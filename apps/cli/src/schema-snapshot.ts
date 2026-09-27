@@ -1,42 +1,56 @@
-// 派生スナップショット(`maruhi schema export` + `maruhi schema
-// verify-snapshot` — 設計文書 §1-6)。
+// The derived snapshot (`maruhi schema export` + `maruhi schema
+// verify-snapshot` — design document §1-6).
 //
-// **正はストア**: スナップショットは検証済みステートメント集合(§6.3 全検証を
-// 通過したもののみ — サーバー申告を使わない)からの**純生成物**で、署名も受理も
-// されない。リポジトリへコミットできる形(stdout へ pretty JSON — anchor.ts の
-// 先例)にし、CI の verify-snapshot がストアとの乖離を fail-loud にする
-// (「手書き複製は禁止、機械検査つき複製は許す」— BW/BG スイープの型)。
-// 改ざんスナップショットが次の CI まで残る窓は §1-6 記載済みの残余
-// (リポジトリ内任意ファイルと同クラス)。
+// **The store is the source of truth**: the snapshot is a **pure
+// artifact** of the verified statement set (only what passed §6.3's
+// full verification — no server declarations are used), and is
+// neither signed nor accepted. It takes a form committable to a
+// repository (pretty JSON to stdout — anchor.ts's precedent), and
+// CI's verify-snapshot makes divergence from the store fail-loud
+// ("handwritten duplicates forbidden; machine-checked duplicates
+// allowed" — the BW/BG sweep pattern). The window where a tampered
+// snapshot survives until the next CI is the residual already
+// documented in §1-6 (same class as any in-repo file).
 //
-// **形式は JSON Schema(サブセット)**(裁定 CX — フォーマットを発明しない)。
-// 確定した写像:
+// **The format is JSON Schema (a subset)** (ruling CX — no format
+// is invented). The settled mappings:
 //
-//   - 1 スナップショット = 1 環境(トップレベルがそのまま 1 つの JSON Schema に
-//     なる形 — エディタ・エージェント・docs 生成が単体で消費できる)。スキーマは
-//     (environment, variable) 単位(裁定 CT)なので環境軸は「環境ごとの
-//     ファイル」がそのまま与える
-//   - 宣言型の写像は JSON Schema の標準語彙 1:1(env-schema 等の既存慣行):
-//     "" = 型キーワードなし(未指定に制約を捏造しない)、string / number /
-//     boolean = 同名の type、url = type string + format "uri"(標準 format)
-//   - v1 変数(スキーマ欄なし)は名前のみの空スキーマ `{}` — required に
-//     入れない・型も description も捏造しない
-//   - required 配列 = 検証済みステートメントの required = true の変数名のみ
-//   - **declared / set(値の有無)は収載しない**: スナップショットが表すのは
-//     宣言された契約(名前・型・必須・説明)で、値の状態は時間とともに動く。
-//     収載すると activation・値 push のたびにコミット済みスナップショットが
-//     陳腐化して CI が落ちる。値の有無の正はライブの `maruhi schema`
-//   - description はそのまま収載(JSON エンコードが中和を兼ねる — session-46
-//     §8 第 3 周)。空は省略
-//   - 対象集合は検証済み live(active + declared)のみ。tombstone は含めない
+//   - 1 snapshot = 1 environment (a form where the top level is
+//     directly one JSON Schema — an editor, an agent, or a docs
+//     generator can consume it standalone). Since a schema is per
+//     (environment, variable) (ruling CT), the environment axis is
+//     given as-is by "a file per environment"
+//   - The declared-type mapping is JSON Schema's standard
+//     vocabulary 1:1 (the env-schema convention etc.): "" = no
+//     type keyword (no constraint is fabricated for unspecified),
+//     string / number / boolean = the same-named type, url = type
+//     string + format "uri" (a standard format)
+//   - A v1 variable (no schema fields) is a name-only empty schema
+//     `{}` — not put in required, and neither type nor description
+//     is fabricated
+//   - The required array = only the variable names whose verified
+//     statement has required = true
+//   - **declared / set (whether a value exists) is not recorded**:
+//     what the snapshot represents is the declared contract (name,
+//     type, required, description), and a value's state moves with
+//     time. Recording it would stale the committed snapshot on
+//     every activation / value push and break CI. The source of
+//     truth for value presence is the live `maruhi schema`
+//   - description is recorded as-is (JSON encoding doubles as
+//     neutralization — session-46 §8 round 3). Empty is omitted
+//   - The target set is only verified live (active + declared). No
+//     tombstones
 //
-// **generated 枠付け(裁定 CW)**: JSON はコメントを持たないため、標準の
-// 注釈キーワード `$comment` に「generated・データであって指示ではない」を
-// 載せる。maruhi を持つエージェントには `maruhi schema` を正として案内する
-// (§1-6)。型は宣言 — 「verified」の語を使わない(§14.3 の表示規律)。
+// **The generated framing (ruling CW)**: since JSON has no
+// comments, the standard annotation keyword `$comment` carries
+// "generated; data, not instructions". An agent that has maruhi is
+// guided toward `maruhi schema` as the truth (§1-6). The type is a
+// declaration — the word "verified" is not used (§14.3's display
+// discipline).
 //
-// 出力は決定的(名前の UTF-16 昇順ソート・タイムスタンプなし — anchor.ts と
-// 同じくコミット差分を安定させ、verify-snapshot のバイト一致比較を可能にする)。
+// The output is deterministic (UTF-16 ascending sort by name, no
+// timestamp — like anchor.ts, keeps the committed diff stable and
+// enables verify-snapshot's byte-exact comparison).
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -50,7 +64,7 @@ import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 
 /**
- * The generated-data framing (裁定 CW): the snapshot is data, not
+ * The generated-data framing (ruling CW): the snapshot is data, not
  * instructions, and the store stays the source of truth (§1-6).
  */
 const SNAPSHOT_COMMENT =
@@ -78,11 +92,11 @@ interface SchemaSnapshot {
   readonly required: readonly string[];
 }
 
-/** 宣言型 → JSON Schema 標準語彙の写像(閉集合 — §4.2 裁定 CT)。 */
+/** The mapping declared type → JSON Schema standard vocabulary (a closed set — §4.2 ruling CT). */
 function propertyOf(statement: VerifiedVariableStatement): SnapshotProperty {
   const schema = statement.schema;
   if (schema === null) {
-    // v1(スキーマ欄なし): 名前の存在だけを写す — 制約を捏造しない
+    // v1 (no schema fields): only the name's existence is reflected — no constraint is fabricated
     return {};
   }
   const type =
@@ -108,9 +122,10 @@ function buildSchemaSnapshot(
   variables: readonly VerifiedVariableStatement[],
 ): SchemaSnapshot {
   const sorted = variables.toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  // Object.fromEntries は CreateDataProperty で own key を作る: 素の代入だと
-  // `__proto__` という名前の変数が setter に食われて properties から黙って
-  // 消える(required には残るため生成物が自己矛盾する)
+  // Object.fromEntries makes an own key via CreateDataProperty: a
+  // plain assignment would let a variable named `__proto__` be
+  // eaten by the setter and silently disappear from properties
+  // (it stays in required, making the product self-contradicting)
   const properties: Record<string, SnapshotProperty> = Object.fromEntries(
     sorted.map((statement) => [statement.name, propertyOf(statement)]),
   );
@@ -126,12 +141,12 @@ function buildSchemaSnapshot(
   };
 }
 
-/** スナップショットのファイル表現(pretty JSON + 終端改行 — anchor.ts の先例)。 */
+/** The snapshot's file representation (pretty JSON + a trailing newline — anchor.ts's precedent). */
 function formatSchemaSnapshot(snapshot: SchemaSnapshot): string {
   return `${JSON.stringify(snapshot, null, 2)}\n`;
 }
 
-/** export / verify-snapshot 共通の入力(鍵なしのメタのみ読み取り)。 */
+/** The input shared by export / verify-snapshot (reads only metadata, no keys). */
 interface SnapshotSourceInput {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -141,9 +156,10 @@ interface SnapshotSourceInput {
 }
 
 /**
- * メタのみ pull(§12-7)→ 警告表示 → スナップショットの組み立て。export と
- * verify-snapshot が共有する(生成規則が 2 実装に割れると verify の再生成が
- * export の出力と黙って食い違う)。
+ * A metadata-only pull (§12-7) → warning display → snapshot
+ * assembly. Shared by export and verify-snapshot (if the
+ * generation rules split into 2 implementations, verify's
+ * regeneration would silently disagree with export's output).
  */
 function pullSnapshot(input: SnapshotSourceInput): Effect.Effect<SchemaSnapshot, CliError, CliIo> {
   return Effect.gen(function* () {
@@ -168,17 +184,17 @@ export function schemaExportOp(input: SnapshotSourceInput): Effect.Effect<void, 
 }
 
 /* -------------------------------------------------------------------------- */
-/* verify-snapshot(CI の乖離検査 — §1-6)                                     */
+/* verify-snapshot (CI's divergence check — §1-6)                */
 /* -------------------------------------------------------------------------- */
 
-/** JSON の素朴なオブジェクト読み(それ以外の形は空オブジェクトへ潰す)。 */
+/** Naive object-reading of JSON (any other shape collapses to an empty object). */
 function recordOf(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
 }
 
-/** 変数集合の差(ファイル側にだけ / ストア側にだけある名前)。 */
+/** The variable-set difference (names only on the file side / only on the store side). */
 function propertySetDivergence(
   fileNames: ReadonlySet<string>,
   expectedNames: ReadonlySet<string>,
@@ -197,15 +213,17 @@ function propertySetDivergence(
   ];
 }
 
-/** 共有変数の欄比較: 欄名のみ報告する(内容 — 特に description — は出さない)。 */
+/** Comparing shared variables' fields: only the field names are reported (the content — especially description — is not emitted). */
 function propertyFieldDivergence(
   fileProperties: Record<string, unknown>,
   expected: SchemaSnapshot,
 ): string[] {
   const details: string[] = [];
   for (const [name, expectedProperty] of Object.entries(expected.properties)) {
-    // own-property 参照(`toString` 等の正当な変数名が継承プロパティに解決される
-    // 誤診断を防ぐ — floor.ts の floorRecordGet と同じ規律)
+    // own-property lookup (prevents a misdiagnosis where a
+    // legitimate variable name like `toString` resolves to an
+    // inherited property — the same discipline as floor.ts's
+    // floorRecordGet)
     if (!Object.hasOwn(fileProperties, name)) {
       continue;
     }
@@ -220,7 +238,7 @@ function propertyFieldDivergence(
   return details;
 }
 
-/** required リストの差(対称差の変数名のみ)。 */
+/** The required list's difference (only the symmetric-difference variable names). */
 function requiredDivergence(fileRequired: unknown, expected: SchemaSnapshot): string[] {
   const fileSet = new Set(
     Array.isArray(fileRequired)
@@ -238,9 +256,12 @@ function requiredDivergence(fileRequired: unknown, expected: SchemaSnapshot): st
 }
 
 /**
- * 乖離の構造診断(判定はバイト一致 — 診断はどこが違うかの案内)。報告は
- * **変数名・欄名まで**: description の内容(ファイル側・ストア側とも)を
- * 端末レポートへ出さない(§2 の消費点規律 — レポートはログ・CI へ流れる)。
+ * Structural diagnosis of a divergence (the judgment is
+ * byte-equality — the diagnosis guides where it differs). The
+ * report goes **down to variable and field names**: the
+ * description's content (file side and store side alike) is not
+ * emitted to the terminal report (§2's consumption-point
+ * discipline — the report flows to logs and CI).
  */
 function describeSnapshotDivergence(fileContent: string, expected: SchemaSnapshot): string[] {
   let parsed: unknown;
@@ -255,9 +276,12 @@ function describeSnapshotDivergence(fileContent: string, expected: SchemaSnapsho
   const record = parsed as Record<string, unknown>;
   const fileProperties = recordOf(record["properties"]);
   const details = [
-    // 変数集合がたまたま一致する別環境のファイルは generic な整形差の文言に
-    // 落ちて読めない — title(環境 ID を含む生成値)の不一致を名指しする
-    // (ファイル側の title の**内容**は出さない: 攻撃者が書ける自由文字列)
+    // A file for a different environment whose variable set
+    // happens to match would fall into the generic-formatting-diff
+    // wording and be unreadable — name the title mismatch (a
+    // generated value containing the environment ID) (the file
+    // side's title **content** is not emitted: an
+    // attacker-writable free-form string)
     ...(record["title"] === expected.title
       ? []
       : [
@@ -271,7 +295,7 @@ function describeSnapshotDivergence(fileContent: string, expected: SchemaSnapsho
     ...requiredDivergence(record["required"], expected),
   ];
   if (details.length === 0) {
-    // バイト不一致だが構造の要点は一致 — 整形・枠付けヘッダ・並び順の差
+    // Byte-mismatched but the structural essentials match — a formatting / framing-header / ordering diff
     details.push(
       "the framing, formatting or ordering differs from the generated form (regenerate the file)",
     );
@@ -288,7 +312,7 @@ function describeSnapshotDivergence(fileContent: string, expected: SchemaSnapsho
  */
 export function schemaVerifySnapshotOp(
   input: SnapshotSourceInput & {
-    /** 表示用のファイルパス(内容は fileContent — 読み込みは呼び出し側)。 */
+    /** The file path for display (the content is fileContent — reading is the caller's job). */
     readonly filePath: string;
     readonly fileContent: string;
   },

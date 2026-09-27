@@ -1,24 +1,30 @@
-// サインアップ制御の案内ページ(AUTH_SPEC §3)。
+// Guidance pages for signup control (AUTH_SPEC §3).
 //
-// 配信規律は cli-pages.ts と同一(§15-3 の招待着地ページの型): スクリプトなし・
-// 自己配信 CSS のみ(共通枠 `page()`)・CSP `script-src 'none'`。応答点は
-// handlers-auth.ts(配信ヘッダーは handlers-auth-cli.ts の htmlResponse を共用)。
-// 文言はすべて英語(ADR-0017)。
+// The delivery discipline is identical to cli-pages.ts (the §15-3 invite
+// landing page's mold): no scripts, self-hosted CSS only (the shared `page()`
+// frame), CSP `script-src 'none'`. The response point is handlers-auth.ts
+// (the delivery header shares handlers-auth-cli.ts's htmlResponse). All
+// wording is English (ADR-0017).
 //
-// 3 枚とも同じ 3 段で書く(「拒否時の着地文言」):
-//   1. 何が起きたか(h1 + 1 文)
-//   2. 何が起きていないか — **「アカウントは作られていない」を outcome 行で明示**
-//      (fail-closed の可視化 — AUTH_SPEC §3。行を作らない実装と文言を一致させる)
-//   3. 次にできること(h2 "What you can do" + 箇条書き)
-// - invite-invalid は無効・失効・消費済みを出し分けない(§15 の 410 と同じ一様さ。
-//   256-bit 単回コードなので列挙オラクルの懸念自体は薄いが、区別して得る UX もない)
-// - waitlist の収集面は作らない(hosted-design.md §2-2 — 案内は運営への連絡まで)
+// All three pages are written in the same 3 stages ("landing wording on
+// denial"):
+//   1. What happened (h1 + one sentence)
+//   2. What did not happen — **"No account was created" is stated on the
+//      outcome row** (visualizing fail-closed — AUTH_SPEC §3; the wording
+//      matches the implementation that creates no rows)
+//   3. What can be done next (h2 "What you can do" + bullet list)
+// - invite-invalid does not differentiate invalid / expired / consumed (the
+//   same uniformity as §15's 410; with a 256-bit single-use code the
+//   enumeration-oracle concern is thin to begin with, and differentiating
+//   buys no UX)
+// - No waitlist-collection surface is built (hosted-design.md §2-2 — the
+//   guidance goes as far as contacting the operators)
 
 import { page } from "./cli-pages.ts";
 
 const NO_ACCOUNT_CREATED = `        <p class="outcome">No account was created.</p>`;
 
-/** signupPolicy = closed の拒否ページ(§3 — OAuth 完走後・行を作らず終了)。 */
+/** Denial page for signupPolicy = closed (§3 — ends after the OAuth round trip, creating no rows). */
 export function renderSignupClosedPage(): string {
   return page(
     "maruhi — sign-ups closed",
@@ -36,7 +42,7 @@ ${NO_ACCOUNT_CREATED}
   );
 }
 
-/** signupPolicy = invite でコード未提示の拒否ページ(§3)。 */
+/** Denial page for signupPolicy = invite with no code presented (§3). */
 export function renderSignupInviteRequiredPage(): string {
   return page(
     "maruhi — invite required",
@@ -59,8 +65,9 @@ ${NO_ACCOUNT_CREATED}
 }
 
 /**
- * 無効なサインアップ招待コードのページ(§3 — start の事前検証と callback の
- * 消費 CAS 敗北の両方で使う。不明・失効・消費済みを出し分けない)。
+ * Page for an invalid signup invite code (§3 — used both when start's
+ * pre-verification fails and when the callback's consumption CAS loses.
+ * Does not differentiate unknown / expired / consumed).
  */
 export function renderSignupInviteInvalidPage(): string {
   return page(

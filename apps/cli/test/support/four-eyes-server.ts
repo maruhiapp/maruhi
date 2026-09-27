@@ -1,7 +1,10 @@
-// 四眼(PF1 K6)の CLI テスト用の状態つきモック: チェーン GET / 追記 POST(CAS 差し込み)・
-// /auth/config・招待一覧・環境一覧・pull(変数なし)・rotate 複合の受理・dek_wraps
-// (自分宛の取得と登録の捕捉)。approval.test.ts / approval-propose.test.ts が共有する。
-// 受理面の検証は行わない(CLI の検証済みチェーンが導出の真実源 — テストの関心)。
+// Stateful mock for the four-eyes (PF1 K6) CLI tests: chain GET / append POST
+// (with CAS injection), /auth/config, invite list, environment list, pull (no
+// variables), acceptance of the rotate composite, dek_wraps (self-addressed
+// fetch and registration capture). Shared by approval.test.ts /
+// approval-propose.test.ts.
+// The acceptance side is not verified (the CLI's verified chain is the source
+// of truth for derivation — that's what the tests care about).
 
 import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
@@ -42,28 +45,28 @@ export interface FourEyesServerState {
   readonly rotateBodies: FourEyesRotateBody[];
   readonly registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[];
   readonly counters: { appendAttempts: number };
-  /** 現在のチェーン(追記後の検査用)。 */
+  /** The current chain (for assertions after appends). */
   readonly entries: ChainEntry[];
   readonly hashes: string[];
 }
 
 export async function makeFourEyesServer(input: {
   readonly built: BuiltChain;
-  /** 環境 → 現エポックと(実行者宛の)自分宛ラップ。 */
+  /** environment → current epoch and (actor-addressed) self wraps. */
   readonly environments: Readonly<
     Record<string, { currentEpoch: number; deks: WireRecipientDek[] }>
   >;
-  /** rotate 受理の issuer と自分宛ラップの受信者(= 実行者)。 */
+  /** The issuer of rotate acceptances and the recipient of self-addressed wraps (= the actor). */
   readonly actor: TestUser;
-  /** 環境ステートメントの author(seq 1 時点のメンバー — 既定 = genesis の作成者と同じ `actor`)。 */
+  /** The author of environment statements (the member as of seq 1 — default: `actor`, same as the genesis creator). */
   readonly author?: TestUser;
-  /** `/auth/config` の応答(server grant のテスト)。 */
+  /** The `/auth/config` response (for server-grant tests). */
   readonly authConfig?: Record<string, unknown>;
-  /** 招待一覧の行(member add のテスト)。 */
+  /** Invite list rows (for member-add tests). */
   readonly invitations?: readonly Record<string, unknown>[];
-  /** チェーン追記への差し込み(409 等)。undefined = 受理。 */
+  /** Injected response for chain appends (e.g. 409). undefined = accept. */
   readonly onAppend?: (call: number) => MockResponse | undefined;
-  /** onAppend の差し込み時に、以後のチェーンをこの形へ差し替える(並行追記)。 */
+  /** When onAppend injects, replaces the subsequent chain with this shape (a concurrent append). */
   readonly chainAfterConflict?: BuiltChain;
 }): Promise<FourEyesServerState> {
   const actor = input.actor;

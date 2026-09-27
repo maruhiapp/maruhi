@@ -1,7 +1,10 @@
-// DEK ラップの登録・配布・修復の Effect プログラム(AUTH_SPEC §12-6)。
+// Effect programs for DEK-wrap registration, distribution, and repair
+// (AUTH_SPEC §12-6).
 //
-// 受理検証の本体(受信者・集合・登録署名・行数上限)は dek-wraps.ts。
-// permit 直列化の前提は旧 data-programs.ts のとおり。
+// The body of acceptance checking (recipients, the set, the
+// registration signature, the row-count cap) lives in dek-wraps.ts.
+// The permit-serialization premise is the same as the former
+// data-programs.ts.
 
 import { Effect } from "effect";
 
@@ -35,11 +38,14 @@ export const registerDekWrapsProgram = (
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    // 登録者(署名者 = 呼び出し主体 — §12-6 (1))も対象環境を scope に含むこと
-    // (§12-6 末尾 = §12-3 の呼び出し主体の scope 判定と同一 → 403。受信者軸の
-    // 422 scope-out-of-range とは別段で、こちらが先)。role の下限は reader —
-    // reader の自己バックフィル(§12-3 — 2026-09-19 DK: 受信者がすべて呼び出し
-    // 主体自身の端末鍵)を除き、直後に member 以上を要求する(設計録 §8 K3-5)
+    // The registrant (the signer = the caller — §12-6 (1)) must also
+    // have the target environment in scope (the tail of §12-6 — the
+    // same scope check of the caller as §12-3's → 403; distinct from
+    // the recipient-axis 422 scope-out-of-range, and this one comes
+    // first). The role floor is reader — except for a reader's own
+    // backfill (§12-3 — 2026-09-19 DK: all recipients are the caller's
+    // own device keys), member-or-above is required immediately after
+    // (design record §8 K3-5)
     const { state, member, projectId } = yield* requireEnvironmentAccess(
       actor.userId,
       "reader",
@@ -52,9 +58,11 @@ export const registerDekWrapsProgram = (
       return yield* rejectData({ kind: "insufficient-role" });
     }
     yield* requireActiveEnvironment(environmentId);
-    // DO ストレージ総量ガード(§12-8): 登録(バックフィル・修復再登録)は
-    // 成長面(存在検査の後・集合 / 登録署名の検証の前)。削除
-    // (deleteDekWrapsProgram)は呼ばない — 解放手段を塞がない
+    // The DO storage-total guard (§12-8): registration (backfill,
+    // repair re-registration) is a growth surface (after the existence
+    // check, before the set / registration-signature checks). Deletion
+    // (deleteDekWrapsProgram) does not call it — it must not plug the
+    // release path
     yield* ensureStorageAdmitsGrowth;
     const currentEpoch = currentEpochOf(state, environmentId);
     const signer = yield* ensureWrapSetAcceptable(
@@ -66,10 +74,12 @@ export const registerDekWrapsProgram = (
       wraps,
     );
     if (signer === null) {
-      // ワイヤ Schema は 1 件以上を強制する(空の deks は 400)ので到達しない
+      // Unreachable: the wire Schema enforces at least one entry (an
+      // empty deks is a 400)
       return yield* rejectData({ kind: "dek-wrap-rejected", reason: "recipient-missing" });
     }
-    // 第 2 段(設計録 §8 K3-1): 署名した端末の実効権限で role / scope を再判定する
+    // Stage 2 (design record §8 K3-1): re-check role / scope against
+    // the signing device's effective permission
     yield* ensureDevicePermission(signer, requiredRole, environmentId);
     const store = yield* DataStore;
     const audit = yield* AuditStore;
@@ -84,7 +94,7 @@ export const registerDekWrapsProgram = (
     });
   });
 
-/** 削除参照が指す保存済みスロット(端末鍵は省略可 — 設計録 §8 K3-3)。 */
+/** The stored slot a deletion reference points at (device key may be omitted — design record §8 K3-3). */
 interface ResolvedWrapRef {
   readonly epoch: number;
   readonly recipientUserId: string;
@@ -93,9 +103,11 @@ interface ResolvedWrapRef {
 }
 
 /**
- * §12-6 の修復経路: admin による (環境, エポック, 受信者, 端末鍵) 単位のラップ削除。
- * 上書き禁止(可用性攻撃の遮断)は維持したまま、毒ラップを削除 → 不足分の
- * 追記経路で再登録する。存在しないタプルは 404(黙って成功させない)。
+ * §12-6's repair path: an admin deletes wraps per (environment,
+ * epoch, recipient, device key) tuple. With overwrite prohibition
+ * (blocking availability attacks) kept intact, poisoned wraps are
+ * deleted and then re-registered via the append path for the missing
+ * part. A nonexistent tuple is a 404 (no silent success).
  */
 export const deleteDekWrapsProgram = (
   actor: DataActor,
@@ -119,11 +131,14 @@ export const deleteDekWrapsProgram = (
         return yield* rejectData({ kind: "dek-wrap-rejected", reason: "duplicate-recipient" });
       }
       seen.add(key);
-      // 保存済み行の受信者クラスと突合する: クライアント申告の class を監査列の
-      // 選択(下の dek.deleted の書き分け)にそのまま使わせない。不一致 =
-      // そのクラスのラップは存在しない(404 と同じ扱い — 黙って成功させない)。
-      // これで「class 違いの同一 (epoch, recipient) ref」も片方が必ずここで落ち、
-      // 1 行の削除に監査 2 行が積まれる形も同時に塞がる
+      // Compare against the stored row's recipient class: the
+      // client-declared class must not be used as-is for choosing the
+      // audit column (the dek.deleted distinction below). A mismatch
+      // = no wrap of that class exists (treated the same as a 404 —
+      // no silent success). This also guarantees that one of two
+      // "same (epoch, recipient) refs with different classes" always
+      // fails here, and simultaneously closes the shape where one
+      // row's deletion would stack two audit rows
       const slot = (yield* store.listWrapSlots(environmentId, ref.epoch, ref.recipientUserId)).find(
         (candidate) =>
           candidate.recipientClass === wrapRecipientClass(ref) &&
@@ -145,8 +160,9 @@ export const deleteDekWrapsProgram = (
     }
     const audit = yield* AuditStore;
     const now = Date.now();
-    // 書き込みフェーズ(単一タスク): 削除と dek.deleted(1 受信者 1 行 —
-    // AUDIT_SPEC §3.3)を原子的に書く
+    // The write phase (a single task): writes the deletion and the
+    // dek.deleted (one row per recipient — AUDIT_SPEC §3.3)
+    // atomically
     yield* Effect.sync(() => {
       for (const ref of resolved) {
         store.write.deleteWrap(
@@ -158,10 +174,12 @@ export const deleteDekWrapsProgram = (
       }
       audit.appendManySync(
         resolved.map((ref) =>
-          // server 受信者は user_id を持たないため FP を target_key_fingerprint に
-          // 載せる(dek.registered — dek-wraps.ts — と同じ書き分け。AUDIT_SPEC §3.3)。
-          // ここで ref の class を使ってよいのは、上の検証フェーズで保存行の
-          // recipient_class と一致することを確認済みだからである
+          // A server recipient has no user_id, so the FP rides on
+          // target_key_fingerprint (the same distinction as
+          // dek.registered — dek-wraps.ts; AUDIT_SPEC §3.3).
+          // Using ref's class here is sound because the check phase
+          // above already confirmed it matches the stored row's
+          // recipient_class
           dataEvent(actor, now, "dek.deleted", {
             environmentId,
             epoch: ref.epoch,
@@ -176,11 +194,14 @@ export const deleteDekWrapsProgram = (
 
 export const listMyDekWrapsProgram = (actor: DataActor, environmentId: string, cache: StateCache) =>
   Effect.gen(function* () {
-    // 自分宛 DEK 取得は環境 ∈ scope(§12-3 の「一括 pull(値付き)・自分宛 DEK
-    // 取得」行)。scope 外のメンバー宛ラップは §12-6 が受理しないので通常は
-    // 空になるが、受理面の 403 で「配布しない」を構造にする(fail-closed)。
-    // 応答は自分の全端末宛の行(端末鍵 recipientEncPubHex 付き — 受信者は自分の
-    // 端末鍵の行だけを開封する)
+    // Fetching one's own DEK requires environment ∈ scope (§12-3's
+    // "bulk pull (with values) / own-DEK fetch" row). Wraps addressed
+    // to out-of-scope members are never accepted by §12-6, so the
+    // result is normally empty — but the acceptance surface's 403
+    // makes "do not distribute" structural (fail-closed).
+    // The response is the rows addressed to all of one's own devices
+    // (each carrying the device key's recipientEncPubHex — a recipient
+    // unseals only the rows for its own device key)
     yield* requireEnvironmentAccess(actor.userId, "reader", environmentId, cache);
     yield* requireActiveEnvironment(environmentId);
     const store = yield* DataStore;

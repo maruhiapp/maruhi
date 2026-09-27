@@ -1,8 +1,11 @@
-// 運用のリポジトリ — docs/notes/hosted-ops.md §2-A / §2-B / §4-2 / §6。
+// The operations repository — docs/notes/hosted-ops.md §2-A / §2-B /
+// §4-2 / §6.
 //
-// 監査ログではない運営限定の可変状態(ops_counters / ops_backups / ops_state)と、
-// 既存の監査行(user_audit_events の auth.* — AUDIT_SPEC §3.1 が「運用のトリップ
-// ワイヤはこの行を数える」と規定)の窓集計。Drizzle の型はこの境界の外に出さない。
+// Operator-only mutable state that is not the audit log (ops_counters /
+// ops_backups / ops_state), plus windowed aggregation over the existing
+// audit rows (auth.* in user_audit_events — AUDIT_SPEC §3.1 prescribes
+// that "operations tripwires count these rows"). Drizzle types never
+// leave this boundary.
 
 import { and, asc, count, eq, gt, gte, isNull, lt, or, type SQL, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
@@ -20,13 +23,13 @@ type Db = ReturnType<typeof drizzle>;
 
 const run = <T>(evaluate: () => Promise<T>): Effect.Effect<T> => Effect.promise(evaluate);
 
-/** 運用カウンタの metric 名(hosted-ops §2-A)。 */
+/** Operations counter metric names (hosted-ops §2-A). */
 export type OpsCounterMetric = "github_token_requests" | "cli_flow_capacity";
 
-/** DO ストレージ総量ガードの census 値(storage-guard.ts の判定と同じ語彙)。 */
+/** Census values of the DO storage-total guard (same vocabulary as storage-guard.ts's checks). */
 export type OpsStorageLevel = "admit" | "warn" | "reject";
 
-/** 退避の失敗コード(静的 — ログ・結果に載せてよい)。 */
+/** Evacuation failure codes (static — safe to put in logs and results). */
 export type OpsBackupFailureCode = "oversize" | "rpc-failed" | "upload-failed";
 
 export interface OpsBackupRecord {
@@ -55,14 +58,15 @@ export type OpsBackupAttempt =
       readonly storageLevel: OpsStorageLevel;
     }
   | {
-      /** 内容不変で退避を省略(成功として扱わない — last_success は据え置き)。 */
+      /** Evacuation omitted because content is unchanged (not counted as success — last_success kept as-is). */
       readonly kind: "skipped";
       readonly storageLevel: OpsStorageLevel;
     }
   | {
       /**
-       * 上限超過で退避しない(hosted-ops §4-2)。失敗ではない — 連続失敗カウンタを
-       * 触らず、`backup_oversize_projects` だけを点灯させる。
+       * Not evacuated due to the size cap (hosted-ops §4-2). Not a
+       * failure — the consecutive-failure counter is untouched; only
+       * `backup_oversize_projects` is lit.
        */
       readonly kind: "oversize";
       readonly storageLevel: OpsStorageLevel;
@@ -73,7 +77,7 @@ export type OpsBackupAttempt =
       readonly storageLevel: OpsStorageLevel | null;
     };
 
-/** hosted-ops §3 行 2 / 行 7 の集計値(識別子を含まない)。 */
+/** Aggregates for hosted-ops §3 row 2 / row 7 (contains no identifiers). */
 export interface OpsBackupSummary {
   readonly trackedProjects: number;
   readonly storageWarnProjects: number;
@@ -84,18 +88,18 @@ export interface OpsBackupSummary {
 }
 
 export interface OpsRepoShape {
-  /** 固定窓カウンタの +1(UPSERT 1 文)。 */
+  /** +1 on the fixed-window counter (a single UPSERT). */
   readonly incrementCounter: (metric: OpsCounterMetric, nowMs: number) => Effect.Effect<void>;
-  /** `sinceMs` 以降に始まる窓の件数(窓開始昇順)。 */
+  /** Counts of windows starting at or after `sinceMs` (ascending by window start). */
   readonly counterWindows: (
     metric: OpsCounterMetric,
     sinceMs: number,
   ) => Effect.Effect<readonly { readonly windowStart: number; readonly count: number }[]>;
-  /** 保持期間を過ぎた窓の削除(有界化)。 */
+  /** Deletes windows past the retention period (bounding). */
   readonly pruneCounters: (nowMs: number) => Effect.Effect<void>;
-  /** `sinceMs` 以降の user_audit_events の件数(event 名で)。 */
+  /** Count of user_audit_events since `sinceMs` (by event name). */
   readonly auditEventCountSince: (event: string, sinceMs: number) => Effect.Effect<number>;
-  /** スイープの列挙(`projects` を id 昇順・排他カーソル)。 */
+  /** Sweep enumeration (`projects` in id order, exclusive cursor). */
   readonly listProjectIdsAfter: (
     afterProjectId: string | null,
     limit: number,
@@ -114,16 +118,16 @@ export interface OpsRepoShape {
 
 export class OpsRepo extends Context.Service<OpsRepo, OpsRepoShape>()("OpsRepo") {}
 
-/** 固定窓の開始時刻(1 時間境界)。 */
+/** Fixed-window start time (1-hour boundary). */
 export function opsWindowStart(nowMs: number): number {
   return Math.floor(nowMs / OPS_COUNTER_WINDOW_MS) * OPS_COUNTER_WINDOW_MS;
 }
 
-/** 条件を満たす行数(条件付き sum)。 */
+/** Number of rows satisfying a condition (conditional sum). */
 const flag = (condition: SQL): SQL<number> =>
   sql<number>`coalesce(sum(case when ${condition} then 1 else 0 end), 0)`;
 
-/** D1 の集計値(数値 / 文字列 / 欠損)→ 非負整数。 */
+/** A D1 aggregate value (number / string / missing) → non-negative integer. */
 function toCount(value: unknown): number {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? n : 0;
@@ -137,7 +141,7 @@ function toFailureCode(value: string | null): OpsBackupFailureCode | null {
   return value === "oversize" || value === "rpc-failed" || value === "upload-failed" ? value : null;
 }
 
-/** 退避の試行 → ops_backups の列(挿入時 / 既存行の更新時)。 */
+/** An evacuation attempt → ops_backups columns (at insert / at update of an existing row). */
 function backupAttemptColumns(
   attempt: OpsBackupAttempt,
   nowMs: number,
@@ -158,8 +162,9 @@ function backupAttemptColumns(
       return { insert: columns, update: columns };
     }
     case "oversize": {
-      // 連続失敗カウンタは 0 に戻す(oversize の間は success が起きないため、先に積んだ
-      // rpc-failed / upload-failed が backup_failing_projects を永久点灯させないように)
+      // The consecutive-failure counter resets to 0 (while oversize no
+      // success can occur, so the rpc-failed / upload-failed already
+      // accumulated must not keep backup_failing_projects lit forever)
       const columns = {
         storageLevel: attempt.storageLevel,
         consecutiveFailures: 0,
@@ -176,7 +181,7 @@ function backupAttemptColumns(
       return { insert: columns, update: columns };
     }
     case "failure": {
-      // census は測れたときだけ更新する(RPC 失敗時は据え置き)
+      // census is updated only when measured (kept as-is on RPC failure)
       const level = attempt.storageLevel === null ? {} : { storageLevel: attempt.storageLevel };
       return {
         insert: { ...level, consecutiveFailures: 1, lastFailureCode: attempt.code },
@@ -276,7 +281,7 @@ export function makeOpsRepo(db: Db): OpsRepoShape {
     backupSummary: (nowMs) =>
       run(async () => {
         const staleBefore = nowMs - OPS_BACKUP_STALE_MS;
-        // 1 クエリで集計(条件付き sum — 行数は最大でプロジェクト数)
+        // Aggregates in a single query (conditional sum — row count is at most the project count)
         const row = await db
           .select({
             tracked: count(),

@@ -1,230 +1,230 @@
-# DK 仕様改訂ドラフト — デバイス鍵分離(端末単位の失効)(2026-09-19 起草・2026-09-20 所有者承認・同日 K1 反映済み)
+# DK spec revision drafts — device key separation (per-device revocation) (drafted 2026-09-19, owner-approved 2026-09-20, applied to the canonical texts the same day as K1)
 
-**位置づけ**: DK フェーズ 1(設計セッション)の成果物。設計の全体像・裁定の反復記録・実装分割・承認依頼項目は docs/notes/dk-design.md。本ファイルは正本 3 文書(CRYPTO_SPEC / AUTH_SPEC / AUDIT_SPEC)へ反映した**改訂本文の起草時の写し**である。**2026-09-20 に所有者が承認項目 1〜16 を採用案側で承認し、同日 K1 として正本へ反映済み**(CRYPTO_SPEC 0.12-draft §1 / §3 / §5.1 / §6.2 / §6.3 / §6.4 / §6.5 / §6.6 / §7 / §8 / §10 / §11 / §13 / §14、AUTH_SPEC 0.24-draft §5 / §6 / §11-1 / §12-3 / §12-6 / §12-8 / §13 / §16-1、AUDIT_SPEC 1.9-draft §2 / §3.1 / §3.4 / §4.1 / §4.2 / §6)。以後の正は各正本であり、本ファイルは経緯の記録として残す(差異が生じた場合は正本が勝つ)。K1 で正本に書く段階で生じた裁定(原則 D1 の §1 への昇格・§6.2 の記述構造・掃除の範囲・削除の書き方・HTTP 状態の照合〔B-7 の承認 `201` は正本の `204`、§13-11 の作成系はドラフトの `201` でなく先例の `200`〕)は設計録の「§6 K1 追記」に記録した。
+**Position**: the deliverable of DK phase 1 (the design session). The overall design, the iterated ruling record, the implementation split, and the approval-request items live in docs/notes/dk-design.md. This file is the **as-drafted copy of the revision text** that was applied to the three canonical documents (CRYPTO_SPEC / AUTH_SPEC / AUDIT_SPEC). **On 2026-09-20 the owner approved items 1–16 on the adopted-option side, and they were applied to the canonical texts the same day as K1** (CRYPTO_SPEC 0.12-draft §1 / §3 / §5.1 / §6.2 / §6.3 / §6.4 / §6.5 / §6.6 / §7 / §8 / §10 / §11 / §13 / §14, AUTH_SPEC 0.24-draft §5 / §6 / §11-1 / §12-3 / §12-6 / §12-8 / §13 / §16-1, AUDIT_SPEC 1.9-draft §2 / §3.1 / §3.4 / §4.1 / §4.2 / §6). From here on, the canonical texts are the source of truth; this file remains as a record of the process (if a discrepancy arises, the canonical texts win). Rulings that arose while writing K1 into the canonical texts (promoting principle D1 into §1, the writing structure of §6.2, the scope of the sweep, how deletion was written, reconciling HTTP statuses [B-7's approved `201` became the canonical `204`; the creation endpoints in §13-11 follow the precedent `200` rather than the draft's `201`]) are recorded in the design record's "§6 K1 addendum".
 
-各ドラフトは「差し替え」または「追記」で示す。既存本文のうち変えない部分は引用しない。版番号は CRYPTO_SPEC 0.11 → **0.12-draft**、AUTH_SPEC 0.23 → **0.24-draft**、AUDIT_SPEC 1.8 → **1.9-draft**。各 Status 行への追記文は末尾 D に置く。裁定番号(DK-A〜)は設計録 §2 を指す。
+Each draft is shown as a "substitution" or an "addition". Parts of the existing text that do not change are not quoted. Version numbers: CRYPTO_SPEC 0.11 → **0.12-draft**, AUTH_SPEC 0.23 → **0.24-draft**, AUDIT_SPEC 1.8 → **1.9-draft**. Sentences to append to each Status line are placed in section D at the end. Ruling numbers (DK-A…) refer to design record §2.
 
-用語(本ドラフト共通): **端末鍵(device key)** = 端末ごとの enc(X25519)+ sig(Ed25519)の鍵対。鍵フィンガープリント(§3)で識別する。**予備鍵(reserve key)** = 秘密鍵が §8 の台帳にだけ住む端末鍵(チェーン上では他の端末鍵と区別しない)。**端末の上限(cap)** = `add_device` payload の (role_cap, scope_kind, scope_environments)。**端末の実効権限** = (min(人の role, role_cap), 人の scope ∩ 端末の scope)。`add_member` / `genesis` が載せる最初の鍵の cap は構造的に (owner, all)(= 人の権限そのもの)。cap は人の権限に対する**上限**であり権限そのものではない(`owner` = 上限なし)。単調性(§6.2)は cap 同士で比べ、実効権限では比べない。
+Terminology (common to this draft): **device key** = a per-device key pair of enc (X25519) + sig (Ed25519). Identified by key fingerprint (§3). **reserve key** = a device key whose private key lives only in the §8 ledger (indistinguishable from other device keys on the chain). **device cap** = the (role_cap, scope_kind, scope_environments) in an `add_device` payload. **device effective authority** = (min(person's role, role_cap), person's scope ∩ device's scope). The cap on the first key carried by `add_member` / `genesis` is structurally (owner, all) (= the person's authority itself). A cap is an **upper bound** on a person's authority, not authority itself (`owner` = no bound). Monotonicity (§6.2) compares caps to caps, never effective authorities.
 
 ---
 
-## A. CRYPTO_SPEC の改訂案
+## A. CRYPTO_SPEC revision proposals
 
-### A-1. §3 の差し替え(鍵階層の図と最終 2 項目 — DK-A)
+### A-1. Substitution in §3 (key hierarchy diagram and the final two items — DK-A)
 
 > ```
-> User(チェーンのメンバー — user_id・role・scope)
-> ├─ 端末鍵 d1 … dn(端末ごと。各 enc: X25519 + sig: Ed25519)
-> │     cap = (role_cap, scope) — 端末の実効権限 = (min(role, role_cap), scope ∩ scope_d)
-> └─ 予備鍵 r(端末鍵と同じ形。秘密鍵は §8 の台帳にだけ住む)
+> User (a chain member — user_id, role, scope)
+> ├─ device keys d1 … dn (per device. enc: X25519 + sig: Ed25519 each)
+> │     cap = (role_cap, scope) — device effective authority = (min(role, role_cap), scope ∩ scope_d)
+> └─ reserve key r (same shape as a device key. Its private key lives only in the §8 ledger)
 >         │
->         └─ ラップ対象: Environment Epoch DEK(プロジェクト × 環境 × エポックごと)— 受信者は (user, 端末鍵)
->                 └─ 暗号化対象: 変数値、および将来の秘匿メタデータ
+>         └─ Wrap target: Environment Epoch DEK (per project × environment × epoch) — recipients are (user, device key)
+>                 └─ Encryption target: variable values, and future secret metadata
 > ```
 >
-> - **端末鍵(2026-09-19 DK — 旧「User master keypair」)**: 端末ごとにクライアントで生成する。秘密鍵はサーバーに送信せず、その端末のセキュアストレージ(CLI: OS キーチェーン、または `maruhi agent` のメモリ)にだけ置く。**端末鍵を他の端末へ複製しない**。チェーン上のメンバー(user_id)は端末鍵の**集合**を持ち、`add_member` / `genesis` が最初の 1 つを、`add_device` / `revoke_device`(§6.2)がその後の増減を載せる。署名者の同定は従来どおり (user_id, 鍵フィンガープリント) であり、フィンガープリントが端末を指す
-> - **予備鍵(2026-09-19 DK)**: 端末鍵と同じ形の鍵対のうち、秘密鍵を**日常の端末に置かず §8 の台帳にだけ置く**もの。チェーン上では `add_device`(cap = (owner, all))で登録された普通の端末鍵であり、DEK ラップを受け取る(全端末を失った後の復元で、他の端末が無くてもバックフィルできるため)。復元(§8)後は新しい端末鍵を `add_device` してから、予備鍵の秘密を端末から消す
-> - **鍵フィンガープリント**: `SHA-256(enc公開鍵 || sig公開鍵)` の先頭 16 バイト。ログ・UI での鍵識別に使う — **不変**。DK 以後、フィンガープリントは端末を識別する
-> - ~~v1 の簡略化: デバイスごとの鍵は持たず、master keypair を各デバイスに配置する。デバイス追加はリカバリーコードの入力による(§8)。デバイス鍵分離とパスキー PRF は将来課題(**未決事項 #2**)~~ **2026-09-19 改訂(DK — 未決 #2 の解消)**: デバイス鍵分離を上記のとおり導入する。端末の追加は本人の別端末による `add_device`(儀式なし — §6.2)、失効は `revoke_device`(`remove_member` と同型の rotate 義務 — §7)。設計録は docs/notes/dk-design.md
+> - **Device key (2026-09-19 DK — formerly "User master keypair")**: generated on the client, per device. The private key is never sent to the server; it lives only in that device's secure storage (CLI: the OS keychain, or `maruhi agent` memory). **A device key is never copied to another device**. A member on the chain (user_id) holds a **set** of device keys: `add_member` / `genesis` carries the first one, `add_device` / `revoke_device` (§6.2) carries the later additions and removals. Signer identification stays (user_id, key fingerprint) as before — the fingerprint now names the device
+> - **Reserve key (2026-09-19 DK)**: a key pair of the same shape as a device key whose private key is **not kept on any day-to-day device and lives only in the §8 ledger**. On the chain it is an ordinary device key registered via `add_device` (cap = (owner, all)) and it receives DEK wraps (so that after losing every device it can still backfill even when no other device exists). After recovery (§8), `add_device` a new device key first, then erase the reserve key secret from the device
+> - **Key fingerprint**: the first 16 bytes of `SHA-256(enc public key || sig public key)`. Used for key identification in logs and the UI — **unchanged**. After DK, a fingerprint identifies a device
+> - ~~v1 simplification: no per-device keys; the master keypair is placed on each device. Adding a device is done by entering a recovery code (§8). Device key separation and passkey PRF are future work (**open item #2**)~~ **Revised 2026-09-19 (DK — resolves open item #2)**: device key separation is introduced as above. Devices are added by `add_device` signed by another of the same person's devices (no ceremony — §6.2); revocation is `revoke_device` (a rotate obligation of the same shape as `remove_member` — §7). The design record is docs/notes/dk-design.md
 
-### A-2. §5.1 の追記(クライアント検証の 1 文 — DK-A)
+### A-2. Addition to §5.1 (one sentence on client verification — DK-A)
 
-> - **端末鍵(2026-09-19 DK)**: 「署名者フィンガープリントが一致するもの」は、その user_id の**端末鍵の有効区間**(`add_member` / `genesis` の鍵は在籍区間、`add_device` で載った鍵は `add_device` 以後 `revoke_device` より前)の中で選ぶ。規則の形は不変(フィンガープリントによる鍵選択)
+> - **Device key (2026-09-19 DK)**: "a matching signer fingerprint" is chosen within the **validity interval of that user_id's device keys** (a key carried by `add_member` / `genesis` uses the membership interval; a key carried by `add_device` is valid after `add_device` and before `revoke_device`). The shape of the rule is unchanged (key selection by fingerprint)
 
-### A-3. §6.2 の差し替え・追記(role 表・op 表・合意規則「端末鍵」・四眼の票の字面・鍵一意性 — DK-A / DK-C / DK-D)
+### A-3. Substitution / addition in §6.2 (role table, op table, the consensus rule "device keys", the wording of four-eyes votes, key uniqueness — DK-A / DK-C / DK-D)
 
-role 表の `reader` 行を差し替える:
+Substitute the `reader` row of the role table:
 
-> | `reader` | scope 内の環境の値の取得・復号のみ(DEK ラップは scope 内の環境について受け取る)。チェーン追記は**自分の端末の `add_device` / `revoke_device` のみ**(2026-09-19 DK) |
+> | `reader` | May only fetch and decrypt values of environments in scope (receives DEK wraps for in-scope environments). Chain appends are **limited to `add_device` / `revoke_device` of one's own devices** (2026-09-19 DK) |
 
-op 表に 2 行を追記する(`withdraw` の後):
+Append two rows to the op table (after `withdraw`):
 
-> | **`add_device`** | **enc_pub_hex、sig_pub_hex、role_cap、scope_kind、scope_environments_lp_hex**(新端末の公開鍵と上限) | **全 role(actor 本人の端末を足す — 対象は actor 自身。新端末の cap ≤ actor 端末自身の cap — 実効権限ではない)** |
-> | **`revoke_device`** | **target_user_id、device_fingerprints_lp_hex**(失効する端末 FP のリスト) | **自分の端末: 全 role。他人の端末: `remove_member` と同じ role 規則(reader / member の端末は admin 以上、admin / owner の端末は owner)+ 対象の scope ⊆ actor の実効 scope。失効端末の実効 scope の全環境の `rotate_epoch` を伴う(§7)** |
+> | **`add_device`** | **enc_pub_hex, sig_pub_hex, role_cap, scope_kind, scope_environments_lp_hex** (the new device's public keys and its caps) | **Every role (the actor adds a device of their own — the target is the actor themself. The new device's cap ≤ the actor's own signing device's cap — not the effective authority)** |
+> | **`revoke_device`** | **target_user_id, device_fingerprints_lp_hex** (the list of device FPs to revoke) | **Own device: every role. Another person's device: the same role rule as `remove_member` (revoking a reader / member's device requires admin or above; an admin / owner's device requires owner) + target's scope ⊆ actor's effective scope. Carries a `rotate_epoch` obligation for every environment in the revoked device's effective scope (§7)** |
 
-合意規則ブロックを追記する(「環境スコープ」ブロックの直後):
+Append a consensus-rule block (immediately after the "environment scope" block):
 
-> - **端末鍵(2026-09-19 DK — 旧未決事項 #2。設計録 docs/notes/dk-design.md)**: メンバーは端末鍵の**集合**を持つ。`genesis` / `add_member` は最初の端末鍵を載せ(payload は不変。その鍵の cap は構造的に (owner, all))、`add_device` / `revoke_device` が増減させる。**原則 D1 — 鍵は端末に属し、権限は人に属する**: role・scope・四眼の票の distinct は user_id で数え、鍵素材とその失効は端末で扱う。署名者は (user_id, 鍵 FP) で同定し、FP が端末を選ぶ。**端末の実効権限** = (min(人の role, 端末の role_cap), 人の scope ∩ 端末の scope) であり、**本仕様のあらゆる「actor / writer / author / issuer / attester の role・scope」の検査は、署名した端末の実効権限に対して行う**(role 規則・原則 1 の包含・環境対象 op・§6.3 の 1 / 3 / 3′・§6.6・四眼の票)。以下の個別規則はこの原則からの導出である
->   - **payload と構造(構造検査の段)**: `add_device` = `[enc_pub_hex, sig_pub_hex, role_cap, scope_kind, scope_environments_lp_hex]`(公開鍵は hex 小文字 64。`role_cap` ∈ {`reader`, `member`, `admin`, `owner`} — `owner` は「上限なし」。scope の 2 フィールドは「環境スコープ」と同じ符号化・同じ構造規則〔`all` ⇒ 空リスト・256 要素以下・重複無効・`listed` の空リストは有効 = DEK を受け取らない端末〕)。`revoke_device` = `[target_user_id, device_fingerprints_lp_hex]`(FP〔hex 小文字 32〕のリストを §2.1 で入れ子 LP 化した hex。1 要素以上・256 要素以下・重複無効。順序は署名対象。生成は昇順 SHOULD・検証は集合)
->   - **`add_device` の認可**: actor は現メンバー(role 不問 — reader も可)。対象は actor 自身(payload に target を持たない)。新端末の各公開鍵は、現メンバー集合の**全端末鍵**の同種公開鍵と重複してはならない(`duplicate-member-key` の対象を端末集合へ拡張。有効な `grant_server` のサーバー鍵との衝突は `add_member` と同じく本規則の対象外)。`listed` の各 environment_id は `create_environment` が先行していること(`unknown-environment`)。**単調性(原則 D2)**: 新端末の cap は署名した端末**自身の cap**(payload に書かれた上限。`add_member` / `genesis` の鍵は構造的に (owner, all))を超えてはならない — role_cap_new ≤ role_cap_signer、かつ端末 scope_new ⊆ 端末 scope_signer(集合代数は「環境スコープ」と同じ: `all` = U。拒否理由 `device-cap-exceeded`)。**比較は cap 同士であり、人の role を取り込んだ実効権限では比べない**(実効権限で比べると、member が cap (owner, all) の予備鍵を登録できない — cap は「人の権限に対する上限」であって権限そのものではなく、`owner` は「上限なし」を意味する。member の予備鍵の実効権限は min(member, owner) = member のまま — 2026-09-19 Cursor Bugbot 指摘対応)。盗まれた端末が自分より強い上限の端末を作れないための規則であり、予備鍵(cap (owner, all))は最初の端末鍵(cap (owner, all))が登録する
->   - **`revoke_device` の認可**: 対象 = actor 自身なら role 不問。他人なら `remove_member` と同じ role 規則(対象の role で決まる)と、原則 1 の包含(対象の scope ⊆ actor の実効 scope — 失効の rotate 義務〔§7〕を履行できる者だけが失効させられる。拒否理由 `scope-not-contained`)。各 FP は対象の**現在有効な**端末でなければならない(`unknown-device`)。失効後に対象の端末が 0 になるエントリは無効(`last-device-protected` — 端末のないメンバーは復帰不能であり、その形は `remove_member` で表す)。自分がいま署名している端末を失効させてよい(エントリ時点では有効。以後の署名は無効)
->   - **端末の有効区間**: 端末鍵は `add_device`(または `add_member` / `genesis`)の seq から `revoke_device` の seq の**直前**まで有効(inclusive 規約 — `revoke_device` エントリの適用後状態にはその端末は含まれない)。検証状態は現メンバーごとの端末集合(FP → 公開鍵・cap)を、履歴索引は端末ごとの有効区間と cap を導出する(§6.3 の鍵選択・3′・AUTH_SPEC §12-6 の受信者判定の入力)。`remove_member` は対象の全端末を同時に終える。同一 user_id の再追加(`add_member`)は最初の端末 1 つから始まる
->   - **受信者集合 R(E)(端末軸)**: 環境 E の DEK ラップの宛先の完全集合 = { (m, d) | m ∈ 現メンバー, d ∈ 端末(m), E ∈ scope(m) ∩ scope(d) } ∪ { 有効 `grant_server` g | E ∈ scope_environments(g) }。判定は受信者クラスを跨いで「同定(id + 鍵)∧ E ∈ 実効 scope」の 1 述語
->   - **四眼との関係**: `add_device` / `revoke_device` は `set_approval_policy` の `ops` に含められず(構造検査 — `invalid-payload`)、提案もできない(`approval-not-required`)— 端末の追加は user_id を増やさず定足数に影響せず、失効は安全側の操作(`rotate_epoch` と同じ線)である。原則 2 の S の要素 (user_id, 鍵 FP) は不変で、FP は署名した端末を指す(下記 `approve` の字面)
->   - **検査順序(理由コードごとベクターで固定)**: `add_device` = actor 規則(`actor-not-member` / `actor-key-mismatch`)→ `duplicate-member-key` → `unknown-environment` → `device-cap-exceeded`。`revoke_device` = `unknown-target` → `unknown-device` → 対象依存の role 規則(自分なら通る・他人なら `insufficient-role`)→ `last-device-protected` → `scope-not-contained`(他人のみ)— 対象の存在を先に解決してから対象依存の role 規則を判定する `remove_member` / `change_role` の既存順(`resolveTargetedOp`)と同じ形(2026-09-19 pullfrog 指摘対応)。既存 op の検査順序は不変(実効権限への置換は各検査の入力が変わるだけ)
->   - 本規則の導入は新 op の追加であり、既存 op の payload 形式には触れない。導入前に受理された既存チェーンは新規則で**有効**(各メンバーの端末 = 最初の鍵 1 つ)。`chain-entries.json` は追記で拡張する(§11)
+> - **Device keys (2026-09-19 DK — formerly open item #2. Design record: docs/notes/dk-design.md)**: a member holds a **set** of device keys. `genesis` / `add_member` carries the first device key (the payload is unchanged; that key's cap is structurally (owner, all)) and `add_device` / `revoke_device` grows and shrinks the set. **Principle D1 — keys belong to devices; authority belongs to people**: role, scope, and the distinctness of four-eyes votes are counted by user_id; key material and its revocation are handled per device. A signer is identified by (user_id, key FP), and the FP picks the device. **Device effective authority** = (min(person's role, device's role_cap), person's scope ∩ device's scope), and **every check in this spec of "the role / scope of actor / writer / author / issuer / attester" is performed against the effective authority of the device that signed** (role rules, principle 1 containment, environment-targeting ops, §6.3's 1 / 3 / 3′, §6.6, four-eyes votes). The individual rules below are derivations from this principle
+>   - **Payload and structure (the structural-check stage)**: `add_device` = `[enc_pub_hex, sig_pub_hex, role_cap, scope_kind, scope_environments_lp_hex]` (public keys are lowercase hex, 64 chars. `role_cap` ∈ {`reader`, `member`, `admin`, `owner`} — `owner` means "no bound". The two scope fields use the same encoding and the same structural rules as "environment scope" [`all` ⇒ empty list, at most 256 elements, duplicates invalid; an empty `listed` list is valid = a device that receives no DEK]). `revoke_device` = `[target_user_id, device_fingerprints_lp_hex]` (a list of FPs [lowercase hex, 32 chars] nested-LP-encoded per §2.1. At least 1 element, at most 256, duplicates invalid. Order is signed. Generation SHOULD be ascending; verification is set-wise)
+>   - **Authorization of `add_device`**: the actor is a current member (any role — a reader may). The target is the actor themself (the payload carries no target). Each of the new device's public keys must not duplicate a same-kind public key of **any device key** in the current member set (the target of `duplicate-member-key` is extended to the device set; collisions with the server key of a valid `grant_server` remain out of scope of this rule, as with `add_member`). Each `listed` environment_id must have a preceding `create_environment` (`unknown-environment`). **Monotonicity (principle D2)**: the new device's cap must not exceed the signing device's **own cap** (the bound written in the payload; keys of `add_member` / `genesis` are structurally (owner, all)) — role_cap_new ≤ role_cap_signer, and device scope_new ⊆ device scope_signer (the set algebra is the same as "environment scope": `all` = U. Rejection reason `device-cap-exceeded`). **The comparison is between caps, not effective authorities that take the person's role into account** (compared as effective authorities, a member could not register a reserve key with cap (owner, all) — a cap is "an upper bound on the person's authority", not authority itself, and `owner` means "no bound". A member's reserve key's effective authority stays min(member, owner) = member — addressed per a 2026-09-19 Cursor Bugbot report). This rule exists so a stolen device cannot mint a device with a stronger bound than itself; the reserve key (cap (owner, all)) is registered by the first device key (cap (owner, all))
+>   - **Authorization of `revoke_device`**: if the target is the actor themself, any role. Otherwise the same role rule as `remove_member` (determined by the target's role) plus principle-1 containment (target's scope ⊆ actor's effective scope — only someone who can fulfill the revocation's rotate obligation [§7] may revoke. Rejection reason `scope-not-contained`). Each FP must be a **currently valid** device of the target (`unknown-device`). An entry that would leave the target with zero devices is invalid (`last-device-protected` — a member with no device cannot come back; that shape is expressed by `remove_member`). One may revoke the very device one is signing with (it is valid at entry time; signatures after that are invalid)
+>   - **Device validity interval**: a device key is valid from the seq of its `add_device` (or `add_member` / `genesis`) to **just before** the seq of its `revoke_device` (inclusive convention — the post-application state of a `revoke_device` entry does not contain that device). The verification state is the device set per current member (FP → public keys, cap); the history index derives each device's validity interval and cap (inputs to §6.3's key selection and 3′, and to AUTH_SPEC §12-6's recipient determination). `remove_member` ends all of the target's devices at once. Re-adding the same user_id (`add_member`) starts from a single first device
+>   - **Recipient set R(E) (device axis)**: the complete set of recipients of environment E's DEK wraps = { (m, d) | m ∈ current members, d ∈ devices(m), E ∈ scope(m) ∩ scope(d) } ∪ { valid `grant_server` g | E ∈ scope_environments(g) }. Determination is the single predicate "identified (id + key) ∧ E ∈ effective scope" across recipient classes
+>   - **Relationship to four-eyes**: `add_device` / `revoke_device` cannot be included in `set_approval_policy`'s `ops` (structural check — `invalid-payload`), nor proposed (`approval-not-required`) — adding a device does not increase user_ids and does not affect quorum, and revocation is a fail-safe operation (same line as `rotate_epoch`). The element (user_id, key FP) of S in principle 2 is unchanged, and the FP names the device that signed (see the `approve` wording below)
+>   - **Check order (fixed per reason code, for vectors)**: `add_device` = actor rules (`actor-not-member` / `actor-key-mismatch`) → `duplicate-member-key` → `unknown-environment` → `device-cap-exceeded`. `revoke_device` = `unknown-target` → `unknown-device` → target-dependent role rule (passes for self, `insufficient-role` for others) → `last-device-protected` → `scope-not-contained` (others only) — the same shape as the existing order of `remove_member` / `change_role`, which resolves the target's existence before deciding the target-dependent role rule (`resolveTargetedOp`) (addressed per a 2026-09-19 pullfrog report). The check order of existing ops is unchanged (substituting in effective authority only changes the inputs to each check)
+>   - Introducing this rule adds new ops; it does not touch the payload format of existing ops. Existing chains accepted before introduction are **valid** under the new rule (each member's devices = the single first key). `chain-entries.json` is extended by appending (§11)
 
-「四眼」ブロックの `approve` の票の字面を差し替える(該当箇所のみ):
+Substitute the vote wording of `approve` in the "four-eyes" block (only the relevant passage):
 
-> - **`approve`**(端末鍵の語彙 — 2026-09-19 DK): actor はその時点の owner で、署名した端末の実効 role が owner であること(`insufficient-role` — cap < owner の端末は票を入れられない)。actor の user_id が S に**生きている票**(適用時点でその人の有効な端末による署名)を既に持つなら `duplicate-approval`(同じ端末の 2 票目も、別端末の 2 票目も重複 — 1 人 1 票)。票数 = S の要素のうち「この `approve` の時点で、その FP が現 owner の有効な端末であり、端末の実効 role が owner」であるものの distinct な user_id 数。**失効した端末の票は失効する**(`revoke_device` は「その鍵は侵害されたかもしれない」の宣言であり、鍵更新で旧鍵の票が失効する 2026-09-15 裁定と同じ)。失効した端末鍵を同じ人が `add_device` で再登録すれば旧票は復活する(「失効は単調ではない」の端末形 — 帰結。CLI は失効済み FP の再登録に警告する)。`proposal-void` の「提案時と同じ鍵 FP」は「提案した端末が適用時点でも有効で、その実効 role が内側 op に足りる」と読む
+> - **`approve`** (device-key vocabulary — 2026-09-19 DK): the actor must be an owner at that point, and the signing device's effective role must be owner (`insufficient-role` — a device with cap < owner cannot cast a vote). If the actor's user_id already holds a **live vote** in S (a signature by a device valid for that person at application time), the result is `duplicate-approval` (a second vote from the same device and a second vote from another device are both duplicates — one vote per person). Vote count = the number of distinct user_ids among elements of S where "at this `approve`'s point, that FP is a valid device of a current owner and the device's effective role is owner". **Votes of a revoked device are revoked** (a `revoke_device` is a declaration that "this key may have been compromised" — same as the 2026-09-15 ruling that a key change expires the old key's votes). If the same person re-registers a revoked device key via `add_device`, the old vote revives (the device form of "revocation is not monotone" — a consequence. The CLI warns on re-registering a revoked FP). `proposal-void`'s "the same key FP as at proposal" reads as "the device that proposed is still valid at application time and its effective role suffices for the inner op"
 
-「メンバー鍵の一意性」ブロックの判定単位の 1 文を差し替える:
+Substitute the one sentence on the unit of determination in the "member key uniqueness" block:
 
-> - **判定単位は enc / sig の個別鍵**(鍵フィンガープリント = enc‖sig の一致ではない)。比較対象は現メンバー集合の**全端末鍵**(2026-09-19 DK — 端末鍵は人ごとに複数あり、片方の鍵の共有は端末を跨いでも同じ多義性を生む)。enc と sig の種類を跨いだ比較は行わない
+> - **The unit of determination is the individual enc / sig key** (key fingerprint = enc‖sig equality does not apply). The comparison set is **all device keys** of the current member set (2026-09-19 DK — there are multiple device keys per person, and sharing one of the two keys produces the same ambiguity across devices). enc and sig keys are not compared across kinds
 
-### A-4. §6.3 の追記(4 箇所 — DK-A / DK-E)
+### A-4. Additions to §6.3 (4 places — DK-A / DK-E)
 
-> - **端末鍵の選択(2026-09-19 DK)**: 1 の「宣言ヘッド時点でその user_id に有効に束縛されていた鍵」は、その user_id の端末鍵の有効区間(§6.2)に宣言ヘッドが含まれる鍵を指す。失効した端末が失効 seq 以後のヘッドを宣言した署名は `*-key-mismatch-at-head`(既存の理由コード — 在籍区間跨ぎと同じ形)。3 の role・3′ の scope は**署名した端末の実効権限**で判定する(cap < member の端末の値署名は `*-role-insufficient-at-head`、端末 scope 外は `*-environment-out-of-scope-at-head` — いずれも既存コードで、入力が実効権限に変わるだけ)
-> - **ラップ先 = R(E)(端末軸)**: 「scope 内の現メンバー」は「scope 内の現メンバーの、実効 scope に E を含む各端末」と読む(§6.2 の R(E))。受信側: 自分宛のラップで環境 ∉ **この端末の実効 scope** のものは使用せず警告する(規範は不変)
-> - **(a) 招待リンクアンカー**: 「当該 seq 時点のチェーン上で招待者 user_id に束縛された sig 公開鍵がリンクの `is` と一致」は「招待者の当該 seq 時点で有効な端末鍵のいずれかの sig 公開鍵と一致」と読む(招待は端末から発行される)
-> - **スコープ外環境の扱い**: 人の scope に加えて端末 scope の外の環境も同じ扱い(メタは見える・DEK は受け取らない)。端末 scope は人の scope の部分集合なので、人の可視範囲(裁定 G)を超えることはない
+> - **Device key selection (2026-09-19 DK)**: the "key validly bound to that user_id at the declared head" in 1 means a key whose device-key validity interval (§6.2) for that user_id contains the declared head. A signature in which a revoked device declared a head at or after the revocation seq is `*-key-mismatch-at-head` (an existing reason code — same shape as spanning the membership interval). The role in 3 and the scope in 3′ are determined by the **effective authority of the signing device** (a value signature from a device with cap < member is `*-role-insufficient-at-head`; outside device scope is `*-environment-out-of-scope-at-head` — both existing codes; only the input changes to effective authority)
+> - **Wrap target = R(E) (device axis)**: "current members in scope" reads as "each device of the current members in scope whose effective scope contains E" (R(E) of §6.2). Receiving side: do not use, and warn on, wraps addressed to you for environments ∉ **this device's effective scope** (norm unchanged)
+> - **(a) Invite link anchor**: "the sig public key bound to the inviter's user_id on the chain at that seq matches the link's `is`" reads as "matches the sig public key of one of the inviter's devices valid at that seq" (an invite is issued from a device)
+> - **Handling of out-of-scope environments**: environments outside device scope are treated the same as outside person scope (metadata is visible; no DEK is received). Device scope is a subset of person scope, so it can never exceed the person's visibility range (ruling G)
 
-### A-5. §6.4 の追記(受理ポリシー 1 項目 — DK-E)
+### A-5. Addition to §6.4 (one acceptance-policy item — DK-E)
 
-> - **端末数(2026-09-19 DK)**: メンバー 1 人あたりの有効な端末は **16** まで(受理ポリシー — 合意規則ではない。超過の `add_device` は型付きエラー — AUTH_SPEC §12-8)。`revoke_device` の受理副作用: 対象端末の申告行の削除(AUTH_SPEC §16-1)・要ローテーション検出(AUDIT_SPEC §4.1 の `revoke_device` 変種)・ミラー(§3.4)。`add_device` の受理副作用: ミラーのみ(DEK のバックフィルはクライアント — §7)。`add_device` / `revoke_device` は汎用チェーン追記 API で受理する(AUTH_SPEC §11)
+> - **Device count (2026-09-19 DK)**: up to **16** valid devices per member (acceptance policy — not a consensus rule. An `add_device` in excess is a typed error — AUTH_SPEC §12-8). Acceptance side-effects of `revoke_device`: deleting the target device's attestation rows (AUTH_SPEC §16-1), rotation-needed detection (the `revoke_device` variant of AUDIT_SPEC §4.1), mirroring (§3.4). Acceptance side-effects of `add_device`: mirroring only (DEK backfill is the client's — §7). `add_device` / `revoke_device` are accepted through the generic chain-append API (AUTH_SPEC §11)
 
-### A-6. §6.5 の追記(1 文 — DK-D)
+### A-6. Addition to §6.5 (one sentence — DK-D)
 
-> - **端末鍵との関係(2026-09-19 DK)**: 招待を受諾する鍵・招待を発行する鍵はいずれも**その操作を行った端末の端末鍵**である。裏付け元(`github-signing-keys`)へ登録する(`maruhi key publish`)のは受諾に使う端末の sig 公開鍵(端末ごとに登録してよい — GitHub は複数の署名鍵を持てる)。本人が自分の他の端末を足す経路は招待ではなく `add_device`(§6.2 — 第三者保証も相互確認も要さない: 本人が自分の鍵を増やす操作であり、運ぶのは FP〔公開情報〕だけで、サーバーが公開鍵をすり替えれば FP 照合で落ちる)。検証済み指紋帳(充足形 3)の記録は (origin, user_id) → FP の**集合**とし、既知の相手の未知の FP は鍵変更と同じ扱い(警告 + 儀式)とする
+> - **Relationship to device keys (2026-09-19 DK)**: both the key that accepts an invite and the key that issues an invite are **the device key of the device performing the operation**. What gets registered to the backing source (`github-signing-keys`) (`maruhi key publish`) is the sig public key of the device used for acceptance (registration is per device — GitHub can hold multiple signing keys). The path by which a person adds another device of their own is `add_device`, not invites (§6.2 — needs neither third-party vouching nor mutual confirmation: it is an operation where the person grows their own keys, and it carries only the FP [public information]; if the server swapped the public key, the FP check would fail). The verified fingerprint ledger (satisfaction form 3) records a **set** of (origin, user_id) → FPs, and an unknown FP of a known peer is treated like a key change (warning + ceremony)
 
-### A-7. §6.6 の追記(1 文 — DK-A)
+### A-7. Addition to §6.6 (one sentence — DK-A)
 
-> - **端末鍵(2026-09-19 DK)**: attester の鍵は署名した端末の端末鍵。クライアント検証 (1)(2) の「申告ヘッド時点で有効だった鍵」は端末の有効区間で判定する。申告はメンバーごとでなく**端末ごと**に最新 1 行を保存・配布する(AUTH_SPEC §16-1 — 端末は独立に同期するため、端末を跨いだ seq 単調性は要求しない)
+> - **Device keys (2026-09-19 DK)**: an attester's key is the device key of the signing device. In client verification (1)(2), "the key that was valid at the attested head" is determined by the device's validity interval. Attestations are stored and distributed as the latest one row **per device**, not per member (AUTH_SPEC §16-1 — because devices sync independently, no seq monotonicity across devices is required)
 
-### A-8. §7 の追記(2 項目 — DK-B)
+### A-8. Additions to §7 (two items — DK-B)
 
-> - **端末の失効(2026-09-19 DK)**: `revoke_device` は、失効した各端末の**実効 scope**(人の scope ∩ 端末の scope)の全環境について、`remove_member` と同じ `rotate_epoch` 義務を伴う(機密性 — その端末が保持していた DEK の失効。scope が空の端末〔票だけの端末〕の失効は義務を伴わない)。義務の起点は当該 `revoke_device` の seq。履行者は失効を署名した actor(同じ人の別端末、または他人の端末を失効させた admin / owner — 原則 1 の包含により DEK を持つ)。**reader が自分の端末を失効させた場合**、actor は `rotate_epoch` の権限を持たないため履行できない — この失効は合意規則で拒否せず(失効は安全側の操作であり、`rotate_epoch` を四眼で遅らせないのと同じ線)、義務は要ローテーション検出(AUDIT_SPEC §4.1 の `revoke_device` 変種)と `project verify` の未収束義務の警告で当該環境の member 以上に見せ、CLI は本人に「rotate を頼む相手」を表示する
-> - **端末追加のバックフィル**: `add_device` の actor(同じ人の端末)は、新端末の実効 scope の各環境について**全エポック**の DEK を新端末の enc 公開鍵へラップして登録する(AUTH_SPEC §12-6 の追記経路 — `add_member` 後のバックフィルと同型。予備鍵〔cap (owner, all)〕を含む)。actor は同じ人の端末であり当該 DEK を持つ(「ラップの実行者 = DEK 保持者」)。reader の端末も自分宛のバックフィルを登録できる(AUTH_SPEC §12-3 — 受信者がすべて自分の端末鍵に限る)。四眼経由の適用(`add_member` / scope 拡大)のバックフィルを承認者が行う場合、宛先は対象の**全端末**(R(E) のとおり)
+> - **Device revocation (2026-09-19 DK)**: `revoke_device` carries the same `rotate_epoch` obligation as `remove_member`, for every environment in each revoked device's **effective scope** (person's scope ∩ device's scope) (confidentiality — revocation of the DEKs that device held. Revoking a device whose scope is empty [a vote-only device] carries no obligation). The obligation's origin is the seq of that `revoke_device`. The fulfiller is the actor who signed the revocation (another device of the same person, or an admin / owner who revoked someone else's device — which holds the DEKs by principle-1 containment). **When a reader revokes their own device**, the actor lacks `rotate_epoch` authority and cannot fulfill — this revocation is not rejected by a consensus rule (revocation is a fail-safe operation; same line as not delaying `rotate_epoch` under four-eyes); instead the obligation is surfaced to members and above of that environment via rotation-needed detection (the `revoke_device` variant of AUDIT_SPEC §4.1) and `project verify`'s unfulfilled-obligation warning, and the CLI shows the revoker "who to ask for a rotate"
+> - **Backfill on device add**: the `add_device` actor (a device of the same person) wraps and registers the DEKs of **all epochs** for each environment in the new device's effective scope, to the new device's enc public key (the append path of AUTH_SPEC §12-6 — same shape as the backfill after `add_member`. Includes the reserve key [cap (owner, all)]). The actor is a device of the same person and holds those DEKs ("the wrap performer = a DEK holder"). A reader's device can also register its own backfill (AUTH_SPEC §12-3 — recipients are limited entirely to the caller's own device keys). When an approver performs a backfill for a four-eyes application (`add_member` / scope expansion), the destinations are the target's **all devices** (per R(E))
 
-### A-9. §8 の差し替え(見出し・8.1・8.3・8.4・8.5 — DK-G)
+### A-9. Substitution in §8 (heading, 8.1, 8.3, 8.4, 8.5 — DK-G)
 
-> ## 8. 予備鍵ラップ台帳(リカバリーコード・パスキー PRF・保護者・ハンドオフ)
+> ## 8. Reserve-key wrap ledger (recovery codes, passkey PRF, guardians, handoff)
 >
-> **2026-09-19 改訂(DK)**: 台帳のラップ対象 B は **予備鍵**(§3 — 秘密鍵が台帳にだけ住む端末鍵)のブロブとする。旧「master 鍵」は端末鍵(日常の端末に置く)と予備鍵(台帳に置く)に分かれ、台帳が守るのは後者だけである。台帳の構造(クラス S / G / H)・AAD・分片・ハンドオフの要求 / 承認 payload・`recovery-wrap.json` のバイト列は不変。変わるのは (1) B の意味、(2) ハンドオフの旧端末経路(`kind = "device"` / `source = "device"`)の**削除**(日常の端末は B を持たないため成立しない — 端末の追加は §6.2 の `add_device` が担う)、(3) 保護者分片の封印先が保護者の**各端末鍵**になること、(4) 台帳の変更(ラップの追加・再発行・保護者の指名)に**予備鍵の開封**が要ること(予備鍵は端末に無いため、クライアントはまずコードかパスキーで B を開いてから新しいラップを作る。初回の鍵生成では端末鍵と予備鍵を同時に生成し、その場でリカバリーコードのラップと任意のパスキーラップを作る)
+> **Revised 2026-09-19 (DK)**: the ledger's wrap target B is now a blob of the **reserve key** (§3 — a device key whose private key lives only in the ledger). The former "master key" splits into device keys (kept on day-to-day devices) and the reserve key (kept in the ledger); the ledger protects only the latter. The ledger's structure (classes S / G / H), AAD, segments, handoff request / approval payloads, and the `recovery-wrap.json` byte strings are unchanged. What changes: (1) the meaning of B, (2) the **removal** of the handoff old-device path (`kind = "device"` / `source = "device"`) (a day-to-day device does not hold B, so it cannot work — adding a device is handled by `add_device` in §6.2), (3) the seal destination of guardian segments becoming the guardian's **each device key**, (4) changing the ledger (adding wraps, reissuing, naming guardians) now **requires unsealing the reserve key** (since the reserve key is not on a device, the client first opens B with a code or a passkey, then builds new wraps. At initial key generation, the device key and the reserve key are generated together, and the recovery-code wrap and any passkey wraps are created on the spot)
 >
-> ### 8.1 共通規定(差し替え箇所のみ)
+> ### 8.1 Common provisions (substituted passages only)
 >
-> - **ラップ対象 B**: 予備鍵(enc / sig)の不透明ブロブ。直列化形式はクライアント(CLI)の契約であり、サーバーは関知しない(現行 = キーチェーンレコードの JSON。端末鍵のレコードと同じ形。復元側は自己検証を通してから、**端末鍵の発行にだけ用い、日常の保存先には置かない**)
-> - **受信者クラス**: (S) 対称 KEK — `recovery-code` / `passkey-prf`。(G) 保護者グループ — `guardian`。(H) ハンドオフ — 一時受信者(保護者の承認を要求者へ運ぶ応答スコープ)
-> - `kind` ∈ {`passkey-prf`, `guardian`}(`device` は 2026-09-19 に削除 — 8.4)。`wrap_ref` = passkey-prf: `wrap_id` / guardian: `group_id`。`mode` = guardian のみ `any` | `all`、それ以外は空文字列。**例外: `recovery-code` は旧 AAD のまま**(不変)
+> - **Wrap target B**: an opaque blob of the reserve key (enc / sig). The serialization format is a client (CLI) contract; the server does not care (currently = JSON of a keychain record, the same shape as a device-key record. The restoring side uses it **only to mint device keys**, after passing self-verification, and does not place it in day-to-day storage)
+> - **Recipient classes**: (S) symmetric KEK — `recovery-code` / `passkey-prf`. (G) guardian group — `guardian`. (H) handoff — ephemeral recipient (a response scope carrying a guardian's approval to the requester)
+> - `kind` ∈ {`passkey-prf`, `guardian`} (`device` was removed on 2026-09-19 — 8.4). `wrap_ref` = passkey-prf: `wrap_id` / guardian: `group_id`. `mode` = `any` | `all` for guardian only; the empty string otherwise. **Exception: `recovery-code` keeps the old AAD** (unchanged)
 >
-> ### 8.3 保護者グループ(差し替え箇所のみ)
+> ### 8.3 Guardian groups (substituted passages only)
 >
-> - **分片の封印先**: 保護者の**現在有効な各端末鍵**の enc 公開鍵(チェーン導出 — §6.2 の端末集合)。同じ `s_i` を保護者の端末数ぶん封印する(info は端末を含まないが受信者鍵が異なるため相互に開けない)。台帳は分片ごとに保護者の user_id と端末の鍵 FP を併置し、クライアントは保護者の現端末集合(チェーン導出)と突合して、封印先の端末がすべて失効 / 更新されていれば不一致(STALE)を警告する — `all` では 1 人の不一致でグループが復元不能になる。保護者が端末を足しても既存の分片は追随しない(ward が再作成する)
+> - **Seal destination of segments**: the enc public key of the guardian's **each currently valid device key** (chain-derived — the device set of §6.2). The same `s_i` is sealed once per guardian device (info does not contain the device, but the recipient keys differ so they cannot open each other's). The ledger records the guardian's user_id and the device's key FP alongside each segment, and the client cross-checks them against the guardian's current device set (chain-derived) and warns on mismatch (STALE) if every sealed destination device has been revoked / rotated — under `all`, one person's mismatch makes the group unrestorable. Existing segments do not follow when a guardian adds a device (the ward recreates them)
 >
-> ### 8.4 ハンドオフ(差し替え箇所のみ)
+> ### 8.4 Handoff (substituted passages only)
 >
-> - 「端末移行」の項を削除する。承認者は**保護者のみ**(`source = group_id`)。`source = "device"`・`KEK_h`・承認への B の同送は無い。要求者の組み立ては「当該グループの `mode` に従い KEK を得て、台帳から取得したグループのラップを開く」の 1 形
-> - **端末の追加は本節の対象外**(§6.2 `add_device` — 秘密を運ばない)。全端末喪失からの復元は、本節の経路で予備鍵 B を得た端末が、予備鍵で `add_device` を署名して自分の新しい端末鍵を登録し、予備鍵の秘密を端末から消す(§3)
+> - Remove the "device migration" item. Approvers are **guardians only** (`source = group_id`). There is no `source = "device"`, no `KEK_h`, no piggybacked B on the approval. The requester's assembly has a single form: "obtain the KEK per that group's `mode`, then open the group's wraps fetched from the ledger"
+> - **Adding a device is out of scope of this section** (§6.2 `add_device` — it carries no secret). Recovery from losing every device: a device that obtained the reserve key B via this section's path signs `add_device` with the reserve key to register its own new device key, then erases the reserve key secret from the device (§3)
 >
-> ### 8.5 禁止事項(追記)
+> ### 8.5 Prohibitions (addition)
 >
-> - 予備鍵の秘密鍵を日常の端末の保存先(キーチェーン・agent メモリ)に**留める**こと(復元・台帳変更の間だけメモリに置き、用が済んだら消す)
-> - 予備鍵を端末に束縛された封印器(SE / TPM 等)で封印すること(復元はどの端末でも行える必要がある — 台帳のみ)
+> - **Keeping** the reserve key's private key in day-to-day device storage (keychain, agent memory) (keep it in memory only during recovery or ledger changes; erase it when done)
+> - Sealing the reserve key with a device-bound sealer (SE / TPM etc.) (recovery must be possible from any device — the ledger only)
 
-### A-10. §11 テストベクターへの追記
+### A-10. Additions to the §11 test vectors
 
-> - 0.12-draft(DK)で追加・改訂されるベクター(**所有者承認後の実装 PR〔K2 — 実装分割は docs/notes/dk-design.md §3〕で、実装より先にコミットする**): `chain-entries.json` の**追記**(seq 25〜 — `add_device` / `revoke_device` の正例〔予備鍵・票だけの端末 (owner, listed{})・CI 箱 (member, listed{dev})・第 2 端末による有効な値署名の派生・自己 / 一括 / admin による失効・失効端末の票が数えられない派生・別端末での再投票〕と負例〔`duplicate-member-key`・`unknown-device`・`last-device-protected`・`device-cap-exceeded` の role / scope 各軸・`scope-not-contained`・失効端末の署名 = `actor-key-mismatch`・cap < owner の approve = `insufficient-role`・同じ人の別端末の 2 票目 = `duplicate-approval`・`add_device` の提案 = `approval-not-required`・検査順序の固定形〕。`expected_head_states` の members に `devices` を追加。**正規チェーン seq 1〜24 のバイト列・ハッシュは不変** — 既存 op の payload 形式に触れないため全再生成は不要〔`checkpoint` op 追加時と同じ型〕)、`value-signature.json` / `metadata-signature.json` / `env-manifest.json` / `head-attestation.json` の**追記**(端末軸の負例 = 失効端末の宣言ヘッド〔`*-key-mismatch-at-head`〕・cap 不足〔`*-role-insufficient-at-head`〕・端末 scope 外〔`*-environment-out-of-scope-at-head`〕と第 2 端末の正例。既存の正例・負例は不変)、`master-key-wrap.json` の**再生成**(`handoff-device` 正例と kind `device` への付け替え負例の削除 — 互換経路を作らない裁定の写し。他のケースのバイト列は不変。README 規約 28 として意図的な例外を明記)。**他のベクターは不変**(HPKE info・AAD・登録署名・発行文・受諾文・申告の LP に触れない)
+> - Vectors added or revised in 0.12-draft (DK) (**committed before the implementation, in the post-owner-approval implementation PR [K2 — the implementation split is docs/notes/dk-design.md §3]**): **appends** to `chain-entries.json` (seq 25 onwards — positive cases of `add_device` / `revoke_device` [reserve key; a vote-only device (owner, listed{}); a CI box (member, listed{dev}); derivation of a valid value signature by a second device; self / batch / admin revocations; derivation that a revoked device's vote is not counted; re-voting from another device] and negative cases [`duplicate-member-key`; `unknown-device`; `last-device-protected`; `device-cap-exceeded` on each of the role / scope axes; `scope-not-contained`; a revoked device's signature = `actor-key-mismatch`; an approve with cap < owner = `insufficient-role`; a second vote from another device of the same person = `duplicate-approval`; proposing `add_device` = `approval-not-required`; the fixed check order]). `expected_head_states` members gain `devices`. **The byte strings and hashes of canonical-chain seq 1–24 are unchanged** — no regeneration needed because no existing op's payload format is touched [same shape as when the `checkpoint` op was added]); **appends** to `value-signature.json` / `metadata-signature.json` / `env-manifest.json` / `head-attestation.json` (device-axis negative cases = declared head by a revoked device [`*-key-mismatch-at-head`], insufficient cap [`*-role-insufficient-at-head`], outside device scope [`*-environment-out-of-scope-at-head`], and a positive case for a second device. Existing positive and negative cases are unchanged); **regeneration** of `master-key-wrap.json` (removing the `handoff-device` positive case and the negative case re-pointed at kind `device` — a reflection of the ruling not to build a compat path. Byte strings of the other cases are unchanged. The intentional exception is recorded as README convention 28). **All other vectors are unchanged** (HPKE info, AAD, registration signatures, issuance text, acceptance text, and attestation LP are untouched)
 
-### A-11. §13 未決事項の差し替え(#2)
+### A-11. Substitution of §13 open item #2
 
-> 2. ~~デバイス鍵分離・パスキー PRF(WebAuthn PRF 拡張)対応(Phase 2 以降)~~ **解消(2026-09-19 起草 — 本改訂 PR のマージをもって確定)**: パスキー PRF は KL3(0.9-draft — §8.2)で、デバイス鍵分離は DK(§3 / §6.2 / §7 / §8 — 端末鍵・予備鍵・`add_device` / `revoke_device`)で設計。設計録は docs/notes/dk-design.md
+> 2. ~~Device key separation / passkey PRF (WebAuthn PRF extension) support (Phase 2 and later)~~ **Resolved (drafted 2026-09-19 — finalized on merge of this revision PR)**: passkey PRF was designed in KL3 (0.9-draft — §8.2), device key separation in DK (§3 / §6.2 / §7 / §8 — device keys, reserve key, `add_device` / `revoke_device`). The design record is docs/notes/dk-design.md
 
-### A-12. §14.2 / §14.3 への追記
+### A-12. Additions to §14.2 / §14.3
 
-> 11. **端末単位の失効の保証(2026-09-19 — DK)**: 検証済みチェーン上で `revoke_device` により失効した端末鍵 d(seq s)について、s 以後のエポックの DEK ラップは仕様適合クライアントによって d 宛に生成されず、仕様適合サーバーによって受理されない(§6.2 の R(E) / AUTH_SPEC §12-6)。d による s 以後のヘッドを宣言した値・メタ・マニフェスト・申告の署名、s 以後の d によるチェーンエントリ・四眼の票は全検証者が拒否する。人(user_id)の在籍・role・scope・他の端末は影響を受けない(再招待・票の入れ直しは要らない)。**保証しないもの**: d が失効前に取得した DEK・平文の取り消し(§1 原則 5 — §7 の rotate 義務と要ローテーション検出が補う)、d が失効前に `add_device` で登録した端末の自動失効(チェーン上に「d が追加した」と見える — 失効者が同じエントリで一括して失効する)、cap の単調性を超える端末の作成の**事前**防止以上のこと(盗まれた端末は自分以下の端末を作れる)
+> 11. **Guarantee of per-device revocation (2026-09-19 — DK)**: for a device key d revoked by `revoke_device` on a verified chain (seq s), DEK wraps of epochs at or after s are not generated for d by spec-conforming clients and not accepted by spec-conforming servers (§6.2's R(E) / AUTH_SPEC §12-6). Signatures by d on values, metadata, manifests, and attestations declaring heads at or after s, and chain entries and four-eyes votes by d at or after s, are rejected by every verifier. The person (user_id)'s membership, role, scope, and other devices are unaffected (no re-invite or re-voting needed). **Not guaranteed**: undoing DEKs or plaintext that d obtained before revocation (§1 principle 5 — covered by §7's rotate obligation and rotation-needed detection); automatic revocation of devices that d registered via `add_device` before being revoked (visible on-chain as "added by d" — the revoker revokes them in batch in the same entry); anything beyond **prior** prevention of creating devices exceeding cap monotonicity (a stolen device can mint devices at or below itself)
 
-> 10. **予備鍵の露出(2026-09-19 — §8 / DK)**: 全端末喪失からの復元では予備鍵 B が復元に使う端末のメモリに置かれる。その端末が侵害されていれば予備鍵も侵害される(暗号は防がない — 復元後の `key reserve rotate`〔新予備鍵の登録 + 旧予備鍵の失効 = rotate 義務〕が回復手段)。予備鍵は日常の端末に留めない(§8.5)ことで露出の機会を復元と台帳変更の瞬間に限る
+> 10. **Reserve-key exposure (2026-09-19 — §8 / DK)**: in recovery from losing every device, the reserve key B is placed in the memory of the device performing the recovery. If that device is compromised, the reserve key is compromised too (crypto cannot prevent this — `key reserve rotate` after recovery [registering a new reserve key + revoking the old one = rotate obligation] is the remedy). Not keeping the reserve key on day-to-day devices (§8.5) limits exposure opportunities to the moments of recovery and ledger changes
 
 ---
 
-## B. AUTH_SPEC の改訂案
+## B. AUTH_SPEC revision proposals
 
-### B-1. §5 の追記(セッション許可列挙 — DK-K)
+### B-1. Addition to §5 (session-scope permission enumeration — DK-K)
 
-> - 許可列挙(認証・自己情報系)に **`GET /auth/devices`**(§13-11 — 端末登録簿の読み取り。表示名と鍵 FP・公開鍵のみ。秘密を運ばない)を追加する。端末の追加要求・登録簿の書き込み・削除はセッション主体に拒否する(端末限定 — 2026-09-19 DK)
+> - Add **`GET /auth/devices`** to the permission enumeration (authentication / self-information kind) (§13-11 — reading the device registry. Carries display names, key FPs, and public keys only. Carries no secrets). Session principals are denied device-add requests, registry writes, and deletions (device-limited — 2026-09-19 DK)
 
-### B-2. §6 の追記(1 文 — DK-L)
+### B-2. Addition to §6 (one sentence — DK-L)
 
-> - **端末鍵との対応(2026-09-19 DK)**: CLI ログインで発行するトークン(既定名 `cli:<hostname>`)は 1 端末に 1 本であり、端末鍵と同じ端末に住む。端末の失効(`revoke_device` — CRYPTO_SPEC §6.2)はチェーンの事実でありトークンとは独立だが、クライアントは失効時に当該端末のトークンの指定失効(本節)を提案する。対応は端末登録簿(§13-11)の `tokenId`(任意・advisory)で持つ
+> - **Correspondence with device keys (2026-09-19 DK)**: a token issued at CLI login (default name `cli:<hostname>`) is one per device and lives on the same device as the device key. Device revocation (`revoke_device` — CRYPTO_SPEC §6.2) is a chain fact and independent of tokens, but the client proposes targeted revocation (this section) of that device's token at revocation time. The correspondence is held in the device registry's (§13-11) `tokenId` (optional, advisory)
 
-### B-3. §11-1 の追記(1 文 — DK-F)
+### B-3. Addition to §11-1 (one sentence — DK-F)
 
-> - **`add_device` / `revoke_device`(CRYPTO_SPEC §6.2。2026-09-19 DK)は汎用追記 API で受理する**(付随データを持たない)。トークン水準は `add_member` 等と同じ **admin**(§6)。`revoke_device` の受理副作用 = 対象端末の申告行の削除(§16-1)・要ローテーション検出(AUDIT_SPEC §4.1)・ミラー。端末数の上限は §12-8
+> - **`add_device` / `revoke_device` (CRYPTO_SPEC §6.2. 2026-09-19 DK) are accepted through the generic append API** (they carry no accompanying data). The token level is **admin**, same as `add_member` etc. (§6). Acceptance side-effects of `revoke_device` = deleting the target device's attestation rows (§16-1), rotation-needed detection (AUDIT_SPEC §4.1), mirroring. The device-count limit is §12-8
 
-### B-4. §12-3 の追記(表 1 行 — DK-E)
+### B-4. Addition to §12-3 (one table row — DK-E)
 
-> | DEK ラップ登録(**受信者がすべて呼び出し主体自身の端末鍵**の場合 — 2026-09-19 DK) | write | **reader 以上** | 環境 ∈ 呼び出し主体の実効 scope(受信者側も) |
+> | DEK wrap registration (**when every recipient is the calling principal's own device keys** — 2026-09-19 DK) | write | **reader or above** | environment ∈ the calling principal's effective scope (recipient side too) |
 >
-> - reader が自分の新端末(予備鍵を含む)へ自分の DEK を包み直す経路(CRYPTO_SPEC §7 の端末追加バックフィル)。reader は当該 DEK を正当に保持しており、自分の鍵へ包み直しても他者の能力は増えない。受信者に他人の鍵が 1 つでも含まれれば従来どおり member 以上
+> - The path by which a reader re-wraps their own DEKs to their own new device (including the reserve key) (the device-add backfill of CRYPTO_SPEC §7). The reader legitimately holds those DEKs; re-wrapping to their own keys grows no one else's capabilities. If even one recipient is another person's key, member or above is required as before
 
-### B-5. §12-6 の差し替え(4 箇所 — DK-E)
+### B-5. Substitutions in §12-6 (4 places — DK-E)
 
-> - 受信者の同定は **user_id と enc 公開鍵の両方**(不変)。2026-09-19 DK 以後、同じ user_id が複数の enc 公開鍵(端末鍵)を持つため、公開鍵は端末を同定する。チェーン導出の現メンバーの**有効な端末鍵**と両方が厳密一致し、かつ対象環境が**その端末の実効 scope**に含まれる(CRYPTO_SPEC §6.2 — scope 外は 422 `scope-out-of-range`)ことを受理条件とする。保存のスロットは **(environment_id, epoch, recipient_user_id, recipient_enc_pub_hex)**(旧 (environment_id, epoch, recipient_user_id) — 端末ごとに 1 スロット)。上書き禁止(409 `DekWrapExists` — `storedRecipientEncPubHex` の同梱は不変)・完全一致・不足分追記・修復経路は不変
-> - **旧鍵宛ラップの掃除**: `add_member` の再追加受理時は、対象 user_id 宛の保存済みラップのうち受信者 enc 公開鍵が**追加された端末鍵**と一致しないものを削除する(旧規則の端末形 — 再追加は端末 1 つから始まる)。`revoke_device` / `remove_member` では削除しない(同一鍵の再登録で復帰する既存規律)
-> - **独立登録 API が残る経路**に 6 番目を加える: 「**`add_device` 後の、同じ人の端末による新端末宛の全エポックのバックフィル**(新端末の実効 scope の環境。予備鍵を含む — CRYPTO_SPEC §7。reader の自己バックフィルは §12-3)」。受理規則は全経路共通(署名者 = 呼び出し主体、受信者 ∈ R(E)、上書き禁止)
-> - **登録者(署名者)の scope**: 「署名者 = 呼び出し主体」の判定は不変。scope は**署名した端末の実効 scope**で判定する(§12-3 の 403 `InsufficientScope`)。呼び出し主体の user_id と署名端末の user_id の一致は §5.1 の signer_user_id 束縛が担う
+> - Recipient identification is **both user_id and enc public key** (unchanged). After 2026-09-19 DK, the same user_id can hold multiple enc public keys (device keys), so a public key identifies a device. Acceptance requires both to exactly match a chain-derived current member's **valid device key**, and the target environment to be contained in **that device's effective scope** (CRYPTO_SPEC §6.2 — out of scope is 422 `scope-out-of-range`). The storage slot is **(environment_id, epoch, recipient_user_id, recipient_enc_pub_hex)** (previously (environment_id, epoch, recipient_user_id) — one slot per device). No overwrite (409 `DekWrapExists` — including `storedRecipientEncPubHex` is unchanged); exact match, appending the shortfall, and the repair path are unchanged
+> - **Sweeping wraps to old keys**: when a re-add `add_member` is accepted, delete stored wraps addressed to that user_id whose recipient enc public key does not match the **added device key** (the device form of the old rule — a re-add starts from a single device). Nothing is deleted on `revoke_device` / `remove_member` (the existing discipline: return happens by re-registering the same key)
+> - Add a sixth entry to the **paths where the standalone registration API remains**: "**the backfill of all epochs to the new device by a device of the same person, after `add_device`** (environments in the new device's effective scope. Includes the reserve key — CRYPTO_SPEC §7. A reader's self-backfill is §12-3)". The acceptance rules are common to all paths (signer = calling principal, recipients ∈ R(E), no overwrite)
+> - **The registering signer's scope**: the "signer = calling principal" determination is unchanged. Scope is determined by **the signing device's effective scope** (§12-3's 403 `InsufficientScope`). Matching the calling principal's user_id to the signing device's user_id is carried by §5.1's signer_user_id binding
 
-### B-6. §12-8 の追記(表 1 行)
+### B-6. Addition to §12-8 (one table row)
 
-> | 有効な端末数 / メンバー / プロジェクト | 16(`add_device` の受理時に判定。超過は型付き 422 `DeviceLimit`。`revoke_device` / `remove_member` で解放 — 2026-09-19 DK) |
+> | Valid devices / member / project | 16 (decided at `add_device` acceptance. Excess is typed 422 `DeviceLimit`. Freed by `revoke_device` / `remove_member` — 2026-09-19 DK) |
 
-### B-7. §13 の差し替え・追記(前文・13-1・13-6・13-7・13-9・新 13-11 — DK-G / DK-F / DK-D)
+### B-7. Substitutions / additions to §13 (preamble, 13-1, 13-6, 13-7, 13-9, new 13-11 — DK-G / DK-F / DK-D)
 
-前文の 1 文を差し替える:
+Substitute one sentence of the preamble:
 
-> CRYPTO_SPEC §8(**予備鍵**ラップ台帳 — 2026-09-19 DK)のサーバー保存・配布面の規定。台帳のラップ対象は予備鍵のブロブであり、端末鍵は台帳に載らない(端末の追加は §13-11 の要求行と CRYPTO_SPEC §6.2 の `add_device`)。
+> Provisions on the server storage / distribution side of CRYPTO_SPEC §8 (the **reserve-key** wrap ledger — 2026-09-19 DK). The ledger's wrap target is the reserve-key blob; device keys do not go on the ledger (adding a device is via §13-11's request rows and CRYPTO_SPEC §6.2's `add_device`).
 
-§13-1 の 1 文を追記する:
+Append one sentence to §13-1:
 
-> - 2026-09-19 DK: ブロブの中身は予備鍵(CRYPTO_SPEC §3)。既存の `recovery_wraps` 行(master 鍵の複製)は移行で予備鍵のラップへ**置換**される(再発行と同じ upsert — 移行手順は docs/SELF_HOSTING.md "Updates")
+> - 2026-09-19 DK: the blob's contents are the reserve key (CRYPTO_SPEC §3). Existing `recovery_wraps` rows (copies of the master key) are **replaced** by reserve-key wraps at migration (the same upsert as reissuance — the migration procedure is docs/SELF_HOSTING.md "Updates")
 
-§13-6 の差し替え(`guardian_shares` と `key_handoff_approvals` のみ):
+Substitution in §13-6 (only `guardian_shares` and `key_handoff_approvals`):
 
 > ```sql
 > guardian_shares (
 >   group_id        TEXT NOT NULL REFERENCES guardian_groups(id) ON DELETE CASCADE,
->   share_index     INTEGER NOT NULL,     -- 1..n(論理分片 — 保護者 1 人につき 1 つ)
+>   share_index     INTEGER NOT NULL,     -- 1..n (logical segment — one per guardian)
 >   guardian_user_id TEXT NOT NULL REFERENCES users(id),
->   guardian_key_fingerprint_hex TEXT NOT NULL,   -- 封印先の端末鍵(2026-09-19 DK — 保護者の各端末に 1 行)
+>   guardian_key_fingerprint_hex TEXT NOT NULL,   -- the sealed-destination device key (2026-09-19 DK — one row per guardian device)
 >   guardian_enc_pub_hex TEXT NOT NULL,
->   enc_hex, ciphertext_hex,              -- HPKE(guardian-wrap 形。info は端末を含まない — 同じ s_i を端末ごとに封印)
+>   enc_hex, ciphertext_hex,              -- HPKE (guardian-wrap form. info does not contain the device — the same s_i is sealed per device)
 >   PRIMARY KEY (group_id, share_index, guardian_key_fingerprint_hex),
 >   UNIQUE (group_id, guardian_user_id, guardian_key_fingerprint_hex)
 > )
 > key_handoff_approvals (
 >   request_id      TEXT NOT NULL REFERENCES key_handoff_requests(id) ON DELETE CASCADE,
->   source          TEXT NOT NULL,        -- group_id(2026-09-19 DK — 'device' は削除)
+>   source          TEXT NOT NULL,        -- group_id (2026-09-19 DK — 'device' removed)
 >   share_index     INTEGER NOT NULL,
 >   approver_user_id TEXT NOT NULL,
->   approver_key_fingerprint_hex TEXT NOT NULL,   -- 承認に使った端末鍵
->   enc_hex, ciphertext_hex,              -- HPKE(handoff-wrap 形)
+>   approver_key_fingerprint_hex TEXT NOT NULL,   -- the device key used for the approval
+>   enc_hex, ciphertext_hex,              -- HPKE (handoff-wrap form)
 >   created_at,
 >   PRIMARY KEY (request_id, source, share_index)
 > )
 > ```
 >
-> - `blob_suite / blob_nonce_hex / blob_ciphertext_hex`(旧 `source = 'device'` の同送ブロブ)は削除する。受理ポリシーの「分片 1..5 / グループ」は**論理分片**(保護者数)の上限で、端末行はその 16 倍(§12-8 の端末数)まで
+> - `blob_suite / blob_nonce_hex / blob_ciphertext_hex` (the piggyback blob of the former `source = 'device'`) are removed. The acceptance policy's "segments 1..5 / group" is a bound on **logical segments** (guardian count); device rows are allowed up to 16× that (the device count of §12-8)
 
-§13-7 の差し替え(該当行のみ):
+Substitution in §13-7 (relevant rows only):
 
-> | 要求の照会(承認者) | `GET /auth/handoff/:requestId`(200) | 呼び出し主体が ward のいずれかのグループの分片保持者(いずれかの端末鍵で)であること。**ward 本人の照会は無い**(旧端末の承認経路は削除 — 2026-09-19 DK)。それ以外・不明・失効は一律 404。応答 = `{ wardUserId, wardLogin, expiresAtMs, roles: [ { groupId, mode, shareIndex } ] }` |
-> | 承認 | `POST /auth/handoff/:requestId/approvals`(201) | `source = group_id` で当該グループの `share_index` の分片保持者のみ(照合は保存行から — 承認に使う端末鍵の FP が分片行のいずれかと一致)。`source = "device"` は受け付けない(Schema 400) |
+> | Querying a request (approver) | `GET /auth/handoff/:requestId` (200) | The calling principal must be a segment holder of one of the ward's groups (under one of their device keys). **No queries by the ward themself** (the old-device approval path was removed — 2026-09-19 DK). Everything else, unknown, or revoked is uniformly 404. Response = `{ wardUserId, wardLogin, expiresAtMs, roles: [ { groupId, mode, shareIndex } ] }` |
+> | Approval | `POST /auth/handoff/:requestId/approvals` (201) | Only the segment holder of `share_index` of the group given by `source = group_id` (matched against stored rows — the FP of the device key used for the approval matches one of the segment rows). `source = "device"` is not accepted (Schema 400) |
 
-§13-9 の差し替え(該当行のみ):
+Substitution in §13-9 (relevant rows only):
 
 > ```
-> GuardianShare = { shareIndex, guardianUserId, guardianKeyFingerprintHex, guardianEncPubHex, encHex, ciphertextHex }   // 端末ごとに 1 要素(同じ shareIndex が複数)
-> HandoffApproval = { source: groupId, shareIndex, encHex, ciphertextHex }                                              // blob は無い
+> GuardianShare = { shareIndex, guardianUserId, guardianKeyFingerprintHex, guardianEncPubHex, encHex, ciphertextHex }   // one element per device (multiple entries share a shareIndex)
+> HandoffApproval = { source: groupId, shareIndex, encHex, ciphertextHex }                                              // no blob
 > ```
 
-新設 §13-11:
+New §13-11:
 
-> ### 13-11. 端末登録簿と端末追加要求(2026-09-19 DK — advisory)
+> ### 13-11. Device registry and device-add requests (2026-09-19 DK — advisory)
 >
-> 端末鍵の真実源は各プロジェクトのチェーン(CRYPTO_SPEC §6.2 — `add_device` / `revoke_device`)である。本節の登録簿は**表示名・トークンの対応・追加要求の公開鍵の置き場**であり、**いかなる検証・認可の入力にもならない**(サーバーが行を差し込んでもクライアントは端末を足さない — クライアントが `add_device` してよい鍵は、自分が生成した鍵・自分が承認した鍵・検証済みチェーン上でその人の端末として観測した鍵に限る — CRYPTO_SPEC §6.5 の充足形と同じく、サーバー申告を鍵の出所にしない)。
+> The source of truth for device keys is each project's chain (CRYPTO_SPEC §6.2 — `add_device` / `revoke_device`). The registry in this section is **a place for display names, token correspondence, and the public keys of add requests**, and is **never an input to any verification or authorization** (even if the server inserts rows, the client does not add devices — the keys a client may `add_device` are limited to keys it generated itself, keys it approved itself, and keys observed as that person's devices on a verified chain — like CRYPTO_SPEC §6.5's satisfaction forms, server claims are never a key's provenance).
 >
 > ```sql
-> devices (                                -- 端末登録簿(D1・user 単位・advisory)
+> devices (                                -- device registry (D1, per user, advisory)
 >   user_id TEXT NOT NULL REFERENCES users(id),
->   key_fingerprint_hex TEXT NOT NULL,     -- 端末鍵 FP(CRYPTO_SPEC §3)
+>   key_fingerprint_hex TEXT NOT NULL,     -- device-key FP (CRYPTO_SPEC §3)
 >   enc_pub_hex TEXT NOT NULL, sig_pub_hex TEXT NOT NULL,
->   label TEXT NOT NULL,                   -- 表示名(§6 のトークン名と同じ受理規律 — 制御文字・bidi 禁止・128 文字以下)
->   token_id TEXT,                         -- 任意: この端末の API トークン id(§6)
+>   label TEXT NOT NULL,                   -- display name (same acceptance discipline as §6 token names — no control characters or bidi, ≤ 128 chars)
+>   token_id TEXT,                         -- optional: this device's API token id (§6)
 >   created_at INTEGER NOT NULL,
 >   PRIMARY KEY (user_id, key_fingerprint_hex)
 > )
-> device_add_requests (                    -- 新端末の公開鍵を承認端末へ渡す要求行(TTL 15 分)
+> device_add_requests (                    -- request rows carrying a new device's public keys to approver devices (TTL 15 min)
 >   user_id TEXT NOT NULL, key_fingerprint_hex TEXT NOT NULL,
 >   enc_pub_hex TEXT NOT NULL, sig_pub_hex TEXT NOT NULL, label TEXT NOT NULL,
 >   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
@@ -232,61 +232,61 @@ op 表に 2 行を追記する(`withdraw` の後):
 > )
 > ```
 >
-> | op | エンドポイント | 認可 |
+> | op | Endpoint | Authorization |
 > |---|---|---|
-> | 登録簿の読み取り | `GET /auth/devices`(200) | 認証済み主体すべて(**セッション主体も可** — §5)。応答 = `[{ keyFingerprintHex, encPubHex, sigPubHex, label, tokenId?, createdAtMs }]`。秘密を運ばない |
-> | 登録簿の登録・表示名の更新 | `PUT /auth/devices/:fp`(204。body: `{ encPubHex, sigPubHex, label, tokenId? }`) | `*` × admin トークン(§13-2 と同水準。セッション主体は拒否)。`fp` は body の公開鍵から再計算した値と一致すること(400)。行は user あたり 32 まで(429) |
-> | 登録簿からの削除 | `DELETE /auth/devices/:fp`(204 / 404) | 同上(advisory の削除 — チェーンの失効とは独立) |
-> | 追加要求の作成 | `POST /auth/devices/requests`(201。body: `{ encPubHex, sigPubHex, label }`) | `*` × admin トークン(新端末自身 — 端末は先に §4 でログインしている)。user あたり 5 回 / 時(429)。同じ FP の要求・登録簿の既存行との衝突は 409 |
-> | 追加要求の一覧・照会 | `GET /auth/devices/requests`(200)/ `GET /auth/devices/requests/:fp`(200 / 404) | `*` × admin トークン(承認する端末 — 本人のみ)。応答 = `[{ keyFingerprintHex, encPubHex, sigPubHex, label, expiresAtMs }]`。**承認クライアントは応答の公開鍵から FP を再計算し、人が運んだ FP と一致するもの以外を無視する**(サーバーによる公開鍵のすり替えは FP 照合で落ちる) |
-> | 追加要求の取消 | `DELETE /auth/devices/requests/:fp`(204) | 同上(本人)。承認後にクライアントが消す。失効行は日和見削除 |
+> | Read the registry | `GET /auth/devices` (200) | Any authenticated principal (**session principals allowed** — §5). Response = `[{ keyFingerprintHex, encPubHex, sigPubHex, label, tokenId?, createdAtMs }]`. Carries no secrets |
+> | Register to / rename in the registry | `PUT /auth/devices/:fp` (204. body: `{ encPubHex, sigPubHex, label, tokenId? }`) | `*` × admin token (same level as §13-2. Session principals denied). `fp` must match the value recomputed from the body's public keys (400). At most 32 rows per user (429) |
+> | Delete from the registry | `DELETE /auth/devices/:fp` (204 / 404) | Same (deletion of advisory data — independent of chain revocation) |
+> | Create an add request | `POST /auth/devices/requests` (201. body: `{ encPubHex, sigPubHex, label }`) | `*` × admin token (the new device itself — the device has already logged in via §4). 5 per user per hour (429). Collisions with a same-FP request or an existing registry row are 409 |
+> | List / query add requests | `GET /auth/devices/requests` (200) / `GET /auth/devices/requests/:fp` (200 / 404) | `*` × admin token (approving devices — the person themself only). Response = `[{ keyFingerprintHex, encPubHex, sigPubHex, label, expiresAtMs }]`. **The approving client recomputes the FP from the response's public keys and ignores everything that does not match the FP the person carried over** (a server swapping public keys fails the FP check) |
+> | Cancel an add request | `DELETE /auth/devices/requests/:fp` (204) | Same (the person themself). The client deletes it after approval. Expired rows are deleted opportunistically |
 >
-> - 監査イベントは持たない(値・鍵素材に触れない自己情報の帳簿 — §6 のトークン一覧と同じ規律。端末の追加・失効の記録はチェーンのミラー行 — AUDIT_SPEC §3.4 — が担う)
-> - hosted Web は登録簿の読み取りだけを表示してよい(「サーバー申告」として — ADR-0018 改訂 2・4 項。失効の導線はトークンの指定失効〔§6〕までで、チェーンの `revoke_device` は CLI)
+> - No audit events (a ledger of self-information that touches neither values nor key material — same discipline as the §6 token list. Records of device adds and revocations are carried by the chain's mirror rows — AUDIT_SPEC §3.4)
+> - The hosted Web may show only reads of the registry (as "server claims" — ADR-0018 revisions 2 and 4. The revocation affordance stops at targeted token revocation [§6]; the chain's `revoke_device` is CLI)
 
-### B-8. §16-1 の追記(1 項目 — DK-A)
+### B-8. Addition to §16-1 (one item — DK-A)
 
-> - **端末ごとの申告(2026-09-19 DK)**: 保存・配布はメンバーごとでなく **(attester_user_id, attester_key_fingerprint_hex) ごと**に最新 1 行(端末は独立に同期するため、端末を跨いだ seq の単調性は課さない — 後退の 409 は同じ端末の保存行に対してのみ)。`revoke_device` の受理時に当該端末の申告行を、`remove_member` の受理時に対象の全端末の申告行を削除する。受理ポリシーの窓(1 時間 60 回)はメンバー単位のまま
+> - **Per-device attestation (2026-09-19 DK)**: storage and distribution keep the latest one row per **(attester_user_id, attester_key_fingerprint_hex)**, not per member (because devices sync independently, no seq monotonicity across devices is required — the 409 on regression applies only against the same device's stored row). On accepting a `revoke_device`, delete the device's attestation rows; on accepting a `remove_member`, delete all the target's devices' rows. The acceptance-policy window (60 per hour) stays per member
 
 ---
 
-## C. AUDIT_SPEC の改訂案
+## C. AUDIT_SPEC revision proposals
 
-### C-1. §2 の追記(1 文 — DK-F)
+### C-1. Addition to §2 (one sentence — DK-F)
 
-> - **鍵 FP は端末を指す(2026-09-19 DK)**: 端末鍵の導入後、`key_fingerprint` は「その時点でその user_id がその操作に使った端末」を同定する。actor に端末の別フィールドは持たない(識別子は user_id + 鍵 FP のまま — §1-2 不変)
+> - **A key FP names a device (2026-09-19 DK)**: after device keys are introduced, `key_fingerprint` identifies "the device that user_id used for that operation, at that point". The actor carries no separate device field (identifiers remain user_id + key FP — §1-2 unchanged)
 
-### C-2. §3.4 の追記(表 2 行 + 1 項目)
+### C-2. Addition to §3.4 (2 table rows + 1 item)
 
-> | **`chain.device_added`** | `add_device`(target_user_id = actor、payload = { deviceKeyFingerprint, roleCap, scopeKind, scopeEnvironmentIds }。2026-09-19 DK) |
-> | **`chain.device_revoked`** ★ | `revoke_device`(target_user_id = 対象、payload = { deviceKeyFingerprints }。**§4.1 の検出契機になる**ため ★) |
+> | **`chain.device_added`** | `add_device` (target_user_id = actor, payload = { deviceKeyFingerprint, roleCap, scopeKind, scopeEnvironmentIds }. 2026-09-19 DK) |
+> | **`chain.device_revoked`** ★ | `revoke_device` (target_user_id = the target, payload = { deviceKeyFingerprints }. ★ because **it triggers §4.1 detection**) |
 >
-> - 端末の追加・失効も 1 エントリ 1 行(全単射不変)。`chain.device_added` は検出の契機ではないが、§4.1 の端末の窓の開始点として Q1 が読む
+> - Device adds and revocations are also one row per entry (the bijection is unchanged). `chain.device_added` is not a detection trigger, but Q1 reads it as the start of a device's window in §4.1
 
-### C-3. §4.1 の追記(変種 1 つ — DK-B / DK-F)
+### C-3. Addition to §4.1 (one variant — DK-B / DK-F)
 
-> **`revoke_device` の変種(2026-09-19 DK)**: 同じ骨格で次を差し替える — 手順 1 の区間は失効した各端末の**有効区間**(`chain.device_added`〔または `add_member` / `genesis` の最初の鍵は在籍区間の開始〕〜 `chain.device_revoked`)と、対象者の環境別アクセス窓(手順 2)および端末の scope(`chain.device_added` の payload)の**共通部分**。手順 3 の (a) は在籍区間内の `var.read` のうち **`actor_key_fingerprint` が失効した FP 集合に含まれる行**(端末単位で「確実に取得した」が言える — user_id で照合する remove の変種より精密。集約形の `var.read` も actor 鍵 FP を持つ)。手順 4〜5 は同じ。`rotation.recommended` の `trigger = revoke_device`、payload に対象 user_id と失効 FP 集合。対象者は在籍を続けるため在籍区間は閉じない(降格の変種と同じく「契機 seq で切った窓」で検出する)。scope が空の端末(票だけの端末)の失効は候補が空になり行を書かない
+> **The `revoke_device` variant (2026-09-19 DK)**: same skeleton with the following substitutions — step 1's interval is each revoked device's **validity interval** (`chain.device_added` [or the first key of `add_member` / `genesis` starts the membership interval] ~ `chain.device_revoked`), intersected with the target's per-environment access windows (step 2) and the device's scope (the payload of `chain.device_added`). Step 3's (a) is the `var.read` rows within the membership interval whose **`actor_key_fingerprint` is in the revoked FP set** (per-device "definitely obtained" — more precise than the remove variant's user_id matching. Aggregate-form `var.read` rows also carry the actor key FP). Steps 4–5 are the same. `rotation.recommended` gets `trigger = revoke_device`, with the target user_id and the revoked FP set in its payload. The target stays a member, so the membership interval does not close (like the demotion variant, detection uses "a window cut at the trigger seq"). Revoking a device whose scope is empty (a vote-only device) yields empty candidates and writes no row
 
-### C-4. §4.2 の追記(Q1 の 1 文)
+### C-4. Addition to §4.2 (one sentence in Q1)
 
-> Q1 の列挙に `chain.device_added` / `chain.device_revoked` を加える(payload の FP と cap が端末の窓の開閉点 — §4.1 の `revoke_device` 変種)。索引 (target_user_id, seq) は不変(`chain.device_added` の target は actor 自身)
+> Add `chain.device_added` / `chain.device_revoked` to Q1's enumeration (the payload's FPs and cap are the open/close points of a device's window — the `revoke_device` variant of §4.1). The index (target_user_id, seq) is unchanged (`chain.device_added`'s target is the actor themself)
 
-### C-5. §6 の追記(1 項目)
+### C-5. Addition to §6 (one item)
 
-> - **端末鍵は可視性クラスを変えない(2026-09-19 DK)**: `chain.device_added` / `chain.device_revoked` はクラス 1(`chain.*`)。端末登録簿(AUTH_SPEC §13-11)は監査対象外(トークン一覧と同じ規律)。要ローテーションフラグのビューは `revoke_device` 変種を含めてクラス 1
+> - **Device keys do not change visibility classes (2026-09-19 DK)**: `chain.device_added` / `chain.device_revoked` are class 1 (`chain.*`). The device registry (AUTH_SPEC §13-11) is not an audit target (same discipline as the token list). The rotation-needed flag view, including the `revoke_device` variant, is class 1
 
 ---
 
-## D. Status 行への追記文
+## D. Sentences appended to the Status lines
 
 CRYPTO_SPEC:
 
-> 0.12-draft = DK(デバイス鍵分離 — 端末単位の失効。2026-09-19 設計セッション。設計録は docs/notes/dk-design.md、起草時のドラフトは docs/notes/dk-spec-drafts.md): §3 の端末鍵 / 予備鍵 / cap(v1 簡略化の解消 — 未決 #2)/ §5.1 の端末鍵の選択 / §6.2 の `add_device` / `revoke_device`(原則 D1 = 鍵は端末に属し権限は人に属する・実効権限の置換・単調性・鍵一意性の端末集合・R(E) の端末軸・四眼の票の端末語彙)/ §6.3 の鍵選択と 3′ / §6.4 の端末数 / §6.5 / §6.6 の 1 文 / §7 の失効の義務とバックフィル / §8 の予備鍵化と `kind = "device"` の削除・保護者分片の端末展開 / §11 ベクターの追記と `master-key-wrap.json` の再生成 / §13 #2 の解消 / §14.2 保証 11・§14.3 非保証 10。設計の 16 項目は 2026-09-20 に所有者承認済み(設計録 §4) — **本改訂 PR のマージをもって仕様文言の承認とする**
+> 0.12-draft = DK (device key separation — per-device revocation. 2026-09-19 design session. Design record: docs/notes/dk-design.md, as-drafted drafts: docs/notes/dk-spec-drafts.md): §3's device keys / reserve key / cap (resolving the v1 simplification — open item #2) / §5.1's device-key selection / §6.2's `add_device` / `revoke_device` (principle D1 = keys belong to devices, authority to people; substitution of effective authority; monotonicity; key uniqueness over the device set; R(E) on the device axis; four-eyes votes in device vocabulary) / §6.3's key selection and 3′ / §6.4's device count / §6.5 / §6.6's one sentence / §7's revocation obligation and backfill / §8's reserve-key-ification, removal of `kind = "device"`, guardian segments expanded per device / §11 vector appends and `master-key-wrap.json` regeneration / §13 #2 resolved / §14.2 guarantee 11, §14.3 non-guarantee 10. The 16 design items were owner-approved on 2026-09-20 (design record §4) — **merging this revision PR constitutes approval of the spec wording**
 
 AUTH_SPEC:
 
-> 0.24-draft = DK(2026-09-19 — CRYPTO_SPEC 0.12-draft。設計録は docs/notes/dk-design.md): §5 の端末登録簿の読み取り / §6 の端末とトークンの対応 / §11-1 の 2 op / §12-3 の reader 自己バックフィル / §12-6 のスロットの端末軸と 6 番目の登録経路 / §12-8 の端末数 / §13 の予備鍵化・旧端末経路の削除・保護者分片の端末行・新 §13-11 端末登録簿と追加要求 / §16-1 の端末ごとの申告。設計の 16 項目は 2026-09-20 に所有者承認済み(設計録 §4) — **本改訂 PR のマージをもって仕様文言の承認とする**
+> 0.24-draft = DK (2026-09-19 — CRYPTO_SPEC 0.12-draft. Design record: docs/notes/dk-design.md): §5's registry read / §6's device-token correspondence / §11-1's two ops / §12-3's reader self-backfill / §12-6's slot on the device axis and sixth registration path / §12-8's device count / §13's reserve-key-ification, removal of the old-device path, guardian segments as device rows, new §13-11 device registry and add requests / §16-1's per-device attestation. The 16 design items were owner-approved on 2026-09-20 (design record §4) — **merging this revision PR constitutes approval of the spec wording**
 
 AUDIT_SPEC:
 
-> 1.9-draft = DK(2026-09-19): §2 の鍵 FP = 端末の注記 / §3.4 の `chain.device_added` / `chain.device_revoked` / §4.1 の `revoke_device` 変種(端末の窓・actor 鍵 FP による (a) の照合)/ §4.2 Q1 の列挙 / §6 のクラス不変。設計の 16 項目は 2026-09-20 に所有者承認済み(設計録 §4) — **本改訂 PR のマージをもって仕様文言の承認とする**
+> 1.9-draft = DK (2026-09-19): §2's note that key FP = device / §3.4's `chain.device_added` / `chain.device_revoked` / §4.1's `revoke_device` variant (device windows, (a) matching by actor key FP) / §4.2 Q1's enumeration / §6's classes unchanged. The 16 design items were owner-approved on 2026-09-20 (design record §4) — **merging this revision PR constitutes approval of the spec wording**

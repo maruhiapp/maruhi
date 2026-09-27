@@ -1,19 +1,22 @@
-// master 鍵ラップ台帳のドメイン型(AUTH_SPEC §13-6〜13-10 — KL3)。
-// db.package の外へ出す公開シェイプ(Drizzle の型は出さない — ADR-0006)。
-// どの型もラップ・分片はサーバーから見て不透明な暗号文(hex 文字列)であり、
-// KEK の素材・平文の分片は現れない。
+// Domain types of the master-key wrap ledger (AUTH_SPEC §13-6–13-10 —
+// KL3).
+// The public shapes handed outside db.package (Drizzle types never
+// leave — ADR-0006).
+// In every type, wraps and segments are opaque ciphertext as seen by
+// the server (hex strings); KEK material and plaintext segments never
+// appear.
 
-/** 保護者グループの閾値モード(CRYPTO_SPEC §8.3)。 */
+/** The guardian group's threshold mode (CRYPTO_SPEC §8.3). */
 export type GuardianMode = "any" | "all";
 
-/** B(master 鍵ブロブ)のラップ(AES-256-GCM。§13-9 MasterKeyWrap)。 */
+/** The wrap of B (the master-key blob) (AES-256-GCM; §13-9 MasterKeyWrap). */
 export interface MasterKeyWrapBlob {
   readonly suite: string;
   readonly nonceHex: string;
   readonly ciphertextHex: string;
 }
 
-/** クラス S(passkey-prf)の台帳行。`params` は公開パラメータの JSON 文字列。 */
+/** A class-S (passkey-prf) ledger row. `params` is the JSON string of public parameters. */
 export interface PasskeyWrapRecord {
   readonly wrapId: string;
   readonly params: string;
@@ -22,7 +25,7 @@ export interface PasskeyWrapRecord {
   readonly updatedAtMs: number;
 }
 
-/** クラス G の分片行(保護者の enc 公開鍵への HPKE Seal)。 */
+/** A class-G segment row (an HPKE Seal to the guardian's enc public key). */
 export interface GuardianShareRecord {
   readonly shareIndex: number;
   readonly guardianUserId: string;
@@ -32,7 +35,7 @@ export interface GuardianShareRecord {
   readonly ciphertextHex: string;
 }
 
-/** クラス G のグループ行(分片込み)。 */
+/** A class-G group row (segments included). */
 export interface GuardianGroupRecord {
   readonly groupId: string;
   readonly userId: string;
@@ -42,15 +45,15 @@ export interface GuardianGroupRecord {
   readonly shares: readonly GuardianShareRecord[];
 }
 
-/** 保護者から見た自分の分片(ward 情報つき)。**端末ごとに 1 行**(2026-09-19 DK)。 */
+/** The guardian's own segment as the guardian sees it (with ward info). **One row per device** (2026-09-19 DK). */
 export interface WardShareRecord {
   readonly wardUserId: string;
-  /** linked_identities.provider_login の表示用スナップショット(識別子ではない) */
+  /** A display snapshot of linked_identities.provider_login (not an identifier) */
   readonly wardLogin: string | null;
   readonly groupId: string;
   readonly mode: GuardianMode;
   readonly shareIndex: number;
-  /** 封印先の端末鍵(保護者の端末 — 行の同定) */
+  /** The sealed-to device key (the guardian's device — identifies the row) */
   readonly guardianKeyFingerprintHex: string;
   readonly guardianEncPubHex: string;
   readonly encHex: string;
@@ -58,7 +61,7 @@ export interface WardShareRecord {
   readonly createdAtMs: number;
 }
 
-/** クラス H のハンドオフ要求(E.pub は持たない — request_id はその導出値)。 */
+/** A class-H handoff request (does not hold E.pub — request_id is a derivative of it). */
 export interface HandoffRequestRecord {
   readonly requestId: string;
   readonly userId: string;
@@ -67,7 +70,7 @@ export interface HandoffRequestRecord {
   readonly collectedAtMs: number | null;
 }
 
-/** クラス H の承認(応答スコープ — 要求とともに消える)。 */
+/** A class-H approval (response scope — disappears with the request). */
 export interface HandoffApprovalRecord {
   readonly source: string;
   readonly shareIndex: number;
@@ -78,10 +81,10 @@ export interface HandoffApprovalRecord {
   readonly createdAtMs: number;
 }
 
-/** §13-8 の固定窓の種別。 */
+/** The §13-8 fixed-window kinds. */
 export type KeyWrapWindowKind = "blob-fetch" | "handoff-request" | "approval" | "device-request";
 
-/** 固定窓の消費結果。 */
+/** The result of a fixed-window consumption. */
 export type KeyWrapWindowDecision =
   | { readonly allowed: true }
   | { readonly allowed: false; readonly retryAfterSeconds: number };

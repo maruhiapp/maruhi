@@ -1,6 +1,8 @@
-// DEK ラップ登録・修復 API の型付きエラー(AUTH_SPEC §12-6 / CRYPTO_SPEC §5.1)。
+// Typed errors of the DEK-wrap registration / repair API (AUTH_SPEC
+// §12-6 / CRYPTO_SPEC §5.1).
 //
-// エラーには識別子・カウンタしか載せない(ラップ・鍵素材の断片を運ばない)。
+// Errors carry only identifiers and counters (no fragments of wraps or
+// key material).
 
 import { Schema } from "effect";
 
@@ -8,12 +10,14 @@ import { EncPubHex } from "../hex.ts";
 
 /**
  * Reason codes for rejecting a DEK-wrap registration (AUTH_SPEC §12-6).
- * 受信者クラス server: FP に一致する有効 grant がない =
- * `recipient-not-granted`、grant はあるが対象環境が開示スコープ外 =
- * `scope-out-of-range`(いずれも 422)。enc 公開鍵の不一致はクラス共通の
- * `recipient-key-mismatch`。受信者クラス member でも、対象環境が受信者の
- * チェーン導出 scope の外なら同じ `scope-out-of-range`(受信者集合 R(E) —
- * CRYPTO_SPEC §6.2。2026-09-15 ES K3)。
+ * Recipient class server: no valid grant matching the FP =
+ * `recipient-not-granted`; a grant exists but the target environment
+ * is outside the disclosure scope = `scope-out-of-range` (both 422).
+ * An enc public-key mismatch is the class-shared
+ * `recipient-key-mismatch`. For recipient class member too, if the
+ * target environment is outside the recipient's chain-derived scope it
+ * is the same `scope-out-of-range` (the recipient set R(E) —
+ * CRYPTO_SPEC §6.2. 2026-09-15 ES K3).
  */
 export const DekWrapRejectReasonSchema = Schema.Literals([
   "recipient-not-member",

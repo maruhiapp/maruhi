@@ -1,11 +1,13 @@
-// チェーン追記の受理と同時に §3.4 のミラーイベントを記録する書き込みフェーズの
-// 共有(汎用追記 = chain-do.ts / standalone checkpoint = checkpoint-accept.ts)。
-// 単一の同期ブロック(= 同一イベントループタスク)でチェーン挿入・ミラー追記・
-// 受理副作用(+ 経路固有の追加同期書き込み)を書き、クラッシュしても「チェーン
-// だけ書けてミラーが欠ける」不整合を作らない(ミラーは v1 バックフィルなし —
-// AUDIT_SPEC §3.4 — なので欠落は恒久化する)。serverTs は全検査後・書き込み
-// フェーズ直前に取得する(複合経路と同じタイミング — chain-accept.ts の
-// insertAcceptedEntrySync 参照)。
+// Shared write phase that records §3.4 mirror events alongside acceptance
+// of a chain append (generic append = chain-do.ts / standalone checkpoint
+// = checkpoint-accept.ts). A single synchronous block (= one event-loop
+// task) writes the chain insert, mirror append, and acceptance side
+// effects (+ path-specific extra synchronous writes), so a crash cannot
+// leave the inconsistency "chain written but mirror missing" (the mirror
+// has no v1 backfill — AUDIT_SPEC §3.4 — so a gap would be permanent).
+// serverTs is acquired after all checks and immediately before the write
+// phase (the same timing as the composite path — see insertAcceptedEntrySync
+// in chain-accept.ts).
 
 import type { ChainMirrorSubject } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
@@ -20,20 +22,23 @@ import { ChainStore } from "./chain-store.ts";
 import { DataStore } from "./data-store.ts";
 
 /**
- * 受理済みエントリの原子コミット。`chain` は受理前の保存チェーン(受理済み
- * エントリを足した列が §3.4 の提案索引の入力 — chain-accept.ts)。`extraSync` は
- * 同じ同期ブロック内で追加の書き込み(standalone checkpoint のスナップショット
- * 保存 — §6.4)を行う口で、serverTs(nowMs)を共有する。戻り値は完成した approve が
- * 適用した提案(それ以外は null)。
+ * Atomic commit of an accepted entry. `chain` is the stored chain before
+ * acceptance (the sequence with the accepted entry appended is the input
+ * to §3.4's proposal index — chain-accept.ts). `extraSync` is the hook for
+ * additional writes inside the same synchronous block (the standalone
+ * checkpoint's snapshot store — §6.4) and shares serverTs (nowMs). The
+ * return value is the proposal a completed approve applied (null
+ * otherwise).
  */
-/** `add_device` の載せた端末 FP(CRYPTO_SPEC §3 — enc ‖ sig の SHA-256 先頭 16 バイト)。 */
+/** The device FP carried by `add_device` (CRYPTO_SPEC §3 — first 16 bytes of SHA-256 over enc ‖ sig). */
 const mirrorSubjectOf = (entry: ChainEntry): Effect.Effect<ChainMirrorSubject> =>
   Effect.gen(function* () {
     if (entry.op !== "add_device") {
       return {};
     }
-    // verifyChain 通過済みの payload(hex 小文字 64)なので decode / 計算は成功する。
-    // 失敗は検証器のバグ = defect(静かに FP 無しの行を作らない — K2-12 の契約)
+    // The payload already passed verifyChain (lowercase hex, 64 chars), so
+    // decode / computation succeed. Failure is a verifier bug = defect (do
+    // not quietly produce a row with no FP — the K2-12 contract)
     const enc = decodeHex(entry.payload.encPubHex);
     const sig = decodeHex(entry.payload.sigPubHex);
     if (enc === null || sig === null) {
@@ -56,14 +61,16 @@ export const commitAcceptedEntry = (
   Effect.gen(function* () {
     const chainStore = yield* ChainStore;
     const audit = yield* AuditStore;
-    // 受理副作用(chain-accept.ts): add_member の旧鍵ラップ掃除がラップ行を
-    // 削除するため、汎用チェーン受理もデータストアの書き込み面を渡す
+    // Acceptance side effects (chain-accept.ts): add_member's old-key wrap
+    // sweep deletes wrap rows, so generic chain acceptance is also handed
+    // the data store's write surface
     const dataStore = yield* DataStore;
     const nowMs = Date.now();
     const proposals = proposalIndexOf([...chain.entries, entry], applied);
-    // add_device のミラー行(AUDIT_SPEC §3.4)は載せた端末の FP を要する。SHA-256 は
-    // 非同期なので同期の書き込みフェーズの前に受理側が計算して写像へ渡す
-    // (設計録 dk-design.md §7 K2-12)
+    // add_device's mirror row (AUDIT_SPEC §3.4) needs the carried device's
+    // FP. SHA-256 is async, so the acceptance side computes it before the
+    // synchronous write phase and hands it to the mapping (design record
+    // dk-design.md §7 K2-12)
     const subject = yield* mirrorSubjectOf(entry);
     return yield* Effect.sync(() => {
       const appliedProposal = insertAcceptedEntrySync(

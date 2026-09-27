@@ -1,14 +1,20 @@
-// トリップワイヤの評価と通知 — docs/notes/hosted-ops.md §2-B / §3。
+// Tripwire evaluation and notification — docs/notes/hosted-ops.md
+// §2-B / §3.
 //
-// 毎時 cron(index.ts)から呼ばれる。入力は D1 に閉じる(運用カウンタ・退避記録・
-// 既存の監査行の窓集計)。出力は「静的な信号名 + 集計値 + 閾値 + 状態」のみで、
-// 識別子(プロジェクト ID・ユーザー ID 等)を含まない。
+// Called from the hourly cron (index.ts). Inputs stay inside D1 (ops
+// counters, evacuation records, and windowed aggregation over the
+// existing audit rows). Outputs are only "static signal name +
+// aggregate + threshold + state" — they contain no identifiers
+// (project IDs, user IDs, etc.).
 //
-// 通知先は Workers Secret `OPS_ALERT_WEBHOOK_URL`(未設定 = 送信しない — 既定は無効)。
-// 状態遷移(inactive → active / active → inactive)で通知し、active が続く間は
-// OPS_ALERT_RENOTIFY_MS ごとに再通知する。送信失敗は握り潰さず静的 1 行 + 状態を
-// 更新しない(次回の評価で再送)。webhook 未設定でも active な信号は静的 1 行を
-// Workers Logs に残す(セルフホストの hook)。
+// The destination is the Workers Secret `OPS_ALERT_WEBHOOK_URL`
+// (unset = do not send — disabled by default). Notifications fire on
+// state transitions (inactive → active / active → inactive); while a
+// signal stays active it re-notifies every OPS_ALERT_RENOTIFY_MS. A
+// send failure is not swallowed: a static 1-line log is left and the
+// state is not updated (the next evaluation re-sends). Even without a
+// webhook configured, an active signal leaves a static 1-line entry
+// in Workers Logs (the self-hosted hook).
 
 import { Context, Effect } from "effect";
 
@@ -22,7 +28,7 @@ import {
 
 const ALERT_STATE_KEY = "alerts";
 
-/** 信号名(固定語彙 — hosted-ops §3)。 */
+/** Signal names (fixed vocabulary — hosted-ops §3). */
 export type OpsSignalName =
   | "github_token_requests_per_hour"
   | "cli_flow_capacity_reached"
@@ -49,7 +55,7 @@ export interface OpsAlertEvent {
   readonly threshold: number;
 }
 
-/** webhook へ送る本文(識別子なし)。 */
+/** The payload sent to the webhook (no identifiers). */
 export interface OpsAlertPayload {
   readonly service: "maruhi";
   readonly at: string;
@@ -65,21 +71,21 @@ interface AlertState {
 
 type AlertStates = Partial<Record<OpsSignalName, AlertState>>;
 
-/** 通知の送り口(テストは捕捉実装を差す)。true = 送れた / 送る先が無い。 */
+/** The notification sink (tests plug in a capturing implementation). true = sent / nowhere to send. */
 export interface OpsNotifierShape {
   readonly notify: (payload: OpsAlertPayload) => Effect.Effect<boolean>;
 }
 
 export class OpsNotifier extends Context.Service<OpsNotifier, OpsNotifierShape>()("OpsNotifier") {}
 
-/** 本番実装: webhook URL が設定されていれば JSON を POST する。 */
+/** The production implementation: POSTs JSON when a webhook URL is configured. */
 export function makeWebhookNotifier(webhookUrl: string | undefined): OpsNotifierShape {
   return {
     notify: (payload) =>
       Effect.promise(async () => {
         if (webhookUrl === undefined || webhookUrl === "") {
           for (const event of payload.events) {
-            // 静的な信号名 + 集計値のみ
+            // Static signal name + aggregates only
             console.warn(
               `ops signal ${event.state}: ${event.signal} (value ${event.value}, threshold ${event.threshold})`,
             );
@@ -100,7 +106,7 @@ export function makeWebhookNotifier(webhookUrl: string | undefined): OpsNotifier
           }
           return true;
         } catch (error) {
-          // URL・応答本文は書かない(種別名のみ)
+          // Neither the URL nor the response body is logged (kind name only)
           console.warn(
             "ops alert webhook request failed; retrying on the next evaluation",
             error instanceof Error ? error.name : "unknown",
@@ -126,7 +132,7 @@ const makeSignal = (name: OpsSignalName, value: number, threshold: number): OpsS
   firing: value >= threshold,
 });
 
-/** 信号の評価(通知しない — 純粋な集計)。 */
+/** Signal evaluation (does not notify — pure aggregation). */
 export function evaluateOpsSignals(
   nowMs: number,
 ): Effect.Effect<readonly OpsSignal[], never, OpsRepo> {
@@ -175,13 +181,14 @@ function parseStates(raw: string | null): AlertStates {
   try {
     return JSON.parse(raw) as AlertStates;
   } catch {
-    // 破損した状態行は「全て inactive」から始め直す(運用状態のみ — 監査ではない)
+    // A corrupted state row restarts from "all inactive" (operational
+    // state only — not audit)
     console.warn("ops alert state row is not valid JSON; starting from an empty state");
     return {};
   }
 }
 
-/** 遷移(と再通知)の導出 — 純関数(テストが固定する)。 */
+/** Derivation of transitions (and re-notifications) — a pure function (pinned by tests). */
 export function deriveAlertEvents(
   signals: readonly OpsSignal[],
   states: AlertStates,
@@ -230,8 +237,9 @@ function describe(events: readonly OpsAlertEvent[]): string {
 }
 
 /**
- * 評価 → 遷移の導出 → 通知 → 状態の保存。通知に失敗したら状態を保存しない
- * (次回の評価で同じ遷移が再導出され再送される)。
+ * Evaluate → derive transitions → notify → save state. If
+ * notification fails, the state is not saved (the next evaluation
+ * re-derives the same transition and re-sends).
  */
 export function runOpsAlerts(
   nowMs: number,

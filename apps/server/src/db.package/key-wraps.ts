@@ -1,15 +1,19 @@
-// master 鍵ラップ台帳のリポジトリ(AUTH_SPEC §13-6〜13-10 — KL3)。
+// Repository of the master-key wrap ledger (AUTH_SPEC §13-6–13-10 — KL3).
 //
-// - Drizzle の型・クエリはこのファイル(db.package 境界内)に閉じる。公開シェイプは
-//   ../key-wrap-domain.ts のドメイン型と Effect のみ
-// - 監査(AUDIT_SPEC §3.1 の KL3 9 事件)はレコード操作と同一 batch で記録する。
-//   拒否(429 / 404 / 409 / 422)は記録しない(受理していないものを記録しない —
-//   §13-10)
-// - §13-8 の固定窓は `key_wrap_windows`(user × kind)の**単一の条件付き UPSERT**で
-//   数える(RecoveryRepo.recordFetch と同じ設計: 読み → 書きの 2 段だと並行
-//   リクエストが同じ count を読んで計数が進まない)。許可 = RETURNING が 1 行、
-//   監査は `changes() = 1` ガードの INSERT…SELECT で許可と 1:1 に同梱する
-// - ラップ・分片はサーバーから見て不透明であり、このファイルは中身を解釈しない
+// - Drizzle types and queries stay inside this file (within the
+//   db.package boundary). The public shapes are the domain types in
+//   ../key-wrap-domain.ts and Effect only
+// - Audit (the 9 KL3 events of AUDIT_SPEC §3.1) is recorded in the same
+//   batch as the record operation. Rejections (429 / 404 / 409 / 422)
+//   are not recorded (what was not accepted is not recorded — §13-10)
+// - The §13-8 fixed windows are counted by **a single conditional
+//   UPSERT** on `key_wrap_windows` (user × kind) (same design as
+//   RecoveryRepo.recordFetch: a two-stage read → write lets concurrent
+//   requests read the same count and counting stalls). Allowance =
+//   RETURNING yields 1 row; audit is bundled 1:1 with allowance via an
+//   INSERT…SELECT guarded by `changes() = 1`
+// - Wraps and segments are opaque to the server; this file does not
+//   interpret their contents
 
 import { and, count, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
@@ -44,19 +48,19 @@ import {
 
 type Db = ReturnType<typeof drizzle>;
 
-/** D1 の障害は defect(Effect.promise)。ドメイン上の分岐だけを値で返す。 */
+/** D1 failures are defects (Effect.promise). Only domain-level branches are returned as values. */
 const run = <A>(thunk: () => Promise<A>): Effect.Effect<A> => Effect.promise(thunk);
 
-/** §13-8 の固定窓の長さ(すべて 1 時間)。 */
+/** The §13-8 fixed-window length (all 1 hour). */
 const KEY_WRAP_WINDOW_MS = 60 * 60 * 1000;
-/** ブロブ取得の合算上限(§13-8 — §13-3 の 5 回 / 時を種別合算に読み替え)。 */
+/** Aggregate cap for blob fetches (§13-8 — §13-3's 5 per hour, reinterpreted as summed over kinds). */
 export const KEY_BLOB_FETCH_LIMIT = 5;
-/** ハンドオフ要求の上限(§13-8: 5 回 / 時 / ward)。 */
+/** Handoff-request cap (§13-8: 5 per hour per ward). */
 export const HANDOFF_REQUEST_LIMIT = 5;
-/** 承認窓の上限(§13-8: 分片取得 + 承認で 20 回 / 時 / 承認者)。 */
+/** Approval-window cap (§13-8: 20 segment fetches + approvals per hour per approver). */
 export const APPROVAL_LIMIT = 20;
 
-/** 失効した要求の日和見削除の猶予(失効後 1 時間を過ぎた行を消す)。 */
+/** Grace before opportunistic deletion of expired requests (rows more than 1 hour past expiry are deleted). */
 const HANDOFF_SWEEP_GRACE_MS = 60 * 60 * 1000;
 
 export interface GuardianShareInput {
@@ -77,10 +81,12 @@ export interface HandoffApprovalInput {
 }
 
 export interface KeyWrapRepoShape {
-  // --- 固定窓(§13-8)-------------------------------------------------------
+  // --- Fixed windows (§13-8)----------------------------------------------
   /**
-   * 窓を 1 消費する。`audit` があれば、許可のときだけ同一 batch で記録する
-   * (拒否は記録しない)。承認のように記録を別の挿入と同梱する経路は省略する。
+   * Consumes one window. When `audit` is given, it is recorded in the
+   * same batch only on allowance (rejections are not recorded). A path
+   * that bundles the record with another insert, like approvals, omits
+   * this.
    */
   readonly consumeWindow: (input: {
     readonly userId: string;
@@ -89,10 +95,10 @@ export interface KeyWrapRepoShape {
     readonly nowMs: number;
     readonly audit?: D1AuditEventInput;
   }) => Effect.Effect<KeyWrapWindowDecision>;
-  /** 窓のリセット(recovery-code の再発行 — 旧ブロブへの試行履歴を新ブロブに引き継がない)。 */
+  /** Window reset (recovery-code reissue — a new blob does not inherit the attempt history against the old one). */
   readonly resetWindow: (userId: string, kind: KeyWrapWindowKind) => Effect.Effect<void>;
 
-  // --- クラス S(passkey-prf)------------------------------------------------
+  // --- Class S (passkey-prf)------------------------------------------------
   readonly passkeyInsert: (input: {
     readonly userId: string;
     readonly wrapId: string;
@@ -111,8 +117,8 @@ export interface KeyWrapRepoShape {
     actor: D1AuditActor,
   ) => Effect.Effect<boolean>;
 
-  // --- クラス G(保護者グループ)---------------------------------------------
-  /** 実在しない user_id を返す(保護者の存在検査)。 */
+  // --- Class G (guardian groups)-------------------------------------------
+  /** Returns the user_ids that do not exist (guardian existence check). */
   readonly missingUsers: (userIds: readonly string[]) => Effect.Effect<readonly string[]>;
   readonly guardianCreate: (input: {
     readonly userId: string;
@@ -135,13 +141,13 @@ export interface KeyWrapRepoShape {
     nowMs: number,
     actor: D1AuditActor,
   ) => Effect.Effect<boolean>;
-  /** 保護者から見た自分の分片(任意で ward を絞る)。 */
+  /** The guardian's own segments as the guardian sees them (optionally narrowed by ward). */
   readonly sharesOfGuardian: (
     guardianUserId: string,
     wardUserId?: string,
   ) => Effect.Effect<readonly WardShareRecord[]>;
 
-  // --- クラス H(ハンドオフ)--------------------------------------------------
+  // --- Class H (handoff)----------------------------------------------------
   readonly handoffCreate: (input: {
     readonly requestId: string;
     readonly userId: string;
@@ -149,7 +155,7 @@ export interface KeyWrapRepoShape {
     readonly nowMs: number;
     readonly actor: D1AuditActor;
   }) => Effect.Effect<"created" | "conflict">;
-  /** 失効していない要求のみ返す。 */
+  /** Returns only requests that have not expired. */
   readonly handoffFind: (
     requestId: string,
     nowMs: number,
@@ -164,7 +170,7 @@ export interface KeyWrapRepoShape {
     readonly actor: D1AuditActor;
   }) => Effect.Effect<"created" | "conflict" | "exceeded">;
   readonly handoffApprovals: (requestId: string) => Effect.Effect<readonly HandoffApprovalRecord[]>;
-  /** 初回の取得(1 件以上)を 1 回だけ auth.key_handoff_collected として記録する。 */
+  /** Records the first fetch (1 or more) exactly once as auth.key_handoff_collected. */
   readonly handoffMarkCollected: (
     requestId: string,
     approvalCount: number,
@@ -172,17 +178,19 @@ export interface KeyWrapRepoShape {
     actor: D1AuditActor,
   ) => Effect.Effect<void>;
   readonly handoffDelete: (requestId: string, userId: string) => Effect.Effect<boolean>;
-  /** 失効 + 猶予を過ぎた要求の日和見削除(承認は cascade で消える)。 */
+  /** Opportunistic deletion of requests past expiry + grace (approvals are removed by cascade). */
   readonly handoffSweep: (nowMs: number) => Effect.Effect<void>;
-  /** 表示用の login スナップショット(github)。 */
+  /** The login snapshot for display (github). */
   readonly loginOf: (userId: string) => Effect.Effect<string | null>;
 }
 
 export class KeyWrapRepo extends Context.Service<KeyWrapRepo, KeyWrapRepoShape>()("KeyWrapRepo") {}
 
 /**
- * 端末行の列を論理分片(share_index ごと 1 つ — 保護者 1 人)へ畳む(2026-09-19 DK:
- * 同じ share_index が保護者の端末数ぶん並ぶ。監査の指名・解除事件は保護者単位)。
+ * Folds a column of device rows into logical segments (one per
+ * share_index — one guardian) (2026-09-19 DK: the same share_index
+ * appears once per guardian's device. Audit designation / revocation
+ * events are per guardian).
  */
 function logicalShares<T extends { readonly shareIndex: number; readonly guardianUserId: string }>(
   rows: readonly T[],
@@ -220,8 +228,9 @@ function toShare(row: {
 }
 
 export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
-  // 監査行の条件付き INSERT…SELECT(guardianCreate は「グループ行が入った」とき、
-  // guardianDelete は「グループ行が消えた」とき = changes() の連鎖で 1:1 に同梱)
+  // Conditional INSERT…SELECT for audit rows (guardianCreate: only when
+  // "a group row was inserted"; guardianDelete: only when "a group row
+  // was deleted" = bundled 1:1 via the changes() chain)
   const guardedAuditInsert = (
     event: D1AuditEventInput,
     nowMs: number,
@@ -301,9 +310,11 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
   return {
     consumeWindow: ({ userId, kind, limit, nowMs, audit }) =>
       run(async () => {
-        // 窓の期限判定は INSERT…ON CONFLICT の excluded 行(= 今回の nowMs)と既存行
-        // の差で行う。期限切れならリセット、窓内なら count < limit のときだけ加算。
-        // WHERE が偽なら何も更新されず RETURNING は 0 行 = 拒否
+        // The window-expiry check uses the difference between the
+        // INSERT…ON CONFLICT excluded row (= this call's nowMs) and the
+        // existing row: expired → reset; within the window → increment
+        // only when count < limit. If WHERE is false nothing is updated
+        // and RETURNING yields 0 rows = refusal
         const expired = sql`excluded.window_start - ${keyWrapWindows.windowStart} >= ${KEY_WRAP_WINDOW_MS}`;
         const upsert = db
           .insert(keyWrapWindows)
@@ -367,10 +378,12 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
 
     passkeyInsert: ({ userId, wrapId, params, wrap, limit, nowMs, actor }) =>
       run(async () => {
-        // 上限判定と挿入を同一の INSERT…SELECT…WHERE で行う(並行登録で上限を
-        // 超えない — invitations の pending 上限と同じ形)
-        // 上限と id 衝突(クライアント採番 — AAD が wrap_id を束縛するため)を同じ
-        // WHERE で判定し、0 行のときは id の存在で conflict / limit を切り分ける
+        // Cap check and insert in the same INSERT…SELECT…WHERE
+        // (concurrent registrations cannot overrun — same shape as the
+        // invitations pending cap)
+        // The cap and the id collision (client-assigned — the AAD binds
+        // wrap_id) are tested in the same WHERE; on 0 rows, the id's
+        // existence distinguishes conflict / limit
         const underLimit = sql<boolean>`(select count(*) from ${masterKeyWraps} where ${masterKeyWraps.userId} = ${userId}) < ${limit} and not exists (select 1 from ${masterKeyWraps} where ${masterKeyWraps.id} = ${wrapId})`;
         const results = await db.batch([
           db
@@ -473,8 +486,9 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
     guardianCreate: ({ userId, groupId, mode, wrap, shares, limit, nowMs, actor }) =>
       run(async () => {
         const underLimit = sql<boolean>`(select count(*) from ${guardianGroups} where ${guardianGroups.userId} = ${userId}) < ${limit} and not exists (select 1 from ${guardianGroups} where ${guardianGroups.id} = ${groupId})`;
-        // グループ行は上限付き INSERT…SELECT、分片行と監査は「グループ行が入った
-        // (changes() = 1)」ときだけ入る同一 batch。D1 の batch は原子的
+        // The group row goes through a capped INSERT…SELECT; the segment
+        // rows and the audit enter only when "a group row was inserted
+        // (changes() = 1)" in the same batch. D1 batches are atomic
         const groupInsert = db
           .insert(guardianGroups)
           .select(
@@ -492,10 +506,12 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
               .where(underLimit),
           )
           .returning({ id: guardianGroups.id });
-        // 分片は「直前の文が 1 行入れた」ときだけ入れる(changes() の連鎖: グループ
-        // 行が入らなければ最初の分片が 0 行になり、以降も 0 行のまま)。id の存在で
-        // 条件を組むと、クライアント採番 id の衝突時に既存グループへ分片を足そうと
-        // して PK 違反 = defect になる
+        // Segments are inserted only when "the preceding statement
+        // inserted 1 row" (the changes() chain: if the group row does not
+        // go in, the first segment yields 0 rows and the rest stay at 0).
+        // Conditioning on the id's existence would, on a client-assigned
+        // id collision, try to append segments to the existing group and
+        // end in a PK violation = defect
         const created = sql`changes() = 1`;
         const shareInserts = shares.map((share) =>
           db.insert(guardianShares).select(
@@ -517,10 +533,12 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
               .where(created),
           ),
         );
-        // 監査行も同じ batch に同梱する(passkeyInsert と同じ形): グループ行が
-        // 入った(changes() の連鎖が 1 のまま)ときだけ INSERT…SELECT で入る。
-        // 上限 / 衝突で 0 行なら監査も 0 行。2 段目の batch に分けると「行はあるが
-        // 監査がない」窓ができ、失敗時の再試行が別 id で 2 つ目のグループを作る
+        // The audit row is also bundled in the same batch (same shape as
+        // passkeyInsert): it enters via INSERT…SELECT only when the group
+        // row went in (the changes() chain still at 1). 0 rows on cap /
+        // collision → 0 audit rows. Splitting into a second batch would
+        // open a "row exists but no audit" window, and a retry after
+        // failure would create a second group under a different id
         const audited = and(
           eq(guardianGroups.id, groupId),
           eq(guardianGroups.userId, userId),
@@ -532,7 +550,8 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
             actor,
             payload: { kind: "guardian", groupId, mode, recipientCount: shares.length },
           },
-          // 指名は論理分片(保護者)ごとに 1 事件 — 端末行の数ではない(2026-09-19 DK)
+          // Designation is one event per logical segment (guardian) —
+          // not per device row (2026-09-19 DK)
           ...logicalShares(shares).map((share): D1AuditEventInput => ({
             event: "auth.guardian_designated",
             actor,
@@ -570,9 +589,11 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
         if (group === null) {
           return false;
         }
-        // findGroup と batch の間に他者が削除しうるため、監査行は「グループ行が
-        // 消えた(changes() = 1)」ときだけ INSERT…SELECT で入れる(passkeyDelete と
-        // 同じ形)。負けた方の delete は 0 行で、監査も 0 行 = 1:1 の事件記録。
+        // Since another party may delete between findGroup and the
+        // batch, audit rows enter via INSERT…SELECT only when "a group
+        // row was deleted (changes() = 1)" (same shape as passkeyDelete).
+        // The losing delete yields 0 rows and its audit 0 rows = a 1:1
+        // event record.
         const deleted = sql`changes() = 1`;
         const auditEvents: D1AuditEventInput[] = [
           {
@@ -621,7 +642,7 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
                   eq(guardianGroups.userId, wardUserId),
                 ),
           )
-          // 端末行は FP 昇順(配布の先頭行を決定的にする — 設計録 §8 K3-10)
+          // Device rows in FP order (makes the head row of distribution deterministic — design record §8 K3-10)
           .orderBy(guardianGroups.createdAt, guardianShares.guardianKeyFingerprintHex);
         const wardIds = [...new Set(rows.map((r) => r.wardUserId))];
         const logins =
@@ -701,10 +722,12 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
       }),
     handoffApprove: ({ requestId, wardUserId, approverUserId, approval, limit, nowMs, actor }) =>
       run(async () => {
-        // 上限は受理ポリシーの宣言(§13-8)。実効の境界は PK `(request_id, source,
-        // share_index)` と handler の役割検査が構造的に担う(limit = 1 + グループ数 ×
-        // 分片上限 = 到達しうる最大行数)ので、この read-then-write に競合窓があっても
-        // 行数が limit を超えることはない
+        // The cap is a declaration of the acceptance policy (§13-8). The
+        // effective bound is carried structurally by the PK `(request_id,
+        // source, share_index)` plus the handler's role check (limit = 1
+        // + group count × segment cap = the maximum reachable row count),
+        // so even with a race window in this read-then-write the row
+        // count cannot exceed limit
         const existing = await db
           .select({ n: count() })
           .from(keyHandoffApprovals)
@@ -760,8 +783,9 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
       }),
     handoffMarkCollected: (requestId, approvalCount, nowMs, actor) =>
       run(async () => {
-        // collected_at が NULL のときだけ立て、その 1 回だけ監査を記録する
-        // (ポーリングのたびに「復元が起きた」を重ねて書かない)
+        // Sets collected_at only while it is NULL, and records audit
+        // exactly that once (does not keep writing "a restore happened"
+        // on every poll)
         await db.batch([
           db
             .update(keyHandoffRequests)
@@ -806,7 +830,7 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
   };
 }
 
-/** 承認の挿入行(保護者の分片だけ — 旧端末経路の blob 列は DK K4 で撤去)。 */
+/** The approval insert row (guardian segments only — the old device-path blob column was removed under DK K4). */
 function approvalRow(
   requestId: string,
   approverUserId: string,

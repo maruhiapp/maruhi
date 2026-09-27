@@ -1,16 +1,24 @@
-// 端末登録簿と端末追加要求の HttpApi 定義(AUTH_SPEC §13-11 — 2026-09-19 DK K3)。
+// HttpApi definition of the device registry and device-add requests
+// (AUTH_SPEC §13-11 — 2026-09-19 DK K3).
 //
-// - 端末鍵の真実源は各プロジェクトのチェーン(CRYPTO_SPEC §6.2 — `add_device` /
-//   `revoke_device`)。本グループの登録簿は**表示名・トークンの対応・追加要求の
-//   公開鍵の置き場**であり、**いかなる検証・認可の入力にもならない**(advisory)。
-//   サーバーが行を差し込んでもクライアントは端末を足さない
-// - 認可(§13-11 / §5): `list`(登録簿の読み取り)は認証済み主体すべて(セッション
-//   主体も可 — SESSION_ALLOWED_ENDPOINTS)。書き込みと要求は `*` × admin トークン
-//   のみ(§13-2 の鍵素材条件と同水準。セッション主体は拒否)
-// - 「承認」は API ではない: 承認端末は要求の公開鍵から FP を再計算し、人が運んだ
-//   FP と一致するものだけを各プロジェクトのチェーンへ `add_device` する
-// - 秘密を運ばない(公開鍵・FP・表示名・トークン id のみ)。監査イベントは持たない
-//   (§6 のトークン一覧と同じ規律 — 端末の追加・失効の記録はチェーンのミラー行)
+// - The source of truth for device keys is each project's chain
+//   (CRYPTO_SPEC §6.2 — `add_device` / `revoke_device`). This group's
+//   registry is **a place for display names, token associations, and the
+//   public keys of add requests**; it is **never an input to any
+//   verification or authorization** (advisory). A server inserting a row
+//   does not add a device on the client
+// - Authorization (§13-11 / §5): `list` (reading the registry) is open to
+//   every authenticated principal (session principals too —
+//   SESSION_ALLOWED_ENDPOINTS). Writes and requests are `*` × admin
+//   tokens only (same level as the §13-2 key-material condition; session
+//   principals are refused)
+// - "Approval" is not an API: the approving device recomputes the FP
+//   from the request's public key and `add_device`s to each project's
+//   chain only the one that matches the FP a human carried over
+// - Carries no secrets (public keys, FPs, display names, token ids only).
+//   Has no audit events (the same discipline as the §6 token list —
+//   device additions and revocations are recorded by the chain's mirror
+//   rows)
 
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
@@ -27,31 +35,33 @@ import {
 import { EncPubHex, KeyFingerprintHex, PublicKeyHex } from "./hex.ts";
 import { strictPayload } from "./strict.ts";
 
-/** 端末登録簿の受理ポリシー(AUTH_SPEC §13-11 — 合意規則ではない)。 */
+/** Device-registry acceptance policy (AUTH_SPEC §13-11 — not a consensus rule). */
 export const MAX_DEVICE_REGISTRY_ROWS_PER_USER = 32;
-/** 端末追加要求: user あたり固定窓 1 時間 5 回。 */
+/** Device-add requests: a fixed window of 5 per hour per user. */
 export const MAX_DEVICE_ADD_REQUESTS_PER_HOUR = 5;
-/** 端末追加要求の有効期間(15 分)。 */
+/** Lifetime of a device-add request (15 minutes). */
 export const DEVICE_ADD_REQUEST_TTL_MS = 15 * 60 * 1000;
 
 /**
- * 端末の表示名(§13-11 — §6 のトークン名と同じ受理規律: 制御文字・bidi 制御文字
- * なし・128 文字以下)。空は許さない(登録簿の行は人が選ぶ名前を持つ)。
+ * Display name of a device (§13-11 — same acceptance discipline as the
+ * §6 token name: no control or bidi control characters, 128 characters
+ * or fewer). Empty is not allowed (a registry row carries the name a
+ * human chose).
  */
 export const DeviceLabelSchema = TokenNameSchema.check(Schema.isMinLength(1));
 
-/** 登録簿 1 行(`GET /auth/devices`)。秘密を運ばない。 */
+/** One registry row (`GET /auth/devices`). Carries no secrets. */
 export const DeviceSummarySchema = Schema.Struct({
   keyFingerprintHex: KeyFingerprintHex,
   encPubHex: EncPubHex,
   sigPubHex: PublicKeyHex,
   label: DeviceLabelSchema,
-  /** 任意: この端末の API トークン id(§6 — advisory。認可の入力にしない)。 */
+  /** Optional: the API token id of this device (§6 — advisory; never an input to authorization). */
   tokenId: Schema.optionalKey(Schema.String),
   createdAtMs: Schema.Number,
 });
 
-/** 登録簿の登録・表示名の更新(`PUT /auth/devices/:fp`)の body。 */
+/** Body of registry registration / display-name update (`PUT /auth/devices/:fp`). */
 export const DeviceRegistrationSchema = Schema.Struct({
   encPubHex: EncPubHex,
   sigPubHex: PublicKeyHex,
@@ -59,7 +69,7 @@ export const DeviceRegistrationSchema = Schema.Struct({
   tokenId: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
 });
 
-/** 端末追加要求の作成(`POST /auth/devices/requests`)の body。 */
+/** Body of device-add request creation (`POST /auth/devices/requests`). */
 export const DeviceAddRequestSchema = Schema.Struct({
   encPubHex: EncPubHex,
   sigPubHex: PublicKeyHex,
@@ -67,9 +77,10 @@ export const DeviceAddRequestSchema = Schema.Struct({
 });
 
 /**
- * 端末追加要求 1 行(承認端末向け)。**承認クライアントは応答の公開鍵から FP を
- * 再計算し、人が運んだ FP と一致するもの以外を無視する**(サーバーによる公開鍵の
- * すり替えは FP 照合で落ちる — §13-11)。
+ * One device-add request row (for the approving device). **The approving
+ * client recomputes the FP from the response's public key and ignores
+ * anything that does not match the FP a human carried over** (a server
+ * swapping the public key is caught by the FP comparison — §13-11).
  */
 export const DeviceAddRequestSummarySchema = Schema.Struct({
   keyFingerprintHex: KeyFingerprintHex,
@@ -79,17 +90,18 @@ export const DeviceAddRequestSummarySchema = Schema.Struct({
   expiresAtMs: Schema.Number,
 });
 
-/** 登録簿の一覧(`GET /auth/devices`)の応答 envelope(K5 申し送り (0) — Web が導出型で読む)。 */
+/** Response envelope of the registry listing (`GET /auth/devices`) (K5 follow-up (0) — the web reads it via the derived type). */
 export const DeviceListSchema = Schema.Struct({ devices: Schema.Array(DeviceSummarySchema) });
 
 /**
- * 追加要求の作成(`POST /auth/devices/requests`)の応答: 要求の期限
- * (`DEVICE_ADD_REQUEST_TTL_MS` 後)。保護者ハンドオフの `HandoffCreateResultSchema` とは
- * 期限の意味が違うので共有しない(DK K9-4)。
+ * Response of request creation (`POST /auth/devices/requests`): the
+ * request's expiry (`DEVICE_ADD_REQUEST_TTL_MS` later). Not shared with
+ * the guardian handoff's `HandoffCreateResultSchema` because the
+ * expiry's meaning differs (DK K9-4).
  */
 export const DeviceAddRequestCreateResultSchema = Schema.Struct({ expiresAtMs: Schema.Number });
 
-/** 追加要求の一覧(`GET /auth/devices/requests` — 本人の未失効の要求)の応答 envelope。 */
+/** Response envelope of the request listing (`GET /auth/devices/requests` — the caller's own unexpired requests). */
 export const DeviceAddRequestListSchema = Schema.Struct({
   requests: Schema.Array(DeviceAddRequestSummarySchema),
 });
@@ -103,24 +115,28 @@ const fingerprintParams = { fp: KeyFingerprintHex };
  */
 export const devicesGroup = HttpApiGroup.make("devices")
   .add(
-    // 登録簿の読み取り: 認証済み主体すべて(セッション主体も可 — §5 の許可列挙)
+    // Reading the registry: every authenticated principal (session principals too — the §5 allowlist)
     HttpApiEndpoint.get("list", "/auth/devices", {
       success: DeviceListSchema,
     }).middleware(AuthMiddleware),
   )
   .add(
-    // 登録簿の登録・表示名の更新(upsert)。`fp` は body の公開鍵から再計算した値と
-    // 一致すること(400)。行は user あたり 32 まで(429 — 更新は上限に数えない)
+    // Registry registration / display-name update (upsert). `fp` must
+    // equal the value recomputed from the body's public key (400). Rows
+    // are capped at 32 per user (429 — updates do not count toward the
+    // cap)
     HttpApiEndpoint.put("register", "/auth/devices/:fp", {
       params: fingerprintParams,
-      // strict 受理(§12-10 (1) — 公開鍵の登録 = 鍵宣言クラス。未知フィールドを黙って落とさない)
+      // strict acceptance (§12-10 (1) — registering a public key = the
+      // key-declaration class; unknown fields are not silently dropped)
       payload: strictPayload(DeviceRegistrationSchema),
       success: HttpApiSchema.NoContent,
       error: [ForbiddenError, DeviceFingerprintMismatchError, DeviceRegistryLimitError],
     }).middleware(AuthMiddleware),
   )
   .add(
-    // 登録簿からの削除(advisory の削除 — チェーンの失効とは独立)。無ければ 404
+    // Deletion from the registry (deleting an advisory — independent of
+    // chain revocation). 404 when absent
     HttpApiEndpoint.delete("remove", "/auth/devices/:fp", {
       params: fingerprintParams,
       success: HttpApiSchema.NoContent,
@@ -128,8 +144,10 @@ export const devicesGroup = HttpApiGroup.make("devices")
     }).middleware(AuthMiddleware),
   )
   .add(
-    // 追加要求の作成(新端末自身 — 先に §4 でログインしている)。作成系の成功は
-    // HttpApi の既定 200(§13-7 と同じ)。同じ FP の要求・登録簿の既存行との衝突は 409
+    // Creating an add request (the new device itself — it has already
+    // logged in via §4). A creation's success is the HttpApi default 200
+    // (same as §13-7). A conflict with an existing request of the same FP
+    // or an existing registry row is 409
     HttpApiEndpoint.post("requestCreate", "/auth/devices/requests", {
       payload: strictPayload(DeviceAddRequestSchema),
       success: DeviceAddRequestCreateResultSchema,
@@ -137,14 +155,16 @@ export const devicesGroup = HttpApiGroup.make("devices")
     }).middleware(AuthMiddleware),
   )
   .add(
-    // 追加要求の一覧(承認する端末 — 本人のみ)。失効行は含めない
+    // Listing add requests (for the approving device — the caller only).
+    // Expired rows are not included
     HttpApiEndpoint.get("requestList", "/auth/devices/requests", {
       success: DeviceAddRequestListSchema,
       error: [ForbiddenError],
     }).middleware(AuthMiddleware),
   )
   .add(
-    // 追加要求の照会(本人のみ)。不明・失効は一様 404
+    // Fetching an add request (the caller only). Unknown and expired
+    // requests are a uniform 404
     HttpApiEndpoint.get("requestGet", "/auth/devices/requests/:fp", {
       params: fingerprintParams,
       success: DeviceAddRequestSummarySchema,
@@ -152,7 +172,8 @@ export const devicesGroup = HttpApiGroup.make("devices")
     }).middleware(AuthMiddleware),
   )
   .add(
-    // 追加要求の取消(本人のみ)。承認後にクライアントが消す。無ければ 404
+    // Cancelling an add request (the caller only). The client removes it
+    // after approval. 404 when absent
     HttpApiEndpoint.delete("requestCancel", "/auth/devices/requests/:fp", {
       params: fingerprintParams,
       success: HttpApiSchema.NoContent,

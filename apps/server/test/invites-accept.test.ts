@@ -1,7 +1,9 @@
-// 招待 API(AUTH_SPEC §15 — IV 改訂)の統合テスト。認可・存在秘匿・受諾の判定順
-// (404 → 410 → 422 link → 422 accept → CAS)、共同署名(CRYPTO_SPEC §6.5 v2)の
-// 実データ検証、invite.* 監査(AUDIT_SPEC §3.2)の同一 batch 書き込みと CAS 敗北時の
-// ガードを固定する。
+// Integration tests for the invite API (AUTH_SPEC §15 — IV
+// revision). They pin authorization, existence hiding, the
+// acceptance judgment order (404 → 410 → 422 link → 422 accept →
+// CAS), real-data verification of the joint signatures
+// (CRYPTO_SPEC §6.5 v2), the invite.* audit (AUDIT_SPEC §3.2)'s
+// same-batch writes, and the guard on CAS loss.
 
 import {
   deriveInviteLinkKeyPair,
@@ -74,8 +76,9 @@ describe("invite accept", () => {
     expect(audit.actor_user_id).toBe(STRANGER);
     expect(audit.target_user_id).toBe(STRANGER);
     expect(audit.project_id).toBe(projectId);
-    // payload は不変(AUDIT_SPEC §3.2 — IV 改訂): 招待 id + 受諾鍵 FP のみ。
-    // リンク公開鍵・署名・裏付け元の login は書かない
+    // The payload is invariant (AUDIT_SPEC §3.2 — IV revision): only
+    // the invite id + the acceptance key FP. No link public key,
+    // signatures, or backing-source login are written
     expect(payloadOf(audit)).toEqual({
       inviteId: issued.id,
       inviteeKeyFingerprintHex: keys.fingerprintHex,
@@ -86,14 +89,16 @@ describe("invite accept", () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     expect((await acceptAs(fixture, STRANGER, keys, issued)).status).toBe(200);
-    // 正規受諾者の再試行も、別人の後着も同じ 410 accepted(うるさい競合の顕在化)
+    // Both the legitimate acceptor's retry and a different person's
+    // late arrival get the same 410 accepted (surface a noisy
+    // conflict)
     const retry = await acceptAs(fixture, STRANGER, keys, issued);
     expect(retry.status).toBe(410);
     expect((await retry.json()) as object).toMatchObject({ reason: "accepted" });
     const memberKeys = await makeInviteeKeys();
     const late = await acceptAs(fixture, MEMBER, memberKeys, issued);
     expect(late.status).toBe(410);
-    // CAS 敗北で監査行は増えない(changes() ガード)
+    // A lost CAS adds no audit row (the changes() guard)
     const accepted = (await inviteAuditRows()).filter((r) => r.event === "invite.accepted");
     expect(accepted).toHaveLength(1);
   });
@@ -102,9 +107,11 @@ describe("invite accept", () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     expect((await acceptAs(fixture, STRANGER, keys, issued)).status).toBe(200);
-    // 「pending を読んでから CAS までの間に他者の受諾が確定した」並行敗者は、
-    // HTTP 経路では事前読みの 410 が先に立つため、リポジトリ直呼びで決定的に
-    // 再現する(同一 batch 内の changes() ガードそのものの検証)
+    // The concurrent loser whose "another acceptance finalized
+    // between reading pending and the CAS" case is deterministically
+    // reproduced via a direct repository call, since over HTTP the
+    // pre-read 410 fires first (verifying the same-batch changes()
+    // guard itself)
     const invites = Context.get(makeDbServices(env.DB), InviteRepo);
     const lateKeys = await makeInviteeKeys();
     const won = await Effect.runPromise(
@@ -123,11 +130,11 @@ describe("invite accept", () => {
       ),
     );
     expect(won).toBe(false);
-    // 敗者の監査行は書かれず、行は勝者の受諾内容のまま
+    // The loser's audit row is never written; the row stays as the winner's acceptance
     expect((await inviteAuditRows()).filter((r) => r.event === "invite.accepted")).toHaveLength(1);
     expect(mustRow(await inviteRow(issued.id)).invitee_user_id).toBe(STRANGER);
 
-    // revoke 側の CAS 敗北も同じガード: completed 行への失効は監査を書かない
+    // A lost CAS on the revoke side is the same guard: revoking a completed row writes no audit
     const completed = await issueInvite(fixture, OWNER, "member");
     await env.DB.prepare("UPDATE invitations SET status = 'completed' WHERE id = ?")
       .bind(completed.id)
@@ -162,7 +169,7 @@ describe("invite accept", () => {
       linkSignatureHex: "cd".repeat(64),
     });
     expect(malformed.status).toBe(400);
-    // 旧ワイヤ形(token フィールド)は strict 受理で 400(互換経路なし)
+    // The old wire shape (the token field) is a strict-acceptance 400 (no compatibility path)
     const legacy = await acceptRequest(bearer(tokenOf(fixture.tokens, STRANGER)), {
       token: `maruhi_inv_${"A".repeat(43)}`,
       encPubHex: keys.encPubHex,
@@ -174,7 +181,7 @@ describe("invite accept", () => {
 
   it("unusable invites are 410 with a reason (status precedes expiry)", async () => {
     const keys = await makeInviteeKeys();
-    // revoked(かつ期限切れ)→ revoked が先(判定順の固定)
+    // revoked (and expired) → revoked wins (pin the judgment order)
     const revoked = await issueInvite(fixture, OWNER, "member");
     await env.DB.prepare("UPDATE invitations SET status = 'revoked', expires_at = ? WHERE id = ?")
       .bind(Date.now() - 1000, revoked.id)
@@ -192,7 +199,7 @@ describe("invite accept", () => {
     expect(completedResponse.status).toBe(410);
     expect((await completedResponse.json()) as object).toMatchObject({ reason: "completed" });
 
-    // pending のまま期限切れ → expired
+    // still pending and expired → expired
     const expired = await issueInvite(fixture, OWNER, "member");
     await env.DB.prepare("UPDATE invitations SET expires_at = ? WHERE id = ?")
       .bind(Date.now() - 1000, expired.id)
@@ -209,7 +216,7 @@ describe("invite accept", () => {
     const auth = bearer(tokenOf(fixture.tokens, STRANGER));
     const valid = await signAcceptance(keys, issued, STRANGER);
 
-    // (a) 受諾署名バイトの改竄 → which=accept
+    // (a) tampered acceptance-signature bytes → which=accept
     const tamperedAccept = await acceptRequest(auth, {
       linkPubHex: issued.linkPubHex,
       encPubHex: keys.encPubHex,
@@ -223,7 +230,7 @@ describe("invite accept", () => {
       which: "accept",
     });
 
-    // (b) リンク署名バイトの改竄 → which=link(判定順で先)
+    // (b) tampered link-signature bytes → which=link (earlier in the judgment order)
     const tamperedLink = await acceptRequest(auth, {
       linkPubHex: issued.linkPubHex,
       encPubHex: keys.encPubHex,
@@ -234,8 +241,9 @@ describe("invite accept", () => {
     expect(tamperedLink.status).toBe(422);
     expect((await tamperedLink.json()) as object).toMatchObject({ which: "link" });
 
-    // (c) 別のリンク鍵で作ったリンク署名(サーバー偽造の形 — 正規のリンク秘密鍵を
-    //     持たない者は有効なリンク署名を作れない)
+    // (c) a link signature made under a different link key (a
+    //     server-forgery shape — a party without the legitimate link
+    //     private key cannot produce a valid link signature)
     const forgedLink = await deriveInviteLinkKeyPair(generateInviteLinkSeed());
     if (!forgedLink.ok) {
       throw new Error("link key derivation failed");
@@ -254,20 +262,24 @@ describe("invite accept", () => {
     expect(forgedResponse.status).toBe(422);
     expect((await forgedResponse.json()) as object).toMatchObject({ which: "link" });
 
-    // (d) リンク改竄: 別プロジェクトの座標で署名(サーバーは保存行から再構成)
+    // (d) link tampering: signed at a different project's coordinates
+    //     (the server reconstructs from the stored row)
     const wrongProject = await acceptAs(fixture, STRANGER, keys, issued, {
       projectId: "0".repeat(64),
     });
     expect(wrongProject.status).toBe(422);
 
-    // (e) 別人向けに署名した受諾の持ち込み(呼び出し主体 = 署名対象の invitee)
+    // (e) presenting an acceptance signed for someone else (the
+    //     calling principal = the signed invitee)
     const wrongInvitee = await acceptAs(fixture, STRANGER, keys, issued, {
       inviteeUserId: MEMBER,
     });
     expect(wrongInvitee.status).toBe(422);
 
-    // (f) 宣言 sig 鍵と署名鍵の不一致(鍵すり替え): リンク署名は宣言鍵に対して
-    //     正しく作れてしまう(攻撃者はリンクを持つ)が、受諾署名が落ちる
+    // (f) declared-sig-key vs signing-key mismatch (a key swap): the
+    //     link signature can be made correctly against the declared
+    //     key (the attacker holds the link), but the acceptance
+    //     signature fails
     const swapped = await signAcceptance(keys, issued, STRANGER, {
       inviteeSigPubHex: otherKeys.sigPubHex,
     });
@@ -280,13 +292,13 @@ describe("invite accept", () => {
     expect(swappedResponse.status).toBe(422);
     expect((await swappedResponse.json()) as object).toMatchObject({ which: "accept" });
 
-    // どの失敗経路でも行は pending のまま・監査は invite.created のみ
+    // On every failure path the row stays pending and the audit holds only invite.created
     const row = await inviteRow(issued.id);
     expect(row?.status).toBe("pending");
     expect((await inviteAuditRows()).filter((r) => r.event === "invite.accepted")).toHaveLength(0);
   });
 
-  it("requires the key-material token condition (§13-2 と同水準)", async () => {
+  it("requires the key-material token condition (the §13-2 level)", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     const narrow = await cliToken(9009, [{ project: projectId, permission: "admin" }]);
@@ -303,7 +315,7 @@ describe("invite accept", () => {
     });
   });
 
-  it("rejects a session principal even with the CSRF header (§5 能力制限 — §15-2 の反転)", async () => {
+  it("rejects a session principal even with the CSRF header (the §5 capability restriction — the §15-2 inversion)", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     const session = await loginSession(9009);
@@ -314,21 +326,23 @@ describe("invite accept", () => {
       sigPubHex: keys.sigPubHex,
       ...signatures,
     };
-    // 受諾は CLI のみ(§15-3)でセッションの正当な導線がなく、セッション XSS +
-    // 漏洩招待リンクで攻撃者鍵を被害者 user_id に束縛する複合を手前で塞ぐ
-    // (§15-2)。CSRF ヘッダーの有無によらず一様に拒否
+    // Acceptance is CLI-only (§15-3) with no legitimate session
+    // path; this cuts off in front a composite where a session XSS +
+    // leaked invite link binds an attacker key to the victim's
+    // user_id (§15-2). Rejected uniformly with or without the CSRF
+    // header
     const noCsrf = await acceptRequest({ cookie: `__Host-maruhi_session=${session}` }, body);
     expect(noCsrf.status).toBe(403);
     expect(((await noCsrf.json()) as { reason: string }).reason).toBe("session-not-allowed");
     const withCsrf = await acceptRequest(sessionHeaders(session), body);
     expect(withCsrf.status).toBe(403);
     expect(((await withCsrf.json()) as { reason: string }).reason).toBe("session-not-allowed");
-    // 行は pending のまま(拒否が受諾 CAS より前に確定している)
+    // The row stays pending (the rejection settles before the acceptance CAS)
     expect((await inviteRow(issued.id))?.status).toBe("pending");
   });
 });
 
-/** 署名 hex の末尾 1 文字を変える(改竄の模擬)。 */
+/** Flip the last character of a signature hex (a tamper simulation). */
 const flip = (hex: string) => `${hex.slice(0, -1)}${hex.endsWith("0") ? "1" : "0"}`;
 
 const revoke = (id: string) =>
@@ -378,15 +392,17 @@ describe("invite list / revoke", () => {
       headSeq: issued.headSeq,
       issueSignatureHex: issued.issueSignatureHex,
     });
-    // 旧 token_hash は一覧に出ない(発行文に置き換わった)
+    // The old token_hash no longer appears in the list (replaced by the issuance document)
     expect(listed).not.toHaveProperty("tokenHashHex");
     const acceptance = listed?.acceptance;
     const issuance = listed?.issuance;
     if (listed === undefined || !acceptance || !issuance) {
       throw new Error("accepted invitation missing from list");
     }
-    // 招待者クライアントの再検証(CRYPTO_SPEC §6.5): (1) 発行文が自分の鍵で
-    // 検証できる(自分が発行した行 — 発行ピン不要)、(2) 受諾署名、(3) リンク署名
+    // The inviter client's re-verification (CRYPTO_SPEC §6.5): (1)
+    // the issuance document verifies under one's own key (a row one
+    // issued oneself — no issuance pin needed), (2) the acceptance
+    // signature, (3) the link signature
     const owner = await signingKeyPairOf(OWNER);
     const issueVerified = await verifyInviteIssueSignature({
       context: {
@@ -446,24 +462,24 @@ describe("invite list / revoke", () => {
       role: "member",
     });
 
-    // 受諾は 410 revoked
+    // Acceptance is 410 revoked
     const keys = await makeInviteeKeys();
     const late = await acceptAs(fixture, STRANGER, keys, issued);
     expect(late.status).toBe(410);
     expect((await late.json()) as object).toMatchObject({ reason: "revoked" });
 
-    // 再失効は 410 revoked(黙って成功させない)+ 監査は増えない
+    // Re-revoking is 410 revoked (no silent success) + audit does not grow
     const again = await revoke(issued.id);
     expect(again.status).toBe(410);
     expect((await inviteAuditRows()).filter((r) => r.event === "invite.revoked")).toHaveLength(1);
 
-    // accepted の失効は可(照合不一致の発見時に殺す経路)
+    // Revoking an accepted invite is allowed (the path for killing it when a mismatch is discovered)
     const accepted = await issueInvite(fixture, OWNER, "member");
     const acceptedKeys = await makeInviteeKeys();
     expect((await acceptAs(fixture, STRANGER, acceptedKeys, accepted)).status).toBe(200);
     expect((await revoke(accepted.id)).status).toBe(204);
 
-    // completed は 410 completed
+    // completed is 410 completed
     const completed = await issueInvite(fixture, OWNER, "member");
     await env.DB.prepare("UPDATE invitations SET status = 'completed' WHERE id = ?")
       .bind(completed.id)
@@ -472,22 +488,25 @@ describe("invite list / revoke", () => {
     expect(completedResponse.status).toBe(410);
     expect((await completedResponse.json()) as object).toMatchObject({ reason: "completed" });
 
-    // 未知 id は 404
+    // An unknown id is 404
     expect((await revoke("01ARZ3NDEKTSV4RRFFQ69G5FAV")).status).toBe(404);
   });
 
-  it("session principals can list and revoke (§5 の許可列挙 — 読み取り + 失効系)", async () => {
+  it("session principals can list and revoke (§5's permitted set — reads + revocations)", async () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const session = await loginSession(9001);
 
-    // 一覧(読み取り)— チェーン role admin 以上のセッションは可(§15-2)
+    // Listing (a read) — allowed for a session with chain role admin
+    // or above (§15-2)
     const listed = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
       headers: sessionHeaders(session),
     });
     expect(listed.status).toBe(200);
 
-    // 失効(資格を減らす方向の mutation — ADR-0018 改訂 2 の境界原則)。
-    // セッション actor の監査帰属は auth_method(トークン id なし — AUDIT_SPEC §2)
+    // Revocation (a mutation in the direction of reducing
+    // credentials — ADR-0018 revision 2's boundary principle). A
+    // session actor's audit attribution is auth_method (no token id —
+    // AUDIT_SPEC §2)
     const revoked = await SELF.fetch(`${BASE}/projects/${projectId}/invites/${issued.id}`, {
       method: "DELETE",
       headers: sessionHeaders(session),
@@ -520,11 +539,12 @@ describe("invite list / revoke", () => {
       },
     });
 
-    // 鍵一致の accepted 招待だけが completed へ突合される(§15-2)
+    // Only the accepted invite whose keys match is reconciled to completed (§15-2)
     expect((await inviteRow(matched.id))?.status).toBe("completed");
-    // 受諾されていない招待は据え置き
+    // An unaccepted invite is kept as-is
     expect((await inviteRow(otherPending.id))?.status).toBe("pending");
-    // completed への更新は独立イベントを書かない(§15-4 — chain.member_added が証跡)
+    // The update to completed writes no separate event (§15-4 —
+    // chain.member_added is the evidence)
     const audits = await inviteAuditRows();
     expect(audits.filter((r) => r.event === "invite.completed")).toHaveLength(0);
   });
@@ -533,8 +553,9 @@ describe("invite list / revoke", () => {
     const issued = await issueInvite(fixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     expect((await acceptAs(fixture, STRANGER, keys, issued)).status).toBe(200);
-    // 突合の D1 書き込みを決定的に失敗させる(テーブルを一時退避)。ガードを
-    // 外すと確定済み append が 500 になり appendOperation 内の 200 expect が落ちる
+    // Make the reconciliation's D1 write fail deterministically (the
+    // table is temporarily stashed). Without the guard the committed
+    // append would 500 and appendOperation's 200 expect would fail
     await env.DB.prepare("ALTER TABLE invitations RENAME TO invitations_hidden").run();
     await appendOperation(fixture, OWNER, {
       op: "add_member",
@@ -548,8 +569,10 @@ describe("invite list / revoke", () => {
       },
     });
     await env.DB.prepare("ALTER TABLE invitations_hidden RENAME TO invitations").run();
-    // 突合は欠落し、招待は accepted のまま残る(可視・失効で修復できる状態 —
-    // handlers-membership.ts のコメントが宣言する「欠落側に倒す」の実挙動)
+    // The reconciliation is dropped and the invite stays accepted
+    // (a state recoverable via visibility and revocation — the
+    // actual behavior of "fail on the drop side" that the
+    // handlers-membership.ts comment declares)
     expect(mustRow(await inviteRow(issued.id)).status).toBe("accepted");
   });
 
@@ -571,8 +594,9 @@ describe("invite list / revoke", () => {
       },
     });
 
-    // 別鍵での add_member はこの受諾を成就させない — accepted のまま一覧に残り、
-    // 管理者の失効対象として可視
+    // An add_member under a different key does not fulfill this
+    // acceptance — it stays listed as accepted, visible as a
+    // revocation target for admins
     expect((await inviteRow(issued.id))?.status).toBe("accepted");
   });
 });

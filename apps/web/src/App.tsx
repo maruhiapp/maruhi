@@ -1,7 +1,8 @@
-// App エントリポイント(サーバーコンポーネント)。ルート定義はサーバーモジュールに置き、
-// ページ本体(サーバーコンポーネント)を RSC ペイロードとしてビルド時に固める。
-// ダッシュボードはクライアントコンポーネントで、共有ルート定義
-// (dashboard/routes.ts)を bindRoute で結合する(裁定 BO — docs/notes/session-43.md)。
+// App entry point (server component). Route definitions live in a server
+// module; the page bodies (server components) are baked into the RSC
+// payload at build time. The dashboard is a client component, bound with
+// bindRoute against the shared route definitions (dashboard/routes.ts)
+// (ruling BO — docs/notes/session-43.md).
 import { Router } from "@funstack/router";
 import { bindRoute } from "@funstack/router/server";
 
@@ -25,13 +26,15 @@ import { TokensScreen } from "./dashboard/TokensScreen.tsx";
 import { AboutPage } from "./pages/AboutPage.tsx";
 import { HomePage } from "./pages/HomePage.tsx";
 
-// ルート定義(パス)は routes.ts が単一目録(裁定 BZ — SPA 空間と
-// run_worker_first の非交差をユニットテストが検査する)。ここは結合のみ
+// routes.ts is the single catalog of route definitions (paths) (ruling
+// BZ — a unit test checks the SPA space and run_worker_first do not
+// intersect). This file only binds them
 const routes = [
   bindRoute(homeRoute, { component: <HomePage /> }),
   bindRoute(aboutRoute, { component: <AboutPage /> }),
-  // 認証が要る画面は pathless の親(DashboardLayout: セッション + AppShell + SideNav +
-  // Outlet)の子に置く — 遷移でシェルが再マウントされない(routes.ts の dashboardShellRoute)
+  // The authenticated screens sit under a pathless parent
+  // (DashboardLayout: session + AppShell + SideNav + Outlet) so
+  // navigations never remount the shell (routes.ts's dashboardShellRoute)
   bindRoute(dashboardShellRoute, {
     component: <DashboardLayout />,
     children: [
@@ -47,7 +50,7 @@ const routes = [
 export default function App() {
   return (
     <Providers>
-      {/* fallback="static": Navigation API 非対応ブラウザでは MPA(フルページロード)に劣化 */}
+      {/* fallback="static": browsers without the Navigation API degrade to MPA (full page loads) */}
       <Router routes={routes} fallback="static" />
     </Providers>
   );

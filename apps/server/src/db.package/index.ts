@@ -1,8 +1,9 @@
-// db.package の公開面(ImportLint 境界)。
+// The public surface of db.package (the ImportLint boundary).
 //
-// ここから再エクスポートするのはリポジトリサービスの Context タグ・消費側が
-// 必要とするシェイプ型・構築関数のみ。Drizzle のテーブル定義(schema.ts)・
-// クエリ型は境界外に出さない(ADR-0006)。
+// Only the repository services' Context tags, the shape types consumers
+// need, and the construction functions are re-exported from here.
+// Drizzle table definitions (schema.ts) and query types never leave the
+// boundary (ADR-0006).
 
 export {
   D1AuditRepo,

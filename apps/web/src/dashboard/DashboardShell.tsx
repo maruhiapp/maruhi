@@ -1,32 +1,46 @@
 "use client";
 
-// アプリシェル(DP3 裁定 A 改訂 1 — docs/notes/web-design-pass.md §5)。認証が要る画面
-// (S4〜S9・S11)はすべてこのシェルの中に描く。形は Astryx のテンプレートに従う:
+// The app shell (DP3 ruling A amendment 1 — docs/notes/web-design-pass.md
+// §5). Every authenticated screen (S4–S9, S11) renders inside this shell.
+// The shape follows the Astryx templates:
 //
-// - フレーム = `astryx template shell-side-nav` / `AppShellSideNavOnly`: AppShell +
-//   SideNav(ヘッダー = ㊙ ロゴ + maruhi、本文 = 到達点、フッター = アカウント〔ユーザー
-//   id → Account audit、Sign out〕)。collapsible。モバイル幅(AppShell の md)では
-//   SideNav が AppShell 生成のドロワーへ移る(スキップリンク・main ランドマークも AppShell)
-// - ページ = `table-page` / `LayoutHeaderWithActions`: Layout(auto)の header スロットに
-//   戻りリンク + h1 + 説明(+ タブ)、content スロットに本文。ページ全体がスクロールする
-//   (header は固定しない — DP3 改訂 5: 見出しと本文を分ける線を引かず余白で分ける。固定
-//   header は線なしでは本文と重なって読めないので固定もやめる)
-// - サインイン = `astryx template login`: Center(ビューポート全高)+ ロゴ + Card(見出し・説明・主ボタン)
+// - Frame = `astryx template shell-side-nav` / `AppShellSideNavOnly`:
+//   AppShell + SideNav (header = ㊙ logo + maruhi, body = destinations,
+//   footer = account [user id → Account audit, Sign out]). collapsible.
+//   At mobile width (AppShell's md) the SideNav moves into the
+//   AppShell-generated drawer (the skip link and the main landmark are
+//   also AppShell's)
+// - Page = `table-page` / `LayoutHeaderWithActions`: a back link + h1 +
+//   description (+ tabs) in Layout(auto)'s header slot, the body in the
+//   content slot. The whole page scrolls (the header is not fixed —
+//   DP3 amendment 5: separate heading from body with whitespace, not a
+//   line. An unfixed header would overlap the body and be unreadable, so
+//   the fixing goes too)
+// - Sign-in = `astryx template login`: Center (full viewport height) +
+//   logo + Card (heading, description, primary button)
 //
-// セッション状態(`GET /auth/me`)はシェルが 1 か所で持つ。401 は全画面で同じサインイン
-// 画面に落ち、ok のときだけ本文を描く(子のフェッチは me の確認後 — 1 往復の直列化を
-// 受け入れて、401 時に本文が一瞬描かれてから消える形を避ける)。ログアウトは
-// POST /auth/logout + CSRF ヘッダー(api.ts が一律付与)。表示規律の但し書き
-// (ServerReportedNote)はページ末尾にシェルが 1 回置く。文言はすべて英語(ADR-0017)。
+// The session state (`GET /auth/me`) is held in one place by the shell.
+// A 401 lands every screen on the same sign-in screen, and the body
+// renders only when ok (children fetch after me is confirmed — accepting
+// the one-round-trip serialization to avoid a shape where the body
+// flashes in and disappears on a 401). Sign-out is POST /auth/logout +
+// the CSRF header (api.ts attaches it uniformly). The display-
+// discipline caveat (ServerReportedNote) is placed once by the shell at
+// the bottom of the page. All wording is English (ADR-0017).
 //
-// 2 層構造(DP3 改訂 11): `DashboardLayout` は pathless の親ルート
-// (routes.ts の dashboardShellRoute)の部品で、セッション状態 + AppShell + SideNav を持ち
-// `Outlet` に子ルートを描く。画面間の遷移で再マウントされないので、/auth/me の再取得・
-// 「Checking your session」の再表示・サイドバーの折りたたみ状態の消失が起きない。
-// `DashboardShell` は各画面が使うページの枠(Layout の header = 見出し、content = 本文)。
-// サイドバーの現在地とプロジェクトの子項目は各画面が `destination` / `project` で申告し、
-// context 経由で親へ上げる(URL から導く `useLocation` は Location の `.hash` を
-// バンドルに持ち込み、AUTH_SPEC §15-3 の tripwire〔語 "hash" の禁止〕に当たるため使わない)。
+// Two-layer structure (DP3 amendment 11): `DashboardLayout` is the
+// component of the pathless parent route (routes.ts's
+// dashboardShellRoute); it holds session state + AppShell + SideNav and
+// renders child routes into `Outlet`. Never remounting across screen
+// transitions means no /auth/me re-fetch, no re-appearance of "Checking
+// your session", and no loss of the sidebar's collapsed state.
+// `DashboardShell` is the page frame each screen uses (Layout's header
+// = heading, content = body). Each screen declares the sidebar's
+// current location and the project child item via `destination` /
+// `project`, raised to the parent through context (a `useLocation`
+// derived from the URL is not used because Location's `.hash` would
+// enter the bundle and trip the AUTH_SPEC §15-3 tripwire [the word
+// "hash" is banned]).
 import { AppShell } from "@astryxdesign/core/AppShell";
 import { Banner } from "@astryxdesign/core/Banner";
 import { BreadcrumbItem, Breadcrumbs } from "@astryxdesign/core/Breadcrumbs";
@@ -64,50 +78,59 @@ import { SessionExpiredContext } from "./session-expiry.ts";
 import { FailureNotice, LoadingRow, SECTION_GAP, ServerReportedNote } from "./shared.tsx";
 import type { Me } from "./types.ts";
 
-/** サイドバーの到達点(選択状態 = aria-current="page")。project 画面は Projects 配下。 */
+/** The sidebar's destinations (selection state = aria-current="page"). The project screen sits under Projects. */
 type ShellDestination = "projects" | "tokens" | "devices" | "account";
 
-/** 親階層(パンくずの先頭。現在地はプロジェクトの短縮 ID か title — 改訂 7 で `Breadcrumbs` に)。 */
+/** The parent level (the head of the breadcrumbs. The current location is the project's shortened ID or the title — moved to `Breadcrumbs` in amendment 7). */
 interface BackLink {
   label: string;
   href: string;
 }
 
-// ブランド資産(DP1 — apps/web/public)。反転版 = 朱の円盤に白抜きの「秘」= favicon と同形。
-// サイドバー見出しとサインイン画面で同じファイルを使う。色はテーマに追随せず
-// 朱で固定(ブラウザのタブの favicon と同じ見え方)
+// Brand assets (DP1 — apps/web/public). The inverted version = the ㊙
+// mark in white on a vermilion disc = same shape as the favicon.
+// The sidebar heading and the sign-in screen share the same file. The
+// color does not follow the theme — pinned to vermilion (looking the
+// same as the favicon on the browser tab)
 const LOGO_INVERTED_SRC = "/logo-inverted.svg";
-// 見出しの文字高(bold 16px)と釣り合う 24px。サインインは見出しの上に置くので 40px
+// 24px, balancing the heading's character height (bold 16px). Sign-in
+// places it above the heading, so 40px
 const SIDE_NAV_LOGO_PX = 24;
 const SIGN_IN_LOGO_PX = 40;
 
-// 本文の最大幅(全ページ共通の 1 値 — ページごとに変えない)。Astryx の `settings` テンプレートは
-// 1440、`detail-page` は 1000。1200 は 1440px のノート(領域 1180)でちょうど満ち、1920px では中央に
-// 収まる
+// The body's max width (one value shared by every page — it does not
+// vary per page). Astryx's `settings` template is 1440, `detail-page`
+// is 1000. 1200 exactly fills a 1440px notebook (region 1180) and sits
+// centered at 1920px
 const CONTENT_WIDTH = 1200;
 
-// 区切りの規律(DP3 改訂 5 — 裁定 O): 見出し・節・本文の境界は線でなく余白(SECTION_GAP)で
-// 示す。線は集合の内側(表の行・監査行の hairline)と、タブ行(TabList hasDivider — タブの
-// 下線が header と本文の唯一の境界を兼ねる)だけ
+// The separator discipline (DP3 amendment 5 — ruling O): boundaries
+// between heading, section, and body are marked by whitespace
+// (SECTION_GAP), not lines. Lines appear only inside a collection
+// (table rows, the audit rows' hairlines) and on the tab row (TabList
+// hasDivider — the tab underline doubles as the only boundary between
+// header and body)
 
-/** 開いているプロジェクト(サイドバーの Projects の子項目として現在地を示す)。 */
+/** The open project (shown as the current location under the sidebar's Projects child item). */
 interface CurrentProject {
   id: string;
   label: string;
 }
 
-/** サイドバーの状態(現在地 + 開いているプロジェクト)。各画面が申告し、親のシェルが保持する。 */
+/** The sidebar's state (current location + the open project). Each screen declares it; the parent shell holds it. */
 interface ShellNav {
   destination: ShellDestination;
   project: CurrentProject | undefined;
 }
 
-// 子ルート(画面)→ 親(シェル)への申告経路。値は useState の setter(同一性が安定)
+// The declaration path from a child route (screen) to the parent
+// (shell). The value is a useState setter (stable identity)
 const ShellNavContext = createContext<((nav: ShellNav) => void) | undefined>(undefined);
 
 /**
- * 画面が自分の到達点とプロジェクトをシェルへ申告する。描画前(layout effect)に反映し、
- * 遷移直後の 1 フレームに前の画面の選択状態が残らないようにする。
+ * A screen declares its destination and project to the shell. Applied
+ * before paint (layout effect) so the first frame after a transition
+ * never retains the previous screen's selection state.
  */
 function useShellNav(destination: ShellDestination, project: CurrentProject | undefined): void {
   const setNav = useContext(ShellNavContext);
@@ -124,15 +147,18 @@ function useShellNav(destination: ShellDestination, project: CurrentProject | un
   }, [setNav, destination, projectId, projectLabel]);
 }
 
-// 静的シェル(Root.tsx)の <title>。ダッシュボードを離れる(RSC の Home / About へ SPA 遷移
-// する)ときはこの値へ戻す
+// The static shell's (Root.tsx) <title>. Restored when leaving the
+// dashboard (an SPA transition to the RSC Home / About)
 const BASE_DOCUMENT_TITLE = "maruhi";
 
 /**
- * 画面ごとの document.title(`<画面名> — maruhi`)。SPA 遷移では静的シェルの <title> が
- * 変わらないため、支援技術・タブ・履歴で画面を区別できるよう client 側で設定する。
- * アンマウント時は静的シェルの値へ戻す(同一コミット内では旧画面のクリーンアップが
- * 新画面の設定より先に走るので、遷移先の値が上書きされることはない)。
+ * The per-screen document.title (`<screen name> — maruhi`). Because an
+ * SPA transition never changes the static shell's <title>, it is set
+ * on the client side so assistive tech, tabs, and history can tell
+ * screens apart.
+ * On unmount it restores the static shell's value (within one commit
+ * the old screen's cleanup runs before the new screen's setup, so the
+ * destination's value is never overwritten).
  */
 function useDocumentTitle(title: string): void {
   useEffect(() => {
@@ -149,7 +175,8 @@ type AuthState =
   | { status: "ok"; me: Me }
   | { status: "failed"; failure: ApiFailure };
 
-// 到達点の目録(表示順)。パスは routes.ts の spaPaths だけを経由する(裁定 CA)
+// The destination catalog (in display order). Paths go only through
+// routes.ts's spaPaths (ruling CA)
 const DESTINATIONS: ReadonlyArray<{
   id: ShellDestination;
   label: string;
@@ -191,7 +218,7 @@ function NavItems({
   );
 }
 
-/** サイドバー(`shell-side-nav` テンプレートの形: ヘッダー / 到達点 / アカウントのフッター)。 */
+/** The sidebar (the `shell-side-nav` template's shape: header / destinations / account footer). */
 function DashboardSideNav({
   current,
   project,
@@ -222,7 +249,7 @@ function DashboardSideNav({
       }
       footer={
         <SideNavSection title="Account" isHeaderHidden>
-          {/* 内部 user_id(ULID)の表示。Account audit(本人軸)への到達点を兼ねる */}
+          {/* Displays the internal user_id (ULID). Doubles as the destination for Account audit (the self axis) */}
           <SideNavItem
             label={me.userId}
             icon={UserCircleIcon}
@@ -247,11 +274,14 @@ function DashboardSideNav({
 }
 
 /**
- * サインイン画面(`astryx template login` の形。資格情報は GitHub OAuth のみ)。
- * AppShell の外に描くので、main ランドマークは Center(div)に role で与える。
- * `signedOutNow`(サインアウト直後・画面の 401 でその場で切り替わった)のときは、
- * 直前にフォーカスしていた要素が消えて body に落ちるため、見出しへフォーカスを移す
- * (初回表示〔セッション無しで開いた〕では奪わない)。
+ * The sign-in screen (the `astryx template login` shape. Credentials
+ * are GitHub OAuth only).
+ * Rendered outside AppShell, so the main landmark is given to
+ * Center(div) via role.
+ * When `signedOutNow` (just signed out, or switched on the spot by a
+ * screen's 401), the previously focused element disappears and focus
+ * falls to body, so it is moved to the heading (not stolen on the
+ * initial render [opened without a session]).
  */
 function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
   useDocumentTitle("Sign in");
@@ -281,7 +311,7 @@ function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
             {signedOutNow ? (
               <Banner status="info" title="You are signed out." container="card" />
             ) : null}
-            {/* 復帰マーカー(裁定 BU): OAuth 完了後に S1 経由で /dashboard へ戻る */}
+            {/* The return marker (ruling BU): after OAuth completes, returns to /dashboard via S1 */}
             <Button
               label="Sign in with GitHub"
               variant="primary"
@@ -302,9 +332,11 @@ function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
 }
 
 /**
- * ページ見出し(`detail-page` テンプレートの PageHeader の形): パンくず → h1 → 説明 →
- * タブ。パンくずは Astryx `Breadcrumbs`(親階層 = リンク、現在地 = aria-current)。
- * タブ(TabList hasDivider)の下線が header と本文の境界を兼ねる(裁定 O)。
+ * The page heading (the `detail-page` template's PageHeader shape):
+ * breadcrumbs → h1 → description → tabs. The breadcrumbs are Astryx
+ * `Breadcrumbs` (parent level = link, current location = aria-current).
+ * The tabs' (TabList hasDivider) underline doubles as the boundary
+ * between header and body (ruling O).
  */
 function PageHeader({
   backLink,
@@ -337,8 +369,9 @@ function PageHeader({
 }
 
 /**
- * セッション状態(loading / signed-out / ok / failed)。ok のときだけ me を持つ。
- * サインアウトは成功・401 のどちらでも signed-out(signedOutNow)へ落とす。
+ * The session state (loading / signed-out / ok / failed). me exists
+ * only when ok. Sign-out falls to signed-out (signedOutNow) on either
+ * success or a 401.
  */
 function useSession(): {
   auth: AuthState;
@@ -371,26 +404,28 @@ function useSession(): {
       }
     });
   }, []);
-  // 画面のフェッチが 401 を返した(session-expiry.ts)。サインアウト直後と同じ画面へ
+  // A screen's fetch returned a 401 (session-expiry.ts). Land on the
+  // same screen as just after a sign-out
   const expire = useCallback(() => setAuth({ status: "signed-out", signedOutNow: true }), []);
   return { auth, reload, signOut, expire };
 }
 
 interface PageProps {
   destination: ShellDestination;
-  /** 開いているプロジェクト(サイドバーの子項目 + パンくずの現在地)。 */
+  /** The open project (the sidebar's child item + the breadcrumbs' current location). */
   project?: CurrentProject | undefined;
   backLink?: BackLink;
   title: string;
   intro?: ReactNode;
-  /** header スロットの末尾に置くタブ(TabList)。本文の切替は呼び出し側が持つ。 */
+  /** Tabs (a TabList) placed at the end of the header slot. The caller owns the body switching. */
   tabs?: ReactNode;
   children: ReactNode;
 }
 
 /**
- * セッション確認中・失敗時のフレーム(ナビなし — 状態表示だけを中央に置く)。AppShell の
- * 外なので main ランドマークは Center(div)に role で与える。`title` は document.title。
+ * The frame for session-checking / failure (no nav — only the status
+ * display centered). Outside AppShell, so the main landmark is given
+ * to Center(div) via role. `title` is the document.title.
  */
 function StatusFrame({ title, children }: { title: string; children: ReactNode }): ReactNode {
   useDocumentTitle(title);
@@ -404,10 +439,13 @@ function StatusFrame({ title, children }: { title: string; children: ReactNode }
 }
 
 /**
- * 認証が要る画面の親(pathless ルート `dashboardShellRoute` の部品)。セッションを確認し、
- * ok のときだけ AppShell + SideNav の中に子ルート(`Outlet`)を描く。signed-out はサインイン
- * 画面、loading / failed は状態フレーム(ナビなし)。画面のフェッチが 401 を返したら
- * (SessionExpiredContext — session-expiry.ts)その場で signed-out へ落とす。
+ * The parent of the authenticated screens (the component of the
+ * pathless route `dashboardShellRoute`). Confirms the session and only
+ * when ok renders the child route (`Outlet`) inside AppShell +
+ * SideNav. signed-out shows the sign-in screen; loading / failed show
+ * the status frame (no nav). When a screen's fetch returns a 401
+ * (SessionExpiredContext — session-expiry.ts) it drops to signed-out
+ * on the spot.
  */
 export function DashboardLayout(): ReactNode {
   const { auth, reload, signOut, expire } = useSession();
@@ -433,7 +471,7 @@ export function DashboardLayout(): ReactNode {
   );
 }
 
-/** サインイン後のフレーム: サイドバー(現在地は子ルートの申告)+ 子ルート。 */
+/** The post-sign-in frame: the sidebar (current location as declared by the child route) + the child route. */
 function SignedInFrame({ me, onSignOut }: { me: Me; onSignOut: () => void }): ReactNode {
   const [nav, setNav] = useState<ShellNav>({ destination: "projects", project: undefined });
   return (
@@ -456,10 +494,12 @@ function SignedInFrame({ me, onSignOut }: { me: Me; onSignOut: () => void }): Re
 }
 
 /**
- * 画面ごとのページの枠(`DashboardLayout` の Outlet に描かれる)。`title` はページの h1
- * (AppShell は見出しを描かないので、header スロットの見出しがページの h1 になる)。
- * `backLink` は親階層への戻り、`intro` は見出し直下の 1〜2 行、`tabs` は header 末尾の
- * TabList。`destination` / `project` はサイドバーへの申告(useShellNav)。
+ * The per-screen page frame (rendered into `DashboardLayout`'s Outlet).
+ * `title` is the page's h1 (AppShell renders no heading, so the header
+ * slot's heading becomes the page's h1). `backLink` is the way back to
+ * the parent level, `intro` the 1–2 lines right under the heading,
+ * `tabs` the TabList at the end of the header. `destination` /
+ * `project` are the declaration to the sidebar (useShellNav).
  */
 export function DashboardShell({
   destination,
@@ -490,7 +530,7 @@ export function DashboardShell({
       }
       content={
         <LayoutContent>
-          {/* header との間は線でなく余白(裁定 O): header 自身の下余白 16px + 24px = 40px */}
+          {/* The gap from the header is whitespace, not a line (ruling O): the header's own bottom margin 16px + 24px = 40px */}
           <VStack gap={SECTION_GAP} paddingBlockStart={6}>
             {children}
             <ServerReportedNote />

@@ -1,29 +1,46 @@
-// パスキー PRF 取得のローカルリスナー(CRYPTO_SPEC §8.2 / ADR-0018 決定 2 /
-// integration-options.md 補足 20 裁定 A・B)。**CLI 初の TCP リスナー**。
+// The local listener that obtains a passkey's PRF (CRYPTO_SPEC §8.2
+// / ADR-0018 decision 2 / integration-options.md supplement 20
+// rulings A, B). **The CLI's first TCP listener**.
 //
-// 127.0.0.1 の乱数ポートで `node:http` を聞き(`agent.ts` の `node:net` と同じく
-// vitest〔Node〕で実リスナーを検査できる)、CLI 同梱のページ(passkey-page.ts)を配って
-// PRF 出力を 1 POST で受け取る。URL は `http://localhost:<port>/<token>/`(rpId =
-// `localhost` のため、bind は 127.0.0.1 でもホスト名は localhost)。
+// It listens with `node:http` on a random 127.0.0.1 port (like
+// `agent.ts`'s `node:net`, a real listener can be tested under vitest
+// [Node]), serves the CLI-bundled page (passkey-page.ts), and
+// receives the PRF output in one POST. The URL is
+// `http://localhost:<port>/<token>/` (rpId = `localhost`, so even
+// bound to 127.0.0.1 the hostname is localhost).
 //
-// 認証(裁定 A — 人間レビュー箇所):
-//   - URL パスのワンタイムトークン(32 バイト乱数の base64url)。ページ資産の GET も
-//     POST も同じトークンで閉じる(他の localhost ページはこちらの画面を列挙できない)
-//   - `Host` 完全一致(`localhost:<port>` — DNS リバインディングは Host が違う)
-//   - POST は `Origin` 完全一致(`http://localhost:<port>` — 別ポートの localhost
-//     ページは Origin が違う。JSON の POST は preflight になり OPTIONS も 404 で落ちる)
-//   - 1 回限りの消費: 最初の正しい POST で結果を確定し、以後は 404
-//   - 失敗は理由を出さない一様 404(トークン・Origin・本文の何が違うかを外へ返さない)
-//   - 本文は `application/json` かつ 4 KiB まで。形は passkey-page.ts の PrfPagePost + `code`
-//   - **確認コード**(裁定 A 改訂 1): トークンはブラウザ起動の argv に載り、同じマシンの
-//     別 UID の利用者が読める。POST は端末に表示した 6 桁コードの同梱を要し、不一致は
-//     404 で**消費しない**(正しいページの POST は後から通る)。総当たりは
-//     MAX_CODE_ATTEMPTS で打ち切り、儀式ごと失敗にする(fail-closed)
-// 有効期間はリスナーの寿命(呼び出し側の `Effect.timeout`)。close は開いている接続を
-// 切ってから `server.close`(keep-alive が close を遅らせる — agent.ts と同じ先例)。
+// Authentication (ruling A — the human-review spot):
+//   - A one-time token in the URL path (32-byte random, base64url).
+//     Both the page assets' GET and the POST are gated by the same
+//     token (other localhost pages cannot enumerate this screen)
+//   - `Host` exact match (`localhost:<port>` — DNS rebinding has a
+//     different Host)
+//   - POST requires an `Origin` exact match
+//     (`http://localhost:<port>` — a localhost page on another port
+//     has a different Origin. A JSON POST triggers a preflight, so
+//     OPTIONS also falls to 404)
+//   - Single consumption: the first correct POST settles the result;
+//     after that, 404
+//   - Failures return a uniform reasonless 404 (never disclose
+//     whether it was the token, the Origin, or the body that
+//     differed)
+//   - The body is `application/json` and at most 4 KiB. The shape is
+//     passkey-page.ts's PrfPagePost + `code`
+//   - **Confirmation code** (ruling A revision 1): the token rides
+//     on the browser launch's argv, readable by another UID's user
+//     on the same machine. A POST must carry the 6-digit code
+//     displayed on the terminal; a mismatch gets 404 and is **not
+//     consumed** (the correct page's POST still passes later). Brute
+//     force is cut off at MAX_CODE_ATTEMPTS, failing the ceremony
+//     itself (fail-closed)
+// The validity period is the listener's lifetime (the caller's
+// `Effect.timeout`). close severs open connections before
+// `server.close` (keep-alive delays close — the same precedent as
+// agent.ts).
 //
-// 値・鍵素材の扱い: PRF 出力は受け取った Promise の値としてだけ存在し、ログ・エラー・
-// ページの DOM に出ない。トークンはリスナーと同寿命。
+// Handling of values and key material: the PRF output exists only as
+// the received Promise's value and never reaches logs, errors, or
+// the page's DOM. The token shares the listener's lifetime.
 
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -39,19 +56,19 @@ import {
   type PrfPagePost,
 } from "./passkey-page.ts";
 
-/** ページ資産の CSP(script-src 'self' 基調。inline・eval・第三者を許さない)。 */
+/** The page assets' CSP (script-src 'self' baseline. No inline, eval, or third parties). */
 export const PRF_PAGE_CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
-/** POST 本文の上限(PRF hex 64 + credential id hex ≤ 2048 + JSON の器で十分)。 */
+/** The POST body's cap (PRF hex 64 + credential id hex ≤ 2048 + JSON envelope is enough). */
 const MAX_BODY_BYTES = 4 * 1024;
 const TOKEN_BYTES = 32;
 const PRF_HEX_PATTERN = /^[0-9a-f]{64}$/;
 const CREDENTIAL_ID_HEX_PATTERN = /^(?:[0-9a-f]{2}){1,1024}$/;
-/** 確認コードの不一致をこの回数まで許す(打ち間違いの余地 + 総当たりの打ち切り)。 */
+/** The confirmation code may mismatch up to this many times (room for typos + a brute-force cutoff). */
 const MAX_CODE_ATTEMPTS = 5;
 
-/** リスナー側で確定する結果(ページの POST、または総当たりの打ち切り)。 */
+/** The result the listener settles (the page's POST, or the brute-force cutoff). */
 export type PrfListenerOutcome = PrfPagePost | { readonly error: "too-many-code-attempts" };
 
 /** A running PRF listener (one ceremony; closes itself after the first accepted POST). */
@@ -114,7 +131,7 @@ export function parsePrfPost(text: string): ParsedPrfPost | null {
   return { code, post: { credentialIdHex, prfHex } };
 }
 
-/** 定数時間の比較(長さが違えば不一致)。 */
+/** Constant-time comparison (different lengths = mismatch). */
 function codeMatches(expected: string, given: string): boolean {
   const a = Buffer.from(expected, "utf8");
   const b = Buffer.from(given, "utf8");
@@ -125,7 +142,7 @@ function newToken(): string {
   return Buffer.from(crypto.getRandomValues(new Uint8Array(TOKEN_BYTES))).toString("base64url");
 }
 
-/** 全応答に共通のヘッダ(キャッシュ・スニッフ・Referer を閉じる)。 */
+/** Headers common to every response (close caching, sniffing, and Referer). */
 const COMMON_HEADERS: Readonly<Record<string, string>> = {
   "cache-control": "no-store",
   "x-content-type-options": "nosniff",
@@ -143,12 +160,12 @@ function reply(
   response.end(body);
 }
 
-/** 理由を出さない一様 404。 */
+/** The uniform reasonless 404. */
 function notFound(response: ServerResponse): void {
   reply(response, 404, "not found");
 }
 
-/** 静的資産(トークン配下の GET)。 */
+/** Static assets (GET under the token). */
 function serveAsset(name: string, config: PrfPageConfig, response: ServerResponse): void {
   switch (name) {
     case "":
@@ -173,7 +190,7 @@ function serveAsset(name: string, config: PrfPageConfig, response: ServerRespons
   }
 }
 
-/** 本文を上限つきで読む(超過は接続を切る)。 */
+/** Reads the body with a cap (excess severs the connection). */
 function readBody(request: IncomingMessage): Promise<string | null> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
@@ -196,14 +213,14 @@ function readBody(request: IncomingMessage): Promise<string | null> {
   });
 }
 
-/** 振り分けの結果(応答の書き込みは呼び出し側)。 */
+/** The routing result (the caller writes the response). */
 type Route =
   | { readonly kind: "not-found" }
   | { readonly kind: "redirect" }
   | { readonly kind: "asset"; readonly name: string }
   | { readonly kind: "post" };
 
-/** トークン配下のパスを解く(トークン不一致は null)。 */
+/** Resolves the path under the token (token mismatch = null). */
 function tokenPath(
   url: string,
   token: string,
@@ -217,10 +234,12 @@ function tokenPath(
 }
 
 /**
- * Host 完全一致 → トークン → メソッド / パスの順に振り分ける。ページの資産は
- * `./app.js` 等の相対参照なので、末尾スラッシュ無しの `/<token>` で開かれると
- * `/app.js` を引きに行って動かない(手で URL を打つ・ポート転送で貼るときに
- * 落ちやすい)。正しい形へ寄せる。
+ * Routes in the order: Host exact match → token → method / path.
+ * The page's assets are relative references like `./app.js`, so
+ * when the page is opened at `/<token>` without the trailing slash
+ * it goes after `/app.js` and does not work (a common failure when
+ * typing the URL by hand or pasting it through port forwarding).
+ * Steer toward the correct form.
  */
 function routeRequest(
   request: IncomingMessage,
@@ -256,7 +275,7 @@ export function startPrfListener(config: PrfPageConfig, confirmCode: string): Pr
   const connections = new Set<Socket>();
   let settled = false;
   let codeAttempts = 0;
-  // Promise の外から確定させる(executor は同期に走るので代入は必ず済む)
+  // Settled from outside the Promise (the executor runs synchronously, so the assignment is always done)
   let resolveOutcome!: (post: PrfListenerOutcome) => void;
   let rejectOutcome!: (error: Error) => void;
   const outcome = new Promise<PrfListenerOutcome>((resolve, reject) => {
@@ -265,13 +284,13 @@ export function startPrfListener(config: PrfPageConfig, confirmCode: string): Pr
   });
   let expectedHost = "";
 
-  /** Origin 完全一致 + JSON の POST だけを読む(確定後はすべて 404)。 */
+  /** Only reads POSTs with an Origin exact match + JSON (after settling, everything is 404). */
   const postIsAcceptable = (request: IncomingMessage): boolean =>
     !settled &&
     request.headers.origin === `http://${expectedHost}` &&
     (request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json");
 
-  /** コード不一致を数え、上限で儀式ごと打ち切る(fail-closed)。 */
+  /** Counts code mismatches and cuts off the whole ceremony at the cap (fail-closed). */
   const recordCodeMismatch = (): void => {
     codeAttempts += 1;
     if (codeAttempts >= MAX_CODE_ATTEMPTS) {
@@ -287,7 +306,7 @@ export function startPrfListener(config: PrfPageConfig, confirmCode: string): Pr
     }
     const text = await readBody(request);
     const parsed = text === null ? null : parsePrfPost(text);
-    // 読み終わるまでに別の POST が確定していたら、こちらは捨てる(1 回限り)
+    // If another POST settled before this one finished reading, discard it (single-use)
     if (parsed === null || settled) {
       notFound(response);
       return;
@@ -342,8 +361,10 @@ export function startPrfListener(config: PrfPageConfig, confirmCode: string): Pr
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
       server.off("error", reject);
-      // listen 後のサーバー自体の失敗は儀式の失敗として呼び出し側へ渡す(unhandled
-      // "error" にしない)。接続単位の失敗は node:http が接続を閉じるだけ
+      // A failure of the server itself after listen is passed to
+      // the caller as a ceremony failure (not left as an unhandled
+      // "error"). A per-connection failure just closes the
+      // connection in node:http
       server.on("error", (error) => {
         if (!settled) {
           settled = true;

@@ -1,15 +1,20 @@
 "use client";
 
-// S5 プロジェクト概要 / S6 監査(project・invites 軸)/ S7 要ローテーション
-// フラグ(設計文書 §3)。読み取りのみ・全表示はサーバー申告(§4)。
+// S5 project overview / S6 audit (project and invites axes) / S7
+// rotation-needed flags (design document §3). Read-only; every
+// display is server-reported (§4).
 //
-// - S5: チェーン取得(§11)を表示用に畳み込む(chain-view.ts — 検証ではない)。
-//   環境一覧(§12-4)+ 選択環境のメタデータのみ pull(§12-7 — 値・DEK は
-//   構造的に応答へ現れない。var.read も記録されない)
-// - S6: AuditEventList(裁定 BQ)。invites 軸はチェーン role admin 限定で、
-//   403 は役割文言のまま表示する(タブを事前に隠す role 判定は置かない)
-// - S7: dismiss は置かない(ADR-0018 改訂 2 の境界原則 — 警告の消去)。
-//   CLI `maruhi rotation dismiss` への静的案内のみ
+// - S5: the chain fetch (§11) is folded for display (chain-view.ts —
+//   not verification).
+//   The environment listing (§12-4) + a pull of the selected
+//   environment's metadata only (§12-7 — values and DEKs structurally
+//   never appear in a response; no var.read is recorded either)
+// - S6: AuditEventList (ruling BQ). The invites axis is limited to
+//   chain role admin, and a 403 is displayed as-is with the role
+//   wording (no role check that hides the tab in advance)
+// - S7: no dismiss here (ADR-0018 amendment 2's boundary principle —
+//   erasing a warning). Only static guidance pointing at the CLI
+//   `maruhi rotation dismiss`
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
@@ -63,7 +68,7 @@ import type {
 import { useApiResource } from "./use-api-resource.ts";
 
 // ---------------------------------------------------------------------------
-// S5: 概要タブ — チェーン(メンバー・ヘッド・サーバー)
+// S5: overview tab — the chain (members, head, servers)
 // ---------------------------------------------------------------------------
 
 interface MemberRow extends Record<string, unknown> {
@@ -72,13 +77,13 @@ interface MemberRow extends Record<string, unknown> {
   /** Environment scope as reported (`all environments` or the listed ids — ES K4). */
   scope: string;
   sinceSeq: number;
-  /** Device keys as reported (DK K5 — chain-view の畳み込み)。 */
+  /** Device keys as reported (DK K5 — the chain-view fold). */
   devices: ReadonlyArray<ReportedDevice>;
   deviceCount: number;
   unresolvedRevocations: number;
 }
 
-/** 表示用の scope 文言(サーバー申告の畳み込み — Granted servers の Scope 列と同じ描き方)。 */
+/** The display wording of a scope (a fold of the server report — drawn the same way as the Granted servers Scope column). */
 function describeMemberScope(member: ReportedMember): string {
   if (member.scopeKind === "all") return "all environments";
   return member.scopeEnvironmentIds.length === 0
@@ -87,8 +92,10 @@ function describeMemberScope(member: ReportedMember): string {
 }
 
 /**
- * 端末 cap の字面(CLI `describeCap` — apps/cli/src/device-key.ts — と同じ: `owner/all`、
- * `member/dev, staging`、`owner/no environments`)。Web と CLI で同じ事実は同じ字面(K5-3)。
+ * The wording of a device cap (same as the CLI's `describeCap` —
+ * apps/cli/src/device-key.ts: `owner/all`, `member/dev, staging`,
+ * `owner/no environments`). The same fact is written the same way on
+ * the web and the CLI (K5-3).
  */
 function describeCap(device: ReportedDevice): string {
   if (device.scopeKind === "all") return `${device.roleCap}/all`;
@@ -99,27 +106,27 @@ function describeCap(device: ReportedDevice): string {
   }`;
 }
 
-/** 上限のある端末だけ cap を添える(CLI `describeDevice` と同じ)。 */
+/** Only a bounded device carries the cap (same as the CLI's `describeDevice`). */
 function isBounded(device: ReportedDevice): boolean {
   return device.roleCap !== "owner" || device.scopeKind !== "all";
 }
 
 const FINGERPRINT_NOT_REPORTED = "fingerprint not reported";
 
-/** chip の字面: 短縮 FP(無ければ not reported)+ 上限があるときだけ `(cap)`。 */
+/** The chip's wording: the shortened FP (or not reported) + `(cap)` only when bounded. */
 function deviceChipLabel(device: ReportedDevice): string {
   const fp = device.keyFingerprintHex;
   const head = fp === null ? FINGERPRINT_NOT_REPORTED : shortId(fp);
   return isBounded(device) ? `${head} (${describeCap(device)})` : head;
 }
 
-/** chip の説明(全長 FP・cap・追加 seq — hover / 支援技術向け)。 */
+/** The chip's description (the full FP, cap, and adding seq — for hover / assistive tech). */
 function deviceChipDescription(device: ReportedDevice): string {
   const fp = device.keyFingerprintHex ?? FINGERPRINT_NOT_REPORTED;
   return `${fp} · cap ${describeCap(device)} · since seq ${device.addedSeq}`;
 }
 
-/** 端末 1 つの chip(短縮 FP + 上限。全長 FP と cap は description)。 */
+/** The chip of one device (shortened FP + bound. The full FP and cap go in the description). */
 function DeviceChip({ device }: { device: ReportedDevice }): ReactNode {
   return (
     <Token
@@ -132,9 +139,11 @@ function DeviceChip({ device }: { device: ReportedDevice }): ReactNode {
 }
 
 /**
- * Devices 列: 端末数(算術で正確)+ 端末ごとの chip。FP は申告のバイト列から束縛できた
- * ときだけ出る(`add_device` のワイヤは FP を運ばない — K5-1)。unresolved があれば、
- * 未束縛のうち幾つが失効したか(どれかは不明)を 1 文で添える。
+ * The Devices column: the device count (exact, by arithmetic) + one
+ * chip per device. An FP appears only once it could be bound from the
+ * reported bytes (the `add_device` wire carries no FP — K5-1). When
+ * unresolved entries exist, one sentence notes how many of the unbound
+ * devices were revoked (which ones is unknown).
  */
 function DeviceChips({ row }: { row: MemberRow }): ReactNode {
   return (
@@ -200,7 +209,8 @@ const MEMBER_COLUMNS: TableColumn<MemberRow>[] = [
 ];
 
 function attestationSummary(snapshot: ChainSnapshot): string {
-  // 申告の形だけ見る(敵対サーバー対策 — 読めない行は数えずに落とす)
+  // Only the report's shape is read (defense against a hostile server
+  // — an unreadable row is dropped without being counted)
   const attestations = snapshot.attestations.filter(
     (a) =>
       typeof a === "object" &&
@@ -213,11 +223,12 @@ function attestationSummary(snapshot: ChainSnapshot): string {
   return `${attestations.length} reported: ${parts.join(" · ")}`;
 }
 
-// MetadataList のラベル列幅(`incident-console` のインスペクタと同じ規模。64 hex の値が折り返しても
-// ラベルと値の対応が読める)
+// The label column width of a MetadataList (same scale as
+// `incident-console`'s inspector. The label-value correspondence stays
+// readable even when a 64-hex value wraps)
 const CHAIN_LABEL_WIDTH = 200;
 
-/** チェーンの要約(`detail-page` テンプレートの見出し直下メタデータの形 — MetadataList)。 */
+/** The chain summary (the `detail-page` template's under-heading metadata shape — a MetadataList). */
 function ChainSummary({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
   return (
     <MetadataList columns="single" label={{ position: "start", width: CHAIN_LABEL_WIDTH }}>
@@ -258,7 +269,7 @@ const SERVER_COLUMNS: TableColumn<ServerRow>[] = [
   },
 ];
 
-/** 付与済みサーバー鍵(行 = Table — 集合は行で描く)。 */
+/** Granted server keys (rows = a Table — a collection is drawn as rows). */
 function ServersList({ servers }: { servers: ReadonlyArray<ReportedServer> }): ReactNode {
   if (servers.length === 0) return null;
   const rows: ServerRow[] = servers.map((server) => ({
@@ -344,8 +355,9 @@ function describePolicy(policy: ReportedPolicy | null): string {
 }
 
 /**
- * 四眼の方針と pending 提案(K6-J — 読み取りのみ。承認・撤回は CLI: ADR-0018)。票数は
- * 記録ではなく再集計(chain-view の畳み込み)。
+ * The four-eyes policy and pending proposals (K6-J — read-only.
+ * Approving and withdrawing are the CLI's: ADR-0018). The vote count
+ * is a recount, not the record (the chain-view fold).
  */
 function ApprovalsView({
   policy,
@@ -404,9 +416,11 @@ function ApprovalsView({
 }
 
 /**
- * 読めずに落としたエントリは黙って吸収しない(K5-17): 落とした `add_device` は端末を欠かせ、
- * 落とした `revoke_device` は端末を残すので、表示はどちらの向きにもずれうる(片方向を言わない —
- * K5-18)。0 なら描かない。検証は CLI
+ * Entries dropped as unreadable are never silently absorbed (K5-17):
+ * a dropped `add_device` leaves a device missing and a dropped
+ * `revoke_device` leaves one in, so the display may be off in either
+ * direction (never asserts a single direction — K5-18). Not rendered
+ * at 0. Verification is the CLI's job
  */
 function UnreadableEntriesNote({ count }: { count: number }): ReactNode {
   if (count === 0) return null;
@@ -455,7 +469,8 @@ function ChainView({ snapshot }: { snapshot: ChainSnapshot }): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
-// S5: 概要タブ — 環境と変数名(メタデータのみ pull)
+// S5: overview tab — environments and variable names (metadata-only
+// pull)
 // ---------------------------------------------------------------------------
 
 interface EnvironmentRow extends Record<string, unknown> {
@@ -502,7 +517,7 @@ const VARIABLE_COLUMNS: TableColumn<VariableRow>[] = [
   },
 ];
 
-/** 選択環境の変数名(行 = Table — 集合は行で描く)。値は構造上応答に無い。 */
+/** The selected environment's variable names (rows = a Table — a collection is drawn as rows). Values are structurally absent from the response. */
 function VariableNames({ pull }: { pull: EnvironmentMetadataPull }): ReactNode {
   const rows: VariableRow[] = [
     ...pull.variables.map((s) => ({ id: s.variableId, name: s.name, deleted: false })),
@@ -548,8 +563,10 @@ function VariablesSection({
 }
 
 /**
- * 環境表の列。Variables 列のボタンは表の下に変数名の節を開閉するディスクロージャー
- * (aria-expanded + 開いている間は aria-controls で節の id を指す — 閉じた節は DOM に無い)。
+ * The environment table's columns. The Variables column's button is a
+ * discloser that opens and closes the variable-names section below the
+ * table (aria-expanded + aria-controls pointing at the section's id
+ * while open — a closed section is not in the DOM).
  */
 function buildEnvironmentColumns(
   selectedEnvironmentId: string | undefined,
@@ -656,13 +673,17 @@ function EnvironmentsSection({ projectId }: { projectId: string }): ReactNode {
 }
 
 /**
- * 概要タブ。チェーン取得(§11)をプロジェクトの存在確認を兼ねる先頭リソースとし、
- * 環境一覧はチェーンが取れてから読む — 一様 404 / 403 のとき同じ Banner が節ごとに
- * 並ぶ形(DP3 裁定 B の見直しで判明)を避ける。1 往復の直列化は受容。
+ * The overview tab. The chain fetch (§11) doubles as the
+ * project-existence check and is the leading resource; the
+ * environment list is read only once the chain arrives — on a uniform
+ * 404 / 403 this avoids the same Banner stacking per section (found
+ * when revisiting DP3 ruling B). The one-round-trip serialization is
+ * accepted.
  */
 function OverviewTab({ projectId }: { projectId: string }): ReactNode {
   const { state, reload } = useApiResource<ChainSnapshot>(apiPaths.chain(projectId));
-  // 置換形(裁定 B-a)— 以下 VariablesSection / EnvironmentsSection / RotationTab も同じ
+  // Replacement form (ruling B-a) — VariablesSection /
+  // EnvironmentsSection / RotationTab below are the same
   if (state.kind === "loading") return <LoadingRow label="Loading chain" />;
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return (
@@ -674,7 +695,8 @@ function OverviewTab({ projectId }: { projectId: string }): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
-// S6: 監査タブ(project / invites 軸。本人軸は /dashboard/account)
+// S6: audit tab (the project / invites axes. The self axis is
+// /dashboard/account)
 // ---------------------------------------------------------------------------
 
 function AuditTab({ projectId }: { projectId: string }): ReactNode {
@@ -692,12 +714,12 @@ function AuditTab({ projectId }: { projectId: string }): ReactNode {
   return (
     <VStack gap={4}>
       <HStack gap={3} justify="between" align="center" wrap="wrap">
-        {/* 規定文言(AUDIT_SPEC §7 / 設計文書 §4-4): 不可視クラスの存在・件数を示唆しない */}
+        {/* The prescribed wording (AUDIT_SPEC §7 / design document §4-4): never hints at the existence or count of an invisible class */}
         <Text type="supporting" data-testid="audit-caption">
           Events visible to your role, as reported by the server.
         </Text>
-        {/* 軸の切替は ToggleButtonGroup(single)。SegmentedControl は dark で非選択ラベルの
-            コントラストが 4.26:1(12px)で AA に届かない(a11y 監査 — 上流候補) */}
+        {/* Axis switching is a ToggleButtonGroup(single). SegmentedControl's unselected-label
+            contrast is 4.26:1 (12px) in dark, short of AA (a11y audit — an upstream candidate) */}
         <ToggleButtonGroup
           label="Audit source"
           type="single"
@@ -736,7 +758,7 @@ function AuditTab({ projectId }: { projectId: string }): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
-// S7: 要ローテーションフラグ
+// S7: rotation-needed flags
 // ---------------------------------------------------------------------------
 
 interface FlagRow extends Record<string, unknown> {
@@ -748,8 +770,10 @@ interface FlagRow extends Record<string, unknown> {
   recommendedAtMs: number;
 }
 
-// 人を対象にする trigger の字面(remove_member は既定の除名の字面)。
-// Map なのでプロトタイプ鎖の名前(敵対的な trigger 文字列)に当たらない
+// The wording of person-targeted triggers (remove_member takes the
+// default removal wording).
+// As a Map it never hits a prototype-chain name (a hostile trigger
+// string)
 const USER_TRIGGER_LABELS: ReadonlyMap<string, string> = new Map([
   ["change_role", "member role/scope changed"],
   ["revoke_device", "device revoked"],
@@ -760,12 +784,14 @@ function userTriggerLabel(trigger: RotationFlag["trigger"]): string {
 }
 
 /**
- * トリガー(削除 / 降格・縮小された主体 / 失効された端末の持ち主 / 失効されたサーバー鍵)
- * の表示形。人が対象なら `trigger`(AUDIT_SPEC §3.3 — 2026-09-14 ES、`revoke_device` は
- * 2026-09-19 DK)の字面を使う。
- * 末尾に契機のチェーン seq(`triggerChainSeq` — 応答が運ぶ)を添える: `revoke_device` の行は
- * 端末 FP を運ばないので、seq で Audit タブのミラー行(`chain.device_revoked` — FP 入り)を
- * 辿れるようにする(K5-5 再探索)。
+ * The display form of a trigger (a removal / a demoted or narrowed
+ * principal / the owner of a revoked device / a revoked server key).
+ * When the target is a person it uses the `trigger` (AUDIT_SPEC §3.3
+ * — 2026-09-14 ES; `revoke_device` is 2026-09-19 DK) wording.
+ * The tail carries the triggering chain seq (`triggerChainSeq` —
+ * carried by the response): a `revoke_device` row carries no device
+ * FP, so the seq lets one trace the mirrored row on the Audit tab
+ * (`chain.device_revoked` — which has the FP) (K5-5 re-exploration).
  */
 function flagTrigger(flag: RotationFlag): string {
   const subject =
@@ -827,7 +853,9 @@ function RotationFlagsView({ flags }: { flags: ReadonlyArray<RotationFlag> }): R
       <EmptyNotice
         title="No rotation flags"
         description="No rotation flags are currently effective, as reported by the server."
-        // 見出し無しの箱(タブ内、ページ h1 の直下)なので h2 — 後続の Callout(h2)と並ぶ
+        // A box without a heading (inside a tab, directly under the
+        // page h1), so h2 — sitting level with the following Callout
+        // (h2)
         headingLevel={2}
         testId="rotation-empty"
       />
@@ -855,7 +883,7 @@ function RotationTab({ projectId }: { projectId: string }): ReactNode {
       <SectionBlock>
         <RotationFlagsView flags={state.value.flags} />
       </SectionBlock>
-      {/* dismiss は Web に置かない(ADR-0018 改訂 2 — 警告の消去はガバナンス操作) */}
+      {/* Dismissing is not on the web (ADR-0018 amendment 2 — erasing a warning is a governance operation) */}
       <Callout title="Rotating and dismissing" headingLevel={2} testId="rotation-note">
         A flag means the upstream credential should be rotated. Rotate the value, then dismiss the
         flag from the CLI: <Text type="code">maruhi rotation dismiss</Text> (admin). Dismissing is
@@ -866,7 +894,7 @@ function RotationTab({ projectId }: { projectId: string }): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
-// 画面本体
+// The screen body
 // ---------------------------------------------------------------------------
 
 const PROJECT_TABS = ["overview", "audit", "rotation", "invites"] as const;
@@ -879,8 +907,9 @@ const PROJECT_TAB_PANELS: Record<ProjectTab, string> = {
   invites: "project-panel-invites",
 };
 
-// tabpanel は対応する tab から名前を取る(APG)。Astryx は Tab に自動 id を
-// 振らないので、明示 id を tab 側に置いて aria-labelledby で指す
+// A tabpanel takes its name from the corresponding tab (APG). Astryx
+// does not auto-assign ids to Tabs, so an explicit id is placed on
+// the tab side and referenced via aria-labelledby
 const PROJECT_TAB_IDS: Record<ProjectTab, string> = {
   overview: "project-tab-overview",
   audit: "project-tab-audit",
@@ -888,9 +917,10 @@ const PROJECT_TAB_IDS: Record<ProjectTab, string> = {
   invites: "project-tab-invites",
 };
 
-// `hidden` 属性だけでは隠れない: Astryx の reset(`@layer reset` の
-// `:where([hidden]){display:none}`)より VStack 自身の `display:flex`
-// (`@layer astryx-base`)が勝つ。StyleX 同士なら後勝ちで効く(ADR-0013 ②)
+// The `hidden` attribute alone does not hide: VStack's own
+// `display:flex` (in `@layer astryx-base`) beats the Astryx reset's
+// `:where([hidden]){display:none}` (in `@layer reset`). Between StyleX
+// rules the later one wins, so it works (ADR-0013 ②)
 const panelStyles = stylex.create({
   hidden: { display: "none" },
 });
@@ -902,13 +932,14 @@ function isProjectTab(value: string): value is ProjectTab {
 function ProjectTabBody({ tab, projectId }: { tab: ProjectTab; projectId: string }): ReactNode {
   if (tab === "audit") return <AuditTab projectId={projectId} />;
   if (tab === "rotation") return <RotationTab projectId={projectId} />;
-  // S8(裁定 CP): project 軸の管理面はタブ。失効状態が別プロジェクトへ
-  // 持ち越されないよう projectId でキーする
+  // S8 (ruling CP): the project axis's management surface is a tab.
+  // Keyed by projectId so a revocation state cannot carry over to
+  // another project
   if (tab === "invites") return <InvitesTab key={projectId} projectId={projectId} />;
   return <OverviewTab projectId={projectId} />;
 }
 
-/** header スロット用の TabList(同一画面内のパネル切替なので nav landmark でなく WAI-ARIA tabs)。 */
+/** The TabList for the header slot (it switches panels within one screen, so WAI-ARIA tabs, not a nav landmark). */
 function ProjectTabList({
   tab,
   onChange,
@@ -970,10 +1001,12 @@ function ProjectTabPanels({ tab, projectId }: { tab: ProjectTab; projectId: stri
   ));
 }
 
-/** 妥当な ID のプロジェクト画面(`detail-page` テンプレートの形: 戻りリンク → h1 → ID → タブ)。 */
+/** The project screen for a well-formed ID (the `detail-page` template's shape: back link → h1 → ID → tabs). */
 function ProjectPage({ projectId }: { projectId: string }): ReactNode {
   const [tab, setTab] = useState<ProjectTab>("overview");
-  // 見出しとサイドバーの子項目は短縮形(先頭・末尾 6 桁)。全文は見出し直下に HexText で出す
+  // The heading and the sidebar's child item use the shortened form
+  // (first and last 6 digits). The full text is shown right under the
+  // heading in a HexText
   const label = shortId(projectId);
   return (
     <DashboardShell
@@ -989,7 +1022,7 @@ function ProjectPage({ projectId }: { projectId: string }): ReactNode {
   );
 }
 
-/** ID の形式を満たさないパス(サーバーには問い合わせない)。 */
+/** A path that fails the ID's format (the server is not asked). */
 function InvalidProjectPage({ projectId }: { projectId: string }): ReactNode {
   return (
     <DashboardShell

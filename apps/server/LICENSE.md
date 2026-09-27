@@ -6,7 +6,7 @@ FSL-1.1-MIT
 
 ## Notice
 
-Copyright 2026 しまぶー (lightsound)
+Copyright 2026 しまぶー (lightsound) <!-- english-exempt: author handle -->
 
 ## Terms and Conditions
 

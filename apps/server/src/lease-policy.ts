@@ -1,35 +1,43 @@
-// lease_policy の評価(AUTH_SPEC §14-1 の認可段)。
+// Evaluation of lease_policy (AUTH_SPEC §14-1's authorization stage).
 //
-// **認可の真実源はチェーン**(CRYPTO_SPEC §9.1): どのワークロードがリースを
-// 受けられるかは grant_server payload の lease_policy であり、サーバー可変の
-// 設定ではない。ここにあるのは「構造(合意規則)に対する評価意味論」だけで、
-// チェーン形式には触れない(§6.2 の構造 / 意味論の分離 — 評価の拡張は
-// AUTH_SPEC §14 の改訂で行い、grandfathering を要さない)。
+// **The chain is the source of truth for authorization** (CRYPTO_SPEC
+// §9.1): which workloads may receive a lease is the lease_policy of
+// grant_server payloads, not a server-mutable setting. What lives here
+// is only "the evaluation semantics over the structure (the agreed
+// rules)"; the chain format is untouched (the §6.2
+// structure/semantics split — extending evaluation happens via an
+// AUTH_SPEC §14 revision and needs no grandfathering).
 //
-// 判定は**存在量化**(§14-1): 一致する要素が 1 つでも
-// あれば認可する。「一致する要素を選ぶ」形にすると複数要素一致時の選定が
-// 非決定になり、どの要素が一致したかは認可結果にもリースラップにも影響しない
-// (claims_digest はトークンの issuer / sub / aud から計算され、要素の同定に
-// 依存しない)。
+// The check is an **existential quantification** (§14-1): one matching
+// element suffices to authorize. Shaping it as "pick the matching
+// element" would make the selection nondeterministic when several
+// elements match, and which element matched affects neither the
+// authorization result nor the lease wrap (claims_digest is computed
+// from the token's issuer / sub / aud and does not depend on
+// identifying the element).
 
 import type { LeasePolicyIssuer, ServerGrant } from "@maruhi/crypto";
 
 import type { VerifiedOidcToken } from "./oidc.package/index.ts";
 
 /**
- * ポリシー評価が読むトークンの部分。VerifiedOidcToken(worker 側)と RPC の
- * LeaseTokenFacts(DO 側)の共通部分であり、評価が時刻系フィールドに依存
- * しないこと(時刻検証は認証段で完了済み — §14-1)を型で固定する。
+ * The part of the token the policy evaluation reads. It is the common
+ * subset of VerifiedOidcToken (worker side) and the RPC's
+ * LeaseTokenFacts (DO side); the type pins that evaluation does not
+ * depend on the time fields (time checks already completed in the
+ * authentication stage — §14-1).
  */
 type PolicyEvaluationToken = Pick<VerifiedOidcToken, "issuer" | "audiences" | "claims">;
 
 /**
- * claim 制約 1 件の評価(v1 = 完全一致のみ — §14-1)。
+ * Evaluation of one claim constraint (v1 = exact match only —
+ * §14-1).
  *
- * **文字列以外の claim 値は決して一致しない**: 数値・真偽・配列を文字列へ
- * 型強制すると、`1` と `"1"`、`["a"]` と `"a"` のような別物が同一視され、
- * 認可を広げる方向の驚きを生む。制約に列挙された claim のみ評価し、列挙外の
- * claim は関与しない(§14-1)。
+ * **A non-string claim value never matches**: coercing numbers,
+ * booleans, or arrays to strings would conflate distinct things like
+ * `1` and `"1"`, `["a"]` and `"a"`, producing surprises that widen
+ * authorization. Only claims enumerated in the constraint are
+ * evaluated; claims outside the enumeration take no part (§14-1).
  */
 function claimMatches(
   claims: Readonly<Record<string, unknown>>,
@@ -40,15 +48,18 @@ function claimMatches(
 }
 
 /**
- * lease_policy 要素 1 件の評価: issuer_url がトークンの issuer と一致し、
- * audience がトークンの `aud` に含まれ、claim_constraints の**すべて**が
- * 完全一致すること。claim_constraints が空の要素は fail-closed で一致しない。
- * issuer は全 GitHub Actions で共有され、audience は呼び出し元が選べるため、
- * 空を無条件の許可として扱うと第三者のワークロードまで認可してしまう。
+ * Evaluation of one lease_policy element: issuer_url matches the
+ * token's issuer, audience is contained in the token's `aud`, and
+ * **every** claim_constraint matches exactly. An element whose
+ * claim_constraints is empty fails closed and does not match. Since
+ * issuer is shared across all of GitHub Actions and audience is
+ * caller-chosen, treating empty as unconditional allow would
+ * authorize third-party workloads.
  *
- * `aud` の包含判定(一致ではなく contains)は、RFC 7519 が `aud` に配列を
- * 許すため。単一文字列の `aud` は verifier が 1 要素配列へ正規化しており、
- * その場合この判定は完全一致に退化する。
+ * The `aud` check is containment (contains, not equality) because RFC
+ * 7519 allows `aud` to be an array. A single-string `aud` is already
+ * normalized to a one-element array by the verifier, in which case
+ * this check degenerates to an exact match.
  */
 function elementMatches(element: LeasePolicyIssuer, token: PolicyEvaluationToken): boolean {
   return (
@@ -60,15 +71,16 @@ function elementMatches(element: LeasePolicyIssuer, token: PolicyEvaluationToken
 }
 
 /**
- * 存在量化による認可判定(§14-1)。空 lease_policy は「リース経路なし」を
- * 意味するため常に false になる(その grant はサーバー鍵宛ラップの登録のみを
- * 許す — CRYPTO_SPEC §6.2)。
+ * The authorization decision by existential quantification (§14-1).
+ * An empty lease_policy means "no lease path", so it is always false
+ * (such a grant permits only registering wraps addressed to the
+ * server key — CRYPTO_SPEC §6.2).
  */
 export function leasePolicyAuthorizes(grant: ServerGrant, token: PolicyEvaluationToken): boolean {
   return grant.leasePolicy.some((element) => elementMatches(element, token));
 }
 
-/** 開示スコープ(scope_environments)に対象環境が含まれるか(§14-1)。 */
+/** Whether the disclosure scope (scope_environments) contains the target environment (§14-1). */
 export function grantCoversEnvironment(grant: ServerGrant, environmentId: string): boolean {
   return grant.scopeEnvironmentIds.includes(environmentId);
 }

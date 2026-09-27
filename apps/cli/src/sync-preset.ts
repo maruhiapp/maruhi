@@ -1,19 +1,24 @@
-// `maruhi sync` のプリセット = 1 つの同期先に対する 2 種類のドライバの宣言
-// (integration-options.md §3 補足 13 W1「1 インターフェース × 2 種類」)。
+// A `maruhi sync` preset = declarations of the 2 driver kinds for
+// one sync target (integration-options.md §3 supplement 13 W1 "1
+// interface × 2 kinds").
 //
-// exec(sync-exec.ts — 導入済みのベンダー CLI)と http(sync-http.ts — ベンダー
-// API)は同じプリセット id を共有し、設定の `driver` でどちらを使うかを選ぶ。
-// レシートはプリセット id だけを持つので、ドライバを切り替えても前回の届き先の
-// 記録はそのまま使える(同じ同期先に同じ名前・version を届けたという事実は
-// ドライバに依らない)。
+// exec (sync-exec.ts — an installed vendor CLI) and http
+// (sync-http.ts — the vendor API) share the same preset id; the
+// config's `driver` chooses which to use. A receipt carries only
+// the preset id, so switching drivers keeps the prior delivery
+// records usable (the fact of having delivered the same
+// name+version to the same target does not depend on the driver).
 //
-// 片方のドライバしか持てない同期先がある(SY4 の裁定 A): Netlify の CLI は値を
-// 引数に取る(argv = `ps` で見える)ので exec の安全なレシピが書けず、http だけを
-// 持つ。GitHub Actions secrets は逆に http を持てない(API はリポジトリ公開鍵への
-// libsodium sealed box を要し、WebCrypto に無い — 補足 5。maruhi は封印を実装せず
-// `gh` に任せる)。宣言の代わりに**理由**(`unavailable`)を置き、設定がその
-// ドライバを選んだときの文面にする。`driver` を省いた設定は exec があれば exec、
-// 無ければ http。
+// Some sync targets can only have one driver (SY4's ruling A):
+// Netlify's CLI takes the value as an argument (argv = visible in
+// `ps`), so no safe exec recipe exists and it has only http.
+// GitHub Actions secrets conversely cannot have http (the API
+// requires a libsodium sealed box to the repository's public key,
+// which WebCrypto lacks — supplement 5. maruhi does not implement
+// sealing and leaves it to `gh`). In place of a declaration, a
+// **reason** (`unavailable`) is stored, which becomes the message
+// when the config picks that driver. A config omitting `driver`
+// gets exec if present, otherwise http.
 
 import { type ExecPreset, EXEC_PRESETS } from "./sync-exec.ts";
 import { type HttpPreset, HTTP_PRESETS } from "./sync-http.ts";
@@ -29,23 +34,23 @@ export interface SyncPreset {
   readonly id: PresetId;
   readonly exec: ExecPreset | UnavailableDriver;
   readonly http: HttpPreset | UnavailableDriver;
-  /** 明示が無いときの production 判定(誤操作ガードの既定 — sync-config.ts)。 */
+  /** The production judgment when unstated (the default of the misoperation guard — sync-config.ts). */
   readonly isProduction: (options: ResolvedOptions) => boolean;
 }
 
-/** 宣言が無い(理由だけの)ドライバか。 */
+/** Whether the driver has no declaration (a reason only). */
 export function isUnavailable(
   declaration: ExecPreset | HttpPreset | UnavailableDriver,
 ): declaration is UnavailableDriver {
   return "unavailable" in declaration;
 }
 
-/** `driver` を省いた設定の既定: exec があれば exec、無ければ http。 */
+/** The default for a config omitting `driver`: exec if present, otherwise http. */
 export function defaultDriverOf(preset: SyncPreset): DriverKind {
   return isUnavailable(preset.exec) ? "http" : "exec";
 }
 
-// Netlify の deploy context のうち production 扱い(`all` は production を含む)
+// The Netlify deploy contexts treated as production (`all` includes production)
 const NETLIFY_PRODUCTION_CONTEXTS = new Set(["production", "all"]);
 
 /** Built-in presets (first-class targets — owner decision: Vercel / Cloudflare Workers; Netlify = http only; GitHub Actions secrets = exec only). */
@@ -54,7 +59,7 @@ export const SYNC_PRESETS: Readonly<Record<PresetId, SyncPreset>> = {
     id: "cloudflare-workers",
     exec: EXEC_PRESETS["cloudflare-workers"],
     http: HTTP_PRESETS["cloudflare-workers"],
-    // wrangler の名前付き環境なし = トップレベルの Worker(本番)
+    // No wrangler named environment = the top-level Worker (production)
     isProduction: (options) => options["environment"] === undefined,
   },
   vercel: {
@@ -79,9 +84,11 @@ export const SYNC_PRESETS: Readonly<Record<PresetId, SyncPreset>> = {
       unavailable:
         "the github-actions preset has no http driver: the GitHub API takes the value sealed to the repository's public key with libsodium, which maruhi does not implement, so maruhi only drives the gh CLI",
     },
-    // リポジトリ secrets(Environment なし)は全 workflow に効く = production 扱い。
-    // Environment secrets はその名前が production のときだけ — GitHub の Environment 名は
-    // 大文字小文字を区別しない(docs「Managing environments」)ので畳んで比べる
+    // Repository secrets (no Environment) affect every workflow =
+    // treated as production. Environment secrets only when the
+    // name is production — GitHub's Environment names are
+    // case-insensitive (docs "Managing environments"), so fold
+    // them for comparison
     isProduction: (options) =>
       options["environment"] === undefined ||
       String(options["environment"]).toLowerCase() === "production",

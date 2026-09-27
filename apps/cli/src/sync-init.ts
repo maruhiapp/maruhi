@@ -1,16 +1,20 @@
-// `maruhi sync init <target>`: リポジトリ設定(`maruhi.sync.json`)の生成
-// (SY2 第 2 段 — 裁定 F)。
+// `maruhi sync init <target>`: generating the repository config
+// (`maruhi.sync.json`) (SY2 stage 2 — ruling F).
 //
-// 先例は `maruhi project anchor`(anchor.ts): 非機密の設定を **JSON として
-// stdout に出し**、利用者がリダイレクトしてコミットする。ファイルは書かない
-// (既存ファイルの上書き・マージの判断を CLI に持たせない — 2 つ目のターゲットは
-// 手で足す。docs の表がキーを説明する)。ネットワークにも行かない: 入力はすべて
-// フラグで、生成物は sync-config.ts の厳格なパーサを**そのまま通る**ことを
-// 出す前に確かめる(通らなければ理由を添えて書き方の誤り = 2)。
+// The precedent is `maruhi project anchor` (anchor.ts): emit the
+// non-secret config **as JSON to stdout** and let the user redirect
+// and commit it. No file is written (the CLI is not given the
+// overwrite/merge judgment on an existing file — a second target is
+// added by hand. The docs table explains the keys). It does not go
+// to the network either: every input is a flag, and before emitting
+// it confirms the product passes sync-config.ts's strict parser
+// **unchanged** (if it does not, the write-up error is reported
+// with a reason = 2).
 //
-// 値の既定: `variables` は省略時 `"all"`(+ Note で公開設定 / プラットフォーム
-// 所有の資源を除くよう案内 — 補足 13 W3)、`production` はプリセットの判定に
-// 任せる(明示は `--production`)。
+// Value defaults: `variables` is `"all"` when omitted (+ a Note
+// guiding to exclude public-config / platform-owned resources —
+// supplement 13 W3), and `production` defers to the preset's
+// judgment (the explicit form is `--production`).
 
 import { Effect } from "effect";
 
@@ -21,30 +25,30 @@ import { parseSyncConfig } from "./sync-config.ts";
 import { defaultDriverOf, isUnavailable, SYNC_PRESETS } from "./sync-preset.ts";
 import type { DriverKind, OptionSpec, PresetId } from "./sync-types.ts";
 
-/** `maruhi sync init` の入力(すべて明示フラグ由来)。 */
+/** `maruhi sync init`'s input (all from explicit flags). */
 export interface SyncInitInput {
   readonly target: string;
   readonly preset: string;
   readonly driver: string | undefined;
-  /** 同期元の maruhi 環境 ID(`--env`)。 */
+  /** The source maruhi environment ID (`--env`). */
   readonly environment: string;
-  /** レシート環境 ID(`--receipts`)。 */
+  /** The receipt environment ID (`--receipts`). */
   readonly receipts: string;
   readonly project: string | undefined;
-  /** カンマ区切りの変数名(省略 = "all")。 */
+  /** Comma-separated variable names (omitted = "all"). */
   readonly variables: string | undefined;
-  /** カンマ区切りの除外名(`variables` 省略時のみ)。 */
+  /** Comma-separated exclusion names (only when `variables` is omitted). */
   readonly exclude: string | undefined;
   readonly production: boolean;
   readonly cwd: string | undefined;
   readonly command: string | undefined;
   readonly tokenEnvironment: string | undefined;
   readonly tokenName: string | undefined;
-  /** push 直後の同期(`--on-push apply|workflow` — 第 3 段)。 */
+  /** The post-push sync (`--on-push apply|workflow` — stage 3). */
   readonly onPush: string | undefined;
-  /** `--on-push workflow` の workflow ファイル名(`--workflow`)。 */
+  /** The workflow filename for `--on-push workflow` (`--workflow`). */
   readonly workflow: string | undefined;
-  /** `key=value` の列(`--option`)。boolean オプションは true / false。 */
+  /** A list of `key=value` (`--option`). Boolean options are true / false. */
   readonly options: readonly string[];
 }
 
@@ -58,7 +62,7 @@ function splitList(value: string | undefined): string[] | undefined {
     .filter((entry) => entry.length > 0);
 }
 
-/** `--option key=value` の解釈(宣言の型に合わせて boolean に写す)。 */
+/** Interprets `--option key=value` (maps to boolean per the declaration's type). */
 function parseOptionFlags(
   given: readonly string[],
   declared: Readonly<Record<string, OptionSpec>>,
@@ -91,12 +95,12 @@ function parseOptionFlags(
   return options;
 }
 
-/** 省略されたキーは JSON に出さない(`undefined` の値を落とす)。 */
+/** Omitted keys do not appear in the JSON (drops `undefined` values). */
 function compact(record: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined));
 }
 
-/** 1 ターゲットの JSON オブジェクト(キーの順は docs の表と同じ)。 */
+/** One target's JSON object (key order matches the docs table). */
 function targetObjectOf(
   input: SyncInitInput,
   driver: DriverKind,
@@ -109,7 +113,7 @@ function targetObjectOf(
       : { environment: input.tokenEnvironment, name: input.tokenName };
   return compact({
     preset: input.preset,
-    // exec は省略が既定。http は、それしか無いプリセットでも明示する(平文の行き先を読める形)
+    // exec is the default for omitting. http is written explicitly even on a preset that only has it (a form where the plaintext's destination is readable)
     driver: driver === "exec" ? undefined : driver,
     environment: input.environment,
     variables: variables === undefined || variables.length === 0 ? "all" : variables,
@@ -124,7 +128,7 @@ function targetObjectOf(
   });
 }
 
-/** 設定オブジェクトを組み立て、厳格なパーサで検証してから JSON 文字列にする。 */
+/** Assembles the config object, validates it through the strict parser, then serializes it to a JSON string. */
 function buildSyncConfigJson(input: SyncInitInput): Effect.Effect<string, CliError> {
   return Effect.gen(function* () {
     if (!Object.hasOwn(SYNC_PRESETS, input.preset)) {
@@ -158,7 +162,7 @@ function buildSyncConfigJson(input: SyncInitInput): Effect.Effect<string, CliErr
       targets: { [input.target]: targetObjectOf(input, driver, options) },
     });
     const json = `${JSON.stringify(config, null, 2)}\n`;
-    // 生成物は厳格なパーサをそのまま通る(通らなければ、書き方の誤りとして理由を言う)
+    // The product passes the strict parser unchanged (if it does not, report the write-up error with a reason)
     const parsed = parseSyncConfig(json, ".");
     if (typeof parsed === "string") {
       return yield* Effect.fail(usageError(`The config would be invalid: ${parsed}`));
@@ -167,7 +171,7 @@ function buildSyncConfigJson(input: SyncInitInput): Effect.Effect<string, CliErr
   });
 }
 
-/** `maruhi sync init`: 設定 JSON を stdout に出す(コマンドの出力 — 決定 9)。 */
+/** `maruhi sync init`: emits the config JSON to stdout (the command's output — decision 9). */
 export function syncInitOp(input: SyncInitInput): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;

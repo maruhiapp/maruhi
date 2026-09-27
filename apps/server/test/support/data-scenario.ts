@@ -1,8 +1,8 @@
-// データプレーン統合テストの共有シナリオ。
+// Shared scenario for data-plane integration tests.
 //
-// fixture / varStatements は ESM の live binding としてエクスポートし、各テスト
-// ファイルは registerDataScenario() で beforeEach(リセット + 再シード)を登録
-// してから describe を書く。
+// fixture / varStatements are exported as ESM live bindings; each test file
+// registers its beforeEach (reset + re-seed) via registerDataScenario() and
+// then writes its describe blocks.
 
 import { beforeEach, expect } from "vitest";
 
@@ -36,16 +36,16 @@ export const VAR = "var-database-url";
 
 export let fixture: DataFixture;
 
-/** 変数ごとの最新ステートメント + author(rename / 削除の prev 連鎖の材料)。 */
+/** Latest statement + author per variable (material for the prev chain of renames / deletions). */
 export let varStatements: Map<
   string,
   { statement: WireVariableMetaStatement; authorUserId: string }
 >;
 
-/** 各テストファイルの冒頭で 1 回呼ぶ: フィクスチャの beforeEach を登録する。 */
+/** Called once at the top of each test file: registers the fixture's beforeEach. */
 export function registerDataScenario(): void {
   beforeEach(async () => {
-    // 端末鍵の差し替え(useDeviceKey)はテストを跨いで持ち越さない
+    // Device-key substitution (useDeviceKey) does not carry over across tests
     resetDeviceKeys();
     fixture = await setupDataProject();
     varStatements = new Map();
@@ -55,9 +55,10 @@ export function registerDataScenario(): void {
 export const token = (userId: string): string => tokenOf(fixture.tokens, userId);
 
 /**
- * 変数のメタ操作(作成・rename・削除)に同梱するマニフェスト(§12-5)を、
- * 検証済みステートメントのハッシュから署名して返す(成功時は record で記録を
- * 進める)。issuer は操作の実行者と一致させること(§12-5 (1))。
+ * Sign and return the manifest bundled with a variable meta op (create /
+ * rename / delete) (§12-5), computed from the verified statement's hash (on
+ * success, `record` advances the record). issuer must match the actor
+ * performing the op (§12-5 (1)).
  */
 export async function manifestForStatement(
   statement: WireVariableMetaStatement,
@@ -81,7 +82,7 @@ function recordManifestState(environmentId: string, state: EnvManifestState): vo
   fixture.manifests.set(environmentId, state);
 }
 
-/** 変数作成に同梱するステートメント(metaVersion 1)を署名し、記録する。 */
+/** Sign and record the statement bundled with variable creation (metaVersion 1). */
 export async function variableStatementFor(
   authorUserId: string,
   variableId: string,
@@ -98,14 +99,14 @@ export async function variableStatementFor(
   });
 }
 
-/** レイアウト v2 のスキーマ欄(ワイヤ形 — required は boolean)。 */
+/** Layout-v2 schema fields (wire shape — required is a boolean). */
 export interface WireSchemaFields {
   readonly varType: "" | "string" | "number" | "boolean" | "url";
   readonly required: boolean;
   readonly description: string;
 }
 
-/** v2 ステートメントの運搬フィールド(layoutVersion 2 + スキーマ欄)。 */
+/** Carrier fields for a v2 statement (layoutVersion 2 + the schema fields). */
 export function v2Fields(schema: Partial<WireSchemaFields> = {}): {
   readonly layoutVersion: number;
   readonly varType: WireSchemaFields["varType"];
@@ -120,14 +121,14 @@ export function v2Fields(schema: Partial<WireSchemaFields> = {}): {
   };
 }
 
-/** 変数の次ステートメント(rename / スキーマ再発行 / 削除 / activation)を記録済み最新から署名する。 */
+/** Sign a variable's next statement (rename / schema re-issuance / deletion / activation) from the latest recorded one. */
 export async function nextVariableStatement(input: {
   readonly variableId: string;
   readonly name: string;
   readonly status: "active" | "deleted" | "declared";
   readonly authorUserId: string;
   readonly environmentId?: string;
-  /** レイアウト v2 の運搬フィールド(v2Fields(...) — 省略 = v1 ステートメント)。 */
+  /** Layout-v2 carrier fields (v2Fields(...) — omitted = v1 statement). */
   readonly v2?: ReturnType<typeof v2Fields>;
 }): Promise<WireVariableMetaStatement> {
   const last = varStatements.get(input.variableId);
@@ -153,7 +154,7 @@ export async function nextVariableStatement(input: {
   });
 }
 
-/** 変数 rename(ステートメント付き PATCH)。204 なら記録を進める。 */
+/** Variable rename (PATCH with statement). On 204, advances the record. */
 export async function renameVariableRequest(
   variableId: string,
   name: string,
@@ -179,7 +180,7 @@ export async function renameVariableRequest(
   return response;
 }
 
-/** 変数削除(status deleted のステートメント付き DELETE)。204 なら記録を進める。 */
+/** Variable deletion (DELETE with a status-deleted statement). On 204, advances the record. */
 export async function deleteVariableRequest(
   variableId: string,
   actorUserId: string,
@@ -190,7 +191,7 @@ export async function deleteVariableRequest(
   }
   const statement = await nextVariableStatement({
     variableId,
-    // deleted の name は直前 active 名を保持する(§4.2)
+    // A deleted statement's name keeps the immediately preceding active name (§4.2)
     name: last.statement.name,
     status: "deleted",
     authorUserId: actorUserId,
@@ -210,8 +211,9 @@ export async function deleteVariableRequest(
 }
 
 /**
- * Schema 通過のみが必要なテスト(400 / 403 / 404 が署名検証より前に確定)用の
- * 未署名ダミーステートメント(形式のみ有効なゼロ署名)。
+ * Unsigned dummy statement for tests that only need to pass Schema (400 /
+ * 403 / 404 are decided before signature verification) — a formally valid
+ * zero signature.
  */
 export function unsignedVariableStatement(
   variableId: string,
@@ -232,8 +234,9 @@ export function unsignedVariableStatement(
 }
 
 /**
- * Schema 通過のみが必要なテスト(400 / 403 / 404 が署名検証より前に確定)用の
- * 未署名ダミーマニフェスト(形式のみ有効なゼロ署名)。
+ * Unsigned dummy manifest for tests that only need to pass Schema (400 /
+ * 403 / 404 are decided before signature verification) — a formally valid
+ * zero signature.
  */
 export function unsignedManifest(environmentId = ENV): WireEnvironmentManifest {
   return {
@@ -252,10 +255,11 @@ export function unsignedManifest(environmentId = ENV): WireEnvironmentManifest {
 }
 
 /**
- * 受理ポリシー系テスト用のフェイク暗号文(サーバーは中身を復号できない)。
- * 値署名(§12-5)はサーバーが検証するため、フェイクでも呼び出し主体の実鍵で
- * 正しく署名する(writerUserId = リクエストに使う PAT の主体と一致させること)。
- * 宣言ヘッドは現ヘッド(fixture.head)。
+ * Fake ciphertext for acceptance-policy tests (the server cannot decrypt
+ * the contents). The value signature (§12-5) is verified by the server, so
+ * even a fake is signed correctly with the caller's real key (writerUserId
+ * must match the subject of the PAT used for the request). The declared
+ * head is the current head (fixture.head).
  */
 export function fakePayload(
   writerUserId: string,
@@ -272,8 +276,9 @@ export function fakePayload(
       aad,
       nonceHex: "00".repeat(12),
       ciphertextHex: "ab".repeat(options?.ciphertextBytes ?? 48),
-      // version > 1 の既定 prev はダミー 64 hex(prev 検査より前段 — CAS 等 —
-      // で拒否されるテスト用。prev 検査へ到達するテストは実ハッシュを渡す)
+      // The default prev for version > 1 is a dummy 64-hex (for tests
+      // rejected at an earlier stage than the prev check — CAS etc. Tests
+      // that reach the prev check pass a real hash)
       prevValueSigHashHex:
         options?.prevValueSigHashHex ?? (aad.version === 1 ? "" : "cd".repeat(32)),
       chainHeadHashHex: fixture.head.hashHex,
@@ -284,9 +289,10 @@ export function fakePayload(
 }
 
 /**
- * 署名検証に到達しないことが確定しているテスト(Schema 400 / AAD 422 /
- * 非メンバー 404)用の未署名フェイク。STRANGER はベクター鍵を持たないため
- * 実署名できない — 形式のみ有効なゼロ署名を載せる。
+ * Unsigned fake for tests that are certain never to reach signature
+ * verification (Schema 400 / AAD 422 / non-member 404). STRANGER has no
+ * vector key and cannot sign for real — carry a formally valid zero
+ * signature.
  */
 export function unsignedPayload(aad: WireEncryptedPayload["aad"]): WireEncryptedPayload {
   return {
@@ -314,7 +320,7 @@ export const aadFor = (
   ...overrides,
 });
 
-/** 変数作成(実暗号化 + MEMBER の値署名 + metaVersion 1 のステートメント同梱)。 */
+/** Variable creation (real encryption + MEMBER's value signature + bundled metaVersion-1 statement). */
 export async function createVariableOk(
   dek: Uint8Array,
   variableId: string,
@@ -342,8 +348,8 @@ export async function createVariableOk(
 }
 
 /**
- * レイアウト v2 の作成ステートメント(metaVersion 1 — active = 値同梱 /
- * declared = 値なしの宣言)を署名して返す。
+ * Sign and return a layout-v2 creation statement (metaVersion 1 — active =
+ * with bundled value / declared = valueless declaration).
  */
 export async function variableStatementV2For(input: {
   readonly authorUserId: string;
@@ -367,7 +373,7 @@ export async function variableStatementV2For(input: {
   });
 }
 
-/** declared 作成(値なしの宣言複合 — §12-5)。204/200 相当の成功時は記録を進める。 */
+/** declared creation (the valueless declaration composite — §12-5). On a 204/200-equivalent success, advances the record. */
 export async function declareVariableRequest(input: {
   readonly variableId: string;
   readonly name: string;
@@ -398,7 +404,7 @@ export async function declareVariableRequest(input: {
   return response;
 }
 
-/** declared 作成の成功形(§12-5 — 保存バージョン 0)。 */
+/** The success shape of declared creation (§12-5 — stored version 0). */
 export async function declareVariableOk(input: {
   readonly variableId: string;
   readonly name: string;
@@ -419,8 +425,8 @@ export async function declareVariableOk(input: {
 }
 
 /**
- * activation 複合(§12-5 — declared → active: 値 version 1 + status active の
- * v2 ステートメント + マニフェスト)。200 なら記録を進める。
+ * The activation composite (§12-5 — declared → active: value version 1 +
+ * status-active v2 statement + manifest). On 200, advances the record.
  */
 export async function activateVariableRequest(input: {
   readonly variableId: string;
@@ -431,9 +437,10 @@ export async function activateVariableRequest(input: {
   readonly name?: string;
   readonly schema?: Partial<WireSchemaFields>;
   /**
-   * 値の version(既定 1 = 正当な activation)。1 以外は negative 用 —
-   * 「active 変数へ latest + 1 を送る」迂回形の再現(ヘルパが 1 を固定すると
-   * 『active 変数を狙えない』という性質が検証できない)。
+   * The value's version (default 1 = a legitimate activation). Anything
+   * other than 1 is for negatives — reproducing the bypass shape "send
+   * latest + 1 to an active variable" (if the helper pinned 1, the property
+   * "cannot target an active variable" could not be verified).
    */
   readonly version?: number;
   readonly prevValueSigHashHex?: string;
@@ -481,7 +488,7 @@ export async function activateVariableRequest(input: {
   return response;
 }
 
-/** schemaPolicy の設定(PUT — §12-11。既定 actor は OWNER = チェーン role owner)。 */
+/** Set schemaPolicy (PUT — §12-11. The default actor is OWNER = chain role owner). */
 export async function setSchemaPolicyOk(
   policy: "disabled" | "enabled" | "locked",
   actorUserId = OWNER,
@@ -492,7 +499,7 @@ export async function setSchemaPolicyOk(
   expect(response.status).toBe(204);
 }
 
-/** ダミー DEK の完全ラップ集合(受信者・エポック・署名者は指定可)。 */
+/** A complete wrap set for a dummy DEK (recipients, epoch, and signer selectable). */
 export const wrapsFor = (
   environmentId: string,
   recipients: readonly string[],
@@ -508,7 +515,7 @@ export const wrapsFor = (
     signerUserId,
   });
 
-/** チェーン保存行のエントリハッシュ(宣言ヘッドの exact pair 構成用)。 */
+/** The entry hash of a stored chain row (for building the declared head's exact pair). */
 export async function hashOf(seq: number): Promise<string> {
   const rows = await queryProjectDo(
     projectId,

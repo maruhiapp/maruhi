@@ -1,17 +1,23 @@
-// docs が名乗る CLI の語彙(コマンド名・フラグ)が、CLI の help golden
-// (`apps/cli/test/golden/help.txt` — 出荷されている字面の正)と一致することを固定する。
-// ES K7-A / DK K6-O の原則「docs の語彙は CLI の help から写し、docs が名前を発明しない」を、
-// 目視でなく構造で守る(DK K6-T: 真偽が機械で判定できる裁定は検査に落とす)。
+// Pins that the CLI vocabulary (command names, flags) the docs cite matches
+// the CLI's help golden (`apps/cli/test/golden/help.txt` — the canonical
+// shipped text). The ES K7-A / DK K6-O principle "docs copy their vocabulary
+// from the CLI help; docs invent no names" is enforced structurally rather
+// than by eye (DK K6-T: a ruling whose truth a machine can decide becomes a
+// check).
 //
-// 検査するのは docs の ```sh ブロックとインラインコードに現れる `maruhi …` の呼び出しだけ:
-//   1. コマンド経路(`maruhi device approve` 等)が help に存在すること
-//   2. グループ(子コマンドを持つ経路)の後ろに来るのが子コマンドであること
-//   3. 添えられた `--flag` が、その経路の FLAGS か GLOBAL FLAGS にあること
-//   4. ```sh ブロックの呼び出しが、USAGE の必須位置引数(`<environment-id>` 等)を数だけ
-//      添えていること(インラインコードは散文の中でコマンド名だけを指しうるので対象外。
-//      getting-started の `maruhi env create` が引数なしのまま出荷された回帰の固定)
-// 散文の主張(「コードかパスキーで開く」)は機械では捉えられないので、この検査の外
-// (そこは K6-R の「規範の主張は 1 ページが持つ」で守る)。
+// Only `maruhi …` invocations appearing in docs' ```sh blocks and inline
+// code are checked:
+//   1. the command path (`maruhi device approve` etc.) exists in help
+//   2. what follows a group (a path that has subcommands) is a subcommand
+//   3. each attached `--flag` is in that path's FLAGS or GLOBAL FLAGS
+//   4. each ```sh block invocation carries as many required positional
+//      arguments as USAGE declares (`<environment-id>` etc.) (inline code is
+//      out of scope — it may name only the command inside prose. Pins the
+//      regression where getting-started shipped `maruhi env create` with no
+//      argument)
+// Claims in prose ("opens with a code or a passkey") cannot be captured
+// mechanically, so they are outside this check (that is covered by K6-R's
+// "one page owns each normative claim").
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -21,20 +27,20 @@ const siteRoot = join(import.meta.dirname, "..", "..");
 const repoRoot = join(siteRoot, "..", "..");
 const help = readFileSync(join(repoRoot, "apps", "cli", "test", "golden", "help.txt"), "utf8");
 
-/** help の 1 節(`$ maruhi <path> --help` の中身)が宣言するフラグと、グループか否か。 */
+/** The flags one help section (the body of `$ maruhi <path> --help`) declares, and whether it is a group. */
 interface CommandSpec {
   readonly flags: ReadonlySet<string>;
-  /** 値を取るフラグ(`--project string` 等 — 次の語はフラグの値で位置引数ではない)。 */
+  /** Flags that take a value (`--project string` etc. — the next word is the flag's value, not a positional argument). */
   readonly valuedFlags: ReadonlySet<string>;
-  /** 子コマンドを持ち、引数を取らない経路(`maruhi device` 等)。 */
+  /** A path that has subcommands and takes no arguments (`maruhi device` etc.). */
   readonly isGroup: boolean;
-  /** USAGE 行の必須位置引数の数(`[...]` の中と `--` の後ろは数えない)。 */
+  /** The number of required positional arguments on the USAGE line (inside `[...]` and after `--` do not count). */
   readonly requiredArgs: number;
 }
 
 const defined = (value: string | undefined): value is string => value !== undefined;
 
-/** 節の中で `--flag` で始まる行は FLAGS / GLOBAL FLAGS のものだけ(他の節は語で始まる)。 */
+/** Within a section, lines starting with `--flag` belong only to FLAGS / GLOBAL FLAGS (other sections start with a word). */
 function parseSection(lines: readonly string[]): CommandSpec {
   const flags = lines.map((line) => /^\s+(--[a-z][a-z-]*)/.exec(line)?.[1]).filter(defined);
   const isGroup = lines.includes("SUBCOMMANDS") && !lines.includes("ARGUMENTS");
@@ -46,19 +52,19 @@ function parseSection(lines: readonly string[]): CommandSpec {
   };
 }
 
-/** FLAGS の行のうち型名(`string` 等)を添えた、値を取るフラグ。 */
+/** Among FLAGS lines, the flags that take a value, marked by a type name (`string` etc.). */
 function valuedFlagOf(line: string): string | undefined {
   return /^\s+(--[a-z][a-z-]*)(?:, -[a-z])?\s+[a-z]+\s{2,}/.exec(line)?.[1];
 }
 
-/** USAGE 行の `<…>` のうち、`[...]` の外かつ `--` より前のもの。 */
+/** The `<…>` on the USAGE line that sit outside `[...]` and before `--`. */
 function requiredArgsOf(lines: readonly string[]): number {
   const usage = lines[lines.indexOf("USAGE") + 1] ?? "";
   const [beforeSeparator = ""] = usage.split(" -- ");
   return [...beforeSeparator.replace(/\[[^\]]*\]/g, "").matchAll(/<[^>]+>/g)].length;
 }
 
-/** help golden の各節から、コマンド経路 → その宣言。 */
+/** From each help-golden section, command path → its declaration. */
 function helpIndex(text: string): ReadonlyMap<string, CommandSpec> {
   const index = new Map<string, CommandSpec>();
   for (const section of text.split(/^\$ maruhi ?/m).slice(1)) {
@@ -74,12 +80,12 @@ const pages = readdirSync(join(siteRoot, "docs")).filter((name) => name.endsWith
 
 const pageText = (page: string): string => readFileSync(join(siteRoot, "docs", page), "utf8");
 
-/** ページの ```sh ブロック(中身)。 */
+/** A page's ```sh blocks (contents). */
 function shellBlocks(markdown: string): string[] {
   return [...markdown.matchAll(/```[a-z]*\n([\s\S]*?)```/g)].map((m) => m[1] ?? "");
 }
 
-/** ドキュメントのコード(```sh ブロックとインラインコード)を 1 行ずつ。 */
+/** The document's code (```sh blocks and inline code), one line at a time. */
 function codeLines(markdown: string): string[] {
   const spans = [...markdown.matchAll(/`([^`\n]+)`/g)].map((m) => m[1] ?? "");
   return [...shellBlocks(markdown).flatMap((block) => block.split("\n")), ...spans];
@@ -87,14 +93,14 @@ function codeLines(markdown: string): string[] {
 
 interface Invocation {
   readonly path: string;
-  /** 経路の後ろに残った語(引数、またはグループの子コマンド)。 */
+  /** Words left after the path (arguments, or a group's subcommand). */
   readonly rest: readonly string[];
   readonly flags: readonly string[];
-  /** 経路の後ろ・`--` より前の、フラグでもフラグの値でもない語(位置引数の候補)。 */
+  /** Words after the path and before `--` that are neither a flag nor a flag's value (positional-argument candidates). */
   readonly tokens: readonly string[];
 }
 
-/** 経路 = help に存在する最長の前置(残りは引数: `config set server <url>` の `server` 等)。 */
+/** The path is the longest leading prefix that exists in help (the rest are arguments: `server` in `config set server <url>` etc.). */
 function resolvePath(words: readonly string[]): { path: string; rest: string[] } {
   for (let n = words.length; n > 0; n--) {
     const candidate = words.slice(0, n).join(" ");
@@ -103,19 +109,19 @@ function resolvePath(words: readonly string[]): { path: string; rest: string[] }
   return { path: words[0] ?? "", rest: [] };
 }
 
-/** `--`(run / agent の子コマンド区切り)までを見る。 */
+/** Look only up to `--` (the subcommand separator of run / agent). */
 function until(tokens: readonly string[], stop: number): readonly string[] {
   return stop === -1 ? tokens : tokens.slice(0, stop);
 }
 
-/** `--`(子コマンド区切り)より前のフラグ。 */
+/** Flags before `--` (the subcommand separator). */
 function flagsBeforeSeparator(tokens: readonly string[]): string[] {
   return until(tokens, tokens.indexOf("--"))
     .map((token) => /^(--[a-z][a-z-]*)/.exec(token)?.[1])
     .filter(defined);
 }
 
-/** 先頭から続く小文字の語(コマンド経路の候補。`<fp>` や `"MacBook"` で止まる)。 */
+/** The leading run of lowercase words (command-path candidates; stops at `<fp>` or `"MacBook"`). */
 function leadingWords(tokens: readonly string[]): readonly string[] {
   return until(
     tokens,
@@ -124,9 +130,10 @@ function leadingWords(tokens: readonly string[]): readonly string[] {
 }
 
 /**
- * 1 行に現れる `maruhi …` の呼び出し。呼び出しと見なすのは、行またはシェルの連結の
- * **先頭**にある `maruhi`(`$ ` の後も可)だけ: 散文の中の語("runs maruhi at an
- * interactive terminal" — CLI の文言の引用)は対象にしない。
+ * The `maruhi …` invocations appearing on one line. Only a `maruhi` at the
+ * **start** of a line or a shell conjunction (after `$ ` is fine) counts as
+ * an invocation: the word inside prose ("runs maruhi at an interactive
+ * terminal" — quoting the CLI's wording) is not a target.
  */
 function parseSegment(segment: string): Invocation | null {
   const call = /^\s*(?:\$ ?)?maruhi\b(.*)$/.exec(segment);
@@ -151,17 +158,17 @@ function unknownFlags(call: Invocation, spec: CommandSpec): string[] {
   return unknown.map((flag) => `maruhi ${call.path} ${flag} (no such flag)`);
 }
 
-/** 1 つの呼び出しが help と食い違う点(無ければ空)。 */
+/** The points where one invocation disagrees with help (empty if none). */
 function problemsOf(call: Invocation): string[] {
   const spec = commands.get(call.path);
   if (spec === undefined) return [`maruhi ${call.path} (no such command)`];
-  // グループの後ろに来られるのは子コマンドだけ(`maruhi device frobnicate` を捕らえる)
+  // Only a subcommand may follow a group (catches `maruhi device frobnicate`)
   const strayWord = spec.isGroup ? call.rest[0] : undefined;
   if (strayWord !== undefined) return [`maruhi ${call.path} ${strayWord} (no such subcommand)`];
   return unknownFlags(call, spec);
 }
 
-/** 位置引数の数(`#` のコメント・行継続の `\\`・`--` で止め、フラグとその値は除く)。 */
+/** The number of positional arguments (stops at a `#` comment, a line-continuation `\`, or `--`; flags and their values do not count). */
 function positionalCount(call: Invocation, spec: CommandSpec): number {
   const words = until(call.tokens, call.tokens.findIndex(endsArguments));
   const flagValues = new Set(
@@ -174,7 +181,7 @@ function endsArguments(token: string): boolean {
   return token === "--" || token === "\\" || token.startsWith("#");
 }
 
-/** ```sh ブロックの呼び出しが USAGE の必須位置引数を欠いている点(無ければ空)。 */
+/** The points where ```sh block invocations miss USAGE's required positional arguments (empty if none). */
 function missingArguments(markdown: string): string[] {
   const calls = shellBlocks(markdown)
     .flatMap((block) => block.split("\n"))
@@ -223,7 +230,7 @@ describe("docs quote the CLI vocabulary of apps/cli/test/golden/help.txt", () =>
     expect(vocabularyProblems("`maruhi guardian add --passkey`")).toEqual([
       "maruhi guardian add --passkey (no such flag)",
     ]);
-    // 散文の中の `maruhi` は呼び出しではない(CLI の文言の引用)
+    // `maruhi` inside prose is not an invocation (quoting the CLI's wording)
     expect(vocabularyProblems("`a person runs maruhi at an interactive terminal`")).toEqual([]);
   });
 
@@ -235,23 +242,25 @@ describe("docs quote the CLI vocabulary of apps/cli/test/golden/help.txt", () =>
     expect(missingArguments("```sh\nmaruhi env create\n```")).toEqual([
       "maruhi env create (missing a required argument)",
     ]);
-    // フラグの値は位置引数に数えない
+    // A flag's value does not count as a positional argument
     expect(missingArguments("```sh\nmaruhi env create --project abc\n```")).toEqual([
       "maruhi env create (missing a required argument)",
     ]);
     expect(missingArguments("```sh\nmaruhi env create dev # comment\n```")).toEqual([]);
-    // インラインコードは対象外(散文がコマンド名だけを指す)
+    // Inline code is out of scope (prose naming only the command)
     expect(missingArguments("run `maruhi env create` first")).toEqual([]);
   });
 });
 
-// 以下は K6-T(裁定の構造への回し直し)で足した固定。いずれも「文言の点検」を検査に
-// 置き換えるもので、対象は本 PR が主張していることだけ。
+// The following pins were added in K6-T (converting rulings into
+// structure). Each replaces "checking the wording" with a check, and the
+// target is only what this PR asserts.
 describe("the docs keep the device-key vocabulary and coverage", () => {
   const devices = pageText("devices.mdx");
 
-  // K6-A: Devices のページは `device` / `token` グループと `key reserve` を網羅する
-  // (グループの子コマンドが増えたら、このページに書くか裁定し直すこと)
+  // K6-A: the Devices page covers the `device` / `token` groups and
+  // `key reserve` (if a group gains subcommands, either write them on this
+  // page or re-rule)
   it.each(["device", "token", "key reserve"])(
     "devices.mdx covers every `%s` subcommand",
     (group) => {
@@ -264,7 +273,8 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
     },
   );
 
-  // K6-D: ダッシュボードの文言は Web の実装から写す(言い換えない)
+  // K6-D: dashboard wording is copied from the web implementation (no
+  // paraphrasing)
   it.each([
     ["fingerprint not reported", "ProjectScreen.tsx"],
     ["as reported by the server", "DevicesScreen.tsx"],
@@ -275,8 +285,9 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
     expect(devices).toContain(phrase);
   });
 
-  // K6-H / K7-5: 端末鍵以後の語彙。docs にも CLI の help にも `master key` は残らない
-  // (K7 で `maruhi agent` / `--key-ttl` の help を改めたので、K6 の「注記 1 か所」も消えた)
+  // K6-H / K7-5: the post-device-key vocabulary. No `master key` remains in
+  // docs or in the CLI help (K7 rewrote the help of `maruhi agent` /
+  // `--key-ttl`, so even K6's "one remaining note" is gone)
   it.each([...pages, "apps/cli/test/golden/help.txt"])(
     "%s does not fall back to the pre-device-key vocabulary",
     (page) => {
@@ -285,18 +296,20 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
     },
   );
 
-  // K7-7: FP の出所の規律(要求を置けるのはアカウント全域の admin トークン —
-  // `ensureKeyMaterialAccess`)は docs と `device approve` の出力の両方が自分の言葉で述べる
-  // 消せない複製なので、述語から写した語句を両方に釘で留める
+  // K7-7: the discipline of a FP's provenance (only an account-wide admin
+  // token can place a request — `ensureKeyMaterialAccess`) is an
+  // unremovable duplication stated in its own words by both the docs and
+  // `device approve`'s output, so the copied phrase is pinned on both
   it("states who can place a device-add request with the same words as `device approve`", () => {
     const source = readFileSync(join(repoRoot, "apps", "cli", "src", "device.ts"), "utf8");
     expect(source).toContain("account-wide admin API token");
     expect(devices).toContain("account-wide admin API token");
   });
 
-  // DK K9-3: 登録簿に載せられなかったとき要求を残す(K9-1)ことは、`device approve` の
-  // Note と docs の両方が述べる消せない複製なので、docs が引用する Note の語句を両方に
-  // 留める(Note 側を言い換えると docs の引用が偽になる)
+  // DK K9-3: that a failed registry write leaves the request in place
+  // (K9-1) is an unremovable duplication stated by both `device approve`'s
+  // Note and the docs, so the Note phrase the docs quote is pinned on both
+  // (rewording the Note would falsify the docs' quote)
   it("quotes the note that a failed registry write leaves the request in place", () => {
     const source = readFileSync(join(repoRoot, "apps", "cli", "src", "device.ts"), "utf8");
     expect(source).toContain("The request is left in place until");
@@ -306,11 +319,14 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
     );
   });
 
-  // K6-U: 台帳を変えるコマンドの列挙(`designating guardians` を含む文)は、開封の材料を
-  // 名乗らない。`maruhi guardian add` は `--passkey` を受けないので、この列挙に材料を足すと
-  // 必ず嘘になる(同じ誤りが devices / recover の両ページで出た — K6-R の原則の機械化)。
-  // 列挙の文が 1 つも無ければ検査は空虚になるので、存在も固定する(言い回しを変えるなら
-  // この pin も一緒に直す — 無関係な編集で静かに失われないように)
+  // K6-U: the enumeration of ledger-changing commands (sentences
+  // containing `designating guardians`) names no opening material.
+  // `maruhi guardian add` does not accept `--passkey`, so adding a material
+  // to this enumeration is always a lie (the same mistake appeared on both
+  // the devices and recover pages — mechanizing the K6-R principle).
+  // With zero enumeration sentences the check is vacuous, so existence is
+  // pinned too (if the phrasing changes, fix this pin with it — so an
+  // unrelated edit cannot silently lose it)
   it("keeps the ledger-changing enumeration free of an opening material", () => {
     const listings = pages.flatMap((page) =>
       pageText(page)
@@ -321,8 +337,9 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
     expect(listings.filter((sentence) => /with the code|or a passkey/.test(sentence))).toEqual([]);
   });
 
-  // K6-L: `recipes.test.ts` が実行するのは deploy-targets.mdx のブロックだけ。
-  // 他のページの ```sh がその形に偶然一致しないこと(一致させるなら検査対象に加える)
+  // K6-L: `recipes.test.ts` executes only deploy-targets.mdx's blocks.
+  // No other page's ```sh may accidentally match that shape (if you make
+  // one match, add it to the checked set)
   it.each(pages.filter((page) => page !== "deploy-targets.mdx"))(
     "%s has no block that recipes.test.ts would execute",
     (page) => {
@@ -334,12 +351,15 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
   );
 });
 
-// DK K10-6: `devices.mdx` の What can go wrong は CLI の文言を `- **\`…\`**` の形で引用する。
-// 引用を `…` で切った各断片(12 文字以上)が CLI の文言(`apps/cli/src/*.ts` — バッククォートを
-// 除いた字面)に実在することを、写しごとの釘でなく引用の形そのものに網をかけて留める
-// (文言を変えた PR が引用を置き去りにしない — K9-9 の型)。空虚さ(引用が集まらない)と
-// 偶然の一致(短い断片)は同じ検査の中で否定する(K8-2)。値を埋めた例示の引用を持つ他の
-// ページ(environment-scopes / four-eyes)は対象にしない。
+// DK K10-6: devices.mdx's "What can go wrong" quotes the CLI's wording in
+// the form `- \`…\`**. That each fragment of a quote split on `…` (12+
+// characters) really exists in the CLI's wording (`apps/cli/src/*.ts` —
+// the literal text minus backquotes) is pinned by netting the quote's
+// shape itself rather than nailing each copy (a PR that changes the
+// wording cannot leave the quote behind — the K9-9 shape). Vacuity (no
+// quotes collected) and accidental matches (short fragments) are both
+// denied inside the same check (K8-2). Other pages that quote examples
+// with values filled in (environment-scopes / four-eyes) are out of scope.
 describe("devices.mdx quotes CLI messages as the CLI prints them", () => {
   const cliDir = join(repoRoot, "apps", "cli", "src");
   const cliSource = readdirSync(cliDir)
@@ -355,7 +375,7 @@ describe("devices.mdx quotes CLI messages as the CLI prints them", () => {
     readonly fragments: readonly string[];
   }
 
-  /** `- **\`…\`**` の引用と、`…` で切った断片(短い断片は偶然当たるので数えない)。 */
+  /** The `- \`…\`**` quotes and their `…`-split fragments (short fragments match by chance, so they do not count). */
   function quotesOf(markdown: string): Quote[] {
     return [...markdown.matchAll(/^- \*\*`([^`]+)`\*\*/gm)].map((match) => {
       const quote = match[1] ?? "";
@@ -397,22 +417,25 @@ describe("devices.mdx quotes CLI messages as the CLI prints them", () => {
   });
 });
 
-// K6-Y: docs が書く上限・レート制限・TTL を、定義側の定数に釘で留める。値が変われば
-// この検査が落ち、docs と一緒に直すことになる(数値は語彙と同じく「写す」もの — K7-A)。
-// 釘は語句の**出現回数**で留める(存在検査だと複製された文は最初の 1 つで満たされ、
-// 2 つ目以降を編集しても緑のまま通る — K6-Y 補 3)。回数が変われば、写しを増やした側も
-// 減らした側も落ちるので、将来の複製は黙って生まれない。
+// K6-Y: pins the limits, rate limits, and TTLs the docs write to the
+// defining constants. If a value changes this check fails and the docs are
+// fixed with it (numbers are copied just like vocabulary — K7-A).
+// The pin is by **occurrence count** of the phrase (an existence check is
+// satisfied by the first of duplicated sentences, and editing the second
+// onward still passes green — K6-Y supplement 3). If the count changes,
+// both the side that added a copy and the side that removed one fail, so
+// future duplication cannot be born silently.
 interface Mention {
   readonly page: string;
   readonly phrase: string;
-  /** そのページでこの語句が現れる回数(既定 1)。 */
+  /** The number of times this phrase appears on the page (default 1). */
   readonly times?: number;
 }
 
 interface Limit {
   readonly file: string;
   readonly name: string;
-  /** `export const <name> = <rhs>;` の右辺の字面(`15 * 60 * 1000` を「15 分」と読めるまま留める)。 */
+  /** The literal right-hand side of `export const <name> = <rhs>;` (kept so `15 * 60 * 1000` still reads as "15 minutes"). */
   readonly value: string;
   readonly mentions: readonly Mention[];
 }
@@ -429,7 +452,7 @@ const LIMITS: readonly Limit[] = [
     value: "16",
     mentions: [
       { page: "devices.mdx", phrase: "16 active devices" },
-      // `failure.ts` が `${e.limit}` で埋める CLI の文言の引用(同じ定数の 2 つ目の写し)
+      // A quote of the CLI wording that `failure.ts` fills with `${e.limit}` (a second copy of the same constant)
       { page: "devices.mdx", phrase: "for that member (16)" },
     ],
   },
@@ -459,13 +482,15 @@ const LIMITS: readonly Limit[] = [
     mentions: [
       { page: "devices.mdx", phrase: "The request lives 15 minutes" },
       { page: "devices.mdx", phrase: "Requests expire 15 minutes after" },
-      // K7-15: 待機の途中の案内(TTL / 3)は TTL の写しでもある。TTL が変われば
-      // 「five minutes」も動く(定数の右辺が記号のままでは、この釘だけが留める)
+      // K7-15: the mid-wait guidance (TTL / 3) is also a copy of the TTL.
+      // If the TTL changes, "five minutes" moves too (while the constant's
+      // right-hand side stays symbolic, this pin alone holds it)
       { page: "devices.mdx", phrase: "five minutes after the request" },
     ],
   },
   {
-    // K7-3: 待機の途中の案内(TTL の 1/3 = 5 分)。docs は「five minutes」と写す
+    // K7-3: the mid-wait guidance (TTL / 3 = 5 minutes). The docs copy it
+    // as "five minutes"
     file: DEVICE_CLI,
     name: "DEVICE_ADD_WAIT_HINT_AFTER_MS",
     value: "DEVICE_ADD_REQUEST_TTL_MS / 3",
@@ -500,14 +525,15 @@ const LIMITS: readonly Limit[] = [
         page: "recover-your-key.mdx",
         phrase: "five fetches of the sealed reserve key per user per hour",
       },
-      // 同じページのまとめの節(括弧が保護者の要求の節と見分ける)
+      // The summary section of the same page (the parentheses distinguish
+      // it from the guardian-request section)
       { page: "recover-your-key.mdx", phrase: "guardian groups together): five per user per hour" },
       { page: "linux-keychain.mdx", phrase: "five fetches per hour", times: 2 },
     ],
   },
 ];
 
-/** `export const NAME = <rhs>;` の右辺(そのままの字面)。 */
+/** The right-hand side of `export const NAME = <rhs>;` (verbatim). */
 function constantOf(source: string, name: string): string | undefined {
   const match = new RegExp(`export const ${name}\\s*=\\s*([^;]+);`).exec(source);
   return match?.[1]?.trim();
@@ -517,7 +543,7 @@ function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
-/** 語句と、実際の出現回数(期待と違えば差分に出る)。 */
+/** The phrase and its actual occurrence count (a mismatch with the expectation shows in the diff). */
 function countedMention(mention: Mention): { where: string; times: number } {
   return {
     where: `${mention.page}: ${mention.phrase}`,

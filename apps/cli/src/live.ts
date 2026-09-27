@@ -1,16 +1,21 @@
-// 本番サービス実装(Bun ランタイム。ADR-0004: CLI は Bun 固有 API 可)。
+// The production service implementations (Bun runtime. ADR-0004: the CLI
+// may use Bun-specific APIs).
 //
-// - Keychain = Bun.secrets(macOS Keychain / Linux libsecret / Windows
-//   Credential Manager)。キーチェーン不在環境では型付きエラーで案内し、
-//   平文ファイルへのフォールバックは行わない(ディスクレス不変条件)
-// - ProcessRunner = Bun.spawn(環境変数へのメモリ注入のみ。stdio は継承)
-// - エージェント検出 = std-env の agentInfo(ADR-0016 決定 7 の二次層。
-//   一次境界は Stdio の TTY 判定)
-// - Stdio = @effect/platform-bun(argv と端末の有無。`process.*` を直に読む
-//   のはこの実装の中だけ = 引数層はサービス経由で受け取る)
+// - Keychain = Bun.secrets (macOS Keychain / Linux libsecret / Windows
+//   Credential Manager). On a keychain-less environment it guides with a
+//   typed error; never falls back to a plaintext file (the diskless
+//   invariant)
+// - ProcessRunner = Bun.spawn (in-memory injection into environment
+//   variables only; stdio is inherited)
+// - Agent detection = std-env's agentInfo (ADR-0016 decision 7's
+//   secondary layer. The first boundary is Stdio's TTY judgment)
+// - Stdio = @effect/platform-bun (argv and terminal presence. Reading
+//   `process.*` directly happens only inside this implementation = the
+//   argument layer arrives via services)
 
-// サブモジュールを直に読む(パッケージの index は BunRedis 等まで巻き込み、
-// `bun` モジュールを解決できない環境 — Node で走る vitest — で落ちる)
+// Read submodules directly (a package's index pulls in BunRedis etc. and
+// crashes on environments that cannot resolve the `bun` module — vitest
+// running under Node)
 import { writeSync } from "node:fs";
 import { stat } from "node:fs/promises";
 
@@ -49,15 +54,18 @@ const keychainUnavailable = () =>
     "Cannot access the OS keychain (tokens and keys cannot be stored in this environment). maruhi does not fall back to plaintext files — run `maruhi agent -- <shell>` to keep them in memory for that shell's lifetime, or pass a token via the MARUHI_TOKEN environment variable",
   );
 
-// keyring デーモン不在の headless Linux では Bun.secrets の書き込みが応答なしで
-// ブロックすることを実測。キーチェーンのロック解除
-// プロンプト(ユーザー操作)を待つ余地を残しつつ、ハングは案内エラーに落とす
+// On a keyring-daemon-less headless Linux, a Bun.secrets write was
+// observed to block without answering. Leave room to wait for the
+// keychain's unlock prompt (a user action), while a hang degrades to a
+// guidance error
 const KEYCHAIN_TIMEOUT = Duration.seconds(30);
 
-// 変更系タイムアウト専用の文言: Effect の timeout は進行中の
-// Bun.secrets.set / delete の Promise を取り消せないため、CLI が失敗を報告した
-// **後に**変更が完了しうる(set は次回実行時の上書きガード、delete は「まだ
-// あるはず」の鍵の消失)。「完了した可能性がある」ことと確認・復旧手順を明示する
+// Wording dedicated to a mutating timeout: Effect's timeout cannot cancel
+// an in-flight Bun.secrets.set / delete Promise, so the change may
+// complete **after** the CLI reports the failure (set → the next run's
+// "already exists" guard; delete → a key expected to still be there gone
+// missing). Spell out that "it may have completed" and the confirm /
+// recover procedure
 const keychainWriteTimedOut = () =>
   cliError(
     `Writing to the OS keychain timed out. The write cannot be cancelled and may still complete in the background — if a later command reports that a key or token already exists, that write did land. Check the stored state with \`maruhi key show\`, and remove a stale entry via your OS keychain manager (service: ${KEYCHAIN_SERVICE}) before retrying. maruhi does not fall back to plaintext files`,
@@ -94,29 +102,33 @@ function makeBunKeychain(): KeychainShape {
 }
 
 /**
- * ベンダー CLI の駆動(`maruhi sync` の exec ドライバ — sync-exec.ts)。値は
- * 子の stdin に**一度に書いて閉じる**(Bun は ArrayBufferView を stdin に渡すと
- * 書き切ってから閉じる — Vercel CLI の「最初のチャンクを 500 ms だけ待つ」
- * 読み方に合わせる)。stdout / stderr は継承せず捕捉する: ベンダーの出力は
- * 値を含みうるので、そのまま端末へ流さない(表示は呼び出し側が scrub してから)。
- * ここでは**切らない**: 伏せ字化の前に切ると、切れ目にかかった値の後半が
- * 断片に一致しなくなって漏れる。表示の上限は伏せた後に
- * sync-exec.ts が掛ける。
+ * Driving a vendor CLI (`maruhi sync`'s exec driver — sync-exec.ts). The
+ * value is **written to the child's stdin once and closed** (Bun closes
+ * stdin only after writing an ArrayBufferView to the end — matching
+ * Vercel CLI's "wait just 500 ms for the first chunk" read). stdout /
+ * stderr are captured, not inherited: the vendor's output may contain
+ * values, so it never flows to the terminal as-is (display is the
+ * caller's after scrubbing). It is **not truncated here**: truncating
+ * before redacting makes the latter half of a value sitting across the
+ * cut match no fragment and leak. The display cap is applied by
+ * sync-exec.ts after redaction.
  */
 async function execVendor(input: ExecInput): Promise<ExecOutcome> {
-  // cwd の不在・非ディレクトリは spawn の ENOENT / ENOTDIR として現れ、実行体の
-  // 不在と区別が付かない。先に見て、原因を名指しする
+  // A missing / non-directory cwd surfaces as spawn's ENOENT / ENOTDIR,
+  // indistinguishable from a missing executable. Look first and name the
+  // cause
   const cwdStat = await stat(input.cwd).catch(() => null);
   if (cwdStat === null || !cwdStat.isDirectory()) {
     throw new CwdUnavailableError(input.cwd);
   }
-  // 剥がす理由: 子プロセスの stdin への書き込み(値が maruhi を離れる唯一の
-  // 経路。argv には名前しか載らない — sync-exec.ts の型が保証する)
+  // Reason for unwrapping: writing to the child process's stdin (the only
+  // path by which a value leaves maruhi. argv carries names only —
+  // sync-exec.ts's types guarantee it)
   const stdin = Redacted.value(input.stdin);
   const child = Bun.spawn({
     cmd: [...input.command],
     cwd: input.cwd,
-    // run と同じ規律: 親の一般環境は継承し、MARUHI_* は渡さない
+    // The same discipline as run: inherit the parent's general environment, never pass MARUHI_*
     env: buildChildEnvironment(process.env, input.extraEnv),
     stdin,
     stdout: "pipe",
@@ -130,14 +142,14 @@ async function execVendor(input: ExecInput): Promise<ExecOutcome> {
   return { exitCode, output: `${stdout}${stderr}` };
 }
 
-/** ベンダー CLI の実行ディレクトリ(設定の cwd)が無い・ディレクトリでない。 */
+/** The vendor CLI's execution directory (the config's cwd) is missing or not a directory. */
 class CwdUnavailableError extends Error {
   constructor(readonly cwd: string) {
     super("cwd unavailable");
   }
 }
 
-/** 起動失敗の文面(値は運ばない — 実行体名・cwd・OS のエラーコードだけ)。 */
+/** The launch-failure wording (carries no values — only the executable name, cwd, and the OS error code). */
 function execStartFailure(input: ExecInput, error: unknown): string {
   if (error instanceof CwdUnavailableError) {
     return `Cannot run ${input.command[0] ?? ""}: the target's working directory does not exist or is not a directory (${error.cwd}). Fix the target's cwd in the sync config`;
@@ -151,11 +163,12 @@ function makeBunProcessRunner(): ProcessRunnerShape {
     run: ({ command, extraEnv }) =>
       Effect.tryPromise({
         try: async () => {
-          // 値は子プロセスの環境変数へのメモリ注入のみ(ディスクレス不変条件)
+          // Values are injected into the child's environment variables in memory only (the diskless invariant)
           const child = Bun.spawn({
             cmd: [...command],
-            // keychain-less / CI の MARUHI_TOKEN は親のセッション解決専用。
-            // 子へは注入値より広い長寿命 credential を渡さない
+            // A keychain-less / CI MARUHI_TOKEN is for the parent's
+            // session resolution only. Never pass a child a longer-lived
+            // credential broader than the injected values
             env: buildChildEnvironment(process.env, extraEnv),
             stdin: "inherit",
             stdout: "inherit",
@@ -168,8 +181,9 @@ function makeBunProcessRunner(): ProcessRunnerShape {
     exec: (input) =>
       Effect.tryPromise({
         try: () => execVendor(input),
-        // 起動失敗(未導入・PATH に無い・cwd が無い)。取りに行かない(導入済みの
-        // CLI だけ — integration-options.md §3 補足 16)
+        // A launch failure (not installed, not on PATH, cwd missing).
+        // Never go fetch it (only an installed CLI — integration-options.md
+        // §3 supplement 16)
         catch: (error) => cliError(execStartFailure(input, error)),
       }),
     runSession: ({ command, env }) =>
@@ -180,21 +194,24 @@ function makeBunProcessRunner(): ProcessRunnerShape {
   };
 }
 
-/** 子が生きている間の SIGINT の扱い(何もしない = 子の対話シェルに任せる)。 */
+/** SIGINT's handling while the child is alive (do nothing = leave it to the child's interactive shell). */
 const ignoreInterrupt = (): void => {};
 
 /**
- * `maruhi agent` の子(agent.ts)。run と違い親の環境を**濾さずに**渡す
- * (`MARUHI_AGENT_SOCK` を運ぶのがこの経路の目的で、利用者の設定
- * 〔MARUHI_CONFIG_DIR 等〕もこれから作業するシェルに見えていなければ
- * ならない。値の注入は無い)。
+ * `maruhi agent`'s child (agent.ts). Unlike run, the parent's environment
+ * is passed **unfiltered** (carrying `MARUHI_AGENT_SOCK` is this path's
+ * whole purpose, and the user's settings [MARUHI_CONFIG_DIR etc.] must
+ * also be visible to the shell they are about to work in. No value
+ * injection).
  *
- * シグナル: 端末の Ctrl+C は前景プロセスグループ全体(agent と子)に届く。
- * 子が対話シェルなら SIGINT を無視して生き続けるのに、agent が死ぬと
- * シェルは鍵の保持先を失う。ssh-agent の `ssh-agent <command>` と同じく、
- * 子が生きている間は agent 側で SIGINT を無視し、SIGTERM / SIGHUP は子へ
- * 転送する(子が終われば agent も終わる — 後始末は agent.ts の release)。
- * `process.*` を読むのはこの実装の中だけ(ADR-0016 決定 5)。
+ * Signals: the terminal's Ctrl+C reaches the whole foreground process
+ * group (agent and child). While a child that is an interactive shell
+ * ignores SIGINT and stays alive, if agent died the shell would lose
+ * where the keys are held. Like ssh-agent's `ssh-agent <command>`, the
+ * agent side ignores SIGINT while the child is alive and forwards
+ * SIGTERM / SIGHUP to the child (once the child finishes the agent does
+ * too — cleanup is agent.ts's release). `process.*` is read only inside
+ * this implementation (ADR-0016 decision 5).
  */
 async function runAgentSession(
   command: readonly string[],
@@ -225,7 +242,7 @@ async function runAgentSession(
   }
 }
 
-/** 対話入力の Ctrl+C / Ctrl+D による中断(EOF・読み取り不能と区別する)。 */
+/** An interruption of interactive input by Ctrl+C / Ctrl+D (distinguished from EOF and unreadability). */
 class PromptInterruptedError extends Error {}
 
 const ENTER_CHARS = new Set(["\r", "\n"]);
@@ -233,7 +250,7 @@ const ERASE_CHARS = new Set(["\u007f", "\b"]);
 const CTRL_C = "\u0003";
 const CTRL_D = "\u0004";
 const ESCAPE = "\u001b";
-// CSI 等のエスケープ列の終端(英字と ~)。矢印キー等の断片を入力に混ぜない
+// The terminator of a CSI-style escape sequence (a letter or ~). Never mix arrow-key fragments into the input
 const ESCAPE_END = /[A-Za-z~]/;
 
 function endOutcome(ch: string): "done" | "interrupted" | null {
@@ -247,11 +264,13 @@ function endOutcome(ch: string): "done" | "interrupted" | null {
 }
 
 /**
- * TTY での非エコー入力(リカバリーコード等の秘密の 1 行)。raw mode で 1 文字
- * ずつ読み、端末には何も表示しない。Backspace は末尾削除、Ctrl+C / Ctrl+D は
- * 中断(raw mode では EOF もキー入力として届く)、矢印キー等のエスケープ列と
- * その他の制御文字は無視する(見えない入力を黙って壊さない)。ストリームの
- * 終端・エラーでも必ず settle する(ハングしない)。テスト用に公開する。
+ * Non-echoed input on a TTY (one secret line, e.g. a recovery code).
+ * Reads one character at a time in raw mode and shows nothing on the
+ * terminal. Backspace deletes the tail; Ctrl+C / Ctrl+D interrupt (under
+ * raw mode even EOF arrives as a key press); escape sequences like the
+ * arrow keys and other control characters are ignored (never silently
+ * corrupt invisible input). Always settles even on stream end / error
+ * (never hangs). Exported for tests.
  */
 export function readHiddenLine(stdin: NodeJS.ReadStream): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -278,7 +297,7 @@ export function readHiddenLine(stdin: NodeJS.ReadStream): Promise<string> {
         reject(new Error(outcome));
       }
     };
-    // 消去は末尾 1 文字、その他の制御文字(タブ等)は無視、印字可能文字のみ追加
+    // Erase removes one trailing character, other control characters (tabs etc.) are ignored, only printable characters are appended
     const applyChar = (ch: string) => {
       if (ERASE_CHARS.has(ch)) {
         line = line.slice(0, -1);
@@ -286,7 +305,7 @@ export function readHiddenLine(stdin: NodeJS.ReadStream): Promise<string> {
         line += ch;
       }
     };
-    // 1 文字を処理し、入力が終端した(finish 済み)かを返す
+    // Processes one character and returns whether the input terminated (finish already ran)
     const handleChar = (ch: string): boolean => {
       if (inEscape) {
         inEscape = !ESCAPE_END.test(ch);
@@ -320,10 +339,12 @@ export function readHiddenLine(stdin: NodeJS.ReadStream): Promise<string> {
 }
 
 /**
- * 非 TTY(パイプ)入力の共有行リーダー。readline を都度作って閉じる形は、
- * 閉じた時点でインスタンスがバッファ済みの次行を捨てるため、複数プロンプトの
- * フロー(復元コードの再入力等)で 2 行目以降が消える。未消費分を保持する
- * 単一のバッファから行を切り出す。テスト用に公開する。
+ * The shared line reader for non-TTY (piped) input. The
+ * create-and-close-a-readline-each-time shape discards the next
+ * already-buffered line when it closes, so in a multi-prompt flow
+ * (re-entering a recovery code etc.) the second line onward disappears.
+ * Cut lines out of a single buffer that keeps the unconsumed part.
+ * Exported for tests.
  */
 export function makeStdinLineReader(stdin: NodeJS.ReadStream): () => Promise<string> {
   let buffered = "";
@@ -337,7 +358,7 @@ export function makeStdinLineReader(stdin: NodeJS.ReadStream): () => Promise<str
     buffered = buffered.slice(index + 1);
     return line.endsWith("\r") ? line.slice(0, -1) : line;
   };
-  // 改行なしで終端した残り(`printf` の最終行等)も 1 行として返す
+  // A tail that ended without a newline (e.g. `printf`'s last line) is also returned as one line
   const drainTail = (): string => {
     if (buffered.length === 0) {
       throw new Error("eof");
@@ -368,10 +389,11 @@ export function makeStdinLineReader(stdin: NodeJS.ReadStream): () => Promise<str
   };
 }
 
-/** stdin の次のチャンクを 1 つ読む(終端は null。エラーは reject)。 */
+/** Read stdin's next chunk (end is null; an error rejects). */
 function nextChunk(stdin: NodeJS.ReadStream): Promise<string | null> {
-  // 'end' は一度しか発火しない: 前回の読み取りでリスナーを外した後に終端して
-  // いた場合、イベント待ちは永遠に解決しない。既終端はここで検出する
+  // 'end' fires only once: if the stream already ended after a previous
+  // read removed its listeners, waiting for the event never resolves.
+  // An already-ended stream is detected here
   if (stdin.readableEnded) {
     return Promise.resolve(null);
   }
@@ -402,37 +424,40 @@ function nextChunk(stdin: NodeJS.ReadStream): Promise<string | null> {
 }
 
 /**
- * AI コーディングエージェントの検出(二次層)。
+ * Detecting an AI coding agent (the secondary layer).
  *
- * 検出規則は std-env の `agentInfo`(`CLAUDECODE` / `CURSOR_AGENT` /
- * `GEMINI_CLI` / `AI_AGENT` ほかの環境変数表)。`agentInfo` はモジュール
- * 初期化時に 1 回だけ評価される同期の値。
+ * The detection rules are std-env's `agentInfo` (a table of environment
+ * variables such as `CLAUDECODE` / `CURSOR_AGENT` / `GEMINI_CLI` /
+ * `AI_AGENT`). `agentInfo` is a synchronous value evaluated once at
+ * module initialization.
  */
 function detectAgentProfile(): AgentProfile {
   const name = agentInfo.name;
   return name === undefined ? { isAgent: false } : { isAgent: true, name };
 }
 
-/** OS 既定ブラウザを開くコマンド(URL は引数として渡す — シェル展開なし)。 */
+/** The command that opens the OS default browser (the URL is passed as an argument — no shell expansion). */
 function browserOpenCommand(url: string): readonly string[] {
   if (process.platform === "darwin") {
     return ["open", url];
   }
   if (process.platform === "win32") {
-    // cmd 組み込みの `start` を使うと URL 中の `&` `^` 等が cmd 自身のパーサに
-    // 解釈される(spawn の引用規約は Win32 argv 用で、cmd メタ文字はエスケープ
-    // されない — 正常な verificationUrl も `&` で切られるうえ、敵対的サーバー
-    // からはコマンド注入になる)。rundll32 の FileProtocolHandler は cmd を
-    // 通らずに既定ブラウザへディスパッチする
+    // Using cmd's builtin `start` would let cmd's own parser interpret
+    // `&` `^` etc. inside the URL (spawn's quoting convention targets
+    // Win32 argv and does not escape cmd metacharacters — a legitimate
+    // verificationUrl gets cut at `&`, and from a hostile server it
+    // becomes command injection). rundll32's FileProtocolHandler
+    // dispatches to the default browser without passing through cmd
     return ["rundll32", "url.dll,FileProtocolHandler", url];
   }
   return ["xdg-open", url];
 }
 
 /**
- * 既定ブラウザで URL を開く(best effort)。stdio は繋がない(端末の表示を
- * 汚さない)。起動の失敗(コマンド不在等)は false — 呼び出し側は URL の
- * 手動オープン案内へ縮退する。
+ * Open a URL in the default browser (best effort). stdio is left
+ * unconnected (never dirty the terminal's display). A launch failure
+ * (missing command etc.) is false — the caller degrades to guidance for
+ * opening the URL manually.
  */
 function openBrowserLive(url: string): Effect.Effect<boolean> {
   return Effect.tryPromise({
@@ -450,25 +475,29 @@ function openBrowserLive(url: string): Effect.Effect<boolean> {
 }
 
 /**
- * 1 行を fd へ同期書き込みする。`console.error` は使わない: Bun は stderr が端末の
- * とき console.error の出力を**すべて赤で塗る**(実測 `\e[0m\e[31m…\e[0m` —
- * ヘルプ本文も Note も赤になっていた)。`process.stderr.write` も使わない:
- * パイプ相手では非同期で、bin.ts の `process.exit` が末尾を切り落とす(実測:
- * 5 万行中 7,401 行で途切れる)。`writeSync` は端末・パイプ・ファイルのどれでも
- * 完了してから戻る。
+ * Synchronously write one line to an fd. `console.error` is not used:
+ * when stderr is a terminal Bun colors **all** console.error output red
+ * (measured `\e[0m\e[31m…\e[0m` — help bodies and Notes were all red).
+ * `process.stderr.write` is not used either: it is asynchronous against
+ * a pipe and bin.ts's `process.exit` clips the tail (measured: cut off
+ * at line 7,401 of 50k). `writeSync` returns after completing on
+ * terminal, pipe, or file alike.
  *
- * 読み手が先に閉じたパイプ(`maruhi pull | head -1` の 2 行目以降)への書き込みは
- * `EPIPE` を投げる。console.log はこれを黙って捨てていた(実測)ので同じにする —
- * 読み手はもう要らないと言っており、報告する相手も経路も無い(defect にすると
- * 「読み手が満足した実行」が internal error で終わる)。
- * `EAGAIN`(非ブロッキング fd)は書き切るまで再試行し、部分書き込みは続きから
- * 書く。それ以外の書き込み失敗はそのまま投げる(握り潰さない)。テスト用に公開する。
+ * Writing to a pipe whose reader closed first (the lines past `maruhi
+ * pull | head -1`) throws `EPIPE`. console.log was observed to drop this
+ * silently, so do the same — the reader has already said it needs no
+ * more, and there is nobody and no path to report it to (making it a
+ * defect would end "a run whose reader was satisfied" in an internal
+ * error). `EAGAIN` (a non-blocking fd) retries until written; a partial
+ * write continues from where it left off. Any other write failure is
+ * thrown as-is (never swallowed). Exported for tests.
  */
 export function writeLine(fd: number, line: string): void {
   const buffer = Buffer.from(`${line}\n`);
   let offset = 0;
-  // 部分書き込み(戻り値 < 残り)は続きから、EAGAIN(非ブロッキング fd)は
-  // 書き切るまで再試行、EPIPE は読み手が去ったので終わる
+  // A partial write (return value < remaining) continues from where it
+  // left off, EAGAIN (a non-blocking fd) retries until written, and EPIPE
+  // ends it because the reader has left
   while (offset < buffer.length) {
     try {
       offset += writeSync(fd, buffer, offset);
@@ -485,7 +514,7 @@ export function writeLine(fd: number, line: string): void {
 }
 
 function makeLiveIo(): CliIoShape {
-  // 非 TTY 入力の行リーダーはプロセスで 1 つ(プロンプト間で未消費行を保持する)
+  // One line reader per process for non-TTY input (keeps unconsumed lines across prompts)
   const readPipedLine = makeStdinLineReader(process.stdin);
   return {
     log: (line) => Effect.sync(() => writeLine(1, line)),
@@ -510,13 +539,13 @@ function makeLiveIo(): CliIoShape {
     promptLine: ({ prompt, secret }) =>
       Effect.tryPromise({
         try: async () => {
-          // プロンプトは stderr へ(stdout をパイプしても対話が壊れない)
+          // The prompt goes to stderr (the interaction survives stdout being piped)
           process.stderr.write(prompt);
           const stdin = process.stdin;
           if (secret === true && stdin.isTTY) {
             return await readHiddenLine(stdin);
           }
-          // 非 TTY(パイプ入力)ではエコー制御のしようがないためそのまま読む
+          // On non-TTY (piped input) there is no echo control to be had, so read as-is
           return await readPipedLine();
         },
         catch: (error) =>
@@ -529,8 +558,9 @@ function makeLiveIo(): CliIoShape {
     envVar: (name) => process.env[name],
     agentProfile: detectAgentProfile,
     stderrIsTerminal: () => process.stderr.isTTY === true,
-    // 色の可否(stderr の接頭辞だけ — notice.ts)。判定材料の `process.*` は
-    // この実装の中でだけ読む(ADR-0016 決定 5)
+    // Whether color is allowed (only stderr's prefixes — notice.ts). The
+    // judgment material's `process.*` is read only inside this
+    // implementation (ADR-0016 decision 5)
     colorEnabled: () =>
       shouldUseColor({
         stderrIsTerminal: process.stderr.isTTY === true,
@@ -543,27 +573,28 @@ function makeLiveIo(): CliIoShape {
 /** Production service layer for the maruhi CLI (Bun runtime). */
 export function liveLayer(): Layer.Layer<CliServices> {
   const configPath = defaultConfigPath((name) => process.env[name]);
-  // `maruhi agent` セッションの中(MARUHI_AGENT_SOCK あり)では OS キーチェーン
-  // の代わりに agent のメモリを使う(KL2 — agent.ts)。明示の環境変数 = 利用者の
-  // 明示の選択なので、キーチェーンがあっても agent を優先する。MARUHI_TOKEN の
-  // 優先順位(session.ts: 環境変数 → Keychain)は従来どおり
+  // Inside a `maruhi agent` session (MARUHI_AGENT_SOCK present), use the
+  // agent's memory instead of the OS keychain (KL2 — agent.ts). An
+  // explicit environment variable = the user's explicit choice, so the
+  // agent wins even when a keychain exists. MARUHI_TOKEN's precedence
+  // (session.ts: env var → Keychain) is unchanged
   const agentSocket = process.env[AGENT_SOCKET_ENV];
   const keychain =
     agentSocket !== undefined && agentSocket.length > 0
       ? makeAgentKeychain(agentSocket)
       : makeBunKeychain();
   return Layer.mergeAll(
-    // argv と端末の有無(引数層と値の表示可否の判定材料)
+    // argv and terminal presence (the argument layer and the judgment material for value displayability)
     BunStdio.layer,
-    // 値の表示可否の二次層(一次境界は上の Stdio による TTY 判定)
+    // The secondary layer for value displayability (the first boundary is the Stdio TTY judgment above)
     Layer.succeed(AgentProfileRef, detectAgentProfile()),
     Layer.succeed(Keychain, keychain),
     Layer.succeed(ConfigStore, makeFileConfigStore(configPath)),
-    // ローカル床(§6.3)は設定と同系の非機密置き場(<config dir>/floor)
+    // The local floor (§6.3) lives in the same non-sensitive family as the config (<config dir>/floor)
     Layer.succeed(FloorStore, makeFileFloorStore(floorDirOf(configPath))),
-    // 招待のアンカー・発行ピン(§6.3 (a))も同系(<config dir>/invites)
+    // The invite anchors and issuance pins (§6.3 (a)) are the same family (<config dir>/invites)
     Layer.succeed(PinStore, makeFilePinStore(pinsDirOf(configPath))),
-    // 検証済み指紋帳(KF)も同系(<config dir>/known-fingerprints.json)
+    // The verified-fingerprint ledger (KF) is the same family (<config dir>/known-fingerprints.json)
     Layer.succeed(FingerprintBook, makeFileFingerprintBook(fingerprintBookPathOf(configPath))),
     Layer.succeed(OwnDeviceStore, makeFileOwnDeviceStore(ownDevicesPathOf(configPath))),
     Layer.succeed(CliIo, makeLiveIo()),

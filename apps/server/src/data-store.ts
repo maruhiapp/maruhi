@@ -1,9 +1,12 @@
-// データプレーンのストレージ(DO SQLite)を隔離する Effect サービス。
+// The Effect service isolating the data plane's storage (DO SQLite).
 //
-// - テーブルは do-schema.ts(DO コンストラクタが DDL 適用済み)
-// - 環境・変数の削除は tombstone(deleted_at)。ID 再利用禁止(AUTH_SPEC §12-1)の
-//   判定に使う。暗号文(variable_versions)とラップ(dek_wraps)は即時削除
-// - Drizzle 見送りの判断は do-schema.ts 冒頭コメントと docs/notes/session-07.md
+// - The tables are do-schema.ts's (the DO constructor has already
+//   applied the DDL)
+// - Environment/variable deletion is a tombstone (deleted_at); it feeds
+//   the no-ID-reuse judgment (AUTH_SPEC §12-1). Ciphertexts
+//   (variable_versions) and wraps (dek_wraps) are deleted immediately
+// - The decision to forgo Drizzle is in the do-schema.ts head comment
+//   and docs/notes/session-07.md
 
 import { Context, Effect, Layer } from "effect";
 
@@ -31,7 +34,7 @@ import type { StoredServerWrap } from "./server-key.ts";
 interface EnvironmentRow {
   readonly environmentId: string;
   readonly name: string;
-  /** 最新ステートメントの metaVersion(導出キャッシュ — metaVersion CAS 用)。 */
+  /** The latest statement's metaVersion (a derived cache — for the metaVersion CAS). */
   readonly latestMetaVersion: number;
   readonly deletedAtMs: number | null;
 }
@@ -42,24 +45,27 @@ export interface VariableRow {
   readonly latestMetaVersion: number;
   readonly latestVersion: number;
   /**
-   * 最新ステートメントの status(declared 変数の判定材料 — §12-5: declared への
-   * 通常 push は activation-required、activation は declared のみが対象)。
-   * 真実源はステートメント行(JOIN で読む — 変数行とステートメント行は同一の
-   * 同期ブロックで書かれる)。
+   * The latest statement's status (the decision input for declared
+   * variables — §12-5: a normal push to a declared one is
+   * activation-required; only declared is eligible for activation). The
+   * source of truth is the statement row (read via a JOIN — the
+   * variable row and the statement row are written in the same
+   * synchronous block).
    */
   readonly latestStatus: MetaStatementStatusInput;
   readonly deletedAtMs: number | null;
 }
 
-/** ラップ登録署名の署名者(dek_wraps の signer_* 列に保存する)。 */
+/** The signer of a wrap registration signature (stored into dek_wraps's signer_* columns). */
 export interface WrapSignerInfo {
   readonly userId: string;
   readonly keyFingerprintHex: string;
 }
 
 /**
- * 値の writer(variable_versions の writer_* 列に保存する — 受理時点の
- * チェーン導出メンバーの user_id + 鍵 FP。CRYPTO_SPEC §4.1 / AUTH_SPEC §12-5)。
+ * A value's writer (stored into variable_versions's writer_* columns —
+ * the user_id + key FP of the chain-derived member at acceptance time.
+ * CRYPTO_SPEC §4.1 / AUTH_SPEC §12-5).
  */
 export interface ValueWriterInfo {
   readonly userId: string;
@@ -67,8 +73,9 @@ export interface ValueWriterInfo {
 }
 
 /**
- * 保存済みバージョンの検証アンカー: サーバー再計算の signed_bytes ハッシュと
- * 当時のエポック。次 version の prev 検査(§12-5 の 5)の入力。
+ * The verification anchor of a stored version: the server-recomputed
+ * signed_bytes hash and the epoch at the time. The input of the next
+ * version's prev check (§12-5's 5).
  */
 interface VersionAnchor {
   readonly signedBytesHashHex: string;
@@ -76,8 +83,9 @@ interface VersionAnchor {
 }
 
 /**
- * ステートメントの author(*_meta_statements の author_* 列に保存する —
- * 受理時点のチェーン導出メンバーの user_id + 鍵 FP。CRYPTO_SPEC §4.2)。
+ * A statement's author (stored into the *_meta_statements tables'
+ * author_* columns — the user_id + key FP of the chain-derived member
+ * at acceptance time. CRYPTO_SPEC §4.2).
  */
 export interface MetaAuthorInfo {
   readonly userId: string;
@@ -85,12 +93,14 @@ export interface MetaAuthorInfo {
 }
 
 /**
- * 保存済みステートメントの検証アンカー: サーバー再計算の signed_bytes ハッシュと
- * status。次 metaVersion の prev 検査と削除後の再ステートメント拒否
- * (§12-5 のメタ規則)の入力。layoutVersion は保存実値(レイアウト単調性検査の
- * アンカー — CRYPTO_SPEC §4.2)、schema は v2 行のスキーマ欄(削除ステートメントの
- * 直前一致検査 — §12-5 — の材料。v1 行は null)。環境メタは常に layoutVersion 1・
- * schema null(v2 の対象外)。
+ * The verification anchor of a stored statement: the server-recomputed
+ * signed_bytes hash and status. The input of the next metaVersion's
+ * prev check and of the post-deletion re-statement rejection (the §12-5
+ * meta rules). layoutVersion is the stored actual value (the anchor of
+ * the layout-monotonicity check — CRYPTO_SPEC §4.2); schema is the v2
+ * row's schema fields (the input of the deleted statement's
+ * predecessor-match check — §12-5; a v1 row is null). Environment meta
+ * is always layoutVersion 1, schema null (outside v2's scope).
  */
 export interface MetaAnchor {
   readonly signedBytesHashHex: string;
@@ -100,9 +110,9 @@ export interface MetaAnchor {
 }
 
 /**
- * variables_digest の 1 エントリ(CRYPTO_SPEC §4.3 — @maruhi/crypto の
- * VariablesDigestEntry と構造一致。data-store は crypto に依存しないため
- * 構造型で持つ)。
+ * One entry of variables_digest (CRYPTO_SPEC §4.3 — structurally
+ * identical to @maruhi/crypto's VariablesDigestEntry; held as a
+ * structural type because data-store does not depend on crypto).
  */
 interface VariableDigestEntryRow {
   readonly variableId: string;
@@ -112,9 +122,9 @@ interface VariableDigestEntryRow {
 }
 
 /**
- * checkpoint values_digest の 1 エントリ(CRYPTO_SPEC §6.2 — @maruhi/crypto の
- * EnvValuesDigestEntry と構造一致。data-store は crypto に依存しないため
- * 構造型で持つ)。
+ * One entry of a checkpoint values_digest (CRYPTO_SPEC §6.2 —
+ * structurally identical to @maruhi/crypto's EnvValuesDigestEntry; held
+ * as a structural type because data-store does not depend on crypto).
  */
 export interface CheckpointValueEntryRow {
   readonly variableId: string;
@@ -123,9 +133,10 @@ export interface CheckpointValueEntryRow {
 }
 
 /**
- * 境界 checkpoint のタプル + チェーン位置(スナップショット保存の入力 —
- * CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2 の「再構成した値スナップショット列挙 +
- * 対応 checkpoint seq / hash」の座標部分)。
+ * A boundary checkpoint's tuple + chain position (the input of snapshot
+ * saving — the coordinate part of CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2's
+ * "the reconstructed value-snapshot enumeration + the corresponding
+ * checkpoint seq / hash").
  */
 export interface CheckpointSnapshotInput {
   readonly chainSeq: number;
@@ -137,9 +148,10 @@ export interface CheckpointSnapshotInput {
 }
 
 /**
- * 保存済み最新マニフェストの検証アンカー: manifestVersion(CAS — §12-5 (6))・
- * サーバー再計算の signed_bytes ハッシュ(prev 検査 — (5))・当時のエポック
- * (predecessor のエポック単調性検査)。
+ * The verification anchor of the stored latest manifest:
+ * manifestVersion (the CAS — §12-5 (6)), the server-recomputed
+ * signed_bytes hash (the prev check — (5)), and the epoch at the time
+ * (the predecessor's epoch-monotonicity check).
  */
 interface EnvManifestAnchor {
   readonly manifestVersion: number;
@@ -147,16 +159,18 @@ interface EnvManifestAnchor {
   readonly epoch: number;
 }
 
-/** アクティブ数と行数(tombstone 込み)。§12-8 の数量ポリシー判定用。 */
+/** Active count and row count (tombstones included). For the §12-8 quantity-policy judgment. */
 interface ResourceCounts {
   readonly active: number;
   readonly rows: number;
 }
 
 /**
- * 保存済みラップの受信者情報(存在検査 + 上書き禁止 409 の応答材料 —
- * AUTH_SPEC §12-6)。クラスは削除経路の突合、enc 公開鍵は 409 応答に載せる
- * `storedRecipientEncPubHex` の唯一の源。
+ * The recipient info of a stored wrap (the input of the existence check
+ * and of the overwrite-prohibited 409 response — AUTH_SPEC §12-6). The
+ * class is cross-checked on the delete path; the enc public key is the
+ * only source of `storedRecipientEncPubHex` carried on the 409
+ * response.
  */
 interface StoredWrapRecipient {
   readonly recipientClass: string;
@@ -164,17 +178,21 @@ interface StoredWrapRecipient {
 }
 
 /**
- * 書き込みの同期関数群。1 操作の全書き込み(監査追記を含む)を 1 つの同期
- * ブロック(= 同一イベントループタスク)にまとめて呼ぶことで、クラッシュ時の
- * 部分書き込みを構造的に防ぐ(DO SQLite の書き込みはタスク単位で原子コミット)。
- * 検証(読み取り)は Effect 側のメソッドで書き込みフェーズの前に済ませる。
+ * The synchronous write functions. By calling every write of one
+ * operation (audit appends included) bundled into one synchronous block
+ * (= the same event-loop task), a partial write on a crash is prevented
+ * structurally (a DO SQLite write commits atomically per task).
+ * Verification (reads) is done by the Effect-side methods ahead of the
+ * write phase.
  */
 export interface DataWriteOps {
-  /** 環境行の挿入。name / latest_meta_version は直後の insertEnvironmentMetaStatement が確定する。 */
+  /** Insert an environment row. name / latest_meta_version are settled by the insertEnvironmentMetaStatement right after. */
   readonly insertEnvironment: (environmentId: string, name: string, nowMs: number) => void;
   /**
-   * 環境ステートメント行の挿入 + 環境行キャッシュ(name / latest_meta_version)の
-   * 同期更新。作成・rename・削除の全経路で同じ同期ブロック内から呼ぶ。
+   * Insert an environment statement row + synchronously update the
+   * environment-row cache (name / latest_meta_version). Called from
+   * inside the same synchronous block on every path: create, rename,
+   * delete.
    */
   readonly insertEnvironmentMetaStatement: (
     environmentId: string,
@@ -184,9 +202,10 @@ export interface DataWriteOps {
     nowMs: number,
   ) => void;
   /**
-   * tombstone 化 + 配下データ(変数・変数ステートメント・バージョン・ラップ)の
-   * 即時削除。環境自身の削除ステートメント(insertEnvironmentMetaStatement)は
-   * 保存・配布し続ける(§12-4)。
+   * Tombstone + immediately delete the subordinate data (variables,
+   * variable statements, versions, wraps). The environment's own
+   * deletion statement (insertEnvironmentMetaStatement) keeps being
+   * stored and distributed (§12-4).
    */
   readonly retireEnvironment: (environmentId: string, nowMs: number) => void;
   readonly insertVariable: (
@@ -195,7 +214,7 @@ export interface DataWriteOps {
     name: string,
     nowMs: number,
   ) => void;
-  /** 変数ステートメント行の挿入 + 変数行キャッシュの同期更新(環境版と同型)。 */
+  /** Insert a variable statement row + synchronously update the variable-row cache (same shape as the environment one). */
   readonly insertVariableMetaStatement: (
     environmentId: string,
     variableId: string,
@@ -204,12 +223,14 @@ export interface DataWriteOps {
     author: MetaAuthorInfo,
     nowMs: number,
   ) => void;
-  /** tombstone 化 + 全バージョン(暗号文)の即時削除。deleted ステートメントは残る。 */
+  /** Tombstone + immediately delete every version (ciphertext). The deleted statement stays. */
   readonly retireVariable: (environmentId: string, variableId: string, nowMs: number) => void;
   /**
-   * 環境マニフェストの upsert(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5)。保持は
-   * 環境ごとに**最新 1 通のみ**(§12-5 — 過去行を要する検証経路が存在しない)。
-   * issuer は受理時点のチェーン導出メンバー(= 署名検証に使った鍵の持ち主)。
+   * The upsert of an environment manifest (CRYPTO_SPEC §4.3 / AUTH_SPEC
+   * §12-5). Only **the latest one** is kept per environment (§12-5 — no
+   * verification path needs the past rows). issuer is the chain-derived
+   * member at acceptance time (= the owner of the key used for the
+   * signature check).
    */
   readonly upsertEnvironmentManifest: (
     environmentId: string,
@@ -219,12 +240,15 @@ export interface DataWriteOps {
     nowMs: number,
   ) => void;
   /**
-   * 境界 checkpoint の値スナップショットの保存(CRYPTO_SPEC §6.4 / AUTH_SPEC
-   * §16-2): 環境ごとの最新包含 checkpoint のタプルを upsert し、
-   * 値スナップショット列挙を環境単位で全置換する(保存済みの values digest と
-   * 一致するときは列挙が同一なので置換を省く — タプル行は常に更新)。payload に含まれない環境の
-   * 既存スナップショットは変更しない(A のみ再 checkpoint しても B の基準は
-   * 失われない — §6.4)。チェーン追記と同じ同期ブロック内から呼ぶ。
+   * Save a boundary checkpoint's value snapshot (CRYPTO_SPEC §6.4 /
+   * AUTH_SPEC §16-2): upsert the latest covering checkpoint's tuple per
+   * environment and replace the value-snapshot enumeration wholesale
+   * per environment (when it matches the stored values digest the
+   * enumeration is identical, so the replacement is skipped — the tuple
+   * row is always updated). The existing snapshot of an environment not
+   * in the payload is not modified (re-checkpointing only A does not
+   * lose B's basis — §6.4). Called from inside the same synchronous
+   * block as the chain append.
    */
   readonly upsertCheckpointSnapshot: (
     environmentId: string,
@@ -232,7 +256,7 @@ export interface DataWriteOps {
     values: readonly CheckpointValueEntryRow[],
     nowMs: number,
   ) => void;
-  /** バージョン行の挿入と latest_version の前進(書き込みロック下で呼ぶ)。 */
+  /** Insert a version row and advance latest_version (called under the write lock). */
   readonly insertVersion: (
     environmentId: string,
     variableId: string,
@@ -243,8 +267,9 @@ export interface DataWriteOps {
     nowMs: number,
   ) => void;
   /**
-   * ラップ行の挿入。signer は登録受理時のチェーン導出メンバー(= 署名検証に
-   * 使った鍵の持ち主 — CRYPTO_SPEC §5.1)。
+   * Insert a wrap row. signer is the chain-derived member at
+   * registration acceptance (= the owner of the key used for the
+   * signature check — CRYPTO_SPEC §5.1).
    */
   readonly insertWrap: (
     environmentId: string,
@@ -252,7 +277,7 @@ export interface DataWriteOps {
     signer: WrapSignerInfo,
     nowMs: number,
   ) => void;
-  /** §12-6 修復経路: 1 ラップ(端末スロット)の削除(存在検証は呼び出し側が済ませる)。 */
+  /** The §12-6 repair path: delete one wrap (device slot); the caller has already done the existence check. */
   readonly deleteWrap: (
     environmentId: string,
     epoch: number,
@@ -260,51 +285,62 @@ export interface DataWriteOps {
     recipientEncPubHex: string,
   ) => void;
   /**
-   * §12-6 の再追加受理時掃除: 対象 user_id 宛(受信者クラス
-   * member)で受信者 enc 公開鍵が `keepEncPubHex` と一致しないラップを削除し、
-   * 削除した (環境, エポック) を返す(dek.deleted の監査行の材料)。現行チェーン
-   * 鍵のラップは対象にならない(上書き禁止の不変条件は不変)。add_member 受理の
-   * 書き込みフェーズ(単一タスク)内から呼ぶ。
+   * The cleanup at §12-6 re-add acceptance: delete the wraps to the
+   * target user_id (recipient class member) whose recipient enc public
+   * key does not match `keepEncPubHex`, and return the deleted
+   * (environment, epoch) pairs (the input of the dek.deleted audit
+   * rows). Wraps to the current chain keys are never a target (the
+   * overwrite-prohibition invariant is unchanged). Called from inside
+   * the write phase (a single task) of an add_member acceptance.
    */
   readonly deleteStaleMemberWraps: (
     recipientUserId: string,
     keepEncPubHex: string,
   ) => readonly StaleWrapRef[];
   /**
-   * ヘッド申告の upsert(AUTH_SPEC §16-1 — **端末ごと**最新 1 行。2026-09-19 DK)。
-   * seq の単調前進は呼び出し側(attestation-accept.ts)が同じ端末の保存済み seq と
-   * 照合してから呼ぶ(後退 409 / 同一 seq 冪等 204)。
+   * The upsert of a head attestation (AUTH_SPEC §16-1 — **per device**,
+   * the latest one row. 2026-09-19 DK). Monotonic seq advancement is
+   * the caller's (attestation-accept.ts) job, which first compares the
+   * same device's stored seq (regression 409 / same-seq idempotent
+   * 204).
    */
   readonly upsertHeadAttestation: (attestation: StoredHeadAttestation, nowMs: number) => void;
   /**
-   * `remove_member` 受理時の申告行(対象の全端末)・レート窓行の削除(CRYPTO_SPEC
-   * §6.4 — 現メンバーのみ配布へのストレージ収束。§12-6 の旧鍵ラップ掃除と同型)。
-   * add_member 受理の書き込みフェーズと同じく単一タスク内から呼ぶ。
+   * Delete the attestation rows (all the target's devices) and the rate
+   * window row at `remove_member` acceptance (CRYPTO_SPEC §6.4 —
+   * converging the storage to "distribute to current members only";
+   * same shape as the §12-6 old-key wrap cleanup). Called from inside a
+   * single task, like the write phase of an add_member acceptance.
    */
   readonly deleteHeadAttestation: (attesterUserId: string) => void;
   /**
-   * `revoke_device` 受理時の当該端末の申告行の削除(AUTH_SPEC §16-1 — 2026-09-19 DK)。
-   * 窓行(メンバー単位)は触らない。
+   * Delete the attestation row of the revoked device at `revoke_device`
+   * acceptance (AUTH_SPEC §16-1 — 2026-09-19 DK). The window row (per
+   * member) is left alone.
    */
   readonly deleteDeviceHeadAttestation: (attesterUserId: string, keyFingerprintHex: string) => void;
   /**
-   * schemaPolicy の upsert(AUTH_SPEC §12-11)。監査 project.schema_policy_changed
-   * と同じ同期ブロックで呼ぶ(設定変更と監査行の原子性)。
+   * The upsert of schemaPolicy (AUTH_SPEC §12-11). Called in the same
+   * synchronous block as the project.schema_policy_changed audit row
+   * (the setting change and the audit row are atomic).
    */
   readonly setSchemaPolicy: (policy: SchemaPolicy) => void;
 }
 
-/** 掃除で削除されたラップの座標(dek.deleted 監査行の材料)。 */
+/** The coordinates of a wrap deleted by the cleanup (the input of a dek.deleted audit row). */
 export interface StaleWrapRef {
   readonly environmentId: string;
   readonly epoch: number;
 }
 
 /**
- * 保存されたヘッド申告(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1 — **端末ごと**
- * 最新 1 行。2026-09-19 DK)。attesterKeyFingerprintHex は申告に署名した端末の
- * 鍵 FP(主キーの一部。配布時の検証材料)。受理時刻(accepted_at)は**含めない** — 保存は
- * するが配布しない(§16-1)ため、配布材料の型に最初から載せない。
+ * A stored head attestation (CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1 — **per
+ * device**, the latest one row. 2026-09-19 DK).
+ * attesterKeyFingerprintHex is the key FP of the device that signed
+ * the attestation (part of the primary key; the verification material
+ * at distribution). The acceptance time (accepted_at) is **not**
+ * included — it is stored but never distributed (§16-1), so it is
+ * absent from the distribution-material type from the start.
  */
 export interface StoredHeadAttestation {
   readonly attesterUserId: string;
@@ -322,29 +358,32 @@ interface DataStoreShape {
     name: string,
     excludeEnvironmentId: string | null,
   ) => Effect.Effect<boolean>;
-  /** 全環境(削除済み込み)の最新ステートメント付き一覧(環境一覧応答用)。 */
+  /** The list of all environments (deleted included) with their latest statements (for the environment-list response). */
   readonly listEnvironmentStatements: Effect.Effect<
     readonly { environmentId: string; statement: DistributedMetaStatementValue }[]
   >;
-  /** 1 環境の最新ステートメント(pull 応答用。行が無いのは不変条件違反 = null)。 */
+  /** One environment's latest statement (for the pull response; a missing row is an invariant violation = null). */
   readonly environmentStatement: (
     environmentId: string,
   ) => Effect.Effect<DistributedMetaStatementValue | null>;
-  /** 環境ステートメントの検証アンカー(prev 検査 — §12-5 のメタ規則)。 */
+  /** The environment statement's verification anchor (the prev check — the §12-5 meta rules). */
   readonly environmentMetaAnchor: (
     environmentId: string,
     metaVersion: number,
   ) => Effect.Effect<MetaAnchor | null>;
   /**
-   * 最新の環境マニフェスト(配布形 — §12-7 の同梱材料)。保存行が無ければ null
-   * (環境作成は manifest_version 1 を同梱するので、作成済みの環境では起きない)。
+   * The latest environment manifest (the distributed form — the §12-7
+   * bundled material). null when no stored row exists (environment
+   * creation bundles manifest_version 1, so it cannot happen on a
+   * created environment).
    */
   readonly environmentManifest: (
     environmentId: string,
   ) => Effect.Effect<DistributedEnvManifestValue | null>;
   /**
-   * 最新マニフェストの検証アンカー(manifestVersion CAS = §12-5 (6) と prev
-   * 検査 = (5) の材料。epoch は predecessor のエポック単調性検査に使う)。
+   * The verification anchor of the latest manifest (the inputs of the
+   * manifestVersion CAS = §12-5 (6) and the prev check = (5). epoch is
+   * used for the predecessor's epoch-monotonicity check).
    */
   readonly environmentManifestAnchor: (
     environmentId: string,
@@ -363,84 +402,91 @@ interface DataStoreShape {
   readonly listActiveVariables: (
     environmentId: string,
   ) => Effect.Effect<readonly { variableId: string; name: string }[]>;
-  /** 変数ステートメントの検証アンカー(prev 検査 — §12-5 のメタ規則)。 */
+  /** The variable statement's verification anchor (the prev check — the §12-5 meta rules). */
   readonly variableMetaAnchor: (
     environmentId: string,
     variableId: string,
     metaVersion: number,
   ) => Effect.Effect<MetaAnchor | null>;
-  /** 削除済み変数の deleted ステートメント一覧(pull で配布し続ける — §12-5)。 */
+  /** The deleted statements of deleted variables (kept being distributed on pull — §12-5). */
   readonly deletedVariableStatements: (
     environmentId: string,
   ) => Effect.Effect<readonly DistributedVariableMetaStatementValue[]>;
   /**
-   * 削除済みでない全変数(declared 含む)の最新ステートメント一覧
-   * (メタデータのみモード — §12-7)。
+   * The latest statements of every non-deleted variable (declared
+   * included) (the metadata-only mode — §12-7).
    */
   readonly activeVariableStatements: (
     environmentId: string,
   ) => Effect.Effect<readonly DistributedVariableMetaStatementValue[]>;
   /**
-   * declared 変数の最新ステートメント一覧(値付き pull / リースの同梱材料 —
-   * §12-7。値・バージョンは存在しない)。
+   * The latest statements of declared variables (the bundled material
+   * of a value-bearing pull / a lease — §12-7; no value or version
+   * exists).
    */
   readonly declaredVariableStatements: (
     environmentId: string,
   ) => Effect.Effect<readonly DistributedVariableMetaStatementValue[]>;
   /**
-   * 全変数(tombstone 込み)の最新ステートメントのダイジェストタプル
-   * (CRYPTO_SPEC §4.3 の variables_digest 再計算材料 — §12-5 (7))。
-   * metaSigHashHex はサーバー再計算の signed_bytes ハッシュ。
+   * The digest tuples of the latest statements of all variables
+   * (tombstones included) (the recompute input of CRYPTO_SPEC §4.3's
+   * variables_digest — §12-5 (7)). metaSigHashHex is the
+   * server-recomputed signed_bytes hash.
    */
   readonly variableDigestEntries: (
     environmentId: string,
   ) => Effect.Effect<readonly VariableDigestEntryRow[]>;
   /**
-   * checkpoint values_digest の再計算材料(§6.4 の内容突合 — 受理時点の保存
-   * 状態): active 変数の最新 version とサーバー再計算の value_signed_bytes
-   * ハッシュ。tombstone は含めない(§6.2 — active 変数のみ。tombstone は
-   * マニフェスト側が捕捉する)。
+   * The recompute input of a checkpoint values_digest (the §6.4 content
+   * cross-check — the stored state at acceptance time): each active
+   * variable's latest version and the server-recomputed
+   * value_signed_bytes hash. Tombstones are excluded (§6.2 — active
+   * variables only; the manifest side captures the tombstones).
    */
   readonly checkpointValueEntries: (
     environmentId: string,
   ) => Effect.Effect<readonly CheckpointValueEntryRow[]>;
   /**
-   * チェックポイント時点の値スナップショットの配布形(§12-7 / §14-2):
-   * checkpoint 受理時に原子保存した最新包含 checkpoint の
-   * タプル + 列挙をそのまま返す(再構成しない — §16-2)。基準を持たない環境は
-   * null(応答に載せない)。
+   * The distributed form of the checkpoint-time value snapshot (§12-7 /
+   * §14-2): returns the latest covering checkpoint's tuple + enumeration
+   * atomically saved at checkpoint acceptance as-is (never
+   * reconstructed — §16-2). An environment without a basis is null (not
+   * carried on the response).
    */
   readonly checkpointSnapshot: (
     environmentId: string,
   ) => Effect.Effect<CheckpointSnapshotValue | null>;
 
-  /** アクティブ変数の最新バージョン + 最新ステートメント一覧(一括 pull 用)。 */
+  /** Each active variable's latest version + latest statement (for the bulk pull). */
   readonly latestVersions: (
     environmentId: string,
   ) => Effect.Effect<
     readonly (PulledVariableValue & { statement: DistributedVariableMetaStatementValue })[]
   >;
-  /** 保存済みバージョンの検証アンカー(prev 検査 — §12-5 の 5)。 */
+  /** The stored version's verification anchor (the prev check — §12-5's 5). */
   readonly versionAnchor: (
     environmentId: string,
     variableId: string,
     version: number,
   ) => Effect.Effect<VersionAnchor | null>;
-  /** プロジェクトの累積暗号文バイト(現在保存中の量。§12-8)。 */
+  /** The project's cumulative ciphertext bytes (the amount currently stored. §12-8). */
   readonly totalCiphertextBytes: Effect.Effect<number>;
 
   readonly countWrapsForEpoch: (environmentId: string, epoch: number) => Effect.Effect<number>;
-  /** プロジェクト全体の DEK ラップ行数(現在保存中の量。§12-8)。 */
+  /** The DEK wrap row count of the whole project (the amount currently stored. §12-8). */
   readonly countWrapRows: Effect.Effect<number>;
   /**
-   * 保存済みラップの受信者クラスと enc 公開鍵(行がなければ null)。削除経路は
-   * クラスとリクエストの class を突合する — クライアント申告の class をそのまま
-   * 監査列の選択に使わせない(AUDIT_SPEC §1-2 の列意味論をワイヤ入力から切り離す)。
-   * enc 公開鍵は上書き禁止 409 の応答材料(AUTH_SPEC §12-6)。
+   * The recipient class and enc public key of a stored wrap (null when
+   * the row is absent). The delete path cross-checks the class against
+   * the request's class — the client-declared class is never used
+   * verbatim to pick the audit column (it detaches the §1-2 column
+   * semantics from wire input). The enc public key is the input of the
+   * overwrite-prohibited 409 response (AUTH_SPEC §12-6).
    */
   /**
-   * (環境, エポック, 受信者) の全スロット(端末ごと — 2026-09-19 DK)。削除参照が
-   * 端末鍵を省略したときの一意性判定の材料(設計録 §8 K3-3)。
+   * All slots of (environment, epoch, recipient) (per device —
+   * 2026-09-19 DK). The input of the uniqueness judgment when a delete
+   * reference omits the device key (design record §8 K3-3).
    */
   readonly listWrapSlots: (
     environmentId: string,
@@ -460,21 +506,25 @@ interface DataStoreShape {
     recipientUserId: string,
   ) => Effect.Effect<readonly RecipientDekValue[]>;
   /**
-   * サーバー鍵 FP 宛のラップ(受信者クラス server)を全エポック分返す
-   * (AUTH_SPEC §14 のリース経路 — CRYPTO_SPEC §9.1)。listWrapsForRecipient と
-   * 分けているのは配布の意味論が違うため: あちらは**受信者本人への配布**で
-   * 登録署名と署名者情報を運ぶが、こちらは**サーバー自身が開封する材料**であり
-   * 応答へは出ない(開封 → 再ラップの結果だけが出る — server-key.ts)。
+   * Returns the wraps to the server key FP (recipient class server) for
+   * every epoch (the lease path of AUTH_SPEC §14 — CRYPTO_SPEC §9.1).
+   * Kept separate from listWrapsForRecipient because the distribution
+   * semantics differ: that one is **distribution to the recipient
+   * itself** and carries the registration signature and signer
+   * information, while this one is **material for the server to unwrap
+   * itself** and never goes out on a response (only the result of the
+   * unwrap → re-wrap does — server-key.ts).
    */
   readonly listServerWraps: (
     environmentId: string,
     serverKeyFingerprintHex: string,
   ) => Effect.Effect<readonly StoredServerWrap[]>;
   /**
-   * 固定窓の**判定のみ**(消費しない — §14-3 / AUDIT_SPEC §3.5)。窓が切れて
-   * いれば 0 から数え直した扱いになる。判定と消費を分けているのは、
-   * 「窓を消費してよいのは実際に発行した(記録した)ときだけ」という規律を
-   * 呼び出し側で表現するため。
+   * **Judgment only** of the fixed window (does not consume — §14-3 /
+   * AUDIT_SPEC §3.5). An expired window is treated as counting from 0.
+   * Judgment and consumption are separated so the caller can express
+   * the discipline "a window may be consumed only when an issuance was
+   * actually made (recorded)".
    */
   readonly checkLeaseWindow: (
     kind: LeaseWindowKind,
@@ -482,22 +532,28 @@ interface DataStoreShape {
     nowMs: number,
   ) => Effect.Effect<LeaseWindowDecision>;
   /**
-   * 固定窓の消費(1 件計上)。窓が切れていれば開始時刻を now に巻き直す。
-   * DO の permit 下で直列化されているため、判定 → 消費の間に割り込みはない。
+   * Consume the fixed window (counts 1). If the window has expired, its
+   * start time is reset to now. Serialized under the DO's permit, so
+   * nothing can interpose between judgment and consumption.
    */
   readonly recordLeaseWindowUse: (kind: LeaseWindowKind, nowMs: number) => void;
   /**
-   * 先着束縛(AUTH_SPEC §14-1)の照会: 生存期限内の束縛行が
-   * あれば束縛先の一時公開鍵を返す。期限切れ行は**行の物理削除(GC)に依存せず**
-   * expires_at 条件で無視する — 判定の正しさを GC のタイミングから切り離す。
-   * `bindingKeyHex` は JWS signing input のハッシュ(生トークンのハッシュでは
-   * ない — programs-lease.ts の LeaseTokenFacts.bindingKeyHex の doc)。
+   * Query a first-come binding (AUTH_SPEC §14-1): returns the bound
+   * ephemeral public key when a binding row within its validity period
+   * exists. Expired rows are ignored by the expires_at condition,
+   * **without depending on the rows' physical deletion (GC)** — the
+   * correctness of the judgment is detached from GC timing.
+   * `bindingKeyHex` is the hash of the JWS signing input (not of the
+   * raw token — see the doc of programs-lease.ts's
+   * LeaseTokenFacts.bindingKeyHex).
    */
   readonly leaseBinding: (bindingKeyHex: string, nowMs: number) => Effect.Effect<string | null>;
   /**
-   * 先着束縛の記録(発行・監査・窓消費と同一の同期ブロックで呼ぶ — §14-1)。
-   * 既存行(同一キー + 同一鍵の冪等リトライ)は上書きしない。あわせて
-   * 期限切れ行を GC する(行数の上界 = 発行レート窓 × 保持期間 — policy.ts)。
+   * Record a first-come binding (called in the same synchronous block
+   * as issuance, audit, and window consumption — §14-1). An existing
+   * row (an idempotent retry with the same key + same public key) is
+   * not overwritten. Also GCs expired rows (the row count's upper bound
+   * = issuance rate window × retention — policy.ts).
    */
   readonly recordLeaseBinding: (
     bindingKeyHex: string,
@@ -506,41 +562,44 @@ interface DataStoreShape {
     nowMs: number,
   ) => void;
   /**
-   * プロジェクトの schemaPolicy(AUTH_SPEC §12-11 — 行なし = 既定 disabled)。
-   * 受理判定は DO permit 下の各プログラムがこれを読む(受理時点のポリシー)。
+   * The project's schemaPolicy (AUTH_SPEC §12-11 — no row = the default
+   * disabled). The acceptance decision reads this in each program under
+   * the DO permit (the policy at acceptance time).
    */
   readonly schemaPolicy: Effect.Effect<SchemaPolicy>;
-  /** 保存済みヘッド申告の seq(未提出なら null — 単調前進判定の材料。§16-1)。 */
-  /** 同じ端末(user_id + 鍵 FP)の保存済み申告 seq(AUTH_SPEC §16-1 — 端末ごと)。 */
+  /** The stored attestation seq of the same device (user_id + key FP) (AUTH_SPEC §16-1 — per device; null when none was submitted — the input of the monotonic-advance check). */
   readonly headAttestationSeq: (
     attesterUserId: string,
     keyFingerprintHex: string,
   ) => Effect.Effect<number | null>;
   /**
-   * 全メンバーの保存済みヘッド申告(AUTH_SPEC §16-1 の配布材料)。現メンバー
-   * への絞り込みは呼び出し側(chain-do.ts — チェーン導出の現メンバー集合)が
-   * 行う: remove 時の行削除(§6.4)が漏れた場合の独立の防衛層を配布側に持つ。
+   * Every member's stored head attestations (the distribution material
+   * of AUTH_SPEC §16-1). The narrowing to current members is done by
+   * the caller (chain-do.ts — the chain-derived current-member set):
+   * the distribution side holds an independent defensive layer in case
+   * the row deletion at remove (§6.4) missed one.
    */
   readonly listHeadAttestations: Effect.Effect<readonly StoredHeadAttestation[]>;
   /**
-   * ヘッド申告のメンバーあたり固定窓の判定のみ(消費しない — checkLeaseWindow と
-   * 同じ分離規律)。
+   * Judgment only of the per-member fixed window of head attestations
+   * (does not consume — the same separation discipline as
+   * checkLeaseWindow).
    */
   readonly checkAttestationWindow: (
     attesterUserId: string,
     limit: number,
     nowMs: number,
   ) => Effect.Effect<LeaseWindowDecision>;
-  /** ヘッド申告の固定窓の消費(1 件計上。permit 下で直列化 — 判定との割り込みなし)。 */
+  /** Consume the head-attestation fixed window (counts 1; serialized under the permit — nothing interposes with the judgment). */
   readonly recordAttestationWindowUse: (attesterUserId: string, nowMs: number) => void;
 
   readonly write: DataWriteOps;
 }
 
-/** 固定窓の種別(§14-3 発行 / AUDIT_SPEC §3.5 拒否記録)。 */
+/** The fixed-window kinds (§14-3 issuance / AUDIT_SPEC §3.5 denial record). */
 type LeaseWindowKind = "issued" | "denied";
 
-/** 固定窓の判定結果(超過時は窓の残り秒数を返す — §13-3 の先例と同型)。 */
+/** The fixed-window decision (on excess it returns the window's remaining seconds — same shape as the §13-3 precedent). */
 interface LeaseWindowDecision {
   readonly allowed: boolean;
   readonly retryAfterSeconds: number;
@@ -549,15 +608,18 @@ interface LeaseWindowDecision {
 export class DataStore extends Context.Service<DataStore, DataStoreShape>()("DataStore") {}
 
 // ---------------------------------------------------------------------------
-// 行デコードの安全層: 必須列の存在・型を検査し、不一致は説明付き defect にする。
-// String(...) / Number(...) の素通しは列名 typo / rename を文字列 "undefined" や
-// NaN として通過させるため、行 → ドメイン型の写像は必ずここを経由する
-// (storedSuite / statementOf の status 検査 — 「未知値は defect」— の全列への拡張)。
+// The row-decode safety layer: check a required column's presence and
+// type; a mismatch becomes a defect with an explanation. A bare
+// String(...) / Number(...) passthrough would let a column-name typo /
+// rename through as the string "undefined" or NaN, so every row →
+// domain-type mapping goes through here (the same discipline as
+// storedSuite / statementOf's status check — "an unknown value is a
+// defect" — extended to every column).
 // ---------------------------------------------------------------------------
 
 type StoredRow = Record<string, unknown>;
 
-/** 列の存在検査(SELECT 句とデコーダの列名不一致 = 実装バグの検出)。 */
+/** A column's existence check (a column-name mismatch between the SELECT clause and the decoder = detection of an implementation bug). */
 function columnValue(row: StoredRow, column: string): unknown {
   const value = row[column];
   if (value === undefined) {
@@ -594,15 +656,15 @@ function countsOf(row: StoredRow | undefined): ResourceCounts {
   if (row === undefined) {
     return { active: 0, rows: 0 };
   }
-  // SUM(CASE ...) は 0 行のとき NULL を返すため 0 に読み替える(COUNT は常に数値)
+  // SUM(CASE ...) returns NULL on zero rows, so it is read as 0 (COUNT is always a number)
   const active = nullableNumberColumn(row, "active_rows");
   return { active: active ?? 0, rows: numberColumn(row, "total_rows") };
 }
 
 /**
- * 保存済み suite 列の読み出し。書き込み経路は Schema の Literal(§12-2)が
- * 強制するため、既知以外の値はストレージ破損として defect に落とす
- * (cast で握り潰さない)。
+ * Read out the stored suite column. Since the write path is pinned by
+ * the Schema Literal (§12-2), a value outside the known set is storage
+ * corruption and drops to a defect (never swallowed by a cast).
  */
 function storedSuite(value: unknown): WireSuite {
   if (value !== "maruhi/v1") {
@@ -612,18 +674,19 @@ function storedSuite(value: unknown): WireSuite {
 }
 
 /**
- * 保存済み status 列 → 環境ステートメントの 2 値(環境メタは v2 の対象外 —
- * CRYPTO_SPEC §4.2)。既知以外はストレージ破損として defect。
+ * The stored status column → an environment statement's 2 values
+ * (environment meta is outside v2's scope — CRYPTO_SPEC §4.2). An
+ * unknown value is a defect as storage corruption.
  */
 function storedEnvStatus(value: string): "active" | "deleted" {
   if (value !== "active" && value !== "deleted") {
-    // 書き込み経路は Schema の Literal が強制する(既知以外はストレージ破損)
+    // The write path is pinned by the Schema Literal (an unknown value is storage corruption)
     throw new Error("unexpected status in stored meta statement row");
   }
   return value;
 }
 
-/** 保存済み status 列 → 変数ステートメントの 3 値(declared は v2 のみ)。 */
+/** The stored status column → a variable statement's 3 values (declared is v2 only). */
 function storedVariableStatus(value: string): MetaStatementStatusInput {
   if (value !== "active" && value !== "deleted" && value !== "declared") {
     throw new Error("unexpected status in stored meta statement row");
@@ -631,7 +694,7 @@ function storedVariableStatus(value: string): MetaStatementStatusInput {
   return value;
 }
 
-/** 保存済み var_type 列 → 閉集合(CRYPTO_SPEC §4.2 — 既知以外は defect)。 */
+/** The stored var_type column → the closed set (CRYPTO_SPEC §4.2 — an unknown value is a defect). */
 function storedVarType(value: string): MetaVarTypeInput {
   if (
     value !== "" &&
@@ -645,7 +708,7 @@ function storedVarType(value: string): MetaVarTypeInput {
   return value;
 }
 
-/** 保存済み required 列("true" / "false" — 署名対象表現)→ boolean。 */
+/** The stored required column ("true" / "false" — the signed-target representation) → boolean. */
 function storedRequired(value: string): boolean {
   if (value !== "true" && value !== "false") {
     throw new Error("unexpected required in stored meta statement row");
@@ -662,8 +725,9 @@ function nullableStringColumn(row: StoredRow, column: string): string | null {
 }
 
 /**
- * レイアウト v2 のスキーマ欄列のデコード(v1 行 = 4 列とも不在扱いで null)。
- * v2 行のスキーマ欄 NULL は書き込み経路の不変条件違反(defect)。
+ * Decode the layout-v2 schema columns (a v1 row = all 4 columns treated
+ * as absent → null). A NULL schema column on a v2 row is an invariant
+ * violation of the write path (a defect).
  */
 function storedSchemaColumns(row: StoredRow, prefix: string): MetaVariableSchemaInput | null {
   const layoutVersion = numberColumn(row, `${prefix}layout_version`);
@@ -684,10 +748,11 @@ function storedSchemaColumns(row: StoredRow, prefix: string): MetaVariableSchema
 }
 
 /**
- * メタステートメント列(environmentId / variableId を除く共通部)のデコード。
- * prefix は latestVersions の SQL 別名(ms_*)用 — 擬似行オブジェクトの組み立てを
- * せず、別名付きの行をそのまま読む。status のデコードは環境(2 値)/ 変数
- * (3 値)で呼び出し側が選ぶ。
+ * Decode the meta-statement columns (the common part excluding
+ * environmentId / variableId). prefix serves latestVersions's SQL
+ * aliases (ms_*) — the aliased row is read as-is without assembling a
+ * pseudo-row object. The caller picks the status decode between
+ * environment (2 values) and variable (3 values).
  */
 function statementColumns<S extends MetaStatementStatusInput>(
   row: StoredRow,
@@ -708,7 +773,7 @@ function statementColumns<S extends MetaStatementStatusInput>(
   };
 }
 
-/** 環境メタステートメント行 → 配布形(author 込み。environmentId は列から取る)。 */
+/** An environment meta-statement row → the distributed form (author included; environmentId comes from the column). */
 function statementOf(row: StoredRow): DistributedMetaStatementValue {
   return {
     environmentId: stringColumn(row, "environment_id"),
@@ -717,9 +782,10 @@ function statementOf(row: StoredRow): DistributedMetaStatementValue {
 }
 
 /**
- * 変数ステートメント列 → 配布形の v2 運搬フィールド(§12-2): v1 行では
- * 4 フィールドとも不在(v1 の配布へ新フィールドを足さない)、v2 行では
- * layoutVersion + スキーマ欄を展開する。
+ * Variable-statement columns → the distributed form's v2 carried
+ * fields (§12-2): on a v1 row all four fields are absent (no new field
+ * is added to a v1 distribution); on a v2 row layoutVersion + the
+ * schema fields are expanded.
  */
 function variableStatementV2Fields(
   row: StoredRow,
@@ -749,7 +815,7 @@ function variableStatementOf(row: StoredRow): DistributedVariableMetaStatementVa
   };
 }
 
-/** 変数ステートメントのアンカー行 → MetaAnchor(layoutVersion は保存実値)。 */
+/** A variable statement's anchor row → MetaAnchor (layoutVersion is the stored actual value). */
 function variableAnchorOf(row: StoredRow | undefined): MetaAnchor | null {
   if (row === undefined) {
     return null;
@@ -762,7 +828,7 @@ function variableAnchorOf(row: StoredRow | undefined): MetaAnchor | null {
   };
 }
 
-/** 環境ステートメントのアンカー行 → MetaAnchor(環境メタは常にレイアウト 1)。 */
+/** An environment statement's anchor row → MetaAnchor (environment meta is always layout 1). */
 function environmentAnchorOf(row: StoredRow | undefined): MetaAnchor | null {
   if (row === undefined) {
     return null;
@@ -775,13 +841,15 @@ function environmentAnchorOf(row: StoredRow | undefined): MetaAnchor | null {
   };
 }
 
-// 配布(§12-2)は signed_bytes_hash_hex を選択しない = 配布しない(検証者が
-// 自ら再計算する)。アンカー照会(*AnchorOf)だけがハッシュ列を読む
+// Distribution (§12-2) does not select signed_bytes_hash_hex = never
+// distributes it (a verifier recomputes it themselves). Only the
+// anchor lookups (*AnchorOf) read the hash column
 const MS_COLUMNS =
   "ms.environment_id, ms.suite, ms.name, ms.status, ms.meta_version, ms.prev_meta_sig_hash_hex, ms.chain_head_hash_hex, ms.chain_head_seq, ms.signature_hex, ms.author_user_id, ms.author_key_fingerprint";
 
-// 変数ステートメントは v2 の運搬フィールド列も選択する(環境側の SELECT には
-// 存在しない列 — environment_meta_statements は v2 の対象外)
+// A variable statement also selects the v2 carried-field columns
+// (columns that do not exist in the environment side's SELECT —
+// environment_meta_statements is outside v2's scope)
 const VAR_MS_COLUMNS = `${MS_COLUMNS}, ms.layout_version, ms.var_type, ms.required, ms.description`;
 
 const makeEnvironmentQueries = (sql: SqlStorage) => ({
@@ -824,8 +892,10 @@ const makeEnvironmentQueries = (sql: SqlStorage) => ({
         .toArray();
       return rows.length > 0;
     }),
-  // 削除済み環境も deleted ステートメント付きで列挙する(削除の否認・無断
-  // 復活の検出材料 — §12-4。クライアントはステートメントの status で判別する)
+  // Deleted environments are also listed with their deleted statement
+  // (the detection material for a denied deletion / unauthorized
+  // revival — §12-4; the client discriminates by the statement's
+  // status)
   listEnvironmentStatements: Effect.sync(() =>
     sql
       .exec(
@@ -870,8 +940,9 @@ const makeEnvironmentQueries = (sql: SqlStorage) => ({
           .toArray()[0],
       ),
     ),
-  // 配布(§12-2)は signed_bytes_hash_hex を選択しない = 配布しない(検証者が
-  // 自ら再計算する — ステートメント配布と同じ規律)
+  // Distribution (§12-2) does not select signed_bytes_hash_hex = never
+  // distributes it (a verifier recomputes it themselves — the same
+  // discipline as statement distribution)
   environmentManifest: (environmentId: string) =>
     Effect.sync(() => {
       const row = sql
@@ -984,10 +1055,11 @@ const makeVariableQueries = (sql: SqlStorage) => ({
         .toArray()
         .map(variableStatementOf),
     ),
-  // deletedVariableStatements の active 側(メタデータのみモード — §12-7):
-  // 最新ステートメントのみ。値・DEK は選択しない(配布しないため触りもしない)。
-  // declared 変数のステートメントも含む(削除済みでない全変数の最新形 —
-  // status が判別を担う)
+  // The active side of deletedVariableStatements (the metadata-only
+  // mode — §12-7): the latest statements only. Values and DEKs are not
+  // selected (never distributed, so never touched). The statements of
+  // declared variables are included too (the latest form of every
+  // non-deleted variable — status carries the discrimination)
   activeVariableStatements: (environmentId: string) =>
     Effect.sync(() =>
       sql
@@ -1005,9 +1077,10 @@ const makeVariableQueries = (sql: SqlStorage) => ({
         .toArray()
         .map(variableStatementOf),
     ),
-  // declared 変数の最新ステートメント(値付き pull の同梱材料 — §12-7。値・
-  // バージョンは存在しないため latestVersions には現れない: JOIN が
-  // latest_version 0 の行を自然に除外する)
+  // The latest statements of declared variables (the bundled material
+  // of a value-bearing pull — §12-7; they never appear in
+  // latestVersions because no value or version exists: the JOIN
+  // naturally excludes the rows with latest_version 0)
   declaredVariableStatements: (environmentId: string) =>
     Effect.sync(() =>
       sql
@@ -1036,9 +1109,10 @@ const makeVariableQueries = (sql: SqlStorage) => ({
         .toArray()[0];
       return countsOf(row);
     }),
-  // variables_digest の再計算材料(§12-5 (7)): tombstone 込みの全変数の最新形。
-  // 正規順(variable_id のバイト昇順)は crypto の computeVariablesDigest が
-  // 内部で確立するため、ここでは順序を規範にしない
+  // The recompute input of variables_digest (§12-5 (7)): the latest
+  // form of every variable, tombstones included. The canonical order
+  // (byte-ascending variable_id) is established internally by crypto's
+  // computeVariablesDigest, so the order is not canonicalized here
   variableDigestEntries: (environmentId: string) =>
     Effect.sync(() =>
       sql
@@ -1056,16 +1130,19 @@ const makeVariableQueries = (sql: SqlStorage) => ({
         .toArray()
         .map((row): VariableDigestEntryRow => ({
           variableId: stringColumn(row, "variable_id"),
-          // declared も entry の status 値として自然に載る(CRYPTO_SPEC §4.3 —
-          // 正規形・エンコーダは不変)
+          // declared naturally rides along as an entry's status value
+          // (CRYPTO_SPEC §4.3 — the canonical form and encoder are
+          // unchanged)
           status: storedVariableStatus(stringColumn(row, "status")),
           metaVersion: numberColumn(row, "meta_version"),
           metaSigHashHex: stringColumn(row, "signed_bytes_hash_hex"),
         })),
     ),
-  // checkpoint values_digest の再計算材料(§6.4): active 変数の最新 version と
-  // 保存済み value_signed_bytes ハッシュ。正規順(variable_id のバイト昇順)は
-  // crypto の computeEnvValuesDigest が内部で確立するため、順序を規範にしない
+  // The recompute input of a checkpoint values_digest (§6.4): each
+  // active variable's latest version and stored value_signed_bytes
+  // hash. The canonical order (byte-ascending variable_id) is
+  // established internally by crypto's computeEnvValuesDigest, so the
+  // order is not canonicalized here
   checkpointValueEntries: (environmentId: string) =>
     Effect.sync(() =>
       sql
@@ -1087,7 +1164,8 @@ const makeVariableQueries = (sql: SqlStorage) => ({
           valueSigHashHex: stringColumn(row, "signed_bytes_hash_hex"),
         })),
     ),
-  // 配布形のチェックポイントスナップショット(§12-7 — 保存行そのもの)
+  // The distributed checkpoint snapshot (§12-7 — the stored rows
+  // themselves)
   checkpointSnapshot: (environmentId: string) =>
     Effect.sync((): CheckpointSnapshotValue | null => {
       const row = sql
@@ -1148,10 +1226,11 @@ const makeVariableQueries = (sql: SqlStorage) => ({
 });
 
 const makeVersionQueries = (sql: SqlStorage) => ({
-  // 配布(§12-7)は保存済みの署名ブロックと writer / author をそのまま返す
-  // (現メンバー集合から再導出しない — 削除済み writer / author の過去データの
-  // 検証可能性)。signed_bytes_hash_hex は値・ステートメントとも選択しない =
-  // 配布しない(AUTH_SPEC §12-2)
+  // Distribution (§12-7) returns the stored signature block and the
+  // writer / author as-is (never re-derived from the current member
+  // set — verifiability of past data by a since-deleted writer /
+  // author). signed_bytes_hash_hex is not selected on either values or
+  // statements = never distributed (AUTH_SPEC §12-2)
   latestVersions: (environmentId: string) =>
     Effect.sync(() =>
       sql
@@ -1196,8 +1275,9 @@ const makeVersionQueries = (sql: SqlStorage) => ({
           signatureHex: stringColumn(row, "signature_hex"),
           writerUserId: stringColumn(row, "writer_user_id"),
           writerKeyFingerprintHex: stringColumn(row, "writer_key_fingerprint"),
-          // ステートメント部は ms_* 別名列をそのまま読む(statementColumns の
-          // prefix)。環境 ID は WHERE 句の引数、変数 ID は行の値
+          // The statement part reads the ms_* aliased columns as-is
+          // (statementColumns's prefix). The environment ID is the
+          // WHERE-clause argument; the variable ID is the row's value
           statement: {
             environmentId,
             variableId: stringColumn(row, "variable_id"),
@@ -1287,8 +1367,10 @@ const makeWrapQueries = (sql: SqlStorage) => ({
             recipientEncPubHex: stringColumn(row, "recipient_enc_pub_hex"),
           };
     }),
-  // 配布は本人宛のみ(§12-6)。server クラスの行は識別子形式が交わらないため
-  // user_id では引けないが、クラス条件を明示して境界を固定する
+  // Distribution is to the recipient only (§12-6). A server-class row
+  // cannot be looked up by user_id because the identifier shapes do
+  // not intersect, but the class condition is stated explicitly to pin
+  // the boundary
   listWrapsForRecipient: (environmentId: string, recipientUserId: string) =>
     Effect.sync(() =>
       selectWrapRows(sql, {
@@ -1305,9 +1387,11 @@ const makeWrapQueries = (sql: SqlStorage) => ({
         signerKeyFingerprintHex: stringColumn(row, "signer_key_fingerprint"),
       })),
     ),
-  // FP でも絞るのは、失効 → 別鍵での再 grant を挟んだ環境に旧サーバー鍵宛の
-  // 行が残っていた場合に、現行鍵で開封できない行を掴まないため(開封失敗は
-  // 毒ラップと区別できず、503 の理由を濁らせる)
+  // Narrowing by FP as well keeps an environment that went through
+  // revocation → re-grant under a different key from grabbing a row
+  // addressed to the old server key that the current key cannot unwrap
+  // (an unwrap failure is indistinguishable from a poisoned wrap and
+  // would muddy the 503's reason)
   listServerWraps: (environmentId: string, serverKeyFingerprintHex: string) =>
     Effect.sync(() =>
       selectWrapRows(sql, {
@@ -1319,7 +1403,8 @@ const makeWrapQueries = (sql: SqlStorage) => ({
   checkLeaseWindow: (kind: LeaseWindowKind, limit: number, nowMs: number) =>
     Effect.sync(() => {
       const current = leaseWindowRow(sql, kind, nowMs);
-      // 窓切れ・初回・時計の巻き戻しはいずれも「0 から数え直し」= 常に許可
+      // An expired window, a first request, and a clock rewind all mean
+      // "count from 0" = always allowed
       if (current === null || current.count < limit) {
         return { allowed: true, retryAfterSeconds: 0 };
       }
@@ -1357,8 +1442,9 @@ const makeWrapQueries = (sql: SqlStorage) => ({
     expiresAtMs: number,
     nowMs: number,
   ) => {
-    // GC を先に置くことで、期限切れの同一キー残骸が主キー衝突で新しい束縛の
-    // 記録を妨げない(照会側は expires_at 条件で既に無視している)
+    // Placing the GC first keeps an expired leftover of the same key
+    // from blocking a new binding's record via a primary-key conflict
+    // (the query side already ignores it via the expires_at condition)
     sql.exec("DELETE FROM lease_bindings WHERE expires_at <= ?", nowMs);
     sql.exec(
       `INSERT INTO lease_bindings (binding_key_hex, ephemeral_pub_hex, expires_at)
@@ -1371,9 +1457,10 @@ const makeWrapQueries = (sql: SqlStorage) => ({
 });
 
 /**
- * プロジェクト設定(AUTH_SPEC §12-11 — 現状 schemaPolicy のみ)。行なし =
- * 既定 disabled。既知外の保存値はストレージ破損として defect(storedSuite と
- * 同じ規律 — 黙って既定へ読み替えない)。
+ * Project settings (AUTH_SPEC §12-11 — currently only schemaPolicy). No
+ * row = the default disabled. An unknown stored value is a defect as
+ * storage corruption (the same discipline as storedSuite — never
+ * silently re-read as the default).
  */
 const makeSettingsQueries = (sql: SqlStorage) => ({
   schemaPolicy: Effect.sync((): SchemaPolicy => {
@@ -1390,8 +1477,10 @@ const makeSettingsQueries = (sql: SqlStorage) => ({
 });
 
 /**
- * ヘッド申告の読み・固定窓(AUTH_SPEC §16-1)。窓の意味論(判定と消費の分離・
- * 窓切れ = 数え直し)はリース窓と同一で、キーがメンバー単位になっただけ。
+ * Reads and the fixed window of head attestations (AUTH_SPEC §16-1).
+ * The window's semantics (separation of judgment and consumption;
+ * expired = counting from 0) are identical to the lease window's — only
+ * the key became per-member.
  */
 const makeAttestationQueries = (sql: SqlStorage) => ({
   headAttestationSeq: (attesterUserId: string, keyFingerprintHex: string) =>
@@ -1451,7 +1540,7 @@ const makeAttestationQueries = (sql: SqlStorage) => ({
   },
 });
 
-/** 申告窓の有効行(リース窓の leaseWindowRow と同じ「有効な窓」の定義)。 */
+/** The live row of the attestation window (same "live window" definition as the lease window's leaseWindowRow). */
 function attestationWindowRow(
   sql: SqlStorage,
   attesterUserId: string,
@@ -1474,8 +1563,9 @@ function attestationWindowRow(
 }
 
 /**
- * 現在有効な固定窓の行(窓切れ・初回・時計の巻き戻しは null = 数え直し)。
- * 判定と消費が同じ「有効な窓」の定義を共有するための 1 箇所。
+ * The row of the currently-live fixed window (expired, first request,
+ * or a clock rewind → null = count from 0). The single place where
+ * judgment and consumption share the same "live window" definition.
  */
 function leaseWindowRow(
   sql: SqlStorage,
@@ -1496,7 +1586,8 @@ function leaseWindowRow(
 }
 
 /**
- * ラップ行の共通 SELECT(配布とリース材料で列だけが違う)。並びは epoch 昇順。
+ * The common SELECT of wrap rows (only the columns differ between
+ * distribution and lease material). Ordered by ascending epoch.
  */
 function selectWrapRows(
   sql: SqlStorage,
@@ -1522,9 +1613,10 @@ function selectWrapRows(
 }
 
 /**
- * ラップ行の共通部。`storedSuite` は未知スイートを defect にする(v1 の書き込み
- * 経路では生まれない値であり、黙って v1 として配布・再ラップしない — §13-5 の
- * リカバリーブロブと同じ規律)。
+ * The common part of a wrap row. `storedSuite` makes an unknown suite a
+ * defect (a value the v1 write path cannot produce; it is never
+ * silently distributed or re-wrapped as v1 — the same discipline as
+ * the §13-5 recovery blob).
  */
 function wrapBodyOf(row: Record<string, SqlStorageValue>): {
   readonly suite: WireSuite;
@@ -1541,9 +1633,10 @@ function wrapBodyOf(row: Record<string, SqlStorageValue>): {
 }
 
 /**
- * レイアウト v2 の列値(layout_version + スキーマ欄 — 変数ステートメント専用)。
- * v1 ステートメントは layout_version 1・スキーマ欄 NULL。required は署名対象の
- * "true" / "false" 表現で保存する(CRYPTO_SPEC §4.2 の LP フィールドと同一)。
+ * The layout-v2 column values (layout_version + the schema fields —
+ * variable statements only). A v1 statement has layout_version 1 and
+ * NULL schema fields. required is stored as the signed-target "true" /
+ * "false" representation (identical to CRYPTO_SPEC §4.2's LP field).
  */
 function layoutColumnValues(statement: MetaStatementInput): readonly (string | number | null)[] {
   const layoutVersion = statement.layoutVersion ?? 1;
@@ -1555,8 +1648,9 @@ function layoutColumnValues(statement: MetaStatementInput): readonly (string | n
 }
 
 /**
- * ステートメント行の INSERT(変数・環境共通の列並び。テーブル名だけ差し替える)。
- * 変数側はレイアウト v2 の列({@link layoutColumnValues})も書く。
+ * The INSERT of a statement row (the column order shared by variable
+ * and environment; only the table name is swapped). The variable side
+ * also writes the layout-v2 columns ({@link layoutColumnValues}).
  */
 function insertStatementRow(
   sql: SqlStorage,
@@ -1598,8 +1692,9 @@ function insertStatementRow(
 }
 
 const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
-  // latest_meta_version は 0 で挿入し、同じ同期ブロック内の
-  // insertEnvironmentMetaStatement(metaVersion 1)が確定する
+  // latest_meta_version is inserted as 0 and settled by the
+  // insertEnvironmentMetaStatement (metaVersion 1) inside the same
+  // synchronous block
   insertEnvironment: (environmentId, name, nowMs) => {
     sql.exec(
       "INSERT INTO environments (environment_id, name, latest_meta_version, created_at, deleted_at) VALUES (?, ?, 0, ?, NULL)",
@@ -1632,18 +1727,24 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       environmentId,
     );
     sql.exec("DELETE FROM variables WHERE environment_id = ?", environmentId);
-    // 配下の変数ステートメントも即時削除する(§12-4 の配下データ)。環境自身の
-    // ステートメント連鎖(deleted 込み)は environment_meta_statements に残る —
-    // 環境 ID はチェーン合意規則で再利用不能のため、変数側に検出材料は残らない
+    // The subordinate variable statements are also deleted immediately
+    // (the §12-4 subordinate data). The environment's own statement
+    // chain (deleted included) stays in environment_meta_statements —
+    // since an environment ID cannot be reused under the chain
+    // consensus rules, nothing on the variable side remains as
+    // detection material
     sql.exec("DELETE FROM variable_meta_statements WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM variable_versions WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM dek_wraps WHERE environment_id = ?", environmentId);
-    // 環境マニフェストもカスケード削除する(§12-4: 削除済み環境には
-    // 配布チャネルが存在せず、配布されないサーバー保存物に検出材料としての残存
-    // 価値がない。環境自身の deleted ステートメントが終端の検出材料)
+    // The environment manifest is also cascade-deleted (§12-4: a
+    // deleted environment has no distribution channel, and a
+    // server-stored artifact that is never distributed has no residual
+    // value as detection material. The environment's own deleted
+    // statement is the terminal detection material)
     sql.exec("DELETE FROM environment_manifests WHERE environment_id = ?", environmentId);
-    // チェックポイントのタプル・値スナップショットも同じ論法でカスケード削除
-    // (§12-4: 削除済み環境のスナップショットに配布チャネルはない)
+    // The checkpoint tuple and value snapshot are cascade-deleted by
+    // the same argument (§12-4: a deleted environment's snapshot has no
+    // distribution channel)
 
     sql.exec("DELETE FROM environment_checkpoints WHERE environment_id = ?", environmentId);
     sql.exec("DELETE FROM checkpoint_snapshot_values WHERE environment_id = ?", environmentId);
@@ -1696,7 +1797,8 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       variableId,
     );
   },
-  // 保持は環境ごとに最新 1 通のみ(§12-5 — upsert で置き換え、行を蓄積しない)
+  // Only the latest one is kept per environment (§12-5 — replaced via
+  // upsert; rows are not accumulated)
   upsertEnvironmentManifest: (environmentId, manifest, signedBytesHashHex, issuer, nowMs) => {
     sql.exec(
       `INSERT INTO environment_manifests
@@ -1738,13 +1840,18 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
     );
   },
   upsertCheckpointSnapshot: (environmentId, checkpoint, values, nowMs) => {
-    // 保存済み列挙の digest(上書き前に読む)。全呼び出し元は保存前に
-    // 「values の digest = checkpoint.valuesDigestHex」を突合済み
-    // (ensureCheckpointValuesDigest — standalone / create / rotate の 3 経路)で、
-    // 両表の行は同じ同期ブロックでしか書かれず、削除も両表同時(retireEnvironment)。
-    // よって保存行の values_digest_hex は保存済み列挙そのものの SHA-256 であり、
-    // 一致すれば列挙は同一 — 全置換を省いても保存状態は変わらない(§6.4 の
-    // 「受理時点状態そのもの」を保つ)。タプル座標の行は常に更新する
+    // The digest of the stored enumeration (read before overwriting).
+    // Every call site has already cross-checked "the digest of values =
+    // checkpoint.valuesDigestHex" before saving
+    // (ensureCheckpointValuesDigest — the 3 paths: standalone / create
+    // / rotate), both tables' rows are written only inside the same
+    // synchronous block, and deletion happens to both tables together
+    // (retireEnvironment). So a stored row's values_digest_hex is the
+    // SHA-256 of the stored enumeration itself, and a match means the
+    // enumeration is identical — skipping the wholesale replacement
+    // leaves the stored state unchanged (keeping §6.4's "the state at
+    // acceptance time itself"). The tuple-coordinates row is always
+    // updated
     const stored = sql
       .exec(
         "SELECT values_digest_hex FROM environment_checkpoints WHERE environment_id = ?",
@@ -1779,7 +1886,8 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
     if (valuesUnchanged) {
       return;
     }
-    // 列挙は環境単位の全置換(受理時点状態そのもの — §6.4 の upsert 意味論)
+    // The enumeration is a wholesale replacement per environment (the
+    // state at acceptance time itself — the §6.4 upsert semantics)
     sql.exec("DELETE FROM checkpoint_snapshot_values WHERE environment_id = ?", environmentId);
     for (const value of values) {
       sql.exec(
@@ -1861,11 +1969,14 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       recipientEncPubHex,
     );
   },
-  // SELECT → DELETE の 2 文だが同一同期タスク内(permit 下・原子コミット)。
-  // recipient は主キー第 3 成分で主キー前方一致を使えないため、受信者索引
-  // dw_recipient (recipient_user_id, recipient_class)(do-schema.ts の
-  // マイグレーションステップ)で引く — 走査は対象 user_id 宛のラップ行に限られる
-  // (test/do-schema.test.ts が EXPLAIN QUERY PLAN で固定)
+  // Two statements, SELECT → DELETE, but inside the same synchronous
+  // task (under the permit, committed atomically). Since recipient is
+  // the third component of the primary key, a key-prefix match is
+  // impossible, so it is looked up via the recipient index dw_recipient
+  // (recipient_user_id, recipient_class) (a migration step of
+  // do-schema.ts) — the scan is limited to the wrap rows addressed to
+  // the target user_id (test/do-schema.test.ts pins it via EXPLAIN
+  // QUERY PLAN)
   deleteStaleMemberWraps: (recipientUserId, keepEncPubHex) => {
     const stale = sql
       .exec(

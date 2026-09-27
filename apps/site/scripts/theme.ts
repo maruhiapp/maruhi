@@ -1,25 +1,28 @@
-// apex サイト(LP + docs — Blume)のテーマ生成(裁定 B — docs/notes/web-design-pass.md §4
-// 「DP2 実装時の裁定録」)。
+// Theme generation for the apex site (LP + docs — Blume) (ruling B —
+// docs/notes/web-design-pass.md §4 "rulings made while implementing DP2").
 //
-// ブランド定義の唯一の置き場所は apps/web/theme/(ADR-0013)。その生成物 maruhi.css
-// (`astryx theme build` の出力 — 朱 2 値 + on-accent 2 値は tokens で確定、warm neutral は
-// HCT 導出)から、Blume の theme tokens(`--blume-*`)と blume.config.ts が読む定数を
-// **書き出す**。site 側に生 hex を手で書かない(二重管理を作らない)ため、生成物は
-// コミットし、test/unit/theme.test.ts が「再生成 = コミット済み」を検査する(DP1 の
-// 「生成 CSS と一致」契約と同じ型)。
+// The only home for brand definitions is apps/web/theme/ (ADR-0013). From
+// its artifact maruhi.css (the output of `astryx theme build` — the
+// vermilion pair + on-accent pair are fixed in tokens, warm neutral is
+// HCT-derived), this **writes** Blume's theme tokens (`--blume-*`) and the
+// constants blume.config.ts reads. To avoid hand-writing raw hex on the
+// site side (no double bookkeeping), the artifacts are committed and
+// test/unit/theme.test.ts checks "regenerated = committed" (the same shape
+// as DP1's "matches the generated CSS" contract).
 //
-// 同じ経路でブランド資産(favicon / logo / OG / apple-touch-icon)を apps/web/public から
-// 複製し、ダークモード用のロゴ(fill を dark accent に差し替えた SVG)を導出する。
+// Along the same path, brand assets (favicon / logo / OG / apple-touch-icon)
+// are copied from apps/web/public, and the dark-mode logo (an SVG with fill
+// swapped to the dark accent) is derived.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** 光・闇の 2 値。 */
+/** A pair of values, light and dark. */
 export interface ModePair {
   readonly light: string;
   readonly dark: string;
 }
 
-/** maruhi.css から抽出したブランドトークン(すべて hex)。 */
+/** Brand tokens extracted from maruhi.css (all hex). */
 export interface BrandTokens {
   readonly accent: ModePair;
   readonly onAccent: ModePair;
@@ -32,30 +35,31 @@ export interface BrandTokens {
   readonly radius: string;
 }
 
-/** リポジトリ相対パス(生成の入力・出力の目録)。 */
+/** Repo-relative paths (the catalog of generation inputs and outputs). */
 export const paths = {
-  /** 入力: Astryx テーマの生成 CSS(ブランドの正の生成物)。 */
+  /** Input: the Astryx theme's generated CSS (the canonical brand artifact). */
   webThemeCss: "apps/web/theme/maruhi.css",
-  /** 入力: 朱の単色ロゴ(light 側の accent で塗られている)。 */
+  /** Input: the single-color vermilion logo (painted with the light accent). */
   webLogo: "apps/web/public/logo.svg",
-  /** 出力: Blume の theme.css(design tokens の上書き)。 */
+  /** Output: Blume's theme.css (design-token overrides). */
   themeCss: "apps/site/theme.css",
-  /** 出力: blume.config.ts が読む定数。 */
+  /** Output: the constants blume.config.ts reads. */
   tokensTs: "apps/site/theme/tokens.ts",
-  /** 出力: ダークモード用ロゴ(fill を dark accent へ)。 */
+  /** Output: the dark-mode logo (fill swapped to the dark accent). */
   logoDark: "apps/site/public/logo-dark.svg",
 } as const;
 
-/** apps/web/public から apps/site/public へ無変換で複製するブランド資産。 */
+/** Brand assets copied unmodified from apps/web/public to apps/site/public. */
 export const copiedAssets = ["favicon.svg", "logo.svg", "og.png", "apple-touch-icon.png"] as const;
 
 const HEX = "#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?";
 
 /**
- * `--<token>: light-dark(<hex>, <hex>)` の宣言を maruhi.css から 1 組だけ取り出す。
- * 同じトークン名は variant スコープで `var(...)` 参照として再宣言されるため、
- * hex の light-dark 形に限って一意であることを要求する(複数の異なる組が出たら
- * 生成規則の前提が変わったとみなして失敗させる)。
+ * Extracts exactly one `--<token>: light-dark(<hex>, <hex>)` declaration
+ * from maruhi.css. The same token name is re-declared as a `var(...)`
+ * reference in variant scopes, so uniqueness is required only for the hex
+ * light-dark form (multiple differing pairs means the generation rule's
+ * premise changed — fail).
  */
 function pickPair(css: string, token: string): ModePair {
   const re = new RegExp(`--${token}:\\s*light-dark\\((${HEX}),\\s*(${HEX})\\)`, "g");
@@ -82,7 +86,7 @@ function pickLength(css: string, token: string): string {
   return [...values][0]!;
 }
 
-/** maruhi.css の本文からブランドトークンを抽出する。 */
+/** Extracts the brand tokens from maruhi.css's body. */
 export function extractBrand(webThemeCss: string): BrandTokens {
   return {
     accent: pickPair(webThemeCss, "color-accent"),
@@ -116,9 +120,9 @@ const blumeTokenMap = (
 ];
 
 /**
- * Blume の theme.css を描く。Blume は `:root` を light、`:root[data-theme="dark"]` を dark
- * として読む(theme.mode "system" ではインラインの起動スクリプトが OS 設定から
- * data-theme を立てる)。
+ * Renders Blume's theme.css. Blume reads `:root` as light and
+ * `:root[data-theme="dark"]` as dark (with theme.mode "system", the inline
+ * bootstrap script sets data-theme from the OS setting).
  */
 export function renderThemeCss(b: BrandTokens): string {
   const block = (selector: string, mode: keyof ModePair): string =>
@@ -130,7 +134,7 @@ export function renderThemeCss(b: BrandTokens): string {
 
 const pair = (p: ModePair): string => `{ light: "${p.light}", dark: "${p.dark}" }`;
 
-/** blume.config.ts / e2e が import する定数モジュールを描く(on-accent・surface は theme.css 側のみで使う)。 */
+/** Renders the constants module imported by blume.config.ts / e2e (on-accent and surface are used only on the theme.css side). */
 export function renderTokensTs(b: BrandTokens): string {
   return `// ${GENERATED_BANNER.split("\n").join("\n// ")}
 // Brand tokens extracted from the Astryx maruhi theme (docs/notes/web-design-pass.md §3 / §4).
@@ -153,26 +157,27 @@ export const border = ${pair(b.border)} as const;
 }
 
 /**
- * ダークモード用ロゴ: apps/web/public/logo.svg(fill = light 側の accent)の fill を
- * dark 側の accent に置き換える。置換対象が見つからなければ前提(SVG の赤 = light accent —
- * DP1 裁定 A)が破れているので失敗させる。
+ * Dark-mode logo: replaces the fill of apps/web/public/logo.svg (fill =
+ * the light accent) with the dark accent. If no replacement target is
+ * found, the premise (the SVG's red = light accent — DP1 ruling A) is
+ * broken, so it fails.
  */
 export function renderLogoDark(logoSvg: string, b: BrandTokens): string {
   const light = b.accent.light.toLowerCase();
   const re = new RegExp(`fill="${light}"`, "gi");
   if (!re.test(logoSvg)) {
     throw new Error(
-      `apps/web/public/logo.svg: no fill="${b.accent.light}" found (DP1 裁定 A: SVG の赤 = light accent)`,
+      `apps/web/public/logo.svg: no fill="${b.accent.light}" found (DP1 ruling A: the SVG's red = light accent)`,
     );
   }
   const note = `<!-- @generated: apps/web/public/logo.svg with the fill swapped to the dark-mode accent (${b.accent.dark}) — see apps/site/scripts/build-theme.ts -->\n`;
   const swapped = logoSvg.replace(re, `fill="${b.accent.dark}"`);
-  // 元の先頭コメントの直後(<svg の前)に由来を挿す
+  // Insert the provenance right after the original leading comment (before <svg)
   const at = swapped.indexOf("<svg");
   return `${swapped.slice(0, at)}${note}${swapped.slice(at)}`;
 }
 
-/** 生成物一式(パス → 内容)。バイナリ資産は Buffer のまま複製する。 */
+/** The whole set of artifacts (path → content). Binary assets are copied as Buffer. */
 export function renderAll(repoRoot: string): ReadonlyMap<string, string | Buffer> {
   const css = readFileSync(join(repoRoot, paths.webThemeCss), "utf8");
   const brand = extractBrand(css);

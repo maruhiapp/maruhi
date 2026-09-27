@@ -1,140 +1,139 @@
-# セッション 05 メモ(メンバーシップログのサーバー保存 — apps/server 基盤 + CRYPTO_SPEC §6.4)
+# Session 05 memo (server-side storage of the membership log — apps/server foundation + CRYPTO_SPEC §6.4)
 
-日付: 2026-08-02。前提: PR #12・#13(packages/crypto = E2EE コア)マージ済み。
-スコープ: 仕様追記(§6.4 サイズ上限)+ packages/core + packages/api-schema + apps/server
-(プロジェクト DO・チェーン追記 API)+ vitest-pool-workers テスト。
+Date: 2026-08-02. Prerequisite: PRs #12 and #13 (packages/crypto = the E2EE core) merged.
+Scope: spec addition (§6.4 size limits) + packages/core + packages/api-schema + apps/server
+(project DO, chain-append API) + vitest-pool-workers tests.
 
-## 1. やったこと(コミット順 = 層順)
+## 1. What was done (commit order = layer order)
 
-1. **spec**: §6.4 にサイズ上限(サーバー受理ポリシー)とプロジェクト ID = genesis
-   エントリハッシュを規定(§6.1 の先送り項目の解消)
-2. **deps**: effect 4.0.0-beta.102 を core / api-schema / server に完全ピンで追加
-3. **core**: `CryptoResult`(kind 判別 union)→ `Data.TaggedError` マッピング
-   (`fromCryptoResult` / `cryptoEffect`。セッション 04 裁定 (b) の帰結)+ `ProjectId`
-4. **api-schema**: チェーン init / get / append の HttpApi 定義。ChainEntry のワイヤ
-   Schema(op 判別 union、crypto の `ChainEntry` と型レベルで一致固定)+ 型付きエラー
-   (404 / 409 CAS / 409 genesis 重複 / 413 / 422 検証失敗 / 422 累積上限)
-5. **server**: `ProjectChainDO`(DO SQLite append-only 保存、verifyChain 再実行、
-   CAS、受理ポリシー、Semaphore(1) 直列化)+ HttpApi worker + 認証サービス境界
-6. **テスト**: ベクター正常系 9 + 認可系 negative 14 の API 経由再生、CAS 競合、
-   genesis 重複、サイズ / 累積上限、認証境界。全 30(サーバー)/ root 197 PASS
+1. **spec**: §6.4 gained size limits (server acceptance policy) and project ID = genesis
+   entry hash (resolving §6.1's deferred item)
+2. **deps**: added effect 4.0.0-beta.102 to core / api-schema / server, fully pinned
+3. **core**: mapping `CryptoResult` (kind-discriminated union) → `Data.TaggedError`
+   (`fromCryptoResult` / `cryptoEffect`; the consequence of session 04's ruling (b)) + `ProjectId`
+4. **api-schema**: HttpApi definitions for chain init / get / append. The ChainEntry wire
+   Schema (an op-discriminated union, pinned to match crypto's `ChainEntry` at the type level) + typed errors
+   (404 / 409 CAS / 409 duplicate genesis / 413 / 422 verification failure / 422 cumulative limit)
+5. **server**: `ProjectChainDO` (DO SQLite append-only storage, verifyChain re-execution,
+   CAS, acceptance policy, Semaphore(1) serialization) + the HttpApi worker + the authentication service boundary
+6. **tests**: replayed 9 vector positives + 14 authorization negatives through the API, CAS contention,
+   duplicate genesis, size / cumulative limits, the authentication boundary. All 30 (server) / root 197 PASS
 
-## 2. 裁定事項(重要: 所有者の実時間応答が得られなかった)
+## 2. Rulings (important: no real-time response from the owner was available)
 
-セッション中に AskUserQuestion で 4 件の裁定を仰いだが応答が得られなかったため、
-**すべて「推奨案で仮進行 + PR レビューで所有者が承認/差し戻し」**とした。4 件とも
-不可逆な選択肢(合意規則化 = crypto 変更)を避けた形になっている。マージ = 承認とみなす。
+Four rulings were requested via AskUserQuestion during the session, but no response came, so
+**everything proceeded as "recommended option provisional progress + owner approve/reject at PR review"**. All four
+avoided irreversible options (making something a consensus rule = a crypto change). Merging counts as approval.
 
-### 裁定 1: エントリ全体サイズ上限(§6.1 の先送り項目)
+### Ruling 1: total entry-size limit (§6.1's deferred item)
 
-比較した案: (a) 受理ポリシー 1 MiB【採用】/ (b) op 別上限(64 KiB + grant_server
-例外)/ (c) 合意規則化(verifyChain 組み込み)/ (d) 規定しない。
+Options compared: (a) a 1 MiB acceptance policy [adopted] / (b) per-op limits (64 KiB + a grant_server
+exception) / (c) a consensus rule (built into verifyChain) / (d) leave it unspecified.
 
-採用理由: §6.1 のフィールド上限(合意規則)が仕様適合エントリの正規化サイズを最大
-約 516 KiB(grant_server の最大形 = 1024 B 環境 ID × 256)に**数学的に束縛**するため、
-1 MiB の受理ポリシーは仕様適合エントリを拒否し得ない = 実装間差異によるチェーン分裂が
-構造的に起きない。(c) は packages/crypto 変更(人間レビュー + ベクター先行)を発動し、
-フィールド上限と二重の検査になるだけで暗号学的利得がない。(d) は仕様の
-「§6.4 実装時に追加で規定する」への回答にならない。
+Adoption rationale: §6.1's field limits (a consensus rule) **mathematically bound** the normalized size of a
+spec-conformant entry to at most ~516 KiB (grant_server's maximal form = 1024 B environment IDs × 256), so
+a 1 MiB acceptance policy cannot reject a spec-conformant entry = implementation divergence cannot
+structurally split the chain. (c) triggers a packages/crypto change (human review + vectors first)
+and only duplicates the field-limit checks — no cryptographic gain. (d) fails to answer the spec's
+"to be defined additionally when §6.4 is implemented".
 
-### 裁定 2: チェーン累積上限(先送り項目とは別の追加論点)
+### Ruling 2: cumulative chain limit (a new issue separate from the deferred item)
 
-比較した案: (a) 受理ポリシーで導入(10,000 エントリ / 累積 32 MiB)【採用】/
-(b) 導入しない / (c) 合意規則化 / (d) エントリ数のみ。
+Options compared: (a) introduce an acceptance policy (10,000 entries / 32 MiB cumulative) [adopted] /
+(b) do not introduce one / (c) a consensus rule / (d) entry count only.
 
-採用理由: 追記は §6.4 により全チェーン再検証(O(n) 署名検証)であり、member 権限の
-`rotate_epoch` 連打でチェーンを肥大させる DoS(サーバー CPU + 全クライアントの同期・
-検証コスト)が開いている。受理ポリシーなら将来の引き上げが過去チェーンの有効性に
-影響しない。「長いチェーン = 無効」は有効性の意味論として不自然なので合意規則化しない。
+Adoption rationale: appends re-verify the whole chain per §6.4 (O(n) signature verification), and
+member-privilege `rotate_epoch` spam opens a DoS that bloats the chain (server CPU + every client's
+sync/verification cost). An acceptance policy lets future increases not affect past chains' validity.
+"A long chain = invalid" is unnatural as validity semantics, so it is not made a consensus rule.
 
-### 裁定 3: プロジェクト ID と DO 名前解決
+### Ruling 3: project ID and DO name resolution
 
-比較した案: (a) genesis エントリハッシュ = project_id、DO は idFromName【採用】/
-(b) サーバー採番(newUniqueId)/ (c) クライアント生成 ULID / (d) D1 projects テーブル。
+Options compared: (a) genesis entry hash = project_id, DO via idFromName [adopted] /
+(b) server-assigned (newUniqueId) / (c) client-generated ULID / (d) a D1 projects table.
 
-採用理由: (a) はチェーンと ID を暗号学的に束縛する — サーバーが同じ ID で別チェーンを
-配布する差し替えを、クライアントが genesis ハッシュ再計算だけで機械的に検出できる
-(§6.1 にはエントリ↔プロジェクトの束縛がないため、この性質は ID 設計からしか得られない)。
-同一 genesis の再投入は構造的に同一 DO へ到達し重複拒否になる。D1 不要なので、org 連携
-(AUTH_SPEC §9、認証セッション送り)の先取りもしない。(d) はスコープ外の D1 に踏み込む。
+Adoption rationale: (a) cryptographically binds the chain to the ID — a client can mechanically detect
+the server substituting a different chain under the same ID just by recomputing the genesis hash
+(§6.1 has no entry↔project binding, so this property can only come from the ID design).
+Resubmitting an identical genesis structurally reaches the same DO and is rejected as a duplicate. No D1 needed,
+so it also does not preempt org integration (AUTH_SPEC §9, deferred to the authentication session). (d) steps into out-of-scope D1.
 
-### 裁定 4: 認証スタブの本番混入防止
+### Ruling 4: preventing the auth stub from leaking into production
 
-比較した案: (a) モジュールグラフ分離【採用】/ (b) 環境変数切替 / (c) ビルド時 define +
-DCE / (d) 別パッケージ(@maruhi/server-testing)。
+Options compared: (a) module-graph separation [adopted] / (b) env-var switching / (c) build-time define +
+DCE / (d) a separate package (@maruhi/server-testing).
 
-採用理由: (a) はスタブを `apps/server/test/support/auth-stub.ts` に置き、wrangler の
-バンドルが `src/index.ts` を起点とする以上、スタブが本番ビルドに入る経路が構造的に
-存在しない(設定ミスで有効化される (b)・検証コストの高い (c) と違い、保証が bundler の
-module graph で機械的)。本番側は「明示の未認証プレースホルダ」(`unauthenticatedRequestAuth`)
-のみで、これはスタブではなく現状の正直な表現。
+Adoption rationale: (a) places the stub at `apps/server/test/support/auth-stub.ts`; since wrangler's
+bundle starts from `src/index.ts`, there is structurally no path for the stub to enter the production
+build (unlike (b), which could be enabled by a config mistake, and (c), which is costly to verify — the guarantee is mechanical via the bundler's
+module graph). The production side carries only an "explicit unauthenticated placeholder" (`unauthenticatedRequestAuth`),
+which is not a stub but an honest expression of the current state.
 
-**既知の制約(スタブ期間中)**: クライアントの身元申告は信用しない。追記 API の保護は
-現状チェーン署名の検証(§6.4)のみで、リクエスト主体の認証は行われない。認証セッションで
-SessionService / TokenService の実装が `RequestAuth` に結線される。
+**Known limitation (for the stub's lifetime)**: client identity claims are not trusted. The append API is
+currently protected only by chain-signature verification (§6.4); the request principal is not authenticated. In the authentication session,
+the SessionService / TokenService implementations get wired into `RequestAuth`.
 
-### その他の設計判断(機械的・可逆。推奨案で進行)
+### Other design decisions (mechanical, reversible — proceeded with the recommended option)
 
-- **Drizzle 見送り(DO チェーンテーブル)**: ADR-0006 は「リポジトリ層をサービス境界に
-  閉じる」が本旨。単一 append-only テーブル(SELECT 1 本 + INSERT 1 本)にマイグレーション
-  生成の利得はなく、drizzle-orm 依存(1.0.0-rc 系)を今入れる理由がない。素の SQL を
-  `ChainStore` サービス境界内に閉じた(Drizzle 型どころか SQL も外に出ない)。
-  D1 のユーザー / 組織スキーマ導入時(認証セッション)に Drizzle を導入し、その時に
-  DO 側も揃えるか再評価する
-- **DO 変更操作の直列化は Effect Semaphore(1)**: DO の input gate はストレージ以外の
-  await(verifyChain 内の crypto.subtle)中に開くため、ゲート任せでは追記同士が交錯し
-  「検証済み → 挿入」の間に別追記が入り得る。Semaphore で直列化し、seq PRIMARY KEY を
-  最終防衛とした
-- **HTTP 生ボディ上限 4 MiB は実装詳細**: 仕様(§6.4)は正規化バイト列基準(1 MiB)のみを
-  規定。生ボディ上限は JSON エスケープ膨張(最悪 ~6 倍)を見込んだ JSON パース前の
-  メモリ DoS 防御で、スキーマ外の素の 413 で返す
-- **自由文字列の §6.1 上限を api-schema の Schema に重複させない**: 上限超過は常に
-  verifyChain の `invalid-payload`(ベクターで固定された理由コード)として報告されるべきで、
-  Schema 400 と二重の拒否経路を作らない。固定長 hex のみ Schema で検査(安価・正確)
+- **Drizzle deferred (the DO chain table)**: ADR-0006's intent is "keep the repository layer inside
+  the service boundary". For a single append-only table (one SELECT + one INSERT) a migration
+  generator adds nothing, and there is no reason to pull in the drizzle-orm dependency (the 1.0.0-rc line) now. Plain SQL is
+  confined inside the `ChainStore` service boundary (no Drizzle types — not even SQL — escape).
+  Drizzle is introduced when the D1 user / org schema lands (the authentication session); whether to
+  align the DO side then is re-evaluated at that point
+- **Serialization of DO mutating operations uses an Effect Semaphore(1)**: the DO input gate opens during
+  non-storage awaits (crypto.subtle inside verifyChain), so leaving it to the gate would interleave appends —
+  another append could slip between "verified → insert". Serialized with a Semaphore, with the seq PRIMARY KEY as
+  the last line of defense
+- **The 4 MiB raw HTTP body limit is an implementation detail**: the spec (§6.4) defines only the
+  normalized-bytes basis (1 MiB). The raw-body limit defends against pre-JSON-parse
+  memory DoS, anticipating JSON escape inflation (worst case ~6×), and returns a bare 413 outside the schema
+- **Did not duplicate the §6.1 free-string limits into api-schema Schemas**: an over-limit value must always
+  be reported as verifyChain's `invalid-payload` (a reason code pinned by vectors); do not build
+  a second rejection path as a Schema 400. Only fixed-length hex is checked in Schema (cheap, precise)
 
-## 3. ハマったこと・環境知見
+## 3. Pitfalls and environment learnings
 
-- **cloudflareTest プラグイン(0.20.1)にはテスト間ストレージ分離がない**(旧
-  defineWorkersConfig の isolatedStorage に相当する機能がソース上存在しない)。DO SQLite は
-  ファイル内のテスト間で持ち越されるため、beforeEach で明示リセットした。さらに DO の
-  ManagedRuntime layer は最初のメソッド呼び出しまで遅延構築されるので、リセット側で
-  CREATE TABLE IF NOT EXISTS してから DELETE する必要がある
-- **workers-types と DOM lib の併用**: server の tsconfig は
+- **The cloudflareTest plugin (0.20.1) has no per-test storage isolation** (nothing equivalent to the old
+  defineWorkersConfig's isolatedStorage exists in the source). DO SQLite carries
+  over between tests in a file, so reset it explicitly in beforeEach. Moreover, the DO's
+  ManagedRuntime layer is lazily built until the first method call, so the reset side must
+  CREATE TABLE IF NOT EXISTS before DELETE
+- **Combining workers-types with the DOM lib**: the server tsconfig uses
   `types: ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers/types"]` +
-  `lib: ["ES2023", "DOM"]`。DOM lib がないと @maruhi/crypto のソース(DOM の
-  SubtleCrypto オーバーロード前提)が typecheck を通らない(workers-types は
-  exportKey の戻り値を union に潰している)。併用しても重複識別子エラーは出なかった
-- **workers-types の RPC スタブ型は union 戻り値を分配する**: `Promise<A|B>` を返す DO
-  メソッドがスタブ経由だと `Promise<A>&... | Promise<B>&...` になり await 型が壊れる。
-  worker 側で `as Promise<T>` に戻すヘルパ(rpcCall)を挟んだ
-- **HttpApi ハンドラのエラー型はエンドポイント宣言と厳密一致が必要**: ハンドラの
-  エラー union が宣言より 1 型でも広いと `.handle()` の型が崩れ、離れた場所
-  (toWebHandler の Context 型が unknown になる等)に誤誘導なエラーが出る。共有写像
-  関数はオーバーロードで戻り値 union を絞ること
-- **oxlint の no-underscore-dangle は有効**(eslint-js プラグイン経由)。`_tag` への
-  直接アクセスや `_` 接頭辞の識別子はテストでも書けない。判定は instanceof で行う
-- **fallow の CRAP ゲートは cyclomatic 6 でも踏む**(coverage 推定 0 の関数は
-  CRAP = c²+c > 30)。flat な switch 写像でも分割・共通化で 4 以下に抑える。DO の RPC
-  メソッドは静的には未参照に見えるため `fallow-ignore-next-line unused-class-member` で
-  理由付き抑制した
-- Effect v4 beta.102: `Effect.catchAll` は存在しない(catchTag / catchTags / catchCause)。
-  Semaphore は `effect` 直下の `Semaphore.makeUnsafe(permits)` + `withPermit`
+  `lib: ["ES2023", "DOM"]`. Without the DOM lib, @maruhi/crypto's source (which assumes the DOM
+  SubtleCrypto overloads) fails typecheck (workers-types flattens
+  exportKey's return into a union). Using them together produced no duplicate-identifier errors
+- **workers-types RPC stub types distribute over union returns**: a DO method returning
+  `Promise<A|B>` becomes `Promise<A>&... | Promise<B>&...` through the stub and the awaited type breaks.
+  Interposed a helper (rpcCall) on the worker side that narrows back to `as Promise<T>`
+- **HttpApi handler error types must match the endpoint declaration exactly**: if a handler's
+  error union is even one type wider than declared, `.handle()`'s type breaks and a misleading error
+  surfaces far away (toWebHandler's Context type becoming unknown, etc.). Shared mapping
+  functions must narrow the return union with overloads
+- **oxlint's no-underscore-dangle is active** (via the eslint-js plugin). Direct `_tag`
+  access and `_`-prefixed identifiers cannot be written even in tests. Use instanceof to discriminate
+- **fallow's CRAP gate trips even at cyclomatic 6** (a function with estimated 0 coverage has
+  CRAP = c²+c > 30). Even a flat switch mapping must be split/shared down to ≤ 4. DO RPC
+  methods look statically unreferenced, so they were suppressed with reasoned `fallow-ignore-next-line unused-class-member`
+- Effect v4 beta.102: `Effect.catchAll` does not exist (catchTag / catchTags / catchCause).
+  Semaphore is `Semaphore.makeUnsafe(permits)` + `withPermit` directly under `effect`
 
-## 4. 次セッションへの申し送り
+## 4. Handoff to the next session
 
-- **PR マージ後**: ROADMAP のメンバーシップログ項目の注記を更新(サーバー保存・追記 API
-  完了、残りはクライアント同期。完全チェックオフはしない)← 本セッションの PR 作成後の
-  イベントで対応予定
-- **裁定 1〜4 は PR レビューでの所有者承認が必要**(§2 参照)。差し戻しの場合、
-  仕様(CRYPTO_SPEC §6.4 の 2026-08-02 追加 2 項目)と実装(apps/server/src/policy.ts、
-  chain-do.ts、auth.ts)を対で変更すること
-- **Phase 0 の残項目「監査ログのスキーマ設計」は未着手**(本セッションの optional 項目。
-  時間の都合で見送り)。次セッション以降で提案ドキュメントとして作成する
-- 未実装(意図的スコープ外): §6.3 クライアント同期(DEK ラップ先一致検査・ヘッド
-  ゴシップ)、認証の本実装(AUTH_SPEC。RequestAuth への結線点は用意済み)、監査ログ、
-  D1、org 連携(projects.org_id)、実デプロイ検証(spike-b からの継続課題)
-- プロジェクト ID = genesis ハッシュの帰結: クライアント同期実装時、`GET chain` の検証に
-  「hash(entries[0]) == projectId」の照合を含めること(§6.4 に明記済み)
-- 認可(reader の pull 拒否等、§6.2 の「サーバーはデータ操作もチェーン導出 role で認可」)は
-  変数値 API の実装時に ChainState 導出(DO 内)を使って行う。今回のチェーン取得 API は
-  認証がないため全公開(既知の制約に含む)
+- **After the PR merges**: update the note on ROADMAP's membership-log item (server storage and append API
+  done; remaining is client sync. Do not fully check it off) ← to be handled on the post-PR-creation
+  event of this session
+- **Rulings 1–4 need owner approval in PR review** (see §2). On rejection,
+  change the spec (the two items added to CRYPTO_SPEC §6.4 on 2026-08-02) and the implementation (apps/server/src/policy.ts,
+  chain-do.ts, auth.ts) as a pair
+- **Phase 0's remaining item "audit log schema design" is untouched** (an optional item this session,
+  deferred for time). Draft it as a proposal document in a later session
+- Unimplemented (intentionally out of scope): §6.3 client sync (DEK-wrap-destination match check, head
+  gossip), the real authentication implementation (AUTH_SPEC; the wiring point into RequestAuth is prepared), audit logging,
+  D1, org integration (projects.org_id), real deployment verification (a continuing item from spike-b)
+- A consequence of project ID = genesis hash: when implementing client sync, include
+  the check "hash(entries[0]) == projectId" in `GET chain` verification (noted in §6.4)
+- Authorization (e.g. rejecting a reader's pull — §6.2's "the server authorizes data operations by chain-derived role")
+  will use ChainState derivation (inside the DO) when the variable-value API is implemented. This session's chain-get API
+  is fully public because there is no authentication yet (included among the known limitations)

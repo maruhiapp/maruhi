@@ -1,21 +1,30 @@
-// `maruhi server grant`(CRYPTO_SPEC §9 / AUTH_SPEC §12-6)。
+// `maruhi server grant` (CRYPTO_SPEC §9 / AUTH_SPEC §12-6).
 //
-// grant_server をチェーンへ追記し、開示スコープ内の全環境 × 全エポックの
-// サーバー宛ラップをバックフィルする(grant 実行者 = owner がラップ実行者 —
-// CRYPTO_SPEC §7)。フロー:
-//   1. owner 検査・環境の存在検査・duplicate-server-key / 再 grant 二層の早期検査
-//   2. `/auth/config` からサーバー鍵の公開面を取得し、FP = SHA-256(enc_pub)[:16]
-//      を再計算照合(輸送破損・設定飛びの機械検出)
-//   3. サーバー鍵確認の儀式(§9): FP の BIP39 12 語表示 + 明示確認
-//      (対話 = 最終語の再入力、非対話 = --expect-fingerprint の帯域外値照合)
-//   4. grant_server 追記(親ヘッド CAS リトライ)
-//   5. バックフィル: 環境ごとに全エポックのサーバー宛ラップを一括登録し、
-//      409(登録済み)はエポック単位に落として続行 — **再実行が常に収束する**
-//      (進捗ファイルなし。分散状態が再開状態 — env rotate と同じ規律)
+// Appends a grant_server to the chain, then back-fills a server-
+// addressed wrap for every environment in the disclosure scope × every
+// epoch (the grant's executor = the owner is the wraps' executor —
+// CRYPTO_SPEC §7). The flow:
+//   1. Early checks: the owner check, the environment-existence check,
+//      the two layers of duplicate-server-key / re-grant checks
+//   2. Fetch the server key's public face from `/auth/config` and
+//      recompute-and-verify FP = SHA-256(enc_pub)[:16] (machine
+//      detection of transport corruption / config drift)
+//   3. The server-key confirmation ceremony (§9): the FP's BIP39
+//      12-word display + explicit confirmation (interactive = re-typing
+//      the last word, non-interactive = matching the out-of-band value
+//      of --expect-fingerprint)
+//   4. The grant_server append (parent-head CAS retry)
+//   5. Backfill: bulk-register every epoch's server-addressed wrap per
+//      environment, and keep going past a 409 (already registered) at
+//      epoch granularity — **a re-run always converges** (no progress
+//      file. The distributed state is the resumption state — the same
+//      discipline as env rotate)
 //
-// 中断復旧: grant がチェーンに載った後で落ちても、再実行が「同一内容の有効
-// grant を検出 → 追記スキップ → バックフィル(409 = 登録済み)」で収束する。
-// リースは不足時に 503 `server-wraps-missing` へ倒れる(AUTH_SPEC §14-3)。
+// Interrupted recovery: even if the process dies after the grant lands
+// on the chain, a re-run converges through "detect a valid grant of
+// identical content → skip the append → backfill (409 = already
+// registered)". A lease in shortage falls to 503 `server-wraps-missing`
+// (AUTH_SPEC §14-3).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
@@ -50,25 +59,25 @@ import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
 
-/** サーバー鍵の公開面(`/auth/config` — AUTH_SPEC §4)。 */
+/** The server key's public face (`/auth/config` — AUTH_SPEC §4). */
 interface ServerKeyConfig {
   readonly serverEncPubHex: string;
   readonly serverKeyFingerprintHex: string;
 }
 
 export interface GrantSummary {
-  /** チェーンへ追記したか(false = 同一内容の有効 grant を検出してスキップ)。 */
+  /** Whether it appended to the chain (false = detected a valid grant of identical content and skipped). */
   readonly appended: boolean;
   readonly serverKeyFingerprintHex: string;
   readonly scopeEnvironmentIds: readonly string[];
   readonly leasePolicyCount: number;
-  /** バックフィルで新規登録したラップ数。 */
+  /** The count of wraps newly registered by the backfill. */
   readonly registered: number;
-  /** 既に登録済みだったラップ数(再実行の収束)。 */
+  /** The count of wraps already registered (the re-run's convergence). */
   readonly alreadyRegistered: number;
 }
 
-/** スコープの各環境がチェーン上に存在するか(不成立なら理由の文字列)。 */
+/** Whether every environment in the scope exists on the chain (the reason's string when not). */
 function scopeExistsRejection(verified: VerifiedProject, scope: readonly string[]): string | null {
   for (const environmentId of scope) {
     if (!verified.state.environments.has(environmentId)) {
@@ -79,14 +88,15 @@ function scopeExistsRejection(verified: VerifiedProject, scope: readonly string[
 }
 
 /**
- * duplicate-server-key(§6.2)の早期検査: サーバー enc 公開鍵が現メンバーの
- * enc 公開鍵と一致する grant は合意規則で無効になる。
+ * The early check of duplicate-server-key (§6.2): a grant whose server
+ * enc public key equals a current member's enc public key is invalid
+ * under the consensus rule.
  */
 function duplicateServerKeyRejection(
   verified: VerifiedProject,
   serverEncPubHex: string,
 ): string | null {
-  // 比較対象は現メンバー集合の全端末鍵(§6.2 — 2026-09-19 DK)
+  // The comparison target is every device key of the current member set (§6.2 — 2026-09-19 DK)
   for (const chainMember of verified.state.members.values()) {
     for (const device of chainMember.devices.values()) {
       if (device.encPubHex === serverEncPubHex) {
@@ -98,8 +108,9 @@ function duplicateServerKeyRejection(
 }
 
 /**
- * 再 grant 二層(§6.3): scope は拡大のみ。縮小には revoke_server(全環境
- * ローテーション義務つき)を案内する。lease_policy は自由改訂。
+ * The re-grant layer (§6.3): scope may only grow. A narrowing is guided
+ * toward revoke_server (carrying the all-environment rotation mandate).
+ * lease_policy is freely revised.
  */
 function scopeNarrowedRejection(
   existing: ServerGrant | null,
@@ -115,7 +126,7 @@ function scopeNarrowedRejection(
   return `The disclosure scope can only grow (re-grant rule — CRYPTO_SPEC §6.3). Environments in the existing grant's scope are missing from this invocation: ${missing.join(", ")}. To narrow the scope, run \`maruhi server revoke\` (which rotates every environment — §7) and grant again`;
 }
 
-/** grant_server 実行前の検査一式(再同期後のリトライでも同じ検査を通す)。 */
+/** The check set before running grant_server (a retry after resync goes through the same checks). */
 function ensureGrantable(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
@@ -135,7 +146,7 @@ function ensureGrantable(input: {
   return rejection !== null ? Effect.fail(cliError(rejection)) : Effect.succeed({ existing });
 }
 
-/** オブジェクトのキー順に依存しない正規形(配列形)で比較する。 */
+/** Compared via a canonical form (array form) independent of the object's key order. */
 function canonicalPolicyKey(policy: readonly LeasePolicyIssuer[]): string {
   return JSON.stringify(
     policy.map((element) => [
@@ -155,9 +166,11 @@ function sameScope(a: readonly string[], b: readonly string[]): boolean {
 }
 
 /**
- * `/auth/config` のサーバー鍵公開面を取得し、FP を再計算照合する。FP の照合
- * 「対象」は帯域外の控え(儀式 — §9)であり、ここでの再計算は応答の自己整合
- * 検査(輸送破損・別ソースの取り違えの機械検出)である。
+ * Fetches `/auth/config`'s server-key public face and recomputes-and-
+ * verifies the FP. What the FP is checked **against** is the out-of-band
+ * record (the ceremony — §9); the recomputation here is the response's
+ * self-consistency check (machine detection of transport corruption /
+ * a mix-up of sources).
  */
 function fetchServerKeyConfig(client: MaruhiClient): Effect.Effect<ServerKeyConfig, CliError> {
   return Effect.gen(function* () {
@@ -191,15 +204,19 @@ function fetchServerKeyConfig(client: MaruhiClient): Effect.Effect<ServerKeyConf
 }
 
 /**
- * サーバー鍵確認の儀式(§9): FP のワード表示と、デプロイメントの公開設定との
- * 照合の明示確認。メンバー鍵に課している真正性確認(§6.5)をサーバー鍵にだけ
- * 免除しない — grant はサーバーを「メンバー N+1」にする操作である。
+ * The server-key confirmation ceremony (§9): the FP's word display and
+ * the explicit confirmation of matching against the deployment's public
+ * configuration. The authenticity confirmation imposed on member keys
+ * (§6.5) is not waived for the server key alone — a grant is the
+ * operation that makes the server "member N+1".
  *
- * 確認の形は 2 つ:
- * - `--expect-fingerprint <hex>`: 帯域外で控えた FP を引数で供給する(非対話の
- *   明示確認。デプロイ時の控えと一致しなければ即エラー)
- * - 対話: 12 語を表示し、**最終語の再入力**を要求する(リカバリーコードの
- *   保存確認 — recovery.ts — と同じ儀式。読まずに y を打つ形を塞ぐ)
+ * The confirmation comes in two forms:
+ * - `--expect-fingerprint <hex>`: supplies the out-of-band FP as an
+ *   argument (the non-interactive explicit confirmation. An immediate
+ *   error unless it matches the record from deploy time)
+ * - Interactive: shows the 12 words and demands **re-typing the last
+ *   word** (the same ceremony as the recovery code's save confirmation —
+ *   recovery.ts. Blocks the shape of typing y without reading)
  */
 function confirmServerKey(input: {
   readonly fingerprintHex: string;
@@ -233,8 +250,10 @@ function confirmServerKey(input: {
       );
       return;
     }
-    // AI エージェント環境では儀式を代行させない(照合は人間の帯域外確認 — §9 /
-    // ADR-0014。値表示の拒否 — agent.ts — と同じ姿勢の grant 版)
+    // Never let an AI-agent environment perform the ceremony on the
+    // user's behalf (the matching is a human's out-of-band
+    // confirmation — §9 / ADR-0014. The grant version of the same posture
+    // as the value-display refusal — agent.ts)
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
@@ -252,7 +271,7 @@ function confirmServerKey(input: {
   });
 }
 
-/** grant_server エントリを現ヘッドの直後に署名する(共有核 = chain-append.ts)。 */
+/** Signs the grant_server entry right after the current head (the shared core = chain-append.ts). */
 function signGrantEntry(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
@@ -281,10 +300,12 @@ function signGrantEntry(input: {
 }
 
 /**
- * 1 環境の全エポック(1〜現エポック)のサーバー宛ラップを登録する(共有核 =
- * backfill.ts)。エポック単位の 409 は「登録済み」として吸収する(サーバー宛
- * ラップの一覧 API は存在しない — 配布は本人宛のみ §12-6 — ため、「409 を
- * 完了扱い」が唯一かつ十分な照合手段)。
+ * Registers the server-addressed wraps for every epoch (1..current
+ * epoch) of one environment (the shared core = backfill.ts). A per-epoch
+ * 409 is absorbed as "already registered" (there is no list API for
+ * server-addressed wraps — distribution is to-the-principal only §12-6 —
+ * so "treat a 409 as done" is the only and sufficient means of
+ * reconciliation).
  */
 function backfillEnvironment(input: {
   readonly client: MaruhiClient;
@@ -307,7 +328,7 @@ function backfillEnvironment(input: {
   });
 }
 
-/** 同一内容(scope と lease_policy)の有効 grant が既にあるか(追記スキップ / 提案スキップの判定)。 */
+/** Whether a valid grant of identical content (scope and lease_policy) already exists (the skip-append / skip-proposal judgment). */
 function grantUnchanged(
   existing: ServerGrant | null,
   scope: readonly string[],
@@ -320,20 +341,22 @@ function grantUnchanged(
   );
 }
 
-/** CAS リトライの状態。 */
+/** The CAS retry's state. */
 interface GrantState {
   readonly verified: VerifiedProject;
 }
 
-/** grant の結果: 提案(四眼 — K6)か適用。 */
+/** The grant's outcome: a proposal (four-eyes — K6) or an application. */
 export type ServerGrantOutcome =
   | { readonly kind: "proposed"; readonly proposal: ProposedSummary }
   | { readonly kind: "applied"; readonly summary: GrantSummary };
 
 /**
- * grant 適用後のサーバー宛バックフィル(開示スコープ内の全環境 × 全エポック — AUTH_SPEC
- * §12-6)。直接追記の grant と、四眼で適用を完成させた承認者の履行(approval-approve.ts —
- * §12-6 の 5 番目の経路)が共有する。
+ * The post-grant-application server-addressed backfill (every
+ * environment in the disclosure scope × every epoch — AUTH_SPEC §12-6).
+ * Shared by a directly-appended grant and the fulfillment of an approver
+ * who completed the application under four-eyes (approval-approve.ts —
+ * §12-6's fifth path).
  */
 export function backfillServerGrant(input: {
   readonly client: MaruhiClient;
@@ -377,7 +400,7 @@ export function serverGrantOp(input: {
 }): Effect.Effect<ServerGrantOutcome, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // スコープの正規化: コードポイント昇順・重複なし(§6.2 の SHOULD)
+    // Normalizing the scope: ascending code-point order, no duplicates (§6.2's SHOULD)
     const scope = [...new Set<string>(input.environmentIds)].toSorted();
     const serverConfig = yield* fetchServerKeyConfig(input.client);
     const { existing } = yield* ensureGrantable({
@@ -389,8 +412,9 @@ export function serverGrantOp(input: {
 
     const unchanged = grantUnchanged(existing, scope, input.leasePolicy);
 
-    // 儀式(§9)は追記の有無に関わらず行う(バックフィルだけの再実行でも、
-    // これから開示し続ける鍵の照合を省略しない)
+    // The ceremony (§9) runs whether or not an append happens (even on a
+    // backfill-only re-run, never skip matching the key that will
+    // continue to receive disclosure)
     yield* confirmServerKey({
       fingerprintHex: serverConfig.serverKeyFingerprintHex,
       expectFingerprintHex: input.expectFingerprintHex,
@@ -405,10 +429,12 @@ export function serverGrantOp(input: {
         leasePolicy: input.leasePolicy,
       },
     };
-    // 四眼(K6-A): 方針が grant_server を対象にしていれば提案して終わる(サーバー宛
-    // バックフィルは適用を完成させた承認者が行う — 承認項目 22)。儀式は提案者が済ませた
+    // Four-eyes (K6-A): when the policy targets grant_server, propose and
+    // stop (the server-addressed backfill is performed by the approver
+    // who completes the application — approval item 22). The proposer has
+    // already done the ceremony
     if (!unchanged && isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
-      // 再同期後に同じ内容の grant が既に有効なら提案しない(Cursor Bugbot 指摘対応 — 冗長な提案)
+      // Never propose when a grant of identical content is already valid after resync (Cursor Bugbot finding — a redundant proposal)
       const proposal = yield* proposeOperation(
         input,
         inner,
@@ -453,8 +479,9 @@ export function serverGrantOp(input: {
           classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
           recover: (state) =>
             Effect.gen(function* () {
-              // 延長検査付き再同期(短縮・分岐チェーンへの再署名を塞ぐ —
-              // env create / rotate の CAS リトライと同じ規律)
+              // Resync with the extended check (blocks re-signing onto a
+              // shortened / forked chain — the same discipline as env
+              // create / rotate's CAS retry)
               const resynced = yield* resyncExtended(input.resync, state.verified);
               yield* ensureStillTarget(resynced, inner, false);
               yield* ensureGrantable({
@@ -468,7 +495,7 @@ export function serverGrantOp(input: {
           exhaustedMessage: `grant_server's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
         },
       );
-      // 受理後の再同期で grant の掲載を確認する(サーバー申告を真実源にしない)
+      // Confirm the grant's listing via the post-acceptance resync (never make the server's claim the source of truth)
       verified = yield* resyncExtended(input.resync, appended);
       const granted = verified.state.serverGrants.get(serverConfig.serverKeyFingerprintHex);
       if (granted === undefined) {
@@ -490,7 +517,7 @@ export function serverGrantOp(input: {
       );
     }
 
-    // バックフィル(開示スコープ内の全環境 × 全エポック — AUTH_SPEC §12-6)
+    // The backfill (every environment in the disclosure scope × every epoch — AUTH_SPEC §12-6)
     const { registered, alreadyRegistered } = yield* backfillServerGrant({
       client: input.client,
       verified,

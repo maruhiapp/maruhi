@@ -1,7 +1,7 @@
-// @maruhi/cli — effect/unstable/cli + Effect の `maruhi` / `mh` CLI。
-// ディスクレス不変条件: シークレットの平文をディスクに書かない。.env 系ファイルの
-// 生成機能を作らない。永続化は maruhi トークン・master 秘密鍵(OS キーチェーン)と
-// 非機密設定のみ。
+// @maruhi/cli — the `maruhi` / `mh` CLI on effect/unstable/cli + Effect.
+// Diskless invariant: never write plaintext secrets to disk. Do not build
+// features that generate .env-style files. Only the maruhi token, the master
+// secret key (OS keychain), and non-secret settings may be persisted.
 
 export { type CliServices, runCli } from "./cli.ts";
 export { liveLayer } from "./live.ts";

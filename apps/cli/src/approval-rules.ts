@@ -1,15 +1,23 @@
-// 四眼(CRYPTO_SPEC §6.2 — PF1)の CLI 側の純関数(設計録 es-design.md §12 K6-F / G / K / O)。
+// CLI-side pure functions for four-eyes (CRYPTO_SPEC §6.2 — PF1; design
+// record es-design.md §12 K6-F / G / K / O).
 //
-// - 対象判定 `isApprovalTarget` と票の再集計 `countOwnerVotes` は crypto の合意規則
-//   (chain-verify.ts の非公開関数)の CLI 側の 2 実装目。公開 API(`APPROVAL_TARGET_OPS` /
-//   `ApprovalPolicy` / `PendingProposal` / `ApprovalVote` / `ChainMember`)から導出し、
-//   内部実装はコピーしない(K4-I の包含述語と同じ構図)。ずれは合意規則の 422 が
-//   最終判定として拾い、`verifyChain` との差分テスト(approval-rules.test.ts)が回帰を
-//   捕まえる。次に crypto を触る段で公開 API 化を検討する(K6-Q の申し送り)
-// - 票数は記録(`PendingProposal.approvals`)をそのまま出さず、**現方針と現メンバーで
-//   再集計する**(記録は失効票を保持する — 設計録 §8 K2 の実装メモ)
-// - 提案の識別子は提案エントリの entry_hash(hex 64)だけで、CLI は別名を作らない。
-//   先頭 8 文字以上の一意接頭辞を受け付ける(承認項目 23)
+// - The target check `isApprovalTarget` and the vote re-tally
+//   `countOwnerVotes` are the CLI's second implementation of crypto's
+//   consensus rules (private functions in chain-verify.ts). They are derived
+//   from the public API (`APPROVAL_TARGET_OPS` / `ApprovalPolicy` /
+//   `PendingProposal` / `ApprovalVote` / `ChainMember`) without copying the
+//   internals (the same shape as K4-I's inclusion predicate). A divergence
+//   is caught by the consensus rule's 422 as the final arbiter, and the
+//   differential test against `verifyChain` (approval-rules.test.ts) catches
+//   regressions. Consider making them public API the next time crypto is
+//   touched (K6-Q handoff)
+// - The vote count does not echo the record (`PendingProposal.approvals`)
+//   verbatim — **it is re-tallied under the current policy and current
+//   members** (the record keeps revoked votes — design record §8 K2
+//   implementation memo)
+// - A proposal's identifier is only the proposal entry's entry_hash (hex
+//   64); the CLI invents no alias. It accepts a unique prefix of at least
+//   the first 8 characters (approval item 23)
 
 import {
   APPROVAL_TARGET_OPS,
@@ -32,12 +40,12 @@ const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 const MS_PER_DAY = 24 * MS_PER_HOUR;
 
-/** Default proposal lifetime (裁定 P6 — 7 days). */
+/** Default proposal lifetime (ruling P6 — 7 days). */
 export const DEFAULT_PROPOSAL_LIFETIME_MS = 7 * MS_PER_DAY;
 /** Server acceptance-policy upper bound of `expires_at_ms` (CRYPTO_SPEC §6.4 — 30 days). */
 export const MAX_PROPOSAL_LIFETIME_MS = 30 * MS_PER_DAY;
 
-/** Default `--ops` set when a policy is enabled (承認項目 17 — 既定推奨集合). */
+/** Default `--ops` set when a policy is enabled (approval item 17 — the recommended default set). */
 export const DEFAULT_POLICY_OPS: readonly ApprovalTargetOp[] = [
   "change_role",
   "grant_server",
@@ -45,11 +53,11 @@ export const DEFAULT_POLICY_OPS: readonly ApprovalTargetOp[] = [
   "set_approval_policy",
 ];
 
-/** Shortest proposal-id prefix accepted on the command line (承認項目 23). */
+/** Shortest proposal-id prefix accepted on the command line (approval item 23). */
 const MIN_PROPOSAL_REF_LENGTH = 8;
 
 // ---------------------------------------------------------------------------
-// 対象判定と票の再集計(§6.2 原則 2 の CLI 側の写し)
+// Target check and vote re-tally (the CLI-side copy of the §6.2 principle 2)
 // ---------------------------------------------------------------------------
 
 /** Whether `value` names an operation a policy may list in `ops` (closed set — CRYPTO_SPEC §6.2). */
@@ -57,7 +65,7 @@ export function isApprovalTargetOp(value: string): value is ApprovalTargetOp {
   return APPROVAL_TARGET_OPS.some((op) => op === value);
 }
 
-/** owner role を確立する add_member / change_role(方針の単調性 (a) の常時対象)。 */
+/** add_member / change_role that establish an owner role (always-targets, per policy monotonicity (a)). */
 function establishesOwner(operation: ProposableOperation): boolean {
   return (
     (operation.op === "add_member" && operation.payload.role === "owner") ||
@@ -66,9 +74,11 @@ function establishesOwner(operation: ProposableOperation): boolean {
 }
 
 /**
- * 四眼の対象判定(§6.2): 方針が有効で、op が `ops` に列挙されているか、常時対象
- * (`set_approval_policy` 自身と owner を確立する add_member / change_role)であること。
- * `propose` / `approve` / 直接追記の拒否が共有する 1 述語の CLI 側の写し。
+ * The four-eyes target check (§6.2): a policy is enabled and the op is
+ * either listed in `ops` or an always-target (`set_approval_policy` itself
+ * and add_member / change_role that establish an owner). The CLI-side copy
+ * of the single predicate shared by `propose` / `approve` / direct-append
+ * refusal.
  */
 export function isApprovalTarget(
   operation: ProposableOperation,
@@ -84,9 +94,10 @@ export function isApprovalTarget(
 }
 
 /**
- * 原則 2(§6.2)の署名者集合 S = {owner として提案した提案者} ∪ {受理済み approve の actor}。
- * 要素は (user_id, 署名時の鍵 FP)。admin として提案した提案者は S に入らない(昇格後に
- * approve を追記できる — 2026-09-15 裁定 ②)。
+ * Principle 2 (§6.2) signer set S = {proposers who proposed as owner} ∪
+ * {actors of accepted approves}. Elements are (user_id, key FP at signing).
+ * A proposer who proposed as admin does not enter S (they can append an
+ * approve after being promoted — 2026-09-15 ruling ②).
  */
 export function signersOf(pending: PendingProposal): readonly ApprovalVote[] {
   const proposer: readonly ApprovalVote[] =
@@ -96,16 +107,18 @@ export function signersOf(pending: PendingProposal): readonly ApprovalVote[] {
   return [...proposer, ...pending.approvals];
 }
 
-/** 票の端末がいまその人の有効な端末か(§6.2「approve の票の端末語彙」— 2026-09-19 DK)。 */
+/** Whether the vote's device is currently a valid device of that person (§6.2 "the device vocabulary of an approve vote" — 2026-09-19 DK). */
 function voteIsLive(members: ReadonlyMap<string, ChainMember>, signer: ApprovalVote): boolean {
   return members.get(signer.userId)?.devices.has(signer.keyFingerprintHex) === true;
 }
 
 /**
- * 端末の実効 role が owner か(§6.2「approve の票の端末語彙」)。予告(eligibleApprovers /
- * voteEligibility)と集計(countedVoters)は同じ述語を読む — 予告層と集計層が cap つき端末で
- * 食い違わないため(PR #186 pullfrog 指摘)。K2 の CLI は端末 1 つなので「いずれかの端末」=
- * その端末。K4 で署名する端末(手元の鍵)に絞る
+ * Whether the device's effective role is owner (§6.2 "the device vocabulary
+ * of an approve vote"). Foretelling (eligibleApprovers / voteEligibility)
+ * and tallying (countedVoters) read the same predicate — so the foretell
+ * layer and the tally layer cannot disagree on a capped device (PR #186
+ * pullfrog finding). The K2 CLI has one device, so "any device" = that
+ * device. K4 narrows it to the signing device (the key at hand)
  */
 function ownerOnAnyDevice(member: ChainMember): boolean {
   return [...member.devices.values()].some(
@@ -114,8 +127,9 @@ function ownerOnAnyDevice(member: ChainMember): boolean {
 }
 
 /**
- * S の要素のうち、現時点でその FP が現 owner の有効な端末であり、端末の実効 role が
- * owner である distinct user_id(同じ人の別端末は 1 票 — §6.2)。
+ * Among S's elements, the distinct user_id whose FP is currently a valid
+ * device of a current owner and whose device's effective role is owner
+ * (another device of the same person is one vote — §6.2).
  */
 function countedVoters(
   members: ReadonlyMap<string, ChainMember>,
@@ -136,7 +150,7 @@ function countedVoters(
   return [...voters].toSorted();
 }
 
-/** 票数 = |S ∩ 適用時点の owners|(原則 2 — 離脱・降格・鍵更新済みの投票者の票は数えない)。 */
+/** Vote count = |S ∩ owners at apply time| (principle 2 — votes by voters who left, were demoted, or rotated keys are not counted). */
 export function countOwnerVotes(
   members: ReadonlyMap<string, ChainMember>,
   signers: readonly ApprovalVote[],
@@ -144,7 +158,7 @@ export function countOwnerVotes(
   return countedVoters(members, signers).length;
 }
 
-/** actor の user_id が S に生きた票(いま有効な端末の署名)を持つか(`duplicate-approval` の予告)。 */
+/** Whether the actor's user_id holds a live vote in S (a signature by a currently valid device) (the `duplicate-approval` foretell). */
 function hasVoted(
   members: ReadonlyMap<string, ChainMember>,
   pending: PendingProposal,
@@ -155,7 +169,7 @@ function hasVoted(
   );
 }
 
-/** 同じ操作か(op と正規化 payload_bytes の一致 — 提案の冪等性の判定に使う。K6-A)。 */
+/** Whether two operations are the same (match on op and normalized payload_bytes — used to judge proposal idempotency. K6-A). */
 export function sameOperation(a: ProposableOperation, b: ProposableOperation): boolean {
   if (a.op !== b.op) {
     return false;
@@ -166,7 +180,7 @@ export function sameOperation(a: ProposableOperation, b: ProposableOperation): b
 }
 
 // ---------------------------------------------------------------------------
-// pending 提案の表示ビュー(再集計込み)
+// Display views of pending proposals (with re-tally)
 // ---------------------------------------------------------------------------
 
 /** One pending proposal with the votes recounted under the current policy and member set. */
@@ -187,7 +201,7 @@ export interface ProposalView {
   readonly expired: boolean;
 }
 
-/** 1 提案のビュー(現方針・現メンバーで再集計)。 */
+/** The view of one proposal (re-tallied under the current policy and members). */
 export function proposalViewOf(
   verified: VerifiedProject,
   proposal: PendingProposal,
@@ -209,21 +223,21 @@ export function proposalViewOf(
     required,
     voters,
     votes: voters.length,
-    // 次の approve の actor 自身が 1 票なので、残り = required − 現票数 − 1(下限 0)
+    // The next approve's actor themself is one vote, so remaining = required − current votes − 1 (floor 0)
     needed: required === null ? null : Math.max(0, required - voters.length - 1),
     eligibleApprovers,
     expired: nowMs > proposal.expiresAtMs,
   };
 }
 
-/** pending 提案の一覧(提案 seq 昇順 — K6-F)。 */
+/** The list of pending proposals (ascending by proposal seq — K6-F). */
 export function proposalViews(verified: VerifiedProject, nowMs: number): readonly ProposalView[] {
   return [...verified.state.pendingProposals.values()]
     .toSorted((a, b) => a.proposalSeq - b.proposalSeq)
     .map((proposal) => proposalViewOf(verified, proposal, nowMs));
 }
 
-/** 自分が approve できるかの判定(通信前検査 — §6.2 の approve の検査順に沿う)。 */
+/** Whether I can approve (pre-flight check — follows the §6.2 approve check order). */
 export type VoteEligibility =
   | {
       readonly ok: true;
@@ -243,10 +257,12 @@ export type VoteEligibility =
     };
 
 /**
- * 自分の票の判定は**署名する端末**(手元の鍵の FP)の実効 role で行う(DK K4 — 予告
- * `eligibleApprovers` は他人がどの端末で票を入れるか知りえないので「owner 実効の端末を
- * 1 つでも持つ人」のまま)。手元の鍵がその人の有効な端末でなければ票は数えられない
- * (集計 `countedVoters` と同じ述語)。
+ * My vote is judged by the effective role of **the signing device** (the FP
+ * of the key at hand) (DK K4 — the foretell `eligibleApprovers` stays
+ * "people holding at least one owner-effective device" because it cannot
+ * know which device others will vote from). If the key at hand is not a
+ * valid device of that person, the vote is not counted (the same predicate
+ * as the tally `countedVoters`).
  */
 export function voteEligibility(
   verified: VerifiedProject,
@@ -309,7 +325,7 @@ export function voteEligibility(
 }
 
 // ---------------------------------------------------------------------------
-// id(entry_hash)の接頭辞解決
+// Prefix resolution of id (entry_hash)
 // ---------------------------------------------------------------------------
 
 export type ProposalRefResolution =
@@ -323,13 +339,16 @@ export type ProposalRefResolution =
   | { readonly kind: "malformed" };
 
 /**
- * 提案 id(hex 64)の先頭 8 文字以上の接頭辞を pending 集合で解決する。0 件のときは
- * 完成済み / 撤回済み(core の `indexProposals`)と未知を言い分ける(古い id と typo の区別)。
+ * Resolves a prefix of at least the first 8 characters of a proposal id
+ * (hex 64) against the pending set. On zero matches it distinguishes
+ * completed / withdrawn (core's `indexProposals`) from unknown (telling an
+ * old id from a typo).
  */
 export function resolveProposalRef(verified: VerifiedProject, ref: string): ProposalRefResolution {
   const normalized = ref.trim().toLowerCase();
-  // `#<seq>`: 提案エントリの seq による参照(K6-F′ — チェーンが定める不変の値。`#` 接頭で
-  // hex 接頭辞と構造的に分ける)
+  // `#<seq>`: reference by the proposal entry's seq (K6-F′ — an immutable
+  // value fixed by the chain; the `#` prefix separates it structurally from
+  // hex prefixes)
   const bySeq = /^#(\d{1,9})$/.exec(normalized);
   if (bySeq !== null) {
     return resolveProposalSeq(verified, Number(bySeq[1]));
@@ -366,7 +385,7 @@ export function resolveProposalRef(verified: VerifiedProject, ref: string): Prop
     : { kind: "completed", proposalSeq: only.entry.seq, completedAtSeq: only.completedAtSeq };
 }
 
-/** 提案 seq での解決(pending → 完成 / 撤回 → 未知の順に言い分ける)。 */
+/** Resolves by proposal seq (distinguishes pending → completed / withdrawn → unknown, in that order). */
 function resolveProposalSeq(verified: VerifiedProject, seq: number): ProposalRefResolution {
   for (const proposal of verified.state.pendingProposals.values()) {
     if (proposal.proposalSeq === seq) {
@@ -384,10 +403,13 @@ function resolveProposalSeq(verified: VerifiedProject, seq: number): ProposalRef
 }
 
 /**
- * 鍵 FP 再登録の判定(設計録 K5-K / K6-I / K6-I′): 登録しようとする鍵が検証済みチェーンの
- * 履歴(`keyHistory` — 提案経由の追加も含む)の別の在籍区間に現れる user_id。同一 user_id の
- * 過去の在籍と別 user_id を言い分ける。提案者側(`member add`)と承認者側(`approval show`)
- * が同じ 1 述語を使う。
+ * Detects key-FP re-registration (design record K5-K / K6-I / K6-I′): the
+ * user_id under which the key being registered appears in a different
+ * membership interval of the verified chain's history (`keyHistory` —
+ * including proposal-mediated additions). Distinguishes a past membership
+ * of the same user_id from a different user_id. The proposer side
+ * (`member add`) and the approver side (`approval show`) use the same
+ * single predicate.
  */
 export function keyReuseOf(
   verified: VerifiedProject,
@@ -405,7 +427,7 @@ export function keyReuseOf(
   return reuse;
 }
 
-/** 鍵 FP 再登録の警告文(提案者側・承認者側で同じ文言。`subject` = 「the acceptance key」等)。 */
+/** Warning text for key-FP re-registration (same wording on the proposer and approver sides. `subject` = "the acceptance key" etc.). */
 export function describeKeyReuse(
   subject: string,
   reuse: { readonly userId: string; readonly sameUser: boolean },
@@ -436,7 +458,7 @@ export function describeUnresolvedRef(
 }
 
 // ---------------------------------------------------------------------------
-// 期限(`--expires <duration>` — K6-K)
+// Expiry (`--expires <duration>` — K6-K)
 // ---------------------------------------------------------------------------
 
 export type ProposalExpiryParse =
@@ -444,8 +466,10 @@ export type ProposalExpiryParse =
   | { readonly ok: false; readonly message: string };
 
 /**
- * `<n>m` / `<n>h` / `<n>d` を期間(ms)へ。省略 = 7 日(裁定 P6)。0 と 30 日超は拒否
- * (`expires_at_ms > now` と `≤ now + 30 日` の通信前検査 — K5-S。構成上ここに畳まれる)。
+ * `<n>m` / `<n>h` / `<n>d` into a duration (ms). Omitted = 7 days (ruling
+ * P6). 0 and over 30 days are refused (the pre-flight checks
+ * `expires_at_ms > now` and `≤ now + 30 days` — K5-S; they are folded here
+ * by construction).
  */
 export function parseProposalExpiry(text: string | undefined): ProposalExpiryParse {
   if (text === undefined) {
@@ -476,7 +500,7 @@ export function parseProposalExpiry(text: string | undefined): ProposalExpiryPar
 }
 
 // ---------------------------------------------------------------------------
-// 内側 op の表示
+// Display of the inner op
 // ---------------------------------------------------------------------------
 
 /** One-line human summary of the inner operation (ids are neutralized). */

@@ -1,74 +1,74 @@
-# スパイク B 検証結果: サーバー基盤の結線(Effect v4 HttpApi + DO + vitest-pool-workers + Alchemy v2)
+# Spike B results: wiring the server stack (Effect v4 HttpApi + DO + vitest-pool-workers + Alchemy v2)
 
-日付: 2026-08-01。ROADMAP Phase 0 の検証スパイク。
-**使い捨てコードは `spikes/spike-b/` にあり、製品コードではない。** `apps/server` は変更していない。
+Date: 2026-08-01. A ROADMAP Phase 0 verification spike.
+**The throwaway code lives in `spikes/spike-b/` and is not product code.** `apps/server` was not modified.
 
-## 検証対象と構成
+## What was verified, and the setup
 
-| 部品 | バージョン(厳密ピン) | 備考 |
+| Component | Version (exact pin) | Notes |
 |---|---|---|
-| effect | 4.0.0-beta.102 | **v4 に stable は存在しない**(latest は 3.22.1)。CLAUDE.md の「Effect v4 系」に従い beta を採用、ADR-0011 の厳密ピンで運用 |
-| @cloudflare/vitest-pool-workers | 0.20.1 | セッション 01 と同じ。`cloudflareTest()` プラグイン形式 |
-| alchemy | 2.0.0-beta.67 | v2 は npm dist-tag `next`。こちらも stable 未リリース |
-| wrangler | (pool-workers の推移的依存) | dry-run 検証に使用 |
+| effect | 4.0.0-beta.102 | **v4 has no stable release** (latest is 3.22.1). Per CLAUDE.md's "Effect v4 line" the beta was adopted, run under ADR-0011's exact pinning |
+| @cloudflare/vitest-pool-workers | 0.20.1 | Same as session 01. The `cloudflareTest()` plugin form |
+| alchemy | 2.0.0-beta.67 | v2 is the npm dist-tag `next`. Also without a stable release |
+| wrangler | (transitive dependency of pool-workers) | Used for dry-run verification |
 
-作ったもの: カウンタ 1 本のダミー構成。
+What was built: a dummy setup with a single counter.
 
-- `src/api.ts` — HttpApi 定義(GET `/counter/:name`、POST `/counter/:name/increment`)。v4 では @effect/platform が effect 本体に統合され、HttpApi は `effect/unstable/httpapi` にある
-- `src/worker.ts` — 素の Workers API(`export default { fetch }` + `DurableObject` サブクラス)のまま、内部を Effect で実装:
-  - **DO(ManagedRuntime パターン)**: `CounterDO` のコンストラクタで Layer から `ManagedRuntime.make` を 1 度だけ実行し、RPC メソッド(`getValue` / `increment`)は `runtime.runPromise` で Effect を走らせる。ストレージアクセスは Effect サービス `CounterStore` の背後に隔離(ADR-0006 の縮小版)。DO SQLite は `ctx.storage.sql`(UPSERT + RETURNING)
-  - **Worker**: `HttpApiBuilder.group` でハンドラ実装 → `HttpRouter.toWebHandler` を isolate ごとに 1 度だけ構築。`env`(DO バインディング)はリクエストごとに `handler(request, Context.make(WorkerEnv, env))` で注入(リクエスト毎に Layer を再構築・dispose しない)
-- `test/counter.test.ts` — vitest-pool-workers(workerd 実環境)。SELF 経由の HttpApi 統合 + `runInDurableObject` による DO SQLite 実データの直接検証
-- `wrangler.jsonc` + `alchemy.run.ts` — ADR-0012 両対応の 2 経路(後述)
+- `src/api.ts` — the HttpApi definition (GET `/counter/:name`, POST `/counter/:name/increment`). In v4, @effect/platform is merged into the effect package and HttpApi lives at `effect/unstable/httpapi`
+- `src/worker.ts` — keeps the plain Workers API (`export default { fetch }` + a `DurableObject` subclass), implemented internally in Effect:
+  - **DO (the ManagedRuntime pattern)**: `CounterDO`'s constructor runs `ManagedRuntime.make` from a Layer exactly once, and the RPC methods (`getValue` / `increment`) run Effects via `runtime.runPromise`. Storage access is isolated behind an Effect service `CounterStore` (a miniature of ADR-0006). DO SQLite is used via `ctx.storage.sql` (UPSERT + RETURNING)
+  - **Worker**: the handler is implemented with `HttpApiBuilder.group` → `HttpRouter.toWebHandler` built once per isolate. `env` (the DO binding) is injected per request via `handler(request, Context.make(WorkerEnv, env))` (the Layer is not rebuilt / disposed per request)
+- `test/counter.test.ts` — vitest-pool-workers (the real workerd environment). An HttpApi integration via SELF + direct verification of real DO SQLite data via `runInDurableObject`
+- `wrangler.jsonc` + `alchemy.run.ts` — the 2 paths supporting both ADR-0012 modes (below)
 
-## 結果: すべて成立
+## Result: everything works
 
-- **テスト 5/5 通過**(workerd 実環境。`navigator.userAgent === "Cloudflare-Workers"` を確認)
-  - HttpApi ルーティング → DO RPC → DO SQLite 読み書きのラウンドトリップ
-  - Schema バリデーション失敗時のエラー応答
-  - `runInDurableObject` で DO 内部の SQLite 行を直接 assert
-- Effect v4(beta.102)は **workerd 上で `nodejs_compat` なしにそのまま動く**
-- `tsc --noEmit` 通過、ルート品質ゲート 7 ステップ通過
-- wrangler 経路: `wrangler deploy --dry-run` でバンドル成功(**Total Upload 1259 KiB / gzip 261 KiB** — Effect ランタイム込みのサイズ感。Workers のスクリプト上限 3 MiB (free) / 10 MiB (paid) gzip 内)
-- Alchemy 経路: `alchemy.run.ts` が型チェック通過、CLI(`alchemy plan` ほか)起動確認
+- **5/5 tests pass** (the real workerd environment; `navigator.userAgent === "Cloudflare-Workers"` confirmed)
+  - The HttpApi routing → DO RPC → DO SQLite read/write round trip
+  - The error response on a Schema validation failure
+  - Direct assertion of SQLite rows inside the DO via `runInDurableObject`
+- Effect v4 (beta.102) **runs as-is on workerd with no `nodejs_compat`**
+- `tsc --noEmit` passes, the root quality gate's 7 steps pass
+- The wrangler path: `wrangler deploy --dry-run` bundles successfully (**Total Upload 1259 KiB / gzip 261 KiB** — a sense of the size with the Effect runtime included; within Workers' script limits of 3 MiB (free) / 10 MiB (paid) gzip)
+- The Alchemy path: `alchemy.run.ts` passes the type check, the CLI (`alchemy plan` etc.) launches
 
-## ADR-0012(Alchemy v2 + 素の wrangler 両対応)の検証
+## Verifying ADR-0012 (supporting both Alchemy v2 and plain wrangler)
 
-**成立する。** 鍵は Alchemy v2 の「**Async Worker**」形式:
+**It works.** The key is Alchemy v2's "**Async Worker**" form:
 
-- Worker 実装(`src/worker.ts`)は素の Workers API のまま。Alchemy 固有の import を一切含まない
-- `alchemy.run.ts` は `Cloudflare.Worker("SpikeB", { main: "./src/worker.ts", env: { COUNTER: Cloudflare.DurableObject<CounterDO>("COUNTER", { className: "CounterDO" }) } })` と「実装 Effect を渡さず main を指すだけ」。この場合 Alchemy はファイルをそのままバンドルし、Effect ランタイムをデプロイ定義側から持ち込まない
-- 同一ソースを `wrangler.jsonc`(durable_objects バインディング + `new_sqlite_classes` migration)でもデプロイできる。二重管理は「バインディング宣言 2 か所」だけに縮む
-- 注意: Alchemy には Effect ネイティブな Worker/DO 記述(two-phase Effect パターン、スキーマレス RPC ブリッジ)もあるが、**それを使うとソースが Alchemy 依存になり wrangler 経路が壊れる**。maruhi では Async Worker 形式に固定すべき
+- The Worker implementation (`src/worker.ts`) stays on the plain Workers API. It contains no Alchemy-specific imports at all
+- `alchemy.run.ts` is `Cloudflare.Worker("SpikeB", { main: "./src/worker.ts", env: { COUNTER: Cloudflare.DurableObject<CounterDO>("COUNTER", { className: "CounterDO" }) } })` — "pass no implementation Effect, just point at main". In this case Alchemy bundles the file as-is and does not pull the Effect runtime in from the deployment-definition side
+- The same source can also be deployed via `wrangler.jsonc` (a durable_objects binding + a `new_sqlite_classes` migration). The double-management shrinks to just "declaring the binding in 2 places"
+- Note: Alchemy also offers Effect-native Worker/DO descriptions (the two-phase Effect pattern, a schema-less RPC bridge), but **using those makes the source Alchemy-dependent and breaks the wrangler path**. For maruhi, fix on the Async Worker form
 
-実デプロイ(`alchemy deploy` / `wrangler deploy`)は **Cloudflare 資格情報がないため未実施**。`alchemy plan` も state 取得に資格情報を要求するため実行できなかった(`AuthError: No credentials configured for 'Cloudflare'`)。dry-run バンドルと型チェックまでで打ち切り。
+Real deploys (`alchemy deploy` / `wrangler deploy`) are **not done — no Cloudflare credentials**. `alchemy plan` could not run either because it requires credentials to fetch state (`AuthError: No credentials configured for 'Cloudflare'`). Stopped at the dry-run bundle and type check.
 
-## ハマったこと(実装時に再遭遇しうる罠)
+## Things that tripped us up (traps you may hit again in implementation)
 
-1. **HttpApiEndpoint の payload に素のフィールド群を渡すと form-urlencoded になる**: `payload: { by: Schema.Number }` は `application/x-www-form-urlencoded` コーデック扱いで、JSON ボディは **415 Unsupported content-type** になる。JSON にするには `payload: Schema.Struct({ by: Schema.Number })` と Schema を明示する(`HttpApiEndpoint.js` の `getPayload` が fields shorthand に `asFormUrlEncoded()` を付ける実装)
-2. **`HttpApiBuilder.layer` は型上 `HttpPlatform` / `FileSystem` / `Etag.Generator` / `Path` を要求する**(ファイルレスポンス用。JSON API だけなら実行時には呼ばれない)。workerd には FS がないので `FileSystem.layerNoop({})` + `HttpPlatform.layer` + `Etag.layer` + `Path.layer` で型要求だけ満たした
-3. **alchemy CLI は optional peerDependencies を実行時に要求する**: bun 実行では `@effect/platform-node` と `@effect/platform-bun`(4.0.0-beta.102)を追加するまで CLI が起動しない
-4. **Alchemy v2 ドキュメントの Async Worker + DO の例は `bindings:` プロパティだが、実際の `WorkerProps` の型は `env:`**(`bindings?` は WorkerVersion 側の別物)。beta ゆえのドキュメント乖離
-5. `cloudflare:test` の `env` の型付けは `Cloudflare.Env` の global augmentation で行う(`ProvidedEnv` 拡張はまだ動くが deprecated。`env` 自体も `cloudflare:workers` からの import が推奨に変わっている)
-6. テレメトリ: alchemy は CLI テレメトリを送る(`DO_NOT_TRACK=1` か `ALCHEMY_TELEMETRY_DISABLED=1` で無効化、`~/.alchemy/telemetry-disabled` で永続 opt-out)。wrangler も同様(`WRANGLER_SEND_METRICS=false`)。**「言わざる」原則はメンテナ環境の CI にも適用したいので、Phase 1 で CI の環境変数に無効化を入れるべき**
+1. **Passing a plain field list to HttpApiEndpoint's payload makes it form-urlencoded**: `payload: { by: Schema.Number }` is treated with the `application/x-www-form-urlencoded` codec, and a JSON body becomes a **415 Unsupported content-type**. To get JSON, write `payload: Schema.Struct({ by: Schema.Number })` with Schema explicit (the `HttpApiEndpoint.js` implementation where `getPayload` attaches `asFormUrlEncoded()` to a fields shorthand)
+2. **`HttpApiBuilder.layer` type-requires `HttpPlatform` / `FileSystem` / `Etag.Generator` / `Path`** (for file responses — never called at runtime for a JSON-only API). workerd has no FS, so only the type requirements were satisfied via `FileSystem.layerNoop({})` + `HttpPlatform.layer` + `Etag.layer` + `Path.layer`
+3. **The alchemy CLI demands optional peerDependencies at runtime**: under bun the CLI does not start until `@effect/platform-node` and `@effect/platform-bun` (4.0.0-beta.102) are added
+4. **The Alchemy v2 docs' Async Worker + DO example uses a `bindings:` property, but the actual `WorkerProps` type is `env:`** (`bindings?` is a different thing on the WorkerVersion side). Doc drift because it is a beta
+5. Typing `cloudflare:test`'s `env` is done via global augmentation of `Cloudflare.Env` (the `ProvidedEnv` extension still works but is deprecated. Importing `env` itself from `cloudflare:workers` is the new recommendation)
+6. Telemetry: alchemy sends CLI telemetry (disable via `DO_NOT_TRACK=1` or `ALCHEMY_TELEMETRY_DISABLED=1`; a persistent opt-out at `~/.alchemy/telemetry-disabled`). Same for wrangler (`WRANGLER_SEND_METRICS=false`). **Since the "say nothing" principle should apply to the maintainers' CI too, Phase 1 should put the disables into CI environment variables**
 
-## 採用判断への示唆
+## Implications for the adoption decision
 
-- ADR-0005(HttpApi、Hono 不使用)と ADR-0012(両対応)は、このダミー規模では**問題なく成立**。スキーマから型付きハンドラ・バリデーション・エラー応答まで一貫して導出される体験は良好
-- HttpApi が `unstable/` 名前空間にある点は認識しておく: v4 stable 化の際に API が動く可能性が明示されている。厳密ピン + 独立 PR 更新(ADR-0011)で吸収する前提
-- ManagedRuntime パターンは DO と素直に噛み合う。DO には明示的な破棄フックがないため `runtime.dispose()` は呼んでいない(今回の Layer は リソースレスなので問題なし)。**リソースを持つ Layer(接続・タイマー等)を DO に載せる場合の後始末は実装時の設計課題**
-- Effect ランタイム込み gzip 261 KiB は Workers 制限内だが、コールドスタートへの影響は未計測。Phase 1 で実測する
+- ADR-0005 (HttpApi, no Hono) and ADR-0012 (supporting both) **hold without problems** at this dummy scale. The experience of deriving typed handlers, validation, and error responses consistently from the schema is good
+- Be aware that HttpApi lives under the `unstable/` namespace: it is explicitly marked that the API may move when v4 stabilizes. Assumed absorbed by exact pinning + independent-PR updates (ADR-0011)
+- The ManagedRuntime pattern meshes cleanly with DOs. Since a DO has no explicit teardown hook, `runtime.dispose()` is not called (no problem — this Layer holds no resources). **Cleanup when a DO carries a resource-holding Layer (connections, timers) is a design task for implementation**
+- The gzip 261 KiB with the Effect runtime included is within Workers limits, but the cold-start impact is unmeasured. Measure in Phase 1
 
-## 残った疑問(Phase 1 で解消すべきもの)
+## Remaining questions (to resolve in Phase 1)
 
-1. **実デプロイ未検証**: Alchemy v2 / wrangler とも Cloudflare 資格情報が必要。Phase 1 着工時に検証用アカウントで `alchemy deploy` と `wrangler deploy`(または Deploy to Cloudflare ボタン)を通すこと。クラウド開発環境で行うなら Cloud Agents > Secrets に CF トークンの登録が必要
-2. Drizzle(`drizzle-orm/durable-sqlite`、ADR-0006)は本スパイクのスコープ外。DO 内自己マイグレーション + Effect サービス境界の検証が別途必要(alchemy は drizzle-orm 1.0.0-rc.4 を optional peer に持っており、バージョン整合の確認も)
-3. D1(プロジェクト外メタデータ)との結線は未検証(DO SQLite のみ検証した)
-4. Effect v4 stable 化のタイミング(ROADMAP のウォッチ項目のまま)
-5. alchemy 2.0.0-beta の破壊的変更ペース(beta.47 の changelog でもブリッジ挙動が動いている)。ADR-0011 の厳密ピン運用が必須
+1. **A real deploy is unverified**: both Alchemy v2 and wrangler need Cloudflare credentials. At Phase 1 kickoff, run `alchemy deploy` and `wrangler deploy` (or a Deploy to Cloudflare button) on a verification account. If doing it in a cloud dev environment, a CF token must be registered under Cloud Agents > Secrets
+2. Drizzle (`drizzle-orm/durable-sqlite`, ADR-0006) is outside this spike's scope. Verifying in-DO self-migration + the Effect service boundary is separately needed (alchemy also has drizzle-orm 1.0.0-rc.4 as an optional peer, so check version alignment too)
+3. Wiring to D1 (cross-project metadata) is unverified (only DO SQLite was verified)
+4. The timing of Effect v4 stabilization (still a ROADMAP watch item)
+5. The pace of alchemy 2.0.0-beta's breaking changes (the bridge behavior was still moving in beta.47's changelog). ADR-0011's exact-pin operation is mandatory
 
-## 本採用時に統合すべきルート変更
+## Root changes to integrate when adopting for real
 
-- `.fallowrc.json` の `ignorePatterns` に `spikes/**`(spike-c ブランチと同一の 1 行。どちらが先にマージされても内容が同じなので衝突しない)
-- ルート `package.json` / `vitest.config.ts` / `ci.yml` は変更していない
-- Phase 1 で apps/server に組み込む際: effect(v4 beta、厳密ピン)を apps/server の依存に追加し、プレースホルダ worker を HttpApi 構成に置き換える。CI 環境変数にテレメトリ無効化(`DO_NOT_TRACK=1` / `WRANGLER_SEND_METRICS=false`)を追加する
+- Add `spikes/**` to `.fallowrc.json`'s `ignorePatterns` (the same single line as the spike-c branch — identical content, so no conflict whichever merges first)
+- Root `package.json` / `vitest.config.ts` / `ci.yml` are unchanged
+- When integrating into apps/server in Phase 1: add effect (v4 beta, exact-pinned) to apps/server's dependencies and replace the placeholder worker with the HttpApi setup. Add the telemetry disables (`DO_NOT_TRACK=1` / `WRANGLER_SEND_METRICS=false`) to CI environment variables

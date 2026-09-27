@@ -1,390 +1,375 @@
-# セッション 32 メモ(session-31 裁定 1 の仕様起草と strict 受理経路の実証)
+# Session 32 notes (spec drafting of session-31 ruling 1 and proving the strict acceptance path)
 
-日付: 2026-08-19。対象: session-31(PR-M1 マージ後監査)§7 の所有者裁定 3 件のうち
-裁定 1 の仕様起草。形式: 仕様改訂 + 技術検証の記録。実装(PR-F1〜F4)は
-仕様承認後の別 PR で行う。
+Date: 2026-08-19. Target: spec drafting of ruling 1 among the 3 owner rulings in
+session-31 (post-PR-M1-merge audit) §7. Format: spec revision + record of technical verification.
+Implementation (PR-F1–F4) happens in a separate PR after spec approval.
 
-## 1. 本 PR で起草したもの(裁定 1 = session-31 の最終推奨をそのまま採用)
+## 1. What this PR drafted (ruling 1 = session-31's final recommendation adopted as-is)
 
-- AUTH_SPEC §12-10: security-critical 受理スキーマの厳格性(1-E)・
-  wire 非互換変更の設計規範・mutation 成功の定義(1-E′)
-- CRYPTO_SPEC §1 原則 6: 意味論は署名バイト列の中に置く(既存アーキテクチャの
-  明文化。残余 = 受理側の検証モード選択は裁定 2 の帰結に従うことを明記)
+- AUTH_SPEC §12-10: strictness of security-critical acceptance schemas (1-E) /
+  design norms for wire-incompatible changes / the definition of mutation success (1-E′)
+- CRYPTO_SPEC §1 principle 6: semantics live inside the signed byte string (codifying the
+  existing architecture; the remainder = noting that the accepting side's verification-mode
+  choice follows ruling 2's outcome)
 
-裁定 2(H+1 例外 — 2-F / 2-E / 2-D のはしご)と裁定 3(床 — 3-D + 3-E + 3-E′)は
-本 PR に含めない。裁定 2 は一時コスト(2-F = re-genesis + データ層全再構築)の
-受け入れが所有者にしか決められず、裁定 3 の §6.3 床節の書き直しは裁定 2 の帰結
-(2-F なら床のマニフェスト記録材料がチェーン導出になる — session-31 §7 裁定 1
-第 4 次の相乗効果)と文言が絡むため、裁定確定後にまとめて起草する。
+Ruling 2 (the H+1 exception — the 2-F / 2-E / 2-D ladder) and ruling 3 (floor — 3-D + 3-E + 3-E′)
+are not in this PR. Ruling 2's one-time cost (2-F = re-genesis + full data-layer rebuild) can only
+be accepted by the owner, and ruling 3's §6.3 floor-section rewrite entangles wording with ruling
+2's outcome (under 2-F the floor's manifest record material becomes chain-derived — session-31 §7
+ruling 1 round-4 synergy), so both are drafted together after the rulings are finalized.
 
-## 2. strict 受理の実装経路の実証(session-31 が「PR-F1 の最初の作業」とした確認)
+## 2. Proof of the strict-acceptance implementation path (what session-31 called "PR-F1's first task")
 
-環境: effect 4.0.0-rc.109(リポジトリの厳密ピン)。検証スクリプトは使い捨て
-(コミットしない)。
+Environment: effect 4.0.0-rc.109 (the repo's strict pin). Verification scripts are throwaway
+(not committed).
 
-### 2-1. 結論: スキーマ AST 注釈だけで到達できる(HttpApiBuilder の変更不要)
+### 2-1. Conclusion: reachable with schema AST annotations alone (no HttpApiBuilder changes needed)
 
-session-31 は「`onExcessProperty` は decode 呼び出しの `ParseOptions` であって
-スキーマ注釈ではなく、現行の `HttpApiBuilder` は payload デコーダを
-ParseOptions なしで組み立てる」ため、エンドポイント定義でのオプション指定・
-手動 decode 層・upstream 対応のいずれかが要ると見込んでいた。実測の結果、
-**第 4 の経路(スキーマ自身への焼き込み)が存在し、それだけで足りる**:
+session-31 expected that one of an endpoint-definition option, a manual decode layer, or an
+upstream change would be needed, because "`onExcessProperty` is a `ParseOptions` of the decode
+call, not a schema annotation, and the current `HttpApiBuilder` builds the payload decoder
+without ParseOptions". Measurement found that **a 4th path exists — baking it into the schema
+itself — and that alone suffices**:
 
-- `SchemaParser.makeParser`(dist/SchemaParser.js)は AST 注釈
-  `annotations["parseOptions"]` を読み取り、parse 時に
-  `mergeParseOptions(options, astOptions)` で合成する
-- 合成は **AST 注釈が呼び出し側 ParseOptions に勝つ**(第 2 引数が後勝ち)。
-  HttpApiBuilder が options なしで decode しても、将来緩い options を渡す
-  実装になっても、スキーマに焼き込んだ strict は維持される
+- `SchemaParser.makeParser` (dist/SchemaParser.js) reads the AST annotation
+  `annotations["parseOptions"]` and merges it at parse time via
+  `mergeParseOptions(options, astOptions)`
+- The merge has **AST annotations winning over caller ParseOptions** (the 2nd argument is
+  last-wins). Even though HttpApiBuilder decodes with no options — and even if a future
+  implementation passed looser options — strict baked into the schema is preserved
 
-### 2-2. 実測結果(bun + effect rc.109)
+### 2-2. Measured results (bun + effect rc.109)
 
-`Schema.Struct({...}).annotate({ parseOptions: { onExcessProperty: "error" } })`
-に対して、HttpApiBuilder と同一の組み立て
-(`Schema.decodeUnknownEffect(Schema.Union([schema]))`、options なし)で:
+For `Schema.Struct({...}).annotate({ parseOptions: { onExcessProperty: "error" } })`,
+with the same assembly as HttpApiBuilder (`Schema.decodeUnknownEffect(Schema.Union([schema]))`,
+no options):
 
-| ケース | 結果 |
+| Case | Result |
 |---|---|
-| 素の Struct + 未知フィールド | 黙って除去して成功(M1-A2 の既定挙動の再現) |
-| 注釈付き + 未知フィールド | `Expected no excess property at ["manifest"]` で拒否 |
-| 注釈付き + 正常入力 | 成功 |
-| 親にのみ注釈 + ネスト内の未知フィールド | 拒否(**子へ伝播する**) |
-| 注釈付き + 呼び出し側が `onExcessProperty: "ignore"` を明示 | 拒否(**注釈が勝つ**) |
-| `Schema.Union` ラップ越し(HttpApiBuilder 実経路と同型) | 拒否 |
+| Bare Struct + unknown field | silently stripped, succeeds (reproduces M1-A2's default behavior) |
+| Annotated + unknown field | rejected with `Expected no excess property at ["manifest"]` |
+| Annotated + normal input | succeeds |
+| Annotation on parent only + unknown field in a nest | rejected (**propagates to children**) |
+| Annotated + caller explicitly passes `onExcessProperty: "ignore"` | rejected (**the annotation wins**) |
+| Through a `Schema.Union` wrap (isomorphic to HttpApiBuilder's real path) | rejected |
 
-### 2-3. PR-F1 実装への含意
+### 2-3. Implications for PR-F1 implementation
 
-- 適用点は `packages/api-schema` の security-critical payload schema のみ
-  (トップレベル 1 注釈で全ネストに効く)。共有ラッパー(例:
-  `strictPayload(...)`)1 つで単一実装点にできる
-- HttpApiBuilder のフォーク・手動 decode 層・upstream issue は不要。
-  AUTH_SPEC §12-10 (1) の実装注記に反映済み
-- エラーは既存の Schema 検証エラー(400)として表面化する(HttpApiSchemaError
-  経由)— 新しいエラー面を増やさない
-- **適用順の制約(2026-08-19 pullfrog レビュー指摘 — 実測で確認)**:
-  `SchemaParser.makeParser` は AST に checks があると `parseOptions` を
-  **最後の check の annotations** から読む(dist/SchemaParser.js:892)。
-  `SchemaAST.annotate` も checks があると最後の check へ注釈を付けるため、
-  **注釈の後に `.check(...)` を合成すると strict が無警告で失効する**
-  (rc.109 実測: annotate のみ → 拒否 / check → annotate → 拒否 /
-  annotate → check → **受理・未知フィールドは黙って除去**)。
-  fail-closed 機構の失敗が silent なので、PR-F1 では
-  (1) `strictPayload(...)` を**最後に適用する**規約(check を全て
-  済ませたスキーマにのみ被せる)とし、
-  (2) 全対象エンドポイントについて「未知フィールドが実際に 400 で
-  拒否される」ことを受理経路の固定テストで保証する(注釈の存在では
-  なく拒否の実効性をテストする — 適用順バグ・upstream の読み取り位置
-  変更の両方を検出する)
+- The application point is only the security-critical payload schemas in `packages/api-schema`
+  (one top-level annotation covers all nesting). A single shared wrapper (e.g.
+  `strictPayload(...)`) makes it a single implementation point
+- No HttpApiBuilder fork, manual decode layer, or upstream issue needed.
+  Reflected in AUTH_SPEC §12-10 (1)'s implementation note
+- The error surfaces as an existing Schema validation error (400) (via HttpApiSchemaError)
+  — adds no new error surface
+- **Application-order constraint (2026-08-19 pullfrog review finding — confirmed by measurement)**:
+  `SchemaParser.makeParser` reads `parseOptions` from **the last check's annotations** when the
+  AST has checks (dist/SchemaParser.js:892). `SchemaAST.annotate` likewise attaches the annotation
+  to the last check when checks exist, so **composing `.check(...)` after the annotation silently
+  loses strictness** (measured on rc.109: annotate only → rejects / check → annotate → rejects /
+  annotate → check → **accepts; unknown fields silently stripped**).
+  Since a fail-closed mechanism's failure is silent, PR-F1 adopts:
+  (1) a convention that `strictPayload(...)` is **applied last** (only draped over a schema whose
+  checks are all done), and
+  (2) for every covered endpoint, an acceptance-path test pinning that "an unknown field is
+  actually rejected with 400" (test the effectiveness of rejection, not the presence of the
+  annotation — catches both application-order bugs and upstream changes to the read location)
 
-## 3. 裁定待ちの状態(所有者へ)
+## 3. Awaiting-ruling state (for the owner)
 
-- 裁定 1: 本 PR のマージ = 承認
-- 裁定 2: **2026-08-19 所有者裁定 = 案 2-G′**(はしごの経緯: §4-2 第 5 次で
-  2-H 追加 → §5-1 第 6 次で 2-G′ 再生・推奨)。仕様改訂は本 PR で起草済み
-  (CRYPTO_SPEC §4.3 / §6.2 / §6.3 / §6.4、AUTH_SPEC §12-4)— マージ =
-  仕様文言の承認
-- 裁定 3: **2026-08-19 所有者裁定 = 3-D + 3-E + 3-E′ + 3-F**(コンパクションは
-  M1 スナップショットレコード方式)。仕様改訂は本 PR で起草済み
-  (CRYPTO_SPEC §6.3 ローカル床節)— マージ = 仕様文言の承認
+- Ruling 1: merging this PR = approval
+- Ruling 2: **2026-08-19 owner ruling = option 2-G′** (ladder history: 2-H added in §4-2
+  round 5 → 2-G′ revived and recommended in §5-1 round 6). Spec revisions already drafted in this
+  PR (CRYPTO_SPEC §4.3 / §6.2 / §6.3 / §6.4, AUTH_SPEC §12-4) — merge = approval of the spec wording
+- Ruling 3: **2026-08-19 owner ruling = 3-D + 3-E + 3-E′ + 3-F** (compaction is the M1
+  snapshot-record method). Spec revisions already drafted in this PR (CRYPTO_SPEC §6.3 local-floor
+  section) — merge = approval of the spec wording
 
-## 4. 裁定 2・3 の上位互換探索(2026-08-19 第 5 次 — 所有者依頼)
+## 4. Upward-compatible exploration of rulings 2 & 3 (2026-08-19 round 5 — owner request)
 
-session-31 §7 の各最終推奨に対して、さらなる上位互換がないかを再点検した。
+Re-checked whether any further upward-compatible option exists against session-31 §7's final
+recommendations.
 
-### 4-1. 検討して棄却した案(裁定 2)
+### 4-1. Options considered and rejected (ruling 2)
 
-- **案 2-G: `checkpoint` op(§6.2 — 既起草・未実装)を複合へ原子同梱する**:
-  2-F の「チェーンがマニフェストハッシュを運ぶ」を、既存起草の op の再利用で
-  合意規則の**追加のみ**(既存 op payload 不変 = re-genesis 不要)により
-  実現する着想。棄却理由: checkpoint payload は values_digest_hex を必須で
-  運び、受理検証(§6.4)が受理時点のサーバー保存状態との突合を要求するため、
-  発行者は最新の値レベルビュー(variable_id / version / value_sig_hash)が
-  必要になる。metadata-only pull はこれを運ばない(AUTH_SPEC §12-7 —
-  実測で確認)ため full pull が要り、rotate / create のたびに `var.read` を
-  変数ごとに記録する監査汚染が発生する — 案 3-B の棄却根拠と同じ循環
-  (**→ この棄却理由は誤りだった。§5-1 で訂正し、案 2-G′ として再生**)
-- **案 2-I: checkpoint の values_digest を空許容にする(manifest-only
-  checkpoint)**: §6.3 チェックポイント整合の規則 2 は「基準チェックポイントを
-  持つ環境の値付き配布がスナップショット列挙を欠く場合は拒否する」を
-  不変条件とする(2026-08-18 pullfrog レビューで固めた線)。値公証なしの
-  checkpoint はそこへ「基準あり・列挙なし」の第 3 状態を持ち込み、攻撃者が
-  選べる規則 2 スキップ経路になる。棄却
+- **Option 2-G: atomically bundle the `checkpoint` op (§6.2 — already drafted, unimplemented) into
+  the composite**: the idea of realizing 2-F's "the chain carries the manifest hash" by reusing an
+  already-drafted op, through consensus-rule **addition only** (existing op payloads unchanged =
+  no re-genesis). Rejection rationale: the checkpoint payload must carry values_digest_hex, and
+  acceptance verification (§6.4) requires matching against server-stored state at acceptance time,
+  so the issuer needs the latest value-level view (variable_id / version / value_sig_hash).
+  metadata-only pull doesn't carry it (AUTH_SPEC §12-7 — confirmed by measurement), so a full pull
+  is required, and every rotate / create records a `var.read` per variable — audit pollution, the
+  same circularity as option 3-B's rejection ground (**→ this rejection rationale was wrong.
+  Corrected in §5-1 and revived as option 2-G′**)
+- **Option 2-I: allow checkpoint's values_digest to be empty (manifest-only checkpoint)**: §6.3
+  checkpoint-consistency rule 2 holds invariant "reject a value-bearing distribution for an
+  environment that has a reference checkpoint when the snapshot enumeration is missing" (the line
+  hardened in the 2026-08-18 pullfrog review). A checkpoint without value notarization introduces a
+  third state of "reference present, enumeration absent", giving an attacker a selectable rule-2
+  skip path. Rejected
 
-### 4-2. 案 2-H: 専用アンカー op の複合原子同梱(2-F の強度を re-genesis なしで)
+### 4-2. Option 2-H: atomic composite bundling of a dedicated anchor op (2-F's strength without re-genesis)
 
-**着想: 2-F のコストの源泉は「既存 op(create / rotate)の payload を変える」
-ことにあり、束縛を「新 op の追加」で運べば加法的になる**(checkpoint op が
-§6.2 で「既存 op payload に触れない」を利点として明記した、その形の再利用)。
+**Idea: 2-F's cost originates in "changing existing op (create / rotate) payloads", so carrying the
+binding via "adding a new op" makes it additive** (reusing the shape the checkpoint op noted as its
+advantage in §6.2: "doesn't touch existing op payloads").
 
-- 新 op `anchor_manifest`(名称は起草時に確定): payload =
+- New op `anchor_manifest` (name fixed at drafting time): payload =
   `LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex)` —
-  checkpoint の環境エントリから values_digest を除いた同型。
-  「チェーンはハッシュを運び、内容の検証はデータ層が担う」クラス(§6.2 の
-  先例に載る)
-- 複合(create / rotate)は同一リクエストで **H+1 = create / rotate、
-  H+2 = anchor_manifest の 2 エントリを原子追記**する(単一 DO
-  トランザクション — 部分受理は構造的に起きない)
-- 合意規則(いずれも新 op に閉じる = 既存チェーンへ影響しない):
-  (i) 隣接規則 — anchor は直前エントリが同一環境の create / rotate かつ
-  同一 actor の場合のみ有効(standalone アンカーの排除)、
-  (ii) epoch はエントリ時点(自エントリ適用前)の現エポックと厳密一致
-  (checkpoint と同型)。**H+2 時点では H+1 が適用済みなので new_epoch が
-  厳密一致する — anchor 自身に H+1 例外は不要**、
-  (iii) manifest_version の単調増加 — 同一環境の先行 anchor の値より
-  大きいこと(checkpoint-regression と同型。payload の公開値のみで
-  チェーン検証可能)。これにより有効チェーン上で (environment_id,
-  manifest_version) の anchor は高々 1 つになり、下の検証規則の照合先が
-  決定的になる
-- マニフェスト検証(**選言にしない — 2026-08-19 pullfrog レビュー反映**。
-  当初の「strict または anchor 一致」の形は、anchor が存在しても strict
-  経路が生きたままなので、同一 issuer が同じ (environment_id, epoch,
-  manifest_version) で別内容のマニフェストに宣言ヘッド H+2 以降を
-  焼き込めば strict 側で通ってしまい、equivocation 優位が消える):
-  1. 検証済みチェーン上に当該 (environment_id, manifest_version) の
-     anchor が**存在するなら、manifest_sig_hash の完全一致を MUST とする**
-     (strict はこの場合の代替経路にならない)。epoch も anchor の値と
-     一致すること
-  2. anchor が存在しない場合のみ strict(epoch = 宣言ヘッド時点の
-     現エポック)を適用する
-  3. 配布されたマニフェストの manifest_version は、検証済みチェーン上の
-     当該環境の**最新 anchor の値以上**、epoch は同 anchor の epoch 以上で
-     なければならない(チェーン導出の下限。manifestVersion はエポックを
-     跨いで単調 — §12-5 CAS — なので、境界より前の版はすべて最新 anchor の
-     値未満になり、正当な配布への誤検出はない)
-  - actor = issuer 規則は不要(2-F と同じ論法: 投機的相乗りは hash を
-    予知できず、事後の相乗りは自分のマニフェストの hash がアンカーに
-    載っていない)。なお 2-F を採る場合も、session-31 §7 の規則文
-    (「例外は…場合のみ」)は同じ選言形なので、起草時に本 MUST 形
-    (エントリが manifest ハッシュを運ぶ create / rotate に対応する
-    manifest_version は、その hash と一致しなければならない)へ
-    書き直すこと
-- 2-F の波及効果を全て保持する: エポック境界の発行時チェーンアンカー、
-  M1-A4(受理確認 = チェーン同期だけで床コミット材料が揃う)、M1-A3
-  (env create 直後の床のマニフェスト記録がチェーン導出で確立)、1-E′
-  (複合の成功確認がチェーン同期で完結)
-- **2-E に対する検出差(2026-08-19 pullfrog レビュー 2 巡で縮小 —
-  当初の「equivocation が全クライアントに検出可能」は過大主張だった)**:
-  アンカーが載るのはエポック境界(create / rotate 複合)の版のみで、
-  同一エポック内の後続版(メタ操作ごとの manifestVersion = 最新 + 1 —
-  AUTH_SPEC §12-5)は構造的に未アンカーのまま規則 2(strict)に落ちる。
-  よって 2-H / 2-F が 2-E に対して新たに閉じるのは、見出しとしては
-  **(i) アンカーを持つ版(= 境界マニフェスト)の equivocation** に縮む。
-  境界跨ぎの巻き戻しは層で分けて数える(2026-08-19 pullfrog レビューの
-  自己訂正を反映): **チェーンごと巻き戻す形**は必ず epoch の後退になり
-  (単調性論法)、床なしクラスにも既存のリポジトリアンカー受理規則
-  (§6.3 帯域外アンカー (b) — チェーン導出の環境エポック ≥ アンカー)が
-  既に落とすため差に数えない。一方 **チェーンは最新のまま、境界より前の
-  正当なマニフェスト(宣言ヘッド = 旧、epoch = 旧)だけを組にして配布する
-  形**は、マニフェストのエポック整合が宣言ヘッド時点との一致・ヘッド束縛が
-  最新性を要求しない・アンカー規則の束縛対象はチェーン層である、の
-  3 点により既存規則を通る。チェックポイント整合の基準は**チェーン導出**
-  (§6.3 — 床とは独立に床なしクラスへも届く)なので、境界後の基準が
-  張られていれば規則 1 がこの形を落とす — 規則 3 が唯一の防御になるのは
-  **基準が張られるまでの窓**(M2 未実装の現在は常時。実装後も
-  rotate → 再暗号化 → checkpoint 発行までの区間 — 発行 SHOULD (i))に
-  限られる(マニフェスト層の下限はチェーン層のアンカー規則と束縛対象が
-  別物、という性格は変わらない)。
-  規則 3 の価値はこの **(a) マニフェスト層の巻き戻し下限**(アンカーを
-  持つ版への照合〔規則 1〕の下方回避もこれが塞ぐ)と、
-  **(b) M2 checkpoint の周期的な非後退カバーに対する境界即時の基準供給**に
-  ある。**最新 anchor より先の未アンカー版を名乗る前進注入は、issuer の
-  正規発行能力そのものであり、どの案でも残る**(CRYPTO_SPEC §14.3-5 の
-  残余 (i) に記録済みの非保証と同じクラス)。  床も帯域外アンカーも持たない
-  クラスには規則 3 も無力(§14.3-3 が原理的不可能と記録済みの範囲)。
-  床を持つクライアントは §6.3 床規則 (b) で、チェックポイント基準
-  (チェーン導出 — 床の有無と独立)が張られた環境では整合規則 1 で、
-  2-E でも同等の検出ができる。なおマニフェストの
-  prev 連鎖(prevManifestSigHashHex)が最新 anchor へ到達することを
-  要求すれば未アンカー版も推移的に束縛できるが、サーバーの保持が
-  最新 1 通のみ(§12-5)で中間版が配布されないため、保持・配布規則の
-  改訂を伴う — 本探索では 2-H のコストに含めず採らない(2-H の眼目は
-  検出差ではなく「2-F の強度を re-genesis なしで」に置き、はしごの順位は
-  この縮小後も変わらない)
-- **コストが加法的**: 既存チェーンは新規則の下でも有効(旧エントリに新 op は
-  含まれない)→ **re-genesis 不要・データ層再構築不要**。chain-entries.json
-  は追加のみ(既存ベクター・expected_head_states の再生成なし)。
-  マニフェストのワイヤ形式は不変 → env-manifest.json は負例追加のみ。
-  移行 = 環境ごと 1 回の rotate / メタ操作(2-E と同水準)。crypto の
-  人間レビューも加法ベクターで済む(2-F は全再生成のレビュー)
-- 2-F が恒久的に勝る点(正直な差分): op が 1 つ少ない・隣接規則が不要・
-  エポック境界あたり 1 エントリで済む。2-H はこの 3 点を恒久コストとして
-  払い、引き換えに一時コスト(データ層全再構築)を消す
-- **更新順序(2026-08-19 pullfrog レビュー反映 — session-28 §2-2 の順序が
-  一部逆転する)**: 最初の移行 rotate がアンカーエントリを載せた時点で、
-  旧 CLI は「未知 op = チェーン無効」により**プロジェクト全体の**チェーン
-  検証に失敗する(未移行環境の CI ジョブも含む)。したがって順序は
-  ① サーバー → ② **CI / CLI の更新** → ③ 全環境の移行 rotate とし、
-  session-28 §2-2 の「② 移行 → ③ CLI」を入れ替える。②〜③ の間に
-  旧クライアントが残っていればプロジェクトが読めなくなる窓があり、
-  これは 2-E / 2-D にはない移行コストとしてはしごの比較に含める
-  (fail-closed 方向の失敗であり無言の劣化ではない点は変わらない)
+  the same shape as a checkpoint environment entry minus values_digest. It belongs to the class
+  "the chain carries a hash; content verification is the data layer's job" (rides the §6.2
+  precedent)
+- A composite (create / rotate) **atomically appends 2 entries in one request: H+1 = create /
+  rotate, H+2 = anchor_manifest** (a single DO transaction — partial acceptance is structurally
+  impossible)
+- Consensus rules (all confined to the new op = no effect on existing chains):
+  (i) adjacency rule — an anchor is valid only when the immediately preceding entry is a create /
+  rotate of the same environment by the same actor (eliminates standalone anchors),
+  (ii) epoch strictly equals the current epoch at entry time (before applying the entry itself)
+  (same shape as checkpoint). **At H+2, H+1 is already applied, so new_epoch matches strictly —
+  the anchor itself needs no H+1 exception**,
+  (iii) manifest_version monotonic increase — greater than any prior anchor's value for the same
+  environment (same shape as checkpoint-regression; verifiable from the payload's public values
+  alone). This makes at most one anchor per (environment_id, manifest_version) on a valid chain,
+  making the verification rule's match target deterministic
+- Manifest verification (**not a disjunction — reflecting the 2026-08-19 pullfrog review**.
+  The original "strict OR anchor match" shape leaves the strict path alive even when an anchor
+  exists, so the same issuer could bake a declared head of H+2 or later into a different-content
+  manifest at the same (environment_id, epoch, manifest_version) and pass on the strict side,
+  erasing the equivocation advantage):
+  1. If an anchor for the (environment_id, manifest_version) **exists on the verified chain, an
+     exact manifest_sig_hash match is a MUST** (strict is not an alternative path in that case).
+     epoch must also match the anchor's value
+  2. strict (epoch = current epoch at the declared head) applies only when no anchor exists
+  3. A distributed manifest's manifest_version must be **at least the latest anchor's value** for
+     that environment on the verified chain, and its epoch at least that anchor's epoch
+     (chain-derived floor. Since manifestVersion is monotonic across epochs — §12-5 CAS — every
+     version before the boundary falls below the latest anchor's value, so no false positives on
+     legitimate distributions)
+  - No actor = issuer rule needed (same argument as 2-F: speculative piggybacking can't predict the
+    hash; after-the-fact piggybacking finds its own manifest's hash absent from the anchor). Note
+    that if 2-F is taken instead, session-31 §7's rule text ("the exception is ... only when") is
+    the same disjunctive shape, so at drafting time rewrite it into this MUST form (the
+    manifest_version corresponding to a create / rotate whose entry carries the manifest hash
+    must match that hash)
+- Preserves all of 2-F's ripple effects: the chain anchor at issuance at epoch boundaries,
+  M1-A4 (acceptance confirmation = floor-commit material complete with just a chain sync), M1-A3
+  (the floor's manifest record right after env create is established chain-derived), 1-E′
+  (composite success confirmation completes within a chain sync)
+- **Detection difference vs 2-E (narrowed in 2026-08-19 pullfrog review round 2 — the original
+  "equivocation detectable by all clients" was an overclaim)**: anchors only cover boundary
+  (create / rotate composite) versions; later in-epoch versions (per-meta-operation
+  manifestVersion = latest + 1 — AUTH_SPEC §12-5) remain structurally unanchored and fall to
+  rule 2 (strict). So what 2-H / 2-F newly close over 2-E shrinks, in headline terms, to
+  **(i) equivocation of anchored versions (= boundary manifests)**. Cross-boundary rollback is
+  counted in separated layers (reflecting the 2026-08-19 pullfrog review's self-correction):
+  **the shape that rewinds the chain itself** is always an epoch regression (monotonicity
+  argument), and the floorless class already drops it via the existing repository-anchor
+  acceptance rule (§6.3 out-of-band anchor (b) — chain-derived environment epoch ≥ anchor), so it
+  doesn't count in the diff. On the other hand, **the shape that keeps the chain current but
+  pairs and distributes only a legitimate pre-boundary manifest (declared head = old, epoch = old)**
+  passes existing rules because manifest epoch consistency is a match against declared-head time,
+  head binding doesn't require recency, and the anchor rule binds the chain layer — 3 points.
+  Checkpoint-consistency criteria are **chain-derived** (§6.3 — they reach the floorless class
+  independent of the floor), so once a post-boundary reference is pinned, rule 1 drops this shape —
+  rule 3 is the sole defense only during **the window until a reference is pinned** (always-on
+  while M2 is unimplemented; after implementation still limited to the interval rotate →
+  re-encrypt → checkpoint issue — the issuance SHOULD (i)) (the manifest layer's floor and the
+  chain layer's anchor rule bind different things — that character doesn't change).
+  Rule 3's value lies in this **(a) manifest-layer rollback floor** (it also blocks downward
+  circumvention of the anchored-version match [rule 1]) and **(b) supplying a boundary-immediate
+  reference against M2 checkpoints' periodic non-regression coverage**. **Forward injection
+  claiming an unanchored version beyond the latest anchor is the issuer's legitimate issuance
+  capability itself and remains under every option** (the same class as the non-guarantee already
+  recorded in CRYPTO_SPEC §14.3-5 residual (i)). For a class holding neither floor nor out-of-band
+  anchor, rule 3 is powerless too (the range §14.3-3 records as fundamentally impossible).
+  A client with a floor can achieve equivalent detection under 2-E via §6.3 floor rule (b), and in
+  environments where a checkpoint reference (chain-derived — independent of floor presence) is
+  pinned, via consistency rule 1. Requiring the manifest's prev chain (prevManifestSigHashHex) to
+  reach the latest anchor could transitively bind unanchored versions too, but the server retains
+  only the latest 1 copy (§12-5) and intermediate versions aren't distributed, so it would require
+  revising retention/distribution rules — not counted in 2-H's cost and not taken in this
+  exploration (2-H's point is not the detection difference but "2-F's strength without re-genesis";
+  the ladder ranking is unchanged even after this narrowing)
+- **The cost is additive**: existing chains stay valid under the new rule (old entries contain no
+  new op) → **no re-genesis, no data-layer rebuild**. chain-entries.json is addition-only (no
+  regeneration of existing vectors / expected_head_states). The manifest wire format is unchanged
+  → env-manifest.json only adds negatives. Migration = one rotate / meta operation per environment
+  (same level as 2-E). The crypto human review is also satisfied by additive vectors (2-F needs a
+  full-regeneration review)
+- Points where 2-F permanently wins (honest diff): one fewer op, no adjacency rule needed, 1 entry
+  per epoch boundary. 2-H pays these 3 as permanent costs in exchange for erasing the one-time cost
+  (full data-layer rebuild)
+- **Update ordering (reflecting the 2026-08-19 pullfrog review — part of session-28 §2-2's order
+  inverts)**: the moment the first migration rotate lands an anchor entry, an old CLI fails chain
+  verification for the **whole project** via "unknown op = invalid chain" (including CI jobs on
+  unmigrated environments). So the order is ① server → ② **CI / CLI updates** → ③ migration
+  rotate of all environments, swapping session-28 §2-2's "② migrate → ③ CLI". Between ② and ③
+  there's a window where a remaining old client can't read the project at all, and this is counted
+  in the ladder comparison as a migration cost 2-E / 2-D don't have (it's still a fail-closed
+  failure, not a silent degradation)
 
-**はしごの改訂(第 5 次)**: 2-F ⇔ **2-H** ⇔ 2-E ⇔ 2-D。
-推奨 = **2-H**: 2-F の一時コストの大半(re-genesis = projectId 更新 →
-全署名データの検証不能化 → データ層全再構築)が消え、恒久差分は
-op 1 個 + 隣接規則 1 本 + 境界 1 エントリに縮む。「公開前に払って恒久に
-単純へ」の先例(grant_server 拡張・rotate への commitment)はいずれも
-**既存データの作り直しを伴わない**形式確定だった — データ層全再構築まで
-踏み込む先例はなく、2-H は先例の水準で 2-F の強度に到達する。
+**Ladder revision (round 5)**: 2-F ⇔ **2-H** ⇔ 2-E ⇔ 2-D.
+Recommendation = **2-H**: most of 2-F's one-time cost disappears (re-genesis = projectId update →
+all signed data unverifiable → full data-layer rebuild), and the permanent diff shrinks to
+1 op + 1 adjacency rule + 1 boundary entry. The precedents of "pay before release, be simple
+forever" (grant_server extension, commitment into rotate) were all format finalizations **without
+rebuilding existing data** — there's no precedent reaching a full data-layer rebuild, and 2-H
+reaches 2-F's strength at the precedents' level.
 
-### 4-3. 案 3-F: intent journaling(3-E′ の上位互換 — journal-before-send)
+### 4-3. Option 3-F: intent journaling (3-E′'s upward-compatible — journal-before-send)
 
-3-E′(journal-before-release)は「検証済み事実の記録が使用・報告に先行する」
-規律だが、**mutation の送信そのものは覆わない**。M1-A4 の応答消失・
-post-accept failure の窓(session-31 §8 運用ガード 5 が手動で塞いでいるもの)は
-「送信したが受理を観測できていない」状態が非永続であることに由来する。
+3-E′ (journal-before-release) is the discipline "recording a verified fact precedes its use /
+report", but it **doesn't cover the sending of a mutation itself**. The window of M1-A4's lost
+response / post-accept failure (what session-31 §8 operational guard 5 closes manually) comes from
+the non-persistence of "sent but acceptance unobserved".
 
-- **3-F**: security-critical mutation の**送信前**に intent record
-  (op 種別・environment_id・manifest_version + sig hash・宣言ヘッド —
-  非機密のみ。ディスクレス不変条件と両立)を床ログへ追記する。
-  受理確認(§12-10 (3) の効果確認)の成功で resolution record を追記して
-  閉じる。未解決 intent を持つクライアントは、同一環境への次の mutation・
-  成功報告の前に照合(チェーン同期 / metadata-only pull)で解決する(SHOULD)
-- join との関係: intent は検証済み事実ではないため **join の格子には
-  入れない**(観測とは記録クラスを分ける)。fold は未解決 intent を
-  「要照合」として表面化する — 3-D の意味論を汚さない
-- 失敗方向: クラッシュ・応答消失で失われるのは「成功したという思い込み」では
-  なく「確認義務の記録」— 記録漏れの方向が安全側に固定される(3-E′ と同じ
-  性質を送信側へ拡張した形)
-- §12-10 (3)(1-E′)との相乗: 1-E′ が「確認するまで成功と言わない」を
-  規範化し、3-F がその未確認状態をクラッシュ耐性にする。裁定 2 で 2-H / 2-F を
-  採る場合、rotate / create intent の解決はチェーン同期のみで完結する
-- 3-E′ の精密化(同時に規定する): journal-before-release / before-send の
-  「記録」は write の成功ではなく**永続化(fsync 相当)**を基準とする。
-  床ログの追記頻度は低くコストは無視できる
+- **3-F**: before **sending** a security-critical mutation, append an intent record
+  (op kind, environment_id, manifest_version + sig hash, declared head — non-secret only;
+  compatible with the diskless invariant) to the floor log. On success of the acceptance check
+  (the effect check of §12-10 (3)), append a resolution record to close it. A client holding an
+  unresolved intent SHOULD resolve it by reconciliation (chain sync / metadata-only pull) before
+  the next mutation to the same environment or a success report
+- Relationship to join: an intent is not a verified fact, so it **doesn't enter the join lattice**
+  (observations stay a separate record class). fold surfaces unresolved intents as "needs
+  reconciliation" — doesn't pollute 3-D's semantics
+- Failure direction: what a crash / lost response loses is not "the belief that it succeeded" but
+  "the record of the confirmation duty" — the direction of a missed record is pinned to the safe
+  side (3-E′'s property extended to the send side)
+- Synergy with §12-10 (3) (1-E′): 1-E′ normalizes "don't call it success until confirmed", and
+  3-F makes that unconfirmed state crash-resilient. When 2-H / 2-F is taken under ruling 2,
+  resolving a rotate / create intent completes entirely within a chain sync
+- 3-E′ refinement (specified at the same time): the "record" of journal-before-release /
+  before-send is measured by **persistence (fsync-equivalent)**, not by the write succeeding.
+  Floor-log append frequency is low, so the cost is negligible
 
-**推奨(第 5 次)**: 裁定 3 = 3-D + 3-E + 3-E′ + **3-F**(コンパクションは
-session-31 の M1 スナップショット行方式のまま)。
+**Recommendation (round 5)**: ruling 3 = 3-D + 3-E + 3-E′ + **3-F** (compaction stays the M1
+snapshot-row method of session-31).
 
-## 5. 第 6 次探索(2026-08-19 — 所有者依頼の最終再点検)
+## 5. Round-6 exploration (2026-08-19 — owner-requested final re-check)
 
-### 5-1. 裁定 2: 案 2-G′ — 2-G の棄却理由の誤りを訂正して再生(checkpoint の複合原子同梱)
+### 5-1. Ruling 2: option 2-G′ — correcting 2-G's rejection error and reviving it (atomic composite bundling of checkpoint)
 
-§4-1 の 2-G 棄却は、複合の 2 つの発生点それぞれで前提が誤っていた:
+§4-1's rejection of 2-G had wrong premises at each of the composite's two generation points:
 
-1. **create**: 新環境の変数は空集合であり、values_digest は空列挙の
-   ダイジェスト。**pull 自体が不要**
-2. **rotate**: ローテーション実行者は「現在値を新 DEK で再暗号化し、
-   再暗号化された各値に writer として署名する」義務を負う(CRYPTO_SPEC §7。
-   writer = 実行者自身は §6.3 の checkpoint 発行 SHOULD (i) にも明記)。
-   つまり**全現在値の実読は rotate に固有の必須動作**であり、その
-   `var.read` は真実の記録 — values_digest の構築は追加の読み取りを
-   一切発生させない(pull → rotate 複合 → 再暗号化の順に直列化するだけ)
+1. **create**: the new environment's variable set is empty, and values_digest is the digest of an
+   empty enumeration. **No pull is needed at all**
+2. **rotate**: the rotation executor bears the duty "re-encrypt current values under the new DEK
+   and sign each re-encrypted value as writer" (CRYPTO_SPEC §7. That writer = the executor is also
+   stated in §6.3's checkpoint-issuance SHOULD (i)). In other words **a real read of all current
+   values is an operation intrinsic to rotate**, and its `var.read` is a truthful record — building
+   values_digest generates no additional reads (it just serializes pull → rotate composite →
+   re-encrypt)
 
-したがって「values_digest が full pull = 監査汚染を強制する」は成立しない。
-境界 checkpoint のカバー範囲を**当該環境 1 タプルのみ**に限定すれば
-(周期 checkpoint の全環境カバー SHOULD は据え置き — あちらは実 pull に
-相乗りする契機設計で監査を汚さない)、他環境の読み取りも発生しない。
+So "values_digest forces full pull = audit pollution" doesn't hold. If the boundary checkpoint's
+coverage is **limited to the single tuple of the environment in question** (the periodic
+checkpoint's SHOULD of covering all environments stays as-is — that one is an occasion design that
+piggybacks on real pulls and doesn't pollute the audit), no reads of other environments occur either.
 
-**内容**: 複合(create / rotate)= H+1 の create / rotate エントリ +
-H+2 の `checkpoint` エントリ(当該環境 1 タプル)の原子追記。
+**Content**: composite (create / rotate) = atomic append of the H+1 create / rotate entry +
+the H+2 `checkpoint` entry (the environment's single tuple).
 
-- **新 op すら不要** — checkpoint op は承認済み仕様に既在(0.6-draft §6.2、
-  PR #80 マージ = 承認)。未着手なのは実装だけで、それは M2 で必ず作る層の
-  前倒しになる(捨て作業が生じない)
-- マニフェスト検証の例外は 2-H と同じ MUST 形: 「検証済みチェーン上の
-  checkpoint タプル (environment_id, epoch, manifest_version,
-  manifest_sig_hash) との完全一致」。非後退・下限は**承認済みの
-  チェックポイント整合規則 1 がそのまま**担う — 2-H の規則 3 の新設が不要
-- **2-H との決定的な差**: 境界ごとに**値込みの完全な基準**が即時に張られる。
-  §4-2 で「規則 3 が唯一の防御になるのは基準が張られるまでの窓」と限定した
-  **残余の窓そのものが消える** — 床なしクラスへのチェックポイント整合が
-  全エポック境界から有効になる。2-H(anchor はマニフェストのみ)にも
-  2-F にも無い利得。**時期の限定(2026-08-19 pullfrog レビュー反映)**:
-  PR-F3 時点で有効になるのは規則 1(マニフェストの非後退・エポック基準)
-  のみで、値側(規則 2)の利得はスナップショット配布 + クライアント検証が
-  入る M2 で届く(下の「正直なコスト」の分割と対応)。基準となる
-  checkpoint 自体は PR-F3 の境界から積まれるため、M2 到達時に過去の
-  境界分も遡って効く。はしごの順位は規則 1 の境界基準だけで 2-H の
-  規則 3 を包含するため変わらない
-- 2-H の恒久コスト(checkpoint の部分複製 op + 隣接規則)も消える。
-  隣接規則は不要 — checkpoint は元来 standalone が正当な op であり、
-  複合同梱は「発行契機が受理と原子的になった」だけ。エントリ数・
-  合意規則面は M2 後の姿と完全に同一になる
-- **正直なコスト**: PR-F3 に M2 の checkpoint 層(合意規則・§6.4 受理検証
-  〔内容突合〕・スナップショットの原子保存)が前倒しで入る。分割で有界化
-  する: F3a = checkpoint op の合意規則 + ベクター(純粋な M2 前倒し)、
-  F3b = 複合同梱 + マニフェスト検証規則。スナップショットの**配布**と
-  クライアント側の整合規則 2 の検証は M2 本体に残せる(受理・保存までを
-  前倒しし、消費側は後続)
-- 構築順序: pull(再暗号化に必要な読み取りと同一)→ manifest 署名 →
-  checkpoint 構築・署名 → 2 エントリ + ステートメント + マニフェスト +
-  ラップの原子受理
-- **rotate の liveness が並行 push に結合する(2026-08-19 pullfrog
-  レビュー反映 — 恒久的な liveness 特性としてはしごの比較に含める)**:
-  値 push は現行ではマニフェストに触れず rotate 複合と競合しないが、
-  2-G′ の必須同梱では pull と受理の間の並行 push が values_digest の
-  内容突合(§6.4)を外し **rotate 複合ごと 422 にする**。既存の退避経路
-  (環境の部分集合発行)は当該環境 1 タプルの必須同梱では空集合に縮退して
-  使えない。評価: (i) 再試行の再 pull は捨て作業ではなく**正しさに必要な
-  作業** — 現行設計では pull 後に着地した並行 push の値を実行者が
-  再暗号化から黙って取りこぼす(stale ビューの黙認)が、422 はそれを
-  強制リフレッシュへ変える。(ii) 悪意 member による push 連打の飢餓は
-  チェーン CAS 409 の連打飢餓と同じクラス(member 権限の DoS —
-  受理ポリシー・レート制限の領分)で、2-G′ が新しい攻撃クラスを作る
-  わけではない。(iii) MUST 同梱を SHOULD へ緩める退避は §4-2 で 2-H の
-  選言形を潰したのと同じ穴(checkpoint なし複合の素通り)を開けるため
-  採らない — 有界再試行を使い切った rotate は失敗として報告し、
-  ユーザーが再実行する(§7 の緊急ローテーション義務はこの再試行の外で
-  完遂されるべきもので、無限再試行に読み替えない)
-- 移行・更新順序: 2-H と同一(旧 CLI は checkpoint op を未知 op として
-  拒否する fail-closed。CLI / CI 先行更新 → 全環境の移行 rotate)
-- 仕様の改訂面: AUTH_SPEC §12-4(複合の同梱物へ checkpoint エントリを
-  追加)、CRYPTO_SPEC §6.3 発行 SHOULD (i)(「境界 checkpoint は複合の
-  必須同梱〔カバー = 当該環境のみ〕、再暗号化完了後の checkpoint は
-  従来どおり」の区分)、**CRYPTO_SPEC §6.4 の checkpoint 受理検証
-  (2026-08-19 pullfrog レビュー反映)**: 内容突合の基準時点は現行文言で
-  「受理時点のサーバー保存状態」だが、同梱 checkpoint はマニフェストを
-  同一トランザクションの H+1 が登録し、create では環境自体が事前に
-  存在しないため、**同梱分の突合基準を「複合の適用後の保存状態」へ
-  明示し直す**(standalone checkpoint は従来どおり。同一リクエスト内の
-  同梱物一致検査 — §12-4 — との分担は起草時に一意化する)
+- **Not even a new op needed** — the checkpoint op already exists in the approved spec (0.6-draft
+  §6.2, PR #80 merge = approval). What's untouched is only the implementation, and this becomes an
+  early landing of a layer M2 must build anyway (no throwaway work)
+- The manifest-verification exception has the same MUST shape as 2-H: "an exact match against the
+  checkpoint tuple (environment_id, epoch, manifest_version, manifest_sig_hash) on the verified
+  chain". Non-regression and the floor are carried **as-is by the already-approved
+  checkpoint-consistency rule 1** — no need for 2-H's new rule 3
+- **The decisive difference vs 2-H**: a **complete value-bearing reference** is pinned immediately
+  at every boundary. The **residual window itself** that §4-2 confined to "rule 3 is the sole
+  defense only until a reference is pinned" disappears — checkpoint consistency reaches the
+  floorless class from every epoch boundary. A gain neither 2-H (anchor covers the manifest only)
+  nor 2-F has. **Qualification on timing (reflecting the 2026-08-19 pullfrog review)**: what takes
+  effect at PR-F3 is only rule 1 (manifest non-regression / epoch reference); the value-side gain
+  (rule 2) arrives at M2 when snapshot distribution + client verification land (corresponds to the
+  "honest cost" split below). Since the reference checkpoints themselves accumulate from PR-F3's
+  boundary onward, they apply retroactively to past boundaries once M2 is reached. The ladder
+  ranking doesn't change because rule 1's boundary reference alone subsumes 2-H's rule 3
+- 2-H's permanent costs (a partially-duplicate checkpoint op + the adjacency rule) also disappear.
+  No adjacency rule needed — a checkpoint is inherently a legitimate standalone op; composite
+  bundling just makes "the issuance occasion atomic with acceptance". Entry-count and
+  consensus-rule surfaces end up completely identical to the post-M2 shape
+- **Honest cost**: PR-F3 gets M2's checkpoint layer early (consensus rules, §6.4 acceptance
+  verification [content matching], atomic snapshot storage). Bounded by splitting: F3a = checkpoint
+  op consensus rules + vectors (a pure M2 early landing), F3b = composite bundling + manifest
+  verification rules. Snapshot **distribution** and the client-side consistency rule-2 check can
+  stay in M2 proper (pull acceptance + storage forward; consumers later)
+- Construction order: pull (same as the reads re-encryption needs) → manifest signing →
+  checkpoint construction + signing → atomic acceptance of 2 entries + statement + manifest +
+  wraps
+- **rotate's liveness couples to concurrent pushes (reflecting the 2026-08-19 pullfrog review —
+  counted in the ladder comparison as a permanent liveness characteristic)**: today a value push
+  doesn't touch the manifest and doesn't race a rotate composite, but under 2-G′'s mandatory bundling
+  a concurrent push between pull and acceptance fails the values_digest content match (§6.4) and
+  turns **the whole rotate composite into a 422**. The existing escape path (issuing on a subset of
+  environments) degenerates to the empty set under the single-tuple mandatory bundling and is
+  unusable. Evaluation: (i) the retry's re-pull isn't throwaway work but **work needed for
+  correctness** — under the current design, values from a concurrent push landing after the pull
+  are silently dropped from re-encryption by the executor (silent acceptance of a stale view), and
+  a 422 turns that into a forced refresh. (ii) Starvation via push spam by a malicious member is the
+  same class as chain-CAS 409 spam starvation (member-privilege DoS — the domain of acceptance
+  policy / rate limits); 2-G′ doesn't create a new attack class. (iii) Relaxing the MUST bundling to
+  SHOULD isn't taken because it opens the same hole (unbundled composites slipping through) that
+  §4-2 killed in 2-H's disjunctive form — a rotate that exhausts its bounded retries is reported as
+  failed and the user re-runs it (§7's emergency-rotation duty is something to complete outside
+  this retry loop, not to be reinterpreted as infinite retries)
+- Migration / update order: identical to 2-H (old CLI rejects the checkpoint op as unknown =
+  fail-closed. CLI / CI update first → then migration rotate of all environments)
+- Spec revision surface: AUTH_SPEC §12-4 (add the checkpoint entry to the composite's bundle),
+  CRYPTO_SPEC §6.3 issuance SHOULD (i) (the division "a boundary checkpoint is a mandatory part of
+  the composite [coverage = that environment only]; the post-re-encryption checkpoint is as
+  before"), **CRYPTO_SPEC §6.4 checkpoint acceptance verification (reflecting the 2026-08-19
+  pullfrog review)**: the current text makes the content-match reference point "the server-stored
+  state at acceptance time", but a bundled checkpoint's manifest is registered by H+1 in the same
+  transaction, and on create the environment itself doesn't exist beforehand, so **re-specify the
+  bundled tuple's match reference as "the stored state after the composite is applied"**
+  (standalone checkpoints stay as before. The division of labor with the same-request bundle-match
+  check — §12-4 — is unified at drafting time)
 
-**はしごの改訂(第 6 次)**: **2-G′(推奨)** > 2-H > 2-F > 2-E > 2-D。
-2-G′ は 2-H の全利点(re-genesis 不要・加法ベクター・マニフェスト形式不変・
-移行 2-E 水準)を保ったまま、新規面(op・規則)を増やさずに承認済み機構の
-実装前倒しだけで 2-F 超えの強度(境界即時の値込み基準)に到達する。
-唯一の負担は PR-F3 のスコープ増であり、それは次マイルストーン M2 の
-作業そのもの。
+**Ladder revision (round 6)**: **2-G′ (recommended)** > 2-H > 2-F > 2-E > 2-D.
+2-G′ keeps all of 2-H's advantages (no re-genesis, additive vectors, unchanged manifest format,
+2-E-level migration) while adding no new surface (op or rules), reaching beyond-2-F strength
+(boundary-immediate value-bearing references) via only early implementation of an already-approved
+mechanism. Its sole burden is PR-F3's scope increase — and that is the very work of the next
+milestone M2.
 
-### 5-2. 裁定 1: 天井の確認と実装ガード 1 件
+### 5-2. Ruling 1: ceiling check and 1 implementation guard
 
-- 構造の上位互換は見つからなかった。検討して棄却: サーバー応答への
-  受理証明の同梱(サーバー署名)— 検証者がサーバーを信頼する形になり
-  「サーバーを信頼しない」原則と矛盾。成功の真実源は配布物(1-E′)のまま
-  が正しい
-- **実装ガード(PR-F1 への指示)**: `strictPayload(...)` はロード時に
-  AST を読み返し(parser と同じ経路 — checks があれば最後の check の
-  annotations、なければ ast.annotations)、strict 注釈が**有効位置に
-  ある**ことを assert して不成立なら throw する。§2-3 の適用順 silent
-  失効を、テスト到達以前のモジュールロード時 fail-loud に格上げする
-  (固定テストの要件は据え置き — 二重の防衛)
-- 1-E′ の値 push 除外の将来解除オプション(sig-hash listing)—
-  **検討完了・不採用(2026-08-19 所有者依頼で前倒し検討)**:
-  監査意味論の疑問は解消する(listing は暗号文を配布しないため
-  `var.read` の記録条件 — §12-7「記録条件は暗号文の配布」— に該当せず、
-  呼び出せる主体は full pull で値そのものを正当に読める権限を既に持つ =
-  開示内容は正当に取得可能な情報の真部分集合。metadata-only モードと
-  同じ「記録しない」クラスで矛盾しない)。しかし検討の過程で監査より
-  深い不採用理由が確定した: **listing はサーバー申告の非署名データで
-  あり、1-E′ の「検証可能な配布物」の水準を満たさない** — 悪意サーバーは
-  保存せずに期待どおりの (version, sig_hash) をエコーできる(2xx を
-  信じるのと等価)。チェーン同期・metadata-only pull による確認が成立
-  するのは、返るものが署名済み成果物(エントリ・ステートメント・
-  マニフェスト)でチェーン検証に接続されているからで、listing には
-  その性質がない。honest-but-buggy サーバー(M1-A2 クラス)にだけ効く
-  確認に新しい配布面を増やす価値はなく、値の検証可能な確認は
-  values_digest がチェーンに載る checkpoint(裁定 2 = 2-G′ の境界
-  チェックポイント + M2 の周期・規則 2)が正しい機構。よって不採用で
-  確定し、1-E′ の値 push 除外は checkpoint の領分という現行の線を維持する
+- No upward-compatible structure found. Considered and rejected: bundling an acceptance proof
+  (server signature) into the server response — it would make the verifier trust the server,
+  contradicting the "don't trust the server" principle. The source of truth for success correctly
+  stays with distributed artifacts (1-E′)
+- **Implementation guard (instruction to PR-F1)**: `strictPayload(...)` re-reads the AST at load
+  time (same path as the parser — the last check's annotations if checks exist, otherwise
+  ast.annotations), asserts the strict annotation is **in the effective position**, and throws if
+  not. Promotes §2-3's silent application-order loss to fail-loud at module load, before tests can
+  reach it (the pinned test requirement stays — double defense)
+- The future unlock option for 1-E′'s value-push exemption (sig-hash listing) —
+  **examination complete, not adopted (examined early at the owner's 2026-08-19 request)**:
+  the audit-semantics question resolves (a listing doesn't distribute ciphertexts, so it doesn't
+  meet `var.read`'s record condition — §12-7 "the record condition is ciphertext distribution" —
+  and a principal able to call it already holds the privilege to legitimately read the values
+  themselves via full pull = the disclosure is a strict subset of legitimately obtainable
+  information; consistent with metadata-only mode's "don't record" class). But the examination
+  settled a deeper reason for non-adoption: **a listing is server-declared unsigned data and doesn't
+  meet 1-E′'s "verifiable distributed artifact" bar** — a malicious server can echo the expected
+  (version, sig_hash) without storing anything (equivalent to trusting a 2xx). Confirmation via
+  chain sync / metadata-only pull works because what comes back is signed artifacts (entries,
+  statements, manifests) hooked into chain verification — a listing has none of that. There's no
+  value in adding a new distribution surface for a check that only works against honest-but-buggy
+  servers (the M1-A2 class), and the correct mechanism for verifiable confirmation of values is
+  checkpoints carrying values_digest on the chain (ruling 2 = 2-G′'s boundary checkpoints + M2's
+  periodic / rule 2). Finalized as not adopted; 1-E′'s value-push exemption stays the current line
+  of being checkpoint territory
 
-### 5-3. 裁定 3: 天井の確認
+### 5-3. Ruling 3: ceiling check
 
-- 3-D / 3-E / 3-E′ / 3-F の構造に上位互換は見つからなかった。検討して
-  棄却: 床ログの OS キーチェーン格納(床は非機密で追記意味論が必要 —
-  用途違い)、観測のファイル分割(1 観測 1 ファイル — inode 増と順序
-  管理で JSONL に劣る)
-- 2-G′ 採用時の相乗を追記: 境界 checkpoint が「checkpoint 以下の観測」
-  という M2 コンパクション基準(session-31 §7 裁定 3 第 4 次)を
-  エポック境界ごとに供給するため、床ログの物理回収の設計(M2)が
-  接続しやすくなる
+- No upward-compatible structure found over 3-D / 3-E / 3-E′ / 3-F. Considered and rejected:
+  storing the floor log in the OS keychain (the floor is non-secret and needs append semantics —
+  wrong tool), splitting observations into files (one file per observation — worse than JSONL on
+  inode count and order management)
+- Added a note on synergy when 2-G′ is adopted: boundary checkpoints supply an M2 compaction
+  reference of "observations up to the checkpoint" (session-31 §7 ruling 3 round 4) at every epoch
+  boundary, making the floor log's physical-collection design (M2) easier to connect

@@ -1,312 +1,317 @@
-# セッション 14 メモ(値真正性の実装 — セッション 12 仕様の実装 PR-2)
+# Session 14 notes (value-authenticity implementation — implementation PR-2 of the session-12 spec)
 
-日付: 2026-08-04。前提: PR #28(実装 PR-1 = DEK 真正性。merge `3250571`)と
-PR #29(docs 同期 `808c61e`)が祖先であることを確認して開始。
-スコープ: session-12.md §9 の **PR-2 = 値署名(案 A + C 最小核)**。承認済み
-CRYPTO_SPEC §4.1 に従い、値の writer 署名・認可時点束縛・prev 連鎖・fork 証拠化を
-ベクター先行 → crypto/core → api-schema → server → CLI の層順でコミット。
+Date: 2026-08-04. Prerequisites: confirmed PR #28 (implementation PR-1 = DEK authenticity, merge `3250571`) and
+PR #29 (docs sync `808c61e`) are ancestors before starting.
+Scope: session-12.md §9's **PR-2 = value signing (option A + C minimal core)**. Per the approved
+CRYPTO_SPEC §4.1, commits land in layer order — vectors first → crypto/core → api-schema → server → CLI —
+for value writer signatures, authorization-time binding, prev chaining, and fork evidence.
 
-## 1. やったこと
+## 1. What was done
 
-1. **テストベクター先行**(実装より先にコミット。人間レビュー対象):
-   - `value-signature.json` 新規(session-12 §8-1): chain-entries.json の正規
-     12 エントリチェーンを参照(cross-file の先例)。ciphertext は
-     `environment_deks` のダミー DEK による実 AES-GCM 暗号文(値署名 → §4 復号が
-     一続きの実データ)。正例 6 件は §6.3 の inclusive 規約を境界で固定
-     (create / rotate エントリ自身を宣言ヘッドとする push、削除済み writer の
-     在籍中過去値、rotate 実行者の再暗号化 push = エポック単調 prev 連鎖)
-   - 改竄・移植系 negative(元署名の Ed25519 失敗)14 件と、検証規則系 negative
-     (**署名は有効**のまま `expected_reason` で拒否)12 件。ヘッド不一致の 2 種
-     (`chain-head-mismatch` = 即時証拠 / `chain-head-future` = 再同期の入口)、
-     tenure 跨ぎ(`tenure_extension` = 正規 12 + seq 13 新鍵 re-add の派生
-     チェーン — chain-entries.json 本体は変更しない)、prev の形 / 連鎖 /
-     エポック単調性を理由コードごと固定
-   - `fork_same_version`: 同一座標への 2 有効署名 = equivocation の証拠化
-   - `dek-wrap-signature.json` の description に欠落していた `signer_user_id` を
-     追記(session-12 §13 の申し送り。`signed_fields_order` は変更なし)。他の
-     既存ベクターは oxfmt 適用後 byte-identical を確認
-2. **crypto**: `value-sign.ts`(LP 正規化・signValue / verifyValueSignature /
-   computeValueSignedBytesHash)、`chain-history.ts` + `verifyChainWithHistory`
-   (裁定 A の ChainHistoryIndex — §2 参照)、`value-verify.ts`
-   (`verifyDistributedValue` = §6.3 の 1〜4・6 の複合検証)。
-   `ValueInvalidReason` / `ValueInvalid` kind を新設し、core は
-   `CryptoValueInvalidError` へ完全写像(kind 対応表の網羅を静的検査化)
-3. **api-schema**: `EncryptedPayload` に署名ブロック(prevValueSigHashHex =
-   ""|64 hex / chainHeadHashHex / chainHeadSeq ≥ 1 / signatureHex)、配布専用
-   `DistributedEncryptedPayload`(writerUserId + writerKeyFingerprintHex)、
-   `PulledVariable.value` を配布型へ。422 `ValueSignatureRejected`(3 理由)
-4. **server**: `variable_versions` に NOT NULL 7 列を追加(§4 参照)、
-   StateCache を state + 履歴索引の対へ、push / create(同梱 v1 も同一検証)の
-   受理検証を CAS の直後・数量ポリシーの前に挿入(裁定 D の判定順)、pull は
-   保存済み writer / 署名ブロックをそのまま配布、`var.created` /
-   `var.version_pushed` に chain-derived writer FP(AUDIT_SPEC §3.3)
-5. **CLI**: 復号前の全値検証(values.ts)、future head の有界再同期 + 延長検査
-   (sync.ts の ensureExtensionOf)、push の prev 連鎖(検証済み latest の
-   自計算 hash)・自分の user id + master sig 鍵での署名、409 VersionConflict の
-   winner 再取得手順、EpochConflict の延長検査付き再同期
-6. **テスト**: crypto 4 実行環境のベクター駆動(chain-history / value-signature
-   チェック追加)+ server 181 / CLI 109(§7 参照)
-7. **docs**: 本メモ
+1. **Test vectors first** (committed before implementation; human review target):
+   - New `value-signature.json` (session-12 §8-1): references chain-entries.json's canonical
+     12-entry chain (the cross-file precedent). ciphertext is a real AES-GCM ciphertext under
+     `environment_deks`'s dummy DEK (value signature → §4 decryption is one continuous real data
+     flow). The 6 positive cases pin §6.3's inclusive convention at boundaries
+     (a push whose declared head is the create / rotate entry itself, a removed writer's
+     past value from its membership interval, the rotation executor's re-encrypted push = an
+     epoch-monotonic prev chain)
+   - 14 tamper/transplant negatives (Ed25519 failure of the original signature) and 12
+     verification-rule negatives (rejected via `expected_reason` while **the signature stays valid**). The 2 head-mismatch kinds
+     (`chain-head-mismatch` = immediate evidence / `chain-head-future` = entry to re-sync),
+     a tenure-crosser (`tenure_extension` = derived chain of canonical 12 + seq 13 re-add with a
+     new key — chain-entries.json itself unchanged), and prev's shape / chaining /
+     epoch monotonicity pinned by reason code
+   - `fork_same_version`: 2 valid signatures at the same coordinates = equivocation evidence
+   - Added the missing `signer_user_id` to `dek-wrap-signature.json`'s description
+     (session-12 §13's handoff. `signed_fields_order` unchanged). Confirmed other existing
+     vectors are byte-identical after oxfmt
+2. **crypto**: `value-sign.ts` (LP canonicalization, signValue / verifyValueSignature /
+   computeValueSignedBytesHash), `chain-history.ts` + `verifyChainWithHistory`
+   (ruling A's ChainHistoryIndex — see §2), `value-verify.ts`
+   (`verifyDistributedValue` = §6.3's composite check of items 1–4 & 6).
+   Introduced `ValueInvalidReason` / the `ValueInvalid` kind, and core maps it fully onto
+   `CryptoValueInvalidError` (kind-table coverage statically checked)
+3. **api-schema**: signature block on `EncryptedPayload` (prevValueSigHashHex =
+   ""|64 hex / chainHeadHashHex / chainHeadSeq ≥ 1 / signatureHex), the distribution-only
+   `DistributedEncryptedPayload` (writerUserId + writerKeyFingerprintHex),
+   `PulledVariable.value` moved to the distributed type. 422 `ValueSignatureRejected` (3 reasons)
+4. **server**: added 7 NOT NULL columns to `variable_versions` (see §4),
+   StateCache became a state + history-index pair, push / create (bundled v1 also gets the same
+   verification) acceptance checks inserted right after CAS and before quantity policy (ruling D's
+   check order), pull distributes the stored writer / signature block as-is, `var.created` /
+   `var.version_pushed` carry the chain-derived writer FP (AUDIT_SPEC §3.3)
+5. **CLI**: verify all values before decryption (values.ts), bounded re-sync + extension check on
+   future heads (sync.ts's ensureExtensionOf), push's prev chaining (self-computed hash of the
+   verified latest) & signing with own user id + master sig key, the 409 VersionConflict
+   winner re-fetch procedure, EpochConflict's re-sync with extension check
+6. **Tests**: vector-driven across crypto's 4 runtimes (chain-history / value-signature
+   checks added) + server 181 / CLI 109 (see §7)
+7. **docs**: this memo
 
-## 2. 裁定の細部(複数案比較 → 推奨で仮進行。確定条件 = PR レビュー承認)
+## 2. Ruling details (multi-option comparison → proceeded on recommendation; confirmation = PR review approval)
 
-### 2-1. ChainHistoryIndex は verifyChain のループ内で構築する(裁定 A の実装形)
+### 2-1. ChainHistoryIndex is built inside verifyChain's loop (ruling A's implementation shape)
 
-| 案 | 評価 |
+| Option | Evaluation |
 |---|---|
-| **`verifyChainWithHistory` が検証ループと同時に索引を構築(採用)** | 索引は「検証済みチェーンからしか生まれない」ことが構成的に保証され、状態機械(role 遷移・エポック遷移)の意味論が verifyChain と 1 実装に揃う。エントリハッシュは検証ループが prev 連鎖のためにどのみち計算しており、記録は無償 |
-| 独立の `buildChainHistoryIndex(entries)` | 未検証チェーンから索引を作れる誤用面が生まれ、role/tenure の導出ループが verifyChain と二重になる(将来の合意規則追加で意味論が割れる温床) |
+| **`verifyChainWithHistory` builds the index alongside the verification loop (adopted)** | it's structurally guaranteed that "the index can only come from a verified chain", and the state-machine semantics (role transitions, epoch transitions) stay aligned with verifyChain in a single implementation. The verification loop computes entry hashes anyway for the prev chain, so recording them is free |
+| A separate `buildChainHistoryIndex(entries)` | creates a misuse surface where an index is built from an unverified chain, and the role/tenure derivation loop duplicates verifyChain's (a breeding ground for semantic divergence when consensus rules are added later) |
 
-索引の照会 API は最低限(裁定 A)に揃えた: `entryHashAt`(seq → hash)、
-`memberStateAt`(inclusive 時点の role / 鍵束縛 / tenure 開始 seq — remove →
-re-add は別 tenure)、`environmentStateAt`(作成済みか + 時点エポック)、
-`sigKeyByFingerprint`(§6.3-1 の鍵選択 — 全 tenure 対象。ヘッド時点の束縛検査は
-`memberStateAt` が別途行うため、tenure 跨ぎは「署名は検証 → 束縛不一致で拒否」の
-順になる = 検査順(仮裁定 C)どおり署名壊れが先に判定される)。
-timestamp は索引のどの照会にも使わない。CLI の既存 `keyHistory` は DEK ラップの
-§5.1 検証(ヘッド束縛を持たない意味論)専用として残し、値検証には使わない。
+The index's query API was kept minimal (ruling A): `entryHashAt` (seq → hash),
+`memberStateAt` (role / key binding / tenure-start seq at the inclusive point — remove →
+re-add is a separate tenure), `environmentStateAt` (created? + epoch at that point),
+`sigKeyByFingerprint` (§6.3-1 key selection — covers all tenures. Since head-time binding checks
+are done separately by `memberStateAt`, a tenure crosser resolves to "signature verifies → rejected
+on binding mismatch" = per check order (provisional ruling C) a broken signature is judged first).
+No timestamp is used in any index query. The CLI's existing `keyHistory` stays dedicated to DEK-wrap
+§5.1 verification (head-binding-free semantics) and is not used for value verification.
 
-### 2-2. 422 理由の写像(仮裁定 C — 確定条件 = PR レビュー承認)
+### 2-2. Mapping of the 422 reasons (provisional ruling C — confirmation = PR review approval)
 
-仕様(session-12 §6-7)の 3 理由のみを wire に置き、crypto 層の詳細理由
-(`ValueInvalidReason` 12 種)からサーバーが写像する(`toValueRejectReason`):
+Only the spec's (session-12 §6-7) 3 reasons go on the wire; the server maps from the crypto layer's
+detailed reasons (12 `ValueInvalidReason`s) via `toValueRejectReason`:
 
-- `signature-invalid` ← valid-format の Ed25519 失敗のみ
-- `chain-head-unknown` ← `chain-head-mismatch` / `chain-head-future`(サーバーに
-  とって「自チェーンに存在しない seq」は同じ不在。再同期分岐はクライアント側の
-  概念でサーバーには無い)
-- `chain-head-state-mismatch` ← 残り全部(head 時点の在籍・鍵束縛・role・環境・
-  エポック、prev の形 / 保存 predecessor との不一致、writer-unknown)
+- `signature-invalid` ← only Ed25519 failure on a valid-format signature
+- `chain-head-unknown` ← `chain-head-mismatch` / `chain-head-future` (to the server,
+  "a seq not on its own chain" is the same absence. The re-sync branch is a client-side
+  concept the server doesn't have)
+- `chain-head-state-mismatch` ← everything else (membership, key binding, role, environment,
+  epoch at the head point; prev's shape / mismatch against the stored predecessor; writer-unknown)
 
-**代替案の比較**:
+**Comparison of alternatives**:
 
-| 案 | 評価 |
+| Option | Evaluation |
 |---|---|
-| **3 理由 + 検査順 = 署名壊れ → unknown head → state mismatch(採用)** | 仕様の理由列挙と一致。prev 不一致が Ed25519 failure に潰れない(裁定 B)。クライアントは 3 理由とも「自分の組み立てか同期状態のバグ / サーバーとの視界差」として同じ復旧経路(再同期 → 再構築)に入るため、wire 粒度はこれで足りる |
-| prev 不一致を `signature-invalid` に含める | 「署名自体は正しいが連鎖が違う」証拠情報を潰す。fork 証拠化(§14.2-5)のデバッグ性を損なうため不採用 |
-| 4 つ目の理由(例: `prev-mismatch`)を追加 | wire 変更(理由語彙は API 契約)であり仕様の 3 理由列挙の改訂を要する。粒度が必要なら将来 PR で仕様改訂とセットで行う |
+| **3 reasons + check order = broken signature → unknown head → state mismatch (adopted)** | matches the spec's reason enumeration. A prev mismatch doesn't collapse into an Ed25519 failure (ruling B). For all 3 reasons the client enters the same recovery path (re-sync → rebuild) as "a bug in my assembly or sync state / a view difference vs the server", so this wire granularity suffices |
+| Fold prev mismatch into `signature-invalid` | crushes the evidence information "signature itself is valid but the chain differs". Not adopted since it harms fork-evidence debuggability (§14.2-5) |
+| Add a 4th reason (e.g. `prev-mismatch`) | a wire change (the reason vocabulary is API contract) requiring a revision of the spec's 3-reason enumeration. If finer granularity is ever needed, do it in a future PR together with the spec revision |
 
-### 2-3. latest-only の限界の実装形(裁定 B)
+### 2-3. Implementation shape of the latest-only limit (ruling B)
 
-`verifyDistributedValue` は predecessor 引数の有無で検査範囲が変わる:
+`verifyDistributedValue`'s check coverage changes with whether a predecessor argument is passed:
 
-- **常に検査**: 署名・ヘッド(2 種の区別)・宣言ヘッド時点の在籍 / 鍵束縛 /
-  role・環境作成済み / エポック整合・座標(呼び出し側が期待座標で context を
-  組む)・prev の**形**(version 1 = 空 / version > 1 = 64 hex —
+- **Always checked**: signature, head (2 kinds distinguished), membership / key binding /
+  role at the declared head, environment created, epoch consistency, coordinates (the caller builds
+  context from expected coordinates), prev's **shape** (version 1 = empty / version > 1 = 64 hex —
   `prev-shape-mismatch`)
-- **predecessor を渡された場合のみ**: prev の実在一致(`prev-hash-mismatch`)と
-  エポック非減少(`epoch-regressed`)。渡されない場合に「検査済み」と偽らない
+- **Only when a predecessor is passed**: prev's existence match (`prev-hash-mismatch`) and
+  epoch non-regression (`epoch-regressed`). When not passed, it doesn't pretend to be "checked"
 
-server は version > 1 で保存済み N-1 の signed_bytes hash を必ず渡す(CAS 通過後
-なので必ず存在 — 欠落は defect)。CLI の pull は latest-only のため渡せない
-(rollback / omission / 前進注入の永続検出は PR-4 のローカル床の領分 — §6 参照)。
-push の 409 手順では「検証済み winner」が predecessor 相当の役割を果たす
-(次 version の prev に自計算 hash を使う)。
+The server always passes the stored N-1's signed_bytes hash for version > 1 (it's post-CAS so it
+always exists — absence is a defect). The CLI's pull is latest-only so it can't pass one
+(persistent detection of rollback / omission / forward-injection is PR-4's local-floor domain — see §6).
+In push's 409 procedure, the "verified winner" plays the predecessor-equivalent role
+(the next version's prev uses the self-computed hash).
 
-なお署名側(`signValue`)は version ↔ prev の結合違反を InvalidInput で拒否する
-(結合違反の署名を自分では作らない)が、検証側は「有効署名 + 規則違反」の wire
-データを理由コード付きで拒否する必要があるため結合を検証規則に置く非対称がある
-(ベクター `v1-nonempty-prev` / `v2-empty-prev` が固定)。
+Note that the signing side (`signValue`) rejects version ↔ prev binding violations with
+InvalidInput (it won't produce a signature that violates the binding itself), while the verification
+side must reject wire data of "valid signature + rule violation" with reason codes — hence the
+asymmetry of putting the binding in verification rules (pinned by vectors `v1-nonempty-prev` /
+`v2-empty-prev`).
 
-### 2-4. future head の扱い(裁定 G の実装形)
+### 2-4. Handling future heads (ruling G's implementation shape)
 
-- `seq <= 自ヘッド` でハッシュ不一致 → 即時拒否(`chain-head-mismatch` —
-  分岐または偽造の硬い証拠)
-- `seq > 自ヘッド` → **1 回だけ**再同期(有界)。新スナップショットは
-  syncProject の全体検証・genesis 一致に加えて **延長検査**
-  (`ensureExtensionOf`: 新ヘッド ≥ 旧ヘッド かつ 旧 verified head の seq/hash が
-  新スナップショット内で一致)を通す。その後 pull 応答の**全値**を新ビューで
-  再検証し、なお future のままなら拒否
-- EpochConflict の再同期も同じ延長検査を通す(サーバーの currentEpoch 申告を
-  真実源にしない従来規律に加えて、別整合チェーンへの誘導も拒否)
+- Hash mismatch at `seq <= own head` → immediate rejection (`chain-head-mismatch` —
+  hard evidence of a fork or forgery)
+- `seq > own head` → re-sync **exactly once** (bounded). The new snapshot passes
+  syncProject's full verification + genesis match plus an **extension check**
+  (`ensureExtensionOf`: new head ≥ old head AND the old verified head's seq/hash matches inside the
+  new snapshot). Then **all values** in the pull response are re-verified under the new view; still
+  future → reject
+- EpochConflict re-syncs also pass the same extension check (on top of the existing discipline of
+  not treating the server's currentEpoch declaration as truth, redirection to a different
+  consistent chain is also rejected)
 
-### 2-5. server の判定順(裁定 D)
+### 2-5. Server check order (ruling D)
 
-`Schema(400)→ 値サイズ(413)→ AAD 座標整合(422)→ token scope / チェーン
-role / 存在(404 / 403)→ epoch / version CAS(409)→ 値署名(署名 → 宣言
-head → head 時点状態 → predecessor = 422 の 3 理由)→ 数量ポリシー(422)→
-原子書き込み`。既存の判定順に対して値署名は CAS と数量の間に**挿入のみ**。
-宣言 head は現 head と同一でなくてよく(同じ epoch・tenure・role を満たす古い
-head は受理 — ベクター positive が固定)、宣言 head seq の単調性・サーバー独自の
-エポック単調比較は追加しない(「現エポックのみ受理 + rotate +1 + version CAS」の
-帰結として構造的に単調 — AUTH_SPEC §12-5 の 2026-08-03 明確化のとおり)。
-全 crypto await は検証 Effect 内で完了し、同期 SQL 書き込みフェーズに await を
-挟まない(PR-1 と同じ規律)。不受理時は variable / version / latest / audit の
-いずれも変更しない(テストで固定)。
+`Schema (400) → value size (413) → AAD-coordinate consistency (422) → token scope / chain
+role / existence (404 / 403) → epoch / version CAS (409) → value signature (signature → declared
+head → head-time state → predecessor = 422's 3 reasons) → quantity policy (422) →
+atomic write`. Value signing is **inserted only** between CAS and quantity in the existing order.
+The declared head need not equal the current head (an older head satisfying the same epoch, tenure,
+and role is accepted — pinned by vector positives); no monotonicity on declared-head seq or a
+server-specific epoch-monotonic comparison is added (it follows structurally from "accept current
+epoch only + rotate +1 + version CAS" — as clarified in AUTH_SPEC §12-5 on 2026-08-03).
+All crypto awaits complete inside the verification Effect; no await is interposed in the
+synchronous-SQL write phase (same discipline as PR-1). On non-acceptance, variable / version /
+latest / audit all stay unmodified (pinned in tests).
 
-versions-per-variable の数量上限テスト(latest_version の直接引き上げ)は、
-検証順の変更(CAS → 値署名 → 数量)により predecessor 行の実在が前提になった
-ため、上限直前の version 行をシードする形へ更新した(§12-8 の判定自体は不変)。
+The versions-per-variable quantity-cap test (which raises latest_version directly) was updated to
+seed a version row just below the cap, because the new check order (CAS → value signature →
+quantity) makes the predecessor row's existence a premise (§12-8's check itself is unchanged).
 
-## 3. DDL・ストレージ(裁定 E)
+## 3. DDL & storage (ruling E)
 
-`variable_versions` に NOT NULL で追加(Project DO SQLite の生 DDL 直接変更。
-D1 / Drizzle / migration は触っていない):
+Added to `variable_versions` as NOT NULL (direct change to the Project DO SQLite raw DDL.
+D1 / Drizzle / migrations untouched):
 
-| 列 | 内容 |
+| Column | Content |
 |---|---|
-| `prev_value_sig_hash_hex` | 直前 version の value_signed_bytes の SHA-256(version 1 は空文字列) |
-| `chain_head_hash_hex` / `chain_head_seq` | 宣言ヘッド(exact pair) |
-| `signature_hex` | 値の書き込み署名(Ed25519) |
-| `signed_bytes_hash_hex` | **サーバー再計算**の signed_bytes ハッシュ(次 version の prev 検査・409 再試行の検証材料。**配布しない**) |
-| `writer_user_id` / `writer_key_fingerprint` | 受理時点のチェーン導出 writer(user_id + 鍵 FP) |
+| `prev_value_sig_hash_hex` | SHA-256 of the previous version's value_signed_bytes (empty string for version 1) |
+| `chain_head_hash_hex` / `chain_head_seq` | declared head (exact pair) |
+| `signature_hex` | the value's write signature (Ed25519) |
+| `signed_bytes_hash_hex` | **server-recomputed** signed_bytes hash (verification material for the next version's prev check and 409 retries. **Not distributed**) |
+| `writer_user_id` / `writer_key_fingerprint` | the chain-derived writer at acceptance time (user_id + key FP) |
 
-signed bytes 本体・公開鍵は保存しない(座標とチェーンから再構成できる)。
-backfill・nullable 遷移は作らない(公開前・適用済み環境なし)。
-**古いローカル dev の `.wrangler/state` は本ブランチで動かす前に破棄が必要**
-(session-08 §3 / session-13 と同じ注意 — 旧スキーマの variable_versions 行は
-NOT NULL 列を持たず、`CREATE TABLE IF NOT EXISTS` は列を足さない)。
+The signed bytes themselves and public keys are not stored (reconstructible from coordinates and
+the chain).
+No backfill or nullable transition was created (pre-release; no applied environments).
+**Old local-dev `.wrangler/state` must be discarded before running this branch**
+(same caveat as session-08 §3 / session-13 — old-schema variable_versions rows lack the
+NOT NULL columns and `CREATE TABLE IF NOT EXISTS` doesn't add columns).
 
-pull は保存済みの writer / 署名ブロックをそのまま返し、現メンバー集合から
-再導出しない(削除済み writer の過去値を、チェーン履歴の当時の鍵で検証可能に
-保つ — 統合テストで固定)。audit は chain-derived writer FP のみを写し、署名・
-signed bytes・hash・nonce・暗号文・平文は載せない。rename / delete / env 系の
-FP は PR-3(メタステートメント)の領分。
+pull returns the stored writer / signature block as-is without re-deriving from the current member
+set (keeps a removed writer's past values verifiable with the chain-history keys of their time —
+pinned in integration tests). Audit copies only the chain-derived writer FP; signatures,
+signed bytes, hashes, nonces, ciphertexts, and plaintext are never recorded. Rename / delete /
+env-family FPs are PR-3's domain (meta statements).
 
-## 4. 既知の制約・v1 許容(本 PR が保証**しない**もの)
+## 4. Known constraints / v1 tolerances (what this PR does **not** guarantee)
 
-- **latest-only**: 初回同期・pull は predecessor を持たず、prev の実在一致・
-  エポック非減少・rollback / omission / 前進注入の永続検出はできない(§14.3-3/5)。
-  ローカル床は PR-4(session-12 §10-4 の裁定済み方針)
-- **名前の真正性**: 名前 → variable_id の解決は PR-3(VariableMetaStatement /
-  EnvironmentMetaStatement / NFC 検査 / 認証済み名前解決)まで非認証のまま。
-  値署名は名前を認証しない(§4.1 の意味論)。実行制御系変数名 denylist
-  (session-11)は防衛層として維持
-- **fork の検出は証拠化まで**: 同一座標の 2 有効署名は否認不能な証拠になる
-  (ベクター fork_same_version / CLI の 409 equivocation 拒否)が、split view の
-  機構的検出は Phase 2 ヘッドゴシップ(§14.3-4)
-- gossip / checkpoint / manifest / rotate CLI / チェーン操作 CLI /
-  remove+rotate 複合化 / DO total-size guard / session-11 後続 PR は本 PR に
-  含めない(タスク指定のスコープ外)
+- **latest-only**: first sync and pull hold no predecessor, so prev existence matching,
+  epoch non-regression, and persistent detection of rollback / omission / forward-injection are
+  impossible (§14.3-3/5). The local floor is PR-4 (session-12 §10-4's ruled policy)
+- **Name authenticity**: name → variable_id resolution stays unauthenticated until PR-3
+  (VariableMetaStatement / EnvironmentMetaStatement / NFC check / authenticated name resolution).
+  Value signatures don't authenticate names (§4.1 semantics). The execution-control variable-name
+  denylist (session-11) stays as a defense layer
+- **Fork detection stops at evidence**: 2 valid signatures at the same coordinates become
+  non-repudiable evidence (vector fork_same_version / CLI's 409 equivocation rejection), but
+  mechanical split-view detection is Phase 2 head gossip (§14.3-4)
+- gossip / checkpoint / manifest / rotate CLI / chain-operation CLI /
+  remove+rotate composition / DO total-size guard / session-11 follow-up PRs are not in this PR
+  (out of the task-specified scope)
 
-## 5. ハマったこと・環境知見
+## 5. Sticking points & environment findings
 
-- **「versions 上限」テストの前提が判定順の変更で壊れる**: latest_version だけを
-  SQL で引き上げる従来のショートカットは、「CAS 通過後の predecessor 行は必ず
-  存在する」という新しい不変条件(欠落 = defect)と矛盾する。テスト側で上限直前の
-  version 行(signed_bytes_hash_hex 込み)をシードして解消した — 実運用では CAS +
-  行の個別削除なし(変数削除は全行削除)により不変条件は常に成立する
-- **CLI の移植系テストの期待メッセージが「前段化」する**: 旧実装で復号失敗
-  (AAD 不一致)まで進んでいた座標移植・暗号文差し替えは、値署名の座標整合
-  (§6.3-5)が復号より前に落とすようになった。防御の意味論は同じで検出层が
-  手前に移った(GCM 層の防衛は §4 のとおり独立に残る)
-- **fork 証拠のテストは「両方 verify 成功」を先に固定する**: fork_same_version は
-  negative でなく専用セクションにした。negative の形(must_fail)にすると
-  「単体で落ちる」誤実装(例: prev 連鎖だけで分岐を検出したつもりになる)を
-  検出できない
-- **mock サーバーの旧 fixture は Schema 400 で全滅する**: EncryptedPayload の
-  必須フィールド追加はワイヤ互換を壊す(公開前の意図的な非互換)。CLI テストの
-  値 fixture は全件、writer・宣言ヘッド・prev を持つ署名付きへ更新した
+- **The "versions cap" test's premise breaks under the changed check order**: the old shortcut of
+  raising only latest_version via SQL contradicts the new invariant "after CAS the predecessor row
+  always exists" (absence = defect). Resolved by seeding a version row just under the cap
+  (signed_bytes_hash_hex included) in the test — in real operation the invariant always holds via
+  CAS + no per-row deletion (variable deletion removes all rows)
+- **CLI transplant-test expected messages move "upstream"**: coordinate transplants and ciphertext
+  swaps that previously advanced to decryption failure (AAD mismatch) now get dropped earlier by the
+  value-signature coordinate check (§6.3-5). Same defense semantics, detection moved one layer up
+  (the GCM layer's defense independently remains, per §4)
+- **Pin "both verify successfully" first in fork-evidence tests**: fork_same_version went into its
+  own section rather than negative. In negative shape (must_fail) you can't catch a wrong
+  implementation of "fails standalone" (e.g. believing fork detection works via the prev chain alone)
+- **Old fixtures on the mock server all die with Schema 400**: adding required fields to
+  EncryptedPayload breaks wire compatibility (an intentional pre-release incompatibility). Every
+  value fixture in the CLI tests was updated to a signed one carrying writer, declared head, and prev
 
-## 6. 申し送り
+## 6. Handoffs
 
-- **PR-3(メタデータステートメント)**: metadata-signature.json →
-  crypto(§4.2)→ api-schema(VariableMetaStatement / EnvironmentMetaStatement、
-  環境一覧の name → ステートメント置換)→ server(メタ CAS・非 NFC 422・
-  `env.created` 等への author FP)→ CLI(名前解決の検証経由化)。
-  検証機構(宣言ヘッド・認可時点・prev 連鎖)は本 PR の
-  ChainHistoryIndex / verifyDistributedValue の同型を再利用できる
-- **PR-4(CLI ローカル床)**: 床の拡張規則 (c)(pull 時点エポック基準)まで
-  含めて session-12 §12 ループ 2 の規範どおりに。values.ts が返す
-  signedBytesHashHex / version / epoch が床の記録材料になる
-- テスト支援の共有抽出(session-11 §5 の裁定済み独立 PR): 本セッションで
-  signValueAs / encryptValueFor / valueHashOf 系のクローンが server / CLI 両側に
-  増えた。抽出時に fallow dupes ベースラインも解消する(session-13 §3-6)
-- 409 の再試行上限(5 回)・有界再同期(1 回)は実装定数。運用で不足が観測されたら
-  設定化を検討する
+- **PR-3 (metadata statements)**: metadata-signature.json →
+  crypto (§4.2) → api-schema (VariableMetaStatement / EnvironmentMetaStatement,
+  replacing name in the environment list with statements) → server (meta CAS, non-NFC 422,
+  author FP on `env.created` etc.) → CLI (route name resolution through verification).
+  The verification machinery (declared head, authorization-time, prev chain) can reuse this PR's
+  ChainHistoryIndex / verifyDistributedValue isomorphs
+- **PR-4 (CLI local floor)**: implement exactly per session-12 §12 loop 2's norm, including
+  the floor-extension rule (c) (pull-time epoch basis). values.ts's returned
+  signedBytesHashHex / version / epoch become the floor's record material
+- Shared extraction of test support (session-11 §5's ruled independent PR): this session grew
+  signValueAs / encryptValueFor / valueHashOf clones on both server and CLI sides. Also clear the
+  fallow dupes baseline at extraction time (session-13 §3-6)
+- The 409 retry cap (5) and bounded re-sync (1) are implementation constants. Consider making them
+  configurable if operation observes insufficiency
 
-## 7. テスト結果
+## 7. Test results
 
-- vectors tools: `bun run generate`(既存ベクター byte-identical)+
-  `bun run verify` 全 PASS(value-signature 追加分込み)
-- `@maruhi/crypto`: node 364 / workerd 364 / browser 364 / Bun 363(vitest の
-  集約 1 件差は従来どおり)— chain-history / value-signature チェック追加
-- server(vitest-pool-workers): 181 tests green(値署名の受理検証 8 件を新設、
-  既存 fixture を値署名必須へ全面更新)
-- CLI: 109 tests green(値署名検証・future head・409 winner 手順の negative 追加)
-- `bun run check`(fmt / lint / typecheck / importlint / fallow / doctor / test)
+- vectors tools: `bun run generate` (existing vectors byte-identical) +
+  `bun run verify` all PASS (including the value-signature additions)
+- `@maruhi/crypto`: node 364 / workerd 364 / browser 364 / Bun 363 (the vitest
+  aggregation 1-count diff is as before) — chain-history / value-signature checks added
+- server (vitest-pool-workers): 181 tests green (8 new value-signature acceptance checks;
+  existing fixtures fully updated to require value signatures)
+- CLI: 109 tests green (added negatives for value-signature verification, future head, and the
+  409 winner procedure)
+- `bun run check` (fmt / lint / typecheck / importlint / fallow / doctor / test)
   green
 
-## 8. レビュー→修正ループ(PR 内。3 観点の並行レビュー → 修正)
+## 8. Review→fix loops (inside the PR. 3 parallel review perspectives → fixes)
 
-### ループ 1 の指摘と対応
+### Loop 1 findings and responses
 
-3 観点(セキュリティ・暗号 / 正しさ・並行性・fork / 仕様・ベクター・wire)を
-並行実行。**[高] 1 = [中](セキュリティ観点)の同根**を独立検出:
+Ran 3 perspectives in parallel (security & crypto / correctness, concurrency & fork / spec, vectors
+& wire). **[high] 1 = independently detected as the same root as [med] (security)**:
 
-1. **409 リトライがセッション内の検証済み latest からの後退を検出しない
-   (正しさ [高]・セキュリティ [中] が同根を独立検出)**: `adoptConflictWinner`
-   の整合検査が (a) `winner.version < currentVersion`(申告との不整合)と
-   (b) `winner.version === known.version` のハッシュ相違(equivocation)のみで、
-   `currentVersion < known.version` / `winner.version < known.version`
-   (このセッションで §6.3 検証済みの latest からの後退)を拒否していなかった。
-   悪意サーバーが巻き戻し申告 + 巻き戻しビュー(単体では全検証を通る古い正規値)を
-   配布すると、正直 writer が**巻き戻しブランチの座標へ自分の署名で連鎖**して
-   しまう(実史との same-coordinate fork 証拠の片割れを被害者自身に作らせる)。
-   ローカル床(PR-4)は「セッションを跨ぐ永続検出」であり、**同一 push フロー内で
-   `state.target.latest` を保持している以上、後退はゼロコストで検出できる**のが
-   論点。→ 対応: `winnerInconsistency` を新設し、(i) `currentVersion < known.version`
-   / `winner.version < known.version` = 巻き戻しの証拠として拒否、を追加。正直
-   サーバーでは latest_version 単調(行の個別削除なし)のため誤拒否なし
-2. **隣接 predecessor を持つ 409 経路で §6.3-6(prev 実在一致・エポック非減少)を
-   検査していない(正しさ [中])**: 裁定 B は「pull は latest-only で predecessor
-   を渡せない」だが、`winner.version === known.version + 1` のときクライアントは
-   まさに直前 version の検証済みアンカーを保持している。→ 対応:
-   `winnerInconsistency` に (ii) `winner.version === known.version + 1` のとき
-   `winner.prevValueSigHashHex === known.signedBytesHashHex` と
-   `winner.epoch >= known.epoch` を直接比較、を追加(VerifiedPulledValue に
-   `prevValueSigHashHex` を追加)。fork した履歴への連鎖を無償で検出する
-3. **自ビュー外の新規メンバーが書いた値が `writer-unknown` で即時拒否され、
-   §6.3-2b の有界再同期に入らない(セキュリティ [低])**: 検査順(仮裁定 C:
-   署名 → ヘッド)により鍵選択がヘッド束縛検査より先に走るため、宣言ヘッドが自
-   ビューより先 **かつ** writer が未同期区間で追加された新規メンバーの場合、
-   `chain-head-future` に到達する前に `writer-unknown` で落ちる。fail-closed だが
-   §6.3-2b の「まず再同期」規範から外れ、悪意サーバーが警告疲れを誘発できる。→
-   対応: `values.ts` の分類で「`writer-unknown` かつ `chainHeadSeq > 自ビューの
-   headSeq`」を future と同じ有界再同期経路に入れる(再同期後も unknown なら拒否)。
-   crypto 層の検査順は不変
-4. **[低]・[情報] 群**: winner 欠落メッセージに並行削除の可能性を併記
-   (正しさ [低])/ `dataEvent` の JSDoc を「クライアント署名を伴う操作
-   (dek.registered / var.created / var.version_pushed)が署名者 FP を写す」へ更新
-   (契約 [低] — 実装は仕様どおりで JSDoc のみ旧世代)/ サーバー側の
-   `epoch-regressed` 分岐は CAS 通過後は到達不能だが共有検証器の無害な防衛線
-   (正しさ [情報])/ create 経路の quota が CAS 前なのは「既存判定順への挿入
-   のみ」で整合(正しさ [情報])/ tenure 跨ぎ拒否のサーバー統合テスト追加を推奨
-   (セキュリティ [情報])
+1. **409 retry doesn't detect regression from the session's verified latest
+   (correctness [high] + security [med], same root detected independently)**: `adoptConflictWinner`'s
+   consistency checks only covered (a) `winner.version < currentVersion` (inconsistency vs the
+   declaration) and (b) `winner.version === known.version` with a hash difference (equivocation),
+   not rejecting `currentVersion < known.version` / `winner.version < known.version`
+   (a regression from the latest this session already §6.3-verified). A malicious server could
+   declare a rollback + distribute a rollback view (an old canonical value that passes every check
+   standalone), making an honest writer **chain onto the rolled-back branch's coordinates with their
+   own signature** (the victim produces one half of a same-coordinate fork proof against real
+   history). The local floor (PR-4) is "persistent detection across sessions"; the point is that
+   **as long as the same push flow holds `state.target.latest`, regression detection is zero-cost**.
+   → Response: introduced `winnerInconsistency`, adding (i) reject `currentVersion < known.version`
+   / `winner.version < known.version` as rollback evidence. On an honest server latest_version is
+   monotonic (no per-row deletion), so no false rejections
+2. **The 409 path with an adjacent predecessor doesn't check §6.3-6 (prev existence match, epoch
+   non-regression) (correctness [med])**: ruling B says "pull is latest-only and can't pass a
+   predecessor", but at `winner.version === known.version + 1` the client holds exactly the previous
+   version's verified anchor. → Response: added to `winnerInconsistency` (ii) when
+   `winner.version === known.version + 1`, directly compare `winner.prevValueSigHashHex ===
+   known.signedBytesHashHex` and `winner.epoch >= known.epoch` (added `prevValueSigHashHex` to
+   VerifiedPulledValue). Detects chaining onto a forked history for free
+3. **A value written by a new member outside the own view gets instantly rejected as
+   `writer-unknown` and never enters §6.3-2b's bounded re-sync (security [low])**: under the check
+   order (provisional ruling C: signature → head), key selection runs before the head-binding check,
+   so when the declared head is ahead of the own view **and** the writer is a new member added in
+   the un-synced interval, it dies on `writer-unknown` before reaching `chain-head-future`.
+   Fail-closed, but deviates from §6.3-2b's "re-sync first" norm, letting a malicious server induce
+   warning fatigue. → Response: in values.ts's classification, route "`writer-unknown` AND
+   `chainHeadSeq > own view's headSeq`" onto the same bounded re-sync path as future (reject if
+   still unknown after re-sync). The crypto layer's check order is unchanged
+4. **[low] / [info] group**: note the possibility of a concurrent deletion in the winner-missing
+   message (correctness [low]) / update `dataEvent`'s JSDoc to "operations carrying a client
+   signature (dek.registered / var.created / var.version_pushed) copy the signer FP"
+   (contract [low] — implementation matches spec; only the JSDoc was stale) / the server-side
+   `epoch-regressed` branch is unreachable post-CAS but a harmless defense line in the shared
+   verifier (correctness [info]) / create-path quota being pre-CAS is consistent with "insertion
+   only into the existing order" (correctness [info]) / recommend adding a server integration test
+   for tenure-crossing rejection (security [info])
 
-3 観点とも **blocking / 新規重大指摘は上記のみ**で、署名対象バイト列・検証規則・
-サーバー受理・原子性・inclusive 境界・キャッシュ一貫性・ベクター仕様適合・wire
-契約・規範仕様の無変更はいずれも「確認済み(問題なし)」と判定された。
+All 3 perspectives judged **blocking / new major findings = the above only**, and signed-bytes /
+verification rules / server acceptance / atomicity / inclusive boundary / cache consistency /
+vector-spec conformance / wire contract / no-change-to-normative-spec were each judged "verified
+(no issues)".
 
-### ループ 2(修正の再検証)
+### Loop 2 (re-verification of the fixes)
 
-3 観点ともループ 1 の修正を**十分・新規ブロッキングなし**と判定(巻き戻し・
-equivocation・prev 連鎖・新規メンバー再同期の各分岐が正直サーバーの不変条件 —
-latest_version 単調性・delete = 404 / tombstone — の下で誤拒否を生まないことを
-検証)。新規 [低] 2 件 + [情報] を検出・対応:
+All 3 perspectives judged loop 1's fixes **sufficient, no new blocking issues** (verified that the
+rollback / equivocation / prev-chain / new-member re-sync branches produce no false rejections under
+honest-server invariants — latest_version monotonicity, delete = 404 / tombstone). Detected and
+handled 2 new [low] + [info]:
 
-1. **非隣接 winner のエポック単調性が未検査(正しさ [低])**: §4.1 の単調性は
-   推移的なので、`winner.version > known.version` でありさえすれば版番号ギャップ
-   越しでも epoch 非減少を要求できる。旧実装は隣接(`known.version + 1`)のみで
-   検査しており、版番号を +2 以上ずらすと削除済みメンバーの旧エポック署名注入が
-   隣接検査を迂回できた。→ `winnerRegression` の epoch 検査を `winner.version >
-   known.version` 全体へ持ち上げ(prev 実在一致は隣接のみ維持)。正直サーバーは
-   受理順にエポック非減少のため誤拒否なし。版番号ギャップ越しの後退拒否テストを追加
-2. **サーバー tenure 跨ぎテストの変異検出力(契約 [低])**: 新規テストの prev が
-   ダミー 64hex だと、tenure 検査を変異で消しても `prev-hash-mismatch` が同じ
-   ワイヤ理由(`chain-head-state-mismatch`)を返してテストが緑のまま通る。→
-   prev を保存済み v1 の実 signed-bytes ハッシュにし、tenure 検査(head 時点状態 —
-   prev 検査より前段)を単独の失敗要因に固定
-3. [情報]: `winnerRegression` の二重 JSDoc の統合、`winnerInconsistency` の
-   ドキュメント追記(いずれも分割時の残骸)
+1. **Epoch monotonicity of non-adjacent winners unchecked (correctness [low])**: §4.1's monotonicity
+   is transitive, so as long as `winner.version > known.version`, epoch non-regression can be
+   required even across a version-number gap. The old implementation only checked the adjacent case
+   (`known.version + 1`), so shifting the version number by +2 or more let an old-epoch signature
+   injection by a removed member bypass the adjacent check. → lifted `winnerRegression`'s epoch
+   check to cover all of `winner.version > known.version` (prev existence match stays adjacent-only).
+   Honest servers are epoch-non-decreasing in acceptance order, so no false rejections. Added a
+   cross-version-gap regression rejection test
+2. **Mutation-detection power of the server tenure-crossing test (contract [low])**: with the new
+   test's prev being a dummy 64hex, mutating away the tenure check still returns the same wire
+   reason (`chain-head-state-mismatch`) via `prev-hash-mismatch` and the test stays green. →
+   made prev the stored v1's real signed-bytes hash, pinning the tenure check (head-time state —
+   upstream of the prev check) as the sole failure factor
+3. [info]: consolidated `winnerRegression`'s doubled JSDoc, added documentation to
+   `winnerInconsistency` (both split leftovers)
 
-品質ゲート再実行: `bun run check` green(686 tests)、crypto 4 実行環境 green、
-vectors verify 全 PASS。
+Quality gate re-run: `bun run check` green (686 tests), crypto's 4 runtimes green,
+vectors verify all PASS.
 
-### ループ 3(最終確認)
+### Loop 3 (final check)
 
-ループ 2 の 3 分岐(エポック単調性の持ち上げ・テスト検出力・ドキュメント)を
-反映後、残余は [情報](エポック後退ブランチの専用負テスト = 追加済み、
-「writer-unknown → 再同期後も unknown → 拒否」の負テスト = 有界性・延長検査の
-既存負テストでカバー)のみで、ブロッキングゼロ。経過: ループ 1 = 高 1(2 観点
-同根)・中 1・低 3・情報数件 → ループ 2 = 低 2・情報 → ループ 3 = ゼロ。
+After reflecting loop 2's 3 branches (epoch-monotonicity lift, test detection power, docs), the
+remainder is [info] only (dedicated negative test for the epoch-regression branch = already added;
+the "writer-unknown → still unknown after re-sync → reject" negative = covered by existing
+boundedness / extension-check negatives), zero blocking. Timeline: loop 1 = 1 high (2 perspectives,
+same root), 1 med, 3 low, several info → loop 2 = 2 low, info → loop 3 = zero.

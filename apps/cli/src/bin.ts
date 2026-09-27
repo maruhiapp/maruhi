@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
-// `maruhi` / `mh` バイナリのエントリポイント(Bun ランタイム)。
+// Entry point of the `maruhi` / `mh` binaries (Bun runtime).
 
-// ランタイム検査は import ホイストより先に効かせる必要があるため、
-// 先頭の副作用 import で行う(runtime-guard.ts)
+// The runtime check must take effect before import hoisting, so it runs as
+// the leading side-effect import (runtime-guard.ts)
 import "./runtime-guard.ts";
 import { runCli } from "./cli.ts";
 import { liveLayer } from "./live.ts";
 
 const exitCode = await runCli(process.argv.slice(2), liveLayer());
-// exitCode 代入でなく明示 exit: キーチェーン操作のタイムアウト(live.ts)で
-// 中断された Bun.secrets の pending なネイティブ呼び出しがイベントループを
-// 生かし続け、プロセスが終了しないことを実測したため
+// Explicit exit rather than exitCode assignment: a pending Bun.secrets native
+// call interrupted by the keychain-operation timeout (live.ts) was observed to
+// keep the event loop alive and prevent the process from exiting
 process.exit(exitCode);

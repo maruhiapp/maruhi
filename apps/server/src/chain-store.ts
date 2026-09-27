@@ -1,11 +1,13 @@
-// プロジェクト DO 内のチェーン保存(ChainStore)と導出状態(ChainState)の共有部。
+// Shared parts of the project DO's chain storage (ChainStore) and derived
+// state (ChainState).
 //
-// chain-do.ts(チェーン API のプログラム)とデータプレーンのプログラム群
-// (programs-environment.ts / programs-variable.ts / programs-dek.ts)の
-// 両方が使う: 認可の真実源はチェーン導出の現メンバー集合であり(CRYPTO_SPEC §6.4)、
-// データ操作もチェーン導出 role で認可する(§6.2、AUTH_SPEC §12-3)。
+// Used by both chain-do.ts (the chain API's programs) and the data-plane
+// programs (programs-environment.ts / programs-variable.ts /
+// programs-dek.ts): the authorization source of truth is the chain-derived
+// current member set (CRYPTO_SPEC §6.4), and data operations are also
+// authorized by the chain-derived role (§6.2, AUTH_SPEC §12-3).
 //
-// テーブルの DDL は do-schema.ts(DO コンストラクタが適用済み)。
+// The tables' DDL lives in do-schema.ts (applied by the DO constructor).
 
 import { ChainInvalidError, toWrappedCryptoError } from "@maruhi/core";
 import type { ChainEntry, ChainHistoryIndex, ChainState } from "@maruhi/crypto";
@@ -14,10 +16,10 @@ import { Context, Effect, Layer } from "effect";
 
 export interface StoredChain {
   readonly entries: readonly ChainEntry[];
-  /** 0 = 未初期化 */
+  /** 0 = uninitialized */
   readonly headSeq: number;
   readonly headHashHex: string | null;
-  /** genesis エントリのハッシュ = プロジェクト ID(CRYPTO_SPEC §6.4)。未初期化なら null */
+  /** Hash of the genesis entry = the project ID (CRYPTO_SPEC §6.4). null when uninitialized */
   readonly genesisHashHex: string | null;
   readonly totalCanonicalBytes: number;
 }
@@ -25,9 +27,10 @@ export interface StoredChain {
 interface ChainStoreShape {
   readonly load: Effect.Effect<StoredChain>;
   /**
-   * 同期挿入。監査ミラーの追記(audit-store.ts)と同じ同期ブロックで呼び、
-   * チェーン挿入とミラーを同一タスクで原子コミットする(AUDIT_SPEC §5.1 の
-   * 「同一トランザクションで書ける」配置根拠を実装で保証する)。
+   * Synchronous insert. Called in the same synchronous block as the audit
+   * mirror's append (audit-store.ts) so the chain insert and the mirror
+   * commit atomically in one task (implements the placement rationale of
+   * AUDIT_SPEC §5.1's "writable in the same transaction").
    */
   readonly insertSync: (entry: ChainEntry, entryHashHex: string, canonicalBytes: number) => void;
 }
@@ -35,9 +38,10 @@ interface ChainStoreShape {
 export class ChainStore extends Context.Service<ChainStore, ChainStoreShape>()("ChainStore") {}
 
 /**
- * 差分ロード(キャッシュ済みヘッドより後の行のみ)。afterSeq = 0 はフルロード。
- * チェーンは append-only(削除・更新の口がない — insertSync のみ)なので、
- * キャッシュ済み接頭辞 + `seq > afterSeq` の連結はフルロードと同一結果になる。
+ * Differential load (only rows after the cached head). afterSeq = 0 means
+ * a full load. Because the chain is append-only (no delete or update
+ * surface — insertSync only), concatenating the cached prefix with
+ * `seq > afterSeq` yields the same result as a full load.
  */
 interface LoadedRows {
   readonly entries: ChainEntry[];
@@ -66,7 +70,7 @@ function loadRowsAfter(sql: SqlStorage, afterSeq: number): LoadedRows {
   };
 }
 
-/** 空チェーン(キャッシュ無効時の差分ロードの基底 = フルロード)。 */
+/** The empty chain (the base of a differential load when the cache is invalid = a full load). */
 const EMPTY_CHAIN: StoredChain = {
   entries: [],
   headSeq: 0,
@@ -76,7 +80,7 @@ const EMPTY_CHAIN: StoredChain = {
 };
 
 function loadChain(sql: SqlStorage, cache: StateCache): StoredChain {
-  // キャッシュ無効(DO 再起動直後など)は空チェーン基底の差分 = フルロード
+  // An invalid cache (e.g. right after a DO restart) makes the differential load off the empty base = a full load
   const base = cache.chain ?? EMPTY_CHAIN;
   const diff = loadRowsAfter(sql, base.headSeq);
   if (diff.entries.length === 0 && cache.chain !== null) {
@@ -104,9 +108,11 @@ export const chainStoreLayer = (sql: SqlStorage, cache: StateCache): Layer.Layer
         entryHashHex,
         canonicalBytes,
       );
-      // 受理済み追記のキャッシュへの増分反映。キャッシュと不連続な挿入は
-      // 起こらない想定(全経路が load → 検証 → insertSync の直列)だが、万一の
-      // 場合は無効化してフルロードに戻す(古い状態を配らない防御線)
+      // Incremental reflection of an accepted append into the cache. An
+      // insert discontinuous with the cache is not expected (every path is
+      // serialized load → verify → insertSync), but should it happen the
+      // cache is invalidated back to a full load (a defensive line against
+      // serving stale state)
       const cached = cache.chain;
       cache.chain =
         cached !== null && entry.seq === cached.headSeq + 1
@@ -122,16 +128,18 @@ export const chainStoreLayer = (sql: SqlStorage, cache: StateCache): Layer.Layer
   }));
 
 /**
- * 検証済みチェーンの導出状態と履歴索引の対(CRYPTO_SPEC §6.3 / §4.1)。
- * 履歴索引は値署名の「宣言ヘッド時点」検証の入力で、検証ループと同時に構築
- * されるため(verifyChainWithHistory)、未検証チェーンの索引は存在しない。
+ * The pair of a verified chain's derived state and history index
+ * (CRYPTO_SPEC §6.3 / §4.1). The history index is the input to the value
+ * signature's "at the declared head" verification and is built alongside
+ * the verification loop (verifyChainWithHistory), so no index exists for
+ * an unverified chain.
  */
 export interface VerifiedChainView {
   readonly state: ChainState;
   readonly history: ChainHistoryIndex;
 }
 
-/** verifyChainWithHistory を Effect に持ち上げ、ChainInvalid 以外の(契約上起こらない)失敗は defect にする。 */
+/** Lifts verifyChainWithHistory into Effect; failures other than ChainInvalid (contractually impossible) become defects. */
 export function verifyChainEffect(
   entries: readonly ChainEntry[],
 ): Effect.Effect<VerifiedChainView, ChainInvalidError> {
@@ -142,15 +150,16 @@ export function verifyChainEffect(
         return Effect.succeed(result.value);
       }
       const wrapped = toWrappedCryptoError(result.error);
-      // verifyChain は契約上 ChainInvalid しか返さない。それ以外は実装バグ
+      // verifyChain contractually returns only ChainInvalid; anything else is an implementation bug
       return wrapped instanceof ChainInvalidError ? Effect.fail(wrapped) : Effect.die(wrapped);
     },
   );
 }
 
 /**
- * 正規化バイト列の長さ。Schema 検証済みエントリでは失敗しないが、エンコーダの
- * 例外は invalid-payload に封じ込める(DO を defect で落とさない)。
+ * The length of the canonical byte string. Cannot fail on a
+ * Schema-validated entry, but an encoder exception is confined to
+ * invalid-payload (does not take the DO down with a defect).
  */
 export function canonicalBytesOf(entry: ChainEntry): Effect.Effect<number, ChainInvalidError> {
   return Effect.try({
@@ -160,15 +169,18 @@ export function canonicalBytesOf(entry: ChainEntry): Effect.Effect<number, Chain
 }
 
 /**
- * チェーン導出状態 + 履歴索引のキャッシュ(DO インスタンスメモリ)。保存済み
- * チェーンは受理時に検証済みなので、同一ヘッドへの再導出を省く(§6.2 の認可・
- * §11-2 のメンバーシップ判定・値署名の宣言ヘッド時点検証 — §12-8 — を
- * 読み取りごとの O(n) 署名検証にしないため)。
+ * Cache of the chain-derived state + history index (DO instance memory).
+ * A stored chain was already verified at acceptance, so re-deriving for
+ * the same head is skipped (so that §6.2 authorization, §11-2 membership
+ * checks, and the value signature's declared-head-time verification —
+ * §12-8 — do not become a per-read O(n) signature verification).
  *
- * chain は parse 済みチェーンのキャッシュ: ロード SQL を `seq > headSeq` の
- * 差分に限定し、全操作前段の「全行 SELECT + JSON.parse」を省く(ホットパス
- * 最適化)。チェーンは append-only なので差分連結 = フルロードと同一結果。
- * null はキャッシュ無効(DO 再起動直後など)で、次のロードがフルロードで張り直す。
+ * chain is a cache of the parsed chain: it bounds the load SQL to the
+ * `seq > headSeq` diff and skips the "SELECT all rows + JSON.parse" that
+ * would otherwise precede every operation (hot-path optimization). The
+ * chain is append-only, so a diff concat = a full load. null means the
+ * cache is invalid (e.g. right after a DO restart) and the next load
+ * rebuilds it with a full load.
  */
 export interface StateCache {
   current: { readonly headHashHex: string; readonly verified: VerifiedChainView } | null;
@@ -176,9 +188,11 @@ export interface StateCache {
 }
 
 /**
- * キャッシュ更新は headSeq の単調ガード付き(チェーンは append-only なので
- * headSeq 比較で十分)。全操作が permit 下で直列化された現在は実質的に到達しない
- * 防御線だが、permit 外の導出経路が将来増えても古い状態で上書きしないよう残す。
+ * Cache updates carry a monotonic guard on headSeq (the chain is
+ * append-only, so a headSeq comparison suffices). With every operation
+ * serialized under the permit this defensive line is effectively
+ * unreachable today, but it is kept so that a future derivation path
+ * outside the permit cannot overwrite with stale state.
  */
 export function updateStateCache(cache: StateCache, verified: VerifiedChainView): void {
   if (cache.current === null || verified.state.headSeq >= cache.current.verified.state.headSeq) {
@@ -186,7 +200,7 @@ export function updateStateCache(cache: StateCache, verified: VerifiedChainView)
   }
 }
 
-/** 保存済みチェーンから検証済みビュー(状態 + 履歴索引)を導出する。検証失敗は実装バグ(defect)。 */
+/** Derives the verified view (state + history index) from a stored chain. Verification failure is an implementation bug (defect). */
 export function deriveStoredState(
   chain: StoredChain,
   cache: StateCache,

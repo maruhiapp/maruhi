@@ -1,10 +1,11 @@
-// チェーンエントリ受理の共有実装(CRYPTO_SPEC §6.4)。
+// Shared implementation of chain-entry acceptance (CRYPTO_SPEC §6.4).
 //
-// 「正規化サイズ検査 → チェーン容量 → verifyChain 再実行 → insert + 監査ミラー」の
-// 受理 4 手順は、汎用チェーン API(chain-do.ts の init / append)と複合リクエスト
-// (composite-programs.ts の create / rotate)の全経路がここを通る。上限意味論の
-// 修正が片側にしか当たらないズレを構造的に防ぐ。エラーは DataRejection で運び、
-// 呼び出し側には outcome への畳み込みだけを残す。
+// Every path — the generic chain API (init / append in chain-do.ts) and
+// composite requests (create / rotate in composite-programs.ts) — passes
+// through the same 4-step acceptance: "canonical-size check → chain
+// capacity → verifyChain re-run → insert + audit mirror". This
+// structurally prevents a cap-semantics fix from landing on only one side.
+// Errors travel as DataRejection; callers only fold them into an outcome.
 
 import type { ChainInvalidError, ChainMirrorSubject, ProposalIndex } from "@maruhi/core";
 import { chainMirrorEvents, indexProposals } from "@maruhi/core";
@@ -29,11 +30,11 @@ import {
   detectServerRevocation,
 } from "./rotation-detect.ts";
 
-/** ChainInvalid(検証・エンコーダ失敗)→ chain-entry-invalid 拒否。 */
+/** ChainInvalid (verification / encoder failure) → chain-entry-invalid rejection. */
 const rejectChainInvalid = (error: ChainInvalidError): DataRejectedError =>
   rejectData({ kind: "chain-entry-invalid", seq: error.seq, reason: error.reason });
 
-/** §6.4: 1 エントリの正規化サイズ検査。通過したら正規化バイト数を返す。 */
+/** §6.4: canonical-size check for one entry. Returns the canonical byte count on pass. */
 function checkEntrySize(entry: ChainEntry): Effect.Effect<number, DataRejectedError> {
   return canonicalBytesOf(entry).pipe(
     Effect.mapError(rejectChainInvalid),
@@ -48,9 +49,10 @@ function checkEntrySize(entry: ChainEntry): Effect.Effect<number, DataRejectedEr
 }
 
 /**
- * 受理ポリシー(§6.4): チェーン全体のエントリ数・累積バイト数の上限。
- * 判定は数値のみに依存する純関数(エントリ数上限のユニットテストのために公開。
- * 10,000 本の有効チェーンを統合テストで実生成するのは非現実的なため)。
+ * Acceptance policy (§6.4): caps on the whole chain's entry count and
+ * cumulative byte count. The decision is a pure function of numbers only
+ * (exposed for unit tests of the entry-count cap — generating a valid
+ * 10,000-entry chain in an integration test is impractical).
  */
 export function chainCapacityExceeded(
   entryCount: number,
@@ -80,9 +82,11 @@ function ensureChainCapacity(
 }
 
 /**
- * CAS(§6.4): 親ヘッドが現ヘッドと一致しなければ現ヘッド情報付きで拒否
- * (worker が 409 に写す)。未初期化の検査は呼び出し側の前段(loadChainForMember /
- * loadInitializedChain)が済ませている前提で、ここでは head の一致のみを見る。
+ * CAS (§6.4): if the parent head does not match the current head, reject
+ * with the current head's information (the worker maps this to a 409). The
+ * uninitialized check is assumed done by the caller's preceding stage
+ * (loadChainForMember / loadInitializedChain); here only the head match is
+ * examined.
  */
 export function ensureParentHead(
   chain: { readonly headSeq: number; readonly headHashHex: string },
@@ -101,10 +105,11 @@ export function ensureParentHead(
 }
 
 /**
- * 受理検査(サイズ → 容量 → §6.4 の全チェーン再検証 = prev_hash 連続性・署名・
- * 合意規則)。受理される場合は正規化バイト数と「エントリ適用後の検証済み
- * ビュー」を返す(複合のラップ判定基準状態 — AUTH_SPEC §12-4 — と、受理後の
- * StateCache 更新の入力)。
+ * Acceptance check (size → capacity → §6.4's full-chain re-verification =
+ * prev_hash continuity, signatures, consensus rules). On acceptance,
+ * returns the canonical byte count and the "verified view after applying
+ * the entry" (the input for the composite wrap-decision reference state —
+ * AUTH_SPEC §12-4 — and for the post-acceptance StateCache update).
  */
 export const verifyAcceptableEntry = (
   chain: StoredChain,
@@ -123,13 +128,15 @@ export const verifyAcceptableEntry = (
   });
 
 /**
- * 複合の 2 エントリ受理検査(AUTH_SPEC §12-4: H+1 = create / rotate、
- * H+2 = 境界 `checkpoint`)。サイズ検査は各エントリ、
- * 容量検査は 2 エントリ分の合算、verifyChain(§6.4 の合意規則 — checkpoint の
- * エポック厳密一致は「エントリ時点 = H+1 適用後」基準で自然に成立する —
- * CRYPTO_SPEC §6.2)は両エントリを適用した全チェーンに対して 1 回。返す
- * `applied` は両エントリ適用後の検証済みビュー(境界 checkpoint タプルを含む
- * 履歴 = 同梱マニフェストのチェックポイント束縛検証 — §4.3 (2) — の入力)。
+ * Acceptance check for the composite's 2 entries (AUTH_SPEC §12-4: H+1 =
+ * create / rotate, H+2 = the boundary `checkpoint`). The size check runs
+ * per entry; the capacity check counts both entries together; verifyChain
+ * (§6.4's consensus rules — the checkpoint's strict epoch equality holds
+ * naturally under the "entry time = after H+1 is applied" basis —
+ * CRYPTO_SPEC §6.2) runs once over the whole chain with both entries
+ * applied. The returned `applied` is the verified view after both entries
+ * (a history containing the boundary-checkpoint tuple = the input to the
+ * checkpoint-binding verification of the bundled manifest — §4.3 (2)).
  */
 export const verifyAcceptableEntryPair = (
   chain: StoredChain,
@@ -165,7 +172,7 @@ export const verifyAcceptableEntryPair = (
     return { firstCanonicalBytes, secondCanonicalBytes, applied };
   });
 
-/** insertAcceptedEntrySync が書き込みに使うストア面(構造的部分型)。 */
+/** The store surface insertAcceptedEntrySync writes through (structural subtype). */
 export interface ChainAcceptStores {
   readonly chainStore: {
     readonly insertSync: (entry: ChainEntry, entryHashHex: string, canonicalBytes: number) => void;
@@ -191,10 +198,11 @@ export interface ChainAcceptStores {
 }
 
 /**
- * 完成した approve が適用した提案(内側 op と提案エントリの seq)。DO の append の
- * 戻り値で worker へ渡し、worker は直接追記の add_member / remove_member と同じ
- * D1 後処理(招待の completed 突合・membership 投影)を内側 op に対して行う
- * (設計録 es-design.md §11 K5-H)。
+ * The proposal a completed approve applied (the inner op and the proposal
+ * entry's seq). Returned from the DO's append to the worker, which performs
+ * on the inner op the same D1 post-processing as a directly appended
+ * add_member / remove_member (invite completed matching, membership
+ * projection) (design record es-design.md §11 K5-H).
  */
 export interface AppliedProposal {
   readonly proposalSeq: number;
@@ -202,15 +210,16 @@ export interface AppliedProposal {
 }
 
 /**
- * 受理後のチェーン(受理済みエントリを含む)の提案索引(AUDIT_SPEC §3.4 の
- * approve / withdraw 行と適用行の入力)。導出は core の indexProposals をサーバーと
- * CLI で共有する(K5-F)。
+ * The proposal index of the post-acceptance chain (including the accepted
+ * entry) — the input to AUDIT_SPEC §3.4's approve / withdraw rows and the
+ * application row. The derivation shares core's indexProposals between
+ * server and CLI (K5-F).
  */
 export function proposalIndexOf(
   entries: readonly ChainEntry[],
   applied: VerifiedChainView,
 ): ProposalIndex {
-  // entryHashAt は索引オブジェクトのメソッド(this 束縛)なので引数で包む
+  // entryHashAt is a method on the index object (this-bound), so it is wrapped in an argument
   return indexProposals(
     entries,
     (seq) => applied.history.entryHashAt(seq),
@@ -218,26 +227,33 @@ export function proposalIndexOf(
   );
 }
 
-/** 提案できない op だけを運ぶ経路(複合の create / rotate + 境界 checkpoint)用の空索引。 */
+/** The empty index for paths that carry only non-proposable ops (the composite's create / rotate + boundary checkpoint). */
 const NO_PROPOSALS: ProposalIndex = new Map();
 
 /**
- * 受理済みエントリの挿入 + §3.4 の監査ミラー + op 別の受理副作用(同期)。
- * チェーン挿入・ミラー追記・副作用を同一同期ブロック(= 同一タスク)で原子
- * コミットするために、呼び出し側の書き込みフェーズ内から呼ぶ。serverTs(nowMs)は
- * 必ず引数で受け取り、取得タイミング(全検査後・書き込みフェーズ直前)を全経路で
- * 統一する。副作用をここに置くのは、受理経路が将来増えても「remove を受理したのに
- * フラグが出ない」「再追加を受理したのに旧鍵ラップが残る」形を構造的に防ぐため
- * (受理 4 手順の共有と同じ理由)。
+ * Inserts the accepted entry + §3.4 audit mirror + per-op acceptance side
+ * effects (synchronous). Called from inside the caller's write phase so
+ * that the chain insert, mirror append, and side effects commit atomically
+ * in the same synchronous block (= the same task). serverTs (nowMs) is
+ * always received as an argument so that its acquisition timing (after all
+ * checks, immediately before the write phase) is uniform across paths.
+ * The side effects live here so that future acceptance paths cannot
+ * structurally produce shapes like "a remove was accepted but no flag was
+ * raised" or "a re-add was accepted but stale key wraps remain" (the same
+ * reason the 4 acceptance steps are shared).
  *
- * 四眼(K5): 完成した approve は `chain.approved`(completed = true)に続けて内側 op の
- * 適用行(同じ chain_seq・actor = 提案者・viaProposalSeq)を書き、そのうえで内側 op の
- * 副作用を approve の seq を起点に走らせる(CRYPTO_SPEC §6.4「内側 op を直接受理した
- * 場合と同一に、当該 approve エントリの受理タスク内で」)。戻り値は適用した提案
- * (未完成・四眼以外は null)。
+ * Four-eyes (K5): a completed approve writes `chain.approved` (completed =
+ * true) followed by the inner op's application row (same chain_seq, actor =
+ * the proposer, viaProposalSeq), then runs the inner op's side effects
+ * anchored at the approve's seq (CRYPTO_SPEC §6.4: "identically to having
+ * accepted the inner op directly, inside that approve entry's acceptance
+ * task"). The return value is the applied proposal (null when incomplete
+ * or non-four-eyes).
  *
- * 端末鍵(K3): `subject` は `add_device` の載せた端末 FP(受理側が計算 — chain-commit.ts)。
- * `revoke_device` は当該端末の申告行の削除 + 要ローテーション検出変種(AUDIT_SPEC §4.1)。
+ * Device keys (K3): `subject` is the device FP carried by `add_device`
+ * (computed on the acceptance side — chain-commit.ts). `revoke_device`
+ * deletes the device's attestation rows + the rotation-needed-detection
+ * variant (AUDIT_SPEC §4.1).
  */
 export function insertAcceptedEntrySync(
   stores: ChainAcceptStores,
@@ -259,21 +275,25 @@ export function insertAcceptedEntrySync(
   if (proposal === undefined || proposal.completedAtSeq !== entry.seq) {
     return null;
   }
-  // 適用行はミラーの 2 行目として既に書かれている(chainMirrorEvents)。副作用は
-  // 内側 op に対して、適用 seq = この approve の seq で走らせる(裁定 P7 — 義務の
-  // 起点は適用時点。要ローテーション検出の triggerChainSeq も同じ)
+  // The application row has already been written as the mirror's second
+  // row (chainMirrorEvents). The side effects run on the inner op with
+  // application seq = this approve's seq (ruling P7 — the obligation's
+  // origin is the application time; the rotation-needed detection's
+  // triggerChainSeq likewise)
   applyAcceptanceSideEffectsSync(stores, proposal.entry.payload.inner, entry.seq, nowMs);
   return { proposalSeq: proposal.entry.seq, inner: proposal.entry.payload.inner };
 }
 
 /**
- * 複合の 2 エントリ(H+1 / H+2 — verifyAcceptableEntryPair 通過済み)の挿入 +
- * ミラー + 副作用(同期・seq 順)。H+1 のエントリハッシュは H+2 の prev_hash
- * (verifyChain が連鎖一致を検証済み)、H+2 のハッシュは両エントリ適用後の
- * ヘッドハッシュ。checkpoint のスナップショット保存(§6.4)はエントリ単体から
- * 導出できない(受理時点の保存状態の再構成物)ため、ここではなく呼び出し側の
- * 書き込みフェーズが同じ同期ブロック内で行う。この経路が運ぶ op(create /
- * rotate / checkpoint)は提案できない(CRYPTO_SPEC §6.2)ので提案索引は空でよい。
+ * Inserts the composite's 2 entries (H+1 / H+2 — already through
+ * verifyAcceptableEntryPair) + mirror + side effects (synchronous, in seq
+ * order). H+1's entry hash is H+2's prev_hash (verifyChain has verified
+ * the chain linkage); H+2's hash is the head hash after both entries.
+ * The checkpoint snapshot store (§6.4) cannot be derived from the entry
+ * alone (it reconstructs the stored state at acceptance time), so the
+ * caller's write phase performs it inside the same synchronous block, not
+ * here. The ops this path carries (create / rotate / checkpoint) cannot
+ * be proposed (CRYPTO_SPEC §6.2), so the proposal index may be empty.
  */
 export function insertAcceptedEntryPairSync(
   stores: ChainAcceptStores,
@@ -293,25 +313,33 @@ export function insertAcceptedEntryPairSync(
 }
 
 /**
- * op 別の受理副作用(ミラー追記の後・同一タスク内)。入力は op + payload
- * (署名済みエントリ、または完成した approve が適用した内側 op)と適用 seq。
+ * Per-op acceptance side effects (after the mirror append, inside the same
+ * task). The input is the op + payload (a signed entry, or the inner op a
+ * completed approve applied) and the application seq.
  *
- * - `add_member`: 再追加の旧鍵宛ラップ掃除(AUTH_SPEC §12-6 — §6.3 の
- *   「ラップ先 = 現メンバー鍵と厳密一致」不変条件へのストレージ収束)。
- *   削除は dek.deleted(actor = system + 原因 payload — AUDIT_SPEC §3.3)
- * - `remove_member` / `change_role`(降格・scope 縮小 — 2026-09-14 ES)/
- *   `revoke_server`: 要ローテーション検出(AUDIT_SPEC §4.1)。検出はミラー追記の
- *   **後**に読む — 対象の在籍 / grant 区間・アクセス窓は直前に書いたミラー行
- *   (四眼経由では適用行 — 同じイベント名・同じ target 索引)で閉じている
- * - `remove_member` はさらに対象のヘッド申告行を削除する(CRYPTO_SPEC §6.4 /
- *   AUTH_SPEC §16-1 — 現メンバーのみ配布へのストレージ収束。§12-6 の旧鍵
- *   ラップ掃除と同型)
- * - `revoke_device`(2026-09-19 DK — CRYPTO_SPEC §6.4): 失効した各端末の申告行の
- *   削除(AUTH_SPEC §16-1)+ 要ローテーション検出の `revoke_device` 変種(AUDIT_SPEC
- *   §4.1 — 端末の有効区間 ∩ 人のアクセス窓 ∩ 端末 scope)。`add_device` の副作用は
- *   ミラーのみ(バックフィルはクライアント — §7)
- * - 四眼の 4 op 自身(`set_approval_policy` / `propose` / `approve` / `withdraw`)に
- *   固有の副作用はない(完成した approve の内側 op は呼び出し側が本関数を再度呼ぶ)
+ * - `add_member`: on re-addition, sweep wraps addressed to the old key
+ *   (AUTH_SPEC §12-6 — storage convergence to §6.3's "wrap target = exact
+ *   match to a current member key" invariant). The deletion is
+ *   dek.deleted (actor = system + cause payload — AUDIT_SPEC §3.3)
+ * - `remove_member` / `change_role` (demotion, scope shrink — 2026-09-14
+ *   ES) / `revoke_server`: rotation-needed detection (AUDIT_SPEC §4.1).
+ *   The detection reads **after** the mirror append — the subject's
+ *   membership / grant intervals and access windows are already closed by
+ *   the mirror rows just written (via four-eyes it is the application
+ *   row — same event name, same target index)
+ * - `remove_member` additionally deletes the subject's head-attestation
+ *   rows (CRYPTO_SPEC §6.4 / AUTH_SPEC §16-1 — storage convergence to
+ *   distributing only to current members; same shape as §12-6's old-key
+ *   wrap sweep)
+ * - `revoke_device` (2026-09-19 DK — CRYPTO_SPEC §6.4): deletes each
+ *   revoked device's attestation rows (AUTH_SPEC §16-1) + the
+ *   rotation-needed detection's `revoke_device` variant (AUDIT_SPEC §4.1 —
+ *   device's valid interval ∩ person's access window ∩ device scope).
+ *   `add_device`'s only side effect is the mirror (backfill is the
+ *   client's — §7)
+ * - The four-eyes 4 ops themselves (`set_approval_policy` / `propose` /
+ *   `approve` / `withdraw`) have no dedicated side effects (a completed
+ *   approve's inner op re-enters this function via the caller)
  */
 function applyAcceptanceSideEffectsSync(
   stores: ChainAcceptStores,

@@ -1,16 +1,18 @@
-// サインアップ招待コードの発行(運営操作 — AUTH_SPEC §3)。
+// Issues a sign-up invite code (operations — AUTH_SPEC §3).
 //
-// サーバーに発行 API・UI は存在しない(hosted-design.md §2-2 — wrangler /
-// スクリプト経路)。このスクリプトはコードの生成とハッシュ計算だけを行い、
-// D1 への登録は出力された wrangler コマンドを運営者が実行する(CF 資格情報を
-// このスクリプトに要求しない)。
+// The server has no issuance API or UI (hosted-design.md §2-2 — the wrangler /
+// script path). This script only generates the code and computes its hash;
+// the operator registers it in D1 by running the wrangler command it prints
+// (this script does not ask for CF credentials).
 //
-// - 生値(maruhi_sgn_…)はこの端末に一度だけ表示される。DB に入るのは
-//   SHA-256 ハッシュのみ(AUTH_SPEC §15 招待トークンと同じ規律)
-// - コードは単回・期限つき(既定 7 日 — --days で調整)で、アカウント作成の
-//   許可だけを運ぶ(プロジェクト・org・role とは結びつかない)
+// - The raw value (maruhi_sgn_…) is shown on this terminal exactly once. Only
+//   the SHA-256 hash goes into the DB (same discipline as AUTH_SPEC §15
+//   invite tokens)
+// - The code is single-use and expires (default 7 days — adjust with --days);
+//   it carries only permission to create an account (not tied to any project,
+//   org, or role)
 //
-// 使い方(apps/server から):
+// Usage (from apps/server):
 //   bun run scripts/issue-signup-invite.ts [--days 7] [--origin https://your.deployment]
 
 import { randomBase62, sha256Hex, ulid } from "../src/ids.ts";

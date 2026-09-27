@@ -1,18 +1,26 @@
-// レイアウト v2 — 値なしスキーマのサーバー受理面の統合テスト。
+// Layout v2 — integration tests of the valueless schema's server-side
+// acceptance surface.
 //
-// 対象: AUTH_SPEC §12-5「レイアウト v2・declared・activation の受理」全項 +
-// §12-8(description の受理検査)+ §12-11(schemaPolicy)+ §12-7(declared の
-// 配布・advisory 同梱)。設計文書(docs/notes/value-free-schema-design.md §3)の
-// 「停止しても安全」の実証 — 既定 disabled で v2 受理が眠ったまま・v1 不変 —
-// と、§12-5 の 422 エラー名 4 種(schema-policy-disabled / activation-required /
-// layout-regression / schema-required)の境界を固定する。
+// Scope: all items of AUTH_SPEC §12-5 "acceptance of layout v2,
+// declared, and activation" + §12-8 (the description acceptance check)
+// + §12-11 (schemaPolicy) + §12-7 (declared distribution, advisory
+// bundling). This pins the design document's
+// (docs/notes/value-free-schema-design.md §3) "safe to stop" claim —
+// with the default disabled, v2 acceptance lies dormant and v1 is
+// unchanged — plus the boundary of §12-5's four 422 error names
+// (schema-policy-disabled / activation-required / layout-regression /
+// schema-required).
 //
-// スイートの分担(共有ヘルパは support/schema-v2-scenario.ts。分割の動機は
-// support/membership-scenario.ts 冒頭を参照):
-// - 本ファイル: schemaPolicy 設定・有効化ゲート・declared 作成と activation
-// - data-schema-v2-transitions.test.ts: 遷移とレイアウト単調性・削除の直前一致・
-//   スキーマ再発行と可逆性
-// - data-schema-v2-locked.test.ts: schema-locked・description・未対応レイアウト
+// How the suite is split (shared helpers in
+// support/schema-v2-scenario.ts; for the split's motivation see the
+// top of support/membership-scenario.ts):
+// - this file: the schemaPolicy setting, the enablement gate, declared
+//   creation and activation
+// - data-schema-v2-transitions.test.ts: transitions and layout
+//   monotonicity, deletions' just-before match, schema re-issuance and
+//   reversibility
+// - data-schema-v2-locked.test.ts: schema-locked, description,
+//   unsupported layouts
 
 import { describe, expect, it } from "vitest";
 
@@ -48,7 +56,7 @@ import { createVariableV2Request } from "./support/schema-v2-scenario.ts";
 
 registerDataScenario();
 
-/** 監査行の件数(イベント名 × variable_id)。 */
+/** Audit-row count (event name × variable_id). */
 async function auditCount(event: string, variableId?: string): Promise<number> {
   const rows =
     variableId === undefined
@@ -66,8 +74,8 @@ async function auditCount(event: string, variableId?: string): Promise<number> {
   return Number(rows[0]?.["n"]);
 }
 
-describe("schemaPolicy 設定(AUTH_SPEC §12-11)", () => {
-  it("GET は既定 disabled を返す(read × reader 以上)。非メンバーは一律 404", async () => {
+describe("the schemaPolicy setting (AUTH_SPEC §12-11)", () => {
+  it("GET returns the default disabled (read × reader or above). Non-members get a uniform 404", async () => {
     const asReader = await requestJson("GET", "/schema-policy", token(READER));
     expect(asReader.status).toBe(200);
     await expect(asReader.json()).resolves.toEqual({ schemaPolicy: "disabled" });
@@ -75,7 +83,7 @@ describe("schemaPolicy 設定(AUTH_SPEC §12-11)", () => {
     expect(asStranger.status).toBe(404);
   });
 
-  it("PUT は admin × admin(204)。変更は project.schema_policy_changed を旧値・新値つきで記録する", async () => {
+  it("PUT is admin × admin (204). A change records project.schema_policy_changed with the old and new values", async () => {
     await setSchemaPolicyOk("enabled", OWNER);
     const read = await requestJson("GET", "/schema-policy", token(READER));
     await expect(read.json()).resolves.toEqual({ schemaPolicy: "enabled" });
@@ -84,8 +92,8 @@ describe("schemaPolicy 設定(AUTH_SPEC §12-11)", () => {
       "SELECT actor_type, actor_user_id, actor_key_fingerprint, payload FROM audit_events WHERE event = 'project.schema_policy_changed'",
     );
     expect(rows).toHaveLength(1);
-    // actor = 変更した本人(type=user)。署名を伴わない設定操作のため FP なし
-    // (AUDIT_SPEC §3.3)
+    // actor = the changer themself (type=user). No FP since this
+    // config operation carries no signature (AUDIT_SPEC §3.3)
     expect(rows[0]).toMatchObject({
       actor_type: "user",
       actor_user_id: OWNER,
@@ -97,13 +105,13 @@ describe("schemaPolicy 設定(AUTH_SPEC §12-11)", () => {
     });
   });
 
-  it("同値の PUT は 204 のまま監査を追加しない(変わっていない遷移を「変更」として書かない)", async () => {
+  it('a same-value PUT stays 204 and adds no audit row (does not record an unchanged transition as a "change")', async () => {
     await setSchemaPolicyOk("enabled", OWNER);
     await setSchemaPolicyOk("enabled", OWNER);
     expect(await auditCount("project.schema_policy_changed")).toBe(1);
   });
 
-  it("PUT の認可: チェーン role member は 403、非メンバーは 404", async () => {
+  it("PUT authorization: a chain role of member gets 403, a non-member 404", async () => {
     const asMember = await requestJson("PUT", "/schema-policy", token(MEMBER), {
       schemaPolicy: "enabled",
     });
@@ -112,19 +120,19 @@ describe("schemaPolicy 設定(AUTH_SPEC §12-11)", () => {
       schemaPolicy: "enabled",
     });
     expect(asStranger.status).toBe(404);
-    // 拒否はポリシーを変えない
+    // The rejection does not change the policy
     const read = await requestJson("GET", "/schema-policy", token(OWNER));
     await expect(read.json()).resolves.toEqual({ schemaPolicy: "disabled" });
   });
 
-  it("3 値以外の PUT は Schema 検証の 400", async () => {
+  it("a PUT of anything but the three values is a Schema-verification 400", async () => {
     const response = await requestJson("PUT", "/schema-policy", token(OWNER), {
       schemaPolicy: "everything",
     });
     expect(response.status).toBe(400);
   });
 
-  it("advisory 同梱(§12-7): 環境一覧・値付き pull・メタのみ pull に schemaPolicy が載る(検証材料ではない)", async () => {
+  it("advisory bundling (§12-7): the environment list, the valued pull, and the metadata-only pull all carry schemaPolicy (not verification material)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("locked", OWNER);
     const list = await requestJson("GET", "/environments", token(READER));
@@ -136,8 +144,8 @@ describe("schemaPolicy 設定(AUTH_SPEC §12-11)", () => {
   });
 });
 
-describe("有効化ゲート — 既定 disabled は v2 の新規採用のみ拒否(§12-5 / §12-11)", () => {
-  it("v2 の値同梱作成は 422 schema-policy-disabled(v1 経路は不変)", async () => {
+describe("the enablement gate — the default disabled rejects only new v2 adoption (§12-5 / §12-11)", () => {
+  it("a value-bundled v2 creation is 422 schema-policy-disabled (the v1 path is unchanged)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const rejected = await createVariableV2Request({
       variableId: VAR,
@@ -150,11 +158,11 @@ describe("有効化ゲート — 既定 disabled は v2 の新規採用のみ拒
       _tag: "SchemaPolicyRejected",
       reason: "schema-policy-disabled",
     });
-    // v1 の作成は従来どおり受理される(既存 v1 プロジェクトへの影響ゼロの実証)
+    // v1 creation is accepted as before (demonstrating zero impact on existing v1 projects)
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
   });
 
-  it("declared 作成(値なし)は 422 schema-policy-disabled", async () => {
+  it("declared creation (no value) is 422 schema-policy-disabled", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const rejected = await declareVariableRequest({
       variableId: VAR,
@@ -166,11 +174,11 @@ describe("有効化ゲート — 既定 disabled は v2 の新規採用のみ拒
       _tag: "SchemaPolicyRejected",
       reason: "schema-policy-disabled",
     });
-    // 拒否は変数行・監査行を残さない
+    // The rejection leaves no variable row or audit row
     expect(await auditCount("var.created", VAR)).toBe(0);
   });
 
-  it("v1 変数への v2 再発行は 422 schema-policy-disabled", async () => {
+  it("a v2 re-issuance on a v1 variable is 422 schema-policy-disabled", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const statement = await nextVariableStatement({
@@ -195,8 +203,8 @@ describe("有効化ゲート — 既定 disabled は v2 の新規採用のみ拒
   });
 });
 
-describe("declared 作成と activation(§12-5)", () => {
-  it("enabled: declared 作成は値なしで受理され、保存バージョン 0・var.created(author FP)を記録する", async () => {
+describe("declared creation and activation (§12-5)", () => {
+  it("enabled: declared creation is accepted with no value, recording stored version 0 and var.created (author FP)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({
@@ -210,11 +218,14 @@ describe("declared 作成と activation(§12-5)", () => {
       ENV,
       VAR,
     );
-    // 保存バージョン 0 のまま・アクティブ行(§12-5 — declared だけが正当な
-    // version 0 状態。アクティブ変数枠にも数える)
+    // Stored version stays 0 on an active row (§12-5 — declared is the
+    // only legitimate version-0 state. Also counts toward the
+    // active-variable cap)
     expect(rows).toEqual([{ latest_version: 0, latest_meta_version: 1, deleted_at: null }]);
-    // 存在区間の開始 = metaVersion 1 の受理(AUDIT_SPEC §3.3 — declared 作成も
-    // var.created。値署名がないため FP はステートメント署名の author 鍵 FP)
+    // The interval's start = acceptance of metaVersion 1 (AUDIT_SPEC
+    // §3.3 — declared creation is also var.created. With no value
+    // signature, the FP is the author key FP of the statement
+    // signature)
     const audits = await queryProjectDo(
       projectId,
       "SELECT actor_user_id, actor_key_fingerprint FROM audit_events WHERE event = 'var.created' AND variable_id = ?",
@@ -226,7 +237,7 @@ describe("declared 作成と activation(§12-5)", () => {
     expect(await auditCount("var.version_pushed", VAR)).toBe(0);
   });
 
-  it("配布(§12-7): declared は値付き pull の declaredVariables とメタのみ pull の variables に載り、値・DEK は運ばれない", async () => {
+  it("distribution (§12-7): declared appears on the valued pull's declaredVariables and the metadata-only pull's variables; values and DEKs are not carried", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({
@@ -240,11 +251,12 @@ describe("declared 作成と activation(§12-5)", () => {
       variables: readonly unknown[];
       declaredVariables?: readonly Record<string, unknown>[];
     };
-    // 値配列には現れない(status active の値配布要求 — CRYPTO_SPEC §6.3 — の
-    // 「declared だけが正当な値なし状態」の供給側)
+    // It does not appear in the values array (the supply side of the
+    // status-active value-distribution requirement — CRYPTO_SPEC §6.3 —
+    // "declared is the only legitimate valueless state")
     expect(pulled.variables).toEqual([]);
     expect(pulled.declaredVariables).toHaveLength(1);
-    // v2 の運搬フィールド(§12-2)がステートメントに揃って載る
+    // The v2 carrier fields (§12-2) are carried aligned with the statement
     expect(pulled.declaredVariables?.[0]).toMatchObject({
       variableId: VAR,
       status: "declared",
@@ -260,11 +272,11 @@ describe("declared 作成と activation(§12-5)", () => {
     };
     expect(metadataBody.variables).toHaveLength(1);
     expect(metadataBody.variables[0]).toMatchObject({ variableId: VAR, status: "declared" });
-    // declared の配布は var.read を記録しない(値を配布していない — AUDIT_SPEC §3.3)
+    // Distributing a declared does not record a var.read (no value was distributed — AUDIT_SPEC §3.3)
     expect(await auditCount("var.read", VAR)).toBe(0);
   });
 
-  it("declared への通常 push は 422 activation-required", async () => {
+  it("a normal push against a declared is 422 activation-required", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({ variableId: VAR, name: "API_KEY" });
@@ -287,7 +299,7 @@ describe("declared 作成と activation(§12-5)", () => {
     });
   });
 
-  it("activation 複合は 200 version 1 で受理され、var.version_pushed(version 1)を記録する", async () => {
+  it("the activation composite is accepted with 200 version 1 and records var.version_pushed (version 1)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({ variableId: VAR, name: "API_KEY" });
@@ -301,7 +313,7 @@ describe("declared 作成と activation(§12-5)", () => {
     await expect(response.json()).resolves.toEqual({ variableId: VAR, version: 1, epoch: 1 });
     expect(await auditCount("var.version_pushed", VAR)).toBe(1);
     expect(await auditCount("var.created", VAR)).toBe(1);
-    // activation 後の pull は値を配布し、declaredVariables は空になる
+    // A pull after activation distributes the value and declaredVariables becomes empty
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     const pulled = (await pull.json()) as {
       variables: readonly Record<string, unknown>[];
@@ -309,7 +321,7 @@ describe("declared 作成と activation(§12-5)", () => {
     };
     expect(pulled.variables).toHaveLength(1);
     expect(pulled.declaredVariables).toBeUndefined();
-    // activation 後は通常 push が受理される(declared ゲートの解除)
+    // After activation, normal pushes are accepted (the declared gate is lifted)
     const next = await encryptValue(
       dek,
       { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: 2 },
@@ -329,7 +341,7 @@ describe("declared 作成と activation(§12-5)", () => {
     expect(push.status).toBe(200);
   });
 
-  it("activation は disabled 降格後もポリシーに依らず受理される(§12-11 の可逆性 — 継続ステートメント)", async () => {
+  it("activation is accepted regardless of the policy even after a downgrade to disabled (§12-11 reversibility — a continuation statement)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({ variableId: VAR, name: "API_KEY" });
@@ -343,7 +355,7 @@ describe("declared 作成と activation(§12-5)", () => {
     expect(response.status).toBe(200);
   });
 
-  it("active 変数への activation 複合は 422 payload-mismatch(status — 明示ガード。version の値に依らない)", async () => {
+  it("the activation composite on an active variable is 422 payload-mismatch (status — an explicit guard, independent of the version value)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await createVariableV2Request({
@@ -352,9 +364,11 @@ describe("declared 作成と activation(§12-5)", () => {
       plaintext: "postgres://alpha",
       dek,
     }).then((response) => expect(response.status).toBe(200));
-    // version 1(CAS で落ちる形)と latest + 1(CAS を通過する形)の両方で
-    // 同じ 422 になること — 対象判定を値 CAS に依存させない(version 1 固定の
-    // ヘルパでは「active 変数を狙えない」性質を検証できない)
+    // The same 422 must result both with version 1 (a shape that fails
+    // the CAS) and with latest + 1 (a shape that passes it) — the
+    // target judgment must not depend on the value CAS (with a
+    // version-1-only helper, "cannot target an active variable" could
+    // not be verified)
     for (const version of [1, 2]) {
       const response = await activateVariableRequest({
         variableId: VAR,
@@ -372,10 +386,12 @@ describe("declared 作成と activation(§12-5)", () => {
     }
   });
 
-  it("disabled 下の active v1 変数は activation 経路でも v2 へ昇格できない(§12-11 迂回の遮断)", async () => {
-    // activation は schemaPolicy を検査しない(declared の直前は必ず v2 の
-    // ため)が、その免除は対象の declared 限定が前提。ガードが
-    // 無いと disabled のまま v1 active 変数 + version latest+1 で v2 再発行が通る
+  it("an active v1 variable under disabled cannot be promoted to v2 via the activation path either (§12-11 bypass is blocked)", async () => {
+    // activation does not check schemaPolicy (because a declared's
+    // immediate predecessor is always v2), but that exemption presumes
+    // the target is a declared. Without the guard, a v2 re-issuance
+    // would pass under disabled on a v1 active variable with version
+    // latest+1
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const response = await activateVariableRequest({
@@ -391,7 +407,7 @@ describe("declared 作成と activation(§12-5)", () => {
       _tag: "PayloadMismatch",
       field: "status",
     });
-    // 拒否は何も書かない: 最新ステートメントはレイアウト 1 のまま・version も不変
+    // The rejection writes nothing: the latest statement stays layout 1 and version is unchanged
     const rows = await queryProjectDo(
       projectId,
       `SELECT ms.layout_version, v.latest_version, v.latest_meta_version
@@ -407,7 +423,7 @@ describe("declared 作成と activation(§12-5)", () => {
     expect(rows).toEqual([{ layout_version: 1, latest_version: 1, latest_meta_version: 1 }]);
   });
 
-  it("activation は改名を兼ねない(name は宣言時の名を保持 — 422 payload-mismatch)", async () => {
+  it("activation does not double as a rename (name keeps the declaration's name — 422 payload-mismatch)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({ variableId: VAR, name: "API_KEY" });
@@ -423,8 +439,9 @@ describe("declared 作成と activation(§12-5)", () => {
       _tag: "PayloadMismatch",
       field: "name",
     });
-    // 改名は rename 経路(declared → declared — var.renamed の監査つき)を挟めば
-    // 同じ結果に到達できる(能力は失われない)
+    // Renaming can still reach the same result via the rename path
+    // (declared → declared — audited as var.renamed); the capability is
+    // not lost
     const rename = await nextVariableStatement({
       variableId: VAR,
       name: "API_TOKEN",
@@ -451,10 +468,10 @@ describe("declared 作成と activation(§12-5)", () => {
     expect(activated.status).toBe(200);
   });
 
-  it("作成複合は deleted を創出できない(ワイヤ形の 400 — §12-5 の受理面が正)", async () => {
+  it("the creation composite cannot create a deleted (a wire-shape 400 — §12-5's acceptance surface is authoritative)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
-    // 形式のみ有効なゼロ署名(Schema 400 は署名検証に到達しない)
+    // A zero signature valid only in form (a Schema 400 never reaches signature verification)
     const statement = {
       suite: "maruhi/v1",
       environmentId: ENV,
@@ -481,7 +498,7 @@ describe("declared 作成と activation(§12-5)", () => {
   });
 });
 
-/** 保存済み version の value signed-bytes ハッシュ(次 version の prev 材料)。 */
+/** The value signed-bytes hash of a stored version (prev material for the next version). */
 async function storedValueSigHash(variableId: string, version: number): Promise<string> {
   const rows = await queryProjectDo(
     projectId,

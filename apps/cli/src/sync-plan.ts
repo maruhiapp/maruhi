@@ -1,25 +1,31 @@
-// `maruhi sync plan` / `maruhi sync apply`(integration-options.md §3「同期の
-// 最終形」の表: ドライバ × リポジトリ設定 × レシート × plan / apply。http ドライバ
-// と、レシートを持たない CI の経路〔sync-ci.ts〕も同じ芯〔{@link runDriver}〕に
-// 載る)。
+// `maruhi sync plan` / `maruhi sync apply` (the table of "the sync's
+// final form" in integration-options.md §3: driver × repository config
+// × receipt × plan / apply. The http driver and the receipt-less CI
+// path [sync-ci.ts] ride the same core [{@link runDriver}]).
 //
-// plan = 「レシート(前回届いた version)と maruhi の現在の version の差」を
-// 名前と version だけで示す。同期先は**読み戻さない**(一方通行 — ADR-0014。
-// Vercel の sensitive 値は読み戻せないので、レシートが唯一の突合材料 — 補足 13 W2)。
-// plan は同期元の値を復号しない(値署名の検証までで止まる — values.ts の
-// pullVerifiedEnvironment)し、ベンダー API にも触れない。apply は復号し
-// (pull.ts)、exec ドライバならベンダー CLI の stdin に一度だけ書き(sync-exec.ts)、
-// http ドライバならベンダー API のリクエスト本文に載せる(sync-http.ts)。値は
-// stdout / stderr / エラー文面に出ない。
+// plan = shows "the difference between the receipt (the versions
+// delivered last time) and maruhi's current versions" by name and
+// version only. The target is **never read back** (one-way —
+// ADR-0014. A Vercel sensitive value cannot be read back, so the
+// receipt is the only matching material — supplement 13 W2). plan never
+// decrypts the source's values (stops at verifying the value signatures
+// — values.ts's pullVerifiedEnvironment) and never touches the vendor
+// API. apply decrypts (pull.ts), then for the exec driver writes once
+// to the vendor CLI's stdin (sync-exec.ts), or for the http driver puts
+// them in the vendor API's request body (sync-http.ts). Values never
+// appear on stdout / stderr / in an error's wording.
 //
-// production の既定は plan のみ(補足 14 M4): production 扱いのターゲットへの
-// apply は `--yes` を要求する。エージェント環境の専用ゲートは作らない(補足 9 —
-// `run` と同じ扱い)。
+// production's default is plan only (supplement 14 M4): apply to a
+// target treated as production requires `--yes`. No dedicated gate for
+// an agent environment is built (supplement 9 — the same treatment as
+// `run`).
 //
-// 完全性(補足 14 M5): required と宣言された変数に値が無ければ、`run` の
-// presence fail-fast と同じ規則で何も運ばずに止める。required の active 変数が
-// ターゲットの選択から漏れていれば警告する(同期先で欠けるのは契約違反だが、
-// 運ぶものを選ぶのは設定の責務)。
+// Completeness (supplement 14 M5): when a variable declared required
+// has no value, stop without carrying anything under the same rule as
+// `run`'s presence fail-fast. When a required active variable is left
+// out of the target's selection, warn (missing at the destination is a
+// contract violation, but choosing what to carry is the config's
+// responsibility).
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
@@ -82,19 +88,19 @@ export type PlanEntry =
 /** A computed plan for one target. */
 export interface SyncPlan {
   readonly entries: readonly PlanEntry[];
-  /** 選択されているが required の宣言だけで値が無い変数(apply は何も運ばない)。 */
+  /** Selected variables that have only a required declaration and no value (apply carries nothing). */
   readonly declaredRequired: readonly DeclaredVariable[];
-  /** required の active 変数のうち、ターゲットの選択から漏れている名前(警告)。 */
+  /** Names among the required active variables that fell outside the target's selection (warned). */
   readonly requiredNotSelected: readonly string[];
 }
 
-/** 同期元の 1 変数(plan は暗号文の長さから平文長を出す — 復号しない)。 */
+/** One variable of the sync source (plan derives the plaintext length from the ciphertext's length — never decrypts). */
 export interface SourceVariable {
   readonly name: string;
   readonly version: number;
-  /** 平文のバイト長(plan = 暗号文長 − GCM タグ 16 バイト、apply = 実測)。 */
+  /** The plaintext's byte length (plan = ciphertext length − 16-byte GCM tag, apply = measured). */
   readonly byteLength: number;
-  /** required の宣言(レイアウト v1 = false)。 */
+  /** The required declaration (layout v1 = false). */
   readonly required: boolean;
 }
 
@@ -104,7 +110,7 @@ function byName<T extends { readonly name: string }>(entries: readonly T[]): Map
   return new Map(entries.map((entry) => [entry.name, entry] as const));
 }
 
-/** 復号済み変数 → plan の材料(apply / ci sync)。平文長は実測する。 */
+/** Decrypted variables → plan material (apply / ci sync). The plaintext length is measured. */
 export function sourceVariablesOf(
   variables: readonly {
     readonly name: string;
@@ -116,15 +122,18 @@ export function sourceVariablesOf(
   return variables.map((variable) => ({
     name: variable.name,
     version: variable.version,
-    // 剥がす理由: 平文長の実測(産物は長さだけ)。plan 段の暗号文長からの推定と
-    // 同じ値になるが、apply は実際に送るバイト列で判定する
+    // Reason for unwrapping: measuring the plaintext length (the product
+    // is only the length). The same value as the plan stage's estimate
+    // from the ciphertext length, but apply judges on the byte string it
+    // actually sends
     byteLength: Redacted.value(variable.value).byteLength,
     required: variable.required,
   }));
 }
 
-/** 検証済みメタデータ → plan の材料。暗号文 = ct || tag(16 バイト)から
- * 平文長だけを出す(復号しない — plan / apply 共通)。 */
+/** Verified metadata → plan material. From ciphertext = ct || tag (16
+ * bytes), derives only the plaintext length (never decrypts — shared by
+ * plan / apply). */
 function sourceFromVerified(
   variables: VerifiedEnvironmentPull["variables"],
 ): readonly SourceVariable[] {
@@ -136,14 +145,14 @@ function sourceFromVerified(
   }));
 }
 
-/** 復号済み変数 → 名前で引ける書き込み材料(値は包んだまま)。 */
+/** Decrypted variables → write material indexable by name (the values stay wrapped). */
 export function writesOf(
   variables: readonly { readonly name: string; readonly value: Redacted.Redacted<Uint8Array> }[],
 ): ReadonlyMap<string, SyncWrite> {
   return byName(variables.map((variable) => ({ name: variable.name, value: variable.value })));
 }
 
-/** 文面用のドライバの呼び名("the vercel CLI" / "the Vercel API")。 */
+/** The driver's label for wording ("the vercel CLI" / "the Vercel API"). */
 function driverLabel(driver: TargetDriver): string {
   return driver.kind === "exec" ? `the ${driver.spec.command} CLI` : driver.spec.label;
 }
@@ -174,7 +183,7 @@ function selectNames(
   return Effect.succeed([...target.variables].toSorted());
 }
 
-/** 1 変数の plan 行(名前 / size / 空の制約はここで、内容の制約は apply で)。 */
+/** One variable's plan line (the name / size / emptiness constraints here; the content constraints at apply). */
 function classifyVariable(
   driver: TargetDriver,
   variable: SourceVariable,
@@ -182,8 +191,9 @@ function classifyVariable(
 ): PlanEntry {
   const { name, version } = variable;
   const { constraints } = driver.spec;
-  // 名前の規則は平文を要しない = plan で判定できる(apply の checkValueConstraints は
-  // 防衛線として残る)。理由文は名前と規則だけを運ぶ
+  // The name rule needs no plaintext = judgeable in plan (apply's
+  // checkValueConstraints remains as the defense line). The reason
+  // wording carries only the name and the rule
   if (constraints.name !== null && !constraints.name.regex.test(name)) {
     return {
       action: "blocked",
@@ -241,8 +251,9 @@ export function computePlan(input: {
     const selected = yield* selectNames(input.target, source, declared);
     const selectedSet = new Set(selected);
     const previous = input.receipt?.variables ?? {};
-    // declared のみ(値なし)は運ぶものが無い: required なら enforceDeclaredPresence
-    // が止める材料、optional なら plan に載せない
+    // Declared-only (no value) has nothing to carry: when required it is
+    // material for enforceDeclaredPresence to stop; when optional it is
+    // not put on the plan
     const current = selected.flatMap((name) => {
       const variable = source.get(name);
       if (variable === undefined) {
@@ -251,7 +262,7 @@ export function computePlan(input: {
       const previousVersion = Object.hasOwn(previous, name) ? previous[name] : undefined;
       return [classifyVariable(input.target.driver, variable, previousVersion)];
     });
-    // レシートにあって今は運ばない名前(選択から外れた・maruhi から消えた)= 削除
+    // Names in the receipt that are no longer carried (left the selection / disappeared from maruhi) = deletes
     const deleted = Object.keys(previous)
       .filter((name) => !selectedSet.has(name) || !source.has(name))
       .map((name): PlanEntry => ({
@@ -279,7 +290,7 @@ function countOf(plan: SyncPlan, action: PlanEntry["action"]): number {
   return plan.entries.filter((entry) => entry.action === action).length;
 }
 
-/** 1 行の描画(記号 + 名前 + version。値は決して載らない)。 */
+/** Rendering one line (symbol + name + version. A value never lands). */
 function planLine(entry: PlanEntry): string {
   const name = displayText(entry.name);
   switch (entry.action) {
@@ -297,9 +308,11 @@ function planLine(entry: PlanEntry): string {
 }
 
 /**
- * 同期先の説明(ヘッダー行用): プリセット id と、プリセットが `describeOptions` で
- * 宣言した「同期先の呼び名」のオプション値(設定されている文字列だけ・宣言順)と
- * ドライバ。値も秘密も載らない(宣言に非機密のオプション名しか無い)。
+ * The destination's description (for the header line): the preset id,
+ * the option values of the "destination's label" the preset declared
+ * via `describeOptions` (only the strings that are set, in declaration
+ * order), and the driver. Neither values nor secrets land (the
+ * declaration has only non-secret option names).
  */
 function describeDestination(target: SyncTarget): string {
   const shown = target.driver.spec.describeOptions.flatMap((option) => {
@@ -309,15 +322,15 @@ function describeDestination(target: SyncTarget): string {
   return `${[target.preset.id, ...shown].join(" ")} via ${target.driver.kind}`;
 }
 
-/** plan の描画の選択(push 直後の apply は unchanged の行を省く)。 */
+/** The choice of plan rendering (the apply right after a push omits the unchanged lines). */
 interface PlanDisplay {
-  /** `=` の行を出すか(既定 true。ヘッダーの件数は常に全部)。 */
+  /** Whether the `=` lines are shown (default true. The header's counts always cover all). */
   readonly showUnchanged: boolean;
 }
 
 const FULL_PLAN: PlanDisplay = { showUnchanged: true };
 
-/** plan を stdout に出す(コマンドの出力 — 名前と version だけ)。 */
+/** Prints the plan to stdout (the command's output — names and versions only). */
 function reportPlan(
   target: SyncTarget,
   plan: SyncPlan,
@@ -357,7 +370,7 @@ export interface SyncContextInput {
   readonly receiptsFloor: FloorHandle;
 }
 
-/** plan / apply 共通の前段: レシートを読む(警告はここで流す)。 */
+/** The prologue shared by plan / apply: read the receipt (warnings flow here). */
 function loadTargetReceipt(input: SyncContextInput): Effect.Effect<LoadedReceipt, CliError, CliIo> {
   return Effect.gen(function* () {
     const loaded = yield* loadReceipt({
@@ -376,9 +389,11 @@ function loadTargetReceipt(input: SyncContextInput): Effect.Effect<LoadedReceipt
 }
 
 /**
- * plan / apply 共通の後段: plan を出し、契約の助言を流し、レシートの上限接近を
- * 警告し、blocked が 1 件でもあれば失敗する(apply は何も送らない)。
- * CI(レシート無し)は `receipt: "none-in-ci"` で同じ段を通る。
+ * The epilogue shared by plan / apply: emits the plan, flows the
+ * contract's advisories, warns on the receipt nearing its cap, and
+ * fails when even one blocked entry exists (apply sends nothing).
+ * CI (no receipt) passes through the same stage with
+ * `receipt: "none-in-ci"`.
  */
 export function reviewPlan(
   target: SyncTarget,
@@ -400,7 +415,7 @@ export function reviewPlan(
         `required variables are not part of this target: ${plan.requiredNotSelected.map(displayText).join(", ")}. The target's runtime will not receive them (add them to the target's variables in the sync config if it needs them)`,
       );
     }
-    // required の宣言だけで値が無い変数が選択にある = 何も運ばない(run と同じ規則)
+    // A selection containing a variable with only a required declaration and no value = nothing is carried (the same rule as run)
     yield* enforceDeclaredPresence(plan.declaredRequired, "Nothing was sent");
     if (receipt.kind === "loaded") {
       const warning = receiptVersionWarning({
@@ -459,27 +474,27 @@ export function syncPlanOp(input: SyncContextInput): Effect.Effect<void, CliErro
   });
 }
 
-/** apply の入力(plan に加えて署名鍵・`--yes`)。 */
+/** apply's input (plan's, plus the signing key and `--yes`). */
 export interface SyncApplyInput extends SyncContextInput {
   readonly writerUserId: string;
   readonly signingKey: CryptoKey;
-  /** production ターゲットへの apply の明示(補足 14 M4)。 */
+  /** The explicit consent for apply to a production target (supplement 14 M4). */
   readonly yes: boolean;
-  /** 書き手の時計(レシートの syncedAt。判定には使わない)。 */
+  /** The writer's clock (the receipt's syncedAt. Never used for a judgment). */
   readonly now: () => Date;
-  /** 統合トークンの環境の床(http ドライバのときだけ。exec は null)。 */
+  /** The floor of the integration token's environment (only for the http driver. exec is null). */
   readonly tokenFloor: FloorHandle | null;
-  /** ベンダー API のリトライ(既定は本番の調律。テストで短くする)。 */
+  /** The vendor API's retry (the default is production tuning. Tests shorten it). */
   readonly httpRetry?: HttpRetryPolicy;
-  /** plan の描画(push 直後の apply は unchanged を省く)。 */
+  /** The plan's rendering (the apply right after a push omits unchanged). */
   readonly display?: PlanDisplay;
 }
 
-/** apply が送るもの(plan の add / update / delete を材料に組む)。 */
+/** What apply sends (built from the plan's add / update / delete). */
 export interface ApplyWork {
   readonly writes: readonly SyncWrite[];
   readonly deletes: readonly string[];
-  /** 書く変数の version(レシートに記録する座標)。 */
+  /** The version of each variable written (the coordinate recorded in the receipt). */
   readonly versions: ReadonlyMap<string, number>;
 }
 
@@ -506,7 +521,7 @@ export function prepareWork(
           cliError("The plan names a variable that was not pulled (internal inconsistency)"),
         );
       }
-      // 剥がす理由: 送る前の制約検査の入力(産物は真偽と変数名だけ)
+      // Reason for unwrapping: the input of the constraint check before sending (the product is only a boolean and a variable name)
       const plaintext = Redacted.value(write.value);
       if (decodeValueText(plaintext) === null) {
         return yield* Effect.fail(
@@ -533,23 +548,24 @@ export function prepareWork(
   });
 }
 
-/** ドライバの実行結果(成功した名前だけをレシートへ進める材料)。 */
+/** The driver's run result (the material for advancing only the succeeded names to the receipt). */
 export interface DriverResult {
   readonly written: readonly string[];
   readonly deleted: readonly string[];
-  /** 失敗した呼び出し(無ければ null)。 */
+  /** The failed invocation (null when none). */
   readonly failure: {
     readonly names: readonly string[];
     readonly kind: "write" | "delete";
-    /** 何が失敗したか(実行体名と終了コード / API の呼び名)。値は運ばない。 */
+    /** What failed (the executable name and exit code / the API's name). Carries no value. */
     readonly what: string;
     /**
-     * maruhi 自身の説明(起動失敗の理由と案内 — 完成した文)。ベンダーの出力では
-     * ないので `output` に置かない(failDriver は output をベンダーの発言として
-     * 実行体名 / ホスト名の接頭辞つきで見せる)。
+     * maruhi's own explanation (the start failure's reason and guidance
+     * — a complete sentence). Not the vendor's output, so it does not go
+     * on `output` (failDriver shows output as the vendor's speech, with
+     * an executable-name / hostname prefix).
      */
     readonly detail: string | null;
-    /** 伏せ字化済みの出力・応答の断片(ベンダーの発言。無ければ空)。 */
+    /** The scrubbed fragments of output / responses (the vendor's speech. Empty when none). */
     readonly output: readonly string[];
   } | null;
 }
@@ -580,9 +596,11 @@ function runInvocations(
     const deleted: string[] = [];
     const deleteSet = new Set(work.deletes);
     for (const invocation of invocations) {
-      // 起動の失敗(型付きエラー — live.ts の execStartFailure)もこの呼び出しの失敗に
-      // 畳む: ここで generator ごと中断すると、前の呼び出しで届いた名前が written /
-      // deleted に畳まれずレシートに残らない(http の runBatch と同じ形)
+      // A start failure (a typed error — live.ts's execStartFailure) is
+      // also folded into this invocation's failure: aborting the whole
+      // generator here would leave the names delivered by the earlier
+      // invocations unfurled into written / deleted and absent from the
+      // receipt (the same shape as http's runBatch)
       const outcome = yield* runner
         .exec(invocation)
         .pipe(Effect.catch((error: CliError) => Effect.succeed({ startFailure: error.message })));
@@ -594,8 +612,9 @@ function runInvocations(
             names: invocation.names,
             kind: invocation.kind,
             what: `${displayText(driver.command)} could not be started`,
-            // 起動失敗の文面は maruhi 自身のもの(値を運ばない)。走らなかった
-            // プロセスに出力は無いので、ベンダー出力の置き場ではなく detail で運ぶ
+            // The start failure's wording is maruhi's own (carries no
+            // value). A process that never ran has no output, so it
+            // travels on detail rather than the vendor-output slot
             detail: displayText(outcome.startFailure),
             output: [],
           },
@@ -610,12 +629,12 @@ function runInvocations(
             kind: invocation.kind,
             what: `${displayText(driver.command)} exited with code ${outcome.exitCode}`,
             detail: null,
-            // ベンダーの出力は信用しない: 値を伏せ、制御文字を中和し、末尾だけ
+            // The vendor's output is untrusted: scrub the values, neutralize control characters, keep only the tail
             output: scrubVendorOutput(outcome.output, work.writes),
           },
         };
       }
-      // JSON の 1 バッチには書き込みと削除(null)が同居する — 名前で振り分ける
+      // A JSON batch mixes writes and deletes (null) — split by name
       for (const name of invocation.names) {
         (deleteSet.has(name) ? deleted : written).push(name);
       }
@@ -624,7 +643,7 @@ function runInvocations(
   });
 }
 
-/** ベンダー API への送信(バッチ順。最初の失敗で止め、届いた分を返す)。 */
+/** Sending to the vendor API (in batch order. Stops at the first failure and returns what was delivered). */
 function runBatches(
   driver: Extract<TargetDriver, { kind: "http" }>,
   options: SyncTarget["options"],
@@ -659,9 +678,10 @@ function runBatches(
           failure: {
             names: result.failure.names,
             kind: batch.kind,
-            // 何が起きたか(拒否 / 未確認の応答 / 送信の失敗 / 一覧の失敗 / 未送信)は
-            // runBatch が失敗の作り手として言い分ける — 「refused」を試行の使い切りに
-            // 付けない
+            // What happened (refused / an unconfirmed response / a
+            // failed send / a failed listing / never sent) is
+            // distinguished by runBatch as the failure's author — never
+            // attach "refused" to a retry-exhausted attempt
             what: result.failure.what,
             detail: null,
             output: result.failure.lines,
@@ -673,11 +693,11 @@ function runBatches(
   });
 }
 
-/** ドライバの実行に要るもの(exec = プロセス、http = トークン + 通信)。 */
+/** What running the driver needs (exec = processes, http = the token + communication). */
 export interface RunDriverInput {
   readonly target: SyncTarget;
   readonly work: ApplyWork;
-  /** http ドライバの統合トークン(exec では null)。 */
+  /** The http driver's integration token (null for exec). */
   readonly token: IntegrationToken | null;
   readonly httpRetry: HttpRetryPolicy;
 }
@@ -694,8 +714,10 @@ export function runDriver(
     const io = yield* CliIo;
     const { driver } = input.target;
     if (driver.kind === "exec") {
-      // どの実行体に・どこで渡すかを出力に残す(設定の command / cwd で平文の行き先が
-      // 変わるので、差分だけでなく端末と CI ログでも見えるように)
+      // Leave in the output which executable receives it and where (the
+      // config's command / cwd changes the plaintext's destination, so
+      // make it visible on the terminal and in CI logs, not only in the
+      // diff)
       yield* io.log(`Running ${displayText(driver.command)} in ${displayText(driver.cwd)}`);
       return yield* runInvocations(driver, input.target.options, input.work);
     }
@@ -717,7 +739,7 @@ export function runDriver(
   });
 }
 
-/** 復号済み変数の中から統合トークンを取り出す(検査つき)。 */
+/** Extracts the integration token from the decrypted variables (with a check). */
 export function integrationTokenOf(
   token: { readonly environment: string; readonly name: string },
   variables: readonly { readonly name: string; readonly value: Redacted.Redacted<Uint8Array> }[],
@@ -730,14 +752,14 @@ export function integrationTokenOf(
       ),
     );
   }
-  // 剥がす理由: トークンの形の検査(ヘッダーに載る文字か)。産物は再び Redacted
+  // Reason for unwrapping: checking the token's shape (is it header-safe). The product is Redacted again
   const checked = checkIntegrationToken(token.name, Redacted.value(variable.value));
   return typeof checked === "string"
     ? Effect.succeed(Redacted.make(checked, { label: "integration-token" }))
     : Effect.fail(checked);
 }
 
-/** 統合トークンの取り出し(手元: トークン環境を検証し、その 1 変数だけを復号する)。 */
+/** Fetching the integration token (locally: verifies the token environment and decrypts just that one variable). */
 function fetchIntegrationToken(
   input: SyncApplyInput,
   driver: Extract<TargetDriver, { kind: "http" }>,
@@ -768,7 +790,7 @@ function fetchIntegrationToken(
   });
 }
 
-/** レシートの次の内容(成功した書き込み・削除だけを前回に重ねる)。 */
+/** The receipt's next content (layers only the succeeded writes / deletes over the previous). */
 function nextReceipt(input: {
   readonly target: SyncTarget;
   readonly previous: SyncReceipt | null;
@@ -797,7 +819,7 @@ function nextReceipt(input: {
 
 function sameVariables(a: SyncReceipt | null, b: SyncReceipt): boolean {
   if (a === null) {
-    // レシートがまだ無く、届いたものも無い(最初の呼び出しで失敗)= 書くものが無い
+    // No receipt yet and nothing delivered (the first invocation failed) = nothing to write
     return Object.keys(b.variables).length === 0;
   }
   const left = Object.entries(a.variables).toSorted();
@@ -841,7 +863,7 @@ function saveReceipt(
   );
 }
 
-/** ドライバの失敗の本文(純関数 — failDriver がそのまま型付きエラーにする)。 */
+/** The driver failure's body (a pure function — failDriver turns it into a typed error as-is). */
 function driverFailureMessage(
   input: {
     readonly target: SyncTarget;
@@ -852,10 +874,12 @@ function driverFailureMessage(
   result: DriverResult,
   failure: NonNullable<DriverResult["failure"]>,
 ): string {
-  // 削除の失敗は「同期先で既に消されていた」形がありうる(同期先は読み戻さない
-  // ので、レシートに残った名前を消し続ける)。復旧はレシートの作り直し —
-  // ただし作り直すと**まだ試していない削除**も忘れるので、その名前を添えて
-  // 先に同期先で手で消すよう言う
+  // A delete's failure can take the shape "it was already removed at
+  // the destination" (the destination is never read back, so the name
+  // keeps being deleted from the receipt). Recovery is rebuilding the
+  // receipt — but rebuilding also forgets the **deletions not attempted
+  // yet**, so name them and say to remove them at the destination by
+  // hand first
   const failed = new Set(failure.names);
   const notAttempted = input.work.deletes.filter(
     (name) => !result.deleted.includes(name) && !failed.has(name),
@@ -868,23 +892,24 @@ function driverFailureMessage(
     failure.kind === "delete" && input.receiptsEnvironment !== null
       ? ` If the variable was already removed at the target (for example in its dashboard), reset the receipt with \`maruhi var rm ${displayText(receiptVariableName(input.target.name))} --env ${displayText(input.receiptsEnvironment)}\` and apply again (the next apply rewrites every variable of the target once).${pendingHint}`
       : "";
-  // 出力が 1 行も無ければ「上に出ている」と言わない(空の出力で失敗する CLI が
-  // あり、起動できなかったプロセスに出力は無い)
+  // When there is not a single output line, never say "shown above"
+  // (some CLIs fail with empty output, and a process that could not
+  // start has none)
   const outputHint =
     failure.output.length === 0 ? "" : " Its output is shown above with values filtered out.";
-  // maruhi 自身の説明(起動失敗の理由と案内)は本文の続きとして言う
+  // maruhi's own explanation (the start failure's reason and guidance) is spoken as the body's continuation
   const detail = failure.detail === null ? "" : ` ${failure.detail}.`;
   return `${failure.what} while ${failure.kind === "write" ? "writing" : "deleting"} ${failure.names.map(displayText).join(", ")} (delivered before that: ${countNoun(result.written.length, "variable")} written, ${result.deleted.length} deleted).${detail}${outputHint}${deleteHint} Fix the cause, then ${input.next}`;
 }
 
-/** ドライバの失敗の報告(伏せ字化した出力を添えて型付きエラー)。 */
+/** Reporting the driver's failure (a typed error with the scrubbed output attached). */
 export function failDriver(input: {
   readonly target: SyncTarget;
   readonly work: ApplyWork;
   readonly result: DriverResult;
-  /** レシートの作り直しの案内に添える環境(CI = null: レシートが無い)。 */
+  /** The environment attached to the receipt-rebuild guidance (CI = null: no receipt). */
   readonly receiptsEnvironment: string | null;
-  /** 残りを見る手段(手元 = plan、CI = 再実行)。 */
+  /** The means to see what is left (locally = plan, CI = re-run). */
   readonly next: string;
 }): Effect.Effect<never, CliError, CliIo> {
   return Effect.gen(function* () {
@@ -895,7 +920,7 @@ export function failDriver(input: {
         cliError("failDriver called without a failure (internal inconsistency)"),
       );
     }
-    // output はベンダーの発言なので、実行体名 / ホスト名の接頭辞つきで見せる
+    // output is the vendor's speech, so it is shown with an executable-name / hostname prefix
     const prefix = target.driver.kind === "exec" ? target.driver.command : target.driver.spec.host;
     for (const line of result.failure.output) {
       yield* io.logError(`  ${displayText(prefix)}: ${line}`);
@@ -904,7 +929,7 @@ export function failDriver(input: {
   });
 }
 
-/** 実行結果の報告(失敗は伏せ字化した出力を添えて型付きエラー)。 */
+/** Reporting the run's result (a failure is a typed error with the scrubbed output attached). */
 function reportApply(
   input: SyncApplyInput,
   work: ApplyWork,
@@ -933,7 +958,7 @@ function reportApply(
   });
 }
 
-/** production ターゲットへの apply には `--yes` が要る(補足 14 M4)。 */
+/** apply to a production target needs `--yes` (supplement 14 M4). */
 export function requireProductionConsent(
   target: SyncTarget,
   yes: boolean,
@@ -959,9 +984,11 @@ export function syncApplyOp(
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const loaded = yield* loadTargetReceipt(input);
-    // plan はメタデータだけから組む(復号しない — sync plan と同じ経路)。
-    // 選択から外れた変数・required 警告の対象外の平文をメモリに作らないため、
-    // 値は「実際に送る add / update だけ」に select で絞った 2 段目の pull で取る
+    // The plan is built from metadata only (never decrypts — the same
+    // path as sync plan). To never build a plaintext in memory of a
+    // variable outside the selection or outside the required-warning
+    // target, the values are taken in a second pull select-narrowed to
+    // "only the add / update entries actually being sent"
     const meta = yield* pullVerifiedEnvironment({
       client: input.client,
       verified: loaded.verified,
@@ -981,8 +1008,9 @@ export function syncApplyOp(
       { kind: "loaded", loaded, environmentId: input.receiptsEnvironment },
       input.display ?? FULL_PLAN,
     );
-    // apply は復号する(run と同じ経路 — pull.ts)。平文は Redacted のまま
-    // ドライバの本文 / stdin の組み立てまで運ぶ
+    // apply decrypts (the same path as run — pull.ts). The plaintext
+    // stays in Redacted all the way to the driver's body / stdin
+    // assembly
     const writeNames = new Set(
       plan.entries
         .filter((entry) => entry.action === "add" || entry.action === "update")
@@ -1006,7 +1034,7 @@ export function syncApplyOp(
       return;
     }
     yield* requireProductionConsent(input.target, input.yes, "maruhi sync apply");
-    // 統合トークンは送る直前に取り出す(送らずに終わる経路では復号しない)
+    // The integration token is fetched just before sending (a path that ends without sending never decrypts it)
     let verified = pulled.verified;
     let token: IntegrationToken | null = null;
     if (input.target.driver.kind === "http") {
@@ -1020,8 +1048,9 @@ export function syncApplyOp(
       token,
       httpRetry: input.httpRetry ?? DEFAULT_HTTP_RETRY,
     });
-    // レシートは「実際に届いた分」だけ進める。失敗した回でも届いた分は記録し、
-    // 次の plan が残りだけを示すようにする
+    // The receipt advances only by "what was actually delivered". Even
+    // on a failed run the delivered part is recorded, so the next plan
+    // shows only the remainder
     const receipt = nextReceipt({
       target: input.target,
       previous: loaded.receipt,
@@ -1029,8 +1058,9 @@ export function syncApplyOp(
       versions: work.versions,
       syncedAt: input.now().toISOString(),
     });
-    // レシートの push は、同期元(とトークン環境)の pull で前進していることのある
-    // ビューから始める(loadReceipt 時点のビューは古いことがある)
+    // The receipt's push starts from the view that may have advanced via
+    // the pulls of the sync source (and the token environment) (the view
+    // at loadReceipt can be stale)
     const receiptVersion = yield* saveReceipt(input, { ...loaded, verified }, receipt);
     yield* reportApply(input, work, result, receiptVersion);
   });

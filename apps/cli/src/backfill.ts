@@ -1,11 +1,13 @@
-// バックフィルの共有核(CRYPTO_SPEC §7 / AUTH_SPEC §12-6)。
+// The shared core of backfill (CRYPTO_SPEC §7 / AUTH_SPEC §12-6).
 //
-// 「1 環境の全エポック(1〜現エポック)の DEK を自分宛ラップから検証・開封し、
-// 対象受信者へ再ラップして登録する。409(登録済みスロット)は一括 → エポック
-// 単位に落として収束させる」構造は、grant 直後のサーバー宛バックフィル
-// (server-grant)と add_member 後の新メンバー宛バックフィル(member)で同一。
-// エポック単位 409 の解決だけが異なる(登録済み扱い / 修復経路での置換)ため、
-// そこを注入点にする。
+// The structure — "verify and unwrap every epoch's DEK (1 through the
+// current epoch) of one environment from the wraps addressed to me, re-wrap
+// for the target recipient, and register; converge a 409 (an occupied
+// slot) by dropping from bulk to per-epoch" — is identical between the
+// server-directed backfill right after a grant (server-grant) and the
+// new-member-directed backfill after add_member (member). Only the
+// resolution of a per-epoch 409 differs (treat as registered / replace via
+// the repair path), so that is the injection point.
 
 import { DekWrapExistsError, type WrappedDek } from "@maruhi/api-schema";
 import type { SigningKeyPair } from "@maruhi/crypto";
@@ -19,24 +21,25 @@ import { toCliError } from "./failure.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /**
- * 登録試行の結果(409 = 既存スロット)。`storedRecipientEncPubHex` は 409 が
- * 運ぶ占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6)。
+ * Result of a registration attempt (409 = existing slot).
+ * `storedRecipientEncPubHex` is the stored recipient enc public key of the
+ * occupying wrap carried by the 409 (AUTH_SPEC §12-6).
  */
 export type RegisterOutcome =
   | { readonly kind: "ok" }
   | { readonly kind: "exists"; readonly storedRecipientEncPubHex: string };
 
-/** エポック単位 409 の解決(呼び出し側の意味論)。 */
+/** Resolution of a per-epoch 409 (the caller's semantics). */
 export type SlotConflictResolution = "already-registered" | "repaired";
 
 export interface BackfillEnvironmentOutcome {
   readonly registered: number;
   readonly alreadyRegistered: number;
-  /** `onSlotConflict` が "repaired" を返した数(member add の修復経路)。 */
+  /** How many times `onSlotConflict` returned "repaired" (member add's repair path). */
   readonly repaired: number;
 }
 
-/** 複数環境のバックフィルの集計(1 環境の失敗で残りを止めない — §7)。 */
+/** Aggregate of a multi-environment backfill (one environment's failure does not stop the rest — §7). */
 export interface BackfillAggregate {
   readonly registered: number;
   readonly alreadyRegistered: number;
@@ -45,8 +48,9 @@ export interface BackfillAggregate {
 }
 
 /**
- * 環境ごとにバックフィルを走らせて集計する(member add / change-role の拡大分 /
- * 端末追加が共有する集計の形)。失敗は環境ごとに集めて続行する。
+ * Runs the backfill per environment and aggregates (the aggregation shape
+ * shared by member add / change-role widenings / device addition).
+ * Failures are collected per environment and the run continues.
  */
 export function backfillEachEnvironment<R>(
   environments: readonly string[],
@@ -77,38 +81,42 @@ export function backfillEachEnvironment<R>(
 }
 
 /**
- * 1 環境の全エポックの DEK を対象受信者へラップして登録する。自分宛ラップの
- * 検証・開封(§5.1 + §5.2)→ 再ラップ + 登録署名(§5.1)→ 一括登録 → 409 なら
- * エポック単位(バッチは原子的受理のため、部分登録済みの再実行では一括が 409 に
- * なる)。エポック単位の 409 は `onSlotConflict` が解決する(既定 = 登録済み)。
+ * Wraps every epoch's DEK of one environment for the target recipient and
+ * registers them. Verify & unwrap the wraps addressed to me (§5.1 + §5.2)
+ * → re-wrap + sign the registration (§5.1) → bulk register → on 409 drop
+ * to per-epoch (because a batch is accepted atomically, a re-run after a
+ * partial registration gets a 409 for the bulk). A per-epoch 409 is
+ * resolved by `onSlotConflict` (default = treat as registered).
  */
 export function backfillEnvironmentFor(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: string;
-  /** 自分(DEK 保持者 = ラップ実行者 — §7)の受信情報。 */
+  /** Recipient info of myself (the DEK holder = the one performing the wrap — §7). */
   readonly recipient: DekRecipient;
-  /** ラップの宛先(サーバー鍵 / 新メンバー)。 */
+  /** The wrap's destination (a server key / a new member). */
   readonly wrapRecipient: WrapRecipient;
-  /** ラップ生成失敗の文言に使う宛先ラベル(例: 「サーバー宛」)。 */
+  /** Destination label used in the wrap-generation failure message (e.g. "for the server"). */
   readonly recipientLabel: string;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
   /**
-   * エポック単位 409 の解決(省略 = 登録済み扱い)。member add の再追加修復は
-   * ここで削除 → 再登録を行う(§12-6 の修復経路)。第 2 引数は 409 が運ぶ
-   * 占有ラップの保存済み受信者 enc 公開鍵。
+   * Resolution of a per-epoch 409 (omitted = treat as registered). member
+   * add's re-add repair performs delete → re-register here (the §12-6
+   * repair path). The second argument is the stored recipient enc public
+   * key of the occupying wrap carried by the 409.
    */
   readonly onSlotConflict?: (
     wrap: WrappedDek,
     storedRecipientEncPubHex: string,
   ) => Effect.Effect<SlotConflictResolution, CliError>;
   /**
-   * 包むエポック(省略 = 1〜現エポックの全部)。端末の欠けの補完(device-gaps.ts —
-   * DK K11-1)が、欠けたエポックのうち自分が開けたものだけを渡す。
+   * The epochs to wrap (omitted = all of 1 through the current epoch).
+   * Device gap filling (device-gaps.ts — DK K11-1) passes only the missing
+   * epochs it could open.
    */
   readonly epochs?: readonly number[];
-  /** このセッションで検証・開封済みの自分宛 DEK(`environmentKeysFor` の `cached`)。 */
+  /** My-addressed DEKs already verified and unwrapped in this session (the `cached` of `environmentKeysFor`). */
   readonly cached?: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
 }): Effect.Effect<BackfillEnvironmentOutcome, CliError> {
   return Effect.gen(function* () {
@@ -123,10 +131,11 @@ export function backfillEnvironmentFor(input: {
     for (const epoch of epochsToWrap(input.epochs, keys.currentEpoch)) {
       const dek = keys.deksByEpoch.get(epoch);
       if (dek === undefined) {
-        // §7: 全メンバーは全エポックの DEK を受け取る。欠けは毒ラップ・欠落の
-        // 兆候なので黙って飛ばさない(§12-6 の修復経路を案内)。単純な再実行では
-        // 解消しない(自分宛ラップが無い限り毎回同じ欠けに当たる)ため、
-        // 「再実行してください」とは言わない
+        // §7: every member receives every epoch's DEK. A gap is a sign of a
+        // poisoned wrap or a loss, so it is not silently skipped (guide the
+        // §12-6 repair path). A plain re-run does not fix it (it hits the
+        // same gap every time unless a wrap addressed to me exists), so do
+        // not say "please re-run"
         return yield* Effect.fail(
           cliError(
             `No DEK wrap addressed to you exists for epoch ${epoch} of environment ${input.environmentId} (contradicts the all-epoch distribution of §7). Have another member who holds wraps for every epoch run this operation, or fill the gap via the repair path (re-registering wraps addressed to you) and re-run`,
@@ -157,7 +166,7 @@ export function backfillEnvironmentFor(input: {
 
     const register = registerWraps(input.client, input.verified.projectId, input.environmentId);
 
-    // 一括 → 409 ならエポック単位に落として収束させる
+    // Bulk → on 409, drop to per-epoch to converge
     const batch = yield* register(wraps);
     if (batch.kind === "ok") {
       return { registered: wraps.length, alreadyRegistered: 0, repaired: 0 };
@@ -185,7 +194,7 @@ export function backfillEnvironmentFor(input: {
   });
 }
 
-/** 包むエポック: 指定があればそれ、無ければ 1〜現エポック(バックフィルの既定)。 */
+/** Epochs to wrap: the given ones, or 1 through the current epoch (the backfill default). */
 function epochsToWrap(
   epochs: readonly number[] | undefined,
   currentEpoch: number,
@@ -194,8 +203,9 @@ function epochsToWrap(
 }
 
 /**
- * DEK ラップ登録の試行(409 = DekWrapExists は「既存スロット」として値で返す —
- * 再実行の収束・修復判断の入力)。
+ * Attempt to register DEK wraps (409 = DekWrapExists is returned as the
+ * value "existing slot" — input to re-run convergence and repair
+ * decisions).
  */
 export function registerWraps(
   client: MaruhiClient,

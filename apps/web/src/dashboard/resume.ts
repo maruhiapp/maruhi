@@ -1,28 +1,34 @@
-// サインイン後の /dashboard 復帰マーカー(裁定 BU — docs/notes/session-43.md §10)。
+// The post-sign-in /dashboard return marker (ruling BU —
+// docs/notes/session-43.md §10).
 //
-// OAuth callback は `${origin}/`(S1 ランディング)へ固定リダイレクトする(API
-// 側の挙動)。ダッシュボードの Sign in クリック時に sessionStorage へ
-// ワンショットのマーカーを置き、S1 側がマーカーを消費したときだけ `/auth/me` を
-// 1 回確認して /dashboard へ戻す。マーカーなしの S1(P1 訪問者)は API を一切
-// 呼ばない(BP 第 3 周で棄却した「S1 での常時 /auth/me 照会」を避けたまま、
-// 受容していた「余分な 1 ホップ」を解消する)。
+// The OAuth callback always redirects to `${origin}/` (the S1 landing)
+// (API-side behavior). When the dashboard's Sign in is clicked, a
+// one-shot marker is placed in sessionStorage; only when the S1 side
+// consumes the marker does it check `/auth/me` once and return to
+// /dashboard. An S1 without the marker (a P1 visitor) calls no API at
+// all (removing the "extra hop" that had been accepted, without
+// resurrecting the "always query /auth/me on S1" rejected in BP round
+// 3).
 //
-// sessionStorage はタブ単位・OAuth 往復はタブ内遷移なので届く。storage 不可の
-// 環境(プライベートモード等)では例外を型付きの「マーカーなし」へ写して
-// 現行導線(静的リンク)に劣化する(握り潰しではなく分類 — api.ts と同じ規律)。
+// sessionStorage is per-tab and the OAuth round-trip is an in-tab
+// navigation, so the marker arrives. In environments where storage is
+// unavailable (private mode etc.), the exception is mapped to the typed
+// "no marker" and degrades to the current funnel (a static link)
+// (classification, not swallowing — same discipline as api.ts).
 
 const RESUME_MARKER_KEY = "maruhi-resume-dashboard";
 
-/** Sign in クリック時に呼ぶ: 完了後に /dashboard へ戻る意図を記録する。 */
+/** Called when Sign in is clicked: records the intent to return to /dashboard after completion. */
 export function markResumeToDashboard(): void {
   try {
     window.sessionStorage.setItem(RESUME_MARKER_KEY, "1");
   } catch {
-    // storage 不可 = マーカーなしとして現行導線(ランディング着地)に劣化する
+    // storage unavailable = treated as no marker, degrading to the
+    // current funnel (landing on the landing)
   }
 }
 
-/** S1 側で 1 回だけ消費する: マーカーがあれば消して true。 */
+/** Consumed once on the S1 side: if the marker exists, removes it and returns true. */
 export function consumeResumeToDashboard(): boolean {
   try {
     const marked = window.sessionStorage.getItem(RESUME_MARKER_KEY) !== null;

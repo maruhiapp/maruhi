@@ -1,19 +1,29 @@
 "use client";
 
-// ダッシュボード共通部品(裁定 BP の文言一元化 — docs/notes/session-43.md)。
-// ユーザー可視文言はすべて英語(ADR-0017)。表示規律(設計文書 §4):
-// サーバー申告の言い回しに限り、クライアント側の断定(expired / revoked /
-// not a member 等)を含めない。
+// Shared dashboard parts (the wording unification of ruling BP —
+// docs/notes/session-43.md).
+// Every user-visible string is English (ADR-0017). The display
+// discipline (design document §4): only server-reported phrasing —
+// no client-side assertions (expired / revoked / not a member etc.).
 //
-// 空状態 / ローディング / エラーの規律(DP3 裁定 B — docs/notes/web-design-pass.md §5):
-// 各リソースの 3 状態は次の 3 部品だけで描く。画面側で Text / Banner を直接組まない。
-//   - ローディング = `LoadingRow`(スピナー + 何を読んでいるかの 1 行。role="status")
-//   - 空 = `EmptyNotice`(見出し + 「as reported by the server」の説明。件数は出さない)
-//   - 失敗 = `FailureNotice`(HTTP 分類ごとの Banner。置き方は 2 種のみ)
-//       (a) 置換: リソース本体の代わりに描く。再取得手段があれば onRetry を渡す
-//       (b) 追記: 既に描けた本体の下に足す(Load more の失敗・失効の失敗)。
-//           行から再操作できる失敗(失効)は onRetry を渡さない
-//     失効の追記形は `RevocationOutcome`(S8 / S9 / S11 で共用)が 1 か所で持つ
+// The empty / loading / error discipline (DP3 ruling B —
+// docs/notes/web-design-pass.md §5):
+// each resource's three states are drawn with only these three parts.
+// A screen never composes a Text / Banner directly.
+//   - Loading = `LoadingRow` (a spinner + one line naming what is being
+//     loaded. role="status")
+//   - Empty = `EmptyNotice` (a heading + an "as reported by the
+//     server" description. No counts)
+//   - Failure = `FailureNotice` (a Banner per HTTP classification.
+//     Only two placements)
+//       (a) Replacement: rendered in place of the resource body.
+//           Pass onRetry if a re-fetch exists
+//       (b) Appended: added below the already-rendered body (a Load
+//           more failure, a revocation failure).
+//           A failure the row itself can retry (revocation) gets no
+//           onRetry
+//     The appended form of a revocation is held in one place by
+//     `RevocationOutcome` (shared by S8 / S9 / S11)
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
@@ -36,9 +46,10 @@ import type { ResourceState } from "./use-api-resource.ts";
 import type { RevocationState } from "./use-revocation.ts";
 
 /**
- * SPA 内の命令的ナビゲーション(ID 直入力の Open 等)。Navigation API が
- * あれば SPA 遷移、なければフルページロードへ劣化(Router の fallback="static"
- * と同じ劣化線)。
+ * Imperative navigation inside the SPA (e.g. the direct-ID-input Open).
+ * If the Navigation API exists it is an SPA transition; otherwise it
+ * degrades to a full page load (same degradation line as the Router's
+ * fallback="static").
  */
 export function navigateTo(path: string): void {
   const nav = (window as { navigation?: { navigate: (url: string) => void } }).navigation;
@@ -50,26 +61,32 @@ export function navigateTo(path: string): void {
 }
 
 /**
- * サーバー時刻(ms)の記録値としての表示形。UTC 明示の ISO 形式。人が読む一覧では
- * `ServerTime` を使い、これは監査の展開部(Recorded at — 記録どおりの値)専用。
+ * The as-recorded display form of a server timestamp (ms): the ISO
+ * form, UTC explicit. Human-readable listings use `ServerTime`; this is
+ * reserved for the audit's expanded part (Recorded at — the value as
+ * recorded).
  */
 export function formatServerTime(ms: number): string {
   const date = new Date(ms);
   return Number.isFinite(date.getTime()) ? date.toISOString() : String(ms);
 }
 
-// hover card の行: UTC の絶対時刻と Unix 秒(どちらもコピー可)。表示は閲覧者の時間帯 + 略称
+// The hover card's rows: the absolute UTC time and Unix seconds (both
+// copyable). The display is the viewer's timezone + an abbreviation
 const SERVER_TIME_TOOLTIP = [
   { timezoneID: "UTC", label: "UTC", isCopyable: true },
   { format: "unix_seconds", label: "Unix", isCopyable: true },
 ] as const;
 
 /**
- * サーバー時刻(ms)の人が読む表示(DP3 改訂 6 — 裁定 Q): Astryx `Timestamp`(date_time +
- * 時間帯の略称)。値はサーバー申告の serverTs / expiresAtMs そのもので、換算は閲覧者の
- * 時間帯での描画だけ。hover card に UTC と Unix 秒(コピー可)。`hasTooltip={false}` は
- * ボタンの中(監査行のトリガー)で使う — 入れ子の対話要素を作らない。
- * 範囲外の ms(Date が Invalid)は生の数値を出す。
+ * The human-readable display of a server timestamp (ms) (DP3
+ * amendment 6 — ruling Q): Astryx `Timestamp` (date_time + the
+ * timezone abbreviation). The value is the server-reported serverTs /
+ * expiresAtMs itself; only the rendering converts it to the viewer's
+ * timezone. The hover card carries UTC and Unix seconds (copyable).
+ * `hasTooltip={false}` is for inside a button (the audit row's
+ * trigger) — never build a nested interactive element.
+ * An out-of-range ms (an Invalid Date) renders the raw number.
  */
 export function ServerTime({
   ms,
@@ -106,9 +123,10 @@ const ROLE_TOKEN_COLOR: Record<ChainRole, "purple" | "blue" | "green" | "gray"> 
 };
 
 /**
- * チェーン導出 role のサーバー申告値の表示(設計文書 §4 — 検証済みを名乗らない)。
- * Object.hasOwn: 想定外の role 文字列(プロトタイプ鎖の鍵名を含む)は
- * default 色へ落とす。
+ * Displays the server-reported value of a chain-derived role (design
+ * document §4 — never claims to be verified).
+ * Object.hasOwn: an unexpected role string (including a
+ * prototype-chain key name) falls back to the default color.
  */
 export function RoleToken({ role }: { role: string }): ReactNode {
   const color = Object.hasOwn(ROLE_TOKEN_COLOR, role)
@@ -117,14 +135,18 @@ export function RoleToken({ role }: { role: string }): ReactNode {
   return <Token label={role} size="sm" color={color} />;
 }
 
-// 比較リテラルを api-schema の閉じた列挙へ型束縛する(裁定 CC): reason 名の
-// リネームは「一般文言への無音フォールバック」でなくコンパイルエラーで割れる
+// Type-binds the comparison literal to api-schema's closed
+// enumeration (ruling CC): renaming a reason fails at compile time,
+// not as a silent fallback to the generic wording
 const SESSION_NOT_ALLOWED = "session-not-allowed" satisfies ForbiddenReason;
 
 /**
- * 404 文言の対象名詞(裁定 CN の付随具体化 — docs/notes/session-45.md §5)。
- * 一様 404 の意味(他人の・存在しないを区別しない)は変えず、画面の対象に
- * 合わせて名詞だけ替える — 文言の一元化(裁定 BP)は本モジュールが保つ。
+ * The object noun of the 404 wording (the concrete form accompanying
+ * ruling CN — docs/notes/session-45.md §5).
+ * The uniform-404 meaning (it does not distinguish someone else's
+ * from nonexistent) never changes — only the noun adapts to the
+ * screen's subject — and this module holds the wording unification
+ * (ruling BP).
  */
 export type FailureSubject = "project" | "invitation" | "token" | "device registry";
 
@@ -132,11 +154,11 @@ const NOT_FOUND_DESCRIPTION: Record<FailureSubject, string> = {
   project: "The server reports no such project for your account.",
   invitation: "The server reports no such invitation for this project.",
   token: "The server reports no such token for your account.",
-  // 404 は空状態には畳まない(K5-9)
+  // A 404 does not fold into an empty state (K5-9)
   "device registry": "The server reports no device registry for your account.",
 };
 
-/** 403 の表示(reason 別 — session-not-allowed は CLI へ誘導)。 */
+/** The 403 display (per reason — session-not-allowed points at the CLI). */
 function ForbiddenNotice({ reason }: { reason: string | undefined }): ReactNode {
   return reason === SESSION_NOT_ALLOWED ? (
     <Banner
@@ -164,9 +186,12 @@ function UnreachableNotice({ onRetry }: { onRetry: (() => void) | undefined }): 
 }
 
 /**
- * 410 の表示(現状は invite 失効面のみが受ける — サーバー申告の reason を写す)。
- * 名詞は NOT_FOUND_DESCRIPTION と同じく subject から取る(裁定 BP の単一
- * 実装点 — 他の消費面が 410 を持ったとき片方だけ名詞が固定される形を残さない)。
+ * The 410 display (today only the invite-revocation surface can
+ * receive one — it transcribes the server-reported reason).
+ * The noun comes from the subject, same as NOT_FOUND_DESCRIPTION
+ * (ruling BP's single implementation point — so that when another
+ * consumer surface gains a 410 it does not leave one noun fixed on
+ * only one side).
  */
 function GoneNotice({
   reason,
@@ -214,9 +239,10 @@ function StatusNotice({
 }
 
 /**
- * 失敗の画面内表示。401 はシェルへ「セッション失効」を通知し(session-expiry.ts)、
- * シェルがその場でサインイン画面に切り替える — 通知が届くまでの 1 描画(またはシェルの
- * 外)は「Signed out」の Banner が出る。
+ * The in-screen display of a failure. A 401 reports "session expired"
+ * to the shell (session-expiry.ts) and the shell swaps to the
+ * sign-in screen on the spot — for the single render until the report
+ * lands (or outside the shell) the "Signed out" Banner shows.
  */
 export function FailureNotice({
   failure,
@@ -234,14 +260,18 @@ export function FailureNotice({
 }
 
 /**
- * 節間の間隔(DP3 改訂 5 — 裁定 O)。節の境界は線でなく余白で示すので、節内(4)との
- * 対比がつく 10(40px)を全画面で共有する。
+ * The between-sections gap (DP3 amendment 5 — ruling O). A section
+ * boundary is marked by whitespace, not a line, so 10 (40px), which
+ * contrasts with the in-section gap (4), is shared by every screen.
  */
 export const SECTION_GAP = 10;
 
 /**
- * 節の見出しブロック(Astryx `settings` テンプレートの形: 見出し + 1 行の説明)。
- * ページ h1 直下の h2。節の始まりを線でなく見出しの重さで示す(裁定 O)ので level 2 の見た目。
+ * The section heading block (the Astryx `settings` template's shape:
+ * a heading + a one-line description).
+ * The h2 directly under the page h1. A section's start is marked by
+ * the heading's weight, not a line (ruling O), so it has the level-2
+ * look.
  */
 export function SectionHeader({
   title,
@@ -263,14 +293,22 @@ export function SectionHeader({
 }
 
 /**
- * 集合の容器(DP3 改訂 9 → 10 — 裁定 S 改訂): 見出し + 説明はページの content line に置き、
- * 行の集合だけを `Card`(border 付きの固定幅の箱)に入れる。文字の開始位置がページで 1 本に
- * 揃い(h1・説明・概要の MetadataList・節見出しが同じ線に乗る)、右にずれるのは枠線のある箱の
- * 中身だけになる(改訂 10 — 所有者裁定)。Astryx の docs は「ページの節に Card を使わない」
- * (Section を使う)とするが、maruhi のテーマでは Section の面が本文と同じで節が見えない。
- * この形では Card が包むのは節でなく集合(表・監査行)なので、Card docs の「自己完結した
- * 部品の硬い境界」に近い。中の Table は Card の縁まで伸びる(Astryx の整列モデル)ので、
- * 行の線は border の内側で止まる。`title` を省くと箱だけ(ページ h1 が見出しを兼ねる一覧)。
+ * The container for a collection (DP3 amendment 9 → 10 — amended
+ * ruling S): the heading + description sit on the page's content line,
+ * and only the collection of rows goes into a `Card` (a fixed-width
+ * box with a border). Every text start position aligns on one line
+ * across the page (the h1, descriptions, the overview's MetadataList,
+ * and section headings sit on the same line), and only what is inside
+ * the bordered box shifts right (amendment 10 — owner ruling).
+ * Astryx's docs say "do not use a Card for a page section" (use a
+ * Section), but under maruhi's theme a Section's surface is identical
+ * to the body and the section is invisible. In this shape the Card
+ * wraps not a section but a collection (a table, audit rows), which is
+ * closer to the Card docs' "the firm boundary of a self-contained
+ * part". The Table inside extends to the Card's edge (Astryx's
+ * alignment model), so row lines stop inside the border. Omit `title`
+ * and it is only the box (a listing whose page h1 doubles as its
+ * heading).
  */
 export function SectionBlock({
   title,
@@ -298,8 +336,9 @@ export function SectionBlock({
 }
 
 /**
- * ローディング表示(リソース本体の置き換え用)。Astryx `Spinner` の `label` スロット
- * (文字列は aria-label も兼ねる — 見える文言と読み上げが同じ 1 点。裁定 B / 改訂 7)。
+ * The loading display (replaces the resource body). Astryx `Spinner`'s
+ * `label` slot (the string doubles as the aria-label — the visible
+ * wording and the spoken name are one. Ruling B / amendment 7).
  */
 export function LoadingRow({ label }: { label: string }): ReactNode {
   return (
@@ -310,9 +349,11 @@ export function LoadingRow({ label }: { label: string }): ReactNode {
 }
 
 /**
- * 注記のブロック(Astryx `CardCallout` ブロックの形: muted の Card + 見出し + 本文)。
- * CLI への静的案内(発行・失効・dismiss)に使う。`headingLevel` は置かれる場所の
- * 文書構造に合わせる(見た目は level 4)。
+ * The note block (the Astryx `CardCallout` block's shape: a muted
+ * Card + heading + body).
+ * Used for static guidance pointing at the CLI (issuing, revoking,
+ * dismissing). `headingLevel` matches the document structure of where
+ * it sits (the look is level 4).
  */
 export function Callout({
   title,
@@ -340,10 +381,13 @@ export function Callout({
 }
 
 /**
- * 空状態(裁定 B)。説明は既定で「as reported by the server」を含む規定文言 —
- * 件数・不可視クラスの存在を示唆しない(設計文書 §4-4)。`headingLevel` は
- * 置かれる場所の見出し階層に合わせる(ページ h1 → 節 h2 → 空状態 h3 が既定。見出しの無い
- * 箱〔一覧・監査・rotation — ページ h1 の直下〕では h2 を渡し、h1 → h3 の飛びを作らない)。
+ * The empty state (ruling B). The description defaults to the
+ * prescribed wording including "as reported by the server" — it must
+ * not hint at counts or the existence of an invisible class (design
+ * document §4-4). `headingLevel` matches the heading hierarchy of
+ * where it sits (the default is page h1 → section h2 → empty-state
+ * h3. In a box without a heading [listing, audit, rotation — directly
+ * under the page h1] pass h2 so there is no h1 → h3 jump).
  */
 export function EmptyNotice({
   title,
@@ -363,11 +407,14 @@ export function EmptyNotice({
   );
 }
 
-// 識別子(64 hex の project ID / チェーンハッシュ / 鍵 FP / row_id)の表示。空白を
-// 含まない長い文字列は Text の wordBreak だけでは折れない(inline 要素の幅が親の
-// flex 項目の min-content を押し広げる)ため、xstyle で anywhere 折りを明示する。
-// DP3 で同じ上書きが繰り返し必要になるので本モジュールに 1 定義だけ置き、
-// 画面側は HexText を使う(variant / ui.package への昇格は人間の判断 — 裁定 H)
+// The display of identifiers (a 64-hex project ID / a chain hash / a
+// key FP / a row_id). A long string without whitespace does not wrap
+// on Text's wordBreak alone (an inline element's width pushes the
+// parent flex item's min-content wider), so the anywhere wrap is made
+// explicit in xstyle.
+// DP3 needed the same override repeatedly, so one definition lives in
+// this module and screens use HexText (promotion to a variant /
+// ui.package is a human's call — ruling H)
 const hexStyles = stylex.create({
   breakable: {
     overflowWrap: "anywhere",
@@ -376,7 +423,7 @@ const hexStyles = stylex.create({
   },
 });
 
-/** 識別子の表示(等幅・任意位置で折り返し)。`size` は周囲の密度に合わせる。 */
+/** The display of an identifier (monospace, wraps at any position). `size` matches the surrounding density. */
 export function HexText({
   children,
   size = "sm",
@@ -394,8 +441,9 @@ export function HexText({
 }
 
 /**
- * 期限の表示(裁定 CQ — docs/notes/session-45.md)。表示の主体は常にサーバー
- * 申告の expiresAtMs(過去判定のみクライアント時計との比較)。
+ * The expiry display (ruling CQ — docs/notes/session-45.md). The
+ * displayed value is always the server-reported expiresAtMs (only the
+ * is-past check compares against the client clock).
  */
 export function ExpiryCell({ expiresAtMs }: { expiresAtMs: number }): ReactNode {
   return (
@@ -407,16 +455,23 @@ export function ExpiryCell({ expiresAtMs }: { expiresAtMs: number }): ReactNode 
 }
 
 /**
- * 失効の入口(行ごとの ghost ボタン)。確認は `RevokeDialog`(AlertDialog)で行う —
- * DP3 改訂 4 で裁定 CO のインライン 2 段階(Cancel / Confirm revoke を行内に出す)から
- * Astryx の `AlertDialogAsyncAction` テンプレートの形(モーダルの確認 + 実行中は
- * action ボタンにスピナー)へ改めた。行内の 2 ボタンは狭い列で縦に積まれ、他の行の
- * 高さも変えていた。武装(armed)状態の意味は不変: 常に 1 行のみ、別行の武装で解除。
- * `isLocked` = 別の行の失効が実行中(in-flight 中は他行を無効化)。`label` は見える文言で、
- * 対象の名詞を添える場面(S11 の端末行から失効するのは端末でなくトークン — "Revoke token")で
- * 使う。`accessibleName` は行の同定を含む読み上げ名(表の中で "Revoke" が並ぶと支援技術の
- * ボタン一覧で区別できない)。Astryx Button は children が label と異なるとき label を
- * aria-label にするので、label = 読み上げ名、children = 見える文言で渡す。
+ * The entry to a revocation (a per-row ghost button). Confirmation
+ * happens in `RevokeDialog` (AlertDialog) — DP3 amendment 4 replaced
+ * ruling CO's inline two-step (Cancel / Confirm revoke inside the
+ * row) with the Astryx `AlertDialogAsyncAction` template's shape (a
+ * modal confirm + a spinner on the action button while running). The
+ * in-row two buttons stacked vertically in a narrow column and
+ * changed the height of other rows. The meaning of the armed state is
+ * unchanged: at most one row, disarmed when another row arms.
+ * `isLocked` = another row's revocation is running (other rows are
+ * disabled while in-flight). `label` is the visible wording, used when
+ * the object's noun should be attached (from an S11 device row the
+ * thing being revoked is not the device but the token — "Revoke
+ * token"). `accessibleName` is the spoken name including the row's
+ * identification (a table lined with "Revoke" buttons cannot be told
+ * apart in assistive tech's button list). An Astryx Button makes label
+ * the aria-label when children differ from label, so pass label = the
+ * spoken name, children = the visible wording.
  */
 export function RevokeButton({
   onArm,
@@ -437,9 +492,11 @@ export function RevokeButton({
 }
 
 /**
- * 失効の確認ダイアログ(テーブルごとに 1 つ。`armedId` が立っている間だけ開く)。
- * `title` / `description` は対象の名詞と帰結を画面側が与える(裁定 CO の「帰結の注記」を
- * 確認の場で読ませる)。実行中は action ボタンが isActionLoading、Cancel は閉じるだけ。
+ * The revocation confirm dialog (one per table. Open only while an
+ * `armedId` is set). `title` / `description` are given by the screen
+ * as the object's noun and the consequence (ruling CO's "consequence
+ * note" is read at the point of confirmation). While running, the
+ * action button is isActionLoading and Cancel only closes.
  */
 function RevokeDialog({
   isOpen,
@@ -472,9 +529,12 @@ function RevokeDialog({
 }
 
 /**
- * 失効の成功の告知(Banner status="success" = role="status")。失効した行は再取得で
- * 消える・ボタンを失うため、ダイアログが戻したフォーカスはその行ごと失われる。出現時に
- * Banner 自身へフォーカスを移し(tabIndex -1)、読み上げと次の操作の起点をここに置く。
+ * The announcement of a successful revocation (Banner
+ * status="success" = role="status"). Because the revoked row
+ * disappears and loses its button on re-fetch, the focus the dialog
+ * returned is lost with the row. On appearance focus moves to the
+ * Banner itself (tabIndex -1), which becomes the base for the
+ * announcement and the next action.
  */
 function RevocationSuccess({ message }: { message: string }): ReactNode {
   const ref = useRef<HTMLDivElement>(null);
@@ -493,11 +553,15 @@ function RevocationSuccess({ message }: { message: string }): ReactNode {
 }
 
 /**
- * 失効の結果面(S8 / S9 / S11 で共用 — DK K5 で 3 画面目が出たので昇格): 武装中は
- * `RevokeDialog`、直近の失敗は一覧の下の追記形(裁定 B-b — 再操作は行から行えるので
- * Retry なし)、直近の成功は `RevocationSuccess`。`arm(undefined)` / `confirm(id, …)` は
- * use-revocation.ts の操作をそのまま渡す。`successMessage` は確認時点の対象名で作る
- * (再取得後の一覧に対象が残らないことがある)。
+ * The revocation outcome surface (shared by S8 / S9 / S11 — promoted
+ * when DK K5 produced a third screen): while armed it is
+ * `RevokeDialog`, the latest failure is the appended form below the
+ * list (ruling B-b — the row itself can retry, so no Retry), the
+ * latest success is `RevocationSuccess`. `arm(undefined)` /
+ * `confirm(id, …)` are passed straight from use-revocation.ts's
+ * operations. `successMessage` is built with the object's name at the
+ * moment of confirmation (the object may not remain in the list after
+ * the re-fetch).
  */
 export function RevocationOutcome({
   revocation,
@@ -539,8 +603,9 @@ export function RevocationOutcome({
 }
 
 /**
- * 表示規律の但し書き(設計文書 §4-1・§4-2): 全表示はサーバー申告であり、
- * 検証済み表示が要る場面は CLI へ誘導する。
+ * The display-discipline caveat (design document §4-1 and §4-2):
+ * everything shown is server-reported, and when a verified display is
+ * needed it points at the CLI.
  */
 export function ServerReportedNote(): ReactNode {
   return (
@@ -552,7 +617,7 @@ export function ServerReportedNote(): ReactNode {
   );
 }
 
-/** 武装中のトークン(一覧にあれば)。 */
+/** The armed token (if still in the list). */
 function armedToken(
   tokens: ResourceState<TokenList>,
   armedId: string | undefined,
@@ -560,7 +625,7 @@ function armedToken(
   return tokens.kind === "ok" ? tokens.value.tokens.find((t) => t.id === armedId) : undefined;
 }
 
-/** 確認ダイアログの見出しに出す対象名(一覧にあれば名前、無ければ "this token")。 */
+/** The object's name for the confirm dialog's heading (its name if in the list, otherwise "this token"). */
 export function armedTokenName(
   tokens: ResourceState<TokenList>,
   armedId: string | undefined,
@@ -569,7 +634,7 @@ export function armedTokenName(
   return token === undefined ? "this token" : `token "${token.name}"`;
 }
 
-/** 失効成功の告知文(確認時点の名前 — 再取得後の一覧には残らない)。 */
+/** The announcement text of a successful revocation (the name at the moment of confirmation — it may not remain in the post-refetch list). */
 export function tokenRevokedMessage(
   tokens: ResourceState<TokenList>,
   armedId: string | undefined,

@@ -1,14 +1,17 @@
-// `maruhi ci run -- <cmd>`: CI ジョブ内のワークロードリース実行
-// (CRYPTO_SPEC §9.1 / AUTH_SPEC §14。設計判断は docs/notes/session-25.md)。
+// `maruhi ci run -- <cmd>`: workload-lease execution inside a CI job
+// (CRYPTO_SPEC §9.1 / AUTH_SPEC §14; design decisions are in
+// docs/notes/session-25.md).
 //
-// リースの取得と検証は ci-lease.ts(`maruhi ci sync` と共有)。このモジュールは
-// その材料を `run` と同一の経路へ渡すだけ: 復号値は Redacted のまま runOp
-// (buildInjectionEnv → ProcessRunner)へ渡り、子プロセスの環境変数への
-// メモリ注入のみで消費される(ディスクレス不変条件)。これは値の「表示」では
-// なく「注入」なので agent-gate(値表示ゲート)の対象外である(run と同じ
-// サンクションされた消費経路 — ADR-0016 決定 7)。要求サービス型
-// (CliIo | ProcessRunner | HttpClient)が config・トークン・キーチェーンへの
-// 依存の不在を示す。
+// Lease acquisition and verification are ci-lease.ts (shared with `maruhi
+// ci sync`). This module only hands the material to the same path as
+// `run`: decrypted values pass as Redacted to runOp (buildInjectionEnv →
+// ProcessRunner) and are consumed solely by memory injection into the
+// child process's environment variables (the diskless invariant). Because
+// this is "injection" rather than "display" of values, it is outside the
+// agent-gate (value-display gate) (the same sanctioned consumption path
+// as run — ADR-0016 decision 7). The required-services type (CliIo |
+// ProcessRunner | HttpClient) shows the absence of dependencies on
+// config, tokens, and the keychain.
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -20,7 +23,7 @@ import { cliError, type CliError } from "./errors.ts";
 import type { CliIo } from "./io.ts";
 import { enforceDeclaredPresence, ProcessRunner, runOp, typeAdvisoryWarnings } from "./run.ts";
 
-/** `maruhi ci run` の入力(すべて明示フラグ由来 — session-25 §2)。 */
+/** Input of `maruhi ci run` (all from explicit flags — session-25 §2). */
 export interface CiRunInput extends CiLeaseInput {
   readonly environmentId: EnvironmentId;
   readonly command: readonly string[];
@@ -45,11 +48,12 @@ export function ciRunOp(
         cliError("The lease returned no material (internal inconsistency)"),
       );
     }
-    // presence fail-fast(設計文書 §1-4 — run と同一規則): リース応答に同梱
-    // された検証材料(ステートメント + マニフェスト — §14-2)に対して判定する。
-    // required = true の declared があれば子プロセスは起動しない
+    // presence fail-fast (design doc §1-4 — the same rule as run): judged
+    // against the verification material bundled in the lease response
+    // (statements + manifest — §14-2). If a required = true declared
+    // exists, the child process is not started
     yield* enforceDeclaredPresence(material.declared);
-    // type は advisory(§14.3-7)— 不一致は警告のみで実行続行
+    // type is advisory (§14.3-7) — a mismatch only warns; execution continues
     yield* logWarnings(typeAdvisoryWarnings(material.variables));
     return yield* runOp({ command: input.command, variables: material.variables });
   });

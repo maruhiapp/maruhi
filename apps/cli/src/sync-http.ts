@@ -1,51 +1,65 @@
-// `maruhi sync` の http ドライバ(第 2 段 — integration-options.md §3
-// 補足 13 W1「CI と未導入時 = http」/ 補足 14 M2「プリセットは宣言的」/ 補足 15 X2
-// 「統合トークンは普通の変数」)。
+// The http driver of `maruhi sync` (stage 2 — integration-options.md §3
+// supplement 13 W1 "CI and not-yet-installed = http" / supplement 14 M2
+// "presets are declarative" / supplement 15 X2 "an integration token is an
+// ordinary variable").
 //
-// ベンダー CLI が無い環境(CI・入れたくない人)で、maruhi 自身のコードがベンダーの
-// HTTP API に一括 upsert する。exec ドライバ(sync-exec.ts)と同じ設定・同じ
-// plan / apply に載る別のドライバであって、CLI を取りに行く代替ではない。
+// On a machine without the vendor CLI (CI, people who don't want it
+// installed), maruhi's own code bulk-upserts to the vendor's HTTP API.
+// Another driver on the same config and the same plan / apply as the exec
+// driver (sync-exec.ts) — not a substitute for fetching the CLI.
 //
-// 型で決めていること:
-//   - 値のプレースホルダ({@link EntryToken} の `value`)は**本文のエントリ**にしか
-//     置けない。URL のパス・クエリ・ヘッダのテンプレート({@link PathToken})に
-//     値のトークンは存在しない
-//   - 送る先はプリセットの宣言(`host`)で固定。設定でホストを差し替える口は無い
-//   - 統合トークンは `Redacted` のまま `HttpClientRequest.bearerToken` に渡す
-//     (上流が内側で剥がす — api.ts と同じ理由で手書きのヘッダー組み立てをしない)
+// What the types decide:
+//   - A value's placeholder (the `value` of {@link EntryToken}) may only sit
+//     in **a body entry**. No value token exists in the URL path / query /
+//     header templates ({@link PathToken})
+//   - The destination is fixed by the preset's declaration (`host`). There
+//     is no door for config to swap the host
+//   - The integration token is handed to `HttpClientRequest.bearerToken`
+//     still `Redacted` (the upstream unwraps it inside — no hand-built
+//     header assembly, for the same reason as api.ts)
 //
-// ベンダー API の実物(実装で確かめた):
+// The vendor APIs as they actually are (verified in implementation):
 //   - wrangler 4.128.0 `secret bulk` = `PATCH /accounts/{account}/workers/scripts/
-//     {script}/secrets-bulk`、`Content-Type: application/merge-patch+json`、本文
-//     `{"secrets": {NAME: {"name","text","type":"secret_text"} | null}}`(null =
-//     削除)。`--env` はスクリプト名の合成 `<name>-<env>`(getLegacyScriptName)。
-//     未デプロイの Worker はエラーコード 10007 / 10090(isWorkerNotFoundError)で
-//     wrangler が draft Worker を作るが、http ドライバは作らず型付きエラーで案内する。
-//     envelope は `{success, errors[{code,message}], messages, result}`
-//   - Vercel CLI 59.11.7 `env add --force` = `POST /v10/projects/{id}/env?upsert=true`、
-//     本文 `{type, key, value, target[], gitBranch}`(type = production / preview は
-//     "sensitive"、development か --no-sensitive は "encrypted")。公開 REST docs は
-//     同じエンドポイントに**配列**も受け(一括)、応答は `{created, failed[]}`。
-//     `env rm` = `GET /v10/projects/{id}/env?target=&gitBranch=` で id を引いてから
-//     `DELETE /v10/projects/{id}/env/{envId}`。team は `?teamId=`。
-//     429 / Retry-After を CLI も再試行する(sleep + skew)
-//   - Netlify(open-api.netlify.com の swagger 2.57.1・docs.netlify.com・
-//     netlify-cli の `env:set` / `env:unset` で確かめた): base `https://api.netlify.com/api/v1`、
-//     環境変数は**アカウント(チーム)単位**のエンドポイントに `site_id` クエリでサイトを
-//     指す。`POST /accounts/{account_id}/env?site_id=`(配列。**新規作成**)、
-//     `PATCH /accounts/{account_id}/env/{key}?site_id=`(本文 `{context, context_parameter?,
-//     value}` = **既存 key** の 1 context の値を作る / 更新する。swagger 原文 "for an existing
-//     environment variable")、`GET /accounts/{account_id}/env?site_id=`(配列。secret の値は
-//     返らない)、`DELETE …/env/{key}`(key ごと = 全 context)、`DELETE …/env/{key}/value/{id}`
-//     (1 context の値だけ)。netlify-cli 自身も一覧で有無を見てから「無ければ POST・あれば
-//     PATCH(context 指定時)」に分岐する = 単独の upsert は無い。エラー本文は `{code, message}`。
-//     secret(`is_secret`)は write-only で `all` / `dev` に置けず、`post_processing` scope を
-//     持てない(CLI は builds / functions / runtime の 3 scope を明示して送る)。レート制限は
-//     500 req / min(`X-RateLimit-*`。429 の `Retry-After` の有無は docs に無い)
+//     {script}/secrets-bulk`, `Content-Type: application/merge-patch+json`,
+//     body `{"secrets": {NAME: {"name","text","type":"secret_text"} | null}}`
+//     (null = delete). `--env` composes the script name `<name>-<env>`
+//     (getLegacyScriptName). An undeployed Worker is error code 10007 /
+//     10090 (isWorkerNotFoundError) — wrangler creates a draft Worker; the
+//     http driver does not, and guides with a typed error instead.
+//     The envelope is `{success, errors[{code,message}], messages, result}`
+//   - Vercel CLI 59.11.7 `env add --force` = `POST /v10/projects/{id}/env?upsert=true`,
+//     body `{type, key, value, target[], gitBranch}` (type = production /
+//     preview is "sensitive"; development or --no-sensitive is
+//     "encrypted"). The public REST docs also accept an **array** on the
+//     same endpoint (bulk), and the response is `{created, failed[]}`.
+//     `env rm` = `GET /v10/projects/{id}/env?target=&gitBranch=` to look up
+//     the id, then `DELETE /v10/projects/{id}/env/{envId}`. team is
+//     `?teamId=`.
+//     The CLI also retries 429 / Retry-After (sleep + skew)
+//   - Netlify (verified against the swagger 2.57.1 at open-api.netlify.com,
+//     docs.netlify.com, and netlify-cli's `env:set` / `env:unset`): base
+//     `https://api.netlify.com/api/v1`, and environment variables live on an
+//     **account (team)-scoped** endpoint that a `site_id` query points at a
+//     site. `POST /accounts/{account_id}/env?site_id=` (array. **Creation
+//     only**), `PATCH /accounts/{account_id}/env/{key}?site_id=` (body
+//     `{context, context_parameter?, value}` = create / update the value of
+//     one context of an **existing key**. swagger verbatim: "for an existing
+//     environment variable"), `GET /accounts/{account_id}/env?site_id=`
+//     (array. secret values are not returned), `DELETE …/env/{key}`
+//     (per key = every context), `DELETE …/env/{key}/value/{id}` (only one
+//     context's value). netlify-cli itself also looks the name up in the
+//     list and then branches "POST if absent, PATCH if present (with a
+//     context)" = there is no standalone upsert. The error body is
+//     `{code, message}`. A secret (`is_secret`) is write-only, cannot be
+//     placed on `all` / `dev`, and cannot have the `post_processing` scope
+//     (the CLI sends the 3 scopes builds / functions / runtime explicitly).
+//     The rate limit is 500 req / min (`X-RateLimit-*`; whether 429 carries
+//     `Retry-After` is not in the docs)
 //
-// 応答本文は値やトークンを echo しうる前提で扱う(Vercel の `created` は値を
-// 返す): 成功時は捨て、失敗時は抽出した断片だけを sync-exec.ts の
-// scrubVendorOutput(伏せてから切る)に通してから見せる。
+// Response bodies are handled on the premise that they can echo values and
+// tokens (Vercel's `created` returns the value): on success they are
+// discarded; on failure only the extracted fragments are shown, after going
+// through sync-exec.ts's scrubVendorOutput (redact, then truncate).
 
 import { Duration, Effect, Redacted } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
@@ -64,9 +78,9 @@ import { CLI_VERSION } from "./version.ts";
 export type PathToken =
   | string
   | { readonly kind: "option"; readonly option: string }
-  /** 削除の 2 手目だけ: 一覧で引いた同期先側の ID。 */
+  /** The delete's second step only: the target-side ID looked up via the list. */
   | { readonly kind: "id" }
-  /** 1 変数だけを運ぶリクエスト(create-or-update の各手・removeItem)だけ: 変数名。 */
+  /** Requests carrying exactly one variable only (each step of create-or-update, removeItem): the variable name. */
   | { readonly kind: "name" };
 
 /** One leaf of the per-variable entry template (the only place a value goes). */
@@ -100,17 +114,18 @@ export type EntriesLayout = "object-by-name" | "array" | "single";
 export interface HttpWriteSpec {
   readonly method: "POST" | "PATCH" | "PUT";
   readonly path: readonly PathToken[];
-  /** クエリ(値が undefined のオプションは省く)。 */
+  /** The query (options whose value is undefined are omitted). */
   readonly query: Readonly<Record<string, PathToken>>;
   readonly contentType: string;
-  /** 本文全体(`{kind: "entries"}` を 1 か所含む)。 */
+  /** The whole body (contains one `{kind: "entries"}`). */
   readonly body: JsonTemplate<BodyToken>;
   readonly entries: EntriesLayout;
-  /** 1 変数ぶんのエントリ(値のトークンはここだけ)。 */
+  /** One variable's entry (the only place a value token sits). */
   readonly entry: JsonTemplate<EntryToken>;
   /**
-   * 削除のエントリ(object-by-name で書き込みと同居させる形 — Workers の merge-patch
-   * では JSON の `null`)。`delete.kind === "in-write"` のプリセットだけが持つ。
+   * A deletion's entry (the shape that rides along with writes in
+   * object-by-name — a JSON `null` under Workers' merge-patch). Only
+   * presets with `delete.kind === "in-write"` carry this.
    */
   readonly deletedEntry?: JsonTemplate<EntryToken>;
 }
@@ -119,13 +134,14 @@ export interface HttpWriteSpec {
 export interface HttpListSpec {
   readonly path: readonly PathToken[];
   readonly query: Readonly<Record<string, PathToken>>;
-  /** 応答のうち一覧が入るフィールド(null = 本文そのものが配列)。 */
+  /** The response field that holds the list (null = the body itself is the array). */
   readonly itemsField: string | null;
   readonly keyField: string;
   /**
-   * 一覧が続きを持つことを示すフィールドの経路(Vercel = `pagination.next`)。省略 =
-   * 一覧は常に完全。続きがあるのに名前が無い一覧は「消えている」の証拠にならず、
-   * 「存在しない」の証拠にもならない(fail-closed)。
+   * The path of the field that says the list has a continuation (Vercel =
+   * `pagination.next`). Omitted = the list is always complete. A name
+   * missing from a list that has a continuation is not evidence that it is
+   * "gone", and not evidence that it "doesn't exist" either (fail-closed).
    */
   readonly nextPage?: readonly [string, string];
 }
@@ -141,19 +157,21 @@ export type HttpWriteStrategy =
   | {
       readonly kind: "create-or-update";
       readonly list: HttpListSpec;
-      /** 一覧に無い名前(`entries` は `array` か `single` で、1 リクエスト 1 変数)。 */
+      /** Names not in the list (`entries` is `array` or `single`, one request per variable). */
       readonly create: HttpWriteSpec;
-      /** 一覧にある名前(同上)。 */
+      /** Names in the list (same). */
       readonly update: HttpWriteSpec;
       /**
-       * update のリクエストでは**変えられない**属性の守り: 導いたオプションが true なら、
-       * 一覧の項目の `field` も true でなければ書かない(Netlify の `is_secret` — PATCH は
-       * 値しか取らないので、非 secret の変数に secret のつもりの値を黙って置かない)。
+       * The guard of an attribute an update request **cannot change**: when
+       * the derived option is true, the write is not sent unless the list
+       * item's `field` is also true (Netlify's `is_secret` — PATCH only
+       * takes a value, so a non-secret variable must not silently get a
+       * value meant for a secret).
        */
       readonly updateGuards?: readonly {
         readonly field: string;
         readonly option: string;
-        /** 文面の末尾(何をすればよいか)。 */
+        /** The tail of the message (what to do). */
         readonly hint: string;
       }[];
     };
@@ -165,20 +183,22 @@ export interface HttpRemoveSpec {
   readonly query: Readonly<Record<string, PathToken>>;
 }
 
-/** 削除の表現: 書き込みに同居(merge-patch の null)か、一覧で引いてから 1 件ずつ消す。 */
+/** How a delete is expressed: riding along in a write (a merge-patch null), or looked up in a list then deleted one by one. */
 export type HttpDeleteSpec =
   | { readonly kind: "in-write" }
   | {
       readonly kind: "lookup";
       readonly list: HttpListSpec;
       /**
-       * 同期先側の環境の照合(名前が同じでも別の環境のものを消さない): 項目(または
-       * `valuesField` の配列の各要素)のうち、`targetField` が `targetOption` の値と一致
-       * する(配列なら含む)もの、かつ `branchField` が `branchOption` の値(無ければ
-       * 未設定)と一致するものの `idField` を消す。
+       * Matching the target-side environment (a same-named variable of a
+       * different environment is never deleted): among the item's elements
+       * (or each element of the `valuesField` array), those whose
+       * `targetField` equals (or contains, if an array) the `targetOption`
+       * value, and whose `branchField` equals the `branchOption` value
+       * (or is unset when there is none), have their `idField` deleted.
        */
       readonly match: {
-        /** 項目の中で id を持つ要素の入れ子(Netlify の `values[]`)。無ければ項目自身。 */
+        /** The nesting where the item's elements carrying an id live (Netlify's `values[]`). The item itself when absent. */
         readonly valuesField?: string;
         readonly idField: string;
         readonly targetField: string;
@@ -188,23 +208,25 @@ export type HttpDeleteSpec =
       };
       readonly remove: HttpRemoveSpec;
       /**
-       * 照合した要素が項目の**全要素**だったときに代わりに送る、項目ごとの削除
-       * (Netlify: 他の context の値が無い変数は key ごと消し、空の変数を残さない)。
+       * The per-item deletion sent instead when the matched elements were
+       * **all** of the item's elements (Netlify: a variable whose other
+       * contexts have no values is deleted per key, leaving no empty
+       * variable).
        */
       readonly removeItem?: HttpRemoveSpec;
     };
 
-/** 応答の読み方(閉集合 — 追加はここに 1 つ足す)。 */
+/** How a response is read (a closed set — additions are one entry here). */
 export type ResponseKind = "cloudflare-v4" | "vercel-env" | "netlify-env";
 
-/** 展開済みオプション(設定の値 + `derive` の産物。配列は本文の葉にだけ使う)。 */
+/** Derived options (config values + `derive`'s products. Arrays are used only as body leaves). */
 export type DerivedOptions = Readonly<Record<string, string | boolean | readonly string[]>>;
 
 /** A declarative http preset (data — no per-vendor request code). */
 export interface HttpPreset {
-  /** 送る先(固定。設定では変えられない)。 */
+  /** The destination (fixed. Config cannot change it). */
   readonly host: string;
-  /** 人間向けの呼び名(文面用 — "the Vercel API")。 */
+  /** The human-facing name (for messages — "the Vercel API"). */
   readonly label: string;
   readonly write: HttpWriteStrategy;
   readonly delete: HttpDeleteSpec;
@@ -212,30 +234,34 @@ export interface HttpPreset {
   readonly constraints: ValueConstraints;
   readonly options: Readonly<Record<string, OptionSpec>>;
   /**
-   * 同期先の呼び名を組み立てるオプション名(plan / apply のヘッダー行 —
-   * sync-plan.ts の describeDestination)。宣言順に、設定されている文字列の値だけが
-   * 並ぶ。非機密のオプションだけを載せる(ID 系は冗長なので載せない)。
+   * The option names that compose the target's display name (the plan /
+   * apply header line — sync-plan.ts's describeDestination). In
+   * declaration order, only the set string values are listed. Only
+   * non-sensitive options go up (IDs are redundant, so they don't).
    */
   readonly describeOptions: readonly string[];
   /**
-   * 設定のオプション同士の整合(1 オプションの型・閉集合は `options` の宣言が検査する)。
-   * 不正なら理由(設定の検証文面になる。打たれた値は出さない)。
+   * Consistency across the config's options (one option's type and closed
+   * set are checked by the `options` declaration). The reason when invalid
+   * (it becomes the config's validation message. The value entered is not
+   * shown).
    */
   readonly check?: (options: ResolvedOptions) => string | null;
-  /** 設定のオプションから導く値(スクリプト名・Vercel の type 等。値には触れない)。 */
+  /** Values derived from the config's options (a script name, Vercel's type, etc. Values are never touched). */
   readonly derive: (options: ResolvedOptions) => DerivedOptions;
-  /** 統合トークンの作り方の案内(エラー文面用。docs の節を指す)。 */
+  /** Guidance for creating the integration token (for error messages. Points at the docs section). */
   readonly tokenHint: string;
 }
 
 const VERCEL_ENVIRONMENTS = ["production", "preview", "development"] as const;
 
-// Vercel の 1 リクエストの件数上限は公開 docs に無い(CLI は 1 件ずつ)。総量の
-// 上限(64 KB / deployment)には件数が効かないので、未知の上限に対して保守側に置く
+// Vercel's per-request item limit is not in the public docs (the CLI goes
+// one at a time). The total limit (64 KB / deployment) does not depend on
+// the count, so sit on the conservative side of an unknown limit
 const VERCEL_BATCH = 25;
 
-// Netlify の deploy context(swagger の `context` の閉集合。`branch` は `branch` オプションの
-// ブランチ名を `context_parameter` に取る)
+// Netlify's deploy contexts (the closed set of swagger's `context`.
+// `branch` takes the `branch` option's branch name into `context_parameter`)
 const NETLIFY_CONTEXTS = [
   "production",
   "deploy-preview",
@@ -246,14 +272,16 @@ const NETLIFY_CONTEXTS = [
   "all",
 ] as const;
 
-// secret を置けない context(docs「Secret values must be set to explicit deploy contexts」・
-// CLI「specify a non-development context」。`dev-server` は CLI の SUPPORTED_CONTEXTS には
-// あり secret の判定は `dev` を含む名前で見る = dev-server も不可)
+// Contexts where a secret cannot be placed (docs: "Secret values must be
+// set to explicit deploy contexts"; CLI: "specify a non-development
+// context". `dev-server` is in the CLI's SUPPORTED_CONTEXTS but the secret
+// check looks at names containing `dev` = dev-server is also excluded)
 const NETLIFY_NON_SECRET_CONTEXTS = new Set(["all", "dev", "dev-server"]);
 
-// secret の変数は post_processing scope を持てない(docs の Secrets Controller)。netlify-cli
-// は残りの 3 scope を明示して作る — 同じ形を写す(secret でなければ scopes を送らず
-// Netlify の既定 = 全 scope に任せる。scope の選択は Pro 以上)
+// A secret variable cannot have the post_processing scope (the docs'
+// Secrets Controller). netlify-cli specifies the other 3 scopes when
+// creating one — copy the same shape (non-secret sends no scopes and
+// leaves Netlify's default = every scope. Choosing scopes is Pro and up)
 const NETLIFY_SECRET_SCOPES = ["builds", "functions", "runtime"] as const;
 
 const NETLIFY_ENV_PATH: readonly PathToken[] = [
@@ -264,7 +292,7 @@ const NETLIFY_ENV_PATH: readonly PathToken[] = [
 const NETLIFY_KEY_PATH: readonly PathToken[] = [...NETLIFY_ENV_PATH, "/", { kind: "name" }];
 const NETLIFY_SITE_QUERY = { site_id: { kind: "option", option: "siteId" } } as const;
 
-/** Netlify の一覧(書き込みの有無判定と削除の id 照合が同じ一覧を読む)。 */
+/** Netlify's list (the write's existence check and the delete's id matching read the same list). */
 const NETLIFY_LIST: HttpListSpec = {
   path: NETLIFY_ENV_PATH,
   query: NETLIFY_SITE_QUERY,
@@ -306,7 +334,7 @@ export const HTTP_PRESETS = {
       environment: { type: "string", required: false },
     },
     describeOptions: ["name", "environment"],
-    // wrangler の getLegacyScriptName: 名前付き環境は `<name>-<env>`
+    // wrangler's getLegacyScriptName: a named environment is `<name>-<env>`
     derive: (options) => ({
       scriptName:
         typeof options["environment"] === "string"
@@ -365,7 +393,7 @@ export const HTTP_PRESETS = {
       },
     },
     response: "vercel-env",
-    // API は値をそのまま保存する(CLI の stdin 由来の制約は無い)
+    // The API stores the value verbatim (the CLI's stdin-sourced constraints do not apply)
     constraints: { maxBytes: null, nonEmpty: false, trailingNewline: "kept", name: null },
     options: {
       environment: { type: "string", required: true, values: VERCEL_ENVIRONMENTS },
@@ -374,10 +402,11 @@ export const HTTP_PRESETS = {
       teamId: { type: "string", required: false },
       sensitive: { type: "boolean", required: false },
     },
-    // projectId / teamId は不透明な ID(ヘッダー行の呼び名にならない)ので載せない
+    // projectId / teamId are opaque IDs (they don't become the header line's name), so they're not listed
     describeOptions: ["environment", "gitBranch"],
-    // Vercel CLI の resolveFinalType: development は sensitive 不可、--no-sensitive
-    // は encrypted(= 読み返せる値)。それ以外は sensitive
+    // Vercel CLI's resolveFinalType: development cannot be sensitive;
+    // --no-sensitive is encrypted (= a value that can be read back).
+    // Everything else is sensitive
     derive: (options) => ({
       type:
         options["environment"] === "development" || options["sensitive"] === false
@@ -390,9 +419,11 @@ export const HTTP_PRESETS = {
   netlify: {
     host: "api.netlify.com",
     label: "the Netlify API",
-    // Netlify に upsert は無い(POST = 新規、PATCH = 既存 key の 1 context の値)。一覧で
-    // 名前の有無を引き、1 変数 1 リクエスト(配列 POST の部分失敗の形は docs に無いので
-    // 件数を 1 に固定し、届いた名前を正確に割る)
+    // Netlify has no upsert (POST = create, PATCH = the value of one
+    // context of an existing key). Look the name up in the list, one
+    // request per variable (the partial-failure shape of an array POST is
+    // not in the docs, so fix the count at 1 and attribute the delivered
+    // names exactly)
     write: {
       kind: "create-or-update",
       list: NETLIFY_LIST,
@@ -429,8 +460,9 @@ export const HTTP_PRESETS = {
           value: { kind: "value" },
         },
       },
-      // PATCH は is_secret を変えられない(前提 (1))。非 secret で既にある変数に secret の
-      // つもりの値を置かない
+      // PATCH cannot change is_secret (premise (1)). Never place a value
+      // meant for a secret onto a variable that already exists as
+      // non-secret
       updateGuards: [
         {
           field: "is_secret",
@@ -439,8 +471,10 @@ export const HTTP_PRESETS = {
         },
       ],
     },
-    // 削除はこのターゲットの context の値だけ(`DELETE …/value/{id}`)。それが変数の最後の
-    // 値なら key ごと消す(空の変数を残さない)。他の context の値には触れない
+    // The delete covers only this target's context value
+    // (`DELETE …/value/{id}`). If that was the variable's last value, delete
+    // the whole key (leave no empty variable). Other contexts' values are
+    // untouched
     delete: {
       kind: "lookup",
       list: NETLIFY_LIST,
@@ -460,7 +494,7 @@ export const HTTP_PRESETS = {
       removeItem: { method: "DELETE", path: NETLIFY_KEY_PATH, query: NETLIFY_SITE_QUERY },
     },
     response: "netlify-env",
-    // 値の上限は 5,000 文字(docs)— 超過は API の失敗として文面に出る(黙って切らない)
+    // The value limit is 5,000 characters (docs) — an excess surfaces as an API failure in the message (never silently truncated)
     constraints: { maxBytes: null, nonEmpty: false, trailingNewline: "kept", name: null },
     options: {
       accountId: { type: "string", required: true },
@@ -469,7 +503,7 @@ export const HTTP_PRESETS = {
       branch: { type: "string", required: false },
       secret: { type: "boolean", required: false },
     },
-    // accountId / siteId は不透明な ID(ヘッダー行の呼び名にならない)ので載せない
+    // accountId / siteId are opaque IDs (they don't become the header line's name), so they're not listed
     describeOptions: ["context", "branch"],
     check: (options) => {
       if (options["context"] === "branch" && typeof options["branch"] !== "string") {
@@ -486,9 +520,11 @@ export const HTTP_PRESETS = {
       }
       return null;
     },
-    // 既定は secret(Netlify 側で読み返せない値 — Vercel の sensitive と同じ向き)。secret を
-    // 置けない context では既定を false に倒す。secret は post_processing scope を持てない
-    // ので CLI と同じ 3 scope を明示する
+    // The default is secret (a value that cannot be read back on the
+    // Netlify side — same direction as Vercel's sensitive). On a context
+    // where a secret cannot be placed, the default flips to false. A secret
+    // cannot have the post_processing scope, so the same 3 scopes as the
+    // CLI are specified explicitly
     derive: (options) => {
       const isSecret =
         options["secret"] ?? !NETLIFY_NON_SECRET_CONTEXTS.has(String(options["context"]));
@@ -499,37 +535,37 @@ export const HTTP_PRESETS = {
   },
 } as const satisfies Readonly<Record<string, HttpPreset>>;
 
-/** 統合トークン(復号済み — ヘッダーに載る直前まで包んだまま)。 */
+/** An integration token (already decrypted — kept wrapped until just before it goes on the header). */
 export type IntegrationToken = Redacted.Redacted<string>;
 
-/** リトライの調律(テストで短くする)。 */
+/** The retry tuning (shortened in tests). */
 export interface HttpRetryPolicy {
-  /** 1 リクエストの試行回数(最初の 1 回を含む)。 */
+  /** The number of attempts for one request (including the first). */
   readonly attempts: number;
   readonly baseDelay: Duration.Duration;
-  /** `Retry-After` を尊重する上限(それ以上は待たずに失敗させる)。 */
+  /** The cap on honoring `Retry-After` (beyond it the request fails instead of waiting). */
   readonly maxDelay: Duration.Duration;
 }
 
-/** 本番のリトライ: 3 回、0.5 s から倍々、Retry-After は 30 s まで尊重。 */
+/** Production retry: 3 attempts, doubling from 0.5 s, honoring Retry-After up to 30 s. */
 export const DEFAULT_HTTP_RETRY: HttpRetryPolicy = {
   attempts: 3,
   baseDelay: Duration.millis(500),
   maxDelay: Duration.seconds(30),
 };
 
-/** 1 リクエストの結果(値・トークンを含みうる本文は呼び出し側で捨てるか伏せる)。 */
+/** The result of one request (the caller discards or redacts a body that can contain values / tokens). */
 interface HttpOutcome {
   readonly status: number;
   readonly text: string;
 }
 
-/** ベンダー API の応答本文の読み(壊れた JSON は null)。 */
+/** Reading a vendor API's response body (broken JSON is null). */
 function parseJson(text: string): unknown {
   try {
     return JSON.parse(text) as unknown;
   } catch {
-    // 本文が JSON でない(WAF のブロックページ等)= 読めない応答として扱う
+    // A body that is not JSON (a WAF block page, etc.) = treated as an unreadable response
     return null;
   }
 }
@@ -538,7 +574,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** パスに載せてよい、リクエスト固有の材料(削除の ID・1 変数リクエストの名前)。 */
+/** Per-request material allowed on the path (a delete's ID, a one-variable request's name). */
 interface PathSubject {
   readonly id: string | null;
   readonly name: string | null;
@@ -546,7 +582,7 @@ interface PathSubject {
 
 const NO_SUBJECT: PathSubject = { id: null, name: null };
 
-/** パス / クエリのトークンの展開(値は決して載らない — トークンの型に無い)。 */
+/** Expanding the path / query tokens (a value never goes on — the token type has none). */
 function renderPathToken(
   token: PathToken,
   options: DerivedOptions,
@@ -566,7 +602,7 @@ function renderPathToken(
   return typeof value === "string" ? encodeURIComponent(value) : undefined;
 }
 
-/** パスの展開(必須オプションが無いのは宣言と検証の不整合 = 内部エラー)。 */
+/** Expanding a path (a missing required option is a declaration/verification mismatch = internal error). */
 function renderPath(
   path: readonly PathToken[],
   options: DerivedOptions,
@@ -583,7 +619,7 @@ function renderPath(
     .join("");
 }
 
-/** クエリの展開(未設定のオプションは省く)。 */
+/** Expanding a query (unset options are omitted). */
 function renderQuery(
   query: Readonly<Record<string, PathToken>>,
   options: DerivedOptions,
@@ -592,7 +628,7 @@ function renderQuery(
   for (const [key, token] of Object.entries(query)) {
     const rendered = renderPathToken(token, options, NO_SUBJECT);
     if (rendered !== undefined) {
-      // クエリはこの後 UrlParams が符号化する(パス用の符号化を二重に掛けない)
+      // The query is encoded by UrlParams afterwards (don't double-apply the path encoding)
       params[key] = typeof token === "string" ? rendered : decodeURIComponent(rendered);
     }
   }
@@ -600,8 +636,9 @@ function renderQuery(
 }
 
 /**
- * 1 エントリの展開。値のトークンは `Redacted` から剥がした平文を JSON の葉に置く
- * (この関数の産物は送信本文の材料としてだけ使い、ログ・エラーへは流れない)。
+ * Expanding one entry. The value token places the plaintext unwrapped from
+ * `Redacted` onto a JSON leaf (this function's product is used only as
+ * material for the request body — it never flows to logs or errors).
  */
 function renderEntry(
   template: JsonTemplate<EntryToken>,
@@ -621,7 +658,7 @@ function renderEntry(
   const rendered: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(template as Record<string, JsonTemplate<EntryToken>>)) {
     const item = renderEntry(value, input);
-    // undefined(未設定のオプション)はキーごと省く(JSON.stringify も落とす)
+    // undefined (an unset option) is omitted with its key (JSON.stringify would drop it too)
     if (item !== undefined) {
       rendered[key] = item;
     }
@@ -629,12 +666,12 @@ function renderEntry(
   return rendered;
 }
 
-/** テンプレートの葉がトークンか(`kind` を持つオブジェクト)。 */
+/** Whether a template leaf is a token (an object with `kind`). */
 function isToken(template: object): boolean {
   return "kind" in template && typeof (template as { kind?: unknown }).kind === "string";
 }
 
-/** 1 トークンの値(名前 / 値 / オプション。未設定のオプションは undefined = 省く)。 */
+/** The value of one token (name / value / option. An unset option is undefined = omitted). */
 function renderEntryToken(
   token: EntryToken,
   input: { readonly name: string; readonly text: string | null; readonly options: DerivedOptions },
@@ -649,7 +686,7 @@ function renderEntryToken(
   }
 }
 
-/** 本文全体の展開(`entries` の位置に展開済みのエントリ集合を置く)。 */
+/** Expanding the whole body (the expanded entry set goes at the `entries` position). */
 function renderBody(
   template: JsonTemplate<BodyToken>,
   entries: unknown,
@@ -685,7 +722,7 @@ export interface HttpBatch {
   readonly deletes: readonly string[];
 }
 
-/** 展開済みオプション(設定の値 + `derive` の産物)。 */
+/** Derived options (config values + `derive`'s products). */
 export function resolveOptions(preset: HttpPreset, options: ResolvedOptions): DerivedOptions {
   return { ...options, ...preset.derive(options) };
 }
@@ -727,7 +764,7 @@ export function buildBatches(input: {
   return batches;
 }
 
-/** 状態を持つ送信部品の入力(ターゲット 1 つぶん)。 */
+/** The input of the stateful sending part (for one target). */
 export interface HttpTargetInput {
   readonly preset: HttpPreset;
   readonly options: DerivedOptions;
@@ -735,17 +772,18 @@ export interface HttpTargetInput {
   readonly retry: HttpRetryPolicy;
 }
 
-/** ベンダー API 1 リクエストの成否(本文は抽出済みの断片だけを外へ出す)。 */
+/** The outcome of one vendor API request (only extracted fragments of the body go out). */
 export interface HttpRequestResult {
-  /** 成功として届いた名前(部分成功の応答〔Vercel の failed〕はここで割れる)。 */
+  /** Names delivered successfully (a partial-success response [Vercel's failed] is split here). */
   readonly delivered: readonly string[];
-  /** 失敗(null = 全件成功)。文面は伏せ字化済みで変数名と応答の断片だけを運ぶ。 */
+  /** The failure (null = everything succeeded). The message is already redacted and carries only variable names and response fragments. */
   readonly failure: {
     readonly names: readonly string[];
     /**
-     * 何が起きたか(エラー文面の先頭 — 拒否 / 未確認の応答 / 送信の失敗 /
-     * 一覧の失敗 / 未送信の 5 文型を言い分ける。詳細は `lines` が言う)。
-     * 値は運ばない。
+     * What happened (the head of the error message — discriminates the 5
+     * sentence shapes: refused / unconfirmed response / send failure /
+     * list failure / not sent. `lines` gives the details). Never carries
+     * a value.
      */
     readonly what: string;
     readonly lines: readonly string[];
@@ -754,7 +792,7 @@ export interface HttpRequestResult {
 
 const RETRIABLE_STATUSES = new Set([429, 502, 503, 504]);
 
-/** `Retry-After`(秒 or HTTP 日付)の解釈。読めなければ null。 */
+/** Interpreting `Retry-After` (seconds or an HTTP date). null if unreadable. */
 function retryAfterOf(header: string | undefined, now: number): Duration.Duration | null {
   if (header === undefined) {
     return null;
@@ -795,7 +833,7 @@ function send(
             text,
           })),
         ),
-        // 通信層の失敗(DNS・接続・TLS)。文面は要求先の説明だけで、本文は無い
+        // A transport-layer failure (DNS, connection, TLS). The message is only a description of the destination; no body
         Effect.catch((error) =>
           Effect.succeed({ kind: "transport" as const, message: describeTransport(error) }),
         ),
@@ -828,7 +866,7 @@ function send(
   });
 }
 
-/** 通信層の失敗の説明(要求先のホストとエラーの種別だけ。本文・ヘッダーは無い)。 */
+/** Describing a transport-layer failure (only the destination host and the error kind. No body or headers). */
 function describeTransport(error: unknown): string {
   const tag = isRecord(error) && typeof error["_tag"] === "string" ? error["_tag"] : "error";
   const description =
@@ -836,7 +874,7 @@ function describeTransport(error: unknown): string {
   return `Could not reach the vendor API (${tag}${displayText(description)})`;
 }
 
-/** 応答本文から見せてよい断片を取り出し、伏せ字化する(値・トークン)。 */
+/** Extracts the showable fragments from a response body and redacts them (values, tokens). */
 function scrubbed(
   lines: readonly string[],
   writes: readonly SyncWrite[],
@@ -845,7 +883,7 @@ function scrubbed(
   return scrubVendorOutput(lines.join("\n"), writes, [token]);
 }
 
-/** Cloudflare の envelope の errors / messages を行に。 */
+/** Turns a Cloudflare envelope's errors / messages into lines. */
 function cloudflareLines(body: unknown, status: number): string[] {
   if (!isRecord(body)) {
     return [`HTTP ${status}`];
@@ -861,17 +899,17 @@ function cloudflareLines(body: unknown, status: number): string[] {
   ];
 }
 
-/** 配列でなければ空(応答の形の揺れを吸収する)。 */
+/** Empty unless an array (absorbs wobble in the response shape). */
 function arrayOf(value: unknown): readonly unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-/** 配列のうちオブジェクトの要素だけ。 */
+/** Only the object elements of an array. */
 function recordsOf(value: unknown): readonly Record<string, unknown>[] {
   return arrayOf(value).filter(isRecord);
 }
 
-/** Cloudflare の errors[].code の集合。 */
+/** The set of Cloudflare errors[].code values. */
 function cloudflareCodes(body: unknown): Set<number> {
   const codes = new Set<number>();
   if (isRecord(body) && Array.isArray(body["errors"])) {
@@ -884,10 +922,10 @@ function cloudflareCodes(body: unknown): Set<number> {
   return codes;
 }
 
-// wrangler の isWorkerNotFoundError(worker-not-found-error.ts)
+// wrangler's isWorkerNotFoundError (worker-not-found-error.ts)
 const CLOUDFLARE_WORKER_NOT_FOUND = new Set([10007, 10090]);
 
-/** Cloudflare v4 envelope の判定: 2xx かつ `success: true`。 */
+/** The Cloudflare v4 envelope check: 2xx and `success: true`. */
 function readCloudflare(
   outcome: HttpOutcome,
   batch: HttpBatch,
@@ -914,7 +952,7 @@ function readCloudflare(
   };
 }
 
-/** Vercel の `{created, failed[]}` の判定(部分成功を名前で割る)。 */
+/** Reading Vercel's `{created, failed[]}` (partial success is split by name). */
 function readVercel(
   outcome: HttpOutcome,
   batch: HttpBatch,
@@ -935,8 +973,8 @@ function readVercel(
     return { delivered: batch.names, failure: null };
   }
   if (!("created" in body)) {
-    // 書き込みの 2xx に `created` が無い = 期待した形の応答でない(schema の変化・
-    // 中継の応答)。届いたと読まない
+    // A write 2xx without `created` = not the expected response shape (a
+    // schema change, an intermediary's response). Not read as delivered
     return {
       delivered: [],
       failure: {
@@ -952,14 +990,14 @@ function readVercel(
   }
   const failed = recordsOf(body["failed"]);
   if (failed.length === 0) {
-    // failed が空なら全件届いたと読む(created の形は 1 件 / 配列で揺れる)
+    // An empty failed means everything was delivered (created's shape wobbles between one entry and an array)
     return { delivered: batch.names, failure: null };
   }
   const created = body["created"];
   const createdKeys = new Set(keysOf(Array.isArray(created) ? created : [created]));
   const failures = failed.map(vercelFailureOf);
   const failedNames = new Set(failures.flatMap((entry) => (entry.key === null ? [] : [entry.key])));
-  // 失敗した名前が特定できなければバッチ全体を未達とする(届いたと誤記録しない)
+  // If the failed names cannot be identified, the whole batch is undelivered (don't mis-record as delivered)
   const delivered =
     failedNames.size === 0
       ? []
@@ -976,7 +1014,7 @@ function readVercel(
   };
 }
 
-/** Vercel の非 2xx 応答(`{error: {code, message}}`)の表示行。 */
+/** The display lines of Vercel's non-2xx response (`{error: {code, message}}`). */
 function vercelErrorLines(status: number, body: unknown): string[] {
   const error = isRecord(body) && isRecord(body["error"]) ? body["error"] : null;
   return error === null
@@ -984,7 +1022,7 @@ function vercelErrorLines(status: number, body: unknown): string[] {
     : [`HTTP ${status}`, `error ${String(error["code"] ?? "")}: ${String(error["message"] ?? "")}`];
 }
 
-/** 応答のエントリの `key`(文字列のものだけ)。 */
+/** The `key` of a response entry (string ones only). */
 function keysOf(entries: readonly unknown[]): readonly string[] {
   return entries.filter(isRecord).flatMap((entry) => {
     const key = entry["key"];
@@ -992,7 +1030,7 @@ function keysOf(entries: readonly unknown[]): readonly string[] {
   });
 }
 
-/** Vercel の `failed[]` 1 件 → 失敗した名前と表示行(伏せ字化は呼び出し側)。 */
+/** One Vercel `failed[]` entry → the failed name and a display line (redaction is the caller's). */
 function vercelFailureOf(entry: Record<string, unknown>): {
   readonly key: string | null;
   readonly line: string;
@@ -1006,7 +1044,7 @@ function vercelFailureOf(entry: Record<string, unknown>): {
   };
 }
 
-/** Netlify の非 2xx 応答(`{code, message}`)の表示行(本文が JSON でなければ status だけ)。 */
+/** The display lines of Netlify's non-2xx response (`{code, message}`) (only the status when the body is not JSON). */
 function netlifyErrorLines(status: number, body: unknown): string[] {
   return isRecord(body) && typeof body["message"] === "string"
     ? [`HTTP ${status}`, `error ${String(body["code"] ?? status)}: ${body["message"]}`]
@@ -1014,9 +1052,10 @@ function netlifyErrorLines(status: number, body: unknown): string[] {
 }
 
 /**
- * Netlify の判定: 2xx。書き込み(POST = 配列 / PATCH = 1 変数)は応答の `key` が運んだ
- * 名前を含むことまで見る(形の違う 2xx を「届いた」と読まない — Vercel の `created` と
- * 同じ姿勢)。削除は 204 で本文が無い。応答は値を echo する(捨てる)。
+ * Reading Netlify: 2xx. For a write (POST = array / PATCH = one variable)
+ * the response's `key` must also carry the name (a differently-shaped 2xx
+ * is not read as "delivered" — same posture as Vercel's `created`). A
+ * delete is a 204 with no body. The response echoes the value (discarded).
  */
 function readNetlify(
   outcome: HttpOutcome,
@@ -1062,8 +1101,10 @@ function readResponse(
 }
 
 /**
- * 書き込みリクエストの組み立て(値はここで剥がして本文に置き、産物は送信にだけ渡す)。
- * `single` の宣言は 1 変数だけを受け、その名前がパスの name トークンに載る。
+ * Building a write request (the value is unwrapped here and placed in the
+ * body, and the product is handed only to the send). A `single`
+ * declaration takes exactly one variable, and its name goes on the path's
+ * name token.
  */
 function buildWriteRequest(
   input: HttpTargetInput,
@@ -1089,7 +1130,7 @@ function buildWriteRequest(
   ).pipe(HttpClientRequest.bodyText(JSON.stringify(body), write.contentType));
 }
 
-/** バッチのエントリ(書き込み + 同居する削除)を名前つきで展開する(値はここで剥がす)。 */
+/** Expands a batch's entries (writes + riding deletes) with their names (the value is unwrapped here). */
 function renderEntries(
   write: HttpWriteSpec,
   batch: HttpBatch,
@@ -1097,11 +1138,13 @@ function renderEntries(
 ): (readonly [string, unknown])[] {
   const entries: (readonly [string, unknown])[] = [];
   for (const item of batch.writes) {
-    // 剥がす理由: 本文のエントリの値の葉(値が maruhi を離れる直前。この産物は
-    // リクエスト本文にしか流れず、失敗時の表示は応答から抽出して伏せた断片だけ)
+    // Why it is unwrapped: the value leaf of a body entry (the moment the
+    // value leaves maruhi. This product flows only into the request body,
+    // and failure display uses only fragments extracted from the response
+    // and redacted)
     const text = decodeValueText(Redacted.value(item.value));
     if (text === null) {
-      // prepareWork(sync-plan.ts)が送る前に弾いている前提の防衛線
+      // A defensive line on the premise that prepareWork (sync-plan.ts) has already filtered these out before sending
       throw new Error("a value that is not valid UTF-8 reached the http driver");
     }
     entries.push([item.name, renderEntry(write.entry, { name: item.name, text, options })]);
@@ -1115,14 +1158,15 @@ function renderEntries(
   return entries;
 }
 
-/** 一覧の読み(項目の配列と完全性)。失敗なら伏せ字化済みの行。 */
+/** Reading a list (the array of items and its completeness). On failure, already-redacted lines. */
 type Listing =
   | { readonly items: readonly Record<string, unknown>[]; readonly complete: boolean }
   | { readonly failure: readonly string[] };
 
 /**
- * 一覧を 1 回読む(値は読まずに捨てる — 名前と ID の突合にだけ使う)。続きのページが
- * あるかも返す(続きがあれば「無い」を証拠にしない — fail-closed)。
+ * Reads the list once (values are discarded unread — used only for
+ * name/ID matching). Also returns whether there might be a next page (if
+ * there is, "absent" is not evidence — fail-closed).
  */
 function fetchListing(
   input: HttpTargetInput,
@@ -1150,7 +1194,7 @@ function fetchListing(
   });
 }
 
-/** 続きのページが無いか(Vercel の `pagination.next`。宣言が無い / null = 一覧は完全)。 */
+/** Whether there is no next page (Vercel's `pagination.next`. No declaration / null = the list is complete). */
 function isListingComplete(spec: HttpListSpec, body: unknown): boolean {
   if (spec.nextPage === undefined || !isRecord(body)) {
     return true;
@@ -1161,7 +1205,7 @@ function isListingComplete(spec: HttpListSpec, body: unknown): boolean {
   return next === undefined || next === null || next === false;
 }
 
-/** 一覧の項目を名前で引ける形に(文字列の `keyField` を持つものだけ)。 */
+/** The list items in name-addressable form (only those with a string `keyField`). */
 function listedByKey(
   items: readonly Record<string, unknown>[],
   keyField: string,
@@ -1177,8 +1221,9 @@ function listedByKey(
 }
 
 /**
- * update で変えられない属性の守り(`updateGuards`): 破っていれば文面(変数名と属性名
- * だけ。値は載らない)、守れていれば null。
+ * The guard of an attribute an update cannot change (`updateGuards`): the
+ * message when broken (variable name and attribute name only — no value),
+ * null when honored.
  */
 function guardUpdate(
   write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
@@ -1194,7 +1239,7 @@ function guardUpdate(
   return null;
 }
 
-/** 削除の照合: 要素が「このターゲットの環境」のものか(名前が同じでも別の環境は消さない)。 */
+/** The delete's matching: whether the element belongs to "this target's environment" (a same-named variable of a different environment is never deleted). */
 function matchesTarget(
   element: Record<string, unknown>,
   match: Extract<HttpDeleteSpec, { kind: "lookup" }>["match"],
@@ -1213,8 +1258,10 @@ function matchesTarget(
 }
 
 /**
- * 削除の 1 手目: 一覧で同期先側の ID を引く。`whole` = 照合した要素が、その名前の
- * 項目の全要素だった(項目ごと消してよい — `removeItem` のあるプリセットだけが使う)。
+ * The delete's first step: look up the target-side IDs in the list.
+ * `whole` = the matched elements were all of that name's item's elements
+ * (the item may be deleted whole — only presets with a `removeItem` use
+ * this).
  */
 function lookupIds(
   items: readonly Record<string, unknown>[],
@@ -1246,15 +1293,18 @@ function lookupIds(
   return { ids, whole: matchedItems > 0 && wholeItems === matchedItems };
 }
 
-/** 1 変数だけのバッチ(create-or-update の各手に readResponse を通す形)。 */
+/** A batch of exactly one variable (each step of create-or-update goes through readResponse). */
 function singleBatch(write: SyncWrite): HttpBatch {
   return { kind: "write", names: [write.name], writes: [write], deletes: [] };
 }
 
 /**
- * create-or-update の書き込み: 一覧で名前の有無を引き、無い名前は create・ある名前は
- * update を 1 変数ずつ送る。最初の失敗で止め、届いた名前を返す(一覧と送信の間に
- * 同名が作られれば create が同期先の失敗として出る — 次の apply は update になる)。
+ * The create-or-update write: look the names up in the list, send a create
+ * for each absent name and an update for each present one, one variable at
+ * a time. Stop at the first failure and return the delivered names (if a
+ * same-named variable gets created between the listing and the send, the
+ * create surfaces as a target-side failure — the next apply becomes an
+ * update).
  */
 function createOrUpdate(
   input: HttpTargetInput,
@@ -1264,8 +1314,9 @@ function createOrUpdate(
   return Effect.gen(function* () {
     const listing = yield* fetchListing(input, write.list);
     if ("failure" in listing) {
-      // 一覧は応答が返っている(lines が HTTP status を言う)ので「送っていない」と
-      // 言わない — 何が失敗したかは一覧の失敗として言う
+      // The listing did get a response back (lines state the HTTP status),
+      // so don't say "not sent" — what failed is reported as the listing's
+      // failure
       return {
         delivered: [],
         failure: {
@@ -1276,8 +1327,9 @@ function createOrUpdate(
       };
     }
     if (!listing.complete) {
-      // 続きがあるのに一覧で判定すると、既にある名前を create して失敗する(または
-      // 同期先の規則で二重に作る)。何も送らずに止める
+      // Judging by a list that has a continuation would create a name that
+      // already exists and fail (or create it twice under the target's
+      // rules). Stop without sending anything
       return {
         delivered: [],
         failure: {
@@ -1298,7 +1350,7 @@ function createOrUpdate(
   });
 }
 
-/** create-or-update の送信部: 1 変数ずつ、最初の失敗で止める。 */
+/** The sending part of create-or-update: one variable at a time, stopping at the first failure. */
 function writeOneByOne(
   input: HttpTargetInput,
   write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
@@ -1310,9 +1362,11 @@ function writeOneByOne(
     for (const item of batch.writes) {
       const one = singleBatch(item);
       const listed = existing.get(item.name);
-      // 1 変数の送信が型付きエラーで落ちても(試行の使い切り・Retry-After 超過)、この
-      // バッチで先に届いた名前を失わない: その変数の失敗として報告し、届いた分はレシートへ
-      // (create-or-update は書き込み全部が 1 バッチなので、落とすと実行全体の進みが消える)
+      // Even if sending one variable fails with a typed error (attempts
+      // exhausted, Retry-After exceeded), the names delivered earlier in
+      // this batch are not lost: reported as that variable's failure, and
+      // the delivered ones go to the receipt (in create-or-update the whole
+      // write is one batch, so letting it fall erases the run's progress)
       const result = yield* (
         listed === undefined
           ? createOrRecover(input, write, one)
@@ -1338,7 +1392,7 @@ function writeOneByOne(
   });
 }
 
-/** 一覧にある名前: 守り(`updateGuards`)を通してから update を 1 件送る。 */
+/** A name in the list: pass the guard (`updateGuards`), then send one update. */
 function updateOne(
   input: HttpTargetInput,
   write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
@@ -1347,7 +1401,7 @@ function updateOne(
 ): Effect.Effect<HttpRequestResult, CliError, HttpClient.HttpClient> {
   const refused = guardUpdate(write, one.names[0] ?? "", listed, input.options);
   if (refused !== null) {
-    // 送らずに止める(値は残らない。届いた分はレシートへ)
+    // Stop without sending (no value lands. The delivered share goes to the receipt)
     return Effect.succeed({
       delivered: [],
       failure: { names: one.names, what: "maruhi did not send the request", lines: [refused] },
@@ -1359,10 +1413,13 @@ function updateOne(
 }
 
 /**
- * 一覧に無い名前: create を送る。create は upsert でない(既存 key を拒む)ので、届いた
- * のに応答が失われて再送された形(`send` のリトライ)や、一覧と送信の間に同名が作られた
- * 競合では、同期先の失敗として返る。そのときは**一覧を引き直し**、名前があれば update に
- * 切り替える(応答の文言に依らない)。無ければ create の失敗をそのまま。
+ * A name not in the list: send the create. create is not an upsert (it
+ * refuses an existing key), so shapes like a delivered response lost and
+ * resent (`send`'s retry) or a same-named variable created between the
+ * listing and the send come back as a target-side failure. In that case,
+ * **re-read the list** and switch to an update if the name is there
+ * (regardless of the response's wording). If not, the create's failure
+ * stands.
  */
 function createOrRecover(
   input: HttpTargetInput,
@@ -1375,8 +1432,10 @@ function createOrRecover(
     if (created.failure === null) {
       return created;
     }
-    // 引き直しの一覧が失敗しても(通信層・試行の使い切り = 型付きエラー)create の失敗の
-    // 報告に戻す: ここで落とすと、同じバッチで先に届いた名前がレシートに残らない
+    // Even if the re-read listing fails (transport layer, attempts
+    // exhausted = a typed error), fall back to reporting the create's
+    // failure: failing here would keep names already delivered in the same
+    // batch off the receipt
     const listing = yield* fetchListing(input, write.list).pipe(
       Effect.catch((error: CliError) => Effect.succeed({ failure: [error.message] })),
     );
@@ -1391,7 +1450,7 @@ function createOrRecover(
   });
 }
 
-/** create の失敗に、引き直しの一覧の失敗(伏せ字化済みの行)を添える。 */
+/** Attaches the re-read listing's failure (already-redacted lines) to a create's failure. */
 function withRecheckFailure(
   created: HttpRequestResult,
   lines: readonly string[],
@@ -1415,12 +1474,15 @@ function withRecheckFailure(
  * Runs one batch against the vendor API: the write request(s), or the
  * lookup-then-delete pair for presets whose delete does not ride along.
  *
- * バッチの送信が型付きエラーで落ちても(試行の使い切り・Retry-After 超過)、その
- * バッチの失敗として返す: 呼び出し側(sync-plan.ts の runBatches)は前のバッチで
- * 届いた名前を畳んでいる途中で、ここで落とすとその進みごと消える(削除バッチの
- * 一覧・DELETE、upsert の 2 つ目以降のバッチ)。http の全プリセット・全バッチ
- * 種別に一様(exec の runInvocations も同じ形 — 起動の失敗をその呼び出しの
- * 失敗に畳む)。create-or-update の書き込みは中で 1 変数ずつ受け、届いた分を保つ。
+ * Even when the batch's send fails with a typed error (attempts exhausted,
+ * Retry-After exceeded), return it as that batch's failure: the caller
+ * (sync-plan.ts's runBatches) is mid-way folding the names earlier batches
+ * delivered, and failing here would erase that progress (a delete batch's
+ * listing and DELETEs, an upsert's second-and-later batches). Uniform
+ * across every http preset and batch kind (exec's runInvocations has the
+ * same shape — a launch failure is folded into that invocation's
+ * failure). A create-or-update write receives one variable at a time
+ * inside and keeps the delivered share.
  */
 export function runBatch(
   input: HttpTargetInput,
@@ -1454,7 +1516,7 @@ export function runBatch(
   );
 }
 
-/** 削除バッチ(1 名前): 一覧で ID を引き、値ごと(または項目ごと)に消す。 */
+/** A delete batch (one name): look the ID up in the list, then delete per value (or per item). */
 function lookupAndRemove(
   input: HttpTargetInput,
   spec: Extract<HttpDeleteSpec, { kind: "lookup" }>,
@@ -1464,8 +1526,8 @@ function lookupAndRemove(
     const name = batch.names[0] ?? "";
     const listing = yield* fetchListing(input, spec.list);
     if ("failure" in listing) {
-      // 一覧は応答が返っている(lines が HTTP status を言う)ので「送っていない」と
-      // 言わない
+      // The listing did get a response back (lines state the HTTP status),
+      // so don't say "not sent"
       return {
         delivered: [],
         failure: {
@@ -1477,8 +1539,9 @@ function lookupAndRemove(
     }
     const looked = lookupIds(listing.items, spec, name, input.options);
     if (looked.ids.length === 0 && !listing.complete) {
-      // 一覧に続きがあるのに名前が無い: 「消えている」とは言えない。届いたと記録せず
-      // レシートに残す(次の apply が再び試す — fail-closed)
+      // A name missing from a list that has a continuation: cannot say
+      // it's "gone". Don't record it as delivered and leave it on the
+      // receipt (the next apply tries again — fail-closed)
       return {
         delivered: [],
         failure: {
@@ -1490,7 +1553,7 @@ function lookupAndRemove(
         },
       };
     }
-    // 完全な一覧に無い = 同期先で既に消えている(読み戻しは ID の突合だけで、値は読まない)
+    // Absent from a complete list = already deleted at the target (the re-read only matches IDs; values are never read)
     if (looked.whole && spec.removeItem !== undefined) {
       return yield* removeOne(input, spec.removeItem, batch, { id: null, name });
     }
@@ -1498,7 +1561,7 @@ function lookupAndRemove(
   });
 }
 
-/** 削除の 2 手目: 引いた ID を 1 件ずつ DELETE(404 = 一覧の直後に並行して消された)。 */
+/** The delete's second step: DELETE each looked-up ID (404 = deleted concurrently right after the listing). */
 function removeByIds(
   input: HttpTargetInput,
   spec: Extract<HttpDeleteSpec, { kind: "lookup" }>,
@@ -1517,7 +1580,7 @@ function removeByIds(
   });
 }
 
-/** DELETE 1 件(ID か名前で)。404 は「既に消えている」= 成功扱い。 */
+/** One DELETE (by ID or name). 404 is "already gone" = success. */
 function removeOne(
   input: HttpTargetInput,
   spec: HttpRemoveSpec,
@@ -1537,8 +1600,10 @@ function removeOne(
 }
 
 /**
- * ヘッダー値に載らない文字を含むか: C0 制御文字(改行を含む)・DEL・ISO-8859-1 の
- * 外(fetch の `Headers` が TypeError で拒む — 型付きエラーにする)。
+ * Whether the text contains a character that cannot go on a header value:
+ * C0 control characters (including newlines), DEL, or outside ISO-8859-1
+ * (fetch's `Headers` refuses them with a TypeError — turned into a typed
+ * error).
  */
 function hasNonHeaderCharacter(text: string): boolean {
   for (const character of text) {
@@ -1550,13 +1615,13 @@ function hasNonHeaderCharacter(text: string): boolean {
   return false;
 }
 
-/** 統合トークンの検査(ヘッダーに載る形か)。文面は変数名だけを運ぶ。 */
+/** Checking an integration token (a shape that can go on a header). The message carries only the variable name. */
 export function checkIntegrationToken(name: string, bytes: Uint8Array): CliError | string {
   const text = decodeValueText(bytes);
   if (text === null || text.length === 0) {
     return cliError(`The token variable ${displayText(name)} is empty or not valid UTF-8`);
   }
-  // ヘッダー値に載らない文字(改行・制御文字)は `echo` の末尾改行が典型
+  // A character that cannot go on a header value (newline, control character) — `echo`'s trailing newline is typical
   if (hasNonHeaderCharacter(text)) {
     return cliError(
       `The token variable ${displayText(name)} contains a newline, a control character, or a character outside ISO-8859-1, so it cannot be sent as an Authorization header. Push the token without a trailing newline (\`printf %s\` instead of \`echo\`)`,

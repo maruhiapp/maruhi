@@ -1,12 +1,16 @@
-// oidc.package の公開面(ImportLint 境界)。
+// The public surface of oidc.package (the ImportLint boundary).
 //
-// AUTH_SPEC §14-1 の認証段(OIDC トークンの検証)だけをここに閉じる。
-// base64url デコード・JWK → WebCrypto の写像・JWKS キャッシュの内部は
-// 境界内に留め、外からは「トークン → 検証済み claim」の 1 操作に見せる。
+// Only AUTH_SPEC §14-1's authentication stage (OIDC token
+// verification) is confined here. The internals — base64url decoding,
+// the JWK → WebCrypto mapping, the JWKS cache — stay inside the
+// boundary; from the outside it looks like a single operation,
+// "token → verified claims".
 //
-// 認可(lease_policy との突合)はここに置かない: 認証と認可を実装単位で
-// 分けることが、§14-3 の「認証失敗のみ 401 / 認可失敗は一律 404」を
-// 構造として保証する。
+// Authorization (the comparison against lease_policy) is not placed
+// here: separating authentication from authorization at the
+// implementation-unit level is what structurally guarantees §14-3's
+// "authentication failure alone is 401 / authorization failure is
+// uniformly 404".
 
 export { makeJwksCache } from "./jwks.ts";
 export {

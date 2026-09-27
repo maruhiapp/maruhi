@@ -1,17 +1,24 @@
-// project DO 監査イベント読み取りの Effect プログラム(AUDIT_SPEC §6 / §7)。
+// Effect programs for reading a project DO's audit events
+// (AUDIT_SPEC §6 / §7).
 //
-// - 可視性クラス(§6)は認可段で強制する: admin 可視(全行)は「チェーン role
-//   admin 以上 × トークンスコープ admin」(§12-3 の min(スコープ, role) 規律 —
-//   worker が scopeAdmin を判定して渡す)。それ未満はクラス 1 の行 + 本人が
-//   actor の行のみで、クラス 2 の行は件数・ページング・カーソルにも現れない
-//   (audit-store.ts の WHERE 句 — 「存在しないかのように振る舞う」)
-// - actor_user_id フィルタの他人指定は admin 可視でなければ 403(§6 の
-//   「他人が actor の行の横断検索はクラス 2」。データ非依存の静的規則なので
-//   存在情報は漏れない)
-// - 応答は記録どおりの行(識別子 + 記録 payload)のみ。表示名の解決・ミラーの
-//   検証はクライアントの領分(AUDIT_SPEC §7 / §1-5)
+// - Visibility classes (§6) are enforced at the authorization stage:
+//   admin visibility (all rows) is "chain role admin-or-above × token
+//   scope admin" (§12-3's min(scope, role) discipline — the worker
+//   judges scopeAdmin and passes it in). Below that, only class-1
+//   rows and rows where the requester is the actor are visible, and
+//   class-2 rows appear in neither the count, the pages, nor the
+//   cursor (audit-store.ts's WHERE clause — "they behave as if they
+//   do not exist")
+// - Specifying someone else in the actor_user_id filter is a 403
+//   without admin visibility (§6's "cross-sectional search of rows
+//   where someone else is the actor is class 2" — a static rule
+//   independent of the data, so no existence information leaks)
+// - The response is the rows as recorded (identifiers + recorded
+//   payload) only. Resolving display names and validating mirrors is
+//   the client's domain (AUDIT_SPEC §7 / §1-5)
 //
-// permit 直列化の前提は他の programs-* と同じ。
+// The permit-serialization premise is the same as the other
+// programs-*.
 
 import { DEFAULT_AUDIT_EVENTS_PAGE_LIMIT, MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
 import { Effect, type Schema } from "effect";
@@ -23,29 +30,30 @@ import type { DataActor } from "./data-plane.ts";
 import { rejectData, requireMemberState, roleAtLeast } from "./data-plane.ts";
 import { ensureStorageAdmitsAuditHeadExtension } from "./storage-guard.ts";
 
-/** 読み取りクエリ(RPC 境界を渡る)。フィルタ語彙は AUDIT_SPEC §7 のとおり。 */
+/** A read query (crosses the RPC boundary). The filter vocabulary is per AUDIT_SPEC §7. */
 export interface AuditEventsQueryInput {
-  /** ページングカーソル = 前ページ末尾行の id(row_id — §7 の不透明カーソル)。 */
+  /** The paging cursor = the id of the previous page's last row (row_id — §7's opaque cursor). */
   readonly beforeRowId?: string;
   readonly limit?: number;
   readonly event?: string;
-  /** event 名前空間の前置一致(AUDIT_SPEC §7)。 */
+  /** A prefix match on the event namespace (AUDIT_SPEC §7). */
   readonly eventPrefix?: string;
-  /** chain_seq が NULL でない行だけを返す(AUDIT_SPEC §7)。 */
+  /** Returns only rows whose chain_seq is not NULL (AUDIT_SPEC §7). */
   readonly chainSeqPresent?: true;
   readonly actorUserId?: string;
   readonly targetUserId?: string;
   readonly variableId?: string;
   readonly environmentId?: string;
   /**
-   * worker 判定のトークンスコープ半分(admin スコープが対象プロジェクトを
-   * 覆うか)。DO は「× チェーン role admin 以上」と合成してクラス 2 可視を
-   * 決める。actor(auditActorOf)と同じ worker 信頼境界の入力。
+   * The worker-judged token-scope half (whether the admin scope
+   * covers the target project). The DO composites it with "× chain
+   * role admin-or-above" to decide class-2 visibility. An input of
+   * the same worker trust boundary as actor (auditActorOf).
    */
   readonly scopeAdmin: boolean;
 }
 
-/** 監査イベントのアクター(ワイヤの AuditActorSchema と構造一致)。 */
+/** An audit event's actor (structurally identical to the wire's AuditActorSchema). */
 export interface AuditActorValue {
   readonly type: "user" | "server" | "system";
   readonly userId?: string;
@@ -53,11 +61,11 @@ export interface AuditActorValue {
   readonly apiTokenId?: string;
 }
 
-/** 監査イベント 1 行(ワイヤの AuditEventSchema と構造一致)。 */
+/** One audit-event row (structurally identical to the wire's AuditEventSchema). */
 export interface AuditEventValue {
-  /** ワイヤ行識別子(row_id — §5.1 / §7)。 */
+  /** The wire row identifier (row_id — §5.1 / §7). */
   readonly id: string;
-  /** 保存採番。admin 可視の project DO 応答のみ(§7 — 序数の非漏洩)。 */
+  /** The stored seq. Only on admin-visible project DO responses (§7 — non-disclosure of the ordinal). */
   readonly seq?: number;
   readonly serverTs: number;
   readonly clientTs?: number;
@@ -70,12 +78,12 @@ export interface AuditEventValue {
   readonly epoch?: number;
   readonly version?: number;
   readonly chainSeq?: number;
-  /** org 系列(D1 行のみ。project DO 行では常に欠落)。 */
+  /** The org axis (D1 rows only; always absent on project DO rows). */
   readonly orgId?: string;
   readonly payload?: Readonly<Record<string, Schema.Json>>;
 }
 
-/** 保存行の actor_type 列 → アクター種別(§2 の 3 値。列は書き込み時に固定済み)。 */
+/** The stored row's actor_type column → the actor kind (§2's 3 values; the column is already fixed at write time). */
 function actorTypeOf(stored: string): AuditActorValue["type"] {
   return stored === "server" || stored === "system" ? stored : "user";
 }
@@ -85,10 +93,12 @@ function spreadIf<K extends string, V>(key: K, value: V | null): { readonly [P i
 }
 
 /**
- * 保存行 → RPC 値。NULL 列はキーごと落とす(ワイヤの optionalKey と同型)。
- * `seq` は admin 可視のときだけ載せる(§7: 無欠番採番の序数は admin 未満に
- * クラス 2 の件数を漏らす。§6 の「欠番 = 削除の痕跡」検知は全行が見える
- * admin にだけ意味がある)。
+ * Stored row → RPC value. NULL columns are dropped with their keys
+ * (same shape as the wire's optionalKey).
+ * `seq` rides only on admin-visible responses (§7: the gapless
+ * ordinal would leak the class-2 row count to below-admin. §6's
+ * "a gap = a trace of deletion" detection is meaningful only to an
+ * admin who sees every row).
  */
 function toAuditEventValue(row: StoredAuditEventRow, includeSeq: boolean): AuditEventValue {
   return {
@@ -110,26 +120,30 @@ function toAuditEventValue(row: StoredAuditEventRow, includeSeq: boolean): Audit
     ...spreadIf("epoch", row.epoch),
     ...spreadIf("version", row.version),
     ...spreadIf("chainSeq", row.chainSeq),
-    // JSON.parse 由来の値は実行時に必ず JSON 語彙(encode 時の Schema.Json
-    // 検証が最終防衛)。unknown → Json は型のみの狭め
+    // A JSON.parse-derived value is always JSON vocabulary at
+    // runtime (the Schema.Json check at encode is the last line of
+    // defense). unknown → Json is a type-only narrowing
     ...spreadIf("payload", row.payload as Readonly<Record<string, Schema.Json>> | null),
   };
 }
 
-/** limit の確定(既定 50)。Schema が上限 200 を強制済みだが、DO 側でも束ねる(多層防御)。 */
+/** Resolution of limit (default 50). The Schema already enforces the 200 cap, but the DO side bounds it too (defense in depth). */
 export function resolvePageLimit(limit: number | undefined): number {
   const requested = limit ?? DEFAULT_AUDIT_EVENTS_PAGE_LIMIT;
   return Math.max(1, Math.min(requested, MAX_AUDIT_EVENTS_PAGE_LIMIT));
 }
 
 /**
- * GET /projects/:projectId/audit-head(AUTH_SPEC §16-2 — checkpoint の
- * audit_head_hash 公証の申告元)。認可は実効権限 admin: スコープ半分
- * (admin スコープ)は worker(callProjectData の permission: "admin")、
- * チェーン role 半分はここで判定する(member 水準に開くと累積ハッシュの
- * 変化のポーリングがクラス 2 の活動窓を漏らす — §16-2 のタイミングサイド
- * チャネル対応)。応答は累積ハッシュのみ(監査 seq・行数を載せない — §7 の
- * 件数非漏洩)。監査行ゼロは空文字列。
+ * GET /projects/:projectId/audit-head (AUTH_SPEC §16-2 — the
+ * declaration source of checkpoint's audit_head_hash notarization).
+ * Authorization is the effective permission admin: the scope half
+ * (admin scope) is the worker's (callProjectData's
+ * permission: "admin"); the chain-role half is checked here
+ * (opening it to member level would let polling of accumulated-hash
+ * changes leak the class-2 activity window — §16-2's timing side
+ * channel). The response is the accumulated hash only (neither audit
+ * seq nor the row count rides — §7's count non-disclosure). Zero
+ * audit rows return the empty string.
  */
 export const auditHeadProgram = (actor: DataActor, cache: StateCache) =>
   Effect.gen(function* () {
@@ -138,19 +152,27 @@ export const auditHeadProgram = (actor: DataActor, cache: StateCache) =>
       return yield* rejectData({ kind: "insufficient-role" });
     }
     const audit = yield* AuditStore;
-    // 累積ハッシュ列を MAX(seq) まで伸ばしてから読む(遅延 materialize —
-    // 初回呼び出しが既存行からの初期化マイグレーションを兼ねる。AUDIT_SPEC §5.1)。
-    // 注意: この GET は読み取り形だが**意図的に書き込む** endpoint である
-    // (派生列の遅延実体化 = 「読む経路が読む前に伸ばす」契約)。op permit 下で
-    // 直列化され、拡張は冪等なので再試行は安全だが、応答キャッシュの導入や
-    // 「GET = 副作用なし」を前提にした経路変更はこの副作用を壊す。
-    // 有界伸長: 上限到達 = MAX(seq) 未到達なら古いヘッドを
-    // 返さず retryable な audit-head-not-ready(503)— 拒否は認可判定(上の
-    // 404 / 403)より後なので §11-2 の存在秘匿と両立する
-    // DO ストレージ総量ガード(AUTH_SPEC §12-8): 上の実体化が書き込みを
-    // 要する(列が MAX(seq) 未到達)ときだけ、拒否閾値以上の DO では 422
-    // project-storage-bytes で拒否する(監査行そのものの読み取り — auditEvents —
-    // はガード対象外)。認可判定(404 / 403)より後 = §11-2 と両立
+    // Extend the accumulated-hash column up to MAX(seq) before
+    // reading (lazy materialization — the first call doubles as the
+    // initialization migration over existing rows. AUDIT_SPEC §5.1).
+    // Note: this GET is read-shaped but is an endpoint that
+    // **deliberately writes** (lazy materialization of a derived
+    // column = the contract "the read path extends before reading").
+    // It is serialized under the op permit and the extension is
+    // idempotent, so retries are safe; but introducing response
+    // caching or rerouting on the assumption "GET = side-effect-free"
+    // would break this side effect.
+    // Bounded extension: hitting the cap (= not reaching MAX(seq))
+    // returns a retryable audit-head-not-ready (503) rather than a
+    // stale head — since the refusal comes after the authorization
+    // checks (the 404 / 403 above), it composes with §11-2's
+    // existence hiding.
+    // The DO storage-total guard (AUTH_SPEC §12-8): only when the
+    // materialization above needs a write (the column is short of
+    // MAX(seq)), a DO at or beyond the refusal threshold is rejected
+    // with 422 project-storage-bytes (reading the audit rows
+    // themselves — auditEvents — is not guarded). After the
+    // authorization checks (404 / 403) = composes with §11-2
     yield* ensureStorageAdmitsAuditHeadExtension;
     if ((yield* audit.ensureHeadCurrent) === "more-remains") {
       return yield* rejectData({ kind: "audit-head-not-ready" });

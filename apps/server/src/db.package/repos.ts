@@ -1,12 +1,16 @@
-// D1 リポジトリの Effect サービス実装(AUTH_SPEC §2。ADR-0006)。
+// The Effect service implementation of the D1 repositories (AUTH_SPEC
+// §2; ADR-0006).
 //
-// - Drizzle の型・クエリはこのファイル(db.package 境界内)に閉じる。公開シェイプは
-//   ドメイン型(../auth-domain.ts)と Effect のみ
-// - D1 の障害(接続・SQL エラー)は defect として扱う(Effect.promise)。ドメイン上
-//   予期される分岐(該当なし・一意制約競合)だけを値で表現する
-// - Drizzle 採用の確定判断はセッション 06: classic drizzle-orm/d1 を採用。
-//   effect-d1 ドライバは rc.4 時点で transaction / batch 未対応のため、原子性が
-//   必要な getOrCreateUser(§1-5)が成立しない。D1 の atomic batch を使う
+// - Drizzle types and queries are confined to this file (inside the
+//   db.package boundary). The public shapes are domain types
+//   (../auth-domain.ts) and Effect only
+// - A D1 failure (connection, SQL error) is treated as a defect
+//   (Effect.promise). Only the domain-expected branches (no such row,
+//   a unique-constraint conflict) are expressed as values
+// - The settled decision to adopt Drizzle is session 06: classic
+//   drizzle-orm/d1 was adopted. The effect-d1 driver at rc.4 did not
+//   support transaction / batch, so getOrCreateUser (§1-5), which needs
+//   atomicity, could not stand. D1's atomic batch is used
 
 import type { SignupPolicy } from "@maruhi/api-schema";
 import type { OrgRole, TokenScope } from "@maruhi/core";
@@ -78,17 +82,21 @@ type Db = ReturnType<typeof drizzle>;
 const run = <T>(evaluate: () => Promise<T>): Effect.Effect<T> => Effect.promise(evaluate);
 
 // ---------------------------------------------------------------------------
-// IdentityRepo(§1-5 getOrCreateUser / §9-1 パーソナル org 自動作成)
+// IdentityRepo (§1-5 getOrCreateUser / §9-1 automatic personal-org
+// creation)
 // ---------------------------------------------------------------------------
 
 interface IdentityRepoShape {
   /**
-   * 単一の冪等な入口。新規作成時は本人 owner のパーソナル org を同時に作る。
+   * The single idempotent entry point. On fresh creation, a personal
+   * org owned by the user is created at the same time.
    *
-   * signupPolicy ゲート(AUTH_SPEC §3)は「不在 → 作成」分岐の直前にあり、
-   * 既存ユーザーの解決には一切影響しない。`signupInviteTokenHash` はサインアップ
-   * 招待コード(提示文字列全体)の SHA-256(未提示は null)。
-   * `invite` 下の作成はコード消費 CAS と同一 D1 batch で行われる。
+   * The signupPolicy gate (AUTH_SPEC §3) sits right before the "absent →
+   * create" branch and never affects resolving an existing user.
+   * `signupInviteTokenHash` is the SHA-256 of the signup invite code
+   * (the whole presented string; null when not presented). A creation
+   * under `invite` happens in the same D1 batch as the code-consumption
+   * CAS.
    */
   readonly getOrCreateUser: (
     identity: VerifiedIdentity,
@@ -96,30 +104,33 @@ interface IdentityRepoShape {
     signupInviteTokenHash: string | null,
   ) => Effect.Effect<SignupGateResult>;
   /**
-   * 照会のみ(作成しない — AUTH_SPEC §4-1 (4) (ii)・裁定 DH)。CLI ログインの
-   * ブラウザ脚が使う: アカウント不在はサインアップ案内で終了し、一切の
-   * 不可逆な副作用を起こさない。
+   * Lookup only (never creates — AUTH_SPEC §4-1 (4) (ii), ruling DH).
+   * Used by the browser leg of CLI login: a missing account ends in
+   * signup guidance and produces no irreversible side effect.
    */
   readonly lookupUser: (identity: VerifiedIdentity) => Effect.Effect<string | null>;
-  /** ユーザーが属する org 一覧(プロジェクト作成先の発見用。§11-3)。 */
+  /** The orgs the user belongs to (for discovering where to create a project. §11-3). */
   readonly listUserOrgs: (userId: string) => Effect.Effect<readonly UserOrg[]>;
   /**
-   * GitHub の表示用 login スナップショット(`/auth/me` の providerLogin —
-   * AUTH_SPEC §15-3 の `il` の材料)。リンクなし・未保存は null。
+   * The GitHub display login snapshot (`/auth/me`'s providerLogin — the
+   * input of AUTH_SPEC §15-3's `il`). null when unlinked or unstored.
    */
   readonly providerLoginOf: (userId: string) => Effect.Effect<string | null>;
   /**
-   * 受理時点の signupPolicy(AUTH_SPEC §3)。行なし = 'open'(既定 = 従来挙動)、
-   * 未知の保存値 = 'closed'(fail-closed — 運営の誤設定を黙って 'open' に
-   * 化けさせない)。`/auth/config` の advisory と CLI サインアップ案内ページの
-   * 文言分岐が読む。
+   * The signupPolicy at acceptance time (AUTH_SPEC §3). No row = 'open'
+   * (the default = legacy behavior); an unknown stored value = 'closed'
+   * (fail-closed — an operator's misconfiguration never silently turns
+   * into 'open'). Read by `/auth/config`'s advisory and by the wording
+   * branch of the CLI signup-guidance page.
    */
   readonly signupPolicy: Effect.Effect<SignupPolicy>;
   /**
-   * サインアップ招待コードの事前検証(AUTH_SPEC §3 — start の開始時 fail-fast)。
-   * 存在・未消費・未失効のときのみ true。256-bit 乱数・単回なので存在オラクルに
-   * ならない(§15 招待トークンと同水準)。消費はここでは行わない(消費は
-   * getOrCreateUser の作成 batch 内の CAS のみ)。
+   * Pre-validation of a signup invite code (AUTH_SPEC §3 — fail-fast at
+   * the start of `start`). True only when it exists, is unconsumed, and
+   * is unexpired. A 256-bit single-use random, so it is not an
+   * existence oracle (same level as the §15 invite tokens). Not
+   * consumed here (consumption happens only in the CAS inside
+   * getOrCreateUser's creation batch).
    */
   readonly hasPendingSignupInvite: (tokenHashHex: string, nowMs: number) => Effect.Effect<boolean>;
 }
@@ -147,11 +158,15 @@ function lookupLinkedUser(db: Db, identity: VerifiedIdentity): Effect.Effect<str
 class InsertConflictError extends Data.TaggedError("InsertConflict")<object> {}
 
 /**
- * 一意制約違反かどうかを D1 のエラーメッセージで判別する。競合以外の失敗
- * (一時障害・FK 違反等)を「競合」に誤分類すると再ルックアップが空になり、
- * 実態と異なる defect メッセージで障害調査を誤誘導するため区別する。
- * drizzle は経路によってエラーを `cause` にラップする(batch は素通し、単発
- * クエリは DrizzleQueryError)ため、cause 連鎖も辿る。テスト用に公開する。
+ * Judges from the D1 error message whether a failure is a unique
+ * constraint violation. Distinguished because misclassifying a
+ * non-conflict failure (a transient outage, an FK violation, etc.) as a
+ * "conflict" would make the re-lookup come up empty and misdirect the
+ * incident investigation with a defect message that does not match
+ * reality. drizzle wraps the error into `cause` depending on the path
+ * (a batch passes it through; a single query wraps it in
+ * DrizzleQueryError), so the cause chain is walked too. Exposed for
+ * tests.
  */
 export function isUniqueConflict(error: unknown): boolean {
   for (let current = error; current instanceof Error; current = current.cause) {
@@ -162,17 +177,19 @@ export function isUniqueConflict(error: unknown): boolean {
   return false;
 }
 
-/** deployment_settings の signupPolicy キー(AUTH_SPEC §3)。 */
+/** The signupPolicy key in deployment_settings (AUTH_SPEC §3). */
 const SIGNUP_POLICY_KEY = "signup_policy";
 
-// 未知の保存値の fail-closed 警告は isolate ごとに 1 回だけ出す(/auth/config は
-// 外形監視が定期的に叩く面 — hosted-design.md §5-2 — であり、毎回の warn は
-// ログを溢れさせる)。メッセージは静的(保存値そのものは書かない — §11-5 の規律)
+// The fail-closed warning for an unknown stored value is emitted once
+// per isolate (/auth/config is a surface the synthetic monitor hits
+// periodically — hosted-design.md §5-2 — and warning every time would
+// flood the log). The message is static (the stored value itself is
+// never written — the §11-5 discipline)
 let warnedUnknownSignupPolicy = false;
 
 /**
- * 受理時点の signupPolicy の読み取り(AUTH_SPEC §3)。行なし = 'open'、
- * 未知の値 = 'closed'(fail-closed)。
+ * Read the signupPolicy at acceptance time (AUTH_SPEC §3). No row =
+ * 'open'; an unknown value = 'closed' (fail-closed).
  */
 async function readSignupPolicy(db: Db): Promise<SignupPolicy> {
   const row = await db
@@ -196,41 +213,50 @@ async function readSignupPolicy(db: Db): Promise<SignupPolicy> {
 }
 
 /**
- * 作成 batch 内で評価する signupPolicy 条件(AUTH_SPEC §3 —「判定は受理時点の
- * 設定」)。読み取り(readSignupPolicy)と作成の間に設定が遷移しても、作成が
- * 効くのはこの条件が batch のトランザクション内で真のときだけ — 遷移との競合窓を
- * 作らない(§12-11 の DO 直列化に相当する D1 形)。行なしの既定 'open' は
- * coalesce が畳む。
+ * The signupPolicy condition evaluated inside the creation batch
+ * (AUTH_SPEC §3 — "the judgment uses the setting at acceptance time").
+ * Even if the setting transitions between the read (readSignupPolicy)
+ * and the creation, the creation takes effect only when this condition
+ * is true inside the batch's transaction — no race window against the
+ * transition (the D1 shape equivalent to the §12-11 DO
+ * serialization). The default 'open' of a missing row is folded by
+ * coalesce.
  */
 function signupPolicyIs(value: SignupPolicy): SQL {
   return sql`(select coalesce((select ${deploymentSettings.value} from ${deploymentSettings} where ${deploymentSettings.key} = ${SIGNUP_POLICY_KEY}), 'open')) = ${value}`;
 }
 
-/** 作成ゲートの指定(AUTH_SPEC §3): open のポリシー条件か、invite の消費 CAS。 */
+/** The specification of the creation gate (AUTH_SPEC §3): open's policy condition or invite's consumption CAS. */
 type SignupGate =
   | { readonly kind: "open" }
   | { readonly kind: "invite"; readonly inviteId: string };
 
-/** ゲート敗北(ポリシー遷移・招待コードの並行消費)。呼び出し側が再判定する。 */
+/** A lost gate (a policy transition or a concurrent invite-code consumption). The caller re-judges. */
 class SignupGateLostError extends Data.TaggedError("SignupGateLost")<object> {}
 
 /**
- * users + linked_identities + パーソナル org + owner membership を atomic batch で
- * 作成する。並行サインアップは (provider, provider_user_id) の PK で片方が失敗する
- * ので、競合時は呼び出し側が再ルックアップする。競合以外の失敗は defect。
+ * Creates users + linked_identities + the personal org + the owner
+ * membership in one atomic batch. Of two concurrent signups one fails
+ * on the (provider, provider_user_id) PK, so on a conflict the caller
+ * re-looks-up. A failure other than a conflict is a defect.
  *
- * signupPolicy ゲート(AUTH_SPEC §3)は batch 先頭の条件として畳む: open は
- * 先頭 INSERT の WHERE にポリシー条件、invite は先頭の消費 CAS
- * (UPDATE — pending・未失効・ポリシー 'invite' のときのみ効く)。後続の全文は
- * `changes() = 1` で直前の成立に連鎖する(tokenInsertSelect と同じ D1 batch の
- * 作法)ため、ゲートが負けた batch は**何も書かずに**コミットされる(コードだけ
- * 燃える形・部分作成の両方が構造的に存在しない)。
+ * The signupPolicy gate (AUTH_SPEC §3) is folded in as the batch's
+ * head condition: for open it is the policy condition on the head
+ * INSERT's WHERE; for invite it is the head consumption CAS (an UPDATE
+ * that takes effect only on pending + unexpired + policy 'invite').
+ * Every following statement chains on the previous one's success via
+ * `changes() = 1` (the same D1 batch idiom as tokenInsertSelect), so a
+ * batch whose gate lost is committed **having written nothing**
+ * (neither the "burns a code only" shape nor a partial creation can
+ * exist structurally).
  *
- * 監査(AUDIT_SPEC §3.1〜§3.2)も同じ batch で追記する: auth.user_created
- * (invite 消費由来は payload に signupInviteId — AUDIT_SPEC §3.1)/
- * auth.identity_linked(provider 種別名のみ — 数値 ID・login は記録しない)/
- * org.created(パーソナル org 自動作成。org 名は providerLogin 由来のため
- * payload に写さない — §1-2)/ org.member_added(owner 自身)。
+ * Audit (AUDIT_SPEC §3.1–§3.2) is appended in the same batch too:
+ * auth.user_created (an invite-consumption origin carries signupInviteId
+ * in the payload — AUDIT_SPEC §3.1) / auth.identity_linked (the
+ * provider kind only — the numeric ID and login are never recorded) /
+ * org.created (automatic personal-org creation; the org name derives
+ * from providerLogin so it is not copied into the payload — §1-2) /
+ * org.member_added (the owner themselves).
  */
 function createUserBatch(
   db: Db,
@@ -242,9 +268,10 @@ function createUserBatch(
   const orgId = ulid(nowMs);
   const actor: D1AuditActor = { userId };
   const chained = sql`changes() = 1`;
-  // 後続の全文は直前の文の成立(changes() = 1)に連鎖する INSERT…SELECT
-  // (tokenInsertSelect と同じ形)。挿入行はすべて定数選択なので、ゲートが
-  // 負けた batch では 1 行も書かれない
+  // Every following statement is an INSERT…SELECT chained on the
+  // previous one's success (changes() = 1) (the same shape as
+  // tokenInsertSelect). Every inserted row is a constant selection, so
+  // a batch whose gate lost writes not a single row
   const usersInsert = db
     .insert(users)
     .select(
@@ -358,10 +385,12 @@ function createUserBatch(
         gate.kind === "invite"
           ? (
               await db.batch([
-                // 消費 CAS(AUTH_SPEC §3): pending・未失効・受理時点ポリシーが
-                // 'invite' のときのみ効く。作成と同一トランザクション —
-                // 「作成に失敗した試行がコードだけ燃やす形」も「作成が成功した
-                // のにコードが未消費で残る形」も存在しない
+                // The consumption CAS (AUTH_SPEC §3): takes effect only
+                // on pending + unexpired + acceptance-time policy
+                // 'invite'. Same transaction as the creation — neither
+                // the "a failed attempt burns a code only" shape nor
+                // the "creation succeeded but the code is left
+                // unconsumed" shape exists
                 db
                   .update(signupInvites)
                   .set({ status: "used", usedByUserId: userId, usedAt: nowMs })
@@ -384,7 +413,8 @@ function createUserBatch(
       if (isUniqueConflict(error)) {
         return new InsertConflictError();
       }
-      // 競合以外の D1 障害はインフラ defect としてそのまま伝播する
+      // A D1 failure other than a conflict propagates as-is, as an
+      // infrastructure defect
       throw error;
     },
   }).pipe(
@@ -395,8 +425,9 @@ function createUserBatch(
 }
 
 /**
- * ログイン時に verified メールを最新化する(GitHub の email API の一時障害で
- * サインアップ時に取り損ねた場合の自己修復)。null では既存値を消さない。
+ * Refreshes the verified email at login (self-repair for the case where
+ * a transient GitHub email-API outage missed it at signup). null never
+ * wipes the existing value.
  */
 function refreshVerifiedEmail(
   db: Db,
@@ -416,7 +447,7 @@ function refreshVerifiedEmail(
   });
 }
 
-/** サインアップ招待コードの pending 行の照会(消費しない — 消費は作成 batch)。 */
+/** Look up a signup invite code's pending row (does not consume — consumption is the creation batch's job). */
 function findPendingSignupInvite(
   db: Db,
   tokenHashHex: string,
@@ -439,10 +470,13 @@ function findPendingSignupInvite(
 }
 
 function makeIdentityRepo(db: Db): IdentityRepoShape {
-  // signupPolicy ゲート(AUTH_SPEC §3)つきの単一の冪等な入口(§1-5)。
-  // attempt は SignupGateLost(読み取りと batch の間にポリシーが遷移した・
-  // 招待コードが並行消費された)の再判定回数 — 再帰は毎回設定を読み直すので
-  // 定常状態では 1 回で収束する。収束しない設定の往復は運用異常(defect)
+  // The single idempotent entry point (§1-5) carrying the signupPolicy
+  // gate (AUTH_SPEC §3). attempt is the re-judgment count of
+  // SignupGateLost (the policy transitioned between the read and the
+  // batch, or the invite code was concurrently consumed) — each
+  // recursion re-reads the setting, so in a steady state it converges
+  // in one pass. A setting that keeps oscillating without converging is
+  // an operational anomaly (defect)
   const getOrCreateUser = (
     identity: VerifiedIdentity,
     nowMs: number,
@@ -461,8 +495,8 @@ function makeIdentityRepo(db: Db): IdentityRepoShape {
       );
     return Effect.flatMap(lookupLinkedUser(db, identity), (existing) => {
       if (existing !== null) {
-        // 既存ユーザーはゲート非通過(AUTH_SPEC §3 — 新規作成だけを塞ぐ)。
-        // 提示されたコードは消費されない
+        // An existing user bypasses the gate (AUTH_SPEC §3 — it only
+        // blocks fresh creation). A presented code is not consumed
         return Effect.as(refreshVerifiedEmail(db, existing, identity, nowMs), {
           userId: existing,
           created: false,
@@ -503,7 +537,7 @@ function makeIdentityRepo(db: Db): IdentityRepoShape {
   };
 }
 
-/** batch 競合後の再ルックアップ。ここでも見つからないのは D1 障害(defect)。 */
+/** The re-lookup after a batch conflict. Still not finding it here is a D1 failure (defect). */
 function rerunLookup(db: Db, identity: VerifiedIdentity): Effect.Effect<ResolvedUser> {
   return Effect.flatMap(lookupLinkedUser(db, identity), (found) =>
     found === null
@@ -541,7 +575,8 @@ function listUserOrgs(db: Db, userId: string): Effect.Effect<readonly UserOrg[]>
 }
 
 // ---------------------------------------------------------------------------
-// SessionRepo(§5。id はハッシュ。生値はこの層に到達しない)
+// SessionRepo (§5. The id is a hash; the raw value never reaches this
+// layer)
 // ---------------------------------------------------------------------------
 
 export interface SessionRepoShape {
@@ -553,16 +588,17 @@ export interface SessionRepoShape {
     expiresAtMs: number,
   ) => Effect.Effect<void>;
   readonly findByHash: (idHash: string) => Effect.Effect<SessionRecord | null>;
-  /** スライディング更新(§5): last_used_at と expires_at を進める。 */
+  /** The sliding update (§5): advances last_used_at and expires_at. */
   readonly touch: (idHash: string, nowMs: number, expiresAtMs: number) => Effect.Effect<void>;
   /**
-   * 明示失効(ログアウト / サーバー側失効)。auth.session_revoked を同一 batch で
-   * 記録する(AUDIT_SPEC §3.1)。期限切れ掃除は deleteByHash / deleteExpired を
-   * 使う(失効イベントではないため記録しない)。
+   * Explicit revocation (logout / server-side revocation). Records
+   * auth.session_revoked in the same batch (AUDIT_SPEC §3.1). Expired-row
+   * cleanup uses deleteByHash / deleteExpired (not a revocation event,
+   * so nothing is recorded).
    */
   readonly revokeByHash: (idHash: string, nowMs: number) => Effect.Effect<void>;
   readonly deleteByHash: (idHash: string) => Effect.Effect<void>;
-  /** 期限切れ行の一括掃除(cron から呼ぶ。提示されない行はここでしか消えない)。 */
+  /** The bulk cleanup of expired rows (called from cron; a row never presented disappears only here). */
   readonly deleteExpired: (nowMs: number) => Effect.Effect<void>;
 }
 
@@ -570,10 +606,11 @@ export class SessionRepo extends Context.Service<SessionRepo, SessionRepoShape>(
 
 function makeSessionRepo(db: Db): SessionRepoShape {
   return {
-    // auth.login_succeeded はセッション作成と 1:1(AUDIT_SPEC §3.1 —
-    // auth.session_created を独立イベントにしない)なので同じ batch で記録する。
-    // session id(= 保存 id と同じハッシュ。生値ではない — AUTH_SPEC §10)は
-    // 失効イベントとの突合用に payload に写す
+    // auth.login_succeeded is 1:1 with session creation (AUDIT_SPEC
+    // §3.1 — auth.session_created is not an independent event), so it
+    // is recorded in the same batch. The session id (= the same hash as
+    // the stored id — not the raw value, AUTH_SPEC §10) is copied into
+    // the payload for cross-checking against the revocation event
     insert: (idHash, userId, authMethod, nowMs, expiresAtMs) =>
       run(async () => {
         await db.batch([
@@ -616,11 +653,15 @@ function makeSessionRepo(db: Db): SessionRepoShape {
       }),
     revokeByHash: (idHash, nowMs) =>
       run(async () => {
-        // 削除の成立を returning で観測してからイベントを書く(actor もここから
-        // 写す)。読み → 削除の 2 段だと並行ログアウトが両方 SELECT に成功して
-        // 1 失効に 2 行記録し得る。削除と追記が 2 文になる分「削除だけ成功し
-        // イベントが欠ける」窓は理論上残るが、重複より欠落側に倒す。行がなければ
-        // no-op(存在しない失効をイベント化しない)
+        // The event is written after observing the deletion's success
+        // via returning (the actor is also copied from it). A read →
+        // delete two-step would let two concurrent logouts both succeed
+        // on the SELECT and record 2 rows for 1 revocation. Splitting
+        // the delete and the append into 2 statements leaves a
+        // theoretical window where "only the delete succeeded and the
+        // event is missing", but we fall toward the missing side over
+        // the duplicate side. No row = no-op (a nonexistent revocation
+        // is not evented)
         const deleted = await db
           .delete(sessions)
           .where(eq(sessions.id, idHash))
@@ -647,7 +688,8 @@ function makeSessionRepo(db: Db): SessionRepoShape {
 }
 
 // ---------------------------------------------------------------------------
-// TokenRepo(§6。token_hash 照合はサービス層でタイミング安全比較を併用)
+// TokenRepo (§6. The token_hash comparison additionally uses a
+// timing-safe comparison at the service layer)
 // ---------------------------------------------------------------------------
 
 export interface NewApiToken {
@@ -657,34 +699,40 @@ export interface NewApiToken {
   readonly tokenHash: string;
   readonly tokenPrefix: string;
   readonly scopes: readonly TokenScope[];
-  /** 発行時に固定される有効期限(AUTH_SPEC §6 の既定 TTL — W3a)。 */
+  /** The validity period fixed at issuance (AUTH_SPEC §6's default TTL — W3a). */
   readonly expiresAtMs: number;
   readonly createdAtMs: number;
 }
 
 export interface TokenRepoShape {
   /**
-   * 同一 (user, name) は既存トークンを失効させつつローテーションし、別名は
-   * `limit` 未満のときだけ条件付き発行する。各経路を D1 の atomic batch で行い、
-   * 並行発行でも同名重複・別名の上限超過を許さない。false = quota 拒否。
+   * The same (user, name) rotates while revoking the existing token; a
+   * different name is conditionally issued only under `limit`. Each
+   * path runs as a D1 atomic batch, so even concurrent issuance never
+   * allows a duplicate name or an over-limit distinct name. false =
+   * quota rejection.
    *
-   * 置換された旧トークン id は `auth.token_created` の payload に
-   * `replacedTokenId` として載る(新規発行では現れない — AUDIT_SPEC §3.1)。
+   * The replaced old token id rides on `auth.token_created`'s payload
+   * as `replacedTokenId` (absent on a fresh issuance — AUDIT_SPEC §3.1).
    */
   readonly issueForUserWithinLimit: (token: NewApiToken, limit: number) => Effect.Effect<boolean>;
   readonly findByHash: (tokenHash: string) => Effect.Effect<ApiTokenRecord | null>;
   readonly touchLastUsed: (id: string, nowMs: number) => Effect.Effect<void>;
   /**
-   * 本人のトークン一覧(AUTH_SPEC §6 — W3a)。token_hash は選択列に含めない
-   * (配布面 — ApiTokenSummary に構造ごと存在しない)。期限切れ行も返す
-   * (棚卸しの対象 — 検証だけが 401 に落とす)。created_at 昇順・同時刻は id。
+   * The user's own token list (AUTH_SPEC §6 — W3a). token_hash is not
+   * among the selected columns (a distribution surface — it does not
+   * even exist in ApiTokenSummary's structure). Expired rows are
+   * returned too (inventory targets — only verification drops them to
+   * 401). Ascending created_at; ties by id.
    */
   readonly listForUser: (userId: string) => Effect.Effect<readonly ApiTokenSummary[]>;
   /**
-   * 明示失効。id × user 所有を強制し、auth.token_revoked を記録する(§3.1 / S8)。
-   * actor は失効を実行した主体(指定失効ではセッション / 別トークンでありうる —
-   * AUDIT_SPEC §2)。戻り値 = 実際に行が消えたか(false は呼び出し側が一様 404 を
-   * 導出する — §6 の存在秘匿)。
+   * Explicit revocation. Enforces id × user ownership and records
+   * auth.token_revoked (§3.1 / S8). actor is the principal that executed
+   * the revocation (on a targeted revocation it may be a session /
+   * another token — AUDIT_SPEC §2). The return value = whether a row
+   * was actually deleted (false is how the caller derives the uniform
+   * 404 — §6's existence concealment).
    */
   readonly revokeById: (
     id: string,
@@ -735,8 +783,9 @@ function tokenCreatedAuditAfterInsert(db: Db, token: NewApiToken) {
 }
 
 /**
- * 既存同名 token のローテーション。最初の audit INSERT が旧 id を読むため、
- * replacedTokenId は実際に同一 batch で消える行と一致する。
+ * The rotation of an existing same-name token. Because the first audit
+ * INSERT reads the old id, replacedTokenId matches the row that is
+ * actually deleted in the same batch.
  */
 async function rotateExistingToken(db: Db, token: NewApiToken): Promise<boolean> {
   const basePayload = JSON.stringify({
@@ -768,7 +817,7 @@ async function rotateExistingToken(db: Db, token: NewApiToken): Promise<boolean>
   return results[2].length === 1;
 }
 
-/** 新規名 token の上限判定 + INSERT を 1 文に畳む。 */
+/** Folds the limit check + INSERT of a new-name token into one statement. */
 async function createNewTokenWithinLimit(
   db: Db,
   token: NewApiToken,
@@ -792,10 +841,12 @@ async function createNewTokenWithinLimit(
 
 function makeTokenRepo(db: Db): TokenRepoShape {
   return {
-    // 発行上限の admission は repo 内の条件付き INSERT が担う。
-    // サービス層の count → insert は別 D1 round-trip になり、異名の並行発行が
-    // 同じ under-limit を観測して上限を超えられる。同名ローテーションは上限
-    // 到達時も許可し、旧 id の監査も同一 batch で保つ。
+    // The admission on the issuance limit is the job of the repo's
+    // conditional INSERT. A service-layer count → insert would be a
+    // separate D1 round-trip, and concurrent issuances under different
+    // names could observe the same under-limit and exceed it. A
+    // same-name rotation is allowed even at the limit and also keeps
+    // the old id's audit in the same batch.
     issueForUserWithinLimit: (token, limit) =>
       run(async () => {
         if (await rotateExistingToken(db, token)) {
@@ -804,8 +855,9 @@ function makeTokenRepo(db: Db): TokenRepoShape {
         if (await createNewTokenWithinLimit(db, token, limit)) {
           return true;
         }
-        // 最初の既存確認と新規 INSERT の間に同名 token が現れた競合。
-        // 新規名の quota 拒否と区別するため、最後にローテーションを再試行する
+        // A race where a same-name token appeared between the first
+        // existence check and the new INSERT. To distinguish it from a
+        // quota rejection of a new name, the rotation is retried last
         return rotateExistingToken(db, token);
       }),
     findByHash: (tokenHash) => run(() => findTokenByHash(db, tokenHash)),
@@ -815,9 +867,11 @@ function makeTokenRepo(db: Db): TokenRepoShape {
       }),
     listForUser: (userId) =>
       run(async () => {
-        // token_hash を選択列に含めない(配布面 — auth-domain.ts の注記)。
-        // 期限切れ行も返す: 一覧は棚卸し面であり、期限切れは失効(行の削除)と
-        // 違って在庫として可視のまま残る(利用者が指定失効で掃除できる)
+        // token_hash is not among the selected columns (a distribution
+        // surface — the note in auth-domain.ts). Expired rows are
+        // returned too: the list is an inventory surface, and unlike
+        // revocation (row deletion) an expired row stays visible as
+        // stock (the user can clean it up with a targeted revocation)
         const rows = await db
           .select({
             id: apiTokens.id,
@@ -835,8 +889,10 @@ function makeTokenRepo(db: Db): TokenRepoShape {
         return rows.map((row): ApiTokenSummary => {
           const scopes = parseTokenScopes(row.scopes);
           if (scopes === null) {
-            // findTokenByHash と同じ規律: 自分の書き込み経路でしか生成されない
-            // 列が壊れている = 実装バグ / DB 破損(黙って行を落とさない)
+            // The same discipline as findTokenByHash: a column only our
+            // own write path can produce being broken = an
+            // implementation bug / DB corruption (the row is never
+            // silently dropped)
             throw new Error("stored token scopes are not a valid scope array");
           }
           return {
@@ -852,15 +908,19 @@ function makeTokenRepo(db: Db): TokenRepoShape {
       }),
     revokeById: (id, userId, nowMs, actor) =>
       run(async () => {
-        // 削除の成立を returning で観測してからイベントを書く(revokeByHash と
-        // 同型)。並行 revoke は呼び出し側の findByHash を両方通過し得るため、
-        // 無条件 batch だと 1 失効に複数の token_revoked を記録できてしまう
-        // (過大計上)。重複より欠落側に倒す
+        // The event is written after observing the deletion's success
+        // via returning (same shape as revokeByHash). A concurrent
+        // revoke can pass the caller's findByHash on both sides, so an
+        // unconditional batch could record multiple token_revoked for 1
+        // revocation (overcounting). We fall toward the missing side
+        // over the duplicate side
         const deleted = await db
           .delete(apiTokens)
-          // id だけで消すと token-id 指定の管理 API(W3a の指定失効)が別 user の
-          // token を失効し、監査 actor だけ呼び出し user と誤記録する。
-          // 所有条件は repo 境界で強制し、0 行 = 呼び出し側の一様 404(§6)
+          // Deleting by id alone would let the token-id-addressed admin
+          // API (W3a's targeted revocation) revoke another user's
+          // token while mis-recording the audit actor as the calling
+          // user. The ownership condition is enforced at the repo
+          // boundary; 0 rows = the caller's uniform 404 (§6)
           .where(and(eq(apiTokens.id, id), eq(apiTokens.userId, userId)))
           .returning({ id: apiTokens.id });
         if (deleted.length === 0) {
@@ -894,7 +954,8 @@ async function findTokenByHash(db: Db, tokenHash: string): Promise<ApiTokenRecor
   }
   const scopes = parseTokenScopes(row.scopes);
   if (scopes === null) {
-    // 自分の書き込み経路でしか生成されない列が壊れている = 実装バグ / DB 破損
+    // A column only our own write path can produce being broken = an
+    // implementation bug / DB corruption
     throw new Error("stored token scopes are not a valid scope array");
   }
   return {
@@ -908,22 +969,25 @@ async function findTokenByHash(db: Db, tokenHash: string): Promise<ApiTokenRecor
 }
 
 // ---------------------------------------------------------------------------
-// RecoveryRepo(AUTH_SPEC §13。ブロブは user 単位で高々 1 つ)
+// RecoveryRepo (AUTH_SPEC §13. At most one blob per user)
 // ---------------------------------------------------------------------------
 
 /**
- * ブロブ取得レート制限(AUTH_SPEC §13-3: user あたり 1 時間 5 回)。KL3(§13-8)
- * 以降は passkey / 保護者グループのラップ取得と**種別合算**の 1 窓
- * (`key_wrap_windows` の kind = blob-fetch — KeyWrapRepo.consumeWindow)で数える。
- * 上限値は不変。
+ * The blob-fetch rate limit (AUTH_SPEC §13-3: 5 per hour per user).
+ * Since KL3 (§13-8) it is counted in one window **summed by kind** with
+ * passkey / guardian-group wrap fetches (`key_wrap_windows` kind =
+ * blob-fetch — KeyWrapRepo.consumeWindow). The limit value is
+ * unchanged.
  */
 export const RECOVERY_FETCH_LIMIT = KEY_BLOB_FETCH_LIMIT;
 
 interface RecoveryRepoShape {
   /**
-   * 登録・再発行 = 置換 upsert(§13-1。旧ラップは受理と同時に消える)。
-   * auth.recovery_code_reissued を同一 batch で記録する(AUDIT_SPEC §3.1 /
-   * AUTH_SPEC §13-5。初回登録も同じ置換受理なので同一イベント)。
+   * Registration / re-issuance = a replacing upsert (§13-1; the old
+   * wrap disappears the moment the new one is accepted). Records
+   * auth.recovery_code_reissued in the same batch (AUDIT_SPEC §3.1 /
+   * AUTH_SPEC §13-5; the first registration is the same replacing
+   * acceptance, hence the same event).
    */
   readonly upsert: (
     userId: string,
@@ -933,11 +997,14 @@ interface RecoveryRepoShape {
   ) => Effect.Effect<void>;
   readonly find: (userId: string) => Effect.Effect<RecoveryWrapRecord | null>;
   /**
-   * 固定窓の計数を進め、取得可否を返す(§13-3)。行が存在しないときは
-   * allowed(404 は計数しない — 呼び出し側が find で判定する)。読み → 条件付き
-   * 更新の 2 文であり、並行リクエストで計数が僅かに超過しうるベストエフォート。
-   * allowed のとき auth.recovery_blob_fetched(要監視イベント — AUDIT_SPEC §3.1)
-   * を計数更新と同一 batch で記録する(拒否 = 配布なしは記録しない)。
+   * Advances the fixed-window count and returns whether the fetch is
+   * allowed (§13-3). When no row exists it is allowed (a 404 is not
+   * counted — the caller judges via find). A read → conditional-update
+   * pair of statements, best-effort in that concurrent requests may
+   * slightly exceed the count. When allowed, records
+   * auth.recovery_blob_fetched (a watch-listed event — AUDIT_SPEC §3.1)
+   * in the same batch as the count update (a denial = no distribution
+   * is not recorded).
    */
   readonly recordFetch: (
     userId: string,
@@ -955,8 +1022,9 @@ function makeRecoveryRepo(db: Db, keyWraps: KeyWrapRepoShape): RecoveryRepoShape
     upsert: (userId, wrap, nowMs, actor) =>
       run(async () => {
         await db.batch([
-          // 再発行は新しいブロブなので取得窓(合算窓 — §13-8)もリセットする
-          // (旧ブロブへの試行履歴を新ブロブに引き継がない)
+          // A re-issuance is a new blob, so the fetch window (the
+          // summed window — §13-8) is reset too (the trial history
+          // against the old blob is not carried over to the new one)
           db
             .delete(keyWrapWindows)
             .where(and(eq(keyWrapWindows.userId, userId), eq(keyWrapWindows.kind, "blob-fetch"))),
@@ -1003,10 +1071,12 @@ function makeRecoveryRepo(db: Db, keyWraps: KeyWrapRepoShape): RecoveryRepoShape
               updatedAtMs: row.updatedAt,
             };
       }),
-    // 取得計数は KL3(§13-8)以降、passkey / 保護者グループのラップ取得と合算の
-    // 固定窓(KeyWrapRepo.consumeWindow — 単一の条件付き UPSERT + changes() = 1
-    // ガードの監査同梱)で数える。呼び出し側が find で 404 を先に判定するため、
-    // 未登録は窓を消費しない(§13-3 の線引きは不変)
+    // Since KL3 (§13-8) the fetch count is kept in the fixed window
+    // summed with passkey / guardian-group wrap fetches
+    // (KeyWrapRepo.consumeWindow — a single conditional UPSERT + a
+    // changes() = 1 guarded audit bundled in). The caller judges the
+    // 404 via find first, so an unregistered user does not consume the
+    // window (the §13-3 line is unchanged)
     recordFetch: (userId, nowMs, actor) =>
       keyWraps.consumeWindow({
         userId,
@@ -1019,7 +1089,7 @@ function makeRecoveryRepo(db: Db, keyWraps: KeyWrapRepoShape): RecoveryRepoShape
 }
 
 // ---------------------------------------------------------------------------
-// OrgRepo(§9-1 org ロール。プロジェクトアクセスには関与しない)
+// OrgRepo (§9-1 org roles. Not involved in project access)
 // ---------------------------------------------------------------------------
 
 interface OrgRepoShape {
@@ -1043,20 +1113,25 @@ function makeOrgRepo(db: Db): OrgRepoShape {
 }
 
 // ---------------------------------------------------------------------------
-// ProjectRepo(§11-3。org 帰属メタデータ + §11-5 の membership 投影。
-// どちらも権限テーブルではない — 投影は発見専用の候補索引で、認可判定には
-// 使わない。真実源はメンバーシップチェーン — CRYPTO_SPEC §6.4)
+// ProjectRepo (§11-3. The org-attribution metadata + the §11-5
+// membership projection. Neither is an authorization table — the
+// projection is a discovery-only candidate index and is never used in
+// an authorization decision. The source of truth is the membership
+// chain — CRYPTO_SPEC §6.4)
 // ---------------------------------------------------------------------------
 
 interface ProjectRepoShape {
   /**
-   * 冪等挿入(修復経路を含む §11-3)。既存行はそのまま。org.project_created
-   * (AUDIT_SPEC §3.2)と genesis actor(owner)の membership 投影行(§11-5)を
-   * 同一 batch で記録する。batch の原子性により、既存行との競合で挿入が成立
-   * しなかった場合は監査行も巻き戻る(空振り挿入でイベントだけ重複しない)。
-   * 投影行の挿入は onConflictDoNothing: 修復経路(§11-3)では lazy upsert
-   * (§11-5 の (4))が先に行を立てていることがあり、その競合で projects 行の
-   * 挿入まで巻き戻してはならない。
+   * An idempotent insert (§11-3 including the repair path). An existing
+   * row is left as-is. Records org.project_created (AUDIT_SPEC §3.2) and
+   * the genesis actor's (owner's) membership projection row (§11-5) in
+   * the same batch. By the batch's atomicity, when the insert does not
+   * go through because of a conflict with an existing row, the audit
+   * row is rolled back too (a whiffed insert never duplicates just the
+   * event). The projection row's insert is onConflictDoNothing: on the
+   * repair path (§11-3) a lazy upsert (§11-5's (4)) may have already
+   * placed the row, and that conflict must not roll back even the
+   * projects row's insert.
    */
   readonly insertIfAbsent: (
     projectId: string,
@@ -1067,33 +1142,43 @@ interface ProjectRepoShape {
   ) => Effect.Effect<void>;
   readonly exists: (projectId: string) => Effect.Effect<boolean>;
   /**
-   * org のアクティブプロジェクト数(AUTH_SPEC §11-3 の受理上限の判定材料)。
-   * v1 では当該 org の全 `projects` 行(削除 API が無く tombstone も存在しない —
-   * 削除導入時に除外条件を足す)。`proj_org` 索引の count。
-   * best-effort の判定入力であり、DO 受理との原子性は持たない(§11-3 —
-   * 並行 init の僅かな超過は受容)。
+   * The org's active project count (the decision input of AUTH_SPEC
+   * §11-3's acceptance limit). In v1 it counts every `projects` row of
+   * the org (there is no delete API and no tombstone — when deletion is
+   * introduced an exclusion condition is added). A count on the
+   * `proj_org` index. It is a best-effort judgment input with no
+   * atomicity against DO acceptance (§11-3 — a slight excess from
+   * concurrent inits is accepted).
    */
   readonly countInOrg: (orgId: string) => Effect.Effect<number>;
   /**
-   * 投影の維持(§11-5): add_member 受理後の行挿入と、チェーン取得成功時の
-   * lazy 挿入(missing の自己修復 + 投影導入前プロジェクトの無人バックフィル)。
-   * 冪等(INSERT OR IGNORE 相当)。
+   * Maintaining the projection (§11-5): the row insert after an
+   * add_member acceptance and the lazy insert on a successful chain
+   * fetch (self-repair of a missing row + the unmanned backfill of
+   * pre-projection projects). Idempotent (equivalent to INSERT OR
+   * IGNORE).
    */
   readonly upsertMember: (projectId: string, userId: string, nowMs: number) => Effect.Effect<void>;
   /**
-   * 投影の維持(§11-5): remove_member 受理後と、一覧の読取時確認で DO が
-   * 非メンバーと答えた stale 行の削除(チェーン truth への収束)。冪等。
+   * Maintaining the projection (§11-5): deletion of a stale row the DO
+   * answered non-member on at list read-time verification, after a
+   * remove_member acceptance (convergence toward the chain truth).
+   * Idempotent.
    */
   readonly deleteMember: (projectId: string, userId: string) => Effect.Effect<void>;
   /**
-   * 一覧の候補列挙(§11-5): 本人の投影行の project_id を昇順で、排他カーソル
-   * `afterProjectId`(null = 先頭から)から最大 `limit` 件。候補にすぎない —
-   * 応答へ載せてよいかは呼び出し側の DO 確認が決める。
+   * The candidate enumeration of the list (§11-5): the project_ids of
+   * the user's own projection rows, ascending, up to `limit` rows from
+   * the exclusive cursor `afterProjectId` (null = from the head).
+   * Candidates only — the caller's DO check decides whether they may go
+   * on the response.
    *
-   * `withinProjectIds` はトークンスコープとの交差を**候補索引の段で**行う
-   * フィルタ(null = 制限なし)。`nextAfter` は候補ページの末尾から出るため、
-   * 交差を後段(応答行の絞り込み)だけに置くとスコープ外の project_id が
-   * カーソルに載って漏れる — 候補空間自体をスコープ内に閉じる。
+   * `withinProjectIds` is the filter performing the intersection with
+   * the token scope **at the candidate-index stage** (null = no
+   * restriction). `nextAfter` comes off the tail of the candidate page,
+   * so leaving the intersection to a later stage (narrowing the
+   * response rows) would let an out-of-scope project_id ride the cursor
+   * and leak — the candidate space itself is closed inside the scope.
    */
   readonly listMemberProjectIds: (
     userId: string,
@@ -1106,11 +1191,13 @@ interface ProjectRepoShape {
 export class ProjectRepo extends Context.Service<ProjectRepo, ProjectRepoShape>()("ProjectRepo") {}
 
 /**
- * スコープ交差 IN のチャンク幅(§11-5 の候補列挙)。D1 の 1 クエリ束縛
- * パラメータ上限(100 — Cloudflare D1 limits)から userId / after / limit の
- * 3 パラメータを引いた予算内に余裕を持って収める。トークンスコープの発行時
- * 上限(100 エントリ — AUTH_SPEC §6 / api-schema)を単一 IN に流すと上限を
- * 超えるため、いずれかの上限を変更する場合は本値との整合を再確認すること。
+ * The chunk width of the scope-intersection IN (the §11-5 candidate
+ * enumeration). Sized with headroom inside the budget left after
+ * subtracting the 3 parameters userId / after / limit from D1's
+ * per-query bound-parameter cap (100 — Cloudflare D1 limits). Pushing
+ * the token scope's issuance-time cap (100 entries — AUTH_SPEC §6 /
+ * api-schema) into a single IN would exceed the cap, so when changing
+ * any of these limits, re-verify the consistency with this value.
  */
 const SCOPE_FILTER_CHUNK_SIZE = 50;
 
@@ -1133,8 +1220,10 @@ function makeProjectRepo(db: Db): ProjectRepoShape {
             }),
           ]);
         } catch (error) {
-          // PK 競合 = 既に作成済み。batch ごと巻き戻るため挿入・監査とも no-op
-          // (冪等)。監査行だけが残る実行順は存在しない。競合以外は defect
+          // A PK conflict = already created. The whole batch rolls back,
+          // so both insert and audit are a no-op (idempotent). No
+          // execution order exists where only the audit row survives.
+          // A non-conflict is a defect
           if (!isUniqueConflict(error)) {
             throw error;
           }
@@ -1194,14 +1283,16 @@ function makeProjectRepo(db: Db): ProjectRepoShape {
         if (withinProjectIds === null) {
           return (await pageQuery(null)).map((row) => row.projectId);
         }
-        // スコープ交差の IN はチャンクして発行する: D1 の 1 クエリ束縛パラメータ
-        // 上限は 100 で、トークンスコープのスキーマ上限も 100 エントリ
-        // (api-schema auth-api.ts)— 単一 IN だと
-        // userId / after / limit の 3 パラメータと合わせて上限を超え、正当に
-        // 発行されたワイドスコープトークンの一覧が hard fail する。各チャンクは
-        // limit 件までの昇順列を返すので、連結 + 全体ソート + limit 切りが
-        // 単一クエリと同じページを与える(チャンクは互いに素な ID 集合)。
-        // ループ形は保存済みスコープが発行時上限を超える旧行にも安全
+        // The scope-intersection IN is issued chunked: D1's per-query
+        // bound-parameter cap is 100 and the token scope's schema cap is
+        // also 100 entries (api-schema auth-api.ts) — a single IN would
+        // exceed the cap together with the 3 parameters userId / after
+        // / limit, and a legitimately issued wide-scope token's list
+        // would hard-fail. Each chunk returns an ascending run of up to
+        // `limit` rows, so concatenate + sort-all + cut-at-limit gives
+        // the same page as a single query (the chunks are disjoint ID
+        // sets). The loop shape is also safe against old rows whose
+        // stored scope exceeds the issuance-time cap
         const merged: string[] = [];
         for (let offset = 0; offset < withinProjectIds.length; offset += SCOPE_FILTER_CHUNK_SIZE) {
           const chunk = withinProjectIds.slice(offset, offset + SCOPE_FILTER_CHUNK_SIZE);
@@ -1213,65 +1304,74 @@ function makeProjectRepo(db: Db): ProjectRepoShape {
 }
 
 // ---------------------------------------------------------------------------
-// InviteRepo(AUTH_SPEC §15。招待レコードと invite.* 監査の同一 batch 追記)
+// InviteRepo (AUTH_SPEC §15. Invite records and invite.* audit appended
+// in the same batch)
 // ---------------------------------------------------------------------------
 
-/** §15-1 起草値: 招待の有効期間(発行 + 7 日)。 */
+/** The §15-1 drafted value: an invitation's validity (issuance + 7 days). */
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * §15-2 起草値: 発行のレート窓(1 時間 30 回 / プロジェクト)。実装形は
- * 「直近 1 時間の invitations 行数」の lookback 計数(auth.login_failed —
- * audit.ts — と同じ、追加の窓状態を持たない形)。任意の 1 時間区間で 30 を
- * 超えない = 仕様の固定窓より緩む方向には決してならない(バケット境界の
- * リセットが無い分だけ厳しい側)。retryAfterSeconds は最古の窓内発行が
- * 窓から抜ける時刻から導出する。
+ * The §15-2 drafted value: the issuance rate window (30 per hour per
+ * project). The implementation shape is a lookback count of "the
+ * invitations row count in the last hour" (the same shape as
+ * auth.login_failed — audit.ts — with no additional window state).
+ * Never exceeding 30 in any one-hour interval = it can never be looser
+ * than the spec's fixed window (it lands on the stricter side by the
+ * absence of a bucket-boundary reset). retryAfterSeconds is derived
+ * from when the oldest in-window issuance leaves the window.
  */
 const INVITE_ISSUE_WINDOW_MS = 60 * 60 * 1000;
 export const INVITE_ISSUE_WINDOW_LIMIT = 30;
 
-/** §15-2 起草値: pending 招待の上限(プロジェクトあたり 100。期限切れは数えない)。 */
+/** The §15-2 drafted value: the pending-invite cap (100 per project; expired ones are not counted). */
 export const MAX_PENDING_INVITES_PER_PROJECT = 100;
 
 interface InviteCreateInput {
   readonly id: string;
   readonly projectId: string;
   readonly role: InviteRole;
-  /** 付与予定 scope(発行文の一部 — §15-2、2026-09-14 ES)。 */
+  /** The scope to be granted (part of the issuance text — §15-2, 2026-09-14 ES). */
   readonly scope: InviteScope;
   readonly inviterUserId: string;
-  /** 発行文(CRYPTO_SPEC §6.5 — サーバーは検証せず保存する)。 */
+  /** The issuance text (CRYPTO_SPEC §6.5 — the server stores it without verifying). */
   readonly issuance: InviteIssuance;
 }
 
 interface InviteRepoShape {
   /**
-   * 発行(§15-2)。受理ポリシーの判定順は仕様の記載順に固定: pending 上限 →
-   * レート窓(lookback 計数 — INVITE_ISSUE_WINDOW_MS の注記参照)。両カウントを
-   * `INSERT … SELECT … WHERE` の同一文で再評価し、並行発行でも上限を超えない。
-   * 受理時は invite.created(AUDIT_SPEC §3.2)を changes() ガード付き
-   * INSERT…SELECT と同一 batch に入れ、作成と 1:1 で記録する。
+   * Issuance (§15-2). The acceptance policy's judgment order is pinned
+   * to the spec's written order: the pending cap → the rate window
+   * (lookback counting — see the note on INVITE_ISSUE_WINDOW_MS). Both
+   * counts are re-evaluated inside the same `INSERT … SELECT … WHERE`
+   * statement, so even concurrent issuance never exceeds the limits. On
+   * acceptance, invite.created (AUDIT_SPEC §3.2) is placed in the same
+   * batch as the changes()-guarded INSERT…SELECT and recorded 1:1 with
+   * the creation.
    */
   readonly create: (
     input: InviteCreateInput,
     nowMs: number,
     actor: D1AuditActor,
   ) => Effect.Effect<InviteIssueDecision>;
-  /** リンク公開鍵による解決(受諾経路 — リンク鍵の保持が capability)。 */
+  /** Resolution by link public key (the acceptance path — holding the link key is the capability). */
   readonly findByLinkPub: (linkPubHex: string) => Effect.Effect<InvitationRecord | null>;
-  /** プロジェクト配下の id 解決(失効経路)。 */
+  /** The id resolution under a project (the revocation path). */
   readonly findById: (projectId: string, id: string) => Effect.Effect<InvitationRecord | null>;
-  /** 一覧(§15-2)。受諾ブロック込み — 招待者クライアントの §6.5 独立検証の材料。 */
+  /** The list (§15-2). The acceptance block included — the input of the inviter client's §6.5 independent verification. */
   readonly listForProject: (projectId: string) => Effect.Effect<readonly InvitationRecord[]>;
   /**
-   * 受諾の単回使用 CAS(pending → accepted — §15-1)。条件付き UPDATE と、
-   * `changes() = 1` でガードした invite.accepted の INSERT…SELECT を同一 batch
-   * で発行する(AUDIT_SPEC §5.2 の同一トランザクション原則)。D1 は batch を
-   * 逐次・非並行・単一トランザクションと文書化しており、その逐次性から
-   * changes() は直前の UPDATE の結果を参照する(RETURNING 文の消化順序までは
-   * 明文化されていないため、この性質は invites.test.ts の CAS 敗北テストで
-   * 実挙動としても固定する)— CAS 敗北時は監査行も 0 行のまま。戻り値は勝敗
-   * のみ(敗北理由の導出は呼び出し側が再読みで行う)。
+   * The single-use CAS of acceptance (pending → accepted — §15-1). The
+   * conditional UPDATE and the invite.accepted INSERT…SELECT guarded by
+   * `changes() = 1` are issued in the same batch (AUDIT_SPEC §5.2's
+   * same-transaction principle). D1 documents a batch as sequential,
+   * non-parallel, and a single transaction, and by that sequentiality
+   * changes() refers to the result of the immediately preceding UPDATE
+   * (the digestion order of RETURNING statements is not documented, so
+   * this property is also pinned as actual behavior by the CAS-defeat
+   * test in invites.test.ts) — on a CAS defeat the audit row stays at
+   * 0 rows too. The return value is win/loss only (the caller derives
+   * the defeat reason by re-reading).
    */
   readonly acceptCas: (
     input: InviteAcceptInput,
@@ -1279,10 +1379,11 @@ interface InviteRepoShape {
     actor: D1AuditActor,
   ) => Effect.Effect<boolean>;
   /**
-   * 失効の CAS(pending | accepted → revoked)。期限切れ pending の失効も許す
-   * (管理操作の掃除)。受理時は invite.revoked を同一 batch で記録する
-   * (acceptCas と同じ changes() ガード)。completed / revoked へは効かない
-   * (呼び出し側が再読みで 410 を導出する)。
+   * The revocation CAS (pending | accepted → revoked). Revoking an
+   * expired pending is allowed too (an admin-operation cleanup). On
+   * acceptance invite.revoked is recorded in the same batch (the same
+   * changes() guard as acceptCas). Has no effect on completed / revoked
+   * (the caller derives the 410 by re-reading).
    */
   readonly revokeCas: (
     projectId: string,
@@ -1292,17 +1393,20 @@ interface InviteRepoShape {
     actor: D1AuditActor,
   ) => Effect.Effect<boolean>;
   /**
-   * add_member 受理時の accepted → completed 突合(§15-2。導出状態の更新であり
-   * 真実源はチェーン。§15-4: 証跡は chain.member_added — 独立イベントを書かない)。
-   * 鍵一致条件(enc / sig 両方)は「この受諾がこの add_member によって成就した」
-   * ことの精密化 — 別鍵の accepted 招待は据え置かれ、一覧で可視のまま残る。
+   * The accepted → completed reconciliation at add_member acceptance
+   * (§15-2. It updates a derived state; the source of truth is the
+   * chain. §15-4: the evidence is chain.member_added — no independent
+   * event is written). The key-match conditions (both enc / sig)
+   * refine "this acceptance was fulfilled by this add_member" — an
+   * accepted invite under a different key is kept as-is and stays
+   * visible in the list.
    */
   readonly completeAccepted: (target: InviteCompletionTarget) => Effect.Effect<void>;
 }
 
 export class InviteRepo extends Context.Service<InviteRepo, InviteRepoShape>()("InviteRepo") {}
 
-/** 招待行(select 結果の形 — Drizzle 型はこの境界の外へ出さない)。 */
+/** An invitation row (the shape of the select result — the Drizzle type never leaves this boundary). */
 interface InvitationRow {
   readonly id: string;
   readonly projectId: string;
@@ -1325,7 +1429,7 @@ interface InvitationRow {
   readonly issueSignature: string;
 }
 
-/** 受諾ブロック(6 列すべて揃っているときのみ — status が accepted 以降)。 */
+/** The acceptance block (only when all 6 columns are populated — status at accepted or later). */
 function acceptanceOf(row: InvitationRow): InvitationRecord["acceptance"] {
   return row.inviteeUserId !== null &&
     row.inviteeEncPub !== null &&
@@ -1344,7 +1448,7 @@ function acceptanceOf(row: InvitationRow): InvitationRecord["acceptance"] {
     : null;
 }
 
-/** 発行文(CRYPTO_SPEC §6.5 — 4 列とも NOT NULL)。 */
+/** The issuance text (CRYPTO_SPEC §6.5 — all 4 columns NOT NULL). */
 function issuanceOf(row: InvitationRow): InvitationRecord["issuance"] {
   return {
     linkPubHex: row.linkPub,
@@ -1355,9 +1459,11 @@ function issuanceOf(row: InvitationRow): InvitationRecord["issuance"] {
 }
 
 /**
- * scope 列(JSON 配列の文字列)→ ドメイン表現。列は発行時に Schema 検査済みの値を
- * JSON.stringify したものだが、壊れた行を throw で受諾不能にせず fail-closed に
- * `listed` の空(= どの環境も付与しない)へ倒す
+ * The scope column (a JSON-array string) → the domain representation.
+ * The column holds a JSON.stringify of a value Schema-checked at
+ * issuance, but rather than making a broken row unacceptable via a
+ * throw, it falls fail-closed to an empty `listed` (= grants no
+ * environment)
  */
 function scopeOf(row: InvitationRow): InviteScope {
   let ids: readonly string[] = [];
@@ -1374,7 +1480,7 @@ function scopeOf(row: InvitationRow): InviteScope {
     : { scopeKind: "listed", scopeEnvironmentIds: ids };
 }
 
-/** 行 → ドメイン表現。 */
+/** Row → the domain representation. */
 function toInvitationRecord(row: InvitationRow): InvitationRecord {
   return {
     id: row.id,
@@ -1391,11 +1497,12 @@ function toInvitationRecord(row: InvitationRow): InvitationRecord {
 }
 
 /**
- * D1 の UNIQUE 制約違反を発行の 409 へ写す(`invitations.id` / `inv_link_pub`)。
- * それ以外のエラーは null(呼び出し側が再 throw — 握り潰さない)。
+ * Maps a D1 UNIQUE constraint violation to the issuance 409
+ * (`invitations.id` / `inv_link_pub`). Any other error is null (the
+ * caller re-throws — never swallowed).
  */
 function inviteUniqueConflictOf(error: unknown): "id" | "linkPub" | null {
-  // D1 は制約エラーを message か cause のどちらかに載せる(実行環境差)
+  // D1 carries a constraint error on either message or cause (varies by runtime)
   const cause = error instanceof Error ? error.cause : undefined;
   const message = `${error instanceof Error ? error.message : String(error)} ${
     cause instanceof Error ? cause.message : ""
@@ -1409,7 +1516,7 @@ function inviteUniqueConflictOf(error: unknown): "id" | "linkPub" | null {
   return message.includes("invitations.id") ? "id" : null;
 }
 
-/** pending / lookback の両上限を同一 INSERT 文で再評価する。 */
+/** Re-evaluates both the pending and the lookback caps inside the same INSERT statement. */
 function conditionalInviteInsert(db: Db, input: InviteCreateInput, nowMs: number) {
   const pendingAvailable = sql<boolean>`(
     select count(*) from ${invitations}
@@ -1450,8 +1557,9 @@ function conditionalInviteInsert(db: Db, input: InviteCreateInput, nowMs: number
 }
 
 /**
- * 条件付き INSERT が 0 行だった理由を仕様順に導出する。拒否後の説明用だけで、
- * admission 自体は conditionalInviteInsert の 1 文が担う。
+ * Derives in spec order why the conditional INSERT produced 0 rows.
+ * For explaining the rejection only; the admission itself is the job of
+ * conditionalInviteInsert's single statement.
  */
 async function inviteIssueRejection(
   db: Db,
@@ -1499,11 +1607,13 @@ function makeInviteRepo(db: Db): InviteRepoShape {
     return row === undefined ? null : toInvitationRecord(row);
   };
   /**
-   * invite.* 監査行の INSERT…SELECT(AUDIT_SPEC §3.2 / §5.2)。直前の条件付き
-   * UPDATE が 1 行に効いたときだけ挿入される(changes() ガード)。FROM は対象
-   * 招待行そのもの(project_id を保存行から写す — ワイヤ申告値から組まない)。
-   * org_id は載せない: invite.* の読み取り軸は org admin ではなくチェーン role
-   * admin(AUDIT_SPEC §7)。
+   * The INSERT…SELECT of an invite.* audit row (AUDIT_SPEC §3.2 /
+   * §5.2). Inserted only when the immediately preceding conditional
+   * UPDATE hit 1 row (the changes() guard). The FROM is the target
+   * invitation row itself (project_id is copied from the stored row —
+   * never composed from a wire-declared value). org_id is not carried:
+   * invite.*'s read axis is chain role admin, not org admin (AUDIT_SPEC
+   * §7).
    */
   const guardedAuditInsert = (input: {
     readonly inviteId: string;
@@ -1516,8 +1626,10 @@ function makeInviteRepo(db: Db): InviteRepoShape {
     db.insert(orgAuditEvents).select(
       db
         .select({
-          // 共有列(audit.ts — recovery の取得計数と同じ写像)+ project_id は
-          // 対象招待行から写す(ワイヤ申告値から組まない)
+          // The shared columns (audit.ts — the same mapping as
+          // recovery's fetch counting) + project_id copied from the
+          // target invitation row (never composed from a wire-declared
+          // value)
           ...guardedAuditSelectColumns(input),
           projectId: invitations.projectId,
         })
@@ -1527,14 +1639,20 @@ function makeInviteRepo(db: Db): InviteRepoShape {
   return {
     create: (input, nowMs, actor) =>
       run(async () => {
-        // 判定と挿入を単一 INSERT…SELECT に畳む。別リクエストの SELECT → INSERT
-        // では、並行した全員が同じ under-limit を観測して
-        // 並行度ぶん上限を超えられる。audit は直前の INSERT が 1 行に効いた
-        // ときだけ changes() ガードで書く
-        // クライアント採番の id / link_pub の重複は 409(受理ポリシーより先 —
-        // §15-2 の判定順)。乱数由来の衝突は事実上起きないが、id の再利用を黙って
-        // 通さない。事前 SELECT で決定的に検出し、SELECT と INSERT の間に割り込む
-        // 並行発行は UNIQUE 制約エラーとして現れるので同じ 409 へ写す
+        // The judgment and the insert are folded into a single
+        // INSERT…SELECT. With a separate request's SELECT → INSERT,
+        // every concurrent issuer would observe the same under-limit
+        // and could exceed the cap by the degree of parallelism. The
+        // audit is written under the changes() guard only when the
+        // immediately preceding INSERT hit 1 row
+        // A duplicate of a client-sequenced id / link_pub is a 409
+        // (ahead of the acceptance policy — §15-2's judgment order). A
+        // random-derived collision is effectively impossible, but a
+        // reused id is never silently let through. It is detected
+        // deterministically by a prior SELECT, and a concurrent
+        // issuance interposing between the SELECT and the INSERT
+        // surfaces as a UNIQUE constraint error and is mapped to the
+        // same 409
         const existing = await db
           .select({ id: invitations.id, linkPub: invitations.linkPub })
           .from(invitations)
@@ -1575,9 +1693,11 @@ function makeInviteRepo(db: Db): InviteRepoShape {
         if (rejection !== null) {
           return rejection;
         }
-        // conditional INSERT と説明用再読の間に revoke / expiry が進み、
-        // 一時的に admission が再び可能になった稀な競合。新しいリクエストで
-        // 安全に再試行できる型付き rate-limit に倒し、上限を破る fallback はしない
+        // A rare race where revoke / expiry progressed between the
+        // conditional INSERT and the explaining re-read and admission
+        // momentarily became possible again. Falls to a typed
+        // rate-limit that a fresh request can safely retry; never
+        // falls back to breaking the cap
         return {
           kind: "rate-limited",
           retryAfterSeconds: 1,
@@ -1675,18 +1795,21 @@ function makeInviteRepo(db: Db): InviteRepoShape {
 }
 
 // ---------------------------------------------------------------------------
-// FlowSigningKeyRepo(AUTH_SPEC §4-2。CLI ログインのフロー署名鍵の置き場)
+// FlowSigningKeyRepo (AUTH_SPEC §4-2. The store of the CLI login flow
+// signing key)
 // ---------------------------------------------------------------------------
 
-/** 署名鍵行の固定 id(高々 1 行)。 */
+/** The fixed id of the signing-key row (at most one row). */
 const FLOW_SIGNING_KEY_ID = "v1";
 
 interface FlowSigningKeyRepoShape {
   /**
-   * 初回使用時の自動生成(AUTH_SPEC §4-2 — セルフホストのセットアップ手順を
-   * 増やさない)。冪等・先勝ち: 候補鍵を INSERT OR IGNORE し、常に保存行を
-   * 読み戻す — 同時初回使用の 2 リクエストが別々の鍵を書き合って進行中
-   * フローを失効させる分岐を閉じる。戻り値は勝った鍵(hex)。
+   * Auto-generation on first use (AUTH_SPEC §4-2 — does not add to the
+   * self-host setup steps). Idempotent, first-one-wins: the candidate
+   * key is INSERT OR IGNOREd and the stored row is always read back —
+   * closing the branch where two simultaneous first-use requests write
+   * different keys and invalidate an in-flight flow. The return value
+   * is the winning key (hex).
    */
   readonly getOrCreate: (candidateKeyHex: string, nowMs: number) => Effect.Effect<string>;
 }
@@ -1710,7 +1833,7 @@ function makeFlowSigningKeyRepo(db: Db): FlowSigningKeyRepoShape {
           .where(eq(flowSigningKeys.id, FLOW_SIGNING_KEY_ID))
           .get();
         if (row === undefined) {
-          // INSERT OR IGNORE 直後の SELECT が空 = D1 障害(defect)
+          // An empty SELECT right after the INSERT OR IGNORE = a D1 failure (defect)
           throw new Error("flow signing key insert succeeded but the row is missing");
         }
         return row.keyHex;
@@ -1719,28 +1842,31 @@ function makeFlowSigningKeyRepo(db: Db): FlowSigningKeyRepoShape {
 }
 
 // ---------------------------------------------------------------------------
-// CliFlowRepo(AUTH_SPEC §4-1 (4)〜(5)。CLI ログインのフロー行)
+// CliFlowRepo (AUTH_SPEC §4-1 (4)–(5). The CLI login flow rows)
 // ---------------------------------------------------------------------------
 
 /**
- * デプロイメント全体の同時未消費フロー行の上限(AUTH_SPEC §4-1 (4) (iii)
- * 起草値)。到達には「既存アカウント × OAuth 完走」の同時併走が上限件数ぶん
- * 必要で安価に維持できない。TTL 15 分で自然回復。セルフホストの受理ポリシー
- * として調整可。
+ * The cap on concurrent unconsumed flow rows across the whole
+ * deployment (the AUTH_SPEC §4-1 (4) (iii) drafted value). Reaching it
+ * requires the cap's worth of simultaneous "existing account × OAuth
+ * completion" runs, so it cannot be held cheaply. Recovers naturally
+ * with the 15-minute TTL. Adjustable as a self-host acceptance policy.
  */
 export const MAX_CONCURRENT_CLI_FLOWS = 1000;
 
 /**
- * 期限後も行を残す余裕(AUTH_SPEC §4-1 (5) 起草値 +5 分)。consumed / denied の
- * 行を flowToken の期限より先に消すと poll が「行なし = pending」と誤読して
- * CLI が完了済みフローを無限に待つ。日和見削除はこの余裕を過ぎた行のみ対象。
+ * The headroom for keeping a row past its expiry (the AUTH_SPEC §4-1
+ * (5) drafted value +5 minutes). Deleting a consumed / denied row
+ * before the flowToken's expiry would let a poll misread "no row =
+ * pending" and the CLI would wait forever on a completed flow.
+ * Opportunistic deletion targets only rows past this headroom.
  */
 const CLI_FLOW_DELETE_GRACE_MS = 5 * 60 * 1000;
 
-/** フロー行の状態(§4-1 (4)〜(5) の CAS 語彙)。 */
+/** The state of a flow row (the CAS vocabulary of §4-1 (4)–(5)). */
 type CliFlowStatus = "awaiting" | "approved" | "denied" | "consumed";
 
-/** 承認ページの明示操作(§4-1 (4) (iv) — 承認 / 拒否の 2 択)。 */
+/** The explicit operation on the approval page (§4-1 (4) (iv) — the two choices: approve / deny). */
 type CliFlowDecision = "approved" | "denied";
 
 interface NewCliLoginFlow {
@@ -1750,12 +1876,12 @@ interface NewCliLoginFlow {
   readonly scopes: readonly TokenScope[];
   readonly expiresInDays: number;
   readonly userCode: string;
-  /** 承認チケット(256-bit 乱数)の SHA-256(hex)。生値はページのみ。 */
+  /** The SHA-256 (hex) of the approval ticket (a 256-bit random). The raw value lives only on the page. */
   readonly ticketHash: string;
   readonly expiresAtMs: number;
 }
 
-/** poll の行引き(§4-1 (5))が見る形。ticket_hash は含めない(照合は CAS 内)。 */
+/** The shape the poll's row lookup (§4-1 (5)) sees. ticket_hash is excluded (the comparison happens inside the CAS). */
 interface CliLoginFlowRecord {
   readonly flowId: string;
   readonly userId: string;
@@ -1768,28 +1894,33 @@ interface CliLoginFlowRecord {
 }
 
 /**
- * create-or-match の帰結(§4-1 (4) (iii))。created / matched が承認ページの
- * 描画へ進む。rejected は一様エラーページ(別 user_id・期限切れ・終端状態 —
- * 理由を出し分けない)、capacity は上限到達(同じ一様エラーページ + 運用
- * アラートの材料)。
+ * The outcome of create-or-match (§4-1 (4) (iii)). created / matched
+ * proceed to rendering the approval page. rejected is the uniform
+ * error page (another user_id, expired, or a terminal state — the
+ * reason is not differentiated); capacity is the cap reached (the same
+ * uniform error page + the input of an operational alert).
  */
 type CliFlowAdmission = "created" | "matched" | "rejected" | "capacity";
 
 interface CliFlowRepoShape {
   /**
-   * フロー行の作成 CAS(create-or-match — §4-1 (4) (iii))。batch 先頭に期限 +
-   * 余裕を過ぎた行の日和見削除を同梱し、作成は「同 flowId の行なし × 未消費
-   * 総量が上限未満」の条件付き INSERT で行う。行が既にある場合、同一 user_id ×
-   * awaiting × 期限内の再到達のみチケットを置換して成功(べき等 — matched)。
-   * 別 user_id はチケットを回転させず rejected(乗っ取り・チケット失効攻撃の
-   * 両経路を閉じる)。
+   * The creation CAS of a flow row (create-or-match — §4-1 (4) (iii)).
+   * An opportunistic delete of rows past expiry + headroom is bundled
+   * at the batch's head, and creation is done by a conditional INSERT
+   * on "no row with the same flowId × the unconsumed total under the
+   * cap". When the row already exists, only a re-arrival with the same
+   * user_id × awaiting × within validity succeeds by replacing the
+   * ticket (idempotent — matched). A different user_id is rejected
+   * without rotating the ticket (closing both the takeover and the
+   * ticket-invalidation attack paths).
    */
   readonly createOrMatch: (flow: NewCliLoginFlow, nowMs: number) => Effect.Effect<CliFlowAdmission>;
   /**
-   * 承認 / 拒否の CAS(awaiting → approved | denied — §4-1 (4) (iv))。資格は
-   * 承認チケット(最新 1 枚)で、不明・期限切れ・使用済みは一様に false。
-   * 承認(user_id 確定)は `auth.login_succeeded`(authMethod cli_handoff —
-   * §4-2)を changes() ガード付きで同一 batch に記録する。
+   * The approve / deny CAS (awaiting → approved | denied — §4-1 (4)
+   * (iv)). The credential is the approval ticket (the latest one);
+   * unknown, expired, and used all uniformly return false. An approval
+   * (user_id settled) records `auth.login_succeeded` (authMethod
+   * cli_handoff — §4-2) in the same batch under the changes() guard.
    */
   readonly decideCas: (
     flowId: string,
@@ -1797,12 +1928,13 @@ interface CliFlowRepoShape {
     decision: CliFlowDecision,
     nowMs: number,
   ) => Effect.Effect<boolean>;
-  /** poll の行引き(§4-1 (5))。行なし = null(呼び出し側が pending を導出)。 */
+  /** The poll's row lookup (§4-1 (5)). No row = null (the caller derives pending). */
   readonly findById: (flowId: string) => Effect.Effect<CliLoginFlowRecord | null>;
   /**
-   * 単回発行ゲート(approved → consumed の CAS — §4-1 (5))。勝者(true)だけが
-   * PAT を発行する。CAS 成功後の発行失敗は consumed のまま終える(fail-closed —
-   * 呼び出し側は巻き戻さない)。
+   * The single-issuance gate (the approved → consumed CAS — §4-1 (5)).
+   * Only the winner (true) issues a PAT. An issuance failure after the
+   * CAS succeeded ends consumed as-is (fail-closed — the caller does
+   * not roll back).
    */
   readonly consumeCas: (flowId: string) => Effect.Effect<boolean>;
 }
@@ -1813,9 +1945,11 @@ function makeCliFlowRepo(db: Db): CliFlowRepoShape {
   return {
     createOrMatch: (flow, nowMs) =>
       run(async () => {
-        // 上限は未消費行(consumed 以外)で数える(§4-1 (4) (iii) の「同時未消費
-        // 行」)。判定と挿入は同一 INSERT…SELECT(invites の admission と同型 —
-        // 並行作成が同じ under-limit を観測して上限を超えない)
+        // The cap is counted on unconsumed rows (anything but consumed)
+        // (§4-1 (4) (iii)'s "concurrent unconsumed rows"). The judgment
+        // and the insert are the same INSERT…SELECT (same shape as the
+        // invites admission — a concurrent creation never observes the
+        // same under-limit and exceeds the cap)
         const capAvailable = sql<boolean>`(
           select count(*) from ${cliLoginFlows}
           where ${cliLoginFlows.status} != 'consumed'
@@ -1824,8 +1958,10 @@ function makeCliFlowRepo(db: Db): CliFlowRepoShape {
           select 1 from ${cliLoginFlows} where ${cliLoginFlows.id} = ${flow.flowId}
         )`;
         const results = await db.batch([
-          // 日和見削除(§4-1 (4) (iii)): 期限 + 余裕を過ぎた行のみ。consumed /
-          // denied も余裕内は残す(poll の「行なし = pending」誤読の遮断)
+          // The opportunistic delete (§4-1 (4) (iii)): only rows past
+          // expiry + headroom. consumed / denied rows are also kept
+          // within the headroom (blocking a poll's "no row = pending"
+          // misread)
           db
             .delete(cliLoginFlows)
             .where(lte(cliLoginFlows.expiresAt, nowMs - CLI_FLOW_DELETE_GRACE_MS)),
@@ -1853,10 +1989,12 @@ function makeCliFlowRepo(db: Db): CliFlowRepoShape {
         if (results[1].length === 1) {
           return "created";
         }
-        // 行あり(match / conflict)か上限到達。同一 user_id × awaiting × 期限内の
-        // 再到達だけがチケットを置換して成功する(旧チケットは置換失効 — 有効な
-        // チケットは常に最新 1 枚)。別 user_id はこの UPDATE に決して合致しない
-        // = チケットを回転させない(§4-1 (4) (iii))
+        // Either the row exists (match / conflict) or the cap was hit.
+        // Only a re-arrival with the same user_id × awaiting × within
+        // validity succeeds by replacing the ticket (the old ticket is
+        // revoked by the replacement — at any time exactly one latest
+        // ticket is valid). A different user_id never matches this
+        // UPDATE = the ticket is not rotated (§4-1 (4) (iii))
         const matched = await db
           .update(cliLoginFlows)
           .set({ ticketHash: flow.ticketHash })
@@ -1877,8 +2015,9 @@ function makeCliFlowRepo(db: Db): CliFlowRepoShape {
           .from(cliLoginFlows)
           .where(eq(cliLoginFlows.id, flow.flowId))
           .get();
-        // 行なし = 条件付き INSERT を落としたのは上限(capacity)。行あり =
-        // 別 user_id / 期限切れ / terminal 状態(一様 rejected — 出し分けない)
+        // No row = what dropped the conditional INSERT was the cap
+        // (capacity). A row = another user_id / expired / a terminal
+        // state (uniformly rejected — never differentiated)
         return existing === undefined ? "capacity" : "rejected";
       }),
     decideCas: (flowId, ticketHash, decision, nowMs) =>
@@ -1896,12 +2035,14 @@ function makeCliFlowRepo(db: Db): CliFlowRepoShape {
           )
           .returning({ id: cliLoginFlows.id });
         if (decision !== "approved") {
-          // 拒否は監査イベントを持たない(§4-2 — 承認 = login_succeeded のみ。
-          // 失敗系は login_failed の固定窓規律で、明示拒否はどちらでもない)
+          // A denial carries no audit event (§4-2 — only an approval =
+          // login_succeeded. The failure family follows login_failed's
+          // fixed-window discipline, and an explicit denial is neither)
           return (await cas).length === 1;
         }
-        // 承認 = auth.login_succeeded(authMethod cli_handoff — §4-2)。actor の
-        // user_id は行から写す(changes() ガード — invites の CAS と同型)
+        // An approval = auth.login_succeeded (authMethod cli_handoff —
+        // §4-2). The actor's user_id is copied from the row (the
+        // changes() guard — same shape as the invites CAS)
         const results = await db.batch([
           cas,
           db.insert(userAuditEvents).select(
@@ -1942,7 +2083,8 @@ function makeCliFlowRepo(db: Db): CliFlowRepoShape {
         }
         const scopes = parseTokenScopes(row.scopes);
         if (scopes === null) {
-          // 自分の書き込み経路でしか生成されない列が壊れている = 実装バグ / DB 破損
+          // A column only our own write path can produce being broken =
+          // an implementation bug / DB corruption
           throw new Error("stored CLI flow scopes are not a valid scope array");
         }
         return {
@@ -1969,7 +2111,8 @@ function makeCliFlowRepo(db: Db): CliFlowRepoShape {
 }
 
 // ---------------------------------------------------------------------------
-// 束ね: D1 binding からリポジトリ一式の Context を作る
+// The bundle: build the Context of the whole repository set from a D1
+// binding
 // ---------------------------------------------------------------------------
 
 export type DbServices =
@@ -1987,11 +2130,11 @@ export type DbServices =
   | KeyWrapRepo
   | DeviceRepo;
 
-/** D1 binding からリポジトリサービス一式を構築する(worker 起動時に 1 回)。 */
+/** Builds the set of repository services from a D1 binding (once at worker startup). */
 export function makeDbServices(d1: D1Database): Context.Context<DbServices> {
   const db = drizzle(d1);
-  // master 鍵ラップ台帳(AUTH_SPEC §13-6〜13-10 — KL3)。recovery-code の取得窓も
-  // この合算窓を使う(§13-8)
+  // The master key-wrap ledger (AUTH_SPEC §13-6–13-10 — KL3). The
+  // recovery-code fetch window also uses this summed window (§13-8)
   const keyWraps = makeKeyWrapRepo(db);
   return Context.make(IdentityRepo, makeIdentityRepo(db)).pipe(
     Context.add(SessionRepo, makeSessionRepo(db)),
@@ -2004,9 +2147,11 @@ export function makeDbServices(d1: D1Database): Context.Context<DbServices> {
     Context.add(FlowSigningKeyRepo, makeFlowSigningKeyRepo(db)),
     Context.add(CliFlowRepo, makeCliFlowRepo(db)),
     Context.add(D1AuditRepo, makeD1AuditRepo(db)),
-    // 運用(H3 — hosted-ops.md §6): カウンタ・退避記録・状態 kv
+    // Operations (H3 — hosted-ops.md §6): counters, evacuation
+    // records, state kv
     Context.add(OpsRepo, makeOpsRepo(db)),
-    // 端末登録簿・端末追加要求(AUTH_SPEC §13-11 — DK K3。advisory)
+    // The device registry and device-add requests (AUTH_SPEC §13-11 —
+    // DK K3. advisory)
     Context.add(DeviceRepo, makeDeviceRepo(db)),
   );
 }

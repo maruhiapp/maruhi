@@ -1,21 +1,31 @@
-// `maruhi var rm <NAME>` — 変数の削除。
+// `maruhi var rm <NAME>` — deleting a variable.
 //
-// ワイヤ・受理・検証は既存(DeleteVariableMetaStatement v1 / V2 + マニフェスト
-// 複合 — AUTH_SPEC §12-5)。本モジュールは CLI 側の署名・送信・確認だけを足す:
+// The wire, acceptance, and verification already exist
+// (DeleteVariableMetaStatement v1 / V2 + the manifest compound —
+// AUTH_SPEC §12-5). This module only adds the CLI-side signing,
+// sending, and confirmation:
 //
-//   - v1 変数の削除は v1 形のまま(レイアウトを勝手に上げない)。v2 変数の削除は
-//     **スキーマ欄・レイアウトの直前 byte-exact 保持**(CRYPTO_SPEC §4.2 の削除
-//     規約 — サーバーは不一致を 422 payload-mismatch で強制する)。name は
-//     直前の active 名をそのまま保持する(削除で名前フィールドを空にしない)
-//   - 削除は終端(deleted からの復帰は存在しない — §4.2)。active(値あり)の
-//     削除は全バージョンの暗号文の即時削除を伴う(§12-5)。だから対話の明示
-//     確認(変数名の再入力)を必須にし、非対話環境では --force なしに拒否する
-//     (fail-closed)。declared(値なし)も黙っては消さない — 同じ確認に載せる
-//   - メタ操作の既存規律に載せる: 3-F(journal-before-send — issueManifestWithIntent)
-//     + 1-E′(効果確認 — confirmMetaMutation)+ 床の tombstone 前進(commitPush)
+//   - Deleting a v1 variable keeps the v1 form (never silently
+//     raises the layout). Deleting a v2 variable **keeps the schema
+//     fields and layout byte-exactly from the previous statement**
+//     (CRYPTO_SPEC §4.2's deletion convention — the server enforces
+//     a mismatch as 422 payload-mismatch). name keeps the last
+//     active name as-is (deletion never empties the name field)
+//   - Deletion is terminal (no return from deleted — §4.2).
+//     Deleting an active (valued) variable immediately deletes
+//     every version's ciphertext (§12-5). So an interactive
+//     explicit confirmation (retyping the variable name) is
+//     required, and a non-interactive environment refuses without
+//     --force (fail-closed). A declared (valueless) variable is not
+//     deleted silently either — it rides the same confirmation
+//   - Rides the existing meta-operation discipline: 3-F
+//     (journal-before-send — issueManifestWithIntent) + 1-E′
+//     (effect confirmation — confirmMetaMutation) + the floor's
+//     tombstone advance (commitPush)
 //
-// コマンドを schema グループに置かない理由: 消えるのはスキーマでなく変数と
-// 値そのもの(スキーマ欄はその一部にすぎない)。
+// Why the command is not placed in the schema group: what
+// disappears is not the schema but the variable and the value
+// itself (the schema fields are only a part of it).
 
 import { ManifestVersionConflictError, MetaVersionConflictError } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
@@ -42,9 +52,9 @@ export interface VarRmInput {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
-  /** 変数名(NFC 正規化は本関数が行う — §12-1)。 */
+  /** The variable name (NFC normalization is done by this function — §12-1). */
   readonly name: string;
-  /** true = 確認をスキップ(非対話の唯一の経路 — 明示のリスク受諾)。 */
+  /** true = skip the confirmation (the only non-interactive path — an explicit risk acceptance). */
   readonly force: boolean;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly floor: FloorHandle;
@@ -55,12 +65,12 @@ export interface VarRmInput {
 export interface VarRmSummary {
   readonly variableId: string;
   readonly metaVersion: number;
-  /** 削除前の状態(active = 値も消えた / declared = 宣言のみ)。 */
+  /** The pre-deletion state (active = the value is also gone / declared = declaration only). */
   readonly previousStatus: "active" | "declared";
   readonly warnings: readonly string[];
 }
 
-/** 対象の解決(削除済み・未存在の言い分けは呼び出し前の状態で行う)。 */
+/** Resolves the target (distinguishing deleted / nonexistent uses the pre-call state). */
 function resolveDeletionTarget(
   input: VarRmInput,
   verified: VerifiedProject,
@@ -73,8 +83,10 @@ function resolveDeletionTarget(
       return { ...state, target };
     }
     if (state.tombstones.some((tombstone) => tombstone.name === name)) {
-      // 削除は終端(§4.2)— 既に削除済みの名前への rm は「望んだ状態」ではあるが
-      // 呼び出しの前提(この実行が消す)が成り立っていないので明示エラーにする
+      // Deletion is terminal (§4.2) — rm on an already-deleted
+      // name reaches "the desired state" but the call's
+      // precondition (this run deletes it) does not hold, so make
+      // it an explicit error
       return yield* Effect.fail(
         cliError(
           `Variable ${displayText(name)} is already deleted (deletion is terminal — a deleted variable cannot be restored). Nothing was changed by this run`,
@@ -88,10 +100,12 @@ function resolveDeletionTarget(
 }
 
 /**
- * 削除の明示確認(fail-closed): --force なしでは、対話端末(stdin と stdout の
- * 両方が端末 — Stdio サービス経由)で**変数名の再入力**を要求する。非対話では
- * --force なしに拒否する。判定材料をサービス経由で取るのは CLAUDE.md の
- * 「process.* を直に読まない」規律。
+ * The explicit deletion confirmation (fail-closed): without
+ * --force, an interactive terminal (both stdin and stdout being
+ * terminals — via the Stdio service) requires **retyping the
+ * variable name**. Non-interactive refuses without --force.
+ * Getting the judgment material via a service is CLAUDE.md's
+ * "never read process.* directly" discipline.
  */
 function ensureDeletionConfirmed(
   input: VarRmInput,
@@ -105,7 +119,7 @@ function ensureDeletionConfirmed(
         ? "its value (every stored version) is deleted immediately and cannot be recovered"
         : "the declaration (no value was set) is removed";
     if (input.force) {
-      // 明示フラグ = リスクの明示受諾。それでも事実は可視化する(黙って消さない)
+      // An explicit flag = explicit risk acceptance. The fact is still made visible (never delete silently)
       yield* io.logError(
         `Deleting ${displayText(name)} without confirmation (--force): ${consequence}. Deletion is terminal — the variable cannot be restored`,
       );
@@ -148,7 +162,7 @@ interface AcceptedDeletion {
   readonly state: SchemaSetState;
 }
 
-/** v1 変数の削除ステートメント(v1 形のまま — レイアウトを勝手に上げない)。 */
+/** A v1 variable's deletion statement (keeps the v1 form — never silently raises the layout). */
 function signDeleteStatementV1(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
@@ -157,14 +171,15 @@ function signDeleteStatementV1(input: {
   readonly signingKey: CryptoKey;
 }) {
   return Effect.gen(function* () {
-    // 署名対象 context は 1 回だけ構築し、ワイヤは機械的に導出する
-    // (meta-statement.ts / schema-statement.ts と同じ規律)
+    // The signed context is built exactly once, and the wire is
+    // derived mechanically (same discipline as meta-statement.ts
+    // / schema-statement.ts)
     const context = {
       suite: SUITE_ID,
       projectId: input.verified.projectId,
       environmentId: input.environmentId,
       target: { kind: "variable", variableId: input.target.variableId },
-      // name は直前の active 名をそのまま保持する(§4.2 — 削除で空にしない)
+      // name keeps the last active name as-is (§4.2 — deletion never empties it)
       name: input.target.name,
       status: "deleted",
       metaVersion: input.target.metaVersion + 1,
@@ -192,7 +207,7 @@ function signDeleteStatementV1(input: {
   });
 }
 
-/** 1 試行(署名・送信)。競合の分類は retryOnConflict の classify が担う。 */
+/** One attempt (sign, send). Conflict classification is retryOnConflict's classify's job. */
 function attemptDeletion(
   input: VarRmInput,
   state: SchemaSetState & { readonly target: VerifiedVariableStatement },
@@ -206,8 +221,10 @@ function attemptDeletion(
       );
     }
     const previousStatus = target.status;
-    // v2 変数の削除は v2 形(スキーマ欄・レイアウトの直前 byte-exact 保持 —
-    // §12-5 の削除規約)、v1 変数の削除は v1 形のまま
+    // Deleting a v2 variable uses the v2 form (schema fields and
+    // layout kept byte-exactly from the previous statement —
+    // §12-5's deletion convention); a v1 variable's deletion keeps
+    // the v1 form
     const signed =
       target.layoutVersion === 2 && target.schema !== null
         ? yield* signDeleteStatementV2({
@@ -227,8 +244,9 @@ function attemptDeletion(
             authorUserId: input.authorUserId,
             signingKey: input.signingKey,
           });
-    // マニフェストは対象エントリを tombstone へ差し替える(§4.3 — ダイジェストは
-    // tombstone を含む全ステートメントを覆う)。3-F intent は送信前に永続化する
+    // The manifest swaps the target entry for a tombstone (§4.3 —
+    // the digest covers every statement including tombstones). The
+    // 3-F intent is persisted before sending
     const { manifest, intentId } = yield* issueManifestWithIntent({
       verified: state.verified,
       environmentId: input.environmentId,
@@ -277,12 +295,14 @@ function attemptDeletion(
 
 type DeletionConflict = { readonly kind: "re-resolve" };
 
-/** CAS 競合(§12-5)のリトライ可能な分類。それ以外は null(定的エラー)。 */
+/** The retryable classification of a CAS conflict (§12-5). Anything else = null (a determinate error). */
 function classifyDeletionConflict(error: unknown): DeletionConflict | null {
   if (error instanceof MetaVersionConflictError || error instanceof ManifestVersionConflictError) {
-    // 並行メタ操作は名前から解決し直す(§12-5 の再試行 = 再取得 → 検証 →
-    // ステートメントとマニフェストの両方を再署名)。並行削除に負けた場合は
-    // 再解決が「already deleted」の定的エラーとして表面化させる
+    // A concurrent meta operation re-resolves from the name
+    // (§12-5's retry = refetch → verify → re-sign both the
+    // statement and the manifest). Losing to a concurrent deletion
+    // surfaces from re-resolution as the determinate "already
+    // deleted" error
     return { kind: "re-resolve" };
   }
   return null;
@@ -300,13 +320,16 @@ export function varRmOp(
   input: VarRmInput,
 ): Effect.Effect<VarRmSummary, CliError, CliIo | Stdio.Stdio> {
   return Effect.gen(function* () {
-    // 正規化の実施主体は署名前のクライアント(§4.2 / §12-1)
+    // Normalization's agent is the client before signing (§4.2 / §12-1)
     const name = input.name.normalize("NFC");
     const initial = yield* resolveDeletionTarget(input, input.verified, name);
-    // 確認は署名・送信・リトライループより前に 1 回だけ。確認が束縛するのは
-    // **variableId**(名前ではない): 再解決は名前で行うため、並行削除 + 同名の
-    // 新規作成で別の変数が同じ名前に載ることがある — その形は下の recover が
-    // 型付きエラーで止める(確認していない変数を消さない)
+    // The confirmation happens exactly once before signing,
+    // sending, and the retry loop. What the confirmation binds is
+    // **variableId** (not the name): re-resolution happens by
+    // name, so a concurrent deletion + a fresh creation of the
+    // same name can put a different variable under that name —
+    // that shape is stopped by the recover below as a typed error
+    // (never delete an unconfirmed variable)
     yield* ensureDeletionConfirmed(input, initial.target, name);
     const confirmedVariableId = initial.target.variableId;
     const accepted = yield* retryOnConflict(initial, {
@@ -325,9 +348,11 @@ export function varRmOp(
         ),
       exhaustedMessage: `The deletion conflict did not resolve (after ${MAX_ATTEMPTS} attempts). Wait a moment and re-run the command`,
     });
-    // 効果確認(1-E′ — §12-10 (3)): 成功の定義は検証可能な配布物での確認。
-    // 削除の効果は tombstone(発行 metaVersion 以上。同版はハッシュ一致まで
-    // 要求 — 並行操作に負けた 2xx を効果ありと誤読しない)
+    // Effect confirmation (1-E′ — §12-10 (3)): the definition of
+    // success is confirmation on the verifiable distribution. A
+    // deletion's effect is a tombstone (at or above the issued
+    // metaVersion. Same-version requires hash equality — never
+    // misread a 2xx lost to a concurrent operation as effective)
     const issued = { metaVersion: accepted.metaVersion, metaSigHashHex: accepted.metaSigHashHex };
     const tombstoneConfirms = (tombstone: {
       readonly metaVersion: number;
@@ -351,9 +376,11 @@ export function varRmOp(
             tombstone.variableId === accepted.variableId && tombstoneConfirms(tombstone),
         ),
     });
-    // 床の tombstone 前進(§6.3 — 以後の pull で削除の無断取り消しを検出できる。
-    // journal-before-release: 成功報告より先)。削除自体は確認済みなので、床の
-    // 書き込み失敗はその旨を明示する
+    // The floor's tombstone advance (§6.3 — a later pull can
+    // detect the deletion being silently undone.
+    // journal-before-release: before the success report). Since
+    // the deletion itself is already confirmed, a floor write
+    // failure is reported as such
     yield* input.floor
       .commitPush(
         accepted.variableId,

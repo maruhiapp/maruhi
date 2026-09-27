@@ -1,24 +1,31 @@
-// ローカル床の保存形: 追記専用の観測ログ + fold(CRYPTO_SPEC §6.3 の
-// 3-E / 3-E′ / 3-F)。
+// The local floor's storage form: an append-only observation log + fold
+// (CRYPTO_SPEC §6.3's 3-E / 3-E′ / 3-F).
 //
-// - 床ファイルは「検証済み観測の追記専用ログ(1 観測 = 1 行の JSONL)」であり、
-//   床 = ログを fold した join として**導出**する。上書き更新の保存形
-//   (読み・merge・書き戻し)は用いない — 並行プロセスの観測は両方ログに残り、
-//   同座標 conflict は fold 時に typed conflict として顕在化する(**上書きに
-//   よる証拠喪失が「禁止」から「表現不能」になる**)。M1 ではプロセス間ロック
-//   自体が存在しない(追記のみ)
-// - 追記は追記モード(O_APPEND 相当)のみ・**fsync 相当の永続化まで待つ**
-//   (3-E′ — journal-before-release / before-send の「記録」基準)
-// - 破損レコード(クラッシュ・電源断の torn write)は fold が無視する
-//   (自己回復)。追記は常に改行を**前置**するため、torn 行が後続レコードを
-//   壊すことはない(末尾検査は行わない — appendRecords の JSDoc)
-// - コンパクションは「現在の fold 結果 + 畳んだ接頭辞の終端位置」を
-//   **スナップショットレコードとして追記**する形でのみ行う(契機 = 最新
-//   スナップショットレコード以降に積まれた相対量の閾値超過)。書き直し・
-//   切り詰め・物理回収は M1 では行わない(M2 の checkpoint 基準接続と同時に
-//   設計する)。同座標 conflict の証拠はスナップショットに畳まれても消えない
-// - intent / resolution レコード(3-F)は join の格子に入れない別クラス —
-//   fold は未解決 intent を「要照合」として表面化する
+// - The floor file is an "append-only log of verified observations (one
+//   observation = one JSONL line)", and the floor is **derived** as the
+//   join produced by folding the log. An overwrite-update storage form
+//   (read, merge, write back) is not used — observations of concurrent
+//   processes both remain in the log, and a same-coordinate conflict
+//   surfaces as a typed conflict at fold time (**evidence loss via
+//   overwrite goes from "forbidden" to "inexpressible"**). In M1 there
+//   is no inter-process lock at all (appends only)
+// - Appends go only through append mode (O_APPEND equivalent) and **wait
+//   for fsync-equivalent durability** (3-E′ — the "record" standard of
+//   journal-before-release / before-send)
+// - Corrupt records (torn writes from a crash or power loss) are ignored
+//   by fold (self-healing). Because every append is **prefixed** with a
+//   newline, a torn line never corrupts later records (no tail-end
+//   check — see appendRecords's JSDoc)
+// - Compaction only happens by **appending a snapshot record** holding
+//   "the current fold result + the end position of the folded prefix"
+//   (the trigger is exceeding a threshold of the relative amount
+//   accumulated after the latest snapshot record). M1 never rewrites,
+//   truncates, or physically reclaims (to be designed together with
+//   M2's checkpoint-baseline linking). The evidence of a same-coordinate
+//   conflict is not lost by being folded into a snapshot
+// - intent / resolution records (3-F) are a separate class that does not
+//   enter the join's lattice — fold surfaces an unresolved intent as
+//   "needs reconciliation"
 
 import {
   type FileHandle,
@@ -60,16 +67,18 @@ import {
 } from "./floor.ts";
 
 /**
- * コンパクション契機: 最新スナップショットレコード以降に積まれたレコード数の
- * 閾値(相対量 — 総ファイルサイズ基準は一度超えると恒久成立するため使わない)。
- * fold コストの有界化はこの相対基準そのものが担う。
+ * The compaction trigger: a threshold on the number of records
+ * accumulated after the latest snapshot record (a relative amount — a
+ * total-file-size basis is not used because once exceeded it holds
+ * forever). Bounding the fold cost is carried by this relative basis
+ * itself.
  */
 const DEFAULT_COMPACTION_THRESHOLD = 256;
 
-/** 1 論理 append の全長書き直し再試行の上限(short write — appendAll)。 */
+/** The cap on full-length rewrite retries of one logical append (short write — appendAll). */
 const MAX_APPEND_WRITE_ATTEMPTS = 3;
 
-/** スナップショットレコードの中身(= fold 結果。conflicts / intents 込み)。 */
+/** A snapshot record's content (= the fold result, including conflicts / intents). */
 interface SnapshotState {
   readonly chainHead: ChainHeadFloor | null;
   readonly environments: Readonly<Record<string, EnvironmentFloor>>;
@@ -77,7 +86,7 @@ interface SnapshotState {
   readonly intents: readonly FloorIntent[];
 }
 
-/** 観測ログのレコード(1 行 = 1 レコード)。 */
+/** An observation-log record (one line = one record). */
 type FloorLogRecord =
   | { readonly r: "head"; readonly head: ChainHeadFloor }
   | {
@@ -116,19 +125,21 @@ type FloorLogRecord =
     }
   | {
       /**
-       * コンパクション: `folded` は畳んだ接頭辞の終端位置(このレコードより
-       * 前の解読可能レコードのうち fold 済みの個数)。fold は「スナップショットの
-       * state ⊔ 位置 `folded` 以降の全レコード」— 並行追記がスナップショットの
-       * 読みと追記の間に着地しても、join の冪等性・可換性により二重畳みは無害で
-       * 取りこぼしは位置基準が防ぐ。位置が壊れていれば全レコード fold へ
-       * フォールバックする(正しさは変わらない — §6.3)。
+       * Compaction: `folded` is the end position of the folded prefix
+       * (the count of already-folded decodable records before this
+       * record). fold is "the snapshot's state ⊔ all records at position
+       * `folded` onward" — even if a concurrent append lands
+       * between the snapshot's read and write, the join's idempotence and
+       * commutativity make a double fold harmless, and the position basis
+       * prevents drops. If the position is corrupt it falls back to
+       * folding all records (correctness is unchanged — §6.3).
        */
       readonly r: "snapshot";
       readonly folded: number;
       readonly state: SnapshotState;
     };
 
-// ---- 厳格デコード(1 レコード単位。壊れた行は fold が無視する = 自己回復) ----
+// ---- Strict decoding (per-record; a broken line is ignored by fold = self-healing) ----
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 const INTENT_ID = /^[0-9a-f]{16}$/;
@@ -149,7 +160,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// @maruhi/core の ID ガードは string 引数 — unknown からの 2 段ガードをここで包む
+// @maruhi/core's ID guards take a string — wrap the two-stage guard from unknown here
 function isEnvironmentIdValue(value: unknown): value is string {
   return typeof value === "string" && isEnvironmentId(value);
 }
@@ -168,9 +179,9 @@ const isNullOr =
     value === null || check(value);
 
 /**
- * フィールド仕様の一括検査。strict デコードの `||` 連鎖(1 条件 = 1 分岐)を
- * データへ畳む — fallow の複雑度ゲート対応であると同時に、仕様の列挙が
- * 見た目にもフィールド表になる。
+ * Bulk field-spec check. Folds the strict decode's `||` chain (one
+ * condition = one branch) into data — satisfies fallow's complexity gate
+ * and makes the spec's enumeration visibly a field table.
  */
 function fieldsValid(
   record: Record<string, unknown>,
@@ -179,7 +190,7 @@ function fieldsValid(
   return Object.entries(spec).every(([key, check]) => check(record[key]));
 }
 
-/** 全要素が strict にデコードできた場合のみ配列を返す(1 件でも壊れていれば null)。 */
+/** Returns the array only when every element decodes strictly (a single corrupt item yields null). */
 function decodeList<T>(value: unknown, decode: (item: unknown) => T | null): T[] | null {
   if (!Array.isArray(value)) {
     return null;
@@ -202,7 +213,7 @@ function decodeChainHead(value: unknown): ChainHeadFloor | null {
   return { seq: value["seq"], hashHex: value["hashHex"] };
 }
 
-/** active 変数床の値側フィールドの復号(メタ側は共通 — decodeVariableFloor)。 */
+/** Decoding an active variable-floor's value-side fields (the meta side is shared — decodeVariableFloor). */
 function decodeActiveValueSide(
   value: Record<string, unknown>,
 ): Pick<
@@ -234,7 +245,7 @@ function decodeVariableFloor(value: unknown): VariableFloor | null {
     metaVersion: value["metaVersion"],
     metaSigHashHex: value["metaSigHashHex"],
   };
-  // deleted / declared(§4.2 レイアウト v2 の値未設定宣言)はメタ側のみ(値床は空)
+  // deleted / declared (layout v2's no-value-set declaration, §4.2) carry the meta side only (the value floor is empty)
   if (value["status"] === "deleted" || value["status"] === "declared") {
     return { status: value["status"], ...meta };
   }
@@ -261,11 +272,12 @@ function decodeManifestFloor(value: unknown): ManifestFloor | null {
   };
 }
 
-// レコードキー(environmentId / variableId)は §12-1 の受理形式を要求する。
-// 正規の床は wire スキーマ検証済み(または CLI 採番)の ID しか書かないため、
-// 形式外のキー = 破損として行単位で拒否する。これは `__proto__`(先頭 `_` で
-// 形式外)を構造的に排除する。`constructor` / `prototype` は正当な ID であり
-// 拒否しない(参照側は floorRecordGet の own-property 参照で守る)
+// Record keys (environmentId / variableId) must satisfy §12-1's accepted
+// form. A proper floor writes only wire-schema-verified (or CLI-assigned)
+// IDs, so an out-of-form key = rejected as corruption per line. This
+// structurally excludes `__proto__` (a leading `_` is out of form).
+// `constructor` / `prototype` are legitimate IDs and are not refused (the
+// read side is protected by floorRecordGet's own-property lookup)
 function decodeVariablesRecord(value: unknown): Record<string, VariableFloor> | null {
   if (!isRecord(value)) {
     return null;
@@ -281,7 +293,7 @@ function decodeVariablesRecord(value: unknown): Record<string, VariableFloor> | 
   return variables;
 }
 
-/** manifest(省略可)+ variables の共通デコード(新形と旧形が共有する尾部)。 */
+/** The shared decode of manifest (optional) + variables (the tail shared by the new and old forms). */
 function decodeManifestAndVariables(
   value: Record<string, unknown>,
 ): { readonly manifest?: ManifestFloor; readonly variables: Record<string, VariableFloor> } | null {
@@ -294,7 +306,7 @@ function decodeManifestAndVariables(
   return { ...(manifest === undefined ? {} : { manifest }), variables };
 }
 
-/** 環境床(新形 — bottom 座標を許す: pullEpoch / observedEpoch / metaVersion = 0)。 */
+/** The environment floor (new form — admits the bottom coordinates: pullEpoch / observedEpoch / metaVersion = 0). */
 function decodeEnvironmentFloor(value: unknown): EnvironmentFloor | null {
   if (
     !isRecord(value) ||
@@ -430,7 +442,7 @@ function decodeSnapshotState(value: unknown): SnapshotState | null {
   return { chainHead, environments, conflicts, intents };
 }
 
-/** 環境座標を持つレコードの共通部(head + environmentId)のデコード。 */
+/** Decoding the shared part (head + environmentId) of environment-scoped records. */
 function decodeScoped(
   value: Record<string, unknown>,
 ): { readonly head: ChainHeadFloor; readonly environmentId: string } | null {
@@ -522,8 +534,9 @@ function decodeSnapshotRecord(value: Record<string, unknown>): FloorLogRecord | 
   return { r: "snapshot", folded: value["folded"], state };
 }
 
-// r タグ → デコーダの対応(Map — 素の Record だと `constructor` 等の r 値が
-// 継承プロパティの関数へ解決されて破損レコードが通る)
+// r tag → decoder mapping (a Map — with a plain Record an r value like
+// `constructor` resolves to an inherited-property function and lets a
+// corrupt record through)
 const RECORD_DECODERS = new Map<string, (value: Record<string, unknown>) => FloorLogRecord | null>([
   ["head", decodeHeadRecord],
   ["pull", decodePullRecord],
@@ -535,7 +548,7 @@ const RECORD_DECODERS = new Map<string, (value: Record<string, unknown>) => Floo
   ["snapshot", decodeSnapshotRecord],
 ]);
 
-/** 1 行の厳格デコード。null = 解読不能(fold が無視する — 自己回復)。 */
+/** Strict decoding of one line. null = undecodable (fold ignores it — self-healing). */
 function decodeLogRecord(line: string): FloorLogRecord | null {
   let value: unknown;
   try {
@@ -550,7 +563,7 @@ function decodeLogRecord(line: string): FloorLogRecord | null {
   return decode === undefined ? null : decode(value);
 }
 
-// ---- fold(観測ログ → 床)----
+// ---- fold (observation log → floor) ----
 
 interface FoldState {
   chainHead: ChainHeadFloor | null;
@@ -560,8 +573,10 @@ interface FoldState {
 }
 
 function conflictKey(conflict: FloorConflict): string {
-  // 同一 conflict の再導出(fold は毎回走る)とスナップショット由来の重複を
-  // 座標 + 両証拠で同一視する。証拠の並びは join の代表選択と独立に正規化する
+  // Re-derivation of the same conflict (fold runs every time) and
+  // snapshot-derived duplicates are identified by coordinates + both
+  // evidence values. The evidence ordering is normalized independently of
+  // the join's representative selection
   const pair = [
     `${conflict.firstVersion}:${conflict.firstHashHex}`,
     `${conflict.secondVersion}:${conflict.secondHashHex}`,
@@ -619,8 +634,9 @@ function applyRecord(state: FoldState, record: FloorLogRecord): void {
       state.chainHead = joinChainHead(state.chainHead, record.head, sink);
       joinEnvironmentInto(state, record.environmentId, {
         ...emptyEnvironmentFloor(),
-        // マニフェストは検証済み観測なので、その epoch は環境水準のエポック
-        // 観測(座標 (ii))としても join する(pull 基準 (i) は動かさない)
+        // A manifest is a verified observation, so its epoch also joins
+        // as an environment-level epoch observation (coordinate (ii))
+        // (the pull baseline (i) is not moved)
         observedEpoch: record.manifest.epoch,
         manifest: record.manifest,
       });
@@ -632,18 +648,18 @@ function applyRecord(state: FoldState, record: FloorLogRecord): void {
       state.intents.delete(record.intentId);
       return;
     case "snapshot":
-      // fold 側では no-op(基点の選択は foldRecords が行う — 二重畳みは無害)
+      // A no-op on the fold side (foldRecords chooses the base point — a double fold is harmless)
       return;
   }
 }
 
 interface FoldOutcome {
   readonly floor: ProjectFloor;
-  /** 解読できたレコード総数(スナップショットの `folded` の基準位置)。 */
+  /** The total decodable record count (the basis position for a snapshot's `folded`). */
   readonly decodedRecords: number;
-  /** 解読できなかった非空行の数(torn 行の自己回復 — 診断用)。 */
+  /** The number of non-empty lines that failed to decode (torn-line self-healing — diagnostic). */
   readonly droppedLines: number;
-  /** 最新スナップショットレコード以降に積まれたレコード数(コンパクション契機)。 */
+  /** The record count accumulated after the latest snapshot record (the compaction trigger). */
   readonly recordsSinceSnapshot: number;
 }
 
@@ -664,11 +680,13 @@ function baseStateOf(snapshot: { folded: number; state: SnapshotState } | null):
 }
 
 /**
- * 行 → 解読できたレコード列 + 落とした非空行の位置(torn 行の自己回復)。
- * 位置 = その行の直前までに解読できたレコード数 — fold 基点(スナップショットの
- * folded)より前の落ちた行は「畳まれた接頭辞の中」なので警告の対象から外れる
- * (コンパクションが警告を自然に retire する — 恒久的に鳴り続けるノイズを
- * equivocation 警告と同じ帯域へ載せない)。
+ * Lines → the decodable record list + the positions of dropped non-empty
+ * lines (torn-line self-healing). A position = the number of records
+ * decoded just before that line — a dropped line before the fold base
+ * (the snapshot's folded) sits "inside the folded prefix" and is out of
+ * the warning's scope (compaction naturally retires the warning — a
+ * permanently ringing noise must not share the equivocation warning's
+ * band).
  */
 function parseLogLines(lines: readonly string[]): {
   readonly records: FloorLogRecord[];
@@ -682,8 +700,9 @@ function parseLogLines(lines: readonly string[]): {
     }
     const record = decodeLogRecord(line);
     if (record === null) {
-      // torn 行(クラッシュした並行プロセスの書きかけ)の自己回復。conflict の
-      // 証拠行は正しい JSON なのでここでは失われない
+      // Self-healing of a torn line (an interrupted write by a crashed
+      // concurrent process). A conflict's evidence line is valid JSON, so
+      // it is not lost here
       droppedAtRecordCount.push(records.length);
       continue;
     }
@@ -693,10 +712,11 @@ function parseLogLines(lines: readonly string[]): {
 }
 
 /**
- * fold の基点 = 最新の有効なスナップショット。「畳んだ接頭辞の終端位置
- * (folded)」がスナップショット自身の位置を超えている(壊れている)場合は
- * 全レコード fold へフォールバックする — join の冪等性・可換性により正しさは
- * 不変(コストだけが変わる — §6.3)。
+ * The fold base = the latest valid snapshot. When "the end position of
+ * the folded prefix (folded)" exceeds the snapshot's own position
+ * (corrupt), fall back to folding all records — the join's idempotence
+ * and commutativity keep correctness invariant (only the cost changes —
+ * §6.3).
  */
 function foldBase(records: readonly FloorLogRecord[]): {
   readonly foldFrom: number;
@@ -731,14 +751,15 @@ function foldRecords(lines: readonly string[]): FoldOutcome {
       intents: [...state.intents.values()],
     },
     decodedRecords: records.length,
-    // fold 基点より後の落ちた行だけを数える(基点より前はスナップショットへ
-    // 畳まれた接頭辞 — 警告済みの古い torn 行を恒久的に鳴らさない)
+    // Count only dropped lines after the fold base (before it they are
+    // inside the prefix folded into the snapshot — do not ring an
+    // already-warned old torn line forever)
     droppedLines: droppedAtRecordCount.filter((position) => position >= foldFrom).length,
     recordsSinceSnapshot: snapshotIndex >= 0 ? records.length - 1 - snapshotIndex : records.length,
   };
 }
 
-// ---- ファイルストア ----
+// ---- File store ----
 
 function isFileMissingError(error: unknown): boolean {
   return (
@@ -749,14 +770,18 @@ function isFileMissingError(error: unknown): boolean {
 }
 
 /**
- * O_APPEND で開いたハンドルへ payload を 1 論理 append として書き、datasync まで待つ
- * (床ログ・証拠ログの追記の物理規律)。
+ * Writes payload to an O_APPEND-opened handle as one logical append and
+ * waits through datasync (the physical discipline for appends to the
+ * floor log / evidence log).
  *
- * 1 論理 append = 1 write syscall(O_APPEND の原子性が及ぶ単位)。short write の
- * **残りを継ぎ足さない**: 継ぎ足しの 2 回目の write は別プロセスの追記と交錯し、
- * 1 レコードが 2 つの不正断片に分裂して無言で失われる(成功を返してはならない形)。
- * 断片は改行前置で隔離済みの torn 行として読み手が捨てるので、payload **全体**を
- * 先頭から書き直す。書き切れないまま尽きたら(0 バイト書き込みを含む)投げる。
+ * One logical append = one write syscall (the unit O_APPEND's atomicity
+ * covers). On a short write, **do not splice on the remainder**: a second
+ * splicing write would interleave with another process's append, and one
+ * record would split into two invalid fragments lost silently (a shape
+ * that must never return success). Since readers discard the fragment as
+ * a torn line already isolated by newline-prefixing, rewrite the
+ * **whole** payload from the start. If it runs out still unwritten
+ * (including a 0-byte write), throw.
  */
 async function appendAll(handle: FileHandle, payload: Buffer, logName: string): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
@@ -782,13 +807,13 @@ function randomIntentId(): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-/** commit 系の返り値: fold 済み床から当該環境の床(未観測なら bottom)。 */
+/** The commit functions' return value: the environment's floor from the folded floor (bottom if unobserved). */
 function environmentOf(floor: ProjectFloor, environmentId: string): EnvironmentFloor {
   return floorRecordGet(floor.environments, environmentId) ?? emptyEnvironmentFloor();
 }
 
 export interface FileFloorStoreOptions {
-  /** コンパクション契機(最新スナップショット以降のレコード数)。テスト用の上書き。 */
+  /** The compaction trigger (record count after the latest snapshot). A test override. */
   readonly compactionThreshold?: number;
 }
 
@@ -797,23 +822,28 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
   const compactionThreshold = options?.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD;
 
   const pathOf = (projectId: string): string => {
-    // projectId は genesis ハッシュ(hex 64)のはずだが、ファイル名に使う前に
-    // 形式を強制する(パス組み立てへの信頼できない文字列の混入を防ぐ)
+    // projectId is supposed to be a genesis hash (hex-64), but the form
+    // is enforced before it goes into a file name (prevents untrusted
+    // strings from mixing into path assembly)
     if (!isProjectId(projectId)) {
       throw new Error(`invalid project id for floor path: ${projectId}`);
     }
     return join(dir, `${projectId}.jsonl`);
   };
   /**
-   * 追記(O_APPEND 相当)+ fsync 相当の永続化(3-E′)。
+   * Appending (O_APPEND equivalent) + fsync-equivalent durability
+   * (3-E′).
    *
-   * 書き込みは常に改行を**前置**する: 並行プロセスの torn 行(改行なしの
-   * 書きかけ)が直前に着地していても、自分のレコードは必ず新しい行として
-   * 隔離される(fold は空行を無視する)。「末尾バイトを読んで判定する」形は
-   * 検査と O_APPEND 書き込みの間に torn 行が割り込むレースを持つため使わない
-   * (割り込まれると自分の完全なレコードが 1 行に連結されて失われ、
-   * journal-before-release が無言で破れる)。write は short write に備えて
-   * 全バイト書けるまでループする(datasync が永続化の基準 — 3-E′)。
+   * Every write is **prefixed** with a newline: even if a concurrent
+   * process's torn line (an unfinished write without a newline) landed
+   * right before, our record is always isolated as a fresh line (fold
+   * ignores empty lines). The "read the tail byte to decide" shape is not
+   * used because it races a torn line slipping in between the check and
+   * the O_APPEND write (once interrupted, our complete record would be
+   * concatenated onto that line and lost, silently breaking
+   * journal-before-release). write loops until every byte is written,
+   * guarding against short writes (datasync is the durability standard —
+   * 3-E′).
    */
   const appendRecords = async (
     projectId: string,
@@ -824,8 +854,10 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
     const handle = await open(path, "a", 0o600);
     try {
       const payload = Buffer.from(`\n${records.map(encodeRecord).join("")}`, "utf8");
-      // 書き切れないまま尽きたら失敗として投げる(mutate が床エラーへ変換し、
-      // 呼び出し側は「永続化済み」と扱わない)。重複レコードは join の冪等性で無害
+      // If it runs out still unwritten it throws as a failure (mutate
+      // converts it to a floor error and the caller never treats it as
+      // "persisted"). Duplicate records are harmless via the join's
+      // idempotence
       await appendAll(handle, payload, "floor log");
     } finally {
       await handle.close();
@@ -837,7 +869,7 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
     return foldRecords(raw.split("\n"));
   };
 
-  /** 追記 → fold。fold が conflict を持てば typed エラー(証拠はログに残っている)。 */
+  /** Append → fold. If fold produced a conflict it is a typed error (the evidence remains in the log). */
   const mutate = (
     projectId: string,
     records: readonly FloorLogRecord[],
@@ -847,9 +879,10 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
         await appendRecords(projectId, records);
         let outcome = await readAndFold(projectId);
         if (outcome.recordsSinceSnapshot > compactionThreshold) {
-          // コンパクション = スナップショットレコードの追記のみ(書き直さない)。
-          // 並行スナップショット 2 本は無害(fold は最新の 1 本を基点にし、
-          // 位置基準 + join の冪等性で二重畳みも正しい)
+          // Compaction = only appending a snapshot record (never a
+          // rewrite). Two concurrent snapshots are harmless (fold bases
+          // on the latest one, and the position basis + join idempotence
+          // keep even a double fold correct)
           await appendRecords(projectId, [
             {
               r: "snapshot",
@@ -893,10 +926,12 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
   };
 
   /**
-   * 証拠の追記(床ログと同じ規律: O_APPEND + 改行前置 + datasync まで待つ)。
-   * 床ログの appendRecords と分かれているのは、あちらが床レコード型に固有だから
-   * — 追記の物理規律(short write の全長書き直し + datasync)は
-   * 共有の appendAll が担う。
+   * Appending evidence (the same discipline as the floor log: O_APPEND
+   * + newline prefixing + waiting through datasync). It is kept separate
+   * from the floor log's appendRecords because that one is specific to
+   * the floor record type — the append's physical discipline
+   * (full-length rewrite on short write + datasync) is carried by the
+   * shared appendAll.
    */
   const appendJsonLine = async (path: string, value: AttestationEvidenceRecord): Promise<void> => {
     await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -925,10 +960,11 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
           const outcome = foldRecords(raw.split("\n"));
           if (outcome.decodedRecords === 0) {
             if (raw.trim() !== "") {
-              // 非空なのに 1 件も解読できない = 全体破損
+              // Non-empty yet not a single record decodable = wholesale corruption
               return { floor: null, state: "corrupt", droppedRecords: outcome.droppedLines };
             }
-            // 空ファイルは open("a") と write の間で落ちた残骸でもありうる(= 未作成)
+            // An empty file may also be a remnant dropped between
+            // open("a") and write (= never created)
             return { floor: null, state: "missing", droppedRecords: 0 };
           }
           return { floor: outcome.floor, state: "loaded", droppedRecords: outcome.droppedLines };
@@ -982,8 +1018,9 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
       return mutate(projectId, [{ r: "intent", intent }]).pipe(Effect.map(() => intent.id));
     },
     resolveIntent: (projectId, intentId, outcome) =>
-      // resolution は intent を閉じる帳簿レコード(join の格子外)。既存 conflict の
-      // 検査で失敗させない — 解決の記録自体は証拠を増やす方向にしか働かない
+      // A resolution is a ledger record that closes an intent (outside
+      // the join's lattice). Do not fail it on an existing-conflict check
+      // — recording a resolution only ever works toward more evidence
       Effect.asVoid(
         Effect.tryPromise({
           try: () => appendRecords(projectId, [{ r: "resolution", intentId, outcome }]),
@@ -1005,8 +1042,8 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
             }
             throw error;
           }
-          // 本体(`<id>.jsonl`)だけ。`<id>.attestation-evidence.jsonl` などは
-          // ID の形(hex 64)に一致しないので落ちる
+          // Only the body (`<id>.jsonl`). `<id>.attestation-evidence.jsonl`
+          // etc. fall out for not matching the ID form (hex 64)
           const ids = new Set<string>();
           for (const name of names) {
             const match = /^(.+)\.jsonl$/.exec(name);
@@ -1030,8 +1067,10 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
             }
             throw error;
           }
-          // 破損は null(前回申告の追跡はベストエフォート — 喪失の帰結は
-          // 同一 seq の再提出で、サーバー側の冪等 204 が吸収する)
+          // Corruption becomes null (tracking the previous attestation
+          // is best-effort — the consequence of losing it is a
+          // resubmission of the same seq, which the server's idempotent
+          // 204 absorbs)
           let value: unknown;
           try {
             value = JSON.parse(raw);
@@ -1046,8 +1085,9 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
       Effect.tryPromise({
         try: async () => {
           await mkdir(dir, { recursive: true, mode: 0o700 });
-          // tmp → rename の置換(部分書き込みを読み手に見せない)。追跡は
-          // 上書き可の別クラス(検証済み観測ではない — floor.ts の doc)
+          // tmp → rename substitution (never show a partial write to a
+          // reader). Tracking is a separate, overwritable class (not a
+          // verified observation — floor.ts's doc)
           const path = attestedPathOf(projectId);
           const tmp = `${path}.tmp`;
           await writeFile(tmp, `${JSON.stringify({ v: 1, head })}\n`, { mode: 0o600 });

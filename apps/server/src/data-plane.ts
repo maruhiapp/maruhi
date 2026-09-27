@@ -1,8 +1,10 @@
-// データプレーン(AUTH_SPEC §12)の共有部: RPC 境界を渡る型・拒否理由・
-// 認可ガード(チェーン導出 role と環境 scope — CRYPTO_SPEC §6.2)。
+// The shared parts of the data plane (AUTH_SPEC §12): the types crossing
+// the RPC boundary, the rejection reasons, and the authorization guards
+// (chain-derived role and environment scope — CRYPTO_SPEC §6.2).
 //
-// 拒否は DataRejectedError 1 種に畳み、DO の RPC 境界では DataOutcome の
-// 判別 union として渡す(worker が api-schema の型付きエラーへ写像する)。
+// Rejections fold into the single DataRejectedError type and cross the DO's
+// RPC boundary as a DataOutcome discriminated union (the worker maps it
+// onto api-schema's typed errors).
 
 import type { AuditActor } from "@maruhi/core";
 import { auditPayloadWith } from "@maruhi/core";
@@ -23,36 +25,42 @@ import type { StateCache, StoredChain } from "./chain-store.ts";
 import { ChainStore, deriveStoredState } from "./chain-store.ts";
 
 // ---------------------------------------------------------------------------
-// RPC 境界を渡る入力・値(structured clone 安全な素のオブジェクトのみ)
+// Inputs and values crossing the RPC boundary (only plain objects safe for
+// structured clone)
 // ---------------------------------------------------------------------------
 
 /**
- * データ操作の監査アクター(AUDIT_SPEC §2)。worker が認証主体から
- * auditActorOf(@maruhi/core — 写像の唯一の実装)で作る。
- * 鍵 FP は持たない — ほとんどのデータ操作は署名を伴わないため。署名を伴う
- * 唯一の例外は DEK ラップ登録(CRYPTO_SPEC §5.1)で、その署名者 FP は worker
- * でなく DO がチェーン導出メンバーから取り、dek.registered イベントに写す。
+ * The audit actor of a data operation (AUDIT_SPEC §2). The worker builds
+ * it from the authenticated principal via auditActorOf (@maruhi/core —
+ * the mapping's only implementation).
+ * It carries no key FP — most data operations involve no signature. The
+ * only exception that does is DEK wrap registration (CRYPTO_SPEC §5.1),
+ * whose signer FP is taken not by the worker but by the DO from the
+ * chain-derived member and recorded on the dek.registered event.
  */
 export type DataActor = AuditActor;
 
 /**
- * スイート識別子(CRYPTO_SPEC §2 設計原則 4)。ワイヤは Schema の Literal が
- * 強制するため、RPC 境界・保存行の型もこの literal で表す(AUTH_SPEC §12-2)。
+ * The suite identifier (CRYPTO_SPEC §2 design principle 4). Since the wire
+ * pins it via the Schema Literal, the types at the RPC boundary and the
+ * stored rows express it as this same literal (AUTH_SPEC §12-2).
  */
 export type WireSuite = "maruhi/v1";
 
 /**
- * DEK ラップの受信者クラス(AUTH_SPEC §12-6): member = チェーン上の
- * 現メンバー、server = 有効な grant_server のサーバー鍵。省略時は member。
- * server クラスでは recipientUserId 位置にサーバー鍵 FP(hex 小文字)が入る
- * (HPKE info / §5.1 署名対象と同じ置き換え — CRYPTO_SPEC §9)。
+ * The recipient class of a DEK wrap (AUTH_SPEC §12-6): member = a current
+ * member on the chain; server = the server key of a valid grant_server.
+ * Omitted means member. For the server class, the recipientUserId position
+ * carries the server key FP (lowercase hex) — the same substitution as the
+ * HPKE info / §5.1 signed target (CRYPTO_SPEC §9).
  */
 export type DekRecipientClass = "member" | "server";
 
 /**
- * 1 受信者宛のラップ済み DEK(AUTH_SPEC §12-6。ワイヤ表現と構造一致)。
- * signatureHex は登録署名(CRYPTO_SPEC §5.1)— 署名者は API 呼び出し主体と
- * 厳密一致(§12-6)のため、ワイヤ・RPC 境界に署名者 ID は載せない。
+ * A DEK wrapped to one recipient (AUTH_SPEC §12-6; structurally identical
+ * to the wire form). signatureHex is the registration signature
+ * (CRYPTO_SPEC §5.1) — the signer matches the API calling principal
+ * exactly (§12-6), so no signer ID rides the wire or the RPC boundary.
  */
 export interface DekWrapInput {
   readonly suite: WireSuite;
@@ -66,8 +74,9 @@ export interface DekWrapInput {
 }
 
 /**
- * 保存済みラップの参照(§12-6 の修復経路の削除単位)。`recipientEncPubHex` は端末軸
- * (2026-09-19 DK — スロットは端末ごと)。
+ * A reference to a stored wrap (the deletion unit of the §12-6 repair
+ * path). `recipientEncPubHex` is on the device axis (2026-09-19 DK —
+ * slots are per device).
  */
 export interface DekWrapRefInput {
   readonly epoch: number;
@@ -77,19 +86,21 @@ export interface DekWrapRefInput {
 }
 
 /**
- * ステートメントのライフサイクル状態(CRYPTO_SPEC §4.2)。declared は変数の
- * レイアウト v2 限定(環境メタと v1 レイアウトは 2 値のまま — ワイヤ Schema が
- * 強制し、DO 側は保存・検証の型として 3 値を受ける)。
+ * A statement's lifecycle state (CRYPTO_SPEC §4.2). declared is limited
+ * to variables on layout v2 (environment meta and the v1 layout stay
+ * two-valued — the wire Schema enforces it, and the DO side accepts all
+ * three values as the storage / verification type).
  */
 export type MetaStatementStatusInput = "active" | "deleted" | "declared";
 
-/** varType の閉集合(CRYPTO_SPEC §4.2 — `""` = 未指定)。 */
+/** The closed set of varType (CRYPTO_SPEC §4.2 — `""` = unspecified). */
 export type MetaVarTypeInput = "" | "string" | "number" | "boolean" | "url";
 
 /**
- * レイアウト v2 のスキーマ欄(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2)。required は
- * ワイヤの boolean のまま運ぶ(署名対象の "true" / "false" 文字列への写像は
- * 検証点 — verify-meta.ts — の 1 箇所で行う)。
+ * The layout-v2 schema fields (CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2).
+ * required rides as the wire's boolean (the mapping onto the signed
+ * "true" / "false" strings happens in the one place that verifies —
+ * verify-meta.ts).
  */
 export interface MetaVariableSchemaInput {
   readonly varType: MetaVarTypeInput;
@@ -98,45 +109,51 @@ export interface MetaVariableSchemaInput {
 }
 
 /**
- * メタデータステートメントの保存入力(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-5)。
- * 座標(environment / variable)は worker が URL・ステートメント申告値の一致を
- * 検査済みで、DO は保存先座標から署名対象を再構成する(§12-5 — ワイヤの申告値
- * から組まない)。author = 呼び出し主体が契約のため author の ID / FP はここに
- * 載せない(DO が受理時点のチェーン導出メンバーから取る)。
+ * The stored input of a metadata statement (CRYPTO_SPEC §4.2 / AUTH_SPEC
+ * §12-5). The coordinates (environment / variable) have already been
+ * checked by the worker for a match against the URL and the statement's
+ * declared values; the DO reconstructs the signed target from the
+ * storage coordinates (§12-5 — it is never assembled from the wire's
+ * declared values). Since author = the calling principal is the
+ * contract, no author ID / FP is carried here (the DO takes it from the
+ * chain-derived member at acceptance time).
  */
 export interface MetaStatementInput {
   readonly suite: WireSuite;
   readonly name: string;
   readonly status: MetaStatementStatusInput;
   readonly metaVersion: number;
-  /** 直前ステートメントの signed_bytes の SHA-256(metaVersion 1 は空文字列)。 */
+  /** SHA-256 of the previous statement's signed_bytes (empty string for metaVersion 1). */
   readonly prevMetaSigHashHex: string;
   /**
-   * ワイヤの layoutVersion(§12-2 — 省略 = 1)。ワイヤ Schema は明示値 2 以上
-   * のみ通し、サポート範囲({1, 2})超過は署名検証より前の受理検査が
-   * `unsupported-layout` の 422 で拒否する(裁定 CR)。
+   * The wire's layoutVersion (§12-2 — omitted = 1). The wire Schema only
+   * lets an explicit value of 2 or above through; an excess over the
+   * supported range ({1, 2}) is refused by the acceptance check ahead of
+   * signature verification with a 422 `unsupported-layout` (ruling CR).
    */
   readonly layoutVersion?: number;
-  /** レイアウト v2 のスキーマ欄(layoutVersion 明示時は必ず存在 — ワイヤ形)。 */
+  /** The layout-v2 schema fields (always present when layoutVersion is explicit — the wire shape). */
   readonly schema?: MetaVariableSchemaInput;
-  /** author が署名時点で最後に検証したチェーンヘッド(§4.2 の認可時点束縛)。 */
+  /** The chain head the author last verified at signing time (the §4.2 authorization-time binding). */
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
-  /** ステートメント署名(Ed25519 — CRYPTO_SPEC §4.2)。 */
+  /** The statement signature (Ed25519 — CRYPTO_SPEC §4.2). */
   readonly signatureHex: string;
 }
 
 /**
- * 配布されるメタデータステートメント(DistributedVariableMetaStatement /
- * DistributedEnvironmentMetaStatement と構造一致 — 変数用は variableId 付き)。
- * 保存済みの署名ブロックと author(受理時点の user_id + チェーン導出鍵 FP)を
- * そのまま返す(削除済み author の過去ステートメントの検証可能性 — §12-2)。
+ * The distributed metadata statement (structurally identical to
+ * DistributedVariableMetaStatement /
+ * DistributedEnvironmentMetaStatement — the variable one carries a
+ * variableId). Returns the stored signature block and the author (the
+ * user_id + chain-derived key FP at acceptance time) as-is (verifiability
+ * of a past statement by a since-deleted author — §12-2).
  */
 export interface DistributedMetaStatementValue {
   readonly suite: WireSuite;
   readonly environmentId: string;
   readonly name: string;
-  /** 環境ステートメントは 2 値のまま(declared は変数の v2 限定 — §4.2)。 */
+  /** An environment statement stays two-valued (declared is v2-only for variables — §4.2). */
   readonly status: "active" | "deleted";
   readonly metaVersion: number;
   readonly prevMetaSigHashHex: string;
@@ -148,9 +165,9 @@ export interface DistributedMetaStatementValue {
 }
 
 /**
- * 変数ステートメントの配布形(variableId 付き)。レイアウト v2 の運搬
- * フィールドは v2 の保存行でのみ 4 つ揃って存在する(v1 の配布へ新フィールドを
- * 足さない — §12-2)。
+ * The distributed form of a variable statement (with variableId). The
+ * layout-v2 carried fields exist as a complete set of four only on v2
+ * stored rows (no new field is added to a v1 distribution — §12-2).
  */
 export interface DistributedVariableMetaStatementValue extends Omit<
   DistributedMetaStatementValue,
@@ -165,32 +182,36 @@ export interface DistributedVariableMetaStatementValue extends Omit<
 }
 
 /**
- * 環境マニフェストの保存入力(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5)。
- * 座標(environment)は worker が URL との一致を検査済みで、DO は保存先座標から
- * 署名対象を再構成する(§12-5 — ワイヤの申告値から組まない)。issuer = 呼び出し
- * 主体が契約のため issuer の ID / FP はここに載せない(DO が受理時点のチェーン
- * 導出メンバーから取る)。
+ * The stored input of an environment manifest (CRYPTO_SPEC §4.3 /
+ * AUTH_SPEC §12-5). The coordinate (environment) has already been
+ * checked by the worker for a match against the URL; the DO reconstructs
+ * the signed target from the storage coordinate (§12-5 — it is never
+ * assembled from the wire's declared values). Since issuer = the calling
+ * principal is the contract, no issuer ID / FP is carried here (the DO
+ * takes it from the chain-derived member at acceptance time).
  */
 export interface EnvManifestInput {
   readonly suite: WireSuite;
-  /** 発行時点(宣言ヘッド時点)の現エポック(§4.3 の鮮度アンカー)。 */
+  /** The current epoch at issuance time (at the declared head) — §4.3's freshness anchor. */
   readonly epoch: number;
   readonly manifestVersion: number;
   readonly variablesDigestHex: string;
   readonly envMetaVersion: number;
   readonly envMetaSigHashHex: string;
-  /** 直前マニフェストの signed_bytes の SHA-256(manifestVersion 1 は空文字列)。 */
+  /** SHA-256 of the previous manifest's signed_bytes (empty string for manifestVersion 1). */
   readonly prevManifestSigHashHex: string;
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
-  /** マニフェスト署名(Ed25519 — CRYPTO_SPEC §4.3)。 */
+  /** The manifest signature (Ed25519 — CRYPTO_SPEC §4.3). */
   readonly signatureHex: string;
 }
 
 /**
- * 配布される環境マニフェスト(DistributedEnvironmentManifest と構造一致)。
- * 保存済みの署名ブロックと issuer(受理時点の user_id + チェーン導出鍵 FP)を
- * そのまま返す(削除済み issuer の過去マニフェストの検証可能性 — §12-2)。
+ * The distributed environment manifest (structurally identical to
+ * DistributedEnvironmentManifest). Returns the stored signature block and
+ * the issuer (the user_id + chain-derived key FP at acceptance time)
+ * as-is (verifiability of a past manifest by a since-deleted issuer —
+ * §12-2).
  */
 export interface DistributedEnvManifestValue extends EnvManifestInput {
   readonly environmentId: string;
@@ -199,11 +220,14 @@ export interface DistributedEnvManifestValue extends EnvManifestInput {
 }
 
 /**
- * 変数値の保存入力。AAD 構成要素のうち座標(project / environment / variable)は
- * worker が URL との一致を検査済み(§12-2)。DO は状態依存の epoch / version と
- * 値署名(§12-5 = CRYPTO_SPEC §4.1 / §6.4)を検査する。
- * writer = 呼び出し主体が契約のため writer の ID / FP はここに載せない
- * (DO が受理時点のチェーン導出メンバーから取る)。
+ * The stored input of a variable value. Of the AAD components, the
+ * coordinates (project / environment / variable) have already been
+ * checked by the worker for a match against the URL (§12-2). The DO
+ * verifies the state-dependent epoch / version and the value signature
+ * (§12-5 = CRYPTO_SPEC §4.1 / §6.4).
+ * Since writer = the calling principal is the contract, no writer ID / FP
+ * is carried here (the DO takes it from the chain-derived member at
+ * acceptance time).
  */
 export interface ValueInput {
   readonly suite: WireSuite;
@@ -211,19 +235,19 @@ export interface ValueInput {
   readonly version: number;
   readonly nonceHex: string;
   readonly ciphertextHex: string;
-  /** 直前 version の value_signed_bytes の SHA-256(version 1 は空文字列)。 */
+  /** SHA-256 of the previous version's value_signed_bytes (empty string for version 1). */
   readonly prevValueSigHashHex: string;
-  /** writer が署名時点で最後に検証したチェーンヘッド(§4.1 の認可時点束縛)。 */
+  /** The chain head the writer last verified at signing time (the §4.1 authorization-time binding). */
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
-  /** 値の書き込み署名(Ed25519 — CRYPTO_SPEC §4.1)。 */
+  /** The value's write signature (Ed25519 — CRYPTO_SPEC §4.1). */
   readonly signatureHex: string;
 }
 
 export interface EnvironmentSummaryValue {
   readonly environmentId: string;
   readonly currentEpoch: number;
-  /** 最新の環境メタステートメント(削除済み環境は deleted ステートメント)。 */
+  /** The latest environment meta statement (a deleted environment carries a deleted statement). */
   readonly statement: DistributedMetaStatementValue;
 }
 
@@ -234,10 +258,12 @@ export interface VariableVersionValue {
 }
 
 /**
- * 一括 pull の 1 変数(§12-7)。保存済みの署名ブロックと writer(受理時点の
- * user_id + チェーン導出鍵 FP)を配布する — 現メンバー集合から再導出しない
- * (削除済み writer の過去値もチェーン履歴の当時の鍵で検証可能にするため)。
- * サーバー再計算の signed_bytes ハッシュは配布しない(検証者が自ら再計算する)。
+ * One variable of a bulk pull (§12-7). Distributes the stored signature
+ * block and the writer (the user_id + chain-derived key FP at acceptance
+ * time) — not re-derived from the current member set (so that a past
+ * value by a since-deleted writer is still verifiable under the keys of
+ * that time in the chain history). The server-recomputed signed_bytes
+ * hash is not distributed (a verifier recomputes it themselves).
  */
 export interface PulledVariableValue {
   readonly variableId: string;
@@ -255,17 +281,20 @@ export interface PulledVariableValue {
 }
 
 /**
- * 配布されるラップ(RecipientDek と構造一致)。署名・署名者情報(登録受理時の
- * チェーン導出メンバーの user_id + 鍵 FP)を運び、配布時のクライアント検証
- * (CRYPTO_SPEC §5.1)を可能にする。
+ * The distributed wrap (structurally identical to RecipientDek). Carries
+ * the signature and the signer information (the user_id + key FP of the
+ * chain-derived member at registration acceptance) to enable the
+ * client's verification at distribution time (CRYPTO_SPEC §5.1).
  */
 export interface RecipientDekValue {
   readonly suite: WireSuite;
   readonly epoch: number;
   /**
-   * 受信者の端末鍵(enc 公開鍵 — AUTH_SPEC §12-6 の端末軸。2026-09-19 DK)。同じ人の
-   * 複数端末宛のラップが同じ応答に並ぶため、受信者は自分の端末鍵の行だけを開封する
-   * (開封失敗を毒ラップと取り違えない)。
+   * The recipient's device key (the enc public key — the device axis of
+   * AUTH_SPEC §12-6; 2026-09-19 DK). Since wraps to multiple devices of
+   * the same person appear side by side in one response, the recipient
+   * opens only the row of its own device key (an open failure is not
+   * mistaken for a poisoned wrap).
    */
   readonly recipientEncPubHex: string;
   readonly encHex: string;
@@ -275,7 +304,7 @@ export interface RecipientDekValue {
   readonly signerKeyFingerprintHex: string;
 }
 
-/** チェックポイント時点の値スナップショットの 1 エントリ(配布形 — §12-7)。 */
+/** One entry of the checkpoint-time value snapshot (the distributed form — §12-7). */
 export interface CheckpointSnapshotEntryValue {
   readonly variableId: string;
   readonly version: number;
@@ -283,11 +312,12 @@ export interface CheckpointSnapshotEntryValue {
 }
 
 /**
- * 配布されるチェックポイント時点の値スナップショット(api-schema の
- * CheckpointValueSnapshot と構造一致 — §12-7 / §14-2)。
- * 供給源は checkpoint 受理時に原子保存した行そのもの(§16-2 — 再構成しない)。
- * chainSeq / entryHashHex は保存済みの対応 checkpoint の位置(クライアント側では
- * advisory locator — 検証基準はチェーン導出)。
+ * The distributed checkpoint-time value snapshot (structurally identical
+ * to api-schema's CheckpointValueSnapshot — §12-7 / §14-2).
+ * The supply is the very rows atomically stored at checkpoint acceptance
+ * (§16-2 — never reconstructed). chainSeq / entryHashHex are the
+ * position of the stored corresponding checkpoint (on the client side an
+ * advisory locator — the verification basis is chain-derived).
  */
 export interface CheckpointSnapshotValue {
   readonly chainSeq: number;
@@ -296,9 +326,11 @@ export interface CheckpointSnapshotValue {
 }
 
 /**
- * 値付き応答の省略可能な検証材料フィールド(§12-7 / §14-2): 保存行があれば
- * 必ず載せ、なければキー自体を置かない(optionalKey のワイヤ形)。pull と
- * lease の応答組み立てが共有する(分岐を各プログラムに重複させない)。
+ * The omittable verification-material fields of a value-bearing response
+ * (§12-7 / §14-2): always present when a stored row exists, otherwise
+ * the key itself is absent (the optionalKey wire shape). Shared by the
+ * response assembly of pull and lease (the branch is not duplicated in
+ * each program).
  */
 export function optionalDistributionFields(
   manifest: DistributedEnvManifestValue | null,
@@ -316,77 +348,82 @@ export function optionalDistributionFields(
 export interface EnvironmentPullValue {
   readonly environmentId: string;
   readonly currentEpoch: number;
-  /** 環境自身の最新メタステートメント(§12-7 の検証材料の同梱)。 */
+  /** The environment's own latest meta statement (the bundled verification material of §12-7). */
   readonly statement: DistributedMetaStatementValue;
-  /** アクティブ変数ごとの最新ステートメント + 最新バージョン。 */
+  /** The latest statement + latest version of each active variable. */
   readonly variables: readonly (PulledVariableValue & {
     readonly statement: DistributedVariableMetaStatementValue;
   })[];
-  /** 削除済み変数の deleted ステートメント(保存・配布し続ける — §12-5)。 */
+  /** The deleted statements of deleted variables (kept being stored and distributed — §12-5). */
   readonly deletedVariables: readonly DistributedVariableMetaStatementValue[];
   /**
-   * declared 変数の最新ステートメント(§12-7 — 値・バージョンは存在しない。
-   * マニフェストのダイジェスト再計算の材料)。declared が無い環境では省略
-   * (ワイヤの optionalKey と同型)。
+   * The latest statements of declared variables (§12-7 — no value or
+   * version exists. Input for the manifest digest recomputation).
+   * Omitted for an environment with no declared variable (same shape as
+   * the wire's optionalKey).
    */
   readonly declaredVariables?: readonly DistributedVariableMetaStatementValue[];
   readonly deks: readonly RecipientDekValue[];
-  /** schemaPolicy の advisory 同梱(§12-7 / §12-11 — 常に載せる)。 */
+  /** The schemaPolicy advisory bundle (§12-7 / §12-11 — always present). */
   readonly schemaPolicy: SchemaPolicy;
   /**
-   * 最新の環境マニフェスト(§12-7)。保存行があれば必ず同梱する(環境作成が
-   * manifest_version 1 を同梱するので、作成済みの環境では常にある — クライアント側は
-   * 欠落 = 一律拒否 §6.3)。
+   * The latest environment manifest (§12-7). Always bundled when a
+   * stored row exists (since environment creation bundles manifest_version
+   * 1, a created environment always has one — on the client side absence
+   * = unconditional rejection §6.3).
    */
   readonly manifest?: DistributedEnvManifestValue;
   /**
-   * チェックポイント時点の値スナップショット列挙(§12-7)。
-   * 当該環境のエントリを含む最新 checkpoint の保存行があれば必ず同梱する
-   * (クライアント規則 2 は「基準あり + 列挙なし」を拒否する — CRYPTO_SPEC §6.3)。
-   * undefined は基準 checkpoint を持たない環境のみ。
+   * The checkpoint-time value snapshot enumeration (§12-7).
+   * Always bundled when a stored row exists for the latest checkpoint
+   * that contains an entry of the environment (client rule 2 rejects
+   * "basis present + enumeration absent" — CRYPTO_SPEC §6.3).
+   * undefined only for an environment with no basis checkpoint.
    */
   readonly checkpointSnapshot?: CheckpointSnapshotValue;
 }
 
 /**
- * メタデータのみモードの応答(§12-7): 値(暗号文)と DEK を
- * 含まない。§6.3 のメタ検証材料(環境 + アクティブ変数の最新ステートメント +
- * tombstone)のみを運ぶ。var.read は記録されない(AUDIT_SPEC §3.3)。
+ * The metadata-only mode's response (§12-7): carries no values
+ * (ciphertexts) and no DEKs. Only the §6.3 meta-verification material
+ * (environment + latest statements of active variables + tombstones).
+ * var.read is not recorded (AUDIT_SPEC §3.3).
  */
 export interface EnvironmentMetadataPullValue {
   readonly environmentId: string;
   readonly currentEpoch: number;
-  /** 環境自身の最新メタステートメント。 */
+  /** The environment's own latest meta statement. */
   readonly statement: DistributedMetaStatementValue;
   /**
-   * 削除済みでない全変数の最新ステートメント(値は伴わない)。declared 変数の
-   * ステートメントもここに載る(§12-7 — status が判別を担う)。
+   * The latest statements of every non-deleted variable (no values
+   * attached). The statements of declared variables also appear here
+   * (§12-7 — status carries the discrimination).
    */
   readonly variables: readonly DistributedVariableMetaStatementValue[];
-  /** 削除済み変数の deleted ステートメント(§12-5)。 */
+  /** The deleted statements of deleted variables (§12-5). */
   readonly deletedVariables: readonly DistributedVariableMetaStatementValue[];
-  /** 最新の環境マニフェスト(メタ検証の完全性はこのモードでも同水準 — §12-7)。 */
+  /** The latest environment manifest (meta verification completeness is at the same level in this mode — §12-7). */
   readonly manifest?: DistributedEnvManifestValue;
-  /** schemaPolicy の advisory 同梱(§12-7 / §12-11 — 常に載せる)。 */
+  /** The schemaPolicy advisory bundle (§12-7 / §12-11 — always present). */
   readonly schemaPolicy: SchemaPolicy;
 }
 
-/** 環境一覧の RPC 値(§12-4 + schemaPolicy の advisory 同梱 — §12-7)。 */
+/** The RPC value of the environment list (§12-4 + the schemaPolicy advisory bundle — §12-7). */
 export interface EnvironmentListValue {
   readonly environments: readonly EnvironmentSummaryValue[];
   readonly schemaPolicy: SchemaPolicy;
 }
 
 // ---------------------------------------------------------------------------
-// 拒否理由(worker が api-schema の型付きエラーへ写像する)
+// Rejection reasons (the worker maps them onto api-schema's typed errors)
 // ---------------------------------------------------------------------------
 
 export type ResourceConflictReason = "exists" | "retired" | "duplicate-name";
 
 /**
- * 環境の 409 は表示名の衝突のみ: ID の一意性はチェーン合意規則
- * `duplicate-environment`(chain-entry-invalid)が担う
- * (CRYPTO_SPEC §6.2 / AUTH_SPEC §12-4)。
+ * The only 409 of an environment is a display-name collision: ID
+ * uniqueness is owned by the chain consensus rule `duplicate-environment`
+ * (chain-entry-invalid) (CRYPTO_SPEC §6.2 / AUTH_SPEC §12-4).
  */
 export type EnvironmentConflictReason = "duplicate-name";
 
@@ -401,11 +438,13 @@ export type DekWrapRejectReason =
   | "signature-invalid";
 
 /**
- * 値署名の 422 理由(AUTH_SPEC §12-5。仮裁定 C — 仕様の 3 理由のみ):
- * signature-invalid = valid-format の Ed25519 失敗 / chain-head-unknown =
- * 有効署名だが宣言 seq 不在またはその seq の保存 hash 不一致 /
- * chain-head-state-mismatch = head は既知だが head 時点の鍵・role・環境・
- * エポック不一致、または保存 predecessor と prev 不一致。
+ * The 422 reasons of a value signature (AUTH_SPEC §12-5; provisional
+ * ruling C — only the spec's 3 reasons): signature-invalid = an Ed25519
+ * failure on a valid-format input / chain-head-unknown = a valid
+ * signature but the declared seq is absent or the stored hash at that
+ * seq mismatches / chain-head-state-mismatch = the head is known but the
+ * key, role, environment, or epoch at the head disagrees, or prev
+ * mismatches the stored predecessor.
  */
 export type ValueSignatureRejectReason =
   | "signature-invalid"
@@ -413,15 +452,17 @@ export type ValueSignatureRejectReason =
   | "chain-head-state-mismatch";
 
 /**
- * メタステートメントの 422 理由: 値署名の 3 語彙(session-12 §6-7)に、仕様が
- * エラー名を明示するレイアウト v2 の 2 理由を加える — `layout-regression` =
- * v2 変数への v1 後続(レイアウト単調性 — §12-5)、`unsupported-layout` =
- * 申告 layoutVersion がサポート範囲超過(「古いサーバー × 新しいクライアント」の
- * 正常系 — 裁定 CR。署名不正に潰さない)。chain-head-state-mismatch はヘッド
- * 時点の在籍・鍵束縛・role、prev の形 / 保存 predecessor との不一致、削除後の
- * 再ステートメント(revived-after-delete)、active → declared の遷移
- * (declared-after-active)を含む。api-schema の MetaStatementRejectReasonSchema
- * と一致させる。
+ * The 422 reasons of a meta statement: the value signature's 3-vocabulary
+ * (session-12 §6-7) plus the 2 layout-v2 reasons the spec names
+ * explicitly — `layout-regression` = a v1 successor to a v2 variable
+ * (layout monotonicity — §12-5); `unsupported-layout` = a declared
+ * layoutVersion beyond the supported range (the normal case of "old
+ * server × new client" — ruling CR; it is not squashed into an invalid
+ * signature). chain-head-state-mismatch covers: membership, key binding,
+ * and role at the head; mismatches of prev's shape / the stored
+ * predecessor; a re-statement after deletion (revived-after-delete); and
+ * an active → declared transition (declared-after-active). Kept in sync
+ * with api-schema's MetaStatementRejectReasonSchema.
  */
 export type MetaStatementRejectReason =
   | ValueSignatureRejectReason
@@ -429,41 +470,45 @@ export type MetaStatementRejectReason =
   | "unsupported-layout";
 
 /**
- * プロジェクトのスキーマポリシー(AUTH_SPEC §12-11 — 既定 disabled)。受理
- * 判定は受理時点のポリシー(project DO の直列化の中で読む)。
+ * A project's schema policy (AUTH_SPEC §12-11 — default disabled). The
+ * acceptance decision reads the policy at acceptance time (inside the
+ * project DO's serialization).
  */
 export type SchemaPolicy = "disabled" | "enabled" | "locked";
 
-/** schemaPolicy 由来の 422 理由(§12-11 / §12-5)。 */
+/** The 422 reasons from schemaPolicy (§12-11 / §12-5). */
 export type SchemaPolicyRejectReason = "schema-policy-disabled" | "schema-required";
 
-/** スキーマ description の受理検査(§12-8)の 422 理由。 */
+/** The 422 reasons of the schema-description acceptance check (§12-8). */
 export type SchemaDescriptionRejectReason = "too-long" | "control-characters";
 
 /**
- * ヘッド申告の 422 理由も同じ 3 語彙を共有する(AUTH_SPEC §16-1 — 新理由
- * コードを作らない)。chain-head-unknown は seq が現ヘッドより先の場合を含む
- * (クライアント側の再同期分岐 — chain-head-future — はサーバーには無い)。
+ * The head attestation's 422 reasons share the same 3-vocabulary
+ * (AUTH_SPEC §16-1 — no new reason code is created). chain-head-unknown
+ * also covers a seq ahead of the current head (the client-side resync
+ * branch — chain-head-future — does not exist on the server).
  */
 export type AttestationRejectReason = ValueSignatureRejectReason;
 
 /**
- * 環境マニフェストの 422 理由(AUTH_SPEC §12-5): 既存 3 語彙を
- * 共有し、マニフェスト固有の 2 理由(ダイジェスト再計算不一致・エポック不整合)を
- * 加える。api-schema の ManifestRejectReasonSchema と一致させる。
+ * The 422 reasons of an environment manifest (AUTH_SPEC §12-5): shares
+ * the existing 3-vocabulary and adds the 2 manifest-specific reasons
+ * (digest-recompute mismatch, epoch inconsistency). Kept in sync with
+ * api-schema's ManifestRejectReasonSchema.
  */
 export type ManifestRejectReason =
   | ValueSignatureRejectReason
   | "manifest-digest-mismatch"
   | "manifest-epoch-mismatch"
-  // チェックポイント束縛(CRYPTO_SPEC §4.3 (2) / §6.3 整合規則 1)
+  // Checkpoint binding (CRYPTO_SPEC §4.3 (2) / §6.3 consistency rule 1)
   | "checkpoint-binding-mismatch"
   | "checkpoint-equivocation"
   | "checkpoint-regressed";
 
 /**
- * checkpoint 内容突合の 422 理由(CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2)。
- * api-schema の CheckpointMismatchReasonSchema と一致させる。
+ * The 422 reasons of a checkpoint content cross-check (CRYPTO_SPEC §6.4 /
+ * AUTH_SPEC §16-2). Kept in sync with api-schema's
+ * CheckpointMismatchReasonSchema.
  */
 export type CheckpointMismatchReason =
   | "manifest-mismatch"
@@ -473,8 +518,9 @@ export type CheckpointMismatchReason =
   | "environment-deleted";
 
 /**
- * `propose` の受理ポリシー違反の理由(AUTH_SPEC §12-8 — 2026-09-16 K5)。
- * api-schema の ProposalLimitReasonSchema と一致させる。
+ * The reasons a `propose` violates the acceptance policy (AUTH_SPEC
+ * §12-8 — 2026-09-16 K5). Kept in sync with api-schema's
+ * ProposalLimitReasonSchema.
  */
 export type ProposalLimitReason = "pending-proposals" | "proposal-lifetime";
 
@@ -489,16 +535,18 @@ export type DataLimitResource =
   | "dek-wraps-per-request"
   | "dek-wrap-rows"
   | "rotation-dismissals-per-request"
-  // DO ストレージ総量ガード(§12-8。storage-guard.ts。limit = 拒否閾値バイト)
+  // The DO storage total guard (§12-8; storage-guard.ts. limit = the
+  // rejection threshold in bytes)
   | "project-storage-bytes";
 
 export type DataRejection =
   | { readonly kind: "not-initialized" }
   | { readonly kind: "not-member" }
   | { readonly kind: "insufficient-role" }
-  // 対象環境 ∉ 呼び出し主体のチェーン導出 scope(AUTH_SPEC §9-2 / §12-3 —
-  // 2026-09-15 ES K3。role 403 の直後・存在 404 の前。worker が
-  // ForbiddenError〔insufficient-scope〕へ写す)
+  // Target environment ∉ the calling principal's chain-derived scope
+  // (AUTH_SPEC §9-2 / §12-3 — 2026-09-15 ES K3. Right after the role 403
+  // and before the existence 404. The worker maps it to
+  // ForbiddenError [insufficient-scope])
   | { readonly kind: "insufficient-scope" }
   | { readonly kind: "environment-not-found"; readonly environmentId: string }
   | {
@@ -506,36 +554,45 @@ export type DataRejection =
       readonly environmentId: string;
       readonly reason: EnvironmentConflictReason;
     }
-  // チェーン受理系(複合リクエスト §12-4 と汎用チェーン API — chain-do.ts —
-  // の両方が使う。worker が api-schema の ChainHeadConflict / ChainEntryInvalid /
-  // ChainEntryTooLarge / ChainCapacityExceeded / CompositeRequired へ写像する)
+  // Chain-acceptance family (shared by the composite request §12-4 and
+  // the generic chain API — chain-do.ts. The worker maps them onto
+  // api-schema's ChainHeadConflict / ChainEntryInvalid /
+  // ChainEntryTooLarge / ChainCapacityExceeded / CompositeRequired)
   | {
       readonly kind: "composite-required";
       readonly op: "create_environment" | "rotate_epoch";
     }
-  // 端末数の受理ポリシー(AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 2026-09-19 DK K3):
-  // `add_device` の受理時に actor の有効な端末が上限(16)に達している。worker が
-  // api-schema の DeviceLimit(422)へ写す。合意規則ではない
+  // The device-count acceptance policy (AUTH_SPEC §12-8 / CRYPTO_SPEC
+  // §6.4 — 2026-09-19 DK K3): at the acceptance of an `add_device`, the
+  // actor's valid devices have reached the cap (16). The worker maps it
+  // to api-schema's DeviceLimit (422). Not a consensus rule
   | { readonly kind: "device-limit"; readonly limit: number }
-  // 四眼の `propose` の受理ポリシー(AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 2026-09-16
-  // K5): pending 上限(期限切れは数えない)と `expires_at_ms` の上界。worker が
-  // api-schema の ProposalLimit(422)へ写す。語彙は ProposalLimitReasonSchema と一致
+  // The four-eyes `propose` acceptance policy (AUTH_SPEC §12-8 /
+  // CRYPTO_SPEC §6.4 — 2026-09-16 K5): the pending cap (expired ones do
+  // not count) and the `expires_at_ms` upper bound. The worker maps it
+  // to api-schema's ProposalLimit (422). The vocabulary matches
+  // ProposalLimitReasonSchema
   | {
       readonly kind: "proposal-limit";
       readonly reason: ProposalLimitReason;
       readonly limit: number;
     }
-  // checkpoint の内容突合(CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2 — 境界同梱分
-  // 〔複合の適用後基準 — §12-4〕と standalone 分〔受理時点 = 適用前基準〕の
-  // 両経路で共通。語彙は api-schema の CheckpointMismatchReasonSchema と一致)
+  // The checkpoint content cross-check (CRYPTO_SPEC §6.4 / AUTH_SPEC
+  // §16-2 — common to both the boundary-bundled path [the
+  // post-composite-application basis — §12-4] and the standalone path
+  // [acceptance time = the pre-application basis]. The vocabulary matches
+  // api-schema's CheckpointMismatchReasonSchema)
   | {
       readonly kind: "checkpoint-state-mismatch";
       readonly reason: CheckpointMismatchReason;
     }
-  // 監査ヘッド派生列の有界伸長が未完了(AUDIT_SPEC §5.1)。
-  // 監査ヘッドを読む全経路(GET /audit-head・standalone 受理・境界複合の
-  // 非空公証)で、上限到達時に古い列で unknown / stale を判定する代わりに
-  // 返す retryable 拒否(worker が api-schema の AuditHeadNotReady〔503〕へ写像)
+  // The bounded extension of the audit-head derived row is unfinished
+  // (AUDIT_SPEC §5.1). On every path that reads an audit head (GET
+  // /audit-head, standalone acceptance, the boundary composite's
+  // non-empty notarization), when the bound is reached this is the
+  // retryable rejection returned instead of judging unknown / stale on a
+  // stale row (the worker maps it to api-schema's AuditHeadNotReady
+  // [503])
   | { readonly kind: "audit-head-not-ready" }
   | {
       readonly kind: "chain-head-conflict";
@@ -553,7 +610,8 @@ export type DataRejection =
       readonly maxEntries: number;
       readonly maxTotalBytes: number;
     }
-  // 複合内整合検査(§12-4): URL 座標と同梱エントリ payload の不一致
+  // The composite-internal consistency check (§12-4): a URL coordinate
+  // disagrees with the bundled entry's payload
   | { readonly kind: "payload-mismatch"; readonly field: string }
   | { readonly kind: "variable-not-found"; readonly variableId: string }
   | {
@@ -565,17 +623,18 @@ export type DataRejection =
   | { readonly kind: "epoch-conflict"; readonly currentEpoch: number }
   | { readonly kind: "value-rejected"; readonly reason: ValueSignatureRejectReason }
   | { readonly kind: "meta-rejected"; readonly reason: MetaStatementRejectReason }
-  // schemaPolicy の受理ゲート(§12-11): disabled 下の v2 新規採用 /
-  // locked 下の varType なし作成
+  // The schemaPolicy acceptance gate (§12-11): new v2 adoption under
+  // disabled / a creation without varType under locked
   | { readonly kind: "schema-policy-rejected"; readonly reason: SchemaPolicyRejectReason }
-  // declared 変数への通常 push(§12-5 — activation 複合を要求する)
+  // A normal push to a declared variable (§12-5 — requires the activation composite)
   | { readonly kind: "activation-required"; readonly variableId: string }
-  // スキーマ description の受理検査(§12-8 — 1024 コードポイント・制御文字なし)
+  // The schema-description acceptance check (§12-8 — ≤1024 code points, no control characters)
   | { readonly kind: "description-rejected"; readonly reason: SchemaDescriptionRejectReason }
   | { readonly kind: "meta-version-conflict"; readonly currentMetaVersion: number }
   | { readonly kind: "manifest-rejected"; readonly reason: ManifestRejectReason }
-  // manifestVersion CAS(§12-5 (6))。最新番号のみを返す(勝者のハッシュを
-  // 載せない規律は metaVersion CAS と同一)
+  // The manifestVersion CAS (§12-5 (6)). Only the latest number is
+  // returned (the discipline of not carrying the winner's hash is the
+  // same as the metaVersion CAS)
   | { readonly kind: "manifest-version-conflict"; readonly currentManifestVersion: number }
   | { readonly kind: "name-not-nfc" }
   | { readonly kind: "dek-wrap-rejected"; readonly reason: DekWrapRejectReason }
@@ -584,9 +643,10 @@ export type DataRejection =
       readonly epoch: number;
       readonly recipientUserId: string;
       /**
-       * 占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6)。
-       * 非機密(全歴史鍵はチェーン配布済み)。再追加バックフィルの 409 で、
-       * クライアントが登録済み / 旧鍵ラップを厳密比較で判定する材料。
+       * The stored recipient enc public key of the occupying wrap
+       * (AUTH_SPEC §12-6). Not secret (all historical keys are
+       * chain-distributed). On a re-add backfill 409, the input for the
+       * client to decide registered / old-key wrap by exact comparison.
        */
       readonly storedRecipientEncPubHex: string;
     }
@@ -605,13 +665,14 @@ export type DataRejection =
       readonly resource: DataLimitResource;
       readonly limit: number;
     }
-  // ヘッド申告(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1)
+  // Head attestations (CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1)
   | { readonly kind: "attestation-rejected"; readonly reason: AttestationRejectReason }
-  // seq 後退(黙って成功させない — 保存済み seq を返す。同一 seq は冪等 204)
+  // seq regression (does not silently succeed — returns the stored seq.
+  // An identical seq is an idempotent 204)
   | { readonly kind: "attestation-regression"; readonly storedSeq: number }
   | { readonly kind: "attestation-rate-limited"; readonly retryAfterSeconds: number };
 
-/** データプレーンのプログラムが失敗として運ぶ唯一の型付きエラー。 */
+/** The only typed error a data-plane program carries as a failure. */
 export class DataRejectedError extends Data.TaggedError("DataRejected")<{
   readonly rejection: DataRejection;
 }> {}
@@ -619,29 +680,33 @@ export class DataRejectedError extends Data.TaggedError("DataRejected")<{
 export const rejectData = (rejection: DataRejection): DataRejectedError =>
   new DataRejectedError({ rejection });
 
-/** RPC 境界(structured clone)を渡るデータ操作の結果。 */
+/** The result of a data operation crossing the RPC boundary (structured clone). */
 export type DataOutcome<T> =
   | { readonly kind: "ok"; readonly value: T }
   | { readonly kind: "rejected"; readonly rejection: DataRejection };
 
 // ---------------------------------------------------------------------------
-// 認可ガード(チェーン導出 role — CRYPTO_SPEC §6.2 / AUTH_SPEC §12-3)
+// Authorization guards (chain-derived role — CRYPTO_SPEC §6.2 / AUTH_SPEC
+// §12-3)
 // ---------------------------------------------------------------------------
 
 const ROLE_RANK: Record<Role, number> = { reader: 1, member: 2, admin: 3, owner: 4 };
 
-/** チェーン role の下限判定(reader < member < admin < owner)。招待 API の
- * worker 側水準判定(handlers-invites.ts)とも共有する(rank 表を増殖させない)。 */
+/**
+ * The lower-bound check of a chain role (reader < member < admin <
+ * owner). Also shared with the invites API's worker-side level judgment
+ * (handlers-invites.ts) — do not proliferate the rank table.
+ */
 export function roleAtLeast(role: Role, minimum: Role): boolean {
   return ROLE_RANK[role] >= ROLE_RANK[minimum];
 }
 
 /**
  * A chain member together with **the device that signed this request** (2026-09-19
- * DK — K3。設計録 dk-design.md §8 K3-1): the key every chain-external signature of
- * the request is attributed to (受理時点の署名者 FP・DEK ラップの受信者鍵・監査行の
- * FP)and the effective permission that device holds — `(min(role, role_cap), scope ∩
- * device scope)`(CRYPTO_SPEC §6.2)。The device is resolved **from the signature
+ * DK — K3; design record dk-design.md §8 K3-1): the key every chain-external signature of
+ * the request is attributed to (the signer FP at acceptance time, the DEK
+ * wrap's recipient key, the audit row's FP) and the effective permission that device holds — `(min(role, role_cap), scope ∩
+ * device scope)` (CRYPTO_SPEC §6.2). The device is resolved **from the signature
  * itself** (`withSigningDevice` — the caller's active devices are tried in
  * fingerprint order; key uniqueness across current members makes at most one
  * verify) or, for chain entries, from `entry.actor.keyFingerprintHex` (`deviceOf`).
@@ -656,7 +721,7 @@ export interface MemberWithDevice extends ChainMember {
   readonly permission: EffectivePermission;
 }
 
-/** `member` + 指定 FP の有効な端末(無ければ undefined — 呼び出し側が理由コードを選ぶ)。 */
+/** `member` + the valid device of the given FP (undefined when absent — the caller picks the reason code). */
 export function deviceOf(
   member: ChainMember,
   keyFingerprintHex: string,
@@ -676,7 +741,7 @@ function withDevice(member: ChainMember, device: ChainDevice): MemberWithDevice 
   };
 }
 
-/** 呼び出し主体の有効な端末を FP 昇順で(試行順を決定的にする — 結果は順序に依らない)。 */
+/** The calling principal's valid devices in ascending FP order (makes the trial order deterministic — the result does not depend on it). */
 function activeDevicesOf(member: ChainMember): readonly MemberWithDevice[] {
   return [...member.devices.values()]
     .toSorted((a, b) => (a.keyFingerprintHex < b.keyFingerprintHex ? -1 : 1))
@@ -704,8 +769,8 @@ function isSignatureInvalidRejection(rejection: DataRejection): boolean {
 }
 
 /**
- * Resolves the request's signing device from a signature (設計録 §8 K3-1 —
- * 案 a-3): runs `attempt` with each of the member's active devices in
+ * Resolves the request's signing device from a signature (design record
+ * §8 K3-1 — option a-3): runs `attempt` with each of the member's active devices in
  * fingerprint order until one does not answer `signature-invalid`. Returns that
  * device with the attempt's value. When every device answers `signature-invalid`
  * the last such rejection is returned (fail-closed — the signature belongs to no
@@ -719,12 +784,13 @@ export function withSigningDevice<A, R>(
   return Effect.gen(function* () {
     const candidates = activeDevicesOf(member);
     if (candidates.length === 0) {
-      // 検証済みチェーンの現メンバーは端末を 1 つ以上持つ(§6.2 last-device-protected)
+      // A current member of a verified chain holds at least one device (§6.2 last-device-protected)
       return yield* Effect.die(new Error("internal: a current member has no active device"));
     }
     let lastRejection: DataRejectedError | null = null;
     for (const device of candidates) {
-      // signature-invalid だけを「次の端末を試す」に畳む。他の拒否はその端末で確定
+      // Only signature-invalid folds into "try the next device". Every
+      // other rejection is final for that device
       const outcome: { readonly verified: A } | { readonly retry: DataRejectedError } =
         yield* attempt(device).pipe(
           Effect.map((value) => ({ verified: value })),
@@ -739,7 +805,7 @@ export function withSigningDevice<A, R>(
       }
       lastRejection = outcome.retry;
     }
-    // candidates は非空なので lastRejection は必ず設定されている
+    // candidates is non-empty, so lastRejection is always set
     return yield* Effect.fail(
       lastRejection ?? rejectData({ kind: "value-rejected", reason: "signature-invalid" }),
     );
@@ -747,14 +813,14 @@ export function withSigningDevice<A, R>(
 }
 
 /**
- * Second-stage authorization (設計録 §8 K3-1): the signing device's **effective**
+ * Second-stage authorization (design record §8 K3-1): the signing device's **effective**
  * permission must satisfy the same role floor and (when an environment is
  * targeted) the same scope predicate the person already passed at the first
  * stage. Same reason codes as the first stage (403 — AUTH_SPEC §12-3). A device
  * never exceeds its person, so this can only narrow what the first stage let
  * through.
  *
- * Reachability (設計録 §8 K3 実装録): on the composite, checkpoint and DEK-register
+ * Reachability (design record §8 K3 implementation note): on the composite, checkpoint and DEK-register
  * paths this is the check that produces the 403 (pinned by
  * membership-negatives-composite / device-ops tests). On the value push, metadata
  * statement and manifest paths the crypto layer's declared-head authorization
@@ -786,10 +852,13 @@ export function ensureDevicePermission(
 }
 
 /**
- * チェーン導出 role の下限検査(複合プログラム — composite-programs.ts — と共有)。
- * 第 1 段(人の role — 設計録 §8 K3-1): 端末の実効権限は人の権限を超えないので、
- * ここで落ちる主体は端末でも落ちる。署名した端末の実効権限(第 2 段)は署名検証の
- * 後に ensureDevicePermission で判定する。
+ * The lower-bound check of a chain-derived role (shared with the
+ * composite programs — composite-programs.ts).
+ * First stage (the person's role — design record §8 K3-1): since a
+ * device's effective permission never exceeds the person's, a principal
+ * that fails here also fails on its device. The effective permission of
+ * the signing device (second stage) is judged after signature
+ * verification by ensureDevicePermission.
  */
 export function requireRole(
   state: ChainState,
@@ -798,7 +867,8 @@ export function requireRole(
 ): Effect.Effect<ChainMember, DataRejectedError> {
   const member = state.members.get(callerUserId);
   if (member === undefined) {
-    // §11-2: 非メンバーには現ヘッド・受理判定を含む一切を返さない(worker が 404 に写す)
+    // §11-2: a non-member gets nothing back, including the current head
+    // and the acceptance decision (the worker maps it to 404)
     return Effect.fail(rejectData({ kind: "not-member" }));
   }
   return roleAtLeast(member.role, minimum)
@@ -807,13 +877,17 @@ export function requireRole(
 }
 
 /**
- * 環境対象 op の scope 判定(AUTH_SPEC §12-3 の「環境 ∈ scope」列 — CRYPTO_SPEC
- * §6.2 の検証状態が導出した scope。2026-09-15 ES K3): role 下限の直後・
- * 環境の存在(データ行)の前に置く(設計録 es-design.md §9 K3-C — チェーン導出
- * 状態だけで決まる検査を、保存状態を読む検査より先に)。判定は
- * `scopeIncludesEnvironment`(`all` = 全環境)の 1 述語で、環境の作成
- * (§12-3「scope = all」行)も同じ述語で判定する — `listed` の scope に未存在の
- * 環境 id は含まれえないため `all` の主体だけが通る(§6.2 と同じ形)。
+ * The scope judgment of an environment-targeted op (the "environment ∈
+ * scope" column of AUTH_SPEC §12-3 — the scope derived by the verified
+ * state of CRYPTO_SPEC §6.2; 2026-09-15 ES K3): placed right after the
+ * role floor and before the environment's existence (a data row)
+ * (design record es-design.md §9 K3-C — a check decided by chain-derived
+ * state alone goes before one that reads stored state). The judgment is
+ * the single predicate `scopeIncludesEnvironment` (`all` = every
+ * environment), and environment creation (the §12-3 "scope = all" row)
+ * is judged by the same predicate — since a `listed` scope cannot
+ * contain a not-yet-existent environment id, only an `all` principal
+ * passes (the same shape as §6.2).
  */
 function requireEnvironmentInScope<M extends ChainMember>(
   member: M,
@@ -825,10 +899,11 @@ function requireEnvironmentInScope<M extends ChainMember>(
 }
 
 /**
- * role 下限 → scope の 2 段(§12-3 の判定順)。環境対象 op のうち、チェーン全体を
- * 自前でロードする経路(複合 — composite-programs.ts、standalone checkpoint —
- * checkpoint-accept.ts)が使う。データプレーンのプログラムは
- * requireEnvironmentAccess(下)を使う。
+ * The two stages role floor → scope (the §12-3 check order). Used by the
+ * environment-targeted ops that load the whole chain themselves (the
+ * composite — composite-programs.ts — and the standalone checkpoint —
+ * checkpoint-accept.ts). Data-plane programs use
+ * requireEnvironmentAccess (below).
  */
 export function requireRoleInScope(
   state: ChainState,
@@ -842,34 +917,37 @@ export function requireRoleInScope(
 }
 
 /**
- * requireMemberState の結果: 導出状態・履歴索引(値署名の宣言ヘッド時点検証の
- * 入力 — CRYPTO_SPEC §4.1 / §6.4)に加えて、呼び出し主体のチェーンメンバー
- * (登録署名・値署名の検証鍵と署名者 FP の源 — §5.1 / §4.1)と、プロジェクト ID
- * (= genesis エントリハッシュ。署名対象の座標)を返す。
+ * The result of requireMemberState: besides the derived state and the
+ * history index (the input of the value signature's declared-head-time
+ * verification — CRYPTO_SPEC §4.1 / §6.4), returns the calling
+ * principal's chain member (the source of the verification key and
+ * signer FP of registration and value signatures — §5.1 / §4.1) and the
+ * project ID (= the genesis entry hash; the coordinate being signed).
  */
 export interface MemberContext {
   readonly state: ChainState;
   readonly history: ChainHistoryIndex;
   /**
-   * The caller as a **person** (role・scope・端末集合). The device that signed the
+   * The caller as a **person** (role, scope, the device set). The device that signed the
    * request is resolved later from the signature (`withSigningDevice`) or the
-   * entry actor (`deviceOf`) — 設計録 §8 K3-1. Unsigned operations (reads,
+   * entry actor (`deviceOf`) — design record §8 K3-1. Unsigned operations (reads,
    * deletions, dismissals) have no device and are judged on the person alone.
    */
   readonly member: ChainMember;
   readonly projectId: string;
 }
 
-/** 初期化済みチェーン(genesis ハッシュの存在を型で保証した StoredChain)。 */
+/** An initialized chain (a StoredChain whose type guarantees the genesis hash exists). */
 export type InitializedChain = StoredChain & {
   readonly headHashHex: string;
   readonly genesisHashHex: string;
 };
 
 /**
- * チェーンのロードと初期化検査(データ操作・複合受理の共通前段)。未初期化は
- * not-initialized、headSeq > 0 なのに genesis / ヘッドが欠けるのはストレージ
- * 破損(defect)。
+ * Chain loading and the initialization check (the shared front stage of
+ * data operations and composite acceptance). Uninitialized is
+ * not-initialized; headSeq > 0 with genesis / head missing is storage
+ * corruption (a defect).
  */
 export const loadInitializedChain: Effect.Effect<InitializedChain, DataRejectedError, ChainStore> =
   Effect.gen(function* () {
@@ -885,8 +963,9 @@ export const loadInitializedChain: Effect.Effect<InitializedChain, DataRejectedE
   });
 
 /**
- * データ操作に共通する前段: 未初期化の検査 → チェーン導出 → メンバーシップと
- * role 下限の検査(§12-3 の判定順)。導出はチェーン API と同じキャッシュを流用する。
+ * The front stage shared by data operations: initialization check →
+ * chain derivation → membership and role-floor check (the §12-3 check
+ * order). Derivation reuses the same cache as the chain API.
  */
 export const requireMemberState = (
   callerUserId: string,
@@ -901,13 +980,16 @@ export const requireMemberState = (
   });
 
 /**
- * 環境対象のデータ操作に共通する前段(§12-3): requireMemberState(未初期化 →
- * メンバーシップ → role 下限)→ **環境 ∈ 呼び出し主体の scope**(403
- * insufficient-scope)。環境の存在(データ行 — requireActiveEnvironment)は
- * この後に呼び出し側が検査する(設計録 §9 K3-C: role → scope → 存在)。
- * 環境を持たない / scope 不問の経路(環境一覧・メタのみ pull・フラグ・監査)は
- * requireMemberState をそのまま使う — 関数を分けることで「不問」と「呼び忘れ」を
- * 型で区別する。
+ * The front stage shared by environment-targeted data operations
+ * (§12-3): requireMemberState (uninitialized → membership → role floor)
+ * → **environment ∈ the calling principal's scope** (403
+ * insufficient-scope). The environment's existence (a data row —
+ * requireActiveEnvironment) is checked by the caller after this
+ * (design record §9 K3-C: role → scope → existence).
+ * Paths without an environment / where scope does not apply
+ * (environment list, metadata-only pull, flags, audit) use
+ * requireMemberState as-is — splitting the functions lets the type
+ * distinguish "does not apply" from "forgot to call".
  */
 export const requireEnvironmentAccess = (
   callerUserId: string,
@@ -922,11 +1004,14 @@ export const requireEnvironmentAccess = (
   });
 
 /**
- * 環境の現エポック = チェーン導出値(CRYPTO_SPEC §6.2 / §6.3)。
- * 環境の存在自体がチェーン導出(`create_environment`)なので「未観測なら
- * 初期値 1」の既定値は持たない。データ行は複合受理(§12-4)でチェーンエントリと
- * 原子的に作られるため、アクティブなデータ行があるのにチェーンに環境がないのは
- * 不変条件違反(ストレージ / 実装バグ)であり defect として落とす。
+ * An environment's current epoch = the chain-derived value (CRYPTO_SPEC
+ * §6.2 / §6.3).
+ * Since the environment's very existence is chain-derived
+ * (`create_environment`), there is no "default to 1 when unobserved"
+ * fallback. A data row is created atomically with the chain entry in
+ * composite acceptance (§12-4), so having an active data row while the
+ * chain has no environment is an invariant violation (a storage /
+ * implementation bug) and is dropped as a defect.
  */
 export function currentEpochOf(state: ChainState, environmentId: string): number {
   const environment = state.environments.get(environmentId);
@@ -937,11 +1022,14 @@ export function currentEpochOf(state: ChainState, environmentId: string): number
 }
 
 /**
- * データ操作の監査イベントを組み立てる(AUDIT_SPEC §3.3)。actor の
- * auth_method は列ではなく payload JSON に載せる(§5.1: 頻出属性のみ列に昇格)。
- * actor の鍵 FP は原則持たない(チェーンミラーの専有)が、**dek.registered のみ
- * 例外**として登録署名(CRYPTO_SPEC §5.1)の署名者 FP を actorKeyFingerprintHex
- * に写す(AUDIT_SPEC §3.3 — 監査行とチェーン外署名の突合用)。
+ * Build the audit event of a data operation (AUDIT_SPEC §3.3). The
+ * actor's auth_method rides the payload JSON rather than a column (§5.1:
+ * only frequent attributes are promoted to columns).
+ * The actor's key FP is in principle absent (the chain mirror's
+ * exclusive remit), but **dek.registered alone is the exception** — the
+ * signer FP of the registration signature (CRYPTO_SPEC §5.1) is recorded
+ * into actorKeyFingerprintHex (AUDIT_SPEC §3.3 — for cross-checking the
+ * audit row against the chain-external signature).
  */
 export function dataEvent(
   actor: DataActor,

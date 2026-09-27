@@ -1,12 +1,14 @@
-// ワークロードリース(AUTH_SPEC §14)のテストヘルパ。
+// Test helpers for workload leases (AUTH_SPEC §14).
 //
-// - OIDC トークンの組み立てと ES256 署名(鍵は support/oidc-issuer.ts の
-//   ダミー。outboundService が同じ鍵の JWKS を配信する)
-// - デプロイメント keypair(vitest.config.ts の SERVER_ENC_KEY_IKM から
-//   実際に導出する)。テストは「サーバーが自分宛ラップを本当に開封できる」
-//   ところまで検査するため、ダミー公開鍵ではなく実導出鍵を使う
+// - Building and ES256-signing OIDC tokens (the key is the dummy in
+//   support/oidc-issuer.ts; outboundService serves the JWKS of the same key)
+// - The deployment keypair (actually derived from SERVER_ENC_KEY_IKM in
+//   vitest.config.ts). Because tests check as far as "the server can really
+//   open a wrap addressed to itself", they use the real derived key, not a
+//   dummy public key
 //
-// 鍵素材はすべてテスト専用の使い捨てダミーであり、実環境では使われない。
+// All key material is disposable test-only dummies and is never used in real
+// environments.
 
 import {
   computeServerKeyFingerprint,
@@ -17,10 +19,11 @@ import {
 
 import { OIDC_ISSUER, OIDC_KID, OIDC_PRIVATE_JWK } from "./oidc-issuer.ts";
 
-/** リースのテストで使う既定の audience(デプロイメントの origin を模す)。 */
+/** The default audience used in lease tests (simulates a deployment's
+ * origin). */
 export const LEASE_AUDIENCE = "https://maruhi.test";
 
-/** 既定の subject(GitHub Actions の `sub` claim 形式)。 */
+/** The default subject (the GitHub Actions `sub` claim form). */
 export const LEASE_SUBJECT = "repo:maruhi-test/demo:ref:refs/heads/main";
 
 export interface DeploymentKey {
@@ -31,14 +34,16 @@ export interface DeploymentKey {
 let cachedKey: DeploymentKey | undefined;
 
 /**
- * SERVER_ENC_KEY_IKM から実際に導出したデプロイメント鍵の公開面。サーバーが
- * `server-key.ts` で導出するものと同一(RFC 9180 DeriveKeyPair は決定論的)。
+ * The public side of the deployment key actually derived from
+ * SERVER_ENC_KEY_IKM. Identical to what the server derives in
+ * `server-key.ts` (RFC 9180 DeriveKeyPair is deterministic).
  */
 export async function deploymentKey(): Promise<DeploymentKey> {
   if (cachedKey !== undefined) {
     return cachedKey;
   }
-  // vitest.config.ts の miniflare bindings の SERVER_ENC_KEY_IKM("b0" × 32)と同値
+  // Same value as SERVER_ENC_KEY_IKM ("b0" x 32) in vitest.config.ts's
+  // miniflare bindings
   const ikm = Uint8Array.from({ length: 32 }, () => 0xb0);
   const pair = await deriveEncryptionKeyPair({ ikm });
   if (!pair.ok) {
@@ -70,25 +75,28 @@ export interface TokenOptions {
   readonly issuer?: string;
   readonly subject?: string;
   readonly audience?: string | readonly string[];
-  /** 追加 claim(claim 制約の一致・不一致を作るため)。 */
+  /** Extra claims (to make claim constraints match or not). */
   readonly claims?: Readonly<Record<string, unknown>>;
   readonly expSeconds?: number;
   readonly iatSeconds?: number;
   readonly alg?: string;
   readonly kid?: string | null;
-  /** true なら署名を 1 バイト改竄する(signature-invalid の検査用)。 */
+  /** If true, tampers with the signature by 1 byte (for the
+   * signature-invalid check). */
   readonly tamperSignature?: boolean;
-  /** exp / iat を省く(missing-claim の検査用)。 */
+  /** Omits exp / iat (for the missing-claim check). */
   readonly omit?: readonly string[];
-  /** JOSE ヘッダーへ `crit` を載せる(RFC 7515 §4.1.11 の拒否検査用)。 */
+  /** Puts `crit` on the JOSE header (for the RFC 7515 §4.1.11 rejection
+   * check). */
   readonly crit?: readonly string[];
 }
 
 /**
- * ES256 の OIDC トークンを組み立てて署名する。`alg` / `kid` を差し替えられる
- * のは、許可リスト外 alg・未知 kid の拒否を実経路で検査するため(ヘッダーだけ
- * 差し替えても署名鍵は同じ = 「ヘッダーの alg を信じる実装」なら通ってしまう
- * 形を作れる)。
+ * Builds and signs an ES256 OIDC token. `alg` / `kid` are replaceable so
+ * that rejection of a non-allowlisted alg and an unknown kid can be checked
+ * on the real path (swapping only the header keeps the same signing key =
+ * produces a shape that would pass an implementation that "trusts the
+ * header's alg").
  */
 export async function makeOidcToken(options: TokenOptions = {}): Promise<string> {
   const nowSeconds = Math.floor(Date.now() / 1000);

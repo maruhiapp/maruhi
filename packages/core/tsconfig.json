@@ -1,8 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    // @maruhi/crypto のソースを型として取り込むため、crypto と同じ WebCrypto 型
-    // (DOM lib)が必要になる
+    // Because @maruhi/crypto's source is imported as types, the same
+    // WebCrypto types (DOM lib) as crypto's are needed
     "lib": ["ES2023", "DOM"]
   },
   "include": ["src", "test", "vitest.config.ts"]

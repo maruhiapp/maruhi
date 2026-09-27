@@ -1,70 +1,70 @@
-# スパイク A 検証結果: フロント基盤(funstack-static + funstack-router + Astryx)
+# Spike A results: the front-end stack (funstack-static + funstack-router + Astryx)
 
-日付: 2026-08-01。ROADMAP Phase 0 の検証スパイク(ADR-0007 / ADR-0013)。
-作業場所は `apps/web`(このスパイクは使い捨てコードではなく、Phase 1 の下敷きになりうる骨格として apps/web に残した。捨てる判断も可)。e2e 検証は `apps/web/test/e2e.test.ts`(wrangler dev = Workers Static Assets 実配信 + Playwright/Chromium)で自動化し、**4/4 通過**。
+Date: 2026-08-01. A ROADMAP Phase 0 verification spike (ADR-0007 / ADR-0013).
+The working location is `apps/web` (this spike is not throwaway code — it was left in apps/web as a skeleton Phase 1 can build on. Discarding it is also an option). E2E verification is automated in `apps/web/test/e2e.test.ts` (wrangler dev = real Workers Static Assets delivery + Playwright/Chromium), **4/4 passing**.
 
-## 使用バージョン(すべて厳密ピン)
+## Versions used (all exact-pinned)
 
 react 19.2.8 / react-dom 19.2.8 / @funstack/static 1.2.0 / @funstack/router 1.2.0 / @astryxdesign/{core,cli,build,theme-neutral} 0.2.0 / @stylexjs/stylex 0.19.0 / vite 8.2.0 / @vitejs/plugin-react 6.0.5 / wrangler 4.118.0 / playwright 1.62.1
 
-## 検証項目と結果
+## Items verified and results
 
-### 1. ビルド時 RSC と "use client" 境界 — ✅ 成立
+### 1. Build-time RSC and the "use client" boundary — ✅ holds
 
-- `vite build` が静的シェル `index.html` + RSC ペイロード(`funstack__/fun__rsc-payload/<hash>.txt`)+ アセットを `dist/public` に出力。サーバーコンポーネント(HomePage / AboutPage)の内容は**ビルド時に RSC ペイロードへ直列化**される(ビルド時刻の埋め込みで確認)
-- `"use client"` 境界はペイロード内でモジュール参照(`I["...","CounterCard",...]`)として現れ、クライアント島(カウンタ)はブラウザで hydrate されて動作する
-- Astryx の dist は各コンポーネントに `'use client'` ディレクティブを持っており、サーバーモジュール(App.tsx)から直接 import しても正しくクライアント境界になる
-- 既定(ssr: false)ではシェルにアプリ本文の HTML は含まれない(マウントポイントのみ)。SEO が要るランディングは `ssr: true` の検討余地(未検証)
+- `vite build` emits a static shell `index.html` + the RSC payload (`funstack__/fun__rsc-payload/<hash>.txt`) + assets into `dist/public`. The server components' (HomePage / AboutPage) content is **serialized into the RSC payload at build time** (confirmed via an embedded build timestamp)
+- `"use client"` boundaries appear inside the payload as module references (`I["...","CounterCard",...]`), and the client island (the counter) hydrates and works in the browser
+- Astryx's dist carries a `'use client'` directive on every component, so importing directly from a server module (App.tsx) correctly becomes a client boundary
+- With the default (ssr: false) the shell contains no app-body HTML (the mount point only). A landing page that needs SEO has room to consider `ssr: true` (unverified)
 
-### 2. Navigation API 非対応ブラウザの劣化挙動 — ✅ 仕様通り劣化
+### 2. Degradation on browsers without the Navigation API — ✅ degrades per spec
 
-- funstack-router に `<Link>` は存在せず、**素の `<a>` を Navigation API がインターセプト**する設計。Chromium では SPA 遷移(ページ破棄なし)を e2e で確認
-- `<Router fallback="static">` を指定すると、Navigation API 非対応環境では StaticAdapter に切り替わり**全リンクがフルページロード(MPA)**になる。`navigate()` 呼び出しは console.warn。fallback 未指定なら NullAdapter(遷移不能)なので **`fallback="static"` は必須**と考えるべき
-- 非対応環境の再現は `delete window.navigation`(Playwright addInitScript)で実施。MPA 劣化後もページ表示は成立(Workers Static Assets の `not_found_handling: "single-page-application"` により `/about` 直リクエストでも index.html が返る)
-- 2026 年時点の Navigation API 対応: Chromium 系 + Firefox は対応済み、**Safari が未対応(TP のみ)**のため、Safari ユーザーは当面 MPA 劣化で使うことになる。ダッシュボードとして許容するかは人間の判断(E2EE 復号自体は劣化モードでも動く)
+- funstack-router has no `<Link>`; the design has the **Navigation API intercept plain `<a>` elements**. On Chromium, SPA transitions (no page teardown) were confirmed in e2e
+- With `<Router fallback="static">`, environments without the Navigation API switch to the StaticAdapter and **every link becomes a full page load (MPA)**. `navigate()` calls console.warn. With no fallback specified it is the NullAdapter (navigation impossible), so **`fallback="static"` should be considered mandatory**
+- The unsupported environment was reproduced via `delete window.navigation` (Playwright addInitScript). Page display still works after MPA degradation (thanks to Workers Static Assets' `not_found_handling: "single-page-application"`, a direct `/about` request returns index.html)
+- Navigation API support as of 2026: Chromium-family + Firefox support it; **Safari does not (TP only)**, so Safari users get the MPA degradation for now. Whether that is acceptable for a dashboard is a human judgment (E2EE decryption itself works in degraded mode)
 
-### 3. Astryx プリビルド CSS + テーマの Workers Static Assets 配信 — ✅ 成立
+### 3. Astryx prebuilt CSS + theme delivery via Workers Static Assets — ✅ holds
 
-- `@astryxdesign/core/reset.css` + `astryx.css`(プリビルド、cascade layers 付き)を global.css で `@import` → Vite が 1 CSS アセットに束ね、静的配信できる
-- ブランドテーマは `apps/web/theme/maruhi.ts`(defineTheme、neutralTheme を extends)を **`astryx theme build` で静的 CSS + JS にプリビルド**し、CSS は import、JS(`__built: true` のテーマオブジェクト)を `<Theme theme={...}>` に渡す。これで**ランタイム CSS 注入なし** = 厳格 CSP と両立
-- 検証知見: `defineTheme` の `color.accent`(#C73E3A)は HCT でパレット導出されるため、最終 `--color-accent` は指定 hex そのものではなく導出値(#B22A2B)になる。ブランド色を厳密に一致させたい場合は `tokens: { '--color-accent': [...] }` の明示上書きを使う
-- 生成物(maruhi.css / maruhi.js / *.d.ts)はコミットし、`theme:build` スクリプトで再生成。生成 d.ts が oxlint に引っかかるため `apps/web/.oxlintrc.json` の ignorePatterns で除外した
+- `@astryxdesign/core/reset.css` + `astryx.css` (prebuilt, with cascade layers) are `@import`ed in global.css → Vite bundles them into one CSS asset that can be served statically
+- The brand theme `apps/web/theme/maruhi.ts` (defineTheme, extending neutralTheme) is **prebuilt into static CSS + JS via `astryx theme build`**; the CSS is imported and the JS (the theme object with `__built: true`) is passed to `<Theme theme={...}>`. This means **no runtime CSS injection** = compatible with a strict CSP
+- Verification finding: `defineTheme`'s `color.accent` (#C73E3A) derives its palette in HCT, so the final `--color-accent` is a derived value (#B22A2B), not the specified hex itself. To match the brand color exactly, use the explicit override `tokens: { '--color-accent': [...] }`
+- The generated artifacts (maruhi.css / maruhi.js / *.d.ts) are committed and regenerated via the `theme:build` script. The generated d.ts trips oxlint, so it is excluded via `apps/web/.oxlintrc.json`'s ignorePatterns
 
-### 4. 厳格 CSP(script-src 'self')— ⚠ 成立(ただし 1 つ回避策が必要)
+### 4. Strict CSP (script-src 'self') — ⚠ holds (but requires one workaround)
 
-- **funstack-static 1.2.0 はブートストラップとしてインライン `<script id="_R_">` を index.html に埋め込む**(RSC ペイロードのマニフェスト設定 + エントリの動的 import)。素の `script-src 'self'` ではこれがブロックされ、**アプリが一切起動しない**
-- 回避策: ビルド後にそのスクリプトの SHA-256 を計算し、`script-src 'self' 'sha256-...'` を `_headers` に書き出す(`apps/web/scripts/write-headers.ts`、`bun run build` に組み込み済み)。スクリプト内容はペイロードのコンテンツハッシュを含みビルドごとに変わるため、ハッシュ生成は必ずビルドパイプラインに入れる
-- この状態で e2e 全機能(hydrate、カウンタ操作、SPA 遷移、テーマ、xstyle)が CSP 違反ゼロで動作
-- **人間の判断が必要**: CLAUDE.md は「inline script・eval 禁止」。ハッシュ許可されたインラインスクリプトは実質的に自己配信スクリプトと等価の安全性(改竄されれば実行されない)だが、字義的には inline script。(a) ハッシュ方式を明文化して許容する、(b) upstream(funstack-static)に「ブートストラップの外部ファイル化オプション」を issue / PR する、の二択。b が筋が良い
-- 小さな上流バグ: シェルの `<link rel="preload" as="stylesheet">` は無効な `as` 値(正しくは `style`)で、ブラウザが警告を出す(実害は preload が効かないだけ)。upstream 報告候補
-- `default-src 'none'` 基調で必要なのは: script-src 'self' + ハッシュ / style-src 'self' / connect-src 'self'(RSC ペイロードの fetch)/ img-src 'self' data: / font-src 'self'
+- **funstack-static 1.2.0 embeds an inline `<script id="_R_">` in index.html as the bootstrap** (configuring the RSC payload manifest + the entry's dynamic import). Under a plain `script-src 'self'` this is blocked and **the app does not start at all**
+- The workaround: after the build, compute that script's SHA-256 and write `script-src 'self' 'sha256-...'` into `_headers` (`apps/web/scripts/write-headers.ts`, already wired into `bun run build`). The script's contents include the payload's content hash and change every build, so the hash generation must always live in the build pipeline
+- In this state the full e2e suite (hydration, counter operation, SPA transitions, the theme, xstyle) works with zero CSP violations
+- **Human judgment needed**: CLAUDE.md says "no inline scripts, no eval". A hash-allowed inline script is effectively as safe as a self-served script (it won't execute if tampered), but literally speaking it is an inline script. Two options: (a) codify the hash approach and allow it, (b) file an issue / PR upstream (funstack-static) for "an option to externalize the bootstrap file". b is the cleaner route
+- A small upstream bug: the shell's `<link rel="preload" as="stylesheet">` uses an invalid `as` value (correct: `style`), so the browser warns (the only harm is the preload not applying). A candidate for an upstream report
+- Under a `default-src 'none'` base, what is needed: script-src 'self' + hash / style-src 'self' / connect-src 'self' (the RSC payload fetch) / img-src 'self' data: / font-src 'self'
 
-### 5. StyleX コンパイラ(xstyle 用)× Vite — ✅ 成立(重要な訂正あり)
+### 5. The StyleX compiler (for xstyle) × Vite — ✅ holds (with an important correction)
 
-- `@astryxdesign/build/vite` の `astryxStylex` を Vite プラグインに追加し、`stylex.create` + typed tokens(`spacingVars['--spacing-5']`)の xstyle が**静的 CSS(`.xqifx2i { margin-top: var(--spacing-5) }`)にコンパイルされて CSS アセットに追記**されることを確認。computed style で 20px 適用を e2e 検証
-- **セッション 01 メモの訂正**: 「コンパイラ未設定だと無警告で無スタイル描画」は @stylexjs/stylex 0.19.0 では不正確。実際は**ビルドは無警告で成功**し、ブラウザで `stylex.create` が **`Unexpected 'stylex.create' call at runtime` を throw してクライアント島ごと描画されない**(コンソールにのみエラー)。つまり「静かな見た目崩れ」ではなく「ビルドは通るがランタイムで全損」。`SPIKE_NO_STYLEX=1 bun run build` で再現可能だった(当時の検証記録 — この再現用スイッチは検証完了につき 2026-08-11 に vite.config.ts から撤去済み。再現するには一時的にプラグイン配列から `astryxStylex` を外す)。CI でビルドが通ってもデプロイが壊れる点は同じなので、**e2e(今回の 4 テスト)を品質ゲートに含めることが実効的な防御**になる
-- `astryxStylex` の API は 2 形態あり要注意: `stylexOptions` キーを渡すと **legacy モード**(今回使用。プリビルド CSS 消費 + アプリコードのみコンパイル。出力レイヤは `priority1`)。新形式(オプション直渡し)は `@astryxdesign/core` を **src へ alias するライブラリソースビルド**に切り替え、さらに `transformIndexHtml` でレイヤ順のインライン `<style>` を注入する(funstack-static の HTML 生成には適用されず、かつ CSP と衝突しうる)。**maruhi は legacy モード(プリビルド消費)が正解**。README は新形式を説明していないため、更新時に挙動が変わらないか注意
-- dev サーバー(`vite dev`)での StyleX HMR は未検証(ビルド + 配信の検証を優先した)
+- Adding `@astryxdesign/build/vite`'s `astryxStylex` as a Vite plugin confirmed that `stylex.create` + typed tokens (`spacingVars['--spacing-5']`) xstyle **compiles to static CSS (`.xqifx2i { margin-top: var(--spacing-5) }`) appended to the CSS asset**. E2E-verified via computed style showing 20px applied
+- **Correction to the session-01 memo**: "with no compiler configured it renders unstyled with no warning" is inaccurate for @stylexjs/stylex 0.19.0. In reality **the build succeeds without warnings**, and in the browser `stylex.create` **throws `Unexpected 'stylex.create' call at runtime`, so the whole client island fails to render** (an error only in the console). In other words, not a "silent visual breakage" but "the build passes while everything is lost at runtime". It was reproducible via `SPIKE_NO_STYLEX=1 bun run build` (the verification record at the time — this reproduction switch was removed from vite.config.ts on 2026-08-11 after verification completed. To reproduce, temporarily remove `astryxStylex` from the plugin array). The fact that CI can pass while the deploy breaks is the same either way, so **including the e2e (this spike's 4 tests) in the quality gate is the effective defense**
+- `astryxStylex`'s API has two forms — take note: passing the `stylexOptions` key gives **legacy mode** (used here: consumes the prebuilt CSS and compiles only app code; the output layer is `priority1`). The new form (direct options) switches to a **library-source build that aliases `@astryxdesign/core` to src**, and additionally injects a layer-ordering inline `<style>` via `transformIndexHtml` (which does not apply to funstack-static's HTML generation and may collide with the CSP). **The right answer for maruhi is legacy mode (consuming the prebuilt)**. The README does not explain the new form, so watch whether behavior changes on upgrades
+- StyleX HMR on the dev server (`vite dev`) is unverified (build + delivery verification was prioritized)
 
-### 6. エージェント統合・品質ゲート統合 — ✅ 実施(root 統合はメモのみ)
+### 6. Agent integration / quality-gate integration — ✅ done (root integration is a note only)
 
-- `astryx init --features agents --agent all` → `apps/web/AGENTS.md` と `apps/web/.claude/CLAUDE.md` を生成(コミット済み)。内容は Astryx の運用規律(div 禁止・トークン強制・discover ワークフロー)で、本リポジトリの CLAUDE.md styling 規律と整合
-- `astryx doctor` は全チェック通過(6 passed)。テーマ配線の warning は package.json の `astryx.theme` フィールドで解消。`doctor:astryx` スクリプトとして apps/web に追加済み
-- `@stylexjs/eslint-plugin`(0.19.0)は **oxlint の jsPlugins で動く**ことを実証(`stylex/valid-styles` が不正プロパティ・不正値を検出)。ルート `.oxlintrc.json` を変えずに **`apps/web/.oxlintrc.json`(nested config、extends でルートを継承)**で有効化した
-- web の vitest プロジェクト(`apps/web/vitest.config.ts`、e2e 4 テスト)を追加。**ルート `vitest.config.ts` にはあえて登録していない**(要ビルド + ブラウザ依存のため、ユニットテストと同じレーンに入れない方がよい)
+- `astryx init --features agents --agent all` → generated `apps/web/AGENTS.md` and `apps/web/.claude/CLAUDE.md` (committed). Their content is Astryx's operating discipline (no divs, mandatory tokens, the discover workflow), consistent with this repository's CLAUDE.md styling rules
+- `astryx doctor` passed all checks (6 passed). The theme-wiring warning is resolved by package.json's `astryx.theme` field. Already added to apps/web as the `doctor:astryx` script
+- `@stylexjs/eslint-plugin` (0.19.0) was demonstrated to **work via oxlint's jsPlugins** (`stylex/valid-styles` detects invalid properties / invalid values). It was enabled via **`apps/web/.oxlintrc.json` (a nested config inheriting the root via extends)** without touching the root `.oxlintrc.json`
+- Added a web vitest project (`apps/web/vitest.config.ts`, the 4 e2e tests). **Deliberately not registered in the root `vitest.config.ts`** (it needs a build + a browser, so it should not share the unit-test lane)
 
-## 本採用時に統合すべきルート変更
+## Root changes to integrate when adopting for real
 
-1. `.fallowrc.json`(このブランチで実施済み): `entry` に apps/web のエントリ(funstackStatic の root/app は vite.config の文字列参照で自動検出不能)+ `ignoreDependencies` に @stylexjs/unplugin・@stylexjs/eslint-plugin。**スパイク B / C のブランチも同ファイルの ignorePatterns 行を同一内容で変更しているため、マージ順によっては手動解決が要る**
-2. ルート `vitest.config.ts` / `ci.yml`(未実施。提案): web の e2e はビルド成果物前提なので、`bun run --filter @maruhi/web build && bunx vitest run --config apps/web/vitest.config.ts` を CI の独立ステップ(テスト第 7 ステップの後)に足すのが良い。`doctor:astryx` も品質ゲートへ(`bun run doctor` の隣)
-3. `bun.lock`: apps/web はワークスペースのためルートロックファイルが更新される(スパイク B / C は standalone install なので競合しない)
+1. `.fallowrc.json` (done on this branch): add apps/web's entry to `entry` (funstackStatic's root/app are string references in vite.config and cannot be auto-detected) + add @stylexjs/unplugin and @stylexjs/eslint-plugin to `ignoreDependencies`. **Spikes B / C's branches also modify the same file's ignorePatterns line with identical content, so depending on merge order a manual resolution may be needed**
+2. Root `vitest.config.ts` / `ci.yml` (not done — a proposal): since web e2e requires the build artifact, adding `bun run --filter @maruhi/web build && bunx vitest run --config apps/web/vitest.config.ts` as an independent CI step (after test step 7) is the right shape. Add `doctor:astryx` to the quality gate too (next to `bun run doctor`)
+3. `bun.lock`: apps/web is a workspace, so the root lockfile updates (spikes B / C use standalone installs, so no conflict)
 
-## 残った疑問(Phase 1 で解消すべきもの)
+## Remaining questions (to resolve in Phase 1)
 
-1. **CSP とインラインブートストラップの扱い**(上記 4。人間の判断待ち + upstream issue 候補)
-2. Safari(Navigation API 未対応)の扱い: MPA 劣化を正式サポートと言うか。劣化モードでの UX(ローダー、フォーム)確認は未実施
-3. `ssr: true`(ビルド時フル HTML)モードは未検証。ランディングページで欲しくなる可能性が高い
-4. `vite dev` での開発体験(StyleX HMR、Astryx ソースマップ)は未検証
-5. Astryx 0.2.0 は 0.x semver。`astryx upgrade` コードモッドの実運用も未検証(更新 PR が最初の機会)
-6. react-doctor が apps/web を実検査するようになった(rules gated on)。現状は全通過
-7. 実デプロイ(`wrangler deploy` での Static Assets + _headers 反映)は Cloudflare 資格情報がないため未実施。`wrangler dev` でのヘッダ付与までは確認済み
+1. **The CSP / inline-bootstrap question** (item 4 above — awaiting a human decision + an upstream issue candidate)
+2. How to treat Safari (no Navigation API): whether MPA degradation is officially supported. The degraded-mode UX (loaders, forms) is unchecked
+3. `ssr: true` (full build-time HTML) mode is unverified. Likely wanted for the landing page
+4. The `vite dev` experience (StyleX HMR, Astryx source maps) is unverified
+5. Astryx 0.2.0 is 0.x semver. The `astryx upgrade` codemod's real-world behavior is also unverified (the first update PR is the first opportunity)
+6. react-doctor now actually inspects apps/web (rules gated on). Currently all passing
+7. A real deploy (`wrangler deploy` with Static Assets + _headers applied) is undone — no Cloudflare credentials. Verified up to header attachment under `wrangler dev`

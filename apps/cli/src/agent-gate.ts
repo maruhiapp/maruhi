@@ -1,55 +1,65 @@
-// 値の表示可否の判定(ADR-0016 決定 7 — 一次境界を TTY に置く fail-closed の 2 層)。
+// Deciding whether values may be displayed (ADR-0016 decision 7 — a
+// fail-closed two-layer design with the primary boundary on the TTY).
 //
-// **deny-list だけでは足りない理由**: 「既知のエージェントの環境変数リスト」に
-// 一致したら拒否する方式は、境界の定義が上流のリストに依存し、
-// リストに載っていない新しいエージェント・自作ハーネス・CI・ログ収集経路は
-// **素通りする**(fail-open)。環境変数の標準化は未確定
-// (`AGENT` と `AI_AGENT` が併存、各社独自変数が乱立)なので、
-// 「リストが常に正しい」という前提そのものが持たない。
+// **Why a deny-list alone is not enough**: an approach that refuses when the
+// environment matches a "list of known agent variables" makes the boundary's
+// definition depend on an upstream list, and new agents not on the list,
+// custom harnesses, CI, and log-collection paths **pass straight through**
+// (fail-open). Environment-variable standardization is undecided (`AGENT` and
+// `AI_AGENT` coexist, and each vendor's own variables proliferate), so the
+// premise "the list is always correct" cannot even be held.
 //
-// よって、値を見てよいのは**人間が対話端末で実行したとき**だけ、という
-// 要件そのものを判定にする(allow-list = fail-closed):
+// So the requirement itself becomes the check: values may be seen **only when
+// a human runs the command at an interactive terminal** (allow-list =
+// fail-closed):
 //
-//   1. 一次境界: stdin と stdout の両方が TTY か(`Stdio` サービス)。
-//      エージェント・CI・パイプ・リダイレクトはすべて既定で拒否になる。
-//      未知のエージェントも同じ理由で拒否される(知らなくても止まる)
-//   2. 二次層: 既知エージェントの環境変数(名前が分かると診断が親切になり、
-//      PTY を割り当てて実行するエージェントも捕まえられる)
+//   1. Primary boundary: are both stdin and stdout TTYs (`Stdio` service).
+//      Agents, CI, pipes, and redirects are all refused by default.
+//      Unknown agents are refused for the same reason (stopped even when
+//      unrecognized)
+//   2. Secondary layer: environment variables of known agents (naming them
+//      makes diagnostics friendlier, and it also catches agents that allocate
+//      a PTY to run)
 //
-// 判定材料はどちらも Effect のサービス経由で差し替えられる(`process.stdout` を
-// 直に読まない)。実体の検出は live.ts が std-env で行い、テストは
-// `Stdio.layerTest` と {@link AgentProfileRef} の差し替えで両方を偽装する。
+// Both kinds of evidence are substitutable via Effect services (never reading
+// `process.stdout` directly). Real detection is done by live.ts with std-env;
+// tests fake both by substituting `Stdio.layerTest` and
+// {@link AgentProfileRef}.
 //
-// 拒否メッセージで `maruhi run -- <cmd>` を勧めない: run は「値を使う」ための
-// 注入経路であって「値を見る」ための経路ではなく、`run -- printenv` のような
-// 使い方は結局平文をエージェントの標準出力(トランスクリプト)へ流す =
-// 拒否した境界の迂回になる。エージェントに迂回レシピを渡さない。
+// The refusal message does not recommend `maruhi run -- <cmd>`: run is an
+// injection path for *using* values, not a path for *seeing* them, and a use
+// like `run -- printenv` ends up streaming plaintext into the agent's stdout
+// (transcript) = bypassing the refused boundary. Do not hand agents a bypass
+// recipe.
 //
-// なお、失敗は maruhi 共通の {@link CliError}(実行の失敗 = exit 1)で表す。
-// 終了コードはエラー型が `Runtime.errorExitCode` で持つ(errors.ts)ので、
-// ランナー側に写像表は要らない(ADR-0016 決定 4)。
+// Failures are represented by the shared maruhi {@link CliError} (execution
+// failure = exit 1). The error type carries the exit code via
+// `Runtime.errorExitCode` (errors.ts), so the runner needs no mapping table
+// (ADR-0016 decision 4).
 
 import { Context, Effect, Stdio } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 
-/** AI コーディングエージェントの検出結果(検出そのものは注入する)。 */
+/** Detection result for an AI coding agent (the detection itself is injected). */
 export interface AgentProfile {
   readonly isAgent: boolean;
   readonly name?: string | undefined;
 }
 
 /**
- * 検出結果のサービス。実装(std-env / 自前表)を差し替えられるように
- * ここでは値だけを受け取る — 二次層であって境界ではない。
+ * Service holding the detection result. It only receives the value here so
+ * the implementation (std-env / a custom table) can be swapped — a secondary
+ * layer, not the boundary.
  */
 export class AgentProfileRef extends Context.Reference<AgentProfile>("cli/AgentProfile", {
   defaultValue: (): AgentProfile => ({ isAgent: false }),
 }) {}
 
 /**
- * 鍵素材・capability の表示 / 入力に使う3チャネルTTYゲート。
- * stderrへ出す経路もあるため、値表示のstdin+stdout境界より1チャネル厳しい。
+ * 3-channel TTY gate used for displaying / entering key material and
+ * capabilities. One channel stricter than the stdin+stdout boundary for value
+ * display, because there is also a path that writes to stderr.
  */
 export function ensureSensitiveTerminalAllowed(input: {
   readonly agent: AgentProfile;
@@ -71,10 +81,11 @@ export function ensureSensitiveTerminalAllowed(input: {
 }
 
 /**
- * 一次境界(stdin と stdout が端末か)に落ちた側を名指しする(DP5 追補 G)。
- * 「両方が端末ではない」と一括りに言うと、`| less` を外せばよいのか
- * ヒアドキュメントをやめればよいのかが分からない。判定の意味論は不変で、
- * 文面の材料に判定結果をそのまま使うだけ(新しい検査は足していない)。
+ * Names which side failed the primary boundary (whether stdin and stdout are
+ * terminals) (DP5 supplement G). Saying only "both are not terminals" leaves
+ * it unclear whether to drop `| less` or to stop using a heredoc. The check's
+ * semantics are unchanged; the check result is used verbatim as message
+ * material (no new check is added).
  */
 export function describeNonTerminal(input: {
   readonly stdinIsTerminal: boolean;
@@ -89,9 +100,9 @@ export function describeNonTerminal(input: {
 }
 
 /**
- * 既知エージェントを検出したときの拒否文(名前は診断のためだけに出す)。
- * 文面の順は「何が拒否されたか → なぜ → どうすればよいか」(DP5 裁定 G —
- * 判定の意味論は不変)。
+ * Refusal text when a known agent is detected (the name is shown only for
+ * diagnosis). Message order is "what was refused → why → what to do"
+ * (DP5 ruling G — the check's semantics are unchanged).
  */
 function agentRejection(name: string | undefined): CliError {
   const detected = name === undefined ? "" : ` (${name})`;
@@ -104,8 +115,9 @@ function agentRejection(name: string | undefined): CliError {
  * Fails unless value display is allowed: a human at an interactive terminal,
  * not an AI coding agent.
  *
- * 呼び出し側は 2 か所ある(多層防御): pull の入口(復号より前 — 本線)と
- * `showValues`(復号後の防衛線 — display.ts)。
+ * There are two call sites (defense in depth): the pull entry point (before
+ * decryption — the main line) and `showValues` (the post-decryption line of
+ * defense — display.ts).
  */
 export const ensureValueDisplayAllowed: Effect.Effect<void, CliError, Stdio.Stdio> = Effect.gen(
   function* () {
@@ -117,8 +129,8 @@ export const ensureValueDisplayAllowed: Effect.Effect<void, CliError, Stdio.Stdi
     const stdinIsTerminal = yield* stdio.stdinIsTerminal;
     const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
     if (!stdinIsTerminal || !stdoutIsTerminal) {
-      // パイプ・リダイレクト・CI・未知のエージェントはここで止まる。
-      // 「知っているものを止める」ではなく「人間の端末だけ通す」
+      // Pipes, redirects, CI, and unknown agents stop here.
+      // Not "stop what we know" but "let only a human terminal through"
       return yield* Effect.fail(
         cliError(
           `Refused to display values: ${describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal })}. Values are shown only to a person at a terminal (pipes, redirects, CI, and AI agents are refused), so they never land in a file or a log. Run this command yourself in a terminal, without redirecting its input or output`,
@@ -129,9 +141,11 @@ export const ensureValueDisplayAllowed: Effect.Effect<void, CliError, Stdio.Stdi
 );
 
 /**
- * 儀式の 2 層ゲートの共通形(ADR-0016 決定 7 と同じ材料: 既知エージェントの検出 →
- * stdin / stdout が端末か)。拒否文は儀式ごとに与える(何が拒否されたか → なぜ →
- * どうすればよいか)。`agentRefusal` は検出名の括弧書き(空文字あり)を受ける。
+ * Shared shape of the ceremony two-layer gate (the same evidence as ADR-0016
+ * decision 7: known-agent detection → whether stdin / stdout are terminals).
+ * The refusal text is given per ceremony (what was refused → why → what to
+ * do). `agentRefusal` receives the parenthesized detected name (an empty
+ * string is possible).
  */
 export function ensureHumanCeremonyAllowed(input: {
   readonly agentRefusal: (detected: string) => string;
@@ -155,9 +169,12 @@ export function ensureHumanCeremonyAllowed(input: {
 }
 
 /**
- * `maruhi device approve` の儀式ゲート(設計録 dk-design.md §9 K4-6 — ADR-0016 決定 7 の
- * 2 層と同じ材料): 承認は人が別端末から運んだ FP を照合する行為で、エージェント環境や
- * 非対話(パイプ・CI)では成立しない。指紋帳の一致も人の yes を代替しない(K4-3)。
+ * Ceremony gate for `maruhi device approve` (design record dk-design.md §9
+ * K4-6 — the same evidence as the ADR-0016 decision 7 two layers): approval
+ * is the act of a person comparing an FP carried over from another device,
+ * and cannot hold in an agent environment or non-interactively (pipes, CI).
+ * A fingerprint-registry match does not substitute for a person's yes either
+ * (K4-3).
  */
 export const ensureDeviceApproveAllowed: Effect.Effect<void, CliError, Stdio.Stdio> =
   ensureHumanCeremonyAllowed({

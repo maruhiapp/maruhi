@@ -1,11 +1,16 @@
-// サーバーコンポーネント。「このデプロイについて」— ビルド時刻とクライアント側の動作確認。
+// Server component. "About this deployment" — the build time and a
+// client-side operation check.
 //
-// e2e の機構検証フック(スパイク A 起源)の置き場(DP2 裁定 F — docs/notes/web-design-pass.md §4):
-//   - built-at: ビルド時 RSC(サーバーコンポーネントが埋めた値が静的シェルに出る)
-//   - counter-button: "use client" 島の hydrate と、厳格 CSP 下での StyleX(xstyle)適用
-//   - about-heading / to-home: SPA 遷移(Navigation API)と MPA 劣化の検証対象
-// セルフホスト運用者にも「何がデプロイされているか」「クライアントバンドルが CSP 下で動くか」を
-// 示す診断ページとして意味を持たせる。
+// Home of the e2e mechanism-verification hooks (originating in spike A)
+// (DP2 ruling F — docs/notes/web-design-pass.md §4):
+//   - built-at: build-time RSC (a value the server component embedded
+//     appears in the static shell)
+//   - counter-button: hydration of the "use client" island and StyleX
+//     (xstyle) application under the strict CSP
+//   - about-heading / to-home: verification targets for SPA navigation
+//     (Navigation API) and MPA degradation
+// It doubles as a diagnostics page showing self-host operators "what is
+// deployed" and "does the client bundle run under the CSP".
 import { CounterCard } from "../components/CounterCard.tsx";
 import { spaPaths } from "../dashboard/routes.ts";
 

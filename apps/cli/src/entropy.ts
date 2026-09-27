@@ -1,30 +1,39 @@
-// スキーマ欄への実値混入(発見 D)の書き込み時クライアント検査(裁定 CW —
-// fail-closed)。`maruhi schema set`(将来は schema import)の name /
-// description 入力に「秘密らしき高エントロピー部分文字列」を検出したら、
-// 対話環境では警告 + 明示確認、非対話環境では明示フラグなしに型付きエラーで
-// 拒否する。メタは平文でサーバー可視であり、実値の混入はゼロ知識の約束に
-// ユーザー形の穴を開ける。
+// Write-time client check for real-value contamination in schema
+// fields (finding D) (ruling CW — fail-closed). When a
+// "secret-looking high-entropy substring" is detected in the name /
+// description input of `maruhi schema set` (and schema import in the
+// future), an interactive environment warns and requires explicit
+// confirmation, and a non-interactive environment refuses with a
+// typed error absent an explicit flag. Meta is plaintext and
+// server-visible; real-value contamination pokes a user-shaped hole
+// in the zero-knowledge promise.
 //
-// 検出器・閾値は実装詳細(仕様が固定するのは要件と失敗方向のみ — 設計文書
-// §1-2)。ここでは detect-secrets 系の定番ヒューリスティクスを採る:
-//   - hex トークン(32 文字以上)の Shannon エントロピー ≥ 3.0
-//   - 混在文字クラス(数字 + 大小文字、または数字 + base64 記号)の長い
-//     トークン(20 文字以上)の Shannon エントロピー ≥ 3.5
-// 誤検出は「確認 1 回 / 明示フラグ 1 個」のコスト、見逃しは平文メタへの実値
-// 混入なので、閾値は検出側に倒す(fail-closed の失敗方向)。
+// The detector and thresholds are implementation details (the spec
+// fixes only the requirement and the failure direction — design
+// document §1-2). Here we take the standard detect-secrets
+// heuristics:
+//   - Shannon entropy ≥ 3.0 of a hex token (32 chars or more)
+//   - Shannon entropy ≥ 3.5 of a long token (20 chars or more) of
+//     mixed character classes (digits + upper/lowercase, or digits +
+//     base64 symbols)
+// A false positive costs "one confirmation / one explicit flag" while
+// a miss is a real value in plaintext meta, so the thresholds lean
+// toward detection (the fail-closed failure direction).
 //
-// 検出結果に**入力そのものを含めない**: 呼び出し側のメッセージが端末・ログへ
-// 流れるため、疑わしい値(= 秘密でありうる)を運ばない。位置と長さのみ返す。
+// A detection result **does not contain the input itself**: the
+// caller's message flows to the terminal and logs, so it must not
+// carry the suspect value (= possibly a secret). Returns only
+// position and length.
 
-/** 1 件の検出(値そのものは運ばない — 長さと種別のみ)。 */
+/** One detection (does not carry the value itself — only length and kind). */
 export interface EntropyFinding {
-  /** 検出した部分文字列の長さ(文字数)。 */
+  /** Length of the detected substring (in characters). */
   readonly length: number;
-  /** 検出根拠(hex = 長い hex 列、mixed = 混在文字クラスの高エントロピー列)。 */
+  /** Detection basis (hex = a long hex sequence, mixed = a high-entropy sequence of mixed character classes). */
   readonly kind: "hex" | "mixed";
 }
 
-/** トークン分割: 秘密値に現れる文字クラスの連(base64 / hex / URL-safe)。 */
+/** Token splitting: runs of the character classes secret values appear in (base64 / hex / URL-safe). */
 const TOKEN_PATTERN = /[A-Za-z0-9+/=_-]+/g;
 
 const HEX_TOKEN = /^[0-9a-fA-F]+$/;
@@ -33,7 +42,7 @@ const MIN_MIXED_LENGTH = 20;
 const HEX_ENTROPY_THRESHOLD = 3.0;
 const MIXED_ENTROPY_THRESHOLD = 3.5;
 
-/** 文字単位の Shannon エントロピー(bits/char)。 */
+/** Per-character Shannon entropy (bits/char). */
 function shannonEntropyPerChar(token: string): number {
   const counts = new Map<string, number>();
   for (const char of token) {
@@ -48,10 +57,12 @@ function shannonEntropyPerChar(token: string): number {
   return entropy;
 }
 
-// 混在文字クラスの判定: 乱数トークン(API キー・base64 秘密)は「数字 +
-// 大小文字の混在」か「数字 + base64 記号(+ / =)」をほぼ必ず含む。逆に
-// 識別子的な正当入力(DATABASE_URL・camelCase 名・英文)はどちらも満たし
-// にくい(大文字のみ + 数字、記号なし等)
+// Judging mixed character classes: a random token (an API key, a
+// base64 secret) almost always contains "digits + mixed
+// upper/lowercase" or "digits + base64 symbols (+ / =)". Conversely,
+// identifier-like legitimate input (DATABASE_URL, a camelCase name,
+// English prose) satisfies neither (uppercase only + digits, no
+// symbols, etc.)
 function isMixedCharsetToken(token: string): boolean {
   const hasDigit = /\d/.test(token);
   if (!hasDigit) {
@@ -64,7 +75,7 @@ function isMixedCharsetToken(token: string): boolean {
 }
 
 function tokenFinding(token: string): EntropyFinding | null {
-  // base64 パディングはエントロピーを下げるだけなので判定前に落とす
+  // base64 padding only lowers the entropy, so strip it before judging
   const trimmed = token.replace(/=+$/, "");
   if (HEX_TOKEN.test(trimmed) && trimmed.length >= MIN_HEX_LENGTH) {
     if (shannonEntropyPerChar(trimmed.toLowerCase()) >= HEX_ENTROPY_THRESHOLD) {
@@ -82,7 +93,7 @@ function tokenFinding(token: string): EntropyFinding | null {
 
 /**
  * Scans free-form input (a schema-set name or description) for secret-like
- * high-entropy substrings (裁定 CW). Returns the first finding, or null.
+ * high-entropy substrings (ruling CW). Returns the first finding, or null.
  * The finding never carries the matched text — only its length and kind —
  * so callers can build messages without echoing a possible secret.
  */

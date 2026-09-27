@@ -1,16 +1,25 @@
-// リカバリーコードの発行・再発行・開封(CRYPTO_SPEC §8 / AUTH_SPEC §13)。
+// Issuing / reissuing / opening a recovery code (CRYPTO_SPEC §8 /
+// AUTH_SPEC §13).
 //
-// - リカバリーコード(256-bit)はプロセスメモリと表示にのみ存在し、ディスク・
-//   キーチェーン・ログへ書かない(コードの保管はユーザーの責務)
-// - ラップ対象 B = **予備鍵**のレコード(2026-09-19 DK — 旧: master 鍵)の JSON 直列化
-//   (CRYPTO_SPEC §8 の「直列化形式は CLI 実装時に確定」の確定点。端末鍵と同じ形)。
-//   開封側は importMasterKeys の自己検証を通してから、**端末鍵の発行にだけ用いる**
-//   (§8.1 — 保存はしない。復元の後段は key-recover.ts)
-// - コードの表示・入力は鍵素材を端末へ通すため、stdin / stdout / stderr の
-//   全てが TTY の人間環境だけ許可する(既知 AI agent は二次層でも拒否)
-// - 保存確認(ROADMAP の紛失対策 UX): 表示したコードの最終グループを再入力
-//   させてから完了とする。確認前にサーバー登録を済ませる — 確認に失敗しても
-//   再発行(`maruhi key recovery`)でやり直せる状態を先に作る
+// - The recovery code (256-bit) exists only in process memory and on
+//   display — never written to disk, the keychain, or logs (safekeeping
+//   the code is the user's responsibility)
+// - The wrap target B = a JSON-serialized **reserve key** record
+//   (2026-09-19 DK — previously: the master key) (the fixing point of
+//   CRYPTO_SPEC §8's "the serialization format is fixed at CLI
+//   implementation". The same shape as a device key). The opening side
+//   passes it through importMasterKeys's self-verification, then uses it
+//   **only for issuing a device key** (§8.1 — never stored. Recovery's
+//   tail is key-recover.ts)
+// - Since displaying / entering the code passes key material through the
+//   terminal, it is allowed only on a human environment where stdin /
+//   stdout / stderr are all TTYs (a known AI agent is refused by the
+//   secondary layer too)
+// - Save confirmation (ROADMAP's loss-prevention UX): complete only after
+//   the user re-types the displayed code's last group. Server
+//   registration finishes **before** the confirmation — build the state
+//   where reissuing (`maruhi key recovery`) can redo it first, in case
+//   the confirmation fails
 
 import {
   decodeHex,
@@ -50,7 +59,7 @@ import {
   unsupportedCryptoCause,
 } from "./session.ts";
 
-/** 保存確認・コード入力の再試行回数(タイプミスの救済。超過は明示エラー)。 */
+/** The retry count for save confirmation / code entry (forgiving typos. Exceeding it is an explicit error). */
 const PROMPT_ATTEMPTS = 3;
 
 const agentRefusalMessage =
@@ -73,9 +82,11 @@ function ensureRecoveryCodeInteractionAllowed(
 
 /**
  * Issues (or reissues) the recovery code for the reserve key `record`:
- * generate → wrap → register → display → save confirmation. `maruhi key
- * generate`(初回封印)/ `maruhi key recovery`(再発行・分離)/ `maruhi key reserve
- * rotate` の共通本体。`record` は予備鍵のレコード(reserve.ts)— 端末鍵を渡す経路は無い。
+ * generate → wrap → register → display → save confirmation. The shared
+ * body of `maruhi key generate` (first sealing) / `maruhi key recovery`
+ * (reissue / separation) / `maruhi key reserve rotate`. `record` is a
+ * reserve key's record (reserve.ts) — there is no path to pass a device
+ * key.
  */
 export function issueRecoveryCodeOp(input: {
   readonly session: CliSession;
@@ -86,7 +97,7 @@ export function issueRecoveryCodeOp(input: {
     const io = yield* CliIo;
     yield* ensureRecoveryCodeInteractionAllowed(io, "issue");
 
-    // 既登録の置換(再発行)は事前に明示する(旧コードはこの操作で無効になる)
+    // Replacing an existing registration (reissue) is announced beforehand (the previous code stops working with this operation)
     const status = yield* input.client.auth.recoveryStatus({}).pipe(Effect.mapError(toCliError));
     if (status.registered) {
       yield* io.logError(
@@ -95,14 +106,15 @@ export function issueRecoveryCodeOp(input: {
     }
 
     const secret = Redacted.make(generateRecoverySecret(), { label: "recovery-secret" });
-    // JSON.stringify(record) は使わない — 秘密側が伏字のままラップされ、
-    // 「復元できたのに鍵が使えない」リカバリーブロブを登録してしまう
-    // (キーチェーン保存と同じ罠。keychain.ts の注記)
+    // Never use JSON.stringify(record) — the secret side would be wrapped
+    // still redacted, registering a recovery blob that "restores but the
+    // key is unusable" (the same trap as keychain storage. keychain.ts's
+    // note)
     const blob = new TextEncoder().encode(serializeStoredMasterKey(input.record));
     const wrapped = yield* Effect.tryPromise({
       try: () =>
         wrapMasterSecret({
-          // 剥がす理由: リカバリーラップの鍵導出入力(暗号境界)
+          // Reason for unwrapping: the recovery wrap's key-derivation input (the crypto boundary)
           recoverySecret: Redacted.value(secret),
           userId: input.session.userId,
           masterSecretBlob: blob,
@@ -122,17 +134,21 @@ export function issueRecoveryCodeOp(input: {
       })
       .pipe(Effect.mapError(toCliError));
 
-    // コードの表示ブロックは丸ごと stderr へ(プロンプトと同じチャネル)。
-    // stdout はリダイレクト・パイプされうる: コードは鍵素材であり、
-    // `maruhi key generate > log` で平文ファイルに残る経路を作らない。
-    // stderr なら確認プロンプトと同じ画面に出て、確認の儀式も成立する
+    // The code's display block goes wholly to stderr (the same channel as
+    // the prompt). stdout may be redirected / piped: the code is key
+    // material and must not get a path that lands in a plaintext file via
+    // `maruhi key generate > log`. On stderr it appears on the same
+    // screen as the confirmation prompt, so the confirmation ceremony
+    // still works
     const code = formatRecoveryCode(secret);
     yield* io.logError("");
     yield* io.logError("Issued your recovery code. Store it somewhere safe now:");
     yield* io.logError("");
-    // 剥がす理由: コードの表示が発行の機能そのもの(二度と表示されない)。
-    // 表示可否はこの関数の冒頭の TTY + agent ゲートで判定済みで、剥がすのは
-    // その後ろ。stderr 自体も TTY であることを確認済み
+    // Reason for unwrapping: displaying the code is issuance's very
+    // function (it is never shown again). Displayability was already
+    // decided by the TTY + agent gate at the head of this function, and
+    // the unwrap happens behind it. stderr itself was also confirmed to
+    // be a TTY
     yield* io.logError(`    ${Redacted.value(code)}`);
     yield* io.logError("");
     yield* io.logError(
@@ -146,12 +162,13 @@ export function issueRecoveryCodeOp(input: {
   });
 }
 
-/** 表示したコードの最終グループの再入力で保存を確認する(紛失対策 UX)。 */
+/** Confirm the save by re-typing the displayed code's last group (the loss-prevention UX). */
 function confirmCodeSaved(code: Redacted.Redacted<string>): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // 剥がす理由: 最終グループの照合材料。既に表示済みのコードであり、
-    // ここで取り出す部分文字列は出力せず比較にしか使わない
+    // Reason for unwrapping: the matching material for the last group.
+    // The code is already displayed, and the substring taken here is
+    // never output — used only for the comparison
     const groups = Redacted.value(code).split("-");
     const last = groups[groups.length - 1] ?? "";
     for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt += 1) {
@@ -173,10 +190,11 @@ function confirmCodeSaved(code: Redacted.Redacted<string>): Effect.Effect<void, 
 
 /**
  * Opens the recovery blob with a prompted recovery code and returns the reserve
- * key record (memory only — nothing is stored). `maruhi key recover`(復元の
- * 前段)と台帳変更の開封(ledger-open.ts — `key recovery` / `key seal passkey` /
- * `guardian add` / `key reserve rotate`)が共有する。復元の後段(新端末鍵の発行 →
- * `add_device` → 予備鍵の破棄)は key-recover.ts。
+ * key record (memory only — nothing is stored). Shared by `maruhi key
+ * recover` (recovery's front half) and the opening for a ledger change
+ * (ledger-open.ts — `key recovery` / `key seal passkey` / `guardian add`
+ * / `key reserve rotate`). Recovery's tail (issuing the new device key →
+ * `add_device` → discarding the reserve key) is key-recover.ts.
  */
 export function unwrapRecoveryBlobWithCode(input: {
   readonly session: CliSession;
@@ -184,9 +202,10 @@ export function unwrapRecoveryBlobWithCode(input: {
 }): Effect.Effect<StoredMasterKey, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // 発行側と対称の線引き: コードは鍵素材であり、エージェント越しの stdin に
-    // 打ち込ませる経路も作らない(入力はエージェントのセッション層から読める)。
-    // 開封は人間の対話端末で行う
+    // A line symmetric to the issuing side: the code is key material, and
+    // no path for typing it through an agent-mediated stdin is built
+    // either (the input is readable from the agent's session layer).
+    // Opening happens on a human interactive terminal
     yield* ensureRecoveryCodeInteractionAllowed(io, "read");
 
     const wrap = yield* input.client.auth.recoveryGet({}).pipe(
@@ -212,7 +231,7 @@ export function unwrapRecoveryBlobWithCode(input: {
       return yield* Effect.fail(cliError("The server response is malformed (cannot decode hex)"));
     }
 
-    // コード入力 → 復号はローカル再試行(取得レート制限の窓を消費しない)
+    // Code entry → decryption retries locally (never consumes the fetch's rate-limit window)
     return yield* unwrapWithPromptedCode({
       nonce,
       ciphertext,
@@ -221,24 +240,28 @@ export function unwrapRecoveryBlobWithCode(input: {
   });
 }
 
-/** 再登録の手順そのもの(どの原因でも同じ)。 */
+/** The re-registration procedure itself (identical for every cause). */
 const reRegisterAction =
   "seal a new reserve key by running `maruhi key recovery --replace` on a device of yours that is registered (it does not open the ledger; the reserve keys recorded on that machine are revoked).";
 
 /**
- * ブロブが使えないときの共通の出口(このデバイスでは直せない)。
+ * The common exit when the blob is unusable (this device cannot fix it).
  *
- * 「このコードでは復元できません」は**破損・伏字の場合にだけ真**。未知スイートの
- * ブロブは更新すれば同じコードで復元できるので、この文言を付けてはいけない
- * (付けると、使えるコードを捨てさせる)。
+ * "This code cannot restore the key" is true **only for corruption /
+ * redacted placeholder**. A blob of an unknown suite can still restore
+ * with the same code after an update, so this wording must not be
+ * attached (attaching it would make the user discard a working code).
  */
 const reRegisterGuidance = `This code cannot restore the key — ${reRegisterAction}`;
 
 /**
- * 開封したブロブが鍵素材として読み込めない({@link importMasterKeys} の失敗)ときの
- * 写し(key-recover.ts / ledger-open.ts が使う)。未知スイート(より新しい maruhi が
- * 別デバイスで登録した)は破損ではない。残る 2 つを区別する: 環境が非対応なら
- * ブロブもコードも無事(**捨てさせない**)、そうでなければ本当に壊れている(再登録が要る)。
+ * The mapping for when the opened blob cannot be loaded as key material
+ * ({@link importMasterKeys}'s failure) (used by key-recover.ts /
+ * ledger-open.ts). An unknown suite (a newer maruhi registered it on
+ * another device) is not corruption. Distinguish the remaining two: if
+ * the environment is incompatible, both blob and code are intact
+ * (**never make the user discard them**); otherwise it is truly corrupt
+ * (re-registration is needed).
  */
 export function mapUnloadableRecoveryBlob<A, R>(
   effect: Effect.Effect<A, MasterKeyImportError, R>,
@@ -256,36 +279,43 @@ export function mapUnloadableRecoveryBlob<A, R>(
 }
 
 /**
- * 環境が非対応のときの文言(この経路版)。
+ * The wording for when the environment is incompatible (this route's
+ * version).
  *
- * この経路は ensureNoStoredMasterKey を通っており、このデバイスに鍵は無い —
- * 「保存されている鍵を消さないでください」は指す物が無い。代わりに**無事な物**
- * (コードとブロブ)を名指しする: 書かないと、失敗をコードのせいだと思って
- * 唯一の復元手段を捨てられる。
+ * This route has passed through ensureNoStoredMasterKey, so this device
+ * holds no key — "do not delete your stored key" points at nothing.
+ * Instead it names **what is intact** (the code and the blob): without
+ * it, the user might blame the code and discard their only means of
+ * recovery.
  */
 const unsupportedCryptoOnRecover =
   `${unsupportedCryptoCause}. The recovery code you entered and the registered blob are intact — do not discard them. ${retryOnSupportedRuntime}` as const;
 
 /**
- * ブロブは解釈できたが鍵素材が読み込めないときの文言。
+ * The wording for when the blob parses but its key material cannot be
+ * loaded.
  *
- * **原因を「壊れている」と断定しない**: このフォークは形が現行と同じブロブ
- * (= parse を通ったもの)しか来ないため、「本当に壊れている」のと「スイートを
- * 変えずに符号化だけ変えた将来版が書いた」のを**観測では区別できない**
- * (suite は暗号スイートの識別子であって保存形式の版ではない — keychain.ts の
- * 注記と同じ理由)。断定して `reRegisterGuidance`(「このコードでは復元できません」)を
- * 付けると、別デバイスでの再登録で**使えるコードを失効させてしまう**。
- * 先に更新を促し、再登録はその後の手段として置く。
+ * **Never declare the cause "corrupt"**: this fork only receives blobs
+ * whose shape matches the current version (= passed parse), so
+ * "genuinely corrupt" and "written by a future version that changed only
+ * the encoding, not the suite" are **indistinguishable by observation**
+ * (suite is the crypto suite's identifier, not the storage format's
+ * version — the same reason as keychain.ts's note). Declaring it and
+ * attaching `reRegisterGuidance` ("this code cannot restore the key")
+ * would **revoke a working code** when re-registering on another device.
+ * Prompt an update first; keep re-registration as the step after.
  */
 const brokenRecoveryBlobMessage =
   `Cannot load the key material in the registered recovery blob (the record is corrupt, or in a format this version does not know). First update maruhi to the latest version and re-run (the recovery code you just entered may still work — do not discard it). If updating does not fix it, ${reRegisterAction}` as const;
 
 /**
- * ブロブが現行版の知らないスイートで書かれていたときの文言。
+ * The wording for when the blob was written under a suite the current
+ * version does not know.
  *
- * キーチェーンのレコードと違い**消すものは無い**(ブロブはサーバー側にあり、
- * このデバイスに鍵は保存されていない)ので、削除の警告は要らない。スイート名は
- * ブロブ由来の自由文字列なので、端末へ出す前にエスケープする。
+ * Unlike a keychain record, **there is nothing to delete** (the blob
+ * lives server-side and no key is stored on this device), so no deletion
+ * warning is needed. The suite name is a free string from the blob, so
+ * it is escaped before reaching the terminal.
  */
 function foreignRecoveryBlobMessage(suite: string | null): string {
   const named = suite === null ? "" : ` (${escapeText(suite)})`;
@@ -293,22 +323,24 @@ function foreignRecoveryBlobMessage(suite: string | null): string {
 }
 
 /**
- * 復号済みブロブの解釈。**平文の鍵素材(hex)を持つ文字列をこの関数の外へ
- * 出さない**ために切り出してある: 呼び出し側にはレコードと真偽値しか渡らず、
- * エラーメッセージの組み立てから物理的に届かない(この経路は master 秘密鍵が
- * 素の文字列として現れる唯一の場所)。
+ * Interpreting the decrypted blob. Carved out so that **no string
+ * holding plaintext key material (hex) leaves this function**: the
+ * caller receives only the record and a boolean — physically out of
+ * reach of error-message assembly (this route is the only place the
+ * master secret key appears as a bare string).
  */
 function readRecoveryBlob(bytes: Uint8Array): {
   readonly record: StoredMasterKey | null;
   readonly placeholder: boolean;
-  /** 解釈できなかったときの分類(キーチェーン側と同じ規準)。 */
+  /** The classification when uninterpretable (the same criteria as the keychain side). */
   readonly classification: "corrupt" | "foreign";
-  /** 解釈できなかったブロブが名乗るスイート(名乗らなければ null)。 */
+  /** The suite an uninterpretable blob claims (null when it claims none). */
   readonly declaredSuite: string | null;
 } {
   const blob = new TextDecoder().decode(bytes);
-  // 分類とスイートの取り出しも**この関数の中で**行う: どちらもブロブの生文字列を
-  // 要るため、外へ出すと平文の鍵素材を持つ文字列が呼び出し側へ漏れる
+  // The classification and suite extraction also happen **inside this
+  // function**: both need the blob's raw string, so doing them outside
+  // would leak a string holding plaintext key material to the caller
   return {
     record: parseStoredMasterKey(blob),
     placeholder: hasRedactedPlaceholder(blob),
@@ -325,9 +357,11 @@ function unwrapWithPromptedCode(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt += 1) {
-      // 入力されたコードは鍵素材そのもの。**入口で包む**(素の string のまま
-      // 置くと、同じブロックにある logError へ 1 行で載せられてしまい、
-      // 剥がす箇所の棚卸しにも現れない)。剥がすのは解釈の直前だけ
+      // The entered code is key material itself. **Wrap it at the
+      // boundary** (left as a bare string, it could be loaded onto the
+      // logError in the same block in one line, and never appear in the
+      // inventory of unwrap points). It is unwrapped only just before
+      // interpretation
       const answer = Redacted.make(
         yield* io.promptLine({
           prompt: "Enter your recovery code: ",
@@ -345,7 +379,7 @@ function unwrapWithPromptedCode(input: {
       const unwrapped = yield* Effect.tryPromise({
         try: () =>
           unwrapMasterSecret({
-            // 剥がす理由: リカバリーブロブ復号の鍵導出入力(暗号境界)
+            // Reason for unwrapping: the recovery-blob decryption's key-derivation input (the crypto boundary)
             recoverySecret: Redacted.value(secret),
             userId: input.userId,
             wrapped: { nonce: input.nonce, ciphertext: input.ciphertext },
@@ -359,23 +393,29 @@ function unwrapWithPromptedCode(input: {
       const parsed = readRecoveryBlob(unwrapped.value);
       const record = parsed.record;
       if (record === null) {
-        // 復号は成功したのに中身が壊れている = 登録時のブロブが不正(コードの
-        // 誤りではないので再入力させない)。伏字保存はここでも区別する:
-        // ブロブは serializeStoredMasterKey の 3 つ目のシンクであり、同じ
-        // 剥がし忘れが届きうる。しかも `maruhi key recovery` での再登録は
-        // master 鍵の読み込み(= 復元済みであること)を要するため、鍵を失った
-        // デバイスでは実行できない — 案内としても成立しない
+        // Decryption succeeded yet the content is corrupt = the blob was
+        // malformed at registration (not a code mistake, so no re-entry
+        // is prompted). A redacted save is distinguished here too: the
+        // blob is serializeStoredMasterKey's third sink and the same
+        // forgotten unwrap can arrive. Moreover re-registering via
+        // `maruhi key recovery` requires loading the master key (=
+        // already restored), so it cannot run on a device that lost its
+        // key — it does not even hold up as guidance
         return yield* Effect.fail(
           cliError(
             parsed.placeholder
-              ? // 壊れているのは**サーバー登録済みのブロブ**であってキーチェーンの
-                // レコードではない(この経路は ensureNoStoredMasterKey を通って
-                // いるので、キーチェーンに master 鍵は存在しない)
+              ? // What is corrupt is the **server-registered blob**, not a
+                // keychain record (this route passed through
+                // ensureNoStoredMasterKey, so no master key exists in the
+                // keychain)
                 `${placeholderCause("The registered recovery blob")}. ${reRegisterGuidance} Also report this as a maruhi bug`
-              : // 形が違うだけかもしれない(将来版が書いたブロブ)。キーチェーン側と
-                // 同じ分類を使い、破損と言い切れないものには更新を先に案内する。
-                // 破損側でも再登録は**鍵が残っている別のデバイス**でしか実行
-                // できない(このデバイスには鍵が無い)ので、その断りを落とさない
+              : // It may only be a different shape (a blob a future
+                // version wrote). Use the same classification as the
+                // keychain side, and for what cannot be declared corrupt,
+                // guide toward an update first. Even on the corrupt side,
+                // re-registration can only run **on another device that
+                // still holds a key** (this device has none), so do not
+                // drop that caveat
                 parsed.classification === "foreign"
                 ? foreignRecoveryBlobMessage(parsed.declaredSuite)
                 : `Cannot interpret the decrypted blob as a key record. ${reRegisterGuidance}`,
@@ -391,10 +431,13 @@ function unwrapWithPromptedCode(input: {
 }
 
 /**
- * `maruhi key generate` の後段: 予備鍵の生成と初回封印(K4-2 — 予備鍵は最初の台帳封印で
- * 生まれる)。順序は封印 → ローカル記録(→ チェーン登録は次の同期 — K4-1 の反例 1)。
- * エージェント環境では封印(儀式)そのものをスキップし(拒否ではなく案内)、端末鍵の
- * 生成は成立させる。予備鍵は後日の `maruhi key recovery` が作る。
+ * `maruhi key generate`'s tail: generating the reserve key and its first
+ * sealing (K4-2 — a reserve key is born at the first ledger sealing).
+ * The order is seal → record locally (→ chain registration at the next
+ * sync — K4-1 counterexample 1). Under an agent environment the sealing
+ * (ceremony) itself is skipped (guided rather than refused) while the
+ * device key's generation still succeeds. The reserve key is made by a
+ * later `maruhi key recovery`.
  */
 export function issueRecoveryAfterKeygen(input: {
   readonly session: CliSession;
@@ -420,7 +463,8 @@ export function issueRecoveryAfterKeygen(input: {
 
 /**
  * Generates a reserve key, seals it with a fresh recovery code and records its
- * public side locally (K4-1 の順序: 封印 → 記録。チェーン登録は次の同期)。
+ * public side locally (K4-1's order: seal → record. Chain registration
+ * happens at the next sync).
  */
 export function sealNewReserve(input: {
   readonly session: CliSession;

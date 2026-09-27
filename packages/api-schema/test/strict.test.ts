@@ -1,10 +1,12 @@
-// strict 受理(AUTH_SPEC §12-10 (1))のユニットテスト。
+// Unit tests of strict acceptance (AUTH_SPEC §12-10 (1)).
 //
-// Effect rc.113 以降、スキーマ AST の parseOptions はパーサに読まれない。
-// strict は payload スキーマのラッパーであり、HttpApiBuilder は options なしで
-// Schema.Union([payload]) を decode する。エンドポイントの HttpApi.ParseOptions
-// は使わない(エラー応答の strict encode が HTTP 500 になる)。
-// 受理経路(workerd 実環境)での 400 拒否は apps/server/test/strict-payload.test.ts
+// Since Effect rc.113, a schema AST's parseOptions is not read by the
+// parser. strict is a wrapper around the payload schema, and
+// HttpApiBuilder decodes Schema.Union([payload]) with no options. An
+// endpoint's HttpApi.ParseOptions is not used (strict-encoding an error
+// response becomes HTTP 500).
+// The 400 rejection on the acceptance path (a real workerd
+// environment) is covered by apps/server/test/strict-payload.test.ts
 
 import { Result, Schema } from "effect";
 import { describe, expect, it } from "vitest";
@@ -19,7 +21,7 @@ import {
 
 const payload = Schema.Struct({ nested: Schema.Struct({ a: Schema.String }) });
 
-/** HttpApiBuilder が payload デコーダを組み立てる形(options なしの Union)。 */
+/** The shape in which HttpApiBuilder assembles the payload decoder (an options-less Union). */
 const decodeAsBuilder = (schema: Schema.Top, input: unknown) =>
   Schema.decodeUnknownResult(
     Schema.Union([schema]) as unknown as Schema.ConstraintDecoder<unknown>,
@@ -76,7 +78,7 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
   });
 
   it("covers every §12-10 (1) implemented surface", () => {
-    // 列挙の退行防止(§16-1 ヘッド申告 = membership.attest を含む)
+    // Regression protection for the list (including §16-1 head attestation = membership.attest)
     expect(SECURITY_CRITICAL_PAYLOAD_ENDPOINTS).toEqual([
       ["membership", "init"],
       ["membership", "append"],
@@ -87,17 +89,17 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       ["environments", "remove"],
       ["variables", "create"],
       ["variables", "push"],
-      // activation 複合(§12-5)
+      // the activation composite (§12-5)
       ["variables", "activate"],
       ["variables", "rename"],
       ["variables", "remove"],
       ["deks", "register"],
       ["auth", "recoveryPut"],
-      // master 鍵ラップ台帳(§13-7 — KL3): ラップ・分片・再封印値 = 鍵素材の暗号文
+      // master-key wrap ledger (§13-7 — KL3): wraps / segments / re-sealed values = ciphertext of key material
       ["keyWraps", "passkeyRegister"],
       ["keyWraps", "guardianCreate"],
       ["keyWraps", "handoffApprove"],
-      // 端末登録簿(§13-11 — DK K3): 公開鍵の登録 = 鍵宣言クラス
+      // device registry (§13-11 — DK K3): registering public keys = the key-declaration class
       ["devices", "register"],
       ["devices", "requestCreate"],
       ["lease", "issue"],
@@ -106,18 +108,19 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
     ]);
   });
 
-  it("classifies every payload-bearing endpoint (strict と除外の重複なし)", () => {
-    // 除外リストの退行防止: §12-10 (1) の対象外(署名済み構造・暗号文・鍵材料を
-    // 運ばない mutation)のみが載ること
+  it("classifies every payload-bearing endpoint (no overlap between strict and exempt)", () => {
+    // Regression protection for the exempt list: only surfaces outside
+    // §12-10 (1) (mutations carrying no signed structure, ciphertext, or
+    // key material) may appear
     expect(STRICT_EXEMPT_PAYLOAD_ENDPOINTS).toEqual([
       ["authCli", "cliStart"],
       ["authCli", "cliPoll"],
       ["authCli", "cliApprove"],
       ["deks", "remove"],
       ["rotation", "dismiss"],
-      // schemaPolicy の PUT(§12-11 — 署名済み構造を運ばない 3 値の Literal)
+      // schemaPolicy's PUT (§12-11 — a 3-value Literal carrying no signed structure)
       ["schemaPolicy", "set"],
-      // ハンドオフ要求(§13-7 — KL3): request_id のみ
+      // handoff request (§13-7 — KL3): request_id only
       ["keyWraps", "handoffCreate"],
     ]);
   });
@@ -132,7 +135,7 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
   });
 
   it("throws for a payload-bearing endpoint in neither list (fail-closed)", () => {
-    // 新設エンドポイントの分類漏れは黙って非 strict にならずロード時に落ちる
+    // An unclassified new endpoint does not silently stay non-strict — it fails at load time
     const fakeApi = fakeApiFromRegistry(true);
     const membership = fakeApi.groups["membership"];
     if (membership === undefined) {
@@ -149,8 +152,10 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
   });
 
   it("throws for a stale exempt entry (endpoint no longer exists)", () => {
-    // 消えた・リネームされた面の除外指定が残ると、同名の security-critical 面の
-    // 再利用時に「意識的除外」へ化けるため、除外側にも実在検査を課す
+    // If an exemption for a removed or renamed surface lingered, it
+    // would masquerade as "deliberately exempt" when a security-critical
+    // surface later reuses that name, so the exempt side also gets an
+    // existence check
     const fakeApi = fakeApiFromRegistry(true);
     const rotation = fakeApi.groups["rotation"];
     if (rotation === undefined) {
@@ -176,8 +181,10 @@ type FakeApi = {
 };
 
 /**
- * 列挙面を strictPayload(または素の Struct)、除外面を素の Struct にした
- * フェイク API(スイープの正例・負例 — 実在検査を通すため両リストの座標を揃える)。
+ * A fake API whose enumerated surfaces are strictPayload (or a plain
+ * Struct) and whose exempt surfaces are plain Structs (positive /
+ * negative cases of the sweep — both lists' coordinates aligned so the
+ * existence check passes).
  */
 function fakeApiFromRegistry(strict: boolean): FakeApi {
   const schema = Schema.Struct({ a: Schema.String });

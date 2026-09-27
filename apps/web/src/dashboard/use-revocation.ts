@@ -1,23 +1,29 @@
 "use client";
 
-// 失効操作(DELETE)の行単位の状態機械(裁定 CO — docs/notes/session-45.md)。
-// S8(招待)と S9(トークン)で共用する。
+// The per-row state machine for revocation (DELETE) (ruling CO —
+// docs/notes/session-45.md). Shared between S8 (invites) and S9
+// (tokens).
 //
-// - 武装(armed)は常に 1 行のみ(別行の武装・Cancel で解除)
-// - 確認で DELETE(CSRF ヘッダーは api 層が一律付与 — AUTH_SPEC §11-4)
-// - 成否によらず完了後に一覧を再取得する(楽観更新でクライアント推測の状態を
-//   描かない — 表示規律 §4 と同じ側。410 / 404 は他所で状態が動いた印でもある)
-// - 状態は一覧リソースの再取得をまたいで生存させる(呼び出し側は一覧の外 —
-//   画面レベル — で本フックを持つ): 再取得中のアンマウントで失敗表示が
-//   消えない
-// - 成功は呼び出し側が確認時に渡す文言(対象名入り — 再取得後の一覧には対象が
-//   残らないことがあるため確認時点で決める)を `succeeded` に残し、一覧の下に
-//   role="status" の Banner で告げる。次の武装で消える
+// - Arming is always a single row (arming another row or Cancel disarms)
+// - Confirming issues the DELETE (the api layer always attaches the
+//   CSRF header — AUTH_SPEC §11-4)
+// - The list is re-fetched after completion regardless of outcome (no
+//   optimistic update renders client-guessed state — same side as
+//   display discipline §4. A 410 / 404 is also a sign the state moved
+//   elsewhere)
+// - State survives across the list resource's re-fetch (the caller
+//   holds this hook outside the list — at screen level): a failure
+//   display must not disappear on an unmount mid-refetch
+// - On success, the wording the caller passed at confirm time (which
+//   includes the target's name — decided at confirm time because the
+//   target may be absent from the list after re-fetch) is kept in
+//   `succeeded` and announced via a role="status" Banner below the list.
+//   It clears on the next arming
 import { useCallback, useRef, useState } from "react";
 
 import { apiDelete, type ApiFailure } from "./api.ts";
 
-/** 失効操作の画面状態(武装・実行中・直近の失敗・直近の成功の文言)。 */
+/** The screen state of a revocation (armed, in-flight, latest failure, latest success wording). */
 export interface RevocationState {
   readonly armedId: string | undefined;
   readonly pendingId: string | undefined;
@@ -32,7 +38,7 @@ const IDLE: RevocationState = {
   succeeded: undefined,
 };
 
-/** 2 段階失効の状態と操作(revokePath は id → DELETE パスのビルダー)。 */
+/** The state and operations of a two-step revocation (revokePath is an id → DELETE path builder). */
 export function useRevocation(
   revokePath: (id: string) => string,
   reload: () => void,
@@ -42,11 +48,13 @@ export function useRevocation(
   confirm: (id: string, successMessage: string) => void;
 } {
   const [revocation, setRevocation] = useState<RevocationState>(IDLE);
-  // in-flight ガード: DELETE の実行中は arm / confirm を
-  // 受け付けない — 後着の完了が別行の武装状態を上書きし、失敗の帰属が別の
-  // 失効に見える競合を塞ぐ。UI 側も pendingId を見て他行の Revoke を無効化する
-  // (RevokeControl の isLocked)— ガードは見えないボタンでなく効かないボタンを
-  // 作らないための二層目
+  // In-flight guard: while a DELETE is running, arm / confirm are not
+  // accepted — this blocks the race where a late-arriving completion
+  // overwrites another row's armed state and the failure looks like it
+  // belongs to a different revocation. The UI side also disables other
+  // rows' Revoke by watching pendingId (RevokeControl's isLocked) — the
+  // guard is a second layer so we produce buttons that do not work
+  // rather than invisible buttons
   const pendingRef = useRef(false);
   const arm = useCallback((id: string | undefined) => {
     if (pendingRef.current) return;

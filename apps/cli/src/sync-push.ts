@@ -1,43 +1,62 @@
-// `maruhi push` 直後の同期(integration-options.md §3「同期の最終形」
-// の表「運ぶ主体」の行: 値を変えられるのは人間だけ → 変更の瞬間には書き手の CLI
-// がいる → 書き手の CLI が直接同期するか、`gh workflow run` で CI を起動する。
-// 補足 4 N1 / 補足 7 P1)。
+// Syncing right after `maruhi push` (the "who carries it" row of
+// the "sync's final form" table in integration-options.md §3: only
+// a human can change a value → at the change's moment the writer's
+// CLI is present → either the writer's CLI syncs directly, or it
+// launches CI via `gh workflow run`. Supplement 4 N1 / supplement
+// 7 P1).
 //
-// 同期設定のターゲットが `onPush` を持てば、push が受理された**後始末**として:
-// - `"apply"`: 既存の `syncApplyOp`(sync-plan.ts — 復号 → ドライバの stdin / API
-//   本文 → レシート)をそのまま呼ぶ。plan はレシートと現在の version の差なので、
-//   書くのは今 push した変数だけ(前回の取りこぼしがあればそれも)。production
-//   ターゲットには設定の段階で拒まれている(sync-config.ts — production を書くのは
-//   人が `--yes` を打つ `maruhi sync apply` だけ)
-// - `"workflow"`: 書き手の `gh`(利用者自身の GitHub 認証)で
-//   `gh workflow run <file> -f target=<name>` を叩き、CI(`maruhi ci sync`)に運ばせる。
-//   書き手は同期先のトークンを持たない(P1)。**値も変数名も載せない**: argv は
-//   設定由来のターゲット名と workflow の名前だけで、値は CI が maruhi から取る。
-//   起動の受理だけを報告し、結果は待たない(一方通行)。レシートは CI が書けない
-//   ので進まない(docs「In CI」の 3 点目)
+// When a sync-config target has `onPush`, as the push's **cleanup**
+// after acceptance:
+// - `"apply"`: calls the existing `syncApplyOp` (sync-plan.ts —
+//   decrypt → the driver's stdin / API body → receipt) as-is.
+//   Since plan is the diff between the receipt and the current
+//   version, what gets written is only the variables pushed now
+//   (plus anything missed last time). A production target is
+//   refused at the config stage (sync-config.ts — only a human's
+//   `--yes`-ed `maruhi sync apply` writes production)
+// - `"workflow"`: hits `gh workflow run <file> -f target=<name>`
+//   with the writer's `gh` (the user's own GitHub auth) and lets
+//   CI (`maruhi ci sync`) carry it. The writer does not hold the
+//   sync target's token (P1). **Neither values nor variable names
+//   ride**: argv is only the config-derived target name and the
+//   workflow's name; the values are fetched from maruhi by CI.
+//   Only the launch's acceptance is reported — the result is not
+//   awaited (one-way). The receipt cannot advance because CI
+//   cannot write it (docs "In CI", 3rd point)
 //
-// 後始末であって push の一部ではない(2b の裁定 D と同じ規律): 通信・権限・競合・
-// ベンダー / gh の失敗は警告に留め、push の終了コードを変えない — 未同期の印は
-// レシートの遅れそのもの(次の `maruhi sync plan` が pending と示す)で、次の apply
-// か CI が回収する。**証拠**(`CliError.evidence`)だけはそのまま失敗として通す
-// (asCleanupOutcome — errors.ts)。push 自体の報告と checkpoint / アンカーの提案は
-// ここより前に出ている。
+// This is cleanup, not part of push (same discipline as ruling D
+// of 2b): communication, authority, conflict, and vendor / gh
+// failures stay warnings and never change push's exit code — the
+// mark of unsynced work is the receipt's lag itself (the next
+// `maruhi sync plan` shows it pending), and the next apply or CI
+// picks it up. Only **evidence** (`CliError.evidence`) passes
+// through as a failure (asCleanupOutcome — errors.ts). push's own
+// report and the checkpoint / anchor proposals come out before
+// here.
 //
-// 設定の所在(裁定 B): `--config` 明示か、cwd の既定パス(`maruhi.sync.json`)。
-// 既定パスは黙って使うので、`project` を名乗る設定にしか使わず(sync-config.ts が
-// `onPush` に `project` を要求する)、push 先のプロジェクトと違えば何もしない
-// (note)。明示の `--config` で食い違えば書き方の誤り — push の前に止める
-// (2b の裁定 B)。`--no-sync` は設定を読まずに push だけを行う(補足 14 M8 —
-// 連続 push の末尾で 1 回 `maruhi sync apply`)。
+// Where the config lives (ruling B): an explicit `--config`, or
+// the default path under cwd (`maruhi.sync.json`). The default
+// path is used silently, so it is only used for a config that
+// names `project` (sync-config.ts requires `project` for
+// `onPush`), and does nothing if it names a different project
+// than the push target (note). A mismatch with an explicit
+// `--config` is a write-up error — stops before the push (ruling
+// B of 2b). `--no-sync` performs push alone without reading the
+// config (supplement 14 M8 — one `maruhi sync apply` at the tail
+// of consecutive pushes).
 //
-// 既定パスの設定が**実行体を名指し**するターゲット(exec の `command` /
-// `workflow.command`)は動かさない: プロジェクト ID は公開リポジトリでは
-// 公開情報で、fork に置かれた設定が「その ID + 任意のプログラム」を名指しして書き手の
-// 平文を stdin で受け取る形を、cwd だけで成立させない。プリセットの既定の実行体
-// (PATH 上の `vercel` / `wrangler` / `gh`)だけが既定パスから動く。
+// A target the default-path config **names an executable for**
+// (exec's `command` / `workflow.command`) is not run: the project
+// ID is public information in a public repository, and a config
+// planted on a fork must not get to name "that ID + an arbitrary
+// program" and receive the writer's plaintext on stdin merely by
+// cwd. Only the preset's default executables (`vercel` /
+// `wrangler` / `gh` on PATH) run from the default path.
 //
-// エージェント環境の専用ゲートは無い(補足 9 — `sync` は `run` と同じ扱い)。
-// 出力に出るのはターゲット名・workflow 名・件数・version・変数名(displayText)だけ。
+// There is no dedicated gate for agent environments (supplement 9
+// — `sync` is treated like `run`). What appears in the output is
+// only the target name, the workflow name, counts, versions, and
+// variable names (displayText).
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
@@ -64,7 +83,7 @@ import { syncApplyOp } from "./sync-plan.ts";
 export interface PushSyncSetup {
   readonly config: SyncConfig;
   readonly path: string;
-  /** `--config` で明示された(true)か、cwd の既定パスを黙って読んだ(false)か。 */
+  /** Whether it was made explicit via `--config` (true), or the cwd default path was silently read (false). */
   readonly explicit: boolean;
 }
 
@@ -81,7 +100,7 @@ export function loadPushSyncConfig(input: {
   return Effect.gen(function* () {
     if (input.noSync) {
       if (input.config !== undefined) {
-        // 指した設定を読まずに済ませる形を黙って通さない
+        // Do not silently allow the shape that avoids reading the pointed-at config
         return yield* Effect.fail(
           usageError("--no-sync and --config cannot be combined (drop one of them)"),
         );
@@ -99,23 +118,26 @@ export function loadPushSyncConfig(input: {
 
 /** What the cleanup will do (decided before the push, so a usage error stops it). */
 export type PushSyncDecision =
-  /** 既定パスの設定が別プロジェクトのもの(何もしない — note)。 */
+  /** The default-path config belongs to a different project (does nothing — note). */
   | { readonly kind: "other-project" }
-  /** push 先の環境からこの変数を運ぶ `onPush` ターゲットが無い。 */
+  /** There is no `onPush` target carrying this variable from the push's environment. */
   | { readonly kind: "none" }
   | {
       readonly kind: "targets";
       readonly targets: readonly SyncTarget[];
       /**
-       * 既定パスの設定が**実行体を名指し**しているターゲット(exec の `command` /
-       * `workflow.command`)。cwd で見つけただけの設定から、その設定が名指しする
-       * プログラムに平文を渡す形を作らない: 同期しない旨を note で言い、`--config`
-       * 明示(利用者がそのファイルを指す動作)でだけ動かす
+       * Targets for which the default-path config **names an
+       * executable** (exec's `command` / `workflow.command`).
+       * From a config merely found in cwd, never build the shape
+       * that hands plaintext to a program the config names: say
+       * it does not sync in a note, and run it only under an
+       * explicit `--config` (the act of the user pointing at
+       * that file)
        */
       readonly namesCommand: readonly SyncTarget[];
     };
 
-/** ターゲットがこの変数を運ぶか(明示リスト / `"all"` − exclude)。 */
+/** Whether the target carries this variable (an explicit list / `"all"` − exclude). */
 function targetCarries(target: SyncTarget, name: string): boolean {
   return target.variables === "all"
     ? !target.exclude.includes(name)
@@ -138,8 +160,9 @@ export function decidePushSync(
   const { config } = setup;
   const onPush = [...config.targets.values()].filter((target) => target.onPush !== null);
   if (onPush.length === 0) {
-    // 手動同期だけの設定: push には無関係(`project` の照合もしない — 設定は
-    // `onPush` を持つときだけ `project` を名乗る義務がある)
+    // A config of manual sync only: unrelated to push (its
+    // `project` is not collated either — a config is obliged to
+    // name `project` only when it has `onPush`)
     return Effect.succeed({ kind: "none" });
   }
   if (config.projectId !== undefined && config.projectId !== input.projectId) {
@@ -181,7 +204,7 @@ function namesCommandToRun(target: SyncTarget): boolean {
   return target.driver.kind === "exec" && target.driver.namedCommand;
 }
 
-/** gh の終了コード 4 = 認証が要る(cli/cli internal/ghcmd/cmd.go の exitAuth)。 */
+/** gh's exit code 4 = authentication is needed (exitAuth in cli/cli internal/ghcmd/cmd.go). */
 const GH_EXIT_AUTH = 4;
 
 /**
@@ -210,12 +233,12 @@ function buildWorkflowDispatch(
   };
 }
 
-/** 回収の案内(直接 apply と CI 起動の失敗で共通)。 */
+/** The recovery guidance (common to direct-apply and CI-launch failures). */
 function recoveryHint(target: SyncTarget): string {
   return `The next \`maruhi sync plan ${displayText(target.name)}\` shows the pushed variable as pending; \`maruhi sync apply ${displayText(target.name)}\` or CI delivers it`;
 }
 
-/** CI 起動: `gh workflow run` を叩き、受理(終了コード 0)だけを報告する。 */
+/** CI launch: hits `gh workflow run` and reports only the acceptance (exit code 0). */
 function triggerWorkflow(
   target: SyncTarget,
   onPush: Extract<OnPush, { kind: "workflow" }>,
@@ -239,7 +262,7 @@ function triggerWorkflow(
       );
       return;
     }
-    // gh の出力は信用しない: 値は無いはずだが、伏せてから切る規律は同じ
+    // gh's output is not trusted: there should be no values, but the discipline of scrub-then-truncate is the same
     for (const line of scrubVendorOutput(outcome.output, [])) {
       yield* io.logError(`  ${displayText(onPush.command)}: ${line}`);
     }
@@ -250,9 +273,11 @@ function triggerWorkflow(
 }
 
 /**
- * 1 回の push で環境ごとに床ハンドルを 1 つだけ持つ台帳(同じ環境に 2 つのハンドルを
- * 開かない — `openSyncTarget` と同じ規律。複数ターゲットが 1 つのトークン環境を共有
- * するとき、2 つ目が push 前の床のスナップショットから始まらないように)。
+ * A ledger holding exactly one floor handle per environment for
+ * one push (never open two handles on the same environment — the
+ * same discipline as `openSyncTarget`, so that when several
+ * targets share one token environment, the second does not start
+ * from the floor's pre-push snapshot).
  */
 function floorLedger(
   context: EnvironmentContext,
@@ -270,7 +295,7 @@ function floorLedger(
     });
 }
 
-/** 直接 apply: 既存の apply をそのまま(unchanged の行は省く)。 */
+/** Direct apply: the existing apply as-is (unchanged rows are skipped). */
 function applyTarget(
   context: EnvironmentContext,
   setup: PushSyncSetup,
@@ -282,8 +307,10 @@ function applyTarget(
     yield* io.log(
       `Syncing target ${displayText(target.name)} after the push (onPush in ${displayText(setup.path)})`,
     );
-    // 床ハンドルは環境ごとに 1 つ(同期元 = push 先は push のハンドル、レシート環境と
-    // 統合トークンの環境は台帳が返す同じもの)
+    // One floor handle per environment (the sync source = the
+    // push destination gets push's handle; the receipt
+    // environment and the unified token's environment get the
+    // same one the ledger returns)
     const receiptsFloor = yield* floorOf(setup.config.receiptsEnvironment);
     const tokenFloor =
       target.driver.kind !== "http" ? null : yield* floorOf(target.driver.token.environment);
@@ -293,14 +320,16 @@ function applyTarget(
       recipient: context.recipient,
       resync: context.resync,
       target,
-      // push 先の環境 = 同期元: push が進めた床ハンドルをそのまま渡す
+      // The push's environment = the sync source: passes push's advanced floor handle as-is
       sourceFloor: context.floorHandle,
       receiptsEnvironment: setup.config.receiptsEnvironment as EnvironmentId,
       receiptsFloor,
       writerUserId: context.session.userId,
       signingKey: context.masterKeys.sigKeyPair.privateKey,
-      // production ターゲットは設定の段階で "apply" になれない(sync-config.ts)。
-      // 万一到達しても requireProductionConsent が止め、警告になる
+      // A production target cannot become "apply" at the config
+      // stage (sync-config.ts). Even if reached,
+      // requireProductionConsent stops it and it becomes a
+      // warning
       yes: false,
       now: () => new Date(),
       tokenFloor,

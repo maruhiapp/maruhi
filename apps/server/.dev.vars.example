@@ -1,3 +1,3 @@
-# ローカル開発用のダミー値のみ(CLAUDE.md: 本物のシークレットを置かない)
+# Dummy values for local development only (CLAUDE.md: do not place real secrets)
 GITHUB_CLIENT_ID=dummy-github-client-id
 GITHUB_CLIENT_SECRET=dummy-github-client-secret

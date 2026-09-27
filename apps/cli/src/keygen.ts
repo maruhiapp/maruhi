@@ -1,16 +1,24 @@
-// 端末鍵の生成と表示(CRYPTO_SPEC §3 — 2026-09-19 DK: 旧「master keypair」は端末鍵)。
+// Generating and displaying the device key (CRYPTO_SPEC §3 —
+// 2026-09-19 DK: the old "master keypair" is the device key).
 //
-// - 生成は @maruhi/crypto の公開 API のみ(key-record.ts)。extractable 生成 → 秘密鍵を
-//   シリアライズして OS キーチェーンへ(平文ファイルへ書かない)
-// - 既存鍵の上書きは拒否する: 鍵を失うと全プロジェクトの復号可能性を失う
-//   (復元は予備鍵経由 = `maruhi key recover` のみ)
-// - **アイデンティティは 1 つ**(設計録 §9 K4-19): 台帳(リカバリー登録)が既にある
-//   アカウントで `key generate` を打つのは「2 台目の端末」であり、鍵生成ではなく端末追加
-//   (`maruhi device add`)へ案内する。台帳の状態が取れなければ fail-closed で拒否する。
-//   鍵もコードも全端末も失った人の作り直しは `--new-identity`(名指しの明示)
-// - 生成の後段で予備鍵を生成して封印する(§8 — recovery.ts。エージェント環境では
-//   封印をスキップして案内する)
-// - 表示(key show)は公開鍵とフィンガープリントのみ。秘密鍵は表示しない
+// - Generation uses only @maruhi/crypto's public API
+//   (key-record.ts). Extractable generation → serialize the private
+//   key to the OS keychain (never written to a plaintext file)
+// - Overwriting an existing key is refused: losing the key loses the
+//   ability to decrypt every project (recovery only via the reserve
+//   key = `maruhi key recover`)
+// - **There is one identity** (design record §9 K4-19): running `key
+//   generate` on an account that already has a ledger (a recovery
+//   registration) is "a second device", so it is guided to device
+//   addition (`maruhi device add`) rather than key generation. If
+//   the ledger's state cannot be fetched, refuse fail-closed.
+//   Re-creation for someone who lost the key, the code, and every
+//   device is `--new-identity` (a specifically-named explicit opt-in)
+// - After generation, generate and seal the reserve key (§8 —
+//   recovery.ts. In agent environments the sealing is skipped and
+//   guidance is shown)
+// - Display (key show) shows only the public keys and the
+//   fingerprint. The secret key is never displayed
 
 import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
@@ -45,9 +53,9 @@ import {
 export function keyGenerateOp(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-  /** 裏付け元(CRYPTO_SPEC §6.5): `none` 以外なら生成直後に GitHub 登録の導線を出す。 */
+  /** The backing source (CRYPTO_SPEC §6.5): when not `none`, the GitHub-registration route is shown right after generation. */
   readonly identityBacking: IdentityBacking;
-  /** `--new-identity`: 台帳があっても新しいアイデンティティを作る(K4-19 — 名指しの明示)。 */
+  /** `--new-identity`: create a new identity even when a ledger exists (K4-19 — a specifically-named explicit opt-in). */
   readonly newIdentity: boolean;
 }): Effect.Effect<
   void,
@@ -59,7 +67,7 @@ export function keyGenerateOp(input: {
       input.session,
       "A device key already exists on this machine. Overwriting it would destroy the ability to decrypt existing projects, so this is refused (check it with `maruhi key show`)",
     );
-    // アイデンティティは 1 つ(K4-19): 台帳があれば「2 台目」= 端末追加へ
+    // One identity (K4-19): when a ledger exists, this is "a second device" → device addition
     if (!input.newIdentity) {
       const status = yield* input.client.auth
         .recoveryStatus({})
@@ -80,12 +88,15 @@ export function keyGenerateOp(input: {
     }
 
     const record = yield* generateKeyRecord();
-    // 保存「前」にレコードを再インポートして自己検証する(検証失敗の壊れた
-    // レコードをキーチェーンに残さない)。
-    // 失敗の文言は**この経路専用**にする: 既定の文言はキーチェーンのレコードを
-    // 指して削除を促すが、ここはまだ何も保存していない — 無い物の削除を案内する
-    // ことになる。原因が環境(WebCrypto 非対応)なら鍵の問題ではないので、
-    // それだけは言い分ける
+    // Re-import the record for self-verification **before** storing
+    // (never leave a record that failed verification in the
+    // keychain).
+    // The failure wording is **specific to this path**: the default
+    // wording points at the keychain's record and urges deletion, but
+    // here nothing has been stored — that would guide deleting a
+    // thing that does not exist. When the cause is the environment
+    // (WebCrypto unsupported), it is not a key problem, so that one
+    // is distinguished
     const validated = yield* importMasterKeys(record).pipe(
       Effect.catch(() =>
         Effect.flatMap(cryptoBackendUsable(), (usable) =>
@@ -93,19 +104,23 @@ export function keyGenerateOp(input: {
             cliError(
               usable
                 ? "Could not load the generated key back (nothing was stored in the keychain). Report this as a maruhi bug"
-                : // 保存前なので「保存されている鍵」は指せない。無事な物(=
-                  // 何も書いていないこと)を言い、次の一手だけ共有する
+                : // Nothing is stored yet, so "the stored key"
+                  // cannot be pointed at. State the safe thing (=
+                  // that nothing was written) and share only the
+                  // next step
                   `${unsupportedCryptoCause}. Nothing was stored in the keychain. ${retryOnSupportedRuntime}`,
             ),
           ),
         ),
       ),
     );
-    // JSON.stringify(record) は使わない — 秘密側が伏字で保存され、鍵を
-    // 復元できないレコードがキーチェーンに残る(keychain.ts の注記)。
-    // 保存は上書き検出つき: ガードから鍵生成を挟んだこの位置では
-    // 並行実行が先に書いている可能性があり、素の set は後勝ちで一方の鍵を
-    // 黙って消す。後段の予備鍵の封印より前に失敗させる
+    // Do not use JSON.stringify(record) — the private side would be
+    // stored redacted, leaving a record in the keychain whose key
+    // cannot be recovered (the note in keychain.ts).
+    // Storing detects overwrite: at this position, between the guard
+    // and key generation, a concurrent run may have written first,
+    // and a bare set is last-write-wins and silently erases one key.
+    // Fail it before the downstream reserve-key sealing
     yield* storeMasterKeyAndReport({
       entryName,
       serialized: serializeStoredMasterKey(record),
@@ -116,7 +131,7 @@ export function keyGenerateOp(input: {
       "this key belongs to this device only. Other machines get their own device key (`maruhi device add`); losing every device is covered by the reserve key created next",
     );
     yield* issueRecoveryAfterKeygen({ session: input.session, client: input.client });
-    // 登録の導線(補足 21 裁定 G ⑥ (b)): リカバリーコードの儀式が終わってから聞く
+    // The registration route (supplement 21 ruling G ⑥ (b)): ask only after the recovery-code ceremony finishes
     if (input.identityBacking !== "none") {
       yield* offerGithubRegistration({ session: input.session });
     }
@@ -131,25 +146,28 @@ export function keyShowOp(input: {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const keys = yield* loadMasterKeys(input.session);
-    // userId はサーバー由来の自由文字列。他の出力経路と同様サニタイズする
+    // userId is a server-derived free-form string. Sanitize like the other output paths
     yield* io.log(`user:                   ${displayText(input.session.userId)}`);
     yield* io.log(`device enc public key:  ${keys.record.encPubHex}`);
     yield* io.log(`device sig public key:  ${keys.record.sigPubHex}`);
     yield* io.log(`device key fingerprint: ${keys.fingerprintHex}`);
-    // FP のワード表示(§3): 招待の相互確認(§6.5)・端末追加(`device approve`)で
-    // 自分の語列を読み上げる / 運ぶ再表示経路
+    // The FP's word display (§3): the re-display path for reading /
+    // carrying my word list in invite mutual confirmation (§6.5) and
+    // device addition (`device approve`)
     const words = yield* fingerprintWords(keys.fingerprintHex, "The key fingerprint is malformed");
     yield* io.log(`fp words:               ${formatWordList(words)}`);
-    // 予備鍵(台帳にだけ住む — ローカル記録は公開側だけ)
+    // The reserve key (lives only in the ledger — the local record is public-side only)
     const reserves = yield* recordedReserves(input.session);
     const reserve = reserves[0];
     yield* io.log(
       `reserve key fingerprint: ${reserve === undefined ? "not recorded on this machine" : reserve.keyFingerprintHex}`,
     );
-    // 保管リマインダ(ROADMAP の紛失対策 UX): 登録状態を常に表示し、未登録は
-    // 発行コマンドを案内する。status はブロブを運ばない(AUTH_SPEC §13-2)。
-    // show の本務はローカル鍵の表示なので、状態確認の失敗はコマンドを失敗させず
-    // 「確認できなかった」と明示して劣化する(オフライン・トークン失効でも使える)
+    // Custody reminder (ROADMAP's loss-proofing UX): always show the
+    // registration state; when unregistered, guide the issuing
+    // command. status carries no blob (AUTH_SPEC §13-2).
+    // show's job is displaying the local key, so a failure to check
+    // the state does not fail the command — degrade with an explicit
+    // "could not check" (usable offline and with an expired token)
     const status = yield* input.client.auth
       .recoveryStatus({})
       .pipe(Effect.catch(() => Effect.succeed(null)));

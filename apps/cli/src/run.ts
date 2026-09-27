@@ -1,13 +1,16 @@
-// `maruhi run -- <cmd>`: 子プロセス環境変数へのメモリ注入のみで値を渡す
-// (CLAUDE.md ディスクレス不変条件)。ファイル・一時ファイル・ソケット等の
-// 中間経路を作らない。エージェント検出時も run は許可される(値の表示では
-// なく、サンクションされた消費経路であるため — タスク裁定)。
+// `maruhi run -- <cmd>`: values are passed only by in-memory injection
+// into the child's environment variables (CLAUDE.md's diskless
+// invariant). No intermediate path — file, temp file, socket — is
+// created. run is allowed even when an agent is detected (it is not a
+// value display but a sanctioned consumption path — the task ruling).
 //
-// 値なしスキーマ(§4.2 レイアウト v2)の fail-fast(設計文書 §1-4 — 裁定
-// CT / CU): presence は硬く(required = true の declared → 子プロセスを
-// **起動せず**型付きエラー)、型は柔らかく(注入直前の平文への advisory 検証 —
-// 不一致は警告のみで実行続行 §14.3-7)。**エラー・警告文面に description を
-// 含めない**(ログ経由の注入面を作らない)。
+// The valueless schema's (§4.2 layout v2) fail-fast (design doc §1-4 —
+// rulings CT / CU): presence is strict (a required = true declared →
+// the child is **never started**, a typed error), types are lenient (an
+// advisory check on the plaintext just before injection — a mismatch
+// only warns and the run continues §14.3-7). **No error or warning
+// wording ever includes the description** (never build an injection
+// surface via the logs).
 
 import { Context, Effect, Redacted } from "effect";
 
@@ -39,7 +42,7 @@ export interface ExecOutcome {
    * Combined stdout + stderr of the child, whole and untruncated: cutting it
    * before redaction could leave a suffix of an echoed value that no longer
    * matches. Untrusted: it may echo the value, so callers must scrub it before
-   * showing any of it, and only then trim it (sync-exec.ts の
+   * showing any of it, and only then trim it (sync-exec.ts's
    * scrubVendorOutput).
    */
   readonly output: string;
@@ -80,13 +83,16 @@ export class ProcessRunner extends Context.Service<ProcessRunner, ProcessRunnerS
 
 const MARUHI_ENV_PREFIX = "MARUHI_";
 
-// 実行制御系の環境変数名は注入を拒否する: 変数名は
-// 平文メタデータで AAD に束縛されないため、悪意あるサーバーが名前と暗号文の
-// 対応を付け替えても復号は成功する。正当な秘密値がこれらの名前で注入されると
-// 子プロセスのコード実行制御になるため、名前空間ごと塞ぐ。
-// このリストは best-effort の緩和策であり網羅ではない — 根本策は名前の
-// 暗号学的束縛(仕様側の検討事項)。
-// 比較は大文字化して行う(Windows の環境変数名は大文字小文字を区別しない)
+// Execution-control environment variable names are refused for
+// injection: a variable name is plaintext metadata unbound by the AAD,
+// so a malicious server could swap name↔ciphertext pairs and decryption
+// would still succeed. Since a legitimate secret injected under one of
+// these names would hand the child process's code execution to it,
+// the whole namespace is blocked.
+// This list is a best-effort mitigation, not exhaustive — the root fix
+// is cryptographically binding the names (a spec-side consideration).
+// Comparison is done upper-cased (Windows environment variable names are
+// case-insensitive)
 const DENIED_ENV_NAMES = new Set([
   "PATH",
   "NODE_OPTIONS",
@@ -101,8 +107,9 @@ const DENIED_ENV_NAMES = new Set([
   "IFS",
   "SHELL",
   "ZDOTDIR",
-  // rc ファイル・設定ディレクトリの参照先を差し替えられる名前:
-  // HOME を差し替えると bash / zsh / 各種ツールが攻撃者パスの rc・設定を読む
+  // Names that can redirect what rc files / config directories point at:
+  // swapping HOME makes bash / zsh / various tools read an attacker
+  // path's rc / config
   "HOME",
   "USERPROFILE",
   "HOMEDRIVE",
@@ -111,8 +118,9 @@ const DENIED_ENV_NAMES = new Set([
   "LOCALAPPDATA",
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
-  // プロンプト評価でコマンド実行になる bash/zsh の変数(M2)。PS1 / PS4 も
-  // コマンド置換・xtrace(SHELLOPTS=xtrace + PS4)経由で実行制御になる
+  // bash/zsh variables that become command execution via prompt
+  // evaluation (M2). PS1 / PS4 also become execution control via command
+  // substitution / xtrace (SHELLOPTS=xtrace + PS4)
   "PROMPT_COMMAND",
   "PS0",
   "PS1",
@@ -128,7 +136,7 @@ const DENIED_ENV_NAMES = new Set([
   "PYTHONEXECUTABLE",
   "PYTHON",
   "NODE_GYP_FORCE_PYTHON",
-  // 対話モード強制(M2): 子プロセス終了後に REPL が開き、後続入力を実行する
+  // Forcing interactive mode (M2): a REPL opens after the child exits and executes the input that follows
   "PYTHONINSPECT",
   "PERL5OPT",
   "PERL5LIB",
@@ -140,15 +148,17 @@ const DENIED_ENV_NAMES = new Set([
   "JDK_JAVA_OPTIONS",
   "CLASSPATH",
   "GCONV_PATH",
-  // Windows の実行解決(M2): PATHEXT は拡張子探索、COMSPEC はシェル本体、
-  // SYSTEMROOT / WINDIR はシステム DLL・実行体の解決基準を差し替えられる
+  // Windows's execution resolution (M2): PATHEXT is extension search,
+  // COMSPEC is the shell itself, SYSTEMROOT / WINDIR can redirect the
+  // resolution basis of system DLLs / executables
   "PATHEXT",
   "COMSPEC",
   "SYSTEMROOT",
   "WINDIR",
-  // 子プロセスが**別のプログラムを起動する**ときの起動先:
-  // LESSOPEN / LESSCLOSE は `|cmd %s` 形式でそのままコマンド実行、PAGER 系と
-  // EDITOR / VISUAL / BROWSER は git・systemctl・各種 CLI が直接 spawn する
+  // What gets launched when the child **starts another program**:
+  // LESSOPEN / LESSCLOSE are executed as commands verbatim in `|cmd %s`
+  // form, and PAGER family + EDITOR / VISUAL / BROWSER are spawned
+  // directly by git, systemctl, and assorted CLIs
   "LESSOPEN",
   "LESSCLOSE",
   "PAGER",
@@ -156,18 +166,19 @@ const DENIED_ENV_NAMES = new Set([
   "EDITOR",
   "VISUAL",
   "BROWSER",
-  // パスフレーズ入力の代行プログラム: ssh / sudo が指定先を実行する
+  // Stand-in programs for passphrase entry: ssh / sudo execute the target
   "SSH_ASKPASS",
   "SUDO_ASKPASS",
-  // インタプリタの初期化フック・モジュール探索。LUA_INIT は任意の Lua を
-  // 実行し、LUA_PATH / LUA_CPATH は require の探索先を差し替える
+  // The interpreter's init hooks / module search. LUA_INIT runs arbitrary
+  // Lua, and LUA_PATH / LUA_CPATH redirect require's search targets
   "LUA_INIT",
   "LUA_PATH",
   "LUA_CPATH",
   "PSMODULEPATH",
-  // glibc / ローダの挙動と補助データの探索先。GLIBC_TUNABLES は
-  // チューナブル経由で挙動を変え、LOCPATH / NLSPATH / TERMINFO / TERMCAP は
-  // プロセスが読み込むバイナリ記述子(ロケール・端末定義)の出所を差し替える
+  // The search targets of glibc / loader behavior and auxiliary data.
+  // GLIBC_TUNABLES changes behavior via tunables, and LOCPATH / NLSPATH /
+  // TERMINFO / TERMCAP redirect the provenance of binary descriptors
+  // (locales, terminal definitions) a process loads
   "GLIBC_TUNABLES",
   "MALLOC_CONF",
   "LOCPATH",
@@ -176,8 +187,9 @@ const DENIED_ENV_NAMES = new Set([
   "TERMINFO_DIRS",
   "TERMCAP",
   "CDPATH",
-  // shell function autoload と TLS trust root。既存の BASH_ENV / ZDOTDIR /
-  // NODE_EXTRA_CA_CERTS と同じ実行・信頼境界
+  // shell function autoload and TLS trust roots. The same execution /
+  // trust boundary as the existing BASH_ENV / ZDOTDIR /
+  // NODE_EXTRA_CA_CERTS
   "FPATH",
   "KSH_ENV",
   "SSL_CERT_FILE",
@@ -206,25 +218,33 @@ const DENIED_ENV_NAMES = new Set([
   "GEM_PATH",
   "HOSTALIASES",
 ]);
-// NODE_ / PYTHON_ / BUN_ の包括 prefix 拒否は採らない:
-// NODE_ENV / PYTHONDONTWRITEBYTECODE 等、実行制御でない正当な変数を大量に
-// 巻き込み、rename の強制が互換性を壊す。実行制御になる既知の名前を個別に足す。
+// A blanket prefix refusal of NODE_ / PYTHON_ / BUN_ is not taken:
+// it would sweep up masses of legitimate non-execution-control
+// variables (NODE_ENV / PYTHONDONTWRITEBYTECODE etc.) and the forced
+// renames would break compatibility. Known execution-control names are
+// added individually instead.
 //
-// `MARUHI_` だけは包括 prefix で塞ぐ。上の方針と矛盾しない理由は
-// **maruhi 自身が予約する名前空間**だから: 巻き込む「正当な変数」が原理的に
-// 存在せず(この名前空間の意味は maruhi が決める)、逆にここへ 1 つでも通すと
-// 入れ子の `maruhi` の挙動を注入側が決められる。実際 `MARUHI_TOKEN` /
-// `MARUHI_TOKEN_ORIGIN` は resolveSession がキーチェーンより**先に**見るため、
-// 悪意あるメンバーがその名前の変数に自分の PAT を入れておくと、被害者の
-// `maruhi run -- make deploy` の中の `maruhi pull` が攻撃者として認証される
-// (変数名は AAD に束縛されない平文メタデータ = 共同メンバーが決められる)。
-// 個別名の列挙にすると将来 MARUHI_* を増やしたときに同じ穴が再発する
+// `MARUHI_` alone is blocked by blanket prefix. This does not contradict
+// the policy above because it is **a namespace maruhi itself reserves**:
+// in principle no "legitimate variable" can be swept up (maruhi defines
+// what this namespace means), and conversely letting even one through
+// lets the injecting side decide the behavior of a nested `maruhi`. In
+// fact `MARUHI_TOKEN` / `MARUHI_TOKEN_ORIGIN` are read by resolveSession
+// **before** the keychain, so a malicious member who plants their own
+// PAT in a variable of that name gets their victim's `maruhi pull`
+// inside `maruhi run -- make deploy` authenticated as the attacker (the
+// variable name is plaintext metadata unbound by the AAD = a
+// co-member can choose it). Enumerating individual names would reopen
+// the same hole the next time MARUHI_* grows
 //
-// NPM_CONFIG_ は registry credential / private registry URL という正当なsecret・
-// 設定注入用途があるため包括拒否しない。実行・require・spawn・TLS trustを直接
-// 変える上記キーだけを個別拒否する。NPM_CONFIG_REGISTRY はinstall先を変えるが
-// private registryの基本設定でもあるため許可し、install scriptの実行可否は
-// 呼び出すnpmコマンド側の責務とする
+// NPM_CONFIG_ is not blanket-refused because it has legitimate
+// secret / config injection uses (registry credentials / a private
+// registry URL). Only the keys above that directly change execution /
+// require / spawn / TLS trust are refused individually.
+// NPM_CONFIG_REGISTRY changes where installs come from but is also the
+// basic setting for a private registry, so it is allowed — whether an
+// install script may run is the responsibility of the npm command being
+// invoked
 const DENIED_ENV_PREFIXES = ["LD_", "DYLD_", "GIT_", "CORECLR_", "COR_", MARUHI_ENV_PREFIX];
 
 function isDeniedEnvName(name: string): boolean {
@@ -233,12 +253,14 @@ function isDeniedEnvName(name: string): boolean {
 }
 
 /**
- * 子プロセスへ渡す環境。親の一般環境は継承するが、maruhi 自身の制御・資格情報
- * 名前空間は除く。
+ * The environment passed to the child. The parent's general environment
+ * is inherited, but maruhi's own control / credential namespace is not.
  *
- * keychain-less / CI の MARUHI_TOKEN は run のセッション解決には必要だが、
- * 子へ渡すと注入値より長寿命・広スコープな PAT まで依存コードが読める。
- * 大文字化比較は Windows の環境変数名が case-insensitive なため。
+ * A keychain-less / CI MARUHI_TOKEN is needed for run's session
+ * resolution, but passed on to the child, dependent code could read a
+ * PAT longer-lived and broader in scope than the injected values. The
+ * upper-cased comparison exists because Windows environment variable
+ * names are case-insensitive.
  */
 export function buildChildEnvironment(
   inherited: Readonly<Record<string, string | undefined>>,
@@ -253,16 +275,19 @@ export function buildChildEnvironment(
   for (const [name, value] of Object.entries(inherited)) {
     copyAllowed(name, value);
   }
-  // extraEnv は buildInjectionEnv で既に MARUHI_* を拒否するが、ProcessRunner
-  // 境界を直接使う将来 caller に対しても資格情報名前空間を通さない
+  // extraEnv already refused MARUHI_* in buildInjectionEnv, but a future
+  // caller that uses the ProcessRunner boundary directly must still not
+  // pass the credential namespace through
   for (const [name, value] of Object.entries(extraEnv)) {
     copyAllowed(name, value);
   }
   return child;
 }
 
-// 注入する環境変数名は POSIX 識別子に限定する(bash 関数インポート名など
-// 特殊文字を含む注入経路を構造的に塞ぐ。denylist は識別子内の実行制御名を覆う)
+// Injected environment variable names are limited to POSIX identifiers
+// (structurally blocks injection paths containing special characters
+// like bash function-import names. The denylist covers the
+// execution-control names inside the identifier space)
 const SAFE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
@@ -276,8 +301,9 @@ export function buildInjectionEnv(
 ): Effect.Effect<Readonly<Record<string, string>>, CliError> {
   return Effect.gen(function* () {
     const env: Record<string, string> = {};
-    // Windows の環境変数名は大文字小文字を区別しないため、大小違いだけの
-    // 名前の共存を許すと片方が黙って潰れる。衝突として拒否する
+    // Windows environment variable names are case-insensitive, so
+    // allowing names differing only in case to coexist would silently
+    // crush one side. Refuse as a collision
     const seenUpper = new Set<string>();
     for (const variable of variables) {
       const upper = variable.name.toUpperCase();
@@ -289,11 +315,13 @@ export function buildInjectionEnv(
         );
       }
       seenUpper.add(upper);
-      // 環境変数名は POSIX 識別子([A-Za-z_][A-Za-z0-9_]*)に限定する。
-      // これは `=` / NUL / 制御文字だけでなく、bash 関数インポートの
-      // エンコード名(BASH_FUNC_x%% や x() 形式 — shellshock 系の関数注入)も
-      // 弾く: 悪意あるメンバーがそうした名前の変数を作り、被害者が
-      // `maruhi run -- bash ...` を実行するとシェルが攻撃者定義関数を読み込む
+      // Environment variable names are limited to POSIX identifiers
+      // ([A-Za-z_][A-Za-z0-9_]*). This filters out not only `=` / NUL /
+      // control characters but also bash function-import encoded names
+      // (BASH_FUNC_x%% and x() forms — shellshock-family function
+      // injection): a malicious member could create a variable of that
+      // name and a victim running `maruhi run -- bash ...` would load
+      // the attacker-defined function into the shell
       if (!SAFE_ENV_NAME.test(variable.name)) {
         return yield* Effect.fail(
           cliError(
@@ -308,10 +336,13 @@ export function buildInjectionEnv(
           ),
         );
       }
-      // 剥がす理由: 子プロセス env への注入(この関数の産物)。注入の直前だけで
-      // 剥がし、平文は返り値の env map にのみ現れる。エラーメッセージは
-      // 変数名しか運ばない(下の 3 分岐とも値を含めない)
-      // デコード方針は display.ts に一本化(fatal — pull --show と共通)
+      // Reason for unwrapping: injection into the child process's env
+      // (this function's product). Unwrapped only at the last moment
+      // before injection; the plaintext appears only in the returned env
+      // map. Error messages carry only the variable name (none of the
+      // three branches below includes the value)
+      // The decoding policy is unified into display.ts (fatal — shared
+      // with pull --show)
       const value = decodeValueText(Redacted.value(variable.value));
       if (value === null) {
         return yield* Effect.fail(
@@ -337,22 +368,23 @@ export function buildInjectionEnv(
  * Message shown when `maruhi run` has no command after `--`. Shared by the
  * argument check at the CLI entry point and the guard in {@link runOp}.
  *
- * 文面を 1 か所に置く(2 実装が食い違わないように)。
+ * The wording lives in one place (so the two implementations cannot disagree).
  */
 export const RUN_COMMAND_REQUIRED =
   "Specify the command to run after `--` (example: `maruhi run -- printenv MY_VAR`)";
 
 /**
- * Presence fail-fast (設計文書 §1-4 — 裁定 CT / CU): required = true の
- * declared 変数が検証済み集合に存在する場合、**子プロセスを起動する前**に
- * 型付きエラーで終了する(変数名を列挙。判定材料は署名済みステートメント +
- * マニフェスト被覆のみ — §14.2-8: サーバー申告に依存しない)。required =
- * false の declared は注入せず情報表示のみ(stderr)。文面はどちらも
- * description を含めない。
+ * Presence fail-fast (design doc §1-4 — rulings CT / CU): when a
+ * required = true declared variable exists in the verified set, exit
+ * with a typed error **before starting the child process** (enumerating
+ * the variable names. The judgment material is only signed statements +
+ * manifest coverage — §14.2-8: independent of the server's claims). A
+ * required = false declared is not injected and only noted (stderr).
+ * Neither wording includes the description.
  */
 export function enforceDeclaredPresence(
   declared: readonly DeclaredVariable[],
-  /** 何が起きなかったかの結び(run = 子プロセス未起動、sync = 何も送っていない)。 */
+  /** The closing clause of what did not happen (run = the child was never started, sync = nothing was sent). */
   outcome = "The command was not started",
 ): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
@@ -361,9 +393,10 @@ export function enforceDeclaredPresence(
       .map((variable) => displayText(variable.name))
       .toSorted();
     if (missing.length > 0) {
-      // 子プロセス未起動の硬いエラー(presence — verified statements only)。
-      // 復旧導線は 2 つ明示する: 値を設定する(activation)か、宣言が誤りなら
-      // --optional で required を下げる(宣言の削除コマンドは未提供)
+      // The strict error of a child never started (presence — verified
+      // statements only). Two recovery paths are spelled out: set the
+      // value (activation), or when the declaration was mistaken lower
+      // required via --optional (no command deletes a declaration yet)
       return yield* Effect.fail(
         cliError(
           `Required variables are declared but have no value yet (verified from signed statements — CRYPTO_SPEC §14.2): ${missing.join(", ")}. Set each value with \`maruhi push <NAME>\` (the first push of a declared variable activates it), or downgrade a mistaken declaration with \`maruhi schema set <NAME> --optional\`. ${outcome}`,
@@ -382,10 +415,12 @@ export function enforceDeclaredPresence(
   });
 }
 
-// advisory 型検証(§14.3-7)の判定。宣言型は閉集合(§4.2 — "" = 未指定は
-// 検査対象外)。判定は注入直前のメモリ内の平文にのみ触れ、結果(真偽)以外を
-// 外へ出さない。number は 10 進表記(整数・小数・指数)のみ受ける(Number()
-// の "0x1f" / "Infinity" 受理を型一致に数えない)
+// The advisory type check's (§14.3-7) judgment. The declared type is a
+// closed set (§4.2 — "" = unspecified is outside the check). The
+// judgment touches only the in-memory plaintext just before injection
+// and nothing but the result (boolean) leaves. number accepts decimal
+// notation only (integer / fraction / exponent) (never counting
+// Number()'s acceptance of "0x1f" / "Infinity" as a type match)
 const NUMBER_TEXT = /^-?(?:\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
 
 function matchesDeclaredType(varType: "string" | "number" | "boolean" | "url", text: string) {
@@ -404,9 +439,10 @@ function matchesDeclaredType(varType: "string" | "number" | "boolean" | "url", t
 /**
  * Advisory declared-type check at injection time (§14.3-7): mismatches are
  * warnings only and execution continues (type conformance is never verified —
- * the declaration is advisory). 文面は変数名・宣言型名のみ(値も description も
- * 含めない)。不正 UTF-8 はここでは黙って素通しする(buildInjectionEnv が
- * 変数名付きの硬いエラーにする — 二重報告しない)。
+ * the declaration is advisory). The wording carries only the variable
+ * name and declared-type name (neither the value nor the description).
+ * Invalid UTF-8 is silently passed through here (buildInjectionEnv turns
+ * it into a strict error with the variable name — no double reporting).
  */
 export function typeAdvisoryWarnings(variables: readonly DecryptedVariable[]): readonly string[] {
   const warnings: string[] = [];
@@ -414,8 +450,10 @@ export function typeAdvisoryWarnings(variables: readonly DecryptedVariable[]): r
     if (variable.varType === "") {
       continue;
     }
-    // 剥がす理由: 注入直前の advisory 型検証(メモリ内のみ)。判定結果(真偽)
-    // 以外は外へ出ない — 警告文面は変数名と宣言型名だけを運ぶ
+    // Reason for unwrapping: the advisory type check just before
+    // injection (in memory only). Nothing but the judgment result
+    // (boolean) leaves — the warning wording carries only the variable
+    // name and declared-type name
     const text = decodeValueText(Redacted.value(variable.value));
     if (text !== null && !matchesDeclaredType(variable.varType, text)) {
       warnings.push(
@@ -432,10 +470,11 @@ export function runOp(input: {
   readonly variables: readonly DecryptedVariable[];
 }): Effect.Effect<number, CliError, ProcessRunner> {
   return Effect.gen(function* () {
-    // 空文字列は実行できない(`maruhi run -- "$CMD"` の CMD 未設定がこの形)。
-    // 「引数が 1 つある」ことと「実行対象がある」ことは別
+    // An empty string cannot execute (`maruhi run -- "$CMD"` with CMD
+    // unset arrives in this shape). "One argument is present" and
+    // "there is a target to run" are different things
     if (input.command.length === 0 || (input.command[0] ?? "").trim() === "") {
-      // 書き方の誤り = usage エラー(2)。入口の検査と同じ扱いにする
+      // A mistake in how it was written = a usage error (2). Same treatment as the entry-point check
       return yield* Effect.fail(usageError(RUN_COMMAND_REQUIRED));
     }
     const runner = yield* ProcessRunner;

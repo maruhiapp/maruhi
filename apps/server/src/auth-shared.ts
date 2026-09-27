@@ -1,9 +1,10 @@
-// 認証ハンドラ間の共有ヘルパ(handlers-auth.ts / handlers-auth-cli.ts)。
+// Shared helpers between the auth handlers (handlers-auth.ts /
+// handlers-auth-cli.ts).
 //
-// Web ログイン(AUTH_SPEC §3)と CLI ログインのブラウザ脚(§4-1 (3)〜(4))は
-// GitHub OAuth の 1〜2 段(authorize リダイレクト・state 検証・code 交換)を
-// 共有する。循環 import(handlers-auth ⇄ handlers-auth-cli)を作らないため、
-// 両者が使う部品をこのモジュールに置く。
+// Web login (AUTH_SPEC §3) and the CLI login browser leg (§4-1 (3)-(4))
+// share stages 1-2 of GitHub OAuth (authorize redirect, state verification,
+// code exchange). To avoid a circular import (handlers-auth ⇄
+// handlers-auth-cli), the parts both sides use live in this module.
 
 import { AuthFlowError, SetupIncompleteError } from "@maruhi/api-schema";
 import { Effect } from "effect";
@@ -16,32 +17,35 @@ import { D1AuditRepo } from "./db.package/index.ts";
 const GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const OAUTH_SCOPE = "read:user user:email";
 
-/** Web ログインの state クッキー(§3-2)。 */
+/** Web login state cookie (§3-2). */
 export const STATE_COOKIE = "__Host-maruhi_oauth_state";
 
 /**
- * CLI ブラウザ脚専用の state + フロー束縛クッキー(§4-1 (3))。Web ログインの
- * STATE_COOKIE とは意図的に別名: 古い CLI フローのクッキーが通常の Web ログインを
- * 壊さず、その逆もない。値は「state + vsig 済みパラメータ一式」のクエリ文字列
- * (callback で vsig を再検証するため、クッキー自体は改竄防御を持たなくてよい)。
+ * State + flow-binding cookie dedicated to the CLI browser leg (§4-1 (3)).
+ * Deliberately named apart from the web login STATE_COOKIE: a cookie from an
+ * old CLI flow must not break a normal web login, and vice versa. The value
+ * is a query string of "state + vsig'd parameter set" (since the callback
+ * re-verifies the vsig, the cookie itself needs no tamper protection).
  */
 export const CLI_STATE_COOKIE = "__Host-maruhi_oauth_cli";
 
-/** GitHub の state パラメータの CLI フロー識別プレフィックス(§4-1 (3))。 */
+/** CLI-flow identification prefix for the GitHub state parameter (§4-1 (3)). */
 export const CLI_STATE_PREFIX = "cli.";
 
 /**
- * サインアップ招待コードの運搬クッキー(AUTH_SPEC §3)。
- * `GET /auth/github/start?signup_code=…` の開始時事前検証を通ったコードの
- * **SHA-256 ハッシュ**を、発行時 state に束縛して callback まで運ぶ
- * (HttpOnly。生値のワイヤ出現は start の 1 回だけで、クッキーストアには
- * 残らない — 値の形と論拠は handlers-auth.ts の signupCookieValue)。
- * 消費 CAS は callback 側(getOrCreateUser の作成 batch)が行う。
- * state クッキーと同じ 10 分 maxAge・callback の HTML / 302 終端で失効する。
+ * Carrier cookie for the signup invite code (AUTH_SPEC §3).
+ * Carries the **SHA-256 hash** of a code that passed the start-time
+ * pre-verification of `GET /auth/github/start?signup_code=…`, bound to the
+ * issued state, through to the callback (HttpOnly; the raw value appears on
+ * the wire only once at start and never sits in the cookie store — the
+ * value's shape and rationale are in handlers-auth.ts's signupCookieValue).
+ * The consuming CAS is performed on the callback side (getOrCreateUser's
+ * creation batch). Same 10-minute maxAge as the state cookie; expires at the
+ * callback's HTML / 302 terminal.
  */
 export const SIGNUP_CODE_COOKIE = "__Host-maruhi_signup";
 
-/** `__Host-` クッキーの共通属性(§5)。 */
+/** Common attributes of `__Host-` cookies (§5). */
 export const HOST_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: true,
@@ -50,9 +54,10 @@ export const HOST_COOKIE_OPTIONS = {
 } as const satisfies Cookies.Cookie["options"];
 
 export function requestOrigin(request: HttpServerRequest.HttpServerRequest): string {
-  // effect の HttpServerRequest.url はパスのみ。絶対 URL は生の Web Request が持つ。
-  // Host ヘッダー(攻撃者が偽装可能)を redirect_uri の組み立てに使わない —
-  // workerd の入口は常に Web Request なので、そうでないのは配線バグ(defect)
+  // effect's HttpServerRequest.url carries only the path. The absolute URL
+  // lives on the raw Web Request. The Host header (attacker-spoofable) is not
+  // used to build the redirect_uri — workerd's entry point is always a Web
+  // Request, so anything else is a wiring bug (defect)
   const source: unknown = request.source;
   if (source instanceof Request) {
     return new URL(source.url).origin;
@@ -64,7 +69,7 @@ export function callbackUri(origin: string): string {
   return `${origin}/auth/github/callback`;
 }
 
-/** GitHub authorize URL の組み立て(§3-2。web / CLI ブラウザ脚で共通)。 */
+/** Builds the GitHub authorize URL (§3-2; shared by the web / CLI browser legs). */
 function githubAuthorizeUrl(clientId: string, origin: string, state: string): URL {
   const authorize = new URL(GITHUB_AUTHORIZE_URL);
   authorize.searchParams.set("client_id", clientId);
@@ -75,10 +80,10 @@ function githubAuthorizeUrl(clientId: string, origin: string, state: string): UR
 }
 
 /**
- * §3-1 の 1 段目の終端(web / CLI ブラウザ脚で共通): GitHub authorize への
- * 302 に state 運搬クッキーを添える。クッキー名と値だけが二経路で異なる
- * (web = STATE_COOKIE に state 乱数、CLI = CLI_STATE_COOKIE に state +
- * vsig 済みパラメータ一式)。
+ * Terminal of the §3-1 first leg (shared by the web / CLI browser legs): the
+ * 302 to GitHub authorize carries a state-transport cookie. Only the cookie
+ * name and value differ between the two paths (web = STATE_COOKIE with a
+ * state nonce; CLI = CLI_STATE_COOKIE with state + the vsig'd parameter set).
  */
 export function redirectToGitHubAuthorize(
   request: HttpServerRequest.HttpServerRequest,
@@ -96,12 +101,13 @@ export function redirectToGitHubAuthorize(
 }
 
 /**
- * セルフホスト未設定の検出(AUTH_SPEC §3): client_id / client_secret の
- * どちらかが未登録(`wrangler secret put` 漏れ)・空(Env 型は string だが、
- * secret を欠いたデプロイでは実行時に undefined になり得る)。素通しすると
- * GitHub のエラーページや不透明なトークン交換失敗(AuthFlow 400)に落ちて
- * 原因に辿り着けないため、503 でセットアップガイド(docs/SELF_HOSTING.md)へ
- * 誘導する。
+ * Detects missing self-hosted configuration (AUTH_SPEC §3): either
+ * client_id or client_secret unregistered (a missed `wrangler secret put`)
+ * or empty (the Env type is string, but a deploy lacking the secret can
+ * become undefined at runtime). Letting it pass through would land on a
+ * GitHub error page or an opaque token-exchange failure (AuthFlow 400) with
+ * no traceable cause, so it redirects to the setup guide
+ * (docs/SELF_HOSTING.md) with a 503.
  */
 export function ensureGitHubOAuthConfigured(
   clientId: string | undefined,
@@ -114,7 +120,7 @@ export function ensureGitHubOAuthConfigured(
     : Effect.void;
 }
 
-/** GitHub の認証ダンス失敗を API の型付きエラーへ写す(web ログイン用)。 */
+/** Maps a GitHub authentication-dance failure to the API's typed error (for web login). */
 export function authFlowFailure(
   reason: "state-mismatch" | "code-exchange-failed" | "github-token-invalid",
 ): () => AuthFlowError {
@@ -122,13 +128,15 @@ export function authFlowFailure(
 }
 
 /**
- * auth.login_failed の記録(AUDIT_SPEC §3.1)。actor は user_id なしの user =
- * 未認証の外部主体。理由種別のみ記録し、提示された外部 ID・コード・トークンは
- * 記録しない(同 §3.1 の禁止)。未認証経路からの書き込み増幅を有界にするため
- * 固定窓上限つきの専用追記を使う(db.package/audit.ts)。
+ * Records auth.login_failed (AUDIT_SPEC §3.1). The actor is a user with no
+ * user_id = an unauthenticated external principal. Records only the reason
+ * kind; the presented external ID, code, and token are not recorded (same
+ * §3.1 prohibition). To bound write amplification from the unauthenticated
+ * path, uses a dedicated append with a fixed-window cap
+ * (db.package/audit.ts).
  *
- * 上限は authMethod + reason をバケットとして数える:
- * 片方の経路・理由への匿名洪水が、別理由の失敗まで黙って消さないようにする。
+ * The cap counts with authMethod + reason as the bucket: an anonymous flood
+ * on one path or reason must not silently erase failures of other reasons.
  */
 export function recordLoginFailed(
   authMethod: "github_oauth" | "cli_handoff",
@@ -144,11 +152,12 @@ export function recordLoginFailed(
 }
 
 /**
- * auth.signup_denied の記録(AUDIT_SPEC §3.1)。actor は
- * login_failed と同じ user_id なしの type=user(拒否時点で内部 user_id は
- * 存在しない)。提示された外部 ID・コード生値は記録しない。固定窓上限つき
- * (拒否の洪水による書き込み増幅の有界化 — バケットは reason 単位)。
- * 運用の「サインアップ拒否の計数」トリップワイヤはこの行を数える。
+ * Records auth.signup_denied (AUDIT_SPEC §3.1). The actor is the same
+ * type=user with no user_id as login_failed (no internal user_id exists at
+ * denial time). Presented external IDs and raw code values are not recorded.
+ * Fixed-window capped (bounding write amplification from denial floods —
+ * the bucket is per reason). The operations "count signup denials"
+ * tripwire counts these rows.
  */
 export function recordSignupDenied(
   reason: SignupDenialReason,

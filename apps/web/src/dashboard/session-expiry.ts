@@ -1,16 +1,19 @@
-// セッション失効の通知経路。
+// The notification path for session expiry.
 //
-// シェル(DashboardLayout)は遷移をまたいで 1 回だけマウントされ、`GET /auth/me` も
-// 1 回しか呼ばない。そのため画面のフェッチが途中で 401 を返しても、シェルは自力では
-// 「サインイン済み」から戻れない。画面側の FailureNotice が 401 を描くときにここを通じて
-// 親へ知らせ、シェルはその場でサインイン画面へ切り替える(再読込は要らない)。
-// 最初の 401 に反応するだけで、遷移ごとの /auth/me 再確認(1 往復)は増やさない。
+// The shell (DashboardLayout) mounts once across navigations and calls
+// `GET /auth/me` only once. So when a screen's fetch returns 401
+// mid-session, the shell cannot find its way back from "signed in" on
+// its own. When the screen-side FailureNotice renders a 401 it notifies
+// the parent through here, and the shell switches to the sign-in screen
+// on the spot (no reload needed).
+// It only reacts to the first 401 — no per-navigation /auth/me
+// re-check (one round trip) is added.
 import { createContext, useContext, useEffect } from "react";
 
-/** 親シェルが提供する「セッションが失効した」の受け口。シェルの外では undefined。 */
+/** The "session expired" receiver the parent shell provides. undefined outside the shell. */
 export const SessionExpiredContext = createContext<(() => void) | undefined>(undefined);
 
-/** `expired`(= 画面のフェッチが 401)のとき親シェルへ通知する。 */
+/** Notifies the parent shell when `expired` (= a screen fetch got a 401). */
 export function useReportSessionExpired(expired: boolean): void {
   const report = useContext(SessionExpiredContext);
   useEffect(() => {

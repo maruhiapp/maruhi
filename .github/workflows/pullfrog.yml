@@ -21,15 +21,16 @@ jobs:
       id-token: write
       contents: read
     steps:
-      # 外部 action は commit SHA でピン留めする(release.yml と同じ規律。
-      # 多数のプロバイダ API キーを env で渡す特権経路のため、可変タグ経由の
-      # 上流侵害を排除する)。更新はタグではなく SHA の差し替えで行うこと
+      # External actions are pinned by commit SHA (same discipline as
+      # release.yml. This is a privileged path that passes many provider API
+      # keys via env, so it rules out upstream compromise through a mutable
+      # tag). Updates are done by replacing the SHA, not the tag
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 1
-          # エージェント実行 job に GITHUB_TOKEN を .git/config に残さない
-          # (ci.yml / release.yml / installer.yml と同じ規律)
+          # Do not leave GITHUB_TOKEN in .git/config on the agent-running job
+          # (same discipline as ci.yml / release.yml / installer.yml)
           persist-credentials: false
       - name: Run agent
         uses: pullfrog/pullfrog@0657d542f2e34565c6254d5c84581313e631cd90 # v0.1.57

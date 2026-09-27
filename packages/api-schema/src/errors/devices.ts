@@ -1,8 +1,11 @@
-// 端末登録簿・端末追加要求 API の型付きエラー(AUTH_SPEC §13-11 — 2026-09-19 DK K3)。
+// Typed errors of the device-registry / device-add-request API
+// (AUTH_SPEC §13-11 — 2026-09-19 DK K3).
 //
-// 登録簿は advisory(検証・認可の入力にならない)。エラーには識別子・理由コード・
-// カウンタしか載せない(公開鍵・FP は要求側が送った値であり、エラーに写さない —
-// 呼び出し側の値をエラーに映さない規律は TokenNotFound と同じ)。
+// The registry is advisory (never an input to verification or
+// authorization). Errors carry only identifiers, reason codes, and
+// counters (public keys and FPs are values the requester sent and are
+// not copied into the error — the discipline of not reflecting the
+// caller's values into errors is the same as TokenNotFound).
 
 import { Schema } from "effect";
 

@@ -1,12 +1,14 @@
-// メンバーシップログ(チェーン)API の型付きエラー(CRYPTO_SPEC §6.4)。
+// Typed errors of the membership log (chain) API (CRYPTO_SPEC §6.4).
 //
-// エラーには識別子・カウンタしか載せない(平文値・鍵素材の断片を運ばない)。
+// Errors carry only identifiers and counters (no fragments of plaintext
+// values or key material).
 
 import type { ChainInvalidReason } from "@maruhi/crypto";
 import { Schema } from "effect";
 
-// crypto の ChainInvalidReason と同期する理由コード一覧(satisfies で静的検査)。
-// 値の実体をここに持つのは、api-schema をランタイムで crypto に依存させないため。
+// Reason-code list kept in sync with crypto's ChainInvalidReason
+// (statically checked via satisfies). The values' substance lives here
+// so api-schema does not depend on crypto at runtime.
 const CHAIN_INVALID_REASONS = [
   "empty-chain",
   "bad-suite",
@@ -28,15 +30,15 @@ const CHAIN_INVALID_REASONS = [
   "grant-scope-narrowed",
   "duplicate-server-key",
   "epoch-out-of-sequence",
-  // checkpoint op(CRYPTO_SPEC §6.2)
+  // checkpoint op (CRYPTO_SPEC §6.2)
   "checkpoint-audit-role-insufficient",
   "checkpoint-epoch-mismatch",
   "checkpoint-regression",
-  // 環境スコープ(CRYPTO_SPEC §6.2 — 2026-09-14 ES)
+  // Environment scope (CRYPTO_SPEC §6.2 — 2026-09-14 ES)
   "scope-role-mismatch",
   "scope-not-contained",
   "environment-out-of-scope",
-  // 四眼(CRYPTO_SPEC §6.2 — 2026-09-14 PF1)
+  // Four-eyes (CRYPTO_SPEC §6.2 — 2026-09-14 PF1)
   "approval-required",
   "approval-not-required",
   "approval-quorum-unreachable",
@@ -44,13 +46,14 @@ const CHAIN_INVALID_REASONS = [
   "duplicate-approval",
   "proposal-expired",
   "proposal-void",
-  // 端末鍵(CRYPTO_SPEC §6.2 — 2026-09-19 DK)
+  // Device keys (CRYPTO_SPEC §6.2 — 2026-09-19 DK)
   "unknown-device",
   "last-device-protected",
   "device-cap-exceeded",
 ] as const satisfies readonly ChainInvalidReason[];
 
-// 逆方向の静的検査: crypto 側に理由コードが追加されたらここがコンパイルエラーになる
+// Static check in the reverse direction: if a reason code is added on
+// the crypto side, this fails to compile
 type AllReasonsListed = ChainInvalidReason extends (typeof CHAIN_INVALID_REASONS)[number]
   ? true
   : never;
@@ -75,8 +78,8 @@ export class ProjectAlreadyInitializedError extends Schema.TaggedError<ProjectAl
 ) {}
 
 /**
- * 429: the org already holds the maximum number of active projects (AUTH_SPEC
- * §11-3 — テナント quota。起草値 100). Returned only for a **fresh** genesis:
+ * 429: the org already holds the maximum number of active projects
+ * (AUTH_SPEC §11-3 — the tenant quota; drafted value 100). Returned only for a **fresh** genesis:
  * the §11-3 repair path (already-initialized + missing `projects` row +
  * genesis actor) is never blocked by this limit. Carries the limit only.
  */
@@ -98,8 +101,8 @@ export class ChainHeadConflictError extends Schema.TaggedError<ChainHeadConflict
 ) {}
 
 /**
- * 422: server-side chain verification (CRYPTO_SPEC §6.4 = verifyChain の再実行)
- * rejected the entry at `seq` for `reason`.
+ * 422: server-side chain verification (CRYPTO_SPEC §6.4 = re-running
+ * verifyChain) rejected the entry at `seq` for `reason`.
  */
 export class ChainEntryInvalidError extends Schema.TaggedError<ChainEntryInvalidError>()(
   "ChainEntryInvalid",
@@ -128,11 +131,13 @@ export class ChainCapacityExceededError extends Schema.TaggedError<ChainCapacity
  * 422: `create_environment` / `rotate_epoch` entries may only be submitted
  * through their composite endpoints (AUTH_SPEC §6 / §12-4) — the
  * generic chain append rejects them so the entry-plus-data atomicity cannot
- * be bypassed ("エポックはあるがラップがない" 中間状態を作らせない).
+ * be bypassed (it must not create the intermediate state "the epoch
+ * exists but the wraps do not").
  *
- * `checkpoint` は本エラーの対象ではない: standalone
- * (周期)チェックポイントは §16-2 のとおり汎用 append が受理検証(内容突合 +
- * スナップショット原子保存)つきで受理する。
+ * `checkpoint` is not a target of this error: a standalone (periodic)
+ * checkpoint is accepted by the generic append with acceptance
+ * verification (content matching + atomic snapshot storage), per
+ * §16-2.
  */
 export class CompositeRequiredError extends Schema.TaggedError<CompositeRequiredError>()(
   "CompositeRequired",
@@ -155,7 +160,7 @@ export class DeviceLimitError extends Schema.TaggedError<DeviceLimitError>()(
 
 /**
  * Why a `propose` entry was refused by the pending-proposal acceptance policy
- * (AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 合意規則ではない):
+ * (AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — not a consensus rule):
  *
  * - `pending-proposals`: the project already holds the maximum number of live
  *   (unexpired by the server clock) pending proposals; `limit` = that count.

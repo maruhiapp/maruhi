@@ -1,15 +1,21 @@
-// 一括 pull と復号(AUTH_SPEC §12-7 + CRYPTO_SPEC §4.1 / §5.1 / §5.2)。
+// Bulk pull and decryption (AUTH_SPEC §12-7 + CRYPTO_SPEC §4.1 / §5.1 /
+// §5.2).
 //
-// 検証順(§6.3): (1) 全値の値署名を復号より前に検証する(values.ts — future
-// head の有界再同期を含む)、(2) 自分宛ラップの §5.1 登録署名 + §5.2 DEK
-// コミットメント照合(deks.ts)、(3) AES-GCM 復号。復号文脈(AAD)は申告
-// `aad` を信用せず、検証済み座標(genesis ハッシュ・要求環境・応答メタの
-// variableId)で組み立てる(session-07 §5 / session-14 裁定 G)。
+// Verification order (§6.3): (1) verify every value's value signature
+// before decryption (values.ts — including the bounded resync on a
+// future head), (2) the §5.1 registration signature + §5.2 DEK
+// commitment match of one's own wraps (deks.ts), (3) AES-GCM decryption.
+// The decryption context (AAD) never trusts the declared `aad` — it is
+// assembled from verified coordinates (the genesis hash, the requested
+// environment, the response metadata's variableId) (session-07 §5 /
+// session-14 ruling G).
 //
-// 平文はメモリ上の Uint8Array のみ。ディスクへ書く経路はこのモジュールに
-// 存在しない(ディスクレス不変条件)。復号の産物は `Redacted` で包み、
-// ログ・エラー・テンプレート展開へ素で流れないようにする(剥がすのは
-// 注入直前 = run.ts、表示ゲートの後ろ = display.ts、暗号境界 = push.ts のみ)。
+// Plaintext lives only in in-memory Uint8Arrays. No path in this module
+// writes it to disk (the diskless invariant). The decryption's product
+// is wrapped in `Redacted` so it never flows raw into logs, errors, or
+// template expansion (unwrapped only just before injection = run.ts,
+// behind the display gate = display.ts, or at the crypto boundary =
+// push.ts).
 
 import type { EnvironmentId } from "@maruhi/core";
 import type { MetaVarType, SigningKeyPair } from "@maruhi/crypto";
@@ -32,27 +38,29 @@ import { pullVerifiedEnvironment, type VerifiedPulledValue } from "./values.ts";
 
 /** One decrypted variable (plaintext bytes live in memory only). */
 export interface DecryptedVariable {
-  /** 検証済みメタステートメント由来の名前(§4.2 — 裸の name を信用しない)。 */
+  /** The name from the verified meta statement (§4.2 — never trust a bare name). */
   readonly variableId: string;
   readonly name: string;
   readonly version: number;
   readonly epoch: number;
   /**
-   * 宣言型(§4.2 レイアウト v2 のスキーマ欄。v1 / 未指定 = "")。注入直前の
-   * advisory 型検証(run.ts — §14.3-7: 検証は警告のみで実行は続行)にだけ使う。
+   * The declared type (the schema column of §4.2 layout v2. v1 /
+   * unspecified = ""). Used only by the advisory type check just before
+   * injection (run.ts — §14.3-7: the check warns but the run continues).
    */
   readonly varType: MetaVarType;
-  /** required の宣言(レイアウト v2 のスキーマ欄。v1 = false)。`maruhi sync` の完全性検査に使う。 */
+  /** The required declaration (layout v2's schema column. v1 = false). Used by `maruhi sync`'s completeness check. */
   readonly required: boolean;
-  /** 平文バイト列(メモリ上のみ。剥がす箇所は run / show / 再暗号化に限る)。 */
+  /** The plaintext bytes (memory only. Unwrapped only in run / show / re-encryption). */
   readonly value: Redacted.Redacted<Uint8Array>;
 }
 
 /**
  * One declared variable (a schema-only declaration with no value —
- * CRYPTO_SPEC §4.2 layout v2). `maruhi run` / `ci run` の presence 検査
- * (required 硬 — §14.2-8)の材料。description は運ばない(fail-fast の
- * エラー文面に description を含めない — session-46 §8 第 3 周)。
+ * CRYPTO_SPEC §4.2 layout v2). Material for `maruhi run` / `ci run`'s
+ * presence check (required strict — §14.2-8). Carries no description
+ * (the fail-fast error wording never includes the description —
+ * session-46 §8 turn 3).
  */
 export interface DeclaredVariable {
   readonly variableId: string;
@@ -61,23 +69,24 @@ export interface DeclaredVariable {
   readonly varType: MetaVarType;
 }
 
-/** 復号済み変数・declared 宣言と、検証中に収集した SHOULD 警告(非 NFC 名の配布等)。 */
+/** The decrypted variables, declared declarations, and the SHOULD warnings collected during verification (non-NFC name distribution etc.). */
 export interface PulledVariables {
-  /** 検証に使ったビュー(future head の有界再同期で前進していることがある)。後続の書き込みはこれを引き継ぐ。 */
+  /** The view used for verification (it may have advanced via the future head's bounded resync). Later writes inherit it. */
   readonly verified: VerifiedProject;
   readonly variables: readonly DecryptedVariable[];
-  /** 検証済み declared(値なし — 注入対象外。presence 検査は呼び出し側)。 */
+  /** The verified declared (valueless — outside injection scope. The presence check is the caller's). */
   readonly declared: readonly DeclaredVariable[];
   readonly warnings: readonly string[];
-  /** 同じ人の他の端末の欠けたエポックの補完(`fillOwnDeviceGaps` を渡したときだけ — DK K11)。 */
+  /** Filling the missing epochs of the same person's other devices (only when `fillOwnDeviceGaps` is passed — DK K11). */
   readonly ownDeviceGapFills: readonly OwnDeviceGapFill[];
 }
 
 /**
- * 検証済み declared ステートメント → presence 検査の材料。declared はレイアウト
- * v2 限定(§4.2 — v1 declared は検証段で拒否済み)なので schema は必ず載るが、
- * 型の上の null は fail-closed に required = true 扱いにする(required の欠落を
- * 「注入せず素通り」に落とさない)。
+ * Verified declared statements → the presence check's material. declared
+ * is layout v2-only (§4.2 — a v1 declared was already refused at the
+ * verification stage) so a schema always rides along, but a null on the
+ * type is treated as required = true, fail-closed (never let a missing
+ * required collapse into "pass through without injecting").
  */
 export function toDeclaredVariables(
   statements: readonly VerifiedVariableStatement[],
@@ -91,10 +100,12 @@ export function toDeclaredVariables(
 }
 
 /**
- * 「自分宛に当該エポックのラップが無い」理由文。**復号の失敗理由を作る側**に置き、
- * 呼び出し側(env-rotate の警告)と共有する: env rotate はこの文面で「良性の欠落」を
- * 見分け、`dedupeWarnings`(完全一致の集合)で重複を潰すため、2 箇所に書くと
- * 片方を直した瞬間に同じ変数の警告が 2 行出るようになる。
+ * The reason sentence for "no wrap for that epoch was addressed to me".
+ * Placed on **the side that builds the decryption's failure reason** and
+ * shared with the caller (env-rotate's warning): env rotate tells a
+ * "benign gap" apart by this wording and dedupes via `dedupeWarnings`
+ * (an exact-match set), so writing it in two places would print the same
+ * variable's warning twice the moment one side is fixed.
  */
 export function missingWrapReason(variable: {
   readonly name: string;
@@ -104,28 +115,33 @@ export function missingWrapReason(variable: {
 }
 
 /**
- * Decrypts one already-verified value (§6.3 を通過した values.ts の産物)。
- * 復号文脈(AAD)の座標は申告 `aad` ではなく検証済みの値(genesis ハッシュ・
- * 要求環境・応答外側の variableId)から組む。epoch / version は値署名で検証
- * 済みの申告値(この座標に束縛される)。
+ * Decrypts one already-verified value (values.ts's product, passed
+ * through §6.3). The decryption context (AAD) coordinates are assembled
+ * from verified values (the genesis hash, the requested environment, the
+ * response-outer variableId), not the declared `aad`. epoch / version
+ * are the declared values verified by the value signature (bound to
+ * these coordinates).
  *
- * 共有点である理由: `maruhi run` の pull と `maruhi env rotate` の再暗号化は
- * 同じ規律で復号しなければならない(復号経路が 2 つに割れると、片方だけが
- * 座標の自前構築・エポック上限検査を失う静かな退行になる)。
+ * Why a shared point: `maruhi run`'s pull and `maruhi env rotate`'s
+ * re-encryption must decrypt by the same discipline (a fork into two
+ * decryption paths would silently regress — one side would lose the
+ * self-built coordinates and the epoch cap check).
  */
 export function decryptVerifiedValue(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly variable: VerifiedPulledValue;
   readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
-  /** チェーン導出の現エポック(申告エポックの上限 — 導出不整合への防衛線)。 */
+  /** The chain-derived current epoch (the declared epoch's cap — the defense line against a derivation inconsistency). */
   readonly chainEpoch: number;
 }): Effect.Effect<Redacted.Redacted<Uint8Array>, CliError> {
   return Effect.gen(function* () {
     const variable = input.variable;
-    // 値署名の検証(§6.3-4)が「宣言ヘッド時点の現エポック = 値の epoch」を
-    // 保証済みで、エポックの単調性からこの値は現エポック以下。ここの検査は
-    // 導出不整合(実装バグ)への防衛線として残す
+    // The value signature's verification (§6.3-4) already guarantees
+    // "the current epoch at declared head = the value's epoch", and by
+    // epoch monotonicity this value is at or below the current epoch.
+    // The check here is kept as a defense line against a derivation
+    // inconsistency (an implementation bug)
     if (variable.epoch > input.chainEpoch) {
       return yield* Effect.fail(
         cliError(
@@ -147,7 +163,7 @@ export function decryptVerifiedValue(input: {
     const plaintext = yield* Effect.tryPromise({
       try: () =>
         decryptVariable({
-          // 剥がす理由: 復号の鍵入力(暗号境界)
+          // Reason for unwrapping: the decryption's key input (the crypto boundary)
           dek: Redacted.value(dek),
           context: {
             projectId: input.verified.projectId,
@@ -169,12 +185,12 @@ export function decryptVerifiedValue(input: {
         ),
       );
     }
-    // 復号の産物はここで包む。以降、平文は Redacted としてしか流れない
+    // The decryption's product is wrapped here. From here on the plaintext flows only as a Redacted
     return Redacted.make(plaintext.value, { label: "variable-value" });
   });
 }
 
-/** 復号する変数の絞り込み(`select` 省略 = 全件)。検証済みの集合にだけ掛ける。 */
+/** Narrowing the variables to decrypt (omitted `select` = all). Applies only to the verified set. */
 function selectedVariables(
   variables: readonly VerifiedPulledValue[],
   select: ((name: string) => boolean) | undefined,
@@ -196,42 +212,51 @@ export function pullVariables(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
-  /** future head(§6.3-2b)時の有界再同期。 */
+  /** The bounded resync on a future head (§6.3-2b). */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** ローカル床(§6.3 — 検査と検証成功後の原子コミット)。 */
+  /** The local floor (§6.3 — the checks and the atomic commit after verification succeeds). */
   readonly floor: FloorHandle;
   /**
-   * 復号する変数を名前で絞る(`maruhi sync` の統合トークン — 環境の他の変数の
-   * 平文をメモリに作らない)。検証(値署名・ステートメント・ラップ)は環境全体に
-   * 対して変わらず行う。省略 = 全 active 変数を復号する。
+   * Narrows the variables to decrypt by name (`maruhi sync`'s integrated
+   * token — never materializes the environment's other variables'
+   * plaintext in memory). Verification (value signatures, statements,
+   * wraps) is still performed across the whole environment. Omitted =
+   * decrypt every active variable.
    */
   readonly select?: (name: string) => boolean;
   /**
-   * 同じ人の他の端末の欠けたエポックを、同梱の行から導いて補う(DK K11-1 / K11-4 —
-   * `maruhi pull` だけが渡す。署名はこの端末の鍵)。省略 = 補わない。DEK はこの関数の
-   * 外に出さない(補完はここで行い、結果は事実として返す)。
+   * Derives and fills the missing epochs of the same person's other
+   * devices from the bundled rows (DK K11-1 / K11-4 — only `maruhi pull`
+   * passes this. Signing uses this device's key). Omitted = no fill. DEKs
+   * never leave this function (the fill happens here; the result is
+   * returned as a fact).
    */
   readonly fillOwnDeviceGaps?: { readonly signingKeyPair: SigningKeyPair };
 }): Effect.Effect<PulledVariables, CliError> {
   return Effect.gen(function* () {
-    // (0) 対象環境 ∈ 自分の scope(CRYPTO_SPEC §6.3 — サーバーの 403 を待たない。
-    // 2026-09-15 ES K4、設計録 K4-C)。値付き pull の唯一の共通経路(pull / run /
-    // sync / rotate の再暗号化)なので、`--env` の前段(context.ts)を通らない複数環境
-    // コマンドもここで止まる。値付き pull は `var.read` を記録するため、通信前に落とす
+    // (0) Target environment ∈ one's own scope (CRYPTO_SPEC §6.3 — never
+    // wait for the server's 403. 2026-09-15 ES K4, design record K4-C).
+    // This is the only shared path of a values-bearing pull (pull / run /
+    // sync / rotate's re-encryption), so a multi-environment command that
+    // never passes through the `--env` prologue (context.ts) also stops
+    // here. Since a values-bearing pull records a `var.read`, it is
+    // dropped before communicating
     yield* requireEnvironmentInScope({
       verified: input.verified,
       userId: input.recipient.userId,
       environmentId: input.environmentId,
       operation: "pull values from",
     });
-    // (1) 値署名の検証(復号より前)。future head なら有界再同期で前進した
-    // ビューが返る — 以降の検証(ラップ・エポック)も同じビューで行う
+    // (1) Verifying the value signatures (before decryption). On a
+    // future head, a view advanced by the bounded resync comes back — the
+    // later checks (wraps, epochs) also run on the same view
     const pulled = yield* pullVerifiedEnvironment(input);
     const verified = pulled.verified;
 
-    // (2) ラップの §5.1 / §5.2 検証と unwrap(コミットメント照合まで成功する
-    // まで DEK は使用しない)。現エポック(チェーン導出 — §6.2)と DEK 集合は
-    // 同じ検証済みビューから一括導出する(deks.ts の environmentKeysFor)
+    // (2) The wraps' §5.1 / §5.2 verification and unwrap (no DEK is used
+    // until the commitment match also succeeds). The current epoch
+    // (chain-derived — §6.2) and the DEK set are derived in bulk from the
+    // same verified view (deks.ts's environmentKeysFor)
     const keys = yield* environmentKeysFor({
       client: input.client,
       verified,
@@ -241,12 +266,15 @@ export function pullVariables(input: {
     });
     const deksByEpoch = keys.deksByEpoch;
 
-    // §7 の全エポック配布との差分検査(未完了バックフィルの本人側検出 — B2 裁定):
-    // 全メンバーは 1〜現エポックの全 DEK を自分宛に持つはずで、欠けは常に
-    // member add のバックフィル中断・修復未了の兆候(誤検知なし)。現在値の
-    // 復号に必要なエポックの欠けは decryptVerifiedValue が硬い失敗として止める
-    // ので、ここは履歴エポックの静かな欠け(現在値だけでは永遠に顕在化しない)を
-    // SHOULD 警告として拾う
+    // The difference check against §7's all-epoch distribution (the
+    // self-side detection of an unfinished backfill — the B2 ruling):
+    // every member should hold every DEK of epochs 1..current addressed
+    // to them, so a gap is always a sign of an interrupted member-add
+    // backfill or an unfinished repair (no false positives). Since a gap
+    // in an epoch the current values need for decryption is already
+    // stopped by decryptVerifiedValue as a definitive failure, here we
+    // catch a silent gap in historical epochs (never surfaced by the
+    // current values alone) as a SHOULD warning
     const missingEpochs = missingEpochsOf(keys);
     const warnings =
       missingEpochs.length === 0
@@ -258,8 +286,9 @@ export function pullVariables(input: {
 
     const results: DecryptedVariable[] = [];
     for (const variable of selectedVariables(pulled.variables, input.select)) {
-      // 同名 active の重複はステートメント検証(values.ts)が解決拒否済み
-      // (§4.2 — `maruhi run` の環境変数注入が黙って片方を潰す経路はない)
+      // A duplicate active name was already refused by the statement
+      // verification (values.ts) (§4.2 — `maruhi run`'s environment
+      // variable injection has no path that silently crushes one side)
       const plaintext = yield* decryptVerifiedValue({
         verified,
         environmentId: input.environmentId,
@@ -277,8 +306,9 @@ export function pullVariables(input: {
         value: plaintext,
       });
     }
-    // 兄弟端末の欠けの補完(DK K11): 復号まで済んでから(pull が失敗すれば補わない)。
-    // 失敗は結果に畳まれ、pull の成否を変えない
+    // Filling the sibling devices' gaps (DK K11): only after decryption
+    // is done (a failed pull fills nothing). A failure folds into the
+    // result and never changes the pull's outcome
     const ownDeviceGapFills = yield* fillOwnDeviceGaps({
       client: input.client,
       verified,

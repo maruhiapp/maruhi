@@ -1,28 +1,44 @@
-// `maruhi env rotate --config` によるレシートの前進(integration-options.md
-// §3 補足 14 M1)。
+// Receipt advancement driven by `maruhi env rotate --config`
+// (integration-options.md §3 supplement 14 M1).
 //
-// エポックローテーション(CRYPTO_SPEC §7 / §4.1)は現在値を**新 version として
-// 再暗号化する**(平文は不変)。レシート(sync-receipt.ts)は version だけを持つので、
-// ローテーション後の `maruhi sync plan` は全変数を changed と示し、次の apply が同じ
-// 平文を書き直す — 無害だが無駄で、production では `--yes` の儀式を伴う。平文が
-// 不変であることを知っている唯一の主体は**ローテーションの実行者の CLI**なので、
-// その実行の中でレシートを新 version へ進める。暗号操作の追加はない: レシートの
-// 書き込みは storeReceipt = §4.1 の署名つきの普通の push(実行者の master 鍵)。
+// An epoch rotation (CRYPTO_SPEC §7 / §4.1) re-encrypts the
+// current value **as a new version** (the plaintext is
+// unchanged). Since the receipt (sync-receipt.ts) only carries
+// the version, `maruhi sync plan` after a rotation shows every
+// variable as changed, and the next apply rewrites the same
+// plaintext — harmless but wasteful, and on production it incurs
+// the `--yes` ceremony. The only party that knows the plaintext
+// is unchanged is **the rotating executor's CLI**, so inside
+// that run the receipt is advanced to the new version. No crypto
+// is added: writing the receipt is storeReceipt = a §4.1-signed
+// ordinary push (the executor's master key).
 //
-// 進めてよいのは「この実行が再暗号化を**完了した**変数」(RotationSummary.written)
-// で、かつ「レシートがその変数の**直前 version** を指している」ときだけ。遅れていた
-// レシート(同期先に届いているのは古い平文)を進めると未同期の差分を隠すので進めない。
-// `alreadyCurrent`(並行 push — 平文が変わりうる)・未完了・レシートに無い名前
-// (未同期)も進めない — 判定に迷う変数は「次の apply が無害に書き直す」側へ倒す。
+// A receipt may advance only for a variable whose re-encryption
+// **this run completed** (RotationSummary.written) AND whose
+// **immediately previous version** the receipt pointed at.
+// Advancing a lagging receipt (where an older plaintext is what
+// the target holds) would hide an unsynced diff, so it is not
+// advanced. `alreadyCurrent` (a concurrent push — the plaintext
+// may have changed), incomplete ones, and names absent from the
+// receipt (unsynced) are not advanced either — a variable the
+// judgment is unsure about falls toward "the next apply
+// harmlessly rewrites".
 //
-// 後始末であってローテーションの一部ではない: ここでの失敗(通信・権限・競合 —
-// 再同期・レシートの読み・書きのどれでも)は警告に留め、ローテーション自体の終了
-// コードを変えない(sync-plan.ts の saveReceipt と同じ)。**例外は証拠**(`CliError.evidence`
-// — 床違反・チェーン置換・equivocation): 正規署名済みデータ同士の矛盾は「次の apply が
-// 書き直す」種類の失敗ではなく、警告に畳むと「apply し直せ」という誤った案内で
-// 改竄の証拠を隠す。証拠だけはそのまま失敗として通す(env-rotate.ts の再走査と同じ規律)。
-// maruhi サーバーとしか話さず、同期先(ベンダー API / CLI)には触れない。出力に
-// 出るのはターゲット名・件数・version・変数名(displayText)だけである。
+// This is cleanup, not part of the rotation: a failure here
+// (communication, authority, conflict — in the re-sync, the
+// receipt read, or the write alike) stays a warning and does not
+// change the rotation's own exit code (same as sync-plan.ts's
+// saveReceipt). **The exception is evidence**
+// (`CliError.evidence` — floor violation, chain replacement,
+// equivocation): a contradiction between properly signed data is
+// not the kind of failure "the next apply rewrites", and folding
+// it into a warning would hide tamper evidence behind the wrong
+// guidance "just re-apply". Evidence alone passes through as a
+// failure (same discipline as env-rotate.ts's re-scan). It talks
+// only to the maruhi server and never touches the sync target
+// (vendor API / CLI). What appears in the output is only the
+// target name, counts, versions, and variable names
+// (displayText).
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -46,9 +62,11 @@ import {
 import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 /**
- * 設定の `project` と、実際に回したプロジェクトの照合(食い違いは書き方の誤り)。
- * `--project` の有無に関わらず解決済みのプロジェクト ID と比べる — ローテーションの
- * **前**に呼び、別プロジェクトの設定でエポックを進めてしまう形を塞ぐ。
+ * Collates the config's `project` against the project actually
+ * rotated (a disagreement is a write-up error). Compared against
+ * the resolved project ID regardless of `--project` — call it
+ * **before** the rotation, closing the shape where an epoch
+ * advances under a different project's config.
  */
 export function checkRotateConfigProject(
   config: SyncConfig,
@@ -64,17 +82,17 @@ export function checkRotateConfigProject(
   return Effect.void;
 }
 
-/** 回した環境を同期元にするターゲット(設定の順)。 */
+/** The targets syncing from the rotated environment (in config order). */
 function targetsSyncedFrom(config: SyncConfig, environmentId: string): readonly SyncTarget[] {
   return [...config.targets.values()].filter((target) => target.environment === environmentId);
 }
 
-/** レシートの前進の判定結果(1 ターゲット分)。 */
+/** The receipt-advancement judgment's result (for one target). */
 interface AdvancedReceipt {
   readonly receipt: SyncReceipt;
-  /** 直前 version を指していたので新 version へ進めた名前。 */
+  /** Names advanced to the new version because the receipt pointed at the previous version. */
   readonly advanced: readonly string[];
-  /** レシートにあるが直前 version を指していなかった名前(遅れ・別系統 — 進めない)。 */
+  /** Names in the receipt that did not point at the previous version (lagging or a different lineage — not advanced). */
   readonly behind: readonly string[];
 }
 
@@ -116,34 +134,38 @@ function advanceReceipt(
 
 export interface AdvanceReceiptsInput {
   readonly client: MaruhiClient;
-  /** ローテーション前の検証済みビュー(再同期したチェーンがこれの延長であることを検査する基準)。 */
+  /** The verified view from before the rotation (the reference for checking the re-synced chain is its extension). */
   readonly verified: VerifiedProject;
   readonly recipient: DekRecipient;
   /**
-   * 再同期(チェーン全再検証)。ローテーションでチェーンは前進しているので、後始末は
-   * これで取り直し、`verified` の**延長**であることを確かめた検証済みビューから始める
-   * (前進したビューから始める規律)。通信の失敗は後始末の内側で警告に畳み、検証の
-   * 拒否(証拠)は通す(ローテーションの終了コードを変えるのは証拠だけ)。
+   * The re-sync (a full chain re-verification). Since the
+   * rotation advanced the chain, cleanup re-fetches with this
+   * and starts from a verified view confirmed to be an
+   * **extension** of `verified` (the discipline of starting from
+   * the advanced view). Communication failures fold into a
+   * warning inside the cleanup; a verification refusal
+   * (evidence) passes through (only evidence may change the
+   * rotation's exit code).
    */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly config: SyncConfig;
-  /** 回した環境(この環境を同期元にするターゲットだけが対象)。 */
+  /** The rotated environment (only targets syncing from this environment are covered). */
   readonly environmentId: EnvironmentId;
   readonly written: readonly ReencryptedVariable[];
-  /** レシート環境の床ハンドル(回した環境と同じなら rotate のものを共有する)。 */
+  /** The receipt environment's floor handle (when it is the same environment that was rotated, the rotate's one is shared). */
   readonly receiptsFloor: FloorHandle;
   readonly writerUserId: string;
   readonly signingKey: CryptoKey;
   readonly now: () => Date;
 }
 
-/** 1 ターゲット分の結果(表示用)。 */
+/** One target's result (for display). */
 type TargetOutcome =
   | { readonly kind: "no-receipt" }
   | { readonly kind: "nothing-to-advance"; readonly behind: readonly string[] }
   | { readonly kind: "advanced"; readonly version: number; readonly result: AdvancedReceipt };
 
-/** 1 ターゲットのレシートを読み、進められる分だけ書く。失敗は型付きエラーのまま返す。 */
+/** Reads one target's receipt and writes only what can be advanced. A failure comes back as a typed error. */
 function advanceTarget(
   input: AdvanceReceiptsInput,
   target: SyncTarget,
@@ -167,12 +189,12 @@ function advanceTarget(
     });
     yield* logWarnings(loaded.warnings);
     if (loaded.receipt === null) {
-      // 初回同期前 = 進めるものが無い(静かに飛ばす — plan が全件 new と言う)
+      // Before the first sync = nothing to advance (skipped quietly — plan says everything is new)
       return { outcome: { kind: "no-receipt" }, verified: loaded.verified };
     }
     const result = advanceReceipt(loaded.receipt, input.written, input.now().toISOString());
     if (result.advanced.length === 0) {
-      // 内容が変わらないなら書かない(version を消費しない)
+      // Nothing is written when the content does not change (does not consume a version)
       return {
         outcome: { kind: "nothing-to-advance", behind: result.behind },
         verified: loaded.verified,
@@ -198,7 +220,7 @@ function advanceTarget(
     if (warning !== null) {
       yield* logWarning(warning);
     }
-    // レシートの push は前進したビュー(pull で進んでいることがある)を次へ引き継ぐ
+    // The receipt's push hands the advanced view (the pull may have advanced it) to the next step
     return {
       outcome: { kind: "advanced", version: stored.version, result },
       verified: loaded.verified,
@@ -221,7 +243,7 @@ function reportTarget(
     const io = yield* CliIo;
     switch (outcome.kind) {
       case "no-receipt":
-        // レシートが無い = まだ一度も同期していない。何も言わない
+        // No receipt = never synced once. Says nothing
         return;
       case "nothing-to-advance":
         if (outcome.behind.length > 0) {
@@ -252,7 +274,7 @@ export function advanceReceiptsAfterRotation(
   return Effect.gen(function* () {
     const io = yield* CliIo;
     if (input.written.length === 0) {
-      // 何も再暗号化していない(確認だけ・押せなかった)= 進めるものが無い
+      // Nothing was re-encrypted (check-only or could not push) = nothing to advance
       return;
     }
     const targets = targetsSyncedFrom(input.config, input.environmentId);
@@ -262,8 +284,10 @@ export function advanceReceiptsAfterRotation(
       );
       return;
     }
-    // 再同期の失敗も後始末の失敗: ローテーションは済んでいるので警告に留める
-    // (受け皿の外で失敗させると、成功した報告の後で終了コードが 1 に化ける)
+    // A re-sync failure is also a cleanup failure: the rotation
+    // is already done, so keep it a warning (failing it outside
+    // the envelope would turn the exit code into 1 after a
+    // successful report)
     const synced = yield* asCleanupOutcome(resyncExtended(input.resync, input.verified));
     if (synced.kind === "failed") {
       yield* logWarning(
@@ -275,7 +299,7 @@ export function advanceReceiptsAfterRotation(
     for (const target of targets) {
       const attempt = yield* asCleanupOutcome(advanceTarget(input, target, verified));
       if (attempt.kind === "failed") {
-        // 1 ターゲットの失敗で残りを止めない。終了コードも変えない(後始末)
+        // One target's failure does not stop the rest. The exit code is unchanged either (cleanup)
         yield* logWarning(
           `the rotation is done, but the receipt for target ${target.name} could not be advanced (${attempt.error.message}). The next \`maruhi sync plan ${target.name}\` shows the re-encrypted variables as pending; applying again overwrites them with the same plaintext`,
         );

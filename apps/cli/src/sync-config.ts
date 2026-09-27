@@ -1,22 +1,28 @@
-// `maruhi sync` のリポジトリ設定(第 1 段 — integration-options.md §3
-// 補足 15 X1「同期の対応付け設定はリポジトリへ(非機密)」。第 2 段で `driver` /
-// `token` を追加)。
+// The repository sync config of `maruhi sync` (stage 1 —
+// integration-options.md §3 supplement 15 X1 "the sync's correspondence
+// config lives in the repository (non-secret)". Stage 2 added `driver` /
+// `token`).
 //
-// 「maruhi 環境 → 同期先(プリセット)/ 同期先の環境 / 運ぶ変数」の対応付けは
-// 秘密ではなく、コードと一緒に版管理される設定。リポジトリアンカー
-// (anchor.ts — `maruhi project anchor` の JSON を利用者がコミットする)と
-// 同じ扱いで、CLI が永続化してよい「非機密の設定」の範囲内(CLAUDE.md)。
-// 統合トークンは持たない: exec ドライバはベンダー CLI 自身のログインを使い
-// (補足 16)、http ドライバは maruhi の普通の変数を**指す**だけ(環境 ID と
-// 変数名 — 補足 15 X2)。レシートの置き場(環境 ID)もここで指す(X3 (a))。
+// The "maruhi environment → sync destination (preset) / destination's
+// environment / variables carried" correspondence is not a secret — it
+// is a config versioned together with the code. The same treatment as
+// the repository anchor (anchor.ts — the user commits the JSON of
+// `maruhi project anchor`), within the "non-secret configuration" the
+// CLI may persist (CLAUDE.md). No integration token is held: the exec
+// driver uses the vendor CLI's own sign-in (supplement 16), and the http
+// driver only **points at** a normal maruhi variable (an environment ID
+// and a variable name — supplement 15 X2). The receipts' location (an
+// environment ID) is also pointed at here (X3 (a)).
 //
-// 形式: JSON 1 ファイル(既定 `maruhi.sync.json`、`--config` で差し替え)。
-// version フィールドつき・未知のキーは拒否(打ち間違いを黙って無視しない)。
-// `version: 1` は第 1 段のまま(第 2 段のキーはすべて省略可で、第 1 段の設定は
-// そのまま読める。第 1 段の CLI は第 2 段のキーを「未知のキー」として拒否する —
-// 互換の方向は後方のみ。裁定 H)。第 3 段の `onPush` / `workflow` も同じ扱い
-// (省略 = 手動同期のみ)。検証の文面は「どのキーが・なぜ」を言い、打たれた値
-// そのものは出さない。
+// The format: a single JSON file (default `maruhi.sync.json`,
+// overridable with `--config`). Has a version field, and unknown keys
+// are refused (a typo is never silently ignored). `version: 1` stays
+// stage-1-shaped (every stage-2 key is optional and a stage-1 config
+// still reads as-is. A stage-1 CLI refuses stage-2 keys as "unknown
+// keys" — compatibility runs backward only. Ruling H). Stage 3's
+// `onPush` / `workflow` get the same treatment (omitted = manual sync
+// only). The validation's wording says "which key and why" and never
+// shows the value that was typed.
 
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -45,11 +51,11 @@ export type TargetDriver =
   | {
       readonly kind: "exec";
       readonly spec: ExecPreset;
-      /** ベンダー CLI の実行ディレクトリ(設定ファイルの場所からの相対を解決済み)。 */
+      /** The vendor CLI's working directory (the relative path from the config file's location, resolved). */
       readonly cwd: string;
-      /** 起動する実行体(既定はプリセットのコマンド名 = PATH 上の導入済み CLI)。 */
+      /** The executable to launch (default: the preset's command name = the installed CLI on PATH). */
       readonly command: string;
-      /** 設定が `command` を書いた(= 設定が実行体を名指しした。既定の綴りと同じでも true)。 */
+      /** The config wrote `command` (= the config named the executable — true even if it spells the default). */
       readonly namedCommand: boolean;
     }
   | {
@@ -60,8 +66,8 @@ export type TargetDriver =
 
 /**
  * What `maruhi push` does for the target right after a push lands in its
- * source environment (第 3 段 — integration-options.md §3 補足 4 N1 /
- * 補足 7 P1): apply directly from the writer's CLI, or trigger the repository's
+ * source environment (stage 3 — integration-options.md §3 supplement 4
+ * N1 / supplement 7 P1): apply directly from the writer's CLI, or trigger the repository's
  * workflow with `gh workflow run` so CI applies it (`maruhi ci sync`). The
  * writer then never holds the target's token. `null` = only by hand.
  */
@@ -83,43 +89,46 @@ export type OnPush =
 
 /** One deploy target: which maruhi environment goes where, and how. */
 export interface SyncTarget {
-  /** ターゲット名(設定のキー。レシート変数名の一部になる)。 */
+  /** The target's name (the config's key — becomes part of the receipt variable name). */
   readonly name: string;
   readonly preset: SyncPreset;
   readonly driver: TargetDriver;
-  /** 復号する maruhi 環境 ID。 */
+  /** The maruhi environment ID to decrypt. */
   readonly environment: string;
-  /** 運ぶ変数名の明示リスト、または環境の全 active 変数(`"all"`)。 */
+  /** An explicit list of variable names to carry, or every active variable of the environment (`"all"`). */
   readonly variables: readonly string[] | "all";
   /**
-   * `"all"` から除く名前(公開設定・プラットフォーム所有の資源 — 補足 13 W3)。
-   * 統合トークンが同期元と同じ環境にあれば、その名前は設定に無くてもここに入る
-   * (トークンは運ばない — 構造で保証する)。
+   * Names excluded from `"all"` (public config / platform-owned
+   * resources — supplement 13 W3). When the integration token lives in
+   * the same environment as the sync source, its name lands here even
+   * without the config listing it (never carries the token — guaranteed
+   * by structure).
    */
   readonly exclude: readonly string[];
-  /** production 扱い(apply に `--yes` が要る — 補足 14 M4)。 */
+  /** Treated as production (apply requires `--yes` — supplement 14 M4). */
   readonly production: boolean;
-  /** プリセット固有のオプション(選んだドライバの宣言で検証済み)。 */
+  /** The preset-specific options (verified against the chosen driver's declaration). */
   readonly options: ResolvedOptions;
-  /** push 直後の自動同期(省略 = 手動のみ)。 */
+  /** The automatic sync right after a push (omitted = manual only). */
   readonly onPush: OnPush | null;
 }
 
 /** The parsed repository sync config. */
 export interface SyncConfig {
   readonly version: 1;
-  /** 設定が属するプロジェクト(省略可。指定時は解決されたプロジェクトと照合する)。 */
+  /** The project the config belongs to (optional. When given, checked against the resolved project). */
   readonly projectId: string | undefined;
-  /** レシート変数を置く環境 ID(補足 15 X3 (a))。 */
+  /** The environment ID where receipt variables live (supplement 15 X3 (a)). */
   readonly receiptsEnvironment: string;
   readonly targets: ReadonlyMap<string, SyncTarget>;
 }
 
-// ターゲット名は環境 ID と同じ字種に限る(レシート変数名 `sync-receipt:<name>` の
-// 一部になり、表示・照合で中和の要らない形に保つ)
+// A target name is limited to the same character class as an environment
+// ID (it becomes part of the receipt variable name `sync-receipt:<name>`
+// — kept in a shape that needs no neutralizing for display or matching)
 const TARGET_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
-/** 検証失敗(理由の文字列)。値そのものは含めない。 */
+/** A validation failure (the reason's string). Never includes the value itself. */
 type Invalid = string;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -138,7 +147,7 @@ function nonEmptyStringList(value: unknown): readonly string[] | null {
   return list.every((entry) => entry.trim().length > 0) ? list : null;
 }
 
-/** 1 オプションの値の検証(宣言 spec に従う。不正なら理由)。 */
+/** Validating one option's value (follows the declared spec. The reason when invalid). */
 function parseOptionValue(
   spec: OptionSpec,
   given: unknown,
@@ -159,7 +168,7 @@ function parseOptionValue(
   return { value: given };
 }
 
-/** プリセット固有オプションの検証(選んだドライバの宣言に従う — データ駆動)。 */
+/** Validating the preset-specific options (follows the chosen driver's declaration — data-driven). */
 function parseTargetOptions(
   presetId: PresetId,
   driverKind: DriverKind,
@@ -235,7 +244,7 @@ function parseVariables(
   return { variables: list, exclude: [] };
 }
 
-/** 省略可能な非空文字列のキー(無ければ undefined、形が違えば理由)。 */
+/** An optional non-empty-string key (undefined when absent, the reason when malformed). */
 function optionalString(
   record: Record<string, unknown>,
   key: string,
@@ -252,7 +261,7 @@ function optionalString(
   return { value: given };
 }
 
-/** `token: { environment, name }` の解釈(http ドライバの統合トークンの置き場)。 */
+/** Interpreting `token: { environment, name }` (where the http driver's integration token lives). */
 function parseTokenRef(value: unknown, path: string): TokenRef | Invalid {
   if (!isRecord(value)) {
     return `${path} must be an object of the form { "environment": "<environment ID>", "name": "<variable name>" }`;
@@ -272,7 +281,7 @@ function parseTokenRef(value: unknown, path: string): TokenRef | Invalid {
   return { environment, name };
 }
 
-/** exec ドライバの実行面(cwd / command)の解釈。 */
+/** Interpreting the exec driver's run surface (cwd / command). */
 function parseExecDriver(
   record: Record<string, unknown>,
   path: string,
@@ -304,7 +313,7 @@ function parseExecDriver(
   };
 }
 
-/** http ドライバの資格面(token)の解釈。 */
+/** Interpreting the http driver's credential surface (token). */
 function parseHttpDriver(
   record: Record<string, unknown>,
   path: string,
@@ -325,7 +334,7 @@ function parseHttpDriver(
   return { kind: "http", spec, token };
 }
 
-/** ターゲットの形(キー・プリセット・ドライバ・環境)の解釈。 */
+/** Interpreting the target's shape (key, preset, driver, environment). */
 function parseTargetHead(
   name: string,
   value: unknown,
@@ -363,7 +372,7 @@ function parseTargetHead(
   return { record: value, preset, driverKind: driverKind.kind, environment };
 }
 
-/** プリセット id の解決(own-property 参照 — `__proto__` 等を解決しない)。 */
+/** Resolving the preset id (own-property lookup — never resolves `__proto__` etc.). */
 function presetOf(value: unknown): SyncPreset | undefined {
   return typeof value === "string" && Object.hasOwn(SYNC_PRESETS, value)
     ? SYNC_PRESETS[value as PresetId]
@@ -371,8 +380,9 @@ function presetOf(value: unknown): SyncPreset | undefined {
 }
 
 /**
- * `driver` の解決(省略 = プリセットの既定: exec があれば exec、無ければ http)。プリセットが
- * 持たないドライバを名指しした設定は、その理由(宣言の `unavailable`)を添えて拒む。
+ * Resolving `driver` (omitted = the preset's default: exec when it has
+ * one, else http). A config naming a driver the preset does not have is
+ * refused with the reason (the declaration's `unavailable`) attached.
  */
 function driverKindOf(
   value: unknown,
@@ -413,8 +423,9 @@ function parseTarget(name: string, value: unknown, configDir: string): SyncTarge
   if (typeof exclude === "string") {
     return exclude;
   }
-  // 明示が無ければプリセットの判定(Vercel = production 環境、Workers = 名前付き
-  // 環境なし)。誤操作ガードなので既定は「production 寄り」に倒す
+  // Absent an explicit value, the preset decides (Vercel = production
+  // environment, Workers = no named environment). Since it is a
+  // misoperation guard, the default falls toward "production"
   const isProduction = production ?? preset.isProduction(options);
   const onPush = parseOnPush(record, path, isProduction, configDir);
   if (typeof onPush === "string") {
@@ -434,11 +445,13 @@ function parseTarget(name: string, value: unknown, configDir: string): SyncTarge
 }
 
 /**
- * `onPush` / `workflow` の解釈(第 3 段 — 裁定 B / C)。`"apply"` は書き手の CLI が
- * 直接 apply する形で、production ターゲットには**設定の段階で**拒む(production を
- * 書くのは人が `--yes` を打つ `maruhi sync apply` だけ — 第 1 段の裁定 J)。
- * `"workflow"` は `gh workflow run` で CI を起動する形で、値を書くのは CI の
- * workflow(そこに `--yes` が見える)なので production でも可。
+ * Interpreting `onPush` / `workflow` (stage 3 — rulings B / C). `"apply"`
+ * is the shape where the writer's CLI applies directly, and is refused
+ * **at config time** for a production target (production is written only
+ * by a person typing `--yes` on `maruhi sync apply` — stage 1's ruling
+ * J). `"workflow"` is the shape that launches CI with `gh workflow run`;
+ * the value is written by the CI workflow (where the `--yes` is
+ * visible), so it is allowed even for production.
  */
 function parseOnPush(
   record: Record<string, unknown>,
@@ -468,7 +481,7 @@ function parseOnPush(
   return parseWorkflow(workflow, `${path}.workflow`, configDir);
 }
 
-/** `workflow: { file, ref?, command? }` の解釈(`onPush: "workflow"` のとき必須)。 */
+/** Interpreting `workflow: { file, ref?, command? }` (required when onPush is "workflow"). */
 function parseWorkflow(value: unknown, path: string, configDir: string): OnPush | Invalid {
   const record = workflowRecord(value, path);
   if (typeof record === "string") {
@@ -501,7 +514,7 @@ function parseWorkflow(value: unknown, path: string, configDir: string): OnPush 
   };
 }
 
-/** `workflow` の形(存在・オブジェクト・既知のキー)。 */
+/** The `workflow` shape (presence, object, known keys). */
 function workflowRecord(value: unknown, path: string): Record<string, unknown> | Invalid {
   if (value === undefined) {
     return `${path} is required when onPush is "workflow": { "file": "<workflow file name>" } naming the workflow that runs \`maruhi ci sync\` (it must have a workflow_dispatch trigger with a "target" input)`;
@@ -516,8 +529,9 @@ function workflowRecord(value: unknown, path: string): Record<string, unknown> |
 }
 
 /**
- * gh の argv に載る設定値(workflow 名・ref): 非空で、`-` で始まらない(フラグと
- * 読まれる形を設定で作らせない)。
+ * A config value that lands on gh's argv (the workflow name, ref):
+ * non-empty and not starting with `-` (never let a config build a shape
+ * read as a flag).
  */
 function ghArgument(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 && !value.startsWith("-")
@@ -525,7 +539,7 @@ function ghArgument(value: unknown): string | undefined {
     : undefined;
 }
 
-/** ドライバの面(exec = cwd / command、http = token)と、そのドライバの宣言で検証したオプション。 */
+/** The driver's surface (exec = cwd / command, http = token) and the options verified against that driver's declaration. */
 function parseDriverAndOptions(
   record: Record<string, unknown>,
   path: string,
@@ -547,13 +561,13 @@ function parseDriverAndOptions(
   if (typeof options === "string") {
     return options;
   }
-  // オプション同士の整合(プリセットの `check` — Netlify の context / branch / secret、
-  // GitHub の environment / app)
+  // The options' mutual consistency (the preset's `check` — Netlify's
+  // context / branch / secret, GitHub's environment / app)
   const inconsistent = driver.spec.check?.(options) ?? null;
   return inconsistent === null ? { driver, options } : `${path}.options.${inconsistent}`;
 }
 
-/** 選んだドライバの宣言でターゲットのドライバ面を読む(宣言の不在は parseTargetHead が拒んでいる)。 */
+/** Reads the target's driver surface against the chosen driver's declaration (parseTargetHead already refused a missing declaration). */
 function parseDriver(
   record: Record<string, unknown>,
   path: string,
@@ -572,8 +586,10 @@ function parseDriver(
 }
 
 /**
- * トークンが同期元と同じ環境にある: 明示リストに載っていれば設定の誤り、"all" なら
- * 黙って除く(トークンを同期先へ運ばないことを構造で保証する)。
+ * The token lives in the same environment as the sync source: an error
+ * if it appears on the explicit list; under "all" it is silently
+ * excluded (the structure guarantees the token is never carried to the
+ * target).
  */
 function excludeToken(
   selection: { readonly variables: readonly string[] | "all"; readonly exclude: readonly string[] },
@@ -611,7 +627,7 @@ function parseReceipts(value: unknown): { readonly environment: string } | Inval
   return { environment };
 }
 
-/** 設定 JSON の解釈(不正なら理由の文字列)。 */
+/** Interpreting the config JSON (the reason's string when invalid). */
 export function parseSyncConfig(content: string, configDir: string): SyncConfig | Invalid {
   const parsed = parseJsonRecord(content);
   if (typeof parsed === "string") {
@@ -643,7 +659,7 @@ export function parseSyncConfig(content: string, configDir: string): SyncConfig 
     : { version: 1, projectId: project, receiptsEnvironment, targets };
 }
 
-/** `targets` の各ターゲットの解釈と、設定全体に掛かる検査(レシート環境・`project`)。 */
+/** Interpreting each target of `targets` and the checks spanning the whole config (the receipts environment, `project`). */
 function parseTargets(
   targetsRaw: Record<string, unknown>,
   root: {
@@ -658,13 +674,16 @@ function parseTargets(
     if (typeof target === "string") {
       return target;
     }
-    // レシートの環境を同期元にしない: `maruhi run --env <receipts>` がレシート
-    // 変数まで子へ注入する形と、レシート自身を同期先へ運ぶ形の両方を塞ぐ
+    // Never make the receipts environment a sync source: blocks both the
+    // shape where `maruhi run --env <receipts>` injects even receipt
+    // variables into the child, and the shape that carries a receipt
+    // itself to the target
     if (target.environment === root.receiptsEnvironment) {
       return `targets.${name}.environment is the receipts environment (${root.receiptsEnvironment}); receipts must live in an environment that is not synced`;
     }
-    // push 直後の同期は「この設定がどのプロジェクトのものか」を名乗る設定にしか
-    // 使わない(第 3 段の裁定 B — cwd の設定を別プロジェクトの push に黙って使わない)
+    // The post-push sync is only used with a config that names which
+    // project it belongs to (stage 3's ruling B — never silently apply
+    // cwd's config to a different project's push)
     if (target.onPush !== null && root.project === undefined) {
       return `targets.${name}.onPush needs the top-level "project": sync on push only uses a config that names its project (add it, or generate the config with \`maruhi sync init --project <project ID>\`)`;
     }
@@ -673,7 +692,7 @@ function parseTargets(
   return targets;
 }
 
-/** `--config <file>`(既定 `maruhi.sync.json`)の読み込みと検証。 */
+/** Loading and verifying `--config <file>` (default `maruhi.sync.json`). */
 export function loadSyncConfig(path: string): Effect.Effect<SyncConfig, CliError> {
   return Effect.gen(function* () {
     const content = yield* Effect.tryPromise({
@@ -717,14 +736,14 @@ export function loadSyncConfigIfPresent(path: string): Effect.Effect<SyncConfig 
   });
 }
 
-/** 名前でターゲットを引く(未知なら候補を添えて usage エラー相当の文面)。 */
+/** Looks a target up by name (when unknown, a usage-error-equivalent wording with the candidates attached). */
 export function requireSyncTarget(
   config: SyncConfig,
   name: string,
 ): Effect.Effect<SyncTarget, CliError> {
   const target = config.targets.get(name);
   if (target === undefined) {
-    // 語が何も指していない = 書き方の誤り(2)。打たれた名前は出さず候補だけ言う
+    // A word that points at nothing = a writing mistake (2). Never shows the typed name — only states the candidates
     return Effect.fail(
       usageError(
         `Unknown sync target (targets in the config: ${[...config.targets.keys()].join(", ")})`,
@@ -734,7 +753,7 @@ export function requireSyncTarget(
   return Effect.succeed(target);
 }
 
-/** 設定の `project` とフラグの照合(食い違いは書き方の誤り = 2)。 */
+/** Matching the config's `project` against the flag (a mismatch is a writing mistake = 2). */
 export function checkConfigProject(
   config: SyncConfig,
   projectFlag: string | undefined,

@@ -1,14 +1,18 @@
-// 監査ログの追記ストア(AUDIT_SPEC §5.1)と読み取り面(§7 — C1)。
+// The audit log's append store (AUDIT_SPEC §5.1) and read surface (§7 —
+// C1).
 //
-// - append-only: このサービスは追記と読み取りのみを公開する(更新・削除の口を
-//   作らない — AUDIT_SPEC §1-4)
-// - seq は単調・無欠番。次 seq は DO インスタンスメモリに保持し(初期化時に
-//   MAX(seq) を 1 回だけ読む。DO 再起動で再読込)、同期 SQL なので await 境界を
-//   またがない
-// - アイデンティティ規則(§1-2): actor / target は内部 user_id と鍵 FP のみ。
-//   プロバイダ ID・メールをこの層に持ち込まないこと
-// - チェーンミラーの写像(§3.4)は @maruhi/core の chainMirrorEvent(CLI の
-//   ミラー検証 — `maruhi audit verify` — と同一実装を共有する)
+// - append-only: this service exposes only appends and reads (no update
+//   or delete entry point is created — AUDIT_SPEC §1-4)
+// - seq is monotonic and gapless. The next seq is held in DO instance
+//   memory (MAX(seq) is read once at initialization; re-read on a DO
+//   restart), and never crosses an await boundary because the SQL is
+//   synchronous
+// - Identity rule (§1-2): actor / target carry only the internal
+//   user_id and the key FP. Never bring provider IDs or emails into this
+//   layer
+// - The chain-mirror mapping (§3.4) shares its implementation with
+//   @maruhi/core's chainMirrorEvent (the same implementation the CLI's
+//   mirror verification — `maruhi audit verify` — uses)
 
 import type { AuditEventRecord } from "@maruhi/core";
 import { auditReadVariablesOf, CHAIN_MIRROR_EVENT_PREFIX, VAR_READ_EVENT } from "@maruhi/core";
@@ -19,31 +23,37 @@ import { Context, Effect, Layer } from "effect";
 import { randomHex } from "./ids.ts";
 
 /**
- * 監査イベント 1 行の入力(列は AUDIT_SPEC §5.1、未指定は NULL)。
- * 共有のレコード型(@maruhi/core — チェーンミラーの写像と同居)の別名。
+ * The input of one audit-event row (columns per AUDIT_SPEC §5.1;
+ * unspecified = NULL). An alias of the shared record type
+ * (@maruhi/core — colocated with the chain-mirror mapping).
  */
 export type AuditEventInput = AuditEventRecord;
 
 // ---------------------------------------------------------------------------
-// 要ローテーション検出の読み取り面(AUDIT_SPEC §4.1 / §4.2 の Q1〜Q6)。
-// 追記と読み取りのみを公開する(§1-4)— 更新・削除の口は引き続き作らない。
-// すべて同期: 検出はチェーン受理の書き込みフェーズ(単一タスク)内で走り、
-// ミラー追記と同一トランザクションで rotation.recommended を書く(§4.1)。
+// The read surface for rotation-needed detection (AUDIT_SPEC §4.1 /
+// §4.2's Q1-Q6). Only appends and reads are exposed (§1-4) — the
+// update/delete entry points stay uncreated. Everything synchronous:
+// detection runs inside the write phase of a chain acceptance (a single
+// task) and writes rotation.recommended in the same transaction as the
+// mirror append (§4.1).
 // ---------------------------------------------------------------------------
 
 /**
- * ミラー payload から読んだ scope(AUDIT_SPEC §3.4 の scopeKind /
- * scopeEnvironmentIds — §4.1 手順 2 の環境別アクセス窓の材料)。
+ * The scope read out of a mirror payload (AUDIT_SPEC §3.4's scopeKind /
+ * scopeEnvironmentIds — the input of §4.1 step 2's per-environment
+ * access windows).
  */
 export type ScopeSnapshot =
   | { readonly kind: "all" }
   | { readonly kind: "listed"; readonly environmentIds: readonly string[] };
 
 /**
- * Q1: 対象 user_id の在籍区間イベント(chain.genesis / member_added /
- * role_changed / member_removed — 2026-09-15 ES K3 で role_changed を追加)。
- * scope / role はミラー payload から(genesis = owner / all、removed = null、
- * payload から読めない行は null = 窓導出が fail-safe に all として扱う)。
+ * Q1: the membership-interval events of the target user_id
+ * (chain.genesis / member_added / role_changed / member_removed —
+ * role_changed was added at 2026-09-15 ES K3). scope / role come from
+ * the mirror payload (genesis = owner / all; removed = null; a row
+ * unreadable from the payload is null = the window derivation treats it
+ * as `all`, fail-safe).
  */
 export interface MembershipEventRow {
   readonly seq: number;
@@ -53,10 +63,12 @@ export interface MembershipEventRow {
 }
 
 /**
- * Q1 の端末軸(2026-09-19 DK — AUDIT_SPEC §4.1 `revoke_device` 変種): 対象 user_id の
- * chain.device_added(payload の deviceKeyFingerprint 1 つ + 端末 scope)/
- * chain.device_revoked(payload の deviceKeyFingerprints)。scope は device_added の
- * payload から(読めない行は null = 窓導出が fail-safe に all として扱う)。
+ * The device axis of Q1 (2026-09-19 DK — the `revoke_device` variant of
+ * AUDIT_SPEC §4.1): the target user_id's chain.device_added (one
+ * deviceKeyFingerprint in the payload + the device scope) /
+ * chain.device_revoked (the payload's deviceKeyFingerprints). scope
+ * comes from the device_added payload (an unreadable row is null = the
+ * window derivation treats it as `all`, fail-safe).
  */
 export interface DeviceEventRow {
   readonly seq: number;
@@ -65,18 +77,20 @@ export interface DeviceEventRow {
   readonly scope: ScopeSnapshot | null;
 }
 
-/** Q6: サーバー鍵 FP の grant 区間イベント(chain.server_granted / revoked)。 */
+/** Q6: the grant-interval events of a server key FP (chain.server_granted / revoked). */
 export interface GrantEventRow {
   readonly seq: number;
   readonly event: string;
   /**
-   * chain.server_granted の payload から。revoked 行は空配列。null = payload から
-   * 読めない壊れた行(窓導出が全環境として扱う fail-safe — 設計録 §9 K3-F)。
+   * From a chain.server_granted payload. A revoked row is the empty
+   * array. null = a broken row unreadable from the payload (the window
+   * derivation treats it as every environment, fail-safe — design
+   * record §9 K3-F).
    */
   readonly scopeEnvironmentIds: readonly string[] | null;
 }
 
-/** Q2: 変数の存在区間イベント(var.created / var.deleted)。 */
+/** Q2: a variable's existence-interval events (var.created / var.deleted). */
 export interface VariableLifecycleRow {
   readonly seq: number;
   readonly event: string;
@@ -84,7 +98,7 @@ export interface VariableLifecycleRow {
   readonly variableId: string;
 }
 
-/** Q3: 対象 user_id の var.read(集約形の payload 展開 — §3.3)。 */
+/** Q3: the target user_id's var.read (expansion of the aggregate form's payload — §3.3). */
 export interface VariableReadRow {
   readonly seq: number;
   readonly environmentId: string;
@@ -92,25 +106,27 @@ export interface VariableReadRow {
 }
 
 /**
- * Q3 の seq 範囲(両端とも**開区間** — `afterSeq < seq < beforeSeq`)。呼び出し側
- * (rotation-detect.ts の detectForMember)が検出対象の窓の包絡を渡し、窓の外で
- * 捨てられる行を読まないための絞り込み。非有限値は「その側は無制限」。
+ * The seq range of Q3 (both ends are **open** — `afterSeq < seq <
+ * beforeSeq`). The caller (detectForMember of rotation-detect.ts)
+ * supplies the envelope of the detection window so rows that would be
+ * discarded outside the window are never read. A non-finite value
+ * means "unbounded on that side".
  */
 export interface SeqRange {
   readonly afterSeq: number;
   readonly beforeSeq: number;
 }
 
-/** Q6: サーバー鍵 FP の開示行使(server.lease_issued / value_decrypted〔予約〕)。 */
+/** Q6: a server key FP's disclosure exercises (server.lease_issued / value_decrypted [reserved]). */
 export interface ServerAccessRow {
   readonly seq: number;
   readonly event: string;
   readonly environmentId: string;
-  /** server.lease_issued は環境単位配布のため null(§3.5)。 */
+  /** server.lease_issued is per-environment distribution, so null (§3.5). */
   readonly variableId: string | null;
 }
 
-/** Q5: フラグ導出の入力行(rotation.recommended / dismissed / var.version_pushed)。 */
+/** Q5: the input rows of flag derivation (rotation.recommended / dismissed / var.version_pushed). */
 export interface RotationFlagSourceRow {
   readonly seq: number;
   readonly serverTs: number;
@@ -122,7 +138,7 @@ export interface RotationFlagSourceRow {
   readonly payload: Readonly<Record<string, unknown>> | null;
 }
 
-/** 検出・フラグ導出が使う同期読み取り面(索引は §4.2 / do-schema.ts)。 */
+/** The synchronous read surface used by detection and flag derivation (indexes in §4.2 / do-schema.ts). */
 export interface AuditRotationRead {
   readonly membershipEventsFor: (targetUserId: string) => readonly MembershipEventRow[];
   readonly deviceEventsFor: (targetUserId: string) => readonly DeviceEventRow[];
@@ -134,34 +150,40 @@ export interface AuditRotationRead {
 }
 
 // ---------------------------------------------------------------------------
-// 汎用読み取り面(AUDIT_SPEC §7 — C1)。seq カーソルページング + フィルタ。
-// 可視性クラス(§6)は SQL の WHERE で強制する: クラス 2 の行は admin 未満の
-// 結果・件数・ページングのどこにも現れない(「存在しないかのように振る舞う」)。
+// The generic read surface (AUDIT_SPEC §7 — C1). seq-cursor paging +
+// filters. Visibility classes (§6) are enforced by the SQL WHERE: a
+// class-2 row appears nowhere in a sub-admin's results, counts, or
+// paging ("behaves as if it did not exist").
 // ---------------------------------------------------------------------------
 
 /**
- * クラス 1(チェーン role reader 以上 = 全メンバー)の**非 chain** イベント名
- * (§6)。`chain.` 名前空間と `chain_seq IS NOT NULL` の provenance claim は
- * 名前の列挙ではなく SQL の述語で覆う({@link visibilityCondition}) —
- * §6 は名前空間**全体**と chain provenance の検証材料をクラス 1 と定めており、
- * 写像済みの名前だけを許すと 2 方向で壊れる:
+ * The **non-chain** event names of class 1 (chain role reader or above =
+ * every member) (§6). The `chain.` namespace and the provenance claim
+ * `chain_seq IS NOT NULL` are covered by SQL predicates rather than a
+ * name enumeration ({@link visibilityCondition}) — §6 classifies the
+ * **whole** namespace and the verification material of chain provenance
+ * as class 1, and permitting only the mapped names would break in two
+ * directions:
  *
- * 1. 将来の op 追加で列挙が漏れると、そのミラー行が admin 未満に不可視になり、
- *    全メンバー実行可能なはずの `maruhi audit verify` が健全なサーバーを
- *    「欠落 = 削除の隠蔽」と誤断定する
- * 2. 写像に**無い** `chain.*` を名乗る偽造行がサーバー側で落とされ、admin 未満の
- *    verify には 1 行も届かない — 偽造方向の被覆漏れが非 admin では残ったまま
- *    になる
- * 3. `chain.*` の外で `chain_seq` を名乗る偽造行がクラス 2 として落ちると、
- *    verify は名前空間の 1 歩外にある provenance claim を検査できない。
- *    正直な書き手でこの形は存在しないため、chain_seq の存在を
- *    クラス 1 に昇格するのは正常なクラス 2 行を開示せず、tamper evidence だけを
- *    全メンバーへ届ける
+ * 1. If a future op addition is missed by the enumeration, that mirror
+ *    row becomes invisible to sub-admins and `maruhi audit verify`,
+ *    which every member should be able to run, falsely convicts a
+ *    healthy server of "missing = deletion concealed"
+ * 2. A forged row claiming a `chain.*` name that is **not** in the
+ *    mapping is dropped on the server side and not a single row reaches
+ *    a sub-admin's verify — a coverage hole in the forgery direction
+ *    would remain for non-admins
+ * 3. If a forged row claiming `chain_seq` outside `chain.*` fell into
+ *    class 2, verify could not inspect a provenance claim one step
+ *    outside the namespace. Since no honest writer produces that shape,
+ *    promoting the presence of chain_seq to class 1 discloses no
+ *    legitimate class-2 row and only delivers tamper evidence to every
+ *    member
  *
- * **chain.* 以外は明示 allowlist の default-deny**: ここに無いイベント
- * (var.read / dek.registered / dek.deleted、および将来追加される非 chain
- * イベント)はクラス 2 扱いで admin 未満には見えない — イベントを増やした
- * ときに安全側へ倒す。
+ * **Outside chain.* it is an explicit allowlist with default-deny**: an
+ * event absent here (var.read / dek.registered / dek.deleted, and any
+ * non-chain event added in the future) is treated as class 2 and
+ * invisible to sub-admins — new events fall to the safe side.
  */
 const CLASS1_EVENTS: readonly string[] = [
   "env.created",
@@ -178,42 +200,45 @@ const CLASS1_EVENTS: readonly string[] = [
   "server.value_decrypted",
   "rotation.recommended",
   "rotation.dismissed",
-  // 設定値自体が pull 応答で全メンバーへ advisory 配布されるためクラス 1
-  // (AUDIT_SPEC §3.3 — AUTH_SPEC §12-11)
+  // Class 1 because the setting itself is advisory-distributed to every
+  // member in pull responses (AUDIT_SPEC §3.3 — AUTH_SPEC §12-11)
   "project.schema_policy_changed",
 ];
 
 /**
- * クラス 1 か(§6): `chain.` 名前空間の全体 + {@link CLASS1_EVENTS}。
- * SQL 側の可視性述語({@link visibilityCondition})と同じ判定であり、
- * 片方だけ変えると応答とテストの主張が食い違う。
+ * Whether an event is class 1 (§6): the whole `chain.` namespace +
+ * {@link CLASS1_EVENTS}. The same judgment as the SQL-side visibility
+ * predicate ({@link visibilityCondition}); changing only one makes the
+ * response and the tests' claims disagree.
  */
 export function isClass1Event(event: string): boolean {
   return event.startsWith(CHAIN_MIRROR_EVENT_PREFIX) || CLASS1_EVENTS.includes(event);
 }
 
 /**
- * 可視性の指定(§6)。admin = 全行(呼び出し側で「チェーン role admin 以上 ×
- * トークンスコープ admin」を確認済み)、class1-or-self = クラス 1 の行 +
- * 本人が actor の行(クラスに依らず本人閲覧可)。
+ * The visibility specification (§6). admin = every row (the caller has
+ * already confirmed "chain role admin-or-above × token scope admin"),
+ * class1-or-self = class-1 rows + the rows where the caller is the
+ * actor (self is readable regardless of class).
  */
 type AuditVisibility =
   | { readonly kind: "admin" }
   | { readonly kind: "class1-or-self"; readonly selfUserId: string };
 
-/** 汎用読み取りのクエリ(§7 のフィルタ語彙のみ。null = フィルタなし)。 */
+/** The generic-read query (only the §7 filter vocabulary; null = no filter). */
 interface AuditEventsQuery {
   /**
-   * ページングカーソル = 前ページ末尾行の row_id(§7 — 不透明)。解決は
-   * 閲覧者の可視性述語つきで行い、不可視・不明な id は空ページとして振る舞う
-   * (存在オラクルにしない)。
+   * The paging cursor = the row_id of the last row of the previous page
+   * (§7 — opaque). Resolution happens under the viewer's visibility
+   * predicate; an invisible or unknown id behaves as an empty page
+   * (does not become an existence oracle).
    */
   readonly beforeRowId: string | null;
   readonly limit: number;
   readonly event: string | null;
-  /** event 名前空間の前置一致(§7)。LIKE ではなく substr 比較。 */
+  /** A prefix match on the event namespace (§7). A substr comparison, not LIKE. */
   readonly eventPrefix: string | null;
-  /** chain_seq が NULL でない行だけを返す(§7)。 */
+  /** Return only rows whose chain_seq is not NULL (§7). */
   readonly chainSeqPresent: boolean;
   readonly actorUserId: string | null;
   readonly targetUserId: string | null;
@@ -223,93 +248,113 @@ interface AuditEventsQuery {
 }
 
 /**
- * 保存行の読み取り形(§5.1 の全列。NULL は null)。列集合は監査ヘッド計算の
- * 入力形(AuditHeadRow — §5.1 の固定 17 列)と同一で、row_id の非 NULL 制約と
- * payload の防御的 parse(TEXT そのままではなくオブジェクト)だけが異なる。
+ * The read shape of a stored row (all §5.1 columns; NULL is null). The
+ * column set is identical to the audit-head computation's input shape
+ * (AuditHeadRow — the fixed 17 columns of §5.1); only the non-NULL
+ * constraint on row_id and the defensive parse of payload (an object,
+ * not the raw TEXT) differ.
  */
 export interface StoredAuditEventRow extends Omit<AuditHeadRow, "rowId" | "payloadText"> {
-  /** ワイヤ行識別子(§5.1 row_id — 16 バイト乱数 hex)。 */
+  /** The wire row identifier (§5.1 row_id — 16 bytes random hex). */
   readonly rowId: string;
   readonly payload: Readonly<Record<string, unknown>> | null;
 }
 
 /**
- * ensureHeadCurrent の結果: "current" = 列が MAX(seq) に到達(ヘッドを読んで
- * よい)、"more-remains" = 有界伸長の上限に達し未到達(読まずに retryable 拒否)。
+ * The result of ensureHeadCurrent: "current" = the column has reached
+ * MAX(seq) (the head may be read); "more-remains" = hit the bounded
+ * extension limit before reaching it (do not read; answer with a
+ * retryable rejection).
  */
 export type AuditHeadExtensionOutcome = "current" | "more-remains";
 
 interface AuditStoreShape {
   /**
-   * 同期追記。データ書き込みと同じ同期ブロック(= 同一イベントループタスク)で
-   * 呼ぶことで、クラッシュ時に「データだけ書けてイベントが欠ける」不整合を
-   * 構造的に防ぐ(DO SQLite の書き込みはタスク単位で原子コミットされる)。
+   * A synchronous append. Called inside the same synchronous block (= the
+   * same event-loop task) as the data write, the inconsistency "the data
+   * was written but the event is missing" on a crash is prevented
+   * structurally (a DO SQLite write commits atomically per task).
    */
   readonly appendSync: (event: AuditEventInput) => void;
   /**
-   * 複数イベントの一括同期追記(multi-row INSERT)。返却変数ごと・カスケード
-   * 変数ごと・ラップごとのループ追記(1 リクエスト最大 1 万行)を行ごとの
-   * INSERT 文にしないための経路。原子性は appendSync と同じ「同一同期ブロック
-   * 内」で保たれる(文はチャンク分割されるが同一タスクでコミットされる)。
+   * A bulk synchronous append of multiple events (a multi-row INSERT).
+   * The path that keeps the per-returned-variable / per-cascade-variable
+   * / per-wrap loop appends (up to 10,000 rows per request) from being
+   * one INSERT statement per row. Atomicity is held by the same "inside
+   * one synchronous block" as appendSync (the statements are split into
+   * chunks but commit in the same task).
    */
   readonly appendManySync: (events: readonly AuditEventInput[]) => void;
   /**
-   * 採番キャッシュの破棄。タスク失敗時はストレージがタスク単位でロールバック
-   * されるのにメモリの採番だけが前進したまま残り、次の追記が欠番を作る
-   * (AUDIT_SPEC §5.1 違反)ため、DO は失敗経路(chain-do.ts の defect フック)で
-   * 必ずこれを呼び、次の追記を MAX(seq) の再読込から続ける。
+   * Discard the sequence cache. On a task failure the storage rolls back
+   * per task while only the in-memory sequencing stays advanced, making
+   * the next append produce a gap (an AUDIT_SPEC §5.1 violation), so the
+   * DO always calls this on the failure path (the defect hook of
+   * chain-do.ts) and the next append continues from a fresh MAX(seq)
+   * read.
    */
   readonly resetSeqCacheSync: () => void;
-  /** 要ローテーション検出・フラグ導出の読み取り(§4.1。追記の口は増やさない)。 */
+  /** The reads for rotation-needed detection and flag derivation (§4.1; adds no append entry point). */
   readonly readRotationSync: AuditRotationRead;
   /**
-   * 汎用読み取り(§7 — C1): seq 降順(新しい順)+ フィルタ + 可視性クラス。
-   * 可視性は WHERE 句で強制するため、admin 未満のページはクラス 2 の行を
-   * スキップした穴のない limit 件になる(件数・カーソルに漏れない — §7)。
+   * The generic read (§7 — C1): seq-descending (newest first) + filters
+   * + visibility class. Since visibility is enforced by the WHERE
+   * clause, a sub-admin page is a gapless `limit` rows that skipped
+   * class-2 rows (nothing leaks via counts or the cursor — §7).
    */
   readonly queryEventsSync: (query: AuditEventsQuery) => readonly StoredAuditEventRow[];
   /**
-   * 監査ヘッド累積ハッシュ列(AUDIT_SPEC §5.1 — audit_head_hashes)を
-   * MAX(seq) へ向けて伸ばす。ハッシュ列は append-only 行からの決定論的な導出値
-   * で、materialize は読み取り経路(GET /audit-head・checkpoint 受理検証)の
-   * 直前に行う — SHA-256 が非同期(WebCrypto)のため追記の同期ブロックには
-   * 置けず、遅延拡張なら var.read の大量追記ホットパスにハッシュ計算が乗らない。
-   * 初回呼び出しが既存全行からの再計算 = §5.1 の導入マイグレーションを兼ねる。
-   * どの読み手も拡張後の完全な列しか観測しないため、行と列の食い違いは
-   * 観測不能(設計の裁定は docs/notes/session-35.md)。DO permit 下で呼ぶこと。
+   * Extend the audit-head cumulative hash column (AUDIT_SPEC §5.1 —
+   * audit_head_hashes) toward MAX(seq). The hash column is a
+   * deterministic derivation from the append-only rows, and
+   * materialization happens right before a read path (GET /audit-head,
+   * checkpoint acceptance verification) — SHA-256 is async (WebCrypto)
+   * so it cannot sit in the synchronous append block, and lazy extension
+   * keeps the hash computation off the var.read bulk-append hot path.
+   * The first call recomputing from all existing rows doubles as the
+   * §5.1 introduction migration. Since no reader observes anything but
+   * the fully extended column, a disagreement between rows and the
+   * column is unobservable (the design ruling is docs/notes/session-35.
+   * md). Call under the DO permit.
    *
-   * **有界契約**: 1 呼び出しの
-   * 伸長はチャンク数で有界({@link MAX_HEAD_EXTENSION_CHUNKS_PER_CALL})。
-   * `"more-remains"` が返った呼び出しでは列は MAX(seq) に達していないので、
-   * 呼び出し側は**ヘッドを読まず**(currentHeadHexSync / headPositionSync を
-   * 呼ばず)retryable な拒否(AuditHeadNotReady — AUTH_SPEC §16-2)で応答する
-   * こと。古い列で audit-head-unknown / stale を判定してはならない(fail-closed)。
-   * 進捗はチャンク単位で保存済みなので、再試行は必ず前進して収束する。
+   * **Bounded contract**: one call's extension is bounded in chunks
+   * ({@link MAX_HEAD_EXTENSION_CHUNKS_PER_CALL}). On a call that
+   * returned `"more-remains"` the column has not reached MAX(seq), so
+   * the caller must answer with a retryable rejection (AuditHeadNotReady
+   * — AUTH_SPEC §16-2) **without reading the head** (never calling
+   * currentHeadHexSync / headPositionSync). Never judge
+   * audit-head-unknown / stale on a stale column (fail-closed). Progress
+   * is persisted per chunk, so a retry always advances and converges.
    */
   readonly ensureHeadCurrent: Effect.Effect<AuditHeadExtensionOutcome>;
   /**
-   * 累積ハッシュ列が MAX(seq) に未到達か(= 次の ensureHeadCurrent が実体化の
-   * 書き込みを伴うか)。DO ストレージ総量ガード(AUTH_SPEC §12-8)の入力:
-   * 実体化は監査行数に比例する書き込み(1 行あたりハッシュ 1 行 + 索引)で、
-   * 拒否閾値以上の DO では未実体化の backlog を書かない(storage-guard.ts)。
-   * 読み取りのみ(2 つの索引付き MAX / 存在検査)。
+   * Whether the cumulative hash column is behind MAX(seq) (= whether the
+   * next ensureHeadCurrent involves materialization writes). The input
+   * of the DO storage total guard (AUTH_SPEC §12-8): materialization is
+   * a write proportional to the audit row count (one hash row + index
+   * per row), and a DO at or over the rejection threshold must not write
+   * an unmaterialized backlog (storage-guard.ts). Read-only (two indexed
+   * MAX / existence checks).
    */
   readonly headColumnBehindSync: () => boolean;
   /**
-   * 現在の累積ハッシュ(監査行ゼロは空文字列)。ensureHeadCurrent が
-   * "current" を返した後にのみ呼ぶ(有界契約 — 上記)。
+   * The current cumulative hash (empty string when there are no audit
+   * rows). Call only after ensureHeadCurrent returned "current" (the
+   * bounded contract — above).
    */
   readonly currentHeadHexSync: () => string;
   /**
-   * 累積ハッシュ列内の出現位置(= 監査 seq。所属検査 — CRYPTO_SPEC §6.4)。
-   * 列に存在しなければ null。ensureHeadCurrent が "current" を返した後にのみ
-   * 呼ぶ(有界契約 — 上記)。
+   * The position inside the cumulative hash column (= the audit seq; the
+   * membership check — CRYPTO_SPEC §6.4). null when absent from the
+   * column. Call only after ensureHeadCurrent returned "current" (the
+   * bounded contract — above).
    */
   readonly headPositionSync: (headHashHex: string) => number | null;
   /**
-   * 直前 checkpoint のミラー行(chain.checkpointed — 公証の有無を問わない)の
-   * 監査 seq(位置下限検査の基準 — CRYPTO_SPEC §6.4)。存在しなければ null
-   * (プロジェクト初の checkpoint — 位置下限を課さない)。
+   * The audit seq of the mirror row of the previous checkpoint
+   * (chain.checkpointed — with or without notarization; the basis of the
+   * position-lower-bound check — CRYPTO_SPEC §6.4). null when absent
+   * (the project's first checkpoint — no lower bound applies).
    */
   readonly latestCheckpointMirrorSeqSync: () => number | null;
 }
@@ -323,12 +368,13 @@ const INSERT_COLUMNS = `INSERT INTO audit_events (
     chain_seq, payload
   ) VALUES `;
 
-/** 1 行分のプレースホルダ(seq + row_id + eventBindings の 15 値 = 17 列)。 */
+/** The placeholders of one row (seq + row_id + the 15 values of eventBindings = 17 columns). */
 const VALUES_ROW = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 /**
- * multi-row INSERT の 1 文あたり行数。17 列 × 5 行 = 85 バインドで、SQLite の
- * バインド変数上限(保守的に 100 と見る)を下回るように取る。
+ * The per-statement row count of a multi-row INSERT. 17 columns × 5
+ * rows = 85 bindings, staying under SQLite's bound-variable limit
+ * (conservatively taken as 100).
  */
 const APPEND_CHUNK_ROWS = 5;
 
@@ -337,12 +383,15 @@ function orNull(value: string | number | undefined): string | number | null {
 }
 
 /**
- * chain_seq は chain.* ミラー専有(AUDIT_SPEC §5.1)。
+ * chain_seq is reserved for chain.* mirrors (AUDIT_SPEC §5.1).
  *
- * 読み取り側は chain_seq を持つ行を tamper evidence としてクラス 1 に昇格するため、
- * 正直な書き手の誤用をここで止めないと将来のクラス 2 行を全メンバーへ開示しうる。
- * 列だけ NULL にすると producer bug を隠して監査の突合材料を失うため defect にする。
- * 呼び出しは採番・SQL 実行より前に置き、違反で欠番や部分追記を作らない。
+ * Since the read side promotes a row carrying chain_seq to class 1 as
+ * tamper evidence, not stopping an honest writer's misuse here could
+ * disclose a future class-2 row to every member. Nulling only the
+ * column would hide a producer bug and lose the audit cross-check
+ * material, so it is a defect. The call sits ahead of sequencing and
+ * SQL execution so a violation creates neither a gap nor a partial
+ * append.
  */
 function assertChainSeqInvariant(event: AuditEventInput): void {
   if (event.chainSeq !== undefined && !event.event.startsWith(CHAIN_MIRROR_EVENT_PREFIX)) {
@@ -350,7 +399,7 @@ function assertChainSeqInvariant(event: AuditEventInput): void {
   }
 }
 
-/** 挿入バインディング(INSERT_EVENT の SELECT 列と同順)。未指定は NULL。 */
+/** The insert bindings (same order as INSERT_EVENT's SELECT columns). Unspecified = NULL. */
 function eventBindings(event: AuditEventInput): (string | number | null)[] {
   return [
     event.serverTs,
@@ -372,20 +421,24 @@ function eventBindings(event: AuditEventInput): (string | number | null)[] {
 }
 
 /**
- * AuditStore の実装(テストから直接構築できるよう Layer と分けて公開)。
+ * The AuditStore implementation (exposed separately from the Layer so
+ * tests can build it directly).
  *
- * 次 seq(単調・無欠番 — AUDIT_SPEC §5.1)は DO インスタンスメモリに保持し、
- * 行ごとの `SELECT COALESCE(MAX(seq),0)+1` 集約を初期化時の 1 回に置き換える。
- * null はキャッシュ無効(DO 再起動直後・失敗後)で、次の追記時に MAX(seq) を
- * 再読込する。挿入の失敗時は採番キャッシュを即座に破棄する — チャンク成功 ≠
- * タスク成功であり、タスク失敗時のストレージロールバック(タスク単位)に対して
- * メモリの採番だけが前進したまま残ると次の追記が欠番を作るため(同じ理由で
- * DO の失敗経路も resetSeqCacheSync を呼ぶ — chain-do.ts)。全追記はこの実装
- * 経由 + DO の permit 下で直列化されている前提。
+ * The next seq (monotonic, gapless — AUDIT_SPEC §5.1) is held in DO
+ * instance memory, replacing a per-row `SELECT COALESCE(MAX(seq),0)+1`
+ * aggregate with a single read at initialization. null = cache invalid
+ * (right after a DO restart or a failure); the next append re-reads
+ * MAX(seq). On an insert failure the sequence cache is discarded
+ * immediately — chunk success ≠ task success, and if only the in-memory
+ * sequencing stayed advanced against the per-task storage rollback on
+ * task failure, the next append would produce a gap (for the same
+ * reason the DO's failure path calls resetSeqCacheSync — chain-do.ts).
+ * Assumes every append goes through this implementation under the DO's
+ * permit serialization.
  */
-/** makeAuditStore のオプション(テストが有界伸長の上限を縮めて固定するため)。 */
+/** The options of makeAuditStore (so a test can pin a smaller bounded-extension limit). */
 export interface AuditStoreOptions {
-  /** ensureHeadCurrent の 1 呼び出しあたりチャンク上限(既定は本番値)。 */
+  /** ensureHeadCurrent's per-call chunk limit (defaults to the production value). */
   readonly maxHeadExtensionChunks?: number;
 }
 
@@ -405,7 +458,7 @@ export const makeAuditStore = (sql: SqlStorage, options?: AuditStoreOptions): Au
       assertChainSeqInvariant(event);
       const seq = nextSeq();
       try {
-        // row_id = ワイヤ行識別子(16 バイト乱数 — AUDIT_SPEC §5.1 / §7)
+        // row_id = the wire row identifier (16 bytes random — AUDIT_SPEC §5.1 / §7)
         sql.exec(INSERT_COLUMNS + VALUES_ROW, seq, randomHex(16), ...eventBindings(event));
       } catch (error) {
         nextSeqCache = null;
@@ -414,7 +467,8 @@ export const makeAuditStore = (sql: SqlStorage, options?: AuditStoreOptions): Au
       nextSeqCache = seq + 1;
     },
     appendManySync: (events) => {
-      // 全件を SQL より前に検査し、後半の違反で前半チャンクだけ書く形を作らない
+      // Check every event ahead of the SQL so a violation in a later
+      // chunk never leaves only the earlier chunks written
       for (const event of events) {
         assertChainSeqInvariant(event);
       }
@@ -478,25 +532,28 @@ export const makeAuditStore = (sql: SqlStorage, options?: AuditStoreOptions): Au
 };
 
 // ---------------------------------------------------------------------------
-// 監査ヘッド累積ハッシュの遅延拡張(AUDIT_SPEC §5.1 — 実装形の裁定は
-// docs/notes/session-35.md)。正規形は @maruhi/crypto(audit-head.json が固定)。
+// Lazy extension of the audit-head cumulative hash (AUDIT_SPEC §5.1 —
+// the implementation-shape ruling is docs/notes/session-35.md). The
+// canonical form is @maruhi/crypto (pinned by audit-head.json).
 // ---------------------------------------------------------------------------
 
-/** 1 チャンクで読む・書く行数(2 列 × 50 行 = 100 バインドで SQLite 上限内)。 */
+/** The rows read and written per chunk (2 columns × 50 rows = 100 bindings, inside the SQLite limit). */
 const HEAD_CHUNK_ROWS = 50;
 
 /**
- * ensureHeadCurrent の 1 呼び出しあたりチャンク上限(セッション 38 の裁定 AF)。
- * 200 チャンク × 50 行 = 10,000 行 — §12-8 の 1 リクエスト最大監査行数
- * (appendManySync の上限)と同値に取る: 定常状態(読むたびに伸ばす)の
- * バックログは高々「直前の読み以降の追記」であり、最大の単発バーストでも
- * 1 呼び出しで解消する。上限に達しうるのは巨大な既存ログの初回実体化だけで、
- * その場合は "more-remains" → AuditHeadNotReady(503)→ クライアントの有界
- * 再試行(進捗はチャンク単位で保存済み — 各呼び出しが最大 1 万行前進する)。
+ * ensureHeadCurrent's per-call chunk limit (session 38's ruling AF).
+ * 200 chunks × 50 rows = 10,000 rows — taken equal to §12-8's maximum
+ * audit rows per request (the appendManySync cap): the steady-state
+ * backlog (extended on each read) is at most "the appends since the
+ * previous read", and even the largest single burst clears in one call.
+ * The limit can only be hit by the first materialization of a huge
+ * existing log, in which case it is "more-remains" → AuditHeadNotReady
+ * (503) → the client's bounded retries (progress is persisted per chunk
+ * — each call advances up to 10,000 rows).
  */
 export const MAX_HEAD_EXTENSION_CHUNKS_PER_CALL = 200;
 
-/** 拡張の読み取り列(row_digest の固定 17 列 — AUDIT_SPEC §5.1 の列順)。 */
+/** The columns read by the extension (the fixed 17 columns of row_digest — the column order of AUDIT_SPEC §5.1). */
 const HEAD_ROW_COLUMNS = `seq, row_id, server_ts, client_ts, event, actor_type, actor_user_id,
   actor_key_fingerprint, actor_api_token_id, target_user_id, target_key_fingerprint,
   environment_id, variable_id, epoch, version, chain_seq, payload`;
@@ -519,25 +576,30 @@ function toAuditHeadRow(row: Record<string, unknown>): AuditHeadRow {
     epoch: numberOrNull(row["epoch"]),
     version: numberOrNull(row["version"]),
     chainSeq: numberOrNull(row["chain_seq"]),
-    // payload は保存 TEXT のバイト列そのまま(JSON 正規化をしない — §5.1)
+    // payload is the stored TEXT bytes verbatim (no JSON normalization — §5.1)
     payloadText: textOrNull(row["payload"]),
   };
 }
 
 /**
- * audit_head_hashes を audit_events の MAX(seq) へ向けて伸ばす(1 呼び出し
- * maxChunks チャンクまで — 有界契約はサービス宣言の doc を参照)。
+ * Extend audit_head_hashes toward audit_events's MAX(seq) (up to
+ * maxChunks chunks per call — see the bounded contract in the service
+ * declaration's doc).
  *
- * 永続化の粒度はタスク単位(chain-do.ts 冒頭のとおり DO SQLite の書き込みは
- * タスクごとに原子コミットされ、失敗で巻き戻るのは**現在の**タスクの書き込み
- * のみ)。このループはチャンクごとに await(SHA-256)を挟んでタスクを跨いで
- * 進むため、完了済みチャンクの INSERT は先行タスクで確定済みで、途中失敗が
- * 失いうるのは高々進行中チャンクの単一 INSERT(そのチャンクの全ハッシュ計算が
- * 成功した後の 1 回の sql.exec)だけ。どの失敗・上限到達時点でも列は seq 1
- * からの連続接頭辞のまま残り、次回呼び出しが保存済みの末尾から再開して収束する
- * — 巨大な既存ログの初回パスは "more-remains"(→ AuditHeadNotReady)の有界
- * 再試行に分割され、各呼び出しが必ず前進する。seq の欠番は §5.1 の不変条件違反
- * (append-only ストレージの破損)なので defect にする。
+ * The persistence granularity is the task (as in the head of
+ * chain-do.ts, a DO SQLite write commits atomically per task, and what
+ * a failure rolls back is only the **current** task's writes). This
+ * loop proceeds across tasks with an await (SHA-256) between chunks, so
+ * a completed chunk's INSERT is already committed in a prior task, and
+ * a mid-flight failure can lose at most the single INSERT of the
+ * in-flight chunk (the one sql.exec issued after that chunk's hashes
+ * all computed). At any failure or limit-hit point the column remains a
+ * contiguous prefix from seq 1, and the next call resumes from the
+ * persisted tail and converges — the first pass over a huge existing
+ * log is split into bounded retries of "more-remains" (→
+ * AuditHeadNotReady), each call always making progress. A seq gap is a
+ * §5.1 invariant violation (append-only storage corruption), so it is a
+ * defect.
  */
 const extendHeadHashes = (
   sql: SqlStorage,
@@ -557,8 +619,9 @@ const extendHeadHashes = (
         return "current";
       }
     }
-    // チャンク上限に到達。残行の有無を軽い存在検査で確定する(ちょうど上限で
-    // 完了した呼び出しに余計な "more-remains" を返さない)
+    // The chunk limit was reached. Settle whether rows remain with a
+    // light existence check (so a call that finished exactly at the
+    // limit does not return a spurious "more-remains")
     const remains = sql
       .exec(`SELECT 1 FROM audit_events WHERE seq > ? LIMIT 1`, state.hashedUpTo)
       .toArray()[0];
@@ -566,8 +629,9 @@ const extendHeadHashes = (
   });
 
 /**
- * 次の 1 チャンク(最大 HEAD_CHUNK_ROWS 行)をハッシュして単一 INSERT で確定する。
- * 返り値 = このチャンクで列が MAX(seq) に到達したか(空チャンク・端数チャンク)。
+ * Hash the next chunk (up to HEAD_CHUNK_ROWS rows) and commit it in a
+ * single INSERT. The return value = whether this chunk brought the
+ * column to MAX(seq) (an empty chunk or a short chunk).
  */
 async function hashNextChunk(
   sql: SqlStorage,
@@ -593,7 +657,8 @@ async function hashNextChunk(
     }
     const digest = await computeAuditRowDigest(row);
     if (!digest.ok) {
-      // 保存行由来の入力で構造不正は実装バグ(エラー値に秘密は含まれない)
+      // A structural invalidity on input derived from a stored row is an
+      // implementation bug (the error value carries no secrets)
       throw new Error(`audit row digest failed at seq ${row.seq}: ${digest.error.kind}`);
     }
     const next = await computeAuditHeadHash(SUITE_ID, state.head, row.seq, digest.value);
@@ -610,29 +675,31 @@ async function hashNextChunk(
       .join(", ")}`,
     ...inserts,
   );
-  // 端数チャンク = このチャンクで MAX(seq) に到達(追加の SELECT 不要)
+  // A short chunk = this chunk reached MAX(seq) (no extra SELECT needed)
   return rows.length < HEAD_CHUNK_ROWS;
 }
 
-/** queryEventsSync の SELECT 列(StoredAuditEventRow と同順)。 */
+/** The SELECT columns of queryEventsSync (same order as StoredAuditEventRow). */
 const EVENT_ROW_COLUMNS = `seq, row_id, server_ts, client_ts, event, actor_type, actor_user_id,
   actor_key_fingerprint, actor_api_token_id, target_user_id, target_key_fingerprint,
   environment_id, variable_id, epoch, version, chain_seq, payload`;
 
-/** 可視性クラス(§6)の WHERE 条件(本クエリとカーソル解決で共用)。 */
+/** The WHERE condition of the visibility class (§6) (shared by this query and cursor resolution). */
 function visibilityCondition(
   visibility: AuditVisibility,
 ): { readonly clause: string; readonly bindings: readonly (string | number)[] } | null {
   if (visibility.kind === "admin") {
     return null;
   }
-  // §6 / §7: クラス 2 の行は admin 未満に対して存在しないかのように振る舞う。
-  // 本人が actor の行はクラスに依らず本人が閲覧可。
-  // chain.* は名前の列挙ではなく前置一致で覆う(isClass1Event と同じ判定 —
-  // 理由は CLASS1_EVENTS の doc)。さらに chain_seq を持つ行はイベント名に
-  // かかわらず provenance claim = 全メンバーが検証すべき tamper evidence として
-  // クラス 1 にする。前置比較は LIKE ではなく substr で行い、
-  // ワイルドカード意味論を持たせない
+  // §6 / §7: a class-2 row behaves as if it did not exist for a
+  // sub-admin. A row where the viewer is the actor is readable by them
+  // regardless of class.
+  // chain.* is covered by a prefix match, not a name enumeration (the
+  // same judgment as isClass1Event — see the doc of CLASS1_EVENTS for
+  // the reasons). Additionally, a row carrying chain_seq becomes class 1
+  // regardless of the event name, as a provenance claim = tamper
+  // evidence every member must verify. The prefix comparison uses substr
+  // rather than LIKE, so no wildcard semantics apply
   return {
     clause: `(event IN (${CLASS1_EVENTS.map(() => "?").join(", ")}) OR substr(event, 1, ?) = ? OR chain_seq IS NOT NULL OR actor_user_id = ?)`,
     bindings: [
@@ -645,9 +712,11 @@ function visibilityCondition(
 }
 
 /**
- * カーソル(row_id)→ 内部 seq の解決。**閲覧者の可視性述語つき**で引く:
- * 不可視な行の id をカーソルに差しても「不明な id」と同一(null)に振る舞い、
- * カーソル探索を存在オラクルにしない(§7。id は 128-bit 乱数で推測も不能)。
+ * Cursor (row_id) → internal seq resolution. Resolved **under the
+ * viewer's visibility predicate**: an invisible row's id used as a
+ * cursor behaves identically to an unknown id (null), so cursor probing
+ * is not an existence oracle (§7; the id is a 128-bit random and
+ * unguessable anyway).
  */
 function resolveCursorSeq(
   sql: SqlStorage,
@@ -666,7 +735,7 @@ function resolveCursorSeq(
   return row === undefined ? null : Number(row["seq"]);
 }
 
-/** WHERE 句の断片(条件列 + バインド列)。 */
+/** A fragment of the WHERE clause (conditions + bindings). */
 interface SqlConditions {
   readonly conditions: readonly string[];
   readonly bindings: readonly (string | number)[];
@@ -683,7 +752,7 @@ function withCondition(
   };
 }
 
-/** seq 降順 + LIMIT の 1 ページ。 */
+/** One page of seq-descending + LIMIT. */
 function selectPage(
   sql: SqlStorage,
   where: SqlConditions,
@@ -701,24 +770,35 @@ function selectPage(
 }
 
 /**
- * 集約形 `var.read`(AUDIT_SPEC §3.3 — variable_id IS NULL・payload の
- * `variables` 列挙)のうち、指定変数を含む行の条件(§7 の variable_id フィルタ /
- * §4.2 Q4)。変数 ID は列に無いため payload を検査するが、検査対象を **値の
- * 存在区間(最初の var.version_pushed 〜 最後の var.deleted の seq 範囲)** に
- * 絞る: 値付き pull は環境の全アクティブ変数を返すので、区間内の集約行はほぼ
- * 全て当該変数を含み、ページ上限で止まる。区間の外(値の初出前・削除後の pull)
- * は 1 行も検査しない — 削除済み変数のフィルタで環境の全 pull 履歴を JSON
- * 走査する形を作らない。下限を var.created でなく値の初出に取るのは、値を
- * 一度も持たない declared 変数が pull に現れないため(その場合は null =
- * 集約側クエリを省略する)。**区間は環境ごとに取り、その和で束縛する**: 変数 ID
- * はクライアント発行でサーバーの一意性は (環境, 変数) 単位のため、同じ ID が
- * 複数環境に存在しうる(環境 A で削除済み・B で存命の形で、変数単位の
- * MAX(deleted) を上限にすると B の集約行を取りこぼす)。`environmentId`
- * フィルタがあればその環境の区間だけを使う。admin 未満(class1-or-self)は集約行のうち本人の
- * 行しか見えない(§6 — var.read はクラス 2)ので `actor_user_id = 本人` を
- * 明示し、検査対象を ae_actor で本人の行に束縛する(可視性述語の評価順に
- * 依存して他人の pull 履歴を走査しない)。json_valid は EXISTS の前に置く
- * (保存行はサーバーが書いた JSON だが、壊れた行で読み取り API を落とさない)。
+ * The condition selecting, among the aggregate-form `var.read` rows
+ * (AUDIT_SPEC §3.3 — variable_id IS NULL, a `variables` enumeration in
+ * the payload), the rows containing the given variable (the §7
+ * variable_id filter / §4.2 Q4). Since the variable ID is not a column
+ * the payload is inspected, but the inspection set is narrowed to **the
+ * value's existence interval (the seq range from the first
+ * var.version_pushed to the last var.deleted)**: a value-bearing pull
+ * returns every active variable of the environment, so the aggregate
+ * rows inside the interval almost all contain the variable and stop at
+ * the page limit. Rows outside the interval (pulls before the value's
+ * first appearance or after deletion) are never inspected — a deleted
+ * variable's filter never creates a form that JSON-scans the
+ * environment's whole pull history. The lower bound is the value's
+ * first appearance, not var.created, because a declared variable that
+ * never held a value never appears in a pull (in that case null = the
+ * aggregate-side query is skipped). **The interval is taken per
+ * environment and bounds by their union**: variable IDs are
+ * client-issued and the server's uniqueness is per (environment,
+ * variable), so the same ID can exist in several environments (with the
+ * shape "deleted in A, alive in B", a per-variable MAX(deleted) upper
+ * bound would drop B's aggregate rows). An `environmentId` filter uses
+ * only that environment's interval. Below admin (class1-or-self), only
+ * the viewer's own rows among the aggregate rows are visible (§6 —
+ * var.read is class 2), so `actor_user_id = self` is stated explicitly
+ * and the inspected set is bound to the viewer's rows via ae_actor
+ * (independent of the visibility predicate's evaluation order, so
+ * another person's pull history is never scanned). json_valid precedes
+ * EXISTS (a stored row is server-written JSON, but a broken row must
+ * not crash the read API).
  */
 function aggregatedReadContains(
   sql: SqlStorage,
@@ -726,8 +806,9 @@ function aggregatedReadContains(
   environmentId: string | null,
   visibility: AuditVisibility,
 ): SqlConditions | null {
-  // 環境ごとの (値の初出 seq, 最後の削除 seq)。ae_var (variable_id, environment_id,
-  // seq) の索引順で環境ごとにまとまる
+  // Per-environment (first-value seq, last-deleted seq). Grouped per
+  // environment in the index order of ae_var (variable_id,
+  // environment_id, seq)
   const windows = sql
     .exec(
       `SELECT
@@ -752,7 +833,9 @@ function aggregatedReadContains(
   if (windows.length === 0) {
     return null;
   }
-  // 和集合の外包: 下限は最も早い初出、上限は全環境で削除済みのときだけ最後の削除
+  // The union's envelope: the lower bound is the earliest first
+  // appearance; the upper bound is the last deletion, only when deleted
+  // in every environment
   const firstValueSeq = Math.min(...windows.map((window) => window.firstValueSeq));
   const deletedSeq = windows.every((window) => window.deletedSeq !== null)
     ? Math.max(...windows.map((window) => window.deletedSeq as number))
@@ -778,7 +861,7 @@ function aggregatedReadContains(
   };
 }
 
-/** seq 降順の 2 列を seq 降順のまま合流し、先頭 limit 件を返す。 */
+/** Merge two seq-descending lists staying seq-descending, and return the first `limit` rows. */
 function mergeDescending(
   left: readonly StoredAuditEventRow[],
   right: readonly StoredAuditEventRow[],
@@ -811,16 +894,18 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
   if (query.beforeRowId !== null) {
     const beforeSeq = resolveCursorSeq(sql, query.beforeRowId, query.visibility);
     if (beforeSeq === null) {
-      // 不明・不可視なカーソルは空ページ(ページング終端と同じ形 — §7)
+      // An unknown or invisible cursor is an empty page (same shape as
+      // the end of paging — §7)
       return [];
     }
     filter("seq < ?", beforeSeq);
   }
   filter("event = ?", query.event);
   if (query.eventPrefix !== null) {
-    // 前置一致は LIKE を使わない: LIKE だと入力の % / _ が
-    // ワイルドカードとして働き、フィルタが名前空間の指定でなくなる。
-    // substr 比較は長さと値の 2 バインドだけで、特別扱いの文字を持たない
+    // A prefix match never uses LIKE: under LIKE the input's % / _
+    // would act as wildcards and the filter would stop being a namespace
+    // specification. A substr comparison costs only the two bindings
+    // (length and value) and has no special characters
     where = withCondition(where, "substr(event, 1, ?) = ?", [
       query.eventPrefix.length,
       query.eventPrefix,
@@ -839,12 +924,15 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
   if (query.variableId === null) {
     return selectPage(sql, where, query.limit);
   }
-  // variable_id フィルタ(§7 / Q4): 列一致(var.created / var.version_pushed 等 —
-  // ae_var の索引順で limit 件で止まる)と集約形 var.read(payload 検査 —
-  // aggregatedReadContains)は別クエリで引き、seq 降順のまま合流する。1 つの OR に
-  // すると SQLite は両項の全一致行を集めてからソートし、列一致のページングが
-  // 「索引順 + 早期停止」から「一致行数比例」へ退行するため。カーソル・可視性・
-  // 他のフィルタは両クエリに同一に効く
+  // The variable_id filter (§7 / Q4): the column match (var.created /
+  // var.version_pushed etc. — stops at `limit` rows in ae_var's index
+  // order) and the aggregate-form var.read (payload inspection —
+  // aggregatedReadContains) run as separate queries and merge in
+  // seq-descending order. Fused into one OR, SQLite would gather all
+  // matching rows of both sides before sorting, degrading the column
+  // match's paging from "index order + early stop" to "proportional to
+  // the match count". The cursor, visibility, and the other filters
+  // apply identically to both queries
   const byColumn = selectPage(
     sql,
     withCondition(where, "variable_id = ?", [query.variableId]),
@@ -857,7 +945,8 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
     query.visibility,
   );
   if (aggregated === null) {
-    // 値を一度も持たない変数は集約行に現れない — payload 検査を走らせない
+    // A variable that never held a value never appears in aggregate
+    // rows — do not run the payload inspection
     return byColumn;
   }
   const listed = selectPage(
@@ -872,8 +961,10 @@ const textOrNull = (value: unknown): string | null => (value === null ? null : S
 const numberOrNull = (value: unknown): number | null => (value === null ? null : Number(value));
 
 function toStoredRow(row: Record<string, unknown>): StoredAuditEventRow {
-  // 列の写像は監査ヘッド計算の入力形と共有する(列集合が同一 — §5.1 の 17 列)。
-  // row_id の非 NULL 化と payload の防御的 parse だけがこの読み取り形の差分
+  // The column mapping is shared with the audit-head computation's
+  // input shape (identical column set — the 17 columns of §5.1). Only
+  // the non-NULL coercion of row_id and the defensive parse of payload
+  // are this read shape's difference
   const { payloadText: _payloadText, ...shared } = toAuditHeadRow(row);
   return {
     ...shared,
@@ -882,7 +973,7 @@ function toStoredRow(row: Record<string, unknown>): StoredAuditEventRow {
   };
 }
 
-/** payload 列(JSON)の防御的 parse(壊れた行は null 扱い — 検出を defect にしない)。 */
+/** Defensive parse of the payload column (JSON) (a broken row is treated as null — detection is never made a defect). */
 function parsePayload(value: unknown): Readonly<Record<string, unknown>> | null {
   if (typeof value !== "string") {
     return null;
@@ -898,8 +989,9 @@ function parsePayload(value: unknown): Readonly<Record<string, unknown>> | null 
 }
 
 /**
- * payload の scopeEnvironmentIds を読む。配列でない・非 string 要素を含む壊れた行は
- * null(黙って縮めた列挙 = 窓の見逃しを作らない — 設計録 §9 K3-F)。
+ * Read the payload's scopeEnvironmentIds. A broken row — not an array,
+ * or containing non-string elements — is null (a silently narrowed
+ * enumeration would create a missed window — design record §9 K3-F).
  */
 function scopeOf(payload: Readonly<Record<string, unknown>> | null): readonly string[] | null {
   const scope = payload?.["scopeEnvironmentIds"];
@@ -909,9 +1001,10 @@ function scopeOf(payload: Readonly<Record<string, unknown>> | null): readonly st
 }
 
 /**
- * ミラー payload の scope を読む。listed で id 列が配列でない壊れた行は listed{}
- * (窓ゼロ = 見逃し)ではなく null(= 窓導出が all として扱う fail-safe)に倒す
- * (設計録 §9 K3-F)。
+ * Read the scope of a mirror payload. A broken row with kind listed but
+ * a non-array id list falls to null (= the window derivation treats it
+ * as all, fail-safe), never listed{} (zero windows = a miss) (design
+ * record §9 K3-F).
  */
 function scopeSnapshotOf(payload: Readonly<Record<string, unknown>> | null): ScopeSnapshot | null {
   const kind = payload?.["scopeKind"];
@@ -923,10 +1016,12 @@ function scopeSnapshotOf(payload: Readonly<Record<string, unknown>> | null): Sco
 }
 
 /**
- * Q1 の 1 行を (role, scope) 付きで読む(AUDIT_SPEC §3.4 の member_added /
- * role_changed の payload)。genesis は構造的に owner / all(CRYPTO_SPEC §6.2)、
- * removed は両方 null。scopeKind が読めない行は scope = null(壊れた行で検出を
- * defect にしない — 窓導出側が all として扱う)。
+ * Read one Q1 row with (role, scope) attached (the payloads of
+ * member_added / role_changed in AUDIT_SPEC §3.4). genesis is
+ * structurally owner / all (CRYPTO_SPEC §6.2); removed is null on both.
+ * A row whose scopeKind is unreadable gets scope = null (detection is
+ * never made a defect on a broken row — the window derivation treats it
+ * as all).
  */
 function membershipRowOf(row: Record<string, SqlStorageValue>): MembershipEventRow {
   const seq = Number(row["seq"]);
@@ -948,8 +1043,9 @@ function membershipRowOf(row: Record<string, SqlStorageValue>): MembershipEventR
 }
 
 const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
-  // Q1: (target_user_id, seq) 索引(ae_target)。role_changed の payload の scope が
-  // 環境別アクセス窓の開閉点(§4.1 手順 2 — 2026-09-15 ES K3)
+  // Q1: the (target_user_id, seq) index (ae_target). The scope in a
+  // role_changed payload is the open/close point of the per-environment
+  // access window (§4.1 step 2 — 2026-09-15 ES K3)
   membershipEventsFor: (targetUserId) =>
     sql
       .exec(
@@ -961,8 +1057,10 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       )
       .toArray()
       .map(membershipRowOf),
-  // Q1 の端末軸(同じ ae_target 索引 — AUDIT_SPEC §3.4 の device_added / device_revoked は
-  // target_user_id = 対象)。FP は payload から読む(§4.1 の revoke_device 変種)
+  // The device axis of Q1 (the same ae_target index — device_added /
+  // device_revoked of AUDIT_SPEC §3.4 carry target_user_id = the
+  // subject). FPs are read from the payload (the §4.1 revoke_device
+  // variant)
   deviceEventsFor: (targetUserId) =>
     sql
       .exec(
@@ -996,7 +1094,7 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
           scope: scopeSnapshotOf(payload),
         };
       }),
-  // Q6: (target_key_fingerprint, seq) 索引(ae_target_fp)
+  // Q6: the (target_key_fingerprint, seq) index (ae_target_fp)
   serverGrantEventsFor: (fpHex) =>
     sql
       .exec(
@@ -1015,7 +1113,7 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
             ? []
             : scopeOf(parsePayload(row["payload"])),
       })),
-  // Q2: (event, seq) 索引(ae_event)
+  // Q2: the (event, seq) index (ae_event)
   variableLifecycles: () =>
     sql
       .exec(
@@ -1029,14 +1127,19 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
         environmentId: String(row["environment_id"]),
         variableId: String(row["variable_id"]),
       })),
-  // Q3: (actor_user_id, seq) 索引(ae_actor)。集約形 var.read(payload の variables
-  // 列挙 — §3.3)を展開する(展開は防御的 parse — 壊れた行で検出を defect にしない)。
-  // 同一 pull の変数は同じ seq を共有する(§4.1 手順 3 の区間判定は seq 単位)。
-  // range は ae_actor の seq 成分での範囲走査になる(省略時は全 seq)。
-  // `+event` は event 列を索引の候補から外す単項 +(SQLite の定石): 統計のない
-  // DO SQLite のプランナは `event = ?` の等値で ae_event (event, seq) を選び、
-  // プロジェクト全員の var.read(支配的な行種)を舐めていた。述語の意味は不変で、
-  // actor で絞る ae_actor が選ばれる(test/audit-index.test.ts が EXPLAIN で固定)
+  // Q3: the (actor_user_id, seq) index (ae_actor). Expands the
+  // aggregate-form var.read (the payload's variables enumeration — §3.3)
+  // (the expansion is a defensive parse — a broken row never makes
+  // detection a defect). The variables of one pull share the same seq
+  // (§4.1 step 3's interval judgment is per seq). range becomes a range
+  // scan over ae_actor's seq component (omitted = every seq).
+  // `+event` is the unary + that disqualifies the event column from
+  // index candidacy (a standard SQLite idiom): the DO SQLite planner has
+  // no statistics and would pick ae_event (event, seq) for the `event =
+  // ?` equality, scanning the whole project's var.read (the dominant
+  // row kind). The predicate's meaning is unchanged and ae_actor,
+  // narrowed by actor, is chosen instead (test/audit-index.test.ts pins
+  // it via EXPLAIN)
   variableReadsBy: (actorUserId, range) =>
     sql
       .exec(
@@ -1061,7 +1164,7 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
           variableId: variable.variableId,
         }));
       }),
-  // Q6 の (a) 入力: (actor_key_fingerprint, seq) 索引(ae_actor_fp)
+  // The (a) input of Q6: the (actor_key_fingerprint, seq) index (ae_actor_fp)
   serverAccessEventsBy: (actorFpHex) =>
     sql
       .exec(
@@ -1078,7 +1181,7 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
         environmentId: String(row["environment_id"]),
         variableId: row["variable_id"] === null ? null : String(row["variable_id"]),
       })),
-  // Q5: (event, seq) 索引(ae_event)
+  // Q5: the (event, seq) index (ae_event)
   rotationFlagEvents: () =>
     sql
       .exec(

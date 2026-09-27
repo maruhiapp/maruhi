@@ -1,28 +1,31 @@
 "use client";
 
-// 単発 GET リソースの 3 状態フック(複数画面で共用)。
+// The three-state hook for a one-shot GET resource (shared across screens).
 import { useCallback, useEffect, useState } from "react";
 
 import { type ApiFailure, apiGet, type ApiResult } from "./api.ts";
 
 /**
- * useApiResource の画面状態。ok の `refreshing` は、同じ path の再読込(reload)中で
- * 直前の値を描き続けていることを示す(値は再取得の完了で置き換わる)。
+ * The screen state of useApiResource. `refreshing` on ok means a reload
+ * of the same path is in flight while the previous value keeps being
+ * rendered (the value is replaced when the re-fetch completes).
  */
 export type ResourceState<T> =
   | { kind: "loading" }
   | { kind: "failed"; failure: ApiFailure }
   | { kind: "ok"; value: T; refreshing: boolean };
 
-/** 取得済みの値がどの path のものか(path 変更時に前の値を持ち越さないため)。 */
+/** Which path the fetched value belongs to (so a path change never carries the previous value over). */
 export interface Loaded<T> {
   readonly path: string;
   readonly state: ResourceState<T>;
 }
 
 /**
- * 同じ path の再読込中は直前の値を残す(表を LoadingRow に差し替えるとフォーカス中の
- * 行の要素が消えて body へ落ちる)。path が変わった・直前が失敗/読込中なら loading。
+ * During a reload of the same path the previous value stays (swapping
+ * the table for a LoadingRow would drop the focused row's element and
+ * focus would fall to body). If the path changed or the last state was
+ * failed/loading, it is loading.
  */
 export function reloadingState<T>(current: Loaded<T>, path: string): ResourceState<T> {
   return current.path === path && current.state.kind === "ok"
@@ -31,10 +34,13 @@ export function reloadingState<T>(current: Loaded<T>, path: string): ResourceSta
 }
 
 /**
- * 単発 GET の 3 状態(loading / failure / value)を持つ小さなフック。
- * path 変更・再読込で古い in-flight 応答は捨てる(effect のクリーンアップで
- * stale マーク — 後着の旧プロジェクト応答が新しい画面を上書きしない)。
- * 同じ path の再読込(reload)中は直前の値を `refreshing: true` で描き続ける。
+ * A small hook holding the three states of a one-shot GET
+ * (loading / failure / value). A path change or reload discards a stale
+ * in-flight response (marked stale in the effect's cleanup — a
+ * late-arriving response for an old project never overwrites the newer
+ * screen).
+ * During a reload of the same path the previous value keeps rendering
+ * with `refreshing: true`.
  */
 export function useApiResource<T>(path: string): {
   state: ResourceState<T>;
@@ -60,7 +66,8 @@ export function useApiResource<T>(path: string): {
     };
   }, [path, attempt]);
   const reload = useCallback(() => setAttempt((n) => n + 1), []);
-  // path が変わった直後(effect 前の 1 描画)に前の path の値を見せない
+  // Never show the previous path's value right after a path change (the
+  // one render before the effect)
   const state: ResourceState<T> = loaded.path === path ? loaded.state : { kind: "loading" };
   return { state, reload };
 }

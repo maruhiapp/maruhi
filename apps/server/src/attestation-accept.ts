@@ -1,27 +1,35 @@
-// ヘッド申告の受理(CRYPTO_SPEC §6.4 / §6.6、AUTH_SPEC §16-1)。
+// Acceptance of head attestations (CRYPTO_SPEC §6.4 / §6.6, AUTH_SPEC §16-1).
 //
-// 受理検証の判定順:
-//   1. メンバーシップ(reader 以上 — 非メンバーは not-member → worker が 404。
-//      呼び出し主体 = attester は構造的(ワイヤに attester フィールドがなく、
-//      署名対象の attester_user_id に呼び出し主体を用いる — §12-5 の規則))
-//   2. メンバーあたり固定窓レート制限(§16-1 起草値 60/時。判定はメンバーシップの
-//      後 = 429 が非メンバーへ存在を漏らさない。消費は受理可否に依らない —
-//      Ed25519 検証の作業量をレートで有界にするため署名検証より前に置く)
-//   3. §6.6 検証(署名 = 受理時点の現メンバーの sig 鍵・申告ヘッドの実在一致・
-//      申告ヘッド時点の在籍と鍵束縛)。実装はクライアントと同一の
-//      verifyDistributedHeadAttestation を受理時点の履歴索引へ適用する —
-//      配布物は必ずクライアント検証(§6.6)を通る形しか保存しない(§6.4 の
-//      両輪: クライアントが全拒否するデータをサーバーが保存しない)。仕様の
-//      受理列挙(§6.4)にない「申告ヘッド時点の在籍」検査が加わるのはこの
-//      共有の帰結で、正直なクライアントの申告(自分がメンバーとして同期・
-//      検証したヘッド ≥ 自分の add 位置)は常に満たす
-//   4. 保存済み申告からの seq 単調前進: 後退 = 409(保存済み seq を返す —
-//      黙って成功させない。正直なクライアントの後退は床の破損・並行 CLI の
-//      徴候であり静かに握り潰さない)、同一 seq = 冪等 204(署名は決定論的で
-//      ヘッド一致検査済み = 同一内容の再送。リトライ安全)、前進 = upsert
+// Order of acceptance checks:
+//   1. Membership (reader or higher — non-members get not-member → worker
+//      returns 404. The caller = attester is structural (the wire has no
+//      attester field; the signed attester_user_id is the caller — the §12-5
+//      rule))
+//   2. Fixed-window rate limit per member (§16-1 drafted value 60/hour.
+//      Checked after membership = a 429 does not leak existence to
+//      non-members. Consumption is independent of acceptance — placed before
+//      signature verification so Ed25519 work is bounded by rate)
+//   3. §6.6 verification (signature = the current member's sig key at
+//      acceptance time, declared head exists, membership and key binding at
+//      the declared head). The implementation applies the same
+//      verifyDistributedHeadAttestation as the client to the acceptance-time
+//      history index — distributed material is only ever stored in a form
+//      that passes client verification (§6.6) (the §6.4 pair: the server does
+//      not store data clients would universally reject). The "membership at
+//      the declared head" check, absent from the spec's acceptance
+//      enumeration (§6.4), is a consequence of this sharing, and an honest
+//      client's attestation (a head it synced and verified as a member ≥ its
+//      own add position) always satisfies it
+//   4. Monotonic seq advance over the stored attestation: regression = 409
+//      (returns the stored seq — never silently succeed; regression by an
+//      honest client is a symptom of a broken floor or concurrent CLIs and is
+//      not quietly swallowed), same seq = idempotent 204 (the signature is
+//      deterministic and head-match verified = a resend of identical
+//      content; retry-safe), advance = upsert
 //
-// 保存は端末ごと最新 1 行(2026-09-19 DK。チェーンに載せない — §6.4)。受理時刻は保存する
-// が配布しない(§16-1)。監査イベント化もしない(§16-3)。
+// Storage is the latest single row per device (2026-09-19 DK; not put on the
+// chain — §6.4). The acceptance time is stored but not distributed (§16-1).
+// It is also not turned into an audit event (§16-3).
 
 import type { AttestationInvalidReason } from "@maruhi/crypto";
 import { verifyDistributedHeadAttestation } from "@maruhi/crypto";
@@ -33,7 +41,7 @@ import { rejectData, requireMemberState, withSigningDevice } from "./data-plane.
 import { DataStore } from "./data-store.ts";
 import { MAX_ATTESTATIONS_PER_MEMBER_PER_WINDOW } from "./policy.ts";
 
-/** ワイヤの提出内容(attester は呼び出し主体 — api-schema の submission と同形)。 */
+/** Wire submission content (attester is the caller — same shape as api-schema's submission). */
 export interface HeadAttestationSubmissionInput {
   readonly suite: "maruhi/v1";
   readonly chainHeadHashHex: string;
@@ -42,10 +50,11 @@ export interface HeadAttestationSubmissionInput {
 }
 
 /**
- * crypto の詳細理由 → ワイヤの 3 理由への写像(verify-value.ts の
- * VALUE_REJECT_REASONS と同じ畳み方)。chain-head-future はサーバーにとって
- * 「自チェーンに存在しない seq」なので chain-head-unknown に畳む。
- * 網羅は Record 型が静的に強制する。
+ * Mapping of crypto's detailed reasons onto the wire's 3 reasons (the same
+ * folding as VALUE_REJECT_REASONS in verify-value.ts). chain-head-future is,
+ * to the server, "a seq that does not exist on our chain", so it folds into
+ * chain-head-unknown. Exhaustiveness is statically enforced by the Record
+ * type.
  */
 const ATTESTATION_REJECT_REASONS: Readonly<
   Record<AttestationInvalidReason, AttestationRejectReason>
@@ -59,8 +68,9 @@ const ATTESTATION_REJECT_REASONS: Readonly<
 };
 
 /**
- * PUT /projects/:projectId/head-attestation の受理プログラム(DO の permit 下で
- * 実行 — 判定と保存の間に割り込みはない)。成功は void(204)。
+ * Acceptance program for PUT /projects/:projectId/head-attestation (runs
+ * under the DO's permit — no interruption between the decision and the
+ * store). Success is void (204).
  */
 export const putHeadAttestationProgram = (
   callerUserId: string,
@@ -68,12 +78,12 @@ export const putHeadAttestationProgram = (
   cache: StateCache,
 ): Effect.Effect<void, DataRejectedError, DataStore | ChainStore> =>
   Effect.gen(function* () {
-    // 1. メンバーシップ(reader 以上 — §16-1 の「チェーン role reader 以上」)
+    // 1. Membership (reader or higher — §16-1's "chain role reader or higher")
     const context = yield* requireMemberState(callerUserId, "reader", cache);
     const store = yield* DataStore;
     const nowMs = Date.now();
 
-    // 2. メンバーあたり固定窓(判定 → 即消費: 拒否される提出の反復も窓を使う)
+    // 2. Fixed window per member (check → consume immediately: repeated rejected submissions also use the window)
     const window = yield* store.checkAttestationWindow(
       callerUserId,
       MAX_ATTESTATIONS_PER_MEMBER_PER_WINDOW,
@@ -87,11 +97,13 @@ export const putHeadAttestationProgram = (
     }
     store.recordAttestationWindowUse(callerUserId, nowMs);
 
-    // 3. §6.6 検証(クライアントと同一実装を受理時点の履歴索引へ適用する。
-    //    project_id は DO 自身のチェーン(genesis ハッシュ)から取る — §12-5 の
-    //    座標再構成の不変条件。申告値から組まない)。申告した端末は署名から解く
-    //    (呼び出し主体の有効な端末を試行 — 設計録 §8 K3-1。attester の鍵 = 署名した
-    //    端末の端末鍵 — CRYPTO_SPEC §6.6)
+    // 3. §6.6 verification (applies the same implementation as the client to
+    //    the acceptance-time history index. project_id is taken from the DO's
+    //    own chain (genesis hash) — the §12-5 coordinate-reconstruction
+    //    invariant; not assembled from declared values). The attesting device
+    //    is resolved from the signature (tries the caller's valid devices —
+    //    design record §8 K3-1. The attester's key = the signing device's
+    //    device key — CRYPTO_SPEC §6.6)
     const { device: attester } = yield* withSigningDevice(context.member, (candidate) =>
       Effect.gen(function* () {
         const verified = yield* Effect.promise(() =>
@@ -115,8 +127,9 @@ export const putHeadAttestationProgram = (
               reason: ATTESTATION_REJECT_REASONS[verified.error.reason],
             });
           }
-          // InvalidInput / KeyImportFailed は Schema 検証済みワイヤ + 検証済み
-          // チェーン由来の鍵では到達しない(実装バグ = defect。秘密は含まれない)
+          // InvalidInput / KeyImportFailed are unreachable with a
+          // Schema-validated wire + a key derived from a verified chain
+          // (implementation bug = defect. No secrets included)
           return yield* Effect.die(
             new Error(`head attestation verification failed: ${verified.error.kind}`),
           );
@@ -124,15 +137,17 @@ export const putHeadAttestationProgram = (
       }),
     );
 
-    // 4. seq 単調前進(後退 409 / 同一 seq 冪等 204 / 前進 upsert)— 同じ端末の
-    //    保存行に対してのみ(端末を跨いだ単調性は課さない — AUTH_SPEC §16-1)
+    // 4. Monotonic seq advance (regression 409 / same seq idempotent 204 /
+    //    advance upsert) — only against the same device's stored row (no
+    //    cross-device monotonicity imposed — AUTH_SPEC §16-1)
     const storedSeq = yield* store.headAttestationSeq(callerUserId, attester.keyFingerprintHex);
     if (storedSeq !== null && input.chainHeadSeq < storedSeq) {
       return yield* rejectData({ kind: "attestation-regression", storedSeq });
     }
     if (storedSeq !== null && input.chainHeadSeq === storedSeq) {
-      // ヘッド実在一致(手順 3)を通過した同一 seq は同一ハッシュ・決定論的
-      // Ed25519 の同一署名 = 同一内容の再送。書き直さず冪等成功
+      // The same seq that passed the head-existence match (step 3) has the
+      // same hash, and deterministic Ed25519 gives the same signature = a
+      // resend of identical content. Idempotent success without rewriting
       return;
     }
     yield* Effect.sync(() =>

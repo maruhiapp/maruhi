@@ -1,12 +1,18 @@
-// 四眼の CLI 側純関数(approval-rules.ts — 設計録 es-design.md §12 K6-F / G / K)の検査。
+// Checks for the four-eyes CLI-side pure functions (approval-rules.ts —
+// design note es-design.md §12 K6-F / G / K).
 //
-// 固定する性質:
-//  1. 対象判定 `isApprovalTarget` と票の再集計 `countOwnerVotes` は crypto の合意規則の
-//     2 実装目(K6-G)。**差分テスト**: 同じチェーンを公開 API の verifyChain に通し、
-//     直接追記の拒否(approval-required)・失効票(降格 / 鍵更新)・完成の判定が一致する
-//  2. 提案 id の接頭辞解決(8 文字以上・一意・完成済み / 撤回済み / 未知の言い分け)
-//  3. `--expires` の解析(既定 7 日・上限 30 日・0 不可)
-//  4. 内側 op の表示と、既に足りている提案の「次の approve で完成」の判定(K5-L)
+// Properties pinned down:
+//  1. The target check `isApprovalTarget` and the vote recount
+//     `countOwnerVotes` are the second implementation of crypto's consensus
+//     rules (K6-G). **Differential test**: run the same chains through the
+//     public API's verifyChain and require the direct-append rejection
+//     (approval-required), stale votes (demotion / key rotation), and
+//     completion verdicts to agree
+//  2. Proposal-id prefix resolution (8+ chars, unique; distinguishing
+//     completed / withdrawn / unknown)
+//  3. `--expires` parsing (default 7 days, cap 30 days, 0 not allowed)
+//  4. Displaying the inner op and judging an already-satisfied proposal as
+//     "completes on the next approve" (K5-L)
 
 import type { ProjectId } from "@maruhi/core";
 import type { ChainEntry, ChainOperation } from "@maruhi/crypto";
@@ -58,7 +64,7 @@ beforeAll(async () => {
   member = await makeTestUser("user-member-5555");
 });
 
-/** 組み立て済みチェーンを CLI の検証済みビューにする(sync.ts と同じ経路)。 */
+/** Turns a built chain into the CLI's verified view (same path as sync.ts). */
 function verifiedOf(built: BuiltChain): Promise<VerifiedProject> {
   return Effect.runPromise(
     verifyChainSnapshot({
@@ -70,7 +76,7 @@ function verifiedOf(built: BuiltChain): Promise<VerifiedProject> {
   );
 }
 
-/** 4 owner + 1 member + 方針(remove_member / required)の前段。 */
+/** Prefix of 4 owners + 1 member + policy (remove_member / required). */
 function prefixWith(required: number, ops: readonly ("remove_member" | "change_role")[]) {
   return [
     { actor: owner, operation: genesisOp(owner) },
@@ -88,15 +94,15 @@ async function hashOfLast(built: BuiltChain): Promise<string> {
   return hash;
 }
 
-/** verifyChain の結果(ok / 拒否理由)。 */
+/** verifyChain's result (ok / rejection reason). */
 async function verifyResult(entries: readonly ChainEntry[]): Promise<string> {
   const result = await verifyChain(entries);
   if (result.ok) return "ok";
   return result.error.kind === "ChainInvalid" ? result.error.reason : result.error.kind;
 }
 
-describe("isApprovalTarget — verifyChain との差分(K6-G)", () => {
-  it("方針の対象 op の直接追記は approval-required で無効になり、CLI の判定も真(対象外は両方とも通る)", async () => {
+describe("isApprovalTarget — differential vs verifyChain (K6-G)", () => {
+  it("a direct append of a policy-targeted op is invalid as approval-required, and the CLI's verdict is also true (untargeted ops pass both)", async () => {
     const prefix = prefixWith(2, ["remove_member"]);
     const verified = await verifiedOf(await buildChain(prefix));
     const policy = verified.state.approvalPolicy;
@@ -105,7 +111,8 @@ describe("isApprovalTarget — verifyChain との差分(K6-G)", () => {
     const promote: ChainOperation = changeRoleOp(member, "owner", null);
     expect(isApprovalTarget(innerOf(remove), policy)).toBe(true);
     expect(isApprovalTarget(innerOf(demote), policy)).toBe(false);
-    // owner を確立する change_role は列挙に依らず常時対象(方針の単調性 (a))
+    // A change_role that establishes an owner is always targeted regardless
+    // of the listing (policy monotonicity (a))
     expect(isApprovalTarget(innerOf(promote), policy)).toBe(true);
     expect(isApprovalTarget(innerOf(setApprovalPolicyOp([], 0)), policy)).toBe(true);
     expect(isApprovalTarget(innerOf(remove), null)).toBe(false);
@@ -122,8 +129,8 @@ describe("isApprovalTarget — verifyChain との差分(K6-G)", () => {
   });
 });
 
-describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と verifyChain の一致", () => {
-  it("降格された投票者の票は数えず(pending のまま)、次の未投票 owner の approve が完成させる — CLI の needed=0 と一致", async () => {
+describe("countOwnerVotes / proposalViewOf — vote recount (principle 2) agrees with verifyChain", () => {
+  it("a demoted voter's vote is not counted (stays pending), and the next non-voting owner's approve completes it — matching the CLI's needed=0", async () => {
     const prefix = prefixWith(3, ["remove_member"]);
     const proposed = await buildChain([
       ...prefix,
@@ -134,13 +141,15 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
       ...prefix,
       { actor: owner, operation: proposeOp(innerOf(removeMemberOp(member))) },
       { actor: owner2, operation: approveOp(hash) },
-      // owner2 を降格(必要な owner は owner / owner3 / owner4 の 3 名で到達可能)
+      // Demote owner2 (the required owners are still reachable via the 3:
+      // owner / owner3 / owner4)
       { actor: owner, operation: changeRoleOp(owner2, "admin", null) },
     ];
     const demoted = await verifiedOf(await buildChain(steps));
     const pending = demoted.state.pendingProposals.get(hash);
     if (pending === undefined) throw new Error("proposal should still be pending");
-    // 記録には owner2 の票が残るが、再集計は提案者(owner)の 1 票だけ
+    // owner2's vote remains in the record, but the recount counts only the
+    // proposer's (owner's) single vote
     expect(pending.approvals.map((vote) => vote.userId)).toEqual([owner2.userId]);
     expect(countOwnerVotes(demoted.state.members, signersOf(pending))).toBe(1);
     const view = proposalViewOf(demoted, pending, 0);
@@ -149,7 +158,8 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
     expect(view.needed).toBe(1);
     expect(view.eligibleApprovers.toSorted()).toEqual([owner3.userId, owner4.userId].toSorted());
 
-    // owner3 が投票 → 2 票(pending のまま)。CLI は needed=0(次の approve で完成)
+    // owner3 votes → 2 votes (still pending). The CLI reports needed=0
+    // (completes on the next approve)
     const two = await verifiedOf(
       await buildChain([...steps, { actor: owner3, operation: approveOp(hash) }]),
     );
@@ -162,7 +172,8 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
       ok: true,
       completes: true,
     });
-    // 既投票者(owner3)と降格済み(owner2)は approve できない
+    // An already-voted owner (owner3) and the demoted one (owner2) cannot
+    // approve
     expect(voteEligibility(two, owner3.userId, owner3.fingerprintHex, twoView)).toMatchObject({
       ok: false,
       reason: "duplicate-approval",
@@ -172,7 +183,8 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
       reason: "insufficient-role",
     });
 
-    // owner4 の approve で verifyChain が完成させる(pending から消え、member は削除)
+    // owner4's approve lets verifyChain complete it (gone from pending,
+    // member removed)
     const done = await verifiedOf(
       await buildChain([
         ...steps,
@@ -182,7 +194,8 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
     );
     expect(done.state.pendingProposals.has(hash)).toBe(false);
     expect(done.state.members.has(member.userId)).toBe(false);
-    // 適用済み操作列(K6-C)に approve の seq で内側 op が載る
+    // The applied-operations list (K6-C) carries the inner op at the
+    // approve's seq
     const applied = done.applied.at(-1);
     expect(applied?.operation.op).toBe("remove_member");
     expect(applied?.seq).toBe(done.state.headSeq);
@@ -190,7 +203,7 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
     expect(applied?.viaProposalSeq).toBe(prefix.length + 1);
   });
 
-  it("required を引き下げた後の pending は「次の approve で完成」— 既投票 owner は duplicate-approval(K5-L)", async () => {
+  it("after required is lowered, a pending entry is 'completes on the next approve' — an already-voted owner is duplicate-approval (K5-L)", async () => {
     const prefix = prefixWith(3, ["remove_member"]);
     const proposed = await buildChain([
       ...prefix,
@@ -202,7 +215,8 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
         ...prefix,
         { actor: owner, operation: proposeOp(innerOf(removeMemberOp(member))) },
         { actor: owner2, operation: approveOp(hash) },
-        // 方針の変更自体は四眼(required 3): 提案 → 3 owner の署名
+        // Changing the policy itself is four-eyes (required 3): propose →
+        // signatures from the 3 owners
         { actor: owner, operation: proposeOp(innerOf(setApprovalPolicyOp(["remove_member"], 2))) },
       ]),
     );
@@ -232,7 +246,7 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
     });
   });
 
-  it("方針が対象から外した提案は approval-not-required、期限切れは proposal-expired を予告する", async () => {
+  it("a proposal whose op the policy dropped is approval-not-required, and an expired one previews proposal-expired", async () => {
     const prefix = prefixWith(2, ["remove_member", "change_role"]);
     const proposed = await buildChain([
       ...prefix,
@@ -246,7 +260,8 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
       ok: false,
       reason: "proposal-expired",
     });
-    // 方針を change_role だけに変える(四眼: 提案 + owner2 の approve)
+    // Change the policy to change_role only (four-eyes: propose + owner2's
+    // approve)
     const policyChange = await buildChain([
       ...prefix,
       { actor: owner, operation: proposeOp(innerOf(removeMemberOp(member)), 1_000) },
@@ -270,8 +285,8 @@ describe("countOwnerVotes / proposalViewOf — 票の再集計(原則 2)と veri
   });
 });
 
-describe("resolveProposalRef — 接頭辞解決(K6-F)", () => {
-  it("8 文字以上の一意接頭辞を解決し、短い / 曖昧 / 完成済み / 撤回済み / 未知を言い分ける", async () => {
+describe("resolveProposalRef — prefix resolution (K6-F)", () => {
+  it("resolves a unique prefix of 8+ chars and distinguishes too-short / ambiguous / completed / withdrawn / unknown", async () => {
     const prefix = prefixWith(2, ["remove_member", "change_role"]);
     const first = await buildChain([
       ...prefix,
@@ -286,7 +301,7 @@ describe("resolveProposalRef — 接頭辞解決(K6-F)", () => {
     const hashB = await hashOfLast(second);
     const verified = await verifiedOf(second);
     expect(resolveProposalRef(verified, hashA.slice(0, 8))).toMatchObject({ kind: "pending" });
-    // `#<seq>`(K6-F′): 提案エントリの seq でも指せる
+    // `#<seq>` (K6-F'): the proposal entry can also be pointed at by its seq
     expect(resolveProposalRef(verified, `#${prefix.length + 1}`)).toMatchObject({
       kind: "pending",
       proposal: { proposalHashHex: hashA },
@@ -297,7 +312,7 @@ describe("resolveProposalRef — 接頭辞解決(K6-F)", () => {
     expect(resolveProposalRef(verified, "not-hex!")).toEqual({ kind: "malformed" });
     expect(resolveProposalRef(verified, "0".repeat(64))).toEqual({ kind: "unknown" });
 
-    // 完成 / 撤回した提案の id は pending ではなく、その旨を返す
+    // Ids of completed / withdrawn proposals are not pending — says so
     const closed = await verifiedOf(
       await buildChain([
         ...prefix,
@@ -322,8 +337,8 @@ describe("resolveProposalRef — 接頭辞解決(K6-F)", () => {
   });
 });
 
-describe("parseProposalExpiry — --expires(K6-K)", () => {
-  it("既定 7 日・単位付き期間・0 と 30 日超の拒否", () => {
+describe("parseProposalExpiry — --expires (K6-K)", () => {
+  it("defaults to 7 days, accepts unit-suffixed durations, rejects 0 and >30 days", () => {
     expect(parseProposalExpiry(undefined)).toEqual({
       ok: true,
       lifetimeMs: DEFAULT_PROPOSAL_LIFETIME_MS,
@@ -339,7 +354,7 @@ describe("parseProposalExpiry — --expires(K6-K)", () => {
 });
 
 describe("describeInnerOperation", () => {
-  it("内側 op を 1 行で表す(識別子は中和)", () => {
+  it("renders an inner op on one line (identifiers neutralized)", () => {
     expect(describeInnerOperation(innerOf(removeMemberOp(member)))).toBe(
       `remove_member ${member.userId}`,
     );

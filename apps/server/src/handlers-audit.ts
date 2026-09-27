@@ -1,16 +1,20 @@
-// 監査イベント読み取り API のハンドラ(AUDIT_SPEC §6 / §7 — C1)。
+// Handlers for the audit-event read API (AUDIT_SPEC §6 / §7 — C1).
 //
-// - events(project DO): read スコープ × チェーン role reader 以上で到達。
-//   クラス 2 可視(全行)は「チェーン role admin × トークンスコープ admin」
-//   (§12-3 の min 規律)— スコープ半分はここで判定して DO へ渡す。状態を
-//   持たない読み取り(監査記録なし)なので CSRF ヘッダーは要求しない
-//   (rotation flags と同じ論拠 — AUTH_SPEC §12-7 の一括 pull とは異なる)
-// - invites(D1): 権限軸は当該プロジェクトのチェーン role admin 以上 ×
-//   トークンスコープ admin(§7 の例外規定 — org admin は閲覧権限を与えない。
-//   requireProjectChainAdmin = 招待 API と同一の前段)
-// - self(D1): 本人のみ(§6)。トークン条件は鍵素材クラス(§13-2)と同水準
+// - events (project DO): reached with read scope × chain role reader or
+//   above. Class-2 visibility (all rows) requires "chain role admin ×
+//   token scope admin" (§12-3's min discipline) — the scope half is
+//   decided here and passed to the DO. Being a stateless read (no audit
+//   record), the CSRF header is not required (same rationale as
+//   rotation flags — unlike AUTH_SPEC §12-7's bulk pull)
+// - invites (D1): the authority axis is chain role admin or above on
+//   that project × token scope admin (§7's exception provision — org
+//   admin grants no read permission. requireProjectChainAdmin = the
+//   same leading stage as the invite API)
+// - self (D1): the principal only (§6). The token condition is the same
+//   level as the key-material class (§13-2)
 //
-// 応答は記録どおりの行のみ(表示名の解決・ミラー検証はクライアントの領分)。
+// Responses contain only the rows as recorded (resolving display names
+// and verifying mirrors are the client's domain).
 
 import { maruhiApi } from "@maruhi/api-schema";
 import { RequestAuth } from "@maruhi/core";
@@ -24,12 +28,12 @@ import { D1AuditRepo } from "./db.package/index.ts";
 import type { AuditActorValue, AuditEventValue } from "./programs-audit.ts";
 import { resolvePageLimit } from "./programs-audit.ts";
 
-/** 保存行の actor_type 列 → アクター種別(D1 側は書き込み経路が 'user' のみ)。 */
+/** Stored row's actor_type column → actor kind (on the D1 side the write path is 'user' only). */
 function actorTypeOf(stored: string): AuditActorValue["type"] {
   return stored === "server" || stored === "system" ? stored : "user";
 }
 
-/** optional query を RPC 入力へ写す。undefined はキーごと落とす。 */
+/** Maps the optional query onto RPC input. undefined drops the key itself. */
 function spreadIfDefined<K extends string, V>(
   key: K,
   value: V | undefined,
@@ -38,8 +42,10 @@ function spreadIfDefined<K extends string, V>(
 }
 
 /**
- * D1 監査行 → ワイヤ形。`seq` は**誰にも**載せない(§7 — D1 の autoincrement は
- * デプロイメント全域の共有採番で、序数はテナント・ユーザーを跨ぐ活動量を漏らす)。
+ * D1 audit row → wire form. `seq` is **never** exposed to anyone
+ * (§7 — D1's autoincrement is a sequence shared across the whole
+ * deployment, and the ordinal would leak activity volume across
+ * tenants and users).
  */
 function toWireD1Event(row: D1StoredAuditEventRow): AuditEventValue {
   return {
@@ -54,8 +60,9 @@ function toWireD1Event(row: D1StoredAuditEventRow): AuditEventValue {
     ...(row.targetUserId === null ? {} : { targetUserId: row.targetUserId }),
     ...(row.orgId === null ? {} : { orgId: row.orgId }),
     ...(row.projectId === null ? {} : { projectId: row.projectId }),
-    // JSON.parse 由来の値は実行時に必ず JSON 語彙(encode 時の Schema.Json
-    // 検証が最終防衛)。unknown → Json は型のみの狭め
+    // A value from JSON.parse is always JSON vocabulary at runtime
+    // (Schema.Json validation at encode time is the last line of
+    // defense). unknown → Json is a type-only narrowing
     ...(row.payload === null
       ? {}
       : { payload: row.payload as Readonly<Record<string, Schema.Json>> }),
@@ -66,8 +73,9 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
   handlers
     .handle("events", ({ params, query, endpoint }) =>
       Effect.gen(function* () {
-        // クラス 2 可視のスコープ半分(min(スコープ, チェーン role) — §12-3)。
-        // role 半分は DO(チェーン導出の権威)が判定する
+        // The scope half of class-2 visibility (min(scope, chain role)
+        // — §12-3). The role half is decided by the DO (the
+        // chain-derived authority)
         const principal = yield* (yield* RequestAuth).principal;
         const scopeAdmin = tokenScopeAllowsForProject(principal, params.projectId, "admin");
         const events = yield* callProjectData<readonly AuditEventValue[]>()({
@@ -96,9 +104,10 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
     )
     .handle("auditHead", ({ params, endpoint }) =>
       Effect.gen(function* () {
-        // 実効権限 admin(AUTH_SPEC §16-2): スコープ半分は permission: "admin"
-        // (スコープ外 404 / 水準不足 403)、チェーン role 半分は DO
-        // (auditHeadProgram — 非メンバー 404 / admin 未満 403)
+        // Effective permission admin (AUTH_SPEC §16-2): the scope half
+        // is permission: "admin" (out of scope 404 / insufficient level
+        // 403); the chain-role half is the DO (auditHeadProgram —
+        // non-member 404 / below admin 403)
         return yield* callProjectData<{ readonly auditHeadHashHex: string }>()({
           endpoint,
           projectId: params.projectId,
@@ -121,9 +130,10 @@ export const auditLive = HttpApiBuilder.group(maruhiApi, "audit", (handlers) =>
     .handle("self", ({ query }) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
-        // アカウント全域の履歴(要監視イベント含む)はスコープ限定トークンに
-        // 読ませない(§13-2 と同水準 — audit-api.ts の宣言コメント)。
-        // セッション主体は可(§5 の許可列挙「監査読み取り」)
+        // The account-wide history (including watch-list events) is not
+        // readable by scope-limited tokens (same level as §13-2 — see
+        // the declaration comment in audit-api.ts). Session principals
+        // are allowed (§5's allowed enumeration "audit read")
         yield* ensureSelfAuditAccess(principal);
         const audit = yield* D1AuditRepo;
         const rows = yield* audit.readUserEventsFor(principal.userId, {

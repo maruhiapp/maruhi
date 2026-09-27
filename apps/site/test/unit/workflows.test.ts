@@ -1,23 +1,35 @@
-// docs/github-actions.mdx の workflow テンプレート(docs/notes/integration-options.md §3「SY3 実装時の
-// 裁定録」裁定 H)を**ページの本文からそのまま切り出して**検査する(recipes.test.ts と同じ規律:
-// 「書いた文言」と「検査対象」を一致させ、docs の漂流を構造で防ぐ)。YAML の解釈は Bun 1.4.0 同梱の
-// `Bun.YAML`(リポジトリが `.bun-version` で要求する実行環境。依存追加なし)を子プロセスで呼ぶ —
-// vitest は Node で走るため。固定するのは:
-//   1. 起動先の契約(`workflow_dispatch` + `target` 入力)が deploy-targets.mdx の断片と一致する(第 3 段の契約)
-//   2. maruhi を実行する job は `permissions: id-token: write` + `contents: read` だけ(他の write なし)
-//   3. 導入は setup-maruhi をタグで固定(`@<tag>` + `version: <tag>`)、他の action は 40 hex の commit SHA、
-//      checkout は `persist-credentials: false`、`npx` / `curl` で取りに行かない
-//   4. 平文は CI の中だけ: `secrets.` を参照しない(唯一の例外 = 標準形 ② の sync step の
-//      `GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}` — GitHub secrets を書く github-actions ターゲットの
-//      bootstrap トークン。SY5 裁定 F)、maruhi を実行する step は `$GITHUB_ENV` /
-//      `$GITHUB_OUTPUT` / `echo "$…"` / `set -x` / `printenv` / `--value` を持たず、
-//      `run:` に `${{ }}` を直接展開しない(env 経由)
-//   5. `maruhi ci sync` は `--yes` / `--server` / `--project` / `--anchor .maruhi/anchor.json` を持つ
-//   6. 標準形 ②: `schedule` を持ち、`sync` job は Environment = ターゲット名・ターゲット単位の concurrency
-//      (cancel-in-progress: false)・fail-fast: false・空リストのガード。`targets` job のスクリプトは実際に
-//      sh で走らせる(dispatch の実在 / 不在ターゲット・schedule の一覧)
-//   7. 標準形 ①: Environment `production`、`ci sync` が deploy の前、deploy は
-//      `maruhi ci run … -- <wrangler>`
+// Checks the workflow templates of docs/github-actions.mdx
+// (docs/notes/integration-options.md §3 "rulings recorded while
+// implementing SY3", ruling H) **verbatim as cut from the page body**
+// (same discipline as recipes.test.ts: make "the written wording" and
+// "the checked target" coincide, preventing doc drift structurally). YAML
+// is parsed by `Bun.YAML` bundled with Bun 1.4.0 (the runtime the repo
+// requires via `.bun-version`; no added dependency) invoked as a
+// subprocess — vitest runs on Node. What is pinned:
+//   1. the invocation contract (`workflow_dispatch` + `target` input)
+//      matches the deploy-targets.mdx fragment (the third-tier contract)
+//   2. jobs that run maruhi have only `permissions: id-token: write` +
+//      `contents: read` (no other write)
+//   3. installation pins setup-maruhi to a tag (`@<tag>` +
+//      `version: <tag>`), every other action to a 40-hex commit SHA,
+//      checkout has `persist-credentials: false`, and nothing is fetched
+//      via `npx` / `curl`
+//   4. plaintext stays inside CI: no `secrets.` reference (the only
+//      exception = the sync step's `GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN
+//      }}` in standard shape ② — the bootstrap token of the
+//      github-actions target that writes GitHub secrets; SY5 ruling F),
+//      and a step running maruhi has no `$GITHUB_ENV` / `$GITHUB_OUTPUT` /
+//      `echo "$…"` / `set -x` / `printenv` / `--value`, and no `${{ }}`
+//      expanded directly in `run:` (env-mediated)
+//   5. `maruhi ci sync` carries `--yes` / `--server` / `--project` /
+//      `--anchor .maruhi/anchor.json`
+//   6. standard shape ②: has `schedule`; the `sync` job has Environment =
+//      target name, per-target concurrency (cancel-in-progress: false),
+//      fail-fast: false, and an empty-list guard. The `targets` job's
+//      script is actually run under sh (dispatch with a real / missing
+//      target, the schedule's list)
+//   7. standard shape ①: Environment `production`, `ci sync` before
+//      deploy, deploy is `maruhi ci run … -- <wrangler>`
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -185,7 +197,8 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
       .workflow_dispatch;
     const contractDispatch = (contract.on as { workflow_dispatch: Record_ }).workflow_dispatch;
     const inputOf = (d: Record_) => (d["inputs"] as Record<string, Record_>)["target"];
-    // 契約側の入力が消えたり改名されたりしても検査が黙って通らないよう、存在を先に断言する
+    // Assert existence first so the check does not silently pass if the
+    // contract's input disappears or is renamed
     expect(inputOf(contractDispatch)).toBeDefined();
     expect(inputOf(dispatch)).toMatchObject(inputOf(contractDispatch) ?? {});
     expect(inputOf(dispatch)).toMatchObject({ required: true, type: "string" });
@@ -214,19 +227,23 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
         expect(uses.some((s) => s.uses === SETUP_MARUHI)).toBe(true);
         for (const step of uses) expectPinned(step);
         expect(source).not.toMatch(/npx|bunx|curl|wget|\| *sh\b/);
-        // action の ref とバージョンは同じプレースホルダ(README と同じ約束: 置き換え箇所は 1 種類)。
-        // コメント行(置き換えの案内)は数えない
+        // The action's ref and version share one placeholder (same
+        // promise as the README: a single kind of substitution point).
+        // Comment lines (substitution guidance) do not count
         expect(withoutComments(source).match(/<tag>/g)?.length).toBe(2);
       });
 
       it("keeps the values inside the job: no GitHub secrets (except the one bootstrap token, in the sync step's env), no expression in run:, no echo / GITHUB_ENV / xtrace around maruhi", () => {
-        // `secrets.` は標準形 ② の sync step の `GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}` 1 か所だけ
-        // (github-actions ターゲットの bootstrap — SY5 裁定 F)。他の workflow・他の場所には無い
+        // `secrets.` appears only once: the sync step's `GH_TOKEN: ${{
+        // secrets.GH_SECRETS_TOKEN }}` in standard shape ② (the bootstrap
+        // of the github-actions target — SY5 ruling F). Nowhere else, in
+        // no other workflow
         const bootstrap = expectedBootstrap(workflow);
         expect(secretReferences(source)).toEqual(bootstrap.refs);
         expect(bootstrapCarriers(workflow)).toEqual(bootstrap.carriers);
         expect(source).not.toMatch(/GITHUB_ENV/);
-        // 式は env 経由でだけシェルへ渡す(GitHub のスクリプトインジェクション対策)
+        // Expressions reach the shell only via env (GitHub script-
+        // injection hardening)
         for (const step of stepsOf(workflow)) expect(step.run ?? "").not.toMatch(/\$\{\{/);
         for (const step of stepsOf(workflow).filter(runsMaruhi)) expectMaruhiStepKeepsValues(step);
       });
@@ -278,7 +295,7 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
       expect(deployIndex).toBeGreaterThan(syncIndex);
       expect(runs[deployIndex]).toMatch(/--env tokens/);
       expect(runs[deployIndex]).toMatch(/ -- \.\/node_modules\/\.bin\/wrangler deploy$/);
-      // ベンダー CLI はプロジェクトの依存として入れる(取りに行かない)
+      // The vendor CLI comes in as a project dependency (never fetched)
       expect(runs.slice(0, syncIndex).some((r) => /^npm ci$/.test(r.trim()))).toBe(true);
     });
   });
@@ -299,7 +316,8 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
 
     it("runs one target per matrix leg, in the Environment named after it, one run per target at a time", () => {
       expect(sync.needs).toBe("targets");
-      // 独自の `if` は暗黙の success() を置き換えうるので明示する(targets の失敗で sync を始めない)
+      // A custom `if` may replace the implicit success(), so state it
+      // explicitly (do not start sync when targets failed)
       expect(sync.if).toBe("success() && needs.targets.outputs.list != '[]'");
       expect(sync.strategy).toEqual({
         "fail-fast": false,
@@ -372,7 +390,8 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
         expect(runTargets({ TARGET: "", SCHEDULED_TARGETS: "web  preview " }).output).toBe(
           'list=["web","preview"]\n',
         );
-        // 検査のループと JSON 化が同じ分割から出る(タブ・改行区切りでも 1 要素に潰れない)
+        // The check's loop and the JSON rendering come from the same
+        // split (tab/newline separators do not collapse into one element)
         expect(runTargets({ TARGET: "", SCHEDULED_TARGETS: "web\tpreview\n" }).output).toBe(
           'list=["web","preview"]\n',
         );

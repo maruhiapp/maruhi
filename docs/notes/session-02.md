@@ -1,57 +1,57 @@
-# セッション 02 引き継ぎメモ(Phase 0 検証スパイク C / B / A + 決定事項)
+# Session 02 handoff memo (Phase 0 verification spikes C / B / A + decisions)
 
-日付: 2026-08-01。スコープは ROADMAP Phase 0 の検証スパイク 3 本と、その結果を受けた所有者との決定。
+Date: 2026-08-01. Scope is the three Phase 0 verification spikes in ROADMAP and the decisions taken with the owner on their results.
 
-## このセッションでやったこと
+## What this session did
 
-1. ステップ 0: セッション 01 指摘の文書修正(ADR-0003 Status 明記、ROADMAP 要決定 3 件化、adr README 前文削除、ADR-0005/0009 誤字)→ スパイク C の PR に同梱
-2. スパイク C(PR #2): HPKE 検証 → `docs/notes/spike-c.md`
-3. スパイク B(PR #3): サーバー基盤結線 → `docs/notes/spike-b.md`
-4. スパイク A(PR #4): フロント基盤 → `docs/notes/spike-a.md`
-5. 所有者との Q&A による決定(下記)と CRYPTO_SPEC への反映(本 PR)
+1. Step 0: the document fixes flagged in session 01 (explicit Status on ADR-0003, raising ROADMAP's to-be-decided count to 3, deleting the adr README preamble, ADR-0005/0009 typos) → bundled into the spike C PR
+2. Spike C (PR #2): HPKE verification → `docs/notes/spike-c.md`
+3. Spike B (PR #3): server foundation wiring → `docs/notes/spike-b.md`
+4. Spike A (PR #4): front-end foundation → `docs/notes/spike-a.md`
+5. Decisions through Q&A with the owner (below) and their reflection into CRYPTO_SPEC (this PR)
 
-## 決定事項(2026-08-01、所有者確認済み)
+## Decisions (2026-08-01, confirmed by the owner)
 
-1. **HPKE ライブラリ = `hpke`(panva)を採用**。退避経路 = hpke-js(dajiaji)。CRYPTO_SPEC §2 / §13 に反映済み(本 PR)。Open は KeyPair 渡しを標準とする
-2. **Safari(Navigation API 未対応ブラウザ)はサポートしない**。主要ターゲットは PC の Chrome。`<Router fallback="static">`(MPA 劣化)は保険としてコードに残すが、劣化モードの UX 検証・改善は行わない
-3. **Effect v4 は今月中に stable リリース見込み**のため、beta 固有の問題は深追いしない。stable が出たら独立 PR でピン更新(ADR-0011 の運用)
-4. Cloudflare 資格情報は後日登録。**実デプロイ検証(wrangler / Alchemy v2)は資格情報登録後の別セッション**で行う
-5. **CSP のインラインブートストラップ例外を承認**(所有者)。「自ビルドが生成する起動スクリプトへの SHA-256 ハッシュ許可」のみ可、`'unsafe-inline'` は常に禁止。CLAUDE.md に明文化済み(本 PR)。funstack-static への外部ファイル化オプションの upstream 提案は別途行う
+1. **HPKE library = `hpke` (panva) adopted**. Fallback path = hpke-js (dajiaji). Reflected in CRYPTO_SPEC §2 / §13 (this PR). Open takes a KeyPair as the standard form
+2. **Safari (browsers without Navigation API) is not supported**. The main target is Chrome on PC. `<Router fallback="static">` (MPA degradation) stays in the code as insurance, but the degraded mode's UX is neither verified nor improved
+3. **Effect v4 is expected to reach stable within the month**, so beta-specific problems will not be chased. Once stable ships, update the pin in an independent PR (per ADR-0011)
+4. Cloudflare credentials are registered later. **The real deployment verification (wrangler / Alchemy v2) happens in a separate session after credential registration**
+5. **The CSP inline-bootstrap exception approved** (owner). Only "SHA-256 hash allowlisting of the boot script our own build generates" is allowed; `'unsafe-inline'` is always forbidden. Codified in CLAUDE.md (this PR). An upstream proposal for an external-file option in funstack-static is made separately
 
-## 決定事項(エージェント裁量。所有者は「複数案から長期最良を選べ」と委任)
+## Decisions (agent discretion — the owner delegated "pick the long-term best among the options")
 
-6. **DO 内の Effect Layer の後始末方針**: ManagedRuntime は DO インスタンス生成時に 1 度だけ構築し、**dispose は呼ばない**。その代わり、DO インスタンス寿命の Layer は「ファイナライザの実行に正しさを依存しないもの」に限定し、後始末が必要な本物のリソース(接続・ロック等)は **リクエスト / RPC 呼び出し単位の `Effect.scoped`** で獲得・解放する
-   - 理由: workerd の Durable Object には破棄フック(onDestroy 相当)が存在せず、ハイバネーション・エビクションはいつでも起こる。「dispose がいつか呼ばれる」を前提にした設計は原理的に成立しないため、呼ばれなくても正しいことを構造で保証する方が長期的に安全
-   - 却下した代替案: (a) リクエストごとに ManagedRuntime を構築・破棄 — DO のインメモリ状態の利点を失い、レイテンシ税を毎回払う。(b) alarm による定期 dispose — 実行保証がなく複雑さだけ増える
-7. **3 PR のマージ手順(実測済み)**: **C(#2)→ B(#3)→ A(#4)の順**でマージする。C → B は衝突なし。A のマージで `.fallowrc.json` に 1 箇所衝突が出るが、**A 側(`git checkout --theirs .fallowrc.json`)を採用**すれば正しい統合結果になる(A のブランチに B/C と同一の `spikes/**` 除外行を先行して入れてあるため)。統合状態で `bun run check` 全通過をローカルで確認済み
-8. **root 統合(web e2e の CI 追加・`doctor:astryx` の品質ゲート追加・web vitest プロジェクトの扱い)は、3 PR + 本 PR のマージ後の次セッション冒頭で独立 PR として実施**。Cloudflare 資格情報は不要(wrangler dev はローカル完結)なので、デプロイ検証セッションを待つ必要はない
+6. **Policy for disposing Effect Layers inside a DO**: the ManagedRuntime is built once at DO instance creation and **dispose is never called**. Instead, Layers scoped to the DO instance lifetime are limited to "ones whose correctness does not depend on a finalizer running", and real resources needing cleanup (connections, locks, etc.) are acquired and released per request / per RPC call via **`Effect.scoped`**
+   - Rationale: workerd Durable Objects have no destruction hook (no onDestroy equivalent); hibernation / eviction can happen at any time. A design premised on "dispose gets called eventually" cannot work in principle, so guaranteeing correctness without the call is structurally safer long-term
+   - Rejected alternatives: (a) build and tear down a ManagedRuntime per request — loses the DO's in-memory state advantage and pays a latency tax every time. (b) periodic dispose via alarm — no execution guarantee, only more complexity
+7. **Merge order of the 3 PRs (measured)**: merge in the order **C (#2) → B (#3) → A (#4)**. C → B has no conflict. Merging A produces one conflict in `.fallowrc.json`, and **taking A's side (`git checkout --theirs .fallowrc.json`) yields the correct merged result** (A's branch already carries the same `spikes/**` exclusion line as B/C). `bun run check` verified green locally on the integrated state
+8. **The root integration (adding web e2e to CI, adding `doctor:astryx` to the quality gate, handling of the web vitest project) happens as an independent PR at the start of the next session, after the 3 PRs + this PR merge**. No Cloudflare credentials needed (wrangler dev is local-only), so there is no need to wait for the deployment-verification session
 
-## 決定事項(エージェント委任分・追加)
+## Decisions (agent-delegated items — additions)
 
-9. **CRYPTO_SPEC §8 改訂案(2026-07-31 反映分)を承認**(所有者が判断を委任)。根拠: recovery_secret は一様ランダム 256-bit であり RFC 5869 §3.1 の salt 省略条件に該当、用途分離は info が担保、AAD は §2.1 エンコーディングで user_id に文脈束縛される。セッション 01 の裏取り(Infisical のリカバリー経路と同型 + AAD は上乗せ強化)とも整合
-10. **セッション 01 指摘の文書不一致を解消**(所有者が委任): CLAUDE.md 技術スタック表の docs 行を `apps/docs` に確定 / ADR-0010 の CI 順序に第 7 ステップ(テスト)を追記(本 PR)
+9. **The CRYPTO_SPEC §8 revision draft (the part reflected 2026-07-31) is approved** (the owner delegated the call). Basis: recovery_secret is a uniform-random 256-bit value, meeting RFC 5869 §3.1's salt-omission condition; use separation is carried by info; the AAD is context-bound to user_id in the §2.1 encoding. Consistent with session 01's substantiation (same shape as Infisical's recovery path + AAD as added hardening)
+10. **The document inconsistencies flagged in session 01 are resolved** (delegated by the owner): the docs row of the CLAUDE.md tech-stack table is settled as `apps/docs` / ADR-0010's CI ordering gains the seventh step (tests) (this PR)
 
-## 決定事項(追加裁定)
+## Decisions (additional rulings)
 
-11. **環境モデル = 案 C を採用**(所有者裁定 2026-08-01): DEK 粒度 = **プロジェクト × 環境 × エポック**。AAD / HPKE info に環境識別子を追加し、エポックは (プロジェクト, 環境) ごとに独立。v1 では環境別の権限 UI は作らず(全メンバー全環境)、データ構造のみ環境対応にする。CRYPTO_SPEC 本文の改訂(§3 / §4 / §5 / §13 #6)は認可モデル・org 関係の裁定と合わせて 1 回で行う
-12. **暗号テストベクターの方針を承認**(所有者): HPKE 層は RFC 9180 公式ベクター(spike-c で抽出済み)を流用し、maruhi 固有部(§2.1 エンコーディング、変数暗号化 AAD、チェーン正規化 + 署名、リカバリーラップ)は固定鍵・固定 nonce の手書き JSON + 改竄系 negative を定義。環境モデル反映後・実装開始前にコミット
-13. **npm 確保の分担**(所有者): org `maruhi` の作成のみ所有者が Web UI で実施(API 非提供のため)。プレースホルダパッケージ `maruhi` の publish はエージェントが行う。npm トークン(Granular Access Token)は Cloud Agents > Secrets に `NPM_TOKEN` として登録予定 → 登録後の新セッションで実施
+11. **Environment model = option C adopted** (owner ruling 2026-08-01): DEK granularity = **project × environment × epoch**. An environment identifier is added to the AAD / HPKE info, and epochs are independent per (project, environment). v1 builds no per-environment permission UI (all members, all environments); only the data structures become environment-aware. The revision of the CRYPTO_SPEC body (§3 / §4 / §5 / §13 #6) happens once, together with the rulings on the authorization model and the org relationship
+12. **Crypto test-vector policy approved** (owner): the HPKE layer reuses the official RFC 9180 vectors (extracted in spike-c); the maruhi-specific parts (§2.1 encoding, variable-encryption AAD, chain canonicalization + signatures, recovery wrap) get hand-written JSON with fixed keys and fixed nonces plus tamper-type negatives. Committed after the environment model is reflected and before implementation starts
+13. **Splitting the npm securing work** (owner): only the creation of the org `maruhi` is done by the owner in the Web UI (no API is provided). Publishing the placeholder package `maruhi` is done by the agent. The npm token (Granular Access Token) is to be registered as `NPM_TOKEN` in Cloud Agents > Secrets → carried out in a new session after registration
 
-14. **認可モデル = 案 B を採用**(所有者裁定 2026-08-01): org ロールとプロジェクトロールの完全分離。チェーン上の role は owner / admin / member / reader の 4 段、grant_server / revoke_server は owner 限定。CRYPTO_SPEC §6.2 / §13 #7、AUTH_SPEC §2 / §9-2 に反映済み(本 PR)
-15. **プロジェクトと組織の関係 = 案 A を採用**(所有者裁定 2026-08-01): パーソナル org 自動作成、projects.org_id は NOT NULL、単独利用時は UI で org を隠す。AUTH_SPEC §9-1 に反映済み(本 PR)
-16. **「セルフホスト = 1 人専用 + ホステッド = WorkOS で組織機能」案は取り下げ**(所有者、2026-08-01 議論の結果)。評価の記録: (1) WorkOS が提供するのは認証(SSO)とディレクトリ同期であり、maruhi の組織機能の本体(誰が DEK を受け取るか = チェーン + クライアント暗号操作、role 認可)は E2EE の性質上外注不能で、設計量は減らない。(2) 1 人専用とマルチテナントで製品が分岐し、以後の全機能を 2 回作ることになる(ADR-0009 の同一コードベース戦略と衝突)。(3) セルフホストからチーム利用を外すと OSS 配布物の価値が痩せる(FSL が禁じたいのは競合 SaaS であり、企業の自社チーム利用は歓迎すべき採用経路)。(4) 「後から WorkOS を無停止で挿せる」ことは AUTH_SPEC §7 の挿入ポイント設計が既に最小コストで担保している。なお監査ログは actor = 内部 user_id + 鍵フィンガープリントのみという絶対規則により WorkOS 採否と独立
-17. **監査ログスキーマ(`docs/AUDIT_SPEC.md`)は次セッションで起草**(所有者確認済み): 本 PR の仕様改訂(環境モデル・認可モデル)がレビュー・マージされた内容を前提に書くのが手戻りがないため
-18. **npm の名前確保は完了**(2026-08-01): org `maruhi`(@maruhi スコープ)は所有者が作成、プレースホルダ `maruhi@0.0.1` はエージェントが publish 済み(maintainer: 所有者アカウント)。使用したトークンは短命の使い捨てで、publish 直後に所有者が Revoke する運用とした(Cloud Agents Secrets への恒久登録はせず。Phase 2 の本 publish は provenance 付き CI publish に切り替える)
+14. **Authorization model = option B adopted** (owner ruling 2026-08-01): complete separation of org roles and project roles. The on-chain role has 4 tiers — owner / admin / member / reader; grant_server / revoke_server are owner-only. Reflected in CRYPTO_SPEC §6.2 / §13 #7 and AUTH_SPEC §2 / §9-2 (this PR)
+15. **Relationship between projects and organizations = option A adopted** (owner ruling 2026-08-01): automatic personal-org creation, projects.org_id is NOT NULL, and the UI hides the org in solo use. Reflected in AUTH_SPEC §9-1 (this PR)
+16. **The "self-host = single-user only + hosted = WorkOS for organization features" proposal is withdrawn** (owner, as a result of the 2026-08-01 discussion). Record of the evaluation: (1) what WorkOS provides is authentication (SSO) and directory sync; the core of maruhi's organization features (who receives a DEK = chain + client-side crypto operations, role authorization) cannot be outsourced due to E2EE's nature, so the design volume does not shrink. (2) The product would fork into single-user and multi-tenant, doubling all future features (collides with ADR-0009's single-codebase strategy). (3) Removing team use from self-hosting thins the OSS distribution's value (what the FSL wants to forbid is competing SaaS; corporate self-hosted team use is an adoption path to welcome). (4) "Being able to insert WorkOS later with no downtime" is already guaranteed at minimal cost by the insertion-point design of AUTH_SPEC §7. Note the audit log is independent of the WorkOS decision by the absolute rule that actor = internal user_id + key fingerprint only
+17. **The audit log schema (`docs/AUDIT_SPEC.md`) is drafted next session** (owner confirmed): writing it on top of this PR's spec revisions (environment model, authorization model) after review and merge avoids rework
+18. **The npm name securing is complete** (2026-08-01): the org `maruhi` (the @maruhi scope) was created by the owner; the placeholder `maruhi@0.0.1` was published by the agent (maintainer: the owner's account). The token used was a short-lived disposable; the owner revokes it right after publishing (no permanent registration in Cloud Agents Secrets. The real publish in Phase 2 switches to provenance-backed CI publish)
 
-## 次セッション以降の残タスク
+## Remaining tasks for the next session onward
 
-- [x] ~~3 スパイク PR + 本 PR のマージ(上記手順 7)~~(#2〜#5 マージ済み)
-- [x] ~~マージ後: 環境セットアップエージェントの実行~~(環境構成に設定済み。Playwright はプリインストール Chromium を使用)
-- [x] ~~root 統合 PR(上記 8)+ ROADMAP のスパイク項目チェックオフ~~(2026-08-01 実施。web build + e2e / doctor:astryx を CI の独立ステップ化、e2e のポート固定解消、CI テレメトリ無効化)
-- [x] ~~監査ログスキーマ(`docs/AUDIT_SPEC.md`)起草 → 暗号テストベクター定義(実装より先にコミット)~~(2026-08-01 実施。AUDIT_SPEC は 0.1-draft でレビュー待ち、テストベクターは packages/crypto/test-vectors/ にコミット。docs/notes/session-03.md 参照)
-- [x] ~~npm プレースホルダ publish~~(2026-08-01 完了。`maruhi@0.0.1`)
-- [x] ~~ROADMAP のチェックオフ(#2 マージ後の root 統合 PR で。対象: 要決定 3 件・検証スパイク 3 本・npm プレースホルダ + org — いずれも完了済み)~~(2026-08-01 実施)
-- [ ] `spikes/` の使い捨てコードの削除(所有者承認済みの方針: Phase 1 で crypto の 3 環境 CI とサーバー実装の雛形として参照し終えた時点で削除。その際 `.fallowrc.json` の `spikes/**` 行も戻す)
-- [x] ~~funstack-static への upstream 提案: 起動スクリプトの外部ファイル化オプション(+ `<link rel="preload" as="stylesheet">` の誤値報告)~~(2026-08-01 所有者判断: **当面見送り**。実害なしのため。調査記録は docs/notes/session-03.md)
-- [x] ~~Cloudflare 資格情報登録後: 実デプロイ検証(wrangler 一発デプロイ / Alchemy v2 / Static Assets の _headers 反映確認)~~(完了。2026-08-01 に wrangler 経路 + _headers 反映、2026-08-02 にユーザー API トークン差し替え後の Alchemy 経路も確認。ADR-0012 の両経路実証済み。docs/notes/session-03.md 参照)
-- [ ] Effect v4 stable リリース後: ピン更新の独立 PR
+- [x] ~~Merge the 3 spike PRs + this PR (procedure 7 above)~~ (#2–#5 merged)
+- [x] ~~After merging: run the environment-setup agent~~ (set in the environment configuration. Playwright uses the preinstalled Chromium)
+- [x] ~~Root integration PR (item 8 above) + checking off the ROADMAP spike items~~ (done 2026-08-01. Made web build + e2e / doctor:astryx independent CI steps, removed the fixed e2e port, disabled CI telemetry)
+- [x] ~~Draft the audit log schema (`docs/AUDIT_SPEC.md`) → define crypto test vectors (committed before implementation)~~ (done 2026-08-01. AUDIT_SPEC is 0.1-draft awaiting review; test vectors committed under packages/crypto/test-vectors/. See docs/notes/session-03.md)
+- [x] ~~npm placeholder publish~~ (complete 2026-08-01. `maruhi@0.0.1`)
+- [x] ~~ROADMAP check-offs (in the root integration PR after #2 merges. Targets: 3 to-be-decided items, 3 verification spikes, npm placeholder + org — all complete)~~ (done 2026-08-01)
+- [ ] Delete the disposable code under `spikes/` (owner-approved policy: delete once Phase 1 has finished referencing it for crypto's 3-environment CI and the server-implementation skeleton. Restore the `spikes/**` line in `.fallowrc.json` at that time)
+- [x] ~~Upstream proposal to funstack-static: an option to externalize the boot script (+ report the wrong value on `<link rel="preload" as="stylesheet">`)~~ (owner decision 2026-08-01: **set aside for now**, since there is no real harm. Investigation record in docs/notes/session-03.md)
+- [x] ~~After Cloudflare credential registration: real deployment verification (one-shot wrangler deploy / Alchemy v2 / confirming Static Assets honors _headers)~~ (done. The wrangler path + _headers reflection verified 2026-08-01; the Alchemy path after swapping to a user API token verified 2026-08-02. Both ADR-0012 paths demonstrated. See docs/notes/session-03.md)
+- [ ] After the Effect v4 stable release: an independent PR to update the pin

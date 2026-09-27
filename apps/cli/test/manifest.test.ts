@@ -1,11 +1,13 @@
-// 環境マニフェストの CLI 結線テスト(CRYPTO_SPEC §4.3 / §6.3、AUTH_SPEC §12 —
-// session-27 §13-5 のマニフェスト項)。
+// CLI wiring tests for the environment manifest (CRYPTO_SPEC §4.3 / §6.3,
+// AUTH_SPEC §12 — the manifest clause of session-27 §13-5).
 //
-// 検証の柱:
-//  1. 配布時検証: 欠落 = 一律拒否・ダイジェスト再計算(変数 / tombstone の欠落)・
-//     エポック整合・issuer の役割不足(crypto の共有実装への結線)
-//  2. 床のマニフェスト拡張: 規則 (a) 後退・(b) 同版相違・(c) 前進 version の
-//     旧エポック焼き込み(セッションを跨ぐ永続検出)
+// Pillars of verification:
+//  1. Distribution-time verification: absence = uniform refusal · digest
+//     recomputation (missing variable / tombstone) · epoch consistency ·
+//     issuer role insufficiency (wiring into crypto's shared implementation)
+//  2. Manifest extension of the floor: rules (a) regression, (b) same-version
+//     difference, (c) old-epoch burn-in on an advancing version
+//     (persistent detection across sessions)
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash, computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
@@ -42,15 +44,15 @@ import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 const ENV_ID = "prod";
 
 let owner: TestUser;
-/** role reader のメンバー(issuer 役割不足の negative 用)。 */
+/** A member with role reader (for the issuer-role-insufficiency negative). */
 let reader: TestUser;
-/** role member の第 2 メンバー(同版相違 = equivocation の別 issuer 用)。 */
+/** A second member with role member (for same-version difference = equivocation's different issuer). */
 let member2: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
-/** [genesis, add reader, add member2, create ENV](epoch 1)。 */
+/** [genesis, add reader, add member2, create ENV] (epoch 1). */
 let chain1: BuiltChain;
-/** chain1 + rotate_epoch(2)(chain1 の厳密な延長)。 */
+/** chain1 + rotate_epoch(2) (a strict extension of chain1). */
 let chain2: BuiltChain;
 let wrap1: WireRecipientDek;
 let wrap2: WireRecipientDek;
@@ -148,9 +150,9 @@ interface PullJson {
   }[];
   readonly deletedVariables?: readonly WireDistributedVariableStatement[];
   readonly deks: readonly WireRecipientDek[];
-  /** undefined = マニフェストを配布しない(欠落 negative 用)。 */
+  /** undefined = do not distribute a manifest (for the absence negative). */
   readonly manifest?: WireDistributedManifest;
-  /** チェーンに基準 checkpoint を積むフィクスチャは対応する列挙を同梱する(§12-7)。 */
+  /** A fixture that stacks a baseline checkpoint on the chain bundles the corresponding enumeration (§12-7). */
   readonly checkpointSnapshot?: WireCheckpointSnapshot;
 }
 
@@ -186,7 +188,7 @@ async function startEnv(handlers: readonly MockHandler[]): Promise<TestEnv> {
   return env;
 }
 
-/** 同一 TestEnv(= 同一の床)へのフェーズ切り替え(floor-detection と同じ流儀)。 */
+/** Phase switch into the same TestEnv (= the same floor) — same style as floor-detection. */
 async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promise<void> {
   const server = await MockServer.start(handlers);
   servers.push(server);
@@ -200,7 +202,7 @@ async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promi
 
 const alphaEntry = () => ({ variableId: "va", statement: alphaStatement, value: alphaValue1 });
 
-/** 正直なマニフェスト(epoch 1・chain1 ヘッド・[ALPHA])。上書きで negative を作る。 */
+/** The honest manifest (epoch 1 · chain1 head · [ALPHA]). Overrides build the negatives. */
 function manifestV1(
   overrides: {
     readonly statements?: readonly WireDistributedVariableStatement[];
@@ -208,7 +210,7 @@ function manifestV1(
     readonly head?: { readonly seq: number; readonly hashHex: string };
     readonly issuer?: TestUser;
     readonly manifestVersion?: number;
-    /** version > 1 の prev(隣接 prev 検証 — M1-A1 — を満たすフィクスチャ用)。 */
+    /** prev for version > 1 (for fixtures satisfying the adjacent prev check — M1-A1). */
     readonly prevManifestSigHashHex?: string;
   } = {},
 ): Promise<WireDistributedManifest> {
@@ -226,8 +228,8 @@ function manifestV1(
   });
 }
 
-describe("マニフェスト配布時検証(§6.3 — crypto の共有実装への結線)", () => {
-  it("欠落は一律拒否する", async () => {
+describe("manifest distribution-time verification (§6.3 — wiring into crypto's shared implementation)", () => {
+  it("absence is uniformly refused", async () => {
     const env = await startEnv([
       chainHandler(chain1),
       pullHandler({ currentEpoch: 1, variables: [alphaEntry()], deks: [wrap1] }),
@@ -238,9 +240,10 @@ describe("マニフェスト配布時検証(§6.3 — crypto の共有実装へ�
     expect(errors).toContain("manifest suppression");
   });
 
-  it("変数の欠落(ダイジェストにない変数の配布 = 逆に言えば省略の運搬形)を拒否する", async () => {
-    // マニフェストは空集合のダイジェストで署名 → 配布は ALPHA を含む =
-    // 再計算不一致。逆向き(配布から省く)も同じ 1 検査で覆われる
+  it("refuses a missing variable (distributing a variable that is not in the digest = the carriage form of an omission in reverse)", async () => {
+    // The manifest is signed with the digest of the empty set → the
+    // distribution contains ALPHA = recomputation mismatch. The reverse
+    // direction (omitting from the distribution) is covered by the same single check
     const env = await startEnv([
       chainHandler(chain1),
       pullHandler({
@@ -254,7 +257,7 @@ describe("マニフェスト配布時検証(§6.3 — crypto の共有実装へ�
     expect(env.errors.join("\n")).toContain("reason=variables-digest-mismatch");
   });
 
-  it("tombstone の欠落(削除記録を除いたダイジェスト)を拒否する", async () => {
+  it("refuses a missing tombstone (a digest that excludes the deletion record)", async () => {
     const tombstone = await statementFor({
       projectId,
       environmentId: ENV_ID,
@@ -265,7 +268,7 @@ describe("マニフェスト配布時検証(§6.3 — crypto の共有実装へ�
       status: "deleted",
       metaVersion: 2,
     });
-    // マニフェストのダイジェストは active のみ(tombstone 抜き)で署名されている
+    // The manifest's digest is signed over actives only (without the tombstone)
     const env = await startEnv([
       chainHandler(chain1),
       pullHandler({
@@ -280,8 +283,8 @@ describe("マニフェスト配布時検証(§6.3 — crypto の共有実装へ�
     expect(env.errors.join("\n")).toContain("reason=variables-digest-mismatch");
   });
 
-  it("エポック不整合(宣言ヘッド時点の現エポックでない)を拒否する", async () => {
-    // rotate 後のヘッド(seq 5 = epoch 2)に epoch 1 を焼き込んだマニフェスト
+  it("refuses an epoch mismatch (not the current epoch at the declared head)", async () => {
+    // A manifest that burns epoch 1 into the post-rotate head (seq 5 = epoch 2)
     const env = await startEnv([
       chainHandler(chain2),
       pullHandler({
@@ -295,7 +298,7 @@ describe("マニフェスト配布時検証(§6.3 — crypto の共有実装へ�
     expect(env.errors.join("\n")).toContain("reason=epoch-not-current-at-head");
   });
 
-  it("issuer の役割不足(reader 発行)を拒否する(発行契機はすべて member 以上 — §4.3)", async () => {
+  it("refuses an insufficient issuer role (reader issuance) — every issuance trigger is member-or-above (§4.3)", async () => {
     const env = await startEnv([
       chainHandler(chain1),
       pullHandler({
@@ -309,7 +312,7 @@ describe("マニフェスト配布時検証(§6.3 — crypto の共有実装へ�
     expect(env.errors.join("\n")).toContain("reason=issuer-role-insufficient-at-head");
   });
 
-  it("署名 bit 反転を拒否する", async () => {
+  it("refuses a signature bit-flip", async () => {
     const honest = await manifestV1();
     const flipped = `${honest.signatureHex.slice(0, -1)}${
       honest.signatureHex.endsWith("0") ? "1" : "0"
@@ -328,10 +331,10 @@ describe("マニフェスト配布時検証(§6.3 — crypto の共有実装へ�
   });
 });
 
-describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェスト適用)", () => {
-  it("manifestVersion の後退を拒否する(規則 (a))", async () => {
+describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to manifests)", () => {
+  it("refuses a manifestVersion regression (rule (a))", async () => {
     const env = await makeTestEnv();
-    // フェーズ 1: v2 のマニフェストで床を確立
+    // Phase 1: establish the floor with the v2 manifest
     await startPhase(env, [
       chainHandler(chain1),
       pullHandler({
@@ -343,7 +346,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // フェーズ 2: 同一集合の v1(単体では全検証を通る古い正規マニフェスト)
+    // Phase 2: v1 over the same set (an old valid manifest that passes every check standalone)
     await startPhase(env, [
       chainHandler(chain1),
       pullHandler({
@@ -360,15 +363,17 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     expect(errors).toContain("manifestVersion=1");
   });
 
-  it("チェーンの checkpoint 基準線(F3)は床の規則 (a)(F2)を代替しない — 基準線以上・床未満の配布は床が拒否する(PR-F4 cross-layer)", async () => {
-    // チェーン上の最新 checkpoint は mv1 を公証している(境界 checkpoint の形)。
-    // 床は pull で v3 を知っている。v2 の配布は §4.3 (4) の基準線(mv1 以上)を
-    // 通り checkpoint-regressed は発火しないが、床の規則 (a)(v3 未満)が落とす —
-    // 粗い共有基準(チェーン。メタ操作は checkpoint を発行しないため床より
-    // 遅れて進む)が、細かいローカル基準(床)を短絡しないことの固定
+  it("the chain's checkpoint baseline (F3) does not substitute for the floor's rule (a) (F2) — a distribution at-or-above the baseline but below the floor is refused by the floor (PR-F4 cross-layer)", async () => {
+    // The latest checkpoint on the chain notarizes mv1 (the boundary-checkpoint
+    // shape). The floor knows v3 from the pull. A v2 distribution passes the
+    // §4.3 (4) baseline (mv1 or above) so checkpoint-regressed does not fire,
+    // but the floor's rule (a) (below v3) rejects it — pinning that the coarse
+    // shared criterion (the chain, which lags the floor because meta operations
+    // do not issue checkpoints) never short-circuits the fine local criterion (the floor)
     const v1 = await manifestV1();
-    // 基準 checkpoint の values_digest は配布集合([ALPHA v1])の実計算値 —
-    // 対応する列挙(checkpointSnapshot)を pull に同梱する(規則 2 — PR-M3)
+    // The baseline checkpoint's values_digest is the actual computed value of
+    // the distributed set ([ALPHA v1]) — the corresponding enumeration
+    // (checkpointSnapshot) is bundled into the pull (rule 2 — PR-M3)
     const snapshotValues = await checkpointSnapshotValuesOf([alphaValue1]);
     const valuesDigest = await computeEnvValuesDigest(SUITE_ID, snapshotValues);
     if (!valuesDigest.ok) throw new Error("values digest failed");
@@ -403,7 +408,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
       values: snapshotValues,
     };
     const env = await makeTestEnv();
-    // フェーズ 1: v3 で床を確立(mv1 タプルとは別版 — strict 経路で検証される)
+    // Phase 1: establish the floor with v3 (a different version from the mv1 tuple — verified on the strict path)
     await startPhase(env, [
       chainHandler(checkpointChain),
       pullHandler({
@@ -416,7 +421,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // フェーズ 2: v2(チェーン基準線 mv1 以上・床 v3 未満)
+    // Phase 2: v2 (at-or-above the chain baseline mv1, below the floor's v3)
     await startPhase(env, [
       chainHandler(checkpointChain),
       pullHandler({
@@ -433,7 +438,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     expect(errors).not.toContain("checkpoint-regressed");
   });
 
-  it("同一 manifestVersion の signed bytes 相違を拒否する(規則 (b) — equivocation)", async () => {
+  it("refuses differing signed bytes under the same manifestVersion (rule (b) — equivocation)", async () => {
     const env = await makeTestEnv();
     await startPhase(env, [
       chainHandler(chain1),
@@ -446,7 +451,7 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // 同一 version・同一集合だが issuer が異なる = signed bytes が異なる有効署名
+    // Same version, same set, but a different issuer = valid signatures over different signed bytes
     await startPhase(env, [
       chainHandler(chain1),
       pullHandler({
@@ -460,9 +465,9 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     expect(env.errors.join("\n")).toContain("signed bytes served for the same manifestVersion");
   });
 
-  it("前進 manifestVersion の旧エポック焼き込みを拒否する(規則 (c) のマニフェスト適用)", async () => {
+  it("refuses an advancing manifestVersion that burns in an old epoch (applying rule (c) to manifests)", async () => {
     const env = await makeTestEnv();
-    // フェーズ 1: epoch 2 の床(pull 時点エポック基準 = 2)を確立
+    // Phase 1: establish an epoch-2 floor (pull-time epoch criterion = 2)
     await startPhase(env, [
       chainHandler(chain2),
       pullHandler({
@@ -478,12 +483,14 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // フェーズ 2: version は前進(4 — 床 v2 との差 2 以上 = 隣接 prev 検証
-    // 〔M1-A1〕の対象外で、中間 predecessor の実在一致は latest-only の既知
-    // 制約どおり検査不能)だが epoch 1 を焼き込んだマニフェスト(旧エポック期の
-    // 在籍ヘッド seq 4 を宣言すれば暗号学的には有効)。この gap 形の前進注入を
-    // 落とすのが床の規則 (c) のマニフェスト適用そのもの(隣接形は共有検証器の
-    // predecessor エポック非減少 — 下の固定テスト — が先に落とす)
+    // Phase 2: the version advances (4 — a gap of ≥2 from the floor's v2 means
+    // the adjacent-prev check [M1-A1] does not apply, and the actual-equality
+    // of an intermediate predecessor is uncheckable per the known latest-only
+    // constraint), but the manifest burns in epoch 1 (declaring membership
+    // head seq 4 from the old epoch is cryptographically valid). Rejecting
+    // this gap-shaped advancing injection is exactly the floor's rule (c)
+    // applied to manifests (the adjacent shape is rejected earlier by the
+    // shared verifier's predecessor-epoch-non-decrease check — the test below)
     await startPhase(env, [
       chainHandler(chain2),
       pullHandler({
@@ -499,11 +506,12 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     expect(errors).toContain("forward meta injection");
   });
 
-  it("規則 (c) の基準は床マニフェスト自身の epoch も含む(pullEpoch が遅れている窓)", async () => {
-    // 有界再同期の形では pullEpoch は応答取得**前**ビュー(= 旧エポック)に
-    // 据え置かれる一方、床マニフェストは epoch 2 を検証済みで知っている。
-    // 基準を pullEpoch だけにすると、旧エポックを焼き込んだ前進 manifestVersion
-    // (旧在籍ヘッド宣言で暗号学的には有効)が素通りする
+  it("rule (c)'s criterion also covers the floor manifest's own epoch (the window where pullEpoch lags)", async () => {
+    // In the bounded-resync shape, pullEpoch stays at the pre-response view
+    // (= the old epoch), while the floor manifest already knows epoch 2 as
+    // verified. If the criterion were pullEpoch alone, an advancing
+    // manifestVersion burning in the old epoch (cryptographically valid via a
+    // declaration of the old membership head) would slip through
     const env = await makeTestEnv();
     let chainCalls = 0;
     const progressiveChain: MockHandler = onRequest("GET", `/projects/${projectId}/chain`, () => {
@@ -520,9 +528,9 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
         },
       };
     });
-    // フェーズ 1: 旧ビュー(chain1)から始まり、epoch 2 の値 + v2 マニフェスト
-    // (head seq 5 = future)が有界再同期で受理される → 床: pullEpoch 1・
-    // マニフェスト {v2, epoch 2}
+    // Phase 1: starting from the old view (chain1), the epoch-2 value + v2
+    // manifest (head seq 5 = future) is accepted by bounded resync → floor:
+    // pullEpoch 1, manifest {v2, epoch 2}
     await startPhase(env, [
       progressiveChain,
       pullHandler({
@@ -538,10 +546,11 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // フェーズ 2: version は前進(4 — gap 2 以上 = 隣接 prev 検証の対象外)だが
-    // epoch 1 を焼き込んだマニフェスト。pullEpoch(1)基準では素通りするが、
-    // 床マニフェストの epoch(2)が基準に入るため拒否される(マニフェスト連鎖の
-    // エポック非減少の推移形)
+    // Phase 2: the version advances (4 — gap ≥2 = outside the adjacent-prev
+    // check), but the manifest burns in epoch 1. It would slip through on the
+    // pullEpoch (1) criterion, but is rejected because the floor manifest's
+    // epoch (2) joins the criterion (the transitive form of epoch
+    // non-decrease across the manifest chain)
     await startPhase(env, [
       chainHandler(chain2),
       pullHandler({
@@ -558,8 +567,8 @@ describe("床のマニフェスト拡張(§6.3 規則 (a)(b)(c) のマニフェ�
   });
 });
 
-describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1) — session-31 M1-A1)", () => {
-  /** metadata-only pull(§12-7)の応答(push の名前解決経路 = metadata 経路の固定用)。 */
+describe("prev-chain verification of adjacent manifestVersions (§4.3 verification rule (1) — session-31 M1-A1)", () => {
+  /** The response of a metadata-only pull (§12-7) — for pinning push's name-resolution path = the metadata path. */
   function metadataHandler(manifest: WireDistributedManifest): MockHandler {
     return onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`, () => ({
       status: 200,
@@ -575,7 +584,7 @@ describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1) �
     }));
   }
 
-  /** フェーズ 1: v1 マニフェストで床を確立し、その signed-bytes ハッシュを返す。 */
+  /** Phase 1: establish the floor with a v1 manifest and return its signed-bytes hash. */
   async function establishV1Floor(env: TestEnv): Promise<string> {
     await startPhase(env, [
       chainHandler(chain1),
@@ -590,7 +599,7 @@ describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1) �
     return manifestHashOf(projectId, await manifestV1());
   }
 
-  it("床 v1 → 正しい prev の v2: 受理する", async () => {
+  it("floor v1 → v2 with the correct prev: accepted", async () => {
     const env = await makeTestEnv();
     const v1Hash = await establishV1Floor(env);
     await startPhase(env, [
@@ -605,10 +614,10 @@ describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1) �
     expect(await runCli(["pull"], env.layer)).toBe(0);
   });
 
-  it("床 v1 → 異なる prev の v2: 分岐の証拠として拒否する(有効署名・正しい digest でも)", async () => {
+  it("floor v1 → v2 with a different prev: refused as evidence of branching (even with a valid signature and correct digest)", async () => {
     const env = await makeTestEnv();
     const v1Hash = await establishV1Floor(env);
-    // 有効署名・正しい digest・正しい epoch を持つが、prev が任意の 64-hex
+    // Holds a valid signature, correct digest, and correct epoch, but prev is an arbitrary 64-hex
     const forged = await manifestV1({
       manifestVersion: 2,
       prevManifestSigHashHex: "ab".repeat(32),
@@ -625,18 +634,19 @@ describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1) �
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("declares a prev that does not match the verified predecessor");
-    // 証拠: 床側ハッシュ・配布側 prev・issuer・宣言ヘッド(M1-A1 修正案 3)
+    // Evidence: the floor-side hash, the distributed prev, issuer, declared head (M1-A1 amendment 3)
     expect(errors).toContain(v1Hash);
     expect(errors).toContain("ab".repeat(32));
     expect(errors).toContain(`issuer=${owner.userId}`);
     expect(errors).toContain("declared head:");
   });
 
-  it("床 v1 → v3(version gap ≥ 2): latest-only の既知制約どおり受理する(§14.3)", async () => {
+  it("floor v1 → v3 (version gap ≥ 2): accepted per the known latest-only constraint (§14.3)", async () => {
     const env = await makeTestEnv();
     await establishV1Floor(env);
-    // 中間版(v2)は配布されない設計なので prev の実在一致は検査不能 — 検査
-    // できると偽らない(prev はフィクスチャのダミーのまま)
+    // Intermediate versions (v2) are never distributed by design, so prev's
+    // actual-equality is uncheckable — do not pretend it is checkable (prev
+    // stays a fixture dummy)
     await startPhase(env, [
       chainHandler(chain1),
       pullHandler({
@@ -649,7 +659,7 @@ describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1) �
     expect(await runCli(["pull"], env.layer)).toBe(0);
   });
 
-  it("metadata-only pull 経路でも同一の prev 検査が働く(push の名前解決で発火)", async () => {
+  it("the same prev check works on the metadata-only pull path (fired by push's name resolution)", async () => {
     const env = await makeTestEnv();
     await establishV1Floor(env);
     const forged = await manifestV1({
@@ -664,9 +674,10 @@ describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1) �
     );
   });
 
-  it("隣接 v2 が prev を正しく連鎖しつつエポックを後退させたら epoch-regressed で拒否する", async () => {
-    // 床の predecessor は hash と epoch の両方を運ぶ(共有検証器の §4.1 同型
-    // 検査)。旧エポック焼き込みの隣接前進はここで落ちる(gap 形は床の規則 (c))
+  it("an adjacent v2 that chains prev correctly but regresses the epoch is refused as epoch-regressed", async () => {
+    // The floor's predecessor carries both hash and epoch (the shared
+    // verifier's §4.1 isomorphic check). An old-epoch burn-in in adjacent
+    // advance is rejected here (the gap shape is the floor's rule (c))
     const env = await makeTestEnv();
     await startPhase(env, [
       chainHandler(chain2),
@@ -702,7 +713,7 @@ describe("隣接 manifestVersion の prev 連鎖検証(§4.3 検証規則 (1) �
 });
 
 /* -------------------------------------------------------------------------- */
-/* 移行経路(session-27 §14 PR-M1 — マニフェスト導入前の環境の v1 初期化)      */
+/* Migration path (session-27 §14 PR-M1 — v1 init for pre-manifest envs)    */
 /* -------------------------------------------------------------------------- */
 
 interface RotateBody {
@@ -726,19 +737,19 @@ interface RotateBody {
     readonly signatureHex: string;
   }[];
   readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
-  /** 境界 checkpoint(H+2 — §12-4 の必須同梱)。 */
+  /** The boundary checkpoint (H+2 — the mandatory bundle of §12-4). */
   readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
 }
 
 /**
- * マニフェスト導入前に作られた環境のサーバー: 保存マニフェストなし(pull は
- * manifest を同梱しない)。rotate 複合を受理したら以後は受理マニフェストを配布する。
+ * The server of an environment created before manifests: no stored manifest
+ * (pull does not bundle manifest). Once it accepts a rotate composite, it distributes the accepted manifest thereafter.
  */
 function makeLegacyServer(input: {
   readonly serveManifestAfterAccept?: boolean;
-  /** 初期配布マニフェスト(undefined = 未初期化サーバー)。 */
+  /** The initially distributed manifest (undefined = uninitialized server). */
   readonly initialManifest?: WireDistributedManifest;
-  /** 初期チェーン(既定 = chain1)。 */
+  /** The initial chain (default = chain1). */
   readonly built?: BuiltChain;
   readonly currentEpoch?: number;
   readonly variables?: {
@@ -761,8 +772,8 @@ function makeLegacyServer(input: {
   const pushes: string[] = [];
   let currentEpoch = input.currentEpoch ?? 1;
   let manifest: WireDistributedManifest | null = input.initialManifest ?? null;
-  // 保存済みチェックポイントスナップショット(§16-2 — 境界 checkpoint の受理で
-  // 保存し、以後の値付き pull に同梱する。規則 2 の材料 — PR-M3)
+  // The stored checkpoint snapshot (§16-2 — saved when a boundary checkpoint
+  // is accepted and bundled into later value-bearing pulls. Material for rule 2 — PR-M3)
   let checkpointSnapshot: WireCheckpointSnapshot | null = null;
   const handlers: MockHandler[] = [
     onRequest("GET", `/projects/${projectId}/chain`, () => ({
@@ -824,14 +835,14 @@ function makeLegacyServer(input: {
       }
       const body = request.body as RotateBody;
       rotateBodies.push(body);
-      // rotate + 境界 checkpoint の 2 エントリ受理(§12-4)
+      // Accepts the 2 entries rotate + boundary checkpoint (§12-4)
       entries.push(body.entry, body.checkpoint);
       hashes.push(
         await computeChainEntryHash(body.entry),
         await computeChainEntryHash(body.checkpoint),
       );
-      // 受理と同一トランザクションのスナップショット保存(§16-2 — 受理時点の
-      // 配布集合の列挙)
+      // Snapshot save in the same transaction as acceptance (§16-2 — the
+      // enumeration of the distributed set at acceptance time)
       checkpointSnapshot = {
         chainSeq: entries.length,
         entryHashHex: hashes[hashes.length - 1] ?? "",
@@ -874,42 +885,43 @@ function makeLegacyServer(input: {
   return { handlers, rotateBodies, pushes };
 }
 
-describe("rotate 受理後の巻き戻し検出(§6.3 / §4.3 (4))", () => {
-  it("受理後も旧 manifestVersion を配布し続けるサーバーは、同一実行の再走査が検出する", async () => {
-    // rotate は自分が署名した次 manifestVersion を受理直後に床へ昇格する。
-    // 境界 checkpoint(PR-F3b)が受理 version の基準線をチェーン上にも固定する
-    // ため、旧マニフェストを配布し続けるサーバー(受理した v2 の握り潰し)は
-    // 床検査(規則 (a))より先に §4.3 検証規則 (4)(checkpoint-regressed)で
-    // 落ちる — 検出層が増えただけで、握り潰しが同一実行内で落ちる
-    // 固定点は変わらない
+describe("rollback detection after rotate acceptance (§6.3 / §4.3 (4))", () => {
+  it("a server that keeps distributing an old manifestVersion after acceptance is detected by the same run's rescan", async () => {
+    // rotate promotes the next manifestVersion it signed into the floor right
+    // after acceptance. Because the boundary checkpoint (PR-F3b) also pins the
+    // accepted-version baseline on the chain, a server that keeps distributing
+    // the old manifest (swallowing the accepted v2) is rejected by §4.3
+    // verification rule (4) (checkpoint-regressed) before the floor check
+    // (rule (a)) — one more detection layer, but the fixed point that the
+    // swallow is rejected within the same run is unchanged
     const staleManifest = await manifestV1({ statements: [] });
     const state = makeLegacyServer({
       initialManifest: staleManifest,
-      // 受理した v2 を保存せず、v1 を配布し続ける(巻き戻しサーバーのモデル化)
+      // Keeps distributing v1 without storing the accepted v2 (models a rollback server)
       serveManifestAfterAccept: false,
     });
     const env = await startEnv(state.handlers);
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "握り潰し"], env.layer)).toBe(1);
-    // 複合自体は受理されている(拒否は受理後の再走査 pull の検証)
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "swallow"], env.layer)).toBe(1);
+    // The composite itself was accepted (the refusal is the verification of the post-acceptance rescan pull)
     expect(state.rotateBodies).toHaveLength(1);
     expect(env.errors.join("\n")).toContain("checkpoint-regressed");
   });
 
-  it("床の書き込みに失敗しても、受理 version の検出基準は同一実行の再走査で機能する", async () => {
-    // commitManifest のディスク書き込みが失敗しても、受理した rotate の境界
-    // checkpoint はチェーン上の基準線であり続ける — 受理後に旧版を配布し続ける
-    // サーバーは同一実行内で checkpoint-regressed として落ちる(床の永続化の
-    // 欠けは警告で開示される)
+  it("even when the floor write fails, the accepted-version detection criterion still works via the same run's rescan", async () => {
+    // Even if commitManifest's disk write fails, the accepted rotate's boundary
+    // checkpoint remains the baseline on the chain — a server that keeps
+    // distributing the old version after acceptance is rejected as
+    // checkpoint-regressed within the same run (the missing floor persistence is disclosed via a warning)
     const staleManifest = await manifestV1({ statements: [] });
     const state = makeLegacyServer({
       initialManifest: staleManifest,
       serveManifestAfterAccept: false,
     });
     const env = await startEnv(state.handlers);
-    // 床は事前 pull で確立しておく(rotate 中の書き込みだけを失敗させる)
+    // Establish the floor via a prior pull (only the write during rotate fails)
     expect(await runCli(["pull"], env.layer)).toBe(0);
     env.failFloorPushCommits();
-    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "床故障"], env.layer)).toBe(1);
+    expect(await runCli(["env", "rotate", ENV_ID, "--reason", "floor failure"], env.layer)).toBe(1);
     expect(state.rotateBodies).toHaveLength(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("could not be recorded in the local floor");
