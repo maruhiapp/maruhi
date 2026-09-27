@@ -40,7 +40,6 @@ import {
   sweepAfterDeviceRevoke,
 } from "./device-ops.ts";
 import {
-  groupStandings,
   type KeyStanding,
   keyStandingOnProject,
   ledgerKeyVerdictOf,
@@ -62,7 +61,12 @@ import { CliIo } from "./io.ts";
 import { generateKeyRecord } from "./key-record.ts";
 import { Keychain, masterKeyEntryName, serializeStoredMasterKey } from "./keychain.ts";
 import { recoveryRegistered } from "./keygen.ts";
-import { type LedgerOpenVia, openLedgerReserve, settleLedgerKeyForChange } from "./ledger-open.ts";
+import {
+  type LedgerOpenVia,
+  noteUncheckedLedgerKey,
+  openLedgerReserve,
+  settleLedgerKeyForChange,
+} from "./ledger-open.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { OwnDeviceStore } from "./own-devices.ts";
 import { fetchProjectMemberships } from "./project-list.ts";
@@ -306,14 +310,15 @@ function finishRecovery(input: {
       yield* reportRecoveryOutcome(outcome);
     }
     // 判定は登録のために開いたチェーンで行う(同期を二重にしない — DK K14-1 / K14-5)
-    const groups = groupStandings({
-      projects: outcomes.map(({ projectId, standing }) => ({ projectId, standing })),
-      listFailure: null,
-    });
+    // 同期できなかったプロジェクトは各プロジェクトの報告が名指し済みなので、確かめられなかった範囲の
+    // Note は出さない
     yield* settleOpenedKey({
       session: input.session,
       reserve: input.reserve,
-      verdict: reserveVerdictOf(groups),
+      verdict: reserveVerdictOf({
+        projects: outcomes.map(({ projectId, standing }) => ({ projectId, standing })),
+        listFailure: null,
+      }),
     });
     // B の秘密はここで役目を終える(参照を手放す。保存経路は型で閉じている — reserve.ts)
     yield* logNote(
@@ -499,6 +504,7 @@ function separateUnusableLedgerKey(input: {
       }
       return "separated";
     }
+    yield* noteUncheckedLedgerKey(fp, verdict);
     return "record";
   });
 }

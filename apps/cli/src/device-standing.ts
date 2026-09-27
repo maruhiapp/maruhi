@@ -180,16 +180,30 @@ export type ReserveVerdict =
       /** 失効していないプロジェクト(まだ有効に載っている所)。 */
       readonly activeProjectIds: readonly string[];
     }
-  | { readonly kind: "usable" };
+  | {
+      readonly kind: "usable";
+      /**
+       * 同期できず確かめられなかったプロジェクト(そこで失効していても見えない)。止めはしない
+       * (DK K16-6)が、報告側が Note で名指す。
+       */
+      readonly uncheckedProjectIds: readonly string[];
+      /** プロジェクト一覧の取得の失敗(null = 取れた)。取れなければどこも確かめていない。 */
+      readonly listFailure: string | null;
+    };
 
-export function reserveVerdictOf(groups: StandingGroups): ReserveVerdict {
+export function reserveVerdictOf(standings: KeyStandings): ReserveVerdict {
+  const groups = groupStandings(standings);
   return groups.revoked.length > 0
     ? {
         kind: "revoked",
         projectIds: groups.revoked,
         activeProjectIds: groups.active.map((entry) => entry.projectId),
       }
-    : { kind: "usable" };
+    : {
+        kind: "usable",
+        uncheckedProjectIds: groups.unsynced.map((entry) => entry.projectId),
+        listFailure: standings.listFailure,
+      };
 }
 
 /**
@@ -202,7 +216,5 @@ export function ledgerKeyVerdictOf(input: {
   readonly client: MaruhiClient;
   readonly fingerprintHex: string;
 }): Effect.Effect<ReserveVerdict, never, CliServices> {
-  return Effect.map(keyStandingsOf(input), (standings) =>
-    reserveVerdictOf(groupStandings(standings)),
-  );
+  return Effect.map(keyStandingsOf(input), reserveVerdictOf);
 }

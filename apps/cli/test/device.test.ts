@@ -3064,11 +3064,45 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     // 同期できないプロジェクトでの登録・失効は失敗として報告される(終了コード 1 — 再実行で続く)
     expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).not.toContain("Refused to change anything");
+    // 止めない代わりに、確かめられなかった範囲を名指す
+    expect(env.errors.join("\n")).toContain(
+      `Note: 1 project (${broken.projectId}) could not be synced, so whether the key ${reserve.fingerprintHex} is revoked there was not checked`,
+    );
     expect(ledgerPuts).toHaveLength(1);
     const revoked = state.appendedTo.flatMap(({ entry }) =>
       entry.op === "revoke_device" ? entry.payload.deviceFingerprintsHex : [],
     );
     expect(revoked).toEqual([reserve.fingerprintHex]);
+  });
+
+  it("key recovery: 確かめられないプロジェクトがあっても予備鍵を使い、その範囲を Note で名指す(DK K16-6)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(reserve) },
+    ]);
+    const broken = await buildChain([{ actor: member, operation: genesisOp(member) }]);
+    const { env } = await recoveryFixture({
+      device: owner,
+      ledgerKey: reserve,
+      built,
+      brokenProjects: [{ built: broken, mode: "unavailable" }],
+    });
+    await runCli(["key", "recovery"], env.layer);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `Note: 1 project (${broken.projectId}) could not be synced, so whether the key ${reserve.fingerprintHex} is revoked there was not checked`,
+    );
+    expect(env.logs.join("\n")).not.toContain("cannot serve as your reserve key");
+  });
+
+  it("rotate: 確かめたプロジェクトがすべて同期できれば、確かめられなかった範囲の Note は出さない", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: addDeviceOp(reserve) },
+    ]);
+    const { env } = await recoveryFixture({ device: owner, ledgerKey: reserve, built });
+    expect(await runCli(["key", "reserve", "rotate"], env.layer), env.errors.join("\n")).toBe(0);
+    expect(env.errors.join("\n")).not.toContain("was not checked");
   });
 
   it("rotate: 予備鍵の印の無い台帳の鍵は、チェーンでどこでも add_device 出所でも何も変えずに止まる(DK K16-6)", async () => {

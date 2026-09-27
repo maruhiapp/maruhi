@@ -3557,3 +3557,12 @@ K16-2 と K16-4 は、印の無い既存の予備鍵の利用者を止めない�
   2. DO: `maruhi-server-hosted` に、503 を返すだけの仮 Worker を `exports: { ProjectChainDO: { type: "durable-object", state: "deleted" } }` でデプロイし、名前空間を削除した(wrangler 4.136.1。出力 "Durable Object exports reconciliation: Deleted: ProjectChainDO")。この間 `my.maruhi.app` は 503。
   3. `wrangler.jsonc` の `migrations` を `exports`(`storage: "sqlite"`)に置き換えた。一度 `exports` でデプロイしたので `migrations` には戻せない。セルフホストの新規デプロイも `exports` で DO を作る。
   4. main から `bun run deploy`(`--env hosted`)で D1 マイグレーションとデプロイを実行し、新しい名前空間で DO を作った。
+
+### 22-5. 確かめられなかったプロジェクトの Note(2026-09-27 — Cursor セキュリティ指摘への対応。所有者承認)
+
+- 指摘: 台帳の鍵の失効判定は、同期できないプロジェクト・一覧の失敗を「失効していない」に畳んで進む(fail-open)。
+- 裁定: 止める挙動は変えない(K16-6: 印のある予備鍵は、確かめられない所があっても使う — 止めると回復の唯一の経路が一時的な障害で塞がる)。代わりに黙らない。
+- 成果物:
+  - `ReserveVerdict` の `usable` に `uncheckedProjectIds` と `listFailure` を足した(`reserveVerdictOf` は `KeyStandings` を受ける)。
+  - `ledger-open.ts` の `noteUncheckedLedgerKey` が Note を出す: 一覧の失敗なら「どこも確かめていない」、同期できないプロジェクトがあればその名前。`key recovery`(台帳の鍵を使う分岐)と、台帳を変えるコマンド(`settleLedgerKeyForChange` — rotate / passkey / guardian)が呼ぶ。
+  - `key recover` の登録後の判定では出さない(同期できなかったプロジェクトは各プロジェクトの報告が名指し済み)。
