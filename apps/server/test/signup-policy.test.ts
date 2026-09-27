@@ -1,14 +1,18 @@
-// サインアップ制御の統合テスト(AUTH_SPEC §3 — H1)。
+// Integration tests for the sign-up controls (AUTH_SPEC §3 — H1).
 //
-// 検査の骨子:
-// - 既定(deployment_settings に行なし)= 'open' = 従来挙動と完全に同一
-//   (従来挙動そのものの回帰は auth.test.ts が担う — 本ファイルは advisory と
-//   ゲートの H1 追加面のみを見る)
-// - 塞ぐのは「不在 → 作成」だけ(既存ユーザーのログインはどのポリシーでも不変)
-// - 拒否時に users / linked_identities / organizations / memberships の行を
-//   作らない(fail-closed)+ auth.signup_denied の記録
-// - サインアップ招待コードの消費はアカウント作成と同一トランザクション
-//   (成功 = used、拒否・既存ユーザー・open = pending のまま)
+// The skeleton of the checks:
+// - the default (no row in deployment_settings) = 'open' = exactly
+//   the same as the previous behavior (regressions of the previous
+//   behavior itself are covered by auth.test.ts — this file only
+//   exercises the advisory and the gate's H1-added surface)
+// - what it blocks is only "absent → create" (an existing user's
+//   login is unchanged under any policy)
+// - on rejection, no rows are created in users / linked_identities /
+//   organizations / memberships (fail-closed) + auth.signup_denied
+//   is recorded
+// - consuming a sign-up invite code is in the same transaction as
+//   account creation (success = used; rejection / existing user /
+//   open = stays pending)
 
 import { env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -39,7 +43,7 @@ async function countRows(table: string): Promise<number> {
   return row?.n ?? -1;
 }
 
-/** 主要テーブルの行数(拒否 = 行を作らない fail-closed の検査)。 */
+/** The row counts of the main tables (checks the rejection = fail-closed creates no rows). */
 async function authRowCounts(): Promise<{
   users: number;
   identities: number;
@@ -54,7 +58,7 @@ async function authRowCounts(): Promise<{
   };
 }
 
-/** auth.signup_denied の記録行(payload は JSON)。 */
+/** The auth.signup_denied record rows (payload is JSON). */
 async function signupDeniedEvents(): Promise<{ reason: string }[]> {
   const rows = await env.DB.prepare(
     "SELECT payload FROM user_audit_events WHERE event = 'auth.signup_denied' ORDER BY seq",
@@ -65,7 +69,7 @@ async function signupDeniedEvents(): Promise<{ reason: string }[]> {
   });
 }
 
-describe("GET /auth/config の signupPolicy advisory(§3 / §4)", () => {
+describe("GET /auth/config's signupPolicy advisory (§3 / §4)", () => {
   it("returns 'open' by default (no settings row)", async () => {
     const response = await SELF.fetch(`${BASE}/auth/config`);
     expect(response.status).toBe(200);
@@ -86,20 +90,20 @@ describe("GET /auth/config の signupPolicy advisory(§3 / §4)", () => {
     expect(closed.signupPolicy).toBe("closed");
   });
 
-  it("treats an unknown stored value as 'closed' (fail-closed — 運営の typo を open に化けさせない)", async () => {
+  it("treats an unknown stored value as 'closed' (fail-closed — an operator typo must not flip to open)", async () => {
     await setSignupPolicy("evreyone-welcome");
     const body = (await (await SELF.fetch(`${BASE}/auth/config`)).json()) as {
       signupPolicy?: string;
     };
     expect(body.signupPolicy).toBe("closed");
-    // ゲート側も同じ読み(新規作成は拒否される)
+    // The gate reads it the same way (new sign-ups are rejected)
     const callback = await signupAttempt(700);
     expect(callback.status).toBe(403);
     expect((await authRowCounts()).users).toBe(0);
   });
 });
 
-describe("signupPolicy = closed(§3 — 新規作成の全拒否)", () => {
+describe("signupPolicy = closed (§3 — reject every new sign-up)", () => {
   beforeEach(async () => {
     await setSignupPolicy("closed");
   });
@@ -109,15 +113,17 @@ describe("signupPolicy = closed(§3 — 新規作成の全拒否)", () => {
     expect(callback.status).toBe(403);
     const html = await callback.text();
     expect(html).toContain("Sign-ups are closed");
-    // 拒否ページは「アカウントは作られていない」を明示する(§3 — DP4 で outcome 行に)
+    // The rejection page states explicitly that no account was
+    // created (§3 — surfaced as the outcome row in DP4)
     expect(html).toContain("No account was created.");
-    // スクリプトなし配信規律(§15-3 と同じ — cli-pages の応答点を共用)
+    // The scriptless-serving discipline (same as §15-3 — shares the
+    // cli-pages response point)
     expect(callback.headers.get("content-security-policy")).toContain("script-src 'none'");
-    // セッションは発行されない・行も作られない(fail-closed)
+    // No session is issued and no rows are created (fail-closed)
     expect(readCookieValue(callback.headers.getSetCookie(), SESSION_COOKIE)).toBeNull();
     expect(await authRowCounts()).toEqual({ users: 0, identities: 0, orgs: 0, memberships: 0 });
     expect(await signupDeniedEvents()).toEqual([{ reason: "policy-closed" }]);
-    // 拒否は外部 provider ID を記録しない(AUDIT_SPEC §1-2)
+    // The rejection does not record the external provider ID (AUDIT_SPEC §1-2)
     const denied = await env.DB.prepare(
       "SELECT actor_user_id, payload FROM user_audit_events WHERE event = 'auth.signup_denied'",
     ).first<{ actor_user_id: string | null; payload: string }>();
@@ -125,7 +131,7 @@ describe("signupPolicy = closed(§3 — 新規作成の全拒否)", () => {
     expect(denied?.payload).not.toContain("701");
   });
 
-  it("does not affect an existing user's login (§3 — 塞ぐのは新規作成のみ)", async () => {
+  it("does not affect an existing user's login (§3 — only new sign-ups are blocked)", async () => {
     await seedUser("user-closed-001", 702);
     const session = await loginSession(702);
     expect(session).toMatch(/^[0-9a-f]{64}$/);
@@ -133,7 +139,7 @@ describe("signupPolicy = closed(§3 — 新規作成の全拒否)", () => {
   });
 });
 
-describe("signupPolicy = invite(§3 — サインアップ招待コード)", () => {
+describe("signupPolicy = invite (§3 — sign-up invite codes)", () => {
   beforeEach(async () => {
     await setSignupPolicy("invite");
   });
@@ -150,12 +156,13 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
     const invite = await seedSignupInvite();
     const callback = await signupAttempt(711, { signupCode: invite.code });
     expect(callback.status).toBe(302);
-    // セッション付与 + state 失効 + サインアップコードクッキー失効(単回)
+    // A session is granted + the state is revoked + the signup-code
+    // cookie is expired (single-use)
     const setCookies = callback.headers.getSetCookie();
     expect(readCookieValue(setCookies, SESSION_COOKIE)).toMatch(/^[0-9a-f]{64}$/);
     const signupCookie = setCookies.find((cookie) => cookie.startsWith(`${SIGNUP_CODE_COOKIE}=`));
     expect(signupCookie).toContain("Max-Age=0");
-    // コードは消費済みで、作成されたユーザーに束縛される
+    // The code is consumed and bound to the created user
     const user = await env.DB.prepare(
       "SELECT user_id FROM linked_identities WHERE provider = 'github' AND provider_user_id = '711'",
     ).first<{ user_id: string }>();
@@ -167,7 +174,7 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
     expect(row?.status).toBe("used");
     expect(row?.used_by_user_id).toBe(user?.user_id);
     expect(row?.used_at).not.toBeNull();
-    // 監査: auth.user_created の payload が消費した招待 id を運ぶ(AUDIT_SPEC §3.1)
+    // Audit: auth.user_created's payload carries the consumed invite id (AUDIT_SPEC §3.1)
     const created = await env.DB.prepare(
       "SELECT payload FROM user_audit_events WHERE event = 'auth.user_created'",
     ).first<{ payload: string }>();
@@ -175,14 +182,14 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
     expect(await signupDeniedEvents()).toEqual([]);
   });
 
-  it("rejects an unknown code at start, before any GitHub redirect (§3 の事前検証)", async () => {
+  it("rejects an unknown code at start, before any GitHub redirect (§3's pre-validation)", async () => {
     const start = await SELF.fetch(
       `${BASE}/auth/github/start?signup_code=maruhi_sgn_${"0".repeat(43)}`,
       { redirect: "manual" },
     );
     expect(start.status).toBe(400);
     expect(await start.text()).toContain("can&#39;t be used");
-    // リダイレクトも state クッキーも発行されない(OAuth ダンスを開始しない)
+    // Neither a redirect nor a state cookie is issued (the OAuth dance never starts)
     expect(start.headers.get("location")).toBeNull();
     expect(start.headers.getSetCookie()).toHaveLength(0);
   });
@@ -198,12 +205,13 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
   it("a used code cannot be reused (start pre-validation and callback CAS both deny)", async () => {
     const invite = await seedSignupInvite();
     expect((await signupAttempt(712, { signupCode: invite.code })).status).toBe(302);
-    // start の事前検証が先に落とす
+    // start's pre-validation rejects first
     const start = await SELF.fetch(`${BASE}/auth/github/start?signup_code=${invite.code}`, {
       redirect: "manual",
     });
     expect(start.status).toBe(400);
-    // start と callback の間に消費された場合(並行消費の再現)も callback 側で拒否
+    // If it was consumed between start and callback (reproducing a
+    // concurrent consumption), the callback side also rejects
     const secondInvite = await seedSignupInvite();
     const callback = await signupAttempt(713, {
       signupCode: secondInvite.code,
@@ -216,7 +224,7 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
     expect(callback.status).toBe(403);
     expect(await callback.text()).toContain("can&#39;t be used");
     expect(await signupDeniedEvents()).toEqual([{ reason: "invite-invalid" }]);
-    // 2 人目の行は作られていない(1 人目のぶんだけ)
+    // The second user's rows are not created (only the first's)
     expect((await authRowCounts()).users).toBe(1);
   });
 
@@ -231,20 +239,23 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
     expect(row?.status).toBe("pending");
   });
 
-  it("a cookie carried into a different flow is not treated as a presented code (state 束縛)", async () => {
+  it("a cookie carried into a different flow is not treated as a presented code (state-bound)", async () => {
     const invite = await seedSignupInvite();
-    // コード付き start でクッキーを得る(このフローは放棄し、コードは使わない)
+    // Obtain the cookie via a start with a code (this flow is
+    // abandoned and the code is unused)
     const abandoned = await SELF.fetch(`${BASE}/auth/github/start?signup_code=${invite.code}`, {
       redirect: "manual",
     });
     expect(abandoned.status).toBe(302);
     const staleCookie = readCookieValue(abandoned.headers.getSetCookie(), SIGNUP_CODE_COOKIE);
     expect(staleCookie).not.toBeNull();
-    // クッキーが運ぶのはハッシュのみ(生値のワイヤ出現は start の 1 回だけ —
-    // クッキーストアに生値を残さない。AUTH_SPEC §3)
+    // The cookie carries only the hash (the raw value appears on the
+    // wire just once, at start — the cookie store never holds it.
+    // AUTH_SPEC §3)
     expect(staleCookie).not.toContain(invite.code);
     expect(staleCookie).toMatch(/^[0-9a-f]{32}\.[0-9a-f]{64}$/);
-    // 同一ブラウザの後続の**無関係な**フロー(プレーンな start = 別 state)へ持ち越す
+    // Carry it over into a later **unrelated** flow in the same
+    // browser (a plain start = a different state)
     const plain = await SELF.fetch(`${BASE}/auth/github/start`, { redirect: "manual" });
     const state = new URL(plain.headers.get("location") ?? "").searchParams.get("state") ?? "";
     const callback = await SELF.fetch(`${BASE}/auth/github/callback?code=code-717&state=${state}`, {
@@ -253,27 +264,28 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
       },
       redirect: "manual",
     });
-    // state 不一致のクッキーは「提示なし」に畳まれる — 持ち越しでの消費は起きない
+    // A cookie whose state mismatches folds to "not presented" — no
+    // consumption happens on carry-over
     expect(callback.status).toBe(403);
     expect(await callback.text()).toContain("Sign-ups are invite-only");
     const row = await env.DB.prepare("SELECT status FROM signup_invites WHERE id = ?")
       .bind(invite.id)
       .first<{ status: string }>();
     expect(row?.status).toBe("pending");
-    // 残存クッキーはこの終端でも単回失効する
+    // The leftover cookie is singly expired at this endpoint too
     const expired = callback.headers
       .getSetCookie()
       .find((cookie) => cookie.startsWith(`${SIGNUP_CODE_COOKIE}=`));
     expect(expired).toContain("Max-Age=0");
   });
 
-  it("the CLI browser leg never reads a signup code but expires a leftover cookie (裁定 DH + 単回規律)", async () => {
+  it("the CLI browser leg never reads a signup code but expires a leftover cookie (ruling DH + the single-use discipline)", async () => {
     const invite = await seedSignupInvite();
     const abandoned = await SELF.fetch(`${BASE}/auth/github/start?signup_code=${invite.code}`, {
       redirect: "manual",
     });
     const staleCookie = readCookieValue(abandoned.headers.getSetCookie(), SIGNUP_CODE_COOKIE);
-    // CLI ブラウザ脚(コードは CLI 経路に載らない)に残存クッキーを同送する
+    // Send the leftover cookie along on the CLI browser leg (codes do not ride the CLI path)
     const started = await startCliFlow();
     const verify = await SELF.fetch(started.verificationUrl, { redirect: "manual" });
     expect(verify.status).toBe(302);
@@ -285,7 +297,8 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
       },
       redirect: "manual",
     });
-    // アカウント不在 → サインアップ案内(invite 文言)。コードは消費されない
+    // No account → the sign-up guidance (invite wording). The code is
+    // not consumed
     expect(callback.status).toBe(200);
     expect(await callback.text()).toContain("invite-only");
     const row = await env.DB.prepare("SELECT status FROM signup_invites WHERE id = ?")
@@ -306,7 +319,8 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
     });
     expect(callback.status).toBe(403);
     expect(await callback.text()).toContain("Sign-ups are closed");
-    // コードは燃えていない(消費 CAS は受理時点ポリシー 'invite' を条件に含む)
+    // The code is not burned (the consumption CAS is conditioned on
+    // the acceptance-time policy being 'invite')
     const row = await env.DB.prepare("SELECT status FROM signup_invites WHERE id = ?")
       .bind(invite.id)
       .first<{ status: string }>();
@@ -331,7 +345,7 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
     }
     const body = (await limited.json()) as Record<string, unknown>;
     expect(body["_tag"]).toBe("AuthRateLimited");
-    // プレーンな start(ログイン導線)は同じ IP でも制限されない
+    // A plain start (the login path) is not limited even from the same IP
     const plain = await SELF.fetch(`${BASE}/auth/github/start`, {
       headers: { "cf-connecting-ip": "203.0.113.77" },
       redirect: "manual",
@@ -339,21 +353,22 @@ describe("signupPolicy = invite(§3 — サインアップ招待コード)", () 
     expect(plain.status).toBe(302);
   }, 60_000);
 
-  it("adapts the CLI signup-guidance page wording (§4-1 (4) (ii) の文言追随)", async () => {
+  it("adapts the CLI signup-guidance page wording (follows §4-1 (4) (ii)'s copy)", async () => {
     const started = await startCliFlow();
     const callback = await cliBrowserLeg(started.verificationUrl, 716);
     expect(callback.status).toBe(200);
     const html = await callback.text();
     expect(html).toContain("No maruhi account yet");
     expect(html).toContain("invite-only");
-    // プレーンなサインアップリンクは案内しない(invite-required へ誘導するだけ)
+    // No plain sign-up link is shown (it only steers toward invite-required)
     expect(html).not.toContain(`href="https://example.com/auth/github/start"`);
-    // 案内は副作用ゼロ(フロー行もアカウントも作らない)
+    // The guidance is side-effect free (creates neither a flow row
+    // nor an account)
     expect((await authRowCounts()).users).toBe(0);
   });
 });
 
-describe("signupPolicy = open(既定 — 現行挙動との同一性)", () => {
+describe("signupPolicy = open (the default — identical to current behavior)", () => {
   it("creates an account without a code (default, no settings row)", async () => {
     const callback = await signupAttempt(720);
     expect(callback.status).toBe(302);

@@ -1,15 +1,17 @@
-// 招待 API の型付きエラー(AUTH_SPEC §15)。
+// Typed errors of the invite API (AUTH_SPEC §15).
 //
-// エラーには識別子・カウンタしか載せない(トークン生値・鍵素材を運ばない)。
-// InviteNotFound はプロジェクト座標を一切運ばない: トークン保持が capability で
-// あり(§15-1)、未知トークンへの応答からプロジェクトの存在を推定させない
-// (§11-2 の存在秘匿と同じ規律の受諾経路版)。
+// Errors carry only identifiers and counters (no raw token values or key
+// material). InviteNotFound carries no project coordinates at all:
+// holding the token is the capability (§15-1), and responses to unknown
+// tokens must not let the project's existence be inferred (the
+// acceptance-path version of §11-2's existence-concealment
+// discipline).
 
 import { Schema } from "effect";
 
 /**
  * 404: no invitation matches the presented token (accept) or id (revoke).
- * 存在秘匿のためフィールドを持たない。
+ * Carries no fields, for existence concealment.
  */
 export class InviteNotFoundError extends Schema.TaggedError<InviteNotFoundError>()(
   "InviteNotFound",
@@ -18,10 +20,12 @@ export class InviteNotFoundError extends Schema.TaggedError<InviteNotFoundError>
 ) {}
 
 /**
- * 410 の理由(AUTH_SPEC §15-1 の単回使用 + 期限切れ導出)。観測できるのは
- * 2^256 空間のトークン保持者(capability 保持者)のみであり、正規受諾者が
- * リンク横取りの先着受諾を「うるさい競合」として検出する(CRYPTO_SPEC §6.5)
- * ために理由を返す。判定順は状態 → 期限(revoked かつ期限切れは revoked)。
+ * 410 reasons (AUTH_SPEC §15-1 single-use + expiry derivation). Only a
+ * holder of the token in the 2^256 space (the capability holder) can
+ * observe this; the reason is returned so the legitimate acceptor
+ * detects a first-come acceptance from a link interception as a "noisy
+ * race" (CRYPTO_SPEC §6.5). Decision order is state → expiry (revoked
+ * and expired counts as revoked).
  */
 export const InviteGoneReasonSchema = Schema.Literals([
   "accepted",
@@ -38,12 +42,15 @@ export class InviteGoneError extends Schema.TaggedError<InviteGoneError>()(
 ) {}
 
 /**
- * 422: one of the acceptance co-signatures failed verification (CRYPTO_SPEC
- * §6.5 v2)。`which` は落ちた署名(`link` = リンク鍵の共同署名 — 判定順で先、
- * `accept` = 受諾者のチェーン鍵)。signed_bytes の project_id / link_pub は
- * 保存行から、invitee_user_id は呼び出し主体から再構成される(§15-2)ため、
- * 別人の署名・別招待からの移植・鍵すり替えはすべてこのエラーに畳まれる
- * (専用の actor-mismatch を持たない)。
+ * 422: one of the acceptance co-signatures failed verification
+ * (CRYPTO_SPEC §6.5 v2). `which` names the failed signature (`link` =
+ * the link key's co-signature — checked first in the decision order;
+ * `accept` = the acceptor's chain key). Because the signed_bytes'
+ * project_id / link_pub are reconstructed from the stored row and
+ * invitee_user_id from the calling principal (§15-2), a signature by a
+ * different person, transplantation from another invite, and key
+ * substitution all fold into this error (there is no dedicated
+ * actor-mismatch).
  */
 export class InviteSignatureInvalidError extends Schema.TaggedError<InviteSignatureInvalidError>()(
   "InviteSignatureInvalid",
@@ -53,8 +60,8 @@ export class InviteSignatureInvalidError extends Schema.TaggedError<InviteSignat
 
 /**
  * 409: the client-chosen invite id or link public key already exists
- * (AUTH_SPEC §15-2 — 招待 id はクライアント採番、link_pub は UNIQUE)。
- * クライアントは採番・生成し直して再試行する。
+ * (AUTH_SPEC §15-2 — invite ids are client-assigned and link_pub is
+ * UNIQUE). The client reassigns / regenerates and retries.
  */
 export class InviteConflictError extends Schema.TaggedError<InviteConflictError>()(
   "InviteConflict",
@@ -71,7 +78,8 @@ export class InvitePendingLimitError extends Schema.TaggedError<InvitePendingLim
 
 /**
  * 429: the per-project issuance window is exhausted (AUTH_SPEC §15-2 —
- * 固定窓 1 時間 30 回)。`retryAfterSeconds` は窓の残り秒数。
+ * fixed window, 30 per hour). `retryAfterSeconds` is the remaining
+ * seconds of the window.
  */
 export class InviteRateLimitedError extends Schema.TaggedError<InviteRateLimitedError>()(
   "InviteRateLimited",

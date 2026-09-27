@@ -1,6 +1,6 @@
-# 生成物 — 手で編集しない。
-# apps/cli/scripts/generate-formula.ts が Release の checksums.txt から作る
-# (maruhiapp/maruhi)。更新手順は docs/RELEASING.md の「Homebrew tap の更新」。
+# Generated file — do not edit by hand.
+# Built by apps/cli/scripts/generate-formula.ts from the Release's checksums.txt
+# (maruhiapp/maruhi). Update procedure: docs/RELEASING.md, "Updating the Homebrew tap".
 class Maruhi < Formula
   desc "Diskless, end-to-end encrypted secrets manager on Cloudflare"
   homepage "https://github.com/maruhiapp/maruhi"
@@ -31,8 +31,8 @@ class Maruhi < Formula
 
   def install
     bin.install "maruhi"
-    # アーカイブにはバイナリ 1 本しか入っていない。`mh` はインストーラ側で
-    # 張る(ADR-0015 裁定 6/7)
+    # The archive contains a single binary. `mh` is linked by the
+    # installer side (ADR-0015 rulings 6/7)
     bin.install_symlink "maruhi" => "mh"
   end
 

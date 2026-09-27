@@ -1,24 +1,32 @@
-// 要ローテーション検出(AUDIT_SPEC §4.1 = CRYPTO_SPEC §7 の実装)と
-// フラグの解消導出(§4.1 手順 5)。
+// Detection of rotation-needed flags (AUDIT_SPEC §4.1 = the implementation of
+// CRYPTO_SPEC §7) and derivation of flag dismissal (§4.1 step 5).
 //
-// - 検出は `remove_member` / `change_role`(降格・scope 縮小 — 2026-09-14 ES)/
-//   `revoke_server` / `revoke_device`(端末の窓 — 2026-09-19 DK)の受理時に project DO 内で走り、ミラー追記と同一の同期タスクで
-//   `rotation.recommended`(1 (variable × environment) 1 行 — §3.3)を追記する
-//   (chain-accept.ts が結線)。座標系は監査 seq(DO 内の全順序 — チェーン受理も
-//   データ操作も同じ列に載る)
-// - 候補集合(§4.1 手順 2)は**環境別のアクセス窓**: 対象が環境 E の DEK を持ち
-//   えた seq 区間の列。窓はチェーンミラーの payload の scope 状態(`all` /
-//   `listed`)の遷移点だけで決まり、member(genesis / member_added / role_changed /
-//   member_removed)と server(server_granted / server_revoked)で **1 つの窓導出を
-//   共有する**(§4.1「実装は 1 つの窓導出を共有する」— 設計録 es-design.md §9
-//   K3-E)。`all` = 全環境(将来分を含む)なので、`all` の期間中に作成された変数も
-//   存在区間との重なりで自然に候補になる
-// - 区間の重なり判定は開区間: max(start) < min(end)。隣接イベント(例: 変数
-//   作成の直後に削除受理)の間にも実時間の窓があり「取得可能だった」は成立する
-//   (実際の取得はイベントを挟むため rank (a) は正しく空になる)
-// - 解消導出はイベント列の畳み込みのみ(フラグを可変ストアに持たない — §4.1)。
-//   再暗号化マーカー付きの var.version_pushed は解消と見なさない(§4.1-5 —
-//   義務ローテーションの sweep による全自動誤解消の遮断)
+// - Detection runs inside the project DO at the acceptance of `remove_member` /
+//   `change_role` (demotion, scope reduction — 2026-09-14 ES) / `revoke_server`
+//   / `revoke_device` (device windows — 2026-09-19 DK), and appends
+//   `rotation.recommended` (one row per (variable × environment) — §3.3) in
+//   the same synchronous task as the mirror append (chain-accept.ts wires it).
+//   The coordinate system is the audit seq (the total order inside the DO —
+//   chain acceptance and data operations ride on the same sequence)
+// - The candidate set (§4.1 step 2) is **per-environment access windows**: the
+//   list of seq intervals during which the subject could have held
+//   environment E's DEK. A window is determined only by the transition points
+//   of the scope state (`all` / `listed`) in the chain mirror's payload, and
+//   member (genesis / member_added / role_changed / member_removed) and server
+//   (server_granted / server_revoked) **share a single window derivation**
+//   (§4.1 "the implementation shares one window derivation" — design record
+//   es-design.md §9 K3-E). `all` = every environment (including future ones),
+//   so a variable created during an `all` period naturally becomes a candidate
+//   by overlap with its existence interval
+// - Interval overlap is an open-interval check: max(start) < min(end). Even
+//   between adjacent events (e.g. a delete accepted right after a variable's
+//   creation) there is a real-time window and "could have been obtained"
+//   holds (the actual fetch is sandwiched between events, so rank (a) is
+//   correctly empty)
+// - Dismissal derivation is a pure fold over the event sequence (flags do not
+//   live in a mutable store — §4.1). A var.version_pushed carrying the
+//   re-encryption marker does not count as dismissal (§4.1-5 — blocks a
+//   mandatory-rotation sweep from auto-dismissing everything by mistake)
 
 import type {
   AuditEventInput,
@@ -30,41 +38,44 @@ import type {
   VariableLifecycleRow,
 } from "./audit-store.ts";
 
-/** 根拠ランク(§4.1 手順 3): read = 確実に取得した / readable = 取得可能だった。 */
+/** Basis rank (§4.1 step 3): read = definitely obtained / readable = could have been obtained. */
 export type RotationBasis = "read" | "readable";
 
 /**
- * 検出を起こした op(§3.3 `rotation.recommended` の payload.trigger — 2026-09-14
- * ES): remove_member / change_role(降格・縮小)/ revoke_server。
+ * The op that triggered detection (§3.3 `rotation.recommended`'s
+ * payload.trigger — 2026-09-14 ES): remove_member / change_role
+ * (demotion/shrink) / revoke_server / revoke_device.
  */
 export type RotationTrigger = "remove_member" | "change_role" | "revoke_server" | "revoke_device";
 
-/** 現在有効な要ローテーションフラグ(§4.1 手順 5 の導出結果。RPC 境界を渡る)。 */
+/** A currently-effective rotation-needed flag (the §4.1 step 5 derivation result; crosses the RPC boundary). */
 export interface EffectiveRotationFlag {
   readonly environmentId: string;
   readonly variableId: string;
   readonly basis: RotationBasis;
-  /** remove_member / change_role 変種のみ。 */
+  /** Only on the remove_member / change_role variants. */
   readonly targetUserId?: string;
-  /** revoke_server 変種のみ。 */
+  /** Only on the revoke_server variant. */
   readonly targetServerKeyFingerprintHex?: string;
-  // 監査 seq は持たない(2026-08-16 C1 裁定): 無欠番採番の序数はワイヤに
-  // 載せられず(クラス 2 件数を漏らす — §7)、解消順序は導出の入力行順
-  // (rotationFlagEvents の seq 順)で既に担保されるため、出力には不要
+  // No audit seq is carried (the 2026-08-16 ruling C1): the gapless sequence
+  // number cannot go on the wire (it would leak the class-2 row count — §7),
+  // and the dismissal order is already guaranteed by the derivation's input
+  // row order (the seq order of rotationFlagEvents), so the output does not
+  // need it
   readonly recommendedAtMs: number;
-  /** 検出を起こした削除・降格 / 縮小・失効エントリの chain seq(payload から)。 */
+  /** The chain seq of the deletion / demotion-or-shrink / revocation entry that triggered detection (from the payload). */
   readonly triggerChainSeq: number;
-  /** 検出を起こした op(payload の trigger)。 */
+  /** The op that triggered detection (the payload's trigger). */
   readonly trigger: RotationTrigger;
 }
 
-/** 監査 seq 上の半開区間(end = +Infinity は未閉包)。 */
+/** A half-open interval on the audit seq (end = +Infinity means unclosed). */
 interface SeqInterval {
   readonly start: number;
   readonly end: number;
 }
 
-/** 変数の存在区間(§4.1 手順 2 の Q2 — var.created 〜 var.deleted)。 */
+/** A variable's existence interval (Q2 of §4.1 step 2 — var.created to var.deleted). */
 interface VariableLifetime {
   readonly environmentId: string;
   readonly variableId: string;
@@ -75,24 +86,27 @@ interface VariableLifetime {
 const pairKey = (row: { readonly environmentId: string; readonly variableId: string }): string =>
   `${row.environmentId}\u0000${row.variableId}`;
 
-/** 開区間どうしの重なり(整数 seq 列の間の実時間窓を含む — 冒頭コメント)。 */
+/** Overlap of two open intervals (includes the real-time window between integer seqs — see the header comment). */
 function overlaps(a: SeqInterval, bStart: number, bEnd: number): boolean {
   return Math.max(a.start, bStart) < Math.min(a.end, bEnd);
 }
 
-/** seq がイベント区間の内部(両端のイベント自身は含まない)にあるか。 */
+/** Whether seq lies inside an event interval (excluding the boundary events themselves). */
 function within(seq: number, interval: SeqInterval): boolean {
   return interval.start < seq && seq < interval.end;
 }
 
 // ---------------------------------------------------------------------------
-// 環境別アクセス窓(§4.1 手順 2 — member / server 共通の窓導出)
+// Per-environment access windows (§4.1 step 2 — the window derivation shared
+// by member / server)
 // ---------------------------------------------------------------------------
 
 /**
- * scope 状態の遷移(ミラー行 1 つ = 1 遷移): open = 在籍 / grant の開始(scope
- * 付き)、update = 在籍中の scope の置換(change_role・拡大再 grant)、close =
- * 在籍 / grant の終了。窓導出はこの 3 種だけを見る(受信者クラスを跨いで同一)。
+ * A scope-state transition (one mirror row = one transition): open = start of
+ * membership / grant (with a scope), update = replacement of the scope during
+ * the interval (change_role, enlarging re-grant), close = end of membership /
+ * grant. The window derivation looks only at these three kinds (identical
+ * across recipient classes).
  */
 interface ScopeTransition {
   readonly seq: number;
@@ -107,19 +121,23 @@ function scopeIncludes(scope: ScopeSnapshot, environmentId: string): boolean {
 }
 
 /**
- * 環境 E のアクセス窓の列(§4.1 手順 2): E ∈ scope になった遷移で開き、E ∉ scope
- * になった遷移(update)または close で閉じる。在籍 / grant の区間を跨ぐ再開は
- * 別の窓。チェーン合意規則は二重追加・二重 grant を拒否するが、導出は防御的に
- * 「開いた区間があるときの open」を update と同じに扱い、「区間外の update」は
- * open と同じに扱う(壊れた入力では見逃さない側 — 設計録 §9 K3-F。区間外の
- * close だけは無視する = 削除後の遷移)。
+ * The list of access windows for environment E (§4.1 step 2): opens on the
+ * transition where E enters scope; closes on the transition (update) where E
+ * leaves scope, or on close. A restart spanning a membership / grant interval
+ * boundary is a separate window. Chain consensus rules reject double-add and
+ * double-grant, but the derivation defensively treats "an open while an
+ * interval is open" the same as update, and "an update outside an interval"
+ * the same as open (for corrupt input, err toward not missing — design record
+ * §9 K3-F. Only a close outside an interval is ignored = a post-deletion
+ * transition).
  */
 function accessWindows(
   transitions: readonly ScopeTransition[],
   environmentId: string,
 ): readonly SeqInterval[] {
   const windows: SeqInterval[] = [];
-  // 窓導出の状態: 在籍 / grant 区間の内側か、E の窓がどの seq から開いているか
+  // Window-derivation state: whether inside a membership / grant interval, and
+  // from which seq E's window is open
   const state = { openedAt: null as number | null };
   const closeWindow = (seq: number): void => {
     if (state.openedAt !== null) {
@@ -145,10 +163,12 @@ function accessWindows(
 }
 
 /**
- * Q1 の在籍区間イベント(genesis / member_added / role_changed / member_removed)
- * を scope 遷移に写す。genesis は構造的に `all`(CRYPTO_SPEC §6.2)。scope を
- * 読めない行(壊れた payload・K2 以前の形 — 再作成対象で存在しない前提)は
- * fail-safe に `all` として窓を開く(検出は見逃さない側が安全 — 設計録 §9 K3-F)。
+ * Map Q1's membership-interval events (genesis / member_added / role_changed /
+ * member_removed) onto scope transitions. genesis is structurally `all`
+ * (CRYPTO_SPEC §6.2). A row whose scope cannot be read (corrupt payload, or a
+ * pre-K2 shape — assumed absent because it is a re-creation target) fails safe
+ * and opens the window as `all` (for detection, the safe side is not missing
+ * — design record §9 K3-F).
  */
 function membershipTransitions(events: readonly MembershipEventRow[]): readonly ScopeTransition[] {
   return events.map((event) => {
@@ -165,11 +185,14 @@ function membershipTransitions(events: readonly MembershipEventRow[]): readonly 
 }
 
 /**
- * Q6 の grant 区間イベント(server_granted / server_revoked)を scope 遷移に写す。
- * 同一鍵 FP への再 grant は区間内では update、失効後の再 grant は新しい区間の
- * open。区間内の scope は**単調に和集合**で積む(合意規則は拡大のみ受理 —
- * CRYPTO_SPEC §6.3。仮に縮小する再 grant が通っても、サーバーが既に知る DEK の
- * 開示窓を失効前に閉じない = 「見せかけの縮小」を検出側でも塞ぐ fail-safe)。
+ * Map Q6's grant-interval events (server_granted / server_revoked) onto scope
+ * transitions. A re-grant to the same key FP is an update inside the interval;
+ * a re-grant after revocation is an open of a new interval. Inside an
+ * interval, the scope accumulates **monotonically as a union** (the consensus
+ * rules only accept enlargement — CRYPTO_SPEC §6.3. Even if a shrinking
+ * re-grant slipped through, never close the disclosure window of a DEK the
+ * server already knows before revocation = a fail-safe that also blocks a
+ * "cosmetic shrink" on the detection side).
  */
 function grantTransitions(
   events: readonly {
@@ -179,8 +202,10 @@ function grantTransitions(
   }[],
 ): readonly ScopeTransition[] {
   const transitions: ScopeTransition[] = [];
-  // 区間内の開示集合。null = 区間外。"all" = scope を読めない grant 行を含む
-  // 区間(fail-safe に全環境 — member 軸の scope 不明と同じ倒し方。K3-F)
+  // The disclosed set inside the interval. null = outside an interval. "all" =
+  // an interval containing a grant row whose scope is unreadable (fail-safe to
+  // all environments — the same handling as an unknown scope on the member
+  // axis. K3-F)
   let disclosed: Set<string> | "all" | null = null;
   for (const event of events) {
     if (event.event === "chain.server_revoked") {
@@ -202,7 +227,7 @@ function grantTransitions(
   return transitions;
 }
 
-/** 変数の存在区間の復元(Q2。variable_id は再利用されない — AUTH_SPEC §12-1)。 */
+/** Reconstruction of variable existence intervals (Q2; variable_id is never reused — AUTH_SPEC §12-1). */
 function variableLifetimes(
   rows: readonly VariableLifecycleRow[],
 ): ReadonlyMap<string, VariableLifetime> {
@@ -228,7 +253,7 @@ function variableLifetimes(
   return lifetimes;
 }
 
-/** 環境ごとの窓を遅延導出して memo する(候補判定は変数ごと・窓は環境ごと)。 */
+/** Lazily derive and memoize windows per environment (candidates are judged per variable; windows are per environment). */
 function windowsByEnvironment(
   transitions: readonly ScopeTransition[],
 ): (environmentId: string) => readonly SeqInterval[] {
@@ -244,7 +269,7 @@ function windowsByEnvironment(
   };
 }
 
-/** rotation.recommended 1 行の組み立て(§3.3 の記録細則 — actor は system)。 */
+/** Assemble one rotation.recommended row (the §3.3 recording rules — actor is system). */
 function recommendedEvent(input: {
   readonly nowMs: number;
   readonly lifetime: VariableLifetime;
@@ -253,7 +278,7 @@ function recommendedEvent(input: {
   readonly triggerChainSeq: number;
   readonly targetUserId?: string;
   readonly targetKeyFingerprintHex?: string;
-  /** revoke_device 変種のみ: 失効 FP 集合(AUDIT_SPEC §4.1 — payload に写す)。 */
+  /** Only on the revoke_device variant: the revoked FP set (AUDIT_SPEC §4.1 — copied to the payload). */
   readonly revokedDeviceKeyFingerprints?: readonly string[];
 }): AuditEventInput {
   return {
@@ -278,12 +303,15 @@ function recommendedEvent(input: {
 }
 
 /**
- * member 変種(remove_member / change_role)の共通骨格: 候補 = 対象窓と存在期間が
- * 重なる全 (variable × environment)(削除済み変数も含める — 上流 credential は
- * 変数を消しても失効しない)、(a) = 対象窓の内部にある対象の var.read(API
- * トークン経由を含む — actor.user_id で照合。読み取り自体もイベントなので厳密に
- * 区間内部で判定する)。`selectWindows` が変種ごとに「どの窓を検出対象にするか」を
- * 決める(remove = 全窓、change_role = 契機で閉じた窓)。
+ * The shared skeleton of the member variants (remove_member / change_role):
+ * candidates = every (variable × environment) whose existence interval
+ * overlaps a subject window (including deleted variables — an upstream
+ * credential does not expire just because the variable is deleted), and (a) =
+ * the subject's var.read inside a subject window (including reads via API
+ * token — matched by actor.user_id; a read is itself an event, so judge
+ * strictly inside the interval). `selectWindows` decides per variant "which
+ * windows are detection targets" (remove = all windows, change_role = windows
+ * closed by the trigger).
  */
 function detectForMember(input: {
   readonly read: AuditRotationRead;
@@ -313,9 +341,11 @@ function detectForMember(input: {
   if (candidates.length === 0) {
     return [];
   }
-  // 読み取りは「選んだ窓のどれかの内部」(within — 開区間)でしか数えないので、
-  // 全窓の包絡 (最小 start, 最大 end) の外の行は下の filter で必ず捨てられる。
-  // 包絡を Q3 に渡して ae_actor の範囲走査にする(結果は絞らない場合と同一)
+  // Reads are only counted "inside one of the selected windows" (within —
+  // open interval), so rows outside the envelope of all windows (smallest
+  // start, largest end) are always dropped by the filter below. Pass the
+  // envelope to Q3 to make it a range scan over ae_actor (the result is
+  // identical to not narrowing)
   const envelope = [...selected.values()].flat().reduce(
     (range, window) => ({
       afterSeq: Math.min(range.afterSeq, window.start),
@@ -347,11 +377,14 @@ function detectForMember(input: {
 }
 
 /**
- * `remove_member` 受理時の検出(§4.1 手順 1〜3)。呼び出しはミラー追記の後
- * (在籍区間は直前に書いたミラー行で閉じている)。候補は在籍区間内の**全窓**
- * (過去に縮小で閉じた窓を含む — §4.1 手順 2 の字面。縮小時の検出と重複する
- * 行は同対の複数有効 recommended として残る = 再削除と同じ扱い)。返り値を
- * そのまま appendManySync すれば手順 4 になる。
+ * Detection at `remove_member` acceptance (§4.1 steps 1-3). Called after the
+ * mirror append (the membership interval is closed by the mirror row written
+ * just before). Candidates are **all windows** inside the membership interval
+ * (including windows previously closed by a shrink — per the letter of §4.1
+ * step 2. Rows overlapping what the shrink-time detection emitted remain as
+ * multiple effective recommendeds for the same pair = same treatment as a
+ * re-delete). Feeding the return value to appendManySync as-is performs step
+ * 4.
  */
 export function detectMemberRemoval(input: {
   readonly read: AuditRotationRead;
@@ -371,20 +404,26 @@ export function detectMemberRemoval(input: {
   });
 }
 
-/** member 以上(書き手)か — 降格(member 未満へ)の判定に使う。 */
+/** Whether a role is member-or-higher (a writer) — used to judge demotion (down to below member). */
 const WRITER_ROLES: ReadonlySet<string> = new Set(["member", "admin", "owner"]);
 
 /**
- * `change_role` 受理時の検出(§4.1 の change_role 変種 — 2026-09-14 ES)。
- * 呼び出しはミラー追記の後(直前に書いた `chain.role_changed` 行が Q1 の末尾)。
- * - **縮小**(旧 scope \ 新 scope ≠ ∅): 契機のミラー行で閉じた窓の環境が候補
- *   (CRYPTO_SPEC §7 — 縮小分は remove 相当)
- * - **降格**(旧 role ≥ member、新 role = reader): 契機直前に開いていた全窓(=
- *   旧 scope の全環境。新 scope に残る環境は reader として DEK を受け取り続ける
- *   ため窓自体は閉じないが、検出は契機 seq で切った窓で行う — 「上流の credential
- *   を知る者が権限を失った」事実の検出。§4.1)。同時に縮小も起きていれば和集合で
- *   1 (variable × environment) 1 行(§3.3 の粒度)
- * - 昇格・拡大・scope 不変の role 変更(降格でない)は候補なし
+ * Detection at `change_role` acceptance (the §4.1 change_role variant —
+ * 2026-09-14 ES). Called after the mirror append (the `chain.role_changed`
+ * row written just before is the tail of Q1).
+ * - **Shrink** (old scope \ new scope ≠ ∅): environments of windows closed by
+ *   the trigger's mirror row are candidates (CRYPTO_SPEC §7 — the shrunk part
+ *   is equivalent to a removal)
+ * - **Demotion** (old role ≥ member, new role = reader): all windows open just
+ *   before the trigger (= all environments of the old scope). The windows
+ *   themselves do not close because environments remaining in the new scope
+ *   keep receiving DEKs as a reader, but detection runs on windows clipped at
+ *   the trigger seq — detection of the fact "someone who knew upstream
+ *   credentials lost the privilege" (§4.1). If a shrink happened at the same
+ *   time, the union still yields one row per (variable × environment) (the
+ *   §3.3 granularity)
+ * - Promotion, enlargement, and scope-unchanged role changes (not demotions)
+ *   produce no candidates
  */
 export function detectRoleChange(input: {
   readonly read: AuditRotationRead;
@@ -400,14 +439,16 @@ export function detectRoleChange(input: {
   const previousRole =
     events.toReversed().find((event) => event.seq < trigger.seq && event.role !== null)?.role ??
     null;
-  // role が読めない行(壊れた payload — 到達不能)は「降格だった」側に倒す
-  // (見逃さない側 — 設計録 §9 K3-F): 旧 role 不明 = 書き手だったとみなし、
-  // 新 role 不明 = 書き手でなくなったとみなす
+  // A row whose role cannot be read (corrupt payload — unreachable) is judged
+  // as "was a demotion" (the not-missing side — design record §9 K3-F):
+  // unknown old role = was a writer; unknown new role = no longer a writer
   const demoted =
     (previousRole === null || WRITER_ROLES.has(previousRole)) &&
     (trigger.role === null || !WRITER_ROLES.has(trigger.role));
-  // 契機行の scope が読めない場合、窓導出は all に倒して「縮小分」を検出できない
-  // (窓が閉じない)ため、降格と同じく契機直前の全窓を候補にする(見逃さない側)
+  // If the trigger row's scope cannot be read, the window derivation falls to
+  // all and the "shrunk part" cannot be detected (windows never close), so use
+  // every window open just before the trigger as candidates, same as demotion
+  // (the not-missing side)
   const closeAll = demoted || trigger.scope === null;
   return detectForMember({
     ...input,
@@ -415,12 +456,14 @@ export function detectRoleChange(input: {
     transitions: membershipTransitions(events),
     selectWindows: (windows) =>
       windows.flatMap((window) => {
-        // 契機のミラー行で閉じた窓 = 縮小分
+        // A window closed by the trigger's mirror row = the shrunk part
         if (window.end === trigger.seq) {
           return [window];
         }
-        // 降格: 契機時点で開いたままの窓(新 scope に残る環境)を契機 seq で切る
-        // (遷移列は契機行で終わるので、契機より後まで続く窓 = 未閉包の窓)
+        // Demotion: clip a window still open at the trigger (environments
+        // remaining in the new scope) at the trigger seq (the transition list
+        // ends at the trigger row, so a window continuing past the trigger =
+        // an unclosed window)
         if (closeAll && window.start < trigger.seq && window.end > trigger.seq) {
           return [{ start: window.start, end: trigger.seq }];
         }
@@ -429,7 +472,7 @@ export function detectRoleChange(input: {
   });
 }
 
-/** 2 区間の交差(空なら null)。 */
+/** Intersection of two intervals (null when empty). */
 function intersect(a: SeqInterval, b: SeqInterval): SeqInterval | null {
   const start = Math.max(a.start, b.start);
   const end = Math.min(a.end, b.end);
@@ -437,12 +480,15 @@ function intersect(a: SeqInterval, b: SeqInterval): SeqInterval | null {
 }
 
 /**
- * 失効した端末の有効区間と端末 scope(§4.1 の revoke_device 変種 — 手順 1。設計録
- * dk-design.md §8 K3-11): 契機より前の最新の `chain.device_added`(payload の FP が
- * 一致)から契機まで。どの device_added にも無い FP は `add_member` / `genesis` の
- * 最初の鍵で、区間は在籍区間の開始(契機より前の最新の open 遷移)から、scope は
- * all(最初の鍵の cap は構造的に (owner, all) — CRYPTO_SPEC §6.2)。scope が読めない
- * 行は all(見逃さない側 — ES K3-F)。
+ * The live interval and device scope of a revoked device (the §4.1
+ * revoke_device variant — step 1; design record dk-design.md §8 K3-11): from
+ * the latest `chain.device_added` before the trigger (matching FP in the
+ * payload) to the trigger. A FP absent from every device_added is the first
+ * key of an `add_member` / `genesis`, whose interval runs from the start of
+ * the membership interval (the latest open transition before the trigger),
+ * with scope all (a first key's cap is structurally (owner, all) — CRYPTO_SPEC
+ * §6.2). A row whose scope cannot be read is all (the not-missing side —
+ * ES K3-F).
  */
 function revokedDeviceSpans(
   membership: readonly MembershipEventRow[],
@@ -475,13 +521,16 @@ function revokedDeviceSpans(
 }
 
 /**
- * `revoke_device` 受理時の検出(§4.1 の revoke_device 変種 — 2026-09-19 DK)。
- * 呼び出しはミラー追記の後(直前に書いた `chain.device_revoked` 行が契機)。
- * 候補 = 各失効端末の有効区間 ∩ 人の環境別アクセス窓 ∩ 端末 scope(端末 scope に
- * E を含まない端末は窓なし = 票だけの端末〔scope 空〕の失効は行を書かない)。
- * (a) は remove の変種と同じく actor.user_id の `var.read` を区間内で照合する
- * (`var.read` は FP を持たない — K1-12)。対象者は在籍を続けるため在籍区間は
- * 閉じない(契機 seq で切った窓で検出する — 降格の変種と同型)。
+ * Detection at `revoke_device` acceptance (the §4.1 revoke_device variant —
+ * 2026-09-19 DK). Called after the mirror append (the `chain.device_revoked`
+ * row written just before is the trigger). Candidates = each revoked device's
+ * live interval ∩ the person's per-environment access windows ∩ the device
+ * scope (a device whose device scope does not contain E has no window =
+ * revoking a vote-only device [empty scope] writes no row). (a) is, same as
+ * the remove variant, a match of the subject's `var.read` inside the interval
+ * by actor.user_id (`var.read` carries no FP — K1-12). The subject stays a
+ * member, so the membership interval does not close (detect on windows
+ * clipped at the trigger seq — same shape as the demotion variant).
  */
 export function detectDeviceRevocation(input: {
   readonly read: AuditRotationRead;
@@ -522,11 +571,15 @@ export function detectDeviceRevocation(input: {
 }
 
 /**
- * `revoke_server` 受理時の検出(§4.1 の revoke_server 変種)。区間 = 当該
- * サーバー鍵 FP の grant 区間(再 grant があれば区間ごと)、候補 = 各区間の
- * **環境別の開示窓**(拡大再 grant で後から入った環境は拡大 seq から — member と
- * 同じ窓導出)内の環境の変数、(a) = `server.lease_issued`(発行時点の環境内
- * アクティブ変数の全て — 環境単位配布)+ `server.value_decrypted`(予約)。
+ * Detection at `revoke_server` acceptance (the §4.1 revoke_server variant).
+ * The interval = the grant intervals of the given server key FP (each
+ * interval separately if re-granted); candidates = the variables of
+ * environments inside each interval's **per-environment disclosure windows**
+ * (an environment that entered later via an enlarging re-grant counts from the
+ * enlargement seq — the same window derivation as member); (a) =
+ * `server.lease_issued` (every variable active in the environment at issuance
+ * — environment-granularity distribution) + `server.value_decrypted`
+ * (reserved).
  */
 export function detectServerRevocation(input: {
   readonly read: AuditRotationRead;
@@ -557,10 +610,11 @@ export function detectServerRevocation(input: {
         return false;
       }
       if (row.event === "server.lease_issued") {
-        // 環境単位配布(§3.5): 発行時点にアクティブだった変数の全てが (a)
+        // Environment-granularity distribution (§3.5): every variable active
+        // at issuance counts as (a)
         return lifetime.start < row.seq && row.seq < lifetime.end;
       }
-      // server.value_decrypted(予約 — v1 では発生しない): 変数粒度の照合
+      // server.value_decrypted (reserved — never occurs in v1): variable-granularity matching
       return row.variableId === lifetime.variableId;
     });
     results.push(
@@ -577,7 +631,7 @@ export function detectServerRevocation(input: {
   return results;
 }
 
-/** payload.trigger の読み出し(サーバー自身が書いた行 — 型は防御的に確認)。 */
+/** Read payload.trigger (rows written by this server itself — check the type defensively). */
 function triggerOf(row: RotationFlagSourceRow): RotationTrigger {
   const trigger = row.payload?.["trigger"];
   if (
@@ -588,11 +642,12 @@ function triggerOf(row: RotationFlagSourceRow): RotationTrigger {
   ) {
     return trigger;
   }
-  // 書き手はこのサーバーだけで、trigger は常に載る — 無い・未知の行は破損(defect)
+  // This server is the only writer, so trigger is always present — a missing
+  // or unknown row is corruption (defect)
   throw new Error(`rotation.recommended row has no valid trigger: ${String(trigger)}`);
 }
 
-/** recommended 行の payload から検出時の値を読む(サーバー自身が書いた行 — 型は防御的に確認)。 */
+/** Read the detection-time values from a recommended row's payload (rows written by this server itself — check the type defensively). */
 function flagOf(row: RotationFlagSourceRow): EffectiveRotationFlag {
   const basis = row.payload?.["basis"] === "read" ? "read" : "readable";
   const trigger = row.payload?.["triggerChainSeq"];
@@ -611,10 +666,11 @@ function flagOf(row: RotationFlagSourceRow): EffectiveRotationFlag {
 }
 
 /**
- * フラグの解消導出(§4.1 手順 5): seq 順の畳み込み。recommended が積み、
- * それより後の `rotation.dismissed` または**再暗号化マーカーなしの**
- * `var.version_pushed` が同じ (variable × environment) の積みを消す。
- * 同じ対に複数の有効 recommended(再削除等)は全て返す(UI 側で束ねる)。
+ * Derivation of flag dismissal (§4.1 step 5): a fold in seq order. A
+ * recommended stacks, and a later `rotation.dismissed` or a
+ * `var.version_pushed` **without the re-encryption marker** clears the stack
+ * for the same (variable × environment). Multiple effective recommendeds on
+ * the same pair (a re-delete etc.) are all returned (the UI bundles them).
  */
 export function deriveEffectiveFlags(
   rows: readonly RotationFlagSourceRow[],
@@ -632,8 +688,9 @@ export function deriveEffectiveFlags(
       continue;
     }
     if (row.event === "var.version_pushed" && row.payload?.["reencryption"] === true) {
-      // 再暗号化(同一平文の新エポック再 push — AUTH_SPEC §12-5)は上流の
-      // 失効ではないため解消しない(§4.1-5)
+      // Re-encryption (re-push of the same plaintext on a new epoch —
+      // AUTH_SPEC §12-5) is not an upstream revocation, so it does not dismiss
+      // (§4.1-5)
       continue;
     }
     live.delete(key);

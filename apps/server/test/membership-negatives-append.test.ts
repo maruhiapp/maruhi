@@ -1,9 +1,11 @@
-// サーバー側検証(CRYPTO_SPEC §6.4 = verifyChain 再実行)— 認可系 negative
-// ベクターのうち、汎用 append 経由(checkpoint の wire schema 拒否を含む)の
-// 拒否テスト。複合エンドポイント経由の negative は
-// membership-negatives-composite.test.ts。
-// 共有 fixture・ベクター再生ヘルパは support/membership-scenario.ts(分割の
-// 動機はシナリオモジュール冒頭を参照)。
+// Server-side verification (CRYPTO_SPEC §6.4 = verifyChain re-run) —
+// rejection tests for the authorization negative vectors that go
+// through generic append (including the checkpoint wire-schema
+// rejections). Negatives via the composite endpoint live in
+// membership-negatives-composite.test.ts.
+// The shared fixture and vector-replay helpers are in
+// support/membership-scenario.ts (for the split's motivation see the
+// top of the scenario module).
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { describe, expect, it } from "vitest";
@@ -26,14 +28,18 @@ import {
 registerMembershipScenario();
 
 /**
- * checkpoint op の汎用 append テスト: 固定長 hex の形式違反は api-schema の
- * hex Schema が先に 400 で拒否する
- * (create-env-commitment-* の複合期待と同じ分担)。それ以外の合意規則 negative
- * (role / audit role / unknown / epoch / regression と検査順序)は crypto 層の
- * 4 実行環境テストが理由コードごと固定済みで、前提チェーン(checkpoint-baseline
- * 派生チェーン — タプル内容がダミー)は §16-2 の内容突合を通らず API では再生
- * できないため、ここでは繰り返さない。API 受理面(認可 2 水準・内容突合 5 理由・
- * 原子性・スナップショット保存)は data-checkpoint.test.ts が実データで固定する。
+ * Generic-append tests for the checkpoint op: a fixed-length-hex
+ * format violation is rejected first at 400 by api-schema's hex
+ * Schema (the same division of labor as the create-env-commitment-*
+ * composite expectations). The other consensus-rule negatives (role /
+ * audit role / unknown / epoch / regression and the check order) are
+ * pinned reason-by-reason by the crypto layer's 4-runtime tests, and
+ * their prerequisite chain (the checkpoint-baseline derived chain —
+ * dummy tuple content) cannot pass §16-2's content match and cannot
+ * be replayed through the API, so they are not repeated here. The
+ * API's acceptance surface (2 authorization levels, 5 content-match
+ * reasons, atomicity, snapshot storage) is pinned with real data by
+ * data-checkpoint.test.ts.
  */
 function registerCheckpointAppendGuardTest(negative: (typeof vectorAuthzNegatives)[number]): void {
   const schemaRejected = [
@@ -56,16 +62,20 @@ function registerCheckpointAppendGuardTest(negative: (typeof vectorAuthzNegative
 }
 
 /**
- * ES / PF1(2026-09-14)の構造 negative のうち、api-schema の閉集合リテラル
- * (scope_kind / ops / 内側 op)・固定長 hex(proposal_hash_hex)・内側 payload の
- * 必須フィールドが verifyChain より先に 400 で拒否するもの(create-env-commitment-* /
- * checkpoint-* の hex Schema と同じ分担)。合意規則としての `invalid-payload` は
- * crypto 層の 4 実行環境テストが理由コードごと固定する
+ * Among ES / PF1's (2026-09-14) structural negatives, the ones where
+ * api-schema's closed-set literals (scope_kind / ops / inner op),
+ * fixed-length hex (proposal_hash_hex), or the inner payload's
+ * required fields reject at 400 before verifyChain (the same division
+ * as the create-env-commitment-* / checkpoint-* hex Schemas).
+ * `invalid-payload` as a consensus rule is pinned reason-by-reason by
+ * the crypto layer's 4-runtime tests
  */
 /**
- * 構造 negative のうち、テスト時の署名 API(signChainEntry)が受け付けない形
- * (負の expires_at_ms は §2.1 の符号化対象外)。構造検査は署名検証に先行するため、
- * 再署名せずに送っても理由コードは構造段のもの(invalid-payload)で確定する
+ * Among the structural negatives, shapes the test-time signing API
+ * (signChainEntry) does not accept (a negative expires_at_ms is
+ * outside §2.1's encoding). Since structural checks precede signature
+ * verification, sending it unresigned still settles the reason code
+ * at the structural stage (invalid-payload)
  */
 const UNSIGNABLE_STRUCTURE_NEGATIVES: ReadonlySet<string> = new Set(["propose-expires-negative"]);
 
@@ -78,8 +88,10 @@ const WIRE_SCHEMA_REJECTED: ReadonlySet<string> = new Set([
   "propose-inner-shape-precedes-role",
   "approve-hash-uppercase",
   "approve-hash-bad-length",
-  // 端末鍵(DK): 閉集合リテラル(role_cap / ops)・固定長 hex(公開鍵・FP)は api-schema が先に 400。
-  // K3(2026-09-20)から前提チェーン(端末派生)を再生して通常経路で固定する
+  // Device keys (DK): closed-set literals (role_cap / ops) and
+  // fixed-length hex (public key, FP) are rejected by api-schema at
+  // 400 first. Since K3 (2026-09-20) the prerequisite chain (device-
+  // derived) is replayed and these are pinned on the normal path
   "add-device-role-cap-unknown",
   "add-device-enc-pub-bad-length",
   "add-device-sig-pub-uppercase-hex",
@@ -91,7 +103,7 @@ const WIRE_SCHEMA_REJECTED: ReadonlySet<string> = new Set([
 
 type AuthzNegative = (typeof vectorAuthzNegatives)[number];
 
-/** 前提チェーンを再生し、seq / prev だけ実ヘッドへ付け替えた原本(再署名なし)を送る。 */
+/** Replay the prerequisite chain, then send the original with only seq / prev re-pointed at the real head (not re-signed). */
 async function appendUnsignedAtHead(negative: AuthzNegative): Promise<Response> {
   const { head } = await replayNegativePrefix(negative);
   return appendEntry(vectorProjectId, head.hashHex, {
@@ -102,8 +114,10 @@ async function appendUnsignedAtHead(negative: AuthzNegative): Promise<Response> 
 }
 
 /**
- * 署名 API が拒む形(負の expires_at_ms)は再署名できない。構造検査は署名検証に
- * 先行する(§6.3 の検証段順)ので、原本を送れば理由コードは構造段のもので確定する
+ * A shape the signing API refuses (negative expires_at_ms) cannot be
+ * re-signed. Since structural checks precede signature verification
+ * (the §6.3 verification stage order), sending the original settles
+ * the reason code at the structural stage
  */
 function registerStructureBeforeSignatureTest(negative: AuthzNegative): void {
   it(`rejects ${negative.name} with 422 (${negative.expected_reason}) before the signature`, async () => {
@@ -121,17 +135,19 @@ function registerWireSchemaRejectTest(negative: AuthzNegative): void {
   });
 }
 
-/** 合意規則(verifyChain)での拒否 — 実ヘッドで再署名して送り、理由コードと seq を固定する。 */
+/** Rejection at a consensus rule (verifyChain) — re-sign at the real head and send; pin the reason code and seq. */
 function registerConsensusRejectTest(negative: AuthzNegative): void {
-  // actor が非メンバーのケースは §11-2 の存在秘匿(404)が verifyChain より先に働く
+  // For a non-member actor, §11-2's existence hiding (404) acts before verifyChain
   const expectsConcealment = negative.expected_reason === "actor-not-member";
   const label = expectsConcealment
     ? `rejects ${negative.name} with 404 (§11-2 concealment)`
     : `rejects ${negative.name} with 422 (${negative.expected_reason})`;
   it(label, async () => {
     const { head } = await replayNegativePrefix(negative);
-    // 実ヘッドで再署名する(境界 checkpoint 挿入分のずれを吸収 — 複合側と同じ)。
-    // approve / withdraw の参照先は再生時の実 hash へ付け替える
+    // Re-sign at the real head (absorbing the shift from inserted
+    // boundary checkpoints — same as the composite side). approve /
+    // withdraw references are re-pointed at the real hash from
+    // replay
     const { entry } = await resignEntryAt(
       remapProposalRef(toWireEntry(negative.entry)),
       head.seq + 1,
@@ -150,20 +166,27 @@ function registerConsensusRejectTest(negative: AuthzNegative): void {
 }
 
 /**
- * 認可 negative の分割(pullfrog 第 3 巡): 判定が広がっても suite が静かに空に
- * ならないよう、各分岐の件数を厳密に固定する。K5(2026-09-16)で受理ガードを
- * 外し、四眼 op の negative と四眼 op を含む派生チェーンを前提とする negative は
- * すべて通常の経路(合意規則の 422 / wire schema の 400 / 署名前の構造段)へ戻した
- * (K2-10 の `skipped` 58 + `fourEyesGuard` 7 = 65 件の内訳: consensus +57、
- * wireSchema +7、structureBeforeSignature +1)。
+ * Splitting the authz negatives (pullfrog round 3): pin each branch's
+ * count exactly so the suite cannot quietly empty as the judgment
+ * widens. K5 (2026-09-16) removed the acceptance guard and returned
+ * four-eyes-op negatives and negatives whose prerequisite chains
+ * include four-eyes ops all to the normal paths (a consensus-rule 422
+ * / wire-schema 400 / pre-signature structural stage) (the K2-10
+ * breakdown of `skipped` 58 + `fourEyesGuard` 7 = 65: consensus +57,
+ * wireSchema +7, structureBeforeSignature +1).
  *
- * 2026-09-20 DK K2(認可 negative +57): 端末 op の negative(41)+ ops に端末 op を書く
- * negative(2)は受理ガード(`deviceOpsGuard` 43)、端末派生チェーンを前提とする残り
- * (10)は `skipped` だった。**K3(2026-09-20)で受理ガードを外し、両分岐を通常の経路へ
- * 戻した**(設計録 dk-design.md §8 K3-12 — ES K2-10 → K5 と同じ手順): 端末派生チェーンは
- * `replayNegativePrefix` が汎用 append で再生する(受理されること自体が §6.2 の許容側の
- * 固定)。内訳: consensus 104 + 36(端末 op の合意規則)+ 10(端末派生チェーン前提)=
- * 150、wireSchema 8 + 7(端末 op の閉集合リテラル・固定長 hex)= 15
+ * 2026-09-20 DK K2 (authz negatives +57): the device-op negatives
+ * (41) plus negatives that write a device op into ops (2) had an
+ * acceptance guard (`deviceOpsGuard` 43); the rest whose prerequisite
+ * is a device-derived chain (10) were `skipped`. **K3 (2026-09-20)
+ * removed the acceptance guard and returned both branches to the
+ * normal paths** (design record dk-design.md §8 K3-12 — the same
+ * procedure as ES K2-10 → K5): a device-derived chain is replayed by
+ * `replayNegativePrefix` via generic append (the acceptance itself
+ * pins §6.2's permissive side). Breakdown: consensus 104 + 36
+ * (consensus rules on device ops) + 10 (device-derived-chain
+ * prerequisites) = 150, wireSchema 8 + 7 (closed-set literals and
+ * fixed-length hex on device ops) = 15
  */
 const EXPECTED_PARTITION = {
   checkpoint: 21,
@@ -176,11 +199,14 @@ const EXPECTED_PARTITION = {
 type PartitionBucket = keyof typeof EXPECTED_PARTITION;
 
 /**
- * negative の分岐(判定順は固定): checkpoint → 複合(create / rotate)→ 四眼(PF1)の
- * 4 op と四眼 op を含む派生チェーンは K5 から、端末鍵(DK)の 2 op と端末派生チェーンは
- * K3 からサーバーが再生・受理する
- * (propose の受理ポリシーは固定時刻のベクターを拒まない — expires_at_ms は上界の内側で、
- * 失効済みの提案は pending 上限の計算から除外されるだけ。設計録 es-design.md §11 K5-C)
+ * A negative's branch (the judgment order is fixed): checkpoint →
+ * composite (create / rotate) → the four-eyes (PF1) 4 ops and
+ * four-eyes-derived chains are replayed and accepted by the server
+ * since K5; the device-key (DK) 2 ops and device-derived chains since
+ * K3 (propose's acceptance policy does not reject fixed-timestamp
+ * vectors — expires_at_ms stays within its upper bound, and an
+ * expired proposal is merely excluded from the pending-count
+ * computation. Design record es-design.md §11 K5-C)
  */
 function bucketOf(negative: AuthzNegative): PartitionBucket {
   const op = negative.entry.op;
@@ -196,7 +222,7 @@ function bucketOf(negative: AuthzNegative): PartitionBucket {
   return WIRE_SCHEMA_REJECTED.has(negative.name) ? "wireSchema" : "consensus";
 }
 
-/** 分岐ごとの登録(複合は membership-negatives-composite.test.ts、skipped は crypto 層のみ)。 */
+/** Registration per branch (composites go to membership-negatives-composite.test.ts; skipped exists only in the crypto layer). */
 const REGISTER_BY_BUCKET: Record<PartitionBucket, (negative: AuthzNegative) => void> = {
   checkpoint: registerCheckpointAppendGuardTest,
   composite: () => undefined,
@@ -205,7 +231,7 @@ const REGISTER_BY_BUCKET: Record<PartitionBucket, (negative: AuthzNegative) => v
   consensus: registerConsensusRejectTest,
 };
 
-describe("サーバー側検証(§6.4)— 認可系 negative ベクター(汎用 append 経由)", () => {
+describe("server-side verification (§6.4) — authorization negative vectors (via generic append)", () => {
   const partition: Record<PartitionBucket, number> = {
     checkpoint: 0,
     composite: 0,
@@ -219,14 +245,15 @@ describe("サーバー側検証(§6.4)— 認可系 negative ベクター(汎用
     REGISTER_BY_BUCKET[bucket](negative);
   }
 
-  it("partitions the authz negatives as expected (K5 — 四眼 op、DK K3 — 端末 op を含めて全件を再生する)", () => {
+  it("partitions the authz negatives as expected (K5 — four-eyes ops, DK K3 — device ops included; all replayed)", () => {
     expect(partition).toEqual(EXPECTED_PARTITION);
     expect(Object.values(partition).reduce((a, b) => a + b, 0)).toBe(vectorAuthzNegatives.length);
   });
 
   it("rejects a tampered payload with 422 (bad-signature)", async () => {
-    // ベクター negative "tampered-payload-role" の再構成: entry 2 の payload の
-    // role を書き換え、署名は元のまま → 署名検証で拒否される
+    // Reconstructing the vector negative "tampered-payload-role":
+    // rewrite entry 2's payload role while keeping the original
+    // signature → rejected at signature verification
     await replayVectorChain(1);
     const genesis = vectorEntries[0];
     const entry2 = vectorEntries[1];

@@ -1,19 +1,19 @@
-# ADR-0009: 認証は GitHub OAuth 直接実装、WorkOS は不採用(再判断ポイント付き)
+# ADR-0009: Auth is a direct GitHub OAuth implementation — WorkOS not adopted (with a re-decision point)
 
-**Context**: 将来のエンタープライズと無料ユーザー増を見据え WorkOS 採用を検討した。
-**Decision**: コア認証は GitHub OAuth(web + device flow。2026-08-31 の AUTH_SPEC §4 全面改訂で device flow は廃止 — CLI ログインも web flow のサーバー仲介ハンドオフに一本化: session-48 裁定 DF。本 ADR の決定〔直接実装・フレームワーク不使用〕は不変)の直接実装。Better Auth 等のフレームワークも不使用。ただし AUTH_SPEC の 6 項目(内部 user_id 主キー、メール検証 + 自動リンク禁止、org のファーストクラス化、DB バックセッション、maruhi 発行トークン、冪等 get-or-create)により将来の IdP 追加を無停止で可能に保つ。
-**Rationale**: セルフホスト版は外部依存なしが製品価値であり GitHub 直実装が必須。同一コードベース戦略のため WorkOS は削減ではなく純増になる。自前実装の範囲は OAuth クライアント + セッション + トークンの数百行で、危険物(パスワード等)を含まない。Better Auth はスキーマ所有が E2EE 主導のユーザーモデル設計と衝突。
-**Consequences**: 再判断ポイント: ホステッド版の着工日。メンバーシップチェーンにプロバイダ情報を書かないことが最重要の不可逆制約(CRYPTO_SPEC §6.1)。**(→ 再判断は 2026-08-30 H0 で実施 — 下記)**
+**Context**: WorkOS adoption was considered for future enterprise needs and free-user growth.
+**Decision**: Core auth is a direct implementation of GitHub OAuth (web + device flow. In the 2026-08-31 full revision of AUTH_SPEC §4 the device flow was abolished — CLI login was also unified into the server-mediated web-flow handoff: session-48 ruling DF. This ADR's decision [direct implementation, no framework] is unchanged). No framework such as Better Auth either. However, the six items in AUTH_SPEC (internal user_id primary key, email verification + no auto-linking, first-class orgs, DB-backed sessions, maruhi-issued tokens, idempotent get-or-create) keep future IdP additions possible without downtime.
+**Rationale**: For the self-hosted edition, zero external dependencies is the product value, so a direct GitHub implementation is mandatory. Because of the single-codebase strategy, WorkOS would be a pure addition, not a reduction. The in-house scope is a few hundred lines of OAuth client + session + token, containing no dangerous goods (passwords etc.). Better Auth collides with the E2EE-led user-model design over schema ownership.
+**Consequences**: Re-decision point: the work-start date of the hosted edition. Writing no provider information into the membership chain is the most important irreversible constraint (CRYPTO_SPEC §6.1). **(→ The re-decision was carried out at 2026-08-30 H0 — below)**
 
 ---
 
-## 再判断(2026-08-30 — H0: ホステッド着工日の到来)
+## Re-decision (2026-08-30 — H0: arrival of the hosted work-start date)
 
-ADR-0014 改訂 1(ホステッドクラウド版の前倒し)により Consequences の再判断ポイントが到来したため、再判断を実施した(裁定 DE — docs/notes/session-47.md)。
+Because Revision 1 of ADR-0014 (moving the hosted cloud edition earlier) brought the re-decision point in Consequences due, the re-decision was carried out (ruling DE — docs/notes/session-47.md).
 
-**判断: v1 は GitHub OAuth 直実装のまま続行する。WorkOS は引き続き不採用。**
+**Verdict: v1 continues with the direct GitHub OAuth implementation. WorkOS remains not adopted.**
 
-1. **元の Rationale は全て存立している**: セルフホスト = 外部依存なし(同一コードベースのため WorkOS は純増)、実装済み範囲は当時の見積りどおり小さく危険物を含まない、AUTH_SPEC §7 の挿入ポイント(6 項目)は W 系列・S0 を経た現行仕様でも維持されている(§2 のデータモデル・§9 の分離は不変)
-2. **ホステッドのベータ対象(hosted-design.md §1 のペルソナ)は GitHub を持つ開発者であり、エンタープライズ SSO の実需がまだ存在しない**。SSO は「有償プランで要求が実測された時点」の機能であり、needs が観測されるより前の導入は ADR-0011(未安定・外部依存の最小化)と同じ理由で見送る
-3. **新しく確認した事実(2026-08-30 一次情報 — hosted-design.md §3-4)は判断を変えない**: ホステッドの CLI ログインは GitHub device flow のコード入力 50 回/時/App という共有上限に律速される。これは WorkOS を足しても解けない(CLI 認証を GitHub device flow から外さない限り上限は残り、外すなら解は web-flow ハンドオフ等の自前経路 — 同 §3-4 (a) — であって IdP サービスの追加ではない)。むしろ「認証面の変更は自前実装の 1 箇所に閉じている」ことが緩和の実装を安くしている(2026-08-31 追記: この緩和 = web-flow ハンドオフを session-48 裁定 DF で採用し AUTH_SPEC §4 を改訂した。BYO App の議題は裁定 DG で本 ADR の次回再判断ポイント〔有償プラン設計時 or SSO 実需〕へ合流)
-4. **次の再判断ポイント**: 有償プラン(GA)の設計時、またはエンタープライズ SSO の実需(具体的な顧客要求)が観測された時点のいずれか早い方。挿入ポイント(AUTH_SPEC §7)の維持は引き続き改訂の受理条件とする
+1. **All of the original Rationale still stands**: self-hosted = no external dependencies (WorkOS is a pure addition under the single codebase); the implemented scope is as small as originally estimated and contains no dangerous goods; the AUTH_SPEC §7 insertion point (the six items) is maintained in the current spec even after the W series and S0 (the §2 data model and §9 separation are unchanged)
+2. **The hosted beta's target audience (the persona in hosted-design.md §1) is developers who have GitHub; there is no actual demand for enterprise SSO yet**. SSO is a feature for "once demand is measured on a paid plan"; introducing it before needs are observed is deferred for the same reason as ADR-0011 (minimizing unstable and external dependencies)
+3. **Newly confirmed facts (2026-08-30 primary sources — hosted-design.md §3-4) do not change the decision**: the hosted CLI login is rate-limited by GitHub device flow's shared cap of 50 code entries / hour / App. Adding WorkOS cannot solve it (the cap remains unless CLI auth is taken off the GitHub device flow, and if it is taken off, the answer is an in-house path such as the web-flow handoff — same §3-4 (a) — not adding an IdP service). Rather, the fact that "auth-surface changes are confined to one place in our own implementation" makes implementing mitigation cheap (addendum 2026-08-31: that mitigation = the web-flow handoff, adopted by session-48 ruling DF, which revised AUTH_SPEC §4. The BYO App topic was merged by ruling DG into this ADR's next re-decision point [paid-plan design or observed SSO demand])
+4. **Next re-decision point**: whichever comes first — paid-plan (GA) design, or observed actual demand for enterprise SSO (a concrete customer request). Maintaining the insertion point (AUTH_SPEC §7) remains an acceptance criterion for any revision.

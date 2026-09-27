@@ -1,52 +1,67 @@
-// 環境間のパリティチェック(`maruhi env diff`)。
+// The cross-environment parity check (`maruhi env diff`).
 //
-// 同一プロジェクト内の 2 環境について**変数名の集合**と**スキーマ契約
-// (required・set / declared の状態 — 設計文書 §1-5 の required 軸)**を比較し、
-// 片方にしか無い名前と、両方にあるが契約の食い違う名前を報告する(「prod に
-// 入れ忘れた」「staging には required の宣言がない」を値を一切見ずに検出する)。
-// description は diff 出力に出さない(§2 の消費点規律 — fail-fast・lint と同じ線)。
+// For two environments in the same project it compares **the set of
+// variable names** and **the schema contract (required, and the
+// set / declared state — the required axis of design doc §1-5)**, and
+// reports names present on only one side and names present on both but
+// with disagreeing contracts (detecting "forgot to put it in prod" or
+// "staging has no required declaration" without looking at a single
+// value). description is not shown in the diff output (the §2
+// consumption-point discipline — the same line as fail-fast and lint).
 //
-// 値も DEK も取得しない: 入力は §12-7 のメタデータのみ pull だけで、平文値を
-// メモリに作らない。サーバーはこのエンドポイントで `var.read` を記録しない
-// (AUDIT_SPEC §3.3)— これは AUDIT_SPEC §4 の要ローテーション検出の入力純度を
-// 守るための規律なので、diff でも記録を増やさない。
+// Neither values nor DEKs are fetched: the input is only a §12-7
+// metadata-only pull, and no plaintext value is ever materialized in
+// memory. The server does not record `var.read` on this endpoint
+// (AUDIT_SPEC §3.3) — that discipline protects the input purity of the
+// rotation-needed detection of AUDIT_SPEC §4, so diff does not add
+// records either.
 //
-// 比較は**検証済みステートメントの name** で行う(§6.3 を通ったものだけを
-// 信用する — §12-2)。照合規則は AUTH_SPEC §12-1 の byte-exact・大文字小文字
-// 区別(POSIX 環境変数名の意味論)で、環境間の変数名照合を平文メタデータの
-// 変数名で行うのは CRYPTO_SPEC §4 のとおり。削除済み(tombstone)は対象外で、
-// active な最新ステートメントだけを見る。
+// The comparison is done on **verified statements' name** (only what
+// passed §6.3 is trusted — §12-2). The matching rule is AUTH_SPEC §12-1's
+// byte-exact, case-sensitive comparison (POSIX environment-variable-name
+// semantics), and matching variable names across environments by the
+// plaintext metadata names is per CRYPTO_SPEC §4. Deleted (tombstone)
+// variables are out of scope; only the latest active statement is read.
 //
-// **両方にある名前は「名前が一致する」以上のことを意味しない**。値が一致するか
-// どうかは復号しなければ分からず、この機構は原理的にそこへ触れない — 報告でも
-// そう明示する(「同期している」と読まれると、検出できていない不一致を
-// 検出済みと誤解させる)。
+// **A name present on both means nothing more than "the name matches"**.
+// Whether the values match cannot be known without decrypting, and this
+// mechanism fundamentally never touches that — the report says so
+// explicitly (reading it as "in sync" would make the user believe an
+// undetected discrepancy was detected).
 //
-// **標本のずれ(検査済みと偽らない)**: 2 環境は 2 回の pull で**順に**読む。
-// 2 環境を同時に読む API は無いため、1 つ目と 2 つ目の間に他メンバーの push が
-// 挟まると、その変数は一時的に片側だけに見える = **偽の差分**になる。逆向きも
-// ある: 1 つ目を読んだ後に片側から変数が削除されると、両方にあると報告されて
-// 差分ゼロで終わる = **実在する差分の見落とし**になる。ここで
-// 揃えているのは検証に使うチェーンビューであって、変数集合の同時性ではない
-// (前者は §6.3 の検証が別々の履歴に対して行われるのを防ぐためのもので、
-// 後者は保証できない)。偽の差分を真に受けた利用者の「修正」は push であり、
-// チェーンへの取り消せない追記 — かつ新しい値を古い値で上書きしうる — であり、
-// 見落としの側は「揃っている」と読ませる。どちらの結論も覆されうるので、
-// 注意書きは**差分の有無によらず常に**添える(reportEnvironmentDiff)。
+// **Specimen skew (never claimed as checked)**: the two environments are
+// read **sequentially** in two pulls. Because there is no API that reads
+// two environments at once, if another member's push slips in between the
+// first and second read, that variable temporarily appears on only one
+// side = **a phantom difference**. There is a reverse direction too: if a
+// variable is deleted from one side after the first is read, it is
+// reported as present on both and ends with zero differences = **a missed
+// real difference**. What is aligned here is the chain view used for
+// verification, not the simultaneity of the variable sets (the former
+// prevents §6.3 verification from running against separate histories; the
+// latter cannot be guaranteed). A user's "fix" based on a phantom
+// difference is a push — an irreversible append to the chain, and one
+// that may overwrite a newer value with an older one — and the missed
+// side reads as "in sync". Since either conclusion can be overturned, the
+// caveat is attached **always, regardless of whether differences exist**
+// (reportEnvironmentDiff).
 //
-// AI エージェント検出(agent.ts)は掛けない: agent.ts の線引きは「値を端末に
-// 表示する操作」であり、変数名は**設計上の平文メタデータ**(CRYPTO_SPEC §4 —
-// 名前の秘匿は未決 #3)なので値ではない。`--show` なしの `maruhi pull` が
-// 同じ一覧を既に表示している(エージェント判定は `--show` のときだけ)。
+// AI-agent detection (agent.ts) is not applied: agent.ts's line is
+// "operations that display values on the terminal", and variable names
+// are **plaintext metadata by design** (CRYPTO_SPEC §4 — name secrecy is
+// unresolved #3), not values. `maruhi pull` without `--show` already
+// displays the same listing (agent determination is only under `--show`).
 //
-// ただし「pull より開示が狭い」とは言えない — master 鍵を要求しない以上、
-// キーチェーンの無い端末(MARUHI_TOKEN 経由 — session.ts)では pull が
-// loadMasterKeys で落ちる一方、このコマンドは両環境の変数名一覧を出す。
-// **その資格情報で変数名を出す最初のコマンド**である。線引きそのものは
-// 変わらない(開示の境界はトークンで、サーバーは read 権限があれば
-// pullMetadata を返す — ローカル鍵の有無は関与しない)が、名前を値と同じ
-// 扱いにするなら agent.ts の線引きごと見直す話になるので、ここで判断を
-// 握り潰さずに記す。
+// However, "narrower disclosure than pull" cannot be claimed — since it
+// does not require the master key, on a device without a keychain (via
+// MARUHI_TOKEN — session.ts) pull fails at loadMasterKeys while this
+// command prints both environments' variable-name listings. **It is the
+// first command to emit variable names under that credential**. The line
+// itself does not change (the disclosure boundary is the token; the
+// server returns pullMetadata to anyone with read permission — whether a
+// local key exists is uninvolved), but treating names like values would
+// mean re-examining agent.ts's line itself, so the judgment is recorded
+// here rather than swallowed.
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -61,54 +76,58 @@ import { logNote } from "./notice.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 
-/** 比較対象の 1 環境。床は §6.3 のメタ水準検査に使う(コミットはしない)。 */
+/** One environment under comparison. The floor is used for §6.3's meta-level checks (not committed). */
 export interface DiffTarget {
   readonly environmentId: EnvironmentId;
   readonly floor: FloorHandle;
 }
 
 /**
- * 1 変数の required 契約(検証済みステートメントの schema 欄のみから導出 —
- * サーバー申告を使わない §14.2-8)。`none` = スキーマ欄なし(レイアウト v1)。
+ * One variable's required contract (derived only from the verified
+ * statement's schema field — server declarations are not used, §14.2-8).
+ * `none` = no schema field (layout v1).
  */
 export type RequiredContract = "required" | "optional" | "none";
 
-/** 片側にしかない 1 変数(名前・状態・required — description は運ばない §2)。 */
+/** One variable present on only one side (name, state, required — description is not carried, §2). */
 export interface DiffSideEntry {
   readonly name: string;
-  /** true = declared(値なし)。 */
+  /** true = declared (no value). */
   readonly declared: boolean;
   readonly required: RequiredContract;
 }
 
-/** 両側にある名前のうち、宣言された契約(required / 状態)が食い違うもの。 */
+/** Among the names present on both sides, those whose declared contract (required / state) disagrees. */
 export interface ContractMismatch {
   readonly name: string;
   readonly first: { readonly declared: boolean; readonly required: RequiredContract };
   readonly second: { readonly declared: boolean; readonly required: RequiredContract };
 }
 
-/** 変数名の集合比較の結果(名前でソート済みの差分と件数)。 */
+/** The result of the variable-name set comparison (name-sorted differences and counts). */
 export interface EnvironmentDiff {
   readonly firstEnvironmentId: EnvironmentId;
   readonly secondEnvironmentId: EnvironmentId;
-  /** 1 つ目にしか無い変数(名前でソート済み)。 */
+  /** Variables only in the first (name-sorted). */
   readonly onlyInFirst: readonly DiffSideEntry[];
-  /** 2 つ目にしか無い変数(名前でソート済み)。 */
+  /** Variables only in the second (name-sorted). */
   readonly onlyInSecond: readonly DiffSideEntry[];
   /**
-   * 両方にある名前のうち required 契約・状態(set / declared)が食い違うもの
-   * (§1-5 の required 軸 — 判定材料は両環境の検証済みステートメントのみ)。
+   * Among the names present on both, those whose required contract or
+   * state (set / declared) disagrees (the required axis of §1-5 — the
+   * decision material is only both environments' verified statements).
    */
   readonly contractMismatches: readonly ContractMismatch[];
-  /** 両方にある名前の数。**値が一致することは含意しない**(復号しないため)。 */
+  /** The number of names present on both. **Does not imply the values match** (they are never decrypted). */
   readonly shared: number;
 }
 
 /**
- * 名前の並びは **UTF-16 コード単位**の昇順(既定の比較)。localeCompare は
- * 実行環境のロケールで並びが変わるため使わない — 同じ 2 環境を比べた出力が
- * 端末によって別の順に出ると、出力そのものの差分を取れなくなる。
+ * The name ordering is ascending by **UTF-16 code unit** (the default
+ * comparison). localeCompare is not used because the order varies with
+ * the runtime's locale — if comparing the same two environments printed
+ * in different orders on different terminals, the output itself could no
+ * longer be diffed.
  */
 function sortedByName<T extends { readonly name: string }>(entries: Iterable<T>): readonly T[] {
   return [...entries].toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -130,11 +149,13 @@ function sideEntryOf(statement: VerifiedVariableStatement): DiffSideEntry {
 }
 
 /**
- * 検証済み変数ステートメント(active + declared の混在 — §12-7)→ 名前 →
- * ステートメントの表。declared も「存在する変数名」として比較に含める(S3 の
- * 裁定 — declared は第一級の変数 §4.2。値の有無は注記で示す)。同一環境内の
- * 同名は §6.3 の検証(values.ts の checkVerifiedNames)が既に拒否しているので、
- * ここで表に潰しても事実は落ちない。
+ * Verified variable statements (a mix of active + declared — §12-7) →
+ * name → statement map. declared is included in the comparison as "an
+ * existing variable name" (the S3 ruling — declared is a first-class
+ * variable, §4.2; the presence of a value is shown as a note). A
+ * same-name collision within one environment is already refused by
+ * §6.3's verification (values.ts's checkVerifiedNames), so folding into
+ * the map here loses no fact.
  */
 function statementsByName(
   variables: readonly VerifiedVariableStatement[],
@@ -146,16 +167,21 @@ function statementsByName(
  * Emits one environment's §12-1 SHOULD warnings to stderr, labelled with the
  * environment id.
  *
- * **pull ごとに即時に吐く**: 2 つ目の pull が落ちた実行で 1 つ目の警告を
- * 捨てないため(env-rotate の「収集した警告は失敗経路でも必ず吐く」と同じ規律)。
+ * **Emitted immediately per pull**: so the first pull's warnings are not
+ * dropped on a run where the second pull fails (the same discipline as
+ * env-rotate's "collected warnings are always emitted even on a failure
+ * path").
  *
- * 2 環境ぶんの警告は同じ行になりうる(variable_id は**環境内**で一意なので、
- * 別環境の別変数について文面まで同一の警告が立つ)。集合で畳むと片方の事実が
- * 黙って消えるため、重複排除ではなく環境 ID でラベルする。
+ * The two environments' warnings can be the same line (variable_id is
+ * unique **within an environment**, so an identical warning can fire for
+ * a different variable in the other environment). Folding by set would
+ * silently drop one fact, so they are labelled by environment ID instead
+ * of deduplicated.
  *
- * 組み立てた行は丸ごと displayText を通す — 環境 ID は `EnvironmentId` が
- * ブランド付きでないため検証済みとは限らず、警告本文も将来の産出元が中和済み
- * とは限らない(displayText は冪等なので二重適用しても壊れない)。
+ * The assembled line goes through displayText whole — the environment ID
+ * is not necessarily verified since `EnvironmentId` is not branded, and a
+ * future producer of the warning body is not necessarily neutralized
+ * (displayText is idempotent, so double application does not corrupt).
  */
 export function reportEnvironmentWarnings(
   environmentId: EnvironmentId,
@@ -170,21 +196,23 @@ export function reportEnvironmentWarnings(
  * Compares the variable **names** of two environments in one project, using
  * only metadata pulls (no values, no DEKs, no `var.read`).
  *
- * 2 つ目の pull には **1 つ目が返したビュー**を渡す: メタデータ pull は future
- * head 時に有界再同期でビューを前進させることがあり(§6.3-2b)、元のビューを
- * 使い回すと 2 環境を**別々の履歴**に対して検証したまま比較することになる。
+ * The second pull is passed **the view the first returned**: a metadata
+ * pull may advance the view via a bounded resync on a future head
+ * (§6.3-2b), and reusing the original view would compare the two
+ * environments as verified against **separate histories**.
  */
 export function envDiffOp(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
-  /** future head 時の有界再同期(各 pull が 1 回ずつ使う)。 */
+  /** The bounded resync on a future head (each pull uses it once). */
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly first: DiffTarget;
   readonly second: DiffTarget;
   /**
-   * 検証済みチェーンヘッドの記録。**pull ごとに**呼ぶ: 最後にまとめて呼ぶと、
-   * 2 つ目の pull が失敗した実行で 1 つ目の有界再同期が確立した前進を落とす
-   * (pull / push は応答ごとの accept の中で同じヘッドを書いている)。
+   * Recording the verified chain head. **Called per pull**: called only
+   * once at the end, a run whose second pull fails would drop the
+   * advancement the first pull's bounded resync established (pull / push
+   * write the same head inside each response's accept).
    */
   readonly commitHead: (verified: VerifiedProject) => Effect.Effect<void, CliError, CliServices>;
 }): Effect.Effect<EnvironmentDiff, CliError, CliServices> {
@@ -196,12 +224,12 @@ export function envDiffOp(input: {
       resync: input.resync,
       floor: input.first.floor,
     });
-    // 警告 → ヘッド記録の順(どちらも 2 つ目の pull の成否に依存させない)
+    // Warnings then head recording, in that order (neither depends on the second pull's success)
     yield* reportEnvironmentWarnings(input.first.environmentId, first.warnings);
     yield* input.commitHead(first.verified);
     const second = yield* pullVerifiedEnvironmentMetadata({
       client: input.client,
-      // 1 つ目の検証に使ったビュー(前進していることがある)を引き継ぐ
+      // Carries over the view the first's verification used (it may have advanced)
       verified: first.verified,
       environmentId: input.second.environmentId,
       resync: input.resync,
@@ -246,11 +274,14 @@ export function envDiffOp(input: {
 }
 
 /**
- * 片側にしかない 1 変数の表示注記(§1-5 の required 軸 + declared 注記)。
- * 出力は名前・状態・required のみ — **description は出さない**(§2 の消費点
- * 規律: fail-fast エラー・lint レポートと同じ線。diff 出力もログ・CI へ流れる)。
- * required の充足・宣言は署名済みステートメント由来だが、表示は宣言として扱い
- * 「verified」の語を使わない(§14.3 の表示規律)。
+ * The display annotation for a variable present on only one side (the
+ * §1-5 required axis + a declared note). Output is name, state, and
+ * required only — **description is not shown** (the §2 consumption-point
+ * discipline: the same line as fail-fast errors and lint reports; the
+ * diff output also flows to logs / CI). required satisfaction and
+ * declaration come from signed statements, but display treats them as
+ * declared and does not use the word "verified" (the §14.3 display
+ * discipline).
  */
 function sideEntryLine(entry: DiffSideEntry): string {
   const notes = [
@@ -261,20 +292,23 @@ function sideEntryLine(entry: DiffSideEntry): string {
   return `  ${displayText(entry.name)}${suffix}`;
 }
 
-/** 契約食い違いの片側の表示(required / optional / no schema + declared 注記)。 */
+/** Displaying one side of a contract mismatch (required / optional / no schema + a declared note). */
 function contractText(side: ContractMismatch["first"]): string {
   const required = side.required === "none" ? "no schema (layout v1)" : side.required;
   return side.declared ? `${required}, declared — no value set` : required;
 }
 
 /**
- * 差分の報告。一覧は stdout(コマンドの出力)、警告は stderr(logWarnings)へ
- * 分ける — 「stdout はコマンドの出力だけ」の規律。
+ * Reporting the diff. The listing goes to stdout (the command's output)
+ * and warnings to stderr (logWarnings) — the "stdout is only the
+ * command's output" discipline.
  *
- * 端末へ出す文字列は**この関数が中和する**(警告は reportEnvironmentWarnings が
- * 同じ規律で受け持つ)。変数名は他メンバーが書いた平文メタデータで ANSI / BEL を
- * 仕込まれうるし(pull の formatPulledLine と同じ扱い)、環境 ID も
- * `EnvironmentId` がブランド付きではない以上、型では検証済みを保証できない。
+ * Every string emitted to the terminal **is neutralized by this
+ * function** (warnings are handled by reportEnvironmentWarnings under the
+ * same discipline). A variable name is plaintext metadata another member
+ * wrote and may carry ANSI / BEL (handled the same as pull's
+ * formatPulledLine), and since `EnvironmentId` is not branded, the type
+ * cannot guarantee the environment ID is verified either.
  */
 export function reportEnvironmentDiff(diff: EnvironmentDiff): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
@@ -289,15 +323,16 @@ export function reportEnvironmentDiff(diff: EnvironmentDiff): Effect.Effect<void
       { environmentId: second, entries: diff.onlyInSecond },
     ];
     for (const side of sides) {
-      // 件数は名前が 0 件でも必ず出す(出力の形を実行ごとに変えない)
+      // The count is printed even at 0 names (the output's shape does not vary between runs)
       yield* io.log(`Variables only in environment ${side.environmentId}: ${side.entries.length}`);
       for (const entry of side.entries) {
         yield* io.log(sideEntryLine(entry));
       }
     }
-    // required 軸(§1-5): 両方にある名前でも、宣言された契約(required /
-    // set・declared)が食い違えば表示する。件数行は 0 件でも必ず出す(上と同じ
-    // 「出力の形を実行ごとに変えない」規律)
+    // The required axis (§1-5): even for names present on both, a
+    // disagreeing declared contract (required / set / declared) is shown.
+    // The count line is printed even at 0 (same "the output's shape does
+    // not vary between runs" discipline as above)
     yield* io.log(
       `Variables in both with a differing schema contract: ${diff.contractMismatches.length}`,
     );
@@ -309,11 +344,13 @@ export function reportEnvironmentDiff(diff: EnvironmentDiff): Effect.Effect<void
     yield* io.log(
       `Variables in both: ${diff.shared} (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)`,
     );
-    // 標本のずれの注意書きは**常に**出す(stderr — 助言であってコマンドの出力
-    // ではないので stdout の差分一覧には混ぜない)。差分ゼロのときに黙ると、
-    // **skew が最も危険な向き**を隠すことになる: 1 つ目を読んだ後に片側から
-    // 変数が削除されると、両方にあると報告されて差分ゼロで終わる = 実在する
-    // 差分を「揃っている」と読ませる。助言だけを結論に合わせて変える
+    // The specimen-skew caveat is **always** printed (stderr — it is
+    // advice, not the command's output, so it is not mixed into the
+    // stdout diff listing). Going silent at zero differences would hide
+    // **skew's most dangerous direction**: if a variable is deleted from
+    // one side after the first is read, it is reported as present on both
+    // and ends at zero differences = a real difference reads as "in
+    // sync". Only the advice follows the conclusion
     const advice =
       diff.onlyInFirst.length + diff.onlyInSecond.length > 0
         ? "For differences you cannot explain, run this again to confirm before filling them in with a push (a push is an irreversible chain append and may overwrite a newer value with an older one)"

@@ -1,24 +1,31 @@
-// standalone(周期)checkpoint の受理と、checkpoint 内容突合の共有実装
-// (CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2)。
+// Acceptance of standalone (periodic) checkpoints and the shared
+// implementation of checkpoint content matching
+// (CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2).
 //
-// - standalone は汎用チェーン追記 API 経由(§16-2 — クライアント供給の付随
-//   データがなく、複合で束ねる別入力がない)。合意規則(形式・role・監査
-//   admin・unknown-environment・エポック厳密一致・checkpoint-regression)は
-//   verifyChain(chain-accept.ts 経由)が担い、ここは受理ポリシー =
-//   **受理時点(適用前)の保存状態との内容突合**とスナップショットの原子保存
-// - 突合の語彙は CheckpointStateMismatch(422): environment-deleted /
-//   manifest-mismatch / values-digest-mismatch / audit-head-unknown /
-//   audit-head-stale。境界同梱分(composite-programs.ts — 突合基準は複合の
-//   適用後状態)も values_digest と監査ヘッドの検査をここから共有し、
-//   「保存規律は経路によらず同一」(§16-2)を実装の共有で構造化する
-// - 非空 audit_head_hash の実効権限 admin(§16-2): スコープ半分は worker
-//   (handlers-membership / handlers-environments)、チェーン role 半分は
-//   ここで requireRole(admin) — 不足 403。合意規則の
-//   checkpoint-audit-role-insufficient(422)より API の 403 が先に立つ
-//   (session-27 §13-5 の権限マトリクス (c))
-// - 全タプルの環境 ∈ 呼び出し主体の scope(AUTH_SPEC §12-3 — 2026-09-15 ES K3):
-//   role 軸の直後に 403 insufficient-scope。合意規則 environment-out-of-scope
-//   (422)より先に立つ(同じ状態の多層防御)
+// - standalone goes through the generic chain-append API (§16-2 — there is
+//   no client-supplied accompanying data and no separate input to bundle in
+//   a composite). The consensus rules (form, role, audit admin,
+//   unknown-environment, strict epoch equality, checkpoint-regression) are
+//   carried by verifyChain (via chain-accept.ts); here lives the acceptance
+//   policy = **content matching against the stored state at acceptance time
+//   (before applying)** and the atomic snapshot store
+// - The mismatch vocabulary is CheckpointStateMismatch (422):
+//   environment-deleted / manifest-mismatch / values-digest-mismatch /
+//   audit-head-unknown / audit-head-stale. The boundary-bundled case
+//   (composite-programs.ts — the matching reference is the composite's
+//   post-application state) also shares the values_digest and audit-head
+//   checks from here, structuring "the storage discipline is identical
+//   across paths" (§16-2) as an implementation sharing
+// - Non-empty audit_head_hash requires effective permission admin (§16-2):
+//   the scope half is the worker's (handlers-membership /
+//   handlers-environments); the chain-role half is here via
+//   requireRole(admin) — insufficient is 403. The API's 403 precedes the
+//   consensus rule's checkpoint-audit-role-insufficient (422)
+//   (session-27 §13-5 permission matrix (c))
+// - Every tuple's environment ∈ the caller's scope (AUTH_SPEC §12-3 —
+//   2026-09-15 ES K3): 403 insufficient-scope right after the role axis.
+//   Precedes the consensus rule environment-out-of-scope (422) (defense in
+//   depth on the same state)
 
 import type { ChainEntry, CheckpointEnvironmentEntry } from "@maruhi/crypto";
 import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
@@ -42,9 +49,11 @@ import { DataStore } from "./data-store.ts";
 import { ensureStorageAdmitsAuditHeadExtension } from "./storage-guard.ts";
 
 /**
- * checkpoint values_digest の内容突合(CRYPTO_SPEC §6.4)。`values` は受理
- * 時点(standalone)/ 複合の適用後(境界 — 複合は値を変更しないため同値)の
- * 保存状態の再列挙。不一致は 422(発行者のビューが古い・並行 push)。
+ * Content match of a checkpoint's values_digest (CRYPTO_SPEC §6.4).
+ * `values` is a re-enumeration of the stored state at acceptance time
+ * (standalone) / after the composite is applied (boundary — same value
+ * since a composite does not change values). A mismatch is 422 (the
+ * issuer's view is stale / a concurrent push).
  */
 export const ensureCheckpointValuesDigest = (
   tuple: CheckpointEnvironmentEntry,
@@ -53,7 +62,7 @@ export const ensureCheckpointValuesDigest = (
   Effect.gen(function* () {
     const digest = yield* Effect.promise(() => computeEnvValuesDigest(SUITE_ID, values));
     if (!digest.ok) {
-      // 保存行由来の入力で構造不正は実装バグ(エラー値に秘密は含まれない)
+      // Malformed input derived from stored rows is an implementation bug (no secrets in error values)
       return yield* Effect.die(new Error(`values digest failed: ${digest.error.kind}`));
     }
     if (digest.value !== tuple.valuesDigestHex) {
@@ -65,22 +74,29 @@ export const ensureCheckpointValuesDigest = (
   });
 
 /**
- * 非空 audit_head_hash の存在・位置検査(CRYPTO_SPEC §6.4 / AUDIT_SPEC §5.1)。
- * 空文字列 = 公証なしは検査対象外。検査の前に累積ハッシュ列を MAX(seq) まで
- * 伸ばす(遅延 materialize — audit-store.ts)。
+ * Existence/position check of a non-empty audit_head_hash (CRYPTO_SPEC
+ * §6.4 / AUDIT_SPEC §5.1). The empty string = no notarization is out of
+ * scope. Before the check, the cumulative hash column is extended to
+ * MAX(seq) (lazy materialization — audit-store.ts).
  *
- * - 有界伸長: 伸長が 1 呼び出しの上限に達し MAX(seq) 未到達の
- *   場合は retryable な audit-head-not-ready(503)で拒否する。**古い列で
- *   unknown / stale を判定しない**(fail-closed — 途中までの列に対する所属・
- *   位置の判定は、正当な申告の誤拒否〔unknown〕と保護接頭辞の誤った基底を
- *   同時に作る)。進捗は保存済みで、再試行は必ず前進する
- * - 所属: 申告ハッシュが計算列に存在すること(audit-head-unknown)
- * - 位置下限: 出現位置が直前 checkpoint(公証の有無を問わない)のミラー行
- *   (chain.checkpointed)以上であること(audit-head-stale)。直前が存在しない
- *   初回は課さない(空虚に真 — admin 突合〔AUDIT_SPEC §6〕と同一述語・同一の
- *   基底ケース)。この受理検査により、正直なサーバーの下では突合の位置検査が
- *   構造的に必ず成立する(CAS 競合後に申告を取り直さなかった良性の発行は
- *   ここで型付き拒否され、改竄告発として現れない)
+ * - Bounded extension: when extension hits the per-call cap without
+ *   reaching MAX(seq), reject with the retryable audit-head-not-ready
+ *   (503). **Never judge unknown / stale on a stale column** (fail-closed —
+ *   judging membership/position against a partially extended column would
+ *   both wrongly reject a legitimate declaration [unknown] and wrongly
+ *   base the protected prefix). Progress is stored, so a retry always
+ *   advances
+ * - Membership: the declared hash exists in the computed column
+ *   (audit-head-unknown)
+ * - Position floor: the position of occurrence is at or beyond the mirror
+ *   row (chain.checkpointed) of the immediately preceding checkpoint
+ *   (notarized or not) (audit-head-stale). The first checkpoint with no
+ *   predecessor is not bound (vacuously true — same predicate, same base
+ *   case as the admin match [AUDIT_SPEC §6]). With this acceptance check,
+ *   under an honest server the matching-side position check always holds
+ *   structurally (a benign issuance that did not re-declare after a CAS
+ *   conflict is type-rejected here rather than surfacing as a tamper
+ *   accusation)
  */
 export const ensureAuditHeadAcceptable = (auditHeadHashHex: string) =>
   Effect.gen(function* () {
@@ -88,9 +104,11 @@ export const ensureAuditHeadAcceptable = (auditHeadHashHex: string) =>
       return;
     }
     const audit = yield* AuditStore;
-    // DO ストレージ総量ガード(AUTH_SPEC §12-8): 派生列の実体化(監査
-    // 行数比例の書き込み)を要するときだけ成長面として判定する。空の公証
-    // (CLI の境界 / 周期 checkpoint)はここへ来ない = 拒否下でも受理される
+    // DO storage-total guard (AUTH_SPEC §12-8): judged as a growth surface
+    // only when materializing the derived column (a write proportional to
+    // the audit row count) is needed. An empty notarization (the CLI's
+    // boundary / periodic checkpoint) never reaches here = is accepted even
+    // under rejection
     yield* ensureStorageAdmitsAuditHeadExtension;
     if ((yield* audit.ensureHeadCurrent) === "more-remains") {
       return yield* rejectData({ kind: "audit-head-not-ready" });
@@ -106,13 +124,15 @@ export const ensureAuditHeadAcceptable = (auditHeadHashHex: string) =>
   });
 
 /**
- * 1 環境タプルの受理時点突合(§6.4): tombstone(environment-deleted)→
- * 最新マニフェストとの一致(manifest-mismatch — 実在しない先行
- * manifest_version の公証もここで落ちる)→
- * values_digest。通過したら保存済みの値列挙(スナップショット保存の材料)を
- * 返す。環境のチェーン存在は合意規則(unknown-environment)が先に保証して
- * いる前提 — チェーンに在るのにデータ行が無いのは複合受理の原子性違反
- * (ストレージ破損)なので defect にする。
+ * Acceptance-time match of one environment tuple (§6.4): tombstone
+ * (environment-deleted) → match against the latest manifest
+ * (manifest-mismatch — notarizing a nonexistent earlier manifest_version
+ * also falls here) → values_digest. On pass, returns the stored value
+ * enumeration (material for the snapshot store). The environment's
+ * existence on the chain is assumed already guaranteed by the consensus
+ * rule (unknown-environment) — a chain-resident environment with no data
+ * rows is a violation of composite-acceptance atomicity (storage
+ * corruption), so it dies.
  */
 const ensureCheckpointTupleState = (tuple: CheckpointEnvironmentEntry) =>
   Effect.gen(function* () {
@@ -143,11 +163,12 @@ const ensureCheckpointTupleState = (tuple: CheckpointEnvironmentEntry) =>
   });
 
 /**
- * standalone checkpoint の受理(汎用チェーン追記の checkpoint 分岐 —
- * chain-do.ts の appendProgram から呼ばれる)。チェーン追記 + ミラー +
- * スナップショット upsert を単一の同期ブロックで原子コミットする
- * (§16-2 の「チェーン追記と同一トランザクション」。payload に含まれない
- * 環境の既存スナップショットは変更しない)。
+ * Acceptance of a standalone checkpoint (the checkpoint branch of the
+ * generic chain append — called from chain-do.ts's appendProgram). Chain
+ * append + mirror + snapshot upsert commit atomically in a single
+ * synchronous block (§16-2's "same transaction as the chain append";
+ * existing snapshots of environments absent from the payload are left
+ * unchanged).
  */
 export function standaloneCheckpointProgram(
   parentHeadHashHex: string,
@@ -158,22 +179,27 @@ export function standaloneCheckpointProgram(
   return Effect.gen(function* () {
     const chain = yield* loadInitializedChain;
     const { state } = yield* deriveStoredState(chain, cache);
-    // §11-2: 非メンバーには一切を返さない(worker が 404 に写す)。checkpoint
-    // 自体の role 下限(member)は合意規則(verifyChain)が 422 で拒否する
+    // §11-2: non-members get nothing back (the worker maps to 404). The
+    // checkpoint's own role floor (member) is rejected with 422 by the
+    // consensus rules (verifyChain)
     const person = yield* requireRole(state, callerUserId, "reader");
-    // §16-2: 非空 audit_head_hash はチェーン role admin 以上(不足 403。
-    // スコープ半分〔admin スコープ〕は worker が先行検査済み)
+    // §16-2: a non-empty audit_head_hash requires chain role admin or
+    // higher (insufficient → 403. The scope half [admin scope] was
+    // pre-checked by the worker)
     if (entry.payload.auditHeadHashHex !== "") {
       yield* requireRole(state, callerUserId, "admin");
     }
-    // §12-3: 全タプルの環境 ∈ 呼び出し主体の scope(403 insufficient-scope —
-    // role 軸の直後・CAS / verifyChain の前。合意規則 `environment-out-of-scope`
-    // の 422 は多層防御として残る — 設計録 es-design.md §9 K3-G)
+    // §12-3: every tuple's environment ∈ the caller's scope (403
+    // insufficient-scope — right after the role axis, before CAS /
+    // verifyChain. The consensus rule `environment-out-of-scope`'s 422
+    // remains as defense in depth — design record es-design.md §9 K3-G)
     for (const tuple of entry.payload.environments) {
       yield* requireRoleInScope(state, callerUserId, "reader", tuple.environmentId);
     }
-    // 第 2 段(設計録 §8 K3-1): エントリの actor FP が名指す端末の実効権限で同じ
-    // 検査を繰り返す(呼び出し主体の有効な端末でない FP は actor-key-mismatch)
+    // Stage 2 (design record §8 K3-1): repeat the same check with the
+    // effective permission of the device the entry's actor FP names (an FP
+    // that is not one of the caller's valid devices is
+    // actor-key-mismatch)
     const device = deviceOf(person, entry.actor.keyFingerprintHex);
     if (device === undefined) {
       return yield* rejectData({
@@ -190,9 +216,11 @@ export function standaloneCheckpointProgram(
       yield* ensureDevicePermission(device, "reader", tuple.environmentId);
     }
     yield* ensureParentHead(chain, parentHeadHashHex);
-    // 受理 4 手順(サイズ → 容量 → verifyChain = §6.2 の合意規則)は他経路と共有
+    // The 4 acceptance steps (size → capacity → verifyChain = §6.2's
+    // consensus rules) are shared with the other paths
     const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
-    // 受理時点(適用前)の保存状態との内容突合(§6.4)。列挙順 = payload 順
+    // Content match against the stored state at acceptance time (before
+    // applying) (§6.4). Enumeration order = payload order
     const snapshots: {
       readonly tuple: CheckpointEnvironmentEntry;
       readonly values: readonly CheckpointValueEntryRow[];
@@ -202,8 +230,8 @@ export function standaloneCheckpointProgram(
     }
     yield* ensureAuditHeadAcceptable(entry.payload.auditHeadHashHex);
     const dataStore = yield* DataStore;
-    // スナップショット保存(§6.4)はチェーン挿入・ミラーと同じ同期ブロックで
-    // 原子コミットする(commitAcceptedEntry の extraSync)
+    // The snapshot store (§6.4) commits atomically in the same synchronous
+    // block as the chain insert and mirror (commitAcceptedEntry's extraSync)
     yield* commitAcceptedEntry(chain, entry, applied, canonicalBytes, (nowMs) => {
       for (const { tuple, values } of snapshots) {
         dataStore.write.upsertCheckpointSnapshot(
@@ -222,7 +250,7 @@ export function standaloneCheckpointProgram(
       }
     });
     updateStateCache(cache, applied);
-    // checkpoint は提案できない op(CRYPTO_SPEC §6.2)— 適用した提案はない
+    // checkpoint is a non-proposable op (CRYPTO_SPEC §6.2) — no proposal was applied
     return {
       headSeq: applied.state.headSeq,
       headHashHex: applied.state.headHashHex,

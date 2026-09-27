@@ -1,17 +1,24 @@
-// 招待 API の HttpApi 定義(AUTH_SPEC §15 — 2026-09-13 IV 改訂)。
+// HttpApi definition of the invite API (AUTH_SPEC §15 — 2026-09-13 IV revision).
 //
-// - 発行 / 一覧 / 失効はプロジェクト配下(認可 = トークンスコープ admin ×
-//   チェーン role admin 以上。非メンバーへは一律 404 — §11-2)
-// - 発行はクライアントが招待 id を採番し、リンク公開鍵・検証済みヘッド・role に
-//   対する**発行署名**(CRYPTO_SPEC §6.5)を発行文として渡す。サーバーは形式検査と
-//   UNIQUE 違反(409)のみで発行署名を検証しない(検証者は招待者自身と受諾者)。
-//   応答は期限だけで、**サーバーは招待の秘密を一切返さない**(旧 token は廃止)
-// - 受諾はプロジェクト配下でない経路(§15-2): リンク鍵の保持(= リンク署名を
-//   作れること)が対象招待への capability であり、リンクのフラグメントからは
-//   公開鍵だけがサーバーへ渡る。未知の link_pub は 404(InviteNotFound —
-//   プロジェクト座標を運ばない)、使用不能は 410(InviteGone)、署名は 422
-// - 全エンドポイント認証必須(AuthMiddleware が 401 / CSRF 403 を担う。
-//   一覧 GET は監査を書かない = 状態を持たないため §11-4 の追加 CSRF 対象外)
+// - Issue / list / revoke live under the project (authorization = token
+//   scope admin × chain role admin or higher; always 404 to non-members
+//   — §11-2)
+// - Issue: the client assigns the invite id and passes the **issuance
+//   signature** (CRYPTO_SPEC §6.5) over the link public key, the
+//   verified head, and the role as the issuance statement. The server
+//   runs format checks and UNIQUE violations (409) only — it does not
+//   verify the issuance signature (its verifiers are the inviter and
+//   the acceptor). The response carries only the expiry; **the server
+//   never returns an invitation secret** (the old token is retired)
+// - Accept lives off the project path (§15-2): holding the link key
+//   (= being able to make the link signature) is the capability on the
+//   target invite, and only the public key reaches the server from the
+//   link's fragment. An unknown link_pub is 404 (InviteNotFound —
+//   carries no project coordinates), unusable is 410 (InviteGone),
+//   signature is 422
+// - Every endpoint requires authentication (AuthMiddleware supplies the
+//   401 / CSRF 403. The list GET writes no audit = holds no state, so it
+//   is outside §11-4's added-CSRF scope)
 
 import { EnvironmentIdSchema, ProjectIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
@@ -40,24 +47,26 @@ import {
 } from "./hex.ts";
 import { strictPayload } from "./strict.ts";
 
-/** 招待で付与できる role(owner は招待経由で付与しない — AUTH_SPEC §15-1)。 */
+/** Roles grantable via an invite (owner is never granted via the invite path — AUTH_SPEC §15-1). */
 export const InviteRoleSchema = Schema.Literals(["reader", "member", "admin"]);
 
-/** scope の環境リスト上限(CRYPTO_SPEC §6.1 / §6.2 — grant_server の scope と同じ 256)。 */
+/** Cap on the scope environment list (CRYPTO_SPEC §6.1 / §6.2 — same 256 as grant_server's scope). */
 const MAX_INVITE_SCOPE_ENVIRONMENTS = 256;
 
 /**
- * 招待の付与予定 scope(AUTH_SPEC §15-2 — 2026-09-14 ES)。形式検査のみ: kind の
- * 閉集合・`all` なら空配列・256 要素以下・重複なし・各 id は §12-1 形式。
- * **存在検査はしない**(合意規則は add_member 受理時に verifyChain が検査する)。
- * 発行 body・一覧行・受諾応答が同じ 2 フィールドを運ぶ。
+ * An invite's to-be-granted scope (AUTH_SPEC §15-2 — 2026-09-14 ES).
+ * Format checks only: a closed kind set, an empty array under `all`,
+ * at most 256 elements, no duplicates, each id in §12-1 form.
+ * **No existence check** (verifyChain checks it as a consensus rule
+ * when the add_member is accepted). The issue body, list rows, and
+ * accept response carry the same two fields.
  */
 const inviteScopeFields = {
   scopeKind: ScopeKindSchema,
   scopeEnvironmentIds: Schema.Array(EnvironmentIdSchema),
 };
 
-/** scope の構造規則(§6.2 と同じ — all ⇒ 空・上限・重複なし)を Struct 全体へ掛ける。 */
+/** Applies the scope structural rules (same as §6.2 — all ⇒ empty, cap, no duplicates) to the whole Struct. */
 function withInviteScopeShape<
   S extends Schema.Struct<typeof inviteScopeFields & Schema.Struct.Fields>,
 >(schema: S): S {
@@ -77,18 +86,20 @@ function withInviteScopeShape<
   ) as S;
 }
 
-/** 保存上の招待状態(期限切れは expiresAtMs からの導出 — §15-1)。 */
+/** The stored invite status (expired is derived from expiresAtMs — §15-1). */
 export const InviteStatusSchema = Schema.Literals(["pending", "accepted", "completed", "revoked"]);
 
-/** 招待 id(クライアント採番の ULID — Crockford Base32 26 文字。発行署名が覆う)。 */
+/** Invite id (a client-assigned ULID — Crockford Base32, 26 chars; covered by the issuance signature). */
 export const InviteIdSchema = Schema.String.check(
   Schema.isPattern(/^[0-9A-HJKMNP-TV-Z]{26}$/, { description: "invite id (ULID)" }),
 );
 
 /**
- * 発行文(CRYPTO_SPEC §6.5): リンク公開鍵・発行時点の招待者の検証済みヘッド・
- * 発行署名。サーバーは保存・配布するだけで検証しない。招待者クライアントは
- * `add_member` の前に自分の sig 公開鍵で再検証する(発行ピンに依存しない)。
+ * The issuance statement (CRYPTO_SPEC §6.5): the link public key, the
+ * inviter's verified head at issuance time, and the issuance signature.
+ * The server only stores and distributes it — it does not verify. The
+ * inviter client re-verifies it under its own sig public key before
+ * `add_member` (does not rely on the issuance pin).
  */
 export const InviteIssuanceSchema = Schema.Struct({
   linkPubHex: PublicKeyHex,
@@ -97,21 +108,23 @@ export const InviteIssuanceSchema = Schema.Struct({
   issueSignatureHex: InviteIssueSignatureHex,
 });
 
-/** 受諾ブロック(status が accepted 以降 — §15-1)。 */
+/** The acceptance block (status accepted or later — §15-1). */
 export const InviteAcceptanceSchema = Schema.Struct({
   inviteeUserId: Schema.String,
   inviteeEncPubHex: EncPubHex,
   inviteeSigPubHex: PublicKeyHex,
-  /** CRYPTO_SPEC §6.5 の受諾署名(受諾者のチェーン sig 鍵)。招待者クライアントが独立検証する */
+  /** The CRYPTO_SPEC §6.5 acceptance signature (the acceptor's chain sig key). The inviter client verifies it independently */
   signatureHex: InviteAcceptSignatureHex,
-  /** CRYPTO_SPEC §6.5 のリンク署名(リンク鍵)。同じバイト列への共同署名 */
+  /** The CRYPTO_SPEC §6.5 link signature (the link key). A co-signature over the same byte string */
   linkSignatureHex: InviteLinkSignatureHex,
   acceptedAtMs: Schema.Number,
 });
 
 /**
- * 一覧の 1 行。発行文と受諾ブロックは招待者クライアントの再検証(CRYPTO_SPEC
- * §6.5 — signed_bytes の再構成材料)と FP ワード表示に必要。
+ * One row of the list. The issuance statement and the acceptance block
+ * are needed for the inviter client's re-verification (CRYPTO_SPEC §6.5
+ * — the material to reconstruct signed_bytes) and for the FP word
+ * display.
  */
 export const InvitationSummarySchema = Schema.Struct({
   id: Schema.String,
@@ -131,7 +144,7 @@ export const InvitationListSchema = Schema.Struct({
   invitations: Schema.Array(InvitationSummarySchema),
 });
 
-/** 発行の要求(§15-2): クライアント採番の id + 発行文(role・scope を含む)。 */
+/** The issue request (§15-2): a client-assigned id + the issuance statement (includes role and scope). */
 export const InviteIssuePayloadSchema = withInviteScopeShape(
   Schema.Struct({
     id: InviteIdSchema,
@@ -144,14 +157,15 @@ export const InviteIssuePayloadSchema = withInviteScopeShape(
   }),
 );
 
-/** 発行応答。期限のみ(トークン相当の秘密は無い — §15-1)。 */
+/** The issue response. Expiry only (there is no token-equivalent secret — §15-1). */
 export const InviteIssueResultSchema = Schema.Struct({
   expiresAtMs: Schema.Number,
 });
 
 /**
- * 受諾応答。最小形(§15-1: サーバー申告の表示情報を信頼させる面を作らない —
- * 招待者情報・アンカーはリンクのフラグメントが運ぶ)。
+ * The accept response. Minimal form (§15-1: it must not create a
+ * surface where server-declared display information is trusted — the
+ * inviter info and the anchor ride in the link's fragment).
  */
 export const InviteAcceptResultSchema = Schema.Struct({
   id: Schema.String,
@@ -161,23 +175,26 @@ export const InviteAcceptResultSchema = Schema.Struct({
 });
 
 /**
- * Invitation endpoints (AUTH_SPEC §15-2)。
+ * Invitation endpoints (AUTH_SPEC §15-2).
  *
  * - `issue`: create one invitation from a client-generated id and issuance
- *   statement; nothing secret is returned. role = admin の招待の発行は owner
- *   のみ(CRYPTO_SPEC §6.2 の add_member 権限表と同水準)。
- * - `accept`: single-use CAS(pending → accepted)。リンク署名と受諾署名
- *   (CRYPTO_SPEC §6.5)はサーバーが保存行 + 呼び出し主体から signed_bytes を
- *   再構成して検証する。鍵は形式検査のみ(メンバー鍵一意性の真実源は
- *   add_member のチェーン合意規則)。
- * - `list` / `revoke`: 管理面。revoke は pending | accepted に効く(completed /
- *   revoked へは 410)。
+ *   statement; nothing secret is returned. Only an owner may issue an
+ *   invite with role = admin (same level as the CRYPTO_SPEC §6.2
+ *   add_member permission table).
+ * - `accept`: single-use CAS (pending → accepted). The server
+ *   reconstructs signed_bytes from the stored row + the calling
+ *   principal and verifies the link signature and the acceptance
+ *   signature (CRYPTO_SPEC §6.5). Keys get a format check only (the
+ *   source of truth for member-key uniqueness is add_member's chain
+ *   consensus rule).
+ * - `list` / `revoke`: the management surface. revoke works on pending |
+ *   accepted (410 for completed / revoked).
  */
 export const invitesGroup = HttpApiGroup.make("invites")
   .add(
     HttpApiEndpoint.post("issue", "/projects/:projectId/invites", {
       params: { projectId: ProjectIdSchema },
-      // strict 受理(§12-10 (1) — 招待の作成・受諾は §15-2 の鍵宣言クラス)
+      // strict acceptance (§12-10 (1) — invite creation / acceptance is §15-2's key-declaration class)
       payload: strictPayload(InviteIssuePayloadSchema),
       success: InviteIssueResultSchema,
       error: [

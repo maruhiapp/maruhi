@@ -1,12 +1,18 @@
-// apex サイト(LP + docs — Blume)の e2e。ビルド済み dist(+ scripts/postbuild.ts の
-// _headers)を **本番と同じ wrangler 設定**(apps/site/wrangler.jsonc — Workers Static Assets のみ)
-// で配信し、Playwright(Chromium)で次を固定する(docs/notes/web-design-pass.md §4 の検証項目):
-//   1. 全リクエストが同一オリジン(外部への通信ゼロ — 「言わざる」)
-//   2. CSP 違反ゼロ、`script-src 'self'` / `style-src 'self'` 基調で 'unsafe-inline' なし
-//   3. フォントは自己配信(Archivo / Martian Mono が実際に適用され、OFL 全文が /fonts/ から読める)
-//   4. 朱の accent が light / dark(システム追従)で DP1 のテーマ値と一致する
-//   5. `/docs` が開き、末尾スラッシュの正規化と 404 が wrangler.jsonc の設定どおり
-// 事前に `bun run build` が必要。
+// e2e for the apex site (LP + docs — Blume). The built dist (+
+// scripts/postbuild.ts's _headers) is served under **the same wrangler
+// config as production** (apps/site/wrangler.jsonc — Workers Static Assets
+// only), and Playwright (Chromium) pins the following (the verification
+// items of docs/notes/web-design-pass.md §4):
+//   1. all requests same-origin (zero outbound traffic — "say nothing")
+//   2. zero CSP violations; `script-src 'self'` / `style-src 'self'`
+//      baseline with no 'unsafe-inline'
+//   3. fonts are self-hosted (Archivo / Martian Mono actually apply, and
+//      the full OFL texts are readable from /fonts/)
+//   4. the vermilion accent matches DP1's theme values in light / dark
+//      (system-following)
+//   5. `/docs` opens, and trailing-slash normalization plus the 404 behave
+//      as wrangler.jsonc configures
+// Requires `bun run build` beforehand.
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -49,14 +55,15 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
       const res = await fetch(url);
       if (res.ok) return;
     } catch {
-      // まだ起動していない
+      // not up yet
     }
     if (Date.now() > deadline) throw new Error(`server at ${url} did not start`);
     await new Promise((r) => setTimeout(r, 500));
   }
 }
 
-// apps/web/test/e2e.test.ts と同じ停止手順(SIGTERM → 10 秒で SIGKILL、パイプは無条件に閉じる)
+// Same shutdown procedure as apps/web/test/e2e.test.ts (SIGTERM → SIGKILL
+// after 10s; pipes are closed unconditionally)
 async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
   if (proc === undefined) return;
   try {
@@ -99,8 +106,9 @@ beforeAll(async () => {
       { cause },
     );
   }
-  // ブラウザのダウンロードができない環境(Claude Code on the web 等)では、
-  // プリインストール Chromium のパスを PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH で受け取る
+  // In environments that cannot download a browser (Claude Code on the web
+  // etc.), the preinstalled Chromium's path arrives via
+  // PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
   const executablePath = process.env["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"];
   browser = await chromium.launch(executablePath ? { executablePath } : {});
 });
@@ -110,7 +118,7 @@ afterAll(async () => {
   await stopWrangler(wranglerProcess);
 });
 
-/** ページが発した全リクエストの URL と CSP 違反を収集する。 */
+/** Collects the URLs of every request a page makes and its CSP violations. */
 function observe(page: Page): { requests: string[]; violations: string[] } {
   const requests: string[] = [];
   const violations: string[] = [];
@@ -142,7 +150,7 @@ describe("site e2e: headers (Workers Static Assets — apps/site/wrangler.jsonc)
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     expect(res.headers.get("strict-transport-security")).toContain("max-age=");
-    // Blume が出した _headers(トップの Link ヘッダー)は postbuild.ts が保持する
+    // postbuild.ts keeps the _headers Blume emitted (the top Link header)
     expect(res.headers.get("link")).toContain("llms.txt");
   });
 
@@ -191,17 +199,19 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
     await expect(page.locator("h1").first().textContent()).resolves.toContain("Not even us");
     expect(foreignOrigins(requests)).toEqual([]);
     expect(violations).toEqual([]);
-    // フォントは自己配信の woff2 が実際に取得される
+    // The self-hosted woff2 fonts are actually fetched
     expect(requests.some((u) => u.endsWith(".woff2"))).toBe(true);
-    // インライン style 属性・外部 stylesheet なし(style-src 'self' + Astro Fonts のハッシュのみ)
+    // No inline style attributes / external stylesheets (style-src 'self' +
+    // only the Astro Fonts hash)
     const inlineStyleAttrs = await page.evaluate(() => document.querySelectorAll("[style]").length);
     expect(inlineStyleAttrs).toBe(0);
     await page.close();
   });
 
   it("leaves the terminal samples as plain preformatted text (no aria-label on a generic role)", async () => {
-    // <pre> は generic role で、aria-label は支援技術により読まれたり読まれなかったりする。
-    // 端末の例はすべて同じ扱い(本文をそのまま読ませる)に揃える
+    // <pre> has the generic role, and assistive tech may or may not read an
+    // aria-label. Keep every terminal example treated the same (let the body
+    // be read as-is)
     const page = await browser.newPage();
     await page.goto(BASE, { waitUntil: "networkidle" });
     const terminals = page.locator("pre.terminal");
@@ -226,7 +236,7 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
       .first()
       .evaluate((el) => getComputedStyle(el).fontFamily);
     expect(codeFont).toContain("Martian Mono");
-    // 読み込まれた書体名(Astro Fonts API は family 名にハッシュを付ける)
+    // Loaded family names (the Astro Fonts API hashes the family name)
     const loaded = await page.evaluate(() =>
       [...document.fonts].filter((f) => f.status === "loaded").map((f) => f.family),
     );
@@ -255,15 +265,18 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
       expect(tokens.theme).toBe(scheme);
       expect(tokens.accent.toLowerCase()).toBe(expectedAccent.toLowerCase());
       expect(tokens.background.toLowerCase()).toBe(expectedBackground.toLowerCase());
-      // 生成 theme.css(apps/web/theme/maruhi.css の写像)に同じ値がある
+      // The generated theme.css (a mapping of apps/web/theme/maruhi.css)
+      // carries the same value
       expect(themeCss.toLowerCase()).toContain(expectedAccent.toLowerCase());
-      // CTA ボタンの背景 = accent(アクセントは限定的に — ボタン 1 種)
+      // CTA button background = accent (accent is used sparingly — one kind
+      // of button)
       const cta = await page
         .locator(".button")
         .first()
         .evaluate((el) => getComputedStyle(el).backgroundColor);
       expect(cta).toBe(hexToRgb(expectedAccent));
-      // ヘッダーのロゴはモードに応じた SVG(light = 原本、dark = 生成物)が見える
+      // The header logo shows the mode-appropriate SVG (light = the
+      // original, dark = the generated one)
       const visibleLogo = await page
         .locator(`img[src="/logo${scheme === "dark" ? "-dark" : ""}.svg"]`)
         .first()
@@ -278,12 +291,13 @@ describe("site e2e: landing page (Blume custom page under strict CSP)", () => {
     const page = await browser.newPage({ colorScheme: "dark" });
     const { requests, violations } = observe(page);
     await page.goto(BASE, { waitUntil: "networkidle" });
-    // Blume のテーマトグル(遷移抑制 <style> を JS で挿す — ハッシュ許可済み)
+    // Blume's theme toggle (inserts a transition-suppression <style> via
+    // JS — hash-allowed)
     await page.locator("[data-blume-theme-toggle]").first().click();
     await expect(page.evaluate(() => document.documentElement.dataset["theme"])).resolves.toBe(
       "light",
     );
-    // 検索(Orama — ローカル索引 /blume-search.json)
+    // Search (Orama — local index /blume-search.json)
     await page.locator("[data-blume-search-open]").first().click();
     const input = page.locator("[data-blume-search-input]").first();
     await input.fill("self-hosting");
@@ -300,7 +314,8 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
     const { requests, violations } = observe(page);
     await page.goto(`${BASE}/docs`, { waitUntil: "networkidle" });
     await expect(page.locator("h1").first().textContent()).resolves.toContain("Documentation");
-    // docs index のカード(MDX の <Card href>)は basePath 込みの実ルートへ解決される
+    // The docs index cards (MDX <Card href>) resolve to real routes
+    // including basePath
     for (const target of [
       "/docs/getting-started",
       "/docs/deploy-targets",
@@ -309,15 +324,17 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
     ]) {
       await expect(page.locator(`a[data-blume-card][href='${target}']`).count()).resolves.toBe(1);
     }
-    // 本文から LP(サイトルート)へのリンクは basePath の書き換えを受けない絶対 URL
+    // A link from the body to the LP (site root) is an absolute URL not
+    // rewritten by basePath
     await expect(page.locator("a[href='/docs/#access']").count()).resolves.toBe(0);
     await page.locator("a[data-blume-card][href='/docs/getting-started']").click();
     await page.locator("h1", { hasText: "Getting started" }).waitFor();
     expect(new URL(page.url()).pathname).toBe("/docs/getting-started");
     expect(foreignOrigins(requests)).toEqual([]);
     expect(violations).toEqual([]);
-    // Shiki のトークン色・chrome の inline style 属性は postbuild.ts がクラスへ外部化している
-    // (style-src-attr に 'unsafe-inline' を使わないための前提)。コードブロックは着色されたまま
+    // Shiki token colors and the chrome's inline style attributes have been
+    // externalized to classes by postbuild.ts (the precondition for not
+    // using 'unsafe-inline' in style-src-attr). Code blocks stay colored
     await expect(page.evaluate(() => document.querySelectorAll("[style]").length)).resolves.toBe(0);
     const tokenColor = await page
       .locator("pre code span[class*='sa-']")
@@ -325,7 +342,7 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
       .evaluate((el) => getComputedStyle(el).color);
     const bodyColor = await page.locator("body").evaluate((el) => getComputedStyle(el).color);
     expect(tokenColor).not.toBe(bodyColor);
-    // 第三者 AI への「Open in chat」は置かない(ai.openInChat: false)
+    // No "Open in chat" to third-party AI (ai.openInChat: false)
     await expect(
       page.locator("a[href^='https://chatgpt.com'], a[href^='https://claude.ai']").count(),
     ).resolves.toBe(0);

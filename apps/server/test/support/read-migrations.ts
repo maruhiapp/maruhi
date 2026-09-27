@@ -1,7 +1,9 @@
-// drizzle-kit v1 のフォルダ形式(drizzle/<name>/migration.sql)を
-// cloudflare:test の applyD1Migrations が受け取る D1Migration[] へ読み込む。
-// @cloudflare/vitest-plugin 同梱の readD1Migrations はフラットな *.sql のみ対応のため自前で読む。
-// Node(vitest.config.ts)専用 — テスト本体(workerd)から import しないこと。
+// Loads drizzle-kit v1's folder form (drizzle/<name>/migration.sql) into the
+// D1Migration[] that cloudflare:test's applyD1Migrations accepts.
+// The readD1Migrations bundled with @cloudflare/vitest-plugin only supports
+// flat *.sql files, so this reads them itself.
+// Node (vitest.config.ts) only — do not import from the test bodies
+// (workerd).
 
 import { readdirSync, readFileSync } from "node:fs";
 

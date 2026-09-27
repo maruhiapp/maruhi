@@ -1,41 +1,53 @@
-// `maruhi schema lint`(発見 G — 設計文書 §1-7)。
+// `maruhi schema lint` (finding G — design doc §1-7).
 //
-// ソースの env 参照(`process.env.X` 等)を静的走査し、検証済みストア側
-// スキーマ(live 変数名の集合 — active + declared)と突合する: 「コードは FOO
-// を読むがスキーマに宣言がない / 逆」。
+// Statically scans the sources' env references (`process.env.X` etc.)
+// and cross-checks them against the verified store-side schema (the set
+// of live variable names — active + declared): "the code reads FOO but
+// the schema has no declaration / the reverse".
 //
-// **best-effort・善意のドリフト検出**(BG トリップワイヤと同じ位置づけ):
-// 動的アクセス(`process.env[name]`)・未対応言語・文字列組み立ては拾えない。
-// 検査の欠落を保証の欠落と混同させない注意書きを常に出力へ含める(§1-7)。
+// **Best-effort, good-faith drift detection** (the same positioning as
+// the BG tripwire): dynamic access (`process.env[name]`), unsupported
+// languages, and string-assembled names cannot be caught. Always include
+// the caveat that keeps a gap in checking from being conflated with a
+// gap in the guarantee (§1-7).
 //
-// 走査器は**自前の正規表現ベース**(仕様が固定するのは位置づけのみ — コード
-// パーサの新規依存を追加しない)。対応する読み取り形(実装裁定 — 主要
-// ランタイムの静的な逐語形のみ):
+// The scanner is **self-built and regex-based** (the spec fixes only the
+// positioning — no new code-parser dependency is added). The supported
+// read forms (implementation ruling — only the static literal forms of
+// the major runtimes):
 //   JS/TS: process.env.X / process.env["X"] / import.meta.env.X / Bun.env.X /
-//          Deno.env.get("X")(メンバー参照は optional chaining `?.` も可)、
-//          および env オブジェクトの分割代入
+//          Deno.env.get("X") (member references may use optional
+//          chaining `?.`), plus destructuring of an env object
 //          `const { X, Y: alias, Z = "default" } = process.env`
-//          (最頻出イディオム — 拾えないと undeclared 側のトリップワイヤが
-//          JS の典型コードで空振りする)
+//          (the most frequent idiom — missing it would make the
+//          undeclared-side tripwire swing at typical JS code)
 //   Python: os.environ["X"] / os.environ.get("X") / os.getenv("X")
 //   Go:     os.Getenv("X") / os.LookupEnv("X")
 //   Ruby:   ENV["X"] / ENV.fetch("X")
-//   Rust:   env::var("X") / env::var_os("X")(std:: 接頭辞あり・なし)
-// シェルの `$X` は対応しない(シェル変数と env 参照を静的に区別できず
-// 誤検出が支配的になる — best-effort の線)。
+//   Rust:   env::var("X") / env::var_os("X") (with or without the std::
+//           prefix)
+// A shell's `$X` is not supported (a shell variable and an env reference
+// cannot be told apart statically — false positives would dominate. The
+// best-effort line).
 //
-// **レポートは変数名のみ**(description を含めない — §1-7 / §2 の消費点規律。
-// レポートはログ・CI へ流れる)。名前は displayText で中和する(コード由来・
-// ストア由来とも、端末インジェクションの中和は表示側の独立義務 — 裁定 CW)。
+// **The report carries only variable names** (no descriptions — §1-7 /
+// §2's consumption-point discipline. Reports flow into logs and CI).
+// Names are neutralized via displayText (whether code-sourced or
+// store-sourced, neutralizing terminal injection is the display side's
+// independent duty — ruling CW).
 //
-// **終了コードの裁定(実装裁定 — PR 本文に記録)**: 「コードが読むが宣言が
-// ない」は exit 1(fail-loud — 走査が**見つけた**証拠で、run の presence
-// fail-fast の予兆)。「宣言済みだがコードで読まれない」は報告のみ(exit 0)
-// — 動的アクセス・別リポジトリの消費・run 経由の子プロセスの読みで正当に
-// 発生し、best-effort 走査の欠落を CI 失敗に直結させると「検査の欠落」を
-// 「保証の欠落」と混同させる方向になる。env diff の「差分があっても 0」との
-// 線引き: diff は環境間の**報告**(どちらが正か機械には決められない)、lint は
-// コード契約の**検査**(コードが正 — 発見 G)。
+// **The exit-code ruling (an implementation ruling — recorded in the PR
+// body)**: "read by the code but undeclared" is exit 1 (fail-loud —
+// evidence the scan **found**, the precursor of run's presence
+// fail-fast). "Declared but not read by the code" is report-only
+// (exit 0) — it legitimately arises from dynamic access, consumption by
+// another repository, or a child process's reads via run, and wiring a
+// best-effort scan's gap straight to a CI failure goes the direction of
+// conflating "a gap in checking" with "a gap in the guarantee". The
+// line against env diff's "nonzero diff, still 0": diff is a **report**
+// between environments (a machine cannot decide which is right), lint
+// is a **check** of a code contract (the code is the authority —
+// finding G).
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -52,12 +64,12 @@ import { logNote } from "./notice.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 
-/** 環境変数名として拾う識別子形(POSIX 環境変数名の慣用形)。 */
+/** The identifier shape caught as an environment variable name (the customary POSIX env-var name). */
 const NAME = "([A-Za-z_][A-Za-z0-9_]*)";
 
-/** 静的な逐語 env 参照のパターン(`${NAME}` の位置 = 変数名のキャプチャ)。 */
+/** The patterns of static literal env references (the `${NAME}` position = the variable-name capture). */
 const REFERENCE_SOURCES: readonly string[] = [
-  // JS のメンバー参照は optional chaining(`process.env?.X`)も同じ形の逐語参照
+  // A JS member reference with optional chaining (`process.env?.X`) is the same shape of literal reference
   String.raw`process\.env\??\.${NAME}`,
   String.raw`process\.env\[["']${NAME}["']\]`,
   String.raw`import\.meta\.env\??\.${NAME}`,
@@ -73,10 +85,12 @@ const REFERENCE_SOURCES: readonly string[] = [
 ];
 
 /**
- * 全パターン共通の左境界: 直前が識別子の続き(英数字・`_`・`$`)やメンバー
- * アクセスの `.` なら一致させない。`MY_ENV["FOO"]` / `TEST_ENV.fetch("BAR")`
- * のような「たまたま ENV で終わる識別子」を env 参照と誤認して CI を exit 1 に
- * する形を塞ぐ。`\b` では足りない(`_` は単語文字)。
+ * The shared left boundary of every pattern: no match when the character
+ * just before continues an identifier (alphanumeric / `_` / `$`) or is a
+ * member-access `.`. Blocks mistaking an "identifier that happens to end
+ * in ENV" — `MY_ENV["FOO"]` / `TEST_ENV.fetch("BAR")` — for an env
+ * reference and taking CI to exit 1. `\b` is not enough (`_` is a word
+ * character).
  */
 const LEFT_BOUNDARY_SOURCE = String.raw`(?<![A-Za-z0-9_$.])`;
 
@@ -85,31 +99,34 @@ const REFERENCE_PATTERNS: readonly RegExp[] = REFERENCE_SOURCES.map(
 );
 
 /**
- * env オブジェクトの分割代入(`const { X, Y: alias, Z = "d" } = process.env`)。
- * キャプチャ 1 = ブレース内全体(名前の取り出しは destructuredNames)。
- * `[^{}]*` は改行を跨ぐ(複数行の分割代入)。ネストした分割は対象外。
+ * Destructuring an env object (`const { X, Y: alias, Z = "d" } =
+ * process.env`). Capture 1 = everything inside the braces (name
+ * extraction is destructuredNames). `[^{}]*` spans newlines
+ * (multi-line destructuring). Nested destructures are out of scope.
  */
 const DESTRUCTURE_PATTERN = new RegExp(
   String.raw`\{([^{}]*)\}\s*=\s*${LEFT_BOUNDARY_SOURCE}(?:process\.env|import\.meta\.env|Bun\.env)(?![.\[?])`,
   "g",
 );
 
-/** 分割代入のブレース内から env 名を取り出す(rename の左辺・default の左辺)。 */
+/** Extract env names from inside a destructure's braces (the left side of a rename / of a default). */
 function destructuredNames(inner: string): string[] {
   const names: string[] = [];
-  // 値側の文字列リテラルは `""` に潰す — default 値にカンマがあっても
-  // (`{ LIST = "a,b" }`)分割位置として扱わない(幻影の識別子が undeclared に
-  // 混入して lint を誤失敗させるのを防ぐ)。直後に `:` が続く引用符はキー
-  // (`"QUOTED_VAR": q`)なので残す
+  // A value-side string literal is crushed to `""` — even when a default
+  // value contains a comma (`{ LIST = "a,b" }`) it is not treated as a
+  // split point (prevents a phantom identifier from mixing into
+  // undeclared and false-failing the lint). A quote immediately followed
+  // by `:` is a key (`"QUOTED_VAR": q`), so it is kept
   const blanked = inner.replace(
     /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g,
     (m: string, offset: number, s: string) =>
       s[offset + m.length]?.trimStart().startsWith(":") ? m : '""',
   );
   for (const entry of blanked.split(",")) {
-    // `Y: alias` は左辺(プロパティ名 = env 名)、`Z = "d"` も左辺。
-    // 引用符付きキー(`"X": v`)は引用符を剥がして識別子形のみ受ける
-    // (`...rest` や計算プロパティは識別子形に合わず自然に落ちる)
+    // `Y: alias` takes the left side (the property name = the env name);
+    // `Z = "d"` also takes the left side. A quoted key (`"X": v`) is
+    // unquoted and accepted only if identifier-shaped (`...rest` or a
+    // computed property does not match and drops naturally)
     const key = (entry.split("=")[0]?.split(":")[0] ?? "").trim().replace(/^["']|["']$/g, "");
     if (new RegExp(`^${NAME}$`).test(key)) {
       names.push(key);
@@ -137,7 +154,7 @@ export function scanEnvReferences(content: string): ReadonlySet<string> {
   return names;
 }
 
-/** 走査対象の拡張子(対応パターンのある言語のソースのみ — 誤検出を抑える)。 */
+/** The extensions scanned (only sources of languages with a supported pattern — keeps false positives down). */
 const SOURCE_EXTENSIONS = new Set([
   ".js",
   ".jsx",
@@ -153,7 +170,7 @@ const SOURCE_EXTENSIONS = new Set([
   ".rs",
 ]);
 
-/** 生成物・依存のディレクトリは走査しない(ソースの契約だけを見る)。 */
+/** Generated-artifact / dependency directories are not scanned (only the source contract is read). */
 const SKIPPED_DIRECTORIES = new Set([
   "node_modules",
   ".git",
@@ -169,7 +186,7 @@ const SKIPPED_DIRECTORIES = new Set([
   "__pycache__",
 ]);
 
-/** 1 ファイルの走査上限(生成物・データファイルの巻き込みを抑える)。 */
+/** The per-file scan cap (keeps generated artifacts / data files from being swept in). */
 const MAX_FILE_BYTES = 1024 * 1024;
 
 function extensionOf(name: string): string {
@@ -181,7 +198,7 @@ function extensionOf(name: string): string {
 async function collectSourceFiles(path: string, into: string[]): Promise<void> {
   const info = await stat(path);
   if (info.isFile()) {
-    // 明示指定されたファイルは拡張子で弾かない(利用者の指定を黙って無視しない)
+    // An explicitly specified file is not filtered by extension (never silently ignore the user's designation)
     into.push(path);
     return;
   }
@@ -191,7 +208,7 @@ async function collectSourceFiles(path: string, into: string[]): Promise<void> {
   const entries = await readdir(path, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.isSymbolicLink()) {
-      // シンボリックリンクは辿らない(循環・リポジトリ外への逸脱を作らない)
+      // Symlinks are never followed (never build a cycle or an escape outside the repository)
       continue;
     }
     if (entry.isDirectory()) {
@@ -206,7 +223,7 @@ async function collectSourceFiles(path: string, into: string[]): Promise<void> {
   }
 }
 
-/** 走査の結果(突合前の生データ)。 */
+/** The scan's result (raw data before cross-checking). */
 export interface LintScan {
   readonly scannedFiles: number;
   readonly references: ReadonlySet<string>;
@@ -228,7 +245,7 @@ export function scanPaths(paths: readonly string[]): Effect.Effect<LintScan, Cli
           continue;
         }
         const content = await readFile(file, "utf8");
-        // バイナリの巻き込みは NUL で検出してスキップ(拡張子は偽装できる)
+        // A swept-in binary is detected by a NUL and skipped (extensions can be faked)
         if (content.includes("\u0000")) {
           continue;
         }
@@ -239,8 +256,9 @@ export function scanPaths(paths: readonly string[]): Effect.Effect<LintScan, Cli
       }
       return { scannedFiles, references };
     },
-    // パスは利用者の入力なのでエラーへ出してよい(値ではない)が、OS エラーの
-    // 詳細は運ばない(schema import のファイル読み込みと同じ規律)
+    // The paths are the user's input so they may go in the error (they
+    // are not values), but the OS error's detail is not carried (the same
+    // discipline as schema import's file reading)
     catch: () =>
       cliError("Could not scan the given paths (check that they exist and are readable)"),
   });
@@ -254,7 +272,7 @@ const BEST_EFFORT_NOTE =
 
 /**
  * Cross-checks scanned environment-variable references against the
- * environment's verified live variable names (発見 G — §1-7). The scan is
+ * environment's verified live variable names (finding G — §1-7). The scan is
  * the caller's input (`scanPaths` — run before any network access so a bad
  * path fails without a round trip). Reports carry variable names only. Exit
  * is non-zero only for the hard direction (code reads a name the store does
@@ -267,7 +285,7 @@ export function schemaLintOp(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly floor: FloorHandle;
   readonly scan: LintScan;
-  /** undeclared 側から除外する名前(NODE_ENV 等の maruhi 管理外 — 明示指定)。 */
+  /** Names excluded from the undeclared side (non-maruhi-managed like NODE_ENV — explicitly specified). */
   readonly ignore: readonly string[];
 }): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
@@ -275,8 +293,10 @@ export function schemaLintOp(input: {
     const scan = input.scan;
     const metadata = yield* pullVerifiedEnvironmentMetadata(input);
     yield* logWarnings(metadata.warnings);
-    // 突合の対象は検証済み live 集合の名前(v1 変数も名前は第一級 — スキーマ欄の
-    // 有無に依らず「ストアに存在する変数」として数える。捏造するのは名前ではない)
+    // The cross-check's target is the names of the verified live set (a
+    // v1 variable's name is also first-class — counted as "a variable the
+    // store holds" regardless of the schema column. What is being
+    // fabricated is not a name)
     const declaredNames = new Set(metadata.variables.map((statement) => statement.name));
     const ignored = new Set(input.ignore);
     const undeclared = [...scan.references]
@@ -287,7 +307,7 @@ export function schemaLintOp(input: {
     yield* io.log(
       `Scanned ${countNoun(scan.scannedFiles, "source file")} (${countNoun(scan.references.size, "distinct environment-variable reference")})`,
     );
-    // 件数行は 0 件でも必ず出す(出力の形を実行ごとに変えない — env diff の規律)
+    // The count lines are emitted even at 0 (the output's shape does not vary by run — env diff's discipline)
     yield* io.log(
       `Read by the scanned code but not declared in environment ${environment}: ${undeclared.length}`,
     );
@@ -300,8 +320,9 @@ export function schemaLintOp(input: {
     for (const name of unread) {
       yield* io.log(`  ${displayText(name)}`);
     }
-    // best-effort の注意書きは結論に依らず常に出す(検査の欠落 ≠ 保証の欠落 —
-    // stderr: 助言でありコマンドの出力ではない)
+    // The best-effort caveat is always emitted regardless of the
+    // conclusion (a gap in checking is not a gap in the guarantee —
+    // stderr: it is advice, not the command's output)
     yield* logNote(BEST_EFFORT_NOTE);
     if (undeclared.length > 0) {
       return yield* Effect.fail(

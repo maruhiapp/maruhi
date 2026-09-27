@@ -1,9 +1,10 @@
 "use client";
 
-// クライアントコンポーネント("use client" 境界の検証対象)。
-// Astryx コンポーネント + xstyle(stylex.create + typed tokens)の検証を兼ねる。
-// xstyle は StyleX コンパイラ(@astryxdesign/build/vite)を要求する。
-// コンパイラ未設定時に無警告で無スタイルになることを e2e テストで再現する。
+// Client component (the target of the "use client" boundary check).
+// Also verifies Astryx components + xstyle (stylex.create + typed
+// tokens). xstyle requires the StyleX compiler (@astryxdesign/build/vite).
+// The e2e test reproduces that an unconfigured compiler silently renders
+// with no styles.
 import { Button } from "@astryxdesign/core/Button";
 import { spacingVars } from "@astryxdesign/core/theme/tokens.stylex";
 import * as stylex from "@stylexjs/stylex";

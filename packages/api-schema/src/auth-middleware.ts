@@ -1,8 +1,10 @@
-// 認証ミドルウェアの API 契約(AUTH_SPEC §5 / §11-4)。
+// API contract of the authentication middleware (AUTH_SPEC §5 / §11-4).
 //
-// 認証必須エンドポイントはこのミドルウェアを宣言し、ハンドラは RequestAuth
-// (@maruhi/core)から認証済み主体を受け取る。実装(セッション / トークンの解決、
-// CSRF custom header の一括検査)は apps/server 側の Layer が提供する。
+// Endpoints requiring authentication declare this middleware, and the
+// handler receives the authenticated principal from RequestAuth
+// (@maruhi/core). The implementation (session / token resolution, the
+// blanket check of the CSRF custom header) is provided by a Layer on the
+// apps/server side.
 
 import { RequestAuth, SessionService, TokenService } from "@maruhi/core";
 import { HttpApiMiddleware } from "effect/unstable/httpapi";
@@ -10,10 +12,11 @@ import { HttpApiMiddleware } from "effect/unstable/httpapi";
 import { ForbiddenError, UnauthorizedError } from "./errors/index.ts";
 
 /**
- * CSRF 対抗のカスタムヘッダー名(AUTH_SPEC §11-4: `x-maruhi-csrf: 1`)。
- * サーバーのミドルウェア・クライアントの送信側が同じ名前を見るための共有定数
- * (名前のリネームが「CLI 誘導文言 → 一般 403」の無音フォールバックに
- * ならないよう、真実源を api-schema に 1 箇所化する)。
+ * Custom header name for CSRF defense (AUTH_SPEC §11-4: `x-maruhi-csrf:
+ * 1`). A shared constant so the server middleware and the client sender
+ * see the same name (one source of truth in api-schema, so renaming the
+ * name cannot silently fall back into "CLI guidance text → generic
+ * 403").
  */
 export const CSRF_HEADER_NAME = "x-maruhi-csrf";
 

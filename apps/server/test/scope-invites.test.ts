@@ -1,8 +1,11 @@
-// ES K3 — 招待行の scope(AUTH_SPEC §15 — 形式検査のみ。K2 で実装済みの挙動を固定する。
-// 設計録 docs/notes/es-design.md §9 の項目 4)。
-//   - 発行 body の scope は形式検査のみ(存在検査なし — 未存在の環境 id でも 200)
-//   - 一覧行と受諾応答に scope が載る
-//   - 包含検査は add_member 受理時の合意規則(ここでは足さない)
+// ES K3 — scope on invite rows (AUTH_SPEC §15 — format checking only; pins
+// behavior already implemented in K2. Item 4 of the design record
+// docs/notes/es-design.md §9).
+//   - scope on an issue body gets format checking only (no existence check —
+//   a not-yet-existing environment id still returns 200)
+//   - list rows and the acceptance response carry scope
+//   - Containment checking is a consensus rule at add_member admission (not
+//   added here)
 
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -23,8 +26,8 @@ import {
 
 registerInviteScenario();
 
-describe("招待行の scope(§15 — 形式検査のみ)", () => {
-  it("listed の発行は環境の存在を検査せず受理し、一覧行と受諾応答に scope を載せる", async () => {
+describe("scope on invite rows (§15 — format checking only)", () => {
+  it("admits a listed issuance without checking environment existence, and carries scope on the list row and the acceptance response", async () => {
     const payload = await makeIssuePayload(fixture, OWNER, "member", {
       scopeKind: "listed",
       scopeEnvironmentIds: ["env-never-created-0001", "env-dev-0002"],
@@ -61,9 +64,10 @@ describe("招待行の scope(§15 — 形式検査のみ)", () => {
     });
   });
 
-  it("all の発行に非空の scopeEnvironmentIds を付けると形式検査の 400(§15 の kind 規則 — 署名検証より前)", async () => {
-    // 発行署名の生成側(@maruhi/crypto)は all + 非空を構造不正として拒むため、
-    // 有効な all の発行文を作ってからワイヤ body だけを改変して送る
+  it("attaching a non-empty scopeEnvironmentIds to an `all` issuance is a 400 format check (the §15 kind rule — before signature verification)", async () => {
+    // The issue-signature producer side (@maruhi/crypto) rejects `all` +
+    // non-empty as malformed, so build a valid `all` issuance first and then
+    // mutate only the wire body
     const payload = await makeIssuePayload(fixture, OWNER, "member");
     const response = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
       method: "POST",

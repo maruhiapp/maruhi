@@ -1,17 +1,25 @@
-// 予備鍵のハンドオフ — 要求側(CRYPTO_SPEC §8.4 / AUTH_SPEC §13-7 — KL3、2026-09-19 DK)。
+// Reserve-key handoff — the requesting side (CRYPTO_SPEC §8.4 /
+// AUTH_SPEC §13-7 — KL3, 2026-09-19 DK).
 //
-// `maruhi key recover --handoff`(鍵を持たない端末): 一時 X25519 鍵 E をメモリ内で
-// 生成し、そのハンドオフコード(= E.pub のコード化。公開情報)を表示して**保護者**の
-// 承認を待つ。承認が揃ったら分片を開いて KEK を組み、台帳のグループラップから
-// 予備鍵 B を復号してレコードを返す(保存しない — 後段の key-recover.ts が新しい
-// 端末鍵を発行し、B で `add_device` を署名してから B を捨てる)。E は永続化しない。
+// `maruhi key recover --handoff` (a device holding no keys): generates
+// an ephemeral X25519 key E in memory, displays its handoff code (=
+// the encoding of E.pub; public information), and waits for the
+// **guardians'** approvals. Once approvals arrive, it opens the
+// segments, assembles the KEK, decrypts reserve key B from the
+// ledger's group wrap, and returns the record (it does not persist —
+// the downstream key-recover.ts issues a new device key, signs
+// `add_device` with B, then discards B). E is never persisted.
 //
-// 承認側は `maruhi guardian approve <code>`(guardian.ts)。旧端末の承認経路
-// (`source = "device"` — 端末移行)は DK K4 で削除した: 日常の端末は B を持たないため
-// 成立せず、端末の追加は `maruhi device add` / `approve`(秘密を運ばない)が担う。
+// The approving side is `maruhi guardian approve <code>`
+// (guardian.ts). The old-device approval path (`source = "device"` —
+// device migration) was removed in DK K4: everyday devices do not
+// hold B so it cannot work, and adding a device is handled by
+// `maruhi device add` / `approve` (which carry no secret).
 //
-// 儀式(要求・復元)は人間の対話端末でのみ行い、AI エージェント環境では拒否する
-// (ADR-0016 決定 7 の既存ゲート)。平文の分片・KEK・B はローカル変数にのみ存在する。
+// Ceremonies (request, recovery) run only on a human's interactive
+// terminal and are refused in AI agent environments (ADR-0016
+// decision 7's existing gate). Plaintext segments, KEK, and B exist
+// only in local variables.
 
 import {
   computeHandoffRequestId,
@@ -38,7 +46,7 @@ import { parseStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
 import { decodeWrapped } from "./master-ops.ts";
 import type { CliSession } from "./session.ts";
 
-/** 承認待ちのポーリング間隔。 */
+/** Polling interval while waiting for approvals. */
 const POLL_INTERVAL = Duration.seconds(3);
 
 function ensureHandoffRequestAllowed(io: CliIoShape): Effect.Effect<void, CliError, Stdio.Stdio> {
@@ -52,7 +60,7 @@ function ensureHandoffRequestAllowed(io: CliIoShape): Effect.Effect<void, CliErr
   });
 }
 
-/** サーバーが返す承認 1 件(ワイヤ形)。 */
+/** One approval as returned by the server (wire shape). */
 interface ApprovalWire {
   readonly source: string;
   readonly shareIndex: number;
@@ -68,13 +76,13 @@ interface GroupSummary {
   readonly guardianCount: number;
 }
 
-/** 揃った承認の組(any 1 片、all 全片)。 */
+/** An assembled set of approvals (any: one piece, all: every piece). */
 interface Assembled {
   readonly group: GroupSummary;
   readonly approvals: readonly ApprovalWire[];
 }
 
-/** 届いた承認から復元に足る組を選ぶ。 */
+/** Selects a set sufficient for recovery from the arrived approvals. */
 function assemble(
   approvals: readonly ApprovalWire[],
   groups: readonly GroupSummary[],
@@ -108,7 +116,7 @@ function decodeBlobWrap(blob: {
     : Effect.succeed({ nonce, ciphertext });
 }
 
-/** 承認の値(分片)を一時鍵で開く。文脈の不一致は復号失敗 = 中止。 */
+/** Opens an approval's value (segment) with the ephemeral key. A context mismatch = decryption failure = abort. */
 function openApproval(input: {
   readonly ephemeral: EncryptionKeyPair;
   readonly userId: string;
@@ -143,7 +151,7 @@ function openApproval(input: {
   });
 }
 
-/** 揃った組から KEK を組み、台帳のグループラップを復号する。 */
+/** Assembles the KEK from the assembled set and decrypts the ledger's group wrap. */
 function recoverBlob(input: {
   readonly client: MaruhiClient;
   readonly ephemeral: EncryptionKeyPair;
@@ -193,7 +201,7 @@ function recoverBlob(input: {
   });
 }
 
-/** 一時鍵 E とそのコード / request_id(E はこのプロセスのメモリにだけ存在する — §8.4)。 */
+/** The ephemeral key E and its code / request_id (E exists only in this process's memory — §8.4). */
 interface HandoffRequest {
   readonly ephemeral: EncryptionKeyPair;
   readonly code: string;
@@ -219,7 +227,7 @@ function newHandoffRequest(): Effect.Effect<HandoffRequest, CliError> {
   });
 }
 
-/** コードと案内を表示する(コードは公開鍵 = 秘密ではないが、案内と同じ stderr に出す)。 */
+/** Displays the code and the guidance (the code is a public key = not secret, but it goes to the same stderr as the guidance). */
 function announceCode(
   io: CliIoShape,
   code: string,
@@ -243,7 +251,7 @@ function announceCode(
   });
 }
 
-/** 承認が揃うまでポーリングする(期限切れは失敗)。 */
+/** Polls until the approvals arrive (expiry is a failure). */
 function awaitApprovals(input: {
   readonly client: MaruhiClient;
   readonly requestId: string;
@@ -272,8 +280,9 @@ function awaitApprovals(input: {
 }
 
 /**
- * `maruhi key recover --handoff` の前段: request approvals from your guardians
- * and open the reserve key (memory only — key-recover.ts が後段を担う)。
+ * `maruhi key recover --handoff`'s pre-stage: request approvals from
+ * your guardians and open the reserve key (memory only —
+ * key-recover.ts owns the downstream).
  */
 export function requestHandoffReserve(input: {
   readonly session: CliSession;
@@ -335,7 +344,7 @@ export function requestHandoffReserve(input: {
         `approved by ${displayText(approval.approverUserId)} (guardian, group ${displayText(approval.source)}; device key fingerprint ${approval.approverKeyFingerprintHex})`,
       );
     }
-    // 要求は役目を終えた(承認は E とともに無価値になるが、行は消しておく)
+    // The request has served its purpose (the approvals become worthless together with E, but still delete the row)
     yield* input.client.keyWraps
       .handoffCancel({ params: { requestId: request.requestId } })
       .pipe(Effect.ignore);

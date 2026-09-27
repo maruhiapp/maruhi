@@ -1,4 +1,4 @@
-// 非機密設定(config.ts)と CLI の config コマンドのテスト。
+// Tests for non-sensitive config (config.ts) and the CLI's config command.
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -10,12 +10,12 @@ import { defaultConfigPath } from "../src/config.ts";
 import { makeTestEnv } from "./support/env.ts";
 
 describe("defaultConfigPath", () => {
-  it("MARUHI_CONFIG_DIR を最優先する", () => {
+  it("prefers MARUHI_CONFIG_DIR above all", () => {
     const path = defaultConfigPath((name) => (name === "MARUHI_CONFIG_DIR" ? "/tmp/x" : undefined));
     expect(path).toBe(join("/tmp/x", "config.json"));
   });
 
-  it("XDG_CONFIG_HOME → ~/.config の順で解決する", () => {
+  it("resolves XDG_CONFIG_HOME then ~/.config", () => {
     const withXdg = defaultConfigPath((name) => (name === "XDG_CONFIG_HOME" ? "/xdg" : undefined));
     expect(withXdg).toBe(join("/xdg", "maruhi", "config.json"));
     const fallback = defaultConfigPath(() => undefined);
@@ -24,11 +24,12 @@ describe("defaultConfigPath", () => {
 });
 
 describe("maruhi config", () => {
-  it("set → get が往復し、ファイルには known key のみ永続化される", async () => {
+  it("set → get round-trips, and only known keys are persisted to the file", async () => {
     const env = await makeTestEnv();
     expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(0);
-    // 報告文は**設定キー名**を言う(宣言オブジェクトの取り違えで Effect の
-    // 内部表現が stdout へ出る形を塞ぐ)
+    // The report names the **config key** (blocks the shape where a
+    // declaration-object mix-up prints Effect's internal representation to
+    // stdout)
     expect(env.logs).toContain("Set server");
     expect(env.logs.join("\n")).not.toContain("_id");
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(0);
@@ -37,14 +38,14 @@ describe("maruhi config", () => {
     expect(raw).toEqual({ server: "https://maruhi.example" });
   });
 
-  it("未知キーの set は usage エラー(2)で拒否する", async () => {
+  it("rejects set of an unknown key as a usage error (2)", async () => {
     const env = await makeTestEnv();
-    // 打ち間違いは実行の失敗(1)と区別する
+    // A typo is distinguished from an execution failure (1)
     expect(await runCli(["config", "set", "token", "x"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Unknown config key");
   });
 
-  it("壊れた設定ファイルは get で報告され、set で作り直せる", async () => {
+  it("a corrupt config file is reported by get and can be rebuilt by set", async () => {
     const env = await makeTestEnv();
     const { writeFile, mkdir } = await import("node:fs/promises");
     const { dirname } = await import("node:path");
@@ -52,25 +53,27 @@ describe("maruhi config", () => {
     await writeFile(env.configPath, "{ broken json");
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("corrupt");
-    // set は破棄して作り直せる(非機密のみのファイル)
+    // set can discard and rebuild it (a non-sensitive-only file)
     expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(0);
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(0);
     expect(env.logs).toContain("https://maruhi.example");
   });
 
-  it("ENOENT 以外の読み取り失敗は空設定に畳まず、型付きエラーで報告する", async () => {
+  it("a read failure other than ENOENT is not folded into empty config — it is reported as a typed error", async () => {
     const env = await makeTestEnv();
     const { mkdir } = await import("node:fs/promises");
-    // 設定ファイルの位置にディレクトリを置く(EISDIR: ENOENT ではない読み取り失敗)
+    // Place a directory where the config file goes (EISDIR: a read failure
+    // that is not ENOENT)
     await mkdir(env.configPath, { recursive: true });
     expect(await runCli(["config", "get", "server"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("Cannot read the config file (");
     expect(env.errors.join("\n")).not.toContain("corrupt");
-    // set も既存(読めない)設定の黙った置換にならない — 同じ理由で失敗する
+    // set likewise must not silently replace an existing (unreadable)
+    // config — it fails for the same reason
     expect(await runCli(["config", "set", "server", "https://maruhi.example"], env.layer)).toBe(1);
   });
 
-  it("JSON 配列の設定ファイルは破損として扱う", async () => {
+  it("treats a JSON-array config file as corrupt", async () => {
     const env = await makeTestEnv();
     const { writeFile, mkdir } = await import("node:fs/promises");
     const { dirname } = await import("node:path");
@@ -80,18 +83,18 @@ describe("maruhi config", () => {
     expect(env.errors.join("\n")).toContain("corrupt");
   });
 
-  it("サブコマンドなしは使い方を表示する(exit 0・出力は stderr)", async () => {
-    // bare `maruhi` はヘルプ要求として扱う(exit 0。出力先は決定 9 に合わせて
-    // stderr)。一覧はコマンド定義から描かれる(手書きだと、コマンドを増やしたときに
-    // ヘルプだけ古いまま残る)
+  it("with no subcommand shows usage (exit 0, output to stderr)", async () => {
+    // Bare `maruhi` is treated as a help request (exit 0; the destination is
+    // stderr per decision 9). The list is drawn from the command definitions
+    // (hand-written help would go stale when commands are added)
     const env = await makeTestEnv();
     expect(await runCli([], env.layer)).toBe(0);
     expect(env.logs).toEqual([]);
     const help = env.errors.join("\n");
     expect(help).toContain("maruhi <subcommand>");
-    // 部分一致だと他コマンドの説明文("run the command…" 等)で満たされて
-    // しまい、一覧からの脱落を検出できない。SUBCOMMANDS
-    // 節に**行として**並んでいることを見る
+    // A substring match would be satisfied by other commands' description
+    // text ("run the command…" etc.) and could not detect a missing entry.
+    // Check that they appear **as lines** in the SUBCOMMANDS section
     const section = help.slice(help.indexOf("SUBCOMMANDS"));
     expect(section).toContain("SUBCOMMANDS");
     for (const command of [

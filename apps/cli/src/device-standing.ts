@@ -1,16 +1,26 @@
-// 端末鍵のチェーン上の立場(DK K13-1 — 設計録 dk-design.md §18)。
+// The standing of a device key on the chain (DK K13-1 — design
+// record dk-design.md §18).
 //
-// 「この鍵はこのプロジェクトで何か」という問いを 1 か所で答える: 有効・失効(自分宛の適用済み `revoke_device` の
-// 対象)・無い・同期できず。`device add`(既存の鍵の分岐・完了の確認・期限切れ・`--replace`
-// の表示)と `device list` と `ownDeviceOrFail`(失効の分岐)が同じ述語を使う。
+// One place answers "what is this key on this project": active,
+// revoked (the target of an applied `revoke_device` addressed to
+// it), absent, or unsyncable. `device add` (branching on an
+// existing key, checking completion, expiry, `--replace` display),
+// `device list`, and `ownDeviceOrFail` (the revocation branch) use
+// the same predicate.
 //
-// 純関数 `keyStandingIn` は既に検証したチェーンに当てるだけ(`device list` と `key recover`
-// の登録は同期を二重にしない)。`keyStandingsOf` はプロジェクト一覧(サーバー申告 — 発見用)の各プロジェクトを
-// 鍵なしの前段で同期して純関数を呼び、一覧・同期の失敗はコマンドを落とさず事実に畳む
-// (改ざんの兆候は `evidence` で運ぶ)。文言は作らない(報告側が作る — K12-10)。
+// The pure function `keyStandingIn` only applies to an
+// already-verified chain (`device list` and `key recover`
+// registrations do not double the sync). `keyStandingsOf` syncs
+// each project of the project list (server declaration — for
+// discovery) at the keyless pre-stage and calls the pure
+// function; a list/sync failure does not drop the command and
+// folds into facts (tamper signals ride on `evidence`). It does
+// not produce wording (the reporting side does — K12-10).
 //
-// 台帳の鍵が予備鍵かは、台帳の中身の予備鍵の印で決まる(CRYPTO_SPEC §8 — DK K16)。チェーンが
-// 台帳の鍵について言うのは「失効しているか」だけ(`ledgerKeyVerdictOf`)。
+// Whether a ledger key is a reserve key is decided by the
+// reserve-key mark in the ledger's contents (CRYPTO_SPEC §8 — DK
+// K16). The only thing the chain says about a ledger key is
+// "whether it is revoked" (`ledgerKeyVerdictOf`).
 
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Effect, Result } from "effect";
@@ -24,7 +34,7 @@ import { compareCodePoints } from "./scope.ts";
 import type { CliSession } from "./session.ts";
 import type { VerifiedProject } from "./sync.ts";
 
-/** 検証済みチェーンの上での鍵の立場(同期の成否を含まない)。 */
+/** A key's standing on a verified chain (excludes sync success/failure). */
 export type ChainKeyStanding =
   | {
       readonly kind: "active";
@@ -54,7 +64,7 @@ export function keyStandingIn(
     : { kind: "absent" };
 }
 
-/** 1 プロジェクトの立場(同期できなければその事実 — 「無い」と混同しない)。 */
+/** The standing on one project (when unsyncable, that fact — not confused with "absent"). */
 export type KeyStanding =
   | (Extract<ChainKeyStanding, { readonly kind: "active" }> & {
       readonly context: ProjectContextBase;
@@ -63,7 +73,7 @@ export type KeyStanding =
   | {
       readonly kind: "unsynced";
       readonly message: string;
-      /** 署名済みデータの矛盾(チェーンの検証失敗など — 改ざんの兆候)。 */
+      /** A contradiction in signed data (a chain-verification failure etc. — a tamper signal). */
       readonly evidence: boolean;
     };
 
@@ -79,10 +89,10 @@ export function keyStandingOnProject(input: {
   );
 }
 
-/** 一覧の全プロジェクトでの立場(一覧が取れなければ `listFailure`)。 */
+/** The standing across every project of the list (`listFailure` when it cannot be fetched). */
 export interface KeyStandings {
   readonly projects: readonly { readonly projectId: string; readonly standing: KeyStanding }[];
-  /** プロジェクト一覧の取得の失敗(null = 取れた)。取れなければ `projects` は空。 */
+  /** The failure of fetching the project list (null = fetched). On failure `projects` is empty. */
   readonly listFailure: string | null;
 }
 
@@ -116,7 +126,7 @@ export function keyStandingsOf(input: {
   });
 }
 
-/** 1 回の同期の結果(成功 / 失敗)から、1 つの鍵の立場を出す(同期できなければその事実)。 */
+/** From one sync's result (success / failure), produces one key's standing (when unsyncable, that fact). */
 function standingFrom(
   synced: Result.Result<ProjectContextBase, CliError>,
   session: CliSession,
@@ -134,7 +144,7 @@ function standingFrom(
   return standing.kind === "active" ? { ...standing, context } : standing;
 }
 
-/** 立場ごとのプロジェクト(報告・分岐の材料)。 */
+/** The projects by standing (the material for reporting and branching). */
 export interface StandingGroups {
   readonly active: readonly {
     readonly projectId: string;
@@ -169,15 +179,19 @@ export function groupStandings(standings: KeyStandings): StandingGroups {
 }
 
 /**
- * 台帳から開いた鍵の、チェーンが言う事実(DK K16): 予備鍵かどうかは台帳の中身の印で決まり
- * (CRYPTO_SPEC §8)、チェーンが言うのは「どこかで失効しているか」だけ。失効した予備鍵は台帳の鍵と
- * して働かない(利用者が `device revoke` で予備鍵を失効させた場合)。文言は作らない(K12-10)。
+ * What the chain says about a key opened from the ledger (DK
+ * K16): whether it is a reserve key is decided by the mark in
+ * the ledger's contents (CRYPTO_SPEC §8); the only thing the
+ * chain says is "whether it is revoked anywhere". A revoked
+ * reserve key does not work as a ledger key (when the user
+ * revoked the reserve key with `device revoke`). It does not
+ * produce wording (K12-10).
  */
 export type ReserveVerdict =
   | {
       readonly kind: "revoked";
       readonly projectIds: readonly string[];
-      /** 失効していないプロジェクト(まだ有効に載っている所)。 */
+      /** Projects where it is not revoked (where it is still actively listed). */
       readonly activeProjectIds: readonly string[];
     }
   | {
@@ -207,9 +221,11 @@ export function reserveVerdictOf(standings: KeyStandings): ReserveVerdict {
 }
 
 /**
- * 台帳の鍵がどこかで失効しているかを、サーバーが一覧に出す全プロジェクトを同期して確かめる
- * (`key recovery`・台帳の変更の前段)。`key recover` は登録のために開いたチェーンに
- * `reserveVerdictOf` を直接当てる(同期を二重にしない)。
+ * Checks whether the ledger key is revoked anywhere by syncing
+ * every project the server lists (`key recovery`, the pre-stage
+ * of a ledger change). `key recover` applies `reserveVerdictOf`
+ * directly on the chain it opened for registration (no double
+ * sync).
  */
 export function ledgerKeyVerdictOf(input: {
   readonly session: CliSession;

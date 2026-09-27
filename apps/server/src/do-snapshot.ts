@@ -1,25 +1,36 @@
-// プロジェクト DO の退避(DO → R2)と復元 — docs/notes/hosted-ops.md §2-D / §2-E / §4-2。
+// Evacuation (DO → R2) and restore of the project DO —
+// docs/notes/hosted-ops.md §2-D / §2-E / §4-2.
 //
-// 退避物の形: NDJSON を gzip したオブジェクト。行の種類は
-//   header  … 形式・スキーマ版・取得時刻・DO id(`idFromName` の像 — 一方向)
-//   table   … 表名 + 列名(以後の row 行の values の順序)
-//   row     … 表名 + 値配列(number / string / null。BLOB は { b64 } — 現行スキーマに
-//             BLOB 列は無いが、値型の網羅として持つ)
-//   trailer … 表ごとの行数・チェーンヘッド・監査 seq・監査ヘッド hex(列が最新のとき
-//             のみ — 実体化の書き込みはしない)・databaseSize
-// trailer が無い = 途中失敗の退避物であり、復元側は拒否する。
+// Shape of an evacuation: an object of gzipped NDJSON. Line kinds:
+//   header  … format, schema version, taken-at time, DO id (image of
+//           `idFromName` — one-way)
+//   table   … table name + column names (the order of `values` in the
+//             row lines that follow)
+//   row     … table name + value array (number / string / null; a BLOB
+//             is { b64 } — the current schema has no BLOB columns, but
+//             the value-type coverage is kept)
+//   trailer … per-table row counts, chain head, audit seq, audit head
+//             hex (only when the column is current — no materialization
+//             write is performed), databaseSize
+// A missing trailer = an evacuation that failed midway, and the restore
+// side refuses it.
 //
-// 規律:
-// - **プロジェクト ID をキー・ヘッダ・メタデータに載せない**(AUTH_SPEC §11-2 —
-//   capability)。内容のチェーン genesis からは導出できる(それは DO の内容そのもの)
-// - 読み出しは DO の permit 下(chain-do.ts)で、rowid キーセット + LIMIT を 1 文ずつ
-//   同期に `toArray()` する。cursor を await 越しに持たない(storage-api docs: await 後の
-//   cursor は後続の変更を観測しうる)。permit が変更を止めているので表間も一貫する
-// - 追加の暗号化は行わない(CLAUDE.md — 仕様にない暗号操作を実装しない。内容は E2EE
-//   暗号文 + 公開メタで DO に置いてある形と同一)
-// - 復元は**空の DO(chain_entries が空)にのみ**書く。chain_entries は退避物の最後の表
-//   なので、途中で失敗した復元はチェーンを持たず「未初期化」のままになり、再実行は
-//   非チェーン表を消してやり直せる(上書き経路は存在しない)
+// Discipline:
+// - **Do not put the project ID in the key, header, or metadata**
+//   (AUTH_SPEC §11-2 — capability). It is derivable from the chain
+//   genesis inside the content (which is the DO's own content)
+// - Reads run under the DO's permit (chain-do.ts): rowid keyset + LIMIT,
+//   one statement at a time, synchronously `toArray()`. A cursor is not
+//   held across awaits (storage-api docs: after an await a cursor can
+//   observe later changes). Because the permit stops changes, tables are
+//   consistent with each other
+// - No additional encryption (CLAUDE.md — do not implement crypto
+//   operations not in the spec. The content stays in the same shape it
+//   has in the DO: E2EE ciphertext + public metadata)
+// - Restore writes **only into an empty DO (empty chain_entries)**.
+//   Since chain_entries is the last table in the evacuation, a restore
+//   that fails midway holds no chain and stays "uninitialized"; reruns
+//   wipe the non-chain tables and redo (no overwrite path exists)
 
 import {
   OPS_RESTORE_BATCH_ROWS,
@@ -30,7 +41,7 @@ import {
 export const SNAPSHOT_FORMAT = "maruhi-do-snapshot";
 export const SNAPSHOT_FORMAT_VERSION = 1;
 
-/** DO SQLite の束縛パラメータ上限(1 文あたり — durable-objects/platform/limits)。 */
+/** DO SQLite bound-parameter limit (per statement — durable-objects/platform/limits). */
 const MAX_BOUND_PARAMETERS = 100;
 
 type SnapshotScalar = number | string | null | { readonly b64: string };
@@ -62,7 +73,7 @@ export interface SnapshotTrailer {
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string | null;
   readonly auditMaxSeq: number;
-  /** 累積ハッシュ列(audit_head_hashes)が MAX(seq) に到達しているときのみ。 */
+  /** Only when the cumulative-hash column (audit_head_hashes) has reached MAX(seq). */
   readonly auditHeadHashHex: string | null;
   readonly databaseSizeBytes: number;
 }
@@ -70,7 +81,7 @@ export interface SnapshotTrailer {
 type SnapshotLine = SnapshotHeader | SnapshotTableLine | SnapshotRowLine | SnapshotTrailer;
 
 // ---------------------------------------------------------------------------
-// ウォーターマーク(skip 規則の入力 — hosted-ops §2-D)
+// Watermarks (input to the skip rules — hosted-ops §2-D)
 // ---------------------------------------------------------------------------
 
 export interface DoWatermarks {
@@ -79,9 +90,11 @@ export interface DoWatermarks {
   readonly auditMaxSeq: number;
   readonly auditHeadHashHex: string | null;
   /**
-   * ヘッド申告(head_attestations)の最新受理時刻(無ければ 0)。申告の upsert は
-   * チェーン行も監査行も書かない(AUTH_SPEC §16-1)ため、監査 / チェーン seq だけの
-   * skip 規則では申告だけが動くプロジェクトが最大 7 日退避されない。
+   * Latest acceptance time of a head attestation (head_attestations); 0
+   * when none. An attestation upsert writes neither chain rows nor audit
+   * rows (AUTH_SPEC §16-1), so under a skip rule based on audit / chain
+   * seq alone, a project where only attestations move would go unevacuated
+   * for up to 7 days.
    */
   readonly attestationMark: number;
 }
@@ -117,22 +130,23 @@ export function readWatermarks(sql: SqlStorage): DoWatermarks {
   };
 }
 
-/** chain_entries が空か(復元の受理条件 — 上書き経路を作らない)。 */
+/** Whether chain_entries is empty (the restore acceptance condition — creates no overwrite path). */
 function isProjectDoEmpty(sql: SqlStorage): boolean {
   return sql.exec(`SELECT 1 FROM ${CHAIN_TABLE} LIMIT 1`).toArray().length === 0;
 }
 
 const CHAIN_TABLE = "chain_entries";
-/** chain_entries の復元ステージング表。`tables` に含まれないため退避物には出ず、
- * 残骸は次回の復元開始時 / 完了時 / 失敗時に DROP される。
+/** The restore staging table for chain_entries. Not listed in `tables`,
+ * so it never appears in evacuations; leftovers are DROPped at the start
+ * / completion / failure of the next restore.
  */
 const CHAIN_STAGING_TABLE = "chain_entries_restore";
 
 // ---------------------------------------------------------------------------
-// 退避(書き出し)
+// Evacuation (write-out)
 // ---------------------------------------------------------------------------
 
-/** 退避物の表の順序: chain_entries を**最後**に(復元の「チェーンが最後」規則の根拠)。 */
+/** Table order in the evacuation: chain_entries **last** (the basis of restore's "chain comes last" rule). */
 function snapshotTableOrder(tables: readonly string[]): readonly string[] {
   return [...tables.filter((t) => t !== CHAIN_TABLE), CHAIN_TABLE];
 }
@@ -164,9 +178,11 @@ function decodeScalar(value: SnapshotScalar): number | string | null | ArrayBuff
 }
 
 /**
- * gzip 圧縮しながら R2 へ書く出力先。圧縮出力が 1 パート分溜まるごとに multipart の
- * パートとして送り、合計がパート長未満なら単一 put で終える。失敗時は multipart を
- * 中止する(未完了 upload はバケットのライフサイクル規則も掃除する)。
+ * A sink that writes to R2 while gzip-compressing. Each time one part's
+ * worth of compressed output accumulates it is sent as a multipart part;
+ * when the total is under the part length, a single put finishes it. On
+ * failure the multipart upload is aborted (the bucket lifecycle rule also
+ * cleans up incomplete uploads).
  */
 class GzipObjectWriter {
   readonly #encoder = new TextEncoder();
@@ -208,8 +224,8 @@ class GzipObjectWriter {
     if (this.#upload === null) {
       await this.bucket.put(this.key, last);
     } else {
-      // 圧縮後の総量が partBytes の倍数ちょうどだと残りは 0 バイト — R2 は空パートを
-      // 拒否するため送らない
+      // When the compressed total is an exact multiple of partBytes, the
+      // remainder is 0 bytes — R2 rejects an empty part, so don't send it
       if (last.byteLength > 0) {
         this.#parts.push(await this.#upload.uploadPart(this.#parts.length + 1, last));
       }
@@ -234,8 +250,9 @@ class GzipObjectWriter {
       this.#pending.push(value);
       this.#pendingBytes += value.byteLength;
       this.#totalBytes += value.byteLength;
-      // R2 の multipart は最終パート以外を**同一サイズ**に要求する(r2/api/workers/
-      // workers-multipart-usage)ため、ちょうど partBytes ずつ切り出す
+      // R2 multipart requires **the same size** for every part except the
+      // last (r2/api/workers/workers-multipart-usage), so carve out exactly
+      // partBytes each time
       while (this.#pendingBytes >= this.partBytes) {
         this.#upload ??= await this.bucket.createMultipartUpload(this.key);
         this.#parts.push(
@@ -249,7 +266,7 @@ class GzipObjectWriter {
     return this.#takeExact(this.#pendingBytes);
   }
 
-  /** 先頭から n バイトを切り出す(残りは pending に戻す)。 */
+  /** Carve out n bytes from the front (the remainder goes back to pending). */
   #takeExact(n: number): Uint8Array {
     const merged = new Uint8Array(this.#pendingBytes);
     let offset = 0;
@@ -273,7 +290,7 @@ export interface WriteSnapshotInput {
   readonly takenAtMs: number;
   readonly bucket: R2Bucket;
   readonly key: string;
-  /** テスト用(既定は policy の 16 MiB)。 */
+  /** For tests (default is policy's 16 MiB). */
   readonly partBytes?: number;
 }
 
@@ -282,15 +299,16 @@ export interface WriteSnapshotResult {
   readonly trailer: SnapshotTrailer;
 }
 
-/** 退避物のキー(プロジェクト ID を含まない — DO id の像 + 取得時刻)。 */
+/** The evacuation's key (contains no project ID — image of the DO id + taken-at time). */
 export function snapshotObjectKey(prefix: string, doIdHex: string, takenAtMs: number): string {
   const stamp = new Date(takenAtMs).toISOString().replaceAll(":", "-");
   return `${prefix}/${doIdHex}/${stamp}.ndjson.gz`;
 }
 
 /**
- * 全表を読み出し R2 へ書く(呼び出し側が permit を保持していること)。表ごとに
- * rowid キーセットで 1 ページずつ同期に読む(cursor を await 越しに持たない)。
+ * Reads out all tables and writes to R2 (the caller must hold the
+ * permit). Reads one page at a time, synchronously, per table via a
+ * rowid keyset (no cursor is held across awaits).
  */
 export async function writeSnapshot(input: WriteSnapshotInput): Promise<WriteSnapshotResult> {
   const { sql } = input;
@@ -363,10 +381,10 @@ export async function writeSnapshot(input: WriteSnapshotInput): Promise<WriteSna
 }
 
 // ---------------------------------------------------------------------------
-// 復元(読み込み)
+// Restore (read-in)
 // ---------------------------------------------------------------------------
 
-/** 復元の拒否理由(静的コード — 結果ファイル・ログに載せてよい)。 */
+/** Restore refusal reasons (static codes — safe to put in result files and logs). */
 export type RestoreFailureCode =
   | "not-empty"
   | "object-missing"
@@ -383,7 +401,7 @@ export class RestoreRefusedError extends Error {
 }
 
 export interface RestoreSnapshotInput {
-  /** transactionSync を持つ DO ストレージ(sql はここから取る)。 */
+  /** DO storage with transactionSync (sql is taken from here). */
   readonly storage: DurableObjectStorage;
   readonly tables: readonly string[];
   readonly schemaVersion: number;
@@ -425,7 +443,8 @@ function parseLine(text: string): SnapshotLine {
   try {
     parsed = JSON.parse(text);
   } catch {
-    // JSON でない行 = 退避物の破損(理由を静的コードへ畳む — 本文は運ばない)
+    // A non-JSON line = a corrupted evacuation (fold the reason into a
+    // static code — the body is not carried)
     throw new RestoreRefusedError("malformed");
   }
   if (typeof parsed !== "object" || parsed === null || !("kind" in parsed)) {
@@ -440,7 +459,7 @@ function wipeTables(sql: SqlStorage, tables: readonly string[]): void {
   }
 }
 
-/** 1 表の行をバッファし、バッチごとに 1 トランザクションで挿入する。 */
+/** Buffers one table's rows and inserts each batch in a single transaction. */
 class RowInserter {
   #buffer: (readonly SnapshotScalar[])[] = [];
   readonly #rowsPerStatement: number;
@@ -463,7 +482,7 @@ class RowInserter {
     }
   }
 
-  /** バッファ済みの行を 1 トランザクション(transactionSync)で確定する。 */
+  /** Commits the buffered rows in one transaction (transactionSync). */
   flush(): void {
     if (this.#buffer.length === 0) {
       return;
@@ -485,15 +504,17 @@ class RowInserter {
 }
 
 /**
- * 退避物の表行の列名を検証して返す。配列・全要素が文字列・生きた表の列名と
- * 順序ごと完全一致、のいずれかを欠けば "malformed"(列名は SQL の識別子へ
- * 埋め込まれるため、ここを通った値だけを使う)。
+ * Validates and returns the column names of an evacuation's table line.
+ * Any miss — not an array, a non-string element, or not an exact match
+ * including order with the live table's column names — is "malformed"
+ * (column names are embedded as SQL identifiers, so only values that
+ * pass here are used).
  */
 function acceptColumns(sql: SqlStorage, table: string, columns: unknown): readonly string[] {
   if (!Array.isArray(columns) || !columns.every((column) => typeof column === "string")) {
     throw new RestoreRefusedError("malformed");
   }
-  // table は既知表の集合で検査済み(識別子として埋め込んでよい値)
+  // table is already checked against the set of known tables (a value safe to embed as an identifier)
   const live = sql.exec(`SELECT * FROM ${table} LIMIT 0`).columnNames;
   if (
     columns.length === 0 ||
@@ -519,13 +540,13 @@ function acceptHeader(line: SnapshotLine, schemaVersion: number): SnapshotHeader
   return line;
 }
 
-/** 退避物の行を順に受け取り、表ごとにバッチ挿入する状態機械。 */
+/** A state machine that consumes an evacuation's lines in order and batch-inserts per table. */
 class RestoreReader {
   header: SnapshotHeader | null = null;
   trailer: SnapshotTrailer | null = null;
   readonly rows: Record<string, number> = {};
   #inserter: RowInserter | null = null;
-  /** accept 中の論理表名。挿入先とは別物(chain_entries はステージングへ回す)。 */
+  /** The logical table name under accept; distinct from the insert target (chain_entries is routed to staging). */
   #table: string | null = null;
   #chainColumns: readonly string[] | null = null;
 
@@ -559,7 +580,7 @@ class RestoreReader {
     }
   }
 
-  /** 全表の行数がトレーラと一致することを検査し、チェーンを本表へ移して結果を返す。 */
+  /** Verifies every table's row count against the trailer, promotes the chain to the real table, and returns the result. */
   verify(tables: readonly string[]): RestoreSnapshotResult {
     const { header, trailer } = this;
     if (header === null || trailer === null) {
@@ -579,22 +600,26 @@ class RestoreReader {
       throw new RestoreRefusedError("unknown-table");
     }
     this.#flush();
-    // 列名は退避物の行から来る値で、下の INSERT / CREATE TABLE へ識別子として
-    // 埋め込まれる。スキーマ版は header で一致済みなので、書き手(writeSnapshot)と
-    // 同じ取り方の「生きた表の列名」と順序ごと完全一致しなければ破損として拒否する
-    // (識別子を退避物から SQL へ無検証で流さない)。
+    // The column names come from the evacuation's line and are embedded
+    // as identifiers into the INSERT / CREATE TABLE below. The schema
+    // version already matched in the header, so unless they exactly match
+    // the live table's column names — taken the same way the writer
+    // (writeSnapshot) takes them — including order, refuse as corrupt
+    // (never flow identifiers from an evacuation into SQL unverified).
     const columns = acceptColumns(this.storage.sql, line.table, line.columns);
-    // chain_entries はステージング表へ書き、verify で本表へ移す。RowInserter は
-    // バッチごとにコミットするため、プロセスが chain 表の途中で死ぬと「有効だが
-    // 打ち切られた連鎖」が残り、isProjectDoEmpty の拒否で二度と復元できない。
-    // ステージングを経ると、中断は常に「chain_entries 空」(= 未初期化)に倒れる。
+    // chain_entries is written to the staging table and moved to the
+    // real table in verify. Since RowInserter commits per batch, if the
+    // process dies mid-chain-table a "valid but truncated chain" remains,
+    // and the isProjectDoEmpty refusal would make restore impossible
+    // forever. Going through staging, an interruption always falls to
+    // "chain_entries empty" (= uninitialized).
     const target = line.table === CHAIN_TABLE ? this.#beginChainStaging(columns) : line.table;
     this.#inserter = new RowInserter(this.storage, target, columns);
     this.#table = line.table;
     this.rows[line.table] = 0;
   }
 
-  /** チェーンの列名を覚えてステージング表を作り、その表名を返す。 */
+  /** Remembers the chain's column names, creates the staging table, and returns its name. */
   #beginChainStaging(columns: readonly string[]): string {
     const columnList = columns.join(", ");
     this.storage.sql.exec(`DROP TABLE IF EXISTS ${CHAIN_STAGING_TABLE}`);
@@ -603,11 +628,11 @@ class RestoreReader {
     return CHAIN_STAGING_TABLE;
   }
 
-  /** 検証済みのステージング行を 1 トランザクションで chain_entries へ移す。 */
+  /** Moves the verified staging rows to chain_entries in one transaction. */
   #promoteChainStaging(): void {
     const columns = this.#chainColumns;
     if (columns === null) {
-      return; // 退避物に chain_entries 表がなかった(空プロジェクト)
+      return; // the evacuation had no chain_entries table (empty project)
     }
     const columnList = columns.join(", ");
     this.storage.transactionSync(() => {
@@ -628,25 +653,27 @@ class RestoreReader {
     this.rows[line.table] = (this.rows[line.table] ?? 0) + 1;
   }
 
-  /** 進行中の表のバッファを確定する(トランザクションは RowInserter がバッチごとに張る)。 */
+  /** Commits the in-flight table's buffer (transactions are opened per batch by RowInserter). */
   #flush(): void {
     this.#inserter?.flush();
   }
 }
 
 /**
- * 退避物を空の DO へ書き戻す(呼び出し側が permit を保持していること)。
- * バッチごとに transactionSync で原子コミットし、途中失敗(例外・トレーラ欠落・
- * 行数不一致)は全表を消して空へ戻してから投げる。chain_entries の行は
- * ステージング表に書き、検証を通ってから 1 トランザクションで本表へ移す —
- * プロセスがどこで死んでも「未初期化」側に倒れ、復元は再試行できる。
+ * Writes an evacuation back into an empty DO (the caller must hold the
+ * permit). Each batch is atomically committed with transactionSync; a
+ * mid-way failure (exception, missing trailer, row-count mismatch)
+ * wipes all tables back to empty before throwing. chain_entries rows go
+ * to the staging table and are moved to the real table in one
+ * transaction only after verification passes — wherever the process
+ * dies, it falls on the "uninitialized" side and restore can be retried.
  */
 export async function restoreSnapshot(input: RestoreSnapshotInput): Promise<RestoreSnapshotResult> {
   const { storage, tables } = input;
   if (!isProjectDoEmpty(storage.sql)) {
     throw new RestoreRefusedError("not-empty");
   }
-  // 前回の部分復元(非チェーン表の残骸)を消してから始める
+  // Wipe the previous partial restore (leftover non-chain tables) first
   wipeTables(storage.sql, tables);
   storage.sql.exec(`DROP TABLE IF EXISTS ${CHAIN_STAGING_TABLE}`);
   const reader = new RestoreReader(storage, new Set(tables), input.schemaVersion);

@@ -1,9 +1,10 @@
-// 認証エンドポイントのハンドラ(AUTH_SPEC §3 / §4 / §5 / §6)。
+// Handlers for the auth endpoints (AUTH_SPEC §3 / §4 / §5 / §6).
 //
-// - GitHub アクセストークンはこのファイルのハンドラのローカル変数にのみ存在し、
-//   レスポンス・ログ・ストレージへ出ない(§10: GitHub トークンの永続化禁止)
-// - `__Host-` クッキーは Secure / Path=/ が必須(http の wrangler dev ではブラウザに
-//   保存されない点に注意 — テストはヘッダー検証で行う)
+// - A GitHub access token exists only in local variables of this file's
+//   handlers and never reaches a response, a log, or storage (§10: GitHub
+//   tokens must not be persisted)
+// - `__Host-` cookies require Secure / Path=/ (note that a browser will not
+//   store them under http wrangler dev — tests verify the header instead)
 
 import {
   AuthFlowError,
@@ -48,29 +49,33 @@ import { ServerKey } from "./server-key.ts";
 import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "./worker-env.ts";
 
 /**
- * サインアップコードクッキーの値の形: `<state>.<sha256(code)>`(AUTH_SPEC §3)。
+ * The shape of the signup-code cookie value: `<state>.<sha256(code)>`
+ * (AUTH_SPEC §3).
  *
- * **生値ではなくハッシュを運ぶ**: callback が必要とするのはハッシュ照合
- * (signup_invites.token_hash)と消費 CAS のみで、生値の再登場点が存在しない。
- * ハッシュ運搬により、コード生値のワイヤ出現は start リクエストの 1 回だけに
- * なり、ブラウザのクッキーストア(devtools・同期・拡張の可視面)に生値が残らない
- * — 「生値は発行時に一度だけ」(§5 / §15)の規律の運搬面への適用。
+ * **Carry the hash, not the raw value**: the callback needs only the hash
+ * comparison (signup_invites.token_hash) and the consumption CAS; there is
+ * no point where the raw value resurfaces. Carrying the hash means the code's
+ * raw value appears on the wire only once — in the start request — and no
+ * raw value is left in the browser's cookie store (the surface visible to
+ * devtools, sync, and extensions): the "the raw value appears only once at
+ * issuance" discipline (§5 / §15) applied to the carrying surface.
  *
- * クッキーは発行時の OAuth state にも**束縛**する: `__Host-` / path=/ のクッキーは
- * 同一ブラウザの後続の無関係な OAuth 完了(別の state)にも同送されるため、
- * 束縛が無いと持ち越されたコードが「そのフローの提示コード」として消費されうる。
- * callback は state 一致のときだけハッシュを採用する — 型付きエラー終端
- * (Set-Cookie を運ばない応答)にクッキーが残っても、別フローの資格には
- * ならない(残存の無害化)。
+ * The cookie is also **bound** to the OAuth state of issuance: a `__Host-` /
+ * path=/ cookie is sent along with any later, unrelated OAuth completion (a
+ * different state) in the same browser, so without binding a carried-over
+ * code could be consumed as "the code presented for that flow". The callback
+ * adopts the hash only when the state matches — even if a cookie survives on
+ * a typed-error terminal (a response carrying no Set-Cookie), it does not
+ * become a credential of another flow (neutralization of leftovers).
  */
 function signupCookieValue(state: string, tokenHashHex: string): string {
   return `${state}.${tokenHashHex}`;
 }
 
-/** ハッシュのワイヤ形(SHA-256 hex 小文字)。逸脱は「提示なし」に畳む。 */
+/** The hash's wire form (lowercase SHA-256 hex). Deviations fold into "not presented". */
 const SIGNUP_HASH_PATTERN = /^[0-9a-f]{64}$/;
 
-/** クッキーからのコードハッシュ復元(state 不一致・形式不正は「提示なし」)。 */
+/** Restore the code hash from the cookie (a state mismatch or malformed shape is "not presented"). */
 function signupInviteHashFromCookie(cookie: string | undefined, state: string): string | null {
   if (cookie === undefined) {
     return null;
@@ -86,11 +91,13 @@ function signupInviteHashFromCookie(cookie: string | undefined, state: string): 
 }
 
 /**
- * サインアップコードクッキーの単回失効(AUTH_SPEC §3)。リクエストが運んで
- * きた場合のみ失効を積む(プレーンなログインの応答形は従来のまま変えない)。
- * HTML / 302 を返す全終端 — 成功・拒否・CLI ブラウザ脚 — に適用する。型付き
- * エラー終端(AuthFlow 400 / 429 — Set-Cookie を運ばない)に残るクッキーは
- * state 束縛(上記)が無害化し、10 分の maxAge で自然消滅する。
+ * Single-use expiry of the signup-code cookie (AUTH_SPEC §3). The expiry is
+ * attached only when the request carried the cookie (the response shape of a
+ * plain login is unchanged). Applies to every terminal that returns HTML /
+ * 302 — success, denial, and the CLI browser leg. A cookie left over on a
+ * typed-error terminal (AuthFlow 400 / 429 — no Set-Cookie carried) is
+ * neutralized by the state binding (above) and dies naturally at the
+ * 10-minute maxAge.
  */
 function expireSignupCookieIfPresent(
   request: { readonly cookies: Readonly<Record<string, string | undefined>> },
@@ -108,19 +115,24 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     .handle("authConfig", () =>
       Effect.gen(function* () {
         const env = yield* WorkerEnv;
-        // 公開設定(AUTH_SPEC §4): client_id は authorize URL に平文で現れる
-        // 公開情報のみ。client_secret 等をこの応答に足さないこと(検査条件には
-        // 含む — 200 が「client_id / secret とも登録済み」の確認として機能する)
+        // Public config (AUTH_SPEC §4): only public information — client_id
+        // already appears in plaintext on the authorize URL. Do not add
+        // client_secret etc. to this response (it is part of the check — a
+        // 200 works as confirmation that "client_id / secret are both
+        // registered")
         yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
-        // デプロイメント keypair(CRYPTO_SPEC §9)が設定済みなら公開面を加える
-        // (AUTH_SPEC §4 — serverKeyFingerprintHex は grant_server 実行時の照合
-        // 対象。serverEncPubHex は §9 の「サーバーが配布する enc 公開鍵」の
-        // 配布チャネルで、どちらも公開情報)。未設定なら両フィールドを省略する
+        // If the deployment keypair (CRYPTO_SPEC §9) is configured, add its
+        // public face (AUTH_SPEC §4 — serverKeyFingerprintHex is the
+        // verification target when running grant_server; serverEncPubHex is
+        // the distribution channel of the "enc public key the server
+        // distributes" of §9 — both are public information). Omit both fields
+        // when unconfigured
         const serverKey = yield* ServerKey;
         const serverKeyInfo = yield* serverKey.info;
-        // signupPolicy は advisory(AUTH_SPEC §3 — 公開情報。ランディングの
-        // 案内文言と同じ内容で、検証・認可規則の入力にしない)。CLI の login
-        // 事前 fail-fast(hosted-design.md §2-2 (i)(ii))の材料
+        // signupPolicy is advisory (AUTH_SPEC §3 — public information, the
+        // same content as the landing-page guidance text, never an input to
+        // verification or authorization rules). Input for the CLI's login
+        // pre-flight fail-fast (hosted-design.md §2-2 (i)(ii))
         const identities = yield* IdentityRepo;
         const signupPolicy = yield* identities.signupPolicy;
         return {
@@ -142,16 +154,18 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const state = randomHex(16);
         const signupCode = query.signup_code;
         if (signupCode === undefined) {
-          // プレーンな start(ログイン・open 下のサインアップ)は従来どおり
+          // A plain start (login, or signup under open) behaves as before
           return yield* redirectToGitHubAuthorize(request, env.GITHUB_CLIENT_ID, state, {
             name: STATE_COOKIE,
             value: state,
           });
         }
-        // サインアップ招待コードの開始時事前検証(AUTH_SPEC §3): 無効な
-        // コードのために OAuth ダンスを走らせない fail-fast。コード付き start は
-        // D1 読みを伴う未認証面なので per-IP レート制限をハンドラ最初に置く
-        // (検証は 256-bit 単回コードのハッシュ照合であり存在オラクルにならない)
+        // Start-time pre-validation of a signup invite code (AUTH_SPEC §3):
+        // fail fast instead of running the OAuth dance for an invalid code.
+        // A code-bearing start is an unauthenticated surface that reads D1,
+        // so the per-IP rate limit sits first in the handler (the check is a
+        // hash comparison of a 256-bit single-use code and is not an
+        // existence oracle)
         const allowed = yield* ipRateLimitAllowed(env.SIGNUP_START_RATE_LIMIT, request);
         if (!allowed) {
           return yield* Effect.fail(
@@ -162,16 +176,18 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const tokenHash = yield* Effect.promise(() => sha256Hex(signupCode));
         const valid = yield* identities.hasPendingSignupInvite(tokenHash, Date.now());
         if (!valid) {
-          // 不明・失効・消費済みを出し分けないスクリプトなし案内(§3)。
-          // 事前検証は fail-fast であって受理判定ではない — 受理の正は
-          // callback の消費 CAS
+          // Script-less guidance that does not distinguish unknown /
+          // revoked / consumed (§3). The pre-validation is fail-fast, not
+          // the acceptance decision — the acceptance authority is the
+          // callback's consumption CAS
           return htmlResponse(renderSignupInviteInvalidPage(), 400);
         }
-        // 検証済みコードの**ハッシュ**を HttpOnly クッキーで callback まで運ぶ
-        // (§3 — 生値のワイヤ出現はこの start リクエストの 1 回だけ。消費は
-        // アカウント作成と同一トランザクション — ここでは消費しない)。値は
-        // この start の state に束縛する(signupCookieValue — 別フローへの
-        // 持ち越しを資格にしない)
+        // Carry the **hash** of the verified code in an HttpOnly cookie up
+        // to the callback (§3 — the raw value's wire appearance is this
+        // single start request. Consumption is in the same transaction as
+        // the account creation — it is not consumed here). The value is
+        // bound to this start's state (signupCookieValue — a carry-over is
+        // not a credential for another flow)
         const response = yield* redirectToGitHubAuthorize(request, env.GITHUB_CLIENT_ID, state, {
           name: STATE_COOKIE,
           value: state,
@@ -187,35 +203,40 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     .handle("githubCallback", ({ request, query }) =>
       Effect.gen(function* () {
         const env = yield* WorkerEnv;
-        // 発信元 IP のレート制限をハンドラ最初に置く: callback は
-        // 未認証で到達でき、1 回ごとに GitHub token endpoint への交換を起こす。
-        // その枠は device exchange と**同じ** OAuth App 単位の共有クォータで、
-        // 枯渇すると全ユーザーのログインが止まる。
+        // The source-IP rate limit sits first in the handler: the callback
+        // is reachable unauthenticated, and each hit triggers an exchange
+        // against the GitHub token endpoint. That budget is the **same**
+        // shared quota per OAuth App as the device exchange; if exhausted,
+        // every user's login stops.
         //
-        // state 検査は throttle にならない: cookie と query の二重送信のみで
-        // サーバー側に状態を持たないため、非ブラウザの発信元は両方を自分で
-        // 用意でき(githubStart を経由する必要さえない)、検査は常に通る。
-        // 状態不一致の記録(recordLoginFailed)もこの判定より後に置き、未認証
-        // 経路からの監査書き込み増幅ごと有界にする
+        // The state check cannot serve as a throttle: it relies only on the
+        // cookie-plus-query double submit with no server-side state, so a
+        // non-browser source can supply both itself (it need not even go
+        // through githubStart) and the check always passes. The
+        // state-mismatch record (recordLoginFailed) is also placed after
+        // this judgment, bounding even the audit-write amplification from
+        // the unauthenticated path
         const allowed = yield* ipRateLimitAllowed(env.OAUTH_CALLBACK_RATE_LIMIT, request);
         if (!allowed) {
           return yield* Effect.fail(
             new AuthRateLimitedError({ retryAfterSeconds: IP_RATE_LIMIT_PERIOD_SECONDS }),
           );
         }
-        // CLI ログインのブラウザ脚(AUTH_SPEC §4-1 (3)〜(4)): GitHub の callback
-        // URL は §3 の単一 URL のままで、state の `cli.` プレフィックスで分岐する。
-        // CLI 分岐の全終端はブラウザ向け HTML(handlers-auth-cli.ts)であり、
-        // セッションを発行しない(§4-1 (3) — 成果物は poll の PAT のみ)
+        // The browser leg of a CLI login (AUTH_SPEC §4-1 (3)-(4)): the
+        // GitHub callback URL remains the single URL of §3, branching on the
+        // state's `cli.` prefix. Every terminal of the CLI branch is
+        // browser-facing HTML (handlers-auth-cli.ts) and issues no session
+        // (§4-1 (3) — the only artifact is the PAT that poll returns)
         if (isCliCallbackState(query.state)) {
-          // CLI ブラウザ脚はサインアップコードを一切参照しない(裁定 DH —
-          // コードは CLI 経路に載らない)が、同一ブラウザに残ったクッキーは
-          // ここでも単回失効させる(§3 の単回規律 — 参照されない残存を残さない)
+          // The CLI browser leg never references a signup code (ruling DH —
+          // codes do not ride the CLI path), but a cookie left in the same
+          // browser is still given its single-use expiry here (the §3
+          // single-use discipline — leave no unreferenced leftover)
           const cliResponse = yield* handleCliCallback(request, query);
           return yield* expireSignupCookieIfPresent(request, cliResponse);
         }
         const expectedState = request.cookies[STATE_COOKIE];
-        // §3-2: state 検証(不一致は即拒否)
+        // §3-2: the state check (a mismatch is refused immediately)
         if (expectedState === undefined || !constantTimeEqual(expectedState, query.state)) {
           yield* recordLoginFailed("github_oauth", "state-mismatch");
           return yield* Effect.fail(new AuthFlowError({ reason: "state-mismatch" }));
@@ -230,13 +251,16 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
           Effect.mapError(authFlowFailure("github-token-invalid")),
           Effect.tapError(() => recordLoginFailed("github_oauth", "github-token-invalid")),
         );
-        // GitHub トークンはここで役目を終える(保存しない。§3 / §10)
+        // The GitHub token's job ends here (not stored. §3 / §10)
         const identities = yield* IdentityRepo;
-        // サインアップ招待コード(AUTH_SPEC §3): 開始時事前検証を通ったコードの
-        // **ハッシュ**がクッキーで届く(生値はこの経路を流れない)。値は発行時
-        // state に束縛されており、一致しない持ち越しクッキー(別フロー由来)は
-        // 「提示なし」に畳む(signupInviteHashFromCookie)。消費はアカウント作成と
-        // 同一トランザクション内の CAS(repo 側)。既存ユーザーの解決では消費されない
+        // Signup invite code (AUTH_SPEC §3): the **hash** of a code that
+        // passed the start-time pre-validation arrives via cookie (the raw
+        // value never flows through this path). The value is bound to the
+        // issuance-time state; a carried-over cookie whose state does not
+        // match (from another flow) folds into "not presented"
+        // (signupInviteHashFromCookie). Consumption is a CAS in the same
+        // transaction as the account creation (repo side). Resolving an
+        // existing user does not consume it
         const signupInviteTokenHash = signupInviteHashFromCookie(
           request.cookies[SIGNUP_CODE_COOKIE],
           query.state,
@@ -247,11 +271,13 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
           signupInviteTokenHash,
         );
         if ("denied" in resolved) {
-          // signupPolicy による新規作成の拒否(AUTH_SPEC §3): OAuth は完走して
-          // いるが users / linked_identities の行は作られていない(fail-closed)。
-          // 記録は固定窓上限つきの auth.signup_denied(AUDIT_SPEC §3.1)、応答は
-          // スクリプトなし案内ページ(拒否理由は提示者自身の申請の帰結であり、
-          // 第三者への存在オラクルではない)
+          // A signupPolicy denial of new-account creation (AUTH_SPEC §3):
+          // the OAuth flow completed, but no users / linked_identities rows
+          // were created (fail-closed). The record is the fixed-window-
+          // capped auth.signup_denied (AUDIT_SPEC §3.1); the response is a
+          // script-less guidance page (the denial reason is the consequence
+          // of the presenter's own application, not an existence oracle to
+          // third parties)
           yield* recordSignupDenied(resolved.denied);
           const deniedPage =
             resolved.denied === "policy-closed"
@@ -288,14 +314,18 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const principal = yield* (yield* RequestAuth).principal;
         const identities = yield* IdentityRepo;
         const orgs = yield* identities.listUserOrgs(principal.userId);
-        // 招待リンクの `il`(AUTH_SPEC §15-3 — IV)の材料: 本人の GitHub login
-        // の表示用スナップショット(自己情報のみ)
+        // Input for the invite link's `il` (AUTH_SPEC §15-3 — IV): a
+        // display snapshot of the user's own GitHub login (self information
+        // only)
         const providerLogin = yield* identities.providerLoginOf(principal.userId);
-        // トークン主体には提示トークンのスコープと有効期限を返す(AUTH_SPEC
-        // §16-2 / §6 — 裁定 CI。クライアントが実効権限 min(スコープ, チェーン
-        // role) の事前判定・期限の自己観測を行う材料。どちらも自分が提示した
-        // 資格情報の属性であり新しい情報を開示しない)。セッション主体は欠落 =
-        // スコープなし(呼べる面は §5 の能力制限の許可列挙に限られる — W2b)
+        // A token principal gets back the presented token's scopes and
+        // expiry (AUTH_SPEC §16-2 / §6 — ruling CI. Inputs for the client to
+        // pre-compute its effective permission min(scope, chain role) and to
+        // self-observe the expiry. Both are attributes of the credential the
+        // caller itself presented and disclose nothing new). For a session
+        // principal the fields are absent = no scopes (the callable surface
+        // is limited to the §5 capability-limit permission enumeration —
+        // W2b)
         return {
           userId: principal.userId,
           orgs,
@@ -308,13 +338,15 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     )
     .handle("logout", ({ request }) =>
       Effect.gen(function* () {
-        // AuthMiddleware 通過済み(401 / CSRF 403 はミドルウェアが担う)
+        // Already through AuthMiddleware (401 / CSRF 403 are the
+        // middleware's job)
         const principal = yield* (yield* RequestAuth).principal;
         const response = HttpServerResponse.empty({ status: 204 });
         if (principal.kind !== "session") {
-          // ログアウトはセッション主体の操作。トークン主体は no-op とし、同送された
-          // ブラウザのセッションクッキーに触れない(Bearer 認証のリクエストが
-          // 無関係な Web セッションを破壊しないため)
+          // Logout is a session-principal operation. A token principal is a
+          // no-op and does not touch the session cookie the browser sent
+          // along (so a Bearer-authenticated request cannot destroy an
+          // unrelated Web session)
           return response;
         }
         const rawSession = request.cookies[SESSION_COOKIE];
@@ -333,7 +365,8 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         const rawToken = parseBearerToken(request.headers["authorization"] ?? "");
-        // 失効対象は「提示されたトークン自身」のみ(v1 線引き)。セッション経由は対象外
+        // The revocation target is only "the presented token itself" (the
+        // v1 line). Arriving via session is out of scope
         if (principal.kind !== "token" || rawToken === null) {
           return yield* Effect.fail(new ForbiddenError({ reason: "insufficient-permission" }));
         }
@@ -345,13 +378,16 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     .handle("listTokens", () =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
-        // トークン主体は `*` × admin のみ(裁定 CH)。セッション主体は §5 の
-        // 許可列挙を通過済み。403 は呼び出し資格のみから計算される(対象情報なし)
+        // A token principal must be `*` × admin (ruling CH). A session
+        // principal already passed the §5 permission enumeration. The 403 is
+        // computed from calling credentials alone (no target information)
         yield* ensureTokenManagementAccess(principal);
         const tokens = yield* TokenRepo;
-        // 応答は本人の行のみ(userId はサーバー導出 — ワイヤに対象指定がなく、
-        // 他人のトークンを探れる面が構造的に存在しない)。監査イベントは
-        // 記録しない(値・鍵に触れない自己情報の読み取り — §11-5 と同じ規律)
+        // The response contains only the caller's own rows (userId is
+        // server-derived — the wire has no target selector, so no surface
+        // for probing others' tokens exists structurally). No audit event is
+        // recorded (a read of self information touching neither values nor
+        // keys — the same discipline as §11-5)
         const summaries = yield* tokens.listForUser(principal.userId);
         return { tokens: summaries };
       }),
@@ -359,14 +395,18 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     .handle("revokeTokenById", ({ params }) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
-        // 判定順(裁定 CG): 401(ミドルウェア)→ 403(主体条件 — 呼び出し資格
-        // のみから計算)→ 一様 404(本人所有でない・存在しない id を区別しない)。
-        // セッション主体の CSRF はミドルウェアが担う(DELETE は書き込み系)
+        // Check order (ruling CG): 401 (middleware) → 403 (principal
+        // condition — computed from calling credentials alone) → uniform
+        // 404 (does not distinguish a foreign-owned id from a nonexistent
+        // one). Session-principal CSRF is the middleware's job (DELETE is a
+        // write)
         yield* ensureTokenManagementAccess(principal);
         const tokens = yield* TokenRepo;
-        // 所有条件(id × userId)は repo 境界が強制する。
-        // auth.token_revoked は削除の成立と同時に記録され、actor = 実行主体
-        // (セッション / 別トークン)、payload.tokenId = 失効対象(AUDIT_SPEC §3.1)
+        // The ownership condition (id × userId) is enforced at the repo
+        // boundary. auth.token_revoked is recorded the moment the delete
+        // succeeds, with actor = the executing principal (session / another
+        // token) and payload.tokenId = the revocation target
+        // (AUDIT_SPEC §3.1)
         const revoked = yield* tokens.revokeById(
           params.tokenId,
           principal.userId,
@@ -384,8 +424,10 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const recovery = yield* RecoveryRepo;
-        // 登録と再発行は同じ置換 upsert(§13-1)。旧ラップ行はここで消える。
-        // 監査(auth.recovery_code_reissued)は upsert が同一 batch で記録する(§13-5)
+        // Registration and reissue are the same replacement upsert (§13-1).
+        // The old wrap row disappears here. The audit
+        // (auth.recovery_code_reissued) is recorded by upsert in the same
+        // batch (§13-5)
         yield* recovery.upsert(
           principal.userId,
           {
@@ -403,29 +445,33 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
-        // GET だが取得計数という状態を持つ(§13-2 の明示規定。計数は §13-3)—
-        // 第三者サイトからの窓消費 = 可用性いやがらせの遮断(論拠は
-        // statefulGetCsrfViolated の JSDoc)
+        // A GET, but it carries state: the fetch count (an explicit §13-2
+        // provision; counting is §13-3) — blocks third-party sites from
+        // consuming the window = an availability nuisance (rationale in
+        // statefulGetCsrfViolated's JSDoc)
         if (statefulGetCsrfViolated(principal, request.headers)) {
           return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
         }
         const recovery = yield* RecoveryRepo;
-        // レート制限(§13-3)は存在判定より先に計数しない: 未登録(404)は
-        // 計数対象外で、行がなければ recordFetch は常に allowed を返す
+        // The rate limit (§13-3) is not counted ahead of the existence
+        // check: unregistered (404) is out of the counted set, and without a
+        // row recordFetch always returns allowed
         const wrap = yield* recovery.find(principal.userId);
         if (wrap === null) {
           return yield* Effect.fail(new RecoveryWrapNotFoundError());
         }
         if (wrap.suite !== "maruhi/v1") {
-          // PUT は Literal でピン留めされており(§13-4)、v1 の書き込み経路では
-          // 他スイートの行は生まれない。存在したら将来バージョンの書き込みか
-          // DB 破損であり、黙って v1 として配布しない(実装バグとして扱う)。
-          // 計数(recordFetch)より先に判定し、配布できないリクエストで
-          // クォータを消費しない(§13-3 の計数対象はブロブ配布のみ)
+          // PUT pins the suite as a Literal (§13-4), so the v1 write path
+          // can never produce a row of another suite. If one exists it is a
+          // future version's write or DB corruption; do not silently serve
+          // it as v1 (treat as an implementation bug). Judge before the
+          // count (recordFetch) so an unservable request does not consume
+          // quota (§13-3 counts only blob serves)
           return yield* Effect.die(new Error("stored recovery wrap has an unknown suite"));
         }
-        // 監査(auth.recovery_blob_fetched)は recordFetch が計数と同一 batch で
-        // 記録する(§13-5。拒否 = 配布なしは記録しない)
+        // The audit (auth.recovery_blob_fetched) is recorded by recordFetch
+        // in the same batch as the count (§13-5. A denial = no serve is not
+        // recorded)
         const decision = yield* recovery.recordFetch(
           principal.userId,
           Date.now(),

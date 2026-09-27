@@ -1,23 +1,28 @@
-// 複合リクエストの Effect プログラム(AUTH_SPEC §12-4 / CRYPTO_SPEC §6.4 の複合受理)。
+// Effect programs for composite requests (the composite acceptance of
+// AUTH_SPEC §12-4 / CRYPTO_SPEC §6.4).
 //
-// - 環境作成 = `create_environment` チェーンエントリ(エポック 1 の DEK
-//   コミットメント込み — §5.2/§6.2)+ EnvironmentMetaStatement(metaVersion 1 —
-//   §4.2。宣言ヘッドは追記前の現ヘッド = 同梱エントリの prev)+ エポック 1 の
-//   ラップ完全集合
-// - ローテーション = `rotate_epoch` エントリ(新エポックのコミットメント込み)+
-//   新エポックのラップ完全集合(現在値の再暗号化は後続の通常 push — §12-7)
+// - Environment creation = a `create_environment` chain entry (carrying the
+//   epoch-1 DEK commitment — §5.2/§6.2) + an EnvironmentMetaStatement
+//   (metaVersion 1 — §4.2; the declared head is the current head before the
+//   append = the bundled entry's prev) + the epoch-1 complete wrap set
+// - Rotation = a `rotate_epoch` entry (carrying the new epoch's commitment)
+//   + the new epoch's complete wrap set (re-encrypting current values is a
+//   later normal push — §12-7)
 //
-// チェーン追記(親ヘッド CAS + verifyChain 再実行)とデータ登録を単一の同期
-// ブロックで原子的に受理し、「エポックはあるがラップがない」「コミットメントは
-// あるが環境行がない」中間状態を作らない。全検査は書き込みフェーズの前に完了する
-// (programs-* のデータプレーンプログラムと同じ規律)。DO の Semaphore(1) permit
-// 下で実行される前提。
+// The chain append (parent-head CAS + verifyChain re-run) and the data
+// registration are accepted atomically in a single synchronous block, so no
+// intermediate state — "an epoch exists but no wraps" or "a commitment
+// exists but no environment row" — is created. Every check completes before
+// the write phase (same discipline as the data-plane programs in
+// programs-*). Assumes execution under the DO's Semaphore(1) permit.
 //
-// ラップ集合の受理条件(§12-6)の判定基準状態は「同梱エントリ適用後のチェーン
-// 状態」(§12-4 — 追記前状態で判定すると新エポック宛ラップの正当な rotate 複合が
-// 全拒否になる)。エントリ自体の受理は verifyChain(§6.4 = 合意規則の再検証)が
-// 権威で、duplicate-environment / unknown-environment / エポック順序 / role /
-// コミットメント形式はすべてそこで判定される。
+// The judgment state for the wrap-set acceptance condition (§12-6) is "the
+// chain state after applying the bundled entry" (§12-4 — judging on the
+// pre-append state would reject every legitimate rotate composite, whose
+// wraps address the new epoch). Acceptance of the entry itself has
+// verifyChain (§6.4 = re-verification of the consensus rules) as its
+// authority: duplicate-environment / unknown-environment / epoch ordering /
+// role / commitment format are all judged there.
 
 import type { ChainEntry, ChainState } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -60,7 +65,7 @@ import { ensureStorageAdmitsGrowth } from "./storage-guard.ts";
 import { acceptEnvManifest, manifestDigestEntries, storedEnvMeta } from "./verify-manifest.ts";
 import { ensureMetaStatementSignature, ensureNfcName } from "./verify-meta.ts";
 
-/** 複合受理の結果(RPC 境界を渡る)。 */
+/** The result of a composite acceptance (crosses the RPC boundary). */
 export interface EnvironmentChainResultValue {
   readonly environmentId: string;
   readonly currentEpoch: number;
@@ -69,13 +74,17 @@ export interface EnvironmentChainResultValue {
 }
 
 /**
- * 複合共通の前段: 未初期化 / メンバーシップ / role 下限(いずれも member —
- * §12-3 の環境作成・rotate_epoch の水準)/ **環境 ∈ scope**(§12-3 —
- * 2026-09-15 ES K3。rotate = 対象環境、作成 = 新 environment_id。作成は
- * `listed` に未存在 id が含まれえないため scope = all の主体だけが通る —
- * 表の「scope = all」行を同じ 1 述語で満たす)の検査と、チェーン全体のロード。
- * 受理面の 403 が先に立ち、合意規則 `environment-out-of-scope`(verifyChain の
- * 422)は多層防御として残る(設計録 es-design.md §9 K3-G)。
+ * The shared front stage of a composite: uninitialized / membership /
+ * role floor (all member — the §12-3 level for environment creation and
+ * rotate_epoch) / the check of **environment ∈ scope** (§12-3 —
+ * 2026-09-15 ES K3; rotate = the target environment, create = the new
+ * environment_id. Since creation cannot carry a not-yet-existent id in
+ * `listed`, only a scope = all principal passes — the same single
+ * predicate satisfies the table's "scope = all" row), plus loading the
+ * whole chain.
+ * The acceptance surface's 403 stands first; the consensus rule
+ * `environment-out-of-scope` (verifyChain's 422) remains as defense in
+ * depth (design record es-design.md §9 K3-G).
  */
 const loadChainForComposite = (
   callerUserId: string,
@@ -86,15 +95,19 @@ const loadChainForComposite = (
 ) =>
   Effect.gen(function* () {
     const chain = yield* loadInitializedChain;
-    // history は追記前チェーンの履歴索引: 同梱ステートメントの宣言ヘッド実在
-    // 検査は追記前のチェーンに対して行う(§12-4 — 同梱エントリ自身をヘッドに
-    // 宣言する形は受理しない)
+    // history is the pre-append chain's history index: the bundled
+    // statement's declared-head existence check runs against the pre-append
+    // chain (§12-4 — a shape declaring the bundled entry itself as head is
+    // not accepted)
     const { state, history } = yield* deriveStoredState(chain, cache);
     const person = yield* requireRoleInScope(state, callerUserId, "member", environmentId);
-    // 第 2 段(設計録 §8 K3-1): 同梱エントリの actor FP が名指す端末の実効権限で
-    // member × 環境 ∈ 実効 scope を再判定する(端末は試行不要 — エントリが名指す)。
-    // 呼び出し主体の有効な端末でない FP は verifyChain の actor-key-mismatch と同じ
-    // 理由で拒否する(受理面の 403 が verifyChain の 422 より先に立つ形は不変)
+    // Second stage (design record §8 K3-1): re-judge member × environment
+    // ∈ effective scope under the effective permission of the device the
+    // bundled entry's actor FP names (no device trial needed — the entry
+    // names it). An FP that is not a valid device of the calling principal
+    // is rejected for the same reason as verifyChain's actor-key-mismatch
+    // (the acceptance surface's 403 standing ahead of verifyChain's 422 is
+    // unchanged)
     const member = deviceOf(person, entryActorFingerprintHex);
     if (member === undefined) {
       return yield* rejectData({
@@ -108,10 +121,12 @@ const loadChainForComposite = (
   });
 
 /**
- * 複合同梱ラップの検査(§12-4 / §12-6): 全ラップの epoch = 同梱エントリが確立する
- * エポック(複合内整合検査)、受信者集合 R(E) との完全一致(個数一致 = 完全一致 —
- * 受信者・重複は ensureWrapSetAcceptable が検査済み)、登録署名・行数上限。
- * 判定基準状態は同梱エントリ適用後(appliedState)。
+ * Checks of a composite's bundled wraps (§12-4 / §12-6): every wrap's epoch
+ * = the epoch the bundled entry establishes (composite-internal
+ * consistency), exact match against the recipient set R(E) (count match =
+ * exact match — recipients and duplicates are already checked by
+ * ensureWrapSetAcceptable), registration signatures, row-count bound.
+ * The judgment state is after the bundled entry applies (appliedState).
  */
 const ensureCompositeWrapSet = (input: {
   readonly projectId: string;
@@ -122,9 +137,11 @@ const ensureCompositeWrapSet = (input: {
   readonly deks: readonly DekWrapInput[];
 }) =>
   Effect.gen(function* () {
-    // 複合内整合検査(§12-4): 全ラップの epoch = 同梱エントリが確立するエポック。
-    // ensureWrapSetAcceptable の範囲検査(1〜現エポック)より狭い等値検査で、
-    // 過去エポック宛ラップの紛れ込み(rotate 複合への epoch 1 宛等)も拒否する
+    // The composite-internal consistency check (§12-4): every wrap's
+    // epoch = the epoch the bundled entry establishes. A stricter equality
+    // check than ensureWrapSetAcceptable's range check (1..current epoch),
+    // it also rejects a stray wrap addressed to a past epoch (e.g. epoch 1
+    // inside a rotate composite)
     for (const wrap of input.deks) {
       if (wrap.epoch !== input.establishedEpoch) {
         return yield* rejectData({ kind: "dek-wrap-rejected", reason: "epoch-out-of-range" });
@@ -138,30 +155,36 @@ const ensureCompositeWrapSet = (input: {
       input.establishedEpoch,
       input.deks,
     );
-    // 同梱ラップの署名者 = 同梱エントリの端末(§12-4 — 1 リクエスト 1 端末)。
-    // 別の有効な端末で署名したラップは受理しない(fail-closed)
+    // The bundled wraps' signer = the bundled entry's device (§12-4 — one
+    // request, one device). A wrap signed by another valid device is not
+    // accepted (fail-closed)
     if (signer !== null && signer.keyFingerprintHex !== input.member.keyFingerprintHex) {
       return yield* rejectData({ kind: "dek-wrap-rejected", reason: "signature-invalid" });
     }
-    // 完全一致(§12-6 の初回登録)を個数で明示要求する: checkWrapSets は
-    // リクエストに現れたエポックしか見ないため、空集合が素通りしないように。
-    // 受信者・重複は検査済みなので個数一致 = 完全一致(理由コードの判定順は
-    // 環境作成プログラムと同じ「個別検査 → 完全性」を保つ)。対象は
-    // 受信者集合 R(E) = scope に E を含む現メンバー + 開示スコープ内の有効
-    // grant_server のサーバー鍵(§12-4 — 2026-09-15 ES K3。dek-wraps.ts の
-    // 期待数定義を共有する)
+    // Exact match (the §12-6 first registration) is explicitly demanded by
+    // count: checkWrapSets only looks at epochs present in the request, so
+    // the empty set must not slip through. Since recipients and duplicates
+    // are already checked, count match = exact match (the reason-code
+    // check order keeps the environment-creation program's "individual
+    // checks → completeness"). The target is the recipient set R(E) = the
+    // current members whose scope contains E + the server key of a valid
+    // in-disclosure-scope grant_server (§12-4 — 2026-09-15 ES K3; shares
+    // the expected-count definition of dek-wraps.ts)
     if (input.deks.length !== expectedWrapRecipientCount(input.appliedState, input.environmentId)) {
       return yield* rejectData({ kind: "dek-wrap-rejected", reason: "recipient-missing" });
     }
   });
 
 /**
- * 境界 checkpoint の同梱物一致検査(AUTH_SPEC §12-4):
- * 当該環境 1 タプルのみ・座標一致・epoch = 同梱エントリが確立するエポック・
- * manifestVersion = 同梱マニフェストの版。タプルの manifest_sig_hash と同梱
- * マニフェストのハッシュ一致は、両エントリ適用後の履歴に対する acceptEnvManifest
- * のチェックポイント束縛検査(CRYPTO_SPEC §4.3 (2))が一意に担う(§6.4 の
- * 「同梱物一致検査との分担は実装 PR で一意化」)。
+ * The bundled-contents match check of a boundary checkpoint (AUTH_SPEC
+ * §12-4): exactly one tuple for the environment, coordinate match, epoch =
+ * the epoch the bundled entry establishes, manifestVersion = the bundled
+ * manifest's version. The hash match between the tuple's
+ * manifest_sig_hash and the bundled manifest is uniquely owned by
+ * acceptEnvManifest's checkpoint-binding check (CRYPTO_SPEC §4.3 (2))
+ * against the history after both entries apply (§6.4's "the split with
+ * the bundled-contents match check is uniquified in the implementation
+ * PR").
  */
 const ensureBoundaryCheckpointShape = (input: {
   readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
@@ -184,16 +207,19 @@ const ensureBoundaryCheckpointShape = (input: {
     if (tuple.manifestVersion !== input.manifestVersion) {
       return yield* rejectData({ kind: "payload-mismatch", field: "checkpointManifestVersion" });
     }
-    // 非空 audit_head_hash は §16-2 の規則(実効権限 admin + §6.4 の存在・位置
-    // 検査)で受理する — role 半分と内容検査は呼び出し側の
-    // ensureCheckpointAuditHead(checkpoint-accept.ts と共有)が担う
+    // A non-empty audit_head_hash is accepted under the §16-2 rule
+    // (effective permission admin + the §6.4 existence/position check) —
+    // the role half and the content check are the caller-side
+    // ensureCheckpointAuditHead's job (shared with checkpoint-accept.ts)
     return tuple;
   });
 
 /**
- * 境界 checkpoint の監査ヘッド公証(§16-2 — standalone 経路と同一規則):
- * 非空ならチェーン role admin 以上(不足 403。スコープ半分は worker が
- * 先行検査済み)+ §6.4 の存在・位置検査。空文字列 = 公証なしは何もしない。
+ * The boundary checkpoint's audit-head notarization (§16-2 — the same rule
+ * as the standalone path): when non-empty, chain role admin-or-above
+ * (403 if short; the scope half is the worker's already-run pre-check) +
+ * the §6.4 existence/position check. An empty string = no notarization
+ * does nothing.
  */
 const ensureCheckpointAuditHead = (input: {
   readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
@@ -209,9 +235,11 @@ const ensureCheckpointAuditHead = (input: {
   });
 
 /**
- * 境界 checkpoint(H+2)の受理前段の共有列(create / rotate 共通):
- * 同梱物一致検査(§12-4)→ 監査ヘッド検査(§16-2)→ 2 エントリ受理検査
- * (サイズ → 容量 → verifyChain — §6.4 の合意規則。chain-accept.ts と共有)。
+ * The shared acceptance front-pipeline of a boundary checkpoint (H+2)
+ * (common to create / rotate): bundled-contents match check (§12-4) →
+ * audit-head check (§16-2) → the 2-entry acceptance check (size →
+ * capacity → verifyChain — the §6.4 consensus rules; shared with
+ * chain-accept.ts).
  */
 const acceptBoundaryCheckpointPair = (input: {
   readonly chain: StoredChain;
@@ -230,8 +258,9 @@ const acceptBoundaryCheckpointPair = (input: {
       establishedEpoch: input.establishedEpoch,
       manifestVersion: input.manifestVersion,
     });
-    // 非空 audit_head_hash の実効権限 admin + 存在・位置検査(§16-2 —
-    // standalone 経路と同一規則)
+    // The non-empty audit_head_hash's effective-permission admin +
+    // existence/position check (§16-2 — the same rule as the standalone
+    // path)
     yield* ensureCheckpointAuditHead({
       checkpoint: input.checkpoint,
       state: input.state,
@@ -241,12 +270,14 @@ const acceptBoundaryCheckpointPair = (input: {
     return { checkpointTuple, ...pair };
   });
 
-// 境界 checkpoint の values_digest 内容突合(CRYPTO_SPEC §6.4 — 突合基準は
-// 「複合の適用後の保存状態」。複合は値を変更しないため、受理時点の保存値 =
-// 適用後の保存値)と監査ヘッド検査は standalone 経路と共有する
-// (checkpoint-accept.ts — §16-2 の「保存規律は経路によらず同一」)。
+// The boundary checkpoint's values_digest content cross-check (CRYPTO_SPEC
+// §6.4 — the cross-check basis is "the stored state after the composite
+// applies". A composite does not change values, so the stored values at
+// acceptance time = the stored values after application) and the audit-head
+// check are shared with the standalone path (checkpoint-accept.ts — §16-2's
+// "the storage discipline is identical across paths").
 
-/** 複合の書き込みフェーズで共有する依存とパラメータ(同期関数群の引数)。 */
+/** The dependencies and parameters shared across a composite's write phase (the synchronous functions' argument). */
 interface CompositeWriteContext {
   readonly chainStore: {
     readonly insertSync: (entry: ChainEntry, entryHashHex: string, canonicalBytes: number) => void;
@@ -255,8 +286,9 @@ interface CompositeWriteContext {
   readonly audit: {
     readonly appendSync: (event: AuditEventInput) => void;
     readonly appendManySync: (events: readonly AuditEventInput[]) => void;
-    // 受理副作用(chain-accept.ts)の検出入力。複合の op(create_environment /
-    // rotate_epoch)では読まれないが、受理経路の型面を 1 つに保つ
+    // The detection input of acceptance side effects (chain-accept.ts).
+    // Not read for a composite's ops (create_environment / rotate_epoch),
+    // but keeps the acceptance path's type surface as one
     readonly readRotationSync: AuditRotationRead;
   };
   readonly actor: DataActor;
@@ -265,7 +297,7 @@ interface CompositeWriteContext {
   readonly nowMs: number;
 }
 
-/** 同梱ラップの挿入 + dek.registered(1 受信者 1 行 — AUDIT_SPEC §3.3)。 */
+/** Insert the bundled wraps + dek.registered (one row per recipient — AUDIT_SPEC §3.3). */
 function insertCompositeWrapsSync(
   context: CompositeWriteContext,
   deks: readonly DekWrapInput[],
@@ -280,7 +312,7 @@ function insertCompositeWrapsSync(
   );
 }
 
-/** 書き込みフェーズの依存(ChainStore / AuditStore)を束ねて CompositeWriteContext を作る。 */
+/** Bundle the write phase's dependencies (ChainStore / AuditStore) into a CompositeWriteContext. */
 const makeWriteContext = (input: {
   readonly dataStore: { readonly write: DataWriteOps };
   readonly actor: DataActor;
@@ -322,7 +354,7 @@ export const createEnvironmentCompositeProgram = (
     readonly statement: MetaStatementInput;
     readonly deks: readonly DekWrapInput[];
     readonly manifest: EnvManifestInput;
-    /** 境界 checkpoint(H+2 — AUTH_SPEC §12-4)。 */
+    /** The boundary checkpoint (H+2 — AUTH_SPEC §12-4). */
     readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
   },
   cache: StateCache,
@@ -335,16 +367,20 @@ export const createEnvironmentCompositeProgram = (
       input.entry.seq,
       cache,
     );
-    // DO ストレージ総量ガード(§12-8): 環境作成は成長面(環境行・
-    // ステートメント・マニフェスト・全メンバー宛ラップ・スナップショット)。
-    // ローテーション複合(下)は呼ばない — remove 後の義務ローテーション
-    // (CRYPTO_SPEC §7)はセキュリティ是正で、書き込み量は有界(同節 (d))
+    // The DO storage total guard (§12-8): environment creation is a growth
+    // surface (environment row, statement, manifest, wraps to every member,
+    // snapshot). The rotation composite (below) does not call it — the
+    // mandatory rotation after a remove (CRYPTO_SPEC §7) is a security
+    // remediation and its write volume is bounded ((d) of the same
+    // section)
     yield* ensureStorageAdmitsGrowth;
     yield* ensureParentHead(chain, input.parentHeadHashHex);
-    // 複合内の宣言ヘッド(§12-4): 同梱ステートメント・マニフェストの宣言ヘッドは
-    // 追記前の現ヘッド(= 同梱エントリの prev)と厳密一致。CAS 通過後なので
-    // 現ヘッド = parentHeadHashHex。ヘッド CAS 失敗の再試行ではエントリと
-    // ステートメントとマニフェストの全部を再署名する(クライアント側 — env-create.ts)
+    // The composite-internal declared head (§12-4): the bundled
+    // statement's and manifest's declared heads match the pre-append
+    // current head (= the bundled entry's prev) exactly. Since the CAS has
+    // passed, current head = parentHeadHashHex. On a retry after a head
+    // CAS failure, the client re-signs all of the entry, the statement,
+    // and the manifest (client side — env-create.ts)
     if (
       input.statement.chainHeadHashHex !== chain.headHashHex ||
       input.statement.chainHeadSeq !== chain.headSeq
@@ -357,17 +393,20 @@ export const createEnvironmentCompositeProgram = (
     ) {
       return yield* rejectData({ kind: "payload-mismatch", field: "manifestChainHead" });
     }
-    // 複合内整合検査(§12-4): マニフェストの epoch = 同梱エントリが確立する
-    // エポック(作成 = 1)。ラップの epoch 検査と同じ複合内の早期拒否で、
-    // エポック整合の完全検証は acceptEnvManifest(適用後履歴)が行う
+    // The composite-internal consistency check (§12-4): the manifest's
+    // epoch = the epoch the bundled entry establishes (creation = 1). An
+    // early composite-internal rejection like the wraps' epoch check; the
+    // full epoch-consistency verification is done by acceptEnvManifest
+    // (over the post-application history)
     if (input.manifest.epoch !== 1) {
       return yield* rejectData({ kind: "payload-mismatch", field: "manifestEpoch" });
     }
     const environmentId = input.entry.payload.environmentId;
-    // 境界 checkpoint の同梱物一致(§12-4): 当該環境 1 タプル・epoch 1・
-    // manifestVersion 1(ワイヤは Literal 1 だがタプル側も突合する)。
-    // create = H+1、境界 checkpoint = H+2 の 2 エントリを 1 回の全チェーン
-    // 再検証で受理判定する(acceptBoundaryCheckpointPair)
+    // The boundary checkpoint's bundled-contents match (§12-4): one tuple
+    // for the environment, epoch 1, manifestVersion 1 (the wire pins
+    // Literal 1, but the tuple side is cross-checked too). Accept-judge
+    // the 2 entries — create = H+1, boundary checkpoint = H+2 — with one
+    // whole-chain re-verification (acceptBoundaryCheckpointPair)
     const { checkpointTuple, firstCanonicalBytes, secondCanonicalBytes, applied } =
       yield* acceptBoundaryCheckpointPair({
         chain,
@@ -381,8 +420,9 @@ export const createEnvironmentCompositeProgram = (
       });
     const appliedState = applied.state;
     const store = yield* DataStore;
-    // ID の一意性はチェーン合意規則(duplicate-environment — verifyChain)が
-    // 担う。データプレーンに残る検査は表示名の一意性と数量ポリシーのみ
+    // ID uniqueness is the chain consensus rule's job
+    // (duplicate-environment — verifyChain). The only checks left on the
+    // data plane are display-name uniqueness and the quantity policy
     yield* ensureEnvironmentQuota;
     yield* ensureNfcName(input.statement.name);
     if (yield* store.environmentNameTaken(input.statement.name, null)) {
@@ -392,10 +432,12 @@ export const createEnvironmentCompositeProgram = (
         reason: "duplicate-name",
       });
     }
-    // ステートメント検証は追記前の履歴に対して行う(§12-4)。メタステートメントは
-    // 環境の存在を検査しないため、宣言ヘッド時点に環境が未存在でも受理される
-    // (値署名との意図された非対称)。author = 呼び出し主体・宣言ヘッド時点の
-    // member 以上は verifyDistributedMetaStatement が検査する
+    // The statement is verified against the pre-append history (§12-4).
+    // A meta statement does not check the environment's existence, so it
+    // is accepted even if the environment did not exist at the declared
+    // head (the intended asymmetry against value signatures). author =
+    // the calling principal and member-or-above at the declared head are
+    // checked by verifyDistributedMetaStatement
     const metaSignedBytesHashHex = yield* ensureMetaStatementSignature({
       projectId,
       environmentId,
@@ -404,11 +446,13 @@ export const createEnvironmentCompositeProgram = (
       member,
       statement: input.statement,
     });
-    // 同梱マニフェストの受理(§12-4 / §12-5): manifestVersion 1・変数空集合・
-    // epoch 1。エポック整合は両エントリ適用後の履歴(applied.history)に対する
-    // チェックポイント束縛(§4.3 (2) — H+2 の境界 checkpoint タプルとの完全一致。
-    // タプルのハッシュが同梱マニフェストと食い違えば checkpoint-binding-mismatch
-    // で拒否 = §12-4 のハッシュ一致検査を兼ねる)で判定する
+    // Acceptance of the bundled manifest (§12-4 / §12-5): manifestVersion
+    // 1, the empty variable set, epoch 1. Epoch consistency is judged by
+    // the checkpoint binding (§4.3 (2) — exact match with the H+2
+    // boundary checkpoint tuple; if the tuple's hash disagrees with the
+    // bundled manifest it is rejected as checkpoint-binding-mismatch =
+    // doubling as the §12-4 hash-match check) against the history after
+    // both entries apply (applied.history)
     const manifestSignedBytesHashHex = yield* acceptEnvManifest({
       projectId,
       environmentId,
@@ -418,9 +462,11 @@ export const createEnvironmentCompositeProgram = (
       entries: [],
       envMeta: { metaVersion: input.statement.metaVersion, sigHashHex: metaSignedBytesHashHex },
     });
-    // 境界 checkpoint の values_digest(§6.4 — 作成 = 変数空集合の列挙)
+    // The boundary checkpoint's values_digest (§6.4 — creation = an
+    // enumeration of the empty variable set)
     yield* ensureCheckpointValuesDigest(checkpointTuple, []);
-    // 同梱エントリ適用後の現エポックは常に 1(create_environment — §12-4)
+    // The current epoch after the bundled entry applies is always 1
+    // (create_environment — §12-4)
     yield* ensureCompositeWrapSet({
       projectId,
       environmentId,
@@ -435,9 +481,9 @@ export const createEnvironmentCompositeProgram = (
       member,
       environmentId,
     });
-    // 書き込みフェーズ: 単一の同期ブロック = 同一タスクで原子コミット
-    // (チェーンエントリ + ミラー + 環境行 + ステートメント行 + マニフェスト +
-    // ラップ + 監査を分割しない — §12-4)
+    // Write phase: a single synchronous block = an atomic commit in one
+    // task (do not split chain entry + mirror + environment row +
+    // statement row + manifest + wraps + audit — §12-4)
     yield* Effect.sync(() => {
       insertAcceptedEntryPairSync(
         writeContext,
@@ -463,7 +509,7 @@ export const createEnvironmentCompositeProgram = (
         { userId: member.userId, keyFingerprintHex: member.keyFingerprintHex },
         writeContext.nowMs,
       );
-      // env.created はステートメント author の鍵 FP を写す(AUDIT_SPEC §3.3)
+      // env.created records the statement author's key FP (AUDIT_SPEC §3.3)
       writeContext.audit.appendSync(
         dataEvent(actor, writeContext.nowMs, "env.created", {
           environmentId,
@@ -472,7 +518,8 @@ export const createEnvironmentCompositeProgram = (
         }),
       );
       insertCompositeWrapsSync(writeContext, input.deks);
-      // 値スナップショットの原子保存(§6.4 / §16-2): 作成は空列挙 + タプル座標
+      // Atomic save of the value snapshot (§6.4 / §16-2): for creation,
+      // the empty enumeration + the tuple coordinates
       store.write.upsertCheckpointSnapshot(
         environmentId,
         {
@@ -499,14 +546,16 @@ export const rotateEpochCompositeProgram = (
     readonly entry: ChainEntry & { readonly op: "rotate_epoch" };
     readonly deks: readonly DekWrapInput[];
     readonly manifest: EnvManifestInput;
-    /** 境界 checkpoint(H+2 — AUTH_SPEC §12-4)。 */
+    /** The boundary checkpoint (H+2 — AUTH_SPEC §12-4). */
     readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
   },
   cache: StateCache,
 ) =>
   Effect.gen(function* () {
-    // scope は URL 座標の環境で判定する(URL とエントリの不一致は直後の
-    // 複合内整合検査が拒否する — どちらで判定しても受理される組は同じ)
+    // scope is judged on the URL-coordinate environment (a mismatch
+    // between URL and entry is rejected by the composite-internal
+    // consistency check right after — the accepted combinations are the
+    // same whichever side judges)
     const { chain, state, member, projectId } = yield* loadChainForComposite(
       actor.userId,
       environmentId,
@@ -514,17 +563,21 @@ export const rotateEpochCompositeProgram = (
       input.entry.seq,
       cache,
     );
-    // 複合内整合検査(§12-4): URL 座標と同梱エントリの environment_id の一致。
-    // 各部分の独立検証だけで別環境のエントリ × 別環境のラップの組を受理しない
+    // The composite-internal consistency check (§12-4): the URL
+    // coordinate must match the bundled entry's environment_id.
+    // Independent verification of each part alone must not accept a pair
+    // of "an entry for one environment × wraps for another"
     if (input.entry.payload.environmentId !== environmentId) {
       return yield* rejectData({ kind: "payload-mismatch", field: "environmentId" });
     }
-    // 削除済み(tombstone)環境への rotate は 404(§12-4 — §7 の「全環境」は
-    // 削除済みを含まない。黙って受理して守るもののないエポックを進めない)
+    // A rotate to a deleted (tombstone) environment is a 404 (§12-4 —
+    // §7's "all environments" does not include deleted ones; do not
+    // silently accept and advance an epoch nothing is left to protect)
     yield* requireActiveEnvironment(environmentId);
     yield* ensureParentHead(chain, input.parentHeadHashHex);
-    // 複合内の宣言ヘッド(§12-4)とエポック(= new_epoch)の整合検査。
-    // ヘッド CAS 失敗の再試行ではエントリとマニフェストの両方を再署名する
+    // The composite-internal declared-head (§12-4) and epoch (=
+    // new_epoch) consistency checks. On a retry after a head CAS failure,
+    // both the entry and the manifest are re-signed
     if (
       input.manifest.chainHeadHashHex !== chain.headHashHex ||
       input.manifest.chainHeadSeq !== chain.headSeq
@@ -534,9 +587,10 @@ export const rotateEpochCompositeProgram = (
     if (input.manifest.epoch !== input.entry.payload.newEpoch) {
       return yield* rejectData({ kind: "payload-mismatch", field: "manifestEpoch" });
     }
-    // 境界 checkpoint の同梱物一致(§12-4): 当該環境 1 タプル・epoch = new_epoch・
-    // manifestVersion = 同梱マニフェストの版。rotate = H+1、境界 checkpoint =
-    // H+2 の 2 エントリ受理検査(acceptBoundaryCheckpointPair)
+    // The boundary checkpoint's bundled-contents match (§12-4): one tuple
+    // for the environment, epoch = new_epoch, manifestVersion = the
+    // bundled manifest's version. The 2-entry acceptance check of rotate
+    // = H+1 and boundary checkpoint = H+2 (acceptBoundaryCheckpointPair)
     const { checkpointTuple, firstCanonicalBytes, secondCanonicalBytes, applied } =
       yield* acceptBoundaryCheckpointPair({
         chain,
@@ -549,10 +603,12 @@ export const rotateEpochCompositeProgram = (
         manifestVersion: input.manifest.manifestVersion,
       });
     const appliedState = applied.state;
-    // 同梱マニフェストの受理(§12-5 (4): エポック整合は両エントリ適用後の履歴に
-    // 対するチェックポイント束縛 — §4.3 (2)。H+2 のタプルとの完全一致 = §12-4 の
-    // ハッシュ一致検査を兼ねる)。メタ集合は不変(エポック前進の反映だけの
-    // 再発行 — §4.3)なので entries は保存済みの最新形そのまま
+    // Acceptance of the bundled manifest (§12-5 (4): epoch consistency
+    // is the checkpoint binding against the history after both entries
+    // apply — §4.3 (2). The exact match with the H+2 tuple doubles as the
+    // §12-4 hash-match check). The meta set is unchanged (a reissue that
+    // only reflects the epoch advancement — §4.3), so entries is the
+    // stored latest shape as-is
     const manifestSignedBytesHashHex = yield* acceptEnvManifest({
       projectId,
       environmentId,
@@ -562,15 +618,19 @@ export const rotateEpochCompositeProgram = (
       entries: yield* manifestDigestEntries(environmentId, null),
       envMeta: yield* storedEnvMeta(environmentId),
     });
-    // 境界 checkpoint の values_digest(§6.4 — 突合基準は複合の適用後状態。
-    // 複合は値を変更しないため受理時点の保存値と同一。rotate では未再暗号化 =
-    // 旧エポックの現在値の列挙 — §12-7 の正当な状態。宣言ヘッド確定後の並行
-    // push が挟まると不一致 = 422 で、クライアントは再 pull + 有界再試行)
+    // The boundary checkpoint's values_digest (§6.4 — the cross-check
+    // basis is the state after the composite applies. A composite does
+    // not change values, so it equals the stored values at acceptance
+    // time. Under rotate, un-re-encrypted = an enumeration of the old
+    // epoch's current values — a legitimate §12-7 state. If a concurrent
+    // push slips in after the declared head was fixed, the mismatch is a
+    // 422 and the client re-pulls + retries bounded)
     const snapshotValues = yield* Effect.flatMap(DataStore, (store) =>
       store.checkpointValueEntries(environmentId),
     );
     yield* ensureCheckpointValuesDigest(checkpointTuple, snapshotValues);
-    // 同梱エントリ適用後の現エポック = new_epoch(エポック順序は verifyChain 検証済み)
+    // The current epoch after the bundled entry applies = new_epoch
+    // (epoch ordering is already verified by verifyChain)
     yield* ensureCompositeWrapSet({
       projectId,
       environmentId,
@@ -603,8 +663,10 @@ export const rotateEpochCompositeProgram = (
         writeContext.nowMs,
       );
       insertCompositeWrapsSync(writeContext, input.deks);
-      // 値スナップショットの原子保存(§6.4 / §16-2): 受理時点の現在値の列挙
-      // (突合済み)+ タプル座標を最新包含 checkpoint として upsert する
+      // Atomic save of the value snapshot (§6.4 / §16-2): upsert the
+      // enumeration of current values at acceptance time (already
+      // cross-checked) + the tuple coordinates as the latest covering
+      // checkpoint
       writeContext.dataStore.write.upsertCheckpointSnapshot(
         environmentId,
         {

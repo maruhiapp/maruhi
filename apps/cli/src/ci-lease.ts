@@ -1,18 +1,23 @@
-// CI ジョブのワークロードリース(CRYPTO_SPEC §9.1 / AUTH_SPEC §14)の取得 —
-// `maruhi ci run`(ci-run.ts)と `maruhi ci sync`(sync-ci.ts)が共有する前段。
+// Acquiring a CI job's workload lease (CRYPTO_SPEC §9.1 / AUTH_SPEC §14) —
+// the shared front stage of `maruhi ci run` (ci-run.ts) and `maruhi ci
+// sync` (sync-ci.ts).
 //
-// 通常のコマンドと**前提構造がまるごと別**であることがこのモジュールの要点:
-//   - 認証 = リクエスト同梱の OIDC トークンのみ(§14-1)。maruhi トークン・
-//     OS キーチェーン・セッション文脈・config ファイルに一切依存しない —
-//     依存の不在は要求サービス型(CliIo | HttpClient)が示す
-//   - 検証材料 = lease 応答に同梱(§14-2)。他の API を呼ばない
-//   - 床・ピン = 持たない(使い捨てランナー — §14.3-3)。代替の巻き戻し検出は
-//     リポジトリアンカー(--anchor — anchor.ts)
+// The point of this module is that its **prerequisite structure is entirely
+// different** from a normal command:
+//   - auth = only the OIDC token embedded in the request (§14-1). It does
+//     not depend on a maruhi token, the OS keychain, session context, or a
+//     config file at all — the absence of dependencies is shown by the
+//     required-services type (CliIo | HttpClient)
+//   - verification material = bundled in the lease response (§14-2). No
+//     other API is called
+//   - floor / pins = none (a disposable runner — §14.3-3). The substitute
+//     rollback detection is the repository anchor (--anchor — anchor.ts)
 //
-// 複数環境(`ci sync` の同期元とトークン環境)は **1 本の OIDC トークンと 1 つの
-// 一時鍵**で順に要求する: サーバーの先着束縛はトークン単位でプロジェクト内の
-// 全環境を跨ぐため、同一トークンの全リクエストで同一の一時鍵を用いる義務がある
-// (AUTH_SPEC §14-1 / CRYPTO_SPEC §9.1)。
+// Multiple environments (the sync source and the token environment of
+// `ci sync`) are requested in turn with **one OIDC token and one ephemeral
+// key**: the server's first-come binding spans every environment in the
+// project per token, so all requests under the same token must present the
+// same ephemeral key (AUTH_SPEC §14-1 / CRYPTO_SPEC §9.1).
 
 import { LeaseUnauthorizedError, ProjectNotFoundError } from "@maruhi/api-schema";
 import type { EnvironmentId, ProjectId } from "@maruhi/core";
@@ -31,19 +36,19 @@ import type { LeaseResponseWire, VerifiedLeaseMaterial } from "./lease-client.ts
 import { verifyLeaseResponse } from "./lease-client.ts";
 import { fetchGitHubOidcToken, readLeaseClaims } from "./oidc-github.ts";
 
-/** CI コマンド共通の入力(すべて明示フラグ由来 — session-25 §2)。 */
+/** Input shared by the CI commands (all from explicit flags — session-25 §2). */
 export interface CiLeaseInput {
-  /** 正規化済みサーバー origin(`--server`)。 */
+  /** Normalized server origin (`--server`). */
   readonly origin: string;
-  /** 事前固定された genesis(`--project` — §9.1 検証義務 (1))。 */
+  /** Pre-pinned genesis (`--project` — §9.1 verification obligation (1)). */
   readonly projectId: ProjectId;
-  /** OIDC audience(`--audience`。既定はサーバー origin — AUTH_SPEC §14-1 の推奨値)。 */
+  /** OIDC audience (`--audience`; default is the server origin — the AUTH_SPEC §14-1 recommended value). */
   readonly audience: string;
-  /** リポジトリアンカーのパス(`--anchor` — §6.3 (b)。省略可 = SHOULD)。 */
+  /** Path of the repository anchor (`--anchor` — §6.3 (b). Optional = SHOULD). */
   readonly anchorPath: string | undefined;
 }
 
-/** lease 発行 1 回(ワイヤ境界)。エラーは分類のため型のまま返す。 */
+/** One lease issuance (the wire boundary). Errors are returned typed, for classification. */
 function issueLease(input: {
   readonly client: MaruhiClient;
   readonly projectId: ProjectId;
@@ -52,8 +57,9 @@ function issueLease(input: {
   readonly ephemeralPubHex: string;
 }): Effect.Effect<LeaseResponseWire, unknown> {
   return Effect.gen(function* () {
-    // 剥がす理由: lease リクエストのワイヤ境界(payload の oidcToken フィールド)。
-    // 平文トークンはリクエスト本文にのみ乗り、ログ・エラーへは出ない
+    // Why it is unwrapped: the wire boundary of the lease request (the
+    // payload's oidcToken field). The plaintext token rides only in the
+    // request body and never appears in logs or errors
     const oidcToken = Redacted.value(input.token);
     return yield* input.client.lease.issue({
       params: { projectId: input.projectId, environmentId: input.environmentId },
@@ -67,23 +73,25 @@ type IssueOutcome =
   | { readonly kind: "replayed" };
 
 /**
- * lease の 404 は**一様応答**であり(AUTH_SPEC §14-1 の存在秘匿)、CI で最も
- * 起きやすい実因はプロジェクト ID の誤りではなくポリシー不一致(リポジトリ
- * 移転・別ブランチ実行)である。共通写像(failure.ts)の「Project not found —
- * check the ID and your access」はメンバー向けの導線で、ここでは誤った直し先へ
- * 送るため、lease 専用の案内に差し替える。
+ * A lease 404 is a **uniform response** (AUTH_SPEC §14-1 existence
+ * concealment), and the likeliest real cause in CI is not a wrong project
+ * ID but a policy mismatch (repository transfer, running a different
+ * branch). The shared mapping (failure.ts) "Project not found — check the
+ * ID and your access" is member-oriented guidance and would send CI to the
+ * wrong fix, so it is replaced with lease-specific guidance here.
  */
 const LEASE_NOT_FOUND_MESSAGE =
   "The server answered 404 for the lease. The lease endpoint folds these into one uniform answer (existence hiding — AUTH_SPEC §14-1): unknown project, no active grant, a lease-policy mismatch (issuer / audience / claim constraints), and an out-of-scope or unknown environment. Check --server, --project, and the environment in the workflow, and that a project owner granted this workload's identity with `maruhi server grant --lease-policy`";
 
 /**
- * 2 回連続の先着負け = 発行したそばからコピーが使われている。これ以上の再試行は
- * しない(上限 1 回)— トークン漏洩の兆候として調査を促す。
+ * Losing the first-come race twice in a row = a copy is being used right
+ * after minting. No further retries (cap of 1) — prompt investigation as a
+ * sign of token leakage.
  */
 const TOKEN_REPLAYED_AGAIN_MESSAGE =
   "The lease was rejected as token-replayed again with a freshly minted token. Someone else is using this job's OIDC tokens — investigate the job's steps and network path for token exfiltration (AUTH_SPEC §14-1)";
 
-/** 発行の 1 試行。`token-replayed` だけを再試行可能として分類する。 */
+/** One issuance attempt. Only `token-replayed` is classified as retryable. */
 function attemptLease(
   input: Parameters<typeof issueLease>[0],
 ): Effect.Effect<IssueOutcome, CliError> {
@@ -117,14 +125,15 @@ export function leaseEnvironments(
 > {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // アンカーはネットワーク・鍵生成より先に読む(壊れたファイルの検出を
-    // 往復の後ろに置かない)
+    // The anchor is read before the network and key generation (do not put
+    // detecting a broken file behind a round trip)
     const anchor =
       input.anchorPath === undefined ? null : yield* loadRepositoryAnchor(input.anchorPath);
     const client = yield* makeApiClient({ baseUrl: input.origin });
-    // 一時 X25519 鍵ペアはメモリ内で生成し(秘密鍵は非抽出)、ジョブ終了と
-    // ともに消える(§9.1)。1 呼び出し = 1 トークン = 1 鍵(session-25 §3 —
-    // §14-1 の「1 トークンの全リクエストで同一鍵」は構成上満たされる)
+    // The ephemeral X25519 key pair is generated in memory (the private key
+    // is non-extractable) and disappears with the job (§9.1). One call =
+    // one token = one key (session-25 §3 — §14-1's "the same key for all
+    // requests under one token" is satisfied by construction)
     const workloadKeyPair = yield* Effect.tryPromise({
       try: () => generateEncryptionKeyPair(),
       catch: () => cliError("Failed to generate the ephemeral key pair (crypto error)"),
@@ -136,12 +145,13 @@ export function leaseEnvironments(
       }),
     );
 
-    // トークンは lease 要求の直前に発行する(session-24 §8 SHOULD — 先着束縛の
-    // 露出窓の最小化)
+    // The token is minted right before the lease request (session-24 §8
+    // SHOULD — minimize the exposure window of the first-come binding)
     let token = yield* fetchGitHubOidcToken(input.audience);
     let claims: LeaseClaims = yield* readLeaseClaims(token);
-    // GitHub はランタイム発行型 issuer なので、新規トークンで 1 回だけ自動
-    // 再試行してよい(session-24 §8 MAY — 上限 1 回。環境が複数でも合計 1 回)
+    // GitHub is a runtime-minting issuer, so one automatic retry with a
+    // fresh token is allowed (session-24 §8 MAY — cap of 1, total 1 even
+    // across multiple environments)
     let retried = false;
     const materials = new Map<EnvironmentId, VerifiedLeaseMaterial>();
     for (const environmentId of input.environmentIds) {
@@ -151,7 +161,7 @@ export function leaseEnvironments(
         if (retried) {
           return yield* Effect.fail(cliError(TOKEN_REPLAYED_AGAIN_MESSAGE));
         }
-        // 一時鍵は同じものを提示する(新規トークンは未束縛で、この鍵に束縛される)
+        // Present the same ephemeral key (the fresh token is unbound and binds to this key)
         yield* io.logError(
           "The lease was rejected as token-replayed (the token was already bound to a different ephemeral key). Minting a fresh token and retrying once",
         );
@@ -163,7 +173,7 @@ export function leaseEnvironments(
           return yield* Effect.fail(cliError(TOKEN_REPLAYED_AGAIN_MESSAGE));
         }
       }
-      // §9.1 の検証義務 (1)〜(4)。何一つ通るまで値は復号されない
+      // §9.1 verification obligations (1)–(4). No value is decrypted until all of them pass
       const material = yield* verifyLeaseResponse({
         projectId: input.projectId,
         environmentId,
@@ -173,8 +183,9 @@ export function leaseEnvironments(
         anchor,
       });
       yield* logWarnings(material.warnings);
-      // 検証の成立は CI ログに残す(stdout は子プロセスの出力のために空けて
-      // おく — 決定 9。stderr は診断・情報の宛先)
+      // Leave the verification success in the CI log (keep stdout free for
+      // the child process's output — decision 9; stderr is the destination
+      // for diagnostics and info)
       yield* io.logError(
         `Lease verified (chain, statements, value signatures, DEK commitments${anchor === null ? "" : ", repository anchor"}): ${countNoun(material.variables.length, "variable")} (environment ${environmentId})`,
       );

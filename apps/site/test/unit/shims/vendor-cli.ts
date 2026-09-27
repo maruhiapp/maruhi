@@ -9,7 +9,7 @@ export function recordVendorCall(tool: string): void {
     console.error(`${tool} shim: RECIPE_TEST_LOG is required`);
     process.exit(2);
   }
-  // fd 0 を EOF まで読む(パイプ前提。端末なら読まない)
+  // Read fd 0 to EOF (assumes a pipe; do not read on a terminal)
   const stdin = process.stdin.isTTY ? "" : readFileSync(0, "utf8");
   appendFileSync(log, JSON.stringify({ tool, argv: process.argv.slice(2), stdin }) + "\n");
 }

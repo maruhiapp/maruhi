@@ -1,7 +1,9 @@
-// 集約形 var.read の表示導出(src/dashboard/audit-read.ts)の unit テスト。
+// Unit test of the display derivation of the aggregated var.read
+// shape (src/dashboard/audit-read.ts).
 import { describe, expect, it } from "vitest";
 
-// 正準実装(web はパッケージ依存を持たないため、テストからのみソースを相対参照する)
+// The canonical implementation (web carries no package dependencies,
+// so only tests reference the source by relative path)
 import { auditReadVariablesOf } from "../../../../packages/core/src/audit.ts";
 import {
   aggregatedReadVariables,
@@ -11,7 +13,7 @@ import {
 } from "../../src/dashboard/audit-read.ts";
 
 describe("aggregatedReadVariables", () => {
-  it("集約形(variableId 欠落 + payload.variables)だけを列挙として返す", () => {
+  it("returns only the aggregated shape (missing variableId + payload.variables) as an enumeration", () => {
     expect(
       aggregatedReadVariables({
         event: "var.read",
@@ -28,7 +30,7 @@ describe("aggregatedReadVariables", () => {
     ]);
   });
 
-  it("旧形(variableId 列あり)・他イベント・列挙なしは null", () => {
+  it("returns null for the old shape (with a variableId column), another event, and no enumeration", () => {
     expect(aggregatedReadVariables({ event: "var.read", variableId: "var-a" })).toBeNull();
     expect(
       aggregatedReadVariables({
@@ -39,7 +41,7 @@ describe("aggregatedReadVariables", () => {
     expect(aggregatedReadVariables({ event: "var.read", payload: { note: "x" } })).toBeNull();
   });
 
-  it("core の auditReadVariablesOf と同じく、variableId 文字列 + 整数 epoch / version 以外の要素は落とす", () => {
+  it("drops every element that is not variableId string + integer epoch / version, same as core's auditReadVariablesOf", () => {
     expect(
       aggregatedReadVariables({
         event: "var.read",
@@ -61,7 +63,7 @@ describe("aggregatedReadVariables", () => {
     ).toEqual([{ variableId: "var-ok", epoch: 2, version: 3 }]);
   });
 
-  it("受理条件が @maruhi/core の auditReadVariablesOf と一致する", () => {
+  it("acceptance matches @maruhi/core's auditReadVariablesOf", () => {
     const variables = [
       "x",
       { variableId: "a", epoch: 1, version: 1 },
@@ -77,7 +79,7 @@ describe("aggregatedReadVariables", () => {
 });
 
 describe("payloadWithoutVariables", () => {
-  it("列挙以外のキー(authMethod 等)だけを残し、無ければ null", () => {
+  it("keeps only non-enumeration keys (authMethod etc.), null when none", () => {
     expect(
       payloadWithoutVariables({ variables: [{ variableId: "var-a" }], authMethod: "github_oauth" }),
     ).toEqual({ authMethod: "github_oauth" });
@@ -86,12 +88,12 @@ describe("payloadWithoutVariables", () => {
 });
 
 describe("labels", () => {
-  it("要約は件数に応じて単複を切り替える", () => {
+  it("the summary switches singular/plural by the count", () => {
     expect(readSummaryLabel(1)).toBe("read 1 variable");
     expect(readSummaryLabel(3)).toBe("read 3 variables");
   });
 
-  it("展開行は variableId · epoch · version を並べる", () => {
+  it("the expanded row lists variableId · epoch · version", () => {
     expect(listedReadVariableLabel({ variableId: "var-a", epoch: 2, version: 5 })).toBe(
       "var-a · epoch 2 · v 5",
     );

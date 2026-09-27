@@ -1,7 +1,9 @@
-// `maruhi sync` の部品の単体テスト: リポジトリ設定の検証(sync-config.ts)、
-// 宣言的プリセットと呼び出しの組み立て(sync-exec.ts — argv に値が載らない・
-// stdin の形式・100 件ごとの分割・削除の表現)、値の制約、ベンダー出力の伏せ字化、
-// plan の差分(sync-plan.ts)、レシートの codec(sync-receipt.ts)。
+// Unit tests for `maruhi sync`'s parts: repository-config validation
+// (sync-config.ts), the declarative presets and invocation assembly
+// (sync-exec.ts — no values on argv, the stdin format, splitting every
+// 100 entries, how deletions are expressed), the value constraints,
+// scrubbing vendor output, the plan diff (sync-plan.ts), and the receipt
+// codec (sync-receipt.ts).
 
 import { Effect, Exit, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
@@ -51,7 +53,7 @@ function githubTarget(overrides: Record<string, unknown> = {}): Record<string, u
   };
 }
 
-/** `project` つきの設定(onPush はこれを要求する)。 */
+/** A config carrying `project` (onPush requires it). */
 function withProject(target: Record<string, unknown>): string {
   return JSON.stringify({
     version: 1,
@@ -69,7 +71,7 @@ function parsed(target: Record<string, unknown>): SyncTarget {
   return config.targets.get("t") as SyncTarget;
 }
 
-/** exec ドライバの面(cwd / command)。http だったらテストの前提違い。 */
+/** The exec driver's side (cwd / command). An http one would violate the test's premise. */
 function execOf(target: SyncTarget): Extract<TargetDriver, { kind: "exec" }> {
   if (target.driver.kind !== "exec") {
     throw new Error("expected the exec driver");
@@ -78,7 +80,7 @@ function execOf(target: SyncTarget): Extract<TargetDriver, { kind: "exec" }> {
 }
 
 describe("parseSyncConfig", () => {
-  it("Vercel の production は既定で production 扱い、preview は違う。明示が勝つ", () => {
+  it("Vercel's production counts as production by default and preview doesn't; an explicit setting wins", () => {
     expect(parsed(vercelTarget()).production).toBe(true);
     expect(parsed(vercelTarget({ options: { environment: "preview" } })).production).toBe(false);
     expect(parsed(vercelTarget({ production: false })).production).toBe(false);
@@ -88,7 +90,7 @@ describe("parseSyncConfig", () => {
     ).toBe(true);
   });
 
-  it("Workers は名前付き環境なしが production、cwd / command は設定からの相対・上書き", () => {
+  it("Workers without a named environment counts as production; cwd / command are relative-to-config and overridable", () => {
     const top = parsed({ preset: "cloudflare-workers", environment: "prod", variables: "all" });
     expect(top.production).toBe(true);
     expect(execOf(top).cwd).toBe("/repo");
@@ -106,7 +108,8 @@ describe("parseSyncConfig", () => {
     expect(execOf(named).cwd).toBe("/repo/apps/worker");
     expect(execOf(named).command).toBe("node_modules/.bin/wrangler");
     expect(execOf(named).namedCommand).toBe(true);
-    // 既定と同じ綴りでも、設定が書けば「名指し」
+    // Even spelled identically to the default, writing it in config
+    // counts as 'naming it specifically'
     const spelled = parsed({
       preset: "vercel",
       environment: "prod",
@@ -208,13 +211,13 @@ describe("parseSyncConfig", () => {
       baseConfig(githubTarget({ token: { environment: "tokens", name: "GH_TOKEN" } })),
       "targets.t.token applies only to the http driver",
     ],
-  ])("拒否する: %s", (content, reason) => {
+  ])("rejects: %s", (content, reason) => {
     const result = parseSyncConfig(content, "/repo");
     expect(typeof result).toBe("string");
     expect(result).toContain(reason);
   });
 
-  it("GitHub Actions: exec だけ(driver 省略 = exec)、リポジトリ secrets と Environment production は production 扱い、他の Environment は違う", () => {
+  it("GitHub Actions: exec only (driver omitted = exec); repository secrets and Environment production count as production, other Environments don't", () => {
     const repository = parsed(githubTarget());
     expect(repository.driver.kind).toBe("exec");
     expect(execOf(repository).command).toBe("gh");
@@ -222,16 +225,17 @@ describe("parseSyncConfig", () => {
     expect(repository.production).toBe(true);
     expect(repository.options).toEqual({});
     expect(parsed(githubTarget({ options: { environment: "production" } })).production).toBe(true);
-    // GitHub の Environment 名は大文字小文字を区別しない
+    // GitHub Environment names are case-insensitive
     expect(parsed(githubTarget({ options: { environment: "Production" } })).production).toBe(true);
     expect(parsed(githubTarget({ options: { environment: "PRODUCTION" } })).production).toBe(true);
     expect(parsed(githubTarget({ options: { environment: "staging" } })).production).toBe(false);
-    // Dependabot secrets はリポジトリ単位 = production 扱い(明示で上書き可)
+    // Dependabot secrets are repository-wide = production
+    // (overridable explicitly)
     expect(parsed(githubTarget({ options: { app: "dependabot" } })).production).toBe(true);
     expect(
       parsed(githubTarget({ options: { app: "dependabot" }, production: false })).production,
     ).toBe(false);
-    // Environment secrets は app を省くか actions と書く
+    // Environment secrets omit app or say actions
     const full = parsed(
       githubTarget({
         options: { repo: "acme/app", environment: "staging", app: "actions" },
@@ -250,7 +254,7 @@ describe("parseSyncConfig", () => {
     );
   });
 
-  it("onPush: apply は production でないターゲットだけ、workflow は file / ref / command(cwd = 設定の場所)、project が要る", () => {
+  it("onPush: apply is for non-production targets only; workflow carries file / ref / command (cwd = the config's location) and needs a project", () => {
     const apply = parseSyncConfig(
       withProject(vercelTarget({ options: { environment: "preview" }, onPush: "apply" })),
       "/repo",
@@ -267,7 +271,8 @@ describe("parseSyncConfig", () => {
       "/repo",
     );
     if (typeof workflow === "string") throw new Error(workflow);
-    // production(Vercel の production 環境)でも CI 起動は可
+    // Even on production (Vercel's production environment), a CI
+    // trigger is allowed
     expect(workflow.targets.get("t")?.production).toBe(true);
     expect(workflow.targets.get("t")?.onPush).toEqual({
       kind: "workflow",
@@ -287,7 +292,7 @@ describe("parseSyncConfig", () => {
       command: "gh",
       namedCommand: false,
     });
-    // 省略 = 手動のみ
+    // Omitted = manual only
     expect(parsed(vercelTarget()).onPush).toBeNull();
   });
 
@@ -333,13 +338,13 @@ describe("parseSyncConfig", () => {
       vercelTarget({ onPush: "workflow", workflow: "x.yml" }),
       "targets.t.workflow must be an object",
     ],
-  ])("onPush を拒否する: %o", (target, reason) => {
+  ])("rejects onPush: %o", (target, reason) => {
     const result = parseSyncConfig(withProject(target), "/repo");
     expect(typeof result).toBe("string");
     expect(result).toContain(reason);
   });
 
-  it("onPush には top-level の project が要る(既定パスの設定を別プロジェクトの push に使わないため)", () => {
+  it("onPush needs the top-level project (so a config at the default path is never used to push a different project)", () => {
     const result = parseSyncConfig(
       baseConfig(vercelTarget({ onPush: "workflow", workflow: { file: "x.yml" } })),
       "/repo",
@@ -347,7 +352,7 @@ describe("parseSyncConfig", () => {
     expect(result).toContain('targets.t.onPush needs the top-level "project"');
   });
 
-  it("ターゲット名は環境 ID と同じ字種(レシート変数名の一部になる)", () => {
+  it("target names use the same alphabet as environment IDs (they become part of receipt variable names)", () => {
     const bad = parseSyncConfig(
       JSON.stringify({
         version: 1,
@@ -360,8 +365,8 @@ describe("parseSyncConfig", () => {
   });
 });
 
-describe("buildInvocations(宣言的プリセット)", () => {
-  it("Vercel: 名前ごとに 1 プロセス、値は stdin そのもの、オプションは argv、削除は env rm", () => {
+describe("buildInvocations (the declarative presets)", () => {
+  it("Vercel: one process per name, values as stdin verbatim, options on argv, deletion via env rm", () => {
     const target = parsed(
       vercelTarget({
         options: {
@@ -441,7 +446,7 @@ describe("buildInvocations(宣言的プリセット)", () => {
     }
   });
 
-  it("Workers: JSON 1 つに書き込みと削除(null)を同居させ、100 件ごとに分割する", () => {
+  it("Workers: writes and deletions (null) coexist in one JSON, split every 100 entries", () => {
     const target = parsed({
       preset: "cloudflare-workers",
       environment: "prod",
@@ -485,7 +490,7 @@ describe("buildInvocations(宣言的プリセット)", () => {
     expect(invocations[1]?.names).toContain("GONE");
   });
 
-  it("GitHub Actions: 名前ごとに `gh secret set` 1 プロセス、値は stdin そのもの、-R / --env / --app は argv、削除は `gh secret delete`、gh のテレメトリ off", () => {
+  it("GitHub Actions: one `gh secret set` process per name, values as stdin verbatim, -R / --env / --app on argv, deletion via `gh secret delete`, gh telemetry off", () => {
     const target = parsed(
       githubTarget({
         options: { repo: "acme/app", environment: "staging", app: "actions" },
@@ -540,7 +545,8 @@ describe("buildInvocations(宣言的プリセット)", () => {
       expect(invocation.command).not.toContain("--body");
       expect(invocation.command).not.toContain("--env-file");
     }
-    // オプション無し = リポジトリ secrets(gh が cwd の git remote からリポジトリを解く)
+    // No options = repository secrets (gh resolves the repo from cwd's
+    // git remote)
     const bare = buildInvocations({
       preset: execOf(parsed(githubTarget())).spec,
       command: "gh",
@@ -554,7 +560,7 @@ describe("buildInvocations(宣言的プリセット)", () => {
     ]);
   });
 
-  it("UTF-8 でない値が届いたら空文字列を黙って書かずに落とす(prepareWork が先に弾く前提の防衛線)", () => {
+  it("a non-UTF-8 value is dropped rather than silently written empty (the defense line premised on prepareWork rejecting it first)", () => {
     const target = parsed({ preset: "cloudflare-workers", environment: "prod", variables: "all" });
     expect(() =>
       buildInvocations({
@@ -573,7 +579,7 @@ describe("buildInvocations(宣言的プリセット)", () => {
     ).toThrow("not valid UTF-8");
   });
 
-  it("引数テンプレートに値のトークンは存在しない(型で禁止 — 宣言を走査して確かめる)", () => {
+  it("no value token exists in the argument templates (banned by type — verifies by scanning the declarations)", () => {
     for (const preset of Object.values(EXEC_PRESETS)) {
       const templates = [
         ...preset.writeArgs,
@@ -597,7 +603,7 @@ describe("checkValueConstraints", () => {
     label: "the wrangler CLI",
   };
 
-  it("Vercel: 空・16 KiB 超・末尾改行 1 つの 1 行を拒否し、文面は変数名だけ", () => {
+  it("Vercel: rejects empty, over-16-KiB, and single-line-with-trailing-newline values, and the wording names only the variable", () => {
     const secret = "s3cr3t-value";
     expect(checkValueConstraints(vercel, "A", encoder.encode(""))?.message).toContain(
       "Variable A is empty",
@@ -609,19 +615,20 @@ describe("checkValueConstraints", () => {
     expect(newline?.message).toContain("single line ending with a newline");
     expect(newline?.message).not.toContain(secret);
     expect(checkValueConstraints(vercel, "A", encoder.encode(`${secret}\r\n`))).not.toBeNull();
-    // 複数行は末尾改行があっても残る(Vercel CLI が落とさない)ので通す
+    // Multi-line values keep their trailing newline (the Vercel CLI
+    // doesn't drop it), so they pass
     expect(checkValueConstraints(vercel, "A", encoder.encode("a\nb\n"))).toBeNull();
     expect(checkValueConstraints(vercel, "A", encoder.encode(secret))).toBeNull();
   });
 
-  it("Workers: 制約なし(空も改行もそのまま JSON に載る)", () => {
+  it("Workers: no constraints (empty and newlines ride the JSON as-is)", () => {
     expect(checkValueConstraints(workers, "A", encoder.encode(""))).toBeNull();
     expect(checkValueConstraints(workers, "A", encoder.encode("x\n"))).toBeNull();
     expect(checkValueConstraints(workers, "A", new Uint8Array(70_000))).toBeNull();
     expect(checkValueConstraints(workers, "lower-case:name", encoder.encode("x"))).toBeNull();
   });
 
-  it("GitHub Actions: 末尾改行は単行も複数行も CR も拒否(gh の TrimRight)、名前は大文字・数字始まり不可・GITHUB_ 不可、空と大きな値は通す", () => {
+  it("GitHub Actions: trailing newlines are rejected on single- and multi-line values and CRs too (gh's TrimRight); names can't start uppercase/with a digit/contain GITHUB_; empty and large values pass", () => {
     const gh = {
       constraints: EXEC_PRESETS["github-actions"].constraints,
       label: "the gh CLI",
@@ -643,10 +650,12 @@ describe("checkValueConstraints", () => {
     }
     expect(checkValueConstraints(gh, "A", encoder.encode("a\nb"))).toBeNull();
     expect(checkValueConstraints(gh, "A", encoder.encode(secret))).toBeNull();
-    // 空 stdin は gh が空の本文として送る(拒まない)、上限は API が見る(切り詰めは無い)
+    // Empty stdin is sent by gh as an empty body (not rejected); the
+    // ceiling is the API's business (no trimming)
     expect(checkValueConstraints(gh, "A", encoder.encode(""))).toBeNull();
     expect(checkValueConstraints(gh, "A", new Uint8Array(70_000))).toBeNull();
-    // 名前: GitHub が大文字で保存する = 大小違いの 2 名が 1 secret に畳まれるので大文字だけ
+    // Names: GitHub stores them uppercase = two names differing by case
+    // would fold into one secret, so uppercase only
     for (const name of [
       "api_key",
       "ApiKey",
@@ -670,7 +679,7 @@ describe("checkValueConstraints", () => {
 });
 
 describe("scrubVendorOutput", () => {
-  it("JSON に逃がされた形の値(wrangler の本文 echo)も伏せる", () => {
+  it("scrubs values in their JSON-escaped form too (wrangler's body echo)", () => {
     const values = [write("A", 'quo"te\\back\nnext'), write("B", "plain")];
     const echoed = `Error: body was ${JSON.stringify({ A: 'quo"te\\back\nnext', B: "plain" })}`;
     const scrubbed = scrubVendorOutput(echoed, values).join("\n");
@@ -681,9 +690,10 @@ describe("scrubVendorOutput", () => {
     expect(scrubbed).toContain('{"A":"[redacted]","B":"[redacted]"}');
   });
 
-  it("上限を超える出力でも、切る前に伏せる(切れ目にかかった値の後半を残さない)", () => {
-    // 伏せる前に末尾 64 K 文字で切ると、切れ目をまたいだ値の後半が断片に
-    // 一致せず、そのまま表示されてしまう。値の 20 文字目に切れ目が来る長さ
+  it("scrubs before truncating output over the cap (doesn't leave the second half of a value that straddled the cut)", () => {
+    // If you truncated to the last 64K chars before scrubbing, the second
+    // half of a straddling value wouldn't match any fragment and would be
+    // displayed as-is. Size it so the cut lands at the value's 20th char
     const value = "S".repeat(40);
     const values = [write("A", value)];
     const tail = "\nError: request failed";
@@ -695,7 +705,7 @@ describe("scrubVendorOutput", () => {
     expect(scrubbed[1]).toBe("Error: request failed");
   });
 
-  it("値と複数行値の各行を伏せ、制御文字を中和し、末尾 20 行だけを残す", () => {
+  it("scrubs values and each line of multi-line values, neutralizes control characters, and keeps only the last 20 lines", () => {
     const values = [write("A", "top-secret"), write("B", "first line\nsecond line")];
     const lines = Array.from({ length: 30 }, (_, index) => `line ${index}`);
     const output = [
@@ -757,7 +767,7 @@ describe("computePlan", () => {
     );
   }
 
-  it("add / update / unchanged / delete を名前順に出す", () => {
+  it("emits add / update / unchanged / delete in name order", () => {
     const result = plan({
       source: [
         { name: "C", version: 1 },
@@ -774,7 +784,7 @@ describe("computePlan", () => {
     ]);
   });
 
-  it("declared のみの変数は運ぶものが無く、required なら止める材料になる", () => {
+  it("a declared-only variable has nothing to carry, and if required it becomes material to stop", () => {
     const result = plan({
       source: [
         { name: "A", version: 1 },
@@ -787,7 +797,7 @@ describe("computePlan", () => {
     expect(result.declaredRequired.map((entry) => entry.name)).toEqual(["C"]);
   });
 
-  it("選択に無い required の active を数え、レシートにあって選択から外れた名前は delete", () => {
+  it("counts required actives missing from the selection, and a name on the receipt but out of the selection is a delete", () => {
     const narrow = parsed(vercelTarget({ variables: ["A"] }));
     const result = plan({
       targetOverride: narrow,
@@ -804,7 +814,7 @@ describe("computePlan", () => {
     ]);
   });
 
-  it("all + exclude: 除外名は運ばず、maruhi から消えた名前は delete、`__proto__` も普通の名前", () => {
+  it("all + exclude: excluded names aren't carried, names gone from maruhi are deletes, and `__proto__` is an ordinary name", () => {
     const all = parsed({
       preset: "cloudflare-workers",
       environment: "prod",
@@ -817,7 +827,8 @@ describe("computePlan", () => {
         { name: "PUBLIC", version: 1 },
         { name: "__proto__", version: 2 },
       ],
-      // オブジェクトリテラルの `__proto__:` はプロトタイプ指定になるので JSON から作る
+      // An object literal's `__proto__:` becomes the prototype
+      // designation, so build it from JSON
       receipt: JSON.parse('{"REMOVED":1,"__proto__":1}') as Record<string, number>,
     });
     expect(result.entries).toEqual([
@@ -826,7 +837,7 @@ describe("computePlan", () => {
     ]);
   });
 
-  it("名前の規則(gh = 大文字限定)は plan で blocked になり、レシートだけにある名前は規則に関わらず delete のまま", () => {
+  it("name rules (gh = uppercase only) become blocked in the plan, while a receipt-only name stays a delete regardless of rules", () => {
     const gh = parsed(githubTarget({ variables: "all" }));
     const result = plan({
       targetOverride: gh,
@@ -834,7 +845,8 @@ describe("computePlan", () => {
         { name: "API_KEY", version: 2 },
         { name: "apiKey", version: 1 },
       ],
-      // レシートに残った名前が今の規則で不正でも、削除は値を運ばないので通す
+      // A leftover receipt name violating today's rules still passes,
+      // since a delete carries no value
       receipt: { API_KEY: 2, oldName: 1 },
     });
     expect(result.entries).toEqual([
@@ -850,7 +862,7 @@ describe("computePlan", () => {
     ]);
   });
 
-  it("明示リストに無い名前は失敗(値の名前だけを言う)", () => {
+  it("a name missing from the explicit list fails (and names only the value's name)", () => {
     const exit = Effect.runSyncExit(
       computePlan({
         target,
@@ -865,7 +877,7 @@ describe("computePlan", () => {
 });
 
 describe("receipt codec", () => {
-  it("往復し、名前順で決定論的にエンコードする", () => {
+  it("round-trips and encodes deterministically in name order", () => {
     const encoded = encodeReceipt({
       version: 1,
       target: "web",
@@ -896,7 +908,7 @@ describe("receipt codec", () => {
       '{"version":1,"target":"web","preset":"vercel","syncedAt":"t","variables":{"A":0}}',
       "positive integer versions",
     ],
-  ])("拒否する: %s", (text, reason) => {
+  ])("rejects: %s", (text, reason) => {
     expect(decodeReceipt(text, "web")).toContain(reason);
   });
 });

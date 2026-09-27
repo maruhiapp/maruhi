@@ -1,8 +1,10 @@
-// メンバーシップログの HttpApi 定義(CRYPTO_SPEC §6.4)。
-// サーバー実装(apps/server)と将来の CLI クライアント導出の共有源。
+// HttpApi definition of the membership log (CRYPTO_SPEC §6.4). The
+// shared source for the server implementation (apps/server) and the
+// future derived CLI client.
 //
-// API 境界の不変条件(§10): このファイルのどの型も平文シークレット・DEK・
-// master 秘密鍵を表現しない。チェーンエントリは署名付き公開データである。
+// API-boundary invariant (§10): no type in this file represents a
+// plaintext secret, a DEK, or a master private key. Chain entries are
+// signed public data.
 
 import { ProjectIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
@@ -50,9 +52,9 @@ export const ChainHeadSchema = Schema.Struct({
 });
 
 /**
- * ヘッド申告の提出リクエスト(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1)。attester は
- * 呼び出し主体(§12-5 の「呼び出し主体 = 署名者」規則 — ワイヤに attester
- * フィールドを持たない)。
+ * Submission request of a head attestation (CRYPTO_SPEC §6.6 /
+ * AUTH_SPEC §16-1). The attester is the calling principal (§12-5's
+ * "calling principal = signer" rule — the wire has no attester field).
  */
 export const HeadAttestationSubmissionSchema = Schema.Struct({
   suite: Schema.Literal("maruhi/v1"),
@@ -62,11 +64,13 @@ export const HeadAttestationSubmissionSchema = Schema.Struct({
 });
 
 /**
- * 配布されるヘッド申告(AUTH_SPEC §16-1 — チェーン取得応答の `attestations`)。
- * attesterUserId + attesterKeyFingerprintHex は §12-2 の検証材料と同型(受信者は
- * チェーン履歴と照合して CRYPTO_SPEC §6.6 のクライアント検証を行う)。
- * サーバー受理時刻は配布しない(申告が運ぶ行動情報を「チェーン同期の到達点」に
- * 限定する — §16-1)。
+ * The distributed form of a head attestation (AUTH_SPEC §16-1 — the
+ * `attestations` of the chain-fetch response). attesterUserId +
+ * attesterKeyFingerprintHex have the same shape as §12-2's verification
+ * material (the recipient matches them against the chain history to run
+ * CRYPTO_SPEC §6.6's client verification). The server's acceptance time
+ * is not distributed (it confines the action information an attestation
+ * carries to "the reached point of chain sync" — §16-1).
  */
 export const DistributedHeadAttestationSchema = Schema.Struct({
   suite: Schema.Literal("maruhi/v1"),
@@ -80,8 +84,9 @@ export const DistributedHeadAttestationSchema = Schema.Struct({
 /**
  * Full chain as stored by the project DO (entries in seq order).
  *
- * `attestations` = 現メンバーの最新ヘッド申告集合(AUTH_SPEC §16-1)。配布の省略は
- * CRYPTO_SPEC §6.3 の規範的非保証(G8)なので、空の集合は拒否にしない。
+ * `attestations` = the current members' latest head-attestation set
+ * (AUTH_SPEC §16-1). Omitted distribution is CRYPTO_SPEC §6.3's
+ * normative non-guarantee (G8), so an empty set is not refused.
  */
 export const ChainSnapshotSchema = Schema.Struct({
   projectId: ProjectIdSchema,
@@ -92,10 +97,12 @@ export const ChainSnapshotSchema = Schema.Struct({
 });
 
 /**
- * 一覧 1 行(AUTH_SPEC §11-5)。`role` は読取時に各プロジェクト DO が返す
- * **受理時点のチェーン導出 role** — D1 投影(候補索引)の値ではない(投影は
- * role を持たない)。サーバー申告の表示値であり、検証済み状態は
- * `maruhi project verify` / チェーン取得 + クライアント検証の領分。
+ * One row of the list (AUTH_SPEC §11-5). `role` is the **chain-derived
+ * role at acceptance time** that each project DO returns at read time —
+ * not the D1 projection (candidate index) value (the projection holds
+ * no role). It is a server-declared display value; verified state is
+ * the domain of `maruhi project verify` / chain fetch + client
+ * verification.
  */
 export const ProjectMembershipSchema = Schema.Struct({
   projectId: ProjectIdSchema,
@@ -103,10 +110,12 @@ export const ProjectMembershipSchema = Schema.Struct({
 });
 
 /**
- * `GET /projects` の応答(AUTH_SPEC §11-5)。`nextAfter` は D1 候補ページが
- * 満杯(サーバー固定 100 件)のときのみ載るカーソル(project_id 昇順の排他
- * 下限)。org 帰属・作成時刻・ヘッド情報は意図的に載せない(cross-org
- * メンバーへ他 org の帰属情報を開示しない最小形 — session-42 裁定 BK)。
+ * The `GET /projects` response (AUTH_SPEC §11-5). `nextAfter` is a
+ * cursor carried only when the D1 candidate page is full (server-fixed
+ * 100 rows) (the exclusive lower bound in project_id ascending order).
+ * Org membership, creation time, and head info are deliberately absent
+ * (the minimal form that does not disclose other orgs' membership info
+ * to cross-org members — session-42 ruling BK).
  */
 export const ProjectListSchema = Schema.Struct({
   projects: Schema.Array(ProjectMembershipSchema),
@@ -114,31 +123,37 @@ export const ProjectListSchema = Schema.Struct({
 });
 
 /**
- * Membership-log endpoints (CRYPTO_SPEC §6.4)。全エンドポイント認証必須
- * (AUTH_SPEC §11-1。AuthMiddleware が 401 / CSRF 403 を担う)。
+ * Membership-log endpoints (CRYPTO_SPEC §6.4). Every endpoint requires
+ * authentication (AUTH_SPEC §11-1; AuthMiddleware supplies the 401 /
+ * CSRF 403).
  *
  * - `init`: submit a genesis entry; the server verifies it and derives the
- *   project id as the genesis entry hash. `orgId` は帰属先 org(§11-3。作成
- *   権限 = org member 以上)。非メンバー・スコープ外への応答は一律 404(§11-2)。
- *   org のアクティブプロジェクト数が上限(AUTH_SPEC §11-3 — 起草値 100)に
- *   達している場合、**新規の** genesis は 429 `ProjectLimit`(修復経路 =
- *   already-initialized の再 init は上限に依らず通る)。
+ *   project id as the genesis entry hash. `orgId` is the destination
+ *   org (§11-3; creation permission = org member or higher). Responses
+ *   to non-members / out-of-scope are uniformly 404 (§11-2). When the
+ *   org's active-project count has reached the cap (AUTH_SPEC §11-3 —
+ *   drafted value 100), a **fresh** genesis is 429 `ProjectLimit` (the
+ *   repair path = re-init of an already-initialized project passes
+ *   regardless of the cap).
  * - `get`: fetch the stored chain for client-side verification (§6.3).
  * - `append`: append one entry; `parentHeadHashHex` is the compare-and-swap
- *   parent (§6.4)。§6.3 の「署名付き申告ヘッド」(ヘッドゴシップ)とは別物。
- *   認証主体と entry.actor の厳密一致を要求する(§11-1)。
- *   `create_environment` / `rotate_epoch` は複合エンドポイント
- *   (environments group の create / rotate — AUTH_SPEC §12-4)経由のみ受理し、
- *   ここでは CompositeRequired で拒否する(AUTH_SPEC §6)。
- *   standalone(周期)`checkpoint` は本エンドポイントが受理する(AUTH_SPEC
- *   §16-2): 認可は空 audit_head_hash = write × member 以上、
- *   非空 = 実効権限 admin(不足 403)。受理時点の保存状態との突合失敗は 422
- *   `CheckpointStateMismatch`。
+ *   parent (§6.4). Distinct from §6.3's "signed declared head" (head
+ *   gossip). Requires an exact match between the authenticated
+ *   principal and entry.actor (§11-1).
+ *   `create_environment` / `rotate_epoch` are accepted only via the
+ *   composite endpoints (create / rotate on the environments group —
+ *   AUTH_SPEC §12-4) and are refused here with CompositeRequired
+ *   (AUTH_SPEC §6).
+ *   A standalone (periodic) `checkpoint` is accepted by this endpoint
+ *   (AUTH_SPEC §16-2): authorization is empty audit_head_hash = write ×
+ *   member or higher, non-empty = effective permission admin (403 when
+ *   short). A match failure against the acceptance-time stored state is
+ *   422 `CheckpointStateMismatch`.
  */
 export const membershipGroup = HttpApiGroup.make("membership")
   .add(
     HttpApiEndpoint.post("init", "/projects", {
-      // strict 受理(§12-10 (1) — genesis を運ぶチェーン追記面)
+      // strict acceptance (§12-10 (1) — the chain-append surface carrying a genesis)
       payload: strictPayload(Schema.Struct({ orgId: Schema.String, entry: ChainEntrySchema })),
       success: ChainHeadSchema,
       error: [
@@ -146,19 +161,22 @@ export const membershipGroup = HttpApiGroup.make("membership")
         ChainEntryInvalidError,
         ChainEntryTooLargeError,
         ForbiddenError,
-        // org のアクティブプロジェクト数上限(AUTH_SPEC §11-3)。新規
-        // genesis のみ。判定は org 権限確認(403)の後 = org 外の主体に上限
-        // 到達の有無を返さない
+        // The org's active-project cap (AUTH_SPEC §11-3). Fresh
+        // geneses only. Judged after the org permission check (403) =
+        // principals outside the org are not told whether the cap is
+        // reached
         ProjectLimitError,
       ],
     }).middleware(AuthMiddleware),
   )
   .add(
-    // プロジェクト一覧(AUTH_SPEC §11-5)。本人がチェーン
-    // 導出メンバーであるプロジェクトのみを返す。対象指定(パス・クエリ)を
-    // 持たないため 404 系エラーが構造的に存在しない(存在秘匿 §11-2 と自明に
-    // 両立)。トークン主体はスコープとの交差のみ(スコープ外 = 不出現)、
-    // セッション主体は §5 の許可列挙(SESSION_ALLOWED_ENDPOINTS)で可。
+    // Project list (AUTH_SPEC §11-5). Returns only projects where the
+    // caller is a chain-derived member. Having no target designator
+    // (path, query), a 404-family error structurally cannot exist
+    // (trivially compatible with §11-2 existence concealment). Token
+    // principals get only the intersection with their scopes (out of
+    // scope = does not appear); session principals are allowed via §5's
+    // allowlist (SESSION_ALLOWED_ENDPOINTS).
     HttpApiEndpoint.get("list", "/projects", {
       query: { after: Schema.optionalKey(ProjectIdSchema) },
       success: ProjectListSchema,
@@ -176,7 +194,7 @@ export const membershipGroup = HttpApiGroup.make("membership")
       params: { projectId: ProjectIdSchema },
       payload: strictPayload(
         Schema.Struct({
-          // CAS の親ヘッド。不正形式は schema 境界の 400 で落とす(意図的な受理変更)
+          // The CAS parent head. Malformed values are dropped by the schema boundary's 400 (a deliberate acceptance change)
           parentHeadHashHex: Sha256Hex,
           entry: ChainEntrySchema,
         }),
@@ -189,35 +207,41 @@ export const membershipGroup = HttpApiGroup.make("membership")
         ChainEntryTooLargeError,
         ChainCapacityExceededError,
         CheckpointStateMismatchError,
-        // 非空 audit_head_hash の受理検査の前段: 監査ヘッド派生列の有界伸長が
-        // 未完了(AUDIT_SPEC §5.1)。retryable 503 — 古い列で
-        // audit-head-unknown / stale を判定しない(fail-closed)
+        // The stage before acceptance-checking a non-empty
+        // audit_head_hash: bounded extension of the audit-head derived
+        // column is unfinished (AUDIT_SPEC §5.1). retryable 503 —
+        // audit-head-unknown / stale are never judged on a stale column
+        // (fail-closed)
         AuditHeadNotReadyError,
         CompositeRequiredError,
-        // ProposalLimit は propose の受理ポリシー(AUTH_SPEC §12-8 — pending 32 件・
-        // expires_at_ms の上界 30 日。合意規則ではない)
+        // ProposalLimit is propose's acceptance policy (AUTH_SPEC §12-8 —
+        // 32 pending, expires_at_ms capped at 30 days; not a consensus rule)
         ProposalLimitError,
-        // DeviceLimit は add_device の受理ポリシー
-        // (AUTH_SPEC §12-8 — 有効な端末 16 / メンバー / プロジェクト。合意規則ではない)
+        // DeviceLimit is add_device's acceptance policy
+        // (AUTH_SPEC §12-8 — 16 active devices / member / project; not a consensus rule)
         DeviceLimitError,
         ForbiddenError,
-        // DO ストレージ総量ガード(AUTH_SPEC §12-8): 拒否閾値
-        // 以上の DO では、アクセス集合を拡げる add_member / grant_server を 422
-        // `project-storage-bytes` で拒否する。remove_member / revoke_server /
-        // change_role / checkpoint は拒否下でも受理される(同節の明示列挙)
+        // DO total-storage guard (AUTH_SPEC §12-8): on a DO at or above
+        // the refusal threshold, the access-widening add_member /
+        // grant_server are refused with 422 `project-storage-bytes`.
+        // remove_member / revoke_server / change_role / checkpoint are
+        // still accepted under refusal (the same section's explicit
+        // enumeration)
         DataLimitExceededError,
       ],
     }).middleware(AuthMiddleware),
   )
   .add(
-    // ヘッド申告の提出(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1)。
-    // 認可はトークンスコープ read × チェーン role reader 以上(申告は読み取り
-    // 同期の付随で、書けるのは自分の署名済み申告 1 行のみ — §16-1)。受理検証
-    // (署名・ヘッド実在・seq 単調前進)は §6.4。後退 = 409(保存済み seq を
-    // 返す — 黙って成功させない)、同一 seq 再提出 = 冪等 204。
+    // Submission of a head attestation (CRYPTO_SPEC §6.6 / AUTH_SPEC
+    // §16-1). Authorization is token scope read × chain role reader or
+    // higher (an attestation accompanies a read sync; only one's own
+    // signed one-line attestation can be written — §16-1). Acceptance
+    // verification (signature, head existence, seq monotonic advance) is
+    // §6.4. Regression = 409 (returns the stored seq — never silently
+    // succeeds); resubmission of the same seq = idempotent 204.
     HttpApiEndpoint.put("attest", "/projects/:projectId/head-attestation", {
       params: { projectId: ProjectIdSchema },
-      // strict 受理(§12-10 (1) — 署名済み構造を運ぶ mutation)
+      // strict acceptance (§12-10 (1) — a mutation carrying a signed structure)
       payload: strictPayload(HeadAttestationSubmissionSchema),
       success: HttpApiSchema.NoContent,
       error: [
@@ -233,35 +257,39 @@ export const membershipGroup = HttpApiGroup.make("membership")
 export const maruhiApi = HttpApi.make("maruhi")
   .add(membershipGroup)
   .add(authGroup)
-  // CLI ログイン(AUTH_SPEC §4)— 全面未認証(資格 = フロー資格情報。
-  // session-capability.ts の UNAUTHENTICATED_ENDPOINTS に分類)
+  // CLI login (AUTH_SPEC §4) — entirely unauthenticated (the
+  // credential = the flow credential; classified in
+  // session-capability.ts's UNAUTHENTICATED_ENDPOINTS)
   .add(authCliGroup)
   .add(environmentsGroup)
   .add(variablesGroup)
   .add(deksGroup)
-  // schemaPolicy 設定(AUTH_SPEC §12-11 — GET は read × reader、PUT は
-  // admin × admin。セッション主体はどちらも拒否 = §5 の許可列挙外)
+  // schemaPolicy configuration (AUTH_SPEC §12-11 — GET is read ×
+  // reader, PUT is admin × admin; session principals are refused on
+  // both = outside §5's allowlist)
   .add(schemaPolicyGroup)
   .add(invitesGroup)
-  // 予備鍵ラップ台帳(AUTH_SPEC §13-6〜13-10 — KL3)。status のみセッション可
+  // The reserve-key wrap ledger (AUTH_SPEC §13-6 through §13-10 — KL3); only status is session-allowed
   .add(keyWrapsGroup)
-  // 端末登録簿と端末追加要求(AUTH_SPEC §13-11 — DK K3。advisory。読み取りのみセッション可)
+  // The device registry and device-add requests (AUTH_SPEC §13-11 — DK K3; advisory; only reads are session-allowed)
   .add(devicesGroup)
   .add(rotationGroup)
   .add(auditGroup)
-  // 唯一の未認証グループ(資格情報 = OIDC トークン自体 — AUTH_SPEC §14-1)
+  // The only unauthenticated group (credential = the OIDC token itself — AUTH_SPEC §14-1)
   .add(leaseGroup);
 
-// ロード時スイープ(AUTH_SPEC §12-10 (1)): 登録済みの全 security-critical
-// エンドポイントの payload が、options なしの decode でも未知フィールドを
-// 拒否することを import 時に検査する。スキーマ AST の parseOptions は rc.113
-// 以降パーサに読まれない。成功・エラーの符号化は strict にしない
-// (TaggedError のスタックメタデータが strict encode で HTTP 500 になる)。
+// Load-time sweep (AUTH_SPEC §12-10 (1)): checks at import time that
+// the payload of every registered security-critical endpoint refuses
+// unknown fields even in an options-less decode. The schema AST's
+// parseOptions are no longer read by the parser since rc.113. Success
+// and error encodings are not made strict (TaggedError's stack metadata
+// turns into HTTP 500 under strict encode).
 assertSecurityCriticalPayloadsStrict(maruhiApi);
 
-// ロード時スイープ(AUTH_SPEC §5 — W2b): セッション能力制限の宣言
-// (session-capability.ts)が登録済みエンドポイント集合と整合していること —
-// 許可列挙の実在 + AuthMiddleware 保持、未認証面の明示分類 — を import 時に
-// 検査する。列挙外 = 拒否(fail-closed)の実効性はサーバー側マトリクス
-// テストが保証する。
+// Load-time sweep (AUTH_SPEC §5 — W2b): checks at import time that the
+// session-capability restriction declaration (session-capability.ts)
+// agrees with the registered endpoint set — the allowlist actually
+// exists + AuthMiddleware is held, and the unauthenticated surface is
+// explicitly classified. The effectiveness of unlisted = refused
+// (fail-closed) is guaranteed by server-side matrix tests.
 assertSessionCapabilityClassified(maruhiApi);

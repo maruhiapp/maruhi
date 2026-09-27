@@ -1,22 +1,25 @@
-// プロジェクト DO(SQLite)のテーブル定義とマイグレーション機構。
+// Table definitions and migration mechanism for the project DO (SQLite).
 //
-// - chain_entries: メンバーシップチェーンの append-only 保存(CRYPTO_SPEC §6.4)
-// - environments / variables / variable_versions / dek_wraps: データプレーン
-//   (AUTH_SPEC §12)。environments / variables の削除は tombstone(deleted_at)で
-//   表現し、ID の再利用を禁止する(§12-1)。暗号文・ラップは即時削除する
-// - audit_events: 監査ログ(AUDIT_SPEC §5.1 のスキーマそのまま)。seq は
-//   単調・無欠番(採番は audit-store.ts — DO メモリ保持の next seq)
-// - schema_meta: 適用済みマイグレーションの version(1 行)。以後の既存 DO の
-//   スキーマ変更は順序付きステップとして PROJECT_DO_MIGRATIONS に追記する
-//   (CREATE の再適用では既存テーブルに列を追加できない)
+// - chain_entries: append-only storage of the membership chain (CRYPTO_SPEC §6.4)
+// - environments / variables / variable_versions / dek_wraps: the data plane
+//   (AUTH_SPEC §12). Deletion of environments / variables is represented by a
+//   tombstone (deleted_at) and ID reuse is forbidden (§12-1). Ciphertexts and
+//   wraps are deleted immediately
+// - audit_events: the audit log (the AUDIT_SPEC §5.1 schema verbatim). seq is
+//   monotonic with no gaps (numbering lives in audit-store.ts — the next seq
+//   is held in DO memory)
+// - schema_meta: the version of applied migrations (one row). Later schema
+//   changes to existing DOs are appended to PROJECT_DO_MIGRATIONS as ordered
+//   steps (re-applying CREATE cannot add columns to an existing table)
 //
-// Drizzle(drizzle-orm/durable-sqlite)は今回も見送り(セッション 05 の判断を
-// 継続。裁定は docs/notes/session-07.md): クエリは単純なキー参照のみで、依存を
-// 増やさず素の SQL を Store サービス境界内に閉じる。D1 側(db.package)は
-// 引き続き Drizzle。
+// Drizzle (drizzle-orm/durable-sqlite) is again deferred (continuing the
+// session 05 decision; the ruling is in docs/notes/session-07.md): the queries
+// are simple key lookups only, and plain SQL is kept inside the Store service
+// boundary without adding a dependency. The D1 side (db.package) keeps using
+// Drizzle.
 
-// 現行スキーマ(2026-09-26 に全ステップを 1 本へ畳んだ — 設計録 dk-design.md §22-4。
-// 畳む前の DO は運営のデプロイごと作り直した)。
+// The current schema (all steps folded into one on 2026-09-26 — design record
+// dk-design.md §22-4. The pre-fold DOs were recreated with each operator deploy).
 const PROJECT_DO_DDL = [
   `CREATE TABLE chain_entries (
      seq INTEGER PRIMARY KEY,
@@ -24,9 +27,10 @@ const PROJECT_DO_DDL = [
      entry_hash_hex TEXT NOT NULL,
      canonical_bytes INTEGER NOT NULL
    )`,
-  // name / latest_meta_version は最新ステートメント(*_meta_statements)の
-  // 導出キャッシュ(名前一意性クエリと metaVersion CAS 用)。真実源は
-  // ステートメント行で、書き込みフェーズで同期更新する
+  // name / latest_meta_version are derived caches of the latest statement
+  // (*_meta_statements) — used for the name-uniqueness query and the
+  // metaVersion CAS. The statement rows are the source of truth and are kept in
+  // sync during the write phase
   `CREATE TABLE environments (
      environment_id TEXT PRIMARY KEY,
      name TEXT NOT NULL,
@@ -44,15 +48,18 @@ const PROJECT_DO_DDL = [
      deleted_at INTEGER,
      PRIMARY KEY (environment_id, variable_id)
    )`,
-  // メタデータステートメント(CRYPTO_SPEC §4.2 / AUTH_SPEC §12-5):
-  // metaVersion ごとに signed_bytes ハッシュ(サーバー再計算 — prev
-  // 検査・409 再試行の検証材料。配布しない)・署名・author(user_id + 受理
-  // 時点のチェーン導出鍵 FP)・name・status・prev・宣言ヘッドを保存する。
-  // 削除ステートメント(status deleted)も保存・配布し続ける(§12-4/-5 —
-  // 削除の否認・無断復活の検出材料)。
-  // layout_version: ワイヤレイアウト(次ステートメントのレイアウト単調性検査の
-  // アンカー)。var_type / required / description: v2 のスキーマ欄(v1 行は NULL。
-  // required は署名対象の "true" / "false" 文字列表現のまま保存する)
+  // Metadata statements (CRYPTO_SPEC §4.2 / AUTH_SPEC §12-5): for each
+  // metaVersion, stores the signed_bytes hash (server-recomputed — verification
+  // material for the prev check and 409 retries; not distributed), the
+  // signature, the author (user_id + the chain-derived key FP at acceptance
+  // time), name, status, prev, and the declared head.
+  // Delete statements (status deleted) also keep being stored and distributed
+  // (§12-4/-5 — detection material for denial of a deletion and for
+  // unauthorized revival).
+  // layout_version: the wire layout (the anchor for the layout-monotonicity
+  // check of the next statement). var_type / required / description: the v2
+  // schema fields (NULL on v1 rows. required is stored as the signed "true" /
+  // "false" string representation)
   `CREATE TABLE variable_meta_statements (
      environment_id TEXT NOT NULL,
      variable_id TEXT NOT NULL,
@@ -90,14 +97,17 @@ const PROJECT_DO_DDL = [
      created_at INTEGER NOT NULL,
      PRIMARY KEY (environment_id, meta_version)
    )`,
-  // suite 列: すべての永続データ構造はスイート識別子を持つ(CRYPTO_SPEC §2
-  // 設計原則 4 / AUTH_SPEC §12-2。将来のアルゴリズム移行時に行単位で判別する)
+  // The suite column: every persistent data structure carries a suite
+  // identifier (CRYPTO_SPEC §2 design principle 4 / AUTH_SPEC §12-2 — lets a
+  // future algorithm migration discriminate row by row)
   //
-  // 値の書き込み署名列(CRYPTO_SPEC §4.1 / AUTH_SPEC §12-5):
-  // prev_value_sig_hash_hex(version 1 は空文字列)/ 宣言ヘッド(hash + seq)/
-  // 署名 / サーバー再計算の signed_bytes ハッシュ(prev 検査と 409 再試行の
-  // 検証材料 — 配布はしない)/ 受理時点の writer(user_id + チェーン導出鍵 FP)。
-  // signed bytes 本体・公開鍵は保存しない(座標とチェーンから再構成できる)
+  // The value write-signature columns (CRYPTO_SPEC §4.1 / AUTH_SPEC §12-5):
+  // prev_value_sig_hash_hex (empty string for version 1) / the declared head
+  // (hash + seq) / the signature / the server-recomputed signed_bytes hash
+  // (verification material for the prev check and 409 retries — not
+  // distributed) / the writer at acceptance time (user_id + chain-derived key
+  // FP). The signed-bytes body and public keys are not stored (reconstructible
+  // from the coordinates and the chain)
   `CREATE TABLE variable_versions (
      environment_id TEXT NOT NULL,
      variable_id TEXT NOT NULL,
@@ -117,13 +127,16 @@ const PROJECT_DO_DDL = [
      created_at INTEGER NOT NULL,
      PRIMARY KEY (environment_id, variable_id, version)
    )`,
-  // DEK ラップ(AUTH_SPEC §12-6)。スロット = (環境, エポック, 受信者, 受信者の端末
-  // enc 公開鍵) — 同じ人の端末ごとに 1 スロット(R(E) の端末展開 — CRYPTO_SPEC §6.2)。
-  // signature_hex / signer_*: 登録署名(CRYPTO_SPEC §5.1)と署名者。
-  // recipient_class = server の行の recipient_user_id にはサーバー鍵 FP(hex 小文字
-  // 32 文字)が入る(列名は歴史的経緯で user_id のまま)。member の user_id との
-  // クラス跨ぎ衝突は受理段が守る(dek-wraps.ts の wrapStorageKey = 422、既存エポック
-  // への追記はクラス無視の保存存在検査 = 409 — A-1)
+  // DEK wraps (AUTH_SPEC §12-6). A slot = (environment, epoch, recipient,
+  // recipient's device enc public key) — one slot per device of the same person
+  // (the device expansion of R(E) — CRYPTO_SPEC §6.2).
+  // signature_hex / signer_*: the registration signature (CRYPTO_SPEC §5.1) and
+  // the signer.
+  // For a recipient_class = server row, recipient_user_id holds the server key
+  // FP (32 lowercase hex characters) — the column name stays user_id for
+  // historical reasons. Cross-class collision with a member's user_id is guarded
+  // by the acceptance stage (wrapStorageKey in dek-wraps.ts = 422; appending to
+  // an existing epoch is a class-agnostic stored-existence check = 409 — A-1)
   `CREATE TABLE dek_wraps (
      environment_id TEXT NOT NULL,
      epoch INTEGER NOT NULL,
@@ -139,13 +152,14 @@ const PROJECT_DO_DDL = [
      recipient_class TEXT NOT NULL DEFAULT 'member',
      PRIMARY KEY (environment_id, epoch, recipient_user_id, recipient_enc_pub_hex)
    )`,
-  // 受信者索引: §12-6 の再追加受理時掃除(data-store.ts の deleteStaleMemberWraps)は
-  // `recipient_user_id = ? AND recipient_class = 'member'` で引く(主キーの第 3 成分は
-  // 前方一致を使えない)
+  // Recipient index: the §12-6 cleanup at re-add acceptance
+  // (deleteStaleMemberWraps in data-store.ts) queries by
+  // `recipient_user_id = ? AND recipient_class = 'member'` (the third primary-key
+  // component cannot use a prefix match)
   `CREATE INDEX dw_recipient ON dek_wraps (recipient_user_id, recipient_class)`,
-  // AUDIT_SPEC §5.1 のスキーマ。row_id はワイヤ行識別子(16 バイト乱数 hex —
-  // §7 C1 裁定: 無欠番の seq をワイヤに出さない)で、追記経路(audit-store.ts)が
-  // 常に生成する
+  // The AUDIT_SPEC §5.1 schema. row_id is the wire row identifier (16-byte
+  // random hex — §7 ruling C1: the gapless seq never leaves the wire) and is
+  // always generated by the append path (audit-store.ts)
   `CREATE TABLE audit_events (
      seq INTEGER PRIMARY KEY,
      server_ts INTEGER NOT NULL,
@@ -169,40 +183,46 @@ const PROJECT_DO_DDL = [
   `CREATE INDEX ae_actor ON audit_events (actor_user_id, seq)`,
   `CREATE INDEX ae_event ON audit_events (event, seq)`,
   `CREATE UNIQUE INDEX ae_row_id ON audit_events (row_id)`,
-  // 対象・鍵 FP 索引は部分索引(監査ログの成長密度対策 ①): 支配的な行種 `var.read`
-  // で常に NULL の列なので、NULL 行を索引に入れない。読み手はすべて等値条件
-  // (等値は IS NOT NULL を含意)なので選択される(test/audit-index.test.ts が
-  // EXPLAIN QUERY PLAN で固定)
+  // The target / key-FP indexes are partial indexes (audit-log growth-density
+  // measure 1): the dominant row kind `var.read` always has NULL in these
+  // columns, so NULL rows stay out of the index. Every reader uses equality
+  // conditions (equality implies IS NOT NULL), so the index is picked
+  // (test/audit-index.test.ts pins it via EXPLAIN QUERY PLAN)
   `CREATE INDEX ae_target ON audit_events (target_user_id, seq) WHERE target_user_id IS NOT NULL`,
   `CREATE INDEX ae_target_fp ON audit_events (target_key_fingerprint, seq) WHERE target_key_fingerprint IS NOT NULL`,
   `CREATE INDEX ae_actor_fp ON audit_events (actor_key_fingerprint, seq) WHERE actor_key_fingerprint IS NOT NULL`,
-  // ワークロードリースの固定窓カウンタ(AUTH_SPEC §14-3 / AUDIT_SPEC §3.5)。
-  // `kind` は "issued"(発行の窓)/ "denied"(拒否記録の窓)の 2 行だけ。窓は
-  // 「開始時刻 + 件数」のベストエフォート方式(§13-3 の先例と同型)。窓の状態は
-  // 上書き更新が要るので監査ログ(append-only)には置けない
+  // Fixed-window counters for workload leases (AUTH_SPEC §14-3 / AUDIT_SPEC
+  // §3.5). `kind` has only two rows: "issued" (the issuance window) / "denied"
+  // (the denial-record window). A window is the best-effort "start time +
+  // count" scheme (same shape as the §13-3 precedent). Window state needs
+  // overwriting updates, so it cannot live in the (append-only) audit log
   `CREATE TABLE lease_windows (
      kind TEXT PRIMARY KEY,
      window_start INTEGER NOT NULL,
      count INTEGER NOT NULL
    )`,
-  // ワークロードリースの先着束縛(AUTH_SPEC §14-1 の裁定 — docs/notes/session-24.md)。
-  // 発行時に「束縛キー → 一時公開鍵」を記録し、同一キー + 別鍵の再要求を拒否する。
-  // `binding_key_hex` は **JWS signing input(`header.payload`)の SHA-256** で
-  // あって、生トークンのハッシュ**ではない**(生トークンの署名セグメントは可鍛 —
-  // verifier.ts の signingInputHashHex の doc)。`expires_at` は「時刻検証が当該
-  // トークンを受理しうる最終時刻 + 余裕」(policy.ts の LEASE_BINDING_RETENTION_MARGIN_MS)で、
-  // 行数は発行レート窓と GC(data-store.ts — 記録時に期限切れを削除)で有界。
-  // トークン本体・claim は保存しない(ハッシュと公開鍵のみ — どちらも非機密)
+  // First-come bindings for workload leases (the AUTH_SPEC §14-1 ruling —
+  // docs/notes/session-24.md). At issuance it records "binding key → ephemeral
+  // public key" and rejects a re-request with the same key + a different key.
+  // `binding_key_hex` is the **SHA-256 of the JWS signing input
+  // (`header.payload`)**, not a hash of the raw token (the raw token's
+  // signature segment is malleable — see the doc of signingInputHashHex in
+  // verifier.ts). `expires_at` is "the last time time-validation could accept
+  // the token + a margin" (LEASE_BINDING_RETENTION_MARGIN_MS in policy.ts), and
+  // the row count is bounded by the issuance rate window and GC (data-store.ts
+  // — deletes expired rows when recording). Neither the token body nor claims
+  // are stored (hash and public key only — both non-secret)
   `CREATE TABLE lease_bindings (
      binding_key_hex TEXT PRIMARY KEY,
      ephemeral_pub_hex TEXT NOT NULL,
      expires_at INTEGER NOT NULL
    )`,
-  // 環境マニフェスト(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5)。**保持は環境ごとに最新
-  // 1 通のみ**(PRIMARY KEY = environment_id の upsert)。signed_bytes_hash_hex は
-  // サーバー再計算(次の manifestVersion の prev 照合材料。配布しない)。issuer は
-  // 受理時点のチェーン導出メンバー(user_id + 鍵 FP)。環境削除のカスケード対象
-  // (§12-4 — retireEnvironment が行を消す)
+  // Environment manifests (CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5). **Only the
+  // latest manifest per environment is kept** (upsert with PRIMARY KEY =
+  // environment_id). signed_bytes_hash_hex is server-recomputed (prev-matching
+  // material for the next manifestVersion; not distributed). issuer is the
+  // chain-derived member at acceptance time (user_id + key FP). A cascade
+  // target of environment deletion (§12-4 — retireEnvironment deletes the row)
   `CREATE TABLE environment_manifests (
      environment_id TEXT PRIMARY KEY,
      manifest_version INTEGER NOT NULL,
@@ -220,10 +240,12 @@ const PROJECT_DO_DDL = [
      issuer_key_fingerprint TEXT NOT NULL,
      created_at INTEGER NOT NULL
    )`,
-  // チェックポイントの値スナップショット(CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2)。
-  // 環境ごとの**最新包含 checkpoint** のタプル(upsert)と、その時点の値スナップ
-  // ショット列挙(環境単位の全置換)。payload に含まれない環境の既存スナップショットは
-  // 変更しない(§6.4)。環境削除のカスケード対象(retireEnvironment が両表を消す)
+  // Checkpoint value snapshots (CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2). The tuple
+  // of each environment's **latest covering checkpoint** (upsert), plus the
+  // enumeration of value snapshots at that point (a full replacement per
+  // environment). Existing snapshots of environments not included in the
+  // payload are left unchanged (§6.4). Cascade targets of environment deletion
+  // (retireEnvironment deletes both tables)
   `CREATE TABLE environment_checkpoints (
      environment_id TEXT PRIMARY KEY,
      chain_seq INTEGER NOT NULL,
@@ -241,22 +263,27 @@ const PROJECT_DO_DDL = [
      value_sig_hash_hex TEXT NOT NULL,
      PRIMARY KEY (environment_id, variable_id)
    )`,
-  // 監査ヘッド累積ハッシュの計算列(AUDIT_SPEC §5.1)。audit_events の決定論的な
-  // 導出値(append-only の行が真実源)で、materialize は遅延拡張(audit-store.ts の
-  // ensureHeadCurrent — 監査ヘッド読み取り・checkpoint 受理の前に MAX(seq) まで伸ばす)。
-  // 接頭辞連続(seq 1..k の完全な前置)を不変条件とし、書き直し・削除をしない。
-  // head_hash_hex の索引は checkpoint 受理の所属・位置検査(CRYPTO_SPEC §6.4)用
+  // Computed columns of the audit head's cumulative hash (AUDIT_SPEC §5.1). A
+  // deterministic derivation of audit_events (the append-only rows are the
+  // source of truth); materialization is lazy extension (ensureHeadCurrent in
+  // audit-store.ts — extends to MAX(seq) before audit-head reads and checkpoint
+  // acceptance). Prefix-contiguous (a complete prefix of seq 1..k) as the
+  // invariant; rows are never rewritten or deleted. The head_hash_hex index
+  // serves the membership/position check of checkpoint acceptance (CRYPTO_SPEC
+  // §6.4)
   `CREATE TABLE audit_head_hashes (
      seq INTEGER PRIMARY KEY,
      head_hash_hex TEXT NOT NULL
    )`,
   `CREATE INDEX ahh_hash ON audit_head_hashes (head_hash_hex)`,
-  // ヘッド申告(CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1)。**端末ごとに最新 1 行**
-  // (PK = (attester_user_id, attester_key_fingerprint) の upsert — チェーンに載せない
-  // 可変データ)。端末は独立に同期するため端末を跨いだ seq 単調性は課さない。
-  // accepted_at は保存するが**配布しない**。`remove_member` 受理時に行を削除する
-  // (chain-accept.ts の受理副作用)。attestation_windows はメンバー単位の固定窓
-  // カウンタ(1 時間 60 回 — §16-1。remove 時に申告行と一緒に削除)
+  // Head attestations (CRYPTO_SPEC §6.6 / AUTH_SPEC §16-1). **One latest row
+  // per device** (upsert with PK = (attester_user_id, attester_key_fingerprint)
+  // — mutable data that never goes on the chain). Devices sync independently,
+  // so no seq monotonicity across devices is required. accepted_at is stored
+  // but **not distributed**. The row is deleted on `remove_member` acceptance
+  // (an acceptance side effect in chain-accept.ts). attestation_windows is a
+  // per-member fixed-window counter (60 per hour — §16-1; deleted together with
+  // the attestation row on remove)
   `CREATE TABLE head_attestations (
      attester_user_id TEXT NOT NULL,
      attester_key_fingerprint TEXT NOT NULL,
@@ -272,8 +299,9 @@ const PROJECT_DO_DDL = [
      window_start INTEGER NOT NULL,
      count INTEGER NOT NULL
    )`,
-  // プロジェクト設定(1 行)。行なし = schemaPolicy 'disabled'(既定 — AUTH_SPEC
-  // §12-11)。監査は project.schema_policy_changed(AUDIT_SPEC §3.3)
+  // Project settings (one row). No row = schemaPolicy 'disabled' (the default
+  // — AUTH_SPEC §12-11). Audited via project.schema_policy_changed (AUDIT_SPEC
+  // §3.3)
   `CREATE TABLE project_settings (
      id INTEGER PRIMARY KEY CHECK (id = 1),
      schema_policy TEXT NOT NULL
@@ -291,13 +319,15 @@ export interface ProjectDoMigration {
   readonly apply: (sql: SqlStorage) => void;
 }
 
-// 順序付きマイグレーションステップ。**末尾への追記のみ可**(適用済みステップの
-// 編集・並べ替え・削除は、外部にデプロイ済みの DO と不整合になるため禁止)。
-// 各ステップは「前ステップまで適用済みの DB」を前提に書いてよい(ALTER TABLE 等)。
-// 各ステップは「本体 + version 進め」を 1 トランザクション(transactionSync)で
-// 適用するため、途中で例外が起きてもステップ全体がロールバックされ、次回
-// コンストラクタ実行時に失敗したステップの先頭から再実行される(部分適用の
-// DDL は残らないので、ステップ自体を冪等に書く必要はない)。
+// Ordered migration steps. **Appending at the end is the only allowed
+// change** (editing, reordering, or deleting an applied step is forbidden
+// because it would disagree with DOs already deployed externally). Each step
+// may assume "a DB with all previous steps applied" (ALTER TABLE etc.).
+// Each step applies "the body + the version bump" in one transaction
+// (transactionSync), so an exception mid-step rolls the whole step back and the
+// next constructor run retries from the start of the failed step (no partially
+// applied DDL remains, so a step itself does not need to be written
+// idempotently).
 export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
   {
     tables: [
@@ -337,7 +367,7 @@ export const PROJECT_DO_TABLES: readonly string[] = PROJECT_DO_MIGRATIONS.flatMa
   (migration) => migration.tables,
 );
 
-// version は「適用済みステップ数」(0 = 未適用、PROJECT_DO_MIGRATIONS.length = 最新)
+// version = "number of applied steps" (0 = none applied, PROJECT_DO_MIGRATIONS.length = latest)
 const SCHEMA_META_DDL = `CREATE TABLE IF NOT EXISTS schema_meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   version INTEGER NOT NULL
@@ -353,8 +383,8 @@ export function readProjectDoSchemaVersion(sql: SqlStorage): number {
   }
   const version = Number(row.version);
   if (!Number.isInteger(version) || version < 0) {
-    // 破損値を 0 扱いにすると全ステップが再実行されてしまう(step 2 以降は
-    // 冪等でない)ため、明示的に失敗させて人間の調査へ回す
+    // Treating a corrupt value as 0 would re-run every step (step 2 onward is
+    // not idempotent), so fail explicitly and hand it to human investigation
     throw new Error(`project DO schema_meta.version is corrupt: ${String(row.version)}`);
   }
   return version;
@@ -377,11 +407,13 @@ export function applyProjectDoMigrations(
   const sql = storage.sql;
   const current = readProjectDoSchemaVersion(sql);
   if (current > migrations.length) {
-    // セルフホスト配布物では旧バージョンへのロールバックデプロイが現実に起こる。
-    // 新スキーマの DB 上で旧コードを黙って動かさない(§運用: 前進のみ)。
-    // 影響範囲に注意: この throw は DO コンストラクタで起きるため、ロールバック中は
-    // 適用済みプロジェクトの DO が一切開けなくなる(整合性 > 可用性の意図的選択。
-    // 復旧は前方デプロイ)。ステップを追加する際はこの爆風半径を前提に置くこと
+    // In the self-hosted distribution a rollback deploy to an older version
+    // really happens. Do not silently run old code on a newer-schema DB
+    // (operations rule: forward only). Mind the blast radius: this throw fires
+    // in the DO constructor, so during a rollback no DO of an applied project
+    // can open at all (an intentional consistency > availability choice;
+    // recovery is a forward deploy). Assume this blast radius when adding a
+    // step
     throw new Error(
       `project DO schema version ${current} is newer than this deployment supports ` +
         `(max ${migrations.length}); refusing to run older code on a newer schema`,
@@ -402,7 +434,7 @@ export function applyProjectDoMigrations(
   }
 }
 
-/** DO コンストラクタから呼ぶ(冪等)。未適用ステップだけを順に適用する。 */
+/** Called from the DO constructor (idempotent). Applies only the not-yet-applied steps in order. */
 export function ensureProjectDoTables(storage: DurableObjectStorage): void {
   applyProjectDoMigrations(storage, PROJECT_DO_MIGRATIONS);
 }

@@ -1,28 +1,39 @@
-// ローカル床の意味論(CRYPTO_SPEC §6.3)。
+// The local floor's semantics (CRYPTO_SPEC §6.3).
 //
-// 床 = **これまでに検証へ成功した事実の単調 join(結合半束)**であり、
-// 「最後に成功した pull のスナップショット」ではない(3-D)。保存形は
-// 追記専用の観測ログ + fold(3-E — floor-log.ts)で、本モジュールは
-// 格子の型と join 演算だけを持つ。ディスク上のマージとプロセス内マージが
-// **同一の join 実装**を共有する(session-31 §3 — `>=` 後勝ちの
-// 重複実装が同版異ハッシュの証拠を上書きした温床の構造的解消)。
+// The floor = **the monotonic join (join-semilattice) of the facts that
+// have passed verification so far**, not "the snapshot of the last
+// successful pull" (3-D). The storage form is an append-only observation
+// log + fold (3-E — floor-log.ts); this module holds only the lattice's
+// types and the join operations. The on-disk merge and the in-process
+// merge share **one and the same join implementation** (session-31 §3 —
+// structurally removing the breeding ground where a duplicated
+// "`>=` last-wins" implementation overwrote same-version different-hash
+// evidence).
 //
-// エポック観測は型付きの 2 座標として分けて join する(§6.3 規範):
-//   (i) 値規則 (c) の pull 基準(pullEpoch)— 値床カバレッジと原子的に
-//       確立された観測のみが前進させる(チェーン同期単独で前進させない)
-//   (ii) 環境水準のエポック観測(observedEpoch)— マニフェスト規則 (c)
-//       baseline・巻き戻し検出に使い、出所を問わず join する
+// Epoch observations join as two typed coordinates kept apart (the §6.3
+// norm):
+//   (i) the pull baseline of value rule (c) (pullEpoch) — advanced only
+//       by observations established atomically with value-floor coverage
+//       (never advanced by a chain sync alone)
+//   (ii) the environment-level epoch observation (observedEpoch) — used
+//       for manifest rule (c) baselines and rollback detection; joined
+//       regardless of provenance
 //
-// 同座標で比較不能な事実(同一版・異ハッシュ)には join が定義されない =
-// **typed conflict** として両観測の証拠を保存する(規則 (b) がマージ意味論
-// そのものになる)。conflict を持つ床の使用・更新は呼び出し側が拒否する。
+// Facts incomparable at the same coordinate (same version, different
+// hash) have no defined join = **typed conflict**, preserving the
+// evidence of both observations (rule (b) becomes the merge semantics
+// itself). Using or updating a floor holding a conflict is refused by
+// the caller.
 //
-// 各座標は bottom(0 / 空文字列 / レコードなし)を持つ半束であり、部分的な
-// 観測(metadata-only pull の環境水準・push だけの変数床)を不可能状態なしに
-// 表現する — bottom に対する検査規則は構造的に発火しない(誤検出ゼロ)。
+// Every coordinate is a semilattice with a bottom (0 / "" / no record),
+// expressing partial observations (metadata-only pulls' environment
+// level, push-only variable floors) without impossible states — a check
+// rule over bottom structurally never fires (zero false detections).
 //
-// **平文値・鍵素材・変数名・環境名は書かない**(キーはすべて ID、内容は
-// ハッシュ・連番・op 種別のみ — ディスクレス不変条件と両立)。
+// **No plaintext values, key material, variable names, or environment
+// names are written** (keys are all IDs; the content is only hashes,
+// sequence numbers, and op kinds — compatible with the diskless
+// invariant).
 
 import { dirname, join } from "node:path";
 
@@ -30,30 +41,32 @@ import { Context, type Effect } from "effect";
 
 import type { CliError } from "./errors.ts";
 
-/** 最後に検証したチェーンヘッド(§6.3 床の保存項目)。 */
+/** The last verified chain head (a §6.3 floor's stored item). */
 export interface ChainHeadFloor {
   readonly seq: number;
   readonly hashHex: string;
 }
 
 /**
- * 変数 1 つ分の床(active = 最新値 + 最新ステートメント、deleted = tombstone、
- * declared = レイアウト v2 の値未設定宣言 — CRYPTO_SPEC §4.2)。
+ * One variable's floor (active = latest value + latest statement,
+ * deleted = tombstone, declared = layout v2's no-value-set declaration —
+ * CRYPTO_SPEC §4.2).
  *
- * declared はメタ側のみを持つ(値床は activation まで空 — session-46 §8 第 1 周)。
- * 規則 (c) の「床にない変数は version 0 相当」が activation 後の最初の pull に
- * 自然に適用される(値側の基準を捏造しない)。
+ * declared holds the meta side only (the value floor stays empty until
+ * activation — session-46 §8 round 1). Rule (c)'s "a variable absent
+ * from the floor counts as version 0" applies naturally to the first
+ * pull after activation (no value-side baseline is fabricated).
  */
 export type VariableFloor =
   | {
       readonly status: "active";
       readonly version: number;
-      /** その version の epoch(§4.1 単調性・規則 (c) の検査材料)。 */
+      /** That version's epoch (§4.1 monotonicity / rule (c) check material). */
       readonly epoch: number;
-      /** 最新 version の value signed bytes ハッシュ(規則 (b) の比較対象)。 */
+      /** The latest version's value signed-bytes hash (rule (b)'s comparison target). */
       readonly valueSigHashHex: string;
       readonly metaVersion: number;
-      /** 最新 metaVersion の signed bytes ハッシュ(メタ床は巻き戻し検出のみ — §14.3-5)。 */
+      /** The latest metaVersion's signed-bytes hash (the meta floor is for rollback detection only — §14.3-5). */
       readonly metaSigHashHex: string;
     }
   | {
@@ -68,48 +81,57 @@ export type VariableFloor =
     };
 
 /**
- * 環境マニフェストの床(CRYPTO_SPEC §6.3 — manifest_version / その epoch /
- * signed_bytes ハッシュ)。規則 (a) の後退・(b) の同版相違・(c) のマニフェスト
- * 適用(前進 manifestVersion への旧エポック注入)の検出材料。
+ * The environment manifest's floor (CRYPTO_SPEC §6.3 — manifest_version
+ * / its epoch / signed_bytes hash). Detection material for rule (a)
+ * regression, (b) same-version difference, and (c) manifest application
+ * (an old-epoch injection on an advanced manifestVersion).
  */
 export interface ManifestFloor {
   readonly manifestVersion: number;
-  /** そのマニフェストが焼き込んだ epoch(規則 (c) のマニフェスト適用の材料)。 */
+  /** The epoch that manifest baked in (material for rule (c)'s manifest application). */
   readonly epoch: number;
   readonly manifestSigHashHex: string;
 }
 
 /**
- * 環境 1 つ分の床。各座標は独立に join される半束で、bottom(pullEpoch /
- * observedEpoch / metaVersion = 0)は「その座標の観測がまだない」ことを表す。
+ * One environment's floor. Each coordinate is an independently-joined
+ * semilattice, and bottom (pullEpoch / observedEpoch / metaVersion = 0)
+ * means "no observation at that coordinate yet".
  */
 export interface EnvironmentFloor {
   /**
-   * 規則 (c) の基準: 値床カバレッジと原子的に確立された観測(検証済み pull・
-   * 環境作成の受理確認〔空変数集合〕)のみが前進させる。**チェーン同期単独で
-   * 前進させてはならない**(§6.3 の規範 — ローテーション直後の正当な旧エポック
-   * 値の誤拒否と、基準欠落による検出喪失の両縁)。0 = 未確立。
+   * Rule (c)'s baseline: advanced only by an observation established
+   * atomically with value-floor coverage (a verified pull, an
+   * environment-creation acceptance confirmation [empty variable set]).
+   * **A chain sync alone must never advance it** (the §6.3 norm — both
+   * edges: misrejecting a legitimate old-epoch value right after a
+   * rotation, and losing detection through a missing baseline).
+   * 0 = not established.
    */
   readonly pullEpoch: number;
   /**
-   * 環境水準のエポック観測(§6.3 の座標 (ii))。マニフェスト規則 (c) baseline に
-   * 使い、出所を問わず join する(metadata-only pull・受理確認・値付き pull)。
-   * 値を誤拒否する経路を持たないため pull 基準より広く前進する。0 = 観測なし。
+   * The environment-level epoch observation (§6.3's coordinate (ii)).
+   * Used for manifest rule (c)'s baseline and joined regardless of
+   * provenance (metadata-only pull, acceptance confirmation, pull with
+   * values). Having no path that could misreject a value, it advances
+   * more broadly than the pull baseline. 0 = unobserved.
    */
   readonly observedEpoch: number;
-  /** 環境メタステートメントの床(巻き戻し検出のみ — 前進注入は非保証 §14.3-5)。0 = 観測なし。 */
+  /** The environment-meta statement's floor (rollback detection only — forward injection is not guaranteed, §14.3-5). 0 = unobserved. */
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
-  /** 環境マニフェストの床(§6.3)。欠落 = マニフェスト観測なし。 */
+  /** The environment manifest's floor (§6.3). Absent = no manifest observation. */
   readonly manifest?: ManifestFloor;
-  /** キーは variableId(名前を書かない)。 */
+  /** Keys are variableIds (names are never written). */
   readonly variables: Readonly<Record<string, VariableFloor>>;
 }
 
 /**
- * 同座標で比較不能な 2 観測(join 未定義)= equivocation の typed conflict。
- * 両観測の証拠(版とハッシュ)を保存する — 上書きによる証拠喪失は保存形
- * (追記専用ログ)により表現不能で、fold がこの形で顕在化させる(§6.3)。
+ * Two incomparable observations at the same coordinate (join undefined)
+ * = a typed equivocation conflict. Preserves the evidence of both
+ * observations (version and hash) — evidence loss via overwrite is
+ * inexpressible under the storage form (append-only log), and fold
+ * surfaces it in this shape (§6.3).
  */
 export interface FloorConflict {
   readonly kind:
@@ -121,18 +143,18 @@ export interface FloorConflict {
     | "undeletion";
   readonly environmentId: string | null;
   readonly variableId: string | null;
-  /** 観測 1(seq / version / metaVersion / manifestVersion とその signed bytes ハッシュ)。 */
+  /** Observation 1 (seq / version / metaVersion / manifestVersion and its signed-bytes hash). */
   readonly firstVersion: number;
   readonly firstHashHex: string;
-  /** 観測 2。 */
+  /** Observation 2. */
   readonly secondVersion: number;
   readonly secondHashHex: string;
 }
 
-/** security-critical mutation の intent レコードの op 種別(§6.3 記録規律 (ii))。 */
+/** The op kind of a security-critical mutation's intent record (§6.3 recording discipline (ii)). */
 export type FloorIntentOp = "create_environment" | "rotate_epoch" | "meta-op";
 
-/** intent の解決(§12-10 (3) の効果確認の結果)。 */
+/** An intent's resolution (the effect-check result of §12-10 (3)). */
 export type FloorIntentOutcome =
   | "accepted"
   | "accepted-superseded"
@@ -141,53 +163,58 @@ export type FloorIntentOutcome =
   | "superseded";
 
 /**
- * 送信前 intent レコード(3-F — journal-before-send)。非機密座標のみ:
- * op 種別・環境 ID・manifest_version + signed_bytes ハッシュ・宣言ヘッド、
- * および効果確認の照合材料(複合 = DEK コミットメント、メタ操作 = 変数 ID)。
- * intent は検証済み事実ではないため join の格子に入れない — fold は未解決
- * intent を「要照合」として表面化する。
+ * The pre-send intent record (3-F — journal-before-send). Non-sensitive
+ * coordinates only: op kind, environment ID, manifest_version +
+ * signed_bytes hash, declared head, and the effect-check's matching
+ * material (compound = the DEK commitment, meta op = the variable ID).
+ * An intent is not a verified fact and does not enter the join's lattice
+ * — fold surfaces an unresolved intent as "needs reconciliation".
  */
 export interface FloorIntent {
   readonly id: string;
   readonly op: FloorIntentOp;
   readonly environmentId: string;
-  /** 複合が確立するエポック(create = 1 / rotate = new_epoch)。メタ操作 = 発行時点の現エポック。 */
+  /** The epoch the compound establishes (create = 1 / rotate = new_epoch). A meta op = the current epoch at issuance. */
   readonly epoch: number;
-  /** 複合の効果確認材料(チェーン上の自エントリの §5.2 コミットメント)。メタ操作 = null。 */
+  /** The compound's effect-check material (the §5.2 commitment of one's own entry on the chain). A meta op = null. */
   readonly dekCommitmentHex: string | null;
-  /** メタ操作(変数作成)の照合座標。複合 = null。 */
+  /** The matching coordinate of a meta op (variable creation). A compound = null. */
   readonly variableId: string | null;
   readonly manifestVersion: number;
   readonly manifestSigHashHex: string;
   readonly declaredHead: ChainHeadFloor;
 }
 
-/** intent レコードの入力(id はストアが採番する)。 */
+/** An intent record's input (the id is assigned by the store). */
 export type FloorIntentInput = Omit<FloorIntent, "id">;
 
-/** プロジェクト 1 つ分の床 = 観測ログの fold 結果(導出値)。 */
+/** One project's floor = the observation log's fold result (a derived value). */
 export interface ProjectFloor {
-  /** null = ヘッド観測がまだない(intent だけのログ等)。 */
+  /** null = no head observation yet (e.g. an intents-only log). */
   readonly chainHead: ChainHeadFloor | null;
-  /** キーは environmentId。 */
+  /** Keys are environmentIds. */
   readonly environments: Readonly<Record<string, EnvironmentFloor>>;
-  /** 同座標 conflict の証拠(スナップショットに畳まれても消えない — §6.3)。 */
+  /** The evidence of same-coordinate conflicts (survives being folded into a snapshot — §6.3). */
   readonly conflicts: readonly FloorConflict[];
-  /** 未解決の intent(要照合 — 同一環境への次の mutation・成功報告の前に解決する)。 */
+  /** Unresolved intents (needs reconciliation — resolved before the next mutation on the same environment or any success report). */
   readonly intents: readonly FloorIntent[];
 }
 
 /**
- * 矛盾ヘッド申告の証拠レコード(CRYPTO_SPEC §6.6 照合 (a) / §14.2-5)。
- * 申告全文(署名込み — §6.6 検証を通過した否認不能な材料)+
- * 自ビューのチェーンダイジェストを対で保存する。**床の join 格子には入れない**:
- * 申告は他メンバーの署名済み宣言であって「自分の検証済み観測」ではなく、格子へ
- * 流し込むと 1 メンバーの偽ヘッド申告(鍵漏洩)が全コマンドの恒久拒否を招く。
- * 保存は追記専用の証拠ファイル(floor-log.ts — <projectId>.attestation-evidence.jsonl)。
- * 平文値・鍵素材は含まない(ID・ハッシュ・署名のみ)。
+ * The evidence record of a contradicting head attestation (CRYPTO_SPEC
+ * §6.6 reconciliation (a) / §14.2-5). Stores the attestation in full
+ * (including the signature — the non-repudiable material that passed
+ * §6.6 verification) paired with the digest of one's own chain view.
+ * **Not entered into the floor's join lattice**: an attestation is
+ * another member's signed declaration, not "one's own verified
+ * observation", and flowing it into the lattice would let one member's
+ * false head attestation (leaked key) cause every command's permanent
+ * refusal. Stored in an append-only evidence file (floor-log.ts —
+ * <projectId>.attestation-evidence.jsonl). Contains no plaintext values
+ * or key material (IDs, hashes, signatures only).
  */
 export interface AttestationEvidenceRecord {
-  /** 配布された申告そのもの(§6.6 検証を通過済み — 署名が証拠の本体)。 */
+  /** The distributed attestation itself (already passed §6.6 verification — the signature is the evidence's body). */
   readonly attestation: {
     readonly suite: string;
     readonly attesterUserId: string;
@@ -196,40 +223,42 @@ export interface AttestationEvidenceRecord {
     readonly chainHeadSeq: number;
     readonly signatureHex: string;
   };
-  /** 照合時点の自ビュー(検証済みチェーン)のダイジェスト。 */
+  /** The digest of one's own view (verified chain) at reconciliation time. */
   readonly localView: {
     readonly headSeq: number;
     readonly headHashHex: string;
-    /** 申告 seq 位置の自ビューのエントリハッシュ(空 = 申告 seq が自ヘッドより先)。 */
+    /** One's own view's entry hash at the attested seq position (empty = the attested seq is ahead of one's own head). */
     readonly entryHashAtAttestedSeq: string;
   };
-  /** 検出契機(mismatch = seq ≤ 自ヘッドの不一致、unresolved = 有界再同期後も未解決)。 */
+  /** The detection trigger (mismatch = a difference at seq ≤ one's own head, unresolved = still unresolved after a bounded resync). */
   readonly kind: "head-mismatch" | "unresolved-after-resync";
-  /** ローカル検出時刻(フォレンジック用 — 配布されない非機密ローカル状態)。 */
+  /** The local detection time (for forensics — non-sensitive local state, never distributed). */
   readonly detectedAtMs: number;
 }
 
-/** 床ログの読み込み結果(fail-open — 呼び出し側が状態別の警告を出す)。 */
+/** The result of loading the floor log (fail-open — the caller emits per-state warnings). */
 export interface FloorLoadResult {
   readonly floor: ProjectFloor | null;
-  /** missing = 初回同期(床なし)、corrupt = 破損(初回として扱うが区別して警告)。 */
+  /** missing = first sync (no floor), corrupt = corrupted (treated as first run but warned distinctly). */
   readonly state: "loaded" | "missing" | "corrupt";
   /**
-   * 解読できず読み飛ばした非空行の数(torn 行の自己回復の痕跡)。0 でなければ
-   * 呼び出し側が警告する — 部分的な破損を無言の「検出材料の目減り」にしない
-   * (全体破損の corrupt 警告と同じ可視化の水準)。
+   * The number of non-empty lines that failed to decode and were skipped
+   * (the trace of torn-line self-healing). When non-zero the caller
+   * warns — partial corruption is not silently turned into "less
+   * detection material" (the same visibility level as the
+   * whole-corruption corrupt warning).
    */
   readonly droppedRecords: number;
 }
 
-/** pull 成功時の原子コミット(規則 (c) 基準 + 変数床 + チェーンヘッドを 1 レコードで)。 */
+/** The atomic commit on pull success (rule (c) baseline + variable floor + chain head in one record). */
 export interface PullCommit {
   readonly chainHead: ChainHeadFloor;
   readonly environmentId: string;
   readonly environment: EnvironmentFloor;
 }
 
-/** push 受理時のコミット(自分が署名した最新 version を床に昇格)。 */
+/** The commit on push acceptance (promotes one's own signed latest version to the floor). */
 export interface PushCommit {
   readonly chainHead: ChainHeadFloor;
   readonly environmentId: string;
@@ -238,14 +267,16 @@ export interface PushCommit {
 }
 
 /**
- * metadata-only pull の環境水準コミット(session-31 §3)。値床は
- * 捏造しない・pull 基準(規則 (c))は前進させない — 前進するのは環境メタ床・
- * マニフェスト床・環境水準エポック観測(座標 (ii))・チェーンヘッドのみ。
+ * The environment-level commit of a metadata-only pull (session-31 §3).
+ * Fabricates no value floor and never advances the pull baseline (rule
+ * (c)) — only the environment meta floor, manifest floor, the
+ * environment-level epoch observation (coordinate (ii)), and the chain
+ * head advance.
  */
 export interface MetadataCommit {
   readonly chainHead: ChainHeadFloor;
   readonly environmentId: string;
-  /** チェーン導出の現エポック(座標 (ii) — 出所を問わず join)。 */
+  /** The chain-derived current epoch (coordinate (ii) — joined regardless of provenance). */
   readonly observedEpoch: number;
   readonly metaVersion: number;
   readonly metaSigHashHex: string;
@@ -253,9 +284,10 @@ export interface MetadataCommit {
 }
 
 /**
- * 受理確認済みの自己発行マニフェストの床昇格(session-31 §3)。
- * pullEpoch・変数床は動かさない。環境水準エポック観測はマニフェストの
- * epoch で join される(検証済み観測 — 座標 (ii))。
+ * Floor promotion of one's own manifest whose acceptance is confirmed
+ * (session-31 §3). pullEpoch and the variable floor are not moved. The
+ * environment-level epoch observation is joined at the manifest's epoch
+ * (a verified observation — coordinate (ii)).
  */
 export interface ManifestCommit {
   readonly chainHead: ChainHeadFloor;
@@ -264,90 +296,99 @@ export interface ManifestCommit {
 }
 
 /**
- * Load / commit boundary for the local floor log (§6.3). すべての commit は
- * 「追記(fsync 相当の永続化まで — 3-E′)→ fold」であり、fold が同座標
- * conflict を検出したら typed エラーで失敗する(証拠はログに残っている)。
+ * Load / commit boundary for the local floor log (§6.3). Every commit is
+ * "append (through fsync-equivalent durability — 3-E′) → fold", and a
+ * fold that detects a same-coordinate conflict fails with a typed error
+ * (the evidence remains in the log).
  */
 export interface FloorStoreShape {
   readonly load: (projectId: string) => Effect.Effect<FloorLoadResult, CliError>;
-  /** チェーン同期成功時のヘッド前進(規則 (c) 基準は動かさない)。 */
+  /** Head advancement on a successful chain sync (rule (c)'s baseline is not moved). */
   readonly commitHead: (projectId: string, head: ChainHeadFloor) => Effect.Effect<void, CliError>;
-  /** 検証済み pull の床コミット。fold 済み(= ログへ永続化済み)の環境床を返す。 */
+  /** The floor commit of a verified pull. Returns the folded (= persisted to the log) environment floor. */
   readonly commitPull: (
     projectId: string,
     commit: PullCommit,
   ) => Effect.Effect<EnvironmentFloor, CliError>;
-  /** 受理された push の変数床前進(規則 (c) 基準 pullEpoch は動かさない)。 */
+  /** Variable-floor advancement of an accepted push (rule (c)'s baseline pullEpoch is not moved). */
   readonly commitPush: (
     projectId: string,
     commit: PushCommit,
   ) => Effect.Effect<EnvironmentFloor, CliError>;
-  /** metadata-only pull の環境水準コミット(値床は捏造しない)。 */
+  /** The environment-level commit of a metadata-only pull (no value floor is fabricated). */
   readonly commitMetadata: (
     projectId: string,
     commit: MetadataCommit,
   ) => Effect.Effect<EnvironmentFloor, CliError>;
-  /** 受理確認済みマニフェストの床昇格。 */
+  /** Floor promotion of an acceptance-confirmed manifest. */
   readonly commitManifest: (
     projectId: string,
     commit: ManifestCommit,
   ) => Effect.Effect<EnvironmentFloor, CliError>;
   /**
-   * security-critical mutation の送信前 intent(3-F)。追記の永続化(fsync
-   * 相当)まで待ってから送信してよい — 失敗したら送信しない(fail-closed)。
-   * 採番した intent id を返す。
+   * The pre-send intent of a security-critical mutation (3-F). Sending
+   * may proceed only after the append's durability (fsync-equivalent) —
+   * on failure nothing is sent (fail-closed). Returns the assigned
+   * intent id.
    */
   readonly appendIntent: (
     projectId: string,
     intent: FloorIntentInput,
   ) => Effect.Effect<string, CliError>;
-  /** 効果確認の結果で intent を閉じる resolution レコードの追記。 */
+  /** Appending the resolution record that closes an intent with the effect-check's result. */
   readonly resolveIntent: (
     projectId: string,
     intentId: string,
     outcome: FloorIntentOutcome,
   ) => Effect.Effect<void, CliError>;
   /**
-   * 前回提出したヘッド申告のヘッド(CRYPTO_SPEC §6.3 ヘッドゴシップの
-   * 「前回申告より前進していれば提出」の判定材料)。
-   * 床の join 格子には入れない別クラス: 自分の送信記録であって検証済み観測では
-   * なく、喪失の帰結は「同一 seq の再提出(サーバー側で冪等 204)」のみで
-   * 安全性を担わない。missing / 破損は null(ベストエフォート)。
+   * The head of the previously submitted head attestation (the decision
+   * material for CRYPTO_SPEC §6.3's head-gossip "submit if advanced past
+   * the previous attestation"). A separate class not entered into the
+   * floor's join lattice: it is one's own send record, not a verified
+   * observation, and the consequence of losing it is only "a
+   * resubmission of the same seq (idempotent 204 on the server side)" —
+   * it bears no safety. missing / corrupt = null (best-effort).
    */
   readonly loadAttestedHead: (projectId: string) => Effect.Effect<ChainHeadFloor | null, CliError>;
-  /** 提出成功後の前回申告の更新(上書き可の非機密ローカル状態)。 */
+  /** Updating the previous attestation after a successful submission (overwritable non-sensitive local state). */
   readonly saveAttestedHead: (
     projectId: string,
     head: ChainHeadFloor,
   ) => Effect.Effect<void, CliError>;
   /**
-   * 矛盾ヘッド申告の証拠の追記(§6.6 照合 (a) — 追記専用 JSONL。フォーマットは
-   * AttestationEvidenceRecord)。保存先パスを返す(警告文の導線)。
+   * Appending evidence of a contradicting head attestation (§6.6
+   * reconciliation (a) — append-only JSONL, format is
+   * AttestationEvidenceRecord). Returns the destination path (a lead-in
+   * for the warning message).
    */
   readonly appendAttestationEvidence: (
     projectId: string,
     evidence: AttestationEvidenceRecord,
   ) => Effect.Effect<string, CliError>;
   /**
-   * 床の記録があるプロジェクト ID(ファイル名だけを読む — 内容・形式は読まない)。床は
-   * 設定ファイルの場所で 1 つなので、別のサーバー・アカウントのプロジェクトも混ざる。
-   * 判断の材料にしない(`device add` の「どこにも無い」の範囲を補う情報だけ — DK K13-7)。
+   * The project IDs with a floor record (reads only file names — never
+   * the contents or the format). There is one floor per config-file
+   * location, so projects of other servers / accounts mix in. Never used
+   * as decision material (only information supplementing the range of
+   * `device add`'s "nowhere to be found" — DK K13-7).
    */
   readonly listProjectIds: () => Effect.Effect<readonly string[], CliError>;
 }
 
 export class FloorStore extends Context.Service<FloorStore, FloorStoreShape>()("cli/FloorStore") {}
 
-/** 床ディレクトリ(設定と同系の置き場: <config.json の親>/floor)。 */
+/** The floor directory (sibling of the config: <config.json's parent>/floor). */
 export function floorDirOf(configPath: string): string {
   return join(dirname(configPath), "floor");
 }
 
 /**
- * Own-property lookup for floor records. `constructor` / `prototype` は §12-1 の
- * 正当な ID なので、素のブラケット参照だと「レコードに存在しない ID」が
- * Object.prototype の継承プロパティ(関数)に解決されて誤動作する。床レコードの
- * 動的キー参照は必ずこれを使う。
+ * Own-property lookup for floor records. `constructor` / `prototype` are
+ * legitimate IDs under §12-1, so a plain bracket lookup would resolve "an
+ * ID absent from the record" to an Object.prototype inherited property
+ * (a function) and misbehave. Every dynamic key lookup on a floor record
+ * must go through this.
  */
 export function floorRecordGet<T>(
   record: Readonly<Record<string, T>> | undefined,
@@ -356,12 +397,12 @@ export function floorRecordGet<T>(
   return record !== undefined && Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
-/** 全座標が bottom の環境床(部分観測の join 台座)。 */
+/** An environment floor with every coordinate at bottom (the join pedestal for partial observations). */
 export function emptyEnvironmentFloor(): EnvironmentFloor {
   return { pullEpoch: 0, observedEpoch: 0, metaVersion: 0, metaSigHashHex: "", variables: {} };
 }
 
-/** join 中に検出した同座標 conflict の受け皿。 */
+/** The receptacle for same-coordinate conflicts detected during a join. */
 export type ConflictSink = (conflict: FloorConflict) => void;
 
 interface VersionedEvidence {
@@ -370,9 +411,12 @@ interface VersionedEvidence {
 }
 
 /**
- * 同一版・異ハッシュ = join 未定義。証拠を sink へ流し、代表値は**ハッシュの
- * 辞書順で大きい側**にする(可換・冪等 — fold の順序に依存しない決定的な代表。
- * conflict の存在自体が使用拒否の条件なので、代表の選び方は検出に影響しない)。
+ * Same version, different hash = join undefined. The evidence flows to
+ * the sink, and the representative is **the lexicographically larger
+ * hash** (commutative and idempotent — a deterministic representative
+ * independent of fold order. Since the conflict's existence itself is
+ * the refusal-to-use condition, the representative's choice does not
+ * affect detection).
  */
 function joinVersioned<T extends VersionedEvidence>(
   a: T,
@@ -390,7 +434,7 @@ function joinVersioned<T extends VersionedEvidence>(
   return a.hashHex > b.hashHex ? a : b;
 }
 
-/** チェーンヘッドの join(seq 前進のみ。同一 seq の異ハッシュ = 分岐の証拠)。 */
+/** Joining chain heads (seq advancement only. Same seq, different hash = evidence of a fork). */
 export function joinChainHead(
   existing: ChainHeadFloor | null,
   incoming: ChainHeadFloor,
@@ -457,7 +501,7 @@ function joinMetaSide(
   return { metaVersion: joined.version, metaSigHashHex: joined.hashHex };
 }
 
-/** deleted(終端)と live(active | declared)の join: 削除後の live 観測 = undeletion の証拠。 */
+/** Joining deleted (terminal) with live (active | declared): a live observation after deletion = evidence of undeletion. */
 function joinDeletedWithLive(
   environmentId: string,
   variableId: string,
@@ -466,9 +510,10 @@ function joinDeletedWithLive(
   sink: ConflictSink,
 ): VariableFloor {
   if (live.metaVersion > deleted.metaVersion) {
-    // deleted は終端状態(§4.2)— それより進んだ metaVersion の active / declared
-    // 観測は正当な経路が存在しない(無断復活の証拠。declared への遷移も禁止
-    // — 裁定 CS)。代表は deleted のまま
+    // deleted is a terminal state (§4.2) — an active / declared
+    // observation at a metaVersion beyond it has no legitimate path
+    // (evidence of unauthorized resurrection; a transition to declared is
+    // also forbidden — ruling CS). The representative stays deleted
     sink({
       kind: "undeletion",
       environmentId,
@@ -479,7 +524,7 @@ function joinDeletedWithLive(
       secondHashHex: live.metaSigHashHex,
     });
   } else if (live.metaVersion === deleted.metaVersion) {
-    // 同一 metaVersion で status が違えば signed bytes も必ず違う = 規則 (b)
+    // A different status at the same metaVersion always means different signed bytes = rule (b)
     sink({
       kind: "variable-meta",
       environmentId,
@@ -494,11 +539,13 @@ function joinDeletedWithLive(
 }
 
 /**
- * live(active | declared)同士の join: 値側(version — active のみが持つ)と
- * メタ側(metaVersion)を独立に join する。declared の値観測は存在しない
- * (§4.2 — 値床は activation まで空)が、active の値観測が declared 観測で
- * 無効化されることはない(active → declared の正当な遷移は存在しない —
- * 裁定 CS)ため、どちらかが active なら代表は active(値側保持)になる。
+ * Joining two live (active | declared) floors: the value side (version —
+ * only active has it) and the meta side (metaVersion) join independently.
+ * A declared value observation does not exist (§4.2 — the value floor is
+ * empty until activation), and an active value observation is never
+ * invalidated by a declared observation (no legitimate active → declared
+ * transition exists — ruling CS), so when either side is active the
+ * representative is active (value side retained).
  */
 function joinLiveVariableFloor(
   environmentId: string,
@@ -509,7 +556,7 @@ function joinLiveVariableFloor(
 ): VariableFloor {
   const meta = joinMetaSide(environmentId, variableId, existing, incoming, sink);
   if (existing.status === "declared" || incoming.status === "declared") {
-    // 高々片側が active: 値観測はその側のみ(declared は値側を持たない)
+    // At most one side is active: the value observation comes from that side only (declared has no value side)
     const active =
       existing.status === "active" ? existing : incoming.status === "active" ? incoming : null;
     if (active === null) {
@@ -547,9 +594,11 @@ function joinLiveVariableFloor(
 }
 
 /**
- * 変数床の join。deleted は終端状態(active / declared で上書きしない)、
- * live 同士は joinLiveVariableFloor。どちらの入力も §6.3 検証を通過した観測
- * なので、同座標の相違はすべて equivocation の証拠。
+ * Joining variable floors. deleted is a terminal state (never
+ * overwritten by active / declared); live pairs go through
+ * joinLiveVariableFloor. Both inputs are observations that passed §6.3
+ * verification, so every same-coordinate difference is evidence of
+ * equivocation.
  */
 function joinVariableFloor(
   environmentId: string,
@@ -561,9 +610,10 @@ function joinVariableFloor(
   if (existing === undefined) {
     return incoming;
   }
-  // 片側だけ deleted: metaVersion の大小に依らず deleted(終端)が代表。
-  // live 側が deleted より進んでいれば undeletion、同一版なら規則 (b) の
-  // 証拠として joinDeletedWithLive が sink へ流す
+  // Only one side deleted: regardless of metaVersion ordering, deleted
+  // (terminal) is the representative. If the live side advanced past the
+  // deleted it is undeletion; if the same version it is rule (b) evidence
+  // — joinDeletedWithLive flows it to the sink
   if (existing.status === "deleted") {
     if (incoming.status === "deleted") {
       const meta = joinMetaSide(environmentId, variableId, existing, incoming, sink);
@@ -577,7 +627,7 @@ function joinVariableFloor(
   return joinLiveVariableFloor(environmentId, variableId, existing, incoming, sink);
 }
 
-/** マニフェスト床の join(manifestVersion 前進のみ。同一版の異ハッシュ = 分岐の証拠)。 */
+/** Joining manifest floors (manifestVersion advancement only. Same version, different hash = evidence of a fork). */
 function joinManifestFloor(
   environmentId: string,
   existing: ManifestFloor | undefined,
@@ -617,8 +667,10 @@ function joinManifestFloor(
 }
 
 /**
- * 環境床の join(各座標を独立に): pullEpoch / observedEpoch は max、
- * メタ / マニフェストは版前進 + 同版相違の証拠化、変数は単調 union。
+ * Joining environment floors (each coordinate independently):
+ * pullEpoch / observedEpoch take the max, meta / manifest join by
+ * version advancement + evidencing same-version differences, variables
+ * take a monotonic union.
  */
 export function joinEnvironmentFloor(
   environmentId: string,
@@ -636,8 +688,9 @@ export function joinEnvironmentFloor(
         ? { metaVersion: existing.metaVersion, metaSigHashHex: existing.metaSigHashHex }
         : joinMetaSide(environmentId, null, existing, incoming, sink);
   const manifest = joinManifestFloor(environmentId, existing.manifest, incoming.manifest, sink);
-  // union: 正当な床の変数キーは消えない(削除も tombstone レコードとして残る)
-  // ため、片側にしかない変数は保持する
+  // union: a legitimate floor's variable keys never disappear (a deletion
+  // also stays as a tombstone record), so a variable present on only one
+  // side is kept
   const variables: Record<string, VariableFloor> = { ...existing.variables };
   for (const [variableId, variable] of Object.entries(incoming.variables)) {
     variables[variableId] = joinVariableFloor(

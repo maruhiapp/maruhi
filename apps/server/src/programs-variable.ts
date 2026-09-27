@@ -1,9 +1,9 @@
-// 変数とバージョニングの Effect プログラム(AUTH_SPEC §12-5)。
+// Effect programs for variables and versioning (AUTH_SPEC §12-5).
 //
-// 判定順(§12-3)と permit 直列化の前提は旧 data-programs.ts のとおり:
-// requireEnvironmentAccess(role → scope — §12-3。2026-09-15 ES K3)→ 環境・変数の
-// 存在 → CAS → 署名検証 → 数量ポリシー →
-// 原子書き込み + 監査(AUDIT_SPEC §3.3)。
+// The check order (§12-3) and permit-serialization premise are as in the old
+// data-programs.ts: requireEnvironmentAccess (role → scope — §12-3;
+// 2026-09-15 ES K3) → environment/variable existence → CAS → signature
+// verification → quantity policy → atomic write + audit (AUDIT_SPEC §3.3).
 
 import type { ChainHistoryIndex, ChainState } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -64,15 +64,18 @@ function variableIdUnavailable(
 }
 
 /**
- * バージョン行の書き込み + var.version_pushed の記録(create / push 共通の末尾)。
- * 同期関数: 呼び出し側の書き込みフェーズ(単一の Effect.sync)内で使う。
- * writer は受理時点のチェーン導出メンバー(値署名の検証に使った鍵の持ち主 —
- * CRYPTO_SPEC §4.1)。監査は chain-derived writer FP のみを写す(AUDIT_SPEC §3.3 —
- * 署名・signed bytes・hash・nonce・暗号文は監査に載せない)。
+ * Write a version row + record var.version_pushed (the shared tail of create
+ * and push). A synchronous function: used inside the caller's write phase (a
+ * single Effect.sync). writer is the chain-derived member at acceptance time
+ * (the owner of the key that verified the value signature — CRYPTO_SPEC
+ * §4.1). The audit records only the chain-derived writer FP (AUDIT_SPEC §3.3
+ * — signature, signed bytes, hash, nonce, and ciphertext never go on the
+ * audit).
  *
- * `reencryption` は writer 申告の再暗号化マーカー(AUTH_SPEC §12-5)。true の
- * ときだけ payload に写す(§3.3 — 未申告・false は写さない)。受理判定には
- * 一切関与しない — 読むのは要ローテーション検出の解消導出(§4.1-5)だけ。
+ * `reencryption` is the writer-declared re-encryption marker (AUTH_SPEC
+ * §12-5). Copied to the payload only when true (§3.3 — undeclared and false
+ * are not written). It plays no part in the acceptance decision — the only
+ * reader is the dismissal derivation of rotation-needed detection (§4.1-5).
  */
 function writeVersionWithAudit(
   write: DataWriteOps,
@@ -108,12 +111,13 @@ function writeVersionWithAudit(
 }
 
 /**
- * schema-locked(§12-11 / §12-5): locked のプロジェクトでは変数作成
- * (metaVersion 1 — declared・値同梱の両方)に layoutVersion 2 かつ varType
- * 非空を要求する(typo による影の変数の黙った創出の書き込み時遮断)。
- * **作成時の一回検査**であり継続的な不変条件ではない — 後続のスキーマ再発行で
- * varType を "" へ戻すことは locked 下でも妨げず、declared の activation にも
- * 遡及しない。
+ * schema-locked (§12-11 / §12-5): in a locked project, variable creation
+ * (metaVersion 1 — both declared and value-bundled) requires layoutVersion 2
+ * and a non-empty varType (write-time blocking of the silent creation of
+ * shadow variables by typos). It is a **one-time check at creation**, not a
+ * continuing invariant — a later schema reissue may set varType back to ""
+ * even under locked, and it does not reach back to a declared variable's
+ * activation.
  */
 function ensureSchemaLockedCreation(
   schemaPolicy: SchemaPolicy,
@@ -129,10 +133,12 @@ function ensureSchemaLockedCreation(
 }
 
 /**
- * 作成(metaVersion 1)のスキーマ系受理検査(§12-11 / §12-8)を受理時点の
- * ポリシーで通す: disabled の有効化ゲート(v2 の新規採用拒否)→ schema-locked の
- * 作成時検査 → description の受理ポリシー。layoutVersion のサポート範囲検査は
- * 呼び出し側(createVariableProgram)が statement 依存の全検査より前に行う。
+ * Run the creation-time (metaVersion 1) schema-family acceptance checks
+ * (§12-11 / §12-8) under the policy at acceptance time: the disabled
+ * enablement gate (reject new v2 adoption) → the schema-locked creation check
+ * → the description acceptance policy. The layoutVersion support-range check
+ * is done by the caller (createVariableProgram) before every
+ * statement-dependent check.
  */
 const ensureCreationSchemaGates = (statement: MetaStatementInput) =>
   Effect.gen(function* () {
@@ -148,8 +154,8 @@ const ensureCreationSchemaGates = (statement: MetaStatementInput) =>
   });
 
 /**
- * 作成の前段検査(§12-1 / §12-8): ID の可用性(tombstone 再利用禁止)→
- * 数量ポリシー → NFC → 名前の一意性。
+ * The pre-checks of creation (§12-1 / §12-8): ID availability (no tombstone
+ * reuse) → quantity policy → NFC → name uniqueness.
  */
 const ensureVariableCreatable = (
   environmentId: string,
@@ -174,7 +180,7 @@ const ensureVariableCreatable = (
     }
   });
 
-/** 同梱 version 1 の値の検証列(値ありの作成のみ): 値 CAS → 値署名 → 容量。 */
+/** The verification pipeline for a bundled version-1 value (only for creation with a value): value CAS → value signature → capacity. */
 const acceptCreationValue = (context: {
   readonly state: ChainState;
   readonly history: ChainHistoryIndex;
@@ -198,9 +204,10 @@ const acceptCreationValue = (context: {
   });
 
 /**
- * 既存変数への書き込み(push / activation / rename・スキーマ再発行 / 削除)に
- * 共通する前段(§12-3): requireEnvironmentAccess(role → scope)→ 環境の存在 →
- * 変数の存在。4 経路で同じ 3 段を繰り返さないための束ね。
+ * The shared prefix of writes to an existing variable (push / activation /
+ * rename-or-schema-reissue / delete) (§12-3): requireEnvironmentAccess (role
+ * → scope) → environment existence → variable existence. Bundles the same
+ * three stages so the four paths do not repeat them.
  */
 const requireVariableWriteContext = (
   actor: DataActor,
@@ -216,9 +223,11 @@ const requireVariableWriteContext = (
   });
 
 /**
- * 変数作成(§12-5): active(version 1 の値同梱)または declared(値なし —
- * 「値のない変数は存在しない」の唯一の例外。レイアウト v2 限定)。ワイヤ
- * Schema が status と値の有無の結合を固定する(deleted の創出は構造的に不可)。
+ * Variable creation (§12-5): active (with the bundled version-1 value) or
+ * declared (no value — the sole exception to "a variable without a value does
+ * not exist"; layout v2 only). The wire Schema fixes the combination of
+ * status and value presence (creating a deleted variable is structurally
+ * impossible).
  */
 export const createVariableProgram = (
   actor: DataActor,
@@ -226,7 +235,7 @@ export const createVariableProgram = (
   input: {
     readonly variableId: string;
     readonly statement: MetaStatementInput;
-    /** active 作成の version 1 の値。declared 作成(値なし)では undefined。 */
+    /** The version-1 value of an active creation. undefined for a declared creation (no value). */
     readonly value?: ValueInput;
     readonly manifest: EnvManifestInput;
   },
@@ -240,29 +249,37 @@ export const createVariableProgram = (
       cache,
     );
     yield* requireActiveEnvironment(environmentId);
-    // サポート範囲検査は statement 依存の全検査(NFC・重複名を含む前段検査 —
-    // ensureVariableCreatable)より前(rename / 削除 / activation と同じ規律 —
-    // 名前が衝突している v3 クライアントに duplicate-name を返さない)
+    // The support-range check runs before every statement-dependent check
+    // (including the pre-checks — NFC, duplicate name — inside
+    // ensureVariableCreatable; same discipline as rename / delete /
+    // activation — do not return duplicate-name to a v3 client whose name
+    // collides)
     yield* ensureSupportedLayout(input.statement);
-    // DO ストレージ総量ガード(§12-8): メンバーシップ・role・存在・
-    // レイアウトのサポート範囲の後、CAS / 署名 / 数量ポリシー等の意味論的検査の
-    // 前(資源保護は意味論に優先。storage-guard.ts)
+    // The DO storage total guard (§12-8): after membership, role, existence,
+    // and the layout support range; before the semantic checks — CAS,
+    // signature, quantity policy (resource protection outranks semantics;
+    // storage-guard.ts)
     yield* ensureStorageAdmitsGrowth;
     yield* ensureVariableCreatable(environmentId, input.statement, input.variableId);
-    // スキーマポリシー(§12-11 — 受理時点のポリシーを permit 下で読む):
-    // disabled は v2 の新規採用(metaVersion 1 の v2 作成)を拒否し、locked は
-    // 作成に v2 + varType 非空を要求する。description の上限・文字種は §12-8
+    // The schema policy (§12-11 — read the policy at acceptance time under
+    // the permit): disabled rejects new v2 adoption (v2 creation at
+    // metaVersion 1); locked requires v2 + non-empty varType on creation. The
+    // description bound and character class are §12-8
     yield* ensureCreationSchemaGates(input.statement);
-    // 作成 = version 1 の値 + metaVersion 1 のステートメントの同梱(§12-5)。
-    // ワイヤ Schema が metaVersion 1・active/declared・prev 空を固定するが、
-    // CAS は防衛線として残す(latest = 0 相当)
+    // Creation = the bundled version-1 value + the metaVersion-1 statement
+    // (§12-5). The wire Schema already fixes metaVersion 1, active/declared,
+    // and empty prev, but keep the CAS as a defensive line (equivalent to
+    // latest = 0)
     yield* ensureMetaCas(0, input.statement);
-    // 同梱 version 1 の値・同梱ステートメントとも通常経路と同一の署名検証を
-    // 受ける(§12-5 — 作成経由の検証迂回は値・メタとも不可。declared 作成は
-    // 値がないため値署名の検証のみ対象外)。判定順:
-    // CAS → メタ署名 → 値署名 → 数量ポリシー(裁定 D への挿入)。署名した端末は
-    // メタ署名から解き(設計録 §8 K3-1)、第 2 段の認可を通してから値署名・
-    // マニフェストを同じ端末で検証する
+    // Both the bundled version-1 value and the bundled statement undergo the
+    // same signature verification as the normal path (§12-5 — bypassing
+    // verification via the creation path is impossible for value and meta
+    // alike; a declared creation has no value, so only the value signature is
+    // out of scope). Check order:
+    // CAS → meta signature → value signature → quantity policy (insertion
+    // into ruling D). The signing device is resolved from the meta signature
+    // (design record §8 K3-1), and after the second-stage authorization, the
+    // value signature and the manifest are verified with the same device
     const { device: author, value: metaSignedBytesHashHex } = yield* withSigningDevice(
       member,
       (candidate) =>
@@ -288,10 +305,11 @@ export const createVariableProgram = (
             variableId: input.variableId,
             value: input.value,
           });
-    // 環境マニフェストの複合受理(§12-5): 作成後のメタ状態
-    // (新変数のステートメントを含む集合)からダイジェストを再計算して申告と
-    // 突合する。manifestVersion CAS は metaVersion CAS と同一トランザクション
-    // (同一プログラム・同一 permit)で判定される
+    // Composite acceptance of the environment manifest (§12-5): recompute the
+    // digest from the post-creation meta state (the set including the new
+    // variable's statement) and cross-check it against the declaration. The
+    // manifestVersion CAS is judged in the same transaction (same program,
+    // same permit) as the metaVersion CAS
     const acceptedManifest = yield* acceptManifestForMetaOp({
       projectId,
       environmentId,
@@ -311,10 +329,11 @@ export const createVariableProgram = (
     const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = Date.now();
-    // 書き込みフェーズ(単一タスク): 変数行 + ステートメント行 +(active 作成
-    // なら)version 1 + マニフェスト(最新 1 通の upsert)+ 監査行を原子的に
-    // 書く(「latest_version = 0 のまま ID だけ占有された active 変数」を
-    // 残さない — declared だけが正当な version 0 状態)
+    // Write phase (single task): the variable row + the statement row + (for
+    // an active creation) version 1 + the manifest (upsert of the latest one)
+    // + the audit row, written atomically (never leave "an active variable
+    // occupying only an ID with latest_version = 0" — declared is the only
+    // legitimate version-0 state)
     yield* Effect.sync(() => {
       store.write.insertVariable(environmentId, input.variableId, input.statement.name, now);
       acceptedManifest.writeSync(now);
@@ -326,8 +345,9 @@ export const createVariableProgram = (
         { userId: author.userId, keyFingerprintHex: author.keyFingerprintHex },
         now,
       );
-      // var.created の FP = author FP(declared 作成 — 値署名なし — は
-      // ステートメント署名の author 鍵 FP のみを写す。AUDIT_SPEC §3.3)
+      // var.created's FP = the author FP (a declared creation — no value
+      // signature — records only the statement signature's author key FP.
+      // AUDIT_SPEC §3.3)
       audit.appendSync(
         dataEvent(actor, now, "var.created", {
           environmentId,
@@ -337,7 +357,8 @@ export const createVariableProgram = (
         }),
       );
       if (acceptedValue !== null) {
-        // 作成は定義上、再暗号化ではない(マーカーの申告面も持たない — §12-5)
+        // Creation is by definition not a re-encryption (it carries no marker
+        // declaration surface either — §12-5)
         writeVersionWithAudit(
           store.write,
           audit.appendSync,
@@ -354,7 +375,7 @@ export const createVariableProgram = (
     });
     return {
       variableId: input.variableId,
-      // declared 作成は保存バージョン 0 のまま(§12-5)
+      // A declared creation stays at stored version 0 (§12-5)
       version: acceptedValue?.value.version ?? 0,
       epoch: acceptedValue?.value.epoch ?? currentEpochOf(state, environmentId),
     } satisfies VariableVersionValue;
@@ -375,21 +396,25 @@ export const pushVersionProgram = (
       variableId,
       cache,
     );
-    // declared 変数への通常 push は受理しない(§12-5): 最初の値は activation
-    // 複合(値 version 1 + status active のステートメント + マニフェスト)のみ
+    // A normal push to a declared variable is not accepted (§12-5): the
+    // first value is only the activation composite (value version 1 + a
+    // status active statement + manifest)
     if (variable.latestStatus === "declared") {
       return yield* rejectData({ kind: "activation-required", variableId });
     }
-    // DO ストレージ総量ガード(§12-8): 存在・種別の検査の後、CAS / 署名の
-    // 前。再暗号化 push も対象(拒否下では新しい値は書けない — 一貫した帰結。
-    // 同節の (d))
+    // The DO storage total guard (§12-8): after the existence and kind
+    // checks, before CAS / signature. A re-encryption push is also covered
+    // (under rejection, no new value can be written — the consistent
+    // consequence; (d) of the same section)
     yield* ensureStorageAdmitsGrowth;
     yield* ensureValueCas(state, environmentId, variable.latestVersion, value);
-    // 判定順(裁定 D): epoch / version CAS → 値署名(署名 → 宣言 head →
-    // head 時点状態 → predecessor)→ 数量ポリシー → 原子書き込み。
-    // 不受理時は variable / version / latest / audit のいずれも変更しない。
-    // writer の端末は値署名から解く(設計録 §8 K3-1)— 第 2 段の認可(端末の実効
-    // 権限: member × 環境 ∈ 実効 scope)は署名の直後
+    // Check order (ruling D): epoch / version CAS → value signature
+    // (signature → declared head → state at head → predecessor) → quantity
+    // policy → atomic write. On non-acceptance, neither variable / version /
+    // latest / audit changes. The writer's device is resolved from the value
+    // signature (design record §8 K3-1) — the second-stage authorization (the
+    // device's effective permission: member × environment ∈ effective scope)
+    // runs right after the signature
     const { device: writer, value: signedBytesHashHex } = yield* withSigningDevice(
       member,
       (candidate) =>
@@ -436,12 +461,14 @@ export const pushVersionProgram = (
   });
 
 /**
- * activation(declared → active — §12-5): declared 変数への最初の値 push を
- * 「EncryptedPayload(version 1)+ status active のステートメント(metaVersion
- * + 1・v2)+ EnvironmentManifest」の複合として受理する。値署名・ステートメント
- * 署名・マニフェストの検証は既存規則の合成。直前が v2(declared は v2 限定)の
- * ため継続ステートメントとしてポリシーに依らず受理される(§12-11 の可逆性 —
- * schema-locked の varType 検査も遡及しない: activation は創出ではない)。
+ * activation (declared → active — §12-5): the first value push to a declared
+ * variable is accepted as the composite of "EncryptedPayload (version 1) + a
+ * status active statement (metaVersion + 1, v2) + EnvironmentManifest". The
+ * value signature, statement signature, and manifest checks are a composition
+ * of the existing rules. Because the predecessor is necessarily v2 (declared
+ * is v2-only), it is accepted as a continuation statement regardless of the
+ * policy (the §12-11 reversibility — the schema-locked varType check does not
+ * reach back either: activation is not a creation).
  */
 export const activateVariableProgram = (
   actor: DataActor,
@@ -461,36 +488,43 @@ export const activateVariableProgram = (
       variableId,
       cache,
     );
-    // サポート範囲検査は statement 依存の全検査より前(rename / 削除と同じ
-    // 規律 — v3 クライアントには下の status / name ガードや値 CAS の誤誘導
-    // エラーでなく、常に正直な update-required を返す)
+    // The support-range check runs before every statement-dependent check
+    // (same discipline as rename / delete — to a v3 client, always return the
+    // honest update-required rather than a misleading error from the status /
+    // name guards or the value CAS below)
     yield* ensureSupportedLayout(input.statement);
-    // DO ストレージ総量ガード(§12-8): 存在・サポート範囲の後、status /
-    // name ガード・CAS・署名の前
+    // The DO storage total guard (§12-8): after existence and the support
+    // range, before the status / name guards, CAS, and signature
     yield* ensureStorageAdmitsGrowth;
-    // activation の対象は declared のみ(§12-5 — 「値 push + メタ再発行」の
-    // 汎用複合ではない)。値 CAS は version = latestVersion + 1 しか強制しない
-    // ため対象判定を兼ねられず(active 変数へ version N+1 を送れば通過して
-    // しまう)、この明示ガードが下の schemaPolicy 免除の前提「直前は必ず v2
-    // (declared は v2 限定)」を成立させる — 無いと disabled 下で active な
-    // v1 変数を v2 へ昇格でき、§12-11 の有効化ゲートが迂回される
+    // The activation target is only declared (§12-5 — it is not a
+    // general-purpose composite of "value push + meta reissue"). Since the
+    // value CAS only enforces version = latestVersion + 1 it cannot double as
+    // the target check (sending version N+1 to an active variable would pass),
+    // so this explicit guard is what makes the schemaPolicy exemption's
+    // premise below hold — "the predecessor is necessarily v2 (declared is
+    // v2-only)". Without it, an active v1 variable could be promoted to v2
+    // under disabled, bypassing the §12-11 enablement gate
     if (variable.latestStatus !== "declared") {
       return yield* rejectData({ kind: "payload-mismatch", field: "status" });
     }
-    // activation は改名を兼ねない: name は宣言時の名をそのまま保持する
-    // (delete の name 保持と同じ受理検査 — 改名は rename 経路が var.renamed の
-    // 監査と共に担い、「名前の変更 ⇔ var.renamed 行」の対応を崩さない)。
-    // 保持一致により NFC・一意性は宣言受理時の検査結果がそのまま生きる
+    // activation does not double as a rename: name keeps the name declared at
+    // declaration as-is (the same acceptance check as delete's name
+    // preservation — renames are owned by the rename path together with the
+    // var.renamed audit, and the "name change ⇔ var.renamed row"
+    // correspondence must not break). With preservation matching, the NFC and
+    // uniqueness checks at declaration acceptance stay valid as-is
     if (input.statement.name !== variable.name) {
       return yield* rejectData({ kind: "payload-mismatch", field: "name" });
     }
-    // declared は latestVersion 0 の唯一の正当な状態なので、CAS が値 version 1 を
-    // 強制する(§12-5 の「値 version 1」)
+    // Since declared is the only legitimate latestVersion-0 state, the CAS
+    // forces value version 1 (the "value version 1" of §12-5)
     yield* ensureValueCas(state, environmentId, variable.latestVersion, input.value);
-    // メタ受理列(§12-5): CAS → アンカー → description 受理検査 → 署名検証
-    // (declared → active の遷移と v2 単調性は crypto の predecessor 検査)。
-    // schemaPolicy は渡さない — 上の declared ガードにより直前は必ず v2 で、
-    // 継続ステートメントはポリシーに依らず受理される(§12-11)
+    // The meta acceptance pipeline (§12-5): CAS → anchor → description
+    // acceptance check → signature verification (the declared → active
+    // transition and v2 monotonicity are crypto's predecessor check).
+    // schemaPolicy is not passed — thanks to the declared guard above the
+    // predecessor is necessarily v2, and a continuation statement is accepted
+    // regardless of the policy (§12-11)
     const { device: author, value: metaSignedBytesHashHex } = yield* withSigningDevice(
       member,
       (candidate) =>
@@ -513,9 +547,10 @@ export const activateVariableProgram = (
       member: author,
       value: input.value,
     });
-    // マニフェストの複合受理(§12-5): activation はメタ状態が変わるため
-    // マニフェスト再発行を伴う(「値の push はマニフェストに触れない」不変条件の
-    // 対象は通常 push — CRYPTO_SPEC §4.3)
+    // Composite acceptance of the manifest (§12-5): activation changes the
+    // meta state, so it involves a manifest reissue (the invariant "a value
+    // push does not touch the manifest" covers only a normal push —
+    // CRYPTO_SPEC §4.3)
     const acceptedManifest = yield* acceptManifestForMetaOp({
       projectId,
       environmentId,
@@ -533,9 +568,10 @@ export const activateVariableProgram = (
     const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = Date.now();
-    // 書き込みフェーズ(単一タスク): ステートメント行 + version 1 +
-    // マニフェスト + var.version_pushed(version 1 — AUDIT_SPEC §3.3。
-    // 存在区間の開始は declared 作成時の var.created が既に保持する)
+    // Write phase (single task): the statement row + version 1 + the manifest
+    // + var.version_pushed (version 1 — AUDIT_SPEC §3.3. The start of the
+    // existence interval is already held by the var.created of the declared
+    // creation)
     yield* Effect.sync(() => {
       store.write.insertVariableMetaStatement(
         environmentId,
@@ -546,7 +582,8 @@ export const activateVariableProgram = (
         now,
       );
       acceptedManifest.writeSync(now);
-      // activation は最初の値であり、定義上再暗号化ではない
+      // activation is the first value and is by definition not a
+      // re-encryption
       writeVersionWithAudit(
         store.write,
         audit.appendSync,
@@ -582,18 +619,21 @@ export const renameVariableProgram = (
       variableId,
       cache,
     );
-    // サポート範囲検査は statement 依存の全検査より前(裁定 CR — サポート外
-    // レイアウトには以降の検査の誤誘導エラーを返さない)
+    // The support-range check runs before every statement-dependent check
+    // (ruling CR — for an unsupported layout, never return a misleading error
+    // from a later check)
     yield* ensureSupportedLayout(statement);
-    // DO ストレージ総量ガード(§12-8): rename / スキーマ再発行はステート
-    // メント行 + マニフェストを積む成長面(metaVersion 上限とは独立に適用)。
-    // 位置は存在・レイアウト検査の後・CAS / 署名検証の前(削除経路と前段を
-    // 共有する形を保つ — 削除はガードを呼ばない)
+    // The DO storage total guard (§12-8): rename / schema reissue is a growth
+    // surface that stacks a statement row + a manifest (applies independently
+    // of the metaVersion bound). It sits after the existence and layout checks
+    // and before CAS / signature verification (keeps the same prefix shape as
+    // the delete path — delete does not call the guard)
     yield* ensureStorageAdmitsGrowth;
-    // rename / スキーマ再発行は status 不変(§12-5): declared → active は
-    // activation 複合(値同梱)のみ、active → declared は禁止。ワイヤは両
-    // status を運べるため、現状態との一致を受理検査で固定する(name の保持
-    // 検査と同じ payload-mismatch)
+    // rename / schema reissue never changes status (§12-5): declared →
+    // active is only the activation composite (with value), and active →
+    // declared is forbidden. Since the wire can carry both statuses, the
+    // acceptance check pins the match against the current state (the same
+    // payload-mismatch as the name-preservation check)
     if (statement.status !== variable.latestStatus) {
       return yield* rejectData({ kind: "payload-mismatch", field: "status" });
     }
@@ -614,13 +654,16 @@ export const renameVariableProgram = (
           history,
           member: candidate,
           statement,
-          // 有効化ゲート(§12-11): disabled 下の「v1 変数への v2 再発行」を拒否する
-          // (直前が v2 の継続はポリシーに依らず通る — アンカー実値で判定)
+          // The enablement gate (§12-11): rejects "v2 reissue of a v1
+          // variable" under disabled (a continuation whose predecessor is v2
+          // passes regardless of the policy — judged on the anchor's real
+          // values)
           schemaPolicy,
         }),
     );
     yield* ensureDevicePermission(author, "member", environmentId);
-    // マニフェストの複合受理(§12-5): rename 適用後の集合で再計算・突合
+    // Composite acceptance of the manifest (§12-5): recompute and cross-check
+    // on the set after the rename is applied
     const acceptedManifest = yield* acceptManifestForMetaOp({
       projectId,
       environmentId,
@@ -636,12 +679,15 @@ export const renameVariableProgram = (
     });
     const audit = yield* AuditStore;
     const now = Date.now();
-    // 監査イベントの分岐(AUDIT_SPEC §3.3): 名前が実際に変わった
-    // 再発行のみ var.renamed、名前不変の再発行(スキーマ欄の設定・変更 —
-    // §12-5 のスキーマ再発行)は var.schema_reissued。ワイヤは同一操作形の
-    // ため受理時の直前ステートメント名との byte 比較で分岐する(改名して
-    // いない操作を「renamed」と記録しない)。名前とスキーマ欄の同時変更は
-    // var.renamed 1 行(名前変更が主事象 — 1 操作 1 行の記録規律)
+    // Audit-event branching (AUDIT_SPEC §3.3): only a reissue that actually
+    // changed the name is var.renamed; a name-preserving reissue (setting or
+    // changing schema fields — the §12-5 schema reissue) is
+    // var.schema_reissued. The wire has the same operation shape for both, so
+    // branch on a byte comparison against the previous statement's name at
+    // acceptance time (do not record an operation that did not rename as
+    // "renamed"). Changing the name and the schema fields at once is a single
+    // var.renamed row (the rename is the main event — the one-row-per-
+    // operation recording discipline)
     const event = statement.name === variable.name ? "var.schema_reissued" : "var.renamed";
     yield* Effect.sync(() => {
       store.write.insertVariableMetaStatement(
@@ -679,9 +725,11 @@ export const deleteVariableProgram = (
       variableId,
       cache,
     );
-    // サポート範囲検査は statement 依存の全検査より前(rename と同じ規律)
+    // The support-range check runs before every statement-dependent check
+    // (same discipline as rename)
     yield* ensureSupportedLayout(statement);
-    // deleted の name は直前 active 名を保持する(§4.2 — byte-exact)
+    // A deleted statement's name preserves the previous active name (§4.2 —
+    // byte-exact)
     if (statement.name !== variable.name) {
       return yield* rejectData({ kind: "payload-mismatch", field: "name" });
     }
@@ -699,8 +747,9 @@ export const deleteVariableProgram = (
         }),
     );
     yield* ensureDevicePermission(author, "member", environmentId);
-    // マニフェストの複合受理(§12-5): tombstone を含む集合で再計算・突合
-    // (tombstone 隠しの digest 不一致はここで落ちる — §4.3 (3))
+    // Composite acceptance of the manifest (§12-5): recompute and cross-check
+    // on the set including the tombstone (a digest mismatch from hiding a
+    // tombstone is caught here — §4.3 (3))
     const acceptedManifest = yield* acceptManifestForMetaOp({
       projectId,
       environmentId,
@@ -717,9 +766,9 @@ export const deleteVariableProgram = (
     const store = yield* DataStore;
     const audit = yield* AuditStore;
     const now = Date.now();
-    // 書き込みフェーズ: tombstone + 全バージョン削除 + deleted ステートメント行
-    // (保存・配布し続ける — §12-5)+ マニフェスト + var.deleted(author FP —
-    // AUDIT_SPEC §3.3)
+    // Write phase: tombstone + delete all versions + the deleted statement
+    // row (keeps being stored and distributed — §12-5) + the manifest +
+    // var.deleted (author FP — AUDIT_SPEC §3.3)
     yield* Effect.sync(() => {
       store.write.retireVariable(environmentId, variableId, now);
       store.write.insertVariableMetaStatement(

@@ -1,10 +1,12 @@
-// schemaPolicy 設定 API のハンドラ(AUTH_SPEC §12-11)。
+// Handlers for the schemaPolicy configuration API (AUTH_SPEC §12-11).
 //
-// 判定順(§12-3): 認証(ミドルウェア)→ トークンスコープ(GET = read /
-// PUT = admin。スコープ外 404 / 水準不足 403)→ DO(メンバーシップ 404 /
-// チェーン role — GET = reader 以上 / PUT = admin 以上)。セッション主体は
-// GET / PUT とも許可列挙外で 403(session-capability.ts — §5)。
-// ペイロードは署名済み構造を運ばない(strict 対象クラス外 — §12-10 (1))。
+// Check order (§12-3): authentication (middleware) → token scope
+// (GET = read / PUT = admin; out of scope 404 / insufficient level
+// 403) → DO (membership 404 / chain role — GET = reader or above /
+// PUT = admin or above). A session principal is outside the allowed
+// enumeration for both GET / PUT → 403 (session-capability.ts — §5).
+// The payload carries no signed structure (outside the strict-target
+// class — §12-10 (1)).
 
 import { maruhiApi } from "@maruhi/api-schema";
 import { Effect } from "effect";

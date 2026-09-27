@@ -1,10 +1,13 @@
-// Bun 以外のランタイム(npm 配布物を Node.js で起動した場合)を入口で止める
-// 副作用モジュール。bin.ts の import 先頭に置くことで、他モジュールの評価より
-// 先に必ず実行される(ES import はホイストされるため、bin.ts 本文にこの検査を
-// 書いても「import 時に Bun API へ触れる変更」からは守れない)。
+// A side-effect module that stops at the entry any runtime other
+// than Bun (e.g. running the npm distribution on Node.js). Placed
+// at the head of bin.ts's imports, it is always evaluated before
+// the other modules (ES imports are hoisted, so writing this check
+// in bin.ts's body would not guard against "changes that touch Bun
+// API at import time").
 //
-// 通しても keychain(Bun.secrets)や run(Bun.spawn)に触れた時点の
-// ReferenceError になり、「ランタイム違い」という原因が利用者に伝わらない。
+// Letting it through would only produce a ReferenceError at the
+// first touch of keychain (Bun.secrets) or run (Bun.spawn) — the
+// "wrong runtime" cause would never reach the user.
 
 if (typeof globalThis.Bun === "undefined") {
   console.error(

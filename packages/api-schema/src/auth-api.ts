@@ -1,14 +1,17 @@
-// 認証エンドポイントの HttpApi 定義(AUTH_SPEC §3 / §5 / §6 / §11-4)。
-// CLI ログイン(§4 — サーバー仲介 web-flow ハンドオフ)は auth-cli-api.ts。
+// HttpApi definition of the authentication endpoints (AUTH_SPEC §3 / §5 /
+// §6 / §11-4). CLI login (§4 — server-mediated web-flow handoff) lives in
+// auth-cli-api.ts.
 //
-// セッション 06 裁定 4: OAuth リダイレクト系(start / callback)も含めてすべて
-// api-schema に置く(サーバー実装とクライアント導出の共有源を単一に保つ)。
-// start / callback の成功応答は 302 リダイレクト(+ Set-Cookie)であり、
-// ハンドラが HttpServerResponse を直接返す(success スキーマは Void)。
+// session-06 ruling 4: everything including the OAuth redirect endpoints
+// (start / callback) lives in api-schema (keeps the shared source for the
+// server implementation and the client derivation single). The success
+// response of start / callback is a 302 redirect (+ Set-Cookie); the
+// handler returns an HttpServerResponse directly (success schema is Void).
 //
-// 禁止事項(AUTH_SPEC §10): GitHub トークンはリクエスト処理中のメモリ上でのみ
-// 扱われ、どのレスポンス型にも現れない。セッション / トークン生値がレスポンスに
-// 現れるのは発行時の一度だけ(auth-cli-api.ts の cliPoll approved 応答)。
+// Prohibitions (AUTH_SPEC §10): GitHub tokens are handled only in memory
+// during request processing and never appear in any response type.
+// Session / token raw values appear in a response only once, at issuance
+// (the cliPoll approved response in auth-cli-api.ts).
 
 import { OrgRoleSchema, TokenScopeSchema } from "@maruhi/core";
 import { Schema } from "effect";
@@ -28,40 +31,47 @@ import { EncPubHex, hexString, KeyFingerprintHex } from "./hex.ts";
 import { strictPayload } from "./strict.ts";
 
 /**
- * 302 リダイレクト(+ Set-Cookie)で完結するエンドポイントの成功宣言。
- * githubStart / githubCallback はブラウザナビゲーション専用であり、HttpApi 導出
- * クライアント(fetch は既定でリダイレクトを追従する)から呼ぶ設計ではない。
+ * Success declaration for endpoints that complete with a 302 redirect
+ * (+ Set-Cookie). githubStart / githubCallback are browser-navigation
+ * only; they are not designed to be called from the HttpApi-derived
+ * client (fetch follows redirects by default).
  */
 const Redirect = HttpApiSchema.Empty(302);
 
 /**
- * トークン名の上限(`cliStart` の payload — AUTH_SPEC §6)。
+ * Token-name length limit (`cliStart` payload — AUTH_SPEC §6).
  *
- * **CLI の引数層と共有する**: ここだけに書くと、`maruhi login --token-name` の
- * 長すぎる値がブラウザでの承認を完走した後の encode 失敗として初めて現れる。
- * 書き方の誤りは通信より前に落とす(CLI 側の規律)ため、上限を export して
- * 両側が同じ値を見る。
+ * **Shared with the CLI argument layer**: if it lived only here, an
+ * over-long `maruhi login --token-name` value would first surface as an
+ * encode failure after the browser approval completes. Because authoring
+ * mistakes are rejected before any network call (CLI discipline), the
+ * limit is exported so both sides see the same value.
  */
 export const MAX_TOKEN_NAME_LENGTH = 128;
 
-// トークン名に許さない文字クラス(AUTH_SPEC §6 文字種制約):
-// 制御文字(C0 / DEL / C1)と双方向制御文字(bidi — ALM・LRM/RLM・埋め込み /
-// 上書き・分離子)。名前は承認ページ(§4-1 (4))・一覧 API・ダッシュボードに
-// 呼び出し側由来のテキストとして描画されるため、表示面共通の保護を受理時に
-// 置く(§4-2 の「承認文言のなりすまし」緩和)。**非遡及** — 旧 Schema 下で
-// 保存済みの名前は掃除しない。
+// Character class forbidden in token names (AUTH_SPEC §6 character-class
+// constraint): control characters (C0 / DEL / C1) and bidirectional
+// control characters (bidi — ALM, LRM/RLM, embeddings, overrides,
+// isolates). Names are rendered as caller-supplied text on the approval
+// page (§4-1 (4)), the list API, and the dashboard, so the shared
+// display-surface protection is placed at acceptance time (the §4-2
+// "approval-text impersonation" mitigation). **Not retroactive** — names
+// stored under the old Schema are not cleaned up.
 export const TOKEN_NAME_FORBIDDEN_CLASS =
   "\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069";
 
 /**
- * トークン名に禁止文字が含まれるかの検査(CLI の引数層と共有 — 書き方の誤りは
- * 通信より前に落とし、ブラウザ承認の完走後に encode 失敗として現れさせない)。
+ * Check whether a token name contains forbidden characters (shared with
+ * the CLI argument layer — authoring mistakes are rejected before any
+ * network call, not surfaced as an encode failure after the browser
+ * approval completes).
  */
 export const TOKEN_NAME_FORBIDDEN_CHARS = new RegExp(`[${TOKEN_NAME_FORBIDDEN_CLASS}]`, "u");
 
 /**
- * トークン名のワイヤ受理形(AUTH_SPEC §6): 128 文字以下・制御 / bidi 制御
- * 文字なし。`cliStart` の payload と CLI の引数検査が同じ Schema を見る。
+ * Wire acceptance shape of a token name (AUTH_SPEC §6): 128 characters or
+ * fewer, no control or bidi control characters. The `cliStart` payload
+ * and the CLI argument check share this Schema.
  */
 export const TokenNameSchema = Schema.String.check(
   Schema.isMaxLength(MAX_TOKEN_NAME_LENGTH),
@@ -71,23 +81,26 @@ export const TokenNameSchema = Schema.String.check(
 );
 
 /**
- * API トークンの既定 TTL(AUTH_SPEC §6 — W3a)。expires_at は発行時に固定する
- * (セッション §5 のスライディング更新と意図的に非対称 — トークンには定期再認証を
- * 強制する)。セルフホストでの値の調整は許される(受理ポリシーであり
- * 合意規則ではない)。
+ * Default TTL of an API token (AUTH_SPEC §6 — W3a). expires_at is fixed
+ * at issuance (intentionally asymmetric with the §5 session sliding
+ * renewal — tokens enforce periodic re-authentication). Self-hosts may
+ * adjust the value (it is an acceptance policy, not a consensus rule).
  */
 export const DEFAULT_TOKEN_TTL_DAYS = 90;
 
 /**
- * 発行時に明示指定できる TTL の上限(AUTH_SPEC §6 — W3a 裁定 CF)。リース
- * 非対応の実行環境(GitLab CI / k8s / cron 等 — §14-1 の対応 issuer は v1 =
- * GitHub Actions のみ)で PAT を無人利用する場合の逃し弁で、上限つきである
- * こと自体が L-2(無期限トークン)の再導入を遮断する。CLI の引数層と共有する
- * (MAX_TOKEN_NAME_LENGTH と同じ理由 — 書き方の誤りは通信より前に落とす)。
+ * Upper bound of the TTL that can be explicitly requested at issuance
+ * (AUTH_SPEC §6 — W3a ruling CF). A relief valve for unattended PAT use
+ * in environments without lease support (GitLab CI / k8s / cron etc. —
+ * the §14-1 supported issuer is only v1 = GitHub Actions); the fact that
+ * it is capped is itself what prevents reintroducing L-2 (non-expiring
+ * tokens). Shared with the CLI argument layer (same reason as
+ * MAX_TOKEN_NAME_LENGTH — authoring mistakes are rejected before any
+ * network call).
  */
 export const MAX_TOKEN_TTL_DAYS = 365;
 
-/** 発行時の明示 TTL(日)。整数 1..MAX_TOKEN_TTL_DAYS(省略時は既定 90 日)。 */
+/** Explicit TTL at issuance (days). Integer 1..MAX_TOKEN_TTL_DAYS (default 90 days when omitted). */
 export const TokenTtlDays = Schema.Number.check(
   Schema.isInt(),
   Schema.isGreaterThanOrEqualTo(1),
@@ -95,17 +108,20 @@ export const TokenTtlDays = Schema.Number.check(
 );
 
 /**
- * サインアップ受理ポリシー(AUTH_SPEC §3 — H1)。デプロイメント単位のサーバー
- * 受理ポリシーで、チェーン・署名には載せない(§12-11 の schemaPolicy と同じ
- * クラス)。既定 `open` = 従来挙動と同一。
+ * Signup acceptance policy (AUTH_SPEC §3 — H1). A per-deployment server
+ * acceptance policy; it does not appear on the chain or in signatures
+ * (same class as §12-11's schemaPolicy). The default `open` is identical
+ * to the previous behavior.
  */
 export const SignupPolicySchema = Schema.Literals(["open", "invite", "closed"]);
 export type SignupPolicy = (typeof SignupPolicySchema)["Type"];
 
 /**
- * サインアップリンクが運ぶ招待コード(AUTH_SPEC §3 — `maruhi_sgn_` + Base62
- * 43 文字)のワイヤ受理形。未認証面なのでサイズ上限のみ縛る(検証の実体は
- * サーバーのハッシュ照合 — 形式で存在情報を漏らさない)。
+ * Wire acceptance shape of the invite code carried by a signup link
+ * (AUTH_SPEC §3 — `maruhi_sgn_` + 43 Base62 characters). Unauthenticated
+ * surface, so only the size limit is bound (the real verification is the
+ * server's hash comparison — do not leak existence information through
+ * the format).
  */
 export const SignupCodeSchema = Schema.String.check(Schema.isMaxLength(128));
 
@@ -114,14 +130,17 @@ export const SignupCodeSchema = Schema.String.check(Schema.isMaxLength(128));
  * OAuth client_id is public information — it appears in the authorize URL —
  * so exposing it lets a self-hosted CLI resolve it from the server URL alone.
  *
- * serverKeyFingerprintHex(AUTH_SPEC §4)はデプロイメント keypair(CRYPTO_SPEC
- * §9)が設定済みの場合のみ載る。grant_server 実行時の照合対象。
- * serverEncPubHex は §9 の「サーバーが配布する enc 公開鍵」の配布チャネル
- * (公開鍵は公開情報。FP はその SHA-256 先頭 16 バイトで、CLI は両者の整合を
- * 再計算検証する)。
+ * serverKeyFingerprintHex (AUTH_SPEC §4) is present only when the
+ * deployment keypair (CRYPTO_SPEC §9) is configured. It is the comparison
+ * target when running grant_server.
+ * serverEncPubHex is the distribution channel for the "enc public key the
+ * server distributes" of §9 (a public key is public information; the FP
+ * is the first 16 bytes of its SHA-256, and the CLI recomputes and
+ * verifies the two are consistent).
  *
- * signupPolicy(AUTH_SPEC §3 — H1)は advisory(公開情報 — ランディングの案内
- * 文言と同じ内容。検証・認可規則の入力にしない)。
+ * signupPolicy (AUTH_SPEC §3 — H1) is advisory (public information — the
+ * same content as the landing-page guidance text; never an input to
+ * verification or authorization rules).
  */
 export const AuthConfigSchema = Schema.Struct({
   githubClientId: Schema.String,
@@ -132,8 +151,9 @@ export const AuthConfigSchema = Schema.Struct({
 
 /**
  * One API token in the self-inventory listing (AUTH_SPEC §6 — W3a).
- * 生値・token_hash は**構造ごと存在しない**(スキーマに列がない = 実装が
- * 誤って返す経路を型で塞ぐ)。
+ * The raw value and token_hash **do not exist, structurally** (no column
+ * in the schema = the type closes the path by which an implementation
+ * could return them by mistake).
  */
 export const TokenSummarySchema = Schema.Struct({
   id: Schema.String,
@@ -163,36 +183,42 @@ export const MeSchema = Schema.Struct({
   userId: Schema.String,
   orgs: Schema.Array(UserOrgSchema),
   /**
-   * トークン主体のときのみ: 提示トークンのスコープ(AUTH_SPEC §6)。
-   * セッション主体では欠落(スコープを持たない。呼べる面は §5 の能力制限の
-   * 許可列挙に限られ、その中ではチェーン role が束縛 — W2b)。
-   * クライアントが実効権限(min(スコープ, チェーン role) — §9-2)を**事前に**
-   * 判定するための材料(checkpoint の監査ヘッド公証で 403 を踏まない —
-   * §16-2 — PR-M2)。
+   * Only for token principals: the scopes of the presented token
+   * (AUTH_SPEC §6). Absent for session principals (sessions carry no
+   * scopes; the surfaces they can call are limited to the §5 capability
+   * allowlist, and within it the chain role is the binding constraint —
+   * W2b). Material for the client to determine its effective permission
+   * (min(scope, chain role) — §9-2) **in advance** (so the checkpoint's
+   * audit-head notarization does not hit a 403 — §16-2 — PR-M2).
    */
   tokenScopes: Schema.optionalKey(Schema.Array(TokenScopeSchema)),
   /**
-   * トークン主体のときのみ: 提示トークンの有効期限(AUTH_SPEC §6 — W3a
-   * 裁定 CI)。tokenScopes と同じ「自分が提示した資格情報の属性」であり新しい
-   * 情報を開示しない。無人利用(リース非対応環境の PAT — 裁定 CF)が期限を
-   * 自己観測して 401 の前に警告・再発行を仕込むための材料。一覧
-   * `GET /auth/tokens`(トークン主体は `*` × admin — 裁定 CH)を開かずに
-   * 自分の期限だけを知る経路でもある。
+   * Only for token principals: the expiry of the presented token
+   * (AUTH_SPEC §6 — W3a ruling CI). Like tokenScopes it is an attribute
+   * of the credential the caller itself presented, so it discloses no new
+   * information. Material for unattended use (PATs in environments
+   * without lease support — ruling CF) to observe their own expiry and
+   * arrange a warning / reissuance before a 401. It is also a path to
+   * learn only one's own expiry without opening the listing
+   * `GET /auth/tokens` (token principals require `*` × admin — ruling
+   * CH).
    */
   tokenExpiresAtMs: Schema.optionalKey(Schema.Number),
   /**
-   * GitHub の表示用 login スナップショット(2026-09-13 IV — AUTH_SPEC §15-3)。
-   * 招待者クライアントが招待リンクの `il`(裏付け元 `github-signing-keys` の
-   * 照合材料)を組むための材料。リンクなし・未保存は欠落。自己情報の開示のみ
-   * (他人の login はここからは取れない)。
+   * Snapshot of the GitHub display login (2026-09-13 IV — AUTH_SPEC
+   * §15-3). Material for the inviter's client to build the invite link's
+   * `il` (the comparison material for the `github-signing-keys` backing
+   * source). Absent when unlinked or not yet stored. Disclosure of
+   * self-information only (another user's login cannot be obtained here).
    */
   providerLogin: Schema.optionalKey(Schema.String),
 });
 
-// リカバリーブロブ(AUTH_SPEC §13。CRYPTO_SPEC §8 のラップ済み master 秘密鍵)。
-// サーバーから見て不透明な暗号文であり、リカバリーコード自体はワイヤに現れない。
+// Recovery blob (AUTH_SPEC §13; the wrapped master secret key of
+// CRYPTO_SPEC §8). Opaque ciphertext from the server's point of view; the
+// recovery code itself never appears on the wire.
 const RecoveryNonceHex = hexString(12);
-// AES-256-GCM の ct || tag: タグ込み 16 バイト以上・16 KiB 以下(§13-4 受理ポリシー)
+// AES-256-GCM ct || tag: 16 bytes to 16 KiB including the tag (§13-4 acceptance policy)
 const RecoveryCiphertextHex = Schema.String.check(
   Schema.isPattern(/^(?:[0-9a-f]{2}){16,16384}$/, {
     description: "lowercase hex AES-GCM ciphertext (16 bytes .. 16 KiB incl. tag)",
@@ -222,28 +248,31 @@ export const RecoveryStatusSchema = Schema.Struct({
 
 /**
  * Authentication endpoints (AUTH_SPEC §3 web OAuth, §5 sessions, §6 tokens).
- * Token issuance happens only through the CLI login handoff (§4 —
- * auth-cli-api.ts の authCli グループ); management is the presented-token
- * self-revocation (CLI logout 用) plus the W3a token-management surface:
- * self-inventory listing and targeted revocation (W0 裁定で更新された §6 の
- * 線引き — 追加発行 UI / API は作らない).
+ * Token issuance happens only through the CLI login handoff (§4 — the
+ * authCli group in auth-cli-api.ts); management is the presented-token
+ * self-revocation (for CLI logout) plus the W3a token-management surface:
+ * self-inventory listing and targeted revocation (the §6 line-drawing
+ * updated by the W0 ruling — no additional issuance UI / API is built).
  */
 export const authGroup = HttpApiGroup.make("auth")
   .add(
-    // 公開設定エンドポイント(AUTH_SPEC §4。セッション 11 裁定 B)。未認証。
-    // 未設定サーバー(§3 の自己診断条件: client_id がプレースホルダ / 空 / 欠落、
-    // または client_secret 未登録)は 503 でセットアップガイドへ誘導する
+    // Public configuration endpoint (AUTH_SPEC §4; session-11 ruling B).
+    // Unauthenticated. An unconfigured server (the §3 self-diagnosis
+    // conditions: client_id is a placeholder / empty / absent, or no
+    // client_secret registered) answers 503 and directs to the setup guide
     HttpApiEndpoint.get("authConfig", "/auth/config", {
       success: AuthConfigSchema,
       error: [SetupIncompleteError],
     }),
   )
   .add(
-    // signup_code(AUTH_SPEC §3 — H1): サインアップ招待コードの運搬起点。存在
-    // すればハンドラが開始時事前検証(per-IP レート制限つき)を行い、無効なら
-    // スクリプトなし案内ページ(HTML — 成功宣言の 302 を経由しない直接応答)で
-    // 終了、有効なら __Host- クッキーに載せて callback まで運ぶ。プレーンな
-    // start(コードなし)= 従来のログイン導線は不変
+    // signup_code (AUTH_SPEC §3 — H1): the entry point that carries the
+    // signup invite code. When present, the handler pre-verifies it at
+    // start (with a per-IP rate limit); if invalid it ends on a
+    // script-free guidance page (HTML — a direct response that does not go
+    // through the success 302), if valid it is carried on a __Host-
+    // cookie through to callback. A plain start (no code) = the
+    // traditional login flow, unchanged
     HttpApiEndpoint.get("githubStart", "/auth/github/start", {
       query: { signup_code: Schema.optionalKey(SignupCodeSchema) },
       success: Redirect,
@@ -252,13 +281,15 @@ export const authGroup = HttpApiGroup.make("auth")
   )
   .add(
     HttpApiEndpoint.get("githubCallback", "/auth/github/callback", {
-      // 未認証で到達でき、リクエストごとに GitHub へのアウトバウンド(code 交換。
-      // 成功時はさらに /user・/user/emails)を伴うため、クエリに明示的な上限
-      // (512 文字)を課す(追補 3 A-6)。code の形式は OAuth 仕様が定めない
-      // ため長さのみ検査する(実 GitHub の code / state はこの上限より桁違いに
-      // 短い)。長さ上限はペイロードを縛るだけで頻度は縛らないため、交換の
-      // **回数**は発信元 IP 単位の Workers Rate Limiting が有界にする(OAuth
-      // App 共有クォータを消費する経路)
+      // Reachable unauthenticated, and each request causes an outbound
+      // call to GitHub (the code exchange; on success also /user and
+      // /user/emails), so the query carries an explicit cap (512
+      // characters) (supplement 3 A-6). The OAuth spec does not define the
+      // code format, so only its length is checked (real GitHub code /
+      // state values are orders of magnitude shorter than this cap). A
+      // length cap bounds the payload but not the frequency, so the
+      // **number** of exchanges is bounded by per-source-IP Workers Rate
+      // Limiting (a path that consumes the OAuth App's shared quota)
       query: {
         code: Schema.String.check(Schema.isMaxLength(512)),
         state: Schema.String.check(Schema.isMaxLength(512)),
@@ -283,22 +314,25 @@ export const authGroup = HttpApiGroup.make("auth")
     }).middleware(AuthMiddleware),
   )
   .add(
-    // 一覧(AUTH_SPEC §6 — W3a): 本人のトークンのメタデータのみ。生値・
-    // token_hash は返さない(TokenSummarySchema に列が存在しない)。
-    // トークン主体は `*` × admin スコープを含む場合のみ(裁定 CH — §13-2 /
-    // 本人軸監査と同水準: 窃取されたスコープ限定トークンにアカウント全域の
-    // トークン目録 = 偵察材料を渡さない)。上限 100 本(§6)で有界のため
-    // ページングは持たない
+    // Listing (AUTH_SPEC §6 — W3a): metadata of the caller's own tokens
+    // only. The raw value and token_hash are never returned (no such
+    // columns exist on TokenSummarySchema). Token principals only when
+    // they include `*` × admin scope (ruling CH — same level as §13-2 /
+    // self-axis audit: a stolen scope-limited token must not receive an
+    // account-wide token inventory = reconnaissance material). Bounded by
+    // the 100-token cap (§6), so no paging
     HttpApiEndpoint.get("listTokens", "/auth/tokens", {
       success: TokenListSchema,
       error: [ForbiddenError],
     }).middleware(AuthMiddleware),
   )
   .add(
-    // 指定失効(AUTH_SPEC §6 — W3a): 認可 = セッション主体、または `*` × admin
-    // スコープを含むトークンのみ。対象は本人のトークンのみ — 他人の・存在しない
-    // token id は一様 404(存在秘匿 — §12-6 の削除系と同じ規律。判定順は
-    // 裁定 CG: 401 → 403〔呼び出し資格のみから計算〕→ 一様 404)
+    // Targeted revocation (AUTH_SPEC §6 — W3a): authorization = session
+    // principals, or tokens including `*` × admin scope. Targets are the
+    // caller's own tokens only — another user's or a nonexistent token id
+    // is a uniform 404 (existence concealment — the same discipline as the
+    // §12-6 deletion surfaces; the decision order is ruling CG: 401 → 403
+    // [computed from the caller's credentials alone] → uniform 404)
     HttpApiEndpoint.delete("revokeTokenById", "/auth/tokens/:tokenId", {
       params: { tokenId: Schema.String },
       success: HttpApiSchema.NoContent,
@@ -306,11 +340,13 @@ export const authGroup = HttpApiGroup.make("auth")
     }).middleware(AuthMiddleware),
   )
   .add(
-    // 登録・再発行 = 置換 upsert(AUTH_SPEC §13-1。旧ラップは受理と同時に消える)
+    // Registration / reissuance = replace upsert (AUTH_SPEC §13-1; the
+    // old wrap disappears at acceptance)
     HttpApiEndpoint.put("recoveryPut", "/auth/recovery", {
-      // strict 受理(§12-10 (1))。共有の RecoveryWrapSchema 自体は包まない
-      // (他エンドポイントの応答へ波及させない)。strict はこの payload の
-      // decode / encode だけで、成功・エラーの符号化には及ばない。
+      // strict acceptance (§12-10 (1)). The shared RecoveryWrapSchema
+      // itself is not wrapped (the change must not propagate into other
+      // endpoints' responses). strict applies only to this payload's
+      // decode / encode, not to the success / error encoding.
       payload: strictPayload(RecoveryWrapSchema),
       success: HttpApiSchema.NoContent,
       error: [ForbiddenError],

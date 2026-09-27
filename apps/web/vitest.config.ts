@@ -1,8 +1,9 @@
 import { defineConfig } from "vitest/config";
 
-// web ダッシュボードの e2e 検証(wrangler dev + Playwright)。
-// 注意: ルート vitest.config.ts の projects には意図的に追加していない
-// (ビルド済み dist を前提とするため。root 統合は docs/notes/spike-a.md 参照)。
+// e2e check of the web dashboard (wrangler dev + Playwright).
+// Note: intentionally not added to the root vitest.config.ts projects
+// (it assumes a prebuilt dist; see docs/notes/spike-a.md for root
+// integration).
 export default defineConfig({
   test: {
     name: "web-e2e",

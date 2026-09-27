@@ -1,1143 +1,1233 @@
-# web-design-pass — DP 系列(デザインパス)の裁定
+# web-design-pass — rulings for the DP series (design pass)
 
-Status: 2026-09-03 起草・所有者裁定済み(DP1 / DP2 の前提)。ROADMAP.md「DP 系列」の設計文書。
-DP1〜DP5 の各 PR はこの文書を正として実装し、変更があればまずここを改訂する。
+Status: drafted 2026-09-03, owner-ruled (the premises of DP1 / DP2). The design document for ROADMAP.md's "DP series".
+Each of DP1–DP5's PRs implements this document as the source of truth; if something changes, revise this file first.
 
-前提規律(変えない):
+Premise disciplines (unchanged):
 
-- **ADR-0013**: 見た目の変更は ① defineTheme(トークン・variant)→ ② Astryx コンポーネントの `xstyle` →
-  ③ `ui.package` での合成 → ④ `ui.package` での自作 → ⑤ upstream、の順。`swizzle` 禁止・`className` /
-  インライン `style` 禁止・生 hex はテーマ定義のみ
-- **ADR-0018**: Web は鍵・平文を持たない(読み取り + 失効系のみ)。値・鍵操作は CLI
-- **TCB 規則(CLAUDE.md)**: ダッシュボードのオリジン(`my.maruhi.app`)にサードパーティスクリプト・CDN・
-  外部フォント・アナリティクスを一切載せない。厳格 CSP
-- **「言わざる」**: クライアント → 外部への送信を持たない。LP にも適用する(§5)
+- **ADR-0013**: changes to appearance go in the order ① defineTheme (tokens · variants) → ② Astryx components'
+  `xstyle` → ③ composition in `ui.package` → ④ custom in `ui.package` → ⑤ upstream. No `swizzle`, no `className` /
+  inline `style`, raw hex only in theme definitions
+- **ADR-0018**: the Web holds no keys or plaintext (read + revocation kinds only). Value and key operations are the CLI's
+- **The TCB rule (CLAUDE.md)**: no third-party scripts, CDNs, external fonts, or analytics on the dashboard origin
+  (`my.maruhi.app`). Strict CSP
+- **"Never-tell"**: no client → external transmissions. Applies to the LP too (§5)
 
-## 1. 所有者裁定(2026-09-03)
+## 1. Owner rulings (2026-09-03)
 
-| # | 論点 | 裁定 |
+| # | Topic | Ruling |
 |---|---|---|
-| 1 | ロゴ・配色 | **㊙ をロゴにする**。ただし絵文字ではなく**自前の SVG**(円 + 「秘」。字形は OFL の CJK フォント〔Noto Sans CJK / Source Han〕からパス化)。**accent のカラーコードは SVG の赤に一致**させ、絵文字ベンダーの色には合わせない(我々の SVG が正・絵文字は近似)。赤の**彩度は落とさない**(Hanko の濃い赤の実例)。方向は**朱(vermilion — 橙寄りの赤)**で、danger(クリムゾン系)と色相で離す。テキスト文脈(CLI 出力・README 見出し)では絵文字 ㊙ を使い続ける |
-| 2 | ダーク | **システム追従・両モード**(`defineTheme` の `[light, dark]` タプル = CSS `light-dark()`)。手動トグルは持たない(状態の保存先を増やさない)。デザインは**ダークから起こす**。独自カスタマイズは最小(accent seed・neutral `warm`)で **Astryx 既定に寄せる**。細部の色調整は後から `tokens` 上書きで行える |
-| 3 | フォント | **ダッシュボード(`my.maruhi.app` — TCB)は Astryx 既定(システムフォント)**: body / heading = `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, …`、code = `"SF Mono", Monaco, Consolas, monospace`。Web フォントは読み込まない(ゼロバイト)。等幅の自己配信(0/O・1/l 判別)は **DP3 / DP4 の実機確認で問題があれば足す**。確認コードの可読性はフォントでなく**文字集合**(紛らわしい文字の除外)で担保する — DP4 で既存の生成規則を確認。**LP / docs(apex — TCB ではない)は自己配信の可変フォント 2 書体を使う(2026-09-03 追記)**: 見出し・本文 = **Archivo**(SIL OFL・ウェイト 100〜900・幅 62〜125% — 極太 / 幅広の見出しはこの幅軸で作る)、コード = **Martian Mono**(SIL OFL・可変)。参考 = bun.com が同じ 2 書体を自己配信している(フォントの選択は意匠の模倣にならない)。woff2・`font-display: swap`・italic は不要なら落とす。外部 CDN は使わない(§1-5)。**OFL の配布義務(著作権表示 + ライセンス全文の同梱。両書体は Reserved Font Name 未宣言なのでサブセット版も元の名で可)は §4 に記載**。書体の見え方はロゴ SVG と並べて DP2 で確認し、合わなければ Geist / Inter へ差し替え可 |
-| 4 | LP と docs の配置 | **LP は apex `maruhi.app` に独立の静的サイトとして配信**(製品オリジン `my.maruhi.app` と分離 = TCB 分離)。**docs は `maruhi.app/docs`**(同じ静的サイト内のパス。SEO の集約・1 デプロイ・URL 1 つ)。`maruhi.dev` は取得済みのまま **`maruhi.app` へ 301**(防御的保持)。LP / docs は**独立の wrangler 設定**で立て、後日 O9(Alchemy v2 化)で宣言に包める形にする |
-| 5 | アナリティクス | **入れない**。訴求点にする(「このサイトにトラッカーはありません」)。訪問数は **Cloudflare Web Analytics のサーバー側集計**(スクリプト注入なし・Cookie なし・zone レベルの HTTP 集計)のみ。waitlist 等のフォームも Workers に POST するだけで第三者 SaaS を挟まない |
-| 6 | O9 との順序 | **O9(Alchemy v2 化)は DP の後**。DP はベータのゲート・O9 は任意。DP2 で LP / docs を独立 wrangler 設定に切っておけば移行量は同じ |
+| 1 | Logo & colors | **㊙ becomes the logo** — not the emoji but **our own SVG** (the circle + 秘; the glyph is converted to paths from an OFL CJK font [Noto Sans CJK / Source Han]). **The accent color code matches the SVG's red**; it doesn't follow emoji vendors' colors (our SVG is the source of truth; the emoji is an approximation). The red's **saturation is not reduced** (Hanko's deep-red examples). The direction is **vermilion (an orange-leaning red)**, separated from danger (a crimson family) by hue. In text contexts (CLI output, README headings) keep using the ㊙ emoji <!-- english-exempt: references the 秘 brand-glyph character --> |
+| 2 | Dark mode | **System-following, both modes** (`defineTheme`'s `[light, dark]` tuple = CSS `light-dark()`). No manual toggle (don't add a place state is saved). The design is **created dark-first**. Custom customization is minimal (accent seed, neutral `warm`), **staying close to Astryx defaults**. Fine color tweaks can come later via `tokens` overrides |
+| 3 | Fonts | **The dashboard (`my.maruhi.app` — the TCB) uses Astryx defaults (system fonts)**: body / heading = `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, …`, code = `"SF Mono", Monaco, Consolas, monospace`. No web fonts are loaded (zero bytes). Self-hosting a monospace (0/O, 1/l disambiguation) is **added only if real-device checks at DP3 / DP4 show a problem**. Confirmation-code readability is guaranteed not by the font but by the **character set** (excluding ambiguous characters) — DP4 checks the existing generation rules. **The LP / docs (apex — not the TCB) use 2 self-hosted variable fonts (added 2026-09-03)**: headings & body = **Archivo** (SIL OFL, weight 100–900, width 62–125% — the ultra-bold / wide headings are made with this width axis), code = **Martian Mono** (SIL OFL, variable). Reference = bun.com self-hosts the same 2 families (a font choice is not an imitation of design). woff2, `font-display: swap`, drop italic if unneeded. No external CDN (§1-5). **The OFL's distribution obligations (copyright notice + the full license text bundled; both families have no Reserved Font Name declared, so subset versions may keep the original name) are covered in §4**. The families' look is checked next to the logo SVG at DP2, and can be swapped to Geist / Inter if they don't fit |
+| 4 | LP & docs placement | **The LP is served on apex `maruhi.app` as an independent static site** (separate from the product origin `my.maruhi.app` = TCB separation). **docs is `maruhi.app/docs`** (a path inside the same static site. SEO consolidation, 1 deploy, 1 URL). `maruhi.dev` stays registered and **301s to `maruhi.app`** (defensive hold). LP / docs are stood up under **their own wrangler config**, shaped so O9 (the Alchemy v2 migration) can wrap them into declarations later |
+| 5 | Analytics | **None**. Make it a selling point ("this site has no trackers"). Visit counts come only from **Cloudflare Web Analytics's server-side aggregation** (no script injection, no cookies, zone-level HTTP aggregation). Forms like the waitlist only POST to Workers; no third-party SaaS in between |
+| 6 | Ordering vs O9 | **O9 (Alchemy v2 migration) comes after DP**. DP is the beta gate; O9 is optional. If DP2 puts LP / docs on their own wrangler config, the migration cost is the same |
 
-## 2. トーンの方向(参考サイト — 寄せすぎない)
+## 2. Tone direction (reference sites — without over-fitting)
 
-所有者が挙げた参考: [WorkOS](https://workos.com/)(エンタープライズ感)、[Resend](https://resend.com/)(伸びている
-開発者向け製品)、[Phase](https://phase.dev/)・[Shelve](https://www.shelve.cloud/)(競合 — セキュリティ重視の印象)。
-**無理に寄せず、Astryx のコンポーネントで仕上げる**ことを優先する。共通して読み取れる要素:
+The owner's references: [WorkOS](https://workos.com/) (enterprise feel), [Resend](https://resend.com/) (a growing
+developer product), [Phase](https://phase.dev/) and [Shelve](https://www.shelve.cloud/) (competitors — a
+security-focused impression). **Prioritize finishing with Astryx components over forcing a fit**. Common elements:
 
-- ダーク基調。neutral はほぼモノクロで、**アクセントは 1 色**をごく限定的に使う(ボタン・リンク・強調 1 か所)
-- **コード / ターミナルが主役**: ヒーローにインストールコマンドや CLI の出力を置き、UI のスクリーンショットより
-  「打つコマンドと返る結果」で製品を説明する。maruhi は「Everything happens in the CLI」なのでこの型が合う
-- 余白が多く、装飾(グラデーション・イラスト)は控えめ。エンタープライズ感は**装飾の少なさと情報の整列**で出す
-- セキュリティの訴求は「怖がらせる」でなく「仕組みを淡々と書く」(E2EE・ゼロ知識・オープンソース・自己ホスト可)
+- Dark-based. neutrals are almost monochrome; **one accent color** used very sparingly (buttons, links, one emphasis)
+- **Code / terminal is the star**: the hero carries the install command and CLI output, explaining the product by
+  "the command you type and the result that comes back" rather than UI screenshots. maruhi is "Everything happens
+  in the CLI" so this shape fits
+- Generous whitespace, restrained decoration (gradients, illustrations). The enterprise feel comes from **how little
+  decoration there is and how well information is aligned**
+- Security is conveyed not by frightening but by "plainly describing the mechanism" (E2EE, zero-knowledge,
+  open-source, self-hostable)
 
-maruhi 固有の差別化: 朱の ㊙ 印(競合は青〜紫〜緑系)、「diskless」「言わざる(テレメトリゼロ)」、
-セルフホスト一発(`wrangler deploy`)、ゼロ知識の運営。
+maruhi-specific differentiators: the vermilion ㊙ mark (competitors are blue–purple–green), "diskless", "never-tell
+(zero telemetry)", one-shot self-host (`wrangler deploy`), zero-knowledge operations.
 
-## 3. DP1 ブランド基盤 — 成果物
+## 3. DP1 brand foundation — deliverables
 
-- `apps/web/theme/maruhi.ts`: accent seed を朱の確定値へ(HCT で light / dark を導出 — Astryx の accent 生成に任せ、
-  必要なら `[light, dark]` タプルで dark 側の明度だけ上げる)。neutral `warm` 維持。typography / radius は既定
-- ロゴ SVG(`apps/web/public/` 系の静的アセット + LP 用): ㊙ の円と「秘」。単色版(accent)と反転版。favicon
-  (SVG + PNG フォールバック)・OG 画像(1200×630、ダーク地に ㊙ + `maruhi`)
-- danger と accent のコントラスト確認(失効・削除ボタンは Astryx の danger variant で形としても区別)
-- 生 hex はテーマ定義と SVG にのみ存在する(ADR-0013)
+- `apps/web/theme/maruhi.ts`: the accent seed to the settled vermilion value (derive light / dark in HCT — leave it
+  to Astryx's accent generation; if needed raise only the dark side's lightness via the `[light, dark]` tuple).
+  neutral `warm` kept. typography / radius stay default
+- The logo SVG (static assets under `apps/web/public/` etc. + for the LP): ㊙'s circle and 秘. <!-- english-exempt: 秘 is the literal glyph referenced --> A single-color version
+  (accent) and an inverted version. favicon (SVG + PNG fallback), OG image (1200×630, ㊙ + `maruhi` on dark)
+- danger/accent contrast check (revoke/delete buttons are also distinguished by shape via Astryx's danger variant)
+- Raw hex exists only in the theme definition and the SVG (ADR-0013)
 
-### DP1 実装時の裁定録(2026-09-03)
+### DP1 implementation-time ruling record (2026-09-03)
 
-各裁定点は「案を 3 つ以上列挙 → 上位互換 / 銀の弾丸を探索 → 新案が尽きるまで反復 → 選定」の
-ループで決めた。判断基準は ADR-0013 の検討順で浅い層に収まること・TCB 規則と依存最小・生成物が
-少ない・後戻りが安いこと。数値は Astryx 0.5.2 の HCT 実装(`@astryxdesign/core/src/theme/hct.ts` —
-実体は CIELAB LCh。以下「HCT」)と `contrast.ts` で算出した。
+Each ruling point was decided by the loop "enumerate ≥3 options → search for upward compat / a silver bullet →
+iterate until no new options → select". Judgment criteria: staying in a shallow layer of ADR-0013's evaluation order,
+the TCB rules and minimal dependencies, few generated artifacts, cheap reversibility. Numbers were computed with
+Astryx 0.5.2's HCT implementation (`@astryxdesign/core/src/theme/hct.ts` — actually CIELAB LCh; "HCT" below) and
+`contrast.ts`.
 
-**前提の訂正(実装で判明した事実)**: `defineTheme` の `color.accent` は `--color-accent` を
-`light-dark(P[40], P[80])` に**トーン固定**で導出する(`expandColorScale.ts`)。`[light, dark]`
-タプルは各スキームのパレットの**色相・彩度**を差し替えるだけで、dark 側は常にトーン 80(pastel、
-彩度 ≈ 31)になる。§3 冒頭の「タプルで dark 側の明度だけ上げる」は成立しないため、朱の確定値は
-`tokens` で明示する(裁定 A)。**明示する理由は彩度そのものではない**(所有者 2026-09-03: 「彩度を
-落とさない」は絶対条件ではなく、pastel でおかしくなければ可): (1) 導出される dark accent `#FFB3A8` は
-neutralTheme の dark error `#FFC6C1` と ΔE76 = 10.5・相互コントラスト 1.15:1 で、リンクと
-エラー文言が同じ色に見える(§1-1「danger と色相で離す」が dark で崩れる)。(2) ブランドの赤 `#C1330B`
-から ΔE76 = 58 離れ、同じ画面に置く ㊙ ロゴと accent が別の色に見える(明示値 `#FF693C` は ΔE76 = 19)。
-Astryx 自身の既定 dark accent(`#2694FE`)もトーン 60 前後で、トーン 80 は汎用ジェネレータの選択に
-すぎない。比較画像は PR #146 に添付。
+**A premise correction (a fact found during implementation)**: `defineTheme`'s `color.accent` derives
+`--color-accent` **tone-pinned** to `light-dark(P[40], P[80])` (`expandColorScale.ts`). The `[light, dark]` tuple
+only swaps each scheme's palette's **hue and saturation** — the dark side always lands at tone 80 (pastel,
+saturation ≈ 31). So §3's opening "raise only the dark side's lightness via the tuple" doesn't work, and the settled
+vermilion values are made explicit in `tokens` (ruling A). **The reason for making them explicit isn't saturation
+itself** (owner 2026-09-03: "don't reduce the saturation" is not an absolute condition; a pastel that's not odd is
+fine): (1) the derived dark accent `#FFB3A8` sits ΔE76 = 10.5 from neutralTheme's dark error `#FFC6C1` with 1.15:1
+mutual contrast — links and error text look the same color (§1-1's "separate from danger by hue" breaks in dark).
+(2) It's ΔE76 = 58 from the brand red `#C1330B`, so the ㊙ logo and the accent on the same screen look like different
+colors (the explicit `#FF693C` is ΔE76 = 19). Astryx's own default dark accent (`#2694FE`) is also around tone 60 —
+tone 80 is just the generic generator's choice. Comparison images are attached to PR #146.
 
-**A. accent と SVG の赤の一致方法** — 列挙: (i) seed のみ置き SVG は導出値に従う / (ii) `tokens` で
-`--color-accent` を固定し `--color-on-accent` を手で同期 / (iii) 導出結果が狙いになるよう seed を逆算 /
-(iv) seed タプル + `tokens` の併用(上位互換) / (v) accent を導出に任せ SVG を `currentColor` 化して
-「一致」の問題そのものを消す(銀の弾丸候補)。**選定 = (iv)**: `color.accent: [朱L, 朱D]` で warm neutral
-の色相と導出パレットを朱に揃えたうえ、`tokens` で `--color-accent` と `--color-on-accent` の 2 トークン
-だけを確定値で上書きする。SVG の赤 = light 側の `--color-accent`(`#C1330B`)で、生成 CSS にそのまま
-現れる(e2e の「生成 CSS と一致」契約はそのまま通る)。棄却: (i) は dark が pastel になり §1-1 違反。
-(iii) は light のトーン 40 固定は逆算できるが dark のトーン 80 は逆算不能。(ii) 単独は neutral の
-色相が seed 由来のままになる(併用で解消)。(v) は favicon / OG が固定色を要するため「一致」を消せない
-(モノクロ版 `logo-mono.svg` として部分採用 — `currentColor` はインライン `<svg>` / CSS mask で文脈の
-文字色を継承する用途。`<img>` で参照すると黒で描かれる)。`--color-on-accent` の上書きは、seed から焼き込まれる
-dark 側 `P[20]`(`#780000`)が朱 D 上で 4.1:1 と AA に届かないため必要(明示値 `#241915` = warm
-neutral トーン 10 = 導出 dark surface と同値。6.0:1)。
+**A. How the accent and the SVG's red are matched** — options: (i) set only the seed and let the SVG follow the
+derived value / (ii) pin `--color-accent` via `tokens` and sync `--color-on-accent` by hand / (iii) back-solve the
+seed so the derivation lands on the target / (iv) combine the seed tuple + `tokens` (upward compat) / (v) leave the
+accent to the derivation and make the SVG `currentColor`, eliminating the very problem of "matching" (the silver
+bullet candidate). **Selected = (iv)**: with `color.accent: [vermilionL, vermilionD]` the warm neutral's hue and the
+derived palette are aligned to vermilion, and `tokens` then overrides just the 2 tokens `--color-accent` and
+`--color-on-accent` with the settled values. The SVG's red = the light side's `--color-accent` (`#C1330B`), which
+appears verbatim in the generated CSS (the e2e "matches the generated CSS" contract still passes). Rejected: (i)
+makes dark pastel, violating §1-1. (iii): light's tone 40 can be back-solved but dark's tone 80 can't. (ii) alone
+leaves neutral's hue seed-derived (the combination fixes that). (v) can't remove the "matching" since favicon / OG
+need a fixed color (partially adopted as the monochrome `logo-mono.svg` — `currentColor` inherits the context's text
+color for inline `<svg>` / CSS mask use; referenced via `<img>` it draws black). The `--color-on-accent` override is
+because the value baked from the seed
+is needed because the dark side `P[20]` (`#780000`) reaches only 4.1:1 over vermilion-D, short of AA (the explicit
+value `#241915` = warm neutral tone 10 = the same value as the derived dark surface. 6.0:1).
 
-**B. 朱の具体値と danger の分離** — 候補は色相で振り(トーンは light 44 / dark 63 に固定して比較。
-light 44 は warm body `#FFEDE7` 上でリンク文字として 4.9:1 を確保する上限、dark 63 は popover
-`#3A2E29` 上で 4.6:1 を確保しつつ彩度 76 を保てる値):
+**B. The vermilion's concrete values and its separation from danger** — candidates were varied by hue (tones pinned
+at light 44 / dark 63 for comparison. light 44 is the ceiling that still holds 4.9:1 for link text on the warm body
+`#FFEDE7`; dark 63 holds 4.6:1 on the popover `#3A2E29` while keeping saturation 76):
 
-| # | 案 | light | HCT | dark | HCT | Δhue vs `--color-error`(H28) | L: on body / on surface / white on accent | D: on body / on surface / on-accent on accent |
+| # | Option | light | HCT | dark | HCT | Δhue vs `--color-error`(H28) | L: on body / on surface / white on accent | D: on body / on surface / on-accent on accent |
 |---|---|---|---|---|---|---|---|---|
-| B0 | 現状維持(`#C73E3A` seed → 導出) | `#B22A2B` | H32 C63 T40 | `#FFB3A8` | H33 C31 T80 | 3.8° | 5.7 / 6.3 / 6.4 | 11.0 / 10.0 / 10.0 |
-| B1 | 顔料の朱(vermilion pigment 系) | `#C92621` | H36 C76 T44 | `#FF6551` | H36 C71 T63 | 7.8° | 4.9 / 5.4 / 5.6 | 6.5 / 5.9 / 5.9 |
-| **B2** | **朱(橙寄り)— 採用** | **`#C1330B`** | H44 C76 T44 | **`#FF693C`** | H44 C76 T63 | **15.8°** | 4.9 / 5.5 / 5.6 | 6.6 / 6.0 / 6.0 |
-| B3 | 朱(JIS 朱色寄り) | `#BA3E00` | H49 C73 T44 | `#F77027` | H52 C78 T63 | 21.0° | 4.9 / 5.4 / 5.6 | 6.6 / 6.0 / 6.0 |
-| B4 | 銀朱 / 朱肉系 | `#CF1033` | H27 C76 T44 | `#FF6366` | H27 C67 T63 | 1.0° | 4.9 / 5.4 / 5.6 | 6.5 / 5.9 / 5.9 |
-
-**選定 = B2**。danger(`--color-error` = `#A50C25` / `#FFC6C1`、neutralTheme 由来の crimson)と色相で
-16° 離れ(ΔE76 = 24 light / 59 dark)、かつ「赤」と読める範囲に留まる。B3 は JIS の朱色に近いが橙に
-寄りすぎて「赤い印」の印象が弱い。B1 は分離が 8° で不足。B4 は danger と同色相(棄却)。B0 は dark が
-pastel(§1-1 違反)かつ分離 4°。**朱の最終 hex は所有者確認が要る唯一の点** — PR 上で B1 / B3 への
-差し替えを指示できる(`theme/maruhi.ts` の 2 定数 + SVG の fill + 再生成)。
-
-**C. 「秘」字形のパス化の道具** — 列挙: (i) Python fontTools を /tmp で一回性実行 / (ii) opentype.js 等を
-devDependency / (iii) フォントの SVG テーブル・手作業抽出 / (iv) `<text>` + フォント埋め込み(パス化しない)
-/ (v) 絵文字フォントの ㊙ グリフを抽出。**選定 = (i)**。成果物は SVG のみで、道具はリポジトリに残さない
-(依存最小・供給網を増やさない)。手順は再現可能な形で記す: `NotoSansCJKjp-Bold.otf`(notofonts/noto-cjk
-v2.004)の U+79D8 を `fontTools` の `SVGPathPen` + `TransformPen`(y 反転)でパス化し、1000×1000 の
-viewBox に配置(下の E)。棄却: (ii) は一回の抽出のために devDependency を増やす。(iii) は Noto CJK に
-SVG テーブルがなく手作業は再現性が無い。(iv) はフォント配信 = Web フォント追加(§1-3 違反)。(v) は
-絵文字グリフの色・ライセンス依存(§1-1 の趣旨に反する)。フォントは Noto Sans CJK JP(OFL 1.1、
-© 2014-2021 Adobe)を採用(Source Han Sans と同一原図。Noto の方が配布形態が単純)。
-
-**D. favicon / OG の形式と生成** — 形式: favicon = `favicon.svg`(反転版 = 朱の円盤に白抜き) + PNG
-32 / 192 + `apple-touch-icon.png` 180(iOS は透過を黒で埋めるため dark body 色の不透明地)。OG =
-`og.png` 1200×630(dark body `#1B0D07` 地に ㊙ + `maruhi`。ワードマークも同フォントの Latin グリフを
-パス化し、ラスタが環境のフォントに依存しない)。ラスタライズの列挙: (i) resvg / sharp を devDependency /
-(ii) ImageMagick 等を一回性 / (iii) **既存 devDependency の Playwright Chromium で SVG をスクリーンショット**
-(上位互換: 新規依存ゼロ・e2e と同じレンダラ)/ (iv) PNG を作らず SVG のみ(iOS・OG スクレイパーが
-SVG 非対応なので不可)。**選定 = (iii)**、一回性スクリプトで実行し PNG のみコミット。`<head>` には
-`description`・`icon`(svg / png)・`apple-touch-icon`・`og:*`・`twitter:card=summary_large_image` を
-追加(英語 — ADR-0017)。**OG の絶対 URL**: 列挙 = 静的に hosted origin を書く / 相対 URL(スクレイパー
-が解決しないものがある — 不可)/ ビルド時環境変数 / Worker がリクエスト時に書き換える(静的シェルの
-原則に反する)。**選定 = ビルド時環境変数 `MARUHI_WEB_ORIGIN`、既定 `https://my.maruhi.app`**
-(`Root.tsx` はビルド時 RSC なので `process.env` を読める。セルフホストは deploy URL を指定 —
-SELF_HOSTING.md に 1 行)。CSP は変更なし(すべて自己配信、`img-src 'self'` の範囲内)。
-
-**E. 円と字形のプロポーション** — 列挙(1000 単位): (a) ㊙ グリフ忠実(リング 40・字形 66%)/ (b) 印章風
-(リング 64・字形 60〜62%)/ (c) favicon 最適(リング 80・字形 64%)/ (d) リング無しの字形単体 /
-(e) 反転版は字形を大きく(リングが無い分)— 上位互換として (b)+(e) の併用。ウェイトは Bold と Black を
-16 / 24 / 32 / 64 / 160 px で比較。**選定 = Bold・輪郭版はリング 64(直径の 6.7%)・字形 62%、反転版
-(favicon)は字形 66%**。Black は 32 px 以下で画線が潰れて塊になり、Bold は 32 px で「秘」が判読できる。
-16 px では何を選んでも判読不能なので、favicon は「朱の丸」として認識されることを優先し反転版を使う。
-(a) は 16〜24 px でリングが消える。(c) は 160 px 以上で窮屈。(d) は ㊙ の同一性を失う。
-
-**成果物と検証の再現**: `apps/web/theme/maruhi.ts`(生 hex は朱 2 値 + on-accent 2 値のみ)→
-`bun run --filter @maruhi/web theme:build && bunx oxfmt apps/web/theme`(生成物は oxfmt 済みで
-コミットする — 差分ゼロの確認もこの順)。SVG 4 点 + PNG 4 点は `apps/web/public/`。OFL 全文と著作権表示は
-`apps/web/public/fonts/OFL-NotoSansCJK.txt`(配信物からも読める。DP2 の Archivo / Martian Mono も同じ
-ディレクトリに置く — §4)。各 SVG の先頭コメントに由来を記す。
-
-## 4. DP2 LP + docs — 構成
-
-- 新パッケージ(`apps/site` 案。既存の `apps/docs` スタブを吸収してもよい): **Blume**(ADR-0008 で決定済み — Astro
-  ベース)の静的出力で LP と docs を 1 サイトにする。LP を Blume の外(素の Astro 等)で作る必要が実際に出た場合は
-  ADR-0008 の改訂として提起する(蒸し返さない)。LP = `/`、
-  docs = `/docs/*`。**独立の `wrangler.jsonc`**(Workers Static Assets・custom domain `maruhi.app`)。
-  製品 Worker(`maruhi-server-hosted`)とは別デプロイ
-- **スタイリング(2026-09-03 所有者裁定 — Astryx はダッシュボード、LP は Blume)**: 3 層のみ。(1) **Blume の theme
-  tokens**(色・角丸・フォント)に Astryx `defineTheme` と同じ値(朱 accent・warm neutral・Archivo / Martian Mono)
-  を入れて docs と LP の両方に効かせる — 二重管理を避けるなら `apps/web/theme/maruhi.ts` から CSS 変数を書き出す
-  生成スクリプト(DP1 で判断)。(2) **LP のカスタムページは Astro コンポーネントの scoped `<style>`(素の CSS)**。値は
-  CSS 変数を参照し、生 hex・マジックナンバーを書かない(ADR-0013 の精神を LP にも適用)。**CSP との関係(訂正)**: Astro の
-  `build.inlineStylesheets` 既定 `'auto'` は 4 kB 未満のスタイルを HTML の `<style>` にインライン化するため、そのままだと
-  `style-src 'unsafe-inline'`(またはハッシュ列挙)が要る。LP は `build.inlineStylesheets: 'never'` で外部 CSS に固定し、
-  `style-src 'self'` を保つ(Blume が Astro 設定を露出するかは DP2 の確認項目 — 露出しなければ component overrides /
-  eject の判断材料に加える)。(3) docs は Blume 既定(component overrides は必要時のみ)。**入れないもの**: Tailwind
-  (依存増・トークン二重化)、StyleX(静的サイトにコンパイラ不要)、Astryx の React 部品(原則不使用 — 必要なら React
-  islands で個別に)。増える依存は `blume` 本体のみ。**留保**: theme tokens でフォント差し替え・ヘッダー / フッター・
-  カスタムページの自由度がどこまで届くかは Blume を実際に入れて `node_modules/blume/docs` を読んで確定する(DP2 の
-  最初の作業)。届かない部分は component overrides か、LP のみ `blume eject` 相当の自由度を取るかをそこで決める
-- `maruhi.dev` → `maruhi.app` の 301(ゾーンのリダイレクトルール。Worker は置かない)
-- 「最初の 5 分」(ADR-0014 改訂 1)へ導く構成: 価値提案(1 画面)→ インストール(コマンド)→ `maruhi login` →
-  招待制の案内 / waitlist → セルフホストへの導線(SELF_HOSTING.md)
-- LP の CSP は TCB ほど厳格でなくてよいが、**外部スクリプト・外部フォント・トラッカーは置かない**(§1-5)。
-  埋め込み(動画等)が要る場合は自己配信
-- フォント(§1-3): Archivo(見出し・本文)+ Martian Mono(コード)を `/fonts/` から自己配信(可変 woff2・Latin
-  サブセット・`font-display: swap`)。docs(Blume)も同じ 2 書体を共有。**Bun の印象の要素分解**: 極太 / 幅広の見出し
-  (Archivo の幅軸)・黒地・コードブロックが本文と同格・マスコット — マスコットの役は ㊙ ロゴが担う
-- **OFL 1.1 の配布義務**(DP2 の実装で落とさない): (a) 配信物と並べて各書体の著作権表示と OFL 全文を同梱する
-  (`/fonts/OFL-Archivo.txt` / `/fonts/OFL-MartianMono.txt` 等 — 配布物からユーザーが読める場所。リポジトリの
-  `LICENSE` 一式にも追記)。(b) サブセット化・可変軸の間引きは OFL の Modified Version に当たるが、**両書体とも
-  Reserved Font Name を宣言していない**(上流 `OFL.txt` の著作権行に "with Reserved Font Name" の句なし —
-  Omnibus-Type/Archivo・evilmartians/mono、2026-09-03 確認)ため、**改変版でも元のファミリ名(`Archivo` /
-  `Martian Mono`)を名乗れる**。よって Latin サブセット(≈ 半減)を既定にし、改名は不要。同梱する OFL 全文は
-  上流のものをそのまま置く(改変の有無で義務は変わらない)
-- 現 `apps/web/src/pages/HomePage.tsx`(スパイク骨格)は、LP が apex に立った時点で `my.maruhi.app/` を
-  `/dashboard` へのリダイレクト(または最小の案内)に置き換える。e2e の機構検証フック(built-at / counter /
-  about)は別の検証ページへ移すか、テストの前提を改める(削除で e2e を壊さない)
-- hosted-design.md §7 L1 の改訂: 「`maruhi.dev` = docs」→「docs = `maruhi.app/docs`、`maruhi.dev` は 301」
-
-### DP2 実装時の裁定録(2026-09-03)
-
-各裁定点は DP1 と同じループ(案を 3 つ以上列挙 → 上位互換 / 銀の弾丸を探索 → 新案が尽きるまで生成規則を
-変えて反復 → 選定)で決めた。判断基準は §4 の 3 層に収まる・「言わざる」と依存最小に整合・生成物が少ない・
-O9(Alchemy v2 化)で後から包みやすい・後戻りが安いこと。
-
-**Blume の確認結果(留保の解消 — Blume 1.5.3、`node_modules/blume/docs` と `blume --help`、仮導入ビルドで実測)**:
-(1) **theme tokens の到達範囲**: `theme.accent` / `background` は `{ light, dark }` の 2 値、`theme.css`(プロジェクト
-ルート)で `--blume-background / foreground / muted / muted-foreground / border / accent / accent-foreground / action /
-code-background / radius / font-*` を `:root` と `:root[data-theme="dark"]` に上書きでき、docs と LP の両方に効く。
-(2) **フォント**: `theme.fonts` の 3 ロール(display / body / mono)はローカル woff2 の `variants`(可変レンジ `"100..900"`
-可)を受け、Astro Fonts API が `/_astro/fonts/<hash>.woff2` に自己配信する。**既定は Inter / IBM Plex Mono を Google
-Fonts からビルド時に取得**し、スキーマの default のため無効化できない = ローカル指定が「言わざる」の必須条件(取得は
-ビルド時のみで、配信物からの外部通信ではないが、ビルドの外部依存を作らない)。`<Font>` は `@font-face` を **必ず
-インライン `<style>` で出す**(D の前提)。(3) **Astro 設定の露出**: `build.inlineStylesheets` は直接露出しないが、
-`integrations` が透過するので統合の `astro:config:setup` → `updateConfig` で 'never' に固定できる(実測で効く)。
-(4) **カスタムページ**: `pages/*.astro` を同一ルートにマウントし、`PageLayout`(ヘッダー + テーマ + フォント、サイドバー
-なし)で LP の自由度は十分。`blume:data` から config / navigation / fontCssVars を読む。`basePath: "/docs"` で docs を
-`/docs/*` に載せ、ルートはカスタムページが持つ(公式サポート。Docusaurus の `routeBasePath` 相当)。(5) **component
-overrides / eject**: `components.ts` の `layout` スロット(Header / Footer / Logo …)と `blume eject` がある。DP2 では
-どちらも不要。(6) **外部通信**: 検索 = Orama(ブラウザ内、索引 `/blume-search.json`)、`llms.txt` / raw Markdown /
-Copy as Markdown / WebMCP(ページ内登録のみ)/ OG カード(Takumi、ビルド時ローカル描画)/ sitemap / robots は外部通信
-なし。**analytics は opt-in で無宣言なら何も注入しない**(Vercel / PostHog / 任意 script は宣言時のみ)。Ask AI / MCP
-サーバーは server 出力が要る opt-in(既定 off)。**Open in chat** は ChatGPT / Claude / v0 / Cursor 等へのナビゲーション
-リンク(ユーザー操作時のみ・自動送信なし)。「Give feedback」は GitHub issue の事前入力リンク。`@vercel/analytics` は
-Blume のバンドルに含まれるが `window.va` 不在で no-op(実測: LP / docs の全リクエストが同一オリジン)。(7) **ランタイム**:
-Blume は Node 22.12+ を要求するが `bunx --bun blume build` で Bun 上でも完走する(実測。CI の Node 版に依存しないため
-これを採る)。**Bun の印象の要素分解に対する答え**: 極太 / 幅広の見出しは Archivo の `font-stretch: 112%` + weight 800、
-黒地はシステム追従の dark、コードブロックは本文と同格(LP のヒーローはターミナル)、マスコットの役は ㊙ ロゴ。
-
-**A. パッケージの配置と名前** — 列挙: (i) `apps/site` 新設 + `apps/docs` スタブ削除 / (ii) `apps/docs` を LP 込みで拡張 /
-(iii) LP と docs を別パッケージ / (iv) `apps/web` に Astro を同居 / (v) パッケージを作らずリポジトリ直下に Blume を置く。
-**選定 = (i)** `@maruhi/site`(FSL-1.1-MIT = リポジトリ既定)。名前は「apex サイト = LP + docs」を表し、`apps/docs` の
-名では LP が異物になる。品質ゲート: `typecheck` は `blume.config.ts` / `scripts` / `test` / `theme`(`.astro` / `.mdx` は
-tsc の対象外 — Blume の `blume check` は任意)、oxfmt / oxlint は TS のみ対象で `.astro` は無視、ImportLint は TS 相対
-import(`../web/theme` は参照しない — B)、fallow は entry(`blume.config.ts` / `scripts/*.ts` / unit test)と ignore
-(`public/**` / `.blume/**`)を宣言。ルート vitest projects に `apps/site/vitest.unit.config.ts` を追加。棄却: (iii) は
-テーマ・検索・OG の共有を失い 2 デプロイになる。(iv) は TCB に Blume の依存木(≈ 850 パッケージ)を入れる。(v) は
-ワークスペースの規約から外れる。
-
-**B. テーマトークンの共有** — 列挙: (i) `apps/web/theme/maruhi.ts` から CSS 変数を書き出す生成スクリプト / (ii) 値を手で複製
-し差分検査で漂流検知 / (iii) `packages/brand` に定数を置き両者が import / (iv) `apps/web/theme/brand.ts` に定数を分離し site が
-相対 import / (v) site の config が `maruhi.ts` を直接 import(Astryx の `defineTheme` を評価) / (vi) **生成物 `maruhi.css` を
-入力にする生成スクリプト**(上位互換: 朱 2 値だけでなく HCT 導出の warm neutral〔body / surface / popover / text / border〕も
-同じ経路で取れ、web 側のソースに触れない)。**選定 = (vi)**: `apps/site/scripts/theme.ts` が `maruhi.css` の `light-dark(#…, #…)`
-宣言を抽出し、`theme.css`(Blume tokens)/ `theme/tokens.ts`(config が読む定数)/ `public/logo-dark.svg`(fill を dark accent
-へ)/ 複製資産(favicon / logo / og / apple-touch-icon)を書き出す。生成物はコミットし、`test/unit/theme.test.ts` が
-「再生成 = コミット済み」を検査(DP1 の「生成 CSS と一致」契約と同型)。site 側の手書き hex はゼロ(unit test が検査)。
-棄却: (i)(v) は site に `@astryxdesign/core` の評価を持ち込む。(ii) は二重管理。(iii)(iv) は web の theme を触り、
-neutral の導出値は `maruhi.css` にしか無いので結局 CSS を読む。Blume の `--blume-muted` ← Astryx `surface`、
-`--blume-code-background` ← `popover`(dark で本文より明るい面)、`--blume-radius` ← `--radius-element` と写像した。
-
-**C. フォントの取得・サブセット化・配信** — 列挙: (i) 上流リポジトリの可変 TTF / woff2 をそのまま置く / (ii) `pyftsubset` で
-Latin サブセット化(一回性 /tmp)/ (iii) サブセット化ツールを devDependency / (iv) **Fontsource の variable パッケージ
-(`@fontsource-variable/archivo` / `martian-mono` 5.3.0、Google Fonts と同じ原本を Latin 等のサブセットに分割済みの woff2 +
-OFL 全文)から一回性に取り出す**(銀の弾丸: サブセット化の道具そのものが不要)/ (v) Blume の `theme.fonts` に Google
-provider を指定(ビルド時に Google から取得 — 「言わざる」の趣旨とビルドの外部依存で不可)。**選定 = (iv)**: `archivo-latin-
-wdth-normal.woff2`(90 KB — 幅軸 62〜125% + 太さ 100〜900。見出しの幅広に幅軸が要る)と `martian-mono-latin-wght-normal.woff2`
-(24 KB — 太さ 100〜800。コードに幅軸は不要)。italic は落とす(§1-3)。`unicode-range` は Latin 1 ファイルずつなので不要
-(Astro Fonts API の `@font-face` は `font-display: swap` と fallback metrics を付ける)。置き場は `apps/site/public/fonts/`
-(OFL 全文 `OFL-Archivo.txt` / `OFL-MartianMono.txt` と同じディレクトリ = 配布単位。LP のフッターからリンク)。**Astro Fonts
-API は原本を `/_astro/fonts/<hash>.woff2` に複製して参照する**ため配信物にフォントが 2 経路載る(計 ≈ 113 KB の重複)—
-`/fonts/` の可読 URL + ライセンス同居と、ハッシュ付き最適化配信の両方を取る代償として受容。両書体とも上流の OFL に
-Reserved Font Name の句が無いことを Fontsource の LICENSE(上流のコピー)で再確認(改名不要)。README のライセンス表に
-1 行追加。棄却: (i) は 3 スクリプト込みで数百 KB。(ii)(iii) は道具が増える(Fontsource が同じ結果を配っている)。
-
-**D. LP の作り方と CSP** — 列挙: (i) PageLayout のカスタムページ + scoped `<style>` / (ii) RootLayout(docs の chrome 付き)/
-(iii) `layout.Layout` スロットで shell を自作 / (iv) `blume eject` / (v) LP のみ素の Astro(ADR-0008 改訂)。**選定 = (i)**。
-CSP の実測と対処: (a) Astro の `inlineStylesheets` 'auto' → 統合で **'never'**(medium-zoom 等の小 CSS が外部化された)。
-(b) Blume chrome の **inline `<script>` 6 本**(テーマ初期化・ヘッダー操作・ナビ・ClientRouter のスタイル読み込み等。内容は
-Blume のバージョンで決定的)→ 配信物から収集した **SHA-256 ハッシュで許可**(`apps/web/scripts/write-headers.ts` の方式)。
-(c) Astro Fonts の **`@font-face` `<style>` 2 本**(無効化不能 — 上の確認 (2))→ 同様にハッシュ。(d) テーマトグルが JS で挿す
-遷移抑制 `<style>` → 固定文字列の実在を確認してハッシュ。(e) **Shiki のトークン `style` 属性**(`--shiki-light/dark`)と chrome
-の一部(サイドバーの `padding-inline-start`、CardGroup の `--blume-cols`)= `style-src-attr` はハッシュで許可できない →
-列挙: `style-src-attr 'unsafe-inline'` / `'unsafe-hashes'` + 全属性値の列挙 / ハイライト無効(Blume に無い)/ **ビルド後に
-属性値をクラス `.sa-<hash>` へ写像した 1 本の CSS に外部化**(Shiki 公式 `transformerStyleToClass` と同じ手法を配信物に適用
-— Blume はトランスフォーマを露出しない)。**選定 = 外部化**(`scripts/postbuild.ts` 第 1 段。HTML に `style` 属性が 1 つも
-残らないことをビルドで検査、e2e が docs で `[style]` = 0 とトークン着色の維持を検証)。結果の CSP: `default-src 'none';
-script-src 'self' 'sha256-…'×6; style-src 'self' 'sha256-…'×3; img-src 'self' data:; font-src 'self'; connect-src 'self';
-manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` — **`'unsafe-inline'` は script にも style
-にも無い**。§4 の「`style-src 'self'` を保つ」は「'self' + 決定的な内容のハッシュ」の形で満たす(TCB の `apps/web` と同じ
-解釈)。あわせて `postbuild.ts` が配信物の src / href の外部参照ゼロ(href は自リポジトリの GitHub と製品オリジンのみ許可)
-とインラインイベントハンドラ無しを機械検査し、Blume が出す `_headers`(.md / .txt の charset・トップの Link)を保持して
-`/*` に CSP / nosniff / `Referrer-Policy: no-referrer` / HSTS(apex 単独)を追記する。棄却: (ii) は LP にサイドバーが要らない。
-(iii)(iv) は Blume 既定を捨てて上流追随を失う。(v) は ADR-0008 の改訂が要り、Blume で足りることが実測で分かった。
-
-**E. wrangler 設定の形** — 列挙: (i) 独立 `apps/site/wrangler.jsonc`(assets のみ・`main` なし)/ (ii) `apps/server/wrangler.jsonc`
-に名前付き環境 `site` を足す / (iii) Cloudflare Pages / (iv) 製品 Worker に `/docs` を同梱。**選定 = (i)**: `name: maruhi-site`、
-`routes: [{ pattern: "maruhi.app", custom_domain: true }]`、`workers_dev: false`、`preview_urls: false`、`assets.directory: ./dist`、
-`html_handling: "drop-trailing-slash"`(Blume の内部リンク・canonical・sitemap は末尾スラッシュ無しで、出力は `x/index.html`。
-`/docs/x/` は 308 で `/docs/x` へ)、`not_found_handling: "404-page"`(Blume の `404.html` — chrome 付き)。環境変数なし・設定
-1 本で O9 の宣言化に包みやすい。CI は `wrangler deploy --dry-run` で妥当性を検査(製品 Worker の 8b と同型)。preview は
-ローカル `wrangler dev`(`bun run --filter @maruhi/site preview`)のみ — apex 以外の origin を作らない。棄却: (ii) は環境継承の
-規則で製品側の設定を汚す。(iii) は Pages が Workers 収束の方針で新規採用しない。(iv) は TCB に LP を同居させる(§1-4 違反)。
-
-**F. `my.maruhi.app/` と e2e フックの移し先** — 列挙: (i) `_redirects` で `/` → `/dashboard` 302 / (ii) 最小の案内ページ / (iii) 据え置き
-/ (iv) 案内ページ + 機構検証フックを `/about`(「このデプロイについて」= 診断ページ)へ移す(上位互換: サインイン往復の
-`ResumeToDashboard`〔裁定 BU〕を壊さず、フックに運用上の意味〔ビルド時刻・クライアント動作確認〕を与える)。**選定 = (iv)**:
-`HomePage` = SVG ロゴ(`/logo.svg`、絵文字 ㊙ を置換)+ 「Open the dashboard」+ `maruhi.app` への導線 + 「About this
-deployment」。`AboutPage` = 説明 + Diagnostics(`built-at`・`CounterCard`)。e2e は hydrate 検証を `/about` へ、`/` の待機を
-`home-heading` へ変更(SPA / MPA 劣化・API 呼び出しゼロ・マーカー復帰の検証はそのまま。全 25 件通過)。棄却: (i) は静的
-シェルの `_redirects` だと OAuth 往復後の着地(`/`)が変わり、認証フローの検証が DP2 の範囲を超える。(iii) は LP の重複。
-
-**G. LP の情報構成の粒度** — 列挙: (i) 1 ページに全部 / (ii) インストール / セルフホストをサブページに / (iii) LP は 1 画面 + 全部
-docs へ。**選定 = (i)**(1 ページ・6 節: ヒーロー〔ターミナル〕→ How it works〔4 枚〕→ 1. Install〔README と同じ pre-release
-手順〕→ 2. Sign in〔`config set server` + `login`、鍵生成の儀式を正直に〕→ 3. Get access〔招待制の現状。waitlist の置き場 =
-`#access` の `data-waitlist-placeholder`、H6 で差し替え〕→ Or run it yourself〔`/docs/self-hosting`〕→ フッター〔GitHub /
-Docs / License / 「No analytics, no trackers」/ フォントの OFL リンク〕)。docs の初期コンテンツは 3 ページ(index / getting-
-started / self-hosting)で、仕様書・SELF_HOSTING.md への導線を置く(書き下ろしは最小 — 後続は `blume-update-docs`)。
-棄却: (ii) は内容が薄い段階で階層を増やす。(iii) は「最初の 5 分」の導線が LP で完結しない。
-
-**H. Blume の機能の取捨** — on(外部通信なし・既定): 検索(Orama ローカル)/ `llms.txt` / raw Markdown / Copy as Markdown /
-WebMCP(ページ内登録のみ)/ OG カード(ローカル描画。palette は生成トークン、LP は DP1 の `og.png`)/ sitemap / robots /
-JSON-LD / agent-readability.json / テーマトグル(docs は Blume 既定 — §1-2 の「手動トグルを持たない」はダッシュボードの裁定)/
-banner(private preview の案内、dismiss は localStorage)/ Edit on GitHub・Give feedback(GitHub へのリンク)。**off**:
-`ai.openInChat`(第三者 AI へのリンク — 「言わざる」の趣旨。Copy as Markdown が残る)/ RSS(blog 無し)/ analytics(無宣言)/
-Ask AI・MCP サーバー(既定 off。server 出力が要る)/ `lastModified`(既定 off。浅い clone で崩れる)。**off にできない外部
-通信は無い**(実測: LP / docs / テーマトグル / 検索 / クライアント遷移の全経路で外部オリジンへの要求ゼロ・CSP 違反ゼロ)。
-
-**新たに出た裁定点**: (L) **`bun audit` の推移依存**: Blume の依存木に image-size@2.0.2(修正版なし)と
-@vercel/routing-utils の path-to-regexp@6.1.0(厳密ピン)が含まれ CI の監査が落ちる。列挙: 名前単位の `overrides`
-(router の ^8 系まで巻き込む)/ 監査ステップの除外 / advisory ID 単位の `--ignore`(採用 — ビルド時のみ動く
-メンテナ側ツールチェーンで配信物に載らず、実行経路も無い。根拠は ci.yml のコメント。Blume 更新で消える見込み)。
-(I) **ダークモードのロゴ**: `logo.image` の `{ light, dark }` 形で `<img>` 2 枚を出し分ける。dark 用 SVG は
-原本の fill を dark accent(`#FF693C`)へ差し替えた生成物(B の生成スクリプト — 手書き hex ゼロ)。currentColor 版
-(`logo-mono.svg`)だと印が文字色になり「朱の印」でなくなるため不採用。(J) **Blume の実行ランタイム**: `bunx --bun blume`(Bun)。
-Node 22.12+ の要求は Bun 上の実測完走で代替し、CI に Node のセットアップを足さない。(K) **配信物の重複フォント**(C)。
-
-**検証(2026-09-03)**: `bun run check` 7 段通過(site は fmt / lint / typecheck / ImportLint / fallow / unit test に乗る)。web e2e
-25 件通過(F 後)。site e2e 11 件通過 — 全リクエスト同一オリジン・CSP 違反ゼロ(LP / docs / トグル / 検索 / クライアント遷移)・
-Archivo / Martian Mono の適用・light / dark の accent と body が `tokens.ts` と一致・`/docs` 到達・末尾スラッシュ正規化・404。
-スクリーンショット(light / dark / mobile)は PR 本文。人間タスク = hosted-ops.md §7 O10(初回デプロイ)/ O11(`maruhi.dev`
-301)/ O12(訪問数はサーバー側集計のみ)。
-
-
-**G 改訂 1(2026-09-04、所有者レビュー後)**: 所有者の評価「デザインは悪くないが構成が微妙で魅力が伝わらない」を受け、
-競合 LP(Phase / Infisical / Doppler / Shelve / Keyway)を実読して差分を整理した。共通項: 全社が AI エージェント対応を前面に出す。
-Phase は E2EE を掲げるが Console 側で復号し `.env` エクスポートを持つ。Keyway は「エージェントが `.env` を読める」を
-ヒーローに置き、サーバー側 AES。Infisical / Doppler はコンプライアンス・規模・統合数で語る。maruhi の差分は「復号器が
-MIT の CLI 一つで、サーバー・ダッシュボード・運営者のいずれも平文を持てない」「`.env` 書き出し機能が存在しない」
-「自分の CF アカウントへ `wrangler deploy` 一発」「エージェントには `maruhi schema` の契約だけ渡し、値表示は fail-closed」
-「非保証(CRYPTO_SPEC §14.3)を自分から書く」の 5 点に集約される(「No telemetry」は Phase も明記しており独自性として
-は押さない)。列挙した構成: **(A)** 信頼境界を軸(「誰が平文を読めるか」の表を最初に置く)/ (B) ディスクレスを軸
-(`maruhi run` の実演から入る)/ (C) セルフホストを軸(`wrangler deploy` から入る)。**選定 = (A)**(所有者裁定)。
-(B) は「diskless run がある」だけでは差別化にならない(ADR-0014)。(C) は Infisical と同じ土俵で語ることになる。
-ヒーローコピーは所有者の「短くインパクト重視」の指示で **「Secrets only you can read. / Not even us.」**(2 行目を accent 色)。
-新構成(1 ページ・7 節): Hero〔`push` → `run` のターミナル〕→ Who can read your secrets〔CLI / run プロセス = yes、server /
-dashboard / operator / AI agent = no の表〕→ Nothing to leak from disk〔`printenv | wc -c` と `ls .env*` の実演〕→ Agents get
-the contract, not the values〔`maruhi schema` の実出力 + 値表示拒否メッセージ〕→ Your Cloudflare account. One deploy.〔3 コマンド〕
-→ What we don't promise〔§14.3 から 4 点〕→ Get started〔install / sign in / Access(`#access`、waitlist placeholder は据え置き)〕。
-ADR-0014 の柵: 「最も安全」と言わない、機能数で争わない、競合名を LP に出さない、ターミナル出力は CLI の実文字列
-(`Pushed … (version=1, epoch=1)` / `Confirmation code:` / agent gate の拒否文 / `schema` の表)を使う。`THREAT_MODEL.md` は
-未執筆(H5)なので非保証のリンク先は CRYPTO_SPEC §14.3。検証: site e2e 11 件(h1 の断言を新コピーに更新)・`blume validate
---strict`・fmt / lint / tsc 通過。文言の推敲は初回デプロイ後に続ける(§4 の「構造は今、コピーは後」)。
-
-**G 改訂 2(2026-09-04、所有者レビュー 2 回目)**: 改訂 1 に対する所有者の指摘 = (a) 競合は LP にコマンドを並べていないのでは、
-脅威や「なぜ E2EE / なぜディスクレス」を書いているのでは (b) 文章が多すぎて読むのがしんどい、イラストを入れて読みやすく
-(c) Why が 2 つだけだと「競合でいい」となる — maruhi に自然につながる Why の連鎖にする (d) Cursor / Copilot / Claude Code は
-競合ではないので名前を出してよい。競合 LP の再実測(コマンド数 / 脅威説明): Keyway 4 / あり(「AI エージェントが .env を読む」
-→「ディスクに無ければ読めない」の因果が最も明快)、Infisical 2 / あり(sprawl・長寿命資格情報・エージェントは資格情報を
-持てない)、Doppler 0 / あり(侵害統計)、1Password dev 0 / あり、Phase 3 / **なし**(機能列挙のみ — maruhi に最も近い E2EE 競合が
-「なぜ」を語っていない = 空いている席)、Shelve 1 / ほぼなし。改訂 1 の maruhi はターミナル 5 個で 6 社中最多だった。
-**選定 = 「Why の連鎖」構成**: 5 つの問いを順に潰すと maruhi の設計にしか着地しない並び —
-01 Who reads your files?(エディタとエージェントは全ファイルを文脈として読む → 秘密はファイルにできない → `maruhi run`)
-→ 02 Then where do they live?(サーバー。多くはサーバー / コンソールが復号できる → 出る前に暗号化)→ 03 Who holds the key?
-(復号器が小さくなければ E2EE は意味を持たない。復号するダッシュボードは XSS 一発、export .env は 01 を無に戻す → 復号器は
-MIT の CLI 一つ、ダッシュボードは鍵を持たない、`.env` writer は存在しない)→ 04 How does the agent still work?(名前・型・
-設定済みかだけ要る → `maruhi schema`、値表示は fail-closed)→ 05 Who runs the server?(暗号文にも運営者はいる → 自分の
-CF アカウントへ `wrangler deploy`、またはこちら。どちらもテレメトリなし)→ 締め「残るのは you と you が選んで走らせた
-プロセス」。01 だけなら Keyway / Doppler、02 まで なら Phase、03 以降で maruhi のみ、という設計(指摘 c への答え)。
-各問いは「問い → 事実 1〜2 文 → So: 答え(左罫 accent)」+ 図で、図はインライン SVG の線画(線 = muted、鍵と `.env` だけ
-accent。style 属性は使わず class で色付け — CSP の style-src-attr を増やさない)。03 の図は「誰が平文を読めるか」の
-タイル(改訂 1 の表を圧縮)。コマンドは hero の push → run と 04 の schema の 2 箇所に減らし、install / sign-in / self-host
-の手順は docs(getting-started / self-hosting)へ委ねる。ターミナルは `pre-wrap` で折り返し(狭い列・モバイルで横スクロール
-させない)。棄却: 脅威を文章だけで語る案(指摘 b に反する)/ 図を画像ファイルにする案(テーマ追従できず、`img-src` の
-配信物が増える)/ 表を残す案(タイルで同じ情報を短く出せる)。検証: site e2e 11 件・`blume validate --strict`・postbuild
-(外部参照ゼロ、style 属性の外部化は 9 件で変化なし)・fmt / lint。
-
-**G 改訂 2 補遺 — イラストのタッチ(2026-09-04、所有者裁定)**: 同一題材(02「鍵を持つ端末 → 暗号文 → 鍵のないサーバー」)を
-7 案で描いて比較した — A 細線(改訂 2 初版)/ B 太線ピクトグラム / C フラット面 2 トーン / D アイソメトリック / E ブループリント
-(方眼 + 寸法線)/ F ASCII 罫線 / G 印章(㊙ の朱印)。評価軸 = §2 のトーン適合・小サイズ可読性・light / dark・5 枚以上を揃える
-コスト・競合との被り。**選定 = B + G の差し色**: 物体は 3px 丸端の前景色の線 + code 背景色の面(ロゴ ㊙ と同じ線の重さで
-モバイルでも読める。線幅 1 種・面 1 種・accent 1 種なので揃えやすい)、accent は各図で「鍵を持つもの」1 点だけ(01 `.env`、
-02 鍵、03 CLI タイルの ㊙ 印 = `/logo.svg` / `/logo-dark.svg` を `<img>` で再利用し CJK フォントに依存しない、04 守られた値、
-05 deploy)。棄却: A(見出しの Archivo に負けて存在感が薄い・SaaS 線画に見える)/ C(Keyway / Linear 系と同じ棚)/
-D(Cloudflare / Doppler の意匠と重なり、5 枚を同じ角度・光で揃えるコストが最大)/ E は docs のアーキテクチャ図に留保 /
-F は 404 ページ等 1 箇所の遊びに留保(読み上げ・折り返しに弱い)。比較ページは所有者向け artifact(非公開)。
-
-## 5. DP3〜DP5 の入口(詳細は各 PR で)
-
-- DP3(ダッシュボード): アプリシェル・空状態 / ローディング / エラーの統一(`FailureNotice` 13 か所)・監査ビューアの
-  可読性(web-dashboard-design.md §4 の表示規律を保つ)・レスポンシブ・a11y。**xstyle の同じ上書きが 2〜3 回出たら
-  人間に提案してから `ui.package` へ**
-- DP4(儀式ページ): CLI 承認ページ(確認コードの視認性 = フィッシングガードの UX)・サインアップ案内 / 拒否時の着地・
-  `/invite`。CSP `script-src 'none'` のまま自己配信 CSS でブランド統一。確認コードの文字集合を確認
-- DP5(CLI): 出力の一貫性(TTY 規律)・`login` の期限と案内・繰り返し Note の抑制・英語校正・`--help` 整合
-
-### DP3 実装時の裁定録(2026-09-04)
-
-各裁定点は DP1 / DP2 と同じループ(案を 3 つ以上列挙 → 上位互換 / 銀の弾丸を探索 → 新案が尽きるまで
-反復 → 選定)で決めた。判断基準は ADR-0013 の検討順で浅い層に収まる・Astryx 既定に寄せる(§1-2)・
-表示規律(web-dashboard-design.md §4)を 1 つも崩さない・配信物にプレビュー用コードを混ぜない・
-後戻りが安いこと。実測は `apps/web/test/screenshots.ts`(裁定 F)と一回性の axe-core / キーボード
-走査スクリプト(裁定 E)で行った。
-
-**前提の訂正(実装で判明した事実)**: (1) Astryx の `Table` は自前の横スクロール枠(`role="group"` の
-scroll wrapper、`tabindex=0`)を持ち、Layout の padding ぶん左右へ bleed する。W 系列のモバイル幅で表が
-「切れて見えた」のは枠が視覚的なスクロールバーを出さないためで、構造的には読める。よって表の横スクロール
-枠を自作する案(初版の `TableFrame`)は不要で、DP3 の初期実装から取り除いた。(2) `Text` の `wordBreak` は
-maxLines 無しでも適用されるが、空白を含まない 64 hex の識別子は flex 項目の min-content を押し広げるため
-それだけでは折れない(`overflow-wrap: anywhere` + `min-width: 0` が要る — 裁定 H の `HexText`)。
-(3) 内部 user_id は ULID(26 文字 — AUTH_SPEC §9)で、モバイル幅の圧縮バーには「Signed in as + ULID +
-Sign out + トグル」が収まらない(裁定 A の狭幅規則)。(4) `useMediaQuery` は SSR 互換のため初回描画で
-必ず false を返す — 認証済み画面の本文はフェッチ後に描かれるため、Table → List の切替が見えることはない。
-
-**A. アプリシェルの構成と配置** — 列挙: (i) 画面ごとの ad-hoc ヘッダー(現状: /dashboard だけに
-ユーザー表示と Sign out、サブ画面は「← Dashboard」リンクのみ)/ (ii) `AppShell` + `TopNav`(ロゴ・3 到達点・
-ユーザー・Sign out)を認証済み全画面に / (iii) `AppShell` + `SideNav` / (iv) `Layout` の header スロットだけを
-各画面に / (v) **`DashboardShell`(上位互換)**: (ii) に加えて**セッション状態(`GET /auth/me`)をシェルが
-1 か所で持ち**、401 は全画面で同じサインインカード、ok のときだけ本文を描く(旧 `DashboardScreen` の S3 を
-シェルへ移す)。パンくずは親階層だけを渡し現在地は見出しから補う。表示規律の但し書き(`ServerReportedNote`)
-はページ末尾にシェルが 1 回置く。**選定 = (v)**。棄却: (i) はサブ画面からログアウトできず、ユーザー表示も
-無い。(iii) は到達点が 3 つで SideNav の要件(グループ化・増える見込み)を満たさず、Astryx の layout docs も
-「浅く安定した nav は TopNav」。(iv) はランドマーク(skip link / main / nav)とモバイルのドロワーを自作する
-ことになる。**付随の裁定**: (a) 本文は me の確認後に描く(1 往復の直列化を受容 — 401 のとき本文が一瞬
-描かれてから消える形と、子リソースの 401 分岐が並走する形を避ける)。(b) `height="auto"` + `variant="section"`
-— 既定の `elevated` は本文の高さで面が終わり(auto)か、main の内部スクロール(fill)になる。HP5 のモバイル
-閲覧は文書スクロール(アドレスバーの収縮・端までの慣性)が自然なので auto を採り、面の段差を出さない
-section にした(Astryx 既定からの唯一の逸脱で、視覚トークンは触っていない)。(c) 狭い幅(AppShell `md` =
-768px 以下)ではユーザー表示を到達点と一緒にドロワー側(`startContent`)へ移し、バーには Sign out だけを
-残す。(d) e2e は認証済み画面のテストがすべて `/auth/me` をモックする形に追随(`routeSession`)。
-
-**B. 空状態 / ローディング / エラーの統一** — 列挙: (i) 現状維持(空 = `EmptyState` と素の `Text` が混在、
-失敗 = `FailureNotice`、読込 = `LoadingRow`)/ (ii) 空を全部 `EmptyState` に揃えるだけ / (iii) 3 状態を 1 つの
-`ResourceView` に畳む(`useApiResource` 以外の状態 — ページング追記・失効の失敗・シェルの認証 — を覆えず、
-2 つの規律が並ぶ)/ (iv) `FailureNotice` に placement 引数を足す(API を増やす割に見た目は同じ)/ (v)
-**`FailureNotice` の API(failure / onRetry / subject)は変えず、置き方の規律を 2 種に固定し、空状態だけ新部品
-`EmptyNotice` に揃える(上位互換)**。**選定 = (v)**。規律: (a) **置換** = リソース本体の代わりに描き、再取得
-手段があれば `onRetry`。(b) **追記** = 描けた本体の下に足す(Load more の失敗・失効の失敗)。行から再操作できる
-失敗は `onRetry` を渡さない。13 か所(旧 DashboardScreen のセッション失敗表示はシェルへ移動 — 数は不変)= 置換 9 / 追記 4 で、各呼び出しにコメントで印を付けた。
-`EmptyNotice` は見出し + 「as reported by the server」の規定文言で、件数を出さない(§4-4)。`LoadingRow` は
-Spinner の `role="status"` に見える文言と同じ label を渡す。**付随**: 概要タブはチェーン取得を先頭リソースに
-して環境一覧をその後に読む(一様 404 / 403 で同じ Banner が節ごとに並ぶ形を避ける — 1 往復の直列化を受容)。
-棄却: (ii) は失敗と読込の規律が文書化されないまま残る。(iii)(iv) は上記。
-
-**C. 監査ビューアの可読性** — 列挙: (i) 現状(5 列。actor = `user · key FP · token id` を 1 文字列、details も
-` · ` 連結)/ (ii) セルを**ラベル付きの断片**に分解(actor = 主体 1 行 + `key` / `token` の断片、details =
-`target` / `env` / `var` / `epoch` / `v` / `chain seq` の対、`var.read` の件数要約は別行)/ (iii) Table を
-`List`(1 イベント = 1 項目)に置き換える(デスクトップの列走査を失う)/ (iv) 列幅の調整のみ / (v) **(ii) +
-狭い幅だけ (iii) に切り替える(上位互換 — 裁定 D)**。**選定 = (v)**。表示規律の確認: 項目・順序・文言は
-変えず(seq は応答適応のまま・「Events visible to your role」の規定文言・`Server time (UTC)`・FP は参照値の
-ままラベル `key` を付けただけで「照合せよ」と読める文言は無い)、件数表示も加えていない。棄却: (i) は
-FP と target が同じ塊で読めない。(iii) 単独は列走査を失う。(iv) は根本(1 文字列)が変わらない。
-
-**D. レスポンシブ方針** — 列挙: (i) 何もしない(Astryx の scroll wrapper に任せる)/ (ii) 全表を狭い幅で
-List 化 / (iii) 監査一覧だけ List 化、他の表は Astryx の横スクロール枠に任せる / (iv) CSS で `td` をブロック化する
-古典手法(Table の ARIA 構造を壊す。StyleX で Astryx 内部を上書きすることになる)/ (v) ブレークポイント
-定数を 1 つに固定して (iii)。**選定 = (v)**: `NARROW_VIEWPORT_QUERY = "(max-width: 768px)"`(AppShell の
-`md` と同じ式 — ナビのドロワー化と本文の表示形切替が同じ幅で起きる)を `shared.tsx` に 1 定義。HP5 の主用途
-(監査を読む)だけ List 形にし、S5 / S8 / S9 の表は横スクロール(枠は `tabindex=0` でキーボードでも
-スクロールできる)。識別子は `HexText` で任意位置折り返し(見出し直下の project ID・chain head・member id・
-key FP・token prefix)。棄却: (ii) は失効の 2 段階ボタンや Token を項目内に組み直す量に対して得るものが
-少ない。(iv) は上記。
-
-**E. a11y 監査の方法と直す範囲** — 列挙: (i) コードの目視のみ / (ii) `@axe-core/playwright` を devDependency
-に追加 / (iii) Playwright の ARIA スナップショット + 手動のキーボード走査 / (iv) React Doctor + `astryx doctor`
-のみ / (v) **axe-core を一回性(scratchpad の `page.evaluate` — CDP 経由なので CSP の対象外)で注入し、
-(iii)(iv) と合わせる(依存を増やさない上位互換)**。**選定 = (v)**。範囲: wcag2a / 2aa / 21a / 21aa +
-best-practice を S4 / S5 / S6(admin・reader・本人軸)/ S8 / S9 × light / dark / mobile の 18 態で実行。
-**所見と処置**: (a) `empty-table-header`(minor)— 失効列と変数名列の空見出し → `Actions` / `Variables` を
-付けた。(b) `color-contrast`(serious)— `SegmentedControl` の非選択ラベルが dark で 4.26:1(12px、AA は
-4.5)→ 監査軸の切替を `ToggleButtonGroup`(single)に置換して解消(Astryx 内部色なので上流候補として
-PR に記載。テーマの色値は触らない — DP1 で確定)。(c) 見出し階層: ページ h1 はシェル(サインイン前は
-カードの「Sign in」が h1)、節は h2(旧 h3 を昇格)、空状態の見出しは h3。(d) ランドマーク: AppShell の
-skip link → `nav[Dashboard]` → main、パンくずは `nav[Breadcrumb]`、モバイルのドロワーは `dialog[Navigation]`
-で Escape で閉じて焦点がトグルへ戻る。(e) フォーカス可視: light / dark とも accent 2px の outline(TextInput
-は枠線色 + 内側リング)。(f) タブは矢印で焦点移動・Enter で選択(手動活性化)。**直さなかったもの**:
-`TopNavHeading` のロゴリンクの焦点リングは 1px の固定色(Astryx 内部)— 実測では両モードで視認できる
-ため据え置き(上流候補に含める)。
-
-**F. 認証が要る画面の目視確認とスクリーンショット** — 列挙: (i) scratchpad のみのスクリプト(再現不能)/
-(ii) **`apps/web/test/screenshots.ts` をコミット**(e2e と同じ `page.route` モック。フィクスチャは
-`test/fixtures.ts` へ切り出して e2e と共用)/ (iii) 配信物にプレビュー用ルート + モックデータ(禁止)/
-(iv) 実 OAuth でログイン(GitHub App の設定が要り、本セッションでは不能)/ (v) (ii) + 結果を所有者向けの
-非公開ページ(Claude の Artifact)に light / dark / mobile と変更前後で並べる(DP2 と同じ)。**選定 = (v)**。
-手順は `screenshots.ts` 先頭に記載(`build` → `preview`(port 8788)→ `screenshots`。出力は
-`apps/web/screenshots/` — .gitignore 済み)。11 画面 × 3 態 = 33 枚、CSP 違反があれば失敗する。
-
-**G. PR の分割** — 列挙: (i) 1 本 / (ii) DP3a(シェル + 状態統一)/ DP3b(監査可読性 + レスポンシブ + a11y)/
-(iii) 3 本以上。**選定 = (i)**: シェルがブレークポイント(D)・ランドマークと見出し階層(E)・状態の統一(B)の
-土台で、分けると DP3a だけでは a11y と e2e の追随が中途半端になる。差分は web の 12 ファイル + 文書で
-レビュー可能な量(コミットは関心ごとに分けた)。
-
-**H. xstyle の繰り返し** — DP3 で出た xstyle は **1 種類のみ**: 識別子の任意位置折り返し(`overflowWrap:
-anywhere` + `wordBreak: break-all` + `minWidth: 0`)。列挙: (i) 各画面で `stylex.create` を書く(3 回以上の
-重複になる)/ (ii) `shared.tsx` に 1 定義 + `HexText` 部品(定義は 1 か所で、使用箇所は 12)/ (iii) `ui.package`
-を新設して置く(③)/ (iv) `defineTheme` の Text variant(①)。**選定 = (ii)** — 定義の重複は作らず、昇格は
-人間の判断に委ねる(CLAUDE.md「逆流させない」)。**昇格候補(PR に列挙)**: `HexText` を ui.package の
-部品または Text の variant(`code-breakable` 等)へ。他に繰り返しはない(既存の tabpanel の `display: none`
-上書きは W 系列のまま 1 か所)。
-
-**新たに出た裁定点**: (I) **軸切替の部品**: SegmentedControl → ToggleButtonGroup(E-(b))。e2e の指し方は
-`radio` → `button[pressed=false]`。(J) **ロゴの色**: シェルのロゴは `public/logo.svg`(light の朱で固定)でなく
-インライン SVG 部品 `MaruhiMark`(`public/logo-mono.svg` と同じパス)を `Icon color="accent"` で描き、
-light / dark の `--color-accent` を継承する(DP1 裁定 A の (v)「currentColor 化」の部分採用)。パスデータの
-二重管理は SVG 側を正としてコメントで結ぶ。(K) **サインイン前のページ見出し**: シェルは me が取れるまで
-ページ見出しを出さず、サインインカードの「Sign in」が h1 になる(「API tokens」の下にサインインカード、
-という形を避ける)。(L) **プロジェクト見出しの短縮形**: h1 は `Project ab…ab`(先頭・末尾 8 桁)、全文は
-直下に `HexText`(`data-testid="project-id"` は据え置き)。
-
-**A 改訂 1(2026-09-04、所有者レビュー後 — サイドバー型 + Astryx テンプレート起点)**: 所有者の指示
-「レイアウトはサイドバー型に(SaaS の主流で、自分も使いやすい)」「Astryx のテンプレートをもっと積極的に
-使う(ログインもサイドバーもテンプレートにある)」を受け、TopNav 案(A-(v))を **SideNav 案(A-(iii))に
-差し替えた**。所有者の裁定であり、A の「到達点 3 つは TopNav の範囲」という棄却理由は「使い慣れた形」に
-劣後する。形はテンプレートをそのまま起点にする(`astryx template shell-side-nav` / `AppShellSideNavOnly` /
-`SideNavWithHeaderMenu` / `login` / `table-page` / `LayoutHeaderWithActions`): (a) **フレーム** = AppShell +
-`SideNav`(`collapsible`。ヘッダー = `SideNavHeading` + `NavIcon`〔accent の円盤に on-accent の ㊙ = favicon と
-同じ反転版〕、本文 = `SideNavSection` の到達点 3 つ〔Folder / Key / ClipboardDocumentList〕、プロジェクト画面
-では Projects の子項目に現在のプロジェクト〔短縮 ID〕が選択状態で並ぶ、フッター = `SideNavSection`
-"Account"〔ユーザー id → Account audit、Sign out〕— `shell-side-nav` のフッター構成)。モバイル幅では
-AppShell が SideNav をドロワーへ移す(A-(c) の「ユーザー表示をドロワーへ」は SideNav では自然に成立するので
-`useMediaQuery` の分岐を廃止)。(b) **ページ** = `Layout`(fill)の header スロットにパンくず + h1 + 説明
-(`LayoutHeader hasDivider`)、content スロットに本文 + `ServerReportedNote`。main の内部スクロール
-(`table-page` の形。A-(b) の「文書スクロール」は撤回 — テンプレートの既定に寄せる)。(c) **サインイン** =
-`login` テンプレートの形(Center + ロゴ + Card〔h1 "Sign in"・説明・primary の "Sign in with GitHub"〕)。
-資格情報の入力欄は無い(GitHub OAuth のみ)ので Button に `href` を渡してリンクとして描く。サインアウト直後は
-Card 内に info Banner。(d) **アイコン**: テンプレートは `@heroicons/react` を使うか SVG をインラインで持つ。
-依存を増やさない方針で後者を採り、heroicons(MIT)の outline 5 つを `icons.tsx` に写した。列挙した他案:
-SideNav + TopNav の併用(スイート向け — 到達点が薄く 2 本目が余る)/ `LayoutPanelNavigation`(Layout の
-start パネルにナビ — AppShell のドロワーとスキップリンクを失う)/ `Shell Nav`(コマンドパレット付き —
-検索対象が無い)。棄却。e2e は不変(`signed-in-user` / `sign-out` / `login-card` / `sign-in-link` の testid は
-SideNavItem / Card / Button が透過する)。axe 18 態で違反 0、キーボード走査で SideNav の全項目・折りたたみ
-ボタン・ドロワー(Escape で閉じて焦点がトグルへ戻る)を確認。E の「直さなかったもの」に挙げた
-`TopNavHeading` の焦点リングは TopNav を使わなくなったため対象外(SideNavHeading は accent 2px)。
-
-**A 改訂 2(2026-09-04、所有者レビュー 2 回目 — ロゴ・サインインの位置・余白・Table / Settings テンプレート)**:
-所有者の指摘 4 点への対応。(a) **ロゴ**: NavIcon(accent の円盤)の中に環付きの `MaruhiMark` を置いていたため
-「円の中に円」に見えていた。`MaruhiMark` に `hasRing` を足し、円盤の中は環なしの字形だけ(`size="md"`、
-円盤の約 6 割)にして favicon(DP1 裁定 E の反転版)と同じ「円盤 + 字形」に揃えた。(b) **サインインの位置**:
-`Center minHeight="100%"` は親に高さが無く解決されず上に寄っていた → `minHeight="100dvh"`(`login`
-テンプレートは body の高さを前提に `minHeight: '100%'` を style で置く。本リポジトリは style 禁止なので
-ビューポート単位で同じ結果を得る)。(c) **Table / Form / Settings テンプレートの参照**: 改訂 1 は `shell-side-nav` /
-`login` / `LayoutHeaderWithActions` のみを起点にしていた。`table-page`(`density="balanced"` + `hasHover`、
-LayoutHeader の h1 + LayoutContent の VStack gap 4)、`settings`(節 = 見出し level 3 + 1 行の説明 + 内容、
-節間は Divider、入力を伴う節は `Grid columns={{minWidth: 320}} gap={10}` の 2 列 = 見出し | 入力)、
-`SectionWithDividers` を読み、次を採った: 全 Table を `balanced` + `hasHover`(compact は「ログを高速に
-走査する領域」向けで、監査も所有者の「詰まっている」評価を優先して balanced)、節の見出しブロックを
-`SectionHeader`(`shared.tsx` — `Heading level={3} accessibilityLevel={2}` + supporting の説明。見た目は
-テンプレートの level 3、文書構造は h1 直下の h2 を保つ)に統一、S4 の「Open a project by ID」を settings
-テンプレートの 2 列 Grid に、コントロールのサイズを md(balanced と対)に。`contact-form` は入力欄が無い
-ダッシュボードには当てはまらない。(d) **余白**: ページ本文の節間 gap 6 → 8、節内(見出しブロック → 内容)
-gap 4、概要タブの節間 gap 5 → 8、監査 / Load more 周りを gap 4。Astryx spacing docs の「tight は 0.5〜2、
-section は 4〜8」に合わせ、詰め寄りだった 2〜3 を使わない。e2e 26 件・axe 18 態は不変で通過。
-
-**A / C / J 改訂 3(2026-09-04、所有者レビュー 3 回目 — テンプレートを「参考に実装」・横幅・実 SVG)**:
-所有者の指摘「Table / Form / Settings は採用 / 不採用の話ではなく、テンプレートを参考にして実装する」を
-受け、画面ごとに最も近いテンプレートを 1 つ選んでその構造を写した。(a) **監査ビューア(C 改訂)= `incident-console`**
-(「行の待ち行列 + 選択行のインスペクタ」。Rows, not cards)。行 = `List` の `ListItem`(label = イベント名、
-description = seq〔応答適応〕+ 主体 + 座標の断片、endContent = サーバー時刻、`onClick` + `isSelected`)、
-選択行の全フィールド = `MetadataList`(ラベル幅 96)+ 記録どおりの payload(`CodeBlock` json)+ var.read の
-列挙。1024px 超(`INSPECTOR_VIEWPORT_QUERY`、テンプレートと同じ境界)はインスペクタを右に並べ(タブパネルの
-中なので Layout の end スロットでなく HStack + 縦 Divider + `aside`)、以下は全画面 `Dialog`(`detail-page` の
-モバイル型 — Escape で閉じる)。**Table は使わない**(D の Table → List 切替も不要になり `NARROW_VIEWPORT_QUERY`
-を廃止)。項目・順序・文言・件数非表示は不変(§4)。(b) **プロジェクト画面 = `detail-page`(Order Detail)**:
-header スロットに「← All projects」→ h1 → 全文 ID → `TabList`(タブは header に置き、本文が内部スクロール
-しても見え続ける)。概要は横並びの `MetadataList`(Chain head / Head digest / Member head attestations)→
-Members → Environments。「Head hash」は SPA バンドルの語 `hash` 禁止(AUTH_SPEC §15-3 の tripwire —
-`write-headers.ts`)に当たるため「Head digest」。(c) **注記 = `CardCallout` ブロック**(muted の Card + 見出し +
-本文): tokens / invites / rotation の CLI 案内。(d) **一覧 = `table-page`**(前回の改訂 2 のまま: balanced +
-hasHover + LayoutHeader)。(e) **ロゴ(J 改訂)**: DP1 の実資産 `public/logo-inverted.svg`(朱の円盤に白抜きの
-「秘」= favicon と同形)を `<img>` で使う(サイドバー 32px・サインイン 56px)。インライン SVG 部品
-(`MaruhiMark`)は削除。色は朱で固定(ブラウザのタブの favicon と同じ見え方。dark で accent に追随させるなら
-site と同じ生成物 `logo-inverted-dark.svg` + `<picture>` の案があるが、資産を増やすため見送り)。(f) **横幅**:
-所有者の「コンテンツが横幅いっぱい」への見解 — Layout の `contentWidth` は 1040 で、1920px では中央に
-キャップされる(Artifact の 1920 スクリーンショット)。1280px ではサイドバー 260 を引いた 1020 が上限なので
-いっぱいに見える。Astryx の layout docs は「表・盤面は領域を満たし、散文・フォームはキャップ」で、テンプレートも
-`table-page` = キャップなし、`settings` = 1440、`detail-page` = 1000。よって表のページは現状(1040)を維持し、
-散文は `SectionHeader` の説明と注記(Card)で幅を絞る。960 に下げる案は表の列幅を圧迫するため採らない。
-e2e 26 件(監査の指し方を行 + インスペクタに追随)、axe 24 態(1920 を追加)で違反 0。
-
-**改訂 4(2026-09-05、所有者レビュー 4 回目 — 「本当に良いか」をユーザー体験で自問・横幅・ロゴ)**:
-所有者の 3 点(自分でユーザー体験ベースに評価せよ / ページごとに横幅を変えるのはありえない / ロゴが大きい)
-への回答と処置。(a) **自己評価で見つけた弱点と処置**: ① 失効の確認が行内の Cancel / Confirm revoke で、狭い
-Actions 列に縦積みになり行の高さも変わっていた → Astryx の `AlertDialogAsyncAction` テンプレートの形
-(モーダルの確認 + 対象名と帰結を本文に + 実行中は action にスピナー)へ。**裁定 CO(session-45 —
-インライン 2 段階)の実装形を改める**(武装は常に 1 行・別行の武装で解除・in-flight 中は他行を無効化
-〔PR #109〕は不変。帰結の注記はダイアログ本文で確認の場で読ませ、テーブル下の CardCallout にも残す)。
-② 監査行の description が `seq 2 user_e2e target … chain seq 2` の等幅断片の塊で走査しにくい → 「by
-<actor>」を先頭に、seq は endContent の時刻の下へ(誰が・何を・いつ、の順)。③ トークンの Scopes が
-64 hex × 数件で 5 行に膨らみ表を壊す → `Token` chip(短縮 ID:permission、全文は aria-description)。
-④ 概要の横並び MetadataList は 64 hex の digest が折り返して読めない → 単列(ラベル幅 200)。⑤ 変えない
-と判断したもの: ページ末尾の `ServerReportedNote`(§4-1 の規律。全画面で 1 回)、プロジェクト一覧の
-64 hex 表示(サーバー申告は ID と role だけで、名前は無い — ID が capability)、Row id(サポート時の参照)。
-(b) **横幅**: ページごとに変える意図は無く、改訂 3 の説明が誤解を招いた。実装は最初からシェルの 1 値
-(`contentWidth`)で全ページ共通。値は **1040 → 1200** に統一(1440px のノートで領域 1180 をちょうど満たし、
-1920px で中央に収まる。監査のインスペクタ 380 を並べても行に 800 弱が残る)。(c) **ロゴ**: 同意 — 32px は
-見出し文字(bold 16px)より 2 倍大きく浮いていた。サイドバー 24px(文字高と同格)、サインイン 40px
-(56 → 40)。(d) 検証: e2e 26 件(失効の指し方を alertdialog に追随・in-flight のロックはモーダル + 行の
-isDisabled で検査)、axe 24 態で違反 0。
-
-**改訂 5(2026-09-05、所有者レビュー 5 回目 — 区切り線が多い・タブと header 線の組み合わせ・監査の左右分割)**:
-所有者の 2 点: (1) header と本文を分ける線・本文内の線・表の枠線が重なって「どこからどのコンテンツか」が読めず、
-タブの下線と header の線の組み合わせも据わりが悪い。線でなく余白で分ける案の提示あり。(2) 監査(project 軸 /
-本人軸)の左右分割は、幅 1200 の領域で行と詳細の間が空きすぎて広い画面で変に見える。
-
-**O. 区切りの規律(線か余白か)** — 列挙: (i) 現状(header の全幅 divider + タブの下線 + 節の間の Divider + 表の
-行線 + 監査の縦 Divider)/ (ii) **余白だけ**(所有者案): header の divider と節間の Divider を消し、節間を
-gap 10(40px)に広げ、線は表の行だけ / (iii) **タブ行を唯一の境界に**: (ii) に加え、タブがある画面では
-`TabList hasDivider`(タブの下線と同じ線)が header と本文の境界を兼ねる。タブの無い画面は余白のみ /
-(iv) header を固定したまま divider を消す / (v) 節を `Section`(dividers)や Card で囲う(線が増える — 棄却)。
-→ **(ii) + (iii) を採用**。Astryx layout docs の容器の弱い順(gap → Divider → Section → Card)に従い、
-「境界を線で引かず余白の対比(節内 4 / 節間 10)で読ませ、線は集合の内側(表の行・監査行の hairline)と
-タブ行だけ」に固定する。(iv) は線なしの固定 header が本文と重なって読めないため採らず、**Layout を
-`height="auto"` にしてページ全体をスクロール**させる(GitHub のリポジトリページと同じ形。ページが短く、
-サイドバーは AppShell が固定する)。header の下余白 16px + 本文の `paddingBlockStart` 24px = 40px で節間と
-同じ対比。節見出し(`SectionHeader`)は線の代わりに見出しの重さで節の始まりを示すので level 3 → **level 2**。
-Projects 画面は h1 が一覧の見出しを兼ねる(1 領域に主見出しは 1 つ — layout docs)ため「Your projects」の
-節見出しを外し、説明を intro に統合。表の `dividers="rows"` は据え置き(行の区切りは集合の内側)。
-
-**P. 監査の形(左右分割の撤回)** — 列挙: (i) 現状の行 + 右インスペクタ(`incident-console`)で行の幅の
-バグ(`align="start"` で List が縮む)だけ直す / (ii) 1 列 + 詳細は全幅で Dialog(現状のモバイル型を全幅に)/
-(iii) **1 列 + 行をその場で展開**(`Collapsible` × `CollapsibleGroup hasDividers` — `CollapsibleDividedAccordion`
-ブロックの形。トリガー = 要約、展開部 = MetadataList + payload + var.read の列挙)/ (iv) Table + 展開行
-(モバイルで 5 列が横スクロール — HP5 に反する)/ (v) 左右分割のまま行の幅を 560 に固定(分割は残る)。
-→ **(iii) を採用**。幅によらず同じ 1 列で、詳細は読んでいる行の直下に出る(視線が横へ飛ばない・1024px の
-形の切替と縦 Divider が消える・モバイルと同じ操作)。single(1 行だけ開く)で展開部を読む間に他の行が
-動かない。閉じた展開部は DOM に残る(hidden)ため e2e は可視要素だけを数える。行の並びは改訂 4 の
-「主体 → 対象 → 時刻 / seq(右端)」のまま、チェブロンが行末に付く。`INSPECTOR_VIEWPORT_QUERY` と
-`Dialog` / `EmptyState` / 縦 `Divider` は不要になり削除。項目・文言・seq の応答適応・件数非表示は不変。
-
-検証: e2e 26 件(監査の指し方を「行 = button〔aria-expanded〕+ 可視の Row id」に追随、モバイル型の
-Dialog 検査を「同じ列で展開・single で先の行が閉じる」検査に置換)、axe 24 態で違反 0。
-
-**改訂 6(2026-09-05、所有者レビュー 6 回目 — 監査行の時刻が 2 段・Astryx に良い部品は無いか)**:
-
-**Q. サーバー時刻の表示** — 列挙: (i) 現状(`formatServerTime` の UTC ISO 文字列 `2025-08-24T01:48:20.000Z` を
-Text で。監査行では時刻と seq が右端で 2 段)/ (ii) ISO のまま seq と 1 行に並べる / (iii) **Astryx `Timestamp`
-(`format="date_time"` + `isTimezoneShown`)**: 閲覧者の時間帯で `Aug 24, 2025, 1:48 AM UTC` の形、hover card に
-UTC と Unix 秒(コピー可 — `tooltipEntries`)/ (iv) `Timestamp format="auto"`(直近は相対時刻)/ (v) `system_date_time`
-(ISO 風)。→ **(iii) を採用**し、監査行だけでなくサーバー時刻の全表示(tokens の Last used / Expires、invites の
-Expires、rotation の Recommended at、`ExpiryCell`)を `shared.tsx` の `ServerTime` 1 部品に揃える。Astryx の
-Timestamp docs は「生の ISO を出さない」「監査ログでは時間帯の略称を出す」「正確な値が要る記録には
-tooltipEntries でコピー行を付ける」を規範としており、そのまま従った。(iv) は監査の精度(いつ、が主役)に
-合わないので棄却。表の列見出しから「(UTC)」を外す(表示は閲覧者の時間帯 + 略称で、UTC は hover card)。
-値はサーバー申告の ms そのもので、換算は描画だけ — §4 の「as reported by the server」は崩れない。監査行の
-トリガー(ボタン)の中では hover card を切る(`hasTooltip={false}` — 入れ子の対話要素を作らない)代わりに、
-展開部に「Recorded at」として記録どおりの UTC ISO を出す。`formatServerTime` はその 1 用途に残す。
-範囲外の ms(deepsec 2026-08-22 — Invalid Date)は従来どおり生の数値。監査行の右端は seq + 時刻の
-1 行にし、イベント名の右に続ける(右端に寄せない — 広い画面で名前と時刻の間が空かない。狭い幅では
-名前の下へ折り返す)。検証: e2e 26 件、axe 24 態で違反 0(Timestamp を button の中に置いても入れ子の
-対話要素は無い)。
-
-**改訂 7(2026-09-05、所有者レビュー 7 回目 — Astryx の部品が使えるのに自作している箇所の棚卸し)**:
-
-**R. Astryx 部品への置換の棚卸し** — `apps/web/src` の全 JSX を Astryx の 163 部品(`astryx component --list`)と
-突き合わせた。**置換したもの**: (1) `LoadingRow` の Spinner + Text の横並び → `Spinner` の `label` スロット(文字列は
-aria-label も兼ねる — 見える文言と読み上げが 1 点)。(2) Projects の ID 直入力の形式エラー(Text `role="alert"`)→
-`TextInput` の `status`(error + message、`statusVariant="detached"`)。あわせて `onEnter` で Enter でも Open。
-(3) プロジェクト画面の戻りリンク(`Link` の「← All projects」)→ `Breadcrumbs` / `BreadcrumbItem`
-(`variant="supporting"`。親 = Projects へのリンク、現在地 = 短縮 ID に aria-current。nav landmark が付く)。
-`detail-page` テンプレートは Link + 矢印アイコンだが、階層を表す部品が存在するのでそちらに従う。
-(4) 変数名の一覧(HStack の手組み行)と付与済みサーバー鍵(同)→ `Table`(compact、行の hairline。集合は
-行で描く — layout docs)。サーバー鍵は節見出し(`SectionHeader`)付き。(5) CLI 案内の注記(muted Card +
-Heading + Text の同形 × 3)→ `shared.tsx` の `Callout` 1 定義(Astryx の合成は不変 — 重複の解消)。
-(6) 形式外 ID のページ(`InvalidProjectPage`)の Text → `Banner`(warning — 他の通知と同じ形)。
-**置換しないもの(理由)**: (a) `icons.tsx` のインライン heroicons — Astryx はアイコン集合を持たず(`Icon` は
-SVG 部品を受けるだけ)、テンプレート自身が @heroicons/react かインライン SVG。依存を増やさない方針で後者。
-(b) `HexText`(xstyle の anywhere 折り)— `Text` に相当 prop が無い(裁定 H の昇格判断は人間)。(c) タブパネル
-(`VStack role="tabpanel"`)— Astryx に TabPanel 部品が無い(`Tab` の `panelId` で結ぶ設計)。(d) `EmptyNotice` /
-`SectionHeader` / `FailureNotice` / `RevokeDialog` — Astryx 部品の薄い包み(既定文言・置き方の規律を 1 点に持つ)。
-(e) Load more の `Button` — `Pagination` はページ番号型で、カーソル型には合わない。(f) 監査の caption +
-ToggleButtonGroup の HStack — `Toolbar` は操作の並び(above a table)用で、規定文言 + 1 つの切替には過剰。
-(g) 環境表の「Variable names」ボタンで下に変数表を出す形 — `Collapsible` や Table の tree 行(`useTableTreeData`)
-も可能だが、表の行の中に表を入れる形になるため据え置き(次の見直し候補)。(h) `HomePage` / `AboutPage` /
-`CounterCard`(RSC の静的シェル + スパイク)— 生の `<main>` / `<h1>` / `<a>` のまま。DP3 のスコープ外
-(W 系列の spike-a)で、Astryx 化は静的シェルでの `Theme` 適用の設計が要るため別 PR。
-検証: e2e 26 件、axe 24 態で違反 0(Breadcrumbs の nav landmark が 1 つ増える)。
-
-**改訂 8(2026-09-05、所有者レビュー 8 回目 — 表の枠線が節の幅を越えて伸びる違和感・Card で包む案)**:
-
-**S. 節の容器(表の bleed をどう収めるか)** — 事実: Astryx の `Table`(scroll wrapper)は Layout の padding ぶん
-(24px)負のマージンで領域の縁まで伸びる。Section も同じく縁まで伸びる。layout docs の「1 領域に 1 本の内容線 —
-文字は線の上、行の hover 背景は縁まで bleed」の整列モデルで、`detail-page` テンプレートも同じ見え方。
-列挙: (i) 現状(節見出し + 表。表が見出しの左右を越えて伸びる)/ (ii) **Card で包む**(所有者案 — 試作済み。
-表は収まるが、`component Section` に "If you are tempted to use a Card for a page section, use Section instead"、
-`component Card` に "Don't: Wrap page sections in cards"、layout docs に "x full-width Cards stacked as page
-structure" と明記)/ (iii) `Section` で包む(規範どおりだが、neutral テーマでは section の面 = surface = 本文領域の
-色で見えない)/ (iv) **Section + テーマで面の色**: defineTheme の `components.section['variant:section']`(カスタマイズ
-順 ①)に `color-mix(in oklab, var(--color-background-body) 55%, var(--color-background-surface))` を与え、既定の
-Section を「線を引かない薄いパネル」にする / (v) Section `dividers`(上下の hairline — 線が戻る)/ (vi) Section
-`variant="muted"`(docs は attention 用に限る)/ (vii) Layout の padding を AppShell に移して bleed を 0 に(試作 —
-AppShell の contentPadding が効かず、モバイルで文字が画面端に付くため棄却)。
-→ **(iv) を採用**(所有者の選択)。Section docs の "Use it ... any time you need visual separation between parts of a
-page" のとおり分離は Section の役目で、色はテーマの責務。Astryx の surface 階層(body → surface → card)に沿って
-body 側へ半分寄せた色にし、生 hex は増やさない(トークン参照 + color-mix)。`shared.tsx` の `SectionBlock`
-(Section padding 6 = Layout の padding と同じ 24px で、見出しはページの内容線に乗る。`title` を省くとページ h1 が
-見出しを兼ねる一覧のパネル)で、**すべての集合**(Members / Environments / Granted servers / Invitations /
-Projects / API tokens / Rotation flags / 監査行)を包む。表の行は Section の縁まで伸びるので節に収まって見える。
-Callout(muted の Card)は注記のままで、パネルとは色相が違う。テーマの生成物(`maruhi.css` / `.js`)は
-`bun run theme:build` で再生成(差分は section の 1 規則のみ)。site 側はトークンの写しなので漂流なし
-(`apps/site` の theme:build で差分 0)。検証: e2e 26 件、axe 24 態で違反 0(パネル上の文字コントラストは
-body 相当で AA)。
-
-**改訂 9(2026-09-05、所有者レビュー 9 回目 — Section のパネルは不可。固定幅 + border)**:
-
-**S 改訂: 集合の容器は `Card`(border 付きの固定幅の箱)**。改訂 8 の Section + テーマの面の色は、
-所有者の判定で棄却(薄い wash では節が節として見えない)。「固定幅 + border」= 集合ごとの Card。Astryx の
-docs(`component Section` / `component Card` / `docs layout`)は「ページの節に Card を使わない」とするが、
-maruhi のテーマでは Section が節として見えず、境界を見せるには border しかない — **所有者判断で Astryx の
-文言を上書き**する(理由は裁定録に残す。Card docs の "a hard boundary around critical content" の読みも
-併記)。試作 2 案: (A) **見出しを箱の内側**(GitHub の設定画面の Box の形。見出し・説明・表が 1 つの境界に入り、
-見出しの無い集合〔監査行・Projects・API tokens〕でも同じ箱で揃う)/ (B) 見出しを箱の外側(Vercel の形。箱は
-データの容器だけを示し、箱と見出しの所属を余白に頼る)。→ **(A) を採用**(所有者の最終判断は保留中 —
-B への切替は `SectionBlock` の 3 行)。実装: `shared.tsx` の `SectionBlock` = `Card padding={4}` + VStack
-(SectionHeader? + children)。中の Table は Card の縁まで伸びる(Astryx の整列モデル)ので行の線は border の
-内側で止まる。箱に入れるのは集合(Members / Environments / Granted servers / Invitations / Projects /
-API tokens / Rotation flags / 監査行)だけで、概要のメタデータ(MetadataList)・「Open a project by ID」・
-CLI 案内の注記(muted の Card)は入れない。テーマの `components.section` 上書きは取り消し(theme/ は
-main と同一に戻る)。検証: e2e 26 件、axe 24 態で違反 0。
-
-**改訂 10(2026-09-05、所有者レビュー 10 回目 — 案 A / B の最終判断: 見出しは箱の外)**:
-
-**S 改訂 2: 見出し・説明はページの content line、`Card` が包むのは集合だけ(案 B)**。所有者の理由 —
-案 A では節の見出しが Card の border 1px + padding 16px ぶん右にずれ、Card に入れていない文字(h1・パンくず・
-説明・概要の MetadataList)と開始位置が揃わない。文字の開始線がページで 2 本になるのが違和感。案 B なら文字の
-開始線は 1 本で、右にずれるのは枠線のある箱の中身だけ(枠線が「ここから別のフレーム」と説明する)。エージェントの
-評価も同じ(Vercel / GitHub の設定画面の形。案 A の利点「箱の意味が箱だけで完結する」は 1 ページが短い本
-ダッシュボードでは効かない)。副次効果: Card が包むのが節でなく集合(表・監査行)になるので、Astryx の
-「ページの節に Card を使わない」との距離が縮み、Card docs の「自己完結した部品の硬い境界」の用途に近づく。
-実装: `SectionBlock` = VStack gap 4(SectionHeader + `Card padding={4}`〔VStack gap 4 の children〕)。
-`title` 省略時は Card のみ。監査タブの説明文(規定文言)と軸切替(ToggleButtonGroup)は改訂 5 から箱の外に
-あり(見出し行に相当)、変更なし。`Callout`(muted の Card)の inset は枠のある箱なので同じ原則の内側。
-縦のリズム: 見出し → 箱 16px、箱 → 次の見出し 40px(節間 `SECTION_GAP`)の対比で見出しが前の箱に付いて
-見えない。検証: `bun run check` 7 段通過、e2e 26 件、axe 24 態で違反 0、CSP 違反 0。
-
-**改訂 11(2026-09-05、PR #148 Cursor Bugbot 指摘 — シェルが遷移ごとに再マウントされる)**:
-
-**T: 認証が要る画面は pathless の親ルート(`DashboardLayout`)の子に置き、シェルを 1 回だけマウントする**。
-指摘: 各画面が自前で `DashboardShell`(セッション状態 + AppShell + SideNav)を持つため、Projects →
-プロジェクト → API tokens → Account audit の遷移のたびに AppShell / SideNav がアンマウントされ、
-「Checking your session」の全画面フレームが出て `GET /auth/me` を再取得してから遷移先が描かれる。
-サイドバーは据え置かれず(折りたたみ状態も消える)、認証済みの遷移が 1 往復とクロームの点滅を払う。
-検証: 事実(routes は App.tsx で並列に bindRoute、DashboardShell は useSession を持つ)。
-候補: (1) **入れ子ルート**(funstack-router の `children` + `Outlet` — docs の「サイドバーが残る
-ダッシュボード」がまさにこの用途)/ (2) モジュール階層のセッションキャッシュ(再取得と
-loading フレームは消えるが、AppShell / SideNav の DOM は遷移ごとに作り直され、折りたたみ状態が
-消える)/ (3) 画面側で条件描画(docs が避けよという形)。→ **(1) を採用**。
-実装: routes.ts に `dashboardShellRoute = route({ id: "dashboard-shell" })`(pathless — パス名を
-消費しないので 4 つの葉ルートのパスは不変、SPA_ROUTES と spa-topology テストも不変。パスを
-持たないので目録には載せない)。App.tsx で 4 ルートをその子に。`DashboardShell.tsx` は 2 層に:
-`DashboardLayout`(親。useSession + AppShell + SideNav + `Outlet`)と `DashboardShell`(画面の
-枠。Layout の header = 見出し、content = 本文)。サイドバーの現在地とプロジェクトの子項目は各画面が
-`destination` / `project` で申告し、context(useState の setter)+ `useLayoutEffect` で親へ上げる
-(描画前に反映し、遷移直後の 1 フレームに前の画面の選択が残らない)。
-棄却: URL から導く `useLocation` — router の Location が `.hash` を持ち、SPA バンドルに語 "hash" が
-入って AUTH_SPEC §15-3 の tripwire(write-headers.ts — 裁定 BG)に当たる(実際にビルドが落ちた)。
-SSG の注意: router は URL 無しの SSR で pathless ルートを描くが、本プロジェクトの静的シェルは
-`#app` にエントリ用の span しか出さず(クライアント木はビルド時に描かない)、影響しない。
-副次: プロジェクト ID の形式判定(64 hex)を `ids.ts` の `isProjectId` に集約(DashboardScreen /
-ProjectScreen の重複リテラルを解消)。e2e を 1 件追加: サイドバーから API tokens → Account audit へ
-SPA 遷移し、`/auth/me` が 1 回のまま・「Checking your session」が出ない・サイドバーの DOM ノードが
-同一(data 属性の印が残る)・aria-current が移ることを検査。見た目の変化なし(スクリーンショット
-33 枚中 29 枚がバイト一致、残り 4 枚はダイアログの backdrop 等のアニメーション途中の差)。
-検証: `bun run check` 7 段通過、e2e 27 件、axe 24 態で違反 0、CSP 違反 0。
-
-同時に pullfrog(ready for review 後の再レビュー)の 3 件に対応: (a) 見出しの無い箱(一覧・監査・
-rotation — ページ h1 の直下)の `EmptyNotice` が既定の h3 で h1 → h3 の飛びになっていた →
-4 か所に `headingLevel={2}`(裁定 E-(c) の「節 h2 → 空状態 h3」は節見出しがある前提。無い箱では
-h2)。(b) `test/screenshots.ts` の s8 が Revoke クリック後に dialog を待たず、注記も改訂 4 以前の
-インライン 2 段階のまま → `alertdialog` の出現を待つ + 注記を更新(待つようにしたら s8 の
-スクリーンショットが改訂 10 とバイト一致した — 以前は競合で揺れていた)。(c) vendored heroicons
-(5 パス)に MIT のライセンス本文が同梱されていなかった → `src/dashboard/MIT-heroicons.txt`
-(フォントの `public/fonts/OFL-*.txt` と同じく、写した資産の隣に置く)+ icons.tsx 冒頭に参照。
-(d) レビュー本文の指摘「axe 24 態の証拠は非空の画面だけ」— fixtures は全件非空で、空状態と
-FailureNotice の状態は一度も監査を通っていなかった(実際 (a) は空状態だけの違反)。
-`test/screenshots.ts` に `empty` モード(各集合を空で返す mock)と空状態 7 画面(projects /
-overview〔環境〕/ audit〔project・self〕/ rotation / invites / tokens × light / dark / mobile =
-21 枚)を追加し、axe を同じ 7 画面 × light / mobile = 14 態で実行(違反 0。見出し階層: 見出しの
-無い箱は h1 → h2、Environments の空状態は h1 → h2 → h3)。裁定 E の「違反 0」の範囲は
-「fixtures の非空 24 態 + 空状態 14 態」と明示する。未監査: 変数名の空状態(環境はあるが変数が
-無い — empty モードでは環境も空になるので描けない)と FailureNotice の各状態(Banner の単純な
-構造で、次の候補)。pullfrog の再々レビューで「script は 6 態、裁定録は 14 態」の不一致を指摘され、
-環境の空状態を script 側に足して(`/environments` と metadata pull も empty に従う)一致させた。(e) nit: ProjectScreen の
-`Banner` import を先頭コメントの下へ、shared.tsx からの import を辞書順に。
-(f) 入れ子ルート化の副作用(pullfrog 再々レビュー): 途中でセッションが失効して画面のフェッチが
-401 を返しても、シェルは 1 回しか /auth/me を確認しないので「サインイン済み」から戻れず、
-「Signed out」Banner の「Go to sign-in」(/dashboard への SPA 遷移)も同じシェルの子に着地して
-Banner が繰り返す(改訂 10 までは遷移で再マウントされて再確認 → サインイン画面だった)。
-候補: (1) **401 の通知経路**(`session-expiry.ts` の context — FailureNotice が 401 を描くときに
-親へ知らせ、シェルがその場で signed-out へ落としてサインイン画面を描く)/ (2) 復帰リンクを
-`hardNavigate`(フルリロード — 改訂 11 以前の挙動を明示的に再現)/ (3) 遷移ごとに /auth/me を
-再確認(1 往復が戻る — 改訂 11 の目的に反する)。→ (1) を採用(最初の 401 に反応するだけで
-往復は増えない。再読込も不要)。e2e を 1 件追加(/auth/tokens が 401 → 同じ URL のまま
-サインイン画面 + 「You are signed out.」)。
-
-**検証(2026-09-04)**: `bun run check` 7 段通過(fallow は `DashboardShell` の CRAP 指摘を部品分割で解消)。
-web e2e 25 件通過(`/auth/me` モックの追随・軸切替の指し方変更込み)。`astryx doctor` 新規指摘なし。
-React Doctor(diff)指摘なし。axe-core 18 態で違反 0。スクリーンショット 33 枚(PR 本文の Artifact)。
-
-### DP4 実装時の裁定録(2026-09-05)
-
-対象はスクリプトなしの儀式ページ 11 態: CLI ログインの承認 / 完了 / 拒否 / 一様エラー / サインアップ案内
-(signupPolicy 3 種)、サインアップ制御の closed / invite-required / invite-invalid、`/invite`。各裁定点は
-DP1〜DP3 と同じループ(案を 3 つ以上列挙 → 上位互換 / 銀の弾丸を探索 → 新案が出ない周が 1 回あれば終了 →
-選定)で決めた。判断基準は、CSP `script-src 'none'` と meta / ヘッダーの二重化を崩さない・スタイルは自己配信の
-外部 CSS のみ(`style-src 'self'`。inline のハッシュ許可を増やさない)・ブランド値を `apps/web/theme/` の外へ
-複製しない(ADR-0013)・AUTH_SPEC の表示要件と一様性を 1 つも崩さない・配信物にプレビュー用コードを混ぜない・
-後戻りが安いこと。
-
-**前提の訂正(実装で判明した事実)**: (1) `theme/maruhi.css`(`astryx theme build` の生成物)のブランドトークン
-(`--color-accent` / `--font-family-*` / `--radius-*` 等)は `:root` ではなく `@layer astryx-theme` の
-`@scope ([data-astryx-theme="maruhi"])` 配下の `:scope` に定義される。`:root` にあるのはデータ可視化色だけ。
-よってテーマを消費するページは `<html data-astryx-theme="maruhi">`(ダッシュボードのルートと同じ印)が要る。
-(2) Workers Static Assets の既定の配信ヘッダーは `Cache-Control: public, max-age=0, must-revalidate` + ETag
-(wrangler dev で実測。Cloudflare の既定と同じ)。ブラウザは毎回再検証するので、名前固定の CSS を差し替えても
-デプロイ直後の読み込みで新版に切り替わる(裁定 G)。(3) 未設定サーバー(`.dev.vars` なしの wrangler dev = e2e)
-でも `GET /auth/cli/verify?flow=…` は一様エラーページ(400 / HTML)を返すため、サーバー配信ページの実配信は
-e2e からスタイル込みで検査できる(裁定 I)。(4) axe は変更前から存在した違反を 1 件見つけた: `/invite` の
-`pre`(横スクロール)が 390px でキーボード到達不能(`scrollable-region-focusable`、serious)。
-
-**A. CSS の置き場と配信** — 列挙: (i) `apps/web/public` の静的アセット(`/invite.css` と同じ経路。同一オリジン・
-セルフホストでも同梱・`write-headers.ts` のバイト等価検査に載る)/ (ii) Worker のルートで CSS を配信(server が
-自己完結するが、api-schema にスタイル用のエンドポイントが混ざり、`index.ts` の `no-store` も外す必要がある)/
-(iii) インライン `<style>` + ハッシュ許可(不変条件で禁止)/ (iv) Worker が CSS をテキストモジュールとして
-バンドルに埋めて配信(ii の変種。web と server の二重管理)/ (v) `/invite.css` と 1 ファイルに共通化する。
-第 1 周の新案: **(i)+(v) = `apps/web/public/pages.css` を /invite とサーバー配信ページの共有スタイルにする**
-(あり)。第 2 周: なし。**選定 = (i)+(v)**。server 側 HTML は `/pages.css` を参照するだけで、実配信の到達性・
-content-type・ソースとの一致は web の e2e が combined 構成(本番と同じ `apps/server/wrangler.jsonc`)で固定する。
-`vite.config.ts` の `PUBLIC_PASSTHROUGH` と `write-headers.ts` の等価検査を `invite.css` → `pages.css` に。
-`_redirects` の `/invite.css` の盾(200 リライト)は不要になり撤去(66 → 65 本)。名前は「儀式」の内部語を
-避けて `pages.css`(用途 = スクリプトなしページ全般)。棄却: (ii)(iv) は上記。(iii) は禁止。
-
-**B. ブランドトークンの取り込み** — session-41 裁定 BB-b(無彩色のみ)を ROADMAP DP4「自己配信 CSS でブランドを
-統一」(所有者裁定 2026-09-03)が上書きする前提で列挙: (i) 無彩色を維持し ㊙ とワードマークだけで示す(所有者
-裁定に反する)/ (ii) hex を手で写す(ADR-0013 違反)/ (iii) `maruhi.css` から生成 + 乖離テスト(`apps/site` の
-`scripts/theme.ts` 方式。生成スクリプト・生成物・抽出器の複製が要る)/ (iv) **`theme/maruhi.css` そのものを
-無変換で `/theme.css` として同梱し、`pages.css` は `var(--…)` で読むだけにする**(生成物 = テーマファイル
-そのもの。24 KB / gzip 4 KB を儀式ページ 1 回ごとに読む)/ (v) `@layer astryx-base` の `:root` ブロックだけ
-ビルド時に抽出(小さい生成器がまた要り、前提の訂正 (1) により肝心のトークンはそこに無い)。第 1 周の新案: (iv)
-(あり — (iii) の利点〔単一の正・乖離ゼロ〕を保ち、生成器と写しを消す)。第 2 周: なし。**選定 = (iv)**。
-`write-headers.ts` がビルド後に `theme/maruhi.css` → `dist/public/theme.css` を複製し、バイト等価を検査する
-(`pages.css` / `invite.html` と同じ契約)。ページは `data-astryx-theme="maruhi"` を `<html>` に持つ(前提の
-訂正 (1))。付随: Astryx の `@layer reset`(`:where(h1…p, code)` の型設定)も同じスコープで効くが、layer の
-中にあるため `pages.css` の unlayered 規則が常に勝つ — 儀式ページの型は `pages.css` だけ読めば分かる。
-`--font-family-body` の先頭の Figtree は読み込まない(ダッシュボードと同じくシステムフォントへ落ちる —
-§1-3)。棄却: (i)(ii)(v) は上記。(iii) は (iv) に含意される。
-
-**C. 共通枠 `page()` の構造** — 列挙: (i) 現状(h1 = 「㊙ maruhi」、ページの題は h2)/ (ii) 文書型の 1 カラム
-(40rem)+ ブランドヘッダー(見出しでない `header` = ロゴ + ワードマーク)+ **ページの題を h1 に**(旧 h2 → h1、
-h3 → h2)/ (iii) `login` テンプレート型の中央カード(ダッシュボードのサインインと同形。案内ページのような
-長文には向かず、モバイルでは結局全幅)/ (iv) `/invite` と同型(= 文書型)。第 1 周の新案: (ii)+(iv) を 1 つの
-枠に統合し、`/invite` も同じ枠へ寄せる(あり)。第 2 周: なし。**選定 = (ii)+(iv)**。ロゴ: (a) 絵文字 ㊙ の
-テキスト(現状)/ (b) **`<img src="/logo-inverted.svg">` + `img-src 'self'`**(DP3 裁定 J 改訂 3 と同じ実資産・
-同じ朱固定)/ (c) インライン SVG の currentColor(パスの二重管理 — DP3 で棄却済み)/ (d) CSS の
-background-image(同じく `img-src 'self'` が要り、代替テキストの制御が減る)→ **(b)**。CSP は meta と
-ヘッダーの両方で `style-src 'self'; img-src 'self'` に広げ(`'unsafe-inline'`・ハッシュは無し)、`/invite` の
-per-path CSP も同じ形にした。`<meta name="color-scheme">` を CSS 到着前のダーク描画のために置き、favicon の
-`<link rel="icon">` を SPA と同じく載せる。
-
-**D. 確認コードの視認性(フィッシングガードの UX)** — 文字集合の確認: `generateUserCode`(cli-flow.ts)は
-Crockford Base32 の 32 字(I / L / O / U 除外)× 8 字を `XXXX-XXXX` で表示する。残る混同候補は 0 / D、8 / B、
-5 / S、2 / Z。列挙: (i) システム等幅を大きく(2.5rem)・字間 0.14em・単独の要素に置く / (ii) 等幅フォントを
-自己配信(§1-3 の「問題があれば足す」)/ (iii) `font-variant-numeric: slashed-zero`(フォントが `zero` 機能を
-持つときだけ効く。無ければ何も起きない)/ (iv) 群ごとに `span` に分けて間隔を広げる / (v) 文字種を色で塗り分ける
-(コードの一部を強調する形は「ここだけ見ればよい」と誤読させる)。第 1 周の新案: (i)+(iii)(あり — 自己配信
-フォント無しで 0 / D の判別を得る)。第 2 周: なし。**選定 = (i)+(iii)**。実機(Linux Chromium: Liberation Mono /
-DejaVu Sans Mono)では 0 が斜線付きで D と判別でき、8 / B・5 / S・2 / Z も判別できた(スクリーンショット)。
-macOS の SF Mono / Menlo と Windows の Consolas は既定または `zero` で斜線 / 点付きの 0 を持つ。**自己配信の
-等幅フォントは提案しない**(問題が出なかった。CLI 側の表示は DP5)。文言は「Approve only if this code matches
-the one shown in your terminal.」を太字で維持し、コードは "Confirmation code" のラベル付きの面に置く。
-**Approve / Deny の区別**: (a) Approve = accent 塗り + on-accent、Deny = 同サイズの outline、順序は Approve →
-Deny / (b) Deny を先に置く(読み順で拒否が先に目に入るが、正当な利用のたびに逆順を踏ませる)/ (c) 両方
-outline(区別が付かない)/ (d) Approve の前に「一致を確認した」チェックボックス(スクリプトなしで必須化は
-`required` で可能だが、承認の資格はチケットであり、形だけの摩擦を増やす)→ **(a)**。テキスト入力欄が無いので
-Enter の暗黙送信は起きず、焦点はどちらのボタンにも自動では当たらない。
-
-**E. サインアップ案内・拒否ページの文言と構成(H6 の明示項目)** — 列挙: (i) 文言はそのままで見た目だけ /
-(ii) **4 系統(closed / invite-required / invite-invalid / CLI からの案内 × signupPolicy 3 種)を同じ 3 段に揃える:
-何が起きたか(h1 + 1 文)→ 何が起きていないか(`outcome` 行 = 左に accent の線)→ 次にできること(h2 + 箇条書き)**
-/ (iii) closed と invite-required を 1 枚に(ポリシーは公開情報で、出し分けは失敗理由の出し分けではないので
-分ける価値が残る)/ (iv) 理由を詳しく出す(§3 / §4-2 の一様性に反する — 禁止)。**選定 = (ii)**。拒否 3 枚の
-outcome 行は「No account was created.」、CLI 案内は「Nothing has been created or changed by opening this
-page.」、一様エラーと拒否完了は「No token was issued.」。一様性は不変(invite-invalid は無効 / 失効 / 消費済みを
-出し分けず、エラーページはフロー状態を出し分けない)。waitlist の収集面は作らず「contact the operator of this
-server」まで(hosted-design.md §2-2)。既存テストの断言は文言の変更に追随させただけ(`no account was\n
-created` → `No account was created.`)。
-
-**F. `/invite` の扱い** — 列挙: (i) `invite.css` を残して見た目だけ寄せる(2 つの CSS が同じ規則を持つ)/ (ii)
-**共通枠(`/theme.css` + `/pages.css` + ブランドヘッダー)へ移し、独立静的アセットとしての構成(per-path CSP・
-`write-headers.ts` の機械検査・near-miss の 301)はそのまま** / (iii) `/invite` をサーバー配信に移す(§15-3 の
-「独立静的アセット」の構成そのものが変わる — 棄却)。**選定 = (ii)**。h1 は「You have been invited to a maruhi
-project」(旧 h1 はブランド名)。`pre` に `tabindex="0"`(前提の訂正 (4) の修正 — 共有の焦点リングが付く)。
-機械検査は `src="/logo-inverted.svg"`(ルート相対)を既存規則で通し、`img-src 'self'` を meta と per-path CSP の
-両方に足した。e2e の「`/invite.css` が盾で素通しされる」断言は対象が無くなったため外し、`/invite` 自身の 200 だけ
-を残した。
-
-**G. CSS 更新の反映(キャッシュ)** — 列挙: (i) **何もしない**(前提の訂正 (2): 既定が毎回再検証)/ (ii) HTML 側で
-`?v=<hash>` を付ける(server が web のビルドハッシュを知る経路が要る)/ (iii) コンテンツハッシュ名(名前が安定
-せず、サーバー描画 HTML から参照できない — session-41 BB-c と同じ)/ (iv) `_headers` に明示の `cache-control`
-(既定と同値を書くだけ)。**選定 = (i)** + e2e で `/theme.css` / `/pages.css` の `must-revalidate` と ETag を
-固定(既定が変わったら気付く)。Worker 応答(`no-store`)の HTML が古い CSS を掴む窓は「デプロイ直後に
-再検証が 304 を返す」ケースだけで、ETag は内容から計算されるため起きない。
-
-**H. a11y** — 方法は DP3 裁定 E と同じ(axe-core を一回性で注入 — 依存を増やさない)。範囲: 11 ページ × light /
-dark / 390px light / 390px dark = **44 態で違反 0**(wcag2a / 2aa / 21a / 21aa / best-practice)。見出し階層は
-h1 = ページの題 → h2 = 節(What will be granted / What you can do / What to do next / Accept the invite)。
-ランドマークは `header`(banner)→ `main`。焦点リングは accent 2px offset 2px(DP3 E-(e) と同じ見え方)。
-コントラストはテーマ値(text-primary / secondary on body、on-accent on accent、accent のリンク)で、axe の
-color-contrast 指摘なし。直したもの: `/invite` の `pre`(F)。
-
-**I. 目視とスクリーンショットの方法** — 列挙: (i) **描画関数(`render*`)に固定入力を与えて HTML を書き出し、
-`pages.css` / `theme.css` / ロゴと同一オリジンで配信して Chromium で撮る(scratchpad の一回性スクリプト。
-配信物は触らない)**、`/invite` だけ実配信(wrangler dev)/ (ii) 実フロー(`POST /auth/cli/start` → verify →
-GitHub OAuth)を通す(OAuth App が要る — 本セッションでは不能)/ (iii) 配信物にプレビュー用ルートやモック
-データを入れる(禁止)。**選定 = (i)**。加えて e2e が実配信の一様エラーページ(前提の訂正 (3))を Chromium で
-開き、`.page` の幅(40rem)・body の背景色(テーマの変数が解決されたこと)・ロゴの読込・CSP 違反 0・
-script 要素 0 を検査する。before / after は 11 ページ × 4 態 = 各 44 枚(PR 本文の Artifact)。
-
-**新たに出た裁定点**: (J) スタイルシートのパス定数 `PAGE_STYLESHEETS` を export していたが消費者が無く fallow
-の dead export に当たった → 非公開に(参照先の到達性は e2e が担う)。(K) 承認ページの正常系テストに CSP /
-スタイルの断言を足したら cyclomatic 13 で fallow の複雑度閾値に当たった → `expectStyledScriptFreePage` ヘルパー
-に抽出(ヘッダー / meta の両 CSP で `style-src 'self'` / `img-src 'self'` / `'unsafe-inline'` なし / ハッシュ
-なし、`<link>` 2 本、script / style 要素・style 属性なし)。(L) 承認ページの付与内容は `<ul>` から `<dl>`
-(ラベル / 値。狭い幅では 1 列)に。tokenName は `<code>` の不活性描画のまま、補足「Chosen by the requester,
-shown verbatim.」を `<small>` に分離。
-
-**B 改訂 1(2026-09-05、pullfrog の初回レビュー — 未定義トークン)**: 指摘 = `pages.css` が参照する
-`--font-weight-semibold` / `--font-weight-medium` は `theme/maruhi.css` では**参照されるだけで定義されず**
-(定義は Astryx core の `astryx.css` にあり、ダッシュボードはそれを追加で読むが儀式ページは読まない)、
-未解決の `var()` が invalid at computed-value time で無言に落ちて、h1 / h2 / `strong`(フィッシングガードの
-一文)/ outcome 行の太字が全部消えていた。目視・axe・e2e のどれも捕まえられない欠陥(スクリーンショットは
-同じ 2 本の CSS を配信するので同じ欠落を再現し、axe は太さを見ず、e2e は背景色しか見ていなかった)。
-列挙: (i) `defineTheme` の `tokens` に `--font-weight-*` を足して `theme:build`(テーマは本 PR の範囲外 —
-触るなら所有者確認)/ (ii) `pages.css` に数値(600 / 500)を書く(Astryx の値の写し)/ (iii) **CSS の
-キーワード `bold` を使う**(h1 / h2 / `strong` は UA 既定が bold なので宣言を置き換えるだけ、brand と
-outcome 行も `bold`。`.code-label` と `.button` の medium は落とす — 大文字 + 字間 / 塗りで足りる)/ (iv)
-`var(--font-weight-semibold, bold)` のフォールバック(後述の機械検査が「未定義だが許容」の例外を持つことに
-なる)/ (v) Astryx core の stylesheet も同梱(数十 KB・儀式ページに不要な規則)。第 1 周の新案: 「参照集合 ⊆
-定義集合」を `write-headers.ts` でビルド時に検査する(あり — 方式の如何に依らず同種の欠陥を構成で塞ぐ)。
-第 2 周: なし。**選定 = (iii) + 機械検査**。テーマに `tokens` を足す (i) は所有者の判断として PR に残す
-(semibold 600 を儀式ページで使うなら `maruhi.ts` への追加が正で、その時は `pages.css` を `var()` に戻す)。
-検査は `pages.css` の `var(--…)` を集め、`theme/maruhi.css` の `--…:` 定義集合との差が空でなければ throw
-(旧 `pages.css` に当てると 2 件を検出、新版は 0 件)。e2e に h1 / outcome 行の `font-weight` = 700 を追加。
-同じレビューで「`theme.css` のバイト等価検査は同じスクリプトが直前に書いた 2 ファイルを比べるだけで
-常に一致する(担保になっていない)」も受け、等価検査の対象から `theme.css` を外し(`invite.html` /
-`pages.css` は vite の publicDir コピーを経由するので意味がある)、`/theme.css` の契約は上のトークン解決
-検査が担う形に改めた。
-**改訂 1 の追補(pullfrog 再レビュー)**: 検査が名前の存在しか見ておらず、「定義はあるが値が Astryx core の
-トークンを `var()` で参照する」もの(`theme/maruhi.css` に `--text-heading-1-weight: var(--font-weight-semibold)`
-等が 16 種以上)を `pages.css` が使うと通ってしまう穴を指摘された → 定義を `Map<名前, 値>` で持ち、値の
-`var()` を再帰的に辿って未定義に当たったら経路つきで落とす形に(合成 CSS `var(--text-heading-1-weight)` で
-`--text-heading-1-weight -> --font-weight-semibold` を検出することを確認)。
-
-**検証(2026-09-05)**: `bun run check` 7 段通過(fallow は `FALLOW_AUDIT_BASE=origin/main`)。サーバーの
-auth / signup-policy テスト 87 件通過。web e2e 30 件通過(`/theme.css` `/pages.css` の実配信・バイト一致・
-再検証ヘッダー、一様エラーページのスタイル適用と太さを追加)。axe 44 態で違反 0。スクリーンショット
-before / after 各 44 枚(改訂 1 後に撮り直し)、CSP 違反 0。
-
-### DP5 実装時の裁定録(2026-09-05)
-
-対象は CLI の出力面: stderr の通知(Note / Warning / 失敗)と色、繰り返し出る Note の抑制、`login` の案内、
-文言の英語校正、`--help` の整合、ADR-0016 決定 7 の文言。各裁定点は DP1〜DP4 と同じループ(案を 3 つ以上列挙 →
-上位互換 / 銀の弾丸を探索 → 新案が出ない周が 1 回あれば終了 → 選定)で決めた。判断基準は、ADR-0016 の決定
-(打たれた値を診断に出さない・終了コードはエラー型・組み込みフラグは `--help` / `--version` だけ・`process.*` を
-直に読まない・stdout はコマンドの出力だけ)と決定 7 の判定の意味論を 1 つも崩さない・ディスクレス不変条件
-(Note の抑制に平文や機密の状態を持たせない)・新規依存を足さない・サーバー / Web / 仕様書に触らない・
-後戻りが安いこと。
-
-**前提の訂正(実装で判明した事実)**: (1) **Bun の `console.error` は stderr が端末のとき出力全体を赤で塗る**
-(実測 `\e[0m\e[31m…\e[0m`)。「現状 ANSI 色はどこにも使っていない」は誤りで、ヘルプ本文・Note・Warning・
-プロンプトの案内まで**すべて赤**で出ていた(端末の赤は danger の意味なので、Note が警告に見える)。
-(2) `process.stderr.write` / `process.stdout.write` はパイプ相手では非同期で、`bin.ts` の `process.exit` が末尾を
-切り落とす(実測: 5 万行中 7,401 行で途切れる)。`node:fs` の `writeSync` は端末・パイプ・ファイルのどれでも
-完了してから戻る。(3) 実効権限 admin の利用者には、**プロジェクト作成の当日から** push / pull のたびに
-checkpoint の提案が出ていた: 契機 (iii) の admin 側の基準は「公証あり(audit_head_hash 非空)の最新
-checkpoint」だが、環境作成 / rotate の複合に同梱される境界チェックポイント(`boundary-checkpoint.ts`)は
-`auditHeadHashHex: ""` なので基準にならず、「未発行」= 即提案になる。push ではアンカーの Note が同じ導線に
-同梱されるため、1 push あたり Note 2 行が初日から出る。(4) 同期 → 再同期の経路を 2 度通る実行(床違反の再同期
-など)では、同じ Note(ヘッド申告の送信失敗)が 1 コマンドの中で 2 度並ぶ。(5) Note を stdout(`io.log`)へ
-出している箇所が 4 つあった(`audit list` / `audit self` / `logout` の MARUHI_TOKEN 注記 / `key generate`)—
-決定 9(stdout はコマンドの出力だけ)の取りこぼし。(6) サーバーのフロー TTL は `CLI_FLOW_TTL_MS` = 15 分で、
-`POST /auth/cli/start` の `expiresInSeconds` もそこから出る。ROADMAP の「10 分」は誤り。(7) upstream
-(`CliOutput.defaultFormatter`)の色の自動判定は `process.stdout.isTTY` と `NO_COLOR === "1"` を見る —
-stdout 基準(ヘルプは stderr に出す)で、NO_COLOR の規約(非空なら無効)とも食い違う。
-
-**A. 色と記号の TTY 規律** — 列挙: (i) 無色・ASCII のみ(stderr の書き込みを `writeSync` に替えて Bun の赤塗りを
-止めるだけ)/ (ii) **接頭辞だけに色**(`Note:` シアン・`Warning:` 黄・`maruhi:` 赤)+ 全文ヘルプは upstream の
-既定パレット(見出し太字・usage シアン・フラグ名緑)、判定は stderr が端末か + `NO_COLOR` / `FORCE_COLOR` /
-`TERM=dumb` / (iii) 行全体に色(今の Bun の挙動と同じ形 — 本文の値・識別子・URL に色が混ざる)/ (iv) Unicode
-記号(✓ / ⚠ / ✗)/ (v) `--color` フラグ(決定 5 に反する — 組み込みグローバルフラグを増やす)。第 1 周の新案:
-(ii) を「色を付けるのは**定数の接頭辞だけ**」に絞ることで「値・識別子に色を付けない」を規律でなく**構造**で
-保証する(あり)。第 2 周: なし。**選定 = (ii)**。記号は使わない(Windows の端末・非 UTF-8 ロケールでの化けを
-避ける — 接頭辞の語がその役)。DP1 の朱は端末色で真似ない(16 色の赤は danger)。判定は純関数
-`shouldUseColor({ stderrIsTerminal, envVar })`(`FORCE_COLOR` 非空 > `NO_COLOR` 非空 > `TERM=dumb` >
-stderr が端末か)で、`CliIo.colorEnabled()` として本番(`live.ts` — `process.*` を読むのはここだけ)が供給し、
-テストは既定で無色(`setColor(true)` で色経路を検査)。stdout には一切色を付けない(データ)。upstream の
-自動判定は使わず(前提の訂正 (7))、`defaultFormatter({ colors })` に明示で渡す。棄却: (i) は診断の種類が
-一目で分からない(Note が 60 か所以上ある)。(iii)(iv)(v) は上記。
-
-**B. Note / Warning / Error の語彙と宛先** — 語彙の定義: `Note:` = 情報(コマンドは成功。任意の次の一手か状況の
-説明。見逃しても安全性は下がらない)/ `Warning:` = 劣化・要注意(コマンドは続行したが利用者が確認すべき状態。
-見逃すと安全性が下がりうるものは常にこちら — 床の破損・アンカー不一致・署名検証失敗)/ `maruhi:` = 失敗(終了
-コード ≠ 0。1 文目 = 何が起きたか、2 文目 = 次の一手)。宛先は 3 つとも stderr(決定 9)。列挙: (i) 文字列連結の
-まま / (ii) `display.ts` にヘルパー / (iii) `CliIo` にメソッド(`io.note`)/ (iv) **新モジュール `notice.ts`**
-(`logNote` / `logWarning` / `logFailure` + 純関数 `formatNotice`)。第 1 周の新案: (iv) + 継続行(`details`)の
-2 スペース字下げを同じ関数に(あり)。第 2 周: なし。**選定 = (iv)**。約 60 か所の `\`Note: ${…}\`` / `Warning:`
-連結をすべて置換し、stdout に出ていた 4 か所(前提の訂正 (5))を stderr へ移した。`display.ts` の `logWarnings`
-と `cli-formatter.ts` の `maruhi:` 接頭辞も同じ描画を使う。棄却: (iii) は偽の `CliIo` が装飾まで実装することに
-なり、テストが装飾前の行を捕捉できない。
-
-**C. 繰り返し Note の抑制規則** — 列挙: (i) **未発行の基準を genesis の時刻から数える**(同じ 7 日の閾値。状態を
-持たない)/ (ii) プロジェクトごとに「表示済み」を非機密の設定ファイルに記録して 1 日 1 回(新しい永続化の場所と
-多端末での食い違い)/ (iii) `--quiet` 系のフラグ(利用者が覚える必要があり既定を直さない)/ (iv) 文面を短くして
-毎回出す / (v) push のアンカー注記を廃止し rotate だけに残す / (vi) **アンカーの助言を checkpoint 提案と同じ
-1 行に畳む**。第 1 周の新案: (i)+(vi)、および **「同一文面の Note / Warning は 1 コマンド実行あたり 1 回」**
-(`NoticeLedger` — `runEffectCli` が実行ごとに新しい台帳を供給し、台帳が無い文脈では抑制しない。前提の訂正 (4)
-の解消)(あり)。第 2 周: なし。**選定 = (i)+(vi)+台帳**。CRYPTO_SPEC §6.3 (iii) の「7 日超経過または未発行」は
-「未発行 = 基準が genesis のまま」と読み、genesis から 7 日以内は提案しない(提案は SHOULD の付随で、仕様の
-検出条件そのものは変えない — 所有者が仕様の文言に追記したければ人間タスク)。rotate / sweep 後のアンカー注記は
-「エポックが進んだ = 確実に古い」ので無条件のまま(session-35 裁定 P)、文面を短く。**抑制しないもの**: floor の
-破損・アンカー不一致・署名検証失敗・未収束の義務などの Warning は条件も文面の強さも変えない。初回同期の
-「床なし」Note は 1 回きり(床ファイル作成後は出ない)なので据え置き。
-
-**D. `login` の期限と案内文** — D-1 期限: (i) 定数 15 分を CLI に書く / (ii) **サーバー応答の `expiresInSeconds`
-(deadline 判定と同じ丸め値)から「This request expires in 15 minutes」を導く**(分単位で切り捨て、1 分未満だけ秒)。
-期限切れの文面にも同じ期間を添える(「The sign-in request expired (it was valid for 15 minutes). Run `maruhi
-login` again」)/ (iii) 表示しない。**選定 = (ii)**。ROADMAP の「10 分」は 15 分の誤り(ROADMAP の完了注記で
-訂正。サーバーの TTL は変えない)。D-2 宛先: (i) 現状どおり案内も結果も stdout / (ii) **対話の案内(URL・確認
-コード・期限・待機・ブラウザの案内)は stderr、結果(「Signed in as …」・トークンの期限)は stdout** / (iii) 全部
-stderr。**選定 = (ii)** — プロンプトが既に stderr(`live.ts`)で、`maruhi login > file` でも案内が見える。
-D-3 待機中の進捗: (i) 一定間隔で「still waiting」を出す(ログを汚す)/ (ii) `\r` のカウントダウン(TTY 専用の
-描画経路)/ (iii) **出さない**(期限の 1 行が窓を伝える)。**選定 = (iii)**。D-4 ブラウザ: 自動起動を試みて失敗
-したときだけ「Could not open a browser automatically. Open the URL above manually」、成功時は「Opened your
-browser. If nothing appeared, open the URL above manually」、試みない環境(エージェント・非対話)は何も足さない
-(URL の案内が既にある)。D-5 語彙: 承認ページ(DP4)と揃えて「Confirmation code: XXXX-XXXX」+「Approve only
-if the browser shows this exact code (it protects you against phishing)」(「AUTH_SPEC's phishing guard」の
-内部語は消す)。D-6 signupPolicy の事前 fail-fast の案内も stderr。
-
-**E. エラー文の英語校正(用語集)** — 規約: sentence case / 単文は末尾ピリオド無し・複文は文中のピリオドで区切り
-末尾には付けない(現状の 96 件が既にこの形 — 混在の実体はコマンド名の表記だった)/ コマンド・フラグは常に
-バッククォート(`maruhi project checkpoint`)/ 1 文目 = 何が起きたか、2 文目 = 次の一手 / Markdown の `**強調**`
-を端末に出さない。用語: **sign in / sign-in**(prose。コマンドは `maruhi login` のまま)、**server**(origin は
-環境変数名 `MARUHI_TOKEN_ORIGIN` にだけ残る)、**token**(PAT と言わない)、**environment variable**(env var と
-言わない — flag 名 `--env` と ID は別)、**master key**(keypair と言わない)、**recovery code**、**OS keychain**、
-**user ID**(prose。`user_id` はフィールド名として残る)、**epoch DEK**(CRYPTO_SPEC の語)。診断の末尾の仕様参照
-「(CRYPTO_SPEC §6.3)」は残す(issue に貼られたときの追跡性)が、ヘルプには載せない(F)。決定 7 の文面(G)と
-儀式系の拒否文(invite accept / member add / server grant / schema import)は「Refused to …: 何が検出されたか。
-なぜ。どうすればよいか」の順に統一。
-
-**F. `--help` の整合** — 列挙: (i) 説明文の統一だけ / (ii) **golden ファイル**(`test/golden/help.txt` — 全 54 段 +
-bare `maruhi` + `maruhi --help`。`UPDATE_GOLDEN=1` で更新し差分をレビューで読む)+ 機械検査(説明文は大文字の
-動詞始まり・`§` を含まない・ANSI を含まない・stdout を汚さない)/ (iii) 断言だけ(壊れ方が断言の隙間から漏れる)。
-**選定 = (ii)**。規約: 説明文は動詞始まりの 1 行、仕様の § 参照を書かない(利用者はスペックを読めない)、stdin /
-stdout の扱いと危険な操作(permanently / forces a rotation)を書く、グループは「Manage X (a / b / c)」。追加: root に
-製品の一文(bare `maruhi` の冒頭)、`run` / `ci run` の usage 行に `--` を出す(`maruhi run [flags] -- <command...>`
-— 決定 8 の書き方そのもの)、共通フラグの既定は「(default: the `server` setting)」の形。
-
-**G. ADR-0016 決定 7 の文言** — 判定の意味論は不変(一次境界 = stdin と stdout の両方が端末、二次層 = 既知
-エージェント、fail-closed)。エージェント検出: 「Refused to display values: an AI agent environment was detected
-(name). Values are shown only to a person at an interactive terminal, so they never land in an agent's transcript.
-Run this command yourself in a terminal」。TTY 境界: 「Refused to display values: stdin and stdout are not both an
+| B0 | Status quo (`#C73E3A` seed → derived) | `#B22A2B` | H32 C63 T40 | `#FFB3A8` | H33 C31 T80 | 3.8° | 5.7 / 6.3 / 6.4 | 11.0 / 10.0 / 10.0 |
+| B1 | Pigment vermilion (vermilion pigment family) | `#C92621` | H36 C76 T44 | `#FF6551` | H36 C71 T63 | 7.8° | 4.9 / 5.4 / 5.6 | 6.5 / 5.9 / 5.9 |
+| **B2** | **Vermilion (orange-leaning) — adopted** | **`#C1330B`** | H44 C76 T44 | **`#FF693C`** | H44 C76 T63 | **15.8°** | 4.9 / 5.5 / 5.6 | 6.6 / 6.0 / 6.0 |
+| B3 | Vermilion (JIS-shuiro-leaning) | `#BA3E00` | H49 C73 T44 | `#F77027` | H52 C78 T63 | 21.0° | 4.9 / 5.4 / 5.6 | 6.6 / 6.0 / 6.0 |
+| B4 | Silver vermilion / ink-pad family | `#CF1033` | H27 C76 T44 | `#FF6366` | H27 C67 T63 | 1.0° | 4.9 / 5.4 / 5.6 | 6.5 / 5.9 / 5.9 |
+
+**Selected = B2**. It sits 16° away in hue from danger (`--color-error` = `#A50C25` / `#FFC6C1`, the neutralTheme's
+crimson) (ΔE76 = 24 light / 59 dark), while staying in a range still readable as "red". B3 is close to JIS's vermilion
+but leans too orange, weakening the "red seal" impression. B1's 8° separation is insufficient. B4 shares danger's
+hue (rejected). B0 is pastel in dark (violates §1-1) and separates only 4°. **The vermilion's final hex is the one
+point needing owner confirmation** — they can direct a swap to B1 / B3 on the PR (the 2 constants in
+`theme/maruhi.ts` + the SVG's fill + regeneration).
+
+**C. The tool for converting the 秘 glyph to paths** <!-- english-exempt: literal glyph name --> — options: (i) run Python fontTools once in /tmp / (ii) a
+devDependency like opentype.js / (iii) the font's SVG table or manual extraction / (iv) `<text>` + embedded font
+(no path conversion) / (v) extract the ㊙ glyph from an emoji font. **Selected = (i)**. The deliverable is only the
+SVG; the tool doesn't stay in the repo (minimal dependencies, doesn't grow the supply chain). The procedure is
+recorded reproducibly: `NotoSansCJKjp-Bold.otf` (notofonts/noto-cjk v2.004)'s U+79D8 is converted to a path with
+`fontTools`' `SVGPathPen` + `TransformPen` (y-flip) and placed in a 1000×1000 viewBox (E below). Rejected: (ii) adds
+a devDependency for a one-time extraction. (iii): Noto CJK has no SVG table and manual extraction isn't reproducible.
+(iv) is font delivery = adding a web font (violates §1-3). (v) depends on an emoji glyph's colors and license
+(against §1-1's spirit). The chosen font is Noto Sans CJK JP (OFL 1.1, © 2014-2021 Adobe) — same source outlines as
+Source Han Sans; Noto's distribution form is simpler.
+
+**D. favicon / OG formats and generation** — formats: favicon = `favicon.svg` (inverted = a vermilion disc with the
+glyph knocked out white) + PNG 32 / 192 + `apple-touch-icon.png` 180 (iOS fills transparency with black, so an
+opaque dark body-color ground). OG = `og.png` 1200×630 (㊙ + `maruhi` on dark body `#1B0D07`. The wordmark is also
+the same font's Latin glyphs converted to paths, so the raster doesn't depend on the environment's fonts).
+Rasterization options: (i) resvg / sharp as devDependencies / (ii) a one-off ImageMagick etc. / (iii) **screenshot
+the SVG with the existing devDependency Playwright Chromium** (upward compat: zero new dependencies, the same
+renderer as e2e) / (iv) no PNG, SVG only (impossible — iOS and OG scrapers don't support SVG). **Selected = (iii)**,
+run as a one-off script and commit only the PNGs. `<head>` gains `description`, `icon` (svg / png),
+`apple-touch-icon`, `og:*`, `twitter:card=summary_large_image` (English — ADR-0017). **The OG absolute URL**:
+options = write the hosted origin statically / a relative URL (some scrapers don't resolve it — impossible) / a
+build-time env var / the Worker rewriting at request time (against the static-shell principle). **Selected =
+build-time env var `MARUHI_WEB_ORIGIN`, default `https://my.maruhi.app`** (`Root.tsx` is a build-time RSC so it can
+read `process.env`. Self-hosters specify their deploy URL — one line in SELF_HOSTING.md). CSP unchanged (everything
+self-hosted, within `img-src 'self'`).
+
+**E. The circle-to-glyph proportions** — options (in 1000 units): (a) faithful to the ㊙ glyph (ring 40, glyph 66%) /
+(b) seal-style (ring 64, glyph 60–62%) / (c) favicon-optimized (ring 80, glyph 64%) / (d) the glyph alone, no ring /
+(e) the inverted version's glyph larger (to fill where the ring was) — (b)+(e) combined as upward compat. Weights
+Bold and Black were compared at 16 / 24 / 32 / 64 / 160 px. **Selected = Bold, the outlined version at ring 64 (6.7%
+of diameter) and glyph 62%, the inverted (favicon) at glyph 66%**. Black's strokes crush into a blob at 32 px and
+below; Bold's 秘 stays readable at 32 px. <!-- english-exempt: literal glyph referenced --> At 16 px nothing is readable, so the favicon prioritizes being recognized
+as "a vermilion circle" and uses the inverted version. (a)'s ring disappears at 16–24 px. (c) is cramped at 160 px
+and up. (d) loses ㊙'s identity.
+
+**Reproducing the deliverables and verification**: `apps/web/theme/maruhi.ts` (the only raw hex: 2 vermilion values +
+2 on-accent values) → `bun run --filter @maruhi/web theme:build && bunx oxfmt apps/web/theme` (generated artifacts
+are committed oxfmt'd — checking for a zero diff uses the same order). The 4 SVGs + 4 PNGs go in `apps/web/public/`.
+The OFL full text and copyright notice go in `apps/web/public/fonts/OFL-NotoSansCJK.txt` (readable from the
+distributed site too. DP2's Archivo / Martian Mono go in the same directory — §4). Each SVG's leading comment notes
+its provenance.
+
+## 4. DP2 LP + docs — structure
+
+- A new package (`apps/site` is the plan. It may absorb the existing `apps/docs` stub): **Blume** (decided in
+  ADR-0008 — Astro-based)'s static output makes the LP and docs one site. If a real need to build the LP outside
+  Blume (plain Astro etc.) emerges, raise it as an ADR-0008 revision (don't rehash). LP = `/`, docs = `/docs/*`.
+  **Its own `wrangler.jsonc`** (Workers Static Assets, custom domain `maruhi.app`). Deployed separately from the
+  product Worker (`maruhi-server-hosted`)
+- **Styling (2026-09-03 owner ruling — Astryx is the dashboard, the LP is Blume)**: 3 layers only. (1) **Blume's
+  theme tokens** (colors, radii, fonts) get the same values as Astryx `defineTheme` (the vermilion accent, warm
+  neutral, Archivo / Martian Mono), affecting both docs and the LP — to avoid double bookkeeping, a generation
+  script that writes CSS variables out of `apps/web/theme/maruhi.ts` (decided at DP1). (2) **The LP's custom pages
+  use Astro components' scoped `<style>` (plain CSS)**. Values reference CSS variables; no raw hex or magic numbers
+  (ADR-0013's spirit applied to the LP too). **Relationship to CSP (correction)**: Astro's
+  `build.inlineStylesheets` default `'auto'` inlines styles under 4 kB into the HTML's `<style>`, so as-is it needs
+  `style-src 'unsafe-inline'` (or hash enumeration). The LP pins `build.inlineStylesheets: 'never'` to external CSS
+  and keeps `style-src 'self'` (whether Blume exposes the Astro setting is a DP2 check item — if it doesn't, that
+  joins the component overrides / eject decision). (3) docs stay at Blume defaults (component overrides only when
+  needed). **Not added**: Tailwind (more deps, duplicate tokens), StyleX (a static site doesn't need the compiler),
+  Astryx's React parts (unused in principle — individually via React islands if ever needed). The only added
+  dependency is `blume` itself. **Deferred**: how far theme tokens reach for font swaps, header / footer, and custom
+  pages is settled by actually installing Blume and reading `node_modules/blume/docs` (DP2's first task). For what
+  doesn't reach, decide there between component overrides and taking eject-level freedom for the LP only
+- `maruhi.dev` → `maruhi.app` 301 (a zone redirect rule. No Worker is placed)
+- A structure leading to the "first 5 minutes" (ADR-0014 revision 1): the value proposition (one screen) → install
+  (the command) → `maruhi login` → the invite-only notice / waitlist → the route to self-hosting (SELF_HOSTING.md)
+- The LP's CSP needn't be as strict as the TCB's, but **no external scripts, external fonts, or trackers** (§1-5).
+  If embeds (video etc.) are needed, they're self-hosted
+- Fonts (§1-3): Archivo (headings, body) + Martian Mono (code) self-hosted from `/fonts/` (variable woff2, Latin
+  subset, `font-display: swap`). docs (Blume) shares the same 2 families. **Decomposing Bun's impression**: ultra-bold /
+  wide headings (Archivo's width axis), a black ground, code blocks on par with body text, a mascot — the mascot's
+  role is played by the ㊙ logo
+- **OFL 1.1's distribution obligations** (don't drop these in DP2's implementation): (a) bundle each family's
+  copyright notice and the full OFL text alongside the distributed assets (`/fonts/OFL-Archivo.txt` /
+  `/fonts/OFL-MartianMono.txt` etc. — a place users can read from the distribution. Also appended to the repo's
+  `LICENSE` set). (b) Subsetting and pruning variable axes count as an OFL Modified Version, but **neither family
+  declares a Reserved Font Name** (no "with Reserved Font Name" phrase in the copyright line of the upstream
+  `OFL.txt` — checked Omnibus-Type/Archivo and evilmartians/mono on 2026-09-03), so **the modified versions may still
+  carry the original family names (`Archivo` / `Martian Mono`)**. Hence the Latin subset (≈ half the size) is the
+  default and no rename is needed. The bundled OFL full text is the upstream one verbatim (the obligations don't
+  change with modification)
+- The current `apps/web/src/pages/HomePage.tsx` (the spike skeleton) is replaced by a redirect from `my.maruhi.app/`
+  to `/dashboard` (or a minimal notice) once the LP stands on apex. The e2e mechanism-verification hooks (built-at /
+  counter / about) move to a different verification page, or the tests' premise is revised (don't break e2e by
+  deleting)
+- hosted-design.md §7 L1's revision: "`maruhi.dev` = docs" → "docs = `maruhi.app/docs`; `maruhi.dev` is a 301"
+
+### DP2 implementation-time ruling record (2026-09-03)
+
+Each ruling point was decided by the same loop as DP1 (enumerate ≥3 options → search for upward compat / a silver
+bullet → iterate with varied generation rules until no new options → select). Judgment criteria: staying inside §4's
+3 layers, consistency with "never-tell" and minimal dependencies, few generated artifacts, wrappable later by O9
+(the Alchemy v2 migration), cheap reversibility.
+
+**Blume check results (resolving the deferral — Blume 1.5.3, measured on `node_modules/blume/docs`, `blume --help`,
+and a trial-install build)**: (1) **theme tokens' reach**: `theme.accent` / `background` take `{ light, dark }`
+pairs; `theme.css` (project root) can override `--blume-background / foreground / muted / muted-foreground / border
+/ accent / accent-foreground / action / code-background / radius / font-*` on `:root` and
+`:root[data-theme="dark"]`, affecting both docs and the LP. (2) **Fonts**: `theme.fonts`' 3 roles (display / body /
+mono) accept local woff2 `variants` (variable ranges like `"100..900"` OK), and the Astro Fonts API self-hosts them
+at `/_astro/fonts/<hash>.woff2`. **The default fetches Inter / IBM Plex Mono from Google Fonts at build time** and,
+being a schema default, can't be disabled = local specification is a "never-tell" hard requirement (fetching happens
+only at build time — not external communication from the shipped assets — but we don't create a build's external
+dependency either). `<Font>` always emits `@font-face` inside an **inline `<style>`** (D's premise). (3) **Astro
+config exposure**: `build.inlineStylesheets` isn't directly exposed, but `integrations` is transparent, so an
+integration's `astro:config:setup` → `updateConfig` pins it to 'never' (measured to work). (4) **Custom pages**:
+`pages/*.astro` are mounted at the same root, and `PageLayout` (header + theme + fonts, no sidebar) gives enough
+freedom for the LP. config / navigation / fontCssVars are read from `blume:data`. With `basePath: "/docs"` docs sit
+at `/docs/*` and the root belongs to custom pages (officially supported — the equivalent of Docusaurus's
+`routeBasePath`). (5) **component overrides / eject**: `components.ts`'s `layout` slots (Header / Footer / Logo …)
+and `blume eject` exist. Neither is needed at DP2. (6) **External communication**: search = Orama (in-browser, index
+`/blume-search.json`); `llms.txt` / raw Markdown / Copy as Markdown / WebMCP (in-page registration only) / OG cards
+(Takumi, drawn locally at build time) / sitemap / robots — no external communication. **Analytics is opt-in: nothing
+is injected if undeclared** (Vercel / PostHog / arbitrary scripts only when declared). Ask AI / the MCP server are
+opt-in features needing server output (default off). **Open in chat** is a navigation link to ChatGPT / Claude / v0 /
+Cursor etc. (only on user action; no automatic sends). "Give feedback" is a pre-filled GitHub issue link.
+`@vercel/analytics` is bundled in Blume but is a no-op without `window.va` (measured: every LP / docs request stays
+same-origin). (7) **Runtime**: Blume requires Node 22.12+ but `bunx --bun blume build` completes on Bun (measured.
+Adopted so CI doesn't depend on a Node version). **Answers to the Bun-impression decomposition**: the ultra-bold /
+wide headings are Archivo's `font-stretch: 112%` + weight 800, the black ground is system-following dark, the code
+blocks are on par with body text (the LP's hero is a terminal), and the mascot's role is the ㊙ logo.
+
+**A. The package's placement and name** — options: (i) create `apps/site` + delete the `apps/docs` stub / (ii) expand
+`apps/docs` to include the LP / (iii) separate packages for LP and docs / (iv) Astro cohabiting `apps/web` / (v) no
+package, Blume at the repo root. **Selected = (i)** `@maruhi/site` (FSL-1.1-MIT = the repo default). The name says
+"the apex site = LP + docs"; under `apps/docs` the LP would be a foreign body. Quality gate: `typecheck` covers
+`blume.config.ts` / `scripts` / `test` / `theme` (`.astro` / `.mdx` are outside tsc's scope — Blume's `blume check`
+is optional); oxfmt / oxlint target only TS and ignore `.astro`; ImportLint covers TS relative imports (`../web/theme`
+is not referenced — B); fallow declares entries (`blume.config.ts` / `scripts/*.ts` / unit tests) and ignores
+(`public/**` / `.blume/**`). `apps/site/vitest.unit.config.ts` is added to the root vitest projects. Rejected: (iii)
+loses theme / search / OG sharing and becomes 2 deploys. (iv) puts Blume's dependency tree (≈ 850 packages) into the
+TCB. (v) breaks the workspace convention.
+
+**B. Sharing theme tokens** — options: (i) a generation script writing CSS variables out of `apps/web/theme/maruhi.ts`
+/ (ii) duplicate the values by hand and detect drift via a diff check / (iii) constants in `packages/brand` both
+import / (iv) separate constants into `apps/web/theme/brand.ts` and have site relative-import / (v) site's config
+imports `maruhi.ts` directly (evaluating Astryx's `defineTheme`) / (vi) **a generation script taking the artifact
+`maruhi.css` as input** (upward compat: not just the 2 vermilion values — the HCT-derived warm neutrals [body /
+surface / popover / text / border] come down the same path, and the web side's source is untouched). **Selected =
+(vi)**: `apps/site/scripts/theme.ts` extracts `maruhi.css`'s `light-dark(#…, #…)` declarations and writes
+`theme.css` (Blume tokens) / `theme/tokens.ts` (constants the config reads) / `public/logo-dark.svg` (the fill to
+the dark accent) / duplicated assets (favicon / logo / og / apple-touch-icon). The artifacts are committed, and
+`test/unit/theme.test.ts` checks "regeneration = committed" (the same shape as DP1's "matches the generated CSS"
+contract). Hand-written hex on the site side is zero (a unit test checks). Rejected: (i)(v) bring `@astryxdesign/core`
+evaluation into site. (ii) is double bookkeeping. (iii)(iv) touch web's theme, and neutral's derived values exist
+only in `maruhi.css`, so it reads the CSS anyway. The mapping: Blume's `--blume-muted` ← Astryx `surface`,
+`--blume-code-background` ← `popover` (a face brighter than the body in dark), `--blume-radius` ← `--radius-element`.
+
+**C. Font acquisition, subsetting, and delivery** — options: (i) place the upstream repos' variable TTF / woff2 as-is
+/ (ii) subset to Latin via `pyftsubset` (one-off /tmp) / (iii) a subsetting tool as a devDependency / (iv) **take them
+once out of Fontsource's variable packages (`@fontsource-variable/archivo` / `martian-mono` 5.3.0 — the same source
+files as Google Fonts, already split into Latin etc. subset woff2 + the OFL full text)** (a silver bullet: the
+subsetting tool itself isn't needed) / (v) specify the Google provider in Blume's `theme.fonts` (fetches from Google
+at build time — impossible under "never-tell"'s spirit and the build's external dependency). **Selected = (iv)**:
+`archivo-latin-wdth-normal.woff2` (90 KB — width axis 62–125% + weight 100–900. The headings' width needs the width
+axis) and `martian-mono-latin-wght-normal.woff2` (24 KB — weight 100–800. Code doesn't need the width axis). Italic
+is dropped (§1-3). `unicode-range` is unneeded with 1 file per Latin subset (the Astro Fonts API's `@font-face`
+carries `font-display: swap` and fallback metrics). The location is `apps/site/public/fonts/` (the same directory
+as the OFL full texts `OFL-Archivo.txt` / `OFL-MartianMono.txt` = the distribution unit. Linked from the LP's
+footer). **Astro Fonts
+API duplicates the source to `/_astro/fonts/<hash>.woff2` and references it** — so fonts ride the distribution via 2 paths (≈ 113 KB of duplication)
+— accepted as the price of taking both the readable `/fonts/` URL co-located with the licenses and the hashed optimized delivery. Re-verified
+via Fontsource's LICENSE (a copy of the upstream one) that neither family's upstream OFL carries a Reserved Font Name phrase (no rename needed).
+One line added to README's license table. Rejected: (i) is several hundred KB including 3 scripts. (ii)(iii) add a tool (Fontsource already
+distributes the same result).
+
+**D. How the LP is built and its CSP** — options: (i) a PageLayout custom page + scoped `<style>` / (ii) RootLayout (with docs' chrome) /
+(iii) build the shell via the `layout.Layout` slot / (iv) `blume eject` / (v) plain Astro for the LP only (an ADR-0008 revision). **Selected = (i)**.
+CSP measurements and handling: (a) Astro's `inlineStylesheets` 'auto' → **'never'** via the integration (small CSS like medium-zoom was
+externalized). (b) Blume chrome's **6 inline `<script>`s** (theme init, header ops, nav, ClientRouter style loading, etc. — their content is
+deterministic per Blume version) → allowed via **SHA-256 hashes collected from the distribution** (the `apps/web/scripts/write-headers.ts`
+method). (c) Astro Fonts' **2 `@font-face` `<style>`s** (can't be disabled — check (2) above) → hashed the same way. (d) The transition-suppression
+`<style>` the theme toggle inserts via JS → hashed after confirming the fixed string actually exists. (e) **Shiki's token `style` attributes**
+(`--shiki-light/dark`) and parts of the chrome (the sidebar's `padding-inline-start`, CardGroup's `--blume-cols`) — `style-src-attr` can't allow by
+hash → options: `style-src-attr 'unsafe-inline'` / `'unsafe-hashes'` + enumerating every attribute value / disabling highlighting (not available in
+Blume) / **externalize after build into a single CSS mapping attribute values to classes `.sa-<hash>`** (the same technique as Shiki's official
+`transformerStyleToClass`, applied to the distribution — Blume doesn't expose transformers). **Selected = externalize** (`scripts/postbuild.ts`
+stage 1. The build checks that not a single `style` attribute remains in the HTML; e2e verifies `[style]` = 0 and that token coloring survives on
+docs). The resulting CSP: `default-src 'none'; script-src 'self' 'sha256-…'×6; style-src 'self' 'sha256-…'×3; img-src 'self' data:;
+font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` — **no `'unsafe-inline'` on
+either script or style**. §4's "keep `style-src 'self'`" is satisfied in the form "'self' + hashes of deterministic content" (the same reading as
+the TCB's `apps/web`). Together, `postbuild.ts` mechanically checks the distribution for zero external src / href references (href allows only our
+repo's GitHub and the product origin) and no inline event handlers, and keeps the `_headers` Blume emits (.md / .txt charset, the top Link) while
+appending CSP / nosniff / `Referrer-Policy: no-referrer` / HSTS (apex standalone) for `/*`. Rejected: (ii) — the LP doesn't need a sidebar.
+(iii)(iv) throw away Blume defaults and lose upstream-tracking. (v) needed an ADR-0008 revision, and measurements showed Blume suffices.
+
+**E. The wrangler config's shape** — options: (i) an independent `apps/site/wrangler.jsonc` (assets only, no `main`) / (ii) add a named environment
+`site` to `apps/server/wrangler.jsonc` / (iii) Cloudflare Pages / (iv) bundle `/docs` into the product Worker. **Selected = (i)**:
+`name: maruhi-site`, `routes: [{ pattern: "maruhi.app", custom_domain: true }]`, `workers_dev: false`, `preview_urls: false`,
+`assets.directory: ./dist`, `html_handling: "drop-trailing-slash"` (Blume's internal links, canonical, and sitemap are trailing-slash-less and the
+output is `x/index.html`. `/docs/x/` 308s to `/docs/x`), `not_found_handling: "404-page"` (Blume's `404.html` — with chrome). No env vars, one
+config file — easy to wrap into O9's declarativization. CI checks validity via `wrangler deploy --dry-run` (same shape as the product Worker's 8b).
+Preview is local `wrangler dev` (`bun run --filter @maruhi/site preview`) only — don't create origins other than apex. Rejected: (ii) pollutes the
+product side's config under the env-inheritance rules. (iii) Pages isn't adopted for new work under the Workers convergence policy. (iv) puts the
+LP inside the TCB (violates §1-4).
+
+**F. `my.maruhi.app/` and the e2e hooks' destination** — options: (i) `_redirects` for `/` → `/dashboard` 302 / (ii) a minimal notice page / (iii)
+keep as-is / (iv) a notice page + move the mechanism-verification hooks to `/about` ("About this deployment" = a diagnostics page) (upward compat:
+doesn't break the sign-in round trip's `ResumeToDashboard` [ruling BU] and gives the hooks an operational meaning [build time, client-operation
+check]). **Selected = (iv)**: `HomePage` = the SVG logo (`/logo.svg`, replacing the ㊙ emoji) + "Open the dashboard" + a route to `maruhi.app` +
+"About this deployment". `AboutPage` = the explanation + Diagnostics (`built-at`, `CounterCard`). e2e moved its hydrate check to `/about` and
+changed `/`'s wait to `home-heading` (the SPA / MPA degradation, zero-API-call, and marker-return checks are unchanged. All 25 pass). Rejected:
+(i) — with the static shell's `_redirects` the OAuth round trip's landing (`/`) changes, and verifying the auth flow exceeds DP2's scope. (iii)
+duplicates the LP.
+
+**G. The LP's information-structure granularity** — options: (i) everything on 1 page / (ii) install / self-host on subpages / (iii) the LP is 1
+screen and everything goes to docs. **Selected = (i)** (1 page, 6 sections: hero [a terminal] → How it works [4 cards] → 1. Install [the same
+pre-release steps as README] → 2. Sign in [`config set server` + `login`, honest about the key-generation ceremony] → 3. Get access [the current
+invite-only state. The waitlist's slot = `#access`'s `data-waitlist-placeholder`, swapped in at H6] → Or run it yourself [`/docs/self-hosting`] →
+footer [GitHub / Docs / License / "No analytics, no trackers" / the fonts' OFL links]). docs' initial content is 3 pages (index / getting-started /
+self-hosting), with routes into the specs and SELF_HOSTING.md (the write-up is minimal — follow-ups go to `blume-update-docs`). Rejected: (ii) adds
+hierarchy while content is thin. (iii) doesn't complete the "first 5 minutes" route within the LP.
+
+**H. Picking among Blume's features** — on (no external communication, the defaults): search (local Orama) / `llms.txt` / raw Markdown / Copy as
+Markdown / WebMCP (in-page registration only) / OG cards (drawn locally. palette from the generated tokens; the LP uses DP1's `og.png`) / sitemap /
+robots / JSON-LD / agent-readability.json / the theme toggle (docs stay at Blume's default — §1-2's "no manual toggle" was the dashboard's ruling) /
+banner (the private-preview notice; dismiss goes to localStorage) / Edit on GitHub · Give feedback (GitHub links). **off**: `ai.openInChat` (links to
+third-party AIs — against "never-tell"'s spirit. Copy as Markdown remains) / RSS (no blog) / analytics (undeclared) / Ask AI · the MCP server
+(default off — needs server output) / `lastModified` (default off — breaks under a shallow clone). **No external communication exists that can't
+be turned off** (measured: zero requests to external origins and zero CSP violations across every LP / docs / theme-toggle / search / client-side
+navigation path).
+
+**Ruling points that emerged**: (L) **`bun audit`'s transitive deps**: Blume's dependency tree contains image-size@2.0.2 (no fixed version) and
+@vercel/routing-utils' path-to-regexp@6.1.0 (strictly pinned), failing CI's audit. Options: name-level `overrides` (would pull router's ^8 range
+in too) / excluding the audit step / advisory-ID-level `--ignore` (adopted — a maintainer-side toolchain that runs only at build time, doesn't ride
+the distribution, and has no execution path. The rationale is a comment in ci.yml. Expected to disappear on a Blume update). (I) **The dark-mode
+logo**: `logo.image`'s `{ light, dark }` shape serves 2 `<img>`s. The dark SVG is a generated artifact with the original's fill swapped to the dark
+accent (`#FF693C`) (B's generation script — zero hand-written hex). The currentColor version (`logo-mono.svg`) was rejected because the mark would
+take the text color and stop being "the vermilion seal". (J) **Blume's runtime**: `bunx --bun blume` (Bun). The Node 22.12+ requirement is
+substituted by a measured full run on Bun; no Node setup is added to CI. (K) **Duplicated fonts in the distribution** (C).
+
+**Verification (2026-09-03)**: `bun run check`'s 7 stages pass (site rides fmt / lint / typecheck / ImportLint / fallow / unit test). web e2e
+25 pass (after F). site e2e 11 pass — every request same-origin, zero CSP violations (LP / docs / toggle / search / client-side navigation),
+Archivo / Martian Mono applied, light / dark accent and body match `tokens.ts`, `/docs` reachable, trailing-slash normalization, 404. Screenshots
+(light / dark / mobile) are in the PR body. Human tasks = hosted-ops.md §7 O10 (first deploy) / O11 (`maruhi.dev` 301) / O12 (visit counts are
+server-side aggregation only).
+
+**G revision 1 (2026-09-04, after the owner's review)**: responding to the owner's assessment "the design isn't bad but the structure is iffy and
+the appeal doesn't come across", I actually read the competitor LPs (Phase / Infisical / Doppler / Shelve / Keyway) and organized the diffs. Common
+thread: every one puts AI-agent support front and center. Phase advertises E2EE but decrypts Console-side and has a `.env` export. Keyway's hero
+is "agents can read `.env`" with server-side AES. Infisical / Doppler speak in compliance, scale, and integration counts. maruhi's diffs: "the
+decryptor is a single MIT-licensed CLI — neither the server, the dashboard, nor the operator can hold plaintext", "there is no `.env` export
+feature", "`wrangler deploy` once into your own CF account", "agents get only the `maruhi schema` contract, and value display is fail-closed"
+and "writing the non-guarantees ourselves (CRYPTO_SPEC §14.3)" — the diffs aggregate to these 5 points ("No telemetry" is stated by Phase too,
+so it isn't pressed as a differentiator). Structures enumerated: **(A)** trust-boundary axis (the "who can read plaintext" table goes first) /
+(B) diskless axis (enter from a `maruhi run` demo) / (C) self-host axis (enter from `wrangler deploy`). **Selected = (A)** (owner ruling).
+(B): "there's a diskless run" alone doesn't differentiate (ADR-0014). (C): competes on Infisical's same ground.
+The hero copy, per the owner's "short and impact-first" direction, is **"Secrets only you can read. / Not even us."** (the second line in the
+accent color). The new structure (1 page, 7 sections): Hero [a `push` → `run` terminal] → Who can read your secrets [a table: CLI / the `run`
+process = yes; server / dashboard / operator / AI agent = no] → Nothing to leak from disk [demos of `printenv | wc -c` and `ls .env*`] → Agents get
+the contract, not the values [`maruhi schema`'s real output + the value-display refusal message] → Your Cloudflare account. One deploy. [3 commands]
+→ What we don't promise [4 points from §14.3] → Get started [install / sign in / Access (`#access`; the waitlist placeholder stays)].
+ADR-0014's rails: don't say "most secure", don't compete on feature counts, don't name competitors on the LP, and terminal output uses the CLI's
+real strings (`Pushed … (version=1, epoch=1)` / `Confirmation code:` / the agent gate's refusal text / `schema`'s table). `THREAT_MODEL.md` is
+unwritten (H5), so the non-guarantees link to CRYPTO_SPEC §14.3. Verification: site e2e 11 (the h1 assertions updated to the new copy),
+`blume validate --strict`, fmt / lint / tsc pass. Copy refinement continues after the first deploy (§4's "structure now, copy later").
+
+**G revision 2 (2026-09-04, second owner review)**: the owner's points against revision 1 = (a) maybe competitors don't list commands on their
+LPs but instead write the threats and the "why E2EE / why diskless" (b) too much text — hard to read; add illustrations for readability (c) with
+only 2 Whys it becomes "a competitor is fine" — make a chain of Whys that naturally lands on maruhi (d) Cursor / Copilot / Claude Code aren't
+competitors, so they may be named. Re-measured the competitor LPs (command count / threat explanation): Keyway 4 / yes ("AI agents read .env" →
+"if it isn't on disk they can't" is the clearest causality), Infisical 2 / yes (sprawl, long-lived credentials, agents can't hold credentials),
+Doppler 0 / yes (breach statistics), 1Password dev 0 / yes, Phase 3 / **no** (only a feature enumeration — the E2EE competitor closest to maruhi
+doesn't tell the "why" = an open seat), Shelve 1 / nearly none. Revision 1's maruhi had 5 terminals, the most of the 6.
+**Selected = the "chain of Whys" structure**: an ordering where crushing 5 questions in sequence can only land on maruhi's design —
+01 Who reads your files? (editors and agents read every file as context → secrets can't live in files → `maruhi run`) → 02 Then where do they
+live? (a server. Many let the server / console decrypt → encrypt before it leaves) → 03 Who holds the key? (E2EE means nothing if the decryptor
+isn't small. A dashboard that decrypts is one XSS away; an export .env returns 01 to nothing → the decryptor is a single MIT-licensed CLI, the
+dashboard holds no keys, no `.env` writer exists) → 04 How does the agent still work? (it needs only name, type, and whether it's set →
+`maruhi schema`; value display is fail-closed) → 05 Who runs the server? (even ciphertext has an operator → `wrangler deploy` into your own CF
+account, or ours; neither has telemetry) → the close "what remains is you and the processes you chose to run". By design: at 01 alone it could be
+Keyway / Doppler, up to 02 it could be Phase, and from 03 onward only maruhi (the answer to point c). Each question is "the question → 1–2
+sentences of fact → So: the answer (accent left-rule)" + an illustration; the illustrations are inline SVG line drawings (lines = muted; only the
+key and `.env` are accent. No style attributes — colors come from classes, so CSP's style-src-attr isn't grown). 03's illustration is a "who can
+read plaintext" tile set (revision 1's table compressed). Commands are cut to 2 spots (the hero's push → run and 04's schema); the install /
+sign-in / self-host procedures defer to docs (getting-started / self-hosting). Terminals wrap with `pre-wrap` (no horizontal scrolling in narrow
+columns / mobile). Rejected: telling threats in prose only (against point b) / making the illustrations image files (can't follow the theme and
+grows `img-src` distribution) / keeping the table (the tiles show the same information shorter). Verification: site e2e 11 · `blume validate
+--strict` · postbuild (zero external references; the style-attribute externalization unchanged at 9) · fmt / lint.
+
+**G revision 2 supplement — the illustrations' touch (2026-09-04, owner ruling)**: the same subject (02's "the device holding the key → ciphertext
+→ the keyless server") drawn in 7 options and compared — A thin lines (revision 2's first version) / B thick-line pictograms / C flat 2-tone faces /
+D isometric / E blueprint (grid + dimension lines) / F ASCII box-drawing / G seal (㊙'s vermilion stamp). Evaluation axes = §2's tone fit,
+small-size readability, light / dark, the cost of aligning 5+ of them, and overlap with competitors. **Selected = B + G as an accent color**:
+objects are 3px round-cap lines in the foreground color + faces in the code background color (same line weight as the ㊙ logo, readable on mobile.
+One line weight, one face, one accent = easy to keep consistent), and in each illustration the accent marks only the 1 "thing holding the key"
+(01 `.env`, 02 the key, 03 the CLI tile's ㊙ mark = reusing `/logo.svg` / `/logo-dark.svg` via `<img>` so it doesn't depend on a CJK font, 04 the
+guarded value, 05 the deploy). Rejected: A (too thin a presence next to the Archivo headings — looks like a SaaS line drawing) / C (same shelf as
+Keyway / Linear families) / D (overlaps Cloudflare / Doppler's design language; the cost of aligning 5 at the same angle and light is highest) /
+E is reserved for docs' architecture diagrams / F is reserved as a one-off play on e.g. the 404 page (weak for screen-reading and wrapping). The
+comparison page is an owner-facing artifact (private).
+
+## 5. The entrance to DP3–DP5 (details in each PR)
+
+- DP3 (the dashboard): unify the app shell, empty states / loading / errors (13 `FailureNotice` spots), the audit viewer's
+  readability (keep web-dashboard-design.md §4's display discipline), responsive, a11y. **When the same xstyle override
+  appears 2–3 times, propose to a human before promoting it to `ui.package`**
+- DP4 (the ceremony pages): the CLI approval page (confirmation-code visibility = the phishing guard's UX), the sign-up notice /
+  the refusal landing, `/invite`. Keep CSP `script-src 'none'`; unify the brand via self-hosted CSS. Check the confirmation
+  code's character set
+- DP5 (the CLI): output consistency (TTY discipline), `login`'s deadline and guidance, suppressing repeated Notes, English
+  copy editing, `--help` consistency
+
+### DP3 implementation-time ruling record (2026-09-04)
+
+Each ruling point was decided by the same loop as DP1 / DP2 (enumerate ≥3 options → search for upward compat / a silver bullet →
+iterate until no new options → select). Judgment criteria: staying in a shallow layer of ADR-0013's evaluation order, leaning to
+Astryx defaults (§1-2), not breaking a single display-discipline rule (web-dashboard-design.md §4), not mixing preview-only code
+into the distribution, cheap reversibility. Measurements used `apps/web/test/screenshots.ts` (ruling F) and a one-off axe-core /
+keyboard-walk script (ruling E).
+
+**Premise corrections (facts found during implementation)**: (1) Astryx's `Table` has its own horizontal scroll frame (a
+`role="group"` scroll wrapper, `tabindex=0`) and bleeds left and right by the Layout's padding. The W-series mobile-width tables
+"looking cut off" is because the frame doesn't show a visual scrollbar — structurally they're readable. So a home-made table
+scroll frame (the first version's `TableFrame`) isn't needed; it was removed from DP3's initial implementation. (2) `Text`'s
+`wordBreak` applies even without maxLines, but a whitespace-free 64-hex identifier expands a flex item's min-content, so it won't
+wrap on that alone (`overflow-wrap: anywhere` + `min-width: 0` are needed — ruling H's `HexText`). (3) The internal user_id is a
+ULID (26 chars — AUTH_SPEC §9), and "Signed in as + ULID + Sign out + the toggle" doesn't fit the mobile-width compressed bar
+(ruling A's narrow-width rule). (4) `useMediaQuery` always returns false on first paint for SSR compat — an authenticated screen's
+body renders after the fetch, so a Table → List flip is never visible.
+
+**A. The app shell's composition and placement** — options: (i) per-screen ad-hoc headers (status quo: only /dashboard has the user
+display and Sign out; subpages have just a "← Dashboard" link) / (ii) `AppShell` + `TopNav` (logo, the 3 destinations, the user,
+Sign out) on every authenticated screen / (iii) `AppShell` + `SideNav` / (iv) only `Layout`'s header slot on each screen / (v)
+**`DashboardShell` (upward compat)**: on top of (ii), **the shell holds the session state (`GET /auth/me`) in one place**, a 401
+shows the same sign-in card on every screen, and the body renders only on ok (the old `DashboardScreen`'s S3 moves into the shell).
+Breadcrumbs pass only the parent levels; the current location comes from the heading. The display discipline's proviso (`ServerReportedNote`)
+is placed once at the end of the page by the shell. **Selected = (v)**. Rejected: (i) — can't sign out from a subpage, and no user display.
+(iii) — with 3 destinations it doesn't meet SideNav's requirements (grouping, room to grow), and Astryx's layout docs also say "a shallow, stable
+nav is a TopNav". (iv) — would mean hand-making the landmarks (skip link / main / nav) and the mobile drawer. **Attached rulings**: (a) the body
+renders after me is confirmed (accepting the 1-round-trip serialization — avoiding the shape where the body flashes in then disappears on a 401,
+and where child resources' 401 branches run in parallel). (b) `height="auto"` + `variant="section"` — the default `elevated` either ends the face
+at the body's height (auto) or makes main internally scroll (fill). Since HP5's mobile reading is naturally document scrolling (the address bar's
+collapse, inertia to the end), auto is taken, and section avoids a face-height step (the only deviation from Astryx defaults; no visual tokens were
+touched). (c) At narrow widths (AppShell `md` = 768px and below) the user display moves into the drawer side (`startContent`) alongside the
+destinations, and only Sign out stays on the bar. (d) e2e follows by mocking `/auth/me` in every authenticated-screen test (`routeSession`).
+
+**B. Unifying empty / loading / error states** — options: (i) status quo (empty = a mix of `EmptyState` and bare `Text`; failure =
+`FailureNotice`; loading = `LoadingRow`) / (ii) just align all empties to `EmptyState` / (iii) fold the 3 states into one `ResourceView` (can't
+cover non-`useApiResource` states — pagination appends, revocation failures, the shell's auth — leaving 2 disciplines side by side) / (iv) add a
+placement arg to `FailureNotice` (more API for the same look) / (v) **keep `FailureNotice`'s API (failure / onRetry / subject) unchanged, pin the
+placement discipline to 2 kinds, and align only empty states to a new part `EmptyNotice` (upward compat)**. **Selected = (v)**. The discipline:
+(a) **replacement** = render instead of the resource body; pass `onRetry` if a re-fetch path exists. (b) **append** = add below a body that did
+render (a Load more failure, a revocation failure). Failures re-operable from the row don't take `onRetry`. The 13 spots (the old
+DashboardScreen's session-failure display moved into the shell — the count is unchanged) split into 9 replacements / 4 appends; each call site got
+a marker comment. `EmptyNotice` is a heading + the prescribed wording "as reported by the server" and doesn't show counts (§4-4). `LoadingRow`
+passes the Spinner's `role="status"`-visible text the same label. **Attached**: the overview tab makes the chain fetch its leading resource and
+reads the env list after it (avoiding a shape where the same Banner lines up per section on a uniform 404 / 403 — accepting the 1-round-trip
+serialization). Rejected: (ii) leaves the failure and loading disciplines undocumented. (iii)(iv) — as above.
+
+**C. The audit viewer's readability** — options: (i) status quo (5 columns; actor = `user · key FP · token id` as 1 string; details also ` · `
+-joined) / (ii) decompose cells into **labeled fragments** (actor = the principal on 1 line + `key` / `token` fragments; details = `target` /
+`env` / `var` / `epoch` / `v` / `chain seq` pairs; `var.read`'s count summary on its own line) / (iii) replace Table with `List` (1 event = 1 item —
+loses desktop column scanning) / (iv) only adjust column widths / (v) **(ii) + switch to (iii) only at narrow widths (upward compat — ruling D)**.
+**Selected = (v)**. Display-discipline check: items, order, and wording unchanged (seq stays response-adaptive; the prescribed wording "Events
+visible to your role"; `Server time (UTC)`; FPs stay reference values — the added `key` label doesn't carry a "verify this" reading); no count
+display added either. Rejected: (i) — FP and target can't be told apart in the same blob. (iii) alone loses column scanning. (iv) doesn't change
+the root problem (1 string).
+
+**D. The responsive policy** — options: (i) nothing (leave it to Astryx's scroll wrapper) / (ii) List-ify every table at narrow widths / (iii)
+List-ify only the audit list and leave other tables to Astryx's horizontal scroll frame / (iv) the classic trick of CSS-ifying `td` into blocks
+(breaks Table's ARIA structure — would mean overriding Astryx internals with StyleX) / (v) pin the breakpoint constant to one value and do (iii).
+**Selected = (v)**: `NARROW_VIEWPORT_QUERY = "(max-width: 768px)"` (the same expression as AppShell's `md` — the nav's drawer conversion and the
+body's display-form switch happen at the same width) defined once in `shared.tsx`. Only HP5's main use (reading audits) takes the List shape; the
+S5 / S8 / S9 tables stay horizontal-scrollable (the frame is `tabindex=0` so a keyboard can scroll too). Identifiers wrap at any position via
+`HexText` (the project ID below the heading, chain head, member id, key FP, token prefix). Rejected: (ii) gains little for the work of rebuilding
+the revocation 2-stage buttons and Token inside items. (iv) — as above.
+
+**E. The a11y audit's method and fix scope** — options: (i) eyeballing code only / (ii) add `@axe-core/playwright` as a devDependency / (iii)
+Playwright's ARIA snapshot + manual keyboard walk / (iv) only React Doctor + `astryx doctor` / (v) **inject axe-core one-off (a scratchpad
+`page.evaluate` — via CDP, so outside CSP's scope) and combine with (iii)(iv) (upward compat adding no dependency)**. **Selected = (v)**. Scope:
+wcag2a / 2aa / 21a / 21aa + best-practice run across S4 / S5 / S6 (the admin, reader, and self axes) / S8 / S9 × light / dark / mobile = 18 states.
+**Findings and handling**: (a) `empty-table-header` (minor) — the empty headings of the revoke and variable-name columns → added `Actions` /
+`Variables`. (b) `color-contrast` (serious) — `SegmentedControl`'s unselected label is 4.26:1 in dark (12px; AA is 4.5) → resolved by replacing the
+audit-axis switch with `ToggleButtonGroup` (single) (it's an Astryx-internal color, so it's noted on the PR as an upstream candidate. Theme color
+values untouched — settled at DP1). (c) Heading hierarchy: the page h1 is the shell's (before sign-in, the card's "Sign in" is the h1); sections
+are h2 (old h3s promoted); empty-state headings are h3. (d) Landmarks: AppShell's skip link → `nav[Dashboard]` → main; breadcrumbs are
+`nav[Breadcrumb]`; the mobile drawer is `dialog[Navigation]` and closes on Escape with focus returning to the toggle. (e) Visible focus: a 2px
+accent outline in both light and dark (TextInput is border color + an inner ring). (f) Tabs move focus with arrows and select with Enter (manual
+activation). **Not fixed**: the `TopNavHeading` logo link's focus ring is a fixed 1px color (Astryx-internal) — measured as visible in both modes,
+so kept as-is (included among upstream candidates).
+
+**F. Visual checks and screenshots of auth-required screens** — options: (i) a scratchpad-only script (unreproducible) / (ii) **commit
+`apps/web/test/screenshots.ts`** (the same `page.route` mocks as e2e. Fixtures extracted to `test/fixtures.ts` and shared with e2e) / (iii)
+preview routes + mock data inside the distribution (forbidden) / (iv) log in via real OAuth (needs GitHub App setup — impossible in this session) /
+(v) (ii) + lay out results on an owner-facing private page (a Claude Artifact) by light / dark / mobile and before/after (same as DP2).
+**Selected = (v)**. The procedure is written at the head of `screenshots.ts` (`build` → `preview` (port 8788) → `screenshots`. Output goes to
+`apps/web/screenshots/` — gitignored). 11 screens × 3 states = 33 shots; it fails if there's a CSP violation.
+
+**G. PR splitting** — options: (i) 1 PR / (ii) DP3a (the shell + state unification) / DP3b (audit readability + responsive + a11y) / (iii) 3+ PRs.
+**Selected = (i)**: the shell is the foundation for the breakpoint (D), the landmarks and heading hierarchy (E), and the state unification (B) —
+split, and DP3a alone would leave a11y and e2e updates half-done. The diff is reviewable at 12 web files + docs (commits were split by concern).
+
+**H. xstyle repetition** — the xstyle that came out of DP3 is **just 1 kind**: identifiers' any-position wrapping (`overflowWrap: anywhere` +
+`wordBreak: break-all` + `minWidth: 0`). Options: (i) write `stylex.create` on each screen (3+ duplicates) / (ii) 1 definition in `shared.tsx` +
+the `HexText` part (defined once, used in 12 places) / (iii) create `ui.package` and put it there (③) / (iv) a `defineTheme` Text variant (①).
+**Selected = (ii)** — no duplicate definitions; promotion is left to human judgment (CLAUDE.md "don't let it flow backward"). **Promotion
+candidates (listed on the PR)**: `HexText` to a ui.package part or a Text variant (`code-breakable` etc.). No other repetition exists (the existing
+tabpanel `display: none` override stays at its one W-series spot).
+**Ruling points that emerged**: (I) **The axis-switch part**: SegmentedControl → ToggleButtonGroup (E-(b)). How e2e
+points at it changed `radio` → `button[pressed=false]`. (J) **The logo's color**: the shell's logo isn't
+`public/logo.svg` (pinned to light's vermilion) but the inline SVG part `MaruhiMark` (the same paths as
+`public/logo-mono.svg`) drawn via `Icon color="accent"`, inheriting light / dark's `--color-accent` (the partial
+adoption of DP1 ruling A's (v) "currentColor-ification"). The duplicated path data is tied to the SVG as the source
+of truth via a comment. (K) **The pre-sign-in page heading**: until me resolves, the shell emits no page heading and
+the sign-in card's "Sign in" becomes the h1 (avoiding the shape where a sign-in card sits under "API tokens"). (L)
+**The project heading's short form**: the h1 is `Project ab…ab` (first + last 8 digits); the full form sits directly
+below as `HexText` (`data-testid="project-id"` kept).
+
+**A revision 1 (2026-09-04, after the owner's review — sidebar type + starting from Astryx templates)**: on the
+owner's directions "make the layout sidebar-type (SaaS's mainstream, and easier for me to use)" and "use Astryx's
+templates more aggressively (login and sidebar both exist as templates)", the TopNav option (A-(v)) was **swapped for
+the SideNav option (A-(iii))**. It is the owner's ruling, and A's rejection reason "3 destinations are TopNav's
+range" loses to "a shape they're used to". The shape takes the templates as-is for a start (`astryx template
+shell-side-nav` / `AppShellSideNavOnly` / `SideNavWithHeaderMenu` / `login` / `table-page` /
+`LayoutHeaderWithActions`): (a) **the frame** = AppShell + `SideNav` (`collapsible`. The header = `SideNavHeading` +
+`NavIcon` [an accent disc with an on-accent ㊙ = the same inverted version as the favicon]; the body = a
+`SideNavSection` with the 3 destinations [Folder / Key / ClipboardDocumentList] — on project screens, the current
+project [short ID] appears selected under Projects' children; the footer = a `SideNavSection` "Account" [user id →
+Account audit, Sign out] — the `shell-side-nav` footer composition). At mobile widths AppShell moves the SideNav into
+a drawer (A-(c)'s "user display into the drawer" holds naturally under SideNav, so the `useMediaQuery` branch was
+removed). (b) **Pages** = `Layout` (fill)'s header slot carrying breadcrumbs + h1 + description (`LayoutHeader
+hasDivider`), the content slot carrying the body + `ServerReportedNote`. main's internal scroll (the `table-page`
+shape. A-(b)'s "document scrolling" is retracted — lean to the template's default). (c) **Sign-in** = the `login`
+template's shape (Center + logo + Card [h1 "Sign in", description, primary "Sign in with GitHub"]). There are no
+credential fields (GitHub OAuth only), so the Button takes `href` and renders as a link. Right after sign-out, an
+info Banner sits inside the Card. (d) **Icons**: the templates either use `@heroicons/react` or hold SVGs inline.
+Keeping dependencies flat, the latter was taken: 5 heroicons (MIT) outlines were transcribed into `icons.tsx`.
+Other options enumerated: SideNav + TopNav together (suite-oriented — destinations are thin and the second bar is
+leftover) / `LayoutPanelNavigation` (nav in Layout's start panel — loses AppShell's drawer and skip link) /
+`Shell Nav` (with a command palette — nothing to search). Rejected. e2e unchanged (the `signed-in-user` / `sign-out` /
+`login-card` / `sign-in-link` testids pass through SideNavItem / Card / Button). axe at 18 states: 0 violations; the
+keyboard walk confirmed every SideNav item, the collapse button, and the drawer (Escape closes and focus returns to
+the toggle). E's "not fixed" `TopNavHeading` focus ring is out of scope since TopNav isn't used anymore
+(SideNavHeading is accent 2px).
+
+**A revision 2 (2026-09-04, second owner review — the logo, sign-in's position, whitespace, Table / Settings
+templates)**: handling the owner's 4 points. (a) **The logo**: a ringed `MaruhiMark` sat inside the NavIcon (the
+accent disc), so it read as "a circle inside a circle". `MaruhiMark` gained `hasRing`; inside the disc it shows only
+the ring-less glyph (`size="md"`, about 60% of the disc), aligning it with the favicon's "disc + glyph" (DP1 ruling
+E's inverted version). (b) **Sign-in's position**: `Center minHeight="100%"` has no parent height so it didn't
+resolve and the card sat high → `minHeight="100dvh"` (the `login` template presumes body's height and sets
+`minHeight: '100%'` via style. This repo forbids style, so the viewport unit reaches the same result). (c)
+**Referencing the Table / Form / Settings templates**: revision 1 started only from `shell-side-nav` / `login` /
+`LayoutHeaderWithActions`. After reading `table-page` (`density="balanced"` + `hasHover`, LayoutHeader's h1 +
+LayoutContent's VStack gap 4), `settings` (a section = heading level 3 + a one-line description + content; sections
+separated by Divider; sections with inputs use `Grid columns={{minWidth: 320}} gap={10}`'s 2 columns = heading |
+input), and `SectionWithDividers`, these were taken: all Tables become `balanced` + `hasHover` (compact is for
+"regions scanned fast like logs"; the audit too goes balanced, deferring to the owner's "it's cramped" assessment);
+section heading blocks unified to `SectionHeader` (`shared.tsx` — `Heading level={3} accessibilityLevel={2}` + a
+supporting description. The look is the template's level 3 while the document structure keeps an h2 directly under
+the h1); S4's "Open a project by ID" moved to the settings template's 2-column Grid; control sizes to md (paired with
+balanced). `contact-form` doesn't apply to a dashboard with no input fields. (d) **Whitespace**: page-body
+inter-section gap 6 → 8, in-section (heading block → content) gap 4, overview-tab inter-section gap 5 → 8, around
+audit / Load more gap 4. Following Astryx's spacing docs ("tight is 0.5–2, section is 4–8"), the cramped 2–3 values
+aren't used. e2e 26 and axe 18 states pass unchanged.
+
+**A / C / J revision 3 (2026-09-04, third owner review — "implement referencing the templates", width, a real
+SVG)**: on the owner's point "Table / Form / Settings isn't an adopt/reject question — implement referencing the
+templates", the closest template per screen was picked and its structure transcribed. (a) **The audit viewer (C
+revised) = `incident-console`** ("a queue of rows + an inspector of the selected row". Rows, not cards). A row =
+`List`'s `ListItem` (label = the event name; description = seq [response-adaptive] + the principal + the coordinates
+fragment; endContent = the server time; `onClick` + `isSelected`); the selected row's full fields = `MetadataList`
+(label width 96) + the payload as recorded (`CodeBlock` json) + var.read's enumeration. Above 1024px
+(`INSPECTOR_VIEWPORT_QUERY` — the template's same boundary) the inspector sits to the right (inside a tab panel, so
+not Layout's end slot — HStack + a vertical Divider + `aside`); at or below it, a full-screen `Dialog` (detail-page's
+mobile form — Escape closes). **Table isn't used** (D's Table → List switch is unneeded too — `NARROW_VIEWPORT_QUERY`
+removed). Items, order, wording, and count-hiding are unchanged (§4). (b) **Project screens = `detail-page` (Order
+Detail)**: the header slot carries "← All projects" → h1 → the full ID → `TabList` (tabs live in the header so they
+stay visible while the body scrolls internally). The overview is a side-by-side `MetadataList` (Chain head / Head
+digest / Member head attestations) → Members → Environments. "Head hash" hit the SPA bundle's forbidden word `hash`
+(AUTH_SPEC §15-3's tripwire — `write-headers.ts`), so it's "Head digest". (c) **Notices = `CardCallout` blocks** (a
+muted Card + a heading + a body): the tokens / invites / rotation CLI guidance. (d) **Lists = `table-page`** (as last
+time's revision 2: balanced + hasHover + LayoutHeader). (e) **The logo (J revised)**: DP1's real asset
+`public/logo-inverted.svg` (the 秘 knocked out white on a vermilion disc = same shape as the favicon) is used via <!-- english-exempt: literal glyph referenced -->
+`<img>` (32px in the sidebar, 56px on sign-in). The inline SVG part (`MaruhiMark`) was deleted. The color stays
+vermilion (the same look as the browser tab's favicon. Making it follow accent in dark was possible via the same
+generated artifact as site, `logo-inverted-dark.svg` + `<picture>`, but was declined to not grow assets). (f)
+**Width**: on the owner's "content fills the full width" observation — Layout's `contentWidth` is 1040, so at 1920px
+it's capped at center (the Artifact's 1920 screenshot). At 1280px the sidebar's 260 leaves a 1020 cap so it looks
+full. Astryx's layout docs say "tables and boards fill the region; prose and forms are capped", and the templates
+match: `table-page` = no cap, `settings` = 1440, `detail-page` = 1000. So table pages keep the status quo (1040) and
+prose is narrowed via `SectionHeader`'s descriptions and notice Cards. A 960 proposal wasn't taken — it would squeeze
+the tables' column widths. e2e 26 (the audit's selectors followed to row + inspector), axe 24 states (1920 added), 0
+violations.
+
+**Revision 4 (2026-09-05, fourth owner review — self-questioning "is it really good" through the user experience,
+width, the logo)**:
+Answers and handling for the owner's 3 points (evaluate it yourself on user-experience grounds / per-page width
+changes are unthinkable / the logo is too big). (a) **Weaknesses found in self-review and their handling**: ① the
+revoke confirmation was an in-row Cancel / Confirm revoke, stacked vertically in the narrow Actions column and
+changing row heights → moved to the shape of Astryx's `AlertDialogAsyncAction` template (a modal confirmation + the
+target's name and consequence in the body + a spinner on the action while running). **Ruling CO's (session-45 —
+the inline 2-stage) implementation shape is revised** (arming is always 1 row, disarming is a separate row's arming,
+other rows are disabled while in-flight [PR #109] — unchanged. The consequence note is read at the confirmation site
+in the dialog body and also kept in the CardCallout below the table). ② The audit row's description was a blob of
+monospace fragments like `seq 2 user_e2e target … chain seq 2`, hard to scan → "by <actor>" now leads, and seq moved
+below the time in endContent (the order: who, what, when). ③ A token's Scopes ballooned to 5 lines of 64-hex × N and
+broke the table → a `Token` chip (shortened ID:permission; the full text in aria-description). ④ The overview's
+side-by-side MetadataList had 64-hex digests wrapping unreadably → single column (label width 200). ⑤ Things judged
+not to change: the page-tail `ServerReportedNote` (§4-1's discipline — once per screen), the project list's 64-hex
+display (the server declaration carries only the ID and role — there is no name; the ID is the capability), Row id
+(referenced in support). (b) **Width**: there was no per-page intent — revision 3's explanation invited the
+misreading. The implementation has been a single shell value (`contentWidth`) for all pages from the start. The value
+is unified at **1040 → 1200** (exactly fills a 1180 region on a 1440px notebook and sits centered at 1920px. Even
+with the audit's 380 inspector beside it, a row keeps ~800). (c) **The logo**: agreed — at 32px it floated 2× larger
+than the heading text (bold 16px). Sidebar 24px (on par with text height), sign-in 40px (56 → 40). (d) Verification:
+e2e 26 (the revoke's selector followed to alertdialog; the in-flight lock is checked via the modal + the row's
+isDisabled), axe 24 states, 0 violations.
+
+**Revision 5 (2026-09-05, fifth owner review — too many dividers · the tab/header-line combination · the audit's
+left-right split)**: the owner's 2 points: (1) the line between header and body, lines inside the body, and table
+borders overlap so "where one content ends and another begins" can't be read, and the tab underline + header line
+combination sits poorly too. A proposal was offered to separate by whitespace instead of lines. (2) The audit's
+(project axis / self axis) left-right split leaves too much space between the row and the detail in a 1200-wide
+region — looks wrong on wide screens.
+
+**O. The separation discipline (lines or whitespace)** — options: (i) status quo (the header's full-width divider +
+the tab underline + section Dividers + table row lines + the audit's vertical Divider) / (ii) **whitespace only** (the
+owner's option): remove the header's divider and the inter-section Dividers, widen inter-section to gap 10 (40px),
+and leave lines only on table rows / (iii) **make the tab row the only boundary**: on top of (ii), on screens with
+tabs `TabList hasDivider` (the same line as the tab underline) doubles as the header/body boundary. Screens without
+tabs get whitespace only / (iv) pin the header but remove the divider / (v) wrap sections in `Section` (dividers) or
+Cards (more lines — rejected). → **(ii) + (iii) adopted**. Per Astryx layout docs' order of weakening containers
+(gap → Divider → Section → Card): "don't draw boundaries in lines — read them from the whitespace contrast (4 inside
+a section / 10 between), and fix lines to only the inside of collections (table rows, audit-row hairlines) and the
+tab row". (iv) isn't taken — a borderless pinned header overlaps the body and can't be read; **Layout becomes
+`height="auto"` and the whole page scrolls** (the same shape as GitHub's repo pages. Pages are short and AppShell
+pins the sidebar). The header's bottom margin 16px + the body's `paddingBlockStart` 24px = 40px, the same contrast as
+inter-section. Section headings (`SectionHeader`) mark a section's start by the heading's weight instead of a line,
+so level 3 → **level 2**. On the Projects screen the h1 doubles as the list's heading (one main heading per region —
+the layout docs), so the "Your projects" section heading was removed and its description merged into the intro.
+Tables keep `dividers="rows"` (row separation is inside the collection).
+
+**P. The audit's shape (retracting the left-right split)** — options: (i) keep the row + right inspector
+(`incident-console`) and only fix the row-width bug (`align="start"` shrinks the List) / (ii) 1 column + the detail in
+a full-width Dialog (extend the current mobile shape to full width) / (iii) **1 column + expand the row in place**
+(`Collapsible` × `CollapsibleGroup hasDividers` — the `CollapsibleDividedAccordion` block's shape. Trigger = the
+summary; the expanded part = MetadataList + payload + var.read's enumeration) / (iv) Table + expandable rows (5
+columns scroll horizontally on mobile — against HP5) / (v) keep the left-right split and pin the row width to 560
+(the split remains). → **(iii) adopted**. Same 1 column at every width, and the detail appears directly under the row
+being read (the gaze doesn't jump sideways; the 1024px shape switch and the vertical Divider disappear; the same
+operation as mobile). With `single` (only 1 row open), other rows don't move while reading the expansion. A closed
+expansion stays in the DOM (hidden), so e2e counts only visible elements. The row order keeps revision 4's
+"principal → target → time / seq (right end)" and gains a chevron at the row's end. `INSPECTOR_VIEWPORT_QUERY` and
+`Dialog` / `EmptyState` / the vertical `Divider` became unnecessary and were removed. Items, wording, seq's
+response-adaptiveness, and count-hiding unchanged.
+
+Verification: e2e 26 (the audit's selectors followed to "row = button [aria-expanded] + the visible Row id"; the
+mobile Dialog check was replaced by "expands in the same column; under single, the earlier row closes"), axe 24
+states, 0 violations.
+
+**Revision 6 (2026-09-05, sixth owner review — the audit row's time is 2 lines · is there a good Astryx part?)**:
+
+**Q. How the server time is shown** — options: (i) status quo (`formatServerTime`'s UTC ISO string
+`2025-08-24T01:48:20.000Z` in a Text — on audit rows the time and seq sit 2-deep at the right edge) / (ii) keep ISO
+and put it on 1 line with seq / (iii) **Astryx `Timestamp` (`format="date_time"` + `isTimezoneShown`)**: in the
+viewer's timezone as `Aug 24, 2025, 1:48 AM UTC`; a hover card carries UTC and Unix seconds (copyable —
+`tooltipEntries`) / (iv) `Timestamp format="auto"` (recent = relative time) / (v) `system_date_time` (ISO-ish).
+→ **(iii) adopted**, and not just audit rows — every server-time display (tokens' Last used / Expires, invites'
+Expires, rotation's Recommended at, `ExpiryCell`) is unified into one `ServerTime` part in `shared.tsx`. Astryx's
+Timestamp docs norm "don't emit raw ISO", "on audit logs show the timezone abbreviation", and "for records needing
+the exact value, attach a copyable line via tooltipEntries" — followed as-is. (iv) was rejected as mismatched to
+audit's precision (when is the protagonist). "(UTC)" was dropped from table column headings (the display is the
+viewer's timezone + abbreviation; UTC lives in the hover card). The value is the server-declared ms itself — only the
+rendering converts — so §4's "as reported by the server" isn't broken. Inside an audit row's trigger (a button) the
+hover card is turned off (`hasTooltip={false}` — don't nest interactive elements); instead the expanded part shows
+"Recorded at" with the UTC ISO as recorded. `formatServerTime` stays for that 1 use. Out-of-range ms (deepsec
+2026-08-22 — Invalid Date) stays the raw number as before. The audit row's right edge is 1 line of seq + time,
+continuing right after the event name (not right-aligned — avoids a gap between name and time on wide screens; it
+wraps under the name at narrow widths). Verification: e2e 26, axe 24 states, 0 violations (a Timestamp inside a
+button doesn't create nested interactive elements).
+
+**Revision 7 (2026-09-05, seventh owner review — an inventory of places hand-rolled where an Astryx part exists)**:
+
+**R. Inventory of replacements by Astryx parts** — every JSX in `apps/web/src` was cross-checked against Astryx's 163
+parts (`astryx component --list`). **Replaced**: (1) `LoadingRow`'s Spinner + Text side-by-side → `Spinner`'s `label`
+slot (the string doubles as aria-label — the visible wording and the screen-reading are one thing). (2) Projects' ID
+direct-input format error (Text `role="alert"`) → `TextInput`'s `status` (error + message, `statusVariant="detached"`).
+Alongside, `onEnter` makes Enter Open too. (3) The project screen's back link (`Link`'s "← All projects") →
+`Breadcrumbs` / `BreadcrumbItem` (`variant="supporting"`. Parent = a link to Projects; current = the short ID with
+aria-current. Gains a nav landmark). The `detail-page` template is a Link + an arrow icon, but since a part that
+represents hierarchy exists, that one is followed.
+(4) The variable-name list (hand-assembled HStack rows) and granted server keys (same) → `Table` (compact, row
+hairlines. Collections are drawn as rows — the layout docs). Server keys get a section heading (`SectionHeader`).
+(5) The CLI-guidance notices (muted Card + Heading + Text, the same shape × 3) → 1 `Callout` definition in
+`shared.tsx` (Astryx composition unchanged — duplicate removal). (6) The invalid-ID page (`InvalidProjectPage`)'s Text
+→ `Banner` (warning — the same shape as other notices). **Not replaced (reasons)**: (a) `icons.tsx`'s inline heroicons —
+Astryx holds no icon set (`Icon` only takes an SVG part), and the templates themselves use either @heroicons/react or
+inline SVGs. The no-new-dependencies policy takes the latter. (b) `HexText` (xstyle's anywhere-wrap) — `Text` has no
+equivalent prop (ruling H's promotion decision is human). (c) The tab panel (`VStack role="tabpanel"`) — Astryx has no
+TabPanel part (the design ties it via `Tab`'s `panelId`). (d) `EmptyNotice` / `SectionHeader` / `FailureNotice` /
+`RevokeDialog` — thin wrappers around Astryx parts (they hold the prescribed wording and the placement discipline in
+one place). (e) The Load more `Button` — `Pagination` is page-numbered and doesn't fit the cursor style. (f) The audit's
+caption + ToggleButtonGroup HStack — `Toolbar` is for a row of actions (above a table), excessive for a prescribed
+wording + 1 switch. (g) The env-table's "Variable names" button revealing a variable table below — `Collapsible` or
+Table's tree rows (`useTableTreeData`) could do it, but that's a table inside a table's row, so kept (a candidate for
+the next review). (h) `HomePage` / `AboutPage` / `CounterCard` (an RSC static shell + the spike) — stay raw `<main>` /
+`<h1>` / `<a>`. Outside DP3's scope (W-series spike-a); Astryx-ifying them needs a design for applying `Theme` on the
+static shell, so a separate PR. Verification: e2e 26, axe 24 states, 0 violations (Breadcrumbs adds one nav landmark).
+
+**Revision 8 (2026-09-05, eighth owner review — the discomfort of table borders extending past a section's width ·
+the wrap-in-Card option)**:
+
+**S. The section container (how to hold a table's bleed)** — facts: Astryx's `Table` (scroll wrapper) reaches to the
+region's edges with a negative margin of Layout's padding (24px). Section likewise reaches the edges. Under the
+layout docs' alignment model ("1 content line per region — text sits on the line; a row's hover background bleeds to
+the edges"), the `detail-page` template looks the same. Options: (i) status quo (section heading + table; the table
+extends past the heading left and right) / (ii) **wrap in Card** (the owner's option — prototyped. The table fits,
+but `component Section` says "If you are tempted to use a Card for a page section, use Section instead", `component
+Card` says "Don't: Wrap page sections in cards", and the layout docs say "x full-width Cards stacked as page
+structure") / (iii) wrap in `Section` (per the norm, but under the neutral theme a section's face = surface = the body
+region's color, invisible) / (iv) **Section + face color via the theme**: give defineTheme's
+`components.section['variant:section']` (customization order ①) `color-mix(in oklab, var(--color-background-body) 55%,
+var(--color-background-surface))`, making the default Section a "line-less thin panel" / (v) Section `dividers` (top
+and bottom hairlines — the lines return) / (vi) Section `variant="muted"` (the docs limit it to attention) / (vii)
+move Layout's padding to AppShell to zero the bleed (prototyped — AppShell's contentPadding doesn't take, and on
+mobile the text touches the screen edge — rejected). → **(iv) adopted** (the owner's choice). Per Section docs' "Use
+it ... any time you need visual separation between parts of a page", separation is Section's job and color is the
+theme's. Following Astryx's surface hierarchy (body → surface → card), the color leans halfway toward body; no raw
+hex is added (token reference + color-mix). `shared.tsx`'s `SectionBlock` (Section padding 6 = the same 24px as
+Layout's padding; the heading sits on the page's content line. With `title` omitted, a list's panel where the page h1
+doubles as the heading) wraps **every collection** (Members / Environments / Granted servers / Invitations /
+Projects / API tokens / Rotation flags / audit rows). Table rows extend to the Section's edges, so they look
+contained in the section. Callout (a muted Card) stays a notice; its hue differs from the panels'. The theme's
+artifacts (`maruhi.css` / `.js`) are regenerated via `bun run theme:build` (the diff is only the 1 section rule). The
+site side holds token copies so there's no drift (a `apps/site` theme:build shows a 0 diff). Verification: e2e 26,
+axe 24 states, 0 violations (text contrast on the panel is body-equivalent, AA).
+
+**Revision 9 (2026-09-05, ninth owner review — the Section panel is not acceptable. Fixed width + border)**:
+
+**S revision: collections' container is `Card` (a fixed-width box with a border)**. Revision 8's Section + theme face
+color was rejected at the owner's judgment (with a thin wash a section doesn't read as a section). "Fixed width +
+border" = a Card per collection. Astryx's docs (`component Section` / `component Card` / `docs layout`) say "don't
+use Card for a page's sections", but under maruhi's theme a Section doesn't read as a section, and only a border can
+show the boundary — **the owner's judgment overrides Astryx's wording** (the reason is left in the ruling record.
+Card docs' reading "a hard boundary around critical content" is noted alongside). 2 prototypes: (A) **headings inside
+the box** (the shape of GitHub's settings Boxes. Heading, description, and table enter one boundary; heading-less
+collections [audit rows, Projects, API tokens] also uniform in the same box) / (B) headings outside the box (Vercel's
+shape. The box shows only the data's container; whitespace carries the box–heading affiliation). → **(A) adopted**
+(the owner's final judgment is pending — switching to B is 3 lines in `SectionBlock`). Implementation: `shared.tsx`'s
+`SectionBlock` = `Card padding={4}` + VStack (SectionHeader? + children). The Table inside reaches the Card's edges
+(Astryx's alignment model), so row lines stop inside the border. Only collections go in the box (Members /
+Environments / Granted servers / Invitations / Projects / API tokens / Rotation flags / audit rows); the overview's
+metadata (MetadataList), "Open a project by ID", and the CLI-guidance notices (muted Card) don't. The theme's
+`components.section` override is rolled back (theme/ returns identical to main). Verification: e2e 26, axe 24 states,
+0 violations.
+
+**Revision 10 (2026-09-05, tenth owner review — the final call on options A / B: headings outside the box)**:
+
+**S revision 2: headings and descriptions live on the page's content line; the `Card` wraps only collections (option
+B)**. The owner's reasoning — under option A a section heading shifts right by the Card's 1px border + 16px padding,
+misaligning its start from the text outside the Card (the h1, breadcrumbs, description, the overview's MetadataList).
+The text's starting line splitting into 2 per page is the discomfort. Under option B the text's starting line is 1;
+only the bordered box's contents shift right (the border explains "a separate frame starts here"). The agent's
+evaluation is the same (the Vercel / GitHub settings shape. Option A's merit "the box's meaning completes inside the
+box" doesn't pay off on this short-paged dashboard). A side effect: since the Card wraps collections (tables, audit
+rows) rather than sections, the distance from Astryx's "don't use Card for a page's sections" shrinks, nearing Card
+docs' "a hard boundary around self-contained parts" use. Implementation: `SectionBlock` = VStack gap 4
+(SectionHeader + `Card padding={4}` [children of VStack gap 4]). With `title` omitted, only the Card. The audit tab's
+description text (prescribed wording) and axis switch (ToggleButtonGroup) have been outside the box since revision 5
+(equivalent to the heading row); unchanged. `Callout` (a muted Card)'s inset is a bordered box, inside the same
+principle. The vertical rhythm: heading → box 16px, box → next heading 40px (the inter-section `SECTION_GAP`) — the
+contrast keeps a heading from appearing attached to the previous box. Verification: `bun run check` 7 stages pass,
+e2e 26, axe 24 states 0 violations, CSP violations 0.
+
+**Revision 11 (2026-09-05, PR #148 Cursor Bugbot finding — the shell remounts on every navigation)**:
+
+**T: auth-required screens sit under the pathless parent route (`DashboardLayout`), and the shell mounts only once**.
+The finding: because each screen holds its own `DashboardShell` (session state + AppShell + SideNav), every
+navigation among Projects → a project → API tokens → Account audit unmounts AppShell / SideNav, shows the full-screen
+"Checking your session" frame, re-fetches `GET /auth/me`, and only then draws the destination.
+The sidebar isn't kept (its collapsed state disappears too), and every authenticated navigation pays 1 round trip
+plus a chrome flash. Verification of the facts: routes are `bindRoute`d in parallel in App.tsx, and `DashboardShell`
+holds `useSession`. Options: (1) **nested routes** (funstack-router's `children` + `Outlet` — the docs' "a dashboard
+whose sidebar stays" is exactly this use) / (2) a module-level session cache (the re-fetch and the loading frame
+disappear, but the AppShell / SideNav DOM is rebuilt per navigation and the collapsed state dies) / (3) conditional
+rendering on the screen side (a shape the docs say to avoid). → **(1) adopted**. Implementation: routes.ts gets
+`dashboardShellRoute = route({ id: "dashboard-shell" })` (pathless — consumes no path name, so the 4 leaf routes'
+paths are unchanged; SPA_ROUTES and the spa-topology tests too. With no path it isn't listed in the catalog). In
+App.tsx the 4 routes become its children. `DashboardShell.tsx` becomes 2 layers: `DashboardLayout` (the parent —
+useSession + AppShell + SideNav + `Outlet`) and `DashboardShell` (a screen's frame — Layout's header = the heading,
+content = the body). The sidebar's current location and a project's child item are declared by each screen via
+`destination` / `project` and raised to the parent through context (a useState setter) + `useLayoutEffect` (reflected
+before paint, so the previous screen's selection doesn't linger for a frame after navigation). Rejected: deriving it
+from the URL via `useLocation` — the router's Location carries `.hash`, which would put the word "hash" in the SPA
+bundle and trip AUTH_SPEC §15-3's tripwire (write-headers.ts — ruling BG) (the build actually failed). An SSG note:
+the router draws a pathless route under URL-less SSR, but this project's static shell emits only the entry span into
+`#app` (the client tree isn't rendered at build time), so it's unaffected. Side effect: the project-ID format check
+(64 hex) was consolidated into `ids.ts`'s `isProjectId` (removing the duplicated literal in DashboardScreen /
+ProjectScreen). 1 e2e added: SPA-navigate from the sidebar API tokens → Account audit and check that `/auth/me` stays
+at 1 call, "Checking your session" doesn't appear, the sidebar's DOM node is identical (the data-attribute mark
+persists), and aria-current moves. No visual change (29 of the 33 screenshots byte-identical; the remaining 4 differ
+mid-animation, e.g. a dialog's backdrop). Verification: `bun run check` 7 stages pass, e2e 27, axe 24 states 0
+violations, CSP violations 0.
+
+Also handled pullfrog's 3 items (a re-review after ready-for-review): (a) heading-less boxes (the lists, audit,
+rotation — directly under a page h1) had `EmptyNotice` at the default h3, jumping h1 → h3 → `headingLevel={2}` in 4
+spots (ruling E-(c)'s "section h2 → empty-state h3" presumed a section heading; a heading-less box needs h2). (b)
+`test/screenshots.ts`'s s8 didn't wait for the dialog after clicking Revoke, and its note still described the pre-
+revision-4 inline 2-stage → wait for the `alertdialog` to appear + updated the note (with the wait, s8's screenshot
+byte-matched revision 10's — it had been flaky from the race before). (c) The vendored heroicons (5 paths) were
+missing the MIT license text → `src/dashboard/MIT-heroicons.txt` (placed next to the transcribed asset, same as the
+fonts' `public/fonts/OFL-*.txt`) + a reference at the head of icons.tsx. (d) The review body's point "the axe 24-state
+evidence covers only non-empty screens" — fixtures were all non-empty, and empty states and FailureNotice states had
+never passed through an audit (in fact (a) was an empty-state-only violation). `test/screenshots.ts` gained an
+`empty` mode (mocks returning every collection empty) and 7 empty-state screens (projects / overview [environments] /
+audit [project · self] / rotation / invites / tokens × light / dark / mobile = 21 shots), and axe ran on the same 7
+screens × light / mobile = 14 states (0 violations. Heading hierarchy: heading-less boxes are h1 → h2; Environments'
+empty state is h1 → h2 → h3). Ruling E's "0 violations" scope is now stated explicitly as "the fixtures' non-empty 24
+states + the empty-state 14 states". Unaudited: the variable-names empty state (environments exist but variables
+don't — empty mode empties environments too, so it can't be drawn) and each FailureNotice state (a Banner's simple
+structure; a next-time candidate). On pullfrog's re-re-review pointing out the discrepancy "the script is 6 states
+vs the ruling record's 14", the environments' empty state was added to the script side (`/environments` and the
+metadata pull also follow `empty`) to match. (e) nit: ProjectScreen's `Banner` import moved under the leading
+comment; the shared.tsx imports alphabetized. (f) A side effect of nested routes (pullfrog re-re-review): if the
+session expires mid-navigation and a screen's fetch returns 401, the shell checks /auth/me only once, so it can't
+return from "signed in" — and the "Signed out" Banner's "Go to sign-in" (an SPA navigation to /dashboard) also lands
+as a child of the same shell, looping the Banner (before revision 11, navigation remounted and re-checked → the
+sign-in screen appeared). Options: (1) **a 401 notification path** (`session-expiry.ts`'s context — when a
+FailureNotice renders a 401 it tells the parent, and the shell drops to signed-out on the spot and renders the
+sign-in screen) / (2) make the recovery link a `hardNavigate` (a full reload — explicitly reproduces the
+pre-revision-11 behavior) / (3) re-check /auth/me on every navigation (the round trip returns — against revision 11's
+purpose). → (1) adopted (reacting to the first 401 only; no added round trip, no reload needed). 1 e2e added
+(/auth/tokens 401 → the sign-in screen at the same URL + "You are signed out.").
+
+**Verification (2026-09-04)**: `bun run check` 7 stages pass (fallow's CRAP finding on `DashboardShell` resolved by
+splitting parts). web e2e 25 pass (following the `/auth/me` mocks and the axis-switch selector change). `astryx
+doctor` no new findings. React Doctor (diff) none. axe-core 18 states, 0 violations. 33 screenshots (the Artifact in
+the PR body).
+
+### DP4 implementation-time ruling record (2026-09-05)
+
+The subjects are the scriptless ceremony pages' 11 states: CLI login's approve / complete / refuse / uniform error /
+the sign-up notice (the 3 signupPolicy kinds), sign-up control's closed / invite-required / invite-invalid, `/invite`.
+Each ruling point was decided by the same loop as DP1–DP3 (enumerate ≥3 options → search for upward compat / a
+silver bullet → end once a round produces no new options → select). Judgment criteria: don't break CSP
+`script-src 'none'` or the meta / headers duplication; styles come only from self-hosted external CSS
+(`style-src 'self'` — don't grow the inline-hash allowances); don't duplicate brand values outside `apps/web/theme/`
+(ADR-0013); don't break a single AUTH_SPEC display requirement or uniformity rule; don't mix preview-only code into
+the distribution; cheap reversibility.
+
+**Premise corrections (facts found during implementation)**: (1) `theme/maruhi.css` (an `astryx theme build`
+artifact)'s brand tokens (`--color-accent` / `--font-family-*` / `--radius-*` etc.) are defined not on `:root` but on
+`:scope` under `@layer astryx-theme`'s `@scope ([data-astryx-theme="maruhi"])`. Only the data-visualization colors are
+on `:root`. So a page consuming the theme needs `<html data-astryx-theme="maruhi">` (the same mark as the dashboard's
+root). (2) Workers Static Assets' default delivery headers are `Cache-Control: public, max-age=0, must-revalidate` +
+ETag (measured via wrangler dev — same as Cloudflare's default). The browser revalidates every load, so swapping a
+fixed-name CSS file takes effect on the first read after deploy (ruling G). (3) Even against an unconfigured server
+(`wrangler dev` with no `.dev.vars` = e2e), `GET /auth/cli/verify?flow=…` returns the uniform error page (400 /
+HTML), so server-delivered pages' actual delivery can be checked from e2e, styles included (ruling I). (4) axe found
+1 violation that predates the change: `/invite`'s `pre` (horizontal scroll) isn't keyboard-reachable at 390px
+(`scrollable-region-focusable`, serious).
+
+**A. The CSS's placement and delivery** — options: (i) `apps/web/public` static assets (the same path as
+`/invite.css`. Same origin,
+self-hosts bundle it too · covered by `write-headers.ts`'s byte-equivalence check) / (ii) serve CSS on a Worker route (server self-contained,
+but a style endpoint mixes into api-schema, and `index.ts`'s `no-store` would have to come off) / (iii) inline `<style>` + hash allowance
+(forbidden by the invariants) / (iv) the Worker embeds the CSS in its bundle as a text module and serves it (a variant of (ii) — web/server
+double bookkeeping) / (v) unify into 1 file with `/invite.css`. Round 1's new option: **(i)+(v) = make `apps/web/public/pages.css` the shared
+stylesheet for /invite and the server-delivered pages** (yes, novel). Round 2: none. **Selected = (i)+(v)**. The server-side HTML just references
+`/pages.css`; its real-delivery reachability, content-type, and match to source are pinned by web's e2e in the combined configuration (the same
+`apps/server/wrangler.jsonc` as production). `vite.config.ts`'s `PUBLIC_PASSTHROUGH` and `write-headers.ts`'s equivalence check move `invite.css`
+→ `pages.css`. The `_redirects` `/invite.css` shield (a 200 rewrite) became unnecessary and was removed (66 → 65). The name avoids the internal
+word "ceremony" → `pages.css` (use = scriptless pages in general). Rejected: (ii)(iv) — as above. (iii) is forbidden.
+
+**B. Taking in the brand tokens** — enumerated on the premise that ROADMAP DP4's "unify the brand via self-hosted CSS" (owner ruling 2026-09-03)
+overrides the session-41 ruling BB-b (achromatic only): (i) keep achromatic and show only ㊙ and the wordmark (against the owner ruling) / (ii)
+hand-copy hex (violates ADR-0013) / (iii) generate from `maruhi.css` + a divergence test (the `apps/site` `scripts/theme.ts` pattern — needs a
+generation script, an artifact, and a duplicated extractor) / (iv) **bundle `theme/maruhi.css` itself unconverted as `/theme.css`, and let
+`pages.css` only read `var(--…)`** (the artifact = the theme file itself. 24 KB / gzip 4 KB, read once per ceremony page) / (v) extract only the
+`@layer astryx-base` `:root` block at build time (another small generator would be needed, and per premise correction (1) the tokens that matter
+aren't there). Round 1's new option: (iv) (yes — keeps (iii)'s merits [single source of truth, zero drift] and removes the generator and the
+copy). Round 2: none. **Selected = (iv)**. `write-headers.ts` copies `theme/maruhi.css` → `dist/public/theme.css` after build and checks byte
+equivalence (the same contract as `pages.css` / `invite.html`). Pages carry `data-astryx-theme="maruhi"` on `<html>` (premise correction (1)).
+Corollary: Astryx's `@layer reset` (the `:where(h1…p, code)` type setup) also applies in the same scope, but being inside a layer, `pages.css`'s
+unlayered rules always win — a ceremony page's typography is fully readable in `pages.css` alone. `--font-family-body`'s leading Figtree isn't
+loaded (falls to system fonts, same as the dashboard — §1-3). Rejected: (i)(ii)(v) — as above. (iii) is implied by (iv).
+
+**C. The shared frame `page()`'s structure** — options: (i) status quo (h1 = "㊙ maruhi"; a page's title is h2) / (ii) a document-style single
+column (40rem) + a brand header (a non-heading `header` = logo + wordmark) + **the page's title becomes the h1** (old h2 → h1, h3 → h2) / (iii)
+a `login`-template-style centered card (same shape as the dashboard's sign-in — doesn't fit notice-style long text, and on mobile it's full width
+anyway) / (iv) the same shape as `/invite` (= the document style). Round 1's new option: integrate (ii)+(iv) into 1 frame and bring `/invite`
+onto the same frame (yes). Round 2: none. **Selected = (ii)+(iv)**. The logo: (a) the ㊙ emoji as text (status quo) / (b) **`<img
+src="/logo-inverted.svg">` + `img-src 'self'`** (the same real asset and the same pinned vermilion as DP3 ruling J revision 3) / (c) an inline SVG
+at currentColor (path duplication — already rejected at DP3) / (d) a CSS background-image (also needs `img-src 'self'`, with less alt-text
+control) → **(b)**. CSP in both meta and headers widens to `style-src 'self'; img-src 'self'` (no `'unsafe-inline'`, no hashes), and `/invite`'s
+per-path CSP took the same shape. `<meta name="color-scheme">` is placed for dark rendering before CSS arrives, and the favicon's `<link
+rel="icon">` is included like the SPA's.
+
+**D. The confirmation code's visibility (the phishing guard's UX)** — character-set check: `generateUserCode` (cli-flow.ts) displays Crockford
+Base32's 32 chars (I / L / O / U excluded) × 8 chars as `XXXX-XXXX`. The remaining confusables: 0 / D, 8 / B, 5 / S, 2 / Z. Options: (i) system
+monospace enlarged (2.5rem), letter-spacing 0.14em, on its own element / (ii) self-host a monospace font (§1-3's "add if a problem shows") /
+(iii) `font-variant-numeric: slashed-zero` (works only when the font has the `zero` feature — otherwise nothing happens) / (iv) split each group
+into `span`s with wider spacing / (v) color-differentiate by character class (the shape emphasizing part of the code invites the misreading "only
+this part matters"). Round 1's new option: (i)+(iii) (yes — gets 0 / D disambiguation without a self-hosted font). Round 2: none. **Selected =
+(i)+(iii)**. On the real machine (Linux Chromium: Liberation Mono / DejaVu Sans Mono) 0 shows a slash and is distinguishable from D; 8 / B, 5 / S,
+and 2 / Z were also distinguishable (screenshot). macOS's SF Mono / Menlo and Windows's Consolas carry a slashed / dotted 0 by default or via
+`zero`. **A self-hosted monospace is not proposed** (no problem surfaced. The CLI side's display is DP5). The wording keeps **"Approve only if
+this code matches the one shown in your terminal."** in bold, and the code sits on a face labeled "Confirmation code". **Distinguishing Approve /
+Deny**: (a) Approve = accent fill + on-accent, Deny = same-size outline, order Approve → Deny / (b) Deny first (reading order puts refusal in view
+first, but every legitimate use pays the reversed order) / (c) both outline (indistinguishable) / (d) a "I confirmed the match" checkbox before
+Approve (making it mandatory without a script is possible via `required`, but the approval's entitlement is the ticket — it adds only ceremonial
+friction) → **(a)**. With no text field, Enter doesn't implicitly submit, and focus doesn't land on either button automatically.
+
+**E. The wording and composition of the sign-up-notice / refusal pages (H6's specified items)** — options: (i) keep the wording and change only
+the look / (ii) **align the 4 families (closed / invite-required / invite-invalid / the CLI-originated notice × the 3 signupPolicy kinds) to the
+same 3 stages: what happened (h1 + 1 sentence) → what did not happen (an `outcome` line = a left accent rule) → what you can do next (h2 + a list)**
+/ (iii) merge closed and invite-required into 1 page (the policy is public information; since varying the page isn't varying the failure reason,
+the value of separating them remains) / (iv) give detailed reasons (against §3 / §4-2's uniformity — forbidden). **Selected = (ii)**. The 3 refusal
+pages' outcome line is "No account was created."; the CLI notice's is "Nothing has been created or changed by opening this page."; the uniform
+error and refusal-complete's is "No token was issued.". Uniformity is unchanged (invite-invalid doesn't distinguish invalid / expired / consumed;
+the error page doesn't distinguish flow states). No waitlist collection surface is built — it goes as far as "contact the operator of this server"
+(hosted-design.md §2-2). The existing tests' assertions only followed the wording change (`no account was\ncreated` → `No account was created.`).
+
+**F. `/invite`'s treatment** — options: (i) keep `invite.css` and only align the look (2 CSSes carrying the same rules) / (ii) **move it onto the
+shared frame (`/theme.css` + `/pages.css` + the brand header); its structure as an independent static asset (per-path CSP, `write-headers.ts`'s
+mechanical checks, the near-miss 301) stays as-is** / (iii) move `/invite` to server delivery (changes the very structure of §15-3's "independent
+static asset" — rejected). **Selected = (ii)**. The h1 is "You have been invited to a maruhi project" (the old h1 was the brand name). `pre` gets
+`tabindex="0"` (the fix for premise correction (4) — gets the shared focus ring). The mechanical checks pass `src="/logo-inverted.svg"`
+(root-relative) under the existing rules, and `img-src 'self'` was added to both the meta and the per-path CSP. e2e's assertion "`/invite.css` is
+passed through by the shield" was removed since its subject no longer exists; only `/invite`'s own 200 remains.
+
+**G. Propagating CSS updates (caching)** — options: (i) **do nothing** (premise correction (2): the default revalidates every load) / (ii) append
+`?v=<hash>` on the HTML side (needs a path for server to learn web's build hash) / (iii) content-hash names (the name isn't stable — can't be
+referenced from server-rendered HTML, same as session-41 BB-c) / (iv) an explicit `cache-control` in `_headers` (just writes the same value as
+the default). **Selected = (i)** + e2e pins `/theme.css` / `/pages.css`'s `must-revalidate` and ETag (we'd notice if the default changed). The
+window where a Worker response's (`no-store`) HTML grabs an old CSS is "right after a deploy,
+the revalidation returns 304" case, and the ETag is computed from the content so it can't happen.
+
+**H. a11y** — the method is the same as DP3 ruling E (a one-off axe-core injection — adds no dependency). Scope: 11
+pages × light / dark / 390px light / 390px dark = **44 states, 0 violations** (wcag2a / 2aa / 21a / 21aa /
+best-practice). The heading hierarchy is h1 = the page's title → h2 = sections (What will be granted / What you can do
+/ What to do next / Accept the invite). The landmarks are `header` (banner) → `main`. The focus ring is accent 2px
+offset 2px (the same look as DP3 E-(e)). Contrast follows the theme values (text-primary / secondary on body,
+on-accent on accent, accent links), and axe reported no color-contrast findings. Fixed: `/invite`'s `pre` (F).
+
+**I. The visual-check and screenshot method** — options: (i) **feed the render functions (`render*`) fixed inputs,
+write the HTML out, serve it same-origin as `pages.css` / `theme.css` / the logo, and shoot it in Chromium (a
+scratchpad one-off script. The distribution is untouched)**; only `/invite` is really served (wrangler dev) / (ii) run
+the real flow (`POST /auth/cli/start` → verify → GitHub OAuth) (needs an OAuth App — impossible in this session) /
+(iii) put preview routes or mock data in the distribution (forbidden). **Selected = (i)**. Additionally, e2e opens the
+really-delivered uniform error page (premise correction (3)) in Chromium and checks `.page`'s width (40rem), body's
+background color (that the theme's variables resolved), the logo loading, 0 CSP violations, and 0 script elements.
+before / after is 11 pages × 4 states = 44 shots each (the Artifact in the PR body).
+
+**Ruling points that emerged**: (J) the stylesheet path constant `PAGE_STYLESHEETS` was exported but had no consumers
+— hit fallow's dead-export rule → made private (the referenced files' reachability is e2e's job). (K) adding CSP /
+style assertions to the approval page's success-path test hit cyclomatic 13 and fallow's complexity threshold →
+extracted to the `expectStyledScriptFreePage` helper (both header / meta CSPs carry `style-src 'self'` /
+`img-src 'self'` / no `'unsafe-inline'` / no hashes; 2 `<link>`s; no script / style elements or style attributes).
+(L) the approval page's grant list went `<ul>` → `<dl>` (label / value; 1 column at narrow widths). tokenName stays an
+inert `<code>` rendering, and the supplement "Chosen by the requester, shown verbatim." moved to `<small>`.
+
+**B revision 1 (2026-09-05, pullfrog's first review — undefined tokens)**: the finding = `--font-weight-semibold` /
+`--font-weight-medium`, which `pages.css` references, are **referenced but never defined** in `theme/maruhi.css` (they're
+defined in Astryx core's `astryx.css`, which the dashboard additionally loads but the ceremony pages don't). The
+unresolved `var()` fails silently at computed-value time, and every h1 / h2 / `strong` (the phishing guard's sentence)
+/ outcome line had lost its bold. A defect none of visual check, axe, or e2e could catch (the screenshots serve the
+same 2 CSS files so they reproduce the same gap; axe doesn't check weight; e2e was only checking the background
+color). Options: (i) add `--font-weight-*` to `defineTheme`'s `tokens` and `theme:build` (the theme is outside this
+PR's scope — touching it needs owner confirmation) / (ii) write the numbers (600 / 500) in `pages.css` (copies of
+Astryx's values) / (iii) **use the CSS keyword `bold`** (h1 / h2 / `strong` are bold at the UA default so this just
+replaces the declaration; brand and the outcome line also take `bold`. `.code-label` and `.button`'s medium is dropped
+— uppercase + letter-spacing / fill is enough) / (iv) a `var(--font-weight-semibold, bold)` fallback (the
+below-described mechanical check would then carry an "undefined but tolerated" exception) / (v) bundle Astryx core's
+stylesheet too (tens of KB of rules the ceremony pages don't need). Round 1's new option: check "reference set ⊆
+definition set" at build time in `write-headers.ts` (yes — blocks this defect class structurally regardless of the
+approach). Round 2: none. **Selected = (iii) + the mechanical check**. Adding `tokens` to the theme (i) is left on the
+PR as an owner decision (if semibold 600 is wanted on ceremony pages, adding it to `maruhi.ts` is the correct route,
+and `pages.css` would then go back to `var()`). The check collects `pages.css`'s `var(--…)` references and throws if
+their difference from `theme/maruhi.css`'s `--…:` definition set is non-empty (run against the old `pages.css` it
+detects 2; the new version 0). e2e added `font-weight` = 700 on the h1 / outcome line. The same review also raised
+"`theme.css`'s byte-equivalence check always matches because the same script just wrote both files (it guarantees
+nothing)" — `theme.css` was removed from the equivalence check (`invite.html` / `pages.css` do go through vite's
+publicDir copy, so it means something for them), and `/theme.css`'s contract was reworked to be carried by the token-
+resolution check above.
+**Revision 1 addendum (pullfrog re-review)**: the finding that the check only sees name existence — a definition that
+exists but whose *value* `var()`-references an Astryx-core token (`theme/maruhi.css` carries 16+ such, e.g.
+`--text-heading-1-weight: var(--font-weight-semibold)`) would still pass if `pages.css` used it → the check now holds
+definitions as a `Map<name, value>`, recursively follows `var()`s inside values, and fails with the path shown when it
+hits an undefined one (verified: the composed CSS `var(--text-heading-1-weight)` detects `--text-heading-1-weight ->
+--font-weight-semibold`).
+
+**Verification (2026-09-05)**: `bun run check` 7 stages pass (fallow with `FALLOW_AUDIT_BASE=origin/main`). The
+server's auth / signup-policy tests: 87 pass. web e2e 30 pass (`/theme.css` / `/pages.css` real delivery, byte-match,
+revalidation headers; added the uniform error page's style application and weight). axe 44 states, 0 violations.
+Screenshots before / after, 44 each (re-shot after revision 1), CSP violations 0.
+
+### DP5 implementation-time ruling record (2026-09-05)
+
+The subject is the CLI's output surface: stderr's notices (Note / Warning / failure) and colors, suppression of
+repeating Notes, `login`'s guidance, English copy editing, `--help` consistency, and ADR-0016 decision 7's wording.
+Each ruling point was decided by the same loop as DP1–DP4 (enumerate ≥3 options → search for upward compat / a
+silver bullet → end once a round produces no new options → select). Judgment criteria: don't break a single ADR-0016
+decision (don't put typed values into diagnostics · the exit code is the error kind · the only built-in flags are
+`--help` / `--version` · don't read `process.*` directly · stdout carries only the command's output) or decision 7's
+verdict semantics; the diskless invariants (Note suppression mustn't hold plaintext or secret state); add no
+dependencies; don't touch the server / web / specs; cheap reversibility.
+
+**Premise corrections (facts found during implementation)**: (1) **Bun's `console.error` paints its whole output red
+when stderr is a terminal** (measured `\e[0m\e[31m…\e[0m`). "ANSI colors are used nowhere today" was wrong — help text,
+Notes, Warnings, and prompt guidance were **all coming out red** (a terminal's red means danger, so a Note looked
+like a warning). (2) `process.stderr.write` / `process.stdout.write` are async against a pipe, and `bin.ts`'s
+`process.exit` truncates the tail (measured: cut off at 7,401 of 50,000 lines). `node:fs`'s `writeSync` returns after
+completion on a terminal, pipe, or file alike. (3) For an effective-admin user, **since the day the project was
+created**, every push / pull emitted a checkpoint proposal: criterion (iii)'s admin-side criterion is "the latest
+checkpoint that is notarized (non-empty audit_head_hash)", but the boundary checkpoint bundled into the env-creation /
+rotate compound (`boundary-checkpoint.ts`) has `auditHeadHashHex: ""` so it doesn't count — "unissued" = propose
+immediately. On push, the anchor's Note rides the same route, so 2 Note lines have been emitted per push since day
+one. (4) An execution that passes through a sync → re-sync route twice (e.g. a re-sync after a floor violation) lists
+the same Note (the head-declaration send failure) twice within one command. (5) 4 places emitted Notes to stdout
+(`io.log`) (`audit list` / `audit self` / `logout`'s MARUHI_TOKEN note / `key generate`) — an oversight of decision 9
+(stdout carries only the command's output). (6) The server's flow TTL is `CLI_FLOW_TTL_MS` = 15 minutes,
+and `POST /auth/cli/start`'s `expiresInSeconds` comes from it too. ROADMAP's "10 minutes" is wrong. (7) Upstream's
+(`CliOutput.defaultFormatter`) automatic color detection looks at `process.stdout.isTTY` and `NO_COLOR === "1"` —
+an stdout basis (help goes to stderr) that also disagrees with the NO_COLOR convention (disabled when non-empty).
+
+**A. The TTY discipline for color and symbols** — options: (i) colorless, ASCII only (just switching stderr writes to
+`writeSync` stops Bun's red painting) / (ii) **color only on the prefix** (`Note:` cyan, `Warning:` yellow, `maruhi:`
+red) + full help uses upstream's default palette (bold headings, cyan usage, green flag names); detection = "is stderr
+a terminal" + `NO_COLOR` / `FORCE_COLOR` / `TERM=dumb` / (iii) whole lines colored (the same shape as Bun's current
+behavior — color bleeds into values, identifiers, and URLs in the body) / (iv) Unicode symbols (✓ / ⚠ / ✗) / (v) a
+`--color` flag (against decision 5 — it adds a global built-in flag). Round 1's new option: narrowing (ii) to "color
+only the **constant prefixes**" makes "no color on values or identifiers" guaranteed **by structure** rather than by
+discipline (yes). Round 2: none. **Selected = (ii)**. No symbols (avoids mojibake on Windows terminals / non-UTF-8
+locales — the prefix words carry that role). DP1's vermilion is not imitated in terminal colors (a 16-color red is
+danger). Detection is the pure function `shouldUseColor({ stderrIsTerminal, envVar })` (`FORCE_COLOR` non-empty >
+`NO_COLOR` non-empty > `TERM=dumb` > is stderr a terminal), supplied by production (`live.ts` — the only place
+`process.*` is read) as `CliIo.colorEnabled()`; tests default to colorless (`setColor(true)` exercises the color
+path). stdout never gets color (it's data). Upstream's auto-detection isn't used (premise correction (7)) — it's
+passed explicitly to `defaultFormatter({ colors })`. Rejected: (i) — a diagnostic's kind isn't recognizable at a
+glance (there are 60+ Notes). (iii)(iv)(v) — as above.
+
+**B. The Note / Warning / Error vocabulary and destinations** — vocabulary: `Note:` = information (the command
+succeeded. An optional next step or a description of the situation. Missing it doesn't lower safety) / `Warning:` =
+degraded · needs attention (the command continued but a state the user should check exists. Anything whose being
+missed can lower safety always goes here — floor corruption, anchor mismatch, signature-verification failure) /
+`maruhi:` = failure (exit code ≠ 0. Sentence 1 = what happened, sentence 2 = the next step). All 3 go to stderr
+(decision 9). Options: (i) keep string concatenation / (ii) helpers in `display.ts` / (iii) methods on `CliIo`
+(`io.note`) / (iv) **a new module `notice.ts`** (`logNote` / `logWarning` / `logFailure` + the pure `formatNotice`).
+Round 1's new option: (iv) + giving continuation lines (`details`) the same function's 2-space indent (yes). Round 2:
+none. **Selected = (iv)**. All ~60 `\`Note: ${…}\`` / `Warning:` concatenations were replaced, and the 4 places
+emitting to stdout (premise correction (5)) moved to stderr. `display.ts`'s `logWarnings` and `cli-formatter.ts`'s
+`maruhi:` prefix use the same rendering. Rejected: (iii) — a fake `CliIo` would end up implementing the decoration
+too, and tests couldn't capture the pre-decoration line.
+
+**C. The rules for suppressing repeated Notes** — options: (i) **count "unissued" against genesis's timestamp** (the
+same 7-day threshold. No state held) / (ii) record "already shown" per project in a non-secret config file, once a day
+(a new persistence location and cross-device drift) / (iii) a `--quiet`-style flag (the user has to remember it; it
+doesn't fix the default) / (iv) shorten the wording and emit it every time / (v) drop the anchor note on push and keep
+it only on rotate / (vi) **fold the anchor's advice into the same 1 line as the checkpoint proposal**. Round 1's new
+options: (i)+(vi), and **"a Note / Warning with identical wording emits at most once per command run"**
+(`NoticeLedger` — `runEffectCli` supplies a fresh ledger per run; contexts without a ledger don't suppress. Resolves
+premise correction (4)) (yes). Round 2: none. **Selected = (i)+(vi)+the ledger**. CRYPTO_SPEC §6.3 (iii)'s "7 days
+elapsed or unissued" is read as "unissued = the baseline is still genesis"; within 7 days of genesis nothing is
+proposed (the proposal is a SHOULD's accessory — the spec's detection condition itself is unchanged — a human task if
+the owner wants the spec's wording amended). The anchor note after rotate / sweep stays unconditional ("the epoch
+advanced = it's certainly stale" — session-35 ruling P), with a shorter wording. **Not suppressed**: Warnings like
+floor corruption, anchor mismatch, signature-verification failure, or an unconverged obligation keep their conditions
+and strength. The first-sync "no floor" Note stays as-is (it's one-shot — it stops once the floor file exists).
+
+**D. `login`'s deadline and guidance text** — D-1 the deadline: (i) write the 15-minute constant into the CLI / (ii)
+**derive "This request expires in 15 minutes" from the server response's `expiresInSeconds` (the same rounded value
+as the deadline check)** (truncate to minutes; under 1 minute shows seconds). The expiry text carries the same
+duration ("The sign-in request expired (it was valid for 15 minutes). Run `maruhi login` again") / (iii) don't show
+it. **Selected = (ii)**. ROADMAP's "10 minutes" is the error — it should be 15 (corrected in ROADMAP's completion
+note. The server's TTL is unchanged). D-2 destinations: (i) as now, guidance and result both to stdout / (ii) **the
+interactive guidance (the URL, the confirmation code, the deadline, the wait, the browser notice) goes to stderr; the
+result ("Signed in as …", the token's expiry) goes to stdout** / (iii) everything to stderr. **Selected = (ii)** —
+the prompt is already on stderr (`live.ts`), and `maruhi login > file` still shows the guidance. D-3 progress while
+waiting: (i) emit "still waiting" on an interval (pollutes the log) / (ii) a `\r` countdown (a TTY-only drawing path)
+/ (iii) **emit nothing** (the deadline's 1 line conveys the window). **Selected = (iii)**. D-4 the browser: only when
+an auto-launch was tried and failed: "Could not open a browser automatically. Open the URL above manually"; on
+success: "Opened your browser. If nothing appeared, open the URL above manually"; environments that don't try
+(agents, non-interactive) get nothing added (the URL guidance is already there). D-5 vocabulary: matching the approval
+page (DP4) — "Confirmation code: XXXX-XXXX" + "Approve only if the browser shows this exact code (it protects you
+against phishing)" (the internal word "AUTH_SPEC's phishing guard" is gone). D-6 signupPolicy's upfront fail-fast
+guidance also goes to stderr.
+
+**E. English copy editing of error texts (the glossary)** — conventions: sentence case / a single sentence gets no
+trailing period; multiple sentences are separated by in-line periods with none at the end (the existing 96 entries
+already follow this — the real inconsistency was command-name notation) / commands and flags always backquoted
+(`maruhi project checkpoint`) / sentence 1 = what happened, sentence 2 = the next step / Markdown's `**emphasis**`
+never reaches the terminal. Terms: **sign in / sign-in** (prose. The command stays `maruhi login`), **server** (origin
+survives only in the env-var name `MARUHI_TOKEN_ORIGIN`), **token** (never "PAT"), **environment variable** (never
+"env var" — the flag name `--env` and IDs are separate), **master key** (never "keypair"), **recovery code**, **OS
+keychain**, **user ID** (prose. `user_id` stays as a field name), **epoch DEK** (CRYPTO_SPEC's term). A diagnostic's
+trailing spec reference "(CRYPTO_SPEC §6.3)" is kept (traceability when pasted into an issue) but never appears in
+help (F). Decision 7's wording (G) and the ceremony-family refusal texts (invite accept / member add / server grant /
+schema import) are unified to the order "Refused to …: what was detected. why. what to do".
+
+**F. `--help` consistency** — options: (i) only unify the descriptions / (ii) **a golden file** (`test/golden/help.txt`
+— all 54 levels + bare `maruhi` + `maruhi --help`. Update via `UPDATE_GOLDEN=1` and read the diff in review) +
+mechanical checks (descriptions start with a capitalized verb, contain no `§`, no ANSI, don't pollute stdout) / (iii)
+assertions only (breakages leak through the assertions' gaps). **Selected = (ii)**. Conventions: a description is one
+verb-initial line; no spec § references (users can't read the spec); document stdin / stdout behavior and dangerous
+operations (permanently / forces a rotation); groups are "Manage X (a / b / c)". Added: a product one-liner at root
+(the head of bare `maruhi`), `--` in the usage lines of `run` / `ci run` (`maruhi run [flags] -- <command...>` —
+decision 8's notation itself), shared-flag defaults as "(default: the `server` setting)".
+
+**G. ADR-0016 decision 7's wording** — the verdict's semantics are unchanged (primary boundary = stdin and stdout both
+terminals, second layer = a known agent, fail-closed). Agent detection: "Refused to display values: an AI agent
+environment was detected (name). Values are shown only to a person at an interactive terminal, so they never land in
+an agent's transcript. Run this command yourself in a terminal". The TTY boundary: "Refused to display values: stdin
+and stdout are not both an
 interactive terminal. Values are shown only to a person at a terminal (pipes, redirects, CI, and AI agents are
 refused), so they never land in a file or a log. Run this command yourself in a terminal, without redirecting its
-input or output」。`maruhi run` を勧めない規律(迂回レシピを渡さない)はそのまま。
+input or output". The discipline of not recommending `maruhi run` (don't hand out a bypass recipe) stays.
 
-**H. TTY 挙動の検証方法** — 単体(`CliIo` / `Stdio` の差し替え): 色の判定(`shouldUseColor` の 4 条件)・接頭辞だけに
-色が付くこと・台帳の抑制・login の期限(`expiresInSeconds` 3 種 + 非数)・stdout / stderr の分離(`env.logs` /
-`env.errors`)・golden。実プロセス(`script -qec` の擬似 TTY と `| cat` / `2>&1` のパイプ): Bun の赤塗りが消えて
-接頭辞だけに色が付くこと、パイプでは ANSI が出ないこと、`NO_COLOR=1` / `FORCE_COLOR=1` の効き、`maruhi
---version` / `config get` の stdout が汚れないこと、wrangler dev(ダミー `.dev.vars` + ローカル D1 マイグレーション)
-に対する `maruhi login` の実出力(`POST /auth/cli/start` まで。承認は行わない)。before / after は所有者向けの
-Artifact。
+**H. How TTY behavior is verified** — unit (`CliIo` / `Stdio` swaps): the color detection (`shouldUseColor`'s 4
+conditions), that only the prefix is colored, the ledger's suppression, login's deadline (3 `expiresInSeconds`
+shapes + a non-number), the stdout / stderr split (`env.logs` / `env.errors`), the golden. Real processes (`script
+-qec`'s pseudo-TTY and `| cat` / `2>&1` pipes): Bun's red painting is gone and only the prefix is colored; no ANSI on
+a pipe; `NO_COLOR=1` / `FORCE_COLOR=1` take effect; `maruhi --version` / `config get`'s stdout stays clean; a real
+`maruhi login` against wrangler dev (a dummy `.dev.vars` + local D1 migrations) (`POST /auth/cli/start` — no
+approval is performed). The before / after is an Artifact for the owner.
 
-**I. ユーザー向け文書** — `apps/site/docs/getting-started.mdx` の記述(ブラウザで確認コードを照合する)は変更後も
-正しい(触らない)。`README.md` に CLI の出力例は無い。`docs/SELF_HOSTING.md` の `maruhi login` の行コメント
-「client_id is resolved from the server」は 2026-08-31 の §4 改訂で消えた仕組みの残骸なので、その 1 行だけ直した。
+**I. User-facing docs** — `apps/site/docs/getting-started.mdx`'s description (matching the confirmation code in the
+browser) stays correct after the change (untouched). `README.md` has no CLI output examples. `docs/SELF_HOSTING.md`'s
+`maruhi login` line comment "client_id is resolved from the server" is a leftover of the mechanism removed in the
+2026-08-31 §4 revision, so just that 1 line was fixed.
 
-**新たに出た裁定点**: (J) Bun の `console.error` の赤塗り(前提の訂正 (1))→ `live.ts` の `log` / `logError` を
-`writeSync(1 | 2, …)` に(前提の訂正 (2) により `process.stdout.write` ではなく `writeSync`)。(K) stdout に出ていた
-Note 4 か所 → stderr(テストの断言は `env.errors` へ追随)。(L) `run` の usage に `--`(F に含めた)。(M) fallow の
-複雑度(`checkpointProposal` の閉包)→ `baselineIsStale` を関数に切り出し、重複(`schema set` / `var rm` の環境
-解決)→ `requireVerifiedEnvironment` を共有。
+**Ruling points that emerged**: (J) Bun's `console.error` red painting (premise correction (1)) → `live.ts`'s `log` /
+`logError` moved to `writeSync(1 | 2, …)` (per premise correction (2), `writeSync`, not `process.stdout.write`). (K)
+The 4 Notes on stdout → stderr (the tests' assertions followed to `env.errors`). (L) `run`'s usage gains `--`
+(included in F). (M) fallow's complexity (`checkpointProposal`'s closure) → `baselineIsStale` extracted into a
+function; the duplication (`schema set` / `var rm`'s env resolution) → `requireVerifiedEnvironment` is shared.
 
-**J 改訂 1(2026-09-05、Cursor Bugbot の初回レビュー — 閉じたパイプ)**: 指摘 = `writeSync` は読み手が先に閉じた
-パイプ(`maruhi pull | head -1` の 2 行目以降)で `EPIPE` を投げ、`Effect.sync` の中なので defect = internal error で
-終わる(旧 `console.log` は黙って捨てていた — 実測)。列挙: (i) `EPIPE` だけ捨てる(読み手はもう要らないと言って
-おり、報告する相手も経路も無い)/ (ii) 全エラーを捨てる(EBADF 等の本物の失敗まで握り潰す)/ (iii) `console.log` に
-戻す(赤塗りが戻る)。**選定 = (i)** — `writeLine` を公開し、実プロセス(bun の書き手 | `head -1`)で終了コード 0 を
-固定する検査を `live-io.test.ts` に追加。
+**J revision 1 (2026-09-05, Cursor Bugbot's first review — a closed pipe)**: the finding = `writeSync` throws `EPIPE`
+on a pipe whose reader already closed (anything past line 1 of `maruhi pull | head -1`), and being inside
+`Effect.sync` it ends as a defect = internal error (the old `console.log` silently discarded it — measured). Options:
+(i) swallow only `EPIPE` (the reader already said they don't need it; there's nobody and no path to report to) / (ii)
+swallow all errors (would swallow real failures like EBADF too) / (iii) go back to `console.log` (the red painting
+comes back). **Selected = (i)** — `writeLine` is exported, and a check pinning exit code 0 under a real process (a
+bun writer | `head -1`) was added to `live-io.test.ts`.
 
-**改訂 2(2026-09-05、pullfrog の初回レビュー)**: (1) `writeLine` は `EPIPE` に加えて `EAGAIN`(非ブロッキング fd)の
-再試行と部分書き込みの継続を持つループに(pullfrog の提案どおり。CI の fallow が `writeLine` を dead export と判定
-したため、テストから直接 import する検査〔ファイルへの書き切り〕も追加)。(2) **B の台帳は per-item の通知に合わない**
-— `schema import` の候補ごとの高エントロピー警告は、同じ候補の再試行(`e` で編集後)や同じ形の別候補で抑制され、
-「理由の見えない yes プロンプト」になる。列挙: (i) 文面に候補名を入れる(再試行では依然抑制される)/ (ii) **通知に
-`scope: "prompt"` を足し、台帳を迂回して候補の直下に 2 スペース字下げで毎回出す**(旧実装の字下げも戻る)/ (iii)
-台帳のキーに呼び出し位置を入れる(位置は文面の同一性と無関係)。**選定 = (ii)**。併せて未使用だった `details`
-引数を落とした(pullfrog nitpick)。(3) バッククォートのずれ 2 か所(`maruhi rotation list` / `maruhi config set
-defaultProject <id>`)、`logWarning(\`${warning}\`)`、`Re-login` → `Sign in again`。(4) `help.test.ts` の「ANSI を含まない」
-断言はテスト環境が無色なので自明だった → `setColor(true)` で見出しが太字になり、無効なら ANSI が無いことを両方
-固定する検査に置き換え。**互換性の注記**: `login` の案内と Note 数か所が stdout → stderr へ移ったので、
-`maruhi login | tee` のようにログへ取っていたラッパーは URL と確認コードを失う(意図した分離。リリースノートに書く)。
+**Revision 2 (2026-09-05, pullfrog's first review)**: (1) `writeLine` became a loop that, beyond `EPIPE`, retries
+`EAGAIN` (a non-blocking fd) and continues partial writes (per pullfrog's proposal. Since CI's fallow judged
+`writeLine` a dead export, a check that imports it directly from the test [a full write to a file] was also added).
+(2) **B's ledger doesn't fit per-item notices** — `schema import`'s per-candidate high-entropy warning would be
+suppressed on a retry of the same candidate (after editing with `e`) or on a different candidate of the same shape,
+producing "a yes prompt with no visible reason". Options: (i) put the candidate name in the wording (still suppressed
+on retry) / (ii) **add `scope: "prompt"` to the notice — it bypasses the ledger and is emitted every time, 2-space
+indented directly under the candidate** (the old implementation's indent also returns) / (iii) include the call site
+in the ledger's key (the site is unrelated to the wording's identity). **Selected = (ii)**. Alongside, the unused
+`details` arg was dropped (a pullfrog nitpick). (3) 2 backquote slips (`maruhi rotation list` / `maruhi config set
+defaultProject <id>`), `logWarning(\`${warning}\`)`, `Re-login` → `Sign in again`. (4) `help.test.ts`'s "contains no
+ANSI" assertion was vacuous since the test environment is colorless → replaced with a check that under `setColor(true)`
+headings become bold, and when disabled there's no ANSI — pinning both. **Compatibility note**: since `login`'s
+guidance and several Notes moved stdout → stderr, a wrapper logging via `maruhi login | tee` loses the URL and the
+confirmation code (the intended separation. Written in the release notes).
 
-**改訂 3(2026-09-05、Cursor Bugbot の再レビュー)**: 改訂 2 (ii) の `scope: "prompt"` は description 長の Note には
-合わない — その Note は候補の提示(`approvalStep` の `describeCandidate`)より**前**に出るので、字下げが直前の
-項目に付いてしまう。run スコープ(字下げなし)に戻した: 行番号を含むので候補ごとに一意で、捨てたのは 1 回なので
-再試行で繰り返す必要もない。prompt スコープを使うのは提示の直後に出る高エントロピー警告だけ。
+**Revision 3 (2026-09-05, Cursor Bugbot's re-review)**: revision 2 (ii)'s `scope: "prompt"` doesn't fit a
+long-description Note — that Note is emitted **before** the candidate's presentation (`approvalStep`'s
+`describeCandidate`), so the indent would attach to the preceding item. It was returned to run scope (no indent):
+containing a line number, it's unique per candidate, and being emitted only once there's no need to repeat it on
+retry. Only the high-entropy warning emitted right after the presentation uses prompt scope.
 
-**検証(2026-09-05)**: `bun run check` 7 段通過(fallow は `FALLOW_AUDIT_BASE=origin/main`)。CLI テスト 867 件
-(+ notice 9 件・help golden 2 件・login 2 件・checkpoint の genesis 基準)。実プロセスの TTY / パイプ採取と
-wrangler dev に対する `maruhi login` の実出力は PR の Artifact。
+**Verification (2026-09-05)**: `bun run check` 7 stages pass (fallow with `FALLOW_AUDIT_BASE=origin/main`). CLI tests
+867 (+ 9 notice · 2 help golden · 2 login · the checkpoint's genesis basis). The real-process TTY / pipe captures and
+the real `maruhi login` output against wrangler dev are in the PR's Artifact.
 
-### DP5 追補: 薄かった裁定点の再周回(2026-09-05)
+### DP5 addendum: re-looping the thin ruling points (2026-09-05)
 
-PR #151 のマージ後、所有者の問いに答えて自己点検したところ、裁定録のうち A / B / C は「新案が出ない周が 1 回」まで
-回していたが、D 以降は 1 周または列挙のみで決めていた(J の EPIPE と B の台帳の per-item 問題は、もう 1 周
-「この案で何が壊れるか」を問えば自分で出せた種類の穴で、レビューボットに見つけられた)。ここでは D / E / F / G / J を
-同じループで回し直し、周ごとの新案の有無を記す。上位互換が出た E / G は本追補(PR #152)で実装、F-(iv) は所有者への提案、
-D / J は据え置き(理由つき)。
+After PR #151 merged, answering the owner's question with a self-inspection found that the ruling record's A / B / C
+had been looped until "a round produces no new options", but D onward had been decided after 1 round or just
+enumeration (J's EPIPE and B's per-item ledger problem are the kind of hole I could have produced myself by asking
+one more round of "what breaks under this option" — they were caught by review bots). Here D / E / F / G / J are
+re-run through the same loop, noting whether each round produced a new option. E / G, where an upward compat
+appeared, are implemented in this addendum (PR #152); F-(iv) is a proposal to the owner; D / J are kept as-is (with
+reasons).
 
-**D login(再周回)** — D-1 期限: 第 1 周の新案 = 絶対時刻の併記「(at 09:52 UTC)」(あり)→ 相対表示で足り、UTC の
-絶対時刻は利用者のローカル時刻と食い違って混乱を足す(棄却)。第 2 周: なし。D-2 宛先: 第 1 周の新案 = `/dev/tty` へ
-直接書く(パイプ・リダイレクトの両方を迂回できる)(あり)→ `process.*` / fd を直に触る規律(ADR-0016 決定 5)と
-テスト可能性に反し、確認コードは秘密ではないので迂回の必要もない(棄却)。第 2 周: なし。D-3 待機中の進捗: 第 1 周の
-新案 = 窓の半分が過ぎた時点で 1 行だけ「Still waiting (7 minutes left)」(あり)→ 離席した利用者には有用だが、非 TTY の
-ログにも 1 行増え、期限の 1 行が既に窓を伝えている(棄却 — 実機で「待ちが長い」と感じたら再訪)。第 2 周: なし。
-**結論: 据え置き**。
+**D login (re-looped)** — D-1 the deadline: round 1's new option = also writing the absolute time "(at 09:52 UTC)"
+(yes) → the relative display suffices; a UTC absolute time would clash with the user's local clock and add confusion
+(rejected). Round 2: none. D-2 the destination: round 1's new option = write directly to `/dev/tty` (bypasses both
+pipes and redirects) (yes) → against the rule of not touching `process.*` / fds directly (ADR-0016 decision 5) and
+testability; the confirmation code isn't secret so no bypass is needed (rejected). Round 2: none. D-3 progress while
+waiting: round 1's new option = at the window's halfway point emit 1 line, "Still waiting (7 minutes left)" (yes) →
+useful for a user who stepped away, but it adds a line to non-TTY logs too and the deadline's line already conveys
+the window (rejected — revisit if the wait feels long on a real machine). Round 2: none. **Conclusion: kept as-is**.
 
-**E 英語校正(再周回)** — 末尾ピリオド: (i) 無し(現状 96 件が全てこの形)/ (ii) 常に付ける / (iii) 複文だけ付ける。
-第 1 周の新案 = **規約を機械検査にする**(あり — 選択そのものより「守り続ける」方が問題で、用語集は書いた瞬間から
-漂流する)。第 2 周: なし。**選定 = (i) + 検査** `apps/cli/test/message-style.test.ts`: `cliError` / `usageError` /
-`evidenceError` / `io.log` / `io.logError` / `logNote` / `logWarning` に直接渡された文字列リテラルを走査し、
-(1) 末尾ピリオド無し、(2) `maruhi <command>` は必ずバッククォート、(3) `**` を出さない、を固定する(拾った文言が
-300 件以上あることも断言 — 検査の空回りを防ぐ)。初回の走査で (2) の取りこぼしが 1 件残っていた(`member.ts` の
-「and maruhi project verify」)ので直した。用語(sign in / server / token …)の検査は語の出現が文脈依存で
-誤検知が多いため入れない。
+**E English copy editing (re-looped)** — the trailing period: (i) none (all 96 current entries already this shape) /
+(ii) always / (iii) only on multi-sentence. Round 1's new option = **make the convention a mechanical check** (yes —
+the problem is keeping it honored rather than the choice itself; a glossary drifts the moment it's written). Round 2:
+none. **Selected = (i) + the check** `apps/cli/test/message-style.test.ts`: scan the string literals passed directly
+to `cliError` / `usageError` / `evidenceError` / `io.log` / `io.logError` / `logNote` / `logWarning` and pin (1) no
+trailing period, (2) `maruhi <command>` always backquoted, (3) no `**` (also asserts there are 300+ collected wordings —
+guards the check against going vacuous). The first scan found 1 remaining (2) miss (`member.ts`'s "and maruhi project
+verify") — fixed. A check on the terms (sign in / server / token …) isn't included: occurrences are context-dependent
+and false-positives abound.
 
-**F --help(再周回)** — 第 1 周の新案 = (iv) **docs サイトの CLI リファレンスを golden(`test/golden/help.txt`)から
-生成する**(あり — `--help` と docs の食い違いを構造で消す。単一の正 = 宣言)。ただし `apps/site` の変更なので
-本追補では実装せず所有者への提案に留める(DP2 の Blume 構成に生成ページを足す形。生成物のコミット or ビルド時生成の
-選択が要る)。(v) 例(EXAMPLES 節)の追加 → upstream の HelpDoc に節が無く、説明文に混ぜると 1 行規約が崩れる
-(棄却)。第 2 周: なし。**結論: golden は据え置き、(iv) は提案**。
+**F --help (re-looped)** — round 1's new option = (iv) **generate the docs site's CLI reference from the golden
+(`test/golden/help.txt`)** (yes — removes the `--help`-vs-docs divergence structurally. The single source of truth =
+the declaration). Since it touches `apps/site`, this addendum doesn't implement it — left as a proposal to the owner
+(a shape adding a generated page to DP2's Blume structure; needs the choice between committing the artifact and
+generating at build). (v) adding examples (an EXAMPLES section) → upstream's HelpDoc has no such section, and mixing
+them into the description breaks the 1-line convention
+(rejected). Round 2: none. **Conclusion: the golden stays; (iv) is a proposal**.
 
-**G 決定 7 の文言(再周回)** — (i) 現状「stdin and stdout are not both an interactive terminal」/ (ii) 1 行に短縮 /
-(iii) `maruhi run` を勧める(迂回レシピ — 禁止)。第 1 周の新案 = **落ちた側を名指しする**(「stdout is not an
-interactive terminal」/「stdin is not …」/「neither stdin nor stdout …」)(あり — 利用者は `| less` を外すのか
-ヒアドキュメントをやめるのかを文面から判断できる。判定結果を文面の材料に使うだけで、新しい検査は足さない =
-決定 7 の意味論は不変)。第 2 周: なし。**選定 = 名指し**(`agent-gate.ts` の `describeNonTerminal`。`schema
-import` の同型の拒否文にも適用)。
+**G decision 7's wording (re-looped)** — (i) status quo "stdin and stdout are not both an interactive terminal" /
+(ii) shorten to 1 line / (iii) recommend `maruhi run` (a bypass recipe — forbidden). Round 1's new option = **name the
+side that failed** ("stdout is not an interactive terminal" / "stdin is not …" / "neither stdin nor stdout …") (yes —
+the user can judge from the wording whether to drop `| less` or stop a heredoc. It only uses the verdict's result as
+material for the wording; no new check is added = decision 7's semantics unchanged). Round 2: none. **Selected =
+naming** (`agent-gate.ts`'s `describeNonTerminal`. Applied to `schema import`'s same-shaped refusal too).
 
-**J writeSync(再周回)** — 「この案で何が壊れるか」を問う周を改めて回した: EPIPE(改訂 1)・EAGAIN / 部分書き込み
-(改訂 2)は済み。残りの候補: (a) Windows のコンソールハンドルへの `writeSync`(非 ASCII の化け・部分書き込み)— この
-環境では検証不能で人間タスクのまま。(b) 代替案 = `process.stdout.write` に戻し、`bin.ts` の `process.exit` の前に
-コールバック付きの空書き込みで flush を待つ(ストリームなら EPIPE は `error` イベント、Windows は libuv の tty 経路)。
-**実測で棄却**: Bun 1.4.0 ではコールバックがデータの到達前に返り、5 万行のパイプ書き込みは flush を待っても
-7,401 行で途切れた(`writeSync` は全行到達)。(c) `Bun.stderr.writer()`(FileSink)— flush の同期性が文書化されて
-おらず、Node 互換の経路(`node:fs`)を離れる利点が無い(棄却)。第 2 周: なし。**結論: 据え置き**。EAGAIN のビジー
-スピンは同期書き込みに固有で、macOS / Windows の実機確認で「書けない fd が長く続く」事例が出たら再訪。
+**J writeSync (re-looped)** — the "what breaks under this option" round was re-run: EPIPE (revision 1) and EAGAIN /
+partial writes (revision 2) are done. The remaining candidates: (a) `writeSync` to a Windows console handle
+(non-ASCII mojibake, partial writes) — unverifiable in this environment; stays a human task. (b) the alternative =
+go back to `process.stdout.write` and await a flush via a callback'd empty write before `bin.ts`'s `process.exit`
+(on a stream, EPIPE arrives as an `error` event; on Windows it goes through libuv's tty path). **Rejected by
+measurement**: under Bun 1.4.0 the callback returns before the data arrives, and a 50,000-line pipe write still cut
+at 7,401 lines even awaiting the flush (`writeSync` delivers every line). (c) `Bun.stderr.writer()` (a FileSink) —
+flush synchronicity isn't documented, and there's no advantage to leaving the Node-compatible path (`node:fs`)
+(rejected). Round 2: none. **Conclusion: kept as-is**. The EAGAIN busy-spin is inherent to synchronous writes — if a
+real-machine check on macOS / Windows shows "an unwritable fd persisting long", revisit.
 
-## 6. スコープ外
+## 6. Out of scope
 
-- 手動ダークトグル・**ダッシュボード(TCB)側の** Web フォント自己配信(必要になったら再訪 — §1-2 / §1-3)
-- `maruhi ui`(ADR-0018 第 2 段)・値あり UI(第 3 段)
-- 課金ページ・ステータスページ(H4 / GA)
+- A manual dark toggle · **the dashboard (TCB) side's** self-hosted web fonts (revisit if needed — §1-2 / §1-3)
+- `maruhi ui` (ADR-0018 stage 2) · a UI carrying values (stage 3)
+- A billing page · a status page (H4 / GA)

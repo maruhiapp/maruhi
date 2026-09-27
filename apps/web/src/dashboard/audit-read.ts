@@ -1,11 +1,15 @@
-// 集約形 `var.read`(AUDIT_SPEC §3.3 — 値付き一括 pull ごとに環境単位 1 行、
-// payload に返した変数の列挙)の表示導出。純関数のみ(unit テスト対象)。
+// Display derivation for the aggregated `var.read` (AUDIT_SPEC §3.3 —
+// one row per environment per bulk pull with values, with the payload
+// enumerating the returned variables). Pure functions only (unit-test
+// target).
 //
-// サーバー / CLI は @maruhi/core の auditReadVariablesOf を共有するが、Web は
-// api-schema からの type-only import しか持たない(TCB を最小に保つ — types.ts
-// 冒頭)ため、同じ解釈をここに置く。全値はサーバー申告であり検証はしない —
-// 要素の受理条件は core と同一(variableId が文字列かつ epoch / version が整数)
-// で、それ以外の要素は落とす(両者で件数・表示がずれないように)。
+// The server / CLI share @maruhi/core's auditReadVariablesOf, but the
+// web holds only type-only imports from api-schema (keeping the TCB
+// minimal — see the top of types.ts), so the same interpretation lives
+// here. Every value is as reported by the server and is not validated —
+// an element's acceptance condition is identical to core's (variableId
+// is a string and epoch / version are integers), and anything else is
+// dropped (so the two never diverge in count or display).
 import type { AuditEvent } from "./types.ts";
 
 /**
@@ -23,8 +27,9 @@ function isJsonRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * 列挙の 1 要素の整形。@maruhi/core の auditReadVariablesOf と同じ受理条件
- * (variableId が文字列かつ epoch / version が整数)を満たさなければ落とす。
+ * Shapes one element of the enumeration. Dropped unless it satisfies
+ * the same acceptance condition as @maruhi/core's auditReadVariablesOf
+ * (variableId is a string and epoch / version are integers).
  */
 function listedReadVariableOf(entry: unknown): ListedReadVariable | null {
   return isJsonRecord(entry) && isListedReadVariable(entry)
@@ -32,7 +37,7 @@ function listedReadVariableOf(entry: unknown): ListedReadVariable | null {
     : null;
 }
 
-/** 受理条件(variableId が文字列かつ epoch / version が整数 — core と同一)。 */
+/** The acceptance condition (variableId is a string and epoch / version are integers — same as core). */
 function isListedReadVariable(
   entry: Record<string, unknown>,
 ): entry is Record<string, unknown> & ListedReadVariable {
@@ -43,7 +48,7 @@ function isListedReadVariable(
   );
 }
 
-/** payload の `variables` 列挙(配列でなければ null = 集約形ではない)。 */
+/** The payload's `variables` enumeration (null if not an array = not the aggregated shape). */
 function listedVariablesOf(
   payload: AuditEvent["payload"] | undefined,
 ): ReadonlyArray<ListedReadVariable> | null {
@@ -53,7 +58,7 @@ function listedVariablesOf(
     : null;
 }
 
-/** 集約形 var.read の判定: イベント名 + variableId 欠落 + 列挙。 */
+/** Detecting an aggregated var.read: event name + missing variableId + the enumeration. */
 export function aggregatedReadVariables(
   event: Pick<AuditEvent, "event" | "variableId" | "payload">,
 ): ReadonlyArray<ListedReadVariable> | null {
@@ -63,8 +68,10 @@ export function aggregatedReadVariables(
 }
 
 /**
- * 集約形 var.read の payload から変数の列挙を除いた残り(authMethod 等)。空なら
- * null。列挙は折り畳みで見せ、残りは従来どおり記録どおりの JSON で見せる。
+ * The rest of an aggregated var.read's payload with the variable
+ * enumeration removed (authMethod etc.). null if empty. The enumeration
+ * is shown folded; the rest is shown as JSON, verbatim from the record,
+ * as before.
  */
 export function payloadWithoutVariables(
   payload: NonNullable<AuditEvent["payload"]>,
@@ -73,12 +80,12 @@ export function payloadWithoutVariables(
   return Object.keys(rest).length === 0 ? null : rest;
 }
 
-/** 一覧の要約(英語 — ADR-0017): "read 3 variables" / "read 1 variable". */
+/** The list summary (English — ADR-0017): "read 3 variables" / "read 1 variable". */
 export function readSummaryLabel(count: number): string {
   return `read ${count} ${count === 1 ? "variable" : "variables"}`;
 }
 
-/** 展開行の表示形: `var-id · epoch 1 · v 2`。 */
+/** The display shape of an expanded row: `var-id · epoch 1 · v 2`. */
 export function listedReadVariableLabel(variable: ListedReadVariable): string {
   return `${variable.variableId} · epoch ${variable.epoch} · v ${variable.version}`;
 }

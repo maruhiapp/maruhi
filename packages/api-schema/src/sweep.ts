@@ -1,13 +1,16 @@
-// HttpApi 定義のロード時スイープの共通部品(strict.ts / session-capability.ts)。
+// Shared parts of the load-time sweeps over the HttpApi definition
+// (strict.ts / session-capability.ts).
 //
-// 両スイープは構造型で HttpApi を受ける(具象 `HttpApi<...>` はグループ Union に
-// 不変で、公称型 `HttpApi.Top` を引数型に使えない — 各ファイルの `SweepableApi`
-// コメント参照)。ここで共有するのは走査の形のみで、エンドポイントごとの検査は
-// 呼び出し側に置く。
+// Both sweeps take the HttpApi via a structural type (the concrete
+// `HttpApi<...>` is invariant in its group union, so the nominal
+// `HttpApi.Top` cannot be a parameter type — see each file's
+// `SweepableApi` comment). Only the traversal shape is shared here; the
+// per-endpoint check stays with the caller.
 
 /**
- * 列挙リスト 1 件の実在検査: グループ・エンドポイントの存在を要求する。
- * `sweepLabel` は各スイープのエラーメッセージ接頭辞。
+ * Existence check for one enumerated-list entry: requires the group
+ * and endpoint to exist. `sweepLabel` is the error-message prefix of
+ * each sweep.
  */
 export function requireRegisteredEndpoint<Endpoint>(
   api: {
@@ -30,7 +33,7 @@ export function requireRegisteredEndpoint<Endpoint>(
   return endpoint;
 }
 
-/** 登録済み全エンドポイントの走査。`key` は `"group.endpoint"`。 */
+/** Traversal of every registered endpoint. `key` is `"group.endpoint"`. */
 export function forEachEndpoint<Endpoint>(
   api: {
     readonly groups: {

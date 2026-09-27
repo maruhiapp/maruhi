@@ -1,14 +1,20 @@
 "use client";
 
-// S9 トークン管理(一覧・失効 — 設計文書 §3 S9 / AUTH_SPEC §6 W3a)。
+// S9 token management (listing + revocation — design document §3 S9 /
+// AUTH_SPEC §6 W3a).
 //
-// - 対象は本人のトークンのみ(user 軸 — 裁定 CP で独立ルート /dashboard/tokens)。
-//   全ロールで可視(可視性 §5)
-// - **発行・生値表示は置かない**(ADR-0018 改訂 2 — 発行経路は device flow の
-//   端末のみ。応答に生値・ハッシュは構造ごと存在しない — TokenSummarySchema)
-// - 期限切れ(expiresAtMs が過去)は Expired のサーバー申告表示(裁定 CQ)
-// - 失効はインライン 2 段階確認(裁定 CO)。自トークンの失効は稼働中の
-//   CLI / CI を即 401 にするため、帰結の注記をテーブル下へ常時表示する
+// - Only your own tokens (the user axis — ruling CP made it the
+//   separate route /dashboard/tokens). Visible under every role
+//   (visibility §5)
+// - **No issuing or raw-value display here** (ADR-0018 amendment 2 —
+//   the only issuance path is the device in the device flow. The
+//   response structurally has no raw values or hashes —
+//   TokenSummarySchema)
+// - An expired token (expiresAtMs in the past) is displayed as Expired,
+//   as reported by the server (ruling CQ)
+// - Revocation is an inline two-step confirm (ruling CO). Because
+//   revoking your own token instantly 401s any running CLI / CI, the
+//   consequence note is always shown below the table
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
@@ -46,8 +52,9 @@ interface TokenRow extends Record<string, unknown> {
 }
 
 /**
- * スコープの表示(`project:permission` — `*` は全プロジェクト)。project は 64 hex なので
- * chip には短縮形を出し、全文は aria-description に載せる。
+ * Displays the scopes (`project:permission` — `*` is all projects).
+ * project is 64 hex, so the chip carries the shortened form and the
+ * full text rides aria-description.
  */
 function ScopeChips({ token }: { token: TokenSummary }): ReactNode {
   return (
@@ -139,7 +146,7 @@ function buildTokenColumns(
   ];
 }
 
-/** 発行の静的案内(発行 UI は置かない)+ 失効の帰結の注記(裁定 CO)。 */
+/** Static guidance on issuing (no issue UI here) + a note on the consequence of revoking (ruling CO). */
 function TokenNotes(): ReactNode {
   return (
     <Callout title="Issuing and revoking" headingLevel={2} testId="token-notes">
@@ -165,7 +172,7 @@ function TokensTable({
       <EmptyNotice
         title="No API tokens"
         description="Tokens issued to you appear here, as reported by the server."
-        // 一覧の箱は見出し無し(ページ h1 が兼ねる)なので h2
+        // The list's box has no heading (the page h1 doubles as it), so h2
         headingLevel={2}
         testId="token-empty"
       />
@@ -195,8 +202,10 @@ function TokensResource({
   reload: () => void;
   state: ResourceState<TokenList>;
 }): ReactNode {
-  // 置換形(裁定 B-a)。失効後の再取得(refreshing)中は直前の一覧を残し、
-  // 行の Revoke は実行中と同じく無効化する(再取得前の行への二重失効を防ぐ)
+  // Replacement form (ruling B-a). During the post-revocation re-fetch
+  // (refreshing) the previous list stays, and each row's Revoke is
+  // disabled the same as when one is in flight (prevents a double
+  // revocation on a pre-refetch row)
   if (state.kind === "loading") return <LoadingRow label="Loading tokens" />;
   if (state.kind === "failed") {
     return <FailureNotice failure={state.failure} onRetry={reload} subject="token" />;
@@ -212,7 +221,8 @@ function TokensResource({
 
 export function TokensScreen(): ReactNode {
   const { state, reload } = useApiResource<TokenList>(apiPaths.tokens());
-  // 失効状態は一覧リソースの外に持つ(use-revocation.ts のヘッダーコメント)
+  // The revocation state lives outside the list resource (the header
+  // comment of use-revocation.ts)
   const { revocation, arm, confirm } = useRevocation(apiPaths.tokenRevoke, reload);
   return (
     <DashboardShell
@@ -228,7 +238,7 @@ export function TokensScreen(): ReactNode {
         <SectionBlock>
           <TokensResource revocation={revocation} onArm={arm} reload={reload} state={state} />
         </SectionBlock>
-        {/* 確認はモーダル(AlertDialogAsyncAction テンプレート)。対象名は一覧から引く */}
+        {/* Confirmation is modal (AlertDialogAsyncAction template). The target's name is drawn from the list */}
         <RevocationOutcome
           revocation={revocation}
           title={`Revoke ${armedTokenName(state, revocation.armedId)}?`}

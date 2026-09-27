@@ -1,23 +1,31 @@
-// 周期チェックポイントの発行(CRYPTO_SPEC §6.3 の発行 SHOULD / AUTH_SPEC §16-2)。
+// Issuing periodic checkpoints (the issuance SHOULD of CRYPTO_SPEC §6.3 /
+// AUTH_SPEC §16-2).
 //
-// - 発行直前のビュー最新化 → 検証済みビュー(検証済み pull)からマニフェスト
-//   参照・values_digest を構築する(サーバー申告値をそのまま署名しない —
-//   §16-2)。カバー範囲は検証済みビュー内の全環境(SHOULD。検証済み削除
-//   ステートメントのある環境は含めない)— 契機 (i)〔rotate + 再暗号化完了後〕は
-//   当該環境 1 タプル(裁定は docs/notes/session-35.md)
-// - 監査ヘッドの公証は実効権限 admin(min(トークンスコープ, チェーン role) —
-//   §9-2)のみ。スコープは /auth/me の tokenScopes、role は検証済みビューから
-//   **事前判定**する(403 を踏んでからフォールバックしない — §16-2)。申告の
-//   取得は CAS 親(チェーンヘッド)の確定より後(§6.3 — audit-head-stale を
-//   正直クライアントに事実上到達不能にする)
-// - 422(CheckpointStateMismatch)の再試行は有界: ビューの再取得・再検証・
-//   再署名(公証する場合は申告の取り直しを含む)。使い切った場合は受理時点
-//   一致が確認できた環境の部分集合(直近 2 回の構築で不変だったタプル)で
-//   1 回だけ発行を試みる(部分基準は基準ゼロより強い — §6.3)
-// - 受理後照合(§12-10 (3)): 成功はチェーン同期で自エントリの着地を確認して
-//   はじめて報告する(2xx は輸送層の事実でしかない)。intent(3-F)は
-//   積まない — checkpoint はローカル状態を前進させず、未確認の着地が後続の
-//   判断を汚す経路がない(裁定は docs/notes/session-35.md)
+// - Refresh the view right before issuing → build the manifest reference
+//   and values_digest from the verified view (a verified pull) (never sign
+//   server-declared values as-is — §16-2). Coverage is every environment in
+//   the verified view (SHOULD; environments with a verified deletion
+//   statement are not included) — trigger (i) [after rotate + re-encryption
+//   completes] is a single tuple for that environment (the ruling is
+//   docs/notes/session-35.md)
+// - Only effective-admin authority (min(token scope, chain role) — §9-2)
+//   notarizes the audit head. The scope comes from /auth/me's tokenScopes
+//   and the role is **decided up front** from the verified view (no fallback
+//   after hitting a 403 — §16-2). The attestation is fetched after the CAS
+//   parent (the chain head) is settled (§6.3 — makes audit-head-stale
+//   practically unreachable for an honest client)
+// - Retries on 422 (CheckpointStateMismatch) are bounded: refetch the view,
+//   re-verify, re-sign (including refetching the attestation when
+//   notarizing). When the budget is spent, issuance is attempted exactly
+//   once with the subset of environments whose acceptance-time match held
+//   (the tuples unchanged across the last two builds — a partial baseline is
+//   stronger than none — §6.3)
+// - Post-acceptance reconciliation (§12-10 (3)): success is reported only
+//   after a chain sync confirms own entry landed (a 2xx is only a
+//   transport-layer fact). No intent (3-F) is accumulated — a checkpoint
+//   does not advance local state, so there is no path by which an
+//   unconfirmed landing could taint later decisions (the ruling is
+//   docs/notes/session-35.md)
 
 import {
   AuditHeadNotReadyError,
@@ -52,32 +60,34 @@ import { requireEnvironmentInScope } from "./scope.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironment } from "./values.ts";
 
-/** 422 再試行の上限(使い切ったら部分集合発行を 1 回だけ試みる)。 */
+/** The cap on 422 retries (when spent, a subset issuance is attempted exactly once). */
 const MAX_STATE_MISMATCH_ATTEMPTS = 3;
-/** CAS 競合(409)の再署名リトライの上限(チェーン CAS の既存慣行と同水準)。 */
+/** The cap on re-signing retries for a CAS conflict (409) (same level as the existing chain-CAS convention). */
 const MAX_HEAD_CONFLICT_ATTEMPTS = 5;
 /**
- * AuditHeadNotReady(503 — 監査ヘッド派生列の有界伸長が未完了。AUDIT_SPEC
- * §5.1 / AUTH_SPEC §16-2)の再試行上限。1 回の失敗応答でもサーバー側は上限
- * いっぱい(1 万行)前進しているため、予算 × サーバー上限 = 1 実行あたり
- * 10 万行の伸長が保証される。枯渇はエラーにするが、進捗は保存済みなので
- * 再実行が続きから前進する(メッセージで案内 — session-38 裁定 AG)。
+ * The retry cap for AuditHeadNotReady (503 — the bounded extension of the
+ * audit-head derived column is incomplete; AUDIT_SPEC §5.1 / AUTH_SPEC
+ * §16-2). A single failure response still advances the server side by its
+ * full cap (10k rows), so budget x server cap = 100k rows of extension per
+ * run is guaranteed. Exhaustion is an error, but progress is saved so a
+ * re-run continues from where it left off (guided by the message —
+ * session-38 ruling AG).
  */
 const MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS = 10;
 
-/** AuditHeadNotReady 枯渇時の案内(fetch / 送信の両経路で共通)。 */
+/** The guidance shown on AuditHeadNotReady exhaustion (shared by the fetch and send paths). */
 const AUDIT_HEAD_NOT_READY_EXHAUSTED = `The server is still materializing the audit-head hash column after ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS} attempts (this happens once, on the first audit-head access of a project with a very large existing audit log). Progress is saved server-side and every attempt advances it — re-run the command to continue where it left off`;
 
-/** 発行契機 (iii) の基準経過(7 日 — CRYPTO_SPEC §6.3 の起草値)。 */
+/** The baseline age for issuance trigger (iii) (7 days — the drafted value of CRYPTO_SPEC §6.3). */
 const CHECKPOINT_PROPOSAL_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** 発行結果(表示・終了コードの材料)。 */
+/** The issuance result (the material for display and the exit code). */
 export interface CheckpointSummary {
-  /** 公証した環境 ID(バイト昇順 = payload 順)。 */
+  /** The notarized environment IDs (ascending byte order = payload order). */
   readonly environmentIds: readonly string[];
-  /** 全環境カバー(SHOULD)から漏れた環境と理由(部分集合発行時のみ非空)。 */
+  /** The environments left out of the all-environments coverage (SHOULD), with the reason (non-empty only for a subset issuance). */
   readonly skippedEnvironmentIds: readonly string[];
-  /** 監査ヘッドを公証したか(実効権限 admin のみ — §16-2)。 */
+  /** Whether the audit head was notarized (effective admin only — §16-2). */
   readonly attestedAuditHead: boolean;
   readonly headSeq: number;
   readonly warnings: readonly string[];
@@ -88,17 +98,19 @@ export interface CheckpointInput {
   readonly verified: VerifiedProject;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   /**
-   * カバー対象。"all" = 検証済みビュー内の全環境(検証済み削除ステートメントの
-   * ある環境を除く — §6.3)。明示リストは契機 (i)(rotate 完了後の当該環境)用。
+   * The coverage target. "all" = every environment in the verified view
+   * (except environments with a verified deletion statement — §6.3). An
+   * explicit list is for trigger (i) (the environment whose rotate just
+   * completed).
    */
   readonly environmentIds: "all" | readonly EnvironmentId[];
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
-  /** 環境ごとの床ハンドル(検証済み pull の検査・コミット用)。 */
+  /** The per-environment floor handle (for the verified pull's checks and commit). */
   readonly floorFor: (environmentId: EnvironmentId) => Effect.Effect<FloorHandle, CliError>;
 }
 
-/** UTF-8 バイト昇順の比較(payload の生成順 SHOULD — CRYPTO_SPEC §6.2)。 */
+/** Ascending UTF-8 byte order comparison (the payload generation order SHOULD — CRYPTO_SPEC §6.2). */
 function compareUtf8Bytes(a: string, b: string): number {
   const encoder = new TextEncoder();
   const left = encoder.encode(a);
@@ -113,7 +125,7 @@ function compareUtf8Bytes(a: string, b: string): number {
   return left.length - right.length;
 }
 
-/** 1 環境ぶんの構築済みタプル(比較可能な形 — 部分集合退避の判定材料)。 */
+/** One environment's built tuple (a comparable shape — the material for the subset-fallback decision). */
 interface BuiltTuple {
   readonly environmentId: string;
   readonly epoch: number;
@@ -139,9 +151,10 @@ function sameTuple(a: BuiltTuple, b: BuiltTuple | undefined): boolean {
 }
 
 /**
- * 実効権限 admin(min(トークンスコープ, チェーン role) — §9-2)の事前判定。
- * role は検証済みビュー、スコープは /auth/me の tokenScopes(欠落 = セッション
- * 主体 = 本人のフルパワー)から取り、403 を踏まない(§16-2)。
+ * The up-front decision of effective-admin authority (min(token scope,
+ * chain role) — §9-2). The role comes from the verified view and the scope
+ * from /auth/me's tokenScopes (absent = a session principal = the user's
+ * full power); no 403 is hit (§16-2).
  */
 function determineAuditAttestation(input: {
   readonly client: MaruhiClient;
@@ -163,11 +176,14 @@ function determineAuditAttestation(input: {
 }
 
 /**
- * カバー対象の確定("all" = チェーン導出環境 − 検証済み削除 − **自分の scope 外**)。
- * scope 外の環境は値付き pull ができず公証できない(CRYPTO_SPEC §6.2 `checkpoint` は
- * 全タプルの環境 ∈ actor scope、§6.3 環境横断 (i) — 2026-09-15 ES K4)。除外は
- * `outOfScope` に返し、呼び出し側が SHOULD 警告に載せる(全環境カバーの SHOULD から
- * 漏れた理由を黙らせない)。明示リスト(契機 (i))は scope 外なら型付きエラー。
+ * Resolving the coverage targets ("all" = chain-derived environments -
+ * verified deletions - **outside one's own scope**). An out-of-scope
+ * environment cannot be value-pulled and cannot be notarized (CRYPTO_SPEC
+ * §6.2 `checkpoint` requires every tuple's environment in actor scope; §6.3
+ * cross-environment (i) — 2026-09-15 ES K4). Exclusions are returned via
+ * `outOfScope` so the caller puts them on a SHOULD warning (the reason for
+ * missing the all-environments SHOULD must not be silenced). An explicit
+ * list (trigger (i)) is a typed error when out of scope.
  */
 function resolveTargets(
   input: CheckpointInput,
@@ -209,11 +225,13 @@ function resolveTargets(
 }
 
 /**
- * 検証済みビューの構築: 対象環境を順に検証済み pull し、タプルを組み立てる。
- * ビューは pull の有界再同期で前進しうる — 最後の pull のビューを署名基準
- * (CAS 親)にし、タプルの epoch はそのビューのチェーン導出値を写す(合意規則の
- * エントリ時点厳密一致)。pull と署名の間の変化は受理段(409 / 422)が検出し、
- * 有界再試行が吸収する。
+ * Building the verified view: verified-pull each target environment in
+ * order and assemble the tuples. The view may advance via a pull's bounded
+ * resync — the last pull's view becomes the signing basis (the CAS parent)
+ * and each tuple's epoch copies that view's chain-derived value (the
+ * consensus rule's exact match at entry time). A change between pull and
+ * signing is detected by the acceptance stage (409 / 422) and absorbed by
+ * bounded retries.
  */
 function buildTuples(
   input: CheckpointInput,
@@ -288,11 +306,13 @@ function buildTuples(
 }
 
 /**
- * 監査ヘッド申告の取得(実効権限 admin の場合のみ呼ばれる — §16-2)。
- * AuditHeadNotReady(503 — 遅延実体化の有界伸長が未完了)は専用の有界再試行で
- * 吸収する: サーバー側の進捗は呼び出しごとに保存され必ず前進するため、即時
- * 再試行が生産的(バックオフ不要)。枯渇時は発生条件と再実行での解消を案内する
- * (黙って一般エラーに落とさない)。`maruhi audit reconcile` も共有する。
+ * Fetching the audit-head attestation (called only for effective admin —
+ * §16-2). AuditHeadNotReady (503 — the lazy materialization's bounded
+ * extension is incomplete) is absorbed by a dedicated bounded retry: the
+ * server-side progress is saved per call and always advances, so an
+ * immediate retry is productive (no backoff needed). On exhaustion the
+ * message guides the cause and the fix by re-running (never silently drop
+ * to a generic error). `maruhi audit reconcile` shares this too.
  */
 export function fetchAuditHead(
   client: MaruhiClient,
@@ -324,7 +344,7 @@ export function fetchAuditHead(
   });
 }
 
-/** 署名 → 追記 → 受理後照合(§12-10 (3))の 1 試行。 */
+/** One attempt of sign → append → post-acceptance reconciliation (§12-10 (3)). */
 function sendCheckpoint(input: {
   readonly client: MaruhiClient;
   readonly view: VerifiedProject;
@@ -356,19 +376,22 @@ function sendCheckpoint(input: {
       failureText: "Failed to sign the checkpoint entry",
     });
     yield* appendCheckpoint(input.client, input.view, entry);
-    // 受理後照合(§12-10 (3)): 検証済みチェーン上の自エントリの確認。2xx は
-    // 輸送層の事実でしかない — 成功の報告はこの確認を通過した場合のみ
+    // Post-acceptance reconciliation (§12-10 (3)): confirming own entry on
+    // the verified chain. A 2xx is only a transport-layer fact — success is
+    // reported only after this confirmation passes
     yield* confirmAccepted(entry, input.resync);
     return { headSeq: entry.seq };
   });
 }
 
 /**
- * 追記の送信。409(CAS)と 422(CheckpointStateMismatch)は型のまま呼び出し
- * 側の再試行へ返す。転送層の失敗(応答消失)は「着地したかもしれない」を明示
- * して失敗にする — checkpoint はローカル状態を前進させず、着地済みでも未着地
- * でも再実行が安全(着地済みなら新しいヘッドでの再公証になるだけ)なので、
- * rotate のような着地 probe は要らない(裁定は docs/notes/session-35.md)。
+ * Sending the append. 409 (CAS) and 422 (CheckpointStateMismatch) are
+ * returned as their types for the caller's retry. A transport-layer
+ * failure (a lost response) fails with "may or may not have landed"
+ * explicit — a checkpoint does not advance local state and re-running is
+ * safe either way (if it landed, it simply becomes the baseline on a newer
+ * head), so a landing probe like rotate's is unnecessary (the ruling is
+ * docs/notes/session-35.md).
  */
 function appendCheckpoint(
   client: MaruhiClient,
@@ -404,9 +427,9 @@ function appendCheckpoint(
 }
 
 /**
- * 受理後照合(§12-10 (3)): 再同期した検証済みチェーンの当該 seq に自エントリの
- * ハッシュが載っていること。載っていなければ受理は確認できていない(2xx でも
- * 成功と報告しない)。
+ * Post-acceptance reconciliation (§12-10 (3)): own entry's hash must sit
+ * on the re-synced verified chain at that seq. If absent, acceptance is
+ * unconfirmed (success is not reported even on a 2xx).
  */
 function confirmAccepted(
   entry: ChainEntry,
@@ -435,8 +458,10 @@ function confirmAccepted(
 }
 
 /**
- * カバー対象ゼロは失敗(scope 外だけが残る場合はその旨)、scope 外の除外は SHOULD 警告
- * (全環境カバーの SHOULD から漏れた理由を黙らせない — 設計録 K4-M)。
+ * Zero coverage targets is a failure (when only out-of-scope ones remain,
+ * say so); the out-of-scope exclusion is a SHOULD warning (the reason for
+ * missing the all-environments SHOULD must not be silenced — design record
+ * K4-M).
  */
 function scopeCoverageNotes(
   targets: readonly EnvironmentId[],
@@ -461,8 +486,10 @@ function scopeCoverageNotes(
 }
 
 /**
- * `maruhi project checkpoint`(契機 (ii))と rotate 完了後の周期分(契機 (i))の
- * 共有実装。CRYPTO_SPEC §6.3 の発行 SHOULD の再試行・部分集合退避を含む。
+ * The shared implementation of `maruhi project checkpoint` (trigger (ii))
+ * and the periodic issuance after a rotate completes (trigger (i)).
+ * Includes the retries and subset fallback of the CRYPTO_SPEC §6.3
+ * issuance SHOULD.
  */
 export function issueCheckpoint(
   input: CheckpointInput,
@@ -476,12 +503,14 @@ export function issueCheckpoint(
     let previous: BuiltView | null = null;
     let subset: readonly EnvironmentId[] | null = null;
     for (;;) {
-      // 型注釈は generator 内の自己参照推論(built → subset → built)を断つため
+      // The type annotation cuts the generator's self-referential inference (built → subset → built)
       const built: BuiltView = yield* buildTuples(input, subset ?? targets);
       warnings.push(...built.warnings);
-      // 監査ヘッド申告は CAS 親(署名基準のチェーンヘッド)の確定より後に取得
-      // する(§6.3 — 先に取ると間に着地した他者の checkpoint で audit-head-stale
-      // に落ちる)。422 の再試行では申告も取り直す(§16-2)
+      // The audit-head attestation is fetched after the CAS parent (the
+      // chain head the signing is based on) is settled (§6.3 — fetching it
+      // earlier falls into audit-head-stale via someone else's checkpoint
+      // landing in between). A 422 retry refetches the attestation too
+      // (§16-2)
       const auditHeadHashHex = attest
         ? yield* fetchAuditHead(input.client, input.verified.projectId)
         : "";
@@ -506,8 +535,9 @@ export function issueCheckpoint(
           warnings,
         });
       }
-      // 再試行可能な失敗の吸収(型注釈は built と同じ理由 — generator 内の
-      // 自己参照推論を断つ): null = そのまま再試行、配列 = 部分集合へ退避
+      // Absorbing a retriable failure (the type annotation is for the same
+      // reason as built — cutting the generator's self-referential
+      // inference): null = retry as-is, array = fall back to the subset
       const nextSubset: readonly EnvironmentId[] | null = yield* absorbSendFailure({
         failure: attempt,
         counters,
@@ -524,7 +554,7 @@ export function issueCheckpoint(
   });
 }
 
-/** issueCheckpoint の再試行カウンタ(失敗種別ごとの独立予算)。 */
+/** issueCheckpoint's retry counters (an independent budget per failure kind). */
 interface RetryCounters {
   mismatch: number;
   headConflict: number;
@@ -532,18 +562,23 @@ interface RetryCounters {
 }
 
 /**
- * 送信失敗(再試行可能な 3 種)の吸収。返り値 null = ビューを取り直して
- * そのまま再試行、配列 = 部分集合へ退避(§6.3)。予算枯渇は種別ごとの案内で
- * 確定失敗にする。
+ * Absorbing a send failure (the three retriable kinds). Return null =
+ * refetch the view and retry as-is, array = fall back to the subset
+ * (§6.3). Budget exhaustion becomes a definitive failure with per-kind
+ * guidance.
  *
- * - head-conflict(409): 再署名して再試行(既存慣行の上限)
- * - audit-head-not-ready(503): 申告の取得と受理の間に大量の監査行(一括
- *   var.read 等)が追記され、受理側の再伸長が上限に達した形。失敗応答でも
- *   サーバーの伸長は前進済みなので、ビューと申告を取り直して再試行すれば
- *   収束する(進捗保存 — AUDIT_SPEC §5.1)。枯渇は黙らせず発生条件と再実行での
- *   解消を案内する(session-38 裁定 AG)
- * - state-mismatch(422): ビューの再取得で再試行し、上限到達後は直近 2 回の
- *   構築で不変だったタプルの部分集合で 1 回だけ発行する(§6.3 の退避経路)
+ * - head-conflict (409): re-sign and retry (the existing convention's cap)
+ * - audit-head-not-ready (503): the shape where a large batch of audit
+ *   rows (bulk var.read etc.) was appended between the attestation fetch
+ *   and acceptance, and the accepting side's re-extension hit its cap.
+ *   Even on a failure response the server's extension has advanced, so
+ *   refetching the view and the attestation and retrying converges
+ *   (progress saved — AUDIT_SPEC §5.1). Exhaustion is not silenced: the
+ *   message guides the cause and the fix by re-running (session-38 ruling
+ *   AG)
+ * - state-mismatch (422): retry with a refetched view; past the cap, issue
+ *   exactly once with the subset of tuples unchanged across the last two
+ *   builds (the §6.3 fallback path)
  */
 function absorbSendFailure(input: {
   readonly failure:
@@ -591,7 +626,7 @@ function absorbSendFailure(input: {
   });
 }
 
-/** 受理後の要約(部分集合発行時は skipped で全環境カバー(SHOULD)の漏れを明示)。 */
+/** The post-acceptance summary (for a subset issuance, skipped makes the miss of the all-environments SHOULD explicit). */
 function summarizeAccepted(input: {
   readonly targets: readonly EnvironmentId[];
   readonly subset: readonly EnvironmentId[] | null;
@@ -610,11 +645,14 @@ function summarizeAccepted(input: {
 }
 
 /**
- * 受理段の AuditHeadNotReady(503)の吸収: 申告の取得と受理の間に大量の監査行
- * (一括 var.read 等)が追記され、受理側の再伸長が上限に達した形。失敗応答でも
- * サーバーの伸長は前進済みなので、ビューと申告を取り直して再試行すれば収束する
- * (進捗保存 — AUDIT_SPEC §5.1)。枯渇は黙らせず発生条件と再実行での解消を
- * 案内する(session-38 裁定 AG)。
+ * Absorbing AuditHeadNotReady (503) at the acceptance stage: the shape
+ * where a large batch of audit rows (bulk var.read etc.) was appended
+ * between the attestation fetch and acceptance, and the accepting side's
+ * re-extension hit its cap. Even on a failure response the server's
+ * extension has advanced, so refetching the view and the attestation and
+ * retrying converges (progress saved — AUDIT_SPEC §5.1). Exhaustion is
+ * not silenced: the message guides the cause and the fix by re-running
+ * (session-38 ruling AG).
  */
 function absorbAcceptanceNotReady(attempts: number, io: CliIoShape): Effect.Effect<void, CliError> {
   if (attempts >= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS) {
@@ -625,7 +663,7 @@ function absorbAcceptanceNotReady(attempts: number, io: CliIoShape): Effect.Effe
   );
 }
 
-/** CAS 競合(409)の再署名リトライの残量検査(使い切ったら確定失敗)。 */
+/** The remaining-budget check for CAS-conflict (409) re-signing retries (spent = definitive failure). */
 function ensureHeadConflictBudget(attempts: number): Effect.Effect<void, CliError> {
   return attempts >= MAX_HEAD_CONFLICT_ATTEMPTS
     ? Effect.fail(
@@ -637,9 +675,10 @@ function ensureHeadConflictBudget(attempts: number): Effect.Effect<void, CliErro
 }
 
 /**
- * 部分集合退避(§6.3): 直近 2 回の構築(baseline / built)で不変だったタプルの
- * 環境 ID を返す。退避不能(既に部分集合で再失敗した = baseline なし、または
- * 安定な環境が 1 つもない)は確定失敗。
+ * The subset fallback (§6.3): returns the environment IDs of the tuples
+ * unchanged across the last two builds (baseline / built). When the
+ * fallback is impossible (already re-failed on a subset = no baseline, or
+ * no stable environment at all) it is a definitive failure.
  */
 function stableSubsetOrFail(input: {
   readonly built: BuiltView;
@@ -672,7 +711,7 @@ function stableSubsetOrFail(input: {
   return Effect.succeed(stableIds);
 }
 
-/** sendCheckpoint の失敗の分類(再試行の型はここで判別、その他は確定失敗)。 */
+/** Classifying sendCheckpoint's failure (the retriable kinds are discriminated here; anything else is a definitive failure). */
 function classifySendFailure(
   error: ChainHeadConflictError | CheckpointStateMismatchError | AuditHeadNotReadyError | CliError,
 ): Effect.Effect<
@@ -694,32 +733,36 @@ function classifySendFailure(
 }
 
 // ---------------------------------------------------------------------------
-// 発行契機 (iii): push / pull 成功時の提案(CRYPTO_SPEC §6.3 — 7 日超経過
-// または未発行の検出)。基準は実効権限で分かれる: admin =「最新の公証あり
-// (audit_head_hash 非空)チェックポイント」、それ以外 =「最新のチェック
-// ポイント」— 分けないと member の発行が admin の契機を潰し、公証済み接頭辞が
-// 前進しなくなる。
+// Issuance trigger (iii): the proposal on push / pull success (CRYPTO_SPEC
+// §6.3 — detecting a baseline older than 7 days or never issued). The
+// baseline differs by effective authority: admin = "the latest notarized
+// (non-empty audit_head_hash) checkpoint", others = "the latest
+// checkpoint" — without the split a member's issuance would squash an
+// admin's trigger and the notarized prefix would never advance.
 //
-// **未発行の読み方(DP5 裁定 C)**: 「未発行」は基準が genesis のままである
-// ことなので、経過日数は **genesis の時刻から**数える。境界チェックポイント
-// (複合に同梱 — boundary-checkpoint.ts)は公証なしのため、この読み方をしない
-// と実効権限 admin の利用者には**プロジェクト作成の当日から** push / pull の
-// たびに提案が出る(公証すべき監査ログがまだ無い段階での提案 = 無視する訓練
-// になる)。7 日の閾値は同じで、「発行済みの基準が古い」と「基準が無いまま
-// 7 日過ぎた」を同じ節目で扱う。
+// **How to read "never issued" (DP5 ruling C)**: "never issued" means the
+// baseline is still genesis, so the elapsed days are counted **from
+// genesis's time**. A boundary checkpoint (bundled into a compound —
+// boundary-checkpoint.ts) is not notarized, so without this reading an
+// effective-admin user would get the proposal on every push / pull
+// **starting the day the project was created** (a proposal while there is
+// no audit log to notarize yet = training to ignore it). The 7-day
+// threshold is the same, and "the issued baseline is old" and "no baseline
+// for 7 days" are treated at the same milestone.
 // ---------------------------------------------------------------------------
 
-/** 契機 (iii) の提案文(接頭辞 `Note:` は notice.ts が付ける)。 */
+/** The proposal text of trigger (iii) (the `Note:` prefix is added by notice.ts). */
 const PLAIN_BASELINE_PROPOSAL =
   "this project's checkpoint baseline is more than 7 days behind (or was never issued). Run `maruhi project checkpoint` to refresh the rollback-detection baseline (CRYPTO_SPEC §6.3)";
 const ATTESTED_BASELINE_PROPOSAL =
   "this project's latest notarized checkpoint is more than 7 days behind (or was never issued). Run `maruhi project checkpoint` to advance the notarized audit prefix (AUDIT_SPEC §6)";
 
 /**
- * 基準チェックポイント(無ければ genesis)が 7 日超古いか。基準が無ければ
- * genesis の時刻(entries[0])から数える(DP5 裁定 C)。エントリが 1 つも無い
- * 検証済みビューは存在しない(genesis 必須)が、型の上では undefined なので、
- * その場合は提案側(fail-open で 1 行の Note)に倒す。
+ * Whether the baseline checkpoint (genesis if none) is more than 7 days
+ * old. With no baseline, count from genesis's time (entries[0]) (DP5
+ * ruling C). A verified view with no entry at all cannot exist (genesis is
+ * mandatory), but the type allows undefined — fall to the proposing side
+ * (fail-open, a single Note line).
  */
 function baselineIsStale(
   entry: ChainEntry | null,
@@ -730,7 +773,7 @@ function baselineIsStale(
   return baselineMs === undefined || nowMs - baselineMs > CHECKPOINT_PROPOSAL_AGE_MS;
 }
 
-/** チェーン上の最新 checkpoint エントリ(公証あり限定の切り替え付き)。 */
+/** The latest checkpoint entry on the chain (with a switch restricting to notarized ones). */
 function latestCheckpointEntry(
   verified: VerifiedProject,
   attestedOnly: boolean,
@@ -748,11 +791,13 @@ function latestCheckpointEntry(
 }
 
 /**
- * push / pull 成功時の発行提案(契機 (iii))。提案するときだけ /auth/me を引く
- * (実効権限の確定はスコープを要するが、提案の頻度でスコープ取得の往復を
- * 増やさない — role が admin 未満なら公証なし基準で確定する)。返り値は
- * 表示すべき提案行(null = 提案なし)。timestampMs はクライアント申告時刻で、
- * 提案の閾値判定にのみ使う(検証には使わない)。
+ * The issuance proposal on push / pull success (trigger (iii)). /auth/me
+ * is fetched only when a proposal is about to be made (deciding the
+ * effective authority needs the scope, but the proposal's frequency must
+ * not add scope-fetching round trips — a role below admin settles on the
+ * un-notarized baseline). The return value is the proposal line to display
+ * (null = no proposal). timestampMs is the client-declared time, used only
+ * for the proposal's threshold decision (not for verification).
  */
 export function checkpointProposal(input: {
   readonly client: MaruhiClient;
@@ -763,7 +808,7 @@ export function checkpointProposal(input: {
   return Effect.gen(function* () {
     const member = input.verified.state.members.get(input.signerUserId);
     if (member === undefined || member.role === "reader") {
-      // 発行は member 以上(§6.2)。reader には提案しない
+      // Issuance is member or above (§6.2). No proposal for a reader
       return null;
     }
     const plainBasis = latestCheckpointEntry(input.verified, false);
@@ -777,8 +822,9 @@ export function checkpointProposal(input: {
     if (!stale(attestedBasis)) {
       return null;
     }
-    // 公証あり基準が古い: 実効権限(スコープ半分)を確かめてから提案の文面を
-    // 決める。/auth/me は提案が成立しかけたときにだけ引く
+    // The notarized baseline is stale: check the effective authority (the
+    // scope half) before deciding the proposal's wording. /auth/me is
+    // fetched only when the proposal is about to hold
     const effectiveAdmin = yield* determineAuditAttestation(input).pipe(
       Effect.catch(() => Effect.succeed(false)),
     );
@@ -790,16 +836,18 @@ export function checkpointProposal(input: {
 }
 
 /**
- * アンカー更新の提案(session-25 §8 / CRYPTO_SPEC §6.3 (b) SHOULD の後半)。
- * rotate 成功時は無条件(アンカーのエポック床が古くなる — アンカーの中核の
- * 検出材料)、push 成功時は契機 (iii) の提案と**同じ 1 行**に同梱する(裁定は
- * docs/notes/session-35.md — アンカー使用の有無をローカルで知れないため、
- * push ごとの無条件出力は提案を無視させる訓練になる。DP5 裁定 C で 2 行 →
- * 1 行に畳んだ)。
+ * The anchor-refresh proposal (session-25 §8 / the second half of
+ * CRYPTO_SPEC §6.3 (b) SHOULD). On rotate success it is unconditional (the
+ * anchor's epoch floor goes stale — the core detection material of the
+ * anchor); on push success it is bundled into **the same single line** as
+ * the trigger (iii) proposal (the ruling is docs/notes/session-35.md —
+ * since local code cannot know whether an anchor is in use, an
+ * unconditional output on every push would train users to ignore the
+ * proposal. DP5 ruling C folded it from 2 lines to 1).
  */
 export const ANCHOR_REFRESH_PROPOSAL =
   "If this project commits a repository anchor for CI (CRYPTO_SPEC §6.3), refresh it afterwards: `maruhi project anchor > <anchor-file>` and commit the update";
 
-/** rotate 成功時のアンカー提案(エポックが進んだ = アンカーは確実に古い)。 */
+/** The anchor proposal on rotate success (the epoch advanced = the anchor is certainly stale). */
 export const ANCHOR_STALE_AFTER_ROTATION =
   "the epoch advanced, so a committed repository anchor (if any) is now stale. Refresh it: `maruhi project anchor > <anchor-file>` and commit the update (CRYPTO_SPEC §6.3)";

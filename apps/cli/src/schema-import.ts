@@ -1,26 +1,34 @@
-// `maruhi schema import <file>`(ブートストラップ — 設計文書 §1-3・発見 A)。
+// `maruhi schema import <file>` (bootstrap — design doc §1-3, finding A).
 //
-// 儀式の形(4 段):
-//   (1) 明示の位置引数で指定された .env / .env.example をクライアント側でのみ
-//       読む(env-file.ts — 値は読み取り直後に Redacted。型推論 = 形の観察のみ)
-//   (2) 変数ごとの対話承認(編集可)。名前・型候補・required(作成既定 true)・
-//       description 候補を提示し、承認 / 編集 / スキップを選べる
-//   (3) 承認分を declared として登録(schemaSetOp の宣言作成部品を再利用 —
-//       requireCreation)。値が実値と判断され、利用者が変数ごとに明示選択した
-//       場合のみ値 push = activation まで同時に行う(既存 pushVariable の再利用。
-//       既定は値を送信しない)
-//   (4) 完了時に元ファイルの削除を提案する(明示確認の上でのみ削除。既定は
-//       削除しない — 「.env.example の最後の仕事は、署名付きスキーマになること」)
+// The ceremony's shape (4 stages):
+//   (1) Read the .env / .env.example named by the explicit positional
+//       argument on the client side only (env-file.ts — the value is
+//       Redacted right after reading. Type inference = shape observation
+//       only)
+//   (2) Per-variable interactive approval (editable). Present the name,
+//       type candidate, required (creation default true), and
+//       description candidate; approve / edit / skip can be chosen
+//   (3) Register the approved ones as declared (reusing schemaSetOp's
+//       declaration-creation piece — requireCreation). Only when the
+//       value is judged a real value and the user explicitly opts in per
+//       variable does it also push the value = activation (reusing the
+//       existing pushVariable. The default is to send no value)
+//   (4) On completion, offer to delete the source file (deleted only on
+//       explicit confirmation. The default is not to delete — "a
+//       .env.example's last job is to become a signed schema")
 //
-// **対話承認が儀式の核**なので、一括 --yes は作らない。非対話環境(stdin /
-// stdout が端末でない)と既知エージェント検出時は型付きエラーで拒否する —
-// invite / recovery と同じ儀式系 deny の類型(ADR-0016 決定 7)。判定材料は
-// Stdio / AgentProfileRef サービス経由で取り、process.* を直に読まない。
+// **The interactive approval is the ceremony's core**, so no blanket
+// --yes is built. A non-interactive environment (stdin / stdout not a
+// terminal) or a detected known agent is refused with a typed error —
+// the same ceremony-family deny class as invite / recovery (ADR-0016
+// decision 7). The judgment material comes via the Stdio /
+// AgentProfileRef services; process.* is never read directly.
 //
-// 登録は変数ごとの複合 × マニフェスト CAS の直列実行(O(N) 往復 — 発見 F′。
-// 一括複合受理の要否は実測報告を材料にオーナーが判断する。先取りしない)。
-// 競合は schemaSetOp / pushVariable の既存リトライ規律
-// (retryOnConflict)をそのまま再利用する。
+// Registration is a serial run of per-variable composites × manifest
+// CAS (O(N) round trips — finding F'. Whether a bulk composite
+// acceptance is warranted is the owner's call on the evidence of a
+// measured report — not anticipated). Conflicts reuse schemaSetOp /
+// pushVariable's existing retry discipline (retryOnConflict) as-is.
 
 import { unlink } from "node:fs/promises";
 
@@ -49,22 +57,24 @@ import { schemaSetOp } from "./schema.ts";
 import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 
-/** description のサーバー受理上限(AUTH_SPEC §12-8 — 事前絞り込みにのみ使う)。 */
+/** The server's description acceptance cap (AUTH_SPEC §12-8 — used only for pre-filtering). */
 const MAX_DESCRIPTION_LENGTH = 1024;
 
 /**
  * Refuses the import ceremony outside an interactive human terminal: the
  * per-variable approval **is** the ritual, so there is no --yes and no
- * non-interactive path (ADR-0016 決定 7 — the invite / recovery deny class).
+ * non-interactive path (ADR-0016 decision 7 — the invite / recovery deny class).
  *
- * 境界は stdin + stdout の 2 チャネル(値表示・儀式系の一次境界と同じ)であり、
- * recovery コード・招待リンク生値の **3 チャネル**(stderr も TTY)ゲートには
- * 揃えない(意図的な線引き): あちらは「他の経路ではディスクに存在しない
- * capability / 鍵素材」が stderr へ流れるため `2>` での永続化が新しい露出
- * クラスになるが、import が stderr へ出すもの(候補の提示 — description 候補を
- * 含む)は**利用者自身のローカルファイルに既に書かれている内容**で、
- * リダイレクトしても新しい露出は生じない。値そのものはどのチャネルにも
- * 出さない(観察のみ — env-file.ts)。
+ * The boundary is the 2 channels stdin + stdout (the same first boundary
+ * as value display / the ceremony family); it deliberately does NOT
+ * match the **3-channel** gate (stderr also TTY) of recovery codes /
+ * invite link raw values: there, a "capability / key material that
+ * exists on disk via no other path" flows to stderr, so persisting it
+ * via `2>` becomes a new exposure class — whereas what import emits to
+ * stderr (the candidate presentation, including the description
+ * candidate) is **content already written in the user's own local
+ * file**, so redirecting it creates no new exposure. The value itself
+ * goes out on no channel (observation only — env-file.ts).
  */
 export const ensureImportCeremonyAllowed: Effect.Effect<void, CliError, Stdio.Stdio> =
   ensureHumanCeremonyAllowed({
@@ -74,7 +84,7 @@ export const ensureImportCeremonyAllowed: Effect.Effect<void, CliError, Stdio.St
       `Refused to run schema import: ${reason} (pipes, redirects, CI, and AI agents are refused; the per-variable approval is the core of the ceremony and there is no --yes bypass). Run it yourself in a terminal`,
   });
 
-/** import の入力(effect-cli.ts が EnvironmentContext から組む)。 */
+/** The import's input (effect-cli.ts assembles it from EnvironmentContext). */
 export interface SchemaImportInput {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -83,23 +93,23 @@ export interface SchemaImportInput {
   readonly floor: FloorHandle;
   readonly authorUserId: string;
   readonly signingKey: CryptoKey;
-  /** activation の値 push(明示選択時のみ)に使う受信者材料。 */
+  /** The recipient material for the activation value push (only on explicit opt-in). */
   readonly recipient: DekRecipient;
-  /** 表示用のファイルパス(読み込みは呼び出し側 — content で受ける)。 */
+  /** The file path for display (the caller does the reading — received as content). */
   readonly filePath: string;
-  /** ファイル内容(呼び出し側がクライアント側でのみ読む)。 */
+  /** The file content (read by the caller on the client side only). */
   readonly content: string;
 }
 
-/** 1 変数の承認結果(編集後の確定値)。 */
+/** One variable's approval result (the settled values after editing). */
 interface ApprovedCandidate {
   readonly name: string;
   readonly schema: VerifiedSchemaFields;
-  /** true = 値 push(activation)まで行う(利用者の明示選択)。 */
+  /** true = also perform the value push (activation) (the user's explicit choice). */
   readonly pushValue: boolean;
 }
 
-/** 承認ループの 1 変数分の状態(編集で上書きされる)。 */
+/** One variable's state in the approval loop (overwritten by edits). */
 interface CandidateDraft {
   name: string;
   varType: MetaVarType;
@@ -120,20 +130,20 @@ function skipReasonText(skipped: EnvFileSkippedLine): string {
   }
 }
 
-/** 候補の提示行(値そのものは出さない — 型候補と実値らしさの観察結果のみ)。 */
+/** The candidate's presentation line (never shows the value itself — only the type candidate and the real-value-ness observation). */
 function describeCandidate(draft: CandidateDraft, line: number, valueNote: string): string {
   const typeShown = draft.varType === "" ? "-" : draft.varType;
   const description = draft.description === "" ? "-" : `"${escapeText(draft.description)}"`;
   return `Line ${line}: ${displayText(draft.name)} — type=${typeShown}, required=${draft.required}, description=${description}, value=${valueNote}`;
 }
 
-/** yes/no プロンプトの解釈(y / yes のみ肯定 — 既定は否定側)。 */
+/** Interpreting a yes/no prompt (only y / yes affirm — the default is the negative). */
 function isYes(answer: string): boolean {
   const normalized = answer.trim().toLowerCase();
   return normalized === "y" || normalized === "yes";
 }
 
-/** 編集: 名前(空 = 現状維持。形式・重複は警告して現状維持)。 */
+/** Edit: the name (blank = keep as-is. Format / duplicates warn and keep as-is). */
 function editName(
   io: CliIoShape,
   draft: CandidateDraft,
@@ -147,8 +157,10 @@ function editName(
       return;
     }
     const name = answer.normalize("NFC");
-    // 形式・長さの検査はパーサ(env-file.ts)と同じ受理集合 — 編集経由だけが
-    // サーバー 400 の遅い失敗点(import ごと停止)へ素通りする形を作らない
+    // The format / length check accepts the same set as the parser
+    // (env-file.ts) — never build a shape where only the edit route
+    // passes through to the server's slow 400 failure point (stops the
+    // whole import)
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || name.length > MAX_NAME_LENGTH) {
       return yield* io.logError(
         `  Not a valid environment variable name (letters, digits and _ only, not starting with a digit, at most ${MAX_NAME_LENGTH} characters) — keeping the current name`,
@@ -163,7 +175,7 @@ function editName(
   });
 }
 
-/** 編集: 型(空 = 現状維持・none = 未指定。閉集合外は警告して現状維持)。 */
+/** Edit: the type (blank = keep as-is, none = unspecified. Outside the closed set warns and keeps as-is). */
 function editType(io: CliIoShape, draft: CandidateDraft): Effect.Effect<void, CliError> {
   return Effect.gen(function* () {
     const answer = (yield* io.promptLine({
@@ -188,7 +200,7 @@ function editType(io: CliIoShape, draft: CandidateDraft): Effect.Effect<void, Cl
   });
 }
 
-/** 編集: required(y/n。空 = 現状維持、それ以外は警告して現状維持)。 */
+/** Edit: required (y/n. blank = keep as-is; anything else warns and keeps as-is). */
 function editRequired(io: CliIoShape, draft: CandidateDraft): Effect.Effect<void, CliError> {
   return Effect.gen(function* () {
     const answer = (yield* io.promptLine({
@@ -206,7 +218,7 @@ function editRequired(io: CliIoShape, draft: CandidateDraft): Effect.Effect<void
   });
 }
 
-/** 編集: description(空 = 現状維持・"-" = クリア)。 */
+/** Edit: description (blank = keep as-is, "-" = clear). */
 function editDescription(io: CliIoShape, draft: CandidateDraft): Effect.Effect<void, CliError> {
   return Effect.gen(function* () {
     const answer = yield* io.promptLine({
@@ -222,7 +234,7 @@ function editDescription(io: CliIoShape, draft: CandidateDraft): Effect.Effect<v
   });
 }
 
-/** 編集サブプロンプト(空 = 現状維持。不正入力は警告して現状維持)。 */
+/** The edit sub-prompts (blank = keep as-is. Invalid input warns and keeps as-is). */
 function editDraft(
   io: CliIoShape,
   draft: CandidateDraft,
@@ -236,16 +248,16 @@ function editDraft(
   });
 }
 
-/** 承認ループの結果。 */
+/** The approval loop's outcome. */
 type ApprovalOutcome =
   | { readonly kind: "approved"; readonly approved: ApprovedCandidate }
   | { readonly kind: "skipped" }
   | { readonly kind: "stopped" };
 
-/** 承認ループの 1 周の結果(approve = y の確定。retry = 提示からやり直し)。 */
+/** One turn of the approval loop's outcome (approve = the y confirmation. retry = restart from the presentation). */
 type ApprovalStep = ApprovalOutcome | { readonly kind: "retry" };
 
-/** 承認プロンプトへの応答の解釈(表示・副作用を持たない純関数)。 */
+/** Interpreting the approval prompt's answer (a pure function with no display or side effects). */
 function interpretApprovalAnswer(raw: string): "approve" | "edit" | "skip" | "stop" | "invalid" {
   const answer = raw.trim().toLowerCase();
   if (answer === "s" || answer === "") {
@@ -261,8 +273,9 @@ function interpretApprovalAnswer(raw: string): "approve" | "edit" | "skip" | "st
 }
 
 /**
- * エントロピー検出時の専用の明示確認(fail-closed — 裁定 CW の対話形。
- * 非対話経路が存在しないため --allow-high-entropy 相当は不要)。
+ * The dedicated explicit confirmation on an entropy finding (fail-closed
+ * — ruling CW's interactive form. Since no non-interactive path exists,
+ * no --allow-high-entropy equivalent is needed).
  */
 function confirmHighEntropy(io: CliIoShape): Effect.Effect<boolean, CliError> {
   return Effect.gen(function* () {
@@ -278,8 +291,9 @@ function confirmHighEntropy(io: CliIoShape): Effect.Effect<boolean, CliError> {
 }
 
 /**
- * 候補の提示 + エントロピー警告(裁定 CW)+ 1 回分の応答の解釈。検出時に
- * そのまま承認するには専用の明示確認("yes")を要求する。
+ * The candidate presentation + the entropy warning (ruling CW) + one
+ * round of answer interpretation. Approving as-is on a finding requires
+ * the dedicated explicit confirmation ("yes").
  */
 function approvalStep(
   io: CliIoShape,
@@ -293,9 +307,11 @@ function approvalStep(
     const finding =
       findHighEntropySubstring(draft.description) ?? findHighEntropySubstring(draft.name);
     if (finding !== null) {
-      // 警告は検出値そのものを運ばない(秘密でありうる — entropy.ts の規律)
-      // 候補ごとの警告(同じ候補の再試行・同じ形の別候補でも毎回出す — 台帳の
-      // 抑制対象にしない)。候補の直下に字下げして付ける
+      // The warning never carries the found value itself (it may be a
+      // secret — entropy.ts's discipline). Per-candidate warning (emitted
+      // every time — on a retry of the same candidate and on another
+      // candidate of the same shape — never a ledger-suppressed item).
+      // Attached indented directly below the candidate
       yield* logWarning(
         `the candidate looks like it contains a secret-like high-entropy string (a ${finding.length}-character ${finding.kind} run). Schema metadata is stored in plaintext and is visible to the server — edit it out with "e", or approving will ask for an explicit confirmation`,
         { scope: "prompt" },
@@ -339,9 +355,10 @@ function approvalStep(
 }
 
 /**
- * 1 変数の対話承認(編集可 — 設計文書 §1-3 (2))。承認が確定したら、実値らしい
- * 値に限り「値 push = activation まで行うか」の変数ごとの明示選択を続けて聞く
- * (既定 = 送信しない)。
+ * One variable's interactive approval (editable — design doc §1-3 (2)).
+ * Once the approval settles, only for a value that looks real does it
+ * continue to ask the per-variable explicit choice "push the value = go
+ * as far as activation?" (default = do not send).
  */
 function approveCandidate(
   io: CliIoShape,
@@ -349,9 +366,10 @@ function approveCandidate(
   isNameTaken: (name: string) => boolean,
 ): Effect.Effect<ApprovalOutcome, CliError, CliIo> {
   return Effect.gen(function* () {
-    // 忠実に解釈できたと言えない値(閉じない引用符・引用値内のエスケープ —
-    // env-file.ts)は観察にも掛けず、push の提案も出さない(fail-closed —
-    // 誤読した値を暗号化して黙って保存する経路を作らない)
+    // A value that cannot be said to parse faithfully (unclosed quotes,
+    // escapes inside a quoted value — env-file.ts) is neither observed
+    // nor offered a push (fail-closed — never build a path that encrypts
+    // a misread value and silently stores it)
     const observed = entry.valueFaithful
       ? observeValue(entry.value)
       : ({ varType: "", looksReal: false } as const);
@@ -367,10 +385,11 @@ function approveCandidate(
       description: entry.descriptionCandidate,
     };
     if (draft.description.length > MAX_DESCRIPTION_LENGTH) {
-      // 候補の提示(approvalStep の describeCandidate)より前に出るので、項目に
-      // ぶら下がる prompt スコープにはしない(字下げが直前の項目に付いてしまう)。
-      // 行番号を含むので候補ごとに一意で、再試行で繰り返す必要もない
-      // (捨てたのは 1 回)
+      // Emitted before the candidate's presentation (approvalStep's
+      // describeCandidate), so not given the prompt scope that hangs
+      // under an item (the indent would attach to the previous item).
+      // Since it carries the line number it is unique per candidate and
+      // needs no repeating on retry (the discard happened once)
       yield* logNote(
         `the comment above line ${entry.line} exceeds the ${MAX_DESCRIPTION_LENGTH}-character description limit and was discarded — add a shorter one with "e"`,
       );
@@ -384,9 +403,10 @@ function approveCandidate(
       if (step.kind !== "approved" || !observed.looksReal) {
         return step;
       }
-      // 値の送信は常に利用者の変数ごとの明示選択(既定 = 送信しない)。送信は
-      // 宣言登録の後の pushVariable = activation 複合で行われ、値は E2EE の
-      // まま(平文はサーバー API を通らない)
+      // Sending a value is always the user's per-variable explicit choice
+      // (default = do not send). The send happens as the pushVariable =
+      // activation composite after the declaration registers, and the
+      // value stays E2EE (plaintext never crosses the server API)
       const pushAnswer = yield* io.promptLine({
         prompt: `  Also push the value from the file (end-to-end encrypted; activates ${displayText(draft.name)})? [y/N]: `,
       });
@@ -398,19 +418,20 @@ function approveCandidate(
   });
 }
 
-/** import の結果(表示は本関数内 — stdout は結果の要約のみ)。 */
+/** The import's result (display lives inside this function — stdout carries only the result's summary). */
 export interface SchemaImportSummary {
   readonly declared: number;
   readonly activated: number;
   readonly skipped: number;
-  /** 削除提案まで到達したか(q での中断・候補ゼロでは提案しない)。 */
+  /** Whether the deletion offer was reached (never offered on a q interruption or zero candidates). */
   readonly deletionOffered: boolean;
   readonly deleted: boolean;
 }
 
 /**
- * 承認済み 1 変数の宣言登録(schemaSetOp の宣言作成部品の再利用 —
- * requireCreation で既存変数への再発行に切り替わらない)。
+ * Registering one approved variable's declaration (reusing schemaSetOp's
+ * declaration-creation piece — requireCreation keeps it from switching
+ * into reissuing onto an existing variable).
  */
 function declareApproved(
   input: SchemaImportInput,
@@ -443,9 +464,10 @@ function declareApproved(
 }
 
 /**
- * 明示選択された値 push(activation — 既存 pushVariable の再利用: declared に
- * 解決され activation 複合を組む)。値はここで初めて Redacted<string> →
- * Redacted<Uint8Array> に写す。
+ * The explicitly-chosen value push (activation — reusing the existing
+ * pushVariable: resolves to declared and assembles the activation
+ * composite). Here the value is transcribed for the first time:
+ * Redacted<string> → Redacted<Uint8Array>.
  */
 function pushApprovedValue(
   input: SchemaImportInput,
@@ -454,8 +476,9 @@ function pushApprovedValue(
 ): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // 剥がす理由: エンコードの入力。産物は再び Redacted で、平文はこの式の
-    // 外へ出ない(暗号化は push.ts の既存境界)
+    // Reason for unwrapping: the encoding's input. The product is again
+    // Redacted and the plaintext never leaves this expression (encryption
+    // is push.ts's existing boundary)
     const value = Redacted.make(new TextEncoder().encode(Redacted.value(entry.value)), {
       label: "variable-value",
     });
@@ -485,9 +508,10 @@ function pushApprovedValue(
 }
 
 /**
- * 完了時の元ファイル削除の提案(設計文書 §1-3 (4) — 明示確認の上でのみ削除。
- * 既定は削除しない)。呼び出し側が「全候補が今回宣言された」ことを確認済み —
- * プロンプトの文言はその事実を主張する。
+ * The offer to delete the source file on completion (design doc §1-3
+ * (4) — deleted only on explicit confirmation. The default is not to
+ * delete). The caller has already confirmed "every candidate was
+ * declared this run" — the prompt's wording asserts that fact.
  */
 function offerSourceDeletion(
   input: SchemaImportInput,
@@ -511,13 +535,14 @@ function offerSourceDeletion(
 }
 
 /**
- * Imports schema candidates from a parsed .env / .env.example file (設計文書
- * §1-3): per-variable interactive approval, declared-only registration through
- * `schemaSetOp` (one composite × manifest CAS per variable, executed serially
- * — O(N) round trips, 発見 F′), optional per-variable value push (activation)
- * and, on completion, an explicit offer to delete the source file.
+ * Imports schema candidates from a parsed .env / .env.example file
+ * (design doc §1-3): per-variable interactive approval, declared-only
+ * registration through `schemaSetOp` (one composite × manifest CAS per
+ * variable, executed serially — O(N) round trips, finding F'), optional
+ * per-variable value push (activation) and, on completion, an explicit
+ * offer to delete the source file.
  */
-/** 承認 → 登録の直列ループ(変数ごとの複合 × マニフェスト CAS — O(N)。発見 F′)。 */
+/** The serial approve → register loop (per-variable composite × manifest CAS — O(N). Finding F'). */
 function runApprovalLoop(
   input: SchemaImportInput,
   entries: readonly EnvFileEntry[],
@@ -530,9 +555,10 @@ function runApprovalLoop(
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const importedNames = new Set<string>();
-    // 編集(e)での改名は、ファイル内の**未処理の候補**の名前とも衝突させない
-    // (後続の候補が requireCreation の「already exists」で import ごと止まる
-    // ローカル衝突を、編集時点の警告で防ぐ)
+    // A rename via edit (e) may collide with no name — not even an
+    // **unprocessed candidate** in the file (a local collision that would
+    // stop the whole import on a later candidate's requireCreation
+    // "already exists" is prevented by a warning at edit time)
     const fileNames = new Set(entries.map((candidate) => candidate.name));
     const counts = { declared: 0, activated: 0, skipped: 0, stopped: false };
     for (const entry of entries) {
@@ -541,8 +567,9 @@ function runApprovalLoop(
         importedNames.has(name) ||
         (fileNames.has(name) && name !== entry.name);
       if (existingNames.has(entry.name)) {
-        // 既存の active / declared と同名の候補は既定でスキップして表示する —
-        // 再発行は `schema set` の領分(設計文書 §1-3 の線引き)
+        // A candidate named like an existing active / declared is skipped
+        // by default and shown — reissuing is `schema set`'s domain (the
+        // design doc §1-3's boundary)
         yield* io.logError(
           `Skipped ${displayText(entry.name)} (line ${entry.line}): a variable with this name already exists — reissue its schema with \`maruhi schema set\``,
         );
@@ -584,8 +611,9 @@ export function schemaImportOp(
       yield* io.log("No importable variables found in the file");
       return { declared: 0, activated: 0, skipped: 0, deletionOffered: false, deleted: false };
     }
-    // 既存名の照合材料(検証済みステートメントのみ — §12-2。active / declared の
-    // 両方が variables に混在する §12-7)と disabled advisory の一度きりの案内
+    // The matching material for existing names (verified statements only
+    // — §12-2. Both active and declared are mixed into variables §12-7)
+    // and the one-time guidance for the disabled advisory
     const metadata = yield* pullVerifiedEnvironmentMetadata(input);
     yield* logWarnings(metadata.warnings);
     if (metadata.advisorySchemaPolicy === "disabled") {
@@ -602,10 +630,12 @@ export function schemaImportOp(
     yield* io.log(
       `Import finished: ${countNoun(declared, "variable")} declared (${activated} with a value pushed), ${countNoun(skipped, "candidate")} skipped${stopped ? " — stopped before the end" : ""}`,
     );
-    // 完了時の削除提案(設計文書 §1-3 (4))は「ファイルの全候補が今回宣言
-    // された」実行に限る: q での中断・スキップした候補(s / 既存名)・解釈
-    // できなかった行が 1 つでも残るなら、ファイルの「最後の仕事」はまだ
-    // 終わっていない(全スキップの実行に「宣言済み」を主張する提案を出さない)
+    // The completion-time deletion offer (design doc §1-3 (4)) is limited
+    // to a run where "every candidate in the file was declared this
+    // time": if an interruption via q, a skipped candidate (s / existing
+    // name), or an uninterpretable line remains, the file's "last job" is
+    // not done (never emit an offer that asserts "declared" on an
+    // all-skipped run)
     const everyCandidateDeclared =
       !stopped && declared > 0 && skipped === 0 && parsed.skipped.length === 0;
     if (!everyCandidateDeclared) {

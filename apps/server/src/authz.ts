@@ -1,10 +1,12 @@
-// チェーン API のリクエスト認可ヘルパ(AUTH_SPEC §9-2 / §11)。
+// Request authorization helpers for the chain API (AUTH_SPEC §9-2 / §11).
 //
-// - チェーン role の認可は verifyChain(CRYPTO_SPEC §6.2)が真実源。ここで行うのは
-//   「トークンスコープ側の必要条件」(実効権限 = min(スコープ, チェーン role) の
-//   スコープ半分)と、認証主体とエントリ actor の一致(§11-1)のみ
-// - スコープが対象プロジェクトを覆っていない場合は 404(存在秘匿。§11-2)、
-//   覆っているが権限水準が足りない場合は 403
+// - Chain-role authorization has verifyChain (CRYPTO_SPEC §6.2) as its source
+//   of truth. What happens here is only the "necessary condition on the token
+//   scope side" (the scope half of effective permission = min(scope, chain
+//   role)) and the match between the authenticated principal and the entry
+//   actor (§11-1)
+// - If the scope does not cover the target project: 404 (existence hiding,
+//   §11-2); if it covers it but the permission level is insufficient: 403
 
 import { ForbiddenError, ProjectNotFoundError } from "@maruhi/api-schema";
 import type { AuthenticatedPrincipal, TokenPermission } from "@maruhi/core";
@@ -13,17 +15,20 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 /**
- * 追記エントリが要求するトークン権限水準(AUTH_SPEC §6 / §16-2)。
- * `create_environment` / `rotate_epoch` = write(ただしこの 2 op は複合
- * エンドポイント経由のみで、汎用 append はハンドラが CompositeRequired で
- * 先に拒否する — ここの写像は表の網羅性のために保持)、`checkpoint` は
- * payload 依存: 空 audit_head_hash = write、非空 = admin(§16-2 — 実効権限
- * admin のスコープ半分。チェーン role 半分は DO が判定する)。端末鍵の 2 op
- * (§11-1 — 2026-09-19 DK): `add_device` と対象 = 自分の `revoke_device` = write
- * (端末の追加はその後のバックフィル〔write〕、失効はその後の rotate〔write〕を
- * 伴う — read トークンでは行えない)、対象 = 他人の `revoke_device` = admin
- * (`remove_member` と同じ)。メンバー / サーバー鍵管理系 = admin。append に
- * genesis が来た場合も admin(verifyChain が bad-genesis で拒否する)。
+ * The token permission level an appended entry requires (AUTH_SPEC §6 /
+ * §16-2). `create_environment` / `rotate_epoch` = write (these 2 ops are
+ * only reachable via the composite endpoints, though — the handler rejects a
+ * generic append with CompositeRequired first; the mapping here is kept for
+ * the table's exhaustiveness). `checkpoint` is payload-dependent: empty
+ * audit_head_hash = write, non-empty = admin (§16-2 — the scope half of
+ * effective permission admin; the chain-role half is judged by the DO). The
+ * 2 device-key ops (§11-1 — 2026-09-19 DK): `add_device` and `revoke_device`
+ * whose target is oneself = write (adding a device is followed by a
+ * backfill [write], revocation by a rotate [write] — a read token cannot do
+ * these), `revoke_device` whose target is another = admin (same as
+ * `remove_member`). Member / server-key management = admin. A genesis
+ * arriving at append is also admin (verifyChain rejects it with
+ * bad-genesis).
  */
 export function requiredPermissionForEntry(entry: ChainEntry): TokenPermission {
   if (entry.op === "checkpoint") {
@@ -38,7 +43,7 @@ export function requiredPermissionForEntry(entry: ChainEntry): TokenPermission {
   return entry.op === "rotate_epoch" || entry.op === "create_environment" ? "write" : "admin";
 }
 
-/** §11-1: 認証主体の内部 user_id と entry.actor.user_id の厳密一致(受理ポリシー)。 */
+/** §11-1: exact match between the authenticated principal's internal user_id and entry.actor.user_id (acceptance policy). */
 export function ensureActorMatches(
   principal: AuthenticatedPrincipal,
   entry: ChainEntry,
@@ -49,10 +54,12 @@ export function ensureActorMatches(
 }
 
 /**
- * 既存プロジェクトへの操作: スコープ外 = 404(§11-2)、水準不足 = 403。
- * セッション主体はスコープを持たず素通しする — ここへ到達するセッションは
- * §5 の能力制限(AuthMiddleware の宣言層)を通過済みの許可列挙面(読み取り +
- * 失効系)に限られ、チェーン role が束縛する。
+ * Operations on an existing project: out of scope = 404 (§11-2),
+ * insufficient level = 403. Session principals carry no scope and pass
+ * through — a session reaching this point is limited to the allow-enumerated
+ * surface (reads + revocation kinds) that has passed §5's capability
+ * restriction (AuthMiddleware's declaration layer), and the chain role is
+ * the binding.
  */
 export function ensureTokenScopeForProject(
   principal: AuthenticatedPrincipal,
@@ -72,12 +79,14 @@ export function ensureTokenScopeForProject(
 }
 
 /**
- * 非表明のスコープ水準判定(実効権限 = min(スコープ, チェーン role) のスコープ
- * 半分を**確かめるだけ**の形 — 監査読み取りのクラス 2 可視性の材料。AUDIT_SPEC
- * §6 の可視性クラスはチェーン role で定義されるが、盗まれた read スコープの
- * トークンに同僚の読み取りパターン(クラス 2)を開示しないため、スコープ側も
- * admin を要求する)。セッション主体はスコープを持たず素通しする(§5 の能力
- * 制限を通過済みの許可列挙面に限られる — ensureTokenScopeForProject と同じ)。
+ * Non-asserting scope-level check (a shape that **only checks** the scope
+ * half of effective permission = min(scope, chain role) — material for the
+ * class-2 visibility of audit reads. AUDIT_SPEC §6 visibility classes are
+ * defined by chain role, but so that a stolen read-scoped token cannot be
+ * shown colleagues' read patterns (class 2), the scope side also requires
+ * admin). Session principals carry no scope and pass through (limited to the
+ * allow-enumerated surface that passed §5's capability restriction — same as
+ * ensureTokenScopeForProject).
  */
 export function tokenScopeAllowsForProject(
   principal: AuthenticatedPrincipal,
@@ -92,15 +101,17 @@ export function tokenScopeAllowsForProject(
 }
 
 /**
- * プロジェクト一覧の候補列挙に渡すスコープ交差フィルタ(AUTH_SPEC §11-5)。
- * null = 制限なし(セッション主体・`*` スコープを含むトークン)、それ以外は
- * スコープが名指しするプロジェクト ID の重複排除済み列(どの permission も
- * read 以上なので全エントリが一覧の資格を満たす)。空列 = 見えるプロジェクトが
- * 存在しない(呼び出し側は候補列挙自体を省く)。
+ * The scope-intersection filter handed to candidate enumeration for the
+ * project list (AUTH_SPEC §11-5). null = no restriction (session principals,
+ * tokens carrying a `*` scope); otherwise the deduplicated list of project
+ * IDs the scope names (every permission is read or higher, so all entries
+ * qualify for the list). An empty list = no visible project exists (the
+ * caller skips candidate enumeration entirely).
  *
- * 交差を**候補索引の段**で行うのは応答行の絞り込みのためだけではない:
- * `nextAfter` カーソルは候補ページの末尾から出るため、後段の絞り込みだけでは
- * スコープ外の project_id(ID = capability)がカーソルに載って漏れる。
+ * The intersection happens at the **candidate-index stage** not merely to
+ * narrow response rows: the `nextAfter` cursor is emitted from the tail of
+ * the candidate page, so filtering only at a later stage would leak
+ * out-of-scope project_ids (ID = capability) onto the cursor.
  */
 export function scopedProjectIdsFor(principal: AuthenticatedPrincipal): readonly string[] | null {
   if (principal.kind !== "token") {
@@ -113,18 +124,22 @@ export function scopedProjectIdsFor(principal: AuthenticatedPrincipal): readonly
 }
 
 /**
- * 鍵素材クラスの操作のトークン条件(AUTH_SPEC §13-2 / §15-2): トークン主体は
- * `*` × admin スコープを含む場合のみ可。リカバリーブロブの登録・再発行・取得
- * (スコープ限定トークンにラップの置換 = 可用性攻撃や要監視のブロブ取得を
- * 許さない)に加え、招待の受諾にも適用する(B1a 裁定 — 受諾は「自分の公開鍵を
- * 自分の user_id に束縛して宣言する」鍵宣言クラスの操作であり、CI 等の露出し
- * やすい文脈に置かれるスコープ限定トークンの窃取と招待リンクの複合で攻撃者鍵を
- * 束縛する経路を、FP 相互確認 — CRYPTO_SPEC §6.5 — の手前で塞ぐ)。
+ * Token requirement for operations of the key-material class (AUTH_SPEC
+ * §13-2 / §15-2): a token principal is allowed only when it includes the
+ * `*` × admin scope. Applies to recovery-blob registration, reissuance, and
+ * fetch (a scoped token must not be allowed wrap replacement = availability
+ * attack, or watchlisted blob fetches), and also to invite acceptance (B1a
+ * ruling — acceptance is a key-declaration-class operation, "declaring a
+ * binding of one's own public key to one's own user_id", and the path where
+ * stealing a scope-limited token placed in an exposure-prone context such as
+ * CI, combined with an invite link, binds an attacker key is closed off
+ * before FP mutual confirmation — CRYPTO_SPEC §6.5).
  *
- * セッション主体は拒否(§5 の能力制限 — §13-2 / §15-2 の表 = トークンのみ)。
- * 通常は AuthMiddleware の宣言層(SESSION_ALLOWED_ENDPOINTS)が先に 403 を
- * 返すため到達しない — ここは同方向の fail-closed の第 2 層であり、独立の
- * 真実源ではない。
+ * Session principals are denied (§5 capability restriction — the §13-2 /
+ * §15-2 table = tokens only). Normally unreachable because AuthMiddleware's
+ * declaration layer (SESSION_ALLOWED_ENDPOINTS) returns 403 first — this is
+ * a same-direction fail-closed second layer, not an independent source of
+ * truth.
  */
 export function ensureKeyMaterialAccess(
   principal: AuthenticatedPrincipal,
@@ -141,12 +156,14 @@ export function ensureKeyMaterialAccess(
 }
 
 /**
- * 本人軸の監査読み取り(AUDIT_SPEC §6 — `GET /auth/audit/events`)の主体条件:
- * セッション主体は可(§5 の許可列挙「監査読み取り」)、トークン主体は `*` ×
- * admin スコープを含む場合のみ可(§13-2 と同水準 — 要監視イベントを含む
- * アカウント全域の履歴を、露出しやすいスコープ限定トークンに読ませない)。
- * 鍵素材クラス(上の ensureKeyMaterialAccess — §5 でセッション拒否へ反転)とは
- * セッション側の規範が異なるため独立の関数に分ける。
+ * Principal requirement for the self-axis audit read (AUDIT_SPEC §6 —
+ * `GET /auth/audit/events`): session principals allowed (§5's allow
+ * enumeration "audit read"); token principals only when they include the
+ * `*` × admin scope (same level as §13-2 — an account-wide history that
+ * includes watchlisted events must not be readable by an exposure-prone
+ * scoped token). Kept as a separate function from the key-material class
+ * (ensureKeyMaterialAccess above — flips to session-denied under §5)
+ * because the session-side norm differs.
  */
 export function ensureSelfAuditAccess(
   principal: AuthenticatedPrincipal,
@@ -163,14 +180,18 @@ export function ensureSelfAuditAccess(
 }
 
 /**
- * トークン管理面(AUTH_SPEC §6 — W3a: 一覧 `GET /auth/tokens`・指定失効)の
- * 主体条件: セッション主体は可(§5 の許可列挙)、トークン主体は `*` × admin
- * スコープを含む場合のみ。指定失効は §13-2 の鍵素材条件と同水準(スコープ限定
- * トークンの窃取で他のトークンを失効させる可用性攻撃の遮断 — §6)。一覧も同条件
- * (裁定 CH — 本人軸監査 ensureSelfAuditAccess と同じ理由: アカウント全域の
- * トークン目録 = 偵察材料を、露出しやすいスコープ限定トークンに読ませない)。
- * 判定は呼び出し主体の資格情報のみから計算でき、対象トークンの情報を運ばない
- * (裁定 CG の判定順 — 403 が一様 404 より先でも存在情報を漏らさない)。
+ * Principal requirement for the token-management surface (AUTH_SPEC §6 —
+ * W3a: listing `GET /auth/tokens`, targeted revocation): session principals
+ * allowed (§5's allow enumeration); token principals only when they include
+ * the `*` × admin scope. Targeted revocation is the same level as §13-2's
+ * key-material condition (blocking the availability attack where a stolen
+ * scoped token revokes other tokens — §6). Listing is under the same
+ * condition (ruling CH — same reason as self-axis audit
+ * ensureSelfAuditAccess: an account-wide token inventory = reconnaissance
+ * material must not be readable by an exposure-prone scoped token). The
+ * decision is computable solely from the caller's credentials and carries
+ * no information about the target token (ruling CG's ordering — returning
+ * 403 before the uniform 404 still leaks no existence information).
  */
 export function ensureTokenManagementAccess(
   principal: AuthenticatedPrincipal,
@@ -179,8 +200,9 @@ export function ensureTokenManagementAccess(
 }
 
 /**
- * プロジェクト作成(init): まだ存在しないプロジェクトなので存在秘匿の対象外。
- * スコープ不足はすべて 403。必要水準は admin(AUTH_SPEC §6)。
+ * Project creation (init): the project does not exist yet, so it is outside
+ * existence hiding. Any insufficient scope is 403. The required level is
+ * admin (AUTH_SPEC §6).
  */
 export function ensureTokenScopeForInit(
   principal: AuthenticatedPrincipal,

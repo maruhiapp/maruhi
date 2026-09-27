@@ -1,29 +1,41 @@
-// ワークロードリースの Effect プログラム(AUTH_SPEC §14 = CRYPTO_SPEC §9.1)。
+// The Effect program for workload leases (AUTH_SPEC §14 = CRYPTO_SPEC §9.1).
 //
-// **開封と再ラップを DO 内で行う理由**: リースは監査 3 種(server.dek_unwrapped /
-// server.lease_issued / server.lease_denied — AUDIT_SPEC §3.5)を伴い、
-// 「配布したものだけを記録する」ためには応答の材料を読む処理と監査追記が同一
-// permit・同一同期ブロックに入っている必要がある。worker 側で開封すると
-// 「ラップを取りに行く RPC」と「監査を書く RPC」に割れ、原子性が壊れる。
+// **Why unwrap and re-wrap inside the DO**: a lease involves three audit
+// events (server.dek_unwrapped / server.lease_issued / server.lease_denied —
+// AUDIT_SPEC §3.5), and to "record only what was distributed", the code that
+// reads the response material and the audit append must be inside the same
+// permit and the same synchronous block. Unwrapping on the worker side would
+// split it into "the RPC that fetches wraps" and "the RPC that writes audit",
+// breaking atomicity.
 //
-// 平文 DEK はこのプログラムにも現れない: 開封 + 再ラップは ServerKey の
-// クロージャ内で一体に行われ(server-key.ts)、返るのはリースラップだけである。
+// No plaintext DEK appears in this program either: unwrap + re-wrap happen as
+// one unit inside a ServerKey closure (server-key.ts), and only lease wraps
+// come back.
 //
-// 判定順(§14-3。OIDC 検証は worker 側で完了済み = ここは認可以降):
-//   1. チェーン導出の有効 grant(サーバー鍵 FP で同定)+ lease_policy の
-//      存在量化 + 開示スコープ → いずれの不一致も一律 404(§11-2 の存在秘匿)。
-//      **区別できないのは応答(ステータス + ボディ)であってレイテンシではない**:
-//      未知プロジェクトはストレージ 1 読みで短絡し、実在プロジェクトはチェーン
-//      検証と監査書き込みを行うため測定可能な差がある。タイミングは脅威モデル外
-//      (未認証面で定数時間を狙うのは非現実的)という判断
-//   1.5 先着束縛(§14-1。2026-08-15 裁定)— 同一トークン + 別鍵は 401
-//      `token-replayed`。認可の直後・環境存在の判定より前(束縛済みトークンの
-//      コピー保持者に、環境の実在によらず一様 401 を返す — §14-3)。読み取りのみで
-//      レート窓を消費しない
-//   2. 環境の存在(削除済みは 404 — §12-4 と同じ扱い)
-//   3. レート制限(429)— 認可の後(errors/lease.ts の論拠)
-//   4. サーバー宛ラップの存在(欠落 = 503 server-wraps-missing)
-//   5. 開封 → 再ラップ → 監査 → 応答(先着束縛の記録も同一同期ブロック)
+// Check order (§14-3; OIDC verification is already done on the worker side =
+// everything here is post-authorization):
+//   1. A chain-derived valid grant (identified by server key FP) +
+//      existential quantification of lease_policy + disclosure scope → every
+//      mismatch is uniformly 404 (§11-2 existence concealment).
+//      **What is indistinguishable is the response (status + body), not the
+//      latency**: an unknown project short-circuits after one storage read,
+//      while a real project goes through chain verification and audit writes,
+//      so there is a measurable difference. The judgment is that timing is
+//      outside the threat model (aiming for constant time on the
+//      unauthenticated surface is unrealistic)
+//   1.5 First-come binding (§14-1; 2026-08-15 ruling) — the same token + a
+//      different key gets a 401 `token-replayed`. Placed right after
+//      authorization and before the environment-existence check (returns a
+//      uniform 401 to a holder of a copy of a bound token regardless of
+//      whether the environment exists — §14-3). Read-only; does not consume
+//      the rate window
+//   2. Environment existence (a deleted one is 404 — same treatment as §12-4)
+//   3. Rate limit (429) — after authorization (the rationale in
+//      errors/lease.ts)
+//   4. Existence of wraps addressed to the server (missing = 503
+//      server-wraps-missing)
+//   5. Unwrap → re-wrap → audit → response (the first-come-binding record is
+//      in the same synchronous block)
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -41,42 +53,48 @@ import type { LeaseWrapOutput } from "./server-key.ts";
 import { ServerKey } from "./server-key.ts";
 import { observeStorageLevel, StorageMeter } from "./storage-guard.ts";
 
-/** worker が渡す、検証済み OIDC トークンのうち認可・束縛に必要な部分だけ。 */
+/** Only the parts of a verified OIDC token that authorization and binding need, passed by the worker. */
 export interface LeaseTokenFacts {
   readonly issuer: string;
   readonly subject: string;
   readonly audiences: readonly string[];
   /**
-   * claim 制約の評価対象(§14-1)。RPC 境界を渡るため structured clone 安全な
-   * 素のオブジェクトであること。**監査にも応答にも出さない**(外部識別子を
-   * 持ち込まない — §14-4 / AUDIT_SPEC §1-2)。
+   * The evaluation target of claim constraints (§14-1). Must be a plain
+   * structured-clone-safe object because it crosses the RPC boundary.
+   * **Appears in neither audit nor the response** (do not carry in external
+   * identifiers — §14-4 / AUDIT_SPEC §1-2).
    */
   readonly claims: Readonly<Record<string, unknown>>;
-  /** CRYPTO_SPEC §9.1 の claims_digest_hex(worker が crypto で計算済み)。 */
+  /** claims_digest_hex of CRYPTO_SPEC §9.1 (already computed by the worker via crypto). */
   readonly claimsDigestHex: string;
   /**
-   * 先着束縛(§14-1。2026-08-15 裁定)の重複キー = JWS signing input
-   * (`header.payload`)の SHA-256(hex 小文字。worker の verifier が署名検証
-   * 通過後に計算済み — VerifiedOidcToken.signingInputHashHex)。**生トークンの
-   * ハッシュではない**: 生トークンの署名セグメントは可鍛で、束縛を素通りできる
-   * (同 doc)。jti でもない — jti の有無・意味論は issuer 依存で、signing input
-   * ハッシュは issuer に何も要求しない(docs/notes/session-24.md §4)。
+   * The dedup key of the first-come binding (§14-1; 2026-08-15 ruling) = the
+   * SHA-256 of the JWS signing input (`header.payload`), lowercase hex
+   * (computed by the worker's verifier after signature verification —
+   * VerifiedOidcToken.signingInputHashHex). **Not a hash of the raw token**:
+   * the raw token's signature segment is malleable and could slip past the
+   * binding (same doc). Nor is it jti — jti's presence and semantics depend on
+   * the issuer, while the signing-input hash requires nothing of the issuer
+   * (docs/notes/session-24.md §4).
    */
   readonly bindingKeyHex: string;
   /**
-   * 束縛行の生存期限(ms)。worker が「トークンの exp + 保持余裕
-   * (policy.ts — 時刻検証の clock skew 以上であることを導出で保証)」で計算する。
+   * Lifetime of the binding row (ms). The worker computes it as "the token's
+   * exp + retention margin (policy.ts — the derivation guarantees it is at
+   * least the clock skew of time validation)".
    */
   readonly bindingExpiresAtMs: number;
 }
 
 /**
- * リース応答の RPC 値。値付き一括 pull(§12-7)の形から `deks` を落とし、
- * チェーン全体(§14-2 の同梱 — 非メンバーはチェーン API から 404 を受けるため
- * ここが唯一の配布経路)とリースラップを加えたもの。
+ * The lease response's RPC value. The bulk pull-with-values shape (§12-7)
+ * minus `deks`, plus the whole chain (the §14-2 bundling — a non-member gets
+ * 404 from the chain API, so this is the only distribution path) and the
+ * lease wraps.
  */
-// schemaPolicy の advisory 同梱の対象は環境一覧・両 pull 応答のみ(§12-7 /
-// §12-11)— リース応答には載せない
+// The advisory bundling of schemaPolicy targets only the environment list and
+// the two pull responses (§12-7 / §12-11) — it is not carried on the lease
+// response
 export interface LeaseValue extends Omit<EnvironmentPullValue, "deks" | "schemaPolicy"> {
   readonly chain: readonly ChainEntry[];
   readonly headSeq: number;
@@ -84,7 +102,7 @@ export interface LeaseValue extends Omit<EnvironmentPullValue, "deks" | "schemaP
   readonly leases: readonly LeaseWrapOutput[];
 }
 
-/** リース固有の拒否(データプレーンの DataRejection とは別語彙)。 */
+/** Lease-specific rejections (a different vocabulary from the data plane's DataRejection). */
 export type LeaseRejection =
   | { readonly kind: "not-found" }
   | { readonly kind: "rate-limited"; readonly retryAfterSeconds: number }
@@ -92,22 +110,25 @@ export type LeaseRejection =
       readonly kind: "unavailable";
       readonly reason: "server-wraps-missing" | "server-key-unconfigured";
     }
-  // 先着束縛違反(§14-1): 同一トークンが既に別の一時鍵へ発行済み。worker 側で
-  // 401 `token-replayed` になる(404 に畳まない — 正規ジョブ側の失敗を診断可能に
-  // 保つのが先着束縛の可視化の半分。存在秘匿とは両立: 認可通過後にのみ到達する)
+  // First-come-binding violation (§14-1): the same token was already issued to
+  // a different ephemeral key. Becomes a 401 `token-replayed` on the worker
+  // side (not folded into 404 — keeping the legitimate job's failure
+  // diagnosable is half of the first-come binding's observability. Compatible
+  // with existence concealment: reachable only after authorization)
   | { readonly kind: "replayed" };
 
-/** RPC 境界を渡るリース結果。 */
+/** The lease result crossing the RPC boundary. */
 export type LeaseOutcome =
   | { readonly kind: "ok"; readonly value: LeaseValue }
   | { readonly kind: "rejected"; readonly rejection: LeaseRejection };
 
 /**
- * server.lease_denied(AUDIT_SPEC §3.5): **OIDC 署名検証を通過した後の拒否のみ**
- * を、固定窓の全体上限つきで記録する(auth.login_failed と同じ規律)。
- * actor は `{ type: "system" }` — 外部ワークロードは maruhi 上の識別を持たず、
- * サーバー鍵の行使でもない。payload に載せるのは理由コードと claims_digest
- * だけで、リポジトリ名等の外部識別子は書かない(§14-4)。
+ * server.lease_denied (AUDIT_SPEC §3.5): records **only rejections after OIDC
+ * signature verification passed**, under a fixed-window global bound (the same
+ * discipline as auth.login_failed). The actor is `{ type: "system" }` — an
+ * external workload has no identity on maruhi and it is not an exercise of the
+ * server key. Only the reason code and claims_digest go on the payload;
+ * external identifiers such as repository names are not written (§14-4).
  */
 const recordDenied = (reason: string, claimsDigestHex: string, nowMs: number) =>
   Effect.gen(function* () {
@@ -132,7 +153,7 @@ const recordDenied = (reason: string, claimsDigestHex: string, nowMs: number) =>
     });
   });
 
-/** 拒否 + 監査記録を 1 つにまとめる(記録漏れの経路を作らない)。 */
+/** Fold rejection + audit recording into one (leaves no path that forgets to record). */
 const denyWithAudit = (reason: string, facts: LeaseTokenFacts, nowMs: number) =>
   Effect.gen(function* () {
     yield* recordDenied(reason, facts.claimsDigestHex, nowMs);
@@ -140,10 +161,12 @@ const denyWithAudit = (reason: string, facts: LeaseTokenFacts, nowMs: number) =>
   });
 
 /**
- * 先着束縛の判定段(§14-1。2026-08-15 裁定 — docs/notes/session-24.md): 同一
- * トークンが既に**別の**一時鍵へ発行済みなら拒否する。同一トークン + 同一鍵は
- * 通す(応答喪失後の正規リトライの冪等性 — トークンをランタイム再発行できない
- * 事前発行型 issuer を壊さない)。判定は読み取りのみでレート窓を消費しない。
+ * The first-come-binding check stage (§14-1; 2026-08-15 ruling —
+ * docs/notes/session-24.md): reject when the same token was already issued to
+ * a **different** ephemeral key. The same token + the same key passes
+ * (idempotency of a legitimate retry after losing the response — do not break
+ * pre-issuing issuers whose tokens cannot be reissued at runtime). The check
+ * is read-only and does not consume the rate window.
  */
 const rejectReplayedToken = (facts: LeaseTokenFacts, ephemeralPubHex: string, nowMs: number) =>
   Effect.gen(function* () {
@@ -169,38 +192,43 @@ export const leaseProgram = (
     const serverKey = yield* ServerKey;
     const serverKeyInfo = yield* serverKey.info;
     const nowMs = Date.now();
-    // 0. サーバー鍵が未設定のデプロイメントは**プロジェクトを読む前**に落とす。
-    // 順序が重要: チェーンのロード(未初期化 = 404)を先に置くと、鍵なし
-    // デプロイメントで「未知 = 404 / 実在 = 503」の差ができてプロジェクトの
-    // 存在が漏れる(§11-2)。先に落とせば全リクエストが一様に 503 になり、
-    // 何も漏れない。理由が 404 でないのは、設定の欠落は「このプロジェクトは
-    // 存在しない」ではないため(秘密鍵なしでは開封経路自体が存在しない)
+    // 0. A deployment with no server key configured fails **before reading the
+    // project**. Order matters: if chain loading (uninitialized = 404) ran
+    // first, a keyless deployment would produce the "unknown = 404 / real =
+    // 503" split and leak the project's existence (§11-2). Failing first makes
+    // every request uniformly 503 and leaks nothing. The reason is not 404
+    // because missing configuration does not mean "this project does not
+    // exist" (without the private key the unwrap path itself does not exist)
     if (serverKeyInfo === null) {
       return yield* Effect.fail<LeaseRejection>({
         kind: "unavailable",
         reason: "server-key-unconfigured",
       });
     }
-    // 未初期化プロジェクトは監査を残さず 404 にする: 未認証経路が任意の
-    // プロジェクト ID で DO 行を作れると、監査ログの肥大 DoS になる。
-    // プロジェクト ID は genesis ハッシュ = 実質ケーパビリティであり推測できない。
-    // **なお下の固定窓が束縛するのは監査行の本数であってプローブ自体ではない**
-    // (許可 issuer の有効トークンを 1 枚持つ者は、既知のプロジェクト ID へ
-    // 要求を繰り返してチェーン導出のコストを課し、100 行/時を使い切った後は
-    // 以降の拒否が記録されない状態を作れる)。また DO のコンストラクタは到達
-    // 時点で空テーブル群を作るため、任意プロジェクト ID へのプローブは監査行を
-    // 残さなくても DO 実体化のストレージを消費する。
-    // 要求レート自体の上限は未実装で、AUDIT_SPEC §3.5 の記録上限とは別の
-    // 設計判断として申し送る
+    // An uninitialized project is 404 with no audit left behind: letting the
+    // unauthenticated path create DO rows for arbitrary project IDs would be
+    // an audit-log inflation DoS. The project ID is a genesis hash =
+    // effectively a capability and cannot be guessed. **Note the fixed window
+    // below bounds the number of audit rows, not the probe itself** (someone
+    // holding one valid token from an allowed issuer can repeat requests to a
+    // known project ID to impose chain-derivation cost, and after exhausting
+    // the 100 rows/hour can create a state where subsequent denials go
+    // unrecorded). Also, the DO constructor creates the empty tables on reach,
+    // so a probe to an arbitrary project ID consumes DO-instantiation storage
+    // even without leaving an audit row.
+    // A limit on the request rate itself is unimplemented and is deferred as a
+    // design decision separate from AUDIT_SPEC §3.5's recording bound
     const chain = yield* loadInitializedChain.pipe(
       Effect.mapError((): LeaseRejection => ({ kind: "not-found" })),
     );
-    // 導出は失敗しない(保存済みチェーンの検証失敗は defect — chain-store.ts)
+    // Derivation cannot fail (verification failure of a stored chain is a
+    // defect — chain-store.ts)
     const { state } = yield* deriveStoredState(chain, cache);
 
-    // 1. 認可: 自サーバー鍵の有効 grant × lease_policy(存在量化)× 開示スコープ。
-    // 一致するのは常に「自分の FP の grant」— サーバーは自分宛ラップしか
-    // 開封できないため、grant の同定に非決定性はない
+    // 1. Authorization: a valid grant of our own server key × lease_policy
+    // (existential quantification) × disclosure scope. What matches is always
+    // "the grant of our own FP" — the server can only unwrap wraps addressed
+    // to itself, so grant identification has no nondeterminism
     const grant = state.serverGrants.get(serverKeyInfo.serverKeyFingerprintHex);
     if (grant === undefined) {
       return yield* denyWithAudit("no-grant", facts, nowMs);
@@ -212,13 +240,15 @@ export const leaseProgram = (
       return yield* denyWithAudit("scope-out-of-range", facts, nowMs);
     }
 
-    // 1.5 先着束縛(§14-1)。認可の直後・環境存在の判定より**前**に置く —
-    // 束縛済みトークンのコピー保持者には対象環境の実在・削除状態によらず一様に
-    // 401 を返し、環境の存在情報を与えない(§14-3)
+    // 1.5 First-come binding (§14-1). Placed right after authorization and
+    // **before** the environment-existence check — a holder of a copy of a
+    // bound token gets a uniform 401 regardless of whether the target
+    // environment exists or is deleted, so no existence information is given
+    // (§14-3)
     yield* rejectReplayedToken(facts, ephemeralPubHex, nowMs);
     const store = yield* DataStore;
 
-    // 2. 環境の存在(削除済み tombstone は 404)
+    // 2. Environment existence (a deleted tombstone is 404)
     yield* requireActiveEnvironment(environmentId).pipe(
       Effect.matchEffect({
         onFailure: () => denyWithAudit("environment-not-found", facts, nowMs),
@@ -226,11 +256,13 @@ export const leaseProgram = (
       }),
     );
 
-    // 3. レート制限の**判定**(認可の後 — 存在秘匿のため。errors/lease.ts)。
-    // 消費は「実際にリースを発行したとき」だけ行う(下の 6)。ここで消費すると、
-    // サーバー宛ラップ欠落(4)や開封失敗(5)で 503 になるプロジェクトの CI が
-    // 再試行のたびに枠を食い、300 回目以降は「直せる診断」である 503 が無関係な
-    // 429 に化ける — §14-3 が 503 をわざわざ設けた意図が打ち消される
+    // 3. The rate limit **check** (after authorization — for existence
+    // concealment; errors/lease.ts). Consumption happens only "when a lease is
+    // actually issued" (step 6 below). Consuming here would make a project
+    // that 503s on missing server wraps (4) or unwrap failure (5) burn its
+    // window on every CI retry, and from the 300th retry onward the 503 — a
+    // "diagnosable, fixable" failure — turns into an unrelated 429, defeating
+    // the point of §14-3 deliberately providing a 503
     const window = yield* store.checkLeaseWindow("issued", MAX_LEASES_PER_WINDOW, nowMs);
     if (!window.allowed) {
       yield* recordDenied("rate-limited", facts.claimsDigestHex, nowMs);
@@ -240,9 +272,10 @@ export const leaseProgram = (
       });
     }
 
-    // 4. サーバー宛ラップの存在(欠落 = 503。grant 済みだが再ラップ未了の状態を
-    // 不透明な失敗にしない — §14-3。A1 の裁定どおり、バックフィル漏れに対する
-    // 最後の砦がここ)
+    // 4. Existence of wraps addressed to the server (missing = 503; do not
+    // let the "granted but re-wrap incomplete" state become an opaque failure
+    // — §14-3. Per the A1 ruling, this is the last line of defense against a
+    // missed backfill)
     const serverWraps = yield* store.listServerWraps(
       environmentId,
       serverKeyInfo.serverKeyFingerprintHex,
@@ -254,18 +287,20 @@ export const leaseProgram = (
     }
     const variables = yield* store.latestVersions(environmentId);
     const deletedVariables = yield* store.deletedVariableStatements(environmentId);
-    // declared 変数のステートメント(§12-7 の配布規則をリース応答にも適用 —
-    // ワークロードのマニフェストダイジェスト再計算〔§9.1 (5)〕の材料)
+    // Statements of declared variables (apply the §12-7 distribution rules to
+    // the lease response too — material for the workload's manifest-digest
+    // recomputation [§9.1 (5)])
     const declaredVariables = yield* store.declaredVariableStatements(environmentId);
-    // 最新マニフェスト(§14-2 — ワークロードの検証義務 §9.1 (5) の
-    // 材料。受信側は欠落を一律拒否する)
+    // The latest manifest (§14-2 — material for the workload's verification
+    // obligation §9.1 (5); the receiving side rejects any missing uniformly)
     const manifest = yield* store.environmentManifest(environmentId);
-    // チェックポイント時点の値スナップショット(§14-2 — §12-7 と同じ材料。
-    // 基準を持たない環境では null = 載せない)
+    // The value snapshot at the checkpoint (§14-2 — the same material as
+    // §12-7; null for an environment without a baseline = not included)
     const checkpointSnapshot = yield* store.checkpointSnapshot(environmentId);
 
-    // 応答内の最新値が使用する全エポック + 現エポック(§14-2)。過不足なく
-    // 揃っていることを要求する — 1 つでも欠ければ復号できない値が応答に載る
+    // Every epoch used by the latest values in the response + the current
+    // epoch (§14-2). Require the full set with no gaps — if even one is
+    // missing, an undecryptable value would ride on the response
     const neededEpochs = [
       ...new Set([currentEpoch, ...variables.map((variable) => variable.epoch)]),
     ].toSorted((a, b) => a - b);
@@ -280,7 +315,7 @@ export const leaseProgram = (
     }
     const wraps = usable.filter((wrap) => wrap !== undefined);
 
-    // 5. 開封 → 再ラップ(平文 DEK は ServerKey のクロージャ外へ出ない)
+    // 5. Unwrap → re-wrap (no plaintext DEK escapes the ServerKey closure)
     const leases = yield* serverKey
       .reseal({
         projectId: chain.genesisHashHex,
@@ -293,10 +328,12 @@ export const leaseProgram = (
         Effect.matchEffect({
           onFailure: (failure) =>
             Effect.gen(function* () {
-              // 開封失敗 = 毒ラップ(§12-6 の修復経路の対象)、再ラップ失敗 =
-              // ワークロード公開鍵が点として不正。どちらも「grant はあるが
-              // 使える材料がない」状態であり、server-wraps-missing と同じ
-              // 503 に畳む(理由の細分は運用者向けの監査行が持つ)
+              // Unwrap failure = a poisoned wrap (the target of the §12-6
+              // repair path); re-wrap failure = the workload public key is
+              // invalid as a point. Both are "a grant exists but no usable
+              // material", so they fold into the same 503 as
+              // server-wraps-missing (the finer reason lives in the
+              // operator-facing audit row)
               yield* recordDenied(`reseal-${failure}`, facts.claimsDigestHex, nowMs);
               return yield* Effect.fail<LeaseRejection>({
                 kind: "unavailable",
@@ -307,19 +344,22 @@ export const leaseProgram = (
         }),
       );
 
-    // DO ストレージ総量ガードの観測のみ(AUTH_SPEC §12-8 — 拒否しない。リースは
-    // 拒否下でも受理する面 (e) だが監査行を書く読み取りなので警告の観測点を
-    // 持つ — 値付き pull と同じ理由)。認可の後 = 存在秘匿(§11-2)と両立
+    // Observation only for the DO storage total guard (AUTH_SPEC §12-8 — no
+    // rejection. A lease is one of the surfaces accepted even under rejection
+    // (e), but since it is a read that writes audit rows it carries a warning
+    // observation point — same reason as pull-with-values). After
+    // authorization = compatible with existence concealment (§11-2)
     yield* observeStorageLevel;
-    // 監査(AUDIT_SPEC §3.5): server.dek_unwrapped をエポックごと 1 行 +
-    // server.lease_issued を環境単位 1 行。actor は `{ server, 鍵 FP }`。
-    // **var.read は記録しない**(人間 actor の読み取りの証跡であり、
-    // ワークロードへの開示は server.* 系が担う — §14-4)
+    // Audit (AUDIT_SPEC §3.5): one server.dek_unwrapped row per epoch + one
+    // server.lease_issued row per environment. The actor is `{ server, key FP
+    // }`. **No var.read is recorded** (that is the evidence of a human actor's
+    // read; disclosure to workloads is carried by the server.* family — §14-4)
     const audit = yield* AuditStore;
     yield* Effect.sync(() => {
-      // 6. 窓の消費・先着束縛の記録は発行と同一同期ブロックで(記録した分だけ
-      // 数える / 発行なしに束縛だけが残る・発行されたのに束縛が残らない、の
-      // どちらの中間状態も作らない — §14-1)
+      // 6. Window consumption and the first-come-binding record happen in the
+      // same synchronous block as issuance (count only what was recorded /
+      // create neither intermediate state — "a binding left without an
+      // issuance" nor "issued but no binding left" — §14-1)
       store.recordLeaseWindowUse("issued", nowMs);
       store.recordLeaseBinding(
         facts.bindingKeyHex,
@@ -343,9 +383,10 @@ export const leaseProgram = (
           actorKeyFingerprintHex: serverKeyInfo.serverKeyFingerprintHex,
           environmentId,
           payload: {
-            // 一致した policy 要素はチェーン(grant payload)が保持しており、
-            // grant_chain_seq + claims_digest で突合できる。外部識別子
-            // (リポジトリ名等)は書かない(§14-4)
+            // The matching policy element is held by the chain (the grant
+            // payload) and can be cross-checked via grant_chain_seq +
+            // claims_digest. No external identifiers (repository names etc.)
+            // are written (§14-4)
             grantChainSeq: grant.grantSeq,
             claimsDigest: facts.claimsDigestHex,
             epochs: leases.map((lease) => lease.epoch),

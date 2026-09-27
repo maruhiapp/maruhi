@@ -1,35 +1,43 @@
-// 復元 worker(運営専用・非 HTTP・非常設) — docs/notes/hosted-ops.md §2-E / §5-2。
+// The restore worker (operator-only, non-HTTP, non-permanent) —
+// docs/notes/hosted-ops.md §2-E / §5-2.
 //
-// `wrangler deploy -c wrangler.restore.jsonc` で復元作業のときだけデプロイし、終わったら
-// `wrangler delete -c wrangler.restore.jsonc` で消す。HTTP ハンドラを持たない: 起動は
-// 毎分の cron で、仕事は退避バケットの `restore/jobs/<name>.json` を列挙して実行し、
-// `restore/results/<name>.json` に結果(静的コード + 検証値)を書くことだけ。ジョブを
-// 置けるのは R2 への書き込み権限を持つ運営のみ。
+// Deployed only during a restore operation via
+// `wrangler deploy -c wrangler.restore.jsonc`, and deleted afterward
+// via `wrangler delete -c wrangler.restore.jsonc`. It has no HTTP
+// handler: it is driven by an every-minute cron, and its only work is
+// enumerating `restore/jobs/<name>.json` in the evacuation bucket,
+// executing them, and writing results (static code + verified values)
+// to `restore/results/<name>.json`. Only an operator with write
+// access to R2 can place a job.
 //
 // target:
-// - `production`: 本番 worker の DO 名前空間(`script_name` で束縛)。受け側 RPC
-//   (chain-do.ts の opsRestore)は**空の DO にのみ**書く — 上書き経路は存在しない
-// - `drill`: 本 worker 自身の DO クラス(RestoreDrillDO — ProjectChainDO と同じ実装)。
-//   演習(hosted-ops.md §5-3)は本番名前空間に触れない
+// - `production`: the production worker's DO namespace (bound via
+//   `script_name`). The receiving RPC (opsRestore in chain-do.ts)
+//   writes **only into an empty DO** — no overwrite path exists
+// - `drill`: this worker's own DO class (RestoreDrillDO — the same
+//   implementation as ProjectChainDO). Drills (hosted-ops.md §5-3)
+//   never touch the production namespace
 //
-// DO 名(= プロジェクト ID)はジョブに書かず、退避物のチェーン genesis(seq 1 の
-// entry_hash_hex)から導出する(キー・ジョブ・結果に capability を載せない)。
+// The DO name (= the project ID) is not written in the job; it is
+// derived from the evacuated chain's genesis (the seq-1
+// entry_hash_hex) (no capability is carried on keys, jobs, or
+// results).
 
 import type { OpsRestoreOutcome, ProjectChainDO } from "./chain-do.ts";
 import { ProjectChainDO as ProjectChainDOClass } from "./chain-do.ts";
 
-/** 演習用の名前空間(本 worker 内の別クラス名 — 本番名前空間と交わらない)。 */
+/** The drill namespace (a distinct class name inside this worker — never intersects the production namespace). */
 export class RestoreDrillDO extends ProjectChainDOClass {}
 
 export interface RestoreEnv {
   readonly OPS_BACKUP_BUCKET: R2Bucket;
-  /** 本番 worker の名前空間(wrangler.restore.jsonc の script_name 束縛)。 */
+  /** The production worker's namespace (the script_name binding in wrangler.restore.jsonc). */
   readonly PRODUCTION_PROJECT_CHAIN?: DurableObjectNamespace<ProjectChainDO>;
   readonly DRILL_PROJECT_CHAIN?: DurableObjectNamespace<RestoreDrillDO>;
 }
 
 const JOBS_PREFIX = "restore/jobs/";
-/** 実行中のジョブ(claim 済み — 次の cron が同じジョブを拾わない)。 */
+/** Jobs in flight (claimed — the next cron will not pick up the same job). */
 const RUNNING_PREFIX = "restore/running/";
 const RESULTS_PREFIX = "restore/results/";
 
@@ -46,7 +54,7 @@ export type RestoreJobResult =
     }
   | {
       readonly status: "failed";
-      /** 静的コードのみ(例外メッセージは書かない) */
+      /** Static codes only (exception messages are never written) */
       readonly code:
         | "job-malformed"
         | "target-unavailable"
@@ -80,9 +88,11 @@ function parseJob(text: string): RestoreJob | null {
 }
 
 /**
- * 退避物からプロジェクト ID(genesis エントリのハッシュ)を読む。gzip NDJSON を
- * 先頭から流し、chain_entries の seq 1 の行に達したら止める(chain_entries は最後の
- * 表なので実質全走査 — 復元自体が全走査であり、一回性の運用操作として受容)。
+ * Reads the project ID (the genesis entry's hash) out of an
+ * evacuation. Streams the gzipped NDJSON from the top and stops at
+ * the seq-1 row of chain_entries (chain_entries is the last table,
+ * so this is effectively a full scan — the restore itself is a full
+ * scan, and this is accepted as a one-off operational operation).
  */
 export async function projectIdFromSnapshot(body: ReadableStream): Promise<string | null> {
   const reader = body
@@ -123,7 +133,7 @@ class SnapshotMalformedError extends Error {
   }
 }
 
-/** 1 行を JSON として読む(非 JSON = 破損した退避物 — 静的コードへ畳む)。 */
+/** Reads one line as JSON (non-JSON = a corrupted evacuation — folded into a static code). */
 function parseScannedLine(line: string): ScannedLine {
   try {
     return JSON.parse(line) as ScannedLine;
@@ -132,7 +142,7 @@ function parseScannedLine(line: string): ScannedLine {
   }
 }
 
-/** chain_entries の列名を覚え、seq 1 の行の entry_hash_hex(= プロジェクト ID)を拾う。 */
+/** Remembers the chain_entries column names and picks up the seq-1 row's entry_hash_hex (= the project ID). */
 class GenesisScanner {
   #chainColumns: readonly string[] | null = null;
 
@@ -180,8 +190,10 @@ async function runJob(env: RestoreEnv, job: RestoreJob): Promise<RestoreJobResul
   if (object === null) {
     return { status: "failed", code: "snapshot-missing" };
   }
-  // 破損した退避物(非 gzip・切れた gzip・非 JSON 行)は静的コードで返す — 例外を
-  // 逃がすとジョブが消えず毎分の cron が永久に同じ失敗を繰り返す
+  // A corrupted evacuation (non-gzip, truncated gzip, non-JSON
+  // lines) is returned as a static code — letting the exception
+  // escape leaves the job in place and the every-minute cron would
+  // repeat the same failure forever
   let projectId: string | null;
   try {
     projectId = await projectIdFromSnapshot(object.body);
@@ -194,8 +206,10 @@ async function runJob(env: RestoreEnv, job: RestoreJob): Promise<RestoreJobResul
   }
   const stub = namespace.get(namespace.idFromName(projectId));
   try {
-    // workers-types の RPC スタブ型は union 戻り値を分配するため、宣言どおりの型へ戻す
-    // (worker-env.ts の rpcCall と同じ理由。復元 worker は Effect ランタイムを持たない)
+    // The workers-types RPC stub types distribute over union return
+    // values, so this converts back to the declared type (the same
+    // reason as rpcCall in worker-env.ts; the restore worker has no
+    // Effect runtime)
     return toJobResult(
       await (stub.opsRestore(job.objectKey) as Promise<OpsRestoreOutcome>),
       job.target,
@@ -207,33 +221,41 @@ async function runJob(env: RestoreEnv, job: RestoreJob): Promise<RestoreJobResul
 }
 
 /**
- * ジョブを列挙して順に実行し、結果を書いてジョブを消す(1 ジョブ = 1 結果)。
+ * Enumerates the jobs, runs them in order, writes the results, and
+ * deletes the jobs (1 job = 1 result).
  *
- * 実行前に `restore/jobs/` → `restore/running/` へ移して claim する: 復元は分単位で
- * かかりうるのに cron は毎分走るため、ジョブを残したまま実行すると次の呼び出しが同じ
- * ジョブを拾い、2 回目の RPC が(復元済みで非空の DO に対して)`not-empty` を書いて
- * 成功の結果を上書きする。worker が実行中に死んだジョブは
- * `restore/running/` に残る = 運営が結果と突き合わせて再投入する(hosted-ops.md §5-2)。
+ * A job is claimed before execution by moving it from
+ * `restore/jobs/` to `restore/running/`: a restore can take minutes
+ * while the cron runs every minute, so running with the job left in
+ * place would let the next invocation pick the same job up, and a
+ * second RPC (against an already-restored, non-empty DO) would write
+ * `not-empty` and overwrite the success result. A job whose worker
+ * died mid-execution remains under `restore/running/` = the operator
+ * reconciles it against the result and resubmits it
+ * (hosted-ops.md §5-2).
  */
 export async function processRestoreJobs(env: RestoreEnv): Promise<readonly string[]> {
   const listed = await env.OPS_BACKUP_BUCKET.list({ prefix: JOBS_PREFIX });
   const processed: string[] = [];
   for (const object of listed.objects) {
-    // ジョブ名 = キーの basename から .json を除いたもの(結果は同名の .json)
+    // Job name = the key's basename minus .json (the result uses the
+    // same name + .json)
     const name = object.key.slice(JOBS_PREFIX.length).replace(/\.json$/, "");
     if (name === "") {
       continue;
     }
     const body = await env.OPS_BACKUP_BUCKET.get(object.key);
     const text = body === null ? null : await body.text();
-    // claim: 実行前に running/ へ移す(以後の cron は jobs/ に見ない)
+    // claim: move to running/ before executing (later crons do not
+    // look in jobs/)
     const runningKey = `${RUNNING_PREFIX}${name}.json`;
     await env.OPS_BACKUP_BUCKET.put(runningKey, text ?? "");
     await env.OPS_BACKUP_BUCKET.delete(object.key);
     const job = text === null ? null : parseJob(text);
-    // 「ジョブ 1 つ → 結果 1 つ」の不変条件を、想定外の例外でも保つ(ジョブは claim で
-    // 既に jobs/ から消えている — 結果を書かずに投げると running/ に取り残され、
-    // 運営の手当てを待つことになる)
+    // Preserve the "one job → one result" invariant even on an
+    // unexpected exception (the claim has already removed the job
+    // from jobs/ — throwing without writing a result would leave it
+    // stranded in running/ awaiting manual reconciliation)
     let result: RestoreJobResult;
     try {
       result = job === null ? { status: "failed", code: "job-malformed" } : await runJob(env, job);
@@ -258,7 +280,7 @@ export async function processRestoreJobs(env: RestoreEnv): Promise<readonly stri
 }
 
 export default {
-  // HTTP ハンドラは持たない(fetch 未定義 = 404)。起動は cron のみ
+  // No HTTP handler (fetch is undefined = 404). Driven by cron only
   async scheduled(_controller, env, _ctx): Promise<void> {
     await processRestoreJobs(env);
   },

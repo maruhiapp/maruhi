@@ -1,6 +1,7 @@
-// `maruhi sync init`(SY2 第 2 段 — 裁定 F)のテスト: フラグから設定 JSON を
-// 組んで stdout に出し、生成物が厳格なパーサ(sync-config.ts)をそのまま通る
-// (往復)。ネットワークにもファイルにも触れない。
+// Tests for `maruhi sync init` (SY2 phase 2 — ruling F): assembles the
+// config JSON from the flags onto stdout, and the product passes the
+// strict parser (sync-config.ts) as-is (round-trip). Touches neither the
+// network nor files.
 
 import { describe, expect, it } from "vitest";
 
@@ -15,7 +16,7 @@ async function init(...args: string[]) {
 }
 
 describe("maruhi sync init", () => {
-  it("exec の Vercel ターゲット: JSON を stdout に出し、パーサをそのまま通る", async () => {
+  it("exec Vercel target: emits JSON on stdout and it passes the parser as-is", async () => {
     const result = await init(
       "web",
       "--preset",
@@ -46,14 +47,15 @@ describe("maruhi sync init", () => {
     });
     const parsed = parseSyncConfig(result.stdout, "/repo");
     expect(typeof parsed).not.toBe("string");
-    // 明示リストなので "all" の案内は出ない。project の案内は出る
+    // It's an explicit list, so no "all" guidance; the project guidance
+    // does appear
     expect(result.stderr).not.toContain("copies every variable");
     expect(result.stderr).toContain('Note: add "project": "<project ID>"');
-    // 出力は 2 スペースの整形 JSON(コミットしやすい形)
+    // The output is 2-space-formatted JSON (a committable shape)
     expect(result.stdout.startsWith('{\n  "version": 1,')).toBe(true);
   });
 
-  it("http の Workers ターゲット: driver / token / options を組み、案内を stderr に出す", async () => {
+  it("http Workers target: assembles driver / token / options and emits guidance on stderr", async () => {
     const result = await init(
       "worker",
       "--preset",
@@ -105,7 +107,7 @@ describe("maruhi sync init", () => {
     expect(result.stderr).not.toContain('add "project"');
   });
 
-  it("必須フラグの欠落・プリセットの誤り・パーサが拒む組み合わせは書き方の誤り(2)で、何も出さない", async () => {
+  it("a missing required flag, a wrong preset, or a combination the parser rejects is a usage error (2) and emits nothing", async () => {
     const missing = await init("web", "--preset", "vercel", "--env", "production");
     expect(missing.code).toBe(2);
     expect(missing.stdout).toBe("");
@@ -167,7 +169,7 @@ describe("maruhi sync init", () => {
     expect(http.code).toBe(2);
     expect(http.stderr).toContain("targets.worker.token is required for the http driver");
   });
-  it("netlify: --driver 省略で http(唯一のドライバ)を明示して組み、--driver exec は理由つきの書き方の誤り", async () => {
+  it("netlify: --driver omitted assembles http (the only driver) explicitly, and --driver exec is a usage error with a reason", async () => {
     const result = await init(
       "site",
       "--preset",
@@ -247,7 +249,7 @@ describe("maruhi sync init", () => {
     );
   });
 
-  it("github-actions: exec だけ(driver は省略で出る)、options は repo / environment / app、--driver http は理由つきの書き方の誤り", async () => {
+  it("github-actions: exec only (driver emitted when omitted), options are repo / environment / app, and --driver http is a usage error with a reason", async () => {
     const result = await init(
       "dependabot",
       "--preset",
@@ -316,7 +318,7 @@ describe("maruhi sync init", () => {
     );
   });
 
-  it("--on-push workflow --workflow: onPush と workflow.file を組み、project が無ければ書き方の誤り", async () => {
+  it("--on-push workflow --workflow: assembles onPush and workflow.file, and is a usage error without a project", async () => {
     const result = await init(
       "web",
       "--preset",
@@ -365,7 +367,7 @@ describe("maruhi sync init", () => {
     );
     expect(noProject.stdout).toBe("");
 
-    // production に apply は組めない(パーサが拒む)
+    // apply can't be assembled for production (the parser rejects it)
     const production = await init(
       "web",
       "--preset",

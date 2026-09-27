@@ -1,9 +1,11 @@
 import { defineConfig } from "vitest/config";
 
-// web ダッシュボードのユニットテスト(純粋関数 — API 消費層・チェーン表示導出)。
-// e2e(vitest.config.ts — ビルド済み dist + wrangler dev 前提)と違い、ビルド
-// なしで走るためルート vitest.config.ts の projects に載せる(品質ゲート 7 の
-// 経路)。DOM・ブラウザ・ネットワークを使わない(fetch はテスト内でスタブする)。
+// Unit tests for the web dashboard (pure functions — the API
+// consumption layer and the chain-view derivation). Unlike e2e
+// (vitest.config.ts — assumes a prebuilt dist + wrangler dev), these run
+// with no build, so they are listed in the root vitest.config.ts
+// projects (the quality-gate 7 path). No DOM, browser, or network is
+// used (fetch is stubbed inside the tests).
 export default defineConfig({
   test: {
     name: "web-unit",

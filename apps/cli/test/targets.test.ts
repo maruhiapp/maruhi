@@ -1,6 +1,8 @@
-// リリース対象表(scripts/shared.ts の TARGETS)の形の固定。
-// バイナリ生成と release.yml の smoke matrix の単一の出所なので、表の破れは
-// ビルド漏れ・未検証成果物の公開・matrix の解釈エラーに直結する。
+// Pins the shape of the release-target table (TARGETS in
+// scripts/shared.ts). It's the single source for binary generation and
+// release.yml's smoke matrix, so a tear in the table directly means a
+// missed build, an unverified artifact getting published, or a matrix
+// interpretation error.
 
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -11,8 +13,8 @@ import { TARGETS } from "../scripts/shared.ts";
 
 const cliRoot = fileURLToPath(new URL("..", import.meta.url));
 
-describe("リリース対象表(TARGETS)", () => {
-  it("現行 5 対象を含み、名前は一意、runner / bin の形が正しい", () => {
+describe("the release-target table (TARGETS)", () => {
+  it("contains the current 5 targets, names are unique, and runner / bin shapes are right", () => {
     const names = TARGETS.map((t) => t.name);
     for (const required of [
       "linux-x64",
@@ -27,12 +29,13 @@ describe("リリース対象表(TARGETS)", () => {
     for (const target of TARGETS) {
       expect(target.bunTarget).toBe(`bun-${target.name}`);
       expect(target.runner).not.toBe("");
-      // Windows のみ .exe(それ以外に付くと smoke の実行パスが壊れる)
+      // .exe on Windows only (adding it elsewhere breaks the smoke run
+      // path)
       expect(target.bin).toBe(target.name.startsWith("windows") ? "maruhi.exe" : "maruhi");
     }
   });
 
-  it("smoke matrix の導出(print-smoke-matrix)は全対象を GH matrix の形で出す", () => {
+  it("the smoke-matrix derivation (print-smoke-matrix) emits every target in GH-matrix shape", () => {
     const result = spawnSync("bun", ["scripts/print-smoke-matrix.ts"], {
       cwd: cliRoot,
       encoding: "utf8",

@@ -1,23 +1,29 @@
-// apex `maruhi.app` の静的サイト = LP(`/`)+ docs(`/docs/*`)。Blume 一本(ADR-0008 改訂 1、
-// docs/notes/web-design-pass.md §4)。製品オリジン `my.maruhi.app`(TCB)とは別デプロイ。
+// The apex `maruhi.app` static site = LP (`/`) + docs (`/docs/*`). Blume only
+// (ADR-0008 revision 1, docs/notes/web-design-pass.md §4). Deployed
+// separately from the product origin `my.maruhi.app` (TCB).
 //
-// スタイリングは 3 層のみ: (1) この theme tokens(値は apps/web/theme/maruhi.css から生成した
-// theme/tokens.ts と theme.css — 裁定 B)(2) LP のカスタムページ(pages/index.astro)の scoped
-// <style>(素の CSS、値は CSS 変数参照)(3) docs は Blume 既定。Tailwind / StyleX / Astryx の
-// React 部品は入れない。
+// Styling has only 3 layers: (1) these theme tokens (values are theme/
+// tokens.ts and theme.css generated from apps/web/theme/maruhi.css — ruling
+// B) (2) the LP custom page's (pages/index.astro) scoped <style> (plain CSS,
+// values reference CSS variables) (3) docs use the Blume default. No
+// Tailwind / StyleX / Astryx React parts.
 //
-// 「言わざる」: analytics は宣言しない(Blume は無宣言なら何も注入しない)。Ask AI / MCP は
-// off(既定)。フォントはローカル woff2(Astro Fonts API 経由で自己配信 — 既定の Google Fonts
-// ビルド時取得を置き換える)。Open in chat(第三者 AI へのリンク)は off にする。
+// "Say nothing": no analytics are declared (Blume injects nothing when
+// undeclared). Ask AI / MCP are off (the default). Fonts are local woff2
+// (self-hosted via the Astro Fonts API — replacing the default Google Fonts
+// build-time fetch). Open in chat (links to third-party AI) is off.
 import { defineConfig } from "blume";
 
 import { accent, background, border, foreground, mutedForeground } from "./theme/tokens.ts";
 
 /**
- * Astro の `build.inlineStylesheets` を 'never' に固定する統合(裁定 D)。既定 'auto' は 4 kB 未満の
- * スタイルを HTML の <style> にインライン化し、`style-src 'self'` と両立しない。Blume は Astro 設定を
- * 直接露出しないが `integrations` は透過するので、統合の `astro:config:setup` で更新する。
- * (Blume は config を 2 回評価するため、統合のファクトリは副作用を持たない)
+ * Integration that pins Astro's `build.inlineStylesheets` to 'never'
+ * (ruling D). The default 'auto' inlines styles under 4 kB into HTML <style>,
+ * which is incompatible with `style-src 'self'`. Blume does not expose Astro
+ * config directly but `integrations` passes through, so it is updated in the
+ * integration's `astro:config:setup`.
+ * (Blume evaluates config twice, so the integration's factory has no side
+ * effects)
  */
 const noInlineStylesheets = () => ({
   name: "maruhi-no-inline-stylesheets",
@@ -34,8 +40,9 @@ const description =
 export default defineConfig({
   title: "maruhi",
   description,
-  // ヘッダーのブランド: ㊙ の自前 SVG。light は朱 #C1330B の原本、dark は fill を dark accent に
-  // 差し替えた生成物(scripts/build-theme.ts)。ワードマークはテキスト
+  // Header brand: a bespoke SVG of ㊙. light is the original vermilion
+  // #C1330B; dark is a generated file with fill swapped to the dark accent
+  // (scripts/build-theme.ts). The wordmark is text
   logo: {
     image: { light: "/logo.svg", dark: "/logo-dark.svg", alt: "maruhi" },
     text: "maruhi",
@@ -47,7 +54,8 @@ export default defineConfig({
     dismissible: true,
     id: "private-preview",
   },
-  // docs は `/docs/*` に載せ、サイトのルートは LP(pages/index.astro)が持つ
+  // docs are served under `/docs/*`; the site root is owned by the LP
+  // (pages/index.astro)
   basePath: "/docs",
   github: { owner: "maruhiapp", repo: "maruhi", dir: "apps/site" },
   integrations: [noInlineStylesheets()],
@@ -55,10 +63,13 @@ export default defineConfig({
     accent: { light: accent.light, dark: accent.dark },
     background: { light: background.light, dark: background.dark },
     radius: "md",
-    // システム追従(web-design-pass.md §1-2)。docs のヘッダートグルは Blume 既定のまま
+    // Follows the system (web-design-pass.md §1-2). The docs header toggle
+    // stays at the Blume default
     mode: "system",
-    // Archivo(見出し・本文、可変 wdth 62〜125% / wght 100〜900)+ Martian Mono(コード、可変 wght)。
-    // Fontsource の Latin サブセット woff2(Google Fonts と同じ原本)。OFL 全文は public/fonts/OFL-*.txt
+    // Archivo (headings and body, variable wdth 62-125% / wght 100-900) +
+    // Martian Mono (code, variable wght). Fontsource Latin-subset woff2 (same
+    // originals as Google Fonts). The full OFL text is in
+    // public/fonts/OFL-*.txt
     fonts: {
       display: {
         name: "Archivo",
@@ -78,12 +89,15 @@ export default defineConfig({
   },
   search: { provider: "orama" },
   ai: {
-    // llms.txt / raw Markdown / Copy as Markdown は自己配信の静的物なので既定のまま。
-    // Open in chat(ChatGPT / Claude 等へのリンク)は第三者への導線なので置かない。
-    // Ask AI と MCP はライブな外部呼び出し・常駐エンドポイントになるので明示的に off
-    // (Blume 1.7 の既定も off。将来の既定変更で黙って有効にしない)。
-    // JSON docs API と AI catalog は公開 docs の静的索引(llms.txt と同じ類)で、
-    // ビルド成果物以外へは送らない。Blume 1.7 で既定 on になったものを意図して残す。
+    // llms.txt / raw Markdown / Copy as Markdown are self-hosted static
+    // files, so they stay at the default. Open in chat (links to ChatGPT /
+    // Claude etc.) is not offered — it is a channel to third parties. Ask AI
+    // and MCP would become live external calls / resident endpoints, so they
+    // are explicitly off (Blume 1.7's default is also off; do not let a
+    // future default change silently enable them). The JSON docs API and AI
+    // catalog are static indexes of the public docs (same kind as llms.txt)
+    // and are not sent anywhere beyond the build output; they are kept
+    // intentionally — they became default-on in Blume 1.7.
     openInChat: false,
     ask: { enabled: false },
     mcp: { enabled: false },
@@ -91,7 +105,8 @@ export default defineConfig({
     catalog: true,
   },
   seo: {
-    // OG カードはビルド時にローカルで描画される(外部通信なし)。LP は og.png を使う
+    // OG cards are rendered locally at build time (no external calls). The
+    // LP uses og.png
     og: {
       logo: "/logo.svg",
       palette: {

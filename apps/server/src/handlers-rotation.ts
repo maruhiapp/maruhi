@@ -1,13 +1,16 @@
-// 要ローテーションフラグ API のハンドラ(AUDIT_SPEC §4.1 / §6 / §7)。
+// Handlers for the needs-rotation flag API (AUDIT_SPEC §4.1 / §6 / §7).
 //
-// - flags: 導出ビュー(read スコープ × チェーン role reader — クラス 1)。
-//   フラグ集合は状態を持たない読み取り(監査記録なし)なので CSRF ヘッダーは
-//   要求しない(一括 pull の var.read 記録とは異なる — AUTH_SPEC §12-7)
-// - dismiss: 取り下げ操作(admin スコープ × チェーン role admin — §3.3。
-//   ラップ削除と同水準)。対象検証(有効フラグの実在)は DO 側
+// - flags: a derived view (read scope × chain role reader — class 1).
+//   The flag set is a stateless read (no audit record), so the CSRF
+//   header is not required (unlike the var.read record of a bulk pull —
+//   AUTH_SPEC §12-7)
+// - dismiss: a withdrawal operation (admin scope × chain role admin —
+//   §3.3; same level as wrap deletion). Target validation (existence of
+//   an active flag) is on the DO side
 //
-// 共通経路は data-http.ts の callProjectData。返しうるエラーの集合は各
-// エンドポイントの契約宣言(api-schema)から導出される。
+// The shared path is callProjectData in data-http.ts. The set of
+// returnable errors is derived from each endpoint's contract
+// declaration (api-schema).
 
 import { maruhiApi } from "@maruhi/api-schema";
 import { Effect } from "effect";
@@ -23,8 +26,10 @@ export const rotationLive = HttpApiBuilder.group(maruhiApi, "rotation", (handler
         endpoint,
         projectId: params.projectId,
         permission: "read",
-        // 監査 seq は導出結果そのものが持たない(AUDIT_SPEC §7 — 2026-08-16
-        // C1 裁定。境界 strip ではなく型から消して書き忘れの余地を無くす)
+        // The audit seq is not carried by the derived result itself
+        // (AUDIT_SPEC §7 — 2026-08-16 C1 ruling. Removed from the type
+        // rather than stripped at the boundary, leaving no room to
+        // forget)
         invoke: (stub, actor) => stub.rotationFlags(actor),
       }).pipe(Effect.map((flags) => ({ flags }))),
     )

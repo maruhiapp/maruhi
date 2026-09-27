@@ -1,9 +1,12 @@
-// 鍵レコード(`StoredMasterKey` — CRYPTO_SPEC §3 の端末鍵 / 予備鍵の共通形)の生成。
+// Generating a key record (`StoredMasterKey` — the common shape of
+// CRYPTO_SPEC §3's device key / reserve key).
 //
-// 端末鍵(keygen.ts)と予備鍵(reserve.ts)は同じレコード形で、違いは置き場だけ
-// (端末鍵 = キーチェーン / agent メモリ、予備鍵 = 台帳の暗号文の中)。生成は
-// @maruhi/crypto の公開 API のみ。秘密側は生成の直後に `Redacted` で包み、素の
-// 文字列としてこの関数の外へ出ない。
+// The device key (keygen.ts) and the reserve key (reserve.ts) share
+// the same record shape; only the placement differs (device key =
+// keychain / agent memory, reserve key = inside the ledger's
+// ciphertext). Generation uses only @maruhi/crypto's public API. The
+// private side is wrapped in `Redacted` right after generation and
+// never leaves this function as a bare string.
 
 import {
   encodeHex,
@@ -20,8 +23,9 @@ import { Effect, Redacted } from "effect";
 import { cliError, type CliError } from "./errors.ts";
 import type { StoredMasterKey } from "./keychain.ts";
 
-// WebCrypto の reject は defect にせず型付きの失敗へ写す(未検査の外部
-// メッセージを「内部エラー」として端末に流さない)
+// A WebCrypto reject is mapped to a typed failure, not a defect (do
+// not flow an uninspected external message to the terminal as an
+// "internal error")
 const keygenFailed = () => cliError("Failed to generate the keypair (crypto error)");
 
 /** Generates a fresh (enc, sig) key record with the private halves redacted. */

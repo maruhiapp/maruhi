@@ -1,349 +1,372 @@
-# Web ダッシュボード画面設計(W0 — ADR-0018 の枠内)
+# Web dashboard screen design (W0 — within ADR-0018's frame)
 
-位置づけ: Wave 3 W の起点 W0(ROADMAP Phase 2 / session-22 §1)。本文書は
-`apps/web`(hosted / セルフホスト同梱の鍵なし Web)の**画面集合・情報設計・
-権限/可視性軸・API gap 分析・実装分割**を確定する設計文書である。規範
-(信頼境界・発行系の置き場・表示規律)は ADR-0018(改訂 2 込み)が正であり、
-本文書はその画面目録・実装参照。裁定の経緯(複数案・棄却理由)は
-docs/notes/session-39.md(裁定 AM〜AT)。
+Position: the origin W0 of Wave 3 W (ROADMAP Phase 2 / session-22 §1). This document settles
+`apps/web` (hosted / self-hosted-bundled keyless web)'s **screen set, information architecture,
+permission/visibility axes, API gap analysis, and implementation split** as the design document.
+The norms (trust boundary, where issuance lives, display discipline) have ADR-0018 (incl.
+revision 2) as their source of truth; this document is its screen catalog / implementation
+reference. The rulings' course (options considered, rejection reasons) is in
+docs/notes/session-39.md (rulings AM–AT).
 
-前提(蒸し返さない決定): ADR-0018 決定 1〜4 + 改訂 1(復号器を配らない・
-画面共有しない・儀式は TTY・UI 契約の先行確定)。`maruhi ui`(第 2 段)と
-値あり UI(第 3 段)は本文書のスコープ外。
+Premises (decisions not revisited): ADR-0018 decisions 1–4 + revision 1 (don't ship the
+decryptor, no screen sharing, ceremonies are TTY, UI contract settled ahead). `maruhi ui`
+(stage 2) and the value-bearing UI (stage 3) are out of this document's scope.
 
-## 1. 誰がこの画面を見るか(ペルソナ × チェーン role × 認証状態)
+## 1. Who sees these screens (persona × chain role × auth state)
 
-| # | ペルソナ | 認証状態 | チェーン role | Web に求めるもの | CLI で代替可能か |
+| # | Persona | Auth state | Chain role | What they want from the web | Replaceable by CLI? |
 |---|---|---|---|---|---|
-| P1 | 製品を知りに来た訪問者 | 未認証 | なし | ランディング・docs への導線 | 不可(Web 固有) |
-| P2 | 招待リンクを開いた人 | 未認証(未登録含む) | なし(招待 role は未確定) | 「次に何をするか」の案内 | 不可(リンクの着地点は Web origin) |
-| P3 | メンバー(reader / member) | セッション | reader / member | 自プロジェクトの現状閲覧(メンバー・環境・変数名・要ローテーション・監査クラス 1) | 可(TUI)だが、ブラウザ閲覧に固有の需要がありうる(未実測) |
-| P4 | 管理者(admin / owner) | セッション | admin / owner | 監査(クラス 2 込み)・招待とトークンの棚卸し・失効 | 可(`maruhi audit` / `invite` / `rotation`) |
-| P5 | CLI を入れない関係者(監査閲覧だけの利害関係者 — session-29 §4「鍵なしの管理画面を渡す」の相手) | セッション | reader(値の復号関与なしで招待可能) | 読み取り専用の監査・状態閲覧 | 不可(CLI を入れない前提そのもの) |
-| P6 | エージェント / 自動化 | トークン / OIDC | 任意 | — | Web の対象外(API / CLI / リースが正規経路。Web セッションは人間の OAuth のみ) |
+| P1 | Visitor who came to learn about the product | Unauthenticated | none | Landing / docs navigation | No (web-specific) |
+| P2 | Person who opened an invite link | Unauthenticated (incl. unregistered) | none (invited role undecided) | Guidance on "what to do next" | No (the link's landing point is the web origin) |
+| P3 | Member (reader / member) | Session | reader / member | Browsing their project's current state (members, environments, variable names, rotation-needed, audit class 1) | Yes (TUI), but browser browsing may have its own demand (unmeasured) |
+| P4 | Admin (admin / owner) | Session | admin / owner | Audit (incl. class 2), inventory and revocation of invites and tokens | Yes (`maruhi audit` / `invite` / `rotation`) |
+| P5 | Stakeholder without the CLI (an audit-view-only interested party — the recipient of session-29 §4's "hand them a keyless admin screen") | Session | reader (invitable without involvement in value decryption) | Read-only audit / status browsing | No (the premise is that they don't install the CLI) |
+| P6 | Agent / automation | Token / OIDC | any | — | Outside the web's scope (API / CLI / leases are the official path. Web sessions are human OAuth only) |
 
-観察:
-- **Web でなければ満たせない**のは P1・P2・P5 のみ。P1・P2 は未認証の静的
-  ページで足りる。P5 は認証済み**読み取り**で足りる(P5 に書かせたい操作は
-  存在しない)
-- P3・P4 の需要は CLI / TUI(第 1 段)で満たされておりドッグフーディングでも
-  未実測(ADR-0018 Rationale (3))。Web に置く価値が確実なのは「棚卸しと失効」
-  (一覧性がブラウザ向き、かつ失効は資格を減らす方向で XSS 爆発半径が小さい)
-- 値・鍵・チェーン書き込みを伴う操作(push / 招待受諾 / member add /
-  grant_server / 鍵生成 / リカバリー)は ADR-0018 決定 1 により最初から対象外
+Observations:
+- The only personas **only the web can satisfy** are P1, P2, P5. P1 and P2 are satisfied by
+  unauthenticated static pages. P5 is satisfied by authenticated **reading** (there's no
+  operation P5 should perform)
+- P3 and P4's demand is met by the CLI / TUI (stage 1) and unmeasured even in dogfooding
+  (ADR-0018 Rationale (3)). Where the web reliably adds value is "inventory and revocation"
+  (listability suits the browser, and revocation moves toward reducing credentials so the XSS
+  blast radius is small)
+- Operations involving values, keys, or chain writes (push / invite acceptance / member add /
+  grant_server / key generation / recovery) are out of scope from the start per ADR-0018
+  decision 1
 
-## 2. 形の比較と結論
+## 2. Comparison of shapes and the conclusion
 
-3 形の比較(3 周の比較・棄却理由は session-39 裁定 AM):
+Comparison of 3 shapes (the 3-round comparison and rejection reasons are in session-39 ruling
+AM):
 
-- **(a) 静的案内ページ最小形**: 未認証静的ページ(S1・S2)のみ。管理も閲覧も
-  CLI / `maruhi ui` へ。運営の配信面は最小だが、P5(CLI を入れない関係者)が
-  構造的に切り捨てられ、ROADMAP Phase 2 の監査 UI(W2)の置き場が消える
-- **(b) 鍵なし管理画面(ADR-0018 決定 1 の許可リスト全部)**: 招待リンクの
-  発行・トークン管理を含む。発行系は credential の生成であり(改訂 1・5 項)、
-  さらに招待リンクの帯域外アンカー(AUTH_SPEC §15-3 の `h` / `s` / `if`)は
-  発行者クライアントの**検証済みヘッドと鍵 FP** を要する — 鍵なし Web は
-  どちらも持たず、アンカーなしリンクの正規経路化になる
-- **(c) 中間形(採用)**: 静的ページ + 認証済み**読み取り** + **失効系 mutation
-  のみ**。境界の原則 = 「**Web に置く mutation は資格・可視性を減らす方向
-  (失効・ログアウト)のみ。資格の生成(招待発行・トークン発行)、警告の消去
-  (rotation dismiss)、チェーン書き込みは置かない**」(ADR-0018 改訂 2)
+- **(a) Minimal static-guidance-page form**: unauthenticated static pages (S1, S2) only.
+  Management and browsing all go to the CLI / `maruhi ui`. The operator's delivery surface is
+  minimal, but P5 (stakeholders without the CLI) is structurally cut off, and the home for
+  ROADMAP Phase 2's audit UI (W2) disappears
+- **(b) Keyless admin screen (the full allowlist of ADR-0018 decision 1)**: includes invite-link
+  issuance and token management. Issuance is credential generation (revision 1, item 5), and the
+  invite link's out-of-band anchor (AUTH_SPEC §15-3's `h` / `s` / `if`) additionally requires the
+  issuing client's **verified head and key FP** — keyless web has neither, so it would normalize
+  anchor-less links
+- **(c) Intermediate form (adopted)**: static pages + authenticated **reads** + **revocation
+  mutations only**. The boundary principle = "**mutations on the web are limited to ones that
+  reduce credentials / visibility (revocation, logout). No credential generation (invite
+  issuance, token issuance), no warning dismissal (rotation dismiss), no chain writes**"
+  (ADR-0018 revision 2)
 
-採用形 (c) は画面単位で (a) へ縮退可能(認証済み画面はどれを落としても他が
-壊れない)であり、各段の独立停止可能性(ADR-0018 の型)を画面レベルでも保つ。
+The adopted form (c) can degenerate to (a) screen by screen (dropping any authenticated screen
+doesn't break the others), preserving each stage's independent stoppability (ADR-0018's
+character) at the screen level too.
 
-## 3. 画面一覧と gap 分析
+## 3. Screen list and gap analysis
 
-各画面: 対象ペルソナ / 使う実装済み API / 不足 API(**列挙のみ — 本 PR では
-実装しない**)。認可はすべてサーバー側(§11-2 の存在秘匿・§12-3 の表・
-AUDIT_SPEC §6 の可視性クラス)が真実源で、Web は結果を写すだけ。
+For each screen: target persona / implemented APIs it uses / missing APIs (**enumeration only —
+not implemented in this PR**). Authorization is always server-side (§11-2's existence
+concealment, §12-3's table, AUDIT_SPEC §6's visibility classes) as the source of truth; the web
+just renders the results.
 
-### S1. ランディング(静的・未認証)
+### S1. Landing (static, unauthenticated)
 
-- 対象: P1。現 `HomePage` の系。API 不要。gap なし
+- Target: P1. Lineage of the current `HomePage`. No API needed. No gap
 
-### S2. 招待案内 `/invite`(静的・未認証)
+### S2. Invite guidance `/invite` (static, unauthenticated)
 
-- 対象: P2。**完全静的**: 受諾は CLI で行う旨の案内のみを表示し、URL
-  フラグメントを**解釈しない**(AUTH_SPEC §15-3 改訂・ADR-0018 改訂 2。
-  経緯は session-39 裁定 AR)
-- **不変条件は構成で強制する(session-39 §10 — 第 4 周)**: `/invite` は
-  SPA(funstack バンドル — インラインブートストラップ script を持つ)の
-  **外**の独立静的 HTML アセットとして配信し、per-path の CSP
-  `script-src 'none'` を `_headers` に置く(`write-headers.ts` の拡張)。
-  「スクリプトが `location` に触れない」を規約でなく検査可能な構成にする
-- API 不要。gap なし
+- Target: P2. **Fully static**: displays only guidance that acceptance happens in the CLI, and
+  does **not interpret** the URL fragment (AUTH_SPEC §15-3 revision, ADR-0018 revision 2.
+  History in session-39 ruling AR)
+- **The invariant is enforced by configuration (session-39 §10 — round 4)**: `/invite` is
+  delivered as an independent static HTML asset **outside** the SPA (the funstack bundle — which
+  carries an inline bootstrap script), with a per-path CSP `script-src 'none'` placed in
+  `_headers` (an extension of `write-headers.ts`). "No script touches `location`" becomes a
+  checkable configuration rather than a convention
+- No API needed. No gap
 
-### S3. ログイン(Web OAuth)
+### S3. Login (web OAuth)
 
-- 対象: P3〜P5。実装済み: `GET /auth/github/start` / `callback`(AUTH_SPEC §3)、
-  セッション(§5)、`GET /auth/me`。gap なし
+- Target: P3–P5. Implemented: `GET /auth/github/start` / `callback` (AUTH_SPEC §3), sessions
+  (§5), `GET /auth/me`. No gap
 
-### S4. プロジェクト一覧
+### S4. Project list
 
-- 対象: P3〜P5(ログイン後の起点)
-- 実装済み API: なしで**成立しない**。`/auth/me` は orgs のみを返し、
-  プロジェクト membership の真実源は各プロジェクト DO 内のチェーン導出状態
-  (CRYPTO_SPEC §6.4)で、横断索引が存在しない
-- **不足 API(W2a で解消 — 2026-08-29 裁定 BI〜BK、規範は AUTH_SPEC §11-5)**:
-  「自分がチェーン導出メンバーであるプロジェクトの一覧」= `GET /projects`。
-  採用形は **role なし D1 投影(`project_members` — チェーン受理時に維持する
-  候補索引)+ 読取時の各プロジェクト DO への membership 確認**(裁定 BI-c —
-  棄却案込みの経緯は session-42.md)。org 経由の候補列挙は棄却(チェーン
-  membership は org 非依存 — §9-2 — であり、招待経由の cross-org メンバー =
-  P5 の主用途を構造的に取りこぼす)、投影のみ形も棄却(除名後の ghost 行が
-  自己修復しない)。応答は本人の membership のみ(`projectId` + チェーン導出
-  `role` の最小形)で §11-2(存在秘匿)と両立 — 対象指定を持たず、スコープ外は
-  不出現。**セッション許可列挙(AUTH_SPEC §5)に本 API を含める**(S4 は
-  セッション画面 — 列挙漏れは W2b がこの画面を 403 にする。session-39 §10 で
-  修正済み。`SESSION_ALLOWED_ENDPOINTS` への追加は W2a 実装 PR — 実装済み)
-- 暫定縮退: 一覧 API なしでもプロジェクト ID(genesis ハッシュ = capability)の
-  手入力で S5 以降は動く(ブックマーク運用)。W2 を W2a より先に出せる
-  (→ W2 実装で、ID 直入力は一覧と並存する**正式な補助経路**へ昇格 —
-  ブックマーク運用と一覧障害時の直アクセスを恒久に支える)
+- Target: P3–P5 (the starting point after login)
+- Implemented APIs: **doesn't stand without one**. `/auth/me` returns only orgs; the source of
+  truth for project membership is the chain-derived state inside each project DO (CRYPTO_SPEC
+  §6.4), and no cross-cutting index exists
+- **Missing API (resolved in W2a — rulings BI–BK of 2026-08-29, norm in AUTH_SPEC §11-5)**:
+  "the list of projects where the caller is a chain-derived member" = `GET /projects`. The
+  adopted shape is **a role-less D1 projection (`project_members` — a candidate index
+  maintained at chain acceptance) + read-time membership confirmation against each project
+  DO** (ruling BI-c — history including rejected options is in session-42.md). Org-mediated
+  candidate enumeration was rejected (chain membership is org-independent — §9-2 — so it
+  structurally drops invite-path cross-org members = P5's main use); projection-only was also
+  rejected (ghost rows after expulsion don't self-heal). The response is only the caller's own
+  membership (minimal form: `projectId` + chain-derived `role`), consistent with §11-2
+  (existence concealment) — it takes no target specifier and out-of-scope is non-appearance.
+  **Include this API in the session permission enumeration (AUTH_SPEC §5)** (S4 is a session
+  screen — missing the enumeration means W2b 403s this screen. Fixed in session-39 §10. The
+  `SESSION_ALLOWED_ENDPOINTS` addition is in the W2a implementation PR — implemented)
+- Interim degradation: even without the list API, S5 onward works by manually entering a project
+  ID (genesis hash = capability) (bookmark operation). W2 can ship before W2a (→ in the W2
+  implementation, direct ID entry is promoted to a **formal auxiliary path** coexisting with the
+  list — permanently supporting bookmark operation and direct access during list outages)
 
-### S5. プロジェクト概要(メンバー・環境・変数名・エポック)
+### S5. Project overview (members, environments, variable names, epochs)
 
-- 対象: P3〜P5。読み取りのみ
-- 実装済み API: チェーン取得(§11 — メンバー・role・grant_server・ヘッド申告
-  `attestations` 込み)、環境一覧(§12-4)、メタデータのみ pull(§12-7 —
-  変数名・ステートメント・マニフェスト。`var.read` を記録しないため閲覧が
-  監査を汚さない。GET かつ状態なしで CSRF ヘッダー不要)
-- gap なし。表示規律: すべて**サーバー申告表示**(§4 参照)。チェーン検証は
-  実装しない — メンバー一覧・role・FP は「サーバーの申告」として表示する
+- Target: P3–P5. Reads only
+- Implemented APIs: chain fetch (§11 — members, role, grant_server, head declarations
+  `attestations` included), environment list (§12-4), metadata-only pull (§12-7 — variable
+  names, statements, manifest. Records no `var.read`, so browsing doesn't pollute the audit. A
+  GET with no state needs no CSRF header)
+- No gap. Display discipline: everything is a **server-declared display** (see §4). No chain
+  verification is implemented — the member list, roles, FPs are displayed as "server
+  declarations"
 
-### S6. 監査ビューア
+### S6. Audit viewer
 
-- 対象: P4(クラス 2 込み)・P3 / P5(クラス 1 + 本人行)
-- 実装済み API: `GET /projects/:id/audit/events`(row_id カーソル・フィルタ・
-  可視性クラスはサーバー認可段 — AUDIT_SPEC §7)、`GET /projects/:id/audit/invites`
-  (チェーン role admin 軸)、`GET /auth/audit/events`(本人軸)
-- gap なし。表示規律: `seq` は admin 応答にのみ含まれ、そのまま表示してよい
-  (新情報ゼロ — C1 裁定)。ただし**欠番検査・ミラー突合等の完全性主張は Web が
-  行わない**(`maruhi audit verify` / `reconcile` の領分)。admin 未満の一覧には
-  「あなたの role で可視のイベント」の文言を使い、不可視クラスの件数・存在を
-  示唆しない(件数非漏洩 — AUDIT_SPEC §7)
+- Target: P4 (incl. class 2), P3 / P5 (class 1 + own rows)
+- Implemented APIs: `GET /projects/:id/audit/events` (row_id cursor, filters, visibility classes
+  at the server authz stage — AUDIT_SPEC §7), `GET /projects/:id/audit/invites` (chain-role
+  admin axis), `GET /auth/audit/events` (self axis)
+- No gap. Display discipline: `seq` is included only in admin responses and may be displayed
+  as-is (zero new information — ruling C1). However, **the web makes no completeness claims
+  like gap checks or mirror matching** (the domain of `maruhi audit verify` / `reconcile`).
+  Lists for below-admin use the wording "events visible at your role" and never hint at the
+  count or existence of invisible classes (count non-disclosure — AUDIT_SPEC §7)
 
-### S7. 要ローテーションフラグ
+### S7. Rotation-needed flags
 
-- 対象: P3〜P5(クラス 1 — 全メンバー)
-- 実装済み API: `GET /projects/:id/rotation/flags`(導出ビュー)
-- gap なし。**取り下げ(dismiss)は置かない**(警告の消去 — §2 の境界原則。
-  CLI `maruhi rotation dismiss` へ誘導)。表示名の解決は識別子のみ表示 +
-  メタデータのみ pull のステートメント名の併記(サーバー申告表示)
+- Target: P3–P5 (class 1 — all members)
+- Implemented API: `GET /projects/:id/rotation/flags` (derived view)
+- No gap. **No dismissal** (warning removal — §2's boundary principle. Guide to CLI `maruhi
+  rotation dismiss`). Display-name resolution is identifiers only + alongside the
+  metadata-only pull's statement names (server-declared display)
 
-### S8. 招待管理(一覧・失効)
+### S8. Invite management (list, revoke)
 
-- 対象: P4(チェーン role admin 以上 — AUTH_SPEC §15-2)
-- 実装済み API: `GET /projects/:id/invites` / `DELETE /projects/:id/invites/:id`
-- gap なし。**発行は置かない**(ADR-0018 改訂 2 — アンカー欠落 + capability
-  生成。session-39 裁定 AN)。画面には発行手順の案内(`maruhi invite create`)を
-  静的に置く
+- Target: P4 (chain role admin or above — AUTH_SPEC §15-2)
+- Implemented APIs: `GET /projects/:id/invites` / `DELETE /projects/:id/invites/:id`
+- No gap. **No issuance** (ADR-0018 revision 2 — missing anchor + capability generation.
+  session-39 ruling AN). The screen statically carries issuance-procedure guidance (`maruhi
+  invite create`)
 
-### S9. トークン管理(一覧・失効)
+### S9. Token management (list, revoke)
 
-- 対象: P3〜P5(本人のトークンのみ — user 単位のリソース)
-- 実装済み API: `POST /auth/token/revoke` は**提示トークン自身の失効・トークン
-  主体限定**(CLI logout 用)であり、セッション主体の Web からは使えない
-- **不足 API**(AUTH_SPEC §6 改訂で設計 — W3a で実装済み〔2026-08-30〕):
-  1. 一覧 `GET /auth/tokens`(id / name / token_prefix / scopes / created_at /
-     last_used_at / expires_at。**生値・ハッシュは返さない**)
-  2. 指定失効 `DELETE /auth/tokens/:tokenId`(セッション主体または `*` ×
-     admin トークン — §13-2 の鍵素材条件と同水準。非該当は一様 404)
-- **発行・生値表示は置かない**(発行経路は device flow のみ据え置き —
-  ADR-0018 改訂 2・AUTH_SPEC §6 改訂。生値の存在場所は発行時の端末表示 1 箇所)
-- 同時解消: 既定 TTL(SECURITY_REVIEW L-2 — AUTH_SPEC §6 改訂に含める。
-  W3a で実装済み — 移行規則・明示 TTL は session-44.md 裁定 CE / CF)
+- Target: P3–P5 (own tokens only — a user-scoped resource)
+- Implemented API: `POST /auth/token/revoke` is **revocation of the presented token itself,
+  token-principal only** (for CLI logout) and can't be used from a session-principled web
+- **Missing APIs** (designed in the AUTH_SPEC §6 revision — implemented in W3a [2026-08-30]):
+  1. List `GET /auth/tokens` (id / name / token_prefix / scopes / created_at / last_used_at /
+     expires_at. **Raw values and hashes are never returned**)
+  2. Designated revocation `DELETE /auth/tokens/:tokenId` (session principal or `*` × admin
+     token — same level as §13-2's key-material conditions. Non-matching gets a uniform 404)
+- **No issuance or raw-value display** (the issuance path stays device flow only — ADR-0018
+  revision 2, AUTH_SPEC §6 revision. The raw value's only place of existence is the terminal
+  display at issuance time)
+- Resolved alongside: the default TTL (SECURITY_REVIEW L-2 — included in the AUTH_SPEC §6
+  revision. Implemented in W3a — the migration rule and explicit TTL are rulings CE / CF in
+  session-44.md)
 
-### S11. 端末登録簿(読み取り + 紐づくトークンの失効 — 2026-09-21 DK K5 追記)
+### S11. Device registry (read + revocation of bound tokens — 2026-09-21 DK K5 addition)
 
-- 対象: P3〜P5(本人の登録簿のみ — user 軸のリソース。独立ルート `/dashboard/devices`、
-  S9 と同じ配置 — 裁定 CP)。裁定の経緯は docs/notes/dk-design.md §10(K5-7〜K5-10)
-- 実装済み API: `GET /auth/devices`(AUTH_SPEC §13-11 — セッション許可列挙内)+ S9 の
-  `GET /auth/tokens` / `DELETE /auth/tokens/:tokenId`(`tokenId` の突合と失効の導線)
-- **登録簿は advisory**(表示名・トークンの対応の置き場 — 検証・認可の入力にならない)。
-  端末鍵の真実源は各プロジェクトのチェーンで、S5 の Members 表が `add_device` /
-  `revoke_device` の畳み込み(端末数・FP・cap)を「サーバー申告」として出す。S11 の説明文は
-  「as reported by the server; the chain is the source of truth — `maruhi device list`
-  verifies it」と言い、表示名の隣に全長 FP を必ず並べる(表示名の偽装への表示上の備え)
-- **置かないもの**: 登録 / 表示名の更新 / 削除 / 追加要求の承認(いずれもセッション主体が
-  拒否される API であり、ADR-0018 改訂 2 のチェーン書き込み禁止・資格生成禁止にも当たる)。
-  チェーンの `revoke_device` も Web からは行わない。置くのは紛失時の導線 = 既存のトークン
-  失効(S9 の許可 mutation をそのまま — 「Lost a device? `maruhi device revoke <fingerprint>`
-  from another device, then revoke its API token here」)
-- gap なし(ワイヤの不足 = `add_device` エントリが FP を運ばない点は S5 の畳み込み側の
-  劣化形〔not reported / unresolved〕で受け、所有者判断 — dk-design.md §10 K5-1)
+- Target: P3–P5 (own registry only — a user-axis resource. Independent route
+  `/dashboard/devices`, same placement as S9 — ruling CP). The rulings' course is in
+  docs/notes/dk-design.md §10 (K5-7–K5-10)
+- Implemented APIs: `GET /auth/devices` (AUTH_SPEC §13-11 — inside the session permission
+  enumeration) + S9's `GET /auth/tokens` / `DELETE /auth/tokens/:tokenId` (the tokenId match and
+  the revocation path)
+- **The registry is advisory** (the home for display names and token correspondence — never an
+  input to verification or authorization). The device keys' source of truth is each project's
+  chain, and S5's Members table emits `add_device` / `revoke_device` folds (device count, FP,
+  cap) as "server declarations". S11's descriptive text says "as reported by the server; the
+  chain is the source of truth — `maruhi device list` verifies it", and always places the
+  full-length FP next to each display name (a display-level hedge against display-name spoofing)
+- **What it doesn't carry**: registration / display-name updates / deletion / approval of
+  addition requests (all are APIs session principals are denied, and also hit ADR-0018 revision
+  2's chain-write and credential-generation bans). The chain's `revoke_device` isn't performed
+  from the web either. What it does carry is the loss-time path = existing token revocation
+  (S9's permitted mutation as-is — "Lost a device? `maruhi device revoke <fingerprint>` from
+  another device, then revoke its API token here")
+- No gap (the wire shortfall — `add_device` entries not carrying the FP — is absorbed by S5's
+  fold side as a degraded form [not reported / unresolved], owner decision — dk-design.md §10
+  K5-1)
 
-### S10.(任意・後続)セッション一覧・失効
+### S10. (Optional, later) session list / revocation
 
-- 対象: P3〜P5。実装済み API: `POST /auth/logout`(現セッションのみ)
-- **不足 API**: 自分のセッション一覧・指定失効。AUTH_SPEC §5 は「サーバー側
-  削除で即時失効可能」を規定するが一覧・指定失効の API 面は未設計。失効系
-  なので境界原則には適合する — 需要が出た時点で §5 の改訂として設計
-  (v1 の画面集合からは外す)
+- Target: P3–P5. Implemented API: `POST /auth/logout` (current session only)
+- **Missing API**: list of own sessions and designated revocation. AUTH_SPEC §5 prescribes
+  "immediately revocable via server-side deletion", but the API surface for list / designated
+  revocation is undesigned. It's a revocation-family feature so it fits the boundary principle —
+  designed as a §5 revision when demand appears (excluded from v1's screen set)
 
-## 4. 表示規律(鍵なし Web の TCB 上の位置づけ)
+## 4. Display discipline (the keyless web's position on the TCB)
 
-ADR-0018 改訂 2 の規範。根拠と棄却案は session-39 裁定 AP・AQ:
+ADR-0018 revision 2's norm. Rationale and rejected options in session-39 rulings AP, AQ:
 
-1. **検証を実装しない・「検証済み(verified)」を名乗らない**: Web バンドルに
-   チェーン検証・署名検証のコードを入れない。運営配信の JS が自ら「検証済み」
-   バッジを描く構図は、検証者とデータ配布者が同一信頼ドメインになり検証の
-   演出にしかならない(ADR-0018 Context と同じ論法)。全表示は
-   「サーバー申告(as reported by the server)」であり、UI 文言もそう表現する
-2. **検証は CLI の領分**: 検証済み表示が要る場面(チェーン・監査の突合)は
-   `maruhi project verify` / `maruhi audit verify` / `reconcile` へ誘導する
-3. **指紋(FP)は参照値であり照合材料ではない**: 儀式(相互確認)は TTY
-   (ADR-0018 改訂 1・2 項)。Web に表示する FP は監査行・チェーン表示との
-   突合用の参照値で、「この画面の FP と照合せよ」と読める文言を置かない
-4. **可視性の文言**: admin 未満の監査一覧は「あなたの role で可視のイベント」。
-   不可視クラスの存在・件数を示唆しない(AUDIT_SPEC §7)
-5. **英語**(ADR-0017): Web のユーザー可視文言はすべて英語
+1. **Implement no verification, claim no "verified"**: don't put chain-verification or
+   signature-verification code in the web bundle. The composition where operation-delivered JS
+   draws its own "verified" badge makes the verifier and the data distributor the same trust
+   domain — verification theater (same argument as ADR-0018 Context). All displays are "server
+   declarations (as reported by the server)" and the UI copy says so
+2. **Verification is the CLI's domain**: situations needing verified display (chain / audit
+   matching) are guided to `maruhi project verify` / `maruhi audit verify` / `reconcile`
+3. **Fingerprints (FP) are reference values, not matching material**: ceremonies (mutual
+   confirmation) are TTY (ADR-0018 revision 1, item 2). FPs displayed on the web are reference
+   values for matching against audit rows / chain displays; no wording readable as "match this
+   screen's FP" is placed
+4. **Visibility wording**: below-admin audit lists say "events visible at your role". Never hint
+   at the existence or count of invisible classes (AUDIT_SPEC §7)
+5. **English** (ADR-0017): all user-visible web copy is in English
 
-## 5. 権限 × 画面の可視性マトリクス
+## 5. Permission × screen visibility matrix
 
-| 画面 | 未認証 | reader | member | admin | owner |
+| Screen | Unauthenticated | reader | member | admin | owner |
 |---|---|---|---|---|---|
-| S1 ランディング / S2 招待案内 | ○ | ○ | ○ | ○ | ○ |
-| S3 ログイン | ○ | — | — | — | — |
-| S4 プロジェクト一覧 | × | ○ | ○ | ○ | ○ |
-| S5 プロジェクト概要 | × | ○ | ○ | ○ | ○ |
-| S6 監査(クラス 1 + 本人行) | × | ○ | ○ | ○ | ○ |
-| S6 監査(クラス 2・seq) | × | × | × | ○ | ○ |
-| S7 要ローテーションフラグ | × | ○ | ○ | ○ | ○ |
-| S8 招待管理(一覧・失効) | × | × | × | ○ | ○ |
-| S9 トークン管理(本人分) | × | ○ | ○ | ○ | ○ |
-| S11 端末登録簿(本人分 — 読み取り + 紐づくトークンの失効) | × | ○ | ○ | ○ | ○ |
+| S1 landing / S2 invite guidance | ○ | ○ | ○ | ○ | ○ |
+| S3 login | ○ | — | — | — | — |
+| S4 project list | × | ○ | ○ | ○ | ○ |
+| S5 project overview | × | ○ | ○ | ○ | ○ |
+| S6 audit (class 1 + own rows) | × | ○ | ○ | ○ | ○ |
+| S6 audit (class 2, seq) | × | × | × | ○ | ○ |
+| S7 rotation-needed flags | × | ○ | ○ | ○ | ○ |
+| S8 invite management (list, revoke) | × | × | × | ○ | ○ |
+| S9 token management (own) | × | ○ | ○ | ○ | ○ |
+| S11 device registry (own — read + bound-token revocation) | × | ○ | ○ | ○ | ○ |
 
-- 真実源はサーバー認可(§11-2 / §12-3 / AUDIT_SPEC §6)。表は UI の出し分けで
-  あり防御ではない。境界(§2 の原則)の強制は 2 層で行う:
-  1. **能力をバンドルに入れない**(発行・受諾・dismiss・復号のコードパス自体を
-     Web に置かない — ADR-0018 決定 1 の規律)。ただしこれは**同一オリジン
-     XSS への境界にはならない**: XSS はバンドルのコードパスに拘束されず、
-     被害者のセッションクッキー(+ 自分で付けられる `x-maruhi-csrf: 1`)で
-     任意の API を呼べる(PR #103 pullfrog レビュー指摘)
-  2. **サーバー側のセッション主体の能力制限**(AUTH_SPEC §5 — セッション
-     主体が呼べる API を「読み取り + 失効系 + 認証系」の肯定列挙に制限する。
-     裁定 AT、実装は PR-W2b)。境界原則はこの層で初めて強制になる
+- The source of truth is server authorization (§11-2 / §12-3 / AUDIT_SPEC §6). The table is UI
+  differentiation, not defense. The boundary (§2's principle) is enforced in 2 layers:
+  1. **Don't put the capability in the bundle** (the code paths for issuance, acceptance,
+     dismiss, decryption don't live on the web — ADR-0018 decision 1's discipline). But this is
+     **no boundary against same-origin XSS**: XSS isn't confined to the bundle's code paths and
+     can call arbitrary APIs with the victim's session cookie (+ self-attachable `x-maruhi-csrf:
+     1`) (PR #103 pullfrog review finding)
+  2. **Server-side session-principal capability limits** (AUTH_SPEC §5 — restrict the APIs a
+     session principal can call to the positive enumeration "reads + revocation family + auth
+     family". Ruling AT, implementation = PR-W2b). The boundary principle only becomes enforced
+     at this layer
 
-## 6. XSS 爆発半径の評価(採用形 (c) の残余)
+## 6. XSS blast-radius evaluation (the adopted form (c)'s residual)
 
-Web が TCB であること(CLAUDE.md)は鍵なしでも変わらない。評価の基準:
-XSS は同一オリジンで任意の `fetch` を発行でき、セッションクッキーは同送・
-CSRF ヘッダーは自分で付けられる — したがって「画面・バンドルに置かない」は
-爆発半径を縮めず、**サーバーがセッション主体に許す API の集合**だけが縮める
-(PR #103 pullfrog レビュー指摘の反映 — 当初稿はこの区別を欠いていた)。
-採用形での全損シナリオ:
+The web being TCB (CLAUDE.md) is unchanged even keyless. The evaluation's basis: XSS can issue
+arbitrary `fetch` from the same origin, the session cookie rides along, and the CSRF header can
+be self-attached — so "not placed on screens / the bundle" doesn't shrink the blast radius;
+**only the set of APIs the server permits to session principals** does (reflecting a PR #103
+pullfrog review finding — the initial draft lacked this distinction). Total-loss scenarios under
+the adopted form:
 
-- **構造的に不能(サーバー実装の現状に依存しない)**: 値・鍵の復号(鍵が
-  ブラウザに存在しない)、チェーン書き込み・値 push・メタ操作(チェーン導出
-  sig 鍵による署名を要し、XSS は署名を作れない)、maruhi トークンの発行
-  (device flow が GitHub アクセストークンの提示を要求する — §4)
-- **セッション能力制限(AUTH_SPEC §5 — 裁定 AT。実装 = PR-W2b)により拒否**:
-  招待の発行(生 invite token = bearer capability の生成)・受諾(攻撃者鍵の
-  user_id 束縛 — FP 相互確認の手前の面)、rotation dismiss(クラス 1 警告の
-  消去)、リカバリーブロブの登録・取得(置換 = 可用性攻撃・取得 = 要監視)、
-  DEK ラップ削除(§12-6 の修復経路 — 署名を伴わない唯一の破壊系)、値付き
-  一括 pull(監査証跡の汚染 — SECURITY_REVIEW L-1 の残余をさらに縮める)。
-  **W2b 実装までは、これらは admin セッションの XSS から現に到達可能**
-  (サーバーはセッション主体をスコープ検査なしのフルパワーとして扱う —
-  `ensureTokenScopeForProject` / `ensureKeyMaterialAccess` の現行挙動)。
-  W2 (セッションを持つ画面の初出)より前に W2b を入れる順序制約はここから
-  出る
-- **残るもの(採用形の受容する残余)**: メタデータ(プロジェクト・環境・
-  変数名・メンバー・FP・監査の可視分)のセッション riding での閲覧、失効系の
-  悪用(トークン・招待の失効 = 回復可能な DoS)
-- 既存防御は維持: 厳格 CSP(自ビルド起動スクリプトのハッシュ許可のみ)、
-  自己配信、`x-maruhi-csrf`、HttpOnly セッション
+- **Structurally impossible (independent of server implementation's current state)**: value /
+  key decryption (no key exists in the browser), chain writes / value pushes / meta operations
+  (require signatures by chain-derived sig keys; XSS can't produce a signature), maruhi token
+  issuance (device flow requires presenting a GitHub access token — §4)
+- **Denied by session capability limits (AUTH_SPEC §5 — ruling AT. Implementation = PR-W2b)**:
+  invite issuance (generating a raw invite token = a bearer capability) and acceptance (binding
+  the attacker's key's user_id — a surface short of FP mutual confirmation), rotation dismiss
+  (removing class-1 warnings), recovery blob registration / retrieval (replacement =
+  availability attack, retrieval = monitored), DEK-wrap deletion (§12-6's repair path — the only
+  destructive family without a signature), value-bearing bulk pull (polluting the audit trail —
+  further shrinking SECURITY_REVIEW L-1's residual). **Until W2b is implemented, these are
+  currently reachable from an admin session's XSS** (the server currently treats session
+  principals as full-power without scope checks — the current behavior of
+  `ensureTokenScopeForProject` / `ensureKeyMaterialAccess`). The ordering constraint — W2b lands
+  before W2 (the first session-bearing screens) — comes from here
+- **What remains (the adopted form's accepted residual)**: viewing of metadata (project /
+  environment / variable names, members, FPs, the visible portion of audit) via session riding,
+  and abuse of the revocation family (revoking tokens / invites = recoverable DoS)
+- Existing defenses stay: strict CSP (hash-allowlisting only the self-built bootstrap script),
+  self-serving, `x-maruhi-csrf`, HttpOnly sessions
 
-## 7. 実装分割案(W1〜。session-27 §14 の様式)
+## 7. Implementation split plan (W1 onward — session-27 §14 format)
 
-1. **PR-W1: 静的縮小形** — web(S2 `/invite` を **SPA 外の独立静的 HTML** と
-   して追加 + per-path CSP `script-src 'none'`〔`write-headers.ts` 拡張〕+
-   S1 整理 + `_headers` / CSP の適用確認)。AUTH_SPEC §15-3 改訂(本 PR で
-   承認済み)の実装。サーバー・API 変更なし。**ここで止まれば形 (a)
-   (静的案内最小形)として成立**
-2. **PR-W2a: プロジェクト一覧 API** — server(チェーン導出 membership の
-   横断一覧 `GET /projects`。採用形 = role なし D1 投影〔候補索引〕+ 読取時
-   DO 確認 — 裁定は session-42.md BI〜BK、規範は AUTH_SPEC §11-5)→
-   api-schema(+ `SESSION_ALLOWED_ENDPOINTS` への追加)→ CLI
-   (`maruhi project list` — 同じ API の第一消費者としてサーバー実装を先に
-   検証)。web 変更なし
-3. **PR-W2b: セッション主体の能力制限** — server(AUTH_SPEC §5 の肯定列挙の
-   実装: セッション主体を「読み取り + 失効系 + 認証系」以外の全エンドポイントで
-   403 拒否。§11-2 の存在秘匿との判定順の整合・受理経路の固定テスト込み)。
-   api-schema は必要なら ForbiddenError の宣言追加のみ。web 変更なし。
-   **W1・W2a と独立でいつでも先行可**(現状 Web にセッションを張る画面が
-   ないため利用者影響ゼロ)。**W2 の前提**: セッションを持つ画面の初出より
-   前に、セッションの XSS 爆発半径を §6 の評価どおりに縮めておく。
-   **W 系列の最初の実装 PR として先行させることを推奨**(純粋な防御強化で
-   依存ゼロ・待つ理由がない — session-39 §10)。実装形は AUTH_SPEC §5 の
-   推奨どおりエンドポイント契約への宣言焼き込み(§12-10 (1) と同じ
-   単一実装点)とし、W2a のプロジェクト一覧 API(セッション許可 — S4)は
-   宣言の許可側で追加する
-4. **PR-W2: 読み取りダッシュボード** — web(S3 ログイン・S4 一覧・S5 概要・
-   S6 監査・S7 フラグ。すべて実装済み API + W2a の消費のみ)。表示規律(§4)の
-   実装。**ここで止まれば読み取り専用ダッシュボード**(P5 の需要まで充足)。
-   配信は**同一オリジン単一 Worker**(maruhi-server が web アセットを同梱配信 —
-   `__Host-` セッション・`connect-src 'self'`・OAuth callback の 3 制約が独立に
-   要求する形。裁定と棄却案は session-43.md BM)
-5. **PR-W3a: トークン管理 API + TTL** — server(`GET /auth/tokens`・指定失効・
-   既定 TTL = AUTH_SPEC §6 改訂の実装)→ api-schema → CLI(期限切れ 401 の
-   再ログイン案内 + `--token-ttl-days`)。web 変更なし。**実装済み(2026-08-30
-   — 裁定 CE〜CH は docs/notes/session-44.md)**。移行規則は当初案(非遡及)
-   でなく**既存無期限行の「適用時点 + 90 日」への再アンカー + 検証側の NULL
-   fail-closed**を採用(非遡及は L-2 を既存行に恒久温存するため棄却 — 裁定
-   CE)。リース非対応実行環境の無人利用(§8 申し送り)は発行時の明示 TTL
-   指定(`expiresInDays` 1..365)で解消(裁定 CF)
-6. **PR-W3b: 失効系画面** — web(S8 招待管理・S9 トークン管理)。W3a に依存。
-   **実装済み(2026-08-30 — 裁定 CN〜CQ は docs/notes/session-45.md)**: S8 は
-   ProjectScreen の第 4 タブ、S9 は独立ルート `/dashboard/tokens`(裁定 CP)。
-   失効はインライン 2 段階確認(裁定 CO)、期限切れ・移行前 null 行は
-   Expired のサーバー申告表示(裁定 CQ)。W 系列(採用形 (c))はこれで完成
-- 依存: W1 は独立。W2 は W2a(暫定 ID 手入力で先行可 — §3 S4)と **W2b
-  (必須 — 順序制約は §6)**に依存。W3b は W3a に依存。W2a / W2b / W3a は
-  互いに独立で並走可。`maruhi ui`(第 2 段)・theme の MIT 化とはすべて独立
-  (Web 側は theme を現状のまま消費)
-- 各段の停止可能性: W1 のみ = 形 (a)。W2b のみでも独立の防御強化として成立。
-  W2 まで = 読み取り専用。W3 まで = 採用形 (c) の完成。どの段の後でも中間
-  状態が独立に成立する
+1. **PR-W1: statically reduced form** — web (add S2 `/invite` as **independent static HTML
+   outside the SPA** + per-path CSP `script-src 'none'` [write-headers.ts extension] + S1
+   cleanup + confirmation of `_headers` / CSP application). The implementation of AUTH_SPEC
+   §15-3's revision (approved in this PR). No server / API changes. **Stopping here stands as
+   form (a) (the minimal static-guidance form)**
+2. **PR-W2a: project-list API** — server (`GET /projects`, a cross-cutting list of chain-derived
+   membership. Adopted shape = role-less D1 projection [candidate index] + read-time DO
+   confirmation — rulings in session-42.md BI–BK, norm in AUTH_SPEC §11-5) → api-schema (+
+   addition to `SESSION_ALLOWED_ENDPOINTS`) → CLI (`maruhi project list` — as the same API's
+   first consumer, verifying the server implementation first). No web changes
+3. **PR-W2b: session-principal capability limits** — server (implementing AUTH_SPEC §5's
+   positive enumeration: sessions get 403 on every endpoint outside "reads + revocation family +
+   auth family". Includes check-order consistency with §11-2's existence concealment and
+   acceptance-path fixture tests). api-schema changes only if ForbiddenError needs a declaration
+   addition. No web changes. **Independent of W1 / W2a — can land anytime first** (no
+   session-bearing screen exists on the web yet, so zero user impact). **Prerequisite of W2**:
+   shrink the session's XSS blast radius per §6's evaluation before the first session-bearing
+   screen ships. **Recommended as the W series' first implementation PR** (a pure defense
+   strengthening with zero dependencies — no reason to wait — session-39 §10). The
+   implementation form follows AUTH_SPEC §5's recommendation of baking declarations into the
+   endpoint contract (the same single implementation point as §12-10 (1)), and W2a's
+   project-list API (session-permitted — S4) is added on the declaration's permitted side
+4. **PR-W2: read-only dashboard** — web (S3 login, S4 list, S5 overview, S6 audit, S7 flags.
+   All consume implemented APIs + W2a's only). Implements the display discipline (§4).
+   **Stopping here = a read-only dashboard** (covers P5's demand too). Delivery is a
+   **same-origin single Worker** (maruhi-server bundles and serves the web assets — the shape
+   independently required by 3 constraints: `__Host-` sessions, `connect-src 'self'`, the OAuth
+   callback. Ruling and rejected options in session-43.md BM)
+5. **PR-W3a: token-management API + TTL** — server (`GET /auth/tokens`, designated revocation,
+   default TTL = implementing the AUTH_SPEC §6 revision) → api-schema → CLI (re-login guidance
+   on expired 401 + `--token-ttl-days`). No web changes. **Implemented (2026-08-30 — rulings
+   CE–CH in docs/notes/session-44.md)**. The migration rule adopts not the initial option
+   (non-retroactive) but **re-anchoring existing non-expiring rows to "application time + 90
+   days" + NULL fail-closed on the verification side** (non-retroactivity was rejected for
+   permanently sheltering L-2 in existing rows — ruling CE). Unattended use on
+   lease-non-supporting runtimes (§8 handoff) is resolved by explicit TTL at issuance
+   (`expiresInDays` 1..365) (ruling CF)
+6. **PR-W3b: revocation-family screens** — web (S8 invite management, S9 token management).
+   Depends on W3a. **Implemented (2026-08-30 — rulings CN–CQ in docs/notes/session-45.md)**:
+   S8 is ProjectScreen's 4th tab; S9 is the independent route `/dashboard/tokens` (ruling CP).
+   Revocation is inline 2-step confirmation (ruling CO); expired and pre-migration null rows get
+   an Expired server-declared display (ruling CQ). This completes the W series (adopted form
+   (c))
+- Dependencies: W1 is independent. W2 depends on W2a (can lead via interim manual ID entry — §3
+  S4) and **W2b (required — the ordering constraint is §6)**. W3b depends on W3a. W2a / W2b /
+  W3a are mutually independent and can run in parallel. All independent of `maruhi ui` (stage 2)
+  and the theme MIT-ization (the web side consumes the theme as-is)
+- Per-stage stoppability: W1 alone = form (a). W2b alone also stands as an independent defense
+  strengthening. Through W2 = read-only. Through W3 = the adopted form (c) complete. The
+  intermediate state after any stage stands independently
 
-## 8. スコープ外・申し送り
+## 8. Out of scope / handoffs
 
-- `maruhi ui`(第 2 段)本体・UI 契約の具体化・theme の MIT 化(ADR-0018
-  決定 4 — 第 2 段着手の前提のまま)
-- 値あり UI(第 3 段 ADR)・シェル選定(改訂 1・3 項)
-- S10 セッション管理 API(需要が出た時点で AUTH_SPEC §5 改訂)
-- ~~**リース非対応実行環境(GitLab CI / k8s 等 — AUTH_SPEC §14-1 の対応 issuer
-  は v1 = GitHub Actions のみ)での PAT 無人利用と既定 TTL の衝突**: 90 日
-  ごとの再ログイン(人間の介在)を要求する形になる。扱い(発行時の明示 TTL
-  指定〔上限つき〕を許すか、対応 issuer の拡張で解くか)は W3a 実装時の裁定。
-  無期限の既定へ戻す選択肢は採らない(L-2 の再導入 — PR #103 pullfrog
-  レビュー指摘の申し送り)~~ **解消(2026-08-30 W3a 裁定 CF —
-  session-44.md)**: 発行時の明示 TTL 指定 `expiresInDays`(1..365 — 上限は
-  ワイヤ Schema で強制)を採用。対応 issuer の拡張は排他でない長期経路として
-  残す(AUTH_SPEC §14 の将来拡張)。無期限の既定へは戻していない
-- ~~監査 UI の可視性クラスを跨ぐ横断検索 UX(クラス 2 の高度なフィルタ)は
-  W2 実装時の裁定に委ねる(API は実装済みで拘束しない)~~ **解消(2026-08-29
-  W2 裁定 BQ — session-43.md)**: W2 の監査 UI はフィルタなしの単一時系列
-  リスト + `before` カーソルとし、クラスを名指す UI・高度フィルタを置かない
-  (クラス構造の UI 露出自体が不可視集合の示唆になる)。`seq` 列は応答適応
-  (載っていれば出す)で、role の事前判定をクライアントへ複製しない。高度な
-  横断検索は CLI(`maruhi audit`)の領分のまま、需要が実測されたら再裁定
-- Deploy to Cloudflare ボタン検証・docs サイト(G)は別タスク(ROADMAP)
-- **メンバー管理 UI(将来項目 — 2026-08-31 所有者ブレインダンプの記録)**:
-  ユーザー利便のため、チームメンバーの管理(追加・招待・承認など)を Web
-  画面でできる形に需要がある。E2EE ではメンバー追加 = 新メンバーの公開鍵への
-  DEK ラップ(暗号操作)であり、鍵を持たない Web(ADR-0018 / AUTH_SPEC §5
-  の能力制限)だけでは完結できない。方針の素案: ① 鍵が要らない部分(メンバー
-  一覧の閲覧・招待の**失効** — S5 / S8 の既存線)は Web 直で拡充できる。
-  招待の**発行**はここに含まれない — ADR-0018 改訂 2 決定 2 が Web から明示的に
-  除外済み(帯域外アンカー〔§15-3 の `h` / `s` / `if`〕に発行者の検証済み
-  チェーン状態と鍵 FP が要る = 発行こそ鍵が要る側 + capability 生成)。Web
-  からの発行需要は ② の二面ハンドオフ(Web で起票 → CLI で発行)で満たす。
-  ② 鍵が要る部分は「**Web で起票 → 鍵を持つ CLI で確認・実行**」の二面
-  ハンドオフで実現できる — AUTH_SPEC §4(2026-08-31 改訂の CLI ログイン
-  ハンドオフ)のフロー行・単回チケット・ポーリングの部品を逆方向に転用する形
-  で、Web に鍵を持たせずに画面の利便性を得る。③ Web セッションの能力線を
-  動かす場合(§5 / §15-2 / ADR-0018)は独立の裁定として起こす(§4 の改訂
-  ではない)。着手時期は未定・本項は記録のみ
+- `maruhi ui` (stage 2) proper, concretization of the UI contract, theme MIT-ization (ADR-0018
+  decision 4 — still a stage-2 prerequisite)
+- Value-bearing UI (stage 3 ADR), shell selection (revision 1, item 3)
+- S10 session-management API (an AUTH_SPEC §5 revision when demand appears)
+- ~~**The collision between PAT unattended use on lease-non-supporting runtimes (GitLab CI /
+  k8s etc. — AUTH_SPEC §14-1's supported issuer is v1 = GitHub Actions only) and the default
+  TTL**: becomes a shape requiring re-login (human intervention) every 90 days. The treatment
+  (allow explicit TTL at issuance [with a cap], or solve by expanding supported issuers) is a
+  ruling at W3a implementation time. The option of reverting to a non-expiring default is not
+  taken (reintroducing L-2 — the handoff from PR #103's pullfrog review finding)~~ **Resolved
+  (2026-08-30, W3a ruling CF — session-44.md)**: adopted explicit TTL at issuance
+  `expiresInDays` (1..365 — the cap is enforced by the wire Schema). Expanding supported issuers
+  stays as a non-exclusive long-term path (an AUTH_SPEC §14 future extension). Not reverted to
+  a non-expiring default
+- ~~Cross-cutting search UX spanning audit UI visibility classes (advanced class-2 filters) is
+  deferred to W2's implementation ruling (the API is already implemented and doesn't
+  constrain)~~ **Resolved (2026-08-29, W2 ruling BQ — session-43.md)**: W2's audit UI is a
+  filter-less single chronological list + `before` cursor, with no class-naming UI or advanced
+  filters (exposing the class structure in the UI itself would hint at the invisible set). The
+  `seq` column is response-adaptive (shown if present), not duplicating role pre-determination
+  into the client. Advanced cross-cutting search stays the CLI's (`maruhi audit`) domain;
+  re-rule if demand is measured
+- Deploy to Cloudflare button verification and the docs site (G) are a separate task (ROADMAP)
+- **Member-management UI (future item — record of the 2026-08-31 owner brain dump)**: for user
+  convenience, there's demand for managing team members (addition, invites, approval, etc.) from
+  web screens. Under E2EE, adding a member = wrapping the DEK to the new member's public key (a
+  cryptographic operation), which the keyless web (ADR-0018 / AUTH_SPEC §5's capability limits)
+  can't complete alone. Draft policy directions: ① The parts needing no key (viewing the member
+  list, invite **revocation** — the existing lines of S5 / S8) can be expanded directly on the
+  web. Invite **issuance** is not included here — ADR-0018 revision 2 decision 2 already
+  explicitly excludes it from the web (the out-of-band anchor [§15-3's `h` / `s` / `if`]
+  requires the issuer's verified chain state and key FP = issuance is precisely the
+  key-requiring side + capability generation). Web issuance demand is met by ②'s two-sided
+  handoff (filed on the web → issued on the CLI). ② The key-requiring parts can be realized via
+  a two-sided handoff "**filed on the web → confirmed and executed on a key-holding CLI**" —
+  reusing AUTH_SPEC §4's (2026-08-31 revision's CLI login handoff) flow rows, single-use
+  tickets, and polling parts in the reverse direction, gaining the screens' convenience without
+  giving the web keys. ③ If the session capability line moves (§5 / §15-2 / ADR-0018), it's
+  filed as an independent ruling (not a §4 revision). Start timing undecided — this item is a
+  record only

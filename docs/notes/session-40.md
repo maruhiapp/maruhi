@@ -1,298 +1,317 @@
-# セッション 40: W2b — セッション主体の能力制限の実装裁定(AU〜AZ)
+# Session 40: W2b — implementation rulings for session-principal capability limits (AU–AZ)
 
-日付: 2026-08-29。目的: AUTH_SPEC §5「セッション主体の能力制限」(0.13-draft —
-PR #103 マージ = 所有者承認済み)の実装 PR(PR-W2b)における実装上の裁定の記録。
-規範(許可・明示拒否の列挙、fail-closed の既定)は §5 本文が唯一の正であり、
-本文書は動かさない — ここで裁定するのは仕様が実装裁定へ明示的に委ねた具体化
-(宣言の表現・強制の層・判定順・エラー形・authz 整理・固定テストの導出形)のみ。
-各裁定は「複数案 → 上位互換探索 → 3 周比較 → 自律選択」(session-27 §14 の様式。
-記号は session-39 の AT の続きで AU〜)。
+Date: 2026-08-29. Purpose: record of implementation rulings in the implementation PR (PR-W2b)
+of AUTH_SPEC §5 "session-principal capability limits" (0.13-draft — PR #103 merged =
+owner-approved). The norm (the enumeration of permitted and explicitly denied surfaces, the
+fail-closed default) has §5 itself as its sole source of truth, and this document doesn't move
+that — what gets ruled here is only the concretizations the spec explicitly delegated to
+implementation rulings (expression of declarations, enforcement layer, check order, error shape,
+authz reorganization, fixture-test derivation form). Each ruling follows "multiple options →
+upward-compatible exploration → 3-round comparison → autonomous selection" (the session-27 §14
+format. Symbols continue session-39's AT, starting at AU).
 
-前提資料: AUTH_SPEC §5 / §11-2 / §12-3 / §12-10、ADR-0018 改訂 2(1 項)、
-docs/notes/web-dashboard-design.md §6〜§7、session-39(裁定 AT・§10)、
-session-32(AST 注釈の失効の教訓)。
+Reference material: AUTH_SPEC §5 / §11-2 / §12-3 / §12-10, ADR-0018 revision 2 (item 1),
+docs/notes/web-dashboard-design.md §6–§7, session-39 (ruling AT, §10),
+session-32 (the lesson of AST-annotation loss).
 
-## 1. 裁定 AU: 宣言の表現(セッション可否をどこへ焼き込むか)
+## 1. Ruling AU: expressing the declaration (where session-allowedness is baked)
 
-### 第 1 周
+### Round 1
 
-- **案 AU-a: エンドポイント AST への注釈**(§12-10 (1) の strictPayload と同型:
-  各エンドポイント定義に `sessionAllowed` 注釈を付け、実装が注釈を読む)— 棄却:
-  strict の注釈は **decode の挙動自体**が注釈を要求したから採った形であり、
-  能力判定は decode に載らない(ミドルウェアが読む)。注釈は check 合成順で
-  無警告失効しうる(session-32 §2-3)うえ、HttpApiEndpoint の注釈読み出し位置は
-  upstream の内部詳細に依存する。挙動の運搬に注釈を使う必然性がここにはない
-- **案 AU-b: api-schema に `[group, endpoint]` の肯定列挙テーブル
-  (`SESSION_ALLOWED_ENDPOINTS`)+ ロード時スイープ + ミドルウェアが識別子で
-  直接参照** — 宣言は契約側(api-schema)に住み、§5 の許可列挙と 1:1 で突合
-  できるテキストになる。失効しうる中間表現(注釈)を持たない
-- **案 AU-c: 拒否面へ第 2 ミドルウェア(SessionDeny)を個別宣言** — 棄却:
-  「付け忘れ = 素通り」の fail-open。§5 の「既定 = セッション不可」と逆向き
+- **Option AU-a: annotations on endpoint ASTs** (isomorphic to §12-10 (1)'s strictPayload:
+  attach a `sessionAllowed` annotation to each endpoint definition, which the implementation
+  reads) — rejected: strict's annotation was chosen because **decode's behavior itself** required
+  the annotation; capability determination doesn't ride on decode (middleware reads it).
+  Annotations can silently lapse under check-composition order (session-32 §2-3), and
+  HttpApiEndpoint's annotation read location depends on upstream internals. There is no necessity
+  to carry behavior via annotation here
+- **Option AU-b: a positive-enumeration `[group, endpoint]` table in api-schema
+  (`SESSION_ALLOWED_ENDPOINTS`) + a load-time sweep + middleware referencing by identifier
+  directly** — the declaration lives on the contract side (api-schema) and becomes text that can
+  be matched 1:1 against §5's permission enumeration. No losable intermediate representation
+  (annotations)
+- **Option AU-c: a second middleware (SessionDeny) individually declared on denial surfaces** —
+  rejected: "forgot to attach = passes through" is fail-open, the reverse of §5's
+  "default = sessions disallowed"
 
-### 第 2 周(上位互換探索)
+### Round 2 (upward-compatible exploration)
 
-- AU-b の強化: 許可リストだけでは「未認証面(AuthMiddleware なし)」が宣言の
-  視野外に残る — 認証必須のつもりでミドルウェア宣言を落とした新設面は、
-  セッションゲート以前に認証ゲート自体を素通りする。**未認証面の明示列挙
-  `UNAUTHENTICATED_ENDPOINTS` を追加し、スイープを「全エンドポイントは
-  AuthMiddleware を持つか、本リストに載るかのどちらか」の完全分類に拡張**
-  (strict.ts の 2 リスト分類と同型)。採用
-- 明示拒否リスト(§5 の「とくに次は明示的に拒否」の写し)を宣言側に持つ案 —
-  棄却: 挙動は「許可列挙外 = 拒否」で完結しており、拒否リストは挙動に寄与
-  しない第 2 の真実源になる(更新漏れで宣言同士が矛盾しうる)。仕様本文との
-  突合は固定テスト側のピン(AZ)が担う
+- Strengthening AU-b: a permissions list alone leaves "unauthenticated surfaces (no
+  AuthMiddleware)" outside the declaration's view — a new surface whose middleware declaration
+  was dropped despite intending auth-required passes through the auth gate itself before the
+  session gate. **Added an explicit enumeration of unauthenticated surfaces
+  `UNAUTHENTICATED_ENDPOINTS` and extended the sweep to a complete classification: "every
+  endpoint either has AuthMiddleware or is on this list"** (isomorphic to strict.ts's 2-list
+  classification). Adopted
+- Option of keeping an explicit-denial list (a copy of §5's "in particular, the following are
+  explicitly denied") on the declaration side — rejected: behavior is complete as "outside the
+  permission enumeration = denied"; a denial list would be a second source of truth contributing
+  nothing to behavior (a missed update could make the declarations contradict). Matching against
+  the spec text is the fixture-side pin's (AZ) job
 
-### 第 3 周(再点検)
+### Round 3 (re-check)
 
-- §5 の実装形推奨(「エンドポイント契約への宣言焼き込み = 単一実装点」)との
-  整合: 契約 = api-schema パッケージであり、テーブルは契約の一部
-  (SECURITY_CRITICAL_PAYLOAD_ENDPOINTS の先例)。強制点はミドルウェア 1 箇所
-  (AV)で「単一実装点」を満たす
-- スイープの検査内容を確認: 許可列挙の実在 + AuthMiddleware 保持(stale・
-  リネーム・未認証面への許可指定を拒否)、未認証列挙の実在 + AuthMiddleware
-  非保持、全面の完全分類。`maruhiApi` 構築直後の import 時に走る(strict
-  スイープと同じ位置)
+- Consistency with §5's implementation-form recommendation ("declarations baked into the endpoint
+  contract = single implementation point"): the contract = the api-schema package, and the table
+  is part of the contract (the SECURITY_CRITICAL_PAYLOAD_ENDPOINTS precedent). The enforcement
+  point is the single middleware (AV), satisfying "single implementation point"
+- Confirmed the sweep's check content: permission enumeration's existence + AuthMiddleware
+  presence (rejects stale entries, renames, permission designations on unauthenticated surfaces),
+  unauthenticated enumeration's existence + AuthMiddleware absence, complete classification of
+  all surfaces. Runs at import time right after `maruhiApi` construction (same position as the
+  strict sweep)
 
-**選択: AU-b + 第 2 周の完全分類拡張**。実装:
-`packages/api-schema/src/session-capability.ts`。
+**Choice: AU-b + round 2's complete-classification extension**. Implementation:
+`packages/api-schema/src/session-capability.ts`.
 
-## 2. 裁定 AV: 強制の層(どこで拒否するか)
+## 2. Ruling AV: the enforcement layer (where denial happens)
 
-### 第 1 周
+### Round 1
 
-- **案 AV-a: AuthMiddleware 実装内(認証直後)** — Effect v4 の
-  HttpApiMiddleware は第 2 引数 `options: { endpoint, group }` を受け取る
-  (upstream `HttpApiBuilder.applyMiddleware` — 実装確認済み)ため、既存の
-  認証ミドルウェアがエンドポイント識別子で宣言を引ける。追加のミドルウェア
-  宣言・ハンドラ変更ゼロの単一実装点
-- **案 AV-b: 各ハンドラ / authz ヘルパでの検査** — 棄却: §5 が明示的に退けた
-  「ハンドラごとの手動検査」そのもの
-- **案 AV-c: ルーティング前の素の HTTP 層(index.ts の fetch)でパスマッチ** —
-  棄却: api-schema のルート定義と独立の第 2 ルータ(パターン重複)を持つことに
-  なり、パス解釈の乖離が新しい失効面になる
+- **Option AV-a: inside the AuthMiddleware implementation (right after authentication)** —
+  Effect v4's HttpApiMiddleware receives a second argument `options: { endpoint, group }`
+  (upstream `HttpApiBuilder.applyMiddleware` — confirmed by implementation check), so the
+  existing auth middleware can draw the declaration by endpoint identifier. A single
+  implementation point with zero added middleware declarations / handler changes
+- **Option AV-b: checks in each handler / authz helper** — rejected: the "per-handler manual
+  check" §5 explicitly dismissed, verbatim
+- **Option AV-c: path-matching in the raw HTTP layer before routing (index.ts's fetch)** —
+  rejected: it would hold a second router (duplicate patterns) independent of api-schema's route
+  definitions, and divergence in path interpretation becomes a new lapse surface
 
-### 第 2 周(上位互換探索)
+### Round 2 (upward-compatible exploration)
 
-- AV-a の位置の内訳を検討: ミドルウェアはハンドラ効果(payload decode を含む)
-  を包む形で適用されるため、能力拒否は **Schema decode より前**に確定する。
-  拒否面へ巨大 body を送り込んでも decode コストを払わない(資源保護の方向にも
-  正しい)。§12-3 の判定順は「認証 → サイズ → スコープ → …」だが、サイズ検査
-  (413)は HTTP 生ボディ上限(index.ts)が決め、能力判定はリクエスト内容に
-  依存しないため順序の矛盾は生じない
-- 深層防御: 宣言層が唯一の強制点だと、ミドルウェア適用自体の退行(エンドポイント
-  定義から `.middleware(AuthMiddleware)` が落ちる等)で全ゲートが消える。
-  これはスイープ(AU — 未分類面の import 時クラッシュ)とマトリクステスト
-  (AZ — 挙動側)が二重に検出する。追加の第 2 強制層は AY の
-  `ensureKeyMaterialAccess` 反転(同方向・到達しない fail-closed)に留める
+- Considered the position within AV-a: middleware is applied wrapping the handler effect
+  (including payload decode), so capability denial is settled **before Schema decode**. Sending a
+  huge body at a denial surface doesn't pay decode cost (also the right direction for resource
+  protection). §12-3's check order is "auth → size → scope → ...", but the size check (413) is
+  decided by the HTTP raw-body cap (index.ts), and capability determination doesn't depend on
+  request content, so no order conflict arises
+- Defense in depth: if the declaration layer were the only enforcement point, a regression in
+  middleware application itself (e.g. `.middleware(AuthMiddleware)` dropped from an endpoint
+  definition) would erase every gate. The sweep (AU — unclassified surfaces crash at import) and
+  the matrix test (AZ — the behavior side) catch this doubly. An added second enforcement layer
+  stays limited to AY's `ensureKeyMaterialAccess` inversion (same direction, unreachable
+  fail-closed)
 
-### 第 3 周(再点検)
+### Round 3 (re-check)
 
-- ミドルウェアの `options` 引数は型
-  (`HttpApiMiddleware<Provides, E, R>`)の公開シグネチャであり、内部 API への
-  依存ではない。identifier はグループ・エンドポイントの公開プロパティ
-- 既存ミドルウェアへの追加であり、Layer 配線・エンドポイント定義は不変
+- The middleware `options` argument is part of the type
+  (`HttpApiMiddleware<Provides, E, R>`)'s public signature, not a dependency on internal API.
+  identifier is a public property of group / endpoint
+- It's an addition to existing middleware; Layer wiring and endpoint definitions are unchanged
 
-**選択: 案 AV-a**。実装: `apps/server/src/auth.package/middleware.ts` の
-`authMiddlewareImpl`(認証 → 能力 → CSRF の順)。
+**Choice: option AV-a**. Implementation: `authMiddlewareImpl` in
+`apps/server/src/auth.package/middleware.ts` (order: auth → capability → CSRF).
 
-## 3. 裁定 AW: 判定順(§11-2 の存在秘匿・§12-3 の判定順との整合)
+## 3. Ruling AW: check order (consistency with §11-2's existence concealment and §12-3's check order)
 
-### 第 1 周
+### Round 1
 
-- **案 AW-a: 認証(401)→ 能力(403)→ CSRF(403)→ ハンドラ(既存判定順)** —
-  能力判定の材料は(主体種別, エンドポイント識別子)のみ = リクエスト内容
-  のみから計算でき、プロジェクトの存在・状態を一切参照しない。§12-3 が認可
-  先行を許す例外(1a — AAD 座標一致検査)と同じ論法で、どの位置に置いても
-  存在秘匿を破らないが、最前(認証直後)が最も攻撃面が小さい
-- **案 AW-b: CSRF → 能力** — 棄却: 拒否面への応答理由が「攻撃者が自分で
-  付けられるヘッダー」の有無で揺れる。能力拒否は主体とエンドポイントだけで
-  決まる不変の事実であり、可変条件の検査より先に置くのが fail-closed の順序。
-  実利面でも、拒否面の固定テストが CSRF ヘッダーの組み合わせに依存しなくなる
-- **案 AW-c: トークンスコープ判定と同じ位置(ハンドラ内の authz 段)** — 棄却:
-  ハンドラ到達 = ハンドラごとの検査点の分散(AV-b の再来)。またセッションの
-  能力はスコープと違いプロジェクト非依存なので、プロジェクト文脈まで降ろす
-  理由がない
+- **Option AW-a: auth (401) → capability (403) → CSRF (403) → handler (existing check order)** —
+  the capability check's material is only (principal kind, endpoint identifier) = computable from
+  the request's content alone, referencing no project existence or state. By the same argument as
+  §12-3's exception allowing auth-first (1a — AAD coordinate-match check), placing it anywhere
+  doesn't break existence concealment, but frontmost (right after authentication) has the
+  smallest attack surface
+- **Option AW-b: CSRF → capability** — rejected: the response reason on denial surfaces would
+  wobble on the presence of "a header the attacker can attach themselves". Capability denial is
+  an invariant fact determined by principal and endpoint alone, and putting it ahead of
+  variable-condition checks is the fail-closed order. Practically, the denial-surface fixture
+  tests stop depending on CSRF-header combinations
+- **Option AW-c: the same position as token-scope determination (the authz stage inside the
+  handler)** — rejected: reaching the handler = dispersing the check point per handler (AV-b
+  again). Also, a session's capability — unlike scope — is project-independent, so there's no
+  reason to drop down to project context
 
-### 第 2 周(上位互換探索)
+### Round 2 (upward-compatible exploration)
 
-- 存在秘匿の再検証: 拒否は全プロジェクト ID・全リソースに対して一様な 403
-  (reason 込みで不変)であり、404 と情報量が同じ「何も知らない主体にも同じ
-  応答」を満たす。逆に、許可面(membership.get 等)ではセッションは従来どおり
-  非メンバー 404(§11-2)へ流れる — 能力ゲートは存在秘匿の手前の独立な層で、
-  秘匿判定に触れない
-- §12-7 の値付き pull の CSRF 要求(セッションのみ)は §5 で「それ以前の防御 +
-  将来緩和への保険として撤去しない」— ハンドラ内の `statefulGetCsrfViolated`
-  呼び出しは**残す**(能力ゲートにより到達しないが、§5 を緩める将来改訂が
-  あっても CSRF 層が独立に生きている状態を保つ)
+- Re-verifying existence concealment: denial is a uniform 403 (invariant, including the reason)
+  for all project IDs and all resources, satisfying "the same response to a principal that knows
+  nothing" with the same information content as 404. Conversely, on permitted surfaces
+  (membership.get etc.) sessions still flow to non-member 404 (§11-2) as before — the capability
+  gate is an independent layer ahead of existence concealment and doesn't touch concealment
+  determinations
+- §12-7's CSRF requirement for value-bearing pulls (sessions only) is per §5 "defenses that
+  precede it + insurance against future relaxation — not removed" — the in-handler
+  `statefulGetCsrfViolated` call **stays** (unreachable under the capability gate, but keeps the
+  CSRF layer independently alive should a future revision loosen §5)
 
-### 第 3 周(再点検)
+### Round 3 (re-check)
 
-- 401 より後・全 403 より前という位置は §14-3 の先例(認証帰属の失敗 = 401 が
-  最初)とも整合。CSRF の 403 と能力の 403 の順序だけが新規の裁定点で、AW-b の
-  棄却理由が決め手
-- 拒否がハンドラ前に確定するため、監査行(var.read 等)を一切残さない —
-  「読んでいないものを読んだと記録しない」(AUDIT_SPEC §3.3)と自然に整合
+- The position — after 401, before all 403s — is also consistent with §14-3's precedent (auth
+  attribution failure = 401 first). Only the ordering of CSRF's 403 vs capability's 403 was a new
+  ruling point, and AW-b's rejection reason decided it
+- Because denial is settled before the handler, no audit row (var.read etc.) is ever written —
+  naturally consistent with "don't record reading what wasn't read" (AUDIT_SPEC §3.3)
 
-**選択: 案 AW-a**(+ CSRF 保険の維持)。
+**Choice: option AW-a** (+ keeping the CSRF insurance).
 
-## 4. 裁定 AX: エラー形(ステータスと reason)
+## 4. Ruling AX: error shape (status and reason)
 
-### 第 1 周
+### Round 1
 
-- **案 AX-a: 一律 403 `ForbiddenError` + 新 reason `session-not-allowed`** —
-  設計文書 §7(W2b)の「403 拒否」の明文と一致。エンドポイント同一性のみに
-  依存する一様応答で存在秘匿と両立(AW)。W2(Web 画面)実装時に「この操作は
-  Web からはできない(CLI へ)」の文言出し分けが可能になる
-- **案 AX-b: 一律 404** — 棄却: 存在秘匿は「一様であること」が本質で 404 で
-  ある必要はなく、プロジェクト無関係の面(`/auth/recovery` 等)で 404 は
-  「未登録」(既存契約)と衝突する。§13-2 の表の既存拒否も 403
-  (insufficient-permission)であり、404 は整合しない
-- **案 AX-c: 既存 reason `insufficient-permission` の流用** — 棄却: トークンの
-  水準不足(スコープを上げれば通る)と能力制限(どのセッションでも通らない)は
-  クライアントへの含意が違う。CLI の失敗表示・Web の文言・固定テストの判別が
-  reason に依存するため、専用 reason が上位互換
+- **Option AX-a: uniform 403 `ForbiddenError` + new reason `session-not-allowed`** — matches the
+  design doc §7 (W2b)'s explicit "403 denial". A uniform response depending only on endpoint
+  identity is compatible with existence concealment (AW). When W2 (web screens) is implemented it
+  enables wording like "this operation can't be done from the web (use the CLI)"
+- **Option AX-b: uniform 404** — rejected: existence concealment's essence is "being uniform",
+  not that it must be 404, and on project-unrelated surfaces (`/auth/recovery` etc.) 404 collides
+  with "unregistered" (existing contract). Existing denials in §13-2's table are also 403
+  (insufficient-permission); 404 is inconsistent
+- **Option AX-c: reusing the existing reason `insufficient-permission`** — rejected: token
+  insufficiency (raising the scope gets you through) and capability limits (no session ever gets
+  through) carry different implications for the client. CLI failure display, web wording, and
+  fixture-test discrimination all depend on the reason, so a dedicated reason is
+  upward-compatible
 
-### 第 2 周(上位互換探索)
+### Round 2 (upward-compatible exploration)
 
-- reason 追加の互換性: ForbiddenReasonSchema への literal 追加は応答側の加法。
-  旧 CLI が新 reason を decode する経路は「旧 CLI がセッションで呼ぶ」場合のみ
-  だが、CLI は常にトークン主体(§5)であり発生しない。リクエスト payload
-  スキーマは不変(§12-10 の strict 分類に変更なし — 本 PR の宣言変更はエラー
-  reason の 1 literal のみ)
-- 専用エラークラス(SessionNotAllowedError)案 — 棄却: AuthMiddleware の宣言
-  エラー集合(Unauthorized / Forbidden)は全認証必須面の契約に自動で載って
-  おり、既存クラスの reason 追加なら**全エンドポイントのエラー宣言が無変更**で
-  済む。新クラスは全面へのエラー宣言追加(ワイヤ契約の膨張)を要し、加法性の
-  検証面が広がるだけ
+- Compatibility of the reason addition: adding a literal to ForbiddenReasonSchema is an
+  addition on the response side. The only path where an old CLI decodes the new reason is "an old
+  CLI calling with a session", but the CLI is always token-principled (§5) so it never occurs.
+  Request payload schemas are unchanged (no change to §12-10's strict classification — this PR's
+  declaration change is one error-reason literal only)
+- Dedicated error class (SessionNotAllowedError) option — rejected: AuthMiddleware's declared
+  error set (Unauthorized / Forbidden) is automatically on the contract of every auth-required
+  surface, and adding a reason to the existing class means **zero changes to every endpoint's
+  error declarations**. A new class would require adding error declarations to all surfaces
+  (wire-contract inflation) and only widens the additive-verification surface
 
-### 第 3 周(再点検)
+### Round 3 (re-check)
 
-- 拒否面に `membership.attest` / `auth.revokeToken` など従来 Forbidden を返さ
-  なかった面が含まれるが、AuthMiddleware のミドルウェア宣言経由で 403 は既に
-  全認証必須面の契約内(CSRF 403 が同経路)— 契約上も新規追加なし
-- `auth.revokeToken` のセッション拒否は従来ハンドラ内 403
-  (insufficient-permission)だった — ミドルウェアの 403(session-not-allowed)
-  へ前倒しされるのは reason の変化のみで、ステータス互換(ハンドラ内の
-  トークン主体限定検査は非セッションの異常系のために残る)
+- Denial surfaces include ones that conventionally didn't return Forbidden
+  (`membership.attest` / `auth.revokeToken` etc.), but via AuthMiddleware's middleware
+  declaration the 403 is already within the contract of all auth-required surfaces (CSRF 403
+  rides the same path) — nothing new added contractually either
+- `auth.revokeToken`'s session denial was conventionally an in-handler 403
+  (insufficient-permission) — being moved earlier to middleware's 403 (session-not-allowed)
+  changes only the reason; status-compatible (the handler's token-principal-only check remains
+  for non-session abnormal paths)
 
-**選択: 案 AX-a**。
+**Choice: option AX-a**.
 
-## 5. 裁定 AY: 既存 authz の整理(宣言と二重の真実源にしない)
+## 5. Ruling AY: reorganizing existing authz (no double source of truth with the declaration)
 
-### 第 1 周
+### Round 1
 
-- `ensureKeyMaterialAccess` の「セッション = 常に許可」分岐は §13-2 / §15-2 の
-  改訂(トークンのみ)と正面から矛盾 — 除去が必須(タスク指定どおり)。除去後の
-  セッション到達時の挙動が裁定点:
-  - **案 AY-a: 403 session-not-allowed で拒否(到達しない fail-closed の
-    第 2 層)** — 宣言層と同方向の冗長であり「二重の真実源」ではない(真実源は
-    宣言。ここは宣言層が万一迂回された場合に開く方向でなく閉じる方向へ倒す保険)
-  - **案 AY-b: セッション到達を defect(500)にする** — 棄却: 宣言層の退行
-    (万一)でユーザー可視の 500 を出す。拒否できる場面で拒否せずクラッシュを
-    選ぶ理由がない
-  - **案 AY-c: 型からセッションを排除(引数を token principal に狭める)** —
-    棄却: 呼び出し側 3 箇所に「セッションでないことの証明」(narrowing +
-    else 分岐)が分散し、結局 AY-a と同じ分岐を呼び出し側の数だけ書く
+- `ensureKeyMaterialAccess`'s "session = always allowed" branch flatly contradicts §13-2 /
+  §15-2's revision (tokens only) — removal is mandatory (as the task specified). The behavior on
+  post-removal session reach is the ruling point:
+  - **Option AY-a: deny with 403 session-not-allowed (an unreachable fail-closed second
+    layer)** — redundant in the same direction as the declaration layer, and not a "double source
+    of truth" (the source of truth is the declaration; this is insurance that tilts toward
+    closing, not opening, should the declaration layer ever be bypassed)
+  - **Option AY-b: make session reach a defect (500)** — rejected: would emit a user-visible 500
+    on a (hypothetical) declaration-layer regression. No reason to choose a crash over denial
+    where denial is possible
+  - **Option AY-c: exclude sessions at the type level (narrow the argument to token
+    principal)** — rejected: "proof of not being a session" (narrowing + else branches) would
+    disperse across the 3 call sites — you end up writing the same branch as AY-a per call site
 
-### 第 2 周(上位互換探索)
+### Round 2 (upward-compatible exploration)
 
-- `audit.self`(本人軸監査)は同じ関数を共用していたが、こちらはセッション可が
-  規範(§5 許可列挙の「監査読み取り」/ AUDIT_SPEC §6 本人閲覧)。**関数を分離**:
-  `ensureKeyMaterialAccess`(鍵素材クラス — セッション拒否)と
-  `ensureSelfAuditAccess`(本人監査 — セッション可 + トークンは `*` × admin)。
-  1 関数に bool フラグで両意味論を持たせる案は棄却(呼び出し点のフラグ誤りが
-  そのまま権限バグになる — 名前で意味論を固定する)
-- `ensureTokenScopeForProject` / `tokenScopeAllowsForProject` のセッション素通しは
-  **維持**: 許可列挙面(読み取り + 失効系)の正当な形(セッションはスコープを
-  持たず、チェーン role が束縛 — §9-2)。コメントを §5 参照へ更新し、素通しが
-  「宣言層通過済みの許可面に限られる」ことを明記
+- `audit.self` (self-axis audit) shared the same function, but there sessions are the norm (§5's
+  permission enumeration "audit read" / AUDIT_SPEC §6 self viewing). **Split the functions**:
+  `ensureKeyMaterialAccess` (key-material class — sessions denied) and `ensureSelfAuditAccess`
+  (self audit — sessions allowed + tokens need `*` × admin). The option of giving one function
+  both semantics via a bool flag was rejected (a flag mistake at a call site becomes a permission
+  bug as-is — pin semantics by name)
+- **Kept** the session pass-through in `ensureTokenScopeForProject` /
+  `tokenScopeAllowsForProject`: the legitimate shape on permission-enumeration surfaces (reads +
+  revocation family) (sessions hold no scope; the chain role binds — §9-2). Updated comments to
+  reference §5, noting the pass-through is "limited to permitted surfaces that already passed the
+  declaration layer"
 
-### 第 3 周(再点検)
+### Round 3 (re-check)
 
-- ロジック上セッション拒否が能動的に働く関数は authz に残らないこと(強制点の
-  単一性)を確認: `ensureKeyMaterialAccess` の分岐は到達不能(マトリクステストで
-  当該 3 面 — recoveryPut / recoveryGet / invites.accept — のミドルウェア段
-  拒否を固定)であり、判定順・応答形に影響しない
-- `handlers-auth` の logout(セッション主体の正常系)・revokeToken(トークン
-  主体限定)のハンドラ内分岐は能力制限と独立の意味論であり不変
+- Confirmed no function where session denial actively operates remains in authz (single
+  enforcement point): `ensureKeyMaterialAccess`'s branch is unreachable (the matrix test pins
+  middleware-stage denial on those 3 surfaces — recoveryPut / recoveryGet / invites.accept) and
+  doesn't affect check order or response shape
+- `handlers-auth`'s logout (session-principal normal path) and revokeToken (token-principal-only)
+  in-handler branches are semantics independent of capability limits — unchanged
 
-**選択: AY-a + 関数分離**。
+**Choice: AY-a + function split**.
 
-## 6. 裁定 AZ: 固定テストの導出形
+## 6. Ruling AZ: the derivation form of fixture tests
 
-### 第 1 周
+### Round 1
 
-- **案 AZ-a: 手書きのエンドポイント列挙でテスト** — 棄却: タスク指定が明示的に
-  禁じる形(宣言漏れ・焼き込み失効を検出できない)
-- **案 AZ-b: `maruhiApi.groups` からの機械導出マトリクス** — group / endpoint /
-  method / path / AuthMiddleware 有無を実行時に列挙し、パスパラメータを固定
-  代入(`:projectId` → 実在 fixture、`:environmentId` / `:variableId` /
-  `:id` → 固定値。未知パラメータは fail-loud)して workerd 実経路で送信。
-  拒否面(= 認証必須 ∖ 許可列挙)は 403 + reason の完全一致、許可面は
-  「session-not-allowed でない」を検証
-- **案 AZ-c: 宣言(スイープ)の単体テストのみ** — 棄却: session-32 の教訓の
-  再来(宣言の存在をテストしても、強制経路の失効を検出しない)。スイープは
-  import 時に走る前提条件であり、テストは挙動側を固定する
+- **Option AZ-a: test with hand-written endpoint enumeration** — rejected: the shape the task
+  explicitly forbids (can't detect declaration misses / baked-declaration lapse)
+- **Option AZ-b: a mechanically derived matrix from `maruhiApi.groups`** — enumerate group /
+  endpoint / method / path / AuthMiddleware presence at runtime, fix-substitute path parameters
+  (`:projectId` → real fixture, `:environmentId` / `:variableId` / `:id` → fixed values; unknown
+  parameters fail loud), and send through the real workerd path. Denial surfaces (= auth-required
+  ∖ permission enumeration) get exact-match 403 + reason; permitted surfaces are checked for "not
+  session-not-allowed"
+- **Option AZ-c: unit tests of the declaration (sweep) only** — rejected: a repeat of
+  session-32's lesson (testing the declaration's presence doesn't detect enforcement-path lapse).
+  The sweep is a precondition that runs at import; tests pin the behavior side
 
-### 第 2 周(上位互換探索)
+### Round 2 (upward-compatible exploration)
 
-- AZ-b の強化 3 点(採用):
-  1. **仕様突合ピン**: §5 の明示拒否列挙(値付き pull・DEK 3 面・チェーン
-     追記 / init・環境変数 mutation・招待発行 / 受諾・rotation dismiss・
-     リカバリー 2 面)を許可列挙に含めないことのテキスト固定 — 機械導出とは
-     独立に「許可リストへの誤追加」を仕様文言の側から検出する
-  2. **トークン主体の全面回帰**: 全認証必須面へトークンで送信し
-     session-not-allowed が一切返らないこと(CLI 無影響 — §5「CLI・maruhi ui は
-     トークン主体であり影響を受けない」の固定)。`auth.revokeToken` は提示
-     トークン自身を失効させるため最後に送る
-  3. **判定順の固定**: 拒否面は CSRF ヘッダーなしでも session-not-allowed
-     (AW の能力先行)、許可面の書き込み(logout)は CSRF 403 が生きている
-     (保険層の維持)
-- 許可面の正常系(200)は既存スイート + 代表面の positive control に留める
-  (マトリクスで全面 200 を強制すると、エンドポイント固有のフィクスチャを
-  マトリクスに持ち込み手書き列挙が再発する)
+- 3 strengthenings of AZ-b (adopted):
+  1. **Spec-match pin**: text-pin that §5's explicit-denial enumeration (value-bearing pull, the
+     DEK 3 surfaces, chain append / init, environment-variable mutation, invite issuance /
+     acceptance, rotation dismiss, the recovery 2 surfaces) is not included in the permission
+     enumeration — detects "mistaken additions to the permission list" from the spec-text side,
+     independent of mechanical derivation
+  2. **Token-principal full-surface regression**: send to all auth-required surfaces with a token
+     and verify session-not-allowed is never returned (no CLI impact — fixing §5's "CLI and
+     `maruhi ui` are token-principled and unaffected"). `auth.revokeToken` revokes the presented
+     token itself, so it's sent last
+  3. **Check-order pin**: denial surfaces return session-not-allowed even without CSRF headers
+     (AW's capability-first), and a permitted-surface write (logout) still gets CSRF 403
+     (insurance layer preserved)
+- Permitted surfaces' normal paths (200) stay with the existing suite + a representative-surface
+  positive control (forcing all-surface 200 in the matrix would drag endpoint-specific fixtures
+  into the matrix and reintroduce hand-written enumeration)
 
-### 第 3 周(再点検)
+### Round 3 (re-check)
 
-- 既存テストの反転箇所を仕様の側から確認: セッションでの init / 環境作成 /
-  値付き pull / 招待受諾 / リカバリー登録取得の既存テストは「W2b 以前は
-  セッション可だった」(§13-2 / §15-2 の注記)挙動のテストであり、反転が仕様
-  追随そのもの。各テストは「CSRF 有無によらず一様拒否 + 同一 body がトークンで
-  通る(拒否がセッション主体起因の証明)」の形へ書き換え
-- セッション actor の DO 側監査(env.created の authMethod payload)は成立面
-  ごと消えるため、当該テストは「拒否 + 監査行なし」へ反転。セッション actor の
-  監査帰属は D1 側(auth.*)と、残る唯一のセッション mutation である
-  invites.revoke の新規テスト(actor = user_id + authMethod、トークン id なし)
-  が引き継ぐ
+- Confirmed the inversion points of existing tests from the spec side: the existing tests of
+  session init / env create / value-bearing pull / invite acceptance / recovery registration get
+  are tests of "before W2b, sessions were allowed" (§13-2 / §15-2's note) behavior, so inverting
+  them is spec-following itself. Each test is rewritten into "uniform denial regardless of CSRF
+  presence + the same body passes with a token (proving the denial is session-principal-caused)"
+- The session-actor DO-side audit (env.created's authMethod payload) disappears along with the
+  surface itself, so that test inverts to "denial + no audit row". Session-actor audit
+  attribution is carried on by the D1 side (auth.*) and by a new test of invites.revoke — the
+  only remaining session mutation (actor = user_id + authMethod, no token id)
 
-**選択: 案 AZ-b + 強化 3 点**。実装:
-`apps/server/test/session-capability.test.ts`(+ 反転更新: membership /
-data-dek / data-variable / invites / audit / recovery の各テスト)。
+**Choice: option AZ-b + the 3 strengthenings**. Implementation:
+`apps/server/test/session-capability.test.ts` (+ inversion updates: the membership /
+data-dek / data-variable / invites / audit / recovery tests).
 
-## 7. 成果物の要約
+## 7. Deliverable summary
 
-- **api-schema**: `session-capability.ts`(SESSION_ALLOWED_ENDPOINTS = 実装済み
-  許可 12 面 / UNAUTHENTICATED_ENDPOINTS = 未認証 5 面 / 述語 / ロード時
-  スイープ)、ForbiddenReasonSchema へ `session-not-allowed` 追加(応答側の
-  加法のみ — payload スキーマ・strict 分類は不変)
-- **server**: `authMiddlewareImpl` に能力判定(認証 → 能力 → CSRF)、
-  `ensureKeyMaterialAccess` のセッション分岐反転、`ensureSelfAuditAccess` 分離、
-  コメントの §5 追随(`本人のフルパワー` 表現の除去)
-- **CLI**: 挙動変更なし(トークン主体)。invite accept の 403 案内文からの
-  セッション言及除去のみ
-- **テスト**: 機械導出マトリクス(拒否 22 面 × セッション、許可 12 面 ×
-  セッション、認証必須 34 面 × トークン回帰、判定順、positive control)+
-  既存 6 ファイルの反転・追補
-- **仕様変更なし**: §5 の明確化追記が必要になる曖昧さは実装中に発見されなかった
-  (エラー形・判定順は §5 が実装裁定へ委ねた範囲 — 本文書が記録)
+- **api-schema**: `session-capability.ts` (SESSION_ALLOWED_ENDPOINTS = the 12 implemented
+  permitted surfaces / UNAUTHENTICATED_ENDPOINTS = the 5 unauthenticated surfaces / predicates /
+  load-time sweep), `session-not-allowed` added to ForbiddenReasonSchema (response-side addition
+  only — payload schemas and strict classification unchanged)
+- **server**: capability check in `authMiddlewareImpl` (auth → capability → CSRF),
+  `ensureKeyMaterialAccess`'s session branch inverted, `ensureSelfAuditAccess` split,
+  comments updated to follow §5 (removed the "self full-power" phrasing)
+- **CLI**: no behavior change (token-principled). Only the session mention removed from the
+  invite-accept 403 guidance text
+- **tests**: the mechanically derived matrix (22 denial surfaces × session, 12 permitted surfaces
+  × session, 34 auth-required surfaces × token regression, check order, positive control) +
+  inversions / supplements to the existing 6 files
+- **No spec changes**: no ambiguity requiring a clarifying note in §5 was found during
+  implementation (error shape and check order fall within what §5 delegated to implementation
+  rulings — recorded by this document)
 
-## 8. 申し送り
+## 8. Handoffs
 
-1. **W2a(プロジェクト一覧)・W3a(トークン一覧・指定失効)の実装 PR は、
-   AUTH_SPEC §5 の許可列挙に既載のため、`SESSION_ALLOWED_ENDPOINTS` への追加を
-   同じ PR で行う**(fail-closed の既定によりデフォルトは 403 — 追加を忘れると
-   スイープではなくマトリクステストの許可面数の期待で気づく形になる)
-2. セッション一覧・指定失効(S10)は §5 改訂が先(設計文書 §8 のまま)
-3. `statefulGetCsrfViolated` のハンドラ内呼び出し(値付き pull・recoveryGet)は
-   能力ゲートで到達不能だが、§5 / §12-7 の「実装済みの防御は撤去しない」規律で
-   意図的に維持している — 将来の削除提案はこの規律の再裁定を要する
+1. **The implementation PRs of W2a (project list) and W3a (token list / designated revocation)
+   are already listed in AUTH_SPEC §5's permission enumeration, so the addition to
+   `SESSION_ALLOWED_ENDPOINTS` happens in the same PR** (the fail-closed default means the
+   default is 403 — forgetting the addition surfaces via the matrix test's permitted-surface
+   count expectation, not the sweep)
+2. Session list / designated revocation (S10) requires §5 revision first (as per design doc §8)
+3. The in-handler `statefulGetCsrfViolated` calls (value-bearing pull, recoveryGet) are
+   unreachable under the capability gate but intentionally retained per §5 / §12-7's "don't
+   remove implemented defenses" discipline — a future removal proposal requires re-ruling that
+   discipline

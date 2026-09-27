@@ -1,15 +1,18 @@
-// build-binaries.ts / build-npm.ts / print-smoke-matrix.ts で共有する部品。
+// Parts shared by build-binaries.ts / build-npm.ts / print-smoke-matrix.ts.
 
 import { spawnSync } from "node:child_process";
 
 /**
- * リリース対象の単一の出所。バイナリ生成(build-binaries.ts)と release.yml の
- * smoke matrix(print-smoke-matrix.ts → fromJSON)の両方がここから導出される。
- * 対象を足すと実 OS スモークが自動で付いてくる — 表を複製して smoke 側だけ漏れ、
- * クロスコンパイルしか通っていない成果物が公開される形を構造的に塞ぐ。
+ * Single source of truth for release targets. Both binary generation
+ * (build-binaries.ts) and release.yml's smoke matrix (print-smoke-matrix.ts →
+ * fromJSON) are derived from here. Adding a target automatically gives it a
+ * real-OS smoke — structurally prevents the shape where a duplicated table
+ * forgets the smoke side and an artifact that only passed cross-compilation
+ * gets published.
  *
- * runner はスモークに使う GitHub ホスト runner のラベル。darwin-x64 は Intel mac
- * の最終世代 macos-15-intel(2027-08 retire。その際ここを見直す)。
+ * runner is the GitHub-hosted runner label used for the smoke. darwin-x64 uses
+ * macos-15-intel, the last Intel mac generation (retires 2027-08 — revisit this
+ * then).
  */
 export const TARGETS = [
   { bunTarget: "bun-linux-x64", name: "linux-x64", bin: "maruhi", runner: "ubuntu-latest" },
@@ -25,24 +28,25 @@ export const TARGETS = [
 ] as const;
 
 /**
- * Canonical SemVer(build metadata なし。タグに `+` は使わない運用)。
- * `\d+` ベースの緩い形だと `01.2.3` を通し、GitHub Release 作成後の npm publish
- * で初めて弾かれて Release と npm が食い違う。npm と同じ判定をゲートの先頭
- * (release.yml の version-check にも同型の ERE がある)から掛ける。
+ * Canonical SemVer (no build metadata — `+` is not used in tags).
+ * A loose `\d+`-based pattern would accept `01.2.3` and only get rejected at
+ * npm publish after the GitHub Release exists, leaving Release and npm out of
+ * sync. Apply the same check npm uses at the head of the gate (release.yml's
+ * version-check has the same-shaped ERE).
  */
 export const SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
 
-/** 子プロセスを同期実行し、起動失敗・シグナル死・非 0 終了を区別して失敗させる。 */
+/** Runs a child process synchronously, distinguishing spawn failure, signal death, and non-zero exit. */
 export function run(command: string, args: readonly string[], cwd: string): void {
   const result = spawnSync(command, [...args], { cwd, stdio: "inherit" });
   if (result.error !== undefined) {
-    throw new Error(`${command} の起動に失敗: ${result.error.message}`);
+    throw new Error(`failed to spawn ${command}: ${result.error.message}`);
   }
   if (result.signal !== null) {
-    throw new Error(`${command} ${args.join(" ")} がシグナル ${result.signal} で死んだ`);
+    throw new Error(`${command} ${args.join(" ")} died on signal ${result.signal}`);
   }
   if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(" ")} が exit ${result.status} で失敗`);
+    throw new Error(`${command} ${args.join(" ")} exited with status ${result.status}`);
   }
 }

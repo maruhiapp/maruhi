@@ -2,10 +2,10 @@
 
 Project-specific guidance for AI coding agents.
 
-**maruhi 固有の上書き(ルート `CLAUDE.md`「Web UI(Astryx)の styling 規律」が正)**:
+**maruhi-specific overrides (root `CLAUDE.md` "Web UI (Astryx) styling discipline" is the source of truth)**:
 
-- 下の生成ブロックに `swizzle` の案内があるが、**maruhi では `astryx swizzle` は禁止**。コマンドに限らず、Astryx 内部実装のソースをリポジトリへ取り込むこと全般が禁止(閲覧は学習目的のみ可)。上流バグは厳密ピン留めと「アップグレード PR の差し戻し」で対処する
-- カスタマイズの検討順: ① `apps/web/theme/` の defineTheme(variant 追加を含む)→ ② xstyle → ③ `ui.package` での合成ラッパー → ④ `ui.package` での新規自作(Astryx の公開 API のみ)→ ⑤ upstream(facebook/astryx)への issue / PR
+- The generated block below mentions `swizzle`, but **`astryx swizzle` is forbidden in maruhi**. Not just the command — copying Astryx's internal implementation source into the repository by any means is forbidden (reading it is allowed for learning only). Upstream bugs are handled with exact pins and by "sending back the upgrade PR"
+- Order of consideration for customization: ① defineTheme in `apps/web/theme/` (including adding variants) → ② xstyle → ③ a composed wrapper in `ui.package` → ④ a new bespoke component in `ui.package` (Astryx public APIs only) → ⑤ an issue / PR to upstream (facebook/astryx)
 
 <!-- ASTRYX:START -->
 Astryx v0.6.2 · 164 components

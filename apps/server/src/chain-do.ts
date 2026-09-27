@@ -1,24 +1,31 @@
-// プロジェクト DO: メンバーシップチェーンの append-only 保存(CRYPTO_SPEC §6.4)、
-// データプレーン(環境・変数・暗号文・ラップ済み DEK — AUTH_SPEC §12)、監査ログ
-// (AUDIT_SPEC §5.1)を 1 DO に併置する(§4 のクエリがクロスストア join なしで
-// 成立し、チェーン追記とミラー追記が同じ直列化の下で書ける)。
+// The project DO: colocates the append-only membership-chain storage
+// (CRYPTO_SPEC §6.4), the data plane (environments, variables,
+// ciphertexts, wrapped DEKs — AUTH_SPEC §12), and the audit log
+// (AUDIT_SPEC §5.1) in one DO (so the §4 queries hold with no
+// cross-store join, and a chain append and its mirror append write under
+// the same serialization).
 //
-// - サーバー側検証: 追記受理時に verifyChain(@maruhi/crypto)を再実行する。
-//   クライアント検証(§6.3)がサーバー不信の防衛、この検証が不正クライアントの
-//   防衛であり、両方必須(§6.4)
-// - 直列化 + CAS: 追記リクエストは親ヘッドハッシュを持ち、現ヘッドと不一致なら
-//   拒否する。DO 内の操作は Semaphore(1) で直列化する — DO の input gate は
-//   ストレージ以外の await(verifyChain 内の crypto.subtle)中に開くため、
-//   ゲート任せでは追記同士が交錯しうる。データプレーンの変更も同じ permit を
-//   共有する(並行 push の欠損・交錯防止)。**読み取りも同じ permit で直列化する**:
-//   permit 外で読むと「メンバーシップ判定(チェーン導出)→ データ読み」の間に
-//   remove_member の受理が割り込み、削除直後のメンバーへ値を配布しうる
-//   (§11-2 違反の TOCTOU)。permit 下では全操作がチェーン書き込みに対して
-//   線形化される。PRIMARY KEY 制約が最終防衛
-// - 受理ポリシー: チェーンは §6.4(1 MiB / 10,000 エントリ / 32 MiB)、データは
-//   §12-8(policy.ts)
-// - ストレージ(DO SQLite)は Effect サービス(ChainStore / DataStore /
-//   AuditStore)の背後に隔離する。DDL は do-schema.ts(コンストラクタで適用)
+// - Server-side verification: verifyChain (@maruhi/crypto) is re-run when
+//   accepting an append. Client verification (§6.3) defends against an
+//   untrusted server; this verification defends against a malicious
+//   client — both are required (§6.4)
+// - Serialization + CAS: an append request carries the parent head hash
+//   and is rejected when it disagrees with the current head. Operations
+//   inside the DO are serialized by a Semaphore(1) — the DO's input gate
+//   opens during any non-storage await (crypto.subtle inside verifyChain),
+//   so leaving it to the gate would let appends interleave. Data-plane
+//   changes share the same permit (prevents lost/interleaved concurrent
+//   pushes). **Reads serialize under the same permit too**: a read outside
+//   the permit would let a remove_member acceptance slip between
+//   "membership check (chain-derived) → data read" and could distribute a
+//   value to a just-removed member (a TOCTOU violating §11-2). Under the
+//   permit every operation linearizes against chain writes. The PRIMARY
+//   KEY constraint is the last line of defense
+// - Acceptance policy: §6.4 for the chain (1 MiB / 10,000 entries / 32
+//   MiB); §12-8 for the data (policy.ts)
+// - Storage (DO SQLite) is isolated behind Effect services (ChainStore /
+//   DataStore / AuditStore). The DDL lives in do-schema.ts (applied by the
+//   constructor)
 
 import type { ChainEntry, ChainState, Role } from "@maruhi/crypto";
 import { DurableObject } from "cloudflare:workers";
@@ -112,85 +119,98 @@ import {
 export interface Env {
   readonly PROJECT_CHAIN: DurableObjectNamespace<ProjectChainDO>;
   readonly DB: D1Database;
-  /** GitHub OAuth App の client_id(Workers Secret / .dev.vars。公開情報だが登録経路は secret に統一 — AUTH_SPEC §3-2)。 */
+  /** The GitHub OAuth App's client_id (Workers Secret / .dev.vars. Public information, but the provisioning path is uniformly secret — AUTH_SPEC §3-2). */
   readonly GITHUB_CLIENT_ID: string;
-  /** GitHub OAuth App の client_secret(Workers Secret / .dev.vars。ダミー値のみコミット可)。 */
+  /** The GitHub OAuth App's client_secret (Workers Secret / .dev.vars. Only dummy values may be committed). */
   readonly GITHUB_CLIENT_SECRET: string;
   /**
-   * デプロイメント keypair の入力鍵材料(Workers Secret / .dev.vars。32 バイト
-   * hex — CRYPTO_SPEC §9)。keypair は RFC 9180 DeriveKeyPair で起動時に導出する
-   * (server-key.ts)。未設定 = 選択的開示なしの純粋 E2EE デプロイメント(既定)。
-   * secret を欠いたデプロイでは実行時に undefined。
+   * The deployment keypair's input key material (Workers Secret /
+   * .dev.vars. 32 bytes hex — CRYPTO_SPEC §9). The keypair is derived at
+   * startup via RFC 9180 DeriveKeyPair (server-key.ts). Unset = a pure
+   * E2EE deployment with no selective disclosure (the default). On a
+   * deployment lacking the secret it is undefined at runtime.
    */
   readonly SERVER_ENC_KEY_IKM?: string;
   /**
-   * 未認証 CLI ログイン start の発信元 IP レート制限(AUTH_SPEC §4-1 (1) —
-   * wrangler.jsonc の ratelimits。無記録 start なので DB 保護ではなく CPU 保護)。
+   * The source-IP rate limit of unauthenticated CLI-login start
+   * (AUTH_SPEC §4-1 (1) — the ratelimits of wrangler.jsonc. An unrecorded
+   * start, so this protects CPU, not the DB).
    */
   readonly CLI_START_RATE_LIMIT: RateLimit;
   /**
-   * 未認証 CLI ログイン poll の発信元 IP レート制限(AUTH_SPEC §4-1 (5) —
-   * ポーリング間隔の下限 5 秒 = 12 回/分を正常系が下回るよう、start より緩い
-   * 上限にする。超過ポーリングの 429 拒否は仕様が明示的に許す)。
+   * The source-IP rate limit of unauthenticated CLI-login poll
+   * (AUTH_SPEC §4-1 (5) — looser than start so the normal path stays
+   * under the polling interval floor of 5 s = 12 req/min. The spec
+   * explicitly allows a 429 rejection of excess polling).
    */
   readonly CLI_POLL_RATE_LIMIT: RateLimit;
   /**
-   * 未認証 OAuth callback の発信元 IP レート制限。callback はリクエストごとに
-   * GitHub の token endpoint を叩き、OAuth App 単位の共有クォータを消費する。
-   * state は cookie と query の二重送信(サーバー側状態なし)なので、非ブラウザ
-   * の発信元は両方を自分で用意できて検査を通せる — 頻度を縛るのはこの binding
-   * だけ。ブラウザの対話ログイン(CLI ブラウザ脚含む)は共有 egress で束になるため、
-   * start より緩い上限にする(docs/SELF_HOSTING.md の WAF 推奨値と同じ 30/min)。
+   * The source-IP rate limit of the unauthenticated OAuth callback. A
+   * callback hits GitHub's token endpoint per request and consumes the
+   * shared quota per OAuth App. state is a cookie-and-query double
+   * submit (no server-side state), so a non-browser source can supply
+   * both itself and pass the check — this binding is the only thing
+   * bounding the rate. Browser interactive logins (incl. the CLI browser
+   * leg) share one egress, so the cap is looser than start's (the same
+   * 30/min as the WAF recommendation of docs/SELF_HOSTING.md).
    */
   readonly OAUTH_CALLBACK_RATE_LIMIT: RateLimit;
   /**
-   * lease 発行の発信元 IP レート制限。DO は名前指定で暗黙生成されるため、有効な
-   * OIDC token だけで任意の project ID の DO を量産できる — projectStub 到達前の
-   * request-level 制限で生成レートを有界にする。
+   * The source-IP rate limit of lease issuance. A DO is implicitly
+   * created by name, so a valid OIDC token alone could mass-produce DOs
+   * for arbitrary project IDs — this request-level limit before
+   * projectStub is reached bounds the creation rate.
    */
   readonly LEASE_RATE_LIMIT: RateLimit;
   /**
-   * サインアップ招待コード付き `GET /auth/github/start` の発信元 IP レート制限
-   * (AUTH_SPEC §3)。コード付き start は事前検証の D1 読みを伴う未認証面
-   * (検証自体は 256-bit 単回コードのハッシュ照合で存在オラクルにならない —
-   * 制限は資源保護)。プレーンな start は従来どおり制限なし(ログイン導線 —
-   * サーバー側の状態・外部呼び出しを持たない 302 のみ)。
+   * The source-IP rate limit of a `GET /auth/github/start` carrying a
+   * signup invite code (AUTH_SPEC §3). A code-bearing start is an
+   * unauthenticated surface involving a D1 read for pre-validation (the
+   * check itself is a hash comparison of a 256-bit single-use code and
+   * is not an existence oracle — the limit protects resources). A plain
+   * start is still unlimited (the login funnel — a 302 with no
+   * server-side state and no external call).
    */
   readonly SIGNUP_START_RATE_LIMIT: RateLimit;
   /**
-   * DO → R2 退避の保管先(docs/notes/hosted-ops.md §2-D / §2-F)。hosted 環境
-   * (`wrangler deploy --env hosted`)のみが持つ optional バインディング。不在 =
-   * 退避しない(セルフホストの既定。スイープは静的 1 行を残して no-op)。
+   * The destination of DO → R2 evacuations (docs/notes/hosted-ops.md
+   * §2-D / §2-F). An optional binding only the hosted environment
+   * (`wrangler deploy --env hosted`) has. Absent = never evacuates (the
+   * self-hosted default; the sweep leaves a static one line and is a
+   * no-op).
    */
   readonly OPS_BACKUP_BUCKET?: R2Bucket;
   /**
-   * トリップワイヤ通知の webhook(Workers Secret — hosted-ops.md §2-B)。未設定 =
-   * 送信しない(既定は無効)。本文は静的な信号名 + 集計値のみ。
+   * The tripwire-notification webhook (Workers Secret — hosted-ops.md
+   * §2-B). Unset = never sends (disabled by default). The body is only
+   * static signal names + aggregate values.
    */
   readonly OPS_ALERT_WEBHOOK_URL?: string;
 }
 
 // ---------------------------------------------------------------------------
-// 運用 RPC(hosted-ops.md §2-D / §2-E)の入出力。worker 内部(cron の
-// スイープ・復元 worker)からのみ呼ばれ、HTTP ハンドラは呼ばない。
+// Inputs and outputs of the ops RPC (hosted-ops.md §2-D / §2-E). Called
+// only from inside the worker (the cron sweep, the restore worker); no
+// HTTP handler calls them.
 // ---------------------------------------------------------------------------
 
 export interface OpsBackupInput {
-  /** オブジェクトキーの接頭辞(`do`)。キーにプロジェクト ID は載らない。 */
+  /** The object key's prefix (`do`). The project ID never appears on the key. */
   readonly keyPrefix: string;
   readonly nowMs: number;
-  /** これを超える DO は退避しない(oversize)。 */
+  /** A DO larger than this is not evacuated (oversize). */
   readonly maxBytes: number;
   /**
-   * 前回成功のウォーターマーク(監査 seq・チェーン seq・ヘッド申告の最新受理時刻)。
-   * 三つとも一致すれば skip(null = 必ず退避)。
+   * The watermark of the last success (audit seq, chain seq, the latest
+   * acceptance time of a head attestation). Skip when all three match
+   * (null = always evacuate).
    */
   readonly skipIfUnchanged: {
     readonly auditSeq: number;
     readonly chainSeq: number;
     readonly attestationMark: number;
   } | null;
-  /** テスト用: multipart のパート長。 */
+  /** For tests: the multipart part length. */
   readonly partBytes?: number;
 }
 
@@ -233,20 +253,23 @@ export type OpsRestoreOutcome =
       readonly chainHeadSeq: number;
       readonly chainHeadHashHex: string | null;
       readonly auditMaxSeq: number;
-      /** 復元後に累積ハッシュ列を MAX(seq) まで伸ばして読んだ値(監査行ゼロは空文字列)。 */
+      /** The value read after extending the cumulative hash row to MAX(seq) post-restore (empty string when no audit rows). */
       readonly auditHeadHashHex: string;
     }
   | { readonly kind: "refused"; readonly code: RestoreFailureCode }
   | { readonly kind: "no-bucket" };
 
 // ---------------------------------------------------------------------------
-// 型付きエラー(DO 内部)と RPC 境界の outcome 型
+// Typed errors (internal to the DO) and the outcome types at the RPC
+// boundary
 //
-// チェーン API の拒否も DataRejection(data-plane.ts)で運ぶ: タグ付きエラー →
-// outcome の写像は toDataOutcome の 1 本、拒否 → api-schema エラーの写像は
-// worker 側の rejectionErrors(data-http.ts — Record 形で網羅が型強制される)の
-// 1 表に集約される。init だけは「初期化済み(冪等修復の判定材料)」という
-// 拒否でない分岐を持つため専用 outcome を残す。
+// Chain-API rejections also travel as DataRejection (data-plane.ts): the
+// tagged-error → outcome mapping is the single toDataOutcome, and the
+// rejection → api-schema error mapping is consolidated into the one
+// worker-side table rejectionErrors (data-http.ts — a Record shape whose
+// exhaustiveness is type-enforced). Only init keeps a dedicated outcome,
+// because it has a non-rejection branch — "already initialized" (the
+// decision input of idempotent repair).
 // ---------------------------------------------------------------------------
 
 class AlreadyInitializedError extends Data.TaggedError("AlreadyInitialized")<{
@@ -256,32 +279,38 @@ class AlreadyInitializedError extends Data.TaggedError("AlreadyInitialized")<{
 }> {}
 class ProjectIdMismatchError extends Data.TaggedError("ProjectIdMismatch")<object> {}
 /**
- * 未初期化の DO への init が worker の受理判定(AUTH_SPEC §11-3 のプロジェクト数
- * 上限)により「新規初期化を認めない」指示で届いた。既存チェーンの有無を判定した
- * 後にのみ到達する — 初期化済みなら AlreadyInitialized(修復経路)が先に立つ。
+ * An init to an uninitialized DO arrived with the instruction "do not
+ * admit a fresh initialization" from the worker's acceptance check (the
+ * AUTH_SPEC §11-3 project-count limit). Reached only after the
+ * existing-chain check — when already initialized, AlreadyInitialized
+ * (the repair path) stands first.
  */
 class FreshInitNotAdmittedError extends Data.TaggedError("FreshInitNotAdmitted")<object> {}
 
-/** チェーンヘッド(受理成功の RPC 値)。 */
+/** The chain head (the RPC value of a successful acceptance). */
 export interface ChainHeadValue {
   readonly headSeq: number;
   readonly headHashHex: string;
 }
 
 /**
- * 汎用追記の受理結果: 新ヘッド + 完成した approve が適用した提案(四眼 — K5)。
- * worker は `appliedProposal.inner` に対して直接追記と同じ D1 後処理(招待の
- * completed 突合・membership 投影)を行う。ワイヤ(HTTP 応答)には載せない
+ * The acceptance result of a generic append: the new head + the proposal
+ * a completed approve applied (four-eyes — K5). The worker runs the same
+ * D1 post-processing as a direct append on `appliedProposal.inner`
+ * (invite completed cross-check, membership projection). Not carried on
+ * the wire (HTTP response)
  */
 export interface AppendValue extends ChainHeadValue {
   readonly appliedProposal: AppliedProposal | null;
 }
 
 /**
- * チェーン全体のスナップショット(取得成功の RPC 値)。attestations は
- * **現メンバーの有効な端末の最新ヘッド申告のみ**(AUTH_SPEC §16-1 — remove /
- * revoke_device 時の行削除〔chain-accept.ts〕に加えて配布側でも現メンバーの端末
- * 集合で絞る独立の防衛層)。
+ * A whole-chain snapshot (the RPC value of a successful get).
+ * attestations are **only the latest head attestations of the current
+ * members' valid devices** (AUTH_SPEC §16-1 — on top of the row deletion
+ * at remove / revoke_device acceptance [chain-accept.ts], the
+ * distribution side independently narrows to the current members' device
+ * set as a separate defensive layer).
  */
 export interface ChainSnapshotValue {
   readonly entries: readonly ChainEntry[];
@@ -290,14 +319,15 @@ export interface ChainSnapshotValue {
   readonly attestations: readonly StoredHeadAttestation[];
 }
 
-/** RPC 境界(structured clone)を渡る初期化結果。 */
+/** The initialization result crossing the RPC boundary (structured clone). */
 export type InitOutcome =
   | { readonly kind: "initialized"; readonly headSeq: number; readonly headHashHex: string }
   | {
       /**
-       * 初期化済み。genesis actor と現ヘッドを返すのは、worker 側の冪等修復
-       * (AUTH_SPEC §11-3: projects 行欠損 + 要求者 = genesis actor なら成功扱い)
-       * の判定材料のため。
+       * Already initialized. The genesis actor and the current head are
+       * returned as the decision input of the worker-side idempotent
+       * repair (AUTH_SPEC §11-3: a missing projects row + requester =
+       * genesis actor counts as success).
        */
       readonly kind: "already-initialized";
       readonly genesisActorUserId: string;
@@ -306,10 +336,12 @@ export type InitOutcome =
     }
   | {
       /**
-       * 未初期化だったが、worker の受理判定(AUTH_SPEC §11-3 — org のプロジェクト
-       * 数上限)が新規初期化を認めなかった(admitFresh = false)。何も書いて
-       * いない。worker が 429 ProjectLimit に写す。初期化済みの DO はこの
-       * 分岐に到達せず already-initialized(修復経路 / 409)へ進む
+       * Was uninitialized, but the worker's acceptance check (AUTH_SPEC
+       * §11-3 — the org's project-count limit) did not admit a fresh
+       * initialization (admitFresh = false). Nothing was written. The
+       * worker maps it to 429 ProjectLimit. An initialized DO never
+       * reaches this branch and proceeds to already-initialized (repair
+       * path / 409)
        */
       readonly kind: "fresh-not-admitted";
     }
@@ -317,26 +349,29 @@ export type InitOutcome =
   | { readonly kind: "rejected"; readonly rejection: DataRejection };
 
 /**
- * init の受理指示(worker → DO)。`admitFresh` = 未初期化の DO への新規初期化を
- * 認めるか(AUTH_SPEC §11-3 のプロジェクト数上限の判定結果)。false でも DO は
- * 「初期化済みか」を自分の直列化の中で判定してから答えるため、上限到達時の
- * §11-3 修復経路(already-initialized + 行欠損)は塞がれない。
+ * The acceptance instruction of init (worker → DO). `admitFresh` =
+ * whether a fresh initialization of an uninitialized DO is admitted (the
+ * decision result of the AUTH_SPEC §11-3 project-count limit). Even with
+ * false, the DO decides "already initialized?" inside its own
+ * serialization before answering, so at the limit the §11-3 repair path
+ * (already-initialized + missing row) is not blocked.
  */
 export interface InitAdmission {
   readonly admitFresh: boolean;
 }
 
-/** RPC 境界を渡る追記結果。 */
+/** The append result crossing the RPC boundary. */
 export type AppendOutcome = DataOutcome<AppendValue>;
 
-/** RPC 境界を渡るチェーン取得結果。 */
+/** The chain-get result crossing the RPC boundary. */
 export type SnapshotOutcome = DataOutcome<ChainSnapshotValue>;
 
 // ---------------------------------------------------------------------------
-// Effect プログラム(チェーン検証・受理判定の本体)
+// The Effect programs (the body of chain verification and acceptance
+// decisions)
 // ---------------------------------------------------------------------------
 
-/** §6.2 / §11-2: チェーン導出メンバー(reader 含む)でなければ拒否する。 */
+/** §6.2 / §11-2: reject anything that is not a chain-derived member (reader included). */
 function ensureChainMember(
   members: ReadonlyMap<string, unknown>,
   userId: string,
@@ -356,8 +391,9 @@ const initProgram = (
     if (chain.headSeq > 0) {
       const genesisActor = chain.entries[0]?.actor.userId;
       if (genesisActor === undefined || chain.headHashHex === null) {
-        // headSeq > 0 なら両値は不変条件として存在する。欠けているのはストレージ
-        // 破損であり、空文字で成功応答に変換せず defect として落とす
+        // With headSeq > 0 both values exist as an invariant. Missing
+        // means storage corruption; do not convert it into a success
+        // response with an empty string — drop as a defect
         return yield* Effect.die(new Error("initialized chain is missing genesis or head"));
       }
       return yield* new AlreadyInitializedError({
@@ -366,21 +402,27 @@ const initProgram = (
         headHashHex: chain.headHashHex,
       });
     }
-    // AUTH_SPEC §11-3 のプロジェクト数上限(worker が判定済み): 上限到達時は
-    // 新規初期化のみを断る。「初期化済みか」の判定(上)の後に置くことで、
-    // 上限到達 org の修復再 init(already-initialized)は上限に依らず通る —
-    // この順序が §11-3「修復経路を上限で塞がない」の実装点
+    // The AUTH_SPEC §11-3 project-count limit (already judged by the
+    // worker): at the limit, decline only a fresh initialization. Placing
+    // it after the "already initialized?" check (above) lets a repair
+    // re-init (already-initialized) of an at-limit org through regardless
+    // of the limit — this ordering is the implementation point of §11-3's
+    // "do not block the repair path at the limit"
     if (!admission.admitFresh) {
       return yield* new FreshInitNotAdmittedError();
     }
-    // 空チェーンへの受理 4 手順(容量検査は空チェーンでは自明に通る)。
-    // genesis 以外・不正署名などは verifyChain が §6.3 の理由コードで拒否する
-    // init は Schema 上は全 op を受理するが、seq 1 の非 genesis は verifyChain の
-    // フレーミング規則(bad-genesis)で必ず 422 になる — 四眼の受理ポリシー
-    // (appendProgram)を init に置かないのはこの不変条件に依る(独立レビュー D3)
+    // The 4 acceptance steps for an empty chain (the capacity check is
+    // vacuously satisfied on an empty chain). Anything other than
+    // genesis, a bad signature, etc. is rejected by verifyChain with a
+    // §6.3 reason code. On the Schema init accepts every op, but a
+    // non-genesis at seq 1 always becomes a 422 under verifyChain's
+    // framing rule (bad-genesis) — the four-eyes acceptance policy
+    // (appendProgram) is not placed on init because of this invariant
+    // (independent review D3)
     const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
-    // プロジェクト ID = genesis エントリハッシュ(§6.4)。ルーティングした DO と
-    // エントリの束縛が崩れていたら受理しない(worker 側バグへの防衛)
+    // Project ID = genesis entry hash (§6.4). If the binding between the
+    // routed DO and the entry is broken, do not accept (defense against a
+    // worker-side bug)
     if (applied.state.headHashHex !== expectedProjectId) {
       return yield* new ProjectIdMismatchError();
     }
@@ -390,9 +432,10 @@ const initProgram = (
   });
 
 /**
- * 読み取り・追記に共通する前段: 未初期化の検査と、チェーン導出メンバーシップの
- * 検査(§6.2 / §11-2)。非メンバーには CAS の現ヘッド情報・受理ポリシーの判定
- * 結果を含む一切を返さない(worker が not-member を 404 に写す)。
+ * The front stage shared by reads and appends: the initialization check
+ * and the chain-derived membership check (§6.2 / §11-2). A non-member
+ * gets nothing back, including the CAS's current-head information and
+ * the acceptance policy's decision (the worker maps not-member to 404).
  */
 const loadChainForMember = (callerUserId: string, cache: StateCache) =>
   Effect.gen(function* () {
@@ -410,19 +453,24 @@ const loadChainForMember = (callerUserId: string, cache: StateCache) =>
       genesisHashHex: chain.genesisHashHex,
       totalCanonicalBytes: chain.totalCanonicalBytes,
       members: state.members,
-      // 現導出状態(四眼の受理ポリシー・成長ガードの参照先 — appendProgram)
+      // The current derived state (the reference of the four-eyes
+      // acceptance policy and the growth guard — appendProgram)
       state,
     };
   });
 
 /**
- * アクセス集合を拡げる op(AUTH_SPEC §12-8 の成長ガードの対象)か。直接追記の
- * `add_member` / `grant_server` に加え、四眼経由では**その意図が最初に現れる
- * エントリ**で止める(設計録 es-design.md §11 K5-D): 内側 op が成長 op の `propose`
- * と、参照先の pending 提案の内側 op が成長 op の `approve`(完成するか否かに依らず)。
- * 参照先が pending に無い approve は対象外(verifyChain が `unknown-proposal` で拒む)。
- * `withdraw`(解放)/ `set_approval_policy`(チェーン容量で有界)/ remove・revoke・
- * change_role の提案と承認(是正)は拒否下でも受理する(§12-8 (b)(c))。
+ * Whether the op grows the access set (the target of the AUTH_SPEC §12-8
+ * growth guard). Besides a directly appended `add_member` / `grant_server`,
+ * the four-eyes path stops **at the entry where the intent first
+ * appears** (design record es-design.md §11 K5-D): a `propose` whose
+ * inner op is a growth op, and an `approve` whose referenced pending
+ * proposal's inner op is a growth op (regardless of whether it
+ * completes). An `approve` whose referent is not pending is out of
+ * scope (verifyChain rejects it with `unknown-proposal`). `withdraw`
+ * (releases), `set_approval_policy` (bounded by chain capacity), and
+ * proposals and approvals of remove / revoke / change_role
+ * (remediation) are accepted even under rejection (§12-8 (b)(c)).
  */
 function growsAccessSet(entry: ChainEntry, state: ChainState): boolean {
   if (entry.op === "propose") {
@@ -438,9 +486,10 @@ function growsAccessSet(entry: ChainEntry, state: ChainState): boolean {
 const isGrowthOp = (op: ChainEntry["op"]): boolean => op === "add_member" || op === "grant_server";
 
 /**
- * 汎用チェーン追記の受理プログラム(公開はテスト用 — storage-guard.test.ts が
- * add_member / grant_server の拒否と remove_member / checkpoint の非遮断を、
- * 実測量を差し替えた StorageMeter の下で直接固定する)。
+ * The acceptance program of a generic chain append (public for tests —
+ * storage-guard.test.ts pins, under a StorageMeter with substituted
+ * measurements, both the rejection of add_member / grant_server and the
+ * non-blocking of remove_member / checkpoint).
  */
 export const appendProgram = (
   parentHeadHashHex: string,
@@ -453,33 +502,43 @@ export const appendProgram = (
   ChainStore | AuditStore | DataStore | StorageMeter
 > =>
   Effect.gen(function* () {
-    // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch は複合エンドポイント
-    // 経由のみ。worker ハンドラが先行拒否するが、汎用 append の呼び出し経路が
-    // 将来増えても「エポック / 環境はチェーンにあるがラップ・環境行がない」状態を
-    // 作れないよう、受理判定の権威である DO 側にも同じガードを置く(多層防御)
+    // AUTH_SPEC §6 / §12-4: create_environment / rotate_epoch go only
+    // through the composite endpoint. The worker handler refuses ahead of
+    // it, but the same guard sits on the DO side — the authority of the
+    // acceptance decision — so that even if more call paths into the
+    // generic append appear later, the state "the epoch / environment is
+    // on the chain but the wraps / environment row are missing" can
+    // never be created (defense in layers)
     if (entry.op === "create_environment" || entry.op === "rotate_epoch") {
       return yield* rejectData({ kind: "composite-required", op: entry.op });
     }
-    // standalone(周期)checkpoint(AUTH_SPEC §16-2):
-    // 汎用 append が受理するが、受理検証(受理時点状態との内容突合)と
-    // スナップショットの原子保存を伴う専用経路へ分岐する
+    // A standalone (periodic) checkpoint (AUTH_SPEC §16-2): the generic
+    // append accepts it, but branches into a dedicated path that performs
+    // the acceptance verification (content cross-check against the state
+    // at acceptance time) and the atomic snapshot save
     if (entry.op === "checkpoint") {
       return yield* standaloneCheckpointProgram(parentHeadHashHex, entry, callerUserId, cache);
     }
     const chain = yield* loadChainForMember(callerUserId, cache);
-    // DO ストレージ総量ガード(AUTH_SPEC §12-8): アクセス集合を拡げる
-    // add_member / grant_server(直接追記と、四眼経由の提案・承認 — growsAccessSet)
-    // のみ(自然な後続のラップバックフィルが拒否対象のため入口で揃える)。
-    // remove_member / revoke_server / change_role(失効・権限縮小 = セキュリティ
-    // 是正)と checkpoint(有界)は拒否下でも受理する。位置はメンバーシップの後
-    // (§11-2)・CAS / verifyChain の前(資源保護優先)
+    // The DO storage total guard (AUTH_SPEC §12-8): only the
+    // access-set-growing add_member / grant_server (both direct appends
+    // and four-eyes proposals / approvals — growsAccessSet); aligned at
+    // the entry because the natural follow-up wrap backfill is what is
+    // rejected. remove_member / revoke_server / change_role (revocation,
+    // permission narrowing = security remediation) and checkpoint
+    // (bounded) are accepted even under rejection. Position: after
+    // membership (§11-2), before CAS / verifyChain (resource protection
+    // first)
     if (growsAccessSet(entry, chain.state)) {
       yield* ensureStorageAdmitsGrowth;
     }
-    // 四眼の propose の受理ポリシー(AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 合意規則では
-    // ない): expires_at_ms の上界 → pending 上限(期限切れは数えない)。判定材料は
-    // 現導出状態とサーバー時計で、DO のみが持つ(worker には置かない — K5-B)。
-    // 位置は成長ガードと同じ「意味論的検査(CAS / verifyChain)の前」
+    // The four-eyes propose acceptance policy (AUTH_SPEC §12-8 /
+    // CRYPTO_SPEC §6.4 — not a consensus rule): the expires_at_ms upper
+    // bound → the pending cap (expired ones do not count). The decision
+    // inputs are the current derived state and the server clock, which
+    // only the DO has (never placed on the worker — K5-B). Position: same
+    // as the growth guard — "before the semantic checks (CAS /
+    // verifyChain)"
     if (entry.op === "propose") {
       yield* ensureProposalAdmitted(
         entry.payload.expiresAtMs,
@@ -487,10 +546,12 @@ export const appendProgram = (
         Date.now(),
       );
     }
-    // 端末数の受理ポリシー(AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 2026-09-19 DK K3):
-    // `add_device` は actor の**有効な**端末が上限に達していれば受理しない(受理前の
-    // 導出状態で数える — 失効済みは数えない)。四眼の pending 上限と同じ位置
-    // (メンバーシップの後・CAS / verifyChain の前)。合意規則ではない
+    // The device-count acceptance policy (AUTH_SPEC §12-8 / CRYPTO_SPEC
+    // §6.4 — 2026-09-19 DK K3): an `add_device` is not accepted when the
+    // actor's **valid** devices have reached the cap (counted on the
+    // pre-acceptance derived state — revoked ones do not count). Same
+    // position as the four-eyes pending cap (after membership, before
+    // CAS / verifyChain). Not a consensus rule
     if (entry.op === "add_device") {
       const active = chain.state.members.get(callerUserId)?.devices.size ?? 0;
       if (active >= MAX_DEVICES_PER_MEMBER) {
@@ -498,9 +559,11 @@ export const appendProgram = (
       }
     }
     yield* ensureParentHead(chain, parentHeadHashHex);
-    // 受理 4 手順(サイズ → 容量 → verifyChain → insert + ミラー)は複合経路と
-    // 共有(chain-accept.ts)。完成した approve は内側 op のミラー適用行と副作用を
-    // 同じコミットで書き、適用した提案を worker へ返す(K5-H)
+    // The 4 acceptance steps (size → capacity → verifyChain → insert +
+    // mirror) are shared with the composite path (chain-accept.ts). A
+    // completed approve writes the inner op's mirror-application row and
+    // its side effects in the same commit, and returns the applied
+    // proposal to the worker (K5-H)
     const { canonicalBytes, applied } = yield* verifyAcceptableEntry(chain, entry);
     const appliedProposal = yield* commitAcceptedEntry(chain, entry, applied, canonicalBytes);
     updateStateCache(cache, applied);
@@ -511,16 +574,19 @@ export const appendProgram = (
     };
   });
 
-/** チェーン取得(公開はテスト用 — 拒否下でも読み取りが通ることの固定)。 */
+/** The chain get (public for tests — pins that reads pass under rejection). */
 export const snapshotProgram = (
   callerUserId: string,
   cache: StateCache,
 ): Effect.Effect<ChainSnapshotValue, DataRejectedError, ChainStore | DataStore> =>
   Effect.gen(function* () {
     const chain = yield* loadChainForMember(callerUserId, cache);
-    // 申告の同梱(AUTH_SPEC §16-1): 現メンバーの**有効な端末**の最新申告のみ。
-    // remove_member / revoke_device 受理時の行削除(chain-accept.ts)が真実源への
-    // 収束を担い、ここでの絞り込みは独立の防衛層(§6.6 (1) のクライアント検査とも一致)
+    // Bundling the attestations (AUTH_SPEC §16-1): only the latest
+    // attestations of current members' **valid devices**. The row
+    // deletion at remove_member / revoke_device acceptance
+    // (chain-accept.ts) owns the convergence to the source of truth; the
+    // narrowing here is an independent defensive layer (also matching
+    // the §6.6 (1) client check)
     const dataStore = yield* DataStore;
     const attestations = (yield* dataStore.listHeadAttestations).filter((attestation) =>
       chain.members
@@ -536,10 +602,11 @@ export const snapshotProgram = (
   });
 
 /**
- * 呼び出し主体のチェーン導出 role(招待 API — AUTH_SPEC §15-2 — の認可入力)。
- * 下限は reader(= メンバーであること): 非メンバーは not-member で拒否され
- * worker が 404 に写す(§11-2)。admin / owner の水準判定は worker 側が行う
- * (role=admin の招待は owner のみ、等のエンドポイント別規則)。
+ * The calling principal's chain-derived role (the authorization input of
+ * the invites API — AUTH_SPEC §15-2). The floor is reader (= being a
+ * member): a non-member is rejected as not-member and the worker maps it
+ * to 404 (§11-2). The admin / owner level judgment is done on the worker
+ * side (per-endpoint rules like "a role=admin invite only by an owner").
  */
 const memberRoleProgram = (
   callerUserId: string,
@@ -548,12 +615,13 @@ const memberRoleProgram = (
   Effect.map(requireMemberState(callerUserId, "reader", cache), (context) => context.member.role);
 
 // ---------------------------------------------------------------------------
-// Durable Object(ManagedRuntime パターン。spike-b の確立形)
+// The Durable Object (the ManagedRuntime pattern; the established shape
+// of spike-b)
 // ---------------------------------------------------------------------------
 
 type DoServices = ChainStore | DataStore | AuditStore | ServerKey | StorageMeter;
 
-/** データプレーンの拒否を RPC outcome へ畳む(成功は ok 側)。 */
+/** Fold a data-plane rejection into an RPC outcome (a success goes to the ok side). */
 const toDataOutcome = <T, R>(
   program: Effect.Effect<T, DataRejectedError, R>,
 ): Effect.Effect<DataOutcome<T>, never, R> =>
@@ -566,9 +634,9 @@ const toDataOutcome = <T, R>(
 
 export class ProjectChainDO extends DurableObject<Env> {
   readonly #runtime: ManagedRuntime.ManagedRuntime<DoServices, never>;
-  // 全操作(変更 + 読み取り)の直列化(冒頭コメント参照)
+  // Serialization of all operations (writes + reads) — see the header comment
   readonly #opLock = Semaphore.makeUnsafe(1);
-  // チェーン導出状態 + parse 済みチェーンのキャッシュ(chain-store.ts 参照)
+  // Cache of the chain-derived state + the parsed chain (see chain-store.ts)
   readonly #stateCache: StateCache = { current: null, chain: null };
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -579,26 +647,31 @@ export class ProjectChainDO extends DurableObject<Env> {
         chainStoreLayer(ctx.storage.sql, this.#stateCache),
         dataStoreLayer(ctx.storage.sql),
         auditStoreLayer(ctx.storage.sql),
-        // DO ストレージ総量ガードの実測点(AUTH_SPEC §12-8 — storage-guard.ts)。
-        // 運用ログの 1 回限りフラグはこの layer(= インスタンス)に束縛される
+        // The measurement point of the DO storage total guard (AUTH_SPEC
+        // §12-8 — storage-guard.ts). The ops log's once-only flag is
+        // bound to this layer (= this instance)
         storageMeterLayer(ctx.storage.sql),
-        // リースの開封 + 再ラップは DO 内で行う(programs-lease.ts の冒頭:
-        // 監査の原子性)。worker 側の ServerKey とは別インスタンスだが、
-        // 同じ Workers Secret から同じ keypair を導出する
+        // Lease unsealing + re-wrapping happen inside the DO (the head
+        // of programs-lease.ts: audit atomicity). A separate instance
+        // from the worker-side ServerKey, but derives the same keypair
+        // from the same Workers Secret
         Layer.sync(ServerKey, () => makeServerKey(env.SERVER_ENC_KEY_IKM)),
       ),
     );
   }
 
   /**
-   * タスク失敗時のインスタンスメモリ無効化。DO ストレージはタスク単位で
-   * ロールバックされるが、インスタンスメモリ(parse 済みチェーン・導出状態・
-   * 監査採番)は残る。書き込みフェーズ途中の defect でキャッシュだけが前進した
-   * まま残ると、ロールバック済みストレージと食い違う phantom 状態を配って
-   * しまう(最悪、phantom ヘッドへの後続追記で保存チェーンに欠番が恒久化し、
-   * 再起動後の全操作が defect になる)ため、失敗経路では必ず破棄して次の
-   * ロード / 追記を保存状態からの再読込に戻す。受理拒否(DataRejected)は
-   * 書き込みフェーズ前に確定するため対象外(キャッシュは前進していない)。
+   * Invalidation of instance memory on task failure. DO storage rolls
+   * back per task, but instance memory (the parsed chain, the derived
+   * state, the audit sequence) remains. If a defect mid-write-phase left
+   * only the cache advanced, a phantom state disagreeing with the
+   * rolled-back storage would be handed out (worst case, a follow-up
+   * append to a phantom head makes a gap permanent in the stored chain
+   * and every post-restart operation defects), so on the failure path it
+   * is always discarded and the next load / append falls back to a
+   * re-read from the stored state. An acceptance rejection
+   * (DataRejected) is out of scope because it settles before the write
+   * phase (the cache has not advanced).
    */
   #invalidateCachesOnDefect<A, E>(
     program: Effect.Effect<A, E, DoServices>,
@@ -618,9 +691,10 @@ export class ProjectChainDO extends DurableObject<Env> {
   }
 
   /**
-   * データプレーンのプログラムを permit 下で outcome に畳んで実行する。
-   * 読み取りも permit を取る: メンバーシップ判定とデータ読みをチェーン書き込みに
-   * 対して原子化する(冒頭コメントの TOCTOU 対策)。
+   * Run a data-plane program folded into an outcome under the permit.
+   * Reads take the permit too: it makes the membership check and the
+   * data read atomic against chain writes (the TOCTOU fix of the header
+   * comment).
    */
   #runData<T>(program: Effect.Effect<T, DataRejectedError, DoServices>): Promise<DataOutcome<T>> {
     return this.#runtime.runPromise(
@@ -628,16 +702,18 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   init(
     expectedProjectId: string,
     entry: ChainEntry,
     admission: InitAdmission,
   ): Promise<InitOutcome> {
-    // 拒否(DataRejected)は toDataOutcome と同じ rejected 形へ畳む。init 固有の
-    // 「初期化済み」(拒否ではない — 冪等修復の判定材料)・「新規初期化を認めない」
-    // (worker のプロジェクト数上限 — §11-3)と worker 側バグ検出の
-    // project-id-mismatch だけが専用分岐を持つ
+    // Rejections (DataRejected) fold into the same rejected shape as
+    // toDataOutcome. Only init-specific branches — "already initialized"
+    // (not a rejection: the decision input of idempotent repair), "fresh
+    // initialization not admitted" (the worker's project-count limit —
+    // §11-3), and the worker-bug detector project-id-mismatch — have
+    // dedicated branches
     return this.#runtime.runPromise(
       this.#opLock.withPermit(
         this.#invalidateCachesOnDefect(
@@ -668,7 +744,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   append(
     parentHeadHashHex: string,
     entry: ChainEntry,
@@ -677,12 +753,12 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(appendProgram(parentHeadHashHex, entry, callerUserId, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   snapshotFor(callerUserId: string): Promise<SnapshotOutcome> {
     return this.#runData(snapshotProgram(callerUserId, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   putHeadAttestation(
     callerUserId: string,
     input: HeadAttestationSubmissionInput,
@@ -690,14 +766,14 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(putHeadAttestationProgram(callerUserId, input, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   memberRoleFor(callerUserId: string): Promise<DataOutcome<Role>> {
     return this.#runData(memberRoleProgram(callerUserId, this.#stateCache));
   }
 
-  // --- データプレーン RPC(AUTH_SPEC §12) -------------------------------
+  // --- Data-plane RPC (AUTH_SPEC §12) ---------------------------------
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   createEnvironment(
     actor: DataActor,
     input: {
@@ -709,12 +785,13 @@ export class ProjectChainDO extends DurableObject<Env> {
       readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
     },
   ): Promise<DataOutcome<EnvironmentChainResultValue>> {
-    // 複合受理(§12-4): チェーン追記(CAS + verifyChain)とデータ登録を同一
-    // permit・同一同期ブロックで原子化する(§6.4 の複合受理)
+    // Composite acceptance (§12-4): the chain append (CAS + verifyChain)
+    // and the data registration are made atomic in the same permit and
+    // the same synchronous block (the §6.4 composite acceptance)
     return this.#runData(createEnvironmentCompositeProgram(actor, input, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   rotateEpoch(
     actor: DataActor,
     environmentId: string,
@@ -731,7 +808,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   renameEnvironment(
     actor: DataActor,
     environmentId: string,
@@ -743,7 +820,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   deleteEnvironment(
     actor: DataActor,
     environmentId: string,
@@ -754,19 +831,19 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   listEnvironments(actor: DataActor): Promise<DataOutcome<EnvironmentListValue>> {
     return this.#runData(listEnvironmentsProgram(actor, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   createVariable(
     actor: DataActor,
     environmentId: string,
     input: {
       readonly variableId: string;
       readonly statement: MetaStatementInput;
-      /** active 作成の version 1 の値。declared 作成(§12-5)では省略。 */
+      /** The version-1 value of an active creation. Omitted for a declared creation (§12-5). */
       readonly value?: ValueInput;
       readonly manifest: EnvManifestInput;
     },
@@ -774,7 +851,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(createVariableProgram(actor, environmentId, input, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   activateVariable(
     actor: DataActor,
     environmentId: string,
@@ -785,14 +862,14 @@ export class ProjectChainDO extends DurableObject<Env> {
       readonly manifest: EnvManifestInput;
     },
   ): Promise<DataOutcome<VariableVersionValue>> {
-    // activation 複合(§12-5): declared → active を値 version 1 + ステートメント +
-    // マニフェストの原子受理で行う
+    // The activation composite (§12-5): declared → active as the atomic
+    // acceptance of value version 1 + the statement + the manifest
     return this.#runData(
       activateVariableProgram(actor, environmentId, variableId, input, this.#stateCache),
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   pushVersion(
     actor: DataActor,
     environmentId: string,
@@ -805,7 +882,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   renameVariable(
     actor: DataActor,
     environmentId: string,
@@ -825,7 +902,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   deleteVariable(
     actor: DataActor,
     environmentId: string,
@@ -845,7 +922,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   pullEnvironment(
     actor: DataActor,
     environmentId: string,
@@ -853,7 +930,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(pullEnvironmentProgram(actor, environmentId, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   pullEnvironmentMetadata(
     actor: DataActor,
     environmentId: string,
@@ -861,7 +938,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(pullEnvironmentMetadataProgram(actor, environmentId, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   registerDekWraps(
     actor: DataActor,
     environmentId: string,
@@ -870,7 +947,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(registerDekWrapsProgram(actor, environmentId, wraps, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   listMyDekWraps(
     actor: DataActor,
     environmentId: string,
@@ -878,7 +955,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(listMyDekWrapsProgram(actor, environmentId, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   deleteDekWraps(
     actor: DataActor,
     environmentId: string,
@@ -887,26 +964,26 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(deleteDekWrapsProgram(actor, environmentId, refs, this.#stateCache));
   }
 
-  // --- schemaPolicy 設定 RPC(AUTH_SPEC §12-11) --------------------------
+  // --- schemaPolicy configuration RPC (AUTH_SPEC §12-11) ----------------
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   schemaPolicyFor(actor: DataActor): Promise<DataOutcome<{ readonly schemaPolicy: SchemaPolicy }>> {
     return this.#runData(getSchemaPolicyProgram(actor, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   setSchemaPolicy(actor: DataActor, schemaPolicy: SchemaPolicy): Promise<DataOutcome<void>> {
     return this.#runData(setSchemaPolicyProgram(actor, schemaPolicy, this.#stateCache));
   }
 
-  // --- 要ローテーションフラグ RPC(AUDIT_SPEC §4.1 / §7) ------------------
+  // --- Rotation-needed flag RPC (AUDIT_SPEC §4.1 / §7) ------------------
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   rotationFlags(actor: DataActor): Promise<DataOutcome<readonly EffectiveRotationFlag[]>> {
     return this.#runData(rotationFlagsProgram(actor, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   dismissRotationFlags(
     actor: DataActor,
     targets: readonly RotationDismissTargetInput[],
@@ -914,9 +991,9 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(dismissRotationFlagsProgram(actor, targets, this.#stateCache));
   }
 
-  // --- 監査イベント読み取り RPC(AUDIT_SPEC §6 / §7) --------------------
+  // --- Audit-event read RPC (AUDIT_SPEC §6 / §7) -----------------------
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   auditEvents(
     actor: DataActor,
     query: AuditEventsQueryInput,
@@ -924,23 +1001,26 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(auditEventsProgram(actor, query, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   auditHeadFor(actor: DataActor): Promise<DataOutcome<{ readonly auditHeadHashHex: string }>> {
     return this.#runData(auditHeadProgram(actor, this.#stateCache));
   }
 
-  // --- ワークロードリース RPC(AUTH_SPEC §14) ---------------------------
+  // --- Workload-lease RPC (AUTH_SPEC §14) ------------------------------
 
   /**
-   * リースの認可・開封・再ラップ・監査(programs-lease.ts)。OIDC 検証は
-   * worker 側で完了済みで、ここへ来るのは検証済みトークンの事実だけである
-   * (認証と認可の分離 — §14-3 の「認証失敗のみ 401」を構造で保つ)。
+   * Lease authorization, unsealing, re-wrap, and audit
+   * (programs-lease.ts). The OIDC verification is already complete on
+   * the worker side; what arrives here is only the facts of a verified
+   * token (authentication and authorization separated — §14-3's "only an
+   * authentication failure is a 401" is kept structurally).
    *
-   * 他の RPC と違い DataOutcome ではなく LeaseOutcome を返す: リースの拒否
-   * 語彙(404 / 429 / 503)はデータプレーンの DataRejection と重ならず、
-   * 無理に畳むと worker 側の写像表が両方の意味を持つことになるため。
+   * Unlike the other RPCs it returns LeaseOutcome, not DataOutcome: the
+   * lease rejection vocabulary (404 / 429 / 503) does not overlap the
+   * data plane's DataRejection, and folding them would make the
+   * worker-side mapping table carry both meanings.
    */
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   issueLease(
     environmentId: string,
     ephemeralPubHex: string,
@@ -960,15 +1040,18 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // --- 運用 RPC(hosted-ops.md §2-D / §2-E。HTTP から呼ばれない) -----------
+  // --- Ops RPC (hosted-ops.md §2-D / §2-E; not callable over HTTP) -----
 
   /**
-   * DO → R2 退避(permit 下 = 全表が一貫)。読み出しと書き込みは do-snapshot.ts。
-   * census(AUTH_SPEC §12-8 の判定)は既存の meter と純関数を共有する(§12-8 の
-   * 警告行への接続 — hosted-ops.md §2-C。警告行そのものの文言・1 回規律は変えない)。
-   * 退避の失敗は静的コードで返す(次回スイープで再試行)。
+   * The DO → R2 evacuation (under the permit = all tables consistent).
+   * Reading and writing is do-snapshot.ts. The census (the AUTH_SPEC
+   * §12-8 judgment) shares the existing meter and pure function (feeding
+   * into the §12-8 warning line — hosted-ops.md §2-C; the warning line's
+   * wording and once-only discipline are unchanged).
+   * An evacuation failure is returned as a static code (retried on the
+   * next sweep).
    */
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(cron のスイープがスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the cron sweep calls it via the stub)
   opsBackup(input: OpsBackupInput): Promise<OpsBackupOutcome> {
     const bucket = this.env.OPS_BACKUP_BUCKET;
     if (bucket === undefined) {
@@ -1025,7 +1108,8 @@ export class ProjectChainDO extends DurableObject<Env> {
                 trailer: result.trailer,
               }),
               (error: unknown): OpsBackupOutcome => {
-                // 静的メッセージのみ(種別名まで)。記録は worker 側の D1
+                // A static message only (up to the class name). The
+                // record lives in the worker-side D1
                 console.warn(
                   "project snapshot upload failed; retried on the next sweep",
                   error instanceof Error ? error.name : "unknown",
@@ -1041,11 +1125,13 @@ export class ProjectChainDO extends DurableObject<Env> {
   }
 
   /**
-   * 退避物からの復元(permit 下)。**空の DO にのみ**書く(do-snapshot.ts — 上書き
-   * 経路を作らない)。復元後はインスタンスメモリ(導出状態・監査採番)を破棄し、
-   * 累積ハッシュ列を MAX(seq) まで伸ばして監査ヘッドを返す(突合用)。
+   * Restore from an evacuation (under the permit). Writes **only into an
+   * empty DO** (do-snapshot.ts — no overwrite path exists). After the
+   * restore, instance memory (the derived state, the audit sequence) is
+   * discarded, the cumulative hash row is extended to MAX(seq), and the
+   * audit head is returned (for cross-checking).
    */
-  // fallow-ignore-next-line unused-class-member -- DO RPC メソッド(復元 worker がスタブ経由で呼ぶ)
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the restore worker calls it via the stub)
   opsRestore(objectKey: string): Promise<OpsRestoreOutcome> {
     const bucket = this.env.OPS_BACKUP_BUCKET;
     if (bucket === undefined) {
@@ -1076,7 +1162,8 @@ export class ProjectChainDO extends DurableObject<Env> {
               }
               throw error;
             } finally {
-              // 成否に依らずメモリを破棄する(部分復元の残骸も配らない)
+              // Discard the memory regardless of success or failure (no
+              // residue of a partial restore is handed out either)
               cache.chain = null;
               cache.current = null;
               audit.resetSeqCacheSync();
@@ -1085,9 +1172,11 @@ export class ProjectChainDO extends DurableObject<Env> {
           if (restored instanceof RestoreRefusedError) {
             return { kind: "refused", code: restored.code } satisfies OpsRestoreOutcome;
           }
-          // 監査ヘッド列を最後まで伸ばす(有界伸長 — 復元時の一回性の操作なので収束まで回す)
+          // Extend the audit-head row to the end (bounded extension — a
+          // one-time operation at restore, so run it to convergence)
           while ((yield* audit.ensureHeadCurrent) === "more-remains") {
-            // 各呼び出しが前進するため必ず終わる(audit-store.ts の有界契約)
+            // Always terminates because each call makes progress (the
+            // bounded contract of audit-store.ts)
           }
           const marks = readWatermarks(sql);
           return {

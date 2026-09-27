@@ -1,13 +1,15 @@
-// 本番 ProcessRunner(live.ts — Bun.spawn)の `exec` を実プロセスで確かめる
-// プローブ。vitest は Node で走り `Bun` が無いので、live-exec.test.ts がこの
-// スクリプトを `bun` で起動し、結果 JSON を stdout から読む。
+// Probe that exercises the production ProcessRunner's `exec` (live.ts —
+// Bun.spawn) with a real process. vitest runs on Node where `Bun` doesn't
+// exist, so live-exec.test.ts launches this script with `bun` and reads the
+// result JSON from stdout.
 //
-// 検査対象: 値が stdin に**丸ごと**届く(16 KiB — Vercel の上限ぶん)、子の環境に
-// テレメトリ off の変数が入り MARUHI_* は入らない、出力が捕捉される(親の
-// stdout に流れない)、出力は**切らずに丸ごと**返る(伏せる前に切ると値の後半が
-// 漏れる)、非 0 の終了コードが返る、起動できないコマンドは
-// 型付きエラー。子は sh の 1 行(値を stdin から読み、長さと環境の有無だけを
-// 報告する — 値そのものは出力しない)。
+// Under test: the value arrives on stdin **whole** (16 KiB — Vercel's limit),
+// the child's env has the telemetry-off var but no MARUHI_*, output is
+// captured (does not leak to the parent's stdout), output is returned
+// **untruncated and whole** (truncating before redacting would leak the value's
+// tail), a non-zero exit code comes back, and an unspawnable command is a
+// typed error. The child is a one-line sh script (reads the value from stdin
+// and reports only its length and env presence — never the value itself).
 
 import { Effect, Redacted } from "effect";
 
@@ -15,11 +17,11 @@ import { liveLayer } from "../../src/live.ts";
 import { ProcessRunner } from "../../src/run.ts";
 
 const value = "v".repeat(16 * 1024);
-// 子に渡してはならない名前空間を親に置いておく
+// Place the namespace that must not reach the child on the parent
 process.env["MARUHI_TOKEN"] = "maruhi_pat_probe_dummy";
 process.env["MARUHI_TOKEN_ORIGIN"] = "https://probe.invalid";
 
-// 70,000 文字の行を先に出す(64 K 文字での切り詰めが無いことの証拠)
+// Emit a 70,000-char line first (evidence there is no 64K-char truncation)
 const script =
   'head -c 70000 /dev/zero | tr "\\0" x; echo; input=$(cat); printf "len=%s telemetry=%s maruhi=%s\\n" "${#input}" "${WRANGLER_SEND_METRICS:-unset}" "${MARUHI_TOKEN:-unset}"; echo "to-stderr" >&2; exit 3';
 
@@ -57,5 +59,5 @@ const program = Effect.gen(function* () {
 });
 
 const result = await Effect.runPromise(program.pipe(Effect.provide(liveLayer())));
-// stdout はこの JSON だけ(子の出力が混ざっていないことも検査対象)
+// stdout is only this JSON (that no child output is mixed in is also under test)
 console.log(JSON.stringify(result));

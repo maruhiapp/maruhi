@@ -1,10 +1,12 @@
-// ワークロードリースの先着束縛(AUTH_SPEC §14-1)と
-// 発信元 IP の request-level レート制限の統合テスト。
-// スイート全体の分担は lease.test.ts 冒頭、共有ヘルパは
-// support/lease-scenario.ts を参照。
+// Integration tests for the workload-lease first-come binding
+// (AUTH_SPEC §14-1) and the source-IP request-level rate limit.
+// For how the suite is split see the top of lease.test.ts; shared
+// helpers are in support/lease-scenario.ts.
 //
-// このスイートが固定するもの(§14-1): 同一トークン + 別鍵の拒否・同一鍵の
-// 冪等リトライ・保持期間と時刻検証の受理窓の整合・期限切れ束縛の GC。
+// What this suite pins (§14-1): rejecting the same token with a
+// different key, an idempotent retry with the same key, the alignment
+// of the retention period with time validation's acceptance window,
+// and the GC of expired bindings.
 
 import { encodeHex } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
@@ -32,7 +34,7 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-describe("ワークロードリース: 先着束縛(§14-1)", () => {
+describe("workload leases: the first-come binding (§14-1)", () => {
   it("rejects the same token presented with a different ephemeral key (401 token-replayed)", async () => {
     await readyProject();
     const legit = await workloadKeyPair();
@@ -41,14 +43,15 @@ describe("ワークロードリース: 先着束縛(§14-1)", () => {
       200,
     );
 
-    // 盗まれたトークンのコピー + 攻撃者自身の一時鍵
+    // A copy of the stolen token + the attacker's own ephemeral key
     const thief = await workloadKeyPair();
     const replay = await requestLease({ oidcToken, ephemeralPubHex: thief.publicKeyHex });
     expect(replay.status).toBe(401);
     expect(await replay.json()).toMatchObject({ reason: "token-replayed" });
 
-    // 監査(AUDIT_SPEC §3.5): lease_denied が残り、claims_digest は正規発行と
-    // 同一 = 所有者は「どのワークロードのトークンが盗まれたか」を突合できる
+    // Audit (AUDIT_SPEC §3.5): a lease_denied remains, and its
+    // claims_digest equals the legitimate issuance's = the owner can
+    // cross-reference "which workload's token was stolen"
     const denied = await queryProjectDo(
       projectId,
       "SELECT payload FROM audit_events WHERE event = 'server.lease_denied'",
@@ -58,7 +61,7 @@ describe("ワークロードリース: 先着束縛(§14-1)", () => {
     expect(payload["reason"]).toBe("token-replayed");
     expect(payload["claimsDigest"]).toBe(await claimsDigestOf());
 
-    // 拒否はレート窓を消費しない(発行 1 回分のまま — §14-3)
+    // The rejection does not consume the rate window (still 1 issued — §14-3)
     const windows = await queryProjectDo(
       projectId,
       "SELECT count FROM lease_windows WHERE kind = 'issued'",
@@ -67,15 +70,16 @@ describe("ワークロードリース: 先着束縛(§14-1)", () => {
   });
 
   it("allows an idempotent retry: the same token + same ephemeral key succeeds again", async () => {
-    // 応答喪失後の正規リトライ。トークンをランタイム再発行できない事前発行型
-    // issuer(GitLab 等)を将来足しても再試行が壊れないための冪等性(§14-1)
+    // A legitimate retry after a lost response. Idempotency (§14-1) so
+    // retries keep working even if a pre-issued issuer that cannot
+    // re-issue tokens at runtime (GitLab etc.) is added later
     const { dek } = await readyProject();
     const workload = await workloadKeyPair();
     const oidcToken = await makeOidcToken();
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const response = await requestLease({ oidcToken, ephemeralPubHex: workload.publicKeyHex });
       expect(response.status).toBe(200);
-      // リトライの応答も開封可能な本物のリースであること(空応答の冪等ではない)
+      // The retry's response is also a real, openable lease (not empty-response idempotency)
       const body = (await response.json()) as LeaseBody;
       const opened = await openLease({
         lease: requireFirst(body.leases, "lease"),
@@ -84,14 +88,15 @@ describe("ワークロードリース: 先着束縛(§14-1)", () => {
       });
       expect(opened.ok && encodeHex(opened.value)).toBe(encodeHex(dek));
     }
-    // 束縛行は 1 行のまま(上書きしない)
+    // The binding row stays at 1 (not overwritten)
     const bindings = await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM lease_bindings");
     expect(bindings[0]?.["n"]).toBe(1);
   });
 
   it("rejects a replayed token uniformly, regardless of the target environment's existence", async () => {
-    // 判定は環境存在より前(§14-3): 束縛済みトークンのコピー保持者に
-    // 「401 か 404 か」の差で環境の実在を教えない
+    // The judgment precedes environment existence (§14-3): do not tell
+    // a holder of a bound token's copy whether the environment exists
+    // via a 401-vs-404 difference
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const uncreated = "env-in-scope-uncreated";
     await grantServer({ scope: [ENV, uncreated] });
@@ -114,13 +119,15 @@ describe("ワークロードリース: 先着束縛(§14-1)", () => {
     }
   });
 
-  it("locks a token to one ephemeral key across environments (project-wide binding — クライアント義務)", async () => {
-    // 束縛はトークン単位でプロジェクト DO を跨がず共有される(environmentId は
-    // キーに含まない)。エンドポイントは環境単位なので、1 トークンで N 環境を
-    // リースするジョブは**全リクエストで同じ一時鍵**を提示しなければならない。
-    // これはクライアントの義務(トークンあたり一時鍵は 1 つ・リクエストごとに
-    // ローテーションしない — AUTH_SPEC §14-1)。ランタイム再発行できない
-    // 事前発行型 issuer(GitLab 等)で特に効くため、緩いうちに固定する。
+  it("locks a token to one ephemeral key across environments (project-wide binding — a client obligation)", async () => {
+    // The binding is per-token and shared without crossing project DOs
+    // (environmentId is not part of the key). Since the endpoint is
+    // per-environment, a job leasing N environments with one token must
+    // present **the same ephemeral key on every request**. That is a
+    // client obligation (one ephemeral key per token, no per-request
+    // rotation — AUTH_SPEC §14-1). Pinned while loose because it bites
+    // hardest on pre-issued issuers that cannot re-issue at runtime
+    // (GitLab etc.).
     const SECOND = "env-second-0002";
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const dek2 = await createEnvironmentOk(fixture, SECOND, "App2");
@@ -130,7 +137,7 @@ describe("ワークロードリース: 先着束縛(§14-1)", () => {
 
     const oidcToken = await makeOidcToken();
     const workload = await workloadKeyPair();
-    // 同一トークン + 同一鍵なら複数環境をリースできる
+    // The same token + same key can lease multiple environments
     for (const environmentId of [ENV, SECOND]) {
       const response = await requestLease({
         oidcToken,
@@ -139,9 +146,11 @@ describe("ワークロードリース: 先着束縛(§14-1)", () => {
       });
       expect(response.status).toBe(200);
     }
-    // 別環境で鍵をローテーションすると 401(束縛はトークン単位・鍵固定であり、
-    // 未束縛環境への「自分の鍵でのリース」を許さない = 盗難トークンで別環境を
-    // 引く経路も同時に塞ぐ)
+    // Rotating the key on a different environment is a 401 (the
+    // binding is per-token and pins the key — it does not allow
+    // "leasing under your own key" for an unbound environment = the
+    // path of leasing another environment with a stolen token is
+    // blocked at the same time)
     const rotated = await workloadKeyPair();
     const replay = await requestLease({
       oidcToken,
@@ -152,24 +161,26 @@ describe("ワークロードリース: 先着束縛(§14-1)", () => {
     expect(await replay.json()).toMatchObject({ reason: "token-replayed" });
   });
 
-  it("keeps the binding alive as long as time validation can accept the token (PyPI 監査の同型の穴の回避)", async () => {
-    // exp が過去でも skew(±60 秒)内なら時刻検証は通る。束縛の保持期間が
-    // 受理窓より短いと、その差分だけがリプレイ窓になる(policy.ts の保持余裕を
-    // skew から導出している理由 — docs/notes/session-24.md §2 の先例)
+  it("keeps the binding alive as long as time validation can accept the token (avoiding the same-shaped hole from the PyPI audit)", async () => {
+    // A past exp still passes time validation within skew (±60 s). If
+    // the binding's retention were shorter than the acceptance window,
+    // the difference alone would be a replay window (why policy.ts
+    // derives the retention margin from skew — the precedent in
+    // docs/notes/session-24.md §2)
     await readyProject();
-    const expSeconds = Math.floor(Date.now() / 1000) - 30; // 過去だが skew 内
+    const expSeconds = Math.floor(Date.now() / 1000) - 30; // past, but within skew
     const oidcToken = await makeOidcToken({ expSeconds });
     const legit = await workloadKeyPair();
     expect((await requestLease({ oidcToken, ephemeralPubHex: legit.publicKeyHex })).status).toBe(
       200,
     );
 
-    // 束縛行の生存期限 = exp + 保持余裕(余裕 ≥ skew は導出で保証)
+    // The binding row's lifetime = exp + retention margin (margin ≥ skew is guaranteed by the derivation)
     const rows = await queryProjectDo(projectId, "SELECT expires_at FROM lease_bindings");
     expect(rows[0]?.["expires_at"]).toBe(expSeconds * 1000 + LEASE_BINDING_RETENTION_MARGIN_MS);
     expect(LEASE_BINDING_RETENTION_MARGIN_MS).toBeGreaterThanOrEqual(OIDC_CLOCK_SKEW_MS);
 
-    // 受理窓の残りでのリプレイは束縛に当たって拒否される
+    // A replay within the remainder of the acceptance window hits the binding and is rejected
     const thief = await workloadKeyPair();
     const replay = await requestLease({ oidcToken, ephemeralPubHex: thief.publicKeyHex });
     expect(replay.status).toBe(401);
@@ -192,19 +203,20 @@ describe("ワークロードリース: 先着束縛(§14-1)", () => {
         })
       ).status,
     ).toBe(200);
-    // 期限切れ行は発行時に GC され、残るのは今回の束縛だけ
+    // Expired rows are GC'd at issuance time; only this run's binding remains
     const rows = await queryProjectDo(projectId, "SELECT binding_key_hex FROM lease_bindings");
     expect(rows.length).toBe(1);
     expect(rows[0]?.["binding_key_hex"]).not.toBe("aa");
   });
 
   it("binds on the signed material, not the raw token: a malleated signature segment cannot dodge the binding", async () => {
-    // リグレッションガード: 束縛キーが生トークンの
-    // ハッシュだと、署名で保護されない第 3 セグメントの base64url 末尾を
-    // 「デコード結果が同一になる別文字」へ差し替えるだけで、署名検証・
-    // claims_digest を一切変えずにハッシュだけ変えられ、束縛照合が空振りして
-    // リプレイが通る。束縛キーを signing input(header.payload)のハッシュに
-    // することでこの経路が閉じることを固定する。
+    // Regression guard: if the binding key were a hash of the raw
+    // token, swapping the signature-unprotected third segment's
+    // base64url tail for "another character that decodes identically"
+    // would change the hash while leaving signature verification and
+    // claims_digest untouched — the binding lookup misses and the
+    // replay goes through. Pin that hashing the signing input
+    // (header.payload) as the binding key closes this path.
     await readyProject();
     const oidcToken = await makeOidcToken();
     const legit = await workloadKeyPair();
@@ -213,7 +225,7 @@ describe("ワークロードリース: 先着束縛(§14-1)", () => {
     );
 
     const malleated = malleateSignatureSegment(oidcToken);
-    // 前提の確認: 変異トークンは生文字列としては別物(素朴なハッシュは別値になる)
+    // Confirm the premise: the malleated token differs as a raw string (a naive hash differs)
     expect(malleated).not.toBe(oidcToken);
 
     const thief = await workloadKeyPair();
@@ -221,18 +233,20 @@ describe("ワークロードリース: 先着束縛(§14-1)", () => {
       oidcToken: malleated,
       ephemeralPubHex: thief.publicKeyHex,
     });
-    // 変異は署名検証を通過する(= signature-invalid ではない)が、signing input が
-    // 不変なので束縛に当たって token-replayed になる。ここが 200 に戻ると、
-    // まさに 1 文字編集でのリプレイ回避が復活したことを意味する
+    // The mutation passes signature verification (= it is not
+    // signature-invalid) but the signing input is unchanged, so it hits
+    // the binding and becomes token-replayed. If this returned to 200,
+    // replay evasion by a one-character edit would be back
     expect(replay.status).toBe(401);
     expect(await replay.json()).toMatchObject({ reason: "token-replayed" });
   });
 });
 
-// 実在しないプロジェクト ID への連投: 制限が projectStub より
-// 手前にあるため DO は生成されない。Schema(base64url + `.` の文字集合)は通し、
-// OIDC 検証段で落ちる形 — 制限判定はハンドラ内(Schema 通過後)なので、Schema で
-// 弾かれる形だとそもそも計数されない
+// A barrage against a nonexistent project ID: the limit sits before
+// projectStub, so no DO is created. The shape passes the Schema (the
+// base64url + `.` character set) and falls at OIDC verification — the
+// limit judgment lives in the handler (after the Schema pass), so a
+// shape the Schema rejects would never be counted
 function rateLimitedLeaseAttempt(): Promise<Response> {
   return SELF.fetch(`https://maruhi.test/projects/${"ab".repeat(32)}/environments/${ENV}/lease`, {
     method: "POST",
@@ -241,14 +255,15 @@ function rateLimitedLeaseAttempt(): Promise<Response> {
   });
 }
 
-describe("ワークロードリース: 発信元 IP の request-level レート制限", () => {
-  it("固定 IP からの連投は OIDC 検証・DO 生成に到達する前に 429 になる", async () => {
-    // 判定は IP のみでプロジェクト状態と無関係なので、429 の露出は存在秘匿
-    // (§11-2)を壊さない
-    // 窓は wall-clock 整列の固定窓(60/60s): 逐次送信だと遅いランナーでは
-    // 1 窓に 61 発が収まらずフレークする。並列バーストで 2 窓 + 2 発
-    // (124 リクエスト)を数秒に収める — 分境界がバースト中に落ちても、
-    // どちらかの窓が必ず 62 発を受けて 429 を返す
+describe("workload leases: the source-IP request-level rate limit", () => {
+  it("a barrage from a fixed IP gets a 429 before reaching OIDC verification or DO creation", async () => {
+    // The judgment is by IP alone and unrelated to project state, so
+    // exposing the 429 does not break existence hiding (§11-2)
+    // The window is a wall-clock-aligned fixed window (60/60s):
+    // sequentially, a slow runner cannot fit 61 requests in one window
+    // and flakes. Parallel bursts fit 2 windows + 2 (124 requests) into
+    // a few seconds — even if a minute boundary lands mid-burst, one
+    // window always takes 62 requests and returns the 429
     const responses: Response[] = [];
     for (let batch = 0; batch < 4; batch += 1) {
       responses.push(
@@ -260,21 +275,23 @@ describe("ワークロードリース: 発信元 IP の request-level レート�
       if (response.status === 429 && limited === null) {
         limited = response;
       } else if (response.status !== 429) {
-        // 制限にかからない分は通常の認証段拒否(401 malformed-token)
+        // The un-limited ones get the normal authentication-stage rejection (401 malformed-token)
         expect(response.status).toBe(401);
       }
     }
     expect(limited).not.toBeNull();
-    // RFC 9110 の Retry-After ヘッダーも運ぶ(maruhi CLI 以外のクライアントの
-    // バックオフ材料 — index.ts の withRetryAfterHeader)
+    // It also carries an RFC 9110 Retry-After header (backoff material
+    // for clients other than the maruhi CLI — index.ts's
+    // withRetryAfterHeader)
     expect(limited?.headers.get("retry-after")).toMatch(/^\d+$/);
     const body = (await limited?.json()) as Record<string, unknown>;
     expect(body["_tag"]).toBe("LeaseRateLimited");
     expect(body["scope"]).toBe("source-address");
     expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);
-    // 124 リクエストのバーストはスイート全体の負荷次第で既定 15s を越える
-    // (フルスイート実行時の実測)。fixture の beforeEach が PAT を実経路
-    // (CLI ログインハンドオフ = 6 往復/ユーザー)で発行する分もこの計測に
-    // 含まれる。ハング検出の有界性は保ったまま延長する
+    // A 124-request burst can exceed the default 15s depending on
+    // overall suite load (measured on a full-suite run). The fixture's
+    // beforeEach issuing PATs through the real path (the CLI login
+    // handoff = 6 round trips per user) is also included in this
+    // measurement. Extended while keeping hang detection bounded
   }, 120_000);
 });

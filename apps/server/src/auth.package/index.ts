@@ -1,7 +1,8 @@
-// auth.package の公開面(ImportLint 境界)。
+// The public surface of auth.package (the ImportLint boundary).
 //
-// 公開するのはサービス構築関数・ミドルウェア実装・クッキー名のみ。GitHub API の
-// リクエスト詳細・ハッシュ計算などの内部は境界内に閉じる。
+// Only the service constructors, middleware implementation, and cookie names
+// are exposed. Internals such as GitHub API request details and hash
+// computation stay inside the boundary.
 
 export {
   CLI_FLOW_TTL_MS,

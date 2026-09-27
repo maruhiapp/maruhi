@@ -1,6 +1,7 @@
-// メンバーシップログの受理ポリシー(CRYPTO_SPEC §6.4 サイズ上限)の統合テスト。
-// 共有 fixture・ベクター再生ヘルパは support/membership-scenario.ts(分割の
-// 動機はシナリオモジュール冒頭を参照)。
+// Integration tests for the membership log admission policy (CRYPTO_SPEC §6.4
+// size limits). Shared fixtures and vector replay helpers live in
+// support/membership-scenario.ts (see that scenario module's header for why it
+// was split out).
 
 import type { ChainEntry } from "@maruhi/crypto";
 import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
@@ -25,15 +26,16 @@ import {
 
 registerMembershipScenario();
 
-describe("受理ポリシー(§6.4 サイズ上限)", () => {
+describe("admission policy (§6.4 size limits)", () => {
   it("rejects an entry whose canonical bytes exceed 1 MiB with 413", async () => {
     await replayVectorChain(1);
     const genesis = vectorEntries[0];
     if (genesis === undefined) throw new Error("missing genesis vector");
-    // §6.1 のフィールド上限(1024 B)には違反するが、正規化は可能な巨大エントリ。
-    // 受理ポリシー(1 MiB)の検査は verifyChain より先に行われるため 413 になる
-    // (op は汎用 append の対象のもの — rotate_epoch は複合経由なので
-    // remove_member の巨大 targetUserId で構成する)
+    // A giant entry that violates the §6.1 field limit (1024 B) but can still
+    // be canonicalized. The admission-policy check (1 MiB) runs before
+    // verifyChain, so it becomes 413 (the op is one the generic append accepts
+    // — rotate_epoch goes through a compound path, so build it from a
+    // remove_member with a huge targetUserId)
     const oversized: ChainEntry = {
       suite: "maruhi/v1",
       seq: 2,
@@ -60,8 +62,9 @@ describe("受理ポリシー(§6.4 サイズ上限)", () => {
   });
 
   it("enforces the transport cap on the measured stream, not the Content-Length header", async () => {
-    // Content-Length を申告しないストリームボディ(chunked 相当)でも、実測で
-    // 上限を強制して 413 になること(ヘッダー偽装・欠落による迂回の防止)
+    // Even a stream body that does not declare Content-Length
+    // (chunked-equivalent) must hit the cap by actual measurement and become
+    // 413 (prevents bypass via header spoofing or omission)
     const chunk = new TextEncoder().encode("x".repeat(64 * 1024));
     const chunkCount = Math.ceil((MAX_REQUEST_BODY_BYTES + 1024 * 1024) / chunk.length);
     let sent = 0;
@@ -94,12 +97,14 @@ describe("受理ポリシー(§6.4 サイズ上限)", () => {
       timestampMs: 1754006400000,
       signatureHex: "12".repeat(64),
     };
-    // actor.userId をもう 1 フィールド分肥大させ、正規化 1 MiB を超えさせる
+    // Inflate actor.userId by another field's worth to push canonicalization
+    // past 1 MiB
     const second: ChainEntry = {
       ...oversizedGenesis,
       actor: { ...oversizedGenesis.actor, userId: "u".repeat(600_000) + "v".repeat(500_000) },
     };
-    // サイズの先行検査は actor 一致(403)より先に働く(資源保護が優先)
+    // The size pre-check runs before the actor match (403) — resource
+    // protection comes first
     const response = await initChain(second);
     expect(response.status).toBe(413);
     const body = (await response.json()) as { limitBytes: number };
@@ -107,9 +112,10 @@ describe("受理ポリシー(§6.4 サイズ上限)", () => {
   });
 
   it("rejects an append once cumulative canonical bytes would exceed the cap", async () => {
-    // 有効な 2 エントリのチェーンを作り、蓄積バイト数だけを上限相当へ引き上げる
-    // (§11-2 によりメンバーシップ判定 = チェーン導出が受理判定より先に走るため、
-    // 保存チェーン自体は検証可能でなければならない)
+    // Build a valid 2-entry chain, then raise only the cumulative byte count
+    // to the cap (§11-2 means membership determination = chain derivation
+    // runs before the admission check, so the stored chain itself must remain
+    // verifiable)
     await replayVectorChain(2);
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(vectorProjectId));
     await runInDurableObject(stub, (_instance, state) => {
@@ -118,8 +124,9 @@ describe("受理ポリシー(§6.4 サイズ上限)", () => {
         MAX_CHAIN_TOTAL_CANONICAL_BYTES,
       );
     });
-    // 保存行の直接改変(append-only 不変条件の外)はインスタンスの差分ロード
-    // キャッシュに映らないため、DO 再起動相当の退去でフルロードに戻す
+    // Directly rewriting a stored row (outside the append-only invariant)
+    // does not show up in the instance's incremental-load cache, so evict the
+    // DO — equivalent to a restart — to force a full reload
     await evictDurableObject(stub);
     const entry2 = vectorEntries[1];
     if (entry2 === undefined) throw new Error("missing vector entries");
@@ -136,8 +143,9 @@ describe("受理ポリシー(§6.4 サイズ上限)", () => {
   });
 
   it("caps the total entry count (§6.4 receipt policy, unit-level)", () => {
-    // 10,000 本の有効チェーンの実生成は非現実的なため、判定関数を直接検証する
-    // (プラミングは累積バイト数のテストが同じ分岐を通している)
+    // Generating 10,000 valid chain entries is impractical, so verify the
+    // decision function directly (the cumulative-bytes test exercises the
+    // same branch of the plumbing)
     expect(chainCapacityExceeded(MAX_CHAIN_ENTRIES, 0, 10)).toBe(true);
     expect(chainCapacityExceeded(MAX_CHAIN_ENTRIES - 1, 0, 10)).toBe(false);
     expect(chainCapacityExceeded(1, MAX_CHAIN_TOTAL_CANONICAL_BYTES, 1)).toBe(true);

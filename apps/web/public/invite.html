@@ -1,22 +1,28 @@
 <!doctype html>
 <!--
-  招待リンク着地ページ(AUTH_SPEC §15-3 / ADR-0018 改訂 2・5 項)。
-  SPA の外の独立静的アセットとして配信し、スクリプトを一切持たない。
-  URL フラグメント(招待トークン等)は解釈しない — この不変条件は
-  per-path CSP `script-src 'none'`(scripts/write-headers.ts)と
-  ビルド時検査で構成として強制される。ここに script 要素を追加してはならない
-  (検査は配信バイト全体を見るため、コメント内の script 開始タグの字面も禁止)。
-  見た目はサーバー配信の儀式ページ(apps/server/src/auth.package/cli-pages.ts)と
-  同じ共通枠(/theme.css + /pages.css、ブランドヘッダー — DP4)。
+  Invite-link landing page (AUTH_SPEC §15-3 / ADR-0018 amendment 2,
+  item 5). Served as a standalone static asset outside the SPA and
+  carries no scripts at all. It does not interpret the URL fragment
+  (invite token etc.) — this invariant is enforced structurally by the
+  per-path CSP `script-src 'none'` (scripts/write-headers.ts) and by the
+  build-time check. Never add a script element here (the check inspects
+  the whole served bytes, so even the literal text of a script opening
+  tag inside a comment is forbidden).
+  Its appearance shares the common frame with the server-served ceremony
+  pages (apps/server/src/auth.package/cli-pages.ts) (/theme.css +
+  /pages.css, brand header — DP4).
 -->
 <html lang="en" data-astryx-theme="maruhi">
   <head>
     <meta charset="utf-8" />
     <!--
-      meta CSP: 「スクリプトを一切実行しない」の強制を配信バイト自身に内蔵する。
-      _headers の per-path CSP(配信層)と二重化され、配信層の挙動差(デタッチ構文の
-      production 実装等)から独立に効く。meta では frame-ancestors を指定できないため、
-      それだけは _headers 側が単独で担う。複数 CSP は交差(全ポリシーが強制)。
+      meta CSP: builds the "runs no scripts at all" enforcement into the
+      served bytes themselves. It is layered on top of the _headers
+      per-path CSP (the serving layer), so it works independently of
+      serving-layer behavior differences (e.g. the production
+      implementation of detached syntax). frame-ancestors cannot be
+      specified via meta, so _headers alone carries that one. Multiple
+      CSPs intersect (every policy is enforced).
     -->
     <meta
       http-equiv="Content-Security-Policy"

@@ -1,34 +1,50 @@
-// チェーン取得応答からの表示用ビューの導出(S5 — 設計文書 §3)。
+// Deriving the display view from the chain fetch response (S5 —
+// design document §3).
 //
-// これは**検証ではない**(ADR-0018 改訂 2・4 項 — Web バンドルにチェーン・署名
-// 検証のコードを入れない): サーバーが返したエントリ列を、返された順で
-// 機械的に畳み込むだけの表示変換であり、署名・ハッシュ連結・合意規則の検査を
-// 一切行わない。結果はすべて「サーバー申告(as reported by the server)」で
-// あり、UI もそう表示する。検証済みのメンバー集合が要る場面は
-// `maruhi project verify`(CLI)の領分。
+// This is **not verification** (ADR-0018 amendments 2 and 4 — no
+// chain/signature verification code in the web bundle): it is a
+// display transform that mechanically folds the returned entry list in
+// the order it came back, performing no checks of signatures, hash
+// linkage, or consensus rules. Every result is "as reported by the
+// server" and the UI says so. When a verified member set is needed,
+// that is `maruhi project verify`'s (the CLI's) job.
 //
-// 四眼(CRYPTO_SPEC §6.2 — PF1。設計録 es-design.md §12 K6-J): 方針と pending 提案も
-// 同じ機械的な畳み込みで導く。approve / withdraw は提案を entry_hash で指すが、応答は
-// エントリごとの hash を運ばないので、**次のエントリの prevHashHex**(末尾は headHashHex)
-// から引く(hash を計算しない — 暗号を持ち込まない)。票数は記録をそのまま出さず、各
-// approve の時点で「現 owner かつ鍵 FP が一致する投票者」を再集計する(K2 の実装メモ)。
-// 鍵 FP は genesis の actor と、そのメンバーが署名した各エントリの actor から追跡し、
-// add_member で前在籍と同じ鍵なら引き継ぐ(異なれば署名するまで「未知」= 数えない —
-// 鍵が異なれば FP も異なるので合意規則も数えない)。定足数に達した approve は内側 op を
-// 畳み込む(適用された remove を Members から消すために必要)。
+// Four-eyes (CRYPTO_SPEC §6.2 — PF1. Design record es-design.md §12
+// K6-J): the policy and pending proposals are derived by the same
+// mechanical fold. approve / withdraw point at a proposal by
+// entry_hash, but the response carries no per-entry hash, so they are
+// drawn from **the next entry's prevHashHex** (headHashHex at the
+// tail) — no hashes computed, no crypto brought in. The vote count is
+// not the raw record: at each approve the "current owner whose key FP
+// matches" voters are recounted (K2's implementation note). The key FP
+// is tracked from the genesis actor and from the actor of each entry
+// the member signed, and an add_member carrying the same key as the
+// previous membership interval inherits it (if different it stays
+// "unknown" until it signs = never counted — a different key means a
+// different FP, so the consensus rule does not count it either). An
+// approve that reaches quorum folds in the inner op (needed so an
+// applied remove disappears from Members).
 //
-// 端末鍵(CRYPTO_SPEC §3 / §6.2 — DK。設計録 dk-design.md §10 K5-1 / K5-2 / K5-4): メンバーは
-// 端末の集合を持ち、`genesis` / `add_member` の鍵が最初の端末(cap は構造的に owner/all)、
-// `add_device` / `revoke_device` が増減させる。`add_device` のワイヤは公開鍵 2 つと cap を
-// 運び **FP を運ばない**(FP = SHA-256 の導出値)ので、端末は公開鍵対で同定し、FP は
-// 「申告のバイト列から機械的に写せる範囲」でだけ束縛する: genesis の actor FP は最初の鍵、
-// メンバーが署名したエントリの actor FP は「FP 未束縛の端末がちょうど 1 つ」のときだけ
-// その端末に束縛する(hash は計算しない — K6-J)。束縛は「鍵 ↔ FP」の学習済み対応表
-// (`FingerprintTable` — 単射・set-once。K5-16)に記録し、一度どれかの鍵のものになった FP は
-// 別の鍵に結ばれない(失効した端末の FP・在籍をまたいだ再束縛・他人の FP を構造で排除)。
-// `revoke_device` の FP は束縛済み端末に一致すればその端末を外し、一致しない未申告の FP は
-// 未束縛端末の数だけ算術で外す(端末数は常に正確、どれかは「unresolved」として正直に示す)。
-// 四眼の票は端末語彙で数える(§6.2)。
+// Device keys (CRYPTO_SPEC §3 / §6.2 — DK. Design record dk-design.md
+// §10 K5-1 / K5-2 / K5-4): a member holds a set of devices; the
+// `genesis` / `add_member` key is the first device (cap is
+// structurally owner/all), and `add_device` / `revoke_device` grow
+// and shrink it. The `add_device` wire carries two public keys and a
+// cap and **carries no FP** (an FP is a SHA-256 derived value), so a
+// device is identified by the key pair and FPs are bound only within
+// "what can be mechanically transcribed from the reported bytes": a
+// genesis actor FP binds to the first key, and an actor FP of an entry
+// a member signed binds to that device only when "exactly one device
+// is FP-unbound" (no hashes computed — K6-J). Bindings are recorded in
+// the learned key ↔ FP correspondence table (`FingerprintTable` —
+// injective, set-once. K5-16), and an FP that once belonged to a key
+// is never tied to another (a revoked device's FP, re-binding across
+// membership intervals, and another person's FP are excluded
+// structurally). A `revoke_device` FP matching a bound device removes
+// that device; a matching-less, undeclared FP is removed arithmetically
+// by the count of unbound devices (the device count is always exact;
+// which ones is honestly shown as "unresolved"). Four-eyes votes are
+// counted in device vocabulary (§6.2).
 import type { ChainEntry } from "./types.ts";
 
 /**
@@ -110,7 +126,7 @@ export interface ReportedChainView {
   policy: ReportedPolicy | null;
   proposals: ReportedProposal[];
   /**
-   * Entries the fold could not read and left out (K5-17 般化): unknown actor / target,
+   * Entries the fold could not read and left out (the K5-17 generalization): unknown actor / target,
    * a key already held, a fingerprint that is not the target's, a revocation that would
    * leave no device, a malformed payload, or a malformed envelope (non-record entry,
    * actor without a string id/fingerprint, non-record payload). A dropped `add_device`
@@ -121,7 +137,7 @@ export interface ReportedChainView {
   unreadableEntries: number;
 }
 
-/** 投票の記録(user_id と署名時の鍵 FP — 原則 2 の S の要素)。 */
+/** The record of a vote (the user_id and the signing key's FP — an element of principle 2's S). */
 interface Vote {
   userId: string;
   keyFingerprintHex: string;
@@ -129,7 +145,7 @@ interface Vote {
 
 type EntryOf<Op extends ChainEntry["op"]> = Extract<ChainEntry, { op: Op }>;
 
-/** 提案の内側 op(ワイヤ形 — approve の適用で畳み込む)。 */
+/** The inner op of a proposal (wire shape — folded when the approve applies). */
 type ProposableEntry = EntryOf<"propose">["payload"]["inner"];
 
 interface PendingFold {
@@ -142,7 +158,7 @@ interface PendingFold {
   approvals: Vote[];
 }
 
-/** 端末 1 つの可変レコード(FP は束縛できたときだけ入る)。 */
+/** The mutable record of one device (the FP enters only once it could be bound). */
 interface MutableDevice {
   keyFingerprintHex: string | null;
   encPubHex: string;
@@ -153,7 +169,7 @@ interface MutableDevice {
   addedSeq: number;
 }
 
-/** メンバー 1 人の可変レコード(在籍 = 1 レコード。remove で消え、add_member で作り直す)。 */
+/** The mutable record of one member (a membership interval = one record. Deleted on remove, rebuilt on add_member). */
 interface MutableMember {
   userId: string;
   role: string;
@@ -163,36 +179,44 @@ interface MutableMember {
   devices: MutableDevice[];
   unresolvedRevocations: number;
   /**
-   * この人が署名したが端末に束縛できなかった FP(未束縛端末が 2 つ以上のとき)。
-   * 票の判定(K5-2)にだけ使い、失効で未束縛端末が減るたびに捨てる(fail-closed)。
+   * FPs this person signed with but that could not be bound to a
+   * device (when there are two or more unbound devices). Used only for
+   * the vote judgment (K5-2) and discarded every time a revocation
+   * shrinks the unbound devices (fail-closed).
    */
   unboundSignerFps: Set<string>;
 }
 
 /**
- * 鍵 ↔ FP の学習済み対応表(K5-16 — 構造で保つ不変条件)。鍵は (user_id, 公開鍵対)、FP は
- * 申告された actor FP。対応は**単射かつ set-once**: 一度 (鍵, FP) を学べば、その鍵にも
- * その FP にも別の相手を結ばない。帰結: (1) 同じ鍵は失効後の再追加・再在籍でも同じ FP を
- * 引き継ぐ(同じ鍵 ⇒ 同じ FP — K6-J の一般化)。(2) 失効した端末の FP・他人の端末の FP は
- * 「既に誰かの鍵のもの」なので別の端末へ結ばれない(stale actor・在籍またぎの再束縛・
- * 他人の FP の流用を簿記でなく表の性質で排除)。(3) 1 人の端末集合に同じ FP の 2 行は
- * 作れない(鍵が違えば FP も違う)。
+ * The learned key ↔ FP correspondence table (K5-16 — an invariant kept
+ * by structure). A key is (user_id, public key pair); an FP is a
+ * reported actor FP. The correspondence is **injective and set-once**:
+ * once (key, FP) is learned, neither that key nor that FP is ever tied
+ * to another party. Consequences: (1) the same key inherits the same
+ * FP on re-addition after revocation or on re-membership (same key ⇒
+ * same FP — the K6-J generalization). (2) A revoked device's FP or
+ * another person's device's FP is "already someone's key's", so it is
+ * never tied to a different device (a stale actor, re-binding across
+ * membership intervals, and reusing someone else's FP are excluded by
+ * a property of the table, not by bookkeeping). (3) Two rows with the
+ * same FP cannot be created in one person's device set (a different
+ * key means a different FP).
  */
 class FingerprintTable {
   private readonly fingerprintByKey = new Map<string, string>();
   private readonly ownerByFingerprint = new Map<string, { userId: string; keyId: string }>();
 
-  /** 鍵の学習済み FP(無ければ null)。 */
+  /** The key's learned FP (null if none). */
   fingerprintOf(keyId: string): string | null {
     return this.fingerprintByKey.get(keyId) ?? null;
   }
 
-  /** FP を既に持っている鍵(無ければ undefined)。 */
+  /** The key that already holds an FP (undefined if none). */
   ownerOf(fp: string): { userId: string; keyId: string } | undefined {
     return this.ownerByFingerprint.get(fp);
   }
 
-  /** 双方が未学習のときだけ結ぶ(set-once)。結べたら true。 */
+  /** Binds only when both sides are unlearned (set-once). True when the bind succeeded. */
   claim(userId: string, keyId: string, fp: string): boolean {
     if (this.fingerprintByKey.has(keyId) || this.ownerByFingerprint.has(fp)) return false;
     this.fingerprintByKey.set(keyId, fp);
@@ -207,23 +231,23 @@ interface FoldState {
   policy: ReportedPolicy | null;
   pending: Map<string, PendingFold>;
   fingerprints: FingerprintTable;
-  /** 読めずに落としたエントリの行数(K5-17 — 黙って吸収しない)。 */
+  /** The number of entry rows dropped as unreadable (K5-17 — never silently absorbed). */
   unreadableEntries: number;
 }
 
 type Scope = { scopeKind: "all" | "listed"; scopeEnvironmentIds: ReadonlyArray<string> };
 
-/** レコードか(null・配列は除く)。申告は型を信じず形だけ見る。 */
+/** Whether a value is a record (null and arrays excluded). A report is never trusted by type — only its shape is read. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** 指定フィールドがすべて文字列か。 */
+/** Whether all the named fields are strings. */
 function hasStrings(value: unknown, fields: ReadonlyArray<string>): boolean {
   return isRecord(value) && fields.every((f) => typeof value[f] === "string");
 }
 
-/** own-property の値(プロトタイプ鎖の値に当たらない — 敵対的サーバーの "__proto__" 対策)。 */
+/** The own-property value (never hits a prototype-chain value — defends against a hostile server's "__proto__"). */
 function ownProp<K extends string, V>(obj: { readonly [P in K]?: V }, key: string): V | undefined {
   return Object.hasOwn(obj, key) ? obj[key as K] : undefined;
 }
@@ -236,7 +260,7 @@ function keyIdOfDevice(userId: string, device: MutableDevice): string {
   return keyIdOf(userId, device.encPubHex, device.sigPubHex);
 }
 
-/** 新しい端末レコード(学習済みなら FP を引き継ぐ)。 */
+/** A new device record (inherits the FP if already learned). */
 function newDevice(
   state: FoldState,
   userId: string,
@@ -257,11 +281,11 @@ function newDevice(
   };
 }
 
-/** genesis の作成者は構造的に scope = all(CRYPTO_SPEC §6.2)。最初の鍵の cap も (owner, all)。 */
+/** The genesis creator's scope is structurally all (CRYPTO_SPEC §6.2). The first key's cap is also (owner, all). */
 const ALL_SCOPE = { scopeKind: "all", scopeEnvironmentIds: [] } as const;
 const FIRST_DEVICE_CAP = { roleCap: "owner", ...ALL_SCOPE } as const;
 
-/** 在籍の開始(genesis / add_member): レコードを作り直し、最初の端末 1 つを載せる。 */
+/** The start of a membership interval (genesis / add_member): rebuilds the record and puts the first device on it. */
 function startTenure(
   state: FoldState,
   userId: string,
@@ -284,7 +308,7 @@ function startTenure(
   return member;
 }
 
-/** FP を端末に束縛して学習する(表が受け付けたときだけ — set-once)。 */
+/** Binds and learns an FP to a device (only when the table accepts it — set-once). */
 function bindFingerprint(
   state: FoldState,
   userId: string,
@@ -296,15 +320,17 @@ function bindFingerprint(
   }
 }
 
-/** FP 未束縛の端末。 */
+/** FP-unbound devices. */
 function unboundDevicesOf(member: MutableMember): MutableDevice[] {
   return member.devices.filter((d) => d.keyFingerprintHex === null);
 }
 
 /**
- * 署名者のレコード(不在、または FP が既にどれかの鍵のものなら undefined = 結ぶものがない)。
- * 表に載っている FP は、この人の現在の端末のものか、失効した端末・前在籍・他人の鍵のもの
- * かのいずれかで、どの場合も未束縛端末の候補にならない(K5-16)。
+ * The signer's record (undefined = nothing to bind when absent, or when
+ * the FP already belongs to some key). An FP on the table belongs to
+ * this person's current devices, to a revoked device, to a previous
+ * membership interval, or to someone else's key — in every case it is
+ * not a candidate for an unbound device (K5-16).
  */
 function signerNeedingBinding(
   state: FoldState,
@@ -317,9 +343,11 @@ function signerNeedingBinding(
 }
 
 /**
- * 署名した本人の actor FP をその人の端末へ結ぶ(K5-1): 既に誰かの鍵のものなら何もしない。
- * 未束縛の端末がちょうど 1 つならそれに束縛、2 つ以上なら同定せず「未束縛署名 FP」に
- * 入れる(票の判定にだけ使う — K5-2)。0 なら申告が読めない(無視)。
+ * Ties the signer's own actor FP to that person's device (K5-1): if it
+ * already belongs to someone's key, does nothing. If exactly one device
+ * is unbound, binds to it; if two or more, does not identify it and
+ * puts it into "unbound signer FPs" (used only for the vote judgment —
+ * K5-2). If zero, the report is unreadable (ignored).
  */
 function bindActor(state: FoldState, userId: string, fp: string): void {
   const member = signerNeedingBinding(state, userId, fp);
@@ -344,7 +372,8 @@ function applyChangeRole(
   }
   const existing = state.members.get(payload.targetUserId);
   if (existing !== undefined) {
-    // 新 (role, scope) の全置換(§6.2 — 2026-09-15 ES K4 で scope も写す)。端末集合は不変
+    // Full replacement by the new (role, scope) (§6.2 — scope is also
+    // copied per 2026-09-15 ES K4). The device set is unchanged
     const scope = reportedScope(payload);
     existing.role = payload.newRole;
     existing.scopeKind = scope.scopeKind;
@@ -371,7 +400,7 @@ function applyGrantServer(
   });
 }
 
-/** add_member: 在籍を開始(最初の端末 = payload の鍵。前在籍と同じ鍵なら FP を引き継ぐ)。 */
+/** add_member: starts a membership interval (the first device = the payload's key. Same key as the previous interval inherits the FP). */
 function applyAddMember(
   state: FoldState,
   seq: number,
@@ -386,10 +415,13 @@ function applyAddMember(
 
 type OperationOf<Op extends ProposableEntry["op"]> = Extract<ProposableEntry, { op: Op }>;
 
-// 適用済み op の畳み込み(直接追記と、定足数に達した approve の内側 op が共有する)。
-// `seq` = 適用 seq(提案経由なら approve の seq — inclusive 規約)。create_environment /
-// rotate_epoch / checkpoint / genesis はここに載せない(メンバー・サーバー集合に影響しない。
-// genesis は deriveReportedView が鍵 FP の追跡込みで畳む)
+// The fold of applied ops (shared between a direct append and an
+// approve's inner op that reached quorum).
+// `seq` = the application seq (the approve's seq when it came via a
+// proposal — the inclusive convention). create_environment /
+// rotate_epoch / checkpoint / genesis are not here (they do not affect
+// the member/server sets; genesis is folded by deriveReportedView with
+// key-FP tracking)
 const OPERATION_FOLDERS: {
   readonly [Op in ProposableEntry["op"]]?: (
     state: FoldState,
@@ -426,8 +458,9 @@ const OPERATION_FOLDERS: {
 
 function applyOperation(state: FoldState, seq: number, operation: ProposableEntry): void {
   const fold = ownProp(OPERATION_FOLDERS, operation.op) as OperationFolder | undefined;
-  // 未モデルの内側 op は無視(K5-4)。畳む側は payload のフィールドを読むので、
-  // レコードでない payload はここで読めない行として数える(K5-17 と同じ規律)
+  // An unmodeled inner op is ignored (K5-4). Because the folders read
+  // the payload's fields, a non-record payload is counted here as an
+  // unreadable row (same discipline as K5-17)
   if (fold === undefined) return;
   if (!isRecord(operation.payload)) {
     state.unreadableEntries += 1;
@@ -436,7 +469,7 @@ function applyOperation(state: FoldState, seq: number, operation: ProposableEntr
   fold(state, seq, operation);
 }
 
-/** 原則 2 の S = {owner として提案した提案者} ∪ approvals。 */
+/** Principle 2's S = {the proposer who proposed as an owner} ∪ approvals. */
 function signersOf(pending: PendingFold): Vote[] {
   const proposer: Vote[] =
     pending.proposerRoleAtProposal === "owner"
@@ -445,13 +478,13 @@ function signersOf(pending: PendingFold): Vote[] {
   return [...proposer, ...pending.approvals];
 }
 
-/** 票の FP がその人の束縛済み端末なら、その端末の roleCap が owner か(未束縛なら undefined)。 */
+/** If the vote's FP is one of that person's bound devices, whether that device's roleCap is owner (undefined if unbound). */
 function ownerVoteByDevice(member: MutableMember, fp: string): boolean | undefined {
   const device = member.devices.find((d) => d.keyFingerprintHex === fp);
   return device === undefined ? undefined : device.roleCap === "owner";
 }
 
-/** 束縛できなかった署名 FP: その人の未束縛端末が**すべて** roleCap owner のときだけ数える。 */
+/** An unbindable signing FP: counted only when **all** of that person's unbound devices are roleCap owner. */
 function ownerVoteByUnbound(member: MutableMember, fp: string): boolean {
   if (!member.unboundSignerFps.has(fp)) return false;
   const unbound = unboundDevicesOf(member);
@@ -459,10 +492,13 @@ function ownerVoteByUnbound(member: MutableMember, fp: string): boolean {
 }
 
 /**
- * 1 票が数えられるか(§6.2 の端末語彙 — K5-2): 投票者が現 owner で、票の FP がその人の
- * 束縛済み端末に一致し、端末の roleCap が owner(実効 role = owner)。束縛できなかった
- * 署名 FP は、その人の未束縛端末が**すべて** roleCap owner のときだけ数える(どの端末でも
- * 結論が同じ)。それ以外は数えない(fail-closed — 同定できない票は数えない)。
+ * Whether one vote counts (§6.2's device vocabulary — K5-2): the
+ * voter is a current owner, the vote's FP matches one of that person's
+ * bound devices, and the device's roleCap is owner (effective role =
+ * owner). A signing FP that could not be bound counts only when **all**
+ * of that person's unbound devices are roleCap owner (the conclusion
+ * is the same whichever device it was). Anything else is not counted
+ * (fail-closed — an unidentifiable vote is not counted).
  */
 function countsAsOwnerVote(state: FoldState, signer: Vote): boolean {
   const member = state.members.get(signer.userId);
@@ -473,18 +509,18 @@ function countsAsOwnerVote(state: FoldState, signer: Vote): boolean {
   );
 }
 
-/** 票数 = S のうち「現 owner かつ鍵 FP が一致(既知)」の distinct user_id(再集計)。 */
+/** The vote count = the distinct user_ids in S that are "current owner and the key FP matches (known)" (recounted). */
 function countedVoters(state: FoldState, signers: ReadonlyArray<Vote>): string[] {
   const counted = signers.filter((signer) => countsAsOwnerVote(state, signer));
   return [...new Set(counted.map((signer) => signer.userId))];
 }
 
-/** 提案者の現 role(メンバーでなければ "unknown")。 */
+/** The proposer's current role ("unknown" if not a member). */
 function proposerRoleOf(state: FoldState, userId: string): string {
   return state.members.get(userId)?.role ?? "unknown";
 }
 
-/** 提案の内側 op が読める形か(op 名が文字列のレコード)。 */
+/** Whether the proposal's inner op is in a readable shape (a record whose op name is a string). */
 function readableInner(inner: unknown): inner is ProposableEntry {
   return hasStrings(inner, ["op"]);
 }
@@ -508,9 +544,12 @@ function applyPropose(state: FoldState, entry: EntryOf<"propose">, hash: string 
 }
 
 /**
- * approve: 票を記録し、再集計が現方針の required に達したら内側 op を適用して pending から
- * 外す(§6.2 — approve エントリの seq で適用)。チェーンに載っている approve は受理面で
- * 合意規則を通っている(無効なものは載らない)ので、ここでは票の算術だけを写す。
+ * approve: records the vote and, once the recount reaches the current
+ * policy's required, applies the inner op and removes it from pending
+ * (§6.2 — applied at the approve entry's seq). An approve on the chain
+ * already passed the consensus rule at the acceptance surface (an
+ * invalid one is never on the chain), so only the arithmetic of votes
+ * is transcribed here.
  */
 function applyApprove(state: FoldState, entry: EntryOf<"approve">): void {
   if (typeof entry.payload.proposalHashHex !== "string") {
@@ -531,13 +570,14 @@ function applyApprove(state: FoldState, entry: EntryOf<"approve">): void {
   applyOperation(state, entry.seq, pending.inner);
 }
 
-/** 再集計した票数が現方針の required に達したか(方針オフなら達しない)。 */
+/** Whether the recounted vote count reached the current policy's required (never reached when the policy is off). */
 function quorumReached(state: FoldState, signers: ReadonlyArray<Vote>): boolean {
   const required = state.policy?.requiredApprovals;
   return required !== undefined && countedVoters(state, signers).length >= required;
 }
 
-// 内側 op の 1 行要約(識別子は生のまま — 描画側が中和する)
+// One-line summaries of inner ops (identifiers stay raw — the render
+// side neutralizes them)
 const INNER_SUMMARIES: {
   readonly [Op in ProposableEntry["op"]]?: (operation: OperationOf<Op>) => string;
 } = {
@@ -553,7 +593,8 @@ const INNER_SUMMARIES: {
 };
 
 function summarizeInner(operation: ProposableEntry): string {
-  // 要約は内側 payload のフィールドを読む — レコードでないものは op 名に倒す
+  // The summary reads the inner payload's fields — a non-record falls
+  // back to the op name
   if (!isRecord(operation.payload)) return operation.op;
   return (
     (ownProp(INNER_SUMMARIES, operation.op) as InnerSummarizer | undefined)?.(operation) ??
@@ -580,14 +621,15 @@ function applyGenesis(state: FoldState, entry: EntryOf<"genesis">): void {
 }
 
 // ---------------------------------------------------------------------------
-// 端末 2 op(K5-1 / K5-4): fold の整合に要る構造規則だけを写し、読めない行は無視する
+// The 2 device ops (K5-1 / K5-4): transcribe only the structural rules
+// the fold's consistency needs; unreadable rows are ignored
 // ---------------------------------------------------------------------------
 
 function isStringArray(value: unknown): value is ReadonlyArray<string> {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
-/** scope の 2 フィールドが読める形か(型は信じず形だけ見る)。 */
+/** Whether scope's 2 fields are in a readable shape (type is never trusted — only the shape is read). */
 function readableScope(payload: Scope): boolean {
   return (
     (payload.scopeKind === "all" || payload.scopeKind === "listed") &&
@@ -596,15 +638,17 @@ function readableScope(payload: Scope): boolean {
 }
 
 /**
- * 申告された scope を読める形に畳む(敵対サーバー対策): 読めない形は "listed" + 空に
- * 畳んで「未申告」として出す。メンバーレコード自体は落とさない(add_member の
- * scope が読めなくても在籍は在籍)
+ * Folds the reported scope into a readable shape (defense against a
+ * hostile server): an unreadable shape folds to "listed" + empty and
+ * is emitted as "not reported". The member record itself is not
+ * dropped (even when add_member's scope is unreadable, a membership
+ * interval is a membership interval)
  */
 function reportedScope(payload: Scope): Scope {
   return readableScope(payload) ? payload : { scopeKind: "listed", scopeEnvironmentIds: [] };
 }
 
-/** add_device の payload が読める形か(公開鍵・cap・scope)。 */
+/** Whether an add_device payload is in a readable shape (public keys, cap, scope). */
 function readableAddDevice(payload: EntryOf<"add_device">["payload"]): boolean {
   const keysReadable = [payload.encPubHex, payload.sigPubHex, payload.roleCap].every(
     (field) => typeof field === "string",
@@ -612,7 +656,7 @@ function readableAddDevice(payload: EntryOf<"add_device">["payload"]): boolean {
   return keysReadable && readableScope(payload);
 }
 
-/** 現メンバーの端末のうち同種公開鍵を持つもの(持ち主と端末)。 */
+/** Among the current members' devices, the one holding the same public key (the holder and the device). */
 function currentKeyHolder(
   state: FoldState,
   encPubHex: string,
@@ -628,10 +672,13 @@ function currentKeyHolder(
 }
 
 /**
- * 同じ鍵が現メンバーの端末に見えるとき、それが曖昧に失効した未束縛端末の残骸かを解く(K5-12):
- * 受理された `add_device` は「その鍵は現在有効でない」(`duplicate-member-key`)を意味するので、
- * 持ち主に unresolved があり、その端末が未束縛なら、その端末こそ失効済みと確定して外す。
- * 解けなければ重複(読めない行)。
+ * When the same key is visible on a current member's device, resolves
+ * whether it is the residue of an ambiguously revoked unbound device
+ * (K5-12): an accepted `add_device` means "that key is not currently
+ * valid" (`duplicate-member-key`), so if the holder has unresolved
+ * entries and that device is unbound, that device is confirmed revoked
+ * and removed. If it cannot be resolved, it is a duplicate (an
+ * unreadable row).
  */
 function resolveStaleHolder(holder: { member: MutableMember; device: MutableDevice }): boolean {
   const { member, device } = holder;
@@ -641,22 +688,25 @@ function resolveStaleHolder(holder: { member: MutableMember; device: MutableDevi
   return true;
 }
 
-/** 新端末の鍵が使えるか: 現メンバーの端末と重複しない、または重複が失効の残骸として解ける。 */
+/** Whether a new device's key is usable: it does not duplicate a current member's device, or the duplicate resolves as revocation residue. */
 function keyAvailable(state: FoldState, encPubHex: string, sigPubHex: string): boolean {
   const holder = currentKeyHolder(state, encPubHex, sigPubHex);
   return holder === undefined || resolveStaleHolder(holder);
 }
 
 /**
- * 端末集合へ加える。同じ鍵の再追加は学習済み FP を復元する(失効は単調ではない — §6.2)。
- * 同じ FP の 2 行はここでは検査しない: 鍵が違えば FP も違う(表の単射)、同じ鍵の 2 行は
- * `keyAvailable` が先に退ける — 不変条件は表と鍵の一意性から従う(K5-16)。
+ * Adds to the device set. Re-adding the same key restores the learned
+ * FP (revocation is not monotonic — §6.2).
+ * Two rows with the same FP are not checked here: a different key
+ * means a different FP (the table's injectivity), and two rows with
+ * the same key are already rejected by `keyAvailable` — the invariant
+ * follows from the table and key uniqueness (K5-16).
  */
 function pushDevice(member: MutableMember, device: MutableDevice): void {
   member.devices.push(device);
 }
 
-/** add_device: actor 自身の端末集合へ新端末を加える(対象 = actor — §6.2)。読めなければ数える。 */
+/** add_device: adds a new device to the actor's own device set (the target = the actor — §6.2). Counts it if unreadable. */
 function applyAddDevice(state: FoldState, entry: EntryOf<"add_device">): void {
   const member = state.members.get(entry.actor.userId);
   const payload = entry.payload;
@@ -671,7 +721,7 @@ function applyAddDevice(state: FoldState, entry: EntryOf<"add_device">): void {
   pushDevice(member, newDevice(state, member.userId, payload, payload, entry.seq));
 }
 
-/** revoke_device の payload が読める形か(FP のリスト: 1 要素以上・重複なし)。 */
+/** Whether a revoke_device payload is in a readable shape (the FP list: 1+ elements, no duplicates). */
 function readableRevokeDevice(payload: EntryOf<"revoke_device">["payload"]): boolean {
   const fps = payload.deviceFingerprintsHex;
   return (
@@ -682,12 +732,12 @@ function readableRevokeDevice(payload: EntryOf<"revoke_device">["payload"]): boo
   );
 }
 
-/** 失効の算術(K5-1): 一致した端末・一致しない FP の数・未束縛の残り・読める形か。 */
+/** The revocation arithmetic (K5-1): the matched devices, the unmatched FP count, the unbound remainder, and whether it is readable. */
 interface RevocationPlan {
   matched: Set<MutableDevice>;
   unmatched: number;
   unboundRemaining: number;
-  /** 一致しない FP が未束縛の残りを超えず、失効後に 1 台以上残る(§6.2 `unknown-device` / `last-device-protected`)。 */
+  /** The unmatched FPs do not exceed the unbound remainder, and at least one device remains after revocation (§6.2 `unknown-device` / `last-device-protected`). */
   readable: boolean;
 }
 
@@ -702,8 +752,10 @@ function planRevocation(
   const unmatchedFps = [...fps].filter(
     (fp) => !member.devices.some((d) => d.keyFingerprintHex === fp),
   );
-  // 一致しない FP が「既に誰かの鍵のもの」(失効済み端末・他人の端末)なら、この人の未束縛
-  // 端末の失効ではありえない(§6.2 `unknown-device`)— 行は読めない(K5-16)
+  // If an unmatched FP is "already someone's key's" (a revoked device
+  // or someone else's device), it cannot be a revocation of this
+  // person's unbound device (§6.2 `unknown-device`) — the row is
+  // unreadable (K5-16)
   const foreign = unmatchedFps.some((fp) => state.fingerprints.ownerOf(fp) !== undefined);
   const unmatched = unmatchedFps.length;
   const unboundRemaining = unboundDevicesOf(member).length - member.unresolvedRevocations;
@@ -718,8 +770,10 @@ function planRevocation(
 }
 
 /**
- * 読める失効の計画(対象メンバー + 算術)。payload が読めない・対象が現メンバーでない・
- * 算術が成り立たない行は undefined(= 読めない行)。
+ * A readable revocation plan (the target member + the arithmetic).
+ * A row whose payload is unreadable, whose target is not a current
+ * member, or whose arithmetic does not hold is undefined (= an
+ * unreadable row).
  */
 function readableRevocation(
   state: FoldState,
@@ -733,14 +787,15 @@ function readableRevocation(
   return plan.readable ? { member, plan } : undefined;
 }
 
-/** 一致した束縛済み端末を外す(FP は表に残る = 以後、別の端末へ結ばれない — K5-16)。 */
+/** Removes the matched bound devices (their FPs stay on the table = henceforth never tied to another device — K5-16). */
 function revokeMatched(member: MutableMember, plan: RevocationPlan): void {
   member.devices = member.devices.filter((d) => !plan.matched.has(d));
 }
 
-/** 一致しない FP を未束縛端末から算術で外す(残り全部なら消し、少なければ unresolved に数える)。 */
+/** Removes the unmatched FPs arithmetically from the unbound devices (clears them when it is the whole remainder, otherwise counts into unresolved). */
 function revokeUnbound(member: MutableMember, plan: RevocationPlan): void {
-  // 未束縛端末が減る = 未束縛署名 FP の端末が失効したかもしれない → 票の材料を捨てる
+  // Fewer unbound devices = a device of the unbound signer FPs may have
+  // been revoked → discard the vote material
   member.unboundSignerFps.clear();
   if (plan.unmatched === plan.unboundRemaining) {
     member.devices = member.devices.filter((d) => d.keyFingerprintHex !== null);
@@ -751,9 +806,13 @@ function revokeUnbound(member: MutableMember, plan: RevocationPlan): void {
 }
 
 /**
- * revoke_device: 束縛済み端末に一致する FP はその端末を外し、一致しない FP は未束縛端末の
- * 数だけ算術で外す(K5-1)。未束縛の残り(行数 − unresolved)と一致すれば全部外し、少なければ
- * unresolved に数える(端末数は正確・どれかは不明)。多い / 失効後 0 台 / 対象不明は無視。
+ * revoke_device: an FP matching a bound device removes that device;
+ * an unmatched FP is removed arithmetically by the count of unbound
+ * devices (K5-1). When it equals the unbound remainder (row count −
+ * unresolved) all are removed; when fewer, the difference is counted
+ * into unresolved (the device count is exact; which ones is unknown).
+ * More than that / 0 devices after revocation / unknown target are
+ * ignored.
  */
 function applyRevokeDevice(state: FoldState, entry: EntryOf<"revoke_device">): void {
   const readable = readableRevocation(state, entry.payload);
@@ -766,10 +825,12 @@ function applyRevokeDevice(state: FoldState, entry: EntryOf<"revoke_device">): v
   if (plan.unmatched > 0) revokeUnbound(member, plan);
 }
 
-// エントリ自体の畳み込み(genesis・四眼の 4 op・端末の 2 op)。端末の 2 op は提案できない
-// (§6.2 `approval-not-required`)ので直接エントリとしてだけ畳む(内側 op としては無視 —
-// K5-4)。それ以外の状態を変える op は applyOperation(適用済み op の表 — 完成した approve
-// の内側 op と共有)
+// The fold of the entries themselves (genesis, the 4 four-eyes ops,
+// the 2 device ops). The 2 device ops cannot be proposed
+// (§6.2 `approval-not-required`), so they fold only as direct entries
+// (ignored as inner ops — K5-4). Any other state-changing op goes to
+// applyOperation (the applied-op table — shared with a completed
+// approve's inner op)
 const ENTRY_FOLDERS: {
   readonly [Op in ChainEntry["op"]]?: (
     state: FoldState,
@@ -791,12 +852,14 @@ const ENTRY_FOLDERS: {
   revoke_device: applyRevokeDevice,
 };
 
-/** 1 エントリの畳み込み。 */
+/** The fold of one entry. */
 function foldEntry(state: FoldState, entry: ChainEntry, hash: string | undefined): void {
-  // Object.hasOwn: 敵対的サーバーの op(例: "__proto__")がプロトタイプ鎖の
-  // 値に当たって throw で描画を落とさないための自衛
+  // Object.hasOwn: self-defense so a hostile server's op (e.g.
+  // "__proto__") cannot hit a prototype-chain value and drop the
+  // render with a throw
   if (!Object.hasOwn(ENTRY_KINDS, entry.op)) return;
-  // 各フォルダが payload のフィールドを読むので、レコードでない payload は畳めない
+  // Each folder reads the payload's fields, so a non-record payload
+  // cannot be folded
   if (!isRecord(entry.payload)) {
     state.unreadableEntries += 1;
     return;
@@ -809,12 +872,16 @@ function foldEntry(state: FoldState, entry: ChainEntry, hash: string | undefined
   fold(state, entry, hash);
 }
 
-// 畳み込みに載せる op の閉集合(own-property 判定用)。create_environment / rotate_epoch /
-// checkpoint はメンバー・サーバー集合に影響しないため載せない。scope(add_member /
-// change_role の末尾 2 フィールド)は K4(2026-09-15 ES — 設計録 K4-D)で、四眼の 4 op は
-// K6(設計録 K6-J)で、端末の 2 op は DK K5(設計録 dk-design.md §10)で写す
-// 分岐表の 1 分岐が引く引数はその op のエントリに狭いので、検索側は総称へ戻して呼ぶ
-// (構造検査を通った行だけが来ることは各フォルダの前提 — 表の型は呼び出しの記録用)
+// The closed set of ops the fold admits (for the own-property check).
+// create_environment / rotate_epoch / checkpoint do not affect the
+// member/server sets, so they are not here. scope (the trailing 2
+// fields of add_member / change_role) was added by K4 (2026-09-15 ES —
+// design record K4-D), the 4 four-eyes ops by K6 (design record K6-J),
+// and the 2 device ops by DK K5 (design record dk-design.md §10)
+// One branch of the dispatch table takes arguments narrower to its
+// op's entry, so the lookup side calls it after widening back to the
+// generic (each folder assumes only rows that passed the structural
+// check arrive — the table's type is for recording the call)
 type EntryFolder = (state: FoldState, entry: ChainEntry, hash: string | undefined) => void;
 type OperationFolder = (state: FoldState, seq: number, op: ProposableEntry) => void;
 type InnerSummarizer = (op: ProposableEntry) => string;
@@ -834,7 +901,7 @@ const ENTRY_KINDS: { readonly [Op in ChainEntry["op"]]?: true } = {
   revoke_device: true,
 };
 
-/** 可変レコード → 公開の行(票の材料は出さない)。 */
+/** A mutable record → the public row (the vote material is not emitted). */
 function reportedMemberOf(member: MutableMember): ReportedMember {
   return {
     userId: member.userId,
@@ -847,7 +914,7 @@ function reportedMemberOf(member: MutableMember): ReportedMember {
   };
 }
 
-/** 外枠が読めるエントリか(型は信じず形だけ見る): レコードで・seq が数で・actor が文字列 id / FP を持つ。 */
+/** Whether an entry's envelope is readable (type is never trusted — only the shape is read): a record, seq a number, actor with a string id / FP. */
 function readableEnvelope(entry: unknown): entry is ChainEntry {
   return (
     isRecord(entry) &&
@@ -857,8 +924,10 @@ function readableEnvelope(entry: unknown): entry is ChainEntry {
 }
 
 /**
- * 返された順のエントリ列を表示用のメンバー / サーバー集合・方針・pending 提案へ畳み込む。
- * `headHashHex` は末尾エントリの hash(応答の headHashHex — サーバー申告)。
+ * Folds the entry list in the order it came back into the display
+ * member / server sets, the policy, and the pending proposals.
+ * `headHashHex` is the tail entry's hash (the response's headHashHex —
+ * server-reported).
  */
 export function deriveReportedView(
   entries: ReadonlyArray<ChainEntry>,
@@ -873,15 +942,20 @@ export function deriveReportedView(
     unreadableEntries: 0,
   };
   entries.forEach((entry, index) => {
-    // 外枠が読めない行(非レコード・actor 欠落・seq 欠落)は畳めない
-    // — 読めない行として数える(敵対サーバーが送る形 — K5-17 と同じ規律)
+    // A row whose envelope is unreadable (non-record, missing actor,
+    // missing seq) cannot be folded
+    // — counted as an unreadable row (a shape a hostile server sends —
+    // same discipline as K5-17)
     if (!readableEnvelope(entry)) {
       state.unreadableEntries += 1;
       return;
     }
-    // 署名した本人の actor FP はそのメンバーの端末の 1 つ(受理面が検証済み — as reported)
+    // The signing actor's own actor FP is one of that member's
+    // devices (the acceptance surface already verified it — as
+    // reported)
     bindActor(state, entry.actor.userId, entry.actor.keyFingerprintHex);
-    // エントリ i の hash = エントリ i + 1 の prevHashHex、末尾は headHashHex
+    // entry i's hash = entry i + 1's prevHashHex; the tail is
+    // headHashHex
     foldEntry(state, entry, entries[index + 1]?.prevHashHex ?? headHashHex);
   });
   const proposals = [...state.pending]

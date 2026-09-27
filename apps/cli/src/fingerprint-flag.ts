@@ -1,16 +1,18 @@
-// 鍵フィンガープリントを受けるフラグの形式検証(server grant / revoke、
-// invite accept、member add で共用)。利用側は effect-cli.ts。
-// 文言は ADR-0017 に従い英語。
+// Format validation of flags that take a key fingerprint (shared by
+// server grant / revoke, invite accept, member add). The consumer is
+// effect-cli.ts. Wording is English per ADR-0017.
 
 import { Effect } from "effect";
 
 import { type CliError, usageError } from "./errors.ts";
 
 /**
- * 鍵 FP を受けるフラグの形式検証(hex 小文字 32 文字 = 16 バイト)。
- * エラーは**打たれたフラグ名**で報告する(grant の --expect-fingerprint /
- * revoke の --fingerprint / invite・member の FP フラグで共用 — 存在しない
- * フラグ名を指して混乱させない)。`hint` は FP の出所の案内(鍵種別ごと)。
+ * Format validation of a flag taking a key FP (lowercase hex, 32
+ * chars = 16 bytes). Errors are reported under the **flag name as
+ * typed** (shared across grant's --expect-fingerprint / revoke's
+ * --fingerprint / the FP flags of invite and member — never point at
+ * a flag name that does not exist and confuse). `hint` is the
+ * guidance for where the FP comes from (per key kind).
  */
 export function parseFingerprintFlag(
   flagName: string,
@@ -26,7 +28,7 @@ export function parseFingerprintFlag(
   return Effect.succeed(value);
 }
 
-/** ユーザー鍵 FP フラグ(CRYPTO_SPEC §3)— 共用パーサに出所の案内だけを差す。 */
+/** User-key FP flag (CRYPTO_SPEC §3) — inserts only the provenance guidance into the shared parser. */
 export function parseUserFingerprintFlag(
   flagName: string,
   value: string | undefined,

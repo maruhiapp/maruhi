@@ -1,25 +1,38 @@
 "use client";
 
-// S6 監査ビューアの共通リスト(裁定 BQ — docs/notes/session-43.md)。
-// project 軸・invite 軸・本人軸の 3 消費点で同一部品を使う。
+// The shared list of the S6 audit viewer (ruling BQ —
+// docs/notes/session-43.md).
+// The three consumers — the project axis, the invite axis, and the
+// self axis — use the same component.
 //
-// - 見出しは役割適応の規定文言「Events visible to your role」(AUDIT_SPEC §7 —
-//   不可視クラスの存在・件数を示唆しない)
-// - `seq` は「応答に seq が載っているか」でのみ出し分ける(役割の事前判定を
-//   クライアントに複製しない — 判定点はサーバー認可だけに保つ)
-// - ページングは `before` カーソル(row_id)の Load more のみ。件数は表示しない
-// - 全フィールドは記録どおりのサーバー申告値。表示名の解決(検証済み
-//   ステートメント経由)は行わない — 検証を持たない Web での名前解決は
-//   ステートメント検証なしの名前信用になる(AUTH_SPEC §12-2)ため識別子のみ表示
+// - The heading is the role-adaptive prescribed wording "Events
+//   visible to your role" (AUDIT_SPEC §7 — never hints at the
+//   existence or count of an invisible class)
+// - `seq` is shown only by "whether the response carries seq" (the
+//   role's pre-judgment is not replicated on the client — the decision
+//   point stays server authorization only)
+// - Paging is only the `before`-cursor (row_id) Load more. No counts
+//   are displayed
+// - Every field is the server-reported value as recorded. Display-name
+//   resolution (via verified statements) is not performed — name
+//   resolution on a web app without verification becomes trusting a
+//   name without statement verification (AUTH_SPEC §12-2), so only
+//   identifiers are shown
 //
-// DP3 改訂 5(docs/notes/web-design-pass.md §5 裁定 P): 形は「1 列の行 + その場で展開」。
-// 1 行 = Astryx `Collapsible`(CollapsibleGroup hasDividers — `CollapsibleDividedAccordion`
-// ブロックの形)。トリガー = イベント名・主体・座標・サーバー時刻(+ seq)、展開部 = 全
-// フィールド(MetadataList)+ 記録どおりの payload + var.read の列挙。左右分割(改訂 3 の
-// `incident-console` 形)は広い画面で行と詳細の間が空きすぎ、1024px で形が変わるため撤回。
-// 1 列は幅によらず同じ形で、行の直下に詳細が出る(HP5 — モバイルで監査を読む)。
-// Table は使わない(行が読める幅を保つ)。文言・項目・順序は不変(§4 の表示規律 —
-// 「検証済み」を名乗らない・FP は参照値・件数を出さない)。
+// DP3 amendment 5 (docs/notes/web-design-pass.md §5 ruling P): the
+// shape is "one column of rows + expand in place".
+// One row = an Astryx `Collapsible` (CollapsibleGroup hasDividers —
+// the `CollapsibleDividedAccordion` block's shape). The trigger =
+// event name, actor, coordinates, server time (+ seq); the expanded
+// part = every field (MetadataList) + the payload as recorded + the
+// var.read enumeration. The left-right split (amendment 3's
+// `incident-console` shape) was withdrawn because on a wide screen the
+// gap between row and detail grew too large and the shape changed at
+// 1024px. One column keeps the same shape at any width, with the
+// detail directly under the row (HP5 — reading the audit on mobile).
+// No Table (keeps the rows at a readable width). Wording, items, and
+// order are invariant (the §4 display discipline — never claims
+// "verified", FP is a reference value, no counts).
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
 import { Collapsible, CollapsibleGroup } from "@astryxdesign/core/Collapsible";
@@ -47,13 +60,13 @@ import {
 } from "./shared.tsx";
 import type { AuditEvent, AuditEventsPage } from "./types.ts";
 
-/** 1 ページの取得。`before` は前ページ末尾行の row_id(AUDIT_SPEC §7)。 */
+/** Fetches one page. `before` is the row_id of the previous page's last row (AUDIT_SPEC §7). */
 export type AuditPageFetcher = (before: string | undefined) => Promise<ApiResult<AuditEventsPage>>;
 
-// 展開部の MetadataList のラベル列幅(`incident-console` のインスペクタと同じ 96)
+// The label column width of the expanded part's MetadataList (96, same as `incident-console`'s inspector)
 const DETAIL_LABEL_WIDTH = 96;
 
-/** ラベル : 値 の断片(値が欠落なら出さない)。 */
+/** A label : value fragment (not emitted when the value is missing). */
 interface Fragment {
   label: string;
   value: string;
@@ -67,13 +80,13 @@ function isPresent(part: Fragment | undefined): part is Fragment {
   return part !== undefined;
 }
 
-/** actor の主体(内部 user_id / server / system)。プロバイダ情報は構造上載らない。 */
+/** The actor's principal (internal user_id / server / system). Provider information is structurally absent. */
 function actorHead(event: AuditEvent): string {
   const actor = event.actor;
   return actor.type === "user" ? (actor.userId ?? "(unknown user)") : actor.type;
 }
 
-/** actor の付随識別子(鍵 FP・トークン id)— 参照値であり照合材料ではない(§4-3)。 */
+/** The actor's accompanying identifiers (key FP, token id) — reference values, not verification material (§4-3). */
 function actorFragments(event: AuditEvent): Fragment[] {
   return [
     fragment("key", event.actor.keyFingerprintHex),
@@ -81,7 +94,7 @@ function actorFragments(event: AuditEvent): Fragment[] {
   ].filter(isPresent);
 }
 
-/** 行の座標情報(target / 環境 / 変数 / epoch / version / chainSeq)。 */
+/** The row's coordinates (target / environment / variable / epoch / version / chainSeq). */
 function detailFragments(event: AuditEvent): Fragment[] {
   return [
     fragment("target", event.targetUserId),
@@ -94,7 +107,7 @@ function detailFragments(event: AuditEvent): Fragment[] {
   ].filter(isPresent);
 }
 
-/** ラベル付き断片の並び(折り返し可)。 */
+/** A row of labeled fragments (may wrap). */
 function Fragments({ items }: { items: ReadonlyArray<Fragment> }): ReactNode {
   if (items.length === 0) return null;
   return (
@@ -109,15 +122,19 @@ function Fragments({ items }: { items: ReadonlyArray<Fragment> }): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
-// 行のトリガー(常に見える要約)
+// The row's trigger (the always-visible summary)
 // ---------------------------------------------------------------------------
 
 /**
- * 1 イベントの要約 = Collapsible のトリガー(ボタン)の中身。主体 → 座標 → seq / 時刻の順。
- * seq と時刻は 1 行で、イベント名の右に続く(右端に寄せない — 広い画面で名前と時刻の間が
- * 空かない。裁定 Q)。狭い幅では名前の下へ折り返す。seq は応答に載っているときだけ出す
- * (応答適応 — AUDIT_SPEC §7)。ボタンの中なので対話要素を含めない(Text / HexText、
- * Timestamp は hover card なし)。
+ * One event's summary = the content of the Collapsible's trigger
+ * (button). Order: actor → coordinates → seq / time.
+ * seq and time share one line, continuing to the right of the event
+ * name (not pushed to the far right — a wide screen must not open a
+ * gap between name and time. Ruling Q). On narrow widths it wraps
+ * under the name. seq is shown only when the response carries it
+ * (response-adaptive — AUDIT_SPEC §7). Inside a button, so it carries
+ * no interactive elements (Text / HexText, Timestamp without a hover
+ * card).
  */
 function EventSummary({ event }: { event: AuditEvent }): ReactNode {
   const listed = aggregatedReadVariables(event);
@@ -150,7 +167,8 @@ function EventSummary({ event }: { event: AuditEvent }): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
-// 展開部(全フィールド — MetadataList + 記録どおりの payload)
+// The expanded part (every field — MetadataList + the payload as
+// recorded)
 // ---------------------------------------------------------------------------
 
 function DetailItem({ label, value }: { label: string; value: string | undefined }): ReactNode {
@@ -162,10 +180,14 @@ function DetailItem({ label, value }: { label: string; value: string | undefined
   );
 }
 
-// 整形 JSON の改行・字下げを保ち、長い hex は任意位置で折る(横スクロールを作らない)。
-// Astryx `CodeBlock` は行チャンクに inline `style`(contain-intrinsic-block-size)を出すため
-// 厳格 CSP(style-src 'self')下では描けない(DK K5-11 — 設計録 dk-design.md §10)。payload は
-// 監査の記録値であり構文強調は要らないので、`Text type="code"` + xstyle の pre-wrap で描く
+// Keeps the formatted JSON's newlines and indentation, and wraps long
+// hex at any position (no horizontal scrolling).
+// Astryx `CodeBlock` emits an inline `style`
+// (contain-intrinsic-block-size) per line chunk, so it cannot render
+// under the strict CSP (style-src 'self') (DK K5-11 — design record
+// dk-design.md §10). A payload is the audit's recorded value and needs
+// no syntax highlighting, so it is drawn with `Text type="code"` +
+// xstyle's pre-wrap
 const payloadStyles = stylex.create({
   pre: {
     whiteSpace: "pre-wrap",
@@ -175,7 +197,7 @@ const payloadStyles = stylex.create({
   },
 });
 
-/** 記録どおりの payload(サーバー申告の JSON をそのまま — 構文強調なし・inline style なし)。 */
+/** The payload as recorded (the server-reported JSON as-is — no syntax highlighting, no inline style). */
 function RecordedPayload({ payload }: { payload: Readonly<Record<string, unknown>> }): ReactNode {
   return (
     <VStack gap={1}>
@@ -192,8 +214,9 @@ function RecordedPayload({ payload }: { payload: Readonly<Record<string, unknown
 function ReadsList({ event }: { event: AuditEvent }): ReactNode {
   const listed = aggregatedReadVariables(event);
   if (listed === null) return null;
-  // 集約形 var.read(AUDIT_SPEC §3.3): 変数の列挙は payload が持つ。列挙は
-  // variableId 昇順・重複なし — キーに使える
+  // The aggregated var.read (AUDIT_SPEC §3.3): the payload holds the
+  // variable enumeration. The enumeration is sorted by variableId with
+  // no duplicates — usable as keys
   return (
     <VStack gap={2}>
       <Text weight="semibold">{readSummaryLabel(listed.length)}</Text>
@@ -206,7 +229,7 @@ function ReadsList({ event }: { event: AuditEvent }): ReactNode {
   );
 }
 
-/** payload のうち列挙(variables)以外。集約形でなければ payload そのもの。 */
+/** The payload minus the enumeration (variables). The payload itself when not the aggregated shape. */
 function recordedPayload(event: AuditEvent): Readonly<Record<string, unknown>> | null {
   if (event.payload === undefined) return null;
   return aggregatedReadVariables(event) === null
@@ -214,14 +237,14 @@ function recordedPayload(event: AuditEvent): Readonly<Record<string, unknown>> |
     : payloadWithoutVariables(event.payload);
 }
 
-/** 展開部: 記録どおりの全フィールド(ラベルは識別子の種類を示すだけ — §4-3)。 */
+/** The expanded part: every field as recorded (labels only indicate the kind of identifier — §4-3). */
 function EventDetails({ event }: { event: AuditEvent }): ReactNode {
   const payload = recordedPayload(event);
   return (
     <VStack gap={4}>
       <MetadataList columns="single" label={{ position: "start", width: DETAIL_LABEL_WIDTH }}>
         <DetailItem label="Seq" value={event.seq === undefined ? undefined : String(event.seq)} />
-        {/* 記録どおりのサーバー時刻(UTC の ISO)。行の表示は閲覧者の時間帯 */}
+        {/* The server time as recorded (ISO in UTC). The row's display is in the viewer's timezone */}
         <DetailItem label="Recorded at" value={formatServerTime(event.serverTs)} />
         <DetailItem label="Actor" value={actorHead(event)} />
         {actorFragments(event).map((item) => (
@@ -239,16 +262,16 @@ function EventDetails({ event }: { event: AuditEvent }): ReactNode {
 }
 
 // ---------------------------------------------------------------------------
-// ページング状態
+// The paging state
 // ---------------------------------------------------------------------------
 
 interface LoadedState {
   events: AuditEvent[];
-  /** 直近ページが空(または初回から空)= これ以上遡れない。 */
+  /** The latest page came back empty (or empty from the start) = nothing further back. */
   exhausted: boolean;
 }
 
-/** 末尾行の row_id = 次ページの `before` カーソル。 */
+/** The last row's row_id = the next page's `before` cursor. */
 function nextCursor(current: LoadedState | undefined): string | undefined {
   return current?.events.at(-1)?.id;
 }
@@ -264,10 +287,12 @@ function appendPage(
 }
 
 /**
- * Load more。読込中もボタンを差し替えず(LoadingRow にするとフォーカス中の要素が消えて
- * body へ落ちる)、Astryx の isLoading でスピナー + aria-busy を出す。isInterruptible は
- * native disabled を付けない(disabled にしてもフォーカスが外れる)ためで、二重読込は
- * ハンドラ側のガードで防ぐ。
+ * Load more. The button is never swapped out while loading (a
+ * LoadingRow would make the focused element disappear and focus fall
+ * to body); Astryx's isLoading shows a spinner + aria-busy instead.
+ * isInterruptible exists because native disabled is not added (a
+ * disabled element also loses focus); a double load is blocked by the
+ * handler-side guard.
  */
 function LoadMoreRow({
   isLoading,
@@ -295,14 +320,16 @@ function LoadMoreRow({
   );
 }
 
-/** CollapsibleGroup(single)の onChange 値 → 開いている行の id(閉じたら undefined)。 */
+/** CollapsibleGroup(single)'s onChange value → the open row's id (undefined when closed). */
 function openedId(value: string | string[]): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
 /**
- * 行の一覧(1 列)。開いている行は 1 つ(single)— 展開部を読む間は他の行が動かない。
- * 展開の状態はこの部品が持ち、ページを継ぎ足しても保たれる。
+ * The list of rows (one column). At most one row is open (single) —
+ * other rows never move while the expanded part is being read.
+ * The expansion state is held by this component and survives appended
+ * pages.
  */
 function EventRows({ events }: { events: ReadonlyArray<AuditEvent> }): ReactNode {
   const [openId, setOpenId] = useState<string | undefined>(undefined);
@@ -323,7 +350,7 @@ function EventRows({ events }: { events: ReadonlyArray<AuditEvent> }): ReactNode
   );
 }
 
-/** 初回ページが取れた後の本体: 行 + 追記形の失敗 + Load more。 */
+/** The body after the first page arrives: the rows + an appended-form failure + Load more. */
 function LoadedEventsView({
   loaded,
   failure,
@@ -340,7 +367,7 @@ function LoadedEventsView({
   return (
     <VStack gap={4} data-testid={testId}>
       <EventRows events={loaded.events} />
-      {/* 追記形(裁定 B-b): 既に描けた一覧の下に Load more の失敗を足す */}
+      {/* Appended form (ruling B-b): the Load more failure is added below the already-rendered list */}
       {failure !== undefined ? <FailureNotice failure={failure} onRetry={onLoadMore} /> : null}
       <LoadMoreRow isLoading={isLoading} exhausted={loaded.exhausted} onLoadMore={onLoadMore} />
     </VStack>
@@ -359,8 +386,10 @@ export function AuditEventList({
   const [loaded, setLoaded] = useState<LoadedState | undefined>(undefined);
   const [failure, setFailure] = useState<ApiFailure | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(false);
-  // 消費軸(fetchPage)の世代。軸が変わったら旧 in-flight 応答を捨てる —
-  // 後着の旧軸ページが新しい軸のリストへ混入しない
+  // The generation of the consumed axis (fetchPage). When the axis
+  // changes, a stale in-flight response is discarded —
+  // a late-arriving old-axis page cannot bleed into the new axis's
+  // list
   const generationRef = useRef(0);
 
   const loadMore = useCallback(
@@ -381,7 +410,8 @@ export function AuditEventList({
   );
 
   useEffect(() => {
-    // fetchPage(= 消費軸)が変わったら世代を進めて読み直す
+    // When fetchPage (= the consumed axis) changes, advance the
+    // generation and reload
     generationRef.current += 1;
     setLoaded(undefined);
     setFailure(undefined);
@@ -389,7 +419,7 @@ export function AuditEventList({
   }, [loadMore]);
 
   if (loaded === undefined) {
-    // 置換形(裁定 B-a): 初回ページが取れるまでは本体の代わりに描く
+    // Replacement form (ruling B-a): rendered in place of the body until the first page arrives
     return failure !== undefined ? (
       <FailureNotice failure={failure} onRetry={() => void loadMore(undefined)} />
     ) : (
@@ -401,7 +431,7 @@ export function AuditEventList({
       <EmptyNotice
         title={emptyTitle}
         description="No events are visible to your role, as reported by the server."
-        // 監査の箱は見出し無し(ページ h1 の直下)なので h2(DP3 裁定 E-(c))
+        // The audit's box has no heading (directly under the page h1), so h2 (DP3 ruling E-(c))
         headingLevel={2}
         testId={`${testId}-empty`}
       />

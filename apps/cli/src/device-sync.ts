@@ -1,20 +1,31 @@
-// 初回同期の端末登録と端末集合の観測(CRYPTO_SPEC §6.2 / §7 — 2026-09-19 DK。設計録
-// dk-design.md §9 K4-3 / K4-4 / K4-9 / K4-14)。
+// Device registration on first sync and observing the device set
+// (CRYPTO_SPEC §6.2 / §7 — 2026-09-19 DK; design record dk-design.md
+// §9 K4-3 / K4-4 / K4-9 / K4-14).
 //
-// 鍵ありの前段(context.ts の openProjectWith)が同期の後に毎回呼ぶ(冪等 — K4-3
-// 第 3 巡)。行うこと:
-//   (a) 観測: 検証済みチェーン上の自分の端末で、ローカル記録に無いものを "observed" で
-//       記録し、出所(誰の端末が seq いくつで足したか)を Note で見せる(K4-4 d-2)。
-//       失効済みと記録した端末が再び載っていれば Note(明示の再承認だけが記録を戻す)
-//   (b) 失効の観測: チェーン上の自分宛 `revoke_device` に含まれる記録行を revoked にする
-//       (K4-3 反例 1 — 別プロジェクトで復活させない)
-//   (c) 登録: ローカル記録のうち失効しておらず、このチェーンに無い端末(予備鍵・承認した
-//       端末・他プロジェクトで観測した端末)を、この端末の署名で `add_device` し、
-//       バックフィルする。通信前判定(cap の単調性・`listed` の環境の存在)で足せない
-//       行と、サーバーの受理ポリシー(DeviceLimit)は Note にして続ける。コマンド本体の成否を変えない(SHOULD の付随)
-//   (d) 予備鍵の不在の警告(K4-9): 自分の端末がこの端末だけで、記録にも予備鍵が無い
+// The keyed pre-stage (context.ts's openProjectWith) calls this after
+// every sync (idempotent — K4-3 third pass). What it does:
+//   (a) Observation: my devices on the verified chain that are not in
+//       the local record are recorded as "observed", and the
+//       provenance (whose device added them at which seq) is shown in
+//       a Note (K4-4 d-2). A device recorded as revoked that is on the
+//       chain again gets a Note (only an explicit re-approval restores
+//       the record)
+//   (b) Revocation observation: record rows contained in a
+//       my-addressed `revoke_device` on the chain become revoked
+//       (K4-3 counterexample 1 — do not resurrect on another project)
+//   (c) Registration: among the local record, devices not revoked and
+//       not on this chain (reserve keys, approved devices, devices
+//       observed on other projects) are `add_device`'d with this
+//       device's signature and backfilled. Rows that cannot be added
+//       by the pre-flight judgment (cap monotonicity, existence of
+//       `listed` environments) and the server's acceptance policy
+//       (DeviceLimit) become Notes and continue. It does not change
+//       the command's success (an adjunct of a SHOULD)
+//   (d) Warning of a missing reserve key (K4-9): when this device is
+//       my only device and the record has no reserve key
 //
-// 登録簿(`GET /auth/devices`)はここでは読まない・書かない(K4-3 反例 2 — テストで固定)。
+// The device registry (`GET /auth/devices`) is neither read nor
+// written here (K4-3 counterexample 2 — pinned by a test).
 
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Effect, type Stdio } from "effect";
@@ -70,25 +81,27 @@ export function syncOwnDevices(
       return context;
     }
     const records = lookup.state === "loaded" ? lookup.devices : [];
-    // (a)(b): 観測と失効の観測(記録の更新は fail-open — 書けなければ Note)
+    // (a)(b): observation and revocation observation (record updates are fail-open — a Note when unwritable)
     yield* observeDevices({ context, self, records, store });
-    // (c): 登録(この端末がチェーン上の自分の端末であるときだけ署名できる)
+    // (c): registration (can sign only when this device is my device on the chain)
     const own = findOwnDevice(self, { keyFingerprintHex: context.masterKeys.fingerprintHex });
     if (own === undefined) {
       return context;
     }
     let current = context;
     const candidates = registrationCandidates(context.verified, self, records);
-    // 登録は署名を伴う(add_device + DEK のラップ)ので、`device approve` と同じ儀式ゲート
-    // (既知エージェント → stdin / stdout が端末か)を通る人のセッションでだけ行う。
-    // ローカル記録は署名されていないファイルで、エージェント環境で行を仕込めば
-    // このゲート抜きに署名者を足せてしまう(K4-37 — セキュリティレビュー指摘)
+    // Registration involves signing (add_device + DEK wraps), so it is
+    // done only in a human session that passes the same ceremony gate
+    // as `device approve` (known agent → whether stdin / stdout is a
+    // terminal). The local record is an unsigned file: in an agent
+    // environment a planted row would add a signer without this gate
+    // (K4-37 — security review point)
     if (candidates.length > 0 && (yield* registrationAllowed(context.projectId, candidates))) {
       for (const candidate of candidates) {
         current = yield* registerRecorded({ context: current, self, own, candidate });
       }
     }
-    // (d): 予備鍵の不在(K4-9)
+    // (d): missing reserve key (K4-9)
     yield* warnReserveMissing({
       self: current.verified.state.members.get(session.userId) ?? self,
       own,
@@ -99,8 +112,10 @@ export function syncOwnDevices(
 }
 
 /**
- * (c) の儀式ゲート(K4-37): 通らなければ Note を出して false(コマンド本体は止めない —
- * 登録は SHOULD の付随)。材料は `ensureDeviceApproveAllowed` と同じ 2 層。
+ * (c)'s ceremony gate (K4-37): emits a Note and returns false when
+ * not passed (the command body is not stopped — registration is an
+ * adjunct of a SHOULD). The material is the same two layers as
+ * `ensureDeviceApproveAllowed`.
  */
 function registrationAllowed(
   projectId: string,
@@ -119,7 +134,7 @@ function registrationAllowed(
   );
 }
 
-/** (c) の候補: 失効しておらず、このチェーンに無く、このチェーンで失効してもいない記録。 */
+/** (c)'s candidates: records that are not revoked, not on this chain, and not revoked on this chain either. */
 function registrationCandidates(
   verified: VerifiedProject,
   self: ChainMember,
@@ -134,7 +149,7 @@ function registrationCandidates(
   );
 }
 
-/** (d) K4-9: 自分の端末がこの端末だけで、記録にも予備鍵が無いときの警告(1 つの事実に 1 つの案内)。 */
+/** (d) K4-9: warning when this device is my only device and the record has no reserve key (one piece of guidance per fact). */
 function warnReserveMissing(input: {
   readonly self: ChainMember;
   readonly own: ChainDevice;
@@ -153,7 +168,7 @@ function warnReserveMissing(input: {
   );
 }
 
-/** (a)(b) 観測: チェーン上の自分の端末を記録し、失効を記録に写す。 */
+/** (a)(b) Observation: records my devices on the chain and writes revocations into the record. */
 function observeDevices(input: {
   readonly context: ProjectContext;
   readonly self: ChainMember;
@@ -168,7 +183,7 @@ function observeDevices(input: {
       const known = byFp.get(device.keyFingerprintHex);
       const provenance = deviceProvenanceOf(context.verified, session.userId, device);
       if (known === undefined) {
-        // 初回観測(K4-4 d-2): 出所つきの Note。自分の端末自身は黙って記録する
+        // First observation (K4-4 d-2): a Note with provenance. My own device is recorded silently
         const entry: OwnDeviceEntry = {
           keyFingerprintHex: device.keyFingerprintHex,
           encPubHex: device.encPubHex,
@@ -189,14 +204,19 @@ function observeDevices(input: {
           yield* logNote(describeObservation(context.projectId, device, provenance));
         }
       } else if (known.revokedAtMs !== null) {
-        // 失効の印を消すのは再承認だけで、登録済みの鍵は要求を作り直せない(DK K10-5)ので、
-        // 「承認し直せ」とは言わない(従えない手順)。他のプロジェクトにも要るなら新しい鍵で
+        // Only re-approval clears the revocation mark, and a
+        // registered key cannot recreate a request (DK K10-5), so it
+        // does not say "approve it again" (a procedure the user cannot
+        // follow). If the device is needed on other projects, use a
+        // new key
         yield* logNote(
           `device ${device.keyFingerprintHex} was revoked from this machine's records but is active on project ${displayText(context.projectId)} (${describeAdder(provenance)}). It is not re-added to other projects from here (a revoked record is never cleared by syncing). If it should not be active, revoke it with \`maruhi device revoke ${device.keyFingerprintHex}\`; if that machine should be on more projects, revoke it, then ${reAddDeviceRoute("that machine")}`,
         );
       }
     }
-    // (b): このチェーンの失効を記録に写す(現端末でない失効 FP のうち、記録が active のもの)
+    // (b): write this chain's revocations into the record (among
+    // the revoked FPs not the current device, those whose record is
+    // active)
     const revokedHere = revokedFingerprintsOf(context.verified, session.userId);
     const toMark = records
       .filter(
@@ -245,7 +265,7 @@ function noteWriteFailure(error: CliError): Effect.Effect<void, never, CliIo> {
   );
 }
 
-/** (c) 1 行の登録(失敗はすべて Note — 1 台の失敗で同期を止めない)。 */
+/** (c) Registering one row (every failure is a Note — one device's failure does not stop the sync). */
 function registerRecorded(input: {
   readonly context: ProjectContext;
   readonly self: ChainMember;
@@ -288,7 +308,8 @@ function registerRecorded(input: {
       signerUserId: context.session.userId,
       signingKeyPair: context.masterKeys.sigKeyPair,
     });
-    // 記録の cap が働く唯一の時点なので、足した(見つけた)cap をチェーンから出す(DK K10-3)
+    // The only point where the record's cap works, so the added
+    // (found) cap is reported from the chain (DK K10-3)
     yield* logNote(
       `${appended ? "registered" : "found"} your device ${label} with cap ${describeCap(targetDevice)} on project ${displayText(context.projectId)} and backfilled ${backfill.registered} DEK wraps (${backfill.alreadyRegistered} already present)${describeFailedBackfill(context.projectId, backfill.failed)}`,
     );
@@ -304,8 +325,10 @@ function registerRecorded(input: {
 }
 
 /**
- * 登録した端末のバックフィルの失敗(DK K11-5): 同期の候補はチェーンに無い記録だけなので、
- * 次の同期は補わない。補うのは cap が覆う端末の pull(`device-gaps.ts`)。
+ * The failure of backfilling a registered device (DK K11-5): the
+ * sync's candidates are only records not on the chain, so the next
+ * sync does not fill. Filling is done by a pull from a device whose
+ * cap covers it (`device-gaps.ts`).
  */
 function describeFailedBackfill(
   projectId: string,
@@ -315,8 +338,10 @@ function describeFailedBackfill(
     return "";
   }
   const environments = failed.map((failure) => displayText(failure.environmentId)).join(", ");
-  // 失敗した環境は分かっているので、コマンドは環境ごとに実 id で出す(写して打てる形 —
-  // Cursor Bugbot 指摘。`<environment>` の置き場所は環境が分からない場面だけ)
+  // The failed environments are known, so commands are emitted per
+  // environment with the real id (a copyable form — Cursor Bugbot
+  // point. The `<environment>` placeholder is only for situations
+  // where the environment is unknown)
   const commands = failed
     .map((failure) => `\`${gapFillCommandOf(projectId, failure.environmentId)}\``)
     .join(", ");
@@ -324,8 +349,9 @@ function describeFailedBackfill(
 }
 
 function describeRegistrationFailure(projectId: string, label: string, error: CliError): string {
-  // 追記経路は型付きエラーを failure.ts の文言(1 箇所)へ写した後なので、ここは
-  // その文言に K4-14 の持ち越し(ローカル記録は保つ)を添えるだけ
+  // The append path already mapped the typed error onto failure.ts's
+  // wording (one place), so here we only append K4-14's carry-over
+  // (the local record is kept) to that wording
   if (error.message.startsWith("This server does not accept device operations")) {
     return `your device ${label} is recorded on this machine but project ${displayText(projectId)}'s server does not accept device operations yet. ${error.message}. The registration is retried by a sync after the server is updated`;
   }

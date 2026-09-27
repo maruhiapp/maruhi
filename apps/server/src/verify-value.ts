@@ -1,4 +1,5 @@
-// 値署名のサーバー検証と (epoch, version) CAS(AUTH_SPEC §12-5 = CRYPTO_SPEC §4.1 / §6.4)。
+// Server-side verification of value signatures and the (epoch,
+// version) CAS (AUTH_SPEC §12-5 = CRYPTO_SPEC §4.1 / §6.4).
 
 import type {
   ChainHistoryIndex,
@@ -19,7 +20,7 @@ import type {
 import { currentEpochOf, rejectData } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 
-/** 保存済みの値(epoch, version)に対する CAS(§12-5): 現エポック × 最新 + 1 のみ。 */
+/** The CAS against the stored value's (epoch, version) (§12-5): only the current epoch × latest + 1. */
 function checkValueCas(
   state: ChainState,
   environmentId: string,
@@ -47,10 +48,13 @@ export const ensureValueCas = (
 };
 
 /**
- * crypto の詳細理由 → ワイヤの 3 理由(仮裁定 C)への写像。
- * chain-head-future はサーバーにとって「自チェーンに存在しない seq」なので
- * chain-head-unknown に畳む(クライアント側の再同期分岐はサーバーには無い)。
- * 網羅は Record 型が静的に強制する(理由コード追加時にコンパイルエラー)。
+ * Mapping of crypto's detailed reasons → the wire's 3 reasons
+ * (interim ruling C).
+ * chain-head-future is, for the server, "a seq that does not exist
+ * on its own chain", so it folds into chain-head-unknown (the
+ * client-side resync branch does not exist on the server).
+ * Exhaustiveness is statically enforced by the Record type (adding a
+ * reason code would be a compile error).
  */
 const VALUE_REJECT_REASONS: Readonly<Record<ValueInvalidReason, ValueSignatureRejectReason>> = {
   "signature-invalid": "signature-invalid",
@@ -60,8 +64,9 @@ const VALUE_REJECT_REASONS: Readonly<Record<ValueInvalidReason, ValueSignatureRe
   "writer-not-member-at-head": "chain-head-state-mismatch",
   "writer-key-mismatch-at-head": "chain-head-state-mismatch",
   "writer-role-insufficient-at-head": "chain-head-state-mismatch",
-  // §6.3 の 3′(2026-09-14 ES): 宣言ヘッド時点の writer の scope 外 — role 不足と同じ
-  // 「ヘッド時点の状態との不一致」クラス(呼び出し主体の scope 軸の 403 は K3)
+  // §6.3's 3′ (2026-09-14 ES): the writer is out of scope at the
+  // declared head — same "mismatch with the state at the head" class
+  // as role insufficiency (a 403 on the caller's scope axis is K3)
   "writer-environment-out-of-scope-at-head": "chain-head-state-mismatch",
   "environment-not-created-at-head": "chain-head-state-mismatch",
   "epoch-not-current-at-head": "chain-head-state-mismatch",
@@ -71,25 +76,36 @@ const VALUE_REJECT_REASONS: Readonly<Record<ValueInvalidReason, ValueSignatureRe
 };
 
 /**
- * 値署名の受理検証(§12-5 の 1〜5)。判定順は CAS(epoch / version)の後・数量
- * ポリシーの前(session-14 裁定 D)。検査内容:
+ * Acceptance verification of a value signature (§12-5's 1–5). The
+ * check order is after the CAS (epoch / version) and before the
+ * quantity policy (session-14 ruling D). What is checked:
  *
- * 1. 署名は呼び出し主体の受理時点チェーン導出 sig 鍵で検証し、writer_user_id にも
- *    呼び出し主体を用いる(他人が署名した値の持ち込み拒否)
- * 2. 宣言ヘッド(hash + seq)の exact pair が自チェーン上に存在する
- * 3. 宣言ヘッド時点でも member 以上で、当時の束縛鍵 = 受理時点の鍵
- *    (remove → 別鍵 re-add の旧在籍区間ヘッド宣言の拒否)
- * 4. 宣言ヘッド時点で環境作成済みかつ current epoch = 値 epoch
- * 5. version 1 は prev 空、version > 1 は保存済み N-1 の signed-bytes hash と一致
+ * 1. The signature is verified with the caller's chain-derived sig
+ *    key at acceptance time, and writer_user_id is also the caller
+ *    (refuses values signed by someone else being brought in)
+ * 2. The declared head's (hash + seq) exact pair exists on the
+ *    server's own chain
+ * 3. The writer was member-or-above at the declared head, and the
+ *    bound key then = the key at acceptance (refusing a head declared
+ *    inside a stale membership interval after remove → re-add with a
+ *    different key)
+ * 4. At the declared head the environment was already created and
+ *    current epoch = the value's epoch
+ * 5. version 1 has an empty prev; version > 1 matches the stored
+ *    N-1's signed-bytes hash
  *
- * 座標(project / environment / variable)はサーバー側の値(genesis ハッシュ・
- * URL / 保存先)から再構成する — クライアント申告の AAD から組まない(§12-5)。
- * 宣言ヘッドは現ヘッドと同一でなくてよく、seq 単調性・サーバー独自のエポック
- * 単調比較も課さない(裁定 D — 「現エポックのみ受理 + rotate +1 + version CAS」の
- * 帰結として構造的に単調)。
+ * The coordinates (project / environment / variable) are
+ * reconstructed from server-side values (the genesis hash, the URL,
+ * the storage destination) — not assembled from client-declared AAD
+ * (§12-5). The declared head need not equal the current head; no seq
+ * monotonicity or server-side epoch comparison is imposed either
+ * (ruling D — structurally monotonic as a consequence of "accept the
+ * current epoch only + rotate +1 + version CAS").
  *
- * 成功時はサーバー再計算の signed_bytes ハッシュを返す(保存行に書く)。
- * すべての crypto await はこの Effect 内で完了する(同期書き込みフェーズより前)。
+ * On success returns the server-recomputed signed_bytes hash (which
+ * is written to the stored row).
+ * All crypto awaits complete inside this Effect (before the
+ * synchronous write phase).
  */
 export const ensureValueSignature = (input: {
   readonly projectId: string;
@@ -101,9 +117,11 @@ export const ensureValueSignature = (input: {
 }) =>
   Effect.gen(function* () {
     const store = yield* DataStore;
-    // predecessor(version > 1): 保存済み N-1 の signed_bytes ハッシュ。CAS 通過後
-    // なので必ず存在する(欠落はストレージ / 実装バグ = defect)。version 1 は
-    // predecessor なし — prev 空の形検査は verifyDistributedValue が行う
+    // predecessor (version > 1): the stored N-1's signed_bytes hash.
+    // Post-CAS, so it always exists (absence = a storage /
+    // implementation bug = defect). version 1 has no predecessor —
+    // the shape check that prev is empty is done by
+    // verifyDistributedValue
     let predecessor: ValuePredecessor | undefined;
     if (input.value.version > 1) {
       const anchor = yield* store.versionAnchor(
@@ -129,8 +147,10 @@ export const ensureValueSignature = (input: {
           nonceHex: input.value.nonceHex,
           ciphertextHex: input.value.ciphertextHex,
           prevValueSigHashHex: input.value.prevValueSigHashHex,
-          // writer = 呼び出し主体(§12-5 の 1)。検証鍵と head 時点の束縛一致は
-          // FP(受理時点のチェーン導出メンバー)で verifyDistributedValue が検査
+          // writer = the caller (§12-5's 1). The verification key
+          // and the bound-key match at head time are checked by
+          // verifyDistributedValue via the FP (the chain-derived
+          // member at acceptance time)
           writerUserId: input.member.userId,
           chainHeadHashHex: input.value.chainHeadHashHex,
           chainHeadSeq: input.value.chainHeadSeq,
@@ -149,7 +169,9 @@ export const ensureValueSignature = (input: {
         reason: VALUE_REJECT_REASONS[verified.error.reason],
       });
     }
-    // InvalidInput / KeyImportFailed は Schema 検証済みワイヤ + 検証済みチェーン
-    // 由来の鍵では到達しない(実装バグ = defect。エラー値に秘密は含まれない)
+    // InvalidInput / KeyImportFailed are unreachable with a
+    // Schema-validated wire shape + keys derived from a verified
+    // chain (an implementation bug = defect; error values carry no
+    // secrets)
     return yield* Effect.die(new Error(`value verification failed: ${verified.error.kind}`));
   });

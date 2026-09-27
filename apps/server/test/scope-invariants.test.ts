@@ -1,8 +1,12 @@
-// ES K3 — scope が変えないもの(設計録 docs/notes/es-design.md §9 / §1-4):
-//   - リース経路(AUTH_SPEC §14-1): メンバーの scope はリースに関与しない。環境制限は
-//     grant の scope_environments だけが担う
-//   - 可視性クラス(AUDIT_SPEC §6): scope 外環境のクラス 1 イベント・要ローテーション
-//     フラグは listed メンバーにも見える(可視性述語に環境軸を入れない)
+// ES K3 — what scope does not change (design record
+// docs/notes/es-design.md §9 / §1-4):
+//   - The lease path (AUTH_SPEC §14-1): member scopes play no role in
+//     leasing. Environment restriction is carried only by the grant's
+//     scope_environments
+//   - Visibility classes (AUDIT_SPEC §6): class-1 events and
+//     rotation-required flags of out-of-scope environments are visible to
+//     listed members too (the visibility predicate takes no environment
+//     axis)
 
 import { describe, expect, it } from "vitest";
 
@@ -38,11 +42,12 @@ const DEV = "user-devmember-0010";
 const DEVADMIN = "user-devadmin-0011";
 const OTHER = "env-other-0002";
 
-describe("リース経路は不変(AUTH_SPEC §14-1)", () => {
-  it("listed{} / listed{OTHER} のメンバーがいてもリースは grant の scope だけで決まる", async () => {
+describe("the lease path is unchanged (AUTH_SPEC §14-1)", () => {
+  it("a lease is decided by the grant's scope alone even with members in listed{} / listed{OTHER}", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createEnvironmentOk(fixture, OTHER, "Other");
-    // ENV を scope に持たないメンバー(完全集合にも入らない)
+    // A member whose scope does not contain ENV (not in the complete set
+    // either)
     await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", [OTHER]));
     await grantServer({ scope: [ENV] });
     await backfillServerWrap(1, dek);
@@ -55,15 +60,16 @@ describe("リース経路は不変(AUTH_SPEC §14-1)", () => {
   });
 });
 
-describe("可視性クラスは不変(AUDIT_SPEC §6)", () => {
-  it("scope 外環境の var.* / env.* / chain.* と要ローテーションフラグは listed メンバーにも見える", async () => {
+describe("visibility classes are unchanged (AUDIT_SPEC §6)", () => {
+  it("var.* / env.* / chain.* of out-of-scope environments and rotation-required flags are visible to listed members too", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createEnvironmentOk(fixture, OTHER, "Other");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await seedMemberToken(fixture, DEV, 9010);
-    // DEV は OTHER だけ — ENV は scope 外
+    // DEV has only OTHER — ENV is out of scope
     await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", [OTHER]));
-    // ENV(DEV の scope 外)の変数に対するフラグ: all メンバーの削除で検出される
+    // Flags against variables of ENV (out of DEV's scope): surfaced by
+    // removing the all member
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: MEMBER },
@@ -90,7 +96,7 @@ describe("可視性クラスは不変(AUDIT_SPEC §6)", () => {
     expect(body.flags.some((flag) => flag.environmentId === ENV)).toBe(true);
   });
 
-  it("要ローテーションフラグの取り下げは admin の判断で scope を問わない(§3.3 / §4.1-5 — 環境座標を持つ唯一の非 scope 経路)", async () => {
+  it("dismissing a rotation-required flag is an admin's call regardless of scope (§3.3 / §4.1-5 — the only non-scope path carrying environment coordinates)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createEnvironmentOk(fixture, OTHER, "Other");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
@@ -100,7 +106,8 @@ describe("可視性クラスは不変(AUDIT_SPEC §6)", () => {
       op: "remove_member",
       payload: { targetUserId: MEMBER },
     });
-    // ENV は DEVADMIN の scope 外だが、取り下げ(admin × admin スコープ)は通る
+    // ENV is out of DEVADMIN's scope, but a dismissal (admin x admin scope)
+    // goes through
     const dismissed = await requestJson("POST", "/rotation/dismissals", token(DEVADMIN), {
       targets: [{ environmentId: ENV, variableId: VAR }],
     });

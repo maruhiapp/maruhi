@@ -1,102 +1,103 @@
-# セッション 21 メモ(D1 側監査ログ基盤 — AUDIT_SPEC §3.1〜§3.2 / §5.2 案 A)
+# Session 21 memo (the D1-side audit-log foundation — AUDIT_SPEC §3.1–§3.2 / §5.2 option A)
 
-日付: 2026-08-10。前提: PR #41(セッション 20)マージ済みの main から開始。
-スコープ: ROADMAP Phase 1 サーバー項目に唯一残っていた「監査ログの D1 側
-(認証・org 系)」+ セッション 18 の申し送り(auth.recovery_* の記録 =
-AUTH_SPEC §13-5)の解消。保存先は AUDIT_SPEC §5.2 で裁定済みの案 A(D1)。
+Date: 2026-08-10. Prerequisite: started from main with PR #41 (session 20) merged.
+Scope: the only remaining ROADMAP Phase 1 server item — "the D1 side of the audit log
+(authentication / org family)" — plus clearing session 18's handoff (recording auth.recovery_* =
+AUTH_SPEC §13-5). Storage is AUDIT_SPEC §5.2's already-ruled option A (D1).
 
-## 1. 仕様(実装に伴う細則の明文化 — マージをもって承認)
+## 1. Spec (codifying the implementation's fine rules — merge constitutes approval)
 
-- **AUDIT_SPEC 0.6**: §5.2 に実装注記(テーブル = `user_audit_events` /
-  `org_audit_events`、DO 専用列は持たず org_id / project_id を列昇格、users への
-  FK なし、同一トランザクション追記は各リポジトリの batch 同梱)。§3.1 に記録
-  細則 4 点: login_succeeded がセッション id(保存 id と同じハッシュ)を payload
-  に写す / session_revoked は明示失効のみ(期限切れ掃除は記録しない)/
-  login_failed の actor は user_id なしの type=user / 同名ローテーションは
-  token_created 1 行(旧行削除を独立の token_revoked にしない)。§3.2 に
-  パーソナル org の org.created + org.member_added と「org 名スナップショットを
-  写さない」(providerLogin 由来 = §1-2 の禁止情報)
-- **AUTH_SPEC §13-5**: 申し送りを解消。取得の記録は**配布した応答(200)のみ**
-  (レート制限拒否・未登録 404 は記録しない — §13-3 の計数対象と同じ線引き)
+- **AUDIT_SPEC 0.6**: §5.2 gained an implementation note (tables = `user_audit_events` /
+  `org_audit_events`, no DO-only columns — org_id / project_id are promoted to columns,
+  no FK to users, same-transaction append = bundling into each repository's batch). §3.1 gained 4 recording
+  rules: login_succeeded copies the session id (the same hash as the stored id) into its payload /
+  session_revoked records only explicit revocations (expiry cleanup is not recorded) /
+  login_failed's actor is type=user with no user_id / a same-name rotation is
+  1 token_created row (deleting the old row does not become a separate token_revoked). §3.2 gained
+  the personal org's org.created + org.member_added and "do not copy the org-name
+  snapshot" (providerLogin-derived = §1-2's forbidden information)
+- **AUTH_SPEC §13-5**: the handoff cleared. Fetches are recorded **only for distributed responses (200)**
+  (rate-limit rejections and unregistered 404s are not recorded — the same line as §13-3's
+  counted set)
 
-## 2. 設計判断
+## 2. Design decisions
 
-- **同一トランザクション追記の形**: 監査挿入文(userAuditInsert / orgAuditInsert)
-  を各リポジトリが自分の D1 batch へ同梱する。DO 側 audit-store の appendSync
-  (同期ブロック原子性)の D1 対応物。単独追記サービス(D1AuditRepo)は
-  主データ書き込みを伴わないイベント(login_failed / device flow の
-  login_succeeded)専用
-- **イベントと書き込み経路の対応**:
-  - createUserBatch: user_created + identity_linked(provider 種別名のみ)+
-    org.created(personal)+ org.member_added(owner 本人)を既存 batch に同梱
-  - sessions.insert: login_succeeded(§3.1 の 1:1 規定に基づきリポジトリ内で固定)
-  - sessions.revokeByHash(新設): 明示失効専用。削除の成立を returning で観測
-    してから session_revoked を記録(actor = 削除行の所有者・auth_method。
-    Pullfrog 指摘対応: 読み → 削除の 2 段では並行ログアウトが 1 失効に 2 行
-    記録し得る。重複より欠落側に倒す)。期限切れ掃除の deleteByHash /
-    deleteExpired は従来どおりイベントなし
-  - tokens.replaceForUserAndName: token_created(tokenId / name / scopes)。
-    tokens.revokeById(deleteById を置換): token_revoked(actor のトークン id =
-    失効対象 id — v1 は自トークン失効のみ)。削除の成立を returning で観測して
-    から記録(Cursor Security Agent 指摘対応: 並行 revoke は findByHash を両方
-    通過し得るため、無条件 batch だと 1 失効に複数行 = 過大計上になる。
-    revokeByHash と同型の裁定)
-  - recovery.upsert / recordFetch: actor(principal 由来)を引数で受け、
-    reissued / blob_fetched を各 batch に同梱
-  - projects.insertIfAbsent: org.project_created は**行が実際に挿入されたとき
-    のみ**記録(PR レビュー = Cursor Bugbot 指摘対応、修正実装は Bugbot Autofix
-    案を採用: onConflictDoNothing をやめ素の挿入 + 監査行の 2 文 batch とし、
-    PK 競合時は batch ごと原子的に巻き戻して no-op(isUniqueConflict 判別)。
-    偽イベントの混入も監査行だけの欠落も起きない)
-- **device flow のログイン成功**: セッションを作らないため sessions.insert に
-  相乗りできない。getOrCreateUser 直後にハンドラで単独追記。**基準点は
-  「GitHub 検証成功」であって「交換 200」ではない**(Pullfrog が確認を求めた
-  点への裁定): トークン上限(429)は認証失敗ではなく login_failed の理由語彙
-  にも該当しないため、発行後へ移すと「認証は成功したのに監査痕跡ゼロ」の経路
-  が生まれる。監査書き込み障害が交換を 500 にする非対称は許容(best-effort 化
-  = 無言の監査欠落はしない — エラーを握り潰さない規約)
-- **login_failed は未認証経路からの D1 書き込み**になる(仕様が記録を要求)。
-  PR レビュー(Cursor Security Agent, MEDIUM)の指摘を受け、固定窓の全体上限
-  (1 時間 100 行、超過は不記録のベストエフォート — AUDIT_SPEC §3.1 に明文化)
-  で書き込み増幅を有界にした。窓の実測・上限値の調整は §5.3 のドッグフー
-  ディング実測と同時に見直す
+- **The form of same-transaction append**: the audit insert statements (userAuditInsert / orgAuditInsert)
+  are bundled by each repository into its own D1 batch. The D1 counterpart of the DO-side audit-store's appendSync
+  (synchronous-block atomicity). A standalone append service (D1AuditRepo) is
+  only for events with no accompanying main-data write (login_failed / the device flow's
+  login_succeeded)
+- **Event ↔ write-path correspondence**:
+  - createUserBatch: user_created + identity_linked (provider kind name only) +
+    org.created (personal) + org.member_added (the owner themself) bundled into the existing batch
+  - sessions.insert: login_succeeded (fixed inside the repository per §3.1's 1:1 rule)
+  - sessions.revokeByHash (new): explicit revocation only. Observes the deletion succeeding via returning
+    before recording session_revoked (actor = the deleted row's owner / auth_method.
+    Pullfrog finding handled: a read → delete two-step could record 2 rows for 1 revocation
+    under concurrent logouts. Err on the side of missing rather than duplicating). The expiry-cleanup deleteByHash /
+    deleteExpired stay event-free as before
+  - tokens.replaceForUserAndName: token_created (tokenId / name / scopes).
+    tokens.revokeById (replacing deleteById): token_revoked (the actor's token id =
+    the revoked id — v1 only revokes one's own token). Records after observing the deletion succeed via returning
+    (Cursor Security Agent finding handled: concurrent revokes can both pass findByHash, so an unconditional
+    batch would write multiple rows per revocation = overcounting.
+    Same shape as the revokeByHash ruling)
+  - recovery.upsert / recordFetch: actor (derived from the principal) is passed as an argument, and
+    reissued / blob_fetched are bundled into each batch
+  - projects.insertIfAbsent: org.project_created is recorded **only when the row was
+    actually inserted** (PR review = Cursor Bugbot finding; the fix adopts the Bugbot Autofix
+    proposal: drop onConflictDoNothing in favor of a plain insert + audit row as a 2-statement batch, and on a
+    PK conflict roll the whole batch back atomically into a no-op (detected via isUniqueConflict).
+    Neither phantom events nor missing audit rows can occur)
+- **Device-flow login success**: creates no session, so it cannot ride sessions.insert.
+  It is appended standalone in the handler right after getOrCreateUser. **The reference point is
+  "GitHub verification succeeded", not "exchange 200"** (the ruling answering Pullfrog's
+  question): the token limit (429) is not an authentication failure and matches none of login_failed's
+  reason vocabulary, so moving it after issuance would create a path where "authentication succeeded with zero
+  audit trace". The asymmetry where an audit-write failure fails the exchange with 500 is accepted (making it
+  best-effort = never silently drop audit — the do-not-swallow-errors convention)
+- **login_failed is a D1 write from an unauthenticated path** (the spec requires recording it).
+  Following the PR review finding (Cursor Security Agent, MEDIUM), a fixed-window global cap
+  (100 rows per hour; beyond that, best-effort non-recording — codified in AUDIT_SPEC §3.1)
+  bounded the write amplification. The window's measured rate and the cap's value are revisited together with §5.3's dogfooding
+  measurements
 
-## 3. 実装
+## 3. Implementation
 
-- db.package: schema に 2 テーブル + 索引(actor / target / event、org は org_id
-  も)、audit.ts(挿入文ビルダ + D1AuditRepo + principalAuditActor)、repos の
-  各所へ batch 同梱。drizzle マイグレーション 1 本
-- auth.package: session.revokeSession → revokeByHash、token.revokePresentedToken
+- db.package: 2 tables in the schema + indexes (actor / target / event; org also has org_id),
+  audit.ts (the insert-statement builders + D1AuditRepo + principalAuditActor), and batch bundling at
+  various points in repos. One drizzle migration
+- auth.package: session.revokeSession → revokeByHash, token.revokePresentedToken
   → revokeById
-- handlers-auth: login_failed(state-mismatch / code-exchange-failed /
-  github-token-invalid × web・device)、device flow の login_succeeded、recovery
-  への actor 受け渡し。handlers-membership: init へ principal を通し
+- handlers-auth: login_failed (state-mismatch / code-exchange-failed /
+  github-token-invalid × web and device), the device flow's login_succeeded, recovery's
+  actor pass-through. handlers-membership: passes principal into init for
   org.project_created
 
-## 4. テスト・品質
+## 4. Tests and quality
 
-- server +15(audit-d1.test.ts): サインアップ一括イベント列 / 再ログインの差分 /
-  login_failed の固定窓上限(上限で抑制・窓経過で再開)/ 冪等挿入の空振りが
-  org.project_created を増やさない /
-  login_failed 3 種の理由と匿名 actor / device flow の token_created(id・name・
-  scopes 突合)/ ローテーション 2 行 / session_revoked の id 突合と再ログアウト
-  無記録 / **期限切れ掃除が session_revoked を出さない** / token_revoked の
-  actor = 対象 / recovery の配布時のみ記録(404・429 は無記録)/
-  org.project_created の座標と actor / 禁止情報スキャン(provider 数値 ID・
-  login・@ が全行に現れない — DO 側 §1-2 テストの D1 版)
-- 既存テストの追随は test/support/auth.ts の reset テーブル追加のみ(API 変更が
-  サーバー内部に閉じた)
-- `bun run check` green(940 テスト)
+- server +15 (audit-d1.test.ts): the sign-up batch event sequence / re-login deltas /
+  login_failed's fixed-window cap (suppressed at the cap, resumes after the window) / an idempotent-insert
+  miss not adding org.project_created /
+  the 3 login_failed reasons and the anonymous actor / the device flow's token_created (id, name,
+  scopes cross-checked) / rotation's 2 rows / session_revoked's id cross-check and a re-logout
+  unrecorded / **expiry cleanup does not emit session_revoked** / token_revoked's
+  actor = the target / recovery records only on distribution (404 / 429 unrecorded) /
+  org.project_created's coordinates and actor / the forbidden-information scan (no provider numeric ID,
+  login, or @ appears in any row — the D1 counterpart of the DO-side §1-2 test)
+- Existing-test follow-up was limited to adding the reset table in test/support/auth.ts (the API change
+  stayed inside the server)
+- `bun run check` green (940 tests)
 
-## 5. スコープ外(申し送り)
+## 5. Out of scope (handoffs)
 
-- 監査ログの読み取り API と閲覧権限の詳細は Phase 2 の監査ログ UI と同時
-  (AUDIT_SPEC §6〜§7 / 未決 #1)
-- org の改名・削除・メンバー管理 API は未実装のため、対応する §3.2 イベントの
-  記録は API 導入時に開始する(AUDIT_SPEC §5.2 実装注記に明文化)
-- login_failed の書き込み量・var.read の集約方針はドッグフーディングの実測後
-  (AUDIT_SPEC §5.3 / 未決 #4)
-- ドッグフーディング開始時の人間タスク(GitHub OAuth App 作成 + 検証デプロイ
-  への登録 — session-19 §6)は未着手のまま有効
-- チェーン追記系コマンド・crypto test/checks の整理候補(session-17 §4)は
-  未着手のまま有効
+- The audit-log read API and the read-permission details come together with Phase 2's audit-log UI
+  (AUDIT_SPEC §6–§7 / undecided #1)
+- Org rename / delete / member-management APIs are unimplemented, so recording of the corresponding §3.2 events
+  starts when those APIs land (codified in the AUDIT_SPEC §5.2 implementation note)
+- login_failed's write volume and var.read's aggregation policy are revisited after dogfooding measurements
+  (AUDIT_SPEC §5.3 / undecided #4)
+- The human tasks at dogfooding start (creating the GitHub OAuth App + registering it on the
+  verification deploy — session-19 §6) remain valid and untouched
+- The chain-append commands and the crypto test/checks organization candidate (session-17 §4) remain
+  valid and untouched

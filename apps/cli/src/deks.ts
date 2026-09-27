@@ -1,16 +1,20 @@
-// 配布されたラップ済み DEK の検証と復号(CRYPTO_SPEC §5.1 / §5.2 / §12-7)。
+// Verifying and decrypting distributed wrapped DEKs (CRYPTO_SPEC §5.1 /
+// §5.2 / §12-7).
 //
-// 検証の座標は申告値を信用せず自前で組み立てる: projectId = 検証済み genesis
-// ハッシュ、environmentId = リクエストに使った ID、recipient = 自分の
-// user_id + 自分の enc 公開鍵。署名者の鍵は「検証済みチェーン履歴で
-// signerUserId に束縛された sig 鍵のうち FP が一致するもの」(削除済み
-// メンバーの当時の鍵も可 — チェーンは append-only)。
-// wrap の epoch は申告値だが、登録署名(§5.1)と HPKE info(§5)の両方に
-// 束縛されるため、別エポックへの移植は検証・復号失敗に落ちる。
+// The verification coordinates are assembled independently without
+// trusting declared values: projectId = the verified genesis hash,
+// environmentId = the ID used in the request, recipient = my user_id +
+// my enc public key. The signer's key is "the sig key bound to
+// signerUserId in the verified chain history whose FP matches" (a removed
+// member's key of the time also works — the chain is append-only). A
+// wrap's epoch is a declared value, but because it is bound into both the
+// registration signature (§5.1) and HPKE info (§5), transplanting to
+// another epoch fails verification / decryption.
 //
-// §5.2: unwrap した DEK は、チェーン導出の (environment, epoch)
-// コミットメントと照合するまでいかなる暗号操作(復号・暗号化)にも使わない。
-// 不一致は毒ラップ(共謀サーバーによる偽 DEK 注入の遮断 — §14.2-1)。
+// §5.2: an unwrapped DEK is not used in any cryptographic operation
+// (decryption, encryption) until it is matched against the chain-derived
+// (environment, epoch) commitment. A mismatch is a poisoned wrap (blocks
+// a colluding server injecting a false DEK — §14.2-1).
 
 import type { RecipientDek } from "@maruhi/api-schema";
 import type { EncryptionKeyPair, EnvironmentChainState } from "@maruhi/crypto";
@@ -49,7 +53,7 @@ function signerKeyFor(verified: VerifiedProject, wrap: RecipientDek): Uint8Array
   return match === undefined ? null : decodeHex(match.sigPubHex);
 }
 
-/** 1 ラップの検証・開封結果(タグ付き Result — instanceof 判別をしない)。 */
+/** Result of verifying and unwrapping one wrap (a tagged Result — no instanceof discrimination). */
 type UnwrapResult =
   | { readonly kind: "ok"; readonly dek: Uint8Array }
   | { readonly kind: "rejected"; readonly message: string };
@@ -59,7 +63,7 @@ async function verifyAndUnwrapOne(input: {
   readonly environmentId: string;
   readonly recipient: DekRecipient;
   readonly wrap: RecipientDek;
-  /** チェーン導出の当該 (environment, epoch) のコミットメント(§5.2)。 */
+  /** The chain-derived commitment for that (environment, epoch) (§5.2). */
   readonly expectedCommitmentHex: string;
 }): Promise<UnwrapResult> {
   const { verified, environmentId, recipient, wrap } = input;
@@ -116,8 +120,9 @@ async function verifyAndUnwrapOne(input: {
       message: `Cannot decrypt the DEK (epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)}). The wrap is not addressed to your key, or it is corrupt`,
     };
   }
-  // §5.2 / §6.3: コミットメント照合に成功するまで DEK を使用しない。座標は
-  // 自前の検証済み値(genesis ハッシュ・リクエストの環境 ID)から組み立てる
+  // §5.2 / §6.3: do not use the DEK until the commitment check succeeds.
+  // The coordinates are assembled from our own verified values (the
+  // genesis hash, the request's environment ID)
   const commitment = await verifyDekCommitment({
     context: {
       suite: SUITE_ID,
@@ -137,7 +142,7 @@ async function verifyAndUnwrapOne(input: {
   return { kind: "ok", dek: dek.value };
 }
 
-/** チェーン導出の環境状態(§6.2)。未作成の環境の配布はサーバー応答とチェーンの矛盾。 */
+/** Chain-derived environment state (§6.2). Distributing a not-yet-created environment contradicts the chain in the server response. */
 export function requireChainEnvironment(
   verified: VerifiedProject,
   environmentId: string,
@@ -158,11 +163,12 @@ export function requireChainEnvironment(
  * epoch (§12-7: latest versions may span epochs, so all epochs are needed).
  * Any failure aborts — silently skipping a wrap would hide tampering.
  *
- * ファントムエポック対策: wrap の epoch はチェーン
- * 導出の現エポック以下でなければならない。§12-6 の「1〜現エポック」は
- * サーバー側強制であり、サーバー不信の下ではこのクライアント検査が本線
- * (チェーンに rotate_epoch がないエポックの DEK を受理すると、共謀サーバーが
- * 正規メンバー署名済みの攻撃者 DEK で偽値を注入できる)。
+ * Phantom-epoch defense: a wrap's epoch must be at or below the
+ * chain-derived current epoch. §12-6's "1 through the current epoch" is
+ * server-enforced; under a distrusted server this client check is the
+ * main line (accepting a DEK for an epoch with no rotate_epoch on the
+ * chain lets a colluding server inject false values via an attacker DEK
+ * signed by a regular member).
  */
 function verifyAndUnwrapDeks(input: {
   readonly verified: VerifiedProject;
@@ -171,18 +177,23 @@ function verifyAndUnwrapDeks(input: {
   readonly deks: readonly RecipientDek[];
 }): Effect.Effect<ReadonlyMap<number, Redacted.Redacted<Uint8Array>>, CliError> {
   return Effect.gen(function* () {
-    // 環境の存在自体がチェーン導出(§6.2):
-    // チェーンに無い環境の配布はファントム環境として全体を拒否する
+    // An environment's existence itself is chain-derived (§6.2):
+    // distribution of an environment absent from the chain is refused
+    // wholesale as a phantom environment
     const environment = yield* requireChainEnvironment(input.verified, input.environmentId);
     const chainEpoch = environment.currentEpoch;
     const byEpoch = new Map<number, Redacted.Redacted<Uint8Array>>();
-    // 自分の端末宛の行だけを開く(AUTH_SPEC §12-6 の端末軸 — 同じ人の全端末分が 1 応答で
-    // 届く。DK K4-16: 読む → 署名検証 → 開封。他端末宛の行は毒ラップではない)
+    // Open only the rows addressed to my devices (AUTH_SPEC §12-6's
+    // device axis — one response carries all devices of the same person.
+    // DK K4-16: read → verify signature → unwrap. Rows for other devices
+    // are not poisoned wraps)
     const mine = input.deks.filter((wrap) => wrap.recipientEncPubHex === input.recipient.encPubHex);
     for (const wrap of mine) {
       if (wrap.suite !== SUITE_ID) {
-        // Schema の Literal ピンで現状は到達しないが、検証座標に申告 suite を
-        // 使う以上、CLI 側でも明示的に固定する(将来の union 化への防衛)
+        // Currently unreachable because of the Schema Literal pin, but
+        // since the verification coordinates use the declared suite, pin
+        // it explicitly on the CLI side too (defense against a future
+        // union)
         return yield* Effect.fail(cliError(`The DEK wrap uses an unknown suite (${wrap.suite})`));
       }
       if (wrap.epoch > chainEpoch) {
@@ -197,8 +208,9 @@ function verifyAndUnwrapDeks(input: {
           cliError(`Duplicate DEK wraps for the same epoch (epoch=${wrap.epoch})`),
         );
       }
-      // チェーン導出のコミットメント(§5.2)。1 ≤ epoch ≤ 現エポックの全エポックは
-      // create / rotate エントリがコミットメントを掲載済み(§6.2 の合意規則)
+      // The chain-derived commitment (§5.2). For every epoch in
+      // 1 ≤ epoch ≤ current, a create / rotate entry already published
+      // the commitment (§6.2 consensus rules)
       const expectedCommitmentHex = environment.dekCommitments.get(wrap.epoch);
       if (expectedCommitmentHex === undefined) {
         return yield* Effect.fail(
@@ -221,8 +233,9 @@ function verifyAndUnwrapDeks(input: {
       if (result.kind === "rejected") {
         return yield* Effect.fail(cliError(result.message));
       }
-      // 開封済み DEK はここで包む(§5.2 コミットメント照合を通った後 —
-      // 照合前の DEK は verifyAndUnwrapOne の内側から出ない)
+      // The unwrapped DEK is wrapped here (only after the §5.2 commitment
+      // check passes — a DEK before the check never leaves the inside of
+      // verifyAndUnwrapOne)
       byEpoch.set(wrap.epoch, Redacted.make(result.dek, { label: "dek" }));
     }
     return byEpoch;
@@ -230,8 +243,9 @@ function verifyAndUnwrapDeks(input: {
 }
 
 /**
- * 検証済みビュー由来の環境鍵集合: チェーン導出の現エポックと、
- * 同じビューで検証・開封した自分宛 DEK の対。
+ * The set of environment keys derived from a verified view: the pair of
+ * the chain-derived current epoch and the my-addressed DEKs verified and
+ * unwrapped under the same view.
  */
 export interface EnvironmentKeys {
   readonly currentEpoch: number;
@@ -239,9 +253,12 @@ export interface EnvironmentKeys {
 }
 
 /**
- * 1〜現エポックのうち、検証・開封を通った自分宛 DEK が無いエポック(CRYPTO_SPEC §7 の
- * 全エポック配布との差分)。値付き pull の警告と `device add` の到達の確認(DK K12-2)が
- * 同じ関数で判定する — 先取りの報告と後の警告が食い違う入力を構造で無くす。
+ * Among 1 through the current epoch, the epochs with no verified and
+ * unwrapped my-addressed DEK (the difference from CRYPTO_SPEC §7's
+ * all-epochs distribution). The warning of a pull with values and the
+ * reachability check of `device add` (DK K12-2) judge with the same
+ * function — the structure removes inputs where an ahead-of-time report
+ * and a later warning could disagree.
  */
 export function missingEpochsOf(keys: EnvironmentKeys): readonly number[] {
   return Array.from({ length: keys.currentEpoch }, (_, index) => index + 1).filter(
@@ -255,30 +272,35 @@ export function missingEpochsOf(keys: EnvironmentKeys): readonly number[] {
  * epoch and the DEK set come from the same verified view" is enforced by
  * construction instead of by convention.
  *
- * 取得経路の優先順: cached(このセッションで検証済みの既知集合)に現エポックが
- * あれば再取得しない → prefetched(値付き pull の同梱ラップ — §12-7 の二重取得
- * 解消)があればそれを検証・開封 → どちらも無ければ listMine を取得して検証・
- * 開封する。検証(§5.1 登録署名 + §5.2 コミットメント照合)は全経路で必須。
+ * Fetch-path precedence: if cached (the known set already verified in
+ * this session) has the current epoch, do not refetch → else if
+ * prefetched (the wraps bundled with a pull of values — removes the
+ * §12-7 double fetch) exists, verify and unwrap it → else fetch listMine
+ * and verify and unwrap. Verification (§5.1 registration signature +
+ * §5.2 commitment check) is mandatory on every path.
  *
- * **受信側の scope 規則(CRYPTO_SPEC §6.3 — 2026-09-15 ES K4、設計録 K4-F)**: 自分宛の
- * ラップで環境 ∉ 自分の scope のものは使用しない。ここが自分宛 DEK の唯一の
- * 取得口なので、判定をここに置けば「使わない」が構造で成立する。値付き経路は
- * 通信前判定(K4-C)で先に止まるため、到達は競合類(同期の間に scope が縮んだ)か
- * 呼び出し側の誤りに限られ、fail-closed の型付きエラーで中断する(ラップは
- * 取得も開封もせず、内容は文言に出さない)。
+ * **Receiver-side scope rule (CRYPTO_SPEC §6.3 — 2026-09-15 ES K4,
+ * design record K4-F)**: among wraps addressed to me, one whose
+ * environment ∉ my scope is not used. Because this is the only
+ * acquisition point of my-addressed DEKs, placing the check here makes
+ * "not used" hold by structure. The with-values path stops earlier at
+ * the pre-flight check (K4-C), so arrival is limited to a race (scope
+ * shrank during the sync) or a caller error; abort with a fail-closed
+ * typed error (the wrap is neither fetched nor unwrapped, and its
+ * content never appears in the message).
  */
 export function environmentKeysFor(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly recipient: DekRecipient;
-  /** 値付き pull の同梱ラップ(verified と同じビューで検証する前提の生ワイヤ形)。 */
+  /** Wraps bundled with a pull of values (raw wire shape, assumed verified under the same view as verified). */
   readonly prefetched?: readonly RecipientDek[] | null | undefined;
-  /** このセッションで検証・開封済みの既知集合(現エポックがあれば再取得しない)。 */
+  /** The known set already verified and unwrapped in this session (no refetch when it has the current epoch). */
   readonly cached?: ReadonlyMap<number, Redacted.Redacted<Uint8Array>> | undefined;
 }): Effect.Effect<EnvironmentKeys, CliError> {
   return Effect.gen(function* () {
-    // 現エポックはチェーン導出値(§6.2 — 環境未作成はここで止まる)
+    // The current epoch is a chain-derived value (§6.2 — a not-yet-created environment stops here)
     const currentEpoch = (yield* requireChainEnvironment(input.verified, input.environmentId))
       .currentEpoch;
     const self = input.verified.state.members.get(input.recipient.userId);
@@ -287,8 +309,10 @@ export function environmentKeysFor(input: {
         cliError("You are not a chain-derived member of this project (no DEK is addressed to you)"),
       );
     }
-    // 開封する端末 = 手元の enc 鍵と一致する自分の有効な端末(DK K4-16)。実効 scope
-    // (人 ∩ 端末 — K4-17)の外の環境の DEK は、宛てられていても使わない
+    // The unwrapping device = my valid device matching the enc key at
+    // hand (DK K4-16). A DEK for an environment outside the effective
+    // scope (person ∩ device — K4-17) is not used even when addressed to
+    // me
     const device = yield* ownDeviceOrFail(input.verified, self, {
       encPubHex: input.recipient.encPubHex,
     });

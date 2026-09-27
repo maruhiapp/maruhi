@@ -1,11 +1,14 @@
-// プロジェクト設定 schemaPolicy の Effect プログラム(AUTH_SPEC §12-11)。
+// Effect program for the project setting schemaPolicy
+// (AUTH_SPEC §12-11).
 //
-// - 取得: read スコープ(worker)× チェーン role reader 以上(ここ)
-// - 変更: admin スコープ(worker)× チェーン role admin 以上(ここ)。204。
-//   変更は project.schema_policy_changed(AUDIT_SPEC §3.3 — payload = 旧値・
-//   新値、actor = type=user。署名を伴わない設定操作のため鍵 FP は持たない)
-// - 受理判定側(programs-variable.ts / verify-meta.ts)は同じ permit 下で
-//   store.schemaPolicy を読む — 変更との競合窓を作らない(§12-11)
+// - Get: read scope (worker) × chain role reader or above (here)
+// - Set: admin scope (worker) × chain role admin or above (here).
+//   204. A change writes project.schema_policy_changed (AUDIT_SPEC
+//   §3.3 — payload = old value / new value, actor = type=user; being a
+//   setting operation without a signature, it carries no key FP)
+// - The acceptance-check side (programs-variable.ts / verify-meta.ts)
+//   reads store.schemaPolicy under the same permit — no race window
+//   against a change (§12-11)
 
 import { Effect } from "effect";
 
@@ -30,21 +33,26 @@ export const setSchemaPolicyProgram = (
 ) =>
   Effect.gen(function* () {
     yield* requireMemberState(actor.userId, "admin", cache);
-    // DO ストレージ総量ガード(AUTH_SPEC §12-8): 設定変更は内容の成長面
-    // ではないが、退出・解放・セキュリティ是正のいずれにも要らず、変更のたびに
-    // 監査行を積む(admin の反復で非有界)ため拒否対象に含める。取得
-    // (getSchemaPolicyProgram)は読み取り = 拒否下でも通る
+    // The DO storage-total guard (AUTH_SPEC §12-8): a settings change
+    // is not a content-growth surface, but it is not needed for
+    // evacuation, release, or security remediation either, and each
+    // change adds an audit row (unbounded under admin iteration), so it
+    // is included among the refused. Get (getSchemaPolicyProgram) is a
+    // read = passes even under refusal
     yield* ensureStorageAdmitsGrowth;
     const store = yield* DataStore;
     const previous = yield* store.schemaPolicy;
     if (previous === schemaPolicy) {
-      // 冪等な同値 PUT は 204 のまま監査を記録しない(「変更」イベントに
-      // 変わっていない遷移を書かない — AUDIT_SPEC §3.3 の payload は旧値・新値)
+      // An idempotent equal-value PUT stays a 204 and records no
+      // audit (a transition that did not change anything is not
+      // written to the "changed" event — AUDIT_SPEC §3.3's payload is
+      // old value / new value)
       return;
     }
     const audit = yield* AuditStore;
     const now = Date.now();
-    // 設定の upsert と監査行を同一の同期ブロックで書く(原子性)
+    // The settings upsert and the audit row are written in the same
+    // synchronous block (atomicity)
     yield* Effect.sync(() => {
       store.write.setSchemaPolicy(schemaPolicy);
       audit.appendSync(

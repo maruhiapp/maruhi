@@ -1,71 +1,71 @@
-# セッション 01 引き継ぎメモ(開発基盤の整備)
+# Session 01 handoff memo (setting up the development foundation)
 
-日付: 2026-07-31。スコープは開発基盤のみ。製品ロジック・暗号コードは未実装。
+Date: 2026-07-31. Scope is the development foundation only. No product logic or crypto code implemented yet.
 
-## このセッションでやったこと
+## What this session did
 
-1. 5 文書(CLAUDE.md / ROADMAP.md / CRYPTO_SPEC.md / AUTH_SPEC.md / ADR.md)の矛盾チェック(結果は下記)
-2. `docs/ADR.md` を `docs/adr/NNNN-slug.md` × 12 + 索引 `README.md` に分割(本文は原文一致を検証済み。見出しレベル `##`→`#` のみ調整)
-3. Bun workspaces モノレポ骨格: `packages/{crypto,core,api-schema}` + `apps/{server,cli,web,docs}`
-4. 品質ゲート 7 ステップを `bun run check` と GitHub Actions(`.github/workflows/ci.yml`)に配線
-5. Vitest 4 + `@cloudflare/vitest-pool-workers`(server は workerd 実環境)。ダミーテスト 5 ファイル 6 件通過
-6. エージェントスキル 18 個を `.agents/skills/`(正)+ `.claude/skills/`(symlink)に導入
+1. Consistency check across the 5 documents (CLAUDE.md / ROADMAP.md / CRYPTO_SPEC.md / AUTH_SPEC.md / ADR.md) (results below)
+2. Split `docs/ADR.md` into `docs/adr/NNNN-slug.md` × 12 + index `README.md` (verified the bodies match the originals; only heading levels `##`→`#` were adjusted)
+3. Bun workspaces monorepo skeleton: `packages/{crypto,core,api-schema}` + `apps/{server,cli,web,docs}`
+4. Wired the 7-step quality gate into `bun run check` and GitHub Actions (`.github/workflows/ci.yml`)
+5. Vitest 4 + `@cloudflare/vitest-pool-workers` (the server runs in a real workerd environment). 5 dummy test files, 6 tests passing
+6. Installed 18 agent skills under `.agents/skills/` (source of truth) + `.claude/skills/` (symlinks)
 
-## 文書の矛盾・綻び(未修正。人間の判断待ち)
+## Document inconsistencies and gaps (unfixed — awaiting human judgment)
 
-1. ADR 前文「Status: すべて Accepted」と ADR-0003 の「【仮決定】」が矛盾。0003 に個別 Status を持たせるべき
-2. CLAUDE.md 技術スタック表の docs 行「別リポジトリ or apps/docs」が未決の書き方のまま。モノレポ構成では apps/docs 確定
-3. 「実装開始前に要決定」の件数: ROADMAP は 2 件(環境モデル、認可モデル)だが、AUTH_SPEC §9-1「プロジェクトと組織の関係」も要決定マーク付きで実質 3 件
-4. ADR-0010 の CI 順序に第 7 ステップ(テスト)がない。CLAUDE.md の品質ゲートと不一致
-5. CRYPTO_SPEC §8 リカバリーラップの AES-256-GCM に AAD の規定がない(設計原則 3「すべての暗号文は AAD / info により束縛」と不整合)。→ 2026-07-31 改訂案を §8 に反映済み(AAD = "maruhi/v1/recovery-wrap" || user_id)。承認待ち
-6. CRYPTO_SPEC §8 の HKDF に salt の規定がない。→ 2026-07-31 改訂案を §8 に反映済み(salt = 空。RFC 5869 §3.1 の一様ランダム IKM 条項)。承認待ち
-7. 分割後の `docs/adr/README.md` 前文に「各 ADR は将来分割する」の一文が残っている(原文不変更の指示に従い温存。次の文書改訂で削除可)
-8. 誤字レベル: ADR-0005「平文がAPI」、ADR-0009「でありGitHub」等のスペース欠落
+1. The ADR preamble's "Status: all Accepted" contradicts ADR-0003's "[provisional]". 0003 should carry its own Status
+2. The docs row of the CLAUDE.md tech-stack table still reads "separate repository or apps/docs", left undecided. Under the monorepo layout it is settled as apps/docs
+3. The count of "to be decided before implementation starts" items: ROADMAP says 2 (environment model, authorization model), but AUTH_SPEC §9-1 "the relationship between projects and organizations" is also marked to-be-decided, so effectively 3
+4. ADR-0010's CI ordering lacks the seventh step (tests). Inconsistent with CLAUDE.md's quality gate
+5. The CRYPTO_SPEC §8 recovery wrap's AES-256-GCM has no AAD specified (inconsistent with design principle 3, "every ciphertext is bound via AAD / info"). → The 2026-07-31 revision draft has been reflected in §8 (AAD = "maruhi/v1/recovery-wrap" || user_id). Awaiting approval
+6. The CRYPTO_SPEC §8 HKDF has no salt specified. → The 2026-07-31 revision draft has been reflected in §8 (salt = empty; the RFC 5869 §3.1 uniform-random-IKM clause). Awaiting approval
+7. The preamble of the split-out `docs/adr/README.md` still contains the line "each ADR will be split in the future" (kept per the no-text-changes instruction; can be removed in the next document revision)
+8. Typo level: missing spaces such as ADR-0005 "平文がAPI", ADR-0009 "でありGitHub" — english-exempt: quotes literal text owned by docs/adr/
 
-## 環境・バージョンの実態(文書との差分)
+## Actual environment / versions (deltas from the documents)
 
-- **Bun 1.4 は未リリース**(2026-07-31 時点の最新は 1.3.14)。`.bun-version` + `engines` で 1.3.14 をピン留め。ROADMAP の「Bun 1.4 リリース待ち」と整合。1.4 が出たら独立 PR で更新
-- 主要バージョン(すべて厳密ピン): typescript 7.0.2 / vitest 4.1.10 / @cloudflare/vitest-pool-workers 0.20.1 / oxlint 1.76.0 / oxfmt 0.61.0 / @import-lint/cli 0.1.6 / fallow 3.10.0 / react-doctor 0.9.2 / @cloudflare/workers-types 5.20260731.1
-- vitest-pool-workers は v0.13 で API が変わった。旧 `defineWorkersConfig` は削除済みで、現行は `cloudflareTest()` Vite プラグイン(`apps/server/vitest.config.ts` 参照)。古い記事の設定例は使えない
+- **Bun 1.4 is unreleased** (latest as of 2026-07-31 is 1.3.14). Pinned 1.3.14 via `.bun-version` + `engines`. Consistent with ROADMAP's "waiting for Bun 1.4 release". Update it in an independent PR once 1.4 ships
+- Major versions (all strictly pinned): typescript 7.0.2 / vitest 4.1.10 / @cloudflare/vitest-pool-workers 0.20.1 / oxlint 1.76.0 / oxfmt 0.61.0 / @import-lint/cli 0.1.6 / fallow 3.10.0 / react-doctor 0.9.2 / @cloudflare/workers-types 5.20260731.1
+- vitest-pool-workers changed its API in v0.13. The old `defineWorkersConfig` has been removed; the current form is the `cloudflareTest()` Vite plugin (see `apps/server/vitest.config.ts`). Config examples in old articles do not work
 
-## 品質ゲートの運用
+## Operating the quality gate
 
-- `bun run check` = oxfmt --check → oxlint → tsc → ImportLint → fallow audit → React Doctor → vitest run。CI も同一順序
-- **fallow**: baseline を `fallow-baselines/` にコミット済み。既存問題を意図的に受け入れ直すときだけ `bun run fallow:baseline` で更新する
-- **ImportLint**: `*.package` ディレクトリ命名が境界(`defaultImportability: "package"`)。Drizzle 隔離(ADR-0006)や crypto 内部の API 境界は、実装時に該当ディレクトリを `foo.package` に命名して有効化する
-- **React Doctor**: apps/web に React がまだ無いため「rules gated off」で素通りしている。スパイク A で React が入ると自動的に実検査になる。テレメトリ(Sentry)があるため **常に `--no-telemetry` を付ける**こと(scripts に設定済み)
-- **oxfmt**: Markdown は整形対象外(決定済み 2026-07-31: 文書の整形は行わない)
-- web / docs の vitest プロジェクトは未定義。スパイク A / Blume 導入時にルート `vitest.config.ts` の projects に追加する
+- `bun run check` = oxfmt --check → oxlint → tsc → ImportLint → fallow audit → React Doctor → vitest run. CI uses the same order
+- **fallow**: baselines are committed under `fallow-baselines/`. Only update them via `bun run fallow:baseline` when intentionally re-accepting existing issues
+- **ImportLint**: `*.package` directory naming is the boundary (`defaultImportability: "package"`). To activate the Drizzle isolation (ADR-0006) or crypto-internal API boundaries during implementation, name the target directory `foo.package`
+- **React Doctor**: apps/web has no React yet, so it passes with "rules gated off". Once React lands in spike A it becomes a real check automatically. Because telemetry (Sentry) exists, **always pass `--no-telemetry`** (already set in scripts)
+- **oxfmt**: Markdown is excluded from formatting (decided 2026-07-31: documents are not reformatted)
+- No vitest projects are defined for web / docs. Add them to the root `vitest.config.ts` projects when spike A / Blume land
 
-## エージェントスキル
+## Agent skills
 
-- 正: `.agents/skills/`(Cursor 等が読む)。`.claude/skills/` は symlink
-- fallow / react-doctor / improve-react は **node_modules への symlink**(バージョン連動)。`bun install` 前はリンク切れ表示になるが正常
-- drizzle 系 8 スキルは drizzle-kit@rc(1.0.0-beta 系)からの**コピー**。Phase 1 で drizzle-kit を依存に追加したら `drizzle-kit skills` で再同期する
-- 導入元: heroui-react / import-lint / funstack-{router,static}-knowledge / blume / blume-update-docs は `npx skills add` (GitHub 配布)
+- Source of truth: `.agents/skills/` (read by Cursor etc.). `.claude/skills/` is a symlink
+- fallow / react-doctor / improve-react are **symlinks into node_modules** (version-linked). They show as broken links until `bun install` runs — that is normal
+- The 8 drizzle skills are **copies** from drizzle-kit@rc (1.0.0-beta line). Once drizzle-kit is added as a dependency in Phase 1, resync them with `drizzle-kit skills`
+- Sources: heroui-react / import-lint / funstack-{router,static}-knowledge / blume / blume-update-docs were installed via `npx skills add` (GitHub distribution)
 
-## Astryx 採用決定(2026-08-01、ADR-0013)と styling 運用規律
+## The Astryx adoption decision (2026-08-01, ADR-0013) and the styling operating rules
 
-- 所有者決定により web の UI は Astryx(Tailwind v4 は不採用)。ADR-0013 参照。heroui-react スキルは削除済み
-- Astryx の styling 経路は 4 つ: defineTheme(トークン・variant)/ xstyle(stylex.create + typed tokens)/ className(外部 CSS interop 用)/ style(インライン)。swizzle はソース取り込み(**要 StyleX コンパイラ。無いと無警告で無スタイル描画**という罠あり)
-- **運用規律は B2 で決定(2026-08-01)**: defineTheme を基本とし、局所調整のみ xstyle(typed tokens 縛り)。className / インライン style / アプリコードでの stylex.props は oxlint(oxlint-plugin-eslint の no-restricted-syntax、apps/web スコープ)で機械禁止、`ui.package/` 内のみ解除。同じ上書きの再発はテーマ variant か ui.package へ昇格(逆流禁止)。CLAUDE.md に明文化済み・ダミー違反ファイルで発火と免除を検証済み
-- **swizzle は全面禁止で確定(2026-08-01、所有者決定)**: 手段を問わず Astryx 内部実装のリポジトリへの取り込みを禁止(実質基準。手動コピーも同罪)。上流バグは厳密ピン留め運用の「アップグレード PR 差し戻し」で対処するため、ホットフィックス用の例外は不要と判断。表現できない UI は UX 再設計 / 合成 / 公開 API での自作 / upstream issue・PR で解く
-- **訂正(重要)**: StyleX コンパイラは swizzle ではなく **`stylex.create` を書いた時点(xstyle 使用開始時点)で必要**(公式 docs 確認済み)。「未設定だと無警告で無スタイル描画」も authored StyleX 全般に適用。スパイク A で FunStack(Vite)+ StyleX コンパイラの組み合わせを必ず検証すること
-- スパイク A に残した実装: `astryx init --features agents`(AGENTS.md 生成)、`astryx doctor` の品質ゲート追加、`@stylexjs/eslint-plugin` の上乗せ検討(xstyle 値の妥当性検査)
-- 強制手段(確認済み): oxlint native の no-restricted-imports(paths/patterns + overrides)、no-restricted-syntax は oxlint-plugin-eslint(jsPlugins)経由、astryx doctor(CI-friendly exit code)、ImportLint の *.package 境界
-- Astryx は SKILL.md 配布・MCP npm パッケージなし(確認済み)。エージェント対応は CLI(--json / capability manifest / --lang dense)と astryx init --features agents による AGENTS.md / CLAUDE.md 生成。導入はスパイク A で実施
-- バージョン規律: stable のみ(canary 禁止)、厳密ピン、更新は astryx upgrade コードモッド + 独立 PR
+- By owner decision the web UI uses Astryx (Tailwind v4 rejected). See ADR-0013. The heroui-react skill has been removed
+- Astryx has 4 styling paths: defineTheme (tokens, variants) / xstyle (stylex.create + typed tokens) / className (external CSS interop) / style (inline). swizzle means importing source code (**requires the StyleX compiler — without it the trap is silently rendering unstyled**)
+- **Operating rules decided at B2 (2026-08-01)**: defineTheme is the baseline; only local adjustments use xstyle (bound to typed tokens). className / inline style / stylex.props in app code are mechanically banned via oxlint (oxlint-plugin-eslint's no-restricted-syntax, apps/web scope), lifted only inside `ui.package/`. Recurrence of the same override is promoted to a theme variant or into ui.package (no backflow). Codified in CLAUDE.md; firing and exemption verified against a dummy violation file
+- **swizzle is fully banned — settled (2026-08-01, owner decision)**: importing Astryx internals into the repository is prohibited regardless of means (substantive criterion; manual copying counts the same). Upstream bugs are handled by rejecting upgrade PRs under strict pinning, so no hotfix exception is needed. UI that cannot be expressed is solved by UX redesign / composition / building on the public API / upstream issues and PRs
+- **Correction (important)**: the StyleX compiler is required not for swizzle but **the moment `stylex.create` is written (the moment xstyle use begins)** (confirmed in the official docs). "No warning, unstyled render" applies to authored StyleX generally. In spike A, always verify the combination of FunStack (Vite) + the StyleX compiler
+- Implementation left for spike A: `astryx init --features agents` (generates AGENTS.md), adding `astryx doctor` to the quality gate, considering `@stylexjs/eslint-plugin` on top (validating xstyle values)
+- Enforcement means (verified): oxlint native no-restricted-imports (paths/patterns + overrides), no-restricted-syntax via oxlint-plugin-eslint (jsPlugins), astryx doctor (CI-friendly exit code), ImportLint's *.package boundary
+- Astryx distributes SKILL.md files; there is no MCP npm package (verified). Agent support is the CLI (--json / capability manifest / --lang dense) plus AGENTS.md / CLAUDE.md generated by astryx init --features agents. Adoption happens in spike A
+- Version discipline: stable only (no canary), strict pinning, updates via the astryx upgrade codemod + an independent PR
 
-## 次セッション(ROADMAP スパイク A)への引き継ぎ
+## Handoff to the next session (ROADMAP spike A)
 
-スパイク A(ADR-0013 により更新): funstack-static + funstack-router + **Astryx** → Workers Static Assets。`"use client"` 境界、Navigation API 非対応ブラウザの劣化挙動、Astryx プリビルド CSS の静的配信、厳格 CSP との整合を確認。`astryx init --features agents` でエージェントドキュメントを生成し、`astryx doctor` を品質ゲートに追加する。
+Spike A (updated by ADR-0013): funstack-static + funstack-router + **Astryx** → Workers Static Assets. Verify the `"use client"` boundary, degraded behavior in browsers without Navigation API, static delivery of Astryx's prebuilt CSS, and conformance with the strict CSP. Generate agent documents with `astryx init --features agents` and add `astryx doctor` to the quality gate.
 
-- 作業場所は `apps/web`(骨格のみ。React 依存なし)。使い捨てスパイクなら別ディレクトリでも可
-- スキル `funstack-static-knowledge` / `funstack-router-knowledge` を導入済み(heroui-react は ADR-0013 により削除済み)
-- ~~HeroUI Pro のライセンスをクラウド環境(Cloud Agents > Secrets)に登録予定~~ → **不要になった(ADR-0013)**。本リポジトリでは HeroUI を使わない。Pro を使うなら将来の非公開マーケティングサイト用リポジトリで
-- **HeroUI Pro のライセンス制約(2026-07-31 調査。経緯の記録)**: Pro は私有ライセンス(`@heroui-pro/react`、トークン必須)で、コンポーネント・ソースの共有/公開/再配布を禁止。トークンの公開環境への露出も禁止。したがって OSS 配布物には Pro を入れられない。→ この制約が UI ライブラリ再選定の起点となり、**ADR-0013(Astryx 採用)で解決済み**
-- **HeroUI 乗り換え候補の調査(2026-08-01、実測込みで更新)**: 候補は Astryx(Meta、MIT、StyleX ベース、公開 2026-06、内部 8 年・13,000 アプリ)と React Aria Components(Adobe、v1.20、monopackage 化済み・公式エージェントスキル + MCP + llms.txt あり)。実測では依存はどちらも 16 パッケージ / 約 72MB で同等。ただし Astryx はプリビルド CSS 方式のため Tailwind ツールチェーン自体が不要になる。壊れにくさは RAC が優位(公開 8 年の互換実績・コードモッド文化。ただし次期 major が nightly 進行中)、Astryx は 0.x semver・外部コミュニティ対応が未証明。**所有者は Astryx の新規リスク許容 + Tailwind 廃止も可と表明済み**。推奨: スパイク A を「Astryx × FunStack」検証に差し替え、退避経路 = RAC(+ Tailwind v4)として ADR-0007 を改訂(人間の最終決定待ち)。採用決定時は .agents/skills の heroui-react を外し Astryx の CLI/MCP(`astryx init` が AGENTS.md / CLAUDE.md を生成)に入れ替え、oxfmt の sortTailwindcss 設定も除去する
-- **CRYPTO_SPEC §8 改訂案の裏取り(2026-07-31)**: Shelve / Keyway はサーバー側暗号化でリカバリーラップの概念自体がなく参考外。E2EE の Infisical はリカバリーキット(乱数鍵)で秘密鍵の複製を直接復号し、salt 保存は低エントロピーなパスワード経路(Argon2id)のみ。→「salt = 空」は Infisical のリカバリー経路と同型、「AAD 束縛」は 3 製品のどれもやっていない上乗せの強化、として決定を維持
-- 依存追加は `bun add -E`(bunfig.toml の exact=true で強制)。理由をコミットメッセージに書く(CLAUDE.md)
-- web は Trusted Computing Base: CSP(`script-src 'self'`)、サードパーティスクリプト禁止を静的シェル段階から確認する
-- funstack-static は `@vitejs/plugin-rsc` ベース。RSC は静的シェルのみ(ADR-0007)の制約をスパイクの検証項目に含めること
+- Workspace is `apps/web` (skeleton only, no React dependency). A disposable spike may live in a separate directory
+- Skills `funstack-static-knowledge` / `funstack-router-knowledge` are installed (heroui-react removed per ADR-0013)
+- ~~Register the HeroUI Pro license in the cloud environment (Cloud Agents > Secrets)~~ → **no longer needed (ADR-0013)**. This repository does not use HeroUI. If Pro is used, it belongs to a future private marketing-site repository
+- **HeroUI Pro license constraints (2026-07-31 research; recorded for history)**: Pro is a proprietary license (`@heroui-pro/react`, token required) that forbids sharing/publishing/redistributing components and source, and forbids exposing the token in public environments. Hence Pro cannot ship in an OSS distribution. → This constraint started the UI-library re-selection and **was resolved by ADR-0013 (adopt Astryx)**
+- **Research on HeroUI replacement candidates (2026-08-01, updated with measurements)**: candidates are Astryx (Meta, MIT, StyleX-based, published 2026-06, 8 years internal / 13,000 apps) and React Aria Components (Adobe, v1.20, already a monopackage, with official agent skill + MCP + llms.txt). Measured: both pull in 16 packages / ~72 MB, equivalent. However Astryx's prebuilt-CSS approach removes the Tailwind toolchain entirely. Fragility favors RAC (8 years of public compatibility, codemod culture — though its next major is in-flight on nightly); Astryx is 0.x semver with unproven external-community support. **The owner has stated they accept Astryx's newness risk and are willing to drop Tailwind**. Recommendation: repurpose spike A to "Astryx × FunStack" validation, set the fallback path = RAC (+ Tailwind v4), and revise ADR-0007 (awaiting the human's final decision). On adoption, remove heroui-react from .agents/skills, switch in Astryx's CLI/MCP (`astryx init` generates AGENTS.md / CLAUDE.md), and drop oxfmt's sortTailwindcss setting
+- **Substantiation of the CRYPTO_SPEC §8 revision draft (2026-07-31)**: Shelve / Keyway do server-side encryption and have no recovery-wrap concept at all — not applicable. E2EE's Infisical decrypts a copy of the private key directly with a recovery kit (random key), and stores a salt only on the low-entropy password path (Argon2id). → The decision stands: "salt = empty" matches Infisical's recovery path, and "AAD binding" is an added hardening none of the three products do
+- Adding dependencies uses `bun add -E` (enforced by exact=true in bunfig.toml). Write the reason in the commit message (CLAUDE.md)
+- The web is the Trusted Computing Base: verify CSP (`script-src 'self'`) and the no-third-party-scripts rule from the static-shell stage
+- funstack-static is based on `@vitejs/plugin-rsc`. Include the "RSC is static shell only (ADR-0007)" constraint among the spike's verification items

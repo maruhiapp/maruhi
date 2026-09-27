@@ -1,14 +1,19 @@
-// 四眼の提案・撤回・方針の追記(CRYPTO_SPEC §6.2 — PF1。設計録 es-design.md §12 K6-A / H / L)。
+// Appends for four-eyes propose / withdraw / policy (CRYPTO_SPEC §6.2 —
+// PF1; design record es-design.md §12 K6-A / H / L).
 //
-// - `proposeOperation`: 既存コマンド(member remove / change-role / add・server grant /
-//   revoke・project policy approvals)が、検証済みチェーンの現方針が内側 op を対象に
-//   していれば直接追記の代わりに呼ぶ共有核。**冪等**: 同じ内側 op の pending 提案が既に
-//   あれば新たに提案せず、その提案の状態を返す(再実行が提案を増やさない)。CAS 競合の
-//   再同期後も同じ判定を通す
-// - 提案時には sweep / バックフィルを走らせない(適用前 — 裁定 P7 / 承認項目 21)。
-//   履行は適用を完成させた承認者(approval-approve.ts)
-// - 承認者側の履行(approve)は approval-approve.ts(member / server-grant / server-revoke
-//   の後段を呼ぶため、ここから切り離して循環 import を避ける)
+// - `proposeOperation`: the shared core the existing commands (member
+//   remove / change-role / add, server grant / revoke, project policy
+//   approvals) call instead of a direct append when the verified chain's
+//   current policy targets the inner op. **Idempotent**: when a pending
+//   proposal for the same inner op already exists, it does not propose anew
+//   and returns that proposal's state (a re-run does not add proposals).
+//   The same check runs after the resync of a CAS conflict
+// - No sweep / backfill runs at proposal time (before apply — ruling P7 /
+//   approval item 21). Fulfilment belongs to the approver who completes the
+//   apply (approval-approve.ts)
+// - The approver-side fulfilment (approve) lives in approval-approve.ts (it
+//   calls the post-stages of member / server-grant / server-revoke, so it
+//   is split off here to avoid circular imports)
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
 import type {
@@ -47,13 +52,13 @@ export interface ProposedSummary {
   readonly headSeq: number;
 }
 
-/** 提案化に要る入力(期限と時計 — 設計録 K6-K)。 */
+/** The inputs proposing requires (expiry and clock — design record K6-K). */
 export interface ProposalInput {
   readonly expiresAtMs: number;
   readonly nowMs: number;
 }
 
-/** 提案を追記する側が持つ文脈(各 op の入力の部分型 — 呼び出し側はそのまま渡せる)。 */
+/** The context held by the side appending a proposal (a subtype of each op's input — callers can pass theirs as-is). */
 export interface ProposeContext {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -63,7 +68,7 @@ export interface ProposeContext {
   readonly proposal: ProposalInput;
 }
 
-/** 同じ内側 op の pending 提案(冪等性 — K6-A)。複数あれば最初(seq 最小)。 */
+/** A pending proposal for the same inner op (idempotency — K6-A). If several, the first (smallest seq). */
 function findPendingSame(
   verified: VerifiedProject,
   inner: ProposableOperation,
@@ -74,7 +79,7 @@ function findPendingSame(
   return same[0] ?? null;
 }
 
-/** 方針が有効化 / 無効化されて追記の形(直接 / 提案)が変わったときの fail-closed(K6-A)。 */
+/** fail-closed when a policy was enabled / disabled and the append shape (direct / proposal) changed (K6-A). */
 export function ensureStillTarget(
   verified: VerifiedProject,
   inner: ProposableOperation,
@@ -95,9 +100,11 @@ interface ProposeState {
 }
 
 /**
- * `propose` エントリの追記(親ヘッド CAS リトライ)。`recheck` は呼び出し側の追記前検査
- * (再同期後にも同じ検査を通す — 中断復旧の既存規律)。受理後は再同期して pending に
- * 載ったことを確認する(サーバー申告を真実源にしない)。
+ * Appends a `propose` entry (parent-head CAS retry). `recheck` is the
+ * caller's pre-append check (the same check runs after a resync — the
+ * existing interrupted-recovery discipline). After acceptance it resyncs
+ * and confirms the proposal is on pending (does not make the server's
+ * claim the source of truth).
  */
 export function proposeOperation(
   input: ProposeContext,
@@ -188,8 +195,9 @@ export function proposeOperation(
 }
 
 /**
- * 提案化の経路の再検査(CAS 競合の再同期後): 呼び出し側の追記前検査を通し、並行実行が
- * 同じ変更を先に適用していたら(`already`)提案せずに止まる(K6-A)。
+ * Re-checks the proposing path (after the resync of a CAS conflict): runs
+ * the caller's pre-append check and, when a concurrent run already applied
+ * the same change (`already`), stops without proposing (K6-A).
  */
 export function proposeRecheck<A>(
   check: (verified: VerifiedProject) => Effect.Effect<A, CliError>,
@@ -212,11 +220,11 @@ export interface WithdrawSummary {
   readonly proposalHashHex: string;
   readonly proposalSeq: number;
   readonly proposerUserId: string;
-  /** Closed by an owner who is not the proposer (K6-L の Note). */
+  /** Closed by an owner who is not the proposer (the K6-L Note). */
   readonly closedByOtherOwner: boolean;
 }
 
-/** withdraw の前検査(§6.2 — 提案者または owner)。再同期後にも通す。 */
+/** The pre-check for withdraw (§6.2 — the proposer or an owner). Run again after a resync. */
 function ensureWithdrawable(
   verified: VerifiedProject,
   ref: string,
@@ -231,7 +239,7 @@ function ensureWithdrawable(
   if (actor === undefined) {
     return Effect.fail(cliError("You are not a chain-derived member of this project"));
   }
-  // 合意は実効権限(人 ∩ 端末 cap — §6.2 effectivePermissionOf)で判定する
+  // Consensus is judged by effective permission (person ∩ device cap — §6.2 effectivePermissionOf)
   return Effect.flatMap(ownDeviceBySigningKey(verified, actor, signingKeyPair), (device) =>
     effectivePermissionOf(actor, device).role !== "owner" &&
     resolution.proposal.proposerUserId !== signerUserId
@@ -279,7 +287,7 @@ export function withdrawProposalOp(input: {
         recover: (view) =>
           Effect.gen(function* () {
             const resynced = yield* resyncExtended(input.resync, view);
-            // 並行して完成 / 撤回されていればここで型付きに止まる(unknown-proposal を送らない)
+            // If it was concurrently completed / withdrawn, stop here with a typed outcome (do not send an unknown-proposal)
             yield* ensureWithdrawable(
               resynced,
               first.proposalHashHex,
@@ -341,7 +349,7 @@ function ownersOf(verified: VerifiedProject): readonly string[] {
     .map((member) => member.userId);
 }
 
-/** 方針の追記前検査(owner・到達可能性の予告・no-op の検出)。再同期後にも通す。 */
+/** The pre-append check for policy (owner, reachability foretell, no-op detection). Run again after a resync. */
 function ensurePolicySettable(
   verified: VerifiedProject,
   request: PolicyRequest,
@@ -359,7 +367,7 @@ function ensurePolicySettable(
   );
 }
 
-/** 実効権限での方針検査の内側(owner 以外の規則は変わらない)。 */
+/** The inside of the policy check at effective permission (the rules other than owner do not change). */
 function ensurePolicySettableWith(
   verified: VerifiedProject,
   request: PolicyRequest,
@@ -412,9 +420,9 @@ export function setApprovalPolicyOp(input: {
       return { kind: "unchanged" };
     }
     const operation = policyOperation(input.request);
-    // 方針が有効な間は set_approval_policy 自身が常時対象(§6.2「方針」)
+    // While a policy is enabled, set_approval_policy itself is an always-target (§6.2 "policy")
     if (isApprovalTarget(operation, input.verified.state.approvalPolicy)) {
-      // 再同期後に同じ方針が既に適用されていれば提案しない(Cursor Bugbot 指摘対応 — 冗長な提案)
+      // Do not propose when the same policy was already applied after the resync (Cursor Bugbot finding — a redundant proposal)
       const proposal = yield* proposeOperation(
         input,
         operation,
@@ -484,7 +492,7 @@ export function setApprovalPolicyOp(input: {
   });
 }
 
-/** 完成済み / 撤回済み / pending の判別(approve の競合処理が使う — K6-B)。 */
+/** Distinguishes completed / withdrawn / pending (used by approve's conflict handling — K6-B). */
 export function proposalStatusOf(
   verified: VerifiedProject,
   proposalHashHex: string,

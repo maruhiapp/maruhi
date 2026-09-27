@@ -1,11 +1,13 @@
-// プロジェクト DO のスキーママイグレーション機構(src/do-schema.ts)のテスト。
-// workerd 実環境の SqlStorage で、空 DB / 途中版 DB への適用、失敗ステップの
-// ロールバックと再実行、適用済み DB への再適用 no-op を検証する。
+// Tests for the project DO's schema-migration machinery (src/do-schema.ts).
+// Verifies on the real workerd SqlStorage: applying to an empty DB and to
+// a mid-version DB, rollback and rerun of a failed step, and that
+// re-applying to an already-migrated DB is a no-op.
 //
-// 実 DO(ProjectChainDO)のコンストラクタは runInDurableObject のインスタンス化
-// 時点でマイグレーションを適用してしまうため、「空 DB」「途中版 DB」は全テーブルの
-// DROP + schema_meta の初期化で再現する。このファイルは専用の DO 名を使い、他の
-// テストのプロジェクト DO と storage を共有しない。
+// The real DO's (ProjectChainDO) constructor applies migrations at
+// runInDurableObject instantiation time, so the "empty DB" / "mid-version
+// DB" states are reproduced by dropping every table + initializing
+// schema_meta. This file uses a dedicated DO name and does not share
+// storage with other tests' project DOs.
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { Effect } from "effect";
@@ -21,13 +23,13 @@ import {
   readProjectDoSchemaVersion,
 } from "../src/do-schema.ts";
 
-/** このファイル専用 DO の storage 上で body を実行する。 */
+/** Run body on the storage of this file's dedicated DO. */
 async function withStorage<T>(body: (storage: DurableObjectStorage) => T): Promise<T> {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName("do-schema-migrations-test"));
   return await runInDurableObject(stub, (_instance, state) => body(state.storage));
 }
 
-/** 全ユーザーテーブル(_cf_ 内部テーブル以外)を DROP し、マイグレーション未適用の空 DB に戻す。 */
+/** DROP every user table (except _cf_ internals), returning to an unmigrated empty DB. */
 function dropAllUserTables(sql: SqlStorage): void {
   const names = sql
     .exec(
@@ -52,7 +54,7 @@ function userTableNames(sql: SqlStorage): Set<string> {
 }
 
 describe("project DO schema migrations", () => {
-  it("空 DB への適用で全ステップが走り最新版になる", async () => {
+  it("applies every step to an empty DB and reaches the latest version", async () => {
     await withStorage((storage) => {
       const sql = storage.sql;
       dropAllUserTables(sql);
@@ -65,13 +67,14 @@ describe("project DO schema migrations", () => {
       for (const table of PROJECT_DO_TABLES) {
         expect(tables).toContain(table);
       }
-      // tables 宣言(PROJECT_DO_TABLES の導出元)が実スキーマから乖離していないこと:
-      // 実テーブル = 宣言テーブル + schema_meta
+      // The tables declaration (what PROJECT_DO_TABLES is derived from)
+      // has not drifted from the real schema:
+      // real tables = declared tables + schema_meta
       expect(tables).toEqual(new Set([...PROJECT_DO_TABLES, "schema_meta"]));
     });
   });
 
-  it("途中版 DB への適用は未適用ステップだけを順に走らせる", async () => {
+  it("applying to a mid-version DB runs only the unapplied steps in order", async () => {
     await withStorage((storage) => {
       const sql = storage.sql;
       dropAllUserTables(sql);
@@ -91,25 +94,27 @@ describe("project DO schema migrations", () => {
         },
       };
 
-      // step 1 だけ適用された「旧版 DB」を作る
+      // Build an "old-version DB" with only step 1 applied
       applyProjectDoMigrations(storage, [stepOne]);
       expect(readProjectDoSchemaVersion(sql)).toBe(1);
       expect(applied).toEqual(["one"]);
 
-      // ステップが増えた新コードでの起動に相当。step 1 は再実行されない
-      // (stepOne の CREATE TABLE は IF NOT EXISTS なしのため、再実行されれば throw する)
+      // Equivalent to booting with new code that gained a step. Step 1
+      // is not re-run (stepOne's CREATE TABLE has no IF NOT EXISTS, so
+      // it would throw if re-run)
       applyProjectDoMigrations(storage, [stepOne, stepTwo]);
       expect(readProjectDoSchemaVersion(sql)).toBe(2);
       expect(applied).toEqual(["one", "two"]);
       expect(userTableNames(sql)).toEqual(new Set(["schema_meta", "mig_test_a", "mig_test_b"]));
 
-      // 後片付け: 実スキーマへ戻す(このファイル専用 DO だが、状態を残さない)
+      // Cleanup: return to the real schema (a dedicated DO, but leave
+      // no state behind)
       dropAllUserTables(sql);
       ensureProjectDoTables(storage);
     });
   });
 
-  it("途中で失敗したステップは丸ごとロールバックされ、再実行で完遂できる", async () => {
+  it("a step that fails midway is rolled back wholesale and a rerun completes", async () => {
     await withStorage((storage) => {
       const sql = storage.sql;
       dropAllUserTables(sql);
@@ -125,63 +130,67 @@ describe("project DO schema migrations", () => {
         },
       };
 
-      // 途中失敗: version は進まず、ステップ前半の DDL(mig_test_c)も残らない
+      // The mid-step failure: version does not advance, and the step's
+      // first-half DDL (mig_test_c) leaves nothing behind
       expect(() => applyProjectDoMigrations(storage, [flaky])).toThrow(
         "simulated mid-step failure",
       );
       expect(readProjectDoSchemaVersion(sql)).toBe(0);
       expect(userTableNames(sql)).toEqual(new Set(["schema_meta"]));
 
-      // 次回起動に相当する再実行はステップ先頭から走り、完遂する
-      // (mig_test_c の CREATE TABLE は IF NOT EXISTS なし — 部分適用が残っていれば throw する)
+      // The rerun, equivalent to the next boot, runs from the step's
+      // head and completes (mig_test_c's CREATE TABLE has no
+      // IF NOT EXISTS — it would throw if a partial application remained)
       failNext = false;
       applyProjectDoMigrations(storage, [flaky]);
       expect(readProjectDoSchemaVersion(sql)).toBe(1);
       expect(userTableNames(sql)).toEqual(new Set(["schema_meta", "mig_test_c", "mig_test_d"]));
 
-      // 後片付け: 実スキーマへ戻す
+      // Cleanup: return to the real schema
       dropAllUserTables(sql);
       ensureProjectDoTables(storage);
     });
   });
 
-  it("保存 version がデプロイのステップ数より新しい場合は拒否する(ロールバック防御)", async () => {
+  it("rejects when the stored version is newer than the deployment's step count (rollback defense)", async () => {
     await withStorage((storage) => {
       const sql = storage.sql;
       dropAllUserTables(sql);
       ensureProjectDoTables(storage);
-      // 「新コードで 1 ステップ進んだ DB に旧コードがロールバックデプロイされた」状況を再現
+      // Reproduce "old code was rollback-deployed onto a DB advanced 1
+      // step by newer code"
       sql.exec(`UPDATE schema_meta SET version = ? WHERE id = 1`, PROJECT_DO_MIGRATIONS.length + 1);
 
       expect(() => ensureProjectDoTables(storage)).toThrow(/newer than this deployment/);
-      // 拒否はステップ適用前に起きる(version は書き戻されない)
+      // The rejection happens before any step applies (version is not rewritten)
       expect(readProjectDoSchemaVersion(sql)).toBe(PROJECT_DO_MIGRATIONS.length + 1);
 
-      // 後片付け: 実バージョンへ戻す
+      // Cleanup: return to the real version
       sql.exec(`UPDATE schema_meta SET version = ? WHERE id = 1`, PROJECT_DO_MIGRATIONS.length);
       ensureProjectDoTables(storage);
     });
   });
 
-  it("schema_meta.version の破損値は 0 扱いにせず明示的に失敗する", async () => {
+  it("a corrupt schema_meta.version fails explicitly instead of being treated as 0", async () => {
     await withStorage((storage) => {
       const sql = storage.sql;
       dropAllUserTables(sql);
       ensureProjectDoTables(storage);
-      // CHECK 制約は id のみで version の型は強制されない(SQLite は動的型)
+      // The CHECK constraint covers only id; version's type is not enforced (SQLite is dynamically typed)
       sql.exec(`UPDATE schema_meta SET version = 'garbage' WHERE id = 1`);
 
-      // 0 扱いで全ステップ再実行(step 1 の IF NOT EXISTS は通るが将来の
-      // ALTER TABLE ステップは冪等でない)へ落ちないことを固定する
+      // Pin that it does not fall into treating it as 0 and re-running
+      // all steps (step 1's IF NOT EXISTS would pass, but a future
+      // ALTER TABLE step is not idempotent)
       expect(() => ensureProjectDoTables(storage)).toThrow(/schema_meta\.version is corrupt/);
 
-      // 後片付け: 実バージョンへ戻す
+      // Cleanup: return to the real version
       sql.exec(`UPDATE schema_meta SET version = ? WHERE id = 1`, PROJECT_DO_MIGRATIONS.length);
       ensureProjectDoTables(storage);
     });
   });
 
-  it("適用済み DB への再適用は no-op", async () => {
+  it("re-applying to an already-migrated DB is a no-op", async () => {
     await withStorage((storage) => {
       const sql = storage.sql;
       dropAllUserTables(sql);
@@ -193,14 +202,14 @@ describe("project DO schema migrations", () => {
 
       ensureProjectDoTables(storage);
 
-      // version もデータも変わらない(ステップは一切走らない)
+      // Neither version nor data changes (no steps run at all)
       expect(readProjectDoSchemaVersion(sql)).toBe(before);
       expect(sql.exec(`SELECT COUNT(*) AS n FROM chain_entries`).toArray()[0]?.n).toBe(1);
       sql.exec(`DELETE FROM chain_entries`);
     });
   });
 
-  it("dek_wraps の受信者索引 dw_recipient を持ち、再追加時掃除がそれを引く(EXPLAIN QUERY PLAN)", async () => {
+  it("has the recipient index dw_recipient on dek_wraps, and re-add cleanup uses it (EXPLAIN QUERY PLAN)", async () => {
     await withStorage((storage) => {
       const sql = storage.sql;
       dropAllUserTables(sql);
@@ -227,8 +236,9 @@ describe("project DO schema migrations", () => {
       insertWrap("user-b", 1, "old", "member");
       insertWrap("user-a", 3, "old", "server");
 
-      // data-store の実クエリを捕捉して同じ文を EXPLAIN に流す(文の複製による
-      // 検証器ドリフトを避ける — audit-index.test.ts と同じ手法)
+      // Capture data-store's real queries and feed the same statements
+      // to EXPLAIN (avoiding verifier drift from duplicating the
+      // statements — the same technique as audit-index.test.ts)
       const captured: { query: string; bindings: unknown[] }[] = [];
       const wrapped = new Proxy(sql, {
         get(target, property) {

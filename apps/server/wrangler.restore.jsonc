@@ -1,10 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // 復元 worker(運営専用・非 HTTP・非常設 — docs/notes/hosted-ops.md §2-E / §5-2)。
-  // 復元作業のときだけ `wrangler deploy -c wrangler.restore.jsonc` し、終わったら
-  // `wrangler delete -c wrangler.restore.jsonc` で消す。HTTP ハンドラを持たず
-  // (workers.dev も無効)、仕事は毎分の cron が退避バケットの restore/jobs/ を
-  // 読むことだけ。
+  // Restore worker (operations-only, non-HTTP, not permanently deployed —
+  // docs/notes/hosted-ops.md §2-E / §5-2). Deploy it only during restore work
+  // with `wrangler deploy -c wrangler.restore.jsonc`, then remove it with
+  // `wrangler delete -c wrangler.restore.jsonc`. It has no HTTP handler
+  // (workers.dev is also disabled); its only job is a per-minute cron that
+  // reads restore/jobs/ in the evacuation bucket.
   "name": "maruhi-restore",
   "main": "src/restore-worker.ts",
   "compatibility_date": "2026-07-01",
@@ -12,25 +13,29 @@
   "preview_urls": false,
   "durable_objects": {
     "bindings": [
-      // 本番 worker の DO 名前空間(script_name 束縛)。受け側 RPC(opsRestore)は
-      // 空の DO にのみ書く。wrangler の名前付き環境は `<name>-<env>` という別 Worker を
-      // 公開するため、`wrangler deploy --env hosted` の実体は `maruhi-server-hosted`
-      // (最上位の `maruhi-server` はセルフホストの既定 — 運営はデプロイしない)。
-      // scripts/check-hosted-config.ts が env.hosted の実効 name と突き合わせる
+      // The production worker's DO namespace (bound via script_name). The
+      // receiving RPC (opsRestore) writes only to empty DOs. A wrangler named
+      // environment publishes a separate Worker called `<name>-<env>`, so the
+      // entity behind `wrangler deploy --env hosted` is `maruhi-server-hosted`
+      // (the top-level `maruhi-server` is the self-host default — operations
+      // does not deploy it). scripts/check-hosted-config.ts cross-checks the
+      // effective name of env.hosted against this
       {
         "name": "PRODUCTION_PROJECT_CHAIN",
         "class_name": "ProjectChainDO",
         "script_name": "maruhi-server-hosted",
       },
-      // 演習(drill)用の名前空間 — 本 worker 内の別クラス(本番と交わらない)
+      // Namespace for drills — a separate class inside this worker (does not
+      // intersect with production)
       { "name": "DRILL_PROJECT_CHAIN", "class_name": "RestoreDrillDO" },
     ],
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RestoreDrillDO"] }],
   "r2_buckets": [{ "binding": "OPS_BACKUP_BUCKET", "bucket_name": "maruhi-ops-backup" }],
-  // 復元先 DO(drill)は ProjectChainDO と同じコードで動くため、本番と同じ Secret
-  // (SERVER_ENC_KEY_IKM 等)は不要 — 復元は DO SQLite への書き戻しと監査ヘッドの
-  // 導出のみで、鍵を使う経路(リース)は通らない
+  // The restore-destination DO (drill) runs the same code as ProjectChainDO, so
+  // the production Secrets (SERVER_ENC_KEY_IKM etc.) are not needed — restore
+  // only writes back to DO SQLite and derives the audit head; it never passes
+  // through paths that use keys (leases)
   "triggers": { "crons": ["* * * * *"] },
   "limits": { "cpu_ms": 300000 },
 }

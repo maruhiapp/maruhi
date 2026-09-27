@@ -1,10 +1,15 @@
-// ヘッド申告の受理・保存・配布(CRYPTO_SPEC §6.4 / §6.6、AUTH_SPEC §16-1)の
-// 統合テスト(@cloudflare/vitest-plugin — workerd 実環境)。検証項:
-// 単調受理(後退 409・冪等 204)・remove 時の行削除・現メンバーのみ配布・
-// 受理時刻非配布・reader の read スコープ提出可・レート制限。
+// Integration tests for head-attestation acceptance, storage, and
+// distribution (CRYPTO_SPEC §6.4 / §6.6, AUTH_SPEC §16-1)
+// (@cloudflare/vitest-plugin — real workerd environment). Items
+// verified: monotonic acceptance (regression 409, idempotent 204),
+// row deletion on remove, distribution to current members only, no
+// acceptance-time distribution, a reader submitting under a read
+// scope, and rate limiting.
 //
-// チェーンは attestation に必要な最小形(genesis → add_member member →
-// add_member reader — 環境・複合は不要)をベクター鍵のテスト時署名で作る。
+// The chain is built with the minimal shape attestation needs
+// (genesis → add_member member → add_member reader — no environments
+// or composites required) using test-time signatures with vector
+// keys.
 
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
@@ -30,7 +35,7 @@ import { resetProjectDo } from "./support/project-do.ts";
 const ORG = "org-attest-0001";
 const OWNER = "user-owner-0001";
 const MEMBER = "user-member-0002";
-const READER = "user-admin-0003"; // change_role を追記しないため reader のまま使う
+const READER = "user-admin-0003"; // stays a reader since no change_role is appended
 const GITHUB_IDS: Record<string, number> = { [OWNER]: 9001, [MEMBER]: 9002, [READER]: 9003 };
 
 let tokens: Record<string, string> = {};
@@ -48,7 +53,7 @@ interface Head {
   readonly hashHex: string;
 }
 
-/** genesis → add_member(member)→ add_member(reader)の最小チェーンを立てる。 */
+/** Set up the minimal chain: genesis → add_member (member) → add_member (reader). */
 async function setupChain(): Promise<Head> {
   const genesis = vectorEntries[0];
   const addMember = vectorEntries[1];
@@ -81,7 +86,7 @@ const appendEntry = (
     body: JSON.stringify({ parentHeadHashHex, entry }),
   });
 
-/** attester の鍵で §6.6 の申告を署名する(project_id = genesis ハッシュ)。 */
+/** Sign a §6.6 attestation with the attester's key (project_id = genesis hash). */
 async function signAttestation(attesterUserId: string, head: Head): Promise<string> {
   const keys = vectorKeys[attesterUserId];
   if (keys === undefined) {
@@ -163,8 +168,8 @@ beforeEach(async () => {
   await seedOrgMember(ORG, OWNER, "member");
 });
 
-describe("PUT /projects/:projectId/head-attestation(受理 — §6.4 / §16-1)", () => {
-  it("reader が read スコープのトークンで提出でき、配布に attester 情報付きで載る(受理時刻は載らない)", async () => {
+describe("PUT /projects/:projectId/head-attestation (acceptance — §6.4 / §16-1)", () => {
+  it("a reader can submit under a read-scope token and lands on the distribution with attester info (acceptance time is not carried)", async () => {
     const head = await setupChain();
     const readOnly: readonly TokenScope[] = [{ project: vectorProjectId, permission: "read" }];
     const readToken = await cliToken(GITHUB_IDS[READER] ?? 0, readOnly);
@@ -181,8 +186,9 @@ describe("PUT /projects/:projectId/head-attestation(受理 — §6.4 / §16-1)",
       chainHeadHashHex: head.hashHex,
       chainHeadSeq: head.seq,
     });
-    // 受理時刻は配布しない(§16-1 — 行動情報の限定)。ワイヤに時刻系キーが
-    // 一切現れないことをキー集合で固定する
+    // The acceptance time is not distributed (§16-1 — limiting
+    // behavioral information). Pin via the key set that no time-ish
+    // key appears on the wire
     expect(Object.keys(attestations[0] ?? {}).toSorted()).toEqual([
       "attesterKeyFingerprintHex",
       "attesterUserId",
@@ -193,29 +199,31 @@ describe("PUT /projects/:projectId/head-attestation(受理 — §6.4 / §16-1)",
     ]);
   });
 
-  it("seq は単調前進のみ: 前進 = 上書き・同一 seq = 冪等 204・後退 = 409(保存済み seq)", async () => {
+  it("seq advances monotonically only: advance = overwrite, same seq = idempotent 204, regression = 409 (with the stored seq)", async () => {
     const head = await setupChain();
     const head2 = { seq: 2, hashHex: vectorEntries[1]?.entry_hash_hex ?? "" };
     expect((await submitAttestation(OWNER, head2)).status).toBe(204);
-    // 前進(head 3)は upsert — メンバーごと最新 1 行
+    // Advancing (head 3) is an upsert — the latest single row per member
     expect((await submitAttestation(OWNER, head)).status).toBe(204);
-    // 同一 seq の再提出は冪等 204(リトライ安全 — 黙って握り潰す 200 ではなく
-    // 同一内容の再送として成功)
+    // Re-submitting the same seq is an idempotent 204 (retry-safe —
+    // not a silently swallowed 200 but a success as a re-send of the
+    // same content)
     expect((await submitAttestation(OWNER, head)).status).toBe(204);
-    // 後退は 409 + 保存済み seq(床破損・並行 CLI の徴候を静かに握り潰さない)
+    // A regression is 409 + the stored seq (does not quietly swallow
+    // a floor corruption or a concurrent-CLI symptom)
     const regressed = await submitAttestation(OWNER, head2);
     expect(regressed.status).toBe(409);
     expect(await regressed.json()).toMatchObject({
       _tag: "AttestationRegression",
       storedSeq: 3,
     });
-    // 保存はメンバーごと最新 1 行のみ
+    // Only the latest single row per member is stored
     const attestations = await fetchAttestations();
     expect(attestations).toHaveLength(1);
     expect(attestations[0]?.chainHeadSeq).toBe(3);
   });
 
-  it("受理検証: 署名壊れ = 422 signature-invalid、未知ヘッド = 422 chain-head-unknown", async () => {
+  it("acceptance verification: broken signature = 422 signature-invalid, unknown head = 422 chain-head-unknown", async () => {
     const head = await setupChain();
     const good = await signAttestation(OWNER, head);
     const tampered = `${good.slice(0, -2)}${good.endsWith("00") ? "01" : "00"}`;
@@ -231,23 +239,24 @@ describe("PUT /projects/:projectId/head-attestation(受理 — §6.4 / §16-1)",
     expect(badSignature.status).toBe(422);
     expect(await badSignature.json()).toMatchObject({ reason: "signature-invalid" });
 
-    // seq は自チェーン内だがハッシュ不一致(有効署名)= chain-head-unknown
+    // seq inside the chain's own range but a hash mismatch (valid signature) = chain-head-unknown
     const bogusHead = { seq: head.seq, hashHex: "ab".repeat(32) };
     const mismatch = await submitAttestation(OWNER, bogusHead);
     expect(mismatch.status).toBe(422);
     expect(await mismatch.json()).toMatchObject({ reason: "chain-head-unknown" });
 
-    // seq が現ヘッドより先(有効署名)も chain-head-unknown(§6.4 — サーバーに
-    // 再同期分岐はない)
+    // A seq ahead of the current head (valid signature) is also
+    // chain-head-unknown (§6.4 — the server has no re-sync branch)
     const future = await submitAttestation(OWNER, { seq: 9, hashHex: "cd".repeat(32) });
     expect(future.status).toBe(422);
     expect(await future.json()).toMatchObject({ reason: "chain-head-unknown" });
   });
 
-  it("他人の user_id では検証が成立しない(呼び出し主体 = attester の構造的強制)", async () => {
+  it("verification cannot pass with another's user_id (structural enforcement of caller = attester)", async () => {
     const head = await setupChain();
-    // MEMBER の鍵で署名した申告を OWNER のトークンで提出する — サーバーは
-    // 署名対象の attester_user_id に呼び出し主体(OWNER)を用いるため署名不一致
+    // Submitting an attestation signed with MEMBER's key under
+    // OWNER's token — the server uses the calling principal (OWNER)
+    // as the signed attester_user_id, so the signature mismatches
     const signatureHex = await signAttestation(MEMBER, head);
     const response = await putAttestation(
       { suite: "maruhi/v1", chainHeadHashHex: head.hashHex, chainHeadSeq: head.seq, signatureHex },
@@ -257,7 +266,7 @@ describe("PUT /projects/:projectId/head-attestation(受理 — §6.4 / §16-1)",
     expect(await response.json()).toMatchObject({ reason: "signature-invalid" });
   });
 
-  it("非メンバー・未初期化プロジェクトへの提出は一律 404(§11-2)", async () => {
+  it("submissions by non-members / to uninitialized projects are uniformly 404 (§11-2)", async () => {
     await setupChain();
     await seedUser("user-outsider-0042", 9042);
     const outsiderToken = await cliToken(9042);
@@ -273,10 +282,11 @@ describe("PUT /projects/:projectId/head-attestation(受理 — §6.4 / §16-1)",
     expect((await putAttestation(body, bearer(tokenFor(OWNER)), "cd".repeat(32))).status).toBe(404);
   });
 
-  it("メンバーあたり固定窓(60/時)を超過すると 429(他メンバーの窓は独立)", async () => {
+  it("exceeding the per-member fixed window (60/hour) is a 429 (other members' windows are independent)", async () => {
     const head = await setupChain();
-    // 窓は DO の SQLite 行 — 60 回の実 PUT の代わりに満杯の窓を直接シードする
-    // (窓の意味論そのもの — 判定・巻き戻し — は data-store の実装を通る)
+    // The window is a DO SQLite row — instead of 60 real PUTs, seed a
+    // full window directly (the window's own semantics — judgment and
+    // rollback — go through data-store's implementation)
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(vectorProjectId));
     await runInDurableObject(stub, (_instance, state) => {
       state.storage.sql.exec(
@@ -290,13 +300,13 @@ describe("PUT /projects/:projectId/head-attestation(受理 — §6.4 / §16-1)",
     expect(limited.status).toBe(429);
     const body = (await limited.json()) as { retryAfterSeconds: number };
     expect(body.retryAfterSeconds).toBeGreaterThan(0);
-    // 窓はメンバー単位 — 他メンバーは影響を受けない
+    // The window is per member — other members are unaffected
     expect((await submitAttestation(MEMBER, head)).status).toBe(204);
   });
 });
 
-describe("配布と remove 時の掃除(§6.4 / §16-1)", () => {
-  it("remove_member 受理で対象の申告行が削除され、以後の提出も 404(非メンバー)", async () => {
+describe("distribution and cleanup on remove (§6.4 / §16-1)", () => {
+  it("accepting remove_member deletes the target's attestation row and later submissions are 404 (non-member)", async () => {
     const head = await setupChain();
     expect((await submitAttestation(MEMBER, head)).status).toBe(204);
     expect((await submitAttestation(OWNER, head)).status).toBe(204);
@@ -313,9 +323,11 @@ describe("配布と remove 時の掃除(§6.4 / §16-1)", () => {
     });
     expect((await appendEntry(head.hashHex, removal.entry)).status).toBe(200);
 
-    // 行は受理副作用で削除済み(現メンバーのみ配布 — チェーン導出真実への収束)
+    // The row was deleted as an acceptance side effect (distributed
+    // to current members only — convergence to the chain-derived
+    // truth)
     expect((await fetchAttestations()).map((a) => a.attesterUserId)).toEqual([OWNER]);
-    // 削除済みメンバーの再提出は §11-2 の一律 404
+    // A re-submission by the removed member is §11-2's uniform 404
     const resubmit = await submitAttestation(MEMBER, { seq: 4, hashHex: removal.hash });
     expect(resubmit.status).toBe(404);
   });

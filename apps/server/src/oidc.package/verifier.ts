@@ -1,17 +1,21 @@
-// OIDC トークン検証(AUTH_SPEC §14-1 の認証段)。
+// OIDC token verification (AUTH_SPEC §14-1's authentication stage).
 //
-// **検証はここで完結し、チェーン導出状態(grant・lease_policy)を一切参照
-// しない**(§14-1)。ポリシーとの突合は認可であり、リースプログラム側に属する。
-// この分離が「認証失敗のみ 401 / 認可失敗は一律 404」(§14-3 の存在秘匿)を
-// 実装構造として保証する。
+// **Verification completes here and never consults chain-derived state
+// (grants, lease_policy)** (§14-1). Comparison against the policy is
+// authorization and belongs on the lease-program side. This separation
+// structurally guarantees "authentication failure alone is 401 /
+// authorization failure is uniformly 404" (§14-3's existence hiding).
 //
-// 判定順(すべてトークン単体で完結し、プロジェクト状態を一切読まない):
-//   1. 形式(compact JWS の 3 セグメント・JSON ヘッダー / ペイロード)
-//   2. `alg` が許可リスト(RS256 / ES256)内
-//   3. `iss` が**静的な対応 issuer 一覧**内 — **外部 fetch より前**。未認証
-//      エンドポイントから任意 URL の取得を誘発できないようにするため
-//   4. JWKS の解決(取得失敗は 503。§14-1 の fail-closed)と署名検証
-//   5. 必須 claim の存在と時刻検証(clock skew ±60 秒)
+// Check order (every step completes on the token alone; no project
+// state is read):
+//   1. Form (the 3 segments of a compact JWS; JSON header / payload)
+//   2. `alg` inside the allowlist (RS256 / ES256)
+//   3. `iss` inside **the static supported-issuer list** — **before any
+//      external fetch**, so an unauthenticated endpoint cannot be made
+//      to fetch arbitrary URLs
+//   4. JWKS resolution (a fetch failure is 503 — §14-1's fail-closed)
+//      and signature verification
+//   5. Presence of required claims and time checks (clock skew ±60s)
 
 import { LeaseUnauthorizedError, LeaseUnavailableError } from "@maruhi/api-schema";
 import { encodeHex } from "@maruhi/crypto";
@@ -23,54 +27,65 @@ import { verifyJwsSignature } from "./jwk.ts";
 import { type JwksCacheShape, makeJwksCache } from "./jwks.ts";
 
 /**
- * 対応 issuer 一覧(§14-1): **デプロイメント全体で一様な静的設定**であり、
- * プロジェクトの存在・状態情報を運ばない。v1 は GitHub Actions のみ
- * (session-22 §2 R1 の「v1 の有効化は GitHub のみ」)。GitLab / CircleCI /
- * k8s 等の追加はここへの追記だけで済み、チェーン形式(grant_server payload の
- * issuer 汎用 lease_policy)は変更を要さない。
+ * The supported-issuer list (§14-1): **a static configuration uniform
+ * across the whole deployment** that carries no project existence or
+ * state information. v1 covers GitHub Actions only (session-22 §2 R1:
+ * "v1 enables GitHub only"). Adding GitLab / CircleCI / k8s etc. is a
+ * matter of appending here alone; the chain format (the issuer-generic
+ * lease_policy in grant_server payloads) needs no change.
  */
 const SUPPORTED_ISSUERS: readonly string[] = ["https://token.actions.githubusercontent.com"];
 
-/** 許可アルゴリズム(§14-1)。対称鍵 alg と `none` はここに無い。 */
+/** The allowed algorithms (§14-1). Symmetric-key algs and `none` are absent here. */
 const ALLOWED_ALGS: readonly AllowedAlg[] = ["RS256", "ES256"];
 
 /**
- * 時刻検証の許容ずれ(§14-1: ±60 秒)。公開しているのは先着束縛(§14-1)の
- * 保持余裕(policy.ts の LEASE_BINDING_RETENTION_MARGIN_MS)がこの値**以上**で
- * あることを導出で保証するため — 受理窓より短い束縛保持はリプレイ窓になる
- * (session-24 §2 の PyPI 監査の先例)。
+ * The tolerated skew of the time checks (§14-1: ±60 seconds). It is
+ * exported so a derivation can guarantee that the first-come-binding
+ * (§14-1) retention slack (policy.ts's LEASE_BINDING_RETENTION_MARGIN_MS) is
+ * **at least** this value — a binding retention shorter than the
+ * acceptance window becomes a replay window (the precedent of
+ * session-24 §2's PyPI audit).
  */
 export const OIDC_CLOCK_SKEW_MS = 60 * 1000;
 const CLOCK_SKEW_MS = OIDC_CLOCK_SKEW_MS;
 
 /**
- * 検証済みトークンのうち、リース経路が使う値だけを取り出したもの。
- * `claims` は claim 制約の評価(§14-1 の存在量化)に使う生の payload で、
- * **監査にも応答にも出さない**(外部識別子を持ち込まない — §14-4)。
+ * Only the values the lease path uses, extracted from the verified
+ * token. `claims` is the raw payload used to evaluate claim
+ * constraints (§14-1's existential quantification) and **appears in
+ * neither audit nor responses** (no external identifiers are imported
+ * — §14-4).
  */
 export interface VerifiedOidcToken {
   readonly issuer: string;
   readonly subject: string;
-  /** `aud` は文字列 / 配列の両形を取るため、常に配列へ正規化する。 */
+  /** `aud` takes both string / array forms, so it is always normalized to an array. */
   readonly audiences: readonly string[];
   readonly claims: Readonly<Record<string, unknown>>;
   /**
-   * 検証済み `exp`(秒)。先着束縛(§14-1)の束縛行の生存期限の入力になる —
-   * 生存期限は「時刻検証がこのトークンを受理しうる最終時刻」以上を要する。
+   * The verified `exp` (seconds). Input to the binding row's lifetime
+   * in first-come binding (§14-1) — the lifetime must be at least "the
+   * last time a time check could accept this token".
    */
   readonly expiresAtSec: number;
   /**
-   * 先着束縛(§14-1)のキー = JWS signing input(`header.payload`)の SHA-256。
+   * The first-come-binding key (§14-1) = SHA-256 of the JWS signing
+   * input (`header.payload`).
    *
-   * **生トークン文字列をハッシュしてはならない**: 生トークンは第 3 セグメント
-   * (署名)を含むが、そこは署名の**保護外**であり可鍛である — base64url の
-   * 末尾グループの未使用ビット(WHATWG forgiving-base64 decode が捨てる)で、
-   * デコード結果のバイト列を変えずに文字だけ差し替えられる(RS256 の末尾 1 文字は
-   * 15 通りの同値、ES256 はさらに `s`-malleability を持つ)。生トークンを束縛
-   * キーにすると、署名検証・claims_digest を一切変えずにハッシュだけ変える 1 文字
-   * 編集で束縛照合を空振りさせられ、リプレイ防御が丸ごと無効化される。signing
-   * input は issuer が実際に署名したバイト列そのもので、妥当性を保つ変異に対して
-   * 不変であり、この経路を閉じる。
+   * **The raw token string must never be hashed**: the raw token
+   * includes the third segment (the signature), which lies **outside
+   * the signature's protection** and is malleable — via the unused
+   * bits of base64url's trailing group (which WHATWG forgiving-base64
+   * decode discards), the characters can be swapped without changing
+   * the decoded bytes (an RS256 trailing character has 15 equivalent
+   * values; ES256 additionally carries `s`-malleability). If the raw
+   * token were the binding key, a one-character edit that changes only
+   * the hash — leaving signature verification and claims_digest
+   * untouched — would make the binding match miss, disabling replay
+   * protection entirely. The signing input is the very byte string the
+   * issuer actually signed, invariant under validity-preserving
+   * mutation, and it closes this path.
    */
   readonly signingInputHashHex: string;
 }
@@ -100,13 +115,13 @@ function stringClaim(claims: Readonly<Record<string, unknown>>, name: string): s
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-/** 数値 claim(`exp` / `iat` / `nbf`)は秒単位の有限数のみ受ける。 */
+/** Numeric claims (`exp` / `iat` / `nbf`) accept only finite numbers in seconds. */
 function numericClaim(claims: Readonly<Record<string, unknown>>, name: string): number | null {
   const value = claims[name];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-/** `aud` は文字列 / 文字列配列(RFC 7519)。それ以外は claim 不備として扱う。 */
+/** `aud` is a string / string array (RFC 7519). Anything else is treated as a claim deficiency. */
 function audiencesOf(claims: Readonly<Record<string, unknown>>): readonly string[] | null {
   const value = claims["aud"];
   if (typeof value === "string") {
@@ -126,7 +141,7 @@ interface ParsedToken {
   readonly signingInput: Uint8Array;
 }
 
-/** デコード済みの 3 セグメント(形は満たすが中身は未検査)。 */
+/** The 3 decoded segments (shape satisfied, contents not yet checked). */
 interface DecodedSegments {
   readonly header: Readonly<Record<string, unknown>>;
   readonly claims: Readonly<Record<string, unknown>>;
@@ -135,9 +150,11 @@ interface DecodedSegments {
 }
 
 /**
- * compact JWS の 3 セグメントをデコードする(段 1)。署名対象は**受け取った
- * segment 文字列そのもの**(`header.payload`)であり、デコード → 再直列化した
- * 値ではない(再直列化はバイト列を変え、署名検証を無意味にする)。
+ * Decodes the 3 segments of a compact JWS (stage 1). The signed
+ * content is **the received segment strings themselves**
+ * (`header.payload`), not a decode → re-serialize product
+ * (re-serialization would change the bytes and make signature
+ * verification meaningless).
  */
 function decodeSegments(token: string): DecodedSegments | null {
   const segments = token.split(".");
@@ -167,20 +184,24 @@ function decodeSegments(token: string): DecodedSegments | null {
 }
 
 /**
- * 形式・`crit`・`alg` 許可リストの検査(段 1〜2)。
+ * Checks form, `crit`, and the `alg` allowlist (stages 1–2).
  *
- * **`crit`(RFC 7515 §4.1.11)は存在するだけで拒否する**: crit は
- * 「理解できないなら受理してはならない拡張」の宣言であり、本実装は拡張を
- * 1 つも実装していないため、いかなる crit 値も「理解できない」に該当する。
- * この検査を落とした実装は 2025〜2026 に複数の主要ライブラリで CVE になった
- * (Authlib CVE-2025-59420 / PyJWT CVE-2026-32597 / fast-jwt CVE-2026-35042)。
+ * **`crit` (RFC 7515 §4.1.11) is rejected by its mere presence**: crit
+ * declares "extensions that must not be accepted if not understood",
+ * and since this implementation implements zero extensions, every crit
+ * value falls under "not understood". Implementations that dropped
+ * this check became CVEs in several major libraries in 2025–2026
+ * (Authlib CVE-2025-59420 / PyJWT CVE-2026-32597 / fast-jwt
+ * CVE-2026-35042).
  *
- * `typ` は**検査しない**(意図的): RFC 7519 §5.1 で任意であり、cross-JWT
- * 混同の緩和は issuer 許可リスト + audience 一致 + claim 制約が既に強く担って
- * いる。加えて maruhi 自身は JWT を発行しない(AUTH_SPEC §1-3 / §6 — セッションも
- * API トークンも不透明なランダム値)ため、取り違える相手方の JWT が存在しない。
- * 得るものがないのに issuer 側の実装差で正当なトークンを落とすリスクだけを
- * 負うため、ここは緩いままにする。
+ * `typ` is **not checked** (intentionally): it is optional per RFC
+ * 7519 §5.1, and cross-JWT confusion is already strongly mitigated by
+ * the issuer allowlist + audience match + claim constraints. On top of
+ * that, maruhi itself issues no JWTs (AUTH_SPEC §1-3 / §6 — sessions
+ * and API tokens are opaque random values), so there is no counterpart
+ * JWT to confuse with. Gaining nothing while carrying the risk of
+ * dropping legitimate tokens over issuer-side implementation
+ * differences, this stays lenient.
  */
 function parseToken(token: string): Effect.Effect<ParsedToken, LeaseUnauthorizedError> {
   const decoded = decodeSegments(token);
@@ -204,15 +225,16 @@ function parseToken(token: string): Effect.Effect<ParsedToken, LeaseUnauthorized
   });
 }
 
-/** 時刻検証(段 5。§14-1: clock skew ±60 秒)。 */
+/** Time checks (stage 5. §14-1: clock skew ±60 seconds). */
 function checkTimes(
   claims: Readonly<Record<string, unknown>>,
   nowMs: number,
 ): Effect.Effect<void, LeaseUnauthorizedError> {
   const exp = numericClaim(claims, "exp");
   const iat = numericClaim(claims, "iat");
-  // exp / iat はともに必須(§14-1 の (3))。欠けたトークンは無期限に使える
-  // 資格情報になりうるため、寛容側に倒さない
+  // exp / iat are both required (§14-1's (3)). A token lacking them
+  // could become a credential usable without expiry, so do not fall on
+  // the lenient side
   if (exp === null || iat === null) {
     return unauthorized("missing-claim");
   }
@@ -230,8 +252,8 @@ function checkTimes(
 }
 
 /**
- * OIDC verifier(isolate 単位で 1 つ。JWKS キャッシュを閉じ込める)。
- * `jwks` はテストから差し替えられるよう引数に取る。
+ * The OIDC verifier (one per isolate; confines the JWKS cache).
+ * `jwks` is taken as an argument so tests can substitute it.
  */
 export function makeOidcVerifier(
   jwks: JwksCacheShape = makeJwksCache(),
@@ -245,21 +267,24 @@ export function makeOidcVerifier(
         if (issuer === null) {
           return yield* unauthorized("missing-claim");
         }
-        // **外部 fetch より前**の許可リスト照合(冒頭コメントの DoS 論拠)
+        // Allowlist matching **before any external fetch** (the DoS
+        // rationale in the header comment)
         if (!supportedIssuers.includes(issuer)) {
           return yield* unauthorized("unsupported-issuer");
         }
         const resolved = yield* jwks.resolveKey(issuer, parsed.kid).pipe(
-          // 取得失敗は fail-closed(§14-1)だが 401 ではなく 503:
-          // 一過性の issuer / ネットワーク障害を「資格情報が不正」と伝えると
-          // CI ジョブがリトライ不能な失敗として扱う(errors/lease.ts)
+          // A fetch failure is fail-closed (§14-1) but 503, not 401:
+          // telling a transient issuer / network outage as "bad
+          // credentials" would make the CI job treat it as a
+          // non-retryable failure (errors/lease.ts)
           Effect.mapError(() => new LeaseUnavailableError({ reason: "oidc-jwks-unavailable" })),
         );
         if (resolved === null) {
           return yield* unauthorized("unknown-key");
         }
-        // ヘッダーの alg は「JWK から導いた期待値」との一致検査にのみ使う
-        // (分岐の入力にしない — jwk.ts の設計)
+        // The header's alg is used only for the match check against
+        // "the expectation derived from the JWK" (never an input to
+        // branching — jwk.ts's design)
         if (parsed.alg !== resolved.binding.headerAlg) {
           return yield* unauthorized("unsupported-alg");
         }
@@ -277,13 +302,15 @@ export function makeOidcVerifier(
         yield* checkTimes(parsed.claims, nowMs);
         const subject = stringClaim(parsed.claims, "sub");
         const audiences = audiencesOf(parsed.claims);
-        // exp は checkTimes が存在・型を検証済み(null はここに到達しない)
+        // exp's presence and type are already verified by checkTimes
+        // (null cannot reach here)
         const expiresAtSec = numericClaim(parsed.claims, "exp");
         if (subject === null || audiences === null || expiresAtSec === null) {
           return yield* unauthorized("missing-claim");
         }
-        // 先着束縛キーは**署名対象バイト列**のハッシュ(生トークンではない —
-        // signingInputHashHex の doc)。署名検証を通過した後にのみ計算する
+        // The first-come-binding key is a hash of **the signed bytes**
+        // (not the raw token — see signingInputHashHex's doc). Computed
+        // only after signature verification passes
         const digest = yield* Effect.promise(() =>
           crypto.subtle.digest("SHA-256", new Uint8Array(parsed.signingInput)),
         );

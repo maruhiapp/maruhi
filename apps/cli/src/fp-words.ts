@@ -1,13 +1,16 @@
-// フィンガープリントのワード表示(BIP39 英語 12 語 — CRYPTO_SPEC §3)と、
-// 帯域外照合の明示確認の儀式(最終語の再入力)の共有実装。
+// Word display of a fingerprint (BIP39 English 12 words — CRYPTO_SPEC
+// §3) and the shared implementation of the explicit out-of-band
+// confirmation ceremony (re-entering the last word).
 //
-// 使い手はサーバー鍵確認(server-grant — §9)、招待の相互確認(invite accept /
-// member add — §6.5)、`maruhi key show` の自 FP 表示。儀式の文言は操作ごとに
-// 異なる(照合の相手・対象が違う)ため呼び出し側が与え、再入力ループの形
-// (3 回試行・最終語一致)だけをここで固定する。
+// Users: server-key confirmation (server-grant — §9), invite mutual
+// confirmation (invite accept / member add — §6.5), `maruhi key
+// show`'s own-FP display. The ceremony wording differs per operation
+// (the comparison's peer and target differ), so the caller supplies
+// it; only the shape of the re-entry loop (3 attempts, last-word
+// match) is fixed here.
 //
-// FP は公開情報であり、ワード列の表示・ログ出力は平文値・鍵素材の禁止規則に
-// 抵触しない。
+// The FP is public information; displaying or logging the word list
+// does not violate the no-plaintext-values / no-key-material rule.
 
 import { decodeHex, fingerprintToWords } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -15,10 +18,10 @@ import { Effect } from "effect";
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 
-/** 再入力の試行回数(server-grant の CONFIRM_ATTEMPTS を共有化)。 */
+/** Number of re-entry attempts (shared from server-grant's CONFIRM_ATTEMPTS). */
 const CONFIRM_ATTEMPTS = 3;
 
-/** FP hex(16 バイト)を BIP39 12 語へ(§3)。`invalidMessage` は形式不正時の文言。 */
+/** FP hex (16 bytes) to BIP39 12 words (§3). `invalidMessage` is the wording for malformed input. */
 export function fingerprintWords(
   fingerprintHex: string,
   invalidMessage: string,
@@ -39,19 +42,21 @@ export function fingerprintWords(
   });
 }
 
-/** 12 語の番号付き 1 行表示(server-grant の表示形式を共有化)。 */
+/** One-line numbered display of the 12 words (shared from server-grant's display format). */
 export function formatWordList(words: readonly string[]): string {
   return words.map((word, index) => `${String(index + 1).padStart(2)}.${word}`).join(" ");
 }
 
 /**
- * 最終語の再入力による明示確認(ADR-0014 の儀式)。表示済みの語列を読まずに
- * 進む形を塞ぐ。プロンプト・不一致・失敗の文言は操作ごとに与える(server-grant
- * の既存文言は呼び出し側がそのまま渡す — 挙動・文言の互換を保つ)。
+ * Explicit confirmation by re-entering the last word (the ADR-0014
+ * ceremony). Blocks the form where the user proceeds without reading
+ * the displayed word list. The prompt, mismatch, and failure wording
+ * are supplied per operation (the caller passes server-grant's
+ * existing wording verbatim — behavior and wording stay compatible).
  */
 export function confirmByLastWord(input: {
   readonly words: readonly string[];
-  /** `(n/3): ` の直前までのプロンプト本文。 */
+  /** The prompt body up to just before `(n/3): `. */
   readonly promptText: string;
   readonly mismatchText: string;
   readonly exhaustedText: string;

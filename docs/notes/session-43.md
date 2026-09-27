@@ -1,755 +1,871 @@
-# セッション 43: W2 — 読み取りダッシュボード(S3〜S7)の実装裁定(BM〜)
-
-日付: 2026-08-29。目的: PR-W2(web-dashboard-design.md §7)の実装上の裁定の記録。
-規範 = ADR-0018(改訂 1・2)・web-dashboard-design.md(§4 表示規律・§5 可視性
-マトリクス)・AUTH_SPEC §5 / §11-4 / §11-5・AUDIT_SPEC §6 / §7。本文書が裁定する
-のは仕様・設計文書が実装へ委ねた具体化(配信トポロジ・SPA ルーティング・
-エラー分岐・可視性 UX・検査との両立)のみ。各裁定は「複数案 → 上位互換探索 →
-3 周比較 → 自律選択」(session-27 §14 の様式。記号は session-41 の BH /
-session-42 の BL の続きで BM〜)。
-
-前提資料: web-dashboard-design.md 全節、ADR-0018 改訂 1・2、ADR-0013、
-ADR-0017、AUTH_SPEC §3 / §5 / §11-4 / §11-5、AUDIT_SPEC §6 / §7、
-session-39(AM〜AT・§10)、session-41(BA〜BH)、session-42(BI〜BL)、
-apps/web(W1 現状)、apps/server/wrangler.jsonc。
-
-## 1. 裁定 BM: web と server の配信トポロジ(同一オリジンの成立形)
-
-制約の確認(いずれも実装済みの API / 防御であり、本 PR は挙動を変更できない):
-
-- セッションクッキーは `__Host-maruhi_session`(AUTH_SPEC §5)— `__Host-` は
-  ホスト単位で束縛され、別オリジンの Web からは同送されない。SameSite=Lax は
-  クロスサイト XHR/fetch へのクッキー付与も遮断する
-- OAuth callback は `${origin}/` へ 302(handlers-auth.ts — origin はサーバー
-  自身のリクエスト URL 由来)。ログイン完了の着地点はサーバーの origin
-- 既存 CSP は `connect-src 'self'`(write-headers.ts)。別オリジン API への
-  fetch は CSP 拡張(= 例外面の追加)を要する
-
-つまり「ダッシュボードと API の同一オリジン」は 3 点から独立に要求される。
-
-### 第 1 周
-
-- **案 BM-a: 別オリジンのまま CORS + SameSite=None 化** — 棄却: サーバーの
-  クッキー属性・CORS ヘッダーの変更 = API 挙動の変更(本 PR の禁止事項)。
-  かつ SameSite=Lax の CSRF 第一層を自ら外す方向で、防御的にも逆行
-- **案 BM-b: web Worker にプロキシスクリプトを足して API を中継** — 棄却:
-  現行 web は素の静的配信(Worker コードゼロ)であり、配信面に実行コードを
-  足すのは ADR-0018「運営の配信面の最小化」と逆向き(session-41 BF-c と
-  同じ棄却理由)。認証リクエストが 2 つの Worker を経由する形にもなる
-- **案 BM-c: custom domain のゾーンルーティングで 2 Worker を同一オリジンに
-  合成**(`example.com/auth/*` → maruhi-server、他 → maruhi-web)— 棄却:
-  routes はゾーン(独自ドメイン)前提で、セルフホストの既定 URL =
-  workers.dev(apps/server/wrangler.jsonc の `workers_dev: true` /
-  SELF_HOSTING.md)では成立しない。既定デプロイで動かない形は採れない
-- **案 BM-d: maruhi-server Worker に Workers Static Assets として web の
-  ビルド出力を同梱する(単一 Worker)** — wrangler.jsonc の `assets` 設定のみ
-  (API 実装・エンドポイントは無変更)。セッション・CSP・callback の 3 制約を
-  すべて構成だけで満たす
-
-### 第 2 周(上位互換探索)
-
-- BM-d の詳細形: `assets.directory = ../web/dist/public`(web のビルド出力 +
-  write-headers.ts の生成物 `_headers` / `_redirects` をそのまま同梱)。
-  `run_worker_first` に API のパス空間(`/auth/*`・`/projects`・`/projects/*` —
-  api-schema の全エンドポイントはこの 2 前置に収まる)を列挙し、API リクエスト
-  は常に Worker(HttpApi)へ、それ以外はアセット層(SPA フォールバック含む)へ。
-  `html_handling` は W1 と同じ明示ピン(session-41 裁定 BH)
-- 「wrangler deploy 一発」(CLAUDE.md セルフホスト原則)との整合: 単一 Worker
-  形はむしろ 2 Worker 形(web を別デプロイ)より一発性が高い。deploy スクリプト
-  (apps/server)に web ビルドを前置する(`bun run db:migrate && web build &&
-  wrangler deploy`)。SELF_HOSTING.md の手順は増えない
-- apps/web/wrangler.jsonc(maruhi-web)の扱い: **静的配信の検証ハーネスとして
-  存置**(e2e は従来どおりこの Worker の wrangler dev に対して走る。アセット層
-  の挙動 — `_headers` のデタッチ・`_redirects` の先勝ち — は同一のアセット
-  ワーカー実装であり、検証対象の意味は変わらない)。ホステッドの配信面としては
-  使わない(ダッシュボードは API なしでは成立しない)
-
-### 第 3 周(再点検)
-
-- W1 の不変条件への影響: `/invite` の per-path CSP・`_redirects` 正規化・
-  meta CSP は配信バイト(dist/public)ごと server Worker に載る。
-  `run_worker_first` は `/auth`・`/projects` 前置のみで `/invite` に触れない。
-  既存検査(write-headers.ts)は全て非退行
-- SPA フォールバックと API の共存: `run_worker_first` 列挙内は常に Worker
-  (API の 404 意味論 — §11-2 の存在秘匿 — がアセット層に浸食されない)。
-  列挙外の未知パスは従来の web Worker と同じ SPA フォールバック
-- server テスト(vitest-pool-workers)への影響: wrangler.jsonc を読むため
-  assets ディレクトリの実在が要る。テスト設定で `dist/public` を(空で)
-  作成して吸収する(空ディレクトリ = アセット照合ゼロ = 全リクエストが
-  従来どおり Worker へ。API テストの意味は不変)— 実測で確認
-- 新しい失敗モード: web ビルドを忘れた deploy は古いアセットを配る(API とは
-  独立に更新が漏れる)。deploy スクリプトへのビルド前置で系統的な発生源を
-  閉じる。アセット無しでの deploy は wrangler がディレクトリ欠落で落ちる
-  (黙って API 単体になる形はない)
-
-**選択: 案 BM-d(単一 Worker — maruhi-server が web アセットを同梱配信)**。
-
-## 2. 裁定 BN: バンドル語 `hash` 全面禁止検査(session-41 BG)との両立
-
-S5(チェーン取得)・S6(監査)の応答フィールド(`headHashHex`・
-`prevHashHex`・`chainHeadHashHex` 等)の消費で BG の検査
-(`/\bhash\b/i` の全面禁止)が割れる、が本裁定の出発点だった。
-
-### 第 1 周
-
-- **実測**: `\bhash\b` は**単語境界つき**であり、`headHashHex` /
-  `auditHeadHashHex` / `prevMetaSigHashHex` のような複合識別子には一致しない
-  (`d`↔`H`・`h`↔`H` はどちらも単語文字同士で境界が立たない)。一致するのは
-  裸の語 `hash`(識別子・文字列・UI 文言中の単独語)のみ
-- **案 BN-a: 検査を緩和(フィールド名の許可リスト)** — 棄却: 上の実測により
-  緩和の必要自体がない。許可リストは「フラグメント非読取」の保証を将来の
-  ドリフトに対して弱める(BG が明示的に避けた方向)
-- **案 BN-b: 検査を無変更のまま、web 実装側の規約で裸の語を避ける** —
-  API フィールドは元々複合名で一致せず、実装側で裸の `hash` を書く必然が
-  ない(変数名は `headHashHex` のまま運び、UI 文言は "chain head" /
-  "digest" 系の語で表現できる)
-
-### 第 2 周(上位互換探索)
-
-- UI 文言(英語 — ADR-0017)で「ハッシュ」を名指す必要があるか: S5 のヘッド
-  表示は "Chain head" + seq + hex 値、S6 の突合誘導は "verify with
-  `maruhi audit verify`" で足りる。hex 値そのものがラベルの意味を運ぶため、
-  裸の語 `hash` を含む文言は一つも要らない(実装後にビルド検査が裏書きする)
-- 新規に import する Astryx コンポーネントのチャンクが語 `hash` を持ち込む
-  可能性: これは BG が設計済みの「上流変化で意図的に割れる」型そのもので、
-  割れたらその時点の裁定を強制する(先回りの緩和はしない)
-
-### 第 3 周(再点検)
-
-- 検査対象は `dist/public` の全 JS + index.html(BG のまま)。ダッシュボード
-  実装後のビルドで 0 件を確認することが本裁定の受入条件
-- 効果の再確認: 「招待トークン(フラグメント)を読める字面が配信物のどこにも
-  存在しない」は W2 のバンドル拡大後も全パスで検査可能なまま保たれる
-
-**選択: 案 BN-b(検査は無変更・実装規約で裸の語 `hash` を持ち込まない)**。
-保証の弱化ゼロ(BG の「割れたら裁定を強制する」型もそのまま)。
-
-## 3. 裁定 BO: SPA ルーティングと `not_found_handling`(session-41 BF の申し送り)
-
-### 第 1 周
-
-- **案 BO-a: `not_found_handling` を SPA のまま維持し、ダッシュボードを
-  `/dashboard` 前置のクライアントルートとして実装** — 深リンク
-  (`/dashboard/projects/:id`)は SPA フォールバックで成立。API のパス空間
-  (`/auth`・`/projects` 前置)と SPA のルート空間を**素で分離**する
-- **案 BO-b: ルートごとの静的 HTML を出す(`not_found_handling` 廃止)** —
-  棄却: funstack-static はルート単位の静的 HTML を出さず(session-41 BF-b と
-  同じ確認)、動的パス(`:projectId`)は列挙不能。マルチエントリ化は
-  ビルド複雑性だけ増やす
-- **案 BO-c: ダッシュボードのルートも `/projects/...` に置く** — 棄却:
-  BM の `run_worker_first` 列挙と衝突し、深リンクの直接ナビゲーションが
-  API の JSON(401/404)に落ちる。UI のパス空間と API のパス空間の重畳は
-  存在秘匿(§11-2)の応答意味論を UI 導線に混ぜる方向でもある
-
-### 第 2 周(上位互換探索)
-
-- ルート集合: `/dashboard`(S3 ログイン / S4 一覧 — 認証状態で出し分け)、
-  `/dashboard/account`(S6 本人軸 = `/auth/audit/events`)、
-  `/dashboard/projects/:projectId`(S5 / S6 プロジェクト軸 / S7 — タブ)。
-  タブはルート化しない(URL に載せる必然がなく、ルート表面 = near-miss
-  クラスの増加を最小に保つ)
-- funstack-router の部分ルート定義(`route()` を共有モジュール、`bindRoute()`
-  で server 側に結合)により `:projectId` の型付き取得(`useRouteParams`)が
-  成立することを確認
-
-### 第 3 周(再点検)
-
-- BF(near-miss 正規化)の対象は `/invite` のみで変更なし。`/dashboard` 系の
-  タイポは任意の 404 パスと同じクラス(SPA シェル。BG 検査でフラグメント
-  非読取が保証済み)であり、正規化ルールを増やさない
-- 未認証で深リンクを踏んだ場合も SPA シェルが出て、各画面の 401 分岐(BP)が
-  ログイン導線を出す — `not_found_handling` の意味論に依存する画面はない
-
-**選択: 案 BO-a(SPA フォールバック維持・`/dashboard` 前置のルート)**。
-
-## 4. 裁定 BP: 未ログイン・セッション期限切れ(401)・能力制限(403)の分岐と文言
-
-### 第 1 周
-
-- **案 BP-a: 画面ごとに個別処理** — 棄却: 401/403/404 の分岐は全画面共通で、
-  個別処理は文言の漂流(表示規律 §4 違反の混入面)を作る
-- **案 BP-b: 薄い fetch 層で HTTP 状態を型付きの結果に写し、分岐を一元化** —
-  分類: `ok(T)` / `unauthorized`(401)/ `forbidden`(403 — reason 同梱)/
-  `notFound`(404)/ `error`(その他 + ネットワーク)。UI はこの型だけを見る
-
-### 第 2 周(上位互換探索 — 文言。すべて英語 = ADR-0017)
-
-- **401(未ログイン・期限切れの区別なし)**: サーバーは区別を返さず、UI も
-  区別を捏造しない。`/dashboard` 直下 = S3 ログインカード("Sign in with
-  GitHub")。画面内の再取得での 401(期限切れの典型)= 同じログインカードへ
-  差し替え + "Your session has ended. Sign in again to continue."
-- **403 `session-not-allowed`**: 本 PR の消費 API は全て
-  `SESSION_ALLOWED_ENDPOINTS` 内であり正常系では発生しない(発生 = 新旧不整合
-  等の異常)。汎用文言 "This action is not available to browser sessions.
-  Use the maruhi CLI." で CLI へ誘導(隠さない — fail-closed の可視化)
-- **403 その他(`insufficient-role` 等 — S6 invites の admin 未満が正常系)**:
-  "Not available to your role in this project, as reported by the server."
-  何が隠れているかの示唆(件数・種別)は載せない(AUDIT_SPEC §7)
-- **404(§11-2 の存在秘匿)**: "The server reports no such project for your
-  account." — 「存在しない」と「メンバーでない」を区別できない応答である
-  ことを UI も区別せずに写す
-- **ネットワーク・5xx**: "Could not reach the server." + retry ボタン
-
-### 第 3 周(再点検)
-
-- CSRF: 書き込み系はログアウト(POST `/auth/logout`)のみ。fetch 層が
-  mutation に `x-maruhi-csrf: 1` を一律付与する(§11-4)
-- 401 分岐がログイン画面を出すとき、元 URL への復帰は担保しない(callback は
-  `${origin}/` 固定 — BM の制約)。ログイン後の再導線は S1/S4 の静的リンクで
-  足りる(復帰 state をどこかへ持つ形は保存面を増やすだけ)
-- 表示規律との整合: エラー文言も「サーバー申告」の言い回しで統一し、
-  クライアント側の推測(expired / revoked / not a member 等の断定)を含めない
-
-**選択: 案 BP-b + 上記文言**。
-
-## 5. 裁定 BQ: S6 監査ビューアの可視性クラス表示 UX(設計文書 §8 申し送り)
-
-### 第 1 周
-
-- **案 BQ-a: クラス選択 UI(クラス 1 / クラス 2 の切り替え・高度フィルタ)** —
-  棄却: クラスはサーバー認可の内部構造であり、admin 未満の画面に「クラス 2」
-  という語を出すこと自体が不可視集合の存在を UI が示唆する形(件数非漏洩の
-  精神と逆)。高度な横断検索は CLI(`maruhi audit`)の領分で、W2 の需要は未実測
-- **案 BQ-b: 単一の時系列リスト + 役割適応の見出し** — admin 未満:
-  "Events visible to your role"(AUDIT_SPEC §7 / 設計文書 §4-4 の規定文言)。
-  admin(応答に `seq` が載る場合)のみ seq 列を表示。フィルタは置かず
-  `before` カーソルの "Load more" のみ
-
-### 第 2 周(上位互換探索)
-
-- seq 列の出し分けを「役割の事前判定」でなく「**応答に seq があるか**」で行う:
-  クライアントが role を推測して出し分ける形は §5 マトリクスの「表は UI の
-  出し分けであり防御ではない」を超えて判定ロジックの複製になる。応答適応なら
-  サーバー認可が唯一の判定点のまま
-- invites タブ(admin 軸): 403 は BQ/BP の役割文言で表示し、タブ自体は隠さない
-  (隠すと「自分に invites 監査があるか」を UI が事前判定する形になる。
-  表示は BP の "as reported by the server" 文言で統一)
-- 完全性主張の排除: 欠番検査・突合は表示せず、フッターに
-  "Integrity checks are the CLI's job: `maruhi audit verify`" の静的案内のみ
-  (設計文書 §3 S6 の規定)
-
-### 第 3 周(再点検)
-
-- 本人軸(`/auth/audit/events`)も同一のリスト部品を使う(seq は D1 経路で
-  常に欠落 — AUDIT_SPEC §7 — なので seq 列は自然に出ない)
-- イベント行の表示フィールド: event 名・serverTs・actor(userId + FP)・
-  target・environment/variable ID・payload(JSON 折りたたみ)。すべて
-  記録どおり = サーバー申告の生値。表示名の解決(検証済みステートメント経由)
-  は行わない — 検証を持たない Web での名前解決はステートメント検証なしの
-  名前信用になる(§12-2 の「検証を通らない名前を信用しない」に反する)ため、
-  識別子のみ表示が表示規律上の正解
-
-**選択: 案 BQ-b(単一リスト + 応答適応の seq 列 + 規定文言 + フィルタなし)**。
-
-## 6. 裁定 BR: API 消費の実装形(型・クライアント層)
-
-### 第 1 周
-
-- **案 BR-a: Effect HttpApiClient(api-schema からの導出クライアント)** —
-  棄却: Effect ランタイム + Schema デコーダ一式が Web バンドル(= TCB)に
-  入る。CLAUDE.md「フロントの供給網を小さく保つ」と ADR-0018 決定 1 の
-  バンドル検査単純性に逆行。CLI と違い Web の消費面は GET 中心の 9 面で、
-  導出の利得が薄い
-- **案 BR-b: 素の `fetch` + 手書き型** — 棄却: api-schema との型乖離が
-  コンパイルで検出されない(監査応答のような広い構造で漂流リスク)
-- **案 BR-c: 素の `fetch` + api-schema からの type-only import** —
-  `import type`(erasable)のみなら実行コードはバンドルに一切入らず、
-  型は単一定義(`typeof XSchema.Type`)に束縛される。web の devDependencies に
-  `@maruhi/api-schema`(workspace)を追加するだけ
-
-### 第 2 周(上位互換探索)
-
-- ランタイム検証(Schema デコード)を持たない残余: 表示専用・値なしの読み取り
-  であり、形の崩れは表示の崩れにしかならない(認可・秘匿はサーバー側)。
-  クライアント側での applicative な防御(optional チェーン)で足りる。
-  むしろ「Web バンドルに Schema 検証を積まない」は表示規律(検証を実装
-  しない)と同じ側に立つ
-- type-only 徹底の強制: `import type` のみを使い、oxlint / tsc
-  (`verbatimModuleSyntax` 相当の設定があれば)で担保。バンドルへの混入は
-  BG 検査(api-schema の実行コードは `hash` 語を含む)でも二次検出される
-
-### 第 3 周(再点検)
-
-- fetch 層は `credentials: "same-origin"`(既定)+ mutation の CSRF ヘッダー
-  (BP)+ `accept: application/json`。API ベース URL は相対(同一オリジン —
-  BM で構成保証)
-- ページングの consume(`nextAfter` / `before`)もこの層に置かず画面状態で
-  持つ(層はステートレスに保つ)
-
-**選択: 案 BR-c(素の fetch + type-only import)**。
-
-## 7. 裁定 BS: e2e の認証画面テストの形(モック / フィクスチャ)
-
-### 第 1 周
-
-- **案 BS-a: 実サーバー(vitest-pool-workers の SELF)と結合した e2e** —
-  棄却: web e2e は wrangler dev(静的配信)+ Playwright の既存ハーネス
-  (session-41 BD)であり、そこへ server の D1/DO 起動・OAuth フェイクを
-  持ち込むとテストが配信検証から統合検証へ肥大する。GitHub OAuth は
-  実フローをそもそも e2e できない
-- **案 BS-b: Playwright の `page.route` で同一オリジンの API パスを
-  インターセプトし、フィクスチャ JSON を返す** — 配信・描画・CSP は実物
-  (wrangler dev + 実ブラウザ)のまま、API 応答だけ差し替える。フィクスチャは
-  api-schema の型に適合するリテラル(tsc が型で拘束)
-
-### 第 2 周(上位互換探索)
-
-- CSP との関係: `page.route` はネットワーク層の差し替えであり、ページから見た
-  リクエスト先は同一オリジンのまま — `connect-src 'self'` の検証を弱めない
-  (violation ゼロのアサーションが全ダッシュボード画面で維持できる)
-- 網羅する分岐: 未ログイン(401 → S3)、ログイン済み(S4 一覧 + ページング
-  ボタンの有無)、プロジェクト画面(S5 チェーン/環境、S6 監査 + 役割文言、
-  S7 フラグ + dismiss 静的案内)、403(invites の admin 未満文言)。
-  ログアウトは POST への CSRF ヘッダー付与をルートハンドラ内で検証
-
-### 第 3 周(再点検)
-
-- モックの漂流リスク: フィクスチャが実サーバーの応答と乖離する面は残る
-  (e2e は描画とゲーティングの検証であり、ワイヤ互換の真実源は api-schema の
-  型 + サーバー側テスト)。型付きフィクスチャで乖離の大半はコンパイル検出
-- 既存 e2e(CSP・/invite・SPA ナビゲーション)は無変更で残し、非退行を担保
-
-**選択: 案 BS-b(page.route + 型付きフィクスチャ)**。
-
-## 8. 実施記録
-
-- **配信構成(BM)**: `apps/server/wrangler.jsonc` に `assets`
-  (`../web/dist/public`・`run_worker_first: ["/auth/*", "/projects",
-  "/projects/*"]`・SPA フォールバック・html_handling 明示ピン)。
-  `apps/server/package.json` の deploy / deploy:dry-run に web ビルドを前置。
-  server テスト(vitest-pool-workers)は assets ディレクトリ不在でも全通過を
-  実測(504 件 — pool はアセット設定を要求しない)
-- **画面**: `apps/web/src/dashboard/` — `api.ts`(fetch 層 = BP/BR)・
-  `types.ts`(type-only import = BR)・`routes.ts`(/dashboard 前置 = BO)・
-  `shared.tsx`(失敗表示の文言一元化 = BP)・`chain-view.ts`(S5 の表示用
-  畳み込み — 検証なし)・`DashboardScreen.tsx`(S3 + S4)・
-  `ProjectScreen.tsx`(S5 + S6 + S7)・`AccountAuditScreen.tsx`(S6 本人軸)・
-  `AuditEventList.tsx`(BQ)。`App.tsx` に bindRoute で結合、S1 に
-  ダッシュボード導線を追加
-- **複雑度規律への追随**: fallow の変更ファイル監査(CRAP 閾値)が新規 14 関数を
-  検出 → 全て分解(op ハンドラ表・ガード分離・サブコンポーネント化)で解消。
-  リポジトリの全高複雑度関数が本 PR 分だった(110k LOC 中 14 件)ことから、
-  「関数 cyclomatic ≤ 4」が事実上の規律と判断し、抑制コメント・baseline 追加は
-  使わなかった
-- **テスト**: e2e 4 本追加(BS — page.route + 型付きフィクスチャ。S3 401 分岐・
-  S4 ページング + CSRF 付きログアウト・S5〜S7 タブ + invites 403 文言 +
-  seq 応答適応・本人軸の seq 非表示)+ web ユニットテスト新設
-  (`vitest.unit.config.ts` = root vitest 統合、`test/unit/` — chain-view の
-  畳み込み・api 層の分類と CSRF ヘッダー)。既存 7 本は無変更で通過
-- **BG 検査の実測(BN)**: Astryx Table / TabList / SegmentedControl 等を含む
-  拡大後バンドルでも語 `hash` は 0 件のまま = 検査は無変更で通過
-- スコープ外の確認: server 実装・api-schema・CLI・packages/crypto に変更なし
-  (server は wrangler.jsonc / package.json の配信構成のみ)。仕様の文言変更
-  なし(設計文書 §3 S4・§7・§8 の追随のみ)
-
-## 9. 実装後の再点検(上位互換の一巡再探索 — タスク手順 7)
-
-- **BM 再点検**: `run_worker_first: true` + Worker 内アセットバインディング
-  fetch(配信をコードで制御)を再検討し棄却 — 配信面に実行コードを足す方向
-  (BF-c / BM-b と同じ理由)で、_headers / _redirects のアセット層意味論も
-  自前再実装になる。宣言のみの BM-d が上位互換のまま
-- **欠陥修正(BM — 実測で発見)**: `run_worker_first` の初版列挙
-  (`/auth/*`・`/projects`・`/projects/*`)は **`POST /invites/accept`
-  (§15-2 — CLI の招待受諾)を取りこぼしていた**。api-schema の全エンドポイント
-  目録との突合で発見し、実測で確認 — 列挙外のためリクエストがアセット層に
-  渡り、`_redirects` の小文字総取り `/invite*`(session-41 BF)が **POST ごと
-  301 → `/invite` で飲む**(受諾 API の破壊)。`/invites`・`/invites/*` を
-  列挙に追加して解消(実測: POST /invites/accept = Worker 401、`/invite` 静的
-  200・`/Invite` 301 は不変)。教訓は session-39 §10-1 と同型 —
-  「前置に収まっているはず」の列挙は全エンドポイント目録と機械的に突合する
-- **付随観察(BM)**: run_worker_first 経由の Worker 応答にも `_headers` の
-  `/*` から STS・nosniff が付与される(実測)。API 応答へのセキュリティ
-  ヘッダーの追加は加法であり、エンドポイントの挙動・契約は不変
-- **BM の実測(wrangler dev — combined 構成)**: `/` と `/dashboard` = SPA
-  シェル 200、`/auth/config` = Worker(503 SetupIncomplete — 未設定サーバーの
-  正しい応答)、`/projects` = Worker 401、`/invite` = 静的ページ +
-  per-path CSP `script-src 'none'`、`/Invite` = 301 → `/invite`、`/` の CSP =
-  ブートストラップハッシュ許可付き。W1 の全不変条件と API のパス分離が
-  combined 形でも成立することを実測確認
-- **残余(BM)**: pool-workers がアセット設定を無視するため、combined 形の
-  配信挙動(run_worker_first の実効)は CI の自動テスト外(上の実測は手元の
-  wrangler dev)。`deploy:dry-run` が設定の妥当性検査を担い、実効の確認は
-  初回デプロイ後の実応答確認(W1 の BC/BE 推奨と同じ非荷重の推奨)に置く
-- **BN 再点検**: 実測で裏書き(§8)。緩和・精緻化の必要は発生しなかった
-- **BP 強化(採用)**: 画面内の 401 バナー(セッション期限切れ)にサインイン
-  導線(`/dashboard` への Go to sign-in)を追加 — 文言だけで導線がない形は
-  期限切れ時に行き止まりだった
-- **ログイン後の着地の再検討(棄却)**: OAuth callback は `${origin}/`(S1)へ
-  固定(API 挙動 — 本 PR で不変)。S1 で `/auth/me` を自動照会して
-  ダッシュボードへ自動遷移する案は棄却 — P1(未認証の訪問者)の静的
-  ランディングに API 呼び出しを持ち込み、サインイン済みで S1 を見たい人の
-  導線も奪う。S1 の静的リンク(open the dashboard)で足りる
-- **S5 の FP 列の再検討(棄却)**: メンバー表への鍵 FP 列の追加は、add_member
-  エントリが target の FP を運ばず(公開鍵のみ)、クライアントでの FP 計算は
-  暗号導出(検証コードの同梱に半歩入る)ため置かない。FP はチェーンヘッド・
-  監査行・grant_server(エントリが FP を運ぶ)の表示に限る — 表示規律 §4 の
-  「FP は参照値」とも整合
-- **レビュー反映(PR #107 Bugbot — 2 件とも正当なバグとして修正)**:
-  (1) **stale fetch 競合** — `useApiResource` / `AuditEventList` は in-flight
-  応答の後着が新しい画面状態を上書きできた(projectId・監査軸の切り替え)。
-  effect クリーンアップの stale マーク / 世代カウンタで旧応答を破棄する形に
-  修正。(2) **空ページ + nextAfter の終端誤断(S4)** — §11-5 の候補ページは
-  ghost 除外・確認失敗の省略で `{ projects: [], nextAfter }` になりうるが、
-  初版 UI は 0 行 = 終端と誤断して残り membership を隠した。行が増えるか
-  nextAfter が尽きるまでカーソルを自動追跡する形に修正(深さは候補ページ数で
-  有界 — 全滅時のコストは CLI の全ページ列挙と同水準)。e2e に空ページ跨ぎの
-  ページングを追加
-- **レビュー反映(PR #107 pullfrog)**: (1) **run_worker_first の被覆スイープの
-  検査化** — 列挙は api-schema パス空間の手書き複製でドリフトが無音
-  (navigation リクエストは SPA シェル 200 に飲まれる)という指摘を受け、
-  session-capability.ts と同じ型のスイープテスト
-  (apps/server/test/serving-topology.test.ts — 登録済み全エンドポイントの
-  被覆 + `/invite` 非被覆の回帰ガード。wrangler.jsonc の実値は
-  vitest.config.ts が unstable_readConfig で注入)を追加。§9 の欠陥修正を
-  一回性の突合から常設の fail-loud へ格上げ。(2) **CI に deploy:dry-run**
-  (step 8b — credential 不要の設定妥当性検査)を追加し、combined 構成の
-  設定検証を人間儀式から CI へ移した(配信挙動そのものの自動テスト外は残余の
-  まま)。(3) **CSP ヘッダーの実在 assertion** — violation ゼロ検査はヘッダー
-  欠落でも通る(空虚)ため、/dashboard 系 3 パスのヘッダー実在を e2e で直接
-  固定。(4) **プロトタイプ鎖ルックアップの自衛** — `ENTRY_FOLDERS[entry.op]` /
-  `ROLE_TOKEN_COLOR[role]` は敵対的サーバーの op/role(`__proto__` 等)で
-  プロトタイプ鎖の値に当たりうる(帰結は描画破壊のみ)— Object.hasOwn ガード +
-  回帰ユニットテスト。(5) RoleToken を shared.tsx へ移動(置き場の指摘)。
-  stale fetch の指摘は Bugbot 対応(40bd7b1)で修正済み(pullfrog は旧
-  コミットのレビュー)。(6) incremental review の passing note(前進しない
-  nextAfter を返す壊れた・敵対的サーバーでの無限追跡)も、カーソル非前進 =
-  終端扱いの 1 条件で塞いだ(サーバー不信の姿勢の均一化)。**サインイン後の着地(`${origin}/`)の scope 質問**は
-  本裁定(BP 第 3 周)どおり W2 では受容 — callback への return path 追加は
-  API 挙動の変更であり、需要が出た時点の別 PR(AUTH_SPEC §3 の改訂)に送る
-- **S6 ページ終端判定の再検討(維持)**: 「ページが limit 未満なら終端」は
-  サーバーの既定 limit(50)への依存を足すため、「空ページで終端」の現行形を
-  維持(1 回余分な取得と引き換えに応答形への仮定を持たない)
-
-## 10. 第 2 次上位互換探索(オーナー依頼 — 2026-08-29)
-
-オーナーの依頼「銀の弾丸・上位互換となる新しい案の模索」による追加の一巡。
-標的は §9 までに**残余として記録した点**(= 現裁定の最弱部)。3 件を採用し、
-4 件を検討の上で棄却した。
-
-### 裁定 BT: e2e の配信系を combined 構成(デプロイされる実構成)へ移す(採用)
-
-- **標的**: BM の最大残余 —「combined 形の配信挙動(run_worker_first の実効・
-  SPA フォールバック・per-path ヘッダー)は CI の自動テスト外」。pullfrog の
-  approve 済みレビューも "the residual" として名指ししていた。e2e は
-  apps/web/wrangler.jsonc(**デプロイされない**静的専用ハーネス)に対して
-  走っており、検証対象と配信物が別物だった
-- **発見**: ダッシュボード e2e は API を page.route でモックする(裁定 BS)ため、
-  **配信系をどちらの Worker にしても API 側の準備が不要**。ならば e2e の
-  wrangler dev を apps/server(assets 同梱の本番構成)で起動すれば、既存の
-  全アサーション(/invite の per-path CSP・near-miss 301・SPA フォールバック・
-  CSP ヘッダー)がそのまま**デプロイされる構成の検査**になる — 変更は spawn の
-  cwd 1 箇所 + 追加アサーションのみ
-- **追加の利得**: 未設定ローカルサーバーの素の応答(503 / 401 JSON)が
-  「Worker に届いた」ことの証拠になるため、**API パス到達の回帰テスト**を
-  e2e に置けるようになった — §9 で実測発見した欠陥
-  (`POST /invites/accept` が `_redirects` の総取りに 301 で飲まれる)を
-  そのまま再現するテストを固定(スイープテストの静的検査 + 実配信の動的検査の
-  二層になる)
-- **棄却しなかった懸念の確認**: wrangler dev(server)は D1 / DO をローカルで
-  自動生成し、OAuth secret なしでも起動する(§9 の BM 実測 4 回で確認済み)。
-  D1 マイグレーション・secret はモック e2e の経路では不要
-- apps/web/wrangler.jsonc は preview 用ハーネスとして存置(e2e の正は本裁定で
-  server 構成へ移動 — 検証対象と配信物の一致が上位互換の本体)
-
-### 裁定 BU: サインイン後の /dashboard 復帰(採用 — BP 残余の解消)
-
-- **標的**: BP 第 3 周の受容残余「callback は `${origin}/` 固定のため、
-  サインイン後にランディングへ着地し、もう 1 クリック要る」
-- **採用形**: Sign in クリック時に sessionStorage へ**ワンショットのマーカー**を
-  置き、S1 がマーカーを**消費したときだけ** `/auth/me` を 1 回確認して
-  /dashboard へ戻す(`resume.ts` + S1 の不可視クライアント島)。マーカーなしの
-  S1(P1 訪問者)は従来どおり API 呼び出しゼロ — BP 第 3 周が棄却した
-  「S1 での常時 /auth/me 照会」を避けたまま余分なホップだけが消える。
-  セッション未成立(OAuth 中断)はマーカーだけ消えてランディングに留まる。
-  storage 不可(プライベートモード等)は型付きの「マーカーなし」へ劣化
-- **棄却案**: (a) callback のリダイレクト先を /dashboard に変更 — API 挙動の
-  変更で本 PR の禁止事項(需要が残れば AUTH_SPEC §3 の改訂として別 PR へ
-  申し送り。本裁定の採用でその需要自体が概ね消える)。(b) document.referrer で
-  GitHub 帰りを検出 — 受信 referrer は GitHub 側の Referrer-Policy に依存し
-  非決定的。(c) `_redirects` による復帰 — 静的層はセッション状態を知り得ず、
-  P1 のランディングを壊す
-
-### 裁定 BV: e2e フィクスチャの Schema 実検証(採用 — BS 残余の縮小)
-
-- **標的**: BS 第 3 周の残余「フィクスチャが実サーバー応答と乖離する面は残る
-  (型付きで大半はコンパイル検出)」— 型適合は hex 長・パターン等の実行時
-  制約を見ないため、fixture の座標値(row_id 長・projectId 形式)は目視だった
-- **採用形**: e2e に「全フィクスチャを api-schema の実 Schema で
-  `decodeUnknownSync` する」テストを追加。Schema 実行コードは**テスト
-  プロセス内のみ**で動く(バンドル非投入 — 裁定 BR の「Web バンドルに
-  Schema を積まない」と両立。web の devDependencies に効きは既存ピン
-  `effect@4.0.0-rc.111` を明示追加 — 供給網の増分ゼロ)
-- これで「モックとワイヤ契約の漂流」はコンパイル(型)+ 実行時(Schema)の
-  二層で機械検査になる。残余は「サーバー実装が Schema より狭い応答を返す」
-  クラスのみ(それは server 側テストの領分)
-
-### 検討の上で棄却(第 2 次)
-
-- **compat flag(`assets_navigation_has_no_effect`)で navigation 吸収自体を
-  無効化し run_worker_first を不要化** — 棄却: API 到達性が Sec-Fetch-Mode の
-  意味論に依存する形になり、明示列挙 + スイープ(検査可能・fail-loud)より
-  推論が長くなる。フラグの将来変更にも晒される
-- **apps/web/wrangler.jsonc の削除**(ハーネス二重化の解消)— 棄却:
-  `bun run preview`(静的のみの軽量プレビュー)の価値が残る。e2e の正が
-  server 構成へ移った(BT)ことで「検証対象の取り違え」の害は既に消えている
-- **referrer / callback 変更による復帰**(BU の棄却案として上に記載)
-- **フィクスチャの自動生成(Schema の Arbitrary 由来)** — 棄却: 画面の
-  アサーションは具体値(名前・ID)に結びついており、生成値では検証が
-  非決定的になる。実検証(BV)が同じ漂流検出をより単純に与える
-
-## 11. 第 3 次上位互換探索(オーナー依頼 — 2026-08-29)
-
-第 2 次(§10)後にまだ**手検証・規約どまり**で残っていた点を標的にした一巡。
-2 件を採用、4 件を検討の上で棄却。
-
-### 裁定 BW: ダッシュボード消費面の単一目録 + クライアント側スイープ(採用)
-
-- **標的**: 「画面が呼ぶ全エンドポイントが `SESSION_ALLOWED_ENDPOINTS` の
-  列挙内」という W2 の中核不変条件が**手検証**だった(pullfrog の初回レビューも
-  人手で突合していた)。パス文字列も各画面に手書きで散在し、api-schema の
-  リネーム・タイポは実行時 404 / 403 まで沈黙する
-- **採用形**: `src/dashboard/endpoints.ts` — 全パスビルダー + 各ビルダーを
-  api-schema の (group, endpoint) 識別子へ束縛する目録
-  (`DASHBOARD_ENDPOINTS`)。画面はビルダー経由でのみ fetch する。ユニット
-  テスト(test/unit/endpoints.test.ts)が目録を登録済み HttpApi と突合し、
-  (1) **パス整合**(ビルダー生成パス = テンプレートのサンプル置換 — 未知
-  パラメータは置換されず fail-loud)、(2) **セッション許可**
-  (`isSessionAllowedEndpoint` — 新画面が列挙外 API を呼ぶ形は実行時 403 で
-  なくテストで割れる)、(3) 目録の重複なし、を固定する
-- **効果**: serving-topology スイープ(サーバー側 — run_worker_first 被覆)と
-  対になり、**api-schema を中心に消費の両方向が機械検査**になる。あわせて
-  serving-topology 側に負方向(`/invite`・`/dashboard` 系が worker-first に
-  飲まれない)の検査を拡張
-- 逆方向(「セッション許可の全読み取り面をダッシュボードが消費しているか」)は
-  不変条件ではないため課さない(recoveryStatus・invites.list/revoke は許可
-  済みだが W2 の画面外 — W3b の領分)
-
-### 裁定 BX: wrangler 設定の単一真実源化 — apps/web/wrangler.jsonc の削除(採用)
-
-- **標的**: §10 で「preview 用に存置」とした apps/web/wrangler.jsonc。
-  BT(e2e の combined 移行)後、消費者は preview スクリプト 1 つになり、
-  html_handling ピン等の**構成の二重管理**(ドリフト面)だけが残っていた
-- **発見**: `wrangler dev --config ../server/wrangler.jsonc` は apps/web の
-  cwd からでも成立する(パス解決は設定ファイル基準 — 実測: root 200 /
-  /projects 401 / /invite 200)。preview をこれに差し替えると
-  apps/web/wrangler.jsonc の消費者がゼロになる → 削除
-- **効果**: 配信構成が apps/server/wrangler.jsonc の 1 本に集約され、
-  デプロイ・e2e・preview の全経路が同一構成を読む。§10 の存置判断は
-  前提(preview が旧構成を使う)が消えたため本裁定が上書きする
-
-### 検討の上で棄却(第 3 次)
-
-- **コンテンツハッシュ付きアセットへの `Cache-Control: immutable` 付与** —
-  棄却: 性能改善であって残余(セキュリティ・正しさ)の解消ではなく、
-  approve 後の PR に検査対象(write-headers の新ブロック)を増やす対価が
-  釣り合わない。需要が出た時点の独立 PR へ
-- **SRI(subresource integrity)** — 棄却: 全アセット自己配信 + 厳格 CSP の
-  下で SRI が足す保証はない(配信者 = 検証者の構図は ADR-0018 Context の
-  とおり SRI では壊せない)
-- **`/*` CSP の form-action 'self' → 'none' 強化** — 棄却: ダッシュボードに
-  フォームは無いが、'self' が既に同一オリジンへ拘束しており閉じる脅威が
-  ない。W1 で固定した `/*` CSP 文字列の不変(非退行検査の前提)を崩す
-  対価だけが残る
-- **復帰マーカー鍵の export 共有(e2e との重複リテラル解消)** — 解消
-  (下のレビュー反映で positive 側のテストがマーカー注入自体をやめたため、
-  重複リテラルは negative テスト 1 箇所のみ。鍵名ドリフトはそのテストの
-  期待〔ランディング残留〕を変えないため無害)
-- **レビュー反映(pullfrog — BU の被覆指摘)**: 初版の resume テストは
-  マーカーを addInitScript で注入しており、(1) consume ガードを消して
-  「S1 で常時 /auth/me」に退行しても、(2) Link が onClick を運ばなくなり
-  マーカーが書かれなくなっても、テストが割れなかった。positive テストを
-  **実導線駆動**(/dashboard のログインカードを実クリック →
-  /auth/github/start への実ナビゲーションを 302 → `/` で差し替え → 実装が
-  書いたマーカーで復帰)に置き換え、**マーカーなしランディングの API
-  呼び出しゼロ**をリクエスト収集で固定するテストを追加 — BU の 2 不変条件が
-  どちらも fail-loud になった
-
-## 12. 第 4 次上位互換探索(オーナー依頼 — 2026-08-29・最終回)
-
-依頼: 「最後にもう一回だけ更なる上位互換のアイディアがないかを模索してください」。
-第 3 次で導入した 2 つのスイープ(BW / serving-topology)自身を候補集合に含め、
-「検査の穴」と「残った手書き重複」を標的に 3 周比較した。
-
-### 裁定 BY: 消費面目録の完全化(採用)
-
-BW の目録には検査の穴が 3 つ残っていた:
-
-1. **ナビゲーション消費面の目録外** — ログインカードの
-   `/auth/github/start` は fetch でなく Link だったため目録に載らず、
-   パス整合もセッション面分類も未検査だった。`apiPaths.githubStart()` を
-   追加し、目録へ `access: "session" | "unauthenticated"` 判別子を導入。
-   スイープを access 対応にし、session 面は従来どおり
-   `isSessionAllowedEndpoint`、unauthenticated 面は
-   `UNAUTHENTICATED_ENDPOINTS`(AUTH_SPEC §5)への所属を要求する
-   (認証必須面をナビゲーション導線として消費する形もテストで割れる)
-2. **カーソルクエリ組み立ての 3 重複** — projects の `?after=` と
-   audit×2 の `?before=` が画面ごとに手書きだった。`withCursor(path,
-   name, value)` に一本化(唯一のクエリ付与点。encodeURIComponent 込み)
-3. **ビルダー迂回の無検査** — 目録の網羅性は「画面はビルダー経由でのみ
-   fetch する」規律に依存するが、その規律自体が手検証だった。ソース
-   トリップワイヤ(src/ 配下・endpoints.ts 除外で
-   `["']/(auth|projects|invites)` を走査)をユニットテストに追加。
-   バッククォート文字列は対象外(コメント内のパス例と衝突するため)—
-   word-hash トリップワイヤ(session-41 BG)と同じ「善意のドリフト検出」の
-   位置づけで、意図的な迂回の防止は目的にしない
-
-### 裁定 BZ: SPA ルート空間の非交差スイープ(採用)
-
-- **標的**: BO の分離「SPA は /dashboard 前置、API は /auth・/projects・
-  /invites 前置」のうち、逆方向 —「SPA のルートが run_worker_first に
-  飲まれない」— の検査が serving-topology.test.ts 内の**手書きパス列挙**
-  (4 パス)だった。ルート追加時に列挙の追随を忘れると検査が黙って狭まる
-- **採用形**: routes.ts に homeRoute / aboutRoute を移し、全ルートの単一
-  目録 `SPA_ROUTES` を export(App.tsx は bindRoute で結合するのみ)。
-  web-unit テスト(test/unit/spa-topology.test.ts)が実ルート定義と
-  実配信設定(`unstable_readConfig` で apps/server/wrangler.jsonc を読む —
-  BT/BX と同じ「実物を読む」姿勢)を突合し、全 SPA ルートの具体化パスが
-  どの run_worker_first ルールにも被覆されないことを検査する。ルール
-  意味論(完全一致 / 前置 `*` のみ・それ以外は保守的に throw)は
-  serving-topology 側と同一
-- serving-topology 側の手書き 4 パス検査は**残す**(workerd 実環境での
-  検査 + `/invite` は SPA ルートでないため BZ の目録外)。両者は重複でなく
-  「サーバー側は代表点・クライアント側は全ルート導出」の相補
-
-### 検討の上で棄却(第 4 次)
-
-- **loader フックへの取得統合(funstack-router の loader でデータ取得)** —
-  棄却: 画面の useApiResource / 手動ページングを全面改造する churn に対し、
-  得られるのは取得タイミングの前倒しのみ。読み取り専用ダッシュボードの
-  規模では上位互換でなく横移動
-- **パラメータのブランド型(ProjectId 等の branded type)** — 棄却:
-  ビルダー引数の取り違えを型で防ぐ案だが、W2 の消費面では projectId /
-  environmentId の 2 種しかなく、ルートパラメータ由来の値は結局 string。
-  儀式が増えるだけで実バグ面が現状ない
-- **run_worker_first を api-schema から自動生成(コード生成)** — 棄却:
-  生成器 + 生成物検査という新しい機構を持ち込む対価に対し、双方向スイープ
-  (被覆 + 非交差)が既に同じドリフトを fail-loud にしている。設定は
-  「読める素の JSONC」のままが自己ホスト配布物として優る
-
-## 13. 第 5 次上位互換探索(オーナー依頼 — 2026-08-29)
-
-依頼: 「まだ見つかるんですね。それは困るので、一回更なる上位互換のアイディアが
-ないかを模索してください」。生成規則を明示して探索した: 第 3〜4 次の発見は
-すべて「機械可読な正(api-schema / wrangler.jsonc / ルート定義)の手書き複製が
-残っている場所」だった。そこで src/ 全域を対象に「手書き複製」を機械的に
-grep 棚卸しし、残余 2 つを塞いだ。
-
-### 裁定 CA: SPA パスビルダー(spaPaths)— BY の双対(採用)
-
-- **標的**: 内部ナビゲーションのパスリテラルが src/ に 9 箇所散在していた
-  (`/dashboard` 系 6 + `/` `/about` 3)。routes.ts のパス改名はリンク切れに
-  なるが、SPA フォールバックが 200 でシェルを返すため**無音**(API 側で
-  BY が塞いだのと同型のドリフト面が SPA 側に丸ごと残っていた)
-- **採用形**: routes.ts 内のパス定数を単一の置き場にし、route() 定義と
-  `spaPaths` ビルダー(home / about / dashboard / account / project)が同じ
-  定数を読む。画面の href / navigateTo は全てビルダー経由。トリップワイヤ
-  (裁定 BY)の前置集合に `dashboard` を加え、除外をビルダー置き場 2 つ
-  (endpoints.ts・routes.ts)に拡張。spa-topology テストにビルダー ↔
-  SPA_ROUTES の束縛検査(置換完全性 + 全ビルダーが宣言ルートに対応)を追加
-- 同一モジュール内の定数共有なので、apiPaths ↔ api-schema のような
-  突合テストは原理的に不要(複製自体が存在しない)— BY より強い形
-
-### 裁定 CB: カーソルクエリ名のスキーマ突合(採用)
-
-- **標的**: withCursor が付ける `after` / `before` は手書き文字列で、
-  api-schema 側のクエリ宣言(membership.list の `after`、audit 系の
-  `before`)とは無結合だった。パラメータ名のリネームはサーバーが未知
-  クエリを無視するため「ページングが黙って 1 ページ目を返し続ける」形で
-  無音に壊れる
-- **採用形**: 目録に `cursor?: "after" | "before"` を追加(4 面が宣言)。
-  スイープが登録エンドポイントのクエリ Schema の AST
-  (`query.ast.propertySignatures`)にその名前の宣言があることを検査する
-
-### 検討の上で棄却(第 5 次)
-
-- **ruleCovers の共有化(serving-topology / spa-topology の重複解消)** —
-  棄却: 実行環境が異なり(workerd / node)、共有には新しい置き場
-  (テスト支援パッケージ等)が要る。15 行の意味論はどちらも保守的
-  throw 付きで消費側に併置されており、共有の機構代のほうが高い
-- **RoleToken の色マップを role 列挙と突合** — 棄却: api-schema に role の
-  閉じた列挙が存在しない(チェーン導出)上、未知 role は Object.hasOwn
-  ガードで中立 Token に**可視**に劣化する — 無音破壊でないため裁定の
-  対象基準(silent drift)を満たさない
-- **e2e 期待値のビルダー化** — 棄却: テストの期待リテラルをビルダーに
-  すると同語反復(builder == builder)になり検査力が落ちる。ユニット
-  スイープがビルダー ↔ 正を、e2e がレンダリング ↔ リテラルを固定する
-  現行の 2 段が正しい形
-
-### 収束の見立て
-
-第 3〜5 次の全発見は単一の生成規則「機械可読な正の手書き複製を探す」から
-出ている。CA/CB 後、src/ のパス・クエリ・ルートに残る手書き複製はゼロ
-(grep 棚卸しで確認)で、残るリテラルは (a) ビルダー置き場の定義そのもの、
-(b) テストの期待値(意図的 — 上記棄却)、のみ。この規則からの発見は
-尽きたと判断する。次に上位互換が出るとすれば別の生成規則(例: W3 の
-書き込み系で新しい正が増える時)からで、W2 の読み取り面では閉じた。
-
-### レビュー反映(pullfrog — CB の呼び出し側束縛。2026-08-29)
-
-CB 初版は目録 ↔ api-schema は突合したが、**呼び出し側 ↔ 目録**が裸リテラル
-(`withCursor(path, "after", …)`)のままで、audit 面に `after` を渡しても型が
-通り「1 ページ目を黙って繰り返す」残余があった(pullfrog 指摘)。カーソル名を
-共有定数(PROJECTS_CURSOR / AUDIT_CURSOR)に引き上げ、ページング面のビルダー
-自身がカーソル値を受けて内部で名前を付ける形へ変更(withCursor は module
-private 化)。呼び出し側から名前が消え、取り違えは構文上あり得なくなった —
-裁定 CA と同じ「複製を定数共有で消す」形。ビルダーが付ける実名は期待値
-リテラルのユニットテストで固定(e2e 棄却と同じ理由で、期待値側の
-リテラルは意図的)。
-
-## 14. 第 6 次上位互換探索(オーナー依頼 — 2026-08-29)
-
-依頼: 「もう一回だけ上位互換のアイディアがないかを考えるべきだと思います。
-ずっと新しい何かが見つかっているので」。生成規則を更新した: §13 の
-「複製探し」収束後も pullfrog が 2 件(route() 迂回・カーソル名の呼び出し側)を
-見つけたが、どちらも「不変条件の**連鎖の 1 リンク**が規約頼み」型だった。
-そこで各不変条件を**定義 → 消費 → ワイヤ → サーバー**の全リンクで歩査した。
-
-### 裁定 CC: 403 reason 比較リテラルの型束縛(採用)
-
-- **標的**: shared.tsx の `reason === "session-not-allowed"` は裸リテラルで、
-  api-schema の ForbiddenReasonSchema(閉じた Literals)と無結合だった。
-  reason 名のリネームは「CLI 誘導文言 → 一般 403 文言への無音フォール
-  バック」になる(表示規律の静かな劣化)
-- **採用形**: types.ts に `ForbiddenReason = typeof ForbiddenReasonSchema.Type`
-  (type-only — バンドル影響ゼロ)を追加し、比較リテラルを
-  `"session-not-allowed" satisfies ForbiddenReason` の共有定数へ。リネームは
-  コンパイルエラーで割れる(変異検証済み: TS1360)。ランタイムの防御的
-  string 扱い(裁定 BP)は不変
-- ApiFailure.reason の型自体は string のまま(ワイヤは検証しない — BR)。
-  束縛するのは**こちらが意味を割り当てるリテラル**のみ、という切り分け
-
-### 裁定 CD: type-only import 規律の機械検査(採用)
-
-- **標的**: 裁定 BR「Effect / Schema の実行コードをバンドルへ持ち込まない」は
-  **規約でしかなかった**: `import { MeSchema } from "@maruhi/api-schema"` は
-  ビルドも実行も黙って通り、バンドル(= TCB)と供給網だけが静かに太る —
-  W2 で最も重い不変条件の一つが唯一の未検査リンクだった
-- **採用形**: verbatimModuleSyntax の下では type-only import が `import type`
-  構文で明示されるため、src/ 配下の effect / @maruhi/api-schema からの
-  値 import をソーストリップワイヤで拒否(変異検証済み)。走査は
-  findSourceOffenders を共用
-
-### 検討の上で棄却(第 6 次)
-
-- **CSRF ヘッダー名の共有定数化** — 棄却(W3 引き継ぎ): 名前は web api.ts・
-  server middleware.ts・api-schema コメントの 3 箇所に現れるが、束縛には
-  server / packages への変更が要り、本 PR の「web のみ」裁定(§1 (a))の外。
-  web 側の名前は e2e がヘッダー実送信を検査済みで、server 側リネームは
-  server 側 PR の責務。W3 で api-schema に定数 export を置く案を提案する
-- **目録への method 追加(apiGet/apiPost の取り違え検査)** — 棄却:
-  取り違えは 404/405 の可視な失敗で、無音ドリフトでない(ログアウト POST は
-  e2e が実検査)。文言が紛らわしい残余はあるが検査 1 面の対価に届かない
-- **ランタイム応答検証** — 棄却(再確認): ADR-0018 改訂 2・4 項の意図的
-  非実装。形の崩れは表示層の optional アクセスで防御し、「検証済み」を
-  示唆しない — ドリフトでなく設計
-
-### 収束の見立て(更新)
-
-§13 の見立て(「複製探し」は尽きた)は**規則の範囲内では正しかった**が、
-連鎖歩査という上位の規則がさらに 2 件を出した。CC/CD 後、W2 の不変条件
-連鎖(パス・クエリ・ルート・認可分類・文言リテラル・import 規律・配信
-トポロジ)で規約頼みのリンクは、記録上の意図的棄却(テスト期待値・
-CSRF 名の server 側・ランタイム検証)を除きゼロ。次の発見があるとすれば
-さらに上位の生成規則からで、それが何かは現時点で特定できない — 「見つかり
-続ける」構造自体は、レビューボットと探索の反復が同じ規則空間を走っている
-ことの帰結で、規則空間の拡張が止まれば止まる。
+# Session 43: W2 — implementation rulings for the read dashboard (S3–S7) (BM onward)
+
+Date: 2026-08-29. Purpose: recording the implementation-level rulings of PR-W2
+(web-dashboard-design.md §7). Norms = ADR-0018 (revisions 1 · 2) ·
+web-dashboard-design.md (§4 display discipline · §5 visibility matrix) · AUTH_SPEC
+§5 / §11-4 / §11-5 · AUDIT_SPEC §6 / §7. What this document rules is only the
+concretization that the specs and design document delegated to implementation
+(serving topology, SPA routing, error branching, visibility UX, coexistence with
+checks). Each ruling follows "multiple candidates → superior-alternative search →
+3-round comparison → autonomous selection" (session-27 §14's format. Codes continue
+from session-41's BH / session-42's BL: BM onward).
+
+Prerequisite materials: web-dashboard-design.md in full, ADR-0018 revisions 1 · 2,
+ADR-0013, ADR-0017, AUTH_SPEC §3 / §5 / §11-4 / §11-5, AUDIT_SPEC §6 / §7,
+session-39 (AM–AT · §10), session-41 (BA–BH), session-42 (BI–BL), apps/web
+(W1 current state), apps/server/wrangler.jsonc.
+
+## 1. Ruling BM: the serving topology of web and server (how same-origin is established)
+
+Confirming the constraints (all are implemented APIs / defenses; this PR cannot
+change their behavior):
+
+- The session cookie is `__Host-maruhi_session` (AUTH_SPEC §5) — `__Host-` is bound
+  per host and is not sent from a different origin's Web. SameSite=Lax also blocks
+  cookie attachment to cross-site XHR/fetch
+- The OAuth callback 302s to `${origin}/` (handlers-auth.ts — origin derives from
+  the server's own request URL). The landing point after login completion is the
+  server's origin
+- The existing CSP is `connect-src 'self'` (write-headers.ts). Fetching a different-
+  origin API requires a CSP extension (= adding an exception surface)
+
+In other words, "the dashboard and the API on the same origin" is required
+independently by all 3 points.
+
+### Round 1
+
+- **Option BM-a: keep separate origins, switch to CORS + SameSite=None** — dismissed:
+  changing the server's cookie attributes / CORS headers = changing API behavior
+  (this PR's prohibition). It also removes the SameSite=Lax first CSRF layer
+  ourselves — a defensive regression
+- **Option BM-b: add a proxy script to the web Worker and relay the API** —
+  dismissed: the current web is plain static serving (zero Worker code), and adding
+  executable code to the serving surface runs against ADR-0018's "minimize the
+  operator's serving surface" (the same dismissal reason as session-41 BF-c). It
+  would also route auth requests through 2 Workers
+- **Option BM-c: compose the 2 Workers into one origin via zone routing on a custom
+  domain** (`example.com/auth/*` → maruhi-server, the rest → maruhi-web) — dismissed:
+  routes presuppose a zone (a custom domain) and cannot hold for the self-host
+  default URL = workers.dev (apps/server/wrangler.jsonc's `workers_dev: true` /
+  SELF_HOSTING.md). A form that does not work on the default deploy cannot be
+  adopted
+- **Option BM-d: bundle the web build output into the maruhi-server Worker as
+  Workers Static Assets (a single Worker)** — only wrangler.jsonc's `assets` setting
+  (API implementation and endpoints unchanged). Satisfies all 3 constraints —
+  session, CSP, callback — through configuration alone
+
+### Round 2 (superior-alternative search)
+
+- BM-d's detailed form: `assets.directory = ../web/dist/public` (bundles the web
+  build output + write-headers.ts's generated `_headers` / `_redirects` as-is).
+  `run_worker_first` enumerates the API's path space (`/auth/*` · `/projects` ·
+  `/projects/*` — every api-schema endpoint falls under these two prefixes); API
+  requests always go to the Worker (HttpApi), everything else to the asset layer
+  (SPA fallback included). `html_handling` keeps W1's explicit pin (session-41
+  ruling BH)
+- Consistency with "one-shot `wrangler deploy`" (the CLAUDE.md self-host principle):
+  the single-Worker form is actually more one-shot than the 2-Worker form (deploying
+  web separately). The deploy script (apps/server) prepends the web build (`bun run
+  db:migrate && web build && wrangler deploy`). SELF_HOSTING.md's steps do not grow
+- Handling apps/web/wrangler.jsonc (maruhi-web): **kept as the static-serving
+  verification harness** (e2e keeps running against this Worker's wrangler dev as
+  before. The asset layer's behavior — `_headers` detachment, `_redirects`
+  first-match — is the same asset-worker implementation, so the verification
+  target's meaning does not change). It is not used as the hosted serving surface
+  (the dashboard cannot stand without the API)
+
+### Round 3 (re-inspection)
+
+- Impact on W1's invariants: `/invite`'s per-path CSP, `_redirects` normalization,
+  and meta CSP ride onto the server Worker along with the served bytes
+  (dist/public). `run_worker_first` only covers the `/auth` and `/projects`
+  prefixes and never touches `/invite`. Every existing check (write-headers.ts) is
+  non-regressing
+- Coexistence of SPA fallback and the API: inside the `run_worker_first`
+  enumeration it is always the Worker (the API's 404 semantics — §11-2's existence
+  concealment — are not eroded by the asset layer). Unknown paths outside the
+  enumeration get the same SPA fallback as the previous web Worker
+- Impact on server tests (vitest-pool-workers): because they read wrangler.jsonc,
+  the assets directory must physically exist. The test config absorbs this by
+  creating `dist/public` (empty) (an empty directory = zero asset matches = every
+  request goes to the Worker as before. The API tests' meaning is unchanged) —
+  confirmed by measurement
+- A new failure mode: a deploy that forgets the web build serves stale assets
+  (updates are missed independently of the API). Prepending the build to the deploy
+  script closes the systematic source. A deploy without assets fails on wrangler's
+  missing-directory check (there is no shape where it silently becomes API-only)
+
+**Choice: option BM-d (single Worker — maruhi-server bundles and serves the web
+assets)**.
+
+## 2. Ruling BN: coexisting with the bundle-wide `hash` word ban check (session-41 BG)
+
+Consuming the response fields of S5 (chain fetch) and S6 (audit) (`headHashHex` ·
+`prevHashHex` · `chainHeadHashHex` etc.) appeared to break BG's check (the
+`/\bhash\b/i` total ban) — that was this ruling's starting point.
+
+### Round 1
+
+- **Measurement**: `\bhash\b` has **word boundaries** and does not match compound
+  identifiers like `headHashHex` / `auditHeadHashHex` / `prevMetaSigHashHex`
+  (`d`↔`H` and `h`↔`H` are both word characters, so no boundary forms). It matches
+  only the bare word `hash` (identifiers, strings, standalone occurrences in UI
+  copy)
+- **Option BN-a: relax the check (an allowlist of field names)** — dismissed: the
+  measurement above shows no relaxation is needed. An allowlist would weaken the
+  "never read the fragment" guarantee against future drift (the direction BG
+  explicitly avoided)
+- **Option BN-b: leave the check unchanged and avoid the bare word by web-side
+  convention** — API fields are already compound names that do not match, and the
+  implementation never needs to write a bare `hash` (variable names carry
+  `headHashHex` as-is; UI copy can express it with "chain head" / "digest"-family
+  words)
+
+### Round 2 (superior-alternative search)
+
+- Whether UI copy (English — ADR-0017) ever needs to name "hash": S5's head display
+  gets by with "Chain head" + seq + the hex value, and S6's cross-check guidance
+  with "verify with `maruhi audit verify`". Since the hex value itself carries the
+  label's meaning, not a single piece of copy needs the bare word `hash` (the build
+  check will attest this after implementation)
+- The possibility that a chunk of a newly imported Astryx component brings in the
+  word `hash`: this is exactly BG's designed-for "breaks deliberately on an
+  upstream change" shape — if it breaks, that moment's ruling is enforced (no
+  anticipatory relaxation)
+
+### Round 3 (re-inspection)
+
+- The check's target is all JS + index.html under `dist/public` (unchanged from
+  BG). This ruling's acceptance condition is confirming 0 matches on the build
+  after the dashboard is implemented
+- Re-confirming the effect: "no byte sequence anywhere in the served artifact can
+  read an invitation token (the fragment)" remains checkable on every path even
+  after W2's bundle growth
+
+**Choice: option BN-b (the check unchanged; the implementation convention brings
+in no bare `hash` word)**. Zero weakening of the guarantee (BG's "when it breaks, a
+ruling is forced" shape is also preserved).
+
+## 3. Ruling BO: SPA routing and `not_found_handling` (session-41 BF's handoff)
+
+### Round 1
+
+- **Option BO-a: keep `not_found_handling` as SPA, and implement the dashboard as
+  client routes under the `/dashboard` prefix** — deep links
+  (`/dashboard/projects/:id`) work via the SPA fallback. The API's path space
+  (`/auth` · `/projects` prefixes) and the SPA's route space are **plainly
+  separated**
+- **Option BO-b: emit per-route static HTML (abolish `not_found_handling`)** —
+  dismissed: funstack-static does not emit per-route static HTML (the same
+  confirmation as session-41 BF-b), and dynamic paths (`:projectId`) cannot be
+  enumerated. Going multi-entry only adds build complexity
+- **Option BO-c: place the dashboard's routes under `/projects/...` too** —
+  dismissed: collides with BM's `run_worker_first` enumeration, and direct
+  navigation to a deep link would land on the API's JSON (401/404). Overlaying the
+  UI's path space onto the API's path space is also a direction that mixes
+  existence-concealment (§11-2) response semantics into UI navigation
+
+### Round 2 (superior-alternative search)
+
+- The route set: `/dashboard` (S3 login / S4 listing — switched by auth state),
+  `/dashboard/account` (S6 self axis = `/auth/audit/events`),
+  `/dashboard/projects/:projectId` (S5 / S6 project axis / S7 — tabs). Tabs are not
+  made routes (there is no necessity to put them in the URL, and keeping the route
+  surface minimal keeps the near-miss class minimal)
+- Confirmed that funstack-router's partial route definitions (`route()` in a shared
+  module, bound server-side via `bindRoute()`) make typed `:projectId` capture
+  (`useRouteParams`) work
+
+### Round 3 (re-inspection)
+
+- BF's target (near-miss normalization) is only `/invite` — unchanged. Typos under
+  `/dashboard` are the same class as any 404 path (the SPA shell. BG's check
+  guarantees fragments are never read), so no normalization rule is added
+- Deep-linking while unauthenticated also yields the SPA shell, and each screen's
+  401 branch (BP) presents the login path — no screen depends on
+  `not_found_handling` semantics
+
+**Choice: option BO-a (keep the SPA fallback; `/dashboard`-prefixed routes)**.
+
+## 4. Ruling BP: branching and wording for not-logged-in / session-expired (401) / capability-restricted (403)
+
+### Round 1
+
+- **Option BP-a: per-screen individual handling** — dismissed: the 401/403/404
+  branching is common to all screens, and individual handling creates wording drift
+  (a surface for display-discipline §4 violations to creep in)
+- **Option BP-b: a thin fetch layer maps HTTP status into a typed result,
+  centralizing the branching** — the classification: `ok(T)` / `unauthorized` (401)
+  / `forbidden` (403 — carries the reason) / `notFound` (404) / `error` (other +
+  network). The UI looks only at this type
+
+### Round 2 (superior-alternative search — wording. All English = ADR-0017)
+
+- **401 (no logged-out vs expired distinction)**: the server returns no
+  distinction, so the UI does not fabricate one. Directly under `/dashboard` = the
+  S3 login card ("Sign in with GitHub"). A 401 on an in-screen refetch (the
+  typical expiry case) = swap in the same login card + "Your session has ended.
+  Sign in again to continue."
+- **403 `session-not-allowed`**: every API this PR consumes is inside
+  `SESSION_ALLOWED_ENDPOINTS`, so it does not occur in the normal course (occurring
+  = an anomaly like an old/new mismatch). The generic wording "This action is not
+  available to browser sessions. Use the maruhi CLI." guides to the CLI (not hidden
+  — making fail-closed visible)
+- **Other 403s (`insufficient-role` etc. — below-admin on S6 invites is a normal
+  case)**: "Not available to your role in this project, as reported by the
+  server." No hint at what is hidden (count, kind) is carried (AUDIT_SPEC §7)
+- **404 (§11-2's existence concealment)**: "The server reports no such project for
+  your account." — rendered without the UI distinguishing what the response cannot
+  distinguish ("does not exist" vs "not a member")
+- **Network / 5xx**: "Could not reach the server." + a retry button
+
+### Round 3 (re-inspection)
+
+- CSRF: the only write is logout (POST `/auth/logout`). The fetch layer attaches
+  `x-maruhi-csrf: 1` uniformly to mutations (§11-4)
+- When the 401 branch presents the login screen, returning to the original URL is
+  not guaranteed (the callback is fixed at `${origin}/` — BM's constraint).
+  Post-login re-navigation is served well enough by S1/S4's static links (carrying
+  a return state somewhere would only grow storage surfaces)
+- Consistency with the display discipline: error wording is also unified in the
+  "server-declared" phrasing and contains no client-side guesses (assertions like
+  expired / revoked / not a member)
+
+**Choice: option BP-b + the above wording**.
+
+## 5. Ruling BQ: the S6 audit viewer's visibility-class display UX (design document §8 handoff)
+
+### Round 1
+
+- **Option BQ-a: class-selection UI (class 1 / class 2 switching, advanced
+  filters)** — dismissed: classes are the server authorization's internal
+  structure, and the very act of showing the word "class 2" on a below-admin screen
+  is the UI hinting at the invisible set's existence (counter to the spirit of
+  count non-leakage). Advanced cross-search is the CLI's (`maruhi audit`)
+  territory, and W2's demand is unmeasured
+- **Option BQ-b: a single chronological list + a role-adaptive heading** —
+  below-admin: "Events visible to your role" (AUDIT_SPEC §7 / design document
+  §4-4's prescribed wording). Only for admins (when the response carries `seq`) is
+  the seq column shown. No filter is placed — only "Load more" on the `before`
+  cursor
+
+### Round 2 (superior-alternative search)
+
+- The seq column's switching is done not by "prejudging the role" but by "**whether
+  the response has seq**": a form where the client guesses the role and switches
+  would go beyond the §5 matrix's "the table is a UI split, not a defense" and
+  become a duplication of the judgment logic. With response-adaptation, server
+  authorization remains the single decision point
+- The invites tab (the admin axis): a 403 is displayed with BQ/BP's role wording,
+  and the tab itself is not hidden (hiding it would make the UI prejudge "whether
+  I have invites audit". The display is unified under BP's "as reported by the
+  server" wording)
+- Excluding completeness claims: no gap checks or cross-checks are shown, and the
+  footer carries only the static guidance "Integrity checks are the CLI's job:
+  `maruhi audit verify`" (design document §3 S6's provision)
+
+### Round 3 (re-inspection)
+
+- The self axis (`/auth/audit/events`) uses the same list component (seq is always
+  absent on the D1 path — AUDIT_SPEC §7 — so the seq column naturally does not
+  appear)
+- The event row's displayed fields: the event name · serverTs · actor (userId +
+  FP) · target · environment/variable ID · payload (JSON folded). All are as
+  recorded = server-declared raw values. Display-name resolution (via verified
+  statements) is not done — name resolution on a Web with no verification would be
+  trusting a name without statement verification (contrary to §12-2's "do not
+  trust a name that did not pass verification"), so identifier-only display is the
+  display-discipline-correct answer
+
+**Choice: option BQ-b (a single list + the response-adaptive seq column +
+prescribed wording + no filter)**.
+
+## 6. Ruling BR: the implementation form of API consumption (types · the client layer)
+
+### Round 1
+
+- **Option BR-a: Effect HttpApiClient (the derived client from api-schema)** —
+  dismissed: the Effect runtime + the whole Schema decoder set would enter the Web
+  bundle (= the TCB). It runs against CLAUDE.md's "keep the frontend supply chain
+  small" and ADR-0018 decision 1's bundle-check simplicity. Unlike the CLI, the
+  Web's consumption surface is a GET-centric 9 faces, where derivation gains little
+- **Option BR-b: plain `fetch` + hand-written types** — dismissed: type divergence
+  from api-schema would not be detected at compile time (a drift risk across wide
+  structures like audit responses)
+- **Option BR-c: plain `fetch` + type-only imports from api-schema** — with
+  `import type` (erasable) only, zero runtime code enters the bundle, and the types
+  are bound to a single definition (`typeof XSchema.Type`). Only adds
+  `@maruhi/api-schema` (workspace) to web's devDependencies
+
+### Round 2 (superior-alternative search)
+
+- The residual of carrying no runtime verification (Schema decode): these are
+  display-only, value-less reads, and a shape breakage can only become a display
+  breakage (authorization and concealment are server-side). Applicative client-side
+  defense (optional chains) suffices. Rather, "not packing Schema verification into
+  the Web bundle" stands on the same side as the display discipline (verification
+  is not implemented)
+- Enforcing type-only thoroughness: use `import type` only, guaranteed by oxlint /
+  tsc (`verbatimModuleSyntax`-equivalent configuration where present). Bundle
+  contamination would also be caught secondarily by the BG check (api-schema's
+  runtime code contains the word `hash`)
+
+### Round 3 (re-inspection)
+
+- The fetch layer uses `credentials: "same-origin"` (default) + the CSRF header on
+  mutations (BP) + `accept: application/json`. The API base URL is relative
+  (same-origin — guaranteed by BM's construction)
+- Pagination consumption (`nextAfter` / `before`) is also not placed in this layer
+  but held in screen state (the layer stays stateless)
+
+**Choice: option BR-c (plain fetch + type-only imports)**.
+
+## 7. Ruling BS: the form of e2e's authenticated-screen tests (mocks / fixtures)
+
+### Round 1
+
+- **Option BS-a: e2e joined with a real server (vitest-pool-workers' SELF)** —
+  dismissed: web e2e is wrangler dev (static serving) + the existing Playwright
+  harness (session-41 BD); bringing the server's D1/DO startup and an OAuth fake
+  into it would bloat the test from serving verification into integration
+  verification. GitHub OAuth cannot be e2e'd as a real flow in the first place
+- **Option BS-b: intercept the same-origin API paths with Playwright's `page.route`
+  and return fixture JSON** — serving, rendering, and CSP stay real (wrangler dev +
+  a real browser); only the API responses are swapped. The fixtures are literals
+  conforming to api-schema's types (tsc binds them by type)
+
+### Round 2 (superior-alternative search)
+
+- Relationship with CSP: `page.route` swaps at the network layer, and the request
+  destination seen from the page stays same-origin — it does not weaken the
+  `connect-src 'self'` verification (the zero-violation assertion can be kept on
+  every dashboard screen)
+- The branches covered: not logged in (401 → S3), logged in (S4 listing + the
+  presence/absence of the paging button), the project screen (S5 chain/environment,
+  S6 audit + role wording, S7 flags + the dismiss static guidance), 403 (the
+  below-admin wording on invites). Logout's CSRF-header attachment on the POST is
+  verified inside the route handler
+
+### Round 3 (re-inspection)
+
+- The mock-drift risk: a surface remains where fixtures diverge from real server
+  responses (e2e verifies rendering and gating; the wire-compat source of truth is
+  api-schema's types + the server-side tests). Typed fixtures let compilation catch
+  most divergence
+- The existing e2e (CSP · /invite · SPA navigation) is left unchanged and passing —
+  non-regression guaranteed
+
+**Choice: option BS-b (page.route + typed fixtures)**.
+
+## 8. Implementation record
+
+- **Serving configuration (BM)**: `apps/server/wrangler.jsonc` gains `assets`
+  (`../web/dist/public` · `run_worker_first: ["/auth/*", "/projects",
+  "/projects/*"]` · the SPA fallback · the explicit html_handling pin).
+  `apps/server/package.json`'s deploy / deploy:dry-run prepend the web build.
+  Server tests (vitest-pool-workers) were measured to all pass even without the
+  assets directory (504 — the pool does not require the assets setting)
+- **Screens**: `apps/web/src/dashboard/` — `api.ts` (the fetch layer = BP/BR) ·
+  `types.ts` (type-only imports = BR) · `routes.ts` (the `/dashboard` prefix = BO)
+  · `shared.tsx` (unified failure-display wording = BP) · `chain-view.ts` (S5's
+  display folding — no verification) · `DashboardScreen.tsx` (S3 + S4) ·
+  `ProjectScreen.tsx` (S5 + S6 + S7) · `AccountAuditScreen.tsx` (S6 self axis) ·
+  `AuditEventList.tsx` (BQ). Bound into `App.tsx` via bindRoute; a dashboard entry
+  point was added to S1
+- **Following the complexity discipline**: fallow's changed-files audit (the CRAP
+  threshold) detected 14 new functions → all resolved by decomposition (op-handler
+  tables, guard separation, subcomponentization). Since every high-complexity
+  function in the repository was this PR's (14 out of 110k LOC), "function
+  cyclomatic ≤ 4" was judged the de-facto discipline, and no suppression comments
+  or baseline additions were used
+- **Tests**: 4 new e2e (BS — page.route + typed fixtures. S3's 401 branch · S4
+  paging + CSRF-bearing logout · S5–S7 tabs + the invites-403 wording + the seq
+  response-adaptation · the self axis's seq non-display) + a new web unit-test
+  setup (`vitest.unit.config.ts` = the root vitest integration, `test/unit/` —
+  chain-view's folding, the api layer's classification and CSRF header). The
+  existing 7 pass unchanged
+- **BG check measured (BN)**: even on the grown bundle containing Astryx Table /
+  TabList / SegmentedControl etc., the word `hash` stays at 0 hits = the check
+  passes unchanged
+- Out-of-scope confirmation: no changes to server implementation, api-schema, the
+  CLI, or packages/crypto (server changes are only the serving configuration in
+  wrangler.jsonc / package.json). No spec wording changes (only follow-ups in
+  design document §3 S4 · §7 · §8)
+
+## 9. Post-implementation re-inspection (one round of re-searching superior alternatives — task step 7)
+
+- **BM re-inspection**: reconsidered and re-rejected `run_worker_first: true` +
+  in-Worker asset-binding fetches (controlling serving in code) — it is the
+  direction of adding executable code to the serving surface (same reason as BF-c /
+  BM-b), and `_headers` / `_redirects`' asset-layer semantics would have to be
+  re-implemented by hand. The declaration-only BM-d remains the superior
+  alternative
+- **Defect fix (BM — found by measurement)**: the first enumeration of
+  `run_worker_first` (`/auth/*` · `/projects` · `/projects/*`) **missed `POST
+  /invites/accept` (§15-2 — the CLI's invitation acceptance)**. Found by
+  cross-checking against api-schema's complete endpoint catalog and confirmed by
+  measurement — since it fell outside the enumeration, the request went to the
+  asset layer, where `_redirects`' lowercase catch-all `/invite*` (session-41 BF)
+  **swallows it, POST included, with 301 → `/invite`** (breaking the acceptance
+  API). Resolved by adding `/invites` · `/invites/*` to the enumeration (measured:
+  POST /invites/accept = Worker 401, `/invite` static 200 · `/Invite` 301
+  unchanged). The lesson is the same shape as session-39 §10-1 — an enumeration
+  that "should be covered by the prefixes" is mechanically cross-checked against
+  the complete endpoint catalog
+- **Incidental observation (BM)**: Worker responses via run_worker_first also get
+  STS and nosniff from `_headers`' `/*` (measured). Adding security headers to API
+  responses is additive; endpoint behavior and contracts are unchanged
+- **BM measurement (wrangler dev — the combined configuration)**: `/` and
+  `/dashboard` = SPA shell 200, `/auth/config` = Worker (503 SetupIncomplete — the
+  correct response of an unconfigured server), `/projects` = Worker 401, `/invite`
+  = the static page + per-path CSP `script-src 'none'`, `/Invite` = 301 →
+  `/invite`, `/`'s CSP = the bootstrap-hash permission. Measured-confirmation that
+  all of W1's invariants and the API path separation also hold in the combined
+  form
+- **Residual (BM)**: because pool-workers ignores the assets setting, the combined
+  form's serving behavior (run_worker_first's actual effect) is outside CI's
+  automated tests (the measurement above was a local wrangler dev). `deploy:dry-run`
+  carries the configuration-validity check, and effect confirmation is placed on
+  checking real responses after the first deploy (the same zero-load recommendation
+  as W1's BC/BE recommendations)
+- **BN re-inspection**: backed by measurement (§8). No need for relaxation or
+  refinement arose
+- **BP strengthening (adopted)**: added a sign-in path (Go to sign-in →
+  `/dashboard`) to the in-screen 401 banner (session expired) — a form with wording
+  but no path dead-ended users on expiry
+- **Reconsidering the post-login landing (rejected)**: the OAuth callback is fixed
+  at `${origin}/` (S1) (API behavior — unchanged in this PR). The option of having
+  S1 automatically query `/auth/me` and auto-transition to the dashboard is
+  rejected — it would bring an API call into P1's (unauthenticated visitor's)
+  static landing and also rob the path of someone signed in who wants to see S1.
+  S1's static link (open the dashboard) suffices
+- **Reconsidering S5's FP column (rejected)**: adding a key-FP column to the
+  member table is not placed — an add_member entry does not carry the target's FP
+  (only the public key), and computing the FP client-side would be a crypto
+  derivation (a half-step into bundling verification code). FPs are limited to the
+  displays of chain heads, audit rows, and grant_server (whose entries carry the
+  FP) — consistent with display-discipline §4's "an FP is a reference value"
+- **Review follow-up (PR #107 Bugbot — both fixed as legitimate bugs)**:
+  (1) **stale-fetch race** — `useApiResource` / `AuditEventList` could let a
+  late-arriving in-flight response overwrite newer screen state (projectId ·
+  audit-axis switching). Fixed to discard stale responses via an effect-cleanup
+  stale mark / a generation counter. (2) **empty page + nextAfter end
+  misjudgment (S4)** — §11-5's candidate pages can become `{ projects: [],
+  nextAfter }` via ghost exclusion and confirmation-failure omission, but the
+  first-version UI misjudged 0 rows = the end and hid the remaining memberships.
+  Fixed to auto-follow the cursor until rows grow or nextAfter runs out (depth is
+  bounded by the number of candidate pages — total-loss cost is on par with the
+  CLI's full-page enumeration). An e2e covering paging across an empty page was
+  added
+- **Review follow-up (PR #107 pullfrog)**: (1) **making the run_worker_first
+  coverage sweep checkable** — responding to the point that the enumeration is a
+  hand-written copy of the api-schema path space whose drift is silent (navigation
+  requests get swallowed by the SPA shell 200), a sweep test of the same shape as
+  session-capability.ts was added (apps/server/test/serving-topology.test.ts —
+  coverage of every registered endpoint + a regression guard for `/invite` being
+  uncovered. wrangler.jsonc's real values are injected by vitest.config.ts via
+  unstable_readConfig). Promotes §9's defect fix from a one-time cross-check to a
+  permanent fail-loud. (2) **Added deploy:dry-run to CI** (step 8b — a
+  credential-free configuration-validity check), moving the combined
+  configuration's config verification from a human ceremony to CI (the actual
+  serving behavior remains outside automated tests — residual). (3) **Asserting
+  CSP-header presence** — a zero-violation check passes even with the header
+  missing (it is vacuous), so the e2e directly pins header presence on the 3
+  /dashboard-family paths. (4) **Prototype-chain-lookup self-defense** —
+  `ENTRY_FOLDERS[entry.op]` / `ROLE_TOKEN_COLOR[role]` could hit prototype-chain
+  values under a hostile server's op/role (`__proto__` etc.) (the consequence is
+  only rendering breakage) — Object.hasOwn guards + a regression unit test.
+  (5) Moved RoleToken into shared.tsx (the placement point). The stale-fetch
+  finding had already been fixed in the Bugbot handling (40bd7b1) (pullfrog was
+  reviewing an old commit). (6) The incremental review's passing note (infinite
+  following under a broken or hostile server returning a non-advancing nextAfter)
+  was also closed with the one condition "cursor not advancing = treated as the
+  end" (uniformizing the server-distrust posture). **The scope question about the
+  post-sign-in landing (`${origin}/`)** is accepted for W2 per this ruling (BP
+  round 3) — adding a return path to the callback is an API-behavior change and is
+  sent to a separate PR (an AUTH_SPEC §3 revision) when demand appears
+- **Reconsidering S6's page-end determination (kept)**: "a page shorter than limit
+  is the end" would add a dependency on the server's default limit (50), so the
+  current "an empty page is the end" form is kept (one extra fetch in exchange for
+  no assumption about the response shape)
+
+## 10. Second-round superior-alternative search (owner request — 2026-08-29)
+
+One additional round per the owner's request to "search for new options that could
+be silver bullets or superior alternatives". The targets were the points **recorded
+as residuals** through §9 (= the weakest parts of the current rulings). 3 were
+adopted; 4 were considered and dismissed.
+
+### Ruling BT: moving e2e's serving side to the combined configuration (the actually-deployed configuration) (adopted)
+
+- **Target**: BM's largest residual — "the combined form's serving behavior
+  (run_worker_first's actual effect, the SPA fallback, per-path headers) is outside
+  CI's automated tests". pullfrog's approved review had also named it "the
+  residual". The e2e ran against apps/web/wrangler.jsonc (a static-only harness
+  that is **not deployed**), so the verification target and the served artifact
+  were different things
+- **Finding**: because the dashboard e2e mocks the API via page.route (ruling BS),
+  **the API needs no preparation whichever Worker serves**. So if e2e's wrangler
+  dev launches on apps/server (the production configuration bundling assets), every
+  existing assertion (/invite's per-path CSP, the near-miss 301, the SPA fallback,
+  the CSP header) becomes **a check of the deployed configuration** as-is — the
+  change is one spawn cwd + added assertions only
+- **Additional gain**: an unconfigured local server's bare responses (503 / 401
+  JSON) serve as evidence that "the Worker was reached", so a **regression test for
+  reaching API paths** can live in e2e — a test reproducing §9's measured defect
+  (`POST /invites/accept` swallowed by `_redirects`' catch-all with a 301) is
+  pinned (it becomes two layers: the sweep test's static check + real serving's
+  dynamic check)
+- **Confirming a concern that was not dismissed**: wrangler dev (server)
+  auto-creates D1 / DO locally and starts without an OAuth secret (confirmed across
+  §9's 4 BM measurements). D1 migrations and secrets are unneeded on the mocked-e2e
+  path
+- apps/web/wrangler.jsonc stays as the preview harness (e2e's source of truth moves
+  to the server configuration under this ruling — matching the verification target
+  to the served artifact is the body of the superior alternative)
+
+### Ruling BU: returning to /dashboard after sign-in (adopted — resolving BP's residual)
+
+- **Target**: BP round 3's accepted residual — "the callback is fixed at
+  `${origin}/`, so sign-in lands on the landing page and needs one more click"
+- **Adopted form**: clicking Sign in places a **one-shot marker** in
+  sessionStorage, and only when S1 **consumes** the marker does it check `/auth/me`
+  once and return to /dashboard (`resume.ts` + an invisible client island on S1).
+  S1 without a marker (a P1 visitor) keeps making zero API calls — avoiding BP
+  round 3's rejected "always query /auth/me on S1" while removing only the extra
+  hop. When the session was not established (OAuth aborted), only the marker is
+  consumed and the landing stays. When storage is unavailable (private mode etc.)
+  it degrades to the typed "no marker" case
+- **Rejected options**: (a) changing the callback's redirect target to /dashboard —
+  an API-behavior change, which this PR prohibits (if demand remains, it is handed
+  off to a separate PR as an AUTH_SPEC §3 revision. Adopting this ruling mostly
+  erases that demand itself). (b) detecting the GitHub return via
+  document.referrer — the received referrer depends on GitHub's Referrer-Policy and
+  is non-deterministic. (c) returning via `_redirects` — the static layer cannot
+  know session state and would break P1's landing
+
+### Ruling BV: real Schema verification of e2e fixtures (adopted — shrinking BS's residual)
+
+- **Target**: BS round 3's residual — "a surface remains where fixtures diverge
+  from real server responses (typing catches most at compile time)". Type
+  conformance does not see runtime constraints like hex length or patterns, so the
+  fixtures' coordinate values (row_id length, projectId format) were only
+  eyeballed
+- **Adopted form**: add an e2e test that `decodeUnknownSync`s every fixture through
+  api-schema's real Schemas. The Schema runtime code runs **inside the test process
+  only** (not bundled — consistent with ruling BR's "no Schema in the Web bundle".
+  The pin `effect@4.0.0-rc.111` already in effect is explicitly added to web's
+  devDependencies — zero supply-chain increment)
+- This makes "mock-to-wire-contract drift" mechanically checked in two layers:
+  compile-time (types) + runtime (Schema). The remaining residual is only the
+  "the server implementation returns a narrower response than the Schema" class
+  (that is the server-side tests' territory)
+
+### Considered and rejected (round 2)
+
+- **Using a compat flag (`assets_navigation_has_no_effect`) to disable navigation
+  absorption itself, eliminating the need for run_worker_first** — dismissed: API
+  reachability would come to depend on Sec-Fetch-Mode semantics, a longer chain of
+  inference than explicit enumeration + a sweep (checkable, fail-loud). It would
+  also be exposed to future flag changes
+- **Deleting apps/web/wrangler.jsonc** (resolving the harness duplication) —
+  dismissed: `bun run preview` (a lightweight static-only preview) still has value.
+  With e2e's source of truth moved to the server configuration (BT), the harm of
+  "mistaking the verification target" is already gone
+- **Return via referrer / callback changes** (recorded above as BU's rejected
+  options)
+- **Auto-generating fixtures (from Schema Arbitrary)** — dismissed: the screens'
+  assertions are bound to concrete values (names, IDs); generated values make the
+  verification non-deterministic. Real verification (BV) yields the same drift
+  detection more simply
+
+## 11. Third-round superior-alternative search (owner request — 2026-08-29)
+
+A round targeting points still left at **manual verification or convention level**
+after round 2 (§10). 2 adopted, 4 considered and dismissed.
+
+### Ruling BW: a single catalog of the dashboard's consumption surface + a client-side sweep (adopted)
+
+- **Target**: W2's core invariant — "every endpoint the screens call is inside
+  `SESSION_ALLOWED_ENDPOINTS`" — was **manually verified** (pullfrog's first
+  review also cross-checked it by hand). The path strings were also scattered
+  hand-written across screens, and an api-schema rename or typo would stay silent
+  until a runtime 404 / 403
+- **Adopted form**: `src/dashboard/endpoints.ts` — all path builders + a catalog
+  binding each builder to its api-schema (group, endpoint) identifier
+  (`DASHBOARD_ENDPOINTS`). Screens fetch only through the builders. A unit test
+  (test/unit/endpoints.test.ts) cross-checks the catalog against the registered
+  HttpApi and pins (1) **path consistency** (builder-generated path = the
+  template's sample substitution — unknown parameters are left unsubstituted and
+  fail loud), (2) **session permission** (`isSessionAllowedEndpoint` — a new
+  screen calling a non-enumerated API breaks not at runtime 403 but in the test),
+  (3) no duplicate catalog entries
+- **Effect**: paired with the serving-topology sweep (server-side — run_worker_first
+  coverage), **both directions of consumption become mechanically checked around
+  api-schema**. Along with it, the serving-topology side's negative-direction check
+  was extended (`/invite` and the `/dashboard` family must not be swallowed by
+  worker-first)
+- The reverse direction ("does the dashboard consume every session-permitted read
+  surface?") is not an invariant and is not imposed (recoveryStatus ·
+  invites.list/revoke are permitted but outside W2's screens — W3b's territory)
+
+### Ruling BX: making the wrangler configuration single-sourced — deleting apps/web/wrangler.jsonc (adopted)
+
+- **Target**: apps/web/wrangler.jsonc, which §10 "kept for preview". After BT
+  (e2e's move to combined), its sole consumer is the preview script, and only the
+  **dual management of the configuration** (a drift surface) — the html_handling
+  pin etc. — remained
+- **Finding**: `wrangler dev --config ../server/wrangler.jsonc` works even with
+  apps/web as cwd (path resolution is relative to the config file — measured: root
+  200 / /projects 401 / /invite 200). Switching preview to it leaves
+  apps/web/wrangler.jsonc with zero consumers → delete it
+- **Effect**: the serving configuration converges to the single
+  apps/server/wrangler.jsonc, and every path — deploy, e2e, preview — reads the
+  same configuration. §10's keep decision had a premise (preview using the old
+  configuration) that disappeared, so this ruling overrides it
+
+### Considered and rejected (round 3)
+
+- **`Cache-Control: immutable` on content-hashed assets** — dismissed: a
+  performance improvement, not the resolution of a residual (security /
+  correctness), and the cost of adding a checked surface (a new write-headers
+  block) to an already-approved PR does not balance. An independent PR when demand
+  appears
+- **SRI (subresource integrity)** — dismissed: under all-assets self-served + strict
+  CSP, SRI adds no guarantee (the server = verifier composition cannot be broken
+  by SRI, as ADR-0018 Context states)
+- **Strengthening the `/*` CSP's form-action 'self' → 'none'** — dismissed: the
+  dashboard has no forms, and 'self' already confines it to the same origin — no
+  threat is closed. Only the cost of breaking the `/*` CSP string's invariance
+  fixed in W1 (a non-regression-check premise) remains
+- **Exporting the return-marker key for sharing (resolving a duplicated literal
+  with e2e)** — resolved (under the review follow-up below, the positive-side test
+  stopped injecting the marker itself, so the duplicated literal remains only in 1
+  negative test. A key-name drift would not change that test's expectation
+  [staying on the landing], so it is harmless)
+- **Review follow-up (pullfrog — BU's coverage finding)**: the first version's
+  resume test injected the marker via addInitScript, so it would not break even if
+  (1) the consume guard were removed and it regressed to "always /auth/me on S1",
+  or (2) the Link stopped carrying onClick and the marker were never written. The
+  positive test was replaced with a **real-navigation-driven** one (actually
+  clicking /dashboard's login card → replacing the real navigation to
+  /auth/github/start with a 302 → `/` → returning on the marker the
+  implementation wrote), and a test was added that pins **zero API calls on a
+  markerless landing** via request collection — both of BU's 2 invariants became
+  fail-loud
+
+## 12. Fourth-round superior-alternative search (owner request — 2026-08-29 · final round)
+
+Request: "just one more time — search for further superior-alternative ideas". The
+two sweeps introduced in round 3 (BW / serving-topology) themselves were included
+in the candidate set, and a 3-round comparison targeted "check gaps" and "remaining
+hand-written duplication".
+
+### Ruling BY: completing the consumption-surface catalog (adopted)
+
+BW's catalog had 3 check gaps left:
+
+1. **The navigation consumption surface was outside the catalog** — the login
+   card's `/auth/github/start` was a Link, not a fetch, so it never entered the
+   catalog and had neither path-consistency nor session-surface classification
+   checked. `apiPaths.githubStart()` was added, and an `access: "session" |
+   "unauthenticated"` discriminator was introduced into the catalog. The sweep
+   became access-aware: session surfaces go through `isSessionAllowedEndpoint` as
+   before, and unauthenticated surfaces must belong to
+   `UNAUTHENTICATED_ENDPOINTS` (AUTH_SPEC §5) (consuming an auth-required surface
+   as a navigation path also breaks in the test)
+2. **The triple duplication of cursor-query assembly** — projects' `?after=` and
+   the two audit `?before=` were hand-written per screen. Unified into
+   `withCursor(path, name, value)` (the single query-attachment point;
+   encodeURIComponent included)
+3. **Unchecked builder bypass** — the catalog's completeness depended on the
+   discipline "screens fetch only through builders", yet that discipline itself
+   was manual-verified. A source tripwire (scanning src/ for
+   `["']/(auth|projects|invites)` excluding endpoints.ts) was added to the unit
+   tests. Backtick strings are out of scope (they would collide with path
+   examples inside comments) — positioned as the same "good-faith drift
+   detection" as the word-hash tripwire (session-41 BG); preventing deliberate
+   bypass is not the goal
+
+### Ruling BZ: a non-intersection sweep of the SPA route space (adopted)
+
+- **Target**: of BO's separation — "the SPA is `/dashboard`-prefixed; the API is
+  `/auth` · `/projects` · `/invites`-prefixed" — the reverse direction, "no SPA
+  route is swallowed by run_worker_first", was checked by a **hand-written path
+  enumeration** (4 paths) inside serving-topology.test.ts. Forgetting to follow
+  the enumeration when adding a route would silently narrow the check
+- **Adopted form**: homeRoute / aboutRoute are moved into routes.ts, and a single
+  catalog `SPA_ROUTES` of all routes is exported (App.tsx only binds them via
+  bindRoute). A web-unit test (test/unit/spa-topology.test.ts) cross-checks the
+  real route definitions against the real serving configuration (reading
+  apps/server/wrangler.jsonc via `unstable_readConfig` — the same "read the real
+  thing" posture as BT/BX), verifying that every SPA route's concretized path is
+  covered by no run_worker_first rule. The rule semantics (exact match / prefix `*`
+  only · everything else conservatively throws) are identical to the
+  serving-topology side
+- The serving-topology side's hand-written 4-path check **stays** (it verifies in
+  the real workerd environment, and `/invite` is not an SPA route so it is outside
+  BZ's catalog). The two are not duplication but complementary — "representative
+  points on the server side, all-routes derivation on the client side"
+
+### Considered and rejected (round 4)
+
+- **Integrating fetching into loader hooks (data fetching via funstack-router's
+  loader)** — dismissed: against the churn of wholesale-remaking the screens'
+  useApiResource / manual paging, the only gain is earlier fetch timing. At a
+  read-only dashboard's scale it is a lateral move, not a superior alternative
+- **Branded types for parameters (branded types like ProjectId)** — dismissed: an
+  option that would type-prevent builder-argument mix-ups, but W2's consumption
+  surface has only 2 kinds (projectId / environmentId), and route-parameter-derived
+  values are strings anyway. It only adds ceremony; there is no actual bug surface
+- **Auto-generating run_worker_first from api-schema (code generation)** —
+  dismissed: against the cost of bringing in a new mechanism (a generator +
+  checking its output), the bidirectional sweep (coverage + non-intersection)
+  already makes the same drift fail-loud. The configuration stays "plain readable
+  JSONC", which is better for a self-hosted distribution
+
+## 13. Fifth-round superior-alternative search (owner request — 2026-08-29)
+
+Request: "they keep being found — that's a problem, so search once more for further
+superior-alternative ideas". The search ran with the generation rule made explicit:
+every round-3-to-4 finding came from "a place where a hand-written copy of a
+machine-readable source of truth (api-schema / wrangler.jsonc / route definitions)
+remained". So src/ in its entirety was mechanically grep-inventoried for
+"hand-written copies", and the residual 2 were closed.
+
+### Ruling CA: the SPA path builder (spaPaths) — BY's dual (adopted)
+
+- **Target**: path literals for internal navigation were scattered across src/ in 9
+  places (6 `/dashboard`-family + 3 `/` `/about`). Renaming a path in routes.ts
+  would break links but stay **silent** — the SPA fallback returns the shell with a
+  200 (the SPA side wholesale retained the same drift surface BY had closed on the
+  API side)
+- **Adopted form**: the path constants in routes.ts were made a single home, and
+  route() definitions and the `spaPaths` builders (home / about / dashboard /
+  account / project) read the same constants. Every screen href / navigateTo goes
+  through the builders. `dashboard` was added to the tripwire's (ruling BY) prefix
+  set, and its exclusions extended to the 2 builder homes (endpoints.ts ·
+  routes.ts). The spa-topology test gained a builder ↔ SPA_ROUTES binding check
+  (substitution completeness + every builder corresponds to a declared route)
+- Because constants are shared inside a single module, a cross-check test like
+  apiPaths ↔ api-schema is unnecessary in principle (the duplication itself does
+  not exist) — a form stronger than BY
+
+### Ruling CB: schema cross-checking the cursor query names (adopted)
+
+- **Target**: the `after` / `before` attached by withCursor were hand-written
+  strings, unbound from api-schema's query declarations (membership.list's `after`,
+  the audit family's `before`). Renaming a parameter would break silently in the
+  shape "paging keeps silently returning page 1", since the server ignores unknown
+  queries
+- **Adopted form**: the catalog gained `cursor?: "after" | "before"` (4 surfaces
+  declare it). The sweep verifies that the registered endpoint's query Schema AST
+  (`query.ast.propertySignatures`) declares a property of that name
+
+### Considered and rejected (round 5)
+
+- **Sharing ruleCovers (de-duplicating serving-topology / spa-topology)** —
+  dismissed: the runtime environments differ (workerd / node), and sharing would
+  need a new home (a test-support package etc.). The 15-line semantics sits
+  alongside the consuming side in both places with conservative throw, so the
+  mechanism cost of sharing is higher
+- **Cross-checking RoleToken's color map against the role enumeration** —
+  dismissed: api-schema has no closed role enumeration (it is chain-derived), and
+  an unknown role degrades **visibly** to a neutral Token under the Object.hasOwn
+  guard — not a silent breakage, so it does not meet the ruling's target criterion
+  (silent drift)
+- **Builder-izing e2e expectations** — dismissed: making a test's expected literal
+  a builder output would become tautological (builder == builder) and lose
+  checking power. The current two stages — the unit sweep binding builders ↔ the
+  source of truth, e2e pinning rendering ↔ literals — is the correct form
+
+### Convergence assessment
+
+Every round-3-to-5 finding came from the single generation rule "look for
+hand-written copies of machine-readable sources of truth". After CA/CB, zero
+hand-written copies of paths, queries, or routes remain in src/ (confirmed by the
+grep inventory), and the remaining literals are only (a) the definitions inside
+the builder homes themselves, (b) test expectations (deliberate — the rejection
+above). Findings from this rule are judged exhausted. The next superior
+alternative, if any, would come from a different generation rule (e.g. when W3's
+write family adds new sources of truth); on W2's read surface it is closed.
+
+### Review follow-up (pullfrog — CB's call-site binding. 2026-08-29)
+
+CB's first version cross-checked catalog ↔ api-schema but left **call sites ↔
+catalog** as bare literals (`withCursor(path, "after", …)`), so passing `after` to
+an audit surface still type-checked — a "silently repeating page 1" residual
+remained (pullfrog's finding). Cursor names were raised to shared constants
+(PROJECTS_CURSOR / AUDIT_CURSOR), and the paging surfaces' builders now take the
+cursor value themselves and attach the name internally (withCursor became module-
+private). The names disappeared from call sites, making a mix-up syntactically
+impossible — the same "eliminate duplication by sharing constants" shape as
+ruling CA. The real name a builder attaches is pinned by a unit test of
+expectation literals (for the same reason as the e2e rejection, the literals on
+the expectation side are deliberate).
+
+## 14. Sixth-round superior-alternative search (owner request — 2026-08-29)
+
+Request: "I think we should consider one more time whether there are
+superior-alternative ideas, since something new keeps being found". The generation
+rule was updated: even after §13's "duplication search" converged, pullfrog found
+2 findings (the route() bypass, the cursor name on the call side) — both of the
+type "**one link in an invariant's chain** relies on convention". So each
+invariant was walked across all links: **definition → consumption → wire →
+server**.
+
+### Ruling CC: type-binding the 403-reason comparison literal (adopted)
+
+- **Target**: shared.tsx's `reason === "session-not-allowed"` was a bare literal,
+  unbound from api-schema's ForbiddenReasonSchema (a closed Literals). Renaming
+  the reason would become "a silent fallback from the CLI-guidance wording to the
+  generic 403 wording" (a quiet degradation of the display discipline)
+- **Adopted form**: types.ts gained `ForbiddenReason = typeof
+  ForbiddenReasonSchema.Type` (type-only — zero bundle impact), and the comparison
+  literal became a shared constant declared `"session-not-allowed" satisfies
+  ForbiddenReason`. A rename breaks at compile error (mutation-verified: TS1360).
+  The runtime's defensive string treatment (ruling BP) is unchanged
+- ApiFailure.reason's type itself stays `string` (the wire is not verified — BR).
+  The distinction: only the literals **to which we assign meaning** are bound
+
+### Ruling CD: mechanically checking the type-only-import discipline (adopted)
+
+- **Target**: ruling BR's "bring no Effect / Schema runtime code into the bundle"
+  was **convention only**: `import { MeSchema } from "@maruhi/api-schema"` passes
+  build and run silently while the bundle (= the TCB) and the supply chain quietly
+  grow — one of W2's heaviest invariants was the only unchecked link
+- **Adopted form**: under verbatimModuleSyntax, type-only imports are explicit
+  `import type` syntax, so a source tripwire rejects value imports from effect /
+  @maruhi/api-schema under src/ (mutation-verified). The scan reuses
+  findSourceOffenders
+
+### Considered and rejected (round 6)
+
+- **Making the CSRF header name a shared constant** — rejected (W3 handoff): the
+  name appears in 3 places (web api.ts, server middleware.ts, an api-schema
+  comment), and binding it requires changes to server / packages, which is outside
+  this PR's "web only" scope (§1 (a)). The web side's name is already covered by
+  the e2e checking the header is actually sent, and a server-side rename is a
+  server-side PR's duty. The proposal is to place a constant export in api-schema
+  at W3
+- **Adding method to the catalog (checking apiGet/apiPost mix-ups)** — dismissed:
+  a mix-up fails visibly as 404/405, not a silent drift (the logout POST is
+  actually checked by e2e). A confusing-wording residual remains, but it does not
+  reach the cost of one check surface
+- **Runtime response verification** — rejected (re-confirming): ADR-0018 revision
+  2 · item 4's deliberate non-implementation. Shape breakage is defended by the
+  display layer's optional access without implying "verified" — design, not drift
+
+### Convergence assessment (updated)
+
+§13's assessment ("the duplication search is exhausted") was correct **within the
+rule's scope**, but the higher-level rule of chain walking produced 2 more
+findings. After CC/CD, across W2's invariant chains (paths · queries · routes ·
+authorization classification · wording literals · the import discipline · the
+serving topology), convention-reliant links are zero except recorded deliberate
+rejections (test expectations, the server side of the CSRF name, runtime
+verification). The next finding, if any, would come from a yet-higher generation
+rule, and what that is cannot be identified at this point — the "keeps being
+found" structure itself is a consequence of review bots and the searches
+traversing the same rule space, and it will stop when the rule space stops
+expanding.

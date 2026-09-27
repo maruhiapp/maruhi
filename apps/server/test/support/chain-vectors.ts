@@ -1,7 +1,9 @@
-// packages/crypto/test-vectors/chain-entries.json のサーバーテスト向けビュー。
-// ベクター JSON → 型付きエントリの変換は @maruhi/crypto/test-support の実装
-// (テストベクターの正規変換)を再利用し、ここでは重複させない。
-// crypto の型付きエントリ(camelCase)は api-schema のワイヤ形式と構造的に同一。
+// A server-test view over packages/crypto/test-vectors/chain-entries.json.
+// The vector JSON -> typed entry conversion reuses the implementation in
+// @maruhi/crypto/test-support (the canonical conversion for test vectors)
+// rather than duplicating it here.
+// crypto's typed entries (camelCase) are structurally identical to the
+// api-schema wire form.
 
 import type { ChainEntry } from "@maruhi/crypto";
 import {
@@ -19,11 +21,13 @@ interface VectorAuthzNegative {
   readonly name: string;
   readonly entry: VectorEntry;
   readonly expected_reason: string;
-  /** 前提チェーン(extended_chains のキー。無指定 = 正規チェーン)。 */
+  /** Prerequisite chain (key into extended_chains; unset = the canonical
+   * chain). */
   readonly chain?: string;
 }
 
-/** 認可系 negative(完全なエントリを持ち、API 経由の追記拒否テストに再利用できる) */
+/** Authorization negatives (carry a complete entry; reusable for
+ * API-driven append-rejection tests). */
 export const vectorAuthzNegatives: readonly VectorAuthzNegative[] = vectorNegatives.flatMap(
   (negative) =>
     negative.kind === "authorization" &&
@@ -40,7 +44,8 @@ export const vectorAuthzNegatives: readonly VectorAuthzNegative[] = vectorNegati
       : [],
 );
 
-/** 四眼の 4 op(CRYPTO_SPEC §6.2 PF1 — K5 からサーバーが受理する)。 */
+/** The 4 four-eyes ops (CRYPTO_SPEC §6.2 PF1 — accepted by the server since
+ * K5). */
 const FOUR_EYES_OPS: ReadonlySet<string> = new Set([
   "set_approval_policy",
   "propose",
@@ -48,7 +53,8 @@ const FOUR_EYES_OPS: ReadonlySet<string> = new Set([
   "withdraw",
 ]);
 
-/** 正規チェーンで最初の四眼 op の seq(seq 20 = set_approval_policy。方針オフのヘッドは直前)。 */
+/** Seq of the first four-eyes op in the canonical chain (seq 20 =
+ * set_approval_policy; the policy-off head is the one right before). */
 export const firstFourEyesSeq: number = (() => {
   const first = vectorEntries.find((v) => FOUR_EYES_OPS.has(v.op));
   if (first === undefined) {
@@ -57,10 +63,10 @@ export const firstFourEyesSeq: number = (() => {
   return first.seq;
 })();
 
-/** ベクターエントリを API ワイヤ形式(= crypto の ChainEntry)へ変換する */
+/** Converts a vector entry to the API wire form (= crypto's ChainEntry) */
 export const toWireEntry = (vector: VectorEntry): ChainEntry => toTypedEntry(vector);
 
-/** ベクターチェーンのプロジェクト ID = genesis エントリハッシュ(CRYPTO_SPEC §6.4) */
+/** The vector chain's project ID = genesis entry hash (CRYPTO_SPEC §6.4) */
 export const vectorProjectId = (() => {
   const genesis = vectorEntries[0];
   if (genesis === undefined) {

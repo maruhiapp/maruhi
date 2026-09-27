@@ -1,15 +1,20 @@
-// 変数 API のハンドラ(AUTH_SPEC §12-5 / §12-7)。
+// Handlers for the variable API (AUTH_SPEC §12-5 / §12-7).
 //
-// 判定順(§12-3): 認証(ミドルウェア)→ 値サイズの先行検査(413。資源保護は
-// 意味論的判定に優先)→ 申告 AAD / ステートメントの座標一致(422。リクエスト
-// 内容のみに依存する自己整合検査で、存在情報を運ばない)→ トークンスコープ →
-// DO(メンバーシップ / role / CAS / 署名 / 数量)。共通経路は data-http.ts の
-// callProjectData。DO 拒否として返しうるエラーの集合は各エンドポイントの契約
-// 宣言(api-schema)から導出される(手書きの列挙は無い)。
+// Check order (§12-3): authentication (middleware) → preliminary
+// value-size check (413 — resource protection precedes semantic
+// checks) → coordinate match of declared AAD / statement (422 — a
+// self-consistency check depending only on request contents, carrying
+// no existence information) → token scope → DO (membership / role /
+// CAS / signature / quantity). The shared path is callProjectData in
+// data-http.ts. The set of errors returnable as DO rejections is
+// derived from each endpoint's contract declaration (api-schema) — no
+// hand-written enumeration.
 //
-// 作成は version 1 の値 + VariableMetaStatement(metaVersion 1)の同梱(§12-5)。
-// variableId・表示名はステートメントが運ぶため、AAD 座標検査の期待 variableId は
-// ステートメントの variableId を使う(URL に variableId を持たない唯一の値経路)。
+// Creation bundles a version-1 value with a VariableMetaStatement
+// (metaVersion 1) (§12-5). Since variableId and the display name are
+// carried by the statement, the expected variableId of the AAD
+// coordinate check uses the statement's variableId (the only value
+// path without a variableId in the URL).
 
 import { ForbiddenError, maruhiApi } from "@maruhi/api-schema";
 import { RequestAuth } from "@maruhi/core";
@@ -39,9 +44,10 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
   handlers
     .handle("create", ({ params, payload, endpoint }) =>
       Effect.gen(function* () {
-        // 作成 2 形の Union(§12-5): active = 値同梱 / declared = 値なし
-        // (ワイヤ Schema が status と値の有無の結合を固定する)。値を伴う
-        // 先行検査(サイズ・AAD 座標)は active 形のみ
+        // Union of the 2 create forms (§12-5): active = value bundled
+        // / declared = no value (the wire Schema fixes the coupling of
+        // status and value presence). The value-bearing preliminary
+        // checks (size, AAD coordinates) apply only to the active form
         const value = "value" in payload ? payload.value : undefined;
         if (value !== undefined) {
           yield* checkValueSize(value);
@@ -54,7 +60,8 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
           yield* checkAadCoordinates(value, {
             projectId: params.projectId,
             environmentId: params.environmentId,
-            // variableId の保存先はステートメントが確定する(値の AAD との一致検査)
+            // The variableId destination is fixed by the statement
+            // (match-checked against the value's AAD)
             variableId: payload.statement.variableId,
           });
         }
@@ -90,15 +97,16 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
               params.environmentId,
               params.variableId,
               toValueInput(payload.value),
-              // 再暗号化マーカー(AUTH_SPEC §12-5 — 省略は false)
+              // Re-encryption marker (AUTH_SPEC §12-5 — omission means false)
               payload.reencryption === true,
             ),
         });
       }),
     )
     .handle("activate", ({ params, payload, endpoint }) =>
-      // activation 複合(§12-5): 先行検査は create(値同梱形)と同一で、
-      // variableId は URL が確定する
+      // The activation composite (§12-5): preliminary checks identical
+      // to create (the value-bundled form), and the variableId is fixed
+      // by the URL
       Effect.gen(function* () {
         yield* checkValueSize(payload.value);
         yield* checkStatementCoordinates(payload.statement, {
@@ -170,10 +178,12 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
     )
     .handle("pull", ({ params, endpoint, request }) =>
       Effect.gen(function* () {
-        // GET だが変数ごとの var.read 監査の記録という状態を持つ(§12-7 /
-        // AUDIT_SPEC §3.3)— 第三者サイトが被害者のセッションで偽の var.read を
-        // 刻む監査証跡の汚染の遮断(論拠は statefulGetCsrfViolated の JSDoc)。
-        // メタデータのみモード(pullMetadata)は監査を記録しないため対象外
+        // A GET, but it carries state: the per-variable var.read audit
+        // record (§12-7 / AUDIT_SPEC §3.3) — blocks pollution of the
+        // audit trail by a third-party site stamping fake var.reads with
+        // the victim's session (rationale in the JSDoc of
+        // statefulGetCsrfViolated). The metadata-only mode
+        // (pullMetadata) records no audit and is out of scope
         const principal = yield* (yield* RequestAuth).principal;
         if (statefulGetCsrfViolated(principal, request.headers)) {
           return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
@@ -192,26 +202,29 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
             toWireVariable(params.projectId, params.environmentId, row),
           ),
           deletedVariables: pulled.deletedVariables,
-          // declared 変数のステートメント(§12-7 — 値なし。存在するときのみ載る)
+          // Statements of declared variables (§12-7 — no value; present only when they exist)
           ...(pulled.declaredVariables === undefined
             ? {}
             : { declaredVariables: pulled.declaredVariables }),
           deks: pulled.deks,
-          // schemaPolicy の advisory 同梱(§12-7 / §12-11)
+          // The schemaPolicy advisory bundling (§12-7 / §12-11)
           schemaPolicy: pulled.schemaPolicy,
-          // 最新マニフェスト(§12-7 — 保存行があれば必ず同梱。欠落はクライアント側が
-          // 一律拒否する — CRYPTO_SPEC §6.3)
+          // The latest manifest (§12-7 — always bundled when a stored
+          // row exists; the client uniformly refuses its absence —
+          // CRYPTO_SPEC §6.3)
           ...(pulled.manifest === undefined ? {} : { manifest: pulled.manifest }),
-          // チェックポイント時点の値スナップショット(§12-7 — 基準 checkpoint の
-          // 保存行があれば必ず同梱。クライアント規則 2 の材料 — CRYPTO_SPEC §6.3)
+          // The value snapshot at checkpoint time (§12-7 — always
+          // bundled when a stored row of the baseline checkpoint
+          // exists; the material of client rule 2 — CRYPTO_SPEC §6.3)
           ...(pulled.checkpointSnapshot === undefined
             ? {}
             : { checkpointSnapshot: pulled.checkpointSnapshot }),
         };
       }),
     )
-    // メタデータのみモード(§12-7): 認可は pull と同一(read × reader)。
-    // 値・DEK を返さず、var.read は記録されない(AUDIT_SPEC §3.3)
+    // Metadata-only mode (§12-7): authorization identical to pull
+    // (read × reader). Returns no values or DEKs; no var.read is
+    // recorded (AUDIT_SPEC §3.3)
     .handle("pullMetadata", ({ params, endpoint }) =>
       callProjectData<EnvironmentMetadataPullValue>()({
         endpoint,

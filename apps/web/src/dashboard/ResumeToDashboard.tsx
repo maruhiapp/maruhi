@@ -1,10 +1,12 @@
 "use client";
 
-// S1 に置く不可視の復帰島(裁定 BU): サインイン往復のマーカーがあるときだけ
-// `/auth/me` を 1 回確認し、セッションが立っていれば /dashboard へ戻す。
-// マーカーがなければ何もしない(P1 訪問者のランディングは API 呼び出しゼロの
-// まま)。セッションが立っていなければ(OAuth 中断・失敗)マーカーだけ消えて
-// ランディングに留まる — 断定的なエラー表示は置かない(サーバー申告の範囲外)。
+// The invisible return island placed on S1 (ruling BU): only when the
+// sign-in round-trip marker exists does it check `/auth/me` once and,
+// if a session is up, return to /dashboard.
+// Without the marker it does nothing (a P1 visitor's landing stays at
+// zero API calls). If no session is up (OAuth aborted / failed) only
+// the marker disappears and the page stays on the landing — no
+// assertive error display (outside what the server reports).
 import { type ReactNode, useEffect } from "react";
 
 import { apiGet } from "./api.ts";

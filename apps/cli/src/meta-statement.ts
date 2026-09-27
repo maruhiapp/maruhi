@@ -1,14 +1,20 @@
-// 作成ステートメント(metaVersion 1・active・prev 空 — AUTH_SPEC §12-4 / §12-5 =
-// CRYPTO_SPEC §4.2)の著者署名とワイヤ導出の共有実装。
+// Shared implementation of author-signing and wire derivation for
+// create statements (metaVersion 1, active, prev empty — AUTH_SPEC
+// §12-4 / §12-5 = CRYPTO_SPEC §4.2).
 //
-// 「署名した context」と「ワイヤに載せる statement」を独立の 2 リテラルで書くと、
-// 1 フィールドの食い違いが「署名がワイヤと異なるバイト列に対して検証される」
-// 静かな欠陥になる(型では捕まらず、他クライアントの検証失敗として発現する)。
-// MetaStatementContext は 1 回だけ構築し、ワイヤは toWireStatement で機械的に
-// 導出する。push.ts(variable)/ env-create.ts(environment)の差分は target のみ。
+// Writing "the signed context" and "the statement on the wire" as
+// two independent literals makes a one-field discrepancy a silent
+// defect where "the signature is verified against bytes different
+// from the wire" (not caught by types; it manifests as a
+// verification failure on other clients). MetaStatementContext is
+// built exactly once, and the wire is derived mechanically by
+// toWireStatement. The difference between push.ts (variable) /
+// env-create.ts (environment) is only the target.
 //
-// 注意: test/support/crypto.ts はワイヤ形式を意図的に独立再実装しており、本番
-// 実装とのドリフトを検出する相互チェックとして機能するため、ここへ統合しない。
+// Note: test/support/crypto.ts intentionally re-implements the wire
+// format independently and functions as a cross-check that detects
+// drift from the production implementation, so it is not unified
+// into here.
 
 import type { MetaStatementContext } from "@maruhi/crypto";
 import { computeMetaSignedBytesHash, encodeHex, signMetaStatement, SUITE_ID } from "@maruhi/crypto";
@@ -18,19 +24,22 @@ import { cliError, type CliError } from "./errors.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /**
- * クライアント採番の変数 ID(AUTH_SPEC §12-1 形式)。名前とは独立な乱数 ID に
- * する: 表示名の変更・削除済み ID の再利用禁止(tombstone)と衝突しないため。
- * 採番は作成系の全経路(push の create — push.ts、宣言作成 — schema.ts)が
- * この 1 実装を共有する。
+ * The client-issued variable ID (AUTH_SPEC §12-1 format). It is a
+ * random ID independent of the name: so it does not collide with the
+ * ban on renaming display names / reusing deleted IDs (tombstone).
+ * Every creation path shares this one implementation (push's create
+ * — push.ts; declaration creation — schema.ts).
  */
 export function generateVariableId(): string {
   return `v${encodeHex(crypto.getRandomValues(new Uint8Array(12)))}`;
 }
 
 /**
- * 署名 + 自計算 signed-bytes ハッシュの共有実装(v1 作成形 = 本モジュール、
- * レイアウト v2 形 = schema-statement.ts)。ハッシュは受理されたらローカル床の
- * メタ記録になる自計算値(§6.3 — サーバー申告でない)。
+ * Shared implementation of signing + self-computing the
+ * signed-bytes hash (the v1 create form = this module; the
+ * layout-v2 form = schema-statement.ts). The hash is a
+ * self-computed value that, once accepted, becomes the local
+ * floor's meta record (§6.3 — not a server declaration).
  */
 export function signStatementAndHash(
   context: MetaStatementContext,
@@ -55,7 +64,7 @@ export function signStatementAndHash(
   });
 }
 
-/** 作成ステートメントの対象(§4.2 の target — 変数か環境自身)。 */
+/** The create statement's target (§4.2's target — a variable or the environment itself). */
 export type CreateStatementTarget =
   | { readonly kind: "variable"; readonly variableId: string }
   | { readonly kind: "environment" };
@@ -64,16 +73,17 @@ export interface CreateStatementInput {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly target: CreateStatementTarget;
-  /** 表示名(呼び出し側で NFC 正規化済み — §4.2 / §12-1)。 */
+  /** The display name (NFC-normalized by the caller — §4.2 / §12-1). */
   readonly name: string;
   readonly authorUserId: string;
   readonly signingKey: CryptoKey;
 }
 
 /**
- * 署名対象 context の唯一の構築点。宣言ヘッドは「最後に検証したチェーン
- * ヘッド」(値署名と同じ)。CAS リトライで検証ビューが進めば呼び出し側が
- * 作り直す(試行ごとに署名するため)。
+ * The single construction point of the context to sign. The
+ * declared head is "the last verified chain head" (same as value
+ * signing). If the verified view advances on a CAS retry, the
+ * caller rebuilds it (each attempt is signed).
  */
 function createStatementContext(input: CreateStatementInput) {
   return {
@@ -105,17 +115,18 @@ interface WireCreateStatementBase {
   readonly signatureHex: string;
 }
 
-/** 変数作成の同梱ステートメントのワイヤ形(variableId 付き)。 */
+/** The wire shape of the bundled statement for variable creation (with variableId). */
 export type WireVariableCreateStatement = WireCreateStatementBase & {
   readonly variableId: string;
 };
 
-/** 環境作成の同梱ステートメントのワイヤ形。 */
+/** The wire shape of the bundled statement for environment creation. */
 export type WireEnvironmentCreateStatement = WireCreateStatementBase;
 
 /**
- * ワイヤ statement を署名済み context から機械的に導出する。フィールドの出所は
- * 常に context(独立リテラルの再列挙を作らない — このモジュールの存在理由)。
+ * Derives the wire statement mechanically from the signed context.
+ * Every field's source is always the context (never re-enumerate an
+ * independent literal — this module's reason to exist).
  */
 function toWireStatement(
   context: CreateStatementContext,
@@ -139,7 +150,7 @@ function toWireStatement(
 
 export interface SignedCreateStatement<Wire> {
   readonly statement: Wire;
-  /** 受理されたらローカル床のメタ記録になる自計算ハッシュ(§6.3 — サーバー申告でない)。 */
+  /** The self-computed hash that, once accepted, becomes the local floor's meta record (§6.3 — not a server declaration). */
   readonly metaSigHashHex: string;
 }
 

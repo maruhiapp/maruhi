@@ -1,23 +1,32 @@
-// 招待の非機密ピン留めの永続化層(CRYPTO_SPEC §6.3 帯域外アンカー (a) と、
-// その招待者側の対応物 = 発行時ピン)。
+// The persistence layer of invite non-secret pinning (CRYPTO_SPEC
+// §6.3 out-of-band anchor (a) and its inviter-side counterpart =
+// the issue-time pin).
 //
-// - **受諾側アンカー**: 招待リンクのフラグメントが運ぶ genesis(= projectId、
-//   ファイル名が兼ねる)・招待者の検証済みヘッド(hash + seq)・招待者の
-//   user_id + 鍵 FP。受諾時にピン留めし、同期時の機械照合(context.ts)が
-//   「ヘッド包含 + 招待者 FP の在籍一致」を検査する(§6.3 (a) / §6.5)。
-// - **発行側ピン**: `invite create` が控える 招待 id → (link_pub, role, 期限, 宛先 login)。
-//   member add 時に一覧応答(サーバー申告)と突合し、行のすり替え・role の
-//   虚偽申告を機械検出する(受諾側アンカーと対称の防衛)。別デバイスで
-//   member add する場合はピンが無く、儀式の表示照合のみに劣化する(SHOULD)。
+// - **Acceptor-side anchor**: the genesis the invite link's
+//   fragment carries (= projectId, which the filename doubles as),
+//   the inviter's verified head (hash + seq), the inviter's user_id
+//   + key FP. Pinned at accept time; the sync-time mechanical
+//   collation (context.ts) checks "head containment + inviter FP
+//   membership match" (§6.3 (a) / §6.5).
+// - **Issuer-side pin**: what `invite create` records — invite id →
+//   (link_pub, role, expiry, destination login). At member add
+//   time it collates against the list response (a server
+//   declaration) to mechanically detect row substitution and role
+//   misdeclaration (the defense symmetric to the acceptor-side
+//   anchor). member add from a different device has no pin and
+//   degrades to the ceremony's display check only (SHOULD).
 //
-// 内容は公開鍵・ハッシュ・連番・user_id・FP・role・login のみで、平文値・鍵素材・
-// リンク鍵の種を含まない(ディスクレス不変条件と両立)。置き場は床と同系
-// (<config dir>/invites/<projectId>.json)。書き込みは temp + rename の
-// read-merge-write(床と同じ規律)。
+// The contents are only public keys, hashes, sequence numbers,
+// user_id, FP, role, and login — no plaintext values, key material,
+// or link-key seeds (compatible with the diskless invariant).
+// Storage is the same family as the floor (<config
+// dir>/invites/<projectId>.json). Writes are temp + rename
+// read-merge-write (same discipline as the floor).
 //
-// fail-open: ファイル不在は「ピンなし」、破損は「ピンなし + 区別可能な警告」
-// (呼び出し側が出す)。ローカル状態を消せる攻撃者はピンの守備範囲外
-// (§14.3-3 の非保証に帰着 — 床と同じ線引き)。
+// fail-open: a missing file is "no pin", corruption is "no pin + a
+// distinguishable warning" (the caller emits it). An attacker who
+// can erase local state is outside the pins' remit (reduces to
+// §14.3-3's non-guarantee — the same boundary as the floor).
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -30,44 +39,45 @@ import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
 import { GITHUB_LOGIN } from "./invite-link.ts";
 
-/** 受諾側の招待リンクアンカー(§6.3 (a))。 */
+/** The acceptor-side invite-link anchor (§6.3 (a)). */
 export interface InviteAnchor {
   readonly headSeq: number;
   readonly headHashHex: string;
   readonly inviterUserId: string;
-  /** ユーザー鍵 FP(16 バイト hex 32 文字 — §3)。 */
+  /** The user key FP (16-byte hex, 32 chars — §3). */
   readonly inviterKeyFingerprintHex: string;
-  /** 招待者の sig 公開鍵(リンクの `is=`)。初回同期で FP に加えてチェーン上の鍵と突合する。 */
+  /** The inviter's sig public key (the link's `is=`). Collated against the on-chain key in addition to the FP at first sync. */
   readonly inviterSigPubHex: string;
-  /** 初回機械照合が成功したときの自ビューの head seq(未照合 = null)。 */
+  /** My view's head seq at the time the first mechanical collation succeeded (not yet collated = null). */
   readonly verifiedAtSeq: number | null;
 }
 
-/** 発行側のピン(招待 id → 発行時に確定した内容。IV 改訂 — リンク公開鍵 + 宛先 login)。 */
+/** The issuer-side pin (invite id → the content settled at issue time. IV revision — link public key + destination login). */
 export interface IssuedInvitePin {
-  /** リンク公開鍵(hex 64)。サーバー申告の行の link_pub と突合する(SHOULD)。 */
+  /** The link public key (hex 64). Collated against the row's link_pub of the server declaration (SHOULD). */
   readonly linkPubHex: string;
   readonly role: "reader" | "member" | "admin";
-  /** 付与予定 scope(2026-09-15 ES K4 — role と同じ地位の追加突合材料。真実源は発行署名)。 */
+  /** The scope to be granted (2026-09-15 ES K4 — extra collation material of the same standing as role. The source of truth is the issue signature). */
   readonly scopeKind: ScopeKind;
   readonly scopeEnvironmentIds: readonly string[];
   readonly expiresAtMs: number;
   /**
-   * 宛先の GitHub login(`invite create --github` — 裏付け元の照合先。手元だけに
-   * 置く: サーバー・監査・チェーンには書かない)。未指定 = null。
+   * The destination's GitHub login (`invite create --github` —
+   * the backing source's check target. Kept only at hand: never
+   * written to the server, audit, or chain). Unspecified = null.
    */
   readonly expectedGithubLogin: string | null;
 }
 
-/** プロジェクト 1 つ分のピンファイル(invites/<projectId>.json)。 */
+/** The pin file for one project (invites/<projectId>.json). */
 export interface InvitePins {
   readonly v: 1;
   readonly anchor: InviteAnchor | null;
-  /** キーは招待 id。 */
+  /** The key is the invite id. */
   readonly issued: Readonly<Record<string, IssuedInvitePin>>;
 }
 
-/** 読み込み結果(fail-open — 呼び出し側が状態別の警告を出す)。 */
+/** The load result (fail-open — the caller emits a state-specific warning). */
 export interface PinsLoadResult {
   readonly pins: InvitePins | null;
   readonly state: "loaded" | "missing" | "corrupt";
@@ -76,9 +86,9 @@ export interface PinsLoadResult {
 /** Load / merge boundary for the invite pin files. */
 export interface PinStoreShape {
   readonly load: (projectId: string) => Effect.Effect<PinsLoadResult, CliError>;
-  /** アンカーの保存(read-merge-write。既存 issued ピンは保持)。 */
+  /** Saves the anchor (read-merge-write. Existing issued pins are kept). */
   readonly saveAnchor: (projectId: string, anchor: InviteAnchor) => Effect.Effect<void, CliError>;
-  /** 発行ピンの追記(read-merge-write + 期限切れ長期経過分の掃除)。 */
+  /** Appends an issued pin (read-merge-write + sweeping rows long past their expiry). */
   readonly saveIssuedPin: (
     projectId: string,
     inviteId: string,
@@ -88,25 +98,29 @@ export interface PinStoreShape {
 
 export class PinStore extends Context.Service<PinStore, PinStoreShape>()("cli/PinStore") {}
 
-/** ピンディレクトリ(設定と同系の置き場: <config.json の親>/invites)。 */
+/** The pins directory (a location of the same family as the config: <config.json's parent>/invites). */
 export function pinsDirOf(configPath: string): string {
   return join(dirname(configPath), "invites");
 }
 
 /**
- * 発行ピンの保持窓: 期限切れからこの時間を過ぎた行は掃除する。受諾済み招待の
- * add_member は期限切れ後も可能(期限が縛るのは受諾のみ — AUTH_SPEC §15-1)な
- * ので、期限そのものでは消さない。窓を過ぎた member add はピンなし(表示照合
- * のみ)へ劣化する。
+ * The issued pin's retention window: rows past this much time
+ * after expiry are swept. An accepted invite's add_member is
+ * possible even after expiry (the expiry binds only acceptance —
+ * AUTH_SPEC §15-1), so it is not deleted at the expiry itself. A
+ * member add past the window degrades to pinless (display check
+ * only).
  */
 const ISSUED_PIN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 const HEX_32 = /^[0-9a-f]{32}$/;
 const ROLES = ["reader", "member", "admin"] as const;
-// 招待 id はサーバー採番(ULID)だが形式へは依存しない(AUTH_SPEC §11-1 の
-// ID 形式非依存と同じ姿勢)。先頭 `_` の禁止が `__proto__` を構造的に排除する
-// (floor.ts のレコードキー規律)。参照側は floorRecordGet を使う
+// The invite id is server-issued (ULID) but does not depend on
+// the format (the same posture as AUTH_SPEC §11-1's ID-format
+// independence). Banning a leading `_` structurally excludes
+// `__proto__` (floor.ts's record-key discipline). The reading side
+// uses floorRecordGet
 const INVITE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -117,7 +131,7 @@ function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-/** レコードの文字列フィールドをパターン検証して返す(不一致 = null)。 */
+/** Returns a record's string field after pattern validation (mismatch = null). */
 function patternField(
   record: Record<string, unknown>,
   key: string,
@@ -127,13 +141,13 @@ function patternField(
   return typeof value === "string" && pattern.test(value) ? value : null;
 }
 
-/** レコードの正整数フィールド(不一致 = null)。 */
+/** A record's positive-integer field (mismatch = null). */
 function positiveIntField(record: Record<string, unknown>, key: string): number | null {
   const value = record[key];
   return isPositiveInteger(value) ? value : null;
 }
 
-/** null 可の文字列フィールド: null = null、パターン一致 = 値、それ以外(欠落を含む)= "invalid"。 */
+/** A nullable string field: null = null, pattern match = the value, otherwise (including missing) = "invalid". */
 function nullablePatternField(
   record: Record<string, unknown>,
   key: string,
@@ -142,7 +156,7 @@ function nullablePatternField(
   return record[key] === null ? null : (patternField(record, key, pattern) ?? "invalid");
 }
 
-/** null 可の正整数フィールド(null = null、それ以外の不正・欠落 = "invalid")。 */
+/** A nullable positive-integer field (null = null, other malformed/missing = "invalid"). */
 function nullablePositiveIntField(
   record: Record<string, unknown>,
   key: string,
@@ -201,7 +215,7 @@ function decodeIssuedPin(value: unknown): IssuedInvitePin | null {
   return { linkPubHex, role, ...scope, expiresAtMs, expectedGithubLogin };
 }
 
-/** scope の対(構造規則違反 = "invalid")。構造規則は CRYPTO_SPEC §6.2(kind の閉集合・all ⇒ 空・256 以下・重複なし・id 形式)。 */
+/** The scope pair (a structural-rule violation = "invalid"). The structural rules are CRYPTO_SPEC §6.2's (kind's closed set, all ⇒ empty, at most 256, no duplicates, id format). */
 function scopeFields(
   record: Record<string, unknown>,
 ): { readonly scopeKind: ScopeKind; readonly scopeEnvironmentIds: readonly string[] } | "invalid" {
@@ -217,7 +231,7 @@ function scopeFields(
   return { scopeKind: kind, scopeEnvironmentIds: [...ids] };
 }
 
-/** 環境 id リストの構造規則(§12-1 形式・256 以下・重複なし)。 */
+/** The structural rules of an environment-id list (§12-1 format, at most 256, no duplicates). */
 function isScopeIdList(ids: unknown): ids is readonly string[] {
   return (
     Array.isArray(ids) &&
@@ -227,8 +241,8 @@ function isScopeIdList(ids: unknown): ids is readonly string[] {
   );
 }
 
-/** 厳格デコード。スキーマ不一致は全体を破損扱い(部分読みしない — 床と同じ)。 */
-/** issued レコード全体のデコード(1 件でも不正なら全体拒否)。 */
+/** Strict decoding. A schema mismatch treats the whole as corrupt (no partial reads — same as the floor). */
+/** Decoding the whole issued record (one malformed entry rejects the whole). */
 function decodeIssuedRecord(value: unknown): Record<string, IssuedInvitePin> | null {
   if (!isRecord(value)) {
     return null;
@@ -268,7 +282,7 @@ function decodeInvitePins(json: string): InvitePins | null {
   return { v: 1, anchor, issued };
 }
 
-/** 発行ピンの参照(own-property — floor.ts の規律)。 */
+/** Reads an issued pin (own-property — floor.ts's discipline). */
 export function issuedPinOf(
   pins: InvitePins | null,
   inviteId: string,
@@ -285,10 +299,12 @@ export function makeFilePinStore(dir: string): PinStoreShape {
     try {
       json = await readFile(pathOf(projectId), "utf8");
     } catch (error) {
-      // 未作成(ENOENT)**だけ**を「なし」に畳む。EACCES / EISDIR 等は「既存の
-      // ピンを読めなかった」失敗で、「なし」に畳むと merge が既存ファイルを
-      // 空から再構築し、検証済みアンカーと発行ピンを黙って失わせる
-      // (config.ts の読み込みと同じ規律)
+      // Only missing (ENOENT) **alone** folds into "none". EACCES
+      // / EISDIR etc. are a "could not read the existing pins"
+      // failure — folding them into "none" makes merge rebuild the
+      // existing file from empty and silently lose the verified
+      // anchor and the issued pins (same discipline as config.ts's
+      // reading)
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return { pins: null, state: "missing" };
       }
@@ -314,10 +330,13 @@ export function makeFilePinStore(dir: string): PinStoreShape {
       try: async () => {
         const loaded = await loadRaw(projectId);
         if (loaded.state === "corrupt") {
-          // 破損ファイルへの書き込みは拒否する(床の「書き込み失敗を fail-open に
-          // しない」と同じ規律)。空からの再構築にすると、検証済みアンカーが
-          // 破損 1 回 + 次の書き込みで黙って失われ、「アンカーが最初から無い」と
-          // 区別できなくなる(§6.3 (a) の検出そのものがアンカーに依存する)
+          // Writing onto a corrupt file is refused (same
+          // discipline as the floor's "a write failure is never
+          // fail-open"). Rebuilding from empty would let the
+          // verified anchor be silently lost via one corruption +
+          // the next write and become indistinguishable from
+          // "there never was an anchor" (§6.3 (a)'s detection
+          // itself depends on the anchor)
           throw new Error("corrupt");
         }
         const base: InvitePins = loaded.pins ?? { v: 1, anchor: null, issued: {} };
@@ -337,7 +356,7 @@ export function makeFilePinStore(dir: string): PinStoreShape {
       }),
     saveAnchor: (projectId, anchor) => merge(projectId, (pins) => ({ ...pins, anchor })),
     saveIssuedPin: (projectId, inviteId, pin) => {
-      // 形式外 id を書くと次回ロードが全体破損になる(厳格デコード)ため手前で拒否
+      // Writing an out-of-format id makes the next load wholly corrupt (strict decoding), so refuse beforehand
       if (!INVITE_ID.test(inviteId)) {
         return Effect.fail(
           cliError(

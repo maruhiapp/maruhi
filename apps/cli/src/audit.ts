@@ -1,20 +1,26 @@
-// `maruhi audit`(AUDIT_SPEC §6 / §7)。
+// `maruhi audit` (AUDIT_SPEC §6 / §7).
 //
-// - list: project DO の監査イベント(新しい順、seq カーソル)。可視性クラス
-//   (§6)はサーバーが強制し、ここは表示だけを担う
-// - invites: invite.* の D1 読み取り(チェーン role admin — サーバー強制)
-// - self: user 系イベントの本人閲覧(§3.1 / §6 — 要監視イベントの監視経路)
-// - verify: チェーンミラーの全単射検証(§1-5「ミラーはチェーンから再構築
-//   可能」/ §6 の緩和策「ミラーはチェーンと突合して検証できる」のクライアント
-//   実装)。検証済みチェーンから期待ミラー列を再構築し、欠落・偽造・改変の
-//   3 方向を検出する。写像はサーバーと共有(@maruhi/core の chainMirrorEvent)
-//   — 二重管理による検証器ドリフトの誤警報を構造的に塞ぐ
+// - list: the project DO's audit events (newest-first, seq cursor). The
+//   visibility classes (§6) are server-enforced; this side only renders
+// - invites: D1 read of invite.* (chain role admin — server-enforced)
+// - self: the user's own view of user events (§3.1 / §6 — the monitoring
+//   path for the to-be-monitored events)
+// - verify: bijection verification of the chain mirror (the client
+//   implementation of §1-5 "the mirror can be rebuilt from the chain" /
+//   §6's mitigation "the mirror can be verified by reconciling against the
+//   chain"). Rebuilds the expected mirror column from the verified chain
+//   and detects the three directions — missing, forged, altered. The
+//   mapping is shared with the server (@maruhi/core's chainMirrorEvent) —
+//   structurally blocking false alarms from verifier drift under double
+//   maintenance
 //
-// TCB 規律(AUDIT_SPEC §7): 応答の全フィールドはサーバー申告である。表示名は
-// 検証済みメタステートメント(削除済み変数の tombstone 含む)からのみ解決し、
-// payload の名前スナップショットは「記録」として区別表示する(表示名の位置に
-// 昇格しない)。chain.* 行は検証済みチェーンとの突合結果をラベルで示す。
-// 平文値・鍵素材はこのモジュールを通らない。
+// TCB discipline (AUDIT_SPEC §7): every field of a response is a server
+// claim. Display names are resolved only from verified meta-statements
+// (including tombstones of deleted variables); a name snapshot inside a
+// payload is displayed separately as a "record" (never promoted to the
+// display-name position). chain.* rows show their reconciliation result
+// against the verified chain as a label.
+// Plaintext values and key material never pass through this module.
 
 import {
   type AuditEventSchema,
@@ -44,18 +50,20 @@ import { logNote, logWarning } from "./notice.ts";
 import { type NameIndex, resolveNames } from "./rotation.ts";
 
 /**
- * ワイヤの監査イベント(api-schema の AuditEventSchema の受信形 — 型は Schema
- * から導出し、ここで形を複製しない)。全フィールドはサーバー申告(冒頭の TCB 規律)。
+ * The wire audit event (the received shape of api-schema's
+ * AuditEventSchema — the type is derived from the Schema; its shape is not
+ * duplicated here). Every field is a server claim (the TCB discipline
+ * above).
  */
 export type WireAuditEvent = typeof AuditEventSchema.Type;
 
-/** list / invites / self 共通のページ指定。before は前ページ末尾行の id。 */
+/** The paging spec shared by list / invites / self. before is the id of the previous page's last row. */
 export interface AuditPageOptions {
   readonly limit: number | null;
   readonly before: string | null;
 }
 
-/** list のフィルタ(AUDIT_SPEC §7 の語彙)。 */
+/** list's filters (AUDIT_SPEC §7 vocabulary). */
 export interface AuditListFilters {
   readonly event: string | null;
   readonly actorUserId: string | null;
@@ -64,19 +72,22 @@ export interface AuditListFilters {
   readonly variableId: string | null;
 }
 
-/** list の表示オプション。 */
+/** list's display options. */
 export interface AuditListOptions {
   /**
-   * 集約形 `var.read`(AUDIT_SPEC §3.3 — 値付き pull ごとに環境単位 1 行)の
-   * 変数列挙を 1 変数 1 行で展開する。既定は件数の要約のみ。
+   * Expand the aggregated `var.read` form (AUDIT_SPEC §3.3 — one row per
+   * environment per value pull) into one line per variable. The default is a
+   * count-only summary.
    */
   readonly expandReads: boolean;
 }
 
 /**
- * 集約形 `var.read` の変数列挙(AUDIT_SPEC §3.3)。集約行は変数 ID を列に持たず
- * (variableId 欠落)、payload の `variables` に返した変数を列挙する。他イベントは null。
- * 解釈はサーバーと同じ共有実装。
+ * The variable enumeration of an aggregated `var.read` row (AUDIT_SPEC
+ * §3.3). An aggregated row carries no variable ID column (variableId
+ * absent); it enumerates the read variables in the payload's
+ * `variables`. Other events return null. Interpretation uses the same
+ * shared implementation as the server.
  */
 function aggregatedReadOf(event: WireAuditEvent): readonly AuditReadVariable[] | null {
   if (event.event !== VAR_READ_EVENT || event.variableId !== undefined) {
@@ -86,7 +97,7 @@ function aggregatedReadOf(event: WireAuditEvent): readonly AuditReadVariable[] |
 }
 
 // ---------------------------------------------------------------------------
-// ミラー突合(§1-5 / §6)
+// Mirror reconciliation (§1-5 / §6)
 // ---------------------------------------------------------------------------
 
 function isJsonRecord(value: unknown): value is Record<string, unknown> {
@@ -101,7 +112,7 @@ function jsonRecordEqual(left: Record<string, unknown>, right: Record<string, un
   );
 }
 
-/** JSON 値の構造的等価(キー順に依存しない)。 */
+/** Structural equality of JSON values (key-order independent). */
 function jsonEqual(a: unknown, b: unknown): boolean {
   if (a === b) {
     return true;
@@ -117,9 +128,11 @@ function describeValue(value: unknown): string {
 }
 
 /**
- * 1 エントリの期待ミラー行のうち、観測行と同じイベント名のもの(完成した approve は
- * `chain.approved` と内側 op の適用行の 2 行を持つ — イベント名は重ならない)。名前が
- * どの期待行にも一致しなければ先頭行を返し、event の不一致として報告される。
+ * Of one entry's expected mirror rows, the one with the same event name as
+ * the observed row (a completed approve has two rows — `chain.approved` plus
+ * the inner op's applied row — and the event names never overlap). If the
+ * name matches no expected row, the first row is returned and the mismatch
+ * is reported on event.
  */
 function expectedRowFor(
   entry: ChainEntry,
@@ -129,17 +142,19 @@ function expectedRowFor(
   const rows = chainMirrorEvents(entry, observed.serverTs, index);
   const first = rows[0];
   if (first === undefined) {
-    // chainMirrorEvents は 1 行以上を返す(全 op が写像を持つ)
+    // chainMirrorEvents returns 1+ rows (every op has a mapping)
     throw new Error("chain mirror mapping produced no rows");
   }
   return rows.find((row) => row.event === observed.event) ?? first;
 }
 
 /**
- * chain.* ミラー行と期待行の突合。サーバーと同一の写像(chainMirrorEvents)から
- * 期待行を再構成し、不一致フィールドを列挙する(空 = 一致)。serverTs はサーバー
- * 受理時刻(クライアントに検証材料がない)のため対象外。chain.* の payload は
- * 署名済みエントリ由来(適用行は提案エントリの内側 op 由来)なので突合対象。
+ * Reconciliation of a chain.* mirror row against the expected row. Rebuilds
+ * the expected row from the same mapping as the server (chainMirrorEvents)
+ * and lists the mismatched fields (empty = match). serverTs is out of scope —
+ * it is the server's acceptance time and the client has nothing to verify it
+ * against. A chain.* payload derives from the signed entry (an applied row
+ * derives from the proposal entry's inner op), so it is in scope.
  */
 function mirrorMismatches(expected: AuditEventRecord, observed: WireAuditEvent): readonly string[] {
   const reasons: string[] = [];
@@ -159,9 +174,9 @@ function mirrorMismatches(expected: AuditEventRecord, observed: WireAuditEvent):
     expected.targetKeyFingerprintHex,
     observed.targetKeyFingerprintHex,
   );
-  // 写像はミラー行に api_token_id を設定しない(§3.4 の actor はチェーン
-  // エントリの写し)。期待は常に undefined だが、偽の「トークン経由」表示への
-  // 誤導を塞ぐため明示的に突合する
+  // The mapping never sets api_token_id on a mirror row (§3.4's actor is a
+  // copy of the chain entry's). The expectation is always undefined, but the
+  // check is explicit to block misleading into a fake "via token" display
   check("actor.api_token_id", expected.actorApiTokenId, observed.actor.apiTokenId);
   check("environment_id", expected.environmentId, observed.environmentId);
   check("variable_id", expected.variableId, observed.variableId);
@@ -171,15 +186,17 @@ function mirrorMismatches(expected: AuditEventRecord, observed: WireAuditEvent):
   return reasons;
 }
 
-/** 検証済みチェーンの seq → エントリ索引。 */
+/** Verified-chain seq → entry index. */
 function entryIndexOf(entries: readonly ChainEntry[]): ReadonlyMap<number, ChainEntry> {
   return new Map(entries.map((entry) => [entry.seq, entry]));
 }
 
 /**
- * approve / withdraw の参照先が提案索引に無いか。検証済みチェーンでは到達不能
- * (索引は同じ検証済みチェーンから構築される — unknown-proposal は無効エントリ)だが、
- * verify(問題として報告)と list(unverified ラベル)が同じ述語を共有する。
+ * Whether an approve / withdraw's referenced proposal is missing from the
+ * proposal index. Unreachable on a verified chain (the index is built from
+ * the same verified chain — an unknown-proposal is an invalid entry), but
+ * verify (reports it as a problem) and list (an unverified label) share the
+ * same predicate.
  */
 function proposalMissingFor(entry: ChainEntry, index: ProposalIndex): boolean {
   return (
@@ -187,7 +204,7 @@ function proposalMissingFor(entry: ChainEntry, index: ProposalIndex): boolean {
   );
 }
 
-/** chain.* 行のトラストラベル(表示用)と不一致詳細。 */
+/** A chain.* row's trust label (for display) and mismatch details. */
 interface MirrorTrust {
   readonly label: string;
   readonly mismatches: readonly string[];
@@ -203,8 +220,9 @@ function mirrorTrustOf(
     return { label: "mirror=mismatch", mismatches: ["chain_seq: the mirror row has no chain_seq"] };
   }
   if (observed.chainSeq > headSeq) {
-    // 同期後にチェーンが伸びた正直なレースでも起きる — 単独では証拠にしないが、
-    // 偽造との区別(head 直後からの連続性)は verify が確定する
+    // Can also happen in an honest race where the chain grew after the sync —
+    // not evidence on its own, but verify decides the distinction from
+    // forgery (contiguity from just after the head)
     return {
       label: "mirror=unverified (newer than the local chain — confirm with `maruhi audit verify`)",
       mismatches: [],
@@ -231,12 +249,14 @@ function mirrorTrustOf(
 }
 
 /**
- * event 名が chain.* 外なのに chain_seq を持つ行の明示的な不信ラベル。
+ * The explicit distrust label for a row that carries chain_seq while its
+ * event name is outside chain.*.
  *
- * 正直なサーバーで chainSeq を設定する唯一の書き手は chainMirrorEvent なので、
- * この組み合わせは provenance claim の偽造を示す。イベント名だけを起点にすると
- * 名前空間の 1 歩外へ逃げた行が素の `chain_seq=N` として表示され、verify の
- * eventPrefix=chain. にも入らない。
+ * On an honest server the only writer that sets chainSeq is
+ * chainMirrorEvent, so this combination shows a forged provenance claim.
+ * Starting from the event name alone, a row that escaped one step outside
+ * the namespace would display as a bare `chain_seq=N` and would not even
+ * fall under verify's eventPrefix=chain. filter.
  */
 function outsideChainNamespaceTrust(event: WireAuditEvent): MirrorTrust | null {
   if (event.chainSeq === undefined || event.event.startsWith(CHAIN_MIRROR_EVENT_PREFIX)) {
@@ -250,7 +270,7 @@ function outsideChainNamespaceTrust(event: WireAuditEvent): MirrorTrust | null {
   };
 }
 
-/** project 監査行の provenance 判定。chainSeq の存在をイベント名より先に見る。 */
+/** Provenance judgment of a project audit row. Looks at the presence of chainSeq before the event name. */
 function projectMirrorTrustOf(
   event: WireAuditEvent,
   entries: ReadonlyMap<number, ChainEntry>,
@@ -265,7 +285,7 @@ function projectMirrorTrustOf(
   );
 }
 
-/** D1 経路(invites / self)は chain provenance を保存しない。あれば偽造・破損。 */
+/** The D1 path (invites / self) stores no chain provenance. If present: forgery or corruption. */
 function d1MirrorTrustOf(event: WireAuditEvent): MirrorTrust | null {
   if (event.chainSeq === undefined) {
     return null;
@@ -278,7 +298,7 @@ function d1MirrorTrustOf(event: WireAuditEvent): MirrorTrust | null {
   };
 }
 
-/** trust の不一致を端末警告へ写す(空 = 未検証だが単独では改竄断定しない)。 */
+/** Maps trust mismatches to terminal warnings (empty = unverified but not tamper-decidable on its own). */
 function mirrorWarnings(event: WireAuditEvent, trust: MirrorTrust | null): readonly string[] {
   return (trust?.mismatches ?? []).map(
     (mismatch) =>
@@ -287,11 +307,12 @@ function mirrorWarnings(event: WireAuditEvent, trust: MirrorTrust | null): reado
 }
 
 // ---------------------------------------------------------------------------
-// 表示
+// Display
 // ---------------------------------------------------------------------------
 
-// serverTs はサーバー申告の無制限 number: total な共有フォーマッタで表示し、
-// Date 範囲外の値が defect(RangeError)にならないようにする
+// serverTs is a server-claimed unbounded number: display it with the total
+// shared formatter so out-of-Date-range values do not become a defect
+// (RangeError)
 const formatTs = formatUtcSeconds;
 
 function describeActor(event: WireAuditEvent): string {
@@ -317,14 +338,14 @@ function describeTarget(event: WireAuditEvent): string | null {
   return null;
 }
 
-/** 変数の表示ラベル(検証済み名があれば `NAME (id)`、なければ id のみ)。 */
+/** A variable's display label (`NAME (id)` when a verified name exists, the id alone otherwise). */
 function variableLabel(variableId: string, resolvedName: string | null): string {
   return resolvedName === null
     ? displayText(variableId)
     : `${displayText(resolvedName)} (${displayText(variableId)})`;
 }
 
-/** 座標・数値部の列(env / var / epoch / version — 無いものは出さない)。 */
+/** The coordinate/number columns (env / var / epoch / version — absent ones are not printed). */
 function coordinateParts(
   event: WireAuditEvent,
   resolvedName: string | null,
@@ -336,8 +357,9 @@ function coordinateParts(
   }
   const listed = aggregatedReadOf(event);
   if (listed !== null) {
-    // 集約行: 変数の列挙は payload が持つ(要約は件数のみ。展開は --expand-reads)。
-    // --var 指定時はその変数の項目を添える(行が一致した理由を見せる)
+    // Aggregated row: the variable enumeration lives in the payload (the
+    // summary is count-only; expansion is --expand-reads). With --var, add
+    // that variable's item (shows why the row matched)
     parts.push(`read=${countNoun(listed.length, "variable")}`);
     if (matched !== null) {
       parts.push(`matched=${matched}`);
@@ -355,14 +377,15 @@ function coordinateParts(
   return parts;
 }
 
-/** 末尾部の列(chain_seq + 突合ラベル / 記録 payload)。 */
+/** The trailer columns (chain_seq + reconciliation label / recorded payload). */
 function trailerParts(event: WireAuditEvent, trust: MirrorTrust | null): readonly string[] {
   const parts: string[] = [];
   if (event.chainSeq !== undefined || trust !== null) {
     const seqPart = event.chainSeq === undefined ? "" : `chain_seq=${event.chainSeq}`;
     if (trust === null) {
-      // 呼び出し側が trust 計算を忘れても、chain_seq を検証済み座標のように
-      // 無ラベル表示しない(最後の防衛線)
+      // Even if a caller forgets the trust computation, do not display
+      // chain_seq label-less like a verified coordinate (the last line of
+      // defense)
       parts.push(`${seqPart} (mirror=unverified — no chain verification context)`);
     } else {
       parts.push(seqPart === "" ? `(${trust.label})` : `${seqPart} (${trust.label})`);
@@ -370,17 +393,19 @@ function trailerParts(event: WireAuditEvent, trust: MirrorTrust | null): readonl
   }
   const recorded = recordedPayloadOf(event);
   if (recorded !== null) {
-    // 記録内容(サーバー申告)であることを明示する接頭辞。名前スナップショット
-    // を含みうるが、表示名の位置(var= ラベル)には昇格しない(TCB 規律)
+    // A prefix making explicit this is the recorded content (a server claim).
+    // It may carry a name snapshot but is never promoted to the display-name
+    // position (the var= label) — TCB discipline
     parts.push(`recorded=${displayText(JSON.stringify(recorded))}`);
   }
   return parts;
 }
 
 /**
- * recorded= に出す payload。集約形 var.read は変数の列挙(`variables` — 数十 KB に
- * なりうる。read= の要約・--var の一致表示・--expand-reads の展開行が担う)を除いた
- * 残り(authMethod 等)だけを出す。
+ * The payload printed under recorded=. For an aggregated var.read, only
+ * the remainder after dropping the variable enumeration (`variables` —
+ * can reach tens of KB; the read= summary, --var's match display, and
+ * --expand-reads' expanded lines carry it) is printed (authMethod etc.).
  */
 function recordedPayloadOf(event: WireAuditEvent): Readonly<Record<string, unknown>> | null {
   if (event.payload === undefined) {
@@ -394,8 +419,9 @@ function recordedPayloadOf(event: WireAuditEvent): Readonly<Record<string, unkno
 }
 
 /**
- * 集約形 var.read の展開行(1 変数 1 行 — `--expand-reads`)。表示名は検証済み
- * ステートメント由来のみ(var= ラベルと同じ TCB 規律)。
+ * The expanded lines of an aggregated var.read (one line per variable —
+ * `--expand-reads`). Display names come only from verified statements
+ * (the same TCB discipline as the var= label).
  */
 function expandedReadLines(
   listed: readonly AuditReadVariable[],
@@ -404,12 +430,12 @@ function expandedReadLines(
   return listed.map((variable) => `\t- ${listedVariableLabel(variable, names)}`);
 }
 
-/** 集約行の 1 変数の表示形(展開行・--var の一致表示で共用)。 */
+/** The display form of one variable of an aggregated row (shared by the expanded lines and --var's match display). */
 function listedVariableLabel(variable: AuditReadVariable, names: NameIndex | undefined): string {
   return `var=${variableLabel(variable.variableId, names?.get(variable.variableId) ?? null)}\tepoch=${variable.epoch}\tversion=${variable.version}`;
 }
 
-/** 1 行の描画。表示名(resolvedName)は検証済みステートメント由来のみ。 */
+/** Rendering of one line. Display names (resolvedName) come only from verified statements. */
 function formatEventLine(
   event: WireAuditEvent,
   resolvedName: string | null,
@@ -418,7 +444,7 @@ function formatEventLine(
 ): string {
   const target = describeTarget(event);
   return [
-    // seq は admin 可視の応答にのみ載る(§7 — 非 admin には序数を出さない)
+    // seq rides only on an admin-visible response (§7 — non-admin never sees the ordinal)
     ...(event.seq === undefined ? [] : [`seq=${event.seq}`]),
     formatTs(event.serverTs),
     displayText(event.event),
@@ -429,7 +455,7 @@ function formatEventLine(
   ].join("\t");
 }
 
-/** ページ末尾の続きの案内(limit いっぱい返ったときだけ)。 */
+/** The continuation hint at the page end (only when the page came back full to limit). */
 function continuationHint(
   events: readonly WireAuditEvent[],
   requestedLimit: number | null,
@@ -472,13 +498,15 @@ function fetchProjectEvents(
 }
 
 /**
- * `maruhi audit`(list): 監査イベントの表示。chain.* 行は検証済みチェーンと
- * 突合し、不一致(= 改竄の証拠)があれば終了コード 1(invite list の
- * 完全性検査と同じ規律 — 読めたことと健全であることを混ぜない)。
+ * `maruhi audit` (list): displaying audit events. chain.* rows are
+ * reconciled against the verified chain; any mismatch (= evidence of
+ * tampering) makes exit code 1 (the same discipline as invite list's
+ * integrity check — being readable and being sound are not conflated).
  */
 /**
- * 名前解決の対象になる環境 ID の集合(variableId を持つ行の環境。展開時は
- * 集約形 var.read の環境も — 展開行が名前を引くため)。
+ * The set of environment IDs subject to name resolution (the environment of
+ * rows carrying a variableId; when expanding, also an aggregated var.read's
+ * environment — the expanded lines draw names).
  */
 function environmentIdsForNames(
   events: readonly WireAuditEvent[],
@@ -498,7 +526,7 @@ function environmentIdsForNames(
   return [...ids].toSorted();
 }
 
-/** 1 行分の描画結果(本文 + 展開行 + ミラー不一致の警告列)。純関数 — Effect を持たない。 */
+/** One row's render result (body + expanded lines + mirror-mismatch warnings). Pure — holds no Effect. */
 function renderListEvent(
   event: WireAuditEvent,
   names: ReadonlyMap<string, NameIndex>,
@@ -515,7 +543,7 @@ function renderListEvent(
   const trust = projectMirrorTrustOf(event, entries, headSeq, index);
   const warnings = mirrorWarnings(event, trust);
   const listed = aggregatedReadOf(event);
-  // --var 指定時: 集約行が一致した変数の項目(サーバーは列挙が当該変数を含む行を返す)
+  // With --var: the item of the variable the aggregated row matched on (the server returns rows whose enumeration contains that variable)
   const hit = listed?.find((variable) => variable.variableId === matchVariableId);
   const matched = hit === undefined ? null : listedVariableLabel(hit, environmentNames);
   return {
@@ -572,7 +600,7 @@ export function auditListOp(
   });
 }
 
-/** 各行の本文・展開行を stdout へ、ミラー警告を stderr へ出し、警告数を返す。 */
+/** Prints each row's body and expanded lines to stdout, the mirror warnings to stderr, and returns the warning count. */
 function logListEvents(
   events: readonly WireAuditEvent[],
   render: (event: WireAuditEvent) => ReturnType<typeof renderListEvent>,
@@ -598,7 +626,7 @@ function logListEvents(
 // invites / self
 // ---------------------------------------------------------------------------
 
-/** ページ指定 → クエリ(未指定キーは送らない = サーバー既定に任せる)。 */
+/** Page spec → query (unspecified keys are not sent = left to the server defaults). */
 function pageQueryOf(page: AuditPageOptions): { before?: string; limit?: number } {
   return {
     ...(page.before === null ? {} : { before: page.before }),
@@ -611,7 +639,7 @@ interface D1AuditRenderResult {
   readonly integrityFailures: number;
 }
 
-/** D1 側ページ(invites / self)の共通経路: 取得 → 一覧描画 → 続きの案内。 */
+/** The common path for a D1-side page (invites / self): fetch → render the list → continuation hint. */
 function fetchAndRenderD1Events(input: {
   readonly request: Effect.Effect<{ readonly events: readonly WireAuditEvent[] }, unknown>;
   readonly page: AuditPageOptions;
@@ -630,8 +658,9 @@ function fetchAndRenderD1Events(input: {
     }
     let integrityFailures = 0;
     for (const event of events) {
-      // D1 行は chain provenance を持たない。悪意ある応答が chain_seq を差しても
-      // 素の座標として表示せず、警告 + 非ゼロ終了にする(S1)
+      // A D1 row has no chain provenance. Even if a malicious response slips
+      // chain_seq in, it is not displayed as a bare coordinate — warn +
+      // non-zero exit (S1)
       const trust = d1MirrorTrustOf(event);
       const warnings = mirrorWarnings(event, trust);
       yield* io.log(formatEventLine(event, null, trust));
@@ -648,7 +677,7 @@ function fetchAndRenderD1Events(input: {
   });
 }
 
-/** `maruhi audit invites`: invite.* の監査行(チェーン role admin — サーバー強制)。 */
+/** `maruhi audit invites`: the audit rows of invite.* (chain role admin — server-enforced). */
 export function auditInvitesOp(
   context: ProjectContextBase,
   page: AuditPageOptions,
@@ -664,7 +693,7 @@ export function auditInvitesOp(
   }).pipe(Effect.map((result) => (result.integrityFailures > 0 ? 1 : 0)));
 }
 
-/** `maruhi audit self`: 自分のアカウント系イベント(§3.1 — 要監視イベントの監視)。 */
+/** `maruhi audit self`: one's own account events (§3.1 — monitoring the to-be-monitored events). */
 export function auditSelfOp(
   context: SessionContext,
   page: AuditPageOptions,
@@ -677,7 +706,7 @@ export function auditSelfOp(
       command: "maruhi audit self",
     });
     const events = rendered.events;
-    // 要監視イベント(AUDIT_SPEC §3.1)の含意はここで一度だけ添える
+    // The implication of a to-be-monitored event (AUDIT_SPEC §3.1) is attached here once
     if (events.some((event) => event.event === "auth.recovery_blob_fetched")) {
       yield* logNote(
         "auth.recovery_blob_fetched (a fetch of the sealed reserve key) is present. If you do not recognize a fetch, reissue your recovery code (`maruhi key recovery`) and revoke your tokens and sessions",
@@ -688,27 +717,31 @@ export function auditSelfOp(
 }
 
 // ---------------------------------------------------------------------------
-// verify(ミラー全単射検証)
+// verify (mirror bijection verification)
 // ---------------------------------------------------------------------------
 
-// §3.4 のミラーイベント名は共有写像(@maruhi/core の CHAIN_MIRROR_EVENTS —
-// ChainOp の全域マップから導出)を使う。手書きリストだと将来の op 追加時に
-// ここだけ漏れ、連続性検査が正直なサーバーを偽造と誤断定する
+// §3.4's mirror event names use the shared mapping (@maruhi/core's
+// CHAIN_MIRROR_EVENTS — derived from ChainOp's total map). A hand-written
+// list would miss a future op addition only here, and the contiguity check
+// would wrongly convict an honest server of forgery
 
 const VERIFY_PAGE_LIMIT = MAX_AUDIT_EVENTS_PAGE_LIMIT;
-// チェーン受理ポリシー(10,000 エントリ)÷ ページ 200 = 50 ページが理論最大。
-// カーソルが前進しないサーバーで無限ループしないための硬い上限。名前空間ごと
-// 1 回のページングで全ミラー行を引くため、上限もイベント種別ごとではなく通し
+// Chain acceptance policy (10,000 entries) ÷ 200 per page = a theoretical
+// maximum of 50 pages. A hard cap so a server whose cursor does not advance
+// cannot loop forever. Because one paging pass per namespace draws all mirror
+// rows, the cap is a single total, not per event kind
 const VERIFY_MAX_PAGES = 100;
 
 type MirrorRowSelector = "chain-namespace" | "chain-seq-present";
 
 /**
- * ページング共通エンジン(verify と `maruhi audit reconcile` が共有)。
- * fetchPage は 1 ページ(新しい順)を取得し、カーソルは前ページ末尾行の id。
- * onRow は行ごとの検査 + 収集(失敗 = サーバー応答の矛盾として中止)。
- * bound は静的なページ数上限 — null は上限なしで、そのとき停止性は呼び出し側の
- * 行検査が担う(reconcile は admin 可視 `seq` の厳密減少で総行数を束縛する)。
+ * The shared paging engine (used by verify and `maruhi audit reconcile`).
+ * fetchPage fetches one page (newest-first); the cursor is the previous
+ * page's last row's id. onRow is the per-row check + collection (a failure
+ * aborts as a contradictory server response). bound is a static page-count
+ * cap — null means uncapped, in which case termination is carried by the
+ * caller's row check (reconcile bounds the total row count via the
+ * strictly-decreasing admin-visible `seq`).
  */
 export function paginateAuditEvents(input: {
   readonly pageLimit: number;
@@ -719,7 +752,7 @@ export function paginateAuditEvents(input: {
   return Effect.gen(function* () {
     let before: string | null = null;
     for (let page = 0; input.bound === null || page < input.bound.maxPages; page += 1) {
-      // 型注釈は generator 内の自己参照推論(before → rows → before)を断つため
+      // The annotation breaks self-referential inference inside the generator (before → rows → before)
       const cursor: string | null = before;
       const rows: readonly WireAuditEvent[] = yield* input.fetchPage(cursor);
       for (const row of rows) {
@@ -730,16 +763,17 @@ export function paginateAuditEvents(input: {
       }
       before = rows[rows.length - 1]?.id ?? null;
     }
-    // ループを抜ける = bound 非 null で maxPages に到達した
+    // Leaving the loop = bound was non-null and maxPages was reached
     return yield* Effect.fail(cliError(input.bound?.exceededMessage ?? "unreachable"));
   });
 }
 
 /**
- * 1 つのミラー候補フィルタを全ページ取得(新しい順。カーソルは行 id)。
- * 同じ行 id が再登場したらサーバー応答の矛盾(カーソル非前進・行の重複配布)
- * として拒否する — id は不透明で序数比較ができないため、前進性は集合の
- * 非重複で検査する。
+ * Fetch all pages of one mirror-candidate filter (newest-first; cursor is a
+ * row id). A re-appearing row id is refused as a contradictory server
+ * response (a non-advancing cursor, duplicate row distribution) — ids are
+ * opaque and cannot be ordinally compared, so progress is checked as set
+ * non-duplication.
  */
 function fetchMirrorRowsForSelector(
   client: MaruhiClient,
@@ -790,13 +824,16 @@ function fetchMirrorRowsForSelector(
 }
 
 /**
- * verify のミラー候補全体。2 つの集合を和集合にする:
+ * verify's full mirror candidate set. The union of two sets:
  *
- * 1. `chain.` 名前空間の全行 — 写像に無い名前・chain_seq 欠落も拾う
- * 2. chain_seq を持つ全行 — 名前空間の 1 歩外にある偽 provenance を拾う
+ * 1. every row in the `chain.` namespace — also catches names missing from
+ *    the mapping and missing chain_seq
+ * 2. every row carrying chain_seq — catches forged provenance one step
+ *    outside the namespace
  *
- * 正当なミラー行は両方に入るので row id で重複排除する。同じ id なのに内容が
- * フィルタ間で変わったら、サーバー応答が自己矛盾しており検証を続けられない。
+ * A genuine mirror row lands in both, so dedupe by row id. If the same id's
+ * content changed between the filters, the server response contradicts
+ * itself and verification cannot proceed.
  */
 function fetchAllMirrorRows(
   client: MaruhiClient,
@@ -822,21 +859,23 @@ function fetchAllMirrorRows(
   });
 }
 
-/** ミラー行の索引化の結果(chain_seq で束ね、検証不能な行を分別)。 */
+/** The result of indexing mirror rows (bundled by chain_seq, with unverifiable rows sorted out). */
 interface MirrorBuckets {
   readonly byChainSeq: ReadonlyMap<number, readonly WireAuditEvent[]>;
   readonly problems: readonly string[];
-  /** head 直後から連続する「ローカルのチェーンより新しい」行数(未検証)。 */
+  /** The count of "newer than the local chain" rows contiguous from just after head (unverified). */
   readonly aheadRows: number;
 }
 
 /**
- * head より新しい行の連続性検査。正直な伸長(同期とページ取得の間にチェーンが
- * 進んだ)なら、その行の chain_seq は head+1 から欠番なく連続する — ミラーは
- * 受理と同一トランザクションで書かれ、seq は無欠番だからである(§3.4 / §5.1)。
- * 同一 chain_seq の行は最大 2 行(完成した approve の `chain.approved` + 適用行 —
- * §3.4)。連続しない seq・3 行以上の seq は「実在しないエントリを名乗る偽造行」の
- * 証拠として扱う(到達し得ない chain_seq による検証回避を塞ぐ)。
+ * The contiguity check of rows newer than head. In an honest extension (the
+ * chain advanced between the sync and the page fetch), those rows' chain_seq
+ * run contiguously from head+1 with no gaps — mirrors are written in the same
+ * transaction as acceptance and seq is gapless (§3.4 / §5.1). At most 2 rows
+ * share one chain_seq (a completed approve's `chain.approved` + the applied
+ * row — §3.4). A non-contiguous seq or a seq with 3+ rows is treated as
+ * evidence of "forged rows claiming nonexistent entries" (blocks
+ * verification bypass via an unreachable chain_seq).
  */
 function aheadContiguityProblems(ahead: readonly number[], headSeq: number): readonly string[] {
   const problems: string[] = [];
@@ -862,24 +901,26 @@ function aheadContiguityProblems(ahead: readonly number[], headSeq: number): rea
   return problems;
 }
 
-/** 取得した chain.* 行を chain_seq で索引化する(検証の前段の純関数)。 */
+/** Indexes the fetched chain.* rows by chain_seq (a pure function before verification). */
 function bucketMirrorRows(rows: readonly WireAuditEvent[], headSeq: number): MirrorBuckets {
   const byChainSeq = new Map<number, WireAuditEvent[]>();
   const problems: string[] = [];
   const ahead: number[] = [];
   for (const row of rows) {
-    // chain_seq の存在をイベント名より先に信頼境界として扱う。正当な
-    // chain_seq の唯一の書き手は chainMirrorEvent なので、名前空間外の行は
-    // 実在する op と突合する余地のない偽 provenance claim である
+    // chain_seq's presence is treated as the trust boundary ahead of the
+    // event name. The only writer of a genuine chain_seq is chainMirrorEvent,
+    // so a row outside the namespace is a forged provenance claim that no
+    // real op can reconcile against
     if (!row.event.startsWith(CHAIN_MIRROR_EVENT_PREFIX)) {
       problems.push(
         `Audit row ${displayText(row.id)}: chain_seq=${row.chainSeq ?? "(missing)"} is present outside the chain.* namespace (${displayText(row.event)}) — only chain mirror rows may carry chain provenance (evidence of a forged row)`,
       );
       continue;
     }
-    // 名前空間内で写像に無いイベント名は、それ自体が偽造の証拠:
-    // 実在する op のミラーは必ず chainMirrorEvent の像に入る。chain_seq の
-    // 突合に進める行ではないので、ここで問題として確定させて次の行へ進む
+    // Inside the namespace, an event name missing from the mapping is itself
+    // evidence of forgery: a real op's mirror always lands in
+    // chainMirrorEvent's image. The row cannot proceed to chain_seq
+    // reconciliation, so it is confirmed as a problem here and we move on
     if (!CHAIN_MIRROR_EVENTS.includes(row.event)) {
       problems.push(
         `Audit row ${displayText(row.id)}: the mirror row claims an unknown chain op (${displayText(row.event)}) — no chain operation maps to this event name, so the row cannot mirror a real entry (evidence of a forged row)`,
@@ -900,7 +941,7 @@ function bucketMirrorRows(rows: readonly WireAuditEvent[], headSeq: number): Mir
   return { byChainSeq, problems, aheadRows: ahead.length };
 }
 
-/** 期待行 1 行に対する観測行の突合(欠落 / 重複 / フィールド不一致)。 */
+/** Reconcile the observed rows against one expected row (missing / duplicate / field mismatch). */
 function expectedRowProblems(
   entry: ChainEntry,
   expected: AuditEventRecord,
@@ -918,28 +959,33 @@ function expectedRowProblems(
       `chain_seq=${entry.seq} (op=${entry.op}): ${countNoun(rows.length, `${displayText(expected.event)} mirror row`)} found (duplicates — rows ${rows.map((row) => displayText(row.id)).join(", ")})`,
     ];
   }
-  // serverTs は突合対象外(観測行の値をそのまま期待行に写して比較する)
+  // serverTs is out of scope (the observed row's value is copied onto the expected row before comparing)
   return mirrorMismatches(expectedRowFor(entry, observed, index), observed).map(
     (mismatch) => `chain_seq=${entry.seq} (audit row ${displayText(observed.id)}): ${mismatch}`,
   );
 }
 
 /**
- * 1 エントリ分の全単射 + 写像一致の検査(空 = 問題なし)。期待行の集合は
- * chainMirrorEvents が返す 1 行(完成した approve は 2 行)で、観測行はイベント名で
- * 期待行に対応づける: 期待行に観測行が無ければ欠落、2 行以上あれば重複、期待に無い
- * イベント名の行は過剰(未完成の approve に適用行がある・別 op の行を名乗る等)。
- * 適用行の `viaProposalSeq` を含む全フィールドの不一致は写像の不一致として列挙する
- * (AUDIT_SPEC §3.4 — 2026-09-16 K5)。
+ * One entry's bijection + mapping-match check (empty = no problem). The
+ * expected set is the 1 row chainMirrorEvents returns (2 rows for a
+ * completed approve); observed rows are paired to expected rows by event
+ * name: an expected row with no observed row is missing, 2+ observed is a
+ * duplicate, and a row with an event name outside the expected set is excess
+ * (an applied row on an incomplete approve, a row claiming a different op,
+ * etc.). A mismatch in any field of an applied row, including
+ * `viaProposalSeq`, is listed as a mapping mismatch (AUDIT_SPEC §3.4 —
+ * 2026-09-16 K5).
  */
 function entryMirrorProblems(
   entry: ChainEntry,
   matched: readonly WireAuditEvent[],
   index: ProposalIndex,
 ): readonly string[] {
-  // 検証済みチェーンでは参照先の propose が必ず索引にある(unknown-proposal は無効
-  // エントリ)。欠けていれば索引の構築側の矛盾であり、期待行を組めないので defect で
-  // 落とさず検証失敗として chain_seq 付きで報告する(pullfrog 第 1 巡)
+  // On a verified chain the referenced propose is always in the index (an
+  // unknown-proposal is an invalid entry). A miss is a contradiction in the
+  // index's construction and the expected rows cannot be built, so do not
+  // drop it as a defect — report it as a verification failure with the
+  // chain_seq (pullfrog round 1)
   if (proposalMissingFor(entry, index)) {
     return [
       `chain_seq=${entry.seq} (op=${entry.op}): the referenced proposal is not on the verified chain, so the expected mirror rows cannot be reconstructed — re-run \`maruhi audit verify\` after a full sync; if this persists it is a verifier inconsistency, not evidence about the audit log`,
@@ -965,12 +1011,14 @@ function entryMirrorProblems(
 }
 
 /**
- * `maruhi audit verify`: ミラー全単射検証。検証済みチェーンの全エントリ
- * (1..headSeq)と chain.* ミラー行が 1 対 1 に対応し(完成した approve は
- * + 内側 op の適用行 1 行 — AUDIT_SPEC §3.4)、全フィールドが写像どおり
- * であることを検査する。欠落(削除の隠蔽)・偽造(チェーンにない行)・改変の
- * 3 方向を検出する — per-row 突合(list のラベル)では原理的に見えない欠落まで
- * 覆うのがこのコマンドの追加価値。クラス 1 のみを読むため全メンバーが実行できる。
+ * `maruhi audit verify`: mirror bijection verification. Checks that every
+ * entry of the verified chain (1..headSeq) and the chain.* mirror rows
+ * correspond 1:1 (a completed approve adds the applied inner-op row —
+ * AUDIT_SPEC §3.4) and that every field matches the mapping. Detects the
+ * three directions — missing (concealed deletion), forged (a row not on the
+ * chain), altered — covering even the missing case that per-row
+ * reconciliation (list's labels) cannot see in principle, which is this
+ * command's added value. It reads only class 1, so every member can run it.
  */
 export function auditVerifyOp(
   context: ProjectContextBase,
@@ -994,8 +1042,9 @@ export function auditVerifyOp(
       return 0;
     }
     if (buckets.aheadRows > 0) {
-      // 未検証の行が残る限り「OK」とは言わない(偽造行が未検証枠に恒久に
-      // 居座る形を、成功終了で覆い隠さない)
+      // Never say "OK" while unverified rows remain (do not paper over, with
+      // a successful exit, the shape where forged rows permanently sit inside
+      // the unverified allowance)
       yield* io.logError(
         `Mirror verification incomplete: ${countNoun(buckets.aheadRows, "row")} newer than the local chain could not be verified in this run (this can happen when the chain grew right after the sync). Re-run \`maruhi audit verify\` — if this does not resolve, those mirror rows claim entries that do not exist on the chain (suspected forgery)`,
       );

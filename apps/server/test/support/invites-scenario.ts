@@ -1,10 +1,13 @@
-// 招待 API(AUTH_SPEC §15 — IV 改訂)統合テストの共有ヘルパ。
+// Shared helpers for the invite API (AUTH_SPEC §15 — IV revision)
+// integration tests.
 //
-// 発行文(発行署名)・受諾の共同署名(受諾署名 + リンク署名 — CRYPTO_SPEC §6.5)は
-// @maruhi/crypto の実装で実署名を作る。招待者の署名鍵はベクター固定鍵
-// (data-crypto.ts の vectorKeyOf)、リンク鍵は種から導出する。fixture は
-// data-fixture の setupDataProject(ベースチェーン再生込み)を register 形
-// (data-scenario.ts と同じ live binding パターン)で提供する。
+// The issuance statement (issue signature) and the acceptance joint
+// signature (accept signature + link signature — CRYPTO_SPEC §6.5) are real
+// signatures produced via the @maruhi/crypto implementation. The inviter's
+// signing key is the fixed vector key (data-crypto.ts vectorKeyOf); the link
+// key is derived from a seed. The fixture provides data-fixture's
+// setupDataProject (base-chain replay included) in register form (the same
+// live-binding pattern as data-scenario.ts).
 
 import { ulid } from "@maruhi/core";
 import type {
@@ -36,9 +39,11 @@ import type { DataFixture } from "./data-fixture.ts";
 import { OWNER, projectId, setupDataProject, tokenOf } from "./data-fixture.ts";
 
 /**
- * ユーザーの署名鍵ペア(発行署名の署名者)。ベクター固定鍵を持つユーザーは
- * その鍵、持たないユーザー(STRANGER 等 — 認可で落ちる経路の主体)は使い捨ての
- * 生成鍵(サーバーは発行署名を検証しないので形式が揃えば足りる)。
+ * A user's signing key pair (the signer of issue signatures). Users with a
+ * fixed vector key get that key; users without one (STRANGER etc. —
+ * principals on paths that fail at authorization) get a disposable generated
+ * key (the server does not verify issue signatures, so well-formed is
+ * enough).
  */
 export async function signingKeyPairOf(userId: string) {
   let vector: ReturnType<typeof vectorKeyOf> | null;
@@ -66,7 +71,8 @@ export async function signingKeyPairOf(userId: string) {
   return { pair: pair.value, encPubHex: vector.enc_pub_hex, sigPubHex: vector.sig_pub_hex };
 }
 
-/** 受諾者のテスト鍵ペア(未登録ユーザーの新規生成を模す)。 */
+/** The invitee's test key pair (simulates fresh generation by an
+ * unregistered user). */
 export async function makeInviteeKeys() {
   const enc = await generateEncryptionKeyPair();
   const sig = await generateSigningKeyPair();
@@ -86,11 +92,12 @@ export async function makeInviteeKeys() {
 
 export type InviteeKeys = Awaited<ReturnType<typeof makeInviteeKeys>>;
 
-/** 発行の要求 body(§15-2)+ クライアント側の材料(リンク鍵ペア)。 */
+/** The issue request body (§15-2) plus client-side material (the link key
+ * pair). */
 export interface IssuePayload {
   readonly id: string;
   readonly role: "reader" | "member" | "admin";
-  /** 付与予定 scope(AUTH_SPEC §15-2 — 2026-09-14 ES)。 */
+  /** Scope to be granted (AUTH_SPEC §15-2 — 2026-09-14 ES). */
   readonly scopeKind: "all" | "listed";
   readonly scopeEnvironmentIds: readonly string[];
   readonly linkPubHex: string;
@@ -104,7 +111,8 @@ export interface IssuedInvite extends IssuePayload {
   readonly expiresAtMs: number;
 }
 
-/** 招待 id の採番 + リンク鍵の生成 + 発行署名(招待者 = actor のベクター鍵)。 */
+/** Assigns the invite id, generates the link key, and produces the issue
+ * signature (inviter = the actor's vector key). */
 export async function makeIssuePayload(
   fixture: DataFixture,
   actorUserId: string,
@@ -148,7 +156,7 @@ export async function makeIssuePayload(
   };
 }
 
-/** 発行 body のワイヤ部分だけ(リンク鍵ペアを落とす)。 */
+/** Only the wire part of an issue body (drops the link key pair). */
 export function wirePayloadOf(payload: IssuePayload): Record<string, unknown> {
   return {
     id: payload.id,
@@ -199,7 +207,8 @@ export function acceptRequest(
   });
 }
 
-/** 受諾の共同署名(CRYPTO_SPEC §6.5)を作る。context の上書きでリンク改竄等を模す。 */
+/** Produces the acceptance joint signature (CRYPTO_SPEC §6.5). Overrides on
+ * context simulate link tampering etc. */
 export async function signAcceptance(
   keys: InviteeKeys,
   issued: { readonly linkPubHex: string; readonly linkKey: InviteLinkKeyPair },
@@ -247,7 +256,8 @@ export interface InviteRow {
   readonly head_seq: number;
   readonly issue_signature: string;
   readonly role: string;
-  /** 付与予定 scope(AUTH_SPEC §15-1 — 2026-09-14 ES)。scope_environments は JSON 配列。 */
+  /** Scope to be granted (AUTH_SPEC §15-1 — 2026-09-14 ES).
+   * scope_environments is a JSON array. */
   readonly scope_kind: string;
   readonly scope_environments: string;
   readonly status: string;
@@ -289,9 +299,11 @@ export function payloadOf(row: AuditRow): Record<string, unknown> {
 }
 
 /**
- * テスト用の招待行の直接シード(受理ポリシー・状態遷移の前提状態を作る)。
- * 発行文は形だけ整えたダミー(link_pub は id から決定的に導く = UNIQUE を満たす。
- * 発行署名はサーバーが検証しないので固定値)。
+ * Directly seeds an invitation row for tests (builds the precondition state
+ * for admission-policy / state-transition tests). The issuance statement is
+ * a shape-only dummy (link_pub is derived deterministically from the id =
+ * satisfies UNIQUE; the issue signature is a fixed value because the server
+ * does not verify it).
  */
 export async function seedInvitation(input: {
   readonly id: string;
@@ -322,7 +334,8 @@ export async function errorTag(response: Response): Promise<string> {
   return body["_tag"] ?? "";
 }
 
-/** 存在を検証済みの行の non-null 化(以降のフィールド検証を素の参照にする)。 */
+/** Non-null-ifies a row whose existence was verified (lets later field
+ * checks use plain references). */
 export function mustRow(row: InviteRow | null): InviteRow {
   if (row === null) {
     throw new Error("invitation row missing");
@@ -340,7 +353,8 @@ export function firstAudit(rows: readonly AuditRow[], event: string): AuditRow {
 
 export let fixture: DataFixture;
 
-/** 各テストファイルの冒頭で 1 回呼ぶ: フィクスチャの beforeEach を登録する。 */
+/** Called once at the top of each test file: registers the fixture's
+ * beforeEach. */
 export function registerInviteScenario(): void {
   beforeEach(async () => {
     fixture = await setupDataProject();

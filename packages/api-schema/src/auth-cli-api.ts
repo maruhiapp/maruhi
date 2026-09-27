@@ -1,19 +1,22 @@
-// CLI ログイン(サーバー仲介 web-flow ハンドオフ)の HttpApi 定義
-// (AUTH_SPEC §4)。
+// HttpApi definition of CLI login (the server-mediated web-flow handoff)
+// (AUTH_SPEC §4).
 //
-// 原則(§4): CLI はアイデンティティプロバイダを知らない。本グループのワイヤに
-// プロバイダ固有フィールドを置かず、verificationUrl は CLI にとって不透明な
-// URL とする。flowToken は CLI 専用の bearer 資格情報であり、ブラウザチャネル
-// (URL・ページ・リダイレクト)には決して載せない(§4-1 (1))。
+// Principle (§4): the CLI does not know the identity provider. This
+// group's wire carries no provider-specific fields, and verificationUrl
+// is an opaque URL to the CLI. flowToken is a CLI-only bearer credential
+// and is never carried on the browser channel (URL, page, redirect)
+// (§4-1 (1)).
 //
-// ブラウザ脚(cliVerify / cliApprove)はブラウザナビゲーション / フォーム POST
-// 専用で、ハンドラが HTML(スクリプトなし — §4-1 (4))を HttpServerResponse で
-// 直接返す。失敗の出し分けは §4-2 の一様拒否規律に従い、型付きエラーを宣言
-// しない(フロー状態のオラクルを作らない)。
+// The browser legs (cliVerify / cliApprove) are browser-navigation /
+// form-POST only; the handler returns HTML (script-free — §4-1 (4)) as an
+// HttpServerResponse directly. Failure differentiation follows the §4-2
+// uniform-refusal discipline: no typed errors are declared (no oracle of
+// flow state).
 //
-// 本グループのいかなる操作もセッション能力の許可列挙(session-capability.ts の
-// SESSION_ALLOWED_ENDPOINTS)に追加しない — 承認の資格はチケットであって
-// セッションではない(§4-1 (3)。全 4 面は未認証面として分類する)。
+// No operation in this group is added to the session-capability allowlist
+// (SESSION_ALLOWED_ENDPOINTS in session-capability.ts) — the
+// authorization credential is a ticket, not a session (§4-1 (3); all four
+// surfaces are classified as unauthenticated surfaces).
 
 import { TokenScopeSchema } from "@maruhi/core";
 import { Schema } from "effect";
@@ -30,27 +33,30 @@ import {
 import { hexString } from "./hex.ts";
 
 /**
- * ポーリング間隔の下限(秒 — AUTH_SPEC §4-1 (5))。サーバーは応答の
- * `pollIntervalSeconds` にこの値を載せ、CLI は応答値をこの下限で clamp する
- * (敵対的・誤設定サーバーの 0 / 負値でビジースピンしない)。超過ポーリングは
- * サーバーが 429 で拒否してよい。
+ * Lower bound of the polling interval (seconds — AUTH_SPEC §4-1 (5)).
+ * The server puts this value on the response's `pollIntervalSeconds`, and
+ * the CLI clamps the response value at this bound (so a hostile or
+ * misconfigured server's 0 / negative value does not cause a busy spin).
+ * The server may reject over-frequent polling with 429.
  */
 export const MIN_CLI_POLL_INTERVAL_SECONDS = 5;
 
-/** 公開相関子 flowId(128-bit 乱数 hex — §4-1 (1) の推測不能性要件)。 */
+/** Public correlator flowId (128-bit random hex — the §4-1 (1) unguessability requirement). */
 export const CliFlowIdSchema = hexString(16);
 
 /**
- * CLI 専用の bearer 資格情報(自己完結の署名形式 — §4-1 (1))。CLI にとって
- * 不透明で、形式はサーバー実装の詳細。未認証の書き込み面なのでサイズ上限のみ
- * ワイヤで縛る。
+ * CLI-only bearer credential (self-contained signed form — §4-1 (1)).
+ * Opaque to the CLI; the format is a server implementation detail.
+ * Unauthenticated write surface, so only the size limit is bound on the
+ * wire.
  */
 const CliFlowTokenSchema = Schema.String.check(Schema.isMaxLength(512));
 
 /**
- * `POST /auth/cli/start` の応答(AUTH_SPEC §4-1 (1))。サーバーはこの時点で
- * 何も保存しない(無記録 — 裁定 DH)。verificationUrl は vsig(ドメイン分離
- * された MAC)で覆われ、URL の知識はポーリング資格を一切与えない。
+ * Response of `POST /auth/cli/start` (AUTH_SPEC §4-1 (1)). The server
+ * stores nothing at this point (recordless — ruling DH).
+ * verificationUrl is covered by a vsig (a domain-separated MAC); knowing
+ * the URL grants no polling credential whatsoever.
  */
 export const CliStartResultSchema = Schema.Struct({
   flowId: CliFlowIdSchema,
@@ -61,15 +67,16 @@ export const CliStartResultSchema = Schema.Struct({
   pollIntervalSeconds: Schema.Number,
 });
 
-/** poll: ブラウザ脚が未到達(行なし = 無記録 start の正常系)または承認待ち。 */
+/** poll: the browser leg has not arrived (no row = the normal case of a recordless start) or approval is pending. */
 export const CliPollPendingSchema = Schema.Struct({
   status: Schema.Literal("pending"),
 });
 
 /**
- * poll: 承認済みフローの単回発行結果(AUTH_SPEC §4-1 (5) — 旧 device 交換と
- * 同じ応答形)。生値 `token` はこの応答の一度だけワイヤに現れる(§6 / §10)。
- * `expiresAtMs` は発行時に固定された有効期限(§6 の既定 TTL)。
+ * poll: the single-issuance result of an approved flow (AUTH_SPEC §4-1
+ * (5) — same response shape as the old device exchange). The raw `token`
+ * appears on the wire only this once (§6 / §10). `expiresAtMs` is the
+ * expiry fixed at issuance (§6 default TTL).
  */
 export const CliPollApprovedSchema = Schema.Struct({
   status: Schema.Literal("approved"),
@@ -79,16 +86,17 @@ export const CliPollApprovedSchema = Schema.Struct({
   expiresAtMs: Schema.Number,
 });
 
-/** poll: 承認ページで明示的に拒否された(§4-1 (4) の拒否操作)。 */
+/** poll: explicitly denied on the approval page (the §4-1 (4) deny action). */
 export const CliPollDeniedSchema = Schema.Struct({
   status: Schema.Literal("denied"),
 });
 
 /**
- * `POST /auth/cli/poll` の応答(§4-1 (5))。pending / denied は正当な flowToken
- * 保持者(= フロー作成者自身)に返す型付き状態で、新しい情報を運ばない
- * (§4-2)。expired は型付きエラー(CliFlowExpired)、資格不一致は一様拒否
- * (CliFlowRejected)。
+ * Response of `POST /auth/cli/poll` (§4-1 (5)). pending / denied are
+ * typed states returned to a legitimate flowToken holder (= the flow
+ * creator itself) and carry no new information (§4-2). expired is a
+ * typed error (CliFlowExpired); a credential mismatch is the uniform
+ * refusal (CliFlowRejected).
  */
 export const CliPollResultSchema = Schema.Union([
   CliPollApprovedSchema,
@@ -97,11 +105,13 @@ export const CliPollResultSchema = Schema.Union([
 ]);
 
 /**
- * ブラウザ脚 `GET /auth/cli/verify` のクエリ(§4-1 (3))。verificationUrl が
- * 運ぶ vsig 済みパラメータ一式。すべて optionalKey で宣言し、欠落・改竄の検査は
- * ハンドラが行って一様な**エラーページ**(HTML)で拒否する — スキーマ境界の
- * JSON 400 をブラウザに見せない。上限は未認証面のサイズ規律のみ
- * (githubCallback のクエリ上限と同じ論拠)。
+ * Query of the browser leg `GET /auth/cli/verify` (§4-1 (3)): the set of
+ * vsig-signed parameters carried by verificationUrl. All are declared
+ * optionalKey; checking for missing or tampered values is done by the
+ * handler, which refuses with a uniform **error page** (HTML) — the
+ * schema boundary's JSON 400 is never shown to the browser. The limits
+ * are just the unauthenticated-surface size discipline (same rationale
+ * as githubCallback's query limits).
  */
 const cliVerifyQuery = {
   flow: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(64))),
@@ -114,10 +124,12 @@ const cliVerifyQuery = {
 };
 
 /**
- * 承認フォーム `POST /auth/cli/approve` の受理形(§4-1 (4))。スクリプトなし
- * 承認ページからの素のフォーム POST(application/x-www-form-urlencoded)。
- * 資格はページに埋め込まれた単回・短命の承認チケットであり、セッションでは
- * ない。欠落・不一致の検査はハンドラが行い一様なエラーページで拒否する。
+ * Acceptance shape of the approval form `POST /auth/cli/approve` (§4-1
+ * (4)): a raw form POST (application/x-www-form-urlencoded) from the
+ * script-free approval page. The credential is a single-use, short-lived
+ * approval ticket embedded in the page, not a session. Missing or
+ * mismatched values are checked by the handler, which refuses with a
+ * uniform error page.
  */
 const CliApproveFormSchema = Schema.Struct({
   flowId: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(64))),
@@ -125,26 +137,30 @@ const CliApproveFormSchema = Schema.Struct({
   decision: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(16))),
 }).pipe(HttpApiSchema.asFormUrlEncoded());
 
-/** ブラウザナビゲーション用の 302(auth-api.ts の Redirect と同じ宣言)。 */
+/** 302 for browser navigation (same declaration as Redirect in auth-api.ts). */
 const Redirect = HttpApiSchema.Empty(302);
 
-/** ハンドラが HttpServerResponse(HTML)を直接返す面の成功宣言。 */
+/** Success declaration for surfaces whose handler returns an HttpServerResponse (HTML) directly. */
 const HtmlPage = Schema.String.pipe(HttpApiSchema.asText({ contentType: "text/html" }));
 
 /**
- * CLI ログインエンドポイント(AUTH_SPEC §4)。全面が未認証
- * (session-capability.ts の UNAUTHENTICATED_ENDPOINTS に分類):
+ * CLI login endpoints (AUTH_SPEC §4). All surfaces are unauthenticated
+ * (classified in UNAUTHENTICATED_ENDPOINTS in session-capability.ts):
  *
- * - `cliStart`: 無記録 start(フロー資格の発行のみ — 裁定 DH)
- * - `cliVerify`: vsig の無状態検証 → §3 の web OAuth へリダイレクト
- * - `cliApprove`: 承認ページのフォーム POST(資格 = 単回承認チケット)
- * - `cliPoll`: flowToken の無状態検証 → 行引き → 単回発行(CAS ゲート)
+ * - `cliStart`: recordless start (issues the flow credentials only —
+ *   ruling DH)
+ * - `cliVerify`: stateless vsig verification → redirect into §3 web OAuth
+ * - `cliApprove`: the approval page's form POST (credential = single-use
+ *   approval ticket)
+ * - `cliPoll`: stateless flowToken verification → row fetch →
+ *   single-issuance (CAS gate)
  */
 export const authCliGroup = HttpApiGroup.make("authCli")
   .add(
     HttpApiEndpoint.post("cliStart", "/auth/cli/start", {
-      // 発行パラメータの意味論は §6(旧 device 交換と同一)。未認証面なので
-      // サイズ上限をワイヤで縛る(スコープ 100 エントリ・TTL 1..365)
+      // The issuance parameters' semantics are §6 (identical to the old
+      // device exchange). Unauthenticated surface, so the size limits are
+      // bound on the wire (100 scope entries, TTL 1..365)
       payload: Schema.Struct({
         tokenName: Schema.optionalKey(TokenNameSchema),
         scopes: Schema.optionalKey(Schema.Array(TokenScopeSchema).check(Schema.isMaxLength(100))),

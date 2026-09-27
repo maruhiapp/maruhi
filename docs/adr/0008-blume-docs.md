@@ -1,17 +1,17 @@
-# ADR-0008: docs は Blume、ランディングは FunStack(改訂 1: ランディングも Blume — apex `maruhi.app` に LP + docs)
+# ADR-0008: docs on Blume, landing on FunStack (Revision 1: landing also on Blume — LP + docs on apex `maruhi.app`)
 
-**Decision**: ドキュメントサイトは Blume(Astro ベース、MCP / llms.txt / 検索 / OpenAPI 内蔵)。
-**Rationale**: docs の資産はコンテンツ(Markdown)でありフレームワークではないため移行コストが低く、「後から変えやすい決定」。ゼロコンフィグで AI-ready な現時点最速を採る。Fumadocs は未採用のメタフレームワークを持ち込むため不採用。自作は非差別化労働のため不採用。
+**Decision**: The documentation site is Blume (Astro-based; MCP / llms.txt / search / OpenAPI built in).
+**Rationale**: A docs site's asset is its content (Markdown), not the framework, so migration cost is low — an "easy-to-change-later" decision. We take the current fastest zero-config, AI-ready option. Fumadocs is rejected for dragging in a meta-framework we have not adopted. In-house is rejected as undifferentiated labor.
 
-## 改訂 1(2026-09-03): ランディングも Blume — apex `maruhi.app` = LP(`/`)+ docs(`/docs`)
+## Revision 1 (2026-09-03): Landing also on Blume — apex `maruhi.app` = LP (`/`) + docs (`/docs`)
 
-Status: 2026-09-03 所有者裁定(docs/notes/web-design-pass.md §1-4 / §4)。DP2 の PR のマージをもって Accepted。表題の「ランディングは FunStack」は本改訂で差し替える(再議論ではなく裁定への同期)。
+Status: 2026-09-03 owner ruling (docs/notes/web-design-pass.md §1-4 / §4). Accepted upon merge of the DP2 PR. The title's "landing is FunStack" is replaced by this revision (not a re-debate — a sync to the ruling).
 
-**Decision**: ランディングページ(LP)は FunStack(`apps/web`)ではなく **Blume のカスタムページ**(Astro の `pages/index.astro`)として、docs と同じ静的サイト `apps/site` に置く。配信は apex `maruhi.app`(Workers Static Assets のみの独立 Worker `maruhi-site`)。製品オリジン `my.maruhi.app`(ダッシュボード = TCB)とは別デプロイ。`apps/docs` スタブは `apps/site` に吸収する。
+**Decision**: The landing page (LP) is not FunStack (`apps/web`) but a **Blume custom page** (Astro `pages/index.astro`), placed in the same static site `apps/site` as docs. Served from apex `maruhi.app` (an independent Worker `maruhi-site` with Workers Static Assets only). Deployed separately from the product origin `my.maruhi.app` (dashboard = TCB). The `apps/docs` stub is absorbed into `apps/site`.
 
 **Rationale**:
-1. **TCB 分離**: LP はマーケティング面であり、ダッシュボードのオリジンに同居させると LP の変更がすべて TCB のリリースになる。別オリジン・別 Worker にすることで、CSP の厳格さと変更頻度をそれぞれに合わせられる(LP も「言わざる」は守る — 外部スクリプト・外部フォント・トラッカーはゼロ)。
-2. **1 サイト 1 デプロイ**: LP と docs を同じ Blume プロジェクトに置くと、テーマ(朱 accent・warm neutral・Archivo / Martian Mono)・検索・OG・`llms.txt` を共有でき、ドメインも 1 つ(SEO の集約)。Blume は `basePath: "/docs"` で docs を `/docs/*` に載せ、ルートはカスタムページに委ねる構成を公式にサポートする(DP2 で実機確認)。
-3. **FunStack 側の単純化**: `apps/web` は製品(ダッシュボード + 儀式ページ)だけを持ち、`my.maruhi.app/` は最小の案内ページになる。ADR-0007(フロントは FunStack)はダッシュボードについて不変。
+1. **TCB separation**: The LP is a marketing surface; colocating it on the dashboard origin would make every LP change a TCB release. A separate origin and a separate Worker let CSP strictness and change frequency each fit their site (the LP still honors "say nothing" — zero external scripts, external fonts, or trackers).
+2. **One site, one deploy**: Putting the LP and docs in the same Blume project lets them share the theme (vermilion accent, warm neutrals, Archivo / Martian Mono), search, OG, and `llms.txt`, on a single domain (consolidated SEO). Blume officially supports this shape: `basePath: "/docs"` mounts docs at `/docs/*` and leaves the root to custom pages (verified live in DP2).
+3. **Simplification on the FunStack side**: `apps/web` holds only the product (dashboard + ceremony pages), and `my.maruhi.app/` becomes a minimal guidance page. ADR-0007 (frontend is FunStack) is unchanged for the dashboard.
 
-**Consequences**: `apps/site` の依存は `blume` 本体(+ 開発用の wrangler / playwright / vitest)。Blume は Astro / Tailwind / React / mermaid 等を内包するため node_modules は大きいが、静的出力の配信物には Blume の chrome が要る JS しか載らない。Tailwind / StyleX / Astryx の React 部品は LP に持ち込まない(web-design-pass.md §4 の 3 層)。LP を Blume の外で作る必要が出た場合は本 ADR の再改訂として提示する。
+**Consequences**: `apps/site` depends on `blume` itself (plus wrangler / playwright / vitest for development). Because Blume bundles Astro / Tailwind / React / mermaid etc., node_modules is large, but the delivered static output only ships the JS that Blume's chrome requires. No Tailwind / StyleX / Astryx React parts are brought into the LP (the three layers in web-design-pass.md §4). If the LP ever needs to be built outside Blume, it is presented as a further revision of this ADR.

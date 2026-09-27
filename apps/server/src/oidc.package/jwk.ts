@@ -1,13 +1,17 @@
-// JWKS の鍵 → WebCrypto 検証鍵(AUTH_SPEC §14-1 の署名検証)。
+// JWKS key → WebCrypto verification key (AUTH_SPEC §14-1's signature
+// verification).
 //
-// **alg 混同を構造的に閉じる設計**: 使用するアルゴリズムは常に **JWK 側の
-// kty / crv** から決め、トークンヘッダーの `alg` はそこから導かれる期待値との
-// 一致検査にしか使わない。ヘッダーの `alg` で分岐する実装は、攻撃者が選べる
-// 値で検証経路を選ばせることになる(`none`・HMAC への差し替え)。ここでは
-// 分岐の入力がサーバーが取得した JWKS だけなので、その経路が存在しない。
+// **A design that structurally closes off alg confusion**: the
+// algorithm used is always decided from **the JWK side's kty / crv**,
+// and the token header's `alg` is used only for a match check against
+// the expectation derived from them. An implementation that branches
+// on the header's `alg` lets an attacker-chosen value pick the
+// verification path (`none`, substitution to HMAC). Here the branch
+// input is only the server-fetched JWKS, so that path does not exist.
 //
-// 許可アルゴリズムは RS256 / ES256 のみ(§14-1)。対称鍵 alg・`none` は
-// そもそも JWK 側に対応する kty がなく、到達しない。
+// The allowed algorithms are RS256 / ES256 only (§14-1). Symmetric-key
+// algs and `none` have no corresponding JWK-side kty and are
+// unreachable.
 
 /** JWS `alg` values this deployment accepts (AUTH_SPEC §14-1). */
 export type AllowedAlg = "RS256" | "ES256";
@@ -47,12 +51,12 @@ const ES256: AlgorithmBinding = {
  * publish keys for algorithms we do not accept).
  */
 export function algorithmForJwk(jwk: Jwk): AlgorithmBinding | null {
-  // `use` は任意だが、宣言されているなら署名用であること
+  // `use` is optional, but when declared it must be "sig"
   if (jwk.use !== undefined && jwk.use !== "sig") {
     return null;
   }
   if (jwk.kty === "RSA") {
-    // JWK 側が alg を宣言しているなら、それも許可リスト内で一致すること
+    // When the JWK side declares an alg, it must also match inside the allowlist
     return jwk.alg === undefined || jwk.alg === "RS256" ? RS256 : null;
   }
   if (jwk.kty === "EC" && jwk.crv === "P-256") {
@@ -70,8 +74,8 @@ export async function importJwk(jwk: Jwk, binding: AlgorithmBinding): Promise<Cr
   try {
     return await crypto.subtle.importKey(
       "jwk",
-      // WebCrypto は JWK を JsonWebKey として受ける。ここへ渡すのは取得済みの
-      // JWKS のエントリそのもの(改変しない)
+      // WebCrypto takes the JWK as a JsonWebKey. What is passed here
+      // is the fetched JWKS entry itself (unmodified)
       jwk as JsonWebKey,
       binding.importParams,
       false,
@@ -83,9 +87,10 @@ export async function importJwk(jwk: Jwk, binding: AlgorithmBinding): Promise<Cr
 }
 
 /**
- * Verifies a JWS signature over `signingInput`. ES256 の JWS 署名は生の
- * `r || s`(64 バイト)であり、WebCrypto の ECDSA がそのまま受ける形なので
- * DER 変換は要らない(不要な変換層を置かない)。
+ * Verifies a JWS signature over `signingInput`. An ES256 JWS
+ * signature is raw `r || s` (64 bytes), the form WebCrypto's ECDSA
+ * takes directly, so no DER conversion is needed (no unnecessary
+ * conversion layer).
  */
 export async function verifyJwsSignature(input: {
   readonly key: CryptoKey;
