@@ -1,11 +1,16 @@
-// scope.ts / deks.ts の scope 規則の単体テスト(2026-09-15 ES K4 — 設計録 §10)。
+// Unit tests for the scope rules in scope.ts / deks.ts (2026-09-15 ES K4
+// — design record §10).
 //
-// 固定する性質:
-//  1. 受信側規則(CRYPTO_SPEC §6.3 — K4-F): 自分宛 DEK の唯一の取得口 environmentKeysFor
-//     は、環境 ∉ 自分の scope なら**取得も開封もせず**型付きエラーで止まる
-//  2. 義務の環境集合の具体化(K4-J): `all` は義務 seq 時点で存在した環境に限る
-//     (後に作成された環境は含まない)
-//  3. 包含述語(K4-I): §6.2 の集合代数(`all` = U、`listed ⊉ all`、listed 同士は部分集合)
+// Properties pinned down:
+//  1. The receiving-side rule (CRYPTO_SPEC §6.3 — K4-F):
+//     environmentKeysFor, the sole entry point for obtaining your own
+//     DEKs, **doesn't fetch or unseal anything** when the environment is
+//     outside your scope — it stops with a typed error
+//  2. Concretizing a mandate's environment set (K4-J): `all` covers only
+//     the environments that existed at the mandate's seq (later-created
+//     environments are excluded)
+//  3. The containment predicates (K4-I): §6.2's set algebra (`all` = U,
+//     `listed ⊉ all`, listed-to-listed is subset)
 
 import type { ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -59,8 +64,8 @@ beforeAll(async () => {
   verified = await verify(built);
 });
 
-describe("受信側の scope 規則(CRYPTO_SPEC §6.3 — K4-F)", () => {
-  it("環境 ∉ 自分の scope なら DEK を取得せず型付きエラーで止まる(サーバーへの要求ゼロ)", async () => {
+describe("receiving-side scope rules (CRYPTO_SPEC §6.3 — K4-F)", () => {
+  it("when the environment is outside your scope it fetches no DEK and stops with a typed error (zero server requests)", async () => {
     const chain = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-dev", new Uint8Array(32)) },
@@ -77,7 +82,8 @@ describe("受信側の scope 規則(CRYPTO_SPEC §6.3 — K4-F)", () => {
         },
       },
     } as unknown as MaruhiClient;
-    // flip: 失敗(CliError)を成功側へ倒して取り出す(成功したらテスト失敗)
+    // flip: tilt the failure (CliError) onto the success side to extract
+    // it (success would fail the test)
     const failure = await Effect.runPromise(
       Effect.flip(
         environmentKeysFor({
@@ -95,9 +101,9 @@ describe("受信側の scope 規則(CRYPTO_SPEC §6.3 — K4-F)", () => {
   });
 });
 
-describe("義務の環境集合の具体化(K4-J)", () => {
-  it("all は義務 seq 時点で存在した環境に限る(後に作成された環境は含まない)", () => {
-    // seq 5 = remove_member。env-later は seq 6 で作成
+describe("concretizing a mandate's environment set (K4-J)", () => {
+  it("all covers only environments that existed at the mandate's seq (later-created environments are excluded)", () => {
+    // seq 5 = remove_member. env-later is created at seq 6
     expect(environmentsOfScopeAt(verified, { kind: "all" }, 5)).toEqual(["env-dev", "env-prod"]);
     expect(environmentsOfScopeAt(verified, { kind: "all" }, 6)).toEqual([
       "env-dev",
@@ -109,7 +115,7 @@ describe("義務の環境集合の具体化(K4-J)", () => {
     ).toEqual(["env-prod"]);
   });
 
-  it("all → listed の縮小は U \\ X をその時点の環境集合に具体化する", () => {
+  it("an all → listed narrowing concretizes U \\ X into that point's environment set", () => {
     const change = scopeChangeAt(
       verified,
       { kind: "all" },
@@ -121,13 +127,13 @@ describe("義務の環境集合の具体化(K4-J)", () => {
   });
 });
 
-describe("包含述語(CRYPTO_SPEC §6.2 の集合代数 — K4-I)", () => {
+describe("containment predicates (CRYPTO_SPEC §6.2's set algebra — K4-I)", () => {
   const all = { kind: "all" } as const;
   const devOnly = { kind: "listed", environmentIds: ["env-dev"] } as const;
   const both = { kind: "listed", environmentIds: ["env-dev", "env-prod"] } as const;
   const none = { kind: "listed", environmentIds: [] } as const;
 
-  it("all ⊇ 任意、listed ⊉ all、listed 同士は部分集合、空 listed は何にでも包含される", () => {
+  it("all ⊇ anything, listed ⊉ all, listed-to-listed is subset, and an empty listed is contained in everything", () => {
     expect(scopeContains(all, all)).toBe(true);
     expect(scopeContains(all, both)).toBe(true);
     expect(scopeContains(devOnly, all)).toBe(false);
@@ -138,14 +144,14 @@ describe("包含述語(CRYPTO_SPEC §6.2 の集合代数 — K4-I)", () => {
     expect(scopeContains(none, devOnly)).toBe(false);
   });
 
-  it("sameScope は集合として比較する(順序を問わず、all と listed{} は別)", () => {
+  it("sameScope compares as sets (order-insensitive; all and listed{} differ)", () => {
     expect(sameScope(both, { kind: "listed", environmentIds: ["env-prod", "env-dev"] })).toBe(true);
     expect(sameScope(all, none)).toBe(false);
     expect(sameScope({ scopeKind: "all", scopeEnvironmentIds: [] }, all)).toBe(true);
   });
 });
 
-describe("change_role 履歴からの拡大 / 縮小分の再導出(K4-N 追補 (2))", () => {
+describe("re-deriving the widened / narrowed portions from the change_role history (K4-N supplement (2))", () => {
   const dek = new Uint8Array(32);
 
   function targetOf(view: VerifiedProject) {
@@ -154,7 +160,7 @@ describe("change_role 履歴からの拡大 / 縮小分の再導出(K4-N 追補 
     return member;
   }
 
-  it("拡大 → 縮小: 拡大分は履歴の和集合 ∩ 現 scope(縮小で外れた環境は含まない)、縮小分は最後の差", async () => {
+  it("widen then narrow: the widened portion is the history's union ∩ current scope (environments lost in the narrowing excluded); the narrowed portion is the last difference", async () => {
     const chain = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-dev", dek) },
@@ -170,14 +176,15 @@ describe("change_role 履歴からの拡大 / 縮小分の再導出(K4-N 追補 
     expect(change.narrowed).toEqual(["env-stg"]);
   });
 
-  it("再拡大: 第三者の change_role が挟まっても、履歴全体の拡大分が現 scope に残る限り再開対象になる", async () => {
+  it("re-widening: even with a third party's change_role in between, a history-wide widened portion still inside the current scope is a resumption target", async () => {
     const chain = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-dev", dek) },
       { actor: owner, operation: createEnvironmentOp("env-prod", dek) },
       { actor: owner, operation: addScopedMemberOp(dev, "member", ["env-dev"]) },
       { actor: owner, operation: changeRoleOp(dev, "member", ["env-dev", "env-prod"]) },
-      // 拡大バックフィルの中断中に別の change_role(role だけ変更)が積まれた形
+      // The shape where another change_role (role only) was stacked
+      // mid-interruption of the widening backfill
       { actor: owner, operation: changeRoleOp(dev, "admin", ["env-dev", "env-prod"]) },
     ]);
     const view = await verify(chain);
@@ -186,7 +193,7 @@ describe("change_role 履歴からの拡大 / 縮小分の再導出(K4-N 追補 
     expect(change.narrowed).toEqual([]);
   });
 
-  it("all → listed → all: 縮小で外れた環境は再拡大で拡大分に戻り、縮小分は空になる", async () => {
+  it("all → listed → all: an environment lost in the narrowing returns to the widened portion on re-widening, and the narrowed portion is empty", async () => {
     const chain = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-dev", dek) },

@@ -1,11 +1,12 @@
-// リリース用のコンパイル済みバイナリ 5 対象と checksums.txt を dist/ に作る。
-// release workflow(.github/workflows/release.yml)とローカル検証の両方がこれを
-// 呼ぶことで、対象一覧・アーカイブ形式・チェックサム形式の定義を 1 か所に保つ。
+// Builds the 5 compiled release binaries and checksums.txt into dist/.
+// Both the release workflow (.github/workflows/release.yml) and local
+// verification call this, keeping the target list, archive format, and
+// checksum format defined in one place.
 //
-// 出力(apps/cli/dist/):
-//   maruhi-<target>.tar.gz × 5(中身はバイナリ 1 本。`mh` エイリアスは同梱しない —
-//   インストーラ側でリンクを張る。ADR-0015)
-//   checksums.txt(`sha256sum -c` 互換: "<hex 64 桁><space><space><ファイル名>")
+// Output (apps/cli/dist/):
+//   maruhi-<target>.tar.gz × 5 (one binary each; the `mh` alias is not bundled —
+//   the installer creates the link. ADR-0015)
+//   checksums.txt (`sha256sum -c` compatible: "<64-hex><space><space><filename>")
 
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -38,8 +39,9 @@ for (const target of TARGETS) {
   );
 
   const archiveName = `maruhi-${target.name}.tar.gz`;
-  // Windows も tar.gz で統一する(Windows 10+ の標準 tar が展開できる)。
-  // zip が要る配布経路(scoop 等)が出たら release workflow ごと見直す
+  // Windows uses tar.gz too (the stock tar on Windows 10+ can extract it).
+  // If a distribution path that needs zip appears (scoop etc.), revisit the
+  // whole release workflow
   run("tar", ["-czf", join(distDir, archiveName), "-C", workDir, target.bin], cliRoot);
   await rm(workDir, { recursive: true, force: true });
 
@@ -50,4 +52,4 @@ for (const target of TARGETS) {
 }
 
 await writeFile(join(distDir, "checksums.txt"), `${checksumLines.join("\n")}\n`);
-console.log(`checksums.txt: ${checksumLines.length} 件(sha256sum -c 互換)`);
+console.log(`checksums.txt: ${checksumLines.length} entries (sha256sum -c compatible)`);

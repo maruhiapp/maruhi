@@ -1,8 +1,12 @@
-// stderr 通知(notice.ts)の語彙・色の規律(DP5 裁定 A / B)。
+// Vocabulary and color discipline for stderr notices (notice.ts) — DP5
+// rulings A / B.
 //
-// - 接頭辞は `Note:` / `Warning:` / `maruhi:` の 3 語だけ、宛先は stderr
-// - 色は接頭辞にだけ付く(本文に ANSI を混ぜない — 値・識別子・URL を含みうる)
-// - 色の可否: FORCE_COLOR > NO_COLOR(非空で無効)> TERM=dumb > stderr が端末か
+// - Only three prefixes: `Note:` / `Warning:` / `maruhi:`, and the
+//   destination is always stderr
+// - Color goes on the prefix alone (no ANSI inside the body — it can
+//   contain values, identifiers, URLs)
+// - Color enablement: FORCE_COLOR > NO_COLOR (non-empty disables) >
+//   TERM=dumb > whether stderr is a terminal
 
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
@@ -12,16 +16,16 @@ import { makeTestEnv } from "./support/env.ts";
 
 const ESC = "\u001B";
 
-/** 環境変数の読み取りの偽装(テーブル → envVar)。 */
+/** Fakes the environment-variable lookup (table → envVar). */
 const envOf = (vars: Readonly<Record<string, string>>) => (name: string) => vars[name];
 
-describe("shouldUseColor(色の可否)", () => {
-  it("既定は stderr が端末かどうかで決まる", () => {
+describe("shouldUseColor (color enablement)", () => {
+  it("defaults to whether stderr is a terminal", () => {
     expect(shouldUseColor({ stderrIsTerminal: true, envVar: envOf({}) })).toBe(true);
     expect(shouldUseColor({ stderrIsTerminal: false, envVar: envOf({}) })).toBe(false);
   });
 
-  it("NO_COLOR は値を問わず非空なら無効にする(no-color.org)", () => {
+  it("NO_COLOR disables when non-empty regardless of value (no-color.org)", () => {
     expect(shouldUseColor({ stderrIsTerminal: true, envVar: envOf({ NO_COLOR: "1" }) })).toBe(
       false,
     );
@@ -31,7 +35,7 @@ describe("shouldUseColor(色の可否)", () => {
     expect(shouldUseColor({ stderrIsTerminal: true, envVar: envOf({ NO_COLOR: "" }) })).toBe(true);
   });
 
-  it("FORCE_COLOR は端末判定と NO_COLOR に勝ち、`0` だけは無効化を意味する", () => {
+  it("FORCE_COLOR beats the terminal check and NO_COLOR; only `0` means disable", () => {
     expect(shouldUseColor({ stderrIsTerminal: false, envVar: envOf({ FORCE_COLOR: "1" }) })).toBe(
       true,
     );
@@ -46,19 +50,19 @@ describe("shouldUseColor(色の可否)", () => {
     );
   });
 
-  it("TERM=dumb は端末でも無色", () => {
+  it("TERM=dumb is colorless even on a terminal", () => {
     expect(shouldUseColor({ stderrIsTerminal: true, envVar: envOf({ TERM: "dumb" }) })).toBe(false);
   });
 });
 
-describe("formatNotice(接頭辞の描画)", () => {
-  it("無色では素の接頭辞 + 本文", () => {
+describe("formatNotice (rendering the prefix)", () => {
+  it("without color it's a bare prefix + the body", () => {
     expect(formatNotice("note", "hello", false)).toBe("Note: hello");
     expect(formatNotice("warning", "hello", false)).toBe("Warning: hello");
     expect(formatNotice("error", "hello", false)).toBe("maruhi: hello");
   });
 
-  it("色は接頭辞だけに付き、本文には ANSI を混ぜない", () => {
+  it("color goes on the prefix alone; the body carries no ANSI", () => {
     const line = formatNotice("warning", "value=abc", true);
     expect(line).toBe(`${ESC}[33mWarning:${ESC}[0m value=abc`);
     expect(line.slice(line.indexOf(" ") + 1)).toBe("value=abc");
@@ -67,8 +71,8 @@ describe("formatNotice(接頭辞の描画)", () => {
   });
 });
 
-describe("logNote / logWarning(宛先と継続行)", () => {
-  it("stderr へ出し、stdout には何も出ない(色は接頭辞だけ)", async () => {
+describe("logNote / logWarning (destination and continuation lines)", () => {
+  it("writes to stderr and nothing to stdout (color on the prefix only)", async () => {
     const env = await makeTestEnv();
     env.setColor(true);
     await Effect.runPromise(
@@ -84,7 +88,7 @@ describe("logNote / logWarning(宛先と継続行)", () => {
     ]);
   });
 
-  it("prompt スコープの通知は字下げされ、台帳があっても再試行のたびに出る", async () => {
+  it("prompt-scope notices are indented and re-emitted on every retry even with a ledger", async () => {
     const env = await makeTestEnv();
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -101,7 +105,7 @@ describe("logNote / logWarning(宛先と継続行)", () => {
     ]);
   });
 
-  it("同一文面の Note / Warning は台帳(1 コマンド実行)あたり 1 回だけ出る", async () => {
+  it("the same-worded Note / Warning appears once per ledger (one command run)", async () => {
     const env = await makeTestEnv();
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -115,7 +119,7 @@ describe("logNote / logWarning(宛先と継続行)", () => {
     expect(env.errors).toEqual(["Note: same", "Warning: same", "Note: other"]);
   });
 
-  it("テスト環境の既定は無色(断言を素の文字列で書ける)", async () => {
+  it("the test environment defaults to colorless (so assertions can be plain strings)", async () => {
     const env = await makeTestEnv();
     await Effect.runPromise(logNote("plain").pipe(Effect.provide(env.layer)));
     expect(env.errors).toEqual(["Note: plain"]);

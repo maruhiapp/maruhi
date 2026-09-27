@@ -1,15 +1,16 @@
-// ベンダー API(`maruhi sync` の http ドライバの宛先)の「正直な」インメモリ
-// モック: 受理した upsert / 削除で状態を進め、次の一覧・次の書き込みに反映する。
-// 応答を手で組み替えず、実物の wire 形(wrangler 4.128.0 / Vercel CLI 59.11.7 /
-// 公開 REST docs で確かめた形)で返す。
+// "Honest" in-memory mocks of the vendor APIs (the targets of `maruhi sync`'s
+// http driver): accepted upserts / deletions advance the state and are
+// reflected in the next list / next write. Responses are not hand-assembled —
+// they come back in the real wire shapes (verified against wrangler 4.128.0 /
+// Vercel CLI 59.11.7 / the public REST docs).
 //
-// 検査用に、受理したリクエスト(ヘッダー・本文)と保存された値を公開する —
-// 「値は本文の決まった位置にだけ現れ、URL・ヘッダー・ログには現れない」を
-// テストが断言する材料。
+// For assertions, the accepted requests (headers + body) and the stored values
+// are exposed — evidence for tests to state that "the value only appears at
+// fixed positions in the body, never in URLs, headers, or logs".
 
 import type { MockHandler, MockRequest, MockResponse } from "./server.ts";
 
-/** 差し込み応答(undefined = 正常受理)。呼び出し回数で切り替える。 */
+/** An injected response (undefined = accept normally). Switched by call count. */
 export type VendorOverride = (
   call: number,
   request: MockRequest,
@@ -17,24 +18,24 @@ export type VendorOverride = (
   | { readonly status: number; readonly json?: unknown; readonly headers?: Record<string, string> }
   | undefined;
 
-/** Cloudflare Workers の偽 API(`PATCH …/secrets-bulk`)。 */
+/** The fake Cloudflare Workers API (`PATCH …/secrets-bulk`). */
 export interface FakeCloudflare {
   readonly handlers: readonly MockHandler[];
-  /** アカウント → スクリプト → 秘密名 → 値。 */
+  /** account → script → secret name → value. */
   readonly secrets: Map<string, Map<string, string>>;
   readonly requests: MockRequest[];
 }
 
 const CF_BULK = /^\/client\/v4\/accounts\/([^/]+)\/workers\/scripts\/([^/]+)\/secrets-bulk$/;
 
-/** Cloudflare の envelope。 */
+/** Cloudflare's envelope. */
 function envelope(success: boolean, result: unknown, errors: { code: number; message: string }[]) {
   return { success, errors, messages: [], result };
 }
 
 export function makeFakeCloudflare(input: {
   readonly token: string;
-  /** 存在する Worker(account/script)。無いスクリプトへの書き込みは 10007。 */
+  /** Existing Workers (account/script). Writes to a missing script get 10007. */
   readonly scripts: readonly string[];
   readonly override?: VendorOverride;
 }): FakeCloudflare {
@@ -71,7 +72,7 @@ export function makeFakeCloudflare(input: {
   return { handlers, secrets, requests };
 }
 
-/** 差し込み応答・認証・Content-Type の前段(通れば null)。 */
+/** Preliminaries: injected response, auth, Content-Type (null = pass). */
 function cloudflarePreflight(
   request: MockRequest,
   token: string,
@@ -96,7 +97,7 @@ function cloudflarePreflight(
   return null;
 }
 
-/** merge-patch の `secrets` を保存状態へ適用する(null = 削除)。結果は名前 → メタ。 */
+/** Applies a merge-patch's `secrets` to the stored state (null = delete). The result is name → meta. */
 function applyMergePatch(store: Map<string, string>, body: unknown): Record<string, unknown> {
   const patch = body as { secrets?: Record<string, { text?: string } | null> };
   const result: Record<string, unknown> = {};
@@ -111,7 +112,7 @@ function applyMergePatch(store: Map<string, string>, body: unknown): Record<stri
   return result;
 }
 
-/** Vercel の 1 変数(同期先側の保存形)。 */
+/** One Vercel variable (the sync destination's stored shape). */
 export interface FakeVercelEnv {
   readonly id: string;
   readonly key: string;
@@ -121,7 +122,7 @@ export interface FakeVercelEnv {
   readonly gitBranch?: string;
 }
 
-/** Vercel の偽 API(`POST /v10/projects/{id}/env?upsert=true`、一覧、削除)。 */
+/** The fake Vercel API (`POST /v10/projects/{id}/env?upsert=true`, list, delete). */
 export interface FakeVercel {
   readonly handlers: readonly MockHandler[];
   readonly envs: FakeVercelEnv[];
@@ -143,7 +144,7 @@ interface VercelFailure {
   readonly error: { readonly code: string; readonly message: string; readonly key: string };
 }
 
-/** 差し込み応答・認証の前段(通れば null)。 */
+/** Preliminaries: injected response, auth (null = pass). */
 function vercelPreflight(
   authorized: boolean,
   forced: ReturnType<VendorOverride>,
@@ -160,7 +161,7 @@ function vercelPreflight(
     : { status: 403, json: { error: { code: "forbidden", message: "Not authorized" } } };
 }
 
-/** 一覧(target / gitBranch で絞る)。値を返す(sensitive 以外)— ドライバが値を読まないことの材料。 */
+/** List (filtered by target / gitBranch). Returns values (except sensitive) — evidence that the driver does not read values. */
 function listEnvs(
   envs: readonly FakeVercelEnv[],
   query: Readonly<Record<string, string>>,
@@ -173,7 +174,7 @@ function listEnvs(
     .map((env) => ({ ...env, value: env.type === "sensitive" ? undefined : env.value }));
 }
 
-/** 1 リクエストぶんの upsert(配列 / 1 件)。 */
+/** One request's worth of upserts (array / single item). */
 function upsertAll(
   envs: FakeVercelEnv[],
   items: readonly VercelEnvItem[],
@@ -193,7 +194,7 @@ function upsertAll(
   return { created, failed };
 }
 
-/** 1 件の upsert(既存があれば update、無ければ create。拒否名は failed)。 */
+/** A single upsert (update if it exists, create otherwise; rejected names go to failed). */
 function upsertEnv(
   envs: FakeVercelEnv[],
   item: VercelEnvItem,
@@ -252,9 +253,9 @@ export function makeFakeVercel(input: {
   readonly teamId?: string;
   readonly initial?: readonly FakeVercelEnv[];
   readonly override?: VendorOverride;
-  /** 1 リクエストのうち失敗させる名前(部分成功の再現)。 */
+  /** Names to fail within one request (reproduces partial success). */
   readonly rejectKeys?: readonly string[];
-  /** 一覧に続きがあると申告する(`pagination.next` — fail-closed の再現)。 */
+  /** Claims the list has a continuation (`pagination.next` — reproduces the fail-closed path). */
   readonly paginated?: boolean;
 }): FakeVercel {
   const envs: FakeVercelEnv[] = [...(input.initial ?? [])];
@@ -264,7 +265,7 @@ export function makeFakeVercel(input: {
   const authorized = (request: MockRequest) =>
     request.headers["authorization"] === `Bearer ${input.token}` &&
     (input.teamId === undefined || request.query["teamId"] === input.teamId);
-  /** `/v10/projects/{id}/env` 宛か(記録・差し込み・認証の前段込み。通れば null)。 */
+  /** Whether it targets `/v10/projects/{id}/env` (includes the recording / injection / auth preliminaries; null = pass). */
   const envCollection = (request: MockRequest, method: string): MockResponse | null | "skip" => {
     const match = request.path.match(VERCEL_ENV);
     if (request.method !== method || match === null || match[1] !== input.projectId) {
@@ -306,7 +307,7 @@ export function makeFakeVercel(input: {
           return `env_${nextId - 1}`;
         },
       );
-      // created は値を echo する(実物と同じ) — ドライバが表示しないことの材料
+      // created echoes the value (same as the real API) — evidence that the driver does not display it
       return { status: 201, json: { created: batch ? created : created[0], failed } };
     },
     (request) => {
@@ -329,7 +330,7 @@ export function makeFakeVercel(input: {
   return { handlers, envs, requests };
 }
 
-/** Netlify の 1 変数の 1 context の値(同期先側の保存形)。 */
+/** One context's value of one Netlify variable (the sync destination's stored shape). */
 export interface FakeNetlifyValue {
   readonly id: string;
   readonly value: string;
@@ -337,7 +338,7 @@ export interface FakeNetlifyValue {
   readonly context_parameter?: string;
 }
 
-/** Netlify の 1 変数(`envVar` — key / scopes / values / is_secret)。 */
+/** One Netlify variable (`envVar` — key / scopes / values / is_secret). */
 export interface FakeNetlifyVar {
   readonly key: string;
   readonly scopes: readonly string[];
@@ -346,17 +347,20 @@ export interface FakeNetlifyVar {
 }
 
 /**
- * Netlify の偽 API(swagger 2.57.1 と netlify-cli で確かめた形):
- * `GET /api/v1/accounts/{account_id}/env?site_id=`(配列)、`POST …/env?site_id=`(配列で
- * 新規作成。**既存 key は 422** — 文言は Netlify Support Forums #88738 で報告された実物。
- * swagger には無い)、
- * `PATCH …/env/{key}?site_id=`(既存 key の 1 context の値を作る / 更新する。不在 key は 404)、
- * `DELETE …/env/{key}?site_id=`(key ごと)、`DELETE …/env/{key}/value/{id}?site_id=`。
- * 一覧・作成・更新の応答は値を echo する(secret は空 — 実物は「返さない」)。
+ * The fake Netlify API (shapes verified against swagger 2.57.1 and
+ * netlify-cli):
+ * `GET /api/v1/accounts/{account_id}/env?site_id=` (array), `POST …/env?site_id=`
+ * (creates from an array. **An existing key is a 422** — the wording is the
+ * real response reported in Netlify Support Forums #88738; not in swagger),
+ * `PATCH …/env/{key}?site_id=` (creates / updates one context's value of an
+ * existing key; missing key is 404),
+ * `DELETE …/env/{key}?site_id=` (whole key), `DELETE …/env/{key}/value/{id}?site_id=`.
+ * List / create / update responses echo values (secret is empty — the real API
+ * "does not return" it).
  */
 export interface FakeNetlify {
   readonly handlers: readonly MockHandler[];
-  /** key → 変数(このサイトのもの)。 */
+  /** key → variable (belonging to this site). */
   readonly vars: Map<string, FakeNetlifyVar>;
   readonly requests: MockRequest[];
 }
@@ -369,7 +373,7 @@ function netlifyError(status: number, message: string): MockResponse {
   return { status, json: { code: status, message } };
 }
 
-/** 一覧 / 応答の形(secret の値は伏せる — 実物は返さない)。 */
+/** The list / response shape (secret values are masked — the real API doesn't return them). */
 function netlifyView(variable: FakeNetlifyVar): Record<string, unknown> {
   return {
     ...variable,
@@ -386,9 +390,9 @@ export function makeFakeNetlify(input: {
   readonly siteId: string;
   readonly initial?: readonly FakeNetlifyVar[];
   readonly override?: VendorOverride;
-  /** 作成(POST)を失敗させる名前(部分成功の再現)。 */
+  /** Names for which creation (POST) fails (reproduces partial success). */
   readonly rejectKeys?: readonly string[];
-  /** 最初に受理した作成(POST)を保存した**うえで** 503 を返す(応答が失われた形の再現)。 */
+  /** Returns 503 **after** storing the first accepted create (POST) (reproduces a lost response). */
   readonly loseFirstCreateResponse?: boolean;
 }): FakeNetlify {
   const vars = new Map<string, FakeNetlifyVar>();
@@ -403,7 +407,7 @@ export function makeFakeNetlify(input: {
     nextId += 1;
     return `val_${nextId - 1}`;
   };
-  /** 記録・差し込み・認証・site_id の前段(通れば null)。 */
+  /** Preliminaries: recording, injection, auth, site_id (null = pass). */
   const preflight = (request: MockRequest, accountId: string): MockResponse | null => {
     requests.push(request);
     calls += 1;
@@ -495,14 +499,14 @@ interface NetlifyCreateItem {
   readonly is_secret?: boolean;
 }
 
-/** 作成を拒む理由(既存 key・拒否名)。通れば null。 */
+/** Reasons to refuse creation (existing key, rejected name). null = pass. */
 function rejectCreate(
   vars: ReadonlyMap<string, FakeNetlifyVar>,
   item: NetlifyCreateItem,
   rejectKeys: readonly string[],
 ): MockResponse | null {
   if (vars.has(item.key)) {
-    // 実物の文言(Netlify Support Forums #88738 で報告された応答。swagger には無い)
+    // The real wording (the response reported in Netlify Support Forums #88738; not in swagger)
     return netlifyError(
       422,
       "Environment variable with the same key name already exists on this site. Try a different key or edit the existing variable.",
@@ -514,7 +518,7 @@ function rejectCreate(
   return null;
 }
 
-/** `POST …/env`: 配列で新規作成(既存 key = 422〔報告された実物〕・拒否名 = 422。全体を拒む)。 */
+/** `POST …/env`: creates from an array (existing key = 422 [the reported real response], rejected name = 422; rejects the whole request). */
 function createVars(
   vars: Map<string, FakeNetlifyVar>,
   body: unknown,
@@ -535,7 +539,7 @@ function createVars(
   for (const item of items) {
     const variable: FakeNetlifyVar = {
       key: item.key,
-      // scopes 省略 = Netlify の既定(全 scope。実物は post_processing の綴り)
+      // Omitted scopes = Netlify's default (all scopes; the real spelling is post_processing)
       scopes: item.scopes ?? ["builds", "functions", "runtime", "post_processing"],
       values: item.values.map((value) => ({ ...value, id: newId() })),
       is_secret: item.is_secret ?? false,
@@ -546,7 +550,7 @@ function createVars(
   return { status: 201, json: created.map(netlifyView) };
 }
 
-/** `PATCH …/env/{key}`: 1 context の値を作る / 置き換える(応答は変数全体の echo)。 */
+/** `PATCH …/env/{key}`: creates / replaces one context's value (the response echoes the whole variable). */
 function setValue(variable: FakeNetlifyVar, body: unknown, newId: () => string): MockResponse {
   const patch = body as { context?: string; context_parameter?: string; value?: string };
   if (typeof patch.context !== "string" || typeof patch.value !== "string") {
