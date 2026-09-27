@@ -1,6 +1,6 @@
 // Mock of the recovery ledger (`GET /auth/recovery` — CRYPTO_SPEC §8). Wraps a
 // key record with a known secret, serves it, and returns the recovery code.
-// Shared by recovery.test.ts and device.test.ts (DK K14 — the reserve-key
+// Shared by recovery.test.ts and device.test.ts (DK K14 — the ledger-key
 // determination).
 
 import { wrapMasterSecret } from "@maruhi/crypto";

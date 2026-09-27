@@ -143,20 +143,9 @@ export function renderFormula(input: string, checksums: ReadonlyMap<string, stri
   const { version, tag } = normalizeVersion(input);
   const downloads = collectDownloads(tag, checksums);
 
-  // english-exempt: generated text must byte-match the golden fixture
-  // packaging/homebrew/maruhi.example.rb, owned by another shard — these lines
-  // stay in Japanese until that fixture is translated.
-  const header = [
-    "# 生成物 — 手で編集しない。", // english-exempt: byte-matches packaging/homebrew/maruhi.example.rb
-    "# apps/cli/scripts/generate-formula.ts が Release の checksums.txt から作る", // english-exempt: byte-matches packaging/homebrew/maruhi.example.rb
-    `# (${REPO})。更新手順は docs/RELEASING.md の「Homebrew tap の更新」。`, // english-exempt: byte-matches packaging/homebrew/maruhi.example.rb
-  ].join("\n");
-  const installComment = [
-    "    # アーカイブにはバイナリ 1 本しか入っていない。`mh` はインストーラ側で", // english-exempt: byte-matches packaging/homebrew/maruhi.example.rb
-    "    # 張る(ADR-0015 裁定 6/7)", // english-exempt: byte-matches packaging/homebrew/maruhi.example.rb
-  ].join("\n");
-
-  return `${header}
+  return `# Generated file — do not edit by hand.
+# Built by apps/cli/scripts/generate-formula.ts from the Release's checksums.txt
+# (${REPO}). Update procedure: docs/RELEASING.md, "Updating the Homebrew tap".
 class Maruhi < Formula
   desc "Diskless, end-to-end encrypted secrets manager on Cloudflare"
   homepage "https://github.com/${REPO}"
@@ -169,7 +158,8 @@ ${renderPlatform("linux", downloads)}
 
   def install
     bin.install "maruhi"
-${installComment}
+    # The archive contains a single binary. \`mh\` is linked by the
+    # installer side (ADR-0015 rulings 6/7)
     bin.install_symlink "maruhi" => "mh"
   end
 
