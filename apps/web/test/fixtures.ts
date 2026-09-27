@@ -1,10 +1,12 @@
-// ダッシュボード e2e / スクリーンショットの共用フィクスチャ(DP3 裁定 F)。W3b(S8 招待管理・
-// S9 トークン管理)の裁定 CE / CO / CQ もここのフィクスチャが固定する。
+// The shared fixtures for the dashboard e2e and screenshots (DP3
+// ruling F). W3b (S8 invite management, S9 token management) rulings
+// CE / CO / CQ are also pinned by the fixtures here.
 //
-// api-schema 由来の型(src/dashboard/types.ts)に適合するリテラルで、乖離は tsc が
-// 検出する。実 Schema でのデコード検査は e2e.test.ts(裁定 BV)。ここはテスト
-// プロセス専用のモジュールで、配信バンドルには入らない(screenshots.ts と
-// e2e.test.ts だけが import する)。
+// Literals conforming to the api-schema-derived types
+// (src/dashboard/types.ts); tsc detects any divergence. A decode
+// check against the real Schemas lives in e2e.test.ts (ruling BV).
+// This is a test-process-only module and never enters the shipped
+// bundle (only screenshots.ts and e2e.test.ts import it).
 import type {
   AuditEvent,
   ChainSnapshot,
@@ -27,8 +29,9 @@ const ROW_ID_1 = "78".repeat(16);
 const ROW_ID_2 = "9a".repeat(16);
 const ROW_ID_3 = "bc".repeat(16);
 const ROW_ID_4 = "de".repeat(16);
-// 端末鍵(DK K5): D2 = 電話(cap member / production)、R = 予備鍵(owner / all)。公開鍵は
-// 最初の鍵(HEX64)と重複させない(chain-view の duplicate-member-key の fold)
+// Device keys (DK K5): D2 = phone (cap member / production), R =
+// reserve key (owner / all). The public keys are chosen not to collide
+// with the first key (HEX64) (chain-view's duplicate-member-key fold)
 export const FP_D2 = "d2".repeat(16);
 const KEYS_D2 = { encPubHex: "a2".repeat(32), sigPubHex: "b2".repeat(32) };
 const KEYS_R = { encPubHex: "ae".repeat(32), sigPubHex: "be".repeat(32) };
@@ -41,8 +44,10 @@ export const projectsPage1: ProjectList = {
   projects: [{ projectId: PROJECT_1, role: "admin" }],
   nextAfter: PROJECT_1,
 };
-// 空ページ + nextAfter(AUTH_SPEC §11-5 — ghost 除外・確認失敗の省略で
-// 候補ページが空になる形)。UI はこれを終端と誤断せずカーソルを進める
+// An empty page + nextAfter (AUTH_SPEC §11-5 — the shape where
+// excluding ghosts and skipping failed confirmations empties the
+// candidate page). The UI must not misjudge this as the end and still
+// advances the cursor
 export const projectsPageEmpty: ProjectList = {
   projects: [],
   nextAfter: PROJECT_GHOST_CURSOR,
@@ -51,9 +56,10 @@ export const projectsPage2: ProjectList = {
   projects: [{ projectId: PROJECT_2, role: "reader" }],
 };
 
-// 端末鍵の 2 op を含む(DK K5): seq 3 = D1 が D2 を足す、seq 4 = D2 が署名して R を足す
-// (D2 の FP はここで束縛される)、seq 5 = D1 が D2 を失効。畳み込み後の user_e2e の
-// 端末 = D1(FP 束縛済み)+ R(FP 未束縛・owner/all)= 2 台
+// Contains the 2 device-key ops (DK K5): seq 3 = D1 adds D2,
+// seq 4 = D2 signs and adds R (this is where D2's FP gets bound),
+// seq 5 = D1 revokes D2. After the fold, user_e2e's devices =
+// D1 (FP bound) + R (FP unbound, owner/all) = 2 devices
 export const chainFixture: ChainSnapshot = {
   projectId: PROJECT_1,
   headSeq: 5,
@@ -125,7 +131,8 @@ export const chainFixture: ChainSnapshot = {
   attestations: [],
 };
 
-// 読めない端末 op を 1 行含むチェーン(K5-17 の注記の描画用): 現メンバーでない対象の失効
+// A chain containing 1 unreadable device op (for rendering the K5-17
+// note): the revocation targets a non-member
 export const chainWithUnreadableEntry: ChainSnapshot = {
   ...chainFixture,
   headSeq: 6,
@@ -178,8 +185,9 @@ export const metadataPullFixture: EnvironmentMetadataPull = {
   schemaPolicy: "disabled",
 };
 
-// admin 可視の project DO 応答(seq あり — AUDIT_SPEC §7)。端末 2 事件(AUDIT_SPEC §3.4 —
-// DK)は汎用描画のまま(K5-6): payload は記録どおりの JSON で出る
+// The admin-visible project-DO response (with seq — AUDIT_SPEC §7).
+// The two device events (AUDIT_SPEC §3.4 — DK) keep the generic
+// rendering (K5-6): the payload comes out as the recorded JSON
 export const projectAuditEvents: { events: AuditEvent[] } = {
   events: [
     {
@@ -228,7 +236,7 @@ export const projectAuditEvents: { events: AuditEvent[] } = {
   ],
 };
 
-// 本人軸(D1 経路 — seq は誰にも返らない)
+// The self axis (the D1 path — seq is returned to nobody)
 export const selfAuditEvents: { events: AuditEvent[] } = {
   events: [
     {
@@ -251,7 +259,8 @@ export const rotationFlagsFixture: RotationFlagList = {
       triggerChainSeq: 3,
       trigger: "remove_member",
     },
-    // 端末失効の変種(AUDIT_SPEC §4.1 — DK): trigger = revoke_device、対象は人(FP は運ばない)
+    // The device-revocation variant (AUDIT_SPEC §4.1 — DK): trigger =
+    // revoke_device; the target is a person (no FP is carried)
     {
       environmentId: "production",
       variableId: "var-api-key",
@@ -265,9 +274,11 @@ export const rotationFlagsFixture: RotationFlagList = {
 };
 
 // ---------------------------------------------------------------------------
-// S8(招待管理)・S9(トークン管理)のフィクスチャ。期限は「未来 = 2100 年 /
-// 過去 = 2023 年」の固定値(実行時刻に対して安定 — 裁定 CQ の Expired 表示は
-// クライアント時計との比較なので、境界近傍の値を使わない)
+// Fixtures for S8 (invite management) and S9 (token management).
+// Expiry values are fixed at "future = 2100 / past = 2023" (stable
+// against the clock at run time — ruling CQ's Expired display
+// compares against the client clock, so nothing near the boundary is
+// used)
 // ---------------------------------------------------------------------------
 
 const FUTURE_MS = 4_102_444_800_000; // 2100-01-01
@@ -282,7 +293,9 @@ const acceptanceFixture = {
   acceptedAtMs: 1_756_000_100_000,
 } as const;
 
-// 発行文(AUTH_SPEC §15-1 — IV): リンク公開鍵・発行時点のヘッド・発行署名(公開値)
+// The issuance statement (AUTH_SPEC §15-1 — IV): the link public key,
+// the head at issuance time, and the issuance signature (public
+// values)
 const issuanceFixture = {
   linkPubHex: HEX64,
   headHashHex: HEX64,
@@ -336,7 +349,8 @@ export const invitationsFixture: InvitationList = {
   ],
 };
 
-// 失効後のサーバー申告(pending 行が revoked へ) — UI は再取得で写す(裁定 CO)
+// The server's report after revocation (the pending row moves to
+// revoked) — the UI transcribes it on refetch (ruling CO)
 export const invitationsAfterRevoke: InvitationList = {
   invitations: [
     { ...pendingInvite, status: "revoked" },
@@ -367,12 +381,15 @@ export const tokensFixture: TokenList = {
   ],
 };
 
-// 指定失効は行の削除(サーバー実装 — 一覧から消える)
+// A targeted revocation deletes the row (the server implementation —
+// it disappears from the list)
 export const tokensAfterRevoke: TokenList = { tokens: tokensFixture.tokens.slice(1) };
 
 // ---------------------------------------------------------------------------
-// S11(端末登録簿 — AUTH_SPEC §13-11。advisory)。tokenId は tokens の一覧と id で突合する
-// (K5-8): 1 行目は "ci"(tok-active)に紐づき、2 行目は一覧に無いトークン、3 行目は紐づけなし
+// S11 (the device registry — AUTH_SPEC §13-11. advisory). The tokenId
+// is collated by id against the tokens listing (K5-8): row 1 is tied
+// to "ci" (tok-active), row 2 names a token absent from the listing,
+// row 3 has no link
 // ---------------------------------------------------------------------------
 
 export const devicesFixture: DeviceList = {

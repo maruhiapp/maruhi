@@ -1,27 +1,31 @@
-# 運用基盤 H3 — D1 の定期 export(docs/notes/hosted-ops.md §2-G / §4-1)と D1 総量の
-# トリップワイヤ(同 §3 行 1)。運営(hosted)アカウント専用: リポジトリ変数
-# OPS_BACKUP_ENABLED が "true" のときだけ動く(フォーク・セルフホストでは無効)。
+# Operations foundation H3 — scheduled D1 export (docs/notes/hosted-ops.md
+# §2-G / §4-1) and a trip-wire on total D1 size (same §3 row 1). For the
+# operator (hosted) account only: runs only when the repository variable
+# OPS_BACKUP_ENABLED is "true" (disabled on forks and self-hosts).
 #
-# 成果物(SQL ダンプ)は age 公開鍵で暗号化し、DO 退避と同じ R2 バケットの d1/ へ置く。
-# 秘密鍵は運営端末のみ・API トークンは D1: Edit + Workers R2 Storage: Edit の
-# Account API token(2026-09-03 実測 — D1 Read では export が認証エラー、バケット
-# 限定の Bucket Item 権限では object put が 403。hosted-ops.md §2-G)・成果物も鍵も
-# リポジトリ / Actions artifact には置かない(公開後のリポジトリでは artifact が
-# 第三者に取得されうる)。
+# The artifact (SQL dump) is encrypted to an age public key and placed under
+# d1/ in the same R2 bucket as the DO backups. The private key lives only on
+# the operator's device; the API token is an Account API token with D1: Edit +
+# Workers R2 Storage: Edit (measured 2026-09-03 — with D1 Read the export
+# fails authentication, and with bucket-scoped Bucket Item permission the
+# object put returns 403; hosted-ops.md §2-G). Neither artifacts nor keys are
+# placed in the repository / Actions artifacts (on a public repository an
+# artifact could be fetched by a third party).
 #
-# 必要な Secrets: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID
-# 必要な Variables: OPS_BACKUP_ENABLED=true / OPS_BACKUP_BUCKET(バケット名)/
-#                   OPS_BACKUP_AGE_RECIPIENT(age の受信者公開鍵 "age1…")
+# Required Secrets: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID
+# Required Variables: OPS_BACKUP_ENABLED=true / OPS_BACKUP_BUCKET (bucket name) /
+#                     OPS_BACKUP_AGE_RECIPIENT (age recipient public key "age1…")
 name: ops-backup
 
 on:
   schedule:
-    # 低トラフィック時刻(export 中は D1 が他のリクエストをブロックする — 一次情報)
+    # Low-traffic hour (during export D1 blocks other requests — primary source)
     - cron: "41 2 * * *"
   workflow_dispatch:
 
-# cron と手動実行が重なると export が 2 本並走し、D1 を 2 倍の時間塞ぐ(export 中は D1 が
-# 他のリクエストをブロックする)。取り消しはしない(途中の export を捨てない)
+# If cron and a manual run overlap, two exports run in parallel and block D1
+# for twice as long (during export D1 blocks other requests). No cancellation
+# (an in-flight export is not discarded)
 concurrency:
   group: ops-backup
   cancel-in-progress: false
@@ -32,7 +36,7 @@ permissions:
 env:
   DO_NOT_TRACK: "1"
   WRANGLER_SEND_METRICS: "false"
-  # hosted-ops.md §3 行 1: D1 総量の警告閾値(10 進 5 GB)
+  # hosted-ops.md §3 row 1: warning threshold for total D1 size (decimal 5 GB)
   D1_SIZE_WARN_BYTES: "5000000000"
 
 jobs:
@@ -55,8 +59,8 @@ jobs:
       - name: Install age
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends age
 
-      # wrangler はワークスペースのピン版(apps/server で bunx)。--env hosted で
-      # 運営 DB(env.hosted の d1_databases)を解決する
+      # wrangler is the workspace-pinned version (bunx inside apps/server).
+      # --env hosted resolves the operator DB (env.hosted's d1_databases)
       - name: Export D1 (hosted)
         working-directory: apps/server
         env:
@@ -83,15 +87,16 @@ jobs:
           bunx wrangler r2 object put "$BUCKET/d1/$stamp.sql.age" --file "$RUNNER_TEMP/d1.sql.age" --remote --content-type application/octet-stream
           rm -f "$RUNNER_TEMP/d1.sql.age"
 
-      # D1 総量のトリップワイヤ(hosted-ops.md §3 行 1): 閾値以上でジョブを落とし、
-      # GitHub の失敗通知で運営に届ける(worker 側は D1 の実測量を持たない)
+      # Trip-wire on total D1 size (hosted-ops.md §3 row 1): at or above the
+      # threshold the job fails, reaching the operator via GitHub's failure
+      # notification (the worker side does not hold D1's measured size)
       - name: D1 size trip-wire
         working-directory: apps/server
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          # wrangler 4.124 は API の file_size を database_size へ改名して出力する(旧版は file_size)
+          # wrangler 4.124 renamed the API's file_size to database_size in its output (older versions use file_size)
           size=$(bunx wrangler d1 info maruhi --env hosted --json | bun --print 'const o = JSON.parse(require("fs").readFileSync(0, "utf8")); o.database_size ?? o.file_size')
           case "$size" in ''|*[!0-9]*) echo "::error::could not read database_size from wrangler d1 info"; exit 1 ;; esac
           echo "D1 database_size=$size bytes (warn at $D1_SIZE_WARN_BYTES)"

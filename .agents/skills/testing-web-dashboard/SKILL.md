@@ -34,7 +34,7 @@ description: How to run and interactively drive the maruhi web dashboard e2e/UI 
 - There is no test login. `apps/web/test/e2e.test.ts` and `test/screenshots.ts` mock the
   API with Playwright `page.route` — reuse their fixtures from `test/fixtures.ts`
   (`meFixture`, `chainFixture`, `environmentsFixture`, project pages).
-- `src/dashboard/api.ts` deliberately does NO schema decoding (裁定 BR): arbitrary JSON —
+- `src/dashboard/api.ts` deliberately does NO schema decoding (ruling BR): arbitrary JSON —
   including malformed/hostile shapes — reaches the display layer, so crafted chain
   snapshots exercise `chain-view.ts` hardening in the real UI.
 - Key paths to mock: `GET /auth/me` (session gate — every authed screen calls it once),

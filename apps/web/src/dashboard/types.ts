@@ -1,11 +1,14 @@
-// ダッシュボードが消費するワイヤ型(裁定 BR — docs/notes/session-43.md)。
+// The wire types the dashboard consumes (ruling BR —
+// docs/notes/session-43.md).
 //
-// api-schema からの **type-only import** に限定する: 型は単一定義(HttpApi の
-// Schema)に束縛しつつ、Effect / Schema の実行コードをバンドル(= TCB)へ
-// 一切持ち込まない(verbatimModuleSyntax がビルド時消去を保証する)。
-// ランタイムの Schema 検証は意図的に行わない — 全表示はサーバー申告
-// (as reported by the server)であり、Web は検証を実装しない(ADR-0018 改訂 2・
-// 4 項)。形の崩れへの防御は表示層の optional アクセスで足りる。
+// Restricted to **type-only imports** from api-schema: the types stay
+// bound to the single definition (the HttpApi Schema) while no
+// Effect / Schema executable code enters the bundle (= the TCB)
+// (verbatimModuleSyntax guarantees build-time erasure).
+// Runtime Schema validation is intentionally skipped — every display
+// is as reported by the server and the web implements no validation
+// (ADR-0018 amendment 2, item 4). Defense against shape breakage is
+// satisfied by optional access at the display layer.
 import type {
   AuditEventSchema,
   AuditEventsPageSchema,
@@ -38,7 +41,7 @@ export type EnvironmentSummary = typeof EnvironmentSummarySchema.Type;
 export type EnvironmentMetadataPull = typeof EnvironmentMetadataPullSchema.Type;
 export type AuditEvent = typeof AuditEventSchema.Type;
 export type RotationFlag = typeof RotationFlagSchema.Type;
-/** 403 reason の閉じた列挙(裁定 CC — 比較リテラルのリネームを型で割る)。 */
+/** The closed enumeration of 403 reasons (ruling CC — renaming a compared literal is caught by the type). */
 export type ForbiddenReason = typeof ForbiddenReasonSchema.Type;
 
 /** `{ events }` page shape shared by every audit read endpoint (AUDIT_SPEC §7). */
@@ -53,7 +56,7 @@ export type RotationFlagList = typeof RotationFlagListSchema.Type;
 /** One invitation row of the S8 management listing (AUTH_SPEC §15-2). */
 export type InvitationSummary = typeof InvitationSummarySchema.Type;
 
-/** 保存上の招待状態の閉じた列挙(AUTH_SPEC §15-1 — 表示色の鍵に使う)。 */
+/** The closed enumeration of stored invite states (AUTH_SPEC §15-1 — used as the key for display colors). */
 export type InviteStatus = typeof InviteStatusSchema.Type;
 
 /** `{ invitations }` shape of the invite listing (AUTH_SPEC §15-2). */

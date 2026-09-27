@@ -1,9 +1,12 @@
-// api.ts(セッション認証つき fetch 層 — 裁定 BP・BR は docs/notes/session-43.md)のユニットテスト。
-// HTTP 状態 → 型付き結果の分類と、mutation への CSRF ヘッダー付与
-// (AUTH_SPEC §11-4)を fetch スタブで固定する。CSRF ヘッダー名の**実送信値**は
-// api-schema の CSRF_HEADER_NAME と照合する(docs/notes/session-45.md 裁定 CN —
-// 型束縛〔satisfies〕と相補の二層目。値 import はテストプロセスのみ —
-// docs/notes/session-43.md 裁定 BV と同じ位置づけ)。
+// Unit test of api.ts (the session-authenticated fetch layer —
+// rulings BP and BR are in docs/notes/session-43.md).
+// A fetch stub pins the classification of HTTP status → typed result
+// and the CSRF-header attachment on mutations (AUTH_SPEC §11-4). The
+// **actually sent value** of the CSRF header name is collated against
+// api-schema's CSRF_HEADER_NAME (docs/notes/session-45.md ruling CN —
+// the second layer complementary to the satisfies type binding. Value
+// imports are allowed only in the test process — same standing as
+// docs/notes/session-43.md ruling BV).
 import { CSRF_HEADER_NAME } from "@maruhi/api-schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -58,7 +61,7 @@ describe("apiGet", () => {
     await expect(apiGet("/projects/x/chain")).resolves.toEqual({ kind: "not-found" });
   });
 
-  it("classifies 410 with the typed reason (InviteGone — docs/notes/session-45.md 裁定 CN 付随)", async () => {
+  it("classifies 410 with the typed reason (InviteGone — attached to docs/notes/session-45.md ruling CN)", async () => {
     stubFetch(jsonResponse(410, { _tag: "InviteGone", reason: "completed" }));
     await expect(apiGet("/x")).resolves.toEqual({ kind: "gone", reason: "completed" });
   });
@@ -85,7 +88,7 @@ describe("apiGet", () => {
 });
 
 describe("apiPost", () => {
-  it("sends the CSRF custom header (api-schema の実値と照合) and maps 204 to ok", async () => {
+  it("sends the CSRF custom header (collated against api-schema's real value) and maps 204 to ok", async () => {
     const mock = stubFetch(new Response(null, { status: 204 }));
     await expect(apiPost("/auth/logout")).resolves.toEqual({ kind: "ok", value: undefined });
     expect(mock).toHaveBeenCalledWith("/auth/logout", {
@@ -96,7 +99,7 @@ describe("apiPost", () => {
 });
 
 describe("apiDelete", () => {
-  it("sends DELETE with the CSRF custom header (失効面 — AUTH_SPEC §11-4)", async () => {
+  it("sends DELETE with the CSRF custom header (the revocation surfaces — AUTH_SPEC §11-4)", async () => {
     const mock = stubFetch(new Response(null, { status: 204 }));
     await expect(apiDelete("/auth/tokens/tok-1")).resolves.toEqual({
       kind: "ok",

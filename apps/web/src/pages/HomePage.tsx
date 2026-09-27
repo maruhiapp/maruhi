@@ -1,19 +1,21 @@
-// サーバーコンポーネント(ビルド時に RSC ペイロードへ固められる)。
+// Server component (baked into the RSC payload at build time).
 //
-// `my.maruhi.app/` は製品オリジン(TCB)のトップ。LP と docs は apex `maruhi.app`(apps/site —
-// Blume)に移ったため、ここは最小の案内(ロゴ + ダッシュボードへの導線 + 製品サイトへのリンク)だけ
-// を置く(DP2 裁定 F — docs/notes/web-design-pass.md §4)。e2e の機構検証フック(built-at /
-// counter / to-about)は /about(AboutPage — 「このデプロイについて」)にある。
+// `my.maruhi.app/` is the top of the product origin (TCB). The LP and
+// docs moved to apex `maruhi.app` (apps/site — Blume), so this page
+// carries only minimal guidance (logo + a funnel to the dashboard + a
+// link to the product site) (DP2 ruling F — docs/notes/web-design-pass.md
+// §4). The e2e mechanism-verification hooks (built-at / counter /
+// to-about) live at /about (AboutPage — "about this deployment").
 import { ResumeToDashboard } from "../dashboard/ResumeToDashboard.tsx";
 import { spaPaths } from "../dashboard/routes.ts";
 
 export function HomePage() {
   return (
     <main>
-      {/* サインイン往復のマーカーがあるときだけ /dashboard へ戻す(裁定 BU)。
-          マーカーなしのランディングは API を呼ばない */}
+      {/* Returns to /dashboard only when the sign-in round-trip marker is present (ruling BU).
+          A landing without the marker calls no API */}
       <ResumeToDashboard />
-      {/* ブランドマークは自前 SVG(DP1)。絵文字 ㊙ はテキスト文脈(CLI / README)に限る */}
+      {/* The brand mark is a bespoke SVG (DP1). The emoji ㊙ is limited to text contexts (CLI / README) */}
       <h1 data-testid="home-heading">
         <img src="/logo.svg" alt="" width="40" height="40" /> maruhi
       </h1>

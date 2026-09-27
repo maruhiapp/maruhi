@@ -2,24 +2,33 @@
 # maruhi install script(Unix: linux-x64 / linux-arm64 / darwin-x64 / darwin-arm64)
 #
 #   curl -fsSL https://raw.githubusercontent.com/maruhiapp/maruhi/<tag>/packaging/install.sh -o install.sh
-#   less install.sh          # 中身を読んでから実行するのが正道
+#   less install.sh          # the right path is to read it first, then run it
 #   sh install.sh --version <tag>
 #
-# 設計(docs/adr/0015-cli-distribution.md / README.md):
-# - 外部アクセスは github.com からの取得のみ。テレメトリ・外部送信は無い(CLAUDE.md「言わざる」)
-# - checksums.txt による SHA-256 検証を必須とし、検証を通るまでインストール先へ一切書かない。
-#   途中で失敗したら部分ファイルを残さず非 0 で終わる
-# - 「署名検証」は書かない: checksums.txt は現時点で未署名で、完全性の根拠は github.com への
-#   TLS のみ。無いものを検証したように見せない(署名導入は ROADMAP)
-# - `mh` は maruhi への相対 symlink として張る(ADR-0015 裁定 6/7)
-# - シェルの設定ファイル(~/.zshrc 等)は書き換えない。PATH へ足す行は表示するだけ
-# - sudo を呼ばない。既定のインストール先は ~/.local/bin
+# Design (docs/adr/0015-cli-distribution.md / README.md):
+# - The only external access is fetching from github.com. No telemetry
+#   or outbound traffic (CLAUDE.md's "does not say")
+# - SHA-256 verification against checksums.txt is mandatory; nothing
+#   is written to the install destination until verification passes.
+#   On a mid-way failure it exits non-zero leaving no partial files
+# - Never says "signature verification": checksums.txt is unsigned at
+#   this point and the completeness guarantee rests solely on TLS to
+#   github.com. It does not pretend to verify what is not there
+#   (signature support is on the ROADMAP)
+# - `mh` is created as a relative symlink to maruhi (ADR-0015
+#   rulings 6/7)
+# - Shell config files (~/.zshrc etc.) are never rewritten. The
+#   PATH-adding line is only displayed
+# - Never invokes sudo. The default install destination is
+#   ~/.local/bin
 #
-# 全体を main() に包み、最終行で呼ぶ。転送が途中で切れた `curl | sh` が
-# 中途半端に実行される形を塞ぐ。
+# The whole body is wrapped in main() and called on the last line.
+# This blocks a `curl | sh` truncated mid-transfer from running
+# half-way.
 
-# `local` は POSIX 未定義だが dash/ash/bash/zsh/busybox いずれも実装しており、
-# 代替(全部グローバル変数)は関数間の取り違えの温床になる。ここだけ意図的に外す
+# `local` is undefined by POSIX, yet dash/ash/bash/zsh/busybox all
+# implement it, and the alternative (all-global variables) breeds
+# cross-function mix-ups. Deliberately deviated only here
 # shellcheck disable=SC3043
 
 set -eu
@@ -27,11 +36,13 @@ set -eu
 REPO="maruhiapp/maruhi"
 RELEASES_URL="https://github.com/${REPO}/releases"
 
-# 対応対象。apps/cli/scripts/shared.ts の TARGETS から windows-x64 を除いた 4 種と
-# 一致することを apps/cli/test/installer.test.ts が検査する(対象表の複製を放置しない)。
+# The supported targets. apps/cli/test/installer.test.ts checks that
+# this matches the 4 entries of apps/cli/scripts/shared.ts's TARGETS
+# minus windows-x64 (the target table is not duplicated and left to
+# drift).
 SUPPORTED_TARGETS="linux-x64 linux-arm64 darwin-x64 darwin-arm64"
 
-# set -u の下で参照する変数はすべてここで初期化する
+# Every variable referenced under set -u is initialized here
 VERSION=""
 INSTALL_DIR=""
 BASE_URL=""
@@ -52,8 +63,9 @@ die() {
   exit 1
 }
 
-# 失敗経路でも「途中状態」を残さない。TMP_DIR は作業一式、PARTIAL_FILE は
-# インストール先へ rename する直前の一時ファイル
+# No "intermediate state" is left on a failure path either. TMP_DIR
+# is the whole work set; PARTIAL_FILE is the temporary file just
+# before being renamed into the install destination
 cleanup() {
   if [ -n "${TMP_DIR}" ]; then rm -rf "${TMP_DIR}"; fi
   if [ -n "${PARTIAL_FILE}" ]; then rm -f "${PARTIAL_FILE}"; fi
@@ -122,8 +134,8 @@ require_tools() {
       die "${cmd} is required"
     fi
   done
-  # Linux は coreutils の sha256sum、macOS は shasum。どちらも無ければ入れない
-  # (検証なしのインストールは行わない)
+  # Linux uses coreutils' sha256sum, macOS uses shasum. With neither
+  # present it does not install (no install without verification)
   if command -v sha256sum >/dev/null 2>&1; then
     SHA_TOOL="sha256sum"
   elif command -v shasum >/dev/null 2>&1; then
@@ -147,8 +159,9 @@ detect_target() {
   arch="$(uname -m)"
   case "${os}" in
     Linux)
-      # 配布バイナリは glibc リンク(musl 対象は未提供)。ここで止めないと、
-      # 実行時に "not found" という無関係に見える形で失敗する
+      # The shipped binaries link glibc (no musl target is
+      # published). If not stopped here, it fails at run time with an
+      # "not found" that looks unrelated
       for musl in /lib/ld-musl-*.so.1; do
         if [ -e "${musl}" ]; then
           die "no binary is published for musl libc (Alpine and similar). Use a glibc environment, or install via Bun (bun install -g maruhi)"
@@ -164,7 +177,8 @@ detect_target() {
       case "${arch}" in
         arm64) TARGET="darwin-arm64" ;;
         x86_64)
-          # Rosetta 下の sh から見た uname -m は x86_64。ネイティブ版を入れる
+          # uname -m seen from sh under Rosetta is x86_64. Install
+          # the native build
           if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || printf '0')" = "1" ]; then
             TARGET="darwin-arm64"
           else
@@ -190,9 +204,11 @@ normalize_version() {
     v[0-9]*) ;;
     *) die "specify the version as v0.1.0 or 0.1.0: ${VERSION}" ;;
   esac
-  # URL に載る値。想定外の文字をここで弾く。`+`(build metadata)は生成側の
-  # SEMVER_PATTERN(scripts/shared.ts)も除外している = タグに使わない運用なので、
-  # 取得側の受理範囲もそこへ揃える
+  # A value that ends up on a URL. Unexpected characters are
+  # rejected here. `+` (build metadata) is excluded by the
+  # producer-side SEMVER_PATTERN (scripts/shared.ts) too = the
+  # convention is that it is never used in a tag, so the fetch
+  # side's acceptance range aligns with that
   case "${VERSION}" in
     *[!A-Za-z0-9.-]*) die "version contains characters that are not allowed: ${VERSION}" ;;
   esac
@@ -203,16 +219,22 @@ resolve_version() {
   if [ -n "${VERSION}" ]; then
     normalize_version
   elif [ -n "${BASE_URL}" ]; then
-    # ミラー指定 + 版未指定: タグ解決も版の照合もしない
+    # Mirror given + no version: neither tag resolution nor version
+    # collation is done
     return 0
   else
-    # GitHub API(未認証 60 req/h・JSON 解析)には依存せず、releases/latest の
-    # リダイレクト先タグを見る。プレリリースは latest にならないので、rc 期間中は
-    # ここで解決できない = 推測せず明示エラーにする。
+    # Does not depend on the GitHub API (60 req/h unauthenticated +
+    # JSON parsing); reads the releases/latest redirect's target tag
+    # instead. A pre-release never becomes latest, so during the rc
+    # period it cannot resolve here = an explicit error, never a
+    # guess.
     #
-    # 成功側の分岐は安定版が出るまで CI で踏めない(ハーネスは MARUHI_BASE_URL 指定 =
-    # 解決を飛ばす経路で回る)。失敗側はタグを指定するよう求める明示エラーで、
-    # 危険側には倒れない。初回の安定版タグ後に手動で一度確認する(docs/RELEASING.md)
+    # The success branch cannot be exercised in CI until a stable
+    # release exists (the harness sets MARUHI_BASE_URL = the path
+    # that skips resolution). The failure side is an explicit error
+    # asking for a tag — it never falls to the dangerous side.
+    # Verify once by hand after the first stable tag
+    # (docs/RELEASING.md)
     resolved="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "${RELEASES_URL}/latest" 2>/dev/null)" || resolved=""
     case "${resolved}" in
       */releases/tag/?*) VERSION="${resolved##*/releases/tag/}" ;;
@@ -234,8 +256,9 @@ resolve_base_url() {
 }
 
 fetch() {
-  # -f: HTTP エラーを非 0 に / -L: リダイレクト追従(Release アセットは
-  # objects.githubusercontent.com へ 302)/ --retry: 一時障害のみ再試行
+  # -f: HTTP errors to non-zero / -L: follow redirects (Release
+  # assets 302 to objects.githubusercontent.com) / --retry: only
+  # transient failures
   if ! curl -fsSL --retry 3 --retry-delay 1 -o "$2" "$1"; then
     die "download failed: $1"
   fi
@@ -250,10 +273,13 @@ download_and_verify() {
   fetch "${BASE_URL}/checksums.txt" "${TMP_DIR}/checksums.txt"
   fetch "${BASE_URL}/${ARCHIVE}" "${TMP_DIR}/${ARCHIVE}"
 
-  # checksums.txt は sha256sum -c 互換(hex 64 桁 + スペース 2 個 + ファイル名)。
-  # 自対象の行だけを取り出して検証する(他対象のアーカイブは手元に無いため、
-  # 実装差のある --ignore-missing に頼らない)。行が 1 行でない・形式が違うのは
-  # 改竄でも生成事故でも危険側なので拒否する
+  # checksums.txt is sha256sum -c compatible (64 hex digits + 2
+  # spaces + filename).
+  # Only our own target's line is extracted and verified (the other
+  # targets' archives are not present, so it does not rely on the
+  # implementation-divergent --ignore-missing). A count other than 1
+  # line or a wrong format is dangerous whether it is tampering or a
+  # generation accident, so it is refused
   pattern="^[0-9a-f]{64}  maruhi-${TARGET}\.tar\.gz\$"
   matches="$(grep -E -c "${pattern}" "${TMP_DIR}/checksums.txt" || true)"
   if [ "${matches}" != "1" ]; then
@@ -274,8 +300,9 @@ extract_and_check() {
   [ -f "${BINARY}" ] || die "archive contents are not what was expected (maruhi is missing)"
   chmod 755 "${BINARY}"
 
-  # インストール先へ触る前に起動を確認する。対象の取り違え・libc 不整合を
-  # 「何も残さない失敗」として扱えるのはこの順序のときだけ
+  # Confirm it starts before touching the install destination. Only
+  # this ordering lets a wrong target or a libc mismatch be treated
+  # as a "failure that left nothing"
   got="$("${BINARY}" --version)" || die "could not run the downloaded binary (target: ${TARGET})"
   if [ -n "${EXPECTED_VERSION}" ] && [ "${got}" != "${EXPECTED_VERSION}" ]; then
     die "version mismatch (expected ${EXPECTED_VERSION} / got ${got}). The assets may have been mixed up"
@@ -288,14 +315,16 @@ install_binary() {
   INSTALL_DIR="$(cd "${INSTALL_DIR}" && pwd)"
   [ -w "${INSTALL_DIR}" ] || die "cannot write to ${INSTALL_DIR} (change it with --dir. This script does not invoke sudo)"
 
-  # 置き換え先が通常ファイル以外(例: ディレクトリ)だと mv がその中へ潜り込み、
-  # 「入ったつもりで入っていない」状態になる。先に止める
+  # If the replacement destination is not a regular file (e.g. a
+  # directory), mv would slip inside it — a state of "thought it
+  # installed, but it didn't". Stop early
   if [ -e "${INSTALL_DIR}/maruhi" ] && [ ! -f "${INSTALL_DIR}/maruhi" ]; then
     die "${INSTALL_DIR}/maruhi is not a regular file. Move it aside and retry, or pick another location with --dir"
   fi
 
-  # 同一ディレクトリ内へ置いてから rename する: 途中状態の実行ファイルを
-  # 見せず、実行中バイナリの上書き(ETXTBSY)も避ける
+  # Place it inside the same directory, then rename: never shows a
+  # half-written executable and also avoids overwriting a running
+  # binary (ETXTBSY)
   PARTIAL_FILE="$(mktemp "${INSTALL_DIR}/.maruhi.install.XXXXXX")" ||
     die "could not create a staging file in the install directory: ${INSTALL_DIR}"
   cp "${BINARY}" "${PARTIAL_FILE}" || die "could not copy to the install directory: ${INSTALL_DIR}"
@@ -320,7 +349,8 @@ link_alias() {
     warn "${link} already exists (not a symlink). Will not create the mh alias"
     return 0
   else
-    # 相対 symlink にする(ディレクトリごと移動しても壊れない)
+    # Make it a relative symlink (survives the whole directory
+    # moving)
     ln -s maruhi "${link}" || die "could not create the mh symlink: ${link}"
   fi
   MH_LINKED="1"
@@ -335,8 +365,9 @@ report() {
   case ":${PATH}:" in
     *":${INSTALL_DIR}:"*) ;;
     *)
-      # rc_hint は画面に出す案内文であって、この script が開くパスではない
-      # (だから展開されない `~` のままでよい)
+      # rc_hint is guidance text shown on screen, not a path this
+      # script opens
+      # (which is why an unexpanded `~` is fine)
       # shellcheck disable=SC2088
       case "$(basename "${SHELL:-sh}")" in
         fish)

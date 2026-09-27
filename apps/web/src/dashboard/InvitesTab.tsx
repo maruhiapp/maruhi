@@ -1,15 +1,19 @@
 "use client";
 
-// S8 招待管理(一覧・失効 — 設計文書 §3 S8 / ADR-0018 改訂 2)。
+// S8 invite management (listing + revocation — design document §3 S8 /
+// ADR-0018 amendment 2).
 //
-// - 対象はチェーン role admin 以上 — 真実源はサーバー認可で、タブは role で
-//   事前に隠さない(裁定 CP 第 3 周 — 403 は役割文言で表示。裁定 BQ と同じ
-//   「事前判定をクライアントへ複製しない」)
-// - **発行は置かない**(ADR-0018 改訂 2 — 帯域外アンカーの欠落 + capability
-//   生成)。CLI `maruhi invite create` の静的案内のみ
-// - 失効はインライン 2 段階確認(裁定 CO)+ 完了後のサーバー再取得。
-//   Revoke は status が pending | accepted の行のみ(サーバーの受理条件 —
-//   期限切れ pending の掃除も可 — の写し)
+// - The audience is chain role admin or above — the source of truth is
+//   server authorization, and the tab is not hidden in advance by role
+//   (ruling CP round 3 — a 403 is displayed with role wording. Same
+//   "do not replicate the pre-judgment onto the client" as ruling BQ)
+// - **No issuing here** (ADR-0018 amendment 2 — no out-of-band anchor +
+//   capability minting). Only static guidance pointing at the CLI
+//   `maruhi invite create`
+// - Revocation is an inline two-step confirm (ruling CO) + a server
+//   re-fetch after completion. Revoke exists only on rows whose status
+//   is pending | accepted (a copy of the server's acceptance
+//   conditions — which also allow cleaning up an expired pending)
 import { VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
@@ -62,8 +66,10 @@ const STATUS_TOKEN_COLOR: Record<InviteStatus, "blue" | "orange" | "green" | "gr
 };
 
 /**
- * 招待状態のサーバー申告値の表示。Object.hasOwn: 想定外の status 文字列
- * (プロトタイプ鎖の鍵名を含む)は default 色へ落とす(RoleToken と同じ自衛)。
+ * Displays the server-reported value of an invite's status.
+ * Object.hasOwn: an unexpected status string (including prototype-chain
+ * key names) falls back to the default color (same self-defense as
+ * RoleToken).
  */
 function InviteStatusToken({ status }: { status: string }): ReactNode {
   const color = Object.hasOwn(STATUS_TOKEN_COLOR, status)
@@ -73,9 +79,11 @@ function InviteStatusToken({ status }: { status: string }): ReactNode {
 }
 
 /**
- * サーバーの失効受理条件(pending | accepted)の写し — 表示の出し分けのみで
- * 防御ではない。リテラルは閉じた列挙へ型束縛する(裁定 CC と同型 — status 名の
- * リネームはボタンの無音消失でなくコンパイルエラーで割れる)。
+ * A copy of the server's revocation-acceptance condition (pending |
+ * accepted) — it only switches what is displayed and is not a defense.
+ * The literals are type-bound to the closed enumeration (same shape as
+ * ruling CC — renaming a status fails at compile time, not as a
+ * silently vanishing button).
  */
 const REVOCABLE_STATUSES: ReadonlyArray<string> = [
   "pending",
@@ -87,8 +95,9 @@ function isRevocable(row: InviteRow): boolean {
 }
 
 /**
- * 招待行の Revoke の読み上げ名。表に見えている列(状態・役割・招待者・期限)で行を
- * 同定する(招待 id は表に出ていないので使わない)。
+ * The accessible name of an invite row's Revoke. Identifies the row by
+ * the columns visible in the table (state, role, inviter, expiry)
+ * (the invite id is not in the table, so it is not used).
  */
 function inviteRevokeName(row: InviteRow): string {
   return `Revoke ${row.status} ${row.role} invitation from ${row.inviterUserId}, expires ${formatServerTime(row.expiresAtMs)}`;
@@ -146,7 +155,7 @@ function buildInviteColumns(
   ];
 }
 
-/** 発行の静的案内(発行 UI は置かない — ADR-0018 改訂 2)+ 失効の帰結の注記。 */
+/** Static guidance on issuing (no issue UI here — ADR-0018 amendment 2) + a note on the consequence of revoking. */
 function InviteNotes(): ReactNode {
   return (
     <Callout title="Issuing and revoking" headingLevel={3} testId="invite-notes">
@@ -199,8 +208,10 @@ function InvitesResource({
   reload: () => void;
   state: ResourceState<InvitationList>;
 }): ReactNode {
-  // 置換形(裁定 B-a)。失効後の再取得(refreshing)中は直前の一覧を残し、行の Revoke は
-  // 実行中と同じく無効化する(再取得前の行への二重失効を防ぐ)
+  // Replacement form (ruling B-a). During the post-revocation re-fetch
+  // (refreshing) the previous list stays, and each row's Revoke is
+  // disabled the same as when one is in flight (prevents a double
+  // revocation on a pre-refetch row)
   if (state.kind === "loading") return <LoadingRow label="Loading invitations" />;
   if (state.kind === "failed") return <FailureNotice failure={state.failure} onRetry={reload} />;
   return (
@@ -214,8 +225,9 @@ function InvitesResource({
 
 export function InvitesTab({ projectId }: { projectId: string }): ReactNode {
   const { state, reload } = useApiResource<InvitationList>(apiPaths.invites(projectId));
-  // 失効状態は一覧リソースの外(タブ直下)に持つ — 再取得中のアンマウントで
-  // 直近の失敗表示が消えない(use-revocation.ts のヘッダーコメント)
+  // The revocation state lives outside the list resource (directly
+  // under the tab) — the latest failure display must not disappear on
+  // an unmount mid-refetch (the header comment of use-revocation.ts)
   const revokePath = useCallback((id: string) => apiPaths.inviteRevoke(projectId, id), [projectId]);
   const { revocation, arm, confirm } = useRevocation(revokePath, reload);
   return (
@@ -226,7 +238,7 @@ export function InvitesTab({ projectId }: { projectId: string }): ReactNode {
       >
         <InvitesResource revocation={revocation} onArm={arm} reload={reload} state={state} />
       </SectionBlock>
-      {/* 確認はモーダル(AlertDialogAsyncAction テンプレート)+ 追記形の失敗(裁定 B-b) */}
+      {/* Confirmation is modal (AlertDialogAsyncAction template) + an appended-form failure (ruling B-b) */}
       <RevocationOutcome
         revocation={revocation}
         title="Revoke this invitation?"

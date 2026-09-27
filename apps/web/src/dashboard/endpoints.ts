@@ -1,42 +1,50 @@
-// ダッシュボードが消費する API 面の単一目録(裁定 BW — docs/notes/session-43.md §11)。
+// The single catalog of API surfaces the dashboard consumes (ruling
+// BW — docs/notes/session-43.md §11).
 //
-// 画面が fetch するパスはすべて本モジュールのビルダー経由とし、目録
-// (DASHBOARD_ENDPOINTS)が各ビルダーを api-schema の (group, endpoint) 識別子に
-// 束縛する。ユニットテスト(test/unit/endpoints.test.ts)が目録を登録済み
-// HttpApi と突合し、次の 2 不変条件を fail-loud にする:
+// Every path a screen fetches goes through a builder in this module,
+// and the catalog (DASHBOARD_ENDPOINTS) binds each builder to its
+// api-schema (group, endpoint) identifier. The unit test
+// (test/unit/endpoints.test.ts) collates the catalog against the
+// registered HttpApi and makes two invariants fail-loud:
 //
-//   1. **パス整合**: ビルダーの生成パス = api-schema のパステンプレート
-//      (リネーム・タイポは実行時 404 でなくテストで割れる)
-//   2. **セッション許可**: 全消費面が SESSION_ALLOWED_ENDPOINTS(AUTH_SPEC §5)の
-//      列挙内(新画面が列挙外 API を呼ぶ形は実行時 403 でなくテストで割れる)
+//   1. **Path agreement**: the builder's generated path = api-schema's
+//      path template (a rename or typo fails in a test, not as a
+//      runtime 404)
+//   2. **Session allowance**: every consumed surface is inside the
+//      SESSION_ALLOWED_ENDPOINTS (AUTH_SPEC §5) enumeration (a new
+//      screen calling an unlisted API fails in a test, not as a
+//      runtime 403)
 //
-// これはサーバー側の serving-topology スイープ(run_worker_first 被覆)の
-// クライアント側対応物で、api-schema を中心に両方向の消費が機械検査になる。
-// 本モジュール自体は純粋な文字列ビルダーのみ(バンドルへ実行コードの追加なし)。
+// This is the client-side counterpart of the server-side
+// serving-topology sweep (run_worker_first coverage); with api-schema
+// in the middle, consumption in both directions is mechanically
+// checked. This module itself is pure string builders only (no
+// executable code added to the bundle).
 
-/** 目録のサンプルパラメータ(テストのテンプレート置換と共有する)。 */
+/** The catalog's sample parameters (shared with the test's template substitution). */
 export const SAMPLE_PROJECT_ID = "ab".repeat(32);
 export const SAMPLE_ENVIRONMENT_ID = "production";
 export const SAMPLE_INVITE_ID = "inv-sample";
 export const SAMPLE_TOKEN_ID = "tok-sample";
 
 /**
- * カーソルクエリ名(裁定 CB — session-43 §13)。ビルダーと目録が同じ定数を
- * 読むため、呼び出し側は名前に触れない(取り違えは構文上あり得ない — 裁定 CA
- * と同じ共有定数の形)。`after` = プロジェクト
- * 一覧(AUTH_SPEC §11-5)、`before` = 監査ページング(AUDIT_SPEC §7)。
+ * The cursor query names (ruling CB — session-43 §13). Because the
+ * builders and the catalog read the same constants, callers never touch
+ * the name (a mix-up is impossible syntactically — the same shared-
+ * constant shape as ruling CA). `after` = the project listing
+ * (AUTH_SPEC §11-5), `before` = audit paging (AUDIT_SPEC §7).
  */
 const PROJECTS_CURSOR = "after";
 const AUDIT_CURSOR = "before";
 
-/** カーソルクエリの組み立て(唯一のクエリ付与点 — ビルダー内部でのみ使う)。 */
+/** Assembling a cursor query (the only query-attaching point — used only inside builders). */
 function withCursor(path: string, name: "after" | "before", value: string | undefined): string {
   return value === undefined ? path : `${path}?${name}=${encodeURIComponent(value)}`;
 }
 
-/** 画面が使うパスビルダー(ページング面はカーソル値を受け、名前は付けない)。 */
+/** The path builders the screens use (paging surfaces take the cursor value, never the name). */
 export const apiPaths = {
-  /** Web OAuth の開始(ナビゲーション導線 — 未認証面。AUTH_SPEC §3)。 */
+  /** The start of web OAuth (a navigation funnel — unauthenticated surface; AUTH_SPEC §3). */
   githubStart: () => "/auth/github/start",
   me: () => "/auth/me",
   logout: () => "/auth/logout",
@@ -52,15 +60,16 @@ export const apiPaths = {
   auditSelf: (before?: string) => withCursor("/auth/audit/events", AUDIT_CURSOR, before),
   rotationFlags: (projectId: string) => `/projects/${projectId}/rotation/flags`,
   invites: (projectId: string) => `/projects/${projectId}/invites`,
-  // inviteId / tokenId はサーバー発行の不透明 id(projectId のような形式検査を
-  // UI 側に持たない)ため encodeURIComponent を通す — 敵対的サーバーの id が
-  // パスを踏み外しても可視の 404/405 に留める(裁定 CN の付随具体化 —
+  // inviteId / tokenId are server-issued opaque ids (the UI carries no
+  // format check the way it does for projectId), so they go through
+  // encodeURIComponent — if a hostile server's id strays off the path it
+  // stays a visible 404/405 (the concrete form accompanying ruling CN —
   // docs/notes/session-45.md §5)
   inviteRevoke: (projectId: string, inviteId: string) =>
     `/projects/${projectId}/invites/${encodeURIComponent(inviteId)}`,
   tokens: () => "/auth/tokens",
   tokenRevoke: (tokenId: string) => `/auth/tokens/${encodeURIComponent(tokenId)}`,
-  /** S11 端末登録簿(AUTH_SPEC §13-11 — advisory。読み取りのみ、セッション可)。 */
+  /** S11 device registry (AUTH_SPEC §13-11 — advisory. Read-only, session-allowed). */
   devices: () => "/auth/devices",
 } as const;
 
@@ -69,22 +78,24 @@ export interface DashboardEndpoint {
   readonly group: string;
   readonly endpoint: string;
   /**
-   * 認証面の分類: `session` はセッション許可列挙(AUTH_SPEC §5)内で
-   * なければならない fetch 消費面、`unauthenticated` は未認証面
-   * (ナビゲーション導線 — UNAUTHENTICATED_ENDPOINTS 内)であること。
+   * Classification of the auth surface: `session` is a fetch-consumed
+   * surface that must be inside the session-allowance enumeration
+   * (AUTH_SPEC §5); `unauthenticated` is an unauthenticated surface (a
+   * navigation funnel — inside UNAUTHENTICATED_ENDPOINTS).
    */
   readonly access: "session" | "unauthenticated";
-  /** サンプルパラメータで具体化したパス(テストがテンプレートと突合する)。 */
+  /** The path materialized with the sample parameters (the test collates it against the template). */
   readonly sample: string;
   /**
-   * この面に withCursor で付けるカーソルクエリ名(裁定 CB — session-43 §13)。
-   * スイープが api-schema のクエリ Schema にこの名前の宣言があることを検査する
-   * (パラメータ名のリネームはページング無反応でなくテストで割れる)。
+   * The cursor query name withCursor attaches to this surface (ruling
+   * CB — session-43 §13). The sweep checks that api-schema's query
+   * Schema declares a field of this name (a parameter rename fails in a
+   * test rather than as silent unresponsive paging).
    */
   readonly cursor?: "after" | "before";
 }
 
-/** ダッシュボードの全消費面(スイープの検査対象)。 */
+/** Every surface the dashboard consumes (the sweep's checked target). */
 export const DASHBOARD_ENDPOINTS: ReadonlyArray<DashboardEndpoint> = [
   {
     group: "auth",
@@ -146,7 +157,8 @@ export const DASHBOARD_ENDPOINTS: ReadonlyArray<DashboardEndpoint> = [
     access: "session",
     sample: apiPaths.rotationFlags(SAMPLE_PROJECT_ID),
   },
-  // S8 招待管理・S9 トークン管理(失効系画面): 一覧 + 指定失効の 4 面
+  // S8 invite management / S9 token management (the revocation
+  // screens): the 4 surfaces of listing + targeted revocation
   {
     group: "invites",
     endpoint: "list",
@@ -166,6 +178,8 @@ export const DASHBOARD_ENDPOINTS: ReadonlyArray<DashboardEndpoint> = [
     access: "session",
     sample: apiPaths.tokenRevoke(SAMPLE_TOKEN_ID),
   },
-  // S11 端末登録簿(DK K5): 一覧のみ。登録・削除・要求はセッション拒否の面で消費しない
+  // S11 device registry (DK K5): the listing only. Registration,
+  // deletion, and requests are session-denied surfaces and are not
+  // consumed
   { group: "devices", endpoint: "list", access: "session", sample: apiPaths.devices() },
 ];

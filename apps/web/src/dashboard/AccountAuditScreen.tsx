@@ -1,8 +1,10 @@
 "use client";
 
-// 本人軸: GET /auth/audit/events(AUDIT_SPEC §3.1 / §6 — 本人のみ)。
-// D1 経路のため seq は常に応答に載らない(§7)— AuditEventList の応答適応で
-// 列は自然に出ない。
+// The self axis: GET /auth/audit/events (AUDIT_SPEC §3.1 / §6 — self
+// only).
+// On the D1 path seq is never on the response (§7) — with
+// AuditEventList's response adaptation the column naturally never
+// appears.
 import { Text } from "@astryxdesign/core/Text";
 import { type ReactNode, useCallback } from "react";
 

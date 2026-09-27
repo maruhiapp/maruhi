@@ -1,19 +1,28 @@
 ---
-// LP(apex `maruhi.app/`)— Blume のカスタムページ(docs/notes/web-design-pass.md §4、裁定 D / G)。
+// LP (apex `maruhi.app/`) — a Blume custom page (docs/notes/
+// web-design-pass.md §4, rulings D / G).
 //
-// 構成は所有者レビュー(2026-09-04)後の案 A 改訂 2:「Why の連鎖」。
-//   Hero(Not even us.)→ 5 つの問い(ファイル → サーバー → 鍵 → エージェント → 運営者)を
-//   順に潰していくと maruhi の設計に着地する → What we don't promise → Get started
-// 各問いは「問い → 事実 1〜2 文 → So: maruhi の答え」+ イラスト(インライン SVG)で、
-// 途中の問いだけなら競合でも足りる、を最後まで読むと maruhi にしか着かない、という並び
-// (競合の LP 実測: コマンドは 0〜4 個、脅威から入るのが定石 — §4 G 改訂 2)。
-// コマンドは hero と schema の 2 箇所のみ。install / self-host の手順は docs に置く。
-// トーン(§2): ダーク基調・アクセント 1 色を限定的に・装飾控えめ・セキュリティは淡々と。
-// 書いていない機能は謳わない。ターミナルの出力行は実際の CLI 文字列(apps/cli/src)から写す。
+// The structure is plan A revision 2 after the owner review (2026-09-04):
+// "the chain of Whys".
+//   Hero (Not even us.) → working through 5 questions (files → server →
+//   key → agents → operator) in order lands on maruhi's design → What we
+//   don't promise → Get started
+// Each question is "question → 1-2 sentences of fact → So: maruhi's answer"
+// + an illustration (inline SVG), ordered so that answering only some of
+// the questions still lets a competitor suffice, but reading to the end
+// lands only on maruhi (competitor LP measurements: 0-4 commands, starting
+// from the threat is standard — §4 G revision 2).
+// Commands appear only twice: hero and schema. The install / self-host
+// steps live in docs.
+// Tone (§2): dark base, one accent color used sparingly, restrained
+// decoration, security stated plainly. No feature that is not written is
+// advertised. Terminal output lines are copied verbatim from the real CLI
+// strings (apps/cli/src).
 //
-// スタイリングは scoped <style>(素の CSS)のみ。色は Blume の theme tokens(--blume-*)を参照し、
-// 生 hex を書かない。SVG も class で色を当てる(style 属性は使わない — CSP)。
-// ユーザーに見える文言は英語(ADR-0017)。
+// Styling is scoped <style> (plain CSS) only. Colors reference Blume's
+// theme tokens (--blume-*); no raw hex. SVGs are colored via classes too
+// (no style attributes — CSP).
+// User-facing text is English (ADR-0017).
 import PageLayout from "blume/components/layout/PageLayout.astro";
 import data from "blume:data";
 
@@ -23,7 +32,8 @@ const productOrigin = "https://my.maruhi.app";
 const cryptoSpec = `${repo}/blob/main/docs/CRYPTO_SPEC.md`;
 const title = "maruhi — secrets only you can read. Not even us.";
 
-// 信頼境界(ADR-0018 / CRYPTO_SPEC §14.2)。復号器を持つ場所だけが平文を見る
+// Trust boundary (ADR-0018 / CRYPTO_SPEC §14.2). Only where a decryptor
+// lives sees plaintext
 const tiles = [
   { who: "Your CLI", note: "and the process it runs", reads: true },
   { who: "The server", note: "ciphertext only", reads: false },
@@ -45,7 +55,7 @@ const tiles = [
   siteUrl={config.site}
   ogEnabled={config.og.enabled}
   ogImage="/og.png"
-  ogImageAlt="The maruhi mark (a vermilion 秘 in a circle) next to the word maruhi"
+  ogImageAlt="The maruhi mark (a vermilion ㊙ in a circle) next to the word maruhi"
   ogImageSize={{ width: 1200, height: 630 }}
   page={{ title, description: config.description }}
 >
@@ -293,7 +303,7 @@ STRIPE_KEY    string  true      set</span>
       </ul>
       <p class="fine">
         The full list, with reasoning, is in the
-        <a href={`${cryptoSpec}#143-明示的な非保証v1`}>crypto specification, §14.3</a> (Japanese).
+        <a href={`${cryptoSpec}#143-明示的な非保証v1` /* english-exempt: anchor slug owned by the docs/CRYPTO_SPEC.md §14.3 heading, translated by its own shard */}>crypto specification, §14.3</a> (Japanese).
       </p>
     </section>
 
@@ -315,7 +325,7 @@ STRIPE_KEY    string  true      set</span>
         > and needs an invite code. A waitlist opens with the invite-only beta; until then, follow
         the repository for release notes, or run it on your own account today.
       </p>
-      <!-- waitlist 導線の置き場(H6 で Workers への POST フォームに差し替える — 静的文言のみ) -->
+      <!-- Placeholder for the waitlist channel (H6 swaps in a POST form to Workers — static text only) -->
       <p class="actions" data-waitlist-placeholder>
         <a class="button" href={`${repo}/releases`}>Watch releases on GitHub</a>
         <a class="link" href="/docs/self-hosting">Self-host instead</a>
@@ -373,14 +383,14 @@ STRIPE_KEY    string  true      set</span>
     font-family: var(--blume-font-display);
     font-size: var(--lp-hero-size);
     font-weight: 800;
-    /* Archivo の幅軸 — 見出しは幅広・極太で作る(web-design-pass.md §4) */
+    /* Archivo's width axis — headings are made wide and extra-bold (web-design-pass.md §4) */
     font-stretch: 112%;
     letter-spacing: -0.03em;
     line-height: 1.05;
     max-width: var(--lp-measure);
   }
 
-  /* アクセントは限定的に: 見出しの決め台詞・CTA ボタン・図の「鍵」(§2) */
+  /* Accent is used sparingly: the heading punchline, CTA buttons, and the "key" in figures (§2) */
   .hero .punch {
     display: block;
     color: var(--blume-accent);
@@ -450,13 +460,13 @@ STRIPE_KEY    string  true      set</span>
     padding: 0 0.35em;
   }
 
-  /* ターミナル: 証拠として 2 箇所だけ(hero / schema)。背景は code token、装飾は付けない */
+  /* Terminal: only in two places as evidence (hero / schema). Background is the code token, no decoration */
   .terminal {
     margin: 0 0 calc(var(--lp-gap) * 1.5);
     padding: var(--lp-gap) calc(var(--lp-gap) * 1.25);
     max-width: var(--lp-measure);
     overflow-x: auto;
-    /* 長い出力行は折り返す(狭い列・モバイルで横スクロールさせない)。表の空白は保つ */
+    /* Long output lines wrap (no horizontal scrolling in narrow columns / mobile). Table whitespace is preserved */
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     font-family: var(--blume-font-mono);
@@ -519,7 +529,7 @@ STRIPE_KEY    string  true      set</span>
     font-weight: 600;
   }
 
-  /* Why の連鎖: 番号 → 問い → 事実 → So(左罫)+ 図。偶数段は図を左に */
+  /* The chain of Whys: number → question → fact → So (left rule) + figure. Even steps put the figure on the left */
   .chain {
     margin: calc(var(--lp-gap) * 2) 0 0;
     padding: 0;
@@ -580,9 +590,12 @@ STRIPE_KEY    string  true      set</span>
     margin: 0;
   }
 
-  /* 図: 太線ピクトグラム(所有者裁定 2026-09-04 — §4 G 改訂 2)。物体は 3px 丸端の前景色の線 +
-     code 背景色の面。補助線(矢印・接続)は muted。accent は「鍵を持つもの」1 点だけ:
-     01 の .env、02 の鍵、03 の ㊙ 印(ロゴ SVG の再利用)、04 の守られた値、05 の deploy */
+  /* Figures: thick-line pictograms (owner ruling 2026-09-04 — §4 G
+     revision 2). Objects are 3px round-ended foreground strokes + a face of
+     the code background color. Auxiliary lines (arrows, connections) are
+     muted. Accent appears at exactly one point — "what holds the key":
+     01's .env, 02's key, 03's ㊙ mark (reuse of the logo SVG), 04's guarded
+     values, 05's deploy */
   .ill {
     display: block;
     width: 100%;
@@ -648,7 +661,7 @@ STRIPE_KEY    string  true      set</span>
     fill: var(--blume-accent);
   }
 
-  /* 信頼境界のタイル: 鍵を持つのは CLI だけ */
+  /* Trust-boundary tiles: only the CLI holds the key */
   .tiles {
     margin: 0;
     padding: 0;
@@ -704,7 +717,7 @@ STRIPE_KEY    string  true      set</span>
     stroke-linejoin: round;
   }
 
-  /* 鍵を持つのは CLI だけ — その印はロゴの ㊙(light / dark で SVG を出し分け。Blume は <html data-theme> を立てる) */
+  /* Only the CLI holds the key — its mark is the logo's ㊙ (light / dark SVGs are swapped; Blume sets <html data-theme>) */
   .seal {
     width: 1.75rem;
     height: 1.75rem;

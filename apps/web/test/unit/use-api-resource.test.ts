@@ -1,22 +1,23 @@
-// 単発 GET フックの再読込時の状態遷移(src/dashboard/use-api-resource.ts)の unit テスト。
+// Unit test of the single-GET hook's state transitions on reload
+// (src/dashboard/use-api-resource.ts).
 import { describe, expect, it } from "vitest";
 
 import { reloadingState } from "../../src/dashboard/use-api-resource.ts";
 
 describe("reloadingState", () => {
-  it("同じ path の再読込は直前の値を残し refreshing にする(表を LoadingRow に差し替えない)", () => {
+  it("a reload of the same path keeps the previous value and sets refreshing (never swaps the table for a LoadingRow)", () => {
     expect(
       reloadingState({ path: "/a", state: { kind: "ok", value: 1, refreshing: false } }, "/a"),
     ).toEqual({ kind: "ok", value: 1, refreshing: true });
   });
 
-  it("path が変わったら前の値を持ち越さず loading", () => {
+  it("goes to loading without carrying the previous value over when the path changes", () => {
     expect(
       reloadingState({ path: "/a", state: { kind: "ok", value: 1, refreshing: false } }, "/b"),
     ).toEqual({ kind: "loading" });
   });
 
-  it("直前が失敗・読込中なら loading(Retry は従来どおり置換形)", () => {
+  it("goes to loading when the previous state is failed or loading (Retry stays the replacement form)", () => {
     expect(
       reloadingState<number>(
         { path: "/a", state: { kind: "failed", failure: { kind: "unreachable" } } },

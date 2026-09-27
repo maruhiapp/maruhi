@@ -1,15 +1,16 @@
-# install script(packaging/install.sh)と Homebrew formula の検証。
+# Validation of the install script (packaging/install.sh) and the Homebrew formula.
 #
-# 実リリースには依存しない: `build:binaries` の成果物を実 OS runner へ配り、
-# ローカルの http / file:// から install.sh を実走させる(正例 + 改竄の負例)。
-# GitHub Releases に何も出ていない段階でも、この workflow だけで
-# 「入る / 改竄されたら入らない」が回る。
+# Does not depend on a real release: the `build:binaries` artifacts are handed to
+# real OS runners and install.sh is actually run against local http / file://
+# (positive cases + tampered negative cases). Even with nothing published to
+# GitHub Releases yet, this workflow alone exercises "installs / refuses to
+# install when tampered".
 #
-# 対象 runner は release.yml の smoke と同じ表(scripts/shared.ts の TARGETS)から
-# windows を除いた 4 種。install.sh 側の対応表との一致は
-# apps/cli/test/installer.test.ts が固定する。
+# Target runners are the same table as release.yml's smoke (TARGETS in
+# scripts/shared.ts) minus windows — 4 targets. Agreement with install.sh's own
+# table is pinned by apps/cli/test/installer.test.ts.
 #
-# 外部 action は commit SHA でピン留めする(release.yml と同じ規律)。
+# External actions are pinned by commit SHA (same discipline as release.yml).
 name: installer
 
 on:
@@ -20,7 +21,7 @@ on:
 permissions: {}
 
 env:
-  # 「言わざる」原則(CLAUDE.md)を ci.yml / release.yml と同様に適用する
+  # Apply the "say nothing" principle (CLAUDE.md) as in ci.yml / release.yml
   DO_NOT_TRACK: "1"
   WRANGLER_SEND_METRICS: "false"
 
@@ -29,7 +30,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 検証用の成果物(リリースと同じ生成経路)と、シェル・formula の静的検査
+  # Artifacts for validation (built via the same path as the release) and
+  # static checks of the shell script and formula
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -39,15 +41,15 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       version: ${{ steps.version.outputs.version }}
     steps:
-      # 依存コード(bun install / build)を実行する job にトークンを残さない
+      # Leave no token on jobs that run dependency code (bun install / build)
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
-      # ubuntu runner にプリインストール済み(新規依存を増やさない)。
-      # install.sh は POSIX sh として検査する — 実行シェルが dash / busybox でも
-      # 壊れないことがこの script の前提
-      - name: Shellcheck (install script + テストハーネス)
+      # Preinstalled on the ubuntu runner (adds no new dependency).
+      # install.sh is checked as POSIX sh — this script's premise is that it
+      # does not break even when the executing shell is dash / busybox
+      - name: Shellcheck (install script + test harness)
         run: |
           shellcheck --shell=sh packaging/install.sh
           shellcheck packaging/install-test.sh
@@ -59,14 +61,15 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Resolve version (単一の出所 = apps/cli/package.json)
+      - name: Resolve version (single source = apps/cli/package.json)
         id: version
         run: |
           VERSION=$(node -p "require('./apps/cli/package.json').version")
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      # 対象表の単一の出所は scripts/shared.ts。ここでは windows を落とすだけで、
-      # 一覧そのものを YAML へ複製しない(release.yml の smoke と同じ導出)
+      # The single source for the target table is scripts/shared.ts. Here we only
+      # drop windows; the list itself is not duplicated into YAML (same
+      # derivation as release.yml's smoke)
       - name: Export unix install matrix (single source = scripts/shared.ts)
         id: matrix
         run: |
@@ -77,9 +80,10 @@ jobs:
       - name: Build binaries + checksums
         run: bun run --filter @maruhi/cli build:binaries
 
-      # 実物の checksums.txt から formula を組み、ruby で構文を確かめる。
-      # example(golden)側の構文も同時に見る — 生成器の出力形は
-      # apps/cli/test/installer.test.ts が example との一致で固定している
+      # Build the formula from the real checksums.txt and syntax-check it with
+      # ruby. The example (golden) side's syntax is checked at the same time —
+      # the generator's output shape is pinned by apps/cli/test/installer.test.ts
+      # matching the example
       - name: Generate + syntax-check Homebrew formula
         run: |
           bun apps/cli/scripts/generate-formula.ts \
@@ -89,8 +93,9 @@ jobs:
           ruby -c "${RUNNER_TEMP}/maruhi.rb"
           ruby -c packaging/homebrew/maruhi.example.rb
 
-      # 全対象を 1 アーティファクトで配る(release.yml の smoke と同じ理由:
-      # 対象別に分けると upload 側へ対象一覧の複製が戻ってくる)
+      # Ship all targets in one artifact (same reason as release.yml's smoke:
+      # splitting per target pushes a duplicate of the target list back into the
+      # upload side)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: installer-fixtures
@@ -99,9 +104,10 @@ jobs:
           retention-days: 1
           overwrite: true
 
-  # 実 OS でのインストール。正例(http / file://・再インストール・他人の mh)と
-  # 負例(checksums 1 文字改竄・アーカイブ 1 バイト改竄・アセット不在・版の不一致)を
-  # packaging/install-test.sh が回す
+  # Install on real OSes. packaging/install-test.sh runs the positive cases
+  # (http / file://, reinstall, someone else's mh) and the negative cases
+  # (one-character checksums tampering, one-byte archive tampering, missing
+  # asset, version mismatch)
   install:
     name: install (${{ matrix.target }})
     needs: build
@@ -123,8 +129,9 @@ jobs:
           name: installer-fixtures
           path: fixtures
 
-      # `${{ }}` を run へ直接展開しない(env 経由)。GitHub の hardening ガイダンス
-      - name: install.sh end-to-end (正例 + 改竄の負例)
+      # Do not expand `${{ }}` directly into run (go through env) — GitHub's
+      # hardening guidance
+      - name: install.sh end-to-end (positive + tampered negative cases)
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -135,12 +142,15 @@ jobs:
             --target "${TARGET}" \
             --version "${VERSION}"
 
-  # setup-maruhi action(actions/setup-maruhi)を**ローカルパス参照で実走**させる。
-  # install.sh 単体は上の install job が検査するが、action と script の結合
-  # (--dir / --version の受け渡し・アーカイブ内のバイナリ位置・GITHUB_PATH への
-  # 追記)はここでしか踏まれない — script 側のフラグ改名や配置変更が action の
-  # 利用者だけを壊す形を CI で検出する(PR #79 pullfrog レビュー反映)。
-  # 実リリースには依存しない: build の成果物を MARUHI_BASE_URL(file://)で与える
+  # Actually run the setup-maruhi action (actions/setup-maruhi) **via a local
+  # path reference**. The install job above checks install.sh on its own, but
+  # the action/script coupling (passing --dir / --version, the binary's
+  # location inside the archive, appending to GITHUB_PATH) is only exercised
+  # here — this detects in CI the shape where a flag rename or layout change on
+  # the script side breaks only the action's users (PR #79 pullfrog review
+  # feedback).
+  # Does not depend on a real release: build's artifacts are supplied via
+  # MARUHI_BASE_URL (file://)
   action-smoke:
     needs: build
     runs-on: ubuntu-latest
@@ -157,8 +167,8 @@ jobs:
           name: installer-fixtures
           path: fixtures
 
-      # job env は composite action のステップにも届く(install.sh のミラー
-      # 指定 — GitHub Releases へは一切出ない)
+      # The job env also reaches the composite action's steps (the mirror
+      # setting for install.sh — nothing ever goes to GitHub Releases)
       - name: Point the installer at the local fixtures
         run: echo "MARUHI_BASE_URL=file://${GITHUB_WORKSPACE}/fixtures" >> "$GITHUB_ENV"
 

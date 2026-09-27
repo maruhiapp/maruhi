@@ -1,7 +1,8 @@
 import { defineConfig } from "vitest/config";
 
-// apex サイトの e2e(wrangler dev + Playwright)。ビルド済み dist(+ _headers)前提なので
-// ルート vitest.config.ts の projects には入れず、CI の独立ステップで実行する(web e2e と同型)。
+// e2e for the apex site (wrangler dev + Playwright). Since it presumes a
+// built dist (+ _headers), it is not in the root vitest.config.ts projects
+// and runs as its own CI step (same shape as web e2e).
 export default defineConfig({
   test: {
     name: "site-e2e",

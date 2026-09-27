@@ -1,6 +1,7 @@
-// `bun run --filter @maruhi/site theme:build` — apps/web/theme/maruhi.css からサイトの
-// テーマ生成物(theme.css / theme/tokens.ts / logo-dark.svg / 複製資産)を書き出す。
-// 生成物はコミットする。差分の検知は test/unit/theme.test.ts(再生成 = コミット済み)。
+// `bun run --filter @maruhi/site theme:build` — writes the site's theme
+// artifacts (theme.css / theme/tokens.ts / logo-dark.svg / copied assets)
+// from apps/web/theme/maruhi.css. The artifacts are committed. Drift is
+// detected by test/unit/theme.test.ts (regenerated = committed).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 

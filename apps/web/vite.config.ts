@@ -6,24 +6,28 @@ import funstackStatic from "@funstack/static";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
-// publicDir の無変換コピーを layer-split の HTML 注入から守る。
-// write-headers.ts がバイト等価を検査する対象と揃える(pages.css は /invite と
-// サーバー配信の儀式ページが共有する自己配信スタイル)。
+// Protect the publicDir's untransformed copies from layer-split's HTML
+// injection. Kept in step with the targets whose byte equality
+// write-headers.ts checks (pages.css is the self-hosted stylesheet shared
+// by /invite and the server-served ceremony pages).
 const PUBLIC_PASSTHROUGH = ["invite.html", "pages.css"] as const;
 
-// FunStack は Vite 環境を rsc / client / ssr に分ける。ssr は JS のみで
-// CSS を出さない。@astryxdesign/build 0.6.2 の astryx-build-layer-split は
-// StyleX 規則があるのに対象 CSS が無いと hard error するため、CSS を出す
-// 環境だけに適用する。加えて client の writeBundle(linkOrphanStylesheets)が
-// publicDir コピーの HTML へ SPA CSS を <link> 注入するので、検査対象アセットは
-// 書き戻す。stylexOptions キーの legacy モードは維持する
-// (docs/notes/spike-a.md — プリビルド CSS 消費。src alias は使わない)。
+// FunStack splits Vite environments into rsc / client / ssr. ssr emits
+// JS only and no CSS. @astryxdesign/build 0.6.2's astryx-build-layer-split
+// hard-errors when StyleX rules exist but no target CSS does, so it is
+// applied only to environments that emit CSS. In addition, client's
+// writeBundle(linkOrphanStylesheets) injects the SPA CSS as <link> into
+// the publicDir-copied HTML, so the checked assets are written back. The
+// stylexOptions key keeps the legacy mode
+// (docs/notes/spike-a.md — prebuilt CSS consumption; no src alias).
 //
-// これは vendor プラグインへの局所パッチ(ADR-0013 ⑤ の upstream 解決待ち)。
-// 0.6.2 の AstryxVitePluginOptions にも環境スコープも publicDir 除外も無い
-// (0.5.2 から再確認)。対象プラグインが見つからない・形が変わった場合は
-// 黙って素通しせず落とす: 片方の回避だけ外れて ssr が hard error に戻る /
-// invite.html が汚れる、を次のアップグレードで無言に起こさないため。
+// This is a local patch on a vendor plugin (awaiting the upstream fix of
+// ADR-0013 option ⑤). AstryxVitePluginOptions 0.6.2 has neither an
+// environment scope nor a publicDir exclusion (re-verified against
+// 0.5.2). If the target plugin is not found or its shape changed, fail
+// loudly rather than silently passing through: so that the next upgrade
+// cannot silently undo one half of the workaround and bring back the ssr
+// hard error / pollute invite.html.
 const LAYER_SPLIT_PLUGIN = "astryx-build-layer-split";
 
 function adaptAstryxLayerSplit(plugins: Plugin[]): Plugin[] {
@@ -71,9 +75,9 @@ function adaptAstryxLayerSplit(plugins: Plugin[]): Plugin[] {
   });
 }
 
-// StyleX コンパイラは常時有効。未設定ビルドはランタイムで全損する
-// (検証記録: docs/notes/spike-a.md — e2e が実効的な防御)ため、
-// コンパイラを外すスイッチは置かない。
+// The StyleX compiler is always on. A build without it loses all styles
+// at runtime (verification record: docs/notes/spike-a.md — e2e is the
+// effective defense), so there is no switch to remove the compiler.
 const stylexPlugins = adaptAstryxLayerSplit(
   astryxStylex({
     stylexOptions: {

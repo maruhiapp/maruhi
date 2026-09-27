@@ -1,22 +1,29 @@
-// セッション認証つき API 消費の薄い fetch 層(裁定 BP・BR — docs/notes/session-43.md)。
+// A thin fetch layer for session-authenticated API consumption (rulings
+// BP / BR — docs/notes/session-43.md).
 //
-// - 同一オリジン前提(裁定 BM: ダッシュボードは maruhi-server Worker が配信する。
-//   CSP connect-src 'self' と __Host- セッションクッキーの下で相対パスのみを叩く)
-// - HTTP 状態を型付きの結果に写し、401 / 403 / 404 / 410 の分岐と文言を全画面で
-//   一元化する(表示規律 §4 — 文言はサーバー申告の言い回しに限る)
-// - mutation(ログアウト・失効 DELETE — W3b)には CSRF ヘッダーを一律付与する
-//   (AUTH_SPEC §11-4)
-// - Schema デコードは持たない(裁定 BR — 検証を実装しない Web の型は
-//   type-only import で拘束し、ランタイム防御は表示層の optional アクセス)
+// - Same-origin assumption (ruling BM: the dashboard is served by the
+//   maruhi-server Worker. Under CSP connect-src 'self' and the __Host-
+//   session cookie it only hits relative paths)
+// - Maps HTTP status to typed results and centralizes the 401 / 403 /
+//   404 / 410 branching and wording across all screens (display
+//   discipline §4 — wording is limited to what the server reports)
+// - Mutations (logout, revocation DELETEs — W3b) always carry the CSRF
+//   header (AUTH_SPEC §11-4)
+// - No Schema decoding (ruling BR — the web implements no validation;
+//   its types are bound via type-only imports, and runtime defense is
+//   optional access at the display layer)
 import type { CSRF_HEADER_NAME } from "@maruhi/api-schema";
 
 /**
- * CSRF 対抗のカスタムヘッダー名(AUTH_SPEC §11-4)。真実源は api-schema の
- * `CSRF_HEADER_NAME` で、ここは型レベルで束縛する(裁定 CN —
- * docs/notes/session-45.md): 値 import はバンドル(= TCB)へ api-schema の
- * 実行コードを持ち込む(裁定 CD のトリップワイヤ対象)ため、type-only import +
- * satisfies でリテラルを拘束し、正の側のリネームをコンパイルエラーで割る。
- * 実送信の値照合は test/unit/api.test.ts(テストプロセスは値 import 可)。
+ * The anti-CSRF custom header name (AUTH_SPEC §11-4). The source of
+ * truth is api-schema's `CSRF_HEADER_NAME`; this file binds it at type
+ * level (ruling CN — docs/notes/session-45.md): a value import would
+ * pull api-schema executable code into the bundle (= the TCB), the
+ * target of ruling CD's tripwire, so the literal is constrained with
+ * type-only import + satisfies and a rename on the source-of-truth side
+ * becomes a compile error.
+ * The actual sent value is compared in test/unit/api.test.ts (a test
+ * process may value-import).
  */
 const CSRF_HEADER = "x-maruhi-csrf" satisfies typeof CSRF_HEADER_NAME;
 
@@ -38,13 +45,13 @@ const STATUS_FAILURES: Readonly<Record<number, ApiFailure>> = {
   404: { kind: "not-found" },
 };
 
-/** 403 / 410 応答から型付き reason(ForbiddenError / InviteGoneError)を防御的に取り出す。 */
+/** Defensively extracts the typed reason (ForbiddenError / InviteGoneError) from a 403 / 410 response. */
 function reasonOf(body: unknown): string | undefined {
   const reason = (body as { reason?: unknown } | null | undefined)?.reason;
   return typeof reason === "string" ? reason : undefined;
 }
 
-/** reason を運ぶ失敗分類(403 = forbidden、410 = gone — 裁定 CN の付随具体化)。 */
+/** Failure kinds that carry a reason (403 = forbidden, 410 = gone — the concrete form accompanying ruling CN). */
 const REASON_FAILURE_KINDS: Readonly<Record<number, "forbidden" | "gone">> = {
   403: "forbidden",
   410: "gone",
@@ -58,14 +65,14 @@ async function classifyWithReason(
   return { kind, reason: reasonOf(body) };
 }
 
-/** 非 2xx 応答の分類(2xx は undefined)。 */
+/** Classification of a non-2xx response (2xx is undefined). */
 async function classifyFailure(response: Response): Promise<ApiFailure | undefined> {
   const reasonKind = REASON_FAILURE_KINDS[response.status];
   if (reasonKind !== undefined) return classifyWithReason(response, reasonKind);
   return STATUS_FAILURES[response.status] ?? (response.ok ? undefined : UNREACHABLE);
 }
 
-/** 2xx 応答のボディ取り出し(204 = ボディなし)。 */
+/** Extracting a 2xx response body (204 = no body). */
 async function parseBody<T>(response: Response): Promise<ApiResult<T>> {
   if (response.status === 204) return { kind: "ok", value: undefined as T };
   try {
@@ -80,7 +87,7 @@ async function request<T>(path: string, init: RequestInit): Promise<ApiResult<T>
   try {
     response = await fetch(path, init);
   } catch {
-    // ネットワーク到達不能は型付き結果へ写す(握り潰しではなく分類)
+    // Network unreachability is mapped into a typed result (classification, not swallowing)
     return UNREACHABLE;
   }
   const failure = await classifyFailure(response);
