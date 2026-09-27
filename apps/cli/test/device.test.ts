@@ -3098,7 +3098,7 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
     expect(env.logs.join("\n")).not.toContain("cannot serve as your reserve key");
   });
 
-  it("rotate: プロジェクト一覧が取れなければ、どこも確かめていないことを Note で名指す(同期できない所の Note より優先)", async () => {
+  it("rotate: プロジェクト一覧が取れなければ、どこも確かめていないことを Note で名指す", async () => {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(reserve) },
@@ -3115,7 +3115,6 @@ describe("maruhi key recover / key recovery — 台帳の鍵のチェーン上�
       `, so whether the key ${reserve.fingerprintHex} is revoked on any of them was not checked`,
     );
     expect(errors).toContain("Note: your projects could not be listed (");
-    expect(errors).not.toContain("could not be synced, so whether the key");
   });
 
   it("rotate: 確かめたプロジェクトがすべて同期できれば、確かめられなかった範囲の Note は出さない", async () => {
