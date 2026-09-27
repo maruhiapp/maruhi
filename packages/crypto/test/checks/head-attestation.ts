@@ -1,4 +1,4 @@
-// Checks for CRYPTO_SPEC §6.6 (head declaration).
+// Checks for CRYPTO_SPEC §6.6 (head attestation).
 // Ed25519 is the RFC 8032 deterministic signature, so the sign direction is
 // also verified to match the vector exactly.
 // The verification-rule family (kind = "authorization") pins that "the
@@ -6,15 +6,15 @@
 // with expected_reason", via verifyDistributedHeadAttestation against a
 // history index built by verifyChainWithHistory.
 //
-// Pinning points unique to declarations (the difference from value / meta):
-// - removed-attester-in-tenure is **positive** (a past declaration inside the
+// Pinning points unique to attestations (the difference from value / meta):
+// - removed-attester-in-tenure is **positive** (a past attestation inside the
 //   removed attester's membership interval passes verification), but the
 //   attester is not a current member — this pins that the distribution /
 //   comparison selection gate (§6.6 (1), first half) is the implementation
 //   test's responsibility
 // - The minimum required role is reader (reader-attestation is positive)
 // - chain-head-mismatch is not "reject and discard" but the entry to the
-//   strict evidence of comparison (a) (handling it is the CLI implementation
+//   hard evidence of comparison (a) (handling it is the CLI implementation
 //   test's domain — here we pin only the reason code)
 
 import type { ChainHistoryIndex, HeadAttestationContext } from "../../src/index.ts";

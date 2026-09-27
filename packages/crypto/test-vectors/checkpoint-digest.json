@@ -1,7 +1,7 @@
 {
-  "description": "CRYPTO_SPEC §6.2: checkpoint values_digest subject selection — variables with status = declared (§4.2 layout v2, value not yet set) do not appear in values_digest (2026-08-30). values_digest_hex = lower_hex(SHA-256(LP(\"maruhi/v1/env-values-digest\", v_1, …, v_m))), v_j = LP(variable_id, version, value_sig_hash_hex) (ascending UTF-8 byte order of variable_id, active variables only). The encoder's LP canonical form is already pinned by the values_digests section of chain-entries.json and is invariant — this file pins only the subject-selection rule (chain-entries.json is unchanged — §11)",
-  "encoding_reference": "the values_digests of chain-entries.json (LP canonical form, ascending byte order, duplicate rejection, decimal stringification of numbers)",
-  "selection_rule": "Selects values_digest_entries (active only) from variables (the variable set including statement status). An active variable always carries the value coordinates (version / value_sig_hash_hex) of its latest version; declared / deleted carry no value coordinates (the value-distribution requirement for active and \"it is legitimate for a declared variable to have no distributed value\" — §6.3)",
+  "description": "CRYPTO_SPEC §6.2: target selection of the checkpoint values_digest — a variable with status = declared (§4.2 layout v2; no value set) does not appear in values_digest (2026-08-30). values_digest_hex = lower_hex(SHA-256(LP(\"maruhi/v1/env-values-digest\", v_1, …, v_m))); v_j = LP(variable_id, version, value_sig_hash_hex) (UTF-8 byte-ascending by variable_id; active variables only). The encoder's LP canonical form is already pinned and unchanged by chain-entries.json's values_digests section — this file pins only the target-selection rule (chain-entries.json is unchanged — §11)",
+  "encoding_reference": "chain-entries.json's values_digests (LP canonical form, byte-ascending, no duplicates, numbers decimal-stringified)",
+  "selection_rule": "select values_digest_entries (active only) from variables (the set of variables including their statement status). An active one always carries the value coordinates of the latest version (version / value_sig_hash_hex); declared / deleted carry no value coordinates (the value-distribution requirement for active and 'not distributing a value to a declared variable is legitimate' — §6.3)",
   "cases": [
     {
       "name": "declared-excluded",
@@ -41,7 +41,7 @@
       ],
       "digest_input_hex": "0000001b6d61727568692f76312f656e762d76616c7565732d6469676573740000005d000000107661722d6170692d6b65792d303030310000000131000000406233356630666434346135303938383961643864326166663833306130646434393965656466386437316262633866656239666631366533356637653264656400000062000000157661722d64617461626173652d75726c2d3030303100000001330000004039613330646430646430663535366632633638353138313830386430393430393336323738613662366436336337336365373537346235306533396631613232",
       "values_digest_hex": "e13d91a9221ccfb802b5cc363beed44de6ddee8a54494333f80a9a8014f3f0ec",
-      "note": "values_digest covers only variables with status = active (§6.2). declared (§4.2 layout v2 — no value or version exists) does not appear, and the exclusion of tombstones (deleted) is an existing rule (covered on the manifest side — §4.3). The digest equals that of the set of only the 2 active variables"
+      "note": "only variables with status = active are values_digest targets (§6.2). declared (§4.2 layout v2 — no value or version exists) does not appear; a tombstone (deleted) being out of scope is the existing rule (caught on the manifest side — §4.3). The digest equals the digest of the set of only the 2 active variables"
     },
     {
       "name": "all-declared-empty",
@@ -54,7 +54,7 @@
       "values_digest_entries": [],
       "digest_input_hex": "0000001b6d61727568692f76312f656e762d76616c7565732d646967657374",
       "values_digest_hex": "d58a289fccde8f2ea3c104b09378136fbd318e0356690521bc5fc44b4b437b01",
-      "note": "The values_digest of an environment with only declared variables equals the digest of the empty set (identical to empty-set in chain-entries.json values_digests) — the subject-selection-side pinning of \"it is legitimate for a declared variable to have no distributed value\" (§6.3)"
+      "note": "the values_digest of an environment with only declared variables equals the empty set's digest (equal to empty-set in chain-entries.json's values_digests) — the target-selection side of 'not distributing a value to a declared variable is legitimate' (§6.3)"
     }
   ]
 }

@@ -1,5 +1,5 @@
 {
-  "description": "CRYPTO_SPEC §6.5 (2026-09-13 IV revision — v2): joint signature of acceptance (Ed25519). signed_bytes = LP(\"<suite>/invite-accept-v2\", project_id, link_pub_hex, invitee_user_id, invitee_enc_pub_hex, invitee_sig_pub_hex). The same byte string carries two signatures: the acceptance signature (verification key = invitee_sig_pub_hex inside the signed payload) and the link signature (verification key = link_pub_hex inside the signed payload). No vectors for the old v1 (invite_token_hash_hex binding) are kept",
+  "description": "CRYPTO_SPEC §6.5 (2026-09-13 IV revision — v2): the joint acceptance signature (Ed25519). signed_bytes = LP(\"<suite>/invite-accept-v2\", project_id, link_pub_hex, invitee_user_id, invitee_enc_pub_hex, invitee_sig_pub_hex). Two signatures go on the same byte string: the acceptance signature (verify key = invitee_sig_pub_hex inside the signed data) and the link signature (verify key = link_pub_hex inside the signed data). The old v1 (invite_token_hash_hex-bound) vectors are not kept",
   "signed_fields_order": [
     "domain",
     "project_id",
@@ -8,7 +8,7 @@
     "invitee_enc_pub_hex",
     "invitee_sig_pub_hex"
   ],
-  "binary_encoding": "The link public key and the invitee's enc/sig public keys are placed on the LP as lowercase hex strings (same convention as binary_encoding in chain-entries.json)",
+  "binary_encoding": "the link public key and the invitee's enc/sig public keys go into LP as lowercase hex strings (the same convention as chain-entries.json's binary_encoding)",
   "invitee": {
     "user_id": "user-invitee-0004",
     "enc_seed_hex": "a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3",
@@ -16,23 +16,23 @@
     "enc_pub_hex": "20f999985e197e2df77c0b21c4348620937d4bcf649ea2d2b4bcaff560ed574d",
     "sig_pub_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
     "key_fingerprint_hex": "27b7f9a4b0a2c932ddf6e7bbf3e8839c",
-    "note": "A fresh dummy key for an unregistered user (outside the chain). Signer of the acceptance signature"
+    "note": "a fresh dummy key of an unregistered user (outside the chain). The signer of the acceptance signature"
   },
   "other_signer": {
     "user_id": "user-member-0002",
     "enc_pub_hex": "34e42d4af5ef94a07a3a84201b889d4cd1a743cb27b11b6a10438a8feb8e5847",
     "sig_pub_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
-    "note": "For the key-substitution / signer-mismatch negatives (same dummy key as user-member-0002 in chain-entries.json)"
+    "note": "for the key-swap / signer-mismatch negatives (the same dummy key as chain-entries.json's user-member-0002)"
   },
   "link_key": {
     "seed_hex": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef",
     "pub_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
-    "note": "The link key (a per-invite Ed25519 key pair). The seed rides only on the link fragment (identical to link_key in invite-link.json). Signer of the link signature"
+    "note": "the link key (a per-invite Ed25519 key pair). The seed rides only on the link's fragment (identical to invite-link.json's link_key). The signer of the link signature"
   },
   "other_link_key": {
     "seed_hex": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
     "pub_hex": "13d9908a70925992ed546007d27f50da68ba7217ef62ac3cca784529ff10471c",
-    "note": "Link key of a different invite (for the transplant / server-forgery negatives)"
+    "note": "the link key of another invite (for the transplant / server-forgery negatives)"
   },
   "vectors": [
     {
@@ -66,7 +66,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2303",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "Flipping the last bit of the signature bytes themselves fails verification"
+      "note": "flipping the last 1 bit of the signature bytes themselves fails verification"
     },
     {
       "name": "transplant-link-pub",
@@ -84,7 +84,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2302",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "Transplanting the acceptance signature to a different invite (a different link public key) fails verification (supports on the signature side the surfacing of colliding single-use accepts on the same invite — §6.5)"
+      "note": "transplanting the acceptance signature to another invite (a different link public key) fails verification (supports the surfacing of same-invite collisions under single-use — §6.5 — on the signature plane)"
     },
     {
       "name": "transplant-project",
@@ -102,7 +102,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2302",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "Transplanting to an invite of a different project fails verification (the server reconstructs project_id from the stored row — AUTH_SPEC §15-2)"
+      "note": "a transplant to an invite of another project fails verification (project_id is reconstituted by the server from the stored row — AUTH_SPEC §15-2)"
     },
     {
       "name": "transplant-invitee",
@@ -120,7 +120,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2302",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "Swapping the invitee user_id fails verification even with the same key (binds the acceptance condition caller = invitee_user_id on the signature side too)"
+      "note": "substituting the invitee user_id fails verification even under the same key (binds the acceptance condition caller = invitee_user_id on the signature side too)"
     },
     {
       "name": "enc-key-mismatch",
@@ -138,7 +138,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2302",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "Substituting the enc public key fails verification (blocks key substitution on the signature side)"
+      "note": "swapping the enc public key fails verification (blocks key-swapping on the signature plane)"
     },
     {
       "name": "sig-key-mismatch",
@@ -156,7 +156,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2302",
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "must_fail": true,
-      "note": "Substituting the sig public key fails verification (the verification key is the declared key inside the signed payload — a substituted key cannot pass a legitimate invitee's signature)"
+      "note": "swapping the sig public key fails verification (the verify key is the declared key inside the signed data — a legitimate invitee's signature does not pass under a swapped key)"
     },
     {
       "name": "wrong-signer-key",
@@ -174,7 +174,7 @@
       "signature_hex": "93f281bb217808ba92ac50da6bf143a41b7b978719afa9b6af1dfeb5e0c2a7bab38cba32d4061630272d8026e642b1171786b964eda428c40ccdfd04b99c1904",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "A signature made with a key other than invitee_sig_pub fails verification (signer mismatch)"
+      "note": "a signature made under a key other than invitee_sig_pub fails verification (signer mismatch)"
     },
     {
       "name": "suite-mismatch",
@@ -192,7 +192,7 @@
       "signature_hex": "cb211bb1527e82d00354970199776458b60df734cd22d9c2f8842036fd6fdb00bb24e0c2de10d9c0d7a340c1714078e993a41e95313dce8da8a8e4283ebb2302",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "A different suite means a different domain string, so transplanting a signature across suites fails verification"
+      "note": "a different suite means a different domain string, so cross-suite signature transplants fail verification"
     },
     {
       "name": "legacy-domain",
@@ -210,7 +210,7 @@
       "signature_hex": "82ef2169aa2db36222a1a876297f60a6a867247bba715cad8da379da95421aa815a14b1f41c53400d443c91059e1495fa3019a498ef5aed89fef460974a69d04",
       "verify_key_hex": "595b9878302e56e54a0c340638db891ece2221a7385c34688ecbddcc84d5ebef",
       "must_fail": true,
-      "note": "A valid acceptance signature made with the old domain string (v1 = the token_hash-bound form) fails verification under a verifier rebuilt with the v2 domain string (the old format is structurally rejected — AUTH_SPEC §12-10 (2))"
+      "note": "a valid acceptance signature made under the old domain string (v1 = the token_hash-bound form) fails verification on a verifier that rebuilds under the v2 domain string (the old form is structurally rejected — AUTH_SPEC §12-10 (2))"
     }
   ],
   "link_negative": [
@@ -230,7 +230,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737201",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "Flipping the last bit of the link signature fails verification"
+      "note": "flipping the last 1 bit of the link signature fails verification"
     },
     {
       "name": "link-wrong-link-key",
@@ -248,7 +248,7 @@
       "signature_hex": "0cf302f99947c81199a1f4b8299315f307be46e332ad7530319f648c6d93190adc2dcd6dad0ed7cbd97ee8f7a0720c2c8815f0c699903d07d2a71ec77aa76d03",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "A link signature made with a different link key fails verification (the shape of a server forging an acceptance with its own link key — the server does not hold the real link private key)"
+      "note": "a link signature made under a different link key fails verification (the form where the server forges an acceptance with its own link key — the server does not hold the legitimate link private key)"
     },
     {
       "name": "link-transplant-link-pub",
@@ -266,7 +266,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737200",
       "verify_key_hex": "13d9908a70925992ed546007d27f50da68ba7217ef62ac3cca784529ff10471c",
       "must_fail": true,
-      "note": "Transplanting to a different invite fails verification because the verification key is the link_pub_hex inside the signed payload"
+      "note": "a transplant to another invite fails verification because the verify key is link_pub_hex inside the signed data"
     },
     {
       "name": "link-enc-key-mismatch",
@@ -284,7 +284,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737200",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "Substituting the invitee enc key also fails the link signature (the body that makes key substitution cryptographically impossible)"
+      "note": "swapping the invitee enc key also fails under the link signature (the body that makes key-swapping cryptographically impossible)"
     },
     {
       "name": "link-sig-key-mismatch",
@@ -302,7 +302,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737200",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "Substituting the invitee sig key also fails the link signature"
+      "note": "swapping the invitee sig key also fails under the link signature"
     },
     {
       "name": "link-transplant-invitee",
@@ -320,7 +320,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737200",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "Swapping the invitee user_id also fails the link signature"
+      "note": "substituting the invitee user_id also fails under the link signature"
     },
     {
       "name": "link-transplant-project",
@@ -338,7 +338,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737200",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "Transplanting to a different project also fails the link signature"
+      "note": "a transplant to another project also fails under the link signature"
     },
     {
       "name": "link-suite-mismatch",
@@ -356,7 +356,7 @@
       "signature_hex": "d829070a0f42b695c2d01b16c7a8d2bc6231fa83f42096192feaa18d519fcdc176991f470470d9a047538ce6cfad174bbf5c8be1a807b0fa21397362ac737200",
       "verify_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
       "must_fail": true,
-      "note": "A different suite means a different domain string, so the link signature cannot be transplanted either"
+      "note": "a different suite means a different domain string, so the link signature cannot be transplanted either"
     }
   ]
 }

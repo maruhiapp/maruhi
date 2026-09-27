@@ -1,7 +1,7 @@
 {
-  "description": "CRYPTO_SPEC §5: DEK wrap (HPKE Base mode single-shot Seal, DHKEM(X25519,HKDF-SHA256)+HKDF-SHA256+AES-256-GCM). info uses the §2.1 encoding. Seal is pinned via hpke-js ekm derandomize (the panva implementation is verified on the Open direction + round-trip)",
+  "description": "CRYPTO_SPEC §5: DEK wrap (HPKE Base mode single Seal, DHKEM(X25519,HKDF-SHA256)+HKDF-SHA256+AES-256-GCM). info is the §2.1 encoding. Seal is pinned by hpke-js ekm derandomize (the panva implementation is verified in the Open direction + roundtrip)",
   "info_fields_order": ["domain", "project_id", "environment_id", "epoch", "recipient_user_id"],
-  "server_recipient_note": "Recipient class server (§9, 2026-08-12): the server key FP (lowercase hex of SHA-256(server_enc_pub)[:16]) occupies the recipient_user_id position of info. server-basic and its negative cases pin this",
+  "server_recipient_note": "Recipient class server (§9. 2026-08-12): the recipient_user_id position of info carries the server key FP (lowercase hex of SHA-256(server_enc_pub)[:16]). Pinned by server-basic and its negatives",
   "recipient_keypair": {
     "ikmR_hex": "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
     "skRm_hex": "bcf39051eb6f0e98911d2f7f4a61e3e3530ea5c34310c516fbc0c2db84d83b03",
@@ -13,7 +13,7 @@
     "skSm_hex": "d6098520ee263d197057a37c9a2cda7afd9587a141759b4af729336cf24cabbf",
     "pkSm_hex": "975a6e70027b1a64117cfbea8962f80dcdfd5d896e72782b089b97c9a847d219",
     "server_key_fingerprint_hex": "f4755fa49cbcc817a7d08eb264771ad5",
-    "note": "The server (deployment) key. Deterministic generation via DeriveKeyPair(ikmS). FP = SHA-256(pkSm)[:16] (§9 — the §3 enc||sig definition does not apply because only an enc key exists)"
+    "note": "The server (deployment) key. Deterministic generation via DeriveKeyPair(ikmS). FP = SHA-256(pkSm)[:16] (§9 — enc key only, so the §3 enc||sig definition does not apply)"
   },
   "vectors": [
     {
@@ -44,7 +44,7 @@
       "aad_hex": "",
       "enc_hex": "0a4244187e020c1b51d51502593322001217c1db3bc91bf837491c9b71807605",
       "ciphertext_hex": "1cb94954e179b81362a0aea96bfd1cbc3176f088a13347e9e22788c8100e7914a08e5db4e78b5bc40838938d7a3d6c86",
-      "note": "Positive case wrapping the same epoch DEK as basic to the server key (recipient class server). The recipient position of info holds the server key FP"
+      "note": "A positive case wrapping the same epoch DEK as basic to the server key (recipient class server). The recipient position of info is the server key FP"
     }
   ],
   "negative": [
@@ -53,21 +53,21 @@
       "base": "basic",
       "open_info_hex": "000000126d61727568692f76312f64656b2d777261700000000970726f6a2d303030310000000d656e762d70726f642d30303031000000013400000013757365722d726563697069656e742d30303032",
       "must_fail": true,
-      "note": "Swapping epoch (a transplant to a different epoch) fails Open"
+      "note": "Substituting the epoch (transplanting to another epoch) fails Open"
     },
     {
       "name": "info-recipient-mismatch",
       "base": "basic",
       "open_info_hex": "000000126d61727568692f76312f64656b2d777261700000000970726f6a2d303030310000000d656e762d70726f642d3030303100000001330000000f757365722d6f776e65722d30303031",
       "must_fail": true,
-      "note": "Swapping the recipient (transplant of a wrap addressed to a different member) fails Open"
+      "note": "Substituting the recipient (transplanting a member-bound wrap) fails Open"
     },
     {
       "name": "info-environment-mismatch",
       "base": "basic",
       "open_info_hex": "000000126d61727568692f76312f64656b2d777261700000000970726f6a2d303030310000000c656e762d6465762d30303032000000013300000013757365722d726563697069656e742d30303032",
       "must_fail": true,
-      "note": "Swapping the environment fails Open (context binding of the environment model)"
+      "note": "Substituting the environment fails Open (context binding of the environment model)"
     },
     {
       "name": "enc-tampered",
@@ -81,21 +81,21 @@
       "base": "server-basic",
       "open_info_hex": "000000126d61727568692f76312f64656b2d777261700000000970726f6a2d303030310000000d656e762d70726f642d30303031000000013300000013757365722d726563697069656e742d30303032",
       "must_fail": true,
-      "note": "info with a member user_id in the recipient position of a server-addressed wrap fails Open (transplant rejection across recipient classes)"
+      "note": "info with a member user_id in the recipient position of a server-bound wrap fails Open (rejects transplant across recipient classes)"
     },
     {
       "name": "server-info-fp-mismatch",
       "base": "server-basic",
       "open_info_hex": "000000126d61727568692f76312f64656b2d777261700000000970726f6a2d303030310000000d656e762d70726f642d303030310000000133000000206635373535666134396362636338313761376430386562323634373731616435",
       "must_fail": true,
-      "note": "info with a different server key's FP in the recipient position fails Open (transplant rejection across server keys)"
+      "note": "info with another server key's FP in the recipient position fails Open (rejects transplant between server keys)"
     },
     {
       "name": "member-info-server-fp",
       "base": "basic",
       "open_info_hex": "000000126d61727568692f76312f64656b2d777261700000000970726f6a2d303030310000000d656e762d70726f642d303030310000000133000000206634373535666134396362636338313761376430386562323634373731616435",
       "must_fail": true,
-      "note": "info with a server key FP in the recipient position of a member-addressed wrap also fails Open (transplant rejection across recipient classes in the reverse direction)"
+      "note": "info with a server key FP in the recipient position of a member-bound wrap also fails Open (rejects reverse-direction recipient-class transplant)"
     }
   ]
 }

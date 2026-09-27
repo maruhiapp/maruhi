@@ -3,7 +3,7 @@
 //   audit-head.json (the row_digest and h_n chaining)
 // - the NULL vs empty-string preimage difference (null_vs_empty section)
 // - invalid-input on numeric bounds (non-integer, >= 2^53) and hex format
-//   (the split under rule 21 — rejections are pinned on the harness side, not
+//   (the split under convention 21 — rejections are pinned on the harness side, not
 //   by JSON vectors)
 
 import type { AuditHeadRow } from "../../src/index.ts";
@@ -90,7 +90,7 @@ async function nullVsEmptyChecks(c: Checks): Promise<void> {
   c.push("audit-head: null and empty string differ", nullDigest !== emptyDigest);
 }
 
-/** invalid-input on numeric bounds and hex format (pinning the rejection side — the split under vector rule 21). */
+/** invalid-input on numeric bounds and hex format (pinning the rejection side — the split under vector convention 21). */
 async function invalidInputChecks(c: Checks): Promise<void> {
   const base = toTypedRow(auditHeadVectors.chain[0]!.row);
   const rejectsRow = async (name: string, row: AuditHeadRow, field: string): Promise<void> => {

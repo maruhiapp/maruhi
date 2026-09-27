@@ -1,11 +1,11 @@
 {
-  "description": "Vectors for the length-prefixed encoding of CRYPTO_SPEC §2.1 (uint32-BE length + UTF-8 body)",
+  "description": "Vectors for CRYPTO_SPEC §2.1's length-prefixed encoding (uint32-BE length + UTF-8 body)",
   "cases": [
     {
       "name": "ambiguity-ab-c",
       "fields": ["ab", "c"],
       "expected_hex": "0000000261620000000163",
-      "note": "Identical to the following ambiguity-a-bc under naive string concatenation, but the point is that they differ under LP"
+      "note": "The point: identical to the next ambiguity-a-bc under raw string concatenation, but different under LP"
     },
     {
       "name": "ambiguity-a-bc",
@@ -16,13 +16,13 @@
       "name": "empty-field",
       "fields": [""],
       "expected_hex": "00000000",
-      "note": "An empty field is just 00000000"
+      "note": "an empty field is just 00000000"
     },
     {
       "name": "empty-list",
       "fields": [],
       "expected_hex": "",
-      "note": "Zero fields produce the empty byte string"
+      "note": "zero fields = the empty byte string"
     },
     {
       "name": "utf8-multibyte",
@@ -34,13 +34,13 @@
       "name": "number-decimal",
       "fields": ["epoch", "42"],
       "expected_hex": "0000000565706f6368000000023432",
-      "note": "Numbers are decimal-stringified (42 → \"42\")"
+      "note": "numbers are stringified in decimal (42 → \"42\")"
     },
     {
       "name": "aad-shape-example",
       "fields": ["maruhi/v1", "proj-0001", "env-prod-0001", "3", "var-database-url-0001", "7"],
       "expected_hex": "000000096d61727568692f76310000000970726f6a2d303030310000000d656e762d70726f642d303030310000000133000000157661722d64617461626173652d75726c2d303030310000000137",
-      "note": "The same byte string as the AAD of the basic vector in variable-encryption.json"
+      "note": "the same byte string as the AAD of variable-encryption.json's basic vector"
     }
   ]
 }

@@ -23,7 +23,7 @@
       "base": "basic",
       "decrypt_aad_hex": "000000176d61727568692f76312f7265636f766572792d7772617000000010757365722d6d656d6265722d30303032",
       "must_fail": true,
-      "note": "Transplanting to another user's key blob fails decryption"
+      "note": "a transplant to another user's key blob fails decryption"
     },
     {
       "name": "ciphertext-bit-flip",
@@ -36,7 +36,7 @@
       "base": "basic",
       "decrypt_kek_hex": "11689ac60a4daa092d374dc9baac56ff3283b1085829fb345773860644f4c343",
       "must_fail": true,
-      "note": "A non-empty salt yields a different KEK and fails decryption (pins the salt = empty rule)"
+      "note": "a non-empty salt produces a different KEK and fails decryption (pins the salt = empty provision)"
     }
   ]
 }
