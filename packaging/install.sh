@@ -7,12 +7,12 @@
 #
 # Design (docs/adr/0015-cli-distribution.md / README.md):
 # - The only external access is fetching from github.com. No telemetry
-#   or outbound traffic (CLAUDE.md's "does not say")
+#   or outbound traffic (CLAUDE.md's "say nothing")
 # - SHA-256 verification against checksums.txt is mandatory; nothing
 #   is written to the install destination until verification passes.
 #   On a mid-way failure it exits non-zero leaving no partial files
 # - Never says "signature verification": checksums.txt is unsigned at
-#   this point and the completeness guarantee rests solely on TLS to
+#   this point and the integrity guarantee rests solely on TLS to
 #   github.com. It does not pretend to verify what is not there
 #   (signature support is on the ROADMAP)
 # - `mh` is created as a relative symlink to maruhi (ADR-0015

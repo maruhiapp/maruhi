@@ -552,7 +552,7 @@ describe("web e2e: serving topology (W2 rulings BM/BT — combined worker)", () 
   });
 });
 
-describe("web e2e: read dashboard (W2 — S3〜S7, mocked API via page.route)", () => {
+describe("web e2e: read dashboard (W2 — S3-S7, mocked API via page.route)", () => {
   it("keeps every mocked fixture wire-valid against the api-schema contracts (ruling BV)", () => {
     // Type conformance (tsc) sees no runtime constraints like hex
     // length or patterns. Decode each fixture against the real Schemas
