@@ -1,6 +1,8 @@
-// CRYPTO_SPEC §6 のチェック(negative + 境界の positive): 改竄・移植・順序入替
-// (must_fail)、認可系ベクター(署名は有効だが §6.2 の規則で拒否)、フレーミング・
-// 意味検証の失敗系、および合意規則の許容側の境界(valid_appends)。
+// Checks for CRYPTO_SPEC §6 (negatives + boundary positives): tampering,
+// transplanting, reordering (must_fail), authorization vectors (valid
+// signatures rejected by the §6.2 rules), framing and semantic verification
+// failures, and the permissive-side boundaries of the consensus rules
+// (valid_appends).
 
 import {
   canonicalChainSignedBytes,
@@ -53,7 +55,7 @@ function negativeByName(name: string) {
   return vectorNegatives.find((n) => n.name === name);
 }
 
-/** ベクター固定鍵(欠落はフィクスチャ破損 = throw。entryAt と同じ流儀)。 */
+/** Vector-fixed keys (missing = fixture corruption → throw. Same convention as entryAt). */
 function keysOf(userId: string) {
   const keys = vectorKeys[userId];
   if (keys === undefined) {
@@ -66,11 +68,11 @@ interface TamperVariant {
   readonly name: string;
   readonly entry: ChainEntry;
   readonly expect: string;
-  /** base エントリの派生チェーン(extended_chains のキー。無指定 = 正規チェーン)。 */
+  /** The base entry's derived chain (an extended_chains key; unset = the canonical chain). */
   readonly chain?: string;
 }
 
-/** 期待した op のベクターエントリ(不一致はフィクスチャ破損 = throw)。 */
+/** The vector entry of the expected op (mismatch = fixture corruption → throw). */
 function entryOfOp<K extends ChainEntry["op"]>(seq: number, op: K): ChainEntry & { op: K } {
   const entry = entryAt(seq);
   if (entry.op !== op) {
@@ -79,7 +81,7 @@ function entryOfOp<K extends ChainEntry["op"]>(seq: number, op: K): ChainEntry &
   return entry as ChainEntry & { op: K };
 }
 
-/** 派生チェーンの期待した op のエントリ(不一致・欠落はフィクスチャ破損 = throw)。 */
+/** The expected-op entry of a derived chain (mismatch/missing = fixture corruption → throw). */
 function extendedEntryOfOp<K extends ChainEntry["op"]>(
   chainName: string,
   seq: number,
@@ -96,7 +98,7 @@ function extendedEntryOfOp<K extends ChainEntry["op"]>(
   return entry as ChainEntry & { op: K };
 }
 
-/** 派生チェーン上の seq の直前までのプレフィックス(base + seq 未満の派生エントリ)。 */
+/** Prefix of a derived chain up to just before seq (base + derived entries below seq). */
 function extendedPrefix(chainName: string, seq: number): readonly ChainEntry[] {
   const extended = vectorExtendedChains[chainName];
   if (extended === undefined) {
@@ -108,7 +110,7 @@ function extendedPrefix(chainName: string, seq: number): readonly ChainEntry[] {
   ];
 }
 
-/** ベクターの (environment, epoch) のコミットメント(欠落はフィクスチャ破損 = throw)。 */
+/** The vector's (environment, epoch) commitment (missing = fixture corruption → throw). */
 function vectorCommitmentOf(environmentId: string, epoch: number): string {
   const commitment = vectorEnvironmentDeks[environmentId]?.[String(epoch)]?.dek_commitment_hex;
   if (commitment === undefined) {
@@ -117,7 +119,7 @@ function vectorCommitmentOf(environmentId: string, epoch: number): string {
   return commitment;
 }
 
-/** 改竄済み payload の typed 変種。canonical bytes がベクターの negative と一致するはず */
+/** Typed variants with tampered payloads; the canonical bytes should match the vector negatives */
 function payloadTamperVariants(): readonly TamperVariant[] {
   const e2 = entryOfOp(2, "add_member");
   const eChange = entryOfOp(7, "change_role");
@@ -146,10 +148,10 @@ function payloadTamperVariants(): readonly TamperVariant[] {
   ];
 }
 
-/** add-device-tampered-enc-pub が差し替える未登録のダミー enc 公開鍵(ベクターの payload と一致)。 */
+/** The unregistered dummy enc public key that add-device-tampered-enc-pub substitutes (matches the vector payload). */
 const FRESH_DEVICE_ENC_PUB_HEX = "1349ac6a06c18c9fb1cc6f15b1907ca645b45fe524716d690bb29f354dffa76e";
 
-/** DK(端末鍵 — 2026-09-19)の payload 改竄変種(派生チェーン device-ops の seq 25 / 27 / 35 / 37 が base)。 */
+/** Payload-tampered variants for DK (device keys — 2026-09-19) (based on seq 25 / 27 / 35 / 37 of the derived chain device-ops). */
 function deviceTamperVariants(): readonly TamperVariant[] {
   const chain = "device-ops";
   const eReserve = extendedEntryOfOp(chain, 25, "add_device");
@@ -157,7 +159,7 @@ function deviceTamperVariants(): readonly TamperVariant[] {
   const eRevokeSelf = extendedEntryOfOp(chain, 35, "revoke_device");
   const eRevokeOther = extendedEntryOfOp(chain, 37, "revoke_device");
   return [
-    // cap(role_cap / scope)は署名対象 — 上限の付け替え対策
+    // cap (role_cap / scope) is signed — guards against relabeling the cap
     {
       name: "add-device-tampered-role-cap",
       entry: { ...eCiBox, payload: { ...eCiBox.payload, roleCap: "owner" } },
@@ -173,7 +175,8 @@ function deviceTamperVariants(): readonly TamperVariant[] {
       expect: "bad-signature",
       chain,
     },
-    // 端末 scope の入れ子 LP の順序も署名対象(add_member の scope と同型)
+    // The order of a device scope's nested LP is also signed (same shape as
+    // add_member's scope)
     {
       name: "add-device-scope-reorder",
       entry: {
@@ -186,14 +189,16 @@ function deviceTamperVariants(): readonly TamperVariant[] {
       expect: "bad-signature",
       chain,
     },
-    // 登録する鍵は署名対象(サーバーによる鍵のすり替え対策)
+    // The registered key is signed (guards against a server swapping the
+    // key)
     {
       name: "add-device-tampered-enc-pub",
       entry: { ...eReserve, payload: { ...eReserve.payload, encPubHex: FRESH_DEVICE_ENC_PUB_HEX } },
       expect: "bad-signature",
       chain,
     },
-    // 失効 FP リストの順序も署名対象(生成は昇順 SHOULD・検証は集合)
+    // The order of the revocation FP list is also signed (generators SHOULD
+    // emit ascending; verification is set-based)
     {
       name: "revoke-device-fp-reorder",
       entry: {
@@ -218,7 +223,7 @@ function deviceTamperVariants(): readonly TamperVariant[] {
   ];
 }
 
-/** ES(scope)/ PF1(四眼)の payload 改竄変種(2026-09-14 — 正規 seq 13〜22 が base)。 */
+/** Payload-tampered variants for ES (scope) / PF1 (four-eyes) (2026-09-14 — based on canonical seq 13-22). */
 function scopeAndApprovalTamperVariants(): readonly TamperVariant[] {
   const eDevMember = entryOfOp(13, "add_member");
   const eDevAdmin = entryOfOp(14, "add_member");
@@ -233,7 +238,8 @@ function scopeAndApprovalTamperVariants(): readonly TamperVariant[] {
   const flippedHash = fromHex(eApprove.payload.proposalHashHex);
   flippedHash[0] = (flippedHash[0] ?? 0) ^ 0x01;
   return [
-    // scope_environments の順序も署名対象(入れ子 LP — grant_server の scope と同型)
+    // The order of scope_environments is also signed (nested LP — same
+    // shape as grant_server's scope)
     {
       name: "add-member-scope-reorder",
       entry: {
@@ -245,7 +251,8 @@ function scopeAndApprovalTamperVariants(): readonly TamperVariant[] {
       },
       expect: "bad-signature",
     },
-    // scope_kind の付け替え(listed{dev} → all)は付与範囲の付け替え = 署名失敗
+    // Relabeling scope_kind (listed{dev} → all) relabels the granted range
+    // = signature failure
     {
       name: "add-member-scope-relabel-all",
       entry: {
@@ -259,7 +266,8 @@ function scopeAndApprovalTamperVariants(): readonly TamperVariant[] {
       entry: { ...eWiden, payload: { ...eWiden.payload, scopeEnvironmentIds: ["env-dev-0002"] } },
       expect: "bad-signature",
     },
-    // ops の順序も署名対象(生成は昇順 SHOULD・検証は集合)
+    // The order of ops is also signed (generators SHOULD emit ascending;
+    // verification is set-based)
     {
       name: "policy-ops-reorder",
       entry: { ...ePolicy, payload: { ...ePolicy.payload, ops: ePolicy.payload.ops.toReversed() } },
@@ -270,7 +278,7 @@ function scopeAndApprovalTamperVariants(): readonly TamperVariant[] {
       entry: { ...ePolicy, payload: { ...ePolicy.payload, requiredApprovals: 3 } },
       expect: "bad-signature",
     },
-    // 内側 payload(inner_payload_lp_hex)と期限は署名対象
+    // The inner payload (inner_payload_lp_hex) and the expiry are signed
     {
       name: "propose-tampered-inner-payload",
       entry: {
@@ -326,7 +334,8 @@ function legacyPayloadTamperVariants(
       },
       expect: "bad-signature",
     },
-    // lease_policy の順序(要素・制約とも)も署名対象(§6.2)
+    // The order of lease_policy (both elements and constraints) is also
+    // signed (§6.2)
     {
       name: "grant-server-lease-policy-reorder",
       entry: {
@@ -360,7 +369,8 @@ function legacyPayloadTamperVariants(
       entry: { ...eRevoke, payload: { serverKeyFingerprintHex: toHex(flipped) } },
       expect: "bad-signature",
     },
-    // dek_commitment_hex も署名対象(§5.2): 差し替えは検証失敗
+    // dek_commitment_hex is also signed (§5.2): substitution fails
+    // verification
     {
       name: "create-env-tampered-commitment",
       entry: { ...eCreate, payload: { ...eCreate.payload, dekCommitmentHex: freshCommitment } },
@@ -374,7 +384,7 @@ function legacyPayloadTamperVariants(
   ];
 }
 
-/** 署名・prev_hash を差し替えた変種(payload は元のまま) */
+/** Variants with the signature / prev_hash substituted (payload untouched) */
 function headerTamperVariants(): readonly TamperVariant[] {
   const e3 = entryAt(3);
   return [
@@ -395,14 +405,16 @@ function headerTamperVariants(): readonly TamperVariant[] {
 }
 
 /**
- * kind なし(暗号検証系)negative の網羅ガード: ベクター再生成で negative が
- * 増えたとき、名前ハードコードの検査(payloadTamperVariants 等)が黙って
- * 新規分を落とさないよう、全 name が検査済み集合に含まれることを固定する。
+ * Coverage guard for kind-less (crypto-verification) negatives: when vector
+ * regeneration adds new negatives, pins that every name belongs to the
+ * covered set so that the name-hardcoded checks (payloadTamperVariants etc.)
+ * do not silently drop the newcomers.
  */
 function tamperCoverageCheck(c: Checks, covered: ReadonlySet<string>): void {
-  // kind の語彙は undefined(暗号検証系 — 本関数の網羅対象)と "authorization"
-  // (crypto / server の authorization スイープが全件を舐める)の 2 つのみ。
-  // 第三の kind が導入されると両方のふるいから静かに漏れるため、語彙自体を固定する
+  // The kind vocabulary has only two values: undefined (crypto-verification
+  // — the coverage target of this function) and "authorization" (the
+  // authorization sweeps of crypto / server cover every one). A third kind
+  // would quietly escape both sieves, so pin the vocabulary itself
   const unknownKinds = vectorNegatives
     .filter((negative) => negative.kind !== undefined && negative.kind !== "authorization")
     .map((negative) => negative.name);
@@ -430,9 +442,11 @@ async function tamperedChecks(c: Checks): Promise<void> {
     new Set([
       ...payloadVariants.map((variant) => variant.name),
       ...headerVariants.map((variant) => variant.name),
-      // bytesLevelChecks が担う 12 件(この実装からは生成されないバイト列)
+      // The 12 covered by bytesLevelChecks (byte strings this implementation
+      // cannot produce)
       ...BYTES_LEVEL_NEGATIVES,
-      // checkpointTamperChecks が担う 1 件(派生チェーンのエントリが base)
+      // The 1 covered by checkpointTamperChecks (based on a derived-chain
+      // entry)
       "checkpoint-tampered-environments",
     ]),
   );
@@ -442,7 +456,8 @@ async function tamperedChecks(c: Checks): Promise<void> {
       c.push(`chain negative: ${variant.name}`, false, "vector missing");
       continue;
     }
-    // payload 改竄系は「改竄後の正規化バイト列」がベクターと一致することも確認する
+    // For payload tampering, also confirm the post-tamper canonical byte
+    // string matches the vector
     const canonicalMatches =
       vector.signed_bytes_hex === undefined ||
       variant.name === "wrong-signer" ||
@@ -459,7 +474,7 @@ async function tamperedChecks(c: Checks): Promise<void> {
   }
 }
 
-/** bytes-level negative の base エントリ(chain 指定つきは派生チェーンから引く)。 */
+/** Base entry of a bytes-level negative (chain-tagged ones are pulled from the derived chain). */
 function bytesLevelBaseEntry(chainName: string | undefined, baseSeq: number): ChainEntry {
   if (chainName === undefined) {
     return entryAt(baseSeq);
@@ -472,15 +487,19 @@ function bytesLevelBaseEntry(chainName: string | undefined, baseSeq: number): Ch
   return toTypedEntry(raw);
 }
 
-// 正規化の順序・入れ子 LP を崩したバイト列(この実装からは生成されない):
-// lease-policy-flat-concat は 3 段入れ子の平坦化、lease-policy-dropped は
-// 旧 3 フィールド形式(4 フィールドが正規形であることの固定 — §6.2)、
-// checkpoint-environments-flat-concat は環境タプルの入れ子 LP の平坦化(§6.2)。
-// 2026-09-14 ES / PF1: *-scope-dropped は scope 2 フィールドを欠く旧形式(新形式が
-// 正規形であることの固定 — 互換受理なし)、*-flat-concat は scope / ops の入れ子 LP の
-// 平坦化、propose-inner-payload-flat は内側 payload を外側 LP に展開した形。
-// 2026-09-19 DK: add-device-scope-flat-concat / revoke-device-fp-flat-concat は端末 scope /
-// 失効 FP リストの入れ子 LP の平坦化(派生チェーン device-ops が base)
+// Byte strings that break canonicalization order / nested LP (this
+// implementation cannot produce them):
+// lease-policy-flat-concat flattens a 3-level nest; lease-policy-dropped is
+// the old 3-field form (pins that the 4-field form is canonical — §6.2);
+// checkpoint-environments-flat-concat flattens the environment tuples'
+// nested LP (§6.2).
+// 2026-09-14 ES / PF1: *-scope-dropped are old forms lacking the 2 scope
+// fields (pins that the new form is canonical — no compatibility
+// acceptance); *-flat-concat flatten the scope / ops nested LP;
+// propose-inner-payload-flat splices the inner payload into the outer LP.
+// 2026-09-19 DK: add-device-scope-flat-concat / revoke-device-fp-flat-concat
+// flatten the device-scope / revocation-FP-list nested LP (based on the
+// derived chain device-ops)
 const BYTES_LEVEL_NEGATIVES: readonly string[] = [
   "field-order-swap",
   "grant-server-scope-flat-concat",
@@ -497,7 +516,8 @@ const BYTES_LEVEL_NEGATIVES: readonly string[] = [
 ];
 
 async function bytesLevelChecks(c: Checks): Promise<void> {
-  // 崩したバイト列は canonical bytes と不一致で、元の署名も通らないことを確認する
+  // Confirm the broken byte string differs from the canonical bytes and
+  // that the original signature does not verify either
   for (const name of BYTES_LEVEL_NEGATIVES) {
     const vector = negativeByName(name);
     if (
@@ -529,11 +549,12 @@ async function bytesLevelChecks(c: Checks): Promise<void> {
 }
 
 /**
- * checkpoint の payload 改竄 negative: 派生チェーン(checkpoint-baseline)の
- * seq 13 を base に、環境タプルの manifest_version を書き換えた typed 変種の
- * 正規化バイト列がベクターと一致し、元の署名で bad-signature になることを固定する
- * (payloadTamperVariants の派生チェーン版 — 正規 12 エントリに checkpoint op が
- * 存在しないため base をベクターの chain フィールドで引く)。
+ * checkpoint payload-tamper negative: based on seq 13 of the derived chain
+ * (checkpoint-baseline), pins that the canonical bytes of a typed variant
+ * with the environment tuple's manifest_version rewritten match the vector
+ * and that the original signature gives bad-signature (the derived-chain
+ * counterpart of payloadTamperVariants — the canonical 12 entries contain
+ * no checkpoint op, so the base is pulled via the vector's chain field).
  */
 async function checkpointTamperChecks(c: Checks): Promise<void> {
   const name = "checkpoint-tampered-environments";
@@ -555,7 +576,7 @@ async function checkpointTamperChecks(c: Checks): Promise<void> {
   );
 }
 
-/** 認可 negative の前提チェーン: 正規プレフィックス、または extended_chains の派生。 */
+/** Prerequisite chain of an authorization negative: the canonical prefix or an extended_chains derived chain. */
 function authzPrefix(chainName: string | undefined, seq: number): readonly ChainEntry[] {
   if (chainName === undefined) {
     return typedEntries.slice(0, seq - 1);
@@ -571,7 +592,8 @@ function authzPrefix(chainName: string | undefined, seq: number): readonly Chain
 }
 
 async function authorizationChecks(c: Checks): Promise<void> {
-  // kind = "authorization": 署名・連鎖は有効で、§6.2 の権限規則のみで拒否すべき
+  // kind = "authorization": signature and chaining are valid; must be
+  // rejected only by the §6.2 authorization rules
   for (const vector of vectorNegatives) {
     if (vector.kind !== "authorization" || vector.entry === undefined) {
       continue;
@@ -587,13 +609,16 @@ async function authorizationChecks(c: Checks): Promise<void> {
 }
 
 async function extendedChainChecks(c: Checks): Promise<void> {
-  // extended_chains: 派生チェーン自体が受理されること(許容側の境界)。
-  // server-key-member-sock は「add_member の鍵一意性の索引は現メンバーの鍵のみで、
-  // 有効 grant のサーバー鍵は対象外」という §6.2 の線引きを固定する。
-  // checkpoint-baseline は同一 manifest_version の正当な再公証(非後退の等号側)と
-  // 「環境ごとの最新チェックポイント」導出(expected_checkpoints)を固定する。
-  // 四眼系(proposal-* / stale-* / proposer-* / policy-*)は方針・pending 提案・
-  // 票の再集計(離脱済み投票者の票は数えない — 原則 2)の導出状態を固定する
+  // extended_chains: the derived chain itself is accepted (the permissive
+  // boundary). server-key-member-sock pins the §6.2 line that "add_member's
+  // key-uniqueness index covers only current members' keys; active-grant
+  // server keys are out of scope". checkpoint-baseline pins a legitimate
+  // re-notarization at the same manifest_version (the equality side of
+  // non-regression) and the "latest checkpoint per environment" derivation
+  // (expected_checkpoints). The four-eyes family (proposal-* / stale-* /
+  // proposer-* / policy-*) pins the derived state of the policy, pending
+  // proposals, and vote re-tallying (votes of departed voters are not
+  // counted — principle 2)
   for (const [name, extended] of Object.entries(vectorExtendedChains)) {
     const chain = [
       ...typedEntries.slice(0, extended.base_seq),
@@ -646,7 +671,7 @@ async function signAs(userId: string, entry: UnsignedChainEntry): Promise<ChainE
   return signed.ok ? signed.value : undefined;
 }
 
-/** 正規チェーン末尾(seq 24)に続く追記エントリの seq。 */
+/** seq of an append entry following the canonical chain end (seq 24). */
 const NEXT_SEQ = typedEntries.length + 1;
 
 function nextEntryBase(): Omit<UnsignedChainEntry, "op" | "payload"> {
@@ -658,14 +683,15 @@ function nextEntryBase(): Omit<UnsignedChainEntry, "op" | "payload"> {
   return {
     suite: "maruhi/v1",
     seq: NEXT_SEQ,
-    // prev はベクター最終エントリのハッシュ(chain.ts の positive で固定済み)
+    // prev is the vector's final-entry hash (already pinned by the
+    // chain.ts positives)
     prevHashHex: "",
     actor: { userId: "user-owner-0001", keyFingerprintHex: owner.key_fingerprint_hex },
     timestampMs: head.timestampMs + 1000,
   };
 }
 
-/** テスト内で追記するエントリ用の形式的に有効なコミットメント(内容は §5.2 の照合対象で、チェーン検証は形式のみ検査する)。 */
+/** A formally valid commitment for entries appended inside the test (the content is the §5.2 comparison target; chain verification checks form only). */
 const DUMMY_COMMITMENT_HEX = "ab".repeat(32);
 
 type SemanticBase = Omit<UnsignedChainEntry, "op" | "payload">;
@@ -707,10 +733,10 @@ function semanticCases(
       expect: "duplicate-member",
     },
     {
-      // 検査順序の固定(§6.2): 対象 user_id と鍵の両方が重複する場合、
-      // user_id 重複(duplicate-member)が鍵重複(duplicate-member-key)より
-      // 先に判定される(owner の鍵一式 = 現メンバーの鍵を流用しても理由は
-      // duplicate-member)
+      // Pin the check order (§6.2): when both the target user_id and the
+      // key are duplicates, the user_id duplicate (duplicate-member) is
+      // judged before the key duplicate (duplicate-member-key) (reusing the
+      // owner's full key set still reports duplicate-member)
       name: "add_member duplicate user id wins over duplicate key",
       entry: {
         ...base,
@@ -769,7 +795,7 @@ async function appendRotation(
   return result.ok ? result.value : undefined;
 }
 
-/** 導出状態のメンバー集合が期待(user_id → role + scope)と一致するか。 */
+/** Whether the derived member set matches the expectation (user_id → role + scope). */
 function membersMatch(
   state: ChainState,
   expected: Readonly<Record<string, VectorMemberState>>,
@@ -778,8 +804,9 @@ function membersMatch(
 }
 
 /**
- * 導出状態の最新チェックポイント集合が期待と一致するか(§6.2 の導出状態 —
- * expected_checkpoints 無指定のベクターは検査対象外として通す)。
+ * Whether the derived latest-checkpoint set matches the expectation (§6.2
+ * derived state — vectors without expected_checkpoints pass as out of
+ * scope).
  */
 function checkpointsMatch(
   state: ChainState,
@@ -804,7 +831,7 @@ function checkpointsMatch(
   );
 }
 
-/** 導出状態の環境集合が期待(environment_id → 現エポック)と一致するか。 */
+/** Whether the derived environment set matches the expectation (environment_id → current epoch). */
 function environmentsMatch(state: ChainState, expected: Readonly<Record<string, string>>): boolean {
   return (
     state.environments.size === Object.keys(expected).length &&
@@ -815,7 +842,7 @@ function environmentsMatch(state: ChainState, expected: Readonly<Record<string, 
   );
 }
 
-/** 導出状態の有効 grant 集合が期待(scope + lease_policy 込み)と一致するか。 */
+/** Whether the derived active-grant set matches the expectation (including scope + lease_policy). */
 function serverGrantsMatch(
   state: ChainState,
   expected: Parameters<typeof serverGrantsMatchVector>[1],
@@ -823,15 +850,16 @@ function serverGrantsMatch(
   return serverGrantsMatchVector(state.serverGrants, expected);
 }
 
-/** valid_appends の 1 件: 接続先ヘッドへ追記して受理と導出状態(全軸)を固定する。 */
+/** One valid_appends entry: appended onto the attach-point head, pin acceptance and the derived state (all axes). */
 async function validAppendVectorCheck(
   c: Checks,
   append: (typeof vectorValidAppends)[number],
 ): Promise<void> {
   const entry = toTypedEntry(append.entry);
-  // 接続点は entry の seq が指す正規エントリ(または派生チェーンのヘッド)の直後
-  // (seq 25 = 末尾ヘッド、seq 10 = seq 9 ヘッドへの再 grant 追記 —
-  // regrant-lease-policy-revised、seq 20 = 方針確立前のヘッド 19 への追記)
+  // The attach point is right after the canonical entry (or derived-chain
+  // head) that the entry's seq points to (seq 25 = the terminal head, seq 10
+  // = a re-grant append onto the seq-9 head — regrant-lease-policy-revised,
+  // seq 20 = an append onto the pre-policy head 19)
   const result = await verifyChain([...authzPrefix(append.chain, entry.seq), entry]);
   c.push(
     `chain valid append: ${append.name}`,
@@ -846,15 +874,19 @@ async function validAppendVectorCheck(
 }
 
 async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<void> {
-  // 合意規則の許容側の境界をベクター(valid_appends)で固定する:
-  // (1) メンバー鍵一意性の禁止範囲は「現メンバー集合のみ」(§6.2)—
-  //     「履歴全体との重複禁止」を誤って実装した検証器はここで落ちる
-  // (2) 環境ライフサイクル(§6.2)— 未使用 ID の create_environment と
-  //     create 済み環境(エポック 1)への初回 rotate(new_epoch 2)は受理される
-  // (3) ES / PF1(2026-09-14)— listed の admin / member による scope 内の add /
-  //     remove / change / rotate / checkpoint、方針下の非対象 op の直接追記、
-  //     propose / withdraw の受理と、方針縮小・オフ後の直接追記(chain 指定 =
-  //     extended_chains の派生ヘッドへの追記)
+  // Pin the permissive-side boundaries of the consensus rules with the
+  // vectors (valid_appends):
+  // (1) Member key uniqueness is prohibited only within "the current member
+  //     set" (§6.2) — a verifier that wrongly implements "no duplication
+  //     across all history" fails here
+  // (2) Environment lifecycle (§6.2) — create_environment of an unused ID
+  //     and the first rotate (new_epoch 2) onto an already-created
+  //     environment (epoch 1) are accepted
+  // (3) ES / PF1 (2026-09-14) — in-scope add / remove / change / rotate /
+  //     checkpoint by listed-scope admin / member, direct append of an op
+  //     not targeted by the policy, acceptance of propose / withdraw, and
+  //     direct appends after the policy is narrowed or off (chain = append
+  //     onto the derived head of extended_chains)
   for (const append of vectorValidAppends) {
     await validAppendVectorCheck(c, append);
   }
@@ -862,9 +894,10 @@ async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<v
 }
 
 /**
- * 索引の再形成: 復帰(re-add)で鍵が現メンバー集合に戻った後は、同じ鍵での
- * 別 user_id の追加が再び duplicate-member-key になる(remove での索引削除と
- * add での再登録の両方向を閉じる)。
+ * Index re-formation: once re-add returns a key to the current member set,
+ * adding a different user_id with the same key is duplicate-member-key
+ * again (closes both directions — index removal on remove and
+ * re-registration on add).
  */
 async function duplicateKeyAfterReaddCheck(c: Checks, base: SemanticBase): Promise<void> {
   const readd = vectorValidAppends.find((a) => a.name === "readd-removed-member-same-key");
@@ -872,7 +905,8 @@ async function duplicateKeyAfterReaddCheck(c: Checks, base: SemanticBase): Promi
     c.push("chain semantic: duplicate key rejected again after re-add", false, "vector missing");
     return;
   }
-  // re-add ベクターは正規 seq 12 ヘッドへの追記(seq 13)なので、その直後に続ける
+  // The re-add vector is an append (seq 13) onto the canonical seq-12 head,
+  // so continue right after it
   const readdEntry = toTypedEntry(readd.entry);
   const memberKeys = keysOf("user-member-0002");
   const duplicated = await signAs("user-owner-0001", {
@@ -900,7 +934,7 @@ async function duplicateKeyAfterReaddCheck(c: Checks, base: SemanticBase): Promi
   );
 }
 
-/** 導出された環境状態が期待(現エポック・作成 seq・エポック開始 seq)と一致するか。 */
+/** Whether the derived environment state matches the expectation (current epoch, created seq, epoch-start seqs). */
 function environmentStateIs(
   environment: EnvironmentChainState | undefined,
   expected: {
@@ -921,8 +955,8 @@ function environmentStateIs(
 }
 
 async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
-  // 正しい追記(admin による rotate_epoch。現エポック 2 → 3)は検証を通り、
-  // 状態(現エポック・エポック開始 seq・コミットメント)が更新される
+  // A correct append (rotate_epoch by admin; current epoch 2 → 3) verifies
+  // and the state (current epoch, epoch-start seq, commitment) updates
   const extended = await appendRotation(base, "env-prod-0001", 3);
   const prod = extended?.environments.get("env-prod-0001");
   c.push(
@@ -932,8 +966,9 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
       prod?.dekCommitments.get(3) === DUMMY_COMMITMENT_HEX,
   );
 
-  // create_environment → rotate_epoch の 2 エントリ連鎖: 作成直後の環境の
-  // エポック開始 seq(1 = create の seq、2 = rotate の seq)まで導出される
+  // A create_environment → rotate_epoch two-entry chain: the epoch-start
+  // seqs of a freshly created environment are derived (1 = the create's seq,
+  // 2 = the rotate's seq)
   const create = await signAs("user-owner-0001", {
     ...base,
     op: "create_environment",
@@ -974,8 +1009,8 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
 }
 
 /**
- * 実行時型が TS 型と乖離した悪意ある/破損エントリ(サーバー配布 JSON 想定)は
- * 例外でなく invalid-payload になる
+ * A malicious/corrupt entry whose runtime types diverge from the TS types
+ * (as in server-distributed JSON) becomes invalid-payload, not an exception
  */
 async function malformedInputChecks(c: Checks): Promise<void> {
   const full = await verifyChain(typedEntries);
@@ -988,8 +1023,9 @@ async function malformedInputChecks(c: Checks): Promise<void> {
     c.push("chain malformed: setup", false, "seq 9 must be grant_server");
     return;
   }
-  // signatureHex は形状として妥当な 64 バイトのダミーにする: 短い値だと全ケースが
-  // 署名長の shape 検査で短絡し、各ケースが意図したフィールドを検査しなくなる
+  // signatureHex is a shape-valid 64-byte dummy: a shorter value would
+  // short-circuit every case at the signature-length shape check, so the
+  // cases would stop testing their intended fields
   const base = {
     ...nextEntryBase(),
     prevHashHex: full.value.headHashHex,
@@ -1098,7 +1134,8 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         payload: { targetUserId: "x" },
       },
     },
-    // checkpoint payload(§6.2): 実行時型の乖離も invalid-payload に落とす
+    // checkpoint payload (§6.2): runtime-type divergence also lands on
+    // invalid-payload
     {
       name: "checkpoint environments is not an array",
       entry: {
@@ -1160,8 +1197,9 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         },
       },
     },
-    // scope(§6.2 — 2026-09-14 ES)/ 四眼(PF1)の payload 構造: 実行時型の乖離も
-    // invalid-payload に落とす(入れ子 payload の再帰も throw しない)
+    // Payload shapes for scope (§6.2 — 2026-09-14 ES) / four-eyes (PF1):
+    // runtime-type divergence also lands on invalid-payload (recursion into
+    // nested payloads does not throw either)
     {
       name: "add_member scope kind is not a string",
       entry: {
@@ -1245,7 +1283,8 @@ async function malformedInputChecks(c: Checks): Promise<void> {
       name: "withdraw payload missing",
       entry: { ...base, op: "withdraw", payload: undefined },
     },
-    // 端末鍵(§6.2 — 2026-09-19 DK)の payload 構造: 実行時型の乖離も invalid-payload に落とす
+    // Payload shapes for device keys (§6.2 — 2026-09-19 DK): runtime-type
+    // divergence also lands on invalid-payload
     {
       name: "add_device role cap is a number",
       entry: {
@@ -1290,9 +1329,10 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         payload: { targetUserId: "user-owner-0001", deviceFingerprintsHex: [42] },
       },
     },
-    // 未知の op: PAYLOAD_SHAPES の表引きが membership を確認せずに
-    // 呼び出すと TypeError で検証が中断する。「不正入力は invalid-payload を返し
-    // throw しない」という公開 verifier の契約(defense-in-depth)をここで固定する
+    // Unknown op: if the PAYLOAD_SHAPES table lookup is called without
+    // confirming membership, verification aborts with a TypeError. Pin the
+    // public verifier's contract here: "invalid input returns
+    // invalid-payload and never throws" (defense-in-depth)
     {
       name: "unknown op",
       entry: { ...base, op: "self_destruct", payload: {} },
@@ -1310,7 +1350,7 @@ async function malformedInputChecks(c: Checks): Promise<void> {
     { name: "entry slot is a string", entry: "not-an-entry" },
   ];
   for (const item of cases) {
-    // 例外を投げず invalid-payload の CryptoResult で返ることを検査する
+    // Verify it returns an invalid-payload CryptoResult without throwing
     try {
       const result = await verifyChain([...typedEntries, item.entry as ChainEntry]);
       c.push(`chain malformed: ${item.name}`, failsWith(result, NEXT_SEQ, "invalid-payload"));
@@ -1321,8 +1361,9 @@ async function malformedInputChecks(c: Checks): Promise<void> {
 }
 
 async function regrantWideningCheck(c: Checks): Promise<void> {
-  // 再 grant のスコープ拡大(旧 ⊆ 新)は受理され、スコープが更新される。
-  // 縮小の拒否(grant-scope-narrowed)はベクター authz-grant-scope-narrowed が固定する
+  // A scope-widening re-grant (old ⊆ new) is accepted and the scope is
+  // updated. The narrowing rejection (grant-scope-narrowed) is pinned by
+  // the vector authz-grant-scope-narrowed
   const check = "chain semantic: re-grant widening accepted";
   const eGrant = entryAt(9);
   const owner = vectorKeys["user-owner-0001"];
@@ -1356,13 +1397,14 @@ async function regrantWideningCheck(c: Checks): Promise<void> {
     check,
     grant !== undefined &&
       grant.scopeEnvironmentIds.length === 3 &&
-      // 二層判定の独立: scope だけ触った再 grant でも lease_policy は新 payload の値
-      // (ここでは元と同じ 2 要素)に置換される
+      // Independence of the two-layer rule: even a re-grant touching only
+      // the scope replaces lease_policy with the new payload's value (here
+      // the same 2 elements as before)
       grant.leasePolicy.length === eGrant.payload.leasePolicy.length,
   );
 }
 
-/** フィールドサイズ上限(§6.1)の境界: 1024 バイトちょうどは受理、バイト数基準で判定 */
+/** Boundary of the field size limit (§6.1): exactly 1024 bytes is accepted; judged by byte count */
 async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
   const full = await verifyChain(typedEntries);
   if (!full.ok) {
@@ -1375,7 +1417,7 @@ async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
     keyFingerprintHex: vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? "",
   };
 
-  // reason がちょうど 1024 バイト(ASCII)→ 受理される
+  // A reason of exactly 1024 bytes (ASCII) → accepted
   const atLimit = await signAs("user-admin-0003", {
     ...base,
     actor: adminActor,
@@ -1391,8 +1433,8 @@ async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
     atLimit === undefined ? undefined : await verifyChain([...typedEntries, atLimit]);
   c.push("chain field-size: 1024-byte reason accepted", accepted !== undefined && accepted.ok);
 
-  // ㊙(3 バイト)× 342 = 1026 バイト: コード単位数は 342 ≤ 1024 だが
-  // UTF-8 バイト数で超過 → 拒否(上限がバイト基準であることの固定)
+  // ㊙ (3 bytes) x 342 = 1026 bytes: 342 ≤ 1024 code units, but the UTF-8
+  // byte count exceeds → rejected (pins that the limit is byte-based)
   const multibyte = await signAs("user-admin-0003", {
     ...base,
     actor: adminActor,
@@ -1412,10 +1454,10 @@ async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
   );
 }
 
-/** 方針確立(seq 20)前の正規ヘッド — 四眼の対象 op を直接追記できる最後の時点。 */
+/** The canonical head before policy establishment (seq 20) — the last point where a four-eyes target op can be appended directly. */
 const PRE_POLICY_HEAD_SEQ = 19;
 
-/** 署名は正しいが意味的に不正なエントリ(vector 外の失敗系)を owner 鍵で作って検査 */
+/** Build correctly-signed but semantically invalid entries (failure cases outside the vectors) with the owner key and check them */
 async function semanticChecks(c: Checks): Promise<void> {
   const full = await verifyChain(typedEntries);
   if (!full.ok) {
@@ -1423,9 +1465,10 @@ async function semanticChecks(c: Checks): Promise<void> {
     return;
   }
   const base = { ...nextEntryBase(), prevHashHex: full.value.headHashHex };
-  // grant_server / remove_member は seq 20 以降は方針の対象(approval-required が
-  // role の直後に先行する — ベクター固定)なので、op 固有の理由は方針確立前の
-  // ヘッド 19 への追記で検査する
+  // grant_server / remove_member become policy targets at seq 20
+  // (approval-required precedes, right after role — pinned by the vectors),
+  // so op-specific reasons are checked by appending onto the pre-policy
+  // head 19
   const prePolicy = typedEntries.slice(0, PRE_POLICY_HEAD_SEQ);
   const prePolicyHead = prePolicy[prePolicy.length - 1];
   const prePolicyBase = {

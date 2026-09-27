@@ -1,16 +1,19 @@
-// CRYPTO_SPEC §5.1: DEK ラップの登録署名(Ed25519)。
+// CRYPTO_SPEC §5.1: the registration signature of a DEK wrap (Ed25519).
 // signed_bytes = LP("<suite>/dek-wrap-sig", project_id, environment_id, epoch,
 //                   recipient_user_id, recipient_enc_pub_hex, enc_hex,
 //                   ciphertext_hex, signer_user_id)
-// suite の束縛はドメイン文字列が担う(§5 の HPKE info と同型)。バイナリ列は
-// §6.2 grant_server の先例どおり hex 小文字文字列として LP に載せる。
-// signer_user_id は署名者自身の内部 user_id — 鍵流用による帰属の付け替えを
-// 署名自体で塞ぐ(§5.1。§6.2 のメンバー鍵一意性が鍵重複メンバーの成立自体を
-// 禁止した後も、独立の防衛層として維持する)。
-// テストベクター: test-vectors/dek-wrap-signature.json
+// The suite binding is carried by the domain string (same shape as the §5 HPKE
+// info). Binary values go onto the LP as lowercase hex strings, per the §6.2
+// grant_server precedent.
+// signer_user_id is the signer's own internal user_id — the signature itself
+// closes off attribution swapping via key reuse (§5.1. Kept as an independent
+// defense layer even after §6.2's member-key uniqueness banned duplicate-key
+// members from existing at all).
+// Test vectors: test-vectors/dek-wrap-signature.json
 //
-// 署名の意味論は帰属であり鮮度証明ではない(タイムスタンプ・ノンスを含めない —
-// §5.1)。既存部品(Ed25519 + §2.1 LP エンコーダ)のみで構成する。
+// The signature's semantics are attribution, not a freshness proof (no
+// timestamp or nonce — §5.1). Built from existing parts only (Ed25519 + the
+// §2.1 LP encoder).
 
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
@@ -43,11 +46,12 @@ export interface DekWrapSignatureContext {
   readonly signerUserId: string;
 }
 
-// 署名対象の構造検証: epoch は LP エンコーダの前提(非負の安全な整数)、
-// hex フィールドは小文字・固定長(大文字 hex を許すと同一ラップに複数の
-// 正規形が生まれ、署名の一意性が壊れる)。suite / signer_user_id は非空
-// (サーバー経路では Schema / 認証がより強く検証するが、公開 API として
-// 空文字のドメイン・署名者を弾く)
+// Structure validation of the signing target: epoch is validated against the LP
+// encoder's precondition (non-negative safe integer), and hex fields are
+// lowercase fixed-length (allowing uppercase hex would give one wrap multiple
+// normalized forms and break signature uniqueness). suite / signer_user_id
+// must be non-empty (the server path validates more strongly via Schema /
+// authentication, but as a public API we reject empty domains / signers)
 function contextInvalidField(context: DekWrapSignatureContext): string | null {
   if (context.suite.length === 0) {
     return "context suite";

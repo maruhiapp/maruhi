@@ -1,25 +1,34 @@
-// CRYPTO_SPEC §6.5(2026-09-13 IV 改訂 — v2): 招待受諾の共同署名(Ed25519)。
+// CRYPTO_SPEC §6.5 (2026-09-13 IV revision — v2): the invite-acceptance
+// co-signature (Ed25519).
 // signed_bytes = LP("<suite>/invite-accept-v2", project_id, link_pub_hex,
 //                   invitee_user_id, invitee_enc_pub_hex, invitee_sig_pub_hex)
-// suite の束縛はドメイン文字列が担う(§5.1 と同型)。バイナリ列は hex 小文字
-// 文字列として LP に載せる(chain-entries の binary_encoding 規約)。
-// link_pub_hex = 招待ごとのリンク鍵(invite-link.ts — 招待者クライアントが種から
-// 導出し、種はリンクのフラグメントにのみ載る。サーバーは種を受け取らない)の公開鍵。
+// The suite binding is carried by the domain string (same shape as §5.1).
+// Binary values go onto the LP as lowercase hex strings (the binary_encoding
+// convention of chain-entries).
+// link_pub_hex = the public key of the per-invite link key (invite-link.ts —
+// the inviter's client derives it from a seed that rides only in the link's
+// fragment; the server never receives the seed).
 //
-// 同一バイト列に 2 つの署名を付ける:
-//   - 受諾署名(accept signature): 受諾者のチェーン sig 鍵。検証鍵は署名対象内の
-//     invitee_sig_pub_hex(自己束縛 — 検証鍵を署名対象外から与える形は「宣言鍵と
-//     検証鍵の不一致」を許すため作らない)。意味論は「この鍵ペアの保持者が、この
-//     招待に対してこの鍵で参加する意思を表明した」の帰属・文脈束縛
-//   - リンク署名(link signature): リンク鍵の秘密鍵。検証鍵は署名対象内の
-//     link_pub_hex(同じく自己束縛)。意味論は「リンクを持つ者がこの鍵での受諾を
-//     承認した」— サーバーはリンク秘密鍵を持たないため、受諾ブロックの鍵を差し替えて
-//     有効なリンク署名を作ることが暗号的に不可能になる(IV1 の本体)
-// 旧 v1(ドメイン "<suite>/invite-accept"、invite_token_hash_hex 束縛)は受け付けない
-// (互換経路を作らない 2026-09-13 所有者裁定。旧ドメイン文字列は negative
-// `legacy-domain` が検証失敗を固定する)。
-// チェーン有効性の合意規則には含めない(チェーン外の追加証跡 — §6.5)。
-// テストベクター: test-vectors/invite-accept-signature.json
+// The same byte string carries two signatures:
+//   - accept signature: the acceptor's chain sig key. The verification key is
+//     invitee_sig_pub_hex inside the signed data (self-binding — a form where
+//     the verification key were given from outside the signed data would
+//     permit a "declared key / verification key mismatch", so it does not
+//     exist). Semantics: the attribution and context binding of "the holder of
+//     this key pair declared the intent to join this invite under this key"
+//   - link signature: the link key's private key. The verification key is
+//     link_pub_hex inside the signed data (likewise self-binding). Semantics:
+//     "the holder of the link approved this acceptance under this key" —
+//     since the server does not hold the link private key, replacing the
+//     acceptance block's key while producing a valid link signature is
+//     cryptographically impossible (the substance of IV1)
+// The old v1 (domain "<suite>/invite-accept", invite_token_hash_hex binding)
+// is not accepted (the 2026-09-13 owner ruling that creates no compatibility
+// path; negative `legacy-domain` pins verification failure under the old
+// domain string).
+// Not part of the consensus rules of chain validity (additional evidence
+// outside the chain — §6.5).
+// Test vectors: test-vectors/invite-accept-signature.json
 
 import { decodeHex } from "./bytes.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
@@ -53,10 +62,12 @@ export interface InviteAcceptSignatureContext {
   readonly inviteeSigPubHex: string;
 }
 
-// 署名対象の構造検証: hex フィールドは小文字・固定長(大文字 hex を許すと
-// 同一受諾に複数の正規形が生まれ、署名の一意性が壊れる — validate.ts の規律)。
-// suite / invitee_user_id は非空。project_id は自由形式の bounded string
-// (ベクターは任意形式 — AUTH_SPEC §11-1 の ID 形式非依存と同じ姿勢)
+// Structure validation of the signing target: hex fields are lowercase
+// fixed-length (allowing uppercase hex would give one acceptance multiple
+// normalized forms and break signature uniqueness — the same discipline as
+// validate.ts). suite / invitee_user_id must be non-empty. project_id is a
+// free-form bounded string (the vectors are format-agnostic — the same
+// posture as AUTH_SPEC §11-1's independence from ID formats)
 function contextInvalidField(context: InviteAcceptSignatureContext): string | null {
   if (context.suite.length === 0) {
     return "context suite";
@@ -140,7 +151,7 @@ async function verifyDeclared(input: {
   if (field !== null) {
     return invalidInput(field);
   }
-  // contextInvalidField が hex 形式を保証済み(decodeHex は到達しない防衛線)
+  // contextInvalidField already guarantees the hex form (an unreachable defensive line for decodeHex)
   const keyBytes = decodeHex(input.declaredKeyHex);
   if (keyBytes === null) {
     return invalidInput(input.declaredField);

@@ -1,4 +1,4 @@
-// AUDIT_SPEC §5.1: 監査ヘッド累積ハッシュの正規形。
+// AUDIT_SPEC §5.1: the normalized form of the audit-head cumulative hash.
 //
 //   row_digest = lower_hex(SHA-256(LP(seq, row_id, server_ts, client_ts, event,
 //                                     actor_type, actor_user_id,
@@ -7,17 +7,19 @@
 //                                     environment_id, variable_id, epoch,
 //                                     version, chain_seq, payload)))
 //   h_n = lower_hex(SHA-256(LP("<suite>/audit-head", h_{n-1}, seq, row_digest)))
-//     (h_0 = 空文字列。h_{n-1} / row_digest は hex 小文字**文字列**として
-//      LP フィールドに載せる — audit-head.json が固定する一様表現)
+//     (h_0 = the empty string. h_{n-1} / row_digest go onto the LP field as
+//      lowercase hex **strings** — the uniform representation pinned by audit-head.json)
 //
-// - NULL 許容列(seq / server_ts / event / actor_type 以外の 13 列)は
-//   タグ付きバイト列: NULL = 0x00 の 1 バイト、非 NULL = 0x01 + 値のバイト列
-//   (NULL と空文字列を同一プリイメージにしない — §5.1)
-// - 数値は §2.1 の 10 進文字列化。payload は保存された TEXT のバイト列を
-//   そのまま使う(JSON 正規化を持ち込まない — §5.1)
-// - 生成側はプロジェクト DO(受理検証と GET /audit-head — AUTH_SPEC §16-2)、
-//   検証側は admin の突合(AUDIT_SPEC §6 — 後続の CLI ツール)。両者がこの
-//   1 実装を共有する。テストベクター: test-vectors/audit-head.json
+// - NULL-allowed columns (the 13 columns other than seq / server_ts / event /
+//   actor_type) are tagged byte strings: NULL = the single byte 0x00;
+//   non-NULL = 0x01 + the value's bytes
+//   (NULL and the empty string must not share a preimage — §5.1)
+// - Numbers use the §2.1 base-10 stringification. payload uses the stored
+//   TEXT's bytes as-is (no JSON normalization — §5.1)
+// - The producing side is the project DO (acceptance verification and
+//   GET /audit-head — AUTH_SPEC §16-2); the verifying side is the admin's
+//   cross-check (AUDIT_SPEC §6 — the follow-up CLI tool). Both share this
+//   single implementation. Test vectors: test-vectors/audit-head.json
 
 import { concatBytes, encodeHex, utf8Encode } from "./bytes.ts";
 import { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
@@ -58,7 +60,7 @@ function isCountingNumber(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
-/** タグ付きバイト列(NULL = 0x00 / 非 NULL = 0x01 + 値のバイト列 — §5.1)。 */
+/** A tagged byte string (NULL = 0x00 / non-NULL = 0x01 + the value's bytes — §5.1). */
 function taggedField(value: string | null): Uint8Array {
   if (value === null) {
     return Uint8Array.of(0x00);
@@ -78,7 +80,7 @@ function taggedNumberField(value: number | null, field: string): CryptoResult<Ui
 
 /**
  * Computes the canonical digest of one audit row (AUDIT_SPEC §5.1). Rejects
- * non-safe-integer numeric inputs (§2.1 の数値境界 — fail-closed).
+ * non-safe-integer numeric inputs (the §2.1 numeric bounds — fail-closed).
  */
 export async function computeAuditRowDigest(row: AuditHeadRow): Promise<CryptoResult<string>> {
   if (!isCountingNumber(row.seq) || row.seq < 1) {

@@ -1,17 +1,22 @@
-// テストベクターの独立検証スクリプト(使い捨てツール。製品コードではない)。
-// 生成系(pyca/cryptography、hpke-js)とは別の実装系で全ベクターを検証する:
+// Independent verification script for the test vectors (a disposable tool,
+// not product code). Verifies every vector with an implementation family
+// separate from the generators (pyca/cryptography, hpke-js):
 //   - encoding / variable-encryption / chain-entries / recovery-wrap → WebCrypto(Bun)
-//   - dek-wrap → panva hpke(製品実装が採用予定のライブラリ)で Open
-// これにより「期待値が正しいこと」と「実装予定スタックで再現できること」を両方確認する。
-// 実行: bun run verify_reference.mjs(このディレクトリで実行。exit 0 = 全検証通過)
+//   - dek-wrap → panva hpke (the library the product implementation will adopt) for Open
+// This confirms both "the expected values are correct" and "they
+// reproduce on the implementation stack we plan to ship".
+// Run: bun run verify_reference.mjs (run in this directory. exit 0 = all
+// checks passed)
 import { readFileSync } from "node:fs";
 
 import * as HPKE from "hpke";
 
 const read = (name) => JSON.parse(readFileSync(new URL(`../${name}`, import.meta.url), "utf8"));
-// 2026-09-20 DK: チェーン依存ベクターの参照チェーンは `chain`(省略 / "canonical" = 正規チェーン、
-// それ以外 = chain-entries.json の extended_chains の名前 — 正規プレフィックス + 派生エントリ)。
-// 署名鍵は (user_id, FP) で選ぶ(FP が端末を指す — `keys` の端末エントリは user_id 欄を持つ)
+// 2026-09-20 DK: a chain-dependent vector's reference chain is `chain`
+// (omitted / "canonical" = the canonical chain; anything else = a name in
+// chain-entries.json's extended_chains — canonical prefix + derived
+// entries). The signing key is selected by (user_id, FP) (the FP points at
+// a device — device entries in `keys` carry a user_id field)
 const chainHeadHash = (chain, chainName, seq) => {
   if (chainName === undefined || chainName === "canonical" || seq <= chain.entries.length) {
     return chain.entries[seq - 1].entry_hash_hex;
@@ -52,14 +57,17 @@ const check = (name, ok, detail = "") => {
   if (!ok) failures += 1;
 };
 
-// 正規化・署名のフィールド順は仕様のハードコードを正とし、ベクター JSON の
-// 宣言はそれとの一致を検査する(JSON 由来の順序で検証すると、宣言の改変ごと
-// 検証が通ってしまい、順序を独立に固定できない — session-15 レビュー③)。
-// チェーン payload の正規化フィールド順(CRYPTO_SPEC §6.1 / §6.2)
+// The canonicalization / signing field order is authoritative as
+// hardcoded from the spec, and the vector JSON's declaration is checked
+// for agreement with it (verifying in a JSON-derived order would pass
+// whenever the declaration is modified and could not pin the order
+// independently — session-15 review (3)).
+// Canonical field order of chain payloads (CRYPTO_SPEC §6.1 / §6.2)
 const PAYLOAD_FIELD_ORDER = {
   genesis: ["enc_pub_hex", "sig_pub_hex"],
-  // 2026-09-14(CRYPTO_SPEC 0.11-draft §6.2 — ES): scope_kind / scope_environments_lp_hex を
-  // 末尾に追加した形が正規形(旧 4 / 2 フィールド形式は互換経路なし)
+  // 2026-09-14 (CRYPTO_SPEC 0.11-draft §6.2 — ES): the canonical form
+  // appends scope_kind / scope_environments_lp_hex at the end (the old
+  // 4 / 2-field form has no compatibility path)
   add_member: [
     "target_user_id",
     "enc_pub_hex",
@@ -72,8 +80,8 @@ const PAYLOAD_FIELD_ORDER = {
   change_role: ["target_user_id", "new_role", "scope_kind", "scope_environments_lp_hex"],
   create_environment: ["environment_id", "dek_commitment_hex"],
   rotate_epoch: ["environment_id", "new_epoch", "reason", "dek_commitment_hex"],
-  // 2026-08-12(CRYPTO_SPEC 0.5-draft §6.2): lease_policy_lp_hex を末尾に追加した
-  // 4 フィールドが正規形
+  // 2026-08-12 (CRYPTO_SPEC 0.5-draft §6.2): the canonical form is the
+  // 4 fields with lease_policy_lp_hex appended at the end
   grant_server: [
     "server_enc_pub_hex",
     "server_key_fingerprint_hex",
@@ -81,29 +89,34 @@ const PAYLOAD_FIELD_ORDER = {
     "lease_policy_lp_hex",
   ],
   revoke_server: ["server_key_fingerprint_hex"],
-  // 2026-08-27(CRYPTO_SPEC 0.7-draft §6.2 checkpoint op — PR-F3a): 環境エントリの
-  // リストは scope_environments と同じ入れ子 LP の hex 文字列 1 フィールド
+  // 2026-08-27 (CRYPTO_SPEC 0.7-draft §6.2 checkpoint op — PR-F3a): the
+  // environment entry list is one hex-string field of the same nested LP
+  // as scope_environments
   checkpoint: ["environments_lp_hex", "audit_head_hash_hex"],
-  // 2026-09-14(CRYPTO_SPEC 0.11-draft §6.2 — PF1 四眼): 4 op
+  // 2026-09-14 (CRYPTO_SPEC 0.11-draft §6.2 — PF1 four-eyes): 4 ops
   set_approval_policy: ["ops_lp_hex", "required_approvals"],
   propose: ["inner_op", "inner_payload_lp_hex", "expires_at_ms"],
   approve: ["proposal_hash_hex"],
   withdraw: ["proposal_hash_hex"],
-  // 2026-09-20(CRYPTO_SPEC 0.12-draft §6.2 — DK 端末鍵): add_device の scope は member_scope と
-  // 同じ入れ子 LP、revoke_device の device_fingerprints_lp_hex は FP リストの入れ子 LP
+  // 2026-09-20 (CRYPTO_SPEC 0.12-draft §6.2 — DK device keys): add_device's
+  // scope is the same nested LP as member_scope; revoke_device's
+  // device_fingerprints_lp_hex is a nested LP of the FP list
   add_device: ["enc_pub_hex", "sig_pub_hex", "role_cap", "scope_kind", "scope_environments_lp_hex"],
   revoke_device: ["target_user_id", "device_fingerprints_lp_hex"],
 };
 
-// メンバー scope / 方針 ops の入れ子 LP(§6.2 — grant_server の scope_environments と同型):
-// 文字列リストの LP の hex 小文字。内側 payload(propose)は内側 op の payload_bytes の hex
+// Nested LP for member scopes / policy ops (§6.2 — same shape as
+// grant_server's scope_environments): lowercase hex of an LP of the
+// string list. An inner payload (propose) is hex of the inner op's
+// payload_bytes
 const stringListLp = (items) => lpEncode(items);
 const innerPayloadLp = (innerOp, innerPayload) =>
   lpEncode(PAYLOAD_FIELD_ORDER[innerOp].map((k) => innerPayload[k]));
 
-// checkpoint の環境エントリの入れ子 LP(§6.2 — generate_reference.py と同一定義):
+// Nested LP for checkpoint's environment entries (§6.2 — same definition
+// as generate_reference.py):
 //   entry = LP(environment_id, epoch, manifest_version, manifest_sig_hash_hex,
-//              values_digest_hex)、environments_lp_hex = lower_hex(LP(entry...))
+//              values_digest_hex), environments_lp_hex = lower_hex(LP(entry...))
 function checkpointEnvironmentsLp(environments) {
   return lpEncode(
     environments.map((e) =>
@@ -118,9 +131,9 @@ function checkpointEnvironmentsLp(environments) {
   );
 }
 
-// checkpoint の values_digest(§6.2): v_j = LP(variable_id, version,
-// value_sig_hash_hex) を variable_id の UTF-8 バイト昇順で並べ、
-// LP("maruhi/v1/env-values-digest", v_1, …, v_m) を SHA-256 する
+// checkpoint's values_digest (§6.2): v_j = LP(variable_id, version,
+// value_sig_hash_hex) ordered by variable_id UTF-8 byte order, then
+// SHA-256 of LP("maruhi/v1/env-values-digest", v_1, …, v_m)
 function envValuesDigestInput(entries) {
   const enc = new TextEncoder();
   const ordered = entries.toSorted((a, b) => {
@@ -139,7 +152,8 @@ function envValuesDigestInput(entries) {
   ]);
 }
 
-// grant_server の lease_policy の入れ子 LP(§6.2 — 3 段。generate_reference.py と同一定義)
+// Nested LP for grant_server's lease_policy (§6.2 — 3 levels. Same
+// definition as generate_reference.py)
 function leasePolicyLp(policy) {
   return lpEncode(
     policy.map((element) =>
@@ -151,7 +165,8 @@ function leasePolicyLp(policy) {
     ),
   );
 }
-// メタステートメントの署名フィールド順(CRYPTO_SPEC §4.2 の LP 引数列)
+// Signed field order for meta statements (CRYPTO_SPEC §4.2's LP argument
+// list)
 const VAR_SIGNED_FIELDS_ORDER = [
   "domain",
   "project_id",
@@ -166,7 +181,8 @@ const VAR_SIGNED_FIELDS_ORDER = [
   "chain_head_seq",
 ];
 const ENV_SIGNED_FIELDS_ORDER = VAR_SIGNED_FIELDS_ORDER.filter((f) => f !== "variable_id");
-// レイアウト v2(CRYPTO_SPEC §4.2 の 0.8-draft — スキーマ欄を status の直後に挟む)
+// Layout v2 (CRYPTO_SPEC §4.2's 0.8-draft — inserts the schema fields
+// immediately after status)
 const VAR_V2_SIGNED_FIELDS_ORDER = [
   "domain",
   "project_id",
@@ -184,7 +200,8 @@ const VAR_V2_SIGNED_FIELDS_ORDER = [
   "chain_head_seq",
 ];
 const sameOrder = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-// メタステートメントのドメイン文字列(§4.2): suite・var / env の別・レイアウト版を束縛
+// Meta-statement domain string (§4.2): binds the suite, var vs env
+// distinction, and layout version
 const expectedMetaDomain = (ctx) =>
   (ctx.layout_version ?? 1) === 2
     ? `${ctx.suite}/var-meta-sig-v2`
@@ -243,7 +260,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
 // --- chain-entries.json ------------------------------------------------------
 {
   const doc = read("chain-entries.json");
-  // 検証は仕様ハードコードの順序で行い、JSON の宣言はそれとの一致を検査する
+  // Verification runs in the spec-hardcoded order; the JSON declaration is
+  // checked for agreement with it
   const declared = doc.canonicalization.payload_field_order;
   check(
     "chain: payload_field_order matches spec",
@@ -255,9 +273,11 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   const sha256 = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
   const importSigPub = (hex) =>
     crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
-  // 署名鍵は actor の (user_id, FP) で選ぶ(2026-09-20 DK — FP が端末を指す: §1 原則 7)。
-  // `keys` の端末エントリ("<user_id>@<label>" — user_id 欄あり)と派生チェーン固有の
-  // `keys`(別鍵で再追加されたメンバー)を同じ規則で探し、見つからなければ人の最初の鍵
+  // The signing key is selected by the actor's (user_id, FP) (2026-09-20
+  // DK — the FP points at a device: §1 principle 7). Look up device entries
+  // in `keys` ("<user_id>@<label>" — they carry a user_id field) and
+  // derived-chain-specific `keys` (a member re-added under a different key)
+  // by the same rule, falling back to the person's first key
   const keyRecords = (extKeys) =>
     [...Object.entries(doc.keys), ...Object.entries(extKeys ?? {})].map(([id, k]) => ({
       userId: k.user_id ?? id,
@@ -306,14 +326,17 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     check(`chain seq ${e.seq}: entry hash`, hash === e.entry_hash_hex);
     prevHash = hash;
   }
-  // 鍵フィンガープリント: SHA-256(enc_pub || sig_pub) 先頭 16 バイト(素の連結)
+  // Key fingerprint: first 16 bytes of SHA-256(enc_pub || sig_pub) (raw
+  // concatenation)
   for (const [uid, k] of Object.entries(doc.keys)) {
     const cat = new Uint8Array([...fromHex(k.enc_pub_hex), ...fromHex(k.sig_pub_hex)]);
     const fp = (await sha256(cat)).slice(0, 32);
     check(`chain: fingerprint ${uid}`, fp === k.key_fingerprint_hex);
   }
-  // 派生チェーン固有の鍵(`keys` — 別鍵で再追加されたメンバーの新鍵)も同じ導出検査を通す。
-  // 申告 FP だけを信じて署名鍵を選ぶと、細工した override で偽造署名が通ってしまう
+  // Derived-chain-specific keys (`keys` — the new key of a member re-added
+  // under a different key) pass through the same derivation check. Picking
+  // the signing key on the declared FP alone would let a crafted override
+  // pass a forged signature
   for (const [chainName, ext] of Object.entries(doc.extended_chains ?? {})) {
     for (const [uid, k] of Object.entries(ext.keys ?? {})) {
       const cat = new Uint8Array([...fromHex(k.enc_pub_hex), ...fromHex(k.sig_pub_hex)]);
@@ -321,28 +344,33 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       check(`chain extended ${chainName}: fingerprint ${uid}`, fp === k.key_fingerprint_hex);
     }
   }
-  // サーバー鍵フィンガープリント: SHA-256(server_enc_pub) 先頭 16 バイト(enc 鍵のみ。§9)
+  // Server key fingerprint: first 16 bytes of SHA-256(server_enc_pub)
+  // (the enc key only. §9)
   {
     const fp = (await sha256(fromHex(doc.server_key.enc_pub_hex))).slice(0, 32);
     check("chain: server key fingerprint", fp === doc.server_key.key_fingerprint_hex);
   }
-  // grant_server の scope_environments: 入れ子 LP(環境 ID リストの LP の hex 文字列)
+  // grant_server's scope_environments: a nested LP (hex string of an LP
+  // of the environment ID list)
   {
     const e7 = doc.entries.find((e) => e.op === "grant_server");
     check(
       "chain: grant_server scope nested LP",
       toHex(lpEncode(e7.payload.scope_environments)) === e7.payload.scope_environments_lp_hex,
     );
-    // lease_policy: 3 段の入れ子 LP(§6.2)。構造化表現からの再構築が lp_hex と一致する
+    // lease_policy: a 3-level nested LP (§6.2). Reconstruction from the
+    // structured representation matches lp_hex
     check(
       "chain: grant_server lease_policy nested LP",
       toHex(leasePolicyLp(e7.payload.lease_policy)) === e7.payload.lease_policy_lp_hex,
     );
-    // 空ポリシーは空バイト列の hex = 空文字列(regrant-lease-policy-revised が使う形)
+    // An empty policy is the hex of an empty byte string = the empty
+    // string (the form regrant-lease-policy-revised uses)
     check("chain: empty lease_policy encodes to empty hex", toHex(leasePolicyLp([])) === "");
   }
-  // ES / PF1(2026-09-14 §6.2): 構造化表現からの入れ子 LP 再構築が *_lp_hex と一致する。
-  // 対象は正規チェーン + extended_chains / valid_appends / negative の全エントリ
+  // ES / PF1 (2026-09-14 §6.2): nested-LP reconstruction from the
+  // structured representation matches *_lp_hex. Targets every entry of
+  // the canonical chain + extended_chains / valid_appends / negative
   {
     const allEntries = [
       ...doc.entries,
@@ -350,8 +378,9 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ...doc.valid_appends.map((a) => a.entry),
       ...doc.negative.map((n) => n.entry).filter((e) => e !== undefined),
     ];
-    // kind の閉集合 {all, listed} は正例(正規チェーン / 派生チェーン / valid_appends)
-    // にだけ主張する — negative(scope-kind-unknown が "some" を運ぶ)は対象外
+    // The closed kind set {all, listed} is asserted only on positives
+    // (canonical chain / derived chains / valid_appends) — negatives
+    // (scope-kind-unknown carries "some") are out of scope
     const negativeEntries = new Set(
       doc.negative.map((n) => n.entry).filter((e) => e !== undefined),
     );
@@ -369,8 +398,9 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
             (negativeEntries.has(e) || p.scope_kind === "all" || p.scope_kind === "listed"),
         );
       } else if (e.op === "add_device") {
-        // 2026-09-20 DK: 端末 scope は member_scope と同じ入れ子 LP。role_cap は閉集合
-        // (負例 add-device-role-cap-unknown は対象外)
+        // 2026-09-20 DK: the device scope is the same nested LP as
+        // member_scope. role_cap is a closed set (the
+        // add-device-role-cap-unknown negative is out of scope)
         scoped += 1;
         const p = e.payload;
         check(
@@ -381,7 +411,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
                 (p.scope_kind === "all" || p.scope_kind === "listed"))),
         );
       } else if (e.op === "revoke_device") {
-        // 2026-09-20 DK: 失効 FP リストの入れ子 LP。正例は 1 要素以上・重複なし・hex 小文字 32
+        // 2026-09-20 DK: nested LP of the revoked-FP list. Positives have
+        // 1+ elements, no duplicates, 32 lowercase hex chars
         const p = e.payload;
         check(
           `${label}: device fingerprints nested LP`,
@@ -400,7 +431,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       } else if (e.op === "propose") {
         proposals += 1;
         const p = e.payload;
-        // 未知の内側 op・内側 payload の形状違反(構造 negative)は空 LP(hex 空文字列)で運ぶ
+        // Unknown inner ops / inner-payload shape violations (structural
+        // negatives) carry an empty LP (hex empty string)
         const decodable =
           Object.hasOwn(PAYLOAD_FIELD_ORDER, p.inner_op) &&
           PAYLOAD_FIELD_ORDER[p.inner_op].every((k) => Object.hasOwn(p.inner_payload, k));
@@ -413,15 +445,17 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       }
     }
     check("chain: scoped member vectors exist", scoped > 0 && policies > 0 && proposals > 0);
-    // scope_kind = all は空リスト(hex 空文字列)— 正規チェーンの add_member / change_role
+    // scope_kind = all carries the empty list (hex empty string) — the
+    // canonical chain's add_member / change_role
     check(
       "chain: canonical all-scope entries carry the empty list",
       doc.entries
         .filter((e) => e.op === "add_member" || e.op === "change_role")
         .every((e) => e.payload.scope_kind !== "all" || e.payload.scope_environments_lp_hex === ""),
     );
-    // approve / withdraw は提案エントリ(同一チェーン上の propose)の entry_hash を参照する。
-    // 正規チェーンの seq 22 / 24 が seq 21 / 23 を指すことを固定する
+    // approve / withdraw reference the entry_hash of a proposal entry (a
+    // propose on the same chain). Pins that canonical seq 22 / 24 point at
+    // seq 21 / 23
     const propose21 = doc.entries[20];
     check(
       "chain: approve 22 references propose 21 / withdraw 24 references propose 23",
@@ -431,9 +465,11 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         doc.entries[23].payload.proposal_hash_hex === doc.entries[22].entry_hash_hex,
     );
   }
-  // DK(2026-09-20): 派生チェーン device-ops のプレフィックス(device-added / device-dead-vote /
-  // device-revote-applied / device-recovered)はエントリのバイト列が device-ops と同一であり、
-  // add_device が載せる公開鍵は `keys` の端末エントリ(actor の user_id と一致)と対応する
+  // DK (2026-09-20): the prefixes of the derived chains based on
+  // device-ops (device-added / device-dead-vote / device-revote-applied /
+  // device-recovered) have entry byte strings identical to device-ops, and
+  // the public keys add_device carries correspond to device entries in
+  // `keys` (matching the actor's user_id)
   {
     const full = doc.extended_chains["device-ops"];
     check("chain: device-ops derived chain exists", full !== undefined && full.base_seq === 24);
@@ -460,7 +496,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         registered !== undefined && registered.userId === e.actor.user_id,
       );
     }
-    // revoke_device の FP は同一チェーン上で先に載った端末(または人の最初の鍵)を指す
+    // A revoke_device FP points at a device carried earlier on the same
+    // chain (or the person's first key)
     const canonicalFps = new Set(Object.values(doc.keys).map((k) => k.key_fingerprint_hex));
     for (const e of full.entries.filter((x) => x.op === "revoke_device")) {
       check(
@@ -469,9 +506,10 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       );
     }
   }
-  // checkpoint(§6.2 — PR-F3a): 構造化表現(environments)からの入れ子 LP 再構築が
-  // environments_lp_hex と一致する。対象は checkpoint op を含む全エントリ
-  // (extended_chains / valid_appends / negative の entry)
+  // checkpoint (§6.2 — PR-F3a): nested-LP reconstruction from the
+  // structured representation (environments) matches environments_lp_hex.
+  // Targets every entry containing a checkpoint op (extended_chains /
+  // valid_appends / negative's entry)
   {
     const checkpointEntries = [
       ...Object.values(doc.extended_chains ?? {}).flatMap((ext) => ext.entries),
@@ -485,24 +523,27 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         toHex(checkpointEnvironmentsLp(e.payload.environments)) === e.payload.environments_lp_hex,
       );
     }
-    // 環境エントリ 0 件は空バイト列の hex = 空文字列(checkpoint-empty-environments)
+    // Zero environment entries = the hex of an empty byte string = the
+    // empty string (checkpoint-empty-environments)
     check(
       "chain: empty checkpoint environments encode to empty hex",
       toHex(checkpointEnvironmentsLp([])) === "",
     );
   }
-  // checkpoint の values_digest 正規形(values_digests セクション): 非正規順の
-  // entries からバイト昇順の再計算が期待ダイジェストと一致する
+  // The checkpoint values_digest canonical form (the values_digests
+  // section): recomputation in byte order from non-canonically-ordered
+  // entries matches the expected digest
   for (const digestCase of doc.values_digests ?? []) {
     check(
       `chain values-digest ${digestCase.name}`,
       (await sha256(envValuesDigestInput(digestCase.entries))) === digestCase.values_digest_hex,
     );
   }
-  // §5.2 の DEK コミットメント: environment_deks のダミー DEK からの再計算が
-  // 掲載値と一致し、create_environment / rotate_epoch の payload がそれを載せている
+  // The §5.2 DEK commitment: recomputation from the dummy DEKs in
+  // environment_deks matches the published values, and the
+  // create_environment / rotate_epoch payloads carry it
   {
-    const projectId = doc.entries[0].entry_hash_hex; // = genesis ハッシュ(§6.4)
+    const projectId = doc.entries[0].entry_hash_hex; // = the genesis hash (§6.4)
     for (const [environmentId, perEnv] of Object.entries(doc.environment_deks)) {
       for (const [epoch, info] of Object.entries(perEnv)) {
         const computed = await sha256(
@@ -530,9 +571,11 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       }
     }
   }
-  // valid_appends: 合意規則の許容側の境界(§6.2 の禁止範囲 = 現メンバー集合のみ)。
-  // 署名・正規化・prev_hash(= 正規チェーン最終エントリのハッシュ)が有効である
-  // ことを確認する。受理されること自体の検査は実装テストが担う
+  // valid_appends: the permissive-side boundary of the consensus rules
+  // (§6.2's forbidden range = the current member set only). Confirms the
+  // signature, canonicalization, and prev_hash (= the hash of the canonical
+  // chain's last entry) are valid. Checking that they are actually
+  // accepted is the implementation tests' job
   for (const a of doc.valid_appends) {
     const e = a.entry;
     const payloadBytes = lpEncode(order[e.op].map((k) => e.payload[k]));
@@ -552,9 +595,10 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       fromHex(e.signature_hex),
       signed,
     );
-    // 受理後のヘッドとして意味を持つ entry_bytes / entry_hash も正規チェーンの
-    // エントリと同水準で検査する(第三者実装がこのハッシュへ追記を連鎖させても
-    // 陳腐値が黙って通らないように — レビューループ 2)
+    // entry_bytes / entry_hash, which become meaningful as the head once
+    // accepted, are checked to the same standard as canonical-chain
+    // entries (so a third-party implementation chaining an append onto
+    // this hash never silently passes a stale value — review loop 2)
     const entryBytes = lpEncode([
       e.suite,
       e.seq,
@@ -566,9 +610,11 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       e.timestamp_ms,
       e.signature_hex,
     ]);
-    // 追記の接続点は seq が指す正規エントリの直後(seq 13 = head 12、seq 10 = seq 9
-    // ヘッドへの再 grant 追記 …)。chain 指定つきは派生チェーン(extended_chains)の
-    // 末尾へ接続する(2026-09-14 ES / PF1 — negative の chain 指定と同じ運び方)
+    // An append connects immediately after the canonical entry its seq
+    // points at (seq 13 = head 12, seq 10 = a re-grant appended onto the
+    // seq 9 head, …). A chain-qualified append connects to the tail of the
+    // derived chain (extended_chains) (2026-09-14 ES / PF1 — carried the
+    // same way as negative's chain qualifier)
     const expectedPrev =
       a.chain === undefined
         ? doc.entries[e.seq - 2].entry_hash_hex
@@ -583,8 +629,10 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         (await sha256(entryBytes)) === e.entry_hash_hex,
     );
   }
-  // extended_chains: 正規チェーンの途中ヘッドへ追記した派生チェーン(認可 negative の
-  // 前提状態)。エントリ自体の正規化・署名・接続点を正規チェーンと同水準で検査する
+  // extended_chains: derived chains appended onto a mid-canonical-chain
+  // head (the precondition state for authorization negatives). Each
+  // entry's canonicalization, signature, and connection point are checked
+  // to the same standard as the canonical chain
   for (const [chainName, ext] of Object.entries(doc.extended_chains ?? {})) {
     let prev = doc.entries[ext.base_seq - 1].entry_hash_hex;
     let seq = ext.base_seq;
@@ -601,9 +649,11 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         payloadBytes,
         e.timestamp_ms,
       ]);
-      // 署名鍵は actor の (user_id, 申告 FP) で選ぶ: 派生チェーン固有の鍵(`keys` — 別鍵で
-      // 再追加されたメンバーが署名する readded-approver-revote / reader-second-device の端末鍵)
-      // と正規の `keys`(人の最初の鍵・端末鍵)を同じ規則で探す
+      // The signing key is selected by the actor's (user_id, declared
+      // FP): derived-chain-specific keys (`keys` — the device keys of
+      // readded-approver-revote / reader-second-device, signed by a member
+      // re-added under a different key) and canonical `keys` (persons'
+      // first keys, device keys) are searched by the same rule
       const signerKey = signerKeyFor(e, ext.keys);
       const sigOk = await crypto.subtle.verify(
         "Ed25519",
@@ -622,8 +672,9 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         e.timestamp_ms,
         e.signature_hex,
       ]);
-      // approve / withdraw の参照先は同一派生チェーン(または正規プレフィックス)上の
-      // propose エントリでなければならない(bogus な参照は negative にのみ現れる)
+      // approve / withdraw references must point at a propose entry on
+      // the same derived chain (or the canonical prefix) (bogus
+      // references appear only in negatives)
       const referenced =
         e.op === "approve" || e.op === "withdraw"
           ? [...doc.entries.slice(0, ext.base_seq), ...ext.entries].find(
@@ -650,8 +701,10 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       continue;
     }
     if (n.kind === "authorization") {
-      // 認可系は「暗号学的には有効(署名・正規化・prev_hash が正しい)」ことを確認する。
-      // 拒否は §6.2 の権限規則によるもので、その検査は実装テストが担う
+      // For the authorization kind, confirm it is "cryptographically
+      // valid (signature, canonicalization, prev_hash are correct)".
+      // Rejection comes from §6.2's authorization rules; that check is
+      // the implementation tests' job
       const e = n.entry;
       const payloadBytes = lpEncode(order[e.op].map((k) => e.payload[k]));
       const signed = lpEncode([
@@ -670,8 +723,9 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         fromHex(e.signature_hex),
         signed,
       );
-      // chain 指定つきは派生チェーン(extended_chains)の末尾へ接続する negative。
-      // 接続点の prev が派生チェーンの最終エントリと一致することも固定する
+      // A chain-qualified negative connects to the tail of the derived
+      // chain (extended_chains). Also pins that the connection point's
+      // prev matches the derived chain's last entry
       const expectedPrev =
         n.chain === undefined ? null : doc.extended_chains[n.chain].entries.at(-1).entry_hash_hex;
       check(
@@ -711,15 +765,17 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ctx.signer_user_id,
     ]);
   const base = doc.vectors[0];
-  // ラップ本体が dek-wrap.json の basic ベクターと同一であること(一続きの実データ)
+  // The wrap body is identical to dek-wrap.json's basic vector (one
+  // continuous run of real data)
   check(
     "dek-wrap-sig: wrap body matches dek-wrap.json",
     base.enc_hex === dekWrap.vectors[0].enc_hex &&
       base.ciphertext_hex === dekWrap.vectors[0].ciphertext_hex &&
       base.recipient_enc_pub_hex === dekWrap.recipient_keypair.pkRm_hex,
   );
-  // 受信者クラス server(§9 / §12-6): recipient 位置 = サーバー鍵 FP、
-  // recipient_enc_pub = サーバー enc 公開鍵、ラップ本体は server-basic と同一
+  // Recipient class server (§9 / §12-6): the recipient position = the
+  // server key FP, recipient_enc_pub = the server's enc public key, and
+  // the wrap body is identical to server-basic
   const serverVector = doc.vectors.find((v) => v.name === "server-basic");
   const serverWrap = dekWrap.vectors.find((v) => v.name === "server-basic");
   check(
@@ -758,12 +814,13 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- invite-accept-signature.json(v2 — 受諾の共同署名) ---------------------
+// --- invite-accept-signature.json (v2 — joint signature of acceptance) ---
 {
   const doc = read("invite-accept-signature.json");
   const importSigPub = (hex) =>
     crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
-  // 署名フィールド順は仕様のハードコードを正とする(dek-wrap-sig と同じ規律)
+  // The signed field order is authoritative as hardcoded from the spec
+  // (same discipline as dek-wrap-sig)
   const signedBytes = (ctx) =>
     lpEncode([
       ctx.domain,
@@ -774,16 +831,18 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ctx.invitee_sig_pub_hex,
     ]);
   const base = doc.vectors[0];
-  // 受諾者の宣言鍵が invitee ブロックと一致(署名者 = invitee の自己束縛)
+  // The accepter's declared keys match the invitee block (signer =
+  // invitee self-binding)
   check(
     "invite-accept-sig: invitee keys bound",
     base.invitee_enc_pub_hex === doc.invitee.enc_pub_hex &&
       base.invitee_sig_pub_hex === doc.invitee.sig_pub_hex &&
       base.invitee_user_id === doc.invitee.user_id,
   );
-  // リンク公開鍵が link_key ブロックと一致し、種から導出できる(PKCS8 経由 —
-  // WebCrypto は Ed25519 の seed 単独 import を持たないため、RFC 8410 の
-  // OneAsymmetricKey 固定プレフィックス + seed を pkcs8 として import し jwk の x を読む)
+  // The link public key matches the link_key block and is derivable from
+  // the seed (via PKCS8 — WebCrypto has no standalone Ed25519 seed
+  // import, so import the RFC 8410 OneAsymmetricKey fixed prefix + seed
+  // as pkcs8 and read jwk's x)
   const pkcs8Prefix = fromHex("302e020100300506032b657004220420");
   const derivePub = async (seedHex) => {
     const der = new Uint8Array(48);
@@ -832,7 +891,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     for (const n of list) {
       const reconstructed = signedBytes(n.context);
       const bytesMatch = toHex(reconstructed) === n.verify_signed_bytes_hex;
-      // 検証鍵は常に署名対象内の宣言鍵(§6.5 の自己束縛)であることを固定する
+      // Pins that the verification key is always the declared key inside
+      // the signed payload (§6.5's self-binding)
       const selfBound = n.verify_key_hex === n.context[keyField];
       const verified = await crypto.subtle.verify(
         "Ed25519",
@@ -841,8 +901,9 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         reconstructed,
       );
       if (n.name === "legacy-domain") {
-        // 旧形式の有効な署名であること(v1 バイト列の上では通る)+ v2 ドメインで
-        // 組み直したバイト列では通らないこと、の両方を固定する
+        // Pins both: it is a valid signature in the old format (passes
+        // over the v1 byte string) + it does not pass over a byte string
+        // rebuilt with the v2 domain
         const v2Bytes = signedBytes({
           ...n.context,
           domain: `${n.context.suite}/invite-accept-v2`,
@@ -866,7 +927,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   await runNegatives(doc.link_negative, "link_pub_hex", "invite-link-sig");
 }
 
-// --- invite-link.json(発行署名 + OpenSSH 符号化) -----------------------------
+// --- invite-link.json (issuance signature + OpenSSH encoding) -------------
 {
   const doc = read("invite-link.json");
   const chain = read("chain-entries.json");
@@ -884,7 +945,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ctx.inviter_user_id,
       ctx.inviter_enc_pub_hex,
       ctx.inviter_sig_pub_hex,
-      // 2026-09-14 ES: 付与予定の scope(§6.2 と同じ符号化)を末尾に追加
+      // 2026-09-14 ES: the scope to be granted (same encoding as §6.2)
+      // is appended at the end
       ctx.scope_kind,
       ctx.scope_environments_lp_hex,
     ]);
@@ -932,8 +994,10 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   for (const n of doc.issue.negative) {
     const selfBound = n.verify_key_hex === n.context.inviter_sig_pub_hex;
     if (n.kind === "encoding") {
-      // 符号化系(旧 10 フィールド形式・平坦連結): 正規化はこのバイト列を生まず、
-      // かつそのバイト列では正規署名が検証に失敗する(chain-entries の flat-concat と同型)
+      // The encoding kind (old 10-field form, flat concatenation):
+      // canonicalization never produces this byte string, and a canonical
+      // signature fails verification over it (same shape as
+      // chain-entries's flat-concat)
       const differs = toHex(signedBytes(n.context)) !== n.verify_signed_bytes_hex;
       const verified = await crypto.subtle.verify(
         "Ed25519",
@@ -954,7 +1018,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
     check(`invite-issue-sig negative: ${n.name}`, bytesMatch && selfBound && verified === false);
   }
-  // OpenSSH 公開鍵行(RFC 4253 §6.6 / RFC 8709): "ssh-ed25519 " + base64(LP("ssh-ed25519") ‖ LP(key))
+  // OpenSSH public key line (RFC 4253 §6.6 / RFC 8709): "ssh-ed25519 " + base64(LP("ssh-ed25519") ‖ LP(key))
   const encodeLine = (pubHex) => {
     const blob = lpEncode([new TextEncoder().encode("ssh-ed25519"), fromHex(pubHex)]);
     return `ssh-ed25519 ${btoa(String.fromCharCode(...blob))}`;
@@ -1003,7 +1067,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
   const basic = doc.vectors[0];
   const wrapBase = dekWrap.vectors[0];
-  // DEK・座標が dek-wrap.json の basic と同一(ラップ → §5.2 照合が一続きの実データ)
+  // The DEK and coordinates are identical to dek-wrap.json's basic
+  // (wrap → §5.2 comparison is one continuous run of real data)
   check(
     "dek-commitment: coordinates match dek-wrap.json",
     basic.dek_hex === wrapBase.dek_hex &&
@@ -1061,13 +1126,15 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       (await sha256hex(bytes)) === v.signed_bytes_sha256_hex,
     );
     check(`value-sig ${v.name}: domain embeds suite`, ctx.domain === `${ctx.suite}/value-sig`);
-    // チェーン参照の整合: project_id = genesis ハッシュ、head = entries[seq-1] のハッシュ
+    // Chain-reference consistency: project_id = the genesis hash, head =
+    // the hash of entries[seq-1]
     check(`value-sig ${v.name}: project id is genesis hash`, ctx.project_id === projectId);
     check(
       `value-sig ${v.name}: head hash matches chain`,
       ctx.chain_head_hash_hex === chainHeadHash(chain, v.chain, ctx.chain_head_seq),
     );
-    // writer 鍵(chain-entries の keys — 端末鍵は (user_id, FP) で選ぶ)で Ed25519 検証
+    // Ed25519 verify with the writer key (chain-entries's keys — device
+    // keys are selected by (user_id, FP))
     const writerKeys = chainKeyFor(chain, ctx.writer_user_id, v.writer_key_fingerprint_hex);
     check(
       `value-sig ${v.name}: writer fingerprint matches chain keys`,
@@ -1080,7 +1147,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       bytes,
     );
     check(`value-sig ${v.name}: Ed25519 signature`, ok);
-    // prev 連鎖: prev_base を持つベクターは直前 version の signed_bytes ハッシュへ連鎖
+    // prev linkage: a vector with prev_base chains to the signed_bytes
+    // hash of the immediately preceding version
     if (v.prev_base !== undefined) {
       check(
         `value-sig ${v.name}: prev links to ${v.prev_base}`,
@@ -1089,7 +1157,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     } else {
       check(`value-sig ${v.name}: version 1 has empty prev`, ctx.prev_value_sig_hash_hex === "");
     }
-    // ciphertext は environment_deks の DEK による実 AES-GCM 暗号文(AAD = §4 の LP)
+    // The ciphertext is a real AES-GCM ciphertext under the
+    // environment_deks DEK (AAD = §4's LP)
     const aad = lpEncode([
       ctx.suite,
       ctx.project_id,
@@ -1108,7 +1177,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
   }
 
-  // fork-same-version: 両 branch とも署名有効・同一座標・prev 同一で signed_bytes が異なる
+  // fork-same-version: both branches have valid signatures, identical
+  // coordinates, identical prev, and distinct signed_bytes
   {
     const [a, b] = doc.fork_same_version.branches;
     for (const branch of [a, b]) {
@@ -1137,7 +1207,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
   }
 
-  // tenure-extension: 派生チェーンの seq 13 エントリ自体が有効(正規化・署名・prev 連鎖)
+  // tenure-extension: the derived chain's seq 13 entry itself is valid
+  // (canonicalization, signature, prev linkage)
   {
     const e = doc.tenure_extension.entry;
     const payloadBytes = lpEncode(PAYLOAD_FIELD_ORDER[e.op].map((k) => e.payload[k]));
@@ -1177,7 +1248,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         toHex(entryBytes) === e.entry_bytes_hex &&
         (await sha256hex(entryBytes)) === e.entry_hash_hex,
     );
-    // re-add は新鍵(旧鍵と異なる = 別 tenure の鍵束縛)
+    // re-add uses a new key (different from the old key = a different
+    // tenure's key binding)
     check(
       "value-sig tenure-extension: rejoined member key differs from tenure 1",
       e.payload.sig_pub_hex !== chain.keys["user-member-0002"].sig_pub_hex &&
@@ -1187,8 +1259,9 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
 
   for (const n of doc.negative) {
     if (n.kind === "authorization") {
-      // 検証規則系は「暗号学的には有効(署名が正しい)」ことを確認する。
-      // expected_reason での拒否は実装テスト(§6.3 の履歴検証)が担う
+      // For the verification-rule kind, confirm it is "cryptographically
+      // valid (the signature is correct)". Rejection via expected_reason
+      // is the implementation tests' job (§6.3 history verification)
       const bytes = signedBytes(n.context);
       const ok = await crypto.subtle.verify(
         "Ed25519",
@@ -1222,7 +1295,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   const sha256hex = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
   const importSigPub = (hex) =>
     crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
-  // 検証は仕様ハードコードの順序で行い、JSON の宣言はそれとの一致を検査する
+  // Verification runs in the spec-hardcoded order; the JSON declaration is
+  // checked for agreement with it
   check(
     "meta-sig: var_signed_fields_order matches spec",
     sameOrder(doc.var_signed_fields_order, VAR_SIGNED_FIELDS_ORDER),
@@ -1235,7 +1309,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     "meta-sig: var_v2_signed_fields_order matches spec",
     sameOrder(doc.var_v2_signed_fields_order, VAR_V2_SIGNED_FIELDS_ORDER),
   );
-  // レイアウトの選択は context の layout_version(省略 = 1)が担う(§4.2 裁定 CR)
+  // The context's layout_version (omitted = 1) carries the layout
+  // selection (§4.2 ruling CR)
   const orderOf = (ctx) => {
     if ((ctx.layout_version ?? 1) === 2) {
       return VAR_V2_SIGNED_FIELDS_ORDER;
@@ -1275,12 +1350,14 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
 
   for (const v of doc.vectors) {
     await verifyStatement(v, v.name);
-    // チェーン参照の整合(rule negative は bogus ヘッドを持つため positive のみ)
+    // Chain-reference consistency (positives only — rule negatives carry
+    // bogus heads)
     check(
       `meta-sig ${v.name}: head hash matches chain`,
       v.context.chain_head_hash_hex === chainHeadHash(chain, v.chain, v.context.chain_head_seq),
     );
-    // prev 連鎖: prev_base を持つベクターは直前 metaVersion の signed_bytes ハッシュへ連鎖
+    // prev linkage: a vector with prev_base chains to the signed_bytes
+    // hash of the immediately preceding metaVersion
     if (v.prev_base !== undefined) {
       check(
         `meta-sig ${v.name}: prev links to ${v.prev_base}`,
@@ -1293,7 +1370,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       );
     }
   }
-  // 削除ステートメントは直前 active 名を保持する(§4.2 — name を削除で空にしない)
+  // A deletion statement retains the name of the immediately preceding
+  // active (§4.2 — deletion does not empty name)
   {
     const del = byName.get("var-delete");
     const rename = byName.get("var-rename");
@@ -1303,7 +1381,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
   }
 
-  // rename-fork: 両 branch とも署名有効・同一座標・prev 同一で signed_bytes が異なる
+  // rename-fork: both branches have valid signatures, identical
+  // coordinates, identical prev, and distinct signed_bytes
   {
     const [a, b] = doc.rename_fork.branches;
     for (const branch of [a, b]) {
@@ -1320,7 +1399,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
   }
 
-  // name-swap: 正規 2 本は有効、name フィールドだけ入れ替えたバイト列では署名失敗
+  // name-swap: the two canonical statements are valid; a byte string
+  // with only the name field swapped fails signature
   {
     for (const statement of doc.name_swap.statements) {
       await verifyStatement(statement, `swap ${statement.name}`);
@@ -1338,7 +1418,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     }
   }
 
-  // tenure-extension: 派生チェーンの seq 13 エントリ自体が有効(value-signature と同一内容)
+  // tenure-extension: the derived chain's seq 13 entry itself is valid
+  // (same content as value-signature)
   {
     const e = doc.tenure_extension.entry;
     const payloadBytes = lpEncode(PAYLOAD_FIELD_ORDER[e.op].map((k) => e.payload[k]));
@@ -1382,9 +1463,12 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
 
   for (const n of doc.negative) {
     if (n.kind === "authorization" || n.kind === "invalid-input") {
-      // 検証規則系・構造違反系は「暗号学的には有効(署名が正しい)」ことを確認する。
-      // expected_reason / expected_error での拒否は実装テスト(§6.3 の履歴検証・
-      // InvalidInput の fail-closed)が担う — 拒否が暗号検証によるものでないことの保証
+      // For the verification-rule and structural-violation kinds,
+      // confirm it is "cryptographically valid (the signature is
+      // correct)". Rejection via expected_reason / expected_error is the
+      // implementation tests' job (§6.3 history verification, InvalidInput
+      // fail-closed) — guarantees the rejection is not a cryptographic
+      // verification failure
       const bytes = signedBytes(n.context);
       const ok = await crypto.subtle.verify(
         "Ed25519",
@@ -1408,8 +1492,9 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
     check(`meta-sig negative: ${n.name}`, bytesMatch && verified === false);
   }
-  // レイアウト v2(§4.2 の 0.8-draft): declared 作成 → activation の prev 連鎖と、
-  // v2 削除のスキーマ欄・name の完全保持(削除ステートメントのみ完全保持を要求)
+  // Layout v2 (§4.2's 0.8-draft): the declared-creation → activation prev
+  // linkage, and a v2 deletion's full retention of the schema fields and
+  // name (only a deletion statement is required to retain everything)
   {
     const declared = byName.get("var-v2-declared-create");
     const activation = byName.get("var-v2-activation");
@@ -1430,7 +1515,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         deleted.context.description === created.context.description,
     );
   }
-  // nfc-variant: NFC 正規形で署名された name の NFD 変種は byte 列が異なることの固定
+  // nfc-variant: pins that the NFD variant of a name signed in NFC
+  // canonical form produces a different byte string
   {
     const nfc = doc.negative.find((n) => n.name === "nfc-variant");
     check(
@@ -1449,7 +1535,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   const sha256hex = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
   const importSigPub = (hex) =>
     crypto.subtle.importKey("raw", fromHex(hex), "Ed25519", false, ["verify"]);
-  // 検証は仕様ハードコードの順序で行い、JSON の宣言はそれとの一致を検査する
+  // Verification runs in the spec-hardcoded order; the JSON declaration is
+  // checked for agreement with it
   const MANIFEST_SIGNED_FIELDS_ORDER = [
     "domain",
     "project_id",
@@ -1495,7 +1582,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   };
   const digestHex = async (entries, sort = true) => sha256hex(digestInput(entries, sort));
 
-  // ダイジェストの LP 正規形(空集合・単一・tombstone・バイト昇順)
+  // The digest LP canonical forms (empty set, single, tombstone, byte
+  // order)
   for (const c of doc.digests) {
     check(
       `env-manifest digest ${c.name}: input reconstruction`,
@@ -1528,7 +1616,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       ctx.domain === `${ctx.suite}/env-manifest-sig`,
     );
     check(`env-manifest ${label}: project id is genesis hash`, ctx.project_id === projectId);
-    // ダイジェスト再計算(§4.3 (3)): entries はマニフェストが署名した集合の正規形
+    // Digest recomputation (§4.3 (3)): entries is the canonical form of
+    // the set the manifest signed
     check(
       `env-manifest ${label}: variables digest recomputation`,
       (await digestHex(v.entries)) === ctx.variables_digest_hex,
@@ -1553,7 +1642,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       `env-manifest ${v.name}: head hash matches chain`,
       v.context.chain_head_hash_hex === chainHeadHash(chain, v.chain, v.context.chain_head_seq),
     );
-    // prev 連鎖: prev_base を持つベクターは直前 manifestVersion の signed_bytes ハッシュへ連鎖
+    // prev linkage: a vector with prev_base chains to the signed_bytes
+    // hash of the immediately preceding manifestVersion
     if (v.prev_base !== undefined) {
       check(
         `env-manifest ${v.name}: prev links to ${v.prev_base}`,
@@ -1566,7 +1656,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       );
     }
   }
-  // tombstone 込みダイジェスト(§4.3): manifest-var-delete は deleted entry を列挙に含む
+  // Digest including tombstones (§4.3): manifest-var-delete includes the
+  // deleted entry in the enumeration
   {
     const del = byName.get("manifest-var-delete");
     check(
@@ -1575,7 +1666,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
   }
 
-  // fork: 両 branch とも署名有効・同一座標・prev 同一で signed_bytes が異なる
+  // fork: both branches have valid signatures, identical coordinates,
+  // identical prev, and distinct signed_bytes
   {
     const [a, b] = doc.manifest_fork.branches;
     for (const branch of [a, b]) {
@@ -1593,8 +1685,9 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
 
   for (const n of doc.negative) {
     if (n.kind === "authorization") {
-      // 検証規則系は「暗号学的には有効(署名が正しい)」ことを確認する。
-      // expected_reason での拒否は実装テスト(§6.3 の履歴検証)が担う
+      // For the verification-rule kind, confirm it is "cryptographically
+      // valid (the signature is correct)". Rejection via expected_reason
+      // is the implementation tests' job (§6.3 history verification)
       const bytes = signedBytes(n.context);
       const ok = await crypto.subtle.verify(
         "Ed25519",
@@ -1606,8 +1699,9 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         `env-manifest rule negative: ${n.name} (signature must be VALID)`,
         ok && toHex(bytes) === n.signed_bytes_hex,
       );
-      // ダイジェスト系: verify_entries(検証側集合)での再計算は署名済み
-      // ダイジェストと一致しない(欠落・tombstone 隠し・順序違反の固定)
+      // The digest kind: recomputation over verify_entries (the
+      // verifier-side set) does not match the signed digest (pins
+      // omissions, tombstone hiding, and order violations)
       if (n.verify_entries !== undefined) {
         check(
           `env-manifest rule negative: ${n.name} (verify-side digest differs)`,
@@ -1626,7 +1720,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
     check(`env-manifest negative: ${n.name}`, bytesMatch && verified === false);
   }
-  // digest-order-swap: 署名されたダイジェストは同一集合の**非正規順**での計算値
+  // digest-order-swap: the signed digest is the value computed over the
+  // same set in **non-canonical order**
   {
     const swap = doc.negative.find((n) => n.name === "digest-order-swap");
     check(
@@ -1637,11 +1732,12 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- audit-head.json(AUDIT_SPEC §5.1 監査ヘッド累積ハッシュ)-------------------
+// --- audit-head.json (AUDIT_SPEC §5.1 audit head cumulative hash) ------
 {
   const doc = read("audit-head.json");
   const sha256 = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
-  // 列順は仕様(AUDIT_SPEC §5.1)のハードコードを正とし、JSON の宣言との一致を検査
+  // The column order is authoritative as hardcoded from the spec
+  // (AUDIT_SPEC §5.1); the JSON declaration is checked for agreement
   const NULLABLE = new Set([
     "row_id",
     "client_ts",
@@ -1756,7 +1852,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- dek-wrap.json(panva hpke で Open)--------------------------------------
+// --- dek-wrap.json (Open with panva hpke) ---------------------------------
 {
   const doc = read("dek-wrap.json");
   const suite = new HPKE.CipherSuite(
@@ -1764,8 +1860,9 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     HPKE.KDF_HKDF_SHA256,
     HPKE.AEAD_AES_256_GCM,
   );
-  // KeyPair 渡しの Open を標準とする(CRYPTO_SPEC §2。非抽出鍵と両立する経路)。
-  // 受信者クラスごとに鍵ペアを解決する(basic = メンバー鍵、server-basic = サーバー鍵)
+  // Open by passing a KeyPair is the standard route (CRYPTO_SPEC §2 —
+  // compatible with non-extractable keys). The key pair is resolved per
+  // recipient class (basic = member key, server-basic = server key)
   const keyPairs = {
     basic: {
       privateKey: await suite.DeserializePrivateKey(fromHex(doc.recipient_keypair.skRm_hex), false),
@@ -1786,7 +1883,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     const dek = await open(v.name, v.info_hex, v.enc_hex, v.ciphertext_hex);
     check(`dek-wrap: ${v.name} panva open == DEK`, toHex(new Uint8Array(dek)) === v.dek_hex);
   }
-  // サーバー鍵 FP: SHA-256(pkSm)[:16](§9)と info の recipient 位置の一致
+  // Server key FP: SHA-256(pkSm)[:16] (§9) matching info's recipient
+  // position
   {
     const digest = new Uint8Array(
       await crypto.subtle.digest("SHA-256", fromHex(doc.server_keypair.pkSm_hex)),
@@ -1824,12 +1922,13 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- lease-wrap.json(panva hpke で Open)-------------------------------------
-// §9.1 のリースラップ。dek-wrap と同じ「生成 = hpke-js / 検証 = panva」の
-// 突き合わせに加えて、(1) claims_digest の LP + SHA-256 を WebCrypto で独立に
-// 再計算し、(2) info が仕様のフィールド順で組まれていること、(3) 座標と DEK が
-// dek-wrap.json の server-basic を引き継いでいること(サーバーが自分宛ラップを
-// 開封して再ラップした形)を検査する
+// --- lease-wrap.json (Open with panva hpke) --------------------------------
+// The §9.1 lease wrap. Beyond dek-wrap's same "generate = hpke-js /
+// verify = panva" cross-check, verifies that (1) the claims_digest LP +
+// SHA-256 is recomputed independently with WebCrypto, (2) info is
+// assembled in the spec's field order, and (3) the coordinates and DEK
+// are inherited from dek-wrap.json's server-basic (the shape of the
+// server Opening its own wrap and re-wrapping)
 {
   const doc = read("lease-wrap.json");
   const dekWrap = read("dek-wrap.json");
@@ -1838,7 +1937,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     HPKE.KDF_HKDF_SHA256,
     HPKE.AEAD_AES_256_GCM,
   );
-  // KeyPair 渡しの Open(CRYPTO_SPEC §2。非抽出鍵と両立する経路)
+  // Open by passing a KeyPair (CRYPTO_SPEC §2 — compatible with
+  // non-extractable keys)
   const workloadKeyPair = {
     privateKey: await suite.DeserializePrivateKey(fromHex(doc.workload_keypair.skWm_hex), false),
     publicKey: await suite.DeserializePublicKey(fromHex(doc.workload_keypair.pkWm_hex)),
@@ -1867,7 +1967,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
   }
 
-  // 座標・DEK の引き継ぎ(§9.1 の「サーバーは DEK の仲介者」の実データ表現)
+  // The coordinates / DEK inheritance (a concrete-data expression of
+  // §9.1's "the server is the DEK's intermediary")
   {
     const serverWrap = dekWrap.vectors.find((v) => v.name === "server-basic");
     const basic = vectorByName("basic");
@@ -1881,8 +1982,9 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 
   for (const v of doc.vectors) {
-    // info はベクター宣言でなく仕様のフィールド順から組み直して照合する
-    // (JSON 由来の順序で検証すると順序を独立に固定できない — session-15 レビュー③)
+    // info is reassembled from the spec's field order, not the vector
+    // declaration, and compared (verifying in a JSON-derived order could
+    // not pin the order independently — session-15 review (3))
     check(
       `lease-wrap: ${v.name} info reconstruction`,
       toHex(lpEncode([v.domain, v.project_id, v.environment_id, v.epoch, v.claims_digest_hex])) ===
@@ -1914,13 +2016,15 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
 }
 
 // --- checkpoint-digest.json ------------------------------------------------------
-// §6.2 values_digest の対象選別(0.8-draft — declared の除外)。エンコーダの正規形は
-// chain-entries.json の values_digests が固定済み(envValuesDigestInput を共用)
+// §6.2 values_digest selection (0.8-draft — declared is excluded). The
+// encoder's canonical form is already pinned by chain-entries.json's
+// values_digests (envValuesDigestInput is shared)
 {
   const doc = read("checkpoint-digest.json");
   const sha256 = async (u8) => toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", u8)));
   for (const digestCase of doc.cases) {
-    // 選別の宣言整合: values_digest_entries = variables の active のみ(値座標込み)
+    // Selection-declaration consistency: values_digest_entries = only
+    // the active variables (with value coordinates)
     const actives = digestCase.variables.filter((v) => v.status === "active");
     const nonActives = digestCase.variables.filter((v) => v.status !== "active");
     check(
@@ -1935,7 +2039,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
           );
         }),
     );
-    // declared / deleted は値座標(version / value_sig_hash_hex)を持たない(§6.3)
+    // declared / deleted carry no value coordinates (version /
+    // value_sig_hash_hex) (§6.3)
     check(
       `checkpoint-digest ${digestCase.name}: non-active variables carry no value coordinates`,
       nonActives.every(
@@ -1955,7 +2060,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       (await sha256(input)) === digestCase.values_digest_hex,
     );
   }
-  // 「declared のみ = 空集合ダイジェスト」は chain-entries.json の empty-set と同値
+  // "declared only = the empty-set digest" equals chain-entries.json's
+  // empty-set
   {
     const chain = read("chain-entries.json");
     const emptySet = (chain.values_digests ?? []).find((c) => c.name === "empty-set");
@@ -1967,11 +2073,13 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
-// --- master-key-wrap.json(§8 台帳 — WebCrypto で KEK / AES-GCM、panva hpke で Open)-----
-// 生成 = hpke-js + WebCrypto、検証 = panva + WebCrypto の突き合わせに加えて、
-// (1) B と user_id が recovery-wrap.json を引き継ぐこと、(2) AAD / info / request_id が
-// 仕様のフィールド順で組まれること、(3) all モードの分片 XOR が KEK に戻ること、
-// (4) ハンドオフコードの符号化・復号を独立に再計算する
+// --- master-key-wrap.json (§8 ledger — KEK / AES-GCM via WebCrypto, Open via panva hpke) ---
+// Beyond the "generate = hpke-js + WebCrypto / verify = panva +
+// WebCrypto" cross-check, verifies that (1) B and user_id are inherited
+// from recovery-wrap.json, (2) AAD / info / request_id are assembled in
+// the spec's field order, (3) the XOR of an all-mode segment set returns
+// the KEK, and (4) the handoff code's encoding / decoding is recomputed
+// independently
 {
   const doc = read("master-key-wrap.json");
   const recovery = read("recovery-wrap.json");
@@ -2082,7 +2190,7 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       );
     }
   }
-  // ハンドオフ: request_id / コード
+  // Handoff: request_id / code
   {
     const pk = fromHex(doc.handoff.ephemeral_pub_hex);
     const lp = lpEncode([doc.handoff.request_id_domain, doc.handoff.ephemeral_pub_hex]);
@@ -2121,7 +2229,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       doc.handoff.other_ephemeral.request_id_hex !== doc.handoff.request_id_hex,
     );
   }
-  // 2026-09-20 DK: ハンドオフの承認者は保護者のみ(handoff-device は削除)
+  // 2026-09-20 DK: handoff approvers are guardians only (handoff-device
+  // was removed)
   for (const h of [vectorByName("handoff-guardian-share")]) {
     check(
       `master-wrap: ${h.name} info reconstruction`,
@@ -2138,8 +2247,9 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       "master-wrap: handoff-guardian-share re-seals share 1 of guardian-all-3",
       h.source === all3.group_id && h.value_hex === all3.shares[0].share_hex,
     );
-    // 2026-09-20 DK: 旧端末の承認(handoff-device — kind = "device" の B ラップの同送)は削除。
-    // kind の集合は {passkey-prf, guardian} に閉じる
+    // 2026-09-20 DK: the old-device approval (handoff-device — a
+    // co-delivery of the B wrap with kind = "device") was removed. The
+    // kind set is closed to {passkey-prf, guardian}
     check(
       "master-wrap: no device kind remains (DK)",
       doc.vectors.every(
@@ -2152,7 +2262,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     let failed = false;
     try {
       if (n.code_symbols !== undefined) {
-        // コードの復号: 長さ・アルファベット・ゼロ詰め・チェックサムをすべて検査
+        // Decode the code: check length, alphabet, zero padding, and
+        // checksum — all of them
         const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
         if (n.code_symbols.length !== 58) throw new Error("length");
         const out = new Uint8Array(36);

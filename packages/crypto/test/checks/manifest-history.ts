@@ -1,15 +1,17 @@
-// env-manifest.json の tenure_extension(正規 12 エントリ + seq 13 の
-// 新鍵 re-add)から派生チェーンの検証済み履歴索引を作る。value-signature.json /
-// metadata-signature.json の tenure_extension と同一内容だが、マニフェスト
-// ベクターの自己完結性のために自ファイルのエントリから構築する(将来ファイルが
-// 乖離しても検査対象がずれない — meta-history.ts と同じ判断)。
+// Builds the verified history index of the derived chain from
+// env-manifest.json's tenure_extension (the canonical 12 entries + the seq 13
+// new-key re-add). Identical in content to the tenure_extension of
+// value-signature.json / metadata-signature.json, but built from this file's
+// own entries for the self-containedness of the manifest vectors (so the
+// checked target does not drift even if the files diverge later — the same
+// judgment as meta-history.ts).
 
 import type { ChainHistoryIndex } from "../../src/index.ts";
 import { verifyChainWithHistory } from "../../src/index.ts";
 import manifestVectors from "../../test-vectors/env-manifest.json" with { type: "json" };
 import { toTypedEntry, typedEntries } from "./chain-vector.ts";
 
-/** 正規 12 エントリ + マニフェストベクターの seq 13 re-add の派生チェーンの履歴索引。 */
+/** History index of the derived chain: the canonical 12 entries + the manifest vector's seq 13 re-add. */
 export async function manifestExtendedHistory(): Promise<ChainHistoryIndex> {
   const raw = manifestVectors.tenure_extension.entry;
   const entry = toTypedEntry({

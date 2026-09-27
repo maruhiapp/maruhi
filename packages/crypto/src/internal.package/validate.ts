@@ -1,17 +1,20 @@
-// 署名系モジュール共通の入力検証・検証ヘルパ(dek-wrap-sign.ts / meta-sign.ts /
-// value-sign.ts / meta-verify.ts / value-verify.ts)。hex は小文字・固定長のみを
-// 正規形とする(大文字 hex を許すと同一データに複数の正規形が生まれ、署名・照合の
-// 一意性が壊れる)。
+// Input validation / verification helpers shared by the signature modules
+// (dek-wrap-sign.ts / meta-sign.ts / value-sign.ts / meta-verify.ts /
+// value-verify.ts). Only lowercase fixed-length hex is the normalized form
+// (allowing uppercase hex would give one datum multiple normalized forms and
+// break the uniqueness of signatures and reconciliations).
 //
-// エラーの語彙(ValueInvalidReason / MetaInvalidReason / DekWrapSignatureInvalid)
-// は仕様上意図的に別物なので、ここでは統合しない: 失敗時に返すエラー値・理由
-// コードは呼び出し側がパラメータで注入し、本モジュールは共通の検査ロジックのみを
-// 持つ。
+// The error vocabularies (ValueInvalidReason / MetaInvalidReason /
+// DekWrapSignatureInvalid) are intentionally distinct per spec, so they are
+// not unified here: the error value / reason code returned on failure is
+// injected by the caller via parameters; this module holds only the shared
+// check logic.
 
 import { decodeHex, encodeHex } from "./bytes.ts";
 import { ROLE_RANK } from "./chain-device.ts";
 
-// role の順序は chain-device.ts が唯一の定義(署名系モジュールへはここから再輸出する)
+// The role order is defined only in chain-device.ts (re-exported here for the
+// signature modules)
 export { ROLE_RANK };
 import type { ChainHistoryIndex } from "./chain-history.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
@@ -23,7 +26,7 @@ const FINGERPRINT_HEX_LENGTH = 16 * 2;
 const SHA256_HEX_LENGTH = 32 * 2;
 const SIGNATURE_HEX_LENGTH = SIGNATURE_BYTES * 2;
 
-/** InvalidInput エラー値(フィールド名のみ — 秘密・入力断片を載せない)。 */
+/** An InvalidInput error value (field name only — never carries secrets or input fragments). */
 export function invalidInput(field: string): {
   readonly ok: false;
   readonly error: CryptoError;
@@ -31,15 +34,17 @@ export function invalidInput(field: string): {
   return { ok: false, error: { kind: "InvalidInput", field } };
 }
 
-/** 指定文字数の hex 小文字文字列か(decodeHex は小文字のみ受理)。 */
+/** Whether the value is a lowercase hex string of the given length (decodeHex accepts lowercase only). */
 export function isLowercaseHexOfLength(value: string, length: number): boolean {
   return value.length === length && decodeHex(value) !== null;
 }
 
 /**
- * Ed25519 署名の共有コア(dek-wrap-sign / invite-accept-sign の sign)。
- * WebCrypto 署名と hex 化のみを担い、署名対象の構造検証は呼び出し側が先に行う。
- * WebCrypto 例外の message は伝播させない(errors.ts の絶対規則)。
+ * The shared core of Ed25519 signing (the sign of dek-wrap-sign /
+ * invite-accept-sign). It performs only the WebCrypto signing and hex
+ * encoding; structure validation of the signing target is done by the
+ * caller first. The message of a WebCrypto exception is never propagated
+ * (errors.ts's absolute rule).
  */
 export async function signEd25519Over(
   signedBytes: Uint8Array,
@@ -56,10 +61,12 @@ export async function signEd25519Over(
 }
 
 /**
- * Ed25519 検証の共有コア(dek-wrap-sign / meta-sign / value-sign の verify)。
- * 署名の形(64 バイト hex)の検査と WebCrypto 検証のみを担う。検証失敗と
- * WebCrypto 例外(message は入力断片を含みうるため伝播させない — errors.ts の
- * 絶対規則)は、呼び出し側が注入した `onInvalid` をそのまま返す。
+ * The shared core of Ed25519 verification (the verify of dek-wrap-sign /
+ * meta-sign / value-sign). It performs only the signature-shape check
+ * (64-byte hex) and the WebCrypto verify. Verification failure and
+ * WebCrypto exceptions (whose message may contain input fragments, so it is
+ * never propagated — errors.ts's absolute rule) return the caller-injected
+ * `onInvalid` as-is.
  */
 export async function verifyEd25519Over(
   signedBytes: Uint8Array,
@@ -85,13 +92,14 @@ export async function verifyEd25519Over(
 }
 
 /**
- * 配布検証(meta-verify / value-verify)の共有入力検査プロローグ。アクター FP
- * のフィールド名(writerKeyFingerprintHex / authorKeyFingerprintHex)だけが
- * 呼び出し側で異なるため、InvalidInput に載せる名前を注入する。
+ * The shared input-check prologue of the distributed verifications
+ * (meta-verify / value-verify). Only the actor-FP field name
+ * (writerKeyFingerprintHex / authorKeyFingerprintHex) differs per caller,
+ * so the name carried on InvalidInput is injected.
  */
 export function distributedInputInvalidField(input: {
   readonly actorKeyFingerprintHex: string;
-  /** InvalidInput に載せるフィールド名(例: "writerKeyFingerprintHex")。 */
+  /** The field name carried on InvalidInput (e.g. "writerKeyFingerprintHex"). */
   readonly actorKeyFingerprintField: string;
   readonly signatureHex: string;
   readonly predecessorSignedBytesHashHex: string | undefined;
@@ -112,11 +120,13 @@ export function distributedInputInvalidField(input: {
 }
 
 /**
- * 鍵の選択(§6.3-1 前段)の共有コア: 履歴でアクターの user_id に束縛された鍵の
- * うち FP 一致のものを選択し、WebCrypto へ import する。宣言ヘッド時点の有効
- * 束縛の検査は署名検証の後(headAuthorizationReason)— 署名壊れを先に判定する
- * 検査順のため、選択自体は全 tenure を対象にする。束縛が存在しない場合は
- * 呼び出し側の語彙(writer-unknown / author-unknown)の `onUnknown` を返す。
+ * The shared core of key selection (the lead-in to §6.3-1): selects the key
+ * matching the FP among those the history binds to the actor's user_id, and
+ * imports it into WebCrypto. The check of the effective binding at the
+ * declared head happens after signature verification (headAuthorizationReason)
+ * — since the check order rules out a broken signature first, the selection
+ * itself covers all tenure. When no binding exists, returns `onUnknown` in
+ * the caller's vocabulary (writer-unknown / author-unknown).
  */
 export async function importActorKeyByFingerprint(input: {
   readonly history: ChainHistoryIndex;
@@ -133,15 +143,17 @@ export async function importActorKeyByFingerprint(input: {
   }
   const keyBytes = decodeHex(sigPubHex);
   if (keyBytes === null) {
-    // 検証済みチェーン由来の鍵は常に正規形 hex(到達しない防衛線)
+    // A key derived from a verified chain is always normalized hex (an
+    // unreachable defensive line)
     return { ok: false, error: input.onUnknown };
   }
   return importSigningPublicKey(keyBytes);
 }
 
 /**
- * ヘッド束縛・認可時点検査(§6.3-1〜-3)の理由コード写像。語彙は呼び出し側
- * (ValueInvalidReason / MetaInvalidReason)が所有し、ここでは統合しない。
+ * The reason-code mapping of the head-binding / authorization-time checks
+ * (§6.3-1 to -3). The vocabulary is owned by the caller
+ * (ValueInvalidReason / MetaInvalidReason) and not unified here.
  */
 export interface HeadAuthorizationReasons<R> {
   readonly chainHeadFuture: R;
@@ -152,9 +164,11 @@ export interface HeadAuthorizationReasons<R> {
 }
 
 /**
- * §6.3 の 3′(2026-09-14 ES): 環境対象の署名は、宣言ヘッド時点のアクターの scope が
- * 当該 environment_id を含むこと。理由コードは呼び出し側の語彙(writer- / author- /
- * issuer-environment-out-of-scope-at-head)。環境を持たない署名(ヘッド申告)は渡さない
+ * §6.3's 3′ (2026-09-14 ES): an environment-targeting signature requires
+ * that the actor's scope at the declared head contains the environment_id.
+ * The reason code is the caller's vocabulary (writer- / author- /
+ * issuer-environment-out-of-scope-at-head). Do not pass this for signatures
+ * that carry no environment (head attestations).
  */
 export interface HeadScopeCheck<R> {
   readonly environmentId: string;
@@ -162,17 +176,24 @@ export interface HeadScopeCheck<R> {
 }
 
 /**
- * ヘッド束縛(§6.3-2)と認可時点(§6.3-1 / -3)の共有検査
- * (meta-verify / value-verify の headStateReason 前段):
- * - 不一致 2 種の区別: seq > 自ヘッド = future(再同期の入口)、seq ≤ 自ヘッドの
- *   ハッシュ不一致 = 分岐または偽造の硬い証拠
- * - 宣言ヘッド時点(inclusive)の在籍・鍵束縛・role。鍵不一致は remove → 別鍵
- *   re-add の tenure 跨ぎ(旧区間の鍵 × 新区間のヘッド)と、失効した端末 × 失効後の
- *   ヘッド(2026-09-19 DK — 端末の有効区間)の拒否を含む
- * - role / 3′ スコープ(`scope` が渡された場合)は**署名した端末の実効権限**で判定する
- *   (§6.3「端末鍵の選択と実効権限」— 人の (role, scope) ではなく deviceStateAt の
- *   EffectivePermission。置換点はこの 1 箇所 — 設計録 dk-design.md §7 K2-4)
- * エポック整合(§6.3-4)は値署名のみの検査なので呼び出し側に残す。
+ * The shared check of head binding (§6.3-2) and authorization time
+ * (§6.3-1 / -3) (the lead-in to meta-verify / value-verify's
+ * headStateReason):
+ * - Distinguishes the two kinds of mismatch: seq > own head = future (the
+ *   entry point of resync); a hash mismatch at seq ≤ own head = hard
+ *   evidence of a fork or a forgery
+ * - Membership, key binding, and role at the declared head (inclusive). A
+ *   key mismatch includes rejecting the remove → re-add-with-new-key tenure
+ *   crossing (old interval's key × new interval's head) and a revoked
+ *   device × a post-revocation head (2026-09-19 DK — device validity
+ *   intervals)
+ * - role / 3′ scope (when `scope` is passed) are judged by the **signing
+ *   device's effective permission** (§6.3 "device-key selection and
+ *   effective permission" — deviceStateAt's EffectivePermission, not the
+ *   person's (role, scope). This is the single substitution point — design
+ *   log dk-design.md §7 K2-4)
+ * Epoch integrity (§6.3-4) is left to the caller since it is a check only
+ * for value signatures.
  */
 export function headAuthorizationReason<R>(input: {
   readonly history: ChainHistoryIndex;

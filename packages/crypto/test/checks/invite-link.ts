@@ -1,9 +1,12 @@
-// CRYPTO_SPEC §6.5(IV — リンク鍵の導出・発行署名・OpenSSH 公開鍵行)のチェック。
-// 発行署名は Ed25519 の決定論性により署名方向もベクターと完全一致で検証する。
-// negative は「ベクターの verify_signed_bytes_hex を実装の正規化が再現し、その上で
-// 元の署名が検証に失敗する」ことを固定する。OpenSSH の解析は第三者データ
-// (GitHub 応答)の復号なので、受理境界(種別・鍵長・blob 内種別・余分なバイト・
-// base64)をベクターで固定する。
+// Checks for CRYPTO_SPEC §6.5 (IV — link key derivation, issue signature, and
+// the OpenSSH public key line).
+// The issue signature is Ed25519-deterministic, so the sign direction is also
+// verified to match the vector exactly.
+// The negatives pin that "the implementation's canonicalization reproduces the
+// vector's verify_signed_bytes_hex, and on top of that the original signature
+// fails verification". OpenSSH parsing decodes third-party data (GitHub
+// responses), so the acceptance boundary (type, key length, in-blob type,
+// extra bytes, base64) is pinned with vectors.
 
 import {
   buildInviteIssueSignedBytes,
@@ -57,7 +60,7 @@ function contextOf(v: VectorContext): InviteIssueContext {
     inviterUserId: v.inviter_user_id,
     inviterEncPubHex: v.inviter_enc_pub_hex,
     inviterSigPubHex: v.inviter_sig_pub_hex,
-    // scope(2026-09-14 ES — §6.5 の発行文末尾 2 フィールド)
+    // scope (2026-09-14 ES — the last 2 fields of the §6.5 issue text)
     scopeKind: v.scope_kind as ScopeKind,
     scopeEnvironmentIds: v.scope_environments,
   };
@@ -73,7 +76,7 @@ async function linkKeyChecks(c: Checks): Promise<void> {
       `invite-link: ${label} derived from seed`,
       derived.ok && toHex(derived.value.publicKeyRaw) === key.pub_hex,
     );
-    // 導出した公開鍵オブジェクトも raw と一致する(2 回の import の整合)
+    // The derived public key object also matches raw (consistency of the two imports)
     if (derived.ok) {
       const exported = new Uint8Array(
         await crypto.subtle.exportKey("raw", derived.value.publicKey),
@@ -135,7 +138,7 @@ async function issuePositiveChecks(c: Checks, signingKey: CryptoKey): Promise<vo
 
 interface IssueNegative {
   readonly name: string;
-  /** "encoding" = この実装からは生成されないバイト列(旧形式・平坦化)。無指定 = 改竄・移植。 */
+  /** "encoding" = a byte string this implementation would never produce (legacy form, flattened). Unspecified = tampering / transplant. */
   readonly kind?: string;
   readonly context: VectorContext;
   readonly signature_hex: string;
@@ -171,10 +174,11 @@ async function issueNegativeChecks(c: Checks): Promise<void> {
 }
 
 /**
- * 符号化系 negative(scope を欠く旧 10 フィールド形式・scope の平坦連結): 正規化は
- * ベクターのバイト列を**生まず**、かつそのバイト列上では正規の発行署名が検証に失敗する
- * ことを固定する(README 規約 27 — 互換受理の経路を持たない。chain-entries の
- * flat-concat と同型)
+ * Encoding-family negatives (the legacy 10-field form lacking scope, the flat
+ * scope concatenation): pin that canonicalization **does not produce** the
+ * vector's byte string, and that the canonical issue signature fails
+ * verification on top of that byte string (README convention 27 — there is no
+ * compat-acceptance path; isomorphic to chain-entries' flat-concat)
  */
 async function issueEncodingNegativeCheck(c: Checks, negative: IssueNegative): Promise<void> {
   const context = contextOf(negative.context);
@@ -216,7 +220,7 @@ async function issueInvalidInputChecks(c: Checks): Promise<void> {
     },
     { name: "short inviter enc pub", context: { ...contextOf(base), inviterEncPubHex: "ab" } },
     { name: "short inviter sig pub", context: { ...contextOf(base), inviterSigPubHex: "ab" } },
-    // scope の構造規則(§6.2 と同じ — all ⇒ 空リスト、重複なし、閉集合の kind、非空 id)
+    // The structural rules of scope (same as §6.2 — all ⇒ empty list, no duplicates, closed-set kind, non-empty id)
     {
       name: "all scope with environments",
       context: { ...contextOf(base), scopeKind: "all", scopeEnvironmentIds: ["env-dev-0002"] },
@@ -237,7 +241,7 @@ async function issueInvalidInputChecks(c: Checks): Promise<void> {
       name: "unknown scope kind",
       context: { ...contextOf(base), scopeKind: "some" as ScopeKind, scopeEnvironmentIds: [] },
     },
-    // id の上限(§6.1 の 1024 バイト — チェーン側の add_member と対称)
+    // The id bound (1024 bytes in §6.1 — symmetric to add_member on the chain side)
     {
       name: "oversized scope environment id",
       context: {
@@ -282,13 +286,13 @@ async function issueRoundtripChecks(c: Checks): Promise<void> {
   }
   const verified = await verifyInviteIssueSignature({ context, signatureHex: signed.value });
   c.push("invite-issue-sig: roundtrip", verified.ok);
-  // 別の招待 id へ移植すると検証失敗(サーバーが発行文を別行へ移植できない)
+  // Transplanting to a different invite id fails verification (the server cannot transplant the issue text to another row)
   const transplanted = await verifyInviteIssueSignature({
     context: { ...context, inviteId: "invite-other" },
     signatureHex: signed.value,
   });
   c.push("invite-issue-sig: roundtrip transplanted invite id rejected", !transplanted.ok);
-  // ゴースト追加者の形: 宣言鍵を招待者の公開鍵にしても、別鍵の署名は通らない
+  // The ghost-adder shape: even setting the declared key to the inviter's public key, a signature by another key does not pass
   const ghost = await generateSigningKeyPair();
   const ghostSigned = await signInviteIssue({ context, signingKey: ghost.privateKey });
   const ghostVerified = ghostSigned.ok
@@ -300,7 +304,7 @@ async function issueRoundtripChecks(c: Checks): Promise<void> {
 function opensshChecks(c: Checks): void {
   opensshVectorChecks(c);
   opensshRoundtripChecks(c);
-  // 解析の拒否(規約 21: 実装ハーネスで固定 — ベクターの負例に無い形)
+  // Parse rejections (convention 21: pinned in the implementation harness — shapes not present in the vector negatives)
   for (const [name, input] of rejectedOpenSshInputs()) {
     const rejectedParse = parseOpenSshEd25519PublicKey(input as string);
     c.push(
@@ -332,7 +336,7 @@ function opensshVectorChecks(c: Checks): void {
 }
 
 function opensshRoundtripChecks(c: Checks): void {
-  // 符号化 → 解析の往復(生成鍵)と、鍵長違いの符号化拒否
+  // The encode → parse round-trip (generated key), and encode rejection of a wrong key length
   const raw = new Uint8Array(32);
   crypto.getRandomValues(raw);
   const encoded = encodeOpenSshEd25519PublicKey(raw);
@@ -342,7 +346,7 @@ function opensshRoundtripChecks(c: Checks): void {
   c.push("openssh: encode short key rejected", !shortKey.ok);
 }
 
-/** ベクターの正例を素材にした拒否入力(型ずれ・長さ・アルファベット・空白)。 */
+/** Rejected inputs built from the vector's positive case (type mismatch, length, alphabet, whitespace). */
 function rejectedOpenSshInputs(): readonly (readonly [string, unknown])[] {
   const good = vectors.openssh.parse[0];
   if (good === undefined) {
@@ -352,11 +356,11 @@ function rejectedOpenSshInputs(): readonly (readonly [string, unknown])[] {
   const line = `${type} ${text}`;
   const blob = base64ToBytes(text);
   const withBlob = (bytes: Uint8Array) => `${type} ${bytesToBase64(bytes)}`;
-  // 33 バイトの鍵(内側の長さ接頭辞も 33 に合わせる)
+  // A 33-byte key (the inner length prefix is also set to 33)
   const longKey = new Uint8Array(blob.length + 1);
   longKey.set(blob);
   longKey[4 + 11 + 3] = 33;
-  // 内側の種別長さ接頭辞だけ 10 にし、全長は保つ
+  // Only the inner type length prefix set to 10, keeping the total length
   const badInnerLength = new Uint8Array(blob);
   badInnerLength[3] = 10;
   return [
@@ -364,7 +368,7 @@ function rejectedOpenSshInputs(): readonly (readonly [string, unknown])[] {
     ["non-string input (number)", 42],
     ["33-byte key", withBlob(longKey)],
     ["inner type length mismatch with same total length", withBlob(badInnerLength)],
-    // base64url だけの文字(- _)は標準アルファベット外(長さは保つ)
+    // base64url-only characters (- _) are outside the standard alphabet (length is kept)
     ["base64url alphabet", `${type} -_${text.slice(2)}`],
     ["whitespace inside the base64", `${type} ${text.slice(0, 10)} ${text.slice(10)}`],
     ["leading space", ` ${line}`],

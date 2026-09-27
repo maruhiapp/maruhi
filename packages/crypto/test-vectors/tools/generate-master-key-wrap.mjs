@@ -1,38 +1,53 @@
-// master-key-wrap.json(CRYPTO_SPEC §8 — 予備鍵ラップ台帳。0.9-draft / KL3、0.12-draft / DK で
-// 旧端末のハンドオフ経路〔kind = "device" / source = "device"〕を削除して再生成)の参照生成器。
-// dek-wrap.json / lease-wrap.json と同じ理由で hpke-js を使う: 製品実装が採用する
-// panva hpke とは独立の実装系であり、ekm による derandomize で Seal 方向を決定論的に
-// 固定できる(panva では不可。docs/notes/spike-c.md)。HKDF / AES-GCM / SHA-256 は
-// WebCrypto(Bun)。使い捨ての参照ツールであり、製品コードではない。鍵・値はすべてダミー。
+// Reference generator for master-key-wrap.json (CRYPTO_SPEC §8 — the
+// reserve key wrap ledger. Regenerated at 0.9-draft / KL3 and 0.12-draft /
+// DK, deleting the old-device handoff route [kind = "device" / source =
+// "device"]).
+// Uses hpke-js for the same reason as dek-wrap.json / lease-wrap.json: an
+// implementation family independent of the panva hpke the product
+// implementation adopts, and the Seal direction can be pinned
+// deterministically via ekm derandomize (impossible with panva.
+// docs/notes/spike-c.md). HKDF / AES-GCM / SHA-256 use WebCrypto (Bun).
+// A disposable reference tool, not product code. All keys and values are
+// dummies.
 //
-// recovery-wrap.json を読み、その master_secret_blob_hex(ブロブ B)と user_id を
-// 引き継ぐ: 台帳は「同じ B を受信者ごとに包んだラップの集合」であり、recovery-code
-// 行(既存ベクター — 不変)と新経路が同じ B を指すことをベクター上で追跡できる。
-// 2026-09-20 DK 以後、B は予備鍵のブロブ(§3 / §8.1)。旧「端末移行」(旧端末が承認者になる
-// ハンドオフ — kind = "device" の B ラップの同送)は削除され、承認者は保護者のみ(§8.4)。
-// 端末の追加はチェーン op `add_device`(§6.2)であり本ベクターの対象外。削除は README 規約 28
-// の意図的な例外(既存ベクター不変の規律に対する)で、他のケースのバイト列は不変
+// Reads recovery-wrap.json and inherits its master_secret_blob_hex (blob B)
+// and user_id: the ledger is "the set of wraps that pack the same B for
+// each recipient", so it is traceable on the vectors that the
+// recovery-code row (an existing vector — unchanged) and the new routes
+// point at the same B.
+// Since 2026-09-20 DK, B is the blob of the reserve key (§3 / §8.1). The
+// old "device migration" (a handoff where the old device acts as
+// approver — a co-delivery of the B wrap with kind = "device") was
+// removed; approvers are now guardians only (§8.4). Adding a device is
+// the chain op `add_device` (§6.2), out of scope for this vector. The
+// removal is an intentional exception to README convention 28 (the
+// discipline of not changing existing vectors); the byte strings of the
+// other cases are unchanged
 //
-// 固定するもの(§8.1〜8.4):
+// Pinned (§8.1-8.4):
 //   - master_wrap_aad = LP("maruhi/v1/master-wrap", user_id, kind, wrap_ref, mode)
-//     (kind ∈ {passkey-prf, guardian} — `device` は 2026-09-20 DK で削除)
-//   - passkey-prf: KEK = HKDF(prf_out, salt=空, info="maruhi/v1/passkey-prf")
-//   - guardian: mode any = 全分片が KEK / mode all = 乱数 XOR 分割(s_n = KEK ⊕ 他)、
-//     分片は HPKE Seal(info = LP("maruhi/v1/guardian-wrap", user_id, group_id, mode,
-//     share_index, guardian_user_id)、aad 空)
-//   - handoff: request_id = SHA-256(LP("maruhi/v1/handoff-id", E_pub_hex))、
-//     ハンドオフコード = Base32(E_pub ‖ SHA-256(E_pub)[:4])を 4 文字ずつハイフン区切り、
-//     承認 = HPKE Seal(info = LP("maruhi/v1/handoff-wrap", user_id, request_id, source,
-//     share_index, approver_user_id)、aad 空)
+//     (kind in {passkey-prf, guardian} — `device` was removed at
+//     2026-09-20 DK)
+//   - passkey-prf: KEK = HKDF(prf_out, salt=empty, info="maruhi/v1/passkey-prf")
+//   - guardian: mode any = every segment is the KEK / mode all = random
+//     XOR split (s_n = KEK XOR the others); a segment is an HPKE Seal
+//     (info = LP("maruhi/v1/guardian-wrap", user_id, group_id, mode,
+//     share_index, guardian_user_id), aad empty)
+//   - handoff: request_id = SHA-256(LP("maruhi/v1/handoff-id", E_pub_hex));
+//     handoff code = Base32(E_pub || SHA-256(E_pub)[:4]) in groups of 4
+//     characters separated by hyphens; approval = HPKE Seal
+//     (info = LP("maruhi/v1/handoff-wrap", user_id, request_id, source,
+//     share_index, approver_user_id), aad empty)
 //
-// 再生成: bun install && bun run generate(このディレクトリで実行)
+// Regenerate: bun install && bun run generate (run in this directory)
 import { readFileSync, writeFileSync } from "node:fs";
 
 import { Aes256Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
 import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
 
-// CRYPTO_SPEC §2.1 の長さプレフィックス付きエンコーディング(他の生成器と同一定義。
-// tools/ は使い捨てのため共有モジュール化しない既存慣行に従う)
+// CRYPTO_SPEC §2.1 length-prefixed encoding (same definition as the other
+// generators. tools/ is disposable, so per existing convention each file
+// carries its own independent definition rather than sharing a module)
 function lpEncode(fields) {
   const parts = [];
   for (const f of fields) {
@@ -66,7 +81,7 @@ const xor = (...arrays) => {
   return out;
 };
 
-// --- Base32(RFC 4648 アルファベット・パディング無し)------------------------------
+// --- Base32 (RFC 4648 alphabet, no padding) ------------------------------
 const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 function base32Encode(bytes) {
   let bits = 0;
@@ -143,7 +158,7 @@ async function hkdf(ikmBytes, infoUtf8) {
   );
 }
 
-// --- recovery-wrap.json から B と user_id を引き継ぐ ------------------------------
+// --- Inherit B and user_id from recovery-wrap.json -------------------------------
 const recoveryDoc = JSON.parse(
   readFileSync(new URL("../recovery-wrap.json", import.meta.url), "utf8"),
 );
@@ -164,19 +179,19 @@ const guardianInfo = (groupId, mode, shareIndex, guardianUserId) =>
 const handoffInfo = (requestId, source, shareIndex, approverUserId) =>
   lpEncode([HANDOFF_WRAP_DOMAIN, userId, requestId, source, shareIndex, approverUserId]);
 
-// --- クラス S: passkey-prf ----------------------------------------------------------
+// --- Class S: passkey-prf -----------------------------------------------------
 const passkeyWrapId = "01JMKWRAP0000000000000PASSK";
 const credentialId = pat(0x11, 16);
 const prfSalt = pat(0x20, 32);
-const prfOut = pat(0x10, 32); // 認証器の HMAC 出力(ベクターでは固定パターン)
-const otherPrfOut = pat(0x18, 32); // 別 prf_salt で評価した出力(prf-salt-mismatch の材料)
+const prfOut = pat(0x10, 32); // the authenticator's HMAC output (a fixed pattern in the vector)
+const otherPrfOut = pat(0x18, 32); // an output evaluated under a different prf_salt (material for prf-salt-mismatch)
 const passkeyKek = await hkdf(prfOut, PASSKEY_HKDF_INFO);
 const otherPasskeyKek = await hkdf(otherPrfOut, PASSKEY_HKDF_INFO);
 const passkeyNonce = pat(0xe0, 12);
 const passkeyAad = masterAad("passkey-prf", passkeyWrapId, "");
 const passkeyCt = await aesGcmEncrypt(passkeyKek, passkeyNonce, passkeyAad, blob);
 
-// --- クラス G: guardian(any-2 / all-3)---------------------------------------------
+// --- Class G: guardian (any-2 / all-3) ----------------------------------------
 const guardianKeys = {
   "user-member-0002": await deriveKeyPair(pat(0x71, 32)),
   "user-admin-0003": await deriveKeyPair(pat(0x72, 32)),
@@ -231,7 +246,7 @@ async function sealShares(group, ekmPrefix) {
 any2.sealed = await sealShares(any2, 0x91);
 all3.sealed = await sealShares(all3, 0x93);
 
-// --- クラス H: handoff ---------------------------------------------------------------
+// --- Class H: handoff ----------------------------------------------------------
 const ephemeral = await deriveKeyPair(pat(0xd1, 32));
 const otherEphemeral = await deriveKeyPair(pat(0xd2, 32));
 const requestIdOf = async (pkHex) => hex(await sha256(lpEncode([HANDOFF_ID_DOMAIN, pkHex])));
@@ -248,7 +263,8 @@ const codeOf = async (pkHex) => {
 };
 const code = await codeOf(ephemeral.pk_hex);
 
-// 保護者の承認: all-3 の分片 1(user-member-0002)を E.pub へ再封印
+// The guardian's approval: re-seal segment 1 of all-3 (user-member-0002)
+// to E.pub
 const guardianApprovalInfo = handoffInfo(requestId, all3.group_id, 1, "user-member-0002");
 const guardianApprovalEkm = pat(0x96, 32);
 const guardianApproval = await seal(
@@ -258,21 +274,23 @@ const guardianApproval = await seal(
   guardianApprovalEkm,
 );
 
-// (旧端末の承認 — kind = "device" の B ラップの同送 — は 2026-09-20 DK で削除。承認者は保護者のみ)
+// (The old-device approval — a co-delivery of the B wrap with kind =
+// "device" — was removed at 2026-09-20 DK. Approvers are guardians only)
 
-// --- 負例の材料 ---------------------------------------------------------------------
+// --- Material for the negatives -----------------------------------------------
 const flipFirstHexNibble = (h) =>
   `${(Number.parseInt(h.slice(0, 2), 16) ^ 0x01).toString(16).padStart(2, "0")}${h.slice(2)}`;
 const badChecksumSymbols = `${code.symbols.slice(0, 55)}${code.symbols[55] === "A" ? "B" : "A"}${code.symbols.slice(56)}`;
-// 末尾シンボルの下位 2 bit(ゼロ詰め)が非ゼロ: 最終シンボル値 +1
+// The low 2 bits of the final symbol (zero-padding) are non-zero: final
+// symbol value +1
 const lastValue = B32.indexOf(code.symbols[57]);
 const badPaddingSymbols = `${code.symbols.slice(0, 57)}${B32[(lastValue + 1) % 32]}`;
 
 const vector = {
   description:
-    'CRYPTO_SPEC §8(0.9-draft / KL3。0.12-draft / DK で予備鍵ラップ台帳へ改訂 — 旧端末のハンドオフ経路〔kind = "device" / source = "device"〕を削除して再生成、他のケースのバイト列は不変): B = 予備鍵のブロブ(recovery-wrap.json の master_secret_blob_hex と同一)を受信者クラス S(passkey-prf: HKDF + AES-256-GCM)/ G(guardian: 乱数 KEK + AES-256-GCM、分片は HPKE Seal)/ H(handoff: 保護者の承認 — 一時鍵 E への HPKE Seal)へ包む。AES-GCM は WebCrypto、Seal は hpke-js の ekm derandomize で固定(panva 実装は Open 方向 + ラウンドトリップで検証する)。recovery-wrap.json(recovery-code 行)はバイト互換のまま不変',
+    'CRYPTO_SPEC §8 (0.9-draft / KL3. Revised into the reserve key wrap ledger at 0.12-draft / DK — regenerated with the old-device handoff route [kind = "device" / source = "device"] removed; the byte strings of the other cases are unchanged): wraps B = the reserve key blob (identical to recovery-wrap.json\'s master_secret_blob_hex) for recipient classes S (passkey-prf: HKDF + AES-256-GCM) / G (guardian: random KEK + AES-256-GCM; segments are HPKE Seals) / H (handoff: a guardian\'s approval — an HPKE Seal to the ephemeral key E). AES-GCM uses WebCrypto; Seal is pinned by hpke-js ekm derandomize (the panva implementation is verified in the Open direction + roundtrip). recovery-wrap.json (the recovery-code row) stays byte-compatible and unchanged',
   provenance_note:
-    "user_id と B は recovery-wrap.json の basic を引き継ぐ。台帳 = 同一 B(2026-09-20 DK 以後は予備鍵のブロブ)に対する受信者ごとのラップの集合であることを実データで表す。kind ∈ {passkey-prf, guardian}、ハンドオフの承認者は保護者のみ(旧端末経路の handoff-device と kind = device への付け替え負例は DK で削除 — README 規約 28)",
+    "user_id and B are inherited from recovery-wrap.json's basic. Expresses in real data that the ledger = the set of per-recipient wraps over the same B (the reserve-key blob since 2026-09-20 DK). kind in {passkey-prf, guardian}; handoff approvers are guardians only (the handoff-device old-device route and the kind = device relabeling negatives were removed at DK — README convention 28)",
   master_wrap_aad_fields_order: ["domain", "user_id", "kind", "wrap_ref", "mode"],
   guardian_wrap_info_fields_order: [
     "domain",
@@ -300,7 +318,7 @@ const vector = {
         ikm_hex: k.ikm_hex,
         sk_hex: k.sk_hex,
         pk_hex: k.pk_hex,
-        note: "保護者の master enc 鍵(DEK ラップを受ける鍵と同じ)。DeriveKeyPair(ikm) による決定論的生成",
+        note: "The guardian's master enc key (the same key that receives DEK wraps). Deterministic generation via DeriveKeyPair(ikm)",
       },
     ]),
   ),
@@ -308,11 +326,11 @@ const vector = {
     ikm_hex: ephemeral.ikm_hex,
     sk_hex: ephemeral.sk_hex,
     pk_hex: ephemeral.pk_hex,
-    note: "要求者(予備鍵を復元する端末)の一時 X25519 鍵 E。ベクターの決定論のため DeriveKeyPair(ikm) で固定するが、実運用では毎回ランダム生成し要求者プロセスとともに破棄する(§8.4)",
+    note: "The requester's (the device restoring the reserve key) ephemeral X25519 key E. Fixed via DeriveKeyPair(ikm) for vector determinism, but in production it is randomly generated each time and discarded with the requester process (§8.4)",
   },
   passkey: {
     hkdf: { salt: "", info_utf8: PASSKEY_HKDF_INFO, length: 32 },
-    note: "prf_out = WebAuthn PRF(credential, eval.first = prf_salt)。prf_salt は登録ごとの乱数で公開パラメータ。KEK = HKDF-SHA256(prf_out, salt 空, info)",
+    note: "prf_out = WebAuthn PRF(credential, eval.first = prf_salt). prf_salt is a per-registration random value and a public parameter. KEK = HKDF-SHA256(prf_out, salt empty, info)",
   },
   handoff: {
     request_id_domain: HANDOFF_ID_DOMAIN,
@@ -324,13 +342,13 @@ const vector = {
       checksum_hex: code.checksum_hex,
       symbols: code.symbols,
       display: code.display,
-      note: "ハンドオフコード = Base32(RFC 4648 アルファベット・パディング無し)(E_pub 32 B ‖ SHA-256(E_pub)[:4]) = 58 シンボル(末尾 2 bit はゼロ詰め)。表示は 4 文字ずつハイフン区切り。入力は小文字・ハイフン・空白を吸収し、アルファベット外・長さ違い・チェックサム不一致・ゼロ詰め非ゼロは拒否",
+      note: "handoff code = Base32 (RFC 4648 alphabet, no padding) (E_pub 32 B || SHA-256(E_pub)[:4]) = 58 symbols (the trailing 2 bits are zero padding). Display is groups of 4 characters separated by hyphens. Input tolerates lowercase, hyphens, and whitespace; non-alphabet, wrong length, checksum mismatch, or non-zero padding is rejected",
     },
     other_ephemeral: {
       ikm_hex: otherEphemeral.ikm_hex,
       pk_hex: otherEphemeral.pk_hex,
       request_id_hex: otherRequestId,
-      note: "別要求(別の一時鍵)。transplant-request-id の材料",
+      note: "A different request (a different ephemeral key). Material for transplant-request-id",
     },
   },
   vectors: [
@@ -346,7 +364,7 @@ const vector = {
       aad_hex: hex(passkeyAad),
       nonce_hex: hex(passkeyNonce),
       ciphertext_hex: hex(passkeyCt),
-      note: "パスキー PRF 由来 KEK による B のラップ。AAD = LP(master-wrap, user_id, 'passkey-prf', wrap_id, '')",
+      note: "A wrap of B under a passkey-PRF-derived KEK. AAD = LP(master-wrap, user_id, 'passkey-prf', wrap_id, '')",
     },
     {
       name: "guardian-any-2",
@@ -359,7 +377,7 @@ const vector = {
       nonce_hex: hex(any2.nonce),
       ciphertext_hex: hex(any2.ciphertext),
       shares: any2.sealed,
-      note: "1-of-n(mode any): 全分片 = KEK。どの 1 片でも B を開ける",
+      note: "1-of-n (mode any): every segment is the KEK. Any single piece opens B",
     },
     {
       name: "guardian-all-3",
@@ -372,7 +390,7 @@ const vector = {
       nonce_hex: hex(all3.nonce),
       ciphertext_hex: hex(all3.ciphertext),
       shares: all3.sealed,
-      note: "n-of-n(mode all): s_1, s_2 は乱数、s_3 = KEK ⊕ s_1 ⊕ s_2。KEK = 全片の XOR",
+      note: "n-of-n (mode all): s_1, s_2 are random; s_3 = KEK XOR s_1 XOR s_2. KEK = the XOR of all pieces",
     },
     {
       name: "handoff-guardian-share",
@@ -387,24 +405,25 @@ const vector = {
       aad_hex: "",
       enc_hex: guardianApproval.enc_hex,
       ciphertext_hex: guardianApproval.ciphertext_hex,
-      note: "保護者 user-member-0002 が guardian-all-3 の分片 1 を開き、その場で要求者の E.pub へ再封印した承認",
+      note: "An approval where guardian user-member-0002 opens segment 1 of guardian-all-3 and re-seals it in place to the requester's E.pub",
     },
   ],
   negative: [
     {
       name: "aad-kind-mismatch",
       base: "guardian-any-2",
-      // mode は guardian のみ(§8.1)。passkey-prf へ付け替えた AAD の mode 欄は空文字列
+      // mode exists only for guardian (§8.1). The mode field of an AAD
+      // relabeled to passkey-prf is the empty string
       decrypt_aad_hex: hex(masterAad("passkey-prf", any2.group_id, "")),
       must_fail: true,
-      note: "kind の付け替え(guardian → passkey-prf。同じ wrap_ref のまま。mode 欄は仕様どおり passkey-prf では空文字列)は復号失敗。2026-09-20 DK で旧 passkey-prf → device の形から作り直した(kind の集合から device が消えたため)",
+      note: "Relabeling the kind (guardian → passkey-prf, same wrap_ref; the mode field is the empty string as the spec prescribes for passkey-prf) fails decryption. Rebuilt at 2026-09-20 DK from the old passkey-prf → device form (device no longer exists in the kind set)",
     },
     {
       name: "aad-wrap-ref-mismatch",
       base: "passkey-prf-basic",
       decrypt_aad_hex: hex(masterAad("passkey-prf", "01JMKWRAP0000000000000OTHER", "")),
       must_fail: true,
-      note: "別の wrap_id(別行)への移植は復号失敗",
+      note: "Transplanting to a different wrap_id (a different row) fails decryption",
     },
     {
       name: "aad-user-mismatch",
@@ -413,28 +432,28 @@ const vector = {
         lpEncode([MASTER_WRAP_DOMAIN, "user-member-0002", "passkey-prf", passkeyWrapId, ""]),
       ),
       must_fail: true,
-      note: "他ユーザーの台帳への移植は復号失敗",
+      note: "Transplanting into another user's ledger fails decryption",
     },
     {
       name: "aad-mode-all-as-any",
       base: "guardian-all-3",
       decrypt_aad_hex: hex(masterAad("guardian", all3.group_id, "any")),
       must_fail: true,
-      note: "サーバーが all グループを any と偽っても(要求者が 1 片で足りると誤らされても)AAD の mode 束縛で復号失敗",
+      note: "Even if the server misrepresents an all group as any (misleading the requester into believing one piece suffices), the AAD mode binding fails decryption",
     },
     {
       name: "aad-mode-any-as-all",
       base: "guardian-any-2",
       decrypt_aad_hex: hex(masterAad("guardian", any2.group_id, "all")),
       must_fail: true,
-      note: "any グループを all と偽る方向も復号失敗",
+      note: "The opposite direction — misrepresenting an any group as all — also fails decryption",
     },
     {
       name: "share-missing",
       base: "guardian-all-3",
       decrypt_kek_hex: hex(xor(all3.shares[0], all3.shares[1])),
       must_fail: true,
-      note: "n−1 片(s_1 ⊕ s_2)では KEK にならず復号失敗(n-of-n の固定)",
+      note: "n-1 pieces (s_1 XOR s_2) do not reconstruct the KEK and decryption fails (pins n-of-n)",
     },
     {
       name: "prf-salt-mismatch",
@@ -442,7 +461,7 @@ const vector = {
       other_prf_out_hex: hex(otherPrfOut),
       decrypt_kek_hex: hex(otherPasskeyKek),
       must_fail: true,
-      note: "別 prf_salt で評価した PRF 出力から導いた KEK では復号失敗(登録ごとの乱数 salt = 登録ごとの独立 KEK)",
+      note: "A KEK derived from a PRF output evaluated under a different prf_salt fails decryption (the per-registration random salt = an independent KEK per registration)",
     },
     {
       name: "suite-mismatch",
@@ -451,7 +470,7 @@ const vector = {
         lpEncode(["maruhi/v2/master-wrap", userId, "passkey-prf", passkeyWrapId, ""]),
       ),
       must_fail: true,
-      note: "ドメイン文字列のスイート部を変えた AAD では復号失敗(スイート束縛はドメイン文字列が担う)",
+      note: "An AAD with the suite portion of the domain string changed fails decryption (suite binding is carried by the domain string)",
     },
     {
       name: "guardian-transplant-share-index",
@@ -459,7 +478,7 @@ const vector = {
       share_index: 1,
       open_info_hex: hex(guardianInfo(all3.group_id, all3.mode, 2, "user-member-0002")),
       must_fail: true,
-      note: "分片番号の付け替えは Open 失敗",
+      note: "Relabeling the share index fails Open",
     },
     {
       name: "guardian-transplant-guardian",
@@ -467,7 +486,7 @@ const vector = {
       share_index: 1,
       open_info_hex: hex(guardianInfo(all3.group_id, all3.mode, 1, "user-admin-0003")),
       must_fail: true,
-      note: "別の保護者への帰属付け替えは Open 失敗(鍵も違うが info だけでも落ちる形を固定)",
+      note: "Re-attributing to a different guardian fails Open (the key differs too, but this pins that info alone already fails)",
     },
     {
       name: "guardian-transplant-group",
@@ -475,7 +494,7 @@ const vector = {
       share_index: 1,
       open_info_hex: hex(guardianInfo(any2.group_id, all3.mode, 1, "user-member-0002")),
       must_fail: true,
-      note: "別グループへの移植は Open 失敗",
+      note: "Transplanting to another group fails Open",
     },
     {
       name: "guardian-mode-relabel",
@@ -483,63 +502,63 @@ const vector = {
       share_index: 1,
       open_info_hex: hex(guardianInfo(all3.group_id, "any", 1, "user-member-0002")),
       must_fail: true,
-      note: "分片側でも mode の付け替えは Open 失敗(AAD と info の二重束縛)",
+      note: "On the share side, relabeling the mode also fails Open (double binding by AAD and info)",
     },
     {
       name: "handoff-transplant-request-id",
       base: "handoff-guardian-share",
       open_info_hex: hex(handoffInfo(otherRequestId, all3.group_id, 1, "user-member-0002")),
       must_fail: true,
-      note: "別要求への移植は Open 失敗(承認は要求 1 件に束縛)",
+      note: "Transplanting to a different request fails Open (an approval is bound to one request)",
     },
     {
       name: "handoff-transplant-approver",
       base: "handoff-guardian-share",
       open_info_hex: hex(handoffInfo(requestId, all3.group_id, 1, "user-admin-0003")),
       must_fail: true,
-      note: "承認者の帰属付け替えは Open 失敗",
+      note: "Re-attributing the approver fails Open",
     },
     {
       name: "handoff-transplant-source",
       base: "handoff-guardian-share",
       open_info_hex: hex(handoffInfo(requestId, any2.group_id, 1, "user-member-0002")),
       must_fail: true,
-      note: "source の付け替え(保護者分片のグループ all-3 → 別グループ any-2)は Open 失敗(要求者の組み立て経路〔どのグループの分片か〕を偽れない。2026-09-20 DK で旧 → device の形から作り直した)",
+      note: "Relabeling the source (the guardian segment's group all-3 → another group any-2) fails Open (the requester's assembly route [which group's segment] cannot be forged. Rebuilt at 2026-09-20 DK from the old → device form)",
     },
     {
       name: "handoff-share-index-mismatch",
       base: "handoff-guardian-share",
       open_info_hex: hex(handoffInfo(requestId, all3.group_id, 2, "user-member-0002")),
       must_fail: true,
-      note: "分片番号の付け替えは Open 失敗",
+      note: "Relabeling the share index fails Open",
     },
     {
       name: "handoff-code-checksum-mismatch",
       base: "handoff-guardian-share",
       code_symbols: badChecksumSymbols,
       must_fail: true,
-      note: "1 シンボル違いのコードはチェックサム不一致で拒否(別の公開鍵として黙って解釈しない)",
+      note: "A code one symbol off is rejected on checksum mismatch (not silently interpreted as a different public key)",
     },
     {
       name: "handoff-code-bad-padding",
       base: "handoff-guardian-share",
       code_symbols: badPaddingSymbols,
       must_fail: true,
-      note: "末尾 2 bit のゼロ詰めが非ゼロのコードは拒否",
+      note: "A code whose trailing 2-bit zero padding is non-zero is rejected",
     },
     {
       name: "handoff-code-wrong-length",
       base: "handoff-guardian-share",
       code_symbols: code.symbols.slice(0, 57),
       must_fail: true,
-      note: "58 シンボル以外は拒否",
+      note: "Anything other than 58 symbols is rejected",
     },
     {
       name: "handoff-request-id-other-key",
       base: "handoff-guardian-share",
       open_enc_hex: flipFirstHexNibble(guardianApproval.enc_hex),
       must_fail: true,
-      note: "encapsulated key の改竄は Open 失敗",
+      note: "Tampering with the encapsulated key fails Open",
     },
   ],
 };

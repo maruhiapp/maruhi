@@ -1,13 +1,16 @@
-// @maruhi/crypto — E2EE コア(WebCrypto + HPKE)。
-// 暗号仕様は docs/CRYPTO_SPEC.md が唯一の正。このパッケージへの変更は人間レビュー必須。
-// 実装は test-vectors/ の全ベクターを通ることを必須とする。
+// @maruhi/crypto — the E2EE core (WebCrypto + HPKE).
+// docs/CRYPTO_SPEC.md is the sole source of truth for the crypto spec. Changes to
+// this package require human review.
+// Implementations must pass every vector in test-vectors/.
 //
-// 全環境(ブラウザ / Bun / workerd)で動く: WebCrypto + panva hpke 以外のプリミティブ禁止。
-// エラーは型付きエラー値(CryptoResult)で返し、Effect ラップは packages/core 側で行う。
+// Runs in every environment (browser / Bun / workerd): no primitives other than
+// WebCrypto + panva hpke.
+// Errors are returned as typed error values (CryptoResult); Effect wrapping is
+// done on the packages/core side.
 //
-// export は CRYPTO_SPEC のセクション別にグルーピングしている(集合は不変)。
+// Exports are grouped by CRYPTO_SPEC section (the grouping does not change the set).
 
-// §1-§2: 共通 — スイート識別子・エンコーディング規約(§2.1)・結果型
+// §1-§2: common — suite identifier, encoding conventions (§2.1), result types
 export {
   type AeadOperation,
   type CryptoError,
@@ -19,9 +22,11 @@ export {
   SUITE_ID,
 } from "./internal.package/index.ts";
 
-// §3: 鍵階層 — マスター鍵ペア・DEK の生成、鍵の入出力、ユーザー鍵フィンガープリント、
-// FP のワード表示(BIP39 英語 12 語 — 帯域外照合の表示符号化。辞書は §3 の固定
-// 辞書として公開する — 完全性はテストが upstream 既知ハッシュで固定)
+// §3: key hierarchy — master key pair / DEK generation, key import/export,
+// user key fingerprints, FP word rendering (BIP39 English 12 words — the
+// display encoding for out-of-band reconciliation. The dictionary is
+// published as §3's fixed dictionary — completeness is pinned by a test
+// against a known upstream hash)
 export {
   BIP39_ENGLISH_WORDS,
   computeUserKeyFingerprint,
@@ -44,7 +49,7 @@ export {
   type SigningKeyPair,
 } from "./internal.package/index.ts";
 
-// §4: 変数の暗号化 — AES-GCM と座標束縛 AAD
+// §4: variable encryption — AES-GCM with coordinate-bound AAD
 export {
   buildVariableAad,
   decryptVariable,
@@ -53,7 +58,7 @@ export {
   type VariableContext,
 } from "./internal.package/index.ts";
 
-// §4.1: 値の書き込み署名
+// §4.1: value write signatures
 export {
   buildValueSignedBytes,
   computeValueSignedBytesHash,
@@ -66,8 +71,8 @@ export {
   verifyValueSignature,
 } from "./internal.package/index.ts";
 
-// §4.2: 変数・環境メタデータの署名付きステートメント(レイアウト v2 — スキーマ欄・
-// declared・レイアウト選択 — を含む。0.8-draft)
+// §4.2: signed statements of variable / environment metadata (including
+// layout v2 — schema columns, declared, layout selection — 0.8-draft)
 export {
   buildMetaSignedBytes,
   computeMetaSignedBytesHash,
@@ -86,8 +91,9 @@ export {
   verifyMetaStatementSignature,
 } from "./internal.package/index.ts";
 
-// §4.3: 環境マニフェスト(メタ層の鮮度アンカー — エポック焼き込み +
-// 変数集合ダイジェスト。正規形実装はここに 1 つだけ置き、サーバー / CLI が共有する)
+// §4.3: environment manifest (the freshness anchor of the meta layer —
+// epoch baking + variable-set digest. The canonical implementation lives
+// exactly here, shared by server / CLI)
 export {
   buildEnvManifestSignedBytes,
   computeEnvManifestSignedBytesHash,
@@ -104,7 +110,7 @@ export {
   verifyEnvManifestSignature,
 } from "./internal.package/index.ts";
 
-// §5: 鍵ラップ(HPKE)
+// §5: key wrap (HPKE)
 export {
   buildDekWrapInfo,
   type DekWrapContext,
@@ -113,7 +119,7 @@ export {
   type WrappedDek,
 } from "./internal.package/index.ts";
 
-// §5.1: DEK ラップの登録署名
+// §5.1: registration signature of DEK wraps
 export {
   buildDekWrapSignatureBytes,
   type DekWrapSignatureContext,
@@ -121,7 +127,7 @@ export {
   verifyDekWrapSignature,
 } from "./internal.package/index.ts";
 
-// §5.2: エポック DEK のコミットメント(チェーンによる真正性の束縛)
+// §5.2: the epoch DEK commitment (authenticity bound by the chain)
 export {
   buildDekCommitmentBytes,
   computeDekCommitment,
@@ -129,9 +135,9 @@ export {
   verifyDekCommitment,
 } from "./internal.package/index.ts";
 
-// §6: メンバーシップログ(署名付きハッシュチェーン)— エントリ形式(§6.1)、
-// role と操作種別(§6.2 — 2026-09-14 ES の環境スコープ / PF1 の四眼を含む)、
-// 検証(§6.3 / §6.4)、導出状態
+// §6: membership log (signed hash chain) — entry format (§6.1), roles and
+// operation kinds (§6.2 — including 2026-09-14 ES's environment scope and
+// PF1's four-eyes), verification (§6.3 / §6.4), derived state
 export {
   type AddDevicePayload,
   type AddMemberPayload,
@@ -200,18 +206,21 @@ export {
   type WithdrawPayload,
 } from "./internal.package/index.ts";
 
-// AUDIT_SPEC §5.1: 監査ヘッド累積ハッシュ(checkpoint の audit_head_hash — §6.2 —
-// の入力)。生成 = プロジェクト DO の受理面、検証 = admin 突合(AUDIT_SPEC §6)が
-// この 1 実装を共有する
+// AUDIT_SPEC §5.1: the audit-head rolling hash (the input of checkpoint's
+// audit_head_hash — §6.2). Generation = the project DO's acceptance side;
+// verification = the admin cross-check (AUDIT_SPEC §6) share this one
+// implementation
 export {
   type AuditHeadRow,
   computeAuditHeadHash,
   computeAuditRowDigest,
 } from "./internal.package/index.ts";
 
-// §6.5: 招待の暗号面(2026-09-13 IV) — リンク鍵・発行署名・受諾の共同署名・OpenSSH
-// 公開鍵行(裏付け元との相互運用。チェーン外の追加証跡。相互確認の表示は §3 の
-// fingerprintToWords、リンクアンカーは §6.3 — いずれも既存 export)
+// §6.5: the crypto side of invites (2026-09-13 IV) — link keys, issuance
+// signatures, acceptance co-signatures, the OpenSSH public-key line
+// (interoperability with the backing source; additional evidence outside the
+// chain. Mutual-confirmation display uses §3's fingerprintToWords, the link
+// anchor §6.3 — both existing exports)
 export {
   buildInviteAcceptSignedBytes,
   buildInviteIssueSignedBytes,
@@ -231,8 +240,9 @@ export {
   verifyInviteLinkSignature,
 } from "./internal.package/index.ts";
 
-// §6.6: ヘッド申告(§6.3 ヘッドゴシップの申告形式 — チェーン外の署名付き宣言。
-// 提出面 = AUTH_SPEC §16-1、サーバー検証 = §6.4、照合規則 = §6.3)
+// §6.6: head attestation (the attestation form of §6.3 head gossip — a
+// signed declaration outside the chain. Submission side = AUTH_SPEC §16-1,
+// server verification = §6.4, reconciliation rules = §6.3)
 export {
   type AttestationInvalidReason,
   buildHeadAttestationSignedBytes,
@@ -244,9 +254,9 @@ export {
   verifyHeadAttestationSignature,
 } from "./internal.package/index.ts";
 
-// §7: エポックとメンバーシップ変更 — export 面なし(ワークフロー規定のみ)
+// §7: epoch and membership changes — no export surface (workflow rules only)
 
-// §8: master 鍵ラップ台帳 — recovery-code 経路(不変)
+// §8: master-key wrap ledger — the recovery-code path (unchanged)
 export {
   generateRecoverySecret,
   unwrapMasterSecret,
@@ -254,9 +264,10 @@ export {
   wrapMasterSecret,
 } from "./internal.package/index.ts";
 
-// §8.1〜8.4(0.9-draft / KL3): 台帳の新しい受信者クラス — passkey-prf の KEK 導出、
-// master-wrap AAD による B のラップ、保護者グループ(XOR 分割 + 分片の HPKE Seal)、
-// ハンドオフ(一時鍵への Seal・request_id・ハンドオフコード)
+// §8.1-8.4 (0.9-draft / KL3): the ledger's new recipient classes —
+// passkey-prf KEK derivation, wrapping B under the master-wrap AAD,
+// guardian groups (XOR split + HPKE Seal of shares), handoff (Seal to an
+// ephemeral key, request_id, handoff code)
 export {
   buildGuardianWrapInfo,
   buildHandoffWrapInfo,
@@ -281,11 +292,11 @@ export {
   wrapMasterBlob,
 } from "./internal.package/index.ts";
 
-// §9: 選択的開示(サーバー鍵)
+// §9: selective disclosure (server keys)
 export { computeServerKeyFingerprint } from "./internal.package/index.ts";
 
-// §9.1: ワークロードリース — リースラップ(§5 と同一プリミティブ。info に
-// claims_digest を束縛)。ラップは応答スコープであり永続化しない
+// §9.1: workload leases — the lease wrap (the same primitive as §5; the
+// info binds claims_digest). Wraps are response-scoped and never persisted
 export {
   buildLeaseClaimsBytes,
   buildLeaseWrapInfo,

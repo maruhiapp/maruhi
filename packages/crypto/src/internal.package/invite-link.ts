@@ -1,28 +1,37 @@
-// CRYPTO_SPEC §6.5(2026-09-13 IV): リンク鍵・発行文と発行署名・OpenSSH 公開鍵行。
+// CRYPTO_SPEC §6.5 (2026-09-13 IV): link keys, the issuance statement and
+// issuance signature, and the OpenSSH public-key line.
 //
-// - リンク鍵: 招待ごとに招待者クライアントが生成する 32 バイトの種 k を RFC 8032 の
-//   seed とする Ed25519 鍵ペア。種はリンクのフラグメントにのみ載り(サーバーは
-//   受け取らない)、公開鍵は発行文としてサーバー行に置く。WebCrypto は Ed25519 の
-//   seed 単独 import を持たないため、RFC 8410 の OneAsymmetricKey(PKCS#8)固定
-//   プレフィックス + seed を pkcs8 として import し、公開鍵は JWK の x から読む
-//   (keys.ts の exportSigningPrivateSeed と同じ手口の逆方向)。これは符号化であり
-//   新しい鍵導出ではない(seed → 鍵ペアは §3 の署名鍵と同じ)
-// - 発行署名: 招待者のチェーン sig 鍵による発行文の署名。
+// - Link key: an Ed25519 key pair whose 32-byte seed k, generated per invite
+//   by the inviter's client, is the RFC 8032 seed. The seed rides only in the
+//   link's fragment (the server never receives it); the public key goes onto
+//   the server row as the issuance statement. Since WebCrypto has no
+//   seed-only Ed25519 import, we import the RFC 8410 OneAsymmetricKey
+//   (PKCS#8) fixed prefix + seed as pkcs8 and read the public key from the
+//   JWK's x (the reverse of keys.ts's exportSigningPrivateSeed). This is an
+//   encoding, not a new key derivation (seed → key pair is the same as §3's
+//   signing key)
+// - Issuance signature: the signature of the issuance statement under the
+//   inviter's chain sig key.
 //   invite_issue_signed_bytes = LP("<suite>/invite-issue", invite_id, project_id,
 //     link_pub_hex, head_hash_hex, head_seq, role, inviter_user_id,
 //     inviter_enc_pub_hex, inviter_sig_pub_hex, scope_kind, scope_environments_lp_hex)
-//   (scope の 2 フィールドは 2026-09-14 ES で末尾に追加 — §6.2 と同じ符号化。
-//   受諾者は「どの環境に入るか」を受諾前に読み、招待者は発行時に同意の範囲を固定する)
-//   検証鍵は署名対象内の inviter_sig_pub_hex(自己束縛)。受諾者はリンクで受け取った
-//   発行文を検証し(ゴースト追加者は招待者名義の署名を作れない)、招待者は
-//   サーバー行の発行文を**自分の鍵で**検証して「自分が発行した行か」を確かめる
-//   (発行ピンに依存しない — 補足 21 裁定 A ⑦)
-// - OpenSSH 公開鍵行: "ssh-ed25519 " + base64(uint32-BE 長さ ‖ "ssh-ed25519" ‖
-//   uint32-BE 長さ ‖ 32 バイト鍵)(RFC 4253 §6.6 / RFC 8709)。裏付け元 = GitHub の
-//   SSH 署名鍵一覧との相互運用のための符号化であり、新しい暗号プリミティブでは
-//   ない(§3 の FP ワード・§8.4 のハンドオフコードと同じ位置づけ)。解析は
-//   第三者データ(GitHub 応答)の復号なのでテストベクターで受理境界を固定する
-// テストベクター: test-vectors/invite-link.json
+//   (the two scope fields were appended at 2026-09-14 ES — the same encoding
+//   as §6.2. The acceptor reads "which environments this joins" before
+//   accepting; the inviter pins the extent of consent at issuance)
+//   The verification key is inviter_sig_pub_hex inside the signed data
+//   (self-binding). The acceptor verifies the issuance statement carried by
+//   the link (a ghost adder cannot produce a signature in the inviter's
+//   name); the inviter verifies the server row's issuance statement with
+//   **their own key** to confirm "this is a row I issued" (independent of
+//   issuance pins — supplement 21 ruling A ⑦)
+// - OpenSSH public-key line: "ssh-ed25519 " + base64(uint32-BE length ‖
+//   "ssh-ed25519" ‖ uint32-BE length ‖ 32-byte key) (RFC 4253 §6.6 /
+//   RFC 8709). An encoding for interoperability with the SSH signing-key
+//   list of the backing source = GitHub; not a new cryptographic primitive
+//   (the same category as §3's FP words and §8.4's handoff code). Since
+//   parsing decodes third-party data (a GitHub response), the acceptance
+//   boundary is pinned by test vectors
+// Test vectors: test-vectors/invite-link.json
 
 import { decodeHex, encodeHex, utf8Encode } from "./bytes.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
@@ -108,10 +117,11 @@ export async function deriveInviteLinkKeyPair(
   der.set(PKCS8_ED25519_PREFIX, 0);
   der.set(seed, PKCS8_ED25519_PREFIX.length);
   try {
-    // 公開鍵の取り出しにだけ抽出可能な一時 import を使い、署名鍵は非抽出で別途 import。
-    // WebCrypto には「種 → 公開鍵」の直接経路が無いため、この JWK は `d`(= 種。
-    // 呼び出し側が既に持つ値)も運ぶ — `x` だけ読んで捨てる。返す privateKey は
-    // 非抽出
+    // An extractable temporary import is used only to extract the public key;
+    // the signing key is imported separately as non-extractable. Since
+    // WebCrypto has no direct "seed → public key" path, this JWK also carries
+    // `d` (= the seed, a value the caller already holds) — only `x` is read
+    // and the rest discarded. The returned privateKey is non-extractable
     const probe = await crypto.subtle.importKey("pkcs8", der as BufferSource, "Ed25519", true, [
       "sign",
     ]);
@@ -138,7 +148,7 @@ export async function deriveInviteLinkKeyPair(
 }
 
 // ---------------------------------------------------------------------------
-// 発行文と発行署名
+// Issuance statement and issuance signature
 
 /**
  * Fields bound by the inviter's issue signature (CRYPTO_SPEC §6.5): the
@@ -162,7 +172,7 @@ export interface InviteIssueContext extends ScopePayloadFields {
   readonly inviterSigPubHex: string;
 }
 
-/** 文字列フィールドの検査(非空・閉集合)。 */
+/** Checks of the string fields (non-empty, closed sets). */
 function issueContextTextInvalidField(context: InviteIssueContext): string | null {
   if (context.suite.length === 0) {
     return "context suite";
@@ -170,22 +180,24 @@ function issueContextTextInvalidField(context: InviteIssueContext): string | nul
   if (context.inviteId.length === 0) {
     return "context inviteId";
   }
-  // role は §6.2 の閉集合(綴り違いが別の有効な署名にならないよう正規形だけを署名する)
+  // role is the §6.2 closed set (only the canonical form is signed, so a
+  // misspelling cannot become a different valid signature)
   if (!Object.hasOwn(ROLE_RANK, context.role)) {
     return "context role";
   }
   if (context.inviterUserId.length === 0) {
     return "context inviterUserId";
   }
-  // scope は §6.2 の構造規則(閉集合の kind・all ⇒ 空リスト・256 以下・重複なし・
-  // id は §6.1 の自由文字列フィールドと同じ上限 — チェーン側の add_member と対称)
+  // scope follows the §6.2 structure rules (kind in the closed set, all ⇒
+  // empty list, at most 256, no duplicates, ids bounded like §6.1's free
+  // string fields — symmetric with the chain side's add_member)
   if (!scopeShapeOk(context.scopeKind, context.scopeEnvironmentIds, isBoundedEnvironmentId)) {
     return "context scope";
   }
   return null;
 }
 
-/** §6.1 の自由文字列フィールド上限(1024 バイト)— chain-verify.ts の isBoundedId と同じ規則。 */
+/** The §6.1 free-string-field bound (1024 bytes) — the same rule as chain-verify.ts's isBoundedId. */
 const MAX_ENVIRONMENT_ID_BYTES = 1024;
 
 function isBoundedEnvironmentId(value: unknown): value is string {
@@ -197,7 +209,7 @@ function isBoundedEnvironmentId(value: unknown): value is string {
   );
 }
 
-/** 公開値(hex)と head_seq の形式検査。 */
+/** Form checks of the public values (hex) and head_seq. */
 function issueContextBinaryInvalidField(context: InviteIssueContext): string | null {
   const hexFields: readonly (readonly [string, string, number])[] = [
     ["context linkPubHex", context.linkPubHex, PUB_KEY_HEX_LENGTH],
@@ -294,9 +306,9 @@ export async function verifyInviteIssueSignature(input: {
 }
 
 // ---------------------------------------------------------------------------
-// OpenSSH 公開鍵行(RFC 4253 §6.6 / RFC 8709)
+// OpenSSH public-key line (RFC 4253 §6.6 / RFC 8709)
 
-/** Standard base64 (RFC 4648 §4) via the Web platform `btoa` (keys.ts と同じ経路)。 */
+/** Standard base64 (RFC 4648 §4) via the Web platform `btoa` (same path as keys.ts). */
 function base64Encode(bytes: Uint8Array): string {
   let binary = "";
   for (const b of bytes) {
@@ -343,7 +355,8 @@ export function encodeOpenSshEd25519PublicKey(publicKey: Uint8Array): CryptoResu
  * `InvalidInput` — third-party data (a GitHub response) is never guessed at.
  */
 export function parseOpenSshEd25519PublicKey(line: string): CryptoResult<Uint8Array> {
-  // 第三者データ(JSON)の実行時の型ずれは例外にせず InvalidInput(bytes.ts の decodeHex と同じ規律)
+  // A runtime type mismatch in third-party data (JSON) yields InvalidInput,
+  // not an exception (same discipline as bytes.ts's decodeHex)
   if (typeof line !== "string") {
     return invalidInput("openssh public key line");
   }
@@ -352,8 +365,9 @@ export function parseOpenSshEd25519PublicKey(line: string): CryptoResult<Uint8Ar
   const encoded = parts[1];
   const expectedType = utf8Encode(OPENSSH_ED25519_TYPE);
   const expectedLength = 4 + expectedType.length + 4 + ED25519_KEY_BYTES;
-  // 正しい blob は 51 バイト = base64 で 68 文字(パディングなし)。長さが違う入力は
-  // 復号せずに拒否する(巨大な文字列を丸ごと復号しない)
+  // A correct blob is 51 bytes = 68 base64 chars (no padding). Inputs of a
+  // different length are rejected without decoding (never decode a huge
+  // string wholesale)
   const expectedEncodedLength = Math.ceil(expectedLength / 3) * 4;
   if (
     type !== OPENSSH_ED25519_TYPE ||

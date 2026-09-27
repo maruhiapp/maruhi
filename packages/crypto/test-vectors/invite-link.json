@@ -1,5 +1,5 @@
 {
-  "description": "CRYPTO_SPEC §6.5(2026-09-13 IV。2026-09-14 ES で発行文の末尾に scope を追加して再生成): リンク鍵の種からの導出、発行文と発行署名(Ed25519 + §2.1 LP)、OpenSSH 公開鍵行の符号化・解析。招待者・ヘッドは chain-entries.json の正規チェーン(user-owner-0001・seq 24)を参照する",
+  "description": "CRYPTO_SPEC §6.5 (2026-09-13 IV; regenerated in 2026-09-14 ES with scope appended to the issue document's tail): link-key derivation from the seed, the issue document and issue signature (Ed25519 + §2.1 LP), and encoding / parsing of the OpenSSH public-key line. The inviter and head reference chain-entries.json's canonical chain (user-owner-0001, seq 24)",
   "signed_fields_order": [
     "domain",
     "invite_id",
@@ -14,11 +14,11 @@
     "scope_kind",
     "scope_environments_lp_hex"
   ],
-  "binary_encoding": "リンク公開鍵・ヘッドハッシュ・招待者の enc/sig 公開鍵は hex 小文字文字列、head_seq は 10 進文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。scope_environments_lp_hex は environment_id リストの LP の hex 小文字(§6.2 の member_scope と同じ入れ子 LP — scope_kind = all なら空文字列)",
+  "binary_encoding": "the link public key, head hash, and the inviter's enc/sig public keys go into LP as lowercase hex strings and head_seq as a decimal string (the same convention as chain-entries.json's binary_encoding). scope_environments_lp_hex is the lowercase hex of the LP of an environment_id list (the same nested LP as §6.2's member_scope — empty string when scope_kind = all)",
   "link_key": {
     "seed_hex": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef",
     "pub_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
-    "note": "種 k(32 バイト乱数)→ Ed25519 鍵ペア(RFC 8032 の seed としてそのまま用いる)。pub_hex は導出の期待値"
+    "note": "seed k (32 random bytes) → an Ed25519 key pair (used verbatim as the RFC 8032 seed). pub_hex is the derivation's expected value"
   },
   "other_link_key": {
     "seed_hex": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
@@ -29,7 +29,7 @@
     "enc_pub_hex": "d89e3bad79437dbed9f843418304f460ff05c7fe81fe4a9577a804cb9367ff66",
     "sig_pub_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
     "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51",
-    "note": "chain-entries.json の owner と同一鍵(seed は同ファイル参照)"
+    "note": "the same key as chain-entries.json's owner (the seed is referenced from that file)"
   },
   "issue": {
     "vectors": [
@@ -70,7 +70,7 @@
         "name": "listed-scope",
         "signed_bytes_hex": "000000166d61727568692f76312f696e766974652d69737375650000000b696e766974652d303030330000000970726f6a2d3030303100000040366630663065656233666266663932356336366430336531396463653438643565646339666665653531636432366165373164643339653536663766646461320000004034316135613630653936393439303234633061356436373735376438666437656463643932666332323235656363346165376536626562653562616339636264000000023234000000066d656d6265720000000f757365722d6f776e65722d3030303100000040643839653362616437393433376462656439663834333431383330346634363066663035633766653831666534613935373761383034636239333637666636360000004032396163626165313431626363616630623232653161393464333464306263373336316535323664306266653132633839373934626339333232393636646437000000066c6973746564000000443030303030303063363536653736326436343635373632643330333033303332303030303030306536353665373632643733373436313637363532643330333033303333",
         "signature_hex": "bad6039976ef3450c97a848d67fbec3ed28065a9365ec3e9f012371afe333e9a14c1c8d24924d70e34b1450ba8be50f65bf949f6228d56f3f539f84995d97406",
-        "note": "listed{dev, stage} を付与予定の発行文(2026-09-14 ES)。scope_environments_lp_hex は §6.2 と同じ入れ子 LP"
+        "note": "an issue document granting listed{dev, stage} (2026-09-14 ES). scope_environments_lp_hex is the same nested LP as §6.2"
       }
     ],
     "negative": [
@@ -97,7 +97,7 @@
         "signature_hex": "1ec4ecfd9eb0568624c8e45769a0f2894f9504151c2239e908bcb23161bb0d5dcc87c753265e32bf64ef8b40dbec28d9b316bf91aa63e51186b6bd7be90c4603",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "署名バイトの末尾 1 bit 反転は検証に失敗する"
+        "note": "flipping the last 1 bit of the signature bytes fails verification"
       },
       {
         "name": "transplant-invite-id",
@@ -122,7 +122,7 @@
         "signature_hex": "1ec4ecfd9eb0568624c8e45769a0f2894f9504151c2239e908bcb23161bb0d5dcc87c753265e32bf64ef8b40dbec28d9b316bf91aa63e51186b6bd7be90c4602",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "別の招待 id への移植は検証に失敗する(サーバーが発行文を別行へ移植できない)"
+        "note": "a transplant to another invite id fails verification (the server cannot transplant the issue document to another row)"
       },
       {
         "name": "transplant-project",
@@ -147,7 +147,7 @@
         "signature_hex": "1ec4ecfd9eb0568624c8e45769a0f2894f9504151c2239e908bcb23161bb0d5dcc87c753265e32bf64ef8b40dbec28d9b316bf91aa63e51186b6bd7be90c4602",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "別プロジェクトへの移植は検証に失敗する"
+        "note": "a transplant to another project fails verification"
       },
       {
         "name": "transplant-link-pub",
@@ -172,7 +172,7 @@
         "signature_hex": "1ec4ecfd9eb0568624c8e45769a0f2894f9504151c2239e908bcb23161bb0d5dcc87c753265e32bf64ef8b40dbec28d9b316bf91aa63e51186b6bd7be90c4602",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "別のリンク公開鍵への付け替えは検証に失敗する(行の link_pub のすり替え検出)"
+        "note": "swapping in another link public key fails verification (detects swapping the row's link_pub)"
       },
       {
         "name": "head-hash-swap",
@@ -197,7 +197,7 @@
         "signature_hex": "1ec4ecfd9eb0568624c8e45769a0f2894f9504151c2239e908bcb23161bb0d5dcc87c753265e32bf64ef8b40dbec28d9b316bf91aa63e51186b6bd7be90c4602",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "アンカーのヘッドハッシュ差し替えは検証に失敗する(リンク経路上の改竄検出 — §6.3 (a))"
+        "note": "substituting the anchor's head hash fails verification (detects tampering on the link path — §6.3 (a))"
       },
       {
         "name": "head-seq-mismatch",
@@ -222,7 +222,7 @@
         "signature_hex": "1ec4ecfd9eb0568624c8e45769a0f2894f9504151c2239e908bcb23161bb0d5dcc87c753265e32bf64ef8b40dbec28d9b316bf91aa63e51186b6bd7be90c4602",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "ヘッド seq の差し替えは検証に失敗する(hash と seq の両方が署名対象)"
+        "note": "substituting the head seq fails verification (both hash and seq are signed)"
       },
       {
         "name": "role-relabel",
@@ -247,7 +247,7 @@
         "signature_hex": "1ec4ecfd9eb0568624c8e45769a0f2894f9504151c2239e908bcb23161bb0d5dcc87c753265e32bf64ef8b40dbec28d9b316bf91aa63e51186b6bd7be90c4602",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "付与予定 role の差し替えは検証に失敗する(r は表示専用から署名対象へ格上げ)"
+        "note": "substituting the to-be-granted role fails verification (r was promoted from display-only to signed data)"
       },
       {
         "name": "inviter-enc-key-mismatch",
@@ -272,7 +272,7 @@
         "signature_hex": "1ec4ecfd9eb0568624c8e45769a0f2894f9504151c2239e908bcb23161bb0d5dcc87c753265e32bf64ef8b40dbec28d9b316bf91aa63e51186b6bd7be90c4602",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "招待者 enc 鍵の差し替えは検証に失敗する(FP は ie‖is から導出される)"
+        "note": "substituting the inviter enc key fails verification (the FP is derived from ie‖is)"
       },
       {
         "name": "inviter-sig-key-mismatch",
@@ -297,7 +297,7 @@
         "signature_hex": "1ec4ecfd9eb0568624c8e45769a0f2894f9504151c2239e908bcb23161bb0d5dcc87c753265e32bf64ef8b40dbec28d9b316bf91aa63e51186b6bd7be90c4602",
         "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
         "must_fail": true,
-        "note": "招待者 sig 鍵の差し替えは検証に失敗する(検証鍵は署名対象内の宣言鍵 — ゴースト追加者は招待者名義の署名を作れない)"
+        "note": "substituting the inviter sig key fails verification (the verify key is the declared key inside the signed data — a ghost inviter cannot produce a signature in the inviter's name)"
       },
       {
         "name": "transplant-inviter",
@@ -322,7 +322,7 @@
         "signature_hex": "1ec4ecfd9eb0568624c8e45769a0f2894f9504151c2239e908bcb23161bb0d5dcc87c753265e32bf64ef8b40dbec28d9b316bf91aa63e51186b6bd7be90c4602",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "招待者 user_id の付け替えは同一鍵でも検証に失敗する"
+        "note": "substituting the inviter user_id fails verification even under the same key"
       },
       {
         "name": "wrong-signer-key",
@@ -347,7 +347,7 @@
         "signature_hex": "e6abaa34b962bc7fa8bde70fd20a1ca4953c1d9efb67d247a4d5c23acc03eab4fdde40bd2f03a71e5a2cdcbcd346553d05081a9e1cea161cfd5f79349782d00a",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "inviter_sig_pub 以外の鍵で作った署名は検証に失敗する(署名者不一致)"
+        "note": "a signature made under a key other than inviter_sig_pub fails verification (signer mismatch)"
       },
       {
         "name": "suite-mismatch",
@@ -372,7 +372,7 @@
         "signature_hex": "1ec4ecfd9eb0568624c8e45769a0f2894f9504151c2239e908bcb23161bb0d5dcc87c753265e32bf64ef8b40dbec28d9b316bf91aa63e51186b6bd7be90c4602",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する"
+        "note": "a different suite means a different domain string, so cross-suite signature transplants fail verification"
       },
       {
         "name": "scope-kind-relabel",
@@ -397,7 +397,7 @@
         "signature_hex": "1ec4ecfd9eb0568624c8e45769a0f2894f9504151c2239e908bcb23161bb0d5dcc87c753265e32bf64ef8b40dbec28d9b316bf91aa63e51186b6bd7be90c4602",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "付与予定 scope の差し替え(all → listed{dev})は検証に失敗する(受諾者が読む「どの環境に入るか」の改竄検出)"
+        "note": "substituting the to-be-granted scope (all → listed{dev}) fails verification (detects tampering with the 'which environments I am entering' the invitee reads)"
       },
       {
         "name": "scope-environments-relabel",
@@ -422,7 +422,7 @@
         "signature_hex": "bad6039976ef3450c97a848d67fbec3ed28065a9365ec3e9f012371afe333e9a14c1c8d24924d70e34b1450ba8be50f65bf949f6228d56f3f539f84995d97406",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "listed の環境集合の差し替え({dev, stage} → {dev, prod})は検証に失敗する"
+        "note": "substituting the listed environment set ({dev, stage} → {dev, prod}) fails verification"
       },
       {
         "name": "scope-dropped",
@@ -448,7 +448,7 @@
         "signature_hex": "1ec4ecfd9eb0568624c8e45769a0f2894f9504151c2239e908bcb23161bb0d5dcc87c753265e32bf64ef8b40dbec28d9b316bf91aa63e51186b6bd7be90c4602",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "scope を落とした旧 10 フィールド形式のバイト列では正規署名が検証に失敗する(ES 改訂前の実装は新リンクを受諾せず、新実装は旧リンクを受諾しない — 互換経路なし)"
+        "note": "a proper signature over a byte string of the old 10-field form with scope dropped fails verification (a pre-ES-revision implementation does not accept new links, and a new implementation does not accept old links — no compat route)"
       },
       {
         "name": "scope-flat-concat",
@@ -474,12 +474,12 @@
         "signature_hex": "bad6039976ef3450c97a848d67fbec3ed28065a9365ec3e9f012371afe333e9a14c1c8d24924d70e34b1450ba8be50f65bf949f6228d56f3f539f84995d97406",
         "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
         "must_fail": true,
-        "note": "scope の環境集合を入れ子 LP でなく素の連結で符号化したバイト列では検証に失敗する(§2.1 の曖昧性排除)"
+        "note": "a byte string that encodes the scope's environment set by raw concatenation instead of nested LP fails verification (§2.1's disambiguation)"
       }
     ]
   },
   "openssh": {
-    "note": "OpenSSH 公開鍵行の符号化と解析(GitHub の ssh_signing_keys 応答の key フィールドと同形)。解析は ssh-ed25519 のみ受理し、32 バイト鍵をバイト一致で返す",
+    "note": "encoding and parsing of the OpenSSH public-key line (same shape as the key field of GitHub's ssh_signing_keys response). The parser only accepts ssh-ed25519 and returns the 32-byte key byte-identical",
     "encode": [
       {
         "name": "invitee-sig-key",
@@ -518,47 +518,47 @@
       {
         "name": "rsa-key",
         "line": "ssh-rsa AAAAB3NzaC1yc2EAAAADAAECAAAAQAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A=",
-        "note": "種別が ssh-ed25519 でない行は受理しない"
+        "note": "a line whose type is not ssh-ed25519 is not accepted"
       },
       {
         "name": "security-key-ed25519",
         "line": "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIFlbmHgwLlblSgw0BjjbiR7OIiGnOFw0aI7L3cyE1evvAAAABHNzaDo=",
-        "note": "FIDO の sk-ssh-ed25519 は別種別(鍵の後に application が続く)— 受理しない"
+        "note": "FIDO's sk-ssh-ed25519 is a different type (an application follows the key) — not accepted"
       },
       {
         "name": "uppercase-type",
         "line": "SSH-ED25519 AAAAC3NzaC1lZDI1NTE5AAAAIFlbmHgwLlblSgw0BjjbiR7OIiGnOFw0aI7L3cyE1evv",
-        "note": "種別文字列は大文字小文字を区別する"
+        "note": "the type string is case-sensitive"
       },
       {
         "name": "short-key",
         "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAH1lbmHgwLlblSgw0BjjbiR7OIiGnOFw0aI7L3cyE1es=",
-        "note": "鍵長 31 バイトは拒否"
+        "note": "a key length of 31 bytes is rejected"
       },
       {
         "name": "blob-type-mismatch",
         "line": "ssh-ed25519 AAAAB3NzaC1yc2EAAAAgWVuYeDAuVuVKDDQGONuJHs4iIac4XDRojsvdzITV6+8=",
-        "note": "外側の種別と blob 内の種別文字列が食い違う行は拒否"
+        "note": "a line whose outer type disagrees with the type string inside the blob is rejected"
       },
       {
         "name": "trailing-bytes",
         "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFlbmHgwLlblSgw0BjjbiR7OIiGnOFw0aI7L3cyE1evvAA==",
-        "note": "blob の末尾に余分なバイトがある行は拒否"
+        "note": "a line whose blob has extra trailing bytes is rejected"
       },
       {
         "name": "corrupt-base64",
         "line": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFlbmHgwLlblSgw0BjjbiR7OIiGnOFw0aI7L3cyE1e!!",
-        "note": "base64 として不正な行は拒否"
+        "note": "a line that is invalid as base64 is rejected"
       },
       {
         "name": "missing-blob",
         "line": "ssh-ed25519",
-        "note": "blob の無い行は拒否"
+        "note": "a line without a blob is rejected"
       },
       {
         "name": "empty-line",
         "line": "",
-        "note": "空行は拒否"
+        "note": "an empty line is rejected"
       }
     ]
   }

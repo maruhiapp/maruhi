@@ -1,7 +1,8 @@
-// CRYPTO_SPEC §5(DEK ラップ)のチェック。
-// panva hpke は単発 Seal を derandomize できないため(spike-c の知見)、
-// 固定ベクター(hpke-js の ekm derandomize で生成)は Open 方向で検証し、
-// Seal 方向はラウンドトリップで担保する。RFC 9180 公式ベクターは rfc9180.ts。
+// Checks for CRYPTO_SPEC §5 (DEK wrap).
+// Because panva hpke cannot derandomize a single-shot Seal (spike-c finding),
+// the fixed vectors (generated via hpke-js ekm derandomize) are verified in the
+// Open direction, and the Seal direction is covered by round-trip. The official
+// RFC 9180 vectors are in rfc9180.ts.
 
 import {
   buildDekWrapInfo,
@@ -17,7 +18,7 @@ import {
 import dekWrapVectors from "../../test-vectors/dek-wrap.json" with { type: "json" };
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
-/** フィクスチャの必須文字列(JSON union 型で optional 化されたフィールドの検証読み出し)。 */
+/** Required fixture string (verifying read of a field made optional by the JSON union type). */
 function fixtureString(value: string | undefined, name: string): string {
   if (value === undefined) {
     throw new Error(`dek-wrap.json: ${name} missing`);
@@ -32,7 +33,7 @@ if (baseVector === undefined) {
 const base = baseVector;
 const baseRecipientUserId = fixtureString(base.recipient_user_id, "basic recipient_user_id");
 
-// 受信者クラス server(§9): info の recipient 位置はサーバー鍵 FP
+// Recipient class server (§9): the recipient position of info holds the server key FP
 const serverVectorFound = dekWrapVectors.vectors.find((v) => v.name === "server-basic");
 if (serverVectorFound === undefined) {
   throw new Error("dek-wrap.json: server-basic vector missing");
@@ -57,7 +58,7 @@ function serverContext(): DekWrapContext {
     projectId: serverVector.project_id,
     environmentId: serverVector.environment_id,
     epoch: serverVector.epoch,
-    // §9: recipient_user_id 位置にサーバー鍵 FP(hex 小文字)を用いる
+    // §9: the recipient_user_id position uses the server key FP (lowercase hex)
     recipientUserId: serverFingerprintHex,
   };
 }
@@ -79,7 +80,7 @@ async function serverKeyPair() {
 async function vectorOpenChecks(c: Checks): Promise<void> {
   c.push("dek-wrap: info construction", toHex(buildDekWrapInfo(baseContext())) === base.info_hex);
 
-  // 固定ベクターの Open(KeyPair は非抽出でインポート)
+  // Open of the fixed vector (the KeyPair is imported non-extractable)
   const pair = await recipientKeyPair();
   if (!pair.ok) {
     c.push("dek-wrap: vector open", false, "recipient key import failed");
@@ -94,8 +95,9 @@ async function vectorOpenChecks(c: Checks): Promise<void> {
 }
 
 /**
- * info 差し替え negative 1 件: ベクターの open_info_hex と info 構築が一致し、
- * その文脈での Open が DekUnwrapFailed になること(negativeChecks / server 系で共用)。
+ * A single info-swap negative: the vector's open_info_hex matches the info
+ * construction, and Open under that context becomes DekUnwrapFailed (shared by
+ * negativeChecks / the server cases).
  */
 async function infoNegativeCheck(
   c: Checks,
@@ -121,8 +123,9 @@ async function infoNegativeCheck(
 }
 
 async function serverVectorChecks(c: Checks): Promise<void> {
-  // 受信者クラス server(§9): FP = SHA-256(server_enc_pub)[:16] を実装で再計算し、
-  // info の recipient 位置に FP を入れた構築がベクターと一致する
+  // Recipient class server (§9): the implementation recomputes
+  // FP = SHA-256(server_enc_pub)[:16], and a construction that puts the FP in
+  // the recipient position of info matches the vector
   const fp = await computeServerKeyFingerprint(fromHex(dekWrapVectors.server_keypair.pkSm_hex));
   c.push(
     "dek-wrap: server key fingerprint matches vector",
@@ -150,10 +153,10 @@ async function serverVectorChecks(c: Checks): Promise<void> {
     "dek-wrap: server vector open == DEK",
     dek.ok && toHex(dek.value) === serverVector.dek_hex,
   );
-  // basic と同一のエポック DEK(1 つの DEK × 複数受信者クラス — §7 のラップ完全集合の形)
+  // The same epoch DEK as basic (one DEK × multiple recipient classes — the §7 complete wrap set shape)
   c.push("dek-wrap: server vector wraps the same DEK", serverVector.dek_hex === base.dek_hex);
 
-  // 受信者クラス間の移植負例(server 宛の info をメンバー user_id / 別 FP で組む)
+  // Transplant negatives across recipient classes (build the server-addressed info with a member user_id / a different FP)
   const serverWrapped = {
     encHex: serverVector.enc_hex,
     ciphertextHex: serverVector.ciphertext_hex,
@@ -171,7 +174,7 @@ async function serverVectorChecks(c: Checks): Promise<void> {
     ...serverWrapped,
   });
 
-  // 逆方向の移植(メンバー宛ラップの recipient 位置にサーバー FP)も Open 失敗
+  // The reverse-direction transplant (a server FP in the recipient position of a member-addressed wrap) also fails Open
   const memberPair = await recipientKeyPair();
   if (!memberPair.ok) {
     c.push("dek-wrap negative: member-info-server-fp", false, "recipient key import failed");
@@ -186,7 +189,7 @@ async function serverVectorChecks(c: Checks): Promise<void> {
   });
 }
 
-/** server-info-fp-mismatch ベクターの「別サーバー鍵の FP」(先頭バイト反転)。 */
+/** The "different server key FP" of the server-info-fp-mismatch vector (first byte flipped). */
 function wrongServerFingerprintHex(): string {
   const fp = fromHex(dekWrapVectors.server_keypair.server_key_fingerprint_hex);
   const flipped = fp.slice();
@@ -201,8 +204,8 @@ async function negativeChecks(c: Checks): Promise<void> {
     return;
   }
 
-  // info 系 negative は文脈差し替えで再現し、ベクターの open_info_hex と
-  // info 構築が一致することも確認する
+  // The info-family negatives are reproduced as context swaps; also confirm
+  // the info construction matches the vector's open_info_hex
   const contexts: readonly { name: string; context: DekWrapContext }[] = [
     { name: "info-epoch-mismatch", context: { ...baseContext(), epoch: 4 } },
     {
@@ -224,7 +227,7 @@ async function negativeChecks(c: Checks): Promise<void> {
     });
   }
 
-  // enc(カプセル化公開鍵)改竄
+  // Tampering with enc (the encapsulated public key)
   const encTampered = dekWrapVectors.negative.find((n) => n.name === "enc-tampered");
   if (encTampered?.enc_hex === undefined) {
     c.push("dek-wrap negative: enc-tampered", false, "vector missing");
@@ -242,7 +245,7 @@ async function negativeChecks(c: Checks): Promise<void> {
 }
 
 async function invalidContextChecks(c: Checks): Promise<void> {
-  // epoch が非負の安全な整数でない場合は throw でなく InvalidInput で返る
+  // A non-(non-negative safe integer) epoch returns InvalidInput rather than throwing
   const recipient = await generateEncryptionKeyPair();
   try {
     const wrapped = await wrapDek({
@@ -268,7 +271,7 @@ async function invalidContextChecks(c: Checks): Promise<void> {
 }
 
 async function roundtripChecks(c: Checks): Promise<void> {
-  // Seal 方向: 自己ラウンドトリップ(受信者は生成鍵・非抽出)
+  // Seal direction: self round-trip (the recipient is a generated, non-extractable key)
   const recipient = await generateEncryptionKeyPair();
   const dek = generateDek();
   const wrapped = await wrapDek({
@@ -287,7 +290,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
   });
   c.push("dek-wrap: roundtrip", unwrapped.ok && toHex(unwrapped.value) === toHex(dek));
 
-  // 文脈差し替えは Open 失敗
+  // Swapping the context fails Open
   const wrongContext = await unwrapDek({
     recipientKeyPair: recipient,
     wrapped: wrapped.value,
@@ -295,7 +298,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
   });
   c.push("dek-wrap: roundtrip wrong context rejected", !wrongContext.ok);
 
-  // 別の受信者鍵では Open 失敗
+  // A different recipient key fails Open
   const otherRecipient = await generateEncryptionKeyPair();
   const wrongKey = await unwrapDek({
     recipientKeyPair: otherRecipient,

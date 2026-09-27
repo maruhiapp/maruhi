@@ -1,29 +1,35 @@
-// CRYPTO_SPEC §9.1: ワークロードリースのリースラップ(HPKE Base mode 単発
-// Seal / Open — §5 と**同一プリミティブ**。新しいプリミティブは導入しない)。
+// CRYPTO_SPEC §9.1: the lease wrap of workload leases (HPKE Base-mode
+// single-shot Seal / Open — the **same primitive** as §5; no new primitive is
+// introduced).
 //
 //   info = LP("<suite>/lease-wrap", project_id, environment_id, epoch,
 //             claims_digest_hex)
 //   claims_digest_hex = lower_hex(SHA-256(LP("<suite>/lease-claims",
 //                                            issuer_url, subject, audience)))
 //
-// §5 の永続ラップとの違いは 2 点だけ:
-//   1. info の recipient 位置が「受信者の同定子(user_id / サーバー鍵 FP)」では
-//      なく claims_digest。受信者はワークロードがメモリ内で生成する一時鍵であり
-//      チェーン上に同定子を持たないため、束縛対象を「どのワークロード文脈へ
-//      発行したか」= 検証済み OIDC トークンの issuer / sub / aud に置き換える。
-//      サーバーとワークロードが独立に同じ値を計算でき、リース応答の別ジョブへの
-//      転用は復号失敗になる(設計原則 3 の一貫適用)。なお**同一**文脈での
-//      有効期間内 OIDC トークンのリプレイはこの束縛が防ぐ範囲外である
-//      (CRYPTO_SPEC §9.1 の明示的な非保証を参照)
-//   2. ドメイン文字列が `<suite>/lease-wrap`。§5 の `<suite>/dek-wrap` との
-//      ドメイン分離により、永続ラップとリースラップは相互に移植できない
+// Only two points differ from the §5 persistent wrap:
+//   1. The recipient position of the info is not "the recipient's identifier
+//      (user_id / server-key FP)" but claims_digest. The recipient is an
+//      ephemeral key the workload generates in memory with no on-chain
+//      identifier, so the binding target is replaced by "which workload
+//      context it was issued to" = the issuer / sub / aud of the verified
+//      OIDC token. Server and workload compute the same value independently,
+//      and reuse of a lease response on another job becomes a decryption
+//      failure (a consistent application of design principle 3). Note that
+//      replay of a still-valid OIDC token within the **same** context is
+//      outside what this binding prevents (see CRYPTO_SPEC §9.1's explicit
+//      non-guarantee)
+//   2. The domain string is `<suite>/lease-wrap`. Domain separation from §5's
+//      `<suite>/dek-wrap` makes persistent wraps and lease wraps mutually
+//      non-transplantable
 //
-// リースラップは**永続化しない**(dek_wraps に入らない — §9.1)。応答スコープに
-// のみ存在するため、§5.1 の登録署名は伴わない(署名者はチェーン上のメンバーで
-// あり、サーバー生成のラップに帰属署名は存在しえない)。
+// A lease wrap is **never persisted** (it does not enter dek_wraps — §9.1).
+// Since it exists only in response scope, it carries no §5.1 registration
+// signature (signers are members on the chain; a server-generated wrap
+// cannot have an attribution signature).
 //
-// aad は §5 と同じく空(文脈束縛は info が担う)。
-// テストベクター: test-vectors/lease-wrap.json
+// aad is empty like §5 (the info carries the context binding).
+// Test vectors: test-vectors/lease-wrap.json
 
 import { encodeHex } from "./bytes.ts";
 import type { WrappedDek } from "./dek-wrap.ts";
@@ -101,14 +107,16 @@ export async function computeLeaseClaimsDigest(claims: LeaseClaims): Promise<Cry
 }
 
 function contextInvalidField(context: LeaseWrapContext): string | null {
-  // epoch は LP エンコーダの前提(非負の安全な整数)を Result で検証する。
-  // エポックは 1 始まり(§3)だが、dek-wrap の checkEpoch と同じく境界は
-  // 呼び出し側(チェーン導出状態)が握るため、ここでは形式のみを見る
+  // epoch is Result-validated against the LP encoder's precondition (non-negative
+  // safe integer). The epoch starts at 1 (§3), but as in dek-wrap's checkEpoch
+  // the boundary is held by the caller (the chain-derived state) — here we only
+  // check the form
   if (!Number.isSafeInteger(context.epoch) || context.epoch < 0) {
     return "context epoch";
   }
-  // digest の形を検査する: 生の claims を渡す誤用と、大文字 hex による
-  // 「同じ digest なのに info が食い違う」実装差を構造的に排除する
+  // Check the digest's form: structurally excludes both the misuse of passing
+  // raw claims and the implementation divergence of uppercase hex producing
+  // "same digest, different info"
   if (!new RegExp(`^[0-9a-f]{${CLAIMS_DIGEST_HEX_LENGTH}}$`).test(context.claimsDigestHex)) {
     return "context claimsDigestHex";
   }
@@ -165,7 +173,7 @@ export async function wrapLeaseDek(input: {
  * Unwraps a leased DEK with the workload's ephemeral key pair (single-shot
  * HPKE Open). Takes the full pair so the private key can stay non-extractable
  * (CRYPTO_SPEC §2). The workload must still match the unwrapped DEK against
- * the chain-published commitment (§5.2) before using it (§9.1 の検証義務 3)。
+ * the chain-published commitment (§5.2) before using it (§9.1's verification duty 3).
  */
 export async function unwrapLeaseDek(input: {
   readonly workloadKeyPair: EncryptionKeyPair;

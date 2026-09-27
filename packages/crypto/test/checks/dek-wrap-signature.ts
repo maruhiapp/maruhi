@@ -1,8 +1,10 @@
-// CRYPTO_SPEC §5.1(DEK ラップの登録署名)のチェック。
-// Ed25519 は RFC 8032 の決定論的署名なので、署名方向もベクターと完全一致で検証する。
-// negative は「ベクターの verify_signed_bytes_hex を実装の正規化が再現し、
-// その上で元の署名が検証に失敗する」ことを固定する(改竄・座標移植・鍵不一致・
-// suite 不一致)。
+// Checks for CRYPTO_SPEC §5.1 (the DEK wrap registration signature).
+// Ed25519 is the RFC 8032 deterministic signature, so the sign direction is
+// also verified to match the vector exactly.
+// The negatives pin that "the implementation's canonicalization reproduces the
+// vector's verify_signed_bytes_hex, and on top of that the original signature
+// fails verification" (tampering, coordinate transplants, key mismatch, suite
+// mismatch).
 
 import {
   buildDekWrapSignatureBytes,
@@ -58,10 +60,11 @@ async function vectorChecks(c: Checks): Promise<void> {
     c.push("dek-wrap-sig: vector keys", false, "signer key import failed");
     return;
   }
-  // 正例は member クラス(basic)と server クラス(server-basic — recipient 位置に
-  // サーバー鍵 FP)の両方(§5.1 / §9)。Ed25519 は決定論的なので署名方向も完全一致
+  // The positive cases cover both the member class (basic) and the server
+  // class (server-basic — the server key FP in the recipient position) (§5.1 /
+  // §9). Ed25519 is deterministic, so the sign direction also matches exactly
   for (const vector of vectors.vectors) {
-    // 正規化バイト列がベクターと一致(ドメイン文字列 = suite の束縛を含む)
+    // The canonical byte string matches the vector (including the domain string = suite binding)
     c.push(
       `dek-wrap-sig: ${vector.name} signed bytes construction`,
       toHex(buildDekWrapSignatureBytes(contextOf(vector))) === vector.signed_bytes_hex,
@@ -86,7 +89,7 @@ async function vectorChecks(c: Checks): Promise<void> {
 async function negativeChecks(c: Checks): Promise<void> {
   for (const negative of vectors.negative) {
     const context = contextOf(negative.context);
-    // 実装の正規化がベクターの検証側バイト列を再現すること
+    // The implementation's canonicalization reproduces the vector's verify-side byte string
     const bytesMatch =
       toHex(buildDekWrapSignatureBytes(context)) === negative.verify_signed_bytes_hex;
     const key = await importSigningPublicKey(fromHex(negative.verify_key_hex));
@@ -108,7 +111,7 @@ async function negativeChecks(c: Checks): Promise<void> {
 
 async function invalidInputChecks(c: Checks): Promise<void> {
   const pair = await generateSigningKeyPair();
-  // epoch が非負の安全な整数でない / hex が大文字・長さ不正なら InvalidInput
+  // A non-(non-negative safe integer) epoch / uppercase or wrong-length hex is InvalidInput
   const badContexts: readonly { name: string; context: DekWrapSignatureContext }[] = [
     { name: "bad epoch", context: { ...contextOf(base), epoch: Number.NaN } },
     {
@@ -134,7 +137,7 @@ async function invalidInputChecks(c: Checks): Promise<void> {
         verified.error.kind === "InvalidInput",
     );
   }
-  // 署名 hex の長さ不正も InvalidInput(64 バイト固定)
+  // A wrong-length signature hex is also InvalidInput (fixed at 64 bytes)
   const shortSignature = await verifyDekWrapSignature({
     context: contextOf(base),
     signatureHex: "ab".repeat(63),
@@ -160,7 +163,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
   });
   c.push("dek-wrap-sig: roundtrip", verified.ok);
 
-  // 別の鍵では検証失敗
+  // Verification fails under a different key
   const other = await generateSigningKeyPair();
   const wrongKey = await verifyDekWrapSignature({
     context: contextOf(base),
@@ -169,7 +172,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
   });
   c.push("dek-wrap-sig: roundtrip wrong key rejected", !wrongKey.ok);
 
-  // 文脈差し替えは検証失敗(座標移植の実装側再確認)
+  // Swapping the context fails verification (implementation-side re-confirmation of coordinate transplants)
   const wrongContext = await verifyDekWrapSignature({
     context: { ...contextOf(base), projectId: "proj-other" },
     signatureHex: signed.value,

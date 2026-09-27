@@ -1,32 +1,45 @@
-// CRYPTO_SPEC §6.3(メタデータステートメントの検証)/ §6.4(サーバー受理検証)の
-// 履歴ベース複合検証。value-verify.ts の同型(検証機構を二重実装しない)。
+// History-based composite verification of CRYPTO_SPEC §6.3 (metadata
+// statement verification) / §6.4 (server acceptance verification).
+// Isomorphic to value-verify.ts (the verification mechanism is not
+// double-implemented).
 //
-// 検証済みチェーンの履歴索引(chain-history.ts)に対して、配布(または受理)
-// されたステートメントの §6.3 の 1〜3・6 を検査する:
-//   1. 署名(鍵の選択 = 履歴で author_user_id に束縛された鍵のうち FP 一致)
-//   2. ヘッド束縛(seq → hash の一致。不一致 2 種 — mismatch / future — を区別)
-//   3. 認可時点(宣言ヘッド時点の在籍・鍵束縛・role — tenure 跨ぎの拒否を含む。
-//      role 水準: 変数の作成・rename・削除と環境の作成・rename = member 以上、
-//      環境の削除のみ admin 以上 — §4.2 / AUTH_SPEC §12-3)
-//   6. 連鎖整合(predecessor を渡された場合のみ: prev 一致 + 削除後の再ステート
-//      メント拒否 — §4.2 の「deleted 後の再 active 化は禁止」— に加え、レイアウト
-//      v2 の遷移規則: active → declared の禁止と変数単位のレイアウト単調性
-//      〔v2 → v1 後退の拒否〕— §4.2 レイアウト v2・0.8-draft)
-// 座標整合(§6.3-5)は呼び出し側の責務: 本関数へ渡す context 自体を、申告値
-// でなく期待座標(検証済み genesis ハッシュ・要求環境・応答外側の variableId)
-// から構成すること。
+// Against the history index of a verified chain (chain-history.ts), checks
+// §6.3's items 1-3 and 6 of a distributed (or submitted) statement:
+//   1. Signature (key selection = FP match among the keys the history binds
+//      to author_user_id)
+//   2. Head binding (seq → hash match; distinguishes the 2 kinds of
+//      mismatch — mismatch / future)
+//   3. Authorization time (membership, key binding, and role at the declared
+//      head — including rejection across tenure boundaries. Role levels:
+//      variable create / rename / delete and environment create / rename =
+//      member or above; only environment delete = admin or above — §4.2 /
+//      AUTH_SPEC §12-3)
+//   6. Chaining integrity (only when a predecessor is passed: prev match +
+//      rejection of re-statement after deletion — §4.2's "no re-activation
+//      after deleted" — plus layout v2's transition rules: no
+//      active → declared, and per-variable layout monotonicity [rejecting a
+//      v2 → v1 regression] — §4.2 layout v2, 0.8-draft)
+// Coordinate integrity (§6.3-5) is the caller's duty: construct the context
+// passed to this function from expected coordinates (the verified genesis
+// hash, the requested environment, the outer response's variableId), not
+// from the declared values.
 //
-// **エポック整合(§6.3-4)は存在しない**: メタステートメントはエポックアンカーを
-// 持たず(§4.2)、環境の存在も検査しない(AUTH_SPEC §12-4 — 複合環境作成の同梱
-// ステートメントの宣言ヘッド時点に環境は未存在。値署名との意図された非対称)。
-// この構造的帰結として、前進 meta_version への偽ステートメント注入(在籍区間内の
-// 宣言ヘッド)は署名・連鎖検証を通る — v1 の明示的な残余(§14.3-5。fork 証拠化
-// = prev 連鎖の分岐までが保証範囲)。
+// **There is no epoch integrity (§6.3-4)**: meta statements carry no epoch
+// anchor (§4.2), and the environment's existence is not checked either
+// (AUTH_SPEC §12-4 — at the declared head of a statement bundled into a
+// compound environment creation, the environment does not exist yet. An
+// intended asymmetry with value signatures). As a structural consequence,
+// injecting a forged statement with a forward meta_version (at a declared
+// head inside the membership interval) passes signature and chaining
+// verification — v1's explicit residue (§14.3-5; fork evidence-making =
+// divergence of the prev chain is the extent of the guarantee).
 //
-// latest-only の限界(session-14 裁定 B の同型): predecessor が無い場合でも
-// 署名・ヘッド・鍵・role・prev の形は必ず検査する。prev の実在一致と削除後の
-// 再ステートメント拒否は predecessor が渡された場合のみ検査し、渡されない場合に
-// 「検査済み」と偽らない(呼び出し側は §14.3 の非保証を負う)。
+// The limits of latest-only (the session-14 ruling-B isomorph): even
+// without a predecessor, the shapes of signature, head, key, role, and prev
+// are always checked. The real match of prev and the rejection of
+// re-statement after deletion are checked only when a predecessor is
+// passed, and we do not falsely claim "checked" when it is not (the caller
+// bears §14.3's non-guarantee).
 
 import type { ChainHistoryIndex } from "./chain-history.ts";
 import type { CryptoResult, MetaInvalidReason } from "./errors.ts";
@@ -52,7 +65,7 @@ import {
  * hash and its status. The caller must have verified the predecessor itself
  * (server: stored acceptance-time statements; client: a statement that
  * passed this same verification) — chaining onto unverified data would
- * poison the evidence chain (AUTH_SPEC §12-5 の 409 規律と同根).
+ * poison the evidence chain (same root as AUTH_SPEC §12-5's 409 discipline).
  */
 export interface MetaPredecessor {
   readonly signedBytesHashHex: string;
@@ -81,7 +94,7 @@ export interface DistributedMetaStatementInput {
   /** Distributed author key fingerprint (server: acceptance-time caller FP). */
   readonly authorKeyFingerprintHex: string;
   readonly signatureHex: string;
-  /** Verified previous statement, when the verifier holds one (裁定 B 同型). */
+  /** Verified previous statement, when the verifier holds one (the ruling-B isomorph). */
   readonly predecessor?: MetaPredecessor | undefined;
 }
 
@@ -92,15 +105,16 @@ function metaInvalid(reason: MetaInvalidReason): {
   return { ok: false, error: { kind: "MetaStatementInvalid", reason } };
 }
 
-/** §4.2 / §12-3 の role 水準: 環境の削除のみ admin、それ以外は member。 */
+/** §4.2 / §12-3 role levels: only environment delete is admin; everything else is member. */
 function requiredRoleRank(context: MetaStatementContext): number {
   return context.target.kind === "environment" && context.status === "deleted"
     ? ROLE_RANK.admin
     : ROLE_RANK.member;
 }
 
-// 2〜3. ヘッド束縛・認可時点(§6.3-1〜-3)の理由コード写像。検査本体は
-// headAuthorizationReason(validate.ts — value-verify と共有)
+// 2-3. Reason-code mapping of head binding / authorization time (§6.3-1 to
+// -3). The check itself is headAuthorizationReason (validate.ts — shared
+// with value-verify)
 const HEAD_AUTHORIZATION_REASONS = {
   chainHeadFuture: "chain-head-future",
   chainHeadMismatch: "chain-head-mismatch",
@@ -111,8 +125,9 @@ const HEAD_AUTHORIZATION_REASONS = {
 
 function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReason | null {
   const { history, context } = input;
-  // エポック整合(§6.3-4)はメタに存在しない(モジュール冒頭コメント参照)ため、
-  // 共有検査(値署名は続けて §6.3-4 を検査する)がそのまま全体
+  // Since epoch integrity (§6.3-4) does not exist for meta (see the module
+  // header comment), the shared check (value signatures continue with §6.3-4
+  // after it) is the whole thing as-is
   return headAuthorizationReason<MetaInvalidReason>({
     history,
     chainHeadSeq: context.chainHeadSeq,
@@ -121,8 +136,10 @@ function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReaso
     actorKeyFingerprintHex: input.authorKeyFingerprintHex,
     requiredRoleRank: requiredRoleRank(context),
     reasons: HEAD_AUTHORIZATION_REASONS,
-    // 3′. スコープ(§6.3 — 2026-09-14 ES): 環境メタ(rename / delete)・変数メタは
-    // いずれも環境対象。作成複合の同梱ステートメントは作成者が all のため空虚に成立
+    // 3′. Scope (§6.3 — 2026-09-14 ES): environment meta (rename / delete)
+    // and variable meta are all environment-targeting. A statement bundled
+    // into a creation compound holds vacuously since the creator's scope is
+    // all
     scope: {
       environmentId: context.environmentId,
       outOfScopeAtHead: "author-environment-out-of-scope-at-head",
@@ -130,50 +147,63 @@ function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReaso
   });
 }
 
-// 本層の predecessor 検査が見るのは**ハッシュ連鎖・遷移・レイアウト単調性のみ**。
-// crypto 層が意図的に検査しないもの(受理面の領分。v1 の前例と一貫):
-// - 削除ステートメントのスキーマ欄・name の「直前からの完全保持」(§4.2)は
-//   **受理検査**(AUTH_SPEC §12-5 — name の「直前の active 名を保持」と同じ
-//   規約の受理検査。v1 の name 保持も同型で apps/server/src/programs-variable.ts
-//   が検査する)。**v2 削除の「スキーマ欄・レイアウトの直前一致」受理検査は
-//   受理面に必須** — 無いと、有効署名を持つ改変削除
-//   (スキーマ欄を書き換えた status = deleted)が受理される
-// - metaVersion 1 + status deleted は署名 API(signMetaStatement)が拒否するが、
-//   分散検証は拒否しない(v1 からの既知の非対称 — 受理面〔§12-5: 作成は active
-//   または v2 declared〕が正)
+// The predecessor checks of this layer see **only the hash chain,
+// transitions, and layout monotonicity**. What the crypto layer
+// intentionally does not check (the acceptance surface's domain; consistent
+// with the v1 precedent):
+// - The "full preservation from the previous" of a delete statement's
+//   schema fields and name (§4.2) is an **acceptance check** (AUTH_SPEC
+//   §12-5 — the same kind of acceptance check as name's "preserve the
+//   previous active name" convention; v1's name preservation is isomorphic
+//   and checked by apps/server/src/programs-variable.ts). **The v2-delete
+//   "schema fields / layout must match the previous" acceptance check is
+//   mandatory on the acceptance surface** — without it, a modified delete
+//   with a valid signature (status = deleted with rewritten schema fields)
+//   would be accepted
+// - metaVersion 1 + status deleted is rejected by the signing API
+//   (signMetaStatement) but not by the distributed verification (a known
+//   asymmetry since v1 — the acceptance surface [§12-5: a creation is
+//   active or v2 declared] is authoritative)
 function prevReason(input: DistributedMetaStatementInput): MetaInvalidReason | null {
   const { context, predecessor } = input;
-  // prev の形(latest-only でも必ず検査): metaVersion 1 = 空、> 1 = 64 hex。
-  // 個別フィールドの hex 形式は metaContextRejection が検査済みなので、
-  // ここは metaVersion との結合のみ
+  // The shape of prev (always checked even under latest-only):
+  // metaVersion 1 = empty, > 1 = 64 hex. The hex form of each field is
+  // already checked by metaContextRejection, so this is only the coupling
+  // with metaVersion
   if ((context.metaVersion === 1) !== (context.prevMetaSigHashHex === "")) {
     return "prev-shape-mismatch";
   }
   if (predecessor === undefined) {
     return null;
   }
-  // 6. 連鎖整合(§6.3-6): prev の実在一致。prev 不一致を Ed25519 failure に
-  //    潰さない(value-verify と同じ裁定)
+  // 6. Chaining integrity (§6.3-6): the real match of prev. A prev mismatch
+  //    must not collapse into an Ed25519 failure (the same ruling as
+  //    value-verify)
   if (context.prevMetaSigHashHex !== predecessor.signedBytesHashHex) {
     return "prev-hash-mismatch";
   }
-  // §4.2: deleted 後の再 active 化は禁止(tombstone は終端)。deleted の後続は
-  // status を問わずすべて拒否する — 削除済み変数・環境の無断復活の遮断。
-  // declared への遷移にも適用する(ベクター declared-after-delete)
+  // §4.2: re-activation after deleted is forbidden (a tombstone is
+  // terminal). Any successor of a deleted statement is rejected regardless
+  // of status — blocks unauthorized revival of a deleted variable or
+  // environment. This applies to a transition into declared too
+  // (vector declared-after-delete)
   if (predecessor.status === "deleted") {
     return "revived-after-delete";
   }
-  // §4.2 レイアウト v2: active → declared は禁止(値の存在の巻き戻し表現を
-  // 作らない — 値を取り除く唯一の経路は削除)。declared → declared(宣言中の
-  // スキーマ再発行・rename)は正当なのでここでは拒否しない
+  // §4.2 layout v2: active → declared is forbidden (never create a
+  // rewinding representation of a value's existence — the only way to take
+  // a value out is deletion). declared → declared (re-issuing the schema or
+  // renaming while still declared) is legitimate and not rejected here
   if (predecessor.status === "active" && context.status === "declared") {
     return "declared-after-active";
   }
-  // §4.2 変数単位のレイアウト単調性: 直前が v2 の変数への v1 後続は拒否
-  // (後退を許すと rename 1 回でスキーマ欄が黙って消え、presence 保証
-  // §14.2-8 と schema-locked〔AUTH_SPEC §12-11〕が迂回できる)。predecessor 側は
-  // 必須フィールド(fail-closed — MetaPredecessor の doc 参照)、context 側のみ
-  // ワイヤ規約(省略 = 1)を適用する
+  // §4.2's per-variable layout monotonicity: a v1 successor of a variable
+  // whose predecessor is v2 is rejected (allowing the regression would let
+  // one rename silently erase the schema fields, bypassing the presence
+  // guarantee §14.2-8 and schema-locked [AUTH_SPEC §12-11]). The
+  // predecessor side is a mandatory field (fail-closed — see
+  // MetaPredecessor's doc); only the context side applies the wire
+  // convention (omitted = 1)
   if (predecessor.layoutVersion === 2 && metaLayoutVersionOf(context) === 1) {
     return "layout-regression";
   }
@@ -194,8 +224,9 @@ function prevReason(input: DistributedMetaStatementInput): MetaInvalidReason | n
 export async function verifyDistributedMetaStatement(
   input: DistributedMetaStatementInput,
 ): Promise<CryptoResult<{ readonly signedBytesHashHex: string }>> {
-  // レイアウト選択の検査(裁定 CR)は metaContextRejection が担う: サポート外の
-  // layoutVersion は署名検証より前に型付きエラー UnsupportedMetaLayout で拒否
+  // The layout-selection check (ruling CR) is carried by
+  // metaContextRejection: an unsupported layoutVersion is rejected as the
+  // typed error UnsupportedMetaLayout before signature verification
   const rejection = metaContextRejection(input.context);
   if (rejection !== null) {
     return { ok: false, error: rejection };
@@ -210,7 +241,8 @@ export async function verifyDistributedMetaStatement(
     return invalidInput(field);
   }
 
-  // 1. 鍵の選択(§6.3-1 前段。検査順は value-verify と同一): validate.ts の共有コア
+  // 1. Key selection (the lead-in to §6.3-1; the check order is the same as
+  //    value-verify): the shared core in validate.ts
   const imported = await importActorKeyByFingerprint({
     history: input.history,
     actorUserId: input.context.authorUserId,

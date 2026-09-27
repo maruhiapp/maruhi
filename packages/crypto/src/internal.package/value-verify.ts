@@ -1,23 +1,33 @@
-// CRYPTO_SPEC §6.3(値の検証)/ §6.4(サーバー受理検証)の履歴ベース複合検証。
+// History-based composite verification of CRYPTO_SPEC §6.3 (value
+// verification) / §6.4 (server acceptance verification).
 //
-// 検証済みチェーンの履歴索引(chain-history.ts)に対して、配布(または受理)
-// された値の §6.3 の 1〜4・6 を検査する:
-//   1. 署名(鍵の選択 = 履歴で writer_user_id に束縛された鍵のうち FP 一致)
-//   2. ヘッド束縛(seq → hash の一致。不一致 2 種 — mismatch / future — を区別)
-//   3. 認可時点(宣言ヘッド時点の在籍・鍵束縛・role — tenure 跨ぎの拒否を含む)
-//   3′. スコープ(宣言ヘッド時点の writer の scope が当該環境を含む — 2026-09-14 ES)
-//   4. エポック整合(宣言ヘッド時点の現エポック = 署名対象の epoch。環境作成前
-//      ヘッドの拒否を含む)
-//   6. 連鎖整合(predecessor を渡された場合のみ: prev 一致 + エポック非減少)
-// 座標整合(§6.3-5)は呼び出し側の責務: 本関数へ渡す context 自体を、申告値
-// でなく期待座標(検証済み genesis ハッシュ・要求環境・応答メタの variableId 等)
-// から構成すること。
+// Against the history index of a verified chain (chain-history.ts), checks
+// §6.3's items 1-4 and 6 of a distributed (or submitted) value:
+//   1. Signature (key selection = FP match among the keys the history binds
+//      to writer_user_id)
+//   2. Head binding (seq → hash match; distinguishes the 2 kinds of
+//      mismatch — mismatch / future)
+//   3. Authorization time (membership, key binding, and role at the declared
+//      head — including rejection across tenure boundaries)
+//   3′. Scope (the writer's scope at the declared head contains the
+//      environment — 2026-09-14 ES)
+//   4. Epoch integrity (the current epoch at the declared head = the signed
+//      epoch; includes rejecting a pre-environment-creation head)
+//   6. Chaining integrity (only when a predecessor is passed: prev match +
+//      epoch non-decrease)
+// Coordinate integrity (§6.3-5) is the caller's duty: construct the context
+// passed to this function from expected coordinates (the verified genesis
+// hash, the requested environment, the response meta's variableId, etc.),
+// not from the declared values.
 //
-// latest-only の限界(session-14 裁定 B): predecessor が無い場合でも署名・
-// ヘッド・鍵・role・環境・エポック・prev の形は必ず検査する。prev の実在一致と
-// エポック非減少は predecessor が渡された場合のみ検査し、渡されない場合に
-// 「検査済み」と偽らない(呼び出し側は §14.3 の非保証を負う)。
-// 検査順序は仮裁定 C(署名壊れ → unknown head → state mismatch)に一致する。
+// The limits of latest-only (session-14 ruling B): even without a
+// predecessor, the shapes of signature, head, key, role, environment, epoch,
+// and prev are always checked. The real match of prev and the epoch
+// non-decrease are checked only when a predecessor is passed, and we do not
+// falsely claim "checked" when it is not (the caller bears §14.3's
+// non-guarantee).
+// The check order matches provisional ruling C (broken signature → unknown
+// head → state mismatch).
 
 import type { ChainHistoryIndex } from "./chain-history.ts";
 import type { CryptoResult, ValueInvalidReason } from "./errors.ts";
@@ -41,7 +51,7 @@ import {
  * value_signed_bytes hash and its epoch. The caller must have verified the
  * predecessor itself (server: stored acceptance-time values; client: a value
  * that passed this same verification) — chaining onto unverified data would
- * poison the evidence chain (AUTH_SPEC §12-5 の 409 規律と同根).
+ * poison the evidence chain (same root as AUTH_SPEC §12-5's 409 discipline).
  */
 export interface ValuePredecessor {
   readonly signedBytesHashHex: string;
@@ -57,7 +67,7 @@ export interface DistributedValueInput {
   /** Distributed writer key fingerprint (server: acceptance-time caller FP). */
   readonly writerKeyFingerprintHex: string;
   readonly signatureHex: string;
-  /** Verified previous version, when the verifier holds one (裁定 B). */
+  /** Verified previous version, when the verifier holds one (ruling B). */
   readonly predecessor?: ValuePredecessor | undefined;
 }
 
@@ -68,8 +78,9 @@ function valueInvalid(reason: ValueInvalidReason): {
   return { ok: false, error: { kind: "ValueInvalid", reason } };
 }
 
-// 2〜3. ヘッド束縛・認可時点(§6.3-1〜-3)の理由コード写像。検査本体は
-// headAuthorizationReason(validate.ts — meta-verify と共有)
+// 2-3. Reason-code mapping of head binding / authorization time (§6.3-1 to
+// -3). The check itself is headAuthorizationReason (validate.ts — shared
+// with meta-verify)
 const HEAD_AUTHORIZATION_REASONS = {
   chainHeadFuture: "chain-head-future",
   chainHeadMismatch: "chain-head-mismatch",
@@ -88,7 +99,7 @@ function headStateReason(input: DistributedValueInput): ValueInvalidReason | nul
     actorKeyFingerprintHex: input.writerKeyFingerprintHex,
     requiredRoleRank: ROLE_RANK.member,
     reasons: HEAD_AUTHORIZATION_REASONS,
-    // 3′. スコープ(§6.3 — role の直後、エポック整合の前)
+    // 3′. Scope (§6.3 — right after role, before epoch integrity)
     scope: {
       environmentId: context.environmentId,
       outOfScopeAtHead: "writer-environment-out-of-scope-at-head",
@@ -97,7 +108,8 @@ function headStateReason(input: DistributedValueInput): ValueInvalidReason | nul
   if (authorization !== null) {
     return authorization;
   }
-  // 4. エポック整合(§6.3-4): 環境作成前ヘッドは拒否(既定値フォールバック禁止)
+  // 4. Epoch integrity (§6.3-4): a pre-environment-creation head is rejected
+  //    (no default fallback)
   const environment = history.environmentStateAt(context.environmentId, context.chainHeadSeq);
   if (environment === undefined) {
     return "environment-not-created-at-head";
@@ -110,17 +122,19 @@ function headStateReason(input: DistributedValueInput): ValueInvalidReason | nul
 
 function prevReason(input: DistributedValueInput): ValueInvalidReason | null {
   const { context, predecessor } = input;
-  // prev の形(裁定 B: latest-only でも必ず検査): version 1 = 空、> 1 = 64 hex。
-  // 個別フィールドの hex 形式は valueContextInvalidField が検査済みなので、
-  // ここは version との結合のみ
+  // The shape of prev (ruling B: always checked even under latest-only):
+  // version 1 = empty, > 1 = 64 hex. The hex form of each field is already
+  // checked by valueContextInvalidField, so this is only the coupling with
+  // version
   if ((context.version === 1) !== (context.prevValueSigHashHex === "")) {
     return "prev-shape-mismatch";
   }
   if (predecessor === undefined) {
     return null;
   }
-  // 6. 連鎖整合(§6.3-6): prev の実在一致とエポック非減少(§4.1 の単調性)。
-  //    prev 不一致を Ed25519 failure に潰さない(裁定 B / C)
+  // 6. Chaining integrity (§6.3-6): the real match of prev and epoch
+  //    non-decrease (§4.1 monotonicity). A prev mismatch must not collapse
+  //    into an Ed25519 failure (rulings B / C)
   if (context.prevValueSigHashHex !== predecessor.signedBytesHashHex) {
     return "prev-hash-mismatch";
   }
@@ -156,7 +170,8 @@ export async function verifyDistributedValue(
     return invalidInput(field);
   }
 
-  // 1. 鍵の選択(§6.3-1 前段。検査順 = 仮裁定 C): validate.ts の共有コア
+  // 1. Key selection (the lead-in to §6.3-1; check order = provisional
+  //    ruling C): the shared core in validate.ts
   const imported = await importActorKeyByFingerprint({
     history: input.history,
     actorUserId: input.context.writerUserId,

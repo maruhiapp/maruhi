@@ -1,8 +1,9 @@
-// @maruhi/crypto/test-support — 外部ワークスペース(apps/*)のテスト支援が使う
-// 再エクスポート面。crypto 内部のテストは従来どおり相対 import でよい。
+// @maruhi/crypto/test-support — the re-export surface used by the test
+// support of external workspaces (apps/*). Tests inside crypto keep using
+// relative imports as before.
 //
-// ここに載せるのはテストベクター・共有フィクスチャの読み出し口のみ。src/ の
-// 内部実装(internal.package)をこの面から露出させないこと。
+// Only the accessors for test vectors and shared fixtures go on this surface.
+// Do not expose internal implementations in src/ (internal.package) through it.
 
 export {
   toTypedEntry,

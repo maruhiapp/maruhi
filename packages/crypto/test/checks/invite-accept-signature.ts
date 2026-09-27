@@ -1,10 +1,13 @@
-// CRYPTO_SPEC §6.5(受諾の共同署名 — v2)のチェック。
-// Ed25519 は RFC 8032 の決定論的署名なので、署名方向もベクターと完全一致で検証する。
-// negative は「ベクターの verify_signed_bytes_hex を実装の正規化が再現し、
-// その上で元の署名が検証に失敗する」ことを固定する(改竄・別招待への移植・
-// 鍵不一致・署名者不一致・suite 不一致・旧ドメイン)。検証鍵は署名対象内の
-// 宣言鍵(受諾署名 = invitee_sig_pub_hex / リンク署名 = link_pub_hex)から実装が
-// 自分で導く(自己束縛 — 外から鍵を渡す口はない)。
+// Checks for CRYPTO_SPEC §6.5 (the acceptance joint signature — v2).
+// Ed25519 is the RFC 8032 deterministic signature, so the sign direction is
+// also verified to match the vector exactly.
+// The negatives pin that "the implementation's canonicalization reproduces the
+// vector's verify_signed_bytes_hex, and on top of that the original signature
+// fails verification" (tampering, transplant to another invite, key mismatch,
+// signer mismatch, suite mismatch, legacy domain). The verification key is
+// derived by the implementation itself from the declared key inside the signed
+// material (acceptance signature = invitee_sig_pub_hex / link signature =
+// link_pub_hex) — self-binding, there is no path to pass a key from outside.
 
 import {
   buildInviteAcceptSignedBytes,
@@ -56,13 +59,13 @@ async function vectorChecks(c: Checks): Promise<void> {
     c.push("invite-accept-sig: vector keys", false, "key import failed");
     return;
   }
-  // リンク鍵の種からの導出がベクターの公開鍵と一致(invite-link.json と同じ種)
+  // Derivation from the link key seed matches the vector's public key (same seed as invite-link.json)
   c.push(
     "invite-accept-sig: link key derived from seed",
     toHex(link.value.publicKeyRaw) === vectors.link_key.pub_hex &&
       base.link_pub_hex === vectors.link_key.pub_hex,
   );
-  // Ed25519 は決定論的なので署名方向も完全一致(算出 → まとめて判定の順)
+  // Ed25519 is deterministic, so the sign direction also matches exactly (compute → then batch-check)
   for (const vector of vectors.vectors) {
     const context = contextOf(vector);
     const builtHex = toHex(buildInviteAcceptSignedBytes(context));
@@ -105,11 +108,14 @@ async function acceptNegativeChecks(c: Checks): Promise<void> {
       context,
       signatureHex: negative.signature_hex,
     });
-    // (1) 実装の正規化がベクターの検証側バイト列を再現し、(2) 検証鍵は常に
-    // 署名対象内の宣言鍵(ベクター側の自己束縛不変条件の再確認)、(3) その上で
-    // 検証が InviteAcceptSignatureInvalid で失敗すること。`legacy-domain` だけは
-    // ベクター側が旧 v1 ドメインで組んだバイト列(+ その上で有効な署名)を運ぶので、
-    // 実装(常に v2 で組む)の再現は**不一致**であることを固定し、検証失敗を確認する
+    // (1) The implementation's canonicalization reproduces the vector's
+    // verify-side byte string, (2) the verification key is always the declared
+    // key inside the signed material (re-confirming the vector side's
+    // self-binding invariant), and (3) on top of that verification fails with
+    // InviteAcceptSignatureInvalid. Only `legacy-domain` carries a byte string
+    // the vector side built under the old v1 domain (plus a signature valid on
+    // it), so pin that the implementation's (always v2) reproduction
+    // **differs**, and confirm the verification failure
     const bytesHex = toHex(buildInviteAcceptSignedBytes(context));
     const bytesExpectation =
       negative.name === "legacy-domain"
@@ -140,12 +146,12 @@ async function linkNegativeChecks(c: Checks): Promise<void> {
   }
 }
 
-/** 失敗結果の kind の照合(成功は false)。 */
+/** Kind matching of a failure result (success is false). */
 function isKind(result: { ok: boolean; error?: { kind: string } }, kind: string): boolean {
   return !result.ok && result.error?.kind === kind;
 }
 
-/** 形式不正の文脈(hex の大文字・長さ不正 / suite・invitee_user_id が空)。 */
+/** Malformed contexts (uppercase / wrong-length hex; empty suite / invitee_user_id). */
 function badAcceptContexts(): readonly { name: string; context: InviteAcceptSignatureContext }[] {
   return [
     {
@@ -160,7 +166,7 @@ function badAcceptContexts(): readonly { name: string; context: InviteAcceptSign
   ];
 }
 
-/** 4 操作(受諾署名 / リンク署名の sign と verify)がすべて InvalidInput で落ちるか。 */
+/** Do all 4 operations (sign/verify of the acceptance signature / link signature) fail with InvalidInput? */
 async function allInvalidInput(
   context: InviteAcceptSignatureContext,
   signingKey: CryptoKey,
@@ -182,7 +188,7 @@ async function invalidInputChecks(c: Checks): Promise<void> {
       await allInvalidInput(bad.context, pair.privateKey),
     );
   }
-  // 署名 hex の長さ不正も InvalidInput(64 バイト固定)
+  // A wrong-length signature hex is also InvalidInput (fixed at 64 bytes)
   const shortSignature = await verifyInviteAcceptSignature({
     context: contextOf(base),
     signatureHex: "ab".repeat(63),
@@ -198,7 +204,8 @@ async function invalidInputChecks(c: Checks): Promise<void> {
 }
 
 async function roundtripChecks(c: Checks): Promise<void> {
-  // 新規生成鍵での往復: 宣言鍵 = 生成鍵の公開鍵、で署名 → 検証が通る(両署名)
+  // Round-trip with freshly generated keys: declared keys = the generated public
+  // keys; sign → verify passes (both signatures)
   const invitee = await generateSigningKeyPair();
   const rawPub = new Uint8Array(await crypto.subtle.exportKey("raw", invitee.publicKey));
   const seed = new Uint8Array(32);
@@ -226,7 +233,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
   });
   c.push("invite-accept-sig: roundtrip", verified.ok && linkVerified.ok);
 
-  // 宣言鍵を別の鍵にすると検証失敗(自己束縛 — 署名鍵と宣言鍵の不一致は通らない)
+  // Swapping the declared key to another key fails verification (self-binding — a mismatch between the signing key and the declared key does not pass)
   const other = await generateSigningKeyPair();
   const otherPub = new Uint8Array(await crypto.subtle.exportKey("raw", other.publicKey));
   const declaredOther = await verifyInviteAcceptSignature({
@@ -235,7 +242,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
   });
   c.push("invite-accept-sig: roundtrip declared-key swap rejected", !declaredOther.ok);
 
-  // 別のリンク鍵で作ったリンク署名は通らない(サーバー偽造の形の実装側再確認)
+  // A link signature made with a different link key does not pass (implementation-side re-confirmation of the server-forgery shape)
   const otherSeed = new Uint8Array(32);
   crypto.getRandomValues(otherSeed);
   const otherLink = await deriveInviteLinkKeyPair(otherSeed);
@@ -247,7 +254,7 @@ async function roundtripChecks(c: Checks): Promise<void> {
     : forged;
   c.push("invite-accept-sig: roundtrip forged link signature rejected", !forgedVerified.ok);
 
-  // 文脈差し替えは検証失敗(別招待への移植の実装側再確認)
+  // Swapping the context fails verification (implementation-side re-confirmation of transplant to another invite)
   const wrongContext = await verifyInviteAcceptSignature({
     context: { ...context, projectId: "proj-other" },
     signatureHex: signed.value,

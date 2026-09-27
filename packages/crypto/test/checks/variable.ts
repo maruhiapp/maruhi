@@ -1,7 +1,8 @@
-// CRYPTO_SPEC §4(変数値の AES-256-GCM + AAD)のチェック。
-// ベクター: test-vectors/variable-encryption.json。
-// 固定 nonce の暗号化 API は存在しない(nonce 再利用を構造的に不可能にするため)ので、
-// 固定ベクターは復号方向で検証する(GCM は決定論的なので暗号化方向の同値性も担保される)。
+// Checks for CRYPTO_SPEC §4 (AES-256-GCM + AAD for variable values).
+// Vector: test-vectors/variable-encryption.json.
+// There is no fixed-nonce encryption API (to make nonce reuse structurally
+// impossible), so the fixed vector is verified in the decrypt direction (GCM
+// is deterministic, which also guarantees encrypt-direction equivalence).
 
 import {
   buildVariableAad,
@@ -45,8 +46,9 @@ async function vectorChecks(c: Checks): Promise<void> {
 }
 
 async function aadMismatchChecks(c: Checks): Promise<void> {
-  // aad-environment-mismatch / aad-epoch-mismatch は文脈差し替えで再現し、
-  // ベクターの decrypt_aad_hex と AAD 構築が一致することも確認する
+  // aad-environment-mismatch / aad-epoch-mismatch are reproduced as context
+  // swaps; also confirm the AAD construction matches the vector's
+  // decrypt_aad_hex
   const mismatches: readonly { name: string; context: VariableContext }[] = [
     {
       name: "aad-environment-mismatch",
@@ -87,8 +89,9 @@ async function tamperChecks(c: Checks): Promise<void> {
 }
 
 async function invalidContextChecks(c: Checks): Promise<void> {
-  // 数値文脈フィールドが LP エンコーダの前提(非負の安全な整数)を満たさない場合、
-  // throw でなく InvalidInput の CryptoResult で返る(encrypt / decrypt とも)
+  // When a numeric context field does not satisfy the LP encoder's
+  // precondition (non-negative safe integer), it returns a CryptoResult of
+  // InvalidInput rather than throwing (both encrypt / decrypt)
   const dek = generateDek();
   const plaintext = new TextEncoder().encode("x");
   const cases: readonly { name: string; context: VariableContext }[] = [
@@ -142,8 +145,9 @@ async function roundtripChecks(c: Checks): Promise<void> {
 }
 
 async function nonceUniquenessChecks(c: Checks): Promise<void> {
-  // §4 / §11: nonce はランダム生成で再利用禁止。同一入力で繰り返し暗号化しても
-  // nonce が重複しないこと(および暗号文も毎回異なること)を検査する
+  // §4 / §11: nonces are randomly generated and reuse is forbidden. Checks
+  // that repeated encryption of the same input produces no duplicate nonce
+  // (and that the ciphertext differs every time)
   const dek = generateDek();
   const plaintext = new TextEncoder().encode("same-input-every-time");
   const nonces = new Set<string>();

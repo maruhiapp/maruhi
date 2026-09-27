@@ -1,7 +1,9 @@
-// RFC 9180 公式テストベクター(Base mode, DHKEM(X25519,HKDF-SHA256), HKDF-SHA256,
-// AES-256-GCM)による HPKE 層の検証(CRYPTO_SPEC §11)。
-// 実装が採用する panva hpke を直接検証する: DeriveKeyPair 一致 + Open 方向一致
-// (Seal 方向の derandomize は panva では不可)。
+// Verification of the HPKE layer against the official RFC 9180 test vectors
+// (Base mode, DHKEM(X25519,HKDF-SHA256), HKDF-SHA256, AES-256-GCM)
+// (CRYPTO_SPEC §11).
+// Verifies the panva hpke the implementation adopts directly: DeriveKeyPair
+// match + Open-direction match (derandomizing the Seal direction is impossible
+// with panva).
 
 import * as HPKE from "hpke";
 
@@ -35,7 +37,7 @@ export async function rfc9180Checks(): Promise<CheckResult[]> {
     );
   }
 
-  // Open 方向のベクター一致(単発 Open は encryptions[0] = seq 0 に対応)
+  // Open-direction vector match (a single-shot Open corresponds to encryptions[0] = seq 0)
   {
     const s = suite();
     const enc0 = vector.encryptions[0];
@@ -53,7 +55,7 @@ export async function rfc9180Checks(): Promise<CheckResult[]> {
     });
     c.push("rfc9180: Open(vector enc/ct) == pt", toHex(pt) === enc0.pt);
 
-    // aad 改竄で Open 失敗(文脈束縛の基礎)
+    // Open fails on tampered aad (the basis of context binding)
     let failed = false;
     try {
       await s.Open(keyPair, fromHex(vector.enc), fromHex(enc0.ct), {

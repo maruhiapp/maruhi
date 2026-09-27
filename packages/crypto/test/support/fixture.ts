@@ -1,8 +1,9 @@
-// cli / server のテスト支援(apps/cli/test/support/crypto.ts /
-// apps/server/test/support/data-crypto.ts)が共有する実 crypto フィクスチャの
-// 共通コア。@maruhi/crypto の公開 API のみを
-// 使う。鍵の出所は両側で異なる(cli = 都度生成 / server = ベクター固定鍵)ため、
-// チェーン署名の手段は呼び出し側が signEntry 関数として注入する。
+// Common core of the real crypto fixtures shared by the cli / server test
+// support (apps/cli/test/support/crypto.ts /
+// apps/server/test/support/data-crypto.ts). Uses only the public API of
+// @maruhi/crypto. The two sides source keys differently (cli = generated each
+// time / server = vector-pinned keys), so the caller injects the chain-signing
+// means as the signEntry function.
 
 import type {
   ChainEntry,
@@ -18,10 +19,10 @@ import {
   SUITE_ID,
 } from "../../src/index.ts";
 
-/** フィクスチャの決定的タイムスタンプ基点(2026-08-01T00:00:00Z)。 */
+/** Deterministic timestamp base for fixtures (2026-08-01T00:00:00Z). */
 export const BASE_TIME_MS = 1754006400000;
 
-/** CryptoResult を素の値へ展開する(失敗 = テストデータの組み立てバグ = throw)。 */
+/** Unwraps a CryptoResult to its plain value (failure = a test-data assembly bug = throw). */
 export function unwrapResult<T>(result: CryptoResult<T>, label: string): T {
   if (!result.ok) {
     throw new Error(`${label}: ${JSON.stringify(result.error)}`);
@@ -29,7 +30,7 @@ export function unwrapResult<T>(result: CryptoResult<T>, label: string): T {
   return result.value;
 }
 
-/** テスト内の hex は常に整形済み(decodeHex の null は組み立てバグ = throw)。 */
+/** Hex inside tests is always well-formed (a null from decodeHex = an assembly bug = throw). */
 export function hexBytes(hex: string): Uint8Array {
   const bytes = decodeHex(hex);
   if (bytes === null) {
@@ -39,13 +40,14 @@ export function hexBytes(hex: string): Uint8Array {
 }
 
 /**
- * プロジェクト ID(= genesis ハッシュ)に依存する op の遅延構築。§5.2 の
- * コミットメント原像は project_id を含むため、create_environment / rotate_epoch
- * の payload は genesis を組んだ後でしか確定できない。
+ * Lazy construction of an op that depends on the project ID (= genesis hash).
+ * Because the §5.2 commitment preimage contains project_id, the payloads of
+ * create_environment / rotate_epoch cannot be finalized until the genesis is
+ * assembled.
  */
 export type LazyChainOperation = (projectId: string) => ChainOperation | Promise<ChainOperation>;
 
-/** buildChainWith の 1 ステップ(actor の同定と署名手段は呼び出し側が与える)。 */
+/** One step of buildChainWith (the caller supplies the actor identity and signing means). */
 export interface ChainBuildStep {
   readonly actor: { readonly userId: string; readonly keyFingerprintHex: string };
   readonly operation: ChainOperation | LazyChainOperation;
@@ -54,13 +56,13 @@ export interface ChainBuildStep {
 
 export interface BuiltChain {
   readonly entries: readonly ChainEntry[];
-  /** entries[i] のエントリハッシュ(CAS の親ヘッドに使う)。 */
+  /** Entry hash of entries[i] (used as the CAS parent head). */
   readonly hashes: readonly string[];
-  /** プロジェクト ID = genesis エントリハッシュ(CRYPTO_SPEC §6.4)。 */
+  /** Project ID = genesis entry hash (CRYPTO_SPEC §6.4). */
   readonly projectId: string;
 }
 
-/** 有効な署名済みチェーンを組み立てる(seq / prev_hash / timestamp は自動)。 */
+/** Assembles a valid signed chain (seq / prev_hash / timestamp are automatic). */
 export async function buildChainWith(steps: readonly ChainBuildStep[]): Promise<BuiltChain> {
   const entries: ChainEntry[] = [];
   const hashes: string[] = [];
@@ -93,7 +95,7 @@ export async function buildChainWith(steps: readonly ChainBuildStep[]): Promise<
   return { entries, hashes, projectId };
 }
 
-/** EncryptedPayload 形のワイヤ表現(§4.1 の署名ブロック込み — AUTH_SPEC §12-2)。 */
+/** Wire representation of the EncryptedPayload shape (including the §4.1 signature block — AUTH_SPEC §12-2). */
 export interface WireEncryptedPayload {
   readonly suite: string;
   readonly aad: {
@@ -105,14 +107,14 @@ export interface WireEncryptedPayload {
   };
   readonly nonceHex: string;
   readonly ciphertextHex: string;
-  // 値の書き込み署名ブロック(CRYPTO_SPEC §4.1 / AUTH_SPEC §12-2)
+  // Value write-signature block (CRYPTO_SPEC §4.1 / AUTH_SPEC §12-2)
   readonly prevValueSigHashHex: string;
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
   readonly signatureHex: string;
 }
 
-/** WireEncryptedPayload から §4.1 の署名コンテキストを再構成する。 */
+/** Reconstructs the §4.1 signature context from a WireEncryptedPayload. */
 export function valueContextOf(
   payload: WireEncryptedPayload,
   writerUserId: string,
@@ -134,8 +136,9 @@ export function valueContextOf(
 }
 
 /**
- * value_signed_bytes の SHA-256(次 version の prev_value_sig_hash_hex に使う —
- * §4.1 の連鎖)。writer はワイヤに載らないため明示指定する。
+ * SHA-256 of value_signed_bytes (used as the next version's
+ * prev_value_sig_hash_hex — the §4.1 chain). writer does not ride on the wire,
+ * so it is specified explicitly.
  */
 export async function valueSignedBytesHashOf(
   payload: WireEncryptedPayload,

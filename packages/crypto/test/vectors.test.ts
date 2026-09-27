@@ -1,6 +1,6 @@
-// テストベクター準拠チェック(CRYPTO_SPEC §11)。
-// node / workerd / browser の 3 プロジェクトで同一実行される(vitest.*.config.ts 参照)。
-// Bun ランタイムは test/run-in-bun.ts が同じチェックを直接実行する。
+// Conformance checks against the test vectors (CRYPTO_SPEC §11).
+// Run identically across the 3 projects node / workerd / browser (see vitest.*.config.ts).
+// For the Bun runtime, test/run-in-bun.ts runs the same checks directly.
 
 import { describe, expect, it } from "vitest";
 

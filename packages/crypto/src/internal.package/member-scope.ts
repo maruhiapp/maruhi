@@ -1,15 +1,21 @@
-// CRYPTO_SPEC §6.2(2026-09-14 ES): メンバーの環境スコープ — 符号化・構造規則・集合代数。
+// CRYPTO_SPEC §6.2 (2026-09-14 ES): a member's environment scope — encoding,
+// structure rules, and set algebra.
 //
-// - payload 上の表現は `scope_kind`("all" | "listed")+ `scope_environments_lp_hex`
-//   (environment_id リストの §2.1 LP の hex 小文字 — grant_server の scope_environments と
-//   同じ入れ子 LP。リスト順は署名対象の一部、生成は昇順 SHOULD・検証は集合)
-// - 構造規則(payload 構造検査の段 — 認可に先行): all ⇒ 空リスト必須、256 要素以下、
-//   重複 id は無効、listed の空リストは有効
-// - 集合代数(原則 1 の包含判定): `all` は全環境の集合 U(将来作成される環境を含む)、
-//   `listed{X}` は有限集合 X。`all ⊇ 任意`、`listed{X} ⊇ all` は偽、
-//   `listed{X} ⊇ listed{Y}` ⇔ Y ⊆ X。差集合・対称差で `U \ X` が現れる形は
-//   EnvironmentSet の `all` 側(= U または U の補有限部分集合 — listed には包含されない)
-//   として fail-closed に扱う
+// - The on-payload representation is `scope_kind` ("all" | "listed") +
+//   `scope_environments_lp_hex` (the lowercase hex of the §2.1 LP of the
+//   environment_id list — the same nested LP as grant_server's
+//   scope_environments. The list order is part of the signed data; generation
+//   SHOULD sort, verification treats a set)
+// - Structure rules (the payload-structure-check stage — precedes
+//   authorization): all ⇒ the list must be empty, at most 256 elements,
+//   duplicate ids are invalid, an empty listed list is valid
+// - Set algebra (principle 1's containment judgment): `all` is the set U of
+//   all environments (including ones created later); `listed{X}` is the finite
+//   set X. `all ⊇ anything`, `listed{X} ⊇ all` is false,
+//   `listed{X} ⊇ listed{Y}` ⇔ Y ⊆ X. Shapes where `U \ X` appears in a
+//   difference / symmetric difference are treated fail-closed as
+//   EnvironmentSet's `all` side (= U or a cofinite subset of U — not
+//   containable by any listed)
 
 import { encodeHex } from "./bytes.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
@@ -17,7 +23,7 @@ import { encodeLengthPrefixed } from "./encoding.ts";
 /** Scope kind on the wire (CRYPTO_SPEC §6.2). */
 export type ScopeKind = "all" | "listed";
 
-/** The two wire fields every scope-carrying payload ends with (§6.2 の正規化フィールド順). */
+/** The two wire fields every scope-carrying payload ends with (the §6.2 normalization field order). */
 export interface ScopePayloadFields {
   readonly scopeKind: ScopeKind;
   /** Environment ids in as-signed order (empty when `scopeKind` is `all`). */
@@ -25,7 +31,7 @@ export interface ScopePayloadFields {
 }
 
 /**
- * A member's derived environment scope (CRYPTO_SPEC §6.2 の検証状態). `all`
+ * A member's derived environment scope (the CRYPTO_SPEC §6.2 verification state). `all`
  * includes environments created later; `listed` is the exact finite set (the
  * empty list is a valid scope that receives no DEK at all).
  */
@@ -42,10 +48,10 @@ export type EnvironmentSet =
   | { readonly kind: "all" }
   | { readonly kind: "listed"; readonly ids: ReadonlySet<string> };
 
-/** The `all` scope (genesis の作成者・owner の scope). */
+/** The `all` scope (the genesis creator's / an owner's scope). */
 export const ALL_SCOPE: MemberScope = { kind: "all" };
 
-/** Upper bound of a listed scope (§6.1 — grant_server の scope_environments と同じ 256). */
+/** Upper bound of a listed scope (§6.1 — the same 256 as grant_server's scope_environments). */
 export const MAX_SCOPE_ENVIRONMENTS = 256;
 
 /** Builds the derived scope from payload fields already validated by `scopeShapeOk`. */
@@ -55,7 +61,7 @@ export function memberScopeOf(fields: ScopePayloadFields): MemberScope {
     : { kind: "listed", environmentIds: [...fields.scopeEnvironmentIds] };
 }
 
-/** The wire fields of a derived scope (CLI / server が payload を組むときの逆変換). */
+/** The wire fields of a derived scope (the inverse transform when CLI / server build a payload). */
 export function scopePayloadFieldsOf(scope: MemberScope): ScopePayloadFields {
   return scope.kind === "all"
     ? { scopeKind: "all", scopeEnvironmentIds: [] }
@@ -68,7 +74,7 @@ export function canonicalScopeEnvironmentsHex(environmentIds: readonly string[])
 }
 
 /**
- * Structure rule (§6.2 — payload 構造検査の段): kind in the closed set, ids are
+ * Structure rule (§6.2 — the payload-structure-check stage): kind in the closed set, ids are
  * bounded non-empty strings (checked by the caller's `isBoundedId`), at most
  * 256, no duplicates, and an `all` scope carries the empty list. Runtime-typed
  * so that hostile chain JSON yields `invalid-payload` instead of throwing.
@@ -93,7 +99,7 @@ export function scopeShapeOk(
   return new Set(scopeEnvironmentIds as readonly string[]).size === scopeEnvironmentIds.length;
 }
 
-/** Whether `environmentId` is inside `scope` (環境対象 op / §6.3 の 3′ / R(E) の述語). */
+/** Whether `environmentId` is inside `scope` (environment-targeting ops / §6.3's 3′ / the R(E) predicate). */
 export function scopeIncludesEnvironment(scope: MemberScope, environmentId: string): boolean {
   return scope.kind === "all" || scope.environmentIds.includes(environmentId);
 }
@@ -116,7 +122,7 @@ export function unionEnvironmentSets(a: EnvironmentSet, b: EnvironmentSet): Envi
 /**
  * `a △ b` (symmetric difference). `all △ all = ∅`; `all △ listed{X} = U \ X`
  * which is cofinite and therefore reported as `all` (not containable by any
- * listed scope — CRYPTO_SPEC §6.2 の集合代数 / Cursor Bugbot 指摘対応).
+ * listed scope — the CRYPTO_SPEC §6.2 set algebra / addressing a Cursor Bugbot finding).
  */
 export function symmetricDifferenceEnvironmentSets(
   a: EnvironmentSet,

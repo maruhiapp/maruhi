@@ -1,16 +1,17 @@
-// AUDIT_SPEC §5.1 監査ヘッド累積ハッシュのチェック:
-// - audit-head.json の chain セクション(row_digest と h_n の連鎖)を
-//   computeAuditRowDigest / computeAuditHeadHash が再現する
-// - NULL と空文字列のプリイメージ相違(null_vs_empty セクション)
-// - 数値境界(非整数・2^53 以上)と hex 形式の invalid-input(規約 21 の分担 —
-//   拒否は JSON ベクターでなくハーネス側で固定する)
+// Checks for the AUDIT_SPEC §5.1 audit head cumulative hash:
+// - computeAuditRowDigest / computeAuditHeadHash reproduce the chain section of
+//   audit-head.json (the row_digest and h_n chaining)
+// - the NULL vs empty-string preimage difference (null_vs_empty section)
+// - invalid-input on numeric bounds (non-integer, >= 2^53) and hex format
+//   (the split under convention 21 — rejections are pinned on the harness side, not
+//   by JSON vectors)
 
 import type { AuditHeadRow } from "../../src/index.ts";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "../../src/index.ts";
 import auditHeadVectors from "../../test-vectors/audit-head.json" with { type: "json" };
 import { type CheckResult, Checks } from "./support.ts";
 
-/** ベクター JSON の行(推論リテラル型でなく構造型で受ける — chain と null_vs_empty の両方から渡す)。 */
+/** A row of the vector JSON (taken as a structural type, not an inferred literal type — passed from both chain and null_vs_empty). */
 interface VectorRow {
   readonly seq: number;
   readonly row_id: string | null;
@@ -89,7 +90,7 @@ async function nullVsEmptyChecks(c: Checks): Promise<void> {
   c.push("audit-head: null and empty string differ", nullDigest !== emptyDigest);
 }
 
-/** 数値境界・hex 形式の invalid-input(拒否側の固定 — ベクター規約 21 の分担)。 */
+/** invalid-input on numeric bounds and hex format (pinning the rejection side — the split under vector convention 21). */
 async function invalidInputChecks(c: Checks): Promise<void> {
   const base = toTypedRow(auditHeadVectors.chain[0]!.row);
   const rejectsRow = async (name: string, row: AuditHeadRow, field: string): Promise<void> => {
@@ -145,7 +146,7 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     [SUITE_ID, "", 1, digest.toUpperCase()],
     "rowDigestHex",
   );
-  // 上界の内側は受理される(MAX_SAFE_INTEGER 自身 — §2.1 の境界の裏側)
+  // The inside of the upper bound is accepted (MAX_SAFE_INTEGER itself — the flip side of the §2.1 boundary)
   const boundary = await computeAuditRowDigest({ ...base, serverTs: Number.MAX_SAFE_INTEGER });
   c.push("audit-head: MAX_SAFE_INTEGER serverTs accepted", boundary.ok);
 }

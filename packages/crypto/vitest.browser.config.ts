@@ -1,11 +1,11 @@
-// ブラウザ(Chromium headless)でのテスト実行(CRYPTO_SPEC §11)。
-// ルート vitest.config.ts の glob には載せず、CI の独立ステップ(Playwright
-// Chromium 導入後)/ `bun run test:browser` から実行する。
+// Runs the tests in a browser (headless Chromium) (CRYPTO_SPEC §11).
+// Not picked up by the root vitest.config.ts glob; run from a dedicated CI step
+// (after Playwright Chromium is provisioned) / `bun run test:browser`.
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig } from "vitest/config";
 
-// apps/web の e2e と同じ環境変数で Chromium 実行体を差し替え可能にする
-// (プリインストール済みブラウザだけがある実行環境向け。未設定なら既定解決)
+// Allows swapping the Chromium executable via the same env var as the apps/web e2e
+// (for environments that only have a pre-installed browser; default resolution when unset)
 const executablePath = process.env["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"];
 
 export default defineConfig({

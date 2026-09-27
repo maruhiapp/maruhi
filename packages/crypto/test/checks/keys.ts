@@ -1,5 +1,5 @@
-// CRYPTO_SPEC §3(鍵生成・フィンガープリント・DEK)のチェック。
-// フィンガープリントは test-vectors/chain-entries.json の keys / server_key で固定。
+// Checks for CRYPTO_SPEC §3 (key generation, fingerprints, DEK).
+// The fingerprints are pinned by keys / server_key of test-vectors/chain-entries.json.
 
 import {
   computeServerKeyFingerprint,
@@ -34,7 +34,7 @@ interface VectorUserKeys {
 const users = chainVectors.keys as Readonly<Record<string, VectorUserKeys>>;
 
 async function fingerprintChecks(c: Checks): Promise<void> {
-  // ユーザー鍵フィンガープリント: SHA-256(enc_pub || sig_pub) 先頭 16 バイト
+  // User key fingerprint: the first 16 bytes of SHA-256(enc_pub || sig_pub)
   for (const [userId, keys] of Object.entries(users)) {
     const fp = await computeUserKeyFingerprint(
       fromHex(keys.enc_pub_hex),
@@ -46,7 +46,7 @@ async function fingerprintChecks(c: Checks): Promise<void> {
     );
   }
 
-  // サーバー鍵フィンガープリント: SHA-256(server_enc_pub) 先頭 16 バイト(enc 鍵のみ)
+  // Server key fingerprint: the first 16 bytes of SHA-256(server_enc_pub) (enc key only)
   const server = chainVectors.server_key;
   const serverFp = await computeServerKeyFingerprint(fromHex(server.enc_pub_hex));
   c.push(
@@ -54,15 +54,16 @@ async function fingerprintChecks(c: Checks): Promise<void> {
     serverFp.ok && toHex(serverFp.value) === server.key_fingerprint_hex,
   );
 
-  // 長さ検証: 32 バイト以外は InvalidInput
+  // Length check: anything other than 32 bytes is InvalidInput
   const bad = await computeUserKeyFingerprint(new Uint8Array(31), new Uint8Array(32));
   c.push("keys: fingerprint rejects bad length", !bad.ok && bad.error.kind === "InvalidInput");
 }
 
 async function deriveChecks(c: Checks): Promise<void> {
-  // RFC 9180 DeriveKeyPair: dek-wrap.json の server_keypair(hpke-js で導出)と
-  // 同じ ikm から同じ公開鍵が導出される(デプロイメント keypair — §9 — の
-  // 「secret 1 本 → keypair」経路の固定。RFC 公式ベクターは rfc9180.ts が担う)
+  // RFC 9180 DeriveKeyPair: the same public key is derived from the same ikm
+  // as dek-wrap.json's server_keypair (derived with hpke-js) — this pins the
+  // "one secret → keypair" path of the deployment keypair (§9). rfc9180.ts
+  // covers the official RFC vectors
   const serverKeys = dekWrapVectors.server_keypair;
   const derived = await deriveEncryptionKeyPair({ ikm: fromHex(serverKeys.ikmS_hex) });
   if (!derived.ok) {
@@ -75,14 +76,14 @@ async function deriveChecks(c: Checks): Promise<void> {
       "keys: derived server fingerprint",
       fp.ok && toHex(fp.value) === serverKeys.server_key_fingerprint_hex,
     );
-    // 非抽出が既定(サーバー側の運用姿勢): エクスポートは KeyExportFailed
+    // Non-extractable is the default (the server-side operational posture): export is KeyExportFailed
     const denied = await exportEncryptionPrivateKey(derived.value.privateKey);
     c.push(
       "keys: derived private key is non-extractable by default",
       !denied.ok && denied.error.kind === "KeyExportFailed",
     );
   }
-  // ikm 長不正は InvalidInput(throw しない)
+  // A wrong-length ikm is InvalidInput (does not throw)
   const badIkm = await deriveEncryptionKeyPair({ ikm: new Uint8Array(31) });
   c.push("keys: derive rejects bad ikm length", !badIkm.ok && badIkm.error.kind === "InvalidInput");
 }
@@ -94,7 +95,7 @@ async function vectorImportChecks(c: Checks): Promise<void> {
     return;
   }
 
-  // sig 鍵の seed → JWK インポートがベクターの公開鍵と整合する
+  // The sig key seed → JWK import is consistent with the vector's public key
   const sigPair = await importSigningKeyPair({
     publicKey: fromHex(owner.sig_pub_hex),
     privateSeed: fromHex(owner.sig_sk_seed_hex),
@@ -104,8 +105,9 @@ async function vectorImportChecks(c: Checks): Promise<void> {
     toHex(await exportSigningPublicKey(sigPair.value.publicKey)) === owner.sig_pub_hex;
   c.push("keys: signing key pair import from seed", sigRoundtrip);
 
-  // enc KeyPair の raw インポート(非抽出)— HPKE Open の KeyPair 渡し経路の前提。
-  // enc_sk_seed は X25519 の生秘密鍵として生成されている(from_private_bytes)
+  // Raw import of the enc KeyPair (non-extractable) — the precondition for the
+  // KeyPair passing path of HPKE Open.
+  // enc_sk_seed is generated as a raw X25519 private key (from_private_bytes)
   const encPair = await importEncryptionKeyPair({
     publicKey: fromHex(owner.enc_pub_hex),
     privateKey: fromHex(owner.enc_sk_seed_hex),
@@ -118,7 +120,7 @@ async function vectorImportChecks(c: Checks): Promise<void> {
 }
 
 async function generationChecks(c: Checks): Promise<void> {
-  // 鍵生成: enc(X25519)/ sig(Ed25519)の公開鍵は 32 バイト raw で往復できる
+  // Key generation: the public keys of enc (X25519) / sig (Ed25519) round-trip as 32-byte raw
   const enc = await generateEncryptionKeyPair();
   const encPub = await exportEncryptionPublicKey(enc.publicKey);
   const encImported = await importEncryptionPublicKey(encPub);
@@ -135,16 +137,17 @@ async function generationChecks(c: Checks): Promise<void> {
     sigPub.length === 32 && sigImported.ok && sig.privateKey.extractable === false,
   );
 
-  // DEK: 256-bit 乱数。長さと(確率的にだが)一意性
+  // DEK: a 256-bit random. Length and (probabilistically) uniqueness
   const a = generateDek();
   const b = generateDek();
   c.push("keys: DEK is 32 bytes and random", a.length === 32 && toHex(a) !== toHex(b));
 }
 
 async function encExportChecks(c: Checks): Promise<void> {
-  // enc 秘密鍵: extractable 生成 → raw エクスポート → 再インポートした鍵ペアで
-  // HPKE Open が機能する(公開鍵一致は入力からの復元で自明のため、機能検証で
-  // エクスポート値の正しさを固定する — CLI の OS キーチェーン経路 CRYPTO_SPEC §3)
+  // enc private key: extractable generation → raw export → HPKE Open works
+  // with the re-imported key pair (public key equality is trivial — a restore
+  // of the input — so a functional check pins the correctness of the exported
+  // value — the CLI's OS keychain path, CRYPTO_SPEC §3)
   const enc = await generateEncryptionKeyPair({ extractable: true });
   const encSk = await exportEncryptionPrivateKey(enc.privateKey);
   const encPub = await exportEncryptionPublicKey(enc.publicKey);
@@ -177,8 +180,9 @@ async function encExportChecks(c: Checks): Promise<void> {
 }
 
 async function sigExportChecks(c: Checks): Promise<void> {
-  // sig 秘密鍵: extractable 生成 → seed エクスポート → 再インポートした秘密鍵の
-  // 署名が「元の」公開鍵で検証できる(機能検証)
+  // sig private key: extractable generation → seed export → a signature by the
+  // re-imported private key verifies under the "original" public key
+  // (functional check)
   const sig = await generateSigningKeyPair({ extractable: true });
   const sigSeed = await exportSigningPrivateSeed(sig.privateKey);
   const sigPub = await exportSigningPublicKey(sig.publicKey);
@@ -205,8 +209,8 @@ async function sigExportChecks(c: Checks): Promise<void> {
 }
 
 async function vectorExportChecks(c: Checks): Promise<void> {
-  // ベクター固定: chain-entries.json の固定鍵を extractable でインポート →
-  // エクスポートがベクターの秘密鍵 hex と一致する(決定的検査)
+  // Vector pinning: import the fixed keys of chain-entries.json as extractable
+  // → the export matches the vector's private key hex (deterministic check)
   const ownerKeys = users["user-owner-0001"];
   if (ownerKeys === undefined) {
     c.push("keys: vector user-owner-0001 present for export checks", false);
@@ -243,7 +247,7 @@ async function vectorExportChecks(c: Checks): Promise<void> {
 }
 
 async function lockedExportChecks(c: Checks): Promise<void> {
-  // 非抽出鍵のエクスポートは KeyExportFailed(throw しない)
+  // Exporting a non-extractable key is KeyExportFailed (does not throw)
   const encLocked = await generateEncryptionKeyPair();
   const encDenied = await exportEncryptionPrivateKey(encLocked.privateKey);
   c.push(

@@ -1,7 +1,7 @@
 {
-  "description": "CRYPTO_SPEC §4: 変数値の AES-256-GCM 暗号化。AAD は §2.1 エンコーディング",
+  "description": "CRYPTO_SPEC §4: AES-256-GCM encryption of variable values. The AAD is the §2.1 encoding",
   "aad_fields_order": ["suite", "project_id", "environment_id", "epoch", "variable_id", "version"],
-  "note": "ciphertext_hex は ct || tag(16 bytes)。WebCrypto / pyca AESGCM と同じ連結形式",
+  "note": "ciphertext_hex is ct || tag (16 bytes). Same concatenated form as WebCrypto / pyca AESGCM",
   "vectors": [
     {
       "name": "basic",
@@ -24,21 +24,21 @@
       "base": "basic",
       "decrypt_aad_hex": "000000096d61727568692f76310000000970726f6a2d303030310000000c656e762d6465762d303030320000000133000000157661722d64617461626173652d75726c2d303030310000000137",
       "must_fail": true,
-      "note": "environment_id 差し替え(環境間の移植攻撃)は復号失敗"
+      "note": "substituting environment_id (a cross-environment transplant attack) fails decryption"
     },
     {
       "name": "aad-epoch-mismatch",
       "base": "basic",
       "decrypt_aad_hex": "000000096d61727568692f76310000000970726f6a2d303030310000000d656e762d70726f642d303030310000000134000000157661722d64617461626173652d75726c2d303030310000000137",
       "must_fail": true,
-      "note": "epoch 差し替え(ローテーション跨ぎの移植)は復号失敗"
+      "note": "substituting the epoch (a transplant across rotations) fails decryption"
     },
     {
       "name": "ciphertext-bit-flip",
       "base": "basic",
       "ciphertext_hex": "96770f5922b967cc584aa8b77217ada74ac82c7dffce0208fe2043fe1ec6056db7582e91db4721533ef03efd3d49b1d6266b36917d02cc28567385172eb283554e261d",
       "must_fail": true,
-      "note": "タグ末尾 1 bit 反転は復号失敗"
+      "note": "flipping the last bit of the tag fails decryption"
     },
     {
       "name": "nonce-mismatch",

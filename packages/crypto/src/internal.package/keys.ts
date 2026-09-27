@@ -1,10 +1,10 @@
-// CRYPTO_SPEC §3: 鍵階層 — user master keypair(enc: X25519 / sig: Ed25519)、
-// 鍵フィンガープリント、Environment Epoch DEK(256-bit 乱数)。
+// CRYPTO_SPEC §3: key hierarchy — user master keypair (enc: X25519 / sig: Ed25519),
+// key fingerprints, Environment Epoch DEK (256-bit random).
 //
-// enc 鍵は panva hpke の API で生成・変換する(HPKE Open の KeyPair 渡し経路と
-// 確実に整合させるため)。sig 鍵は WebCrypto Ed25519。
-// 秘密鍵は既定で非抽出(extractable=false)。エクスポートが必要な生成時のみ
-// 呼び出し側が明示的に extractable=true を指定する。
+// enc keys are generated/converted via panva hpke's API (to guarantee consistency with
+// the HPKE Open KeyPair-passing path). sig keys are WebCrypto Ed25519.
+// Private keys are non-extractable by default (extractable=false); the caller
+// explicitly passes extractable=true only when generating a key that must be exported.
 
 import type { Key, KeyPair } from "hpke";
 
@@ -73,7 +73,7 @@ export async function generateSigningKeyPair(options?: {
     "sign",
     "verify",
   ]);
-  // Ed25519 の generateKey は CryptoKeyPair を返す(型定義上の union を絞る)
+  // Ed25519's generateKey returns a CryptoKeyPair (narrows the union in the type definition)
   return pair as CryptoKeyPair;
 }
 

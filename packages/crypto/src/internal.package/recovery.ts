@@ -1,10 +1,10 @@
-// CRYPTO_SPEC §8: リカバリーコードによる user master 秘密鍵ブロブのラップ。
-// KEK = HKDF-SHA256(recovery_secret, salt = 空(長さ 0), info = "maruhi/v1/recovery")
-// ラップ = AES-256-GCM(AAD = LP("maruhi/v1/recovery-wrap", user_id)、96-bit ランダム nonce)
+// CRYPTO_SPEC §8: wrap of the user master private-key blob by the recovery code.
+// KEK = HKDF-SHA256(recovery_secret, salt = empty (length 0), info = "maruhi/v1/recovery")
+// wrap = AES-256-GCM(AAD = LP("maruhi/v1/recovery-wrap", user_id), 96-bit random nonce)
 //
-// salt = 空の根拠: recovery_secret は一様ランダム 256-bit(RFC 5869 §3.1)。
-// 用途分離は info が担う。パスフレーズ由来鍵を導入する場合は仕様改訂が必要(§8)。
-// ラップ対象の master 鍵ブロブは不透明バイト列として扱う(直列化形式は CLI 実装時に確定)。
+// Rationale for salt = empty: recovery_secret is uniformly random 256-bit (RFC 5869 §3.1).
+// Purpose separation is carried by info. Introducing a passphrase-derived key requires a spec revision (§8).
+// The wrapped master-key blob is treated as an opaque byte string (the serialization format is decided at CLI implementation time).
 
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
@@ -81,7 +81,7 @@ export async function wrapMasterSecret(input: {
     );
     return { ok: true, value: { nonce, ciphertext } };
   } catch {
-    // WebCrypto の予期しない失敗も値で返す(unwrap 側と対称)
+    // Unexpected WebCrypto failures are also returned as values (symmetric with unwrap)
     return { ok: false, error: { kind: "EncryptFailed", operation: "recovery" } };
   }
 }

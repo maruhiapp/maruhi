@@ -1,14 +1,16 @@
-// metadata-signature.json の tenure_extension(正規 12 エントリ + seq 13 の
-// 新鍵 re-add)から派生チェーンの検証済み履歴索引を作る。value-signature.json の
-// tenure_extension と同一内容だが、メタベクターの自己完結性のために自ファイルの
-// エントリから構築する(将来 2 ファイルが乖離しても検査対象がずれない)。
+// Builds the verified history index of the derived chain from
+// metadata-signature.json's tenure_extension (the canonical 12 entries + the
+// seq 13 new-key re-add). Identical in content to value-signature.json's
+// tenure_extension, but built from this file's own entries for the
+// self-containedness of the metadata vectors (so the checked target does not
+// drift even if the two files diverge later).
 
 import type { ChainHistoryIndex } from "../../src/index.ts";
 import { verifyChainWithHistory } from "../../src/index.ts";
 import metaVectors from "../../test-vectors/metadata-signature.json" with { type: "json" };
 import { toTypedEntry, typedEntries } from "./chain-vector.ts";
 
-/** 正規 12 エントリ + メタベクターの seq 13 re-add の派生チェーンの履歴索引。 */
+/** History index of the derived chain: the canonical 12 entries + the metadata vector's seq 13 re-add. */
 export async function metaExtendedHistory(): Promise<ChainHistoryIndex> {
   const raw = metaVectors.tenure_extension.entry;
   const entry = toTypedEntry({
