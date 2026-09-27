@@ -708,7 +708,7 @@ describe("maruhi login", () => {
     expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
     expect(revoked).toBe(1);
     expect(env.keychain.size).toBe(0);
-    expect(env.errors.join("\n")).toContain("キーチェーン"); // english-exempt: asserts literal text owned by apps/cli/test/support/env.ts
+    expect(env.errors.join("\n")).toContain("cannot write to the keychain (test injection)");
   });
 
   it("never claims 'revoked' when keychain-save fails and revocation also fails", async () => {
