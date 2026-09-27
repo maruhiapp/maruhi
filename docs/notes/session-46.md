@@ -1,187 +1,187 @@
-# セッション 46: S0 — 値なしスキーマ(フル)の設計 + 仕様改訂の裁定録
+# Session 46: S0 — the ruling record of the value-free schema (full) design + spec revisions
 
-日付: 2026-08-30。目的: S0(値なしスキーマの仕様起草 — 仕様・文書のみの PR。実装は S1〜)の主要裁定を「複数案 → 上位互換探索 → 3 周比較 → 自律選択」で確定し、棄却案と理由を記録する。第 1 周素材は docs/notes/value-free-schema.md(§1 オーナー既決事項・§2〜§5 の 8 周探索・§6 開いた問い 1〜12)。裁定記号は session-45(〜CQ)の続番で **CR から**。
+Date: 2026-08-30. Purpose: settle S0's major rulings (drafting the value-free-schema spec — a spec-and-docs-only PR; implementation is S1 onward) through "multiple options → upward-compatibility exploration → 3 rounds of comparison → autonomous choice", and record the rejected options with reasons. The round-1 material is docs/notes/value-free-schema.md (§1 the owner's already-decided items, §2–§5 the 8-round exploration, §6 open questions 1–12). The ruling symbols continue session-45's (…CQ) numbering, starting at **CR**.
 
-前提(動かさない — 2026-08-30 オーナー裁定): フル(名前・型・説明・必須)実施 / MCP 配信は後回し / `.env.schema` ファイルを正にしない / H0(ホステッド設計 + ADR-0014 改訂)は S0 の直後 — 順序の正式化・ROADMAP 再編は H0 の責務。出発点は検討メモ §4 の推奨(拡張ルート = マニフェスト被覆の自動継承。発見 F の補正込み)。
+Premises (not moved — owner ruling 2026-08-30): the full (name / type / description / required) implementation / MCP delivery deferred / `.env.schema` file is not made authoritative / H0 (hosted design + ADR-0014 revision) comes right after S0 — formalizing the order and the ROADMAP reorganization are H0's job. The starting point is the exploration memo §4's recommendation (the extension route = automatic inheritance via manifest coverage, including the correction from finding F).
 
-成果物の対応: CRYPTO_SPEC 0.8-draft(§4.2 レイアウト v2 / §4.3 被覆確認 / §6.2〜§6.3 / §11 / §14)、AUTH_SPEC 0.16-draft(§12-2 / §12-5 / §12-7 / §12-8 / §12-10 / §12-11)、AUDIT_SPEC §3.3、docs/notes/value-free-schema-design.md(CLI・付帯面 + 実装分割 S1〜)、ROADMAP Phase 3 ①②の文言最小更新。
+Deliverable mapping: CRYPTO_SPEC 0.8-draft (§4.2 layout v2 / §4.3 coverage confirmation / §6.2–§6.3 / §11 / §14), AUTH_SPEC 0.16-draft (§12-2 / §12-5 / §12-7 / §12-8 / §12-10 / §12-11), AUDIT_SPEC §3.3, docs/notes/value-free-schema-design.md (the CLI and auxiliary surface + the implementation split S1 onward), a minimal wording update to ROADMAP Phase 3 ①②.
 
 ---
 
-## 1. 裁定 CR: §4.2 レイアウト進化の形 — 拡張ルート + ステートメント種ローカルのレイアウト版上げ(課題 (a)・メモ §6-1・10・発見 F)
+## 1. Ruling CR: the form of §4.2 layout evolution — the extension route + a statement-type-local layout version (issue (a), memo §6-1/10, finding F)
 
-**採用**: 検討メモ §4 の推奨どおり**拡張ルート**(`var_meta_signed_bytes` へのスキーマ欄追加)。レイアウト進化の形は:
+**Adopted**: the exploration memo §4's recommended **extension route** (adding the schema fields to `var_meta_signed_bytes`). The form of layout evolution is:
 
-1. **新ドメイン分離文字列 `maruhi/v1/var-meta-sig-v2`** で第 2 レイアウトを定義する(v1 は 10 フィールド、v2 は 13 フィールド — `status` の直後に `var_type` / `required` / `description` を挿入)。ドメイン文字列の版はステートメント種ローカルであり、suite(`maruhi/v1`)は据え置く
-2. **検証側のレイアウト選択はワイヤの `layoutVersion`**(省略 = 1)が行う。layoutVersion は署名対象の外(運搬フィールド)だが、CRYPTO_SPEC §1 原則 6 の既知の残余「検証モード選択」と同型で検証は破れない — 虚偽申告は別レイアウトの signed_bytes 再計算 = 署名不一致に退化する。得られるのはエラーメッセージの品質(誠実な破壊様式)のみ
-3. **旧検証者の破壊様式 = decode 段で割る**: v2 対応クライアントは署名検証より**前**に layoutVersion のサポート範囲を検査し、超過は「未対応レイアウト(クライアント更新が必要)」の型付きエラーで拒否する(署名不正 = 改ざん疑いと区別する)。layoutVersion のワイヤ型は上限を固定しない整数とし、v3〜の将来版上げが旧クライアントに常にこの経路で現れるようにする
-4. **v1 レイアウトは有効なまま**(既存ステートメントの移行不要・一括移行なし)。スキーマ欄・declared を使わないステートメントは v2 導入後も v1 で発行してよい。再発行の自然な機会(rename・schema set)に v2 へ移る
-5. **スキーマ書き込みの有効化ゲート**はプロジェクト単位のサーバー設定 `schemaPolicy`(既定 disabled — AUTH_SPEC §12-11。裁定 CV と一体)。有効化の順序はサーバー → 全メンバー CLI → enabled 化(SELF_HOSTING "Updates" への追記は実装 PR 側 — S2/S3)
+1. **A new domain-separation string `maruhi/v1/var-meta-sig-v2`** defines the second layout (v1 has 10 fields, v2 has 13 — `var_type` / `required` / `description` are inserted right after `status`). The domain string's version is local to the statement type; the suite (`maruhi/v1`) stays as-is
+2. **The verifier's layout selection is driven by the wire's `layoutVersion`** (omitted = 1). layoutVersion is outside the signed material (a transport field), but verification cannot be broken — it is the same shape as CRYPTO_SPEC §1 principle 6's known residual "verification-mode selection": a false claim degenerates into recomputing signed_bytes under the other layout = a signature mismatch. All it buys is error-message quality (an honest failure mode)
+3. **The old verifier's failure mode = decode-stage rejection**: a v2-capable client checks layoutVersion's supported range **before** signature verification, and refuses an excess with a typed error "unsupported layout (client update required)" (distinguished from an invalid signature = suspected tampering). The wire type of layoutVersion is an integer with no fixed upper bound, so that future bumps to v3+ always surface on old clients via this path
+4. **The v1 layout stays valid** (existing statements need no migration — no mass migration). Statements that use neither schema fields nor declared may still be issued as v1 after v2 lands. They move to v2 at a natural reissue opportunity (a rename, a schema set)
+5. **The activation gate for schema writes** is the per-project server setting `schemaPolicy` (default disabled — AUTH_SPEC §12-11; integral with ruling CV). The activation order is server → all members' CLI → enabling (the SELF_HOSTING "Updates" addition belongs to the implementation PR side — S2/S3)
 
-**棄却案**:
+**Rejected options**:
 
-- **suite 全体の `maruhi/v2` 化**: §2 の suite はアルゴリズム束(AES-GCM/HPKE/Ed25519)の識別子で、v2 は PQ ハイブリッド KEM に予約済み(§2・未決 #5)。レイアウト変更(アルゴリズム不変)に消費すると、(i) v2 の意味が「PQ」と「スキーマ欄」の合成になり暗号アジリティの軸が濁る、(ii) 値・DEK ラップ・チェーンなど suite を共有する全構造の版が連動して見える(実際は変わらない)誤読を生む。AUTH_SPEC §12-2 の「v2 まで先取りしない」保留はアルゴリズム版の話であり、ステートメント種ローカルのレイアウト版はこの保留に抵触しない — という切り分け自体を本裁定で明文化する
-- **同一ドメイン文字列のままフィールド追加(可変長 LP)**: LP の一意性(§2.1)は保たれるが、旧検証者には v1 レイアウトでの再計算 → **署名不一致 = サーバー改ざんと区別のつかない最悪の誤メッセージ**で現れる(発見 F-1)。また「10 フィールドの v1」と「13 フィールドの v2」が同一ドメイン文字列を共有すると、検証側がフィールド数で分岐する暗黙のレイアウト判定になり、原則 6 の「検証の分岐を決める情報」がどこにも明示されない
-- **並置ルート(独立スキーマステートメント種)への再逆転**: マニフェスト entry は `LP(variable_id, status, meta_version, meta_sig_hash)` で変数ステートメントのハッシュのみを束縛する。並置種は被覆の外に落ち、入れるには `env_manifest_signed_bytes` の変更が要る(検討メモ §4 — 避けたかった署名フォーマット変更が戻る)。wire にのみスキーマを載せ署名対象 v1 を維持する変形も検証済みで不成立(meta_sig_hash がスキーマを覆わず改ざん可能 — 発見 F-3)
-- **既存ステートメントの一括移行(全再発行)**: 全変数 × 全環境の metaVersion+1 再発行 + マニフェスト再発行を移行の前提にすると、S2 デプロイが全プロジェクトの一斉儀式になる。v1 有効のままの共存で移行圧力自体を消す(公開前かつ既存ステートメントの検証は不変)
+- **Bumping the whole suite to `maruhi/v2`**: §2's suite identifies the algorithm bundle (AES-GCM/HPKE/Ed25519), and v2 is reserved for a PQ hybrid KEM (§2, undecided #5). Spending it on a layout change (algorithms unchanged) would (i) make v2's meaning a compound of "PQ" and "schema fields", muddying the crypto-agility axis, and (ii) suggest every structure sharing the suite — values, DEK wraps, the chain — is versioned in lockstep (they are not). AUTH_SPEC §12-2's reservation "do not pre-empt v2" is about the algorithm version, and a statement-type-local layout version does not conflict with it — this distinction itself is codified by this ruling
+- **Adding fields under the same domain string (variable-length LP)**: LP uniqueness (§2.1) is preserved, but an old verifier recomputes under the v1 layout and sees **a signature mismatch — the worst possible error message, indistinguishable from server tampering** (finding F-1). Moreover, "10-field v1" and "13-field v2" sharing one domain string makes the verifier's layout selection an implicit field-count branch, and principle 6's "information that selects the verification path" is made explicit nowhere
+- **Re-reversing to the juxtaposed route (an independent schema statement type)**: a manifest entry is `LP(variable_id, status, meta_version, meta_sig_hash)`, binding only the variable statement's hash. A juxtaposed type falls outside the coverage, and including it would require changing `env_manifest_signed_bytes` (exploration memo §4 — brings back the signature-format change we wanted to avoid). A variant that puts the schema only on the wire while keeping signed material at v1 was verified and fails (meta_sig_hash does not cover the schema — tamperable, finding F-3)
+- **Mass migration of existing statements (reissuing all)**: making migration a prerequisite means every variable × every environment gets a metaVersion+1 reissue plus a manifest reissue — the S2 deploy becomes a simultaneous ceremony across all projects. Coexistence with v1 staying valid removes the migration pressure itself (pre-publication, and existing statements' verification is unchanged)
 
-**上位互換探索の適用**(§8 に統合): レイアウト選択規則を「未知 status 値での分岐」に代替させる案(declared を含むステートメントは status で割れる)は、スキーマ欄あり・active の v2 ステートメントを説明できず棄却(status は分岐材料として不完全)。
+**Applying upward-compatibility exploration** (folded into §8): an alternative that replaces the layout-selection rule with "branch on an unknown status value" (a statement carrying declared could split on status) was rejected because it cannot explain a v2 statement that has schema fields and is active (status is an incomplete branching input).
 
-## 2. 裁定 CS: `declared` 状態と activation 複合 — 値未設定の第一級表現(課題 (a)/(b) の従属だが独立記録)
+## 2. Ruling CS: the `declared` state and the activation compound — a first-class expression of "no value yet" (subordinate to issues (a)/(b) but recorded separately)
 
-**採用**: `status` に第 3 の値 **`"declared"`(宣言済み・値未設定。v2 レイアウト限定)**を追加する。
+**Adopted**: add a third value to `status`: **`"declared"` (declared, no value set; v2 layout only)**.
 
-- 従来の「値のない変数は存在しない」(AUTH_SPEC §12-5)の**唯一の例外**として、「status declared・スキーマ欄付きステートメント(metaVersion 1)+ マニフェスト」を値なしで受理する複合を追加する
-- **activation(declared → active)は最初の値 push との複合**(EncryptedPayload version 1 + status active のステートメント metaVersion+1 + マニフェスト)。メタ状態が変わるためマニフェスト再発行を伴う — 「値の push はマニフェストに触れない」不変条件(CRYPTO_SPEC §4.3)は不変(これは activation であって通常 push ではない)
-- **遷移は単方向**: declared → active・declared → deleted は可。**active → declared は禁止**(値の存在の巻き戻し表現を作らない — 値を取り除く唯一の経路は削除のまま)。deleted からの復帰禁止(既存)は declared にも適用
-- 同時に、従来暗黙だった構造的アンカーを検証規則へ昇格する: **status active の検証済みステートメントを持つ変数の値が値付き配布に欠けることは、欠落(G6)として拒否する**(CRYPTO_SPEC §6.3)。declared の導入で「値がない」が正当になりうるため、正当な値なし = declared のみ、と明示しないと欠落検出が緩む
-- チェックポイントの values_digest(active のみ — §6.2)に declared は現れない(値が存在しない)。マニフェスト側の entry は status を列挙済みで、`"declared"` は新しい文字列値として被覆に自然に載る
+- As the **sole exception** to the existing "a variable with no value does not exist" (AUTH_SPEC §12-5), add a compound accepted with no value: "a status-declared, schema-fields statement (metaVersion 1) + a manifest"
+- **Activation (declared → active) is a compound with the first value push** (an EncryptedPayload version 1 + a status-active statement at metaVersion+1 + a manifest). Because the meta state changes, it involves a manifest reissue — the invariant "a value push never touches the manifest" (CRYPTO_SPEC §4.3) is unchanged (this is an activation, not a normal push)
+- **Transitions are one-directional**: declared → active and declared → deleted are allowed. **active → declared is forbidden** (do not create an expression that rewinds the existence of a value — the only way to remove a value stays deletion). The existing ban on returning from deleted also applies to declared
+- At the same time, a previously implicit structural anchor is promoted to a verification rule: **a variable holding a verified status-active statement whose value is absent from a valued distribution is rejected as missing (G6)** (CRYPTO_SPEC §6.3). Since declared legitimizes "no value", missing-value detection would loosen unless "legitimate value-free = declared only" is made explicit
+- declared does not appear in the checkpoint's values_digest (active only — §6.2; the value does not exist). The manifest-side entry already enumerates status, so `"declared"` rides the coverage naturally as a new string value
 
-**棄却案**:
+**Rejected options**:
 
-- **「required 宣言 = まだ存在しない変数」を環境メタ・別テーブルで表す**: 宣言がステートメント/マニフェスト被覆の外に出て、presence 保証(裁定 CU)が「サーバー申告に依存しない」性質を失う。並置ルートの縮小再生産
-- **値なしを「空の暗号文 version 0」で表す**: AAD 座標(version ≥ 1)・「値のない変数は存在しない」・values_digest の意味論すべてに例外が波及する。「値ではないもの」を値の型で運ぶのは EncryptedPayload の境界規律(CLAUDE.md)にも反する
-- **declared を v1 レイアウトにも許す**: v1 の status 集合を変えると、既存の v1 検証者(status ∈ {active, deleted} で decode)に enum 外値として現れる — それ自体は decode 段で割れて誠実だが、「v1 は不変・既存検証は壊れない」という移行の核(裁定 CR-4)が崩れる。宣言はスキーマ機能の一部であり v2 に限定するのが一貫する
+- **Representing "required declaration = a variable that does not exist yet" via environment meta / a separate table**: the declaration would leave the statement/manifest coverage, and the presence guarantee (ruling CU) would lose its "does not depend on a server claim" property. A shrunken re-creation of the juxtaposed route
+- **Representing value-free as "an empty ciphertext version 0"**: the exception would propagate to every one of the AAD coordinates (version ≥ 1), "a variable with no value does not exist", and values_digest's semantics. Carrying "something that is not a value" in the value type also violates EncryptedPayload's boundary discipline (CLAUDE.md)
+- **Allowing declared on the v1 layout too**: changing v1's status set would present an out-of-enum value to existing v1 verifiers (which decode status ∈ {active, deleted}) — honest in that it fails at decode, but it breaks the migration core "v1 is immutable and existing verification does not break" (ruling CR-4). Declaring is part of the schema feature and consistently v2-only
 
-## 3. 裁定 CT: 型システムの範囲と required の意味論(課題 (b)・メモ §6-2・3)
+## 3. Ruling CT: the type system's scope and required's semantics (issue (b), memo §6-2/3)
 
-**採用**:
+**Adopted**:
 
-- **`var_type` は閉集合 `"" | "string" | "number" | "boolean" | "url"`**(`""` = 未指定)。検証 DSL・正規表現・長さ制約は導入しない。**enum は見送り**(値に近い — description への実値混入(発見 D)と同じ穴を型定義の側に開ける。列挙値がメタ = 平文サーバー可視に載ることの意味をユーザーが直感できない)。**デフォルト値は置かない**(「値」に半歩踏み込み、ゼロ知識の線引きを濁す — メモ §6-3 の推奨どおり)
-- **required は「環境の契約」**: この環境はこの変数の値を持つべきだ、という宣言。ステートメントは (environment, variable) 単位なので環境別の required は構造がそのまま与える(prod は required・dev は optional は、環境ごとの別ステートメントで自然に表現される)。コード側の要求(ブランチと同乗すべきもの)はスキーマの責務にしない — その面は `maruhi schema lint`(S5 — 発見 G)がコード自身を正として突合する
-- **v2 ステートメントでは required は明示必須**(`"true" | "false"` — 空文字列を許さない)。省略時の既定値解釈をクライアント実装に分散させない(fail-closed。LP は全フィールド必須なので署名対象としても自然)
-- required の充足判定 = 「status が active であること」(検証済みステートメントだけから判定可能 — 裁定 CU)。`maruhi run` / `ci run` の fail-fast は presence を硬く(required かつ declared → 実行前に硬いエラー)、型は警告から(設計文書 §1-4)
+- **`var_type` is the closed set `"" | "string" | "number" | "boolean" | "url"`** (`""` = unspecified). No validation DSL, regexes, or length constraints are introduced. **Enum is deferred** (too close to a value — it would open on the type side the same hole as real values leaking into description (finding D). A user cannot intuit that an enum value rides the meta = plaintext, server-visible surface). **No default values** (it steps half a pace into "value" territory and muddies the zero-knowledge line — per memo §6-3's recommendation)
+- **required is "the environment's contract"**: a declaration that this environment should hold this variable's value. Since statements are per (environment, variable), per-environment required-ness is given by the structure itself (required in prod, optional in dev is naturally expressed by per-environment separate statements). What the code requires (things that must ride along with a branch) is not the schema's job — that surface is `maruhi schema lint` (S5 — finding G), which cross-checks the code itself as the source of truth
+- **On v2 statements required is mandatory-explicit** (`"true" | "false"` — empty string not allowed). Do not disperse the omitted-default interpretation across client implementations (fail-closed; LP requires every field anyway, so it is natural as signed material)
+- required's satisfaction test = "status is active" (decidable from verified statements alone — ruling CU). `maruhi run` / `ci run` fail-fast is hard on presence (required and declared → a hard error before running) and starts type checks as warnings (design doc §1-4)
 
-**棄却案**:
+**Rejected options**:
 
-- **enum を初期集合に入れる**: 上記。将来の追加は v2 レイアウトへのフィールド追加ではなく閉集合 Literal の拡張(受理面)+ レイアウト v3(署名面)で行えるため、見送りに撤去不能なコストはない
-- **required 省略 = true の暗黙既定**: 「書き忘れ = 最も強い主張」は方向としては fail-closed だが、署名バイト列に載る値が生成側の既定値解釈に依存する形になり、原則 6(意味論は署名バイト列の中に)と相性が悪い。明示必須が最も単純
-- **required をプロジェクト横断の変数名単位契約にする**: 変数は環境ごとに独立の集合(CRYPTO_SPEC §4)であり、名前ベースの横断契約は名前 ↔ ID の対応の真正性設計(§4.2 の眼目)を迂回する。横断ビューは `maruhi env diff` の表示(S4)の責務
+- **Including enum in the initial set**: see above. A future addition can be done as a closed-set Literal extension (acceptance side) + layout v3 (signature side) rather than a field addition to v2, so deferring costs nothing unrecoverable
+- **Omitted required = an implicit default of true**: "forgot to write it = the strongest claim" is fail-closed in direction, but it makes a value on the signed bytes depend on a generation-side default interpretation — a poor fit with principle 6 (semantics live inside the signed bytes). Mandatory-explicit is simplest
+- **Making required a cross-project contract on variable names**: variables are independent sets per environment (CRYPTO_SPEC §4), and a name-based cross-cutting contract bypasses the name ↔ ID correspondence-authenticity design (§4.2's point). The cross-cutting view is `maruhi env diff`'s display (S4)'s job
 
-## 4. 裁定 CU: 保証の分割の仕様文言 — presence 硬 / type 柔(課題 (c)・メモ §6-7・発見 B)
+## 4. Ruling CU: the spec wording for splitting guarantees — presence hard / type soft (issue (c), memo §6-7, finding B)
 
-**採用**: CRYPTO_SPEC §14 に規範として明文化する。
+**Adopted**: codified as norms in CRYPTO_SPEC §14.
 
-- **§14.2(保証)に追加**: required 充足(presence)の検証可能性 — スキーマ欄と declared 状態は署名済みステートメントに載りマニフェスト被覆(完全性・エポック鮮度・checkpoint 束縛)に入るため、「required 変数がすべて active か」は検証済みステートメント集合だけから、**サーバー申告に依存せず**全検証者(値を復号できないクライアントを含む)が判定できる。サーバーが「値がある」と偽る余地は active の値配布要求(§6.3 — 裁定 CS)が、「値がない」と偽る余地は欠落検出(マニフェスト + チェックポイント)が挟む
-- **§14.3(非保証)に追加**: 宣言型と値の一致(type/format)は保証しない — E2EE のためサーバーは原理的に検証できず、検証は push 時・run 時のクライアントの advisory 検査のみ。G9(平文の正しさ)の亜種
-- **表示規律**: UI / CLI は型を「宣言」として表示し、型検証を実施した主体(その push / run を行ったクライアント)以外の文脈で「検証済み(verified)」と表示してはならない。required の充足は「署名済みステートメントから検証した」と表示してよい(こちらは硬い)
+- **Addition to §14.2 (guarantees)**: verifiability of required satisfaction (presence) — the schema fields and the declared state ride signed statements and enter manifest coverage (completeness, epoch freshness, checkpoint binding), so "are all required variables active" is decidable from the verified statement set alone, **without depending on a server claim**, by any verifier (including clients that cannot decrypt values). The server's room to falsely claim "a value exists" is sandwiched by the active value-distribution requirement (§6.3 — ruling CS), and its room to falsely claim "no value" by missing detection (manifest + checkpoints)
+- **Addition to §14.3 (non-guarantees)**: agreement between a declared type and the value (type/format) is not guaranteed — under E2EE the server cannot verify in principle, and verification is only the client's advisory check at push time / run time. A subspecies of G9 (correctness of plaintext)
+- **Display discipline**: a UI / CLI displays a type as a "declaration" and must not display "verified" in any context other than the party that ran the check (the client that performed that push / run). required satisfaction may be displayed as "verified from signed statements" (that one is hard)
 
-**棄却案**:
+**Rejected options**:
 
-- **type もサーバー検証可能にする(型のコミットメント・範囲証明等)**: ZK 証明系の導入はプリミティブ発明禁止(CLAUDE.md)に正面衝突。閉集合 4 型のために暗号仕様の複雑性クラスを 1 段上げる価値がない
-- **分割を仕様に書かず設計文書止まりにする**: overclaim の禁止は表示・ドキュメント全域を縛る規範であり、§14 が「何を証明しないか」の唯一の正である以上、そこに載らない非保証は将来の実装・文書が踏む
+- **Making type server-verifiable too (type commitments, range proofs, etc.)**: introducing a ZK-proof system collides head-on with the no-primitive-invention ban (CLAUDE.md). Not worth raising the crypto spec's complexity class a notch for a 4-type closed set
+- **Not writing the split into the spec, leaving it in the design doc**: the overclaim ban is a norm binding all display and documentation surfaces; since §14 is the sole source of truth on "what is not proven", a non-guarantee not listed there is one a future implementation or document will step on
 
-## 5. 裁定 CV: schema-locked 受理ポリシーの形 — プロジェクト設定 3 段・チェーンに載せない(課題 (d)・メモ §6-9・発見 E)
+## 5. Ruling CV: the schema-locked acceptance policy's form — a 3-tier project setting, not on the chain (issue (d), memo §6-9, finding E)
 
-**採用**: 有効化ゲート(裁定 CR-5)と schema-locked(発見 E)を**単一のプロジェクト設定 `schemaPolicy`(disabled | enabled | locked。既定 disabled)**に一元化する(AUTH_SPEC §12-11)。
+**Adopted**: unify the activation gate (ruling CR-5) and schema-locked (finding E) into **a single project setting `schemaPolicy` (disabled | enabled | locked; default disabled)** (AUTH_SPEC §12-11).
 
-- `disabled`(既定): v2 ステートメント(スキーマ欄・declared)の受理を 422 で拒否 — 旧検証者保護の有効化ゲート。v1 受理は不変
-- `enabled`: v2 受理。スキーマ欄は任意
-- `locked`: enabled + **変数作成(metaVersion 1)に layoutVersion 2 かつ varType 非空を要求**(422 `schema-required`)— 「宣言なき変数の創出」(typo の影の変数)の書き込み時遮断
-- **宣言の置き場はチェーン op でも環境メタでもなく、サーバーのプロジェクト設定**(mutation は admin スコープ × チェーン role admin 以上、監査イベント `project.schema_policy_changed` — AUDIT_SPEC §3.3)。根拠: これは**書き込み受理ポリシー(誠実サーバー下の hygiene)**であり、悪意サーバーは自分の受理ポリシーを常に無視できるため、チェーン化しても敵対保証は 1 bit も増えない(§12-8 の受理ポリシーと同じ性格)。チェーンは「鍵の真正性・認可の台帳であり、可変メタデータの台帳にしない」(CRYPTO_SPEC §6.2)— lease_policy がチェーンに載るのは鍵開示の認可(サーバーが検証者でなく被検証者)だからで、性格が異なる
-- 配布面: 環境一覧・pull 応答に advisory フィールドとして同梱(クライアント UX 用 — 検証規則の入力にしない)
-- **可逆性**: enabled → disabled は新規 v2 書き込みを止めるだけで、既存 v2 ステートメントの保存・配布・検証は不変(検証はポリシーを参照しない)。locked → enabled も同様(検討メモ第 8 次の撤去可能性歩査と整合)
+- `disabled` (default): rejects v2 statements (schema fields, declared) at acceptance with 422 — the activation gate protecting old verifiers. v1 acceptance is unchanged
+- `enabled`: accepts v2. Schema fields are optional
+- `locked`: enabled + **requires variable creation (metaVersion 1) to carry layoutVersion 2 and a non-empty varType** (422 `schema-required`) — write-time blocking of "creating a variable with no declaration" (typo shadow variables)
+- **The declaration lives neither in a chain op nor in environment meta, but in a server project setting** (mutation requires admin scope × chain role admin or above, with the audit event `project.schema_policy_changed` — AUDIT_SPEC §3.3). Basis: this is a **write-acceptance policy (hygiene under an honest server)**, and since a malicious server can always ignore its own acceptance policy, putting it on the chain gains not one bit of adversarial guarantee (same character as §12-8's acceptance policies). The chain is "a ledger of key authenticity and authorization, not a ledger of mutable metadata" (CRYPTO_SPEC §6.2) — lease_policy rides the chain because it is authorization for key disclosure (the server is the verify-ee, not the verifier), a different character
+- Distribution side: bundled as an advisory field in the environment list and pull responses (for client UX — not an input to verification rules)
+- **Reversibility**: enabled → disabled only stops new v2 writes; existing v2 statements' storage, distribution, and verification are unchanged (verification does not consult the policy). locked → enabled likewise (consistent with the exploration memo's 8th-order removability walk)
 
-**棄却案**:
+**Rejected options**:
 
-- **チェーン op 化(`set_schema_policy`)**: 上記のとおり敵対保証が増えず、チェーンエントリ上限(§6.4)を設定トグルが消費する。また合意規則化すると「未知 op = チェーン無効」により全実装同時更新の破壊的変更になり、S2 の独立停止可能性(実装分割の要件)を壊す
-- **環境メタステートメントへの焼き込み**: 署名・被覆は得られるが、(i) ポリシー変更のたびに環境メタ metaVersion+1 × 全環境 + マニフェスト再発行が要る、(ii) 受理ゲートとしてはサーバーが読む値であって検証者が読む値ではない — 署名する意味がない(署名の対象は「誰が何を宣言したか」であり、ここで必要なのは監査だけ。監査は AUDIT_SPEC が担う)
-- **環境単位の設定**: プロジェクト単位より細かい制御は現時点で要求がなく、環境ごとの差(dev は緩く prod は locked)は required の環境別性(裁定 CT)が既に大半を吸収する。将来の細分化は enabled/locked の環境 override 追加で後方互換に足せる(先取りしない)
-- **opt-in でなく既定 enabled**: 未更新 CLI が残るプロジェクトでアップグレード済みメンバー 1 人の書き込みが全員の検証を割る(発見 F-2)。既定 disabled + 明示有効化が SELF_HOSTING の更新順序(サーバー → 全 CLI → 有効化)を機械的に強制する
+- **Making it a chain op (`set_schema_policy`)**: as above, adversarial guarantee does not increase, and a settings toggle would consume chain-entry budget (§6.4). Moreover, making it a consensus rule would be a breaking change via "unknown op = invalid chain" requiring simultaneous updates of all implementations, breaking S2's independent stoppability (a requirement of the implementation split)
+- **Burning it into an environment-meta statement**: signatures and coverage are gained, but (i) every policy change requires environment-meta metaVersion+1 × all environments + a manifest reissue, and (ii) as an acceptance gate it is a value the server reads, not a value a verifier reads — there is nothing to sign for (signing covers "who declared what"; what is needed here is only auditing, which AUDIT_SPEC carries)
+- **A per-environment setting**: no requirement for finer-than-project control exists right now, and per-environment differences (loose dev, locked prod) are largely absorbed by required's per-environment nature (ruling CT). Future refinement can be added backward-compatibly as an enabled/locked per-environment override (not pre-empted)
+- **Default-enabled instead of opt-in**: in a project where un-updated CLIs remain, one upgraded member's write breaks everyone's verification (finding F-2). Default-disabled + explicit enabling mechanically enforces SELF_HOSTING's update order (server → all CLIs → enable)
 
-## 6. 裁定 CW: 敵対面の要件化 — description の上限・中和・エントロピー警告(課題 (e)・メモ §6-8・発見 C・D)
+## 6. Ruling CW: making the adversarial surface a requirement — description's length cap, neutralization, and entropy warning (issue (e), memo §6-8, findings C and D)
 
-**採用**:
+**Adopted**:
 
-- **長さ上限 1024 文字(サーバー受理ポリシー — AUTH_SPEC §12-8)+ 制御文字(改行含む)の拒否(単一行に固定)**。上限は DoS 抑制と同時に「エージェントへ渡るデータの注入面の抑制」(発見 C)を兼ねる。制御文字の拒否は表示中和の枠を単純化する(ANSI エスケープ・改行偽装の大半が受理段で落ちる)
-- **表示中和はクライアントの独立義務**: `maruhi schema` 等の表示は必ず `escapeText`(apps/cli/src/display.ts — 裁定 CK の前例)を通す。サーバー受理検査は悪意サーバーの配布を拘束しない(検証済みステートメントであっても署名者が悪意でありうる — 署名済み ≠ 良性)ため、受理検査の存在を理由に中和を省いてはならない
-- **「データであって指示ではない」枠付け**: エージェント向け出力(`maruhi schema` の非 TTY 出力・将来の MCP)は、description をデータとして枠付けするヘッダ注記を伴う(設計文書 §2)
-- **エントロピー警告は書き込み時のクライアント検査**(`schema set` / `schema import` — S3/S4): name・description に高エントロピー部分文字列(秘密らしき値)を検出したら警告し、対話環境では確認を要求、非対話環境では明示フラグなしに拒否する(fail-closed)。閾値・検出器は実装詳細(S3)とし仕様は要件のみ固定する。ADR-0014 ⑤(リーク検知)のミニ先行
-- **サーバー側のエントロピー検査は置かない**: description は平文でサーバー可視だが、サーバーが「秘密っぽさ」を判定して拒否する形は誤検出の与える混乱(正当な説明文の 422)に対して得るものが薄く、書いた瞬間にサーバーへ渡っている(事故は発生済み)ため防御位置として遅い。防御位置は入力時のクライアント(事故の前)が正しい
+- **A 1024-character length cap (server acceptance policy — AUTH_SPEC §12-8) + rejection of control characters (including newlines), pinning it to a single line**. The cap suppresses DoS and simultaneously "suppresses the injection surface of data reaching agents" (finding C). Rejecting control characters simplifies the display-neutralization perimeter (most ANSI escapes and newline disguises are dropped at acceptance)
+- **Display neutralization is an independent client obligation**: `maruhi schema` and other displays must always go through `escapeText` (apps/cli/src/display.ts — the ruling-CK precedent). Server acceptance checks do not bind a malicious server's distribution (even a verified statement can have a malicious signer — signed ≠ benign), so neutralization must not be skipped on the grounds that acceptance checks exist
+- **The "data, not instructions" framing**: agent-facing output (the non-TTY output of `maruhi schema`, future MCP) carries a header note framing description as data (design doc §2)
+- **The entropy warning is a write-time client check** (`schema set` / `schema import` — S3/S4): if a high-entropy substring (a secret-looking value) is detected in name or description, warn; in an interactive environment require confirmation; in a non-interactive environment refuse without an explicit flag (fail-closed). Thresholds and detectors are implementation details (S3); the spec pins only the requirement. A small precursor of ADR-0014 ⑤ (leak detection)
+- **No server-side entropy check**: description is plaintext and server-visible, but a form where the server judges "secret-looking-ness" and rejects buys little against the confusion of false positives (422s on legitimate descriptions), and the value has already reached the server the moment it was written (the accident has already happened) — too late as a defensive position. The correct defensive position is the client at input time (before the accident)
 
-**棄却案**: description の Markdown 対応(表示面の攻撃面を広げる — プレーンテキストのみ)/ NFC 正規化の強制(description は識別子でなく照合に使わないため不要 — name と異なり byte-exact 束縛のみで足りる)/ 上限を合意規則にする(受理ポリシーで足りる — セルフホスト調整の余地を残す。ただし引き上げ時も中和・枠付け維持を条件として明記)。
+**Rejected options**: Markdown support for description (widens the display-side attack surface — plain text only) / mandatory NFC normalization (description is not an identifier and is never used for matching — unlike name, byte-exact binding suffices) / making the cap a consensus rule (an acceptance policy suffices — leaves room for self-host adjustment, on the stated condition that raising it keeps neutralization and framing in place).
 
-## 7. 裁定 CX: 付帯面の S0 仕様化範囲と S1〜への線引き(課題 (f)・メモ §6-4・6・11・12)
+## 7. Ruling CX: the S0 specification scope of the auxiliary surface and the line to S1+ (issue (f), memo §6-4/6/11/12)
 
-**採用**(詳細は docs/notes/value-free-schema-design.md):
+**Adopted** (details in docs/notes/value-free-schema-design.md):
 
-| 面 | S0 での扱い | 実装段 |
+| Surface | Treatment in S0 | Implementation stage |
 |---|---|---|
-| `maruhi schema`(表示)・`schema set` | 設計文書で仕様化(agent-gate は**許可側**に明記 — メモ §6-5) | S3 |
-| `maruhi run` / `ci run` fail-fast | 意味論を仕様化(presence 硬 / type 警告 — 裁定 CT/CU) | S3 |
-| ブートストラップ(`schema import` — 発見 A) | 儀式の形を設計文書で固定(独立コマンド。init への組み込みは案内のみ) | S4 |
-| `maruhi env diff` のスキーマ考慮 | 方向のみ記載 | S4 |
-| 派生スナップショット(export + verify-snapshot — メモ §3-2) | **形式 = JSON Schema サブセット(発見 H)を第一候補として固定**。詳細写像は S5 で | S5 |
-| `maruhi schema lint`(発見 G) | 位置づけ(best-effort・善意のドリフト検出)のみ固定 | S5 |
-| MCP 配信 | スコープ外(オーナー既決 — 需要実測後) | — |
+| `maruhi schema` (display), `schema set` | Specified in the design doc (the agent-gate is explicitly on the **allowing** side — memo §6-5) | S3 |
+| `maruhi run` / `ci run` fail-fast | Semantics specified (presence hard / type warning — rulings CT/CU) | S3 |
+| Bootstrap (`schema import` — finding A) | The ceremony's form pinned in the design doc (an independent command; built-in to init is guidance only) | S4 |
+| `maruhi env diff`'s schema awareness | Direction only | S4 |
+| Derived snapshots (export + verify-snapshot — memo §3-2) | **Format = a JSON Schema subset (finding H) fixed as the first candidate**. The detailed mapping lands in S5 | S5 |
+| `maruhi schema lint` (finding G) | Positioning only (best-effort, benign drift detection) | S5 |
+| MCP delivery | Out of scope (owner-decided — after measuring demand) | — |
 
-線引きの原則: **署名・受理・検証の意味論(後から変えると移行を生む面)は S0 で固定し、UX の形(コマンド体裁・出力形式・検出器の閾値)は設計文書で方向を固定して実装段で確定する**。派生スナップショットの JSON Schema サブセットの正確な写像(required の環境軸・url 型の表現)は、スナップショットが署名も受理もされない生成物(正はストア)であるため S5 送りにしても移行コストを生まない。
+The line-drawing principle: **the semantics of signing, acceptance, and verification (surfaces that produce migration if changed later) are pinned in S0, while UX shapes (command form, output format, detector thresholds) have their direction pinned in the design doc and are settled in the implementation stage**. The exact mapping of the derived snapshot's JSON Schema subset (required's environment axis, the url type's representation) produces no migration cost when deferred to S5 because the snapshot is a generated artifact that is neither signed nor accepted (the store is the source of truth).
 
-**棄却案**: verify-snapshot まで S0 で完全仕様化(スナップショットは検証済みストアからの純関数であり、形式の詳細確定を先送りしても署名面に波及しない — 早期固定の利益がない)/ `schema lint` の仕様化(コード走査のヒューリスティクスは仕様の粒度に馴染まない — BG トリップワイヤと同じく実装文書の領分)。
+**Rejected options**: fully specifying verify-snapshot in S0 (a snapshot is a pure function of the verified store; deferring the format's details does not propagate to the signature surface — no benefit to early pinning) / specifying `schema lint` (code-scanning heuristics do not fit spec granularity — the same domain as BG tripwires: implementation documents).
 
-## 8. 上位互換探索(起草後 — 生成規則を変えて収束まで)
+## 8. Upward-compatibility exploration (post-drafting — changed the generation rules and ran to convergence)
 
-検討メモの 8 周(比較 → 負け点反転 → 機構合成 → ライフサイクル → 敵対者 → 双対 → スキュー → 消費者反転 → 上限/一本化/撤去)の再適用と、新規則 3 種による追加周回。
+A re-application of the exploration memo's 8 rounds (comparison → loser-trait inversion → mechanism synthesis → lifecycle → adversary → dual → skew → consumer inversion → cap/unify/remove) plus additional rounds under 3 new rules.
 
-### 第 1 周: 既存裁定の前提書き換え検査(session-44 §13 の型 — 「採用した裁定が過去の裁定の前提を壊していないか」)
+### Round 1: checking whether adopted rulings break earlier rulings' premises (the session-44 §13 pattern)
 
-- **§12-10 (1) の strict 受理列挙との整合**: declared 作成・activation は「値 push・メタ操作(§12-5)」の変形であり列挙済みクラスに包含される。schema-policy PUT は署名済み構造を運ばず exempt クラス — 列挙の更新は §12-5 項の明確化のみで足りる。**発見なし(整合)**
-- **§12-10 (3) mutation 成功の定義**: declared 作成・スキーマ再発行はメタ操作 → metadata-only pull で効果確認(既存規則がそのまま適用)。activation は値 push を含む複合 — 値 push の適用除外(pull が var.read を汚す)とステートメント側の確認義務が交差する。**解消**: activation の効果確認はステートメント + マニフェスト(metadata-only pull — var.read を記録しない)で行い、値側は CAS + 床の自己記録(既存の値 push 規律)— 分割がそのまま成立する。仕様追記不要(§12-10 の既存文言が種別ごとに定めており、activation は両種の合成)
-- **§6.3 床規則との整合**: declared 変数は version を持たない — 床の変数レコード(version, epoch, meta_version, ...)は meta 側のみ前進し、値床は activation まで空。規則 (c) の「床にない変数は version 0 相当」は activation 後の最初の pull に自然に適用される。**発見なし(格子は単調のまま)**
-- **AUDIT_SPEC Q2(存在区間 = var.created〜var.deleted)**: declared 作成を var.created として記録すると、値の存在しない区間が「閲覧可能だった集合」の候補に入る — が、値が 1 バージョンも存在しない変数の要ローテーションフラグは空虚(読める値がない)であり検出を誤らせない。activation を var.created にする逆案は「存在区間の開始 = metaVersion 1」の既存意味論を壊す。**採用: var.created = metaVersion 1 の受理(declared 含む)、activation の値は var.version_pushed(version 1)**。AUDIT_SPEC §3.3 に注記を追加
+- **Consistency with §12-10 (1)'s strict-acceptance enumeration**: declared creation and activation are variants of "value push and meta operations (§12-5)" and fall under already-enumerated classes. A schema-policy PUT carries no signed structure — an exempt class; updating the enumeration takes only a clarification in §12-5. **No finding (consistent)**
+- **§12-10 (3) the definition of mutation success**: declared creation and schema reissue are meta operations → effect is confirmed via a metadata-only pull (the existing rule applies as-is). Activation is a compound including a value push — the value-push exemption (pull pollutes var.read) intersects the statement-side confirmation duty. **Resolved**: activation's effect is confirmed via the statement + manifest (metadata-only pull — records no var.read), while the value side uses CAS + floor self-recording (the existing value-push discipline) — the split holds as-is. No spec addition needed (§12-10's existing text defines it per kind, and activation is a composition of both kinds)
+- **Consistency with the §6.3 floor rules**: a declared variable has no version — the floor's variable record (version, epoch, meta_version, ...) advances only on the meta side; the value floor stays empty until activation. Rule (c)'s "a variable not on the floor counts as version 0" applies naturally to the first pull after activation. **No finding (the lattice stays monotonic)**
+- **AUDIT_SPEC Q2 (the existence interval = var.created to var.deleted)**: recording declared creation as var.created puts an interval in which no value exists into the candidate set of "the set that was browsable" — but a rotation-needed flag on a variable with not even one value version is vacuous (there is no readable value) and does not mislead detection. The inverse option of making activation var.created would break the existing semantics "interval start = metaVersion 1". **Adopted: var.created = acceptance of metaVersion 1 (including declared); activation's value is var.version_pushed (version 1)**. A note was added to AUDIT_SPEC §3.3
 
-### 第 2 周: 障害・部分適用歩査(新規則 —「各複合が途中で止まった世界を列挙する」)
+### Round 2: failure / partial-application walk (new rule — "enumerate the worlds where each compound stops midway")
 
-- declared 作成・activation はともに単一リクエスト複合(1 decode・原子受理 — §12-10 (1) の複合原子性)であり、「宣言はあるが required が不明」「値はあるが status が declared のまま」の中間状態は構造的に作れない。**発見なし**
-- schemaPolicy の降格(enabled → disabled)と in-flight の v2 書き込みの競合: 受理時点のポリシーで判定(通常の直列化)。降格後も既存 v2 の検証・配布は不変(裁定 CV の可逆性)なので、降格が検証を壊す形はない。**発見なし** — **〔追記: この判定は不完全だった。降格が既存 v2 変数の削除・activation を凍結する経路(継続ステートメントも v2 でなければならないため)を見落としており、PR #112 の pullfrog レビューが検出した — §10 で解消〕**
-- **発見(小・解消済み)**: locked 化と並行する v1 変数作成が CAS の隙間で受理される形 — 受理判定は project DO 直列化の中でポリシーを読むため競合窓はない。仕様上「受理時点のポリシー」で判定と明記(§12-11)
+- Both declared creation and activation are single-request compounds (one decode, atomic acceptance — §12-10 (1)'s compound atomicity), so intermediate states like "a declaration exists but required is unknown" or "a value exists but status is still declared" are structurally impossible. **No finding**
+- Contention between a schemaPolicy downgrade (enabled → disabled) and an in-flight v2 write: judged by the policy at acceptance time (normal serialization). After a downgrade, existing v2 verification and distribution are unchanged (ruling CV's reversibility), so no downgrade can break verification. **No finding** — **〔Added later: this judgment was incomplete. It missed the path where a downgrade freezes deletion/activation of existing v2 variables (because continuation statements must also be v2), which the PR #112 pullfrog review caught — resolved in §10〕**
+- **Finding (small; resolved)**: a v1 variable creation racing a switch to locked could be accepted in a CAS gap — but the acceptance check reads the policy inside the project DO's serialization, so there is no contention window. The spec now explicitly says "judged by the policy at acceptance time" (§12-11)
 
-### 第 2.5 周: 受理・認可面の列挙整合(新規則 —「新操作が既存の全数列挙に漏れなく載っているか」— 起草テキスト確定後に実施)
+### Round 2.5: enumeration consistency of the acceptance / authorization surface (new rule — "does the new operation appear without gaps in the existing enumerations" — run after the draft text was settled)
 
-- **発見(採用)**: §12-3 の認可表の write 行に「declared 作成・activation 複合・スキーマ設定」を明記(従来の列挙は作成・push・改名・削除のみ — 新複合が表の解釈に落ちる形を残さない)。§12-10 (1) の strict 対象列挙にも同複合の包含を明記。§12-1 の「active / deleted 状態の真正性」を 3 値に追随。§12-8 の「変数数 / 環境(アクティブ)」に declared の計上を明記(§12-5 の宣言だけでは表の読み手に届かない)。いずれも意味論の変更ではなく列挙の精密化
+- **Finding (adopted)**: explicitly listed "declared creation, the activation compound, and schema settings" in the write row of §12-3's authorization table (the previous enumeration listed only create / push / rename / delete — leaving no room for the new compounds to fall through the table's interpretation). §12-10 (1)'s strict-target enumeration also now states the compounds' inclusion. §12-1's "authenticity of the active / deleted states" follows the 3-value update. §12-8's "variable count / environment (active)" now states how declared is counted (the §12-5 statement alone would not reach a reader of the table). All are enumeration refinements, not semantic changes
 
-### 第 3 周: 表示・消費面の敵対歩査(新規則 —「スキーマを読む側の全消費点を列挙して注入面を検査する」)
+### Round 3: adversarial walk of the display / consumption surface (new rule — "enumerate every consumption point that reads the schema and check the injection surface")
 
-- 消費点の列挙: `maruhi schema`(TTY / 非 TTY)・`maruhi run` の fail-fast エラーメッセージ(**変数名・型名を出す — description は出さない**: エラー文面への description 混入はログ経由の注入面になる。設計文書 §2 に固定)・web ダッシュボード(将来 — RSC 静的シェル外のクライアント表示 + React の自動エスケープ + CSP)・派生スナップショット(S5 — JSON エンコードが中和を兼ねるが、生成物ヘッダに「generated・データ」枠付けを要求)・schema lint の突合レポート(S5 — 変数名のみ)。**発見(採用)**: fail-fast エラー・lint レポートは description を含めない、を設計文書の要件に追加
-- 名前自体の注入面: name は既存の受理制約(§12-1 の文字集合は環境変数名形式)で制御文字が入らない。**発見なし**
+- Enumerated consumption points: `maruhi schema` (TTY / non-TTY), `maruhi run`'s fail-fast error message (**it names the variable and the type — never the description**: description in an error message becomes an injection surface via logs — pinned in design doc §2), the web dashboard (future — a client render outside the RSC static shell + React's auto-escaping + CSP), the derived snapshot (S5 — JSON encoding doubles as neutralization, but the artifact header requires a "generated, data" framing), schema lint's cross-check report (S5 — variable names only). **Finding (adopted)**: added to the design doc's requirements that fail-fast errors and lint reports do not include description
+- The injection surface of the name itself: name is already constrained by the existing acceptance rules (§12-1's character set is the env-var-name form) so no control characters enter. **No finding**
 
-### 第 4 周: 検討メモ 8 周の規則の再適用(抜粋 — 差分のみ)
+### Round 4: re-applying the exploration memo's 8-round rules (excerpt — deltas only)
 
-- 敵対者歩査の再適用: 「悪意メンバーが required=true を全変数に付けて CI を止める」— 書き込みは member 以上(既存の rename と同水準)であり、rename での妨害(名前の付け替え)と同クラス・同帰属(署名・監査)。新しい脅威クラスではない。**発見なし**
-- 双対の反転の再適用(読み ↔ 書き): schema-locked(書き込み時)に対する読み取り時の双対 = run の fail-fast(裁定 CT)。両方向とも仕様化済み。**発見なし**
-- 撤去可能性歩査の再適用: v2 レイアウト自体の撤去は不可(署名済みステートメントが存在する限り検証側は保持)— ただしこれは全署名フォーマットに共通の性質であり、schemaPolicy disabled への降格で書き込み面は完全に眠る。**発見なし(受容)**
+- Re-applying the adversary walk: "a malicious member sets required=true on every variable to stop CI" — writes require member or above (same level as the existing rename), same class and same attribution (signature, audit) as rename-based sabotage (swapping names). Not a new threat class. **No finding**
+- Re-applying the dual inversion (read ↔ write): schema-locked (write-time)'s read-time dual = run's fail-fast (ruling CT). Both directions are specified. **No finding**
+- Re-applying the removability walk: the v2 layout itself cannot be removed (as long as signed statements exist, the verifier side must keep it) — but that is a property common to every signature format, and downgrading to schemaPolicy disabled puts the write side fully to sleep. **No finding (accepted)**
 
-### 第 5 周: 配布チャネルの全数検査(新規則 —「declared / スキーマ欄が流れるべき全チャネルの列挙」)
+### Round 5: exhaustive check of the distribution channels (new rule — "enumerate every channel declared / the schema fields should flow through")
 
-- 値付き pull(§12-7)・メタのみ pull(§12-7)・リース応答(§14-2 — 「最新メタステートメント + マニフェスト」を同梱済みで declared は自然に流れる。`ci run` の presence 検査の材料が揃う)・環境一覧(ステートメント運搬 — §12-2)。**発見なし**(既存の「名前を返す応答は検証可能なステートメントを運ぶ」規律がそのまま被覆する)
-- layoutVersion のワイヤ型: 配布 decode を Literal(1, 2) にすると v3 が「未対応レイアウト」でなく Schema エラーで割れる — 仕様は「上限を固定しない整数 + decode 後のサポート範囲検査」を既に明記(§12-2)。実装の固定は S3 のテスト要件。**発見なし(仕様側は手当済み)**
+- Valued pull (§12-7), metadata-only pull (§12-7), the lease response (§14-2 — already bundles "the latest meta statements + the manifest", so declared flows naturally; `ci run`'s presence check has its material), the environment list (statement transport — §12-2). **No finding** (the existing discipline "a response returning names carries verifiable statements" covers it as-is)
+- layoutVersion's wire type: making the distribution decode Literal(1, 2) would make v3 fail as a Schema error rather than "unsupported layout" — the spec already states "an integer with no fixed upper bound + a post-decode supported-range check" (§12-2). Pinning the implementation is an S3 test requirement. **No finding (the spec side is covered)**
 
-### 収束の見立て
+### Convergence assessment
 
-新規発見は第 1 周の AUDIT_SPEC 注記(採用)・第 2.5 周の列挙精密化 4 点(採用)・第 3 周の「エラー文面に description を出さない」(採用)で、いずれも要件の追記・列挙の精密化であり裁定 CR〜CX の変更を要さない。第 4 周(過去規則の再適用)・第 5 周(配布チャネル全数)で発見ゼロ。**収束と判断**。
+The new findings are round 1's AUDIT_SPEC note (adopted), round 2.5's 4 enumeration refinements (adopted), and round 3's "no description in error messages" (adopted) — all requirement additions or enumeration refinements needing no change to rulings CR–CX. Rounds 4 (re-applying prior rules) and 5 (all distribution channels) found zero. **Judged converged**.
 
-## 9. 申し送り(S1〜 / H0 へ)
+## 9. Handoffs (to S1+ / H0)
 
-- S1 の頭でテストベクター(CRYPTO_SPEC §11 の 0.8-draft 項)を実装より先にコミットする(CLAUDE.md — crypto はテストベクター先行)
-- SELF_HOSTING "Updates" への移行順序(サーバー → 全メンバー CLI → enabled 化)の追記は S2/S3 実装 PR 側
-- 発見 F′(一括 import の O(N) 往復)は S4 で実測してから複合受理の要否を判断(先取りしない)
-- H0(ホステッド設計 + ADR-0014 改訂)は本 PR マージ直後。S 系列の順序の正式化・ROADMAP Wave 再編は H0 の責務
-- enum・環境単位 schemaPolicy・MCP 配信は需要の実測後(いずれも後方互換に追加可能な形で見送り済み)
+- At the head of S1, commit the test vectors (CRYPTO_SPEC §11's 0.8-draft entry) before implementation (CLAUDE.md — crypto is vectors-first)
+- The SELF_HOSTING "Updates" addition of the migration order (server → all members' CLI → enable) belongs to the S2/S3 implementation PRs
+- Finding F′ (the O(N) round trips of a bulk import) is measured in S4 before deciding whether compound acceptance is needed (not pre-empted)
+- H0 (hosted design + ADR-0014 revision) is right after this PR merges. Formalizing the S-series order and the ROADMAP Wave reorganization are H0's job
+- enum, per-environment schemaPolicy, and MCP delivery are deferred until demand is measured (each deferred in a form that can be added backward-compatibly)
 
-## 10. PR #112 レビュー対応(pullfrog 指摘の裁定追補 — 2026-08-30)
+## 10. PR #112 review handling (a ruling supplement on pullfrog findings — 2026-08-30)
 
-pullfrog が「一度 v2 になった変数のその後」の規則に 2 つの穴を検出した。いずれも正当な指摘であり、S1〜S2 の実装前に仕様側で閉じた(署名・受理面 — 後から変えると移行を生むクラス)。
+pullfrog detected 2 holes in the rules for "what happens to a variable after it becomes v2". Both are legitimate findings and were closed on the spec side before S1–S2 implementation (the signing / acceptance surface — the class that produces migration if changed later).
 
-1. **有効化ゲートの適用範囲を「v2 の新規採用」に限定(裁定 CV の精密化)**: 当初の「disabled = layoutVersion 2 の全拒否」は、削除ステートメントのスキーマ欄・レイアウト保持規約(v2 変数の削除は必ず v2)と合成すると、enabled → disabled の降格後に既存 v2 変数の削除・declared 変数の activation が不可能になり、裁定 CV の可逆性(「降格は新規書き込みを止めるだけ」)が成立しなかった(§8 第 2 周の障害歩査は複合の原子性しか見ておらず、この合成を見落とした)。解消: disabled が拒否するのは **metaVersion 1 の v2 作成と v1 変数への v2 再発行のみ**とし、直前が v2 の変数の継続ステートメント(削除・activation・rename・スキーマ再発行)はポリシーに依らず受理する — ゲートの目的(未更新クライアントが読めない新しい v2 の出現防止)は v2 配布済みの変数には既に達成不能であり、継続を止めても保護は増えない。**棄却した代替**: 「降格 = 既存 v2 の凍結込み」と明記して受容する案 — declared 変数が削除も activation もできない状態は運用の袋小路であり、撤去可能性(検討メモ第 8 次)の趣旨に反する
-2. **変数単位のレイアウト単調性の追加(裁定 CR / CT の補完)**: 当初はスキーマ欄・レイアウトの保持規約が削除ステートメント限定で、v2 変数を v1 レイアウトで rename するとスキーマ欄が黙って消えた — required = true の宣言が明示操作なしに消えて presence 保証(§14.2-8)の前提が崩れ、locked も「作成は v2 → rename で v1 へ落とす」で迂回できた。解消: **直前が v2 の変数の後続ステートメントは layoutVersion 2 でなければならない**(受理は 422 `layout-regression`、クライアント検証は prev 既知範囲 — CRYPTO_SPEC §4.2 / AUTH_SPEC §12-5)。スキーマ欄の値は後続 v2 ステートメントで明示変更してよい(required を下げる正当な操作)。§11 の負例一覧に「v2 変数への v1 後続(レイアウト後退 — rename 形)」を追加
+1. **Narrowing the activation gate's scope to "new v2 adoptions" (a refinement of ruling CV)**: the original "disabled = reject everything at layoutVersion 2" interacted with the schema-field / layout preservation rule (deleting a v2 variable is always v2) such that after an enabled → disabled downgrade, deleting existing v2 variables or activating declared variables became impossible — ruling CV's reversibility ("a downgrade only stops new writes") did not hold (§8 round 2's failure walk only looked at compound atomicity and missed this composition). Resolution: disabled rejects **only metaVersion-1 v2 creations and v2 reissues onto v1 variables**, and continuation statements of a variable whose latest is v2 (deletion, activation, rename, schema reissue) are accepted regardless of policy — the gate's purpose (preventing new v2s an un-updated client cannot read from appearing) is already unachievable for variables with distributed v2s, and stopping continuations adds no protection. **Rejected alternative**: codifying "downgrade = freeze existing v2s" and accepting it — a state where a declared variable can be neither deleted nor activated is an operational dead end and contradicts the spirit of removability (exploration memo 8th order)
+2. **Adding per-variable layout monotonicity (supplementing rulings CR / CT)**: originally the schema-field / layout preservation rule was limited to deletion statements, so renaming a v2 variable under a v1 layout silently dropped the schema fields — a required = true declaration disappearing with no explicit operation broke the premise of the presence guarantee (§14.2-8), and locked could be bypassed by "create as v2 → drop to v1 via rename". Resolution: **a continuation statement of a variable whose latest is v2 must be layoutVersion 2** (acceptance is 422 `layout-regression`; client verification checks within the prev-known range — CRYPTO_SPEC §4.2 / AUTH_SPEC §12-5). The schema-field values may be explicitly changed in a later v2 statement (a legitimate operation to lower required). The §11 negative list gained "a v1 continuation on a v2 variable (layout regression — rename form)"
 
-教訓(次回の探索規則へ): 障害歩査は「複合の途中停止」だけでなく「**設定の遷移 × 各ライフサイクル操作の直積**」を、消費面の歩査は「新規則が旧規則(保持規約)と交わる**全ステートメント種別**」を列挙して検査する。
+Lesson (into the next exploration rules): the failure walk must enumerate not just "a compound stopping midway" but "**the cross product of configuration transitions × every lifecycle operation**", and the consumption-side walk must enumerate "**every statement kind** where a new rule intersects an old rule (the preservation rule)".
 
-第 2 ラウンド(527e895 への再レビュー — いずれも規則の一意化で解消。仕様の構造変更なし):
+Round 2 (re-review of 527e895 — all resolved by making rules unambiguous; no structural spec change):
 
-3. **schema-locked の検査時点の一意化(裁定 CV の明確化)**: locked の検査が作成時(metaVersion 1)限定である一方、単調性の追記が「スキーマ欄の値は後続 v2 で変更してよい」を明文化したため、「作成時の一回検査」か「常時不変条件」かが両読みできた。裁定: **作成時の一回検査を正とする** — locked の遮断対象は「typo による影の変数の黙った創出」であり、作成時検査で完結する。後続の明示的スキーマ再発行による引き下げ(varType を `""` へ戻す)は署名・監査の残る明示操作で、required の引き下げと同じ扱い。enabled 期に varType なしで作られた declared 変数の activation は創出ではなく遡及しない。**棄却した代替**: 常時不変条件化(後続 v2 全部に varType 非空を要求)— 正当な「型指定の撤回」を禁じ、enabled 期作成の declared 変数の activation を locked 化が塞ぐ(§10-1 と同型の凍結)割に、遮断対象の脅威(typo 創出)には何も足さない
-4. **`schema set` のマージ規則の確定(設計文書 §1-2)**: 部分更新か全置換かが未規定で、v2 は required 明示必須のため `--description` 単独実行で型・必須が黙って落ちる全置換の読みがあり得た。裁定: **部分更新**(未指定欄は直前ステートメントの値を引き継ぐ。空へ戻すのは明示フラグのみ)— 単調性が塞いだ「黙った消失」を CLI 側で再現させない。
+3. **Unifying when the schema-locked check applies (clarifying ruling CV)**: locked's check was limited to creation time (metaVersion 1), but the monotonicity addition codified "schema-field values may change in later v2 statements", leaving ambiguous whether it was "a one-time check at creation" or "a standing invariant". Ruling: **the one-time check at creation is correct** — what locked blocks is "the silent creation of shadow variables via typos", which the creation-time check completes. A later lowering via an explicit schema reissue (returning varType to `""`) is an explicit operation leaving signature and audit, handled the same as lowering required. Activating a declared variable created without varType in the enabled period is not a creation and does not apply retroactively. **Rejected alternative**: making it a standing invariant (requiring non-empty varType on every later v2) — forbids the legitimate "withdrawing a type annotation" and lets a switch to locked block activation of a declared variable created in the enabled period (the same freeze as §10-1), while adding nothing against the threat it blocks (typo creation)
+4. **Settling `schema set`'s merge rule (design doc §1-2)**: partial update vs full replacement was unspecified, and since v2 requires required to be explicit, running `--description` alone could read as a full replacement where type and required silently fall away. Ruling: **partial update** (unspecified fields carry over the latest statement's values; returning to empty requires an explicit flag) — do not let the CLI reproduce the "silent disappearance" that monotonicity closed off.
 
-第 3 ラウンド(205405f への再レビュー):
+Round 3 (re-review of 205405f):
 
-5. **`schema set` 作成経路の既定値の確定(設計文書 §1-2)**: 部分更新の基準は「直前ステートメント」であり、作成経路(対象変数なし = declared・metaVersion 1)には引き継ぎ元がない — v2 は required 明示必須のため `--description` 単独の新規実行で required の値が仕様上決まらなかった。裁定: **`required = true` を作成既定**とする(宣言の目的は環境の契約の確立 — 裁定 CT — であり、false 既定では宣言が fail-fast に寄与せず黙って空回りする。fail-closed の失敗方向とも一致 — 過剰な required は run 実行前の可視のエラーとして現れ、`--optional` で明示的に下げられる)。`--type` 未指定は `varType = ""`。CT の「暗黙既定の禁止」との整合: あれは署名バイト列の生成規則(省略時解釈の実装分散)に係る棄却であり、CLI が既定を選んで**常に明示値をワイヤに載せ、選んだ値を出力に明示する**形はそれに抵触しない。`locked` 下の `--type` 未指定は署名前のローカル事前検査で型付きエラー(サーバー 422 への往復を待たない — 受理の正はサーバーのまま)。**棄却した代替**: `required = false` 既定 — 宣言の主用途(presence 契約)を既定で無効化し、「宣言したのに run が素通りする」驚きの方が「宣言したら required になった」より発見が遅い(前者は黙る・後者は即座に見える)。
+5. **Settling the default on `schema set`'s creation path (design doc §1-2)**: partial update's basis is "the latest statement", and the creation path (no such variable = declared, metaVersion 1) has nothing to inherit from — since v2 requires required to be explicit, running a fresh `--description` alone left required's value undetermined by the spec. Ruling: **`required = true` is the creation default** (a declaration's purpose is establishing the environment's contract — ruling CT — and a false default would make the declaration contribute nothing to fail-fast, silently spinning. It also matches fail-closed's failure direction — an excessive required surfaces as a visible error before run executes and can be explicitly lowered with `--optional`). An unspecified `--type` means `varType = ""`. Consistency with CT's "no implicit defaults": that rejection concerned generation rules for the signed bytes (dispersing the omitted interpretation across implementations); a form where the CLI picks a default and **always puts an explicit value on the wire and prints the chosen value in its output** does not conflict with it. Under `locked`, an unspecified `--type` is a typed error at a local pre-check before signing (no waiting for a server-422 round trip — the acceptance authority stays the server's). **Rejected alternative**: `required = false` as the default — disables the declaration's main use (the presence contract) by default, and the surprise "I declared it but run sails through" is discovered later than "declaring made it required" (the former is silent, the latter visible immediately).

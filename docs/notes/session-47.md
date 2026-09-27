@@ -1,212 +1,213 @@
-# セッション 47: H0 — ホステッド化の設計 + ADR-0014 改訂の裁定録
+# Session 47: H0 — the hosted-deployment design + the ruling record of the ADR-0014 revision
 
-日付: 2026-08-30。目的: H0(ホステッドクラウド版の設計 + ADR-0014 決定 5 の差し替え + ADR-0009 再判断 — ADR・ROADMAP・notes のみの文書 PR。実装は H1〜 / S1〜)の主要裁定を「複数案 → 上位互換探索 → 3 周比較 → 自律選択」で確定し、棄却案と理由を記録する。裁定記号は session-46(〜CX)の続番で **CY から**。成果物の対応: ADR-0014 改訂 1 / ADR-0009 再判断記録 / docs/notes/hosted-design.md(設計・gap・実装分割 H1〜H6)/ ROADMAP 再編(H 系列の実スケジュール化・S1〜S3 ゲートの正式化)。
+Date: 2026-08-30. Purpose: settle H0's major rulings (designing the hosted cloud version + replacing ADR-0014 decision 5 + the ADR-0009 re-judgment — a docs-only PR of ADRs / ROADMAP / notes; implementation is H1+ / S1+) through "multiple options → upward-compatibility exploration → 3 rounds of comparison → autonomous choice", and record the rejected options with reasons. The ruling symbols continue session-46's (…CX) numbering, starting at **CY**. Deliverable mapping: ADR-0014 revision 1 / the ADR-0009 re-judgment record / docs/notes/hosted-design.md (design, gaps, the implementation split H1–H6) / the ROADMAP reorganization (making the H series a real schedule, formalizing the S1–S3 gate).
 
-前提(動かさない — 2026-08-30 オーナー裁定): (1) docs サイト(Wave 3 G)は後回し (2) ホステッドクラウド版を最優先し「サービスとして完成」させる (3) 値なしスキーマはフル実施・MCP 配信は後回し(S0 = PR #112 で仕様着地済み)。前セッションの推奨(未承認 — 本 PR の裁定対象): 公開は信頼ストーリーの部品として GA までに結合 / ドッグフーディングは並行開始 / スキーマ実装(S1〜S5)はベータ開放前に着地。
+Premises (not moved — owner ruling 2026-08-30): (1) the docs site (Wave 3 G) is deferred (2) the hosted cloud version takes top priority — "complete it as a service" (3) the value-free schema is the full implementation, MCP delivery deferred (S0 = the spec landed in PR #112). The previous session's recommendations (unapproved — ruled on by this PR): publication is bundled as a trust-story component by GA / dogfooding starts in parallel / the schema implementation (S1–S5) lands before the beta opens.
 
-一次情報の確認(2026-08-30 — 裁定 CZ の入力。詳細表は hosted-design.md §3-1): Cloudflare D1 = 1 DB 10 GB(引き上げ不可)・単一スレッド・Time Travel 30 日、DO SQLite = 1 オブジェクト 10 GB・アカウント総量無制限(Paid)、GitHub OAuth App = client 資格情報リクエスト 5,000 回/時・トークン請求 2,000 回/時(secondary)・**device flow のユーザーコード入力 50 回/時(App 単位)**。最後の 1 つは既存文書(AUTH_SPEC §4 L-3 の check-token 枠)に現れていなかった新事実であり、ホステッドの CLI ログイン全体を律速する最も硬い共有上限として複数の裁定(CY・CZ・DE)に入力された。
+Primary-source verification (2026-08-30 — inputs to ruling CZ; the detailed table is hosted-design.md §3-1): Cloudflare D1 = 10 GB per DB (cannot be raised), single-threaded, Time Travel 30 days; DO SQLite = 10 GB per object, unlimited account total (Paid); GitHub OAuth App = 5,000 client-credential requests/hour, 2,000 token requests/hour (secondary), **50 user-code entries/hour for device flow (per App)**. That last one is a new fact absent from existing documents (AUTH_SPEC §4 L-3's check-token frame) and, as the hardest shared cap throttling the whole hosted CLI login path, fed several rulings (CY, CZ, DE).
 
 ---
 
-## 1. 裁定 CY: ベータの形とサインアップ制御(課題 (a))
+## 1. Ruling CY: the beta's shape and sign-up control (issue (a))
 
-**採用**: 4 段階(private preview → 招待制ベータ → オープンベータ → GA)+ deployment 設定 `signupPolicy`(open / invite / closed。既定 open = セルフホスト挙動不変)+ **サインアップ招待コード**(単回・期限つき bearer。§15 招待の token_hash / 単回 CAS / 期限の型を踏襲し、プロジェクト・org・role とは結びつけない)。判定点は get-or-create のユーザー新規作成直前の単一ゲート(既存ユーザーに無影響・拒否時に行を作らない fail-closed)。詳細は hosted-design.md §2。
+**Adopted**: 4 stages (private preview → invite-only beta → open beta → GA) + the deployment setting `signupPolicy` (open / invite / closed; default open = self-host behavior unchanged) + **sign-up invite codes** (single-use, expiring bearer; follows §15 invites' token_hash / single-use CAS / expiry pattern, not bound to a project, org, or role). The decision point is a single gate right before get-or-create creates a user (fail-closed: no effect on existing users, creates no row on rejection). Details in hosted-design.md §2.
 
-- **private preview と招待制ベータを区別する**(第 2 周比較で導入した上位互換): 当初案は「招待制ベータ」1 段だったが、公開ゲート(裁定 DA)と合成すると「公開が終わるまで誰にも触らせられない」か「非公開のまま外部の秘密を預かる」の二択になった。対人信頼で使う数名(ドッグフーディングの延長)と、ゼロ知識を対外的に約束する不特定の外部テナントを別の段に分けると、前者は公開前に開始でき、後者の前提条件(検証可能性)は破らない — どちらの当初案よりも早く学習が始まり、約束の規律は保たれる
-- サインアップ制御は schemaPolicy(AUTH_SPEC §12-11)と同じ**サーバー受理ポリシー**クラス: 悪意サーバーは自分の受理ポリシーを常に無視できるため、チェーン・署名化しても敵対保証は増えない。セルフホストにも価値が立つ(現状は URL を知る任意の GitHub ユーザーがアカウントを作れる — 単一利用者のデプロイでは不要な開放面)
+- **Distinguish private preview from the invite-only beta** (an upward-compatible option introduced in the round-2 comparison): the original proposal was a single "invite-only beta" stage, but composed with the publication gate (ruling DA) that forced a choice between "nobody outside can touch it until publication" and "holding outside parties' secrets while still private". Splitting a handful of users admitted on interpersonal trust (dogfooding's extension) from unbounded external tenants to whom zero-knowledge is publicly promised into separate stages lets the former start pre-publication without breaking the latter's prerequisite (verifiability) — learning starts earlier than either original option while the promise's discipline is preserved
+- Sign-up control is the same **server acceptance policy** class as schemaPolicy (AUTH_SPEC §12-11): since a malicious server can always ignore its own acceptance policy, putting it on the chain or signing it adds no adversarial guarantee. It also stands up for self-hosts (today any GitHub user who knows the URL can create an account — an openness a single-user deploy does not need)
 
-**棄却案**:
+**Rejected options**:
 
-- **オープンベータで開始(サインアップ制御を作らない)**: GitHub OAuth App の共有クォータ(とくに device flow 50 回/時 — 裁定 CZ)が無制御の流入で枯れる。枯渇の現れ方は「既存ユーザーの CLI ログイン失敗」= 全テナント巻き込みの可用性障害であり、quota・法務・運用が揃う前に取るリスクとして不合理
-- **課金を制御に使う(有償ベータ)**: 課金基盤の導入はベータより大きい工事で、ベータの目的(フィードバック)と手段(支払い障壁)が逆向き。課金は GA の段(オーナー裁定「サービスとして完成」は品質の話であり、収益化を先行させる話ではない)
-- **GitHub ID / login の許可リスト**: login は可変(AUTH_SPEC §10 が識別子利用を禁止)、ID の許可リストはプロバイダ情報を認可判定に持ち込み ADR-0009 の独立性と逆行する。運用も「相手の GitHub ID を先に聞く」往復を挟み招待コードより重い
-- **メールアドレスの許可リスト**: 「メールでのユーザー検索・照合をコードパスとして作らない」(AUTH_SPEC §2)に正面から反する
-- **GitHub org メンバーシップによるゲート**: 追加 scope の要求(最小 scope 原則の毀損)+ GitHub 側の org 構成への結合。ベータ管理のために認可面を太らせる価値がない
-- **waitlist の製品化(サーバーにメール収集面を作る)**: 通知機構(gap 8)より先にメール収集だけが立つ形になり、保存する個人情報を増やす。ベータ期は外部フォーム運用で足りる
+- **Starting at open beta (building no sign-up control)**: the GitHub OAuth App's shared quota (especially device flow's 50/hour — ruling CZ) would be drained by uncontrolled inflow. The drain manifests as "existing users' CLI logins failing" = an availability incident sweeping every tenant — an unreasonable risk to take before quota, legal, and operations are in place
+- **Using billing as the control (a paid beta)**: standing up billing infrastructure is a bigger job than the beta, and the beta's purpose (feedback) and means (a payment barrier) point in opposite directions. Billing belongs to the GA stage (the owner's "complete it as a service" is about quality, not about monetizing early)
+- **An allowlist of GitHub IDs / logins**: logins are mutable (AUTH_SPEC §10 forbids their use as identifiers), and an ID allowlist imports provider information into authorization decisions, running against ADR-0009's independence. Operationally it is also heavier than invite codes — a round trip of "ask for their GitHub ID first"
+- **An allowlist of email addresses**: flatly contradicts "do not build user lookup / matching by email as a code path" (AUTH_SPEC §2)
+- **Gating by GitHub org membership**: demands an extra scope (breaking the minimal-scope principle) + coupling to GitHub-side org structure. No value in fattening the authorization surface for beta management
+- **Productizing a waitlist (building an email-collection surface on the server)**: email collection would land before the notification mechanism (gap 8), increasing the personal information stored. External forms suffice during beta
 
-## 2. 裁定 CZ: テナント資源の有界化(課題 (b))
+## 2. Ruling CZ: bounding tenant resources (issue (b))
 
-**採用**(数値は起草値 — 実装は H2 / H3。詳細は hosted-design.md §3):
+**Adopted** (numbers are draft values — implementation is H2 / H3; details in hosted-design.md §3):
 
-1. **プロジェクト実体はテナント局所に既に有界**(プロジェクト単位 DO 10 GB + AUTH_SPEC §12-8)— この構造は変更しない。新設は横断面のみ
-2. **プロジェクト数 / org 上限(アクティブ 100)**を受理ポリシーとして新設(gap 2)。DO の実体化 = 運営ストレージの消費であり、唯一無制限だった作成面を閉じる
-3. **DO ストレージ総量ガード**は §12-8 の Phase 2 予告をそのまま H2 で実装(警告 8 GB / 拒否 9 GB の 2 段 — SQLITE_FULL の床に到達させない)
-4. **共有 D1 は「監視 + 分離の予約」**: 行上限を新設しない(認証系イベントは低頻度 + 失敗系は固定窓上限済み)。総量 5 GB で警報し、必要になったら監査専用 D1 へ分離(スキーマ同型・追記と読み取りのみの境界なので機械的。D1 は 50,000 DB/アカウントで分離先に困らない)
-5. **GitHub OAuth App 共有クォータは「段階ゲートが一次緩和」**: 消費経路 × 上限の対応表を固定し(hosted-design.md §3-4)、トリップワイヤ監視(check-token の rate limit ヘッダー・交換失敗率)を H3 に置く。device flow のコード入力 50 回/時は消費点がユーザーのブラウザ → github.com で**サーバー側に制御点・観測点がない**ことを明示的な残余として記録。エスカレーション(web-flow ハンドオフ等)は列挙のみ(gap 9 — オープンベータ開放条件の裁定材料)
+1. **The project entity is already tenant-local and bounded** (10 GB per project DO + AUTH_SPEC §12-8) — that structure is unchanged. The new items are only cross-cutting
+2. **A project-count / org cap (100 active)** is newly introduced as an acceptance policy (gap 2). DO materialization = consumption of operator storage; this closes the one creation surface that was unlimited
+3. **The DO total-storage guard** implements §12-8's Phase 2 notice as-is in H2 (two tiers — warn at 8 GB / refuse at 9 GB — never reaching SQLITE_FULL's floor)
+4. **Shared D1 is "monitor + reserve separation"**: no new row cap (authentication-family events are low-frequency + failure-family ones are already capped by a fixed window). Alarm at 5 GB total; if needed, split into a dedicated audit D1 (the schema is isomorphic and the boundary is append-and-read only, so it is mechanical. At 50,000 DBs/account, D1 never lacks a split destination)
+5. **The GitHub OAuth App shared quota is "staged gates as the primary relief"**: the consumption-path × cap correspondence table is fixed (hosted-design.md §3-4), and tripwire monitoring (check-token's rate-limit headers, the exchange failure rate) sits in H3. The device flow's 50 code-entries/hour is explicitly recorded as a residual: the consumption point is the user's browser → github.com, where **the server has no control or observation point**. Escalations (a web-flow handoff etc.) are enumerated only (gap 9 — ruling material for the open-beta release conditions)
 
-**棄却案**:
+**Rejected options**:
 
-- **ユーザー・org 単位の値細分 quota を初手から全面導入(変数数・監査行・帯域の per-tenant 割当て)**: プロジェクト内は §12-8 が既に有界で、細分割当ては「誰も到達しない上限の管理コスト」だけを生む。ベータの実測なしに刻む数値は根拠を持たない(W3a の TTL・S0 の上限と同じく、起草値 → 実測 → 調整の順を守る)
-- **D1 側監査への行上限・保持期限の即時導入**: append-only の規律(AUDIT_SPEC §1-4)に触る変更を、成長の実測なしに行わない。監視 + 分離予約が同じリスクをカバーし、仕様改訂を要しない
-- **DO 側監査(var.read)への行上限**: 要ローテーション検出の入力(AUDIT_SPEC §4)を欠損させる。密度は集約(同 §3.3 — 実測後)、総量は DO ガードが受ける — 既定路線で足りる
-- **複数 OAuth App のシャーディング(クォータの水平分割)**: コールバック URL・client_id の一貫性が壊れ、`/auth/config` の単一 client_id 前提(AUTH_SPEC §4)にも合わない。規約リスクを負って得る枠が 50 回/時 × N でしかなく、正攻法(web-flow ハンドオフ = 2,000 回/時の枠へ移る)の下位互換
-- **GHE Cloud org 所有化を今やる**: 5,000 → 15,000 に上がるのは client 資格情報の枠だけで、律速の 50 回/時(device flow コード入力)は変わらない。コストだけが確定する
+- **Introducing fine-grained per-user / per-org value quotas from the start (variable counts, audit rows, bandwidth allocations per tenant)**: inside a project §12-8 already bounds things; fine-grained allocation only produces "management cost for limits nobody reaches". Numbers carved without beta measurements have no basis (keep the order draft value → measure → adjust, same as W3a's TTL and S0's caps)
+- **Immediately introducing row caps / retention limits on D1-side audit**: a change touching the append-only discipline (AUDIT_SPEC §1-4) is not made without measured growth. Monitoring + reserved separation covers the same risk without a spec revision
+- **A row cap on DO-side audit (var.read)**: would corrupt the inputs of rotation-needed detection (AUDIT_SPEC §4). Density is handled by aggregation (same §3.3 — after measurement); total volume is absorbed by the DO guard — the default path suffices
+- **Sharding across multiple OAuth Apps (horizontally splitting the quota)**: breaks callback-URL / client_id consistency and does not fit `/auth/config`'s single-client_id premise (AUTH_SPEC §4). The headroom bought at compliance risk is only 50/hour × N — inferior to the straightforward fix (a web-flow handoff = moving to the 2,000/hour budget)
+- **Moving to a GHE Cloud org-owned App now**: only the client-credential budget rises 5,000 → 15,000; the throttling 50/hour (device-flow code entry) is unchanged. Only the cost is certain
 
-## 3. 裁定 DA: 公開・ベータ・GA・ドッグフーディングの順序(課題 (c))
+## 3. Ruling DA: the order of publication, beta, GA, and dogfooding (issue (c))
 
-**採用**: ドッグフーディング(private preview 込み)= 並行・継続 → S1〜S3 × H1〜H5 → **public 化 → 招待制ベータ** → オープンベータ → GA。公開は独立マイルストーンから **H 系列のゲート(H5)** へ再配置し、完了条件(SECURITY.md + 脅威モデル文書)は不変。docs サイトは公開の必須物から外す(オーナー裁定)。
+**Adopted**: dogfooding (private preview included) = parallel and continuous → S1–S3 × H1–H5 → **publication → invite-only beta** → open beta → GA. Publication moves from an independent milestone to **a gate of the H series (H5)**; its completion conditions (SECURITY.md + the threat-model document) are unchanged. The docs site is removed from publication's requirements (owner ruling).
 
-**ゼロ知識と検証可能性の論証**(旧決定 5 の前提「公開が先」への回答 — 課題文の要求事項): E2EE 設計はサーバーを被検証者(不信の対象)として作られており(CRYPTO_SPEC §6.3 / §14 — 全検証はクライアントが行い、サーバーの誠実さはどの保証の前提にもない)、**サーバーコードの公開は「運営は読めない」の信頼の必要条件ではない**。検証可能性の要は復号を行うクライアント側(CLI / crypto — MIT)にあり、そこが読めて初めて「読めない」は検証可能な主張になる。モノレポの public 化は全体一括なので、実務上「公開 = クライアント検証可能性の成立」。したがって順序の規範は「Phase の直列」ではなく「**不特定の外部テナントの秘密を預かる前に、約束を検証可能にする**」であり、公開は GA までではなく招待制ベータの前に置く。
+**The zero-knowledge / verifiability argument** (answering the requirement to address old decision 5's premise "publication first"): the E2EE design builds the server as the verify-ee (the distrusted party) (CRYPTO_SPEC §6.3 / §14 — every verification is done by clients; server honesty is a premise of no guarantee), so **publishing the server code is not a necessary condition for the "the operator cannot read" trust claim**. The crux of verifiability is the side that decrypts — the client (CLI / crypto — MIT); only once that is readable does "cannot read" become a verifiable claim. Since the monorepo goes public all at once, in practice "publication = client verifiability achieved". Therefore the ordering norm is not "serialized phases" but "**before holding unbounded external tenants' secrets, make the promise verifiable**" — publication goes before the invite-only beta, not merely before GA.
 
-**前セッション推奨との差分**: 推奨「公開は信頼ストーリーの部品として GA までに結合」を**強い側へ改訂**した(ベータ前ゲートへ前倒し)。GA まで待てる根拠は「ベータは限定的だから」だったが、招待制でも相手が不特定(対人信頼の外)になった時点で「検証不能な約束で秘密を集める」構図は成立してしまう — 対人信頼の範囲は private preview(裁定 CY)が受け持つため、GA まで公開を遅らせて得るものが残らない。
+**Delta from the previous session's recommendation**: the recommendation "bundle publication as a trust-story component by GA" was **revised toward the stronger side** (moved earlier, to a pre-beta gate). The case for waiting until GA was "the beta is limited" — but the moment an invite-only pool becomes unbounded (beyond interpersonal trust), the shape "collecting secrets under an unverifiable promise" already exists. Since interpersonal trust is carried by private preview (ruling CY), nothing remains to be gained by delaying publication to GA.
 
-**棄却案**:
+**Rejected options**:
 
-- **非公開のまま招待制ベータ(公開は GA までに — 前セッション推奨の文字通りの採用)**: 上記のとおり。加えて脅威モデル文書(裁定 DD でベータ前提へ昇格)・SECURITY.md(脆弱性報告窓口)はベータ利用者がまさに必要とする文書であり、公開とベータを分離すると同じ成果物を 2 回のゲートに割る管理だけが増える
-- **公開を先に単独で行い、ホステッドは後から(旧決定 5 の順序の温存)**: オーナー裁定(ホステッド最優先)に反する。また公開単独では「最初の 5 分」が存在せず(セルフホストのみ)、公開の注目が最も高い瞬間に導入経路が上級者向けしかない — 公開とベータ開放を近接させる方が、注目 → 試用の転換を捨てない
-- **ドッグフーディング数週間を先行ゲートとして維持(旧決定 5 の前提 1 の温存)**: 検証デプロイは 2026-08-10 から実在し、機能面(Phase 1)は完了済み。「待つ」ことが検出する欠陥のクラスは、並行のドッグフーディング + private preview が同じ期間でより広く検出する(利用者が 1 → 数名に増えるため)。先行ゲートの温存は総期間を延ばすだけで検出力を足さない
+- **Invite-only beta while still private (publication by GA — the previous recommendation verbatim)**: as above. Moreover, the threat-model document (promoted to a beta prerequisite by ruling DD) and SECURITY.md (the vulnerability-reporting contact) are exactly the documents beta users need — separating publication from beta only doubles the management of splitting the same deliverables across two gates
+- **Publish alone first, hosted later (keeping old decision 5's order)**: contradicts the owner's ruling (hosted first). Also, a publication alone has no "first 5 minutes" (self-host only), so at the moment of peak attention only the advanced path exists — keeping publication and beta opening close together does not waste the attention → trial conversion
+- **Keeping a few weeks of dogfooding as a lead gate (preserving old decision 5's premise 1)**: the verification deploy has existed since 2026-08-10 and the feature surface (Phase 1) is complete. The defect class that "waiting" detects is detected more broadly over the same period by parallel dogfooding + private preview (users grow from 1 to a few). Keeping the lead gate only stretches the total without adding detection power
 
-## 4. 裁定 DB: S 系列(S1〜S5)と H 系列の並走順序の正式化(課題 (d) — session-46 §9 申し送りの解消)
+## 4. Ruling DB: formalizing the parallel ordering of the S series (S1–S5) and the H series (issue (d) — resolving session-46 §9's handoff)
 
-**採用**: **「スキーマはベータ開放前に着地」を S1〜S3 に限定して採用する**(前セッション推奨「S1〜S5 はベータ開放前」の精密化)。S1(テストベクター + crypto)・S2(ワイヤ・受理・schemaPolicy)・S3(CLI 検証側・schema / set・fail-fast)は招待制ベータのゲート。S4(import)・S5(export / lint)はゲートにせずベータと並走可。S 系列と H 系列は実装面で独立し並走可、競合時は S 系列優先(ゲートの長い方)。Phase 3 の残り(MCP 配信・brokering・エージェントリース・no-reveal)は後段のまま — 順序再編は不要。
+**Adopted**: **"the schema lands before the beta opens" is adopted limited to S1–S3** (a refinement of the previous session's "S1–S5 before the beta opens"). S1 (test vectors + crypto), S2 (wire / acceptance / schemaPolicy), and S3 (the CLI verification side / schema / set / fail-fast) are gates of the invite-only beta. S4 (import) and S5 (export / lint) are not gates and may run in parallel with the beta. The S and H series are implementation-independent and run in parallel; on contention the S series wins (the longer gate). The rest of Phase 3 (MCP delivery / brokering / agent leases / no-reveal) stays in the later stages — no reordering needed.
 
-**根拠(署名・ワイヤ面は外部テナント前が最も安い、の再点検 — 課題文の要求事項)**: レイアウト v2 は v1 共存(一括移行なし — 裁定 CR-4)の設計であり、厳密には「外部テナントが存在しても v2 導入は壊れない」。それでもゲートに置く根拠は 2 つ。(1) **v2 自体の設計欠陥が実運用で見つかった場合の修正コスト非対称**: 仕様バグの修正(受理規則の変更・v3 化)は署名・ワイヤ面の変更であり、外部テナントの署名済みステートメントが存在した瞬間に「公開前のため後方互換条項を持たない」(§12-10)という現行の安い改訂様式が使えなくなる。PR #112 のレビューで受理規則の穴が 3 ラウンド見つかった実績(session-46 §10)は、実装・実運用がさらに欠陥を出す事前確率が無視できないことを示す — ドッグフーディングで v2 を踏み抜く期間をベータ前に確保する。(2) **ベータの学習価値**: 値なしスキーマは HP2(エージェント利用開発者)への差別化の中核で、ベータで観察したい対象そのもの。S4・S5 が外れるのは、署名も受理もされない生成物・付帯 UX で「後から変えても移行を生まない」(裁定 CX の線引きの再適用)ため — ゲートは「変更が高くつく面」だけに絞るのが正しい。
+**Basis (re-examining "the signature/wire surface is cheapest before external tenants" — as the issue text requires)**: layout v2 is designed for v1 coexistence (no mass migration — ruling CR-4), so strictly speaking "v2 can be introduced without breaking even with external tenants present". Two grounds still justify gating it. (1) **The asymmetric fix cost if a design defect in v2 itself surfaces in production**: fixing a spec bug (changing an acceptance rule, a v3) is a signature/wire change, and the moment an external tenant's signed statements exist, the current cheap revision style — "no backward-compat clauses because we are pre-publication" (§12-10) — is no longer usable. The PR #112 review caught acceptance-rule holes over 3 rounds (session-46 §10) — the prior probability that implementation and production expose more defects is not negligible, so reserve a period of trampling v2 in dogfooding before beta. (2) **The beta's learning value**: the value-free schema is the core differentiator for HP2 (developers on agentic use), the very thing to observe in beta. S4/S5 are excluded because they are generated artifacts / auxiliary UX that are neither signed nor accepted — "changing them later produces no migration" (re-applying ruling CX's line); gates should be narrowed to just the surfaces where changes are expensive.
 
-**棄却案**:
+**Rejected options**:
 
-- **S1〜S5 全部をゲート(前セッション推奨の文字通りの採用)**: S4 / S5 は移行コストを生まない面であり、ゲートに入れる根拠(変更コスト非対称)が適用されない。ベータ開放を最も遅い付帯 UX に律速させる
-- **S 系列を全部ベータ後へ(H 系列専念)**: 根拠 (1) の非対称を放棄する。また enabled 化の順序要件(サーバー → 全メンバー CLI → enabled — §12-11)はベータ後に入れても変わらず、先送りで安くなる面がない
-- **H 系列を S 系列の後に直列化**: 実装面が独立(crypto / 受理面 vs サーバー設定・運用・法務)で並走可能なのに、総期間を単純加算にする。H4(法務)は人間タスク主体で並走コストがほぼゼロ
+- **Gating all of S1–S5 (the previous recommendation verbatim)**: S4 / S5 are surfaces that produce no migration cost, so the gating basis (change-cost asymmetry) does not apply. It would let the slowest auxiliary UX throttle the beta opening
+- **Pushing the whole S series post-beta (H-series focus)**: abandons basis (1)'s asymmetry. And the enabling-order requirement (server → all members' CLI → enabled — §12-11) is identical whether placed before or after beta; nothing gets cheaper by deferring
+- **Serializing the H series after the S series**: the implementations are independent (crypto / acceptance surface vs server configuration / operations / legal) and can run in parallel, so serializing just sums the durations. H4 (legal) is mostly human tasks at near-zero parallel cost
 
-## 5. 裁定 DC: 運用要件とテレメトリゼロ・AUDIT_SPEC の整合(課題 (e))
+## 5. Ruling DC: operational requirements and consistency with zero telemetry / AUDIT_SPEC (issue (e))
 
-**採用**(詳細は hosted-design.md §5):
+**Adopted** (details in hosted-design.md §5):
 
-1. **テレメトリゼロの線引きを明文化**: 禁止(「言わざる」)は**クライアント → 外部への送信**。運営が自サーバーを観測すること(Workers メトリクス・ログ)はテレメトリではない — この線引き自体を脅威モデル文書の対外項目にする(裁定 DD の目次 5)
-2. **運用ログの規律**: アプリログは静的メッセージのみ(AUTH_SPEC §11-5 の既存規律を全域規範へ昇格)。**プロジェクト ID = capability(§11-2)が URL パスに現れる**ため、プラットフォームのリクエストログは既定で集計メトリクスのみ・per-request ログはサンプリング + 短期保持 + アクセス制御を条件とする
-3. **監査ログ(製品・テナント可視)と運用ログ(運営限定)を混ぜない**: 運用の関心を監査イベントに書き足さない(AUDIT_SPEC §1 の目的の外)。運営者ビューは D1 直接参照のまま、運営向け管理 API・画面は v1 で作らない(攻撃面の増分回避)
-4. **バックアップ**: D1 = Time Travel(30 日)+ 定期 `wrangler d1 export`(暗号化保管)。DO = プラットフォーム耐久性に依拠 + アプリレベル定期退避(DO → R2、暗号文のまま = 運営が読めない形を保つ)を H3 の設計項目に(gap 5)。リストア演習をベータ前に 1 回
-5. **インシデント・ステータスページ**: ステータスページは maruhi 配信面と独立のオリジン(web に第三者スクリプトを入れない規律は不変)。SECURITY.md に報告窓口。ポストモーテムは重大時に公開
-6. **外形監視は既存の未認証・状態なし面(`GET /auth/config` の 200)を使い、専用 health エンドポイントを作らない**(未認証面の増分ゼロ)
+1. **Codifying the zero-telemetry line**: what "say nothing" forbids is **client → external transmission**. The operator observing their own servers (Workers metrics, logs) is not telemetry — this line itself becomes an outward-facing item of the threat-model document (ruling DD's table of contents item 5)
+2. **Operational-log discipline**: application logs carry static messages only (the existing AUTH_SPEC §11-5 discipline is promoted to a global norm). **Because project ID = a capability (§11-2) appears in URL paths**, platform request logs default to aggregate metrics only; per-request logs require sampling + short retention + access control
+3. **Do not mix the audit log (product, tenant-visible) with operational logs (operator-only)**: do not append operator interests to audit events (outside AUDIT_SPEC §1's purpose). The operator view stays direct D1 reference; no operator admin API or screen is built in v1 (avoiding an attack-surface increment)
+4. **Backups**: D1 = Time Travel (30 days) + periodic `wrangler d1 export` (stored encrypted). DO = relying on platform durability + an app-level periodic evacuation (DO → R2, staying ciphertext = keeping the form the operator cannot read) is a design item of H3 (gap 5). One restore exercise before beta
+5. **Incident / status page**: the status page lives on an origin independent of maruhi's delivery surface (the no-third-party-scripts-in-web discipline is unchanged). SECURITY.md carries the reporting contact. Post-mortems are published for severe incidents
+6. **External health monitoring uses the existing unauthenticated, stateless surface (200 from `GET /auth/config`); no dedicated health endpoint is built** (zero increment to the unauthenticated surface)
 
-**棄却案**:
+**Rejected options**:
 
-- **運営向け管理 API・管理ダッシュボードの導入**: ベータ規模では wrangler / D1 コンソールで足り、認証・認可・監査を伴う新しい特権面はそれ自体が最大級の攻撃面になる。需要(運用の反復頻度)の実測後に再訪
-- **per-request ログの全量収集(トラブルシュートの利便優先)**: capability の集積(上記 2)。「運営の非の最小化」は保有しないことが最善の防御という原則(ADR-0018 と同型)をログにも適用する
-- **quota 到達・運用イベントの監査ログへの記録**: テナント可視の監査(AUDIT_SPEC の可視性クラス)と運営の関心が混ざり、§1 の目的(要ローテーション検出・行動の証跡)から外れる行が増える。quota 到達はテナントへは型付きエラー(fail-loud)、運営へはメトリクスで伝える — 2 チャネルを混ぜない
-- **DO 退避のテナント向けエクスポート API 化**: 運営バックアップとテナント機能(SOPS 互換エクスポート — 将来)は目的も認可も異なる。運営専用経路に留める(テナント向けは将来項目のまま)
+- **Introducing an operator admin API / admin dashboard**: at beta scale wrangler / the D1 console suffice, and a new privileged surface with authentication, authorization, and audit is itself a maximal attack surface. Revisit after measuring demand (operational iteration frequency)
+- **Collecting all per-request logs (prioritizing troubleshooting convenience)**: capability accumulation (item 2 above). The principle "minimizing the operator's wrongdoing is best defended by not holding the data" (same shape as ADR-0018) applies to logs too
+- **Recording quota hits / operational events in the audit log**: tenant-visible audit (AUDIT_SPEC's visibility classes) and operator interests would mix, adding rows outside §1's purpose (rotation-needed detection, evidence of actions). Quota hits reach tenants as typed errors (fail-loud) and the operator via metrics — do not mix the 2 channels
+- **Turning DO evacuation into a tenant-facing export API**: operator backup and a tenant feature (SOPS-compatible export — future) differ in purpose and authorization. It stays an operator-only path (the tenant side remains a future item)
 
-## 6. 裁定 DD: 脅威モデル文書の位置づけの昇格(課題 (f) — 本文は次セッション)
+## 6. Ruling DD: promoting the threat-model document's status (issue (f) — its body is next session)
 
-**採用**: 「公開前チェックリストの一項」から「**ホステッド(招待制ベータ)の前提条件**」へ昇格する。裁定 DA の順序で公開はベータに先行するため運用上は「public 化の同梱物」のままだが、昇格の意味は**ベータを急ぐ圧力で脅威モデル文書だけが後回しにされる経路を塞ぐ**こと(ゲート条件として明示されない文書は滑る — 公開チェックリストの他項目と違い、脅威モデルは外部テナントの意思決定〔何を預けるか〕の直接の入力であり、欠けたベータは裁定 DA の「検証可能な約束」を文書面で欠く)。置き場 = `docs/THREAT_MODEL.md`(英語 — ADR-0017。docs サイト後回しのため Markdown 単体で完結)。目次案(5 節 — What we protect / What the operator can see / What we cannot protect against / How to verify / Operational boundaries)は hosted-design.md §6 に固定し、本文の起草は次セッション。
+**Adopted**: promoted from "an item on the pre-publication checklist" to "**a prerequisite of the hosted (invite-only beta)**". Under ruling DA's order, publication precedes beta, so operationally it remains "bundled with going public" — but the point of the promotion is **closing the path where beta urgency pushes only the threat-model document back** (a document not made an explicit gate condition slips — unlike the checklist's other items, the threat model is the direct input to an external tenant's decision on what to entrust, and a beta without it lacks the document side of ruling DA's "verifiable promise"). Location = `docs/THREAT_MODEL.md` (English — ADR-0017; self-contained as Markdown since the docs site is deferred). The table-of-contents draft (5 sections — What we protect / What the operator can see / What we cannot protect against / How to verify / Operational boundaries) is fixed in hosted-design.md §6; the body is drafted next session.
 
-**棄却案**:
+**Rejected options**:
 
-- **公開チェックリスト項のまま(昇格しない)**: 上記の「滑る」経路が残る。公開と脅威モデルが同時である保証は checklist の運用規律だけになる
-- **本文まで本 PR で起草**: 脅威モデルは CRYPTO_SPEC §14 の平易化 + ホステッド固有節(運営に見えるもの)の合成で、H0 の裁定(とくに CZ の quota・DC の運用ログ線引き)の確定が入力になる — 同一 PR に畳むとレビュー面が過大になり、S0(仕様)と CLI 面(設計文書)を分けた前例(session-46)の粒度に反する
-- **docs サイト(Blume)実装まで待って web 文書として出す**: docs サイトは GA まで後回し(オーナー裁定)であり、ベータ前提条件を GA 後回しの成果物に依存させると順序が逆転する
+- **Keeping it as a publication-checklist item (no promotion)**: the "slipping" path described above remains. The guarantee that publication and the threat model coincide would rest only on checklist discipline
+- **Drafting the body in this PR**: the threat model is a composition of a plain-language CRYPTO_SPEC §14 + hosted-specific sections (what the operator can see), and needs H0's rulings settled as input (especially CZ's quota and DC's operational-log line) — folding it into the same PR would overinflate the review surface, violating the granularity precedent that split S0 (the spec) from the CLI side (the design doc) (session-46)
+- **Waiting for the docs site (Blume) implementation to publish it as a web document**: the docs site is deferred until GA (owner ruling); making a beta prerequisite depend on a post-GA deliverable inverts the order
 
-## 7. 裁定 DE: ADR-0009 再判断 — GitHub 直実装のまま続行(WorkOS 不採用の維持)
+## 7. Ruling DE: the ADR-0009 re-judgment — continue with the direct GitHub implementation (keeping WorkOS unadopted)
 
-**採用**: 再判断ポイント(ホステッド着工日)が到来したため再判断を実施し、**v1 は GitHub OAuth 直実装のまま続行**。記録は ADR-0009 の再判断記録(本 PR)。要点: (1) 元の Rationale(セルフホスト = 外部依存なし・WorkOS は純増・実装は小さく危険物なし)は全て存立、(2) ベータ対象は GitHub を持つ開発者で SSO 実需が未観測、(3) 新事実(device flow 50 回/時)は WorkOS では解けない — CLI 認証を GitHub device flow から外す解(web-flow ハンドオフ)は自前実装の改訂であって IdP サービスの追加ではない。次の再判断ポイント = 有償プラン(GA)設計時、またはエンタープライズ SSO の実需観測のいずれか早い方。
+**Adopted**: the re-judgment point (the hosted-work start date) arrived, so the re-judgment was performed — **v1 continues with the direct GitHub OAuth implementation**. The record is ADR-0009's re-judgment record (this PR). Key points: (1) every original Rationale stands (self-host = no external dependency, WorkOS is pure addition, the implementation is small with no hazardous parts), (2) the beta targets developers who have GitHub, and SSO demand is unobserved, (3) the new fact (device flow 50/hour) is not solved by WorkOS — a fix that removes CLI authentication's dependence on GitHub device flow (a web-flow handoff) is a revision of our own implementation, not the addition of an IdP service. The next re-judgment point = paid-plan (GA) design or observed enterprise-SSO demand, whichever comes first.
 
-**棄却案**:
+**Rejected options**:
 
-- **WorkOS 採用(ホステッドと同時に SSO 対応)**: 実需の観測前に外部依存 + 純増コードを積む。AUTH_SPEC §7 の挿入ポイントが「後から無停止で足せる」ことを保証済みであり、先取りの利得がない
-- **再判断の先送り(ベータ実測後に再判断)**: ADR-0009 の Consequences が「着工日」を明示しており、先送りは ADR の再判断規律(蒸し返し防止と対になる「約束した時点で見直す」)を形骸化させる。実施して「続行」を記録し、次のポイントを明示する方が規律に合う
+- **Adopting WorkOS (SSO support together with hosted)**: stacks an external dependency + pure-addition code before demand is observed. AUTH_SPEC §7's insertion point already guarantees "can be added later with no downtime" — no gain in pre-empting
+- **Deferring the re-judgment (re-judge after beta measurements)**: ADR-0009's Consequences name "the start date" explicitly, and deferring would hollow out the ADR re-judgment discipline (the counterpart of not relitigating: "revisit at the promised point"). Performing it, recording "continue", and naming the next point fits the discipline better
 
-## 8. 上位互換探索(起草後 — 生成規則を変えて収束まで)
+## 8. Upward-compatibility exploration (post-drafting — changed the generation rules and ran to convergence)
 
-session-43 §10〜 / 44 §7〜 / 45 §7 / 46 §8 の要領。session-46 §10 の教訓(障害歩査は「設定の遷移 × ライフサイクル操作の直積」まで、消費面は「新規則 × 全既存規則」まで列挙する)を適用。
+Following session-43 §10+ / 44 §7+ / 45 §7 / 46 §8. Applying session-46 §10's lessons (the failure walk enumerates up to "the cross product of configuration transitions × lifecycle operations"; the consumption side up to "the new rules × all existing rules").
 
-### 第 1 周: 過去の裁定・繰り延べの前提書き換え検査
+### Round 1: checking whether earlier rulings' / deferrals' premises are rewritten
 
-- **ADR-0003(FSL)との整合**: 自社ホステッドは FSL の前提(競合 SaaS のみ禁止)そのもの。公開時期の前倒し(裁定 DA)は「公開まではクローズド開発」の終端を早めるだけで、ライセンス構成(サーバー FSL / クライアント MIT)に触れない。**発見なし(整合)**
-- **ADR-0018 / W 系列との整合**: ホステッド Web は W 系列で完成済みの鍵なし形(読み取り + 失効)をそのまま使う。H 系列は Web に mutation を足さない(サインアップ制御は認証フロー側・quota は受理ポリシー側)。**発見なし** **〔追記: この歩査は mutation の不在の確認で打ち切っており、加法的な静的面(法務文書の配信・ベータ案内・オンボーディング)の要否と帰属を列挙していなかった — PR #113 の pullfrog レビューが検出。§10 第 2 ラウンドで解消(H4 / H6 への帰属と ADR-0018 境界内の確認)〕**
-- **AUTH_SPEC §6 既定 TTL 90 日(W3a 裁定 CE)との相互作用**: TTL を延ばせば再ログイン頻度が下がり GitHub クォータ(50 回/時)への圧力が減る — が、L-2(無期限の温存)の再導入方向であり、クォータ緩和として TTL を動かすのは主客転倒。**採用: TTL は据え置き、クォータの一次緩和は段階ゲート(裁定 CY / CZ のまま)**。明示 TTL(`expiresInDays` ≤ 365 — 裁定 CF)が無人 PAT の再ログインを既に希釈している点も確認
-- **schemaPolicy の有効化順序(§12-11「サーバー → 全メンバー CLI → enabled」)のホステッドでの読み替え**: セルフホストでは運営 = 利用者だが、ホステッドでは「サーバー更新」は運営、「全メンバー CLI 更新 → enabled 化」は各プロジェクト admin の責務になる — 順序違反の帰結(未更新 CLI の検証エラー)を負うのも当該プロジェクトのみ。**発見(採用・列挙のみ)**: S3 実装への申し送りとして「enabled 化 UX に、メンバーの CLI 版が古い場合の帰結の警告を含める」(SELF_HOSTING 追記 — 既存の S2/S3 申し送り — のホステッド版)。仕様変更は不要(順序要件自体はデプロイ単位でなくプロジェクト単位で既に機能する)
-- **ADR-0015(CLI 配布)・公証「公開 2〜3 週前」**: H5 ゲートに吸収(hosted-design.md §7 L10)。時系列の矛盾なし。**発見なし**
-- **AUDIT_SPEC 未決 3(プロジェクト削除後の監査保全 — 「ホステッド版で要検討」)**: 到来した。ただし要件の実体は法務(L3 — 保持義務の有無)が決めるため、gap 4 として L3 確定後に再訪とした(先に技術を決めない)。**発見なし(gap 化済み)**
+- **Consistency with ADR-0003 (FSL)**: self-hosting by us is the FSL's very premise (only competing SaaS is forbidden). Bringing publication forward (ruling DA) only moves up the end of "closed development until publication"; it does not touch the license structure (server FSL / client MIT). **No finding (consistent)**
+- **Consistency with ADR-0018 / the W series**: the hosted Web uses the completed key-free shape of the W series as-is (reads + revocations). The H series adds no mutation to the Web (sign-up control is on the authentication-flow side; quota is on the acceptance-policy side). **No finding** **〔Added later: this walk stopped at confirming the absence of mutations and did not enumerate whether additive static surfaces (serving legal documents, beta guidance, onboarding) are needed and where they belong — the PR #113 pullfrog review caught this. Resolved in §10 round 2 (attribution to H4 / H6 and confirmation inside the ADR-0018 boundary)〕**
+- **Interaction with AUTH_SPEC §6's default TTL of 90 days (W3a ruling CE)**: extending the TTL would lower re-login frequency and reduce pressure on the GitHub quota (50/hour) — but that is a reintroduction of L-2 (keeping tokens non-expiring), and moving the TTL to relieve the quota is putting the cart before the horse. **Adopted: the TTL stays; the quota's primary relief is the staged gates (rulings CY / CZ, unchanged)**. Also confirmed that the explicit TTL (`expiresInDays` ≤ 365 — ruling CF) already dilutes unattended-PAT re-logins
+- **Re-reading schemaPolicy's enabling order (§12-11 "server → all members' CLI → enabled") under hosted**: on self-host the operator = the user, but under hosted "server update" is the operator's job while "all members' CLI updates → enabling" is each project admin's — and the consequence of an order violation (verification errors on un-updated CLIs) is also borne only by that project. **Finding (adopted; enumeration only)**: as a handoff to the S3 implementation, "the enabling UX must include a warning about the consequences when members' CLIs are old" (the hosted counterpart of the SELF_HOSTING addition — an existing S2/S3 handoff). No spec change needed (the order requirement already functions per project, not per deployment)
+- **ADR-0015 (CLI distribution) and notarization "2–3 weeks before publication"**: absorbed into the H5 gate (hosted-design.md §7 L10). No timeline contradiction. **No finding**
+- **AUDIT_SPEC undecided 3 (audit preservation after project deletion — "needs study for the hosted version")**: it has arrived. But the substance of the requirement is decided by legal (L3 — whether there is a retention duty), so it was made gap 4, to be revisited after L3 is settled (do not fix the technology first). **No finding (converted to a gap)**
 
-### 第 2 周: 設定の遷移 × ライフサイクル操作の直積(session-46 §10 の教訓の適用 — signupPolicy)
+### Round 2: the cross product of configuration transitions × lifecycle operations (applying session-46 §10's lesson — signupPolicy)
 
-`signupPolicy` の 3 値 × 全認証系ライフサイクル操作(web ログイン・device 交換・既存ユーザーのログイン・トークン検証・プロジェクト招待の受諾・リカバリー取得・セッション更新)を歩査:
+Walked `signupPolicy`'s 3 values × every authentication-family lifecycle operation (web login, device exchange, existing-user login, token verification, project-invite acceptance, recovery fetch, session refresh):
 
-- 既存ユーザーの全操作はゲート非通過(判定点が「新規作成の直前」— 裁定 CY)。open → invite → closed のどの遷移でも既存アカウントは影響を受けない。**発見なし**
-- **発見(採用 — hosted-design.md §2-2 / gap 1 に反映済み)**: `invite` 下で**プロジェクト招待(§15)を受けた未登録ユーザーが詰む**: 受諾はトークン主体 = 先に login(= 新規作成)が要り、そこがゲートで塞がれる。プロジェクト招待の存在はサインアップの正当性を示す材料だが、§15 の招待リンク形式にサインアップ権限を焼き込む(リンク = アカウント作成 capability 化)のは、招待トークンの意味(プロジェクトへの受諾 capability)を太らせ、リンクの漏洩半径を広げる — 棄却。採用は「login / device 交換にサインアップ招待コードを添付できる」合成経路(コードは別チャネルで渡す)。H1 の設計要件として列挙
-- closed への遷移と in-flight の OAuth フロー: 判定は get-or-create 時点の設定(受理時点のポリシー — §12-11 と同じ規則)。途中で closed 化されたフローは完走後に型付き拒否。中間状態(GitHub 認証は済んだがアカウントなし)は行を作らないので残骸ゼロ。**発見なし**
-- invite → open → invite の往復: 招待コードの消費履歴は残り、open 期に作られたアカウントは invite 復帰後も通常どおり(ゲートは新規作成のみ)。**発見なし(可逆性は CY の設計どおり)**
+- Every operation by an existing user does not pass the gate (the decision point is "right before new creation" — ruling CY). No open → invite → closed transition affects existing accounts. **No finding**
+- **Finding (adopted — reflected in hosted-design.md §2-2 / gap 1)**: under `invite`, **an unregistered user who received a project invite (§15) gets stuck**: acceptance is token-based = it needs login (= new creation) first, which the gate blocks. A project invite's existence is material showing the sign-up's legitimacy, but baking sign-up authority into §15's invite link format (making the link an account-creation capability) would fatten the invite token's meaning (a project-acceptance capability) and widen the leak radius of a link — rejected. The adopted form is the composite path "a sign-up invite code can be attached to login / device exchange" (the code is passed over a separate channel). Enumerated as an H1 design requirement
+- A transition to closed vs an in-flight OAuth flow: judged by the setting at get-or-create time (the policy at acceptance — same rule as §12-11). A flow closed mid-flight completes and then gets a typed refusal. The intermediate state (GitHub authenticated, no account) creates no row, so zero residue. **No finding**
+- An invite → open → invite round trip: invite-code consumption history persists, and accounts created in the open period work normally after invite returns (the gate affects only new creation). **No finding (reversibility per CY's design)**
 
-### 第 3 周: 共有資源 × 敵対テナントの直積(新規則 — noisy neighbor 歩査)
+### Round 3: the cross product of shared resources × adversarial tenants (new rule — a noisy-neighbor walk)
 
-横断資源(共有 D1・GitHub クォータ・Workers 実行枠)× 敵対的テナントの消費操作を列挙:
+Enumerated cross-cutting resources (shared D1, the GitHub quota, the Workers execution budget) × an adversarial tenant's consumption operations:
 
-- **D1 単一スレッド × 認証系の洪水**: 未認証面は既存の遮断(device 交換の形式検査 + 10 回/分/IP、callback の上限、login_failed の窓上限)が既に受けている(L-3 / L-4 / A-6 の対応済み面)。認証済みテナントの洪水は D1 到達前にトークン検証(読み取り)で吸収され、書き込み系はいずれも低頻度 + 上限つき。**発見なし(既存防御の確認)**
-- **GitHub クォータの敵対消費**: check-token 5,000 回/時は形式適合トークンの標的洪水で枯らせる(L-3 の既知残余 — per-IP 制限 + 運用 WAF が緩和)。**device flow 50 回/時は 1 テナントの正当な 50 ログインでも枯れる**(敵対以前に正常運用で到達しうる)— 裁定 CY(招待制の規模制御)と CZ(トリップワイヤ)の根拠として記録済み。新しい対策は足さない(エスカレーションは gap 9)。**発見なし(記録の確認)** **〔追記: この歩査は「正当なログイン」と「check-token の洪水」までで、「拒否されるサインアップ試行 × 最硬クォータ」の組を見落としていた — Bugbot / pullfrog レビューが検出。§10 で解消〕**
-- **DO 実体化の量産**(A-4 の既知面): サインアップ制御(H1)が新規アカウント自体を有界化し、プロジェクト数上限(H2)が認証済みテナントあたりの作成面を閉じる — 既知残余(プローブレート上限の申し送り)は縮むが消えない(認証済み主体の任意 ID 指定 GET)。**発見なし(既存申し送りの縮小を確認)**
-- **サインアップ招待コードの総当たり**: 256-bit 乱数 + 単回 + 期限で列挙不能(§15 招待トークンと同水準)。検証は D1 1 読み取りで増幅なし。**発見なし**
+- **D1's single thread × an authentication-family flood**: the unauthenticated surface is already covered by existing blocks (the device exchange's format check + 10/min/IP, the callback cap, login_failed's window cap) (the already-handled surface of L-3 / L-4 / A-6). An authenticated tenant's flood is absorbed by token verification (a read) before reaching D1, and every write operation is low-frequency + capped. **No finding (confirmation of existing defenses)**
+- **Adversarial consumption of the GitHub quota**: the 5,000/hour check-token budget can be drained by a targeted flood of well-formed tokens (L-3's known residual — mitigated by per-IP limits + operational WAF). **The 50/hour device-flow budget can be drained even by one tenant's legitimate 50 logins** (reachable in normal operation before any adversary) — recorded as the basis of rulings CY (invite-based scale control) and CZ (tripwires). No new countermeasure is added (escalations are gap 9). **No finding (confirmation of the record)** **〔Added later: this walk covered "legitimate logins" and "a check-token flood" but missed the pair "rejected sign-up attempts × the hardest quota" — the Bugbot / pullfrog reviews caught it. Resolved in §10〕**
+- **Mass DO materialization** (A-4's known surface): sign-up control (H1) bounds new accounts themselves, and the project-count cap (H2) closes the creation surface per authenticated tenant — the known residual (the handed-off probe-rate limit) shrinks but does not vanish (an authenticated principal's arbitrary-ID GET). **No finding (confirmed the existing handoff shrank)**
+- **Brute-forcing a sign-up invite code**: 256-bit random + single-use + expiry makes enumeration impossible (same level as §15 invite tokens). Verification is one D1 read with no amplification. **No finding**
 
-### 第 4 周: 消費面の列挙(新規則 × 全既存規則 — session-46 §10 の教訓の後半)
+### Round 4: enumerating the consumption surface (new rules × all existing rules — the second half of session-46 §10's lesson)
 
-H 系列が足す新規則(signupPolicy・quota・運用ログ規律)を、既存の全応答面・全文書と突合:
+Cross-checked the new rules the H series adds (signupPolicy, quota, the operational-log discipline) against every existing response surface and document:
 
-- `signupPolicy` の観測面: 拒否応答(型付きエラー + waitlist 案内)以外に設定値を配布する面を**作らない**(schemaPolicy の advisory 配布と違い、未認証者への「今 invite 制か」の開示はサインアップ面の偵察材料にしかならない — ランディングの人間向け案内文言で足りる)。**発見(採用)**: H1 設計要件に「`/auth/config` へ signupPolicy を載せない」を明記(hosted-design.md §2-2 の fail-closed と併せて H1 実装 PR の受理条件)**〔追記: この判定は PR #113 の Bugbot レビューで改訂した — 拒否経路が device flow の共有枠を判定より前に消費する経路を見落としており、CLI の事前 fail-fast に signupPolicy の配布が必要になった。§10 で解消〕**
-- quota 超過エラーと存在秘匿(§11-2)の整合: プロジェクト数上限(gap 2)は作成(init)時の 429 で、対象 org は本人所属 — 存在秘匿と交差しない。DO 総量ガードはメンバー向け応答 — 同じく交差しない。**発見なし**
-- 運用ログ規律(DC-2)× SELF_HOSTING: セルフホスト運営者にも同じ注意(request ログ = capability 集積)が当てはまる。**発見(採用・列挙のみ)**: SELF_HOSTING "Recommended hardening" への追記候補として gap 5 実装時に同梱(仕様変更なし)
-- 脅威モデル目次(DD)× CRYPTO_SPEC §14: 目次 1〜3 は §14.1〜14.3 の写像で新規主張を含まない(overclaim なし)。目次 2「What the operator can see」は §1 の約束の線引きと同一の列挙。**発見なし**
+- `signupPolicy`'s observability surface: **no surface** is built that distributes the setting value other than the refusal response (a typed error + waitlist guidance) (unlike schemaPolicy's advisory distribution, disclosing "is it invite-only now" to the unauthenticated is material only for scouting the sign-up surface — human-facing guidance text on the landing page suffices). **Finding (adopted)**: "do not put signupPolicy on `/auth/config`" is explicitly an H1 design requirement (together with hosted-design.md §2-2's fail-closed, it is an acceptance condition of the H1 implementation PR) **〔Added later: this judgment was revised in the PR #113 Bugbot review — it missed the path where the refusal path consumes the shared device-flow budget before the decision; the CLI's pre-flight fail-fast came to need signupPolicy distribution. Resolved in §10〕**
+- Quota-exceeded errors vs existence hiding (§11-2): the project-count cap (gap 2) is a 429 at creation (init), and the target org is one's own — it does not intersect existence hiding. The DO total guard is a member-facing response — same, no intersection. **No finding**
+- The operational-log discipline (DC-2) × SELF_HOSTING: the same caution (request logs = capability accumulation) applies to self-host operators. **Finding (adopted; enumeration only)**: bundled at gap-5 implementation time as a candidate addition to SELF_HOSTING "Recommended hardening" (no spec change)
+- The threat-model table of contents (DD) × CRYPTO_SPEC §14: items 1–3 map onto §14.1–14.3 and contain no new claims (no overclaim). Item 2 "What the operator can see" is the same enumeration as §1's line of promises. **No finding**
 
-### 第 5 周: 撤去可能性歩査(検討メモ第 8 次の型の再適用)
+### Round 5: the removability walk (re-applying the exploration memo's 8th-order pattern)
 
-- H1(signupPolicy): open へ戻せば現行挙動と完全一致。招待コードテーブルは残るが読み手が消える(眠る)。**撤去可能**
-- H2(quota): 上限の引き上げ・撤廃はいつでも可(受理ポリシー — 合意規則でない)。**撤去可能**
-- H3(運用)・H4(法務): 運営側の実務であり製品ワイヤに残骸を残さない。**撤去可能**
-- H5(public 化): **不可逆**(公開したソースは戻せない)。ただしそれ自体が目的の到達点であり、Phase 2 の完了条件として 2026-08-07(ADR-0014)以前から約束された不可逆性 — 新しく受容するリスクではない。**受容(既定路線の確認)**
-- H6(ベータ開放): signupPolicy を closed へ戻せば新規流入は止まる。既存テナントへの約束(ゼロ知識・退出経路)は残る — これは撤去不能だが、退出経路(クライアント主導の再作成)が「サービス終了時にも値を人質に取らない」ことを構造で保証している。**受容(§1 の約束 5 が対に設計済み)**
+- H1 (signupPolicy): returning to open matches current behavior exactly. The invite-code table remains but its reader disappears (sleeps). **Removable**
+- H2 (quota): caps can be raised or lifted anytime (an acceptance policy, not a consensus rule). **Removable**
+- H3 (operations) / H4 (legal): operator-side practice, leaving no residue on the product wire. **Removable**
+- H5 (going public): **irreversible** (published source cannot be taken back). However that is itself the goal being reached, an irreversibility promised since before 2026-08-07 (ADR-0014) as Phase 2's completion condition — not a newly accepted risk. **Accepted (confirmation of the default path)**
+- H6 (opening the beta): returning signupPolicy to closed stops new inflow. The promise to existing tenants (zero knowledge, an exit path) remains — that cannot be removed, but the exit path (client-driven re-creation) structurally guarantees "does not hold values hostage even at service end". **Accepted (§1's promise 5 is designed as its pair)**
 
-### 収束の見立て
+### Convergence assessment
 
-新規発見は第 1 周の S3 申し送り(enabled 化 UX の警告 — 列挙のみ)・第 2 周のプロジェクト招待 × サインアップ制御の合成経路(採用 — gap 1 へ反映)・第 4 周の「/auth/config へ signupPolicy を載せない」(採用 — H1 要件)と SELF_HOSTING 追記候補(列挙のみ)で、いずれも H1〜の実装要件・申し送りの精密化であり裁定 CY〜DE の変更を要さない。第 3 周(敵対歩査)・第 5 周(撤去可能性)で発見ゼロ。**収束と判断**。
+The new findings are round 1's S3 handoff (the warning in the enabling UX — enumeration only), round 2's composite path of project invite × sign-up control (adopted — reflected to gap 1), and round 4's "do not put signupPolicy on /auth/config" (adopted — an H1 requirement) plus the SELF_HOSTING addition candidate (enumeration only) — all refinements of implementation requirements or handoffs for H1+, needing no change to rulings CY–DE. Rounds 3 (adversarial walk) and 5 (removability) found zero. **Judged converged**.
 
-## 9. 申し送り(H1〜 / S1〜 / 次セッションへ)
+## 9. Handoffs (to H1+ / S1+ / the next session)
 
-- **脅威モデル文書の本文起草は次セッション**(裁定 DD — 目次案は hosted-design.md §6。CRYPTO_SPEC §14 を規範の基礎に、英語で `docs/THREAT_MODEL.md`)
-- H1 実装 PR: AUTH_SPEC §3 / §4 の改訂(signupPolicy・招待コード・§15 との合成経路・`/auth/config` への advisory 配布と CLI の device flow 開始前 fail-fast — §10)を仕様先行で含める(仕様が唯一の正 — 改訂 → 承認 → 実装の順は不変)
-- H2 実装 PR: AUTH_SPEC §11-3 / §12-8 の改訂(プロジェクト数上限・DO 総量ガード)を同様に仕様先行で
-- S3 実装 PR: schemaPolicy enabled 化 UX に「メンバー CLI が古い場合の帰結」警告(§8 第 1 周)
-- gap 6(アカウント削除)・gap 8(通知)は L3(法務)の確定が入力 — H4 の中で設計し、それぞれ独立 PR
-- オープンベータ開放前の裁定(次回以降): CLI ログインのスケール経路(gap 9 — web-flow ハンドオフ第一候補)・quota 起草値の実測調整
-- 課金(GA 前)は独立の設計セッション(本 H0 のスコープ外)
+- **Drafting the threat-model document's body is next session** (ruling DD — the table of contents is hosted-design.md §6. `docs/THREAT_MODEL.md` in English, built on CRYPTO_SPEC §14 as the normative base)
+- The H1 implementation PR: includes spec-first revisions of AUTH_SPEC §3 / §4 (signupPolicy, invite codes, the composite path with §15, advisory distribution on `/auth/config` and the CLI's fail-fast before device-flow start — §10) (the spec is the sole source of truth — the order revise → approve → implement is unchanged)
+- The H2 implementation PR: likewise spec-first revisions of AUTH_SPEC §11-3 / §12-8 (the project-count cap, the DO total-storage guard)
+- The S3 implementation PR: the schemaPolicy enabling UX includes the "consequences when members' CLIs are old" warning (§8 round 1)
+- gap 6 (account deletion) and gap 8 (notifications) take L3 (legal)'s settlement as input — designed inside H4, each an independent PR
+- Rulings due before the open beta (next sessions onward): the CLI login scaling path (gap 9 — the web-flow handoff is the first candidate), measuring and adjusting the quota draft values
+- Billing (before GA) is an independent design session (outside this H0's scope)
 
-## 10. PR #113 レビュー対応(Bugbot 指摘の裁定追補 — 2026-08-30)
+## 10. PR #113 review handling (a ruling supplement on Bugbot findings — 2026-08-30)
 
-Bugbot が「拒否されるサインアップも共有 device flow 枠を消費する」穴を検出した。正当な指摘であり、H1 の設計要件側で閉じた(§8 第 4 周の判定の改訂を含む)。
+Bugbot detected the hole that "a rejected sign-up also consumes the shared device-flow budget". A legitimate finding; closed on the H1 design-requirements side (including revising §8 round 4's judgment).
 
-1. **指摘の内容**: 裁定 CY の拒否の形は「OAuth / device 交換を完走させた後に型付き拒否」(判定材料が get-or-create 前に存在しないため構造上そこになる)だが、GitHub device flow のコード入力(共有 50 回/時 — 裁定 CZ)は交換より**前**に github.com で消費される。H5 で CLI が公開されると、未招待の `maruhi login` 試行が `signupPolicy` の拒否に到達する前に枠を燃やす。招待コードの発行ペース(CZ の一次緩和)はこの試行数を制御せず、H3 のトリップワイヤ(check-token remaining・交換失敗率)は github.com 側で起きる消費を見ない
-2. **解消(hosted-design.md §2-2 / §3-4 / §5-2 に反映)**: (i) `/auth/config` に `signupPolicy` を advisory として載せる — §8 第 4 周の「載せない」判定の改訂。偵察材料の論拠は「設定値がランディングの公開文言(ベータは招待制)と同じ内容」である時点で成立しておらず、fail-fast の材料としての価値が上回る。(ii) CLI は device flow **開始前**に signupPolicy を確認し、`invite` なら「既存アカウントの再ログインか招待コードの提示か」を確認してから開始する(誤操作ガード — 認可ではない。受理の正はサーバーのまま)。未招待の新規希望者には flow を開始せず案内を出す。(iii) H3 トリップワイヤに「サインアップ拒否の計数」を追加(拒否は交換時にサーバーへ到達し観測可能 — 事前確認の取りこぼし〔古い CLI・直接 API〕の代理指標)
-3. **残余(受容・明示)**: 敵対的な枠の枯渇は maruhi のサーバー設計では防止不能である — client_id は公開情報(AUTH_SPEC §4)で、device flow の開始とコード入力は maruhi を介さず github.com に対して直接行える。CLI の事前確認が消すのは**善意の無駄打ち**のみで、悪意の枯渇への恒久解は device flow への依存自体を除く gap 9(web-flow ハンドオフ)。この非対称(善意 = 遮断可能 / 悪意 = 観測と段階ゲートまで)を hosted-design.md §2-2 に明記した
-4. **棄却した代替**: (a) 新規アカウント作成を web OAuth 経路に限定し device 交換の get-or-create を「get-or-fail」化する — 拒否経路の消費は CLI 事前確認で既に消えており、正当な初回ユーザーの導線を「web でサインアップ → CLI で再ログイン」の 2 往復に固定するコストが残るだけ(web 先行の案内自体は H1 の UX 詳細として妨げない)。(b) 判定点を交換より前(device flow 開始前のサーバー判定 API)へ移す — 「新規かどうか」は GitHub 認証の完了まで分からず、事前判定は原理的に不能。事前確認が代替できるのは利用者の自己申告に基づく fail-fast までであり、それは (ii) が既に与える
+1. **The finding's content**: ruling CY's refusal takes the form "complete the OAuth / device exchange, then a typed refusal" (structurally, because the decision material does not exist before get-or-create) — but the GitHub device flow's code entry (the shared 50/hour — ruling CZ) is consumed on github.com **before** the exchange. Once the CLI is public at H5, an uninvited `maruhi login` attempt burns the budget before reaching the `signupPolicy` refusal. The invite-code issuance pace (CZ's primary relief) does not control that attempt count, and H3's tripwires (check-token remaining, the exchange failure rate) do not observe consumption happening on github.com
+2. **Resolution (reflected in hosted-design.md §2-2 / §3-4 / §5-2)**: (i) put `signupPolicy` on `/auth/config` as an advisory — revising §8 round 4's "do not put it" judgment. The scouting-material argument stopped holding the moment the setting's value equals the landing page's public wording (the beta is invite-only), rather than the reverse, and its value as fail-fast material outweighs it. (ii) The CLI checks signupPolicy **before starting** the device flow, and under `invite` confirms "a re-login of an existing account or presenting an invite code" before starting (a misuse guard — not authorization. The acceptance authority stays the server's). For an uninvited new aspirant it does not start the flow and shows guidance. (iii) H3's tripwires gain "a count of sign-up refusals" (refusals reach the server at exchange time and are observable — a proxy indicator for the pre-check's leaks〔old CLIs, direct API calls〕)
+3. **Residual (accepted, made explicit)**: adversarial budget exhaustion cannot be prevented by maruhi's server design — client_id is public information (AUTH_SPEC §4) and starting a device flow + entering the code can be done directly against github.com without going through maruhi. What the CLI pre-check eliminates is only **well-meaning waste**; the lasting fix for malicious exhaustion is removing the dependence on device flow itself = gap 9 (the web-flow handoff). This asymmetry (well-meaning = blockable / malicious = up to observation and staged gates) is made explicit in hosted-design.md §2-2
+4. **Rejected alternatives**: (a) restricting new-account creation to the web OAuth path, turning the device exchange's get-or-create into "get-or-fail" — refusal-path consumption is already eliminated by the CLI pre-check, and what remains is only the cost of fixing the legitimate first-time user's flow to a 2-leg "sign up on web → re-login on CLI" path (web-first guidance itself is not precluded as an H1 UX detail). (b) Moving the decision point before the exchange (a server decision API before device-flow start) — "whether new" is unknowable until GitHub authentication completes, so a pre-decision is impossible in principle. The most a pre-check can substitute is fail-fast on the user's self-declaration, which (ii) already provides
 
-教訓(次回の探索規則へ): 消費面の歩査は「**拒否される要求が、拒否判定に到達する前に消費する共有資源**」まで列挙する(拒否 = 無害と扱わない。判定点と消費点が別ホストにある場合は特に)。
+Lesson (into the next exploration rules): the consumption-side walk must enumerate "**the shared resources that a rejected request consumes before reaching the refusal decision**" (do not treat refusal as harmless — especially when the decision point and the consumption point are on different hosts).
 
-第 2 ラウンド(pullfrog レビュー — 2062c12 への初回レビュー。Bugbot と同根の指摘 1 件に補強 2 点 + 独立指摘 1 件 + nitpick 2 件):
+Round 2 (pullfrog review — the first review of 2062c12. 1 finding sharing Bugbot's root with 2 reinforcements + 1 independent finding + 2 nitpicks):
 
-5. **無招待試行 × 最硬クォータの補強(§10-1〜3 の精密化)**: pullfrog は同じ穴に対し (a) 裁定 DA の順序(public 化がベータに先行)により「公知 × invite 制」の窓が**設計上必ず生じる**こと、(b) 招待コード提示時の typo・失効・消費済みコードも 1 入力を燃やすこと、(c) 受容か遮断かの**明示裁定**が要ることを加えた。裁定: (i) **招待コードの未認証事前検証エンドポイント**(形式・存在・未消費のみ・per-IP レート制限つき)を H1 要件に追加 — CLI は flow 開始前に検証し、無効コードでコード入力へ進まない。コードは 256-bit 乱数・単回であり検証面は存在オラクルにならない(§15 招待トークンと同水準)。(ii) 残余は**明示に受容** — 事前確認へ虚偽の自己申告をする・CLI を介さない無招待の試行は依然コード入力に到達するが、これは「maruhi を介さず github.com へ直接」(§10-3)の部分集合であり、消費点が外部ホストにある以上サーバー設計に強制点が存在しない。受容の構造(善意 = 正規導線の案内で遮断可能 / 悪意 = 監視と段階ゲートまで・恒久解は gap 9)を hosted-design.md §2-2 に明記した。**棄却した代替**: `invite` 期の device start への per-IP 上限の併置(pullfrog の同時裁定案)— device flow の開始(`POST /login/device/code`)は CLI → github.com の直接呼び出しであり maruhi サーバーを経由しない。maruhi 側に置ける上限は事前検証エンドポイントの per-IP 制限(採用済み)までで、start への上限は置き場が存在しない
-6. **H 系列の web 配信面の欠落(独立指摘 — 採用)**: H1〜H6 のどの段にも `apps/web` の作業が帰属しておらず、§8 第 1 周は「Web に mutation を足さない」で歩査を打ち切っていた(加法的な**静的面**の要否が未列挙)。実装エージェントが `apps/web` を触らず「H 系列完了」に到達する形は列挙の穴。裁定: ホステッド固有の web 追加は**未認証の静的ページのみ**(法務文書の配信 = H4、ベータ案内・waitlist 導線・サインアップ拒否時の着地文言・「最初の 5 分」オンボーディング = H6)とし、web-dashboard-design.md の **S1(ランディング)系の拡張**として位置づける — 認証・mutation・スクリプト依存を足さず、ADR-0018 改訂 2 の境界と CSP・自己配信規律の内側(hosted-design.md §9「web 面の帰属」)。**pullfrog の open question(法務文書の置き場)への裁定**: maruhi web の静的自己配信とする。**棄却した代替**: 法務文書の独立オリジン配信 — 供給網と配信面を増やすだけで、独立オリジンの根拠(障害時に生きている必要)はステータスページ(§5-4)にしか適用されない。この非対称を設計文書に明記した
-7. nitpick 2 件を修正: メール許可リスト棄却の出典を AUTH_SPEC §1 → **§2 の規則・§10 の禁止事項**へ訂正(§1 が述べるのは自動リンクの禁止)、§3-2 の「个別」(簡体字)→「個別」
+5. **Reinforcing the uninvited-attempt × hardest-quota analysis (refining §10-1–3)**: pullfrog added, on the same hole, (a) that ruling DA's order (publication precedes beta) makes a "publicly known × invite-only" window **unavoidable by design**, (b) that a typo'd, expired, or consumed invite code also burns one entry at presentation time, and (c) that an **explicit ruling** — accept or block — is needed. Ruling: (i) an **unauthenticated invite-code pre-validation endpoint** (format / existence / unconsumed only, with a per-IP rate limit) is added to the H1 requirements — the CLI validates before starting the flow and does not proceed to code entry on an invalid code. Codes are 256-bit random and single-use, so the validation surface does not become an existence oracle (same level as §15 invite tokens). (ii) The residual is **explicitly accepted** — attempts that lie in the pre-check's self-declaration or bypass the CLI entirely still reach code entry, but that is a subset of "directly against github.com without maruhi" (§10-3), and with the consumption point on an external host, no enforcement point exists in the server design. The acceptance structure (well-meaning = blockable via guidance to the proper flow / malicious = up to monitoring and staged gates, with the lasting fix in gap 9) is made explicit in hosted-design.md §2-2. **Rejected alternative**: placing a per-IP cap on device start during the `invite` period (pullfrog's co-proposal) — starting a device flow (`POST /login/device/code`) is a direct CLI → github.com call that does not go through the maruhi server. The most maruhi can host is the pre-validation endpoint's per-IP limit (adopted); no place exists for a cap on start
+6. **The missing web delivery surface of the H series (an independent finding — adopted)**: none of stages H1–H6 attributed any `apps/web` work, and §8 round 1 ended its walk at "adds no mutation to the Web" (whether additive **static surfaces** are needed was never enumerated). A shape where an implementing agent can reach "H series complete" without touching `apps/web` is an enumeration hole. Ruling: hosted-specific web additions are **unauthenticated static pages only** (serving legal documents = H4; beta guidance, the waitlist funnel, the landing text on sign-up refusal, and "first 5 minutes" onboarding = H6), positioned as an **extension of web-dashboard-design.md's S1 (landing) family** — adding no authentication, mutation, or script dependence, inside the boundary of ADR-0018 revision 2 and the CSP / self-serving discipline (hosted-design.md §9 "attribution of the web surface"). **Ruling on pullfrog's open question (where the legal documents live)**: static self-serving on maruhi web. **Rejected alternative**: serving legal documents from an independent origin — it only multiplies the supply chain and delivery surfaces, and the independent-origin rationale (must stay alive during an incident) applies only to the status page (§5-4). This asymmetry is made explicit in the design doc
+7. 2 nitpicks fixed: corrected the citation for the rejected email-allowlist from AUTH_SPEC §1 to **the §2 rule / §10's prohibition** (what §1 states is the ban on auto-linking), and "个別" (a simplified character) → "個別" in §3-2 — english-exempt: quotes literal text owned by docs/notes/hosted-design.md
 
-教訓の追補(§10-6 から): 影響面の歩査は「新機能が既存面に**足すもの**」を mutation / 認可の軸だけでなく、**静的・加法的な配信面**(文書・案内・着地ページ)まで列挙する — 実装分割は「触らないコンポーネントが本当にゼロか」を段表の完成条件として検査する。
+Supplement to the lessons (from §10-6): the impact-surface walk must enumerate not only what a new feature **adds to existing surfaces** on the mutation / authorization axes but also **static, additive delivery surfaces** (documents, guidance, landing pages) — and the implementation split must check "is a component it does not touch truly zero" as a completion condition of the stage table.
 
-第 3 ラウンド(115a6a2 への incremental レビュー — 前回指摘の解消確認 + 残 1 件):
+Round 3 (an incremental review of 115a6a2 — confirming the previous findings resolved + 1 remaining):
 
-8. **H1 表への CLI 側作業の帰属(採用)**: §2-2 が H1 の設計要件として足した CLI 側ガード((i) 開始前の signupPolicy 確認 (ii) 未招待者への案内 (iii) コード事前検証の呼び出し)が、§9 の H1 行にも gap 表にも現れていなかった — 段表をチェックリストに使う実装エージェントが CLI ガード未実装のまま「H1 完了」に到達できる(§10-6 と同型の帰属漏れ)。裁定: **CLI 側ガードは H1 に含める**(H5 の後段へ分けない)— AUTH_SPEC §4 改訂が login フロー契約(config 参照・コード添付・事前検証)を定め、CLI はその第一消費者としてサーバー実装を検証する(W2a「CLI を同じ API の第一消費者として先に検証」の型)。pullfrog の open question(H5 までに入っていれば足りるのでは)への回答: 実効の期限は確かに H5(公知 × invite 制の窓は CLI 公開から始まる)だが、H1 完了は H5 のゲート順(hosted-design.md §4)で常に先行するため、H1 帰属は期限を自動で満たしつつ「仕様改訂とその第一消費者を同じ段で検証する」既存の型を保つ — 分割して得るものがない。あわせて H1 の「停止しても安全な理由」に中間状態の評価を明記: サーバー側のみの状態でも fail-closed(拒否の正はサーバー)は成立し、CLI ガードの欠落で失うのは共有枠の節約のみ(安全性は落ちない)
+8. **Attributing CLI-side work to the H1 row (adopted)**: the CLI-side guards §2-2 added as H1 design requirements ((i) the pre-start signupPolicy check, (ii) guidance for the uninvited, (iii) calling the code pre-validation) appeared in neither §9's H1 row nor the gap table — an implementing agent using the stage table as a checklist could reach "H1 complete" with the CLI guards unimplemented (the same attribution gap as §10-6). Ruling: **the CLI-side guards are included in H1** (not split off to a later part of H5) — the AUTH_SPEC §4 revision defines the login-flow contract (config reference, attaching the code, pre-validation), and the CLI, as its first consumer, verifies the server implementation (the W2a pattern "verify the CLI as the same API's first consumer first"). Answering pullfrog's open question ("isn't it enough if it lands by H5"): the effective deadline is indeed H5 (the publicly-known × invite-only window starts when the CLI is published), but H1 completion always precedes H5 in the gate order (hosted-design.md §4), so attributing it to H1 automatically meets the deadline while keeping the existing pattern of "verifying a spec revision and its first consumer in the same stage" — there is nothing to gain by splitting. The "why stopping is safe" note on H1 also gained an explicit evaluation of the intermediate state: even with only the server side in place, fail-closed holds (the refusal authority is the server's), and a missing CLI guard loses only the shared-budget savings (safety does not degrade)
 
-第 4 ラウンド(7594159 への incremental レビュー — 前回指摘の解消確認 + 写しの追随 1 件):
+Round 4 (an incremental review of 7594159 — confirming the previous findings resolved + 1 follow-through):
 
-9. **ROADMAP の H 系列行の追随(採用)**: §10-6 / §10-8 の対応で hosted-design.md §9 の H1 / H4 / H6 行は更新されたが、同内容を写す ROADMAP のチェックリスト行(本 PR で新設)が初版のままだった — 最上位のチェックリストに「行を見て完了に到達できる」形が残る(§10-6・§10-8 と同型の帰属漏れの、写し側での再発)。pullfrog の提示 2 案から**案 1(各行への一行追記)を採用**: H1 へ CLI の login 事前 fail-fast・事前検証エンドポイント・advisory 配布、H4 へ法務文書の配信面、H6 へベータ案内・waitlist 導線・拒否時着地文言・オンボーディングの web 静的面を追記(全文の再掲はしない — 実装分割の正は hosted-design.md §9 のまま)。**棄却した代替(案 2)**: H 行を参照専用の要約と明示し詳細を hosted-design.md §9 への参照必須に統一する — ROADMAP の既存項目は「内容の列挙 + 参照」の体裁で書かれており、H 系列だけ参照専用に変えると ROADMAP 内の一貫性が崩れる。節冒頭の「正は hosted-design.md」宣言は据え置きであり、二重管理の正の所在は案 1 でも曖昧にならない
+9. **Following the ROADMAP H-series rows through (adopted)**: the §10-6 / §10-8 fixes updated hosted-design.md §9's H1 / H4 / H6 rows, but the ROADMAP checklist rows (newly added by this PR) mirroring the same content were still the first version — the topmost checklist retained a shape where "reading a row lets you reach completion" (the same attribution gap as §10-6 / §10-8 recurring on the copy side). Of pullfrog's 2 proposed options, **option 1 (a one-line addition to each row) was adopted**: H1 gained the CLI's login pre-flow fail-fast, the pre-validation endpoint, and the advisory distribution; H4 gained the legal-documents serving surface; H6 gained the beta guidance, waitlist funnel, refusal landing text, and the onboarding static web surface (the full text is not restated — the authoritative split stays hosted-design.md §9). **Rejected alternative (option 2)**: marking the H rows as reference-only summaries and uniformly requiring the details via reference to hosted-design.md §9 — ROADMAP's existing items are written in the "enumerate the content + a reference" style, and changing only the H series to reference-only breaks in-document consistency. The section-head "hosted-design.md is authoritative" declaration stays, and option 1 leaves the location of the managed source unambiguous
 
-## 11. マージ後のオーナー決定の記録(2026-08-30 — 探索を経た裁定ではないため裁定記号を消費しない)
+## 11. Record of a post-merge owner decision (2026-08-30 — not a ruling reached through exploration, so no ruling symbol is consumed)
 
-PR #113 マージ後の対話で、H0 のスコープ外だった 1 件についてオーナー決定が出た。次の
-セッションの裁定記号は **DF** から(本節は記録であり DA〜DE に続く裁定ではない)。
+In the dialogue after PR #113 merged, an owner decision arrived on one item outside H0's scope. The next
+session's ruling symbols start at **DF** (this section is a record, not a ruling continuing DA–DE).
 
-- **ホステッド → セルフホストの export / import を製品化する(実施決定・時期未定)**:
-  hosted-design.md §1 の約束の線引きは現在「移行は再作成である(履歴は移行できない)」と
-  書いているが、project_id = genesis ハッシュ・チェーンの自己検証可能性・値の暗号文性に
-  より**構造的には可搬**であり、欠けているのは輸送路のみ。動機は §1 の「可用性を SLA
-  しない」の構造的な裏付け — ADR-0003(FSL = セルフホストへ逃げられる)を約束でなく機構で
-  成立させる。**設計は独立セッション**(受理面 = 移行先サーバーによる一括受理に触れるため、
-  W0 / S0 と同じ「設計 → 承認 → 実装」の順)。論点・非可搬部分は hosted-design.md §10、
-  スケジュール上の位置(ベータのゲートにしない)は ROADMAP の H 系列の節
-- 同対話で出た **BYO App(テナント持ち込み OAuth App)** は、CLI ログイン枠(§3-4)の
-  裁定と不可分なため本記録では扱わない — 次セッション(gap 9 = ログインのスケール経路)の
-  裁定対象に含める
+- **Productize hosted → self-host export / import (decided; timing unset)**:
+  hosted-design.md §1's line of promises currently reads "migration is re-creation (history does not
+  migrate)", but project_id = the genesis hash, the chain's self-verifiability, and values' ciphertext
+  nature make it **structurally portable** — only the transport is missing. The motive is a structural
+  backing for §1's "no availability SLA" — making ADR-0003 (FSL = the ability to escape to self-host)
+  hold by mechanism, not by promise. **The design is an independent session** (the acceptance surface
+  is touched — bulk acceptance by the destination server — so it follows the same "design → approve →
+  implement" order as W0 / S0). The discussion points and the non-portable parts are in hosted-design.md
+  §10; its schedule position (not a beta gate) is in ROADMAP's H-series section
+- **BYO App (tenant-brought OAuth App)**, raised in the same dialogue, is inseparable from the
+  CLI login budget ruling (§3-4), so this record does not treat it — it goes into the next
+  session's ruling set (gap 9 = the login scaling path)

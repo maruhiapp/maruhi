@@ -1,119 +1,128 @@
-# セッション 48: gap 9 — CLI ログインのスケール経路の裁定録(web-flow ハンドオフ)
+# Session 48: gap 9 — the ruling record on the CLI-login scaling path (the web-flow handoff)
 
-日付: 2026-08-31。目的: hosted-design.md §8 gap 9(CLI ログインのスケール経路 — オープンベータ開放条件)と session-47 §11 の申し送り(BYO App の位置づけ)の裁定。形式: **オーナー同席の対話裁定**(前セッション群の「自律選択 → 事後承認」と異なり、第 1 段階 = 事実確認で停止 → 第 2 段階 = 選択肢の比較提示 → オーナーが方向を選択 → 最終ゼロベース探索で収束確認、の順で進めた。本 PR のマージをもって正式承認)。裁定記号は session-47(〜DE)の続番で **DF から**。成果物の対応: AUTH_SPEC 0.17-draft(§4 全面改訂 + §3 / §6 / §13-2 / §15-2 追随)/ AUDIT_SPEC 語彙追随 / hosted-design.md 追記(§2-2・§3-4・§8 gap 9・§9 H1b)/ ROADMAP(H1b 追加)/ 本裁定録。**実装は含めない**(実装段 = H1b)。
+Date: 2026-08-31. Purpose: ruling on hosted-design.md §8 gap 9 (the CLI-login scaling path — an open-beta release condition) and session-47 §11's handoff (positioning BYO App). Format: **a dialogue ruling with the owner present** (unlike the previous sessions' "autonomous choice → post-approval", this proceeded: stage 1 = stop at fact-checking → stage 2 = present the option comparison → the owner picks the direction → a final zero-based exploration confirms convergence. This PR's merge constitutes formal approval). The ruling symbols continue session-47's (…DE) numbering, starting at **DF**. Deliverable mapping: AUTH_SPEC 0.17-draft (a full §4 revision + follow-ups in §3 / §6 / §13-2 / §15-2) / AUDIT_SPEC vocabulary follow-up / hosted-design.md additions (§2-2, §3-4, §8 gap 9, §9 H1b) / ROADMAP (H1b added) / this ruling record. **No implementation is included** (implementation stage = H1b).
 
 ---
 
-## 1. 一次情報の確認(2026-08-31 — 裁定の入力)
+## 1. Primary-source verification (2026-08-31 — the ruling's inputs)
 
-GitHub 公式ドキュメント(Rate limits for OAuth apps / Authorizing OAuth apps / Rate limits for GitHub Apps)で再確認した。H0 の数値は与件でなく引き写しだったため、全数を当たり直した:
+Re-verified against GitHub's official docs (Rate limits for OAuth apps / Authorizing OAuth apps / Rate limits for GitHub Apps). Since H0's numbers were copied over rather than taken as given, every number was rechecked:
 
-- **device flow のユーザーコード入力 = 50 回/時(App 単位)**: 確認(原文 "there is a rate limit of 50 submissions per hour per application")。問題設定は正しい — これがホステッド全体の CLI ログインを毎時 50 回に律速する
-- **OAuth トークン請求 = 2,000 回/時(App 単位・secondary)**: 確認。web flow の code 交換と device flow のポーリングが同じ枠を共有する。secondary rate limit は "subject to change without notice"・残量観測 API なし・超過の継続は "may result in the banning of your integration"
-- **client 資格情報リクエスト = 5,000 回/時(GHE Cloud org 所有で 15,000)**: 確認(check-token の帰属は認証方式〔Basic = client_id:client_secret〕からの合理的帰属 — 個別明文はなし)
-- **トークン発行 = 10 本/時/ユーザー・(user, app, scope) 組あたり 10 本**: ユーザー単位でありホステッドの律速にならない
-- **H0 表の訂正(hosted-design.md §3-4 に反映)**: web ログインの `/user` / `/user/emails` は**ユーザーのトークン**で呼ばれ、ユーザー個人の 5,000 回/時に計上される。共有 App 枠の消費はログイン 1 回 = token 請求 1 回のみ(H0 表の「+ 5,000 回/時」は誤り)
-- **web flow の code → token 交換は client_secret 必須**(device flow のみ例外): CLI 単独の web flow は構造的に不可能で、ハンドオフは必ずサーバー仲介になる — これは前セッションの見立て(ループバック直行案)を覆した確認であり、設計空間を「サーバー仲介の配送方式の選択」に絞った
-- OAuth App は複数 callback URL・ループバック redirect(任意ポート)を正式サポート(2026-08-03 の仕様変更で wildcard は設定制)。ただしサーバー仲介型では GitHub 側 callback は従来の 1 本のままで、この事実の主用途は消えた
-- **GitHub App 移行はログインの律速を変えない**: token 請求 2,000 回/時の secondary は "GitHub Apps and OAuth apps" 共通、device flow のコード入力 50 回/時も App 種別で変わらない → hosted-design.md §3-4 エスカレーション (b) は本問題の解として実質脱落(移行の対価〔大工事〕に対して律速が 1 mm も動かない)
+- **Device-flow user-code entry = 50/hour (per App)**: confirmed (the original text: "there is a rate limit of 50 submissions per hour per application"). The problem framing is correct — this throttles the whole hosted deployment's CLI logins to 50 per hour
+- **OAuth token requests = 2,000/hour (per App, secondary)**: confirmed. Web flow's code exchange and device flow's polling share the same budget. The secondary rate limit is "subject to change without notice", has no remaining-quota observation API, and continued excess "may result in the banning of your integration"
+- **Client-credential requests = 5,000/hour (15,000 for a GHE Cloud org-owned App)**: confirmed (check-token's attribution is a reasonable inference from the auth scheme〔Basic = client_id:client_secret〕 — there is no per-item explicit text)
+- **Token issuance = 10/hour/user, 10 per (user, app, scope) tuple**: per-user, so it does not throttle the hosted deployment
+- **Correction to the H0 table (reflected in hosted-design.md §3-4)**: web login's `/user` / `/user/emails` are called with **the user's token** and count against that user's own 5,000/hour. Consumption of the shared App budget is 1 token request per login only (the H0 table's "+ 5,000/hour" was wrong)
+- **Web flow's code → token exchange requires client_secret** (device flow alone is exempt): a CLI-only web flow is structurally impossible, and a handoff is always server-mediated — this confirmation overturned the previous session's estimate (the direct-loopback option) and narrowed the design space to "choosing the delivery method of a server-mediated handoff"
+- OAuth Apps officially support multiple callback URLs and loopback redirects (any port) (the 2026-08-03 spec change restricted wildcards). However under the server-mediated form, the GitHub-side callback stays the single conventional one, so this fact's main use evaporated
+- **Migrating to a GitHub App does not move the login throttle**: the 2,000/hour token-request secondary is shared by "GitHub Apps and OAuth apps", and the 50/hour device-flow code entry also does not change with App type → hosted-design.md §3-4 escalation (b) effectively drops out as an answer to this problem (the throttle does not move a millimeter against the migration's cost〔a large project〕)
 
-## 2. 裁定 DF: サーバー仲介 web-flow ハンドオフ(ポーリング配送)+ device flow 全削除 + CLI のプロバイダ非依存化
+## 2. Ruling DF: a server-mediated web-flow handoff (polling delivery) + full removal of device flow + making the CLI provider-agnostic
 
-**採用**(仕様 = AUTH_SPEC §4 全面改訂。実装 = H1b): CLI は maruhi サーバーに pending ログインを作り(`POST /auth/cli/start` — flowId / flowToken〔256-bit・ハッシュのみ保存〕/ userCode / verificationUrl)、ユーザーはブラウザで §3 の web OAuth を完走し、maruhi オリジンのスクリプトなし承認ページで userCode を照合して明示承認、CLI はサーバーへのポーリング(`POST /auth/cli/poll`)で maruhi PAT を受け取る(単回 CAS・生値は DB 非保存)。承認の資格は単回・短命の承認チケットであり**既存 Web セッションでは承認できない**。3 点セットで確定:
+**Adopted** (spec = a full AUTH_SPEC §4 revision; implementation = H1b): the CLI creates a pending login on the maruhi server (`POST /auth/cli/start` — flowId / flowToken〔256-bit, only its hash stored〕/ userCode / verificationUrl), the user completes §3's web OAuth in a browser and explicitly approves by matching the userCode on a script-free approval page on the maruhi origin, and the CLI receives the maruhi PAT by polling the server (`POST /auth/cli/poll`) (single-use CAS; the raw value is never stored in the DB). The approval credential is a single-use, short-lived approval ticket — **an existing Web session cannot approve**. Settled as a 3-point set:
 
-1. **配送はポーリング**(CLI → maruhi サーバー。GitHub 消費はログイン 1 回 = token 請求 1 のみ)
-2. **device flow は全削除**(併存させない。オーナー確認 2026-08-31「残す理由がなければ削除」— 残す理由は全滅: SSH / CI / エージェント環境はポーリング + URL 手動オープンが device flow と同型の縮退でカバー、GHES はサーバー側 github.com 決め打ちで元々未対応、旧 CLI 互換は公開前で義務なし)
-3. **CLI はプロバイダを知らない**(オーナー要件 2026-08-31「GitHub 以外も連携しうる前提の作り」: ワイヤにプロバイダ固有フィールドなし・verificationUrl は不透明・将来の IdP 追加〔§7〕はブラウザ脚の内側だけで完結)
+1. **Delivery is polling** (CLI → maruhi server. GitHub consumption is 1 token request per login only)
+2. **Device flow is fully removed** (not kept alongside. Owner confirmation 2026-08-31: "delete it if there is no reason to keep it" — every reason to keep it was exhausted: SSH / CI / agent environments are covered by polling + manually opening the URL, an equivalent degraded form to device flow; GHES was never supported since the server pins github.com; old-CLI compatibility carries no obligation pre-publication)
+3. **The CLI does not know the provider** (owner requirement 2026-08-31: "build it on the premise that providers other than GitHub may be integrated": no provider-specific fields on the wire, verificationUrl is opaque, and a future IdP addition〔§7〕completes entirely inside the browser leg)
 
-採用理由: (1) 律速が 50 回/時 → 2,000 回/時へ 40 倍(規模感: 90 日 TTL の定常再ログインなら数万ユーザー、サインアップピークでも毎時 2,000 アカウント承認 — 現実的な成長で天井に触れない。触れる規模は課金・BYO・GitHub への引き上げ交渉が立つ規模)。(2) 消費点が全てサーバー経由になり**観測点・制御点を獲得**(secondary は残量 API がないため自前計数が唯一の観測 — H3 トリップワイヤへ追加)。(3) 攻撃面の純減 — audience 検証(check-token)・トークン形式事前検査(旧 L-3)・未認証アウトバウンド中継の全廃。(4) H0 の明示受容だった残余(§2-2 (a)(b) — 拒否経路・敵対消費が github.com 直で塞げない)が大幅縮小(Enable Device Flow の無効化で 50 回/時面ごと消滅)。(5) H5 前実装なら公開 CLI にハンドオフのみが載り、破壊的変更が発生しない。
+Rationale: (1) the throttle moves 50/hour → 2,000/hour, a 40× increase (scale sense: steady re-logins under a 90-day TTL support tens of thousands of users, and even a sign-up spike means 2,000 account approvals per hour — realistic growth does not touch the ceiling; a scale that does touch it is one where billing, BYO, and negotiating an increase with GitHub all stand). (2) Every consumption point now goes through the server — **an observation point and a control point are gained** (secondary has no remaining-quota API, so self-counting is the only observation — added to the H3 tripwires). (3) Net reduction of the attack surface — audience verification (check-token), token-format pre-checks (old L-3), and the unauthenticated outbound relay are all eliminated. (4) The residual H0 explicitly accepted (§2-2 (a)(b) — the refusal path / adversarial consumption being unblockable via direct github.com) shrinks drastically (disabling Enable Device Flow removes the 50/hour surface altogether). (5) If implemented before H5, the published CLI carries only the handoff and no breaking change ever occurs.
 
-**対価(明示)**: 承認面が github.com から maruhi オリジン(Web = TCB)へ移る。緩和: スクリプトなし承認ページ(§15-3 の招待着地ページと同じ規律・`script-src 'none'`)・userCode 照合の明示操作(旧 device flow のコード入力と同水準の摩擦)・フレッシュ OAuth 必須(セッションを承認資格にしない — §5 の許可列挙外を維持)。フィッシング残余(攻撃者が start して被害者に URL を踏ませる型)は RFC 8628 の device-code phishing と同型で**悪化ではない**。
+**The cost (explicit)**: the approval surface moves from github.com to the maruhi origin (Web = TCB). Mitigations: a script-free approval page (the same discipline as §15-3's invite landing page, `script-src 'none'`), the explicit act of matching the userCode (the same friction level as the old device flow's code entry), mandatory fresh OAuth (no session as an approval credential — keeping it outside §5's allowed enumeration). The phishing residual (the shape where an attacker starts a flow and has the victim open the URL) is the same shape as RFC 8628's device-code phishing and **not a worsening**.
 
-**棄却案**:
+**Rejected options**:
 
-- **配送 = ループバック既定(127.0.0.1 の一時リスナーへ 302)**: ブラウザ・CLI の同一マシン束縛でフィッシング残余を構造的に閉じる最強形だが、SSH / コンテナ / エージェント環境で成立せず縮退経路(= ポーリング)が結局必須 → 初手から 2 配送の実装・試験・文書。ポーリング単独が全環境同一挙動で最小。**ワイヤ非破壊の加法拡張として予約**(AUTH_SPEC §4-3)
-- **配送 = ワンタイムコード貼り付け**: ブラウザに表示されたコードを CLI へ手で貼る形。手動摩擦が旧 device flow と同等で乗り換え利得が薄く、コードがクリップボード・ターミナル履歴を経由する。ポーリングの下位互換
-- **既存 Web セッションで承認**: 承認 = 実質の PAT 発行 mutation をセッション能力に加えることになり、AUTH_SPEC §5 の能力制限・ADR-0018 改訂 2(発行は端末限定)と正面衝突。セッション窃取・Web XSS が CLI ログイン承認へ昇格する
-- **device flow 併存(自動縮退 / 明示フラグ)**: 上記 2 のとおり積極理由が全滅。併存は持ち込みトークン検証の攻撃面を温存し、50 回/時枠の監視意味論を濁らせ、「どちらの経路で入ったか」の分岐を恒久維持する
-- **トークン自動更新(refresh)で再ログイン頻度を下げる**: 既定 TTL 90 日の意図(定期再認証の強制 — W3a 裁定 CE / L-2 解消)の骨抜き。頻度の問題は 2,000 回/時で解けており、更新機構の追加理由がない
-- **GitHub PAT 持ち込み**: App 共有枠は消えるが、audience 検証が原理的に不能(PAT は App 向け発行でないため「maruhi 向け資格情報」の検証ができず、他所で漏れた被害者の PAT がそのまま成りすましに使える)。UX も最悪(手動 PAT 作成)。ユーザーに「PAT を貼る」習慣を教えること自体が secrets 管理ツールの製品思想と矛盾
-- **SSH 鍵署名による本人証明**(github.com の公開鍵一覧と照合): 非標準プロトコル(CLAUDE.md の独自プロトコル禁止に抵触)・鍵の所持 ≠ アカウントの支配・プロバイダ非依存化と真逆
-- **passkey / メールマジックリンクへの乗り換え**: アカウント回復フロー・メール送信基盤(gap 8)という新しい危険物と供給網を実需の観測前に抱える。メール識別子化は AUTH_SPEC §2 の規律とも衝突。ADR-0009 の再判断規律(実需が立ってから)に従い時期尚早
-- **GitHub App 移行**: §1 のとおり律速が動かないことが数値で確定
-- **複数 App シャーディング・GHE Cloud org 所有化**: H0 棄却の維持(§1 で数値再確認 — GHE はコード入力 50 も token 請求 2,000 も変えない)
-- **何もしない(招待制ベータの実測を待つ — H0 の既定路線)**: 製品判断として対等に比較した上で棄却。(1) H5 で必ず生じる「公知 × invite」窓(session-47 §10)を公開前に構造ごと消せる、(2) 公開後の device flow 削除は破壊的変更になる(公開前が最安)、(3) 実測が教えるのは「いつ天井に触れるか」であり「天井があること」は既知 — 待つ利得が薄い
+- **Delivery = loopback by default (302 to a temporary listener on 127.0.0.1)**: the strongest form, structurally closing the phishing residual by binding browser and CLI to the same machine — but it does not work under SSH / containers / agent environments, and a degraded path (= polling) is needed anyway → two delivery mechanisms to implement, test, and document from day one. Polling alone is minimal with identical behavior in every environment. **Reserved as a wire-nonbreaking additive extension** (AUTH_SPEC §4-3)
+- **Delivery = pasting a one-time code**: the user hand-pastes a code shown in the browser into the CLI. Manual friction equal to the old device flow with thin switching gains, and the code passes through the clipboard and terminal history. Inferior to polling
+- **Approval via an existing Web session**: would add approval — effectively a PAT-issuing mutation — to session capabilities, colliding head-on with AUTH_SPEC §5's capability limits and ADR-0018 revision 2 (issuance is terminal-only). Session theft / Web XSS would escalate into CLI-login approval
+- **Keeping device flow alongside (automatic fallback / an explicit flag)**: every affirmative reason is exhausted, per point 2. Coexistence would preserve the bring-your-own-token verification attack surface, muddy the monitoring semantics of the 50/hour budget, and permanently maintain a "which path did they come in on" branch
+- **Lowering re-login frequency via automatic token refresh**: guts the intent of the 90-day default TTL (forcing periodic re-authentication — W3a ruling CE / resolving L-2). The frequency problem is already solved by 2,000/hour; no reason to add a refresh mechanism
+- **Bringing your own GitHub PAT**: removes the shared App budget, but audience verification becomes impossible in principle (a PAT is not issued for an App, so "a credential intended for maruhi" cannot be verified, and a victim's PAT leaked elsewhere works verbatim for impersonation). The UX is also the worst (manual PAT creation). Teaching users the habit of "paste a PAT" itself contradicts the product philosophy of a secrets manager
+- **Identity proof by SSH-key signing** (matching against the public key list on github.com): a non-standard protocol (violates CLAUDE.md's ban on inventing protocols), key possession ≠ account control, and the exact opposite of provider-agnosticism
+- **Switching to passkeys / email magic links**: would take on new hazardous material and supply chains — an account-recovery flow and an email-sending foundation (gap 8) — before demand is observed. Email-as-identifier also collides with AUTH_SPEC §2's discipline. Premature per ADR-0009's re-judgment discipline (once demand is established)
+- **Migrating to a GitHub App**: confirmed numerically in §1 that the throttle does not move
+- **Multi-App sharding / GHE Cloud org ownership**: the H0 rejections stand (numbers re-verified in §1 — GHE changes neither the 50 code entries nor the 2,000 token requests)
+- **Doing nothing (waiting for invite-only-beta measurements — H0's default path)**: compared as an equal product judgment and rejected. (1) The "publicly known × invite-only" window that H5 inevitably produces (session-47 §10) can be removed structurally before publication, (2) removing device flow after publication is a breaking change (pre-publication is cheapest), (3) what measurement teaches is "when we hit the ceiling" — "that a ceiling exists" is already known; little is gained by waiting
 
-## 3. 裁定 DG: BYO App(テナント持ち込み OAuth App)の繰り延べ
+## 3. Ruling DG: deferring BYO App (tenant-brought OAuth App)
 
-**繰り延べ**(却下ではない — session-47 §11 の申し送りへの応答): BYO は gap 9 の解にならない(無料個人層は共有 App のまま = オープンベータの天井は動かない)。加えて裁定 DF 後は共有枠の逼迫自体が遠のき、BYO の主動機は「大口テナントの枠分離」から「組織管理者の一括管理(承認・失効)needs」へ移る — それはエンタープライズ SSO(AUTH_SPEC §7 / ADR-0009 の WorkOS 挿入ポイント)の議題であり、**ADR-0009 の次回再判断ポイント(有償プラン設計時 or SSO 実需の発生時)へ合流させる**。先行実装しない理由: (1) テナントの client_secret を預かる新しい custody クラスが生まれる(現行の秘匿情報はデプロイ 1 個の secret のみ)、(2) ログイン前に「どのテナントの App か」を解決する導線(org ヒント)が要り、CLI のプロバイダ非依存化(裁定 DF 3 点目)と逆向きの複雑さになる。
+**Deferred** (not rejected — the response to session-47 §11's handoff): BYO does not solve gap 9 (the free individual tier stays on the shared App = the open-beta ceiling does not move). Moreover, after ruling DF the shared-budget squeeze itself recedes, and BYO's main motive shifts from "separating a big tenant's budget" to "org administrators' bulk-management needs (approval, revocation)" — which belongs to enterprise SSO (the AUTH_SPEC §7 / ADR-0009 WorkOS insertion point) and **merges into ADR-0009's next re-judgment point (paid-plan design or observed SSO demand)**. Reasons not to pre-implement: (1) it creates a new custody class — holding tenants' client_secrets (today's secrets are just the one deployment secret), and (2) a funnel to resolve "which tenant's App" before login (an org hint) is needed — complexity running opposite to the CLI's provider-agnosticism (ruling DF point 3).
 
-## 4. ゼロベース探索の記録(収束確認 — 2026-08-31 オーナー依頼)
+## 4. Record of the zero-based exploration (convergence confirmation — owner-requested, 2026-08-31)
 
-第 2 段階の 3 案比較の後、採用前に設計空間を 5 系統で全数再検査した(上位互換・銀の弾丸の探索):
+After stage 2's 3-option comparison and before adoption, the whole design space was re-enumerated across 5 families (an upward-compatibility / silver-bullet search):
 
-1. **CLI ↔ GitHub 直接系**: device flow(50 回/時)・CLI 直 web flow(client_secret で不可能)・GitHub PAT 持ち込み(audience 検証不能)・SSH 鍵署名(非標準)— 全滅
-2. **サーバー仲介系**: 採用族。族内の変種(ループバック・貼り付け・SSE vs ポーリング・QR 表示)はいずれも配送の選択であり、ポーリングが最小・全環境同一。他は加法拡張として後付け可能
-3. **CLI ログイン不要化系**: Web からのブートストラップトークン発行(ADR-0018 違反)・トークン refresh(L-2 再導入)は棄却。**既存デバイスからの資格委任**(ログイン済みデバイスが新デバイスの鍵を承認する形)はデバイス追加 UX として将来性があるが、初回ログインを消せないため gap 9 の解ではない — 未着手のアイデアとして記録のみ
-4. **プロバイダ変更系**: passkey・マジックリンク(上記棄却)。多プロバイダ化は裁定 DF 3 点目の「作り」で将来コストを最小化済み
-5. **制約側を動かす系**: BYO(裁定 DG)・GHE・シャーディング・GitHub への引き上げ交渉(設計でなく運用レバー — 必要になる規模では課金が立っている)
+1. **Direct CLI ↔ GitHub family**: device flow (50/hour), CLI-direct web flow (impossible — client_secret), bring-your-own GitHub PAT (no audience verification), SSH-key signing (non-standard) — all dead
+2. **Server-mediated family**: the adopted family. In-family variants (loopback, paste, SSE vs polling, QR display) are all delivery choices; polling is minimal and identical in every environment. The others can be added later as additive extensions
+3. **Eliminating-CLI-login family**: issuing a bootstrap token from the Web (violates ADR-0018) and token refresh (reintroducing L-2) are rejected. **Credential delegation from an existing device** (a logged-in device approves a new device's key) has a future as device-addition UX but cannot eliminate first login, so it is not a gap-9 answer — recorded only as an unexplored idea
+4. **Provider-change family**: passkeys and magic links (rejected above). Multi-provider support's future cost is already minimized by ruling DF's point-3 "build"
+5. **Moving-the-constraint family**: BYO (ruling DG), GHE, sharding, negotiating an increase with GitHub (an operational lever, not design — at a scale that needs it, billing already stands)
 
-結論: 上位互換なし。「案 3(ポーリング配送)+ device flow 全削除 + プロバイダ非依存」で収束。
+Conclusion: no upward-compatible option. Converged on "option 3 (polling delivery) + full device-flow removal + provider-agnostic".
 
-## 4b. 追補裁定 DH: start の無記録化 + CLI ログインの既存アカウント限定(2026-08-31 所有者採用)
+## 4b. Supplementary ruling DH: making start record-free + restricting CLI login to existing accounts (owner-adopted 2026-08-31)
 
-PR #115 のレビュー 8 往復(§5 の追補記録)を終えた後、所有者依頼の第 2 次ゼロベース探索
-(「良い案が出てこなくなるまでループ」)で、往復で積んだ対症療法の**共通の根**が特定された:
-「まだ何のコストも払っていない・何の意思も示していない相手のために、サーバーが状態を作り
-(未認証 start の pending 行)、取り返しのつかない処理をする(callback 時の get-or-create・
-招待コード消費)」。根を断つ 2 案を所有者が採用した(A + H — 本改訂 PR 内で仕様反映)。
+After the 8 review round-trips on PR #115 (the supplementary record in §5), a second-stage
+zero-based exploration at the owner's request ("loop until no better ideas come out") identified the
+**common root** of the symptomatic fixes stacked up across the rounds:
+"for a party that has paid no cost and shown no intent, the server creates state
+(a pending row at unauthenticated start) and performs irreversible processing (get-or-create at
+callback, invite-code consumption)". The owner adopted the 2 options that cut the root (A + H —
+reflected in the spec within this revision PR).
 
-- **A(無記録 start)**: `POST /auth/cli/start` はサーバーに何も保存せず、署名付きの
-  自己完結フロー資格(flowToken = 乱数 + flowId + 期限 + HMAC-SHA-256。vsig とはドメイン
-  分離 — AUTH_SPEC §4-2)と vsig 付き verificationUrl を返す。フロー行が生まれるのは「既存アカウント保持者が OAuth を完走した瞬間」のみ。
-  **消える機構**: 未認証プールの定員・退避型上限・保護 CAS・退避アラート(レビュー第 2〜4
-  ラウンドで積んだ機構の大半)。**対価**: フロー署名鍵(サーバー側 HMAC 鍵 — 初回使用時に
-  自動生成し D1 保存。セルフホスト手順は増えない)という新しい部品。無記録の保留フローは
-  DB バックでない唯一の資格情報になるが、セッションではない(15 分・単独では何も許可しない)
-- **H(既存アカウント限定)**: CLI ログインはアカウントを作らない。サインアップの唯一の
-  入口は §3 の Web ログインで、H1 の signupPolicy ゲート・招待コードの受理もそこにのみ置く。
-  アカウント不在のアイデンティティには「サインアップ案内ページ」(スクリプトなし)を返し、
-  何も不可逆なことをしない。**消える問題**: §4-3 が H1 へ送致していた「誤アカウント先着で
-  単回招待コードが燃える」分岐(送致ごと解消)、「リンクを開いて OAuth しただけで maruhi
-  アカウントが作られる」性質、user_id 束縛 CAS の中間状態(行は生まれた時点で束縛済み)。
-  **対価**: 初回ユーザーはブラウザ内でサインアップへの 1 遷移が挟まる(既存ユーザーの手順は
-  不変)。第 1 次探索の発見 B(消費・作成を承認時へ遅延)は H に包含され不要になった
-- **探索ループで再検証し棄却した案**: ループバック配送の既定化(SSH・リモート開発で
-  ブラウザと CLI が別マシンのケースが壊れる — 将来拡張の予約は維持)/ 既存 Web セッションに
-  よる承認(XSS → トークン発行への昇格 — 裁定 DF 時の棄却を再確認)/ Web 発行コードの CLI
-  貼り付け(棄却済み配送方式の再確認)/ フロー行の完全無状態化(単回配布には最低 1 個の
-  CAS 可能な状態が必要)/ KV・DO への保管変更(CAS が弱くなる・複雑化のみ)/ userCode の
-  廃止・自動承認(フィッシングへの最後の防衛線)/ 発行パラメータの承認ページ側での選択
-  (CLI フラグの意味が消える)
-- **仕様上の細部(実装者向け)**: flowToken の MAC は **flowId を署名対象に含める**
-  (旧 §4-2 の「(flowId, flowToken) の組一致」検査の削除ではなく**移設** — start は
-  未認証・無償で誰でも正当な flowToken を持てるため、束縛が無いと「他人の flowId +
-  自前の flowToken」の組み替えで他人の PAT を取れてしまう。PR #115 第 9 ラウンド
-  〔pullfrog / Bugbot / Security agent が同一指摘〕で確定)。発行パラメータ
-  (tokenName / scopes / expiresInDays)は vsig で覆った verificationUrl が運ぶ
-  (承認ページの表示と行作成に必要。flowToken はブラウザチャネル不可のまま)。
-  サインアップ案内ページの再開導線は **verificationUrl**(callback 応答自身は単回で
-  再読込不可 — 同ラウンド Bugbot 指摘)。フロー署名鍵の初回生成は冪等(先勝ち +
-  読み戻し — 同ラウンド nitpick)。consumed / denied 行は flowToken 期限 + 余裕まで保持
-  (先に消すと poll が「行なし = pending」と誤読して無限待ち)。行の総量規律(日和見削除 +
-  上限、起草値 1,000・超過は一様エラー + H3 アラート)は作成点(callback)へ移動 — 埋める
-  コストが「既存アカウント × OAuth 完走」なので退避は不要になり単純拒否で足りる
+- **A (record-free start)**: `POST /auth/cli/start` stores nothing on the server and returns a signed
+  self-contained flow credential (flowToken = a random value + flowId + expiry + HMAC-SHA-256; domain-
+  separated from vsig — AUTH_SPEC §4-2) plus a vsig-signed verificationUrl. A flow row is born only
+  "the moment an existing-account holder completes OAuth".
+  **What disappears**: the unauthenticated pool's capacity, the eviction-style cap, the protection CAS,
+  the eviction alert (most of the mechanisms stacked in review rounds 2–4). **The cost**: a new
+  component — the flow-signing key (a server-side HMAC key — auto-generated on first use and stored in D1;
+  the self-host procedure does not grow). A record-free pending flow becomes the only credential not
+  backed by the DB, but it is not a session (15 minutes; permits nothing on its own)
+- **H (existing accounts only)**: CLI login creates no account. The only entry point for sign-up is
+  §3's Web login, where H1's signupPolicy gate and invite-code acceptance also exclusively live.
+  An identity with no account gets a "sign-up guidance page" (script-free) in response, and
+  nothing irreversible happens. **What disappears**: the "a single-use invite code burns on a
+  first-come wrong account" branch that §4-3 had forwarded to H1 (the forwarding itself dissolves), the
+  "opening a link and completing OAuth creates a maruhi account" property, and the intermediate state of
+  the user_id-binding CAS (the row is already bound when born).
+  **The cost**: a first-time user's browser detours once into sign-up (existing users' flow is
+  unchanged). The first exploration's finding B (deferring consumption/creation to approval time) is
+  subsumed by H and no longer needed
+- **Options re-verified and rejected inside the exploration loop**: making loopback delivery the default
+  (breaks the cases where browser and CLI are on different machines — SSH, remote development; the
+  future-extension reservation stays) / approval via an existing Web session (XSS → escalation into
+  token issuance — the DF-time rejection re-confirmed) / pasting a Web-issued code into the CLI
+  (the already-rejected delivery form re-confirmed) / fully stateless flow rows (single-use delivery
+  needs at least one CAS-able state) / moving storage to KV / DO (weakens CAS, only adds
+  complexity) / abolishing userCode or auto-approving (the last line of defense against phishing) /
+  choosing issuance parameters on the approval-page side (erases the meaning of CLI flags)
+- **Spec-level details (for implementers)**: the flowToken MAC **must include flowId in the signed
+  material** (not deleting the old §4-2 "(flowId, flowToken) pair-match" check but **relocating** it —
+  since start is unauthenticated and free, anyone can hold a legitimate flowToken, so without the
+  binding, recombination of "someone else's flowId + one's own flowToken" would steal another's PAT.
+  Settled in PR #115 round 9 〔the same finding by pullfrog / Bugbot / the Security agent〕). The issuance parameters
+  (tokenName / scopes / expiresInDays) are carried by the vsig-covered verificationUrl
+  (needed for the approval page's display and the row creation. flowToken stays off the browser channel).
+  The sign-up guidance page's resume funnel is the **verificationUrl** (the callback response itself is
+  single-use and cannot be reloaded — same round, Bugbot finding). First-time generation of the
+  flow-signing key is idempotent (first-wins + read-back — same round, nitpick). consumed / denied rows
+  are kept until flowToken expiry + slack (deleting them earlier makes poll misread "no row = pending"
+  and wait forever). The total-volume discipline for rows (opportunistic deletion + a cap — draft value
+  1,000, excess = a uniform error + an H3 alert) moves to the creation point (callback) — since filling
+  it costs "an existing account × a completed OAuth", eviction is no longer needed and a plain refusal
+  suffices
 
-## 5. 申し送り
+## 5. Handoffs
 
-- **実装 = H1b**(hosted-design.md §9 追記・ROADMAP): H1 と独立・並走可、**H5(public 化)の前提**。旧エンドポイントの併存猶予窓(サーバー先行デプロイ + 旧 CLI)は実装 PR の判断
-- H1 の CLI fail-fast・招待コード事前検証は §4 改訂後の形へ再基底化(hosted-design.md §2-2 追記 — 独立の事前検証エンドポイントの要否は H1 実装 PR で再判断)**(§4b 裁定 DH で再更新: コードの受理・検証は Web サインアップ側〔§3〕のみ。CLI 側は signupPolicy 確認と案内に縮小 — §2-2 再追記)**
-- H3 トリップワイヤへ「token 請求の自前カウント」と「ログインフロー行の~~退避・~~作成上限到達」を追加(hosted-design.md §3-4 追記 — secondary は残量観測 API がないため自前計数が唯一の観測手段。§4b 裁定 DH で退避機構は消滅し、アラート対象は作成点の上限のみ)。check-token 監視は消滅
-- 承認ページの摩擦の形(userCode の照合表示 + 承認クリック vs コード入力)は実装 PR で確定する — 仕様は「明示操作 + 照合文言 + **付与内容(tokenName・スコープ・有効期限)の表示**」を要求し、体裁は縛らない(フィッシング残余に対して入力方式の差は本質的な防御差を生まない — 攻撃者はコードごと被害者に渡せる。一方、付与内容の提示は旧 device flow が持たなかった改善で、承認面を自前化した利得 — PR #115 pullfrog レビュー起点)
+- **Implementation = H1b** (hosted-design.md §9 addition, ROADMAP): independent of H1 and can run in parallel; **a prerequisite of H5 (going public)**. The coexistence grace window for the old endpoint (server deployed ahead + old CLI) is the implementation PR's call
+- H1's CLI fail-fast and invite-code pre-validation are re-based onto the post-§4-revision form (hosted-design.md §2-2 addition — whether an independent pre-validation endpoint is still needed is re-judged in the H1 implementation PR) **(re-updated by §4b ruling DH: code acceptance/validation lives only on the Web sign-up side〔§3〕; the CLI side shrinks to the signupPolicy check + guidance — §2-2 re-amended)**
+- The H3 tripwires gain "self-counted token requests" and "the login-flow rows' ~~eviction・~~creation cap reached" (hosted-design.md §3-4 addition — secondary has no remaining-quota observation API, so self-counting is the only observation. Under §4b ruling DH the eviction mechanism disappeared and the alert target is only the creation-point cap). The check-token watch disappears
+- The approval page's friction shape (showing the userCode for matching + an approval click vs entering a code) is settled in the implementation PR — the spec requires "an explicit action + the matching wording + **a display of what is granted (tokenName, scopes, expiry)**" and does not bind the form (the input-method difference produces no essential defensive difference against the phishing residual — the attacker can hand the victim a complete code. Meanwhile, showing what is granted is an improvement the old device flow lacked — a gain from owning the approval surface — originating in the PR #115 pullfrog review)
 
-**PR #115 レビュー起点の仕様追補(2026-08-31 — 裁定 DF の範囲内の明確化 3 点)**: (1) 承認ページは userCode に加えて付与内容(tokenName・要求スコープ・有効期限)を表示する(上記)。(2) ブラウザ脚は §3 の 1〜3 段のみでセッションを発行しない(CLI ログインは Web ログインの副作用を持たない — 最小権能)。(3) フロー行の有界化 — 期限切れ行の日和見削除(start の batch 同梱)+ デプロイメント全体の同時 pending 上限(起草値 1,000)。第 2 ラウンド(8dfefdd への追レビュー起点)の追補 2 点: (4) pending 上限は 429 型でなく**退避型**(最古 pending の削除 — 未認証の単一プールを 429 型にすると粘着占有 = クロステナント可用性レバーになるため。退避の発生は H3 アラート・残余は §4-3 に明記・上限値はセルフホスト調整可)。(5) tokenName の文字種制約(制御・bidi 文字の受理時拒否 — §6。表示面共通の保護)と承認ページでの不活性描画(承認文言なりすましの緩和 — 残余は §4-3)。第 3 ラウンド(abda759 への追レビュー起点)の追補 2 点: (6) **退避対象の限定と保護 CAS** — callback は不可逆な副作用(アカウント作成・H1 の招待コード消費)より先に「ブラウザ脚到達」を CAS で記録し、保護済み行は退避対象から外す(退避窓が副作用の確定点より後ろへ伸びない。全行保護済みのときのみ 429 — 保護は行ごとの OAuth 完走を要するため安価に埋められない)。第 4 ラウンド(d4856bf への追レビュー: pullfrog + Bugbot 起点)で callback の処理順を (i) OAuth 完走の確定 → (ii) 保護 CAS → (iii) get-or-create → (iv) 承認ページ、に固定(保護が code 交換より前だと state 自給の非ブラウザ呼び出しで無償保護できて占有ブレーキが壊れる — Bugbot 指摘)し、保護を**べき等**にした(再読込・複数ブラウザの再到達は承認ページの再描画。チケットは到達ごとに置換発行で常に最新 1 枚 — pullfrog 指摘の状態オラクル・未規定分岐の解消)。第 5 ラウンド(7cec846 への追レビュー)で 2 点: get-or-create の結果 user_id をフロー行へ**束縛 CAS**(別アイデンティティの再到達はチケットを回転させず一様エラー — 先着承認者のチケット失効攻撃とフロー乗っ取り〔別アカウントを CLI へ束縛〕の遮断: Bugbot 指摘。H1 は招待コード消費より前に不一致を検査)、「承認できるのは最後に開いたページのみ」を §4-3 の対価として明記(pullfrog 指摘)。第 6 ラウンド(0b81d41 への追レビュー)で flowId の推測不能性(起草値 128-bit — 列挙可能だと束縛先着・保護埋めの起点)を §4-1 (1) に要件化し、別 user_id 先着の詰み分岐(束縛は単調遷移・解除なし)を §4-3 の残余へ追加。第 7 ラウンド(4551224 への追レビュー)で、その詰み分岐の回復経路が **H1 招待制下では成り立たない**(1 番目の到達は NULL → 束縛で不一致検査が存在せず、単回コードが誤アカウント側で消費される)ことを §4-3 に明記 — 運用手当〔招待の再発行〕か消費点の移動〔start 予約 + poll 確定 — 有界化規則と干渉〕かは **H1 側の裁定に送致**(本 PR では決めない)。第 8 ラウンド(b90cf3c への追レビュー — 再掲 nitpick と初回残置分の解消)で 2 点: poll の発行順序を「approved → consumed の CAS が発行を**ゲート**する(勝者のみ発行・敗者は一様拒否。CAS 後の発行失敗は consumed のまま終了 = 半配布を残さない fail-closed)」へ一意化(flowToken は bearer で並行 poll が想定内のため)、「全行保護済みで start が 429」の分岐を §4-3 の残余列挙へ追加(上限件数の OAuth 完走済みフローが要る = 安価に維持できない・TTL で自然回復・H3 アラート)。招待コードの消費はアカウント作成の対価で、以後の再ログインにコードは不要 — フロー期限切れで失われるのは PAT 配布のみ。(7) tokenName 文字種制約の実装オーナー = **H1b**(既存 Schema の締め上げ・非遡及を明記)。いずれも採用方式の骨格(サーバー仲介・ポーリング・単回 CAS)を変えない。
-**(§4b 追補裁定 DH による上書き — 2026-08-31)**: 上記ラウンド記録は歴史としてそのまま残すが、うち (3) 有界化・(4) 退避型上限・(6) 保護 CAS と退避対象の限定・第 5 ラウンドの束縛 CAS(中間状態)・第 7 ラウンドの H1 送致・第 8 ラウンドの「全行保護済み 429」残余は、裁定 DH(無記録 start + 既存アカウント限定)で**前提ごと置換・解消**された。(1) 付与内容表示・(2) セッション非発行・(5) tokenName 保護・callback の「OAuth 完走が先」の順序原則・チケット規律(最新 1 枚・別アイデンティティで回転しない)・flowId エントロピー・poll の CAS ゲートは DH 後も有効。
-- ループバック配送は加法予約(AUTH_SPEC §4-3。start への配送ヒント追加でワイヤ非破壊)
-- `docs/SELF_HOSTING.md` の追随(Enable Device Flow 手順・WAF 表の `/auth/device/exchange` 行・トラブルシュートの `device_flow_disabled`)は H1b 実装 PR 側(検証済み runbook の規律 — 実装のない手順を書かない)
-- authMethod 語彙 `cli_handoff` は起草値(AUDIT_SPEC §3.1 追随済み。最終確定は H1b)
-- ホステッド運用: H1b 実装後、OAuth App の「Enable Device Flow」を無効化する(旧 50 回/時面への敵対消費の遮断 — hosted-design.md §3-4 追記)
-- デバイス間の資格委任(§4 系統 3)は将来のデバイス追加 UX のアイデアとして未着手のまま記録
+**Spec supplements originating in the PR #115 review (2026-08-31 — 3 clarifications within ruling DF's scope)**: (1) the approval page displays, in addition to the userCode, what is granted (tokenName, requested scopes, expiry) (above). (2) The browser leg is only §3's stages 1–3 and issues no session (CLI login carries no Web-login side effects — least capability). (3) Bounding the flow rows — opportunistic deletion of expired rows (bundled into start's batch) + a deployment-wide concurrent-pending cap (draft value 1,000). Round 2 (a follow-up review of 8dfefdd) added 2 more: (4) the pending cap is **eviction-style**, not a 429 (deleting the oldest pending — an unauthenticated single pool under a 429 shape enables sticky occupation = a cross-tenant availability lever. Eviction occurrences produce an H3 alert; the residual is noted in §4-3; the cap is self-host adjustable). (5) The tokenName character-set constraint (rejecting control / bidi characters at acceptance — §6; protection shared across display surfaces) and inert rendering on the approval page (mitigating approval-text impersonation — the residual is in §4-3). Round 3 (a follow-up review of abda759) added 2 more: (6) **narrowing the eviction set + a protection CAS** — the callback records "browser-leg arrival" via CAS before any irreversible side effect (account creation, H1's invite-code consumption), and protected rows leave the eviction set (the eviction window cannot extend past the point where side effects are decided. Only when every row is protected does it 429 — protection requires a completed OAuth per row, so it cannot be filled cheaply). Round 4 (a follow-up review of d4856bf, pullfrog + Bugbot) fixed the callback's processing order as (i) settling the OAuth completion → (ii) the protection CAS → (iii) get-or-create → (iv) the approval page (protecting before the code exchange would let a state-self-supplying non-browser call get protection for free and break the occupation brake — resolving pullfrog's state-oracle and unspecified-branch findings). Round 5 (a follow-up review of 7cec846) added 2 points: a **binding CAS** of the get-or-create result's user_id onto the flow row (a repeat arrival by a different identity gets a uniform error without rotating the ticket — blocking the first-come-approver's ticket-revocation attack and flow hijacking〔binding a different account to the CLI〕: Bugbot finding. H1 checks the mismatch before invite-code consumption), and noting "only the last-opened page can approve" as a §4-3 cost (pullfrog finding). Round 6 (a follow-up review of 0b81d41) made flowId's unguessability (draft value 128-bit — if enumerable it becomes the starting point of binding-first-arrival and protection-stuffing) a requirement in §4-1 (1), and added the dead-end branch of a different user_id arriving first (binding is monotonic, no release) to §4-3's residuals. Round 7 (a follow-up review of 4551224) noted in §4-3 that the dead-end branch's recovery path **does not hold under H1's invite regime** (the first arrival is NULL → no mismatch check exists at binding, and the single-use code is consumed on the wrong-account side) — whether it is handled operationally〔reissuing the invite〕or by moving the consumption point〔reservation at start + settlement at poll — interferes with the bounding rules〕is **referred to the H1 side's ruling** (not decided in this PR). Round 8 (a follow-up review of b90cf3c — resolving a re-raised nitpick and leftovers from round 1) added 2 points: pinning poll's issuance order to "the approved → consumed CAS **gates** issuance (only the winner is issued; losers get a uniform refusal. A post-CAS issuance failure ends as consumed = fail-closed leaving no half-delivery)" (flowToken is a bearer and concurrent polls are expected), and adding the "all rows protected → start returns 429" branch to §4-3's residual enumeration (it takes cap-count OAuth-completed flows = cannot be sustained cheaply, recovers naturally via TTL, H3 alert). Invite-code consumption is the price of account creation; later re-logins need no code — what a flow expiry loses is only the PAT delivery. (7) The tokenName character constraint's implementation owner = **H1b** (noting the tightening of the existing Schema and non-retroactivity). None of these change the adopted skeleton (server-mediated, polling, single-use CAS).
+**(Overwritten by §4b supplementary ruling DH — 2026-08-31)**: the round records above are kept as-is for history, but of them (3) bounding, (4) the eviction-style cap, (6) the protection CAS and narrowing the eviction set, round 5's binding CAS (intermediate state), round 7's referral to H1, and round 8's "all-rows-protected 429" residual were **replaced premise-and-all or resolved** by ruling DH (record-free start + existing-accounts-only). Still valid after DH: (1) displaying what is granted, (2) no session issuance, (5) the tokenName protection, the callback's "OAuth completion first" ordering principle, the ticket discipline (the latest single ticket, not rotated by another identity), flowId entropy, and poll's CAS gate.
+- Loopback delivery stays an additive reservation (AUTH_SPEC §4-3; adding a delivery hint to start keeps the wire non-breaking)
+- `docs/SELF_HOSTING.md` follow-ups (the Enable Device Flow step, the `/auth/device/exchange` row in the WAF table, the `device_flow_disabled` troubleshooting entry) belong to the H1b implementation PR (the verified-runbook discipline — do not write a step that has no implementation)
+- The authMethod vocabulary `cli_handoff` is a draft value (AUDIT_SPEC §3.1 followed up. Final naming is H1b's)
+- Hosted operations: after the H1b implementation, disable "Enable Device Flow" on the OAuth App (closing the old 50/hour surface to adversarial consumption — a hosted-design.md §3-4 addition)
+- Cross-device credential delegation (§4 family 3) remains recorded as an untouched idea for future device-addition UX

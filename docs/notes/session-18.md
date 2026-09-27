@@ -1,155 +1,155 @@
-# セッション 18 メモ(リカバリーコード — CRYPTO_SPEC §8 の製品化。Phase 1 残項目)
+# Session 18 memo (recovery code — productizing CRYPTO_SPEC §8. A remaining Phase 1 item)
 
-日付: 2026-08-09。前提: PR #37(ADR-0014)マージ済みの main から開始。
-スコープ: ROADMAP Phase 1 の「リカバリーコード(保存確認・保管リマインダ等の
-紛失対策 UX 込み — ADR-0014 裁定 4 の第一歩)」。暗号層(§8 の wrap / unwrap +
-テストベクター)は PR #12 で実装済みのため、本セッションは**サーバー保存・配布
-面(AUTH_SPEC §13 起草)+ CLI UX** のみで、`packages/crypto` には触れていない
-(暗号仕様の変更なし)。
+Date: 2026-08-09. Prerequisite: started from main with PR #37 (ADR-0014) merged.
+Scope: ROADMAP Phase 1's "recovery code (including loss-prevention UX such as save confirmation
+and storage reminders — the first step of ADR-0014 ruling 4)". Since the crypto layer (§8's wrap / unwrap +
+test vectors) was implemented in PR #12, this session covers **only the server storage / distribution
+side (drafting AUTH_SPEC §13) + CLI UX**, and `packages/crypto` is untouched
+(no crypto-spec change).
 
-## 1. やったこと
+## 1. What was done
 
-1. **AUTH_SPEC §13(リカバリーブロブ API)起草**: 実装 PR のマージをもって
-   所有者承認とする形式(§5.1 = PR #21 の先例)。要点:
-   - ブロブは user 単位で高々 1 つ。再発行 = 置換 upsert(旧ラップは受理と
-     同時に消える。削除専用エンドポイントは作らない)
-   - **鍵素材管理操作のトークン条件**: 登録・再発行・取得はセッション主体
-     または `*` × admin スコープを含むトークンのみ(既定 device flow トークンは
-     満たす)。窃取されたスコープ限定トークンによるラップ差し替え =
-     可用性攻撃(§12-6 の上書き禁止と同型)と、要監視のブロブ取得を遮断する
-   - **取得レート制限(CRYPTO_SPEC §8 の要件)**: 固定窓 1 時間 5 回。
-     計数はブロブ行に併置(fetch_window_start / fetch_count)、404 は計数外、
-     再発行で窓リセット。ベストエフォートの補助線(暗号境界ではない)
-   - `GET /auth/recovery/status` は登録有無 + 更新時刻のみ(リマインダ用。
-     スコープ条件・レート制限の対象外)
+1. **Drafted AUTH_SPEC §13 (the recovery-blob API)**: in the form where merging the
+   implementation PR constitutes owner approval (§5.1 = the PR #21 precedent). Key points:
+   - At most one blob per user. Reissue = a replacing upsert (the old wrap disappears the moment
+     the new one is accepted. No dedicated delete endpoint)
+   - **Token conditions for key-material management operations**: register / reissue / fetch require
+     a session principal or a token containing `*` × admin scope (the default device-flow token
+     qualifies). Blocks wrap substitution by a stolen scope-limited token =
+     an availability attack (same shape as §12-6's overwrite ban) and blocks fetching of the watch-listed blob
+   - **Fetch rate limit (a CRYPTO_SPEC §8 requirement)**: a fixed window of 5 per hour.
+     The count lives alongside the blob row (fetch_window_start / fetch_count); 404s are not counted;
+     reissue resets the window. A best-effort auxiliary line (not a crypto boundary)
+   - `GET /auth/recovery/status` returns only registration existence + update time (for reminders.
+     Exempt from the scope condition and the rate limit)
 2. **api-schema**: recoveryPut / recoveryGet / recoveryStatus +
-   RecoveryWrapNotFound(404)/ RecoveryRateLimited(429、retryAfterSeconds)。
-   ciphertext は 16 B〜16 KiB の hex(受理ポリシー §13-4)
-3. **server**: D1 `recovery_wraps`(drizzle migration)、RecoveryRepo
-   (upsert / find / recordFetch)、handlers-auth に 3 ハンドラ。
-   保存 suite が `maruhi/v1` 以外なら defect(黙って配布しない)
+   RecoveryWrapNotFound (404) / RecoveryRateLimited (429, retryAfterSeconds).
+   ciphertext is hex of 16 B–16 KiB (acceptance policy §13-4)
+3. **server**: D1 `recovery_wraps` (a drizzle migration), RecoveryRepo
+   (upsert / find / recordFetch), 3 handlers in handlers-auth.
+   A stored suite other than `maruhi/v1` is a defect (not silently distributed)
 4. **CLI**:
-   - `recovery-code.ts`: Base32(RFC 4648)52 シンボル = 4 文字 × 13 グループ。
-     復号側は小文字・空白・ハイフンを吸収、**アルファベット外(0/1/8/9)は推測
-     置換せず拒否**(誤変換は黙った復号失敗になり原因に辿り着けないため)。
-     末尾 4 bit のゼロ詰め検査つき
-   - ブロブの直列化形式(§8 の「CLI 実装時に確定」)= キーチェーンの
-     StoredMasterKey レコードの JSON。復元側は importMasterKeys の自己検証を
-     通してから保存する
-   - `key generate` の後段で自動発行: 表示 → **保存確認(最終グループの
-     再入力、3 回まで)**。登録は確認より先(確認失敗でも再発行でやり直せる
-     状態を先に作る)。確認失敗・登録失敗でも鍵生成は成立し、
-     `maruhi key recovery` を案内する
-   - `key recovery`(発行・再発行。既登録なら「旧コード無効化」を明示)/
-     `key recover`(復元: 認証済み取得 → コード入力 → ローカル復号 →
-     キーチェーン保存。**コード入力の再試行はローカル**でレート制限の窓を
-     消費しない。既存鍵があれば上書き拒否)
-   - **エージェント環境**: コードは鍵素材なので表示を拒否(agent.ts と同じ
-     線引き)。`key generate` では発行をスキップして人間の端末を案内(鍵生成
-     自体は成立)、`key recovery` 単体では拒否
-   - 保管リマインダ: `key show` に recovery 行(未登録なら発行を促す)、
-     login 後に状態別の次の一歩(recover / generate / recovery)を案内
-     (状態確認の失敗はログイン成功を失敗に変えない — 明示の劣化)
-   - CliIo に `promptLine`(対話 1 行入力)を追加。live 実装は TTY では
-     raw mode の非エコー入力(secret: true)、非 TTY は素の 1 行読み
+   - `recovery-code.ts`: Base32 (RFC 4648) 52 symbols = 4 chars × 13 groups.
+     The decode side absorbs lowercase / spaces / hyphens, but **does not guess-substitute
+     out-of-alphabet characters (0/1/8/9) — it rejects** (a mis-substitution would become a silent decryption
+     failure with no traceable cause). Includes a trailing-4-bit zero-padding check
+   - The blob serialization format (§8's "settled at CLI implementation time") = the JSON of the keychain's
+     StoredMasterKey record. The restoring side stores it only after passing importMasterKeys'
+     self-verification
+   - Auto-issuance after `key generate`: display → **save confirmation (re-enter the
+     last group, up to 3 tries)**. Registration precedes confirmation (build the state where
+     reissue can retry even if confirmation fails). Key generation succeeds even if
+     confirmation or registration fails, and `maruhi key recovery` is suggested
+   - `key recovery` (issue / reissue; if already registered it states "the old code is invalidated") /
+     `key recover` (restore: authenticated fetch → code entry → local decrypt →
+     keychain store. **Code-entry retries are local** and do not consume the rate-limit
+     window. Refuses to overwrite an existing key)
+   - **Agent environments**: the code is key material, so display is refused (the same
+     line as agent.ts). `key generate` skips issuance and points to a human terminal (key generation
+     itself succeeds); standalone `key recovery` is refused
+   - Storage reminders: a recovery row in `key show` (prompts issuance if unregistered);
+     after login, guidance to the state-dependent next step (recover / generate / recovery)
+     (a status-check failure must not turn a successful login into a failure — explicit degradation)
+   - Added `promptLine` (interactive single-line input) to CliIo. The live implementation uses
+     raw-mode non-echo input (secret: true) on a TTY and a plain line read on non-TTY
 
-## 2. 実装の細部
+## 2. Implementation details
 
-- **レート制限の設計**: 読み → 条件付き更新の 2 文で、並行リクエストでは計数が
-  僅かに超過しうる(仕様に明記)。位置づけは「認証 + 高エントロピーコードの
-  二重防御の補助線 + 検出時間稼ぎ」であり、D1 の atomic batch 化は複雑さに
-  見合わないと判断
-- **status ハンドラを 403 対象にしない理由**: ブロブを運ばず、CLI が認証のたびに
-  呼ぶリマインダの前提になるため
-- **fallow 対応**: keygen / recover の「既存鍵の上書き拒否」プロローグが
-  クローン検出されたため `session.ts` の `ensureNoStoredMasterKey` へ抽出。
-  raw mode 入力の文字処理は CRAP 閾値(未テストの live 層)に触れたため
-  文字集合の Set + 分岐削減で分割
-- **サーバーテストの注意**: 同名 device flow トークンの再発行はローテーションで
-  旧トークンを失効させる(§6)ため、同一ユーザーの別主体が要るテストは
-  セッション経由で登録した
+- **Rate-limit design**: read → conditional update in 2 statements; concurrent requests can
+  slightly over-count (noted in the spec). Its position is "an auxiliary line on top of the
+  authentication + high-entropy-code double defense + buying detection time", so D1 atomic batching
+  was judged not worth the complexity
+- **Why the status handler is not subject to 403**: it carries no blob, and the CLI calls it on every
+  authentication as the premise of the reminders
+- **fallow handling**: keygen / recover's "refuse to overwrite an existing key" prologue was
+  clone-detected, so it was extracted into `session.ts`'s `ensureNoStoredMasterKey`.
+  The raw-mode input's character handling touched the CRAP threshold (the untested live layer), so it was
+  split via a character-set Set + fewer branches
+- **Server-test caveat**: reissuing a same-named device-flow token revokes the old one on rotation
+  (§6), so tests needing a different principal for the same user register via a session
 
-## 3. スコープ外(申し送り)
+## 3. Out of scope (handoffs)
 
-- **監査イベント**(auth.recovery_blob_fetched / auth.recovery_code_reissued =
-  AUDIT_SPEC §3.1): D1 側監査ログ基盤(§3.1〜§3.2 の保存先)が未実装のため
-  記録していない。基盤導入と同時に実装する(AUTH_SPEC §13-5 に明記)
-- 印刷用テンプレート等のリッチな保管 UX は将来(v1 はコード表示 + 保存確認 +
-  リマインダ)。封印バックアップ・パスキー PRF は ADR-0014 / ROADMAP 将来のまま
-- session-11 §5 の残り(公開設定エンドポイント / pull メタデータのみモード)・
-  チェーン追記系コマンド・crypto test/checks の整理候補(session-17 §4)は
-  未着手のまま有効
+- **Audit events** (auth.recovery_blob_fetched / auth.recovery_code_reissued =
+  AUDIT_SPEC §3.1): not recorded because the D1-side audit-log foundation (§3.1–§3.2's storage) is
+  unimplemented. Implemented together with the foundation (noted in AUTH_SPEC §13-5)
+- Richer storage UX such as a printable template is future work (v1 is code display + save confirmation +
+  reminders). Sealed backup / passkey PRF remain per ADR-0014 / ROADMAP future
+- The rest of session-11 §5 (the public-settings endpoint / the pull metadata-only mode),
+  the chain-append commands, and the crypto test/checks organization candidate (session-17 §4) remain
+  valid and untouched
 
-## 4. セルフレビューと修正(2 コミット目)
+## 4. Self-review and fixes (the 2nd commit)
 
-初回コミット後のレビューで CLI 対話レイヤに 5 件の指摘。サーバー層・Base32 は
-指摘なし。すべて修正済み:
+A post-first-commit review produced 5 findings on the CLI interaction layer. None on the
+server layer or Base32. All fixed:
 
-1. **コード表示を stderr へ**(最重要): 表示ブロックが stdout でプロンプトが
-   stderr という不整合は、`key generate > log` で鍵素材が平文ファイルに残り、
-   かつ画面にコードが見えないまま保存確認だけが出る形だった。発行の儀式
-   (置換警告・コード・案内・確認完了)を丸ごと stderr へ移動
-2. **非 TTY の行リーダー共有**: readline を都度作って閉じる形は、閉じた
-   インスタンスがバッファ済みの次行を捨てるため、複数プロンプト
-   (復元コードの再入力等)で 2 行目以降が消えた。未消費分を保持する
-   単一バッファの `makeStdinLineReader` に置換(既終端は `readableEnded` で
-   検出 — 'end' は一度しか発火しない)
-3. **`key show` のオフライン動作**: recoveryStatus の失敗でコマンド全体が
-   落ちるリグレッションを、「確認できませんでした」の明示表示つき劣化に変更
-   (本務 = ローカル鍵の表示は成立させる)
-4. **raw mode 入力の頑健化**: end/error で settle しない(ハング)・Ctrl+D が
-   不可視の入力として連結される・矢印キーのエスケープ列が入力を黙って壊す、を
-   修正(エスケープ列は終端英字まで無視、制御文字は無視、Ctrl+D = 中断)
-5. **login の案内の無言 catch**: `Effect.catch(() => Effect.void)` は
-   CLAUDE.md の「catch で無言に飲まない」に違反。スキップした旨を 1 行
-   明示する形へ(コマンドの成否は変えない)
+1. **Code display moved to stderr** (most important): the inconsistency of the display block on
+   stdout while prompts were on stderr meant `key generate > log` left key material in a
+   plaintext file and showed only the save confirmation with no code on screen. The issuance
+   ceremony (replacement warning, the code, guidance, confirmation complete) was moved wholesale to stderr
+2. **Sharing the line reader on non-TTY**: creating and closing a readline per prompt
+   dropped buffered next lines when the closed instance discarded them, so a second or later line
+   vanished across multiple prompts (such as re-entering the restore code). Replaced with a single-buffer
+   `makeStdinLineReader` that retains unconsumed input (an already-ended stream is detected via
+   `readableEnded` — 'end' fires only once)
+3. **Offline behavior of `key show`**: the regression where a recoveryStatus failure took down
+   the whole command was changed to degrade with an explicit "could not check" line
+   (the core duty = showing the local key still succeeds)
+4. **Hardening raw-mode input**: not settling on end/error (a hang), Ctrl+D being
+   concatenated as invisible input, and arrow-key escape sequences silently corrupting input were
+   fixed (escape sequences are ignored through the terminating letter, control chars ignored, Ctrl+D = abort)
+5. **Silent catch in login guidance**: `Effect.catch(() => Effect.void)` violates
+   CLAUDE.md's "do not swallow errors silently in catch". Changed to a form that prints one line
+   saying it was skipped (the command's success is unaffected)
 
-live.ts の入力プリミティブは「テスト用に公開」(repos.ts の isUniqueConflict の
-先例)し、live-io.test.ts で 7 件の単体テストを追加(行の持ち越し・CRLF・
-改行なし終端・EOF ハング・Backspace・エスケープ列・Ctrl+C/D)。
+live.ts's input primitives were "exposed for testing" (the repos.ts isUniqueConflict
+precedent), and live-io.test.ts gained 7 unit tests (line carry-over, CRLF,
+EOF without newline, EOF hang, Backspace, escape sequences, Ctrl+C/D).
 
-PR 上のボットレビューからさらに 2 件を反映:
+Two more items were folded in from the bot review on the PR:
 
-6. **未知 suite の検査を取得計数より先に**(Bugbot。Cursor Autofix も同一修正を
-   push — リベースで統合): 配布に至らない defect 応答に固定窓を消費させない。
-   未知 suite 行を D1 直接更新で作る回帰テストを追加(500 + fetch_count 不変)
-7. **ブロブ取得の CSRF ヘッダー(Security Agent)**: `GET /auth/recovery` は
-   状態(取得計数)を持つ GET で、Lax セッションクッキーはクロスサイトの
-   トップレベル遷移でも同送される — 第三者サイトが被害者の取得窓(5/h)を
-   消費できた。セッション主体に書き込み系と同じ `x-maruhi-csrf: 1` を要求
-   (AUTH_SPEC §13-2 に追記。Bearer 主体は対象外)
+6. **The unknown-suite check moved before fetch counting** (Bugbot; Cursor Autofix also
+   pushed the identical fix — integrated via rebase): a defect response that never reaches distribution
+   must not consume the fixed window. Added a regression test that creates an unknown-suite row via
+   direct D1 update (500 + fetch_count unchanged)
+7. **A CSRF header for blob fetch (Security Agent)**: `GET /auth/recovery` is
+   a GET carrying state (the fetch count), and a Lax session cookie is sent even on
+   cross-site top-level navigation — a third-party site could consume the victim's fetch window (5/h).
+   Session principals now require the same `x-maruhi-csrf: 1` as write operations
+   (noted in AUTH_SPEC §13-2. Bearer principals are out of scope)
 
-pullfrog レビュー(設計確認 3 件 + nit 2 件、ブロッカーなし)への裁定:
+Rulings on the pullfrog review (3 design confirmations + 2 nits, no blockers):
 
-8. **`key recover` にもエージェント拒否を追加(境界の対称化)**: コードは
-   鍵素材であり、エージェント越しの stdin に打ち込ませる経路(入力は
-   エージェントのセッション層から読める)も作らない。発行(表示)側と同じ
-   線引きで、復元は人間の対話端末で行う。ブロブ取得(要監視イベント)にも
-   到達させない
-9. **`key generate` の非対話・オフライン契約(意図的、と明文化)**: 発行の
-   儀式(コード表示 + 保存確認)は対話端末前提。非対話・オフラインでは
-   exit 1 だが、**鍵生成そのものは成立しており**、エラーメッセージが
-   `maruhi key recovery` での再開を案内する(再実行の「既に存在します」は
-   鍵の上書き拒否として正しい)。非 TTY での確認自動スキップは採らない —
-   確認なしの発行を成功と報告すると「保存していないのに登録済み」の状態を
-   量産する。CI で master 鍵を生成する正当なフローは存在しない
-10. **中断判定の型付け(nit)**: `error.message === "interrupted"` の文字列
-    一致を `PromptInterruptedError` クラスの instanceof 判定へ
-11. **無監査の窓(確認のみ)**: 鍵素材操作の監査記録が D1 監査基盤導入まで
-    存在しない間は §13-5 とおり申し送り。本 PR のマージ = 所有者がこの間を
-    明示的に許容した記録とする。nit のもう 1 件(suite 検査と計数の順序)は
-    §4-6 で対応済み(レビューは 1316cc9 時点のため既知)
+8. **Added an agent refusal to `key recover` too (symmetrizing the boundary)**: the code is
+   key material, and a path where it is typed into agent-mediated stdin (input is
+   readable from the agent's session layer) is not built either. Same line as the issuance (display)
+   side: restoration happens on a human interactive terminal. It also cannot reach
+   the blob fetch (a watch-listed event)
+9. **`key generate`'s non-interactive / offline contract (codified as intentional)**: the issuance
+   ceremony (code display + save confirmation) assumes an interactive terminal. Non-interactive / offline
+   exits 1, but **the key generation itself has succeeded**, and the error message
+   points to resuming with `maruhi key recovery` (re-running's "already exists" is
+   correct as a key-overwrite refusal). Auto-skipping confirmation on non-TTY was not adopted —
+   reporting an unconfirmed issuance as success mass-produces the "registered but not saved" state.
+   There is no legitimate flow that generates a master key in CI
+10. **Typing the interruption check (nit)**: the string match on
+    `error.message === "interrupted"` became an instanceof check against the `PromptInterruptedError` class
+11. **The unaudited window (confirmation only)**: while no audit records of key-material
+    operations exist until the D1 audit foundation lands, it stays handed off per §13-5. This PR's
+    merge = the record that the owner explicitly accepted this window. The other nit (the order of
+    suite check vs counting) was handled in §4-6 (the review was at 1316cc9, so already known)
 
-## 5. テスト結果
+## 5. Test results
 
-- server(vitest-pool-workers): recovery.test.ts 15 件(認可 2 主体 / スコープ
-  条件 403 / 置換 / レート制限と窓リセット / 404 計数外 / 未知 suite = 500 +
-  窓不消費 / セッション GET の CSRF 403 + 窓不消費 / status / Schema 400 /
-  401)を含め全通過
-- cli(Vitest): recovery.test.ts 14 件(Base32 roundtrip・拒否系、発行 →
-  表示コードで実復号できる roundtrip、保存確認失敗、エージェントスキップ /
-  発行拒否 / 入力拒否、復元成功・誤コード 3 回・404・429・上書き拒否)+
-  live-io.test.ts 7 件 + login の案内 3 件 + key show の recovery 行 3 件。
-  既存テストは新フローに追随
-- `bun run check`(oxfmt / oxlint / tsc / ImportLint / fallow audit / React
-  Doctor / 全テスト)green
+- server (vitest-pool-workers): all pass including recovery.test.ts's 15 tests (2 authorization
+  principals / scope-condition 403 / replacement / rate limit and window reset / 404 not counted /
+  unknown suite = 500 + window not consumed / session GET's CSRF 403 + window not consumed / status /
+  Schema 400 / 401)
+- cli (Vitest): recovery.test.ts's 14 tests (Base32 roundtrip + rejections, a roundtrip where the issued →
+  displayed code actually decrypts, save-confirmation failure, agent skip /
+  issuance refusal / input refusal, restore success, wrong code ×3, 404, 429, overwrite refusal) +
+  live-io.test.ts's 7 + login guidance 3 + key show recovery row 3.
+  Existing tests followed the new flow
+- `bun run check` (oxfmt / oxlint / tsc / ImportLint / fallow audit / React
+  Doctor / all tests) green

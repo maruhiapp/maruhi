@@ -1,121 +1,121 @@
-# セッション 22 メモ(Phase 2 計画 + R1〜R3 設計探索 + 仕様起草)
+# Session 22 memo (Phase 2 planning + R1–R3 design exploration + spec drafting)
 
-日付: 2026-08-12。前提: PR #55 + LICENSE 一式(ADR-0003 確定)マージ済みの main。
-ブランチ: `claude/maruhi-phase-2-features-yzi01b`。
-スコープ: Phase 2「機能開発」の計画裁定(所有者承認済み)、R1〜R3 の設計探索
-(4 巡 — 各巡で上位互換案が出た)、その結果の仕様起草(CRYPTO_SPEC 0.5-draft /
-AUTH_SPEC 0.9-draft / AUDIT_SPEC 0.7-draft)。**公開系タスク(SECURITY.md・
-脅威モデル・Deploy ボタン・maruhi.dev・商標)には着手しない(所有者裁定)**。
+Date: 2026-08-12. Prerequisite: main with PR #55 + the LICENSE set (ADR-0003 settled) merged.
+Branch: `claude/maruhi-phase-2-features-yzi01b`.
+Scope: the plan ruling for Phase 2 "feature development" (owner-approved), the R1–R3 design exploration
+(4 rounds — each round produced an upward-compatible option), and the resulting spec drafting (CRYPTO_SPEC 0.5-draft /
+AUTH_SPEC 0.9-draft / AUDIT_SPEC 0.7-draft). **The publication-side tasks (SECURITY.md,
+threat model, Deploy button, maruhi.dev, trademark) are not started (owner ruling)**.
 
-## 1. 承認済みの計画(Wave 構成と PR 分割)
+## 1. The approved plan (Wave structure and PR splits)
 
-- **Wave 1(裁定不要・即着手・ドッグフーディング直効)**:
-  PR-1 `maruhi env rotate`(ローテーション CLI。サーバー複合は実装済み、
-  再暗号化 push の中断復旧込み)/ PR-2 パリティチェック `maruhi env diff`
-  (メタデータのみ pull ×2 の検証済みステートメント比較)/
-  PR-3 リリース基盤(タグ駆動 CI、bun compile バイナリ、チェックサム、
-  npm provenance)/ PR-4 install script + brew tap
-- **Wave 2(本仕様 PR の承認後)**:
-  A = ワークロードリース(A1 サーバー鍵基盤 + grant/revoke CLI + サーバー宛
-  ラップ、A2 OIDC 検証 + lease エンドポイント + 監査、A3 CLI の CI モード +
-  setup-maruhi action)/ B = チーム共有(B1a 招待 API + 受諾、B1b メンバー管理
-  CLI + バックフィル + remove→全環境ローテ強制、B2 要ローテーション検出)/
-  C1 = 監査読み取り API + `maruhi audit`
-- **Wave 3**: D = ヘッドゴシップ + 環境マニフェスト(CRYPTO_SPEC 未決 #12。
-  設計文書 → 裁定 → 仕様 → ベクター → 実装)/ W = Web ダッシュボード
-  (W0 画面設計から)/ G = docs サイト(Blume)
-- 依存: B1b は PR-1(rotate)に依存。B2 の revoke_server 変種は A 実装後に
-  有効化。W2(監査 UI)は C1 に依存。PR-3/4 は A3(CI での CLI 導入)の前提部品
+- **Wave 1 (no ruling needed, start immediately, direct dogfooding benefit)**:
+  PR-1 `maruhi env rotate` (the rotation CLI; the server-side decrypt path is implemented,
+  including resuming an interrupted re-encryption push) / PR-2 the parity check `maruhi env diff`
+  (comparing verified statements from 2 metadata-only pulls) /
+  PR-3 release foundation (tag-driven CI, bun compile binaries, checksums,
+  npm provenance) / PR-4 install script + brew tap
+- **Wave 2 (after this spec PR is approved)**:
+  A = workload leases (A1 server-key foundation + grant/revoke CLI + server-bound
+  wraps, A2 OIDC verification + the lease endpoint + audit, A3 the CLI's CI mode +
+  the setup-maruhi action) / B = team sharing (B1a invite API + acceptance, B1b member-management
+  CLI + backfill + remove → forced all-environment rotation, B2 rotation-needed detection) /
+  C1 = the audit read API + `maruhi audit`
+- **Wave 3**: D = head gossip + the environment manifest (CRYPTO_SPEC undecided #12;
+  design doc → ruling → spec → vectors → implementation) / W = the Web dashboard
+  (starting from W0 screen design) / G = the docs site (Blume)
+- Dependencies: B1b depends on PR-1 (rotate). B2's revoke_server variant activates after A is
+  implemented. W2 (the audit UI) depends on C1. PR-3/4 are prerequisite parts for A3 (CLI installation in CI)
 
-## 2. R1〜R3 の設計探索の結論(4 巡の要点)
+## 2. Conclusions of the R1–R3 design exploration (key points of the 4 rounds)
 
-### R1: CI 連携 = ワークロードリース(OIDC)
+### R1: CI integration = workload leases (OIDC)
 
-- **push 型 GH secrets 同期を却下**: (1) GH secrets 書き込み API は libsodium
-  sealed box 必須 = 暗号プリミティブの絶対規則に抵触する新依存、(2) PAT の
-  サーバー常時保管(サーバー侵害の爆発半径が repo secrets 書き込みに広がる)、
-  (3) GitHub への平文複製、(4) サーバーが全値を復号する
-- **採用 = OIDC リース型**: CI ジョブが一時 X25519 鍵を生成 → OIDC トークンで
-  lease エンドポイント → サーバーは自分宛ラップを開封し DEK を一時鍵へ再ラップ
-  (**値は復号しない**)。GitHub 側の保存物ゼロ。CI はチェーン + 値署名 +
-  コミットメントを検証(genesis を CI 設定に固定)= 侵害サーバーの偽値注入も
-  検出可能。Phase 3(エージェントリース)の土台を兼ねる
-- **トラストポリシーはチェーン束縛**(grant_server payload の lease_policy)。
-  **issuer 汎用形式**(issuer_url + audience + claim 完全一致制約)で固定し、
-  v1 の有効化は GitHub のみ。合意規則は構造のみを固定し評価意味論は AUTH_SPEC 側
-  → GitLab / CircleCI / k8s 等の追加はチェーン形式変更なし(grandfathering 不要)。
-  **公開前の今が payload 形式を確定できる最後の窓**(§6.2 の 2026-08-03 注記の解消)
-- 再 grant 規則は**二層化**: 開示スコープ = 拡大のみ(縮小は revoke + 全環境
-  ローテ)、lease_policy = 自由改訂(ACL であり既知 DEK 集合を変えない)
-- 付随: サーバー鍵の一意性(`duplicate-server-key`)も同じ窓で合意規則化。
-  grant CLI は環境明示必須(最小開示の既定)+ サーバー鍵 FP 照合の儀式。
-  push 型は実需(`${{ secrets.X }}` を要するサードパーティ action)が出た時の
-  libsodium 例外裁定つきアドオンとして保留
+- **Push-style GH secrets sync rejected**: (1) the GH secrets write API requires a libsodium
+  sealed box = a new dependency violating the absolute crypto-primitive rule, (2) keeping a PAT
+  resident on the server (a server compromise's blast radius extends to repo-secrets writes),
+  (3) a plaintext copy into GitHub, (4) the server decrypting every value
+- **Adopted = the OIDC lease form**: a CI job generates an ephemeral X25519 key → presents an OIDC token to
+  the lease endpoint → the server opens its own-bound wrap and re-wraps the DEK to the ephemeral key
+  (**values are never decrypted**). Zero stored material on the GitHub side. CI verifies chain + value signatures +
+  commitments (pinning genesis in the CI configuration) = even a compromised server injecting fake values is
+  detectable. Also serves as the foundation for Phase 3 (agent leases)
+- **The trust policy is chain-bound** (grant_server payload's lease_policy).
+  Pinned in the **generic issuer form** (issuer_url + audience + claim exact-match constraints), and
+  v1 enables GitHub only. Consensus rules pin only the structure; evaluation semantics live on the AUTH_SPEC side
+  → adding GitLab / CircleCI / k8s etc. needs no chain-format change (no grandfathering).
+  **Now, before publication, is the last window to settle the payload format** (resolves §6.2's 2026-08-03 note)
+- The re-grant rule is **two-layered**: disclosure scope = widen-only (narrowing goes through revoke + all-environment
+  rotation), while lease_policy = freely revisable (it is an ACL and does not change the known-DEK set)
+- Adjacent: server-key uniqueness (`duplicate-server-key`) is also made a consensus rule in the same window.
+  The grant CLI requires an explicit environment (the least-disclosure default) + a server-key-FP verification
+  ceremony. The push form stays shelved as an add-on with a libsodium exception ruling when real demand
+  (third-party actions needing `${{ secrets.X }}`) appears
 
-### R2: 招待 = 一本化(公開鍵ディレクトリは作らない)
+### R2: Invites = unified (no public-key directory)
 
-- **ディレクトリ却下**: user_id を知るだけで相手の合意なく add_member できる
-  「同意なき追加」の構造 + 新しい信頼オブジェクト。共有済みチェーンが既に
-  検証済みディレクトリの役割を果たす
-- **採用**: 登録済み・未登録とも「招待 → 受諾 → add_member」の単一機構。
-  受諾は invite token ハッシュへの署名を伴う(リンク横取りを「静かな鍵すり替え」
-  から「うるさい競合」へ格下げ)。**FP 確認は相互**(片方向だと、偽招待で
-  被害者を攻撃者所有プロジェクトへ参加させ本物のシークレットを push させる
-  逆方向フィッシングが残る — 攻撃者は自プロジェクトの正当な owner であり
-  チェーン検証は警報を出さない)
-- **招待リンクアンカー**: リンクの URL フラグメント(サーバー不可視)に
-  genesis + 招待者の検証済みヘッド + 招待者 FP を埋める → 新メンバー(床なし
-  初回同期 = §14.3-3 の支配的残余)への巻き戻し・fork 配布を招待経路で検出
-  可能に。**リポジトリアンカー**(git にコミットする非機密アンカーファイル)は
-  同じ発想の CI 版 — どちらも未決 #4 の部分的実現
-- FP のワード表示は BIP39 英語 12 語(128-bit 維持。短縮コードは攻撃者が
-  照合の一方の鍵を選べるため第二原像探索への強度低下 = 却下。ロケール非依存)
+- **Directory rejected**: a structure of "unconsented addition" where knowing a user_id lets you
+  add_member without their agreement + a new trust object. An already-shared chain already
+  plays the role of a verified directory
+- **Adopted**: a single mechanism "invite → accept → add_member" for both registered and
+  unregistered users. Acceptance carries a signature over the invite token's hash (demoting link
+  interception from "a silent key substitution" to "a noisy race"). **FP confirmation is mutual** (one-directional
+  leaves the reverse-phishing path where a fake invite has the victim join an attacker-owned
+  project and push real secrets — the attacker is a legitimate owner of their own project, so
+  chain verification raises no alarm)
+- **Invite-link anchor**: the link's URL fragment (invisible to the server) embeds
+  genesis + the inviter's verified head + the inviter's FP → rewinds and fork distributions
+  aimed at the new member (no floor, first sync = §14.3-3's dominant residual) become detectable
+  via the invite path. **The repository anchor** (a non-secret anchor file committed to git) is
+  the same idea for CI — both are partial realizations of undecided #4
+- The FP word display is 12 BIP39 English words (128-bit preserved. A shortened code lets the attacker
+  choose one of the compared keys = weaker against second-preimage search = rejected. Locale-independent)
 
-### R3: 監査読み取り = 可視性クラス
+### R3: Audit reading = visibility classes
 
-- チェーンミラー系を admin に絞るのは**見せかけの防御**(全メンバーが
-  チェーン同期で同じ事実を検証済み)。線引きの原則 =
-  「**人の行動の監視情報か、開示機構の作動か**」
-- クラス 1(全メンバー): chain.* / メタ操作系 / var.version_pushed /
-  **server.***(開示行使を知る利害は全員にある)/ 要ローテーションフラグ /
-  本人が actor の行。クラス 2(admin+): var.read / dek.* / invite.* /
-  他人の行の横断検索
-- server.lease_denied は login_failed と同じ固定窓上限で記録(プローブの可視化)
+- Restricting the chain-mirror family to admins is **security theater** (every member already
+  verifies the same facts via chain sync). The line-drawing principle =
+  "**monitoring information about people's actions, or operation of the disclosure mechanism**"
+- Class 1 (all members): chain.* / meta-operation family / var.version_pushed /
+  **server.*** (everyone has a stake in knowing disclosure exercises) / rotation-needed flags /
+  rows where oneself is the actor. Class 2 (admin+): var.read / dek.* / invite.* /
+  cross-cutting search of others' rows
+- server.lease_denied is recorded under the same fixed-window cap as login_failed (making probes visible)
 
-### 主な却下案(再検討の記録)
+### Main rejected options (recorded for reconsideration)
 
-proxy re-encryption(標準外プリミティブ)/ 事前リースプール・CI 恒久鍵
-(静的資格情報の再導入)/ 招待リンクへの鍵素材の埋め込み(リンク漏洩 = 鍵漏洩)/
-TOFU 既定(ADR-0014 の指紋確認の儀式に反する)/ 短縮確認コード /
-監査読み取りのイベント化・集計限定ビュー(Q4 インシデント対応を壊す)
+Proxy re-encryption (a nonstandard primitive) / pre-leased pools or CI-resident keys
+(reintroducing static credentials) / embedding key material in invite links (a link leak = a key leak) /
+TOFU by default (contradicts ADR-0014's fingerprint-confirmation ceremony) / shortened confirmation codes /
+eventifying audit reads or aggregate-only views (breaks Q4 incident response)
 
-## 3. 起草した仕様改訂(本ブランチ、マージをもって所有者承認)
+## 3. The drafted spec revisions (this branch; merge constitutes owner approval)
 
-- **CRYPTO_SPEC 0.5-draft**: §3 FP ワード表示 / §6.2 lease_policy 拡張 +
-  `duplicate-server-key` / §6.3 再 grant 二層化 + 帯域外アンカー /
-  §6.5 招待受諾署名(未決 #9 解消)/ §7・§9 サーバー宛ラップの線引き解消 /
-  §9.1 ワークロードリース / §11 ベクター追補 / §13 #4 部分実現 / §14.3-3 追記
-- **AUTH_SPEC 0.9-draft**: §4 serverKeyFingerprintHex / §11-1 招待への参照 /
-  §12-4・§12-6 サーバー鍵宛ラップ(複合完全集合 + grant 直後バックフィル)/
-  §14 リース API / §15 招待 API
-- **AUDIT_SPEC 0.7-draft**: §3.2 invite.*(D1 同一 batch)/ §3.5 リース系
-  イベント(value_decrypted は予約化)/ §4.1 変種更新 / §6 可視性クラス
-  (未決 #1 解消)/ §7 読み取り API の形
-- レート制限・上限値は起草値(レビューで調整)。実装用テストベクターは
-  仕様承認後・実装より先にコミット(§11 の一覧)
+- **CRYPTO_SPEC 0.5-draft**: §3 FP word display / §6.2 lease_policy extension +
+  `duplicate-server-key` / §6.3 two-layered re-grant + out-of-band anchors /
+  §6.5 invite-acceptance signature (resolves undecided #9) / §7・§9 resolving the line on server-bound wraps /
+  §9.1 workload leases / §11 vector supplement / §13 #4 partial realization / §14.3-3 addition
+- **AUTH_SPEC 0.9-draft**: §4 serverKeyFingerprintHex / §11-1 references to invites /
+  §12-4・§12-6 server-key-bound wraps (the complete decryption set + backfill right after grant) /
+  §14 the lease API / §15 the invite API
+- **AUDIT_SPEC 0.7-draft**: §3.2 invite.* (same D1 batch) / §3.5 the lease-family
+  events (value_decrypted reserved) / §4.1 variant updates / §6 visibility classes
+  (resolves undecided #1) / §7 the read API's shape
+- Rate limits and cap values are draft values (adjusted in review). Implementation test vectors are
+  committed after spec approval and before implementation (the §11 list)
 
-## 4. 実装への申し送り(別セッション向けハンドオフ)
+## 4. Handoff for implementation (a handoff to other sessions)
 
-- **本仕様 PR の承認(マージ)が Wave 2 の前提**。Wave 1(PR-1〜4)は仕様に
-  依存せず着手可能
-- 各実装セッションの読む順: 本ノート → CLAUDE.md → CRYPTO_SPEC
-  (§6.2 / §6.3 / §6.5 / §9.1)→ AUTH_SPEC(§12 / §14 / §15)→
-  AUDIT_SPEC(§3.5 / §6 / §7)→ ROADMAP
-- crypto 変更分(lease-wrap / invite-accept-signature / dek-wrap 拡張 /
-  chain-entries 再生成)は**テストベクター先行 + 人間レビュー必須**
-- 人間タスク(オーナー): brew tap 用リポジトリの作成(PR-4)、npm org の
-  publish 権限確認(PR-3)、ドッグフーディング環境の OAuth App 登録
-  (session-19 §6 — 継続)
-- 未決のまま維持: #12(ヘッドゴシップ + 環境マニフェスト — Wave 3 の頭で
-  設計文書から)、#10(サーバー鍵ローテーション手順 — リース仕様はこれに
-  依存しない形で起草済み)、監査 var.read 集約(#4 — ドッグフーディング実測後)
+- **This spec PR's approval (merge) is Wave 2's prerequisite**. Wave 1 (PR-1–4) can start without
+  depending on the spec
+- Reading order for each implementation session: this note → CLAUDE.md → CRYPTO_SPEC
+  (§6.2 / §6.3 / §6.5 / §9.1) → AUTH_SPEC (§12 / §14 / §15) →
+  AUDIT_SPEC (§3.5 / §6 / §7) → ROADMAP
+- The crypto-side changes (lease-wrap / invite-accept-signature / dek-wrap extension /
+  chain-entries regeneration) are **test-vectors-first + mandatory human review**
+- Human tasks (owner): creating the brew-tap repository (PR-4), confirming publish
+  permission on the npm org (PR-3), registering the OAuth App for the dogfooding environment
+  (session-19 §6 — continuing)
+- Kept undecided: #12 (head gossip + the environment manifest — starting from a design doc at the head of
+  Wave 3), #10 (the server-key rotation procedure — the lease spec was drafted not to
+  depend on it), audit var.read aggregation (#4 — after dogfooding measurements)

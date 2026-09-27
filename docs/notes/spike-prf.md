@@ -1,97 +1,97 @@
-# K0 スパイク: パスキー PRF の取得経路(localhost ページ + CLI リスナー)
+# K0 spike: obtaining a passkey PRF (a localhost page + a CLI listener)
 
-Status: 2026-09-12 — KL3 K5(パスキー PRF)の前置スパイク。**環境内で確かめられる範囲**(Bun のリスナー / Chromium の仮想認証器)だけを実施した。実機でしか確かめられない項目(ブラウザ × 認証器の対応表、Codespaces / WSL のポート転送)は所有者の後回し K0 の対象であり、**本ノートでは「未検証」として列挙するだけ**である(integration-options.md 補足 19-7 末尾の 2026-09-12 裁定)。実装の裁定録は同 補足 20。
+Status: 2026-09-12 — the pre-spike of KL3 K5 (passkey PRF). Only **the scope checkable inside this environment** (a Bun listener / Chromium's virtual authenticators) was performed. Items that can only be checked on real hardware (the browser × authenticator support table, port forwarding under Codespaces / WSL) belong to the owner's deferred K0 and are **only enumerated here as "unverified"** (the 2026-09-12 ruling at the end of integration-options.md supplement 19-7). The implementation ruling record is supplement 20 of the same file.
 
-使い捨てコード(リポジトリに入れない): Bun 上の `node:http` リスナー、Playwright(`apps/site` の devDependency を絶対パスで借用。CLI に依存を足していない)+ 同梱 Chromium の CDP `WebAuthn.addVirtualAuthenticator`。
+Throwaway code (not committed to the repository): a `node:http` listener on Bun, Playwright (borrowed by absolute path from `apps/site`'s devDependencies — no dependency was added to the CLI) + the bundled Chromium's CDP `WebAuthn.addVirtualAuthenticator`.
 
-## 0. 結論(先に全体像)
+## 0. Conclusion (the big picture first)
 
-| 項目 | 結果 | 検証の種別 |
+| Item | Result | Verification status |
 |---|---|---|
-| Bun 1.4.0 上の `node:http` で `127.0.0.1:0`(乱数ポート)を聞き、`server.address().port` を得る | 動く | **検証済み**(環境内) |
-| URL パスのワンタイムトークン / `Host` 完全一致 / `Origin` 完全一致 / 1 POST で消費 / 2 回目は 404 / タイムアウトで閉じる / 開いている接続を切って `close` | すべて期待どおり(curl で各失敗形を確認) | **検証済み**(環境内) |
-| CSP `default-src 'none'; script-src 'self'; …` の下で、別ファイルの `app.js` が動く(inline script なし) | 動く | **検証済み**(Chromium 141) |
-| `127.0.0.1` に bind したリスナーへ `http://localhost:<port>/` でブラウザが接続し、**rpId = `localhost`** で `create` / `get` が成立する | 成立(IPv4 のみの環境) | **検証済み**(Chromium 141 + 仮想認証器)/ **::1 のある環境は未検証**(下記 §3) |
-| PRF 拡張: `get` の `prf.eval.first = prf_salt` → `results.first`(32 バイト)。同じ salt で決定的、別 salt で別値、`allowCredentials` 指定で成立 | 成立(platform〔internal〕/ roaming〔usb〕の両仮想認証器) | **検証済み**(仮想認証器)/ **実機は未検証** |
-| `create` 時の `prf.eval` は `enabled: true` と `results.first` を返す(Chromium の挙動) | 返る | **検証済み**(仮想認証器)/ 実機・他ブラウザは未検証。**実装はこれに依存しない**(補足 20 裁定 G) |
-| UV(user verification)を持たない認証器: `userVerification: "preferred"` だと `get` の PRF 結果が**黙って欠ける**。`"required"` なら `create` で `NotAllowedError` として明示的に失敗する | 確認 | **検証済み**(仮想認証器) → 実装は `"required"` 固定(裁定 G) |
-| `allowCredentials` に未知の credential id だけを渡した `get` | `NotAllowedError` | **検証済み**(仮想認証器) |
-| `prf.evalByCredential`(credential ごとの salt。`allowCredentials` 複数)での `get` | 成立、値は `eval.first` と一致 | **検証済み**(仮想認証器) |
-| Bun の `import … with { type: "text" }` による HTML / JS の同梱 | `bun run` / `bun build --target=bun` / `--compile` の 3 経路でバンドルされる。ただし **vitest(Vite)が `.html` の import を変換できず、`bun-types` が `*.html` を `HTMLBundle` 型に取る** | **検証済み** → 採らない(裁定 C: TS の文字列定数) |
+| Listening on `127.0.0.1:0` (a random port) with `node:http` on Bun 1.4.0 and getting `server.address().port` | Works | **Verified** (in-environment) |
+| A one-time token in the URL path / exact `Host` match / exact `Origin` match / consumed by 1 POST / a second one gets 404 / closes on timeout / destroys open connections then `close`s | All as expected (each failure shape confirmed with curl) | **Verified** (in-environment) |
+| Under CSP `default-src 'none'; script-src 'self'; …`, a separate-file `app.js` runs (no inline script) | Works | **Verified** (Chromium 141) |
+| A browser connecting to a `127.0.0.1`-bound listener via `http://localhost:<port>/`, and `create` / `get` succeeding with **rpId = `localhost`** | Works (an IPv4-only environment) | **Verified** (Chromium 141 + virtual authenticator) / **unverified on environments that have ::1** (§3 below) |
+| The PRF extension: `get` with `prf.eval.first = prf_salt` → `results.first` (32 bytes). Deterministic for the same salt, a different value for a different salt, works with `allowCredentials` specified | Works (both virtual authenticator kinds — platform〔internal〕/ roaming〔usb〕) | **Verified** (virtual authenticators) / **real hardware unverified** |
+| `prf.eval` at `create` time returns `enabled: true` and `results.first` (Chromium's behavior) | Returned | **Verified** (virtual authenticators) / real hardware and other browsers unverified. **The implementation does not depend on this** (supplement 20 ruling G) |
+| An authenticator without UV (user verification): with `userVerification: "preferred"`, the `get`'s PRF result is **silently missing**. With `"required"`, `create` fails explicitly with `NotAllowedError` | Confirmed | **Verified** (virtual authenticators) → the implementation pins `"required"` (ruling G) |
+| A `get` passing only an unknown credential id in `allowCredentials` | `NotAllowedError` | **Verified** (virtual authenticators) |
+| A `get` with `prf.evalByCredential` (a per-credential salt; multiple `allowCredentials`) | Works; the value matches `eval.first` | **Verified** (virtual authenticators) |
+| Bundling HTML / JS via Bun's `import … with { type: "text" }` | Bundles under all 3 paths: `bun run` / `bun build --target=bun` / `--compile`. However **vitest (Vite) cannot transform the `.html` import, and `bun-types` types `*.html` as `HTMLBundle`** | **Verified** → not adopted (ruling C: a TS string constant) |
 
-## 1. スパイク 1 — リスナー(Bun + `node:http`)
+## 1. Spike 1 — the listener (Bun + `node:http`)
 
-形: `createServer` → `listen(0, "127.0.0.1")` → URL `http://localhost:<port>/<token>/` を表示。`token` は 32 バイト乱数の base64url(43 文字)。
+Shape: `createServer` → `listen(0, "127.0.0.1")` → display the URL `http://localhost:<port>/<token>/`. `token` is 32 random bytes in base64url (43 characters).
 
-| 検査 | 期待 | 実測 |
+| Check | Expected | Measured |
 |---|---|---|
-| `GET /<token>/`(Host `localhost:<port>`) | 200 + CSP ヘッダ | 200、`content-security-policy` あり |
-| 同じ URL を `Host: 127.0.0.1:<port>` で | 404 | 404 |
-| 別トークン | 404 | 404 |
+| `GET /<token>/` (Host `localhost:<port>`) | 200 + the CSP header | 200, `content-security-policy` present |
+| The same URL with `Host: 127.0.0.1:<port>` | 404 | 404 |
+| A different token | 404 | 404 |
 | `GET /<token>/app.js` | 200 text/javascript | 200 |
-| `POST /<token>/prf` — Origin 無し | 404 | 404 |
+| `POST /<token>/prf` — no Origin | 404 | 404 |
 | `POST` — `Origin: http://evil.example` | 404 | 404 |
-| `POST` — Origin 一致・本文不正(hex でない) | 404 | 404 |
-| `POST` — Origin 一致・本文正常 | 204 → リスナー停止 | 204、直後に `server closed` |
-| 停止後の再 POST | 接続拒否 | curl exit 7(connection refused) |
-| 何も来ない | タイムアウトで停止 | 2 秒設定で `shutdown: timeout` |
+| `POST` — Origin matches, malformed body (not hex) | 404 | 404 |
+| `POST` — Origin matches, valid body | 204 → listener stops | 204, `server closed` right after |
+| Re-POSTing after stop | connection refused | curl exit 7 (connection refused) |
+| Nothing arrives | stops on timeout | `shutdown: timeout` under a 2-second setting |
 
-補足: 失敗はすべて **404 の同一応答**(理由を出さない)。`Connection: close` を付け、停止時は台帳に載せた接続を `destroy` してから `server.close`(keep-alive 接続が close を遅らせる `agent.ts` と同じ先例)。
+Note: every failure is **the same 404 response** (no reason disclosed). `Connection: close` is attached, and at shutdown the tracked connections are `destroy`ed before `server.close` (the same precedent as `agent.ts`, where keep-alive connections delay close).
 
-環境の事実: この環境の `localhost` は `127.0.0.1` のみに解決し、**`lo` に `::1` が無い**(`::1` への bind は失敗)。よって「dual-stack ホストで Chrome / Safari が `localhost` を ::1 → 127.0.0.1 の順で試し、フォールバックで繋がるか」は**未検証**(§3)。
+Environment fact: in this environment `localhost` resolves to `127.0.0.1` only, and **`lo` has no `::1`** (binding to `::1` fails). Therefore "on a dual-stack host, do Chrome / Safari try `localhost` as ::1 then 127.0.0.1 and connect via fallback" is **unverified** (§3).
 
-## 2. スパイク 2 — Chromium 仮想認証器 + PRF
+## 2. Spike 2 — the Chromium virtual authenticator + PRF
 
-Chromium 141.0.7390.37(Playwright 同梱、`/opt/pw-browsers/chromium`)、`WebAuthn.enable` → `addVirtualAuthenticator({ protocol: "ctap2", ctap2Version: "ctap2_1", transport, hasResidentKey: true, hasUserVerification, isUserVerified, hasPrf: true, automaticPresenceSimulation: true })`。
+Chromium 141.0.7390.37 (bundled with Playwright, `/opt/pw-browsers/chromium`), `WebAuthn.enable` → `addVirtualAuthenticator({ protocol: "ctap2", ctap2Version: "ctap2_1", transport, hasResidentKey: true, hasUserVerification, isUserVerified, hasPrf: true, automaticPresenceSimulation: true })`.
 
-ページ側の呼び出し(要点):
+The page-side calls (essentials):
 
 ```js
-// 登録: create(PRF の可否を enabled で見る)
+// Registration: create (PRF support is read from enabled)
 navigator.credentials.create({ publicKey: {
   rp: { id: "localhost", name: "maruhi" },
-  user: { id: <16 バイト乱数>, name: "maruhi · <server host>", displayName: 同 },
-  challenge: <32 バイト乱数>,
+  user: { id: <16-byte random>, name: "maruhi · <server host>", displayName: same },
+  challenge: <32-byte random>,
   pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
   authenticatorSelection: { residentKey: "preferred", userVerification: "required" },
   extensions: { prf: { eval: { first: prf_salt } } },
 }});
-// 取得(登録時も復元時も同じ): get → getClientExtensionResults().prf.results.first
+// Retrieval (the same at registration and recovery): get → getClientExtensionResults().prf.results.first
 navigator.credentials.get({ publicKey: {
-  rpId: "localhost", challenge: <乱数>,
+  rpId: "localhost", challenge: <random>,
   allowCredentials: [{ type: "public-key", id: credential_id }],
   userVerification: "required",
   extensions: { prf: { eval: { first: prf_salt } } },
 }});
 ```
 
-| 仮想認証器 | `userVerification` | create `prf.enabled` | create `results.first` | get × 2(同 salt) | 別 salt | 発見可能(allow 空) | 結果 |
+| Virtual authenticator | `userVerification` | create `prf.enabled` | create `results.first` | get × 2 (same salt) | different salt | discoverable (empty allow) | Result |
 |---|---|---|---|---|---|---|---|
-| internal(platform)、UV あり | preferred | true | 返る | 一致 | 別値 | 成立(同じ値) | **成立** |
-| usb(roaming)、UV あり | preferred | true | 返る | 一致 | 別値 | 成立 | **成立** |
-| internal、UV あり | required | true | 返る | 一致 | 別値 | 成立 | **成立**(未知 id の `get` は `NotAllowedError`) |
-| internal、**UV なし** | preferred | true | 返る | **`results` 無し(null)** | — | `NotAllowedError` | PRF が黙って欠ける |
-| internal、**UV なし** | required | — | — | — | — | — | `create` が `NotAllowedError`(明示失敗) |
+| internal (platform), with UV | preferred | true | returned | match | different value | works (same value) | **works** |
+| usb (roaming), with UV | preferred | true | returned | match | different value | works | **works** |
+| internal, with UV | required | true | returned | match | different value | works | **works** (a `get` with an unknown id → `NotAllowedError`) |
+| internal, **no UV** | preferred | true | returned | **no `results` (null)** | — | `NotAllowedError` | PRF silently missing |
+| internal, **no UV** | required | — | — | — | — | — | `create` → `NotAllowedError` (explicit failure) |
 
-読み取り:
-- CTAP2 hmac-secret は UV の有無で別の出力を持ち、Chromium は UV 無しでは PRF 結果を返さない。**`"required"` に固定**すれば「登録できたのに復元で PRF が返らない」形を作らない(失敗が登録時点で見える)。
-- `allowCredentials` を渡す `get` が成立するので、復元では台帳の `credentialIdHex` 全件を渡し、応答の `rawId` で wrap 行を選べる(補足 20 裁定 F)。
-- 2 回目の POST は 404(1 回限りの消費が Chromium からの `fetch` でも成立)。
-- **`prf.evalByCredential`**(2026-09-13 追試): `allowCredentials` に 2 件(未知 id + 本物)を渡し、credential ごとに別 salt を `evalByCredential`(キー = credential id の base64url)で指定した `get` は、本物の credential で成立し、`results.first` は同 salt の `eval.first` と一致した。実装の復元経路(passkey-page.ts の `recover`)はこの形を使う(1 件でも同じ)。
-- ページの `fetch` は `credentials` 無し・同一オリジンで、`Origin` ヘッダは `http://localhost:<port>` が付く(リスナーの完全一致検査が通る)。
+Reading:
+- CTAP2 hmac-secret produces different output depending on UV presence, and Chromium returns no PRF result without UV. **Pinning `"required"`** avoids creating the shape "registration succeeded but recovery returns no PRF" (the failure is visible at registration time).
+- Since a `get` with `allowCredentials` works, at recovery the ledger's `credentialIdHex` values are all passed and the wrap row is selected by the response's `rawId` (supplement 20 ruling F).
+- A second POST is 404 (one-time consumption holds even for a `fetch` from Chromium).
+- **`prf.evalByCredential`** (re-tested 2026-09-13): passing 2 entries in `allowCredentials` (an unknown id + a real one) and specifying a per-credential salt via `evalByCredential` (keyed by the credential id's base64url), the `get` succeeded with the real credential and `results.first` matched the same-salt `eval.first`. The implementation's recovery path (`recover` in passkey-page.ts) uses this form (identical even for a single entry).
+- The page's `fetch` is same-origin with no `credentials`, and gets an `Origin` header of `http://localhost:<port>` (the listener's exact-match check passes).
 
-## 3. 未検証(所有者の後回し K0 の対象 — 実機が要る)
+## 3. Unverified (the owner's deferred K0 — real hardware required)
 
-**ここに書いたものは何も検証していない。公開 docs にはこの節の内容を書かない。**
+**Nothing written in this section has been verified. Do not write this section's content into the public docs.**
 
-- ブラウザ × 認証器の PRF 対応表: Chrome / Edge / Safari / Firefox × platform(Touch ID / Windows Hello / Android)/ roaming(YubiKey 等の CTAP2.1 hmac-secret)/ パスキーマネージャ(iCloud Keychain / Google Password Manager / 1Password / Bitwarden)。特に (a) `create` 時の `prf.enabled` の信頼性、(b) `userVerification: "required"` で Windows Hello / Touch ID が通るか、(c) 同期パスキーで PRF が別端末でも同じ値を返すか(KEK の可搬性)、(d) `excludeCredentials` の扱い(同じ認証器で 2 つ目を拒むか)
-- `localhost` の名前解決が ::1 を含む環境(macOS / Windows の既定)で、`127.0.0.1` bind のリスナーへ Chrome / Safari / Firefox がフォールバックで繋がるか。繋がらなければ `::1` にも同ポートで bind する(補足 20 裁定 B の退避案)
-- VS Code desktop(Remote SSH / Dev Containers)のポート自動転送: 転送先の URL が `localhost:<port>` のままなら rpId=localhost が成立するはず(未確認)
-- Web 版 Codespaces: 転送 URL が `*.app.github.dev` になり rpId=localhost が成立しない → `gh codespace ports forward <port>:<port>` で手元へ引く案内の要否と文面
-- WSL2: Windows 側ブラウザから WSL の `localhost:<port>` への到達(localhostForwarding)
-- ブラウザの自動起動(`openBrowser` = `xdg-open` / `open` / `cmd /c start`)が URL のトークン部分(base64url)をそのまま渡すか
-- パスキーマネージャ上の表示名(`user.name` = `maruhi · <server host>`)が実際にどう見えるか
+- The browser × authenticator PRF support table: Chrome / Edge / Safari / Firefox × platform (Touch ID / Windows Hello / Android) / roaming (CTAP2.1 hmac-secret like YubiKeys) / passkey managers (iCloud Keychain / Google Password Manager / 1Password / Bitwarden). In particular: (a) the reliability of `prf.enabled` at `create` time, (b) whether `userVerification: "required"` passes on Windows Hello / Touch ID, (c) whether a synced passkey's PRF returns the same value on another machine (the KEK's portability), (d) how `excludeCredentials` is handled (does it refuse a second passkey on the same authenticator)
+- On environments where `localhost` resolution includes ::1 (the macOS / Windows default), whether Chrome / Safari / Firefox reach a `127.0.0.1`-bound listener via fallback. If not, bind `::1` on the same port too (supplement 20 ruling B's fallback plan)
+- VS Code desktop (Remote SSH / Dev Containers) automatic port forwarding: if the forwarded URL stays `localhost:<port>`, rpId=localhost should hold (unconfirmed)
+- Web Codespaces: the forwarded URL becomes `*.app.github.dev` and rpId=localhost does not hold → whether guidance to pull the port to the local machine via `gh codespace ports forward <port>:<port>` is needed, and its wording
+- WSL2: reaching the WSL `localhost:<port>` from the Windows-side browser (localhostForwarding)
+- Whether the browser auto-launch (`openBrowser` = `xdg-open` / `open` / `cmd /c start`) passes the URL's token portion (base64url) through intact
+- How the display name (`user.name` = `maruhi · <server host>`) actually appears inside passkey managers
 
-## 4. 使い捨てコードの置き場
+## 4. Where the throwaway code lives
 
-リポジトリには入れない(scratchpad のみ)。再現に必要な要点は §1 / §2 のとおりで、CLI 側の実装(`apps/cli/src/passkey-listener.ts` / `passkey-page.ts`)がスパイク 1 の形をそのまま Effect の資源として持つ。ブラウザ往復は CLI のテストに組み込まない(補足 20 裁定 J — Playwright と Chromium を CLI の依存に足さない)。
+Not committed to the repository (scratchpad only). The essentials needed to reproduce are as in §1 / §2, and the CLI-side implementation (`apps/cli/src/passkey-listener.ts` / `passkey-page.ts`) carries the spike-1 shape as-is as an Effect resource. The browser round trip is not built into the CLI's tests (supplement 20 ruling J — Playwright and Chromium are not added to the CLI's dependencies).
