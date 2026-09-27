@@ -1,5 +1,5 @@
-// レイアウト v2(値なしスキーマ — S2)統合テストの共有ヘルパ。
-// data-scenario.ts の fixture(registerDataScenario)を前提とする。
+// Shared helpers for layout v2 (valueless schema — S2) integration tests.
+// Assumes the fixture of data-scenario.ts (registerDataScenario).
 
 import { encryptValue } from "./data-crypto.ts";
 import { MEMBER, projectId, requestJson } from "./data-fixture.ts";
@@ -12,7 +12,8 @@ import {
   varStatements,
 } from "./data-scenario.ts";
 
-/** v2 の値同梱作成(§12-5 — active + スキーマ欄)。200 なら記録を進める。 */
+/** v2 value-bundled creation (§12-5 — active + schema field). Advances the
+ * record on 200. */
 export async function createVariableV2Request(input: {
   readonly variableId: string;
   readonly name: string;

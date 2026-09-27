@@ -1,10 +1,15 @@
-// 運用基盤 — トリップワイヤの計数・評価・通知(docs/notes/hosted-ops.md §2-A / §2-B / §3)。
+// Operations foundation — tripwire counting, evaluation, and notification
+// (docs/notes/hosted-ops.md §2-A / §2-B / §3).
 //
-// - 計数の出所: GitHub token 請求は exchangeCode の装飾(実経路 = CLI ハンドオフの
-//   ログイン 1 回 = 1 計上)、フロー上限到達は noteOpsCounter
-// - 評価: 固定窓の最大値・既存監査行(auth.signup_denied 等)の窓集計
-// - 通知: 遷移(firing / resolved)と再通知の導出は純関数で固定し、本文に識別子が
-//   載らないこと・送信失敗時に状態を進めないことを実 D1 で固定する
+// - Sources of counting: GitHub token requests are counted by decorating
+//   exchangeCode (the real path — one login via the CLI handoff = one count);
+//   reaching the flow cap is counted by noteOpsCounter
+// - Evaluation: per-window maximums, window aggregation of existing audit
+//   rows (auth.signup_denied etc.)
+// - Notification: deriving transitions (firing / resolved) and
+//   re-notification is pinned as a pure function; that the body carries no
+//   identifiers and that state does not advance on a failed send are pinned
+//   against real D1
 
 import { env } from "cloudflare:test";
 import { Context, Effect } from "effect";
@@ -47,7 +52,7 @@ async function seedAuditRows(event: string, serverTs: number, n: number): Promis
   }
 }
 
-/** 捕捉する通知先(delivered を切り替えられる)。 */
+/** A notification target that captures payloads (delivered is switchable). */
 function capturingNotifier(delivered = true): {
   payloads: OpsAlertPayload[];
   service: OpsNotifier["Service"];
@@ -69,7 +74,7 @@ beforeEach(async () => {
   await resetAuthDb();
 });
 
-describe("計数の出所(hosted-ops.md §2-A)", () => {
+describe("sources of counting (hosted-ops.md §2-A)", () => {
   it("counts one GitHub token request per CLI handoff login (exchangeCode decoration)", async () => {
     await seedUser("user-ops-0001", 4201);
     await cliToken(4201);
@@ -100,7 +105,7 @@ const firingSignal = (firing: boolean): OpsSignal => ({
   firing,
 });
 
-describe("評価(hosted-ops.md §3)", () => {
+describe("evaluation (hosted-ops.md §3)", () => {
   it("fires on the per-hour token request threshold and on signup-denied rows / suppression markers", async () => {
     const now = Date.now();
     await seedCounter(
@@ -110,7 +115,7 @@ describe("評価(hosted-ops.md §3)", () => {
     );
     await seedAuditRows("auth.signup_denied", now - 60_000, OPS_SIGNUP_DENIED_PER_HOUR_THRESHOLD);
     await seedAuditRows("auth.login_failed_suppressed", now - 60_000, 1);
-    // 古い窓(8 日前)は評価前に掃除される
+    // Old windows (8 days back) are cleaned up before evaluation
     await seedCounter("cli_flow_capacity", opsWindowStart(now - 8 * 24 * 3600_000), 5);
     const signals = await runOps(evaluateOpsSignals(now));
     const byName = Object.fromEntries(signals.map((signal) => [signal.name, signal]));
@@ -161,7 +166,7 @@ describe("評価(hosted-ops.md §3)", () => {
   });
 });
 
-describe("通知(hosted-ops.md §2-B)", () => {
+describe("notification (hosted-ops.md §2-B)", () => {
   it("sends static signal names with aggregate values only, persists state on delivery and re-sends after a failed delivery", async () => {
     await seedUser("user-ops-0002", 4202);
     const now = Date.now();
@@ -176,7 +181,8 @@ describe("通知(hosted-ops.md §2-B)", () => {
     expect(first).toEqual([
       { signal: "cli_flow_capacity_reached", state: "firing", value: 1, threshold: 1 },
     ]);
-    // 送れなかった = 状態は進めない → 次回も同じ遷移が導出される
+    // Could not send = state does not advance -> the same transition is
+    // derived next time
     expect(await runOps(Effect.flatMap(OpsRepo, (repo) => repo.getState("alerts")))).toBeNull();
 
     const capturing = capturingNotifier(true);
@@ -190,7 +196,8 @@ describe("通知(hosted-ops.md §2-B)", () => {
     const payload = capturing.payloads[0];
     expect(payload?.service).toBe("maruhi");
     expect(payload?.text).toContain("cli_flow_capacity_reached is firing (value 1, threshold 1)");
-    // 本文に識別子が載らない(ユーザー ID・64 hex のプロジェクト ID・トークン形)
+    // The body carries no identifiers (user IDs, 64-hex project IDs, token
+    // shapes)
     const serialized = JSON.stringify(payload);
     expect(serialized).not.toMatch(/user-ops/);
     expect(serialized).not.toMatch(/[0-9a-f]{64}/);
@@ -224,7 +231,8 @@ describe("通知(hosted-ops.md §2-B)", () => {
       expect(warn).toHaveBeenCalledWith(
         "ops signal firing: storage_warn_projects (value 1, threshold 1)",
       );
-      // 到達不能な URL は false(次回再送)— 無言にしない
+      // An unreachable URL returns false (resent next time) — never
+      // swallowed silently
       expect(
         await Effect.runPromise(
           makeWebhookNotifier("https://unreachable.invalid/hook").notify(payload),

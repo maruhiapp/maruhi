@@ -1,13 +1,16 @@
-// ログ衛生の回帰検査(hosted-ops.md §1 Workers Logs 行・DC-2)。
+// Regression check for log hygiene (hosted-ops.md §1 Workers Logs row, DC-2).
 //
-// リクエスト URL(= /projects/:id の capability — AUTH_SPEC §11-2)がログストアに残る
-// 経路は 2 つある: invocation log(wrangler 設定で塞ぐ)と Effect `HttpMiddleware.logger`
-// ("Sent HTTP response" に `http.url` を注釈 — index.ts の disableLogger で塞ぐ)。
-// 設定検査はコード経路の退行を見ないため、ここで「正常系リクエストを worker の fetch に
-// 通しても console のどこにもリクエストパスが現れない」ことを機械的に固定する。
+// There are two paths by which a request URL (= the /projects/:id capability —
+// AUTH_SPEC §11-2) can persist in the log store: the invocation log (closed by
+// wrangler config) and Effect `HttpMiddleware.logger` (annotates "Sent HTTP
+// response" with `http.url` — closed by disableLogger in index.ts). Config
+// checks do not see regressions in the code path, so here we mechanically pin
+// that "a healthy-path request through the worker's fetch leaves no request
+// path anywhere on console".
 //
-// vitest-pool-workers ではテストと worker が同じ isolate で動くため、テスト側の
-// console spy が worker 側の console 呼び出しを捕まえる(storage-guard.test.ts と同じ型)。
+// Under vitest-pool-workers the test and the worker run in the same isolate,
+// so a console spy on the test side catches the worker side's console calls
+// (same pattern as storage-guard.test.ts).
 import { SELF } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -38,8 +41,9 @@ describe("log hygiene: request paths never reach console (DC-2)", () => {
 
   it("does not log the project id of a /projects/:id request (authenticated or not)", async () => {
     const collect = spyConsole();
-    // 実在しないが形式は正しい project id(64 hex)。認可前に拒否される経路でも、
-    // Effect の既定ロガーは応答後に http.url を出していた(認可の成否と無関係)
+    // A project id that does not exist but is well-formed (64 hex). Even on
+    // the path rejected before authorization, Effect's default logger used to
+    // emit http.url after the response (independent of the auth outcome)
     const projectId = "ab".repeat(32);
     const response = await SELF.fetch(`https://example.com/projects/${projectId}/audit-head`);
     expect(response.status).not.toBe(500);

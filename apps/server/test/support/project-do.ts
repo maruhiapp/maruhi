@@ -1,20 +1,24 @@
-// プロジェクト DO のテスト間リセット(workerd 内で実行)。
+// Resets the project DO between tests (runs inside workerd).
 //
-// この @cloudflare/vitest-plugin 構成のストレージ分離単位はワーカー(isolate:
-// false — apps/server/vitest.config.ts)で、DO SQLite はファイル内のテスト間だけで
-// なく、同じワーカーが処理する他のファイルからも持ち越される。
-// runInDurableObject で DO をインスタンス化するとコンストラクタがマイグレーションを
-// 適用するため、ここでは PROJECT_DO_TABLES の全テーブルを名指しで DELETE し、その後
-// evictDurableObject で導出 ChainState のメモリキャッシュも消す。
-// PROJECT_DO_TABLES は src/do-schema.ts のマイグレーションステップの tables 宣言から
-// 導出される(テーブルを増やすステップは必ず tables に宣言する)。schema_meta は
-// 適用済み version の記録のため意図的に DELETE しない。
+// The storage isolation unit of this @cloudflare/vitest-plugin
+// configuration is the worker (isolate: false —
+// apps/server/vitest.config.ts), so DO SQLite carries over not only between
+// tests in a file but also from other files handled by the same worker.
+// Instantiating the DO via runInDurableObject makes the constructor apply
+// migrations, so here every table in PROJECT_DO_TABLES is DELETE'd by name,
+// and then evictDurableObject drops the in-memory cache of derived
+// ChainState too.
+// PROJECT_DO_TABLES is derived from the tables declarations of the
+// migration steps in src/do-schema.ts (a step that adds a table must always
+// declare it in tables). schema_meta is intentionally not DELETE'd because
+// it records the applied version.
 
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 
 import { PROJECT_DO_TABLES } from "../../src/do-schema.ts";
 
-/** 指定プロジェクトの DO ストレージを空へ戻し、インスタンスを退去させる。 */
+/** Returns the given project's DO storage to empty and evicts the
+ * instance. */
 export async function resetProjectDo(projectId: string): Promise<void> {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
   await runInDurableObject(stub, (_instance, state) => {
@@ -26,15 +30,17 @@ export async function resetProjectDo(projectId: string): Promise<void> {
 }
 
 /**
- * インスタンスを退去させ、導出 ChainState のメモリキャッシュを消す(保存行の
- * 直接改変後にフルロードへ戻す用 — 改変はキャッシュに映らない)。
+ * Evicts the instance and drops the in-memory cache of derived ChainState
+ * (for returning to a full load after directly mutating stored rows — the
+ * mutation does not show through the cache).
  */
 export async function evictProjectDo(projectId: string): Promise<void> {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
   await evictDurableObject(stub);
 }
 
-/** DO SQLite への直接クエリ(保存状態・監査ログの検証用)。 */
+/** Direct queries against DO SQLite (for checking stored state and the
+ * audit log). */
 export async function queryProjectDo(
   projectId: string,
   query: string,
@@ -46,7 +52,7 @@ export async function queryProjectDo(
   );
 }
 
-/** 監査イベントの全行(seq 順)。 */
+/** All audit event rows (seq order). */
 export function readAuditEvents(projectId: string): Promise<Record<string, unknown>[]> {
   return queryProjectDo(projectId, "SELECT * FROM audit_events ORDER BY seq");
 }

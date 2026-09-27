@@ -1,8 +1,8 @@
-// ワークロードリース統合テストの共有ヘルパ。
+// Shared helpers for workload-lease integration tests.
 //
-// data-scenario.ts の fixture(registerDataScenario)を前提とする: 各テスト
-// ファイルは registerDataScenario() を呼んでから describe を書き、ここの
-// ヘルパは data-scenario の live binding(fixture)を参照する。
+// Assumes the fixture of data-scenario.ts (registerDataScenario): each test
+// file calls registerDataScenario() before writing its describes, and the
+// helpers here reference data-scenario's live binding (fixture).
 
 import type { LeasedDek } from "@maruhi/api-schema";
 import {
@@ -28,14 +28,16 @@ import { createVariableOk, ENV, fixture, token, VAR } from "./data-scenario.ts";
 import { deploymentKey, LEASE_AUDIENCE, LEASE_SUBJECT } from "./lease.ts";
 import { OIDC_ISSUER } from "./oidc-issuer.ts";
 
-/** ワークロードの一時鍵(ジョブごとにメモリ内生成される想定 — §9.1)。 */
+/** The workload's ephemeral key (assumed generated in memory per job —
+ * §9.1). */
 export async function workloadKeyPair() {
   const pair = await generateEncryptionKeyPair();
   const publicKey = await exportEncryptionPublicKey(pair.publicKey);
   return { pair, publicKeyHex: encodeHex(publicKey) };
 }
 
-/** 既定のリースポリシー(issuer / audience 一致 + sub の完全一致制約 1 件)。 */
+/** The default lease policy (issuer / audience match + one exact-match
+ * constraint on sub). */
 export function defaultPolicy(subject = LEASE_SUBJECT) {
   return [
     {
@@ -48,7 +50,8 @@ export function defaultPolicy(subject = LEASE_SUBJECT) {
 
 export type LeasePolicy = ReturnType<typeof defaultPolicy>;
 
-/** owner が grant_server を追記する(実導出のデプロイメント鍵宛)。 */
+/** The owner appends a grant_server (addressed to a really-derived
+ * deployment key). */
 export async function grantServer(input: {
   readonly scope: readonly string[];
   readonly leasePolicy?: LeasePolicy;
@@ -66,7 +69,8 @@ export async function grantServer(input: {
   return key.fingerprintHex;
 }
 
-/** owner がサーバー宛ラップをバックフィルする(§12-6 の grant 直後経路)。 */
+/** The owner backfills the server-addressed wrap (the §12-6
+ * right-after-grant path). */
 export async function backfillServerWrap(
   epoch: number,
   dek: Uint8Array,
@@ -126,7 +130,8 @@ export async function requestLease(input: {
   );
 }
 
-/** grant + バックフィル + 変数 1 本まで整えた「リース可能な状態」を作る。 */
+/** Builds a "leaseable state" set up through grant + backfill + one
+ * variable. */
 export async function readyProject(): Promise<{ readonly dek: Uint8Array }> {
   const dek = await createEnvironmentOk(fixture, ENV, "App");
   await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
@@ -135,7 +140,8 @@ export async function readyProject(): Promise<{ readonly dek: Uint8Array }> {
   return { dek };
 }
 
-/** 応答から必須要素を取り出す(以降のアサーションから optional 連鎖を排する)。 */
+/** Extracts a required element of the response (keeps later assertions off
+ * optional chaining). */
 export function requireFirst<T>(items: readonly T[], what: string): T {
   const first = items[0];
   if (first === undefined) {
@@ -144,7 +150,8 @@ export function requireFirst<T>(items: readonly T[], what: string): T {
   return first;
 }
 
-/** サーバーの decodeBase64Url と同じ寛容デコード(atob 経由)で得る binary string。 */
+/** A binary string via the same lenient decode as the server's
+ * decodeBase64Url (through atob). */
 function decodeBase64UrlToBinary(segment: string): string {
   const padded = segment
     .replaceAll("-", "+")
@@ -154,11 +161,13 @@ function decodeBase64UrlToBinary(segment: string): string {
 }
 
 /**
- * 署名セグメントの末尾 1 文字を「サーバーと同じ寛容デコードで同一バイト列に
- * なる別文字」へ差し替える(base64url 末尾グループの未使用ビットの可鍛性)。
- * 変異トークンは署名対象(header.payload)も署名バイト列も変えないため署名検証を
- * 通過するが、生文字列としては別物になる。先着束縛が生トークンをハッシュして
- * いた場合に破れることを示すための攻撃者操作の再現。
+ * Replaces the final character of the signature segment with "a different
+ * character that decodes to the same bytes under the server's lenient
+ * decode" (malleability of the unused bits in the last base64url group). The
+ * mutated token changes neither the signed content (header.payload) nor the
+ * signature bytes, so it passes signature verification but is a different
+ * raw string — a reproduction of an attacker manipulation showing that a
+ * first-come binding would break if it hashed the raw token.
  */
 export function malleateSignatureSegment(compactJws: string): string {
   const parts = compactJws.split(".");
@@ -181,7 +190,8 @@ export function malleateSignatureSegment(compactJws: string): string {
   throw new Error("no byte-identical alternative for the final signature character");
 }
 
-/** ワークロード側の claims_digest を計算する(サーバーと独立の再計算 — §9.1)。 */
+/** Computes the workload-side claims_digest (a recomputation independent of
+ * the server — §9.1). */
 export async function claimsDigestOf(subject = LEASE_SUBJECT): Promise<string> {
   const digest = await computeLeaseClaimsDigest({
     issuerUrl: OIDC_ISSUER,
@@ -194,7 +204,8 @@ export async function claimsDigestOf(subject = LEASE_SUBJECT): Promise<string> {
   return digest.value;
 }
 
-/** リースラップを一時鍵で開く(§9.1 の受信側手順)。 */
+/** Opens a lease wrap with the ephemeral key (the receiving-side procedure
+ * of §9.1). */
 export async function openLease(input: {
   readonly lease: LeasedDek;
   readonly workloadKeyPair: Awaited<ReturnType<typeof workloadKeyPair>>["pair"];

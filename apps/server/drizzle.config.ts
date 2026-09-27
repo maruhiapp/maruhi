@@ -1,6 +1,6 @@
-// D1(sqlite)の drizzle-kit 設定(ADR-0006)。
-// generate 専用: マイグレーション SQL は wrangler の d1 migrations(本番)と
-// applyD1Migrations(テスト)が適用する。push / 実 DB 接続はここでは使わない。
+// drizzle-kit config for D1 (sqlite) (ADR-0006).
+// generate only: migration SQL is applied by wrangler d1 migrations (production)
+// and applyD1Migrations (tests). push / live DB connections are not used here.
 
 import { defineConfig } from "drizzle-kit";
 

@@ -1,5 +1,7 @@
-// 四眼の受理ポリシーの判定(AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — quotas.ts の純関数)。
-// 受理経路への結線は approval-accept.test.ts(HTTP 経由・DO の appendProgram)。
+// Decision logic of the four-eyes admission policy (AUTH_SPEC §12-8 /
+// CRYPTO_SPEC §6.4 — pure functions in quotas.ts). Wiring into the admission
+// path is covered by approval-accept.test.ts (over HTTP, via the DO's
+// appendProgram).
 
 import type { PendingProposal } from "@maruhi/crypto";
 import { describe, expect, it } from "vitest";
@@ -25,8 +27,8 @@ const pendingAt = (expiresAtMs: number): PendingProposal => ({
   approvals: [],
 });
 
-describe("proposalIsLive / countLivePendingProposals(期限切れは数えない — サーバー時計)", () => {
-  it("counts a proposal while expires_at_ms >= now (等号は期限内 — §6.2 の ≤ と同じ向き)", () => {
+describe("proposalIsLive / countLivePendingProposals (expired ones are not counted — server clock)", () => {
+  it("counts a proposal while expires_at_ms >= now (equality counts as within the period — same direction as §6.2's ≤)", () => {
     expect(proposalIsLive(NOW, NOW)).toBe(true);
     expect(proposalIsLive(NOW + 1, NOW)).toBe(true);
     expect(proposalIsLive(NOW - 1, NOW)).toBe(false);
@@ -40,17 +42,18 @@ describe("proposalIsLive / countLivePendingProposals(期限切れは数えない
   });
 });
 
-describe("proposalLifetimeExceeded(expires_at_ms の上界 = now + 30 日)", () => {
+describe("proposalLifetimeExceeded (upper bound of expires_at_ms = now + 30 days)", () => {
   it("admits up to the bound inclusive and rejects beyond it", () => {
     expect(MAX_PROPOSAL_LIFETIME_MS).toBe(30 * 24 * 60 * 60 * 1000);
     expect(proposalLifetimeExceeded(NOW + MAX_PROPOSAL_LIFETIME_MS, NOW)).toBe(false);
     expect(proposalLifetimeExceeded(NOW + MAX_PROPOSAL_LIFETIME_MS + 1, NOW)).toBe(true);
-    // 過去の期限は上界に掛からない(失効済み提案は受理する — 設計録 §11 K5-C)
+    // A past expiry does not hit the upper bound (expired proposals are
+    // admitted — design record §11 K5-C)
     expect(proposalLifetimeExceeded(0, NOW)).toBe(false);
   });
 });
 
-describe("pendingProposalsExceeded(pending 上限 32)", () => {
+describe("pendingProposalsExceeded (pending cap 32)", () => {
   it("rejects the 33rd live proposal only", () => {
     expect(MAX_PENDING_PROPOSALS).toBe(32);
     expect(pendingProposalsExceeded(MAX_PENDING_PROPOSALS - 1)).toBe(false);

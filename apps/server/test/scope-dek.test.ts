@@ -1,14 +1,18 @@
-// ES K3 — DEK ラップの受信者集合 R(E)(CRYPTO_SPEC §6.2 / §6.3、AUTH_SPEC §12-4 /
-// §12-6。設計録 docs/notes/es-design.md §9 K3-D)。
+// ES K3 — the DEK-wrap recipient set R(E) (CRYPTO_SPEC §6.2 / §6.3,
+// AUTH_SPEC §12-4 / §12-6; design record docs/notes/es-design.md §9 K3-D).
 //
-// 固定する規則:
-//   - 完全集合(環境作成・rotate 複合・初回登録)の対象 = R(E) = { m | E ∈ scope(m) } ∪
-//     { grant | E ∈ scope_environments } — scope 外メンバーを含めると 422
-//     scope-out-of-range、欠くと 422 recipient-missing
-//   - 追記経路(バックフィル)の受信者判定: scope 外の現メンバー宛は 422
-//     scope-out-of-range(受信者クラス member でも同じ理由コード)
-//   - 登録者(署名者 = 呼び出し主体)の scope は §12-3 の 403 が先(受信者軸の 422 より前)
-//   - listed{} のメンバーはどの環境の受信者にもならない(CRYPTO_SPEC §6.2 の構造規則 (3))
+// Pinned rules:
+//   - The target of the complete set (environment creation, rotate compound,
+//     initial registration) = R(E) = { m | E ∈ scope(m) } ∪
+//     { grant | E ∈ scope_environments } — including an out-of-scope member
+//     is 422 scope-out-of-range; omitting one is 422 recipient-missing
+//   - Recipient judgment on the append path (backfill): addressing a current
+//     out-of-scope member is 422 scope-out-of-range (same reason code even
+//     for recipient class member)
+//   - The registrant's (signer = calling principal) scope hits §12-3's 403
+//     first (before the recipient-axis 422)
+//   - A listed{} member is a recipient of no environment (CRYPTO_SPEC §6.2
+//     structural rule (3))
 
 import type { ChainState, MemberScope } from "@maruhi/crypto";
 import { describe, expect, it } from "vitest";
@@ -53,10 +57,11 @@ async function setupListed(): Promise<{ envDek: Uint8Array; otherDek: Uint8Array
   return { envDek, otherDek };
 }
 
-describe("R(E) — 完全集合(環境作成 / rotate 複合 — §12-4)", () => {
-  it("環境作成の完全集合は scope に E を含むメンバーだけ: listed 外を含めると 422 scope-out-of-range、除けば 200", async () => {
+describe("R(E) — the complete set (environment creation / rotate compound — §12-4)", () => {
+  it("the complete set at environment creation is only members whose scope contains E: including a non-listed member is 422 scope-out-of-range, excluding them is 200", async () => {
     await setupListed();
-    // DEV は listed{ENV} なので新環境 env-new-0003 の受信者ではない
+    // DEV is listed{ENV}, so it is not a recipient of the new environment
+    // env-new-0003
     const withDev = makeDek();
     const overfull = await createEnvironmentComposite(fixture, {
       environmentId: "env-new-0003",
@@ -89,7 +94,7 @@ describe("R(E) — 完全集合(環境作成 / rotate 複合 — §12-4)", () =>
     expect(exact.status).toBe(200);
   });
 
-  it("rotate 複合の完全集合は R(E): scope 内メンバーを欠くと 422 recipient-missing、揃えば 200", async () => {
+  it("the complete set of a rotate compound is R(E): omitting an in-scope member is 422 recipient-missing, including all is 200", async () => {
     await setupListed();
     const dek = makeDek();
     const missing = await rotateEnvironmentComposite(fixture, {
@@ -122,7 +127,7 @@ describe("R(E) — 完全集合(環境作成 / rotate 複合 — §12-4)", () =>
       actorUserId: OWNER,
     });
     expect(complete.status).toBe(200);
-    // scope 外の環境(OTHER)の rotate は DEV を含めない
+    // Rotating the out-of-scope environment (OTHER) does not include DEV
     const otherDek = makeDek();
     const other = await rotateEnvironmentComposite(fixture, {
       environmentId: OTHER,
@@ -142,8 +147,8 @@ describe("R(E) — 完全集合(環境作成 / rotate 複合 — §12-4)", () =>
   });
 });
 
-describe("R(E) — 追記経路(バックフィル — §12-6)", () => {
-  it("scope 外の現メンバー宛は 422 scope-out-of-range、scope 内宛は 204(add_member 後のバックフィル)", async () => {
+describe("R(E) — the append path (backfill — §12-6)", () => {
+  it("addressing a current out-of-scope member is 422 scope-out-of-range, addressing an in-scope one is 204 (backfill after add_member)", async () => {
     const { envDek, otherDek } = await setupListed();
     const outOfScope = await requestJson("POST", `/environments/${OTHER}/deks`, token(OWNER), {
       deks: [
@@ -171,13 +176,13 @@ describe("R(E) — 追記経路(バックフィル — §12-6)", () => {
       ],
     });
     expect(inScope.status).toBe(204);
-    // 受信者は自分宛ラップを取得できる(scope 内)
+    // The recipient can fetch the wrap addressed to it (in scope)
     const mine = await requestJson("GET", `/environments/${ENV}/deks`, token(DEV));
     expect(mine.status).toBe(200);
     expect(((await mine.json()) as { deks: unknown[] }).deks).toHaveLength(1);
   });
 
-  it("member 受信者の理由コード順は同定 → 鍵 → scope(scope 外かつ鍵不一致は recipient-key-mismatch — クラスを跨いで同一の順)", async () => {
+  it("the reason-code order for member recipients is identify -> key -> scope (out-of-scope with a key mismatch is recipient-key-mismatch — the same order across classes)", async () => {
     const { otherDek } = await setupListed();
     const response = await requestJson("POST", `/environments/${OTHER}/deks`, token(OWNER), {
       deks: [
@@ -195,9 +200,10 @@ describe("R(E) — 追記経路(バックフィル — §12-6)", () => {
     await expectDekRejected(response, "recipient-key-mismatch");
   });
 
-  it("登録者(署名者 = 呼び出し主体)の scope は 403 が先: scope 外の環境へは受信者の判定に到達しない", async () => {
+  it("the registrant's (signer = calling principal) scope hits 403 first: for an out-of-scope environment it never reaches recipient judgment", async () => {
     const { otherDek } = await setupListed();
-    // DEV(listed{ENV})が OTHER へ、scope 内の受信者(OWNER)宛を登録しようとする
+    // DEV (listed{ENV}) tries to register a wrap on OTHER addressed to an
+    // in-scope recipient (OWNER)
     const response = await requestJson("POST", `/environments/${OTHER}/deks`, token(DEV), {
       deks: [
         await wrapDekTo({
@@ -214,10 +220,10 @@ describe("R(E) — 追記経路(バックフィル — §12-6)", () => {
     expect(((await response.json()) as { reason: string }).reason).toBe("insufficient-scope");
   });
 
-  it("listed{} のメンバーはどの環境の受信者にもならない(完全集合に含めず、宛先にもできない)", async () => {
+  it("a listed{} member is a recipient of no environment (not in the complete set, nor an addressable target)", async () => {
     const envDek = await createEnvironmentOk(fixture, ENV, "App");
     await appendOperation(fixture, OWNER, addMemberOperation(NOBODY, "reader", []));
-    // 新環境の完全集合は従来の 3 人のまま
+    // The new environment's complete set stays the original 3 members
     await createEnvironmentOk(fixture, OTHER, "Other");
     const wrap = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [
@@ -242,7 +248,8 @@ const memberOf = (userId: string, scope: MemberScope) =>
       userId,
       role: "member" as const,
       scope,
-      // 最初の鍵 1 つ = 端末 1 つ(cap は構造的に (owner, all) — CRYPTO_SPEC §6.2 DK)
+      // The single first key = one device (cap is structurally (owner, all)
+      // — CRYPTO_SPEC §6.2 DK)
       devices: new Map([
         [
           "33".repeat(16),
@@ -259,8 +266,8 @@ const memberOf = (userId: string, scope: MemberScope) =>
     },
   ] as const;
 
-describe("expectedWrapRecipientCount — R(E) の 1 定義(CRYPTO_SPEC §6.2)", () => {
-  it("member は E ∈ scope のときだけ数え、grant は開示スコープで数える(受信者クラスを跨いで同一の述語)", () => {
+describe("expectedWrapRecipientCount — the single definition of R(E) (CRYPTO_SPEC §6.2)", () => {
+  it("counts members only when E ∈ scope and grants by disclosure scope (the same predicate across recipient classes)", () => {
     const fp = "ab".repeat(16);
     const state: ChainState = {
       members: new Map([
@@ -289,9 +296,10 @@ describe("expectedWrapRecipientCount — R(E) の 1 定義(CRYPTO_SPEC §6.2)", 
     };
     // env-dev: all + dev
     expect(expectedWrapRecipientCount(state, "env-dev")).toBe(2);
-    // env-prod: all + grant(dev は scope 外、none は listed{})
+    // env-prod: all + grant (dev is out of scope, none is listed{})
     expect(expectedWrapRecipientCount(state, "env-prod")).toBe(2);
-    // 未知の環境: all のみ(将来分を含む U — 集合代数の `all`)
+    // Unknown environment: all only (U includes future ones — the set
+    // algebra's `all`)
     expect(expectedWrapRecipientCount(state, "env-future")).toBe(1);
   });
 });

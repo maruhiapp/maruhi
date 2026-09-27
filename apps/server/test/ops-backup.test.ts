@@ -1,10 +1,14 @@
-// 運用基盤 — DO → R2 退避と復元(docs/notes/hosted-ops.md §2-D / §2-E / §4-2)。
+// Operations foundation — DO -> R2 evacuation and restore
+// (docs/notes/hosted-ops.md §2-D / §2-E / §4-2).
 //
-// 実プロジェクト DO(@cloudflare/vitest-plugin)に対し、fixture(API 経由で作った
-// チェーン・環境・変数・監査行)を退避し、空にした DO へ書き戻して、チェーンヘッド・
-// 監査ヘッド(ensureHeadCurrent の値)・全表の行・監査 seq の無欠番(AUDIT_SPEC §5.1)が
-// 一致することを固定する。上書き経路が無いこと(非空 DO への復元の拒否)・途中失敗の
-// 退避物の拒否・skip 規則・multipart 経路・スイープの記録も同じ実 DO で検査する。
+// Against a real project DO (@cloudflare/vitest-plugin): evacuate a fixture
+// (chain, environments, variables, audit rows built via the API), write it
+// back into an emptied DO, and pin that the chain head, audit head (the
+// ensureHeadCurrent value), every table's rows, and the gapless audit seq
+// (AUDIT_SPEC §5.1) all match. The same real DO also covers the absence of
+// an overwrite path (refusing to restore into a non-empty DO), refusing a
+// partially-failed snapshot, the skip rule, the multipart path, and sweep
+// records.
 
 import {
   createExecutionContext,
@@ -51,7 +55,7 @@ async function restore(objectKey: string): Promise<OpsRestoreOutcome> {
   return (await stub().opsRestore(objectKey)) as OpsRestoreOutcome;
 }
 
-/** 全表の全行(rowid 順)— 復元前後の突合用。 */
+/** All rows of every table (rowid order) — for pre/post-restore diffing. */
 async function allRows(): Promise<Record<string, Record<string, unknown>[]>> {
   const rows: Record<string, Record<string, unknown>[]> = {};
   for (const table of PROJECT_DO_TABLES) {
@@ -73,7 +77,7 @@ async function gzipLines(lines: readonly string[]): Promise<Uint8Array> {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", () => {
+describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D / §2-E)", () => {
   it("round-trips chain head, audit head and every row; the object key carries no project id", async () => {
     await seedProjectActivity();
     const headBefore = await auditHeadViaApi();
@@ -85,7 +89,8 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
     if (outcome.kind !== "uploaded") {
       return;
     }
-    // キー = do/<idFromName の像>/<時刻>.ndjson.gz — capability(プロジェクト ID)を含まない
+    // key = do/<image of idFromName>/<timestamp>.ndjson.gz — carries no
+    // capability (project id)
     expect(outcome.objectKey).toMatch(
       /^do\/[0-9a-f]{64}\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z\.ndjson\.gz$/,
     );
@@ -98,7 +103,8 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
     }
     expect(await bucket.head(outcome.objectKey)).not.toBeNull();
 
-    // 空にして書き戻す(resetProjectDo は schema_meta を残す = 同じスキーマ版)
+    // Empty it and write back (resetProjectDo leaves schema_meta = the same
+    // schema version)
     await resetProjectDo(projectId);
     const restored = await restore(outcome.objectKey);
     expect(restored.kind).toBe("restored");
@@ -111,15 +117,16 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
     expect(restored.auditHeadHashHex).toBe(headBefore);
     expect(restored.rows).toEqual(outcome.trailer.rows);
     expect(await allRows()).toEqual(rowsBefore);
-    // 監査 seq は無欠番のまま(AUDIT_SPEC §5.1)
+    // Audit seq stays gapless (AUDIT_SPEC §5.1)
     const seqs = (await queryProjectDo(projectId, "SELECT seq FROM audit_events ORDER BY seq")).map(
       (row) => Number(row["seq"]),
     );
     expect(seqs).toEqual(seqs.map((_, index) => index + 1));
-    // 復元後は製品経路がそのまま動く(インスタンスメモリの破棄 — 復元前の空状態を配らない)
+    // After restore the product path works as-is (instance memory was
+    // discarded — the pre-restore empty state is never served)
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
-    expect(await auditHeadViaApi()).not.toBe(headBefore); // pull が var.read を積む = ヘッドが進む
+    expect(await auditHeadViaApi()).not.toBe(headBefore); // the pull adds a var.read = the head advances
   });
 
   it("refuses to restore into a non-empty DO (no overwrite path) and leaves it untouched", async () => {
@@ -165,7 +172,7 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
       kind: "refused",
       code: "trailer-missing",
     });
-    // 途中まで書いた行は消えている(空へ戻す)
+    // The partially written rows are gone (rolled back to empty)
     expect(await queryProjectDo(projectId, "SELECT * FROM environments")).toEqual([]);
 
     await bucket.put(
@@ -241,7 +248,8 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
         ]),
       );
       expect(await restore(key), name).toEqual({ kind: "refused", code: "malformed" });
-      // 表は壊れず(DROP されず)、DO は空のまま・ステージング表も残らない
+      // The table is not destroyed (no DROP), the DO stays empty, and no
+      // staging table is left behind
       expect(await queryProjectDo(projectId, "SELECT * FROM chain_entries"), name).toEqual([]);
       expect(
         await queryProjectDo(
@@ -267,8 +275,9 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
     };
     const second = await backup(marks);
     expect(second.kind).toBe("skipped");
-    // ヘッド申告の upsert はチェーン行も監査行も書かない(AUTH_SPEC §16-1)が、
-    // 内容の変化として skip を解除する(第三のウォーターマーク)
+    // The head-attestation upsert writes neither a chain row nor an audit
+    // row (AUTH_SPEC §16-1), but counts as a content change that lifts the
+    // skip (the third watermark)
     await runInDurableObject(stub(), (_instance, state) => {
       state.storage.sql.exec(
         `INSERT INTO head_attestations (attester_user_id, suite, chain_head_seq, chain_head_hash_hex, signature_hex, attester_key_fingerprint, accepted_at)
@@ -285,14 +294,15 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
     expect(afterAttestation.attestationMark).toBeGreaterThan(marks.attestationMark);
     marks.attestationMark = afterAttestation.attestationMark;
     expect((await backup(marks)).kind).toBe("skipped");
-    // 値付き pull は監査行(var.read)を書く = 内容が変わった扱いで再退避する
+    // A pull with values writes an audit row (var.read) = treated as changed
+    // content, so it evacuates again
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
     const third = await backup(marks);
     expect(third.kind).toBe("uploaded");
     if (third.kind === "uploaded") {
       expect(third.auditSeq).toBeGreaterThan(marks.auditSeq);
-      expect(third.objectKey).not.toBe(first.objectKey); // 上書きしない(時刻付きキー)
+      expect(third.objectKey).not.toBe(first.objectKey); // never overwritten (timestamped keys)
     }
   });
 
@@ -326,8 +336,9 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
       }
     });
     await evictProjectDo(projectId);
-    // 同じ nowMs(= 同じヘッダ・同じキー)で 2 回退避する: 1 回目で圧縮後の総量を測り、
-    // 2 回目はその総量ちょうどをパート長にして「残り 0 バイト」の経路を踏ませる
+    // Evacuate twice with the same nowMs (= same header, same key): the first
+    // run measures the compressed total, and the second uses exactly that
+    // total as the part size to force the "0 bytes remaining" path
     const nowMs = Date.now();
     const probe = (await stub().opsBackup({ ...backupInput(), nowMs })) as OpsBackupOutcome;
     expect(probe.kind).toBe("uploaded");
@@ -350,7 +361,8 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
 
   it("uses multipart for large snapshots (uniform parts) and still restores identically", async () => {
     await seedProjectActivity();
-    // 圧縮の効きにくい行(乱数 hex の暗号文)を直接積み、圧縮後 5 MiB 超にする
+    // Seed hard-to-compress rows (random-hex ciphertexts) directly to push
+    // the compressed size past 5 MiB
     await runInDurableObject(stub(), (_instance, state) => {
       for (let version = 2; version <= 200; version++) {
         const random = crypto.getRandomValues(new Uint8Array(32 * 1024));
@@ -367,8 +379,9 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
       }
     });
     await evictProjectDo(projectId);
-    // 監査ヘッド列を先に実体化しておく(復元側は列を MAX(seq) まで伸ばすため、
-    // 未実体化のまま退避すると復元後の audit_head_hashes だけが増えて見える)
+    // Materialize the audit-head column first (the restore side extends it
+    // up to MAX(seq), so evacuating before materialization would make
+    // post-restore audit_head_hashes look larger)
     await auditHeadViaApi();
     const rowsBefore = await allRows();
     const outcome = (await stub().opsBackup({
@@ -391,7 +404,7 @@ describe("DO → R2 退避と空 DO への復元(hosted-ops.md §2-D / §2-E)", 
 
 const opsRepo = () => Context.get(makeDbServices(env.DB), OpsRepo);
 
-describe("退避スイープ(ops-backup.ts)と毎時 cron", () => {
+describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
   const sweep = (target: Env = workerEnv) =>
     Effect.runPromise(runBackupSweep(target).pipe(Effect.provideService(OpsRepo, opsRepo())));
 
@@ -418,14 +431,15 @@ describe("退避スイープ(ops-backup.ts)と毎時 cron", () => {
     expect(second).toMatchObject({ visited: 1, uploaded: 0, skipped: 1 });
     const after = await opsRepo().backupRecord(projectId).pipe(Effect.runPromise);
     expect(after?.lastObjectKey).toBe(record?.lastObjectKey);
-    // 終端に達したのでカーソルは先頭へ戻る(空文字列)
+    // The end was reached, so the cursor returns to the start (empty string)
     expect(await opsRepo().getState("backup_sweep_cursor").pipe(Effect.runPromise)).toBe("");
   });
 
   it("records oversize without counting it as a consecutive failure (and clears earlier ones)", async () => {
     await seedProjectActivity();
-    // 先に失敗を 1 回積んでおく: oversize の記録が UPDATE 分岐でもカウンタを 0 へ戻す
-    // ことを検証する(行が無い状態からでは INSERT 分岐しか通らない)
+    // Seed one failure first: verifies that recording an oversize resets the
+    // counter to 0 on the UPDATE branch too (starting from no row would only
+    // exercise the INSERT branch)
     await opsRepo()
       .recordBackupAttempt(
         projectId,

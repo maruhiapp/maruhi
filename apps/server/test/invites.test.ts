@@ -1,14 +1,17 @@
-// 招待 API(AUTH_SPEC §15)の統合テスト。
+// Integration tests for the invite API (AUTH_SPEC §15).
 //
-// - 認可(トークンスコープ admin × チェーン role admin 以上 / role=admin は
-//   owner のみ)、存在秘匿(非メンバー 404)、受諾の判定順(404 → 410 → 422 →
-//   CAS)を理由コードごとに固定する
-// - 受諾署名(CRYPTO_SPEC §6.5)は @maruhi/crypto の実装で実署名を作る。
-//   サーバーは signed_bytes を保存行 + 呼び出し主体から再構成するため、
-//   リンク改竄(別プロジェクト・別トークン)・鍵すり替え・別人の署名は
-//   すべて 422 に落ちることを実データで検証する
-// - invite.* 監査(AUDIT_SPEC §3.2)がレコード操作と同一 batch で書かれ、
-//   CAS 敗北時に監査行が増えないこと(changes() ガード)を D1 直読で検証する
+// - Pins per reason code: authorization (token scope admin x chain role admin
+//   or above / role=admin is owner-only), existence hiding (404 for
+//   non-members), and the order of acceptance decisions (404 -> 410 -> 422 ->
+//   CAS)
+// - Acceptance signatures (CRYPTO_SPEC §6.5) are real signatures produced via
+//   the @maruhi/crypto implementation. Since the server reconstructs
+//   signed_bytes from the stored row + the calling principal, real data
+//   verifies that link tampering (a different project or token), key
+//   substitution, and someone else's signature all land on 422
+// - Verifies by reading D1 directly that invite.* audits (AUDIT_SPEC §3.2)
+//   are written in the same batch as the record operation, and that no audit
+//   row is added on CAS loss (the changes() guard)
 
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -55,7 +58,7 @@ describe("invite issue", () => {
     const row = mustRow(await inviteRow(issued.id));
     expect(row.status).toBe("pending");
     expect(row.role).toBe("member");
-    // 発行文(公開値)がそのまま保存される。サーバーは検証しない
+    // The issuance statement (public values) is stored as-is. The server does not verify it
     expect(row.link_pub).toBe(issued.linkPubHex);
     expect(row.head_hash).toBe(issued.headHashHex);
     expect(row.head_seq).toBe(issued.headSeq);
@@ -67,13 +70,14 @@ describe("invite issue", () => {
     expect(created.actor_user_id).toBe(OWNER);
     expect(created.actor_api_token_id).not.toBeNull();
     expect(created.project_id).toBe(projectId);
-    // invite.* は org 軸に属さない(AUDIT_SPEC §7)
+    // invite.* does not belong to the org axis (AUDIT_SPEC §7)
     expect(created.org_id).toBeNull();
     expect(payloadOf(created)).toMatchObject({
       inviteId: issued.id,
       role: "member",
     });
-    // 発行文・リンク公開鍵を監査に写さない(AUDIT_SPEC §3.2 — payload 不変)
+    // The issuance statement / link public key is not copied into the audit
+    // (AUDIT_SPEC §3.2 — payload invariant)
     expect(String(created.payload)).not.toContain(issued.linkPubHex);
   });
 
@@ -92,7 +96,7 @@ describe("invite issue", () => {
     const linkConflict = await issueInviteRequest(fixture, OWNER, "member", sameLink);
     expect(linkConflict.status).toBe(409);
     expect((await linkConflict.json()) as object).toMatchObject({ field: "linkPub" });
-    // 衝突は監査を書かない(受理していない)
+    // A conflict writes no audit (nothing was admitted)
     expect((await inviteAuditRows()).filter((row) => row.event === "invite.created")).toHaveLength(
       1,
     );
@@ -119,9 +123,9 @@ describe("invite issue", () => {
   });
 
   it("role=admin invites are owner-only (admin can issue member invites)", async () => {
-    // owner は admin 招待を発行できる
+    // The owner can issue admin invites
     await issueInvite(fixture, OWNER, "admin");
-    // member を admin へ昇格(change_role は owner 操作)
+    // Promote member to admin (change_role is an owner operation)
     await appendOperation(fixture, OWNER, {
       op: "change_role",
       payload: {
@@ -131,7 +135,7 @@ describe("invite issue", () => {
         scopeEnvironmentIds: [],
       },
     });
-    // admin は member 招待は発行できるが admin 招待は 403
+    // An admin can issue member invites but an admin invite is 403
     await issueInvite(fixture, MEMBER, "member");
     const denied = await issueInviteRequest(fixture, MEMBER, "admin");
     expect(denied.status).toBe(403);
@@ -169,11 +173,12 @@ describe("invite issue", () => {
     expect(body.retryAfterSeconds).toBeLessThanOrEqual(3600);
   });
 
-  it("pending cap precedes the window limit (§15-2 の記載順)", async () => {
+  it("pending cap precedes the window limit (order listed in §15-2)", async () => {
     const now = Date.now();
     const oldCreated = now - 2 * 60 * 60 * 1000;
-    // 期限内 pending を上限まで(発行窓の外の created_at)+ 窓内にも 30 行 —
-    // 両条件成立時に pending-limit が先に判定されることを固定する
+    // Fill the cap with in-period pending rows (created_at outside the
+    // issue window) plus 30 rows inside the window — pins that the pending
+    // limit is judged first when both conditions hold
     for (let index = 0; index < MAX_PENDING_INVITES_PER_PROJECT - 30; index += 1) {
       await seedInvitation({
         id: `seed-old-${index}`,

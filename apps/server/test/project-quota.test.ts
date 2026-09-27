@@ -1,10 +1,12 @@
-// プロジェクト数 / org の受理上限(AUTH_SPEC §11-3)の統合テスト。
-// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の HttpApi と D1 / DO を検証する。
+// Integration tests for the per-org project-count admission limit
+// (AUTH_SPEC §11-3). Verifies the HttpApi over SELF plus D1 / DO under
+// @cloudflare/vitest-plugin (real workerd).
 //
-// 上限件数の init を実経路で回すのは重い(1 init = チェーン検証 + D1 batch)ため、
-// 判定材料の `projects` 行は D1 へ直接シードして境界(到達・拒否・解放)を作る。
-// 判定の純関数(projectQuotaExceeded)は数値のみで固定する(quotas.ts の他の
-// *Exceeded と同じ形)。
+// Running limit-many inits through the real path is heavy (1 init = chain
+// verification + a D1 batch), so the `projects` rows that feed the decision
+// are seeded into D1 directly to build the boundary (reaching it, rejection,
+// freeing). The pure decision function (projectQuotaExceeded) is pinned with
+// numbers only (same shape as the other *Exceeded in quotas.ts).
 
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
@@ -29,7 +31,8 @@ const genesisEntry = () => {
   return toWireEntry(genesis);
 };
 
-/** 判定材料だけを作る: 当該 org に `count` 件のダミー projects 行(ID は 64 hex)。 */
+/** Builds only the decision material: `count` dummy projects rows on the
+ * org (IDs are 64 hex). */
 async function seedProjectRows(orgId: string, count: number): Promise<void> {
   const statements = Array.from({ length: count }, (_, index) =>
     env.DB.prepare("INSERT INTO projects (id, org_id, created_at) VALUES (?, ?, ?)").bind(
@@ -48,7 +51,7 @@ async function projectRowsInOrg(orgId: string): Promise<number> {
   return row?.n ?? 0;
 }
 
-describe("projectQuotaExceeded(純関数 — §11-3)", () => {
+describe("projectQuotaExceeded (pure function — §11-3)", () => {
   it("rejects the (limit + 1)-th project and admits up to the limit", () => {
     expect(projectQuotaExceeded(MAX_ACTIVE_PROJECTS_PER_ORG)).toBe(true);
     expect(projectQuotaExceeded(MAX_ACTIVE_PROJECTS_PER_ORG - 1)).toBe(false);
@@ -56,7 +59,7 @@ describe("projectQuotaExceeded(純関数 — §11-3)", () => {
   });
 });
 
-describe("POST /projects × プロジェクト数 / org 上限(§11-3)", () => {
+describe("POST /projects x projects-per-org limit (§11-3)", () => {
   it("rejects a fresh genesis with 429 ProjectLimit at the limit and leaves the DO uninitialized", async () => {
     await seedProjectRows(VECTOR_ORG, MAX_ACTIVE_PROJECTS_PER_ORG);
     const response = await initChain(genesisEntry());
@@ -65,8 +68,8 @@ describe("POST /projects × プロジェクト数 / org 上限(§11-3)", () => {
       _tag: "ProjectLimit",
       limit: MAX_ACTIVE_PROJECTS_PER_ORG,
     });
-    // DO は何も書いていない(admitFresh = false は report-only): チェーン取得は
-    // 未初期化 = 404(§11-2)、DO の chain テーブルは空
+    // The DO wrote nothing (admitFresh = false is report-only): fetching the
+    // chain is uninitialized = 404 (§11-2), and the DO's chain table is empty
     const chain = await getChain(vectorProjectId);
     expect(chain.status).toBe(404);
     const entries = await queryProjectDo(
@@ -74,7 +77,8 @@ describe("POST /projects × プロジェクト数 / org 上限(§11-3)", () => {
       "SELECT count(*) AS n FROM chain_entries",
     );
     expect(entries[0]?.["n"]).toBe(0);
-    // D1 側も不変(projects 行・org.project_created の監査行とも増えない)
+    // D1 is also unchanged (neither the projects row nor an
+    // org.project_created audit row is added)
     expect(await projectRowsInOrg(VECTOR_ORG)).toBe(MAX_ACTIVE_PROJECTS_PER_ORG);
     const audit = await env.DB.prepare(
       "SELECT count(*) AS n FROM org_audit_events WHERE event = 'org.project_created' AND project_id = ?",
@@ -103,8 +107,9 @@ describe("POST /projects × プロジェクト数 / org 上限(§11-3)", () => {
   });
 
   it("does not block the §11-3 repair path at the limit (already-initialized + missing row)", async () => {
-    // 正常に init → DO 受理後・D1 行挿入前のクラッシュを模擬(行だけ消す)→
-    // その間に org が上限まで埋まった状況で再 init
+    // init normally -> simulate a crash after the DO admits but before the
+    // D1 row insert (delete just the row) -> re-init while the org has filled
+    // up to the limit in the meantime
     expect((await initChain(genesisEntry())).status).toBe(200);
     await env.DB.prepare("DELETE FROM projects WHERE id = ?").bind(vectorProjectId).run();
     await seedProjectRows(VECTOR_ORG, MAX_ACTIVE_PROJECTS_PER_ORG);
@@ -121,8 +126,8 @@ describe("POST /projects × プロジェクト数 / org 上限(§11-3)", () => {
       .bind(vectorProjectId)
       .first<{ org_id: string }>();
     expect(row?.org_id).toBe(VECTOR_ORG);
-    // 修復は上限を 1 超過させる(DO に実在するプロジェクトを D1 に見せる方を
-    // 優先 — §11-3 の受容)
+    // The repair overshoots the limit by 1 (surfacing a project that really
+    // exists in the DO into D1 takes precedence — the §11-3 acceptance)
     expect(await projectRowsInOrg(VECTOR_ORG)).toBe(MAX_ACTIVE_PROJECTS_PER_ORG + 1);
   });
 
