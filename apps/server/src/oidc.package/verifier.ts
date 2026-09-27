@@ -42,7 +42,7 @@ const ALLOWED_ALGS: readonly AllowedAlg[] = ["RS256", "ES256"];
 /**
  * The tolerated skew of the time checks (§14-1: ±60 seconds). It is
  * exported so a derivation can guarantee that the first-come-binding
- * retention slack (policy.ts's LEASE_BINDING_RETENTION_MARGIN_MS) is
+ * (§14-1) retention slack (policy.ts's LEASE_BINDING_RETENTION_MARGIN_MS) is
  * **at least** this value — a binding retention shorter than the
  * acceptance window becomes a replay window (the precedent of
  * session-24 §2's PyPI audit).
