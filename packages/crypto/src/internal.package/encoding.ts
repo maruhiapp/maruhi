@@ -1,6 +1,6 @@
-// CRYPTO_SPEC §2.1: 長さプレフィックス付き決定論的エンコーディング。
-// AAD / HPKE info / チェーン正規化のすべてがこの 1 実装を共有する(仕様の必須要件)。
-// テストベクター: test-vectors/encoding.json
+// CRYPTO_SPEC §2.1: deterministic length-prefixed encoding.
+// AAD / HPKE info / chain normalization all share this single implementation (a spec requirement).
+// Test vectors: test-vectors/encoding.json
 
 import { concatBytes, utf8Encode } from "./bytes.ts";
 

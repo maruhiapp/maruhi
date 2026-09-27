@@ -1,25 +1,31 @@
-// CRYPTO_SPEC §6.6: ヘッド申告(Ed25519)。
+// CRYPTO_SPEC §6.6: the head attestation (Ed25519).
 // head_attestation_signed_bytes = LP("<suite>/head-attestation",
 //                                    project_id, attester_user_id,
 //                                    chain_head_hash_hex, chain_head_seq)
-// suite の束縛はドメイン文字列が担う(§5.1 と同型)。バイナリ列(ヘッドハッシュ)は
-// hex 小文字文字列として LP に載せ、数値(chain_head_seq)は §2.1 のとおり
-// 10 進文字列化する。テストベクター: test-vectors/head-attestation.json
+// The suite binding is carried by the domain string (same shape as §5.1).
+// The binary value (head hash) goes onto the LP as a lowercase hex string,
+// and the number (chain_head_seq) is base-10 stringified per §2.1.
+// Test vectors: test-vectors/head-attestation.json
 //
-// 意味論は「attester_user_id が、このプロジェクトのチェーンをこの位置まで
-// 検証済みとして受理した」の帰属・文脈束縛(§6.6)。チェーンヘッド自体の真正性は
-// 証明しない — 検証は受信側が自ビューと照合して行う(§6.3 のヘッドゴシップ)。
-// タイムスタンプ・ノンスは署名対象に含めない(鮮度証明ではない — 申告の新旧は
-// chain_head_seq が順序付け、古い申告の再配布はサーバーの omission と等価 = G8)。
-// attester_user_id の焼き込みは §5.1 の signer_user_id と同じ帰属付け替え対策。
+// Semantics: the attribution and context binding of "attester_user_id
+// accepted this project's chain as verified up to this position" (§6.6). It
+// does not prove the chain head's own authenticity — verification is done by
+// the receiver reconciling against its own view (§6.3 head gossip). No
+// timestamp or nonce enters the signed data (this is not a freshness proof —
+// the attestation's recency is ordered by chain_head_seq, and redistribution
+// of an old attestation is equivalent to server omission = G8). Baking in
+// attester_user_id is the same attribution-substitution countermeasure as
+// §5.1's signer_user_id.
 //
-// 履歴ベースの検証(verifyDistributedHeadAttestation)は value / meta の同型
-// (検証機構を二重実装しない — validate.ts の共有コア)。**attester が自ビューの
-// 現メンバーであること(§6.6 (1) の前半)は本モジュールの検査対象外**: それは
-// 「配布・照合の対象か」の選別であって申告自体の有効性ではなく(削除済み
-// メンバーの在籍中ヘッドへの過去申告は検証を通る — ベクター
-// removed-attester-in-tenure)、呼び出し側が history.memberStateAt(userId,
-// history.headSeq) で先に選別する。
+// The history-based verification (verifyDistributedHeadAttestation) is
+// isomorphic to value / meta (no double implementation of the verification
+// mechanism — the shared core in validate.ts). **That the attester is a
+// current member of its own view (the first half of §6.6 (1)) is outside
+// this module's checks**: that is a selection of "is it a
+// distribution/reconciliation target", not the attestation's own validity
+// (a past attestation by a removed member against an in-tenure head passes
+// verification — vector removed-attester-in-tenure); the caller selects
+// first with history.memberStateAt(userId, history.headSeq).
 
 import { encodeHex } from "./bytes.ts";
 import type { ChainHistoryIndex } from "./chain-history.ts";
@@ -49,7 +55,7 @@ const SHA256_HEX_LENGTH = 32 * 2;
 export interface HeadAttestationContext {
   readonly suite: string;
   readonly projectId: string;
-  /** The attester's own internal user id (binds attribution — §5.1 と同型). */
+  /** The attester's own internal user id (binds attribution — same shape as §5.1). */
   readonly attesterUserId: string;
   /** Entry hash of the chain head the attester verified (§6.1). */
   readonly chainHeadHashHex: string;
@@ -57,9 +63,11 @@ export interface HeadAttestationContext {
   readonly chainHeadSeq: number;
 }
 
-// 署名対象の構造検証: hex は小文字・固定長のみ(大文字 hex を許すと同一申告に
-// 複数の正規形が生まれ、署名の一意性が壊れる — validate.ts の規律)。
-// chain_head_seq は §2.1 の数値境界(非負の安全整数)+ seq 1 始まり
+// Structure validation of the signing target: hex is lowercase fixed-length
+// only (allowing uppercase hex would give one attestation multiple
+// normalized forms and break signature uniqueness — the same discipline as
+// validate.ts). chain_head_seq is bounded by §2.1's numeric limits
+// (non-negative safe integer) plus seq being 1-based
 function contextInvalidField(context: HeadAttestationContext): string | null {
   if (context.suite.length === 0) {
     return "context suite";
@@ -99,7 +107,7 @@ export function buildHeadAttestationSignedBytes(context: HeadAttestationContext)
 /**
  * SHA-256 (lowercase hex) of the canonical signed bytes — the digest a
  * verifier records as evidence when a distributed attestation contradicts its
- * own view (§6.6 / §14.2-5 の証拠化).
+ * own view (evidence-making of §6.6 / §14.2-5).
  */
 export async function computeHeadAttestationSignedBytesHash(
   context: HeadAttestationContext,
@@ -154,7 +162,7 @@ export async function verifyHeadAttestationSignature(input: {
 export interface DistributedHeadAttestationInput {
   /** Index over the verifier's own fully verified chain snapshot. */
   readonly history: ChainHistoryIndex;
-  /** Expected coordinates + wire attestation fields (§6.3-5 の座標整合は呼び出し側)。 */
+  /** Expected coordinates + wire attestation fields (§6.3-5 coordinate integrity is the caller's). */
   readonly context: HeadAttestationContext;
   /** Distributed attester key fingerprint (server: acceptance-time member FP). */
   readonly attesterKeyFingerprintHex: string;
@@ -171,11 +179,12 @@ function attestationInvalid(reason: AttestationInvalidReason): {
   return { ok: false, error: { kind: "HeadAttestationInvalid", reason } };
 }
 
-// ヘッド束縛・申告ヘッド時点の在籍(§6.6 (1)〜(3))の理由コード写像。検査本体は
-// headAuthorizationReason(validate.ts — value / meta と共有)。必要 role の
-// 下限は reader(全メンバーが申告できる — §6.3 ヘッドゴシップ)なので
-// roleInsufficientAtHead は構造的に発火しない(ROLE_RANK.reader = 最下位)—
-// 写像は在籍不一致側の理由に畳んでおく
+// Reason-code mapping of head binding / membership at the attested head
+// (§6.6 (1)-(3)). The check itself is headAuthorizationReason (validate.ts —
+// shared with value / meta). Since the required-role lower bound is reader
+// (every member can attest — §6.3 head gossip), roleInsufficientAtHead can
+// never fire structurally (ROLE_RANK.reader = the lowest rank) — the mapping
+// folds it into the membership-mismatch reason
 const HEAD_ATTESTATION_REASONS = {
   chainHeadFuture: "chain-head-future",
   chainHeadMismatch: "chain-head-mismatch",
@@ -192,16 +201,17 @@ const HEAD_ATTESTATION_REASONS = {
  * membership / key-binding checks. Returns the signed-bytes hash on success
  * (the evidence anchor — §14.2-5).
  *
- * The reason codes drive the gossip reconciliation (§6.3 ヘッドゴシップ):
+ * The reason codes drive the gossip reconciliation (§6.3 head gossip):
  * `chain-head-mismatch` = the hard-evidence branch (a) — the caller must
- * treat the *attestation itself* as evidence (署名は検証済み), not merely
- * discard it; `chain-head-future` = the bounded-resync branch (b); any other
- * reason = an invalid attestation that must NOT be used as照合材料
- * (偽申告による警告誘発の排除 — §6.6).
+ * treat the *attestation itself* as evidence (the signature is verified),
+ * not merely discard it; `chain-head-future` = the bounded-resync branch
+ * (b); any other reason = an invalid attestation that must NOT be used as
+ * reconciliation material (excludes warning induction via forged
+ * attestations — §6.6).
  *
  * The current-membership gate of §6.6 (1) is the caller's selection step
  * (see the module comment) — a removed attester's in-tenure attestation
- * verifies here by design (ベクター removed-attester-in-tenure).
+ * verifies here by design (vector removed-attester-in-tenure).
  */
 export async function verifyDistributedHeadAttestation(
   input: DistributedHeadAttestationInput,
@@ -218,8 +228,9 @@ export async function verifyDistributedHeadAttestation(
     return invalidInput(field);
   }
 
-  // 鍵の選択(§6.6 (2) 前段。検査順は value / meta と同一: 署名壊れを先に判定
-  // するため、選択は全 tenure を対象にし、ヘッド時点の束縛は後段で検査する)
+  // Key selection (the lead-in to §6.6 (2); the check order is the same as
+  // value / meta: to rule out a broken signature first, the selection covers
+  // all tenure and the head-time binding is checked afterwards)
   const imported = await importActorKeyByFingerprint({
     history: input.history,
     actorUserId: input.context.attesterUserId,

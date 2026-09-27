@@ -1,5 +1,5 @@
-// CRYPTO_SPEC §2: アルゴリズムスイート識別子。
-// すべての永続データ構造・AAD・info がこの識別子を持つ(暗号アジリティ)。
+// CRYPTO_SPEC §2: the algorithm-suite identifier.
+// Every persistent data structure, AAD, and info carries this identifier (crypto agility).
 
 /** Algorithm suite identifier (CRYPTO_SPEC §2). */
 export const SUITE_ID = "maruhi/v1";

@@ -1,8 +1,8 @@
-// CRYPTO_SPEC §5: DEK ラップ(HPKE Base mode 単発 Seal / Open)。
-// info = LP("maruhi/v1/dek-wrap", project_id, environment_id, epoch, recipient_user_id)。
-// aad は空(文脈束縛は info が担う。テストベクターで固定)。
-// Open は KeyPair(公開鍵込み)渡しのみ: 秘密鍵単体渡しは extractable=true を
-// 強制されるため経路として存在させない(CRYPTO_SPEC §2、spike-c の知見)。
+// CRYPTO_SPEC §5: DEK wrap (HPKE Base-mode single-shot Seal / Open).
+// info = LP("maruhi/v1/dek-wrap", project_id, environment_id, epoch, recipient_user_id).
+// aad is empty (the info carries the context binding; pinned by test vectors).
+// Open is KeyPair-only (public key included): passing a bare private key would force
+// extractable=true, so that path does not exist (CRYPTO_SPEC §2, the spike-c findings).
 
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
@@ -31,8 +31,9 @@ function invalidInput(field: string): { readonly ok: false; readonly error: Cryp
   return { ok: false, error: { kind: "InvalidInput", field } };
 }
 
-// epoch は LP エンコーダの前提(非負の安全な整数)を Result で検証する
-// (variable.ts と同様。try による偶発的な封じ込めでなく型付きエラーで返す)
+// epoch is Result-validated against the LP encoder's precondition (non-negative safe
+// integer) (same as variable.ts — a typed error is returned rather than an accidental
+// containment via try)
 function checkEpoch(context: DekWrapContext): boolean {
   return Number.isSafeInteger(context.epoch) && context.epoch >= 0;
 }

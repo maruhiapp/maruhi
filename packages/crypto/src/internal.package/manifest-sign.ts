@@ -1,4 +1,4 @@
-// CRYPTO_SPEC §4.3: 環境マニフェスト(Ed25519)。
+// CRYPTO_SPEC §4.3: the environment manifest (Ed25519).
 // env_manifest_signed_bytes = LP("<suite>/env-manifest-sig", project_id,
 //                                environment_id, epoch, manifest_version,
 //                                variables_digest_hex,
@@ -8,21 +8,27 @@
 // variables_digest_hex = lower_hex(SHA-256(LP("<suite>/env-manifest-vars",
 //                                             entry_1, …, entry_n)))
 // entry_i = LP(variable_id, status, meta_version, meta_sig_hash_hex)
-//   — variable_id の**バイト昇順**(UTF-8)。tombstone を含む全ステートメントの
-//   最新形。空集合も有効(変数ゼロの環境 = 要素 0 の LP)。各 entry は入れ子 LP の
-//   バイト列を 1 フィールドとして埋め込む(scope_environments と同じ規約)。
-// suite の束縛はドメイン文字列が担い(§4.1 / §4.2 と同型)、数値(epoch /
-// manifest_version / env_meta_version / meta_version / chain_head_seq)は §2.1 の
-// とおり 10 進文字列化、バイナリ(ハッシュ)は hex 小文字文字列として LP に載せる。
-// テストベクター: test-vectors/env-manifest.json
+//   — **byte-ascending** order of variable_id (UTF-8). The latest form of all
+//   statements including tombstones. The empty set is also valid (an
+//   environment with zero variables = an LP with zero elements). Each entry
+//   embeds the byte string of a nested LP as one field (same convention as
+//   scope_environments).
+// The suite binding is carried by the domain string (same shape as §4.1 /
+// §4.2); numbers (epoch / manifest_version / env_meta_version / meta_version /
+// chain_head_seq) are base-10 stringified per §2.1, and binaries (hashes) go
+// onto the LP as lowercase hex strings.
+// Test vectors: test-vectors/env-manifest.json
 //
-// 署名の意味論は「issuer_user_id が、チェーン位置 (chain_head_hash,
-// chain_head_seq)・現エポック epoch の下で、この環境のメタ状態の全体像はこれだと
-// 宣言した」の帰属・内容真正性・認可時点束縛 + **エポック焼き込み**(§4.3 —
-// メタステートメントに欠けていた鮮度アンカーをマニフェスト層が供給する)。
-// 宣言ヘッド・認可時点・エポック整合・ダイジェスト再計算・prev 連鎖の検証は
-// manifest-verify.ts(履歴照会は chain-history.ts)が担い、本モジュールは
-// 正規化・署名・ダイジェスト・ハッシュの低水準のみ。
+// The signature's semantics: "issuer_user_id declared, at chain position
+// (chain_head_hash, chain_head_seq) under current epoch epoch, that the
+// complete picture of this environment's meta state is this" — attribution,
+// content authenticity, and authorization-time binding + **epoch baking**
+// (§4.3 — the manifest layer supplies the freshness anchor that meta
+// statements lack).
+// Verification of the declared head, authorization time, epoch integrity,
+// digest recomputation, and prev chaining is carried by manifest-verify.ts
+// (history queries by chain-history.ts); this module holds only the
+// low-level normalization, signing, digest, and hashing.
 
 import { encodeHex } from "./bytes.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
@@ -37,9 +43,10 @@ const SHA256_HEX_LENGTH = 32 * 2;
 /**
  * One entry of the variables digest (CRYPTO_SPEC §4.3): the latest form of
  * one variable's metadata statement — tombstones (`deleted`) and layout v2
- * `declared` statements (§4.2 — 値未設定の宣言) included. The digest encoder
+ * `declared` statements (§4.2 — a declaration with no value set) included. The digest encoder
  * is unchanged by layout v2: `declared` only appears as a new string value of
- * the `status` field (§4.3 スキーマ欄の被覆 — マニフェスト層は不変).
+ * the `status` field (§4.3's coverage of the schema columns — the manifest
+ * layer is unchanged).
  */
 export interface VariablesDigestEntry {
   readonly variableId: string;
@@ -69,8 +76,9 @@ function digestEntryInvalidField(entry: VariablesDigestEntry): string | null {
  * Computes the canonical variables digest (CRYPTO_SPEC §4.3). The canonical
  * variable_id byte-ascending order is applied internally, duplicate variable
  * ids are rejected, and the empty set is valid (an environment with no
- * variables yet). 骨格(検証 → 重複拒否 → 内部ソート → 入れ子 LP)は
- * sorted-digest.ts の共有実装(§6.2 values_digest と同型)。
+ * variables yet). The skeleton (validate → reject duplicates → internal sort
+ * → nested LP) is the shared implementation in sorted-digest.ts (isomorphic
+ * to §6.2's values_digest).
  */
 export async function computeVariablesDigest(
   suite: string,
@@ -112,7 +120,7 @@ export interface EnvManifestContext {
   readonly envMetaSigHashHex: string;
   /**
    * SHA-256 (lowercase hex) of the previous manifest's signed bytes; the
-   * empty string for manifestVersion 1 (§4.3 の連鎖規約 — §4.1 / §4.2 と同一).
+   * empty string for manifestVersion 1 (the §4.3 chaining convention — same as §4.1 / §4.2).
    */
   readonly prevManifestSigHashHex: string;
   /** The issuer's own internal user id (binds attribution to the identity). */
@@ -139,8 +147,9 @@ function numericFieldInvalid(context: EnvManifestContext): string | null {
   return null;
 }
 
-// バイナリ列は hex 小文字のみ(§4.1 / §4.2 実装と同じ規律 — 大文字 hex を許すと
-// 同一値に複数の正規形が生まれ、署名の一意性が壊れる)
+// Binary values are lowercase hex only (the same discipline as the §4.1 /
+// §4.2 implementations — allowing uppercase hex would give one value multiple
+// normalized forms and break signature uniqueness)
 function hexFieldInvalid(context: EnvManifestContext): string | null {
   if (!isLowercaseHexOfLength(context.variablesDigestHex, SHA256_HEX_LENGTH)) {
     return "context variablesDigestHex";
@@ -160,8 +169,9 @@ function hexFieldInvalid(context: EnvManifestContext): string | null {
   return null;
 }
 
-// suite と座標(projectId / environmentId)・issuer は非空(meta-sign.ts と同じ
-// 検査水準 — 空の座標を署名する正当な呼び出しは存在しない)
+// suite, the coordinates (projectId / environmentId), and issuer must be
+// non-empty (the same check level as meta-sign.ts — no legitimate call signs
+// empty coordinates)
 function contextInvalidField(context: EnvManifestContext): string | null {
   if (context.suite.length === 0) {
     return "context suite";
@@ -209,7 +219,7 @@ export function buildEnvManifestSignedBytes(context: EnvManifestContext): Uint8A
 
 /**
  * SHA-256 (lowercase hex) of the canonical signed bytes — the value carried
- * as the next manifest's `prev_manifest_sig_hash_hex` (§4.3 の連鎖) and
+ * as the next manifest's `prev_manifest_sig_hash_hex` (the §4.3 chaining) and
  * compared for fork evidence (two valid signatures over distinct signed
  * bytes at the same manifestVersion — §14.2-5).
  */
@@ -231,8 +241,8 @@ export async function computeEnvManifestSignedBytesHash(
  * Signing enforces the manifestVersion ↔ prev coupling (manifestVersion 1
  * signs an empty prev, later versions sign a 64-hex prev): producing a
  * rule-violating manifest is always a caller bug, unlike verification where
- * such wire data must be rejected with a typed reason instead (meta-sign.ts
- * と同じ非対称).
+ * such wire data must be rejected with a typed reason instead (the same
+ * asymmetry as meta-sign.ts).
  */
 export async function signEnvManifest(input: {
   readonly context: EnvManifestContext;

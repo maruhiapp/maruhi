@@ -1,13 +1,17 @@
-// @maruhi/crypto の型付きエラー(判別可能 union)と Result 型。
+// Typed errors (a discriminated union) and the Result type for @maruhi/crypto.
 //
-// 設計判断:
-// crypto は Effect に依存しない純粋なエラー値を返し、Effect ラップは packages/core 側で行う。
-// 判別子は `kind`(oxlint の no-underscore-dangle と衝突しない中立名)。
-// core 側の Effect ラップでは kind ごとに Data.TaggedError へマッピングする。
+// Design decisions:
+// crypto returns pure error values with no dependency on Effect; the Effect
+// wrapping happens on the packages/core side.
+// The discriminator is `kind` (a neutral name that does not collide with
+// oxlint's no-underscore-dangle).
+// The core-side Effect wrapper maps each kind to a Data.TaggedError.
 //
-// 絶対規則: エラーには平文値・鍵素材・暗号文の断片を一切含めない。
-// 文脈は識別子(seq / op / 理由コード)のみ。WebCrypto 例外の message も伝播させない
-// (ランタイムによっては入力の断片を含みうるため)。
+// Absolute rule: errors never contain plaintext values, key material, or
+// ciphertext fragments.
+// Context is identifiers only (seq / op / reason codes). WebCrypto exception
+// messages are not propagated either (some runtimes may include input
+// fragments in them).
 
 /** Reason codes for chain verification failure (see CRYPTO_SPEC §6.2 / §6.3). */
 export type ChainInvalidReason =
@@ -31,17 +35,20 @@ export type ChainInvalidReason =
   | "grant-scope-narrowed"
   | "duplicate-server-key"
   | "epoch-out-of-sequence"
-  // checkpoint op(§6.2)。重複 environment_id は
-  // payload 構造検査(invalid-payload)に属し、専用理由コードを持たない
+  // checkpoint op (§6.2). Duplicate environment_ids belong to the
+  // payload structure check (invalid-payload) and have no dedicated reason
+  // code
   | "checkpoint-audit-role-insufficient"
   | "checkpoint-epoch-mismatch"
   | "checkpoint-regression"
-  // 環境スコープ(§6.2 — 2026-09-14 ES)。scope の構造規則(all + 非空・重複・上限)は
-  // invalid-payload、scope の各 id の存在は unknown-environment を再利用する
+  // Environment scope (§6.2 — 2026-09-14 ES). The scope structure rule
+  // (all + non-empty, duplicates, limit) is invalid-payload; existence of
+  // each scope id reuses unknown-environment
   | "scope-role-mismatch"
   | "scope-not-contained"
   | "environment-out-of-scope"
-  // 四眼(§6.2 — 2026-09-14 PF1)。approve の owner 検査は insufficient-role を再利用する
+  // Four-eyes (§6.2 — 2026-09-14 PF1). approve's owner check reuses
+  // insufficient-role
   | "approval-required"
   | "approval-not-required"
   | "approval-quorum-unreachable"
@@ -49,35 +56,42 @@ export type ChainInvalidReason =
   | "duplicate-approval"
   | "proposal-expired"
   | "proposal-void"
-  // 端末鍵(§6.2 — 2026-09-19 DK)。鍵一意性は duplicate-member-key、端末 scope の各 id は
-  // unknown-environment、失効端末の署名は actor-key-mismatch、他人の端末の失効の包含は
-  // scope-not-contained を再利用する
+  // Device keys (§6.2 — 2026-09-19 DK). Key uniqueness is
+  // duplicate-member-key; each id of a device scope is unknown-environment;
+  // a signature by a revoked device is actor-key-mismatch; containment of
+  // revoking another person's device reuses scope-not-contained
   | "unknown-device"
   | "last-device-protected"
   | "device-cap-exceeded";
 
 /**
  * Reason codes for rejecting a distributed variable value (CRYPTO_SPEC §4.1 /
- * §6.3 — value-signature.json の rule negative が固定する語彙):
+ * §6.3 — the vocabulary fixed by the rule negatives of value-signature.json):
  *
- * - `signature-invalid` — valid-format の Ed25519 検証失敗
- * - `writer-unknown` — チェーン履歴のどの時点にも (writer_user_id, 鍵 FP) の
- *   束縛が存在しない(検証鍵を選択できない)
- * - `chain-head-mismatch` — 宣言 seq は自ビュー内だが保存ハッシュと不一致
- *   (§6.3-2a: チェーン分岐または偽造の硬い証拠 — 即時拒否)
- * - `chain-head-future` — 宣言 seq が自ビューのヘッドより先(§6.3-2b:
- *   まず再同期し、延長として一致すれば再検証。この理由での即時拒否は誤り)
+ * - `signature-invalid` — Ed25519 verification of a valid-format input failed
+ * - `writer-unknown` — no point in chain history has a binding of
+ *   (writer_user_id, key FP) (no verification key can be selected)
+ * - `chain-head-mismatch` — the declared seq is within our view but does
+ *   not match the stored hash (§6.3-2a: hard evidence of a chain fork or a
+ *   forgery — reject immediately)
+ * - `chain-head-future` — the declared seq is ahead of our view's head
+ *   (§6.3-2b: resync first and re-verify if it matches as an extension;
+ *   rejecting immediately on this reason is wrong)
  * - `writer-not-member-at-head` / `writer-key-mismatch-at-head` /
- *   `writer-role-insufficient-at-head` — 宣言ヘッド時点の認可検査(§6.3-1/3。
- *   key-mismatch は remove → 別鍵 re-add の tenure 跨ぎを含む)
- * - `writer-environment-out-of-scope-at-head` — 宣言ヘッド時点の writer の scope が
- *   当該環境を含まない(§6.3 の 3′ — role 検査の直後・エポック整合の前。2026-09-14 ES)
+ *   `writer-role-insufficient-at-head` — authorization checks at the
+ *   declared head (§6.3-1/3; key-mismatch includes tenure straddles of
+ *   remove → re-add under a different key)
+ * - `writer-environment-out-of-scope-at-head` — the writer's scope at the
+ *   declared head does not contain the environment (§6.3's 3′ — right
+ *   after the role check, before epoch consistency; 2026-09-14 ES)
  * - `environment-not-created-at-head` / `epoch-not-current-at-head` —
- *   宣言ヘッド時点のエポック整合(§6.3-4)
- * - `prev-shape-mismatch` — version 1 は空 / version > 1 は 64 hex という
- *   prev の形の違反(predecessor を保持しない latest-only でも必ず検査する)
- * - `prev-hash-mismatch` / `epoch-regressed` — predecessor を渡された場合のみの
- *   連鎖・エポック単調性検査(§6.3-6 / §4.1)
+ *   epoch consistency at the declared head (§6.3-4)
+ * - `prev-shape-mismatch` — a violation of the prev shape: empty at
+ *   version 1, 64 hex at version > 1 (always checked, even latest-only
+ *   without a predecessor)
+ * - `prev-hash-mismatch` / `epoch-regressed` — chaining / epoch-
+ *   monotonicity checks done only when a predecessor is given (§6.3-6 /
+ *   §4.1)
  */
 export type ValueInvalidReason =
   | "signature-invalid"
@@ -96,35 +110,45 @@ export type ValueInvalidReason =
 
 /**
  * Reason codes for rejecting a distributed metadata statement (CRYPTO_SPEC
- * §4.2 / §6.3 — metadata-signature.json の rule negative が固定する語彙)。
- * 値(ValueInvalidReason)との違いはメタの意味論そのもの:
+ * §4.2 / §6.3 — the vocabulary fixed by the rule negatives of
+ * metadata-signature.json). Its difference from the value
+ * (ValueInvalidReason) codes is the semantics of metadata itself:
  *
- * - `signature-invalid` — valid-format の Ed25519 検証失敗
- * - `author-unknown` — チェーン履歴のどの時点にも (author_user_id, 鍵 FP) の
- *   束縛が存在しない(検証鍵を選択できない)
- * - `chain-head-mismatch` / `chain-head-future` — 宣言ヘッドの不一致 2 種
- *   (§6.3-2a / -2b。値署名と同じ区別 — future は再同期の入口)
+ * - `signature-invalid` — Ed25519 verification of a valid-format input failed
+ * - `author-unknown` — no point in chain history has a binding of
+ *   (author_user_id, key FP) (no verification key can be selected)
+ * - `chain-head-mismatch` / `chain-head-future` — the two ways a declared
+ *   head mismatches (§6.3-2a / -2b; same distinction as value signatures —
+ *   future is the entry point for resync)
  * - `author-not-member-at-head` / `author-key-mismatch-at-head` /
- *   `author-role-insufficient-at-head` — 宣言ヘッド時点の認可検査(§6.3-1/3。
- *   role 水準は環境の削除のみ admin、それ以外は member — §4.2 / AUTH_SPEC §12-3)
- * - `author-environment-out-of-scope-at-head` — 宣言ヘッド時点の author の scope が
- *   当該環境を含まない(§6.3 の 3′ — 変数メタ・環境メタとも環境対象。2026-09-14 ES)
- * - `prev-shape-mismatch` — metaVersion 1 は空 / > 1 は 64 hex という prev の
- *   形の違反(predecessor を保持しない latest-only でも必ず検査する)
- * - `prev-hash-mismatch` — predecessor を渡された場合のみの連鎖検査(§6.3-6)
- * - `revived-after-delete` — deleted な predecessor の後続ステートメント
- *   (§4.2 の「削除後の再 active 化は禁止」— tombstone は終端。declared への
- *   遷移にも適用する — ベクター declared-after-delete)
- * - `declared-after-active` — active な predecessor の後続を declared にする
- *   ステートメント(§4.2 レイアウト v2 — 値の存在の巻き戻し表現を作らない。
- *   値を取り除く唯一の経路は削除)
- * - `layout-regression` — layoutVersion 2 の predecessor への v1 後続
- *   ステートメント(§4.2 の変数単位のレイアウト単調性 — 後退を許すと rename
- *   1 回でスキーマ欄が黙って消え、presence 保証 §14.2-8 が崩れる)
+ *   `author-role-insufficient-at-head` — authorization checks at the
+ *   declared head (§6.3-1/3; the role floor is admin only for environment
+ *   deletion, member otherwise — §4.2 / AUTH_SPEC §12-3)
+ * - `author-environment-out-of-scope-at-head` — the author's scope at the
+ *   declared head does not contain the environment (§6.3's 3′ — both
+ *   variable meta and environment meta are environment-targeted;
+ *   2026-09-14 ES)
+ * - `prev-shape-mismatch` — a violation of the prev shape: empty at
+ *   metaVersion 1, 64 hex at > 1 (always checked, even latest-only without
+ *   a predecessor)
+ * - `prev-hash-mismatch` — the chaining check done only when a predecessor
+ *   is given (§6.3-6)
+ * - `revived-after-delete` — a successor statement to a deleted
+ *   predecessor (§4.2's "no re-activation after delete" — a tombstone is
+ *   terminal. Also applies to a transition to declared — the
+ *   declared-after-delete vector)
+ * - `declared-after-active` — a statement that declares the successor of
+ *   an active predecessor (§4.2 layout v2 — never express a rollback of a
+ *   value's existence. The only path that removes a value is deletion)
+ * - `layout-regression` — a v1 successor statement to a layoutVersion 2
+ *   predecessor (§4.2's per-variable layout monotonicity — allowing a
+ *   regression would let a single rename silently erase the schema
+ *   column, breaking the presence guarantee §14.2-8)
  *
- * エポック整合(値の environment-not-created / epoch-not-current)に相当する
- * 理由は**存在しない**: メタはエポックアンカーを持たず(§4.2)、前進
- * meta_version への注入は v1 未検出の既知残余(§14.3-5)。
+ * There is **no** reason corresponding to epoch consistency (the value's
+ * environment-not-created / epoch-not-current): metadata carries no epoch
+ * anchor (§4.2), and injection into an advanced meta_version is the known
+ * residual of an undetected v1 (§14.3-5).
  */
 export type MetaInvalidReason =
   | "signature-invalid"
@@ -142,60 +166,78 @@ export type MetaInvalidReason =
   | "layout-regression";
 
 /**
- * Reason codes for rejecting a distributed environment manifest (CRYPTO_SPEC
- * §4.3 / §6.3 — env-manifest.json の rule negative が固定する語彙)。
- * メタステートメント(MetaInvalidReason)との本質的な差はエポックアンカー:
+ * Reason codes for rejecting a distributed environment manifest
+ * (CRYPTO_SPEC §4.3 / §6.3 — the vocabulary fixed by the rule negatives of
+ * env-manifest.json). The essential difference from metadata statements
+ * (MetaInvalidReason) is the epoch anchor:
  *
- * - `signature-invalid` — valid-format の Ed25519 検証失敗
- * - `issuer-unknown` — チェーン履歴のどの時点にも (issuer_user_id, 鍵 FP) の
- *   束縛が存在しない(検証鍵を選択できない)
- * - `chain-head-mismatch` / `chain-head-future` — 宣言ヘッドの不一致 2 種
- *   (§6.3-2a / -2b。値・メタと同じ区別 — future は再同期の入口)
+ * - `signature-invalid` — Ed25519 verification of a valid-format input failed
+ * - `issuer-unknown` — no point in chain history has a binding of
+ *   (issuer_user_id, key FP) (no verification key can be selected)
+ * - `chain-head-mismatch` / `chain-head-future` — the two ways a declared
+ *   head mismatches (§6.3-2a / -2b; same distinction as values and meta —
+ *   future is the entry point for resync)
  * - `issuer-not-member-at-head` / `issuer-key-mismatch-at-head` /
- *   `issuer-role-insufficient-at-head` — 宣言ヘッド時点の認可検査(§6.3-1/3。
- *   発行契機はすべて member 以上のメタ操作 — §4.3)
- * - `issuer-environment-out-of-scope-at-head` — 宣言ヘッド時点の issuer の scope が
- *   当該環境を含まない(§6.3 の 3′ — role 検査の直後・prev / エポック検査の前。2026-09-14 ES)
+ *   `issuer-role-insufficient-at-head` — authorization checks at the
+ *   declared head (§6.3-1/3; every issuance trigger is a member-or-above
+ *   meta operation — §4.3)
+ * - `issuer-environment-out-of-scope-at-head` — the issuer's scope at the
+ *   declared head does not contain the environment (§6.3's 3′ — right
+ *   after the role check, before the prev / epoch checks; 2026-09-14 ES)
  * - `checkpoint-binding-mismatch` / `checkpoint-equivocation` /
  *   `environment-not-created-at-head` / `epoch-not-current-at-head` —
- *   エポック整合(§4.3 (2)):
- *   検証済みチェーン上に当該 (environment_id, manifest_version) の `checkpoint`
- *   タプルが存在すれば、その (epoch, manifest_sig_hash) と完全一致必須(不一致 =
- *   binding-mismatch。strict は代替経路にならない)。同座標に相違タプルが併存
- *   すれば equivocation の硬い証拠として拒否。タプルが無い場合のみ宣言ヘッド
- *   時点の現エポックとの strict 一致(env 未作成 / エポック不一致の 2 理由)
- * - `checkpoint-regressed` — チェックポイント整合の規則 1(§6.3 / §4.3 (4)):
- *   manifestVersion または epoch が当該環境の最新 `checkpoint` 基準を下回る配布
- *   (チェックポイント済み状態からの巻き戻し)
- * - `env-meta-mismatch` — (env_meta_version, env_meta_sig_hash_hex) が検証済み
- *   環境メタステートメントと不一致(AUTH_SPEC §12-5 (7) の再計算対象)
- * - `variables-digest-mismatch` — 検証済みステートメント集合(tombstone 込み)
- *   からの variables_digest 再計算が不一致 = 欠落・注入・順序違反(§4.3 (3))
- * - `prev-shape-mismatch` — manifestVersion 1 は空 / > 1 は 64 hex という prev の
- *   形の違反(predecessor を保持しない latest-only でも必ず検査する)
- * - `prev-hash-mismatch` / `epoch-regressed` — predecessor(検証済みの直前
- *   マニフェスト)を渡された場合のみの連鎖・エポック単調性検査(値の §4.1 と
- *   同型 — rotate 後に旧エポックを焼き込んだ前進 manifestVersion の検出)
+ *   epoch consistency (§4.3 (2)):
+ *   if a `checkpoint` tuple for that (environment_id, manifest_version)
+ *   exists on the verified chain, its (epoch, manifest_sig_hash) must
+ *   match exactly (a mismatch is binding-mismatch; strict is not an
+ *   alternative path). A differing tuple coexisting at the same
+ *   coordinates is rejected as hard evidence of equivocation. Only when
+ *   no tuple exists, a strict match against the current epoch at the
+ *   declared head (the 2 reasons: env not created / epoch mismatch)
+ * - `checkpoint-regressed` — rule 1 of checkpoint consistency (§6.3 /
+ *   §4.3 (4)): a distribution whose manifestVersion or epoch falls below
+ *   the environment's latest `checkpoint` basis (a rollback from a
+ *   checkpointed state)
+ * - `env-meta-mismatch` — (env_meta_version, env_meta_sig_hash_hex) does
+ *   not match the verified environment meta statement (the recomputation
+ *   target of AUTH_SPEC §12-5 (7))
+ * - `variables-digest-mismatch` — recomputing variables_digest from the
+ *   verified statement set (tombstones included) does not match =
+ *   omission, injection, or an ordering violation (§4.3 (3))
+ * - `prev-shape-mismatch` — a violation of the prev shape: empty at
+ *   manifestVersion 1, 64 hex at > 1 (always checked, even latest-only
+ *   without a predecessor)
+ * - `prev-hash-mismatch` / `epoch-regressed` — chaining / epoch-
+ *   monotonicity checks done only when a predecessor (the previous
+ *   verified manifest) is given (isomorphic to §4.1 for values — detects
+ *   an advanced manifestVersion that baked in an old epoch after a
+ *   rotation)
  */
 /**
  * Reason codes for rejecting a distributed head attestation (CRYPTO_SPEC
- * §6.6 — head-attestation.json の rule negative が固定する語彙)。
- * 値・メタと同じヘッド束縛の 2 種区別を持つが、照合(§6.3 ヘッドゴシップ)での
- * 扱いが異なる:
+ * §6.6 — the vocabulary fixed by the rule negatives of
+ * head-attestation.json). It shares the same 2-way head-binding
+ * distinction as values and meta, but is treated differently at
+ * reconciliation (§6.3 head gossip):
  *
- * - `signature-invalid` — valid-format の Ed25519 検証失敗(照合材料にしない)
- * - `attester-unknown` — チェーン履歴のどの時点にも (attester_user_id, 鍵 FP) の
- *   束縛が存在しない(検証鍵を選択できない。照合材料にしない)
- * - `chain-head-mismatch` — 申告 seq は自ビュー内だが保存ハッシュと不一致
- *   (§6.3-2a / §6.6 照合 (a): **署名は検証済み**なので、申告自体が分岐
- *   (equivocation)または attester 鍵漏洩の硬い証拠 — 当該同期の成果物の使用を
- *   中断し、証拠を保存する)
- * - `chain-head-future` — 申告 seq が自ビューのヘッドより先(§6.3-2b / §6.6
- *   照合 (b): 有界再同期で延長として解決すれば正常、解決しなければ (a))
+ * - `signature-invalid` — Ed25519 verification of a valid-format input
+ *   failed (not used as reconciliation material)
+ * - `attester-unknown` — no point in chain history has a binding of
+ *   (attester_user_id, key FP) (no verification key can be selected; not
+ *   used as reconciliation material)
+ * - `chain-head-mismatch` — the declared seq is within our view but does
+ *   not match the stored hash (§6.3-2a / §6.6 reconciliation (a): since
+ *   **the signature is verified**, the declaration itself is hard
+ *   evidence of a fork (equivocation) or a leaked attester key — stop
+ *   using that sync's artifacts and preserve the evidence)
+ * - `chain-head-future` — the declared seq is ahead of our view's head
+ *   (§6.3-2b / §6.6 reconciliation (b): normal if it resolves as an
+ *   extension via bounded resync; otherwise (a))
  * - `attester-not-member-at-head` / `attester-key-mismatch-at-head` —
- *   申告ヘッド時点(inclusive)の在籍・鍵束縛の不一致(§6.6 (1)/(2)。照合材料に
- *   しない)。必要 role の下限は reader(全メンバーが申告できる — §6.3)なので
- *   role 不足の理由コードは存在しない
+ *   membership / key-binding mismatch at the declared head (inclusive)
+ *   (§6.6 (1)/(2); not used as reconciliation material). The required
+ *   role floor is reader (every member may attest — §6.3), so there is
+ *   no insufficient-role reason code
  */
 export type AttestationInvalidReason =
   | "signature-invalid"
@@ -287,7 +329,7 @@ export type CryptoError =
   | { readonly kind: "MetaStatementInvalid"; readonly reason: MetaInvalidReason }
   /**
    * A metadata statement declares a wire `layoutVersion` beyond what this
-   * build supports (CRYPTO_SPEC §4.2 layout selection — 裁定 CR): the client
+   * build supports (CRYPTO_SPEC §4.2 layout selection — ruling CR): the client
    * must be updated. Checked **before** signature verification so an outdated
    * verifier fails with an honest "update required" error instead of a
    * signature failure that is indistinguishable from tampering.
@@ -302,8 +344,8 @@ export type CryptoError =
   | { readonly kind: "EnvManifestInvalid"; readonly reason: ManifestInvalidReason }
   /**
    * A head attestation failed verification (CRYPTO_SPEC §6.6): the attester
-   * signature, the declared chain head (2 種区別 — §6.3-2), or the head-time
-   * membership / key binding was rejected for `reason`.
+   * signature, the declared chain head (the 2-way distinction — §6.3-2), or
+   * the head-time membership / key binding was rejected for `reason`.
    */
   | { readonly kind: "HeadAttestationInvalid"; readonly reason: AttestationInvalidReason }
   /** Chain verification failed at entry `seq` for `reason`. */

@@ -1,7 +1,8 @@
-// CRYPTO_SPEC §6: メンバーシップログ(署名付きハッシュチェーン)の型。
+// CRYPTO_SPEC §6: types of the membership log (a signed hash chain).
 //
-// アイデンティティ規則(絶対): 主体識別は内部 user_id と鍵フィンガープリントのみ。
-// GitHub ID 等のプロバイダ情報・メールアドレスをこの構造に入れてはならない。
+// Identity rule (absolute): actors are identified by internal user_id and key
+// fingerprint only. Provider information such as GitHub IDs and email
+// addresses must never enter this structure.
 
 import type { ChainDevice } from "./chain-device.ts";
 import type { MemberScope, ScopePayloadFields } from "./member-scope.ts";
@@ -10,8 +11,9 @@ import type { MemberScope, ScopePayloadFields } from "./member-scope.ts";
 export type Role = "owner" | "admin" | "member" | "reader";
 
 /**
- * Chain operation kind (CRYPTO_SPEC §6.2 — 2026-09-14 PF1 で四眼の 4 op、2026-09-19 DK で
- * 端末鍵の 2 op `add_device` / `revoke_device` を追加).
+ * Chain operation kind (CRYPTO_SPEC §6.2 — the 4 four-eyes ops added at
+ * 2026-09-14 PF1, the 2 device-key ops `add_device` / `revoke_device` at
+ * 2026-09-19 DK).
  */
 export type ChainOp =
   | "genesis"
@@ -43,7 +45,7 @@ export type ApprovalTargetOp =
   | "add_member"
   | "set_approval_policy";
 
-/** The closed set of `ApprovalTargetOp` (payload 構造検査と CLI の入力検査が共有する). */
+/** The closed set of `ApprovalTargetOp` (shared by the payload structure check and the CLI's input validation). */
 export const APPROVAL_TARGET_OPS: readonly ApprovalTargetOp[] = [
   "grant_server",
   "revoke_server",
@@ -83,7 +85,8 @@ export interface RemoveMemberPayload {
 
 /**
  * `change_role` payload (CRYPTO_SPEC §6.2): the new (role, scope) pair replaces
- * the target's current pair in full (縮小分は §7 の rotate 義務、拡大分はバックフィル).
+ * the target's current pair in full (the shrunk part carries the §7 rotate
+ * duty; the grown part is a backfill).
  */
 export interface ChangeRolePayload extends ScopePayloadFields {
   readonly targetUserId: string;
@@ -181,7 +184,7 @@ export interface CheckpointEnvironmentEntry {
   readonly manifestVersion: number;
   /** SHA-256 (lowercase hex) of the manifest's signed bytes (§4.3). */
   readonly manifestSigHashHex: string;
-  /** Canonical env values digest (lowercase hex — §6.2 の values_digest). */
+  /** Canonical env values digest (lowercase hex — §6.2's values_digest). */
   readonly valuesDigestHex: string;
 }
 
@@ -203,14 +206,14 @@ export interface CheckpointPayload {
 }
 
 /**
- * `set_approval_policy` payload (CRYPTO_SPEC §6.2 — PF1 四眼): the target op set
+ * `set_approval_policy` payload (CRYPTO_SPEC §6.2 — PF1 four-eyes): the target op set
  * (canonicalized as a nested length-prefixed list whose lowercase-hex form is
  * the first field — list order is part of the signed bytes) and the required
  * number of distinct owner signatures. `requiredApprovals` is 0 (policy off)
  * or at least 2; enabling requires the current owner count to reach it
  * (`approval-quorum-unreachable`). While a policy is active, this op itself
  * and every owner-establishing `add_member` / `change_role` are targets
- * regardless of `ops` (方針の単調性).
+ * regardless of `ops` (policy monotonicity).
  */
 export interface SetApprovalPolicyPayload {
   readonly ops: readonly ApprovalTargetOp[];
@@ -257,10 +260,10 @@ export interface WithdrawPayload {
  * with its cap. Canonical field order `[enc_pub_hex, sig_pub_hex, role_cap,
  * scope_kind, scope_environments_lp_hex]`; the scope pair uses the same encoding
  * and structure rules as the member scope. Consensus: the actor's current device
- * signs (any role — reader も可), the keys must not collide with any current
+ * signs (any role — readers included), the keys must not collide with any current
  * member's device keys (`duplicate-member-key`), listed environments must exist
  * (`unknown-environment`), and the cap must not exceed the signing device's own
- * cap (`device-cap-exceeded` — 原則 D2).
+ * cap (`device-cap-exceeded` — principle D2).
  */
 export interface AddDevicePayload extends ScopePayloadFields {
   readonly encPubHex: string;
@@ -318,7 +321,7 @@ export type ChainEntry = UnsignedChainEntry & { readonly signatureHex: string };
 /**
  * A current member derived from a verified chain (§6.2): the **person** — role and
  * environment scope — and the set of device keys it currently holds (2026-09-19
- * DK: 鍵は端末に属し、権限は人に属する). There is no "the member's key": every
+ * DK: keys belong to devices; permission belongs to the person). There is no "the member's key": every
  * signature is attributed to one device (`devices` keyed by fingerprint), and the
  * permission a signature carries is the device's effective permission
  * (`effectivePermissionOf` — chain-device.ts), never the person's raw (role, scope).
@@ -327,9 +330,9 @@ export type ChainEntry = UnsignedChainEntry & { readonly signatureHex: string };
 export interface ChainMember {
   readonly userId: string;
   readonly role: Role;
-  /** Environment scope (CRYPTO_SPEC §6.2 — R(E) / 環境対象 op / §6.3 の 3′ の入力). */
+  /** Environment scope (CRYPTO_SPEC §6.2 — the input of R(E) / environment-targeting ops / §6.3's 3′). */
   readonly scope: MemberScope;
-  /** Active device keys, keyed by key fingerprint (§6.2 の検証状態 — 端末集合). */
+  /** Active device keys, keyed by key fingerprint (the §6.2 verification state — the device set). */
   readonly devices: ReadonlyMap<string, ChainDevice>;
 }
 
@@ -341,11 +344,11 @@ export interface ApprovalPolicy {
 }
 
 /**
- * One element of a proposal's signer set S (CRYPTO_SPEC §6.2 原則 2): an
+ * One element of a proposal's signer set S (CRYPTO_SPEC §6.2 principle 2): an
  * accepted `approve` signature identified by the approver's user id and the
  * key fingerprint the entry was signed with. A vote is bound to that key —
  * an approver removed and re-added with a new key no longer carries it
- * (2026-09-15 — 鍵更新は侵害鍵の票を失効させる).
+ * (2026-09-15 — a key change lapses the compromised key's votes).
  */
 export interface ApprovalVote {
   readonly userId: string;
@@ -353,11 +356,13 @@ export interface ApprovalVote {
 }
 
 /**
- * One pending proposal derived from a verified chain (CRYPTO_SPEC §6.2 の
- * 検証状態 — 提案 hash → 提案者・内側 op・期限・投票者). `approvals` records the
+ * One pending proposal derived from a verified chain (the CRYPTO_SPEC §6.2
+ * verification state — proposal hash → proposer, inner op, expiry, voters).
+ * `approvals` records the
  * accepted `approve` signatures in order; the vote count is never read from
  * this record alone but recomputed at every `approve` against the members
- * current at that entry (原則 2 — 離脱済み・鍵更新済み投票者の票は数えない).
+ * current at that entry (principle 2 — votes of departed or re-keyed voters
+ * are not counted).
  */
 export interface PendingProposal {
   readonly proposalSeq: number;
@@ -367,9 +372,9 @@ export interface PendingProposal {
   readonly proposerKeyFingerprintHex: string;
   /**
    * The proposer's role at proposal time. `owner` puts the proposal signature
-   * into the signer set S (owner の提案は 1 票 — CRYPTO_SPEC §6.2); any other
+   * into the signer set S (an owner's proposal is 1 vote — CRYPTO_SPEC §6.2); any other
    * role does not, and a later promotion to owner does not change that (the
-   * promoted proposer may append an `approve` instead — 2026-09-15 裁定 ②).
+   * promoted proposer may append an `approve` instead — 2026-09-15 ruling ②).
    */
   readonly proposerRoleAtProposal: Role;
   readonly inner: ProposableOperation;
@@ -383,7 +388,7 @@ export interface ServerGrant {
   readonly serverEncPubHex: string;
   /**
    * Seq of the `grant_server` entry that established this active grant — it
-   * moves forward on a re-grant (CRYPTO_SPEC §6.3 の再 grant 二層規則). This
+   * moves forward on a re-grant (CRYPTO_SPEC §6.3's two-layer re-grant rule). This
    * is the sole source of `server.lease_issued`'s `grant_chain_seq` (AUDIT_SPEC
    * §3.5): deriving it here keeps the re-grant rules in the chain verifier
    * rather than duplicating them in the server.
@@ -397,8 +402,9 @@ export interface ServerGrant {
 /**
  * One environment derived from a verified chain (CRYPTO_SPEC §6.2 / §6.3):
  * its existence (`create_environment`), the current epoch, the seq at which
- * each epoch became current (§6.3 の「各エポックの有効区間(開始 seq)」 —
- * §4.1 の値検証の入力), and the §5.2 DEK commitment per epoch.
+ * each epoch became current (§6.3's "valid interval of each epoch (start
+ * seq)" — the input of §4.1 value verification), and the §5.2 DEK
+ * commitment per epoch.
  */
 export interface EnvironmentChainState {
   readonly currentEpoch: number;
@@ -412,8 +418,9 @@ export interface EnvironmentChainState {
 
 /**
  * The latest `checkpoint` tuple covering one environment, derived from a
- * verified chain (CRYPTO_SPEC §6.2 の検証状態 / §6.3 チェックポイント整合の
- * 環境ごとの基準). `seq` is the checkpoint entry that carried the tuple.
+ * verified chain (the CRYPTO_SPEC §6.2 verification state / the per-environment
+ * baseline of §6.3 checkpoint integrity). `seq` is the checkpoint entry that
+ * carried the tuple.
  */
 export interface EnvironmentCheckpointState {
   readonly seq: number;
@@ -443,7 +450,7 @@ export interface ChainState {
   readonly checkpoints: ReadonlyMap<string, EnvironmentCheckpointState>;
   /** Active four-eyes policy (CRYPTO_SPEC §6.2), or `null` when off. */
   readonly approvalPolicy: ApprovalPolicy | null;
-  /** Pending proposals keyed by the `propose` entry hash (§6.2 の検証状態). */
+  /** Pending proposals keyed by the `propose` entry hash (the §6.2 verification state). */
   readonly pendingProposals: ReadonlyMap<string, PendingProposal>;
   readonly headSeq: number;
   readonly headHashHex: string;

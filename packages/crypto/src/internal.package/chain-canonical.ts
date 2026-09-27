@@ -1,18 +1,23 @@
-// CRYPTO_SPEC §6.1: チェーンエントリの正規化(決定論的シリアライズ)。
-// 実体は test-vectors/chain-entries.json の canonicalization 定義で固定されている:
+// CRYPTO_SPEC §6.1: normalization of chain entries (deterministic serialization).
+// The substance is pinned by the canonicalization definition in
+// test-vectors/chain-entries.json:
 //   signed_bytes = LP(suite, seq, prev_hash_hex, op, actor_user_id,
 //                     actor_key_fingerprint_hex, payload_bytes, timestamp_ms)
-//   payload_bytes = LP(op ごとの固定フィールド順) を 1 フィールドとして埋め込む(入れ子 LP)
-//   entry_bytes  = LP(signed_bytes の 8 フィールド, signature_hex)
+//   payload_bytes = LP(the op's fixed field order), embedded as a single field (nested LP)
+//   entry_bytes  = LP(the 8 fields of signed_bytes, signature_hex)
 //   entry_hash   = SHA-256(entry_bytes)
-// バイナリ値(prev_hash / 公開鍵 / FP / 署名)は hex 小文字文字列として LP に載せる。
-// grant_server の scope_environments は環境 ID リストの LP の hex 文字列(入れ子 LP)。
-// grant_server の lease_policy は 3 段の入れ子 LP の hex 文字列(§6.2)。
-// checkpoint の environments は環境タプルリストの入れ子 LP の hex 文字列(§6.2)。
-// add_member / change_role の scope、set_approval_policy の ops は環境 ID / op 名リストの
-// 入れ子 LP の hex、propose の内側 payload は内側 op の payload_bytes の hex(2026-09-14)。
-// add_device の scope は member scope と同じ入れ子 LP、revoke_device の device_fingerprints
-// は FP リストの入れ子 LP の hex(2026-09-19 DK — §6.2)。
+// Binary values (prev_hash / public keys / FP / signature) go onto the LP as
+// lowercase hex strings.
+// grant_server's scope_environments is the hex string of the LP of the
+// environment id list (nested LP).
+// grant_server's lease_policy is the hex string of a 3-level nested LP (§6.2).
+// checkpoint's environments is the hex string of a nested LP of environment
+// tuples (§6.2).
+// add_member / change_role's scope and set_approval_policy's ops are the hex
+// of a nested LP of the environment-id / op-name list; propose's inner payload
+// is the hex of the inner op's payload_bytes (2026-09-14).
+// add_device's scope is the same nested LP as member scope; revoke_device's
+// device_fingerprints is the hex of a nested LP of the FP list (2026-09-19 DK — §6.2).
 
 import { encodeHex } from "./bytes.ts";
 import type {
@@ -85,8 +90,8 @@ export function canonicalChainPayloadBytes(operation: ChainOperation): Uint8Arra
       return encodeLengthPrefixed([p.encPubHex, p.sigPubHex]);
     }
     case "add_member": {
-      // 2026-09-14 ES: scope_kind / scope_environments_lp_hex を末尾に追加(§6.2)。
-      // scope の環境リストは grant_server の scope と同じ入れ子 LP の hex
+      // 2026-09-14 ES: scope_kind / scope_environments_lp_hex appended at the end (§6.2).
+      // The scope's environment list is the same nested-LP hex as grant_server's scope
       const p = operation.payload;
       return encodeLengthPrefixed([
         p.targetUserId,
@@ -136,8 +141,9 @@ export function canonicalChainPayloadBytes(operation: ChainOperation): Uint8Arra
       const environmentsLpHex = encodeHex(canonicalCheckpointEnvironmentsBytes(p.environments));
       return encodeLengthPrefixed([environmentsLpHex, p.auditHeadHashHex]);
     }
-    // 四眼(2026-09-14 PF1 — §6.2)。ops は scope と同じ入れ子 LP の hex、内側 payload は
-    // 内側 op 自身の payload_bytes の hex(§6.1 の入れ子と同型 — 2 段以上の入れ子になりうる)
+    // Four-eyes (2026-09-14 PF1 — §6.2). ops is the same nested-LP hex as scope;
+    // the inner payload is the hex of the inner op's own payload_bytes
+    // (same shape as the §6.1 nesting — it can nest two or more levels deep)
     case "set_approval_policy": {
       const p = operation.payload;
       return encodeLengthPrefixed([encodeHex(encodeLengthPrefixed(p.ops)), p.requiredApprovals]);
@@ -154,9 +160,9 @@ export function canonicalChainPayloadBytes(operation: ChainOperation): Uint8Arra
     case "withdraw": {
       return encodeLengthPrefixed([operation.payload.proposalHashHex]);
     }
-    // 端末鍵(2026-09-19 DK — §6.2)。add_device = [enc_pub_hex, sig_pub_hex, role_cap,
-    // scope_kind, scope_environments_lp_hex]、revoke_device = [target_user_id,
-    // device_fingerprints_lp_hex](FP リストの入れ子 LP — 順序は署名対象)
+    // Device keys (2026-09-19 DK — §6.2). add_device = [enc_pub_hex, sig_pub_hex, role_cap,
+    // scope_kind, scope_environments_lp_hex]; revoke_device = [target_user_id,
+    // device_fingerprints_lp_hex] (nested LP of the FP list — order is signed over)
     case "add_device": {
       const p = operation.payload;
       return encodeLengthPrefixed([

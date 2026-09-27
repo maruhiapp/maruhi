@@ -1,5 +1,5 @@
-// internal.package の公開面。ここから再輸出したものだけが境界の外(src/index.ts)へ出る。
-// 公開 API は最小に保つ(CLAUDE.md)。
+// The public surface of internal.package. Only what is re-exported here escapes the
+// boundary (to src/index.ts). Keep the public API minimal (CLAUDE.md).
 
 export { decodeHex, encodeHex } from "./bytes.ts";
 export {
