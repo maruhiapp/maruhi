@@ -367,7 +367,7 @@ CRYPTO_SPEC §4 identifiers.
     parse → stringify round trip of `maruhi audit reconcile`])
   - **A pull returning 0 variables writes no row** (no ciphertext was
     distributed — the recording condition "ciphertext was returned in the
-    response" is unchanged. The old form also wrote 0 rows)
+    response" is unchanged)
   - **Do not split the row**: one row's payload is variable count × tens of
     bytes (with the 1,000-variable cap per environment [AUTH_SPEC §12-8], tens
     of KB — §5.3), inside the row size cap (2 MB). Splitting one pull into
@@ -381,15 +381,8 @@ CRYPTO_SPEC §4 identifiers.
     from the payload — stronger than §3.5 `server.lease_issued`'s
     environment-level row (which derives the active variables at issuance
     time), because variable IDs are explicit. §4.1 step 3's (a) decides by
-    expanding the aggregate row's enumeration (equivalent to the old form —
-    the implementation PR pins this by test)
-  - **Mixing with the old form**: rows written by pre-revision servers in the
-    1-variable-1-row form (variable_id non-NULL, payload without `variables`)
-    are not rewritten and not backfilled (§1-4). Old and aggregate forms
-    coexist in the same table; the discriminator is **`variable_id IS NULL`
-    (aggregate) / non-NULL (old)**. Every reader — §4's detection, §7's API
-    filters (`variable_id` — Q4), Web, CLI (`maruhi audit list` / `verify` /
-    `reconcile`), audit head — handles both forms
+    expanding the aggregate row's enumeration (the implementation PR pins
+    this by test)
   - **Visibility stays class 2** (§6 — the self-view [actor is self] judgment
     is by the actor column and unchanged). **The audit head** (§5.1) digests
     aggregate rows as aggregate rows (does not affect the semantics of the
@@ -662,8 +655,8 @@ works by a query change alone (no schema change needed — unchanged)
 |---|---|---|
 | Q1 | user_id → membership intervals and per-environment access windows (columns of chain.genesis / member_added / role_changed / member_removed; the scope in member_added / role_changed payloads are the window's open/close points — §4.1 step 2. 2026-09-15 K3 correction: role_changed added to the enumeration), and device windows (columns of chain.device_added / device_revoked — the payload's FP and cap are the device window's open/close points. §4.1's `revoke_device` variant. 2026-09-19 DK. `chain.device_added`'s target is the actor themself) | (target_user_id, seq) (unchanged) |
 | Q2 | Existence intervals of (variable × environment) (columns of var.created / deleted) | (variable_id, environment_id, seq) |
-| Q3 | user_id × period → distinct set of read (variable × environment) | (actor_user_id, seq) + event kind. **The aggregate form of `var.read` (§3.3 — 2026-09-02) obtains the (variable × environment) set by expanding the payload's `variables` enumeration** (unioned with the old form's column values. The index works on the per-actor rows, and the row count drops to 1/variable-count under aggregation) |
-| Q4 | (variable × environment) × period → list of principals who viewed / changed it (reverse lookup. For incident response) | Same index as Q2. **Because the aggregate `var.read` has no variable ID column**, environment-level rows (variable_id IS NULL, event = var.read) are narrowed to a seq range by the **value-existence interval (the first `var.version_pushed` to the last `var.deleted` in that environment)** before the payload's `variables` is inspected (a with-values pull returns all of the environment's active variables, so nearly every aggregate row in the interval contains the variable, and inspection is bounded by "page limit × payload length" — outside the interval not a single row is inspected. The lower bound is the value's first appearance, not `var.created`, because a declared variable that never held a value never appears in a pull — in that case the inspection itself is skipped). **Variable IDs are client-issued and the server's uniqueness unit is (environment, variable)**, so the interval is taken per environment and bounded by their union (don't miss the same ID deleted in environment A but alive in B; with an environment filter, only that environment's interval). §7's `variable_id` filter has the same shape (unioned with old-form column match) |
+| Q3 | user_id × period → distinct set of read (variable × environment) | (actor_user_id, seq) + event kind. **The aggregate form of `var.read` (§3.3 — 2026-09-02) obtains the (variable × environment) set by expanding the payload's `variables` enumeration** (the index works on the per-actor rows, and the row count drops to 1/variable-count under aggregation) |
+| Q4 | (variable × environment) × period → list of principals who viewed / changed it (reverse lookup. For incident response) | Same index as Q2. **Because the aggregate `var.read` has no variable ID column**, environment-level rows (variable_id IS NULL, event = var.read) are narrowed to a seq range by the **value-existence interval (the first `var.version_pushed` to the last `var.deleted` in that environment)** before the payload's `variables` is inspected (a with-values pull returns all of the environment's active variables, so nearly every aggregate row in the interval contains the variable, and inspection is bounded by "page limit × payload length" — outside the interval not a single row is inspected. The lower bound is the value's first appearance, not `var.created`, because a declared variable that never held a value never appears in a pull — in that case the inspection itself is skipped). **Variable IDs are client-issued and the server's uniqueness unit is (environment, variable)**, so the interval is taken per environment and bounded by their union (don't miss the same ID deleted in environment A but alive in B; with an environment filter, only that environment's interval). §7's `variable_id` filter has the same shape (unioned with the column match of other events that carry variable_id as a column) |
 | Q5 | Currently effective rotation.recommended − resolution events | event kind + (variable_id, environment_id, seq) |
 | Q6 | server key FP → grant intervals and scope (columns of chain.server_granted / revoked), plus in-period server.lease_issued (matched by actor_key_fingerprint = server key FP. The main input of §4.1 variant's (a) — 2026-08-12) + server.value_decrypted (reserved — §3.5) | (target_key_fingerprint, seq) + (actor_key_fingerprint, seq) |
 
@@ -782,14 +775,7 @@ CREATE INDEX ae_event  ON audit_events (event, seq);
   no ordinal distance and structurally cuts this inference. The D1-side tables
   (§5.2) carry the same column (their `seq` is a deployment-wide
   autoincrement, so ordinal distribution would infer activity volume across
-  tenants). Existing rows are backfilled by the introduction migration. On the
-  D1 side a deploy gap (after migration application, while old code is running
-  / on rollback) can write `row_id`-less rows, so a read that observes a NULL
-  `row_id` may idempotently re-apply the same backfill statement (deferred
-  backfill at read time) — this is numbering a synthetic identifier and does
-  not touch audit-content columns (compatible with §1-4's append-only). After
-  all deploys stabilize, a follow-up migration of NULL re-backfill + NOT NULL
-  constraint removes this deferral (handoff)
+  tenants). `row_id` is NOT NULL, and the append path always assigns it.
 
 ### 5.2 Placement of org / user events (§3.1–3.2): option comparison
 

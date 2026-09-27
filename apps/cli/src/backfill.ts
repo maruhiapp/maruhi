@@ -20,12 +20,11 @@ import type { VerifiedProject } from "./sync.ts";
 
 /**
  * 登録試行の結果(409 = 既存スロット)。`storedRecipientEncPubHex` は 409 が
- * 運ぶ占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6。追補以前の
- * サーバーは載せない = null)。
+ * 運ぶ占有ラップの保存済み受信者 enc 公開鍵(AUTH_SPEC §12-6)。
  */
 export type RegisterOutcome =
   | { readonly kind: "ok" }
-  | { readonly kind: "exists"; readonly storedRecipientEncPubHex: string | null };
+  | { readonly kind: "exists"; readonly storedRecipientEncPubHex: string };
 
 /** エポック単位 409 の解決(呼び出し側の意味論)。 */
 export type SlotConflictResolution = "already-registered" | "repaired";
@@ -98,12 +97,11 @@ export function backfillEnvironmentFor(input: {
   /**
    * エポック単位 409 の解決(省略 = 登録済み扱い)。member add の再追加修復は
    * ここで削除 → 再登録を行う(§12-6 の修復経路)。第 2 引数は 409 が運ぶ
-   * 占有ラップの保存済み受信者 enc 公開鍵(旧サーバーは null — フォールバック
-   * 判定の入力)。
+   * 占有ラップの保存済み受信者 enc 公開鍵。
    */
   readonly onSlotConflict?: (
     wrap: WrappedDek,
-    storedRecipientEncPubHex: string | null,
+    storedRecipientEncPubHex: string,
   ) => Effect.Effect<SlotConflictResolution, CliError>;
   /**
    * 包むエポック(省略 = 1〜現エポックの全部)。端末の欠けの補完(device-gaps.ts —
@@ -211,7 +209,7 @@ export function registerWraps(
         error instanceof DekWrapExistsError
           ? Effect.succeed<RegisterOutcome>({
               kind: "exists",
-              storedRecipientEncPubHex: error.storedRecipientEncPubHex ?? null,
+              storedRecipientEncPubHex: error.storedRecipientEncPubHex,
             })
           : Effect.fail(toCliError(error)),
       ),

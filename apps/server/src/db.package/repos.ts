@@ -969,8 +969,6 @@ function makeRecoveryRepo(db: Db, keyWraps: KeyWrapRepoShape): RecoveryRepoShape
               ciphertextHex: wrap.ciphertextHex,
               createdAt: nowMs,
               updatedAt: nowMs,
-              fetchWindowStart: null,
-              fetchCount: 0,
             })
             .onConflictDoUpdate({
               target: recoveryWraps.userId,
@@ -979,9 +977,6 @@ function makeRecoveryRepo(db: Db, keyWraps: KeyWrapRepoShape): RecoveryRepoShape
                 nonceHex: wrap.nonceHex,
                 ciphertextHex: wrap.ciphertextHex,
                 updatedAt: nowMs,
-                // 旧計数列(§13-3 の行内窓)は KL3 以降書かない — 常に初期値
-                fetchWindowStart: null,
-                fetchCount: 0,
               },
             }),
           userAuditInsert(db, nowMs, { event: "auth.recovery_code_reissued", actor }),

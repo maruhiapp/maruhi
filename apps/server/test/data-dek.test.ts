@@ -36,6 +36,7 @@ import {
   signEnvManifestAs,
   unwrapAndDecrypt,
   valuesDigestOf,
+  vectorKeyOf,
   wrapDekForAll,
   wrapDekTo,
 } from "./support/data-crypto.ts";
@@ -239,7 +240,9 @@ describe("DEK ラップの修復経路(§12-6: 削除 → 不足分再登録)", 
 
     // owner(admin スコープ × チェーン role owner ≥ admin)が READER 宛を削除
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: READER }],
+      wraps: [
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+      ],
     });
     expect(removed.status).toBe(204);
     const rows = await queryProjectDo(
@@ -289,7 +292,9 @@ describe("DEK ラップの修復経路(§12-6: 削除 → 不足分再登録)", 
     await createEnvironmentOk(fixture, ENV, "App");
     // member のデフォルト PAT はスコープ admin だがチェーン role が member → 403
     const asMember = await requestJson("DELETE", `/environments/${ENV}/deks`, token(MEMBER), {
-      wraps: [{ epoch: 1, recipientUserId: READER }],
+      wraps: [
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+      ],
     });
     expect(asMember.status).toBe(403);
     expect(((await asMember.json()) as { reason: string }).reason).toBe("insufficient-role");
@@ -297,13 +302,17 @@ describe("DEK ラップの修復経路(§12-6: 削除 → 不足分再登録)", 
     const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
     const ownerWrite = await cliToken(9001, writeScope);
     const scoped = await requestJson("DELETE", `/environments/${ENV}/deks`, ownerWrite, {
-      wraps: [{ epoch: 1, recipientUserId: READER }],
+      wraps: [
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+      ],
     });
     expect(scoped.status).toBe(403);
     expect(((await scoped.json()) as { reason: string }).reason).toBe("insufficient-permission");
     // 非メンバーにはプロジェクト自体を秘匿(404 — §11-2)
     const concealed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(STRANGER), {
-      wraps: [{ epoch: 1, recipientUserId: READER }],
+      wraps: [
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+      ],
     });
     expect(concealed.status).toBe(404);
     expect(((await concealed.json()) as { projectId: string }).projectId).toBe(projectId);
@@ -314,8 +323,8 @@ describe("DEK ラップの修復経路(§12-6: 削除 → 不足分再登録)", 
     // 1 件目は存在・2 件目が不存在 → 404(DekWrapNotFound)で、何も消えない
     const partial = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER },
-        { epoch: 1, recipientUserId: "user-nobody-0404" },
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        { epoch: 1, recipientUserId: "user-nobody-0404", recipientEncPubHex: "ab".repeat(32) },
       ],
     });
     expect(partial.status).toBe(404);
@@ -338,8 +347,8 @@ describe("DEK ラップの修復経路(§12-6: 削除 → 不足分再登録)", 
     // 同一タプルの重複列挙は 422(duplicate-recipient)
     const duplicated = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
-        { epoch: 1, recipientUserId: READER },
-        { epoch: 1, recipientUserId: READER },
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
       ],
     });
     expect(duplicated.status).toBe(422);
@@ -351,7 +360,11 @@ describe("DEK ラップの修復経路(§12-6: 削除 → 不足分再登録)", 
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     // エポック 1 の全ラップを削除 → 再登録は初回登録として完全一致を要求される
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: ALL_MEMBERS.map((recipientUserId) => ({ epoch: 1, recipientUserId })),
+      wraps: ALL_MEMBERS.map((recipientUserId) => ({
+        epoch: 1,
+        recipientUserId,
+        recipientEncPubHex: vectorKeyOf(recipientUserId).enc_pub_hex,
+      })),
     });
     expect(removed.status).toBe(204);
     const partial = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
@@ -411,6 +424,7 @@ describe("DEK ラップの修復経路(§12-6: 削除 → 不足分再登録)", 
       wraps: Array.from({ length: MAX_DEK_WRAPS_PER_REQUEST + 1 }, (_v, index) => ({
         epoch: 1,
         recipientUserId: `u${index}`,
+        recipientEncPubHex: "ab".repeat(32),
       })),
     });
     expect(oversized.status).toBe(422);
@@ -422,7 +436,9 @@ describe("DEK ラップの修復経路(§12-6: 削除 → 不足分再登録)", 
     const removedEnv = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removedEnv.status).toBe(204);
     const gone = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: [{ epoch: 1, recipientUserId: READER }],
+      wraps: [
+        { epoch: 1, recipientUserId: READER, recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex },
+      ],
     });
     expect(gone.status).toBe(404);
     // DekWrapNotFound({epoch, recipientUserId})ではなく EnvironmentNotFound({environmentId})

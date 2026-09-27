@@ -54,7 +54,7 @@ export interface EffectiveRotationFlag {
   readonly recommendedAtMs: number;
   /** 検出を起こした削除・降格 / 縮小・失効エントリの chain seq(payload から)。 */
   readonly triggerChainSeq: number;
-  /** 検出を起こした op(payload から。K3 前の保存行は target の有無から補完)。 */
+  /** 検出を起こした op(payload の trigger)。 */
   readonly trigger: RotationTrigger;
 }
 
@@ -588,9 +588,8 @@ function triggerOf(row: RotationFlagSourceRow): RotationTrigger {
   ) {
     return trigger;
   }
-  // K3(2026-09-15)前の保存行は trigger を持たない: 当時の変種は remove_member /
-  // revoke_server の 2 つだけなので target 列の種類から一意に補完できる
-  return row.targetKeyFingerprintHex === null ? "remove_member" : "revoke_server";
+  // 書き手はこのサーバーだけで、trigger は常に載る — 無い・未知の行は破損(defect)
+  throw new Error(`rotation.recommended row has no valid trigger: ${String(trigger)}`);
 }
 
 /** recommended 行の payload から検出時の値を読む(サーバー自身が書いた行 — 型は防御的に確認)。 */

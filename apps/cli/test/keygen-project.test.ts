@@ -28,7 +28,12 @@ async function loggedInEnv(origin: string, userId: string): Promise<TestEnv> {
   await seedConfig(env, { server: origin });
   env.keychain.set(
     tokenEntryName(origin),
-    JSON.stringify({ token: "maruhi_pat_stored", userId, tokenId: "tok_1" }),
+    JSON.stringify({
+      token: "maruhi_pat_stored",
+      userId,
+      tokenId: "tok_1",
+      expiresAtMs: 4_102_444_800_000,
+    }),
   );
   return env;
 }
@@ -292,6 +297,7 @@ describe("maruhi project verify", () => {
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: built.hashes[built.hashes.length - 1],
+          attestations: [],
         },
       })),
     ]);

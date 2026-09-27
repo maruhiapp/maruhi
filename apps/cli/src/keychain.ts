@@ -71,11 +71,9 @@ export interface StoredToken {
   readonly tokenId: string;
   /**
    * 発行時に固定された有効期限(AUTH_SPEC §6 — W3a)。期限接近の事前警告
-   * (W3a 裁定 CL — 無通信のローカル判定)に使う非機密メタデータ。W3a より前の
-   * ログインが書いたレコードには無い(欠落 = 警告なしで従来どおり動く。
-   * 再ログインで付く)。
+   * (W3a 裁定 CL — 無通信のローカル判定)に使う非機密メタデータ。
    */
-  readonly expiresAtMs?: number;
+  readonly expiresAtMs: number;
 }
 
 /**
@@ -182,13 +180,11 @@ function storedRecordPlaceholderCause(kind: KeychainKind): string {
  * トークンレコードに伏字が保存されていたときの文言。
  *
  * 復旧手段は**レコードの種類で違う**ので分けている。トークンは `maruhi login`
- * が無条件に上書きするため、旧ビルドが書いたレコードなら再ログインで直る
- * (直らないと書き切ると、唯一の 1 コマンド復旧から利用者を遠ざけてしまう)。
- * ただし現行版に不具合が残っていれば同じ伏字を書き直すだけなので、再発したら
- * それが判断材料になることまで書く。
+ * が無条件に上書きするため、再ログインで直る。不具合が残っていれば同じ伏字を
+ * 書き直すだけなので、再発したらそれが判断材料になることまで書く。
  */
 export function redactedPlaceholderTokenMessage(kind: KeychainKind): string {
-  return `${storedRecordPlaceholderCause(kind)}. If an older maruhi wrote the record, \`maruhi login\` overwrites it correctly. If it recurs after re-login, the bug is in the current version — report it`;
+  return `${storedRecordPlaceholderCause(kind)}. \`maruhi login\` overwrites it. If it recurs after re-login, it is a maruhi bug — report it`;
 }
 
 /**
@@ -404,16 +400,15 @@ export function parseStoredToken(json: string): StoredToken | null {
       nonEmptyString(value["token"]) &&
       !isRedactedPlaceholder(value["token"]) &&
       nonEmptyString(value["userId"]) &&
-      nonEmptyString(value["tokenId"])
+      nonEmptyString(value["tokenId"]) &&
+      typeof value["expiresAtMs"] === "number" &&
+      Number.isFinite(value["expiresAtMs"])
     ) {
-      // expiresAtMs は後方互換の optional(W3a 裁定 CL): 欠落・数値以外は
-      // 「不明」に畳む(警告が出ないだけで、レコードを壊れ扱いにしない)
-      const expiresAtMs = value["expiresAtMs"];
       return {
         token: Redacted.make(value["token"], { label: "maruhi-token" }),
         userId: value["userId"],
         tokenId: value["tokenId"],
-        ...(typeof expiresAtMs === "number" && Number.isFinite(expiresAtMs) ? { expiresAtMs } : {}),
+        expiresAtMs: value["expiresAtMs"],
       };
     }
     return null;
@@ -435,7 +430,7 @@ export function serializeStoredToken(record: StoredToken): string {
     token: Redacted.value(record.token),
     userId: record.userId,
     tokenId: record.tokenId,
-    ...(record.expiresAtMs === undefined ? {} : { expiresAtMs: record.expiresAtMs }),
+    expiresAtMs: record.expiresAtMs,
   });
 }
 

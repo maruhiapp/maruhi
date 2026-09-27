@@ -301,45 +301,6 @@ describe("maruhi guardian add", () => {
     expect(server.requests.some((r) => r.path === "/auth/recovery")).toBe(false);
   });
 
-  it("台帳が端末鍵の複製(pre-DK)なら `key recovery` を先に案内し、登録しない", async () => {
-    let createSeen = false;
-    // 台帳が ward の端末鍵そのものをラップしている(旧 master 鍵)
-    const secret = crypto.getRandomValues(new Uint8Array(32));
-    const wrapped = await wrapMasterSecret({
-      recoverySecret: secret,
-      userId: ward.userId,
-      masterSecretBlob: new TextEncoder().encode(serializeStoredMasterKey(recordOf(ward))),
-    });
-    if (!wrapped.ok) throw new Error("test wrap failed");
-    const { env } = await startEnv(
-      [
-        chainHandlerOf(built),
-        onRequest("GET", "/auth/recovery", () => ({
-          status: 200,
-          json: {
-            suite: "maruhi/v1",
-            nonceHex: Buffer.from(wrapped.value.nonce).toString("hex"),
-            ciphertextHex: Buffer.from(wrapped.value.ciphertext).toString("hex"),
-            updatedAtMs: 1754006400000,
-          },
-        })),
-        createHandler(() => {
-          createSeen = true;
-        }),
-      ],
-      ward,
-    );
-    env.setPromptResponses([
-      await lastWordOf(alice),
-      Redacted.value(formatRecoveryCode(Redacted.make(secret))),
-    ]);
-    expect(await runCli(["guardian", "add", "--mode", "any", alice.userId], env.layer)).toBe(1);
-    expect(createSeen).toBe(false);
-    expect(env.errors.join("\n")).toContain(
-      "The recovery ledger holds a copy of this device's key (an install from before device keys), not a separate reserve key. Run `maruhi key recovery` first: it creates a reserve key, seals it with a new recovery code and replaces the ledger. Then re-run `maruhi guardian add …`",
-    );
-  });
-
   it("非メンバー・自分自身・重複・all の 1 人は送信前に落ちる", async () => {
     const { env, server } = await startEnv([chainHandlerOf(built), createHandler(() => {})], ward);
     expect(await runCli(["guardian", "add", "--mode", "any", "user-stranger"], env.layer)).toBe(1);
