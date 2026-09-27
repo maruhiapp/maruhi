@@ -1,282 +1,282 @@
-# 競合比較 — maruhi vs Phase / Infisical / Doppler / Shelve / Keyway
+# Competitive comparison — maruhi vs Phase / Infisical / Doppler / Shelve / Keyway
 
-Status: 2026-09-04 起草(内部メモ。ADR-0014 Context の競合整理〔2026-08-07〕を、各社の公開情報で裏取りして更新したもの)。
-競合側の事実は各社の公式サイト・docs・GitHub を 2026-09-04 時点で確認した。**[未確認]** と付けた項目は公開情報から確定できなかったもの。
-maruhi 側の事実は CRYPTO_SPEC / AUTH_SPEC / ADR / ROADMAP / SELF_HOSTING の現状に基づく(pre-release。招待制ベータ前)。
+Status: 2026-09-04 draft (internal memo. The competitor roundup in ADR-0014 Context〔2026-08-07〕re-verified against each company's public information and updated).
+Competitor facts were checked on each company's official site, docs, and GitHub as of 2026-09-04. Items marked **[unverified]** could not be confirmed from public information.
+maruhi-side facts are based on the current state of CRYPTO_SPEC / AUTH_SPEC / ADR / ROADMAP / SELF_HOSTING (pre-release; before the invite-only beta).
 
-> **訂正**: 依頼で挙がった `keyway.ai` は商業不動産向け AI 企業(KeyDocs / KeyComps 等)で、シークレット管理の Keyway ではない。
-> シークレット管理の Keyway は **`keyway.sh`**(GitHub org `keywaysh`)。本書はそちらを扱う。
+> **Correction**: the `keyway.ai` raised in the request is an AI company for commercial real estate (KeyDocs / KeyComps etc.), not the secrets-management Keyway.
+> The secrets-management Keyway is **`keyway.sh`** (GitHub org `keywaysh`). This document covers the latter.
 
 ---
 
-## 0. 結論(先に全体像)
+## 0. Conclusion (the big picture first)
 
-maruhi の差は「機能の数」ではなく **信頼モデルの既定値** にある。5 社を「誰が平文を見られるか」で並べると次のようになる。
+maruhi's difference is not "feature count" but the **default trust model**. Ordering the 5 companies by "who can read the plaintext":
 
-| | 既定の暗号モデル | 運営(サーバー)は値を読めるか | 復号器を配る Web があるか |
+| | Default encryption model | Can the operator (server) read values? | Is there an operator-served Web that ships a decryptor? |
 |---|---|---|---|
-| **maruhi** | **E2EE(ゼロ知識)が既定**。サーバーはプロジェクト単位・owner 署名のオプトイン(`grant_server`)でのみ「メンバー N+1」になる | **読めない**(grant した環境の DEK のみ例外。grant 中は常時明示) | **ない**(ADR-0018: hosted Web は鍵・平文を持たない。復号は各人の CLI のみ) |
-| Phase | E2EE が既定。ただし同期・REST API・外部 ID には SSE(環境ルート鍵のサーバー保存)の有効化が必要 | 既定は読めない。SSE 有効化で読める | ある(Web コンソールがブラウザ内で復号) |
-| Infisical | **サーバー側暗号化**(2023-06 に E2EE を廃止) | 読める | ある(ダッシュボードは平文を受け取る) |
-| Doppler | **サーバー側暗号化**(GCP KMS/HSM でラップ) | 読める(Enterprise の EKM で顧客 KMS 経由に限定可) | ある |
-| Shelve | **サーバー側暗号化**(プロジェクト DEK + プラットフォーム KEK) | 読める | ある |
-| Keyway (.sh) | **サーバー側暗号化**(分離した Go 暗号サービス。「ゼロ知識ではない」と自ら明記) | 読める(「運営を信頼することになる」と threat model に明記) | ある |
+| **maruhi** | **E2EE (zero-knowledge) by default**. The server becomes "member N+1" only via a per-project, owner-signed opt-in (`grant_server`) | **Cannot** (exception: DEKs of granted environments only; grants are always displayed) | **None** (ADR-0018: hosted Web holds neither keys nor plaintext. Decryption happens only in each user's CLI) |
+| Phase | E2EE by default. However sync, REST API, and external identities require enabling SSE (the environment root key is stored on the server) | Cannot by default. Can once SSE is enabled | Yes (the Web console decrypts in the browser) |
+| Infisical | **Server-side encryption** (E2EE removed in 2023-06) | Can | Yes (the dashboard receives plaintext) |
+| Doppler | **Server-side encryption** (wrapped by GCP KMS/HSM) | Can (can be limited to via customer KMS with Enterprise EKM) | Yes |
+| Shelve | **Server-side encryption** (project DEK + platform KEK) | Can | Yes |
+| Keyway (.sh) | **Server-side encryption** (separated Go crypto service. States itself "not zero-knowledge") | Can (its threat model states "you trust the operator") | Yes |
 
-これに **ディスクレスの不変条件**(`.env` を生成する機能を製品として持たない)、**サーバーレス一発セルフホスト**(Cloudflare 無料枠で `wrangler deploy`)、**テレメトリゼロ**、**エージェント隔離の fail-closed 既定** が重なる。この 5 点の「同時成立」が maruhi だけの組み合わせであり、個々の要素は競合にも部分的にある(ADR-0014 の補正「ディスクレス run 単体では差別化にならない」は今回の調査でも変わらない)。
+On top of that sit the **diskless invariant** (the product has no feature that generates `.env`), **serverless one-shot self-hosting** (`wrangler deploy` on the Cloudflare free tier), **zero telemetry**, and **fail-closed-by-default agent isolation**. This combination of five properties holding simultaneously is unique to maruhi; individual elements exist partially in competitors (the ADR-0014 correction "diskless run alone does not differentiate" is unchanged by this research).
 
-一方で、機能の広さ(同期先・SDK・ローテーション・動的シークレット・PKI)、実績(★数・顧客・SOC 2)、非 GitHub 認証、Windows、値を扱える GUI では明確に劣後する。§4 に正直に列挙する。
-
----
-
-## 1. 各社の要約(2026-09-04 時点)
-
-### Phase(phase.dev — Phi Security Inc.)
-- 位置づけ: "Secrets management for teams and AI agents"。GitHub ★913(2023-05 創設)。SOC 2 Type II(2025-11)。Pre-seed(2025-07)。ホスティングは AWS eu-central-1 のみ
-- 暗号: **E2EE 既定**。libsodium(XChaCha20-Poly1305 / X25519 / Ed25519 / Argon2id / BLAKE2b)。リカバリーは BIP39 24 語。環境ごとの鍵ペアにユーザー公開鍵へラップ。**ただし** Secret Syncs(GitHub Actions / Vercel / AWS SM…)・公開 REST API・External Identities(AWS IAM / Azure)は **SSE(サーバー側暗号化)を有効化**しないと使えず、その環境のルート鍵の複製がサーバーに保存される。"Sealed" 型(write-once・読み戻し不可)あり
-- セルフホスト: Docker Compose / Helm / 各クラウド。**PostgreSQL + Redis(Valkey)+ Django backend + worker + frontend + nginx**。サーバーレス選択肢なし。EE 機能はライセンスキー
-- CLI(2026-03 に Go へ書き換え): `phase run -- <cmd>`(メモリ注入)、`phase shell`、**`phase secrets export`(dotenv / json / yaml / toml … 10 形式)**、オフラインモード(API 応答の暗号化キャッシュをローカル保存)
-- ライセンス: MIT + `ee/` は独自 Enterprise ライセンス(open-core)
-- エージェント: `phase ai enable` が SKILL.md を配置(Claude Code / Cursor / Copilot)。CLI がエージェントを検出し、既定で値を `[REDACTED]` マスク、`phase shell` と `printenv` 等を `phase run` 内でブロック。**MCP サーバーなし**。ホームページの「AI egress proxy(デコイ値を渡し通信境界で実値に差し替え)」は **docs・changelog・コードに見当たらない [未確認 — マーケティング先行]**
-- 価格: Free(5 ユーザー/SA・3 apps・3 環境)/ Pro $10/user/月(年払い)/ Enterprise $25
-- テレメトリ: セルフホストは「外部送信なし」と明記。CLI にも telemetry の痕跡なし
-
-### Infisical(infisical.com)
-- 位置づけ: "Security infrastructure for developers and AI agents"。secrets + PKI + SSH + KMS + PAM の統合基盤。GitHub ★29,102(2022-08)。Series A $16M(2025-06、Elad Gil)。SOC 2 Type II / HIPAA / FIPS 140-3。US / EU リージョン
-- 暗号: **サーバー側エンベロープ暗号化**(`ENCRYPTION_KEY` → KMS root → org / project データ鍵 → AES-256-GCM)。外部 KMS(AWS KMS / CloudHSM / GCP KMS)対応。**2023-06 に E2EE をオプトアウト可能にし、現行の security docs はサーバー側モデルのみ**を記述("E2EE は must-have ではなく nice-to-have と受け取られた")
-- セルフホスト: Docker 単体 / Compose / Helm / ECS Fargate / GKE。**PostgreSQL 14+ と Redis が必須**(Redis なしでは起動拒否)。推奨 2〜4 vCPU / 4〜8 GB。EE は license server へ疎通(オフラインライセンスあり)
-- CLI: `infisical run -- <cmd>`(`--watch` で再起動)、**`infisical export --output-file`(dotenv 等をディスクへ)**、**Infisical Agent(サイドカーがテンプレートでシークレットをファイルに描画)**
-- 統合: 最も広い。マシン ID 認証(Universal / K8s / AWS / Azure / GCP / **OIDC〔GitHub Actions 文書化〕** / SPIFFE)、K8s Operator、Secret Syncs 多数、SDK 9 言語、Terraform / Pulumi / Ansible
-- チーム: RBAC・承認ワークフロー・一時アクセス・SAML / LDAP / SCIM・監査ログ・PITR・**ローテーション・動的シークレット**・PKI(ACME)・SSH 証明書・KMS・PAM(セッション録画)
-- エージェント: **MCP サーバー**(`get-secret` は平文を返す)、**Agent Vault**(OSS・HTTPS_PROXY 型の MITM credential proxy、2026-04)、**Agent Proxy**(GA 2026-07-30。ダミー資格を通信境界で実値に差し替える broker。全プランで利用可)
-- ライセンス: MIT + `ee/` は独自 Enterprise ライセンス(open-core)。CLI MIT・MCP Apache-2.0
-- 価格: Free(5 identities・3 環境)/ Pro $20/identity/月 / Advanced $40 / Enterprise
-- テレメトリ: サーバー `TELEMETRY_ENABLED` **既定 true**(opt-out)。CLI は PostHog 組み込み(`--telemetry` フラグ。既定値は未確認)
-
-### Doppler(doppler.com)
-- 位置づけ: "Secrets management for humans and AI agents" / "Per-Seat Secrets Management. No Agent Fees."(旧 SecretOps から AI エージェント / 非人間 ID 訴求へ)。76,000+ orgs(自称)。Series A $20M(2022)。SOC 2 / ISO 27001(2025-09)。GCP us-central1 のみ(EU リージョンなし)
-- 暗号: **サーバー側暗号化**。AES-256-GCM、ワークスペース鍵を GCP KMS(HSM)でラップ、トークナイゼーションサービスで Web 層から鍵を分離。バックエンドが復号し、ダッシュボード・API・CLI・全同期先が平文を受け取る。Enterprise の EKM で顧客 KMS を挟める。Doppler Share(単発共有)だけはブラウザ E2EE
-- セルフホスト: 歴史的にクラウド専用。**2026-06-08 に「Doppler On-prem」を Enterprise 限定で発表**(パッケージ形態は未公開)
-- CLI(Apache-2.0): `doppler run -- <cmd>`、`--mount`(名前付きパイプ)。**`doppler secrets download --format=env|json|yaml`(ディスクへの `.env` 出力)**。**`doppler run` は既定で `~/.doppler/fallback` に暗号化スナップショットを書く**(PBKDF2 + AES-256-GCM。パスフレーズ既定はトークン等から導出)
-- 統合: 最多クラス(GitHub Actions / GitLab / CircleCI、AWS / GCP / Azure、Vercel / Netlify / Heroku / Railway / Render / Fly / Cloudflare Pages、K8s Operator、Terraform〔OIDC 認証 2026-06〕)。OIDC Service Account Identities(GitHub Actions / K8s / GitLab / AWS)
-- チーム: RBAC(カスタムロールは Enterprise)、Change Requests(差分レビュー・承認)、ローテーション(Lambda 経由)、動的シークレット(Enterprise)、活動ログ + ロールバック、SIEM 転送
-- エージェント: 公式 MCP サーバー(experimental。平文の読み書き可。MCP 操作を監査にタグ付け)。`/agents` ページ(ブランチ config + 読み取り専用の期限付きトークン)。**エージェント検出 / 拒否モードなし**
-- 価格: Developer(3 ユーザーまで無料、以後 $8)/ Team $21/user/月 / Enterprise
-- テレメトリ: CLI の `analytics` フラグは **既定 on**(`doppler configure flags disable analytics` で無効化。収集内容は未文書化)
-
-### Shelve(shelve.cloud — HugoRCD、Apache-2.0)
-- 位置づけ: "Open-source secret & environment management"。Nuxt / Vue エコシステムの個人・小チーム向け。v3 から「AI エージェントを first-class citizen」に。★452(2024-02 創設)。単独メンテナ中心(Hugo Richard)。企業・資金調達の開示なし。v3.1〜3.4 を 2026-05〜08 にリリース、活発
-- 暗号: **サーバー側 2 層エンベロープ**(プロジェクト DEK を `iron-webcrypto` AES-256-GCM、DEK は `NUXT_PRIVATE_ENCRYPTION_KEY` の KEK で封印)。サーバーが復号。E2EE / ゼロ知識の主張はない。リカバリーは DB バックアップのみ
-- セルフホスト: **Vercel が公式推奨**。Nuxt / Nitro + PostgreSQL(Neon 推奨)+ Resend または GitHub / Google OAuth。Docker イメージは landing に記載があるが Dockerfile・docs が見当たらない **[未確認]**。サーバーレス Edge(Workers)選択肢なし
-- CLI(`@shelve/cli`): `shelve run -- <cmd>`(メモリ注入。ただし **`~/.shelve/cache/` に AES-256-GCM 暗号化キャッシュを 24h 保存**)、**`shelve pull` は平文 `.env` をディスクへ書く**(monorepo は package ごとに展開)、`push` はローカル `.env` を送信、`diff` / `sync` / `generate`(`.env.example`)
-- 統合: GitHub App → GitHub Actions secrets への push のみ
-- チーム: Owner / Admin / Member、スコープ付き API トークン(IP CIDR 制限・期限)、監査ログ(actor・IP・UA)。**バージョン履歴 / ロールバックは未文書化**
-- エージェント: std-env でエージェント検出(Cursor / Claude / Codex)。**エージェント下の `shelve pull` は `--yes` なしで `AGENT_BLOCKED`**(maruhi の ADR-0016 決定 7 と同系の発想)。`shelve init` が `.cursorignore` 等 5 種を生成。Agent Skill を `/.well-known/skills/` で配布。MCP なし。JSON 出力に値を含めない
-- 価格: 価格ページなし。hosted は「現在無料」
-- テレメトリ: コード・docs に痕跡なし(「文書化された保証」ではなく「見当たらない」)
-
-### Keyway(keyway.sh — Nicolas Ritouet 個人)
-- 位置づけ: "Your secrets don't belong in AI context." / "GitHub-native secrets management. Repo access = secret access."。創業者が Claude に `.env` の DB パスワードを補完されたのが起点(2025-12 記事)。★8(monorepo 2025-11 創設、2026-02 統合)。単独開発(ほぼ全コミットが Claude 共著)。資金調達なし。Keyway Cloud は Railway・EU
-- 暗号: **サーバー側 AES-256-GCM**。暗号化は分離した Go gRPC「crypto service」(約 300 行・private network)で行い「鍵は API サーバー・DB・公開面に触れない」と主張。ただし API サーバーは平文を一時的に扱い、API / ダッシュボードは平文を返す。**threat model が「Keyway Cloud を使うことは運営を信頼すること」と明記(ゼロ知識ではない)**。セルフホストの `ENCRYPTION_KEY` は「デプロイ後ローテ不可」(SELF-HOSTING.md)と「無停止ローテ可」(threat model)で記述が矛盾
-- セルフホスト: Docker Compose 5 サービス(postgres / Go crypto / Fastify / Next.js / Caddy)+ GitHub App 必須。サーバーレスなし
-- CLI(Go): `init` / `push`(`.env` を送信)/ **`pull`(既定で `.env` をディスクへ)**/ `run -- <cmd>` / `set` / `diff --show-values` / `scan`(リーク検知)。`KEYWAY_DISABLE_TELEMETRY`
-- 統合: Vercel / Netlify / Railway 双方向同期、GitHub Actions(`keyway-action`。`.env` 書き出しも可)
-- チーム: 独立したユーザー管理なし。**権限 = GitHub リポジトリロールのミラー**(production は既定 admin のみ write)。活動ログ(Free 7 日 → Team 90 日)、バージョン履歴 / ロールバック
-- エージェント: MCP サーバー(`@keywaysh/mcp`。**`keyway_get_secret` は平文をモデルに返す**)。エージェント検出なし。threat model 自身が「`keyway run` の中でエージェントを動かせば秘密はそのプロセス環境にある」と認める。訴求(AI-Proof)と実装の間に乖離
-- ライセンス: **monorepo に LICENSE ファイルなし**(GitHub API `license: null`)。アーカイブ済み旧リポは MIT。サイトは「MIT」「BSD-3」と記述が割れる **[未確認 — 法的には未定]**
-- 価格: 3 系統の記述が併存(トップ €0/€9/€19/€39、docs $4/$15/$39、2026-07 コミットで「Pro 廃止・フラット化」)**[未確認]**
-- テレメトリ: CLI に PostHog **既定 on**(opt-out)。ダッシュボードも PostHog(セルフホストでは任意)
+On the other hand, maruhi clearly lags in feature breadth (sync targets, SDKs, rotation, dynamic secrets, PKI), track record (stars, customers, SOC 2), non-GitHub auth, Windows, and a GUI that can handle values. §4 lists these honestly.
 
 ---
 
-## 2. 比較表
+## 1. Per-company summaries (as of 2026-09-04)
 
-凡例: ● = あり / 既定、◐ = 条件付き・部分的、○ = なし、— = 該当なし・不明。maruhi 列は **実装済み** を基準にし、ROADMAP のみの項目は「予定」と書く。
+### Phase (phase.dev — Phi Security Inc.)
+- Positioning: "Secrets management for teams and AI agents". GitHub ★913 (founded 2023-05). SOC 2 Type II (2025-11). Pre-seed (2025-07). Hosted only on AWS eu-central-1
+- Crypto: **E2EE by default**. libsodium (XChaCha20-Poly1305 / X25519 / Ed25519 / Argon2id / BLAKE2b). Recovery via BIP39 24 words. Per-environment key pair wrapped to user public keys. **However** Secret Syncs (GitHub Actions / Vercel / AWS SM…), the public REST API, and External Identities (AWS IAM / Azure) **require enabling SSE (server-side encryption)**, which stores a copy of that environment's root key on the server. Has a "Sealed" type (write-once, no read-back)
+- Self-host: Docker Compose / Helm / each cloud. **PostgreSQL + Redis (Valkey) + Django backend + worker + frontend + nginx**. No serverless option. EE features require a license key
+- CLI (rewritten in Go in 2026-03): `phase run -- <cmd>` (memory injection), `phase shell`, **`phase secrets export` (dotenv / json / yaml / toml … 10 formats)**, offline mode (encrypted cache of API responses stored locally)
+- License: MIT + `ee/` under a proprietary Enterprise license (open-core)
+- Agent: `phase ai enable` installs a SKILL.md (Claude Code / Cursor / Copilot). The CLI detects agents, masks values as `[REDACTED]` by default, and blocks `phase shell`, `printenv`, etc. inside `phase run`. **No MCP server**. The homepage's "AI egress proxy" (hands a decoy value and substitutes the real value at the communication boundary) is **nowhere in the docs, changelog, or code [unverified — marketing ahead of implementation]**
+- Pricing: Free (5 users/SAs, 3 apps, 3 environments) / Pro $10/user/mo (annual) / Enterprise $25
+- Telemetry: self-host states "no external transmission". No telemetry traces in the CLI either
 
-### 2-1. 信頼モデル・暗号
+### Infisical (infisical.com)
+- Positioning: "Security infrastructure for developers and AI agents". Integrated platform for secrets + PKI + SSH + KMS + PAM. GitHub ★29,102 (2022-08). Series A $16M (2025-06, Elad Gil). SOC 2 Type II / HIPAA / FIPS 140-3. US / EU regions
+- Crypto: **server-side envelope encryption** (`ENCRYPTION_KEY` → KMS root → org / project data keys → AES-256-GCM). External KMS supported (AWS KMS / CloudHSM / GCP KMS). **E2EE became opt-out in 2023-06, and the current security docs describe only the server-side model** ("E2EE was received as a nice-to-have, not a must-have")
+- Self-host: single Docker / Compose / Helm / ECS Fargate / GKE. **PostgreSQL 14+ and Redis required** (refuses to start without Redis). Recommended 2–4 vCPU / 4–8 GB. EE phones home to a license server (offline license available)
+- CLI: `infisical run -- <cmd>` (`--watch` restarts), **`infisical export --output-file` (writes dotenv etc. to disk)**, **Infisical Agent (a sidecar renders secrets to files from templates)**
+- Integrations: the widest. Machine-ID auth (Universal / K8s / AWS / Azure / GCP / **OIDC〔GitHub Actions documented〕** / SPIFFE), K8s Operator, many Secret Syncs, SDKs in 9 languages, Terraform / Pulumi / Ansible
+- Team: RBAC, approval workflows, temporary access, SAML / LDAP / SCIM, audit logs, PITR, **rotation, dynamic secrets**, PKI (ACME), SSH certificates, KMS, PAM (session recording)
+- Agent: **MCP server** (`get-secret` returns plaintext), **Agent Vault** (OSS, HTTPS_PROXY-style MITM credential proxy, 2026-04), **Agent Proxy** (GA 2026-07-30. A broker that substitutes real values for dummy credentials at the communication boundary. Available on all plans)
+- License: MIT + `ee/` under a proprietary Enterprise license (open-core). CLI MIT, MCP Apache-2.0
+- Pricing: Free (5 identities, 3 environments) / Pro $20/identity/mo / Advanced $40 / Enterprise
+- Telemetry: server `TELEMETRY_ENABLED` **defaults to true** (opt-out). CLI has PostHog built in (`--telemetry` flag. Default value unverified)
 
-| 観点 | maruhi | Phase | Infisical | Doppler | Shelve | Keyway |
+### Doppler (doppler.com)
+- Positioning: "Secrets management for humans and AI agents" / "Per-Seat Secrets Management. No Agent Fees." (pivoting from the old SecretOps toward AI agents / non-human identities). 76,000+ orgs (self-reported). Series A $20M (2022). SOC 2 / ISO 27001 (2025-09). GCP us-central1 only (no EU region)
+- Crypto: **server-side encryption**. AES-256-GCM, workspace keys wrapped by GCP KMS (HSM), a tokenization service separates keys from the Web tier. The backend decrypts, and the dashboard, API, CLI, and all sync targets receive plaintext. Enterprise EKM can route through customer KMS. Only Doppler Share (one-off sharing) is browser E2EE
+- Self-host: historically cloud-only. **"Doppler On-prem" announced 2026-06-08, Enterprise-only** (packaging undisclosed)
+- CLI (Apache-2.0): `doppler run -- <cmd>`, `--mount` (named pipe). **`doppler secrets download --format=env|json|yaml` (writes `.env` to disk)**. **`doppler run` writes an encrypted snapshot to `~/.doppler/fallback` by default** (PBKDF2 + AES-256-GCM. The default passphrase is derived from the token etc.)
+- Integrations: among the most (GitHub Actions / GitLab / CircleCI, AWS / GCP / Azure, Vercel / Netlify / Heroku / Railway / Render / Fly / Cloudflare Pages, K8s Operator, Terraform〔OIDC auth 2026-06〕). OIDC Service Account Identities (GitHub Actions / K8s / GitLab / AWS)
+- Team: RBAC (custom roles are Enterprise), Change Requests (diff review + approval), rotation (via Lambda), dynamic secrets (Enterprise), activity log + rollback, SIEM forwarding
+- Agent: official MCP server (experimental. Can read and write plaintext. Tags MCP operations in the audit log). `/agents` page (branch config + read-only expiring tokens). **No agent detection / refusal mode**
+- Pricing: Developer (free up to 3 users, then $8) / Team $21/user/mo / Enterprise
+- Telemetry: the CLI `analytics` flag is **on by default** (disable with `doppler configure flags disable analytics`. What it collects is undocumented)
+
+### Shelve (shelve.cloud — HugoRCD, Apache-2.0)
+- Positioning: "Open-source secret & environment management". For individuals and small teams in the Nuxt / Vue ecosystem. Since v3, "AI agents as first-class citizens". ★452 (founded 2024-02). Primarily solo-maintained (Hugo Richard). No company or funding disclosure. Released v3.1–3.4 in 2026-05–08, active
+- Crypto: **server-side two-layer envelope** (project DEK with `iron-webcrypto` AES-256-GCM, DEK sealed by a KEK from `NUXT_PRIVATE_ENCRYPTION_KEY`). The server decrypts. No E2EE / zero-knowledge claims. Recovery is DB backup only
+- Self-host: **Vercel is the official recommendation**. Nuxt / Nitro + PostgreSQL (Neon recommended) + Resend or GitHub / Google OAuth. A Docker image is mentioned on the landing page but no Dockerfile or docs found **[unverified]**. No serverless Edge (Workers) option
+- CLI (`@shelve/cli`): `shelve run -- <cmd>` (memory injection. However **stores an AES-256-GCM encrypted cache in `~/.shelve/cache/` for 24h**), **`shelve pull` writes a plaintext `.env` to disk** (monorepo expands per package), `push` sends a local `.env`, `diff` / `sync` / `generate` (`.env.example`)
+- Integrations: only push to GitHub Actions secrets via a GitHub App
+- Team: Owner / Admin / Member, scoped API tokens (IP CIDR restriction, expiry), audit log (actor, IP, UA). **Version history / rollback undocumented**
+- Agent: agent detection via std-env (Cursor / Claude / Codex). **`shelve pull` under an agent returns `AGENT_BLOCKED` without `--yes`** (same line of thinking as maruhi's ADR-0016 decision 7). `shelve init` generates 5 kinds of files such as `.cursorignore`. Agent Skills distributed at `/.well-known/skills/`. No MCP. JSON output does not include values
+- Pricing: no pricing page. Hosted is "currently free"
+- Telemetry: no traces in code or docs ("none found", not a "documented guarantee")
+
+### Keyway (keyway.sh — Nicolas Ritouet, personal)
+- Positioning: "Your secrets don't belong in AI context." / "GitHub-native secrets management. Repo access = secret access.". Origin: the founder had Claude autocomplete a `.env` DB password (2025-12 article). ★8 (monorepo created 2025-11, consolidated 2026-02). Solo development (almost all commits co-authored with Claude). No funding. Keyway Cloud is Railway, EU
+- Crypto: **server-side AES-256-GCM**. Encryption happens in a separated Go gRPC "crypto service" (~300 lines, private network); claims "keys never touch the API server, DB, or public surface". However the API server temporarily handles plaintext and the API / dashboard return plaintext. **The threat model itself states "using Keyway Cloud means trusting the operator" (not zero-knowledge)**. Self-host `ENCRYPTION_KEY` docs are contradictory: "cannot be rotated after deploy" (SELF-HOSTING.md) vs "zero-downtime rotation possible" (threat model)
+- Self-host: Docker Compose with 5 services (postgres / Go crypto / Fastify / Next.js / Caddy) + GitHub App required. No serverless
+- CLI (Go): `init` / `push` (sends `.env`) / **`pull` (writes `.env` to disk by default)** / `run -- <cmd>` / `set` / `diff --show-values` / `scan` (leak detection). `KEYWAY_DISABLE_TELEMETRY`
+- Integrations: bidirectional sync with Vercel / Netlify / Railway, GitHub Actions (`keyway-action`. Can also write `.env`)
+- Team: no independent user management. **Permissions = mirror of GitHub repository roles** (production defaults to admin-only write). Activity log (Free 7 days → Team 90 days), version history / rollback
+- Agent: MCP server (`@keywaysh/mcp`. **`keyway_get_secret` returns plaintext to the model**). No agent detection. The threat model itself admits "if you run an agent inside `keyway run`, secrets are in that process's environment". A gap between the pitch (AI-Proof) and the implementation
+- License: **no LICENSE file in the monorepo** (GitHub API `license: null`). The archived old repo is MIT. The site text wavers between "MIT" and "BSD-3" **[unverified — legally undecided]**
+- Pricing: three conflicting descriptions coexist (top page €0/€9/€19/€39, docs $4/$15/$39, a 2026-07 commit says "Pro removed, flattened") **[unverified]**
+- Telemetry: CLI has PostHog **on by default** (opt-out). Dashboard also uses PostHog (optional on self-host)
+
+---
+
+## 2. Comparison tables
+
+Legend: ● = present / default, ◐ = conditional / partial, ○ = absent, — = N/A / unknown. The maruhi column is based on **what is implemented**; ROADMAP-only items are marked "planned".
+
+### 2-1. Trust model & crypto
+
+| Consideration | maruhi | Phase | Infisical | Doppler | Shelve | Keyway |
 |---|---|---|---|---|---|---|
-| 既定でゼロ知識(運営が値を読めない) | ● | ● | ○ | ○ | ○ | ○ |
-| サーバー側復号の範囲 | プロジェクト × 環境単位の owner 署名オプトイン(`grant_server`)。チェーンに記録・全メンバー検証可・常時表示 | アプリ / SA 単位で SSE 有効化(同期・API・外部 ID に必須) | 全体 | 全体(EKM で顧客 KMS を挟める) | 全体 | 全体 |
-| 復号器を運営が配る Web | ○(ADR-0018。Web は読み取り + 失効のみ。バンドルに復号コードパスを含めない) | ●(ブラウザ内復号) | ●(平文受信) | ● | ● | ● |
-| 公開された暗号仕様 | ● CRYPTO_SPEC(唯一の正・テストベクター付き・保証 / 非保証を §14 で明示) | ◐ architecture / cryptography docs | ◐ security internals | ◐ Security Fact Sheet | ◐ encryption.md | ◐ security / threat-model |
-| 独自プリミティブの不使用 | ● WebCrypto + HPKE(RFC 9180) | ● libsodium | ● | ● | ● iron-webcrypto | ● Go stdlib |
-| メンバーシップの暗号的束縛 | ● 署名付きハッシュチェーン(role・招待受諾・server grant が append-only で全メンバー検証可) | ◐ 「cryptographic enforcement」の RBAC(詳細は未公開) | ○(DB 上の RBAC) | ○ | ○ | ○(GitHub ロールをミラー) |
-| 値・メタデータの真正性(サーバー単独で偽造不能) | ● 値署名・DEK コミットメント・マニフェスト・チェックポイント(CRYPTO_SPEC §14.2) | ◐ | ○ | ○ | ○ | ○ |
-| 巻き戻し / 欠落 / split view の検出 | ◐ ローカル床 + 帯域外アンカー + チェックポイント(限界は §14.3 に明示) | — | — | — | — | — |
-| リカバリー | ● リカバリーコード(運営は復元不能。ADR-0014 決定 4) | ● BIP39 24 語 | —(サーバーが鍵を持つ) | —(アカウント MFA のみ) | —(DB バックアップ) | —(trash / 履歴) |
-| 監査ログのアクター | 内部 user_id + 鍵 FP のみ(プロバイダ ID を書かない) | ユーザー | ユーザー | ユーザー | ユーザー + IP + UA | ユーザー |
-| 監査ログの事後改竄検出 | ◐ チェックポイントに監査累積ハッシュを公証 | ○ | ○ | ○ | ○ | ○ |
+| Zero-knowledge by default (operator cannot read values) | ● | ● | ○ | ○ | ○ | ○ |
+| Scope of server-side decryption | Per-project × environment owner-signed opt-in (`grant_server`). Recorded on the chain, verifiable by all members, always displayed | Per-app / SA SSE enablement (required for sync, API, external IDs) | Everything | Everything (EKM routes via customer KMS) | Everything | Everything |
+| Operator-served Web that ships a decryptor | ○ (ADR-0018. Web is read + revoke only. The bundle contains no decryption code path) | ● (in-browser decryption) | ● (receives plaintext) | ● | ● | ● |
+| Published crypto spec | ● CRYPTO_SPEC (the single source of truth, with test vectors, guarantees / non-guarantees explicit in §14) | ◐ architecture / cryptography docs | ◐ security internals | ◐ Security Fact Sheet | ◐ encryption.md | ◐ security / threat-model |
+| No custom primitives | ● WebCrypto + HPKE (RFC 9180) | ● libsodium | ● | ● | ● iron-webcrypto | ● Go stdlib |
+| Cryptographically bound membership | ● Signed hash chain (role, invite acceptance, server grant are append-only and verifiable by all members) | ◐ "cryptographic enforcement" of RBAC (details unpublished) | ○ (RBAC on the DB) | ○ | ○ | ○ (mirrors GitHub roles) |
+| Authenticity of values & metadata (server alone cannot forge) | ● Value signatures, DEK commitments, manifest, checkpoints (CRYPTO_SPEC §14.2) | ◐ | ○ | ○ | ○ | ○ |
+| Detection of rollback / omission / split view | ◐ Local floor + out-of-band anchor + checkpoints (limits explicit in §14.3) | — | — | — | — | — |
+| Recovery | ● Recovery code (operator cannot restore. ADR-0014 decision 4) | ● BIP39 24 words | — (server holds keys) | — (account MFA only) | — (DB backup) | — (trash / history) |
+| Audit log actor | Internal user_id + key FP only (provider IDs not written) | User | User | User | User + IP + UA | User |
+| Post-hoc tamper detection of audit log | ◐ Notarizes cumulative audit hash in checkpoints | ○ | ○ | ○ | ○ | ○ |
 
-### 2-2. ディスクレス・CLI
+### 2-2. Diskless & CLI
 
-| 観点 | maruhi | Phase | Infisical | Doppler | Shelve | Keyway |
+| Consideration | maruhi | Phase | Infisical | Doppler | Shelve | Keyway |
 |---|---|---|---|---|---|---|
-| `run -- <cmd>` メモリ注入 | ● | ● | ● | ● | ● | ● |
-| **`.env` 生成 / export 機能を製品として持たない** | **●(不変条件。将来も SOPS 互換の明示操作のみ)** | ○ `secrets export` 10 形式 | ○ `export --output-file` + Agent がファイル描画 | ○ `secrets download` | ○ `pull` が平文 `.env` を書く | ○ `pull` が既定で `.env` を書く |
-| 平文 / 暗号化キャッシュをディスクに置かない | ●(永続化はトークン・master 鍵〔OS キーチェーン〕・非機密設定のみ) | ○ オフラインモードで暗号化キャッシュ | ◐(CLI にバックアップ削除関数あり [未確認]) | ○ 既定で `~/.doppler/fallback` に暗号化スナップショット | ○ `~/.shelve/cache/` に 24h | ● [未確認] |
-| 値表示の既定 | `pull` はメタのみ。`pull --show` は TTY 一次境界 + エージェント検出の 2 層 fail-closed | マスク既定(エージェント検出時) | 表示 | 表示 | JSON 出力は値なし | `diff --show-values` |
-| 値なしで動く「契約」機能 | ● 値なしスキーマ(`maruhi schema` / `schema export`〔JSON Schema〕/ `verify-snapshot` / `lint`)。required 充足は署名から検証可 | ○ | ○ | ○ | ◐ `generate`(`.env.example`) | ○ |
-| CLI 実装 / 配布 | Bun コンパイル済み単一バイナリ(linux / darwin。Windows 実験的)+ npm(Bun 必須)。Homebrew は v0.1.0 から | Go | Go | Go | Node(Citty) | Go + npm + brew |
-| CLI テレメトリ | **なし(「言わざる」)** | なし | PostHog 組み込み(既定値未確認) | **既定 on**(opt-out) | 痕跡なし | **既定 on**(opt-out) |
+| `run -- <cmd>` memory injection | ● | ● | ● | ● | ● | ● |
+| **No `.env` generation / export feature in the product** | **● (invariant. In future only explicit SOPS-compatible operations)** | ○ `secrets export` 10 formats | ○ `export --output-file` + Agent renders files | ○ `secrets download` | ○ `pull` writes plaintext `.env` | ○ `pull` writes `.env` by default |
+| No plaintext / encrypted cache on disk | ● (persistent state is only tokens, master key〔OS keychain〕, non-sensitive config) | ○ encrypted cache in offline mode | ◐ (CLI has a backup-deletion function [unverified]) | ○ encrypted snapshot at `~/.doppler/fallback` by default | ○ `~/.shelve/cache/` for 24h | ● [unverified] |
+| Default for value display | `pull` is metadata-only. `pull --show` is a 2-layer fail-closed: TTY primary boundary + agent detection | Masked by default (under agent detection) | Shows | Shows | JSON output has no values | `diff --show-values` |
+| "Contract" features that work without values | ● Value-free schema (`maruhi schema` / `schema export`〔JSON Schema〕/ `verify-snapshot` / `lint`). Required-ness fulfillment verifiable from signatures | ○ | ○ | ○ | ◐ `generate` (`.env.example`) | ○ |
+| CLI implementation / distribution | Bun-compiled single binary (linux / darwin. Windows experimental) + npm (Bun required). Homebrew from v0.1.0 | Go | Go | Go | Node (Citty) | Go + npm + brew |
+| CLI telemetry | **None ("say nothing")** | None | PostHog built in (default unverified) | **On by default** (opt-out) | No traces | **On by default** (opt-out) |
 
-### 2-3. セルフホスト・運用
+### 2-3. Self-host & operations
 
-| 観点 | maruhi | Phase | Infisical | Doppler | Shelve | Keyway |
+| Consideration | maruhi | Phase | Infisical | Doppler | Shelve | Keyway |
 |---|---|---|---|---|---|---|
-| セルフホスト | ● | ● | ● | ◐ Enterprise 限定 On-prem(2026-06) | ● | ● |
-| 必要な基盤 | **Cloudflare アカウントのみ**(Workers + DO SQLite + D1。**無料枠で可**) | Postgres + Redis + Django + worker + frontend + nginx | Postgres + **Redis 必須** + Infisical(2〜4 vCPU) | 非公開 | Vercel + Postgres(Neon)+ Resend / OAuth | Docker Compose 5 サービス + GitHub App |
-| サーバーレス / Edge | ● | ○ | ○ | ○ | ◐(Vercel 上の Nuxt。Postgres は別) | ○ |
-| デプロイ手順 | `wrangler deploy` 中心。約 10 分(SELF_HOSTING.md、実デプロイ検証済み) | Compose / Helm | Compose / Helm / ECS | — | Vercel + DB 設定 | Compose |
-| 常設プロセスの運用(パッチ・DB 保守) | なし(マネージド) | あり | あり | — | DB はマネージド可 | あり |
-| サーバーの外部送信 | なし(EE ライセンス検証も存在しない) | なし(offline license 可) | **`TELEMETRY_ENABLED` 既定 true** + EE は license server へ疎通 | — | 痕跡なし | PostHog(任意) |
-| ホステッド版 | 準備中(招待制ベータ前。`my.maruhi.app`。無料 → GA で課金) | ● eu-central-1 | ● US / EU | ● us-central1 | ● 無料 | ● Railway EU |
-| 認証 IdP | **GitHub OAuth のみ**(ADR-0009。WorkOS 挿入点は確保) | Google / GitHub / GitLab / Okta / Entra / Authentik + SCIM | SAML / LDAP / SCIM / OIDC | SSO(Team+)/ SCIM | Email OTP / GitHub / Google | GitHub のみ |
-| コンプライアンス | なし(pre-release) | SOC 2 Type II | SOC 2 Type II / HIPAA / FIPS | SOC 2 / ISO 27001 | なし | なし |
+| Self-host | ● | ● | ● | ◐ Enterprise-only On-prem (2026-06) | ● | ● |
+| Required infrastructure | **Cloudflare account only** (Workers + DO SQLite + D1. **Works on the free tier**) | Postgres + Redis + Django + worker + frontend + nginx | Postgres + **Redis required** + Infisical (2–4 vCPU) | Undisclosed | Vercel + Postgres (Neon) + Resend / OAuth | Docker Compose 5 services + GitHub App |
+| Serverless / Edge | ● | ○ | ○ | ○ | ◐ (Nuxt on Vercel. Postgres separate) | ○ |
+| Deploy steps | Centered on `wrangler deploy`. ~10 minutes (SELF_HOSTING.md, verified by real deploy) | Compose / Helm | Compose / Helm / ECS | — | Vercel + DB setup | Compose |
+| Operating standing processes (patching, DB maintenance) | None (managed) | Yes | Yes | — | DB can be managed | Yes |
+| Server outbound traffic | None (no EE license verification exists) | None (offline license available) | **`TELEMETRY_ENABLED` defaults to true** + EE phones a license server | — | No traces | PostHog (optional) |
+| Hosted version | In preparation (pre invite-only beta. `my.maruhi.app`. Free → paid at GA) | ● eu-central-1 | ● US / EU | ● us-central1 | ● free | ● Railway EU |
+| Auth IdP | **GitHub OAuth only** (ADR-0009. WorkOS insertion point reserved) | Google / GitHub / GitLab / Okta / Entra / Authentik + SCIM | SAML / LDAP / SCIM / OIDC | SSO (Team+) / SCIM | Email OTP / GitHub / Google | GitHub only |
+| Compliance | None (pre-release) | SOC 2 Type II | SOC 2 Type II / HIPAA / FIPS | SOC 2 / ISO 27001 | None | None |
 
-### 2-4. チーム・統合・エージェント
+### 2-4. Team, integrations & agents
 
-| 観点 | maruhi | Phase | Infisical | Doppler | Shelve | Keyway |
+| Consideration | maruhi | Phase | Infisical | Doppler | Shelve | Keyway |
 |---|---|---|---|---|---|---|
-| ロール | チェーン上の 4 role(owner / admin / member / reader) | RBAC + 環境 / パススコープ | RBAC + カスタムロール + 承認 | RBAC + Change Requests | Owner / Admin / Member | GitHub ロールのミラー |
-| 退職時の鍵ローテ | ● エポックローテーション(remove / 降格で全環境 rotate が義務)+ 要ローテーション検出 | ◐ | —(サーバー鍵) | — | — | — |
-| CI 連携 | GitHub Actions のみ。**OIDC + 応答スコープの一時鍵ラップ(リース)**。サーバーは「DEK の仲介者」で値を復号しない・CI へ偽値を注入できない(§9.1)。リポジトリアンカーで CI 側も検証 | サービストークン(OIDC なし)。同期は SSE 必須 | OIDC(GitHub Actions 文書化)・K8s・AWS…・K8s Operator | OIDC Service Account Identities・K8s Operator | GitHub App が Actions secrets に push | `keyway-action`(`.env` 書き出しも可) |
-| クラウド / PaaS 同期 | ○ 予定(SY 系列 — 招待制ベータのゲート。第一級は Vercel / Cloudflare Workers) | ● 多数(SSE 必須) | ● 最多 | ● 最多 | ○ | ◐ Vercel / Netlify / Railway |
-| SDK | ○(HttpApi 導出クライアントのみ) | Node / Python / Go | 9 言語 | Node / Python | ○ | ○ |
-| バージョン履歴 / ロールバック | ◐ version 単調・prev 連鎖(表示 UI は未) | ● + PITR | ● + PITR | ● | ○ | ● |
-| ローテーション / 動的シークレット | ○(将来: 上流自動ローテ) | ● / ◐ AWS IAM のみ | ● / ● | ● / ● Enterprise | ○ | ○ |
+| Roles | 4 roles on the chain (owner / admin / member / reader) | RBAC + environment / path scopes | RBAC + custom roles + approvals | RBAC + Change Requests | Owner / Admin / Member | Mirror of GitHub roles |
+| Key rotation on offboarding | ● Epoch rotation (removal / demotion obligates rotating all environments) + needs-rotation detection | ◐ | — (server keys) | — | — | — |
+| CI integration | GitHub Actions only. **OIDC + temporary key wrap scoped to the response (lease)**. The server is only a "DEK broker" — it does not decrypt values and cannot inject fake values into CI (§9.1). CI side also verifies via repository anchor | Service tokens (no OIDC). Sync requires SSE | OIDC (GitHub Actions documented), K8s, AWS…, K8s Operator | OIDC Service Account Identities, K8s Operator | GitHub App pushes to Actions secrets | `keyway-action` (can also write `.env`) |
+| Cloud / PaaS sync | ○ planned (SY series — gate for the invite-only beta. First-class targets are Vercel / Cloudflare Workers) | ● many (SSE required) | ● most | ● most | ○ | ◐ Vercel / Netlify / Railway |
+| SDK | ○ (only the HttpApi-derived client) | Node / Python / Go | 9 languages | Node / Python | ○ | ○ |
+| Version history / rollback | ◐ monotonic version + prev linkage (no display UI yet) | ● + PITR | ● + PITR | ● | ○ | ● |
+| Rotation / dynamic secrets | ○ (future: upstream auto-rotation) | ● / ◐ AWS IAM only | ● / ● | ● / ● Enterprise | ○ | ○ |
 | PKI / SSH / KMS / PAM | ○ | ○ | ● | ○ | ○ | ○ |
-| 値ありの GUI | ○(ADR-0018。TUI → 値なし `maruhi ui` → 値ありは独立 ADR) | ● Web コンソール | ● | ● | ● | ● |
-| Web ダッシュボード(鍵なし) | ● 読み取り + 失効のみ(W 系列実装済み。デザインパス DP 進行中) | ● | ● | ● | ● | ● |
-| エージェント検出時の値表示拒否 | ● fail-closed 2 層(TTY 一次 + std-env) | ● マスク + `shell` / `printenv` ブロック | ○ | ○ | ● `pull` を `AGENT_BLOCKED` | ○ |
-| MCP サーバー | ○(需要実測後に `maruhi schema` の薄いラッパとして。**値は配らない方針**) | ○(SKILL.md 方式) | ● 平文を返す | ● 平文を返す(experimental) | ○(Agent Skill 配布) | ● 平文を返す |
-| credential brokering(エージェントに実値を渡さない) | ○ 予定(Phase 3 `maruhi proxy run`。E2EE と合成し「サーバーもエージェントも平文を持たない」) | ◐ 「AI egress proxy」を訴求するが実装未確認 | ● Agent Proxy(GA 2026-07)+ Agent Vault | ○ | ○ | ○ |
-| 値なしスキーマのエージェント開示 | ● `maruhi schema`(名前・型・必須・説明のみ) | ○ | ○ | ○ | ○ | ○ |
+| GUI with values | ○ (ADR-0018. TUI → value-free `maruhi ui` → a value-ful GUI would be its own ADR) | ● Web console | ● | ● | ● | ● |
+| Web dashboard (no keys) | ● read + revoke only (W series implemented. Design pass DP in progress) | ● | ● | ● | ● | ● |
+| Refusing value display under agent detection | ● fail-closed 2 layers (primary TTY + std-env) | ● masking + blocks `shell` / `printenv` | ○ | ○ | ● blocks `pull` with `AGENT_BLOCKED` | ○ |
+| MCP server | ○ (after demand is measured, as a thin wrapper over `maruhi schema`. **Policy: never serve values**) | ○ (SKILL.md approach) | ● returns plaintext | ● returns plaintext (experimental) | ○ (distributes Agent Skills) | ● returns plaintext |
+| credential brokering (never giving agents the real value) | ○ planned (Phase 3 `maruhi proxy run`. Composed with E2EE so "neither server nor agent holds plaintext") | ◐ pitches an "AI egress proxy" but no implementation found | ● Agent Proxy (GA 2026-07) + Agent Vault | ○ | ○ | ○ |
+| Exposing a value-free schema to agents | ● `maruhi schema` (names, types, required, descriptions only) | ○ | ○ | ○ | ○ | ○ |
 
-### 2-5. ライセンス・価格・成熟度
+### 2-5. License, pricing & maturity
 
-| 観点 | maruhi | Phase | Infisical | Doppler | Shelve | Keyway |
+| Consideration | maruhi | Phase | Infisical | Doppler | Shelve | Keyway |
 |---|---|---|---|---|---|---|
-| ライセンス | サーバー / web = **FSL-1.1-MIT**(競合 SaaS 化のみ禁止・2 年後 MIT)。**CLI / crypto / core / api-schema = MIT**(復号器は OSI ライセンス) | MIT + `ee/` 独自(open-core) | MIT + `ee/` 独自(open-core) | 本体プロプライエタリ。CLI Apache-2.0 | Apache-2.0(全体) | **LICENSE なし**(記述が割れる)[未確認] |
-| 無料枠 | セルフホスト無制限(CF 無料枠)。ホステッドはベータ期間無料 | 5 ユーザー / 3 apps | 5 identities / 3 環境 | 3 ユーザー | hosted 無料 | 1 private repo |
-| 有料 | 未設計(GA 時) | $10〜25 / user | $20〜40 / identity | $8〜21 / user | なし | €9〜39(記述不一致) |
-| 成熟度 | pre-release(v0.1.0-rc)。個人開発。実デプロイ検証・ドッグフーディング中 | ★913・SOC 2・Pre-seed | ★29k・Series A・cash-flow positive | 76k orgs・Series A | ★452・個人 | ★8・個人 |
+| License | server / web = **FSL-1.1-MIT** (only competing-SaaS use prohibited, converts to MIT after 2 years). **CLI / crypto / core / api-schema = MIT** (the decryptor is OSI-licensed) | MIT + `ee/` proprietary (open-core) | MIT + `ee/` proprietary (open-core) | Core proprietary. CLI Apache-2.0 | Apache-2.0 (whole) | **No LICENSE** (descriptions inconsistent) [unverified] |
+| Free tier | Self-host unlimited (CF free tier). Hosted free during beta | 5 users / 3 apps | 5 identities / 3 environments | 3 users | hosted free | 1 private repo |
+| Paid | Undesigned (at GA) | $10–25 / user | $20–40 / identity | $8–21 / user | None | €9–39 (descriptions inconsistent) |
+| Maturity | pre-release (v0.1.0-rc). Solo development. Real-deploy verified, dogfooding | ★913, SOC 2, Pre-seed | ★29k, Series A, cash-flow positive | 76k orgs, Series A | ★452, solo | ★8, solo |
 
 ---
 
-## 3. maruhi の優位性(競合に対する差)
+## 3. maruhi's advantages (differences vs competitors)
 
-以下は「競合にない」または「競合が既定にしていない」性質。訴求はいずれも「絶対最安全」ではなく **「信じなくてよい相手の範囲が広い」**(ADR-0014 決定 1)で語る。
+The following are properties competitors lack or do not make the default. None of the pitch is "absolutely the safest" — it is framed as **"a wider circle of parties you don't have to trust"** (ADR-0014 decision 1).
 
-1. **ゼロ知識が既定で、例外が暗号的に可視**
-   - Infisical / Doppler / Shelve / Keyway はサーバー側暗号化で、運営(またはサーバーを握った攻撃者)が値を読める。Phase は E2EE 既定だが、同期・REST API・外部 ID を使うと環境ルート鍵の複製がサーバーに保存される(SSE)。
-   - maruhi の `grant_server` は Phase の SSE と同じ「サーバーをメンバーにする」操作だが、**owner 署名で append-only チェーンに載り、全メンバーが検証でき、grant 中は UI / CLI が常時明示し、`revoke_server + rotate_epoch` で取り消せる**。しかも CI リース経路ではサーバーは DEK の仲介のみで値を復号しない(CRYPTO_SPEC §9.1)。「どこまで開示したか」が監査ログでなく暗号で縛られる点は 5 社になし。
+1. **Zero-knowledge is the default, and exceptions are cryptographically visible**
+   - Infisical / Doppler / Shelve / Keyway are server-side encryption: the operator (or an attacker holding the server) can read values. Phase is E2EE by default, but using sync, the REST API, or external identities stores a copy of the environment root key on the server (SSE).
+   - maruhi's `grant_server` is the same "make the server a member" operation as Phase's SSE, but **it lands on the append-only chain with an owner signature, every member can verify it, the UI / CLI display it continuously while granted, and it can be undone via `revoke_server + rotate_epoch`**. Moreover, on the CI lease path the server only brokers DEKs and never decrypts values (CRYPTO_SPEC §9.1). That "how much was disclosed" is bound by crypto rather than an audit log is something none of the 5 have.
 
-2. **運営が復号器を配らない(Web は TCB に入らない)**
-   - 5 社すべてが「Web で値を見る」を提供する。E2EE の Phase も含め、運営が配信する JS が復号器である以上、配信側の悪意・XSS が全シークレット漏洩になる。maruhi は ADR-0018 でこれを構造的に断ち(hosted Web バンドルに復号コードパスを含めない・セッション主体の API を読み取り + 失効系に限定)、復号は MIT ライセンスの CLI(ソース検証・自己ビルド可)だけで行う。**「運営は読めない」の主張をコードで検証できる**のは maruhi だけ。
+2. **The operator does not ship the decryptor (Web is outside the TCB)**
+   - All 5 offer "view values in the Web". Even for E2EE Phase, as long as the operator-served JS is the decryptor, delivery-side malice or XSS leaks every secret. maruhi cuts this structurally in ADR-0018 (the hosted Web bundle contains no decryption code path; the session-scoped API is limited to read + revoke), and decryption happens only in the MIT-licensed CLI (source-verifiable, self-buildable). **maruhi is the only one whose "the operator can't read it" claim can be verified in code.**
 
-3. **ディスクレスが「機能」でなく「不変条件」**
-   - ADR-0014 の補正どおり `run` 注入は全社にある。差は **`.env` を書く機能を製品として持たない**こと(Phase `export`、Infisical `export` / Agent、Doppler `download` + 既定の fallback ファイル、Shelve / Keyway の `pull` はいずれも平文または暗号化キャッシュをディスクへ置く)。maruhi は暗号化キャッシュも置かず、`pull` の既定はメタのみ、値表示は TTY 一次境界 + エージェント検出の 2 層 fail-closed。
-   - 「`.env` から移行する」入口は `schema import`(明示引数の `.env` をクライアント側だけで読み、変数ごとに対話承認し、全宣言後に元ファイル削除を提案)として、**`.env` を正にしない方向の一方通行**で用意している。
+3. **Diskless is an "invariant", not a "feature"**
+   - As the ADR-0014 correction says, every competitor has `run` injection. The difference is **having no feature that writes `.env`** (Phase `export`, Infisical `export` / Agent, Doppler `download` + the default fallback file, and Shelve / Keyway `pull` all place plaintext or an encrypted cache on disk). maruhi places no encrypted cache either; `pull` defaults to metadata only, and value display is a 2-layer fail-closed of TTY primary boundary + agent detection.
+   - The "migrate off `.env`" entry point is `schema import` (reads an explicitly-argumented `.env` client-side only, interactively approves each variable, and offers to delete the source file once all declarations exist) — provided as a **one-way street that never makes `.env` the source of truth**.
 
-4. **サーバーレス一発セルフホスト(運用ゼロ・無料枠)**
-   - Phase / Infisical / Keyway は Postgres(+ Redis)+ 複数コンテナの常設運用、Shelve は Vercel + Postgres、Doppler は Enterprise 限定 On-prem。maruhi は **Cloudflare 無料枠に `wrangler deploy` で約 10 分**、パッチ・DB 保守・スケール運用が要らない。「セルフホストしたいが VM を面倒見たくない」層への回答は maruhi だけ。
-   - サーバーのライセンス検証・license server 疎通も存在しない(Infisical EE は疎通あり)。
+4. **Serverless one-shot self-hosting (zero operations, free tier)**
+   - Phase / Infisical / Keyway require standing operations with Postgres (+ Redis) + multiple containers, Shelve needs Vercel + Postgres, Doppler is Enterprise-only On-prem. maruhi is **`wrangler deploy` onto the Cloudflare free tier in ~10 minutes**, with no patching, DB maintenance, or scale operations. It is the only answer for "want to self-host but don't want to babysit a VM".
+   - There is also no server-side license verification or license-server phone-home (Infisical EE does phone home).
 
-5. **テレメトリゼロ(「言わざる」)を保証として言える**
-   - Doppler CLI・Keyway CLI は既定 on の分析、Infisical はサーバー telemetry 既定 on + CLI に PostHog。Phase はセルフホストの非送信を明記、Shelve は「痕跡なし」。maruhi はクライアント → 外部送信ゼロを絶対規則とし、install script も github.com 以外へ通信しない。運用観測(自サーバーのメトリクス)との線引きは hosted-design.md §5-1 で明文化済み。
+5. **Can state zero telemetry ("say nothing") as a guarantee**
+   - Doppler CLI and Keyway CLI have analytics on by default; Infisical has server telemetry on by default + PostHog in the CLI. Phase documents no transmission from self-host; Shelve shows "no traces". maruhi makes client → zero outbound an absolute rule; even the install script talks to nothing but github.com. The boundary against operational observation (metrics of your own server) is already spelled out in hosted-design.md §5-1.
 
-6. **エージェント隔離が fail-closed で既定**
-   - 現状の競合は 2 系統。(a) MCP で平文を渡す(Infisical / Doppler / Keyway。Keyway は「AI-Proof」と訴求しつつ MCP が平文を返す)。(b) 検出してマスク / ブロック(Phase・Shelve)。maruhi は (b) を **TTY 一次 + 既知エージェント二次の 2 層**で持ち、加えて **値なしスキーマ**(名前・型・必須・説明だけをエージェントに開示。required 充足は署名から検証可・`schema lint` でコードとの乖離検査)という「値を渡さずに契約だけ渡す」第 3 の形を実装済み。MCP は値を配らない薄いラッパとして後回し。
-   - credential brokering(実値を通信境界で差し替え)は Infisical が先行(Agent Proxy GA)。maruhi は Phase 3 で `maruhi proxy run` を予定し、E2EE と合成して「サーバーもエージェントも平文を持たない」まで一貫させる点が差になる(Infisical の broker はサーバーが平文を持つ前提)。
+6. **Agent isolation is fail-closed by default**
+   - Competitors today come in two strains: (a) handing plaintext over MCP (Infisical / Doppler / Keyway — Keyway pitches "AI-Proof" while its MCP returns plaintext), (b) detecting agents and masking / blocking (Phase, Shelve). maruhi has (b) as **2 layers — TTY primary + known-agent secondary** — plus the already-implemented third form of **value-free schema** (disclose only names, types, required, and descriptions to agents; required-fulness is verifiable from signatures, and `schema lint` checks drift against code): "hand over the contract, not the values". MCP is deferred as a thin wrapper that never serves values.
+   - On credential brokering (substituting the real value at the communication boundary) Infisical leads (Agent Proxy GA). maruhi's Phase 3 `maruhi proxy run` plans to compose with E2EE so that "neither server nor agent holds plaintext" — the consistency is the difference (Infisical's broker presumes the server holds plaintext).
 
-7. **真正性・鮮度まで暗号で扱い、非保証を明示する**
-   - 値署名・DEK コミットメント・メタステートメント・環境マニフェスト・チェックポイント・ヘッド申告により、サーバー単独では値・名前・DEK を偽造できず、巻き戻し・欠落・split view を(限界つきで)検出する。CI ワークロードもリポジトリアンカーで検証する。競合の docs にこの層はない。
-   - 同時に CRYPTO_SPEC §14.3 が可用性・平文の正しさ・初回同期クライアントの鮮度・共謀の残余を**非保証として列挙**しており、脅威モデル文書(H5)の土台になる。競合の security ページは保証の列挙が中心で、非保証の明示はほぼない。
+7. **Authenticity and freshness are handled in crypto, with non-guarantees stated**
+   - Value signatures, DEK commitments, meta-statements, environment manifests, checkpoints, and head declarations mean the server alone cannot forge values, names, or DEKs, and detects rollback, omission, and split view (within stated limits). CI workloads are verified too via the repository anchor. No competitor docs have this layer.
+   - At the same time, CRYPTO_SPEC §14.3 **enumerates non-guarantees**: availability, plaintext correctness, first-sync client freshness, and collusion residue — the foundation for the threat-model document (H5). Competitor security pages mostly list guarantees; explicit non-guarantees are rare.
 
-8. **監査ログにプロバイダ ID を書かない・退職時ローテが義務**
-   - アクターは内部 user_id + 鍵 FP のみ(GitHub ID を append-only 構造に焼かない)。remove / 降格は全環境ローテーションを伴い、「要ローテーション検出」で実効性を補う。Keyway の「GitHub ロール = 権限」とは対極。
+8. **No provider IDs in the audit log; offboarding rotation is mandatory**
+   - Actors are internal user_id + key FP only (GitHub IDs are not burned into the append-only structure). Removal / demotion obligates rotating all environments, with "needs-rotation detection" to enforce effectiveness. The polar opposite of Keyway's "GitHub role = permission".
 
-9. **ライセンス構成が信頼モデルと整合**
-   - 復号を行う側(CLI / crypto / core / api-schema)は MIT、サーバーは FSL(競合 SaaS 化のみ禁止・2 年で MIT)。Phase / Infisical の open-core(`ee/` は本番利用に契約必須)、Doppler のプロプライエタリ、Keyway のライセンス未定と比べ、**「検証したい部分が OSI ライセンス」「セルフホストに制限なし」**が明快。
-
----
-
-## 4. maruhi の劣後点(正直に)
-
-訴求で隠すべきでない差(ADR-0014 決定 5「正直に切り分ける」)。
-
-- **成熟度・実績**: pre-release、個人開発、ユーザー 0、SOC 2 等なし。Infisical(★29k・Series A)・Doppler(76k orgs)とは桁が違う。Phase も SOC 2 済み
-- **統合の幅**: クラウド / PaaS 同期は未実装(SY 系列で着手 — 招待制ベータのゲート)、SDK なし、K8s Operator なし、CI は GitHub Actions のみ。Infisical / Doppler は数十の同期先
-- **認証**: GitHub OAuth のみ。SSO / SAML / SCIM なし(WorkOS 挿入点は確保 — ADR-0009)
-- **値を扱う GUI がない**: Web は読み取り + 失効のみ。値の投入・閲覧・招待受諾・鍵操作はすべて CLI。「ダッシュボードで値を見たい」層には不向き(ADR-0018 の意図的な選択だが、採用の障壁になる)
-- **ゼロ知識の儀式**: 初回の鍵生成・リカバリーコード保管、招待時の指紋相互確認、端末移行。競合(特にサーバー側暗号化の 4 社)にはない手間。「初回と招待だけ」と切り分けて示す
-- **鍵とリカバリーコードを失えば運営は復元できない**(約束の対価)
-- **エンタープライズ機能**: ローテーション・動的シークレット・承認ワークフロー・PKI / SSH / KMS / PAM なし。Infisical は統合基盤、Doppler は Change Requests、Phase もローテ・動的シークレット済み
-- **credential brokering / MCP は未実装**(Infisical は Agent Proxy GA、Doppler / Keyway は MCP 済み)。エージェント訴求の「今すぐ試せる」面では値なしスキーマ + agent-gate のみ
-- **プラットフォーム依存**: Cloudflare 専用(Workers / DO / D1)。オンプレ・他クラウドで動かせない。競合は Docker があればどこでも
-- **Windows 実験的**、Homebrew 未公開、macOS 公証未、checksums 未署名
-- **ホステッド版が未開放**(HP1 の「最初の 5 分」はまだ提供できない)。競合 5 社はすべて hosted を提供中
-- **FSL は OSI オープンソースではない**(サーバー側)。「open source」を名乗る Phase / Infisical / Shelve と並べると注記が要る
+9. **License composition is consistent with the trust model**
+   - The side that decrypts (CLI / crypto / core / api-schema) is MIT; the server is FSL (only competing-SaaS prohibited, converts to MIT in 2 years). Compared to Phase / Infisical open-core (`ee/` needs a contract for production), Doppler's proprietary core, and Keyway's undecided license, **"the parts you want to verify are OSI-licensed"** and **"no restrictions on self-hosting"** are crisp.
 
 ---
 
-## 5. 競合別の一言(誰に対して何を言うか)
+## 4. maruhi's weaknesses (honestly)
 
-| 相手 | 体験の近さ | maruhi が言うべき差 |
+Differences that must not be hidden by the pitch (ADR-0014 decision 5 "separate honestly").
+
+- **Maturity & track record**: pre-release, solo development, 0 users, no SOC 2 etc. Orders of magnitude behind Infisical (★29k, Series A) and Doppler (76k orgs). Phase is SOC 2'd too
+- **Breadth of integrations**: cloud / PaaS sync unimplemented (SY series in progress — gate for the invite-only beta), no SDK, no K8s Operator, CI is GitHub Actions only. Infisical / Doppler have dozens of sync targets
+- **Auth**: GitHub OAuth only. No SSO / SAML / SCIM (WorkOS insertion point reserved — ADR-0009)
+- **No GUI that handles values**: the Web is read + revoke only. Value entry, viewing, invite acceptance, and key operations are all CLI. Not a fit for "I want to see values in a dashboard" users (an intentional ADR-0018 choice, but an adoption barrier)
+- **Zero-knowledge ceremony**: first-time key generation and recovery-code custody, mutual fingerprint verification on invite, device migration. Burdens the competitors (especially the 4 server-side ones) don't have. Frame it as "only first-time and invites"
+- **Lose your keys and recovery code and the operator cannot restore** (the price of the promise)
+- **Enterprise features**: no rotation, dynamic secrets, approval workflows, PKI / SSH / KMS / PAM. Infisical is an integrated platform, Doppler has Change Requests, Phase already has rotation + dynamic secrets
+- **credential brokering / MCP unimplemented** (Infisical has Agent Proxy GA; Doppler / Keyway have MCP). For the "try it now" side of the agent pitch there's only value-free schema + agent-gate
+- **Platform dependency**: Cloudflare-only (Workers / DO / D1). Can't run on-prem or on other clouds. Competitors run anywhere Docker does
+- **Windows is experimental**, Homebrew unpublished, macOS notarized not yet, checksums unsigned
+- **Hosted version not yet open** (HP1's "first 5 minutes" cannot yet be provided). All 5 competitors ship hosted
+- **FSL is not OSI open source** (server side). Lined up against Phase / Infisical / Shelve calling themselves "open source" it needs a footnote
+
+---
+
+## 5. One-liner per competitor (what to say to whom)
+
+| Counterpart | How close the experience is | The difference maruhi should state |
 |---|---|---|
-| **Phase** | 最も近い(E2EE 既定・エージェント検出・Ed25519 / X25519)。**本命の比較対象** | 「同期や API を使う瞬間に SSE で鍵の複製がサーバーに載る」に対し、maruhi は grant がチェーンに署名付きで残り、CI リースではサーバーが値を復号しない。Web で復号しない。Postgres + Redis 不要。テレメトリは両者ゼロ |
-| **Infisical** | 本命競合(vault + diskless run + agent proxy) | 2023 年に E2EE を捨てた(運営・MCP・ダッシュボードが平文)。Redis 必須の常設運用。telemetry 既定 on。maruhi は「運営にも見せない」を既定に戻し、`.env` を書く機能を持たない |
-| **Doppler** | 体験は洗練・統合最多 | 完全サーバー側 + クラウド専用(On-prem は Enterprise)。`run` が既定で fallback ファイルを書く。CLI analytics 既定 on。EU リージョンなし。maruhi は自分の CF アカウントに立つ |
-| **Shelve** | OSS・個人開発・軽さの点で近い。エージェント下 `pull` ブロックも同系 | サーバー側暗号化で運営が読める。`pull` が平文 `.env` を書き、`run` も暗号化キャッシュを置く。Vercel + Postgres。maruhi はゼロ知識 + ディスクレス不変条件 + Workers 一発 |
-| **Keyway (.sh)** | 「AI に秘密を渡さない」訴求が同じ | 訴求と実装が乖離(MCP が平文を返す・エージェント検出なし・「ゼロ知識ではない」と自認)。LICENSE 未定・価格記述不一致・★8。maruhi は同じ訴求を fail-closed + 値なしスキーマ + E2EE で実装済み |
+| **Phase** | Closest (E2EE default, agent detection, Ed25519 / X25519). **The comparison target** | Against "the moment you use sync or the API, SSE puts a key copy on the server": maruhi's grant stays on the chain signed, the server doesn't decrypt values on the CI lease path, and there's no decryption in Web. No Postgres + Redis. Telemetry is zero for both |
+| **Infisical** | Main competitor (vault + diskless run + agent proxy) | Dropped E2EE in 2023 (operator, MCP, dashboard see plaintext). Standing operations with required Redis. Telemetry on by default. maruhi restores "not even the operator sees" as the default and has no feature that writes `.env` |
+| **Doppler** | Polished experience, most integrations | Fully server-side + cloud-only (On-prem is Enterprise). `run` writes a fallback file by default. CLI analytics on by default. No EU region. maruhi runs in your own CF account |
+| **Shelve** | Close in being OSS, solo-built, light. Agent-under `pull` blocking is the same idea | Server-side encryption means the operator can read. `pull` writes plaintext `.env` and `run` leaves an encrypted cache. Vercel + Postgres. maruhi is zero-knowledge + diskless invariant + one-shot Workers |
+| **Keyway (.sh)** | Same "don't hand secrets to AI" pitch | Pitch and implementation diverge (MCP returns plaintext, no agent detection, admits "not zero-knowledge"). LICENSE undecided, pricing descriptions inconsistent, ★8. maruhi already implements the same pitch with fail-closed + value-free schema + E2EE |
 
 ---
 
-## 6. 位置づけの一文(ADR-0014 の売り文句の現行形)
+## 6. Positioning sentence (current form of the ADR-0014 tagline)
 
-> **maruhi は、運営にも・配られた Web にも・エージェントにも平文を渡さないことを既定にした、`.env` を書かない secrets 管理。自分の Cloudflare アカウントに `wrangler deploy` 一発で立ち、何も外へ送らない。**
+> **maruhi is secrets management that defaults to handing plaintext to no one — not the operator, not the served Web, not agents — and never writes `.env`. It stands up in your own Cloudflare account with one `wrangler deploy` and sends nothing out.**
 
-段階: 「運営に平文を見せない」(現在)→「運営にもエージェントにも平文を渡さない」(Phase 3: `maruhi proxy run`)→「人間が間違えても、秘密がそこにない」(no-reveal 方針化)。
-
----
-
-## 6-1. LP / docs での使い方(2026-09-04 追記 — 所有者との対話の記録)
-
-**訴求点(優先順)** — いずれも「仕組みを淡々と書く」(web-design-pass.md §2)・「絶対最安全」と言わない(ADR-0014 ガードレール):
-
-1. 運営は値を読めない。それをコードで確かめられる(E2EE 既定 + 復号は MIT の CLI のみ + Web は復号器を持たない)
-2. `.env` を書かない(`maruhi run` のメモリ注入のみ。生成・出力する機能そのものがない — 「ディスクレス run がある」ではなく「書く機能がない」が差)
-3. 自分の Cloudflare アカウントに一発(`wrangler deploy` 約 10 分・無料枠・Postgres / Redis / 常設 VM なし)
-4. 何も送らない(CLI もインストーラも github.com 以外へ通信しない。「言わざる」は直訳せず仕組みで書く)
-5. エージェントには契約だけ渡す(`maruhi schema` = 名前・型・必須のみ。値表示はエージェント環境で fail-closed)
-6. 保証しないことも書く(CRYPTO_SPEC §14.3 → 脅威モデル文書へリンク)
-
-英語コピー案: "Secrets your vendor can't read. Not even us." / "Secrets that never touch disk. `maruhi run` and nothing else." / "One `wrangler deploy`. Your Cloudflare account. Zero telemetry."
-
-**星取表の扱い** — 広い機能比較表は置かない(同期先・SDK・SSO・ローテーション・動的シークレット・GUI・SOC 2 で全滅に近く、行数で薄まる。ADR-0014「機能数でセキュリティを語らない」)。競合名を書いた表は陳腐化と紛争のリスク(Phase の egress proxy は近く実装されうる・Doppler On-prem は形態未公開・Keyway は価格もライセンスも記述が割れる)。
-
-推奨する 2 段構え:
-- **LP**: 競合名を出さず、列を「サーバー側暗号化の vault」「E2EE だが Web で復号する vault」「maruhi」の 3 型にした信頼モデル表 5 行(既定でゼロ知識か / 復号器を配る Web があるか / `.env` を書く機能があるか / 常設 DB が要るか / 外部送信があるか)。型で語れば陳腐化しない
-- **docs**: 競合名付きの詳細比較は日付と出典つきの比較ページとして後で用意(Keyway の /vs/ ページの形)。本書 §2〜§4 が素材。§4 の劣後点も同じページに載せ、訴求点 6 と一貫させる
-
-表示規律: LP でも「verified」の語は署名検証を実際に行う CLI の文脈以外で使わない(CRYPTO_SPEC §14.3-7)。「運営が読めない」は言えるが「安全性が証明された」は言えない。「On-prem」とは言わず "Runs in your own Cloudflare account" と正確に言う(狭義の On-prem = 自社 DC / air-gap は ADR-0001 の帰結として不可)。
-
-## 7. 申し送り(この比較から出る示唆。決定ではない)
-
-- Phase が「AI egress proxy」を訴求し Infisical が Agent Proxy を GA したことで、**credential brokering は 2026 年内に「あるのが普通」になる**見込み。`maruhi proxy run`(Phase 3 ②)の優先度を再確認する材料
-- Keyway の「訴求と実装の乖離」は maruhi の脅威モデル文書(H5)で **「何を保証しないか」を先に書く**ことの価値を裏付ける
-- Doppler の「Per-Seat, No Agent Fees」、Phase の「SA は無料」、Infisical の「per identity」— GA の課金設計(L9)では **マシン / エージェント ID の課金単位**が論点になる
-- 5 社中 4 社が hosted を「無料枠あり」で提供。招待制ベータの「最初の 5 分」(H6)は競合の hosted 体験が比較基準になる
-- 比較の再確認時期: Phase の egress proxy 実装、Doppler On-prem のパッケージ形態、Keyway の LICENSE が確定した時点
+Stages: "don't show plaintext to the operator" (now) → "don't hand plaintext to the operator or agents" (Phase 3: `maruhi proxy run`) → "even if a human errs, the secret isn't there" (no-reveal policy).
 
 ---
 
-## 出典(2026-09-04 確認)
+## 6-1. How to use this on the LP / docs (2026-09-04 addendum — record of discussion with the owner)
+
+**Selling points (in priority order)** — all "describe the mechanism plainly" (web-design-pass.md §2), never say "absolutely safest" (ADR-0014 guardrails):
+
+1. The operator cannot read values, and you can verify that in code (E2EE default + decryption only in the MIT-licensed CLI + Web ships no decryptor)
+2. Never writes `.env` (`maruhi run` memory injection only. The feature to generate/export simply doesn't exist — the difference is "no writing feature", not "has a diskless run")
+3. One shot into your own Cloudflare account (`wrangler deploy`, ~10 min, free tier, no Postgres / Redis / standing VM)
+4. Sends nothing (neither the CLI nor the installer talks to anything but github.com. Don't translate "言わざる" literally — describe the mechanism) <!-- english-exempt: quotes the source-language slogan being discussed -->
+5. Hand agents only the contract (`maruhi schema` = names, types, required only. Value display is fail-closed in agent environments)
+6. Also state what isn't guaranteed (CRYPTO_SPEC §14.3 → link to the threat-model document)
+
+English copy candidates: "Secrets your vendor can't read. Not even us." / "Secrets that never touch disk. `maruhi run` and nothing else." / "One `wrangler deploy`. Your Cloudflare account. Zero telemetry."
+
+**Handling the feature-matrix** — don't publish a broad feature comparison table (it would be near-empty on sync targets, SDK, SSO, rotation, dynamic secrets, GUI, SOC 2, and the row count dilutes. ADR-0014: "don't argue security by feature count"). A table naming competitors risks staleness and disputes (Phase's egress proxy may ship soon; Doppler On-prem's packaging is undisclosed; Keyway's pricing and license descriptions are inconsistent).
+
+Recommended two-tier structure:
+- **LP**: a 5-row trust-model table with no competitor names, columns being the 3 types "server-side-encrypted vault", "E2EE but decrypts in Web", "maruhi" (zero-knowledge by default? / ships a Web decryptor? / has a `.env`-writing feature? / needs a standing DB? / sends outbound?). Arguing by type never goes stale
+- **docs**: the detailed competitor-named comparison comes later as a dated, sourced comparison page (the shape of Keyway's /vs/ page). §2–§4 of this document are the material. Put §4's weaknesses on the same page to stay consistent with selling point 6
+
+Display discipline: even on the LP, don't use the word "verified" outside the CLI context where signature verification actually happens (CRYPTO_SPEC §14.3-7). "The operator can't read it" can be said; "proven safe" cannot. Don't say "On-prem" — say precisely "Runs in your own Cloudflare account" (On-prem in the strict sense = own DC / air-gap is ruled out as a consequence of ADR-0001).
+
+## 7. Handoff (implications from this comparison. Not decisions)
+
+- With Phase pitching an "AI egress proxy" and Infisical GA-ing Agent Proxy, **credential brokering will likely be "normal to have" within 2026**. Material for re-checking the priority of `maruhi proxy run` (Phase 3 ②)
+- Keyway's "pitch / implementation gap" backs the value of **writing "what is not guaranteed" first** in maruhi's threat-model document (H5)
+- Doppler's "Per-Seat, No Agent Fees", Phase's "SAs are free", Infisical's "per identity" — for the GA pricing design (L9) the **billing unit for machine / agent IDs** is the question
+- 4 of 5 competitors offer hosted with a free tier. For the invite-only beta's "first 5 minutes" (H6), competitors' hosted experience is the comparison bar
+- When to re-verify this comparison: when Phase's egress proxy ships, Doppler On-prem's packaging is revealed, and Keyway's LICENSE is decided
+
+---
+
+## Sources (checked 2026-09-04)
 
 - Phase: https://phase.dev · https://phase.dev/security · https://phase.dev/pricing · https://phase.dev/changelog/ · https://docs.phase.dev/security/architecture · https://docs.phase.dev/security/cryptography · https://docs.phase.dev/console/apps · https://docs.phase.dev/cli/commands · https://docs.phase.dev/self-hosting · https://docs.phase.dev/self-hosting/configuration/envars · https://docs.phase.dev/integrations/agents/claude-code · https://docs.phase.dev/access-control/external-identities · https://github.com/phasehq/console(LICENSE, backend/ee/LICENSE)
 - Infisical: https://infisical.com · https://infisical.com/pricing · https://infisical.com/docs/internals/security · https://infisical.com/docs/self-hosting/overview · https://infisical.com/docs/self-hosting/configuration/requirements · https://infisical.com/docs/self-hosting/configuration/envars · https://infisical.com/docs/self-hosting/ee · https://infisical.com/docs/cli/commands/run · https://infisical.com/docs/cli/commands/export · https://infisical.com/docs/integrations/platforms/infisical-agent · https://infisical.com/docs/documentation/platform/agent-proxy/overview · https://infisical.com/blog/infisical-update-june-2023 · https://infisical.com/blog/series-a · https://github.com/Infisical/infisical · https://github.com/Infisical/infisical-mcp-server · https://github.com/Infisical/agent-vault · https://github.com/Infisical/cli
 - Doppler: https://www.doppler.com · https://www.doppler.com/pricing · https://www.doppler.com/security · https://www.doppler.com/agents · https://docs.doppler.com/docs/security-fact-sheet · https://docs.doppler.com/docs/enterprise-key-management · https://docs.doppler.com/docs/accessing-secrets · https://docs.doppler.com/docs/automatic-fallbacks · https://docs.doppler.com/docs/cli · https://docs.doppler.com/docs/environment-based-configuration · https://docs.doppler.com/docs/mcp · https://docs.doppler.com/docs/share-security · https://docs.doppler.com/changelog · https://github.com/DopplerHQ/cli
 - Shelve: https://www.shelve.cloud/ · https://github.com/HugoRCD/shelve · https://shelve.cloud/raw/docs/core-features/encryption.md · https://shelve.cloud/raw/docs/cli/run.md · https://shelve.cloud/raw/docs/cli/agents-automation.md · https://shelve.cloud/raw/docs/cli/init.md · https://shelve.cloud/raw/docs/core-features/tokens.md · https://shelve.cloud/raw/docs/core-features/audit-logs.md · https://shelve.cloud/raw/docs/core-features/teams.md · https://www.shelve.cloud/docs/self-hosting/vercel · https://shelve.cloud/raw/docs/self-hosting/environment-variables.md · https://shelve.cloud/raw/docs/integrations/github.md
-- Keyway: https://keyway.sh/ · https://keyway.sh/security · https://keyway.sh/threat-model · https://keyway.sh/articles/ai-coding-agents-secrets-security · https://docs.keyway.sh/cli · https://docs.keyway.sh/api · https://docs.keyway.sh/mcp · https://docs.keyway.sh/security · https://docs.keyway.sh/organizations · https://docs.keyway.sh/integrations · https://github.com/keywaysh/keyway(SELF-HOSTING.md, docker-compose.yml)· 参考(無関係の同名企業): https://www.keyway.ai/
+- Keyway: https://keyway.sh/ · https://keyway.sh/security · https://keyway.sh/threat-model · https://keyway.sh/articles/ai-coding-agents-secrets-security · https://docs.keyway.sh/cli · https://docs.keyway.sh/api · https://docs.keyway.sh/mcp · https://docs.keyway.sh/security · https://docs.keyway.sh/organizations · https://docs.keyway.sh/integrations · https://github.com/keywaysh/keyway(SELF-HOSTING.md, docker-compose.yml)· reference (unrelated same-name company): https://www.keyway.ai/
 - maruhi: docs/CRYPTO_SPEC.md(§1 / §9 / §14)· docs/AUTH_SPEC.md · docs/AUDIT_SPEC.md · docs/SELF_HOSTING.md · docs/adr/0002 / 0003 / 0009 / 0014 / 0016 / 0018 · docs/notes/hosted-design.md(§1 / §5-1)· ROADMAP.md

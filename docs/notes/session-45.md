@@ -1,275 +1,333 @@
-# セッション 45: W3b — 失効系画面(S8 招待管理・S9 トークン管理)の実装裁定(CN〜)
+# Session 45: W3b — implementation rulings for the revocation-family screens (S8 invite management, S9 token management) (CN onward)
 
-日付: 2026-08-30。対象 PR: PR-W3b(設計文書 §7 の 6 — **web のみ**。server / CLI /
-crypto 変更なし、api-schema は既存 export の消費のみ)。W 系列の最終 PR で、
-W3a(PR #108)の API を消費する。様式は従来どおり「複数案 → 上位互換探索 →
-3 周比較 → 自律選択」(session-27 §14 の様式。記号は session-44 の CM から
-継続して CN〜)。規範 = ADR-0018 改訂 2(発行系・警告消去・チェーン書き込みを
-置かない/サーバー申告表示)・設計文書 §3 S8/S9・§4 表示規律・§5 可視性・
-AUTH_SPEC §5 / §6(0.15-draft)/ §15-2。W2 の実装様式(session-43 裁定
-BM〜BS・CC・CD)を引き継ぐ。
+Date: 2026-08-30. Target PR: PR-W3b (design doc §7's item 6 — **web only**.
+No server / CLI / crypto changes; api-schema is consumed via existing exports
+only). The final PR of the W series, consuming W3a's (PR #108) API. The
+format is the usual "multiple options → strictly-better search → 3-round
+comparison → autonomous choice" (session-27 §14's format. Letters continue
+from session-44's CM to CN onward). Norms = ADR-0018 revision 2 (no
+issuance-family / warning-dismissal / chain-writing; server-claim display) /
+design doc §3 S8/S9 / §4 display discipline / §5 visibility / AUTH_SPEC §5 /
+§6 (0.15-draft) / §15-2. Inherits W2's implementation format (session-43
+rulings BM–BS, CC, CD).
 
-## 1. 裁定 CN: CSRF ヘッダー名の束縛形(session-44 §9 の申し送りの解消)
+## 1. Ruling CN: the binding form of the CSRF header name (resolving session-44 §9's handoff)
 
-前提: W3a が `CSRF_HEADER_NAME` を api-schema(auth-middleware.ts)へ export
-済みで、server 側は束縛済み。web(dashboard/api.ts)のリテラル
-`"x-maruhi-csrf"` の束縛だけが残っている。制約は裁定 BR/CD —
-「Effect / api-schema の実行コードをバンドル(= TCB)へ持ち込まない」の
-機械検査(値 import のソーストリップワイヤ)と衝突しない形であること。
+Premise: W3a already exports `CSRF_HEADER_NAME` from api-schema
+(auth-middleware.ts), and the server side is bound. What remains is binding
+the `"x-maruhi-csrf"` literal in web (dashboard/api.ts). The constraint is
+rulings BR/CD — the form must not collide with the mechanical check (the
+source tripwire for value imports) of "don't bring Effect / api-schema
+runtime code into the bundle (= TCB)".
 
-### 第 1 周(複数案)
+### Round 1 (multiple options)
 
-- **CN-a(素朴な値 import + トリップワイヤの限定許可)**: api.ts を CD の
-  除外リストへ載せる。棄却 — 定数 1 個のために api-schema の**モジュール
-  グラフ**(index 経由で effect の Schema 実行コード一式)がバンドル候補に
-  入り、排除が tree-shaking の挙動依存になる。「検査可能な構成」(BG/CD の
-  姿勢)から「バンドラの最適化を信じる」への逆行で、W2 で最も重い不変条件に
-  例外を穿つ対価が定数 1 個
-- **CN-b(テスト側でのリテラル照合)**: バンドルは純粋なまま、unit テスト
-  (テストプロセスは値 import 可 — 裁定 BV と同じ位置づけ)がリテラルを
-  `CSRF_HEADER_NAME` と照合する。束縛の検出がテスト実行時まで遅延する
-- **CN-c(型レベル束縛)**: `import type { CSRF_HEADER_NAME }`(値バインディング
-  の type-only import — typeof 文脈でのみ使用可)+
-  `const CSRF_HEADER = "x-maruhi-csrf" satisfies typeof CSRF_HEADER_NAME`。
-  api-schema 側は const 宣言でリテラル型を持つため、値のリネームはコンパイル
-  エラーで割れる。バンドル影響ゼロ・トリップワイヤ変更ゼロ(`import type` は
-  CD の走査対象外)— 裁定 CC(403 reason の satisfies 束縛)と同型
+- **CN-a (naive value import + a limited exemption on the tripwire)**: put
+  api.ts on CD's exclusion list. Rejected — for a single constant,
+  api-schema's **module graph** (the whole set of effect Schema runtime code
+  via index) becomes bundle-eligible, and exclusion becomes dependent on
+  tree-shaking behavior. It's a regression from "an inspectable
+  configuration" (BG/CD's stance) to "trusting the bundler's optimization",
+  paying an exception into W2's heaviest invariant for the price of one
+  constant
+- **CN-b (literal matching on the test side)**: the bundle stays pure, and a
+  unit test (the test process may import values — same footing as ruling BV)
+  matches the literal against `CSRF_HEADER_NAME`. Binding detection defers to
+  test-run time
+- **CN-c (type-level binding)**: `import type { CSRF_HEADER_NAME }` (a
+  type-only import of a value binding — usable only in typeof contexts) +
+  `const CSRF_HEADER = "x-maruhi-csrf" satisfies typeof CSRF_HEADER_NAME`.
+  Since the api-schema side is a const declaration carrying a literal type,
+  renaming the value breaks at compile error. Zero bundle impact, zero
+  tripwire change (`import type` is outside CD's scan) — same shape as
+  ruling CC (the satisfies binding of 403 reasons)
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- CN-c は CN-a(バンドル影響)・CN-b(検出時点)の双方の上位互換。さらに
-  CN-b を**併用**する: unit テストは apiPost / apiDelete が**実際に送る**
-  ヘッダー名を api-schema の実値と照合する(型束縛は「リテラル ↔ 正」、
-  実送信照合は「送信 ↔ 正」— 相補であり同語反復でない)
+- CN-c is strictly better than both CN-a (bundle impact) and CN-b (detection
+  timing). And **combine** CN-b on top: the unit test matches the header name
+  apiPost / apiDelete **actually send** against api-schema's real value (the
+  type binding is "literal ↔ truth", the actual-send matching is "send ↔
+  truth" — complementary, not tautological)
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- CN-c の残余: api-schema 側が将来 `: string` の型注釈を付けると literal 型が
-  消え、`satisfies string` は何でも通る(束縛の無音失効)。CN-b の実値照合が
-  この劣化も検出する(型が広がっても値照合は具体値のまま)— 二層で閉じる
-- **採用: CN-c(型束縛)+ CN-b(テストの実送信照合)**
+- CN-c's residue: if api-schema later adds a `: string` type annotation, the
+  literal type vanishes and `satisfies string` accepts anything (silent decay
+  of the binding). CN-b's real-value matching detects this degradation too
+  (value matching stays concrete even when the type widens) — closed in two
+  layers
+- **Adopted: CN-c (type binding) + CN-b (the test's actual-send matching)**
 
-## 2. 裁定 CO: 失効の誤操作対策(確認 UI の要否と形)
+## 2. Ruling CO: misuse protection on revocation (whether/how to confirm)
 
-前提の非対称性: 招待の失効は再発行(CLI)で回復可能。S9 の自トークン失効は
-**稼働中の CLI / CI を即 401 にする**(トークンの再発行は device flow =
-ブラウザ承認つきで、無人環境の復旧は人手を要する — 裁定 CF/CK の供給手順)。
+The premise's asymmetry: invite revocation is recoverable via re-issuance
+(CLI). S9's self-token revocation **immediately turns running CLI / CI into
+401** (token re-issuance is the device flow = browser-approved, and
+recovering an unattended environment takes a human — rulings CF/CK's
+provisioning procedure).
 
-### 第 1 周(複数案)
+### Round 1 (multiple options)
 
-- **CO-a(確認なし・1 クリック失効)**: 棄却 — 上の非対称性に加え、Astryx の
-  設計指針も destructive アクションの無確認を明示的に避けている。undo は
-  構造的に置けない(undo = 再発行 = 資格の生成で、ADR-0018 改訂 2 の境界の
-  外)ため、事前確認が唯一の誤操作対策
-- **CO-b(ブラウザ native `confirm()`)**: 棄却 — スレッドをブロックし、
-  スタイル・文言の一貫性(ADR-0013 / 表示規律)から外れ、e2e もダイアログ
-  ハンドラ依存になる
-- **CO-c(インライン 2 段階確認)**: 行の Revoke クリックで武装(armed)し、
-  同じ行に Confirm revoke(destructive)+ Cancel を出す。武装は常に 1 行のみ
-  (別行の武装・Cancel で解除)。追加コンポーネントなし・全状態が DOM に
-  可視で e2e が素直
-- **CO-d(モーダルダイアログ)**: 棄却 — 対象の詳細は一覧行に既に見えて
-  おり、フォーカストラップ込みの新表面を足す利得がない
+- **CO-a (no confirmation, 1-click revoke)**: rejected — on top of the
+  asymmetry above, Astryx's design guideline also explicitly avoids
+  unconfirmed destructive actions. Undo is structurally impossible (undo =
+  re-issuance = credential generation, outside ADR-0018 revision 2's
+  boundary), so pre-confirmation is the only misuse protection
+- **CO-b (browser-native `confirm()`)**: rejected — blocks the thread,
+  departs from style / wording consistency (ADR-0013 / display discipline),
+  and makes e2e depend on a dialog handler
+- **CO-c (inline 2-step confirmation)**: clicking a row's Revoke arms it, and
+  the same row shows Confirm revoke (destructive) + Cancel. At most 1 row is
+  armed (arming another row or Cancel disarms). No added components, all
+  state visible in the DOM, e2e-friendly
+- **CO-d (a modal dialog)**: rejected — the target's details are already
+  visible on the list row; no gain in adding a new surface with a focus trap
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- CO-c + **帰結の警告文**: S9 の確認行に「Revoking immediately signs out any
-  CLI or CI still using this token」を添える(S8 は招待リンクが使えなくなる
-  旨)。確認の意味を「もう 1 クリック」から「帰結の提示」へ引き上げる
-- 失効後は一覧を再取得する(サーバー申告の状態を写す — 楽観更新でクライアント
-  推測の状態を描かない。表示規律 §4 と同じ側)
+- CO-c + **a consequence warning line**: on S9's confirm row, add "Revoking
+  immediately signs out any CLI or CI still using this token" (S8 says the
+  invite link stops working). Raises the confirmation's meaning from "one
+  more click" to "presenting the consequence"
+- After revocation, re-fetch the list (mirror the server-declared state —
+  don't paint client-guessed state via optimistic update. Same side as
+  display discipline §4)
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- 武装の自動タイムアウト解除は棄却(非決定的挙動はテスト不能性を足すだけ)。
-  画面遷移・再読込で自然に解除される
-- **採用: CO-c + 帰結の警告文 + 失効後のサーバー再取得**
+- Auto-timeout disarm of the armed state is rejected (non-deterministic
+  behavior only adds untestability). It's naturally disarmed by navigation /
+  reload
+- **Adopted: CO-c + consequence warning + server re-fetch after revocation**
 
-## 3. 裁定 CP: S8 / S9 の画面配置・ルーティング
+## 3. Ruling CP: screen placement / routing of S8 / S9
 
-### 第 1 周(複数案)
+### Round 1 (multiple options)
 
-- **CP-a(S8 = ProjectScreen の第 4 タブ・S9 = 独立ルート /dashboard/tokens)**:
-  軸の一致 — S8 は project 軸(認可も project のチェーン role)なので
-  project 画面のタブ、S9 は user 軸(本人のトークン)なので account 系の
-  独立ルート。裁定 BO「タブはルート化しない」を踏襲
-- **CP-b(S8 も独立ルート /dashboard/projects/:id/invites)**: 棄却 —
-  ルート表面(near-miss クラス)の増加で、BO 第 2 周の決定の蒸し返し
-- **CP-c(S9 を /dashboard/account のタブへ統合)**: 棄却 — W2 の監査読み取り
-  画面に失効 mutation 面が混載され、画面単位の縮退可能性(設計文書 §2)が
-  弱まる。W2 画面の改造も伴う
-- **CP-d(S9 を /dashboard 直下のセクションへ)**: 棄却 — S4(一覧)への
-  mutation 混載で同上
+- **CP-a (S8 = ProjectScreen's 4th tab, S9 = independent route
+  /dashboard/tokens)**: axis consistency — S8 is project-axis (authorization
+  is the project's chain role too), so a tab of the project screen; S9 is
+  user-axis (one's own tokens), so an independent account-family route.
+  Follows ruling BO "tabs aren't routed"
+- **CP-b (S8 as an independent route too,
+  /dashboard/projects/:id/invites)**: rejected — increases the route surface
+  (near-miss class) and re-litigates BO round 2's decision
+- **CP-c (integrate S9 as a tab of /dashboard/account)**: rejected — it would
+  mix a revocation-mutation surface into W2's audit-reading screen, weakening
+  per-screen degradability (design doc §2). It would also involve modifying
+  the W2 screen
+- **CP-d (S9 as a section right under /dashboard)**: rejected — same as
+  above; mutation mixed into S4 (the list)
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- タブ名 "Invites" は S6 監査タブ内の invites 軸(SegmentedControl)と語が
-  重なるが、片方は管理(一覧・失効・発行案内)・片方は監査イベント履歴で、
-  文脈(タブ直下 vs Audit タブ内の軸)が分ける。改名(例: "Invitations")は
-  同じ語を画面の別階層で使い分けるだけで衝突の実体がない — そのまま
-- /dashboard/tokens は既設の BZ スイープ(SPA ルート × run_worker_first の
-  非交差)・CA(spaPaths ビルダー束縛)が自動被覆する
+- The tab name "Invites" overlaps in wording with the invites axis inside the
+  S6 audit tab (SegmentedControl), but one is management (list / revoke /
+  issuance guidance) and the other is audit event history, and the contexts
+  (directly under tabs vs an axis inside the Audit tab) separate them.
+  Renaming (e.g. "Invitations") would only split the same word across
+  different screen hierarchies — no actual collision — keep it as-is
+- /dashboard/tokens is automatically covered by the existing BZ sweep
+  (non-intersection of SPA routes × run_worker_first) and CA (the spaPaths
+  builder binding)
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- S8 タブは role で事前に隠さない(admin 未満は 403 の役割文言 — 裁定 BQ の
-  invites 監査軸と同じ「事前判定をクライアントへ複製しない」)
-- **採用: CP-a**
+- The S8 tab isn't preemptively hidden by role (below admin gets the 403 role
+  wording — same as ruling BQ's invites audit axis: "don't replicate the
+  pre-judgment into the client")
+- **Adopted: CP-a**
 
-## 4. 裁定 CQ: S9 の期限表示 — 期限切れと null(session-44 §9 の宿題)
+## 4. Ruling CQ: S9's expiry display — expired vs null (session-44 §9's homework)
 
-- **期限切れ(expiresAtMs が過去)**: "Expired" Token + 申告時刻の併記。
-  過去判定はクライアント時計との比較だが、表示の主体は常にサーバー申告の
-  expiresAtMs(§4 の様式)。S8 の招待期限(expiresAtMs — 非 null)にも同じ
-  表示部品を使う(様式の一元化)
-- **null(移行前の旧無期限行)**: AUTH_SPEC §6(裁定 CE-c′)により検証側は
-  NULL を**期限切れとして扱う(fail-closed)**。よって表示も "Expired" +
-  "no expiry recorded" の注記とする — 仕様が定める挙動の写しであり、
-  クライアントの捏造ではない
-- 棄却: null を "Never expires" と表示(CE-c′ 後は虚偽 — 移行前の旧意味論の
-  復唱)/ null 行の非表示(棚卸し面の否定 — CE 第 3 周の「期限切れに気づく
-  導線 = 一覧での可視化」と矛盾)
+- **Expired (expiresAtMs in the past)**: an "Expired" Token + the declared
+  time, side by side. Past-ness is a comparison against the client clock, but
+  the display's subject is always the server-declared expiresAtMs (§4's
+  format). S8's invite expiry (expiresAtMs — non-null) uses the same display
+  component (unifying the format)
+- **null (pre-migration old no-expiry rows)**: per AUTH_SPEC §6 (ruling
+  CE-c′), the verification side treats NULL **as expired (fail-closed)**. So
+  the display is also "Expired" + a "no expiry recorded" note — a mirror of
+  spec-defined behavior, not client fabrication
+- Rejected: displaying null as "Never expires" (false after CE-c′ — a
+  recital of the pre-migration semantics) / hiding null rows (denying the
+  inventory surface — contradicts CE round 3's "the path to noticing expiry =
+  making it visible in the list")
 
-## 5. 付随の具体化(裁定記号なし — BP の様式の拡張)
+## 5. Incidental concretization (no ruling letters — an extension of BP's format)
 
-- **410(InviteGone)の分類**: 失効 DELETE の消費で初めて 410 が web に届く
-  (W2 の消費面には存在しなかった)。api.ts の分類へ `gone`(+ サーバー申告の
-  reason)を追加し、文言は「The server reports this invitation as
-  {reason}.」— unreachable への畳み込み(初版の挙動)は「サーバー申告の
-  写し」の規律に反するため分類を広げる
-- **404 文言の対象名詞**: BP の "The server reports no such project for your
-  account." は project 面の文言。S8 失効(invitation)・S9(token)用に
-  FailureNotice へ subject(project / invitation / token)を導入し、一様
-  404 の意味(他人の・存在しないを区別しない)は変えずに名詞だけ替える —
-  文言の一元化(BP)は維持
-- **失効ボタンの表示条件**: S8 は status が pending | accepted の行のみ
-  (サーバーの受理条件 — 期限切れ pending の掃除も可 — の写し。
-  handlers-invites.ts の B1a 裁定)。S9 は全行(期限切れ行の掃除は指定失効が
-  担う — CE 第 3 周)
-- **新規ビルダーのパスパラメータは encodeURIComponent を通す**(inviteId /
-  tokenId はサーバー発行の不透明 id で、projectId のような形式検査を UI 側に
-  持たない — 敵対的サーバーの id がパスを踏み外しても可視の 404/405 に留める)
+- **Classification of 410 (InviteGone)**: consuming the revocation DELETE
+  brings 410 to web for the first time (it didn't exist on W2's consumption
+  surface). Added `gone` (+ the server-declared reason) to api.ts's
+  classification; the wording is "The server reports this invitation as
+  {reason}." Folding into unreachable (the first version's behavior) would
+  violate the "mirror the server's declaration" discipline, so the
+  classification was widened
+- **The target noun of the 404 wording**: BP's "The server reports no such
+  project for your account." is the project surface's wording. Introduced
+  subject (project / invitation / token) on FailureNotice for S8 revocation
+  (invitation) and S9 (token) — change only the noun without changing the
+  uniform 404 meaning (doesn't distinguish another's from nonexistent) — the
+  wording unification (BP) is preserved
+- **Revoke-button display condition**: S8 only on rows with status pending |
+  accepted (mirroring the server's acceptance condition — expired pending
+  rows can be cleaned too — handlers-invites.ts's B1a ruling). S9 all rows
+  (cleaning expired rows is carried by explicit revocation — CE round 3)
+- **New builders' path parameters go through encodeURIComponent** (inviteId /
+  tokenId are server-issued opaque ids — unlike projectId there's no
+  client-side format check — keep a hostile server's id from escaping the
+  path down to a visible 404/405)
 
-## 6. 実施記録
+## 6. Implementation record
 
-- **api 層**: `apiDelete`(DELETE + CSRF ヘッダー)を追加。CSRF ヘッダー名は
-  CN のとおり type-only import + `satisfies typeof CSRF_HEADER_NAME` で型束縛
-  (変異検証: リテラル改変で TS1360)。分類へ `gone`(410 + reason)を追加し、
-  403/410 の reason 取り出しを 1 実装に統合(fallow の cyclomatic ≤ 4 規律に
-  合わせ reason 系 kind を lookup 化)
-- **endpoints.ts**: `invites` / `inviteRevoke` / `tokens` / `tokenRevoke` の
-  4 ビルダー + 目録 4 面(BW スイープが機械検査 — サンプルパラメータに
-  `:tokenId` / `:id` を追加)。新ビルダーのパスパラメータは §5 のとおり
-  encodeURIComponent を通す
-- **S8**: `InvitesTab.tsx` — ProjectScreen の第 4 タブ(CP)。status Token
-  (Object.hasOwn 自衛 — RoleToken と同型)・invited/accepted by・
-  ExpiryCell・RevokeControl(pending | accepted 行のみ — リテラルは
-  `satisfies ReadonlyArray<InviteStatus>` で型束縛)。発行の静的案内
-  (`maruhi invite create`)+ 失効の帰結の注記を常時表示
-- **S9**: `TokensScreen.tsx` — 独立ルート `/dashboard/tokens`(CP。routes.ts の
-  定数 + SPA_ROUTES + spaPaths.tokens — BZ/CA スイープが自動被覆)。
-  name / prefix / scopes / last used(null = "never")/ ExpiryCell(CQ)/
-  RevokeControl 全行。ダッシュボードヘッダーに "API tokens" 導線。
-  createdAtMs 列は置かない(発行の来歴は Account audit — S6 本人軸 — の領分。
-  幅の対価に届かない)
-- **共有部品**: `use-api-resource.ts`(W2 の ProjectScreen 内フックの独立
-  モジュール化 — 挙動不変)・`use-revocation.ts`(CO の状態機械。武装 1 行・
-  完了後の再取得。**状態は一覧リソースの外に持つ** — 再取得中のアンマウントで
-  失敗表示が消えない)・shared.tsx の `ExpiryCell` / `RevokeControl` /
-  `FailureNotice` の subject(§5)+ gone 表示
-- **テスト**: web unit 29 件(apiDelete の CSRF 実送信を api-schema の実値と
-  照合 = CN 二層目・410 分類・目録スイープ追随・spa-topology 追随)。
-  e2e 24 件(S8 失効成功 + 一覧更新 + DELETE/CSRF 実送信・410 文言・403 役割
-  文言・S9 Expired ×2 + no expiry recorded + never 表示・失効 + 一覧更新・
-  一様 404 の token 文言・/dashboard/tokens の CSP ヘッダー実在)。
-  フィクスチャは全件 Schema 実検証(BV)に追加
-- **既設スイープの堅牢化(実測で発見)**: CD の値 import トリップワイヤが
-  **コメント中の語「import」から実 import 文の from 句までを 1 マッチに繋げて
-  誤検知**した(api.ts の CN 注記コメントが最初の踏み抜き)。正規表現を行頭
-  アンカー(`^import` + m フラグ)へ強化 — import 文はトップレベル宣言で行頭に
-  現れる。変異検証: 実際の値 import への改変で従来どおり検知
-- **既存テストの追随**: W2 e2e の監査 invites 軸クリックが管理タブ "Invites"
-  (S8)と同語衝突 → SegmentedControl(radiogroup)側を role で指す形へ。
-  S8 の e2e は Overview タブの消費面もモックする(実サーバーの 401 応答は
-  ボディ未読のまま networkidle を妨げる — W2 テストが全面モックである理由の
-  実測確認)
-- スコープ外の確認: server / api-schema / CLI / packages/crypto に変更なし。
-  発行 UI・生値表示・S10・rotation dismiss は作っていない。BG 検査(語
-  `hash` 0 件)はバンドル拡大後も無変更で通過
-- `bun run check` 全通過(2211 件)+ e2e 24 件通過
+- **api layer**: added `apiDelete` (DELETE + CSRF header). The CSRF header
+  name is type-bound per CN via a type-only import + `satisfies typeof
+  CSRF_HEADER_NAME` (mutation-verified: altering the literal gives TS1360).
+  Added `gone` (410 + reason) to the classification, and unified the
+  reason extraction of 403/410 into 1 implementation (turned reason-family
+  kinds into a lookup, matching fallow's cyclomatic ≤ 4 discipline)
+- **endpoints.ts**: 4 builders — `invites` / `inviteRevoke` / `tokens` /
+  `tokenRevoke` — + 4 catalog surfaces (the BW sweep mechanically checks —
+  added `:tokenId` / `:id` to the sample parameters). New builders' path
+  parameters go through encodeURIComponent per §5
+- **S8**: `InvitesTab.tsx` — ProjectScreen's 4th tab (CP). status Token
+  (Object.hasOwn self-defense — same shape as RoleToken) / invited /
+  accepted by / ExpiryCell / RevokeControl (pending | accepted rows only —
+  the literal is type-bound via `satisfies ReadonlyArray<InviteStatus>`).
+  Permanent display of issuance's static guidance (`maruhi invite create`) +
+  the revocation-consequence note
+- **S9**: `TokensScreen.tsx` — independent route `/dashboard/tokens` (CP.
+  routes.ts constant + SPA_ROUTES + spaPaths.tokens — automatically covered
+  by the BZ/CA sweeps). name / prefix / scopes / last used (null =
+  "never") / ExpiryCell (CQ) / RevokeControl on all rows. An "API tokens"
+  path on the dashboard header. No createdAtMs column (issuance history is
+  Account audit's — S6's self axis — territory. Doesn't reach the cost of
+  the width)
+- **Shared parts**: `use-api-resource.ts` (extracted into an independent
+  module from W2's ProjectScreen-internal hook — behavior unchanged) /
+  `use-revocation.ts` (CO's state machine. 1-row arming, re-fetch on
+  completion. **State lives outside the list resource** — so a failure
+  display doesn't vanish on unmount during re-fetch) / shared.tsx's
+  `ExpiryCell` / `RevokeControl` / `FailureNotice`'s subject (§5) + gone
+  display
+- **Tests**: 29 web unit (matching apiDelete's actually-sent CSRF against
+  api-schema's real value = CN's second layer / 410 classification / catalog
+  sweep following / spa-topology following). 24 e2e (S8 revocation success +
+  list refresh + actual DELETE/CSRF send / 410 wording / 403 role wording /
+  S9 Expired ×2 + no expiry recorded + never display / revocation + list
+  refresh / uniform 404's token wording / CSP headers actually present on
+  /dashboard/tokens). All fixtures added to Schema real-verification (BV)
+- **Hardening an existing sweep (found by measurement)**: CD's value-import
+  tripwire **false-matched by concatenating the word "import" inside a
+  comment through to a real import statement's from clause in one match**
+  (api.ts's CN note comment was the first trip). The regex was strengthened
+  to a line-start anchor (`^import` + m flag) — import statements are
+  top-level declarations and appear at line start. Mutation verification:
+  still detects on an actual value import, as before
+- **Following existing tests**: W2 e2e's audit invites-axis click collided
+  in wording with the management tab "Invites" (S8) → changed to point at
+  the SegmentedControl (radiogroup) side by role. S8's e2e also mocks the
+  Overview tab's consumption surface (a real server's 401 response blocks
+  networkidle with the body unread — a measured confirmation of why W2 tests
+  are fully mocked)
+- Out-of-scope confirmations: no changes to server / api-schema / CLI /
+  packages/crypto. No issuance UI, raw-value display, S10, or rotation
+  dismiss was built. The BG check (0 occurrences of the word `hash`) passes
+  unchanged even after the bundle grew
+- `bun run check` fully passed (2211 tests) + 24 e2e passed
 
-## 7. 実装後の上位互換探索(生成規則を変えた反復 — 収束まで)
+## 7. Post-implementation strictly-better search (iterating with changed generation rules — until convergence)
 
-session-43 §10〜§14 / session-44 §7〜§14 の既知の生成規則を順に適用した:
+Applied each known generation rule from session-43 §10–§14 / session-44
+§7–§14 in turn:
 
-1. **機械可読な正の手書き複製探し**: 新設コードの棚卸しで 2 件を型束縛へ —
-   CSRF リテラル(裁定 CN 本体)と `isRevocable` の status リテラル
-   (`satisfies` — CC と同型)。残るリテラルはビルダー定義・テスト期待値
-   (意図的 — session-43 §13 の棄却と同じ)のみ
-2. **不変条件の連鎖歩査**(定義 → 消費 → ワイヤ → サーバー): 「発行系を
-   置かない」はサーバーの能力制限(W2b — invites.issue が SESSION_ALLOWED 外)
-   が強制し、web は消費コード自体を持たない。「生値・ハッシュ非表示」は
-   W3a のスキーマ構造(列がない)+ S8 で tokenHashHex を表示しない選択。
-   「CSRF on DELETE」は api 層の単一点 + 型束縛 + 実値照合 + e2e 実送信 ×2。
-   規約頼みのリンクは検出されなかった
-3. **裁定合成の盲点**: CN(型束縛)× CD(トリップワイヤ)の合成が
-   **トリップワイヤ自身の誤検知**を顕在化させた(§6 — 行頭アンカーで解消。
-   束縛を書けば書くほど語「import」がコメントに増える構造だった)。
-   CO(完了後再取得)× 一覧リソースの状態管理の合成は「再取得中の
-   アンマウントで失敗表示が消える」を生む — 状態の持ち上げで解消(§6)
-4. **新不変条件の逆流**(「web に破壊系 mutation がある」を旧前提の記述へ):
-   api.ts の「mutation はログアウトのみ」コメントを更新。設計文書 §6 の
-   XSS 残余評価は失効系悪用を織り込み済み(改訂不要)。BP の 404 文言は
-   project 名詞が前提だった → subject 分岐(§5)
-5. **ライフサイクル観測者歩査**: 招待(pending → accepted → completed /
-   revoked / 期限切れ)・トークン(発行 → 使用 → 期限切れ → 失効)の全状態が
-   一覧に可視で、失効可能な状態にだけ操作が出る。トークンの失効は行の削除
-   だが、来歴は Account audit(auth.token_revoked)が観測者として残る
-6. **推奨手順の実演走査**: S9 の注記(失効 → CLI 再ログインで代替発行)は
-   CK/CM の供給手順(`maruhi login --show-token`)へ接続する。S8 の注記
-   (失効 → `maruhi invite create` で再発行)も行き止まりなし
+1. **Looking for hand-written copies of the machine-readable truth**: the
+   new code's inventory turned 2 items into type bindings — the CSRF literal
+   (ruling CN's body) and `isRevocable`'s status literal (`satisfies` — same
+   shape as CC). The only remaining literals are builder definitions and
+   test expectations (intentional — same as session-43 §13's rejection)
+2. **Walking the invariant chain** (definition → consumption → wire →
+   server): "no issuance surface" is enforced by the server's capability
+   restriction (W2b — invites.issue is outside SESSION_ALLOWED); the web has
+   no consumption code at all. "No raw-value / hash display" is W3a's schema
+   structure (no column) + S8's choice not to display tokenHashHex. "CSRF on
+   DELETE" is the api layer's single point + type binding + real-value
+   matching + e2e actual send ×2. No convention-dependent link was found
+3. **Blind spots of ruling composition**: the composition of CN (type
+   binding) × CD (tripwire) **surfaced the tripwire's own false positive**
+   (§6 — resolved by the line-start anchor. Structurally, the more bindings
+   you write, the more the word "import" appears in comments). The
+   composition of CO (re-fetch on completion) × the list resource's state
+   management produces "failure display vanishes on unmount during re-fetch"
+   — resolved by lifting the state (§6)
+4. **Back-flow of a new invariant** ("the web has destructive mutations now"
+   into old-premise descriptions): updated api.ts's comment "mutations are
+   logout only". The design doc §6's XSS residual evaluation already
+   incorporates revocation-family abuse (no revision needed). BP's 404
+   wording assumed the project noun → subject branching (§5)
+5. **Lifecycle-observer walk**: every state of invite (pending → accepted →
+   completed / revoked / expired) and token (issued → used → expired →
+   revoked) is visible in the list, and operations appear only on revocable
+   states. A token's revocation deletes the row, but the Account audit
+   (auth.token_revoked) remains as the observer of its history
+6. **Acting-out scan of recommended procedures**: S9's note (revoke →
+   re-issue by `maruhi login --show-token` on the CLI) connects to CK/CM's
+   provisioning procedure. S8's note (revoke → re-issue via `maruhi invite
+   create`) is also not a dead end
 
-### 受容した残余(記録)
+### Accepted residuals (recorded)
 
-- ForbiddenNotice の一般 403 文言は "in this project" を含む — S9(token 面)の
-  一般 403 はセッション主体では発生しない(CG-b: insufficient-permission は
-  トークン主体条件、セッションは session-not-allowed の専用文言)ため、
-  発生し得ない経路の名詞不整合として受容
-- ExpiryCell の Expired 判定はクライアント時計との比較(CQ に記録済み —
-  表示の主体は常にサーバー申告の expiresAtMs)
-- 410 の reason はサーバー申告の防御的 string を英文へ埋め込む(React の
-  エスケープ + 表示のみ — 他のサーバー申告 string と同じクラス)
+- ForbiddenNotice's generic 403 wording contains "in this project" — S9's
+  (token surface) generic 403 can't occur for a session principal (CG-b:
+  insufficient-permission is the token-principal condition; sessions get the
+  dedicated session-not-allowed wording), so it's accepted as a noun
+  mismatch on an unreachable path
+- ExpiryCell's Expired judgment compares against the client clock (recorded
+  in CQ — the display's subject is always the server-declared expiresAtMs)
+- 410's reason embeds a server-declared defensive string into English text
+  (React escaping + display only — the same class as other server-declared
+  strings)
 
-## 8. レビュー反映(PR #109)
+## 8. Review reflections (PR #109)
 
-- **Bugbot + pullfrog(同一指摘 — 正当として修正)**: 失効の in-flight 中に
-  他行の arm / 同行の再 confirm が可能で、後着の完了が武装状態を上書きし
-  失敗の帰属が別の失効に見える(重複 DELETE は成功済み失効に偽の 404/410
-  バナーも出しうる)。裁定 CO の「武装は常に 1 行」を in-flight にも拡張:
-  `useRevocation` に pendingRef ガード(実行中は arm / confirm を無視)+
-  `RevokeControl` の `isLocked`(他行の Revoke ボタンを無効化 — 効かない
-  ボタンを作らない)。変異検証 = e2e にゲート付き DELETE の回帰テスト
-  (in-flight 中の他行 disabled → 完了後に再有効化)
-- **pullfrog(GoneNotice の名詞固定)**: 410 文言の名詞も subject 経由へ
-  (NOT_FOUND_DESCRIPTION と同じ選び方 — 裁定 BP の単一実装点の一貫性)
-- **pullfrog(トリップワイヤの再 export 穴)**: `export { X } from` /
-  `export * from` も同じ実行コードをバンドルへ引き込む —
-  `^(?:import|export)\s+(?!type\b)` へ拡大(変異検証: 再 export 追加で検知)
-- **pullfrog(nit — e2e のヘッダー観測キー)**: e2e の
-  `headers()["x-maruhi-csrf"]` を `CSRF_HEADER_NAME` の値 import へ束縛
-  (実リクエスト観測にも裁定 CN の二層目が効く形。テストプロセスのみ —
-  BV と同じ位置づけ)
-- **pullfrog 第 2 波(ロック回帰 e2e のロケータ)**: Playwright の name 照合は
-  既定で部分一致 — in-flight 中は実行行の "Confirm revoke"(isLoading で無効)
-  が DOM 順の先頭に立ち、`isLocked` を外してもテストが通っていた。
-  `exact: true` で未武装行だけを指す形へ修正。教訓: **コンポーネント変異の
-  検証は必ずビルド後に走らせる**(e2e は dist のバンドルを検証する — 初回の
-  変異検証はソース改変のみでビルドを忘れ、偽の成功を見ていた。修正後は
-  isLocked 除去 + 再ビルドでテスト失敗 → 復元で全通過を実測)
+- **Bugbot + pullfrog (same finding — fixed as legitimate)**: while a
+  revocation was in-flight, arming another row or re-confirming the same row
+  was possible, and a late completion overwrote the armed state, making a
+  failure's attribution appear to be a different revocation (a duplicate
+  DELETE could also emit a false 404/410 banner on an already-succeeded
+  revocation). Extended ruling CO's "at most 1 row armed" to in-flight too:
+  a pendingRef guard on `useRevocation` (arm / confirm are ignored while
+  running) + `RevokeControl`'s `isLocked` (disables other rows' Revoke
+  buttons — don't create a button that does nothing). Mutation verification
+  = a gated-DELETE regression test in e2e (other row disabled while
+  in-flight → re-enabled after completion)
+- **pullfrog (GoneNotice's noun pinning)**: the 410 wording's noun also goes
+  through subject (same selection as NOT_FOUND_DESCRIPTION — consistency of
+  ruling BP's single implementation point)
+- **pullfrog (the tripwire's re-export hole)**: `export { X } from` /
+  `export * from` also pull the same runtime code into the bundle — widened
+  to `^(?:import|export)\s+(?!type\b)` (mutation-verified: detected on adding
+  a re-export)
+- **pullfrog (nit — e2e's header-observation key)**: bound e2e's
+  `headers()["x-maruhi-csrf"]` to a value import of `CSRF_HEADER_NAME`
+  (actual-request observation also gets ruling CN's second layer. Test
+  process only — same footing as BV)
+- **pullfrog wave 2 (the lock-regression e2e locator)**: Playwright's name
+  matching is substring by default — while in-flight, the running row's
+  "Confirm revoke" (disabled via isLoading) stood first in DOM order, so the
+  test passed even with `isLocked` removed. Fixed to point only at the
+  un-armed row via `exact: true`. Lesson: **always run component-mutation
+  verification after a build** (e2e verifies the dist bundle — the first
+  mutation verification modified only source and forgot the build, seeing a
+  false success. After the fix, isLocked removal + rebuild was measured to
+  fail the test → restore → all pass)
 
-### 収束の見立て
+### Convergence assessment
 
-既知の 6 生成規則を一巡し、新発見は「スイープ自身の誤検知」(規則 3 の
-合成盲点)1 件に縮んだ — 発見の規模は session-44 の弧(ワイヤ面 → 挙動 →
-案内)からさらに縮んでいる。W 系列の消費面はこれで閉じ、次の正の増加
-(新しい画面・新しい API)まで、この規則空間からの発見は尽きたと判断する。
+One pass over the 6 known generation rules shrunk new findings to 1 — "the
+sweep's own false positive" (rule 3's composition blind spot) — a further
+shrink from session-44's arc (wire surface → behavior → guidance). The W
+series' consumption surface is hereby closed, and findings from this rule
+space are judged exhausted until the next positive addition (a new screen, a
+new API).
