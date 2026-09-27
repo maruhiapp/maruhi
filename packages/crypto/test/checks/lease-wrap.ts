@@ -1,7 +1,8 @@
-// CRYPTO_SPEC §9.1(ワークロードリースのリースラップ)のチェック。
-// dek-wrap と同じ構成: 固定ベクター(hpke-js の ekm derandomize で生成)は
-// Open 方向で検証し、Seal 方向はラウンドトリップで担保する(panva は単発 Seal を
-// derandomize できない — spike-c の知見)。
+// Checks for CRYPTO_SPEC §9.1 (the lease wrap of a workload lease).
+// Same layout as dek-wrap: fixed vectors (generated via hpke-js ekm
+// derandomize) are verified in the Open direction, and the Seal direction is
+// covered by a roundtrip (panva cannot derandomize a one-shot Seal — the
+// spike-c finding).
 
 import {
   buildDekWrapInfo,
@@ -63,9 +64,10 @@ async function workloadKeyPair() {
 }
 
 /**
- * claims_digest(§9.1): LP のフィールド順と SHA-256 がベクターと一致すること。
- * 同一 issuer / audience で subject だけが違う 2 文脈が別の digest になることも
- * ここで固定する(リース応答の別ジョブへの転用を防ぐ束縛の根拠)。
+ * claims_digest (§9.1): the LP field order and SHA-256 must match the vector.
+ * Also pinned here: two contexts sharing issuer / audience but differing in
+ * subject produce different digests (the basis of the binding that prevents a
+ * lease response from being reused by another job).
  */
 async function claimsDigestChecks(c: Checks): Promise<void> {
   const primary = claimsOf(leaseWrapVectors.claims.subject);
@@ -85,7 +87,8 @@ async function claimsDigestChecks(c: Checks): Promise<void> {
       other.value === leaseWrapVectors.claims.other_claims_digest_hex &&
       other.value !== leaseWrapVectors.claims.claims_digest_hex,
   );
-  // 空フィールドは InvalidInput(空を許すと別文脈が同一 digest へ潰れうる)
+  // Empty fields are InvalidInput (allowing empty could collapse different
+  // contexts into the same digest)
   const empty = await Promise.all([
     computeLeaseClaimsDigest({ ...primary, issuerUrl: "" }),
     computeLeaseClaimsDigest({ ...primary, subject: "" }),
@@ -114,8 +117,9 @@ async function vectorOpenChecks(c: Checks, pair: EncryptionKeyPair): Promise<voi
       dek.ok && toHex(dek.value) === vector.dek_hex,
     );
   }
-  // 座標と DEK は dek-wrap.json の server-basic を引き継ぐ(§9.1: サーバーは
-  // 自分宛ラップを開封して再ラップするだけで、値も DEK も作らない)
+  // Coordinates and DEK are inherited from dek-wrap.json's server-basic
+  // (§9.1: the server only opens its own wrap and re-wraps it — it creates
+  // neither values nor DEKs)
   const serverWrap = dekWrapVectors.vectors.find((v) => v.name === "server-basic");
   c.push(
     "lease-wrap: basic re-wraps the server-addressed DEK",
@@ -125,11 +129,12 @@ async function vectorOpenChecks(c: Checks, pair: EncryptionKeyPair): Promise<voi
       serverWrap.environment_id === base.environment_id &&
       serverWrap.epoch === base.epoch,
   );
-  // エポックごとに DEK は独立(同一応答に複数エポックが載る — AUTH_SPEC §14-2)
+  // The DEK is independent per epoch (a single response carries multiple
+  // epochs — AUTH_SPEC §14-2)
   c.push("lease-wrap: prior epoch uses its own DEK", priorEpoch.dek_hex !== base.dek_hex);
 }
 
-/** info 差し替え negative: ベクターの open_info_hex と info 構築が一致し、Open が失敗する。 */
+/** info-substitution negative: the vector's open_info_hex matches the built info, and Open fails. */
 async function infoNegativeCheck(
   c: Checks,
   input: {
@@ -141,10 +146,11 @@ async function infoNegativeCheck(
 ): Promise<void> {
   const vector = leaseWrapVectors.negative.find((n) => n.name === input.name);
   const infoMatches = vector?.open_info_hex === input.infoHex;
-  // context を組めない negative(ドメイン差し替え)は info の一致のみを検査する:
-  // 実装の LeaseWrapContext ではドメインを差し替えられない — これは「ドメインが
-  // 型として固定されている」ことの表明であり、Open 失敗自体は
-  // verify_reference.mjs(独立実装)が固定する
+  // A negative whose context cannot be built (domain substitution) only gets
+  // the info match checked: the implementation's LeaseWrapContext cannot swap
+  // the domain — this asserts "the domain is fixed by the type", and the Open
+  // failure itself is pinned by verify_reference.mjs (the independent
+  // implementation)
   if (input.context === undefined) {
     c.push(`lease-wrap negative: ${input.name}`, infoMatches);
     return;
@@ -169,7 +175,8 @@ async function negativeChecks(c: Checks, pair: EncryptionKeyPair): Promise<void>
     },
     { name: "info-epoch-mismatch", context: { ...baseContext(), epoch: base.epoch + 1 } },
     {
-      // 別ワークロード文脈(同一 issuer / audience・別 subject)への転用
+      // Reuse in another workload context (same issuer / audience, different
+      // subject)
       name: "info-claims-digest-mismatch",
       context: {
         ...baseContext(),
@@ -185,8 +192,9 @@ async function negativeChecks(c: Checks, pair: EncryptionKeyPair): Promise<void>
       pair,
     });
   }
-  // §5 の永続ラップとのドメイン分離。実装 API はドメインを差し替えられないため、
-  // dek-wrap 側の info builder で組んだバイト列がベクターと一致することで固定する
+  // Domain separation from the §5 persistent wrap. Since the implementation
+  // API cannot swap the domain, this is pinned by checking that the byte
+  // string built by the dek-wrap-side info builder matches the vector
   await infoNegativeCheck(c, {
     name: "info-dek-wrap-domain",
     infoHex: toHex(
@@ -194,7 +202,8 @@ async function negativeChecks(c: Checks, pair: EncryptionKeyPair): Promise<void>
         projectId: base.project_id,
         environmentId: base.environment_id,
         epoch: base.epoch,
-        // dek-wrap の recipient 位置に claims_digest を置いた「ドメインだけ違う」形
+        // The "only the domain differs" shape with claims_digest placed in
+        // dek-wrap's recipient slot
         recipientUserId: leaseWrapVectors.claims.claims_digest_hex,
       }),
     ),
@@ -205,14 +214,15 @@ async function negativeChecks(c: Checks, pair: EncryptionKeyPair): Promise<void>
 async function invalidContextChecks(c: Checks): Promise<void> {
   const workload = await generateEncryptionKeyPair();
   const dek = generateDek();
-  // epoch の形式違反は throw でなく InvalidInput
+  // A malformed epoch is InvalidInput, not a throw
   const badEpoch = await wrapLeaseDek({
     workloadPublicKey: workload.publicKey,
     dek,
     context: { ...baseContext(), epoch: -1 },
   });
-  // claims_digest は 64 文字の hex 小文字のみ: 生の claims を渡す誤用と、
-  // 大文字 hex による「同じ digest なのに info が食い違う」実装差を排除する
+  // claims_digest accepts only 64-char lowercase hex: rules out passing raw
+  // claims by mistake and implementation drift where "the same digest
+  // produces different info" via uppercase hex
   const rawClaims = await wrapLeaseDek({
     workloadPublicKey: workload.publicKey,
     dek,
@@ -232,7 +242,7 @@ async function invalidContextChecks(c: Checks): Promise<void> {
       (result) => !result.ok && result.error.kind === "InvalidInput",
     ),
   );
-  // DEK 長の検査(32 バイト以外は Seal に入らない)
+  // DEK length check (anything other than 32 bytes never reaches Seal)
   const shortDek = await wrapLeaseDek({
     workloadPublicKey: workload.publicKey,
     dek: dek.slice(0, 16),
@@ -245,7 +255,8 @@ async function invalidContextChecks(c: Checks): Promise<void> {
 }
 
 async function roundtripChecks(c: Checks): Promise<void> {
-  // Seal 方向: 自己ラウンドトリップ(ワークロード鍵は生成鍵・非抽出)
+  // Seal direction: self-roundtrip (the workload key is generated and
+  // non-extractable)
   const workload = await generateEncryptionKeyPair();
   const dek = generateDek();
   const wrapped = await wrapLeaseDek({
@@ -264,7 +275,8 @@ async function roundtripChecks(c: Checks): Promise<void> {
   });
   c.push("lease-wrap: roundtrip", unwrapped.ok && toHex(unwrapped.value) === toHex(dek));
 
-  // 別ワークロード文脈(別 claims_digest)では Open 失敗 = リース応答の転用不可
+  // Open fails with a different workload context (different claims_digest) =
+  // a lease response cannot be reused
   const otherDigest = await computeLeaseClaimsDigest(
     claimsOf(leaseWrapVectors.claims.other_subject),
   );
@@ -278,7 +290,8 @@ async function roundtripChecks(c: Checks): Promise<void> {
   });
   c.push("lease-wrap: roundtrip other workload context rejected", !wrongClaims.ok);
 
-  // 別の一時鍵では Open 失敗(ジョブ終了で鍵が消えれば応答は無価値になる)
+  // Open fails with a different ephemeral key (once the key disappears at job
+  // end, the response is worthless)
   const otherWorkload = await generateEncryptionKeyPair();
   const wrongKey = await unwrapLeaseDek({
     workloadKeyPair: otherWorkload,

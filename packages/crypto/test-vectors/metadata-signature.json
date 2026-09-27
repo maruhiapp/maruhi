@@ -1,5 +1,5 @@
 {
-  "description": "CRYPTO_SPEC §4.2: 変数・環境メタデータの署名付きステートメント(Ed25519)。var_meta_signed_bytes = LP(\"<suite>/var-meta-sig\", project_id, environment_id, variable_id, name, status, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq)、env_meta_signed_bytes = LP(\"<suite>/env-meta-sig\", project_id, environment_id, name, status, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq)。チェーン・鍵は chain-entries.json の正規 12 エントリチェーンを参照",
+  "description": "CRYPTO_SPEC §4.2: signed statements of variable and environment metadata (Ed25519). var_meta_signed_bytes = LP(\"<suite>/var-meta-sig\", project_id, environment_id, variable_id, name, status, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq); env_meta_signed_bytes = LP(\"<suite>/env-meta-sig\", project_id, environment_id, name, status, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq). The chain and keys reference chain-entries.json's canonical 12-entry chain",
   "var_signed_fields_order": [
     "domain",
     "project_id",
@@ -41,13 +41,13 @@
     "chain_head_hash_hex",
     "chain_head_seq"
   ],
-  "binary_encoding": "ハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(meta_version / chain_head_seq)は 10 進文字列化。name は UTF-8 バイト列を byte-exact に束縛(NFC 正規化は署名前のクライアントの責務 — §4.2)",
-  "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、author 鍵 = keys。正規チェーンは 24 エントリ(2026-09-14 ES + PF1 — 正例の意味は不変、負例に author-environment-out-of-scope-at-head を追加)",
-  "no_epoch_anchor": "メタステートメントはエポックアンカーを持たない(§4.2)。値署名の epoch-not-current-at-head / environment-not-created-at-head に相当する検証規則は存在せず、前進 meta_version への注入は v1 未検出の既知残余(§14.3-5)。var-meta-head-before-env-create が positive であることがこの非対称の固定",
-  "layout_v2": "CRYPTO_SPEC §4.2 レイアウト v2(0.8-draft — セッション 46 裁定 CR / CS): 変数メタステートメントの第 2 レイアウト。var_meta_signed_bytes_v2 = LP(\"<suite>/var-meta-sig-v2\", project_id, environment_id, variable_id, name, status, var_type, required, description, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq)。context の layout_version(省略 = 1)がワイヤの layoutVersion に対応し、どのレイアウトで signed_bytes を再計算するかを選択する。検証者は署名検証より前にサポート範囲を検査し、超過は型付きエラー(未対応レイアウト)で拒否する(署名不正に潰さない誠実な破壊様式 — 本件は拒否ケースに参照期待値が存在しないため規約 21 の分担どおりハーネス側で固定)。status は 3 値(active | deleted | declared — declared は v2 限定)、var_type は閉集合(\"\" | string | number | boolean | url)、required は明示必須(\"true\" | \"false\")。環境メタステートメントは v1 のまま(本改訂の対象外)。既存 v1 ベクターは 1 バイトも不変(追記で拡張 — §11)",
+  "binary_encoding": "hashes go into LP as lowercase hex strings (the same convention as chain-entries.json's binary_encoding). Numbers (meta_version / chain_head_seq) are decimal-stringified. name is bound byte-exact as UTF-8 bytes (NFC normalization is the signing client's responsibility — §4.2)",
+  "chain_reference": "chain-entries.json: project_id = the genesis entry hash, chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex, author keys = keys. The canonical chain is 24 entries (2026-09-14 ES + PF1 — the meaning of the positives is unchanged; the negatives gained author-environment-out-of-scope-at-head)",
+  "no_epoch_anchor": "meta statements carry no epoch anchor (§4.2). Verification rules corresponding to the value signature's epoch-not-current-at-head / environment-not-created-at-head do not exist, and injecting onto a forward meta_version is a known residual undetected by v1 (§14.3-5). var-meta-head-before-env-create being a positive pins this asymmetry",
+  "layout_v2": "CRYPTO_SPEC §4.2 layout v2 (0.8-draft — session-46 rulings CR / CS): the second layout of the variable-meta statement. var_meta_signed_bytes_v2 = LP(\"<suite>/var-meta-sig-v2\", project_id, environment_id, variable_id, name, status, var_type, required, description, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq). The context's layout_version (omitted = 1) corresponds to the wire layoutVersion and selects which layout signed_bytes is recomputed under. The verifier checks the supported range before signature verification, and rejects an excess with a typed error (unsupported layout) — an honest failure mode that does not crush it into a signature failure (since no reference expectation exists for this rejection case, the harness pins it per convention-21's division). status is 3 values (active | deleted | declared — declared is v2-only), var_type is a closed set (\"\" | string | number | boolean | url), and required must be explicit (\"true\" | \"false\"). Environment meta statements stay v1 (out of scope of this revision). Existing v1 vectors do not change by one byte (extend by appending — §11)",
   "extra_keys": {
     "ghost": {
-      "note": "author-unknown-in-history 用(チェーン履歴に存在しない鍵)",
+      "note": "for author-unknown-in-history (a key that exists nowhere in the chain history)",
       "enc_sk_seed_hex": "78797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f9091929394959697",
       "sig_sk_seed_hex": "88898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7",
       "enc_pub_hex": "7ea13ddfcbacd8a13542dece890886486fb8024d0d3cc7f95ed8bb4efad66b73",
@@ -56,7 +56,7 @@
     }
   },
   "tenure_extension": {
-    "note": "key-from-other-tenure 用の派生チェーン(value-signature.json と同一内容): 正規チェーン(24 エントリ)の後に seq 25 で user-member-0002 を新鍵で re-add する(remove → re-add = 別 tenure)。chain-entries.json 本体は変更しない",
+    "note": "the derived chain for key-from-other-tenure (identical contents to value-signature.json's): after the canonical chain (24 entries), seq 25 re-adds user-member-0002 with new keys (remove → re-add = a different tenure). chain-entries.json itself is unchanged",
     "rejoined_member": {
       "user_id": "user-member-0002",
       "enc_sk_seed_hex": "7475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f90919293",
@@ -113,7 +113,7 @@
       "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000107661722d6170692d6b65792d30303031000000074150495f4b4559000000066163746976650000000131000000000000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "bc5526ffc4e2f1ac57ff15079bbc52a11f66db2b9b309d0e1d35e6f13291dfd0",
       "signature_hex": "c344b8d7dd113823edb856d2c29e87133ba6654f78fa3196232f77b6448f0ceabafc950c2bceb1f8572665ffd7e754fc37e22b876abc924734a802dd8893440d",
-      "note": "変数作成(metaVersion 1、prev 空、status active)。author は head 12 時点の admin(member 以上)"
+      "note": "variable creation (metaVersion 1, empty prev, status active). The author is the admin at head 12 (member or above)"
     },
     {
       "name": "var-rename",
@@ -136,7 +136,7 @@
       "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000107661722d6170692d6b65792d303030310000000f4150495f4b45595f524f544154454400000006616374697665000000013200000040626335353236666663346532663161633537666631353037396262633532613131663636646232623962333039643065316433356536663133323931646664300000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "dd81598d149b953379c75c592d8b9c2735c98332c12d759b2a91bf3570c78bb2",
       "signature_hex": "968bdf693604c2af988cf6cbe504a12e7655fea2256baa4f30070a99c340e5dbaf4765ce1ad3f03b5a132d28f8008d460a18d43ac4df13acb1c4d0d769ede505",
-      "note": "rename(metaVersion 2)。prev = var-create の signed_bytes の SHA-256(§4.2 の連鎖)",
+      "note": "a rename (metaVersion 2). prev = SHA-256 of var-create's signed_bytes (the §4.2 chain)",
       "prev_base": "var-create"
     },
     {
@@ -160,7 +160,7 @@
       "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000107661722d6170692d6b65792d303030310000000f4150495f4b45595f524f54415445440000000764656c65746564000000013300000040646438313539386431343962393533333739633735633539326438623963323733356339383333326331326437353962326139316266333537306337386262320000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "aff50eb8300e845cd31aea3cb48ceb4e0af4d13f6d24c68e4bad7a8bb2da0ab4",
       "signature_hex": "5345b81ab5de7f1a621c49313616639bc04d94f1400994ae31cc2a9511146506d398e4a21cd2e3fa92901fa934f5638fb8e01bb404f5bfdee1c5ab750c4b160c",
-      "note": "削除(status deleted、metaVersion 3)。name は直前の active 名をそのまま保持する(§4.2 — 削除で空にしない)",
+      "note": "deletion (status deleted, metaVersion 3). name keeps the immediately preceding active name verbatim (§4.2 — do not empty it on delete)",
       "prev_base": "var-rename"
     },
     {
@@ -184,7 +184,7 @@
       "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000d7661722d636166652d3030303900000009434146c3895f55524c000000066163746976650000000131000000000000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "270ac9f4045948c0c1ef6f718fc3411f247054f755c5e1b7467c8fc3c19b02a6",
       "signature_hex": "70b83f7f89c1b171cabe2e23c91bfbd0e711b7b9a3b7795f6f2dd3ce1cf3e6ee016486530dcd8dd679dff8804eaa6723e12504fbbbfb835766d591a5ed115407",
-      "note": "NFC 正規形の非 ASCII 名。署名は name の UTF-8 バイト列に byte-exact に束縛される(§4.2)"
+      "note": "a non-ASCII name in NFC canonical form. The signature is bound byte-exact to the UTF-8 bytes of name (§4.2)"
     },
     {
       "name": "env-create-meta",
@@ -206,7 +206,7 @@
       "signed_bytes_hex": "000000166d61727568692f76312f656e762d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000a50726f64756374696f6e0000000661637469766500000001310000000000000010757365722d6d656d6265722d3030303200000040636436643834343332316466653038666131323231346265633033356630393330333138613435656534643462393636323563323630396361396434306637350000000132",
       "signed_bytes_sha256_hex": "b90c55afb00d38d35c8a99cf3bf958fb910647aa8ec29382a0eef1386d77ea10",
       "signature_hex": "e8b9fce6231bf3a5a3b42917e9e5e69ae350892e4677f26cb803b785ab3150d3e4e6f1af12b5fdf0027db1e1cd3864167e88d26c52d0e874f69ec0c980abdf04",
-      "note": "環境作成の複合リクエスト同梱ステートメント(metaVersion 1): 宣言ヘッドは追記前の現ヘッド(seq 2 = create_environment エントリの prev — AUTH_SPEC §12-4)。宣言ヘッド時点に環境は未存在だが、メタステートメントの検証は環境の存在を検査しない(§12-4 の意図された非対称)"
+      "note": "the statement bundled with the environment-creation compound request (metaVersion 1): the declared head is the current head before the append (seq 2 = the create_environment entry's prev — AUTH_SPEC §12-4). The environment does not exist yet at the declared-head time, but meta-statement verification does not check environment existence (§12-4's deliberate asymmetry)"
     },
     {
       "name": "env-rename",
@@ -228,7 +228,7 @@
       "signed_bytes_hex": "000000166d61727568692f76312f656e762d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000d50726f64756374696f6e20455500000006616374697665000000013200000040623930633535616662303064333864333563386139396366336266393538666239313036343761613865633239333832613065656631333836643737656131300000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "deee5615e2bdb16794bb36bb6257af76357fc5daec298ec4ccb6d1e709da90cb",
       "signature_hex": "9f7527673a25e1752856bfeb13c3e82b3a768614b5d7a6e18a1fa10c215050df34f0ac80b1a79a9448bebd48d7a1b8066c7eb5f6bedf460f50aa46761a78fe03",
-      "note": "環境 rename(metaVersion 2、member 以上)。prev = env-create-meta の signed_bytes の SHA-256",
+      "note": "an environment rename (metaVersion 2, member or above). prev = SHA-256 of env-create-meta's signed_bytes",
       "prev_base": "env-create-meta"
     },
     {
@@ -251,7 +251,7 @@
       "signed_bytes_hex": "000000166d61727568692f76312f656e762d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000d50726f64756374696f6e2045550000000764656c65746564000000013300000040646565653536313565326264623136373934626233366262363235376166373633353766633564616563323938656334636362366431653730396461393063620000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "57043131f8c75dfa801d575fc2deed96c3f5724713755da57ac7c00869a8230b",
       "signature_hex": "1bac2f1f1364b79d40c6d0675272eb13be725dc3ef0e34b3257928f60783dcf31b084655aa080fadcdac15c3fd60224251149b795d778db0b487f8bce583240a",
-      "note": "環境削除(status deleted)。環境の削除のみ宣言ヘッド時点 admin 以上(§4.2 / §12-3 の水準差)。head 12 時点の user-admin-0003 は admin。name は直前 active 名を保持",
+      "note": "an environment deletion (status deleted). Only environment deletion needs admin-or-above at the declared-head time (the level difference in §4.2 / §12-3). user-admin-0003 is admin at head 12. name keeps the preceding active name",
       "prev_base": "env-rename"
     },
     {
@@ -275,7 +275,7 @@
       "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000f7661722d6c65676163792d303030320000000c4c45474143595f544f4b454e0000000661637469766500000001310000000000000010757365722d6d656d6265722d3030303200000040636335313235356136333136643333663265343734323633343961396638353539616235363530613434643364373731333134346537313932666539613664340000000134",
       "signed_bytes_sha256_hex": "76106ac241eb1b692c61af3e90738b88c81552ed535b8f3c737d7553f7149e72",
       "signature_hex": "991a36971ba1aeabf154852108857ec3f7f3a96823ce91b3d9262ab86a2df32a9acc4c62b3889ec129d3ba2079a5678c08f0abb38820b352416f80f7c7b11006",
-      "note": "seq 5 で削除済みの author による在籍区間内(head 4)の過去ステートメント。削除後も当時の鍵で検証できる(§6.3-1 — value-signature の removed-writer-in-tenure の対応物)"
+      "note": "a past statement inside the membership interval (head 4) by an author removed at seq 5. It verifies under the key of that time even after the removal (§6.3-1 — the counterpart of value-signature's removed-writer-in-tenure)"
     },
     {
       "name": "var-meta-head-before-env-create",
@@ -298,7 +298,7 @@
       "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000e7661722d6561726c792d303030350000000a4541524c595f424952440000000661637469766500000001310000000000000010757365722d6d656d6265722d3030303200000040636436643834343332316466653038666131323231346265633033356630393330333138613435656534643462393636323563323630396361396434306637350000000132",
       "signed_bytes_sha256_hex": "098d1c1b756710c8cff049030d408e3e2990c23a1be1d9c6d11e750fce4e84b1",
       "signature_hex": "59a8d5239a12c132324d3ad47449d4d4219f3e435afc6b2b91facdcbef785f1ef422dc94f7c55f38f03f662e205c0478db03ae794f22b93421a7ac8dfd97e303",
-      "note": "positive: 宣言ヘッド(seq 2)が env-prod-0001 の create_environment(seq 3)より前でもvar メタステートメントは受理される。メタはエポックアンカーを持たず環境の存在を検査しない(値署名の §6.3-4 と意図的に非対称 — AUTH_SPEC §12-4。§14.3-5 の既知残余の対価)"
+      "note": "positive: a var meta statement is accepted even though its declared head (seq 2) precedes env-prod-0001's create_environment (seq 3). Meta has no epoch anchor and does not check environment existence (deliberately asymmetric to the value signature's §6.3-4 — AUTH_SPEC §12-4; the cost of §14.3-5's known residual)"
     },
     {
       "name": "var-v2-create-typed",
@@ -325,7 +325,7 @@
       "signed_bytes_hex": "000000196d61727568692f76312f7661722d6d6574612d7369672d763200000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000117661722d76322d74797065642d303031300000000b534552564943455f55524c000000066163746976650000000375726c00000004747275650000001c5072696d617279207365727669636520656e64706f696e742055524c0000000131000000000000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "62db3a6e45644eb7f6714f72fabd733b0082bcd702a3247d59f1a20e1ae47c18",
       "signature_hex": "6a5cf022825c158b431cc6037c4da8830c53c3ce0610922971fff50c7ba2938151aaf0d3d54c62377e676a0ed9fd34c695952f240397102a0346d5e33fe7a50b",
-      "note": "レイアウト v2 の変数作成(スキーマ欄あり・status active)。ドメイン分離文字列は maruhi/v1/var-meta-sig-v2(レイアウト版はステートメント種ローカル — suite は据え置き。§4.2)。スキーマ欄(var_type / required / description)は status の直後に署名対象として並ぶ"
+      "note": "a layout-v2 variable creation (with schema fields, status active). The domain-separation string is maruhi/v1/var-meta-sig-v2 (the layout version is local to the statement kind — suite stays; §4.2). The schema fields (var_type / required / description) line up as signed data right after status"
     },
     {
       "name": "var-v2-create-untyped",
@@ -352,7 +352,7 @@
       "signed_bytes_hex": "000000196d61727568692f76312f7661722d6d6574612d7369672d763200000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000137661722d76322d756e74797065642d303031310000000d4f5054494f4e414c5f464c414700000006616374697665000000000000000566616c7365000000000000000131000000000000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "2835a66c200837fa9dcb665565af771e2937c584d76a672f4bf549fe7bf8f9c2",
       "signature_hex": "4cd834de149516d3c23f255338bee628545677762bb1c0e90ec79998dc0117093d9be9dda5fcfda2d83bb45b003a57713ca0e41db58d2335d3819f3873db0e0b",
-      "note": "レイアウト v2 の未指定型(var_type = \"\" は閉集合の正当な値 — §4.2)。description も空文字列を許す(required のみ明示必須 — 空文字列不可)"
+      "note": "a layout-v2 untyped form (var_type = \"\" is a legitimate value of the closed set — §4.2). description may also be the empty string (only required is mandated explicit — the empty string is not allowed for it)"
     },
     {
       "name": "var-v2-declared-create",
@@ -379,7 +379,7 @@
       "signed_bytes_hex": "000000196d61727568692f76312f7661722d6d6574612d7369672d763200000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000147661722d76322d6465636c617265642d303031320000000e5354524950455f4150495f4b4559000000086465636c6172656400000006737472696e6700000004747275650000002b53747269706520736563726574206b65792028736574206265666f7265206669727374206465706c6f79290000000131000000000000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "4c8b4f9763ac241597b76316a1b7a4dfee8fe9becbd97d1669576df55f542278",
       "signature_hex": "6866d800686e24deb7d5dd956a45db500eb2670b9b9caf7fe25bba0a4f539ca9f7604e64a82692d469fc2fcb1472a175a525f0b18f95ecf861a19eb052d7f906",
-      "note": "declared 作成(metaVersion 1・値なし — §4.2 レイアウト v2 の第 3 の status)。作成は active(値同梱)または declared(値なし)のいずれか"
+      "note": "a declared creation (metaVersion 1, no value — the 3rd status of §4.2 layout v2). Creation is either active (with value bundled) or declared (no value)"
     },
     {
       "name": "var-v2-activation",
@@ -406,7 +406,7 @@
       "signed_bytes_hex": "000000196d61727568692f76312f7661722d6d6574612d7369672d763200000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000147661722d76322d6465636c617265642d303031320000000e5354524950455f4150495f4b45590000000661637469766500000006737472696e6700000004747275650000002b53747269706520736563726574206b65792028736574206265666f7265206669727374206465706c6f7929000000013200000040346338623466393736336163323431353937623736333136613162376134646665653866653962656362643937643136363935373664663535663534323237380000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "4918d4d5c743af15f88f2f69d452af71de35ecded28c1490694e646c8c20eb34",
       "signature_hex": "82c6cf785449d918fe9bb53f73434105a277700a51eb7322f0e8fb6777a40d875e52b9ba68ab036ad89e9c68cd14ab5cd7a2faaa6926f4d3136039b02519c405",
-      "note": "declared → active 遷移(activation — 最初の値 push との複合。複合の受理検査は AUTH_SPEC §12-5 = S2 で、本ベクターはステートメント単体の encode / verify と「declared な predecessor の active 化は正当」を固定する)",
+      "note": "the declared → active transition (activation — a compound with the first value push. The compound's acceptance check is AUTH_SPEC §12-5 = S2; this vector pins the single statement's encode / verify and 'activating a declared predecessor is legitimate')",
       "prev_base": "var-v2-declared-create"
     },
     {
@@ -434,7 +434,7 @@
       "signed_bytes_hex": "000000196d61727568692f76312f7661722d6d6574612d7369672d763200000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000117661722d76322d74797065642d303031300000000b534552564943455f55524c0000000764656c657465640000000375726c00000004747275650000001c5072696d617279207365727669636520656e64706f696e742055524c000000013200000040363264623361366534353634346562376636373134663732666162643733336230303832626364373032613332343764353966316132306531616534376331380000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
       "signed_bytes_sha256_hex": "304de39240e9a8b319215d749f7bf0dfaef6d238ff17a231d6798360cc97207d",
       "signature_hex": "45f8ae0baaf09aca095145c7d1f6bf2084ed347400ec06f54f72d5f9bd6ad2954c2d6a65e37b4ec10bacdba02bc72fb31a2545a14da8fec8b761f027a4352606",
-      "note": "レイアウト v2 の削除(status deleted)。name と同じ規約でスキーマ欄とレイアウトを直前ステートメントからそのまま保持する(§4.2 — 削除ステートメントのみ完全保持を要求)",
+      "note": "a layout-v2 deletion (status deleted). Under the same convention as name, the schema fields and layout are kept verbatim from the preceding statement (§4.2 — only a deletion statement requires full retention)",
       "prev_base": "var-v2-create-typed"
     },
     {
@@ -458,7 +458,7 @@
       "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000c656e762d6465762d30303032000000137661722d6465762d73636f7065642d303030360000000a4445565f53434f5045440000000661637469766500000001310000000000000013757365722d6465766d656d6265722d303031300000004061353535343239623865386630343365303765383366313439366362306661316161383730306330663861656635386166396365633862323661326361653665000000023139",
       "signed_bytes_sha256_hex": "d4c330ca402ad280fe48f4debfea546515af3d962affcb38863671531801e732",
       "signature_hex": "67a9f52c0e5f1614efdfe5e8bfd01e3214c24dbbd1b4c931e140c2ba9fbcd06977f19fb9b9d95abb7df45bcdedc4270e7849a51f385a159bb1ec573e6bc55f06",
-      "note": "listed の author(head 19 時点 member listed{dev, stage})による scope 内の環境(env-dev-0002)の変数ステートメントは通る(3′ の許容側)"
+      "note": "a variable statement on an in-scope environment (env-dev-0002) by a listed author (member listed{dev, stage} at head 19) passes (the permissive side of 3′)"
     },
     {
       "name": "second-device-author-in-scope",
@@ -481,12 +481,12 @@
       "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000c656e762d6465762d30303032000000127661722d63692d73636f7065642d303030370000000943495f53434f5045440000000661637469766500000001310000000000000013757365722d616c6c6d656d6265722d303031330000004035343931383262656633356165623533373963616265386261353035373330356136623231373365336432373532393566613934343934393830336437303837000000023238",
       "signed_bytes_sha256_hex": "ed6b58f8a2d050f889f9e2aebaf0b1d401c856eb6c04b9b737cf052c3b73972f",
       "signature_hex": "1760ba7e02cac9fa63496c4e10bfe90e83fe8c4e4ea28d95df1893a25523ce755ab0e2e2b830348c81bc93ee72f8dc8144ab299075336e9ecc496ccf3ce61c0d",
-      "note": "第 2 端末の正例: allmember-0013 の CI 箱 C(cap (member, listed{dev, stage}))による実効 scope 内の環境(env-dev-0002)の変数ステートメントは通る",
+      "note": "a second-device positive: a variable statement on an in-scope environment (env-dev-0002) by allmember-0013's CI box C (cap (member, listed{dev, stage})) passes",
       "chain": "device-ops"
     }
   ],
   "rename_fork": {
-    "note": "同一座標(var-api-key-0001 × metaVersion 2)に対する内容の異なる 2 つの有効ステートメント。各 branch は単体で §6.3 の全検証を通り(両方 verify 成功)、組として signed_bytes_sha256_hex の相違 = サーバー equivocation の否認不能な証拠になる(§14.2-5。防止ではなく証拠化)",
+    "note": "two valid statements with different contents on the same coordinates (var-api-key-0001 × metaVersion 2). Each branch alone passes all §6.3 checks (both verify successfully); as a pair, the difference in signed_bytes_sha256_hex becomes non-repudiable evidence of server equivocation (§14.2-5 — evidence, not prevention)",
     "branches": [
       {
         "name": "rename-fork-a",
@@ -509,7 +509,7 @@
         "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000107661722d6170692d6b65792d303030310000000c4150495f4b45595f424c554500000006616374697665000000013200000040626335353236666663346532663161633537666631353037396262633532613131663636646232623962333039643065316433356536663133323931646664300000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
         "signed_bytes_sha256_hex": "0b9f27c6d0754246bca8ddb8f1af8de7b562cfbd0db053ebc206be7e49ec8aa1",
         "signature_hex": "19cf8d25cb995efc8ebd6687797a121ea6817ff23f4affe6499cc3ce4749a4e52ad7a409b27bcf039f4825f39bdaef12a7b50f4ae126b7d217a0ba900960ba0d",
-        "note": "metaVersion 2 の分岐 A(admin が署名)",
+        "note": "metaVersion-2 branch A (signed by the admin)",
         "prev_base": "var-create"
       },
       {
@@ -533,13 +533,13 @@
         "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d30303031000000107661722d6170692d6b65792d303030310000000d4150495f4b45595f475245454e00000006616374697665000000013200000040626335353236666663346532663161633537666631353037396262633532613131663636646232623962333039643065316433356536663133323931646664300000000f757365722d6f776e65722d303030310000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
         "signed_bytes_sha256_hex": "c8beace15f76e3ca4f59b025845e151d1483aef3063e93558e66bce4c49b1869",
         "signature_hex": "eaee48df567c15ceeaf226e39492f745f8d3e9d258f9a01efffeadabf6dbee01fadcbd738776a9011df4088f5836b46bd68e2215729c038c3e915c0c0e27340f",
-        "note": "metaVersion 2 の分岐 B(owner が署名)。A と同一座標・同一 prev で name が異なる",
+        "note": "metaVersion-2 branch B (signed by the owner). Same coordinates and same prev as A but a different name",
         "prev_base": "var-create"
       }
     ]
   },
   "name_swap": {
-    "note": "2 変数の名前入替(DATABASE_URL ↔ DEBUG_ENDPOINT)。正規ステートメント 2 本は各々検証を通るが、name フィールドだけを入れ替えたバイト列では元署名の検証に失敗する(名前 ↔ ID の対応は署名が束縛する — §4.2。付け替えられた側の配布は座標整合 §6.3-5 でも落ちる)",
+    "note": "swapping the names of 2 variables (DATABASE_URL ↔ DEBUG_ENDPOINT). The 2 proper statements each pass verification, but a byte string with only the name fields swapped fails verification of the original signature (the name ↔ ID correspondence is bound by the signature — §4.2; distributing the relabeled side also fails at the coordinate check §6.3-5)",
     "statements": [
       {
         "name": "name-swap-var-a",
@@ -562,7 +562,7 @@
         "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000f7661722d737761702d612d303030360000000c44415441424153455f55524c000000066163746976650000000131000000000000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
         "signed_bytes_sha256_hex": "59e88c1770c09d7f12186438f0bcdf2c6a84626ed1dfa3eba47a4171e088a617",
         "signature_hex": "6146005c515a75ede0bb9b6b33786d366d2d0e6f99ac8a2bdf90a55ef44e5ef530b6318b39cdfcf3e97679ba5e052580764daca3c6467b44c969cf64f927280a",
-        "note": "name-swap の正規側 A(DATABASE_URL → var-swap-a-0006)"
+        "note": "the proper side A of name-swap (DATABASE_URL → var-swap-a-0006)"
       },
       {
         "name": "name-swap-var-b",
@@ -585,7 +585,7 @@
         "signed_bytes_hex": "000000166d61727568692f76312f7661722d6d6574612d73696700000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000d656e762d70726f642d303030310000000f7661722d737761702d622d303030370000000e44454255475f454e44504f494e54000000066163746976650000000131000000000000000f757365722d61646d696e2d303030330000004064613234636161653030376562396636343164623766313238343465373062393764383732623236393762656261313435666463346533346363653565633165000000023132",
         "signed_bytes_sha256_hex": "1c537f9593c1ff632d225c820c634b48aac42760c700b82a2982b84a8311f8d0",
         "signature_hex": "91e24ff60929ccf3bc96954861bb57382ff829b379856d36a5211c20cc4efa3d44981bcf0f9aeb5957ae6f9f147e10b7a2eabc8270ba4d7b87df18f3509e4f0a",
-        "note": "name-swap の正規側 B(DEBUG_ENDPOINT → var-swap-b-0007)"
+        "note": "the proper side B of name-swap (DEBUG_ENDPOINT → var-swap-b-0007)"
       }
     ],
     "swapped": [
@@ -611,7 +611,7 @@
         "signature_hex": "6146005c515a75ede0bb9b6b33786d366d2d0e6f99ac8a2bdf90a55ef44e5ef530b6318b39cdfcf3e97679ba5e052580764daca3c6467b44c969cf64f927280a",
         "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
         "must_fail": true,
-        "note": "var-swap-a-0006 のステートメントに var-swap-b-0007 の名前を載せ替えると署名検証に失敗する"
+        "note": "putting var-swap-b-0007's name on var-swap-a-0006's statement fails signature verification"
       },
       {
         "name": "name-swap-b-to-a",
@@ -635,7 +635,7 @@
         "signature_hex": "91e24ff60929ccf3bc96954861bb57382ff829b379856d36a5211c20cc4efa3d44981bcf0f9aeb5957ae6f9f147e10b7a2eabc8270ba4d7b87df18f3509e4f0a",
         "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
         "must_fail": true,
-        "note": "var-swap-b-0007 のステートメントに var-swap-a-0006 の名前を載せ替えると署名検証に失敗する"
+        "note": "putting var-swap-a-0006's name on var-swap-b-0007's statement fails signature verification"
       }
     ]
   },
@@ -662,7 +662,7 @@
       "signature_hex": "c344b8d7dd113823edb856d2c29e87133ba6654f78fa3196232f77b6448f0ceabafc950c2bceb1f8572665ffd7e754fc37e22b876abc924734a802dd8893440c",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "署名バイト自体の末尾 1 bit 反転は検証に失敗する"
+      "note": "flipping the last 1 bit of the signature bytes themselves fails verification"
     },
     {
       "name": "tampered-status",
@@ -686,7 +686,7 @@
       "signature_hex": "c344b8d7dd113823edb856d2c29e87133ba6654f78fa3196232f77b6448f0ceabafc950c2bceb1f8572665ffd7e754fc37e22b876abc924734a802dd8893440d",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "status の書き換え(active → deleted)は元署名の検証に失敗する(無署名の削除偽造の遮断 — §4.2 の tombstone 署名化)"
+      "note": "rewriting status (active → deleted) fails verification of the original signature (blocks a signature-free deletion forgery — §4.2's tombstone signing)"
     },
     {
       "name": "transplant-project",
@@ -710,7 +710,7 @@
       "signature_hex": "c344b8d7dd113823edb856d2c29e87133ba6654f78fa3196232f77b6448f0ceabafc950c2bceb1f8572665ffd7e754fc37e22b876abc924734a802dd8893440d",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "別プロジェクトへの座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant to another project fails signature verification"
     },
     {
       "name": "transplant-environment",
@@ -734,7 +734,7 @@
       "signature_hex": "c344b8d7dd113823edb856d2c29e87133ba6654f78fa3196232f77b6448f0ceabafc950c2bceb1f8572665ffd7e754fc37e22b876abc924734a802dd8893440d",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "別環境への座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant to another environment fails signature verification"
     },
     {
       "name": "transplant-variable",
@@ -758,7 +758,7 @@
       "signature_hex": "c344b8d7dd113823edb856d2c29e87133ba6654f78fa3196232f77b6448f0ceabafc950c2bceb1f8572665ffd7e754fc37e22b876abc924734a802dd8893440d",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "別変数への座標移植は署名検証に失敗する(値 — variable_id 束縛 — と名前の対応の付け替え対策)"
+      "note": "a coordinate transplant to another variable fails signature verification (protects against relabeling the value — variable_id binding — to name correspondence)"
     },
     {
       "name": "transplant-meta-version",
@@ -782,7 +782,7 @@
       "signature_hex": "c344b8d7dd113823edb856d2c29e87133ba6654f78fa3196232f77b6448f0ceabafc950c2bceb1f8572665ffd7e754fc37e22b876abc924734a802dd8893440d",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "別 metaVersion への移植は署名検証に失敗する"
+      "note": "a transplant to another metaVersion fails signature verification"
     },
     {
       "name": "transplant-signer",
@@ -806,7 +806,7 @@
       "signature_hex": "c344b8d7dd113823edb856d2c29e87133ba6654f78fa3196232f77b6448f0ceabafc950c2bceb1f8572665ffd7e754fc37e22b876abc924734a802dd8893440d",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "author_user_id の差し替えは同一鍵でも検証に失敗する(帰属の付け替え対策 — §4.2 の user_id 焼き込み)"
+      "note": "substituting author_user_id fails verification even under the same key (protects against relabeling attribution — §4.2's user_id burning)"
     },
     {
       "name": "wrong-signer-key",
@@ -830,7 +830,7 @@
       "signature_hex": "c344b8d7dd113823edb856d2c29e87133ba6654f78fa3196232f77b6448f0ceabafc950c2bceb1f8572665ffd7e754fc37e22b876abc924734a802dd8893440d",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "署名者以外の鍵では検証に失敗する(FP 付け替えによる別鍵検証の遮断)"
+      "note": "verification fails under a non-signer key (blocks verification under a different key via FP relabeling)"
     },
     {
       "name": "chain-head-swap",
@@ -854,7 +854,7 @@
       "signature_hex": "c344b8d7dd113823edb856d2c29e87133ba6654f78fa3196232f77b6448f0ceabafc950c2bceb1f8572665ffd7e754fc37e22b876abc924734a802dd8893440d",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "chain_head_hash_hex の差し替え(seq は維持)は署名検証に失敗する(認可時点の付け替え対策)"
+      "note": "substituting chain_head_hash_hex (keeping seq) fails signature verification (protects against relabeling the authorization time)"
     },
     {
       "name": "chain-head-seq-mismatch",
@@ -878,7 +878,7 @@
       "signature_hex": "c344b8d7dd113823edb856d2c29e87133ba6654f78fa3196232f77b6448f0ceabafc950c2bceb1f8572665ffd7e754fc37e22b876abc924734a802dd8893440d",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "chain_head_seq の差し替え(hash は維持)は署名検証に失敗する(hash と seq の両方が署名対象)"
+      "note": "substituting chain_head_seq (keeping the hash) fails signature verification (both hash and seq are signed)"
     },
     {
       "name": "tampered-prev-hash",
@@ -902,7 +902,7 @@
       "signature_hex": "968bdf693604c2af988cf6cbe504a12e7655fea2256baa4f30070a99c340e5dbaf4765ce1ad3f03b5a132d28f8008d460a18d43ac4df13acb1c4d0d769ede505",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "prev_meta_sig_hash_hex の差し替えは元署名の検証に失敗する(連鎖の改竄は署名で固定される)"
+      "note": "substituting prev_meta_sig_hash_hex fails verification of the original signature (chain tampering is pinned by the signature)"
     },
     {
       "name": "suite-mismatch",
@@ -926,7 +926,7 @@
       "signature_hex": "c344b8d7dd113823edb856d2c29e87133ba6654f78fa3196232f77b6448f0ceabafc950c2bceb1f8572665ffd7e754fc37e22b876abc924734a802dd8893440d",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する"
+      "note": "a different suite means a different domain string, so cross-suite signature transplants fail verification"
     },
     {
       "name": "nfc-variant",
@@ -950,7 +950,7 @@
       "signature_hex": "70b83f7f89c1b171cabe2e23c91bfbd0e711b7b9a3b7795f6f2dd3ce1cf3e6ee016486530dcd8dd679dff8804eaa6723e12504fbbbfb835766d591a5ed115407",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "NFC 正規形で署名された name を NFD 変種に置き換えると byte 列が異なり署名検証に失敗する(署名は byte-exact — 正規化は署名前のクライアントの責務で、検証者は正規化しない。§4.2)"
+      "note": "substituting a name signed in NFC canonical form with its NFD variant makes the byte string differ and fails signature verification (the signature is byte-exact — normalization is the signing client's responsibility; the verifier does not normalize. §4.2)"
     },
     {
       "name": "env-transplant-environment",
@@ -973,7 +973,7 @@
       "signature_hex": "e8b9fce6231bf3a5a3b42917e9e5e69ae350892e4677f26cb803b785ab3150d3e4e6f1af12b5fdf0027db1e1cd3864167e88d26c52d0e874f69ec0c980abdf04",
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "must_fail": true,
-      "note": "環境ステートメントの別環境への座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant of an environment statement to another environment fails signature verification"
     },
     {
       "name": "cross-kind-transplant",
@@ -997,7 +997,7 @@
       "signature_hex": "e8b9fce6231bf3a5a3b42917e9e5e69ae350892e4677f26cb803b785ab3150d3e4e6f1af12b5fdf0027db1e1cd3864167e88d26c52d0e874f69ec0c980abdf04",
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "must_fail": true,
-      "note": "環境ステートメントの署名を変数ステートメントのバイト列(var-meta-sig ドメイン)で検証すると失敗する(var / env のドメイン分離の固定)"
+      "note": "verifying an environment statement's signature against a variable statement's byte string (var-meta-sig domain) fails (pins the var / env domain separation)"
     },
     {
       "name": "head-not-in-chain",
@@ -1025,7 +1025,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "chain-head-mismatch",
       "must_fail": true,
-      "note": "seq 12 は自ビューに実在するがハッシュが一致しない = チェーン分岐(equivocation)または偽造の硬い証拠として即時拒否(§6.3-2a)"
+      "note": "seq 12 exists in the local view but the hash does not match = hard evidence of a chain fork (equivocation) or forgery — reject immediately (§6.3-2a)"
     },
     {
       "name": "head-beyond-local-seq",
@@ -1053,7 +1053,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "chain-head-future",
       "must_fail": true,
-      "note": "seq 25 は自ビューのヘッド(24)より先 = 自チェーンが古いだけの可能性。まず再同期し、延長として一致すれば受理・しなければ分岐の証拠(§6.3-2b)。値署名と同じ有界再同期の入口が流用されることを固定する"
+      "note": "seq 25 is beyond the local view's head (24) = the local chain may merely be stale. Resync first, accept if it matches as an extension, else it is evidence of a fork (§6.3-2b). Pins that the same bounded-resync entry as the value signature is reused"
     },
     {
       "name": "author-removed-at-head",
@@ -1081,7 +1081,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "author-not-member-at-head",
       "must_fail": true,
-      "note": "seq 5 で削除済みの author が削除後のヘッド(12)を宣言する形は拒否する(削除済みメンバーの鍵による新規ステートメントの遮断 — §6.3-3)"
+      "note": "reject the form where an author removed at seq 5 declares a post-removal head (12) (blocks fresh statements by a removed member's key — §6.3-3)"
     },
     {
       "name": "author-role-insufficient",
@@ -1109,7 +1109,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "author-role-insufficient-at-head",
       "must_fail": true,
-      "note": "head 6 時点の user-admin-0003 は reader(change_role は seq 7)。変数の作成・rename・削除は宣言ヘッド時点で member 以上が必要(§4.2 / §6.3-3)"
+      "note": "at head 6, user-admin-0003 is a reader (the change_role is seq 7). Creating / renaming / deleting a variable needs member-or-above at the declared-head time (§4.2 / §6.3-3)"
     },
     {
       "name": "env-delete-role-insufficient",
@@ -1136,7 +1136,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "author-role-insufficient-at-head",
       "must_fail": true,
-      "note": "head 4 時点の user-member-0002 は member。環境の削除ステートメントのみ宣言ヘッド時点でadmin 以上が必要(§4.2 / §12-3 の水準差の固定 — 環境の作成・rename は member 水準)"
+      "note": "at head 4, user-member-0002 is member. Only an environment-deletion statement needs admin-or-above at the declared-head time (pins the level difference in §4.2 / §12-3 — environment creation and renames are at member level)"
     },
     {
       "name": "key-from-other-tenure",
@@ -1164,7 +1164,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "author-key-mismatch-at-head",
       "must_fail": true,
-      "note": "remove → 別鍵 re-add(派生チェーン seq 25)の user_id で、旧在籍区間の鍵 × 新区間のヘッド(25)の組合せは拒否する(§6.3-1 のヘッド時点鍵束縛)"
+      "note": "the combination old-key (from the first membership interval) × new-interval head (25) under the user_id that went remove → re-add-with-different-keys (derived chain seq 25) is rejected (§6.3-1's head-time key binding)"
     },
     {
       "name": "author-unknown-in-history",
@@ -1192,7 +1192,7 @@
       "verify_key_hex": "03ff0e60c3634744bf45cec1833341ccdde192a3f66873422378bcbd46a32f1b",
       "expected_reason": "author-unknown",
       "must_fail": true,
-      "note": "チェーン履歴のどの時点にも存在しない author_user_id / 鍵 FP の組は検証鍵を選択できず拒否する(署名自体は本 negative の鍵で有効)"
+      "note": "an author_user_id / key FP pair that exists at no point in the chain history cannot select a verification key and is rejected (the signature itself is valid under this negative's key)"
     },
     {
       "name": "v1-nonempty-prev",
@@ -1220,7 +1220,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "prev-shape-mismatch",
       "must_fail": true,
-      "note": "metaVersion 1 の prev_meta_sig_hash_hex は空文字列でなければならない(§4.2)。predecessor を保持しない latest-only 検証でも形は必ず検査する(session-14 裁定 B の同型)"
+      "note": "metaVersion 1's prev_meta_sig_hash_hex must be the empty string (§4.2). The form is always checked even by a latest-only verification that keeps no predecessor (the same form as session-14 ruling B)"
     },
     {
       "name": "v2-empty-prev",
@@ -1248,7 +1248,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "prev-shape-mismatch",
       "must_fail": true,
-      "note": "metaVersion > 1 の prev_meta_sig_hash_hex は 64 文字 hex でなければならない(§4.2)"
+      "note": "metaVersion > 1's prev_meta_sig_hash_hex must be 64-char hex (§4.2)"
     },
     {
       "name": "prev-hash-mismatch",
@@ -1276,7 +1276,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "prev-hash-mismatch",
       "must_fail": true,
-      "note": "既知の直前 metaVersion(var-create)の signed_bytes ハッシュと prev が一致しない連鎖不整合(§6.3-6)。署名は有効 — Ed25519 failure に潰してはならない",
+      "note": "a chain inconsistency where prev does not match the known previous metaVersion (var-create)'s signed_bytes hash (§6.3-6). The signature is valid — it must not be crushed into an Ed25519 failure",
       "predecessor": {
         "base": "var-create",
         "signed_bytes_sha256_hex": "bc5526ffc4e2f1ac57ff15079bbc52a11f66db2b9b309d0e1d35e6f13291dfd0",
@@ -1309,7 +1309,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "revived-after-delete",
       "must_fail": true,
-      "note": "deleted(var-delete、metaVersion 3)の後の active 化は、prev 連鎖・署名が有効でも拒否する(§4.2 — ID 再利用禁止のステートメント層での対応物。削除済み変数の無断復活の遮断)",
+      "note": "activating after deleted (var-delete, metaVersion 3) is rejected even when the prev chain and signature are valid (§4.2 — the statement-layer counterpart of the no-ID-reuse rule; blocks unauthorized revival of a deleted variable)",
       "predecessor": {
         "base": "var-delete",
         "signed_bytes_sha256_hex": "aff50eb8300e845cd31aea3cb48ceb4e0af4d13f6d24c68e4bad7a8bb2da0ab4",
@@ -1342,7 +1342,7 @@
       "verify_key_hex": "8cd555d1ec03e59a465f3e14d1d2f7f82f9aa61f73445885213f4dd0c68e9c51",
       "expected_reason": "author-environment-out-of-scope-at-head",
       "must_fail": true,
-      "note": "head 19 時点の user-devmember-0010 は member listed{dev, stage}。scope 外の env-prod-0001 の変数ステートメントは role を満たしても宣言ヘッド時点の scope 検査(3′)で拒否する"
+      "note": "at head 19, user-devmember-0010 is member listed{dev, stage}. A variable statement on out-of-scope env-prod-0001 is rejected by the declared-head-time scope check (3′) even when role is satisfied"
     },
     {
       "name": "env-author-environment-out-of-scope",
@@ -1369,7 +1369,7 @@
       "verify_key_hex": "8cd555d1ec03e59a465f3e14d1d2f7f82f9aa61f73445885213f4dd0c68e9c51",
       "expected_reason": "author-environment-out-of-scope-at-head",
       "must_fail": true,
-      "note": "環境メタステートメント(rename)も環境対象: scope 外の環境への署名は 3′ で拒否する"
+      "note": "an environment meta statement (a rename) is also environment-targeted: a signature on an out-of-scope environment is rejected by 3′"
     },
     {
       "name": "author-role-precedes-scope",
@@ -1397,7 +1397,7 @@
       "verify_key_hex": "8cd555d1ec03e59a465f3e14d1d2f7f82f9aa61f73445885213f4dd0c68e9c51",
       "expected_reason": "author-role-insufficient-at-head",
       "must_fail": true,
-      "note": "head 24 時点の user-devmember-0010 は reader listed{dev}。role 不足 × scope 外の複合違反は role 検査(3)が scope 検査(3′)に先行する"
+      "note": "at head 24, user-devmember-0010 is reader listed{dev}. An insufficient-role × out-of-scope compound violation is judged with the role check (3) preceding the scope check (3′)"
     },
     {
       "name": "author-device-revoked-at-head",
@@ -1425,7 +1425,7 @@
       "verify_key_hex": "977165d335f646367891019d1b68d575dee45d7f6c7cc2aec8c77d19c41bc4b3",
       "expected_reason": "author-key-mismatch-at-head",
       "must_fail": true,
-      "note": "seq 37 で失効した端末 C が失効後のヘッド(37)を宣言したステートメントは author-key-mismatch-at-head"
+      "note": "a statement by device C — revoked at seq 37 — declaring a post-revocation head (37) is author-key-mismatch-at-head"
     },
     {
       "name": "author-device-role-insufficient",
@@ -1453,7 +1453,7 @@
       "verify_key_hex": "7f06222150f8782176dcf9d51b37751051b95f6421836e657a76379d2e616a1b",
       "expected_reason": "author-role-insufficient-at-head",
       "must_fail": true,
-      "note": "owner-0015 の cap (reader, all) の端末 L の実効 role は reader。変数ステートメント(member 以上)は拒否する"
+      "note": "the effective role of owner-0015's cap-(reader, all) device L is reader. A variable statement (member or above) is rejected"
     },
     {
       "name": "author-device-environment-out-of-scope",
@@ -1481,7 +1481,7 @@
       "verify_key_hex": "977165d335f646367891019d1b68d575dee45d7f6c7cc2aec8c77d19c41bc4b3",
       "expected_reason": "author-environment-out-of-scope-at-head",
       "must_fail": true,
-      "note": "CI 箱 C の実効 scope {dev, stage} 外の env-prod-0001 のステートメントは、人の scope が all でも拒否する"
+      "note": "a statement on env-prod-0001 — outside CI box C's effective scope {dev, stage} — is rejected even though the person's scope is all"
     },
     {
       "name": "env-author-device-environment-out-of-scope",
@@ -1508,7 +1508,7 @@
       "verify_key_hex": "977165d335f646367891019d1b68d575dee45d7f6c7cc2aec8c77d19c41bc4b3",
       "expected_reason": "author-environment-out-of-scope-at-head",
       "must_fail": true,
-      "note": "環境メタステートメント(rename)も端末の実効 scope で判定する"
+      "note": "an environment meta statement (a rename) is also judged by the device's effective scope"
     },
     {
       "name": "layout-confusion-v2-as-v1",
@@ -1532,7 +1532,7 @@
       "signature_hex": "6a5cf022825c158b431cc6037c4da8830c53c3ce0610922971fff50c7ba2938151aaf0d3d54c62377e676a0ed9fd34c695952f240397102a0346d5e33fe7a50b",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "v2 で署名されたステートメント(var-v2-create-typed)をスキーマ欄を落として v1 レイアウト(v1 ドメイン文字列)で再計算したバイト列では署名検証に失敗する(layoutVersion の虚偽申告 v2 → v1 は署名不一致に退化 — 裁定 CR)"
+      "note": "recomputing a v2-signed statement (var-v2-create-typed) with the schema fields dropped under the v1 layout (v1 domain string) fails signature verification (a false layoutVersion declaration v2 → v1 degenerates into a signature mismatch — ruling CR)"
     },
     {
       "name": "layout-confusion-v1-as-v2",
@@ -1560,7 +1560,7 @@
       "signature_hex": "c344b8d7dd113823edb856d2c29e87133ba6654f78fa3196232f77b6448f0ceabafc950c2bceb1f8572665ffd7e754fc37e22b876abc924734a802dd8893440d",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "v1 で署名されたステートメント(var-create)に空のスキーマ欄を補って v2 レイアウト(v2 ドメイン文字列)で再計算したバイト列では署名検証に失敗する(layoutVersion の虚偽申告 v1 → v2 — 逆方向の混同も同様に退化する)"
+      "note": "recomputing a v1-signed statement (var-create) padded with empty schema fields under the v2 layout (v2 domain string) fails signature verification (a false layoutVersion declaration v1 → v2 — confusion in the opposite direction degenerates the same way)"
     },
     {
       "name": "tampered-var-type",
@@ -1588,7 +1588,7 @@
       "signature_hex": "6a5cf022825c158b431cc6037c4da8830c53c3ce0610922971fff50c7ba2938151aaf0d3d54c62377e676a0ed9fd34c695952f240397102a0346d5e33fe7a50b",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "var_type の書き換え(url → string)は元署名の検証に失敗する(スキーマ欄は署名対象 — §4.2)"
+      "note": "rewriting var_type (url → string) fails verification of the original signature (the schema fields are signed — §4.2)"
     },
     {
       "name": "tampered-required",
@@ -1616,7 +1616,7 @@
       "signature_hex": "6a5cf022825c158b431cc6037c4da8830c53c3ce0610922971fff50c7ba2938151aaf0d3d54c62377e676a0ed9fd34c695952f240397102a0346d5e33fe7a50b",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "required の書き換え(true → false)は元署名の検証に失敗する(presence 保証 §14.2-8 の前提 — required 宣言は署名済みの明示操作なしに変わらない)"
+      "note": "rewriting required (true → false) fails verification of the original signature (the premise of the presence guarantee §14.2-8 — a required declaration never changes without a signed explicit operation)"
     },
     {
       "name": "tampered-description",
@@ -1644,7 +1644,7 @@
       "signature_hex": "6a5cf022825c158b431cc6037c4da8830c53c3ce0610922971fff50c7ba2938151aaf0d3d54c62377e676a0ed9fd34c695952f240397102a0346d5e33fe7a50b",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "description の書き換えは元署名の検証に失敗する(description も byte-exact に署名対象 — §4.2)"
+      "note": "rewriting description fails verification of the original signature (description is also signed byte-exact — §4.2)"
     },
     {
       "name": "v2-suite-mismatch",
@@ -1672,7 +1672,7 @@
       "signature_hex": "6a5cf022825c158b431cc6037c4da8830c53c3ce0610922971fff50c7ba2938151aaf0d3d54c62377e676a0ed9fd34c695952f240397102a0346d5e33fe7a50b",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "suite が異なればドメイン文字列が異なり、スイート間の署名移植は v2 レイアウトでも検証に失敗する(レイアウト版はステートメント種ローカルで suite 束縛は不変 — §4.2)"
+      "note": "a different suite means a different domain string, so a cross-suite signature transplant fails verification under the v2 layout too (the layout version is local to the statement kind and the suite binding is unchanged — §4.2)"
     },
     {
       "name": "declared-after-active",
@@ -1704,7 +1704,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "declared-after-active",
       "must_fail": true,
-      "note": "active な predecessor の後続を declared にする形は、署名・prev 連鎖が有効でも拒否する(§4.2 — active → declared 禁止: 値の存在の巻き戻し表現を作らない。値を取り除く唯一の経路は削除)",
+      "note": "the form that makes an active predecessor's successor declared is rejected even when the signature and prev chain are valid (§4.2 — no active → declared: do not create a representation that rolls back the existence of a value. Deletion is the only path that removes a value)",
       "predecessor": {
         "base": "var-v2-create-typed",
         "signed_bytes_sha256_hex": "62db3a6e45644eb7f6714f72fabd733b0082bcd702a3247d59f1a20e1ae47c18",
@@ -1742,7 +1742,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "revived-after-delete",
       "must_fail": true,
-      "note": "deleted な predecessor の後続は declared でも拒否する(§4.2 — 「deleted 後の再 active 化禁止」は declared への遷移にも適用。tombstone は終端 — 既存理由コード revived-after-delete の適用範囲の固定)",
+      "note": "a successor to a deleted predecessor is rejected even as declared (§4.2 — 'no re-activation after deleted' also applies to a transition to declared. A tombstone is terminal — pins the scope of the existing reason code revived-after-delete)",
       "predecessor": {
         "base": "var-v2-delete-keeps-schema",
         "signed_bytes_sha256_hex": "304de39240e9a8b319215d749f7bf0dfaef6d238ff17a231d6798360cc97207d",
@@ -1776,7 +1776,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_reason": "layout-regression",
       "must_fail": true,
-      "note": "直前ステートメントが v2 の変数への v1 後続ステートメント(rename 形)は、署名・prev 連鎖が有効でも拒否する(§4.2 の変数単位のレイアウト単調性 — 後退を許すと rename 1 回でスキーマ欄が黙って消え、presence 保証 §14.2-8 と schema-locked〔AUTH_SPEC §12-11〕が迂回できる)",
+      "note": "a v1 successor statement (a rename form) to a variable whose immediately preceding statement is v2 is rejected even when the signature and prev chain are valid (§4.2's per-variable layout monotonicity — allowing regression would let one rename silently drop the schema fields, bypassing the presence guarantee §14.2-8 and schema-locked [AUTH_SPEC §12-11])",
       "predecessor": {
         "base": "var-v2-create-typed",
         "signed_bytes_sha256_hex": "62db3a6e45644eb7f6714f72fabd733b0082bcd702a3247d59f1a20e1ae47c18",
@@ -1809,7 +1809,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_error": "InvalidInput",
       "must_fail": true,
-      "note": "v1 レイアウトに declared は存在しない(§4.2 / 裁定 CS — 「v1 は不変」という移行の核を守る)。status の語彙違反は構造違反として InvalidInput で拒否する — 署名は本バイト列に対して有効であり、拒否は暗号検証によるものではない"
+      "note": "declared does not exist in the v1 layout (§4.2 / ruling CS — protects 'v1 is immutable', the core of the migration). A status vocabulary violation is a structural violation rejected with InvalidInput — the signature is valid for this byte string; the rejection is not by cryptographic verification"
     },
     {
       "name": "v2-empty-required",
@@ -1840,7 +1840,7 @@
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "expected_error": "InvalidInput",
       "must_fail": true,
-      "note": "v2 の required は \"true\" | \"false\" の明示必須で空文字列を許さない(§4.2 — 省略時の既定値解釈をクライアント実装に分散させない fail-closed)。構造違反として InvalidInput で拒否する"
+      "note": "v2's required must be explicit \"true\" | \"false\" and does not allow the empty string (§4.2 — fail-closed: do not scatter a default-value interpretation for the omitted case across client implementations). Rejected as a structural violation with InvalidInput"
     }
   ]
 }

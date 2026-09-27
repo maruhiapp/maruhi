@@ -1,6 +1,6 @@
 {
-  "description": "CRYPTO_SPEC §8(0.9-draft / KL3。0.12-draft / DK で予備鍵ラップ台帳へ改訂 — 旧端末のハンドオフ経路〔kind = \"device\" / source = \"device\"〕を削除して再生成、他のケースのバイト列は不変): B = 予備鍵のブロブ(recovery-wrap.json の master_secret_blob_hex と同一)を受信者クラス S(passkey-prf: HKDF + AES-256-GCM)/ G(guardian: 乱数 KEK + AES-256-GCM、分片は HPKE Seal)/ H(handoff: 保護者の承認 — 一時鍵 E への HPKE Seal)へ包む。AES-GCM は WebCrypto、Seal は hpke-js の ekm derandomize で固定(panva 実装は Open 方向 + ラウンドトリップで検証する)。recovery-wrap.json(recovery-code 行)はバイト互換のまま不変",
-  "provenance_note": "user_id と B は recovery-wrap.json の basic を引き継ぐ。台帳 = 同一 B(2026-09-20 DK 以後は予備鍵のブロブ)に対する受信者ごとのラップの集合であることを実データで表す。kind ∈ {passkey-prf, guardian}、ハンドオフの承認者は保護者のみ(旧端末経路の handoff-device と kind = device への付け替え負例は DK で削除 — README 規約 28)",
+  "description": "CRYPTO_SPEC §8 (0.9-draft / KL3. Revised into the reserve key wrap ledger at 0.12-draft / DK — regenerated with the old-device handoff route [kind = \"device\" / source = \"device\"] removed; the byte strings of the other cases are unchanged): wraps B = the reserve key blob (identical to recovery-wrap.json's master_secret_blob_hex) for recipient classes S (passkey-prf: HKDF + AES-256-GCM) / G (guardian: random KEK + AES-256-GCM; segments are HPKE Seals) / H (handoff: a guardian's approval — an HPKE Seal to the ephemeral key E). AES-GCM uses WebCrypto; Seal is pinned by hpke-js ekm derandomize (the panva implementation is verified in the Open direction + roundtrip). recovery-wrap.json (the recovery-code row) stays byte-compatible and unchanged",
+  "provenance_note": "user_id and B are inherited from recovery-wrap.json's basic. Expresses in real data that the ledger = the set of per-recipient wraps over the same B (the reserve-key blob since 2026-09-20 DK). kind in {passkey-prf, guardian}; handoff approvers are guardians only (the handoff-device old-device route and the kind = device relabeling negatives were removed at DK — README convention 28)",
   "master_wrap_aad_fields_order": ["domain", "user_id", "kind", "wrap_ref", "mode"],
   "guardian_wrap_info_fields_order": [
     "domain",
@@ -26,26 +26,26 @@
       "ikm_hex": "7172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f90",
       "sk_hex": "8b036d44aabfdedcb48f2ed1ea40cb607a6565ab43f77f06042fcaded767a5d1",
       "pk_hex": "21a4be66051fae7524e65ec4916c06aff4e9245299e821c22362d0112bc11033",
-      "note": "保護者の master enc 鍵(DEK ラップを受ける鍵と同じ)。DeriveKeyPair(ikm) による決定論的生成"
+      "note": "The guardian's master enc key (the same key that receives DEK wraps). Deterministic generation via DeriveKeyPair(ikm)"
     },
     "user-admin-0003": {
       "ikm_hex": "72737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f9091",
       "sk_hex": "b01e72e11c0658dd251b9d72ca61a156bd042be1dcfb1b6766dee507fd50ef48",
       "pk_hex": "881909d2a6dfd01e18366fa062e3f901500f389d34bdc60b129d219825d9df01",
-      "note": "保護者の master enc 鍵(DEK ラップを受ける鍵と同じ)。DeriveKeyPair(ikm) による決定論的生成"
+      "note": "The guardian's master enc key (the same key that receives DEK wraps). Deterministic generation via DeriveKeyPair(ikm)"
     },
     "user-guardian-0004": {
       "ikm_hex": "737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192",
       "sk_hex": "7b5103289fd808a954bea63858cbce8179cd8db7ab373e1ca3796c5d33fe1e5c",
       "pk_hex": "2f27d5d7e054733776ac3dc5f0eee3370c58c0a4cd73f6199f61974bd22a7a15",
-      "note": "保護者の master enc 鍵(DEK ラップを受ける鍵と同じ)。DeriveKeyPair(ikm) による決定論的生成"
+      "note": "The guardian's master enc key (the same key that receives DEK wraps). Deterministic generation via DeriveKeyPair(ikm)"
     }
   },
   "ephemeral_keypair": {
     "ikm_hex": "d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0",
     "sk_hex": "a35b7f24526af62ebf2110b0a59fafc6f19052efc142375d8dfb2bf93a6599a6",
     "pk_hex": "c821a250bf4c1338abc1c5330e3f7c90703a6cb4180b499f32f977795c4c8335",
-    "note": "要求者(予備鍵を復元する端末)の一時 X25519 鍵 E。ベクターの決定論のため DeriveKeyPair(ikm) で固定するが、実運用では毎回ランダム生成し要求者プロセスとともに破棄する(§8.4)"
+    "note": "The requester's (the device restoring the reserve key) ephemeral X25519 key E. Fixed via DeriveKeyPair(ikm) for vector determinism, but in production it is randomly generated each time and discarded with the requester process (§8.4)"
   },
   "passkey": {
     "hkdf": {
@@ -53,7 +53,7 @@
       "info_utf8": "maruhi/v1/passkey-prf",
       "length": 32
     },
-    "note": "prf_out = WebAuthn PRF(credential, eval.first = prf_salt)。prf_salt は登録ごとの乱数で公開パラメータ。KEK = HKDF-SHA256(prf_out, salt 空, info)"
+    "note": "prf_out = WebAuthn PRF(credential, eval.first = prf_salt). prf_salt is a per-registration random value and a public parameter. KEK = HKDF-SHA256(prf_out, salt empty, info)"
   },
   "handoff": {
     "request_id_domain": "maruhi/v1/handoff-id",
@@ -65,13 +65,13 @@
       "checksum_hex": "3f6b0ceb",
       "symbols": "ZAQ2EUF7JQJTRK6BYUZQ4P34SBYDU3FUDAFUTHZS7F3XSXCMQM2T62YM5M",
       "display": "ZAQ2-EUF7-JQJT-RK6B-YUZQ-4P34-SBYD-U3FU-DAFU-THZS-7F3X-SXCM-QM2T-62YM-5M",
-      "note": "ハンドオフコード = Base32(RFC 4648 アルファベット・パディング無し)(E_pub 32 B ‖ SHA-256(E_pub)[:4]) = 58 シンボル(末尾 2 bit はゼロ詰め)。表示は 4 文字ずつハイフン区切り。入力は小文字・ハイフン・空白を吸収し、アルファベット外・長さ違い・チェックサム不一致・ゼロ詰め非ゼロは拒否"
+      "note": "handoff code = Base32 (RFC 4648 alphabet, no padding) (E_pub 32 B || SHA-256(E_pub)[:4]) = 58 symbols (the trailing 2 bits are zero padding). Display is groups of 4 characters separated by hyphens. Input tolerates lowercase, hyphens, and whitespace; non-alphabet, wrong length, checksum mismatch, or non-zero padding is rejected"
     },
     "other_ephemeral": {
       "ikm_hex": "d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1",
       "pk_hex": "09d664b5889b77671ad66dcbfe55b1051313a7dc456f063ae2e04acc7e2c6c00",
       "request_id_hex": "2a65464caa3eb2311f16214cdcf9f85bae041d6b3d5fc3e6b67ba6bd1dc0805e",
-      "note": "別要求(別の一時鍵)。transplant-request-id の材料"
+      "note": "A different request (a different ephemeral key). Material for transplant-request-id"
     }
   },
   "vectors": [
@@ -87,7 +87,7 @@
       "aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d303030310000000b706173736b65792d7072660000001b30314a4d4b5752415030303030303030303030303030504153534b00000000",
       "nonce_hex": "e0e1e2e3e4e5e6e7e8e9eaeb",
       "ciphertext_hex": "4a799174176c51aedaf6d9ba7758164e7c328500e0b119f9b3bd896e229ec304f62ef454a3bfeb1ac43d636bd0ad242182e5794e0780a1480c6203cf56fcb3920c2284298deaaa9fd9d7419321124f67",
-      "note": "パスキー PRF 由来 KEK による B のラップ。AAD = LP(master-wrap, user_id, 'passkey-prf', wrap_id, '')"
+      "note": "A wrap of B under a passkey-PRF-derived KEK. AAD = LP(master-wrap, user_id, 'passkey-prf', wrap_id, '')"
     },
     {
       "name": "guardian-any-2",
@@ -123,7 +123,7 @@
           "ciphertext_hex": "893bce0951e227033ed1eaf7bbe9f96bf63bf8c22ced7a5340f43482c3d39a05dee817915e198c6b728d7ecf03d37eac"
         }
       ],
-      "note": "1-of-n(mode any): 全分片 = KEK。どの 1 片でも B を開ける"
+      "note": "1-of-n (mode any): every segment is the KEK. Any single piece opens B"
     },
     {
       "name": "guardian-all-3",
@@ -170,7 +170,7 @@
           "ciphertext_hex": "3a5e28533e821af73c79897dde0b465b8438085d2c239986820b1eb5adde29af0b476d88f0f4475ab6f667139a89a708"
         }
       ],
-      "note": "n-of-n(mode all): s_1, s_2 は乱数、s_3 = KEK ⊕ s_1 ⊕ s_2。KEK = 全片の XOR"
+      "note": "n-of-n (mode all): s_1, s_2 are random; s_3 = KEK XOR s_1 XOR s_2. KEK = the XOR of all pieces"
     },
     {
       "name": "handoff-guardian-share",
@@ -185,7 +185,7 @@
       "aad_hex": "",
       "enc_hex": "d0bd2dc09360d0b2d737ccd1e5194f9018c751c4abcc42a64e24314b0952c46d",
       "ciphertext_hex": "7b01ad3752dafa6b853c01f7989bb47122221879ee571b8dac61d275d439f7318103cef0bf0bb5cd863f69ad7934df64",
-      "note": "保護者 user-member-0002 が guardian-all-3 の分片 1 を開き、その場で要求者の E.pub へ再封印した承認"
+      "note": "An approval where guardian user-member-0002 opens segment 1 of guardian-all-3 and re-seals it in place to the requester's E.pub"
     }
   ],
   "negative": [
@@ -194,42 +194,42 @@
       "base": "guardian-any-2",
       "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d303030310000000b706173736b65792d7072660000001b30314a4d4b4752503030303030303030303030303030414e59303200000000",
       "must_fail": true,
-      "note": "kind の付け替え(guardian → passkey-prf。同じ wrap_ref のまま。mode 欄は仕様どおり passkey-prf では空文字列)は復号失敗。2026-09-20 DK で旧 passkey-prf → device の形から作り直した(kind の集合から device が消えたため)"
+      "note": "Relabeling the kind (guardian → passkey-prf, same wrap_ref; the mode field is the empty string as the spec prescribes for passkey-prf) fails decryption. Rebuilt at 2026-09-20 DK from the old passkey-prf → device form (device no longer exists in the kind set)"
     },
     {
       "name": "aad-wrap-ref-mismatch",
       "base": "passkey-prf-basic",
       "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d303030310000000b706173736b65792d7072660000001b30314a4d4b57524150303030303030303030303030304f5448455200000000",
       "must_fail": true,
-      "note": "別の wrap_id(別行)への移植は復号失敗"
+      "note": "Transplanting to a different wrap_id (a different row) fails decryption"
     },
     {
       "name": "aad-user-mismatch",
       "base": "passkey-prf-basic",
       "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d7772617000000010757365722d6d656d6265722d303030320000000b706173736b65792d7072660000001b30314a4d4b5752415030303030303030303030303030504153534b00000000",
       "must_fail": true,
-      "note": "他ユーザーの台帳への移植は復号失敗"
+      "note": "Transplanting into another user's ledger fails decryption"
     },
     {
       "name": "aad-mode-all-as-any",
       "base": "guardian-all-3",
       "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d3030303100000008677561726469616e0000001b30314a4d4b4752503030303030303030303030303030414c4c303300000003616e79",
       "must_fail": true,
-      "note": "サーバーが all グループを any と偽っても(要求者が 1 片で足りると誤らされても)AAD の mode 束縛で復号失敗"
+      "note": "Even if the server misrepresents an all group as any (misleading the requester into believing one piece suffices), the AAD mode binding fails decryption"
     },
     {
       "name": "aad-mode-any-as-all",
       "base": "guardian-any-2",
       "decrypt_aad_hex": "000000156d61727568692f76312f6d61737465722d777261700000000f757365722d6f776e65722d3030303100000008677561726469616e0000001b30314a4d4b4752503030303030303030303030303030414e59303200000003616c6c",
       "must_fail": true,
-      "note": "any グループを all と偽る方向も復号失敗"
+      "note": "The opposite direction — misrepresenting an any group as all — also fails decryption"
     },
     {
       "name": "share-missing",
       "base": "guardian-all-3",
       "decrypt_kek_hex": "6060606060606060606060606060606020202020202020202020202020202020",
       "must_fail": true,
-      "note": "n−1 片(s_1 ⊕ s_2)では KEK にならず復号失敗(n-of-n の固定)"
+      "note": "n-1 pieces (s_1 XOR s_2) do not reconstruct the KEK and decryption fails (pins n-of-n)"
     },
     {
       "name": "prf-salt-mismatch",
@@ -237,14 +237,14 @@
       "other_prf_out_hex": "18191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f3031323334353637",
       "decrypt_kek_hex": "b39e9f5729737c2c77f08c0092d85f4961a8b8198a51e08cb6a40e680c9fab3f",
       "must_fail": true,
-      "note": "別 prf_salt で評価した PRF 出力から導いた KEK では復号失敗(登録ごとの乱数 salt = 登録ごとの独立 KEK)"
+      "note": "A KEK derived from a PRF output evaluated under a different prf_salt fails decryption (the per-registration random salt = an independent KEK per registration)"
     },
     {
       "name": "suite-mismatch",
       "base": "passkey-prf-basic",
       "decrypt_aad_hex": "000000156d61727568692f76322f6d61737465722d777261700000000f757365722d6f776e65722d303030310000000b706173736b65792d7072660000001b30314a4d4b5752415030303030303030303030303030504153534b00000000",
       "must_fail": true,
-      "note": "ドメイン文字列のスイート部を変えた AAD では復号失敗(スイート束縛はドメイン文字列が担う)"
+      "note": "An AAD with the suite portion of the domain string changed fails decryption (suite binding is carried by the domain string)"
     },
     {
       "name": "guardian-transplant-share-index",
@@ -252,7 +252,7 @@
       "share_index": 1,
       "open_info_hex": "000000176d61727568692f76312f677561726469616e2d777261700000000f757365722d6f776e65722d303030310000001b30314a4d4b4752503030303030303030303030303030414c4c303300000003616c6c000000013200000010757365722d6d656d6265722d30303032",
       "must_fail": true,
-      "note": "分片番号の付け替えは Open 失敗"
+      "note": "Relabeling the share index fails Open"
     },
     {
       "name": "guardian-transplant-guardian",
@@ -260,7 +260,7 @@
       "share_index": 1,
       "open_info_hex": "000000176d61727568692f76312f677561726469616e2d777261700000000f757365722d6f776e65722d303030310000001b30314a4d4b4752503030303030303030303030303030414c4c303300000003616c6c00000001310000000f757365722d61646d696e2d30303033",
       "must_fail": true,
-      "note": "別の保護者への帰属付け替えは Open 失敗(鍵も違うが info だけでも落ちる形を固定)"
+      "note": "Re-attributing to a different guardian fails Open (the key differs too, but this pins that info alone already fails)"
     },
     {
       "name": "guardian-transplant-group",
@@ -268,7 +268,7 @@
       "share_index": 1,
       "open_info_hex": "000000176d61727568692f76312f677561726469616e2d777261700000000f757365722d6f776e65722d303030310000001b30314a4d4b4752503030303030303030303030303030414e59303200000003616c6c000000013100000010757365722d6d656d6265722d30303032",
       "must_fail": true,
-      "note": "別グループへの移植は Open 失敗"
+      "note": "Transplanting to another group fails Open"
     },
     {
       "name": "guardian-mode-relabel",
@@ -276,63 +276,63 @@
       "share_index": 1,
       "open_info_hex": "000000176d61727568692f76312f677561726469616e2d777261700000000f757365722d6f776e65722d303030310000001b30314a4d4b4752503030303030303030303030303030414c4c303300000003616e79000000013100000010757365722d6d656d6265722d30303032",
       "must_fail": true,
-      "note": "分片側でも mode の付け替えは Open 失敗(AAD と info の二重束縛)"
+      "note": "On the share side, relabeling the mode also fails Open (double binding by AAD and info)"
     },
     {
       "name": "handoff-transplant-request-id",
       "base": "handoff-guardian-share",
       "open_info_hex": "000000166d61727568692f76312f68616e646f66662d777261700000000f757365722d6f776e65722d3030303100000040326136353436346361613365623233313166313632313463646366396638356261653034316436623364356663336536623637626136626431646330383035650000001b30314a4d4b4752503030303030303030303030303030414c4c3033000000013100000010757365722d6d656d6265722d30303032",
       "must_fail": true,
-      "note": "別要求への移植は Open 失敗(承認は要求 1 件に束縛)"
+      "note": "Transplanting to a different request fails Open (an approval is bound to one request)"
     },
     {
       "name": "handoff-transplant-approver",
       "base": "handoff-guardian-share",
       "open_info_hex": "000000166d61727568692f76312f68616e646f66662d777261700000000f757365722d6f776e65722d3030303100000040333034646362373634303862653964346230333866343039313065343436303164666466363333616535343064633066613132303831313965323233653466630000001b30314a4d4b4752503030303030303030303030303030414c4c303300000001310000000f757365722d61646d696e2d30303033",
       "must_fail": true,
-      "note": "承認者の帰属付け替えは Open 失敗"
+      "note": "Re-attributing the approver fails Open"
     },
     {
       "name": "handoff-transplant-source",
       "base": "handoff-guardian-share",
       "open_info_hex": "000000166d61727568692f76312f68616e646f66662d777261700000000f757365722d6f776e65722d3030303100000040333034646362373634303862653964346230333866343039313065343436303164666466363333616535343064633066613132303831313965323233653466630000001b30314a4d4b4752503030303030303030303030303030414e593032000000013100000010757365722d6d656d6265722d30303032",
       "must_fail": true,
-      "note": "source の付け替え(保護者分片のグループ all-3 → 別グループ any-2)は Open 失敗(要求者の組み立て経路〔どのグループの分片か〕を偽れない。2026-09-20 DK で旧 → device の形から作り直した)"
+      "note": "Relabeling the source (the guardian segment's group all-3 → another group any-2) fails Open (the requester's assembly route [which group's segment] cannot be forged. Rebuilt at 2026-09-20 DK from the old → device form)"
     },
     {
       "name": "handoff-share-index-mismatch",
       "base": "handoff-guardian-share",
       "open_info_hex": "000000166d61727568692f76312f68616e646f66662d777261700000000f757365722d6f776e65722d3030303100000040333034646362373634303862653964346230333866343039313065343436303164666466363333616535343064633066613132303831313965323233653466630000001b30314a4d4b4752503030303030303030303030303030414c4c3033000000013200000010757365722d6d656d6265722d30303032",
       "must_fail": true,
-      "note": "分片番号の付け替えは Open 失敗"
+      "note": "Relabeling the share index fails Open"
     },
     {
       "name": "handoff-code-checksum-mismatch",
       "base": "handoff-guardian-share",
       "code_symbols": "ZAQ2EUF7JQJTRK6BYUZQ4P34SBYDU3FUDAFUTHZS7F3XSXCMQM2T62YA5M",
       "must_fail": true,
-      "note": "1 シンボル違いのコードはチェックサム不一致で拒否(別の公開鍵として黙って解釈しない)"
+      "note": "A code one symbol off is rejected on checksum mismatch (not silently interpreted as a different public key)"
     },
     {
       "name": "handoff-code-bad-padding",
       "base": "handoff-guardian-share",
       "code_symbols": "ZAQ2EUF7JQJTRK6BYUZQ4P34SBYDU3FUDAFUTHZS7F3XSXCMQM2T62YM5N",
       "must_fail": true,
-      "note": "末尾 2 bit のゼロ詰めが非ゼロのコードは拒否"
+      "note": "A code whose trailing 2-bit zero padding is non-zero is rejected"
     },
     {
       "name": "handoff-code-wrong-length",
       "base": "handoff-guardian-share",
       "code_symbols": "ZAQ2EUF7JQJTRK6BYUZQ4P34SBYDU3FUDAFUTHZS7F3XSXCMQM2T62YM5",
       "must_fail": true,
-      "note": "58 シンボル以外は拒否"
+      "note": "Anything other than 58 symbols is rejected"
     },
     {
       "name": "handoff-request-id-other-key",
       "base": "handoff-guardian-share",
       "open_enc_hex": "d1bd2dc09360d0b2d737ccd1e5194f9018c751c4abcc42a64e24314b0952c46d",
       "must_fail": true,
-      "note": "encapsulated key の改竄は Open 失敗"
+      "note": "Tampering with the encapsulated key fails Open"
     }
   ]
 }

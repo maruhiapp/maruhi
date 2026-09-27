@@ -1,8 +1,10 @@
-// CRYPTO_SPEC §8(0.9-draft / KL3 — master 鍵ラップ台帳)のチェック。
-// ベクター: test-vectors/master-key-wrap.json。dek-wrap / lease-wrap と同じ構成:
-// 固定ベクター(hpke-js の ekm derandomize で生成)は Open 方向で検証し、Seal 方向は
-// ラウンドトリップで担保する。AES-GCM / HKDF はベクターの復号成功が導出を固定する。
-// recovery-wrap.json(recovery-code 経路)は不変で、そちらは checks/recovery.ts のまま。
+// Checks for CRYPTO_SPEC §8 (0.9-draft / KL3 — the master key wrap ledger).
+// Vectors: test-vectors/master-key-wrap.json. Same layout as dek-wrap /
+// lease-wrap: fixed vectors (generated via hpke-js ekm derandomize) are
+// verified in the Open direction, and the Seal direction is covered by a
+// roundtrip. For AES-GCM / HKDF, a successful vector decryption pins the
+// derivation. recovery-wrap.json (the recovery-code path) is unchanged and
+// still lives in checks/recovery.ts.
 
 import {
   buildGuardianWrapInfo,
@@ -153,7 +155,7 @@ const unwrapVector = (v: AeadVector, context: MasterWrapContext, kek?: Uint8Arra
     context,
   });
 
-/** B と user_id は recovery-wrap.json を引き継ぐ(台帳 = 同一 B のラップ集合)。 */
+/** B and user_id are inherited from recovery-wrap.json (the ledger = the set of wraps of the same B). */
 function provenanceChecks(c: Checks): void {
   const recovery = recoveryVectors.vectors[0];
   c.push(
@@ -173,7 +175,7 @@ async function passkeyChecks(c: Checks): Promise<void> {
   c.push("master-wrap: passkey KEK derivation", kek.ok && toHex(kek.value) === passkey.kek_hex);
   const blob = await unwrapVector(passkey, passkeyContext);
   c.push("master-wrap: passkey vector unwrap == B", blob.ok && toHex(blob.value) === blobHex);
-  // 短い PRF 出力は InvalidInput(HKDF に入れない)
+  // A short PRF output is InvalidInput (never reaches HKDF)
   const short = await derivePasskeyKek(fromHex(passkey.prf_out_hex).slice(0, 16));
   c.push(
     "master-wrap: passkey short prf output rejected",
@@ -212,7 +214,8 @@ async function guardianGroupChecks(c: Checks, g: GuardianGroupVector): Promise<v
   const blob = await unwrapVector(g, groupContext(g));
   c.push(`master-wrap: ${g.name} vector unwrap == B`, blob.ok && toHex(blob.value) === blobHex);
   const opened = await openVectorShares(g, c);
-  // 分片から KEK を組み立てる(any: 1 片 / all: 全片の XOR)
+  // Assemble the KEK from the segments (any: 1 segment / all: XOR of all
+  // segments)
   const joined = joinGuardianShares({
     mode: g.mode,
     shares: g.mode === "any" ? opened.slice(0, 1) : opened,
@@ -256,7 +259,8 @@ async function handoffIdChecks(c: Checks): Promise<void> {
     "master-wrap: handoff code decoding",
     decoded.ok && toHex(decoded.value) === doc.handoff.ephemeral_pub_hex,
   );
-  // 小文字・空白・ハイフン無しの入力も同じ鍵に復号する(転記の寛容)
+  // Lowercase, whitespace, and hyphen-free input decodes to the same key
+  // (leniency for transcription)
   const lenient = await decodeHandoffCode(
     ` ${doc.handoff.code.symbols.toLowerCase().replace(/(.{8})/g, "$1 ")} `,
   );
@@ -267,7 +271,8 @@ async function handoffIdChecks(c: Checks): Promise<void> {
 }
 
 async function handoffOpenChecks(c: Checks, pair: EncryptionKeyPair): Promise<void> {
-  // 承認者は保護者のみ(2026-09-19 DK — 旧端末の承認 handoff-device は §8.4 から消えた)
+  // Only a guardian may approve (2026-09-19 DK — the old-device approval
+  // handoff-device was removed from §8.4)
   for (const h of [handoffShare]) {
     c.push(
       `master-wrap: ${h.name} info construction`,
@@ -283,14 +288,15 @@ async function handoffOpenChecks(c: Checks, pair: EncryptionKeyPair): Promise<vo
       value.ok && toHex(value.value) === h.value_hex,
     );
   }
-  // 保護者承認は guardian-all-3 の分片 1 の再封印(値が同一)
+  // The guardian approval is a re-seal of segment 1 of guardian-all-3 (the
+  // value is identical)
   c.push(
     "master-wrap: handoff-guardian-share re-seals share 1 of guardian-all-3",
     handoffShare.source === all3.group_id && handoffShare.value_hex === all3.shares[0]?.share_hex,
   );
 }
 
-/** AAD 差し替え negative: ベクターの decrypt_aad_hex と AAD 構築が一致し、復号が失敗する。 */
+/** AAD-substitution negative: the vector's decrypt_aad_hex matches the built AAD, and decryption fails. */
 async function aadNegativeCheck(
   c: Checks,
   name: string,
@@ -307,9 +313,11 @@ async function aadNegativeCheck(
 }
 
 async function aadNegativeChecks(c: Checks): Promise<void> {
-  // kind 1 軸だけの差し替え(guardian → passkey-prf。同じ wrap_ref・同じ mode — 2026-09-20 DK で
-  // kind の集合から device が消えたため、guardian-any-2 を base に作り直した)
-  // (mode は guardian のみの欄なので、passkey-prf の文脈は mode を持たない — 持てば InvalidInput)
+  // Substitution on the kind axis alone (guardian → passkey-prf; same
+  // wrap_ref, same mode — rebuilt on guardian-any-2 as base in 2026-09-20 DK
+  // because device left the kind set)
+  // (mode is a guardian-only field, so a passkey-prf context has no mode —
+  // having one would be InvalidInput)
   await aadNegativeCheck(c, "aad-kind-mismatch", any2, {
     ...passkeyContext,
     wrapRef: any2.group_id,
@@ -324,23 +332,24 @@ async function aadNegativeChecks(c: Checks): Promise<void> {
   });
   await aadNegativeCheck(c, "aad-mode-all-as-any", all3, { ...groupContext(all3), mode: "any" });
   await aadNegativeCheck(c, "aad-mode-any-as-all", any2, { ...groupContext(any2), mode: "all" });
-  // suite-mismatch: 実装 API ではドメイン文字列を差し替えられない(型として固定)。
-  // AAD の期待バイト列がベクターに存在することのみ検査し、復号失敗は
-  // verify_reference.mjs(独立実装)が固定する
+  // suite-mismatch: the implementation API cannot swap the domain string
+  // (fixed by the type). Only check that the expected AAD bytes exist in the
+  // vector; the decryption failure itself is pinned by verify_reference.mjs
+  // (the independent implementation)
   c.push(
     "master-wrap negative: suite-mismatch",
     negativeNamed("suite-mismatch").decrypt_aad_hex !== undefined,
   );
 }
 
-/** hex of a successful Uint8Array result, or null(比較を 1 式に畳むための小道具)。 */
+/** hex of a successful Uint8Array result, or null (a helper to fold comparisons into one expression). */
 function okHex(
   result: { readonly ok: boolean; readonly value?: Uint8Array } | null,
 ): string | null {
   return result?.ok === true && result.value !== undefined ? toHex(result.value) : null;
 }
 
-/** ベクターの decrypt_kek_hex と一致する「間違った KEK」での復号が DecryptFailed になること。 */
+/** Decrypting with a "wrong KEK" that matches the vector's decrypt_kek_hex must yield DecryptFailed. */
 async function expectWrongKek(
   c: Checks,
   name: string,
@@ -358,8 +367,9 @@ async function expectWrongKek(
 }
 
 async function kekNegativeChecks(c: Checks): Promise<void> {
-  // share-missing: n−1 片の XOR は KEK ではない。joinGuardianShares は片数不足を
-  // InvalidInput で先に拒否し、片数を偽って組んだ KEK は復号失敗になる
+  // share-missing: the XOR of n−1 segments is not the KEK.
+  // joinGuardianShares rejects an insufficient segment count as InvalidInput
+  // first, and a KEK assembled with a faked segment count fails decryption
   const twoShares = all3.shares.slice(0, 2).map((s) => fromHex(s.share_hex));
   const tooFew = joinGuardianShares({ mode: "all", shares: twoShares, expectedCount: 3 });
   c.push(
@@ -374,7 +384,8 @@ async function kekNegativeChecks(c: Checks): Promise<void> {
     groupContext(all3),
     partial.ok ? partial.value : null,
   );
-  // prf-salt-mismatch: 別 salt の PRF 出力 → 別 KEK → 復号失敗
+  // prf-salt-mismatch: a PRF output under a different salt → a different KEK
+  // → decryption fails
   const salt = negativeNamed("prf-salt-mismatch");
   const otherKek = await derivePasskeyKek(fromHex(salt.other_prf_out_hex ?? ""));
   await expectWrongKek(
@@ -429,7 +440,8 @@ async function handoffNegativeChecks(c: Checks, pair: EncryptionKeyPair): Promis
       name: "handoff-transplant-approver",
       context: { ...base, approverUserId: "user-admin-0003" },
     },
-    // 保護者分片のグループの付け替え(all-3 → any-2 — 2026-09-20 DK で旧 → device の形から作り直した)
+    // Relabeling the guardian segment's group (all-3 → any-2 — rebuilt from
+    // the old → device shape in 2026-09-20 DK)
     { name: "handoff-transplant-source", context: { ...base, source: any2.group_id } },
     { name: "handoff-share-index-mismatch", context: { ...base, shareIndex: 2 } },
     { name: "handoff-request-id-other-key", context: base },
@@ -467,7 +479,8 @@ async function codeNegativeChecks(c: Checks): Promise<void> {
         decoded.error.field === "handoff code",
     );
   }
-  // アルファベット外の文字(0 / 1 / 8 / 9)は推測置換せず拒否
+  // Characters outside the alphabet (0 / 1 / 8 / 9) are rejected rather than
+  // guessed-substituted
   const zeroForO = await decodeHandoffCode(doc.handoff.code.symbols.replace(/[A-Z]/, "0"));
   c.push("master-wrap negative: handoff code non-alphabet symbol", !zeroForO.ok);
 }
@@ -557,7 +570,7 @@ async function passkeyRoundtrip(c: Checks): Promise<void> {
   );
 }
 
-/** 1 分片を生成鍵の保護者へ seal → 本人鍵で open(別鍵では失敗)。開いた分片を返す。 */
+/** Seal one segment to a generated guardian key, then open with that key (a different key fails). Returns the opened segment. */
 async function sealAndOpenShare(
   share: Uint8Array,
   context: GuardianWrapContext,
@@ -581,7 +594,7 @@ async function sealAndOpenShare(
   return opened.ok && !wrongKey.ok ? opened.value : null;
 }
 
-/** 3 分片を 3 人の生成鍵保護者へ seal → open して回収する(失敗した分片は落ちる)。 */
+/** Seal 3 segments to 3 generated guardian keys, then open and collect them (a failed segment drops out). */
 async function recoverShares(
   mode: GuardianMode,
   shares: readonly Uint8Array[],
@@ -631,7 +644,8 @@ async function guardianRoundtrip(c: Checks, mode: GuardianMode): Promise<void> {
     recovered.length === 3 && okHex(joined) === toHex(groupKek) && okHex(unwrapped) === blobHex,
   );
   if (mode === "all") {
-    // 任意の 2 片は KEK と独立: 2 片の XOR は KEK に一致しない
+    // Any 2 segments are independent of the KEK: the XOR of 2 segments does
+    // not equal the KEK
     const pairJoin = joinGuardianShares({ mode, shares: recovered.slice(0, 2), expectedCount: 2 });
     c.push(
       "master-wrap: guardian all roundtrip partial shares != KEK",
@@ -640,7 +654,7 @@ async function guardianRoundtrip(c: Checks, mode: GuardianMode): Promise<void> {
   }
 }
 
-/** 一時公開鍵 → コード → 復号 → request_id。往復が成立しなければ null。 */
+/** ephemeral public key → code → decode → request_id. Returns null if the roundtrip does not hold. */
 async function codeRoundtrip(pub: Uint8Array): Promise<string | null> {
   const code = await encodeHandoffCode(pub);
   const decoded = code.ok ? await decodeHandoffCode(code.value) : null;
@@ -652,7 +666,7 @@ async function codeRoundtrip(pub: Uint8Array): Promise<string | null> {
 }
 
 async function handoffRoundtrip(c: Checks): Promise<void> {
-  // 生成した一時鍵 → コード → 復号 → request_id → seal / open
+  // generated ephemeral key → code → decode → request_id → seal / open
   const ephemeral = await generateEncryptionKeyPair();
   const pub = await exportEncryptionPublicKey(ephemeral.publicKey);
   const requestId = await codeRoundtrip(pub);
@@ -679,7 +693,8 @@ async function handoffRoundtrip(c: Checks): Promise<void> {
     context,
   });
   c.push("master-wrap: handoff roundtrip", requestId !== null && okHex(opened) === toHex(kekH));
-  // 別の一時鍵では開けない(要求者プロセスが終われば承認は無価値)
+  // A different ephemeral key cannot open it (once the requester process
+  // ends, the approval is worthless)
   const otherEphemeral = await generateEncryptionKeyPair();
   const wrongKey = await openHandoffValue({
     ephemeralKeyPair: otherEphemeral,

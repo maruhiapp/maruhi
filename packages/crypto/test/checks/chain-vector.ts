@@ -1,4 +1,5 @@
-// chain-entries.json のベクターを @maruhi/crypto の型付きエントリへ変換するヘルパ。
+// Helpers that convert the chain-entries.json vectors into @maruhi/crypto
+// typed entries.
 
 import {
   type ApprovalPolicy,
@@ -48,12 +49,12 @@ interface VectorNegative {
   readonly expected_prev_hash_hex?: string;
   readonly entry?: VectorEntry;
   readonly expected_reason?: string;
-  /** 認可 negative の前提チェーン(extended_chains のキー。無指定 = 正規チェーン)。 */
+  /** Prerequisite chain for an authorization negative (an extended_chains key; unset = the canonical chain). */
   readonly chain?: string;
   readonly must_fail: boolean;
 }
 
-/** grant_server payload / 導出状態の lease_policy のベクター表現(§6.2)。 */
+/** Vector representation of a grant_server payload / derived-state lease_policy (§6.2). */
 interface VectorLeasePolicyIssuer {
   readonly issuer_url: string;
   readonly audience: string;
@@ -68,11 +69,11 @@ interface VectorServerGrant {
   readonly server_enc_pub_hex: string;
   readonly scope_environments: readonly string[];
   readonly lease_policy: readonly VectorLeasePolicyIssuer[];
-  /** 有効 grant を確立したエントリの seq(再 grant で前進 — §6.3 / AUDIT_SPEC §3.5)。 */
+  /** seq of the entry that established the active grant (advances on re-grant — §6.3 / AUDIT_SPEC §3.5). */
   readonly grant_seq: number;
 }
 
-/** 受理後の環境ごとの最新チェックポイント期待値(§6.2 checkpoint)。 */
+/** Expected latest checkpoint per environment after acceptance (§6.2 checkpoint). */
 export interface VectorCheckpointState {
   readonly seq: number;
   readonly epoch: string;
@@ -81,13 +82,13 @@ export interface VectorCheckpointState {
   readonly values_digest_hex: string;
 }
 
-/** scope の期待値(all / listed)。 */
+/** Expected scope (all / listed). */
 interface VectorScope {
   readonly kind: string;
   readonly environments?: readonly string[];
 }
 
-/** 端末 1 つの期待値(FP → cap + 追加 seq — §6.2 の検証状態。2026-09-19 DK)。 */
+/** Expected state of a single device (FP → cap + added seq — the §6.2 verification state. 2026-09-19 DK). */
 export interface VectorDeviceState {
   readonly role_cap: string;
   readonly scope: VectorScope;
@@ -95,8 +96,9 @@ export interface VectorDeviceState {
 }
 
 /**
- * メンバー状態の期待値(role + scope — §6.2 の検証状態。2026-09-14 ES)。`devices` 省略は
- * 「最初の鍵 1 つ(cap (owner, all))のみ」を意味する(規約 28 — 既存の期待値は不変)
+ * Expected member state (role + scope — the §6.2 verification state.
+ * 2026-09-14 ES). Omitting `devices` means "only the first key (cap (owner,
+ * all))" (convention 28 — existing expectations are unchanged)
  */
 export interface VectorMemberState {
   readonly role: string;
@@ -104,13 +106,13 @@ export interface VectorMemberState {
   readonly devices?: Readonly<Record<string, VectorDeviceState>>;
 }
 
-/** 四眼の方針の期待値(null = オフ)。 */
+/** Expected four-eyes policy (null = off). */
 export interface VectorApprovalPolicy {
   readonly ops: readonly string[];
   readonly required_approvals: string;
 }
 
-/** pending 提案の期待値(提案エントリ hash → 提案)。 */
+/** Expected pending proposals (proposal entry hash → proposal). */
 export interface VectorPendingProposal {
   readonly proposal_seq: number;
   readonly proposer_user_id: string;
@@ -119,36 +121,36 @@ export interface VectorPendingProposal {
   readonly inner_op: string;
   readonly inner_payload: Readonly<Record<string, unknown>>;
   readonly expires_at_ms: string;
-  /** 受理済み approve の署名 (user_id, 鍵 FP) — 2026-09-15 裁定 ⑤(票の鍵束縛)。 */
+  /** Signatures of accepted approve votes (user_id, key FP) — 2026-09-15 ruling (5) (key binding of votes). */
   readonly approvals: readonly { readonly user_id: string; readonly key_fingerprint_hex: string }[];
 }
 
 interface VectorValidAppend {
   readonly name: string;
   readonly entry: VectorEntry;
-  /** 接続先(extended_chains のキー。無指定 = 正規チェーンの entry.seq - 1 まで)。 */
+  /** Attach point (an extended_chains key; unset = the canonical chain up to entry.seq - 1). */
   readonly chain?: string;
   readonly expected_members: Readonly<Record<string, VectorMemberState>>;
   readonly expected_policy?: VectorApprovalPolicy | null;
   readonly expected_pending?: Readonly<Record<string, VectorPendingProposal>>;
-  /** 受理後の環境ごとの現エポック(§6.2 環境ライフサイクル)。 */
+  /** Current epoch per environment after acceptance (§6.2 environment lifecycle). */
   readonly expected_environments: Readonly<Record<string, string>>;
-  /** 受理後の有効 grant 集合(§6.2 再 grant 二層)。 */
+  /** Active grant set after acceptance (§6.2 two-layer re-grant). */
   readonly expected_server_grants: readonly VectorServerGrant[];
-  /** 受理後の環境ごとの最新チェックポイント(checkpoint の valid append のみ)。 */
+  /** Latest checkpoint per environment after acceptance (valid appends of checkpoint only). */
   readonly expected_checkpoints?: Readonly<Record<string, VectorCheckpointState>>;
   readonly note?: string;
 }
 
-/** 正規チェーンの途中ヘッドへ追記した派生チェーン(認可 negative の前提状態)。 */
+/** Derived chain appended onto a mid-canonical-chain head (the prerequisite state for authorization negatives). */
 interface VectorExtendedChain {
   readonly description: string;
   readonly base_seq: number;
   readonly entries: readonly VectorEntry[];
   readonly expected_members: Readonly<Record<string, VectorMemberState>>;
-  /** 派生チェーンだけが使う鍵(再追加の新鍵・第 2 端末 — トップレベル keys と同じ形)。 */
+  /** Keys used only by the derived chain (re-added new keys, second devices — same shape as the top-level keys). */
   readonly keys?: Readonly<Record<string, VectorKey>>;
-  /** 派生チェーン検証後の環境ごとの最新チェックポイント(checkpoint-baseline)。 */
+  /** Latest checkpoint per environment after verifying the derived chain (checkpoint-baseline). */
   readonly expected_checkpoints?: Readonly<Record<string, VectorCheckpointState>>;
   readonly expected_policy?: VectorApprovalPolicy | null;
   readonly expected_pending?: Readonly<Record<string, VectorPendingProposal>>;
@@ -183,8 +185,9 @@ function scopeMatchesVector(actual: MemberScope, expected: VectorScope): boolean
 }
 
 /**
- * 端末集合の一致(§6.2 — 2026-09-19 DK)。期待に `devices` が無ければ「端末 1 つ・cap
- * (owner, all)」のみを要求する(追加 seq は検査しない — 既存の期待値は seq を持たない)
+ * Device-set match (§6.2 — 2026-09-19 DK). If the expectation has no
+ * `devices`, only "one device, cap (owner, all)" is required (the added seq
+ * is not checked — existing expectations carry no seq)
  */
 function devicesMatchVector(
   actual: ReadonlyMap<string, ChainDevice>,
@@ -209,7 +212,7 @@ function devicesMatchVector(
   );
 }
 
-/** 導出状態のメンバー集合がベクター期待(role + scope + 端末集合)と一致するか(集合として比較)。 */
+/** Whether the derived-state member set matches the vector expectation (role + scope + device set) (compared as sets). */
 export function membersMatchVector(
   members: ReadonlyMap<string, ChainMember>,
   expected: Readonly<Record<string, VectorMemberState>>,
@@ -228,7 +231,7 @@ export function membersMatchVector(
   );
 }
 
-/** 導出状態の方針がベクター期待と一致するか(ops は集合として比較。無指定は検査しない)。 */
+/** Whether the derived-state policy matches the vector expectation (ops compared as a set; unspecified is not checked). */
 export function policyMatchesVector(
   policy: ApprovalPolicy | null,
   expected: VectorApprovalPolicy | null | undefined,
@@ -247,7 +250,7 @@ export function policyMatchesVector(
   );
 }
 
-/** pending 提案 1 件の比較用の正規形(順序・型を揃えた JSON — 内側 payload は正規化バイト列)。 */
+/** Canonical form for comparing a single pending proposal (JSON with normalized order and types — the inner payload is the canonical bytes). */
 function pendingProposalKey(input: {
   readonly hash: string;
   readonly proposalSeq: number;
@@ -271,7 +274,7 @@ function pendingProposalKey(input: {
   ]);
 }
 
-/** 導出状態の pending 提案集合がベクター期待と一致するか(無指定は検査しない)。 */
+/** Whether the derived-state pending-proposal set matches the vector expectation (unspecified is not checked). */
 export function pendingMatchesVector(
   pending: ReadonlyMap<string, PendingProposal>,
   expected: Readonly<Record<string, VectorPendingProposal>> | undefined,
@@ -301,8 +304,9 @@ export function pendingMatchesVector(
 }
 
 /**
- * 導出状態の有効 grant 集合がベクター期待(snake_case)と一致するか
- * (§6.2 — scope + lease_policy 込み。chain.ts / chain-negative.ts で共用)。
+ * Whether the derived-state active grant set matches the vector expectation
+ * (snake_case) (§6.2 — including scope + lease_policy. Shared by chain.ts /
+ * chain-negative.ts).
  */
 export function serverGrantsMatchVector(
   serverGrants: ReadonlyMap<string, ServerGrant>,
@@ -317,7 +321,8 @@ export function serverGrantsMatchVector(
         actual.serverEncPubHex === grant.server_enc_pub_hex &&
         actual.grantSeq === grant.grant_seq &&
         actual.scopeEnvironmentIds.join(",") === grant.scope_environments.join(",") &&
-        // lease_policy(§6.2)も導出状態の一部(順序込みで一致 — as-signed 順)
+        // lease_policy (§6.2) is part of the derived state too (match
+        // including order — as-signed order)
         JSON.stringify(
           actual.leasePolicy.map((element) => ({
             issuer_url: element.issuerUrl,
@@ -343,8 +348,9 @@ export const vectorExtendedChains = chainVectors.extended_chains as unknown as R
   Record<string, VectorExtendedChain>
 >;
 /**
- * 鍵レコード。`keys` のキーはメンバーの user_id、または端末鍵の `"<user_id>@<label>"`
- * (2026-09-19 DK — 規約 28。端末鍵は `user_id` / `label` を持つ)。署名者は (user_id, FP) で選ぶ
+ * Key record. A `keys` key is a member's user_id or, for a device key,
+ * `"<user_id>@<label>"` (2026-09-19 DK — convention 28. A device key carries
+ * `user_id` / `label`). The signer is selected by (user_id, FP)
  */
 export interface VectorKey {
   readonly user_id?: string;
@@ -359,8 +365,9 @@ export interface VectorKey {
 export const vectorKeys = chainVectors.keys as Readonly<Record<string, VectorKey>>;
 
 /**
- * (user_id, 鍵 FP) で署名鍵を選ぶ(§6.2 — 署名者の同定は端末単位)。トップレベル keys と
- * 派生チェーンの keys の両方を引く。見つからなければ undefined
+ * Select the signing key by (user_id, key FP) (§6.2 — signers are identified
+ * per device). Consults both the top-level keys and the derived chains'
+ * keys. Returns undefined when not found
  */
 export function vectorKeyFor(userId: string, keyFingerprintHex: string): VectorKey | undefined {
   const pools: readonly Readonly<Record<string, VectorKey>>[] = [
@@ -379,7 +386,7 @@ export function vectorKeyFor(userId: string, keyFingerprintHex: string): VectorK
   }
   return undefined;
 }
-/** checkpoint の values_digest 正規形の単体ベクター(§6.2)。 */
+/** Standalone vectors for the checkpoint values_digest canonical form (§6.2). */
 export const vectorValuesDigests = chainVectors.values_digests as readonly {
   readonly name: string;
   readonly entries: readonly {
@@ -390,7 +397,7 @@ export const vectorValuesDigests = chainVectors.values_digests as readonly {
   readonly values_digest_hex: string;
   readonly note?: string;
 }[];
-/** 各 (environment, epoch) のダミー DEK と §5.2 コミットメント(実計算値)。 */
+/** Dummy DEK and §5.2 commitment per (environment, epoch) (actually computed values). */
 export const vectorEnvironmentDeks = chainVectors.environment_deks as Readonly<
   Record<
     string,
@@ -405,7 +412,7 @@ function str(payload: Readonly<Record<string, unknown>>, key: string): string {
   return value;
 }
 
-/** scope の 2 フィールド(§6.2 — add_member / change_role の末尾 2 フィールド)。 */
+/** The two scope fields (§6.2 — the last two fields of add_member / change_role). */
 function scopeFields(payload: Readonly<Record<string, unknown>>): {
   readonly scopeKind: ScopeKind;
   readonly scopeEnvironmentIds: readonly string[];
@@ -416,8 +423,9 @@ function scopeFields(payload: Readonly<Record<string, unknown>>): {
   };
 }
 
-// op ごとの snake_case → typed payload 変換表(cyclomatic の高い switch を
-// 表引きへ — 実装側の PAYLOAD_SHAPES / OPERATION_APPLIERS と同じ形)
+// Per-op snake_case → typed payload conversion table (a table replaces a
+// high-cyclomatic switch — same shape as the implementation's
+// PAYLOAD_SHAPES / OPERATION_APPLIERS)
 const OPERATION_DECODERS: Readonly<
   Record<string, (payload: Readonly<Record<string, unknown>>) => ChainOperation>
 > = {
@@ -502,7 +510,8 @@ const OPERATION_DECODERS: Readonly<
       },
     };
   },
-  // 四眼(§6.2 — PF1)。propose の内側 op は同じ変換表で再帰的に復号する
+  // Four-eyes (§6.2 — PF1). A propose's inner op is decoded recursively via
+  // the same conversion table
   set_approval_policy: (payload) => ({
     op: "set_approval_policy",
     payload: {
@@ -528,7 +537,8 @@ const OPERATION_DECODERS: Readonly<
     op: "withdraw",
     payload: { proposalHashHex: str(payload, "proposal_hash_hex") },
   }),
-  // 端末鍵(§6.2 — 2026-09-19 DK)。revoke_device の FP リストは署名順のまま載せる
+  // Device keys (§6.2 — 2026-09-19 DK). revoke_device's FP list is carried
+  // in signature order
   add_device: (payload) => ({
     op: "add_device",
     payload: {
@@ -548,9 +558,11 @@ const OPERATION_DECODERS: Readonly<
 };
 
 /**
- * propose の内側 op の復号。構造 negative(未知 op・入れ子・フィールド欠落)は変換表で
- * 復号できないため、その場合は生の payload をそのまま載せ、実装の構造検査が
- * invalid-payload に落とすことを検査対象にする(throw で検査を止めない)
+ * Decodes a propose's inner op. A structural negative (unknown op, nesting,
+ * missing field) cannot be decoded by the conversion table, so in that case
+ * the raw payload is carried as-is and the subject under test is that the
+ * implementation's structural check lands it on invalid-payload (does not
+ * stop the check by throwing)
  */
 function decodeInner(op: string, payload: Readonly<Record<string, unknown>>): ProposableOperation {
   try {
@@ -568,7 +580,7 @@ function toOperation(op: string, payload: Readonly<Record<string, unknown>>): Ch
   return decode(payload);
 }
 
-/** ベクターエントリを型付き ChainEntry へ変換する */
+/** Convert a vector entry into a typed ChainEntry */
 export function toTypedEntry(vector: VectorEntry): ChainEntry {
   return {
     ...toOperation(vector.op, vector.payload),
@@ -587,9 +599,10 @@ export function toTypedEntry(vector: VectorEntry): ChainEntry {
 export const typedEntries: readonly ChainEntry[] = vectorEntries.map(toTypedEntry);
 
 /**
- * (user_id, 鍵 FP) の署名鍵をベクターの seed から WebCrypto へ import する(決定論的
- * 再署名と生署名検証の共通前段 — value / meta / manifest / attestation の 4 ハーネス)。
- * 鍵が無い・import に失敗した場合は null
+ * Imports the signing key of (user_id, key FP) into WebCrypto from the
+ * vector's seed (the shared preamble of deterministic re-signing and raw
+ * signature verification — the 4 harnesses value / meta / manifest /
+ * attestation). Returns null when the key is missing or the import fails
  */
 export async function importVectorSigner(
   userId: string,

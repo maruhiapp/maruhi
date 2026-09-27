@@ -1,8 +1,10 @@
-// CRYPTO_SPEC §4.1(値の書き込み署名)のチェック。
-// Ed25519 は RFC 8032 の決定論的署名なので、署名方向もベクターと完全一致で検証する。
-// 検証規則系(kind = "authorization")は「署名は有効だが §6.3 の履歴検証で
-// expected_reason により拒否される」ことを、verifyChainWithHistory で構築した
-// 履歴索引に対する verifyDistributedValue で固定する。
+// Checks for CRYPTO_SPEC §4.1 (the value write signature).
+// Ed25519 is an RFC 8032 deterministic signature, so the signing direction is
+// verified byte-for-byte against the vectors too.
+// For the verification-rule kind (kind = "authorization"), pin that "the
+// signature is valid but is rejected by the §6.3 history verification with
+// expected_reason" via verifyDistributedValue against the history index built
+// by verifyChainWithHistory.
 
 import type {
   ChainHistoryIndex,
@@ -85,9 +87,10 @@ const positives = valueVectors.vectors;
 const byName = new Map(positives.map((v) => [v.name, v]));
 
 /**
- * 照合先チェーン(名前 → 検証済み履歴索引): canonical(正規 24)、tenure-extension
- * (value-signature.json の re-add 派生)、device-ops(chain-entries.json の端末鍵派生 —
- * 2026-09-19 DK)。ベクターの `chain` 無指定は canonical
+ * Comparison chains (name → verified history index): canonical (canonical
+ * 24), tenure-extension (the re-add derived chain in value-signature.json),
+ * device-ops (the device-key derived chain in chain-entries.json —
+ * 2026-09-19 DK). A vector with `chain` unset means canonical
  */
 type Histories = Readonly<Record<string, ChainHistoryIndex>>;
 
@@ -98,7 +101,7 @@ function historyFor(
   return histories[chain ?? "canonical"];
 }
 
-/** 署名方向(決定論的再署名)と低水準の検証方向の 2 チェック。 */
+/** Two checks: the signing direction (deterministic re-signing) and the low-level verification direction. */
 async function signAndVerifyChecks(
   c: Checks,
   name: string,
@@ -106,7 +109,8 @@ async function signAndVerifyChecks(
   signatureHex: string,
   writerKeyFingerprintHex: string,
 ): Promise<void> {
-  // 署名方向: writer の端末(user_id, FP)の seed で署名し期待署名と一致(Ed25519 は決定論的)
+  // Signing direction: sign with the writer's device (user_id, FP) seed and
+  // match the expected signature (Ed25519 is deterministic)
   const signer = await importVectorSigner(context.writerUserId, writerKeyFingerprintHex);
   if (signer === null) {
     c.push(`value-sig ${name}: writer keys`, false, "signer keys missing or failed to import");
@@ -150,7 +154,8 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       vector.writer_key_fingerprint_hex,
     );
 
-    // 履歴ベースの複合検証(§6.3): prev_base があれば predecessor 込みで検査
+    // History-based composite verification (§6.3): when prev_base exists,
+    // check with the predecessor included
     const base = "prev_base" in vector ? byName.get(vector.prev_base as string) : undefined;
     const distributed = await verifyDistributedValue({
       history,
@@ -188,22 +193,25 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
               epoch: predecessor.context.epoch,
             },
     });
-    // 分岐は単体では全検証を通る(防止は不能 — §14.2-5 の証拠化)
+    // Each branch passes all checks on its own (prevention is impossible —
+    // the evidence-recording of §14.2-5)
     c.push(`value-sig fork ${branch.name}: verifies individually`, result.ok);
     if (result.ok) {
       hashes.push(result.value.signedBytesHashHex);
     }
   }
-  // 同一座標に異なる signed_bytes ハッシュ = equivocation の機械判定可能な証拠
+  // Distinct signed_bytes hashes on the same coordinate = mechanically
+  // decidable evidence of equivocation
   c.push(
     "value-sig fork: same coordinate yields distinct hashes",
     hashes.length === 2 && hashes[0] !== hashes[1],
   );
 }
 
-// 理由空間の網羅固定(観点 7 — support.ts の reasonCoverageChecks で検査):
-// Record 型が union との同期をコンパイル時に強制する(metadata-signature.ts の
-// META_REASON_COVERAGE と同型)。
+// Exhaustiveness pinning of the reason space (consideration 7 — checked by
+// support.ts's reasonCoverageChecks): the Record type enforces sync with the
+// union at compile time (same shape as META_REASON_COVERAGE in
+// metadata-signature.ts).
 const VALUE_REASON_COVERAGE: Record<ValueInvalidReason, true> = {
   "signature-invalid": true,
   "writer-unknown": true,
@@ -220,7 +228,7 @@ const VALUE_REASON_COVERAGE: Record<ValueInvalidReason, true> = {
   "epoch-regressed": true,
 };
 
-/** 検証規則系 negative: 署名は有効だが履歴検証が expected_reason で拒否する。 */
+/** Verification-rule negative: the signature is valid but history verification rejects it with expected_reason. */
 async function ruleNegativeCheck(
   c: Checks,
   negative: RuleNegative,
@@ -255,7 +263,7 @@ async function ruleNegativeCheck(
   );
 }
 
-/** 改竄・移植系 negative: 正規化がベクターの検証側バイト列を再現し、元署名が失敗する。 */
+/** Tamper/transplant negative: canonicalization reproduces the vector's verify-side byte string, and the original signature fails. */
 async function tamperNegativeCheck(
   c: Checks,
   negative: RuleNegative,
@@ -298,7 +306,7 @@ async function negativeChecks(
       await tamperNegativeCheck(c, negative, exercised);
     }
   }
-  // kind 語彙の固定(第三の値が導入されると両ふるいから漏れる)
+  // Pin the kind vocabulary (a third value would escape both sieves)
   c.push(
     "value-sig negative: kind vocabulary is exhaustive",
     [...seenKinds].every((kind) => kind === "signature" || kind === "authorization"),
@@ -328,8 +336,8 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "empty suite", context: { ...baseContext, suite: "" } },
     { name: "empty project id", context: { ...baseContext, projectId: "" } },
     { name: "empty environment id", context: { ...baseContext, environmentId: "" } },
-    // 空の variable id も他の座標と同水準で拒否する(meta-sig の
-    // "empty variable id" と同じ期待値)
+    // An empty variable id is rejected on par with the other coordinates
+    // (same expectation as meta-sig's "empty variable id")
     { name: "empty variable id", context: { ...baseContext, variableId: "" } },
     { name: "empty writer", context: { ...baseContext, writerUserId: "" } },
   ];
@@ -348,8 +356,9 @@ async function invalidInputChecks(c: Checks): Promise<void> {
         verified.error.kind === "InvalidInput",
     );
   }
-  // 署名側だけの結合検査: version 1 に非空 prev を署名させない(検証側は
-  // 「有効署名 + prev-shape-mismatch」として理由コードで拒否する非対称)
+  // A check only on the signing side: never sign a version 1 with a non-
+  // empty prev (the verify side instead rejects asymmetrically with a reason
+  // code, "valid signature + prev-shape-mismatch")
   const coupled = await signValue({
     context: { ...baseContext, version: 1, prevValueSigHashHex: "ab".repeat(32) },
     signingKey: pair.privateKey,
