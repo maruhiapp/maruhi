@@ -1,4 +1,4 @@
-# このディレクトリを独立プロジェクトとして解決させる(ルート workspaces に含めない)。
-# spikes/ と同じ手法(docs/notes/spike-c.md 参照)。
+# Resolve this directory as an independent project (not part of the root workspaces).
+# Same technique as spikes/ (see docs/notes/spike-c.md).
 [install]
 exact = true

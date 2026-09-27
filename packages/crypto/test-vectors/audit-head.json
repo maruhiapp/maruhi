@@ -1,5 +1,5 @@
 {
-  "description": "AUDIT_SPEC §5.1 監査ヘッド累積ハッシュ: row_digest = SHA-256(固定 17 列の LP。NULL 許容列はタグ付きバイト列 0x00 / 0x01 + 値)、h_n = SHA-256(LP(\"maruhi/v1/audit-head\", h_{n-1}, seq, row_digest))。h_0 = 空文字列。h_{n-1} と row_digest は hex 小文字文字列として LP に載せる",
+  "description": "AUDIT_SPEC §5.1 audit-head cumulative hash: row_digest = SHA-256 (LP of the fixed 17 columns; nullable columns are tagged byte strings 0x00 / 0x01 + value), h_n = SHA-256(LP(\"maruhi/v1/audit-head\", h_{n-1}, seq, row_digest)). h_0 = the empty string. h_{n-1} and row_digest go into LP as lowercase hex strings",
   "domain": "maruhi/v1/audit-head",
   "row_columns_order": [
     "seq",
@@ -116,7 +116,7 @@
     }
   ],
   "null_vs_empty": {
-    "note": "target_user_id が NULL の行と空文字列の行は row_digest が異なる(タグ付きバイト列 0x00 / 0x01 — AUDIT_SPEC §5.1)",
+    "note": "a row with NULL target_user_id and a row with an empty string have different row_digests (the tagged byte strings 0x00 / 0x01 — AUDIT_SPEC §5.1)",
     "null_row": {
       "seq": 5,
       "row_id": "a5a6a7a8a9aaabacadaeafb0b1b2b3b4",

@@ -1,7 +1,8 @@
-// CRYPTO_SPEC §8(リカバリーラップ)のチェック。
-// ベクター: test-vectors/recovery-wrap.json。KEK 導出(salt = 空)は
-// ベクター暗号文の復号成功が暗黙に固定する。wrong-salt はベクターの
-// decrypt_kek_hex(空以外の salt で導出した KEK)での復号失敗を WebCrypto で検査。
+// Checks for CRYPTO_SPEC §8 (the recovery wrap).
+// Vector: test-vectors/recovery-wrap.json. The KEK derivation (salt = empty) is
+// implicitly pinned by the successful decryption of the vector ciphertext.
+// wrong-salt checks via WebCrypto that decryption fails with the vector's
+// decrypt_kek_hex (a KEK derived from a non-empty salt).
 
 import {
   encodeLengthPrefixed,
@@ -19,13 +20,13 @@ if (baseVector === undefined) {
 const base = baseVector;
 
 async function vectorChecks(c: Checks): Promise<void> {
-  // AAD 構築(LP("maruhi/v1/recovery-wrap", user_id))がベクターと一致
+  // AAD construction (LP("maruhi/v1/recovery-wrap", user_id)) matches the vector
   c.push(
     "recovery: aad construction",
     toHex(encodeLengthPrefixed(["maruhi/v1/recovery-wrap", base.user_id])) === base.aad_hex,
   );
 
-  // 固定ベクターの unwrap(KEK 導出 salt=空 を暗黙に固定)
+  // unwrap of the fixed vector (implicitly pins KEK derivation with salt=empty)
   const blob = await unwrapMasterSecret({
     recoverySecret: fromHex(base.recovery_secret_hex),
     userId: base.user_id,
@@ -38,7 +39,7 @@ async function vectorChecks(c: Checks): Promise<void> {
 }
 
 async function negativeChecks(c: Checks): Promise<void> {
-  // aad-user-mismatch: 他ユーザーの鍵ブロブへの移植
+  // aad-user-mismatch: transplant to another user's key blob
   const otherUser = await unwrapMasterSecret({
     recoverySecret: fromHex(base.recovery_secret_hex),
     userId: "user-member-0002",
@@ -60,8 +61,9 @@ async function negativeChecks(c: Checks): Promise<void> {
   });
   c.push("recovery negative: ciphertext-bit-flip", !tampered.ok);
 
-  // wrong-salt: 空以外の salt から導出された KEK(ベクター付属)では復号不能。
-  // 実装 API は salt を注入できない(良いこと)ので、WebCrypto で直接検査する
+  // wrong-salt: a KEK derived from a non-empty salt (bundled with the vector)
+  // cannot decrypt. The implementation API cannot inject a salt (a good
+  // thing), so this is checked directly with WebCrypto
   const wrongSalt = recoveryVectors.negative.find((n) => n.name === "wrong-salt");
   if (wrongSalt?.decrypt_kek_hex === undefined) {
     c.push("recovery negative: wrong-salt", false, "vector missing");

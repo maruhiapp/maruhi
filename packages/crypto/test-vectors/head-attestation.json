@@ -1,5 +1,5 @@
 {
-  "description": "CRYPTO_SPEC §6.6: ヘッド申告(Ed25519)。head_attestation_signed_bytes = LP(\"<suite>/head-attestation\", project_id, attester_user_id, chain_head_hash_hex, chain_head_seq)。チェーン・鍵は chain-entries.json の正規チェーン(24 エントリ — 2026-09-14 ES + PF1 の全再生成に追随してハッシュのみ変化。正例・負例の意味は不変)を参照",
+  "description": "CRYPTO_SPEC §6.6: the head attestation (Ed25519). head_attestation_signed_bytes = LP(\"<suite>/head-attestation\", project_id, attester_user_id, chain_head_hash_hex, chain_head_seq). The chain and keys reference chain-entries.json's canonical chain (24 entries — only the hashes changed, tracking the full regeneration of 2026-09-14 ES + PF1; the meaning of the positives and negatives is unchanged)",
   "signed_fields_order": [
     "domain",
     "project_id",
@@ -7,9 +7,9 @@
     "chain_head_hash_hex",
     "chain_head_seq"
   ],
-  "binary_encoding": "チェーンヘッドハッシュは hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)。数値(chain_head_seq)は 10 進文字列化。タイムスタンプ・ノンスは署名対象に含めない(§6.6 — 意味論は帰属であり鮮度証明ではない)",
-  "chain_reference": "chain-entries.json: project_id = genesis エントリハッシュ、chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex、attester 鍵 = keys",
-  "distribution_note": "removed-attester-in-tenure は §6.6 の検証(署名・申告ヘッド時点の在籍)を通る正例だが、attester が現メンバーでないため配布対象外(remove_member 受理時にサーバーが申告行を削除 — §6.4)であり、配布されてもクライアントは照合材料にしない(§6.6 (1))。この現メンバー検査は本ファイルの検証ベクターの外(実装テスト — session-27 §13-5)",
+  "binary_encoding": "the chain-head hash goes into LP as a lowercase hex string (the same convention as chain-entries.json's binary_encoding). Numbers (chain_head_seq) are decimal-stringified. No timestamp or nonce is signed (§6.6 — the semantics is attribution, not a freshness proof)",
+  "chain_reference": "chain-entries.json: project_id = the genesis entry hash, chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex, attester keys = keys",
+  "distribution_note": "removed-attester-in-tenure is a positive that passes §6.6's verification (signature, membership at the attested-head time), but because the attester is not a current member it is outside the distribution targets (the server deletes the attestation row when accepting remove_member — §6.4), and even if distributed a client does not use it as comparison material (§6.6 (1)). This current-member check is outside this file's verification vectors (implementation test — session-27 §13-5)",
   "vectors": [
     {
       "name": "basic",
@@ -25,7 +25,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303030310000004034316135613630653936393439303234633061356436373735376438666437656463643932666332323235656363346165376536626562653562616339636264000000023234",
       "signed_bytes_sha256_hex": "54a3f4ca9d0215d1d45e4aec8a5ad7b3e7e0feb0a6df7953a528fac8fd373236",
       "signature_hex": "572625607415f5eec53393502cd98510dbd537dedf3371137240ec6773d111c49a9c011fac8b72ddf45906b2d500d6de4f8d77482a4766cb52d4ade03568e509",
-      "note": "基本形: owner が現ヘッド(seq 24)を申告する。§6.6 の全検証(署名・ヘッド束縛・申告ヘッド時点の在籍)を通る"
+      "note": "the basic form: the owner attests the current head (seq 24). Passes all §6.6 checks (signature, head binding, membership at the attested-head time)"
     },
     {
       "name": "reader-attestation",
@@ -41,7 +41,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d61646d696e2d3030303300000040616335343838326238326633366661363235353931663738396539316436666334313832393935353666316439646635366562626537636233613963363562310000000136",
       "signed_bytes_sha256_hex": "243b377dc78302e1b3353debb605a7bbefe1c21de9e7082198198d3640abc519",
       "signature_hex": "30c75f3ac88e34014af7f49e05648341743c74d4fd9db371e8bfefb9903d968f22ef66b0d32b0730cd8ba64b559fe793714c3f42136740f04933bd5fca00c00a",
-      "note": "reader の申告: head 6 時点の user-admin-0003 は reader(change_role は seq 7)。申告は reader を含む全メンバーが提出できる(§6.3 ヘッドゴシップ / §6.6 — 必要 role の下限は reader)"
+      "note": "a reader's attestation: at head 6, user-admin-0003 is a reader (the change_role is seq 7). An attestation can be submitted by every member including readers (§6.3 head gossip / §6.6 — the lower bound of the required role is reader)"
     },
     {
       "name": "removed-attester-in-tenure",
@@ -57,7 +57,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e000000403234353366333439343334363363303437316136653638313739633561356139373864633061306139633936626662386230646534616664303064633639363900000010757365722d6d656d6265722d3030303200000040636335313235356136333136643333663265343734323633343961396638353539616235363530613434643364373731333134346537313932666539613664340000000134",
       "signed_bytes_sha256_hex": "464694432bd412d1054f056950c62b77a42ebb6788677560184017e6e4847a32",
       "signature_hex": "0cc52fa17e23ecd2a4a3e67d66f418967ff06563c3a474476094c00dcb18e90ea92a5855965220daa73cc0df4483743a3c9f94ad82c93573200cdb67b20f2f02",
-      "note": "seq 5 で削除済みの attester による在籍区間内(head 4)の過去申告。§6.6 の署名・ヘッド時点検証は通る(検証鍵は当時の鍵 — チェーンは鍵履歴を保持する)が、attester は現メンバーでないため配布対象外(サーバーは remove_member 受理時に申告行を削除 — §6.4)であり、配布されてもクライアントは照合材料にしない(§6.6 (1) — 現メンバー検査)。この二層の意図をベクターで固定する"
+      "note": "a past attestation inside the membership interval (head 4) by an attester removed at seq 5. It passes §6.6's signature and head-time verification (the verify key is the key of that time — the chain keeps key history), but because the attester is not a current member it is outside the distribution targets (the server deletes the attestation row when accepting remove_member — §6.4), and even if distributed a client does not use it as comparison material (§6.6 (1) — the current-member check). This vector pins that two-layer intent"
     },
     {
       "name": "phone-attestation",
@@ -73,7 +73,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303030310000004065353037623532396136623036353937666330663034363362303964376339613636623931396661663736326133393963396536656562653934353366386361000000023333",
       "signed_bytes_sha256_hex": "f4875cd039d2d4fa0949d62c2ce28bed896749f933f559daa6883e592ca79767",
       "signature_hex": "75ff4d908df4c6e9c9d8cdeb387b19c207182d5a0ea4665b8406996cae53f1776c720a08e87c070c6b808e2f9b8b04961c19416e83880ea49405f61726af1c05",
-      "note": "第 2 端末の正例: owner-0001 の電話 P(cap (owner, listed{}) — DEK を受け取らない票だけの端末)が有効区間内のヘッド(33)を申告する。申告は端末ごと(AUTH_SPEC §16-1)",
+      "note": "a second-device positive: owner-0001's phone P (cap (owner, listed{}) — a vote-only device that receives no DEK) attests a head (33) inside its validity interval. Attestations are per-device (AUTH_SPEC §16-1)",
       "chain": "device-ops"
     },
     {
@@ -90,7 +90,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303031350000004062326637353430373539633764303433343737616236376664333834346363613337383963306663373264616463626136643538303330623635396264643861000000023337",
       "signed_bytes_sha256_hex": "a8d4eb8348f0bcb8913f8dcd04d8e46f99aacd4926766becfa60486e5d38d577",
       "signature_hex": "25af071489e08197ff93cdd726ad8e5ba670a626298b8e0a21cc917f55b1c8f72404cc08fc90a19e5dae99b123224bc17d7c3be082cb0b0ba830f7236fd0870b",
-      "note": "cap (reader, all) の端末 L による現ヘッド(37)の申告: 申告の必要 role の下限は reader なので、実効 role reader の端末でも申告できる",
+      "note": "an attestation of the current head (37) by the cap-(reader, all) device L: the lower bound of an attestation's required role is reader, so a device with effective role reader can attest",
       "chain": "device-ops"
     }
   ],
@@ -110,7 +110,7 @@
       "signature_hex": "572625607415f5eec53393502cd98510dbd537dedf3371137240ec6773d111c49a9c011fac8b72ddf45906b2d500d6de4f8d77482a4766cb52d4ade03568e508",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "署名バイト自体の末尾 1 bit 反転は検証に失敗する"
+      "note": "flipping the last 1 bit of the signature bytes themselves fails verification"
     },
     {
       "name": "transplant-project",
@@ -127,7 +127,7 @@
       "signature_hex": "572625607415f5eec53393502cd98510dbd537dedf3371137240ec6773d111c49a9c011fac8b72ddf45906b2d500d6de4f8d77482a4766cb52d4ade03568e509",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "別プロジェクトへの申告の移植は署名検証に失敗する(project_id の文脈束縛 — §6.6)"
+      "note": "transplanting an attestation to another project fails signature verification (project_id's context binding — §6.6)"
     },
     {
       "name": "transplant-attester",
@@ -144,7 +144,7 @@
       "signature_hex": "572625607415f5eec53393502cd98510dbd537dedf3371137240ec6773d111c49a9c011fac8b72ddf45906b2d500d6de4f8d77482a4766cb52d4ade03568e509",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "attester_user_id の差し替えは同一鍵でも検証に失敗する(帰属の付け替え対策 — §5.1 の signer_user_id と同型)"
+      "note": "substituting attester_user_id fails verification even under the same key (protects against relabeling attribution — the same form as §5.1's signer_user_id)"
     },
     {
       "name": "wrong-attester-key",
@@ -161,7 +161,7 @@
       "signature_hex": "572625607415f5eec53393502cd98510dbd537dedf3371137240ec6773d111c49a9c011fac8b72ddf45906b2d500d6de4f8d77482a4766cb52d4ade03568e509",
       "verify_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
       "must_fail": true,
-      "note": "attester 以外の鍵では検証に失敗する(FP 付け替えによる別鍵検証の遮断)"
+      "note": "verification fails under a non-attester key (blocks verification under a different key via FP relabeling)"
     },
     {
       "name": "head-seq-mismatch",
@@ -178,7 +178,7 @@
       "signature_hex": "572625607415f5eec53393502cd98510dbd537dedf3371137240ec6773d111c49a9c011fac8b72ddf45906b2d500d6de4f8d77482a4766cb52d4ade03568e509",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "chain_head_seq の差し替え(hash は維持)は署名検証に失敗する(hash と seq の両方が署名対象 — §6.6)"
+      "note": "substituting chain_head_seq (keeping the hash) fails signature verification (both hash and seq are signed — §6.6)"
     },
     {
       "name": "suite-mismatch",
@@ -195,7 +195,7 @@
       "signature_hex": "572625607415f5eec53393502cd98510dbd537dedf3371137240ec6773d111c49a9c011fac8b72ddf45906b2d500d6de4f8d77482a4766cb52d4ade03568e509",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する"
+      "note": "a different suite means a different domain string, so cross-suite signature transplants fail verification"
     },
     {
       "name": "head-not-in-chain",
@@ -216,7 +216,7 @@
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "expected_reason": "chain-head-mismatch",
       "must_fail": true,
-      "note": "seq 24 は自ビューに実在するがハッシュが一致しない = 分岐(equivocation)または偽造の硬い証拠(§6.3-2a / §6.6 の照合 (a) — 当該同期の成果物の使用を中断し、証拠を保存する)"
+      "note": "seq 24 exists in the local view but the hash does not match = hard evidence of a fork (equivocation) or forgery (§6.3-2a / §6.6's comparison (a) — stop using the artifacts of that sync and preserve the evidence)"
     },
     {
       "name": "head-beyond-local-seq",
@@ -237,7 +237,7 @@
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "expected_reason": "chain-head-future",
       "must_fail": true,
-      "note": "seq 25 は自ビューのヘッド(24)より先 = 自分のチェーンが古いだけの可能性(§6.3-2b / §6.6 の照合 (b))。まず有界再同期し、延長として一致すれば正常・解決しなければ (a) と同じ扱い。この理由での即時証拠化は誤り"
+      "note": "seq 25 is beyond the local view's head (24) = the local chain may merely be stale (§6.3-2b / §6.6's comparison (b)). Do a bounded resync first; matching as an extension is normal, unresolved is handled like (a). Immediate evidence-izing on this reason would be wrong"
     },
     {
       "name": "attester-removed-at-head",
@@ -258,7 +258,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "attester-not-member-at-head",
       "must_fail": true,
-      "note": "seq 5 で削除済みの attester が削除後のヘッド(24)を申告する形は拒否する(§6.6 (1) の申告ヘッド時点在籍 — removed-attester-in-tenure との対比で在籍区間の境界を固定する)"
+      "note": "reject the form where an attester removed at seq 5 attests a post-removal head (24) (§6.6 (1)'s membership at the attested-head time — pins the membership-interval boundary by contrast with removed-attester-in-tenure)"
     },
     {
       "name": "attester-device-revoked-at-head",
@@ -279,7 +279,7 @@
       "verify_key_hex": "debaf7c478bfb3b3f0f8ebc58bf11dc3b373c62aa9250db53d663fca965c36ec",
       "expected_reason": "attester-key-mismatch-at-head",
       "must_fail": true,
-      "note": "seq 35 で失効した電話 P が失効後のヘッド(37)を申告する形は attester-key-mismatch-at-head(人〔owner-0001〕は在籍のまま — 端末の有効区間の終了境界)"
+      "note": "an attestation of a post-revocation head (37) by phone P — revoked at seq 35 — is attester-key-mismatch-at-head (the person [owner-0001] stays enrolled — the end boundary of the device's validity interval)"
     }
   ]
 }

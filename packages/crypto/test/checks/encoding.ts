@@ -1,4 +1,4 @@
-// CRYPTO_SPEC §2.1 のエンコーダを test-vectors/encoding.json で固定するチェック。
+// Check pinning the CRYPTO_SPEC §2.1 encoder against test-vectors/encoding.json.
 
 import { decodeHex, encodeLengthPrefixed } from "../../src/index.ts";
 import encodingVectors from "../../test-vectors/encoding.json" with { type: "json" };
@@ -18,16 +18,17 @@ export async function encodingChecks(): Promise<CheckResult[]> {
     c.push(`encoding: ${v.name}`, toHex(encodeLengthPrefixed(v.fields)) === v.expected_hex);
   }
 
-  // 数値は 10 進文字列化と同一バイト列(§2.1)
+  // Numbers produce the same byte string as their decimal stringification (§2.1)
   c.push(
     "encoding: number equals decimal string form",
     toHex(encodeLengthPrefixed(["epoch", 42])) === toHex(encodeLengthPrefixed(["epoch", "42"])),
   );
 
-  // 数値境界(§2.1): 10 進文字列化の対象は非負の安全整数のみ。
-  // 非整数(1.5)・MAX_SAFE_INTEGER + 1(float64 の精度喪失域 — 10 進文字列化が
-  // 一意でない)・負数は TypeError で拒否する(JSON ベクターで表現しない分担は
-  // docs/notes/session-34.md の裁定)
+  // Numeric bounds (§2.1): only non-negative safe integers are subject to
+  // decimal stringification. Non-integers (1.5), MAX_SAFE_INTEGER + 1 (the
+  // float64 precision-loss region — decimal stringification is not unique
+  // there), and negatives are rejected with TypeError (the split that keeps
+  // this out of the JSON vectors is the ruling in docs/notes/session-34.md)
   for (const bad of [1.5, Number.MAX_SAFE_INTEGER + 1, -1]) {
     let rejected = false;
     try {
@@ -37,20 +38,21 @@ export async function encodingChecks(): Promise<CheckResult[]> {
     }
     c.push(`encoding: rejects non-canonical number field (${bad})`, rejected);
   }
-  // 上界の内側(MAX_SAFE_INTEGER 自身)は一意な 10 進文字列化を持ち受理される
+  // The inside of the upper bound (MAX_SAFE_INTEGER itself) has a unique
+  // decimal stringification and is accepted
   c.push(
     "encoding: MAX_SAFE_INTEGER equals its decimal string form",
     toHex(encodeLengthPrefixed([Number.MAX_SAFE_INTEGER])) ===
       toHex(encodeLengthPrefixed([String(Number.MAX_SAFE_INTEGER)])),
   );
 
-  // Uint8Array フィールドはそのまま載る(チェーン正規化の payload_bytes 埋め込みで使う)
+  // Uint8Array fields ride as-is (used for payload_bytes embedding in chain canonicalization)
   c.push(
     "encoding: Uint8Array field embeds raw bytes",
     toHex(encodeLengthPrefixed([new Uint8Array([0xab, 0xcd])])) === "00000002abcd",
   );
 
-  // hex 変換(公開 API): 小文字ラウンドトリップ、不正入力・大文字は null
+  // hex conversion (public API): lowercase round-trip; malformed input and uppercase return null
   c.push("hex: roundtrip", toHex(fromHex("00ff10ab")) === "00ff10ab");
   c.push(
     "hex: malformed rejected",

@@ -1,5 +1,5 @@
 {
-  "description": "CRYPTO_SPEC §5.1: DEK ラップの登録署名(Ed25519)。signed_bytes = LP(\"<suite>/dek-wrap-sig\", project_id, environment_id, epoch, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex, signer_user_id)。ラップ本体は dek-wrap.json の basic ベクターと同一",
+  "description": "CRYPTO_SPEC §5.1: the DEK-wrap registration signature (Ed25519). signed_bytes = LP(\"<suite>/dek-wrap-sig\", project_id, environment_id, epoch, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex, signer_user_id). The wrap body is identical to dek-wrap.json's basic vector",
   "signed_fields_order": [
     "domain",
     "project_id",
@@ -11,20 +11,20 @@
     "ciphertext_hex",
     "signer_user_id"
   ],
-  "binary_encoding": "受信者 enc 公開鍵 / HPKE enc / ラップ暗号文は hex 小文字文字列として LP に載せる(chain-entries.json の binary_encoding と同じ規約)",
+  "binary_encoding": "the recipient enc public key / HPKE enc / wrap ciphertext go into LP as lowercase hex strings (the same convention as chain-entries.json's binary_encoding)",
   "signer": {
     "user_id": "user-owner-0001",
     "sig_sk_seed_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
     "sig_pub_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
     "key_fingerprint_hex": "cebb7acb0fb521016531d3dd80e25e51",
-    "note": "chain-entries.json の user-owner-0001 と同一のダミー鍵"
+    "note": "the same dummy key as chain-entries.json's user-owner-0001"
   },
   "wrong_signer": {
     "user_id": "user-member-0002",
     "sig_pub_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
-    "note": "wrong-signer-key negative 用(chain-entries.json の user-member-0002)"
+    "note": "for the wrong-signer-key negative (chain-entries.json's user-member-0002)"
   },
-  "server_recipient_note": "受信者クラス server(§9 / AUTH_SPEC §12-6。2026-08-12): recipient_user_id 位置にサーバー鍵 FP(hex 小文字)、recipient_enc_pub_hex にサーバー enc 公開鍵。server-basic とその負例が固定する",
+  "server_recipient_note": "recipient class server (§9 / AUTH_SPEC §12-6; 2026-08-12): the recipient_user_id position takes the server key FP (lowercase hex), and recipient_enc_pub_hex the server enc public key. Pinned by server-basic and its negatives",
   "vectors": [
     {
       "suite": "maruhi/v1",
@@ -78,7 +78,7 @@
       "signature_hex": "f806e65ecf80064321247f991d4e869de4a02339bd89aab830fd8e7a07b75722191640997a808e935f14174166ee7eb4821973b680766cd30a1b3125bd434d0b",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "署名バイト自体の末尾 1 bit 反転は検証に失敗する"
+      "note": "flipping the last 1 bit of the signature bytes themselves fails verification"
     },
     {
       "name": "tampered-ciphertext",
@@ -99,7 +99,7 @@
       "signature_hex": "f806e65ecf80064321247f991d4e869de4a02339bd89aab830fd8e7a07b75722191640997a808e935f14174166ee7eb4821973b680766cd30a1b3125bd434d0a",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "ラップ暗号文の末尾 1 bit 反転(毒ラップへの差し替え)は署名検証に失敗する"
+      "note": "flipping the last 1 bit of the wrap ciphertext (substituting a poisoned wrap) fails signature verification"
     },
     {
       "name": "tampered-enc",
@@ -120,7 +120,7 @@
       "signature_hex": "f806e65ecf80064321247f991d4e869de4a02339bd89aab830fd8e7a07b75722191640997a808e935f14174166ee7eb4821973b680766cd30a1b3125bd434d0a",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "HPKE encapsulated key の改竄は署名検証に失敗する"
+      "note": "tampering with the HPKE encapsulated key fails signature verification"
     },
     {
       "name": "transplant-project",
@@ -141,7 +141,7 @@
       "signature_hex": "f806e65ecf80064321247f991d4e869de4a02339bd89aab830fd8e7a07b75722191640997a808e935f14174166ee7eb4821973b680766cd30a1b3125bd434d0a",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "別プロジェクトへの座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant to another project fails signature verification"
     },
     {
       "name": "transplant-environment",
@@ -162,7 +162,7 @@
       "signature_hex": "f806e65ecf80064321247f991d4e869de4a02339bd89aab830fd8e7a07b75722191640997a808e935f14174166ee7eb4821973b680766cd30a1b3125bd434d0a",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "別環境への座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant to another environment fails signature verification"
     },
     {
       "name": "transplant-epoch",
@@ -183,7 +183,7 @@
       "signature_hex": "f806e65ecf80064321247f991d4e869de4a02339bd89aab830fd8e7a07b75722191640997a808e935f14174166ee7eb4821973b680766cd30a1b3125bd434d0a",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "別エポックへの座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant to another epoch fails signature verification"
     },
     {
       "name": "transplant-recipient",
@@ -204,7 +204,7 @@
       "signature_hex": "f806e65ecf80064321247f991d4e869de4a02339bd89aab830fd8e7a07b75722191640997a808e935f14174166ee7eb4821973b680766cd30a1b3125bd434d0a",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "別受信者への座標移植は署名検証に失敗する"
+      "note": "a coordinate transplant to another recipient fails signature verification"
     },
     {
       "name": "recipient-key-mismatch",
@@ -225,7 +225,7 @@
       "signature_hex": "f806e65ecf80064321247f991d4e869de4a02339bd89aab830fd8e7a07b75722191640997a808e935f14174166ee7eb4821973b680766cd30a1b3125bd434d0a",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "受信者 enc 公開鍵の差し替えは署名検証に失敗する(recipient_enc_pub_hex も署名対象)"
+      "note": "substituting the recipient enc public key fails signature verification (recipient_enc_pub_hex is also signed)"
     },
     {
       "name": "wrong-signer-key",
@@ -246,7 +246,7 @@
       "signature_hex": "f806e65ecf80064321247f991d4e869de4a02339bd89aab830fd8e7a07b75722191640997a808e935f14174166ee7eb4821973b680766cd30a1b3125bd434d0a",
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "must_fail": true,
-      "note": "署名者以外の鍵では検証に失敗する(呼び出し主体 = 署名者の受理条件を支える)"
+      "note": "verification fails under a non-signer key (supports the acceptance condition caller = signer)"
     },
     {
       "name": "transplant-signer",
@@ -267,7 +267,7 @@
       "signature_hex": "f806e65ecf80064321247f991d4e869de4a02339bd89aab830fd8e7a07b75722191640997a808e935f14174166ee7eb4821973b680766cd30a1b3125bd434d0a",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "署名者 user_id の差し替えは同一鍵でも検証に失敗する(鍵流用ソック垢への帰属付け替え対策 — §5.1)"
+      "note": "substituting the signer user_id fails verification even under the same key (protects against relabeling attribution onto a key-reused sockpuppet — §5.1)"
     },
     {
       "name": "suite-mismatch",
@@ -288,7 +288,7 @@
       "signature_hex": "f806e65ecf80064321247f991d4e869de4a02339bd89aab830fd8e7a07b75722191640997a808e935f14174166ee7eb4821973b680766cd30a1b3125bd434d0a",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "suite が異なればドメイン文字列が異なり、スイート間の署名移植は検証に失敗する"
+      "note": "a different suite means a different domain string, so cross-suite signature transplants fail verification"
     },
     {
       "name": "server-transplant-recipient-class",
@@ -309,7 +309,7 @@
       "signature_hex": "ee2a1e9cab7be187c300be959fac7b393d760981235962a04e8ab223298c5eaec1f9e1d40214a45a9d2de9eb82dc4205c09ed2699fe260e90891a901210b8a0f",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "recipient 位置をサーバー鍵 FP からメンバー user_id へ差し替えると署名検証に失敗する(受信者クラス間の移植拒否 — §9)"
+      "note": "substituting a member user_id into the recipient position in place of the server key FP fails signature verification (refusing a transplant across recipient classes — §9)"
     },
     {
       "name": "server-transplant-fp",
@@ -330,7 +330,7 @@
       "signature_hex": "ee2a1e9cab7be187c300be959fac7b393d760981235962a04e8ab223298c5eaec1f9e1d40214a45a9d2de9eb82dc4205c09ed2699fe260e90891a901210b8a0f",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "別サーバー鍵の FP への差し替えは署名検証に失敗する"
+      "note": "substituting another server key's FP fails signature verification"
     },
     {
       "name": "server-recipient-key-mismatch",
@@ -351,7 +351,7 @@
       "signature_hex": "ee2a1e9cab7be187c300be959fac7b393d760981235962a04e8ab223298c5eaec1f9e1d40214a45a9d2de9eb82dc4205c09ed2699fe260e90891a901210b8a0f",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "サーバー enc 公開鍵の差し替え(メンバー鍵へ)は署名検証に失敗する(recipient_enc_pub_hex も署名対象)"
+      "note": "substituting the server enc public key (with a member key) fails signature verification (recipient_enc_pub_hex is also signed)"
     }
   ]
 }
