@@ -206,8 +206,7 @@ export const acceptEnvManifest = (input: {
   Effect.gen(function* () {
     const store = yield* DataStore;
     const anchor = yield* store.environmentManifestAnchor(input.environmentId);
-    // CAS(§12-5 (6)): 申告 == 最新 + 1 のみ。マニフェスト導入前に作成された
-    // 環境は行なし(最新 0)から v1 を確立する(移行手順 — session-27 §14)
+    // CAS(§12-5 (6)): 申告 == 最新 + 1 のみ。行なし(環境作成)は最新 0 から v1
     const latestVersion = anchor?.manifestVersion ?? 0;
     if (input.manifest.manifestVersion !== latestVersion + 1) {
       return yield* rejectData({

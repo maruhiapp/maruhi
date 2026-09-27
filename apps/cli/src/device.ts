@@ -349,12 +349,9 @@ function projectList(projectIds: readonly string[]): string {
 
 /**
  * The branch when an existing key has no live request (DK K13-2 — the
- * design record §18 table). exit 0 only for "a valid key added via
- * `add_device` on some project" (since pre-DK keys can also become
- * `add_device` via a registration from an observation record, a first key
- * defers to a human — hole 1). With zero valid, stop in the order: could
- * not sync → revoked somewhere → on nothing, stating the assertion's
- * range.
+ * design record §18 table). If valid anywhere, exit 0 as registered. With
+ * zero valid, stop in the order: could not sync → revoked somewhere → on
+ * nothing, stating the assertion's range.
  */
 function settleExistingKey(
   input: { readonly session: CliSession; readonly client: MaruhiClient },
@@ -370,7 +367,7 @@ function settleExistingKey(
   });
 }
 
-/** An existing key with a valid project: a first key stops with 2 choices; otherwise report and exit 0. */
+/** An existing key with a valid project: report it as registered and exit 0. */
 function reportActiveKey(
   client: MaruhiClient,
   keys: MasterKeys,
@@ -379,14 +376,6 @@ function reportActiveKey(
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const fingerprintHex = keys.fingerprintHex;
-    const first = groups.active.filter((project) => project.standing.firstKey);
-    if (first.length > 0) {
-      return yield* Effect.fail(
-        cliError(
-          `This machine's device key (${fingerprintHex}) is your first key on ${projectList(first.map((project) => project.projectId))} (the key you created or joined that project with), and it has no pending device-add request. maruhi cannot tell whether this machine is the device that key belongs to or holds a copy of it from an install before device keys. If this machine is that device, nothing is needed: it is already registered. If it holds a copy, re-run with --replace: it generates a new key for this machine and prints its fingerprint to approve from a registered device (the machine the copy came from keeps its key). Do not pass --replace if this is your only device`,
-        ),
-      );
-    }
     yield* io.log(`This device's key fingerprint: ${fingerprintHex}`);
     yield* io.log(
       `This key is registered on ${countNoun(groups.active.length, "project")} (verified on each project's chain)${describeUnchecked(groups)}`,
@@ -604,14 +593,9 @@ function describeReplacedKey(input: {
     const fingerprintHex = loaded.success.fingerprintHex;
     const standings = yield* keyStandingsOf({ ...input, fingerprintHex });
     const groups = groupStandings(standings);
-    const added = groups.active.filter((project) => !project.standing.firstKey);
-    const first = groups.active.filter((project) => project.standing.firstKey);
     const parts = [
-      added.length > 0
-        ? `registered on ${projectList(added.map((project) => project.projectId))}`
-        : null,
-      first.length > 0
-        ? `registered on ${projectList(first.map((project) => project.projectId))} as your first key there`
+      groups.active.length > 0
+        ? `registered on ${projectList(groups.active.map((project) => project.projectId))}`
         : null,
       groups.revoked.length > 0 ? `revoked on ${groups.revoked.map(displayText).join(", ")}` : null,
       groups.unsynced.length > 0
@@ -2094,9 +2078,9 @@ function proposeTokenRevocation(input: {
 function describeToken(token: {
   readonly id: string;
   readonly name: string;
-  readonly expiresAtMs: number | null;
+  readonly expiresAtMs: number;
 }): string {
-  return `${displayText(token.id)} (${displayText(token.name)}, expires ${token.expiresAtMs === null ? "never" : formatUtcMinutes(token.expiresAtMs)})`;
+  return `${displayText(token.id)} (${displayText(token.name)}, expires ${formatUtcMinutes(token.expiresAtMs)})`;
 }
 
 /** Assembling the cap (`--cap <role>` + the scope flags). */

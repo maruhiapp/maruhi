@@ -207,19 +207,15 @@ export const GuardianDeviceShareSchema = Schema.Struct({
 
 /**
  * 自分宛の分片(§13-7 `GET /auth/guardian/shares/:groupId`)。端末軸(2026-09-19 DK
- * K3 — 設計録 dk-design.md §8 K3-10): 従来のフィールドは自分の端末行のうち FP 昇順の
- * 先頭行(端末 1 つなら唯一の行 = 従来どおり)、`deviceShares` は自分の**全端末行**。
- * K4 以降のクライアントは `deviceShares` から手元の端末鍵 FP の行を選ぶ。任意なのは
- * 本追補以前のサーバーが載せないため。
+ * K3 — 設計録 dk-design.md §8 K3-10): `deviceShares` は自分の**全端末行**(FP 昇順)。
+ * クライアントは手元の端末鍵 FP の行を選ぶ。
  */
 export const GuardianShareResultSchema = Schema.Struct({
   groupId: LedgerIdSchema,
   wardUserId: Schema.String,
   mode: GuardianModeSchema,
   shareIndex: Schema.Int,
-  encHex: HpkeEncHex,
-  ciphertextHex: ShareCiphertextHex,
-  deviceShares: Schema.optionalKey(Schema.Array(GuardianDeviceShareSchema)),
+  deviceShares: Schema.Array(GuardianDeviceShareSchema),
 });
 
 /** ハンドオフの request_id(CRYPTO_SPEC §8.4 — SHA-256 hex)。 */

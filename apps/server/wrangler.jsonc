@@ -75,7 +75,12 @@
       "simple": { "limit": 10, "period": 60 },
     },
   ],
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ProjectChainDO"] }],
+  // DO クラスの宣言は exports(wrangler の旧 migrations 配列の後継。一度 exports で
+  // デプロイした Worker は migrations に戻せない)。運営(env.hosted)は 2026-09-26 に
+  // DO 名前空間を削除して作り直した(docs/notes/dk-design.md §22-4)
+  "exports": {
+    "ProjectChainDO": { "type": "durable-object", "storage": "sqlite" },
+  },
   "d1_databases": [
     {
       "binding": "DB",
@@ -155,7 +160,7 @@
           "binding": "DB",
           "database_name": "maruhi",
           // 運営アカウント(maruhi)の実 DB(hosted-ops.md §7 O3 — 2026-09-03 設定。ID は秘密ではない)
-          "database_id": "85cb9161-4aa4-4129-adce-d97e14d2ec55",
+          "database_id": "c45d4f84-3142-46cf-ab3b-c9571ca7eed0",
           "migrations_dir": "drizzle",
           "migrations_pattern": "drizzle/*/migration.sql",
         },

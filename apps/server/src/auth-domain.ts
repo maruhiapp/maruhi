@@ -57,15 +57,14 @@ export interface ApiTokenRecord {
   readonly userId: string;
   readonly tokenHash: string;
   readonly scopes: readonly TokenScope[];
-  readonly expiresAtMs: number | null;
+  readonly expiresAtMs: number;
   readonly lastUsedAtMs: number | null;
 }
 
 /**
  * トークン一覧(AUTH_SPEC §6 — W3a)の 1 行。検証用の ApiTokenRecord と分ける:
  * こちらは配布面であり token_hash を**構造ごと持たない**(誤って応答へ写す経路を
- * 型で塞ぐ)。expiresAtMs の null は移行(裁定 CE)前の旧無期限行で、検証時には
- * 期限切れと同じ扱い(fail-closed — token.ts の toPrincipal)。
+ * 型で塞ぐ)。
  */
 export interface ApiTokenSummary {
   readonly id: string;
@@ -74,7 +73,7 @@ export interface ApiTokenSummary {
   readonly scopes: readonly TokenScope[];
   readonly createdAtMs: number;
   readonly lastUsedAtMs: number | null;
-  readonly expiresAtMs: number | null;
+  readonly expiresAtMs: number;
 }
 
 /**

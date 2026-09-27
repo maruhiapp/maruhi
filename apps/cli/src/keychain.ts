@@ -76,10 +76,9 @@ export interface StoredToken {
   /**
    * Expiry fixed at issuance (AUTH_SPEC §6 — W3a). Non-sensitive metadata
    * used for the early expiry warning (W3a ruling CL — a local check with no
-   * traffic). Absent from records written by logins before W3a (missing =
-   * behaves as before with no warning; added on re-login).
+   * traffic).
    */
-  readonly expiresAtMs?: number;
+  readonly expiresAtMs: number;
 }
 
 /**
@@ -196,14 +195,12 @@ function storedRecordPlaceholderCause(kind: KeychainKind): string {
  * Wording when the placeholder was stored in a token record.
  *
  * Split because the recovery means **differ by record kind**. Since
- * `maruhi login` overwrites a token unconditionally, a record written by an
- * old build is fixed by re-login (asserting it cannot be fixed would shut the
- * user out of the only single-command recovery). But if the bug remains in
- * the current version, rewriting stores the same placeholder again — so the
- * text also says a recurrence is itself evidence.
+ * `maruhi login` overwrites a token unconditionally, re-login fixes it. If a
+ * bug remains, rewriting stores the same placeholder again — so the text
+ * also says a recurrence is itself evidence.
  */
 export function redactedPlaceholderTokenMessage(kind: KeychainKind): string {
-  return `${storedRecordPlaceholderCause(kind)}. If an older maruhi wrote the record, \`maruhi login\` overwrites it correctly. If it recurs after re-login, the bug is in the current version — report it`;
+  return `${storedRecordPlaceholderCause(kind)}. \`maruhi login\` overwrites it. If it recurs after re-login, it is a maruhi bug — report it`;
 }
 
 /**
@@ -453,17 +450,15 @@ export function parseStoredToken(json: string): StoredToken | null {
       nonEmptyString(value["token"]) &&
       !isRedactedPlaceholder(value["token"]) &&
       nonEmptyString(value["userId"]) &&
-      nonEmptyString(value["tokenId"])
+      nonEmptyString(value["tokenId"]) &&
+      typeof value["expiresAtMs"] === "number" &&
+      Number.isFinite(value["expiresAtMs"])
     ) {
-      // expiresAtMs is optional for backward compatibility (W3a ruling CL):
-      // missing or non-numeric values fold into "unknown" (the warning simply
-      // does not appear; the record is not treated as corrupt)
-      const expiresAtMs = value["expiresAtMs"];
       return {
         token: Redacted.make(value["token"], { label: "maruhi-token" }),
         userId: value["userId"],
         tokenId: value["tokenId"],
-        ...(typeof expiresAtMs === "number" && Number.isFinite(expiresAtMs) ? { expiresAtMs } : {}),
+        expiresAtMs: value["expiresAtMs"],
       };
     }
     return null;
@@ -486,7 +481,7 @@ export function serializeStoredToken(record: StoredToken): string {
     token: Redacted.value(record.token),
     userId: record.userId,
     tokenId: record.tokenId,
-    ...(record.expiresAtMs === undefined ? {} : { expiresAtMs: record.expiresAtMs }),
+    expiresAtMs: record.expiresAtMs,
   });
 }
 

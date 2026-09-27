@@ -94,7 +94,7 @@ export async function makeFourEyesServer(input: {
   const handlers: MockHandler[] = [
     onRequest("GET", "/auth/config", () => ({
       status: 200,
-      json: input.authConfig ?? { githubClientId: "dummy-client-id" },
+      json: input.authConfig ?? { githubClientId: "dummy-client-id", signupPolicy: "open" },
     })),
     onRequest("GET", `/projects/${projectId}/chain`, () =>
       servedChainResponse(projectId, entries, hashes),
@@ -128,6 +128,7 @@ export async function makeFourEyesServer(input: {
           currentEpoch: environments[statement.environmentId]?.currentEpoch ?? 1,
           statement,
         })),
+        schemaPolicy: "enabled",
       },
     })),
     async (request) => {
@@ -166,6 +167,7 @@ export async function makeFourEyesServer(input: {
           deks: environment.deks,
           manifest,
           ...(checkpointSnapshot === undefined ? {} : { checkpointSnapshot }),
+          schemaPolicy: "enabled" as const,
         },
       };
     },
@@ -204,6 +206,7 @@ export async function makeFourEyesServer(input: {
         environment.deks.push({
           suite: wrap.suite,
           epoch: wrap.epoch,
+          recipientEncPubHex: wrap.recipientEncPubHex,
           encHex: wrap.encHex,
           ciphertextHex: wrap.ciphertextHex,
           signatureHex: wrap.signatureHex,

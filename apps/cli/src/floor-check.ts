@@ -80,12 +80,8 @@ export interface VerifiedPullSnapshot {
    */
   readonly declared: readonly VerifiedVariableStatement[];
   readonly tombstones: readonly VerifiedTombstone[];
-  /**
-   * The verified manifest (§4.3). null only when the migration path
-   * (--init-manifest) permitted the omission — on the normal path values.ts
-   * has already refused an omission before the floor check.
-   */
-  readonly manifest: VerifiedManifest | null;
+  /** The verified manifest (§4.3 — values.ts has already refused an omission before the floor check). */
+  readonly manifest: VerifiedManifest;
 }
 
 /**
@@ -232,13 +228,6 @@ export type FloorViolation =
       readonly pulled: VerifiedManifest;
     }
   | {
-      // The shape where no manifest is distributed after a manifest floor was
-      // established (even under --init-manifest's omission tolerance, an
-      // omission against an established floor is evidence of suppression)
-      readonly kind: "manifest-omitted";
-      readonly floor: ManifestFloor;
-    }
-  | {
       // Rule (c) applied to manifests (§6.3): a distribution whose manifest is
       // newer than the floor's manifest_version but whose epoch is below the
       // pull-time epoch baseline
@@ -277,8 +266,6 @@ export function floorViolationLabel(violation: FloorViolation): string {
       return "an environment-manifest rollback";
     case "manifest-equivocation":
       return "different signed bytes served for the same manifestVersion (evidence of equivocation)";
-    case "manifest-omitted":
-      return "omission of the environment manifest after one was verified (manifest suppression)";
     case "stale-manifest-injection":
       return "an advanced manifestVersion below the epoch baseline (evidence of forward meta injection with an old epoch key)";
   }
@@ -364,24 +351,17 @@ function checkMetaAgainstFloor(
 }
 
 /**
- * The manifest floor check (the manifest part of rules (a)(b) + omission
- * after establishment). If the floor has no manifest record (a floor from
- * before manifests were introduced) there is nothing to check — establishing
- * the record is the job of the floor commit after verification succeeds.
+ * The manifest floor check (the manifest part of rules (a)(b)). If the floor
+ * has no manifest record there is nothing to check — establishing the record
+ * is the job of the floor commit after verification succeeds.
  */
 function checkManifestAgainstFloor(
   floor: EnvironmentFloor,
-  manifest: VerifiedManifest | null,
+  manifest: VerifiedManifest,
 ): FloorViolation | null {
   const manifestFloor = floor.manifest;
   if (manifestFloor === undefined) {
     return null;
-  }
-  if (manifest === null) {
-    // An omission against an established manifest floor is evidence of
-    // suppression even under the migration path's (--init-manifest) tolerance
-    // (an initialized environment's manifest does not disappear)
-    return { kind: "manifest-omitted", floor: manifestFloor };
   }
   if (manifest.manifestVersion < manifestFloor.manifestVersion) {
     return { kind: "manifest-rollback", floor: manifestFloor, pulled: manifest };
@@ -423,11 +403,8 @@ function checkManifestAgainstFloor(
  */
 function checkManifestEpochBaseline(
   floor: EnvironmentFloor,
-  manifest: VerifiedManifest | null,
+  manifest: VerifiedManifest,
 ): FloorViolation | null {
-  if (manifest === null) {
-    return null;
-  }
   const floorVersion = floor.manifest?.manifestVersion ?? 0;
   const baselineEpoch = Math.max(floor.pullEpoch, floor.observedEpoch, floor.manifest?.epoch ?? 0);
   if (manifest.manifestVersion > floorVersion && manifest.epoch < baselineEpoch) {
@@ -744,15 +721,11 @@ export function buildEnvironmentFloor(
     observedEpoch: chainCurrentEpoch,
     metaVersion: snapshot.environment.metaVersion,
     metaSigHashHex: snapshot.environment.metaSigHashHex,
-    ...(snapshot.manifest === null
-      ? {}
-      : {
-          manifest: {
-            manifestVersion: snapshot.manifest.manifestVersion,
-            epoch: snapshot.manifest.epoch,
-            manifestSigHashHex: snapshot.manifest.signedBytesHashHex,
-          },
-        }),
+    manifest: {
+      manifestVersion: snapshot.manifest.manifestVersion,
+      epoch: snapshot.manifest.epoch,
+      manifestSigHashHex: snapshot.manifest.signedBytesHashHex,
+    },
     variables,
   };
 }

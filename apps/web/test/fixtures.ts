@@ -160,6 +160,7 @@ const environmentStatement = {
 
 export const environmentsFixture: EnvironmentList = {
   environments: [{ environmentId: "production", currentEpoch: 1, statement: environmentStatement }],
+  schemaPolicy: "disabled",
 };
 
 export const metadataPullFixture: EnvironmentMetadataPull = {
@@ -174,6 +175,7 @@ export const metadataPullFixture: EnvironmentMetadataPull = {
     },
   ],
   deletedVariables: [],
+  schemaPolicy: "disabled",
 };
 
 // admin 可視の project DO 応答(seq あり — AUDIT_SPEC §7)。端末 2 事件(AUDIT_SPEC §3.4 —
@@ -247,6 +249,7 @@ export const rotationFlagsFixture: RotationFlagList = {
       targetUserId: "user_colleague",
       recommendedAtMs: 1_756_000_300_000,
       triggerChainSeq: 3,
+      trigger: "remove_member",
     },
     // 端末失効の変種(AUDIT_SPEC §4.1 — DK): trigger = revoke_device、対象は人(FP は運ばない)
     {
@@ -360,17 +363,6 @@ export const tokensFixture: TokenList = {
       createdAtMs: 1_756_000_000_000,
       lastUsedAtMs: null,
       expiresAtMs: PAST_MS,
-    },
-    // 移行(AUTH_SPEC §6 裁定 CE)前の旧無期限行 — 検証側は期限切れ扱い
-    // (fail-closed)。表示は Expired + no expiry recorded(裁定 CQ)
-    {
-      id: "tok-legacy",
-      name: "legacy",
-      tokenPrefix: "maruhi_pat_qrstuvwx",
-      scopes: [],
-      createdAtMs: 1_756_000_000_000,
-      lastUsedAtMs: null,
-      expiresAtMs: null,
     },
   ],
 };

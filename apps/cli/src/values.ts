@@ -132,12 +132,8 @@ export interface VerifiedEnvironmentPull {
   readonly tombstones: readonly VerifiedTombstone[];
   /** The verified environment meta-statement (the envMeta material for manifest issuance). */
   readonly environment: VerifiedMetaEvidence;
-  /**
-   * The verified manifest (§4.3). null only when the migration path
-   * (allowMissingManifest) permitted the omission — an omission on the
-   * normal path is already refused (§6.3).
-   */
-  readonly manifest: VerifiedManifest | null;
+  /** The verified manifest (§4.3 — an omission is already refused, §6.3). */
+  readonly manifest: VerifiedManifest;
   /** The wraps addressed to me (verification is the §5.1 / §5.2 path of deks.ts). */
   readonly deks: readonly RecipientDek[];
   /** SHOULD warnings such as a distributed non-NFC name (displayed by the caller). */
@@ -502,11 +498,10 @@ interface PullWire {
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
   /**
    * The latest statements of declared variables (§12-7 — no value or
-   * version exists). Absent = no declared (an optionalKey doubling as
-   * decode compatibility with old server responses).
+   * version exists). Absent = no declared.
    */
   readonly declaredVariables?: readonly DistributedVariableMetaStatement[] | undefined;
-  /** The latest manifest (§12-7 — omission is unconditionally refused, §6.3. optional only for the migration's transitional state). */
+  /** The latest manifest (§12-7 — omission is unconditionally refused, §6.3). */
   readonly manifest?: DistributedEnvironmentManifest | undefined;
   /**
    * The enumeration of value snapshots at the checkpoint (§12-7 — rule
@@ -829,42 +824,22 @@ function verifyStage<T>(
 }
 
 /**
- * The manifest stage (§4.3 / §6.3): omission = unconditional refusal (the
- * only exception is the migration path's allowMissingManifest —
- * manifest.ts's module comment). When distributed, the digest is
- * recomputed from every verified statement (tombstones included) and
- * compared.
+ * The manifest stage (§4.3 / §6.3): omission = unconditional refusal. When
+ * distributed, the digest is recomputed from every verified statement
+ * (tombstones included) and compared.
  */
 function verifyManifestStage(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly manifest: DistributedEnvironmentManifest | undefined;
-  readonly allowMissingManifest: boolean;
   readonly entries: readonly ManifestDigestEntry[];
   readonly environment: VerifiedMetaEvidence;
   /** The floor's manifest record (the predecessor of the adjacent prev verification — M1-A1. null when there is no floor). */
   readonly floorManifest: ManifestFloor | null;
-}): Effect.Effect<StageResult<VerifiedManifest | null>, CliError> {
+}): Effect.Effect<StageResult<VerifiedManifest>, CliError> {
   const wireManifest = input.manifest;
   if (wireManifest === undefined) {
-    if (!input.allowMissingManifest) {
-      return Effect.fail(cliError(missingManifestMessage(input.environmentId)));
-    }
-    // The migration allowance (--init-manifest) exists for "an environment
-    // whose manifest was never initialized". An environment that has a
-    // baseline checkpoint on the verified chain always carries a manifest
-    // (the checkpoint tuple binds manifest_version — §6.2 / §12-4), so its
-    // omission is refused as evidence of suppression even under the
-    // migration operation (the chain-derived version of refusing an
-    // omission after the floor's manifest record is established — §6.3)
-    if (input.verified.history.latestCheckpointFor(input.environmentId) !== undefined) {
-      return Effect.fail(
-        evidenceError(
-          `The server did not distribute an environment manifest for ${input.environmentId}, although the verified chain carries a checkpoint binding one (manifest suppression — CRYPTO_SPEC §6.3). The migration allowance does not apply to a checkpointed environment`,
-        ),
-      );
-    }
-    return Effect.succeed({ kind: "ok", value: null } as const);
+    return Effect.fail(cliError(missingManifestMessage(input.environmentId)));
   }
   return verifyStage(
     () =>
@@ -896,11 +871,9 @@ function verifyManifestStage(input: {
  * value-bearing response — empty in metadata-only mode where they are
  * mixed into variables) → tombstones → the name check → **the manifest**
  * (digest recomputation and epoch agreement — §4.3. omission =
- * unconditional refusal; the only exception is the migration path's
- * allowMissingManifest — manifest.ts's module comment). The digest
- * recomputation set is every statement of variables ∪ declared ∪ deleted.
- * A future at any stage makes the whole thing future (the bounded-resync
- * entry).
+ * unconditional refusal). The digest recomputation set is every statement
+ * of variables ∪ declared ∪ deleted. A future at any stage makes the whole
+ * thing future (the bounded-resync entry).
  */
 function verifyAllCommon<T extends { readonly variableId: string; readonly name: string }>(
   verified: VerifiedProject,
@@ -916,8 +889,6 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
   >,
   /** One verified active → the variables_digest entry (the recomputation material of §4.3 (3)). */
   digestEntryOf: (value: T) => ManifestDigestEntry,
-  /** True only for the migration path (--init-manifest) — an omission allowance, not a verification relaxation. */
-  allowMissingManifest: boolean,
   /** The floor's manifest record (the adjacent prev verification — M1-A1. Paths with no floor pass null). */
   floorManifest: ManifestFloor | null,
 ): Effect.Effect<
@@ -927,7 +898,7 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
       readonly variables: readonly T[];
       readonly declared: readonly VerifiedVariableStatement[];
       readonly tombstones: readonly VerifiedTombstone[];
-      readonly manifest: VerifiedManifest | null;
+      readonly manifest: VerifiedManifest;
       readonly warnings: readonly string[];
     }
   | { readonly kind: "future" },
@@ -981,7 +952,6 @@ function verifyAllCommon<T extends { readonly variableId: string; readonly name:
       verified,
       environmentId,
       manifest: pull.manifest,
-      allowMissingManifest,
       entries: [
         ...actives.value.values.map(digestEntryOf),
         ...declared.value.values.map((statement) => ({
@@ -1019,7 +989,6 @@ function verifyAll(
   verified: VerifiedProject,
   environmentId: string,
   pull: PullWire,
-  allowMissingManifest: boolean,
   floorManifest: ManifestFloor | null,
   /**
    * The head seq of the view **at the moment the response was fetched**
@@ -1051,7 +1020,6 @@ function verifyAll(
         metaVersion: value.metaVersion,
         metaSigHashHex: value.metaSignedBytesHashHex,
       }),
-      allowMissingManifest,
       floorManifest,
     );
     if (result.kind === "future") {
@@ -1115,11 +1083,8 @@ function verifyAll(
  */
 function resolveMetaIntents(
   floor: FloorHandle,
-  manifest: VerifiedManifest | null,
+  manifest: VerifiedManifest,
 ): Effect.Effect<void, CliError> {
-  if (manifest === null) {
-    return Effect.void;
-  }
   return Effect.forEach(
     floor.unresolvedIntents().filter((intent) => intent.op === "meta-op"),
     (intent) => {
@@ -1279,13 +1244,6 @@ export function pullVerifiedEnvironment(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   /** The local floor (§6.3). Carries the check (rules (a)(b)(c)) and the atomic commit after verification succeeds. */
   readonly floor: FloorHandle;
-  /**
-   * Allowing a manifest **omission** (the migration path `maruhi env
-   * rotate --init-manifest` only). Verification when distributed is not
-   * relaxed. Default false = an omission is unconditionally refused
-   * (§6.3).
-   */
-  readonly allowMissingManifest?: boolean;
 }): Effect.Effect<VerifiedEnvironmentPull, CliError> {
   return Effect.map(
     pullWithBoundedResync({
@@ -1301,7 +1259,6 @@ export function pullVerifiedEnvironment(input: {
           view,
           input.environmentId,
           wire,
-          input.allowMissingManifest === true,
           // The adjacent-version prev verification (M1-A1): the floor's manifest record is passed as the predecessor
           input.floor.current()?.manifest ?? null,
           // The response was fetched under input.verified's view (even on
@@ -1389,7 +1346,6 @@ export function verifyLeaseDistribution(input: {
       input.verified,
       input.environmentId,
       input.wire,
-      false,
       null,
       input.verified.state.headSeq,
     );
@@ -1433,13 +1389,12 @@ export interface VerifiedEnvironmentMetadata {
   /** The verified manifest (omission already refused — no migration tolerance on a metadata-only pull). */
   readonly manifest: VerifiedManifest;
   /**
-   * The server-claimed schemaPolicy (§12-7 / §12-11 — advisory). null =
-   * an old server (not claiming). **Never an input to a verification
-   * rule** — its only use is UX (advance guidance for schema set). An
-   * unsigned claimed value, so this structure carrying the verified name
-   * marks it advisory explicitly.
+   * The server-claimed schemaPolicy (§12-7 / §12-11 — advisory). **Never an
+   * input to a verification rule** — its only use is UX (advance guidance
+   * for schema set). An unsigned claimed value, so this structure carrying
+   * the verified name marks it advisory explicitly.
    */
-  readonly advisorySchemaPolicy: SchemaPolicy | null;
+  readonly advisorySchemaPolicy: SchemaPolicy;
   readonly warnings: readonly string[];
 }
 
@@ -1496,8 +1451,8 @@ interface MetadataPullWire {
   readonly variables: readonly DistributedVariableMetaStatement[];
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
   readonly manifest?: DistributedEnvironmentManifest;
-  /** The advisory bundling of schemaPolicy (§12-7 — absent = an old server). */
-  readonly schemaPolicy?: SchemaPolicy;
+  /** The advisory bundling of schemaPolicy (§12-7). */
+  readonly schemaPolicy: SchemaPolicy;
 }
 
 /** The verified intermediate value of a metadata-only pull (pullWithBoundedResync's TVerified). */
@@ -1520,7 +1475,7 @@ function verifyAllMetadata(
       readonly environment: VerifiedMetaEvidence;
       readonly variables: readonly VerifiedVariableStatement[];
       readonly tombstones: readonly VerifiedTombstone[];
-      readonly manifest: VerifiedManifest | null;
+      readonly manifest: VerifiedManifest;
       readonly warnings: readonly string[];
     }
   | { readonly kind: "future" },
@@ -1543,7 +1498,6 @@ function verifyAllMetadata(
       metaVersion: statement.metaVersion,
       metaSigHashHex: statement.metaSigHashHex,
     }),
-    false,
     floorManifest,
   );
 }
@@ -1658,12 +1612,6 @@ export function pullVerifiedEnvironmentMetadata(input: {
               if (result.kind === "future") {
                 return Effect.succeed({ kind: "future" as const });
               }
-              // verifyAllCommon without allowMissing already refused an
-              // omission — null is a leftover on the type side
-              // (structurally unreachable), so fail it explicitly
-              if (result.manifest === null) {
-                return Effect.fail(cliError(missingManifestMessage(input.environmentId)));
-              }
               return Effect.succeed({
                 kind: "ok" as const,
                 value: {
@@ -1696,8 +1644,8 @@ export function pullVerifiedEnvironmentMetadata(input: {
       tombstones: value.tombstones,
       environment: value.environment,
       manifest: value.manifest,
-      // advisory (§12-11): an unverified claimed value — UX use only (absent = an old server)
-      advisorySchemaPolicy: wire.schemaPolicy ?? null,
+      // advisory (§12-11): an unverified claimed value — UX use only
+      advisorySchemaPolicy: wire.schemaPolicy,
       warnings: value.warnings,
     }),
   );

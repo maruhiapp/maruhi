@@ -228,7 +228,7 @@ export function loadCheckedFloor(
       // is not left silent: if the dropped line was the latest head / manifest
       // observation, the detection material at that coordinate is one
       // generation thinner until the next verified observation (the same
-      // visibility level as the old storage format's corrupt warning)
+      // visibility level as the corrupt warning for whole-log corruption)
       yield* logWarning(
         `${loaded.droppedRecords} record(s) in the local floor log could not be decoded and were skipped (a torn write from an interrupted process is self-healing, but if you do not recognize an interruption, the log may have been damaged). Rollback detection for the affected coordinates resumes from the next verified observation`,
       );

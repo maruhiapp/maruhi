@@ -101,17 +101,13 @@ export function redirectToGitHubAuthorize(
  * secret を欠いたデプロイでは実行時に undefined になり得る)。素通しすると
  * GitHub のエラーページや不透明なトークン交換失敗(AuthFlow 400)に落ちて
  * 原因に辿り着けないため、503 でセットアップガイド(docs/SELF_HOSTING.md)へ
- * 誘導する。プレースホルダ検出は旧テンプレート(client_id を wrangler vars で
- * 配布していた時期)のフォークが値未置換のまま立てた場合への後方互換の防御。
+ * 誘導する。
  */
-const CLIENT_ID_PLACEHOLDER = "replace-with-your-github-oauth-app-client-id";
-
 export function ensureGitHubOAuthConfigured(
   clientId: string | undefined,
   clientSecret: string | undefined,
 ): Effect.Effect<void, SetupIncompleteError> {
-  const clientIdMissing =
-    clientId === undefined || clientId === "" || clientId === CLIENT_ID_PLACEHOLDER;
+  const clientIdMissing = clientId === undefined || clientId === "";
   const clientSecretMissing = clientSecret === undefined || clientSecret === "";
   return clientIdMissing || clientSecretMissing
     ? Effect.fail(new SetupIncompleteError({ reason: "github-oauth-unconfigured" }))

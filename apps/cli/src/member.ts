@@ -893,15 +893,10 @@ interface MemberBackfillResult {
  * occupying the slot". Left alone the re-added member cannot decrypt that
  * epoch (treating the 409 as already-registered makes it invisible), so
  * when judged a stale-key wrap, the §12-6 repair path (delete →
- * re-register) replaces it with a new-key wrap. The judgment prefers the
+ * re-register) replaces it with a new-key wrap. The judgment is made by the
  * **exact comparison** of the 409 response's stored recipient enc public
  * key (`storedRecipientEncPubHex` — AUTH_SPEC §12-6) with the acceptance
- * key (decryptability = enc-key equality itself), falling back to the
- * conventional key-history heuristic (`staleWrapSuspected`) only when the
- * response lacks it (a pre-supplement self-hosted server). Even if the
- * occupying wrap under the heuristic path were actually the current key,
- * delete → re-register converges to the same content and is safe.
- * the occupying wrap under the heuristic path were actually the current key, delete → re-register converges to the same content and is safe.
+ * key (decryptability = enc-key equality itself).
  */
 function backfillMemberEnvironment(input: {
   readonly client: MaruhiClient;
@@ -909,7 +904,6 @@ function backfillMemberEnvironment(input: {
   readonly environmentId: string;
   readonly recipient: DekRecipient;
   readonly target: ChainMember;
-  readonly staleWrapSuspected: boolean;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<MemberBackfillResult, CliError> {
@@ -941,7 +935,6 @@ function backfillMemberDevice(input: {
   readonly recipient: DekRecipient;
   readonly target: ChainMember;
   readonly targetDevice: ChainDevice;
-  readonly staleWrapSuspected: boolean;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<MemberBackfillResult, CliError> {
@@ -959,20 +952,14 @@ function backfillMemberDevice(input: {
     onSlotConflict: (wrap, storedRecipientEncPubHex) =>
       Effect.gen(function* () {
         // Whether the occupied slot is a stale-key wrap: the exact
-        // comparison against the response's stored enc public key is
-        // preferred (a match = registered under the current key =
-        // idempotent). Degrades to estimation only when absent
-        const staleWrap =
-          storedRecipientEncPubHex === null
-            ? input.staleWrapSuspected
-            : storedRecipientEncPubHex !== targetDevice.encPubHex;
-        if (!staleWrap) {
+        // comparison against the response's stored enc public key (a match
+        // = registered under the current key = idempotent)
+        if (storedRecipientEncPubHex === targetDevice.encPubHex) {
           return "already-registered" as const;
         }
         // The repair path (§12-6): delete the occupied slot and
         // re-register the new-key wrap. The reference names down to the
-        // device's enc key (with multiple devices, omitting it is a 422
-        // duplicate-recipient)
+        // device's enc key
         yield* input.client.deks
           .remove({
             params: { projectId: input.verified.projectId, environmentId: input.environmentId },
@@ -981,7 +968,7 @@ function backfillMemberDevice(input: {
                 {
                   epoch: wrap.epoch,
                   recipientUserId: input.target.userId,
-                  recipientEncPubHex: storedRecipientEncPubHex ?? targetDevice.encPubHex,
+                  recipientEncPubHex: storedRecipientEncPubHex,
                 },
               ],
             },
@@ -1133,7 +1120,6 @@ function backfillAllEnvironments(input: {
   readonly target: ChainMember;
   /** The environments to backfill (default = all environments of the target's scope). An explicit list is re-narrowed by the scope. */
   readonly environments?: readonly string[];
-  readonly staleWrapSuspected: boolean;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<
@@ -1198,21 +1184,19 @@ export function backfillNewMember(input: {
 > {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // Detecting a re-addition (a past membership under a different key):
+    // Guidance on a re-addition (a past membership under a different key):
     // does the key history carry a binding different from the current key.
-    // The 409 judgment prefers the exact comparison against the response's
-    // stored enc public key (AUTH_SPEC §12-6 supplement); this heuristic is
-    // a fallback used only for 409s from old servers whose response lacks
-    // the field. Note a supplemented server auto-cleans stale-key wraps on
-    // add_member acceptance (same supplement), so normally a 409 only ever
-    // means "registered under the current key". "A different key" = a
-    // history binding that matches none of the target's current device set
-    // (with multiple devices, a current device's key is not a stale key —
-    // DK K4)
-    const staleWrapSuspected = (input.verified.keyHistory.get(input.target.userId) ?? []).some(
+    // The 409 judgment is the exact comparison against the response's
+    // stored enc public key (AUTH_SPEC §12-6 supplement); this is guidance
+    // only. The server auto-cleans stale-key wraps on add_member acceptance
+    // (same supplement), so normally a 409 only ever means "registered under
+    // the current key". "A different key" = a history binding that matches
+    // none of the target's current device set (with multiple devices, a
+    // current device's key is not a stale key — DK K4)
+    const readdedWithNewKey = (input.verified.keyHistory.get(input.target.userId) ?? []).some(
       (binding) => !memberHasKeys(input.target, binding.encPubHex, binding.sigPubHex),
     );
-    if (staleWrapSuspected) {
+    if (readdedWithNewKey) {
       yield* io.log(
         "The target user ID was previously a member with a different key. If leftover wraps addressed to the old key are found, the repair path (delete → re-register) replaces them with the new key (CRYPTO_SPEC §7 / AUTH_SPEC §12-6)",
       );
@@ -1222,7 +1206,6 @@ export function backfillNewMember(input: {
       verified: input.verified,
       recipient: input.recipient,
       target: input.target,
-      staleWrapSuspected,
       signerUserId: input.signerUserId,
       signingKeyPair: input.signingKeyPair,
     });
@@ -2121,7 +2104,6 @@ export function fulfilRoleChange<R>(input: {
             recipient: input.recipient,
             target: input.target,
             environments: widened,
-            staleWrapSuspected: false,
             signerUserId: input.signerUserId,
             signingKeyPair: input.signingKeyPair,
           });

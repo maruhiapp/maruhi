@@ -19,10 +19,6 @@
 //   設計する)。同座標 conflict の証拠はスナップショットに畳まれても消えない
 // - intent / resolution レコード(3-F)は join の格子に入れない別クラス —
 //   fold は未解決 intent を「要照合」として表面化する
-//
-// 旧保存形(<projectId>.json の単一スナップショット)は読み出し時に
-// 互換読みし、最初の追記でスナップショットレコードとしてログへ移行する
-// (旧ファイルはフォレンジック材料としてそのまま残す — 追記専用の規律)。
 
 import {
   type FileHandle,
@@ -742,87 +738,6 @@ function foldRecords(lines: readonly string[]): FoldOutcome {
   };
 }
 
-// ---- 旧保存形(単一 JSON スナップショット)の互換読み ----
-
-interface LegacyEnvironmentFloor {
-  readonly pullEpoch: number;
-  readonly metaVersion: number;
-  readonly metaSigHashHex: string;
-  readonly manifest?: ManifestFloor;
-  readonly variables: Record<string, VariableFloor>;
-}
-
-function decodeLegacyEnvironment(value: unknown): LegacyEnvironmentFloor | null {
-  if (
-    !isRecord(value) ||
-    !fieldsValid(value, {
-      pullEpoch: isPositiveInteger,
-      metaVersion: isPositiveInteger,
-      metaSigHashHex: isHex64,
-    })
-  ) {
-    return null;
-  }
-  const tail = decodeManifestAndVariables(value);
-  if (tail === null) {
-    return null;
-  }
-  return {
-    pullEpoch: value["pullEpoch"] as number,
-    metaVersion: value["metaVersion"] as number,
-    metaSigHashHex: value["metaSigHashHex"] as string,
-    ...tail,
-  };
-}
-
-/** 旧環境床 → 新形(環境水準観測は既知の検証済み事実から保守的に導出)。 */
-function convertLegacyEnvironment(legacy: LegacyEnvironmentFloor): EnvironmentFloor {
-  return {
-    pullEpoch: legacy.pullEpoch,
-    // 旧形式は環境水準観測(座標 (ii))を持たない — 既知の検証済み事実
-    // (pull 基準と床マニフェスト自身の epoch)から保守的に導出する
-    observedEpoch: Math.max(legacy.pullEpoch, legacy.manifest?.epoch ?? 0),
-    metaVersion: legacy.metaVersion,
-    metaSigHashHex: legacy.metaSigHashHex,
-    ...(legacy.manifest === undefined ? {} : { manifest: legacy.manifest }),
-    variables: legacy.variables,
-  };
-}
-
-function decodeLegacyEnvironments(value: unknown): Record<string, EnvironmentFloor> | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const environments: Record<string, EnvironmentFloor> = {};
-  for (const [environmentId, raw] of Object.entries(value)) {
-    const legacy = decodeLegacyEnvironment(raw);
-    if (legacy === null || !isEnvironmentId(environmentId)) {
-      return null;
-    }
-    environments[environmentId] = convertLegacyEnvironment(legacy);
-  }
-  return environments;
-}
-
-/** 旧形式(v1 単一スナップショット)→ 新しい床(fold 結果と同形)への変換。 */
-function decodeLegacyProjectFloor(json: string): ProjectFloor | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  if (!isRecord(value) || value["v"] !== 1) {
-    return null;
-  }
-  const chainHead = decodeChainHead(value["chainHead"]);
-  const environments = decodeLegacyEnvironments(value["environments"]);
-  if (chainHead === null || environments === null) {
-    return null;
-  }
-  return { chainHead, environments, conflicts: [], intents: [] };
-}
-
 // ---- ファイルストア ----
 
 function isFileMissingError(error: unknown): boolean {
@@ -889,29 +804,8 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
     }
     return join(dir, `${projectId}.jsonl`);
   };
-  const legacyPathOf = (projectId: string): string => join(dir, `${projectId}.json`);
-
-  /** 旧形式ファイルの読み(存在しなければ null。破損は corrupt として区別)。 */
-  const readLegacy = async (
-    projectId: string,
-  ): Promise<{ readonly floor: ProjectFloor | null; readonly corrupt: boolean }> => {
-    let json: string;
-    try {
-      json = await readFile(legacyPathOf(projectId), "utf8");
-    } catch (error) {
-      if (isFileMissingError(error)) {
-        return { floor: null, corrupt: false };
-      }
-      throw error;
-    }
-    const floor = decodeLegacyProjectFloor(json);
-    return floor === null ? { floor: null, corrupt: true } : { floor, corrupt: false };
-  };
-
   /**
-   * 追記(O_APPEND 相当)+ fsync 相当の永続化(3-E′)。空のログへの最初の
-   * 追記は、旧形式スナップショットがあればそれをスナップショットレコードとして
-   * 先頭に移行する。
+   * 追記(O_APPEND 相当)+ fsync 相当の永続化(3-E′)。
    *
    * 書き込みは常に改行を**前置**する: 並行プロセスの torn 行(改行なしの
    * 書きかけ)が直前に着地していても、自分のレコードは必ず新しい行として
@@ -929,24 +823,7 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
     await mkdir(dir, { recursive: true, mode: 0o700 });
     const handle = await open(path, "a", 0o600);
     try {
-      const { size } = await handle.stat();
-      const lines: FloorLogRecord[] = [...records];
-      if (size === 0) {
-        const legacy = await readLegacy(projectId);
-        if (legacy.floor !== null) {
-          lines.unshift({
-            r: "snapshot",
-            folded: 0,
-            state: {
-              chainHead: legacy.floor.chainHead,
-              environments: legacy.floor.environments,
-              conflicts: [],
-              intents: [],
-            },
-          });
-        }
-      }
-      const payload = Buffer.from(`\n${lines.map(encodeRecord).join("")}`, "utf8");
+      const payload = Buffer.from(`\n${records.map(encodeRecord).join("")}`, "utf8");
       // 書き切れないまま尽きたら失敗として投げる(mutate が床エラーへ変換し、
       // 呼び出し側は「永続化済み」と扱わない)。重複レコードは join の冪等性で無害
       await appendAll(handle, payload, "floor log");
@@ -1017,8 +894,8 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
 
   /**
    * 証拠の追記(床ログと同じ規律: O_APPEND + 改行前置 + datasync まで待つ)。
-   * 床ログの appendRecords と分かれているのは、あちらが床レコード型と旧形式
-   * 移行に固有だから — 追記の物理規律(short write の全長書き直し + datasync)は
+   * 床ログの appendRecords と分かれているのは、あちらが床レコード型に固有だから
+   * — 追記の物理規律(short write の全長書き直し + datasync)は
    * 共有の appendAll が担う。
    */
   const appendJsonLine = async (path: string, value: AttestationEvidenceRecord): Promise<void> => {
@@ -1032,17 +909,6 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
     }
   };
 
-  /** 旧形式の互換読み(ログ未作成 / 空ログ)。最初の追記でログへ移行される。 */
-  const loadLegacy = async (projectId: string): Promise<FloorLoadResult> => {
-    const legacy = await readLegacy(projectId);
-    if (legacy.corrupt) {
-      return { floor: null, state: "corrupt", droppedRecords: 0 };
-    }
-    return legacy.floor === null
-      ? { floor: null, state: "missing", droppedRecords: 0 }
-      : { floor: legacy.floor, state: "loaded", droppedRecords: 0 };
-  };
-
   return {
     load: (projectId) =>
       Effect.tryPromise({
@@ -1054,7 +920,7 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
             if (!isFileMissingError(error)) {
               throw error;
             }
-            return loadLegacy(projectId);
+            return { floor: null, state: "missing", droppedRecords: 0 };
           }
           const outcome = foldRecords(raw.split("\n"));
           if (outcome.decodedRecords === 0) {
@@ -1062,10 +928,8 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
               // 非空なのに 1 件も解読できない = 全体破損
               return { floor: null, state: "corrupt", droppedRecords: outcome.droppedLines };
             }
-            // 空ファイルは open("a") と write の間で落ちた残骸でもありうる —
-            // 有効な旧形式が残っていればそれを読む(missing = 初回に潰すと
-            // 旧床が 1 run ぶん不可視になり、事実と違う first sync 通知が出る)
-            return loadLegacy(projectId);
+            // 空ファイルは open("a") と write の間で落ちた残骸でもありうる(= 未作成)
+            return { floor: null, state: "missing", droppedRecords: 0 };
           }
           return { floor: outcome.floor, state: "loaded", droppedRecords: outcome.droppedLines };
         },
@@ -1141,11 +1005,11 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
             }
             throw error;
           }
-          // 本体(`<id>.jsonl`)と旧形式(`<id>.json`)だけ。`<id>.attested.json` などは
+          // 本体(`<id>.jsonl`)だけ。`<id>.attestation-evidence.jsonl` などは
           // ID の形(hex 64)に一致しないので落ちる
           const ids = new Set<string>();
           for (const name of names) {
-            const match = /^(.+)\.jsonl?$/.exec(name);
+            const match = /^(.+)\.jsonl$/.exec(name);
             if (match?.[1] !== undefined && isProjectId(match[1])) {
               ids.add(match[1]);
             }

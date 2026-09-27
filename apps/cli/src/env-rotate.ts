@@ -138,13 +138,6 @@ interface RotateInput {
    * rotation on a departing member's removal — §7).
    */
   readonly forceNewEpoch: boolean;
-  /**
-   * Allowing a manifest **omission** (`--init-manifest` — the migration
-   * path). An explicit operation limited to initializing manifest_version 1
-   * on environments created before manifests existed. Verification when
-   * distributed is not relaxed (manifest.ts's convention).
-   */
-  readonly initManifest: boolean;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
   /** Resync (full chain re-verification). Used for CAS conflicts and post-acceptance confirmation. */
@@ -524,16 +517,15 @@ function appendRotation(
     readonly dekCommitmentHex: string;
     /**
      * The bundled-manifest (§12-4) material: the previous manifest from a
-     * verified pull (null = the migration path's v1 initialization), the
-     * current meta set (tombstones included), and the latest shape of the
-     * environment meta. The meta set is unchanged by a rotate (§4.3 — only
-     * the epoch advance is reflected).
+     * verified pull, the current meta set (tombstones included), and the
+     * latest shape of the environment meta. The meta set is unchanged by a
+     * rotate (§4.3 — only the epoch advance is reflected).
      */
     readonly manifestBase: {
       readonly previous: {
         readonly manifestVersion: number;
         readonly signedBytesHashHex: string;
-      } | null;
+      };
       readonly entries: readonly ManifestDigestEntry[];
       readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
     };
@@ -2303,47 +2295,11 @@ function resumeReencryption(input: {
 }
 
 /**
- * The warning wording of a run where `--init-manifest` turned out
- * unnecessary. **Chosen after rotatePathOf's result is settled**: a run
- * whose path is resume / up-to-date sends no rotate composite = issues no
- * next manifestVersion, so the wording "this rotation re-issues the next
- * version" would be a lie (making the flag-passing user believe in a
- * re-issuance that never happened).
+ * The pre-rotate situation warnings (no floor). Placed right after the pull
+ * warnings = before any subsequent failure (DEK verification etc.).
  */
-function initManifestWarning(
-  environmentId: string,
-  manifestVersion: number,
-  path: "resume" | "up-to-date" | "rotate",
-): string {
-  const base = `--init-manifest was passed, but environment ${displayText(environmentId)} already has a verified manifest (manifestVersion ${manifestVersion}). The flag is not needed`;
-  switch (path) {
-    case "rotate":
-      return `${base} — this rotation re-issues the next manifestVersion as usual`;
-    case "resume":
-      return `${base} — this run only resumes the incomplete re-encryption and issues no new manifest`;
-    case "up-to-date":
-      return `${base} — this run issues nothing (it only confirms the environment is up to date)`;
-  }
-}
-
-/**
- * Of the pre-rotate situation warnings (manifest migration + no floor),
- * the ones that don't depend on the path. Placed right after the pull
- * warnings = before any subsequent failure (DEK verification etc.). Only
- * the `--init-manifest` unneeded-flag wording waits for the path to
- * settle (initManifestWarning).
- */
-function rotateSituationWarnings(
-  input: RotateInput,
-  pulled: VerifiedEnvironmentPull,
-  floorless: boolean,
-): readonly string[] {
+function rotateSituationWarnings(input: RotateInput, floorless: boolean): readonly string[] {
   const warnings: string[] = [];
-  if (pulled.manifest === null) {
-    warnings.push(
-      `Environment ${displayText(input.environmentId)} has no manifest yet (created before manifests were introduced). This rotation initializes manifestVersion 1 — after it succeeds, every distribution of this environment is manifest-verified and a missing manifest is rejected (CRYPTO_SPEC §6.3)`,
-    );
-  }
   if (floorless) {
     warnings.push(
       `This environment has no local floor yet, so variables the server keeps omitting from responses (ones that exist but never appear in listings) are not covered by re-encryption, and the omission cannot be detected (omission detection in CRYPTO_SPEC §6.3 presumes a floor). For revocation-purpose rotations, re-run from a machine that has a floor and confirm the variable listing for ${displayText(input.environmentId)} matches`,
@@ -2354,19 +2310,15 @@ function rotateSituationWarnings(
 
 /**
  * Path selection: send the composite (rotate), a composite-less resume
- * (resume), or a check only (up-to-date). --new-epoch and "an actually
- * needed --init-manifest" always send the composite — issuing
- * manifestVersion 1 happens only bundled with a meta operation (§12-5),
- * so an early return would look like success while leaving it
- * uninitialized.
+ * (resume), or a check only (up-to-date). --new-epoch always sends the
+ * composite.
  */
 function rotatePathOf(input: {
   readonly staleCount: number;
   readonly reason: string | null;
   readonly forceNewEpoch: boolean;
-  readonly mustInitialize: boolean;
 }): "resume" | "up-to-date" | "rotate" {
-  if (input.forceNewEpoch || input.mustInitialize) {
+  if (input.forceNewEpoch) {
     return "rotate";
   }
   if (input.staleCount > 0) {
@@ -2384,18 +2336,15 @@ function manifestBaseOf(pulled: VerifiedEnvironmentPull): {
   readonly previous: {
     readonly manifestVersion: number;
     readonly signedBytesHashHex: string;
-  } | null;
+  };
   readonly entries: readonly ManifestDigestEntry[];
   readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
 } {
   return {
-    previous:
-      pulled.manifest === null
-        ? null
-        : {
-            manifestVersion: pulled.manifest.manifestVersion,
-            signedBytesHashHex: pulled.manifest.signedBytesHashHex,
-          },
+    previous: {
+      manifestVersion: pulled.manifest.manifestVersion,
+      signedBytesHashHex: pulled.manifest.signedBytesHashHex,
+    },
     entries: [
       ...pulled.variables.map((value) => ({
         variableId: value.variableId,
@@ -2470,15 +2419,11 @@ function rotateWithWarnings(
       environmentId: input.environmentId,
       resync: input.resync,
       floor: input.floor,
-      // Only --init-manifest (the migration path) tolerates a manifest
-      // **omission**. Verification when distributed all happens regardless
-      // of the flag
-      allowMissingManifest: input.initManifest,
     });
     // Warnings enter the sink **before** any subsequent failure (DEK
     // verification etc.): if the failure path's flush didn't include them,
     // they'd vanish exactly on failure — the same hole as round 8
-    warnings.push(...pulled.warnings, ...rotateSituationWarnings(input, pulled, floorless));
+    warnings.push(...pulled.warnings, ...rotateSituationWarnings(input, floorless));
     const keys = yield* environmentKeysFor({
       client: input.client,
       verified: pulled.verified,
@@ -2492,13 +2437,7 @@ function rotateWithWarnings(
       staleCount: stale.length,
       reason,
       forceNewEpoch: input.forceNewEpoch,
-      // A run where the initialization is actually needed (an omission was confirmed) always sends the rotate composite
-      mustInitialize: input.initManifest && pulled.manifest === null,
     });
-    // The --init-manifest unneeded-flag wording is chosen after the path
-    // settles (a resume / up-to-date run sends no composite = never say
-    // "it re-issues the next version")
-    warnings.push(...initManifestNotices(input, pulled.manifest, path));
 
     // --- Interruption recovery: the epoch advanced but re-encryption remains ---
     if (path === "resume") {
@@ -2630,17 +2569,6 @@ function rotateWithWarnings(
       warnings: dedupeWarnings(warnings),
     };
   });
-}
-
-/** The guidance for a run where --init-manifest turned out unnecessary (the wording is chosen after the path settles). */
-function initManifestNotices(
-  input: RotateInput,
-  manifest: { readonly manifestVersion: number } | null,
-  path: "resume" | "up-to-date" | "rotate",
-): readonly string[] {
-  return input.initManifest && manifest !== null
-    ? [initManifestWarning(input.environmentId, manifest.manifestVersion, path)]
-    : [];
 }
 
 /** Computing the new-epoch DEK's commitment (CRYPTO_SPEC §5.2). Failures are CliError. */

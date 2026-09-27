@@ -346,7 +346,7 @@ export const ChainEntrySchema = Schema.Union([
   ProposeEntrySchema,
   ApproveEntrySchema,
   WithdrawEntrySchema,
-  // 端末鍵(CRYPTO_SPEC §6.2 — 2026-09-19 DK)。サーバーは K3 まで DeviceOpsNotAccepted で拒否する
+  // 端末鍵(CRYPTO_SPEC §6.2 — 2026-09-19 DK)
   AddDeviceEntrySchema,
   RevokeDeviceEntrySchema,
 ]);

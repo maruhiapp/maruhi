@@ -181,7 +181,7 @@ const TOKEN_EXPIRY_WARNING_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
  * - stderr is used to keep stdout machine-readable (not mixing into the
  *   output of commands that pipe values / JSON — the same discipline as
  *   nextStepHint)
- * - Unknown expiry (undefined — old servers / old records) and expiry already
+ * - Unknown expiry (undefined — not declared) and expiry already
  *   in the past by local judgment (the next request's 401 says so — no
  *   double-saying) emit nothing
  * - Display goes through display.ts's total formatter (the server-declared
