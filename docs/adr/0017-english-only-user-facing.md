@@ -1,71 +1,71 @@
-# ADR-0017: ユーザーに見える文言は英語のみ(i18n 機構は持たない)
+# ADR-0017: All user-visible text is English only (no i18n mechanism)
 
-Status: 2026-08-16 所有者裁定。この ADR を追加する PR のマージをもって Accepted。
+Status: 2026-08-16 owner ruling. Accepted upon merge of the PR that adds this ADR.
 
-**Context**: 現状の CLI の文言は**日本語で書かれている**が、実際の出力は日本語と英語が混ざっている。パーサの既定ヘルプ描画だけが英語のまま残るためで、移行中の今は 2 つの様式が並んでいる:
+**Context**: The CLI's text is currently **written in Japanese**, but actual output is a mix of Japanese and English, because only the parser's default help rendering remains English. During the migration, two notations sit side by side:
 
 ```
 $ maruhi pull --help          $ maruhi push --help
-DESCRIPTION                   stdin から読んだ値を暗号化して push する…
-  同期検査(§6.3)+ …          USAGE:
+DESCRIPTION                   stdin から読んだ値を暗号化して push する…  english-exempt: recorded CLI output
+  同期検査(§6.3)+ …          USAGE:                                    english-exempt: recorded CLI output
 USAGE                           maruhi push <OPTIONS> <name>
   maruhi pull [flags]         ARGUMENTS:
-FLAGS                           name  変数名(表示名。環境変数名になる)
-  --server string  サーバー…   OPTIONS:
+FLAGS                           name  変数名(表示名。環境変数名になる)     english-exempt: recorded CLI output
+  --server string  サーバー…   OPTIONS:                                   english-exempt: recorded CLI output
 GLOBAL FLAGS                    -h, --help  Display this help message
   --help, -h  Show help …
 ```
 
-英語が残るのは (a) 見出し(`DESCRIPTION` / `USAGE` / `FLAGS` — effect/unstable/cli、`USAGE:` / `ARGUMENTS:` / `OPTIONS:` — gunshi)、(b) 組み込みフラグの説明(`Show help information` / `Display this help message`)、(c) `args.ts` の写像に無いコード(customParse・conflict)で gunshi の英文をそのまま出す fallback、の 3 か所。
+English survives in three places: (a) headings (`DESCRIPTION` / `USAGE` / `FLAGS` — effect/unstable/cli; `USAGE:` / `ARGUMENTS:` / `OPTIONS:` — gunshi), (b) built-in flag descriptions (`Show help information` / `Display this help message`), and (c) a fallback that emits gunshi's English verbatim for codes missing from `args.ts`'s mapping (customParse, conflict).
 
-i18n の機構はどこにも入っていない。gunshi は `@gunshi/plugin-i18n` を持つが依存にも import にもなく、`effect/unstable/cli` にはロケール機構自体が存在しない(差し替え点は `CliOutput.Formatter` のみ — ADR-0016 決定 3)。
+No i18n mechanism exists anywhere. gunshi has `@gunshi/plugin-i18n`, but it is neither a dependency nor imported, and `effect/unstable/cli` has no locale mechanism at all (the only substitution point is `CliOutput.Formatter` — ADR-0016 decision 3).
 
 **Decision**:
 
-1. **ユーザーに見える文言はすべて英語**にする。対象は CLI の出力(診断・ヘルプ・警告・確認プロンプト)、サーバー API のエラー文言のうちクライアントが表示するもの、web ダッシュボードの UI 文言、docs サイト、README・リリースノート
-2. **i18n の機構は持たない**。言語は 1 つで、メッセージ表・ロケール検出・翻訳ファイルのいずれも作らない。`CliOutput.Formatter` は「maruhi の語彙で英語の文面を組む」ためだけに使う
-3. **内部の文書は日本語のままでよい**。コード内コメント、ADR、`docs/notes/`、`CRYPTO_SPEC` / `AUTH_SPEC` / `AUDIT_SPEC`、コミットメッセージ、PR の説明は対象外(CLAUDE.md のコーディング規約「コード内コメント・内部ドキュメントは日本語可、公開 API の JSDoc は英語」を維持する)。**境界は「配布物からユーザーが読むか」**であって「ソースに書いてあるか」ではない
-4. **移行は一括では行わない**。文言の書き換えは**コマンド単位**で、ADR-0016 の引数層移行と**同じ PR の中**で行う(そのコマンドのテストがどのみち書き換わるため)。gunshi 側に残るコマンドの文言は移行のタイミングまで日本語のままでよい — 混在期間は許容する。
+1. **All user-visible text is English**. Scope: CLI output (diagnostics, help, warnings, confirmation prompts), server-API error text that clients display, the web dashboard's UI text, the docs site, README and release notes
+2. **No i18n mechanism**. One language; no message table, locale detection, or translation files. `CliOutput.Formatter` is used only "to compose English wording in maruhi's vocabulary"
+3. *(Superseded by ADR-0019 — all repository text is English.)* **Internal documents may stay in Japanese**. Code comments, ADRs, `docs/notes/`, `CRYPTO_SPEC` / `AUTH_SPEC` / `AUDIT_SPEC`, commit messages, and PR descriptions are out of scope (keeping the CLAUDE.md coding convention "code comments and internal documentation may be Japanese; JSDoc on the public API is English"). **The boundary is "does a user read it from the distributed artifact"**, not "is it written in the source"
+4. **Migration is not done in bulk**. Text is rewritten **per command**, in **the same PR** as the ADR-0016 argument-layer migration (because that command's tests are being rewritten anyway). Wording on commands still on gunshi may stay Japanese until their turn — the mixed period is tolerated.
 
-   **例外: 引数層を先に移した 3 コマンド**(`pull` / `run` / `env create`)。この ADR より前に移行済みなので「引数層移行 PR」というトリガーが二度と来ない。決定 4 の紐付けをそのまま読むと**この 3 つだけが静かに漏れる**ため、ROADMAP Phase 2 に**独立項目**として起こす(この ADR と同じ PR で起票済み)
-5. **ヘルプの見出しも英語で統一する**。ADR-0016 決定 3 の `formatHelpDoc` は既定フォーマッタへ委譲しているが、これは英語のままでよい(独自の見出しを作らない = 上流の様式に乗る)
+   **Exception: the 3 commands whose argument layer moved ahead** (`pull` / `run` / `env create`). Migrated before this ADR, they will never again trigger an "argument-layer migration PR". Reading decision 4's binding verbatim would let **these three slip through quietly**, so they are filed as an **independent item** on ROADMAP Phase 2 (already filed in the same PR as this ADR)
+5. **Help headings are also unified to English**. ADR-0016 decision 3's `formatHelpDoc` delegates to the default formatter, which can stay English (not inventing our own headings = riding upstream's notation)
 
-**Rationale**: (1) maruhi は開発者向けの CLI で、配布は GitHub Releases / npm / brew、ROADMAP Phase 2 で OSS として公開する。**エラーメッセージは issue に貼られ、検索され、CI ログに残る**。その語彙が日本語だと、公開後に届く報告と回答の言語が分かれる。(2) 現状は「日本語 + 英語の足場」という**どちらの利点も得ていない状態**で、1 言語に倒せば足場との不整合そのものが消える。(3) i18n 機構を持たないことは maruhi の規律(独自機構を発明しない・依存を増やさない)と整合する。(4) 単一言語であれば、後から多言語化が必要になっても差し替え点は `CliOutput.Formatter` の 1 か所に閉じている。
+**Rationale**: (1) maruhi is a developer CLI distributed via GitHub Releases / npm / brew and will be published as OSS in ROADMAP Phase 2. **Error messages get pasted into issues, searched, and preserved in CI logs**. If that vocabulary is Japanese, the reports and answers that arrive after publication would be split across languages. (2) The current state — "Japanese + English scaffolding" — **enjoys neither side's benefits**; committing to one language removes the inconsistency with the scaffolding itself. (3) Having no i18n mechanism is consistent with maruhi's discipline (invent no in-house mechanisms, add no dependencies). (4) With a single language, if multilingual support is ever needed later, the substitution point is confined to `CliOutput.Formatter`.
 
-**Consequences**: 書き換えの量は小さくない — `apps/cli/src` だけで日本語を含むファイルが 53、日本語を含む文字列リテラルが約 434(2026-08-16 時点の概算)。加えて**テストが日本語の部分文字列で挙動を固定している**ため、機械置換では危険側に壊れる(文面の一致で分岐している箇所がある — 例: `cli-formatter.ts` の `SAFE_EXPECTATIONS`、`args.ts` の写像)。決定 4 のコマンド単位の移行はこの理由による。
+**Consequences**: The amount of rewriting is not small — in `apps/cli/src` alone, 53 files contain Japanese and roughly 434 string literals contain Japanese (estimate as of 2026-08-16). In addition, **tests pin behavior on Japanese substrings**, so mechanical replacement would break on the dangerous side (some places branch on exact wording — e.g. `SAFE_EXPECTATIONS` in `cli-formatter.ts`, the mapping in `args.ts`). Decision 4's per-command migration exists for this reason.
 
-gunshi を廃止すると(ADR-0016 決定 1)、i18n 能力を持つ唯一の依存が無くなる。決定 2 のとおりそれは意図した結果であり、将来必要になった場合は Formatter の裏に自前のメッセージ表を置く(依存は増やさない)。
+Once gunshi is abolished (ADR-0016 decision 1), the only dependency with i18n capability is gone. As decision 2 states, that is the intended outcome; if it is ever needed, an in-house message table goes behind the Formatter (no new dependencies).
 
-web(`apps/web/src/Root.tsx` の `<html lang="ja">`)と docs サイトは CLI と別作業になる。ROADMAP Phase 2 に項目として起こす。
+The web app (`<html lang="ja">` in `apps/web/src/Root.tsx`) and the docs site are separate work from the CLI. Filed as items on ROADMAP Phase 2.
 
 ---
 
-**追記(2026-08-17 — 配布物ドキュメントとインストーラの英語化)**: 決定 1 の残り(CLI 以外)を実施した。境界は決定 3「配布物からユーザーが読むか」で切った。
+**Addendum (2026-08-17 — English-izing distribution documents and the installer)**: the rest of decision 1 (everything but the CLI) was carried out. The boundary was drawn by decision 3's "does a user read it from the distributed artifact".
 
-**ユーザーが読む側(今回英語化)**:
+**What users read (English-ized this time)**:
 
-- `README.md` / `CONTRIBUTING.md` — リポジトリの表紙と DCO 文書。コントリビュータは配布物から読む
-- `docs/SELF_HOSTING.md` — セルフホスト利用者向けの検証済み runbook(ADR-0014 の上級者経路。セッション 19 で実デプロイ検証済み)
-- `packaging/install.sh` のユーザー可視メッセージ(`warn` / `die` / `printf` / `--help`)。スクリプト内コメントは内部なので日本語のまま
-- `apps/web/src/Root.tsx` の `lang="en"`(web の可視文字列に日本語は無く、日本語はコメントのみ = 決定 3 で維持)
-- GitHub Release の公開本文は英語(決定 1)。手段は下の裁定 3
+- `README.md` / `CONTRIBUTING.md` — the repository's cover page and the DCO document. Contributors read them from the distribution
+- `docs/SELF_HOSTING.md` — the verified runbook for self-hosting users (ADR-0014's advanced path. Verified against a real deploy in session 19)
+- User-visible messages in `packaging/install.sh` (`warn` / `die` / `printf` / `--help`). In-script comments are internal and stay Japanese
+- `lang="en"` in `apps/web/src/Root.tsx` (the web app's visible strings contain no Japanese — Japanese exists only in comments = kept under decision 3)
+- GitHub Release published body text is English (decision 1). The mechanism is ruling 3 below
 
-**内部(日本語のまま)**:
+**Internal (stay Japanese)** *(superseded by ADR-0019 — these are now English too)*:
 
 - `docs/CRYPTO_SPEC.md` / `AUTH_SPEC.md` / `AUDIT_SPEC.md`
-- `docs/RELEASING.md` 本体(所有者向けの運用手順)
-- `docs/notes/` / `docs/adr/`(本追記を除く)
+- `docs/RELEASING.md` itself (operating procedure for the owner)
+- `docs/notes/` / `docs/adr/` (except this addendum)
 - `CLAUDE.md` / `AGENTS.md`
-- コード内コメント全般。**`packaging/install.sh` のヘッダコメントも含む**(裁定 2)
-- `packaging/homebrew/maruhi.example.rb` のコメント(`desc` は既に英語)
-- `packaging/install-test.sh` のラベル文字列(CI 内部。install.sh の文言を grep で固定している箇所だけ道連れに更新)
-- ワークスペースの `apps/cli/package.json` に `description` フィールドは無い(追加しない)。npm へ出すマニフェストは `apps/cli/scripts/build-npm.ts` が組み立て、`description` と同梱 `README.md` は**既に英語**(今回の対象外。英語のまま維持する)
+- Code comments in general. **Including the header comment of `packaging/install.sh`** (ruling 2)
+- Comments in `packaging/homebrew/maruhi.example.rb` (`desc` is already English)
+- Label strings in `packaging/install-test.sh` (CI-internal. Only the spots that pin install.sh wording by grep were updated collaterally)
+- The workspace `apps/cli/package.json` has no `description` field (none added). The manifest shipped to npm is assembled by `apps/cli/scripts/build-npm.ts`; its `description` and bundled `README.md` are **already English** (out of scope this time; kept in English)
 
-docs サイト(Blume)は当時未着工(`apps/docs` はプレースホルダのみ)で、サイト構築時に英語で書く旨を ROADMAP に残した。**2026-09-03 DP2 で `apps/site`(LP + docs)として構築し、LP / docs の全文言を英語で書いた**(ADR-0008 改訂 1)。
+The docs site (Blume) was not yet started at the time (`apps/docs` was only a placeholder), and the ROADMAP noted it would be written in English when built. **On 2026-09-03 in DP2 it was built as `apps/site` (LP + docs), and all LP / docs text was written in English** (ADR-0008 Revision 1).
 
-**裁定**:
+**Rulings**:
 
-1. `SELF_HOSTING.md` / `CONTRIBUTING.md` / `install.sh` のユーザー可視メッセージは、決定 3 の境界「配布物からユーザーが読む」側。`CRYPTO_SPEC` / `AUTH_SPEC` / `AUDIT_SPEC` / `RELEASING.md` 本体 / `docs/notes` / ADR 本体 / `CLAUDE.md` は内部
-2. **`install.sh` のコメントは日本語のまま**。README は `less` してから実行する形を先に案内するが、利用者が読む信頼モデルの正は README の英語の trust-model 節である。スクリプトを開いたときに走る処理の説明(コメント)はメンテナ向けであり、実行時に出る文言(`usage` / `die` / `warn`)だけがユーザー可視。ヘッダ 5〜16 行をコメントだからといって英語化しない(決定 3 の「ソースに書いてあるか」ではなく「配布物からユーザーが読むか」)
-3. **GitHub Release の公開本文は英語**(決定 1)。現行の `release.yml` は `gh release create --generate-notes` で、本文はマージ済み PR タイトルから組まれる(`--draft` なし = タグ push 時点で公開済み)。決定 3 はコミットメッセージと PR 説明を日本語のままとしており、PR タイトル英語化も `--notes-file` 化も `--draft` 化もこの追記では採らない。所有者は公開直後に Release 本文を英語へ直す(RELEASING.md に固定)。仕組み側の変更は別判断
-4. `SELF_HOSTING.md` の見出し英訳に伴い、生きている内部文書(`AUTH_SPEC` / `SECURITY_REVIEW_2026-08-14.md`)の見出し参照だけ英語見出し名へ追随する。セッションノート(`docs/notes/`)は日付付きログなので触らない
+1. `SELF_HOSTING.md` / `CONTRIBUTING.md` / install.sh's user-visible messages are on decision 3's "users read from the distribution" side. `CRYPTO_SPEC` / `AUTH_SPEC` / `AUDIT_SPEC` / `RELEASING.md` itself / `docs/notes` / ADR bodies / `CLAUDE.md` are internal
+2. **`install.sh` comments stay Japanese**. The README first guides users to `less` the script before running it, but the source of truth for the trust model users read is the English trust-model section of the README. Descriptions of what runs when the script is opened (comments) are for maintainers; only the text emitted at runtime (`usage` / `die` / `warn`) is user-visible. Header lines 5-16 are not English-ized just because they are comments (decision 3 is "does a user read it from the distributed artifact", not "is it written in the source")
+3. **GitHub Release published body text is English** (decision 1). The current `release.yml` runs `gh release create --generate-notes`, which builds the body from merged PR titles (no `--draft` = published the moment the tag is pushed). Decision 3 leaves commit messages and PR descriptions in Japanese, and this addendum adopts neither English PR titles, `--notes-file`, nor `--draft`. The owner rewrites the Release body into English right after publication (pinned in RELEASING.md). Mechanism-side changes are a separate decision
+4. With `SELF_HOSTING.md`'s headings translated to English, heading references in living internal documents (`AUTH_SPEC` / `SECURITY_REVIEW_2026-08-14.md`) follow the English heading names. Session notes (`docs/notes/`) are dated logs and are not touched

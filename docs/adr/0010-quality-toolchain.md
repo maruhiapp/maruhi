@@ -1,4 +1,4 @@
-# ADR-0010: 品質ツールチェーン
+# ADR-0010: Quality toolchain
 
-**Decision**: oxlint + oxfmt(Prettier 不使用)、ImportLint(@public カプセル化)、fallow(コードベース健全性、baseline 運用)、React Doctor(web、diff モード)。CI 順: format → lint → tsc → ImportLint → fallow → React Doctor → テスト(Vitest)。
-**Rationale**: oxc ファミリーで統一(速度・Tailwind クラスソート内蔵)。ImportLint は暗号コアの API 境界強制というセキュリティ設計を機械化する。全ツールがエージェントスキルを配布しており、エージェント併用開発のガードレールとして機能する。
+**Decision**: oxlint + oxfmt (no Prettier), ImportLint (@public encapsulation), fallow (codebase health, baseline operation), React Doctor (web, diff mode). CI order: format → lint → tsc → ImportLint → fallow → React Doctor → tests (Vitest).
+**Rationale**: Unified on the oxc family (speed, built-in Tailwind class sorting). ImportLint mechanizes the security design of enforcing the crypto core's API boundary. Every tool ships an agent skill, so the set works as guardrails for agent-assisted development.

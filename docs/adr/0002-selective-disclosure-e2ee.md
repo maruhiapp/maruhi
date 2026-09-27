@@ -1,6 +1,6 @@
-# ADR-0002: 暗号アーキテクチャは選択的開示 E2EE
+# ADR-0002: The crypto architecture is selective-disclosure E2EE
 
-**Context**: サーバー側暗号化(Shelve 型)、純粋 E2EE、Git-native、しきい値暗号、BYOK、TEE を比較検討。
-**Decision**: E2EE を基盤とし、サーバーを「招待制のメンバー N+1」として扱う選択的開示モデル。+ 署名付きメンバーシップログ、ヘッドゴシップ、HPKE の文脈束縛、エポック制、暗号アジリティ。詳細は CRYPTO_SPEC.md。
-**Rationale**: 純粋 E2EE の厳密な上位互換(誰も招待しなければ同一)であり、個人開発への信頼問題を暗号で解決しつつ、サーバー主導機能(GitHub 同期等)をプロジェクト単位のオプトインで実現できる。
-**Consequences**: 実装は 3 方式中最も複雑。MVP は純粋 E2EE のみ実装し、サーバー鍵は GitHub 同期実装時に追加。
+**Context**: We compared server-side encryption (Shelve-style), pure E2EE, Git-native, threshold encryption, BYOK, and TEE.
+**Decision**: A selective-disclosure model built on E2EE that treats the server as an "invited member N+1". Plus a signed membership log, head gossip, HPKE context binding, epochs, and crypto agility. Details in CRYPTO_SPEC.md.
+**Rationale**: It is a strict superset of pure E2EE (identical when no one is invited); it solves the trust problem of solo development with crypto while enabling server-driven features (GitHub sync etc.) as per-project opt-ins.
+**Consequences**: The most complex of the three designs. The MVP implements pure E2EE only; the server key is added when GitHub sync is implemented.

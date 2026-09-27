@@ -1,3 +1,3 @@
-# ADR-0011: 未安定依存のリスク管理原則
+# ADR-0011: Risk-management principles for unstable dependencies
 
-**Decision**: 影響半径が小さい場所ほど新しい技術を許容し(docs = Blume、fmt = oxfmt)、退避可能な場所は退避経路つきで採用し(FunStack → SPA、Alchemy → wrangler、HttpApi → Hono)、暗号コアは退屈な標準(WebCrypto、HPKE)のみとする。全依存はバージョン厳密ピン留め、更新は独立 PR で意図的に行う。
+**Decision**: Permit newer technology where the blast radius is small (docs = Blume, fmt = oxfmt); where a fallback exists, adopt it with a declared fallback path (FunStack → SPA, Alchemy → wrangler, HttpApi → Hono); and keep the crypto core on boring standards only (WebCrypto, HPKE). All dependencies are pinned to exact versions, and updates are done deliberately in separate PRs.
