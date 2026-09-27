@@ -60,7 +60,7 @@
       "base": "basic",
       "open_info_hex": "000000126d61727568692f76312f64656b2d777261700000000970726f6a2d303030310000000d656e762d70726f642d3030303100000001330000000f757365722d6f776e65722d30303031",
       "must_fail": true,
-      "note": "Substituting the recipient (transplanting a member-bound wrap) fails Open"
+      "note": "Substituting the recipient (transplanting a wrap addressed to another member) fails Open"
     },
     {
       "name": "info-environment-mismatch",

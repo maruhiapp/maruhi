@@ -1,5 +1,5 @@
 {
-  "description": "CRYPTO_SPEC §6.6: the head declaration (Ed25519). head_attestation_signed_bytes = LP(\"<suite>/head-attestation\", project_id, attester_user_id, chain_head_hash_hex, chain_head_seq). The chain and keys reference chain-entries.json's canonical chain (24 entries — only the hashes changed, tracking the full regeneration of 2026-09-14 ES + PF1; the meaning of the positives and negatives is unchanged)",
+  "description": "CRYPTO_SPEC §6.6: the head attestation (Ed25519). head_attestation_signed_bytes = LP(\"<suite>/head-attestation\", project_id, attester_user_id, chain_head_hash_hex, chain_head_seq). The chain and keys reference chain-entries.json's canonical chain (24 entries — only the hashes changed, tracking the full regeneration of 2026-09-14 ES + PF1; the meaning of the positives and negatives is unchanged)",
   "signed_fields_order": [
     "domain",
     "project_id",
@@ -9,7 +9,7 @@
   ],
   "binary_encoding": "the chain-head hash goes into LP as a lowercase hex string (the same convention as chain-entries.json's binary_encoding). Numbers (chain_head_seq) are decimal-stringified. No timestamp or nonce is signed (§6.6 — the semantics is attribution, not a freshness proof)",
   "chain_reference": "chain-entries.json: project_id = the genesis entry hash, chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex, attester keys = keys",
-  "distribution_note": "removed-attester-in-tenure is a positive that passes §6.6's verification (signature, membership at the declared-head time), but because the attester is not a current member it is outside the distribution targets (the server deletes the declaration row when accepting remove_member — §6.4), and even if distributed a client does not use it as comparison material (§6.6 (1)). This current-member check is outside this file's verification vectors (implementation test — session-27 §13-5)",
+  "distribution_note": "removed-attester-in-tenure is a positive that passes §6.6's verification (signature, membership at the attested-head time), but because the attester is not a current member it is outside the distribution targets (the server deletes the attestation row when accepting remove_member — §6.4), and even if distributed a client does not use it as comparison material (§6.6 (1)). This current-member check is outside this file's verification vectors (implementation test — session-27 §13-5)",
   "vectors": [
     {
       "name": "basic",
@@ -25,7 +25,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303030310000004034316135613630653936393439303234633061356436373735376438666437656463643932666332323235656363346165376536626562653562616339636264000000023234",
       "signed_bytes_sha256_hex": "54a3f4ca9d0215d1d45e4aec8a5ad7b3e7e0feb0a6df7953a528fac8fd373236",
       "signature_hex": "572625607415f5eec53393502cd98510dbd537dedf3371137240ec6773d111c49a9c011fac8b72ddf45906b2d500d6de4f8d77482a4766cb52d4ade03568e509",
-      "note": "the basic form: the owner declares the current head (seq 24). Passes all §6.6 checks (signature, head binding, membership at the declared-head time)"
+      "note": "the basic form: the owner attests the current head (seq 24). Passes all §6.6 checks (signature, head binding, membership at the attested-head time)"
     },
     {
       "name": "reader-attestation",
@@ -41,7 +41,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d61646d696e2d3030303300000040616335343838326238326633366661363235353931663738396539316436666334313832393935353666316439646635366562626537636233613963363562310000000136",
       "signed_bytes_sha256_hex": "243b377dc78302e1b3353debb605a7bbefe1c21de9e7082198198d3640abc519",
       "signature_hex": "30c75f3ac88e34014af7f49e05648341743c74d4fd9db371e8bfefb9903d968f22ef66b0d32b0730cd8ba64b559fe793714c3f42136740f04933bd5fca00c00a",
-      "note": "a reader's declaration: at head 6, user-admin-0003 is a reader (the change_role is seq 7). A declaration can be submitted by every member including readers (§6.3 head gossip / §6.6 — the lower bound of the required role is reader)"
+      "note": "a reader's attestation: at head 6, user-admin-0003 is a reader (the change_role is seq 7). An attestation can be submitted by every member including readers (§6.3 head gossip / §6.6 — the lower bound of the required role is reader)"
     },
     {
       "name": "removed-attester-in-tenure",
@@ -57,7 +57,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e000000403234353366333439343334363363303437316136653638313739633561356139373864633061306139633936626662386230646534616664303064633639363900000010757365722d6d656d6265722d3030303200000040636335313235356136333136643333663265343734323633343961396638353539616235363530613434643364373731333134346537313932666539613664340000000134",
       "signed_bytes_sha256_hex": "464694432bd412d1054f056950c62b77a42ebb6788677560184017e6e4847a32",
       "signature_hex": "0cc52fa17e23ecd2a4a3e67d66f418967ff06563c3a474476094c00dcb18e90ea92a5855965220daa73cc0df4483743a3c9f94ad82c93573200cdb67b20f2f02",
-      "note": "a past declaration inside the membership interval (head 4) by an attester removed at seq 5. It passes §6.6's signature and head-time verification (the verify key is the key of that time — the chain keeps key history), but because the attester is not a current member it is outside the distribution targets (the server deletes the declaration row when accepting remove_member — §6.4), and even if distributed a client does not use it as comparison material (§6.6 (1) — the current-member check). This vector pins that two-layer intent"
+      "note": "a past attestation inside the membership interval (head 4) by an attester removed at seq 5. It passes §6.6's signature and head-time verification (the verify key is the key of that time — the chain keeps key history), but because the attester is not a current member it is outside the distribution targets (the server deletes the attestation row when accepting remove_member — §6.4), and even if distributed a client does not use it as comparison material (§6.6 (1) — the current-member check). This vector pins that two-layer intent"
     },
     {
       "name": "phone-attestation",
@@ -73,7 +73,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303030310000004065353037623532396136623036353937666330663034363362303964376339613636623931396661663736326133393963396536656562653934353366386361000000023333",
       "signed_bytes_sha256_hex": "f4875cd039d2d4fa0949d62c2ce28bed896749f933f559daa6883e592ca79767",
       "signature_hex": "75ff4d908df4c6e9c9d8cdeb387b19c207182d5a0ea4665b8406996cae53f1776c720a08e87c070c6b808e2f9b8b04961c19416e83880ea49405f61726af1c05",
-      "note": "a second-device positive: owner-0001's phone P (cap (owner, listed{}) — a vote-only device that receives no DEK) declares a head (33) inside its validity interval. Declarations are per-device (AUTH_SPEC §16-1)",
+      "note": "a second-device positive: owner-0001's phone P (cap (owner, listed{}) — a vote-only device that receives no DEK) attests a head (33) inside its validity interval. Attestations are per-device (AUTH_SPEC §16-1)",
       "chain": "device-ops"
     },
     {
@@ -90,7 +90,7 @@
       "signed_bytes_hex": "0000001a6d61727568692f76312f686561642d6174746573746174696f6e00000040323435336633343934333436336330343731613665363831373963356135613937386463306130613963393662666238623064653461666430306463363936390000000f757365722d6f776e65722d303031350000004062326637353430373539633764303433343737616236376664333834346363613337383963306663373264616463626136643538303330623635396264643861000000023337",
       "signed_bytes_sha256_hex": "a8d4eb8348f0bcb8913f8dcd04d8e46f99aacd4926766becfa60486e5d38d577",
       "signature_hex": "25af071489e08197ff93cdd726ad8e5ba670a626298b8e0a21cc917f55b1c8f72404cc08fc90a19e5dae99b123224bc17d7c3be082cb0b0ba830f7236fd0870b",
-      "note": "a declaration of the current head (37) by the cap-(reader, all) device L: the lower bound of a declaration's required role is reader, so a device with effective role reader can declare",
+      "note": "an attestation of the current head (37) by the cap-(reader, all) device L: the lower bound of an attestation's required role is reader, so a device with effective role reader can attest",
       "chain": "device-ops"
     }
   ],
@@ -127,7 +127,7 @@
       "signature_hex": "572625607415f5eec53393502cd98510dbd537dedf3371137240ec6773d111c49a9c011fac8b72ddf45906b2d500d6de4f8d77482a4766cb52d4ade03568e509",
       "verify_key_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
       "must_fail": true,
-      "note": "transplanting a declaration to another project fails signature verification (project_id's context binding — §6.6)"
+      "note": "transplanting an attestation to another project fails signature verification (project_id's context binding — §6.6)"
     },
     {
       "name": "transplant-attester",
@@ -258,7 +258,7 @@
       "verify_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
       "expected_reason": "attester-not-member-at-head",
       "must_fail": true,
-      "note": "reject the form where an attester removed at seq 5 declares a post-removal head (24) (§6.6 (1)'s membership at the declared-head time — pins the membership-interval boundary by contrast with removed-attester-in-tenure)"
+      "note": "reject the form where an attester removed at seq 5 attests a post-removal head (24) (§6.6 (1)'s membership at the attested-head time — pins the membership-interval boundary by contrast with removed-attester-in-tenure)"
     },
     {
       "name": "attester-device-revoked-at-head",
@@ -279,7 +279,7 @@
       "verify_key_hex": "debaf7c478bfb3b3f0f8ebc58bf11dc3b373c62aa9250db53d663fca965c36ec",
       "expected_reason": "attester-key-mismatch-at-head",
       "must_fail": true,
-      "note": "a declaration of a post-revocation head (37) by phone P — revoked at seq 35 — is attester-key-mismatch-at-head (the person [owner-0001] stays enrolled — the end boundary of the device's validity interval)"
+      "note": "an attestation of a post-revocation head (37) by phone P — revoked at seq 35 — is attester-key-mismatch-at-head (the person [owner-0001] stays enrolled — the end boundary of the device's validity interval)"
     }
   ]
 }
