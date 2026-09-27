@@ -126,7 +126,6 @@ export interface ServerAccessRow {
   readonly variableId: string | null;
 }
 
-/** Q5: the input rows of flag derivation (rotation.recommended / dismissed / var.version_pushed). */
 /** One epoch transition of an environment, from the chain mirror (§4.1-5 — VH). */
 export interface EnvironmentEpochRow {
   readonly seq: number;
@@ -134,6 +133,7 @@ export interface EnvironmentEpochRow {
   readonly epoch: number;
 }
 
+/** Q5: the input rows of flag derivation (rotation.recommended / dismissed / var.version_pushed). */
 export interface RotationFlagSourceRow {
   readonly seq: number;
   readonly serverTs: number;

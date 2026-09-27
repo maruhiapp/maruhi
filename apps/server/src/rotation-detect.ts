@@ -29,9 +29,11 @@
 //   (its own epoch, or — for a push declaring sameValueAs — the origin epoch
 //   of the version it names), and a flag is effective while the live value's
 //   origin epoch is within the flag's exposure bound (the environment's epoch
-//   at detection — the recommended row's epoch column). A re-encryption therefore neither resolves nor un-resolves (blocks a
+//   at the end of the subject's window — the recommended row's epoch column).
+//   A re-encryption therefore neither resolves nor un-resolves (blocks a
 //   mandatory-rotation sweep from auto-resolving everything), and a rollback to
-//   a pre-flag value re-opens a resolved flag. Dismissal is sticky
+//   a value the subject could read re-opens a resolved flag. A dismissal
+//   covers the flags effective when it is recorded and is sticky
 
 import type {
   AuditEventInput,
@@ -281,7 +283,6 @@ function windowsByEnvironment(
   };
 }
 
-/** Assemble one rotation.recommended row (the §3.3 recording rules — actor is system). */
 /**
  * The exposure bound of a flag (§4.1-5 — 2026-09-27 VH): the environment's
  * epoch at the end of the subject's last window on it — the newest epoch
@@ -306,6 +307,7 @@ function exposureBound(
   return bound;
 }
 
+/** Assemble one rotation.recommended row (the §3.3 recording rules — actor is system). */
 function recommendedEvent(input: {
   readonly nowMs: number;
   readonly lifetime: VariableLifetime;
