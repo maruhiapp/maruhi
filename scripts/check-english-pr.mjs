@@ -13,7 +13,9 @@ import { execFileSync } from "node:child_process";
 // holds no CJK itself: CJK punctuation, hiragana, katakana, katakana phonetic
 // extensions, halfwidth katakana, CJK ext-A, unified + compatibility
 // ideographs, fullwidth forms. U+3299 (the maruhi mark) stays out of range.
-const CJK = /[　-〿぀-ゟ゠-ヿㇰ-ㇿｦ-ﾟ㐀-䶿一-鿿豈-﫿＀-｠]/;
+const CJK = new RegExp(
+  "[\\u3000-\\u303f\\u3040-\\u309f\\u30a0-\\u30ff\\u31f0-\\u31ff\\uff66-\\uff9f\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff\\uff00-\\uff60]",
+);
 
 // Offending lines of one text, labelled with where the text came from.
 function offendingLines(label, text) {
