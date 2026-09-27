@@ -20,8 +20,8 @@
 // The history-based verification (verifyDistributedHeadAttestation) is
 // isomorphic to value / meta (no double implementation of the verification
 // mechanism — the shared core in validate.ts). **That the attester is a
-// current member of its own view (the first half of §6.6 (1)) is outside
-// this module's checks**: that is a selection of "is it a
+// current member in the verifier's own view (the first half of §6.6 (1))
+// is outside this module's checks**: that is a selection of "is it a
 // distribution/reconciliation target", not the attestation's own validity
 // (a past attestation by a removed member against an in-tenure head passes
 // verification — vector removed-attester-in-tenure); the caller selects

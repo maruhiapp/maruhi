@@ -20,7 +20,7 @@
 // hybrid). The wire's layoutVersion (omitted = 1) selects which layout's
 // signed_bytes is computed, and the support-range check happens **before
 // signature verification**, rejecting overage as the typed error
-// UnsupportedMetaLayout (an honest destruction mode that does not collapse
+// UnsupportedMetaLayout (an honest failure mode that does not collapse
 // into signature-invalid — ruling CR).
 // Numbers (meta_version / chain_head_seq) are base-10 stringified per §2.1,
 // and binaries (hashes) go onto the LP as lowercase hex strings.
