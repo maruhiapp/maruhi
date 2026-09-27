@@ -106,7 +106,7 @@ export const EnvironmentSummarySchema = Schema.Struct({
 export const EnvironmentListSchema = Schema.Struct({
   environments: Schema.Array(EnvironmentSummarySchema),
   /** schemaPolicy advisory bundle (§12-7 / §12-11 — same convention as pull). */
-  schemaPolicy: Schema.optionalKey(SchemaPolicySchema),
+  schemaPolicy: SchemaPolicySchema,
 });
 
 /**
@@ -163,18 +163,16 @@ export const EnvironmentPullSchema = Schema.Struct({
    * valueless state — the CRYPTO_SPEC §6.3 value-distribution
    * requirement). Bundling them is mandatory as material for manifest
    * digest recomputation (§4.3). Absent in environments with no declared
-   * variables (optionalKey — also serves decode compatibility with old
-   * server responses).
+   * variables.
    */
   declaredVariables: Schema.optionalKey(Schema.Array(DistributedVariableMetaStatementSchema)),
   deks: Schema.Array(RecipientDekSchema),
   /**
    * Advisory bundle of the project's schemaPolicy (§12-7 / §12-11 — a
    * server assertion, unsigned; client use is UX only — never an input
-   * to verification rules). Servers since this revision always include
-   * it (absent = old server).
+   * to verification rules).
    */
-  schemaPolicy: Schema.optionalKey(SchemaPolicySchema),
+  schemaPolicy: SchemaPolicySchema,
   /**
    * The latest environment manifest + issuer info (§12-7). The client
    * verifies digest recomputation and epoch consistency; **absence is
@@ -220,7 +218,7 @@ export const EnvironmentMetadataPullSchema = Schema.Struct({
   /** The latest environment manifest (the completeness of metadata verification is the same level in this mode — §12-7). */
   manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
   /** schemaPolicy advisory bundle (§12-7 / §12-11 — same convention as EnvironmentPull). */
-  schemaPolicy: Schema.optionalKey(SchemaPolicySchema),
+  schemaPolicy: SchemaPolicySchema,
 });
 
 /**

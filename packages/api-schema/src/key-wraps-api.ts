@@ -224,20 +224,15 @@ export const GuardianDeviceShareSchema = Schema.Struct({
 /**
  * The segment addressed to me (§13-7 `GET /auth/guardian/shares/:groupId`).
  * Device axis (2026-09-19 DK K3 — design record dk-design.md §8 K3-10):
- * the legacy fields are the first row by FP ascending among my device
- * rows (with one device it is the only row = as before); `deviceShares`
- * holds **all my device rows**. K4+ clients pick the row matching
- * their on-hand device-key FP from `deviceShares`. Optional because
- * pre-supplement servers do not send it.
+ * `deviceShares` holds **all my device rows** (FP ascending). The client
+ * picks the row matching its on-hand device-key FP.
  */
 export const GuardianShareResultSchema = Schema.Struct({
   groupId: LedgerIdSchema,
   wardUserId: Schema.String,
   mode: GuardianModeSchema,
   shareIndex: Schema.Int,
-  encHex: HpkeEncHex,
-  ciphertextHex: ShareCiphertextHex,
-  deviceShares: Schema.optionalKey(Schema.Array(GuardianDeviceShareSchema)),
+  deviceShares: Schema.Array(GuardianDeviceShareSchema),
 });
 
 /** The handoff's request_id (CRYPTO_SPEC §8.4 — SHA-256 hex). */

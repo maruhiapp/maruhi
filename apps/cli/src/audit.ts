@@ -75,8 +75,8 @@ export interface AuditListOptions {
 
 /**
  * 集約形 `var.read` の変数列挙(AUDIT_SPEC §3.3)。集約行は変数 ID を列に持たず
- * (variableId 欠落)、payload の `variables` に返した変数を列挙する。旧形
- * (variableId あり)と他イベントは null。解釈はサーバーと同じ共有実装。
+ * (variableId 欠落)、payload の `variables` に返した変数を列挙する。他イベントは null。
+ * 解釈はサーバーと同じ共有実装。
  */
 function aggregatedReadOf(event: WireAuditEvent): readonly AuditReadVariable[] | null {
   if (event.event !== VAR_READ_EVENT || event.variableId !== undefined) {
@@ -380,7 +380,7 @@ function trailerParts(event: WireAuditEvent, trust: MirrorTrust | null): readonl
 /**
  * recorded= に出す payload。集約形 var.read は変数の列挙(`variables` — 数十 KB に
  * なりうる。read= の要約・--var の一致表示・--expand-reads の展開行が担う)を除いた
- * 残り(authMethod 等 — 旧形なら recorded= に出ていた情報)だけを出す。
+ * 残り(authMethod 等)だけを出す。
  */
 function recordedPayloadOf(event: WireAuditEvent): Readonly<Record<string, unknown>> | null {
   if (event.payload === undefined) {
@@ -395,7 +395,7 @@ function recordedPayloadOf(event: WireAuditEvent): Readonly<Record<string, unkno
 
 /**
  * 集約形 var.read の展開行(1 変数 1 行 — `--expand-reads`)。表示名は検証済み
- * ステートメント由来のみ(旧形の var= ラベルと同じ TCB 規律)。
+ * ステートメント由来のみ(var= ラベルと同じ TCB 規律)。
  */
 function expandedReadLines(
   listed: readonly AuditReadVariable[],

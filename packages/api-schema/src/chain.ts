@@ -364,8 +364,7 @@ export const ChainEntrySchema = Schema.Union([
   ProposeEntrySchema,
   ApproveEntrySchema,
   WithdrawEntrySchema,
-  // Device keys (CRYPTO_SPEC §6.2 — 2026-09-19 DK). The server refuses
-  // them with DeviceOpsNotAccepted until K3
+  // Device keys (CRYPTO_SPEC §6.2 — 2026-09-19 DK)
   AddDeviceEntrySchema,
   RevokeDeviceEntrySchema,
 ]);

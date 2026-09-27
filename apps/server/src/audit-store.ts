@@ -84,7 +84,7 @@ export interface VariableLifecycleRow {
   readonly variableId: string;
 }
 
-/** Q3: 対象 user_id の var.read(旧形の列値と集約形の payload 展開の和 — §3.3)。 */
+/** Q3: 対象 user_id の var.read(集約形の payload 展開 — §3.3)。 */
 export interface VariableReadRow {
   readonly seq: number;
   readonly environmentId: string;
@@ -839,12 +839,13 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
   if (query.variableId === null) {
     return selectPage(sql, where, query.limit);
   }
-  // variable_id フィルタ(§7 / Q4): 旧形(列一致 — ae_var の索引順で limit 件
-  // で止まる)と集約形(payload 検査 — aggregatedReadContains)は別クエリで引き、
-  // seq 降順のまま合流する。1 つの OR にすると SQLite は両項の全一致行を集めて
-  // からソートし、旧形のページングが「索引順 + 早期停止」から「一致行数比例」へ
-  // 退行するため。カーソル・可視性・他のフィルタは両クエリに同一に効く
-  const legacy = selectPage(
+  // variable_id フィルタ(§7 / Q4): 列一致(var.created / var.version_pushed 等 —
+  // ae_var の索引順で limit 件で止まる)と集約形 var.read(payload 検査 —
+  // aggregatedReadContains)は別クエリで引き、seq 降順のまま合流する。1 つの OR に
+  // すると SQLite は両項の全一致行を集めてからソートし、列一致のページングが
+  // 「索引順 + 早期停止」から「一致行数比例」へ退行するため。カーソル・可視性・
+  // 他のフィルタは両クエリに同一に効く
+  const byColumn = selectPage(
     sql,
     withCondition(where, "variable_id = ?", [query.variableId]),
     query.limit,
@@ -857,14 +858,14 @@ function queryEvents(sql: SqlStorage, query: AuditEventsQuery): readonly StoredA
   );
   if (aggregated === null) {
     // 値を一度も持たない変数は集約行に現れない — payload 検査を走らせない
-    return legacy;
+    return byColumn;
   }
   const listed = selectPage(
     sql,
     withCondition(where, aggregated.conditions.join(" AND "), aggregated.bindings),
     query.limit,
   );
-  return mergeDescending(legacy, listed, query.limit);
+  return mergeDescending(byColumn, listed, query.limit);
 }
 
 const textOrNull = (value: unknown): string | null => (value === null ? null : String(value));
@@ -1028,11 +1029,9 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
         environmentId: String(row["environment_id"]),
         variableId: String(row["variable_id"]),
       })),
-  // Q3: (actor_user_id, seq) 索引(ae_actor)。旧形(variable_id 列)と集約形
-  // (variable_id IS NULL・payload の variables 列挙 — §3.3)が同一テーブルに
-  // 混在するため、両形を 1 クエリで引いて集約行は列挙を展開する(展開は
-  // 防御的 parse — 壊れた行で検出を defect にしない)。同一 pull の変数は同じ
-  // seq を共有する(§4.1 手順 3 の区間判定は seq 単位なので旧形と同値)。
+  // Q3: (actor_user_id, seq) 索引(ae_actor)。集約形 var.read(payload の variables
+  // 列挙 — §3.3)を展開する(展開は防御的 parse — 壊れた行で検出を defect にしない)。
+  // 同一 pull の変数は同じ seq を共有する(§4.1 手順 3 の区間判定は seq 単位)。
   // range は ae_actor の seq 成分での範囲走査になる(省略時は全 seq)。
   // `+event` は event 列を索引の候補から外す単項 +(SQLite の定石): 統計のない
   // DO SQLite のプランナは `event = ?` の等値で ae_event (event, seq) を選び、
@@ -1041,7 +1040,7 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
   variableReadsBy: (actorUserId, range) =>
     sql
       .exec(
-        `SELECT seq, environment_id, variable_id, payload FROM audit_events
+        `SELECT seq, environment_id, payload FROM audit_events
          WHERE actor_user_id = ? AND +event = ? AND seq > ? AND seq < ? ORDER BY seq`,
         actorUserId,
         VAR_READ_EVENT,
@@ -1056,9 +1055,6 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
       .flatMap((row): VariableReadRow[] => {
         const seq = Number(row["seq"]);
         const environmentId = String(row["environment_id"]);
-        if (row["variable_id"] !== null) {
-          return [{ seq, environmentId, variableId: String(row["variable_id"]) }];
-        }
         return (auditReadVariablesOf(parsePayload(row["payload"])) ?? []).map((variable) => ({
           seq,
           environmentId,

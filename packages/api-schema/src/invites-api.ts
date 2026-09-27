@@ -175,7 +175,7 @@ export const InviteAcceptResultSchema = Schema.Struct({
 });
 
 /**
- * Invitation endpoints (AUTH_SPEC §15-2)。
+ * Invitation endpoints (AUTH_SPEC §15-2).
  *
  * - `issue`: create one invitation from a client-generated id and issuance
  *   statement; nothing secret is returned. Only an owner may issue an

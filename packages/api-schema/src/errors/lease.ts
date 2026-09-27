@@ -131,8 +131,7 @@ export const LeaseRateLimitScopeSchema = Schema.Literals(["project-window", "sou
  * 429: a lease rate limit is exhausted (AUTH_SPEC §14-3).
  * `retryAfterSeconds` is the remaining seconds of the window (same
  * shape as the §13-3 precedent). `scope` distinguishes the two windows
- * above (omitted = an old server's response = equivalent to
- * project-window).
+ * above.
  *
  * The project window is judged *after* authorization: judged earlier,
  * an unauthorized caller would also get a 429 and "that project
@@ -147,7 +146,7 @@ export class LeaseRateLimitedError extends Schema.TaggedError<LeaseRateLimitedEr
   "LeaseRateLimited",
   {
     retryAfterSeconds: Schema.Number,
-    scope: Schema.optionalKey(LeaseRateLimitScopeSchema),
+    scope: LeaseRateLimitScopeSchema,
   },
   { httpApiStatus: 429 },
 ) {}

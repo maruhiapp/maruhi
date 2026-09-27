@@ -552,9 +552,7 @@ export const rotateEpochCompositeProgram = (
     // 同梱マニフェストの受理(§12-5 (4): エポック整合は両エントリ適用後の履歴に
     // 対するチェックポイント束縛 — §4.3 (2)。H+2 のタプルとの完全一致 = §12-4 の
     // ハッシュ一致検査を兼ねる)。メタ集合は不変(エポック前進の反映だけの
-    // 再発行 — §4.3)なので entries は保存済みの最新形そのまま。
-    // マニフェスト導入前に作成された環境の最初の rotate は保存行なし(最新 0)
-    // から manifestVersion 1 を確立する(移行経路 — session-27 §14)
+    // 再発行 — §4.3)なので entries は保存済みの最新形そのまま
     const manifestSignedBytesHashHex = yield* acceptEnvManifest({
       projectId,
       environmentId,

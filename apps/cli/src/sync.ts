@@ -82,9 +82,8 @@ export interface VerifiedProject {
    */
   readonly applied: readonly AppliedOperation[];
   /**
-   * 同じ応答に同梱された他メンバーのヘッド申告(§6.6 — **未検証**)。旧サーバー
-   * の応答には欠ける(欠落 = 空。omission は §6.3 の規範的非保証であり拒否
-   * しない)。lease 応答由来のビューでは常に空(§14-2 — 非同梱)。
+   * 同じ応答に同梱された他メンバーのヘッド申告(§6.6 — **未検証**。omission は §6.3 の
+   * 規範的非保証であり拒否しない)。lease 応答由来のビューでは常に空(§14-2 — 非同梱)。
    */
   readonly attestations: readonly DistributedAttestationWire[];
 }
@@ -264,9 +263,7 @@ export function syncProject(
       entries: snapshot.entries,
       claimedHeadSeq: snapshot.headSeq,
       claimedHeadHashHex: snapshot.headHashHex,
-      // 旧サーバーの応答には attestations が無い(欠落 = 空で受ける — §6.3 の
-      // 規範的非保証。欠落拒否の分岐は作らない)
-      attestations: snapshot.attestations ?? [],
+      attestations: snapshot.attestations,
     });
   });
 }

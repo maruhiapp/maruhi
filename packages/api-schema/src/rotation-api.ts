@@ -54,9 +54,7 @@ export const RotationFlagTriggerSchema = Schema.Literals([
  * (remove_member variant) / `targetServerKeyFingerprintHex` (revoke_server
  * variant) is present. `triggerChainSeq` is the chain seq of the removal /
  * role-change / revocation entry that produced the flag; `trigger` names that
- * operation (servers from the 2026-09-15 ES K3 release always set it — the key
- * is optional only so that a newer client still decodes an older server's
- * response, the same additive-only rule as `storedRecipientEncPubHex`).
+ * operation.
  *
  * No audit seq is carried (AUDIT_SPEC §7): the ordinal of gapless
  * numbering would leak the count of class-2 rows, so it does not
@@ -72,7 +70,7 @@ export const RotationFlagSchema = Schema.Struct({
   targetServerKeyFingerprintHex: Schema.optionalKey(KeyFingerprintHex),
   recommendedAtMs: Schema.Number,
   triggerChainSeq: PositiveInt,
-  trigger: Schema.optionalKey(RotationFlagTriggerSchema),
+  trigger: RotationFlagTriggerSchema,
 });
 
 /** GET /projects/:projectId/rotation/flags: the project's active rotation flags (AUDIT_SPEC §7). */

@@ -20,7 +20,6 @@ import { devicesGroup } from "./devices-api.ts";
 import {
   AttestationRateLimitedError,
   AttestationRegressionError,
-  ApprovalNotAcceptedError,
   AttestationRejectedError,
   AuditHeadNotReadyError,
   ChainCapacityExceededError,
@@ -31,7 +30,6 @@ import {
   CompositeRequiredError,
   DataLimitExceededError,
   DeviceLimitError,
-  DeviceOpsNotAcceptedError,
   ForbiddenError,
   ProjectAlreadyInitializedError,
   ProjectLimitError,
@@ -87,18 +85,15 @@ export const DistributedHeadAttestationSchema = Schema.Struct({
  * Full chain as stored by the project DO (entries in seq order).
  *
  * `attestations` = the current members' latest head-attestation set
- * (AUTH_SPEC §16-1). optionalKey because a new CLI × old server
- * response lacks it — **absence does not refuse** (omitted distribution
- * is CRYPTO_SPEC §6.3's normative non-guarantee = G8; a
- * refuse-when-absent branch adds no attack detection and only breaks
- * use with old servers).
+ * (AUTH_SPEC §16-1). Omitted distribution is CRYPTO_SPEC §6.3's
+ * normative non-guarantee (G8), so an empty set is not refused.
  */
 export const ChainSnapshotSchema = Schema.Struct({
   projectId: ProjectIdSchema,
   entries: Schema.Array(ChainEntrySchema),
   headSeq: PositiveInt,
   headHashHex: Sha256Hex,
-  attestations: Schema.optionalKey(Schema.Array(DistributedHeadAttestationSchema)),
+  attestations: Schema.Array(DistributedHeadAttestationSchema),
 });
 
 /**
@@ -219,21 +214,11 @@ export const membershipGroup = HttpApiGroup.make("membership")
         // (fail-closed)
         AuditHeadNotReadyError,
         CompositeRequiredError,
-        // The four-eyes 4 ops (PF1): K5+ servers accept them.
-        // ApprovalNotAccepted is what pre-K5 servers return
-        // (errors/chain.ts — the declaration stays for wire
-        // compatibility). ProposalLimit is propose's acceptance policy
-        // (AUTH_SPEC §12-8 — 32 pending, expires_at_ms capped at 30
-        // days; not a consensus rule)
-        ApprovalNotAcceptedError,
+        // ProposalLimit is propose's acceptance policy (AUTH_SPEC §12-8 —
+        // 32 pending, expires_at_ms capped at 30 days; not a consensus rule)
         ProposalLimitError,
-        // The device-key 2 ops (2026-09-19 DK): K3 (2026-09-20)+
-        // servers accept them. DeviceOpsNotAccepted is what pre-K3
-        // servers return (errors/chain.ts — the declaration stays for
-        // wire compatibility). DeviceLimit is add_device's acceptance
-        // policy (AUTH_SPEC §12-8 — 16 active devices / member /
-        // project; not a consensus rule)
-        DeviceOpsNotAcceptedError,
+        // DeviceLimit is add_device's acceptance policy
+        // (AUTH_SPEC §12-8 — 16 active devices / member / project; not a consensus rule)
         DeviceLimitError,
         ForbiddenError,
         // DO total-storage guard (AUTH_SPEC §12-8): on a DO at or above

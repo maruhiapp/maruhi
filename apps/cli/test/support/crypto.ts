@@ -259,6 +259,7 @@ export function revokeServerOp(serverKeyFingerprintHex: string): ChainOperation 
 export interface WireRecipientDek {
   readonly suite: "maruhi/v1";
   readonly epoch: number;
+  readonly recipientEncPubHex: string;
   readonly encHex: string;
   readonly ciphertextHex: string;
   readonly signatureHex: string;
@@ -314,6 +315,7 @@ export async function wrapDekFor(input: {
   return {
     suite: SUITE_ID,
     epoch: input.epoch,
+    recipientEncPubHex: input.recipient.encPubHex,
     encHex,
     ciphertextHex,
     signatureHex,

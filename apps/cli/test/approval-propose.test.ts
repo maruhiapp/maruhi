@@ -221,6 +221,7 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
       actor: owner,
       authConfig: {
         githubClientId: "dummy-client-id",
+        signupPolicy: "open",
         serverKeyFingerprintHex: serverFpHex,
         serverEncPubHex: SERVER_ENC_PUB_HEX,
       },
@@ -246,6 +247,7 @@ describe("既存コマンドの自動提案化(K6-A)", () => {
       actor: owner,
       authConfig: {
         githubClientId: "dummy-client-id",
+        signupPolicy: "open",
         serverKeyFingerprintHex: serverFpHex,
         serverEncPubHex: SERVER_ENC_PUB_HEX,
       },

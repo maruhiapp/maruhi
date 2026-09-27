@@ -215,61 +215,16 @@ describe("invite.* の読み取り(§7 の例外規定 — D1)", () => {
     expect((await fetchInvites(token(STRANGER))).status).toBe(404);
   });
 
-  it("row_id を持たない歴史行(デプロイ間隙の旧コード書き込み)は補填して返す(500 にしない)", async () => {
-    const inviteId = await issueInvite("member");
-    // マイグレーション適用後・新 worker 配信前の旧コードが書く形(row_id なし)
-    // を直接シードする。補填(読み取り前段の遅延 backfill)が無いと id の
-    // Schema encode が失敗し、このページは恒久に 500/400 になる
-    await env.DB.prepare(
-      "INSERT INTO org_audit_events (server_ts, event, actor_type, actor_user_id, project_id, payload) VALUES (99, 'invite.created', 'user', ?, ?, '{\"inviteId\":\"legacy\"}')",
-    )
-      .bind(OWNER, projectId)
-      .run();
-    const { status, events } = await fetchInvites(token(OWNER), { limit: "200" });
-    expect(status).toBe(200);
-    const ids = events.map((event) => event.id);
-    for (const id of ids) {
-      expect(id).toMatch(/^[0-9a-f]{32}$/);
-    }
-    expect(new Set(ids).size).toBe(ids.length);
-    const inviteIds = events.map((event) => event.payload?.["inviteId"]);
-    expect(inviteIds).toEqual(expect.arrayContaining(["legacy", inviteId]));
-  });
-
-  it("row_id 補填はページで観測した行に限定される(全 NULL 行への UPDATE をしない)", async () => {
-    await issueInvite("member");
-    // NULL row_id の歴史行を 2 行シードする。limit=1 の読み取りページに載るのは
-    // 新しい方(seq 大)だけ — 補填の UPDATE がページ外の NULL 行へ波及しない
-    // ことを、残った行の row_id が NULL のままであることで固定する
-    await env.DB.batch([
-      env.DB.prepare(
-        "INSERT INTO org_audit_events (server_ts, event, actor_type, actor_user_id, project_id, payload) VALUES (98, 'invite.created', 'user', ?, ?, '{\"inviteId\":\"legacy-old\"}')",
-      ).bind(OWNER, projectId),
-      env.DB.prepare(
-        "INSERT INTO org_audit_events (server_ts, event, actor_type, actor_user_id, project_id, payload) VALUES (99, 'invite.created', 'user', ?, ?, '{\"inviteId\":\"legacy-new\"}')",
-      ).bind(OWNER, projectId),
-    ]);
-    const { status, events } = await fetchInvites(token(OWNER), { limit: "1" });
-    expect(status).toBe(200);
-    expect(events[0]?.payload?.["inviteId"]).toBe("legacy-new");
-    const rows = await env.DB.prepare(
-      "SELECT row_id AS rowId, payload FROM org_audit_events WHERE row_id IS NULL",
-    ).all<{ rowId: string | null; payload: string }>();
-    // ページ外の NULL 行(legacy-old)は補填されずに残る = 1 読み取りの書き込みは
-    // 観測ページに有界。次にその行を含むページが読まれたときに補填される
-    expect(rows.results.map((row) => row.payload)).toEqual(['{"inviteId":"legacy-old"}']);
-  });
-
   it("invite.* 以外の org 系イベント・他プロジェクトの行は混入しない(述語の純度)", async () => {
     const inviteId = await issueInvite("member");
     // 同じ project_id を持つ org 系イベント(org admin 軸の領分)と、他
     // プロジェクトの invite 行を直接シードして、どちらも応答に現れないことを固定
     await env.DB.batch([
       env.DB.prepare(
-        "INSERT INTO org_audit_events (server_ts, event, actor_type, actor_user_id, org_id, project_id) VALUES (1, 'org.project_created', 'user', ?, 'org-data-0001', ?)",
+        "INSERT INTO org_audit_events (row_id, server_ts, event, actor_type, actor_user_id, org_id, project_id) VALUES (lower(hex(randomblob(16))), 1, 'org.project_created', 'user', ?, 'org-data-0001', ?)",
       ).bind(OWNER, projectId),
       env.DB.prepare(
-        "INSERT INTO org_audit_events (server_ts, event, actor_type, actor_user_id, project_id, payload) VALUES (2, 'invite.created', 'user', ?, 'project-other', '{\"inviteId\":\"other\"}')",
+        "INSERT INTO org_audit_events (row_id, server_ts, event, actor_type, actor_user_id, project_id, payload) VALUES (lower(hex(randomblob(16))), 2, 'invite.created', 'user', ?, 'project-other', '{\"inviteId\":\"other\"}')",
       ).bind(OWNER),
     ]);
     const { events } = await fetchInvites(token(OWNER), { limit: "200" });

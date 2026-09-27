@@ -146,48 +146,6 @@ export class CompositeRequiredError extends Schema.TaggedError<CompositeRequired
 ) {}
 
 /**
- * 422: the four-eyes operations (`set_approval_policy` / `propose` / `approve`
- * / `withdraw` — CRYPTO_SPEC §6.2 PF1) are part of the chain format but the
- * server does not accept them. Raised by servers before ES + PF1 K5 (the
- * acceptance side effects — audit mirror rows for the applied inner op,
- * rotation detection, wrap cleanup, pending-proposal limit — landed together
- * with acceptance in K5). A K5+ server never raises it; the declaration stays
- * on the wire so a newer CLI gets a typed message against an older
- * self-hosted server (design record es-design.md §11 K5-A — removing it
- * from the wire requires an owner ruling).
- */
-export class ApprovalNotAcceptedError extends Schema.TaggedError<ApprovalNotAcceptedError>()(
-  "ApprovalNotAccepted",
-  { op: Schema.Literals(["set_approval_policy", "propose", "approve", "withdraw"]) },
-  { httpApiStatus: 422 },
-) {}
-
-/**
- * 422: the device-key operations (`add_device` / `revoke_device` — CRYPTO_SPEC
- * §6.2, 2026-09-19 DK) are part of the chain format but this server does not
- * accept them yet. Raised by servers before DK K3 (the acceptance side
- * effects — mirror rows, rotation detection for revoked devices,
- * attestation-row cleanup, the per-member device limit — land together
- * with acceptance in K3; design record dk-design.md §3 / §7 K2-6 — the
- * ES K2-10 principle "the set of ops the server accepts = the set of
- * ops whose acceptance side effects are implemented"). A K3+ server
- * never raises it; the declaration stays on the wire so a newer CLI
- * gets a typed message against an older self-hosted server (same
- * treatment as ApprovalNotAccepted). Since K3 (2026-09-20) the server's
- * raising source is gone (design record dk-design.md §8 — the same
- * "stays on the wire" as ES K5-A). Removal milestone: after K4 (the
- * device-key CLI) ships and the compatibility window supporting
- * pre-K3 self-hosted servers ends (owner ruling — same treatment as
- * ApprovalNotAccepted). Until then it remains only for the CLI's typed
- * error display.
- */
-export class DeviceOpsNotAcceptedError extends Schema.TaggedError<DeviceOpsNotAcceptedError>()(
-  "DeviceOpsNotAccepted",
-  { op: Schema.Literals(["add_device", "revoke_device"]) },
-  { httpApiStatus: 422 },
-) {}
-
-/**
  * 422: an `add_device` entry would exceed the per-member active-device limit
  * (AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 16 active devices per member per
  * project, 2026-09-19 DK). Counted on the chain-derived state before the entry

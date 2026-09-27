@@ -681,22 +681,14 @@ function sendApproval(input: {
 /** 自分宛の分片行のうち、この端末の鍵へ封印された行を選ぶ(K3-10 — `deviceShares`)。 */
 function ownDeviceShare(
   share: {
-    readonly encHex: string;
-    readonly ciphertextHex: string;
-    readonly deviceShares?:
-      | readonly {
-          readonly guardianKeyFingerprintHex: string;
-          readonly encHex: string;
-          readonly ciphertextHex: string;
-        }[]
-      | undefined;
+    readonly deviceShares: readonly {
+      readonly guardianKeyFingerprintHex: string;
+      readonly encHex: string;
+      readonly ciphertextHex: string;
+    }[];
   },
   masterKeys: MasterKeys,
 ): { readonly encHex: string; readonly ciphertextHex: string } | null {
-  if (share.deviceShares === undefined) {
-    // 旧サーバー(端末 1 つ = 唯一の行)
-    return { encHex: share.encHex, ciphertextHex: share.ciphertextHex };
-  }
   const mine = share.deviceShares.find(
     (row) => row.guardianKeyFingerprintHex === masterKeys.fingerprintHex,
   );

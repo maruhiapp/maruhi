@@ -1,8 +1,8 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "d61a1961-3a74-40cc-b0c1-7e879f8c799c",
-  "prevIds": ["e8ee030d-17c2-4e15-bd20-f9db0c4fb509"],
+  "id": "8f2be310-9f43-414d-b84e-5a3ac54d7ae8",
+  "prevIds": ["00000000-0000-0000-0000-000000000000"],
   "ddl": [
     {
       "name": "api_tokens",
@@ -17,11 +17,39 @@
       "entityType": "tables"
     },
     {
+      "name": "device_add_requests",
+      "entityType": "tables"
+    },
+    {
+      "name": "devices",
+      "entityType": "tables"
+    },
+    {
       "name": "flow_signing_keys",
       "entityType": "tables"
     },
     {
+      "name": "guardian_groups",
+      "entityType": "tables"
+    },
+    {
+      "name": "guardian_shares",
+      "entityType": "tables"
+    },
+    {
       "name": "invitations",
+      "entityType": "tables"
+    },
+    {
+      "name": "key_handoff_approvals",
+      "entityType": "tables"
+    },
+    {
+      "name": "key_handoff_requests",
+      "entityType": "tables"
+    },
+    {
+      "name": "key_wrap_windows",
       "entityType": "tables"
     },
     {
@@ -30,6 +58,10 @@
     },
     {
       "name": "login_failed_windows",
+      "entityType": "tables"
+    },
+    {
+      "name": "master_key_wraps",
       "entityType": "tables"
     },
     {
@@ -146,7 +178,7 @@
     },
     {
       "type": "integer",
-      "notNull": false,
+      "notNull": true,
       "autoincrement": false,
       "default": null,
       "generated": null,
@@ -306,6 +338,146 @@
     },
     {
       "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "user_id",
+      "entityType": "columns",
+      "table": "device_add_requests"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "key_fingerprint_hex",
+      "entityType": "columns",
+      "table": "device_add_requests"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "enc_pub_hex",
+      "entityType": "columns",
+      "table": "device_add_requests"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "sig_pub_hex",
+      "entityType": "columns",
+      "table": "device_add_requests"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "label",
+      "entityType": "columns",
+      "table": "device_add_requests"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "table": "device_add_requests"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "expires_at",
+      "entityType": "columns",
+      "table": "device_add_requests"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "user_id",
+      "entityType": "columns",
+      "table": "devices"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "key_fingerprint_hex",
+      "entityType": "columns",
+      "table": "devices"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "enc_pub_hex",
+      "entityType": "columns",
+      "table": "devices"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "sig_pub_hex",
+      "entityType": "columns",
+      "table": "devices"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "label",
+      "entityType": "columns",
+      "table": "devices"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "table": "devices"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "token_id",
+      "entityType": "columns",
+      "table": "devices"
+    },
+    {
+      "type": "text",
       "notNull": false,
       "autoincrement": false,
       "default": null,
@@ -342,6 +514,146 @@
       "generated": null,
       "name": "id",
       "entityType": "columns",
+      "table": "guardian_groups"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "user_id",
+      "entityType": "columns",
+      "table": "guardian_groups"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "mode",
+      "entityType": "columns",
+      "table": "guardian_groups"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "suite",
+      "entityType": "columns",
+      "table": "guardian_groups"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "nonce_hex",
+      "entityType": "columns",
+      "table": "guardian_groups"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "ciphertext_hex",
+      "entityType": "columns",
+      "table": "guardian_groups"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "table": "guardian_groups"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "group_id",
+      "entityType": "columns",
+      "table": "guardian_shares"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "share_index",
+      "entityType": "columns",
+      "table": "guardian_shares"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "guardian_user_id",
+      "entityType": "columns",
+      "table": "guardian_shares"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "guardian_enc_pub_hex",
+      "entityType": "columns",
+      "table": "guardian_shares"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "guardian_key_fingerprint_hex",
+      "entityType": "columns",
+      "table": "guardian_shares"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "enc_hex",
+      "entityType": "columns",
+      "table": "guardian_shares"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "ciphertext_hex",
+      "entityType": "columns",
+      "table": "guardian_shares"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
       "table": "invitations"
     },
     {
@@ -360,7 +672,37 @@
       "autoincrement": false,
       "default": null,
       "generated": null,
-      "name": "token_hash",
+      "name": "link_pub",
+      "entityType": "columns",
+      "table": "invitations"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "head_hash",
+      "entityType": "columns",
+      "table": "invitations"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "head_seq",
+      "entityType": "columns",
+      "table": "invitations"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "issue_signature",
       "entityType": "columns",
       "table": "invitations"
     },
@@ -371,6 +713,26 @@
       "default": null,
       "generated": null,
       "name": "role",
+      "entityType": "columns",
+      "table": "invitations"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "scope_kind",
+      "entityType": "columns",
+      "table": "invitations"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "scope_environments",
       "entityType": "columns",
       "table": "invitations"
     },
@@ -445,6 +807,16 @@
       "table": "invitations"
     },
     {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "link_signature",
+      "entityType": "columns",
+      "table": "invitations"
+    },
+    {
       "type": "integer",
       "notNull": false,
       "autoincrement": false,
@@ -463,6 +835,176 @@
       "name": "created_at",
       "entityType": "columns",
       "table": "invitations"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "request_id",
+      "entityType": "columns",
+      "table": "key_handoff_approvals"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "source",
+      "entityType": "columns",
+      "table": "key_handoff_approvals"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "share_index",
+      "entityType": "columns",
+      "table": "key_handoff_approvals"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "approver_user_id",
+      "entityType": "columns",
+      "table": "key_handoff_approvals"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "approver_key_fingerprint_hex",
+      "entityType": "columns",
+      "table": "key_handoff_approvals"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "enc_hex",
+      "entityType": "columns",
+      "table": "key_handoff_approvals"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "ciphertext_hex",
+      "entityType": "columns",
+      "table": "key_handoff_approvals"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "table": "key_handoff_approvals"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "key_handoff_requests"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "user_id",
+      "entityType": "columns",
+      "table": "key_handoff_requests"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "table": "key_handoff_requests"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "expires_at",
+      "entityType": "columns",
+      "table": "key_handoff_requests"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "collected_at",
+      "entityType": "columns",
+      "table": "key_handoff_requests"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "user_id",
+      "entityType": "columns",
+      "table": "key_wrap_windows"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "kind",
+      "entityType": "columns",
+      "table": "key_wrap_windows"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "window_start",
+      "entityType": "columns",
+      "table": "key_wrap_windows"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "count",
+      "entityType": "columns",
+      "table": "key_wrap_windows"
     },
     {
       "type": "text",
@@ -553,6 +1095,96 @@
       "name": "suppressed_count",
       "entityType": "columns",
       "table": "login_failed_windows"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "master_key_wraps"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "user_id",
+      "entityType": "columns",
+      "table": "master_key_wraps"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "kind",
+      "entityType": "columns",
+      "table": "master_key_wraps"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "suite",
+      "entityType": "columns",
+      "table": "master_key_wraps"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "params",
+      "entityType": "columns",
+      "table": "master_key_wraps"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "nonce_hex",
+      "entityType": "columns",
+      "table": "master_key_wraps"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "ciphertext_hex",
+      "entityType": "columns",
+      "table": "master_key_wraps"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "table": "master_key_wraps"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "table": "master_key_wraps"
     },
     {
       "type": "text",
@@ -776,7 +1408,7 @@
     },
     {
       "type": "text",
-      "notNull": false,
+      "notNull": true,
       "autoincrement": false,
       "default": null,
       "generated": null,
@@ -1035,26 +1667,6 @@
       "table": "recovery_wraps"
     },
     {
-      "type": "integer",
-      "notNull": false,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "fetch_window_start",
-      "entityType": "columns",
-      "table": "recovery_wraps"
-    },
-    {
-      "type": "integer",
-      "notNull": true,
-      "autoincrement": false,
-      "default": "0",
-      "generated": null,
-      "name": "fetch_count",
-      "entityType": "columns",
-      "table": "recovery_wraps"
-    },
-    {
       "type": "text",
       "notNull": false,
       "autoincrement": false,
@@ -1196,7 +1808,7 @@
     },
     {
       "type": "text",
-      "notNull": false,
+      "notNull": true,
       "autoincrement": false,
       "default": null,
       "generated": null,
@@ -1373,9 +1985,97 @@
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "nameExplicit": false,
+      "name": "fk_device_add_requests_user_id_users_id_fk",
+      "entityType": "fks",
+      "table": "device_add_requests"
+    },
+    {
+      "columns": ["user_id"],
+      "tableTo": "users",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "nameExplicit": false,
+      "name": "fk_devices_user_id_users_id_fk",
+      "entityType": "fks",
+      "table": "devices"
+    },
+    {
+      "columns": ["user_id"],
+      "tableTo": "users",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "nameExplicit": false,
+      "name": "fk_guardian_groups_user_id_users_id_fk",
+      "entityType": "fks",
+      "table": "guardian_groups"
+    },
+    {
+      "columns": ["group_id"],
+      "tableTo": "guardian_groups",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_guardian_shares_group_id_guardian_groups_id_fk",
+      "entityType": "fks",
+      "table": "guardian_shares"
+    },
+    {
+      "columns": ["guardian_user_id"],
+      "tableTo": "users",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "nameExplicit": false,
+      "name": "fk_guardian_shares_guardian_user_id_users_id_fk",
+      "entityType": "fks",
+      "table": "guardian_shares"
+    },
+    {
+      "columns": ["request_id"],
+      "tableTo": "key_handoff_requests",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_key_handoff_approvals_request_id_key_handoff_requests_id_fk",
+      "entityType": "fks",
+      "table": "key_handoff_approvals"
+    },
+    {
+      "columns": ["user_id"],
+      "tableTo": "users",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "nameExplicit": false,
+      "name": "fk_key_handoff_requests_user_id_users_id_fk",
+      "entityType": "fks",
+      "table": "key_handoff_requests"
+    },
+    {
+      "columns": ["user_id"],
+      "tableTo": "users",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "nameExplicit": false,
       "name": "fk_linked_identities_user_id_users_id_fk",
       "entityType": "fks",
       "table": "linked_identities"
+    },
+    {
+      "columns": ["user_id"],
+      "tableTo": "users",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "nameExplicit": false,
+      "name": "fk_master_key_wraps_user_id_users_id_fk",
+      "entityType": "fks",
+      "table": "master_key_wraps"
     },
     {
       "columns": ["org_id"],
@@ -1431,6 +2131,41 @@
       "name": "fk_sessions_user_id_users_id_fk",
       "entityType": "fks",
       "table": "sessions"
+    },
+    {
+      "columns": ["user_id", "key_fingerprint_hex"],
+      "nameExplicit": false,
+      "name": "device_add_requests_pk",
+      "entityType": "pks",
+      "table": "device_add_requests"
+    },
+    {
+      "columns": ["user_id", "key_fingerprint_hex"],
+      "nameExplicit": false,
+      "name": "devices_pk",
+      "entityType": "pks",
+      "table": "devices"
+    },
+    {
+      "columns": ["group_id", "share_index", "guardian_key_fingerprint_hex"],
+      "nameExplicit": false,
+      "name": "guardian_shares_pk",
+      "entityType": "pks",
+      "table": "guardian_shares"
+    },
+    {
+      "columns": ["request_id", "source", "share_index"],
+      "nameExplicit": false,
+      "name": "key_handoff_approvals_pk",
+      "entityType": "pks",
+      "table": "key_handoff_approvals"
+    },
+    {
+      "columns": ["user_id", "kind"],
+      "nameExplicit": false,
+      "name": "key_wrap_windows_pk",
+      "entityType": "pks",
+      "table": "key_wrap_windows"
     },
     {
       "columns": ["provider", "provider_user_id"],
@@ -1491,8 +2226,22 @@
     {
       "columns": ["id"],
       "nameExplicit": false,
+      "name": "guardian_groups_pk",
+      "table": "guardian_groups",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["id"],
+      "nameExplicit": false,
       "name": "invitations_pk",
       "table": "invitations",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["id"],
+      "nameExplicit": false,
+      "name": "key_handoff_requests_pk",
+      "table": "key_handoff_requests",
       "entityType": "pks"
     },
     {
@@ -1500,6 +2249,13 @@
       "nameExplicit": false,
       "name": "login_failed_windows_pk",
       "table": "login_failed_windows",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["id"],
+      "nameExplicit": false,
+      "name": "master_key_wraps_pk",
+      "table": "master_key_wraps",
       "entityType": "pks"
     },
     {
@@ -1635,14 +2391,64 @@
     {
       "columns": [
         {
-          "value": "token_hash",
+          "value": "user_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "gg_user",
+      "entityType": "indexes",
+      "table": "guardian_groups"
+    },
+    {
+      "columns": [
+        {
+          "value": "group_id",
+          "isExpression": false
+        },
+        {
+          "value": "guardian_user_id",
+          "isExpression": false
+        },
+        {
+          "value": "guardian_key_fingerprint_hex",
           "isExpression": false
         }
       ],
       "isUnique": true,
       "where": null,
       "origin": "manual",
-      "name": "inv_token_hash",
+      "name": "gs_group_guardian_device",
+      "entityType": "indexes",
+      "table": "guardian_shares"
+    },
+    {
+      "columns": [
+        {
+          "value": "guardian_user_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "gs_guardian",
+      "entityType": "indexes",
+      "table": "guardian_shares"
+    },
+    {
+      "columns": [
+        {
+          "value": "link_pub",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "inv_link_pub",
       "entityType": "indexes",
       "table": "invitations"
     },
@@ -1692,9 +2498,51 @@
       "isUnique": false,
       "where": null,
       "origin": "manual",
+      "name": "khr_user",
+      "entityType": "indexes",
+      "table": "key_handoff_requests"
+    },
+    {
+      "columns": [
+        {
+          "value": "expires_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "khr_expires",
+      "entityType": "indexes",
+      "table": "key_handoff_requests"
+    },
+    {
+      "columns": [
+        {
+          "value": "user_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
       "name": "li_user",
       "entityType": "indexes",
       "table": "linked_identities"
+    },
+    {
+      "columns": [
+        {
+          "value": "user_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "mkw_user",
+      "entityType": "indexes",
+      "table": "master_key_wraps"
     },
     {
       "columns": [

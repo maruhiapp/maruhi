@@ -201,7 +201,7 @@ const MEMBER_COLUMNS: TableColumn<MemberRow>[] = [
 
 function attestationSummary(snapshot: ChainSnapshot): string {
   // 申告の形だけ見る(敵対サーバー対策 — 読めない行は数えずに落とす)
-  const attestations = (snapshot.attestations ?? []).filter(
+  const attestations = snapshot.attestations.filter(
     (a) =>
       typeof a === "object" &&
       a !== null &&
@@ -748,21 +748,21 @@ interface FlagRow extends Record<string, unknown> {
   recommendedAtMs: number;
 }
 
-// 人を対象にする trigger の字面(未知・欠落は従来どおり除名として推定 — 旧サーバーの行)。
+// 人を対象にする trigger の字面(remove_member は既定の除名の字面)。
 // Map なのでプロトタイプ鎖の名前(敵対的な trigger 文字列)に当たらない
 const USER_TRIGGER_LABELS: ReadonlyMap<string, string> = new Map([
   ["change_role", "member role/scope changed"],
   ["revoke_device", "device revoked"],
 ]);
 
-function userTriggerLabel(trigger: string | undefined): string {
-  return (trigger === undefined ? undefined : USER_TRIGGER_LABELS.get(trigger)) ?? "member removed";
+function userTriggerLabel(trigger: RotationFlag["trigger"]): string {
+  return USER_TRIGGER_LABELS.get(trigger) ?? "member removed";
 }
 
 /**
  * トリガー(削除 / 降格・縮小された主体 / 失効された端末の持ち主 / 失効されたサーバー鍵)
- * の表示形。`trigger`(AUDIT_SPEC §3.3 — 2026-09-14 ES、`revoke_device` は 2026-09-19 DK)が
- * あればそれを使い、無ければ従来どおり target の有無から推定する(旧サーバーの応答)。
+ * の表示形。人が対象なら `trigger`(AUDIT_SPEC §3.3 — 2026-09-14 ES、`revoke_device` は
+ * 2026-09-19 DK)の字面を使う。
  * 末尾に契機のチェーン seq(`triggerChainSeq` — 応答が運ぶ)を添える: `revoke_device` の行は
  * 端末 FP を運ばないので、seq で Audit タブのミラー行(`chain.device_revoked` — FP 入り)を
  * 辿れるようにする(K5-5 再探索)。

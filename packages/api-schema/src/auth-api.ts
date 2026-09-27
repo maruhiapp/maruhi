@@ -140,26 +140,20 @@ export const SignupCodeSchema = Schema.String.check(Schema.isMaxLength(128));
  *
  * signupPolicy (AUTH_SPEC §3 — H1) is advisory (public information — the
  * same content as the landing-page guidance text; never an input to
- * verification or authorization rules). It is optionalKey so the derived
- * client does not break on responses from older servers that lack the
- * field (when absent, proceed as before — the CLI's fail-fast does not
- * stop a login on a missing advisory). New servers always include it.
+ * verification or authorization rules).
  */
 export const AuthConfigSchema = Schema.Struct({
   githubClientId: Schema.String,
   serverKeyFingerprintHex: Schema.optionalKey(KeyFingerprintHex),
   serverEncPubHex: Schema.optionalKey(EncPubHex),
-  signupPolicy: Schema.optionalKey(SignupPolicySchema),
+  signupPolicy: SignupPolicySchema,
 });
 
 /**
  * One API token in the self-inventory listing (AUTH_SPEC §6 — W3a).
  * The raw value and token_hash **do not exist, structurally** (no column
  * in the schema = the type closes the path by which an implementation
- * could return them by mistake). A null `expiresAtMs` is a legacy
- * non-expiring row from before the migration (ruling CE) and is treated
- * at verification time with the same 401 as an expired token
- * (fail-closed).
+ * could return them by mistake).
  */
 export const TokenSummarySchema = Schema.Struct({
   id: Schema.String,
@@ -168,7 +162,7 @@ export const TokenSummarySchema = Schema.Struct({
   scopes: Schema.Array(TokenScopeSchema),
   createdAtMs: Schema.Number,
   lastUsedAtMs: Schema.NullOr(Schema.Number),
-  expiresAtMs: Schema.NullOr(Schema.Number),
+  expiresAtMs: Schema.Number,
 });
 
 /** GET /auth/tokens: the caller's own tokens (AUTH_SPEC §6 — W3a). */

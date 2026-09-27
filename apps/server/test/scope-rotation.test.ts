@@ -327,7 +327,7 @@ const grantRead = (
   rotationFlagEvents: () => [],
 });
 
-describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
+describe("窓導出の fail-safe と trigger の検査(純関数)", () => {
   it("scope を読めない member_added 行は all として窓を開く(検出は見逃さない側 — K3-F)", () => {
     const events = detectMemberRemoval({
       read: fakeRead({
@@ -586,42 +586,20 @@ describe("窓導出の fail-safe と trigger の補完(純関数)", () => {
     expect(events.map((event) => event.variableId)).toEqual(["v"]);
   });
 
-  it("K3 前の rotation.recommended 行(trigger なし)は target 列から補完する", () => {
-    const base = {
-      serverTs: 1,
-      event: "rotation.recommended",
-      environmentId: "env-a",
-      variableId: "v",
-    };
-    const flags = deriveEffectiveFlags([
-      {
-        ...base,
-        seq: 1,
-        targetUserId: "u",
-        targetKeyFingerprintHex: null,
-        payload: { basis: "read", triggerChainSeq: 3 },
-      },
-      {
-        ...base,
-        seq: 2,
-        variableId: "w",
-        targetUserId: null,
-        targetKeyFingerprintHex: "ab".repeat(16),
-        payload: { basis: "readable", triggerChainSeq: 4 },
-      },
-      {
-        ...base,
-        seq: 3,
-        variableId: "x",
-        targetUserId: "u",
-        targetKeyFingerprintHex: null,
-        payload: { basis: "readable", triggerChainSeq: 5, trigger: "change_role" },
-      },
-    ]);
-    expect(flags.map((flag) => [flag.variableId, flag.trigger])).toEqual([
-      ["v", "remove_member"],
-      ["w", "revoke_server"],
-      ["x", "change_role"],
-    ]);
+  it("trigger の無い rotation.recommended 行は破損として defect にする(書き手はサーバーだけ)", () => {
+    expect(() =>
+      deriveEffectiveFlags([
+        {
+          seq: 1,
+          serverTs: 1,
+          event: "rotation.recommended",
+          environmentId: "env-a",
+          variableId: "v",
+          targetUserId: "u",
+          targetKeyFingerprintHex: null,
+          payload: { basis: "read", triggerChainSeq: 3 },
+        },
+      ]),
+    ).toThrow("rotation.recommended row has no valid trigger");
   });
 });

@@ -162,9 +162,9 @@ export class MetaStatementRejectedError extends Schema.TaggedError<MetaStatement
  *
  * - `schema-policy-disabled` — new adoption of layout v2 (a v2
  *   creation at metaVersion 1, or a v2 reissuance of a v1 variable) is
- *   not accepted in a disabled project (the enablement gate —
- *   protecting old verifiers; continuation statements of an already-v2
- *   variable are accepted regardless of policy)
+ *   not accepted in a disabled project (the enablement gate;
+ *   continuation statements of an already-v2 variable are accepted
+ *   regardless of policy)
  * - `schema-required` — in a locked project, a variable creation
  *   (metaVersion 1) does not satisfy layoutVersion 2 and non-empty
  *   varType (a one-time check at creation — a later schema reissuance

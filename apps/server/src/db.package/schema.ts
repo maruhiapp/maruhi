@@ -107,7 +107,7 @@ export const apiTokens = sqliteTable(
     tokenPrefix: text("token_prefix").notNull(),
     /** TokenScope の JSON 配列(AUTH_SPEC §6 のスコープ表現) */
     scopes: text("scopes").notNull(),
-    expiresAt: integer("expires_at"),
+    expiresAt: integer("expires_at").notNull(),
     createdAt: integer("created_at").notNull(),
     lastUsedAt: integer("last_used_at"),
   },
@@ -231,13 +231,6 @@ export const recoveryWraps = sqliteTable("recovery_wraps", {
   ciphertextHex: text("ciphertext_hex").notNull(),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
-  /**
-   * 旧: ブロブ取得の固定窓レート制限(AUTH_SPEC §13-3)。KL3(§13-8)以降は
-   * 種別合算の窓 `key_wrap_windows` へ移行し、この 2 列は書かない(列は据え置き —
-   * 既存行の互換のため。削除は後続のマイグレーションで)
-   */
-  fetchWindowStart: integer("fetch_window_start"),
-  fetchCount: integer("fetch_count").notNull().default(0),
 });
 
 // ---------------------------------------------------------------------------
@@ -542,7 +535,7 @@ export const invitations = sqliteTable(
 const auditEventColumns = {
   seq: integer("seq").primaryKey({ autoIncrement: true }),
   /** ワイヤ行識別子(16 バイト乱数 hex — AUDIT_SPEC §5.1 / §7。seq はワイヤに出さない) */
-  rowId: text("row_id"),
+  rowId: text("row_id").notNull(),
   /** サーバー受理時刻(unix ms) */
   serverTs: integer("server_ts").notNull(),
   /** AUDIT_SPEC §3 のイベント名(`領域.動詞`) */

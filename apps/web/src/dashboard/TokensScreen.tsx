@@ -6,8 +6,7 @@
 //   全ロールで可視(可視性 §5)
 // - **発行・生値表示は置かない**(ADR-0018 改訂 2 — 発行経路は device flow の
 //   端末のみ。応答に生値・ハッシュは構造ごと存在しない — TokenSummarySchema)
-// - 期限切れ(expiresAtMs が過去)と null(移行前の旧無期限行 — 検証側は
-//   fail-closed で期限切れ扱い)は Expired のサーバー申告表示(裁定 CQ)
+// - 期限切れ(expiresAtMs が過去)は Expired のサーバー申告表示(裁定 CQ)
 // - 失効はインライン 2 段階確認(裁定 CO)。自トークンの失効は稼働中の
 //   CLI / CI を即 401 にするため、帰結の注記をテーブル下へ常時表示する
 import { HStack, VStack } from "@astryxdesign/core/Layout";
@@ -43,7 +42,7 @@ interface TokenRow extends Record<string, unknown> {
   tokenPrefix: string;
   token: TokenSummary;
   lastUsedAtMs: number | null;
-  expiresAtMs: number | null;
+  expiresAtMs: number;
 }
 
 /**

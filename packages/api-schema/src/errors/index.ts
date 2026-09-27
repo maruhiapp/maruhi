@@ -51,7 +51,6 @@ export {
   AttestationRejectReasonSchema,
 } from "./attestation.ts";
 export {
-  ApprovalNotAcceptedError,
   ChainCapacityExceededError,
   ChainEntryInvalidError,
   ChainEntryTooLargeError,
@@ -59,7 +58,6 @@ export {
   ChainInvalidReasonSchema,
   CompositeRequiredError,
   DeviceLimitError,
-  DeviceOpsNotAcceptedError,
   ProjectAlreadyInitializedError,
   ProjectLimitError,
   ProjectNotFoundError,
