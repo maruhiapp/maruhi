@@ -1,0 +1,31 @@
+# Files allowed to contain non-English text (ADR-0019 decision 2).
+# Exact repo-relative path, or a directory prefix ending in `/`.
+# Remove entries whose content gets fully translated.
+
+# A JA-to-EN term mapping table — Japanese terms are its content by definition.
+docs/GLOSSARY.md
+
+# Contains the CJK detection pattern itself.
+scripts/check-english.mjs
+
+# Third-party license text that must stay verbatim.
+apps/web/public/fonts/OFL-NotoSansCJK.txt
+
+# Copyright-holder name in license files is a proper noun (the author's
+# handle); transliteration is the owner's call, not a translator's.
+LICENSE.md
+apps/cli/LICENSE
+apps/server/LICENSE.md
+apps/web/LICENSE.md
+packages/api-schema/LICENSE
+packages/core/LICENSE
+packages/crypto/LICENSE
+
+# Brand mark assets — the comments name the kanji glyph the mark derives from.
+apps/site/public/favicon.svg
+apps/site/public/logo-dark.svg
+apps/site/public/logo.svg
+apps/web/public/favicon.svg
+apps/web/public/logo-inverted.svg
+apps/web/public/logo-mono.svg
+apps/web/public/logo.svg

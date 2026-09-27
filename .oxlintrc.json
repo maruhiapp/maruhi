@@ -9,72 +9,80 @@
   "ignorePatterns": ["fallow-baselines", ".agents", ".claude", ".deepsec"],
   "overrides": [
     {
-      // oxlint 1.85 が correctness に昇格させた。テスト内の補助関数を外へ出す大規模な
-      // 移動で、捕捉の有無は呼び出しのたびに変わりうる。局所性を残す。
+      // Promoted to correctness by oxlint 1.85. Moving helper functions out of
+      // tests is a large-scale migration and whether a capture exists varies
+      // per call site. Keep the locality.
       "files": ["**/test/**", "**/*.test.ts"],
       "rules": { "unicorn/consistent-function-scoping": "off" }
     },
     {
-      // Astryx styling 規律(ADR-0013、B2 運用)。詳細は CLAUDE.md の styling 規律を参照
+      // Astryx styling discipline (ADR-0013, B2 operation). Details: the
+      // styling-discipline section of CLAUDE.md
       "files": ["apps/web/**/*.{js,jsx,ts,tsx}"],
       "rules": {
         "eslint-js/no-restricted-syntax": [
           "error",
           {
             "selector": "JSXAttribute[name.name='className']",
-            "message": "className は禁止。Astryx の xstyle(stylex.create + typed tokens)か defineTheme を使う(CLAUDE.md の styling 規律)"
+            "message": "className is forbidden. Use Astryx xstyle (stylex.create + typed tokens) or defineTheme (see the styling discipline in CLAUDE.md)"
           },
           {
             "selector": "JSXAttribute[name.name='style']",
-            "message": "インライン style は禁止。Astryx の xstyle(stylex.create + typed tokens)か defineTheme を使う(CLAUDE.md の styling 規律)"
+            "message": "Inline style is forbidden. Use Astryx xstyle (stylex.create + typed tokens) or defineTheme (see the styling discipline in CLAUDE.md)"
           },
           {
             "selector": "CallExpression[callee.object.name='stylex'][callee.property.name='props']",
-            "message": "stylex.props による生 DOM のスタイリングは apps/web/src/ui.package/ 内のみ。アプリコードは Astryx コンポーネント + xstyle を使う"
+            "message": "stylex.props on raw DOM is only allowed inside apps/web/src/ui.package/. App code uses Astryx components + xstyle"
           }
         ]
       }
     },
     {
-      // ui.package は新規視覚パターンの置き場所なので styling 制限を解除
+      // ui.package is where new visual patterns live, so the styling
+      // restrictions are lifted there
       "files": ["apps/web/**/ui.package/**"],
       "rules": {
         "eslint-js/no-restricted-syntax": "off"
       }
     },
     {
-      // 端末鍵分離以後の語彙(DK K7-5 / K7-13)。利用者に見える文言(文字列・テンプレート)は
-      // "device key" / "reserve key" と言い、"master key" は永続化された名前(`master::` /
-      // `MasterKeys` — K4-12)とコメントにだけ残る。help golden と docs は
-      // apps/site/test/unit/cli-vocabulary.test.ts が留め、実行時文言はこの規則が留める
+      // Vocabulary since the device-key separation (DK K7-5 / K7-13).
+      // User-facing text (strings and templates) says "device key" /
+      // "reserve key"; "master key" remains only in persisted names
+      // (`master::` / `MasterKeys` — K4-12) and in comments. The help golden
+      // and docs are pinned by apps/site/test/unit/cli-vocabulary.test.ts,
+      // and runtime text is pinned by this rule
       "files": ["apps/cli/src/**/*.ts"],
       "rules": {
         "eslint-js/no-restricted-syntax": [
           "error",
           {
             "selector": "Literal[value=/master[ -]key|master private key/i]",
-            "message": "利用者に見える文言では \"master key\" と言わない。この端末の鍵は \"device key\"、台帳の鍵は \"reserve key\"(DK K7-5)"
+            "message": "User-facing text must not say \"master key\". This device's key is \"device key\"; the ledger's key is \"reserve key\" (DK K7-5)"
           },
           {
             "selector": "TemplateElement[value.raw=/master[ -]key|master private key/i]",
-            "message": "利用者に見える文言では \"master key\" と言わない。この端末の鍵は \"device key\"、台帳の鍵は \"reserve key\"(DK K7-5)"
+            "message": "User-facing text must not say \"master key\". This device's key is \"device key\"; the ledger's key is \"reserve key\" (DK K7-5)"
           }
         ]
       }
     },
     {
-      // HttpApi の応答 envelope は名前を持つ(DK K9-4 / K9-5 / K9-7)。`HttpApiEndpoint.*(…)` の
-      // options の `success` の値の中に inline の `Schema.Struct` を書かない — 包んだ形
-      // (`.annotate` / `.pipe` / `Schema.Array(...)`)も子孫結合で落とす。`payload` / `params` /
-      // `error` の Struct、`HttpApiSchema.NoContent`、データ Schema の `success` という名の
-      // フィールドは対象外。エンドポイントを定義するのはこのパッケージだけ(apps は型を参照するのみ)
+      // HttpApi response envelopes are named (DK K9-4 / K9-5 / K9-7). Do not
+      // write an inline `Schema.Struct` as the `success` value in the options
+      // of `HttpApiEndpoint.*(…)` — wrapped forms (`.annotate` / `.pipe` /
+      // `Schema.Array(...)`) are also caught by descendant combination.
+      // Excluded: `payload` / `params` / `error` Structs,
+      // `HttpApiSchema.NoContent`, and a field literally named `success` on a
+      // data Schema. Endpoints are defined only in this package (apps only
+      // reference the types)
       "files": ["packages/api-schema/src/**/*.ts"],
       "rules": {
         "eslint-js/no-restricted-syntax": [
           "error",
           {
             "selector": "CallExpression[callee.object.name='HttpApiEndpoint'] > ObjectExpression > Property:matches([key.name='success'], [key.value='success']) CallExpression[callee.object.name='Schema'][callee.property.name='Struct']",
-            "message": "success に inline の Schema.Struct を書かない。Web / CLI が導出型を取れるよう、行の型の後に名前付きの export const(一覧 = 行の語幹 + List、取得 = 資源 + Result、作成 = 資源 + 動詞 + Result)を置いて index.ts から export する(DK K9-4)"
+            "message": "Do not write an inline Schema.Struct into success. Place a named export const after the row's type (list = row stem + List, read = resource + Result, create = resource + verb + Result) and export it from index.ts so Web / CLI can take the derived type (DK K9-4)"
           }
         ]
       }

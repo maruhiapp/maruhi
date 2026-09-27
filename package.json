@@ -7,7 +7,8 @@
   ],
   "type": "module",
   "scripts": {
-    "check": "bun run fmt:check && bun run lint && bun run typecheck && bun run importlint && bun run fallow:audit && bun run doctor && bun run test",
+    "check": "bun run check:english && bun run fmt:check && bun run lint && bun run typecheck && bun run importlint && bun run fallow:audit && bun run doctor && bun run test",
+    "check:english": "bun scripts/check-english.mjs",
     "doctor": "bun run --filter @maruhi/web doctor",
     "fallow:audit": "fallow audit",
     "fallow:baseline": "fallow dead-code --save-baseline fallow-baselines/dead-code.json && fallow health --save-baseline fallow-baselines/health.json --baseline-mode identity && fallow dupes --save-baseline fallow-baselines/dupes.json",
