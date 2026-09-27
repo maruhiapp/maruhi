@@ -1,9 +1,11 @@
-// origin → user_id で鍵を切るローカルの帳ファイル(known-fingerprints.json・own-devices.json)の
-// 共通の外枠のデコード。1 件でも不正なら全体を破損扱いにする(部分読みしない — pins と同じ)。
+// Decoding of the shared outer frame of the local book files keyed origin → user_id
+// (known-fingerprints.json, own-devices.json). A single invalid record makes the whole
+// file count as corrupt (no partial reads — same as pins).
 
-// レコードキー(origin / user_id)の規律: 先頭は英数字(pins.ts の招待 id と
-// 同じく `__proto__` を構造的に排除)、空白を含まない。origin は正規化済みの
-// URL(http(s)://…)、user_id はサーバー採番 — どちらも形式へは依存しない
+// Record-key (origin / user_id) discipline: starts with an alphanumeric (like the
+// invite id in pins.ts, this structurally excludes `__proto__`) and contains no
+// whitespace. origin is a normalized URL (http(s)://…) and user_id is server-assigned
+// — the rule depends on neither format
 export const BOOK_KEY = /^[A-Za-z0-9]\S{0,1023}$/;
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -11,8 +13,8 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * `{ v: version, known: { origin: users } }` をデコードする。`decodeUsers` は 1 origin 分
- * (user_id → 中身)を読み、不正なら null を返す。
+ * Decodes `{ v: version, known: { origin: users } }`. `decodeUsers` reads one origin's
+ * entry (user_id → contents) and returns null when it is invalid.
  */
 export function decodeOriginBook<Users>(
   json: string,
