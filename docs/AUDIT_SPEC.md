@@ -62,7 +62,7 @@ density measure ② (2026-09-02 owner decision — early resolution of open item
 dogfooding measurements", but it is designed and implemented without waiting
 for measurements): revising §3.3 `var.read`'s recording granularity from "1 row
 per variable" to "1 row per environment per with-values bulk pull (payload
-enumerates the returned variables)" (aggregate form) / stating the §4.2 Q3・Q4
+enumerates the returned variables)" (aggregate form) / stating the §4.2 Q3 / Q4
 index requirements' dependence on payload enumeration / §5.3's quantity
 description / §8 resolution of open item 4. Revised together with AUTH_SPEC
 0.20-draft §12-7 / §12-8 — **owner approval is by the merge of an
