@@ -142,8 +142,10 @@ export const VariableVersionHistorySchema = Schema.Struct({
 
 /**
  * GET …/variables/:variableId/versions/values?fromVersion=k: the distributed
- * payloads of versions k … min(k + 99, latest), ascending (AUTH_SPEC §12-7 —
- * 2026-09-27 VH). `latestVersion` tells the caller whether to page on. The
+ * payloads of versions k, k + 1, … ascending — at most MAX_VERSION_VALUES_PAGE
+ * versions and at most ~1 MiB of ciphertext (always at least one version)
+ * (AUTH_SPEC §12-7 — 2026-09-27 VH). `latestVersion` tells the caller
+ * whether to page on. The
  * caller trusts an old version only as an ancestor of the latest it verified
  * through a bulk pull (prev chain + epoch monotonicity — CRYPTO_SPEC §4.1).
  */

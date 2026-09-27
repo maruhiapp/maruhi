@@ -16,6 +16,10 @@
 //     exposure count is part of the confirmation
 //  5. refusals before any send: the current version, a missing version, an
 //     identical value, a declared variable, a missing --to
+//  6. a push by someone else after the rollback was verified is never
+//     silently overwritten with the restored value
+//  7. `maruhi push` of a value identical to the latest declares the lineage
+//     (sameValueAs = the latest) — re-pushing the same value is not a new value
 
 import { decryptVariable } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -357,5 +361,72 @@ describe("maruhi var rollback (AUTH_SPEC §12-5 / §12-7)", () => {
       await runCli(["var", "rollback", NAME, "--to", "1", "--force"], declared.env.layer),
     ).toBe(1);
     expect(declared.env.errors.join("\n")).toContain("has no value yet");
+  });
+});
+
+describe("maruhi var rollback under a concurrent push", () => {
+  it("refuses when another member pushed after the rollback was verified (nothing is overwritten)", async () => {
+    const chain = await versionChain([...PLAINTEXTS, "delta-secret-4"]);
+    const [v1, v2, v3, v4] = chain;
+    if (v1 === undefined || v2 === undefined || v3 === undefined || v4 === undefined) {
+      throw new Error("chain");
+    }
+    const valueEnv = makeValueEnvironmentServer({
+      chain: built,
+      owner,
+      environmentId: ENV_ID,
+      envStatement,
+      wrap,
+      initialVariables: [{ variableId: VARIABLE_ID, statement, value: v3 }],
+      initialHistory: new Map([[VARIABLE_ID, [v1, v2, v3]]]),
+    });
+    // Another member's v4 lands right after the rollback fetched and
+    // verified its range (before its own push resolves the target again)
+    let injected = false;
+    const concurrentPush = (request: { readonly path: string }) => {
+      if (!injected && request.path.endsWith("/versions/values")) {
+        injected = true;
+        const stored = valueEnv.state.variables.find((entry) => entry.variableId === VARIABLE_ID);
+        if (stored !== undefined) {
+          stored.value = v4;
+        }
+        valueEnv.state.history.get(VARIABLE_ID)?.push({ value: v4 });
+      }
+      return null;
+    };
+    const server = await MockServer.start([concurrentPush, ...valueEnv.handlers]);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    expect(await runCli(["var", "rollback", NAME, "--to", "1", "--force"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "changed while the rollback was being prepared (the latest is now version 4, not the confirmed version 3)",
+    );
+    expect(valueEnv.state.writes).toEqual([]);
+    expectNoValueShown(env);
+  });
+});
+
+describe("maruhi push of an unchanged value (AUTH_SPEC §12-5 lineage — VH re-check round)", () => {
+  it("declares sameValueAs = the latest when the value is identical, and nothing for a new value", async () => {
+    const { env, state } = await startEnv();
+    const pushOf = async (plaintext: string) => {
+      env.setStdin(new TextEncoder().encode(plaintext));
+      expect(await runCli(["push", NAME, "--no-sync"], env.layer)).toBe(0);
+      const writes = state.writes.filter((write) => write.kind === "version");
+      return writes.at(-1)?.request.body as { value: WireDistributedValue; sameValueAs?: number };
+    };
+    const same = await pushOf(PLAINTEXTS[2] ?? "");
+    expect(same.value.aad.version).toBe(4);
+    expect(same.sameValueAs).toBe(3);
+    const fresh = await pushOf("epsilon-secret-5");
+    expect(fresh.value.aad.version).toBe(5);
+    expect(fresh.sameValueAs).toBeUndefined();
+    expectNoValueShown(env);
   });
 });

@@ -38,7 +38,7 @@ import { toCliError } from "./failure.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
 import { decryptVerifiedValue } from "./pull.ts";
-import { type PushedVersion, pushVariable } from "./push.ts";
+import { type PushedVersion, pushVariable, sameRedactedBytes } from "./push.ts";
 import { resolveSchemaTarget } from "./schema.ts";
 import type { VerifiedProject } from "./sync.ts";
 import {
@@ -409,10 +409,6 @@ function verifyAncestry(input: {
   });
 }
 
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  return a.length === b.length && a.every((byte, index) => byte === b[index]);
-}
-
 /**
  * The explicit confirmation (fail-closed): --force proceeds with the facts
  * still stated; a non-interactive run without --force refuses; an interactive
@@ -574,18 +570,12 @@ function decryptTarget(
       });
     const restored = yield* decrypt(plan.target);
     const current = yield* decrypt(plan.latest);
-    // Reason for unwrapping: an in-memory equality check of the two
-    // plaintexts. Nothing is displayed and the bytes never leave this
-    // comparison
-    const [restoredBytes, currentBytes] = [restored, current].map(Redacted.value);
-    if (restoredBytes !== undefined && currentBytes !== undefined) {
-      if (bytesEqual(restoredBytes, currentBytes)) {
-        return yield* Effect.fail(
-          cliError(
-            `The current value of ${displayText(plan.name)} (version ${plan.latest.version}) already equals the value of version ${input.toVersion} — nothing to roll back`,
-          ),
-        );
-      }
+    if (sameRedactedBytes(restored, current)) {
+      return yield* Effect.fail(
+        cliError(
+          `The current value of ${displayText(plan.name)} (version ${plan.latest.version}) already equals the value of version ${input.toVersion} — nothing to roll back`,
+        ),
+      );
     }
     return restored;
   });
@@ -625,7 +615,12 @@ export function varRollbackOp(
       writerUserId: input.writerUserId,
       signingKey: input.signingKey,
       floor: input.floor,
-      restore: { variableId: plan.variableId, sameValueAs: input.toVersion },
+      restore: {
+        variableId: plan.variableId,
+        sameValueAs: input.toVersion,
+        fromVersion: plan.latest.version,
+        fromSignedBytesHashHex: plan.latest.signedBytesHashHex,
+      },
     });
     return {
       name: plan.name,

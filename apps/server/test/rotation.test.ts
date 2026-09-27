@@ -46,6 +46,8 @@ import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from 
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { MAX_VERSION_VALUES_PAGE_BYTES } from "../src/policy.ts";
+import { withinByteBudget } from "../src/programs-history.ts";
 import { JSON_HEADERS } from "./support/auth.ts";
 import {
   createVariableStatement,
@@ -73,6 +75,7 @@ import {
   projectId,
   READER,
   requestJson,
+  rotateEnvironmentComposite,
   rotateEnvironmentOk,
   STRANGER,
 } from "./support/data-fixture.ts";
@@ -197,10 +200,18 @@ async function pushNextVersion(input: {
   readonly prevValueSigHashHex: string;
   /** The value-lineage declaration (§12-5 — VH). */
   readonly sameValueAs?: number;
+  /** The current epoch (default 1). */
+  readonly epoch?: number;
 }): Promise<WireEncryptedPayload> {
   const value = await encryptValue(
     input.dek,
-    { projectId, environmentId: ENV, epoch: 1, variableId: VAR, version: input.version },
+    {
+      projectId,
+      environmentId: ENV,
+      epoch: input.epoch ?? 1,
+      variableId: VAR,
+      version: input.version,
+    },
     `value-v${input.version}`,
     { writerUserId: OWNER, head: fixture.head, prevValueSigHashHex: input.prevValueSigHashHex },
   );
@@ -212,6 +223,30 @@ async function pushNextVersion(input: {
   );
   expect(response.status).toBe(200);
   return value;
+}
+
+/** The mandated rotation after a removal: a new epoch wrapped to the remaining members only. */
+async function rotateTo(
+  newEpoch: number,
+  recipientUserIds: readonly string[],
+): Promise<Uint8Array> {
+  const dek = makeDek();
+  const response = await rotateEnvironmentComposite(fixture, {
+    environmentId: ENV,
+    newEpoch,
+    deks: await wrapDekForAll({
+      projectId,
+      environmentId: ENV,
+      epoch: newEpoch,
+      dek,
+      recipientUserIds,
+      signerUserId: OWNER,
+    }),
+    dekCommitmentHex: await commitmentOf(projectId, ENV, newEpoch, dek),
+    actorUserId: OWNER,
+  });
+  expect(response.status).toBe(200);
+  return dek;
 }
 
 describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
@@ -358,36 +393,53 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
     expect(flags.filter((flag) => flag.variableId === gapVar)).toHaveLength(0);
   });
 
-  it("resolution derivation: a fresh push resolves, a re-encryption (sameValueAs = previous version) does not (§4.1-5)", async () => {
+  it("resolution derivation: only a value first encrypted after the mandated rotation resolves; a pre-rotation push and a re-encryption do not (§4.1-5)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await removeMember(MEMBER);
     expect(await readFlags()).toHaveLength(1);
+    // The flag row carries its exposure bound (the environment's epoch at detection)
+    const recommended = (await readAuditEvents(projectId)).find(
+      (event) => event["event"] === "rotation.recommended",
+    );
+    expect(Number(recommended?.["epoch"])).toBe(1);
 
-    // A re-encryption (the mandated rotation's re-push) inherits the
-    // plaintext origin and does not resolve
+    // A new value pushed before the mandated rotation is still encrypted
+    // under a DEK the removed member holds — it does not resolve
     const v2 = await pushNextVersion({
       dek,
       version: 2,
       prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
-      sameValueAs: 1,
+    });
+    expect(await readFlags()).toHaveLength(1);
+
+    // The rotation's re-encryption (sameValueAs = the previous version)
+    // carries v2's origin epoch forward — it does not resolve either
+    const dek2 = await rotateTo(2, [OWNER, READER]);
+    const v3 = await pushNextVersion({
+      dek: dek2,
+      version: 3,
+      epoch: 2,
+      prevValueSigHashHex: await valueSignedBytesHashOf(v2, OWNER),
+      sameValueAs: 2,
     });
     expect(await readFlags()).toHaveLength(1);
     // The lineage lands in the audit payload (AUDIT_SPEC §3.3)
     const events = await readAuditEvents(projectId);
     const markedPush = events.find(
-      (event) => event["event"] === "var.version_pushed" && Number(event["version"]) === 2,
+      (event) => event["event"] === "var.version_pushed" && Number(event["version"]) === 3,
     );
     expect(JSON.parse(String(markedPush?.["payload"])) as Record<string, unknown>).toMatchObject({
-      sameValueAs: 1,
+      sameValueAs: 2,
     });
 
-    // A fresh push (= rotated the upstream credential and stored a new
-    // value) resolves
+    // A fresh value at the new epoch (= the upstream credential rotated and
+    // stored under a key the removed member never held) resolves
     await pushNextVersion({
-      dek,
-      version: 3,
-      prevValueSigHashHex: await valueSignedBytesHashOf(v2, OWNER),
+      dek: dek2,
+      version: 4,
+      epoch: 2,
+      prevValueSigHashHex: await valueSignedBytesHashOf(v3, OWNER),
     });
     expect(await readFlags()).toHaveLength(0);
   });
@@ -815,41 +867,39 @@ const varReadCount = async (): Promise<number> =>
   (await readAuditEvents(projectId)).filter((event) => event["event"] === "var.read").length;
 
 describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.1-5 — VH)", () => {
-  it("a rollback to a pre-flag value re-opens a resolved flag, a later fresh push resolves it again, and a rollback among post-flag values changes nothing", async () => {
+  it("a rollback to a value the subject could read re-opens a resolved flag, a later fresh push resolves it again, and a rollback among post-rotation values changes nothing", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await removeMember(MEMBER);
-    const v2 = await pushNextVersion({
-      dek,
-      version: 2,
-      prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
-      sameValueAs: 1,
-    });
-    const v3 = await pushNextVersion({
-      dek,
-      version: 3,
-      prevValueSigHashHex: await valueSignedBytesHashOf(v2, OWNER),
-    });
+    const dek2 = await rotateTo(2, [OWNER, READER]);
+    const push = (input: {
+      version: number;
+      prev: WireEncryptedPayload;
+      writer?: string;
+      sameValueAs?: number;
+    }) =>
+      valueSignedBytesHashOf(input.prev, input.writer ?? OWNER).then((prevValueSigHashHex) =>
+        pushNextVersion({
+          dek: dek2,
+          version: input.version,
+          epoch: 2,
+          prevValueSigHashHex,
+          ...(input.sameValueAs === undefined ? {} : { sameValueAs: input.sameValueAs }),
+        }),
+      );
+    const v2 = await push({ version: 2, prev: v1, writer: MEMBER, sameValueAs: 1 });
+    const v3 = await push({ version: 3, prev: v2 });
     expect(await readFlags()).toHaveLength(0);
 
-    // Rollback to v2 (origin = v1, pushed before the flag) = re-exposure
-    const v4 = await pushNextVersion({
-      dek,
-      version: 4,
-      prevValueSigHashHex: await valueSignedBytesHashOf(v3, OWNER),
-      sameValueAs: 2,
-    });
+    // Rollback to v2 (the re-encryption of v1 — origin epoch 1, readable by
+    // the removed member) = re-exposure
+    const v4 = await push({ version: 4, prev: v3, sameValueAs: 2 });
     const reopened = await readFlags();
     expect(reopened).toHaveLength(1);
     expect(reopened[0]).toMatchObject({ variableId: VAR, reopenedByVersion: 4 });
 
     // A re-encryption of the restored value keeps it re-opened (same origin)
-    const v5 = await pushNextVersion({
-      dek,
-      version: 5,
-      prevValueSigHashHex: await valueSignedBytesHashOf(v4, OWNER),
-      sameValueAs: 4,
-    });
+    const v5 = await push({ version: 5, prev: v4, sameValueAs: 4 });
     expect(await readFlags()).toEqual([expect.objectContaining({ reopenedByVersion: 4 })]);
 
     // The history: metadata, the lineage, and the per-version count;
@@ -866,60 +916,61 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
       })),
     ).toEqual([
       { version: 1, epoch: 1, sameValueAs: undefined, flagsIfCurrent: 1 },
-      { version: 2, epoch: 1, sameValueAs: 1, flagsIfCurrent: 1 },
-      { version: 3, epoch: 1, sameValueAs: undefined, flagsIfCurrent: 0 },
-      { version: 4, epoch: 1, sameValueAs: 2, flagsIfCurrent: 1 },
-      { version: 5, epoch: 1, sameValueAs: 4, flagsIfCurrent: 1 },
+      { version: 2, epoch: 2, sameValueAs: 1, flagsIfCurrent: 1 },
+      { version: 3, epoch: 2, sameValueAs: undefined, flagsIfCurrent: 0 },
+      { version: 4, epoch: 2, sameValueAs: 2, flagsIfCurrent: 1 },
+      { version: 5, epoch: 2, sameValueAs: 4, flagsIfCurrent: 1 },
     ]);
     expect(history[0]).toMatchObject({ writerUserId: MEMBER });
     expect(history[4]).toMatchObject({ writerUserId: OWNER });
     expect(history.every((entry) => entry.pushedAtMs > 0)).toBe(true);
 
-    // Rollback to v3 (a value first pushed after the flag) resolves it
-    const v6 = await pushNextVersion({
-      dek,
-      version: 6,
-      prevValueSigHashHex: await valueSignedBytesHashOf(v5, OWNER),
-      sameValueAs: 3,
-    });
+    // Rollback to v3 (first encrypted after the rotation) resolves it
+    const v6 = await push({ version: 6, prev: v5, sameValueAs: 3 });
     expect(await readFlags()).toHaveLength(0);
-    // … and a fresh push after another pre-flag restore resolves again
-    const v7 = await pushNextVersion({
-      dek,
-      version: 7,
-      prevValueSigHashHex: await valueSignedBytesHashOf(v6, OWNER),
-      sameValueAs: 1,
-    });
+    // … and a fresh push after another readable restore resolves again
+    const v7 = await push({ version: 7, prev: v6, sameValueAs: 1 });
     expect(await readFlags()).toEqual([expect.objectContaining({ reopenedByVersion: 7 })]);
-    await pushNextVersion({
-      dek,
-      version: 8,
-      prevValueSigHashHex: await valueSignedBytesHashOf(v7, OWNER),
-    });
+    await push({ version: 8, prev: v7 });
     expect(await readFlags()).toHaveLength(0);
   });
 
-  it("dismissal is sticky: a rollback to a pre-flag value does not re-open a dismissed flag", async () => {
+  it("a dismissal covers only the flags effective at the time: a dismissed flag stays dismissed, a resolved one can still re-open", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await removeMember(MEMBER);
+    const dek2 = await rotateTo(2, [OWNER, READER]);
+    // A fresh value at epoch 2 resolves MEMBER's flag
+    const v2 = await pushNextVersion({
+      dek: dek2,
+      version: 2,
+      epoch: 2,
+      prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
+    });
+    expect(await readFlags()).toHaveLength(0);
+    // READER leaves: a new flag (READER could read v1 and v2), then the admin
+    // dismisses the pair — only READER's flag was effective and shown
+    await removeMember(READER);
+    expect(await readFlags(OWNER)).toEqual([expect.objectContaining({ targetUserId: READER })]);
     const dismissed = await requestJson("POST", "/rotation/dismissals", token(OWNER), {
       targets: [{ environmentId: ENV, variableId: VAR }],
     });
     expect(dismissed.status).toBe(204);
-    const v2 = await pushNextVersion({
-      dek,
-      version: 2,
-      prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
-    });
+    expect(await readFlags(OWNER)).toHaveLength(0);
+    const dek3 = await rotateTo(3, [OWNER]);
+    // Restoring v1 re-exposes MEMBER's value: MEMBER's flag (resolved when
+    // the dismissal happened, so never accepted) re-opens; READER's stays dismissed
     await pushNextVersion({
-      dek,
+      dek: dek3,
       version: 3,
+      epoch: 3,
       prevValueSigHashHex: await valueSignedBytesHashOf(v2, OWNER),
       sameValueAs: 1,
     });
-    expect(await readFlags()).toHaveLength(0);
-    expect((await readHistory()).map((entry) => entry.flagsIfCurrent)).toEqual([0, 0, 0]);
+    expect(await readFlags(OWNER)).toEqual([
+      expect.objectContaining({ targetUserId: MEMBER, reopenedByVersion: 3 }),
+    ]);
+    expect((await readHistory(OWNER)).map((entry) => entry.flagsIfCurrent)).toEqual([1, 0, 1]);
   });
 
   it("sameValueAs must name an earlier version (422 payload-mismatch — §12-5)", async () => {
@@ -1004,5 +1055,36 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
       token(STRANGER),
     );
     expect(stranger.status).toBe(404);
+  });
+});
+
+describe("the value range's ciphertext byte budget (§12-7 — VH)", () => {
+  const row = (version: number, bytes: number) => ({
+    variableId: VAR,
+    version,
+    suite: "maruhi/v1" as const,
+    epoch: 1,
+    nonceHex: "00".repeat(12),
+    ciphertextHex: "ab".repeat(bytes),
+    prevValueSigHashHex: "",
+    chainHeadHashHex: "00".repeat(32),
+    chainHeadSeq: 1,
+    signatureHex: "00".repeat(64),
+    writerUserId: OWNER,
+    writerKeyFingerprintHex: "00".repeat(16),
+  });
+
+  it("stops before the version that would exceed the budget, and always keeps the first", () => {
+    const big = 64 * 1024;
+    const rows = Array.from({ length: 30 }, (_, index) => row(index + 1, big));
+    const page = withinByteBudget(rows);
+    expect(page).toHaveLength(Math.floor(MAX_VERSION_VALUES_PAGE_BYTES / big));
+    expect(page.map((value) => value.version)).toEqual(
+      Array.from({ length: page.length }, (_, index) => index + 1),
+    );
+    expect(withinByteBudget([row(1, MAX_VERSION_VALUES_PAGE_BYTES + 1)])).toHaveLength(1);
+    expect(
+      withinByteBudget(rows.slice(0, 3).map((value) => ({ ...value, ciphertextHex: "ab" }))),
+    ).toHaveLength(3);
   });
 });

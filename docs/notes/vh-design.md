@@ -104,59 +104,66 @@ resolved or dismissed?
 |---|---|---|
 | 2-A | Never re-fire; the rollback marker is merely excluded from resolution. Only a CLI warning before the push | Rejected: a resolved flag stays resolved while the live value is again one the departed principal knows — detection silently loses exactly the case VH creates |
 | 2-B | The server appends new `rotation.recommended` rows at rollback acceptance (a new trigger kind `rollback`), recomputing who could read version k | Rejected: re-runs §4.1 steps 1–3 for every historical subject on a data-plane write, adds a trigger kind whose "subject" is not a chain op, and duplicates flags that already exist for the same (subject × pair) — the UI would show two flags for one exposure |
-| 2-C | **Lineage derivation**: a flag is effective iff it has not been dismissed and the **live value's plaintext origin predates the flag**. Rollback to a pre-flag value re-opens the resolved flag automatically; rollback among post-flag values changes nothing. Dismissal is sticky | **Adopted** |
+| 2-C | **Lineage derivation**: a flag is effective iff it has not been dismissed and the **live value was first encrypted under a key the flag's subject held**. Rollback to such a value re-opens the resolved flag automatically; rollback among values first encrypted after the mandated rotation changes nothing. Dismissal is sticky (and covers only the flags effective when it was recorded) | **Adopted** |
 | 2-D | As 2-C but dismissal is also re-opened | Rejected: dismissal is a human risk-acceptance on the pair (admin × admin scope — §3.3); the risk it accepted ("that subject knows this variable's value") is the same class a pre-flag restore brings back. Overriding it mechanically would turn every rollback into flag noise and teach admins to ignore flags |
 | 2-E | Refuse a rollback whose target predates a flag | Rejected: rollback is the incident-recovery tool; refusing it pushes the user to hand-copy the old value through `maruhi push`, which loses the marker entirely (strictly worse for detection) |
 
-**The derivation (replaces AUDIT_SPEC §4.1 step 5's push rule)**. Over the
-pair's `var.version_pushed` rows in seq order, each version gets an **origin
-seq** — the seq of the push that first introduced its plaintext:
+**The derivation (replaces AUDIT_SPEC §4.1 step 5's push rule — as corrected
+by the §9 re-check round, findings R-5 / R-6)**. Every `rotation.recommended`
+row R carries an **exposure bound** in its epoch column: the environment's
+epoch at the end of the subject's last window on it (R-8) — the subject held
+the DEKs of every epoch up to it and of none after it. Over the pair's `var.version_pushed` rows in seq order, each
+version gets a **plaintext origin epoch** — the epoch its value was first
+encrypted under:
 
 ```
-origin(v) = seq(push of v)              if the push carries no sameValueAs
-origin(v) = origin(sameValueAs(v))      otherwise (an unknown target → 0, the safe side)
+originEpoch(v) = epoch(v)                          if the push carries no sameValueAs
+originEpoch(v) = originEpoch(sameValueAs(v))       otherwise (an unknown target → 0, the safe side)
 ```
 
-A `rotation.recommended` row R on the pair is **effective** iff (i) no
-`rotation.dismissed` for the pair has seq > seq(R), and (ii) either the pair
-has no pushed version yet, or `origin(live) < seq(R)` where live is the pair's
-latest pushed version. (ii) is exactly "the value in use now is one the flag's
-subject could have read" — the flag's own premise.
+R is **effective** iff (i) no `rotation.dismissed` of the pair was recorded
+while R was effective, and (ii) either the pair has no pushed version yet, or
+`originEpoch(live) ≤ bound(R)` where live is the pair's latest pushed
+version. (ii) is "the value in use now was first encrypted under a key the
+flag's subject held" — the flag's own premise, stated in the only terms that
+are exact under E2EE: which key a ciphertext is readable with.
 
-**Why 2-C is strictly better**:
+**Why 2-C holds**:
 
-- It is an **exact generalization** of today's rule: with only fresh pushes and
-  re-encryption pushes, (ii) reduces to "no fresh push after R" — the current
-  behaviour, bit for bit (a fresh push after R gives origin > seq(R);
-  re-encryption inherits the origin, so it neither resolves nor un-resolves).
-  Existing tests keep their meaning
+- It generalizes today's rule for every sequence the CLI produces (removal /
+  revocation / narrowing → mandated rotation → pushes): a fresh push after the
+  rotation resolves, re-encryption inherits the origin so it neither resolves
+  nor un-resolves. It is **stricter** in one case the old rule got wrong (a
+  fresh push between the trigger and the mandated rotation — R-6)
 - It answers the open question **without a new event, a new trigger kind, or
-  a new persisted row** — "resolution state is derived from the event sequence"
-  (§4.1) is preserved, and re-exposure falls out of the same fold
-- It is **per subject**: with flags from two departures at seq 100 (M1) and 200
-  (M2), restoring a value first pushed at seq 150 re-opens M2's flag only (M1
-  left before that value existed) — 2-B would need to recompute this, 2-A can't
+  a new persisted row kind** — "resolution state is derived from the event
+  sequence" (§4.1) is preserved, and re-exposure falls out of the same fold
+  (the bound is one more column on the existing row)
+- It is **per subject**: M1 removed at epoch 1, a fresh value at epoch 2, M2
+  removed at epoch 2: restoring the epoch-2 value re-opens M2's flag only (M1
+  never held epoch 2's key) — 2-B would need to recompute this, 2-A can't
   express it
 - A later fresh push resolves the re-opened flag again with no special case
 
 **Display of a re-opened flag**: the flag wire gains
-`reopenedByVersion?: number` — present when the flag had been resolved after
-R and is effective again because version N restored a pre-flag value (N is the
+`reopenedByVersion?: number` — present when the flag had been resolved and is
+effective again because version N restored a value within its bound (N is the
 push that re-opened it; a re-encryption of that restored value keeps N). The
 CLI's `rotation list` and the Web Rotation screen say "re-opened by the
 rollback in vN" so a flag that reappears is never unexplained.
 
 **The pre-push warning** (the ROADMAP's "warn before pushing if the target
-predates the flag"): the client cannot compare seqs (C1 forbids them on the
-wire), so the server derives it. Each history row carries
-**`flagsIfCurrent`** = the number of non-dismissed flags on the pair that would
-be effective while that version's value is the live one (= flags with
-`origin(v) < seq(R)`). For the live version it equals the pair's effective
-flag count; for a rollback target it is exactly the number of flags the
-rollback leaves (or makes) effective. `var history` shows it per row and
-`var rollback` puts it in the confirmation. This is seq-exact where the
-ROADMAP's epoch comparison was only an approximation (a fresh value pushed
-after a removal but before the rotation sweep shares the old epoch).
+predates the flag"): each history row carries **`flagsIfCurrent`** = the
+number of non-dismissed flags on the pair that would be effective while that
+version's value is the live one (= flags with `originEpoch(v) ≤ bound(R)`).
+For the live version it equals the pair's effective flag count; for a
+rollback target it is exactly the number of flags the rollback leaves (or
+makes) effective. `var history` shows it per row and `var rollback` puts it
+in the confirmation. It is derived server-side, where the lineage and the flag
+rows live. (The first draft of this record compared seqs and called the
+ROADMAP's epoch comparison an approximation; the re-check round showed the
+opposite — R-6. The epoch comparison, applied to the *origin* epoch, is the
+exact one.)
 
 ## 4. Ruling V3 — read surfaces
 
@@ -177,8 +184,10 @@ Two new endpoints on the existing `…/variables/:variableId/versions` resource
    trusts it — it verifies the target itself (V4)
 2. **`GET …/variables/:variableId/versions/values?fromVersion=k` — the value
    range**. Returns the distributed payloads (ciphertext + signature block +
-   writer — the §12-7 shape) of versions k … min(k + 99, latest), ascending.
-   The CLI pages until it reaches the verified latest. Authorization = the
+   writer — the §12-7 shape) of versions k, k + 1, … ascending, at most 100
+   versions and at most 1 MiB of ciphertext per page (always at least one
+   version — a page of 64 KiB values would otherwise reach ~12.8 MiB as hex;
+   re-check round, below). The CLI pages until it reaches the verified latest. Authorization = the
    with-values pull's (reader × environment ∈ scope; a session principal is
    refused like the value pull; the stateful-GET CSRF rule applies because it
    records audit). DEKs are not bundled — the caller already holds the
@@ -227,9 +236,11 @@ does not apply (the permissive side, like `member list` / `schema export`).
    the `var rm` shape). A rollback is not a ceremony and never displays a
    value, so an agent with `--force` may run it (same posture as `var rm`)
 6. Push through `pushVariable` with the restored plaintext and
-   `sameValueAs = --to`, pinned to the resolved variableId: if a concurrent
-   delete / rename makes the retry resolve anything but a normal push to that
-   variable, refuse instead of creating a variable. The value lives only in
+   `sameValueAs = --to`, pinned to the resolved variableId **and to the
+   confirmed latest** (its version and signed-bytes hash — §9 R-1): if a
+   concurrent delete / rename / push makes the (re-)resolution land anywhere
+   but a normal push directly on top of the version the user confirmed,
+   refuse instead of creating a variable or overwriting a change. The value lives only in
    memory (`Redacted`) — nothing touches disk
 7. Report the new version; when `flagsIfCurrent > 0`, a note pointing at
    `maruhi rotation list` (the flags are now effective / re-opened)
@@ -256,6 +267,11 @@ does not apply (the permissive side, like `member list` / `schema export`).
   verification (`maruhi audit verify`) covers the `var.version_pushed` rows
 - The lineage is a writer declaration (V1). Omitting it (or `maruhi push` of a
   hand-copied old value) under-reports re-exposure — unchanged from today
+- The exposure bound is per environment epoch, so it inherits the epoch
+  model's own granularity: a subject that held epoch E's key is treated as
+  able to read every value first encrypted under E (whether or not it ever
+  fetched that ciphertext) — the over-report direction, same as §4.1's
+  "readable" rank
 - Rollback cannot restore a deleted variable (deletion destroys every
   version's ciphertext — §12-5; deletion stays terminal)
 
@@ -271,3 +287,96 @@ Implementation: api-schema (push field, two GETs, flag field) → server
 (`var history`, `var rollback`, rotation-sweep marker, `rotation list`
 display) → Web (audit marker + re-opened flag rendering) → public docs (a
 `/docs/value-history` page).
+
+## 9. Re-check round (2026-09-27 — owner-requested re-verification before the PR)
+
+The owner asked for the rulings to be re-verified before the PR. Each ruling
+was re-attacked (a self review plus an independent adversarial review). V1,
+V3 and V4 stand as ruled; V2's skeleton (a derived lineage fold, no new event)
+stands, but its comparison and its dismissal scope were corrected (R-5 /
+R-6). The round's findings and fixes:
+
+- **R-1 (V4 — concurrency)**: a push by another member between the rollback's
+  verification and its push made `pushVariable`'s conflict retry land the
+  restored value on top of the newer version — a silent overwrite of a change
+  the user never saw. A rollback is a response to the state the user
+  confirmed, so the push now carries the confirmed `fromVersion` and its
+  signed-bytes hash, and any (re-)resolution to a different latest refuses
+  before signing ("changed while the rollback was being prepared"). Pinned by
+  a CLI test. (`maruhi push` keeps last-writer-wins — a plain write carries no
+  "from" state)
+- **R-2 (V3 — page size)**: 100 versions × the 64 KiB value cap could make one
+  value-range page ~12.8 MiB of hex. A page now also stops at 1 MiB of
+  ciphertext (always at least one version); AUTH_SPEC §12-7 updated
+- **R-3 (V2 — safe side)**: `flagsIfCurrent` for a version without a push
+  row defaulted to 0 (the under-report direction) while the fold treats an
+  unknown origin as the oldest. Both now fall to origin 0 (every non-dismissed
+  flag counts). Unreachable on an honest server (every accepted version writes
+  its row in the same synchronous block) — a consistency fix
+- **R-4 (V3 — consumers of the `var.read` enumeration)**: the enumeration may
+  now repeat a variableId (one entry per version). The Web audit list keyed
+  list items by variableId (duplicate React keys) — now keyed by
+  (variableId, version). The CLI and Web summaries counted entries as
+  variables — now "N versions of M variables" for a range read. Rotation-needed
+  detection (rank (a) matches by variableId) and `audit reconcile` (structural
+  JSON equality) were unaffected
+- Checked and unchanged: the rotation sweep's retry path (a 409 rescans and
+  pairs the new latest with its own decrypted plaintext, so
+  `sameValueAs = latest.version` stays true); the new endpoints are
+  authenticated, so the per-IP rate-limit table of SELF_HOSTING.md (the
+  unauthenticated surface) needs no row
+- **R-5 (V2 — dismissal scope; independent review)**: a dismissal marked
+  every flag of the pair, including ones resolved at the time. Before VH that
+  was harmless (a resolved flag never came back); with re-opening it hid a
+  re-exposure nobody accepted — M1's flag resolved by a fresh value, M2's
+  flag dismissed by an admin who saw only M2's, then a rollback to M1-era
+  value: nothing reported (the under-report direction). A dismissal now covers
+  exactly the flags effective when it was recorded (the flags the dismissing
+  admin saw — the same set the dismissal endpoint's 404 rule is about).
+  Pinned by a server test
+- **R-6 (V2 — the comparison; independent review)**: the first draft compared
+  audit seqs ("pushed before the flag") and claimed that was exact. It is not:
+  a value pushed after the trigger but before the mandated rotation is
+  encrypted under a DEK the subject still holds. For `revoke_device` the
+  device's token may still be valid (and a reader who revokes their own device
+  cannot rotate at all — CRYPTO_SPEC §7), for `revoke_server` the server key
+  holder has every ciphertext, and for `remove_member` it is readable under a
+  colluding server. The comparison is now **origin epoch ≤ the flag's
+  exposure bound** (the recommended row's epoch column — R-8 fixes how the
+  bound is taken). This also tightens the pre-VH rule (a fresh
+  push before the rotation no longer resolves — the safe direction; the CLI's
+  flows rotate first, so ordinary sequences are unchanged). The `rotation list`
+  guidance and the docs page say to push the new value after the rotation
+- **R-7 (spec — independent review)**: AUTH_SPEC §12-3's table gained the two
+  new rows (the history refuses session principals — not on §5's allowlist)
+
+**Second independent round (on the corrected V2)**:
+
+- **R-8 (V2 — the bound)**: the first correction stamped the environment's
+  *current* epoch on every flag. A removal also flags windows closed long
+  before (an old shrink); for those, the current epoch overstated what the
+  subject held, and since no rotation is mandated for an environment outside
+  the subject's current scope, the flag could never clear the documented way
+  (it had cleared under the seq rule — a regression in the over-report
+  direction). The bound is now the epoch at the end of the subject's last
+  window on the environment, derived inside detection from the chain mirror's
+  epoch rows (`environmentEpochEvents` — no chain-state plumbing, which also
+  retires the reviewer's latent concern about the composite pair path). And a
+  flag whose bound is already below the live value's origin starts resolved
+  (the fold previously assumed every new flag starts effective). Pinned by a
+  scope test: shrink → rotate → fresh push → removal leaves the old
+  environment's removal flag resolved
+- **R-9 (V1/V2 — guidance-induced under-report)**: after R-6, the natural
+  reaction to a still-open flag — push "the new value" again after the
+  rotation — re-pushed the same plaintext without a lineage declaration, which
+  looked fresh and cleared the flag although its old-epoch ciphertext was
+  readable. `maruhi push` now compares the value with the verified latest (in
+  memory, when it holds that DEK) and declares `sameValueAs` = the latest when
+  they are identical. Pinned by a CLI test. (A re-push of an *older* value by
+  hand stays the V1 residual)
+- **R-10 (nits)**: the demotion carve-out is stated (a demoted reader keeps
+  receiving DEKs by design; the flag there means "replaced after the
+  demotion"); a recommended row's epoch is displayed as the *exposure* epoch
+  (CLI `exposureEpoch=`, Web "exposure epoch"); a recommended row without an
+  epoch (only rows written before this revision — none exist outside
+  development, zero users) is unbounded and clears only by dismissal

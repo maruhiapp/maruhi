@@ -25,10 +25,11 @@
 //   correctly empty)
 // - Resolution derivation is a pure fold over the event sequence (flags do not
 //   live in a mutable store — §4.1). It follows the value lineage (§4.1-5 —
-//   2026-09-27 VH): every pushed version carries a plaintext origin (its own
-//   push seq, or — for a push declaring sameValueAs — the origin of the version
-//   it names), and a flag is effective while the live value's origin predates
-//   it. A re-encryption therefore neither resolves nor un-resolves (blocks a
+//   2026-09-27 VH): every pushed version carries a plaintext origin epoch
+//   (its own epoch, or — for a push declaring sameValueAs — the origin epoch
+//   of the version it names), and a flag is effective while the live value's
+//   origin epoch is within the flag's exposure bound (the environment's epoch
+//   at detection — the recommended row's epoch column). A re-encryption therefore neither resolves nor un-resolves (blocks a
 //   mandatory-rotation sweep from auto-resolving everything), and a rollback to
 //   a pre-flag value re-opens a resolved flag. Dismissal is sticky
 
@@ -36,6 +37,7 @@ import type {
   AuditEventInput,
   AuditRotationRead,
   DeviceEventRow,
+  EnvironmentEpochRow,
   MembershipEventRow,
   RotationFlagSourceRow,
   ScopeSnapshot,
@@ -280,6 +282,30 @@ function windowsByEnvironment(
 }
 
 /** Assemble one rotation.recommended row (the §3.3 recording rules — actor is system). */
+/**
+ * The exposure bound of a flag (§4.1-5 — 2026-09-27 VH): the environment's
+ * epoch at the end of the subject's last window on it — the newest epoch
+ * whose DEK the subject could hold (all-epoch backfill gives every epoch up
+ * to it). A window that closed before the trigger (an earlier shrink, a
+ * device scope) bounds at that earlier epoch, not the current one. An
+ * environment with no epoch row is unbounded (+Infinity — the safe side: the
+ * flag then resolves only by dismissal).
+ */
+function exposureBound(
+  epochRows: readonly EnvironmentEpochRow[],
+  environmentId: string,
+  windows: readonly SeqInterval[],
+): number {
+  const end = Math.max(...windows.map((window) => window.end));
+  let bound = Number.POSITIVE_INFINITY;
+  for (const row of epochRows) {
+    if (row.environmentId === environmentId && row.seq < end) {
+      bound = row.epoch;
+    }
+  }
+  return bound;
+}
+
 function recommendedEvent(input: {
   readonly nowMs: number;
   readonly lifetime: VariableLifetime;
@@ -290,11 +316,14 @@ function recommendedEvent(input: {
   readonly targetKeyFingerprintHex?: string;
   /** Only on the revoke_device variant: the revoked FP set (AUDIT_SPEC §4.1 — copied to the payload). */
   readonly revokedDeviceKeyFingerprints?: readonly string[];
+  /** The exposure bound (§4.1-5 — VH): written to the epoch column when known. */
+  readonly epochBound: number;
 }): AuditEventInput {
   return {
     event: "rotation.recommended",
     serverTs: input.nowMs,
     actorType: "system",
+    ...(Number.isFinite(input.epochBound) ? { epoch: input.epochBound } : {}),
     ...(input.targetUserId === undefined ? {} : { targetUserId: input.targetUserId }),
     ...(input.targetKeyFingerprintHex === undefined
       ? {}
@@ -371,6 +400,7 @@ function detectForMember(input: {
       )
       .map(pairKey),
   );
+  const epochRows = input.read.environmentEpochEvents();
   return candidates.map((lifetime) =>
     recommendedEvent({
       nowMs: input.nowMs,
@@ -379,6 +409,11 @@ function detectForMember(input: {
       trigger: input.trigger,
       triggerChainSeq: input.triggerChainSeq,
       targetUserId: input.targetUserId,
+      epochBound: exposureBound(
+        epochRows,
+        lifetime.environmentId,
+        selected.get(lifetime.environmentId) ?? [],
+      ),
       ...(input.revokedDeviceKeyFingerprints === undefined
         ? {}
         : { revokedDeviceKeyFingerprints: input.revokedDeviceKeyFingerprints }),
@@ -604,6 +639,7 @@ export function detectServerRevocation(input: {
   const windowsOf = windowsByEnvironment(grantTransitions(events));
   const lifetimes = [...variableLifetimes(input.read.variableLifecycles()).values()];
   const access = input.read.serverAccessEventsBy(input.serverKeyFingerprintHex);
+  const epochRows = input.read.environmentEpochEvents();
   const results: AuditEventInput[] = [];
   for (const lifetime of lifetimes) {
     const windows = windowsOf(lifetime.environmentId).filter((window) =>
@@ -635,6 +671,11 @@ export function detectServerRevocation(input: {
         trigger: "revoke_server",
         triggerChainSeq: input.triggerChainSeq,
         targetKeyFingerprintHex: input.serverKeyFingerprintHex,
+        epochBound: exposureBound(
+          epochRows,
+          lifetime.environmentId,
+          windowsOf(lifetime.environmentId),
+        ),
       }),
     );
   }
@@ -676,25 +717,34 @@ function flagOf(row: RotationFlagSourceRow): EffectiveRotationFlag {
 }
 
 /**
- * The plaintext origin of a pushed version (§4.1-5 — 2026-09-27 VH): the
- * version's own push seq, or — when the push declared `sameValueAs` (the
- * writer's lineage declaration, AUTH_SPEC §12-5) — the origin of the version
- * it names. A named version with no row falls to 0 (the oldest possible
- * origin = the safe side: flags stay effective). The acceptance check keeps
- * sameValueAs below the pushed version, so a named version was always pushed
- * earlier in the same pair.
+ * The plaintext origin epoch of a pushed version (§4.1-5 — 2026-09-27 VH):
+ * the epoch its value was first encrypted under — the version's own epoch,
+ * or, when the push declared `sameValueAs` (the writer's lineage
+ * declaration, AUTH_SPEC §12-5), the origin epoch of the version it names (a
+ * re-encryption carries an old plaintext into a new epoch; the old epoch's
+ * key holders could still read it). A named version with no row falls to 0
+ * (the oldest possible origin = the safe side: flags stay effective). The
+ * acceptance check keeps sameValueAs below the pushed version, so a named
+ * version was always pushed earlier in the same pair.
  */
-function originOf(row: RotationFlagSourceRow, origins: ReadonlyMap<number, number>): number {
+function originEpochOf(row: RotationFlagSourceRow, origins: ReadonlyMap<number, number>): number {
   const sameValueAs = row.payload?.["sameValueAs"];
   if (typeof sameValueAs === "number" && Number.isInteger(sameValueAs) && sameValueAs >= 1) {
     return origins.get(sameValueAs) ?? 0;
   }
-  return row.seq;
+  return row.epoch ?? 0;
 }
 
 interface FlagState {
-  readonly seq: number;
   readonly flag: EffectiveRotationFlag;
+  /**
+   * The exposure bound: the environment's current epoch when the flag was
+   * detected (the recommended row's epoch column). The subject held the DEKs
+   * of every epoch up to it, so a value whose origin epoch is at or below it
+   * is one the subject could read. A row without it (corruption) never
+   * resolves by a push — the safe side.
+   */
+  readonly epochBound: number;
   dismissed: boolean;
   resolved: boolean;
   reopenedByVersion: number | undefined;
@@ -702,22 +752,26 @@ interface FlagState {
 
 interface PairState {
   readonly flags: FlagState[];
-  /** version → plaintext origin (the seq of the push that first introduced that plaintext). */
+  /** version → plaintext origin epoch. */
   readonly origins: Map<number, number>;
+  /** The live (latest pushed) value's origin epoch — null while no version was pushed. */
+  liveOrigin: number | null;
 }
 
 /**
- * One var.version_pushed in the lineage fold: record the version's origin and
- * move each non-dismissed flag between resolved and effective. A transition
- * from resolved to effective is a re-exposure (a restore of a pre-flag value).
+ * One var.version_pushed in the lineage fold: record the version's origin
+ * epoch and move each non-dismissed flag between resolved and effective. A
+ * transition from resolved to effective is a re-exposure (a restore of a
+ * value the subject could read).
  */
 function applyPush(pair: PairState, row: RotationFlagSourceRow): void {
-  const origin = originOf(row, pair.origins);
+  const origin = originEpochOf(row, pair.origins);
   if (row.version !== null) {
     pair.origins.set(row.version, origin);
   }
+  pair.liveOrigin = origin;
   for (const flag of pair.flags.filter((candidate) => !candidate.dismissed)) {
-    const effective = origin < flag.seq;
+    const effective = origin <= flag.epochBound;
     if (!effective) {
       flag.reopenedByVersion = undefined;
     } else if (flag.resolved) {
@@ -736,23 +790,28 @@ function foldPairs(rows: readonly RotationFlagSourceRow[]): Map<string, PairStat
   const pairs = new Map<string, PairState>();
   for (const row of rows) {
     const key = pairKey(row);
-    const pair: PairState = pairs.get(key) ?? { flags: [], origins: new Map() };
+    const pair: PairState = pairs.get(key) ?? { flags: [], origins: new Map(), liveOrigin: null };
     pairs.set(key, pair);
     if (row.event === "rotation.recommended") {
-      // Every push so far precedes this row, so the live value's origin
-      // predates it: a new flag starts effective
+      // A new flag starts effective unless the live value was already first
+      // encrypted above its bound (a window that closed earlier — an old
+      // shrink — whose environment was rotated and re-pushed since)
+      const epochBound = row.epoch ?? Number.POSITIVE_INFINITY;
       pair.flags.push({
-        seq: row.seq,
         flag: flagOf(row),
+        epochBound,
         dismissed: false,
-        resolved: false,
+        resolved: pair.liveOrigin !== null && pair.liveOrigin > epochBound,
         reopenedByVersion: undefined,
       });
     } else if (row.event === "rotation.dismissed") {
-      // Sticky: covers every flag recorded before it (§4.1-5)
-      pair.flags.forEach((flag) => {
-        flag.dismissed = true;
-      });
+      // A dismissal covers only the flags effective at that point — what
+      // the dismissing admin saw and accepted. A flag resolved at the time
+      // stays resolved and can still be re-opened by a later restore
+      // (§4.1-5 — 2026-09-27 VH re-check round)
+      for (const flag of pair.flags) {
+        flag.dismissed ||= !flag.resolved;
+      }
     } else {
       applyPush(pair, row);
     }
@@ -788,20 +847,23 @@ export function deriveEffectiveFlags(
 
 /**
  * The history's `flagsIfCurrent` (AUTH_SPEC §12-7 — 2026-09-27 VH): for each
- * pushed version of one pair, the number of non-dismissed flags that are
- * effective while that version's value is the live one (= flags whose seq is
- * after the version's plaintext origin). `rows` are the pair's own rows in
- * seq order.
+ * listed version of one pair, the number of non-dismissed flags that are
+ * effective while that version's value is the live one (= flags whose
+ * exposure bound is at or above the version's origin epoch). `rows` are the
+ * pair's own rows in seq order. A version with no push row falls to origin 0
+ * — the same safe side as {@link originEpochOf} (every non-dismissed flag
+ * counts).
  */
 export function flagsIfCurrentByVersion(
   rows: readonly RotationFlagSourceRow[],
+  versions: readonly number[],
 ): ReadonlyMap<number, number> {
-  const counts = new Map<number, number>();
-  for (const pair of foldPairs(rows).values()) {
-    const live = pair.flags.filter((flag) => !flag.dismissed);
-    for (const [version, origin] of pair.origins) {
-      counts.set(version, live.filter((flag) => origin < flag.seq).length);
-    }
-  }
-  return counts;
+  const pair = [...foldPairs(rows).values()][0];
+  const live = pair?.flags.filter((flag) => !flag.dismissed) ?? [];
+  return new Map(
+    versions.map((version) => {
+      const origin = pair?.origins.get(version) ?? 0;
+      return [version, live.filter((flag) => origin <= flag.epochBound).length];
+    }),
+  );
 }

@@ -102,7 +102,8 @@ function detailFragments(event: AuditEvent): Fragment[] {
     fragment("target key", event.targetKeyFingerprintHex),
     fragment("env", event.environmentId),
     fragment("var", event.variableId),
-    fragment("epoch", event.epoch),
+    // A rotation.recommended row's epoch is its exposure bound (AUDIT_SPEC §3.3 — VH)
+    fragment(event.event === "rotation.recommended" ? "exposure epoch" : "epoch", event.epoch),
     fragment("v", event.version),
     fragment("value", lineageLabel(event) ?? undefined),
     fragment("chain seq", event.chainSeq),
@@ -224,7 +225,10 @@ function ReadsList({ event }: { event: AuditEvent }): ReactNode {
       <Text weight="semibold">{readSummaryLabel(listed)}</Text>
       <List density="compact">
         {listed.map((variable) => (
-          <ListItem key={variable.variableId} label={listedReadVariableLabel(variable)} />
+          <ListItem
+            key={`${variable.variableId}:${variable.version}`}
+            label={listedReadVariableLabel(variable)}
+          />
         ))}
       </List>
     </VStack>

@@ -185,7 +185,7 @@ export function rotationListOp(
       }
     }
     yield* io.log(
-      "To resolve: rotate the upstream credential and save the new value with `maruhi push` (the mandated re-encryption alone does not resolve a flag, and rolling back to a value from before a flag re-opens it). For pairs that cannot be pushed (e.g. deleted variables), dismiss the flag with `maruhi rotation dismiss` as an explicit acceptance of risk (admin)",
+      "To resolve: rotate the upstream credential and save the new value with `maruhi push` after the environment's mandated rotation (a value pushed before it is still under a key the former holder has; the re-encryption alone does not resolve a flag, and rolling back to a value they could read re-opens it). For pairs that cannot be pushed (e.g. deleted variables), dismiss the flag with `maruhi rotation dismiss` as an explicit acceptance of risk (admin)",
     );
     return 0;
   });

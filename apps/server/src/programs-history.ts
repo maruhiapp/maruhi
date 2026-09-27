@@ -10,6 +10,7 @@
 //   environment ∈ scope (the with-values pull's row); one aggregate var.read
 //   row enumerating every returned version
 
+import { MAX_VERSION_VALUES_PAGE } from "@maruhi/api-schema";
 import { auditReadPayload, VAR_READ_EVENT } from "@maruhi/core";
 import { Effect } from "effect";
 
@@ -24,6 +25,7 @@ import {
 } from "./data-plane.ts";
 import type { StoredVersionMeta } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
+import { MAX_VERSION_VALUES_PAGE_BYTES } from "./policy.ts";
 import { requireActiveEnvironment, requireActiveVariable } from "./quotas.ts";
 import { flagsIfCurrentByVersion } from "./rotation-detect.ts";
 import { observeStorageLevel } from "./storage-guard.ts";
@@ -45,8 +47,25 @@ export interface VariableVersionValuesValue {
   readonly values: readonly PulledVariableValue[];
 }
 
-/** The page size of the version value range (the wire's MAX_VERSION_VALUES_PAGE — §12-7). */
-const VERSION_VALUES_PAGE = 100;
+/**
+ * Trims a fetched page to the ciphertext byte budget (§12-7): stops before
+ * the version that would exceed it, always keeping the first (a single value
+ * is at most 64 KiB — §12-8 — so progress is guaranteed).
+ */
+export function withinByteBudget(
+  values: readonly PulledVariableValue[],
+): readonly PulledVariableValue[] {
+  let bytes = 0;
+  const page: PulledVariableValue[] = [];
+  for (const value of values) {
+    bytes += value.ciphertextHex.length / 2;
+    if (page.length > 0 && bytes > MAX_VERSION_VALUES_PAGE_BYTES) {
+      break;
+    }
+    page.push(value);
+  }
+  return page;
+}
 
 /** Read the lineage declaration copied into a var.version_pushed payload (rows this server wrote). */
 function sameValueAsOf(payload: Readonly<Record<string, unknown>> | null): number | undefined {
@@ -70,7 +89,10 @@ export const variableHistoryProgram = (
     const rows = yield* Effect.sync(() =>
       audit.readRotationSync.rotationFlagEventsFor(environmentId, variableId),
     );
-    const flagCounts = flagsIfCurrentByVersion(rows);
+    const flagCounts = flagsIfCurrentByVersion(
+      rows,
+      stored.map((version) => version.version),
+    );
     const lineage = new Map<number, number>();
     for (const row of rows) {
       const sameValueAs = sameValueAsOf(row.payload);
@@ -112,11 +134,8 @@ export const variableVersionValuesProgram = (
     // var.read rows)
     yield* observeStorageLevel;
     const store = yield* DataStore;
-    const values = yield* store.versionRange(
-      environmentId,
-      variableId,
-      fromVersion,
-      VERSION_VALUES_PAGE,
+    const values = withinByteBudget(
+      yield* store.versionRange(environmentId, variableId, fromVersion, MAX_VERSION_VALUES_PAGE),
     );
     // Audit (AUDIT_SPEC §3.3 — the aggregate form): one row per request
     // enumerating every returned version (each is a distributed ciphertext

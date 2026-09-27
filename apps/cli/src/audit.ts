@@ -96,6 +96,18 @@ function aggregatedReadOf(event: WireAuditEvent): readonly AuditReadVariable[] |
   return auditReadVariablesOf(event.payload);
 }
 
+/**
+ * The count of an aggregated read: one entry per variable for a bulk pull;
+ * several versions of one variable for the version value range (AUTH_SPEC
+ * §12-7 — VH), counted as such.
+ */
+function describeReadCount(listed: readonly AuditReadVariable[]): string {
+  const variables = new Set(listed.map((variable) => variable.variableId)).size;
+  return listed.length === variables
+    ? countNoun(variables, "variable")
+    : `${countNoun(listed.length, "version")} of ${countNoun(variables, "variable")}`;
+}
+
 // ---------------------------------------------------------------------------
 // Mirror reconciliation (§1-5 / §6)
 // ---------------------------------------------------------------------------
@@ -360,7 +372,7 @@ function coordinateParts(
     // Aggregated row: the variable enumeration lives in the payload (the
     // summary is count-only; expansion is --expand-reads). With --var, add
     // that variable's item (shows why the row matched)
-    parts.push(`read=${countNoun(listed.length, "variable")}`);
+    parts.push(`read=${describeReadCount(listed)}`);
     if (matched !== null) {
       parts.push(`matched=${matched}`);
     }
@@ -369,7 +381,11 @@ function coordinateParts(
     parts.push(`var=${variableLabel(event.variableId, resolvedName)}`);
   }
   if (event.epoch !== undefined) {
-    parts.push(`epoch=${event.epoch}`);
+    // A rotation.recommended row's epoch is its exposure bound, not a
+    // value's epoch (AUDIT_SPEC §3.3 / §4.1-5 — VH)
+    parts.push(
+      `${event.event === "rotation.recommended" ? "exposureEpoch" : "epoch"}=${event.epoch}`,
+    );
   }
   if (event.version !== undefined) {
     parts.push(`version=${event.version}`);

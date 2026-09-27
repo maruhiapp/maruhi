@@ -127,6 +127,13 @@ export interface ServerAccessRow {
 }
 
 /** Q5: the input rows of flag derivation (rotation.recommended / dismissed / var.version_pushed). */
+/** One epoch transition of an environment, from the chain mirror (§4.1-5 — VH). */
+export interface EnvironmentEpochRow {
+  readonly seq: number;
+  readonly environmentId: string;
+  readonly epoch: number;
+}
+
 export interface RotationFlagSourceRow {
   readonly seq: number;
   readonly serverTs: number;
@@ -135,6 +142,11 @@ export interface RotationFlagSourceRow {
   readonly variableId: string;
   /** The version column (var.version_pushed only — the lineage fold's key; NULL otherwise). */
   readonly version: number | null;
+  /**
+   * The epoch column: a var.version_pushed's epoch, or a rotation.recommended's
+   * exposure bound (the environment's epoch at detection — VH). NULL otherwise.
+   */
+  readonly epoch: number | null;
   readonly targetUserId: string | null;
   readonly targetKeyFingerprintHex: string | null;
   readonly payload: Readonly<Record<string, unknown>> | null;
@@ -148,6 +160,13 @@ export interface AuditRotationRead {
   readonly variableLifecycles: () => readonly VariableLifecycleRow[];
   readonly variableReadsBy: (actorUserId: string, range?: SeqRange) => readonly VariableReadRow[];
   readonly serverAccessEventsBy: (actorFpHex: string) => readonly ServerAccessRow[];
+  /**
+   * Every environment's epoch transitions from the chain mirror
+   * (`chain.environment_created` = epoch 1, `chain.epoch_rotated` = the new
+   * epoch — ae_event), ascending by seq: the input of each flag's exposure
+   * bound (the epoch at the end of the subject's window — §4.1-5, VH).
+   */
+  readonly environmentEpochEvents: () => readonly EnvironmentEpochRow[];
   readonly rotationFlagEvents: () => readonly RotationFlagSourceRow[];
   /** The same rows narrowed to one (variable × environment) pair (the history's flagsIfCurrent — ae_var). */
   readonly rotationFlagEventsFor: (
@@ -1189,10 +1208,24 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
         variableId: row["variable_id"] === null ? null : String(row["variable_id"]),
       })),
   // Q5: the (event, seq) index (ae_event)
+  environmentEpochEvents: () =>
+    sql
+      .exec(
+        `SELECT seq, environment_id, epoch FROM audit_events
+         WHERE event IN ('chain.environment_created', 'chain.epoch_rotated')
+           AND environment_id IS NOT NULL AND epoch IS NOT NULL
+         ORDER BY seq`,
+      )
+      .toArray()
+      .map((row) => ({
+        seq: Number(row["seq"]),
+        environmentId: String(row["environment_id"]),
+        epoch: Number(row["epoch"]),
+      })),
   rotationFlagEvents: () =>
     sql
       .exec(
-        `SELECT seq, server_ts, event, environment_id, variable_id, version,
+        `SELECT seq, server_ts, event, environment_id, variable_id, version, epoch,
                 target_user_id, target_key_fingerprint, payload
          FROM audit_events
          WHERE event IN ('rotation.recommended', 'rotation.dismissed', 'var.version_pushed')
@@ -1203,7 +1236,7 @@ const makeRotationRead = (sql: SqlStorage): AuditRotationRead => ({
   rotationFlagEventsFor: (environmentId: string, variableId: string) =>
     sql
       .exec(
-        `SELECT seq, server_ts, event, environment_id, variable_id, version,
+        `SELECT seq, server_ts, event, environment_id, variable_id, version, epoch,
                 target_user_id, target_key_fingerprint, payload
          FROM audit_events
          WHERE variable_id = ? AND environment_id = ?
@@ -1224,6 +1257,7 @@ function rotationFlagSourceRow(row: Record<string, SqlStorageValue>): RotationFl
     environmentId: String(row["environment_id"]),
     variableId: String(row["variable_id"]),
     version: row["version"] === null ? null : Number(row["version"]),
+    epoch: row["epoch"] === null ? null : Number(row["epoch"]),
     targetUserId: row["target_user_id"] === null ? null : String(row["target_user_id"]),
     targetKeyFingerprintHex:
       row["target_key_fingerprint"] === null ? null : String(row["target_key_fingerprint"]),

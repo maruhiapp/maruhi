@@ -19,7 +19,7 @@
     "apps/server/src/data-http.ts:205-216|apps/server/test/support/data-crypto.ts:601-612",
     "apps/server/src/handlers-devices.ts:147-165|apps/server/src/handlers-devices.ts:192-198",
     "apps/server/src/handlers-variables.ts:203-213|apps/server/src/handlers-variables.ts:225-235",
-    "apps/cli/src/push.ts:575-593|apps/cli/src/push.ts:668-682",
+    "apps/cli/src/push.ts:647-665|apps/cli/src/push.ts:740-754",
     "packages/crypto/test/checks/env-manifest.ts:350-357|packages/crypto/test/checks/metadata-signature.ts:225-232",
     "packages/crypto/test/checks/env-manifest.ts:378-387|packages/crypto/test/checks/metadata-signature.ts:269-278"
   ],

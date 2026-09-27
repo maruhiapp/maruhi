@@ -53,7 +53,7 @@ Before anything is signed, the CLI:
 2. fetches versions 3 to the latest and verifies each one: its signature, its link to the version before it, and that epochs never go backwards. The last one must be exactly the latest it just verified. An old version is trusted only if the current value's own chain leads back to it. A version that is merely signed, for example by a key someone held before they were removed, is refused, and nothing is pushed;
 3. decrypts version 3 and the current value in memory, and stops if they are already equal;
 4. asks for confirmation (`Proceed with the rollback? [y/N]`). Without a terminal, for example in CI or an agent, it refuses unless you pass `--force`;
-5. pushes the old value as a new version, encrypted for the current epoch, and records which version it restored.
+5. pushes the old value as a new version, encrypted for the current epoch, and records which version it restored. If someone else pushed in the meantime, it stops instead of overwriting their change, and you re-run it against the new state.
 
 As with `maruhi push`, deploy targets whose [sync config](/docs/deploy-targets) has `onPush` are synced afterwards; `--no-sync` skips that. The rollback appears in the audit log as an ordinary value push carrying "rollback to v3". In the dashboard's **Audit** tab the row reads `value rollback to v 3`.
 
@@ -61,14 +61,14 @@ The value is never displayed, written to disk, or passed on a command line. You 
 
 ## Rollback and rotation flags
 
-When someone loses access to an environment, maruhi raises a rotation flag for each variable they could read: rotate the upstream credential, then push the new value. `maruhi rotation list` shows them, and pushing a fresh value clears one. Re-encryption during rotation does not clear a flag, because the value is the same.
+When someone loses access to an environment (a member removed, a device or server key revoked, a scope narrowed), maruhi raises a rotation flag for each variable they could read, and the environment is rotated to a new key. To clear a flag, rotate the upstream credential and push the new value **after** that rotation: a value pushed while the environment still uses the old key is encrypted with a key the person held, so it doesn't clear the flag, and pushing that same value again later doesn't either (maruhi records it as the same value). In that case, rotate the upstream credential once more after the rotation and push that. `maruhi rotation list` shows the flags. Re-encryption during a rotation doesn't clear one either, because the value is the same.
 
-A rollback can bring back a value from before the person left. In that case the value in use is one they could read, so the flag comes back:
+A rollback can bring back a value the person could read, that is, a value first encrypted with a key they held. Then the flag comes back:
 
-- Rolling back to a version from **before** a flag re-opens it, even if a fresh push had cleared it. `maruhi rotation list` shows it as "reopened by the rollback in version N", and the dashboard's **Rotation** tab shows "re-opened by the rollback in vN". The rollback's confirmation tells you this before you answer, and the history shows it for every version.
-- Rolling back to a version pushed **after** the flag changes nothing: nobody who left could read it.
-- A flag an admin **dismissed** stays dismissed. The dismissal accepted that the person knew this variable's value, and an older value doesn't change that.
-- Pushing a fresh value (after rotating the upstream credential) clears the flag again.
+- Rolling back to such a value re-opens the flag, even if a fresh push had cleared it. `maruhi rotation list` shows it as "reopened by the rollback in version N", and the dashboard's **Rotation** tab shows "re-opened by the rollback in vN". The rollback's confirmation tells you this before you answer, and the history shows it for every version.
+- Rolling back to a value first pushed **after** the rotation changes nothing: nobody who left held that key. (For a member demoted to reader, who keeps reading new values by design, the flag only asks that the value be replaced after the demotion.)
+- A flag an admin **dismissed** stays dismissed. The dismissal accepted that the person knew this variable's value, and an older value doesn't change that. A dismissal only covers the flags open when it was made; a flag that had already been cleared can still come back.
+- Pushing a fresh value after the rotation clears the flag again.
 
 So if the value you would restore was readable by someone who left, rotating the upstream credential and pushing the new value is usually better than rolling back.
 
