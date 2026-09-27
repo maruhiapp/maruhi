@@ -1,19 +1,23 @@
-// CRYPTO_SPEC §4.1: 値の書き込み署名(Ed25519)。
+// CRYPTO_SPEC §4.1: the value write signature (Ed25519).
 // value_signed_bytes = LP("<suite>/value-sig", project_id, environment_id, epoch,
 //                         variable_id, version, nonce_hex, ciphertext_hex,
 //                         prev_value_sig_hash_hex, writer_user_id,
 //                         chain_head_hash_hex, chain_head_seq)
-// suite の束縛はドメイン文字列が担う(§5.1 と同型)。数値(epoch / version /
-// chain_head_seq)は §2.1 のとおり 10 進文字列化し、バイナリ列(nonce / 暗号文 /
-// ハッシュ)は hex 小文字文字列として LP に載せる。
-// テストベクター: test-vectors/value-signature.json
+// The suite binding is carried by the domain string (same shape as §5.1).
+// Numbers (epoch / version / chain_head_seq) are base-10 stringified per §2.1,
+// and binaries (nonce / ciphertext / hash) go onto the LP as lowercase hex
+// strings.
+// Test vectors: test-vectors/value-signature.json
 //
-// 署名の意味論は「writer_user_id が、チェーン位置 (chain_head_hash, chain_head_seq)
-// の状態を知った上で、この座標のこの暗号文を書いた」の帰属・内容真正性・認可時点
-// 束縛である(§4.1)。平文の正しさ・鮮度は証明しない。値署名は名前を認証しない
-// (名前 ↔ ID の真正性は §4.2 のメタステートメント)。
-// 宣言ヘッド・認可時点・prev 連鎖の検証は value-verify.ts(履歴照会は
-// chain-history.ts)が担い、本モジュールは正規化・署名・ハッシュの低水準のみ。
+// The signature's semantics: "writer_user_id, knowing the state at chain
+// position (chain_head_hash, chain_head_seq), wrote this ciphertext at these
+// coordinates" — attribution, content authenticity, and authorization-time
+// binding (§4.1). It does not prove the plaintext's correctness or freshness.
+// A value signature does not authenticate the name (name ↔ ID authenticity
+// belongs to the §4.2 meta statement).
+// Verification of the declared head, authorization time, and prev chaining is
+// carried by value-verify.ts (history queries by chain-history.ts); this
+// module holds only the low-level normalization, signing, and hashing.
 
 import { decodeHex, encodeHex } from "./bytes.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
@@ -23,7 +27,7 @@ import { invalidInput, isLowercaseHexOfLength, verifyEd25519Over } from "./valid
 
 const NONCE_HEX_LENGTH = 12 * 2;
 const SHA256_HEX_LENGTH = 32 * 2;
-// AES-256-GCM の ct || tag はタグ 16 バイトが下限(AUTH_SPEC §12-2 のワイヤ形状)
+// AES-256-GCM's ct || tag has a 16-byte tag as lower bound (the wire shape of AUTH_SPEC §12-2)
 const MIN_CIPHERTEXT_HEX_LENGTH = 16 * 2;
 
 /**
@@ -42,7 +46,7 @@ export interface ValueSignatureContext {
   readonly ciphertextHex: string;
   /**
    * SHA-256 (lowercase hex) of the previous version's value_signed_bytes;
-   * the empty string for version 1 (§4.1 の連鎖規約).
+   * the empty string for version 1 (the §4.1 chaining convention).
    */
   readonly prevValueSigHashHex: string;
   /** The writer's own internal user id (binds attribution to the identity). */
@@ -53,7 +57,7 @@ export interface ValueSignatureContext {
   readonly chainHeadSeq: number;
 }
 
-// 数値フィールド(epoch / version / chain_head_seq)は 1 始まりの安全な整数
+// Numeric fields (epoch / version / chain_head_seq) are 1-based safe integers
 function numericFieldInvalid(context: ValueSignatureContext): string | null {
   if (!Number.isSafeInteger(context.epoch) || context.epoch < 1) {
     return "context epoch";
@@ -67,8 +71,9 @@ function numericFieldInvalid(context: ValueSignatureContext): string | null {
   return null;
 }
 
-// バイナリ列は hex 小文字のみ(§5.1 実装と同じ規律 — 大文字 hex を許すと
-// 同一値に複数の正規形が生まれ、署名の一意性が壊れる)
+// Binary values are lowercase hex only (the same discipline as the §5.1
+// implementation — allowing uppercase hex would give one value multiple
+// normalized forms and break signature uniqueness)
 function hexFieldInvalid(context: ValueSignatureContext): string | null {
   if (!isLowercaseHexOfLength(context.nonceHex, NONCE_HEX_LENGTH)) {
     return "context nonceHex";
@@ -92,27 +97,30 @@ function hexFieldInvalid(context: ValueSignatureContext): string | null {
   return null;
 }
 
-// 署名対象の構造検証。version ↔ prev の結合(version 1 = 空 / version > 1 =
-// 64 hex)はここでは検査しない: 検証側は「署名は有効だが規則違反」の値
-// (ベクターの rule negative v1-nonempty-prev 等)の署名をまず検証できる必要が
-// あり、結合は検証規則(value-verify.ts の prev-shape-mismatch)として理由
-// コード付きで拒否する。
+// Structure validation of the signing target. The version ↔ prev coupling
+// (version 1 = empty / version > 1 = 64-hex) is not checked here: the verify
+// side must be able to verify the signature of a "valid signature but
+// rule-violating" value first (the vectors' rule negatives such as
+// v1-nonempty-prev), and the coupling is rejected with a reason code as a
+// verification rule (value-verify.ts's prev-shape-mismatch).
 function contextInvalidField(context: ValueSignatureContext): string | null {
   if (context.suite.length === 0) {
     return "context suite";
   }
-  // projectId / environmentId の非空検査は防御的一貫性のため(LP により空でも
-  // 符号化は無曖昧 = 脆弱性ではないが、他フィールドと検査水準を揃える)。
-  // 空の座標を署名する正当な呼び出しは存在しない
+  // The non-empty checks of projectId / environmentId are for defensive
+  // consistency (LP makes even empty values unambiguous = not a
+  // vulnerability, but the check level is kept uniform across fields).
+  // No legitimate call signs empty coordinates
   if (context.projectId.length === 0) {
     return "context projectId";
   }
   if (context.environmentId.length === 0) {
     return "context environmentId";
   }
-  // variable id も他の座標と同水準で非空を要求する。API schema は
-  // 空をワイヤで拒否するため外部からの forgery 経路ではないが、空の座標を署名
-  // する正当な呼び出しは存在しない(meta-sign.ts の variableId 検査と同じ規律)
+  // The variable id is required non-empty at the same level as the other
+  // coordinates. The API schema rejects empties on the wire, so this is not
+  // an external forgery path, but no legitimate call signs empty coordinates
+  // (the same discipline as meta-sign.ts's variableId check)
   if (context.variableId.length === 0) {
     return "context variableId";
   }
@@ -153,7 +161,7 @@ export function buildValueSignedBytes(context: ValueSignatureContext): Uint8Arra
 
 /**
  * SHA-256 (lowercase hex) of the canonical signed bytes — the value carried
- * as the next version's `prev_value_sig_hash_hex` (§4.1 の連鎖) and compared
+ * as the next version's `prev_value_sig_hash_hex` (the §4.1 chaining) and compared
  * for fork evidence (two valid signatures over distinct signed bytes at the
  * same coordinate — §14.2-5).
  */

@@ -1,6 +1,6 @@
-// HPKE スイートの単一構築点(CRYPTO_SPEC §2)。
-// DHKEM(X25519, HKDF-SHA256) + HKDF-SHA256 + AES-256-GCM、Base mode 単発 Seal/Open のみ。
-// ライブラリは panva hpke(厳密ピン。選定経緯は docs/notes/spike-c.md)。
+// The single construction point of the HPKE suite (CRYPTO_SPEC §2).
+// DHKEM(X25519, HKDF-SHA256) + HKDF-SHA256 + AES-256-GCM, Base-mode single-shot Seal/Open only.
+// The library is panva hpke (exact pin; the selection history is docs/notes/spike-c.md).
 
 import * as HPKE from "hpke";
 

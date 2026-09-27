@@ -1,7 +1,7 @@
-// CRYPTO_SPEC §4: 変数値の AES-256-GCM 暗号化。
-// AAD = LP(suite, project_id, environment_id, epoch, variable_id, version)。
-// nonce は 96-bit ランダム生成で暗号文と併置。再利用は絶対に許されない
-// (テストベクター: test-vectors/variable-encryption.json)。
+// CRYPTO_SPEC §4: AES-256-GCM encryption of variable values.
+// AAD = LP(suite, project_id, environment_id, epoch, variable_id, version).
+// The nonce is a 96-bit random value co-located with the ciphertext; reuse is never
+// allowed (test vectors: test-vectors/variable-encryption.json).
 
 import { encodeLengthPrefixed } from "./encoding.ts";
 import type { CryptoError, CryptoResult } from "./errors.ts";
@@ -29,8 +29,9 @@ function invalidInput(field: string): { readonly ok: false; readonly error: Cryp
   return { ok: false, error: { kind: "InvalidInput", field } };
 }
 
-// 数値フィールドは LP エンコーダの前提(非負の安全な整数)を Result で検証する。
-// これを怠ると buildVariableAad が TypeError を投げ「エラーは値で返す」契約が破れる
+// Numeric fields are Result-validated against the LP encoder's precondition (non-negative
+// safe integers). Skipping this makes buildVariableAad throw TypeError and breaks the
+// "errors are returned as values" contract
 function checkContextNumbers(context: VariableContext): string | null {
   if (!Number.isSafeInteger(context.epoch) || context.epoch < 0) {
     return "context epoch";
@@ -94,7 +95,7 @@ export async function encryptVariable(input: {
     );
     return { ok: true, value: { nonce, ciphertext } };
   } catch {
-    // WebCrypto の予期しない失敗(巨大平文等)も値で返す(復号側と対称)
+    // Unexpected WebCrypto failures (huge plaintext etc.) are also returned as values (symmetric with decrypt)
     return { ok: false, error: { kind: "EncryptFailed", operation: "variable" } };
   }
 }

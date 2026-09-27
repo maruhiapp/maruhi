@@ -1,27 +1,35 @@
-// CRYPTO_SPEC §8(0.9-draft / KL3。0.12-draft / DK で予備鍵ラップ台帳へ改訂): 予備鍵の
-// ブロブ B(2026-09-19 DK 以前は master 鍵ブロブ)を受信者ごとに包むラップの集合。
-// recovery-code 経路(recovery.ts)は不変で、本ファイルは新しい受信者クラスだけを扱う:
+// CRYPTO_SPEC §8 (0.9-draft / KL3; revised into the reserve-key wrap ledger in
+// 0.12-draft / DK): the set of wraps packing the reserve-key blob B (the
+// master-key blob before 2026-09-19 DK) per recipient.
+// The recovery-code path (recovery.ts) is unchanged; this file only handles the
+// new recipient classes:
 //
-//   クラス S(対称 KEK): passkey-prf
-//     KEK = HKDF-SHA256(prf_out, salt = 空, info = "maruhi/v1/passkey-prf")
-//   クラス G(保護者グループ): guardian
-//     グループ KEK = 乱数 256-bit。mode any = 全分片が KEK / mode all = 乱数 XOR 分割
-//     分片は HPKE Base mode 単発 Seal(info = LP("maruhi/v1/guardian-wrap", user_id,
-//     group_id, mode, share_index, guardian_user_id)、aad 空)
-//   クラス H(ハンドオフ = 一時受信者。承認者は保護者のみ — 2026-09-19 DK で旧端末の承認
-//     〔kind = "device" の B ラップの同送〕は削除): 要求者の一時 X25519 鍵 E へ 32 バイト値を Seal
+//   Class S (symmetric KEK): passkey-prf
+//     KEK = HKDF-SHA256(prf_out, salt = empty, info = "maruhi/v1/passkey-prf")
+//   Class G (guardian groups): guardian
+//     Group KEK = random 256-bit. mode any = every share is the KEK / mode all =
+//     a random XOR split. Shares are HPKE Base-mode single-shot Seals
+//     (info = LP("maruhi/v1/guardian-wrap", user_id,
+//     group_id, mode, share_index, guardian_user_id), aad empty)
+//   Class H (handoff = a temporary recipient; approvers are guardians only —
+//     the old device's approval [co-sending a B wrap of kind = "device"] was
+//     removed at 2026-09-19 DK): Seals a 32-byte value to the requester's
+//     ephemeral X25519 key E
 //     (info = LP("maruhi/v1/handoff-wrap", user_id, request_id, source, share_index,
-//     approver_user_id)、aad 空)。request_id = SHA-256(LP("maruhi/v1/handoff-id",
-//     E_pub_hex))。ハンドオフコード = Base32(E_pub ‖ SHA-256(E_pub)[:4])
+//     approver_user_id), aad empty). request_id = SHA-256(LP("maruhi/v1/handoff-id",
+//     E_pub_hex)). Handoff code = Base32(E_pub ‖ SHA-256(E_pub)[:4])
 //
-//   B のラップ(S / G に共通): AES-256-GCM、96-bit 乱数 nonce、
+//   Wrapping B (common to S / G): AES-256-GCM, 96-bit random nonce,
 //     AAD = LP("maruhi/v1/master-wrap", user_id, kind, wrap_ref, mode)
-//     kind ∈ {passkey-prf, guardian}(`device` は 2026-09-19 DK で削除 — AAD の構成は不変)
+//     kind ∈ {passkey-prf, guardian} (`device` was removed at 2026-09-19 DK —
+//     the AAD structure is unchanged)
 //
-// 新しいプリミティブは無い: HKDF / AES-GCM / SHA-256 は WebCrypto、Seal / Open は §5 と
-// 同じ HPKE スイート、XOR 分割は情報理論的 n-of-n 秘密分散の標準形(乱数と XOR のみ)。
-// k-of-n(Shamir 等)・パスフレーズ由来 KEK・SAS 短縮は導入しない(§8.5)。
-// テストベクター: test-vectors/master-key-wrap.json(recovery-wrap.json は不変)。
+// No new primitives: HKDF / AES-GCM / SHA-256 are WebCrypto; Seal / Open use
+// the same HPKE suite as §5; XOR splitting is the standard form of
+// information-theoretic n-of-n secret sharing (random values and XOR only).
+// No k-of-n (Shamir etc.), passphrase-derived KEK, or SAS shortening is
+// introduced (§8.5).
+// Test vectors: test-vectors/master-key-wrap.json (recovery-wrap.json is unchanged).
 
 import { encodeHex } from "./bytes.ts";
 import type { WrappedDek } from "./dek-wrap.ts";

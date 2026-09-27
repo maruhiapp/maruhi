@@ -1,11 +1,12 @@
-// 「variable_id バイト昇順・入れ子 LP・ドメイン分離」ダイジェストの共有骨格。
-// CRYPTO_SPEC §4.3 の variables_digest(マニフェスト — manifest-sign.ts)と
-// §6.2 の values_digest(checkpoint — values-digest.ts)は同型の正規形を持つ:
+// Shared skeleton of the "variable_id byte-ascending, nested-LP, domain-separated" digest.
+// CRYPTO_SPEC §4.3's variables_digest (manifest — manifest-sign.ts) and §6.2's
+// values_digest (checkpoint — values-digest.ts) have the same normalized form:
 //   digest_hex = lower_hex(SHA-256(LP("<suite>/<domain>", entry_1, …, entry_n)))
-//   entry_i = LP(エントリ固有のフィールド列)、variable_id の UTF-8 バイト昇順。
-// 骨格(検証 → 重複拒否 → 内部ソート → 入れ子 LP → SHA-256)をここに 1 実装だけ
-// 置き、フィールド列と検証規則だけを呼び出し側が与える(正規形実装の重複を
-// 作らない — CLAUDE.md の「1 実装のみ」の規律)。
+//   entry_i = LP(entry-specific field sequence), in UTF-8 byte-ascending order of variable_id.
+// The skeleton (validate → reject duplicates → internal sort → nested LP → SHA-256)
+// lives here as a single implementation; callers supply only the field sequence and
+// the validation rules (no duplicate normalized-form implementations — CLAUDE.md's
+// "one implementation only" discipline).
 
 import { encodeHex, utf8Encode } from "./bytes.ts";
 import { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
@@ -13,7 +14,7 @@ import type { CryptoResult } from "./errors.ts";
 import { sha256 } from "./hash.ts";
 import { invalidInput } from "./validate.ts";
 
-/** UTF-8 バイト列としての辞書順比較(ロケール・大文字小文字非依存の正規順)。 */
+/** Lexicographic comparison as UTF-8 byte strings (the canonical order — locale- and case-independent). */
 function compareUtf8Bytes(a: string, b: string): number {
   const bytesA = utf8Encode(a);
   const bytesB = utf8Encode(b);

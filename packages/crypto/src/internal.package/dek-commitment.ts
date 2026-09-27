@@ -1,19 +1,22 @@
-// CRYPTO_SPEC §5.2: エポック DEK のコミットメント。
+// CRYPTO_SPEC §5.2: the epoch-DEK commitment.
 //   dek_commitment_hex = lower_hex(SHA-256(LP("<suite>/dek-commit",
 //                                             project_id, environment_id, epoch, dek_hex)))
-// suite の束縛はドメイン文字列が担う(§5.1 と同型)。座標(project / environment /
-// epoch)を原像に含めることで、同一 DEK の別文脈への流用もコミットメント不一致に
-// なり、コミットメント値同士の比較から文脈間の DEK 一致が漏れることもない。
-// dek_hex は DEK 32 バイトの hex 小文字文字列(§6.2 grant_server の先例と同じ
-// binary_encoding 規約)。テストベクター: test-vectors/dek-commitment.json
+// The suite binding is carried by the domain string (same shape as §5.1).
+// Including the coordinates (project / environment / epoch) in the preimage
+// makes reuse of the same DEK in another context a commitment mismatch, and
+// keeps comparison of commitment values from leaking cross-context DEK
+// equality. dek_hex is the lowercase hex string of the 32-byte DEK (the same
+// binary_encoding convention as the §6.2 grant_server precedent).
+// Test vectors: test-vectors/dek-commitment.json
 //
-// これは新しいプリミティブではない: SHA-256 + §2.1 LP のみで構成され、§3 の鍵
-// フィンガープリントと同じ「公開ハッシュによる同定」の適用である。秘匿性は入力の
-// エントロピーに依存するため、対象は一様ランダム 256-bit の DEK のみ(低エントロピー
-// 値への流用は禁止 — §12)。
+// This is not a new primitive: it is built from SHA-256 + the §2.1 LP alone,
+// the same "identification by public hash" applied by §3's key fingerprint.
+// Since secrecy depends on the input's entropy, the only permitted subject is
+// a uniformly random 256-bit DEK (reuse for low-entropy values is forbidden — §12).
 //
-// 受信者は unwrap した DEK をこのコミットメントと照合するまで、その DEK を
-// いかなる暗号操作(復号・暗号化)にも使用してはならない(§5.2 / §6.3)。
+// A recipient must not use an unwrapped DEK in any cryptographic operation
+// (decryption or encryption) until it has been reconciled against this
+// commitment (§5.2 / §6.3).
 
 import { encodeHex } from "./bytes.ts";
 import { encodeLengthPrefixed } from "./encoding.ts";
@@ -101,8 +104,9 @@ export async function verifyDekCommitment(input: {
   readonly dek: Uint8Array;
   readonly expectedCommitmentHex: string;
 }): Promise<CryptoResult<void>> {
-  // 期待値はチェーン由来の正規形(hex 小文字 64 文字)のみ受け付ける。大文字を
-  // 許すと「照合に使う正規形」が複数生まれ、実装間で判定が割れる
+  // The expected value accepts only the chain-derived normalized form (lowercase
+  // hex, 64 chars). Allowing uppercase would produce multiple "normalized forms
+  // used for reconciliation" and split the judgment between implementations
   if (
     input.expectedCommitmentHex.length !== COMMITMENT_HEX_LENGTH ||
     !/^[0-9a-f]+$/.test(input.expectedCommitmentHex)

@@ -1,5 +1,5 @@
-// CRYPTO_SPEC §6.1: チェーンエントリの Ed25519 署名。
-// WebCrypto の Ed25519 は RFC 8032 の決定論的署名(テストベクターと一致する)。
+// CRYPTO_SPEC §6.1: Ed25519 signatures of chain entries.
+// WebCrypto's Ed25519 is the RFC 8032 deterministic signature (matches the test vectors).
 
 import { encodeHex } from "./bytes.ts";
 import { canonicalChainSignedBytes } from "./chain-canonical.ts";

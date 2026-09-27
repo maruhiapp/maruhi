@@ -1,5 +1,5 @@
-// バイト列ユーティリティ。hex は小文字固定
-// (チェーン正規化の binary_encoding 規約が hex 小文字文字列のため)。
+// Byte-string utilities. hex is fixed lowercase
+// (chain normalization's binary_encoding convention is lowercase hex strings).
 
 const textEncoder = new TextEncoder();
 
@@ -26,8 +26,8 @@ export function encodeHex(bytes: Uint8Array): string {
  * entries and fingerprints is lowercase only.
  */
 export function decodeHex(s: string): Uint8Array | null {
-  // 不信データの検証境界から呼ばれるため、実行時型が string でない場合も
-  // throw せず null を返す(TS 型より実行時の防御を優先)
+  // Called from the verification boundary on untrusted data, so a non-string runtime
+  // type returns null rather than throwing (runtime defense takes priority over TS types)
   if (typeof s !== "string" || s.length % 2 !== 0 || !/^[0-9a-f]*$/.test(s)) {
     return null;
   }

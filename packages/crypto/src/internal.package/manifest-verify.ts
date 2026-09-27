@@ -1,53 +1,72 @@
-// CRYPTO_SPEC §4.3 / §6.3(環境マニフェストの検証)/ §6.4(サーバー受理検証)の
-// 履歴ベース複合検証。value-verify.ts / meta-verify.ts の同型(検証機構を
-// 二重実装しない — サーバー / CLI が共有する唯一の実装。§4.3 の「正規形実装は
-// packages/crypto に 1 つだけ置く」)。
+// History-based composite verification of CRYPTO_SPEC §4.3 / §6.3
+// (environment manifest verification) / §6.4 (server acceptance
+// verification). Isomorphic to value-verify.ts / meta-verify.ts (the
+// verification mechanism is not double-implemented — the single
+// implementation shared by server / CLI, per §4.3's "the canonical
+// implementation lives exactly once in packages/crypto").
 //
-// 検証済みチェーンの履歴索引(chain-history.ts)に対して、配布(または受理)
-// されたマニフェストの §6.3 の 1〜3・5 同型 + エポック整合 + ダイジェスト再計算を
-// 検査する:
-//   1. 署名(鍵の選択 = 履歴で issuer_user_id に束縛された鍵のうち FP 一致)
-//   2. ヘッド束縛(seq → hash の一致。不一致 2 種 — mismatch / future — を区別)
-//   3. 認可時点(宣言ヘッド時点の在籍・鍵束縛・role — 発行契機はすべて member
-//      以上のメタ操作 — §4.3)
-//   4. エポック整合(§4.3 (2)): 検証済みチェーン上に当該
-//      (environment_id, manifest_version) の `checkpoint` タプルが存在する場合、
-//      その (epoch, manifest_sig_hash) と**完全一致しなければならない**(境界
-//      チェックポイント束縛 — strict はこの場合の代替経路に**ならない**。
-//      環境作成・rotate 複合のマニフェストは複合が必須同梱する境界 checkpoint —
-//      AUTH_SPEC §12-4 — のこの経路で検証される)。同座標に (epoch,
-//      manifest_sig_hash) の異なるタプルが併存する場合は equivocation の硬い
-//      証拠として拒否する。タプルが存在しない場合のみ、宣言ヘッド時点の当該
-//      環境の現エポックとの厳密一致(strict)
-//   5. 環境メタ整合: (env_meta_version, env_meta_sig_hash_hex) = 検証済み環境
-//      メタステートメントの最新形(AUTH_SPEC §12-5 (7) の再計算対象)
-//   6. ダイジェスト再計算(§4.3 (3)): 検証済み全ステートメント(tombstone 込み)
-//      からの variables_digest 再計算一致。不一致 = 欠落・注入・順序違反の検出
-//   7. prev 連鎖(predecessor を渡された場合のみ: prev 一致 + **エポック非減少**
-//      — 値の §4.1 単調性のマニフェスト版。rotate 後に旧エポックを焼き込んだ
-//      前進 manifestVersion の検出 = 本機構の核)
-//   8. チェックポイント整合の規則 1(§6.3 / §4.3 (4)): manifestVersion・epoch は
-//      当該環境の**最新** `checkpoint` 基準以上であること(基準割れ = チェック
-//      ポイント済み状態からの巻き戻しとして拒否。タプルを持つ版への (4) の照合の
-//      下方回避もこれが塞ぐ — 検査順序〔束縛 (4) → 本規則〕はベクター
-//      checkpoint-binding-mismatch / checkpoint-regressed が固定)。
-//      同版・異ハッシュは (4) の束縛(基準 = 最新 checkpoint 自身のタプル)が拒否
-// 座標整合(§6.3-5)は呼び出し側の責務: 本関数へ渡す context 自体を、申告値
-// でなく期待座標(検証済み genesis ハッシュ・要求環境)から構成すること。
-// entries / envMeta も**検証済み**ステートメントから構成すること(サーバー =
-// 受理後状態の保存行、クライアント = §6.3 検証を通過した配布ステートメント)。
+// Against the history index of a verified chain (chain-history.ts), checks
+// the §6.3 items 1-3 and 5 isomorphs plus epoch integrity and digest
+// recomputation of a distributed (or submitted) manifest:
+//   1. Signature (key selection = FP match among the keys the history binds
+//      to issuer_user_id)
+//   2. Head binding (seq → hash match; distinguishes the 2 kinds of
+//      mismatch — mismatch / future)
+//   3. Authorization time (membership, key binding, and role at the declared
+//      head — every issuing occasion is a member-or-above meta operation
+//      — §4.3)
+//   4. Epoch integrity (§4.3 (2)): when a `checkpoint` tuple for that
+//      (environment_id, manifest_version) exists on the verified chain, the
+//      manifest must **exactly match** its (epoch, manifest_sig_hash)
+//      (boundary-checkpoint binding — strict is **not** an alternative path
+//      in that case. A manifest of a compound environment-creation / rotate
+//      is verified through this path via the boundary checkpoint the
+//      compound must bundle — AUTH_SPEC §12-4). When tuples with differing
+//      (epoch, manifest_sig_hash) coexist at the same coordinate, reject as
+//      hard evidence of equivocation. Only when no tuple exists: strict
+//      equality with the environment's current epoch at the declared head
+//      (strict)
+//   5. Environment-meta integrity: (env_meta_version,
+//      env_meta_sig_hash_hex) = the latest form of the verified environment
+//      meta statement (the recomputation target of AUTH_SPEC §12-5 (7))
+//   6. Digest recomputation (§4.3 (3)): a recomputed variables_digest match
+//      against all verified statements (tombstones included). A mismatch =
+//      detected omission, injection, or ordering violation
+//   7. prev chaining (only when a predecessor is passed: prev match +
+//      **epoch non-decrease** — the manifest version of the value's §4.1
+//      monotonicity; detecting a forward manifestVersion that baked in an
+//      old epoch after a rotate is the core of this mechanism)
+//   8. Rule 1 of checkpoint integrity (§6.3 / §4.3 (4)): manifestVersion
+//      and epoch must be at least the environment's **latest** `checkpoint`
+//      baseline (a baseline violation is rejected as a rollback from an
+//      already-checkpointed state; this also closes the downward bypass of
+//      (4)'s reconciliation for a tuple-bearing version — the check order
+//      [binding (4) → this rule] is pinned by vectors
+//      checkpoint-binding-mismatch / checkpoint-regressed). Same version /
+//      different hash is rejected by (4)'s binding (the baseline = the
+//      latest checkpoint's own tuple)
+// Coordinate integrity (§6.3-5) is the caller's duty: construct the context
+// passed to this function from expected coordinates (the verified genesis
+// hash, the requested environment), not from the declared values.
+// entries / envMeta must likewise be built from **verified** statements
+// (server = stored rows of post-acceptance state; client = distributed
+// statements that passed §6.3 verification).
 //
-// チェックポイント束縛(4)の照合材料は履歴索引の内部照会(checkpointTupleFor —
-// session-33 裁定 A)であり、呼び出し側の入力ではない: 明示入力の形は「引き
-// 忘れ = strict へのフォールバック」という fail-open(タプルが存在しても strict
-// 経路が生きたままなら equivocation 優位が消える — session-32 §4-2 が選言形を
-// 潰した理由の再現)を呼び出し規約のバグとして許すため、構造的に閉じる。
+// The reconciliation material of checkpoint binding (4) is the history
+// index's internal lookup (checkpointTupleFor — session-33 ruling A), not a
+// caller input: an explicit-input form would allow the fail-open of
+// "forgetting = falling back to strict" as a calling-convention bug (while
+// a tuple exists yet the strict path stays alive, the equivocation
+// advantage disappears — a reprise of why session-32 §4-2 killed the
+// disjunctive form), so the structure is closed.
 //
-// latest-only の限界(session-14 裁定 B の同型): predecessor が無い場合でも
-// 署名・ヘッド・鍵・role・エポック・環境メタ・ダイジェスト・prev の形は必ず
-// 検査する。prev の実在一致とエポック非減少は predecessor が渡された場合のみ
-// 検査し、渡されない場合に「検査済み」と偽らない(呼び出し側は §14.3 の非保証を
-// 負う — 床のマニフェスト拡張・チェックポイント整合が補完する)。
+// The limits of latest-only (the session-14 ruling-B isomorph): even
+// without a predecessor, the shapes of signature, head, key, role, epoch,
+// env-meta, digest, and prev are always checked. The real match of prev and
+// the epoch non-decrease are checked only when a predecessor is passed, and
+// we do not falsely claim "checked" when it is not (the caller bears
+// §14.3's non-guarantee — the floor's manifest expansion and checkpoint
+// integrity compensate).
 
 import { encodeHex } from "./bytes.ts";
 import type { ChainHistoryIndex } from "./chain-history.ts";
@@ -71,7 +90,7 @@ import {
 } from "./validate.ts";
 
 /**
- * The verified predecessor manifest's anchor (§4.3 の連鎖): its signed-bytes
+ * The verified predecessor manifest's anchor (the §4.3 chaining): its signed-bytes
  * hash and its epoch. The caller must have verified the predecessor itself
  * (server: the stored latest manifest; client: a manifest that passed this
  * same verification / the local floor's manifest record) — chaining onto
@@ -104,7 +123,7 @@ export interface DistributedEnvManifestInput {
   readonly entries: readonly VariablesDigestEntry[];
   /** The **verified** latest environment meta statement (§12-5 (7)). */
   readonly envMeta: EnvManifestEnvMeta;
-  /** Verified previous manifest, when the verifier holds one (裁定 B 同型). */
+  /** Verified previous manifest, when the verifier holds one (the ruling-B isomorph). */
   readonly predecessor?: EnvManifestPredecessor | undefined;
 }
 
@@ -115,8 +134,9 @@ function manifestInvalid(reason: ManifestInvalidReason): {
   return { ok: false, error: { kind: "EnvManifestInvalid", reason } };
 }
 
-// 2〜3. ヘッド束縛・認可時点(§6.3-1〜-3)の理由コード写像。検査本体は
-// headAuthorizationReason(validate.ts — value-verify / meta-verify と共有)
+// 2-3. Reason-code mapping of head binding / authorization time (§6.3-1 to
+// -3). The check itself is headAuthorizationReason (validate.ts — shared
+// with value-verify / meta-verify)
 const HEAD_AUTHORIZATION_REASONS = {
   chainHeadFuture: "chain-head-future",
   chainHeadMismatch: "chain-head-mismatch",
@@ -126,13 +146,16 @@ const HEAD_AUTHORIZATION_REASONS = {
 } as const satisfies HeadAuthorizationReasons<ManifestInvalidReason>;
 
 /**
- * 4. エポック整合(§4.3 (2) — チェックポイント束縛)。
- * タプルが存在する場合の照合は (epoch, manifest_sig_hash) の
- * **両方**に対して行う: ハッシュはエポックを署名対象として覆うが、タプル側の
- * epoch フィールドがマニフェスト内容と矛盾する形(チェーンに載った虚偽公証)は
- * ハッシュ照合だけでは検出されない。タプルが存在する場合、宣言ヘッド時点の
- * 環境存在検査は行わない(環境作成複合の正当な形 — 宣言ヘッド H の時点で環境は
- * 未作成、H+1 の create と H+2 の境界 checkpoint が同一トランザクションで載る)。
+ * 4. Epoch integrity (§4.3 (2) — checkpoint binding).
+ * When a tuple exists, the reconciliation is against **both** of (epoch,
+ * manifest_sig_hash): the hash covers the epoch as a signed field, but a
+ * shape where the tuple-side epoch field contradicts the manifest content
+ * (a false notarization that landed on the chain) is not detected by hash
+ * comparison alone. When a tuple exists, the environment-existence check at
+ * the declared head is not performed (the legitimate shape of an
+ * environment-creation compound — the environment does not yet exist at
+ * declared head H; the create at H+1 and the boundary checkpoint at H+2
+ * land in the same transaction).
  */
 function epochIntegrityReason(
   input: DistributedEnvManifestInput,
@@ -148,9 +171,10 @@ function epochIntegrityReason(
       ? null
       : "checkpoint-binding-mismatch";
   }
-  // strict: 宣言ヘッド時点の当該環境の現エポックとの厳密一致(削除・member
-  // 未満への降格は全環境ローテーションを伴う — §7 — ため、write 資格を失った
-  // 鍵では現エポックのマニフェストを署名できない)
+  // strict: strict equality with the environment's current epoch at the
+  // declared head (deletion and demotion below member both carry an
+  // all-environment rotation — §7 — so a key that lost write eligibility
+  // cannot sign a manifest at the current epoch)
   const atHead = history.environmentStateAt(context.environmentId, context.chainHeadSeq);
   if (atHead === undefined) {
     return "environment-not-created-at-head";
@@ -159,10 +183,12 @@ function epochIntegrityReason(
 }
 
 /**
- * 8. チェックポイント整合の規則 1(§6.3 / §4.3 (4)): 当該環境の最新
- * `checkpoint` 基準に対する manifestVersion・epoch の非後退。基準を持たない
- * 環境は対象外(その環境の保証はエポック整合のみ — §6.3)。同版・異ハッシュの
- * 拒否は (4) の束縛が担う(最新基準の版のタプルは必ず存在するため)。
+ * 8. Rule 1 of checkpoint integrity (§6.3 / §4.3 (4)): manifestVersion and
+ * epoch must not regress below the environment's latest `checkpoint`
+ * baseline. Environments without a baseline are out of scope (their
+ * guarantee is epoch integrity only — §6.3). Rejection of same version /
+ * different hash is carried by (4)'s binding (a tuple for the baseline's
+ * version always exists).
  */
 function checkpointIntegrityReason(
   input: DistributedEnvManifestInput,
@@ -184,20 +210,23 @@ async function contentReason(
   input: DistributedEnvManifestInput,
 ): Promise<ManifestInvalidReason | null> {
   const { context } = input;
-  // 5. 環境メタ整合(AUTH_SPEC §12-5 (7)): マニフェストが束縛する環境メタ
-  //    ステートメントの座標が、検証済みの最新形と一致すること
+  // 5. Environment-meta integrity (AUTH_SPEC §12-5 (7)): the coordinates
+  //    of the environment meta statement the manifest binds must match the
+  //    verified latest form
   if (
     context.envMetaVersion !== input.envMeta.metaVersion ||
     context.envMetaSigHashHex !== input.envMeta.sigHashHex
   ) {
     return "env-meta-mismatch";
   }
-  // 6. ダイジェスト再計算(§4.3 (3)): 検証済みステートメント集合(tombstone
-  //    込み)からの再計算一致。不一致はステートメントの欠落・注入・順序違反
+  // 6. Digest recomputation (§4.3 (3)): a recomputed match from the
+  //    verified statement set (tombstones included). A mismatch = statement
+  //    omission, injection, or ordering violation
   const digest = await computeVariablesDigest(context.suite, input.entries);
   if (!digest.ok) {
-    // entries は検証済みステートメント由来であり、構造不正は呼び出し側のバグ。
-    // ここでは形式不一致として同じ理由コードに畳む(秘密を含まない)
+    // entries come from verified statements, so a structure violation is a
+    // caller bug. Fold it here into the same reason code as a form mismatch
+    // (contains no secrets)
     return "variables-digest-mismatch";
   }
   return digest.value === context.variablesDigestHex ? null : "variables-digest-mismatch";
@@ -205,18 +234,21 @@ async function contentReason(
 
 function prevReason(input: DistributedEnvManifestInput): ManifestInvalidReason | null {
   const { context, predecessor } = input;
-  // prev の形(latest-only でも必ず検査): manifestVersion 1 = 空、> 1 = 64 hex。
-  // 個別フィールドの hex 形式は manifestContextInvalidField が検査済みなので、
-  // ここは manifestVersion との結合のみ
+  // The shape of prev (always checked even under latest-only):
+  // manifestVersion 1 = empty, > 1 = 64 hex. The hex form of each field is
+  // already checked by manifestContextInvalidField, so this is only the
+  // coupling with manifestVersion
   if ((context.manifestVersion === 1) !== (context.prevManifestSigHashHex === "")) {
     return "prev-shape-mismatch";
   }
   if (predecessor === undefined) {
     return null;
   }
-  // 7. 連鎖整合: prev の実在一致とエポック非減少(§4.1 単調性のマニフェスト版 —
-  //    rotate 後に旧エポックを焼き込んだ前進 manifestVersion の検出)。
-  //    prev 不一致を Ed25519 failure に潰さない(value-verify と同じ裁定)
+  // 7. Chaining integrity: the real match of prev and epoch non-decrease
+  //    (the manifest version of §4.1 monotonicity — detecting a forward
+  //    manifestVersion that baked in an old epoch after a rotate).
+  //    A prev mismatch must not collapse into an Ed25519 failure (the same
+  //    ruling as value-verify)
   if (context.prevManifestSigHashHex !== predecessor.signedBytesHashHex) {
     return "prev-hash-mismatch";
   }
@@ -253,7 +285,8 @@ export async function verifyDistributedEnvManifest(
     return invalidInput(field);
   }
 
-  // 1. 鍵の選択(§6.3-1 前段。検査順は value-verify / meta-verify と同一)
+  // 1. Key selection (the lead-in to §6.3-1; the check order is the same as
+  //    value-verify / meta-verify)
   const imported = await importActorKeyByFingerprint({
     history: input.history,
     actorUserId: input.context.issuerUserId,
@@ -272,7 +305,8 @@ export async function verifyDistributedEnvManifest(
     return signature;
   }
 
-  // 2〜3. ヘッド束縛・認可時点(発行契機はすべて member 以上 — §4.3)
+  // 2-3. Head binding / authorization time (every issuing occasion is member
+  //    or above — §4.3)
   const headReason = headAuthorizationReason<ManifestInvalidReason>({
     history: input.history,
     chainHeadSeq: input.context.chainHeadSeq,
@@ -281,7 +315,7 @@ export async function verifyDistributedEnvManifest(
     actorKeyFingerprintHex: input.issuerKeyFingerprintHex,
     requiredRoleRank: ROLE_RANK.member,
     reasons: HEAD_AUTHORIZATION_REASONS,
-    // 3′. スコープ(§6.3 — 2026-09-14 ES): マニフェストは環境対象
+    // 3′. Scope (§6.3 — 2026-09-14 ES): manifests are environment-targeting
     scope: {
       environmentId: input.context.environmentId,
       outOfScopeAtHead: "issuer-environment-out-of-scope-at-head",
@@ -290,15 +324,16 @@ export async function verifyDistributedEnvManifest(
   if (headReason !== null) {
     return manifestInvalid(headReason);
   }
-  // prev 連鎖は §4.3 (1) の一部(§6.3-6 と同型)であり、エポック整合 (2) に
-  // 先行する(v1-nonempty-prev / v2-empty-prev の形検査が束縛判定より先に
-  // 落ちることをベクターが固定する)
+  // The prev chaining is part of §4.3 (1) (isomorphic to §6.3-6) and
+  // precedes epoch integrity (2) (the vectors pin that the shape checks of
+  // v1-nonempty-prev / v2-empty-prev land before the binding judgment)
   const chainReason = prevReason(input);
   if (chainReason !== null) {
     return manifestInvalid(chainReason);
   }
-  // チェックポイント束縛(2)の照合対象 = 自身の signed_bytes ハッシュ
-  // (成功時の返り値と同一 — 束縛照合のために先に計算する)
+  // The reconciliation target of checkpoint binding (2) = the hash of the
+  // manifest's own signed_bytes (identical to the success return value —
+  // computed early for the binding reconciliation)
   const signedBytesHashHex = encodeHex(await sha256(buildEnvManifestSignedBytes(input.context)));
   const epochReason = epochIntegrityReason(input, signedBytesHashHex);
   if (epochReason !== null) {

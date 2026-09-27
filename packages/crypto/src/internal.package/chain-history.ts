@@ -1,25 +1,32 @@
-// CRYPTO_SPEC §6.3 / §4.1: 検証済みチェーンの履歴索引(ChainHistoryIndex)。
+// CRYPTO_SPEC §6.3 / §4.1: the history index of a verified chain
+// (ChainHistoryIndex).
 //
-// 値署名の検証(value-verify.ts)は「宣言ヘッド時点」(inclusive)のチェーン
-// 導出状態を要する。値ごとにチェーン全体を再署名検証するのは過大なので、
-// verifyChainWithHistory(chain-verify.ts)が検証ループと同時に本索引を一度
-// 構築し、server / CLI は検証済み snapshot ごとにこれを照会する(session-14
-// 裁定 A: 最終 ChainState や単純な keyHistory では tenure・時点照会を表せない)。
+// Verifying a value signature (value-verify.ts) requires the chain-derived
+// state "at the declared head" (inclusive). Re-verifying signatures over the
+// whole chain per value is excessive, so verifyChainWithHistory
+// (chain-verify.ts) builds this index once alongside its verification loop,
+// and server / CLI consult it per verified snapshot (session-14 ruling A:
+// neither the final ChainState nor a naive keyHistory can express tenure and
+// point-in-time queries).
 //
-// inclusive 規約(§6.3。ベクター value-signature.json が固定):
-// - genesis / add_member エントリ自身の seq で対象メンバーは有効
-// - change_role エントリ自身の seq で新 (role, scope) が有効(2026-09-14 ES —
-//   履歴索引は在籍区間ごとに (role, scope) の変化点を保持する。§6.2 の検証状態)。
-//   提案経由の適用(PF1)は定足数に達した approve エントリの seq が変化点
-// - remove_member エントリ自身の seq で対象は無効
-// - create_environment エントリ自身の seq でエポック 1 が有効
-// - rotate_epoch エントリ自身の seq で新エポックが有効
-// - add_device エントリ自身の seq で新端末は有効、revoke_device エントリ自身の seq で
-//   その端末は無効(2026-09-19 DK — §6.2「端末の有効区間」。在籍区間の内側に端末ごとの
-//   有効区間を持ち、remove_member は全端末を同時に終える)
+// The inclusive convention (§6.3; pinned by the value-signature.json vectors):
+// - the target member is valid at the genesis / add_member entry's own seq
+// - the new (role, scope) is valid at the change_role entry's own seq
+//   (2026-09-14 ES — the history index keeps per-tenure (role, scope)
+//   change points; the §6.2 verification state). Application via a proposal
+//   (PF1) uses the seq of the approve entry that reached quorum as the
+//   change point
+// - the target is invalid at the remove_member entry's own seq
+// - epoch 1 is valid at the create_environment entry's own seq
+// - the new epoch is valid at the rotate_epoch entry's own seq
+// - the new device is valid at the add_device entry's own seq, and the device
+//   is invalid at the revoke_device entry's own seq (2026-09-19 DK — §6.2
+//   "device validity intervals": a per-device validity interval sits inside
+//   the membership interval, and remove_member ends all devices at once)
 //
-// timestamp は認可判定に使わない(すべて seq ベース)。remove → re-add は別
-// tenure として保持する(同じ鍵の dedupe で tenure を消さない — 裁定 A)。
+// Timestamps are never used for authorization decisions (everything is
+// seq-based). A remove → re-add is kept as a separate tenure (deduplicating
+// equal keys must not erase tenure — ruling A).
 
 import {
   type ChainDevice,
@@ -34,14 +41,15 @@ import type {
 import type { MemberScope } from "./member-scope.ts";
 
 /**
- * A member's chain-derived state at one inclusive seq (§6.3 の宣言ヘッド時点): the
- * person's (role, scope) and the devices active at that seq. There is no single
- * key field (2026-09-19 DK — 鍵は端末に属する): a signature's key is resolved with
- * `deviceStateAt`, and single-device callers use `soleDeviceOf`.
+ * A member's chain-derived state at one inclusive seq (§6.3's declared-head
+ * time): the person's (role, scope) and the devices active at that seq. There
+ * is no single key field (2026-09-19 DK — keys belong to devices): a
+ * signature's key is resolved with `deviceStateAt`, and single-device
+ * callers use `soleDeviceOf`.
  */
 export interface MemberStateAtSeq {
   readonly role: Role;
-  /** Environment scope at that seq (§6.3 の 3′ — 宣言ヘッド時点の scope 検査の入力). */
+  /** Environment scope at that seq (§6.3's 3′ — the input of the head-time scope check). */
   readonly scope: MemberScope;
   /** Devices active at that seq (inclusive intervals — §6.2), keyed by fingerprint. */
   readonly devices: ReadonlyMap<string, ChainDevice>;
@@ -50,7 +58,7 @@ export interface MemberStateAtSeq {
 }
 
 /**
- * One device of a member at one inclusive seq (§6.3-1 の鍵選択 + 3 / 3′ の入力):
+ * One device of a member at one inclusive seq (§6.3-1's key selection + the input of 3 / 3′):
  * the device and the effective permission it held at that seq
  * (`effectivePermissionOf(person-at-seq, device)` — chain-device.ts).
  */
@@ -64,7 +72,7 @@ export interface DeviceStateAtSeq {
 /**
  * Lookup result for the `checkpoint` tuple covering one
  * (environment_id, manifest_version) coordinate on the verified chain
- * (CRYPTO_SPEC §4.3 検証規則 (2) の照合材料).
+ * (CRYPTO_SPEC §4.3 verification rule (2)'s reconciliation material).
  *
  * - `unique` — every checkpoint entry carrying this coordinate agrees on
  *   (epoch, manifest_sig_hash); `seq` is the first entry that carried it
@@ -74,7 +82,7 @@ export interface DeviceStateAtSeq {
  *   (§4.3 (2)). The values digest is deliberately NOT part of this
  *   comparison: re-attesting the same manifest_version with a new values
  *   digest is a legitimate flow (rotate boundary checkpoint followed by the
- *   post-re-encryption periodic checkpoint — §6.3。session-33 裁定 B)
+ *   post-re-encryption periodic checkpoint — §6.3; session-33 ruling B)
  */
 export type CheckpointTupleLookup =
   | {
@@ -85,7 +93,7 @@ export type CheckpointTupleLookup =
     }
   | { readonly kind: "conflicting" };
 
-/** An environment's chain-derived state at one inclusive seq (§6.3-4 の入力). */
+/** An environment's chain-derived state at one inclusive seq (the input of §6.3-4). */
 export interface EnvironmentStateAtSeq {
   /** Seq of the `create_environment` entry. */
   readonly createdAtSeq: number;
@@ -111,12 +119,13 @@ export interface ChainHistoryIndex {
   readonly memberStateAt: (userId: string, seq: number) => MemberStateAtSeq | undefined;
   /**
    * The device `keyFingerprintHex` of `userId` with `seq` applied inclusively —
-   * the key the chain bound to the user at that point (§6.3-1: 端末の有効区間 =
-   * add_device / add_member / genesis の seq から revoke_device の seq の直前まで) —
+   * the key the chain bound to the user at that point (§6.3-1: the device's
+   * validity interval = from the seq of add_device / add_member / genesis
+   * until just before the seq of revoke_device) —
    * or undefined when the user is not a member at `seq` or the device is not
    * active at `seq` (never added, added later, revoked at or before `seq`, or
    * belonging to another tenure). The result carries the device's effective
-   * permission at `seq` (§6.3-3 / -3′ の入力).
+   * permission at `seq` (the input of §6.3-3 / -3′).
    */
   readonly deviceStateAt: (
     userId: string,
@@ -145,15 +154,15 @@ export interface ChainHistoryIndex {
    * coordinate (§4.3 (2): the strict head-time epoch rule then applies). The
    * verifier consults this internally — the binding is not caller-supplied,
    * so a forgotten lookup cannot reopen the strict path for a coordinate the
-   * chain has bound (session-33 裁定 A).
+   * chain has bound (session-33 ruling A).
    */
   readonly checkpointTupleFor: (
     environmentId: string,
     manifestVersion: number,
   ) => CheckpointTupleLookup | undefined;
   /**
-   * The latest checkpoint tuple covering the environment (§6.3
-   * チェックポイント整合の環境ごとの基準 — mirror of
+   * The latest checkpoint tuple covering the environment (§6.3's
+   * per-environment baseline of checkpoint integrity — the mirror of
    * `ChainState.checkpoints` for history-based verifiers).
    */
   readonly latestCheckpointFor: (environmentId: string) => EnvironmentCheckpointState | undefined;
@@ -197,7 +206,7 @@ type CheckpointTupleRecord =
     }
   | "conflict";
 
-/** change_role はエントリ自身の seq で新 (role, scope) が有効(inclusive)。 */
+/** change_role makes the new (role, scope) valid at the entry's own seq (inclusive). */
 function spanAt(tenure: TenureRecord, seq: number): MemberSpan | undefined {
   let current: MemberSpan | undefined;
   for (const span of tenure.spans) {
@@ -210,7 +219,7 @@ function spanAt(tenure: TenureRecord, seq: number): MemberSpan | undefined {
   return current;
 }
 
-/** 端末は add_device の seq で有効・revoke_device の seq で無効(inclusive — §6.2)。 */
+/** A device is valid at its add_device seq and invalid at its revoke_device seq (inclusive — §6.2). */
 function deviceActiveAt(record: DeviceRecord, seq: number): boolean {
   return record.device.addedSeq <= seq && (record.revokedSeq === null || seq < record.revokedSeq);
 }
@@ -262,7 +271,8 @@ class ChainHistory implements ChainHistoryIndex {
       return undefined;
     }
     const tenures = this.#tenures.get(userId) ?? [];
-    // remove は endSeq 自身で無効(inclusive)なので有効区間は [startSeq, endSeq)
+    // remove is invalid at endSeq itself (inclusive), so the valid interval
+    // is [startSeq, endSeq)
     return tenures.find(
       (candidate) =>
         candidate.startSeq <= seq && (candidate.endSeq === null || seq < candidate.endSeq),
@@ -333,9 +343,11 @@ class ChainHistory implements ChainHistoryIndex {
   }
 
   sigKeyByFingerprint(userId: string, keyFingerprintHex: string): string | undefined {
-    // 全 tenure・全端末(失効済みを含む)から FP で選ぶ(§6.3-1 の鍵選択 — 有効区間の
-    // 検査は deviceStateAt が署名検証の後に行う)。同じ FP は同じ鍵対なので、失効 →
-    // 再登録で複数レコードに現れても sig 公開鍵は一致する
+    // Select by FP over all tenure and all devices (revoked included) —
+    // §6.3-1's key selection; the validity-interval check is done by
+    // deviceStateAt after signature verification. The same FP is the same
+    // key pair, so even if a key appears in multiple records via revoke →
+    // re-register, the sig public keys agree
     for (const tenure of this.#tenures.get(userId) ?? []) {
       const record = tenure.devices.find(
         (candidate) => candidate.device.keyFingerprintHex === keyFingerprintHex,
@@ -443,7 +455,7 @@ export class ChainHistoryBuilder {
     }
   }
 
-  /** change_role: the new (role, scope) pair is current from `seq` (inclusive — §6.2 の全置換). */
+  /** change_role: the new (role, scope) pair is current from `seq` (inclusive — §6.2's full replacement). */
   recordRoleChange(userId: string, seq: number, role: Role, scope: MemberScope): void {
     this.#openTenure(userId)?.spans.push({ fromSeq: seq, role, scope });
   }
@@ -467,10 +479,12 @@ export class ChainHistoryBuilder {
   }
 
   /**
-   * checkpoint エントリの環境タプルを記録する(§6.2 の導出状態 / §4.3 (2) の
-   * 照合材料)。同一 (environment, manifestVersion) に (epoch, manifest_sig_hash)
-   * の異なるタプルが現れたら conflict へ格下げする(equivocation の証拠化 —
-   * session-33 裁定 B。values_digest は同一 mv でも正当に変わるため比較対象外)。
+   * Records the environment tuples of a checkpoint entry (§6.2's derived
+   * state / §4.3 (2)'s reconciliation material). When a differing (epoch,
+   * manifest_sig_hash) tuple appears for the same (environment,
+   * manifestVersion), the record is demoted to conflict (evidence of
+   * equivocation — session-33 ruling B; values_digest is excluded from the
+   * comparison since it may legitimately change at the same mv).
    */
   recordCheckpoint(seq: number, environments: readonly CheckpointEnvironmentEntry[]): void {
     for (const tuple of environments) {
