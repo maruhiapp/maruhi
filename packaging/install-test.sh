@@ -37,7 +37,7 @@ Usage: install-test.sh --dist <dir> --target <name> --version <x.y.z>
   --dist     The directory holding maruhi-<target>.tar.gz and checksums.txt
   --target   The target under test (example: linux-x64). Must match
              the target install.sh detects on this runner
-  --version  The expected `maruhi --version` output (no v prefix)
+  --version  The expected \`maruhi --version\` output (no v prefix)
 EOF
 }
 
