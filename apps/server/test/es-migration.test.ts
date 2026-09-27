@@ -1,16 +1,23 @@
-// ES + PF1 K2 のワイヤ非互換の実測(互換受理を持たないことの固定)。
+// Measurement of the ES + PF1 K2 wire incompatibility (pinning that there is
+// no compatibility-acceptance path).
 //
-// 2026-09-14 の ES 改訂は add_member / change_role の payload 形式と招待の発行文を変え、
-// 互換受理の経路を持たない(CRYPTO_SPEC §6.2 — 所有者裁定)。ここでは「更新前の CLI が
-// 更新後のサーバーへ送る形」を再現し、fail-closed の**実際の応答**を固定する:
-//   - 旧形式(scope 2 フィールドを欠く)の add_member 追記 → HTTP 400(strict Schema)
-//   - 旧形式の招待発行 body(scopeKind / scopeEnvironmentIds なし)→ HTTP 400
-//   - 旧正規化(scope を署名対象に含まない)で署名した add_member を新形式の
-//     フィールド付きで送る形 → HTTP 422 `bad-signature`(合意規則 — 旧署名者は
-//     新形式のエントリを作れない)
-// 逆方向(更新後の CLI × 更新前のサーバー)は旧サーバーの strict 受理(§12-10 (1)
-// — 2026-08-19 リリース)により未知フィールドが 400 になる(strict-payload.test.ts が
-// 固定する挙動の帰結)。
+// The 2026-09-14 ES revision changed the payload shape of add_member /
+// change_role and the invite issuance statement, and there is no
+// compatibility-acceptance path (CRYPTO_SPEC §6.2 — owner ruling). Here we
+// reproduce "the pre-update CLI's shapes sent to the post-update server" and
+// pin the **actual fail-closed responses**:
+//   - appending a legacy-shape add_member (missing the 2 scope fields)
+//     -> HTTP 400 (strict Schema)
+//   - legacy-shape invite issue body (no scopeKind / scopeEnvironmentIds)
+//     -> HTTP 400
+//   - an add_member signed under the old canonicalization (scope not covered
+//     by the signature) sent with the new-shape fields -> HTTP 422
+//     `bad-signature` (consensus rule — an old signer cannot produce a
+//     new-shape entry)
+// The reverse direction (post-update CLI x pre-update server) turns unknown
+// fields into a 400 under the old server's strict admission (§12-10 (1) —
+// released 2026-08-19), a consequence of the behavior pinned by
+// strict-payload.test.ts.
 
 import { computeChainEntryHash, encodeHex, encodeLengthPrefixed, SUITE_ID } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
@@ -45,7 +52,7 @@ function appendRaw(entry: unknown): Promise<Response> {
   });
 }
 
-/** 旧 CLI の add_member エントリ(scope 2 フィールドなし)を旧正規化で署名する。 */
+/** Signs a legacy CLI add_member entry (no scope fields) under the old canonicalization. */
 async function legacySignedAddMember(): Promise<{
   readonly legacyEntry: Record<string, unknown>;
   readonly signatureHex: string;
@@ -67,7 +74,7 @@ async function legacySignedAddMember(): Promise<{
     sigPubHex: NEW_SIG_PUB,
     role: "member",
   };
-  // 旧正規化(2026-09-14 以前): payload_bytes = LP(target, enc, sig, role)
+  // Old canonicalization (before 2026-09-14): payload_bytes = LP(target, enc, sig, role)
   const legacyPayloadBytes = encodeLengthPrefixed([
     legacyPayload.targetUserId,
     legacyPayload.encPubHex,
@@ -117,7 +124,7 @@ describe("ES K2 migration — pre-release CLI shapes against the updated server"
     expect(body["_tag"]).toBe("ChainEntryInvalid");
     expect(body.reason).toBe("bad-signature");
     expect(body.seq).toBe(fixture.head.seq + 1);
-    // 拒否されたエントリはチェーンに載らない(ヘッド不変)
+    // The rejected entry does not land on the chain (head unchanged)
     const chain = await SELF.fetch(`${BASE}/projects/${projectId}/chain`, {
       headers: bearer(tokenOf(fixture.tokens, OWNER)),
     });

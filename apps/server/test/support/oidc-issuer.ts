@@ -1,20 +1,22 @@
-// テスト用の OIDC issuer(AUTH_SPEC §14-1)のフェイク資材。
+// Fake materials for the test OIDC issuer (AUTH_SPEC §14-1).
 //
-// vitest.config.ts の outboundService(Node 側)と、workerd 側のテストコードの
-// **両方**から読む共有モジュール。前者は discovery / JWKS を配信し、後者は同じ
-// 鍵でトークンに署名する — 両側で同じ鍵素材を参照する必要があるため、
-// 鍵は固定値としてここに置く。
+// A shared module read from **both** vitest.config.ts's outboundService (the
+// Node side) and the workerd-side test code. The former serves discovery /
+// JWKS; the latter signs tokens with the same key — since both sides must
+// reference the same key material, the key lives here as a fixed value.
 //
-// **鍵はこのテスト専用に生成した使い捨てのダミー**であり、いかなる実環境でも
-// 使われない(リポジトリに本物のシークレットを置かない — CLAUDE.md)。
-// 実ネットワークへは出ない: 想定外の宛先は outboundService が 500 で落とす。
+// **The key is a disposable dummy generated for these tests only** and is
+// not used in any real environment (no real secrets in the repository —
+// CLAUDE.md). It never reaches a real network: unexpected destinations are
+// dropped with a 500 by outboundService.
 
-/** v1 の対応 issuer(src/oidc.package/verifier.ts の SUPPORTED_ISSUERS と一致)。 */
+/** The issuer v1 supports (matches SUPPORTED_ISSUERS in
+ * src/oidc.package/verifier.ts). */
 export const OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 
 export const OIDC_KID = "test-key-1";
 
-/** JWKS が配信する公開鍵(ES256 / P-256)。 */
+/** The public key JWKS serves (ES256 / P-256). */
 const OIDC_PUBLIC_JWK = {
   kty: "EC",
   crv: "P-256",
@@ -25,14 +27,15 @@ const OIDC_PUBLIC_JWK = {
   kid: OIDC_KID,
 } as const;
 
-/** 同じ鍵の秘密側(テストがトークンに署名するためだけに使う)。 */
+/** The private side of the same key (used only so tests can sign tokens). */
 export const OIDC_PRIVATE_JWK = {
   ...OIDC_PUBLIC_JWK,
   d: "mIuIyT-VxYQPpQMi0zwtrO_1sSATkC633euZ0SrkGBU",
   key_ops: ["sign"],
 } as const;
 
-/** discovery ドキュメント(§14-1: issuer の自己申告と jwks_uri の同一オリジン)。 */
+/** The discovery document (§14-1: the issuer's self-declaration and
+ * jwks_uri on the same origin). */
 export const OIDC_DISCOVERY = {
   issuer: OIDC_ISSUER,
   jwks_uri: `${OIDC_ISSUER}/.well-known/jwks`,
@@ -48,11 +51,12 @@ function body(value: unknown, status = 200): Response {
 }
 
 /**
- * outboundService から呼ぶルーター(issuer 宛でなければ null — 呼び出し側が
- * 他のフェイクへ回す)。**正常応答のみ**を返す: 取得失敗側(fail-closed と
- * 503 `oidc-jwks-unavailable`)は fetch を差し替える単体テスト
- * (test/oidc.test.ts)が検査する — outboundService は Node 側で動くため
- * workerd 側のテストから状態を切り替えられない。
+ * A router called from outboundService (returns null when not addressed to
+ * the issuer — the caller forwards to other fakes). Returns **only happy
+ * responses**: the fetch-failure side (fail-closed and 503
+ * `oidc-jwks-unavailable`) is checked by unit tests that swap out fetch
+ * (test/oidc.test.ts) — outboundService runs on the Node side, so its state
+ * cannot be flipped from workerd-side tests.
  */
 export function fakeOidcIssuer(url: URL): Response | null {
   if (url.origin !== new URL(OIDC_ISSUER).origin) {

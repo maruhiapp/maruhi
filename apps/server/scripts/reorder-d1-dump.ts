@@ -1,22 +1,30 @@
-// `wrangler d1 export` のダンプを import 可能な順に並べ替える(運用 runbook —
-// docs/notes/hosted-ops.md §5-1 (3) / docs/SELF_HOSTING.md "Restoring a D1 export")。
+// Reorders a `wrangler d1 export` dump into an importable order (operations
+// runbook — docs/notes/hosted-ops.md §5-1 (3) / docs/SELF_HOSTING.md
+// "Restoring a D1 export").
 //
-// リストア演習(hosted-ops.md §5-3)で判明した実機の挙動:
-// - export はテーブルを作成順に「CREATE TABLE → その表の INSERT」の塊で並べるため、
-//   外部キーの親表(users)より先に子表(api_tokens 等)の INSERT が現れる
-// - 先頭の `PRAGMA defer_foreign_keys=TRUE` は `wrangler d1 execute --file` の
-//   import 経路では効かず、`no such table: main.users` / `FOREIGN KEY constraint
-//   failed` で止まる
-// よって (1) 全 CREATE TABLE → (2) INSERT を外部キー依存の親→子順 → (3) CREATE INDEX
-// に並べ替える。BEGIN / COMMIT は落とす(D1 の import は文単位で実行する)。
+// Behavior on the real service found during a restore drill (hosted-ops.md
+// §5-3):
+// - export orders tables by creation as "CREATE TABLE -> that table's
+//   INSERTs" blocks, so INSERTs of a child table (api_tokens etc.) appear
+//   before the foreign-key parent table (users)
+// - the leading `PRAGMA defer_foreign_keys=TRUE` does not take effect on the
+//   `wrangler d1 execute --file` import path — it stops with
+//   `no such table: main.users` / `FOREIGN KEY constraint failed`
+// So reorder to (1) all CREATE TABLEs -> (2) INSERTs in foreign-key parent ->
+// child order -> (3) CREATE INDEXes. BEGIN / COMMIT are dropped (D1 import
+// executes per statement).
 //
-// 前提: 文の切り出しは「行末が `;` の行で 1 文が終わる」(export の INSERT は 1 行、
-// CREATE TABLE は複数行で `);` で終わる)。TEXT 値に改行を含む行があると分割が崩れるが、
-// 現行スキーマの値は base64 / ハッシュ / 制約付き識別子で改行を含まず、崩れた場合も
-// 後片が未分類の文として拒否される(fail-closed)。改行を含む列を足すときはここを見直す。
+// Assumption: statement splitting relies on "a statement ends at a line whose
+// end is `;`" (export INSERTs are one line; CREATE TABLE spans multiple lines
+// ending with `);`). If a TEXT value contains a newline the split breaks, but
+// current schema values are base64 / hashes / constrained identifiers with no
+// newlines, and even when it breaks the leftover is rejected as an
+// unclassified statement (fail-closed). Revisit this when adding a column
+// that can contain newlines.
 //
-// 使い方(apps/server から): bun scripts/reorder-d1-dump.ts <in.sql> <out.sql>
-// 秘密は扱わない(SQL テキストの並べ替えのみ)。復号済みダンプは作業後に削除すること。
+// Usage (from apps/server): bun scripts/reorder-d1-dump.ts <in.sql> <out.sql>
+// Handles no secrets (SQL text reordering only). Delete decrypted dumps after
+// the work.
 
 import { reorderD1Dump, UnclassifiedStatementsError } from "./reorder-d1-dump.lib.ts";
 

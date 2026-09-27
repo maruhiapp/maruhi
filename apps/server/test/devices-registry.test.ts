@@ -1,9 +1,11 @@
-// 端末登録簿・端末追加要求 API の統合テスト(AUTH_SPEC §13-11 — 2026-09-19 DK K3)。
-// @cloudflare/vitest-plugin(workerd 実環境)で SELF 経由の実経路を検証する。
+// Integration tests for the device registry and device-add-request APIs
+// (AUTH_SPEC §13-11 — 2026-09-19 DK K3). Verifies the real path via SELF
+// under @cloudflare/vitest-plugin (real workerd).
 //
-// 登録簿は advisory(検証・認可の入力にならない)なので、ここで固定するのは
-// HTTP 面の契約のみ: 認可(`*` × admin トークン / セッションは一覧のみ)、FP の
-// サーバー再計算、上限(行 32 / 要求 5 回 / 時)、衝突(409)、TTL、404 の一様性。
+// The registry is advisory (it feeds neither verification nor authorization),
+// so what is pinned here is only the HTTP-level contract: authorization (`*` x
+// admin token / sessions may only list), server-side FP recomputation, limits
+// (32 rows / 5 requests per hour), conflicts (409), TTL, and uniform 404s.
 
 import {
   computeUserKeyFingerprint,
@@ -38,7 +40,7 @@ interface DeviceKeys {
   readonly fp: string;
 }
 
-/** ベクター鍵(端末鍵)を登録簿の材料へ。 */
+/** Turns a vector key (device key) into registry material. */
 function vectorDevice(name: string): DeviceKeys {
   const keys = vectorKeyNamed(name);
   return {
@@ -48,7 +50,7 @@ function vectorDevice(name: string): DeviceKeys {
   };
 }
 
-/** 使い捨ての端末鍵(上限テスト用 — 秘密鍵は使わない)。 */
+/** Disposable device keys (for the limit tests — private keys go unused). */
 async function freshDevice(): Promise<DeviceKeys> {
   const enc = await generateEncryptionKeyPair();
   const sig = await generateSigningKeyPair();
@@ -114,7 +116,7 @@ async function jsonOf(response: Response): Promise<Record<string, unknown>> {
   return (await response.json()) as Record<string, unknown>;
 }
 
-describe("端末登録簿(§13-11 — PUT / GET / DELETE /auth/devices)", () => {
+describe("device registry (§13-11 — PUT / GET / DELETE /auth/devices)", () => {
   it("registers, lists and updates the caller's own rows (204 → 200)", async () => {
     const token = await cliToken(601);
     expect((await registerDevice(bearer(token), PHONE.fp, registerBody(PHONE))).status).toBe(204);
@@ -136,7 +138,8 @@ describe("端末登録簿(§13-11 — PUT / GET / DELETE /auth/devices)", () => 
     expect(reserve?.["sigPubHex"]).toBe(RESERVE.sigPubHex);
     expect(typeof reserve?.["createdAtMs"]).toBe("number");
 
-    // upsert: 表示名の更新(行数は増えない・tokenId は body どおりに置き換わる)
+    // upsert: updates the display name (row count unchanged; tokenId is
+    // replaced with whatever the body carries)
     expect(
       (await registerDevice(bearer(token), PHONE.fp, registerBody(PHONE, "renamed"))).status,
     ).toBe(204);
@@ -167,7 +170,8 @@ describe("端末登録簿(§13-11 — PUT / GET / DELETE /auth/devices)", () => 
     const b = await cliToken(605);
     expect((await registerDevice(bearer(a), PHONE.fp, registerBody(PHONE))).status).toBe(204);
     expect((await jsonOf(await listDevices(bearer(b))))["devices"]).toEqual([]);
-    // 他人の行は消せない(本人の行として探すので 404)
+    // Another user's row cannot be deleted (looked up as the caller's own
+    // row, so 404)
     expect((await removeDevice(bearer(b), PHONE.fp)).status).toBe(404);
   });
 
@@ -197,7 +201,7 @@ describe("端末登録簿(§13-11 — PUT / GET / DELETE /auth/devices)", () => 
     expect((await jsonOf(reqList))["reason"]).toBe("session-not-allowed");
   });
 
-  it("rejects writes from a token below `*` × admin with 403 (§13-2 と同水準)", async () => {
+  it("rejects writes from a token below `*` × admin with 403 (same level as §13-2)", async () => {
     const scoped = await cliToken(607, [{ project: "f0".repeat(32), permission: "admin" }]);
     expect((await registerDevice(bearer(scoped), PHONE.fp, registerBody(PHONE))).status).toBe(403);
     expect((await removeDevice(bearer(scoped), PHONE.fp)).status).toBe(403);
@@ -205,7 +209,7 @@ describe("端末登録簿(§13-11 — PUT / GET / DELETE /auth/devices)", () => 
     expect((await listRequests(bearer(scoped))).status).toBe(403);
     expect((await getRequest(bearer(scoped), RESERVE.fp)).status).toBe(403);
     expect((await cancelRequest(bearer(scoped), RESERVE.fp)).status).toBe(403);
-    // 一覧は認証済み主体すべて
+    // Listing is open to every authenticated principal
     expect((await listDevices(bearer(scoped))).status).toBe(200);
     const write = await cliToken(608, [{ project: "*", permission: "write" }]);
     expect((await registerDevice(bearer(write), PHONE.fp, registerBody(PHONE))).status).toBe(403);
@@ -238,7 +242,7 @@ describe("端末登録簿(§13-11 — PUT / GET / DELETE /auth/devices)", () => 
     expect(body["_tag"]).toBe("DeviceRegistryLimit");
     expect(body["reason"]).toBe("device-rows");
     expect(body["limit"]).toBe(32);
-    // 既存行の更新は上限に数えない
+    // Updating an existing row does not count against the limit
     const first = devices[0];
     if (first === undefined) {
       throw new Error("no device");
@@ -246,7 +250,7 @@ describe("端末登録簿(§13-11 — PUT / GET / DELETE /auth/devices)", () => 
     expect(
       (await registerDevice(bearer(token), first.fp, registerBody(first, "renamed"))).status,
     ).toBe(204);
-    // 1 行消せばまた登録できる
+    // Deleting one row makes registration possible again
     expect((await removeDevice(bearer(token), first.fp)).status).toBe(204);
     expect((await registerDevice(bearer(token), overflow.fp, registerBody(overflow))).status).toBe(
       204,
@@ -254,7 +258,7 @@ describe("端末登録簿(§13-11 — PUT / GET / DELETE /auth/devices)", () => 
   });
 });
 
-describe("端末追加要求(§13-11 — /auth/devices/requests)", () => {
+describe("device add requests (§13-11 — /auth/devices/requests)", () => {
   it("creates, lists, reads and cancels a request (fp derived by the server)", async () => {
     const token = await cliToken(620);
     const created = await createRequest(bearer(token), requestBody(RESERVE));
@@ -302,7 +306,8 @@ describe("端末追加要求(§13-11 — /auth/devices/requests)", () => {
     expect((await jsonOf(await listRequests(bearer(b))))["requests"]).toEqual([]);
     expect((await getRequest(bearer(b), RESERVE.fp)).status).toBe(404);
     expect((await cancelRequest(bearer(b), RESERVE.fp)).status).toBe(404);
-    // 別ユーザーは同じ公開鍵で要求を作れる(行は (user, fp) 軸)
+    // Another user can create a request with the same public key (rows are
+    // keyed on the (user, fp) axis)
     expect((await createRequest(bearer(b), requestBody(RESERVE))).status).toBe(200);
   });
 
@@ -322,7 +327,7 @@ describe("端末追加要求(§13-11 — /auth/devices/requests)", () => {
     expect(body["reason"]).toBe("add-requests");
     expect(body["limit"]).toBe(5);
     expect(typeof body["retryAfterSeconds"]).toBe("number");
-    // 取消しても窓は戻らない(固定窓)
+    // Cancelling does not restore the window (fixed window)
     expect((await cancelRequest(bearer(token), RESERVE.fp)).status).toBe(404);
     expect((await createRequest(bearer(token), requestBody(RESERVE))).status).toBe(429);
   });
@@ -340,7 +345,7 @@ describe("端末追加要求(§13-11 — /auth/devices/requests)", () => {
   });
 });
 
-describe("FP の再計算(CRYPTO_SPEC §3)", () => {
+describe("FP recomputation (CRYPTO_SPEC §3)", () => {
   it("vector device fingerprints match SHA-256(enc ‖ sig)[0..16]", async () => {
     const digest = await computeUserKeyFingerprint(
       decodeHex(PHONE.encPubHex) ?? new Uint8Array(),

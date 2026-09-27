@@ -1,42 +1,45 @@
-// レート制限キーの正規化(worker-env.ts)のユニットテスト。
-// IPv6 の /64 集約が要点: 標準割当 /64 内の下位 bit ローテーションで毎リクエストが
-// 新規キーになると、発信元 IP 単位のレート制限の窓が一切効かなくなる。
+// Unit tests for rate-limit key normalization (worker-env.ts).
+// The point is IPv6 /64 aggregation: if rotating the low bits inside the
+// standard /64 allocation produced a new key per request, per-source-IP rate
+// limit windows would never take effect.
 
 import { describe, expect, it } from "vitest";
 
 import { rateLimitKeyOf } from "../src/worker-env.ts";
 
-describe("rateLimitKeyOf(発信元 IP → 制限キー)", () => {
-  it("IPv4 はそのまま", () => {
+describe("rateLimitKeyOf (source IP -> limit key)", () => {
+  it("passes IPv4 through unchanged", () => {
     expect(rateLimitKeyOf("203.0.113.7")).toBe("203.0.113.7");
   });
 
-  it("IPv6 は /64 プレフィックスへ丸める(下位 64 bit のローテーションが同一キーに畳まれる)", () => {
+  it("rounds IPv6 down to its /64 prefix (low-64-bit rotation folds into the same key)", () => {
     expect(rateLimitKeyOf("2001:db8:1:2:3:4:5:6")).toBe("2001:db8:1:2::/64");
     expect(rateLimitKeyOf("2001:db8:1:2:ffff:ffff:ffff:ffff")).toBe("2001:db8:1:2::/64");
-    // 圧縮形も同じプレフィックスへ正規化される
+    // Compressed forms normalize to the same prefix too
     expect(rateLimitKeyOf("2001:db8:1:2::9")).toBe("2001:db8:1:2::/64");
     expect(rateLimitKeyOf("2001:DB8:0001:2::9")).toBe("2001:db8:1:2::/64");
-    // 先頭圧縮・全圧縮
+    // Leading compression and full compression
     expect(rateLimitKeyOf("::1")).toBe("0:0:0:0::/64");
     expect(rateLimitKeyOf("fe80::")).toBe("fe80:0:0:0::/64");
   });
 
-  it("IPv4-mapped(::ffff:a.b.c.d)は埋め込み IPv4 をキーにする(共有バケットへ畳まない)", () => {
+  it("uses the embedded IPv4 as the key for IPv4-mapped (::ffff:a.b.c.d) (does not fold into a shared bucket)", () => {
     expect(rateLimitKeyOf("::ffff:192.0.2.1")).toBe("192.0.2.1");
     expect(rateLimitKeyOf("::ffff:c000:201")).toBe("192.0.2.1");
-    // v4-mapped 以外の IPv4 埋め込み(NAT64 等)は通常の /64 集約
+    // IPv4 embedding other than v4-mapped (NAT64 etc.) takes the normal /64
+    // aggregation
     expect(rateLimitKeyOf("64:ff9b:1:2::192.0.2.1")).toBe("64:ff9b:1:2::/64");
   });
 
-  it("パース不能な値は素の文字列キーへフォールバックする(アドレス単位の制限は残る)", () => {
+  it("falls back to the raw string key for unparseable values (per-address limiting still applies)", () => {
     expect(rateLimitKeyOf("not:an:ip:::")).toBe("not:an:ip:::");
     expect(rateLimitKeyOf("2001:db8:1:2:3:4:5:6:7:8")).toBe("2001:db8:1:2:3:4:5:6:7:8");
   });
 
-  it("埋め込み IPv4 の octet は厳密な 10 進のみ", () => {
-    // Number() の強制変換なら通ってしまう形。素の文字列キーへ落ちる(= 別バケット
-    // に化けたり、不正表記が正当なアドレスとして畳まれたりしない)
+  it("accepts only strict decimal octets in embedded IPv4", () => {
+    // Shapes that would slip through a Number() coercion fall back to the raw
+    // string key (= they neither become a different bucket nor fold a
+    // malformed notation into a valid address)
     for (const malformed of [
       "::ffff:0x1.2.3.4",
       "::ffff:1.2.3.",
@@ -49,15 +52,16 @@ describe("rateLimitKeyOf(発信元 IP → 制限キー)", () => {
     ]) {
       expect(rateLimitKeyOf(malformed)).toBe(malformed);
     }
-    // 正当な形は従来どおり畳まれる(0 と 255 の境界を含む)
+    // Valid forms still fold as before (including the 0 and 255 boundaries)
     expect(rateLimitKeyOf("::ffff:0.0.0.0")).toBe("0.0.0.0");
     expect(rateLimitKeyOf("::ffff:255.255.255.255")).toBe("255.255.255.255");
   });
 
-  it("IPv4 埋め込みはアドレス末尾のピースだけ(RFC 4291 §2.2 (3))", () => {
+  it("treats IPv4 embedding as only the address's last piece (RFC 4291 §2.2 (3))", () => {
     expect(rateLimitKeyOf("::ffff:1.2.3.4:0")).toBe("::ffff:1.2.3.4:0");
     expect(rateLimitKeyOf("1.2.3.4::")).toBe("1.2.3.4::");
-    // 非圧縮形の末尾に置くのは正当(6 グループ + IPv4 = 8 グループ)
+    // Placing it at the end of an uncompressed form is valid (6 groups +
+    // IPv4 = 8 groups)
     expect(rateLimitKeyOf("2001:db8:1:2:0:0:192.0.2.1")).toBe("2001:db8:1:2::/64");
   });
 });

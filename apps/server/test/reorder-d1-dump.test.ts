@@ -1,6 +1,7 @@
-// scripts/reorder-d1-dump.ts(D1 復元 runbook の道具 — hosted-ops.md §5-1 (3))の純関数部を
-// 合成ダンプで固定する。素の import が失敗する形(子表 → 親表の順・
-// `PRAGMA defer_foreign_keys` が効かない)を最小の入力で再現する。
+// Pins the pure-function part of scripts/reorder-d1-dump.ts (the D1 restore
+// runbook's tool — hosted-ops.md §5-1 (3)) with a synthetic dump. Reproduces
+// with minimal input the shape in which a raw import fails (child table ->
+// parent table order; `PRAGMA defer_foreign_keys` not taking effect).
 import { describe, expect, it } from "vitest";
 
 import { reorderD1Dump, UnclassifiedStatementsError } from "../scripts/reorder-d1-dump.lib.ts";
@@ -47,7 +48,8 @@ describe("reorder-d1-dump", () => {
       "CREATE TABLE `memberships`",
       "CREATE TABLE `organizations`",
       "CREATE TABLE `users`",
-      // CREATE の無い sqlite_sequence は先頭、その後 親(organizations / users)→ 子
+      // sqlite_sequence (no CREATE) first, then parents (organizations /
+      // users) -> children
       "DELETE FROM sqlite_sequence;",
       'INSERT INTO "sqlite_sequence"',
       'INSERT INTO "organizations"',
