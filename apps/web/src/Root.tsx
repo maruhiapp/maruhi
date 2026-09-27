@@ -39,7 +39,7 @@ export default function Root({ children }: { children: React.ReactNode }) {
         <meta property="og:image:height" content="630" />
         <meta
           property="og:image:alt"
-          content="The maruhi mark (a vermilion ㊙ in a circle) next to the word maruhi"
+          content="The maruhi mark (the kanji for 'secret' in a vermilion circle) next to the word maruhi"
         />
         <meta name="twitter:card" content="summary_large_image" />
         <meta name="twitter:title" content="maruhi" />
