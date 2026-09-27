@@ -7606,7 +7606,7 @@ def gen_invite_link():
 # head-time verification, but is never a distribution or comparison
 # target because the attester is not a current member' (the server
 # deletes the attestation row when accepting remove_member — §6.4 —
-# and a client does not use a attestation by a non-current attester as
+# and a client does not use an attestation by a non-current attester as
 # comparison material — §6.6 (1)).
 
 HEAD_ATTESTATION_FIELDS_ORDER = [
@@ -7686,7 +7686,7 @@ def gen_head_attestation():
         make_attestation(
             "reader-attestation", admin_id, 6,
             "a reader's attestation: at head 6, user-admin-0003 is a reader (the change_role is "
-            "seq 7). A attestation can be submitted by every member including readers "
+            "seq 7). An attestation can be submitted by every member including readers "
             "(§6.3 head gossip / §6.6 — the lower bound of the required role is reader)",
         ),
         make_attestation(
@@ -7731,7 +7731,7 @@ def gen_head_attestation():
         ),
         make_negative(
             "transplant-project", {"project_id": "proj-other-0002"},
-            "transplanting a attestation to another project fails signature verification (project_id's context binding — §6.6)",
+            "transplanting an attestation to another project fails signature verification (project_id's context binding — §6.6)",
         ),
         make_negative(
             "transplant-attester", {"attester_user_id": admin_id},
@@ -7837,8 +7837,8 @@ def gen_head_attestation():
         ),
         make_attestation(
             "reader-cap-device-attestation", owner3_id, 37,
-            "a attestation of the current head (37) by the cap-(reader, all) device L: the lower bound "
-            "of a attestation's required role is reader, so a device with effective role reader "
+            "an attestation of the current head (37) by the cap-(reader, all) device L: the lower bound "
+            "of an attestation's required role is reader, so a device with effective role reader "
             "can attest",
             key=readercap, chain_ref="device-ops", head_hash_hex=dk_head_hash(37),
         ),
@@ -7847,7 +7847,7 @@ def gen_head_attestation():
         rule_negative(
             "attester-device-revoked-at-head", owner_id, dk_head_hash(37), 37,
             "attester-key-mismatch-at-head",
-            "a attestation of a post-revocation head (37) by phone P — revoked at seq 35 — is "
+            "an attestation of a post-revocation head (37) by phone P — revoked at seq 35 — is "
             "attester-key-mismatch-at-head (the person [owner-0001] stays enrolled — the end "
             "boundary of the device's validity interval)",
             chain_ref="device-ops", attester_key=phone,
