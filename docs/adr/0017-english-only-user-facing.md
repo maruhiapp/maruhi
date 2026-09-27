@@ -24,7 +24,7 @@ No i18n mechanism exists anywhere. gunshi has `@gunshi/plugin-i18n`, but it is n
 
 1. **All user-visible text is English**. Scope: CLI output (diagnostics, help, warnings, confirmation prompts), server-API error text that clients display, the web dashboard's UI text, the docs site, README and release notes
 2. **No i18n mechanism**. One language; no message table, locale detection, or translation files. `CliOutput.Formatter` is used only "to compose English wording in maruhi's vocabulary"
-3. **Internal documents may stay in Japanese**. Code comments, ADRs, `docs/notes/`, `CRYPTO_SPEC` / `AUTH_SPEC` / `AUDIT_SPEC`, commit messages, and PR descriptions are out of scope (keeping the CLAUDE.md coding convention "code comments and internal documentation may be Japanese; JSDoc on the public API is English"). **The boundary is "does a user read it from the distributed artifact"**, not "is it written in the source"
+3. *(Superseded by ADR-0019 — all repository text is English.)* **Internal documents may stay in Japanese**. Code comments, ADRs, `docs/notes/`, `CRYPTO_SPEC` / `AUTH_SPEC` / `AUDIT_SPEC`, commit messages, and PR descriptions are out of scope (keeping the CLAUDE.md coding convention "code comments and internal documentation may be Japanese; JSDoc on the public API is English"). **The boundary is "does a user read it from the distributed artifact"**, not "is it written in the source"
 4. **Migration is not done in bulk**. Text is rewritten **per command**, in **the same PR** as the ADR-0016 argument-layer migration (because that command's tests are being rewritten anyway). Wording on commands still on gunshi may stay Japanese until their turn — the mixed period is tolerated.
 
    **Exception: the 3 commands whose argument layer moved ahead** (`pull` / `run` / `env create`). Migrated before this ADR, they will never again trigger an "argument-layer migration PR". Reading decision 4's binding verbatim would let **these three slip through quietly**, so they are filed as an **independent item** on ROADMAP Phase 2 (already filed in the same PR as this ADR)
@@ -50,7 +50,7 @@ The web app (`<html lang="ja">` in `apps/web/src/Root.tsx`) and the docs site ar
 - `lang="en"` in `apps/web/src/Root.tsx` (the web app's visible strings contain no Japanese — Japanese exists only in comments = kept under decision 3)
 - GitHub Release published body text is English (decision 1). The mechanism is ruling 3 below
 
-**Internal (stay Japanese)**:
+**Internal (stay Japanese)** *(superseded by ADR-0019 — these are now English too)*:
 
 - `docs/CRYPTO_SPEC.md` / `AUTH_SPEC.md` / `AUDIT_SPEC.md`
 - `docs/RELEASING.md` itself (operating procedure for the owner)
