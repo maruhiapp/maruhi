@@ -1,12 +1,15 @@
-// 固定長 hex 小文字文字列の Schema ヘルパと、ドメイン別名の一元定義
-// (チェーン・データプレーン・認証で共用)。
+// Schema helpers for fixed-length lowercase hex strings, plus the single
+// point where domain-named aliases are defined (shared by the chain, the
+// data plane, and auth).
 //
-// 命名の規約: 「意味も幅も同じ」ものは 1 名に統合し(SHA-256 ハッシュ =
-// Sha256Hex、鍵フィンガープリント = KeyFingerprintHex)、「幅が同じだが意味が
-// 異なる」もの(公開鍵とハッシュ、署名対象ドメインごとの署名)はドメイン名を
-// 残す。hex 系の別名定義はこのファイルに一元化し、同一実体への複数名を
-// ファイル間で増殖させない(単一用途の長さ — nonce / ラップ暗号文等 — は
-// 使用箇所のローカル定義のまま)。
+// Naming convention: things that agree in both meaning and width merge
+// into one name (SHA-256 hash = Sha256Hex, key fingerprint =
+// KeyFingerprintHex); things that share a width but differ in meaning
+// (a public key vs a hash, signatures over different signed domains)
+// keep their domain names. Hex alias definitions are centralized in this
+// file so multiple names for the same entity do not proliferate across
+// files (single-use lengths — nonces, wrap ciphertexts, etc. — stay
+// local to their call sites).
 
 import { Schema } from "effect";
 
@@ -24,51 +27,51 @@ export function hexString(bytes: number): Schema.String {
   );
 }
 
-/** SHA-256 ハッシュ(チェーンヘッド・prev・エントリハッシュ・signed-bytes ハッシュ)。 */
+/** SHA-256 hash (chain head, prev, entry hash, signed-bytes hash). */
 export const Sha256Hex = hexString(32);
 
-/** 32 バイト公開鍵(チェーン payload の鍵登録 — Ed25519 / X25519)。 */
+/** 32-byte public key (key registration in chain payloads — Ed25519 / X25519). */
 export const PublicKeyHex = hexString(32);
 
-/** X25519 暗号化公開鍵(DEK ラップの受信者鍵 — CRYPTO_SPEC §5)。 */
+/** X25519 encryption public key (recipient key for DEK wraps — CRYPTO_SPEC §5). */
 export const EncPubHex = hexString(32);
 
-/** HPKE の enc(カプセル化された送信者エフェメラル公開鍵 — CRYPTO_SPEC §5)。 */
+/** HPKE enc (the encapsulated sender ephemeral public key — CRYPTO_SPEC §5). */
 export const HpkeEncHex = hexString(32);
 
-/** 鍵フィンガープリント(16 バイト — CRYPTO_SPEC §3)。 */
+/** Key fingerprint (16 bytes — CRYPTO_SPEC §3). */
 export const KeyFingerprintHex = hexString(16);
 
-/** チェーンエントリ署名(Ed25519 — CRYPTO_SPEC §6.1)。 */
+/** Chain entry signature (Ed25519 — CRYPTO_SPEC §6.1). */
 export const SignatureHex = hexString(64);
 
-/** DEK ラップ登録署名(Ed25519 — CRYPTO_SPEC §5.1)。 */
+/** DEK-wrap registration signature (Ed25519 — CRYPTO_SPEC §5.1). */
 export const WrapSignatureHex = hexString(64);
 
-/** 値の書き込み署名(Ed25519 — CRYPTO_SPEC §4.1)。 */
+/** Value write signature (Ed25519 — CRYPTO_SPEC §4.1). */
 export const ValueSignatureHex = hexString(64);
 
-/** メタステートメント署名(Ed25519 — CRYPTO_SPEC §4.2)。 */
+/** Meta-statement signature (Ed25519 — CRYPTO_SPEC §4.2). */
 export const MetaSignatureHex = hexString(64);
 
-/** 環境マニフェスト署名(Ed25519 — CRYPTO_SPEC §4.3)。 */
+/** Environment-manifest signature (Ed25519 — CRYPTO_SPEC §4.3). */
 export const ManifestSignatureHex = hexString(64);
 
-/** 招待受諾署名(Ed25519 — CRYPTO_SPEC §6.5)。 */
+/** Invite acceptance signature (Ed25519 — CRYPTO_SPEC §6.5). */
 export const InviteAcceptSignatureHex = hexString(64);
 
-/** 招待のリンク署名(Ed25519 — CRYPTO_SPEC §6.5。リンク鍵による共同署名)。 */
+/** Invite link signature (Ed25519 — CRYPTO_SPEC §6.5; the link key's co-signature). */
 export const InviteLinkSignatureHex = hexString(64);
 
-/** 招待の発行署名(Ed25519 — CRYPTO_SPEC §6.5。招待者のチェーン sig 鍵)。 */
+/** Invite issuance signature (Ed25519 — CRYPTO_SPEC §6.5; the inviter's chain sig key). */
 export const InviteIssueSignatureHex = hexString(64);
 
-/** ヘッド申告署名(Ed25519 — CRYPTO_SPEC §6.6)。 */
+/** Head-attestation signature (Ed25519 — CRYPTO_SPEC §6.6). */
 export const HeadAttestationSignatureHex = hexString(64);
 
 /**
- * 1 始まりの整数(epoch / version / チェーン seq — CRYPTO_SPEC §3 / §4 / §6)。
- * hex ではないが、チェーンヘッド系フィールド(hash + seq の対)の共有定義として
- * ここに置く。
+ * Integer starting at 1 (epoch / version / chain seq — CRYPTO_SPEC §3 /
+ * §4 / §6). Not hex, but kept here as the shared definition for the
+ * chain-head field family (the hash + seq pair).
  */
 export const PositiveInt = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1));

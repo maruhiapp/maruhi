@@ -1,8 +1,11 @@
-// master 鍵ラップ台帳 API の型付きエラー(AUTH_SPEC §13-6〜13-10 — KL3)。
+// Typed errors of the master-key wrap ledger API (AUTH_SPEC §13-6 through
+// §13-10 — KL3).
 //
-// エラーには識別子・理由コード・カウンタしか載せない(ラップ・分片・鍵素材を
-// 運ばない)。存在秘匿(§11-2 と同じ規律): ハンドオフ要求の照会・承認は
-// 「ward 本人か ward の保護者」以外・不明・失効をすべて一様な 404 に畳む。
+// Errors carry only identifiers, reason codes, and counters (no wraps,
+// segments, or key material). Existence concealment (same discipline as
+// §11-2): handoff-request lookups and approvals fold "not the ward
+// themself or one of the ward's guardians", unknown, and revoked into
+// the same uniform 404.
 
 import { Schema } from "effect";
 
@@ -15,7 +18,8 @@ export class KeyWrapNotFoundError extends Schema.TaggedError<KeyWrapNotFoundErro
 
 /**
  * 404: the handoff request is unknown, expired, or not visible to the caller
- * (neither the ward nor one of the ward's guardians — AUTH_SPEC §13-7 の一様 404)。
+ * (neither the ward nor one of the ward's guardians — the AUTH_SPEC
+ * §13-7 uniform 404).
  */
 export class HandoffNotFoundError extends Schema.TaggedError<HandoffNotFoundError>()(
   "HandoffNotFound",
@@ -23,7 +27,7 @@ export class HandoffNotFoundError extends Schema.TaggedError<HandoffNotFoundErro
   { httpApiStatus: 404 },
 ) {}
 
-/** 409 の理由: 要求 id の衝突 / 同一 (request, source, share_index) の二重承認。 */
+/** 409 reasons: the request id collides / a double approval of the same (request, source, share_index). */
 export const HandoffConflictReasonSchema = Schema.Literals(["request-exists", "already-approved"]);
 
 /** 409: the handoff request or approval already exists (AUTH_SPEC §13-7). */
@@ -34,15 +38,19 @@ export class HandoffConflictError extends Schema.TaggedError<HandoffConflictErro
 ) {}
 
 /**
- * 422 の理由(AUTH_SPEC §13-8 の受理ポリシーと §13-7 の構造条件):
- * - too-many-passkeys / too-many-groups: user あたりの上限(5)
- * - share-count: 分片数が 1..5 の外、`all` で 2 未満、または share_index が 1..n を
- *   ちょうど 1 回ずつ覆っていない
- * - unknown-guardian / self-guardian / duplicate-guardian: 分片の受信者条件
- * - source-mismatch: 承認の source / share_index / blob の組み合わせが呼び出し
- *   主体の役割(ward = device のみ、保護者 = 自分の分片のみ)と合わない
- * - approvals-exceeded: 1 要求あたりの承認数上限
- * - duplicate-id: クライアント採番の wrap_id / group_id が既存行と衝突
+ * 422 reasons (the AUTH_SPEC §13-8 acceptance policy and the §13-7
+ * structural conditions):
+ * - too-many-passkeys / too-many-groups: per-user cap (5)
+ * - share-count: the segment count is outside 1..5, under 2 with `all`,
+ *   or share_index does not cover 1..n exactly once each
+ * - unknown-guardian / self-guardian / duplicate-guardian: the
+ *   segment-recipient conditions
+ * - source-mismatch: the approval's source / share_index / blob
+ *   combination does not fit the calling principal's role (ward =
+ *   device only; guardian = own segment only)
+ * - approvals-exceeded: the per-request approval cap
+ * - duplicate-id: a client-assigned wrap_id / group_id collides with an
+ *   existing row
  */
 export const KeyWrapPolicyReasonSchema = Schema.Literals([
   "too-many-passkeys",
@@ -63,10 +71,10 @@ export class KeyWrapPolicyError extends Schema.TaggedError<KeyWrapPolicyError>()
   { httpApiStatus: 422 },
 ) {}
 
-/** 固定窓の種別(AUTH_SPEC §13-8): ブロブ取得(合算)/ ハンドオフ要求 / 承認。 */
+/** Fixed-window kinds (AUTH_SPEC §13-8): blob fetch (combined) / handoff request / approval. */
 export const KeyWrapWindowSchema = Schema.Literals(["blob-fetch", "handoff-request", "approval"]);
 
-/** 429: a §13-8 fixed window is exhausted. `retryAfterSeconds` は窓の残り秒数。 */
+/** 429: a §13-8 fixed window is exhausted. `retryAfterSeconds` is the remaining seconds of the window. */
 export class KeyWrapRateLimitedError extends Schema.TaggedError<KeyWrapRateLimitedError>()(
   "KeyWrapRateLimited",
   { window: KeyWrapWindowSchema, retryAfterSeconds: Schema.Number },

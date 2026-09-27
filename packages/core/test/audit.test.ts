@@ -1,11 +1,15 @@
-// チェーンミラーの写像(AUDIT_SPEC §3.4)— 提案索引の完成導出と四眼の行(K5)。
+// The chain-mirror mapping (AUDIT_SPEC §3.4) — the proposal index's
+// completion derivation and the four-eyes rows (K5).
 //
-// 固定する規則: `indexProposals` の完成判定「最終状態で pending でなく withdraw も
-// されていない提案は、それを名指しした最後の approve が完成させた」は、crypto の
-// 検証器が pending 集合から要素を消すのが定足数到達と withdraw の 2 箇所だけで、
-// **期限切れの提案は pending に残る**ことに依存する。ここでは導出側の各分岐
-// (pending のまま / withdraw / 完成 / 完成前の 1 票)を、署名を持たない最小の
-// エントリ列で直接固定する(独立レビュー should-fix 3)。
+// The rule being pinned: `indexProposals`' completion judgement "a
+// proposal that is neither pending nor withdrawn in the final state was
+// completed by the last approve naming it" depends on crypto's
+// verifier removing an element from the pending set in exactly two
+// places — reaching quorum and withdraw — so **an expired proposal
+// stays pending**. Here, each branch of the derivation (still pending /
+// withdrawn / completed / one pre-completion vote) is pinned directly
+// with a minimal, signature-less entry list (independent review
+// should-fix 3).
 
 import type { ChainEntry, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { describe, expect, it } from "vitest";
@@ -19,7 +23,7 @@ const INNER: ProposableOperation = {
   payload: { targetUserId: "user-member-0002" },
 };
 
-/** seq のダミーハッシュ(決定的 — 索引の参照先に使う)。 */
+/** Dummy hash of a seq (deterministic — used as the index's reference target). */
 const hashOf = (seq: number): string => seq.toString(16).padStart(64, "0");
 
 function entry(seq: number, actor: typeof PROPOSER, operation: ChainOperation): ChainEntry {
@@ -44,10 +48,10 @@ const withdraw = (seq: number, proposalSeq: number): ChainEntry =>
 const index = (entries: readonly ChainEntry[], pendingSeqs: readonly number[]) =>
   indexProposals(entries, hashOf, new Set(pendingSeqs.map(hashOf)));
 
-describe("indexProposals(完成判定の導出)", () => {
+describe("indexProposals (completion-judgement derivation)", () => {
   it("keeps a proposal with one vote uncompleted while it is still pending (expired or not)", () => {
     const entries = [propose(1), approve(2, 1)];
-    // 期限切れでも pending に残る(検証器は期限切れで pending から消さない)
+    // Stays pending even when expired (the verifier does not remove it from pending on expiry)
     const proposal = index(entries, [1]).get(hashOf(1));
     expect(proposal?.entry.seq).toBe(1);
     expect(proposal?.completedAtSeq).toBeNull();
@@ -71,7 +75,7 @@ describe("indexProposals(完成判定の導出)", () => {
   });
 });
 
-describe("chainMirrorEvents(四眼の行 — AUDIT_SPEC §3.4)", () => {
+describe("chainMirrorEvents (four-eyes rows — AUDIT_SPEC §3.4)", () => {
   it("writes proposalChainSeq / completed and the applied inner-op row for the completing approve only", () => {
     const entries = [propose(1), approve(2, 1), approve(3, 1)];
     const built = index(entries, []);
@@ -86,7 +90,7 @@ describe("chainMirrorEvents(四眼の行 — AUDIT_SPEC §3.4)", () => {
     const completing = chainMirrorEvents(approve(3, 1), 9_000, built);
     expect(completing.map((row) => row.event)).toEqual(["chain.approved", "chain.member_removed"]);
     expect(completing[0]?.payload).toEqual({ proposalChainSeq: 1, completed: true });
-    // 適用行: actor = 提案者、chain_seq / client_ts = approve のもの、viaProposalSeq
+    // The applied row: actor = the proposer; chain_seq / client_ts = the approve's; viaProposalSeq
     expect(completing[1]).toEqual({
       event: "chain.member_removed",
       serverTs: 9_000,

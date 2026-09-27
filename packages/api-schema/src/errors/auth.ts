@@ -1,6 +1,7 @@
-// 認証・アイデンティティ API の型付きエラー(AUTH_SPEC §3-§6 / §13)。
+// Typed errors of the auth / identity API (AUTH_SPEC §3-§6 / §13).
 //
-// エラーには識別子・カウンタしか載せない(平文値・鍵素材・外部トークン値を運ばない)。
+// Errors carry only identifiers and counters (no plaintext values, key
+// material, or external token values).
 
 import { Schema } from "effect";
 
@@ -12,18 +13,23 @@ export class UnauthorizedError extends Schema.TaggedError<UnauthorizedError>()(
 ) {}
 
 /**
- * Reason codes for a 403 (AUTH_SPEC §5 CSRF / セッション能力制限 / §9-2 実効権限 /
- * §11-1 / §11-3 / §12-3).
+ * Reason codes for a 403 (AUTH_SPEC §5 CSRF / session-capability
+ * restriction / §9-2 effective permission / §11-1 / §11-3 / §12-3).
  *
- * `session-not-allowed` = セッション主体の能力制限(§5 の肯定列挙外 — W2b)。
- * エンドポイント同一性と主体種別のみから決まる一様応答であり、プロジェクトの
- * 存在・状態情報を運ばない(§11-2 の存在秘匿と両立する — §12-3 の認可先行例外と
- * 同じ「リクエスト内容のみから計算できる」論法)。
+ * `session-not-allowed` = the capability restriction on session
+ * principals (outside the §5 allowlist — W2b). A uniform response
+ * determined solely by endpoint identity and principal kind; it carries
+ * no project existence or state information (compatible with §11-2
+ * existence concealment — the same "computable from the request alone"
+ * argument as the §12-3 authorization-first exception).
  *
- * `insufficient-scope` = 対象環境が呼び出し主体のチェーン導出 scope の外
- * (§9-2 / §12-3 の 403 `InsufficientScope` — 2026-09-15 ES K3。role 不足と同じ
- * 層・同じ型で、拒否の軸を reason で区別する — 設計録 es-design.md §9 K3-A)。
- * 環境の存在はチェーン導出で全メンバーに既知のため 404 に畳まない。
+ * `insufficient-scope` = the target environment is outside the calling
+ * principal's chain-derived scope (the §9-2 / §12-3 403
+ * `InsufficientScope` — 2026-09-15 ES K3; same layer and same shape as
+ * insufficient role, with reason distinguishing the refusal axis —
+ * design record es-design.md §9 K3-A). Environment existence is
+ * chain-derived and known to every member, so it is not folded into a
+ * 404.
  */
 export const ForbiddenReasonSchema = Schema.Literals([
   "csrf-header-required",
@@ -52,7 +58,8 @@ export const AuthFlowFailureReasonSchema = Schema.Literals([
 /**
  * 400: the web OAuth dance failed (state mismatch, code exchange rejection,
  * or a user-info fetch failure on the obtained token).
- * 提示された外部 ID・トークン値は運ばない(理由コードのみ)。
+ * The presented external ID / token values are not carried (reason code
+ * only).
  */
 export class AuthFlowError extends Schema.TaggedError<AuthFlowError>()(
   "AuthFlow",
@@ -65,9 +72,11 @@ export const SetupIncompleteReasonSchema = Schema.Literals(["github-oauth-unconf
 
 /**
  * 503: this deployment has not finished self-host setup — the GitHub OAuth
- * App is not configured (AUTH_SPEC §3: client_id がプレースホルダ / 空 / 欠落、
- * または client_secret が未登録 / 空)。クライアントは docs/SELF_HOSTING.md の
- * セットアップ手順へ誘導する(成功応答 = 両方登録済み、の意味論を支える)。
+ * App is not configured (AUTH_SPEC §3: client_id is a placeholder /
+ * empty / absent, or client_secret is unregistered / empty). The client
+ * directs the user to the setup procedure in docs/SELF_HOSTING.md
+ * (supports the semantics that a success response = both are
+ * registered).
  */
 export class SetupIncompleteError extends Schema.TaggedError<SetupIncompleteError>()(
   "SetupIncomplete",
@@ -77,11 +86,12 @@ export class SetupIncompleteError extends Schema.TaggedError<SetupIncompleteErro
 
 /**
  * 429: too many requests to an unauthenticated auth surface from this source
- * address (AUTH_SPEC §3 / §4)。OAuth callback は GitHub への
- * アウトバウンド(OAuth App 単位の共有クォータ)を伴い、CLI ログインの
- * start / poll は未認証の CPU 消費面なので、発信元 IP 単位の best-effort
- * 制限を既定デプロイでも強制する(§4-1 の Workers Rate Limiting binding
- * パターン)。`retryAfterSeconds` は次に試してよい目安(固定窓の周期)。
+ * address (AUTH_SPEC §3 / §4). The OAuth callback involves an outbound
+ * call to GitHub (the OAuth App's shared quota), and CLI login's start /
+ * poll are unauthenticated CPU-consuming surfaces, so a per-source-IP
+ * best-effort limit is enforced even on the default deployment (the
+ * §4-1 Workers Rate Limiting binding pattern). `retryAfterSeconds` is a
+ * hint for when to try again (the fixed window's period).
  */
 export class AuthRateLimitedError extends Schema.TaggedError<AuthRateLimitedError>()(
   "AuthRateLimited",
@@ -90,10 +100,12 @@ export class AuthRateLimitedError extends Schema.TaggedError<AuthRateLimitedErro
 ) {}
 
 /**
- * 410: the CLI login flow credential has expired (AUTH_SPEC §4-2)。正当な
- * flowToken 保持者への型付き終了指示で、CLI はポーリングをやめ再ログインを
- * 案内する。期限は flowToken の署名に含まれる自己申告値であり、この応答は
- * フロー状態(行の有無・承認状況)を一切開示しない。
+ * 410: the CLI login flow credential has expired (AUTH_SPEC §4-2). A
+ * typed termination instruction to a legitimate flowToken holder; the
+ * CLI stops polling and guides the user to log in again. The expiry is
+ * a self-declared value inside the flowToken's signature; this response
+ * discloses nothing about flow state (row existence or approval
+ * status).
  */
 export class CliFlowExpiredError extends Schema.TaggedError<CliFlowExpiredError>()(
   "CliFlowExpired",
@@ -102,10 +114,12 @@ export class CliFlowExpiredError extends Schema.TaggedError<CliFlowExpiredError>
 ) {}
 
 /**
- * 400: uniform rejection of a CLI login poll (AUTH_SPEC §4-2 の一様拒否規律)。
- * MAC 不一致・署名内 flowId と提示 flowId の組不一致・consumed 後の再 poll・
- * 並行 poll の CAS 敗者 — すべて同一の応答で、失敗理由を出し分けない
- * (フロー状態のオラクルを作らない)。理由・識別子は運ばない。
+ * 400: uniform rejection of a CLI login poll (the AUTH_SPEC §4-2
+ * uniform-refusal discipline). A MAC mismatch, a pair mismatch between
+ * the in-signature flowId and the presented flowId, a re-poll after
+ * consumed, and the CAS loser of concurrent polls — all get the same
+ * response; the failure reason is not differentiated (no oracle of flow
+ * state). Carries no reason or identifier.
  */
 export class CliFlowRejectedError extends Schema.TaggedError<CliFlowRejectedError>()(
   "CliFlowRejected",
@@ -122,9 +136,11 @@ export class TokenLimitError extends Schema.TaggedError<TokenLimitError>()(
 
 /**
  * 404: the token id does not name a token owned by the authenticated principal
- * (AUTH_SPEC §6 — W3a 指定失効). 他人の・存在しないトークン id への一様応答で
- * あり(存在秘匿 — §12-6 の削除系と同じ規律)、対象 id を運ばない(呼び出し側が
- * 送った値をエラーに写さない)。
+ * (AUTH_SPEC §6 — W3a targeted revocation). A uniform response to
+ * another user's or a nonexistent token id (existence concealment — the
+ * same discipline as the §12-6 deletion surfaces); it does not carry
+ * the target id (the value the caller sent is not copied into the
+ * error).
  */
 export class TokenNotFoundError extends Schema.TaggedError<TokenNotFoundError>()(
   "TokenNotFound",
@@ -141,7 +157,8 @@ export class RecoveryWrapNotFoundError extends Schema.TaggedError<RecoveryWrapNo
 
 /**
  * 429: the recovery-blob fetch window is exhausted (AUTH_SPEC §13-3 —
- * CRYPTO_SPEC §8 のレート制限)。`retryAfterSeconds` は固定窓の残り秒数。
+ * the CRYPTO_SPEC §8 rate limit). `retryAfterSeconds` is the remaining
+ * seconds of the fixed window.
  */
 export class RecoveryRateLimitedError extends Schema.TaggedError<RecoveryRateLimitedError>()(
   "RecoveryRateLimited",

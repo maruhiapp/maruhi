@@ -6,7 +6,7 @@ import { ChainEntrySchema, ChainInvalidReasonSchema, maruhiApi } from "../src/in
 const decodeEntry = Schema.decodeUnknownOption(ChainEntrySchema);
 const decodeReason = Schema.decodeUnknownOption(ChainInvalidReasonSchema);
 
-// 形状は test-vectors/chain-entries.json の seq 1(genesis)と同じ。値はダミー
+// Same shape as seq 1 (genesis) of test-vectors/chain-entries.json. Dummy values
 const genesisEntry = {
   suite: "maruhi/v1",
   seq: 1,

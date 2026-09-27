@@ -1,4 +1,4 @@
-// 要ローテーションフラグ API の型付きエラー(AUDIT_SPEC §4.1 / §7)。
+// Typed errors of the rotation-required-flag API (AUDIT_SPEC §4.1 / §7).
 
 import { Schema } from "effect";
 

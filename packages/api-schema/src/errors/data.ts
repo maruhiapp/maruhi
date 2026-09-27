@@ -1,8 +1,9 @@
-// データプレーン API の型付きエラー(AUTH_SPEC §12)。
+// Typed errors of the data-plane API (AUTH_SPEC §12).
 //
-// チェーン API と同じく、エラーは識別子・カウンタのみを運ぶ(平文値・鍵素材なし)。
-// EnvironmentNotFound / VariableNotFound が返るのはチェーン導出メンバーに対して
-// のみ(プロジェクト自体の存在秘匿 §11-2 が先行する — §12-3)。
+// As with the chain API, errors carry only identifiers and counters (no
+// plaintext values or key material). EnvironmentNotFound /
+// VariableNotFound are returned only to chain-derived members (the
+// project's own existence concealment §11-2 takes precedence — §12-3).
 
 import { Schema } from "effect";
 
@@ -88,16 +89,19 @@ export class PayloadMismatchError extends Schema.TaggedError<PayloadMismatchErro
 
 /**
  * Reason codes for a 422 on a value push / create (AUTH_SPEC §12-5 =
- * CRYPTO_SPEC §4.1 / §6.4 のサーバー検証):
+ * the server-side verification of CRYPTO_SPEC §4.1 / §6.4):
  *
- * - `signature-invalid` — valid-format の Ed25519 検証失敗
- * - `chain-head-unknown` — 署名は有効だが宣言 seq が自チェーンに存在しない、
- *   またはその seq の保存ハッシュと不一致
- * - `chain-head-state-mismatch` — ヘッドは既知だがヘッド時点の鍵 / role / 環境 /
- *   エポックが不一致、または保存 predecessor と prev が不一致
+ * - `signature-invalid` — Ed25519 verification failed on a valid-format
+ *   signature
+ * - `chain-head-unknown` — the signature is valid but the declared seq
+ *   does not exist on the server's own chain, or does not match the
+ *   stored hash at that seq
+ * - `chain-head-state-mismatch` — the head is known but the key / role /
+ *   environment / epoch at that head does not match, or prev does not
+ *   match the stored predecessor
  *
- * 検査順: 署名壊れ → unknown head → state mismatch。仕様の 3 理由のみ —
- * 4 つ目の理由はワイヤ変更になる。
+ * Check order: broken signature → unknown head → state mismatch. Only
+ * the spec's three reasons — a fourth would be a wire change.
  */
 export const ValueSignatureRejectReasonSchema = Schema.Literals([
   "signature-invalid",
@@ -118,17 +122,21 @@ export class ValueSignatureRejectedError extends Schema.TaggedError<ValueSignatu
 /**
  * Reason codes for a 422 on a metadata statement (CRYPTO_SPEC §4.2 /
  * AUTH_SPEC §12-5): the three value-signature reasons (session-12 §6-7 —
- * 語彙を共有する。state-mismatch はヘッド時点の在籍・鍵束縛・role、prev の形 /
- * 保存 predecessor との不一致、削除後の再ステートメント、active → declared の
- * 遷移を含む)plus two layout-v2 reasons the spec names explicitly:
+ * shared vocabulary; state-mismatch covers membership and key binding
+ * at the head, role, the shape of prev / mismatch with the stored
+ * predecessor, a re-statement after deletion, and the active →
+ * declared transition) plus two layout-v2 reasons the spec names
+ * explicitly:
  *
- * - `layout-regression` — 直前ステートメントが v2 の変数への v1 後続
- *   (レイアウト単調性 — CRYPTO_SPEC §4.2。rename 経由のスキーマ欄の黙った
- *   消失と schema-locked の迂回の遮断)
- * - `unsupported-layout` — 申告 layoutVersion がこのサーバーのサポート範囲
- *   (現行 {1, 2})を超える。「古いサーバー × 新しいクライアント」の正常系で
- *   あり、署名不正(改ざんと区別のつかない失敗)に潰さない(裁定 CR —
- *   server update required の誠実な破壊様式)
+ * - `layout-regression` — a v1 successor to a variable whose preceding
+ *   statement is v2 (layout monotonicity — CRYPTO_SPEC §4.2; blocks a
+ *   silent loss of the schema fields via rename and bypassing
+ *   schema-locked)
+ * - `unsupported-layout` — the declared layoutVersion exceeds this
+ *   server's supported range (currently {1, 2}). The normal case of
+ *   "old server × new client"; not collapsed into invalid signature
+ *   (a failure indistinguishable from tampering) (ruling CR — the
+ *   honest failure mode of "server update required")
  */
 export const MetaStatementRejectReasonSchema = Schema.Literals([
   "signature-invalid",
@@ -152,13 +160,15 @@ export class MetaStatementRejectedError extends Schema.TaggedError<MetaStatement
  * Reason codes for a 422 from the project schema policy (AUTH_SPEC §12-11 /
  * §12-5):
  *
- * - `schema-policy-disabled` — レイアウト v2 の新規採用(metaVersion 1 の v2
- *   作成・v1 変数への v2 再発行)を disabled のプロジェクトで受理しない
- *   (有効化ゲート。既に v2 の変数の継続ステートメントは
- *   ポリシーに依らず受理される)
- * - `schema-required` — locked のプロジェクトで変数作成(metaVersion 1)が
- *   layoutVersion 2 かつ varType 非空を満たさない(作成時の一回検査 —
- *   後続のスキーマ再発行による引き下げは妨げない)
+ * - `schema-policy-disabled` — new adoption of layout v2 (a v2
+ *   creation at metaVersion 1, or a v2 reissuance of a v1 variable) is
+ *   not accepted in a disabled project (the enablement gate;
+ *   continuation statements of an already-v2 variable are accepted
+ *   regardless of policy)
+ * - `schema-required` — in a locked project, a variable creation
+ *   (metaVersion 1) does not satisfy layoutVersion 2 and non-empty
+ *   varType (a one-time check at creation — a later schema reissuance
+ *   can still downgrade)
  */
 export const SchemaPolicyRejectReasonSchema = Schema.Literals([
   "schema-policy-disabled",
@@ -185,9 +195,11 @@ export class ActivationRequiredError extends Schema.TaggedError<ActivationRequir
 
 /**
  * Reason codes for a 422 on the schema `description` field (AUTH_SPEC §12-8):
- * `too-long` = 1024 コードポイント超過、`control-characters` = 制御文字
- * (改行を含む — 単一行に固定し ANSI エスケープ・改行偽装を受理段で落とす)。
- * NFC 正規化は要求しない(識別子でなく照合に使わない — name との意図的な差)。
+ * `too-long` = over 1024 code points; `control-characters` = control
+ * characters (including newlines — pinned to a single line so ANSI
+ * escapes and newline spoofing are rejected at acceptance). NFC
+ * normalization is not required (it is not an identifier and is not
+ * used for comparison — a deliberate difference from name).
  */
 export const SchemaDescriptionRejectReasonSchema = Schema.Literals([
   "too-long",
@@ -203,21 +215,24 @@ export class SchemaDescriptionRejectedError extends Schema.TaggedError<SchemaDes
 
 /**
  * Reason codes for a 422 on an environment manifest (AUTH_SPEC §12-5 =
- * CRYPTO_SPEC §4.3): 既存の 3 語彙(署名・ヘッド系)を共有し、
- * マニフェスト固有の 2 理由を加える —
+ * CRYPTO_SPEC §4.3): shares the existing three vocabularies (signature
+ * and head family) and adds manifest-specific reasons —
  *
- * - `manifest-digest-mismatch` — サーバーが受理後のメタ状態(同梱ステートメント
- *   適用後の全変数ステートメント + 環境メタステートメント)から再計算した
- *   variablesDigestHex / envMetaVersion / envMetaSigHashHex と申告値の不一致
- *   (§12-5 (7))
- * - `manifest-epoch-mismatch` — エポック整合の失敗(§12-5 (4): 宣言ヘッド時点の
- *   現エポック — rotate / 作成複合の同梱分は同梱エントリ適用後の状態)
+ * - `manifest-digest-mismatch` — the declared values do not match the
+ *   variablesDigestHex / envMetaVersion / envMetaSigHashHex the server
+ *   recomputed from the post-acceptance meta state (all variable
+ *   statements after applying the bundled statement + the environment
+ *   meta statement) (§12-5 (7))
+ * - `manifest-epoch-mismatch` — epoch consistency failed (§12-5 (4):
+ *   the current epoch at the declared head — for the bundled portion
+ *   of a rotate / create composite, the state after applying the
+ *   bundled entry)
  * - `checkpoint-binding-mismatch` / `checkpoint-equivocation` /
- *   `checkpoint-regressed` — チェックポイント束縛(CRYPTO_SPEC §4.3 (2):
- *   検証済みチェーン上の当該 (environment_id,
- *   manifest_version) タプルとの完全一致必須 / 同座標の相違タプル併存 =
- *   equivocation の証拠 / 最新チェックポイント基準に対する非後退〔§6.3 整合
- *   規則 1〕の失敗)
+ *   `checkpoint-regressed` — checkpoint binding (CRYPTO_SPEC §4.3 (2):
+ *   must exactly match the (environment_id, manifest_version) tuple on
+ *   the verified chain / coexisting differing tuples at the same
+ *   coordinates = evidence of equivocation / failure of non-regression
+ *   against the latest checkpoint baseline [§6.3 consistency rule 1])
  */
 export const ManifestRejectReasonSchema = Schema.Literals([
   "signature-invalid",
@@ -242,27 +257,37 @@ export class ManifestRejectedError extends Schema.TaggedError<ManifestRejectedEr
 
 /**
  * Reason codes for a 422 on a `checkpoint` entry's acceptance-time state
- * matching (CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2。境界同梱分〔§12-4 — 突合
- * 基準は複合の適用後の保存状態〕と standalone 分〔汎用チェーン追記 — 受理
- * 時点 = 適用前の保存状態〕の両経路で共通):
+ * matching (CRYPTO_SPEC §6.4 / AUTH_SPEC §16-2; shared by both paths —
+ * the boundary-bundled case [§12-4 — the matching baseline is the
+ * composite's post-application stored state] and the standalone case
+ * [generic chain append — acceptance time = the pre-application stored
+ * state]):
  *
- * - `manifest-mismatch` — タプルの (manifest_version, manifest_sig_hash) が
- *   受理時点の当該環境の**最新**マニフェストと不一致(発行者のビューが古い
- *   場合と、実在しない先行 manifest_version の公証 — 悪意 member による
- *   checkpoint-regressed 詰まらせ — の両方を含む)
- * - `values-digest-mismatch` — タプルの values_digest が受理時点の保存状態
- *   (全 active 変数の最新 version とその value_signed_bytes ハッシュ)からの
- *   再計算と不一致。宣言ヘッド確定後の並行 push で正当に起きる —
- *   クライアントは再 pull の上で有界再試行する(§12-4 / §16-2)
- * - `audit-head-unknown` — 非空 audit_head_hash が保存済みの累積ハッシュ列
- *   (AUDIT_SPEC §5.1)に存在しない(偽公証の拒否)
- * - `audit-head-stale` — 出現位置が直前 checkpoint(公証の有無を問わない)の
- *   ミラー行(chain.checkpointed)未満(CRYPTO_SPEC §6.4 の位置下限。直前が
- *   存在しない初回は課さない。CAS 競合後に申告を取り直さなかった発行の拒否 —
- *   クライアントは申告も取得し直して再試行する)
- * - `environment-deleted` — 削除済み(tombstone)環境のエントリ(受理時点
- *   状態との一致が定義できない — チェーンは削除を観測しないため合意規則には
- *   できない。CRYPTO_SPEC §6.4)
+ * - `manifest-mismatch` — the tuple's (manifest_version,
+ *   manifest_sig_hash) does not match the environment's **latest**
+ *   manifest at acceptance time (covers both a stale issuer view and
+ *   notarizing a nonexistent earlier manifest_version — a malicious
+ *   member jamming checkpoint-regressed)
+ * - `values-digest-mismatch` — the tuple's values_digest does not match
+ *   a recomputation from the acceptance-time stored state (the latest
+ *   version of every active variable and its value_signed_bytes hash).
+ *   Can legitimately happen when a concurrent push lands after the
+ *   declared head was fixed — the client re-pulls and retries with a
+ *   bound (§12-4 / §16-2)
+ * - `audit-head-unknown` — a non-empty audit_head_hash does not exist
+ *   in the stored cumulative hash sequence (AUDIT_SPEC §5.1) (refusing
+ *   a forged notarization)
+ * - `audit-head-stale` — the occurrence position precedes the mirror
+ *   row (chain.checkpointed) of the immediately previous checkpoint
+ *   (whether or not it notarized) (the CRYPTO_SPEC §6.4 position floor;
+ *   not applied on the first checkpoint where no previous exists.
+ *   Refuses an issuance that did not re-obtain the attestation after a
+ *   CAS conflict — the client refetches the attestation too and
+ *   retries)
+ * - `environment-deleted` — an entry for a deleted (tombstone)
+ *   environment (consistency with the acceptance-time state cannot be
+ *   defined — the chain does not observe deletion, so it cannot be a
+ *   consensus rule; CRYPTO_SPEC §6.4)
  */
 export const CheckpointMismatchReasonSchema = Schema.Literals([
   "manifest-mismatch",
@@ -283,12 +308,15 @@ export class CheckpointStateMismatchError extends Schema.TaggedError<CheckpointS
 ) {}
 
 /**
- * 503: the audit-head derived column (AUDIT_SPEC §5.1 の遅延実体化) has not
- * reached MAX(seq) within this call's bounded extension budget (AUTH_SPEC
- * §16-2)。Retryable: 伸長の進捗はサーバー側に保存
- * 済みで、再試行は必ず前進する。監査ヘッドを読む全経路(GET /audit-head・
- * standalone checkpoint 受理・境界複合の非空公証)が共有する。**本文は空**:
- * 残行数・進捗を載せると監査行数の序数情報になる(AUDIT_SPEC §7 の件数非漏洩)。
+ * 503: the audit-head derived column (AUDIT_SPEC §5.1 lazy
+ * materialization) has not reached MAX(seq) within this call's bounded
+ * extension budget (AUTH_SPEC §16-2). Retryable: expansion progress is
+ * already stored server-side, and every retry makes progress. Shared by
+ * every path that reads the audit head (GET /audit-head, standalone
+ * checkpoint acceptance, non-empty notarization in a boundary
+ * composite). **The body is empty**: carrying a remaining row count or
+ * progress would disclose ordinal information about the audit row
+ * count (AUDIT_SPEC §7 non-leakage of counts).
  */
 export class AuditHeadNotReadyError extends Schema.TaggedError<AuditHeadNotReadyError>()(
   "AuditHeadNotReady",
@@ -298,10 +326,10 @@ export class AuditHeadNotReadyError extends Schema.TaggedError<AuditHeadNotReady
 
 /**
  * 409: manifestVersion CAS failure (AUTH_SPEC §12-5 (6)) — the manifest's
- * declared manifestVersion is not `currentManifestVersion + 1`. Carries the
- * latest manifestVersion **number only**(勝者のハッシュを載せない規律は
- * metaVersion CAS と同一 — §12-5)。再試行ではステートメントとマニフェストの
- * **両方**を再署名する。
+ * declared manifestVersion is not `currentManifestVersion + 1`. Carries
+ * the latest manifestVersion **number only** (the discipline of not
+ * carrying the winner's hash is the same as the metaVersion CAS —
+ * §12-5). A retry re-signs **both** the statement and the manifest.
  */
 export class ManifestVersionConflictError extends Schema.TaggedError<ManifestVersionConflictError>()(
   "ManifestVersionConflict",
@@ -311,9 +339,10 @@ export class ManifestVersionConflictError extends Schema.TaggedError<ManifestVer
 
 /**
  * 409: metaVersion CAS failure (AUTH_SPEC §12-5) — the statement's declared
- * metaVersion is not `currentMetaVersion + 1`. Carries the latest metaVersion
- * **number only** (never the winner's signed-bytes hash — クライアントは勝者を
- * 再取得・検証して prev を自計算する。§12-5 の 409 規律)。
+ * metaVersion is not `currentMetaVersion + 1`. Carries the latest
+ * metaVersion **number only** (never the winner's signed-bytes hash —
+ * the client refetches and verifies the winner and computes prev
+ * itself; the §12-5 409 discipline).
  */
 export class MetaVersionConflictError extends Schema.TaggedError<MetaVersionConflictError>()(
   "MetaVersionConflict",
@@ -323,8 +352,9 @@ export class MetaVersionConflictError extends Schema.TaggedError<MetaVersionConf
 
 /**
  * 422: the statement's display name is not in NFC normal form (AUTH_SPEC
- * §12-1). Normalization is the signing client's responsibility — the server
- * only checks and never normalizes (byte-exact 署名との両立 — CRYPTO_SPEC §4.2)。
+ * §12-1). Normalization is the signing client's responsibility — the
+ * server only checks and never normalizes (compatibility with
+ * byte-exact signatures — CRYPTO_SPEC §4.2).
  */
 export class NameNotNfcError extends Schema.TaggedError<NameNotNfcError>()(
   "NameNotNfc",
@@ -346,20 +376,23 @@ export const DataLimitResourceSchema = Schema.Literals([
   "variables",
   "variable-rows",
   "versions",
-  // metaVersion 行 / 変数(環境)。§12-8 の「バージョン数 / 変数」と
-  // 同値(1,000)を rename / 削除のステートメント行にも適用する(無制限の
-  // rename 連打による DO ストレージ肥大の遮断)
+  // metaVersion rows / variable (environment). Applies the same value
+  // (1,000) as §12-8's "versions / variable" to rename / delete
+  // statement rows too (blocks DO-storage bloat from unlimited rename
+  // spam)
   "meta-versions",
   "project-ciphertext-bytes",
   "dek-wraps-per-request",
   "dek-wrap-rows",
-  // 取り下げ対象の列挙上限(AUDIT_SPEC §7 の取り下げ操作)
+  // Enumeration cap for dismissal targets (the AUDIT_SPEC §7 dismiss operation)
   "rotation-dismissals-per-request",
-  // DO ストレージ総量ガード(§12-8): プロジェクト DO の SQLite
-  // 実測量(databaseSize)が拒否閾値(起草値 9 GB)以上のとき、内容の成長面
-  // (値 push・変数 / 環境の作成・改名・DEK 登録・add_member / grant_server)を
-  // 拒否する。limit = 拒否閾値バイト。読み取り・削除・失効・ローテーションは
-  // 拒否下でも受理され続ける(同節の明示列挙)
+  // DO total-storage guard (§12-8): when the project DO's measured
+  // SQLite size (databaseSize) reaches the refusal threshold (drafted
+  // 9 GB), content-growing surfaces (value push, variable / environment
+  // creation, rename, DEK registration, add_member / grant_server) are
+  // refused. limit = the refusal threshold in bytes. Reads, deletions,
+  // revocations, and rotations keep being accepted under refusal (the
+  // same section's explicit enumeration)
   "project-storage-bytes",
 ]);
 

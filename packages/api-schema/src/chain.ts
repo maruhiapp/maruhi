@@ -1,13 +1,16 @@
-// メンバーシップログ(CRYPTO_SPEC §6)のワイヤ表現。
+// Wire representation of the membership log (CRYPTO_SPEC §6).
 //
-// フィールドは @maruhi/crypto の ChainEntry と構造的に一致させ、デコード結果を
-// そのまま verifyChain へ渡せるようにする(サーバー側の詰め替え層を作らない)。
+// The fields match @maruhi/crypto's ChainEntry structurally, so a decoded
+// value can be passed to verifyChain unchanged (no repacking layer on the
+// server side).
 //
-// 検証の権威は verifyChain(§6.3 / §6.4)である。Schema はトランスポート形状のみを
-// 検査する: 固定長 hex は安価かつ正確に弾けるためここで検査するが、自由文字列の
-// サイズ上限(§6.1 の合意規則)は意図的に Schema へ重複させない — 上限超過は
-// verifyChain の `invalid-payload`(テストベクターで固定された理由コード)として
-// 一貫して報告されるべきで、Schema での 400 と二重の拒否経路を作らないため。
+// The verification authority is verifyChain (§6.3 / §6.4). The Schema
+// checks only the transport shape: fixed-length hex is checked here
+// because it can be rejected cheaply and precisely, but the free-string
+// size limits (the §6.1 consensus rules) are deliberately not duplicated
+// into the Schema — a limit violation should be reported consistently as
+// verifyChain's `invalid-payload` (a reason code pinned by test vectors),
+// so that a Schema 400 does not become a second refusal path.
 
 import { EnvironmentIdSchema } from "@maruhi/core";
 import type { ChainEntry, ProposableOperation } from "@maruhi/crypto";
@@ -20,7 +23,7 @@ export const RoleSchema = Schema.Literals(["owner", "admin", "member", "reader"]
 
 /** Entry actor: internal user id + key fingerprint only (CRYPTO_SPEC §6.1). */
 export const ChainActorSchema = Schema.Struct({
-  // userId は意図的に bound しない(§6.1 の自由文字列上限は verifyChain が検査する)
+  // userId is deliberately unbounded (verifyChain checks the §6.1 free-string limit)
   userId: Schema.String,
   keyFingerprintHex: KeyFingerprintHex,
 });
@@ -39,9 +42,11 @@ export const ScopeKindSchema = Schema.Literals(["all", "listed"]);
 
 /**
  * The two trailing scope fields of `add_member` / `change_role` (CRYPTO_SPEC
- * §6.2). ワイヤは environment_id の構造化リストを as-signed 順で運ぶ(正規化 =
- * 入れ子 LP は crypto 側)。`all` ⇒ 空リスト・256 以下・重複なしは合意規則であり
- * verifyChain が `invalid-payload` で検査する(冒頭の方針どおり Schema へ重複させない)
+ * §6.2). The wire carries the structured list of environment_ids in
+ * as-signed order (canonicalization = nested LP lives on the crypto side).
+ * `all` ⇒ empty list, at most 256 entries, no duplicates are consensus
+ * rules that verifyChain checks as `invalid-payload` (not duplicated into
+ * the Schema, per the policy in the header comment)
  */
 const scopePayloadFields = {
   scopeKind: ScopeKindSchema,
@@ -96,12 +101,15 @@ const ChangeRoleEntrySchema = Schema.Struct({
  * environment-creation endpoint (AUTH_SPEC §12-4) — the generic append
  * rejects it (§6). Exported for that endpoint's payload schema.
  *
- * environmentId は §12-1 の受理ポリシー形式(EnvironmentIdSchema)で検査する:
- * 複合化で ID の運搬が旧 payload からチェーンエントリ内へ移り、URL 座標も
- * 持たないため、ここが唯一のワイヤ受理点になる(形式は合意規則ではない —
- * チェーン検証は §6.1 の bounded string のみを要求する。緩い形式の ID を
- * 受理すると URL param を持つ後続エンドポイント — rotate / rename / delete /
- * pull — から到達不能な環境が生まれ、§7 の全環境ローテーション義務も破れる)。
+ * environmentId is checked with the §12-1 acceptance-policy format
+ * (EnvironmentIdSchema): compositing moved ID carriage from the old
+ * payload into the chain entry, and the entry carries no URL coordinate,
+ * so this is the only wire acceptance point (the format is not a
+ * consensus rule — chain verification only requires the §6.1 bounded
+ * string. Accepting a loosely-formatted ID would create an environment
+ * unreachable from the follow-up endpoints that take a URL param —
+ * rotate / rename / delete / pull — and would also break §7's
+ * all-environment rotation obligation).
  */
 const CreateEnvironmentPayloadSchema = Schema.Struct({
   environmentId: EnvironmentIdSchema,
@@ -120,8 +128,9 @@ export const CreateEnvironmentEntrySchema = Schema.Struct({
  * (AUTH_SPEC §12-4). Exported for that endpoint's payload schema.
  */
 const RotateEpochPayloadSchema = Schema.Struct({
-  // create_environment と同じ受理ポリシー形式(URL 座標との一致検査 —
-  // §12-4 — の対象だが、ワイヤ側でも同じ形式に固定して非対称を作らない)
+  // Same acceptance-policy format as create_environment (it is the target
+  // of the URL-coordinate match check — §12-4 — but the wire side is
+  // pinned to the same format so no asymmetry is introduced)
   environmentId: EnvironmentIdSchema,
   newEpoch: Schema.Number,
   reason: Schema.String,
@@ -136,8 +145,9 @@ export const RotateEpochEntrySchema = Schema.Struct({
 
 /**
  * One exact-match claim constraint of a grant_server lease policy element
- * (CRYPTO_SPEC §6.2)。サイズ上限(要素 8 / 制約 8 / 各文字列 1024 バイト)は
- * 合意規則であり verifyChain が検査する(Schema へ重複させない — 冒頭の方針)。
+ * (CRYPTO_SPEC §6.2). The size limits (8 elements / 8 constraints / 1024
+ * bytes per string) are consensus rules checked by verifyChain (not
+ * duplicated into the Schema — the policy in the header comment).
  */
 const LeaseClaimConstraintSchema = Schema.Struct({
   claimName: Schema.String,
@@ -155,8 +165,10 @@ const GrantServerPayloadSchema = Schema.Struct({
   serverEncPubHex: PublicKeyHex,
   serverKeyFingerprintHex: KeyFingerprintHex,
   scopeEnvironmentIds: Schema.Array(Schema.String),
-  // ワイヤは構造化リストを as-signed 順で運ぶ(正規化 = 3 段入れ子 LP は
-  // crypto 側 — 順序は署名対象の一部なのでオブジェクトでなく配列で保つ)
+  // The wire carries the structured list in as-signed order
+  // (canonicalization = the 3-level nested LP lives on the crypto side —
+  // order is part of the signed payload, so it is kept as an array rather
+  // than an object)
   leasePolicy: Schema.Array(LeasePolicyIssuerSchema),
 });
 
@@ -175,11 +187,12 @@ const RevokeServerEntrySchema = Schema.Struct({
 });
 
 /**
- * One environment tuple of a `checkpoint` payload (CRYPTO_SPEC §6.2)。
- * environmentId は create/rotate と同じ受理ポリシー
- * 形式。epoch / manifestVersion の数値範囲・重複 environment_id・
- * audit_head の「空または 64 hex」は合意規則であり verifyChain が検査する
- * (冒頭の方針どおり Schema へ重複させない。固定長 hex のみここで検査)。
+ * One environment tuple of a `checkpoint` payload (CRYPTO_SPEC §6.2).
+ * environmentId uses the same acceptance-policy format as create/rotate.
+ * The numeric ranges of epoch / manifestVersion, duplicate
+ * environment_ids, and audit_head's "empty or 64 hex" are consensus rules
+ * checked by verifyChain (not duplicated into the Schema, per the header
+ * policy; only fixed-length hex is checked here).
  */
 const CheckpointEnvironmentEntrySchema = Schema.Struct({
   environmentId: EnvironmentIdSchema,
@@ -198,11 +211,13 @@ const CheckpointEnvironmentEntrySchema = Schema.Struct({
  * the composite payload schemas (data-api.ts).
  */
 const CheckpointPayloadSchema = Schema.Struct({
-  // ワイヤは構造化リストを as-signed 順で運ぶ(正規化 = 入れ子 LP は
-  // crypto 側 — 順序は署名対象の一部なので配列で保つ。grant_server と同型)
+  // The wire carries the structured list in as-signed order
+  // (canonicalization = nested LP lives on the crypto side — order is
+  // part of the signed payload, so it is kept as an array; same shape as
+  // grant_server)
   environments: Schema.Array(CheckpointEnvironmentEntrySchema),
-  // 空文字列 = 監査ヘッドの公証なし(§6.2)。「空または 64 hex」の判定は
-  // 合意規則(verifyChain)に一本化する
+  // Empty string = no audit-head notarization (§6.2). The "empty or 64
+  // hex" check is consolidated into the consensus rule (verifyChain)
   auditHeadHashHex: Schema.String,
 });
 
@@ -213,7 +228,7 @@ export const CheckpointEntrySchema = Schema.Struct({
 });
 
 // ---------------------------------------------------------------------------
-// 四眼(CRYPTO_SPEC §6.2 — 2026-09-14 PF1)
+// Four-eyes (CRYPTO_SPEC §6.2 — 2026-09-14 PF1)
 
 /** Operations a four-eyes policy may name (CRYPTO_SPEC §6.2 — the closed target set). */
 const ApprovalTargetOpSchema = Schema.Literals([
@@ -226,10 +241,11 @@ const ApprovalTargetOpSchema = Schema.Literals([
 ]);
 
 /**
- * `set_approval_policy` payload: ops は as-signed 順の配列(正規化 = 入れ子 LP は
- * crypto 側)。required_approvals の「0 または 2 以上」・ops の閉集合検査は合意規則
- * (verifyChain)— ここでは閉集合のリテラルだけを型として持つ(ワイヤ型と crypto 型の
- * 一致のため)
+ * `set_approval_policy` payload: ops is an as-signed-order array
+ * (canonicalization = nested LP lives on the crypto side). The
+ * required_approvals "0 or at least 2" rule and the closed-set check on
+ * ops are consensus rules (verifyChain) — here only the closed-set
+ * literals are held as a type (so the wire type matches the crypto type)
  */
 const SetApprovalPolicyPayloadSchema = Schema.Struct({
   ops: Schema.Array(ApprovalTargetOpSchema),
@@ -269,7 +285,8 @@ const RevokeDevicePayloadSchema = Schema.Struct({
  * An operation carried inside a `propose` entry (CRYPTO_SPEC §6.2): any
  * non-approval operation as `{ op, payload }` — structured on the wire, the
  * `inner_payload_lp_hex` canonical form is computed by the crypto layer.
- * `propose` / `approve` / `withdraw` are not members (提案の入れ子は構造段で無効).
+ * `propose` / `approve` / `withdraw` are not members (nesting a proposal
+ * is invalid at the structure stage).
  */
 const ProposableOperationSchema = Schema.Union([
   Schema.Struct({ op: Schema.Literal("genesis"), payload: GenesisPayloadSchema }),
@@ -288,8 +305,9 @@ const ProposableOperationSchema = Schema.Union([
     op: Schema.Literal("set_approval_policy"),
     payload: SetApprovalPolicyPayloadSchema,
   }),
-  // 端末鍵の 2 op(2026-09-19 DK)は構造上は内側 op になれるが、方針の対象にはなりえない
-  // (`approval-not-required` — CRYPTO_SPEC §6.2「四眼との関係」。verifyChain が判定する)
+  // The two device-key ops (2026-09-19 DK) can structurally be inner ops,
+  // but they can never be policy targets (`approval-not-required` —
+  // CRYPTO_SPEC §6.2 "relationship to four-eyes"; verifyChain decides)
   Schema.Struct({ op: Schema.Literal("add_device"), payload: AddDevicePayloadSchema }),
   Schema.Struct({ op: Schema.Literal("revoke_device"), payload: RevokeDevicePayloadSchema }),
 ]);
@@ -299,7 +317,7 @@ const ProposeEntrySchema = Schema.Struct({
   op: Schema.Literal("propose"),
   payload: Schema.Struct({
     inner: ProposableOperationSchema,
-    // 非負の安全整数は合意規則(verifyChain の invalid-payload)
+    // A non-negative safe integer is a consensus rule (verifyChain's invalid-payload)
     expiresAtMs: Schema.Number,
   }),
 });
@@ -346,13 +364,14 @@ export const ChainEntrySchema = Schema.Union([
   ProposeEntrySchema,
   ApproveEntrySchema,
   WithdrawEntrySchema,
-  // 端末鍵(CRYPTO_SPEC §6.2 — 2026-09-19 DK)
+  // Device keys (CRYPTO_SPEC §6.2 — 2026-09-19 DK)
   AddDeviceEntrySchema,
   RevokeDeviceEntrySchema,
 ]);
 
-// デコード結果が @maruhi/crypto の ChainEntry へそのまま渡せることの静的検査。
-// (ワイヤ型が crypto 型から乖離したらここがコンパイルエラーになる)
+// Static check that a decoded value can be passed unchanged to
+// @maruhi/crypto's ChainEntry. (If the wire type diverges from the crypto
+// type, this fails to compile)
 type WireChainEntry = typeof ChainEntrySchema.Type;
 type WireIsChainEntry = WireChainEntry extends ChainEntry ? true : never;
 const wireIsChainEntry: WireIsChainEntry = true;

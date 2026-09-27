@@ -1,5 +1,6 @@
-// @maruhi/core — ドメイン型、Effect Schema、共有ロジック。
-// crypto(Effect 非依存)と上位層(Effect ベース)の橋渡しはここで行う。
+// @maruhi/core — domain types, Effect Schema, shared logic.
+// The bridge between crypto (Effect-free) and the upper layers
+// (Effect-based) happens here.
 
 export {
   ChainInvalidError,

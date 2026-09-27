@@ -1,13 +1,15 @@
-// @maruhi/crypto の CryptoResult(kind 判別 union)を Effect の型付きエラーへ
-// マッピングするラッパー。
+// A wrapper mapping @maruhi/crypto's CryptoResult (a union discriminated
+// by `kind`) onto Effect typed errors.
 //
-// 設計判断: crypto は Effect 非依存の
-// 純粋関数 + エラー値、Effect ラップは core 側で行う。判別は crypto 側が `kind`、
-// Effect 側は Data.TaggedError の `_tag`(タグ名は "Crypto" プレフィックス)。
+// Design decision: crypto stays Effect-free — pure functions + error
+// values; the Effect wrapping happens on the core side. The
+// discriminator is `kind` on the crypto side and Data.TaggedError's
+// `_tag` on the Effect side (tag names carry the "Crypto" prefix).
 //
-// 絶対規則の継承: エラーには平文値・鍵素材・暗号文の断片を含めない。crypto 側の
-// エラー値が識別子(field / seq / 理由コード)しか運ばないため、ここでの詰め替えも
-// それ以外を追加しない。
+// Inheriting the absolute rule: errors never contain fragments of
+// plaintext values, key material, or ciphertexts. Because crypto-side
+// error values carry only identifiers (field / seq / reason codes),
+// this repacking adds nothing else.
 
 import type {
   AeadOperation,
@@ -212,8 +214,8 @@ export function fromCryptoResult<T>(result: CryptoResult<T>): Effect.Effect<T, W
 
 /**
  * Runs an async @maruhi/crypto operation and lifts its `CryptoResult` into
- * `Effect`. The thunk must never reject — crypto operations return errors as
- * values by contract (packages/crypto は throw しない)。
+ * `Effect`. The thunk must never reject — crypto operations return
+ * errors as values by contract (packages/crypto never throws).
  */
 export function cryptoEffect<T>(
   run: () => Promise<CryptoResult<T>>,
