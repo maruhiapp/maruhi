@@ -147,8 +147,8 @@ export type ValueInvalidReason =
  *
  * There is **no** reason corresponding to epoch consistency (the value's
  * environment-not-created / epoch-not-current): metadata carries no epoch
- * anchor (§4.2), and injection into an advanced meta_version is the known
- * residual of an undetected v1 (§14.3-5).
+ * anchor (§4.2), and injection into an advanced meta_version is a known
+ * residual that v1 does not detect (§14.3-5).
  */
 export type MetaInvalidReason =
   | "signature-invalid"

@@ -8,7 +8,7 @@
 // Errors are returned as typed error values (CryptoResult); Effect wrapping is
 // done on the packages/core side.
 //
-// Exports are grouped by CRYPTO_SPEC section (the set is fixed).
+// Exports are grouped by CRYPTO_SPEC section (the grouping does not change the set).
 
 // §1-§2: common — suite identifier, encoding conventions (§2.1), result types
 export {
