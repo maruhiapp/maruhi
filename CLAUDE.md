@@ -158,6 +158,11 @@ apps/
   `scripts/english-exemptions.txt`; intentional non-English data carries an
   inline `english-exempt` marker. `bun run check:english` enforces this on
   every tracked file
+- **All GitHub activity is English too** (ADR-0019 decision 5): commit
+  messages, PR titles and descriptions, issues, review comments, and every
+  other comment an agent posts. Japanese is used only in the conversation with
+  the owner. `.github/workflows/english-pr.yml` enforces this for PR titles,
+  descriptions and commit messages
 - Domain-term renderings follow `docs/GLOSSARY.md`; cross-reference codes
   (ruling codes, `§` refs, `session-NN`) are never translated
 - Pin unstable dependencies (Bun / Effect v4 / Alchemy v2 / FunStack) exactly.
