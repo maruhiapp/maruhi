@@ -1,18 +1,25 @@
-// 予備鍵(CRYPTO_SPEC §3 / §8 — 2026-09-19 DK。設計録 dk-design.md §9 K4-1 / K4-2)。
+// The reserve key (CRYPTO_SPEC §3 / §8 — 2026-09-19 DK; design
+// record dk-design.md §9 K4-1 / K4-2).
 //
-// 予備鍵は端末鍵と同じ形の鍵対のうち、秘密鍵を**日常の端末に置かず台帳(§8)にだけ
-// 置く**もの。チェーン上では `add_device`(cap (owner, all))で登録された普通の端末鍵で
-// あり、DEK ラップを受け取る。この CLI が予備鍵の秘密を持つのは、封印(コード /
-// パスキー / 保護者)・復元・台帳変更を行う**プロセスのメモリの中だけ**であり、
-// キーチェーンにも agent のメモリにも書かない(§8.5 の禁止事項・K4-1)。
+// Of the key pairs shaped like a device key, the reserve key is the
+// one whose private half is **kept out of everyday devices and only
+// in the ledger (§8)**. On the chain it is an ordinary device key
+// registered via `add_device` (cap (owner, all)) and it receives DEK
+// wraps. This CLI holds the reserve key's secret **only inside the
+// process memory** of a sealing (code / passkey / guardians), a
+// restore, or a ledger change — it is written neither to the
+// keychain nor to agent memory (§8.5's prohibitions, K4-1).
 //
-// 型で保存経路を閉じる(K4-1 a-5): 予備鍵は {@link ReserveKeys}(brand `reserve`)で
-// 運び、キーチェーン保存(session.ts の `storeMasterKeyAndReport`)は端末鍵の
-// `MasterKeys` しか受けない。予備鍵を保存しようとするコードは型エラーになる。
+// Types close the storage path (K4-1 a-5): the reserve key travels
+// as {@link ReserveKeys} (brand `reserve`), and keychain storage
+// (session.ts's `storeMasterKeyAndReport`) accepts only a device
+// key's `MasterKeys`. Code that tries to store a reserve key is a
+// type error.
 //
-// 予備鍵の**公開**側(FP・公開鍵・cap)はローカルの own-devices 記録(own-devices.ts —
-// 出所 "reserve")に置き、初回同期の端末登録(device-sync.ts)が各プロジェクトへ
-// `add_device` する材料にする(K4-3)。
+// The reserve key's **public** side (FP, public keys, cap) goes into
+// the local own-devices record (own-devices.ts — provenance
+// "reserve"), the material the first-sync device registration
+// (device-sync.ts) uses to `add_device` to each project (K4-3).
 
 import { ALL_SCOPE, type EncryptionKeyPair, type SigningKeyPair } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -37,7 +44,7 @@ export interface ReserveKeys {
   readonly fingerprintHex: string;
 }
 
-/** 台帳から復号したレコード(または生成したレコード)を予備鍵として読み込む。 */
+/** Loads a record decrypted from the ledger (or a generated record) as the reserve key. */
 function reserveKeysFromRecord(record: StoredMasterKey): Effect.Effect<ReserveKeys, CliError> {
   return importMasterKeys(record).pipe(
     Effect.mapError(() =>
@@ -66,7 +73,7 @@ export function generateReserveKeys(): Effect.Effect<ReserveKeys, CliError> {
   );
 }
 
-/** 台帳から開いた鍵が、この CLI が予備鍵として生成した印を持つか(DK K16-6)。 */
+/** Whether the key opened from the ledger carries the mark this CLI wrote when generating it as a reserve key (DK K16-6). */
 export function isMarkedReserve(reserve: ReserveKeys): boolean {
   return reserve.record.kind === "reserve";
 }
@@ -119,8 +126,10 @@ export function recordedReserves(
 }
 
 /**
- * 台帳の鍵が失効していると分かったとき、この端末がそれを reserve と記録していれば失効の印を
- * 付ける(DK K14-4 4-g)。行が無ければ何もしない。書き込みの失敗はコマンドを落とさず Warning にする。
+ * When the ledger's key is found to be revoked and this device has
+ * it recorded as reserve, attach the revocation mark (DK K14-4
+ * 4-g). No row = do nothing. A write failure does not fail the
+ * command — it becomes a Warning.
  */
 export function markRevokedReserveRecord(
   session: CliSession,

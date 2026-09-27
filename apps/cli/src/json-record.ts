@@ -1,7 +1,7 @@
-// 非機密の JSON 文書(リポジトリアンカー・sync 設定・同期レシート)の共通の
-// 入口: JSON として読めるか・最上位がオブジェクトか。理由は英語の短い文字列で
-// 返し、呼び出し側が「どのファイルが・なぜ」を添える(内容そのものは文面に
-// 出さない)。
+// Shared entry point for non-secret JSON documents (repository anchor, sync
+// config, sync receipt): does it parse as JSON, and is the top level an
+// object? The reason is returned as a short English string and the caller
+// adds "which file and why" (the content itself is never put in the message).
 
 /** Parses `content` as a JSON object; returns the reason when it is not one. */
 export function parseJsonRecord(content: string): Record<string, unknown> | string {

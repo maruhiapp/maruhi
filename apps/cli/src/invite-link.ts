@@ -1,26 +1,34 @@
-// 招待リンクの組み立て・解釈(AUTH_SPEC §15-3 — 2026-09-13 IV 改訂・v2)。
+// Building and interpreting invite links (AUTH_SPEC §15-3 —
+// 2026-09-13 IV revision, v2).
 //
-// リンク形式:
+// Link format:
 //   https://<web-origin>/invite#v=2&i=<invite_id>&k=<link_seed_hex>&p=<project_id>
 //     &h=<head_hash_hex>&s=<head_seq>&iu=<inviter_user_id>&ie=<inviter_enc_pub_hex>
-//     &is=<inviter_sig_pub_hex>&r=<role>&sk=<scope_kind>&se=<environment_id の comma 区切り>
+//     &is=<inviter_sig_pub_hex>&r=<role>&sk=<scope_kind>&se=<comma-separated environment_id>
 //     [&il=<inviter_github_login>]&sig=<issue_signature_hex>
 //
-// フラグメント(# 以降)はサーバーへ送信されない。`k` はリンク鍵の種(CRYPTO_SPEC
-// §6.5 — 受諾側が Ed25519 鍵ペアを導出してリンク署名を作る。サーバーは受け取らない)、
-// `i` / `p` / `h` / `s` / `r` / `sk` / `se` / `iu` / `ie` / `is` は発行文(発行署名 `sig`
-// が覆う — 招待者のチェーン sig 鍵)、`il` は裏付け元(GitHub)の照合材料(自己申告・
-// 署名外・省略可)。旧 `if`(FP)は廃止し、FP は `ie` ‖ `is` から導出する。
-// `sk` / `se` は付与予定 scope(2026-09-14 ES — `sk=all` なら `se` は空。K2 の CLI は
-// `all` のみ発行し、`--env` は K4)。
+// The fragment (after #) is never sent to the server. `k` is the
+// link key's seed (CRYPTO_SPEC §6.5 — the acceptor derives an Ed25519
+// keypair from it and makes the link signature; the server never
+// receives it); `i` / `p` / `h` / `s` / `r` / `sk` / `se` / `iu` /
+// `ie` / `is` are the issuance statement (covered by the issue
+// signature `sig` — the inviter's chain sig key); `il` is the
+// checking material of the backing source (GitHub) (self-declared,
+// unsigned, optional). The old `if` (FP) is abolished; the FP is
+// derived from `ie` ‖ `is`. `sk` / `se` are the scope to be granted
+// (2026-09-14 ES — when `sk=all`, `se` is empty. The K2 CLI only
+// issues `all`; `--env` is K4).
 //
-// <web-origin> には CLI セッションの server origin を使う(B1b 裁定)。解釈側は
-// origin に依存しない(フラグメントのみを読む)。
+// <web-origin> uses the CLI session's server origin (ruling B1b).
+// The interpreting side does not depend on the origin (only the
+// fragment is read).
 //
-// `k` は招待の秘密なので `Redacted` で運ぶ。組み立て済みリンクも種を内包する以上
-// ただの表示可能文字列ではないため `Redacted<string>` で返し、剥がすのは表示の
-// 直前(invite.ts — エージェントゲートの後ろ)だけに限る。`v=1` リンクと生トークン
-// は受け付けない(互換経路を作らない 2026-09-13 所有者裁定)。
+// `k` is the invite's secret, so it travels as `Redacted`. A built
+// link also embeds the seed, so it is not a mere displayable string —
+// it is returned as `Redacted<string>`, and unwrapping is limited to
+// just before display (invite.ts — behind the agent gate). `v=1`
+// links and raw tokens are not accepted (the 2026-09-13 owner ruling
+// of no compatibility path).
 
 import { isEnvironmentId, isProjectId } from "@maruhi/core";
 import type { ScopeKind } from "@maruhi/crypto";
@@ -30,20 +38,20 @@ const HEX_64 = /^[0-9a-f]{64}$/;
 const HEX_128 = /^[0-9a-f]{128}$/;
 const ROLES = ["reader", "member", "admin"] as const;
 const SCOPE_KINDS: readonly ScopeKind[] = ["all", "listed"];
-/** scope の環境リスト上限(CRYPTO_SPEC §6.2 — grant_server の scope と同じ 256)。 */
+/** Cap on scope's environment list (CRYPTO_SPEC §6.2 — the same 256 as grant_server's scope). */
 const MAX_SCOPE_ENVIRONMENTS = 256;
-/** 招待 id(ULID — Crockford Base32 26 文字。api-schema の InviteIdSchema と同一)。 */
+/** Invite id (ULID — 26 Crockford Base32 chars. Identical to api-schema's InviteIdSchema). */
 const INVITE_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-/** GitHub login(1〜39 文字の英数字とハイフン。先頭・末尾はハイフン不可)。 */
+/** GitHub login (1–39 chars of alphanumerics and hyphens; no leading/trailing hyphen). */
 export const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 
-/** 招待で付与できる role(owner は招待経由で付与しない — §15-1)。 */
+/** Roles grantable via an invite (owner is never granted via an invite — §15-1). */
 export type InviteRole = (typeof ROLES)[number];
 
-/** リンクが運ぶ発行文 + 種 + 裏付け元の照合材料(§15-3 の v2 パラメータ)。 */
+/** The issuance statement + seed + backing-source check material a link carries (the §15-3 v2 parameters). */
 export interface InviteLinkData {
   readonly inviteId: string;
-  /** リンク鍵の種(32 バイト hex — 招待の秘密)。 */
+  /** The link key's seed (32-byte hex — the invite's secret). */
   readonly linkSeedHex: Redacted.Redacted<string>;
   readonly projectId: string;
   readonly headHashHex: string;
@@ -52,18 +60,20 @@ export interface InviteLinkData {
   readonly inviterEncPubHex: string;
   readonly inviterSigPubHex: string;
   readonly role: InviteRole;
-  /** 付与予定 scope(2026-09-14 ES — 発行署名が覆う。`all` なら環境リストは空)。 */
+  /** The scope to be granted (2026-09-14 ES — covered by the issue signature. With `all`, the environment list is empty). */
   readonly scopeKind: ScopeKind;
   readonly scopeEnvironmentIds: readonly string[];
-  /** 招待者の GitHub login(自己申告・署名外。省略時は null)。 */
+  /** The inviter's GitHub login (self-declared, unsigned; null when omitted). */
   readonly inviterLogin: string | null;
   readonly issueSignatureHex: string;
 }
 
 /**
- * §15-3 のリンクを組み立てる(パラメータ順は仕様の記載順で固定)。
+ * Builds a §15-3 link (parameter order is fixed to the spec's
+ * listed order).
  *
- * 戻り値も種を内包するため `Redacted` のまま返す。剥がすのは表示側。
+ * The return value embeds the seed too, so it is returned still
+ * `Redacted`. Unwrapping is the display side's job.
  */
 export function buildInviteLink(input: {
   readonly origin: string;
@@ -73,8 +83,9 @@ export function buildInviteLink(input: {
   const params: (readonly [string, string])[] = [
     ["v", "2"],
     ["i", link.inviteId],
-    // 剥がす理由: リンク文字列そのものの組み立て。結果は再び Redacted で包み、
-    // 生の文字列がこの関数の外へ出ないようにする
+    // Why it is unwrapped: assembling the link string itself. The
+    // result is wrapped in Redacted again so the raw string never
+    // leaves this function
     ["k", Redacted.value(link.linkSeedHex)],
     ["p", link.projectId],
     ["h", link.headHashHex],
@@ -92,19 +103,19 @@ export function buildInviteLink(input: {
   return Redacted.make(`${input.origin}/invite#${fragment}`, { label: "invite-link" });
 }
 
-/** 解釈失敗の理由(呼び出し側がエラーメッセージへ写す)。 */
+/** Reason for a parse failure (the caller maps it to an error message). */
 export type InviteInputRejection =
   | "not-a-link"
   | "unsupported-version"
   | "missing-or-invalid-fragment-params";
 
-/** パターン検証つきのフラグメントパラメータ取得(不一致 = null)。 */
+/** Fetches a fragment parameter with pattern validation (mismatch = null). */
 function fragmentParam(params: URLSearchParams, name: string, pattern: RegExp): string | null {
   const value = params.get(name);
   return value !== null && pattern.test(value) ? value : null;
 }
 
-/** `s=`(検証済みヘッド seq)の解釈(正整数の 10 進のみ)。 */
+/** Interprets `s=` (the verified head seq) (decimal positive integers only). */
 function parseHeadSeq(params: URLSearchParams): number | null {
   const text = fragmentParam(params, "s", /^[1-9][0-9]*$/);
   if (text === null) {
@@ -114,7 +125,7 @@ function parseHeadSeq(params: URLSearchParams): number | null {
   return Number.isSafeInteger(value) ? value : null;
 }
 
-/** `il=`(招待者の GitHub login)の解釈: 省略 = null、存在するなら login の形のみ。 */
+/** Interprets `il=` (the inviter's GitHub login): omitted = null; when present, only the login shape. */
 function parseInviterLogin(params: URLSearchParams): string | null | "invalid" {
   const text = params.get("il");
   if (text === null) {
@@ -123,7 +134,7 @@ function parseInviterLogin(params: URLSearchParams): string | null | "invalid" {
   return GITHUB_LOGIN.test(text) ? text : "invalid";
 }
 
-/** 必須の文字列パラメータ(名前 → 形式)。 */
+/** The required string parameters (name → format). */
 const STRING_PARAMS = {
   i: INVITE_ID,
   k: HEX_64,
@@ -136,7 +147,7 @@ const STRING_PARAMS = {
 
 type StringParams = Readonly<Record<keyof typeof STRING_PARAMS, string>>;
 
-/** 必須文字列パラメータの一括取得(1 つでも欠落・不正なら null)。 */
+/** Bulk-fetch of the required string parameters (null on any missing/malformed). */
 function stringParams(params: URLSearchParams): StringParams | null {
   const out: Partial<Record<keyof typeof STRING_PARAMS, string>> = {};
   for (const [name, pattern] of Object.entries(STRING_PARAMS) as [
@@ -153,9 +164,12 @@ function stringParams(params: URLSearchParams): StringParams | null {
 }
 
 /**
- * `sk=` / `se=`(付与予定 scope)の解釈: kind は閉集合、`all` なら `se` は空、`listed` は
- * comma 区切りの environment_id(§12-1 形式・重複なし・256 以下。空 = どの環境も
- * 付与しない listed)。構造規則は CRYPTO_SPEC §6.2 の scope と同じ(不正 = null)
+ * Interprets `sk=` / `se=` (the scope to be granted): kind is a
+ * closed set; with `all`, `se` is empty; `listed` is a
+ * comma-separated environment_id list (§12-1 format, no duplicates,
+ * at most 256. Empty = a listed that grants no environment). The
+ * structural rules are the same as CRYPTO_SPEC §6.2's scope
+ * (malformed = null)
  */
 function parseScope(
   params: URLSearchParams,
@@ -179,13 +193,13 @@ function parseScope(
   return { scopeKind: "listed", scopeEnvironmentIds: ids };
 }
 
-/** `p=`(プロジェクト ID)の解釈。 */
+/** Interprets `p=` (the project ID). */
 function parseProjectId(params: URLSearchParams): string | null {
   const value = params.get("p");
   return value !== null && isProjectId(value) ? value : null;
 }
 
-/** フラグメント(v=2 検証済み)からのリンクデータの解釈(不正 = null)。 */
+/** Interprets the link data from the fragment (v=2 verified) (malformed = null). */
 function parseLinkData(params: URLSearchParams): InviteLinkData | null {
   const strings = stringParams(params);
   const projectId = parseProjectId(params);
@@ -221,9 +235,11 @@ function parseLinkData(params: URLSearchParams): InviteLinkData | null {
 }
 
 /**
- * `<link>` 入力の解釈。必須パラメータの欠落・形式不正・旧版(`v=1`)・生トークンは
- * すべてエラーにする(壊れたリンクをアンカーなし受諾へ滑り込ませない。旧版・
- * 生トークンは互換経路なし — 再発行を案内する)。
+ * Interprets the `<link>` input. Missing required parameters,
+ * malformed formats, the old version (`v=1`), and raw tokens are all
+ * errors (a broken link must not slide into an anchorless accept.
+ * The old version and raw tokens have no compatibility path — guide
+ * to re-issuing).
  */
 export function parseInviteAcceptInput(raw: Redacted.Redacted<string>):
   | { readonly kind: "link"; readonly link: InviteLinkData }
@@ -231,9 +247,11 @@ export function parseInviteAcceptInput(raw: Redacted.Redacted<string>):
       readonly kind: "rejected";
       readonly reason: InviteInputRejection;
     } {
-  // 剥がす理由: リンクの構文解釈にはバイト列そのものが要る。入力は引数層
-  // (`Argument.Redacted` — ADR-0016)から Redacted のまま届き、生値はこの関数の
-  // 外へ出ない — 種は再び Redacted で包んで返し、他のパラメータは公開値である
+  // Why it is unwrapped: parsing the link's syntax needs the byte
+  // string itself. The input arrives still Redacted from the argument
+  // layer (`Argument.Redacted` — ADR-0016), and the raw value never
+  // leaves this function — the seed is wrapped in Redacted again on
+  // return; the other parameters are public values
   const trimmed = Redacted.value(raw).trim();
   const hashIndex = trimmed.indexOf("#");
   if (hashIndex < 0) {

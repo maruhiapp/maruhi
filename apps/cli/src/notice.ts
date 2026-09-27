@@ -1,34 +1,49 @@
-// stderr へ出す通知(Note / Warning / 失敗)の語彙と描画(DP5 裁定 A / B)。
+// Vocabulary and rendering of stderr notices (Note / Warning /
+// failure) (DP5 rulings A / B).
 //
-// 語彙(用途で使い分ける — 混ぜない):
-//   - `Note:`     情報。コマンドは成功しており、書かれているのは任意の次の一手か
-//                 状況の説明。見逃しても安全性は下がらない
-//   - `Warning:`  劣化・要注意。コマンドは続行(または成功)したが、利用者が
-//                 確認すべき状態がある。見逃すと安全性が下がりうるものは常に
-//                 こちら(床の破損・アンカー不一致・署名検証失敗など)
-//   - `maruhi:`   失敗(終了コード ≠ 0)。文面は「何が起きたか。次の一手」
+// Vocabulary (distinguish by purpose — never mix):
+//   - `Note:`     information. The command succeeded, and what is
+//                 written is an optional next step or an
+//                 explanation of the state. Missing it does not
+//                 lower safety
+//   - `Warning:`  degraded / attention. The command continued (or
+//                 succeeded) but there is a state the user should
+//                 check. Anything whose miss can lower safety always
+//                 goes here (floor corruption, anchor mismatch,
+//                 signature-verification failure, etc.)
+//   - `maruhi:`   failure (exit code ≠ 0). The wording is "what
+//                 happened. The next step"
 //
-// 宛先はすべて stderr(ADR-0016 決定 9 — stdout はコマンドの出力だけ)。文字列
-// 連結 `\`Note: ${…}\`` を各所に散らさず、接頭辞の描画をここ 1 か所に寄せる。
+// Every destination is stderr (ADR-0016 decision 9 — stdout carries
+// only the command's output). Rather than scattering string
+// concatenation `\`Note: ${…}\`` around, prefix rendering gathers in
+// this one place.
 //
-// 色の規律(裁定 A): 色を付けるのは**接頭辞だけ**。本文(値・識別子・URL を
-// 含みうる)には一切付けない — 付けるものを定数の接頭辞に限ることで、識別子や
-// 値に色が混ざる形を構造的に作らない。記号(✓ / ⚠ 等)は使わない(Windows の
-// 端末・非 UTF-8 ロケールでの化けを避け、接頭辞の語がその役を担う)。色の
-// 可否は `CliIo.colorEnabled()` — 本番は {@link shouldUseColor}(stderr が端末か
-// + NO_COLOR / FORCE_COLOR / TERM=dumb)、テストは既定で無色。判定材料は
-// サービス経由で取り、ここでは `process.*` を読まない(ADR-0016 決定 5)。
+// Color discipline (ruling A): only the **prefix** is colored. The
+// body (which may contain values, identifiers, URLs) is never
+// colored — limiting the colored thing to a constant prefix
+// structurally prevents color from mixing into identifiers or
+// values. No symbols (✓ / ⚠ etc.) are used (avoids mojibake on
+// Windows terminals and non-UTF-8 locales; the prefix word carries
+// that role). Whether color is allowed is `CliIo.colorEnabled()` —
+// production is {@link shouldUseColor} (whether stderr is a
+// terminal + NO_COLOR / FORCE_COLOR / TERM=dumb); tests default to
+// no color. The decision material is taken via the service;
+// `process.*` is not read here (ADR-0016 decision 5).
 
 import { Context, Effect, Option } from "effect";
 
 import { CliIo } from "./io.ts";
 
 /**
- * 1 回のコマンド実行の中で出した Note / Warning の文面(裁定 C の規則
- * 「同一文面の通知は 1 コマンド実行あたり 1 回」)。同期 → 再同期のように同じ
- * 経路を 2 度通る実行で、同じ 1 行(例: ヘッド申告の送信失敗)が 2 度並ぶのを
- * 防ぐ。差し替え対象の**状態**なのでサービスにし、runEffectCli が実行ごとに
- * 新しい台帳を供給する(台帳が無い文脈 — 単体テストなど — では抑制しない)。
+ * The wordings of Notes / Warnings emitted within one command
+ * execution (ruling C's rule "an identical notice appears at most
+ * once per command run"). Prevents the same one line (e.g. a head
+ * declaration's send failure) from appearing twice on executions
+ * that traverse the same path twice, like sync → re-sync. This is
+ * replaceable **state**, so it is a service, and runEffectCli
+ * supplies a fresh ledger per execution (contexts without a ledger
+ * — unit tests etc. — are not suppressed).
  */
 export class NoticeLedger extends Context.Service<NoticeLedger, Set<string>>()(
   "cli/NoticeLedger",
@@ -39,8 +54,9 @@ export type NoticeKind = "note" | "warning" | "error";
 
 const RESET = "\u001B[0m";
 const PREFIXES: Readonly<Record<NoticeKind, { readonly label: string; readonly color: string }>> = {
-  // 情報 = シアン(端末 16 色で「情報」の慣用。朱 accent の模倣はしない —
-  // 端末の赤は danger の意味を持つ)
+  // info = cyan (the "information" convention of the terminal 16
+  // colors. No imitation of the vermilion accent — a terminal's red
+  // carries the meaning of danger)
   note: { label: "Note:", color: "\u001B[36m" },
   warning: { label: "Warning:", color: "\u001B[33m" },
   error: { label: "maruhi:", color: "\u001B[31m" },
@@ -49,9 +65,11 @@ const PREFIXES: Readonly<Record<NoticeKind, { readonly label: string; readonly c
 /**
  * Decides whether stderr decorations (ANSI colors) may be used.
  *
- * 優先順: `FORCE_COLOR`(非空。`0` は無効化)> `NO_COLOR`(非空なら無効 —
- * no-color.org の規約: 値は問わない)> `TERM=dumb` > stderr が端末か。stdout は
- * 判定に使わない(色を付けるのは stderr の通知だけで、stdout はデータ)。
+ * Precedence: `FORCE_COLOR` (non-empty; `0` disables) > `NO_COLOR`
+ * (non-empty disables — no-color.org's convention: the value does
+ * not matter) > `TERM=dumb` > whether stderr is a terminal. stdout
+ * is not used in the decision (only stderr's notices are colored;
+ * stdout is data).
  */
 export function shouldUseColor(input: {
   readonly stderrIsTerminal: boolean;
@@ -74,8 +92,10 @@ export function shouldUseColor(input: {
 /**
  * Renders one notice line: the prefix (optionally colored) and the text.
  *
- * 本文は呼び出し側が `displayText` で中和済みの文字列を渡す(サーバー由来の
- * 文字列を素通しにしない規律はそのまま — ここでは装飾だけを足す)。
+ * The caller passes a body string already neutralized via
+ * `displayText` (the discipline of not passing server-derived
+ * strings through raw is unchanged — only decoration is added
+ * here).
  */
 export function formatNotice(kind: NoticeKind, text: string, color: boolean): string {
   const prefix = PREFIXES[kind];

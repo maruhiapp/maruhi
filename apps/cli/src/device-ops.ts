@@ -1,16 +1,25 @@
-// 端末 op(`add_device` / `revoke_device` — CRYPTO_SPEC §6.2、2026-09-19 DK)の署名・追記
-// (親ヘッド CAS)と、端末追加のバックフィル(§7)・端末失効の sweep(§7)の共有核(K4)。
-// 使い手: device.ts(`device approve` / `revoke`)、device-sync.ts(初回同期の登録)、
-// key-recover.ts(復元後の新端末鍵の登録・予備鍵の rotate)。
+// Signing and appending (parent-head CAS) of device ops (`add_device` /
+// `revoke_device` — CRYPTO_SPEC §6.2, 2026-09-19 DK), plus the shared
+// core of the device-addition backfill (§7) and the device-revocation
+// sweep (§7) (K4). Users: device.ts (`device approve` / `revoke`),
+// device-sync.ts (registration on first sync), key-recover.ts
+// (registering the new device key after recovery, rotating the reserve
+// key).
 //
-// 通信前検査は合意規則(§6.2)の写しで、サーバーの 422 を待たない: actor は署名鍵と
-// 一致する現端末(device-key.ts)、鍵の一意性は現メンバーの全端末、`listed` の環境の
-// 存在、単調性(cap 同士 — 原則 D2)、失効は対象の現端末・最後の端末の保護・他人なら
-// role 規則(`remove_member` と同じ 2 段)と原則 1 の包含(**人**の scope)。
+// The pre-flight checks are a copy of the consensus rules (§6.2) and do
+// not wait for the server's 422: actor = the current device matching
+// the signing key (device-key.ts), key uniqueness across all devices of
+// current members, existence of the `listed` environments, monotonicity
+// (cap vs cap — principle D2), revocation = the target being a current
+// device, last-device protection, and for others the role rule (the
+// same two stages as `remove_member`) plus the principle-1 inclusion
+// (the **person's** scope).
 //
-// バックフィル(§7「端末追加のバックフィル」): 新端末の**実効 scope**(人 ∩ 端末)の各
-// 環境について全エポックの DEK を、自分宛ラップから開いて新端末の enc 公開鍵へ包み
-// 直す(backfill.ts の共有核 — 409 は登録済み扱い)。
+// Backfill (§7 "device-addition backfill"): for each environment in the
+// new device's **effective scope** (person ∩ device), unwrap every
+// epoch's DEK from the my-addressed wraps and re-wrap it to the new
+// device's enc public key (the shared core in backfill.ts — 409 counts
+// as already registered).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
 import type {
@@ -67,7 +76,7 @@ export interface DeviceOpSigner {
   readonly signingKeyPair: SigningKeyPair;
 }
 
-/** CAS 追記の共有足場(member.ts の appendWithCas と同型 — 端末 op 用)。 */
+/** Shared scaffolding for a CAS append (same shape as member.ts's appendWithCas — for device ops). */
 function appendWithCas(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -83,7 +92,7 @@ function appendWithCas(input: {
     maxAttempts: MAX_ATTEMPTS,
     attempt: (view) =>
       Effect.gen(function* () {
-        // null = 既に目的の状態(並行実行が先に積んだ)— 追記せず継続
+        // null = already in the desired state (a concurrent run appended first) — continue without appending
         const entry = yield* input.signEntry(view);
         if (entry === null) {
           return { verified: view, appended: false };
@@ -97,7 +106,7 @@ function appendWithCas(input: {
   });
 }
 
-/** 鍵の一意性(§6.2 — 現メンバーの全端末の同種公開鍵と重複しない)の通信前判定。 */
+/** Pre-flight judgment of key uniqueness (§6.2 — no duplicate same-kind public key across all devices of current members). */
 function duplicateKeyRejection(
   verified: VerifiedProject,
   candidate: DeviceCandidate,
@@ -112,7 +121,7 @@ function duplicateKeyRejection(
   return null;
 }
 
-/** `add_device` の通信前検査 → 署名(既に登録済みなら null)。 */
+/** `add_device` pre-flight checks → sign (null if already registered). */
 function signAddDevice(input: {
   readonly verified: VerifiedProject;
   readonly signer: DeviceOpSigner;
@@ -198,7 +207,7 @@ export function appendAddDevice(input: {
   });
 }
 
-/** 他人の端末の失効の role 規則(`remove_member` と同じ 2 段 — K2 申し送り 4 の厳しい読み)。 */
+/** The role rule for revoking another person's device (the same two stages as `remove_member` — the strict reading of K2 handoff 4). */
 function revokeRoleRejection(
   actorRole: ChainMember["role"],
   actorScope: MemberScope,
@@ -216,7 +225,7 @@ function revokeRoleRejection(
   return null;
 }
 
-/** 通信前検査(他人なら role 規則、誰でも last-device-protected)。ok なら null。 */
+/** Pre-flight checks (role rule for others; last-device-protected for anyone). null when ok. */
 function revokeRejection(input: {
   readonly actor: ChainMember;
   readonly actorDevice: ChainDevice;
@@ -237,7 +246,7 @@ function revokeRejection(input: {
   return null;
 }
 
-/** `revoke_device` の通信前検査 → 署名(失効対象が残っていなければ null)。 */
+/** `revoke_device` pre-flight checks → sign (null if no revocation target remains). */
 function signRevokeDevice(input: {
   readonly verified: VerifiedProject;
   readonly signer: DeviceOpSigner;
@@ -337,7 +346,7 @@ export function appendRevokeDevice(input: {
   });
 }
 
-/** 端末追加のバックフィルの結果(環境ごとに集計。1 環境の失敗で残りを止めない)。 */
+/** Result of the device-addition backfill (aggregated per environment; one environment's failure does not stop the rest). */
 export interface DeviceBackfillOutcome {
   readonly environments: number;
   readonly registered: number;
@@ -346,9 +355,12 @@ export interface DeviceBackfillOutcome {
 }
 
 /**
- * 端末が受け取るべき環境: 検証済みで削除されていない環境のうち、その端末の実効 scope に
- * 含まれるもの(コード点順)。バックフィルの対象と、新端末の `device add` が鍵の到達を
- * 確かめる対象(DK K12-1)が同じ関数で決まる — 配ったはずの集合と確かめる集合を構造で一致させる。
+ * The environments a device should receive: among the verified,
+ * non-deleted environments, those included in the device's effective
+ * scope (code-point order). The backfill targets and the set `device
+ * add` of the new device checks key reachability against (DK K12-1) are
+ * decided by the same function — the structure keeps "the set we should
+ * have delivered" and "the set we check" identical.
  */
 export function deviceEnvironmentsOf(input: {
   readonly client: MaruhiClient;
@@ -370,7 +382,7 @@ export function deviceEnvironmentsOf(input: {
 
 /**
  * Backfills every epoch of every environment in the target device's effective
- * scope to that device (CRYPTO_SPEC §7「端末追加のバックフィル」). `recipient`
+ * scope to that device (CRYPTO_SPEC §7 "device-addition backfill"). `recipient`
  * is the caller's own key that opens the DEKs (this device, or the reserve key
  * during recovery).
  */
@@ -406,10 +418,10 @@ export function backfillToDevice(input: {
   });
 }
 
-/** 端末失効の sweep の結果(member 系と同じ形 — 報告を共有する)。 */
+/** Result of the device-revocation sweep (same shape as the member one — shares the report). */
 export type DeviceSweepOutcome = SweepOutcome & {
   readonly skippedDeleted: readonly string[];
-  /** 署名端末の実効 scope 外(または role 不足)で rotate できない義務環境(K4-8 — 持ち越し)。 */
+  /** Obligation environments that cannot be rotated because they are outside the signing device's effective scope (or role is insufficient) (K4-8 — carried over). */
   readonly outOfScope: readonly string[];
 };
 
@@ -417,9 +429,12 @@ export type DeviceSweepOutcome = SweepOutcome & {
 export const DEVICE_REVOKED_ROTATION_REASON = "device-revoked";
 
 /**
- * §7 の端末失効の義務環境の走査(設計録 K4-8): 対象者の `device-revoked` 義務のうち
- * 署名端末の実効 scope 内(かつ実効 role が member 以上)の環境を rotate し、外は
- * `outOfScope` として「同じ人の別端末か次の同期に持ち越す」。
+ * Scanning the obligation environments of §7's device revocation
+ * (design record K4-8): among the target's `device-revoked`
+ * obligations, rotate those inside the signing device's effective
+ * scope (and where the effective role is member or above); the rest go
+ * to `outOfScope` as "carried over to another device of the same person
+ * or the next sync".
  */
 export function sweepAfterDeviceRevoke<R>(input: {
   readonly client: MaruhiClient;

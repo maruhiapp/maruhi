@@ -1,16 +1,21 @@
-// 台帳(CRYPTO_SPEC §8.3 / §8.4 — KL3 / DK)の狭い暗号操作。
+// The narrow crypto operations of the ledger (CRYPTO_SPEC §8.3 /
+// §8.4 — KL3 / DK).
 //
-// ここに集めるのは「鍵で 1 回演算する」3 操作だけ: 保護者としての分片の開封
-// (自分の**端末鍵**で)、予備鍵のブロブ B のラップ(パスキー封印・保護者グループ —
-// 2026-09-19 DK 以後、B は予備鍵のレコード)、要求者の一時鍵への封印(こちらは
-// 鍵を要さないが、承認の組み立てを 1 か所に置く)。旧端末の承認バンドル
-// (`kind = "device"`)は DK K4 で削除した。KL4(委任モデル — agent が
-// 署名 / HPKE open を代行し鍵素材をソケットに出さない。integration-options.md
-// 補足 19-3 (a))でサービス化する下地として、呼び出し側は `MasterKeys` を直に
-// 触らずこの関数群を経由する。
+// Only the 3 "compute once with a key" operations gather here:
+// opening my segment as a guardian (with my **device key**), wrapping
+// the reserve key's blob B (passkey sealing, guardian group — since
+// 2026-09-19 DK, B is the reserve key's record), and sealing to the
+// requester's ephemeral key (this one needs no key, but the approval
+// assembly stays in one place). The old-device approval bundle
+// (`kind = "device"`) was removed in DK K4. As the groundwork for
+// service-ization under KL4 (the delegation model — the agent
+// performs the signing / HPKE open and key material never reaches
+// the socket; integration-options.md supplement 19-3 (a)), callers
+// never touch `MasterKeys` directly and go through these functions.
 //
-// 平文の分片・KEK・B は各関数のローカルにのみ存在し、返り値以外へ出ない
-// (ログ・エラーへ載せない — CLAUDE.md)。
+// Plaintext segments, KEK, and B exist only in each function's
+// locals and leave nowhere but the return value (never onto logs or
+// errors — CLAUDE.md).
 
 import { ulid } from "@maruhi/core";
 import {
@@ -30,14 +35,14 @@ import { cliError, type CliError } from "./errors.ts";
 import { serializeStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
 import type { MasterKeys } from "./session.ts";
 
-/** 保護者として自分宛の分片を開く(承認の直前に呼び、結果は即座に再封印する)。 */
+/** Opens the segment addressed to me as a guardian (called right before approving; the result is resealed immediately). */
 export function openOwnGuardianShare(input: {
   readonly masterKeys: MasterKeys;
   readonly wrapped: WrappedDek;
   readonly context: GuardianWrapContext;
 }): Effect.Effect<Uint8Array, CliError> {
   return Effect.gen(function* () {
-    // info は openGuardianShare が仕様のフィールド順で組む(移植は復号失敗 — §8.3)
+    // info is assembled by openGuardianShare in the spec's field order (a transplant fails decryption — §8.3)
     const opened = yield* Effect.tryPromise({
       try: () =>
         openGuardianShare({
@@ -59,10 +64,12 @@ export function openOwnGuardianShare(input: {
 }
 
 /**
- * 予備鍵のブロブ B を KEK でラップする(§8.1 の master-wrap 形)。passkey 登録
- * (kind = passkey-prf — §8.2)と保護者グループ(kind = guardian — §8.3)の共通本体。
- * `record` は予備鍵のレコード(reserve.ts の `ReserveKeys.record`)であり、端末鍵の
- * レコードを渡す経路は無い(型は同じだが、呼び出し側は予備鍵しか持ち込まない)。
+ * Wraps the reserve key's blob B with the KEK (§8.1's master-wrap
+ * form). The shared body of passkey registration (kind = passkey-prf
+ * — §8.2) and guardian groups (kind = guardian — §8.3). `record` is
+ * the reserve key's record (reserve.ts's `ReserveKeys.record`);
+ * there is no path that passes a device key's record (the types are
+ * the same, but callers only ever bring a reserve key).
  */
 export function wrapReserveBlob(input: {
   readonly record: StoredMasterKey;
@@ -70,7 +77,7 @@ export function wrapReserveBlob(input: {
   readonly context: MasterWrapContext;
 }): Effect.Effect<{ readonly nonce: Uint8Array; readonly ciphertext: Uint8Array }, CliError> {
   return Effect.gen(function* () {
-    // JSON.stringify(record) は使わない(秘密側が伏字になる — keychain.ts の注記)
+    // JSON.stringify(record) is not used (the private side would be redacted — the note in keychain.ts)
     const blob = new TextEncoder().encode(serializeStoredMasterKey(input.record));
     const wrapped = yield* Effect.tryPromise({
       try: () => wrapMasterBlob({ kek: input.kek, masterSecretBlob: blob, context: input.context }),
@@ -83,7 +90,7 @@ export function wrapReserveBlob(input: {
   });
 }
 
-/** 要求者の一時公開鍵(コードから復号した E.pub)へ 32 バイト値を封印する。 */
+/** Seals a 32-byte value to the requester's ephemeral public key (the E.pub decoded from the code). */
 export function sealForRequester(input: {
   readonly ephemeralPublicKey: EncryptionKey;
   readonly value: Uint8Array;
@@ -102,14 +109,15 @@ export function sealForRequester(input: {
 }
 
 /**
- * 台帳のクライアント採番 id(ULID)。wrap_id / group_id は AAD / info が束縛する
- * ため、暗号化の前にクライアントが決める(AUTH_SPEC §13-9)。
+ * The ledger's client-issued id (ULID). wrap_id / group_id are
+ * bound by AAD / info, so the client decides them before encryption
+ * (AUTH_SPEC §13-9).
  */
 export function newLedgerId(): string {
   return ulid();
 }
 
-/** hex(32 バイト)→ 鍵素材。サーバー応答の形式不正は実装バグ / 改竄として拒否する。 */
+/** hex (32 bytes) → key material. A malformed server response is refused as an implementation bug / tampering. */
 export function decodeWrapped(input: {
   readonly encHex: string;
   readonly ciphertextHex: string;

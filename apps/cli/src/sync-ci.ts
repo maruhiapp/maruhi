@@ -1,20 +1,25 @@
-// `maruhi ci sync <target>`: CI ジョブからの同期(integration-options.md §3
-// 補足 7 P3「デプロイ時再適用」/ 補足 16 G1「CI は http」)。
+// `maruhi ci sync <target>`: syncing from a CI job
+// (integration-options.md §3 supplement 7 P3 "re-apply at deploy
+// time" / supplement 16 G1 "CI is http").
 //
-// 資格の経路は `ci run` と同じワークロードリース(ci-lease.ts — OIDC → DEK →
-// 復号)で、maruhi トークン・キーチェーン・セッション・config ファイルに依存
-// しない。読むのはリポジトリにコミットされた同期設定(`maruhi.sync.json` —
-// アンカーファイルと同じ非機密の設定)だけ。
+// The credential path is the same workload lease as `ci run`
+// (ci-lease.ts — OIDC → DEK → decrypt), independent of the maruhi
+// token, keychain, session, and config files. The only thing read
+// is the sync config committed to the repository
+// (`maruhi.sync.json` — a non-secret config like the anchor file).
 //
-// **レシートは書かない**(型で示す — この経路は sync-receipt.ts を import せず、
-// 署名鍵〔master 鍵〕を受け取らない): CI は CRYPTO_SPEC §4.1 の書き込み署名に
-// 使う鍵を持たない。したがって CI の同期は「選択した変数の全件再適用」(冪等な
-// upsert)であり、削除の情報源(レシート)が無いので**何も削除しない**。
-// 削除は手元の `maruhi sync apply`(レシートあり)で行う — docs に明記。
+// **No receipt is written** (shown in types — this path does not
+// import sync-receipt.ts and receives no signing key [master key]):
+// CI lacks the key used for CRYPTO_SPEC §4.1's write signature. So
+// the CI sync is a "re-apply every selected variable" (an
+// idempotent upsert), and without the deletion source (a receipt)
+// **it deletes nothing**. Deletion is done by `maruhi sync apply`
+// (with a receipt) at hand — stated in docs.
 //
-// リースは環境単位なので、http ドライバのトークンが同期元と別の環境にあれば
-// 2 環境をリースする(1 本の OIDC トークン・1 つの一時鍵で — ci-lease.ts)。
-// grant のリースポリシーはその両方の環境を許していなければならない。
+// A lease is per environment, so when the http driver's token lives
+// in a different environment than the source, 2 environments are
+// leased (with one OIDC token and one ephemeral key — ci-lease.ts).
+// The grant's lease policy must allow both environments.
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -40,15 +45,15 @@ import {
   writesOf,
 } from "./sync-plan.ts";
 
-/** `maruhi ci sync` の入力(フラグ + リポジトリ設定のターゲット)。 */
+/** `maruhi ci sync`'s input (flags + the repository config's target). */
 export interface CiSyncInput extends CiLeaseInput {
   readonly target: SyncTarget;
-  /** production ターゲットへの apply の明示(手元の apply と同じ語)。 */
+  /** Explicit confirmation of apply to a production target (the same word as the local apply). */
   readonly yes: boolean;
   readonly httpRetry?: HttpRetryPolicy;
 }
 
-/** リースした環境の材料を引く(無いのは実装の不整合)。 */
+/** Pulls a leased environment's material (its absence is an implementation inconsistency). */
 function materialOf(
   materials: ReadonlyMap<EnvironmentId, VerifiedLeaseMaterial>,
   environmentId: string,
@@ -87,7 +92,7 @@ export function ciSyncOp(
       target,
       source: sourceVariablesOf(source.variables),
       declared: source.declared,
-      // レシート無し: 選択した全変数が add(全件再適用)、削除は生まれない
+      // No receipt: every selected variable is add (full re-apply); no deletion arises
       receipt: null,
     });
     yield* reviewPlan(target, plan, { kind: "none-in-ci" });

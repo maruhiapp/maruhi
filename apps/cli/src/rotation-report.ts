@@ -1,6 +1,7 @@
-// ローテーション結果の報告と終了コードの導出(env rotate / server revoke /
-// member remove / change-role の sweep が共用)。利用側は effect-cli.ts。
-// 文言は ADR-0017(ユーザーに見える文言は英語)に従い英語。
+// Reporting of rotation results and exit-code derivation (shared
+// by the sweeps of env rotate / server revoke / member remove /
+// change-role). The consumer is effect-cli.ts. Text is English per
+// ADR-0017 (all user-facing wording is English).
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -12,9 +13,11 @@ import { CliIo } from "./io.ts";
 import { logWarning } from "./notice.ts";
 
 /**
- * 部分完了 / 完了未検証の報告。エポックは進んでおり、旧エポックの DEK 保持者は
- * 未再暗号化の変数の現在値を読めるままである(§7)。「完了」の顔で終わらせず、
- * 成功終了にもしない。
+ * Reporting of partial completion / completion-unverified. The
+ * epoch has advanced, and holders of the old epoch's DEK can still
+ * read the current values of the not-yet-re-encrypted variables
+ * (§7). Do not let it end with a "complete" face, nor a success
+ * exit.
  */
 function reportPartialRotation(
   environmentId: EnvironmentId,
@@ -24,10 +27,14 @@ function reportPartialRotation(
 ): Effect.Effect<number, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    // 中断した場合の残数は上限であって実測ではない(再走査へ到達していないため、
-    // 競合分が既に他メンバーによって新エポックで書かれている可能性が残る)。
-    // 断定せず「未確認を含む」と示す — 巡を使い切っただけの残数は再走査を
-    // 通った実測なので、そちらに但し書きを付けて疑わしく見せない
+    // The remaining count of an interrupted run is an upper bound,
+    // not a measurement (the re-scan was never reached, so the
+    // contested ones may already have been written at the new epoch
+    // by other members). Do not assert — show "including
+    // unverified" instead. The remaining count of a run that only
+    // exhausted its rounds IS a measured value that passed the
+    // re-scan, so put a qualifier there to keep it from looking
+    // suspect
     const scale =
       summary.remaining > 0
         ? `${countNoun(summary.remaining, "variable")} incomplete${summary.remainingExact ? "" : " (may include unconfirmed ones)"}`
@@ -35,9 +42,11 @@ function reportPartialRotation(
     yield* io.log(
       `Partial completion: ${scope} (re-encrypted ${countNoun(summary.reencrypted, "variable")}${skipped}, ${scale})`,
     );
-    // 失敗の原因がある場合はそれを明示する(エポックだけが進んだ事実を、生の
-    // エラーだけ出して伝え損ねない)。「中断」と言えるのは再走査へ到達できず
-    // 途中で降りた場合だけで、巡を使い切った場合は最後まで走ったうえでの未完了である
+    // When there is a cause of failure, state it (so the bare fact
+    // "only the epoch advanced" is not lost behind a raw error).
+    // Only a run that descended before reaching the re-scan can be
+    // called "interrupted"; a run that exhausted its rounds is
+    // incomplete after having run to the end
     const stopped = summary.remainingExact
       ? "re-encryption did not complete"
       : "re-encryption was interrupted";
@@ -53,14 +62,16 @@ function reportPartialRotation(
 }
 
 /**
- * ローテーション結果の報告と終了コード。完了サマリは再暗号化の実績を報告し、
- * 未完了分(部分完了)は警告として明示する — 「エポックだけ進んで再暗号化が
- * 残っている」状態を成功の顔で終わらせない。
+ * Reporting of rotation results and the exit code. A completion
+ * summary reports the re-encryption record; an incomplete portion
+ * (partial completion) is shown as a warning — never end the "the
+ * epoch advanced but re-encryption remains" state with a success
+ * face.
  */
 export function reportRotation(
   environmentId: EnvironmentId,
   summary: RotationSummary,
-  /** 新しいエポックを要求した実行か(--reason 指定 or --new-epoch)。 */
+  /** Whether the run requested a new epoch (--reason given or --new-epoch). */
   rotationRequested: boolean,
 ): Effect.Effect<number, CliError, CliIo> {
   return Effect.gen(function* () {
@@ -71,8 +82,10 @@ export function reportRotation(
         ? ""
         : `, ${countNoun(summary.alreadyCurrent, "variable")} already re-encrypted by concurrent updates`;
     if (summary.mode === "up-to-date") {
-      // 確認のみ(未完了なし・新エポック未要求)。部分完了の案内が勧める
-      // 再実行の着地点でもあるので、何もしなかったことを明示する
+      // Check-only (nothing incomplete, no new epoch requested).
+      // It is also the landing point of the re-run that the
+      // partial-completion guidance advises, so state explicitly
+      // that nothing was done
       yield* io.log(
         `Check complete: every active variable in environment ${environmentId} is encrypted at epoch ${summary.epoch} (no incomplete re-encryption). To create a new epoch, pass --reason`,
       );
@@ -86,19 +99,23 @@ export function reportRotation(
       return yield* reportPartialRotation(environmentId, summary, scope, skipped);
     }
     if (summary.mode === "resumed") {
-      // 再開は「要求されたローテーション」ではない: 新しいエポックは作られて
-      // いないので、完了報告がローテーション成功に見えてはならない(退職者の
-      // 削除に伴う実行が、新エポックなしで成功扱いになる形を塞ぐ)
+      // A resume is not "the requested rotation": no new epoch was
+      // created, so the completion report must not look like a
+      // rotation success (closing the shape where a run following a
+      // departed member's removal gets counted as a success with
+      // no new epoch)
       yield* io.log(
         `Done: ${scope} (re-encrypted ${countNoun(summary.reencrypted, "variable")}${skipped}). No new epoch was created (epoch remains ${summary.epoch})`,
       );
       if (!rotationRequested) {
-        // 理由なしの実行 = 「未完了があれば再開する」ことだけを要求している
+        // A reasonless run = only requesting "resume the incomplete if any"
         return 0;
       }
-      // ローテーションを要求した実行(--reason / --new-epoch)が再開へ切り替わった
-      // ので、**終了コードでも**成功と言わない: `maruhi env rotate prod --reason ...
-      // || exit 1` のようなスクリプトが、新エポックなしで成功と受け取る形を塞ぐ
+      // A run that requested a rotation (--reason / --new-epoch)
+      // switched to a resume, so **the exit code also** does not
+      // say success: closing the shape where a script like `maruhi
+      // env rotate prod --reason ... || exit 1` would take it as a
+      // success with no new epoch
       yield* logWarning(
         `the requested rotation was not performed (the incomplete re-encryption was resumed first). If you still need a new epoch after this run, run the command again or pass --new-epoch`,
       );

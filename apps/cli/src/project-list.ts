@@ -1,11 +1,14 @@
-// `maruhi project list`(AUTH_SPEC §11-5): 自分がチェーン導出メンバーで
-// あるプロジェクトの一覧。同 API の第一消費者としてサーバー実装を検証する。
+// `maruhi project list` (AUTH_SPEC §11-5): the list of projects
+// where I am a chain-derived member. Verifies the server
+// implementation as the API's first consumer.
 //
-// TCB 規律: 応答(projectId / role)は**サーバー申告**である(§11-5 — role は
-// 読取時の DO 確認が返す値だが、クライアントから見れば検証を経ない申告)。
-// 検証済み状態が要る場面は `maruhi project verify` の領分で、この表示は発見
-// (どのプロジェクト ID を持っているか)のためのもの。トークンのスコープ外の
-// プロジェクトは応答に現れない(§11-5 のスコープ交差)。
+// TCB discipline: the response (projectId / role) is a **server
+// declaration** (§11-5 — role is the value DO's read-time check
+// returns, but from the client's view it is a declaration that went
+// through no verification). Where verified state is needed is
+// `maruhi project verify`'s remit; this display is for discovery
+// (which project IDs I hold). Projects outside the token's scope do
+// not appear in the response (§11-5's scope intersection).
 
 import { Effect } from "effect";
 
@@ -17,13 +20,13 @@ import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 
 /**
- * ページ追跡の有界化(サーバー固定 100 件 / ページ — §11-5)。正直なサーバーでは
- * 到達しない量(10,000 プロジェクト)で、暴走・悪意サーバーの無限 nextAfter
- * 連鎖を有界にする。
+ * Bounds the page chasing (server-fixed at 100 / page — §11-5). At
+ * a volume an honest server never reaches (10,000 projects), it
+ * bounds a runaway or malicious server's infinite nextAfter chain.
  */
 const MAX_LIST_PAGES = 100;
 
-/** 一覧の 1 行(api-schema の ProjectMembershipSchema の受信形)。 */
+/** One row of the list (the received shape of api-schema's ProjectMembershipSchema). */
 export interface MembershipRow {
   readonly projectId: string;
   readonly role: "owner" | "admin" | "member" | "reader";
@@ -32,8 +35,8 @@ export interface MembershipRow {
 /**
  * Fetches every page of the caller's project memberships (server-reported —
  * discovery only; verified state comes from syncing each chain). `maruhi
- * project list` と、全プロジェクトを走査する端末系コマンド(device.ts / key-recover.ts)
- * が共有する。
+ * project list` and the device-side commands that scan every
+ * project (device.ts / key-recover.ts) share this.
  */
 export function fetchProjectMemberships(
   client: MaruhiClient,
@@ -62,7 +65,7 @@ export function fetchProjectMemberships(
   });
 }
 
-/** 全ページを取得して 1 行 1 プロジェクトで表示する(stdout はデータのみ)。 */
+/** Fetches every page and displays one project per line (stdout carries data only). */
 export function projectListOp(input: {
   readonly client: MaruhiClient;
 }): Effect.Effect<void, CliError, CliIo> {

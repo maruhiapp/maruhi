@@ -1,15 +1,20 @@
-// 環境マニフェスト(CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5)の発行・検証の CLI 共有実装。
+// The CLI's shared implementation of issuing and verifying the
+// environment manifest (CRYPTO_SPEC §4.3 / AUTH_SPEC §12-5).
 //
-// 発行(env create / rotate / push の変数作成): meta-statement.ts と同じ規律で
-// 「署名した context」からワイヤを機械的に導出する(独立リテラルの再列挙は
-// 1 フィールドの食い違いが静かな検証失敗になるため作らない)。
-// 検証(pull 両モード・リース応答): 検証済みステートメント集合(tombstone
-// 込み)からのダイジェスト再計算・エポック整合・署名 / 認可時点は
-// @maruhi/crypto の verifyDistributedEnvManifest(サーバーと共有の唯一の実装 —
-// §4.3)へ委譲する。
+// Issuance (env create / rotate / push's variable creation): the
+// same discipline as meta-statement.ts — the wire is derived
+// mechanically from "the signed context" (an independent literal is
+// never re-enumerated, because a one-field discrepancy becomes a
+// silent verification failure). Verification (both pull modes, the
+// lease response): digest recomputation from the verified statement
+// set (tombstones included), epoch consistency, and signature /
+// authorization time are delegated to @maruhi/crypto's
+// verifyDistributedEnvManifest (the single implementation shared
+// with the server — §4.3).
 //
-// **マニフェスト欠落 = 一律拒否**(§6.3 — 「未初期化なら警告」の分岐は攻撃者が
-// 選べる緩和経路になるため置かない)。
+// **Missing manifest = uniform refusal** (§6.3 — the "warn if
+// uninitialized" branch is a relaxation path an attacker can
+// choose, so it does not exist).
 
 import type { DistributedEnvironmentManifest, EnvironmentManifest } from "@maruhi/api-schema";
 import type { EnvManifestContext, VariablesDigestEntry } from "@maruhi/crypto";
@@ -28,18 +33,20 @@ import type { ManifestFloor } from "./floor.ts";
 import type { VerifiedProject } from "./sync.ts";
 
 /**
- * 検証済みマニフェストの証拠材料(§14.2-5 の自己完結性 — 床のマニフェスト
- * 拡張・次 manifestVersion の prev・equivocation 証拠の比較対象)。
+ * The evidence material of a verified manifest (§14.2-5's
+ * self-containedness — the comparison target of the floor's
+ * manifest extension, the next manifestVersion's prev, and
+ * equivocation evidence).
  */
 export interface VerifiedManifest {
   readonly manifestVersion: number;
-  /** 発行時点の現エポック(§4.3 の鮮度アンカー — 床規則 (c) のマニフェスト適用の材料)。 */
+  /** The current epoch at issuance time (§4.3's freshness anchor — the material of floor rule (c)'s manifest application). */
   readonly epoch: number;
   readonly variablesDigestHex: string;
   readonly envMetaVersion: number;
   readonly envMetaSigHashHex: string;
   readonly prevManifestSigHashHex: string;
-  /** 自計算の signed bytes ハッシュ(床規則 (b) の比較対象・次 prev の根拠)。 */
+  /** The self-computed signed-bytes hash (floor rule (b)'s comparison target, the basis of the next prev). */
   readonly signedBytesHashHex: string;
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
@@ -48,39 +55,41 @@ export interface VerifiedManifest {
   readonly issuerKeyFingerprintHex: string;
 }
 
-/** variables_digest の入力(検証済みステートメントの最新形 — tombstone 込み §4.3)。 */
+/** The input of variables_digest (the latest form of verified statements — tombstones included, §4.3). */
 export type ManifestDigestEntry = VariablesDigestEntry;
 
-/** 発行の入力: 直前マニフェスト(なし = env create の v1)と発行後のメタ状態。 */
+/** Issuance input: the previous manifest (none = env create's v1) and the post-issuance meta state. */
 export interface SignManifestInput {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
-  /** 発行時点の現エポック(rotate 複合 = new_epoch、それ以外 = 検証済みビューの現エポック)。 */
+  /** The current epoch at issuance time (rotate compound = new_epoch; otherwise = the verified view's current epoch). */
   readonly epoch: number;
-  /** 検証済みの直前マニフェスト(null = 保存済みマニフェストなし → manifestVersion 1)。 */
+  /** The verified previous manifest (null = no stored manifest → manifestVersion 1). */
   readonly previous: {
     readonly manifestVersion: number;
     readonly signedBytesHashHex: string;
   } | null;
-  /** 発行後のメタ状態の全変数エントリ(tombstone 込み — §4.3 (3) の再計算対象)。 */
+  /** Every variable entry of the post-issuance meta state (tombstones included — §4.3 (3)'s recomputation target). */
   readonly entries: readonly ManifestDigestEntry[];
-  /** 発行後の環境メタステートメントの最新形。 */
+  /** The latest form of the post-issuance environment meta statement. */
   readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
   readonly issuerUserId: string;
   readonly signingKey: CryptoKey;
   /**
-   * 宣言ヘッド。複合(env create / rotate)= 追記前の現ヘッド(§12-4)、
-   * メタ操作 = 最後に検証したチェーンヘッド。CAS リトライで検証ビューが進めば
-   * 呼び出し側が作り直す(試行ごとに署名する — meta-statement.ts と同じ規約)。
+   * The declared head. Compound (env create / rotate) = the current
+   * head before the append (§12-4); meta operation = the last
+   * verified chain head. If the verified view advances on a CAS
+   * retry, the caller rebuilds it (each attempt is signed — same
+   * convention as meta-statement.ts).
    */
   readonly chainHead: { readonly seq: number; readonly hashHex: string };
 }
 
 export interface SignedManifest {
   readonly manifest: EnvironmentManifest;
-  /** 受理されたらローカル床のマニフェスト記録になる自計算ハッシュ(§6.3)。 */
+  /** The self-computed hash that, once accepted, becomes the local floor's manifest record (§6.3). */
   readonly manifestSigHashHex: string;
-  /** 署名済みの manifestVersion / epoch(床記録・表示用)。 */
+  /** The signed manifestVersion / epoch (for floor records and display). */
   readonly manifestVersion: number;
   readonly epoch: number;
 }
@@ -131,8 +140,9 @@ export function signNextManifest(
       return yield* Effect.fail(cliError("Failed to compute the manifest signed-bytes hash"));
     }
     return {
-      // ワイヤはすべて署名済み context から導出する(このモジュールの存在理由。
-      // suite は Literal — context には SUITE_ID を入れて構築している)
+      // The wire is entirely derived from the signed context (this
+      // module's reason to exist. suite is a Literal — the context
+      // is built with SUITE_ID inside)
       manifest: {
         suite: SUITE_ID,
         environmentId: context.environmentId,
@@ -153,7 +163,7 @@ export function signNextManifest(
   });
 }
 
-/** 配布マニフェストの検証結果(future = 有界再同期の入口 — values.ts の共通規約)。 */
+/** The distributed manifest's verification result (future = the entry to bounded re-sync — values.ts's shared convention). */
 export type ManifestVerifyOutcome =
   | { readonly kind: "ok"; readonly value: VerifiedManifest }
   | { readonly kind: "future" }
@@ -168,15 +178,19 @@ export type ManifestVerifyOutcome =
  * @maruhi/crypto. Coordinates are rebuilt from expected values, never from
  * wire claims (§6.3-5).
  *
- * **隣接版の prev 連鎖検証(CRYPTO_SPEC §4.3 検証規則 (1) — session-31 §3)**:
- * 床がマニフェスト記録を持ち、配布版が床の直後
- * (pulled.manifestVersion = floor.manifestVersion + 1)なら、床は直前
- * マニフェストそのものなので、床の signed_bytes ハッシュを predecessor として
- * 共有検証器へ渡し `prevManifestSigHashHex` を厳密検証する。version の差が
- * 2 以上は latest-only の既知制約どおり中間 predecessor の実在一致を検査
- * できない(§14.3 — 検査済みと偽らない)。同版・後退は床検査(規則 (a)(b))が
- * 担う。床を持たない経路(初回同期・リース — ワークロードは床を持たない
- * 初回同期クラス §14.3-3)は floor = null で従来どおり。
+ * **Adjacent-version prev-chain verification (CRYPTO_SPEC §4.3
+ * verification rule (1) — session-31 §3)**: when the floor holds a
+ * manifest record and the distributed version is immediately after
+ * the floor's (pulled.manifestVersion = floor.manifestVersion + 1),
+ * the floor IS the previous manifest, so the floor's signed-bytes
+ * hash is passed to the shared verifier as the predecessor and
+ * `prevManifestSigHashHex` is strictly verified. A version gap of 2
+ * or more cannot check the actual identity of intermediate
+ * predecessors, per latest-only's known constraint (§14.3 — not
+ * falsely claimed as checked). Same-version and regression are the
+ * floor checks' job (rules (a)(b)). Floorless paths (first sync,
+ * lease — the workload is a floorless first-sync class §14.3-3)
+ * pass floor = null as before.
  */
 export async function verifyDistributedManifest(input: {
   readonly verified: VerifiedProject;
@@ -184,7 +198,7 @@ export async function verifyDistributedManifest(input: {
   readonly manifest: DistributedEnvironmentManifest;
   readonly entries: readonly ManifestDigestEntry[];
   readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
-  /** ローカル床のマニフェスト記録(隣接 prev 検証の predecessor — null = 床なし)。 */
+  /** The local floor's manifest record (the predecessor of adjacent-prev verification — null = no floor). */
   readonly floorManifest?: ManifestFloor | null;
 }): Promise<ManifestVerifyOutcome> {
   const manifest = input.manifest;
@@ -222,9 +236,11 @@ export async function verifyDistributedManifest(input: {
     signatureHex: manifest.signatureHex,
     entries: input.entries,
     envMeta: { metaVersion: input.envMeta.metaVersion, sigHashHex: input.envMeta.sigHashHex },
-    // 隣接版のみ床由来の predecessor を渡す(上記)。それ以外は latest-only の
-    // 既知制約どおり — セッションを跨ぐ後退・同版相違・前進注入の検出は床の
-    // マニフェスト拡張(floor-check.ts の規則 (a)(b)(c))が担う
+    // Only an adjacent version gets the floor-derived predecessor
+    // (above). Otherwise it follows latest-only's known constraint —
+    // detecting cross-session regression, same-version difference,
+    // and forward injection is the floor's manifest extension's job
+    // (floor-check.ts's rules (a)(b)(c))
     ...(predecessor === undefined ? {} : { predecessor }),
   });
   if (result.ok) {
@@ -256,9 +272,11 @@ export async function verifyDistributedManifest(input: {
       return { kind: "future" };
     }
     if (predecessor !== undefined && error.reason === "prev-hash-mismatch") {
-      // 隣接 prev 不一致は床(検証済みの直前マニフェスト)との矛盾 = マニフェスト
-      // 連鎖の分岐の証拠。第三者へ提示可能な材料(両ハッシュ・発行者・宣言ヘッド)
-      // を含める(session-31 §3)
+      // An adjacent-prev mismatch is a contradiction against the
+      // floor (the verified previous manifest) = evidence of a fork
+      // in the manifest chain. Include material presentable to a
+      // third party (both hashes, the issuer, the declared head)
+      // (session-31 §3)
       return {
         kind: "rejected",
         message: [
@@ -266,7 +284,7 @@ export async function verifyDistributedManifest(input: {
           `  floor record (previously verified): manifestVersion=${floorManifest?.manifestVersion ?? 0} manifest_signed_bytes_hash=${predecessor.signedBytesHashHex}`,
           `  this distribution: prevManifestSigHashHex=${manifest.prevManifestSigHashHex}`,
           `    declared head: seq=${manifest.chainHeadSeq} hash=${manifest.chainHeadHashHex}`,
-          // user_id はワイヤ上は長さ制約のみの自由文字列 — 端末へ出す前に中和する
+          // user_id is a length-constrained free-form string on the wire — neutralize before showing on the terminal
           `    issuer signature: issuer=${displayText(manifest.issuerUserId)} fp=${manifest.issuerKeyFingerprintHex}`,
           `    signature=${manifest.signatureHex}`,
           "  Preserve this output and the local floor log, and present them to the project administrators",
@@ -284,7 +302,7 @@ export async function verifyDistributedManifest(input: {
   };
 }
 
-/** マニフェスト欠落の一律拒否メッセージ(§6.3)。 */
+/** The uniform refusal message for a missing manifest (§6.3). */
 export function missingManifestMessage(environmentId: string): string {
   return (
     `The server did not distribute an environment manifest for ${environmentId}. ` +

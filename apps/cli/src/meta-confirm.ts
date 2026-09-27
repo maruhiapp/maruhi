@@ -1,17 +1,25 @@
-// メタ操作(変数作成・activation・スキーマ設定)の効果確認(AUTH_SPEC
-// §12-10 (3) — 1-E′)の共有実装: 成功 = 「2xx を受け取った」ではなく「検証
-// 可能な配布物で効果を確認した」。確認材料は metadata-only pull(var.read を
-// 記録しない経路 — §12-7)で、自己発行マニフェストの (version, signed-bytes
-// hash) を照合する。
+// Shared implementation of effect-confirmation for meta operations
+// (variable creation, activation, schema set) (AUTH_SPEC §12-10 (3)
+// — 1-E′): success is not "a 2xx was received" but "the effect was
+// confirmed on a verifiable distribution". The check material is a
+// metadata-only pull (the path that records no var.read — §12-7),
+// and it collates the (version, signed-bytes hash) of the
+// self-issued manifest.
 //
-// - 配布マニフェストが自己発行と完全一致 → 確認完了(床のマニフェスト前進は
-//   確認 pull の検証済み観測 — enforceMetadataFloor — が join 済み)
-// - 版が前進していても操作の効果が検証済み集合から見える(effectVisible —
-//   作成 = 乱数採番 ID の存在、activation / スキーマ再発行 = 発行 metaVersion
-//   以上のステートメントの存在)→ 確認済み(直後の並行メタ操作に追い越された形)
-// - マニフェスト欠落・別マニフェスト(同版異ハッシュ)・
-//   効果の不在 → 失敗。**床は自己発行マニフェストへ前進していない**(自分の
-//   思い込みを床に書かない — 記録されるのは検証済み観測のみ)
+// - The distributed manifest exactly matches the self-issued one →
+//   confirmed (the floor's manifest advance is already joined by
+//   the confirmation pull's verified observation —
+//   enforceMetadataFloor)
+// - The version has advanced but the operation's effect is visible
+//   from the verified set (effectVisible — creation = the
+//   random-issued ID's presence; activation / schema re-issuance = a
+//   statement at or above the issued metaVersion) → confirmed (the
+//   form of being overtaken by a concurrent meta operation)
+// - Manifest missing, a different manifest (same version,
+//   different hash), or the effect absent → failure. **The floor
+//   does NOT advance to the self-issued manifest** (do not write
+//   my assumption onto the floor — only verified observations are
+//   recorded)
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -25,27 +33,29 @@ import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironmentMetadata, type VerifiedEnvironmentMetadata } from "./values.ts";
 
 /**
- * メタ操作の複合送信の前半の共有実装(push の create / activation・schema set):
- * 操作後のメタ集合を反映したマニフェストの発行(§4.3 / §12-5)と、送信前
- * intent(3-F — journal-before-send)の追記。intent の永続化に失敗したら
- * 呼び出し側は送信しない(fail-closed — appendIntent の失敗がそのまま伝播する)。
+ * The shared first half of a meta operation's compound send
+ * (push's create / activation, schema set): issuing a manifest that
+ * reflects the post-operation meta set (§4.3 / §12-5) and appending
+ * the pre-send intent (3-F — journal-before-send). When persisting
+ * the intent fails, the caller must not send (fail-closed —
+ * appendIntent's failure propagates as is).
  */
 export function issueManifestWithIntent(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
-  /** 発行時点の現エポック(チェーン導出値)。 */
+  /** The current epoch at issuance time (the chain-derived value). */
   readonly epoch: number;
   readonly previous: {
     readonly manifestVersion: number;
     readonly signedBytesHashHex: string;
   } | null;
-  /** 操作の適用後のメタ集合(tombstone 込み — §4.3 (3) の再計算対象)。 */
+  /** The meta set after the operation is applied (tombstones included — §4.3 (3)'s recomputation target). */
   readonly entries: readonly ManifestDigestEntry[];
   readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
   readonly issuerUserId: string;
   readonly signingKey: CryptoKey;
   readonly floor: FloorHandle;
-  /** intent の照合座標(メタ操作の対象変数)。 */
+  /** The intent's collation coordinate (the meta operation's target variable). */
   readonly variableId: string;
 }): Effect.Effect<{ readonly manifest: SignedManifest; readonly intentId: string }, CliError> {
   return Effect.gen(function* () {
@@ -91,14 +101,16 @@ export function confirmMetaMutation(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly floor: FloorHandle;
   readonly selfManifest: ManifestFloor;
-  /** 送信前に追記した intent(3-F)の id(null = intent なしの呼び出し形)。 */
+  /** The id of the intent (3-F) appended before sending (null = the call shape with no intent). */
   readonly intentId: string | null;
-  /** 操作の英語名(文面用 — 例: "variable creation" / "activation")。 */
+  /** The operation's English name (for wording — e.g. "variable creation" / "activation"). */
   readonly describe: string;
   /**
-   * マニフェスト版が自己発行を追い越していた場合の効果確認(検証済み集合から
-   * この操作の効果が見えるか)。作成 = 乱数採番 ID の存在、継続ステートメント =
-   * 発行 metaVersion 以上のステートメント / tombstone の存在。
+   * Effect confirmation for when the manifest version has
+   * overtaken the self-issued one (whether this operation's effect
+   * is visible from the verified set). Creation = the random-issued
+   * ID's presence; continuing statement = a statement / tombstone
+   * at or above the issued metaVersion.
    */
   readonly effectVisible: (metadata: VerifiedEnvironmentMetadata) => boolean;
 }): Effect.Effect<void, CliError> {
@@ -129,7 +141,7 @@ export function confirmMetaMutation(input: {
       distributed.manifestVersion > input.selfManifest.manifestVersion &&
       input.effectVisible(metadata)
     ) {
-      // 並行メタ操作に追い越されたが、この操作の効果は検証済み集合に存在する
+      // Overtaken by a concurrent meta operation, but this operation's effect exists in the verified set
       return yield* resolve("accepted-superseded");
     }
     if (distributed.manifestVersion === input.selfManifest.manifestVersion) {

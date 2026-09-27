@@ -1,11 +1,15 @@
-// maruhi CLI のエントリ: 引数層は `effect/unstable/cli`(effect-cli.ts)。
+// Entry of the maruhi CLI: the argument layer is `effect/unstable/cli`
+// (effect-cli.ts).
 //
-// runCli が持つのは (1) `--` より前にコマンド名が無い実行の専用診断(effect 側は
-// 「余分な引数」としか言えず、直し方を伝えられない)、(2) 診断の宛先
-// (コマンド段)の解決、(3) 内部エラーの最終網、の 3 つだけ。
+// runCli holds only three things: (1) the dedicated diagnostic for a run
+// with no command name before `--` (the effect side can only say "extra
+// argument" and cannot say how to fix it), (2) resolving the diagnostic's
+// destination (command level), (3) the final net for internal errors.
 //
-// 値の入力は stdin(argv に平文値を載せない)、値の表示は pull --show のみで、
-// 人間の対話端末以外では拒否する(agent-gate.ts)。`maruhi run` は許可される。
+// Values are entered via stdin (plaintext values never go on argv), values
+// are displayed only by pull --show, and anything but a human's
+// interactive terminal is refused (agent-gate.ts). `maruhi run` is
+// allowed.
 
 import { Effect, type Layer } from "effect";
 
@@ -17,23 +21,28 @@ import { logFailure } from "./notice.ts";
 export type { CliServices } from "./context.ts";
 
 /**
- * コマンド名が `--` の**後ろ**にある実行の文面。effect/unstable/cli は `--` を
- * 跨いでコマンドを解決しない(12 形の #7)が、その診断は「余分な引数です」に
- * しかならず、直し方(コマンド名を前に出す)を伝えられない。専用の文面を
- * 出せる位置は振り分けの手前のここだけ。
+ * The message for a run whose command name sits **after** `--`.
+ * effect/unstable/cli does not resolve commands across `--` (shape #7 of
+ * the 12), but its diagnostic can only be "extra argument" and cannot say
+ * how to fix it (put the command name first). The only position able to
+ * emit a dedicated message is here, before dispatch.
  */
 const TERMINATOR_BEFORE_COMMAND =
   "Write the command name before `--` (everything after `--` is passed through as arguments)";
 
 /**
- * `--` より前の位置引数(コマンド名の候補)を argv から集める。
+ * Collects the positional arguments (command-name candidates) before `--`
+ * from argv.
  *
- * 最小の自前字句。これは ADR-0016 決定 2 が禁じる「引数の**検査**の走査」ではなく
- * **振り分けの材料**で、宣言には載らない。`-` で始まるトークンはオプション
- * (またはその綴りの誤り)、それ以外を位置引数として拾う。値を取るオプションの
- * 値も位置引数として並ぶ(引数表を知らない字句だけの走査)が、
- * 利用側は「先頭の非空トークン」と「`--` より前に
- * 位置引数があるか」しか見ないので、effect 側の解決と食い違わない。
+ * A minimal hand-rolled lexer. This is not the "scan that **inspects**
+ * arguments" ADR-0016 decision 2 forbids — it is **material for
+ * dispatch** and does not appear in the declaration. Tokens starting
+ * with `-` are options (or their misspellings); the rest are collected
+ * as positionals. The value of an option that takes one also lands among
+ * the positionals (a lex-only scan that does not know the argument
+ * table), but the consumer only looks at "the first non-empty token"
+ * and "whether a positional exists before `--`", so it cannot disagree
+ * with the effect side's resolution.
  */
 function positionalTokens(argv: readonly string[]): {
   readonly beforeTerminator: readonly string[];
@@ -59,14 +68,16 @@ function positionalTokens(argv: readonly string[]): {
 }
 
 /**
- * `effect/unstable/cli` へ渡す診断の宛先(解決済みのコマンド段)。
+ * The diagnostic destination passed to `effect/unstable/cli` (the
+ * resolved command level).
  *
- * 先頭のコマンド名で振り分け、2 語目が既知のサブコマンドなら診断の宛先を
- * その段(`env rotate`)まで確定する。未知のコマンド・コマンド名なしは
- * root(ROOT_SPEC_KEY)— 診断は effect 側の UnknownSubcommand /
- * UnrecognizedOption が受け持つ。空のトークンはコマンド名として解決しない
- * (effect 側も解決しない)。段の一覧は COMMAND_SPECS から引く(手書きの
- * 写しを持たない)。
+ * Dispatches on the leading command name; when the second word is a known
+ * subcommand, the diagnostic's destination is fixed to that level
+ * (`env rotate`). An unknown command or no command name is root
+ * (ROOT_SPEC_KEY) — diagnostics are carried by the effect side's
+ * UnknownSubcommand / UnrecognizedOption. An empty token is not resolved
+ * as a command name (the effect side does not resolve one either). The
+ * level list is drawn from COMMAND_SPECS (no hand-written copy is kept).
  */
 function commandKeyOf(tokens: readonly string[]): string {
   const named = tokens.filter((token) => token !== "");
@@ -74,7 +85,7 @@ function commandKeyOf(tokens: readonly string[]): string {
   if (head === undefined || !Object.hasOwn(COMMAND_SPECS, head)) {
     return ROOT_SPEC_KEY;
   }
-  // 既知の段が続く限り深く解決する(`key seal remove` の 3 段まで — KL3 K5)
+  // Resolve as deep as known levels continue (down to the 3 levels of `key seal remove` — KL3 K5)
   let key = head;
   for (const token of named.slice(1)) {
     const nested = `${key} ${token}`;
@@ -94,7 +105,7 @@ export async function runCli(
   argv: readonly string[],
   layer: Layer.Layer<CliServices>,
 ): Promise<number> {
-  /** 診断 1 件以上を stderr へ出す(runEffectCli の外側の最終網)。 */
+  /** Emits one or more diagnostics to stderr (the final net outside runEffectCli). */
   const reportError = async (messages: readonly string[]): Promise<void> => {
     await Effect.runPromise(
       Effect.forEach(messages, (message) => logFailure(message), { discard: true }).pipe(
@@ -103,20 +114,23 @@ export async function runCli(
     );
   };
 
-  // コマンド名が `--` の**後ろ**にある実行(`maruhi -- run printenv`)は、
-  // どのコマンドへ振り分けるかを決めるより先に落とす(上記の専用診断)。
-  // 空のトークンはコマンド名として解決されないので、`maruhi "" -- run` も同じ形として扱う
+  // A run whose command name sits **after** `--` (`maruhi -- run
+  // printenv`) is dropped before deciding which command to dispatch to
+  // (the dedicated diagnostic above). An empty token is not resolved as a
+  // command name, so `maruhi "" -- run` is treated as the same shape
   const tokens = positionalTokens(argv);
   if (tokens.beforeTerminator.every((token) => token === "") && tokens.afterTerminatorHasTokens) {
     await reportError([TERMINATOR_BEFORE_COMMAND]);
     return 2;
   }
 
-  // コマンド本体の defect は runEffectCli の中(`Effect.exit` + reportFailure)
-  // が拾う。ここで受けるのは層の構築や logError 自体の失敗 = reject だけだが、
-  // bin.ts は runCli を await するだけなので、拾わないと maruhi の文面ではなく
-  // Bun の unhandled rejection が出る。message は出さない(打たれた値を
-  // 埋め込んだ文面でも到達しうる)— 型の名前だけを添える(failure.ts)
+  // Defects in the command body are caught inside runEffectCli
+  // (`Effect.exit` + reportFailure). What arrives here is only a reject =
+  // a failure to build layers or of logError itself, but bin.ts only
+  // awaits runCli, so un-caught would surface Bun's unhandled rejection
+  // rather than a maruhi message. Do not emit the message (it could
+  // embed a typed-in value and still arrive) — attach only the type's
+  // name (failure.ts)
   try {
     return await runEffectCli(commandKeyOf(tokens.beforeTerminator), argv, layer);
   } catch (error) {

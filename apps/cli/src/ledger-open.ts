@@ -1,12 +1,17 @@
-// 台帳の開封(CRYPTO_SPEC §8 改訂 (4) — 2026-09-19 DK。設計録 dk-design.md §9 K4-2)。
+// Opening the ledger (CRYPTO_SPEC §8 revision (4) — 2026-09-19 DK;
+// design record dk-design.md §9 K4-2).
 //
-// 台帳の変更(コード再発行・パスキー封印・保護者の指名・予備鍵の rotate)は、まず
-// コード入力かパスキーで予備鍵 B を開封してから行う(台帳を変えるのは台帳を開ける者
-// だけ)。開封した B は {@link ReserveKeys}(メモリのみ — reserve.ts)として呼び出し側へ
-// 渡し、用が済んだら捨てる。
+// Changing the ledger (re-issuing a code, sealing a passkey, naming
+// guardians, rotating the reserve key) is done only after opening
+// reserve key B via a code entry or a passkey (only one who can
+// open the ledger may change it). The opened B is handed to the
+// caller as {@link ReserveKeys} (memory only — reserve.ts) and
+// discarded when done.
 //
-// 台帳の鍵を予備鍵として扱うのは、台帳の中身に予備鍵の印(`kind: "reserve"` — この CLI が
-// 生成したときに書く。CRYPTO_SPEC §8)があり、チェーンでどこも失効していないときだけ(DK K16)。
+// A ledger key is treated as a reserve key only when the ledger's
+// contents carry the reserve-key mark (`kind: "reserve"` — written
+// when this CLI generated it. CRYPTO_SPEC §8) and it is revoked
+// nowhere on the chain (DK K16).
 
 import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/unstable/http";
@@ -58,17 +63,17 @@ export function openLedgerReserve(input: {
 /**
  * Opens the ledger for a change (passkey sealing / guardian designation): the key
  * must carry the reserve-key mark and be revoked nowhere (DK K16); it is then
- * recorded locally as the reserve key (state restoration — K4-2 の反例 2).
+ * recorded locally as the reserve key (state restoration — K4-2 counterexample 2).
  */
 export function openLedgerReserveForChange(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly via: LedgerOpenVia;
-  /** 拒否文言に埋める再実行コマンド(例: "maruhi guardian add …")。 */
+  /** The re-run command embedded in the refusal wording (e.g. "maruhi guardian add …"). */
   readonly command: string;
 }): Effect.Effect<ReserveKeys, CliError, CliServices> {
   return Effect.gen(function* () {
-    // 端末鍵の読み込みが開封より先(鍵の無い端末に台帳を変える資格は無い)
+    // Loading the device key comes before opening (a device without a key is not qualified to change the ledger)
     yield* loadMasterKeys(input.session);
     const reserve = yield* openLedgerReserve(input);
     const verdict = yield* ledgerKeyVerdictOf({
@@ -82,8 +87,10 @@ export function openLedgerReserveForChange(input: {
 }
 
 /**
- * 開いた台帳の鍵を、台帳を変えるコマンドで使ってよいか(DK K16): どこかで失効していれば、または
- * 予備鍵の印が無ければ、記録せずに止めて `key recovery` を名指す。それ以外は記録する。
+ * Whether the opened ledger key may be used by a ledger-changing
+ * command (DK K16): if it is revoked anywhere or lacks the
+ * reserve-key mark, stop without recording and name `key
+ * recovery`. Otherwise record it.
  */
 export function settleLedgerKeyForChange(input: {
   readonly session: CliSession;

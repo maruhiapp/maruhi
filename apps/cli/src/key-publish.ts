@@ -1,18 +1,27 @@
-// `maruhi key publish [--gh]` と鍵登録の導線(CRYPTO_SPEC §6.5 裏付け元 — IV2、
-// 補足 21 裁定 G ④ / G ⑥)。
+// `maruhi key publish [--gh]` and the key-registration route
+// (CRYPTO_SPEC §6.5 backing source — IV2, supplement 21 rulings G ④ /
+// G ⑥).
 //
-// 自分の maruhi sig 公開鍵(Ed25519)を GitHub の **SSH 署名鍵** として登録する
-// ための表示・補助。鍵素材は公開鍵だけなので儀式ではなく、表示ゲートも不要。
+// Display and assistance for registering my maruhi sig public key
+// (Ed25519) as a GitHub **SSH signing key**. The only key material is
+// the public key, so this is not a ceremony and needs no display
+// gate.
 //
-// - 既定: OpenSSH 公開鍵行(`ssh-ed25519 …`)を stdout に 1 行だけ出し、登録手順
-//   (https://github.com/settings/ssh/new — Key type = Signing Key)を stderr に出す
-// - `--gh`: 導入済みの gh CLI(`gh ssh-key add - --type signing`)を ProcessRunner
-//   経由で呼ぶ(取りに行かない — 補足 16 と同じ)。API 直は不可(maruhi は GitHub の
-//   トークンを持たない — AUTH_SPEC §4)。鍵行は stdin で渡す
-// - 登録の導線(G ⑥): 鍵生成の直後(`key generate` / `invite accept` 内の生成)に、
-//   対話端末 + 非エージェントなら「今すぐ登録しますか」と聞き、yes のときだけ gh を
-//   呼ぶ(黙って登録はしない — 利用者の GitHub アカウントを無断で変えない)。
-//   非対話・EOF は「登録しない」として案内だけ出す(鍵生成そのものは完了済み)
+// - Default: emits one OpenSSH public-key line (`ssh-ed25519 …`) to
+//   stdout and the registration procedure
+//   (https://github.com/settings/ssh/new — Key type = Signing Key) to
+//   stderr
+// - `--gh`: calls an installed gh CLI (`gh ssh-key add - --type
+//   signing`) via ProcessRunner (never fetches it — same as
+//   supplement 16). Direct API is not allowed (maruhi holds no GitHub
+//   token — AUTH_SPEC §4). The key line goes via stdin
+// - The registration route (G ⑥): right after key generation (`key
+//   generate` / the generation inside `invite accept`), when on an
+//   interactive terminal and not an agent, ask "register now?" and
+//   call gh only on yes (never register silently — do not change the
+//   user's GitHub account without consent). Non-interactive / EOF is
+//   treated as "do not register" and only the guidance is shown (the
+//   key generation itself is already complete)
 
 import { decodeHex, encodeOpenSshEd25519PublicKey } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
@@ -26,10 +35,10 @@ import { ProcessRunner } from "./run.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 import { GH_ENV } from "./sync-exec.ts";
 
-/** 手動登録先(GitHub の設定ページ)。 */
+/** The manual registration destination (GitHub's settings page). */
 const GITHUB_SSH_SETTINGS_URL = "https://github.com/settings/ssh/new";
 
-/** 自分の sig 公開鍵の OpenSSH 行(コメント無し — 相互運用の符号化、新プリミティブではない)。 */
+/** My sig public key's OpenSSH line (no comment — an interop encoding, not a new primitive). */
 function openSshSigningKeyLine(keys: MasterKeys): Effect.Effect<string, CliError> {
   const raw = decodeHex(keys.record.sigPubHex);
   if (raw === null) {
@@ -41,14 +50,16 @@ function openSshSigningKeyLine(keys: MasterKeys): Effect.Effect<string, CliError
     : Effect.fail(cliError("The stored signing public key cannot be encoded as an OpenSSH key"));
 }
 
-/** gh 側のタイトル(一覧で maruhi の鍵と分かるように FP を添える)。 */
+/** The title on the gh side (carries the FP so the key is recognizable as maruhi's in the list). */
 function keyTitleOf(keys: MasterKeys): string {
   return `maruhi ${keys.fingerprintHex}`;
 }
 
 /**
- * `gh ssh-key add - --type signing` を呼ぶ(stdin = 鍵行)。gh の未導入・未ログイン・
- * 拒否は CliError(出力は公開鍵しか含まないので、整形して添える)。
+ * Calls `gh ssh-key add - --type signing` (stdin = the key line).
+ * gh not installed / not logged in / refused is a CliError (the
+ * output contains only the public key, so it is formatted and
+ * attached).
  */
 function registerViaGh(input: {
   readonly line: string;
@@ -69,7 +80,7 @@ function registerViaGh(input: {
       ],
       cwd: ".",
       extraEnv: GH_ENV,
-      // 公開鍵なので秘密ではないが、exec の stdin は Redacted で受ける契約(run.ts)
+      // A public key is not secret, but exec's stdin contract takes Redacted (run.ts)
       stdin: Redacted.make(new TextEncoder().encode(`${input.line}\n`), {
         label: "openssh-public-key",
       }),
@@ -85,7 +96,7 @@ function registerViaGh(input: {
   });
 }
 
-/** 手動登録の手順(stderr)。 */
+/** The manual registration procedure (stderr). */
 function manualInstructions(keys: MasterKeys): Effect.Effect<void, never, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -98,7 +109,7 @@ function manualInstructions(keys: MasterKeys): Effect.Effect<void, never, CliIo>
   });
 }
 
-/** `maruhi key publish [--gh]`。 */
+/** `maruhi key publish [--gh]`. */
 export function keyPublishOp(input: {
   readonly session: CliSession;
   readonly viaGh: boolean;
@@ -108,7 +119,7 @@ export function keyPublishOp(input: {
     const keys = yield* loadMasterKeys(input.session);
     const line = yield* openSshSigningKeyLine(keys);
     if (!input.viaGh) {
-      // stdout は鍵行だけ(`maruhi key publish > key.pub` / `| pbcopy` で使える)
+      // stdout carries only the key line (usable via `maruhi key publish > key.pub` / `| pbcopy`)
       yield* io.log(line);
       yield* manualInstructions(keys);
       return;
@@ -124,9 +135,11 @@ export function keyPublishOp(input: {
 }
 
 /**
- * 鍵生成直後の登録の導線(裁定 G ⑥ (b)): 対話端末 + 非エージェントなら yes で
- * `gh` 経由の登録まで済ませる。それ以外(非対話・エージェント・EOF・no)は案内
- * だけ出す。ここでの失敗は鍵生成の成否に影響させない(登録は後からできる)。
+ * The registration route right after key generation (ruling G ⑥
+ * (b)): on an interactive terminal + non-agent, a yes completes
+ * registration via `gh`. Everything else (non-interactive, agent,
+ * EOF, no) only shows guidance. A failure here must not affect the
+ * key generation's success (registration can be done later).
  */
 export function offerGithubRegistration(input: {
   readonly session: CliSession;

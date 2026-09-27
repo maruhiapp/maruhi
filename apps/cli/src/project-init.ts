@@ -1,10 +1,14 @@
-// プロジェクト作成 = genesis init(AUTH_SPEC §11-3 / CRYPTO_SPEC §6.4)。
+// Project creation = genesis init (AUTH_SPEC §11-3 / CRYPTO_SPEC
+// §6.4).
 //
-// - orgId は必須(§11-3)。org 作成 API は存在せず、`GET /auth/me` が返す orgs
-//   (サインアップ時に自動作成されるパーソナル org — §9-1)から選ぶ。
-//   単独利用(org が 1 つ)では org を表示・選択させない(概念の簡素化は表示層)
-// - プロジェクト ID = genesis エントリハッシュ。クライアントも同じ計算で ID を
-//   予見できるため、サーバーの応答を予見値と突合する(サーバー不信)
+// - orgId is required (§11-3). No org-creation API exists; pick from
+//   the orgs `GET /auth/me` returns (the personal org auto-created at
+//   sign-up — §9-1). In solo use (one org), org is neither shown nor
+//   selected (concept simplification is a display-layer concern)
+// - Project ID = the genesis entry hash. The client can precompute
+//   the ID with the same calculation, so the server's response is
+//   collated against the precomputed value (the server is not
+//   trusted)
 
 import type { UserOrgSchema } from "@maruhi/api-schema";
 import {
@@ -26,7 +30,7 @@ type UserOrg = typeof UserOrgSchema.Type;
 
 const GENESIS_PREV_HASH = "0".repeat(64);
 
-/** org 選択の純関数はタグ付き Result で返す(instanceof 判別をしない — 慣用の統一)。 */
+/** The pure function for org selection returns a tagged Result (no instanceof discrimination — uniformity of idiom). */
 type PickedOrg =
   | { readonly kind: "ok"; readonly org: UserOrg }
   | { readonly kind: "rejected"; readonly message: string };
@@ -43,8 +47,9 @@ function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): PickedOrg 
   }
   const [first] = orgs;
   if (first === undefined) {
-    // サインアップ時にパーソナル org が自動作成される(§9-1)ため通常は
-    // 起きない。起きたらサーバー側の状態異常として正確に報告する
+    // Normally impossible — a personal org is auto-created at
+    // sign-up (§9-1). If it happens, report it accurately as a
+    // server-side state anomaly
     return {
       kind: "rejected",
       message:
@@ -52,7 +57,7 @@ function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): PickedOrg 
     };
   }
   if (orgs.length === 1) {
-    // パーソナル org のみ(単独利用)。org 概念を表示しない(§9-1)
+    // Only the personal org (solo use). The org concept is not shown (§9-1)
     return { kind: "ok", org: first };
   }
   return {
@@ -100,7 +105,7 @@ export function projectInitOp(input: {
     if (!signed.ok) {
       return yield* Effect.fail(cliError("Failed to sign the genesis entry"));
     }
-    // クライアント側で予見したプロジェクト ID(genesis ハッシュ — §6.4)
+    // The project ID precomputed client-side (the genesis hash — §6.4)
     const expectedProjectId = yield* Effect.tryPromise({
       try: () => computeChainEntryHash(signed.value),
       catch: () => cliError("Failed to compute the genesis hash (crypto error)"),
@@ -110,7 +115,7 @@ export function projectInitOp(input: {
       .init({ payload: { orgId: org.orgId, entry: signed.value } })
       .pipe(Effect.mapError(toCliError));
 
-    // サーバー採番を信用しない: 予見値と厳密一致しなければ失敗させる
+    // The server's issued value is not trusted: fail unless it exactly matches the precomputed value
     if (head.projectId !== expectedProjectId || head.headHashHex !== expectedProjectId) {
       return yield* Effect.fail(
         cliError(
@@ -121,8 +126,9 @@ export function projectInitOp(input: {
 
     yield* io.log(`Created project ${head.projectId}`);
     yield* io.log(`To make it the default: \`maruhi config set defaultProject ${head.projectId}\``);
-    // schema import は独立コマンドのまま(init へ組み込まない — 設計文書 §1-3)。
-    // init の完了出力に導線 1 行だけを足す
+    // schema import stays an independent command (not folded into
+    // init — design doc §1-3). Add just one guidance line to init's
+    // completion output
     yield* io.log(
       "To bootstrap a schema from an existing .env / .env.example: create an environment (`maruhi env create <id>`), then run `maruhi schema import <file>`",
     );

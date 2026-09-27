@@ -1,26 +1,35 @@
-// ワークロードリース応答の検証・開封・復号(CRYPTO_SPEC §9.1 の受信ワーク
-// ロードの検証義務 / AUTH_SPEC §14-2)。
+// Verifying, opening, and decrypting workload lease responses (the
+// receiving workload's verification obligations of CRYPTO_SPEC §9.1 /
+// AUTH_SPEC §14-2).
 //
-// リース応答は**自己完結**である: チェーン・現エポック・全アクティブ変数の
-// 最新値・最新メタステートメント・リースラップ済み DEK がすべて 1 応答に
-// 同梱される(チェーン API は非メンバーへ 404 を返すため、これが唯一の配布
-// 経路 — §14-2)。検証材料を他のエンドポイントへ取りに行かない。
+// A lease response is **self-contained**: the chain, the current
+// epoch, the latest values of every active variable, the latest
+// meta-statements, and the lease-wrapped DEKs are all bundled in one
+// response (the chain API returns 404 to non-members, so this is the
+// only distribution path — §14-2). Verification material is never
+// fetched from other endpoints.
 //
-// 検証義務の対応:
-//   (1) チェーン検証 — verifyChainSnapshot(sync.ts と同一実装)。genesis =
-//       projectId は CI 設定(--project)に事前固定された値と照合する
-//   (2) リポジトリアンカー(SHOULD)— anchor.ts(--anchor 指定時)
-//   (3) DEK コミットメント照合(§5.2)— unwrapLeaseDek の開封後・使用前。
-//       リースラップは §5.1 登録署名を持たない(サーバー生成・応答スコープ —
-//       LeasedDek 型が構造的に区別する)ため deks.ts の署名検証段は適用されず、
-//       エポック上限・重複・コミットメント存在の検査をここに置く。DEK 長の
-//       検査は発明しない(32 バイト以外の Seal はコミットメント照合で落ちる)
-//   (4) 値署名・メタステートメント検証 — values.ts の verifyLeaseDistribution
-//       (future head は再同期せず即時拒否 — チェーンが同梱される以上、
-//       「自分のチェーンが古いだけ」という正直な説明が存在しない)
+// Verification obligations, mapped:
+//   (1) Chain verification — verifyChainSnapshot (the same
+//       implementation as sync.ts). genesis = projectId is checked
+//       against the value pre-pinned in the CI config (--project)
+//   (2) Repository anchor (SHOULD) — anchor.ts (when --anchor is
+//       given)
+//   (3) DEK commitment check (§5.2) — after unwrapLeaseDek's open,
+//       before use. A lease wrap carries no §5.1 registration
+//       signature (server-generated, response-scoped — the LeasedDek
+//       type distinguishes it structurally), so deks.ts's
+//       signature-verification stage does not apply; the epoch-cap,
+//       duplicate, and commitment-presence checks live here. No DEK
+//       length check is invented (a Seal that is not 32 bytes fails
+//       the commitment check)
+//   (4) Value-signature / meta-statement verification — values.ts's
+//       verifyLeaseDistribution (a future head is refused outright,
+//       no re-sync — since the chain is bundled, there is no honest
+//       explanation of "my chain is just old")
 //
-// 床は使わない: ワークロードは床を持たない初回同期クラス(§14.3-3)で、
-// その主要な緩和が (2) のアンカーである。
+// No floor is used: the workload is a floorless first-sync class
+// (§14.3-3), and its main mitigation is the anchor of (2).
 
 import type {
   CheckpointValueSnapshot,
@@ -49,7 +58,7 @@ import { decryptVerifiedValue, toDeclaredVariables } from "./pull.ts";
 import { verifyChainSnapshot, type VerifiedProject } from "./sync.ts";
 import { type PulledWire, type VerifiedPulledValue, verifyLeaseDistribution } from "./values.ts";
 
-/** リース応答のワイヤ形(api-schema の LeaseResponseSchema の構造型)。 */
+/** The wire shape of a lease response (the structural type of api-schema's LeaseResponseSchema). */
 export interface LeaseResponseWire {
   readonly projectId: string;
   readonly environmentId: string;
@@ -61,38 +70,42 @@ export interface LeaseResponseWire {
   readonly variables: readonly PulledWire[];
   readonly deletedVariables: readonly DistributedVariableMetaStatement[];
   /**
-   * declared 変数の最新ステートメント(§14-2 — 値なし。`ci run` の presence
-   * 検査の材料。不在 = declared なし)。
+   * The latest statements of declared variables (§14-2 — no values.
+   * The material of `ci run`'s presence check. Absent = nothing
+   * declared).
    */
   readonly declaredVariables?: readonly DistributedVariableMetaStatement[] | undefined;
-  /** 最新マニフェスト(§12-7 — 欠落は一律拒否 §9.1 (5)。移行許容はない)。 */
+  /** The latest manifest (§12-7 — a missing one is refused outright per §9.1 (5). No migration allowance). */
   readonly manifest?: DistributedEnvironmentManifest | undefined;
   /**
-   * チェックポイント時点の値スナップショット列挙(§14-2 — 規則 2 の材料。
-   * 同梱チェーン上に基準があるのに欠く応答は checkpoint-integrity.ts が拒否)。
+   * The value-snapshot enumeration at the checkpoint (§14-2 — the
+   * material of rule 2. A response that omits it despite a baseline
+   * existing on the bundled chain is refused by
+   * checkpoint-integrity.ts).
    */
   readonly checkpointSnapshot?: CheckpointValueSnapshot | undefined;
   readonly leases: readonly LeasedDek[];
 }
 
-/** リース応答から検証・復号された実行材料(run と同じ注入境界へ渡る)。 */
+/** The execution material verified and decrypted from a lease response (crosses the same injection boundary as run). */
 export interface VerifiedLeaseMaterial {
   readonly variables: readonly DecryptedVariable[];
-  /** 検証済み declared(値なし — presence 検査は呼び出し側 ci-run.ts)。 */
+  /** The verified declared (no values — the presence check is the caller ci-run.ts). */
   readonly declared: readonly DeclaredVariable[];
-  /** 非 NFC 名の配布などの SHOULD 警告(呼び出し側が表示する)。 */
+  /** SHOULD warnings such as non-NFC-name distribution (the caller displays them). */
   readonly warnings: readonly string[];
 }
 
-/** 1 リースラップの開封結果(タグ付き Result — deks.ts の UnwrapResult と同型)。 */
+/** The open result of one lease wrap (a tagged Result — same shape as deks.ts's UnwrapResult). */
 type LeaseUnwrapResult =
   | { readonly kind: "ok"; readonly dek: Uint8Array }
   | { readonly kind: "rejected"; readonly message: string };
 
 /**
- * 1 リースラップの開封 + コミットメント照合(§5.2 / §9.1 検証義務 (3))。
- * 照合に成功するまで DEK はこの関数の外へ出ない。座標は自前の検証済み値
- * (genesis ハッシュ・要求環境)から組む。
+ * Opens one lease wrap + commitment check (§5.2 / §9.1 verification
+ * obligation (3)). The DEK never leaves this function until the
+ * check succeeds. The coordinates are built from my own verified
+ * values (genesis hash, requested environment).
  */
 async function unwrapOneLease(input: {
   readonly verified: VerifiedProject;
@@ -100,7 +113,7 @@ async function unwrapOneLease(input: {
   readonly workloadKeyPair: EncryptionKeyPair;
   readonly claimsDigestHex: string;
   readonly lease: LeasedDek;
-  /** チェーン導出の当該 (environment, epoch) のコミットメント(§5.2)。 */
+  /** The chain-derived commitment for that (environment, epoch) (§5.2). */
   readonly expectedCommitmentHex: string;
 }): Promise<LeaseUnwrapResult> {
   const { verified, environmentId, lease } = input;
@@ -145,9 +158,10 @@ async function unwrapOneLease(input: {
 }
 
 /**
- * リースラップの集合検査(申告 epoch のチェーン上限・重複拒否・コミットメントの
- * 存在)。deks.ts の verifyAndUnwrapDeks のループ前段と同じ規律で、通れば
- * 当該エポックの期待コミットメントを返す。
+ * Set checks of lease wraps (declared epoch vs the chain cap,
+ * duplicate refusal, commitment presence). The same discipline as
+ * the pre-loop stage of deks.ts's verifyAndUnwrapDeks; on pass it
+ * returns that epoch's expected commitment.
  */
 function leaseEpochProblem(
   chainEpoch: number,
@@ -167,10 +181,12 @@ function leaseEpochProblem(
 }
 
 /**
- * リースラップ済み DEK の開封とコミットメント照合(§9.1 の検証義務 (3))。
- * deks.ts の verifyAndUnwrapDeks と同じ規律(申告 epoch のチェーン上限・重複
- * 拒否・チェーン導出コミットメントとの照合まで DEK を使わない)を、§5.1
- * 登録署名を持たないリースラップに適用した形。
+ * Opens lease-wrapped DEKs and checks commitments (§9.1's
+ * verification obligation (3)). The same discipline as deks.ts's
+ * verifyAndUnwrapDeks (declared epoch vs the chain cap, duplicate
+ * refusal, DEK unused until the check against the chain-derived
+ * commitment), applied to lease wraps that carry no §5.1
+ * registration signature.
  */
 function unwrapLeases(input: {
   readonly verified: VerifiedProject;
@@ -183,8 +199,9 @@ function unwrapLeases(input: {
     const { verified, environmentId } = input;
     const environment = yield* requireChainEnvironment(verified, environmentId);
     const chainEpoch = environment.currentEpoch;
-    // claims digest は検証付きの入口(computeLeaseClaimsDigest)のみを使う —
-    // builder 直接使用は空フィールドガードを迂回する
+    // Only the verified entry point (computeLeaseClaimsDigest) is
+    // used for the claims digest — using the builder directly bypasses
+    // the empty-field guards
     const digest = yield* Effect.tryPromise({
       try: () => computeLeaseClaimsDigest(input.claims),
       catch: () => cliError("Failed to compute the lease claims digest (crypto error)"),
@@ -223,8 +240,8 @@ function unwrapLeases(input: {
       if (result.kind === "rejected") {
         return yield* Effect.fail(cliError(result.message));
       }
-      // 開封済み DEK はここで包む(§5.2 照合を通った後 — 照合前の DEK は
-      // unwrapOneLease の内側から出ない)
+      // The opened DEK is wrapped here (after passing the §5.2 check
+      // — a pre-check DEK never leaves unwrapOneLease's inside)
       byEpoch.set(lease.epoch, Redacted.make(result.dek, { label: "dek" }));
     }
     return byEpoch;
@@ -240,19 +257,21 @@ function unwrapLeases(input: {
  * commitment before use.
  */
 export function verifyLeaseResponse(input: {
-  /** CI 設定に事前固定された genesis(= `--project` — §9.1 検証義務 (1))。 */
+  /** The genesis pre-pinned in the CI config (= `--project` — §9.1 verification obligation (1)). */
   readonly projectId: ProjectId;
   readonly environmentId: EnvironmentId;
   readonly response: LeaseResponseWire;
   readonly claims: LeaseClaims;
   readonly workloadKeyPair: EncryptionKeyPair;
-  /** リポジトリアンカー(§6.3 (b) — SHOULD。--anchor 指定時のみ)。 */
+  /** The repository anchor (§6.3 (b) — SHOULD. Only when --anchor is given). */
   readonly anchor: RepositoryAnchor | null;
 }): Effect.Effect<VerifiedLeaseMaterial, CliError> {
   return Effect.gen(function* () {
     const response = input.response;
-    // 申告座標の整合(§6.3-5 と同じ姿勢): 要求した座標と応答の申告が食い違う
-    // 応答は、以降の検証がどのみち落とすが、何が食い違ったかを先に可視化する
+    // Consistency of the declared coordinates (same posture as
+    // §6.3-5): a response whose declared coordinates differ from the
+    // requested ones would be dropped by later verification anyway,
+    // but what differed is surfaced first
     if (response.projectId !== input.projectId || response.environmentId !== input.environmentId) {
       return yield* Effect.fail(
         cliError(
@@ -260,21 +279,25 @@ export function verifyLeaseResponse(input: {
         ),
       );
     }
-    // (1) チェーン検証: 同梱チェーンの全再検証 + genesis ハッシュ = 事前固定の
-    // projectId + 申告ヘッドと導出ヘッドの整合(sync.ts と同一実装)
+    // (1) Chain verification: full re-verification of the bundled
+    // chain + genesis hash = the pre-pinned projectId + consistency
+    // of declared head vs derived head (the same implementation as
+    // sync.ts)
     const verified = yield* verifyChainSnapshot({
       projectId: input.projectId,
       entries: response.chain,
       claimedHeadSeq: response.headSeq,
       claimedHeadHashHex: response.headHashHex,
     });
-    // (2) リポジトリアンカー(SHOULD): ピン留めヘッドの包含 + 環境エポックの
-    // 非後退(巻き戻し配布の検出 — CI は床を持たないため、これが代替)
+    // (2) Repository anchor (SHOULD): containment of the pinned head
+    // + non-regression of the environment epoch (detection of rewind
+    // distribution — CI has no floor, so this substitutes)
     if (input.anchor !== null) {
       yield* checkRepositoryAnchor({ anchor: input.anchor, verified });
     }
-    // 現エポックはチェーン導出値のみを使う(§6.2)。申告 currentEpoch は
-    // 導出値との一致だけを検査する(申告値を信用しない)
+    // Only the chain-derived value is used for the current epoch
+    // (§6.2). The declared currentEpoch is checked only for agreement
+    // with the derived value (declared values are not trusted)
     const chainEpoch = (yield* requireChainEnvironment(verified, input.environmentId)).currentEpoch;
     if (response.currentEpoch !== chainEpoch) {
       return yield* Effect.fail(
@@ -283,7 +306,7 @@ export function verifyLeaseResponse(input: {
         ),
       );
     }
-    // (4) 値署名・メタステートメント検証(future head は即時拒否)
+    // (4) Value-signature / meta-statement verification (a future head is refused outright)
     const distribution = yield* verifyLeaseDistribution({
       verified,
       environmentId: input.environmentId,
@@ -296,7 +319,7 @@ export function verifyLeaseResponse(input: {
         checkpointSnapshot: response.checkpointSnapshot,
       },
     });
-    // (3) リースラップの開封 + DEK コミットメント照合
+    // (3) Opening the lease wraps + DEK commitment check
     const deksByEpoch = yield* unwrapLeases({
       verified,
       environmentId: input.environmentId,
@@ -304,8 +327,9 @@ export function verifyLeaseResponse(input: {
       claims: input.claims,
       leases: response.leases,
     });
-    // 復号(run / rotate と同じ decryptVerifiedValue — 復号文脈は検証済み
-    // 座標から組み、値の epoch に対応するラップの欠けは硬い失敗)
+    // Decryption (the same decryptVerifiedValue as run / rotate — the
+    // decryption context is built from verified coordinates; a
+    // missing wrap for a value's epoch is a strict failure)
     const variables = yield* decryptDistributed({
       verified,
       environmentId: input.environmentId,
@@ -321,7 +345,7 @@ export function verifyLeaseResponse(input: {
   });
 }
 
-/** 検証済み配布値をすべて復号する(pull.ts の pullVariables と同じ材料形へ)。 */
+/** Decrypts every verified distributed value (into the same material shape as pull.ts's pullVariables). */
 function decryptDistributed(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;

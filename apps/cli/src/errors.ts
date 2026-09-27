@@ -1,27 +1,31 @@
-// CLI のユーザー向けエラー。
+// User-facing CLI errors.
 //
-// 絶対規則(CLAUDE.md ディスクレス不変条件): message に平文のシークレット値・
-// 鍵素材・トークン生値を含めない。文脈は識別子(プロジェクト ID・変数名・
-// エポック・鍵フィンガープリント等)のみで表現する。
+// Absolute rule (the CLAUDE.md diskless invariant): message must not
+// contain plaintext secret values, key material, or raw token values.
+// Context is expressed only via identifiers (project ID, variable
+// names, epochs, key fingerprints, etc.).
 
 import { Data, Effect, Runtime } from "effect";
 
 /** A user-facing CLI failure. The message never carries secret material. */
 export class CliError extends Data.TaggedError("CliError")<{
   readonly message: string;
-  /** 引数の書き方の誤り(usage エラー = 終了コード 2)か。 */
+  /** Whether the error is a misuse of the arguments (a usage error = exit code 2). */
   readonly usage?: boolean;
   /**
-   * 暗号学的証拠(署名検証済みデータとチェーン公証・床の矛盾 — 再実行では
-   * 解消しない)を運ぶ失敗か。rotate の巡末分類(env-rotate.ts の settlePass)が
-   * 「再実行すれば直る」案内への格下げを避けるために読む。
+   * Whether the failure carries cryptographic evidence (a
+   * contradiction between signature-verified data and the chain
+   * attestation / floor — one a re-run does not resolve). rotate's
+   * per-leg classification (settlePass in env-rotate.ts) reads it to
+   * avoid downgrading to "re-run to fix" guidance.
    */
   readonly evidence?: boolean;
 }> {
   /**
-   * 終了コードは**エラー型自身が持つ**(ADR-0016 決定 4)。ランナーに
-   * 「usage は 2、失敗は 1」の写像表を置かないための Effect の機構で、
-   * `Runtime.defaultTeardown`(= `runMain` の既定 teardown)がこれを読む。
+   * The exit code is **carried by the error type itself** (ADR-0016
+   * decision 4). An Effect mechanism to keep a "usage = 2, failure =
+   * 1" mapping table off the runner; `Runtime.defaultTeardown` (=
+   * `runMain`'s default teardown) reads it.
    */
   override get [Runtime.errorExitCode](): number {
     return this.usage === true ? 2 : 1;
@@ -45,16 +49,17 @@ export function evidenceError(message: string): CliError {
 /**
  * Builds a {@link CliError} for a malformed invocation (exit code 2).
  *
- * パーサ層で落とせない「語が何も指していない」形 — 不明な操作 / 不明な設定
- * キー / 形式の合わない ID — に使う。実行の失敗(1)と区別できないと、
- * スクリプトが打ち間違いを実行失敗として扱ってしまう。
+ * For the "the word refers to nothing" shape that the parser layer
+ * cannot drop — unknown operation / unknown config key / malformed
+ * ID. Without distinguishing it from an execution failure (1), a
+ * script would treat a typo as an execution failure.
  */
 export function usageError(message: string): CliError {
   return new CliError({ message, usage: true });
 }
 
 /**
- * Sorts a cleanup step's failure (`env rotate --config` / `push` の後始末 —
+ * Sorts a cleanup step's failure (`env rotate --config` / `push` cleanup —
  * sync-rotate.ts / sync-push.ts): evidence (a contradiction re-running cannot
  * resolve) keeps failing, everything else comes back as a value so the caller
  * can warn without changing the exit code of the work already reported.

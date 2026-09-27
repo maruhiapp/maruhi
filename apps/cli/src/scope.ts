@@ -1,16 +1,24 @@
-// メンバーの環境スコープ(CRYPTO_SPEC §6.2 / §6.3、AUTH_SPEC §9-2 / §12-3)の
-// CLI 側の共通述語(2026-09-15 ES K4 — 設計録 es-design.md §10)。
+// The CLI-side shared predicates of a member's environment scope
+// (CRYPTO_SPEC §6.2 / §6.3, AUTH_SPEC §9-2 / §12-3) (2026-09-15 ES
+// K4 — design record es-design.md §10).
 //
-// - 包含(K4-I): `packages/crypto` の公開 API `scopeIncludesEnvironment` から導出する
-//   (内部の集合演算はコピーしない)。§6.2 の集合代数と同値: `all ⊇ 任意`、
-//   `listed ⊇ all` は偽(all は将来の環境を含む U)、`listed{X} ⊇ listed{Y}` ⇔ Y ⊆ X
-// - 通信前判定(K4-C): 対象環境 ∈ 自分の scope を、環境が確定する最も手前の共通
-//   経路(context.ts の openEnvironment / dek-wrap.ts の requireWritingMember /
-//   deks.ts の environmentKeysFor)と、複数環境を扱う経路(checkpoint / sync)の
-//   明示呼び出しで判定する。サーバーの 403 `insufficient-scope` を待たない(§6.3)
-// - 義務の環境集合(K4-J): `all` は義務 seq 時点で存在した環境集合に具体化する
-//   (後に作成された環境の DEK を対象は持ちえない — rotation-sweep.ts の
-//   `createdAtSeq > seq` 除外と同じ線)
+// - Containment (K4-I): derived from `packages/crypto`'s public API
+//   `scopeIncludesEnvironment` (the internal set algebra is not
+//   copied). Equivalent to §6.2's set algebra: `all ⊇ any`,
+//   `listed ⊇ all` is false (all is U, which includes future
+//   environments), `listed{X} ⊇ listed{Y}` ⇔ Y ⊆ X
+// - Pre-communication judgment (K4-C): target environment ∈ my
+//   scope is judged at the earliest shared paths where the
+//   environment is settled (context.ts's openEnvironment /
+//   dek-wrap.ts's requireWritingMember / deks.ts's
+//   environmentKeysFor) plus explicit calls on multi-environment
+//   paths (checkpoint / sync). Does not wait for the server's 403
+//   `insufficient-scope` (§6.3)
+// - The obligation's environment set (K4-J): `all` is concretized
+//   to the environment set that existed at the obligation's seq
+//   (the target cannot hold the DEK of an environment created
+//   later — the same line as rotation-sweep.ts's `createdAtSeq >
+//   seq` exclusion)
 
 import { isEnvironmentId } from "@maruhi/core";
 import type { ChainMember, DeviceCap, MemberScope, ScopePayloadFields } from "@maruhi/crypto";
@@ -26,7 +34,7 @@ import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import type { VerifiedProject } from "./sync.ts";
 
-/** ユーザー向けの scope 表示(`all` / `no environments` / 環境 id の列挙。id は中和する)。 */
+/** The user-facing scope display (`all` / `no environments` / an enumeration of environment ids. Ids are neutralized). */
 export function describeScope(scope: MemberScope | ScopePayloadFields): string {
   const member = toMemberScope(scope);
   if (member.kind === "all") {
@@ -37,7 +45,7 @@ export function describeScope(scope: MemberScope | ScopePayloadFields): string {
     : member.environmentIds.map((id) => displayText(id)).join(", ");
 }
 
-/** scope の一致(集合として比較 — 生成は昇順 SHOULD・検証は集合。CRYPTO_SPEC §6.2)。 */
+/** scope equality (compared as sets — generation is ascending SHOULD, verification is set-based. CRYPTO_SPEC §6.2). */
 export function sameScope(
   a: MemberScope | ScopePayloadFields,
   b: MemberScope | ScopePayloadFields,
@@ -54,7 +62,7 @@ export function sameScope(
   );
 }
 
-/** ワイヤ形(`scopeKind` / `scopeEnvironmentIds`)と導出形の両方を導出形へ。 */
+/** Maps both the wire form (`scopeKind` / `scopeEnvironmentIds`) and the derived form to the derived form. */
 function toMemberScope(scope: MemberScope | ScopePayloadFields): MemberScope {
   if ("kind" in scope) {
     return scope;
@@ -65,8 +73,10 @@ function toMemberScope(scope: MemberScope | ScopePayloadFields): MemberScope {
 }
 
 /**
- * 包含 `actor ⊇ target`(CRYPTO_SPEC §6.2 原則 1 の述語を通信前の案内に使う形)。
- * `all` は将来の環境を含む U なので、`listed` の actor は `all` を包含しない。
+ * Containment `actor ⊇ target` (CRYPTO_SPEC §6.2 principle 1's
+ * predicate used for pre-communication guidance). `all` is U
+ * including future environments, so a `listed` actor does not
+ * contain `all`.
  */
 export function scopeContains(actor: MemberScope, target: MemberScope): boolean {
   if (target.kind === "all") {
@@ -76,15 +86,17 @@ export function scopeContains(actor: MemberScope, target: MemberScope): boolean 
 }
 
 /**
- * `--env <id>`(反復)/ `--all-envs` / `--no-envs` からの scope の組み立て(`invite create` /
- * `member change-role` 共通)。形式検査(§12-1)・重複拒否(§6.2 の構造規則)・
- * 上限 256・コードポイント昇順(生成は昇順 SHOULD)。両方省略なら null(= 呼び出し
- * 側の既定 — 招待は all、change-role は据え置き)。
+ * Assembling a scope from `--env <id>` (repeatable) / `--all-envs`
+ * / `--no-envs` (shared by `invite create` / `member change-role`).
+ * Format check (§12-1), duplicate refusal (§6.2's structural
+ * rules), cap 256, code-point ascending (generation is ascending
+ * SHOULD). When both are omitted, null (= the caller's default —
+ * all for an invite, kept as-is for change-role).
  */
 export function scopeFromFlags(input: {
   readonly env: readonly string[];
   readonly allEnvs: boolean;
-  /** `--no-envs` = `listed{}`(§6.2 の空 listed — 管理だけする admin・後で入れる予定)。 */
+  /** `--no-envs` = `listed{}` (§6.2's empty listed — an admin who only manages, or a member to be admitted later). */
   readonly noEnvs?: boolean;
 }): Effect.Effect<MemberScope | null, CliError> {
   const modes = [input.allEnvs, input.noEnvs === true, input.env.length > 0].filter(Boolean);
@@ -123,14 +135,16 @@ export function scopeFromFlags(input: {
   });
 }
 
-/** コードポイント昇順(§6.2 の生成 SHOULD。ロケール非依存)。 */
+/** Code-point ascending order (§6.2's generation SHOULD. Locale-independent). */
 export function compareCodePoints(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /**
- * `listed` の各 id がチェーン上に存在すること(合意規則 `unknown-environment` の
- * 通信前判定 — typo を発行 / 追記の前に止める)。削除済み環境は列挙してよい(§6.2)。
+ * Each id of `listed` exists on the chain (the pre-communication
+ * judgment of the consensus rule `unknown-environment` — stops a
+ * typo before issuance / append). A deleted environment may be
+ * listed (§6.2).
  */
 export function requireScopeEnvironmentsExist(
   verified: VerifiedProject,
@@ -150,18 +164,19 @@ export function requireScopeEnvironmentsExist(
   );
 }
 
-/** 自分が scope 外の環境を指したときの文言(K4-C — サーバーの 403 を待たない)。 */
+/** The wording for when I point at an environment outside my scope (K4-C — does not wait for the server's 403). */
 export function outOfScopeMessage(input: {
   readonly member: ChainMember;
-  /** 署名・開封する端末(与えられれば端末の scope cap を言い分ける — DK K4-17)。 */
+  /** The device that signs / opens (when given, distinguishes the device's scope cap — DK K4-17). */
   readonly device?: DeviceCap | undefined;
   readonly environmentId: string;
-  /** 例: "pull values from" — 「<operation> environment X」の形に埋める。 */
+  /** E.g. "pull values from" — interpolated into the form "<operation> environment X". */
   readonly operation: string;
 }): string {
   const environment = displayText(input.environmentId);
-  // 人の scope は含むが端末の scope cap が外している場合は、拡大を頼む相手が違う
-  // (admin ではなく、cap 無しの自分の端末か `device approve` のやり直し)
+  // When the person's scope contains it but the device's scope cap
+  // excludes it, the party to ask for expansion is different (not
+  // an admin — my own uncapped device, or a `device approve` redo)
   if (
     input.device !== undefined &&
     scopeIncludesEnvironment(input.member.scope, input.environmentId)
@@ -172,11 +187,14 @@ export function outOfScopeMessage(input: {
 }
 
 /**
- * 対象環境 ∈ 自分の scope(AUTH_SPEC §12-3 の「環境 ∈ scope」行の通信前判定)。
- * 自分が現メンバーでなければその旨で失敗する。`device` が与えられれば判定は
- * **端末の実効 scope**(人 ∩ 端末 — DK K4-17)で行う(値を開く端末は cap の外の
- * 環境の DEK を持たない)。環境の存在はここでは見ない(存在判定は各経路が担う —
- * チェーン導出で全メンバーに既知のため順序は漏洩に関係しない)。
+ * Target environment ∈ my scope (the pre-communication judgment
+ * of AUTH_SPEC §12-3's "environment ∈ scope" row). When I am not a
+ * current member it fails saying so. When `device` is given, the
+ * judgment uses **the device's effective scope** (person ∩ device
+ * — DK K4-17) (a device that opens values does not hold the DEK of
+ * environments outside its cap). Environment existence is not
+ * checked here (existence is each path's job — chain-derived and
+ * known to every member, so ordering is unrelated to leakage).
  */
 export function requireEnvironmentInScope(input: {
   readonly verified: VerifiedProject;
@@ -207,8 +225,10 @@ export function requireEnvironmentInScope(input: {
 }
 
 /**
- * 義務の環境集合の具体化(K4-J): `seq` 時点で存在した(`createdAtSeq <= seq`)環境の
- * うち `scope` に含まれるもの。`all` はその時点の全環境。昇順。
+ * Concretizing the obligation's environment set (K4-J): of the
+ * environments that existed at `seq` (`createdAtSeq <= seq`),
+ * those contained in `scope`. `all` = every environment at that
+ * point. Ascending order.
  */
 export function environmentsOfScopeAt(
   verified: VerifiedProject,
@@ -225,8 +245,10 @@ export function environmentsOfScopeAt(
 }
 
 /**
- * scope の置換 旧 → 新 の差分を `seq` 時点の環境集合に具体化する: 拡大分
- * (新 \ 旧 — バックフィル義務)と縮小分(旧 \ 新 — rotate 義務。CRYPTO_SPEC §7)。
+ * Concretizes the diff of a scope replacement old → new onto the
+ * environment set at `seq`: the grown part (new \ old — the
+ * backfill obligation) and the shrunk part (old \ new — the rotate
+ * obligation. CRYPTO_SPEC §7).
  */
 export function scopeChangeAt(
   verified: VerifiedProject,
