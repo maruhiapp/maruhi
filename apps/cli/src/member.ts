@@ -501,7 +501,6 @@ function selectInvitation(
  * book; a mismatch warns and returns to the normal ceremony (not an
  * automatic failure — a legitimate key update is possible). A successful
  * ceremony / flag match is recorded into the book.
- * automatic failure — a legitimate key update is possible). A successful ceremony / flag match is recorded into the book.
  */
 function confirmInviteeFingerprint(input: {
   readonly origin: string;
@@ -828,7 +827,6 @@ function ensureAddable(input: {
     // different time (independent review S1). Dropped before the ceremony.
     // An already-appended resume (above), like remove / change-role, asks
     // no containment (what remains is only the backfill)
-    // Like remove / change-role, no containment is asked (what remains is only the backfill)
     const invited = memberScopeOf(input.scope);
     if (!scopeContains(permission.scope, invited)) {
       return yield* Effect.fail(
@@ -847,7 +845,6 @@ function ensureAddable(input: {
  * (AUTH_SPEC §15-2 — an inviter cannot grant a different scope after
  * acceptance: the consent's range is fixed by the issuance signature at
  * issuance)
- * grant a different scope after acceptance: the consent's range is fixed by the issuance signature at issuance)
  */
 function signAddMemberEntry(input: {
   readonly verified: VerifiedProject;
@@ -1049,7 +1046,6 @@ function prepareMemberAdd(input: {
     // pin (issued on another device, beyond the retention window) only the
     // issuance signature's verification pins the row (the IV revision moved
     // the source of truth to the issuance signature)
-    // issuance signature's verification pins the row (the IV revision moved the source of truth to the issuance signature)
     const pin = pinMismatchOf(input.pins, row);
     if (pin === "mismatch") {
       return yield* Effect.fail(
