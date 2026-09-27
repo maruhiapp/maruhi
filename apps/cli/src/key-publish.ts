@@ -109,7 +109,7 @@ function manualInstructions(keys: MasterKeys): Effect.Effect<void, never, CliIo>
   });
 }
 
-/** `maruhi key publish [--gh]`。 */
+/** `maruhi key publish [--gh]`. */
 export function keyPublishOp(input: {
   readonly session: CliSession;
   readonly viaGh: boolean;
