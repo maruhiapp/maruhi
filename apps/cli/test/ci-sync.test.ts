@@ -250,6 +250,7 @@ function leaseHandler(environment: string, leased: { keys: string[] }): MockHand
           statements: variables.map((entry) => entry.statement),
         }),
         leases: [await leaseWrapFor(environment, body)],
+        schemaPolicy: "enabled" as const,
       },
     };
   };

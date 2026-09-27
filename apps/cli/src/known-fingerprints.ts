@@ -37,6 +37,7 @@ import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
 import { CliIo } from "./io.ts";
 import { logNote, logWarning } from "./notice.ts";
+import { BOOK_KEY, decodeOriginBook, isRecord } from "./origin-book.ts";
 
 /** 帯域外で検証済みの相手 1 人分の記録。 */
 export interface KnownFingerprint {
@@ -53,8 +54,7 @@ interface KnownUser {
 
 /**
  * ファイル全体(known-fingerprints.json)。キーは origin → user_id → 指紋集合(v2 —
- * DK)。v1(1 人 1 指紋 `{ fingerprintHex, verifiedAtMs }`)は読み込み時に 1 要素の
- * 集合へ昇格し、次の書き込みで v2 になる。
+ * DK)。
  */
 interface FingerprintBookFile {
   readonly v: 2;
@@ -226,38 +226,13 @@ export function confirmKnownFingerprint(input: {
 }
 
 const HEX_32 = /^[0-9a-f]{32}$/;
-// レコードキー(origin / user_id)の規律: 先頭は英数字(pins.ts の招待 id と
-// 同じく `__proto__` を構造的に排除)、空白を含まない。origin は正規化済みの
-// URL(http(s)://…)、user_id はサーバー採番 — どちらも形式へは依存しない
-const BOOK_KEY = /^[A-Za-z0-9]\S{0,1023}$/;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function validTimestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-/** v1 の 1 人分(`{ fingerprintHex, verifiedAtMs }`)→ 1 要素の集合。 */
-function decodeUserV1(value: unknown): KnownUser | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const fingerprintHex = value["fingerprintHex"];
-  const verifiedAtMs = value["verifiedAtMs"];
-  if (
-    typeof fingerprintHex !== "string" ||
-    !HEX_32.test(fingerprintHex) ||
-    !validTimestamp(verifiedAtMs)
-  ) {
-    return null;
-  }
-  return { fingerprints: { [fingerprintHex]: { verifiedAtMs } } };
-}
-
-/** v2 の 1 人分(`{ fingerprints: { FP: { verifiedAtMs } } }`)。 */
-function decodeUserV2(value: unknown): KnownUser | null {
+/** 1 人分(`{ fingerprints: { FP: { verifiedAtMs } } }`)。 */
+function decodeUser(value: unknown): KnownUser | null {
   if (!isRecord(value) || !isRecord(value["fingerprints"])) {
     return null;
   }
@@ -272,13 +247,13 @@ function decodeUserV2(value: unknown): KnownUser | null {
 }
 
 /** 1 origin 分(user_id → 集合)のデコード(1 件でも不正なら全体拒否)。 */
-function decodeUsers(value: unknown, version: 1 | 2): Record<string, KnownUser> | null {
+function decodeUsers(value: unknown): Record<string, KnownUser> | null {
   if (!isRecord(value)) {
     return null;
   }
   const users: Record<string, KnownUser> = {};
   for (const [userId, raw] of Object.entries(value)) {
-    const entry = version === 1 ? decodeUserV1(raw) : decodeUserV2(raw);
+    const entry = decodeUser(raw);
     if (entry === null || !BOOK_KEY.test(userId)) {
       return null;
     }
@@ -287,30 +262,10 @@ function decodeUsers(value: unknown, version: 1 | 2): Record<string, KnownUser> 
   return users;
 }
 
-/** 厳格デコード(v1 / v2)。1 件でも不正なら全体を破損扱い(部分読みしない — pins と同じ)。 */
+/** 厳格デコード(v2)。1 件でも不正なら全体を破損扱い(部分読みしない — pins と同じ)。 */
 function decodeBook(json: string): FingerprintBookFile | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  if (!isRecord(value) || !isRecord(value["known"])) {
-    return null;
-  }
-  const version = value["v"];
-  if (version !== 1 && version !== 2) {
-    return null;
-  }
-  const known: Record<string, Record<string, KnownUser>> = {};
-  for (const [origin, rawUsers] of Object.entries(value["known"])) {
-    const users = BOOK_KEY.test(origin) ? decodeUsers(rawUsers, version) : null;
-    if (users === null) {
-      return null;
-    }
-    known[origin] = users;
-  }
-  return { v: 2, known };
+  const known = decodeOriginBook(json, 2, decodeUsers);
+  return known === null ? null : { v: 2, known };
 }
 
 /** 集合 → 参照結果のエントリ列(FP 昇順)。 */

@@ -121,6 +121,7 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
           ...(state.declared.length === 0 ? {} : { declaredVariables: state.declared }),
           deks: [input.wrap],
           manifest: await manifest(),
+          schemaPolicy: "enabled" as const,
         },
       };
     },
@@ -137,6 +138,7 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
           variables: [...state.variables.map((entry) => entry.statement), ...state.declared],
           deletedVariables: [],
           manifest: await manifest(),
+          schemaPolicy: "enabled" as const,
         },
       };
     },

@@ -317,46 +317,6 @@ describe("maruhi guardian add", () => {
     expect(server.requests.some((r) => r.path === "/auth/recovery")).toBe(false);
   });
 
-  it("when the ledger is a device-key duplicate (pre-DK), guides toward `key recovery` first and does not register", async () => {
-    let createSeen = false;
-    // The ledger is wrapping ward's device key itself (the legacy master
-    // key)
-    const secret = crypto.getRandomValues(new Uint8Array(32));
-    const wrapped = await wrapMasterSecret({
-      recoverySecret: secret,
-      userId: ward.userId,
-      masterSecretBlob: new TextEncoder().encode(serializeStoredMasterKey(recordOf(ward))),
-    });
-    if (!wrapped.ok) throw new Error("test wrap failed");
-    const { env } = await startEnv(
-      [
-        chainHandlerOf(built),
-        onRequest("GET", "/auth/recovery", () => ({
-          status: 200,
-          json: {
-            suite: "maruhi/v1",
-            nonceHex: Buffer.from(wrapped.value.nonce).toString("hex"),
-            ciphertextHex: Buffer.from(wrapped.value.ciphertext).toString("hex"),
-            updatedAtMs: 1754006400000,
-          },
-        })),
-        createHandler(() => {
-          createSeen = true;
-        }),
-      ],
-      ward,
-    );
-    env.setPromptResponses([
-      await lastWordOf(alice),
-      Redacted.value(formatRecoveryCode(Redacted.make(secret))),
-    ]);
-    expect(await runCli(["guardian", "add", "--mode", "any", alice.userId], env.layer)).toBe(1);
-    expect(createSeen).toBe(false);
-    expect(env.errors.join("\n")).toContain(
-      "The recovery ledger holds a copy of this device's key (an install from before device keys), not a separate reserve key. Run `maruhi key recovery` first: it creates a reserve key, seals it with a new recovery code and replaces the ledger. Then re-run `maruhi guardian add …`",
-    );
-  });
-
   it("non-members, self, duplicates, and a single-person `all` fail before sending", async () => {
     const { env, server } = await startEnv([chainHandlerOf(built), createHandler(() => {})], ward);
     expect(await runCli(["guardian", "add", "--mode", "any", "user-stranger"], env.layer)).toBe(1);

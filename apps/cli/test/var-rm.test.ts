@@ -308,6 +308,7 @@ describe("the CAS retry and the binding to the confirmed target", () => {
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: built.hashes[built.hashes.length - 1],
+          attestations: [],
         },
       })),
       onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull/metadata`, () => {
@@ -322,6 +323,7 @@ describe("the CAS retry and the binding to the confirmed target", () => {
             variables: first ? [declaredV2] : [replacement],
             deletedVariables: [],
             manifest: first ? firstManifest : secondManifest,
+            schemaPolicy: "enabled" as const,
           },
         };
       }),

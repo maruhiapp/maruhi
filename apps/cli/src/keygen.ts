@@ -164,7 +164,7 @@ export function keyShowOp(input: {
       yield* io.log(`recovery:               registered${updated}`);
       if (reserve === undefined) {
         yield* logNote(
-          "the recovery ledger is registered but this machine has no record of the reserve key it holds. `maruhi key recovery` opens the ledger (recovery code or --passkey) and restores the record — on an install from before device keys, it also separates the reserve key from this device's key",
+          "the recovery ledger is registered but this machine has no record of the reserve key it holds. `maruhi key recovery` opens the ledger (recovery code or --passkey) and restores the record",
         );
       }
     } else {

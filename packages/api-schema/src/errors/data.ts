@@ -154,7 +154,7 @@ export class MetaStatementRejectedError extends Schema.TaggedError<MetaStatement
  *
  * - `schema-policy-disabled` — レイアウト v2 の新規採用(metaVersion 1 の v2
  *   作成・v1 変数への v2 再発行)を disabled のプロジェクトで受理しない
- *   (有効化ゲート — 旧検証者保護。既に v2 の変数の継続ステートメントは
+ *   (有効化ゲート。既に v2 の変数の継続ステートメントは
  *   ポリシーに依らず受理される)
  * - `schema-required` — locked のプロジェクトで変数作成(metaVersion 1)が
  *   layoutVersion 2 かつ varType 非空を満たさない(作成時の一回検査 —

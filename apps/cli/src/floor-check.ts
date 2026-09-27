@@ -73,11 +73,8 @@ export interface VerifiedPullSnapshot {
    */
   readonly declared: readonly VerifiedVariableStatement[];
   readonly tombstones: readonly VerifiedTombstone[];
-  /**
-   * 検証済みマニフェスト(§4.3)。null は移行経路(--init-manifest)が欠落を
-   * 許容した場合のみ — 通常経路の欠落は values.ts が床検査の前に拒否している。
-   */
-  readonly manifest: VerifiedManifest | null;
+  /** 検証済みマニフェスト(§4.3 — 欠落は values.ts が床検査の前に拒否している)。 */
+  readonly manifest: VerifiedManifest;
 }
 
 /**
@@ -222,12 +219,6 @@ export type FloorViolation =
       readonly pulled: VerifiedManifest;
     }
   | {
-      // マニフェスト床の確立後にマニフェストが配布されない形(--init-manifest の
-      // 欠落許容下でも、一度確立した床に対する欠落は握り潰しの証拠)
-      readonly kind: "manifest-omitted";
-      readonly floor: ManifestFloor;
-    }
-  | {
       // 規則 (c) のマニフェスト適用(§6.3): 床の manifest_version
       // より新しいマニフェストの epoch が pull 時点エポック床より小さい配布
       readonly kind: "stale-manifest-injection";
@@ -265,8 +256,6 @@ export function floorViolationLabel(violation: FloorViolation): string {
       return "an environment-manifest rollback";
     case "manifest-equivocation":
       return "different signed bytes served for the same manifestVersion (evidence of equivocation)";
-    case "manifest-omitted":
-      return "omission of the environment manifest after one was verified (manifest suppression)";
     case "stale-manifest-injection":
       return "an advanced manifestVersion below the epoch baseline (evidence of forward meta injection with an old epoch key)";
   }
@@ -350,22 +339,16 @@ function checkMetaAgainstFloor(
 }
 
 /**
- * マニフェスト床の検査(規則 (a)(b) のマニフェスト部分 + 確立後の欠落)。
- * 床にマニフェスト記録がない(マニフェスト導入前の床)場合は検査対象がない —
- * 記録の確立は検証成功後の床コミットが担う。
+ * マニフェスト床の検査(規則 (a)(b) のマニフェスト部分)。床にマニフェスト記録がない
+ * 場合は検査対象がない — 記録の確立は検証成功後の床コミットが担う。
  */
 function checkManifestAgainstFloor(
   floor: EnvironmentFloor,
-  manifest: VerifiedManifest | null,
+  manifest: VerifiedManifest,
 ): FloorViolation | null {
   const manifestFloor = floor.manifest;
   if (manifestFloor === undefined) {
     return null;
-  }
-  if (manifest === null) {
-    // 一度確立したマニフェスト床に対する欠落は、移行経路(--init-manifest)の
-    // 許容下でも握り潰しの証拠(初期化済み環境のマニフェストは消えない)
-    return { kind: "manifest-omitted", floor: manifestFloor };
   }
   if (manifest.manifestVersion < manifestFloor.manifestVersion) {
     return { kind: "manifest-rollback", floor: manifestFloor, pulled: manifest };
@@ -401,11 +384,8 @@ function checkManifestAgainstFloor(
  */
 function checkManifestEpochBaseline(
   floor: EnvironmentFloor,
-  manifest: VerifiedManifest | null,
+  manifest: VerifiedManifest,
 ): FloorViolation | null {
-  if (manifest === null) {
-    return null;
-  }
   const floorVersion = floor.manifest?.manifestVersion ?? 0;
   const baselineEpoch = Math.max(floor.pullEpoch, floor.observedEpoch, floor.manifest?.epoch ?? 0);
   if (manifest.manifestVersion > floorVersion && manifest.epoch < baselineEpoch) {
@@ -700,15 +680,11 @@ export function buildEnvironmentFloor(
     observedEpoch: chainCurrentEpoch,
     metaVersion: snapshot.environment.metaVersion,
     metaSigHashHex: snapshot.environment.metaSigHashHex,
-    ...(snapshot.manifest === null
-      ? {}
-      : {
-          manifest: {
-            manifestVersion: snapshot.manifest.manifestVersion,
-            epoch: snapshot.manifest.epoch,
-            manifestSigHashHex: snapshot.manifest.signedBytesHashHex,
-          },
-        }),
+    manifest: {
+      manifestVersion: snapshot.manifest.manifestVersion,
+      epoch: snapshot.manifest.epoch,
+      manifestSigHashHex: snapshot.manifest.signedBytesHashHex,
+    },
     variables,
   };
 }

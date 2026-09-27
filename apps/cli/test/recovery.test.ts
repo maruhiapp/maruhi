@@ -44,7 +44,12 @@ async function loggedInEnv(origin: string, userId: string): Promise<TestEnv> {
   await seedConfig(env, { server: origin });
   env.keychain.set(
     tokenEntryName(origin),
-    JSON.stringify({ token: "maruhi_pat_stored", userId, tokenId: "tok_1" }),
+    JSON.stringify({
+      token: "maruhi_pat_stored",
+      userId,
+      tokenId: "tok_1",
+      expiresAtMs: 4_102_444_800_000,
+    }),
   );
   return env;
 }
@@ -412,39 +417,6 @@ describe("maruhi key recovery(発行・再発行)", () => {
     expect([...env.keychain.values()].join("\n")).not.toContain(reserveUser.encSkHex);
   });
 
-  it("台帳が端末鍵の複製(pre-DK)なら予備鍵を生成して分離する", async () => {
-    const user = await makeTestUser("user-0001");
-    const { handler, code } = await ledgerHandlerFor(
-      storedMasterRecord(user),
-      user.userId,
-      crypto.getRandomValues(new Uint8Array(32)),
-    );
-    let put: PutBody | null = null;
-    const maruhi = await start([
-      statusHandler(true),
-      handler,
-      putHandler((body) => {
-        put = body;
-      }),
-    ]);
-    const env = await loggedInEnv(maruhi.origin, user.userId);
-    seedSession(env, maruhi.origin, user);
-    env.setPromptResponses([code, lastGroupOf(env)]);
-    expect(await runCli(["key", "recovery"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain(
-      `The recovery ledger holds a copy of this device's key (${user.fingerprintHex}) — an install from before device keys. Separating: creating a reserve key and sealing it instead`,
-    );
-    expect(env.errors.join("\n")).toContain("`maruhi device add --replace`");
-    // 台帳には端末鍵ではない新しい予備鍵が入り、記録される
-    const reserve = await unwrapWithDisplayedCode(env, put as PutBody | null, user.userId);
-    expect(reserve.encPubHex).not.toBe(user.encPubHex);
-    const reserves = await recordedReservesOf(env, maruhi.origin, user.userId);
-    expect(reserves.map((entry) => entry.encPubHex)).toEqual([reserve.encPubHex]);
-    expect(reserves[0]?.keyFingerprintHex).not.toBe(user.fingerprintHex);
-    // 端末鍵はそのまま
-    expect(storedDeviceRecord(env, maruhi.origin, user.userId).encPubHex).toBe(user.encPubHex);
-  });
-
   it("--replace は台帳を開かずに置換する(コード紛失の逃げ道)", async () => {
     const user = await makeTestUser("user-0001");
     let fetched = false;
@@ -681,7 +653,7 @@ describe("maruhi key recover(復元)", () => {
     expect(env.prompts).toEqual(["Enter your recovery code: "]);
     expect(await recordedReservesOf(env, maruhi.origin, user.userId)).toHaveLength(1);
     expect(env.errors.join("\n")).toContain(
-      `Note: recorded ${user.fingerprintHex} on this machine as your reserve key (its ledger record carries the mark maruhi writes when it creates a reserve key)`,
+      `Note: recorded ${user.fingerprintHex} on this machine as your reserve key`,
     );
     // 新しい端末鍵は発行されている(台帳の鍵そのものは保存しない)
     expect(storedDeviceRecord(env, maruhi.origin, user.userId).encPubHex).not.toBe(user.encPubHex);

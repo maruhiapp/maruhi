@@ -121,7 +121,7 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
           variables: state.variables,
           deletedVariables: state.tombstones,
           manifest,
-          ...(input.schemaPolicy === undefined ? {} : { schemaPolicy: input.schemaPolicy }),
+          schemaPolicy: input.schemaPolicy ?? "enabled",
         },
       };
     },

@@ -231,6 +231,7 @@ describe("auto-proposal of existing commands (K6-A)", () => {
       actor: owner,
       authConfig: {
         githubClientId: "dummy-client-id",
+        signupPolicy: "open",
         serverKeyFingerprintHex: serverFpHex,
         serverEncPubHex: SERVER_ENC_PUB_HEX,
       },
@@ -257,6 +258,7 @@ describe("auto-proposal of existing commands (K6-A)", () => {
       actor: owner,
       authConfig: {
         githubClientId: "dummy-client-id",
+        signupPolicy: "open",
         serverKeyFingerprintHex: serverFpHex,
         serverEncPubHex: SERVER_ENC_PUB_HEX,
       },

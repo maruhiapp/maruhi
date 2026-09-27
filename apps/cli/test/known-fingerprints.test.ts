@@ -77,28 +77,6 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     expect(stored.v).toBe(2);
   });
 
-  it("a v1 book (one fingerprint per person) reads as a one-element set and becomes v2 on the next record", async () => {
-    const { book, path } = await makeBook();
-    await writeFile(
-      path,
-      JSON.stringify({
-        v: 1,
-        known: { [ORIGIN]: { [USER_A]: { fingerprintHex: FP_A, verifiedAtMs: 1 } } },
-      }),
-    );
-    const before = await Effect.runPromise(book.lookup(ORIGIN, USER_A));
-    if (before.state !== "hit") throw new Error("expected hit");
-    expect(before.entries).toEqual([{ fingerprintHex: FP_A, verifiedAtMs: 1 }]);
-    await Effect.runPromise(book.record(ORIGIN, USER_A, FP_B));
-    const stored = JSON.parse(await readFile(path, "utf8")) as { v: number };
-    expect(stored.v).toBe(2);
-    const after = await Effect.runPromise(book.lookup(ORIGIN, USER_A));
-    if (after.state !== "hit") throw new Error("expected hit");
-    expect(after.entries.map((entry) => entry.fingerprintHex).toSorted()).toEqual(
-      [FP_A, FP_B].toSorted(),
-    );
-  });
-
   it("read failures other than ENOENT (EISDIR etc.) do not fold into a miss — lookup and record both fail", async () => {
     const { book, path } = await makeBook();
     await mkdir(path);
@@ -142,8 +120,18 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     await writeFile(
       path,
       JSON.stringify({
+        v: 2,
+        known: { [ORIGIN]: { [USER_A]: { fingerprints: { zz: { verifiedAtMs: 1 } } } } },
+      }),
+    );
+    expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("corrupt");
+
+    // A version other than v2 is not read, even if its contents have the v2 shape
+    await writeFile(
+      path,
+      JSON.stringify({
         v: 1,
-        known: { [ORIGIN]: { [USER_A]: { fingerprintHex: "zz", verifiedAtMs: 1 } } },
+        known: { [ORIGIN]: { [USER_A]: { fingerprints: { [FP_A]: { verifiedAtMs: 1 } } } } },
       }),
     );
     expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("corrupt");
@@ -153,7 +141,7 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     // exclusion of prototype pollution)
     await writeFile(
       path,
-      `{"v":1,"known":{"${ORIGIN}":{"__proto__":{"fingerprintHex":"${FP_A}","verifiedAtMs":1}}}}`,
+      `{"v":2,"known":{"${ORIGIN}":{"__proto__":{"fingerprints":{"${FP_A}":{"verifiedAtMs":1}}}}}}`,
     );
     expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("corrupt");
   });

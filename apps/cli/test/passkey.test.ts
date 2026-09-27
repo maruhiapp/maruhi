@@ -70,9 +70,6 @@ const DEVICE_KEY_EXISTS_REFUSAL =
   "A device key already exists on this machine, so there is nothing to recover here. To add this machine as another device of yours, run `maruhi device add` and approve it from a registered device; if an earlier `maruhi key recover` was interrupted before every project registered this device, re-run with --resume";
 const NO_DEVICE_KEY_REFUSAL =
   "No device key on this machine. If you still have a device of yours, add this machine as a device: `maruhi device add` here, then `maruhi device approve` there. If no device is left, open the reserve key with `maruhi key recover` (recovery code), `maruhi key recover --passkey` (a registered passkey), or `maruhi key recover --handoff` (approvals from your guardians). If this is your first key, generate one with `maruhi key generate`";
-const LEDGER_HOLDS_DEVICE_KEY_REFUSAL =
-  "The recovery ledger holds a copy of this device's key (an install from before device keys), not a separate reserve key. Run `maruhi key recovery` first: it creates a reserve key, seals it with a new recovery code and replaces the ledger. Then re-run `maruhi key seal passkey`";
-
 beforeAll(async () => {
   owner = await makeTestUser("user-owner-0001");
   reserve = await makeTestUser("user-owner-0001");
@@ -99,7 +96,12 @@ async function start(handlers: readonly MockHandler[]): Promise<Started> {
 function seedTokenOnly(env: TestEnv, origin: string): void {
   env.keychain.set(
     tokenEntryName(origin),
-    JSON.stringify({ token: "maruhi_pat_stored", userId: owner.userId, tokenId: "tok_1" }),
+    JSON.stringify({
+      token: "maruhi_pat_stored",
+      userId: owner.userId,
+      tokenId: "tok_1",
+      expiresAtMs: 4_102_444_800_000,
+    }),
   );
 }
 
@@ -536,49 +538,6 @@ describe("maruhi key seal passkey (registration)", () => {
     }
   });
 
-  it("never seals to a pre-DK ledger (a device-key duplicate) — guides toward `maruhi key recovery`", async () => {
-    // Ledger B = this device's own key → sealing would only create one
-    // more device-key duplicate, so refuse
-    const preDk = await ledgerFor(owner);
-    const { env, server } = await start([
-      statusHandler([]),
-      preDk.handler,
-      registerHandler(() => {}),
-    ]);
-    seedSession(env, server.origin, owner);
-    env.setPromptResponses([preDk.code]);
-    browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }));
-    expect(await runCli(["key", "seal", "passkey"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain(LEDGER_HOLDS_DEVICE_KEY_REFUSAL);
-    expect(env.browserOpens).toEqual([]);
-    expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
-  });
-
-  it("on a different device too, when the ledger's key is the chain's first key (a pre-DK duplicate), refuses to seal and guides toward `maruhi key recovery` (DK K14-4)", async () => {
-    // Device = owner (the DK device). Ledger B = reserve, but on the chain
-    // it's that person's genesis key
-    const chain = await buildChain([
-      { actor: reserve, operation: genesisOp(reserve) },
-      { actor: reserve, operation: addOwnerDeviceOp(owner) },
-    ]);
-    const { env, server } = await start([
-      statusHandler([]),
-      ledger.handler,
-      registerHandler(() => {}),
-      projectListHandlerOf([chain]),
-      ...appendableProjectHandlers(chain),
-    ]);
-    seedSession(env, server.origin, owner);
-    env.setPromptResponses([ledger.code]);
-    browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }));
-    expect(await runCli(["key", "seal", "passkey"], env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain(
-      `The recovery ledger holds key ${reserve.fingerprintHex}, your first key on 1 project (${chain.projectId}) (the key you created or joined that project with): a copy of a device key from an install before device keys, not a separate reserve key. Run \`maruhi key recovery\` first: it creates a reserve key, seals it with a new recovery code and replaces the ledger. Then re-run \`maruhi key seal passkey\``,
-    );
-    expect(env.browserOpens).toEqual([]);
-    expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
-  });
-
   it("agent environments, non-terminals, and keyless devices are refused before the listener stands up (the code-entry gate first)", async () => {
     const agent = await start([statusHandler([]), ledger.handler]);
     seedDeviceAndLedger(agent.env, agent.server.origin);
@@ -713,29 +672,6 @@ describe("maruhi key recover --passkey (recovery)", () => {
     );
     expect(stderr).not.toContain(PRF_HEX);
     expect(stderr).not.toContain(reserve.encSkHex);
-  });
-
-  it("when the opened key is the first key (a pre-DK duplicate), records it unasked but emits the revocation notice (the device-key generation itself stands — DK K14)", async () => {
-    const { registration } = await registerOnce();
-    // The ledger's key is the project's genesis key = that person's
-    // first key
-    const chain = await buildChain([{ actor: reserve, operation: genesisOp(reserve) }]);
-    const { env, server } = await start([
-      statusHandler([rowOf(registration)]),
-      wrapHandler(registration.wrapId, registration),
-      projectListHandlerOf([chain]),
-      ...appendableProjectHandlers(chain),
-    ]);
-    seedTokenOnly(env, server.origin);
-    browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX }));
-    expect(await runCli(["key", "recover", "--passkey"], env.layer), env.errors.join("\n")).toBe(0);
-    expect(env.prompts).toEqual([]);
-    expect(env.errors.join("\n")).toContain(
-      `the opened key ${reserve.fingerprintHex} is your first key on 1 project (${chain.projectId}) (the key you created or joined that project with), so it is a copy of a device key from an install before device keys, not a reserve key, and it was not recorded as one. If the machine that held it is lost or retired, revoke it now: \`maruhi device revoke ${reserve.fingerprintHex}\`. Then run \`maruhi key recovery\`: it seals a separate reserve key in its place`,
-    );
-    const stored = env.keychain.get(masterKeyEntryName(server.origin, owner.userId));
-    expect(stored).toBeDefined();
-    expect(stored).not.toBe(serializedReserveRecord());
   });
 
   it("aborts, unregistered credentials, wrong PRFs, and a wrap disagreeing with the row don't recover; an abort fetches no blob", async () => {

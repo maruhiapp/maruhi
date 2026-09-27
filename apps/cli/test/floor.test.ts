@@ -11,7 +11,7 @@
 // and concurrent commits of different variables union". The second half
 // (wiring tests) lives in floor-detection.test.ts.
 
-import { appendFile, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -558,74 +558,6 @@ describe("makeFileFloorStore (append-only log + fold)", () => {
       const result = await load();
       expect(result.floor?.environments["prod"]?.variables["va"]).toMatchObject({ version: 4 });
       expect(result.floor?.chainHead?.seq).toBe(4);
-    });
-  });
-
-  describe("migration from the legacy storage form (a single JSON snapshot)", () => {
-    const legacy = {
-      v: 1,
-      chainHead: { seq: 3, hashHex: HASH_A },
-      environments: {
-        prod: {
-          pullEpoch: 2,
-          metaVersion: 1,
-          metaSigHashHex: HASH_A,
-          manifest: { manifestVersion: 1, epoch: 2, manifestSigHashHex: HASH_B },
-          variables: {
-            va: {
-              status: "active",
-              version: 3,
-              epoch: 2,
-              valueSigHashHex: HASH_B,
-              metaVersion: 1,
-              metaSigHashHex: HASH_C,
-            },
-          },
-        },
-      },
-    };
-
-    it("compat-reads the legacy file (observedEpoch derived from known verified facts) and migrates to the log on the first append", async () => {
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, `${PROJECT_ID}.json`), JSON.stringify(legacy));
-      const loaded = await load();
-      expect(loaded.state).toBe("loaded");
-      expect(loaded.floor?.environments["prod"]).toMatchObject({
-        pullEpoch: 2,
-        observedEpoch: 2,
-        metaVersion: 1,
-      });
-      // The first append migrates the legacy state into the log as a
-      // snapshot record
-      await Effect.runPromise(store.commitHead(PROJECT_ID, { seq: 4, hashHex: HASH_B }));
-      const raw = await readFile(logPath(), "utf8");
-      expect(raw).toContain('"r":"snapshot"');
-      const result = await load();
-      expect(result.floor?.chainHead).toEqual({ seq: 4, hashHex: HASH_B });
-      expect(result.floor?.environments["prod"]?.variables["va"]).toMatchObject({ version: 3 });
-      // The legacy file remains as forensic material (append-only
-      // discipline — don't delete it)
-      const entries = await readdir(dir);
-      expect(entries).toContain(`${PROJECT_ID}.json`);
-    });
-
-    it("distinguishes a corrupt legacy file as corrupt", async () => {
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, `${PROJECT_ID}.json`), "{broken");
-      expect(await load()).toEqual({ floor: null, state: "corrupt", droppedRecords: 0 });
-    });
-
-    it("an empty .jsonl (a remnant crashed between open and write) does not hide a valid legacy form", async () => {
-      // open("a") creates the file immediately, so a crash right after can
-      // leave a 0-byte log. Collapsing that into missing (first run) would
-      // let a run that does have a valid legacy floor run floorless
-      // (fail-open) and emit a factually wrong first-sync notice
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, `${PROJECT_ID}.json`), JSON.stringify(legacy));
-      await writeFile(join(dir, `${PROJECT_ID}.jsonl`), "");
-      const loaded = await load();
-      expect(loaded.state).toBe("loaded");
-      expect(loaded.floor?.environments["prod"]?.variables["va"]).toMatchObject({ version: 3 });
     });
   });
 

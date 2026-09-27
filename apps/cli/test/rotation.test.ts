@@ -92,8 +92,8 @@ interface WireFlag {
   readonly targetServerKeyFingerprintHex?: string;
   readonly recommendedAtMs: number;
   readonly triggerChainSeq: number;
-  /** AUDIT_SPEC §3.3's trigger (2026-09-14 ES. Legacy servers don't carry it). */
-  readonly trigger?: "remove_member" | "change_role" | "revoke_server";
+  /** AUDIT_SPEC §3.3's trigger (2026-09-14 ES). */
+  readonly trigger: "remove_member" | "change_role" | "revoke_server";
 }
 
 interface RotationServerState {
@@ -163,6 +163,7 @@ async function makeRotationServer(input: {
         entries: input.built.entries as readonly ChainEntry[],
         headSeq: input.built.entries.length,
         headHashHex: input.built.hashes[input.built.hashes.length - 1],
+        attestations: [],
       },
     })),
     onRequest("GET", `/projects/${projectId}/environments`, () =>
@@ -172,6 +173,7 @@ async function makeRotationServer(input: {
             status: 200,
             json: {
               environments: [{ environmentId: ENV_ID, currentEpoch, statement: envStatement }],
+              schemaPolicy: "enabled",
             },
           },
     ),
@@ -187,6 +189,7 @@ async function makeRotationServer(input: {
               variables: [activeStatement],
               deletedVariables: [deletedStatement],
               manifest,
+              schemaPolicy: "enabled" as const,
             },
           },
     ),
@@ -232,6 +235,7 @@ function flagFor(overrides: Partial<WireFlag> & { readonly variableId: string })
     targetUserId: target.userId,
     recommendedAtMs: 1_700_000_000_000,
     triggerChainSeq: 4,
+    trigger: "remove_member",
     ...overrides,
   };
 }
@@ -253,8 +257,7 @@ describe("maruhi rotation list", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain("Rotation flags: 2 active flags");
     // trigger = change_role (demotion / narrowing — 2026-09-14 ES) is
-    // distinguished from removal. No trigger (legacy server) keeps the
-    // traditional member: display
+    // distinguished from removal. remove_member keeps the member: display
     expect(logs).toContain(`member (role/scope changed):${target.userId}`);
     // Name resolution: active comes from the statement, deleted from the
     // tombstone's name (§4.2)

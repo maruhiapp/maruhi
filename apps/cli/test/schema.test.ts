@@ -151,6 +151,7 @@ function chainHandler(): MockHandler {
       entries: built.entries,
       headSeq: built.entries.length,
       headHashHex: built.hashes[built.hashes.length - 1],
+      attestations: [],
     },
   }));
 }
@@ -210,6 +211,7 @@ function pullHandler(overrides?: {
         ...(declaredVariables.length === 0 ? {} : { declaredVariables }),
         deks: [wrap1],
         manifest,
+        schemaPolicy: "enabled" as const,
       },
     };
   });
@@ -227,10 +229,6 @@ interface MetadataOverrides {
     body: { statement: WireDistributedVariableStatement; manifest: WireDistributedManifest } | null;
     readonly base: readonly WireDistributedVariableStatement[];
   };
-}
-
-function metadataPolicyField(overrides?: MetadataOverrides): Record<string, unknown> {
-  return overrides?.schemaPolicy === undefined ? {} : { schemaPolicy: overrides.schemaPolicy };
 }
 
 /** Distribution of an accepted meta operation (base + the accepted statement + the accepted manifest). */
@@ -259,7 +257,7 @@ function echoMetadataJson(
       issuerUserId: owner.userId,
       issuerKeyFingerprintHex: owner.fingerprintHex,
     },
-    ...metadataPolicyField(overrides),
+    schemaPolicy: overrides?.schemaPolicy ?? "enabled",
   };
 }
 
@@ -286,7 +284,7 @@ async function defaultMetadataJson(overrides?: MetadataOverrides): Promise<unkno
     variables,
     deletedVariables: [],
     manifest,
-    ...metadataPolicyField(overrides),
+    schemaPolicy: overrides?.schemaPolicy ?? "enabled",
   };
 }
 
@@ -940,6 +938,7 @@ describe("maruhi push's activation (the first value push onto a declared — §1
                   issuerUserId: owner.userId,
                   issuerKeyFingerprintHex: owner.fingerprintHex,
                 },
+                schemaPolicy: "enabled" as const,
               },
             };
           }
@@ -954,6 +953,7 @@ describe("maruhi push's activation (the first value push onto a declared — §1
               variables: first ? [] : [declaredRequired],
               deletedVariables: [],
               manifest: first ? emptyManifest : declaredManifest,
+              schemaPolicy: "enabled" as const,
             },
           };
         },

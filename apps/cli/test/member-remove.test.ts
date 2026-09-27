@@ -151,6 +151,7 @@ async function makeRemoveServer(input: {
         entries,
         headSeq: entries.length,
         headHashHex: hashes[hashes.length - 1],
+        attestations: [],
       },
     })),
     async (request) => {
@@ -183,6 +184,7 @@ async function makeRemoveServer(input: {
           currentEpoch: environments[statement.environmentId]?.currentEpoch ?? 1,
           statement,
         })),
+        schemaPolicy: "enabled",
       },
     })),
     async (request) => {
@@ -225,6 +227,7 @@ async function makeRemoveServer(input: {
           // Always bundle the baseline checkpoint's stored row when one
           // exists (§12-7 — rule 2's material)
           ...(checkpointSnapshot === undefined ? {} : { checkpointSnapshot }),
+          schemaPolicy: "enabled" as const,
         },
       };
     },
@@ -270,6 +273,7 @@ async function makeRemoveServer(input: {
         environment.deks.push({
           suite: wrap.suite,
           epoch: wrap.epoch,
+          recipientEncPubHex: wrap.recipientEncPubHex,
           encHex: wrap.encHex,
           ciphertextHex: wrap.ciphertextHex,
           signatureHex: wrap.signatureHex,

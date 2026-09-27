@@ -219,6 +219,7 @@ async function makeAuditServer(input: AuditServerInput): Promise<readonly MockHa
         entries: input.built.entries as readonly ChainEntry[],
         headSeq: input.built.entries.length,
         headHashHex: input.built.hashes[input.built.hashes.length - 1],
+        attestations: [],
       },
     })),
     onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`, () =>
@@ -233,6 +234,7 @@ async function makeAuditServer(input: AuditServerInput): Promise<readonly MockHa
               variables: [activeStatement],
               deletedVariables: [],
               manifest,
+              schemaPolicy: "enabled" as const,
             },
           },
     ),

@@ -9,9 +9,8 @@
 //     registers them with this device's registration signature (the
 //     registered rows open under the sibling's key and pass §5.1 signature
 //     verification)
-//  2. Nothing is registered when there is no gap, for legacy-server rows
-//     (no `recipientEncPubHex`), or for a device that isn't a recipient
-//     (outside the effective scope)
+//  2. Nothing is registered when there is no gap, or for a device that isn't
+//     a recipient (outside the effective scope)
 //  3. An epoch this device also cannot open is not wrapped — it is reported.
 //     A registration failure stays a Note; pull still exits 0
 
@@ -94,12 +93,8 @@ afterEach(async () => {
 });
 
 /** A distribution row destined to a device key (the new-server shape — carries `recipientEncPubHex`). */
-async function rowFor(
-  device: TestUser,
-  epoch: number,
-  options: { readonly withRecipientKey?: boolean } = {},
-): Promise<WireRecipientDek & { readonly recipientEncPubHex?: string }> {
-  const wrap = await wrapDekFor({
+async function rowFor(device: TestUser, epoch: number): Promise<WireRecipientDek> {
+  return wrapDekFor({
     projectId: built.projectId,
     environmentId: ENV_ID,
     epoch,
@@ -107,9 +102,6 @@ async function rowFor(
     recipient: device,
     signer: owner,
   });
-  return options.withRecipientKey === false
-    ? wrap
-    : { ...wrap, recipientEncPubHex: device.encPubHex };
 }
 
 interface Posted {
@@ -151,6 +143,7 @@ async function start(input: {
         entries: built.entries,
         headSeq: built.entries.length,
         headHashHex: built.hashes[built.hashes.length - 1],
+        attestations: [],
       },
     })),
     onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => ({
@@ -163,6 +156,7 @@ async function start(input: {
         deletedVariables: [],
         deks: input.rows,
         manifest,
+        schemaPolicy: "enabled" as const,
       },
     })),
     onRequest("POST", `/projects/${projectId}/environments/${ENV_ID}/deks`, (request) => {
@@ -238,7 +232,7 @@ describe("maruhi pull fills in the missing epochs of your other devices (DK K11)
     );
   });
 
-  it("registers nothing when there is no gap, for legacy-server rows, or for a non-recipient device's gap", async () => {
+  it("registers nothing when there is no gap, or for a non-recipient device's gap", async () => {
     const complete = await start({
       rows: [
         await rowFor(owner, 1),
@@ -249,18 +243,6 @@ describe("maruhi pull fills in the missing epochs of your other devices (DK K11)
     });
     expect(await runCli(["pull"], complete.env.layer)).toBe(0);
     expect(complete.posted).toEqual([]);
-
-    // A legacy server (rows without `recipientEncPubHex` = attribution
-    // unknowable) derives nothing
-    const legacy = await start({
-      rows: [
-        await rowFor(owner, 1, { withRecipientKey: false }),
-        await rowFor(owner, 2, { withRecipientKey: false }),
-      ],
-    });
-    expect(await runCli(["pull"], legacy.env.layer)).toBe(0);
-    expect(legacy.posted).toEqual([]);
-    expect(legacy.env.errors.join("\n")).not.toContain("had no keys for");
   });
 
   it("reports rather than wraps an epoch this device also cannot open; a registration failure stays a Note and pull is 0", async () => {

@@ -15,7 +15,7 @@
 
 import type { AuditActor } from "@maruhi/core";
 import { auditPayloadWith } from "@maruhi/core";
-import { and, desc, eq, inArray, isNull, lt, or, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, or, type SQL, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
 
@@ -171,11 +171,7 @@ interface D1AuditReadPage {
 /** D1 監査行の読み取り形(共通列のうち §7 の応答が運ぶもの。NULL は null)。 */
 export interface D1StoredAuditEventRow {
   readonly seq: number;
-  /**
-   * ワイヤ行識別子(row_id)。NULL 観測時の遅延 backfill により原則常在
-   * (補填と再読の間に旧コードが並行挿入する極小レースのみ空文字列 —
-   * その要求は encode 失敗しうるが次の読み取りが再補填する)。
-   */
+  /** ワイヤ行識別子(row_id — 16 バイト乱数 hex)。 */
   readonly rowId: string;
   readonly serverTs: number;
   readonly event: string;
@@ -256,50 +252,14 @@ function parseStoredPayload(value: string | null): Readonly<Record<string, unkno
 
 type D1AuditTable = typeof userAuditEvents | typeof orgAuditEvents;
 
-/**
- * row_id の遅延 backfill。マイグレーション(20260816030340)の backfill 後も、
- * デプロイ間隙(`db:migrate` 適用後・旧 worker 稼働中、およびロールバック時)に
- * 旧コードが row_id なしの行を書く窓が残る。その行をワイヤへ出すと `id` の
- * Schema encode が失敗して読み取りが恒久 500 になるため、
- * NULL 行を観測した読み取りだけがマイグレーションと同一の文を冪等に再適用する
- * (無条件に走らせると、全テナント共有の D1 writer に監査読み取りのたびに
- * 書き込みが乗る)。監査内容の列には触れない
- * (§1-4 の append-only は内容の不変性 — row_id はサーバー採番の合成識別子で、
- * この補填は §5.1 backfill の繰り延べにすぎない)。randomblob は行ごとに評価
- * され、WHERE row_id IS NULL は一意索引の NULL エントリを seek する。
- *
- * 更新対象は**このページで観測した seq に限定する**: テーブル全体の
- * NULL 行を触ると、1 回の読み取りが無関係テナントの行まで UPDATE し、並行 reader
- * や(ロールバック中の)旧 worker の並行挿入と衝突する。観測 seq への限定で
- * 1 読み取りあたりの書き込みは高々ページサイズに有界になる。
- */
-async function backfillMissingRowIds(
-  db: Db,
-  table: D1AuditTable,
-  seqs: readonly number[],
-): Promise<void> {
-  // D1 の 1 クエリあたりバインドパラメータ上限(100)より下で分割する: ページ
-  // 上限は 200 で、全行 NULL の legacy ページでは inArray が seq ごとに 1
-  // パラメータを束縛する — 分割しないと、まさに補填が要るページの読み取りが
-  // 決定的に失敗する
-  const CHUNK = 90;
-  for (let offset = 0; offset < seqs.length; offset += CHUNK) {
-    await db
-      .update(table)
-      .set({ rowId: sql`lower(hex(randomblob(16)))` })
-      .where(and(isNull(table.rowId), inArray(table.seq, seqs.slice(offset, offset + CHUNK))));
-  }
-}
-
-/** selectAuditPage の生 1 回分の読み(rowId は補填前なら NULL がありうる)。 */
+/** selectAuditPage の生 1 回分の読み。 */
 async function readAuditPageRows(
   db: Db,
   table: D1AuditTable,
   predicate: SQL | undefined,
   page: D1AuditReadPage,
 ): Promise<
-  readonly (Omit<D1StoredAuditEventRow, "rowId" | "payload"> & {
-    readonly rowId: string | null;
+  readonly (Omit<D1StoredAuditEventRow, "payload"> & {
     readonly payload: string | null;
   })[]
 > {
@@ -342,10 +302,6 @@ async function readAuditPageRows(
  * ページ条件(seq 降順 + row_id カーソル)を述語に合成して読む。カーソルの
  * row_id → seq 解決は**同じ可視性述語つき**で行う(述語外の行の id を差しても
  * 「不明」と同一 = 空ページ。存在オラクルにしない — AUDIT_SPEC §7)。
- * row_id が NULL の行(デプロイ間隙の旧コード書き込み)をページ内に観測した
- * ときだけ遅延 backfill を実行して読み直す — 定常状態の読み取りは純粋な
- * 読み取りのまま。カーソルは常に過去ページが返した非 NULL の row_id なので、
- * カーソル解決が補填前の状態で失敗することはない。
  */
 async function selectAuditPage(
   db: Db,
@@ -353,20 +309,8 @@ async function selectAuditPage(
   predicate: SQL | undefined,
   page: D1AuditReadPage,
 ): Promise<readonly D1StoredAuditEventRow[]> {
-  let rows = await readAuditPageRows(db, table, predicate, page);
-  const missingSeqs = rows.filter((row) => row.rowId === null).map((row) => row.seq);
-  if (missingSeqs.length > 0) {
-    await backfillMissingRowIds(db, table, missingSeqs);
-    rows = await readAuditPageRows(db, table, predicate, page);
-  }
-  return rows.map((row) => ({
-    ...row,
-    // 補填後の再読でも、補填と再読の間に旧 worker が書いた行は NULL であり
-    // うる(極小レース)。その要求の encode は失敗しうるが、次の読み取りが
-    // 再度補填する — fallback は型の絞り込み + この残余のためのもの
-    rowId: row.rowId ?? "",
-    payload: parseStoredPayload(row.payload),
-  }));
+  const rows = await readAuditPageRows(db, table, predicate, page);
+  return rows.map((row) => ({ ...row, payload: parseStoredPayload(row.payload) }));
 }
 
 /**

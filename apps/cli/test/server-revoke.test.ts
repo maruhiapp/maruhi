@@ -225,6 +225,7 @@ async function makeRevokeServer(input: {
         entries,
         headSeq: entries.length,
         headHashHex: hashes[hashes.length - 1],
+        attestations: [],
       },
     })),
     onRequest("GET", `/projects/${projectId}/environments`, () => ({
@@ -235,6 +236,7 @@ async function makeRevokeServer(input: {
           currentEpoch: environments[statement.environmentId]?.currentEpoch ?? 1,
           statement,
         })),
+        schemaPolicy: "enabled",
       },
     })),
     async (request) => {
@@ -285,6 +287,7 @@ async function makeRevokeServer(input: {
           // Always bundle the stored row of the base checkpoint when
           // present (§12-7 — rule 2's material)
           ...snapshotFieldOf(environmentId),
+          schemaPolicy: "enabled" as const,
         },
       };
     },
@@ -330,6 +333,7 @@ async function makeRevokeServer(input: {
         environment.deks.push({
           suite: wrap.suite,
           epoch: wrap.epoch,
+          recipientEncPubHex: wrap.recipientEncPubHex,
           encHex: wrap.encHex,
           ciphertextHex: wrap.ciphertextHex,
           signatureHex: wrap.signatureHex,

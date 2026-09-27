@@ -96,6 +96,7 @@ async function makeGrantServer(input: {
       status: 200,
       json: input.authConfig ?? {
         githubClientId: "dummy-client-id",
+        signupPolicy: "open",
         serverKeyFingerprintHex: serverFpHex,
         serverEncPubHex: SERVER_ENC_PUB_HEX,
       },
@@ -107,6 +108,7 @@ async function makeGrantServer(input: {
         entries,
         headSeq: entries.length,
         headHashHex: hashes[hashes.length - 1],
+        attestations: [],
       },
     })),
     async (request) => {
@@ -254,7 +256,12 @@ describe("maruhi server grant", () => {
       if (epochs.includes(1)) {
         return {
           status: 409,
-          json: { _tag: "DekWrapExists", epoch: 1, recipientUserId: serverFpHex },
+          json: {
+            _tag: "DekWrapExists",
+            epoch: 1,
+            recipientUserId: serverFpHex,
+            storedRecipientEncPubHex: SERVER_ENC_PUB_HEX,
+          },
         };
       }
       return null;
@@ -330,7 +337,7 @@ describe("maruhi server grant", () => {
     const state = await makeGrantServer({
       built,
       deksByEnvironment: {},
-      authConfig: { githubClientId: "dummy-client-id" },
+      authConfig: { githubClientId: "dummy-client-id", signupPolicy: "open" },
     });
     const env = await startGrantEnv(state, built.projectId, owner);
     expect(
@@ -354,6 +361,7 @@ describe("maruhi server grant", () => {
       // meaningless
       authConfig: {
         githubClientId: "dummy-client-id",
+        signupPolicy: "open",
         serverKeyFingerprintHex: serverFpHex,
         serverEncPubHex: "5b".repeat(32),
       },

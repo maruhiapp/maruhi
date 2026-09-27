@@ -240,7 +240,7 @@ async function startFixture(input: {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-/** `printf %s "$VALUE" | maruhi push ALPHA --env prod [...args]`。 */
+/** `printf %s "$VALUE" | maruhi push ALPHA --env prod [...args]`. */
 function push(fixture: Fixture, value: string, ...args: string[]): Promise<number> {
   return pushNamed(fixture, "ALPHA", value, ...args);
 }

@@ -177,13 +177,8 @@ function verifyAndUnwrapDeks(input: {
     const chainEpoch = environment.currentEpoch;
     const byEpoch = new Map<number, Redacted.Redacted<Uint8Array>>();
     // 自分の端末宛の行だけを開く(AUTH_SPEC §12-6 の端末軸 — 同じ人の全端末分が 1 応答で
-    // 届く。DK K4-16: 読む → 署名検証 → 開封。他端末宛の行は毒ラップではない)。
-    // `recipientEncPubHex` を運ばない旧サーバー(K3 前 = 端末 1 つ)の行は全部自分宛
-    const mine = input.deks.filter(
-      (wrap) =>
-        wrap.recipientEncPubHex === undefined ||
-        wrap.recipientEncPubHex === input.recipient.encPubHex,
-    );
+    // 届く。DK K4-16: 読む → 署名検証 → 開封。他端末宛の行は毒ラップではない)
+    const mine = input.deks.filter((wrap) => wrap.recipientEncPubHex === input.recipient.encPubHex);
     for (const wrap of mine) {
       if (wrap.suite !== SUITE_ID) {
         // Schema の Literal ピンで現状は到達しないが、検証座標に申告 suite を

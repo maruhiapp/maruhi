@@ -195,6 +195,7 @@ function chainHandler(built: BuiltChain): MockHandler {
       entries: built.entries,
       headSeq: built.entries.length,
       headHashHex: built.hashes[built.hashes.length - 1],
+      attestations: [],
     },
   }));
 }
@@ -228,6 +229,7 @@ function pullHandler(overrides: PullOverrides = {}): MockHandler {
       deks: wraps,
       manifest: overrides.manifest ?? manifestMain,
       ...(served === null ? {} : { checkpointSnapshot: served }),
+      schemaPolicy: "enabled" as const,
     },
   }));
 }
@@ -387,6 +389,7 @@ describe("accepting positive cases of rule 2 (§6.3 checkpoint integrity 2)", ()
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: built.hashes[built.hashes.length - 1],
+          attestations: [],
         },
       };
     };
@@ -603,6 +606,7 @@ describe("classifying a benign race (baseline advancing after the fetch view is 
           entries: built.entries,
           headSeq: built.entries.length,
           headHashHex: built.hashes[built.hashes.length - 1],
+          attestations: [],
         },
       };
     };
@@ -722,6 +726,7 @@ describe("the lease path (§14-2 — reaching the same implementation and the ba
       deletedVariables: overrides.deletedVariables ?? [],
       manifest: overrides.manifest ?? manifestMain,
       ...(served === null ? {} : { checkpointSnapshot: served }),
+      schemaPolicy: "enabled" as const,
     } as LeaseWire;
   }
 

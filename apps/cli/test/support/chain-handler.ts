@@ -30,6 +30,7 @@ export function chainHandlerOf(chain: BuiltChain): MockHandler {
             entries: chain.entries,
             headSeq: chain.entries.length,
             headHashHex: chain.hashes[chain.hashes.length - 1],
+            attestations: [],
           },
         }
       : null;
@@ -43,7 +44,13 @@ export function servedChainResponse(
 ): { readonly status: 200; readonly json: unknown } {
   return {
     status: 200,
-    json: { projectId, entries, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
+    json: {
+      projectId,
+      entries,
+      headSeq: entries.length,
+      headHashHex: hashes[hashes.length - 1],
+      attestations: [],
+    },
   };
 }
 
@@ -87,7 +94,7 @@ export function appendableProjectHandlers(
     },
     onRequest("GET", `/projects/${projectId}/environments`, () => ({
       status: 200,
-      json: { environments: [] },
+      json: { environments: [], schemaPolicy: "enabled" },
     })),
   ];
 }

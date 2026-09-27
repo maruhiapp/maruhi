@@ -27,7 +27,7 @@ import {
   MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
 } from "../src/policy.ts";
 import { wrapRowsExceeded } from "../src/quotas.ts";
-import { makeDek, signEntryAt, wrapDekForAll } from "./support/data-crypto.ts";
+import { makeDek, signEntryAt, vectorKeyOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentOk,
@@ -281,7 +281,11 @@ describe("数量ポリシー(§12-8 の残り: 環境・変数・ラップ件数
 
     // 経路 3: 登録 API(修復再登録 — §12-6)も同じ上限に束縛される
     const removedOne = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
-      wraps: ALL_MEMBERS.map((recipientUserId) => ({ epoch: 1, recipientUserId })),
+      wraps: ALL_MEMBERS.map((recipientUserId) => ({
+        epoch: 1,
+        recipientUserId,
+        recipientEncPubHex: vectorKeyOf(recipientUserId).enc_pub_hex,
+      })),
     });
     expect(removedOne.status).toBe(204);
     // 3 行解放 → 上限まで 3 行の余裕。4 行(シード +1)を足して再び上限超過にする

@@ -477,7 +477,12 @@ describeSocket("maruhi agent status", () => {
     await Effect.runPromise(
       agent.set(
         tokenEntryName("https://maruhi.test"),
-        JSON.stringify({ token: "maruhi_pat_stored", userId: "user-0001", tokenId: "tok_1" }),
+        JSON.stringify({
+          token: "maruhi_pat_stored",
+          userId: "user-0001",
+          tokenId: "tok_1",
+          expiresAtMs: 4_102_444_800_000,
+        }),
       ),
     );
     // The current shape is complete but the hex is broken = the corruption
@@ -603,7 +608,12 @@ describeSocket("key recover lands in memory inside an agent session", () => {
     await Effect.runPromise(
       agent.set(
         tokenEntryName(maruhi.origin),
-        JSON.stringify({ token: "maruhi_pat_stored", userId: user.userId, tokenId: "tok_1" }),
+        JSON.stringify({
+          token: "maruhi_pat_stored",
+          userId: user.userId,
+          tokenId: "tok_1",
+          expiresAtMs: 4_102_444_800_000,
+        }),
       ),
     );
 
@@ -654,7 +664,12 @@ describeSocket("key recover lands in memory inside an agent session", () => {
     await Effect.runPromise(
       agent.set(
         tokenEntryName(maruhi2.origin),
-        JSON.stringify({ token: "maruhi_pat_stored", userId: user.userId, tokenId: "tok_1" }),
+        JSON.stringify({
+          token: "maruhi_pat_stored",
+          userId: user.userId,
+          tokenId: "tok_1",
+          expiresAtMs: 4_102_444_800_000,
+        }),
       ),
     );
     await Effect.runPromise(

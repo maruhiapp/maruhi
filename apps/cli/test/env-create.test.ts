@@ -100,6 +100,7 @@ function chainHandler(
       entries: built.entries,
       headSeq: built.entries.length,
       headHashHex: built.hashes[built.hashes.length - 1],
+      attestations: [],
     },
   }));
 }
@@ -131,6 +132,7 @@ function acceptingCreateServer(input: {
         entries,
         headSeq: entries.length,
         headHashHex: hashes[hashes.length - 1],
+        attestations: [],
       },
     })),
     async (request) => {
@@ -352,6 +354,7 @@ describe("maruhi env create", () => {
             entries,
             headSeq: entries.length,
             headHashHex: hashes[hashes.length - 1],
+            attestations: [],
           },
         })),
         async (request) => {
@@ -449,6 +452,7 @@ describe("maruhi env create", () => {
               entries: built.entries,
               headSeq: built.entries.length,
               headHashHex: built.hashes[built.hashes.length - 1],
+              attestations: [],
             },
           };
         }),
@@ -502,6 +506,7 @@ describe("maruhi env create", () => {
             entries,
             headSeq: entries.length,
             headHashHex: hashes[hashes.length - 1],
+            attestations: [],
           },
         })),
         async (request) => {
@@ -782,6 +787,7 @@ describe("maruhi env create", () => {
             entries,
             headSeq: entries.length,
             headHashHex: hashes[hashes.length - 1],
+            attestations: [],
           },
         };
       }),
