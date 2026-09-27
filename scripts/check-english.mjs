@@ -84,13 +84,20 @@ function addedLines() {
   const out = [];
   let path = null;
   let line = 0;
+  // `+++ ` and `--- ` are file headers only before a block's first hunk; inside
+  // a hunk an added line whose text starts with `++` also reads `+++ …`.
+  let inHunk = false;
   for (const raw of git(`diff -U0 --no-color ${mergeBase()}`).split("\n")) {
     const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
-    if (hunk) {
+    if (raw.startsWith("diff --git ")) {
+      path = null;
+      inHunk = false;
+    } else if (hunk) {
+      inHunk = true;
       line = Number(hunk[1]);
-    } else if (raw.startsWith("+++ ")) {
+    } else if (!inHunk && raw.startsWith("+++ ")) {
       path = raw.startsWith("+++ b/") ? raw.slice(6) : null;
-    } else if (path && raw.startsWith("+")) {
+    } else if (inHunk && path && raw.startsWith("+")) {
       out.push({ path, line, text: raw.slice(1) });
       line += 1;
     }
