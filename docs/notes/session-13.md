@@ -1,262 +1,314 @@
-# セッション 13 メモ(DEK 真正性の実装 — セッション 12 仕様の実装 PR-1)
+# Session 13 notes (implementing DEK authenticity — implementation PR-1 of the session-12 spec)
 
-日付: 2026-08-04。前提: PR #27(CRYPTO_SPEC 0.4-draft = 値・DEK・変数メタデータの
-真正性仕様)マージ済みを確認して開始(merge commit `5d0f576`。マージをもって仕様 —
-session-12.md §10 の要裁定の推奨案込み — は所有者承認済みとして扱う)。
-スコープ: session-12.md §9 の **PR-1 = DEK 真正性(案 B)**。ベクター先行 →
-crypto → api-schema → server → CLI の層順でコミット。
+Date: 2026-08-04. Prerequisites: started after confirming PR #27 (CRYPTO_SPEC
+0.4-draft = authenticity spec for values, DEKs, and variable metadata) is merged
+(merge commit `5d0f576`. With the merge, the spec — including the recommended
+options for the to-be-ruled items in session-12.md §10 — is treated as
+owner-approved).
+Scope: **PR-1 = DEK authenticity (option B)** from session-12.md §9. Commits in
+layer order: vectors first → crypto → api-schema → server → CLI.
 
-## 1. やったこと
+## 1. What was done
 
-1. **テストベクター先行**(実装より先にコミット。人間レビュー対象):
-   - `tools/generate_reference.py` を拡張: 新 op `create_environment`(payload 順
-     `[environment_id, dek_commitment_hex]`)、`rotate_epoch` の 4 フィールド化
-     (末尾に `dek_commitment_hex`)、§5.2 コミットメントの参照計算(LP + SHA-256)
-   - `chain-entries.json` の**再生成**(session-12 §8-4 の影響一覧どおり):
-     全 rotate に create が先行する 12 エントリの正規チェーン、
-     `expected_head_states` の環境集合への意味論拡張(現エポック・作成 seq・
-     エポック開始 seq・エポックごとのコミットメント —「未観測 = 1」廃止)、
-     authz negative 追加(`authz-create-env-duplicate` /
-     `authz-rotate-unknown-environment` / `authz-create-env-reader` / 検査順序
-     3 件 / コミットメント形式違反 4 件 = payload 構造検査段 / コミットメント
-     改竄の署名系 2 件)、`valid_appends` に環境ライフサイクルの許容境界 2 件、
-     `environment_deks` セクション(ダミー DEK と実計算コミットメント —
-     実装テストが §5.2 照合まで検査できる)
-   - `dek-commitment.json` 新規(session-12 §8-3): 正例(dek-wrap.json basic と
-     同一 DEK・座標 + epoch 1)+ `dek-mismatch` / 座標移植 3 種 / `wrong-domain` /
-     `uppercase-hex` + `rewrap_invariance`(backfill・修復再登録の不変)
-   - 差分確認: 既存 6 ベクターファイル(encoding / variable-encryption /
-     recovery-wrap / dek-wrap / dek-wrap-signature / hpke)は byte-identical
-     (oxfmt 適用後の git diff で機械的に確認)。verify_reference.mjs 全 191 検査
-     PASS を確認してからコミット
-2. **crypto**: `create_environment` の検証(role member 以上・
-   `duplicate-environment` = 履歴全体一意)、`rotate_epoch` の
-   `unknown-environment`(create 先行必須 — 既定値フォールバック廃止)、
-   状態導出の拡張(`ChainState.environmentEpochs` → `environments` =
-   現エポック・作成 seq・エポック開始 seq・コミットメント)、
-   `dek-commitment.ts`(computeDekCommitment / verifyDekCommitment)、
-   `ChainInvalidReason` + `DekCommitmentMismatch`。core の Effect マッピング追随
-3. **api-schema**: op union へ create_environment、環境作成の複合形への置換
-   (parentHeadHashHex + entry + name + deks)、rotate 複合エンドポイント新設
-   (従来の 2 往復を廃止)、`EnvironmentConflict` の `exists` / `retired` 廃止
-   (合意規則へ吸収。`duplicate-name` のみ残置)、`CompositeRequired`(422)、
-   エラー契約の複合エンドポイントへの移動
-4. **server**: 複合受理(composite-programs.ts — 原子性・複合内整合検査・
-   同梱エントリ適用後状態でのラップ判定・行数/リクエスト上限の全経路適用)、
-   汎用 append の 2 op 拒否、削除済み環境への rotate 404、
-   `chain.environment_created` + rotate ミラーへの dek_commitment payload、
-   `currentEpochOf` の新意味論(未観測 = defect)
-5. **CLI**: env create の複合化(CLI 初の genesis 以外のチェーン追記。
-   ChainHeadConflict の再同期 → 再署名リトライ、ラップ集合はメンバー集合変化時
-   のみ再構築)、unwrap 後・DEK 使用前の §5.2 コミットメント照合、
-   エポック導出の環境集合ベース化(ファントム環境の拒否)
-6. **テスト**: crypto 4 実行環境(node / workerd / browser / bun)のベクター駆動 +
-   server 173 / CLI 98 の受理系(session-12 §8-5 の PR-1 分)。フィクスチャは
-   create_environment 先行へ全面改修
-7. **docs**: 本メモ
+1. **Test vectors first** (committed before implementation. Human-review
+   targets):
+   - Extended `tools/generate_reference.py`: new op `create_environment`
+     (payload order `[environment_id, dek_commitment_hex]`), `rotate_epoch`
+     becomes 4 fields (trailing `dek_commitment_hex`), reference computation of
+     the §5.2 commitment (LP + SHA-256)
+   - **Regenerated** `chain-entries.json` (matching the impact list in
+     session-12 §8-4): a canonical 12-entry chain where every rotate is preceded
+     by a create; semantic extension of `expected_head_states`'s environment set
+     (current epoch, creation seq, epoch-start seq, per-epoch commitments —
+     dropping "unobserved = 1"); added authz negatives
+     (`authz-create-env-duplicate` / `authz-rotate-unknown-environment` /
+     `authz-create-env-reader` / 3 check-order cases / 4 commitment-format
+     violations = payload-structure check stage / 2 signature-side commitment
+     tampers); added 2 allowed-boundary environment-lifecycle cases to
+     `valid_appends`; an `environment_deks` section (dummy DEKs and actually
+     computed commitments — so implementation tests can check through the §5.2
+     match)
+   - New `dek-commitment.json` (session-12 §8-3): positive (same DEK and
+     coordinates as dek-wrap.json basic + epoch 1) + `dek-mismatch` / 3
+     coordinate-transplant cases / `wrong-domain` / `uppercase-hex` +
+     `rewrap_invariance` (invariance across backfill and repair
+     re-registration)
+   - Diff check: the existing 6 vector files (encoding / variable-encryption /
+     recovery-wrap / dek-wrap / dek-wrap-signature / hpke) are byte-identical
+     (mechanically verified via git diff after oxfmt). Committed only after
+     confirming verify_reference.mjs passed all 191 checks
+2. **crypto**: verification of `create_environment` (role member or above,
+   `duplicate-environment` = uniqueness across whole history), `rotate_epoch`'s
+   `unknown-environment` (create must precede — the default fallback is gone),
+   extended state derivation (`ChainState.environmentEpochs` → `environments` =
+   current epoch, creation seq, epoch-start seq, commitments),
+   `dek-commitment.ts` (computeDekCommitment / verifyDekCommitment),
+   `ChainInvalidReason` + `DekCommitmentMismatch`. core's Effect mapping follows
+3. **api-schema**: create_environment added to the op union, environment
+   creation replaced by the composite form (parentHeadHashHex + entry + name +
+   deks), new rotate composite endpoint (the former 2-round-trip removed),
+   `EnvironmentConflict`'s `exists` / `retired` removed (absorbed into
+   consensus rules; only `duplicate-name` remains), `CompositeRequired` (422),
+   error contracts moved to the composite endpoints
+4. **server**: composite acceptance (composite-programs.ts — atomicity,
+   in-composite consistency checks, wrap evaluation against post-entry state,
+   row-count/request caps applied on every path), the generic append rejects
+   the 2 ops, rotate to a deleted environment is 404, `chain.environment_created`
+   + the rotate mirror gain dek_commitment payloads, `currentEpochOf`'s new
+   semantics (unobserved = defect)
+5. **CLI**: env create became composite (the CLI's first non-genesis chain
+   append. On ChainHeadConflict it re-syncs → re-signs and retries; the wrap set
+   is rebuilt only when the member set changed), §5.2 commitment matching after
+   unwrap and before DEK use, epoch derivation moved to the environment-set
+   basis (rejects phantom environments)
+6. **tests**: crypto vector-driven on 4 runtimes (node / workerd / browser /
+   bun) + server 173 / CLI 98 acceptance cases (the PR-1 share of session-12
+   §8-5). All fixtures reworked so create_environment precedes
+7. **docs**: this memo
 
-## 2. 段階裁定(タスク指定の確認)
+## 2. Staged ruling (per the task's specification)
 
-**`EnvironmentMetaStatement` は PR-1 に同梱しない**(タスク指定の裁定どおり):
-複合環境作成は従来どおり裸の `name` を運ぶ。ステートメントの同梱・検証・保存、
-§12-4 の「CAS 再試行での両方再署名」のステートメント側、AUDIT_SPEC §3.3
-`env.created` の author 鍵 FP は PR-3 で追加する。公開前ワイヤの意図的な中間状態
-であり、session-12.md §9 の「中間状態でも保証が単調に増える」ことは PR-1 単独でも
-成立する(コミットメントだけで §1-i/ii = 偽 DEK 注入・偽 DEK での暗号化誘導が
-閉じる)。別案(env-meta-sig の最小核の前倒し)は採らなかった — PR-3 の検証機構
-(宣言ヘッド・認可時点・prev 連鎖)を部分実装すると PR-2 の値署名と共有すべき
-機構が二重に生まれ、レビュー粒度の利点(§9 の分割理由)を失うため。
+**`EnvironmentMetaStatement` is not bundled into PR-1** (as the task's ruling
+specifies): composite environment creation still carries a bare `name`. The
+statement's bundling, verification, storage, the statement side of §12-4's
+"re-sign both on CAS retry", and AUDIT_SPEC §3.3 `env.created`'s author key FP
+come in PR-3. This is an intentional intermediate state of a pre-release wire,
+and session-12.md §9's "guarantees grow monotonically even in intermediate
+states" already holds with PR-1 alone (the commitment alone closes §1-i/ii =
+forged-DEK injection and induced encryption under a forged DEK). The alternative
+(pulling forward env-meta-sig's minimal core) was rejected — partially
+implementing PR-3's verification machinery (declared head, authorization point,
+prev linkage) would duplicate machinery that should be shared with PR-2's value
+signatures, losing the review-granularity benefit (the reason for §9's split).
 
-## 3. 裁定の細部(複数案比較 → 推奨で仮進行。確定条件 = PR レビュー承認)
+## 3. Detail decisions of the rulings (multi-option comparison → provisional progress on the recommendation. Finalization condition = PR review approval)
 
-### 3-1. ChainState の環境状態の形 = 環境ごとの構造体(environmentEpochs の置換)
+### 3-1. Shape of ChainState's environment state = per-environment struct (replacing environmentEpochs)
 
-| 案 | 評価 |
+| Option | Assessment |
 |---|---|
-| **`environments: Map<envId, {currentEpoch, createdAtSeq, epochStartSeqs, dekCommitments}>`(採用)** | §6.3 の「各エポックの有効区間(開始 seq)」と §5.2 のコミットメントは同じ導出ループで得られ、環境の存在・エポック・コミットメントが 1 つの真実源に揃う。PR-2 の値検証(エポック整合・宣言ヘッド時点の現エポック)の入力がそのまま出来上がる |
-| environmentEpochs を残し別マップ追加 | 「環境が存在するか」「現エポックはいくつか」の 2 つの照会が別マップに割れ、既定値 1 の残骸(`?? 1`)が生き残る温床になる。置換により全呼び出し箇所がコンパイルエラーで洗い出され、「未観測 = 1」の廃止漏れを構造的に防げた |
+| **`environments: Map<envId, {currentEpoch, createdAtSeq, epochStartSeqs, dekCommitments}>` (adopted)** | §6.3's "each epoch's validity interval (start seq)" and §5.2's commitments come from the same derivation loop, keeping an environment's existence, epoch, and commitment on one source of truth. Inputs for PR-2's value verification (epoch consistency, the current epoch at declared-head time) fall out ready-made |
+| Keep environmentEpochs and add a separate map | The two lookups "does the environment exist" and "what is its current epoch" split across maps, breeding ground for surviving `?? 1` default-1 remnants. The replacement flushed out every call site via compile errors, structurally preventing leftover "unobserved = 1" |
 
-### 3-2. コミットメント API = DEK は Uint8Array で受ける
+### 3-2. Commitment API = DEK is received as Uint8Array
 
-`computeDekCommitment({context, dek: Uint8Array})` は内部で `encodeHex`(小文字)
-してから原像に載せる。hex 文字列で受ける案は呼び出し側の大文字 hex がそのまま
-別原像になる事故(ベクター negative `uppercase-hex` の実装版)を許すため却下。
-`verifyDekCommitment` の期待値(チェーン掲載値)は hex 小文字 64 文字のみ受理
-(照合の正規形を 1 つに固定 — §5.1 実装の「大文字 hex を許すと正規形が複数生まれる」
-と同じ理由)。
+`computeDekCommitment({context, dek: Uint8Array})` internally `encodeHex`s
+(lowercase) before placing it in the preimage. The hex-string option was
+rejected because it would permit the accident where caller-side uppercase hex
+becomes a different preimage (an implementation version of the vector negative
+`uppercase-hex`). `verifyDekCommitment`'s expected value (the chain-published
+value) accepts only lowercase 64-char hex (pinning the comparison canonical
+form to one — same reason as the §5.1 implementation's "allowing uppercase hex
+produces multiple canonical forms").
 
-### 3-3. 複合エンドポイントの検査順序(サーバー)
+### 3-3. Check order of the composite endpoint (server)
 
-`role(member)→ [rotate のみ: URL/エントリの environment_id 一致 →
-アクティブ環境(404)] → 親ヘッド CAS → エントリサイズ・容量 → verifyChain
-(合意規則)→ 複合内整合(全ラップ epoch = 確立エポック)→ ラップ受理
-(§12-6 + §12-8)→ 原子書き込み`。論点:
+`role(member) → [rotate only: URL/entry environment_id match → active
+environment (404)] → parent-head CAS → entry size / capacity → verifyChain
+(consensus rules) → in-composite consistency (every wrap epoch = the epoch being
+established) → wrap acceptance (§12-6 + §12-8) → atomic write`. Discussion
+points:
 
-- **rotate の 404 を CAS より先に置いた**: 削除済み環境への rotate は親ヘッドが
-  何であれ受理されない定的な拒否であり、404 を CAS の後に置くと「リトライで
-  解決しない 409」をクライアントに何周も回させる
-- **未作成環境への rotate 複合はサーバーでは 404**(`unknown-environment` の
-  422 ではなく): 環境のデータ行は複合受理でチェーンエントリと原子的に作られる
-  ため、「行がないのにチェーンに create がある」は不変条件違反で、「行がなく
-  チェーンにもない」= 未作成は行検査(404)が先に立つ。合意規則
-  `unknown-environment` そのものは crypto 層の 4 環境ベクターテストが固定する
-  (サーバー受理面の期待は membership.test.ts の対応表が明文化)
-- **ラップの完全一致(recipient-missing)は個別検査(受信者・重複・署名)の後**:
-  旧・環境作成プログラムの判定順を維持(理由コードの互換)
+- **rotate's 404 placed before CAS**: a rotate to a deleted environment is a
+  deterministic rejection regardless of the parent head; placing the 404 after
+  CAS would make the client spin through many rounds of "409 that retries never
+  resolve"
+- **A rotate composite for an uncreated environment is 404 on the server** (not
+  the 422 `unknown-environment`): the environment's data row is created
+  atomically with the chain entry by composite acceptance, so "a chain create
+  exists but no row" is an invariant violation, while "no row and no chain
+  entry" = uncreated hits the row check (404) first. The consensus rule
+  `unknown-environment` itself is pinned by the crypto layer's 4-environment
+  vector test (the server acceptance-side expectation is spelled out in
+  membership.test.ts's correspondence table)
+- **Wrap exact-match (recipient-missing) runs after per-wrap checks
+  (recipient, duplicates, signature)**: preserves the old environment-creation
+  program's decision order (reason-code compatibility)
 
-### 3-4. 複合の worker / DO の分担
+### 3-4. Composite worker / DO split
 
-actor = 認証主体の一致(§11-1 相当)は worker(ハンドラ)で先行検査し、DO は
-callerUserId を信頼する — 汎用 append の既存分担と同一。DO 側は role・CAS・
-verifyChain・整合・ラップ検査を permit 下で行う。genesis ハッシュ(project_id
-座標)は DO 自身のチェーンから取る(session-09 §3 の不変条件を踏襲)。
+actor = authenticated-principal match (§11-1 equivalent) is checked early at
+the worker (handler), and the DO trusts callerUserId — the same split as the
+generic append. The DO side runs role, CAS, verifyChain, consistency, and wrap
+checks under permit. The genesis hash (the project_id coordinate) comes from
+the DO's own chain (following session-09 §3's invariant).
 
-### 3-5. CLI の CAS リトライ = 上限 5 回・ラップ再構築は差分時のみ
+### 3-5. CLI CAS retry = 5-attempt cap, wrap set rebuilt only on diff
 
-push の MAX_ATTEMPTS と同じ上限。再同期後に現メンバー集合(user_id → enc 鍵)が
-不変ならラップ集合を再利用する(§12-4 の「ラップ集合は現メンバー集合が変わった
-場合のみ作り直す」。HPKE Seal はランダムなので不要な再ラップは差分比較を壊す
-だけでなく無駄)。DEK・コミットメントはリトライを跨いで不変(エントリの再署名
-だけが変わる)。
+Same cap as push's MAX_ATTEMPTS. If the current member set (user_id → enc key)
+is unchanged after re-sync, the wrap set is reused (§12-4's "rebuild the wrap
+set only when the current member set changed". Since HPKE Seal is randomized,
+unnecessary re-wraps are not just wasteful — they break diff comparison). The
+DEK and commitment are invariant across retries (only the entry's re-signing
+changes).
 
-### 3-6. fallow dupes ベースライン
+### 3-6. fallow dupes baseline
 
-session-11 で裁定済みのテスト支援クローン群(cli / server の buildChain・
-op ビルダー等)は、本セッションの改修でフィンガープリントが変わりベースラインと
-不一致になった(警告のみ・ゲートは通過)。共有抽出は session-11 §5 の裁定済み
-独立 PR の領分なので本 PR では手を入れず、抽出 PR 側でベースラインごと解消する。
+The test-helper clones ruled on in session-11 (cli / server buildChain, op
+builders, etc.) changed fingerprints under this session's rework and no longer
+match the baseline (warning only; the gate passes). Shared extraction belongs
+to the separate PR already ruled in session-11 §5, so this PR doesn't touch it;
+the extraction PR will resolve it together with the baseline.
 
-## 4. ハマったこと・環境知見
+## 4. Gotchas & environment findings
 
-- **チェーンベクターの負例は「旧意味論なら受理された値」を選ぶと強くなる**:
-  `authz-rotate-unknown-environment` の new_epoch は 2(旧「未観測 = 1 + 1」で
-  受理された値)にした。既定値フォールバックを残した実装はこの 1 本で落ちる
-- **複合エンドポイント化はテストの前提を広く壊す**: 汎用 append の拒否
-  (CompositeRequired)が入ると、membership テストの「ベクター再生」「CAS」
-  「サイズ上限」「write/admin スコープ判別」など rotate をダシに使っていた
-  テストが全部影響を受ける。rotate/create を使わない op(remove_member)への
-  差し替えと、複合経由の再生ヘルパ(op を追いながらメンバー集合を導出して
-  ラップ完全集合を作る)で吸収した
-- **サーバー受理面では合意規則の理由コードがそのまま出ないケースがある**:
-  role 不足は DO の requireRole(403)が verifyChain(422)より先、未作成環境は
-  データ行の 404 が先、コミットメント形式違反は api-schema の hex Schema
-  (400)が先。membership.test.ts に「ベクター名 → サーバー期待(status +
-  理由)」の対応表を置いて、この写像自体をテストとして固定した
-- **テストフィクスチャのコミットメントは実計算が必須**: CLI の pull テストは
-  §5.2 照合まで走るため、チェーンに載せるコミットメントはフィクスチャの実 DEK
-  から計算しないと全テストが毒ラップ扱いで落ちる。コミットメント原像は
-  project_id(= genesis ハッシュ)を含むため、buildChain に「genesis 確定後に
-  payload を作る」遅延 op(LazyChainOperation)を導入した
-- **`bun run check` の oxfmt は生成 JSON も対象**: 生成ツールの出力に oxfmt を
-  かけると既存ベクターは byte-identical(session-10 §3 の知見の再確認)
+- **Chain-vector negatives get stronger by picking "values the old semantics
+  would have accepted"**: `authz-rotate-unknown-environment`'s new_epoch is 2
+  (the value the old "unobserved = 1 + 1" would have accepted). An
+  implementation that kept the default fallback fails on this single vector
+- **Going composite breaks test assumptions broadly**: once the generic append
+  rejection (CompositeRequired) landed, every membership test that used rotate
+  as a pretext — "vector replay", "CAS", "size cap", "write/admin scope
+  discrimination" — was affected. Absorbed by swapping to an op that uses no
+  rotate/create (remove_member) and a replay-via-composite helper (derives the
+  member set while walking ops to build the complete wrap set)
+- **On the server acceptance surface, consensus-rule reason codes sometimes
+  don't appear verbatim**: insufficient role hits DO's requireRole (403) before
+  verifyChain (422); an uncreated environment hits the data-row 404 first; a
+  commitment-format violation hits api-schema's hex Schema (400) first.
+  membership.test.ts carries a "vector name → server expectation (status +
+  reason)" correspondence table, and that mapping itself is pinned as a test
+- **Fixture commitments must be actually computed**: CLI pull tests run through
+  the §5.2 match, so a commitment placed on the chain that isn't computed from
+  the fixture's real DEK makes every test fail as a poison wrap. Since the
+  commitment preimage includes project_id (= the genesis hash), buildChain
+  gained a lazy op (LazyChainOperation) that "builds the payload after genesis
+  is fixed"
+- **`bun run check`'s oxfmt also covers generated JSON**: applying oxfmt to
+  generated output leaves existing vectors byte-identical (reconfirmation of
+  the session-10 §3 finding)
 
-## 5. 既知の制約・v1 許容
+## 5. Known constraints / v1 tolerances
 
-- ローテーションの CLI コマンドは未実装(スコープ外 — チェーン追記系コマンド
-  一式と同時に将来実装)。rotate 複合はサーバー実装 + テストで検証済み
-- `EnvironmentMetaStatement` 不在の中間状態(§2)。環境の表示名の真正性は PR-3 まで
-  従来どおり非認証
-- 非 NFC 名の 422(§8-5)は PR-3(ステートメント受理と同時)
-- CLI のローカル床(§6.3 SHOULD)は PR-4(要裁定 §10-4)のまま未実装 —
-  コミットメント照合は「提示されたチェーンビュー内」で完結する保証(§14.2-1)
-  であり、ビュー自体の巻き戻しは引き続き床・ゴシップの領分
-- server の複合受理で「データ行はあるがチェーンに環境がない」状態は不変条件
-  違反として defect(currentEpochOf の throw)。旧 API で作られた行は存在しない
-  (公開前・適用済み環境なし)前提
+- The rotation CLI command is unimplemented (out of scope — to come together
+  with the family of chain-append commands). The rotate composite is verified
+  by server implementation + tests
+- The intermediate state without `EnvironmentMetaStatement` (§2). Environment
+  display-name authenticity stays unauthenticated as before until PR-3
+- The non-NFC-name 422 (§8-5) comes in PR-3 (together with statement
+  acceptance)
+- The CLI's local floor (§6.3 SHOULD) stays unimplemented pending PR-4
+  (to-be-ruled §10-4) — commitment matching is a guarantee that completes
+  "within the presented chain view" (§14.2-1); view rollback itself remains
+  the domain of the floor and gossip
+- On the server's composite acceptance, the state "a data row exists but the
+  chain has no environment" is an invariant violation treated as defect
+  (currentEpochOf throws). This assumes rows created by the old API don't
+  exist (pre-release, no applied environments)
 
-## 6. 申し送り
+## 6. Handoff
 
-- **PR-2(値署名)**: value-signature.json は再生成後の正規チェーン(12 エントリ)
-  を参照して作る。`ChainState.environments` の epochStartSeqs が §6.3-4
-  (エポック整合・create 前ヘッドの拒否)の入力になる。既存
-  dek-wrap-signature.json の description の signer_user_id 欠落もそのとき直す
-  (session-12 §13)
-- **PR-3(メタデータステートメント)**: 複合作成への EnvironmentMetaStatement
-  同梱(CAS 再試行の両方再署名)、`env.created` への author FP、非 NFC 422、
-  環境一覧の name → ステートメント置換(EnvironmentSummary 改訂)
-- **テスト支援の共有抽出(session-11 §5 の裁定済み独立 PR)**: 本セッションで
-  クローン群がさらに近づいた(commitmentOf / createEnvironmentOp 系も両側に
-  生えた)。抽出時に fallow dupes ベースラインの不一致警告(§3-6)も解消する
-- session-11 §5 の残り(公開設定エンドポイント / pull メタデータのみモード)・
-  チェーン追記系コマンド + remove_member の全環境 rotate(session-12 §10-7 の
-  複合化検討込み)は未着手のまま有効
+- **PR-2 (value signatures)**: build value-signature.json against the
+  regenerated canonical chain (12 entries). `ChainState.environments`'s
+  epochStartSeqs is the input to §6.3-4 (epoch consistency, rejection of
+  pre-create heads). Also fix the existing dek-wrap-signature.json
+  description's missing signer_user_id then (session-12 §13)
+- **PR-3 (metadata statements)**: bundling EnvironmentMetaStatement into the
+  composite create (re-signing both on CAS retry), author FP on `env.created`,
+  non-NFC 422, environment-list name → statement replacement
+  (EnvironmentSummary revision)
+- **Shared extraction of test helpers (session-11 §5's already-ruled separate
+  PR)**: the clone sets drew even closer this session (commitmentOf /
+  createEnvironmentOp family also grew on both sides). Resolve the fallow
+  dupes baseline mismatch warning (§3-6) at extraction time
+- The rest of session-11 §5 (the publish-settings endpoint / metadata-only
+  pull mode) and the chain-append command family + remove_member's all-
+  environment rotate (including the composite consideration of session-12
+  §10-7) remain valid and unstarted
 
-## 7. レビュー→修正ループ(PR #28 内。3 観点の並行レビュー → 修正)
+## 7. Review→fix loop (inside PR #28. 3 parallel review angles → fix)
 
-### ループ 1 の指摘と対応
+### Loop 1 findings and responses
 
-3 観点(セキュリティ・暗号 / 正しさ・並行性 / テスト・ベクター・ワイヤ契約)を
-並行実行。**[高] 1(契約)= [中](正しさ)の同根**:
+3 angles run in parallel (security / crypto, correctness / concurrency, tests /
+vectors / wire contract). **[high] 1 (contract) = same root as [medium]
+(correctness)**:
 
-1. **複合 create のエントリ内 environment_id から §12-1 の受理ポリシー形式が
-   消えた(契約 [高]・正しさ [中] が独立検出)**: 旧 create ペイロードの
-   `EnvironmentIdSchema` が、複合化で ID の運搬がチェーンエントリ内へ移った際に
-   `Schema.String` へ落ちていた(URL 座標も持たない)。write スコープの
-   メンバーが `"my env/💥"` のような ID の環境を原子コミットでき、URL param を
-   持つ後続エンドポイント(rotate / rename / **remove** / pull)から到達不能 =
-   **ローテーション不能(§7 の全環境義務と衝突)・削除不能・quota 恒久消費・
-   ID 永久焼却**の環境が作れた。→ `CreateEnvironmentEntrySchema` /
-   `RotateEpochEntrySchema` の environmentId を `EnvironmentIdSchema` に(ワイヤ
-   受理ポリシー層で拒否。合意規則 = §6.1 bounded string には昇格させない —
-   project.ts の線引きを維持)。不正形式 3 種の複合 create 400 negative を追加。
-   既存チェーンへの波及なし(2 op の受理点は複合のみ + 公開前・適用済み
-   チェーンなし。悪意サーバーが非適合 ID を配布した場合は CLI の decode が
-   fail-closed になる — 修正前より厳密に良い)
-2. **汎用 append の 2 op 拒否が worker 単層(セキュリティ [低]・正しさ [低] が
-   同根を検出)**: DO の `appendProgram` は合意規則上有効な create / rotate を
-   受理でき、将来の呼び出し経路追加で「チェーンに環境はあるがラップ・環境行が
-   ない」中間状態が作れた。→ DO 側にも同じガード(`composite-required`
-   outcome → `CompositeRequiredError` 写像)を追加(多層防御)。リクエスト
-   内容のみに依存する判定のため §11-2 の存在秘匿とも両立(§12-3 1a と同型)
-3. **テスト [中]〜[低]**: 監査ミラーの dek_commitment が形式(64 hex)しか
-   固定されていなかった → フィクスチャの実 DEK からの §5.2 実計算値と
-   `toEqual` で完全一致に強化 / kind なし negative の検査が名前ハードコードで
-   ベクター再生成の追加分を黙って落とす → 網羅ガード(未検査 name で fail)を
-   追加 / CLI の CAS リトライの「メンバー集合不変ならラップ集合を再利用」の
-   再利用側が未検査(常時再構築の実装が通った)→ deks 完全一致 + prev 更新の
-   テストを追加
-4. **[情報] 群**: 古いコメント(seq 1〜9 等)の更新、README への
-   invalid-payload 系 negative の kind 運搬注記、ファントム環境エラーの文言
-   (良性レースの再実行案内)、env-create 最終試行の設計コメント
-   (push.ts と同じ判断の明記)
+1. **The §12-1 acceptance-policy format disappeared from the composite create
+   entry's environment_id (contract [high] / correctness [medium], detected
+   independently)**: the old create payload's `EnvironmentIdSchema` had
+   degraded to `Schema.String` when compositing moved ID carriage inside the
+   chain entry (it also has no URL coordinate). A write-scoped member could
+   atomically commit an environment whose ID is like `"my env/💥"` —
+   unreachable from later endpoints that take a URL param (rotate / rename /
+   **remove** / pull) = an environment that is **unrotatable (conflicting with
+   §7's all-environment obligation), undeletable, permanently consuming quota,
+   with the ID burned forever**. → `CreateEnvironmentEntrySchema` /
+   `RotateEpochEntrySchema`'s environmentId are now `EnvironmentIdSchema`
+   (rejected at the wire acceptance-policy layer. Not promoted to a consensus
+   rule = §6.1 bounded string — keeping project.ts's line). Added a composite-
+   create 400 negative with 3 malformed-ID variants. No impact on existing
+   chains (the 2 ops' acceptance point is only the composite + pre-release
+   with no applied chains. A malicious server distributing a non-conforming ID
+   makes the CLI's decode fail-closed — strictly better than before the fix)
+2. **The generic append's 2-op rejection was worker-only (security [low] /
+   correctness [low], same root detected)**: the DO's `appendProgram` could
+   accept consensus-valid create / rotate, so adding a future call path could
+   create the intermediate state "the chain has an environment but no
+   wrap/environment row". → added the same guard on the DO (`composite-required`
+   outcome → `CompositeRequiredError` mapping) (defense in depth). Since the
+   decision depends only on request content, it's also compatible with §11-2's
+   existence concealment (same shape as §12-3 1a)
+3. **Tests [medium]–[low]**: the audit mirror's dek_commitment was pinned only
+   by format (64 hex) → strengthened to exact `toEqual` match against the §5.2
+   value computed from the fixture's real DEK / the kind-less negative check
+   silently dropped additions to vector regeneration via a hardcoded name →
+   added an exhaustive guard (fail on an unchecked name) / the reuse side of
+   the CLI CAS retry's "reuse the wrap set when the member set is unchanged"
+   was untested (an always-rebuild implementation passed) → added a deks
+   exact-match + prev-update test
+4. **[info] group**: updated stale comments (seq 1–9 etc.), added a README note
+   on kind carriage of invalid-payload negatives, the phantom-environment
+   error's wording (guidance to re-run on a benign race), and a design comment
+   on env-create's final attempt (noting it's the same judgment as push.ts)
 
-### ループ 2(修正の再検証)
+### Loop 2 (re-verify the fixes)
 
-3 観点とも**ループ 1 指摘への修正は十分・新規ブロッキング指摘ゼロ**を確認:
+All 3 angles confirmed **loop-1 fixes are sufficient, zero new blocking
+findings**:
 
-- セキュリティ = チェーンエントリの挿入点(`insertSync` 呼び出し元)の全数
-  確認で 2 op の迂回経路が worker・DO 両層で不能なこと、`EnvironmentIdSchema`
-  強制が snapshot 配布・CLI decode と矛盾しない(非適合 ID がチェーンに載る
-  経路が構造的にない)ことまで検証
-- 正しさ = 不正 ID 3 種の再現スクリプトで修正後スキーマの拒否を再実行確認。
-  DO ガードの判定順(op のみ依存 = 存在情報を運ばない)の整理を妥当と判定
-- テスト = 新テスト 3 本の変異検出力(`Schema.String` 退行 / 定数写し /
-  常時再ラップがそれぞれ確実に落ちる)をトレースで確認
-- 新規 [情報] 1 件(negative の kind 語彙に第三の値が導入されると両ふるいから
-  漏れる)→ kind 語彙(undefined | "authorization")の固定チェックを追加して対応
+- Security = verified that enumerating every chain-entry insertion point
+  (`insertSync` callers) leaves no bypass of the 2 ops at either worker or DO
+  layer, and that `EnvironmentIdSchema` enforcement doesn't contradict snapshot
+  distribution / CLI decode (there is no structural path for a non-conforming
+  ID to land on the chain)
+- Correctness = re-ran the 3 malformed-ID repro scripts to confirm the fixed
+  schema rejects. Judged the DO guard's decision-order arrangement sound
+  (depends only on the op = carries no existence info)
+- Tests = traced the mutation-detection power of the 3 new tests (a
+  `Schema.String` regression / constant copying / always-re-wrap each fail
+  reliably)
+- 1 new [info] (if a third value ever enters the negative kind vocabulary, it
+  would slip through both sieves) → handled by adding a pin on the kind
+  vocabulary (undefined | "authorization")
 
-### ループ 3(最終確認)
+### Loop 3 (final confirmation)
 
-ループ 2 の 3 観点がそれぞれ「修正十分・新規指摘ゼロ」を明言し、残余はすべて
-[情報](非定時間ハッシュ比較 = 公開値のみ / ワイヤ形式が合意規則より狭い
-非対称 = コメントで文書化済み / チェーンビュー巻き戻し残余 = PR-4 の床・
-§14.2-1 の保証範囲どおり)。品質ゲート: `bun run check` 541 tests green +
-crypto 4 実行環境(node 243 / workerd 243 / browser 243 / Bun 242)green。
-経過: ループ 1 = 高 1(2 観点同根)・中 2・低 3・情報多数 → ループ 2 =
-情報 1 → 指摘ゼロ(ブロッキング)。
+Each of loop 2's 3 angles stated "fixes sufficient, zero new findings"; all
+residue is [info] (non-constant-time hash comparison = compares only public
+values / the wire format being narrower than the consensus rule = documented
+in a comment / chain-view rollback residue = PR-4's floor, within §14.2-1's
+guarantee scope). Quality gate: `bun run check` 541 tests green + crypto on 4
+runtimes (node 243 / workerd 243 / browser 243 / Bun 242) green. Progression:
+loop 1 = 1 high (same root across 2 angles), 2 medium, 3 low, many info →
+loop 2 = 1 info → zero (blocking) findings.
 
-### PR 公開後の自動レビュー対応(2026-08-04)
+### Automated-review responses after the PR opened (2026-08-04)
 
-- **Bugbot [Medium] 1 件(dismiss・コード変更なし)**: 「複合 create は
-  非トランザクショナルな Effect.sync 内でチェーンエントリ → 環境行の順に書く
-  ため、後続が throw するとチェーンだけ残り ID が復旧不能」という指摘。
-  根拠を示して非問題と判断した — (1) 当該ブロックは await を挟まない同期
-  `sql.exec` 列で、SQLite-backed DO は「intervening await のない一連の書き込み」を
-  **1 トランザクションとして原子コミット**する(公式ドキュメントの Write
-  Coalescing。ストレージ層の失敗は Output Gate が応答をエラーへ差し替え DO ごと
-  再起動 = 部分永続化は観測不能)、(2)「後続が throw する」経路自体が到達不能
-  (permit 直列化の下で全 INSERT のキーの新鮮さを事前検査が保証済み — 環境行 PK
-  は duplicate-environment 合意規則、ラップ PK は未作成環境 / 新エポックの構造的
-  不在 + dedupe、監査 seq は MAX+1 の単文。文間は純粋な同期 JS のみ)、
-  (3) 同パターンは insertWithMirror 以降の全書き込みフェーズで承認済みの確立規約
-  (data-store.ts に明文化)。Security Agent・CI(check)は指摘なしで pass
+- **Bugbot [Medium] × 1 (dismissed, no code change)**: claimed "the composite
+  create writes the chain entry then the environment row inside a
+  non-transactional Effect.sync, so a later throw leaves only the chain and the
+  ID is unrecoverable". Judged a non-issue with grounds — (1) that block is a
+  sequence of synchronous `sql.exec` with no intervening await, and a
+  SQLite-backed DO **atomically commits "a series of writes with no intervening
+  await" as one transaction** (the official docs' Write Coalescing; a
+  storage-layer failure makes the Output Gate replace the response with an
+  error and restart the whole DO = partial persistence is unobservable),
+  (2) the "a later step throws" path itself is unreachable (under permit
+  serialization, pre-checks guarantee the freshness of every INSERT's key —
+  the environment-row PK is the duplicate-environment consensus rule, wrap PKs
+  are structurally absent for uncreated environments / new epochs plus dedupe,
+  the audit seq is a single MAX+1 statement; only pure synchronous JS sits
+  between statements), (3) the same pattern is an established convention
+  approved in every write phase since insertWithMirror (documented in
+  data-store.ts). Security Agent and CI (check) passed with no findings

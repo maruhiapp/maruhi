@@ -1,222 +1,269 @@
-# 値なしスキーマ(フル)の検討メモ — S 系列への種
+# Exploration memo on the value-free schema (full) — seed for the S series
 
-日付: 2026-08-30。位置づけ: **検討メモ(裁定ではない)**。裁定は S 系列
-(値なしスキーマの仕様改訂 → 実装)の設計 PR で「複数案 → 上位互換探索 →
-3 周比較 → 自律選択」の様式により行う。本メモはその初期候補と開いた問いの
-記録である。出自は ADR-0014(Varlock から盗むのはエージェント隔離の発想
-だけ)・ROADMAP Phase 3 ①(名前・型・説明・必須のみ。`.env.schema`
-ファイルは正にしない)。
+Date: 2026-08-30. Position: **an exploration memo (not a ruling)**. Rulings
+happen in the S series (value-free schema's spec revision → implementation)
+design PRs, in the "multiple options → strictly-better search → 3-round
+comparison → autonomous choice" format. This memo records the initial
+candidates and the opened questions. Provenance: ADR-0014 (what we steal
+from Varlock is only the agent-isolation idea) / ROADMAP Phase 3 ① (name /
+type / description / required only; no `.env.schema` file as the source of
+truth).
 
-## 1. オーナー既決事項(2026-08-30 の対話)
+## 1. Owner-settled items (dialogue of 2026-08-30)
 
-- **フル版(名前・型・説明・必須)を実装する**。v0(名前のみ)で止めない
-- **MCP 配信は後回し**(シェルを持つコーディングエージェントには
-  `maruhi schema` CLI + AGENTS.md への案内 1 行で価値の大半が出る。需要が
-  実測されたら薄いラッパとして追加)
-- **ファイル(`.env.schema`)を正にしない**(ROADMAP の既定を維持 —
-  ファイル側へ寄せる選択肢は採らない)
-- 位置づけの推奨(H0 で正式化): H 系列(ホステッド)と並走させ、
-  **ホステッドのベータ開放前に着地**する — ワイヤ・署名フォーマットに
-  触れる変更は、外部テナントが存在する前が圧倒的に安い
+- **Implement the full version (name / type / description / required)**.
+  Don't stop at v0 (name only)
+- **MCP distribution is deferred** (for a coding agent with a shell, the
+  `maruhi schema` CLI + one guidance line in AGENTS.md delivers most of the
+  value. Add it as a thin wrapper once demand is measured)
+- **No file (`.env.schema`) as the source of truth** (keeping ROADMAP's
+  default — the file-leaning option is not taken)
+- Recommended positioning (formalized in H0): run alongside the H series
+  (hosted) and **land before the hosted beta opens** — a change touching
+  the wire / signature formats is overwhelmingly cheaper before external
+  tenants exist
 
-## 2. ファイル vs 署名付きストアの評価(要約)
+## 2. File vs signed store evaluation (summary)
 
-| 観点 | ファイル(Varlock 型) | 署名付きストア |
+| Consideration | File (Varlock-style) | Signed store |
 |---|---|---|
-| コードとの結合 | ◎ ブランチ・PR に同乗 | △ 環境の現在形のみ |
-| 可視性 | ◎ 未導入者にも見える | △ メンバー + CLI 前提 |
-| 実装コスト | ◎ ほぼゼロ | △ 仕様改訂 + 移行 |
-| 実態との同期 | ✕ 必ずドリフト(.env.example の腐敗) | ◎ 構造的に乖離しない |
-| 真正性・ACL | ✕ 無署名・リポジトリ write 権限 = 別権限系。エージェントが読む唯一の未認証面(説明文への注入面) | ◎ 署名・監査つき |
-| **完全性**(§4 で発見) | ◎ 1 ファイルで自明 | ステートメント単体では**証明できない** → マニフェスト被覆で ◎ に反転 |
+| Coupling with code | ◎ Rides branches / PRs | △ Only the environment's current form |
+| Visibility | ◎ Visible even to non-adopters | △ Assumes members + CLI |
+| Implementation cost | ◎ Almost zero | △ Spec revision + migration |
+| Sync with reality | ✕ Always drifts (.env.example rot) | ◎ Structurally can't diverge |
+| Authenticity / ACL | ✕ Unsigned; repository write permission = a different authority system. The only unauthenticated surface agents read (an injection surface via descriptions) | ◎ Signed + audited |
+| **Completeness** (found in §4) | ◎ Self-evident in 1 file | **Unprovable** by statements alone → flips to ◎ under manifest coverage |
 
-ファイルの「ブランチ結合」は同時にデプロイ時の嘘の発生源でもある(main へ
-マージした瞬間「スキーマは required と言うが prod ストアに値はない」)。
-ファイルは**コードの要求**を、ストアは**環境の契約**を語る — 検証したいのは
-後者である。
+The file's "branch coupling" is simultaneously a deploy-time source of lies
+(the instant it merges to main, "the schema says required but the prod store
+has no value"). The file speaks **the code's requirements**; the store
+speaks **the environment's contract** — and what we want to verify is the
+latter.
 
-## 3. 負け点を覆す 3 案(第 1 次探索)
+## 3. Three options that overturn the losing points (first search)
 
-1. **「環境の契約」への再定義 + 既存機構**: ブランチ先行の宣言は
-   dev/preview 環境(クライアント採番で安価)で受ける。スキーマ改版履歴は
-   metaVersion のハッシュ連鎖が既に持つ(git 履歴より監査性が高い)
-2. **CI 検証つき派生スナップショット**(可視性の本命): `maruhi schema
-   export` の生成物(generated 明記)をリポジトリに置くことを許し、CI の
-   `maruhi schema verify-snapshot` が署名付きストアとの乖離を fail-loud に
-   する — BW/BG スイープと同じ「手書き複製は禁止、機械検査つき複製は許す」
-   の型。正はストアのまま、GitHub 閲覧者・未導入エージェントへの可視性と
-   PR 差分レビューだけを取る。残余 = 改ざんスナップショットを次の CI が
-   落とすまでの窓(リポジトリ内任意ファイルと同クラス。maruhi を持つ
-   エージェントには `maruhi schema` を正として案内)
-3. ~~コスト圧縮 = 並置(独立ステートメント種)~~ **§4 の発見により撤回**
-   (下記)
+1. **Redefine as "the environment's contract" + existing mechanisms**:
+   branch-ahead declarations are received by dev/preview environments (cheap
+   with client-side numbering). Schema revision history is already carried
+   by metaVersion's hash chain (more auditable than git history)
+2. **CI-verified derived snapshot** (the main answer for visibility): allow
+   placing `maruhi schema export`'s output (marked generated) in the
+   repository, with CI's `maruhi schema verify-snapshot` making divergence
+   from the signed store fail-loud — the same shape as the BW/BG sweeps'
+   "hand-written copies forbidden, machine-checked copies allowed". Truth
+   stays the store; take only the visibility to GitHub browsers /
+   un-onboarded agents and PR diff review. Residual = the window until the
+   next CI rejects a tampered snapshot (same class as any file in the
+   repository. For an agent with maruhi, `maruhi schema` is guided as the
+   truth)
+3. ~~Cost compression = side-by-side (independent statement kind)~~
+   **withdrawn on §4's discovery** (below)
 
-## 4. 第 2 次探索の発見: マニフェスト被覆(最有力候補)
+## 4. Second search's discovery: manifest coverage (the leading candidate)
 
-生成規則 =「既存不変条件機構との合成盲点を探す」。
+Generation rule = "look for composition blind spots with existing invariant
+mechanisms".
 
-- **隠れていた第 4 の負け点「完全性」**: 変数ごとの署名ステートメントは
-  個々の真正性しか証明せず、「サーバーが required 変数を 1 個隠して
-  いない」(= fail-fast の約束の核)を証明しない。これはまさに
-  **環境マニフェスト(CRYPTO_SPEC §4.3 — M1〜M4 で実装済み)**が塞いだ
-  問題(G6 欠落・注入の検出、エポック鮮度、checkpoint 束縛、equivocation
-  の証拠化)。スキーマがマニフェスト被覆に入れば、「署名済み・完全・
-  鮮度つきスキーマ」という**ファイルには原理的に表現できない保証**になる
-- **並置案の自己矛盾**: マニフェストの entry は
-  `LP(variable_id, status, meta_version, meta_sig_hash)` —
-  **変数メタステートメントのハッシュを束縛している**。よって:
-  - **拡張ルート**(§4.2 変数メタステートメントに型・説明・必須を追加)=
-    マニフェスト被覆(完全性・鮮度・巻き戻し検出)を**自動継承**。
-    マニフェスト層は無変更
-  - **並置ルート**(独立スキーマステートメント)= 被覆の外。入れるには
-    `env_manifest_signed_bytes` の変更が要り、避けたかった署名フォーマット
-    変更が戻ってくる — 「安い」が消える(session-44 §13 と同型の
-    「裁定が自分の前提を書き換える」盲点)
-  - **推奨は拡張ルート**。コストは §4.2 レイアウト進化の設計に集約される
-    (**補正 — 第 6 次探索・発見 F**: 「自動継承 = 無償」は**新しい検証者に
-    限る**。旧検証者の破壊様式と有効化ゲートが対価の正体 — §5 第 6 次)
-- **配送の合成**: マニフェスト被覆に入ると、既存の検証済みチャネル全部に
-  追加実装なしで流れる — メタデータのみ pull(§12-7 — 人間・エージェント、
-  監査を汚さない)、リース応答のマニフェスト同梱(§14-2 — CI)、
-  `maruhi run` の検証経路(fail-fast 検証の自然な実装点)
-- **ボーナス(UX)**: push 時のクライアントは平文を保持しているため、
-  **クライアント側の型推論ブートストラップ**(`maruhi schema infer` —
-  ローカルで型候補を提案し、承認したものだけステートメント化)が
-  ゼロ知識を保ったまま乗る
+- **The hidden 4th losing point "completeness"**: per-variable signed
+  statements prove only individual authenticity, not "the server isn't
+  hiding a required variable" (= the core of the fail-fast promise). This is
+  exactly the problem the **environment manifest (CRYPTO_SPEC §4.3 —
+  implemented in M1–M4)** closed (G6 absence / injection detection, epoch
+  freshness, checkpoint binding, equivocation as evidence). If the schema
+  enters manifest coverage, it becomes a guarantee **a file fundamentally
+  cannot express**: "a signed, complete, freshness-carrying schema"
+- **The side-by-side option's self-contradiction**: a manifest's entry is
+  `LP(variable_id, status, meta_version, meta_sig_hash)` — **it binds the
+  hash of the variable meta statement**. Therefore:
+  - **The extension route** (add type / description / required to the §4.2
+    variable meta statement) = **automatically inherits** manifest coverage
+    (completeness, freshness, rollback detection). The manifest layer is
+    unchanged
+  - **The side-by-side route** (an independent schema statement) = outside
+    coverage. To include it you'd have to change
+    `env_manifest_signed_bytes`, bringing back the signature-format change
+    we wanted to avoid — the "cheap" disappears (same shape as session-44
+    §13's "a ruling rewriting its own premise" blind spot)
+  - **The recommendation is the extension route**. Cost concentrates on
+    designing §4.2's layout evolution (**correction — sixth search, finding
+    F**: "automatic inheritance = free" applies **only to new verifiers**.
+    The old verifiers' breakage form and an activation gate are the true
+    price — §5 sixth)
+- **Distribution composition**: once inside manifest coverage, it flows
+  through every existing verified channel with no added implementation —
+  metadata-only pull (§12-7 — humans / agents, doesn't soil the audit),
+  the manifest bundled in the lease response (§14-2 — CI), `maruhi run`'s
+  verification path (the natural implementation point of fail-fast
+  verification)
+- **Bonus (UX)**: the pushing client holds the plaintext, so a
+  **client-side type-inference bootstrap** (`maruhi schema infer` — proposes
+  type candidates locally and only statement-izes approved ones) rides while
+  preserving zero-knowledge
 
-## 5. 第 3〜8 次探索(2026-08-30 — 生成規則を変えた追加 6 周)
+## 5. Searches 3–8 (2026-08-30 — 6 additional rounds with changed generation rules)
 
-### 第 3 次: ライフサイクル観測者歩査(誕生 → 消費 → 進化 → 違反)
+### Third: lifecycle-observer walk (birth → consumption → evolution → violation)
 
-- **発見 A(誕生 = 採用キラーの解消): ブートストラップは `.env.example` の
-  取り込みで行う**。既存プロジェクトの 50 変数に型・説明を手入力させる形は
-  採用の最大障壁だが、maruhi 導入の瞬間は**まさに `.env` / `.env.example` が
-  まだ存在する瞬間**である。`maruhi init` / import がファイルの名前・
-  コメント・値の形(値はクライアント側でのみ観察 — ゼロ知識を保つ)から
-  スキーマ候補を提案し、承認 → 署名 → 元ファイル削除、で一儀式にする。
-  「`.env.example` の最後の仕事は、署名付きスキーマになること」— 削除の
-  物語と派生スナップショット(§3-2 = 後継)が一本につながる
-- **発見 B(保証の分割): presence は硬く、type/format は柔らかい**。
-  E2EE のためサーバーは値と宣言型の一致を**原理的に検証できない**(型・
-  形式検証はクライアント側で行う advisory な保証)。一方 **required の充足
-  = 暗号文の存在**はサーバーが中身を見ずに判定できる(硬い保証)。仕様は
-  この分割を明記し、型検証を「検証済み」と overclaim しない(表示規律の
-  文化)。副産物: 「required だが値が未設定」は Web ダッシュボードに
-  読み取り表示できる(サーバー計算可能 — ホステッドとの相乗)
+- **Finding A (birth = dissolving the adoption killer): the bootstrap
+  ingests `.env.example`**. Making someone hand-type types / descriptions
+  for an existing project's 50 variables is adoption's biggest barrier, but
+  the moment maruhi is introduced is **exactly the moment `.env` /
+  `.env.example` still exist**. `maruhi init` / import proposes schema
+  candidates from the file's names, comments, and value shapes (values are
+  observed client-side only — zero-knowledge preserved), then approve →
+  sign → delete the source file, as one ceremony. "`.env.example`'s last
+  job is to become a signed schema" — the deletion story connects in one
+  line with the derived snapshot (§3-2 = the successor)
+- **Finding B (splitting the guarantee): presence is strict, type/format is
+  lenient**. Because of E2EE, the server **fundamentally cannot verify**
+  that a value matches its declared type (type/format verification is an
+  advisory guarantee done client-side). Meanwhile **required fulfillment =
+  ciphertext existence** can be judged by the server without seeing contents
+  (a strict guarantee). The spec states this split explicitly and doesn't
+  overclaim type verification as "verified" (the display-discipline
+  culture). Byproduct: "required but no value set" can be displayed
+  read-only on the Web dashboard (server-computable — synergy with hosted)
 
-### 第 4 次: 敵対者歩査(スキーマ自体を攻撃面として見る)
+### Fourth: adversary walk (seeing the schema itself as attack surface)
 
-- **発見 C(description は maruhi が初めて意図的に LLM へ渡すデータ)**:
-  署名済み ≠ 良性(侵害メンバー・悪意 insider は署名できる)。エージェントが
-  読む前提の説明文はプロンプトインジェクション面であり、`maruhi schema` /
-  将来の MCP の出力での**中和(escapeText — 裁定 CK の前例)+ 長さ上限 +
-  「データであって指示ではない」枠付け**を仕様要件にする
-- **発見 D(スキーマ欄への秘密の混入)**: メタは平文でサーバー可視。
-  description / enum に実値を書く事故は、ゼロ知識の約束に**ユーザー形の穴**を
-  開ける。`schema set` 時のクライアント側エントロピー警告(ADR-0014 ⑤
-  リーク検知のミニ先行)+ ドキュメント警告。enum は「値に近い」ため採否
-  自体を慎重に扱う
+- **Finding C (description is the first data maruhi intentionally hands to
+  an LLM)**: signed ≠ benign (a compromised member / malicious insider can
+  sign). Description text written on the premise that an agent reads it is
+  a prompt-injection surface, so **neutralization (escapeText — ruling CK's
+  precedent) + a length cap + "data, not instructions" framing** in
+  `maruhi schema` / the future MCP's output become spec requirements
+- **Finding D (secrets sneaking into schema fields)**: meta is plaintext and
+  server-visible. The accident of writing a real value into description /
+  enum opens a **user-shaped hole** in the zero-knowledge promise. A
+  client-side entropy warning at `schema set` time (a mini-advance of
+  ADR-0014 ⑤'s leak detection) + a documentation warning. enum is "close to
+  a value", so treat its adoption itself carefully
 
-### 第 5 次: 双対の反転(読み取り時検証 → 書き込み時検証)
+### Fifth: dual inversion (verification at read → verification at write)
 
-- **発見 E(schema-locked 受理ポリシー)**: 拡張ルート(§4)ではスキーマは
-  変数ステートメントの一部なので、「**新規変数のステートメントはスキーマ欄を
-  必須とする**」というプロジェクト単位 opt-in の**サーバー受理ポリシー 1 行**
-  で、「宣言なき変数の創出」(typo が影の変数を静かに作る — dotenv 系が
-  誰も塞げていない事故)を**書き込み時点**で遮断できる。メタは平文なので
-  サーバー enforcement が E2EE と矛盾しない。**ストアを持たない Varlock には
-  原理的に不可能な、ストア案だけの上位機能**
-- 付随: `maruhi env diff` のスキーマ考慮(required 軸のパリティ比較)
+- **Finding E (schema-locked acceptance policy)**: under the extension route
+  (§4) the schema is part of the variable statement, so a per-project opt-in
+  **1-line server acceptance policy** — "**a new variable's statement must
+  carry the schema fields**" — can cut off "creation of undeclared
+  variables" (a typo silently creating a shadow variable — an accident no
+  dotenv-family tool has ever closed) **at write time**. Meta is plaintext,
+  so server enforcement doesn't contradict E2EE. **A strictly-better
+  capability the store option has and Varlock — with no store —
+  fundamentally cannot**
+- Incidental: schema consideration in `maruhi env diff` (parity comparison
+  on the required axis)
 
-### 第 6 次: バージョンスキュー歩査(新旧「検証者」の互換 — 2026-08-30 追補)
+### Sixth: version-skew walk (new vs old "verifiers" — 2026-08-30 addendum)
 
-- **発見 F(§4 の採用推奨の前提補正)**: `var_meta_signed_bytes` は固定列挙の
-  LP(ドメイン文字列 `maruhi/v1/var-meta-sig` が 10 フィールドを列挙 —
-  CRYPTO_SPEC §4.2)であり、フィールド追加後のステートメントを**旧 CLI は
-  検証できない**(v1 レイアウトで再計算 → 署名不一致)。M1(新ステートメント
-  種の**追加** — 旧 CLI は取得しないだけ)と質が違う、**既存ステートメント種の
-  旧検証者を壊す初の変更**である。帰結:
-  1. suite を `"maruhi/v1"` の Literal にピン留めしたまま署名レイアウトだけ
-     変えると、旧 CLI には「署名不正」= サーバー改ざんと区別のつかない
-     **最悪の誤メッセージ**で現れる。ドメイン文字列 / suite の版上げで
-     **decode 段で割れる**ようにするのが誠実な破壊様式 — これは §12-2 が
-     「v2 まで先取りしない」と保留した suite 版上げ判断と交差する(S0 の
-     裁定対象)
-  2. **スキーマ書き込みには明示の有効化ゲート**(プロジェクト/環境単位)が
-     要る — アップグレード済みメンバー 1 人の書き込みが未アップグレードの
-     全員の検証を割る形を防ぐ。SELF_HOSTING の更新順序(サーバー → 全
-     メンバー CLI → 有効化)は M1 先例の**ピア間スキュー版**
-  3. 並置ルートへの再逆転はなし(検証済み: wire にのみスキーマを載せ署名
-     対象 v1 を維持すると meta_sig_hash がスキーマを覆わず改ざん可能 —
-     無償の昼食は存在しない)。推奨は拡張ルートのまま、対価の正体が
-     「有効化ゲート + 破壊様式の設計」だと判明した形
-- **発見 F′(小)**: 一括バックフィル(発見 A)は変数ごとの meta op ×
-  マニフェスト再発行(CAS 直列)= O(N) 往復。おそらく許容範囲だが S1 で
-  実測し、複合受理の要否を判断(先取りしない)
+- **Finding F (a premise correction to §4's adoption recommendation)**:
+  `var_meta_signed_bytes` is a fixed-enumeration LP (the domain string
+  `maruhi/v1/var-meta-sig` enumerates 10 fields — CRYPTO_SPEC §4.2), and
+  **an old CLI can't verify** a statement written after the field addition
+  (recompute under the v1 layout → signature mismatch). Unlike M1
+  (**adding** a new statement kind — old CLIs just don't fetch it), this is
+  **the first change that breaks old verifiers of an existing statement
+  kind**. Consequences:
+  1. Keeping suite pinned to the `"maruhi/v1"` Literal while changing only
+     the signature layout would surface to old CLIs as "invalid signature" =
+     the **worst mis-message**, indistinguishable from server tampering. The
+     honest breakage form is bumping the domain string / suite version so it
+     **breaks at the decode stage** — this intersects §12-2's deferred
+     "don't preempt up to v2" suite-bump judgment (a ruling target of S0)
+  2. **Schema writes need an explicit activation gate** (per project /
+     environment) — preventing the shape where one upgraded member's write
+     breaks every un-upgraded member's verification. SELF_HOSTING's update
+     order (server → all members' CLIs → activation) is the **inter-peer
+     skew version** of the M1 precedent
+  3. No re-reversal to the side-by-side route (verified: carrying the
+     schema only on the wire while keeping signed-target v1 leaves the
+     schema uncovered by meta_sig_hash and tamperable — no free lunch
+     exists). The recommendation stays the extension route, now understood
+     as priced at "an activation gate + designing the breakage form"
+- **Finding F′ (minor)**: bulk backfill (finding A) is a per-variable meta
+  op × manifest re-issuance (CAS-serialized) = O(N) round-trips. Probably
+  tolerable, but measure in S1 and judge whether composite acceptance is
+  needed (don't preempt)
 
-### 第 7 次: 最後のファイル優位の機械検査化(消費者の反転)
+### Seventh: mechanizing the file's last remaining advantage (inverting the consumer)
 
-- **発見 G**: ファイルの残余優位「コード側の要求宣言」(§2 の△)は、第三の
-  成果物なしで閉じられる — **コード自身がコード側の正**だから。
-  `maruhi schema lint` がソースの env 参照(`process.env.X` 等)を静的走査し、
-  ストア側スキーマと CI で突合する(「コードは FOO を読むがスキーマに宣言が
-  ない / 逆」)。動的アクセスは拾えない best-effort — BG トリップワイヤと
-  同じ「善意のドリフト検出」の位置づけ。比較表の「コードとの結合 △」が
-  機械検査つきで実質 ◎ 側へ動く
-- **発見 H(中)**: 派生スナップショット(§3-2)の形式は自作せず
-  **JSON Schema(サブセット)**を第一候補に — エディタ・エージェント・docs
-  生成が無償で消費でき、「フォーマットを発明しない」規律とも整合
+- **Finding G**: the file's residual advantage "the code-side requirements
+  declaration" (§2's △) can be closed without a third artifact — **because
+  the code itself is the code-side truth**. `maruhi schema lint` statically
+  scans source env references (`process.env.X` etc.) and matches them
+  against the store-side schema in CI ("the code reads FOO but the schema
+  has no declaration / and the reverse"). Dynamic access can't be caught —
+  best-effort, same footing as the BG tripwire's "well-intentioned drift
+  detection". The comparison table's "coupling with code △" moves to
+  effectively ◎ with the machine check
+- **Finding H (medium)**: don't hand-roll the derived snapshot (§3-2)'s
+  format — make **JSON Schema (a subset)** the first candidate — editors,
+  agents, and docs generation consume it free, consistent with the "don't
+  invent formats" discipline
 
-### 第 8 次: 追加 3 規則の適用 — チェックリスト級のみ(収束)
+### Eighth: applying 3 more rules — checklist-level only (convergence)
 
-- 上限・経済歩査: スキーマ欄の strict 受理上限(§12-8 / §12-10 の既存規律の
-  適用)— 新しい不変条件なし
-- 正の一本化歩査: AGENTS.md 案内行・CLI help との整合 — 些末
-- 撤去可能性歩査: 拡張フィールドは optional・schema-locked は opt-in・
-  スナップショットは削除可 — 全段可逆で問題なし
+- Caps / economics walk: strict-acceptance caps on schema fields (applying
+  §12-8 / §12-10's existing disciplines) — no new invariant
+- Truth-unification walk: consistency with the AGENTS.md guidance line / CLI
+  help — trivial
+- Removability walk: extension fields optional, schema-locked opt-in,
+  snapshot deletable — fully reversible, no issue
 
-### 収束の見立て(最終)
+### Convergence assessment (final)
 
-8 周(比較 → 負け点反転 → 機構合成 → ライフサイクル → 敵対者 → 双対 →
-スキュー → 消費者反転 → 上限/一本化/撤去)で、発見の勾配は「採用済み推奨の
-前提補正(F)→ 検査 1 面(G)→ 形式選定(H)→ チェックリスト」と単調に
-落ちた。新しい不変条件レベルの発見は尽きたと判断し、以降は S0 の 3 周比較
-(具体案が立ってから)の領分とする。
+Across 8 rounds (comparison → losing-point reversal → mechanism composition
+→ lifecycle → adversary → dual → skew → consumer inversion →
+caps/unification/removal), the gradient of findings fell monotonically:
+"premise correction of an adopted recommendation (F) → 1 check surface (G) →
+format selection (H) → checklist". New-invariant-level findings are judged
+exhausted; from here on it's S0's 3-round comparison territory (once
+concrete options stand).
 
-## 6. S 系列の設計 PR への開いた問い
+## 6. Open questions for the S series' design PR
 
-1. **§4.2 レイアウト進化の形**: 署名対象へのフィールド追加はドメイン分離
-   文字列の版上げ・検証側の二重経路(移行窓)・テストベクター改版を要する。
-   既存ステートメントの扱い(次回編集時の自然な再発行で移行 / 一括移行)は
-   ここで裁定。**ベータ開放前の着地**が移行コストを最小化する
-2. **required の意味論**: 「環境の契約」(この環境はこの変数を持つべき)に
-   固定するか、環境別 required を許すか。`maruhi run` / `ci run` の
-   fail-fast 検証の判定点と文言
-3. **型システムの範囲**: string/number/boolean/url/enum 程度の小さい集合に
-   留める(検証 DSL の発明はしない)。**デフォルト値は置かない側を推奨**
-   (「値」に半歩踏み込み、ゼロ知識の線引きを濁す)
-4. **派生スナップショット(§3-2)の採否と形**: export 形式・CI 検査の
-   置き場・「正はストア」の明記方法
-5. `maruhi schema` の agent-gate 上の位置づけ(値ゼロの読み取りなので
-   エージェント環境で**許可**する側 — deny ではなく明示的に通すことを
-   仕様に書く)
-6. **ブートストラップ(発見 A)の形**: `.env` / `.env.example` 取り込みを
-   init に組み込むか独立コマンドか。値の観察はクライアント側のみ
-   (ゼロ知識維持)・取り込み後の元ファイル削除の儀式
-7. **保証の分割(発見 B)の仕様文言**: presence(サーバー判定可・硬い)と
-   type/format(クライアント advisory)を分けて書き、型検証を
-   「検証済み」と overclaim しない。`maruhi run` の fail-fast は
-   presence を硬く、型は警告から始めるか
-8. **敵対面(発見 C・D)**: description の長さ上限・表示中和
-   (escapeText — 裁定 CK の前例)・エントロピー警告の要否と実装点
-9. **schema-locked 受理ポリシー(発見 E)**: プロジェクト単位 opt-in の
-   形・既定値・宣言の置き場(チェーン op か環境メタか)
-10. **旧検証者の破壊様式と有効化ゲート(発見 F)**: ドメイン文字列 / suite の
-    版上げの形(§12-2 の「v2 まで先取りしない」保留との関係)・スキーマ
-    書き込みの有効化ゲートの置き場・SELF_HOSTING の更新順序(サーバー →
-    全メンバー CLI → 有効化)。バックフィルの O(N) 往復の実測(F′)
-11. **`maruhi schema lint`(発見 G)の採否と範囲**: ソースの env 参照の
-    静的走査 ↔ ストアの突合(best-effort — BG と同じ善意のドリフト検出の
-    位置づけ)。S0 で仕様化するか S 系列後段か
-12. **スナップショット形式(発見 H)**: JSON Schema サブセットを第一候補に
-    (フォーマットを発明しない)。required の環境軸表現の写像
+1. **The shape of §4.2's layout evolution**: adding fields to the signed
+   target requires bumping the domain-separation string, a dual-path
+   verifier side (migration window), and a test-vector revision. How
+   existing statements are treated (migrate via natural re-issuance on next
+   edit / bulk migration) is ruled here. **Landing before the beta opens**
+   minimizes migration cost
+2. **The semantics of required**: pin it to "the environment's contract"
+   (this environment should hold this variable), or allow per-environment
+   required. The judgment point and wording of `maruhi run` / `ci run`'s
+   fail-fast verification
+3. **The type system's scope**: keep to a small set like
+   string/number/boolean/url/enum (don't invent a verification DSL).
+   **Recommended: no default values** (half a step into "value" territory —
+   muddies the zero-knowledge boundary)
+4. **Adoption and shape of the derived snapshot (§3-2)**: export format, CI
+   check placement, how to state "the truth is the store"
+5. `maruhi schema`'s position on the agent-gate (it's a value-free read, so
+   on the **allowed** side in agent environments — the spec writes that
+   it's explicitly passed, not denied)
+6. **The bootstrap (finding A)'s shape**: whether `.env` / `.env.example`
+   ingestion is built into init or a standalone command. Value observation
+   is client-side only (zero-knowledge preserved) + the ceremony of
+   deleting the source file after ingestion
+7. **Spec wording for the guarantee split (finding B)**: write presence
+   (server-judgeable, strict) and type/format (client advisory) separately,
+   and don't overclaim type verification as "verified". Whether `maruhi
+   run`'s fail-fast makes presence strict and starts types at warnings
+8. **The adversarial surface (findings C, D)**: description length cap,
+   display neutralization (escapeText — ruling CK's precedent), whether an
+   entropy warning is needed and where it goes
+9. **The schema-locked acceptance policy (finding E)**: the per-project
+   opt-in's shape, default value, and where the declaration lives (a chain
+   op or environment meta)
+10. **The old verifiers' breakage form and the activation gate (finding
+    F)**: the shape of the domain-string / suite version bump (its relation
+    to §12-2's "don't preempt up to v2" deferral), where the schema-write
+    activation gate lives, and SELF_HOSTING's update order (server → all
+    members' CLIs → activation). Measuring the backfill's O(N) round-trips
+    (F′)
+11. **Adoption and scope of `maruhi schema lint` (finding G)**: static
+    scanning of source env references ↔ matching against the store
+    (best-effort — same footing as BG's well-intentioned drift detection).
+    Whether it's spec'd in S0 or later in the S series
+12. **The snapshot format (finding H)**: JSON Schema subset as first
+    candidate (don't invent formats). The mapping for expressing required's
+    environment axis

@@ -1,255 +1,315 @@
-# セッション 09 メモ(レビュー裁定の実装 PR B = 2-E: DEK ラップ登録への署名必須化)
+# Session 09 notes (implementing review rulings, PR B = 2-E: require signatures on DEK wrap registration)
 
-日付: 2026-08-02。前提: PR #20 マージ済み(PR A = suite 保存・行数上限・修復経路・
-dek 監査イベント。3-D の suite がワイヤと保存行に入っており、本 PR の署名対象に
-suite が入る前提が成立)。
-スコープ: session-07.md §3.5 の所有者裁定 2-E(暗号層)。**2-E をやること自体は
-裁定済み — 本メモの比較はすべて「細部」であり、確定条件 = PR レビュー承認。**
+Date: 2026-08-02. Prerequisites: PR #20 merged (PR A = suite persistence, row cap,
+repair path, dek audit events. The 3-D suite is already on the wire and in stored rows,
+so this PR's premise that signed bytes include the suite holds).
+Scope: owner ruling 2-E from session-07.md §3.5 (crypto layer). **That 2-E itself will
+be done is already ruled — every comparison in this note is a "detail"; the
+finalization condition = PR review approval.**
 
-## 1. やったこと(コミット順 = 層順)
+## 1. What was done (commit order = layer order)
 
-1. **spec**: CRYPTO_SPEC v0.2-draft(§5.1 新設 = ラップごとの Ed25519 登録署名。
-   §11 のベクター一覧更新)、AUTH_SPEC v0.5-draft(§12-2 ワイヤ / §12-6 受理条件 /
-   §12-8 検証コスト注記)、AUDIT_SPEC v0.4(§3.3 dek.registered に署名者 FP —
-   **所有者起草文書の改訂。PR 説明で変更点を明示**)
-2. **test-vectors**: dek-wrap-signature.json(正例 1 + 負例 9)を**実装より先に
-   コミット**。pyca/cryptography で生成 → WebCrypto(Bun)の verify_reference.mjs
-   で突き合わせ全 PASS。ベクター自体も人間レビュー対象(README に明示)
-3. **crypto**: dek-wrap-sign.ts(buildDekWrapSignatureBytes / signDekWrap /
-   verifyDekWrapSignature)。既存部品(WebCrypto Ed25519 + §2.1 LP)のみ。
-   CryptoError に DekWrapSignatureInvalid、core に Effect ラップ対応
-4. **api-schema**: WrappedDek に signatureHex、RecipientDek に signatureHex +
-   signerUserId + signerKeyFingerprintHex、reject reason に signature-invalid
-5. **server**: dek_wraps に signature_hex / signer_user_id / signer_key_fingerprint
-   (DDL 直接変更)、ensureWrapSignatures をラップ挿入の全経路の共有点
-   (ensureWrapSetAcceptable)に結線、dek.registered に署名者 FP、配布応答に
-   署名・署名者。StoredChain に genesisHashHex(署名対象の project_id を DO 自身の
-   チェーンから取る)
-6. **テスト**: 25 件追加相当(313 → 338 green)。経路網羅(登録 API + 環境作成
-   同梱)・配布のクライアント検証・修復経路の帰属突合を含む
-7. **docs**: 本メモ
+1. **spec**: CRYPTO_SPEC v0.2-draft (new §5.1 = per-wrap Ed25519 registration
+   signature. Updated the §11 vector list), AUTH_SPEC v0.5-draft (§12-2 wire /
+   §12-6 acceptance conditions / §12-8 verification-cost note), AUDIT_SPEC v0.4
+   (§3.3 dek.registered gains signer FP — **a revision of an owner-drafted
+   document; the changes are called out in the PR description**)
+2. **test-vectors**: committed dek-wrap-signature.json (1 positive case + 9
+   negative cases) **before the implementation**. Generated with
+   pyca/cryptography → cross-checked by WebCrypto (Bun) verify_reference.mjs, all
+   PASS. The vectors themselves are also human-review targets (noted in README)
+3. **crypto**: dek-wrap-sign.ts (buildDekWrapSignatureBytes / signDekWrap /
+   verifyDekWrapSignature). Built only from existing parts (WebCrypto Ed25519 +
+   §2.1 LP). Added DekWrapSignatureInvalid to CryptoError and an Effect wrapper
+   in core
+4. **api-schema**: WrappedDek gains signatureHex, RecipientDek gains signatureHex
+   + signerUserId + signerKeyFingerprintHex, reject reasons gain
+   signature-invalid
+5. **server**: dek_wraps gains signature_hex / signer_user_id /
+   signer_key_fingerprint (direct DDL change), wired ensureWrapSignatures into
+   the shared point of every wrap-insertion path (ensureWrapSetAcceptable),
+   dek.registered gains signer FP, the distribution response gains signature +
+   signer. StoredChain gains genesisHashHex (the signed project_id comes from the
+   DO's own chain)
+6. **tests**: +25 cases worth (313 → 338 green). Includes path coverage
+   (registration API + bundled environment creation), client verification on
+   distribution, and attribution matching on the repair path
+7. **docs**: this note
 
-## 2. 裁定事項の細部(複数案比較 → 推奨で仮進行。確定条件 = PR レビュー承認)
+## 2. Detail decisions of the rulings (multi-option comparison → provisional progress on the recommendation. Finalization condition = PR review approval)
 
-### 2-1. 署名単位 = ラップごと(裁定時の注記どおり)
+### 2-1. Signature unit = per wrap (as noted at ruling time)
 
-| 案 | 内容 | 評価 |
+| Option | Content | Assessment |
 |---|---|---|
-| **A: ラップごと(採用)** | 1 受信者宛 1 ラップに 1 署名 | 配布時に受信者が自分宛のラップを**単体で**検証できる(裁定時の注記)。修復経路(2-D)の個別削除・再登録と直交 — 残存ラップの署名は削除の影響を受けない |
-| B: リクエスト(集合)ごと | 1 登録に 1 署名 | 署名数は減るが、受信者は集合全体を取得しないと検証できない(配布は本人宛のみ — §12-6 と矛盾)。個別削除で署名対象集合が変わり検証が壊れる |
+| **A: per wrap (adopted)** | 1 signature per wrap addressed to 1 recipient | At distribution the recipient can verify the wrap addressed to them **standalone** (as noted at ruling time). Orthogonal to the repair path (2-D)'s individual delete / re-register — the signatures of remaining wraps are unaffected by deletion |
+| B: per request (set) | 1 signature per registration | Fewer signatures, but the recipient must fetch the whole set to verify (distribution is only to the addressee — contradicts §12-6). Individual deletion changes the signed set and breaks verification |
 
-### 2-2. 署名対象の正規化
+### 2-2. Canonicalization of the signed payload
 
 `signed_bytes = LP("maruhi/v1/dek-wrap-sig", project_id, environment_id, epoch,
 recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex)`
 
-- **suite の束縛はドメイン文字列**(`<suite>/dek-wrap-sig`): §5 の HPKE info
-  (`maruhi/v1/dek-wrap`)と同型。suite を独立フィールドにする案は二重束縛に
-  なるだけで利得がない(negative `suite-mismatch` で固定)
-- **バイナリ列は hex 小文字文字列として LP に載せる**: §6.2 grant_server の
-  scope_environments_lp_hex と同じ規約(タスク指示の検討事項 → 先例踏襲を採用)。
-  crypto 実装は署名対象の hex フィールドに小文字・固定長の構造検証を課す
-  (大文字 hex を許すと同一ラップに複数の正規形が生まれ署名の一意性が壊れる)
-- **recipient_enc_pub_hex を署名対象に含める(裁定外の追加提案)**:
+- **Suite binding happens in the domain string** (`<suite>/dek-wrap-sig`): same
+  shape as the §5 HPKE info (`maruhi/v1/dek-wrap`). A separate suite field would
+  just be double-binding with no gain (pinned by negative `suite-mismatch`)
+- **Binary sequences go on the LP as lowercase hex strings**: same convention as
+  §6.2 grant_server's scope_environments_lp_hex (an open question in the task
+  instructions → adopted following precedent). The crypto implementation
+  requires the signed hex fields to be lowercase and fixed-length (allowing
+  uppercase hex would give the same wrap multiple canonical forms and break
+  signature uniqueness)
+- **Include recipient_enc_pub_hex in the signed payload (added proposal beyond
+  the ruling)**:
 
-| 案 | 評価 |
+| Option | Assessment |
 |---|---|
-| **含める(採用)** | ワイヤ上の WrappedDek の全フィールドが署名で束縛され、未束縛フィールドが残らない(将来、未束縛フィールドに意味を持たせて齟齬が生じる余地を消す)。受信者は自分の公開鍵を知っているため配布時の単体検証可能性を損なわない(RecipientDek に enc pub を足す必要もない) |
-| 含めない(裁定列挙の最小) | HPKE の性質上 ct 自体が受信者鍵に暗号学的に束縛されるため冗長という見方もできるが、「署名がワイヤの一部だけを覆う」状態は監査・実装の説明コストが高い |
+| **Include (adopted)** | Every field of the wire WrappedDek is bound by the signature, leaving no unbound field (eliminating room for future drift if unbound fields ever gain meaning). The recipient knows their own public key so standalone verifiability at distribution is preserved (and RecipientDek doesn't need the enc pub added) |
+| Don't include (the ruling's minimal enumeration) | One could argue it's redundant since HPKE cryptographically binds ct to the recipient key, but a state where "the signature covers only part of the wire" carries high audit and implementation explanation cost |
 
-- **signer_user_id を署名対象に含める(裁定外の追加提案 その 2。レビューループ 1
-  のセキュリティ指摘 [中] への対応)**: 署名だけでは「鍵 K の保持者が署名した」
-  ことしか固定されず、チェーンの合意規則は同一公開鍵を持つ複数メンバー
-  (add_member は鍵の重複を拒否しない)を許容する。悪意 admin が既存メンバー A の
-  公開鍵一式を流用したソック垢 M′ を追加し、修復経路で空けたスロットへ「A が
-  過去に署名したラップ」を M′ として再投入すると、鍵検証は通り帰属が M′ に
-  記録される(帰属の付け替え)。署名者自身の user_id を signed_bytes に焼き込む
-  ことでこれを署名自体が拒否する。署名者は自分の user_id を知っており、受信者は
-  配布される signerUserId から再構成できるため、単体検証可能性は損なわれない。
-  代替案(チェーン合意規則で鍵重複 add_member を無効化)は §6 の合意規則変更で
-  影響半径が大きく、ワイヤ・ベクター凍結前の §5.1 ローカルな修正を採った
+- **Include signer_user_id in the signed payload (added proposal beyond the
+  ruling, part 2 — in response to review loop 1's [medium] security finding)**:
+  a signature alone only fixes "the holder of key K signed"; the chain's
+  consensus rules allow multiple members holding the same public key (add_member
+  does not reject key duplicates). A malicious admin could add a sockpuppet M′
+  reusing existing member A's public-key set, then re-insert "a wrap A signed in
+  the past" into a slot emptied via the repair path as M′ — key verification
+  passes and the attribution records M′ (attribution reassignment). Baking the
+  signer's own user_id into signed_bytes makes the signature itself reject this.
+  The signer knows their own user_id and the recipient can reconstruct it from
+  the distributed signerUserId, so standalone verifiability is preserved. The
+  alternative (invalidating key-duplicate add_member in the chain consensus
+  rules) is a §6 consensus change with a large blast radius, so we took the
+  §5.1-local fix before freezing the wire / vectors
 
-### 2-3. リプレイの扱い = 「API 呼び出し主体 = 署名者」の厳密一致(タスク指示の起点案を採用)
+### 2-3. Replay handling = strict "API caller = signer" equality (adopting the task instructions' starting option)
 
-- **受理条件**: サーバーは各ラップの署名を**呼び出し主体の受理時点チェーン導出
-  sig 鍵**でのみ検証する。ワイヤに署名者 ID は載せない(呼び出し主体が署名者で
-  あることが契約)
-- **v1 の全登録経路と両立することを確認済み**: 環境作成(作成者が自分でラップ・
-  自分で登録)/ ローテーション後(実行者が同)/ 新メンバー宛バックフィル
-  (招待者が同)/ 修復経路の再登録(再登録者が同)— いずれも CRYPTO_SPEC §7 の
-  「ラップの実行者 = DEK 保持クライアント」により署名者 = 登録者が自然に成立
-- **2-D(削除 → 再充填)との整合**: 削除済みスロットへ「他人が署名した過去の
-  ラップ」を第三者が再投入する経路は署名者不一致で塞がる。session-08 §4 の
-  v1 許容(空きスロットへの member による毒再充填)は帰属がサーバー不信で
-  固定される形に強化された(毒の予防ではなく帰属 — 裁定 E の位置づけどおり)
-- **タイムスタンプ・ノンスは署名対象に含めない**: 署名は帰属であり鮮度証明では
-  ない(CRYPTO_SPEC §5.1 に意味論として明記)。同一文脈への同一署名の再登録は
-  「同じ署名者による同じ内容の復元」以上の効果を持たない(上書き禁止 + 削除は
-  admin 限定のため)。フレッシュネスが必要になったら仕様改訂で扱う
+- **Acceptance condition**: the server verifies each wrap's signature only
+  against the **caller's sig key derived from the chain at acceptance time**. No
+  signer ID on the wire (the contract is that the caller is the signer)
+- **Verified compatible with every v1 registration path**: environment creation
+  (the creator wraps and registers themselves) / post-rotation (the operator
+  does both) / backfill to a new member (the inviter does both) / re-registration
+  on the repair path (the re-registrar does both) — in each, CRYPTO_SPEC §7's
+  "the wrap's performer = the client holding the DEK" naturally makes
+  signer = registrar
+- **Consistency with 2-D (delete → refill)**: the path where a third party
+  re-inserts "a past wrap signed by someone else" into a deleted slot is closed
+  by signer mismatch. session-08 §4's v1-tolerated "poison refill of an empty
+  slot by a member" was hardened into a form where attribution is pinned by
+  server distrust (attribution, not poison prevention — as ruling E positions it)
+- **No timestamp / nonce in the signed payload**: a signature is attribution, not
+  a freshness proof (stated as semantics in CRYPTO_SPEC §5.1). Re-registering
+  the same signature in the same context has no effect beyond "restoration of
+  the same content by the same signer" (overwrite is forbidden and deletion is
+  admin-only). If freshness becomes needed it goes through a spec revision
 
-検討した代替案:
-| 案 | 却下理由 |
+Alternatives considered:
+| Option | Rejected because |
 |---|---|
-| ワイヤに signerUserId を載せ第三者提出を許す | v1 に必要な経路がなく、他人の署名済みラップの再投入(帰属の混濁)を許すだけ |
-| チャレンジ / ノンスで署名に鮮度を持たせる | 署名の目的は帰属。スロット意味論(上書き禁止)の下でリプレイの実害がなく、往復の追加と仕様の複雑化に見合わない |
+| Put signerUserId on the wire and allow third-party submission | No v1 path needs it; it would only permit re-insertion of others' signed wraps (muddying attribution) |
+| Give signatures freshness via challenge / nonce | The signature's purpose is attribution. Under slot semantics (no overwrite), replay does no real harm, so extra round-trips and spec complexity aren't justified |
 
-### 2-4. 検証規則 = 「登録時点のチェーン導出 sig 鍵」
+### 2-4. Verification rule = "chain-derived sig key at registration time"
 
-- サーバー検証は受理時点(= permit 直列化の下では登録時点)の現メンバー集合の鍵。
-  実装は requireMemberState が返す ChainMember の sigPubHex をそのまま使う
-- **メンバー削除後に残る過去署名の検証を CRYPTO_SPEC §5.1 に明記**: 配布時の
-  クライアント検証は「検証済みチェーン履歴で署名者 user_id に束縛された sig
-  公開鍵のうち署名者 FP が一致するもの」(genesis / add_member の payload)を
-  使う。チェーンは append-only なので削除済みメンバーの当時の鍵も検証に使える。
-  RecipientDek が signerUserId + signerKeyFingerprintHex を返すのはこの照合の
-  ため(FP は同一 user_id が削除 → 再追加で別鍵になった場合の曖昧性を除去する)
-- クライアント検証ロジック自体の実装は CLI / Web 実装時(§6.3 と同時。スコープ外
-  — ワイヤ・保存はそれを可能にする形にした)
+- Server verification uses the keys of the current member set at acceptance time
+  (= registration time under permit serialization). The implementation uses the
+  ChainMember sigPubHex returned by requireMemberState as-is
+- **CRYPTO_SPEC §5.1 documents how past signatures surviving member removal are
+  verified**: client verification at distribution uses "the sig public key bound
+  to the signer's user_id in the verified chain history whose signer FP matches"
+  (payload of genesis / add_member). Since the chain is append-only, removed
+  members' keys of the time remain usable for verification. RecipientDek returns
+  signerUserId + signerKeyFingerprintHex precisely for this matching (the FP
+  removes ambiguity when the same user_id was removed → re-added with a
+  different key)
+- Client-verification logic itself is implemented when the CLI / Web are
+  (together with §6.3. Out of scope — the wire and storage were made to enable
+  it)
 
-### 2-5. サーバー検証コスト(タスク指示の検討事項)
+### 2-5. Server verification cost (an open question in the task instructions)
 
-- 最悪 10,000 ラップ/リクエスト × Ed25519 検証が permit 直列化の下で走る。これは
-  **チェーン追記の全再検証(§6.4。最大 10,000 エントリ × Ed25519)と同オーダー**
-  であり、既に受理済みの資源消費水準を超えない(AUTH_SPEC §12-8 に注記)
-- 件数上限の引き下げは検討の上**見送り**: §12-8 の「ラップ数/リクエスト ≥
-  チェーンエントリ上限が束縛するメンバー数」の不変条件(初回登録の完全一致要件と
-  の両立)を壊すため。現実の集合はメンバー数サイズ(数件〜数十件)
-- 実装は安価な検査(件数 → 受信者・重複 → 行数上限 → 集合)をすべて通った後に
-  署名検証を行う(拒否されるリクエストに Ed25519 を浪費しない)
+- Worst case: 10,000 wraps/request × Ed25519 verify runs under permit
+  serialization. That is **the same order as full re-verification of a chain
+  append (§6.4: max 10,000 entries × Ed25519)** and stays within already-accepted
+  resource-consumption levels (noted in AUTH_SPEC §12-8)
+- Lowering the per-request cap was considered and **declined**: it would break
+  §12-8's invariant "wraps/request ≥ member count bound by the chain-entry cap"
+  (incompatible with the exact-match requirement of first registration). Real
+  sets are member-count-sized (a few to a few dozen)
+- The implementation verifies signatures only after every cheap check has
+  passed (count → recipients/duplicates → row cap → set membership), so no
+  Ed25519 is wasted on rejected requests
 
-### 2-6. dek.registered の署名者 FP(裁定 B の「E の署名者 FP を写す」)
+### 2-6. dek.registered's signer FP (ruling B's "copy E's signer FP")
 
-「actor_key_fingerprint を持つのはチェーンミラーのみ」という既存前提
-(data-plane.ts の dataEvent JSDoc・audit テストの NULL アサーション)を**初めて
-破る変更**なので、コメント・テスト・AUDIT_SPEC §3.3 の前提ごと改訂した:
-dek.registered のみ例外(登録署名の署名者 FP を写す — 監査行とチェーン外署名の
-突合用)。dek.deleted は署名を伴わないため従来どおり NULL(テストで固定)。
+This is the **first change to break** the existing premise "only the chain
+mirror carries actor_key_fingerprint" (the dataEvent JSDoc in data-plane.ts and
+the audit test's NULL assertion), so the comments, tests, and AUDIT_SPEC §3.3's
+premise were revised together: only dek.registered is the exception (it copies
+the registration signature's signer FP — for cross-matching audit rows with
+off-chain signatures). dek.deleted carries no signature, so it stays NULL as
+before (pinned by a test).
 
-## 3. ハマったこと・環境知見
+## 3. Gotchas & environment findings
 
-- **署名追加で最大件数のラップ登録が transport 413 に覆われた**: 1 ラップの
-  ワイヤが約 500 バイトになり、10,001 件のリクエスト(約 5 MB)が
-  MAX_REQUEST_BODY_BYTES(4 MiB)を超えて、422(dek-wraps-per-request)より先に
-  素の 413 が返った。**宣言済みエラーの到達可能性**(session-08 レビューループの
-  規律)を保つため 8 MiB へ引き上げ(実装詳細であり仕様値ではない。理論極値 =
-  1024 バイト user_id では従来どおり 413 が先に束縛しうる — §12-8 の既存注記の
-  範囲内)
-- **dek_wraps の DDL 直接変更(NOT NULL 列追加)**: main で作った `.wrangler/state`
-  はこのブランチで動かす前に破棄が必要(session-08.md §3 と同じ。
-  `CREATE TABLE IF NOT EXISTS` は既存テーブルを変更しない)
-- **署名対象の project_id は DO 自身のチェーンから取る**: StoredChain に
-  genesisHashHex(= プロジェクト ID — §6.4)を追加し、worker の申告値に依存させ
-  ない(worker 側バグへの防衛。init 時の project-id-mismatch 検査と同じ姿勢)
-- 生成ツール(generate_reference.py)の JSON 出力はリポジトリの oxfmt 整形と
-  配列の折り返しが異なる。既存ベクターは byte-identical に再現されるが
-  フォーマットだけ差分が出るため、新規ファイルのみ oxfmt をかけてコミットした
-- fallow の重複検出はセッション 08 と同じ構造クローン(data-store.ts の
-  クエリ骨格)を inherited finding として除外済み。ゲートは green
+- **Adding the signature pushed a max-count wrap registration into transport
+  413**: one wrap's wire grew to ~500 bytes, so a 10,001-item request (~5 MB)
+  exceeded MAX_REQUEST_BODY_BYTES (4 MiB) and returned a bare 413 before
+  422 (dek-wraps-per-request). To preserve **reachability of declared errors**
+  (the discipline from session-08's review loop), the limit was raised to 8 MiB
+  (an implementation detail, not a spec value. The theoretical extreme — a
+  1024-byte user_id — can still hit 413 first, as before — within the existing
+  §12-8 note)
+- **Direct DDL change on dek_wraps (adding NOT NULL columns)**: `.wrangler/state`
+  created on main must be discarded before running on this branch (same as
+  session-08.md §3. `CREATE TABLE IF NOT EXISTS` does not alter an existing
+  table)
+- **The signed project_id comes from the DO's own chain**: added genesisHashHex
+  (= the project ID — §6.4) to StoredChain so it doesn't rely on the worker's
+  declared value (defense against worker-side bugs; same posture as the
+  project-id-mismatch check at init)
+- The generation tool's (generate_reference.py) JSON output differs from the
+  repo's oxfmt formatting in array wrapping. Existing vectors reproduce
+  byte-identically, but formatting alone would show a diff, so only the new file
+  was committed after oxfmt
+- fallow's duplicate detection already excludes the same structural clone as
+  session 08 (data-store.ts query skeleton) as an inherited finding. The gate is
+  green
 
-## 4. 既知の制約・v1 許容
+## 4. Known constraints / v1 tolerances
 
-- 署名は**帰属**であり毒ラップの**予防ではない**(裁定どおり)。呼び出し主体が
-  正しく署名した復号不能ブロブは受理される — ただし帰属がサーバー不信で
-  署名 + FP に固定される(テスト「accepts a caller-signed poison wrap」で意味論を
-  固定)
-- 配布時のクライアント検証(チェーン履歴照合)は未実装(CLI / Web 実装時)。
-  テストの verifyDistributedWrapSignature はその形を先取りした検証ヘルパ
-- suite × エポックの結合は v2 設計まで保留(裁定どおり。署名のドメイン文字列は
-  suite を含むため、v2 移行時は新ドメインの署名になる)
-- grant_server 済みプロジェクトのサーバー鍵宛ラップ(Phase 2)は未実装のまま。
-  導入時は「サーバー鍵宛ラップの署名者」も本仕様(§5.1 の呼び出し主体 = 署名者)
-  がそのまま適用できる見込み(ラップ実行者はローテーション実行者 — §7)
+- The signature is **attribution**, not poison-wrap **prevention** (as ruled). A
+  properly-caller-signed undecryptable blob is accepted — but its attribution is
+  pinned to the signature + FP by server distrust (semantics pinned by the test
+  "accepts a caller-signed poison wrap")
+- Client verification at distribution (matching chain history) is unimplemented
+  (comes with the CLI / Web). The test's verifyDistributedWrapSignature is a
+  verification helper that pre-empts that shape
+- suite × epoch binding is deferred until the v2 design (as ruled. Since the
+  signature's domain string includes the suite, the v2 migration produces
+  signatures under a new domain)
+- Wraps addressed to the server key of a grant_server'd project (Phase 2) remain
+  unimplemented. On introduction, this spec (§5.1's caller = signer) should apply
+  as-is to "the signer of a server-key-addressed wrap" (the wrap performer is the
+  rotation performer — §7)
 
-## 5. 次セッションへの申し送り
+## 5. Handoff to the next session
 
-- **チェーン合意規則での鍵重複禁止(2026-08-03 所有者判断: 別 PR で検討)**:
-  §2-2 の帰属付け替え対策は signer_user_id の署名束縛(案 A)で本 PR が塞いだが、
-  根本原因である「add_member が同一公開鍵の複数メンバーを許容する」こと自体を
-  チェーン合意規則で禁止する案 B を、**将来の防衛層(多層化)として独立 PR で
-  検討する**。CRYPTO_SPEC §6 の合意規則変更 + chain-entries.json のベクター改訂
-  (鍵重複 add_member の authz negative 追加)+ verifyChain の実装を伴う暗号層の
-  変更なので、本 PR と同じ「仕様改訂 → ベクター先行 → 人間レビュー」の順を踏む
-  こと。検討時の論点: 正当な鍵共有ユースケースの有無(v1 はデバイス鍵分離なし)、
-  remove → 同一鍵で re-add(同一人物の復帰)は禁止対象にしない線引き
-- **Phase 2 の F(DO ストレージ総量ガード)の実装形メモ(セッション 08 の検討
-  結果)**: 「**会計バイト予算(主・決定論的)+ databaseSize 警報(従・実測)の
-  二段**」で設計する。主 = 挿入経路ごとに行サイズを会計して決定論的な予算
-  (§12-8 の累積暗号文バイトと同型。テスト可能・permit 下で正確)、従 =
-  `ctx.storage.sql.databaseSize` の閾値超過を型付きエラー化する実測の防波堤
-  (断片化・索引・監査ログ肥大など会計外の消費を覆う)。audit_events の無期限
-  保持(AUDIT_SPEC §5.3)を覆う唯一の防衛線になるため、監査ログの集約方針の
-  実測判断と同時に設計する(AUTH_SPEC §12-8 の Phase 2 予告に対応)
-- CLI / Web 実装時: **クライアントはラップ生成 → signDekWrap → 登録を一続きで
-  行う**(署名者 = 登録 API を呼ぶ本人)。配布側は RecipientDek の
-  signerUserId + signerKeyFingerprintHex をチェーン履歴と照合して
-  verifyDekWrapSignature で検証してから unwrap する(§6.3 のクライアント同期
-  検査と同時に実装)
-- 登録 API の空 `deks: []`(no-op 204)の扱いは引き続き申し送り(session-08 §5。
-  署名必須化後も空集合は署名ゼロ件で素通りする no-op のまま — 非破壊系なので
-  実害はないが、削除側の「空列挙 400」と揃えるなら独立の軽微 PR)
-- session-07.md §5 の申し送り(CLI の 409 リトライループ、リカバリーブロブの
-  レート制限等)は未着手のまま有効
+- **Prohibiting key duplication in the chain consensus rules (2026-08-03 owner
+  decision: consider in a separate PR)**: §2-2's anti-attribution-reassignment
+  fix closed this PR via signer_user_id binding (option A), but option B —
+  forbidding "add_member tolerating multiple members with the same public key"
+  itself in the chain consensus rules — should be **considered in a separate PR
+  as a future defense layer (defense in depth)**. It's a crypto-layer change
+  involving a CRYPTO_SPEC §6 consensus-rule change + chain-entries.json vector
+  revision (adding an authz negative for key-duplicate add_member) + verifyChain
+  implementation, so it must follow the same order as this PR: "spec revision →
+  vectors first → human review". Discussion points at that time: whether there
+  are legitimate key-sharing use cases (v1 has no device-key separation), and
+  drawing the line so remove → re-add with the same key (the same person
+  returning) is not prohibited
+- **Memo on the implementation shape of Phase 2's F (DO storage-total guard)
+  (session-08 discussion outcome)**: design it as "**accounting byte budget
+  (primary, deterministic) + databaseSize alarm (secondary, measured)**". Primary
+  = per-insertion-path row-size accounting for a deterministic budget (same
+  shape as §12-8's cumulative ciphertext bytes; testable and exact under
+  permit), secondary = a measured dike that turns `ctx.storage.sql.databaseSize`
+  threshold crossings into typed errors (covering consumption outside
+  accounting: fragmentation, indexes, audit-log bloat). Because it is the only
+  defense line covering the indefinite retention of audit_events (AUDIT_SPEC
+  §5.3), design it together with a measured judgment of the audit-log
+  aggregation policy (corresponds to AUTH_SPEC §12-8's Phase 2 preview)
+- For CLI / Web implementation: **the client performs wrap generation →
+  signDekWrap → registration as one sequence** (the signer = the caller of the
+  registration API). The distributing side matches RecipientDek's
+  signerUserId + signerKeyFingerprintHex against chain history and verifies
+  with verifyDekWrapSignature before unwrapping (implement together with §6.3's
+  client sync check)
+- Handling of the registration API's empty `deks: []` (no-op 204) remains a
+  handoff (session-08 §5. Even after mandatory signatures, an empty set stays a
+  no-op that passes with zero signatures — it's non-destructive so there's no
+  real harm, but aligning it with the deletion side's "empty enumeration 400"
+  would be a small independent PR)
+- session-07.md §5's handoffs (the CLI's 409 retry loop, recovery-blob rate
+  limiting, etc.) remain open and valid
 
-## 6. レビュー→修正ループ(PR #21 内。3 観点の並行レビュー → 修正)
+## 6. Review→fix loop (inside PR #21. 3 parallel review angles → fix)
 
-### ループ 1 の指摘と対応
+### Loop 1 findings and responses
 
-3 観点(セキュリティ・暗号 / 正しさ・並行性 / テスト・契約)とも [高] はゼロ。
-採用・修正した指摘:
+All 3 angles (security / crypto, correctness / concurrency, tests / contract)
+had zero [high]. Accepted and fixed items:
 
-1. **署名者アイデンティティが signed_bytes に未束縛(セキュリティ [中])**:
-   チェーンが鍵重複メンバーを許すため、鍵流用ソック垢への帰属付け替えが成立
-   し得た。→ **signed_bytes に signer_user_id を追加**(§2-2 参照。仕様・
-   ベクター・crypto・server・テストを一括改訂。negative `transplant-signer` で
-   固定し、サーバー側も「MEMBER の鍵一式を流用した STRANGER による再投入 →
-   422」の結合テストで固定)
-2. **signatureHex の不正形式 400 が未テスト(テスト [中])**: 大文字 hex /
-   長さ不正 / 非 hex の 3 変種 + 登録 API 経路の欠落 400 をテスト化
-3. **修復経路の「第三者による元署名ラップの再投入」negative がない(テスト
-   [中])**: 1 の結合テストが単純な署名者不一致(鍵も異なる)より強い形
-   (鍵一致・user_id 不一致)で固定
-4. **低・任意対応分**: crypto の suite / signerUserId 非空検証を追加、署名
-   bit 反転の negative ベクターを追加、「元署名者自身による同一署名の再登録 =
-   204」(§5.1 の意味論の positive 側)をテスト化、登録 API の空 `deks: []`
-   no-op 204 の現挙動をテストで固定(申し送りの明文化)、audit テストの
-   エポック 2 FP 検証を全行ループ化、ensureWrapSignatures の die が依拠する
-   ランタイム前提(raw Ed25519 インポートは長さ検査のみ)をコメントに明記
+1. **Signer identity not bound into signed_bytes (security [medium])**: because
+   the chain tolerates key-duplicate members, attribution reassignment to a
+   key-reusing sockpuppet could succeed. → **Added signer_user_id to
+   signed_bytes** (see §2-2. Spec, vectors, crypto, server, and tests revised
+   together. Pinned by negative `transplant-signer`, and on the server side by
+   an integration test "re-insertion by a STRANGER reusing a MEMBER's key set →
+   422")
+2. **signatureHex malformed 400 untested (tests [medium])**: tested 3 variants —
+   uppercase hex / wrong length / non-hex — plus the missing-field 400 on the
+   registration API path
+3. **No negative for "third-party re-insertion of an originally-signed wrap" on
+   the repair path (tests [medium])**: item 1's integration test pins the
+   stronger form (same key, different user_id) rather than simple signer
+   mismatch (different key)
+4. **Low / optional responses**: added non-empty validation of suite /
+   signerUserId in crypto, added a signature bit-flip negative vector, tested
+   "re-registration of the same signature by the original signer = 204" (the
+   positive side of §5.1 semantics), pinned the current empty-`deks: []` no-op
+   204 behavior of the registration API in a test (spelling out the handoff),
+   made the audit test's epoch-2 FP check loop over all rows, and wrote into a
+   comment the runtime assumption ensureWrapSignatures' die relies on (raw
+   Ed25519 import only checks length)
 
-### 採用せず記録に留めた観察(対応不要と判断)
+### Observations recorded but not adopted (judged as needing no response)
 
-- **素連結(flat-concat)の negative ベクター**(セキュリティ [低]): 正例の
-  signed_bytes 一致検査が誤エンコード実装を直接落とすため追加しない(README に
-  理由を明記)。chain-entries の flat-concat は入れ子 LP という subtlety を
-  守っていたが、本署名対象は平坦な LP 1 段
-- **MAX_REQUEST_BODY_BYTES 8 MiB が全エンドポイント共通**(セキュリティ /
-  正しさ [低]): 未認証経路含む事前バッファ上限が倍になるが可用性のみの限界的
-  変化。DEK 登録ルート限定の 2 段化は必要になったら(§3 に記載済み)
-- **verifyDekWrapSignature の catch-all**(正しさ [情報]): 「不信入力で throw
-  しない」契約(verifyEntrySignature の先例)と一貫しており変更不要
-- **crypto の epoch 下限(≥ 0)とワイヤ(≥ 1)の非対称**(正しさ [情報]):
-  dek-wrap.ts の checkEpoch と同じ選択。サーバーは epoch-out-of-range が先に走る
+- **Flat-concat negative vector** (security [low]): not added because the
+  positive case's signed_bytes match check directly fails a mis-encoded
+  implementation (reason noted in README). chain-entries' flat-concat had the
+  subtlety of nested LP to guard, but this signed payload is a single flat LP
+  level
+- **MAX_REQUEST_BODY_BYTES 8 MiB is shared across all endpoints** (security /
+  correctness [low]): the pre-buffer cap including unauthenticated routes
+  doubles, but it's a marginal availability-only change. Two-tiering restricted
+  to the DEK registration route is for when it becomes needed (already noted in
+  §3)
+- **verifyDekWrapSignature's catch-all** (correctness [info]): consistent with
+  the "don't throw on untrusted input" contract (the verifyEntrySignature
+  precedent); no change needed
+- **Asymmetry between crypto's epoch lower bound (≥ 0) and the wire's (≥ 1)**
+  (correctness [info]): same choice as dek-wrap.ts's checkEpoch. The server's
+  epoch-out-of-range fires first
 
-### ループ 2(修正の再検証)
+### Loop 2 (re-verify the fixes)
 
-3 観点とも **[高]・[中] の残指摘ゼロ**を確認:
+All 3 angles confirmed **zero remaining [high] / [medium] findings**:
 
-- セキュリティ = signer_user_id の追加が指摘を完全に塞ぎ(結合テストは攻撃の
-  最強形 = 鍵一致・user_id 不一致)、新たな曖昧性・クロスプロトコル混同・
-  意味論の破れを持ち込んでいない。副次効果として RecipientDek の signerUserId が
-  署名で暗号学的に固定され、サーバーによる署名者の虚偽申告も配布時のクライアント
-  検証で落ちる形に閉じた
-- 正しさ = 検証コンテキストへの 1 フィールド追加のみの非構造的変更で、permit
-  直列化・「全検証 → 単一 Effect.sync 書き込み」の構造は不変
-- 契約 = ループ 1 の 6 指摘すべて対応十分。新規テストの品質・独立性も問題なし
+- Security = the signer_user_id addition fully closes the finding (the
+  integration test is the attack's strongest form = key match, user_id
+  mismatch) and introduces no new ambiguity, cross-protocol confusion, or
+  semantic breakage. A side effect closed off servers mis-declaring
+  signerUserId: RecipientDek's signerUserId is now cryptographically pinned by
+  the signature, so client verification at distribution would catch it
+- Correctness = a non-structural change adding 1 field to the verification
+  context; permit serialization and the "all-verify → single Effect.sync write"
+  structure are unchanged
+- Contract = all 6 loop-1 findings adequately addressed. New-test quality and
+  independence are fine
 
-ループ 2 で残った [低] 2 件も対応済み: §5.1 意味論 bullet の束縛列挙に「署名者」を
-追記、配布経路の signerUserId 偽装のクライアント検証 negative を統合テストに追加。
-`bun run check`(346 件)+ `wrangler deploy --dry-run` + CI(check)green。
+The 2 [low] items left at loop 2 are also handled: added "signer" to §5.1's
+semantics bullet's bound-field enumeration, and added a client-verification
+negative for a forged signerUserId on the distribution path to the integration
+tests. `bun run check` (346 cases) + `wrangler deploy --dry-run` + CI (check)
+all green.
 
-### ループ 3(最終確認)
+### Loop 3 (final confirmation)
 
-3 観点とも**指摘ゼロ**を確認(セキュリティ = [低] 2 件の対応が正しく、案 B の
-別 PR 送りにセキュリティ上の空白なし / 正しさ = 6403810 はプロダクション
-コード無変更で無退行 / 契約 = 網羅完成)。経過: ループ 1 = 中 3・低数件 →
-ループ 2 = 低 2 → ループ 3 = ゼロ。以降は ready 化 → Bugbot / Security Agent の
-指摘対応(drive-to-green)→ 所有者指示によるマージ。
+All 3 angles confirmed **zero findings** (security = the 2 [low] fixes are
+correct, and deferring option B to a separate PR leaves no security gap /
+correctness = 6403810 has no production-code change and no regression /
+contract = enumeration complete). Progression: loop 1 = 3 medium, several low
+→ loop 2 = 2 low → loop 3 = zero. Next: mark ready → handle Bugbot / Security
+Agent findings (drive-to-green) → merge on owner instruction.

@@ -1,282 +1,355 @@
-# セッション 36 メモ(PR-M3 実装 — 値スナップショット配布・検証 = チェックポイント整合のクライアント規則 2)
+# Session 36 notes (PR-M3 implementation — value-snapshot distribution / verification = client rule 2 of checkpoint consistency)
 
-日付: 2026-08-28。対象: session-27 §14 の PR-M3。前提: PR-M1・PR-F1〜F4・
-PR-M2(#99)はマージ済み。M2 により、サーバーは checkpoint 受理時(standalone /
-境界の両経路)に「受理時点の値スナップショット列挙 + 対応 checkpoint seq / hash」を
-環境ごとの最新包含 checkpoint として原子保存済み(data-store.ts の
-upsertCheckpointSnapshot / checkpointValueEntries)。本 PR は (1) api-schema の
-応答同梱(加法)、(2) サーバーの保存済み列挙の配布(値付き pull §12-7 / lease
-§14-2)、(3) クライアント規則 2(CRYPTO_SPEC §6.3 チェックポイント整合 2 — 値の
-非後退)の検証(一括 pull と lease の両経路)、(4) テスト、を実装する。裁定
-プロセスは goal の指示どおり「複数案 → 上位互換探索 → 3 周の比較 → 自律選択」。
-裁定記号は session-35(J〜Q)の続番(R〜W)。
+Date: 2026-08-28. Target: session-27 §14's PR-M3. Prerequisites: PR-M1,
+PR-F1–F4, and PR-M2 (#99) are merged. Under M2, the server already atomically
+stores "an enumeration of the acceptance-time value snapshot + the
+corresponding checkpoint seq / hash" as each environment's latest covering
+checkpoint when a checkpoint is accepted (both standalone and boundary paths)
+(data-store.ts's upsertCheckpointSnapshot / checkpointValueEntries). This PR
+implements (1) api-schema response bundling (additive), (2) the server
+distributing the stored enumeration (valued pull §12-7 / lease §14-2),
+(3) verification of client rule 2 (CRYPTO_SPEC §6.3 checkpoint consistency 2
+— value non-regression) on both the bulk-pull and lease paths, and (4) tests.
+The ruling process followed the goal's instruction "multiple options →
+strictly-better search → 3 rounds of comparison → autonomous choice". Ruling
+letters continue from session-35's J–Q (R–W).
 
-## 1. 裁定 R: 規則 2 検証の実装の置き場
+## 1. Ruling R: where rule-2 verification's implementation lives
 
-### 第 1 周
+### Round 1
 
-- **案 R-a: packages/crypto の共有検証関数**(manifest-verify.ts の規則 1 =
-  checkpoint-regressed の先例に倣う)— 利点: 「検証機構を二重実装しない」原則の
-  形式的な継続。欠点: 規則 2 にはサーバー側の消費者が存在しない(受理時の
-  values_digest 突合 — checkpoint-accept.ts — は別規則・別入力で実装済み。規則 2 は
-  配布**受信**側の検査)。規則 1 が crypto にあるのは、マニフェスト検証という
-  サーバー / CLI 共有の関数に**付随**するからであり、独立規則の置き場の先例では
-  ない。また crypto 変更はベクター先行 + 4 実行環境ハーネス + 人間レビューを要する
-  が、規則 2 の本体(基準との比較群)はベクターで固定できる正規形を含まない
-  (session-27 §13-5 が「スナップショット同梱検証」を実装テストに分類済み。
-  正規形 = values_digest の LP は computeEnvValuesDigest として固定済み)
-- **案 R-b: CLI 層の合成(新モジュール、values.ts の共通検証骨格へ接続)** —
-  一括 pull と lease は既に同一の検証骨格(values.ts の verifyAll —
-  verifyLeaseDistribution も同関数)を通るため、CLI 層 1 実装で「両経路に同一
-  規則」(§6.3)が構造的に満たされる。床規則 (a)(b)(c) が floor-check.ts に
-  ある先例(クライアント専用の検証規則は CLI 層)と整合。digest の正規計算は
-  crypto の公開 API(computeEnvValuesDigest — ベクター固定済み)を呼ぶだけで、
-  新しい暗号操作は発生しない
+- **Option R-a: a shared verification function in packages/crypto** (following
+  the precedent of manifest-verify.ts's rule 1 = checkpoint-regressed) —
+  advantage: a formal continuation of the "don't implement a verification
+  mechanism twice" principle. Drawback: rule 2 has no server-side consumer
+  (the acceptance-time values_digest matching — checkpoint-accept.ts — is
+  already implemented as a different rule with different inputs; rule 2 is a
+  distribution-**receiving**-side check). Rule 1 lives in crypto only because
+  it's **incidental to** manifest verification, a function shared by server /
+  CLI — not a precedent for an independent rule's home. Also, crypto changes
+  require vectors first + the 4-runtime harness + human review, yet rule 2's
+  body (the comparison set against the basis) contains no canonical form that
+  vectors could pin (session-27 §13-5 already classified "snapshot-bundling
+  verification" as implementation tests. The canonical form — values_digest's
+  LP — is already pinned as computeEnvValuesDigest)
+- **Option R-b: a CLI-layer composition (a new module wired into values.ts's
+  shared verification skeleton)** — since bulk pull and lease already pass
+  through the same verification skeleton (values.ts's verifyAll —
+  verifyLeaseDistribution calls the same function), a single CLI-layer
+  implementation structurally satisfies "the same rule on both paths" (§6.3).
+  Consistent with the precedent of floor rules (a)(b)(c) living in
+  floor-check.ts (client-only verification rules belong to the CLI layer). The
+  canonical digest computation only calls crypto's public API
+  (computeEnvValuesDigest — already vector-pinned); no new crypto operation is
+  introduced
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 R-c: crypto に「比較のみ」の純関数を置き、CLI が材料を渡す** — 棄却:
-  入力(検証済み配布値・検証済み tombstone)は CLI 層の型であり、crypto に
-  渡すには域型の写しを作ることになる(dead な二重型)。ベクターの裏付けがない
-  ロジックを人間レビュー必須パッケージへ足す割に、得るものは「置き場のラベル」
-  だけ。Web ダッシュボードの値付き pull が実装される時点で共有の必要が実在化
-  したら、その PR で crypto へ昇格させればよい(再検討トリガーとして記録)
+- **Option R-c: put a "comparison-only" pure function in crypto, with the CLI
+  passing the materials** — rejected: the inputs (verified distributed values,
+  verified tombstones) are CLI-layer types, so passing them to crypto would
+  mean creating copies of domain types (a dead dual-type). The payoff is just
+  a "where it lives" label, for adding vector-unbacked logic to a
+  human-review-mandatory package. When the Web dashboard's valued pull gets
+  implemented and sharing becomes real, that PR can promote it to crypto
+  (recorded as the re-consideration trigger)
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- lease 経路の非対称(future head = 即時拒否・床なし)が共通実装と両立するかを
-  再点検: 規則 2 の判定は「future(自チェーンが古いだけの可能性)/ rejected」の
-  既存 2 分類(裁定 S)に乗り、lease 側は verifyLeaseDistribution が future を
-  既に拒否へ写像している — 分岐の追加なしに両経路の意味論(pull = 有界再同期、
-  lease = 自己矛盾として拒否)が出る
-- 検査順序を固定: 環境ステートメント → 値 / ステートメント → tombstone → 名前 →
-  マニフェスト(規則 1 込み)→ **規則 2**。規則 2 の「tombstone で説明される
-  消失」判定はマニフェスト整合済みの tombstone 集合(ダイジェスト再計算が
-  tombstone 隠しを拒否済み)を前提にするため、マニフェスト段より後に置く
-  (§6.3 の「検証済み tombstone(マニフェスト整合込み)」の実装形)
+- Re-inspected whether the lease path's asymmetry (future head = immediate
+  rejection, no floor) is compatible with a shared implementation: rule 2's
+  decision rides the existing 2-classification "future (possibly just a stale
+  self chain) / rejected" (ruling S), and on the lease side
+  verifyLeaseDistribution already maps future to rejection — both paths'
+  semantics (pull = bounded re-sync, lease = reject as self-contradictory)
+  emerge without added branches
+- Pinned the check order: environment statements → values / statements →
+  tombstones → names → manifest (incl. rule 1) → **rule 2**. Rule 2's
+  "disappearance explained by a tombstone" judgment presupposes the
+  manifest-consistent tombstone set (digest recomputation already rejected
+  hidden tombstones), so it sits after the manifest stage (the implementation
+  shape of §6.3's "verified tombstones (including manifest consistency)")
 
-**選択: 案 R-b**。`apps/cli/src/checkpoint-integrity.ts`(単一実装)を values.ts の
-verifyAll(値付き経路のみ — metadata-only は §12-7 のとおり対象外)へ接続する。
+**Choice: option R-b**. `apps/cli/src/checkpoint-integrity.ts` (the single
+implementation) is wired into values.ts's verifyAll (valued paths only —
+metadata-only is out of scope per §12-7).
 
-## 2. 裁定 S: ワイヤへの対応 checkpoint seq / hash の同梱
+## 2. Ruling S: bundling the corresponding checkpoint seq / hash onto the wire
 
-§12-7 の文言は「列挙(variable_id / version / value_signed_bytes ハッシュ)」のみ、
-保存規律(§16-2 / §6.4)は「列挙 + 対応 checkpoint seq / hash」。ワイヤに座標を
-載せるかは M3 の裁定事項(goal 明記)。
+§12-7's wording mentions only "the enumeration (variable_id / version /
+value_signed_bytes hash)", while the storage discipline (§16-2 / §6.4) is
+"enumeration + corresponding checkpoint seq / hash". Whether to put
+coordinates on the wire is M3's ruling item (goal-specified).
 
-### 第 1 周
+### Round 1
 
-- **案 S-a: 列挙のみ(仕様文言の字義)** — 欠点: 良性の競合(クライアントの
-  チェーン同期と pull 取得の間に他メンバーの checkpoint が着地し、応答の列挙が
-  自ビューの基準より新しい checkpoint に対応する)と攻撃(列挙の改竄)が
-  区別できない。ダイジェスト不一致を一律に「1 回再同期してから再判定」する
-  盲目再同期になり、§6.3-2 のヘッド束縛が確立した 2 分類((a) 自ヘッド以下の
-  不一致 = 即時の硬い証拠 / (b) 自ヘッドより先 = 再同期 → 解決)と非対称になる
-- **案 S-b: 列挙 + 対応 checkpoint seq / entry hash(advisory locator)** —
-  §6.3-2 と同型の 2 分類が可能になる: 申告 seq > 自ヘッド = 自チェーンが古い
-  だけの可能性(pull は有界再同期 1 回、lease はチェーン同梱ゆえ自己矛盾 =
-  即時拒否)、申告 seq ≤ 自ヘッド = 検証済みチェーン上で基準は確定しており、
-  基準 checkpoint と不一致な列挙は硬い証拠として即時拒否。検証の基準自体は
-  常にチェーン導出(history.latestCheckpointFor)であり、ワイヤ座標は再同期の
-  ルーティングと診断にのみ使う — CRYPTO_SPEC §1 原則 6(署名対象外の運搬
-  フィールドは advisory。検証の分岐を弱める入力にしない)と両立: 座標を偽って
-  も fail-closed(大きく偽る → 再同期後に基準不一致で拒否 / 小さく偽る → 即時
-  基準不一致)
+- **Option S-a: enumeration only (the spec's literal wording)** — drawback:
+  can't distinguish a benign race (another member's checkpoint lands between
+  the client's chain sync and the pull fetch, making the response's
+  enumeration correspond to a checkpoint newer than the self view's basis)
+  from an attack (enumeration tampering). A digest mismatch would always
+  degrade to a blind "re-sync once, then re-judge", asymmetric with §6.3-2's
+  established 2-classification ((a) mismatch at-or-below own head = immediate
+  hard evidence / (b) beyond own head = re-sync → resolve)
+- **Option S-b: enumeration + corresponding checkpoint seq / entry hash
+  (advisory locator)** — enables the same-shape 2-classification as §6.3-2:
+  declared seq > own head = possibly just a stale self chain (pull = one
+  bounded re-sync; lease = self-contradictory since the chain is bundled =
+  immediate rejection), declared seq ≤ own head = the basis is settled on the
+  verified chain and an enumeration inconsistent with the basis checkpoint is
+  immediate rejection as hard evidence. The verification basis itself is
+  always chain-derived (history.latestCheckpointFor); the wire coordinates
+  are used only for re-sync routing and diagnostics — compatible with
+  CRYPTO_SPEC §1 principle 6 (non-signed carried fields are advisory; never
+  make them inputs that weaken verification branches): lying about the
+  coordinates stays fail-closed (over-declare → rejected on basis mismatch
+  after re-sync / under-declare → immediate basis mismatch)
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 S-c: 列挙 + 保存タプル全部(epoch / manifest 参照 / values_digest も)** —
-  棄却: epoch・digest はチェーン導出値の写しであり、ワイヤに載せると「申告値で
-  検証する」誤用面(原則 6 違反の入口)だけが増える。列挙(唯一チェーンから
-  再構成できない配布物)と位置(locator)以外は運ばない
+- **Option S-c: enumeration + the whole stored tuple (epoch / manifest
+  reference / values_digest too)** — rejected: epoch and digest are copies of
+  chain-derived values; putting them on the wire only grows the misuse surface
+  of "verifying against declared values" (an entry point to a principle-6
+  violation). Carry nothing beyond the enumeration (the only distributed
+  material not re-derivable from the chain) and the position (locator)
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- locator の hash 側の使途を確定: 自ヘッド以下の申告 seq に対して
-  entryHashAt(seq) と照合し、不一致は分岐配布の証拠として拒否(seq 単独より
-  誤診断が減る)。基準側の一致判定は seq = 基準 checkpoint の seq(チェーン
-  導出)との一致で行い、hash 照合はその前提検査
-- 旧クライアント互換: 応答フィールドは加法(optionalKey)。旧 CLI のデコードは
-  未知キーを無視するため壊れない。逆方向(新 CLI × 旧サーバー = 列挙なし)は
-  規則 2 の MUST(基準あり + 列挙なし = 拒否)どおり fail-closed —
-  SELF_HOSTING.md にサーバー先行の更新順として明記(§8)
+- Settled the locator's hash side use: for a declared seq at-or-below own
+  head, match against entryHashAt(seq), and a mismatch is rejected as evidence
+  of branched distribution (fewer misdiagnoses than seq alone). The basis-side
+  match is checked by seq equality with the basis checkpoint's seq
+  (chain-derived); the hash match is its prerequisite check
+- Old-client compatibility: the response field is additive (optionalKey). The
+  old CLI's decode ignores unknown keys, so it doesn't break. The reverse
+  direction (new CLI × old server = no enumeration) is fail-closed per rule
+  2's MUST (basis exists + no enumeration = reject) — recorded in
+  SELF_HOSTING.md as server-first update order (§8)
 
-**選択: 案 S-b**。応答フィールド `checkpointSnapshot = { chainSeq, entryHashHex,
-values[] }`。
+**Choice: option S-b**. Response field `checkpointSnapshot = { chainSeq,
+entryHashHex, values[] }`.
 
-## 3. 裁定 T: checkpoint-digest.json ベクター(session-27 §13-4)の要否
+## 3. Ruling T: whether the checkpoint-digest.json vector (session-27 §13-4) is needed
 
-### 第 1 周〜第 3 周(要約)
+### Rounds 1–3 (summary)
 
-- §13-4 の列挙(variables_digest / values_digest / audit-head の LP 正規形)は
-  既存ベクターが全て固定済みであることを確認した: variables_digest =
-  env-manifest.json(PR-M1)、values_digest = chain-entries.json の
-  values_digests セクション(PR-F3a/M2 — values-digest.ts のモジュールコメントが
-  参照)、audit-head = audit-head.json(PR-M2 裁定 J)。M3 は新しい正規形
-  (バイト列形式)を 1 つも導入しない(規則 2 の比較群は §13-5 の実装テスト分類)
-- **独立ファイルへの再掲(案 T-a)は棄却**: 同一正規形の二重ベクターは「片方だけ
-  更新される」乖離面を作る(ベクターは加法のみ・再生成禁止の規律とも相性が悪い)
+- Confirmed that §13-4's enumeration (LP canonical forms of variables_digest /
+  values_digest / audit-head) is already fully pinned by existing vectors:
+  variables_digest = env-manifest.json (PR-M1), values_digest =
+  chain-entries.json's values_digests section (PR-F3a/M2 — referenced by
+  values-digest.ts's module comment), audit-head = audit-head.json (PR-M2
+  ruling J). M3 introduces not a single new canonical form (byte-string
+  format) (rule 2's comparison set is §13-5's implementation-test
+  classification)
+- **Re-listing in a separate file (option T-a) is rejected**: duplicating the
+  same canonical form in another vector creates a divergence surface ("only
+  one side gets updated") (and sits badly with the vectors-are-additions-only,
+  never-regenerate discipline)
 
-**選択: ベクター追加なし**(§13-4 は既存 3 ファイルで充足済みと判定)。crypto に
-一切触れないため、ベクター先行コミット・4 環境ハーネス・人間レビュー必須条件は
-本 PR では対象外(適用対象が存在しない)。
+**Choice: no vector additions** (§13-4 is judged already satisfied by the 3
+existing files). Since crypto isn't touched at all, the vectors-first commit,
+4-runtime harness, and human-review requirements are out of scope for this PR
+(there is nothing they would apply to).
 
-## 4. 裁定 U: 規則 2 検証成功の床(検証済み観測の単調 join)への記録
+## 4. Ruling U: recording rule-2 verification success in the floor (monotonic join of verified observations)
 
-### 第 1 周
+### Round 1
 
-- **案 U-a: スナップショット列挙を値床へ join する** — 棄却: 床の記録規則は
-  「値床は値を実際に検証した場合のみ記録する(捏造しない)」(§6.3)。列挙の
-  エントリはダイジェスト経由でチェーン基準と照合されるが、クライアントが
-  その version の値署名を検証したわけではない — join は記録規則違反。また列挙は
-  checkpoint 時点の状態であり、同じ応答で §6.3 検証を通過した配布値(≥ 列挙の
-  version)の床記録に常に支配される(join しても格子上の増分がない)
-- **案 U-b: 「規則 2 を checkpoint seq S に対して検証済み」の新レコード種** —
-  棄却: この事実を消費する検出規則が存在しない(基準はチェーン導出であり、
-  次回の検証は次回のチェーンから基準を引き直す)。チェーンから再導出可能な
-  状態を床に写すのは二重真実源(床は「チェーンに載らない検証済み観測」の
-  置き場 — チェーンヘッド床が既にチェーン自体をピンしている)
-- **案 U-c: 新レコードなし** — 規則 2 成功後の既存 commitPull(検証済み配布値 +
-  チェーンヘッドの原子コミット)がそのまま「検証に成功した事実の join」を充足
-  する(journal-before-release の順序も既存実装のまま: 床コミット → 復号・使用)
+- **Option U-a: join the snapshot enumeration into the value floor** —
+  rejected: the floor's recording rule is "the value floor records only values
+  it actually verified (no fabrication)" (§6.3). An enumeration's entries get
+  matched against the chain basis via digests, but the client hasn't verified
+  that version's value signature — joining would violate the recording rule.
+  Also, the enumeration is the checkpoint-time state, always dominated by the
+  floor records of the distributed values (≥ the enumeration's versions) that
+  passed §6.3 verification in the same response (no lattice increment from
+  joining)
+- **Option U-b: a new record kind "rule 2 verified against checkpoint seq S"**
+  — rejected: no detection rule consumes this fact (the basis is chain-derived
+  — the next verification re-derives its basis from the next chain). Copying
+  a chain-re-derivable state into the floor is a dual source of truth (the
+  floor is the home of "verified observations that don't ride the chain" —
+  the chain-head floor already pins the chain itself)
+- **Option U-c: no new record** — the existing commitPull after rule-2 success
+  (atomic commit of verified distributed values + chain head) already
+  satisfies "joining the fact that verification succeeded" (the
+  journal-before-release ordering also stays as implemented: floor commit →
+  decrypt & use)
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 U-d: 環境水準エポック観測(座標 (ii))へ基準 epoch を join する** — 棄却:
-  基準 epoch はチェーン導出値で、チェーンヘッド床 + 再導出で常に復元できる。
-  observedEpoch の join は「チェーンに載らない観測」(マニフェストの焼き込み等)
-  のためにあり、チェーン導出値を流し込む先例を作ると (ii) の意味論が濁る
+- **Option U-d: join the basis epoch into the environment-watermark epoch
+  observation (coordinate (ii))** — rejected: the basis epoch is a
+  chain-derived value, always restorable via the chain-head floor +
+  re-derivation. The observedEpoch join exists for "observations that don't
+  ride the chain" (manifest baking etc.); making a precedent of pouring
+  chain-derived values in would muddy (ii)'s semantics
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- lease 経路は床を持たない初回同期クラス(§14.3-3)のままであることを確認 —
-  規則 2 の導入は lease に床を要求しない(基準はサーバー非依存にチェーン導出)
+- Confirmed the lease path remains the first-sync class without a floor
+  (§14.3-3) — introducing rule 2 doesn't require a floor from lease (the basis
+  is chain-derived, server-independent)
 
-**選択: 案 U-c(新規の床レコードなし)**。
+**Choice: option U-c (no new floor record)**.
 
-## 5. 裁定 V: lease 経路での検証の層と、基準なし警告(SHOULD)の置き場
+## 5. Ruling V: the verification layer on the lease path and where the no-basis warning (SHOULD) lives
 
-### 第 1 周
+### Round 1
 
-- **案 V-a: lease-client.ts に独立実装** — 棄却: 「一括 pull と lease の両経路に
-  同一規則」(§6.3 / goal)を 2 実装で保つ形は乖離バグの温床(裁定 R と同根)
-- **案 V-b: values.ts の共通骨格(verifyAll)に統合し、lease-client はワイヤの
-  checkpointSnapshot を通すだけ** — verifyLeaseDistribution は既に verifyAll を
-  呼ぶため、規則 2 も自動的に同一実装になる。future → 即時拒否の lease 意味論も
-  既存の写像がそのまま適用される
+- **Option V-a: an independent implementation in lease-client.ts** — rejected:
+  keeping "the same rule on both the bulk-pull and lease paths" (§6.3 / goal)
+  via 2 implementations breeds divergence bugs (same root as ruling R)
+- **Option V-b: integrate into values.ts's shared skeleton (verifyAll); the
+  lease-client just passes the wire's checkpointSnapshot through** — since
+  verifyLeaseDistribution already calls verifyAll, rule 2 automatically becomes
+  the same implementation. The future → immediate-rejection lease semantics
+  also applies the existing mapping unchanged
 
-### 第 2 周(上位互換探索)
+### Round 2 (strictly-better search)
 
-- **案 V-c: ci-run.ts(コマンド層)での後段検査** — 棄却: 検証は復号・注入より
-  前に完結すべき(values.ts の存在理由)。コマンド層に置くと run 経路(値付き
-  pull — run.ts は pull 経路を使う)と検査位置が割れる
+- **Option V-c: a downstream check in ci-run.ts (the command layer)** —
+  rejected: verification must complete before decryption / injection
+  (values.ts's raison d'être). Placing it in the command layer would split the
+  check position from the run path (valued pull — run.ts uses the pull path)
 
-### 第 3 周(再点検)
+### Round 3 (re-inspection)
 
-- **基準なし警告(§6.3 SHOULD — 床を持たないクライアントは、値付き配布を受けた
-  環境に基準が存在しないことを検出したら警告)の置き場**: 対象は「床を持たない
-  クライアント」クラス(特にワークロード)。CLI の pull 経路は永続床を持つ
-  クラスであり対象外(床未確立の初回 pull も「床を持てるクライアントの初回」で
-  あって同クラスではない — 警告を出すと全新規プロジェクトの初回 pull が恒常的に
-  警告し、SHOULD の意図〔このクラスの主要保証が働いていないことの可視化〕から
-  外れる)。よって警告は verifyLeaseDistribution(ワークロード経路)に置き、
-  既存の warnings 配列(非失敗)で表面化する
+- **Where the no-basis warning lives (§6.3 SHOULD — a client with no floor
+  warns when it detects that an environment it received a valued distribution
+  for has no basis)**: the target is the "clients without a floor" class
+  (workloads in particular). The CLI's pull path is the class with a
+  persistent floor and is out of scope (a first pull without an established
+  floor is "a first pull by a client that can hold a floor", not the same
+  class — warning there would make every new project's first pull warn
+  permanently, which departs from the SHOULD's intent [surfacing that this
+  class's main guarantee isn't working]). So the warning goes into
+  verifyLeaseDistribution (the workload path), surfaced via the existing
+  warnings array (non-failing)
 
-**選択: 案 V-b + lease 経路のみの基準なし警告**。
+**Choice: option V-b + a lease-path-only no-basis warning**.
 
-## 6. 裁定 W: cross-layer 回帰テストの要否
+## 6. Ruling W: whether a cross-layer regression test is needed
 
-### 第 1 周〜第 3 周(要約)
+### Rounds 1–3 (summary)
 
-- PR-F4 の先例(manifest.test.ts —「チェーンの checkpoint 基準線は床の規則 (a) を
-  代替しない」)と同型の相互作用が M3 にも 1 つ実在する: 規則 2 の基準は
-  checkpoint 時点で止まる(列挙の version 以上なら通す)ため、**床が checkpoint
-  より新しい version を知っている場合の巻き戻しは規則 2 を通過し、床の規則 (a)
-  だけが落とす**。この「規則 2 は床を代替しない」を 1 テストで固定する(逆方向 =
-  「床なしでも規則 2 が巻き戻しを落とす」は M3 の主 negative 群が固定する)
-- それ以上の全組み合わせ網羅(案 W-a)は棄却: 床規則群と規則 2 は独立実装・
-  独立入力で、直積の網羅は費用対効果が立たない(F4 が同じ線引きをした)
+- An interaction of the same shape as PR-F4's precedent (manifest.test.ts —
+  "the chain's checkpoint baseline does not substitute for floor rule (a)")
+  does exist once in M3: since rule 2's basis stops at checkpoint time (a
+  version at-or-above the enumeration's passes), **a rollback where the floor
+  knows a newer version than the checkpoint passes rule 2 and only floor rule
+  (a) rejects it**. This "rule 2 does not substitute for the floor" is pinned
+  by 1 test (the reverse direction = "rule 2 rejects a rollback even without a
+  floor" is pinned by M3's main negative set)
+- Exhaustive all-combinations coverage beyond that (option W-a) is rejected:
+  the floor rules and rule 2 are independent implementations with independent
+  inputs, and a Cartesian enumeration isn't cost-justified (F4 drew the same
+  line)
 
-**選択: 1 本の cross-layer 回帰(規則 2 通過 × 床規則 (a) 拒否)を CLI テストに
-含める**。
+**Choice: include 1 cross-layer regression (rule-2 pass × floor-rule-(a)
+rejection) in the CLI tests**.
 
-## 7. 実装内容の要約
+## 7. Summary of what was implemented
 
-- **api-schema**(加法のみ): `CheckpointValueSnapshotEntrySchema`
-  (variableId / version / valueSigHashHex)と `CheckpointValueSnapshotSchema`
-  (chainSeq / entryHashHex / values — 裁定 S)を data.ts に置き、
-  `EnvironmentPullSchema`(§12-7)と `LeaseResponseSchema`(§14-2)へ
-  `checkpointSnapshot` を optionalKey で追加。metadata-only pull は対象外
-  (§12-7 — 値を運ばない)
-- **server**: data-store.ts に読み口 `checkpointSnapshot(environmentId)`
-  (environment_checkpoints + checkpoint_snapshot_values の結合 — M2 の保存行
-  そのもの。再構成しない)。pullEnvironmentProgram / issueLease が行の存在時のみ
-  同梱(LeaseValue は EnvironmentPullValue 派生のため型は自動追随)。削除
-  カスケード(§12-4)は既存挙動のまま(スナップショット行も削除済み)
-- **CLI**: `checkpoint-integrity.ts`(裁定 R)—
-  基準 = history.latestCheckpointFor(チェーン導出・サーバー非依存)。
-  (1) 基準あり + 列挙なし = 拒否(MUST)、(2) locator の 2 分類(裁定 S)、
-  (3) 列挙の重複 variableId 拒否 + computeEnvValuesDigest 再計算 =
-  基準 values_digest 一致、(4) 配布各変数: version ≥ 列挙・等号ならハッシュ一致・
-  前進 version の epoch ≥ 基準 epoch(床規則 (c) のチェックポイント版)、
-  (5) 列挙にあって配布にない変数は検証済み tombstone で説明されない限り拒否、
-  (6) 列挙にない配布変数は epoch ≥ 基準 epoch(version 0 相当と同型。
-  マニフェスト整合は前段のダイジェスト再計算が担保)、(7) 基準なし + 列挙あり =
-  locator の 2 分類で future / 拒否。values.ts の verifyAll(値付き経路)へ
-  マニフェスト段の後に接続し、pull(有界再同期)と lease(future = 即時拒否)の
-  両経路が同一実装を通る。lease 経路は基準なし環境の値付き配布に警告(裁定 V)
-- **床**: 変更なし(裁定 U)
-- **実装中の追補 1(移行許容と基準の整合)**: `--init-manifest` の「欠落の許容」は
-  検証済みチェーン上に基準 checkpoint を持つ環境には適用しない(values.ts の
-  マニフェスト段)。checkpoint タプルは manifest_version を束縛する(§6.2 /
-  §12-4)ため、基準を持つ環境は必ずマニフェストを持つ — その欠落は移行操作下
-  でも握り潰しの証拠(床のマニフェスト記録確立後の欠落拒否 — §6.3 — の
-  チェーン導出版)
-- **実装中の追補 2(証拠の型付け — F4 規律の規則 2 / 床への適用)**: 規則 2 の
-  拒否と床違反の拒否は `CliError.evidence`(新フィールド)で型付けし、rotate の
-  巡末分類(env-rotate.ts settlePass)は evidence 付きの再走査 pull 失敗を
-  「未検証(再実行で直りうる)」でなく**即時中断(abort)**に分類する。M3 で
-  「旧エポック値の巡中注入」の検出層が復号段(AEAD 失敗)から pull 検証段
-  (規則 2)へ前進したため、型付けなしでは F4 が固定した「証拠を再実行案内へ
-  格下げしない」規律が破れる(env-rotate.test.ts の該当テストで固定)
-- **テストフィクスチャの正直サーバー化**: rotate 複合を受理する CLI モックは
-  スナップショット保存(§16-2)と pull 同梱(§12-7)も模す。旧テスト 2 本が
-  モデル化していた「受理時点突合と矛盾する複合の受理」「checkpoint 後の旧
-  エポック変数の遅延出現」は、実サーバーでは 422(§12-4)/ 規則 2 拒否になる
-  状態であり、テストを正直な形(422 → 再 pull 再試行 / 規則 2 の証拠中断)へ
-  改めた(env-rotate.test.ts — 意図の保存はテスト内コメントに記録)
-- **docs**: SELF_HOSTING.md に M3 の更新順(サーバー先行必須 — 新 CLI × 旧
-  サーバーは checkpoint 済み環境の値付き pull / lease が規則 2 の MUST で全拒否)
-  を追記。仕様本文の改訂は不要(M3 は Wave 3 D 承認済み文言への実装追随。
-  ワイヤ座標の同梱 — 裁定 S — は §12-7 の「列挙」への advisory 追加であり、
-  検証規則・保存規律の文言と矛盾しない)
+- **api-schema** (additive only): `CheckpointValueSnapshotEntrySchema`
+  (variableId / version / valueSigHashHex) and `CheckpointValueSnapshotSchema`
+  (chainSeq / entryHashHex / values — ruling S) placed in data.ts, and
+  `checkpointSnapshot` added via optionalKey to `EnvironmentPullSchema`
+  (§12-7) and `LeaseResponseSchema` (§14-2). metadata-only pull is out of
+  scope (§12-7 — carries no values)
+- **server**: a read path `checkpointSnapshot(environmentId)` in data-store.ts
+  (a join of environment_checkpoints + checkpoint_snapshot_values — M2's
+  stored rows themselves; not re-derived). pullEnvironmentProgram / issueLease
+  bundle it only when the row exists (LeaseValue derives from
+  EnvironmentPullValue so the type follows automatically). Deletion cascade
+  (§12-4) keeps existing behavior (snapshot rows are deleted too)
+- **CLI**: `checkpoint-integrity.ts` (ruling R) — basis =
+  history.latestCheckpointFor (chain-derived, server-independent). (1) basis
+  exists + no enumeration = reject (MUST), (2) the locator's 2-classification
+  (ruling S), (3) reject duplicate variableIds in the enumeration +
+  computeEnvValuesDigest recomputation = match the basis values_digest,
+  (4) per distributed variable: version ≥ enumeration's, hash match if equal,
+  epoch ≥ basis epoch on an advancing version (the checkpoint version of
+  floor rule (c)), (5) a variable in the enumeration but absent from the
+  distribution is rejected unless explained by a verified tombstone,
+  (6) distributed variables not in the enumeration require epoch ≥ basis
+  epoch (same shape as version-0 equivalent; manifest consistency is
+  guaranteed by the earlier digest recomputation), (7) no basis + enumeration
+  present = the locator's 2-classification for future / reject. Wired into
+  values.ts's verifyAll (valued paths) after the manifest stage; both the pull
+  (bounded re-sync) and lease (future = immediate rejection) paths go through
+  the same implementation. The lease path warns on valued distributions of
+  no-basis environments (ruling V)
+- **floor**: unchanged (ruling U)
+- **In-flight addendum 1 (consistency between migration tolerance and the
+  basis)**: `--init-manifest`'s "absence tolerance" does not apply to an
+  environment holding a basis checkpoint on the verified chain (values.ts's
+  manifest stage). Since a checkpoint tuple binds manifest_version (§6.2 /
+  §12-4), an environment with a basis always has a manifest — its absence is
+  evidence of suppression even under the migration op (the chain-derived
+  version of rejecting absence after the floor's manifest record is
+  established — §6.3)
+- **In-flight addendum 2 (typing evidence — applying the F4 discipline to
+  rule 2 / the floor)**: rule-2 rejections and floor-violation rejections are
+  typed via `CliError.evidence` (a new field), and rotate's sweep-outcome
+  classification (env-rotate.ts settlePass) classifies an evidence-carrying
+  re-scan pull failure as **immediate abort**, not "unverified (may heal on
+  re-run)". Because M3 moved the detection layer for "old-epoch value
+  injection mid-sweep" from the decrypt stage (AEAD failure) to the pull-
+  verification stage (rule 2), untyped it would break the F4-pinned discipline
+  of "don't demote evidence to re-run guidance" (pinned by the corresponding
+  test in env-rotate.test.ts)
+- **Making test fixtures honest servers**: CLI mocks that accept a rotate
+  composite also simulate snapshot storage (§16-2) and pull bundling (§12-7).
+  Two old tests modeled "accepting a composite inconsistent with acceptance-
+  time matching" and "an old-epoch variable appearing late after a
+  checkpoint" — states a real server turns into 422 (§12-4) / rule-2
+  rejection — so the tests were reshaped into honest form (422 → re-pull retry
+  / rule-2 evidence abort) (env-rotate.test.ts — intent preserved via in-test
+  comments)
+- **docs**: SELF_HOSTING.md gained M3's update order (server-first mandatory —
+  a new CLI × old server gets all valued pulls / leases of checkpointed
+  environments rejected by rule 2's MUST). No spec-body revision needed (M3 is
+  implementation-following of the Wave 3 D approved wording; bundling wire
+  coordinates — ruling S — is an advisory addition to §12-7's "enumeration",
+  consistent with the verification rules' and storage discipline's wording)
 
-## 8. レビュー対応(PR #100)
+## 8. Review response (PR #100)
 
-- **Bugbot(低)— 有界再同期が正直なスナップショットを証拠として誤断罪しうる**:
-  有界再同期は応答本文を取得し直さず前進後のビューで再検証するため、取得と
-  再同期の窓に別の covering checkpoint が着地すると、正直な応答の locator /
-  列挙(旧基準対応)が「最新基準と不一致 = evidence」へ落ち、rotate の巡末分類が
-  「再実行では解消しない」と誤案内する(実際は再 pull で解消する)。**修正**:
-  規則 2 の拒否に evidence の型を持たせ、「基準が応答の取得ビュー
-  (fetchedAtHeadSeq — pull = 取得時ビューのヘッド、lease = 同梱チェーンの
-  ヘッド)より後に前進した」形 — 旧位置の列挙・列挙なしの両方 — は retriable
-  (再 pull の案内)として拒否する。基準が取得ビュー時点で保存済みの形に良性の
-  説明はない(サーバーは checkpoint 受理と原子的に保存する — §16-2)ため従来
-  どおり evidence。lease は自己完結形で基準 ≤ 取得ビューが構造的に成り立ち、
-  常に evidence 側(検出強度の低下なし)。fail-closed は不変(どちらの分類でも
-  応答は拒否される — 変わるのは再実行案内の正直さのみ)
+- **Bugbot (low) — bounded re-sync could wrongly convict an honest snapshot as
+  evidence**: bounded re-sync re-verifies on the post-advance view without
+  re-fetching the response body, so if another covering checkpoint lands in
+  the window between fetch and re-sync, an honest response's locator /
+  enumeration (corresponding to the old basis) falls into "inconsistent with
+  the latest basis = evidence" and rotate's sweep classification misguides
+  "won't resolve on re-run" (it actually resolves on re-pull). **Fix**: give
+  rule-2 rejections an evidence type, and the form "the basis advanced beyond
+  the response's fetch view (fetchedAtHeadSeq — pull = the head of the
+  fetch-time view, lease = the bundled chain's head)" — both the
+  old-position-enumeration and no-enumeration forms — is rejected as retriable
+  (guiding a re-pull). A form whose basis was already stored at the fetch-view
+  point has no benign explanation (the server stores atomically with
+  checkpoint acceptance — §16-2), so it stays evidence as before. The lease is
+  self-contained, so basis ≤ fetch view holds structurally and it's always on
+  the evidence side (no loss of detection strength). Fail-closed unchanged
+  (the response is rejected under either classification — only the honesty of
+  re-run guidance changes)
 
-## 9. テストの固定点(要約)
+## 9. What the tests pin (summary)
 
-- サーバー(vitest-pool-workers): 値付き pull への同梱(基準確立後)と内容の
-  保存列挙一致 / 基準なし環境では載らない / metadata-only pull に載らない /
-  部分集合 checkpoint 後の環境ごとの対応(A 再 checkpoint 後も B は自基準の列挙)/
-  lease 応答への同梱
-- CLI(pull 経路): 受理正例(checkpoint 後の前進 version・tombstone で説明される
-  消失・checkpoint 後の新規作成)と全拒否経路 — 列挙欠落・digest 不一致・
-  version 後退・同版ハッシュ不一致・前進 version の旧エポック・tombstone なしの
-  消失・スナップショット外変数の旧エポック作成・locator 偽装(seq ≤ 自ヘッドの
-  hash 不一致)— session-27 §13-5 の該当項目
-- CLI(lease 経路): 同一規則の到達(拒否 1 例 + 正例)+ 基準なし警告
-- cross-layer(裁定 W): 規則 2 通過 × 床規則 (a) 拒否の 1 本
+- Server (vitest-pool-workers): bundling into valued pull (after basis
+  establishment) with content matching the stored enumeration / absent on a
+  no-basis environment / absent on metadata-only pull / per-environment
+  correspondence after a subset checkpoint (B keeps its own-basis enumeration
+  after A's re-checkpoint) / bundling into the lease response
+- CLI (pull path): acceptance positives (advancing version after a
+  checkpoint, a disappearance explained by a tombstone, new creation after a
+  checkpoint) and every rejection path — missing enumeration, digest
+  mismatch, version regression, same-version hash mismatch, advancing version
+  on an old epoch, unexplained disappearance, old-epoch creation of a
+  variable outside the snapshot, locator forgery (hash mismatch at seq ≤ own
+  head) — the corresponding items of session-27 §13-5
+- CLI (lease path): the same rule is reached (1 rejection + positive) + the
+  no-basis warning
+- cross-layer (ruling W): 1 test of rule-2 pass × floor-rule-(a) rejection

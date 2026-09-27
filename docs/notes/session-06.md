@@ -1,190 +1,228 @@
-# セッション 06 メモ(認証・アイデンティティ基盤 — AUTH_SPEC 本実装 + org 連携)
+# Session 06 notes (auth / identity foundation — real AUTH_SPEC implementation + org integration)
 
-日付: 2026-08-02。前提: PR #14 / #15 マージ済み(チェーン保存・追記 API)。
-スコープ: AUTH_SPEC §2〜§6 の本実装(D1 + Drizzle、GitHub OAuth、セッション /
-トークン)、チェーン API の認可結線(§11 として仕様化)、統合テスト全面改修。
+Date: 2026-08-02. Prerequisites: PR #14 / #15 merged (chain persistence, append API).
+Scope: real implementation of AUTH_SPEC §2–§6 (D1 + Drizzle, GitHub OAuth, sessions /
+tokens), authorization wiring of the chain API (specified as §11), full rework of the
+integration tests.
 
-## 1. やったこと(コミット順 = 層順)
+## 1. What was done (commit order = layer order)
 
-1. **spec**: AUTH_SPEC v0.2 — §11(チェーン API との接続)を追加、§6 にスコープ
-   表現・op 別必要権限・v1 線引きを規定(下記 §2 の裁定を反映)
-2. **core/api-schema**: 認証サービス境界(Principal / RequestAuth / SessionService /
-   TokenService)を core に新設、AuthMiddleware 契約 + auth グループ + 401/403/400
-   エラー型を api-schema に追加。membership 全エンドポイント認証必須化・init に orgId
-3. **server(D1)**: Drizzle v1(rc.4 完全ピン)+ drizzle-kit generate。リポジトリ層は
-   `src/db.package/`(ImportLint 境界)に隔離、公開はドメイン型のみ
-4. **server(auth.package)**: GitHub OAuth(web + device 交換)、SessionService /
-   TokenService、AuthMiddleware 実装
-5. **server(結線・認可)**: env 単位の Layer 構築、DO への ChainState 導出追加、
-   §11 の認可順序(404 秘匿 / actor 一致 / スコープ / org)
-6. **テスト**: 59 件(サーバー)/ 226 件(root)。認証セットアップ込みに全面改修
+1. **spec**: AUTH_SPEC v0.2 — added §11 (connection to the chain API), and defined
+   scope expressions, per-op required permissions, and the v1 line in §6 (reflecting
+   the §2 rulings below)
+2. **core/api-schema**: new auth service boundary in core (Principal / RequestAuth /
+   SessionService / TokenService), added AuthMiddleware contract + auth group +
+   401/403/400 error types to api-schema. Made all membership endpoints require auth,
+   added orgId to init
+3. **server (D1)**: Drizzle v1 (fully pinned rc.4) + drizzle-kit generate. Repository
+   layer isolated in `src/db.package/` (ImportLint boundary); only domain types are
+   public
+4. **server (auth.package)**: GitHub OAuth (web + device exchange), SessionService /
+   TokenService, AuthMiddleware implementation
+5. **server (wiring & authorization)**: per-env Layer construction, derived ChainState
+   on the DO, §11's authorization order (404 concealment / actor match / scope / org)
+6. **tests**: 59 (server) / 226 (root). Fully reworked to include the auth setup
 
-## 2. 裁定事項(所有者の実時間裁定を取得済み)
+## 2. Rulings (real-time owner rulings obtained)
 
-セッション 05 と異なり、AskUserQuestion への実時間応答が得られた。
+Unlike session 05, real-time responses to AskUserQuestion were available.
 
-- **裁定 1(actor 対応)**: 「工数を考慮しない最適解を」との指示。採用: **厳密一致を
-  API 受理ポリシーとして要求**(init / append とも認証 user_id == entry.actor.user_id)。
-  チェーン合意規則(crypto)は ID 形式非依存のまま — ID 形式を有効性規則へ持ち込む
-  ことは暗号学的利得なしにプロバイダ独立性を毀損するため、これが工数と無関係に最適。
-  テストベクターは無変更、サーバー統合テストは D1 シード(固定 user_id +
-  linked_identities)+ 実発行経路で整合
-- **裁定 2**: 非メンバーへの拒否は**一律 404**(存在秘匿)。未初期化と区別しない
-- **裁定 3**: init は org 指定必須(member 以上)。**DO 先行 + D1 projects 追従 +
-  冪等修復**(行欠損 + 要求者 = genesis actor なら再 init を成功扱い)
-- **裁定 4**: 認証エンドポイントは**全部 api-schema**(OAuth リダイレクト系含む)。
-  → HttpApi の 302 + Set-Cookie は成立した(§3 参照)
-- **確認 A**: 監査ログスキーマ提案は所有者自身が起草済みの docs/AUDIT_SPEC.md
-  (PR #10)を提案本体とみなし、重複作成しない。実装は引き続き承認待ち
-- **確認 B**: トークンは device flow 発行 + 自トークン失効まで(v1 線引き)
+- **Ruling 1 (actor correspondence)**: instructed "the optimal solution regardless of
+  effort". Adopted: **require strict equality as the API acceptance policy** (both
+  init and append require authenticated user_id == entry.actor.user_id). The chain
+  consensus rules (crypto) stay ID-format-agnostic — pulling ID format into the
+  validity rules would damage provider independence with no cryptographic gain, so
+  this is optimal regardless of effort. Test vectors unchanged; the server
+  integration tests are consistent via D1 seed (fixed user_id + linked_identities)
+  + the real issuance path
+- **Ruling 2**: refusal to non-members is **uniformly 404** (existence concealed).
+  Not distinguished from uninitialized
+- **Ruling 3**: init requires an org (member or above). **DO first + D1 projects
+  catch-up + idempotent repair** (if the row is missing and the requester is the
+  genesis actor, re-init is treated as success)
+- **Ruling 4**: auth endpoints are **all in api-schema** (including the OAuth
+  redirect ones). → HttpApi's 302 + Set-Cookie worked (see §3)
+- **Confirmation A**: the audit-log schema proposal is treated as docs/AUDIT_SPEC.md
+  (PR #10), already drafted by the owner — no duplicate is created. Implementation
+  still awaits approval
+- **Confirmation B**: tokens are issued via device flow, up to self-revocation (v1
+  line)
 
-### その他の設計判断(機械的・可逆)
+### Other design decisions (mechanical, reversible)
 
-- **Drizzle 採用確定(ADR-0006 の帰結)**: drizzle-orm / drizzle-kit 1.0.0-rc.4。
-  ただし **effect-d1 ドライバは不採用** — rc.4 時点で transaction / batch 未対応で、
-  getOrCreateUser(§1-5)の原子性(users + linked_identities + org + membership)が
-  成立しない。classic drizzle-orm/d1 + D1 atomic batch を tryPromise の薄いアダプタで
-  境界内に閉じた(ADR-0006 の想定退避経路)。DO 側チェーンテーブルは引き続き素の SQL
-- **DO の membership 判定は CAS より先**: 非メンバーに head-conflict(現ヘッドの
-  ハッシュ・seq)や受理ポリシーの判定結果を返すと §11-2 の存在秘匿が破れるため。
-  導出 ChainState はヘッドハッシュをキーに DO インスタンスメモリへキャッシュ
-- **認可の判定順(init)**: サイズ 413 → actor 403 → トークンスコープ → org 403 →
-  DO。資源保護(1 MiB 先行検査)を意味論的判定より先に置く
-- **ULID / Base62 は自前実装**(依存追加なし。暗号プリミティブではなく
-  エンコーディング。乱数と SHA-256 は WebCrypto)
+- **Drizzle adopted (consequence of ADR-0006)**: drizzle-orm / drizzle-kit
+  1.0.0-rc.4. However **the effect-d1 driver was rejected** — at rc.4 it lacks
+  transaction / batch support, so getOrCreateUser's (§1-5) atomicity (users +
+  linked_identities + org + membership) doesn't hold. Classic drizzle-orm/d1 + D1
+  atomic batch is confined inside a thin tryPromise adapter at the boundary (the
+  fallback path anticipated by ADR-0006). The DO-side chain table stays raw SQL
+- **DO membership check runs before CAS**: returning a head-conflict (current head's
+  hash / seq) or an acceptance-policy result to a non-member would break §11-2's
+  existence concealment. The derived ChainState is cached in DO instance memory
+  keyed by head hash
+- **Authorization decision order (init)**: size 413 → actor 403 → token scope → org
+  403 → DO. Resource protection (1 MiB early check) precedes semantic checks
+- **ULID / Base62 are self-implemented** (no added dependency. These are encodings,
+  not crypto primitives. Randomness and SHA-256 are WebCrypto)
 
-## 3. ハマったこと・環境知見
+## 3. Gotchas & environment findings
 
-- **HttpApi のリダイレクト + Set-Cookie は成立する**(session-05 の未検証項目)。
-  ハンドラは success スキーマの値の代わりに `HttpServerResponse` を直接返せる
-  (`HttpServerResponse.redirect` + `setCookie` / `expireCookie`。後二者は
-  Effect を返すので `Effect.orDie` で合成)。success: `Schema.Void` の通常経路は
-  200 で返る(204 が欲しければ raw response を返す)
-- **`HttpServerRequest.url` はパスのみ**。絶対 URL(origin 取得)は
-  `request.source`(生の Web Request)から取る
-- **HttpApiMiddleware の requires は bare requirement になる**: handler 側の要求は
-  `Request<"Requires", T>` ファントムとして toWebHandler のリクエストコンテキストへ
-  遅延できるが、ミドルウェアの requires(SessionService 等)は Layer 構築時に
-  静的に満たす必要がある。env(D1 binding)依存のサービスなので、**webHandler を
-  env 単位で構築・WeakMap キャッシュ**する形にした。ミドルウェア実装は
-  `HttpApiMiddleware.HttpApiMiddleware<Provides, ErrorSchemas, Requires>` の
-  具象型で宣言しないと provideService の Exclude が genericに簡約されず型エラーになる
-- **vitest-pool-workers 0.20.1 に fetchMock はない**(cloudflare:test の export から
-  消えている)。アウトバウンド fetch のスタブは **miniflare の `outboundService` に
-  関数を渡す**(vitest.config.ts = Node 側で実行。本番コードにスタブ分岐が不要になる)
-- **drizzle-kit v1 の migration はフォルダ形式**(`drizzle/<name>/migration.sql`)。
-  wrangler は `d1_databases[].migrations_pattern: "drizzle/*/migration.sql"` で対応
-  済みだが、vitest-pool-workers の `readD1Migrations` はフラット `*.sql` のみ対応
-  → 自前リーダー(test/support/read-migrations.ts)で D1Migration[] を組み立て、
-  miniflare bindings(TEST_MIGRATIONS)経由で `applyD1Migrations` に渡す
-- **`bun x wrangler` 等で消した依存の lock エントリが残ることがある**
-  (@effect/sql-d1 を bun remove しても optional peer 解決として復活)。lock から
-  手で消して `bun install` で整合確認した
-- **`.dev.vars` は gitignore 済み** → コミットするのは `.dev.vars.example`(ダミー値)
-- vitest.config.ts のパスは **process cwd 基準**になる(root の `vitest run` で壊れる)。
-  `new URL("drizzle/", import.meta.url).pathname` で設定ファイル基準に絶対化
-- fallow: `*.package` の index 再エクスポートも未使用エクスポート検査の対象。
-  境界の公開面は「実際に消費されるものだけ」に絞る
+- **HttpApi redirect + Set-Cookie works** (unverified item from session-05). A
+  handler can return `HttpServerResponse` directly instead of the success-schema
+  value (`HttpServerResponse.redirect` + `setCookie` / `expireCookie`. The latter
+  two return Effect, so compose with `Effect.orDie`). The normal path with
+  success: `Schema.Void` returns 200 (return a raw response if you want 204)
+- **`HttpServerRequest.url` is the path only**. Take the absolute URL (origin) from
+  `request.source` (the raw Web Request)
+- **HttpApiMiddleware's `requires` becomes a bare requirement**: handler-side
+  requirements defer into toWebHandler's request context as the
+  `Request<"Requires", T>` phantom, but a middleware's requires (SessionService
+  etc.) must be satisfied statically at Layer construction. Since these services
+  depend on env (D1 binding), **webHandler is built per-env and WeakMap-cached**.
+  The middleware implementation must be declared as the concrete type
+  `HttpApiMiddleware.HttpApiMiddleware<Provides, ErrorSchemas, Requires>` —
+  otherwise provideService's Exclude doesn't reduce the generic and it fails to
+  typecheck
+- **vitest-pool-workers 0.20.1 has no fetchMock** (it disappeared from the
+  cloudflare:test exports). Stub outbound fetch by **passing a function to
+  miniflare's `outboundService`** (vitest.config.ts runs on the Node side, so no
+  stub branch is needed in production code)
+- **drizzle-kit v1 migrations are folder-form** (`drizzle/<name>/migration.sql`).
+  wrangler already supports it via `d1_databases[].migrations_pattern:
+  "drizzle/*/migration.sql"`, but vitest-pool-workers' `readD1Migrations` only
+  supports flat `*.sql` → built D1Migration[] with a custom reader
+  (test/support/read-migrations.ts) and pass it to `applyD1Migrations` via
+  miniflare bindings (TEST_MIGRATIONS)
+- **Dependencies removed via `bun x wrangler` etc. can leave lock entries**
+  (@effect/sql-d1 came back as an optional peer resolution even after bun remove).
+  Removed it from the lockfile by hand and verified consistency with `bun install`
+- **`.dev.vars` is gitignored** → what gets committed is `.dev.vars.example`
+  (dummy values)
+- vitest.config.ts paths are **relative to process cwd** (breaks under root
+  `vitest run`). Absolutize them off the config file with
+  `new URL("drizzle/", import.meta.url).pathname`
+- fallow: `*.package` index re-exports are also subject to unused-export checks.
+  Narrow the public surface of a boundary to "what is actually consumed"
 
-## 4. 既知の制約の更新
+## 4. Updates to known constraints
 
-- **解消**: 「API リクエスト認証は未実装(RequestAuth は全リクエスト匿名)」
-  「チェーン取得 API は全公開」「プロジェクト作成は org と未連携」(session-05 §4)
-  → 本セッションで全て解消。テスト用認証スタブ(auth-stub.ts)は実発行経路 +
-  フェイク GitHub(outboundService)に置き換えて削除
-- **残る制約**: リカバリーブロブ取得のレート制限は未設計(CRYPTO_SPEC §8。
-  今回スコープの optional 項目、未着手)。トークンの一覧・追加発行 UI/API は
-  Web ダッシュボード実装時(確認 B の線引き)
+- **Resolved**: "API request auth unimplemented (RequestAuth treats every request as
+  anonymous)", "chain-read API fully public", "project creation not linked to org"
+  (session-05 §4) → all resolved in this session. The test auth stub (auth-stub.ts)
+  was replaced by the real issuance path + a fake GitHub (outboundService) and
+  deleted
+- **Remaining constraints**: rate-limiting recovery-blob fetch is undesigned
+  (CRYPTO_SPEC §8. An optional item in this scope, not started). Token listing /
+  extra issuance UI/API comes with the Web dashboard (confirmation B's line)
 
-## 4.5 レビュー→修正ループ(PR #16 内。3 観点の並行レビュー → 検証 → 修正)
+## 4.5 Review→fix loop (inside PR #16. 3 parallel review angles → verify → fix)
 
-採用・修正済みの指摘(重要度順):
+Accepted and fixed items (in order of severity):
 
-1. **device 交換の audience 検証欠如(セキュリティ・高)**: `/user` での有効性確認
-   だけでは他 App 向けに発行されたトークンで他人のアカウントに解決できた
-   (confused-deputy)。check-token API(`POST /applications/{client_id}/token`)で
-   「自 OAuth App 発行」まで検証する形に修正し、AUTH_SPEC §4-4 に明文化。
-   フェイク GitHub に other-app トークンを追加して判別テスト化
-2. **同名トークンのローテーション**: 同一 (user, name) への device 交換は既存
-   トークンの失効を伴う再発行(api_tokens の無制限増加 DoS 対策。§6 に明文化)
-3. **資格情報の優先順位の固定**: Authorization ヘッダー提示時はクッキーへ
-   フォールバックしない(無効 Bearer + 有効クッキー = 401)。Bearer スキームは
-   RFC 7235 どおり大文字小文字非区別。テストで pin
-4. **API 契約の乖離**: logout / revokeToken は `HttpApiSchema.NoContent`(204)、
-   OAuth リダイレクト系は `HttpApiSchema.Empty(302)` を宣言(導出クライアントの
-   成功ステータス照合が実応答と一致するように)
-5. **§3-3 メールフィルタの検証可能化**: フェイク GitHub を ID 帯で応答分岐させ
-   (unverified / non-primary / emails 404)、negative テスト 3 件 + 再ログイン時の
-   自己修復(サインアップ時の取り損ねを verified メールで補完)を追加
-6. **§6 op→権限表の判別テスト**: write スコープで rotate_epoch 可・add_member 403・
-   init 403 を追加(全 op を単一水準に潰す退行を検知可能に)
-7. **DO キャッシュの単調ガード**: permit なしの snapshotFor が古い ChainState で
-   新キャッシュを上書きしうる競合(perf のみ)を headSeq 比較で防止。
-   `?? ""` フォールバック(破損を成功応答化しうる)は defect 化
-8. **期限切れセッションの cron 掃除**: scheduled ハンドラ + `triggers.crons` +
-   sessions.expires_at インデックス(未提示行は resolve 時掃除では消えないため)
-9. **認証成功ごとの D1 書き込み間引き**: セッション延長・トークン last_used_at
-   とも 1 時間閾値(30 日スライディングの意味論は不変)
-10. **その他**: getOrCreateUser の競合判別を UNIQUE constraint メッセージで厳密化
-    (非競合の D1 障害を誤分類しない)、requestOrigin の Host ヘッダーフォール
-    バック廃止、トークン交換リクエストに User-Agent 付与、フェイクの忠実性強化
-    (UA 必須・Accept 分岐・check-token)、core スコープ結合則のユニットテスト
-    (個別エントリはワイルドカードを絞れない = 最強一致、を意図として固定)
+1. **Missing audience verification in device exchange (security, high)**: checking
+   validity only via `/user` allowed a token issued for another App to resolve
+   someone else's account (confused-deputy). Fixed to also verify "issued by our
+   OAuth App" via the check-token API (`POST /applications/{client_id}/token`) and
+   documented in AUTH_SPEC §4-4. Added an other-app token to the fake GitHub to
+   make it a discriminating test
+2. **Same-name token rotation**: a device exchange for an existing (user, name)
+   re-issues with revocation of the existing token (DoS defense against unbounded
+   api_tokens growth. Documented in §6)
+3. **Fixed credential precedence**: when an Authorization header is presented,
+   don't fall back to cookies (invalid Bearer + valid cookie = 401). The Bearer
+   scheme is case-insensitive per RFC 7235. Pinned by tests
+4. **API contract drift**: logout / revokeToken declare
+   `HttpApiSchema.NoContent` (204), the OAuth redirect ones declare
+   `HttpApiSchema.Empty(302)` (so the derived client's success-status matching
+   matches real responses)
+5. **Making the §3-3 email filter verifiable**: the fake GitHub now branches
+   responses by ID range (unverified / non-primary / emails 404); added 3 negative
+   tests + self-repair on re-login (backfilling an email missed at signup once it's
+   verified)
+6. **Discriminating tests for the §6 op→permission table**: added rotate_epoch
+   allowed with write scope, add_member 403, init 403 (makes detectable the
+   regression that collapses every op to a single level)
+7. **Monotonic guard on the DO cache**: prevented a race where permit-less
+   snapshotFor could overwrite a fresh cache with an old ChainState (perf only) by
+   comparing headSeq. The `?? ""` fallback (could turn corruption into a success
+   response) became a defect
+8. **Cron sweep of expired sessions**: scheduled handler + `triggers.crons` +
+   sessions.expires_at index (rows not presented never get cleaned at resolve time)
+9. **Thinning per-auth D1 writes**: both session extension and token last_used_at
+   now threshold at 1 hour (30-day sliding semantics unchanged)
+10. **Other**: getOrCreateUser race discrimination made strict by UNIQUE constraint
+    message (so unrelated D1 failures aren't misclassified), dropped the
+    requestOrigin Host-header fallback, added User-Agent to token-exchange
+    requests, strengthened the fake's fidelity (UA required, Accept branching,
+    check-token), and unit-tested the core scope combination rule (fixing the
+    intent that an individual entry cannot narrow a wildcard = strongest match
+    wins)
 
-### ループ 2〜3(再レビュー + Bugbot / CI)
+### Loops 2–3 (re-review + Bugbot / CI)
 
-11. **CI 失敗の修正**: フェイク GitHub の check-token 照合が .dev.vars(gitignore
-    済み・CI に不在)の値を前提にしていた → 「パスの client_id と Basic の
-    client_id の一致 + secret 非空」の配線検証に変更(env 注入元非依存)
-12. **トークン主体 logout のセッション保護(Bugbot)**: Bearer 認証のリクエストに
-    同送されたブラウザのセッションクッキーを失効させない(logout はセッション
-    主体限定の操作に)
-13. **ローテーションの原子化(Bugbot + 再レビューが独立検出)**: delete + insert を
-    D1 atomic batch に統合 + UNIQUE (user_id, name)。並行 device 交換でも同名 1 本
-14. **トークン交換ボディを form-urlencoded に(Bugbot)**: RFC 6749 §4.1.3 準拠
-    (JSON ボディは仕様外)。フェイクも form を要求して pin
-15. **deviceExchange の入力境界 + 発行上限**: tokenName ≤ 128・scopes ≤ 100・
-    project はプロジェクト ID 形式か `"*"` のみ(Schema 強制)。別名トークンは
-    ユーザーあたり 100 本まで(429 TokenLimit。同名ローテーションは常に可能)
-16. **セッションクッキーのスライディング反映**: DB の延長だけでなく、セッション
-    認証の応答でクッキーを Max-Age 付きで再発行(ミドルウェア。ハンドラが同名
-    クッキーを操作した応答には触れない)。クッキー属性(HttpOnly / Secure /
-    SameSite / Max-Age)の回帰テストも追加
-17. **isUniqueConflict の cause 連鎖対応**: drizzle の単発クエリ経路
-    (DrizzleQueryError ラップ)でも競合判別が壊れないよう cause を辿る + 判別
-    テストで固定(batch 経路が素通しであることは workerd 実測で確認済み)
+11. **CI failure fix**: the fake GitHub's check-token matching assumed values from
+    .dev.vars (gitignored, absent in CI) → changed to wiring validation of "the
+    client_id in the path matches the client_id in Basic + secret non-empty"
+    (independent of env-injection source)
+12. **Session protection for token-subject logout (Bugbot)**: a Bearer-authed
+    request must not revoke the browser session cookie sent along with it (logout
+    is restricted to session-subject operations)
+13. **Atomic rotation (detected independently by Bugbot + re-review)**: merged
+    delete + insert into a D1 atomic batch + UNIQUE (user_id, name). Concurrent
+    device exchanges still yield exactly 1 same-name token
+14. **Token-exchange body now form-urlencoded (Bugbot)**: RFC 6749 §4.1.3
+    compliant (a JSON body is out of spec). The fake also requires form to pin it
+15. **deviceExchange input boundary + issuance cap**: tokenName ≤ 128, scopes ≤
+    100, project is a project-ID format or `"*"` only (Schema-enforced). Distinct
+    token names capped at 100 per user (429 TokenLimit. Same-name rotation always
+    allowed)
+16. **Session-cookie sliding reflected**: not only the DB extension — session-auth
+    responses reissue the cookie with Max-Age (in middleware; doesn't touch
+    responses where the handler manipulated a same-name cookie). Also added a
+    regression test for cookie attributes (HttpOnly / Secure / SameSite /
+    Max-Age)
+17. **isUniqueConflict cause-chain handling**: follows the cause so that race
+    detection doesn't break on drizzle's single-query path (wrapped in
+    DrizzleQueryError), pinned by a discrimination test (verified by workerd
+    measurement that the batch path doesn't wrap)
 
-採用せず記録に留めた指摘(実害小・v1 許容):
+Items recorded but not adopted (low impact, acceptable in v1):
 
-- 複数タブでの OAuth 開始は state クッキーが単一スロットのため先行タブが 400 に
-  なる(リトライで回復。修正するなら state の複数許容化)
-- callback 失敗経路では state クッキーを expire しない(TTL 10 分で自然失効)
-- transport 413(生ボディ上限)はスキーマ外の素の応答で、導出クライアントは
-  デコードできない(CLI 実装時にハンドリング分岐が要る)
-- トークン発行上限(100 本)の判定は count(読み)と挿入が別トランザクションの
-  ため、別名の並列発行で数本超過しうる(超過は並列度で有界。DoS 遮断の目的は
-  達成。厳密化するなら条件付き INSERT か DO 直列化)
-- セッションクッキーの属性定義が handlers-auth(発行時)と middleware(再発行時)
-  で二重になっている(両経路とも属性回帰テストで固定済み。将来は共通化の余地)
-- isUniqueConflict の cause 連鎖は循環しない前提(D1 / drizzle のエラーに循環は
-  なく実質到達不能。防御するなら深さ上限)
+- Starting OAuth in multiple tabs fails the earlier tab with 400 because the state
+  cookie is single-slot (recovers on retry. A fix would allow multiple states)
+- The callback failure path doesn't expire the state cookie (it expires naturally
+  at the 10-minute TTL)
+- transport 413 (raw body limit) is a schema-less raw response the derived client
+  can't decode (the CLI implementation will need a handling branch)
+- The token-issuance cap (100) checks count (read) in a separate transaction from
+  the insert, so parallel issuance under distinct names can overshoot by a few
+  (overshoot is bounded by parallelism. The DoS-cutoff goal is met. For strictness:
+  conditional INSERT or DO serialization)
+- The session-cookie attribute definition is duplicated between handlers-auth
+  (issue time) and middleware (reissue time) (both paths are pinned by attribute
+  regression tests. Common ground is future work)
+- isUniqueConflict's cause chain assumes no cycles (D1 / drizzle errors have no
+  cycles so it's effectively unreachable. A depth cap would defend it)
 
-## 5. 次セッションへの申し送り
+## 5. Handoff to the next session
 
-- **PR マージ後**: ROADMAP Phase 1「サーバー: プロジェクト DO、D1、HttpApi、
-  監査ログ(append-only)」の注記更新(D1 + 認証 + チェーン認可まで完了。
-  監査ログ実装は AUDIT_SPEC 承認待ち)
-- **AUDIT_SPEC(PR #10 で所有者起草)のレビュー・承認が監査ログ実装の前提**
-- ~~CI のテレメトリ無効化(spike-b からの申し送り)~~ → **解消済みを確認**:
-  .github/workflows/ci.yml に DO_NOT_TRACK=1 / WRANGLER_SEND_METRICS=false が
-  設定済み(所有者側で対応済み)
-- 未回収の optional 項目: リカバリーブロブ取得のレート制限設計(CRYPTO_SPEC §8)
-- CLI 実装時: device flow の CLI 側は `/auth/device/exchange`(HttpApi 導出
-  クライアント)+ OS キーチェーン保存。トークンの既定スコープは `* × admin`
-  (実効権限はチェーン role で束縛)
-- Web ダッシュボード実装時: セッションクッキーは `__Host-` のため wrangler dev
-  (http)ではブラウザに保存されない(検証は https 環境かヘッダーで)。書き込み系
-  fetch には `x-maruhi-csrf: 1` を付けること
-- セルフホスト手順に追加が必要: `wrangler d1 create maruhi` + database_id 差し替え、
-  `wrangler d1 migrations apply`、GitHub OAuth App 作成 + GITHUB_CLIENT_ID(vars)/
-  GITHUB_CLIENT_SECRET(secret)設定(Phase 1 セットアップウィザードの入力)
+- **After the PR merges**: update the note on ROADMAP Phase 1 "server: project DO,
+  D1, HttpApi, audit log (append-only)" (D1 + auth + chain authorization done.
+  Audit-log implementation awaits AUDIT_SPEC approval)
+- **Reviewing / approving AUDIT_SPEC (drafted by the owner in PR #10) is the
+  precondition for the audit-log implementation**
+- ~~Disabling CI telemetry (handoff from spike-b)~~ → **confirmed resolved**:
+  .github/workflows/ci.yml already sets DO_NOT_TRACK=1 /
+  WRANGLER_SEND_METRICS=false (done on the owner side)
+- Outstanding optional item: rate-limit design for recovery-blob fetch
+  (CRYPTO_SPEC §8)
+- For the CLI implementation: the CLI side of the device flow is
+  `/auth/device/exchange` (HttpApi-derived client) + OS-keychain storage. Default
+  token scope is `* × admin` (effective authority is bound by chain role)
+- For the Web-dashboard implementation: the session cookie is `__Host-`, so it
+  won't be stored by the browser under wrangler dev (http) (verify on https or via
+  headers). Write-path fetches must carry `x-maruhi-csrf: 1`
+- Needs adding to the self-host steps: `wrangler d1 create maruhi` + replacing
+  database_id, `wrangler d1 migrations apply`, creating a GitHub OAuth App +
+  setting GITHUB_CLIENT_ID (vars) / GITHUB_CLIENT_SECRET (secret) (inputs to the
+  Phase 1 setup wizard)

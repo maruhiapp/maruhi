@@ -1,379 +1,445 @@
-# deepsec 残課題(2026-08-25 再検証)
+# deepsec open items (2026-08-25 revalidation)
 
-`DEEPSEC_FINDINGS_2026-08-24.md` の 8 論点の修正を検証した run で残った / 新たに
-出た true-positive。前文書はこの run でクローズ済み(7 論点 fixed、R4 のみ残存)。
+The true-positives that remained, or newly appeared, in the run that verified the fixes
+for the 8 points of `DEEPSEC_FINDINGS_2026-08-24.md`. The previous document is closed
+by this run (7 points fixed, only R4 remains).
 
-## 位置づけ
+## Positioning
 
-- 対象: 追跡 117 ファイル。`process` は 08-24 の修正で変更された候補 13 ファイル
-  (`--reinvestigate 2 --manifest`)、`revalidate` は同 13 ファイル上の全 26 finding
-  を `--force` で再判定
-- モデル: `claude-opus-5`、thinking `medium`、Claude Agent SDK(ローカル認証)
-- run: `scan 20260825002713-ed6224238ec2c19a` /
+- Scope: 117 tracked files. `process` covered the 13 candidate files changed by the
+  08-24 fixes (`--reinvestigate 2 --manifest`); `revalidate` re-judged all 26 findings
+  on those 13 files with `--force`
+- Model: `claude-opus-5`, thinking `medium`, Claude Agent SDK (local auth)
+- runs: `scan 20260825002713-ed6224238ec2c19a` /
   `process 20260825002935-0e1bfd164a1a9165` /
   `revalidate 20260825003446-4a6d6d6964b0c376`
-- 費用: process $8.26、revalidate $3.18(合計 $11.44)
-- 判定: fixed 13、false-positive 3、duplicate 5、**true-positive 5**
+- Cost: process $8.26, revalidate $3.18 (total $11.44)
+- Verdicts: fixed 13, false-positive 3, duplicate 5, **true-positive 5**
 
-## 2026-08-27 S1 / S3 / S4 追加再検証
+## 2026-08-27 additional revalidation of S1 / S3 / S4
 
-- 対象: S1 / S3 / S4 の実装候補 7 ファイル(manifest)。matcher 候補のある 6 ファイルを
-  `--reinvestigate 3` で再調査し、同 manifest 上の 12 finding を `--force` で再検証
-- モデル: `claude-opus-5`、thinking `medium`、Claude Agent SDK(ローカル認証)
-- run: `scan 20260827132550-694fee0d3217c8cc` /
+- Scope: the 7 candidate files implementing S1 / S3 / S4 (manifest). The 6 files with
+  matcher candidates were re-investigated under `--reinvestigate 3`, and the 12
+  findings on that manifest were revalidated with `--force`
+- Model: `claude-opus-5`, thinking `medium`, Claude Agent SDK (local auth)
+- runs: `scan 20260827132550-694fee0d3217c8cc` /
   `process 20260827132600-6cba472eba489f0d` /
   `revalidate 20260827133028-743b76363689b140`
-- 費用: process $3.63、revalidate $1.24(合計 **$4.87**)
-- 対象3件の帰結: **S1 / S3 / S4 はすべて `fixed`**
-- process は新規2件(S7 / S8)を検出。加えて、前回 false-positive だった
-  `maruhi run` の資格情報継承を S6 として true-positive(BUG)へ再判定
-- 現在の未解消: **S2 / S5 / S6 / S7 / S8 の5件**
+- Cost: process $3.63, revalidate $1.24 (total **$4.87**)
+- Outcome of the 3 targets: **S1 / S3 / S4 are all `fixed`**
+- process detected 2 new items (S7 / S8). In addition, `maruhi run`'s credential
+  inheritance — a false-positive last time — was re-judged true-positive (BUG) as S6
+- Currently unresolved: **5 items: S2 / S5 / S6 / S7 / S8**
 
-## 2026-08-27 S2 / S5〜S8 追加再検証
+## 2026-08-27 additional revalidation of S2 / S5–S8
 
-- 対象: 実装候補10ファイル(manifest)。matcher候補のある8ファイルを
-  `--reinvestigate 4` で再調査し、同manifest上の26 findingを `--force` で再検証
-- モデル: `claude-opus-5`、thinking `medium`、Claude Agent SDK(ローカル認証)
-- run: `scan 20260827140524-349506fcf80b67f7` /
+- Scope: 10 candidate files implementing them (manifest). The 8 files with matcher
+  candidates were re-investigated under `--reinvestigate 4`, and the 26 findings on
+  that manifest were revalidated with `--force`
+- Model: `claude-opus-5`, thinking `medium`, Claude Agent SDK (local auth)
+- runs: `scan 20260827140524-349506fcf80b67f7` /
   `process 20260827140543-400e1c0d37c9c1bf` /
   `revalidate 20260827141220-055396ecda27491f`
-- 費用: process $4.96、revalidate $2.90(合計 **$7.86**)
-- 対象5件の帰結: **S2 / S5 / S6 / S7 / S8 はすべて `fixed`**
-- process は新規3件(S9 / S10 / S11)を検出。S9 / S10 は同ブランチで実装済み、
-  S11 はセルフホストのアカウント受入・project quota方針として別途裁定
+- Cost: process $4.96, revalidate $2.90 (total **$7.86**)
+- Outcome of the 5 targets: **S2 / S5 / S6 / S7 / S8 are all `fixed`**
+- process detected 3 new items (S9 / S10 / S11). S9 / S10 are already implemented on
+  the same branch; S11 is being ruled on separately as a self-hosting account
+  admission / project-quota policy
 
-## 2026-08-27 S9 / S10 追補と最終再検証
+## 2026-08-27 S9 / S10 supplement and final revalidation
 
-- 1回目: `scan 20260827142502-5f2e610abc385fdd` /
+- 1st run: `scan 20260827142502-5f2e610abc385fdd` /
   `process 20260827142505-0b1b8b09e2b3f974` /
   `revalidate 20260827142831-98a1fb82adbb859f`
-- 2回目: `scan 20260827143142-d939917e2ceb7dfc` /
+- 2nd run: `scan 20260827143142-d939917e2ceb7dfc` /
   `process 20260827143144-8b605f1ef9c06c78` /
   `revalidate 20260827143508-61f94c1f58e5af7b`
-- 追補修正後の最終revalidate: `20260827144100-13a228b53f0c0734`
-- 費用: process $2.82、revalidate $3.03(合計 **$5.85**)
-- S9 / S10 と追補の S12 / S13 はすべて `fixed`
-- 最終reportのtrue-positiveは **S11 (MEDIUM) 1件のみ**
+- Final revalidate after the supplemental fix: `20260827144100-13a228b53f0c0734`
+- Cost: process $2.82, revalidate $3.03 (total **$5.85**)
+- S9 / S10 and the supplemental S12 / S13 are all `fixed`
+- The final report's true-positives are **just S11 (MEDIUM)**
 
-2026-08-25 の run で変更のない 104 ファイルは 08-22 / 08-24 の分析結果を据え置いている
-(08-25 のモデル実行で再確認したわけではない)。
+The 104 files unchanged in the 2026-08-25 run keep their 08-22 / 08-24 analysis
+results (they were not re-checked by the 08-25 model run).
 
-## 残課題(true-positive 5 件)
+## Open items (5 true-positives)
 
-新規 4 件のうち **S1 と S3 は 08-24 修正のすぐ隣**で、同じ回避が対策範囲の 1 歩外に
-残っていた形。S2 と S4 は既知の申し送り(ADR-0016 決定 7 の 申し送り / B9 の
-「invite counter にも同型がある」)に対応する。
+Of the 4 new ones, **S1 and S3 sit immediately adjacent to the 08-24 fixes** — the
+same evasion survived one step outside the addressed area. S2 and S4 correspond to
+known carryovers (the ADR-0016 decision 7 carryover / B9's "the invite counter has the
+same shape").
 
-> **対応状況(2026-08-27)**: S1〜S10 / S12 / S13 は実装・deepsec再検証とも完了。
-> 未実装は **S11 の1件**。
+> **Status (2026-08-27)**: S1–S10 / S12 / S13 are implemented and deepsec-revalidated.
+> Only **S11** is unimplemented.
 
-### S1. `chain_seq` が `chain.*` 外の行でも無ラベル表示される — BUG(新規)
+### S1. `chain_seq` is displayed unlabeled even on rows outside `chain.*` — BUG (new)
 
-- 場所: `apps/cli/src/audit.ts`(`trailerParts` / `renderListEvent` / `fetchAllMirrorRows`)
+- Location: `apps/cli/src/audit.ts` (`trailerParts` / `renderListEvent` / `fetchAllMirrorRows`)
 - slug: `other-trust-label-bypass` / confidence medium
-- 問題: 信頼ラベルの計算(`renderListEvent`)と verify の取得(`fetchAllMirrorRows`)は
-  どちらも**イベント名の前置**で分岐する一方、`trailerParts` は `chainSeq` を持つ
-  **あらゆる行**に `chain_seq=N` を出す。`trust === null` のときはラベルなしの素の
-  座標になる。`chainSeq` を正当に設定するのは `chainMirrorEvent` だけ(サーバーは
-  echo するのみ)なので、`member.add` や `chainx.grant` のような名前で
-  `chain_seq=7` を持つ行は**正直なサーバーでは存在し得ない** = 偽造の指標だが、
-  CLI は普通の座標として黙って描画し、verify は名前空間の外なので 1 行も取得しない。
-- 08-24 の R1 との関係: R1 は「名前空間の**内側**で写像に無い名前」を塞いだ。
-  この指摘は同じ回避が**名前空間の 1 歩外**に残っている、というもの。
-- 影響の範囲(再検証で縮小): verify の OK 文言は「chain entries 1..N ↔ chain.* mirror
-  rows」と範囲を明示しているため文言としては嘘をつかない。悪意あるサーバー + 素の
-  座標を検証済み provenance と読む運用者の両方が必要。BUG 相当。
-- 推奨: ラベル付けの起点をイベント名の前置から **`chainSeq` の存在**へ移す。
-  `chainSeq` があるのに trust を計算できない行は
-  `(mirror=unverified — event name is outside the chain.* namespace)` を明示し、
-  整合性違反として数える。verify 側でも `chain_seq` を持つ非 `chain.` 行を取得して
-  偽造の証拠として報告する。
-- **対応済み**(2026-08-25): 一覧の trust 判定は `chainSeq` の存在をイベント名より
-  先に見る。名前空間外なら
-  `mirror=unverified (chain_seq is invalid outside the chain.* namespace)` を明示し、
-  警告 + exit 1 にする。`trailerParts` 自体にも trust が null の `chain_seq` を
-  無ラベル表示しない fallback を置いた。D1 経路(invites / self)は正当な
-  chain provenance を持たないため、同じ形を受け取ったら明示ラベル + exit 1。
-  verify は従来の `eventPrefix=chain.` に加えて新しい
-  `chainSeqPresent=true` フィルタを全ページ取得し、row_id で和集合にしてから
-  名前空間外の claim を偽造として報告する。同じ row_id が 2 クエリ間で異なる内容を
-  返した場合もサーバー応答の自己矛盾として中止する。非 admin の verify にも届くよう、
-  `chain_seq IS NOT NULL` は AUDIT_SPEC §6 のクラス 1 とした(正直な書き手でこの列を
-  設定するのは chain.* ミラーだけなので、正常なクラス 2 行は開示しない)。
-  CLI の一覧 / verify / D1 表示と workerd の presence filter / reader 可視性に
-  回帰テストを追加。
-- **再検証**(2026-08-27): `fixed`。表示側は `chainSeq` の存在を名前より先に判定し、
-  verify 側は `chain.` 名前空間と `chain_seq IS NOT NULL` の和集合を検査すること、
-  非 chain 行を警告 + exit 1 にすることを確認した。追記境界も非 `chain.*` の
-  `chain_seq` を defect として拒否する。
+- Problem: the trust-label computation (`renderListEvent`) and verify's fetch
+  (`fetchAllMirrorRows`) both branch **on the event-name prefix**, while
+  `trailerParts` emits `chain_seq=N` for **any row** carrying `chainSeq`. When
+  `trust === null` it becomes a bare coordinate with no label. Only
+  `chainMirrorEvent` legitimately sets `chainSeq` (the server merely echoes it), so a
+  row named `member.add` or `chainx.grant` carrying `chain_seq=7` **cannot exist on an
+  honest server** = an indicator of forgery — yet the CLI silently renders it as an
+  ordinary coordinate, and verify fetches none of it since it is outside the
+  namespace.
+- Relationship to 08-24's R1: R1 closed "names **inside** the namespace that are not
+  in the mapping". This finding is the same evasion surviving **one step outside the
+  namespace**.
+- Scope of impact (narrowed by revalidation): verify's OK message states its range
+  ("chain entries 1..N ↔ chain.* mirror rows"), so the text does not lie. It requires
+  both a malicious server and an operator who reads a bare coordinate as verified
+  provenance. BUG-equivalent.
+- Recommendation: move the labeling trigger from the event-name prefix to **the
+  presence of `chainSeq`**. A row that has `chainSeq` but for which trust cannot be
+  computed gets
+  `(mirror=unverified — event name is outside the chain.* namespace)` explicitly, and
+  is counted as an integrity violation. On the verify side, fetch non-`chain.` rows
+  that carry `chain_seq` and report them as forgery evidence.
+- **Addressed** (2026-08-25): the list's trust judgment looks at the presence of
+  `chainSeq` before the event name. Outside the namespace it explicitly shows
+  `mirror=unverified (chain_seq is invalid outside the chain.* namespace)` and turns
+  it into a warning + exit 1. `trailerParts` itself also got a fallback that does not
+  display a `chain_seq` whose trust is null unlabeled. The D1 paths (invites / self)
+  carry no legitimate chain provenance, so receiving the same shape gets the explicit
+  label + exit 1. In addition to the existing `eventPrefix=chain.` filter, verify now
+  fetches all pages of the new `chainSeqPresent=true` filter, unions them by row_id,
+  and then reports out-of-namespace claims as forgery. If the same row_id returns
+  different contents across the 2 queries, that too aborts as a self-contradictory
+  server response. So that it also reaches non-admin verify, `chain_seq IS NOT NULL`
+  became AUDIT_SPEC §6 class 1 (only the chain.* mirrors set this column under honest
+  writers, so no legitimate class-2 row is disclosed). Regression tests were added
+  for the CLI's list / verify / D1 display and for workerd's presence filter / reader
+  visibility.
+- **Revalidation** (2026-08-27): `fixed`. Confirmed that the display side judges the
+  presence of `chainSeq` before the name, that the verify side inspects the union of
+  the `chain.` namespace and `chain_seq IS NOT NULL`, and that non-chain rows become
+  warning + exit 1. The append boundary also rejects a non-`chain.*` `chain_seq` as a
+  defect.
 
-### S2. リカバリーコードの表示に TTY 検査がない — MEDIUM(新規)
+### S2. Recovery-code display has no TTY check — MEDIUM (new)
 
-- 場所: `apps/cli/src/recovery.ts`(`issueRecoveryCodeOp` / `recoverMasterKeyOp`)
+- Location: `apps/cli/src/recovery.ts` (`issueRecoveryCodeOp` / `recoverMasterKeyOp`)
 - slug: `other-key-material-to-disk` / confidence medium
-- 問題: 表示のゲートが `io.agentProfile().isAgent`(fail-open の deny-list)1 層だけで、
-  256-bit のコードを stderr へ書く。stderr も stdout と同様にリダイレクト可能で、
-  `maruhi key recovery 2> code.txt`、`> out 2>&1`、`script` / `tee`、両ストリームを
-  捕捉する CI ランナーはいずれもコードをディスク・ビルドログへ永続化する。
-  保存確認プロンプトは**表示の後**で、`promptLine` は非 TTY では
-  `readPipedLine()` にフォールバックするため対話性を強制しない。
-- 非対称性: 値表示(`showValues` → `ensureValueDisplayAllowed`)は「stdin と stdout の
-  両方が端末」の fail-closed を一次境界に持つ。より機微な(master 秘密鍵を開く)
-  リカバリーコードが deny-list 1 層、という向きの逆転になっている。
-- 既知性: ADR-0016 決定 7 は recovery を**意図的に** deny-list に据え置いており、
-  その申し送りが「未知のエージェント下では一次境界の保護を受けない」としてこの
-  クラスを次の裁定候補に挙げている。したがって見落としではなく**繰り延べ**。
-- 要判断: 「リダイレクトの軸」は ADR が実際には扱っていない別の懸念である。
-  非 TTY の CI 発行を壊さずに TTY 検査を入れられるか(発行と表示を分けるか)を
-  決めてから実装する。ADR-0016 の改訂として人間に提示すること。
-- **対応済み**(2026-08-27): ADR-0016 決定 7 を改訂し、リカバリーコードの表示・入力は
-  stdin / stdout / stderr の全てが TTY のときだけ許可する。既知 agent 判定は二次層。
-  発行は recovery status / PUT より前、復元は blob GET より前に fail-closed し、
-  `2>` を含む3チャネル各単独の非TTYテストで、コード表示・prompt・server到達が
-  いずれもないことを固定。既知 agent で鍵生成後の発行を黙ってスキップする経路は、
-  コードを表示しないため据え置いた。
-- **再検証**(2026-08-27): `fixed`。発行・入力の両入口が3チャネルTTYを確認し、
-  serverアクセスと鍵素材の剥がしより前に拒否することを確認した。
+- Problem: the display gate is a single layer of `io.agentProfile().isAgent` (a
+  fail-open deny-list), writing a 256-bit code to stderr. stderr is redirectable just
+  like stdout, and `maruhi key recovery 2> code.txt`, `> out 2>&1`, `script` / `tee`,
+  and CI runners that capture both streams all persist the code to disk or build
+  logs. The save-confirmation prompt comes **after** the display, and `promptLine`
+  falls back to `readPipedLine()` on non-TTY, so it does not enforce interactivity.
+- Asymmetry: value display (`showValues` → `ensureValueDisplayAllowed`) has the
+  fail-closed "both stdin and stdout are terminals" as its primary boundary. The
+  more sensitive recovery code (it opens the master secret key) sits behind a single
+  deny-list layer — the direction is reversed.
+- Knownness: ADR-0016 decision 7 **deliberately** kept recovery on the deny-list, and
+  its carryover lists this class as a next ruling candidate under "under unknown
+  agents it does not get the primary boundary's protection". So this is not an
+  oversight but a **deferral**.
+- Needs decision: the "redirect axis" is a different concern the ADR never actually
+  addressed. Decide whether a TTY check can be added without breaking non-TTY CI
+  issuance (or whether issuance and display should be split) before implementing.
+  Present to a human as an ADR-0016 revision.
+- **Addressed** (2026-08-27): ADR-0016 decision 7 was revised — recovery-code display
+  and input are allowed only when all of stdin / stdout / stderr are TTYs. The
+  known-agent check is the second layer. Issuance fails closed before recovery
+  status / PUT, restore before the blob GET, and per-channel non-TTY tests (including
+  `2>`) pin that no code display, prompt, or server reach happens. The path that
+  silently skips issuance after keygen under a known agent was kept as-is, since it
+  displays no code.
+- **Revalidation** (2026-08-27): `fixed`. Confirmed both entry points (issuance /
+  input) check all three channels for TTY, and reject before server access and before
+  key material is unwrapped.
 
-### S3. denylist が maruhi 自身の認証 env を覆っていない — MEDIUM(新規)
+### S3. The denylist does not cover maruhi's own auth env — MEDIUM (new)
 
-- 場所: `apps/cli/src/run.ts`(`DENIED_ENV_NAMES` / `DENIED_ENV_PREFIXES`)
+- Location: `apps/cli/src/run.ts` (`DENIED_ENV_NAMES` / `DENIED_ENV_PREFIXES`)
 - slug: `other-env-hijack` / confidence medium
-- 問題: `MARUHI_TOKEN` / `MARUHI_TOKEN_ORIGIN` が denylist に無い。変数名は
-  write 権限を持つ共同メンバーが決められる平文メタデータなので、悪意あるメンバーが
-  自分の PAT を値に持つ `MARUHI_TOKEN` を作れる。被害者が `maruhi run -- make deploy`
-  を実行し、その makefile が `maruhi pull` を呼ぶ形(CI で非常に一般的)だと、
-  `resolveSession` は env のトークンを**キーチェーンより先に**見るため、入れ子の
-  `maruhi` が攻撃者として認証される。`MARUHI_TOKEN_ORIGIN` も攻撃者が設定できるので
-  `sessionFromEnvToken` の origin 束縛も効かない。
-- 影響: 入れ子の読み取りが攻撃者のプロジェクト値を返し、被害者のパイプラインが
-  それを自分のシークレットとして扱う。入れ子の書き込みは攻撃者のアカウントへ入る。
-- 推奨: `DENIED_ENV_PREFIXES` に `MARUHI_` を足す(最低でも `MARUHI_TOKEN` と
-  `MARUHI_TOKEN_ORIGIN` を `DENIED_ENV_NAMES` へ)。既存の prefix 機構に乗る 1 行。
-- **対応済み**(2026-08-25): `DENIED_ENV_PREFIXES` に `MARUHI_` を追加した。個別名の
-  列挙ではなく包括 prefix を採ったのは、**maruhi 自身が予約する名前空間**であり
-  巻き込む「正当な変数」が原理的に存在しない一方、個別名だと将来 `MARUHI_*` を
-  増やしたときに同じ穴が再発するため(NODE_ / PYTHON_ / BUN_ の包括拒否を採らない
-  M2 の裁定とは、名前空間の所有者が違うので矛盾しない)。この時点では親環境の本物の
-  `MARUHI_TOKEN` の継承には触らなかった(後の S6 で除外)。回帰テストつき
-  (修正を戻すと落ちることを確認済み)。
-- **再検証**(2026-08-27): S3 本体は `fixed`。保存された変数が `MARUHI_*` を名乗って
-  入れ子の maruhi を乗っ取る経路は閉じた。ただし親環境に本物の
-  `MARUHI_TOKEN` がある場合の**継承そのもの**は別論点 S6 として true-positive。
+- Problem: `MARUHI_TOKEN` / `MARUHI_TOKEN_ORIGIN` are not on the denylist. Variable
+  names are plaintext metadata a collaborating member with write permission can
+  choose, so a malicious member can create a `MARUHI_TOKEN` holding their own PAT as
+  the value. If the victim runs `maruhi run -- make deploy` and that makefile calls
+  `maruhi pull` (very common in CI), `resolveSession` sees the env token **before the
+  keychain**, so the nested `maruhi` authenticates as the attacker. The attacker can
+  also set `MARUHI_TOKEN_ORIGIN`, so `sessionFromEnvToken`'s origin binding does not
+  help.
+- Impact: nested reads return the attacker's project values, and the victim's
+  pipeline treats them as its own secrets. Nested writes go into the attacker's
+  account.
+- Recommendation: add `MARUHI_` to `DENIED_ENV_PREFIXES` (at minimum put
+  `MARUHI_TOKEN` and `MARUHI_TOKEN_ORIGIN` in `DENIED_ENV_NAMES`). A one-liner riding
+  the existing prefix mechanism.
+- **Addressed** (2026-08-25): added `MARUHI_` to `DENIED_ENV_PREFIXES`. A blanket
+  prefix rather than enumerated names was chosen because it is **a namespace maruhi
+  itself reserves** — no "legitimate variable" can in principle be caught in it —
+  while with individual names the same hole would reopen when a future `MARUHI_*` is
+  added (this does not contradict M2's ruling against blanket rejection of NODE_ /
+  PYTHON_ / BUN_, since the namespace owner differs). At this point the inheritance
+  of a real `MARUHI_TOKEN` from the parent environment was left alone (excluded
+  later under S6). With a regression test (confirmed it fails when the fix is
+  reverted).
+- **Revalidation** (2026-08-27): the S3 body is `fixed`. The path where a stored
+  variable takes a `MARUHI_*` name to hijack a nested maruhi is closed. However, the
+  **inheritance itself** when the parent environment holds a real `MARUHI_TOKEN` is
+  separately tracked as S6, a true-positive.
 
-### S4. invite の pending 上限・発行窓が check-then-act — BUG(新規)
+### S4. Invite pending cap / issue window is check-then-act — BUG (new)
 
-- 場所: `apps/server/src/db.package/repos.ts`(`InviteRepo.create`)
+- Location: `apps/server/src/db.package/repos.ts` (`InviteRepo.create`)
 - slug: `rate-limit-bypass` / confidence medium
-- 問題: pending 件数と 1 時間窓の 2 つの admission control を素の SELECT で評価し、
-  その後に無関係な `db.batch` で insert する。カウントは insert の WHERE に入って
-  おらず、CAS も条件付き INSERT…SELECT もカウンタ行も無い。N 並行の POST は全部が
-  同じ under-limit を観測して全部 insert するため、`MAX_PENDING_INVITES_PER_PROJECT`
-  (100)と `INVITE_ISSUE_WINDOW_LIMIT`(30/h)を並行度ぶん超過できる。
-- 既知性: JSDoc は「ベストエフォート」と書き、対等な例として recovery の取得計数を
-  指しているが、**そちらは B9 で単一の条件付き UPDATE に直った**ので対等でなくなった。
-- 影響の範囲: 実行には認証済みの project admin(または漏れた admin PAT)が必要で、
-  そもそも 30 件/時は正当に発行できる。1 バーストぶんの上限超過に留まり、権限・
-  機密の境界は越えない。BUG 相当。
-- 推奨: `recordFetch` と同じ形に畳む。insert を `INSERT … SELECT` にして WHERE で
-  両カウントを再評価し 0 行を拒否とするか、`login_failed_windows` と同型の
-  per-project カウンタ行を 1 文の条件付き UPSERT + `RETURNING` で回す。
-  `invite.created` は `acceptCas` / `revokeCas` と同じ `changes() = 1` ガードで
-  同一 batch に残す。
-- **対応済み**(2026-08-25): スキーマ・上限値・判定順は変えず、pending 件数と
-  lookback 件数を同じ `INSERT … SELECT … WHERE` の相関サブクエリで再評価する。
-  `RETURNING` が 1 行なら作成成功、0 行なら説明用に pending → lookback の仕様順で
-  再読して型付き 429 を導出する。`invite.created` は直後の
-  `changes() = 1` ガード付き INSERT…SELECT と同一 D1 batch に置き、作成の勝者と
-  1:1 にした。pending 上限 / 発行窓を残り 1 枠にした状態で 8 並行 POST を送り、
-  どちらも成功 1・拒否 7・保存件数が上限ちょうど・監査行 1 を workerd で固定。
-  条件を一時的に外すと両テストが成功 8 になって失敗することも確認済み。
-- **再検証**(2026-08-27): `fixed`。pending / lookback の両上限が単一の
-  `INSERT … SELECT … WHERE` で再評価され、`RETURNING` と `changes() = 1` 監査が
-  作成の勝者と一致することを確認した。
+- Problem: the two admission controls — pending count and the 1-hour window — are
+  evaluated with a plain SELECT, then the insert happens in an unrelated `db.batch`.
+  The counts are not in the insert's WHERE; there is no CAS, conditional
+  INSERT…SELECT, or counter row. N concurrent POSTs all observe the same under-limit
+  and all insert, so `MAX_PENDING_INVITES_PER_PROJECT` (100) and
+  `INVITE_ISSUE_WINDOW_LIMIT` (30/h) can each be exceeded by the degree of
+  concurrency.
+- Knownness: the JSDoc says "best effort" and points at the recovery fetch count as
+  a peer example, but **that one was fixed into a single conditional UPDATE under
+  B9**, so they are no longer peers.
+- Scope of impact: execution requires an authenticated project admin (or a leaked
+  admin PAT), and 30/hour can be issued legitimately anyway. It stays a one-burst
+  cap overrun and crosses no privilege or confidentiality boundary. BUG-equivalent.
+- Recommendation: fold it into the same shape as `recordFetch`. Either make the
+  insert an `INSERT … SELECT` that re-evaluates both counts in the WHERE and treats
+  0 rows as a refusal, or run a per-project counter row — the same shape as
+  `login_failed_windows` — in a single conditional UPSERT + `RETURNING`. Keep
+  `invite.created` in the same batch with the same `changes() = 1` guard as
+  `acceptCas` / `revokeCas`.
+- **Addressed** (2026-08-25): without changing the schema, the caps, or the
+  judgment order, the pending count and the lookback count are re-evaluated in
+  correlated subqueries of the same `INSERT … SELECT … WHERE`. If `RETURNING` yields
+  1 row the creation succeeded; on 0 rows it re-reads pending then lookback — in spec
+  order — to derive the typed 429. `invite.created` sits in the same D1 batch as the
+  immediately following `changes() = 1`-guarded INSERT…SELECT, made 1:1 with the
+  creation winner. With both the pending cap and the issue window set to 1 remaining
+  slot, 8 concurrent POSTs were sent and workerd pinned: 1 success, 7 rejections,
+  stored count exactly at the cap, 1 audit row — for each limit. Also confirmed both
+  tests fail with 8 successes when the condition is temporarily removed.
+- **Revalidation** (2026-08-27): `fixed`. Confirmed both the pending and lookback
+  caps are re-evaluated in a single `INSERT … SELECT … WHERE`, and that `RETURNING`
+  plus the `changes() = 1` audit agree with the creation winner.
 
-### S5. `auth.login_failed` の上限が `auth_method` 共有のまま — BUG(R4 の残存)
+### S5. The `auth.login_failed` cap is still shared per `auth_method` — BUG (R4 remainder)
 
-- 場所: `apps/server/src/db.package/audit.ts`(`appendLoginFailed`)
+- Location: `apps/server/src/db.package/audit.ts` (`appendLoginFailed`)
 - slug: `other-audit-suppression` / confidence medium
-- 状態: 08-24 の R4 で `auth_method` バケット化 + 抑制件数の可観測化を実装したが、
-  **同一 method 内の被覆は残る**(実装時に「残る限界」として明記したとおり)。
-  再検証はバケット化と 10 の冪マーカーの効果を認めた上で severity を MEDIUM → BUG
-  に下げ、残余を true-positive として維持している。
-- 残余の具体: 100 件/時の枠は method ごとにデプロイ全体で共有。R7 で入れた
-  レート制限(callback 30/分・device exchange 10/分)は**バーストは抑えるが、
-  単一 IP から 1 時間で 100 件に達すること自体は防げない**(OAuth 側は約 4 分)。
-  枠が飽和すると同 method の標的型攻撃の個別行が落ちる。破壊されるのは行の存在
-  ではなく**試行ごとの `reason`**(マーカーで量は残る。`auth.login_failed` は
-  actor user_id を持たないため本人軸の読み取りには元から現れず、失われるのは
-  運営者ビューの情報)。
-- 要判断: 攻撃者が被害者と共有できない次元を与える。§1-2 の識別子規則に収まる案は
-  (a) 解決済みアカウントに帰属できる失敗は `auth_method` + 内部 `user_id` で
-  バケットし、解決前の失敗だけを共有枠に落とす、(b) 共有枠(小)と per-account 枠を
-  別に持つ。最低でもマーカーに reason 別ヒストグラムを載せる。**発信元単位**の
-  次元は AUDIT_SPEC §3.1 が明示的に否定しているので、この選択肢は取らない。
-- **対応済み**(2026-08-27): 現行の失敗は認証前で target user_id を持たず、個別行が
-  運ぶ分類は `auth_method` と `reason` だけなので、その直積を独立バケットにした。
-  marker payload にも reason を載せ、ある理由の洪水が同じ method の別理由を失明
-  させない。`state-mismatch` の枠を飽和させても `code-exchange-failed` が個別行として
-  残り、抑制 marker は reason と count を運ぶ workerd テストを追加。IP / provider ID は
-  counter key・監査 actor のどちらにも追加していない。
-- **再検証**(2026-08-27): `fixed`。`auth_method + reason` のJSON keyで独立計数し、
-  markerもreasonを運ぶため、別理由の洪水で試行分類が失われないことを確認した。
+- Status: R4 in 08-24 implemented `auth_method` bucketing + observability of the
+  suppressed count, but **coverage within the same method remains** (exactly the
+  "remaining limitation" noted at implementation time). The revalidation
+  acknowledged the effect of bucketing and the power-of-ten markers, lowered the
+  severity MEDIUM → BUG, and kept the remainder as a true-positive.
+- The remainder, concretely: the 100/hour frame is shared deployment-wide per
+  method. The rate limits added under R7 (callback 30/min, device exchange 10/min)
+  **damp bursts but cannot prevent a single IP from reaching 100 within an hour**
+  (about 4 minutes on the OAuth side). Once the frame saturates, the individual rows
+  of a targeted attack on that method get dropped. What is destroyed is not the
+  row's existence but **the per-attempt `reason`** (the marker retains the volume.
+  `auth.login_failed` has no actor user_id, so it never appeared on the
+  subject-axis reads anyway; what is lost is operator-view information).
+- Needs decision: give it a dimension the attacker cannot share with the victim. The
+  options that fit §1-2's identifier rules are (a) bucket failures attributable to a
+  resolved account by `auth_method` + internal `user_id`, dropping only
+  pre-resolution failures into the shared frame, and (b) keep a (small) shared frame
+  and a per-account frame separately. At minimum, put a per-reason histogram on the
+  marker. **Per-origin** dimensions are explicitly denied by AUDIT_SPEC §3.1, so that
+  option is not taken.
+- **Addressed** (2026-08-27): current failures are pre-authentication and carry no
+  target user_id — the only classifications an individual row carries are
+  `auth_method` and `reason` — so their cross product was made the independent
+  bucket. The marker payload now also carries reason, so a flood of one reason does
+  not blind a different reason of the same method. A workerd test was added showing
+  that saturating the `state-mismatch` frame still leaves `code-exchange-failed` as
+  individual rows, and that suppression markers carry reason and count. No IP or
+  provider ID was added to either the counter key or the audit actor.
+- **Revalidation** (2026-08-27): `fixed`. Confirmed independent counting by the
+  `auth_method + reason` JSON key, and that the marker carries reason too, so a
+  flood of one reason does not lose the attempt classification.
 
-### S6. `maruhi run` が親環境の maruhi API token を子へ継承する — BUG(再判定)
+### S6. `maruhi run` passes the parent environment's maruhi API token to the child — BUG (re-judged)
 
-- 場所: `apps/cli/src/live.ts`(`makeBunProcessRunner`) / `apps/cli/src/run.ts`
+- Location: `apps/cli/src/live.ts` (`makeBunProcessRunner`) / `apps/cli/src/run.ts`
 - slug: `other-credential-inheritance` / confidence high
-- 状態: 2026-08-25 は false-positive としたが、08-27 の再検証で true-positive
-  (MEDIUM → BUG)へ変更
-- 問題: child env は `{ ...process.env, ...extraEnv }` で、keychain-less / CI の
-  `MARUHI_TOKEN` と `MARUHI_TOKEN_ORIGIN` もそのまま渡る。S3 の `MARUHI_` denylist は
-  **保存された変数がその名前を名乗ること**だけを防ぎ、親環境の継承には効かない。
-  `maruhi run -- npm test` 配下の悪意ある依存は注入された値だけでなく、後からも使える
-  PAT を読み出し、run 終了後も token scope 内の read / write を行える。
-- 推奨: child 用の親環境コピーから maruhi の資格情報変数を除く。少なくとも
-  `MARUHI_TOKEN` / `MARUHI_TOKEN_ORIGIN`、将来の auth 用 `MARUHI_*` も同じ境界で除外する。
-- 要判断: 入れ子の `maruhi` を明示的にサポートするか。strip すると
-  `maruhi run -- make deploy` 内で再び maruhi を呼ぶ既存ワークフローは認証を失うため、
-  互換性と「子へ渡すのは消費対象の値だけ」という security boundary を先に裁定する。
-- **対応済み**(2026-08-27): ADR-0016 に「子へ `MARUHI_*` を継承しない」を追加。
-  `buildChildEnvironment` が親環境と extraEnv の両方から case-insensitive に
-  `MARUHI_` prefix を除き、一般環境・注入値は維持する。keychain-less / CI の入れ子
-  maruhi は親 PAT を暗黙利用せず、必要な maruhi 操作は run の外で行う線引き。
-- **再検証**(2026-08-27): `fixed`。本番 `Bun.spawn` が filtered env を使い、親・
-  extraEnvの両方から将来の `MARUHI_*` を含めて除外することを確認した。
+- Status: judged false-positive on 2026-08-25, changed to true-positive
+  (MEDIUM → BUG) by the 08-27 revalidation
+- Problem: the child env is `{ ...process.env, ...extraEnv }`, so keychain-less / CI
+  `MARUHI_TOKEN` and `MARUHI_TOKEN_ORIGIN` pass through as-is. S3's `MARUHI_`
+  denylist only prevents **a stored variable taking that name**; it does nothing
+  about inheritance from the parent environment. A malicious dependency under
+  `maruhi run -- npm test` reads not only the injected values but a PAT that stays
+  usable afterwards, and can perform reads / writes within the token's scope after
+  the run ends.
+- Recommendation: remove maruhi credential variables from the parent-environment
+  copy given to the child. At least `MARUHI_TOKEN` / `MARUHI_TOKEN_ORIGIN`; exclude
+  future auth-related `MARUHI_*` at the same boundary.
+- Needs decision: whether nested `maruhi` is explicitly supported. Stripping makes
+  existing workflows that call maruhi again inside `maruhi run -- make deploy` lose
+  authentication, so rule first on compatibility versus the security boundary of
+  "only consumed values are passed to the child".
+- **Addressed** (2026-08-27): added "children do not inherit `MARUHI_*`" to
+  ADR-0016. `buildChildEnvironment` removes the `MARUHI_` prefix case-insensitively
+  from both the parent environment and extraEnv, while general environment and
+  injected values are preserved. A keychain-less / CI nested maruhi no longer
+  implicitly uses the parent's PAT; maruhi operations that are needed happen outside
+  the run — that is the line drawn.
+- **Revalidation** (2026-08-27): `fixed`. Confirmed production `Bun.spawn` uses the
+  filtered env, excluding `MARUHI_*` — including future ones — from both the parent
+  and extraEnv.
 
-### S7. API token のユーザー上限が check-then-act — BUG(新規)
+### S7. The per-user API-token cap is check-then-act — BUG (new)
 
-- 場所: `apps/server/src/auth.package/token.ts`(`issueToken`) /
-  `apps/server/src/db.package/repos.ts`(`countByUserExcludingName` /
+- Location: `apps/server/src/auth.package/token.ts` (`issueToken`) /
+  `apps/server/src/db.package/repos.ts` (`countByUserExcludingName` /
   `replaceForUserAndName`)
 - slug: `other-race-condition` / confidence high
-- 問題: ユーザーの他名 token 数を SELECT し、上限 100 を比較した後、別の D1 round-trip
-  で insert する。異なる token 名の並行 device exchange は全て同じ under-limit を
-  観測して挿入でき、並行度ぶん上限を超える。`UNIQUE(user_id, name)` は名前が異なる
-  ため効かない。S4 で invite 上限を直したのと同じ競合。
-- 推奨: `replaceForUserAndName` の insert を
-  `INSERT … SELECT … WHERE (count(user_id, name <> requested) < 100)` にし、
-  `RETURNING` 0 行を `TokenLimitReachedError` へ写す。事前 count は拒否理由導出用に
-  限定し、admission は単一文に持たせる。異名の並行発行テストを追加する。
-- **対応済み**(2026-08-27): repo 内で「既存同名の原子的ローテーション → 新規名の
-  条件付き `INSERT … SELECT … WHERE count < 100` → 同名競合時の再ローテーション」を
-  実行し、サービス層の事前 count を削除。同名は上限到達時も許可し、実際に消える旧 id
-  を `replacedTokenId` に載せる R6 の監査を維持した。残り1枠で異名8並行を送り、
-  成功1・TokenLimit 7・保存100行・作成監査2行(初回 + 勝者)を固定。
-- **再検証**(2026-08-27): `fixed`。quotaは新規INSERTの相関subqueryで評価され、
-  service層に独立countが残っていないことを確認した。
+- Problem: it SELECTs the user's other-name token count, compares against the cap of
+  100, then inserts on a different D1 round-trip. Concurrent device exchanges under
+  different token names all observe the same under-limit and insert, exceeding the
+  cap by the degree of concurrency. `UNIQUE(user_id, name)` does not help because
+  the names differ. The same race as the invite cap fixed in S4.
+- Recommendation: make `replaceForUserAndName`'s insert
+  `INSERT … SELECT … WHERE (count(user_id, name <> requested) < 100)`, mapping a
+  `RETURNING` of 0 rows to `TokenLimitReachedError`. Restrict the prior count to
+  deriving the refusal reason; give admission to the single statement. Add a
+  concurrent different-name issuance test.
+- **Addressed** (2026-08-27): inside the repo it now runs "atomic rotation of an
+  existing same name → conditional `INSERT … SELECT … WHERE count < 100` for a new
+  name → re-rotation on a same-name race", and the service layer's prior count was
+  removed. Same-name requests are still allowed at the cap, keeping R6's audit that
+  puts the actually displaced old id on `replacedTokenId`. With 1 slot left, 8
+  concurrent different-name requests were sent and pinned: 1 success, 7
+  TokenLimit, 100 stored rows, 2 creation audit rows (initial + winner).
+- **Revalidation** (2026-08-27): `fixed`. Confirmed the quota is evaluated in the
+  new INSERT's correlated subquery, and that no independent count remains in the
+  service layer.
 
-### S8. `TokenRepo.revokeById` の DELETE に user 所有条件がない — BUG(新規)
+### S8. `TokenRepo.revokeById`'s DELETE has no user-ownership predicate — BUG (new)
 
-- 場所: `apps/server/src/db.package/repos.ts`(`revokeById`)
+- Location: `apps/server/src/db.package/repos.ts` (`revokeById`)
 - slug: `other-missing-ownership-predicate` / confidence medium
-- 問題: `revokeById(id, userId, nowMs)` は userId を監査 actor にだけ使い、
-  DELETE は token id だけで行う。現行の唯一の呼び出し元は提示 token を hash 解決した
-  `record.id` / `record.userId` を渡すため**現在の exploit 経路はない**。ただし将来
-  token id 指定の管理 API を足すと、別 user の token を削除して監査 actor は呼び出し
-  user と誤記録する latent な認可欠落になる。
-- 推奨: DELETE の WHERE を `id = ? AND user_id = ?` にする。既存の
-  `RETURNING` + 0 行 early return により、非所有 id は監査行なしの no-op へ
-  fail-closed でき、現行経路の挙動・コストは変わらない。
-- **対応済み**(2026-08-27): DELETE を `id AND user_id` へ変更。別 userId で repo を
-  直接呼ぶ回帰テストで、token が残り `auth.token_revoked` も増えないことを確認した。
-- **再検証**(2026-08-27): `fixed`。非所有idはRETURNING 0行→監査なしのno-opになる。
+- Problem: `revokeById(id, userId, nowMs)` uses userId only for the audit actor; the
+  DELETE runs on the token id alone. The only current caller passes a `record.id` /
+  `record.userId` resolved by hashing the presented token, so **there is no exploit
+  path today**. But if a future admin API takes a token id, it becomes a latent
+  authorization gap: delete another user's token while the audit actor is recorded
+  as the calling user.
+- Recommendation: make the DELETE's WHERE `id = ? AND user_id = ?`. With the
+  existing `RETURNING` + 0-row early return, a non-owned id fails closed into a
+  no-op with no audit row, and the current path's behavior and cost do not change.
+- **Addressed** (2026-08-27): changed the DELETE to `id AND user_id`. A regression
+  test calling the repo directly with a different userId confirmed the token remains
+  and `auth.token_revoked` does not grow.
+- **Revalidation** (2026-08-27): `fixed`. A non-owned id is RETURNING 0 rows → a
+  no-op with no audit row.
 
-### S9. invite linkのraw tokenをstdoutへ出し、リダイレクトで永続化できる — BUG(新規)
+### S9. The invite link's raw token goes to stdout, persistable by redirect — BUG (new)
 
-- 場所: `apps/cli/src/invite.ts`(`inviteCreateOp`)
+- Location: `apps/cli/src/invite.ts` (`inviteCreateOp`)
 - slug: `secrets-exposure` / confidence low
-- 問題: 単回使用tokenを含むリンクをstdoutへ出すため、`maruhi invite create > file` や
-  CI captureでcredentialがディスク・ログへ残る。従来は既知agentだけを拒否し、
-  非TTY・未知harnessは通った。tokenは7日expiry + 受諾後FP確認があるため直接の
-  membership bypassではないが、diskless不変条件には反する。
-- **対応済み**(2026-08-27): ADR-0016 決定7を追加改訂し、invite link表示も
-  stdin / stdout / stderrの3チャネルTTY境界へ移した。agent判定は二次層。
-  3チャネル各単独の非TTYで発行POST前に拒否し、raw tokenが出力されないテストを追加。
-- **再検証**(2026-08-27): `fixed`。stdout redirectを含む非TTYがHTTP発行前に
-  fail-closedとなり、raw tokenを出力しないことを確認した。
+- Problem: the link containing a single-use token is written to stdout, so
+  `maruhi invite create > file` or CI capture leaves the credential on disk / in
+  logs. Previously only known agents were refused; non-TTY and unknown harnesses
+  passed. The token has a 7-day expiry plus a post-acceptance FP check, so this is
+  not a direct membership bypass, but it does violate the diskless invariant.
+- **Addressed** (2026-08-27): ADR-0016 decision 7 was further revised and invite
+  link display also moved to the 3-channel stdin / stdout / stderr TTY boundary.
+  The agent check is the second layer. Per-channel non-TTY tests refuse before the
+  issuance POST and pin that no raw token is output.
+- **Revalidation** (2026-08-27): `fixed`. Confirmed non-TTY including a stdout
+  redirect fails closed before the HTTP call and outputs no raw token.
 
-### S10. env denylistにshell autoload / TLS trustの同型名が不足 — BUG(新規)
+### S10. The env denylist lacks same-shape names for shell autoload / TLS trust — BUG (new)
 
-- 場所: `apps/cli/src/run.ts`(`DENIED_ENV_NAMES`)
+- Location: `apps/cli/src/run.ts` (`DENIED_ENV_NAMES`)
 - slug: `other-incomplete-denylist` / confidence medium
-- 問題: 既に拒否する `BASH_ENV` / `ZDOTDIR` / `NODE_EXTRA_CA_CERTS` と同じクラスの
-  `FPATH` / `KSH_ENV` / `SSL_CERT_FILE` / `SSL_CERT_DIR` / `CURL_CA_BUNDLE` /
-  `REQUESTS_CA_BUNDLE` / `AWS_CA_BUNDLE` / `PYTHONUSERBASE` / `PYTHONWARNINGS` が
-  未拒否。共同memberがautoload pathやTLS trust rootを差し替えられる。
-- **対応済み**(2026-08-27): 上記9名を既知実行制御名として追加し、R3と同じ
-  大文字小文字非区別の回帰テストへ含めた。変数名の暗号的束縛が根本策で、
-  denylistがbest-effortである点は変わらない。`NPM_CONFIG_` は全体拒否せず、
-  `USERCONFIG` / `GLOBALCONFIG` / `SCRIPT_SHELL` / `NODE_OPTIONS` / `NODE_GYP` /
-  `INIT_MODULE` / `EDITOR` / `VIEWER` / TLS trust等の実行制御キーだけを個別拒否する。
-  registry credential用の `NPM_CONFIG__AUTH` / `_AUTHTOKEN` とprivate registry用の
-  `NPM_CONFIG_REGISTRY` は許可する。
-- **再検証**(2026-08-27): `fixed`。同じ再調査で追加の同型名がS13として出たため、
-  そちらも同じdenylistに追補した。
+- Problem: same class as the already-denied `BASH_ENV` / `ZDOTDIR` /
+  `NODE_EXTRA_CA_CERTS`, but `FPATH` / `KSH_ENV` / `SSL_CERT_FILE` / `SSL_CERT_DIR` /
+  `CURL_CA_BUNDLE` / `REQUESTS_CA_BUNDLE` / `AWS_CA_BUNDLE` / `PYTHONUSERBASE` /
+  `PYTHONWARNINGS` are not denied. A collaborating member can swap the autoload path
+  or the TLS trust root.
+- **Addressed** (2026-08-27): the 9 names above were added as known
+  execution-control names and included in the same case-insensitive regression test
+  as R3. Cryptographic binding of variable names remains the real fix, and the
+  denylist stays best-effort. `NPM_CONFIG_` is not denied wholesale; only the
+  execution-control keys `USERCONFIG` / `GLOBALCONFIG` / `SCRIPT_SHELL` /
+  `NODE_OPTIONS` / `NODE_GYP` / `INIT_MODULE` / `EDITOR` / `VIEWER` and TLS-trust
+  ones are denied individually. `NPM_CONFIG__AUTH` / `_AUTHTOKEN` for registry
+  credentials and `NPM_CONFIG_REGISTRY` for private registries stay allowed.
+- **Revalidation** (2026-08-27): `fixed`. Since the same re-investigation surfaced
+  additional same-shape names as S13, those were added to the same denylist as a
+  supplement.
 
-### S11. セルフホストが任意GitHub accountを自動登録し、project作成に全体quotaがない — MEDIUM(新規)
+### S11. Self-hosting auto-registers any GitHub account, and project creation has no global quota — MEDIUM (new)
 
-- 場所: `apps/server/src/handlers-auth.ts`(`githubCallback` / `deviceExchange`) /
-  project作成経路
+- Location: `apps/server/src/handlers-auth.ts` (`githubCallback` / `deviceExchange`) /
+  the project-creation path
 - slug: `other-open-registration` / confidence medium
-- 問題: GitHub検証後に無条件で `getOrCreateUser` を呼び、未知accountにもuser +
-  personal orgを作る。device flowは`* × admin` PATも発行する。operator allowlist /
-  signup invite / org制限がなく、登録userのproject数にも上限がないため、公開された
-  self-hostへthrowaway GitHub accountで登録し、projectごとにDOとD1行を増やせる。
-- 推奨: operator-controlled admission(`ALLOWED_GITHUB_USER_IDS`等、またはfirst-user後は
-  signup invite必須)をauthのuser作成前にfail-closedで適用する。別途、user/org単位の
-  project quotaとproject initのrate limitを設ける。
-- 状態: **未実装**。セルフホストの初回owner作成・inviteeの認証前受入・既存deployの
-  移行を同時に決めるproduct/auth方針であり、S2/S5〜S10の局所修正とは分ける。
+- Problem: after GitHub verification it calls `getOrCreateUser` unconditionally,
+  creating a user + personal org even for unknown accounts. The device flow also
+  issues a `* × admin` PAT. With no operator allowlist / signup invite / org
+  restriction and no cap on a registered user's project count, anyone can register
+  on a public self-host with a throwaway GitHub account and grow DOs and D1 rows
+  per project.
+- Recommendation: apply operator-controlled admission (`ALLOWED_GITHUB_USER_IDS` or
+  similar, or a mandatory signup invite after the first user) fail-closed before
+  user creation in auth. Separately, add a per-user/org project quota and a rate
+  limit on project init.
+- Status: **unimplemented**. It is a product/auth policy deciding self-host first
+  owner creation, pre-auth acceptance of invitees, and migration of existing
+  deploys at once — kept separate from the localized fixes S2/S5–S10.
 
-### S12. invite listが未知idの発行pin照合を無言でスキップする — BUG(新規)
+### S12. invite list silently skips the issuance-pin check for unknown ids — BUG (new)
 
-- 場所: `apps/cli/src/invite.ts`(`inviteListOp`)
+- Location: `apps/cli/src/invite.ts` (`inviteListOp`)
 - slug: `other-logic-bug` / confidence high
-- 問題: serverがlocal issuance pinにないidを返すと `issuedPinOf` はundefinedとなり、
-  role / token_hash照合を無言で飛ばす。別端末発行は正当なのでfailureにはできないが、
-  「照合して成功」と「照合材料なし」が同じ表示になる。
-- **対応・再検証済み**(2026-08-27): pinなしの各行に
-  `The token_hash / role cross-check was not performed` と明示する。integrity failureには
-  数えずexit 0を維持。最終revalidateで `fixed`。
+- Problem: when the server returns an id that is not in the local issuance pin,
+  `issuedPinOf` is undefined and the role / token_hash check is silently skipped.
+  Issuance from another device is legitimate, so it cannot be a failure — but
+  "checked and passed" and "no check material" look identical in the output.
+- **Addressed & revalidated** (2026-08-27): each pinless row now states
+  `The token_hash / role cross-check was not performed` explicitly. Not counted as
+  an integrity failure; exit 0 is kept. `fixed` in the final revalidate.
 
-### S13. denylistにfilesystem不要のruntime hookが不足 — MEDIUM(新規)
+### S13. The denylist lacks runtime hooks that need no filesystem — MEDIUM (new)
 
-- 場所: `apps/cli/src/run.ts`(`DENIED_ENV_NAMES` / `DENIED_ENV_PREFIXES`)
+- Location: `apps/cli/src/run.ts` (`DENIED_ENV_NAMES` / `DENIED_ENV_PREFIXES`)
 - slug: `other-env-injection-denylist-gap` / confidence medium
-- 問題: `PYTHONBREAKPOINT` / `PYTHONEXECUTABLE` / `JDK_JAVA_OPTIONS` /
-  `DOTNET_STARTUP_HOOKS` / `GEM_HOME` / `GEM_PATH` / `HOSTALIASES` と
-  `CORECLR_*` / `COR_*` が未拒否。既に拒否する各runtime hookと同じクラス。
-- **対応・再検証済み**(2026-08-27): 上記個別名と2prefixを追加し、
-  case-insensitiveな回帰テストへ含めた。最終revalidateで `fixed`。
+- Problem: `PYTHONBREAKPOINT` / `PYTHONEXECUTABLE` / `JDK_JAVA_OPTIONS` /
+  `DOTNET_STARTUP_HOOKS` / `GEM_HOME` / `GEM_PATH` / `HOSTALIASES` and `CORECLR_*` /
+  `COR_*` are not denied. Same class as the already-denied runtime hooks.
+- **Addressed & revalidated** (2026-08-27): the individual names and 2 prefixes
+  above were added and included in the case-insensitive regression test. `fixed` in
+  the final revalidate.
 
-## 対象外(false-positive)
+## Out of scope (false-positive)
 
-- `requestOrigin()` と Host header(3 回目の false-positive)
-- `recoveryStatus` の `ensureKeyMaterialAccess` 欠落
+- `requestOrigin()` and the Host header (third time as false-positive)
+- `recoveryStatus`'s missing `ensureKeyMaterialAccess`
 
-## 推奨する着手順
+## Recommended order of attack
 
-1. ~~**S3**~~ — 対応済み(上記)。08-24 の R3 と同じクラスだったため同じ PR に含めた。
-2. ~~**S1**~~ — 対応済み(上記)。R1 の名前空間検査を chain_seq の presence まで延長した。
-3. ~~**S4**~~ — 対応済み(上記)。条件付き INSERT + changes() 監査に畳んだ。
-4. ~~**S8**~~ — 対応済み。repo の所有条件 + 非所有 no-op テスト。
-5. ~~**S7**~~ — 対応済み。条件付き発行 + 異名 token の並行テスト。
-6. ~~**S6**~~ — 対応済み。子環境から `MARUHI_*` を除外。
-7. ~~**S5 / S2**~~ — 対応済み。AUDIT_SPEC §3.1 / ADR-0016 決定 7 を改訂。
-8. ~~**S9 / S10**~~ — 対応済み。invite linkのTTY境界 / denylist同型名を追加。
-9. ~~**S12 / S13**~~ — 対応済み。pin照合なしの明示 / runtime hook denylist追補。
-10. **S11**。operator admissionとproject quotaのproduct/auth方針を先に裁定する。
+1. ~~**S3**~~ — addressed (above). Same class as 08-24's R3, so it went in the same PR.
+2. ~~**S1**~~ — addressed (above). Extended R1's namespace check to the presence of chain_seq.
+3. ~~**S4**~~ — addressed (above). Folded into conditional INSERT + changes() audit.
+4. ~~**S8**~~ — addressed. Repo ownership predicate + non-owned no-op test.
+5. ~~**S7**~~ — addressed. Conditional issuance + concurrent different-name token test.
+6. ~~**S6**~~ — addressed. `MARUHI_*` excluded from the child environment.
+7. ~~**S5 / S2**~~ — addressed. AUDIT_SPEC §3.1 / ADR-0016 decision 7 revised.
+8. ~~**S9 / S10**~~ — addressed. Invite-link TTY boundary / denylist same-shape names added.
+9. ~~**S12 / S13**~~ — addressed. Explicit no-pin-check marker / runtime-hook denylist supplement.
+10. **S11**. Rule on the product/auth policy for operator admission and project
+    quota first.
 
-## 作業規律(継続)
+## Working rules (continued)
 
-1. 1 論点または密接な同型だけを 1 PR にする。着手前に現行コード・仕様・ADR を読み、
-   scanner の提案をそのまま実装しない。
-2. Drizzle を触る S7 / S8 はリポジトリサービス境界を守る。スキーマ変更が必要なら
-   drizzle migration の手順に従う。
-3. 平文 secret・鍵素材・外部 provider ID をログや append-only 監査 actor に追加しない。
-4. ユーザー向け文言は英語。完了時は固定 Bun(`.bun-version`)で `bun run check` を通す。
-5. deepsec の再検証はローカルの Claude Max 認証が要る。
+1. Put one point, or only closely related same-shape ones, in one PR. Before
+   starting, read the current code, the spec, and the ADR; do not implement the
+   scanner's suggestion as-is.
+2. S7 / S8 touch Drizzle — keep the repository-service boundary. If a schema change
+   is needed, follow the drizzle migration procedure.
+3. Do not add plaintext secrets, key material, or external provider IDs to logs or
+   to append-only audit actors.
+4. User-facing text is English. When done, pass `bun run check` on the pinned Bun
+   (`.bun-version`).
+5. deepsec revalidation requires local Claude Max auth.
