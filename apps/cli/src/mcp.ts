@@ -13,10 +13,12 @@
 //     no DEK, no `var.read`) — exactly one `maruhi schema` per call
 //     (ruling M5: config, session, chain sync, §6.3 verification and floor
 //     are all fresh; nothing is cached across calls)
-//   - the process runs with a **narrowed Keychain** that answers only API
-//     token entries: master-key entries are refused with a typed error, and
-//     nothing is ever written. A future code path that tried to load the
-//     master key inside the MCP server fails closed instead of decrypting
+//   - the server and every read run in **one narrowed service context**
+//     ({@link narrowedContext}): a Keychain that answers only API token
+//     entries (master-key reads refused with a typed error, nothing ever
+//     written), and CliIo / Console routed to stderr. A code path that tried
+//     to load the master key through the Keychain service fails instead of
+//     decrypting
 //   - output is the neutralized {@link schemaRows} projection shared with
 //     the CLI table, framed as untrusted data in three places (the server
 //     instructions, the tool description, and every result's `notice` —
@@ -27,10 +29,11 @@
 // prompts and stdin reads fail, Effect's own logging is routed to stderr,
 // and stdin EOF (the host went away) is a clean exit 0.
 
-import { EnvironmentIdSchema } from "@maruhi/core";
+import { EnvironmentIdSchema, isEnvironmentId, isProjectId } from "@maruhi/core";
 import {
   Cause,
   Console,
+  Context,
   Effect,
   Exit,
   Fiber,
@@ -44,12 +47,11 @@ import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/unstabl
 
 import { type CommonFlags, type CliServices, openMetadataEnvironment } from "./context.ts";
 import { displayText, logWarnings } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { cliError, CliError, usageError } from "./errors.ts";
+import { internalErrorKind } from "./failure.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { isTokenEntryName, Keychain, type KeychainShape } from "./keychain.ts";
-import { logNote, NoticeLedger } from "./notice.ts";
-import { toDeclaredVariables } from "./pull.ts";
-import { missingRequiredNames } from "./run.ts";
+import { formatNotice, logNote, NoticeLedger } from "./notice.ts";
 import { SCHEMA_UNTRUSTED_HEADER, schemaRows } from "./schema.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 import { CLI_VERSION } from "./version.ts";
@@ -68,7 +70,7 @@ export const MCP_UNTRUSTED_NOTICE = SCHEMA_UNTRUSTED_HEADER.replace(/^# /u, "");
 const MCP_INSTRUCTIONS = [
   "maruhi is an end-to-end encrypted secrets manager. This server exposes the value-free schema of the configured project's environments: variable names, declared types, whether each is required, whether a value is set, and descriptions.",
   "It never returns secret values, and there is no way to obtain one through it.",
-  "To run a program with the secrets, the user (or you, through a shell) runs `maruhi run -- <command>`: values are injected into that process's environment in memory and never pass through you.",
+  "To run a program with the secrets, `maruhi run -- <command>` injects them into that process's environment in memory. The values do not pass through this server, but anything that program prints does reach whoever reads its output, you included: never run commands that print the environment or its values (such as `env` or `printenv`).",
   MCP_UNTRUSTED_NOTICE,
 ].join(" ");
 
@@ -101,12 +103,9 @@ const SchemaResultSchema = Schema.Struct({
     description: "Every environment on the project's verified chain (pass one as `environment`)",
   }),
   variables: Schema.Array(SchemaRowSchema),
-  missingRequired: Schema.Array(Schema.String).annotate({
-    description:
-      "Variables `maruhi run` would refuse to start without in this environment (required but no value yet) — computed by the same rule `maruhi run` applies",
-  }),
   warnings: Schema.Array(Schema.String).annotate({
-    description: "Verification warnings worth relaying to the user",
+    description:
+      "Every warning this read emitted (verification, local state, session) — worth relaying to the user",
   }),
 });
 
@@ -194,6 +193,28 @@ function mcpCliIo(io: CliIoShape): CliIoShape {
   };
 }
 
+/**
+ * The service context the whole server runs in — every read included
+ * (rulings M7 / M8): the command's services with Keychain, CliIo and Console
+ * **replaced inside the context itself**. Building one context (rather than
+ * layering `provideService` over a captured context) leaves no provide order
+ * that could put the real services back — the independent review's critical
+ * finding: an inner `provideContext(captured)` shadowed the outer narrowing,
+ * so a read ran with the real Keychain and wrote a prologue line to stdout.
+ */
+export function narrowedContext(
+  context: Context.Context<CliServices>,
+): Context.Context<CliServices> {
+  const io = Context.get(context, CliIo);
+  const withKeychain = Context.add(
+    context,
+    Keychain,
+    narrowKeychain(Context.get(context, Keychain)),
+  );
+  const withIo = Context.add(withKeychain, CliIo, mcpCliIo(io));
+  return Context.add(withIo, Console.Console, stderrConsole(io));
+}
+
 /** Effect's own logging (the default logger writes to console.log = stdout) → stderr. */
 function stderrConsole(io: CliIoShape): Console.Console {
   const write = (...args: ReadonlyArray<unknown>) => {
@@ -229,46 +250,64 @@ function stderrConsole(io: CliIoShape): Console.Console {
 /**
  * One schema read = one `maruhi schema` (ruling M5): the keyless prologue
  * (fresh config, session, sync, §6.3 verification, floor) and the verified
- * metadata-only pull, projected through {@link schemaRows}. Warnings go to
- * stderr as usual and are also returned (the human rarely sees an MCP
- * server's stderr; the agent can relay them).
+ * metadata-only pull, projected through {@link schemaRows}.
+ *
+ * Every `Warning:` notice the call emits — the prologue's (a corrupt invite
+ * pin, unconverged rotation mandates, …) as well as the pull's — still goes
+ * to stderr and is also returned in `warnings` (the human rarely sees an MCP
+ * server's stderr; the agent can relay them). The notice ledger and the
+ * capture are created per execution, so a resource whose effect is built
+ * once still gets a fresh pair on every read.
  */
 function readSchema(
   flags: CommonFlags,
   environment: string | undefined,
 ): Effect.Effect<SchemaResult, CliError, CliServices> {
   return Effect.gen(function* () {
-    const context = yield* openMetadataEnvironment({
-      ...flags,
-      env: environment ?? flags.env,
-    });
-    const metadata = yield* pullVerifiedEnvironmentMetadata({
-      client: context.client,
-      verified: context.verified,
-      environmentId: context.environmentId,
-      resync: context.resync,
-      floor: context.floorHandle,
-    });
-    yield* logWarnings(metadata.warnings);
-    return {
-      notice: MCP_UNTRUSTED_NOTICE,
-      projectId: context.projectId,
-      environment: displayText(context.environmentId),
-      environments: [...metadata.verified.state.environments.keys()]
-        .toSorted()
-        .map((environmentId) => displayText(environmentId)),
-      variables: schemaRows(metadata.variables),
-      missingRequired: missingRequiredNames(
-        toDeclaredVariables(
-          metadata.variables.filter((statement) => statement.status === "declared"),
-        ),
-      ),
-      warnings: metadata.warnings,
+    const io = yield* CliIo;
+    const warnings: string[] = [];
+    const warningPrefix = formatNotice("warning", "", false);
+    const capturingIo: CliIoShape = {
+      ...io,
+      // Plain prefixes: the capture reads them, and a host log is no terminal
+      colorEnabled: () => false,
+      logError: (line) =>
+        Effect.suspend(() => {
+          if (line.startsWith(warningPrefix)) {
+            warnings.push(line.slice(warningPrefix.length));
+          }
+          return io.logError(line);
+        }),
     };
-  }).pipe(
-    // "An identical notice at most once" is per command run; here a run is one call
-    Effect.provideService(NoticeLedger, new Set<string>()),
-  );
+    const result = yield* Effect.gen(function* () {
+      const context = yield* openMetadataEnvironment({
+        ...flags,
+        env: environment ?? flags.env,
+      });
+      const metadata = yield* pullVerifiedEnvironmentMetadata({
+        client: context.client,
+        verified: context.verified,
+        environmentId: context.environmentId,
+        resync: context.resync,
+        floor: context.floorHandle,
+      });
+      yield* logWarnings(metadata.warnings);
+      return {
+        notice: MCP_UNTRUSTED_NOTICE,
+        projectId: context.projectId,
+        environment: displayText(context.environmentId),
+        environments: [...metadata.verified.state.environments.keys()]
+          .toSorted()
+          .map((environmentId) => displayText(environmentId)),
+        variables: schemaRows(metadata.variables),
+      };
+    }).pipe(
+      Effect.provideService(CliIo, capturingIo),
+      // "An identical notice at most once" is per command run; here a run is one call
+      Effect.provideService(NoticeLedger, new Set<string>()),
+    );
+    return { ...result, warnings };
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -306,7 +345,7 @@ function serverLayer(
   const defaultResource = McpServer.resource({
     uri: SCHEMA_RESOURCE_URI,
     name: "schema",
-    description: `Value-free schema of the default environment${flags.env === undefined ? "" : ` (${flags.env})`}. ${MCP_UNTRUSTED_NOTICE}`,
+    description: `Value-free schema of the default environment${flags.env === undefined ? "" : ` (${displayText(flags.env)})`}. ${MCP_UNTRUSTED_NOTICE}`,
     mimeType: "application/json",
     content: asJson(SCHEMA_RESOURCE_URI, undefined),
   });
@@ -333,40 +372,59 @@ function serverLayer(
   );
 }
 
+/** Startup checks of the launch-time flags (static for the server's life — config is read per call). */
+function checkFlags(flags: CommonFlags): Effect.Effect<void, CliError> {
+  if (flags.project !== undefined && !isProjectId(flags.project)) {
+    return Effect.fail(usageError("Invalid project ID (64 hex digits)"));
+  }
+  if (flags.env !== undefined && !isEnvironmentId(flags.env)) {
+    return Effect.fail(
+      usageError(
+        "Invalid environment ID (must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or -)",
+      ),
+    );
+  }
+  return Effect.void;
+}
+
+/** A failure's user-facing text: a CliError's message, anything else by type name only (failure.ts). */
+function describeFailure(failure: unknown): string {
+  return failure instanceof CliError
+    ? failure.message
+    : `internal error (${internalErrorKind(failure)})`;
+}
+
 /**
  * `maruhi mcp`: serves until stdin reaches EOF (the host closed the session),
  * then returns normally (exit 0).
  */
 export function mcpServeOp(flags: CommonFlags): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const keychain = yield* Keychain;
+    yield* checkFlags(flags);
     const stdio = yield* Stdio.Stdio;
     if (yield* stdio.stdinIsTerminal) {
       yield* logNote(
         "`maruhi mcp` speaks the Model Context Protocol on stdin/stdout — register it with your agent host instead of running it in a terminal (setup: https://maruhi.app/docs/ai-agents). Press Ctrl-D to exit",
       );
     }
-    const narrowedIo = mcpCliIo(io);
-    const context = yield* Effect.context<CliServices>();
+    const context = narrowedContext(yield* Effect.context<CliServices>());
     // Calls are serialized: one call at a time = one `maruhi schema` at a
-    // time, the shape the prologue (floor writes, attestation) was built for
+    // time, the shape the prologue (floor and pin writes) was built for
     const permit = yield* Semaphore.make(1);
     const read = (environment: string | undefined) =>
       permit
         .withPermits(1)(readSchema(flags, environment))
         .pipe(
+          // A defect's message is never shown (the CLI's rule — failure.ts):
+          // the agent and the host log get its type name only
+          Effect.catchDefect((defect) => Effect.fail(cliError(describeFailure(defect)))),
           Effect.provideContext(context),
-          Effect.provideService(CliIo, narrowedIo),
-          Effect.provideService(Keychain, narrowKeychain(keychain)),
         );
     // The stdio protocol interrupts the fiber that built it on stdin EOF, so
     // the server runs in a child fiber and its interruption reads as a clean
     // shutdown here
     const fiber = yield* Layer.launch(serverLayer(flags, read)).pipe(
-      Effect.provideService(Console.Console, stderrConsole(io)),
-      Effect.provideService(CliIo, narrowedIo),
-      Effect.provideService(Keychain, narrowKeychain(keychain)),
+      Effect.provideContext(context),
       Effect.forkChild,
     );
     const exit = yield* Fiber.await(fiber);
@@ -374,7 +432,7 @@ export function mcpServeOp(flags: CommonFlags): Effect.Effect<void, CliError, Cl
       const failure = Cause.findErrorOption(exit.cause);
       return yield* Effect.fail(
         cliError(
-          `The MCP server stopped: ${Option.isSome(failure) && failure.value instanceof Error ? failure.value.message : "internal error"}`,
+          `The MCP server stopped: ${Option.isSome(failure) ? describeFailure(failure.value) : "internal error"}`,
         ),
       );
     }

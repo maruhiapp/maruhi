@@ -218,7 +218,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
       stdout: () =>
         Sink.forEach((chunk: string | Uint8Array) =>
           Effect.sync(() => {
-            stdioOut.push(typeof chunk === "string" ? chunk : stdoutDecoder.decode(chunk));
+            stdioOut.push(
+              typeof chunk === "string" ? chunk : stdoutDecoder.decode(chunk, { stream: true }),
+            );
           }),
         ),
     }),

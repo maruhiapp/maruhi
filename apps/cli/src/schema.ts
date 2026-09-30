@@ -91,20 +91,30 @@ export interface SchemaRow {
   readonly description: string | null;
 }
 
-/** The verified live statements (active + declared) → neutralized rows, UTF-16 ascending by name. */
+/**
+ * The verified live statements (active + declared) → neutralized rows,
+ * UTF-16 ascending by name. A deleted statement is not part of the live
+ * schema and is left out (the metadata pull's verification already refuses
+ * one — this keeps the mapping exhaustive instead of relabelling it).
+ */
 export function schemaRows(variables: readonly VerifiedVariableStatement[]): SchemaRow[] {
   return variables
     .toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-    .map((statement) => {
+    .flatMap((statement): SchemaRow[] => {
+      if (statement.status === "deleted") {
+        return [];
+      }
       const schema = statement.schema;
-      return {
-        name: displayText(statement.name),
-        declaredType: schema === null || schema.varType === "" ? null : schema.varType,
-        required: schema === null ? null : schema.required,
-        status: statement.status === "active" ? "set" : "declared",
-        description:
-          schema === null || schema.description === "" ? null : escapeText(schema.description),
-      };
+      return [
+        {
+          name: displayText(statement.name),
+          declaredType: schema === null || schema.varType === "" ? null : schema.varType,
+          required: schema === null ? null : schema.required,
+          status: statement.status === "active" ? "set" : "declared",
+          description:
+            schema === null || schema.description === "" ? null : escapeText(schema.description),
+        },
+      ];
     });
 }
 

@@ -13,7 +13,7 @@ An agent that writes or runs your code needs to know which variables the project
 | `maruhi schema`           | Agents with a shell, steered by `AGENTS.md`          |
 | `maruhi run -- <command>` | Running the program with the secrets, in memory only |
 
-No value is shown, returned, or written to disk by any of them.
+None of them hands a value to the agent or writes one to disk. What a program started with `maruhi run` prints is another matter — see [Running with the secrets](#running-with-the-secrets).
 
 ## Set up the MCP server
 
@@ -25,7 +25,7 @@ No value is shown, returned, or written to disk by any of them.
 claude mcp add maruhi -- maruhi mcp --project <project-id> --env dev
 ```
 
-Add `--scope project` to write the entry to the repository's `.mcp.json` so the whole team gets it.
+To share the entry with the team, add `--scope project` before the `--` (`claude mcp add --scope project maruhi -- maruhi mcp …`); it writes the repository's `.mcp.json`.
 
 **Cursor, or any host that reads an `mcpServers` file** (`.cursor/mcp.json`, `.mcp.json`):
 
@@ -40,7 +40,13 @@ Add `--scope project` to write the entry to the repository's `.mcp.json` so the 
 }
 ```
 
-The flags are the ones `maruhi schema` takes. `--server`, `--project`, and `--env` fall back to your `server`, `defaultProject`, and `defaultEnvironment` settings (`maruhi config set …`). The project ID is not a secret, so committing this file is fine. **Do not put `MARUHI_TOKEN` in it**: the server reads the token from your OS keychain (or a [`maruhi agent`](/docs/linux-keychain#keep-secrets-in-memory-for-one-shell-maruhi-agent) session) like every other command.
+The flags are the ones `maruhi schema` takes. `--server`, `--project`, and `--env` fall back to your `server`, `defaultProject`, and `defaultEnvironment` settings (`maruhi config set …`). The project ID is not a secret, so committing this file is fine — but review changes to it like any other code your machine runs: whoever edits it chooses which of your projects the agent reads. (Pointing `--server` elsewhere cannot capture your token: tokens are stored and sent per server.)
+
+The server authenticates like every other command. **Never put a token in the committed file.**
+
+- On a workstation, `maruhi login` stores the token in the OS keychain and the server reads it from there.
+- On a headless host, set `MARUHI_TOKEN` and `MARUHI_TOKEN_ORIGIN` in the host's own environment (they take precedence over the keychain; see [Keychain on Linux and in containers](/docs/linux-keychain)).
+- A [`maruhi agent`](/docs/linux-keychain#keep-secrets-in-memory-for-one-shell-maruhi-agent) session works only if the agent host itself was started from that shell; a GUI host launched from the desktop does not inherit it.
 
 ## What the agent sees
 
@@ -68,37 +74,42 @@ The server has one tool, `get_schema`, and the same data as resources (`maruhi:/
       "description": null
     }
   ],
-  "missingRequired": ["STRIPE_KEY"],
   "warnings": []
 }
 ```
 
-- **`status`** is `set` when the environment holds a value and `declared` when it does not yet. `maruhi run` refuses to start while a required variable is `declared`, so this is the agent's answer to "why won't it start".
-- **`missingRequired`** lists the variables `maruhi run` would refuse to start without, computed by the same rule `maruhi run` applies.
+- **`status`** is `set` when the environment holds a value and `declared` when it does not yet. `maruhi run` refuses to start while a required variable is `declared`, so a required `declared` row explains a refusal (it is not the only reason one can happen: your environment scope, for example, is checked too).
 - **`declaredType`** is what a member declared, not something checked against the value.
 - **`environments`** lists every environment on the project; call `get_schema` with `{ "environment": "prod" }` to read another one.
-- **`warnings`** carries verification warnings worth telling you about.
+- **`warnings`** carries every warning the read produced — verification, local state such as a damaged invite pin, a token about to expire — so the agent can pass them on; the same lines go to the server's stderr, which most hosts keep in a log you rarely see.
 
 Every call does what `maruhi schema` does: it syncs the project's chain, verifies every signature, and reads the metadata-only view, which carries no values and no keys and records no read in the audit log. Nothing is cached between calls. If something is wrong — you are signed out, the environment does not exist, verification fails — the tool returns the CLI's message (for example, to run `maruhi login`) and the server keeps running.
 
 ## What the agent never sees
 
-- **Values.** There is no tool, resource, or parameter that returns one. The server does not load your device key at all: it runs with keychain access limited to the API token, so even a bug could not decrypt.
+- **Values.** There is no tool, resource, or parameter that returns one, and the server never loads your device key: its keychain access is restricted to the API token, so a code path that tried to read the key would fail instead of decrypting.
 - **Who changed what.** History, audit, and member lists stay in the CLI and the dashboard.
 - **Write access.** The server is read-only; declaring or changing the schema stays with `maruhi schema set`.
 
-Descriptions are written by project members and reach the agent as data: control and invisible characters are escaped, non-ASCII text arrives as `\u{…}` escapes, and every result, the tool description, and the server's instructions say to treat them as data, not instructions. A signed description can still be written by a malicious member, so this narrows the injection surface; it does not close it.
+Descriptions and variable names are written by project members and reach the agent as data: control and invisible characters are escaped, non-ASCII text in descriptions arrives as `\u{…}` escapes, and every result, the tool description, and the server's instructions say to treat them as data, not instructions. A member can still write a description or name that reads like an instruction, so this narrows the injection surface; it does not close it.
 
 ## Agents with a shell
 
 An agent that can run commands does not need MCP. Put one line in `AGENTS.md` (or `CLAUDE.md`):
 
 ```md
-Run `maruhi schema` to see which environment variables this project needs, and `maruhi run -- <command>` to run anything that needs them. Never ask for secret values.
+Run `maruhi schema` to see which environment variables this project needs, and `maruhi run -- <command>` to run anything that needs them. Never ask for secret values, and never run commands that print the environment (such as `env` or `printenv`).
 ```
 
 `maruhi schema` prints the same rows as a table and, when its output is not a terminal, starts with the same "data, not instructions" line. Commands that would display a value, such as `maruhi pull --show`, refuse to run under an agent or without a terminal.
 
 ## Running with the secrets
 
-When the agent — or you — needs to run the program, `maruhi run -- <command>` decrypts the values in memory and injects them into that one process's environment. The values never pass through the agent's context, and nothing is written to disk.
+When the agent — or you — needs to run the program, `maruhi run -- <command>` decrypts the values in memory and injects them into that one process's environment. Nothing is written to disk, and the values do not pass through the MCP server or the agent's prompt.
+
+**What that program prints is not protected.** An agent runs `maruhi run` through its shell and reads the output, so `maruhi run -- env`, a test that dumps its configuration, or a crash report that includes the environment puts values into the agent's context. The server's instructions and the `AGENTS.md` line above tell the agent not to run such commands, but that is guidance, not a guarantee. Two rules follow:
+
+- Review what an agent runs under `maruhi run` the way you review any command it runs with your credentials.
+- Never start the agent host itself under `maruhi run`: every tool it launches would inherit the values.
+
+Keeping values away from what an agent can read even then is the job of credential brokering, a planned feature, not of the schema.
