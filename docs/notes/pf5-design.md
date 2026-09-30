@@ -430,3 +430,11 @@ each (a self-review again — §15's caveat applies).
 
 **Round results**: one replacement (B). A, C–F unchanged. G keeps the
 override in this PR, with the toolchain upgrade (c) as a separate follow-up.
+
+**G follow-up (done 2026-09-30, its own PR)**: wrangler 4.144.0,
+`@cloudflare/vitest-plugin` 1.3.3 (which pins exactly that wrangler, so one
+wrangler / miniflare 5.20260926.1-alpha / workerd 1.20260926.1 remains), and
+`@cloudflare/workers-types` 5.20260926.1; the `miniflare>undici` override is
+gone. The same PR removes three stale CI audit ignores (image-size and
+sharp@0.35.2 — neither is in the tree any more). Its decisions were looped in
+the PR description.
