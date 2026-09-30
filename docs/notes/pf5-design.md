@@ -53,7 +53,7 @@ maruhi mcp  ── one process, the user's own CLI session (keychain token / MAR
   │        → metadata-only pull (no value, no DEK, no var.read) → schemaRows()
   ▼
 { notice, projectId, environment, environments[], variables[{name, declaredType,
-  required, status, description}], warnings[] }
+  required, status, description}], missingRequired[], warnings[] }
 ```
 
 Nothing on the server side changes: no endpoint, no acceptance rule, no audit
@@ -172,6 +172,13 @@ floor writes and attestation submission were built for.
   an MCP server's stderr, and a warning such as "a name that is not
   NFC-normalized — visually identical names may coexist" is about exactly the
   data the agent is reading
+- **`missingRequired`** (added by the §15 exhaustion loop, candidate 3-I):
+  the names `maruhi run` would refuse to start without, computed by
+  `missingRequiredNames` — the function `maruhi run`'s presence fail-fast
+  itself calls (run.ts), over the same `toDeclaredVariables` conversion
+  (including its fail-closed "a declared without a schema counts as
+  required"). The agent's "will it start?" is answered by maruhi's rule, not
+  re-derived by the model
 - **The instructions steer to the diskless path**: "to run a program with the
   secrets, run `maruhi run -- <command>`", so the natural next step of an
   agent that needs a value is the one that never shows it
@@ -275,7 +282,34 @@ Each ruling was re-attacked against the running implementation:
   definitions, the narrowed Keychain, the stdio discipline
 - `apps/cli/src/effect-cli.ts`: the `maruhi mcp` command (`commonFlags`)
 - `apps/cli/src/keychain.ts`: `isTokenEntryName`
+- `apps/cli/src/run.ts`: `missingRequiredNames` (the presence rule, now
+  shared by `maruhi run`'s fail-fast and `missingRequired`)
 - Tests: `apps/cli/test/mcp.test.ts` (end-to-end over the stdio framing);
   the `Stdio` stdin / stdout hooks in `test/support/env.ts`
 - Public docs: `/docs/ai-agents` (host setup, what the agent sees, what it
   never sees)
+
+## 15. Exhaustion loop (owner-requested, 2026-09-30)
+
+The owner's delegation required the strictly-better search to continue **until
+no new option appears**. The first pass (§§2–10) enumerated each point once,
+and only M3 recorded a second round; this section runs the loop explicitly for
+every ruling. Each round asks: is there an option not yet in the table (a new
+axis, a combination, a relocation of the responsibility) that dominates the
+adopted one? A ruling is closed when a round produces nothing new.
+
+| Ruling | Round 2 — new candidates | Round 3 | Outcome |
+|---|---|---|---|
+| M1 where | 1-F WebMCP in the dashboard: the dashboard holds no keys and does not run the CLI's §6.3 verification, and it is the TCB (ADR-0018) — an agent-facing surface there widens the one place an XSS leaks everything. Rejected. 1-G serve MCP from the `maruhi agent` daemon (KL2): puts the agent-facing surface inside the process whose job is holding key material — the inverse of M7. Rejected. 1-H naming: `maruhi schema mcp` / `maruhi schema --mcp` (honest about today's scope) vs `maruhi mcp` (the host convention; a server, not a display; future value-free agent reads would join the same server without a rename). `maruhi mcp` kept | nothing new | **unchanged** |
+| M2 library | 2-D a lighter third-party MCP framework: dominated by 2-B (a dependency either way, and less scrutiny). 2-E offer only the newest revision: no security gain (the same two primitives exist in every revision), fewer hosts. Rejected | nothing new | **unchanged** |
+| M3 surface | 3-H a two-environment compare parameter: two calls already give it. Rejected. **3-I a derived `missingRequired`** — the names `maruhi run` would refuse on. Derivable by the model from `required` + `status`, but only approximately: `maruhi run` applies a fail-closed conversion (a declared without a schema counts as required) the model would have to know. Computing it with **the same function** `maruhi run` calls makes the agent's answer and the CLI's behavior one rule. **Adopted** (dominates: same data, one more guarantee, no new surface). 3-J write tools confirmed through MCP elicitation (the host asks the human): the confirmation UI would be the host's, not a maruhi-controlled trusted surface, and the entropy gate's interactive path would move into it. Rejected. 3-K resource subscriptions / change notifications: needs polling (server-side change notification is demand-driven — SY6). Rejected. 3-L value-derived metadata (length, "looks like a URL"): value-derived information is a value leak. Rejected with 3-E | 3-I's placement: a separate tool vs a field in `get_schema`. A field — same verification pass, no round trip (the M3 folding argument again). Nothing further | **3-I adopted** |
+| M4 scope | 4-E infer the project from the working directory (a repository file): the CLI has no cwd-based project resolution today (`--project` → `defaultProject`); adding one is a CLI-wide feature, not PF5's. Out of scope. 4-F an environment variable for the project: the same | nothing new | **unchanged** |
+| M5 lifecycle | 5-D verify at startup, re-pull metadata per call: the per-call chain sync is what keeps the view fresh; skipping it re-creates 5-A's staleness. Rejected. 5-F exit after idle (the ROADMAP's old "short-lived"): that word was about value leases. The server holds no key and does not retain the token between calls (read per call through the narrowed Keychain), so an idle process holds nothing to expire. Rejected | nothing new | **unchanged** |
+| M6 output | 6-D table text in `content` + JSON in `structuredContent`: the MCP convention is the JSON serialization in `content` (what Effect emits); two renderings invite divergence. Rejected. 6-E drop `notice` since `instructions` carry the framing: hosts are not required to show instructions to the model. Rejected. 6-G add variableId / metaVersion / author: actors and internals — data minimization. Rejected. (3-I lands here as a field) | nothing new | **unchanged + 3-I** |
+| M7 guarantee | 7-D narrow to the token of the launch-time origin only: which server is M4's concern, and pinning it would break M5's per-call config reading; every token entry is equally the user's. Rejected. 7-E split `Keychain` into a token store and a key store project-wide (a compile-time guarantee instead of a runtime refusal): strictly stronger in kind, but a CLI-wide refactor of every keychain user for a property the runtime refusal plus tests already make fail-closed. Not adopted in PF5 — **recorded as a follow-up candidate** for a later refactor. 7-F an HTTP allow-list (the MCP process may only reach chain / metadata paths): redundant with 7-B for confidentiality (ciphertext without a key reveals nothing), and brittle — every future change to the metadata prologue's traffic would break the server. Rejected | nothing new | **unchanged** (7-E noted) |
+| M8 stdio | 8-B write protocol frames to a dedicated file descriptor: MCP stdio is defined on stdin/stdout; hosts do not support another channel | nothing new | **unchanged** |
+| M9 audit | 9-B a `maruhi-mcp` User-Agent on requests: no consumer on the server, no detection gain (client-declared). Rejected | nothing new | **unchanged** |
+
+**Converged**: round 3 produced no candidate for any ruling. One adoption
+(3-I `missingRequired`), one follow-up candidate outside PF5's scope (7-E the
+token/key store split).

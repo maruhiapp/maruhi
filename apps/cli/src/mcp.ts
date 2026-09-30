@@ -48,6 +48,8 @@ import { cliError, type CliError } from "./errors.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { isTokenEntryName, Keychain, type KeychainShape } from "./keychain.ts";
 import { logNote, NoticeLedger } from "./notice.ts";
+import { toDeclaredVariables } from "./pull.ts";
+import { missingRequiredNames } from "./run.ts";
 import { SCHEMA_UNTRUSTED_HEADER, schemaRows } from "./schema.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 import { CLI_VERSION } from "./version.ts";
@@ -99,6 +101,10 @@ const SchemaResultSchema = Schema.Struct({
     description: "Every environment on the project's verified chain (pass one as `environment`)",
   }),
   variables: Schema.Array(SchemaRowSchema),
+  missingRequired: Schema.Array(Schema.String).annotate({
+    description:
+      "Variables `maruhi run` would refuse to start without in this environment (required but no value yet) — computed by the same rule `maruhi run` applies",
+  }),
   warnings: Schema.Array(Schema.String).annotate({
     description: "Verification warnings worth relaying to the user",
   }),
@@ -252,6 +258,11 @@ function readSchema(
         .toSorted()
         .map((environmentId) => displayText(environmentId)),
       variables: schemaRows(metadata.variables),
+      missingRequired: missingRequiredNames(
+        toDeclaredVariables(
+          metadata.variables.filter((statement) => statement.status === "declared"),
+        ),
+      ),
       warnings: metadata.warnings,
     };
   }).pipe(

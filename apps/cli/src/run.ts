@@ -382,16 +382,27 @@ export const RUN_COMMAND_REQUIRED =
  * required = false declared is not injected and only noted (stderr).
  * Neither wording includes the description.
  */
+/**
+ * The names `maruhi run` refuses to start without: the required = true
+ * declared variables, neutralized and sorted. The one rule shared by the
+ * presence fail-fast below and `maruhi mcp`'s `missingRequired`
+ * (pf5-design.md §15 — an agent's "will it start?" is answered by this
+ * function, not re-derived by the model).
+ */
+export function missingRequiredNames(declared: readonly DeclaredVariable[]): string[] {
+  return declared
+    .filter((variable) => variable.required)
+    .map((variable) => displayText(variable.name))
+    .toSorted();
+}
+
 export function enforceDeclaredPresence(
   declared: readonly DeclaredVariable[],
   /** The closing clause of what did not happen (run = the child was never started, sync = nothing was sent). */
   outcome = "The command was not started",
 ): Effect.Effect<void, CliError, CliIo> {
   return Effect.gen(function* () {
-    const missing = declared
-      .filter((variable) => variable.required)
-      .map((variable) => displayText(variable.name))
-      .toSorted();
+    const missing = missingRequiredNames(declared);
     if (missing.length > 0) {
       // The strict error of a child never started (presence — verified
       // statements only). Two recovery paths are spelled out: set the

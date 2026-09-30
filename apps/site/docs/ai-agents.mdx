@@ -68,11 +68,13 @@ The server has one tool, `get_schema`, and the same data as resources (`maruhi:/
       "description": null
     }
   ],
+  "missingRequired": ["STRIPE_KEY"],
   "warnings": []
 }
 ```
 
 - **`status`** is `set` when the environment holds a value and `declared` when it does not yet. `maruhi run` refuses to start while a required variable is `declared`, so this is the agent's answer to "why won't it start".
+- **`missingRequired`** lists the variables `maruhi run` would refuse to start without, computed by the same rule `maruhi run` applies.
 - **`declaredType`** is what a member declared, not something checked against the value.
 - **`environments`** lists every environment on the project; call `get_schema` with `{ "environment": "prod" }` to read another one.
 - **`warnings`** carries verification warnings worth telling you about.

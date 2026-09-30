@@ -293,6 +293,8 @@ describe("maruhi mcp — get_schema (rulings M5 / M6)", () => {
     expect(content["environment"]).toBe("dev");
     expect(content["environments"]).toEqual(["dev", "prod"]);
     expect(content["warnings"]).toEqual([]);
+    // EVIL is declared but optional: `maruhi run` would start
+    expect(content["missingRequired"]).toEqual([]);
     const variables = content["variables"] as readonly Record<string, unknown>[];
     expect(variables.map((row) => row["name"])).toEqual(["EVIL", "LEGACY_KEY", "PORT"]);
     expect(variables[2]).toEqual({
@@ -343,6 +345,8 @@ describe("maruhi mcp — get_schema (rulings M5 / M6)", () => {
     ]);
     const prod = response(responses, 2)["structuredContent"] as Record<string, unknown>;
     expect(prod["environment"]).toBe("prod");
+    // Required and declared: the same name `maruhi run` would refuse on
+    expect(prod["missingRequired"]).toEqual(["SHOP_URL"]);
     expect((prod["variables"] as readonly Record<string, unknown>[])[0]).toMatchObject({
       name: "SHOP_URL",
       declaredType: "url",
