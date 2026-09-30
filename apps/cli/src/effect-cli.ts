@@ -201,6 +201,7 @@ import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loadLeasePolicy } from "./lease-policy.ts";
 import { openLedgerReserveForChange } from "./ledger-open.ts";
 import { loginOp, logoutOp } from "./login.ts";
+import { mcpServeOp } from "./mcp.ts";
 import {
   type ChangeRoleRequest,
   formatMemberListRow,
@@ -1098,6 +1099,14 @@ const projectPolicyApprovalsConfig = {
 /** `maruhi schema` (display — the bare parent doubles as show. Same shape as audit). */
 const schemaShowConfig = { ...commonFlags() };
 
+/**
+ * `maruhi mcp` (PF5 — the MCP server over stdio). The same flags as
+ * `maruhi schema`: the host config pins the project (and the default
+ * environment) the way a human would on the command line (pf5-design.md
+ * ruling M4).
+ */
+const mcpConfig = { ...commonFlags() };
+
 /** The `--type` closed set (CRYPTO_SPEC §4.2 — ruling CT) + `none` for an explicit clear. */
 const SCHEMA_TYPES = ["string", "number", "boolean", "url"] as const;
 
@@ -1446,6 +1455,7 @@ const LEAF_AND_GROUP_SPECS: Readonly<Record<string, CommandSpec>> = {
   pull: specOf(pullConfig),
   run: specOf(runConfig),
   push: { ...specOf(pushConfig), strayHint: PUSH_STDIN_HINT },
+  mcp: specOf(mcpConfig),
   ...Object.fromEntries(
     Object.entries(GROUP_CONFIGS).flatMap(([group, subcommands]) => [
       [
@@ -4541,6 +4551,16 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  // `maruhi mcp` — the value-free schema over MCP (PF5). Keyless like
+  // `maruhi schema`, and the agent-gate does not apply: it is the
+  // agent-facing surface by construction and serves no values
+  // (pf5-design.md rulings M3 / M7)
+  const mcp = Command.make("mcp", mcpConfig, mcpServeOp).pipe(
+    Command.withDescription(
+      "Serve the value-free schema to AI agents over the Model Context Protocol (stdio). Never serves values",
+    ),
+  );
+
   // **bare `maruhi schema` = display** (design doc §1-1 — a handler-carrying parent like audit)
   const schema = Command.make("schema", schemaShowConfig, runSchemaShow).pipe(
     Command.withDescription(
@@ -5052,6 +5072,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       audit,
       config,
       schema,
+      mcp,
       varGroup,
       sync,
     ]),

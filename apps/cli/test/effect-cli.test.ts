@@ -1033,7 +1033,7 @@ describe("diagnosing an unknown command (stage 3 ④ — root's UnknownSubcomman
     const { env } = await startEnv();
     expect(await runCli(["bogus"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: login | logout | pull | run | push | env | server | invite | member | approval | key | device | token | guardian | project | ci | agent | rotation | audit | config | schema | var | sync)",
+      "Unknown subcommand (expected one of: login | logout | pull | run | push | mcp | env | server | invite | member | approval | key | device | token | guardian | project | ci | agent | rotation | audit | config | schema | var | sync)",
     );
   });
 

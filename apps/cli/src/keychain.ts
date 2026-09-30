@@ -58,6 +58,11 @@ export function tokenEntryName(origin: string): string {
   return `token::${origin}`;
 }
 
+/** Whether an entry name is an API-token entry (the only kind `maruhi mcp` may read — pf5-design.md ruling M7). */
+export function isTokenEntryName(name: string): boolean {
+  return name.startsWith("token::");
+}
+
 /** Keychain entry name for the master keypair of one (server, user). */
 export function masterKeyEntryName(origin: string, userId: string): string {
   return `master::${origin}::${userId}`;
