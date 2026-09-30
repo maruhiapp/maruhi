@@ -7,7 +7,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Effect, Layer, Redacted, Stdio } from "effect";
+import { Effect, Layer, Redacted, Sink, Stdio, Stream } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import { AgentProfileRef } from "../../src/agent-gate.ts";
@@ -78,7 +78,14 @@ export interface TestEnv {
   readonly prompts: string[];
   /** URLs passed to openBrowser (for asserting login's auto-browser-launch branch). */
   readonly browserOpens: string[];
+  /**
+   * Raw chunks written to the `Stdio` stdout sink (only `maruhi mcp` writes
+   * there — the protocol channel. Command output goes through CliIo.log).
+   */
+  readonly stdioOut: string[];
   setStdin(bytes: Uint8Array): void;
+  /** The `Stdio` stdin stream (`maruhi mcp`'s protocol input — default empty). */
+  setStdioIn(stream: Stream.Stream<Uint8Array>): void;
   /**
    * Fakes the terminal detection (`Stdio`). It is the **primary boundary** for
    * whether values may be displayed, so the default is "a human's interactive
@@ -176,6 +183,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const sessionCalls: SessionCall[] = [];
   let sessionHandler: (call: SessionCall) => Promise<number> = sessionExitsZero;
   let stdin: Uint8Array = new Uint8Array(0);
+  let stdioIn: Stream.Stream<Uint8Array> = Stream.empty;
+  const stdioOut: string[] = [];
+  const stdoutDecoder = new TextDecoder();
   let agent: AgentProfile = { isAgent: false };
   let colorEnabled = false;
   // Default is the "a human ran this at an interactive terminal" shape (the
@@ -204,6 +214,15 @@ export async function makeTestEnv(): Promise<TestEnv> {
     Stdio.layerTest({
       stdinIsTerminal: Effect.sync(() => stdinIsTerminal),
       stdoutIsTerminal: Effect.sync(() => stdoutIsTerminal),
+      stdin: Stream.suspend(() => stdioIn),
+      stdout: () =>
+        Sink.forEach((chunk: string | Uint8Array) =>
+          Effect.sync(() => {
+            stdioOut.push(
+              typeof chunk === "string" ? chunk : stdoutDecoder.decode(chunk, { stream: true }),
+            );
+          }),
+        ),
     }),
     // The secondary layer (known-agent detection result); in production
     // live.ts supplies it from std-env
@@ -373,6 +392,10 @@ export async function makeTestEnv(): Promise<TestEnv> {
     fingerprintBookPath,
     prompts,
     browserOpens,
+    stdioOut,
+    setStdioIn(stream) {
+      stdioIn = stream;
+    },
     setStdin(bytes) {
       stdin = bytes;
     },
