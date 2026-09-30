@@ -80,31 +80,20 @@ jobs:
       # --ignore covers transitive deps of maintainer-side toolchains that only
       # run at build/test time and can't be fixed by an in-range update
       # (ignores are per-ID; new advisories still get detected):
-      #   GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq: image-size@2.0.2 (infinite
-      #     loop parsing ICNS / JXL / HEIF = DoS). latest is 2.0.2 with no fix
-      #     release. Blume's image optimization only reads our own repo's
-      #     PNG / SVG at build time — no path for untrusted images
-      #     (as of 2026-09-03. DP2 — PR #147. Expected to disappear with a Blume
-      #     update)
       #   GHSA-9wv6-86v2-598j: path-to-regexp@6.1.0 (ReDoS) — a strict pin via
       #     @astrojs/vercel > @vercel/routing-utils. No deploys to Vercel means
       #     no execution path. A name-scoped override to 6.3.0 would drag in
       #     router (express 5 line, ^8), so it is not taken (same source)
-      #   GHSA-rgj7-g3m4-5g8c: sharp@0.35.2 (vulnerability in the bundled
-      #     libheif; fixed in 0.35.4) — miniflare fully pins 0.35.2, so an
-      #     in-range update can't fix it (bun audit fix doesn't help).
-      #     miniflare is test/dev-only via @cloudflare/vitest-plugin /
-      #     wrangler dev: no path feeds it an untrusted HEIF image and it never
-      #     ships. The sharp under blume > astro is already 0.35.4. Expected to
-      #     disappear with a wrangler / miniflare update (as of 2026-09-08.
-      #     PR #161)
+      # Removed as stale (2026-09-30): the image-size@2.0.2 ignores
+      # (GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq — image-size left the tree
+      # with a Blume update) and the sharp@0.35.2 ignore (GHSA-rgj7-g3m4-5g8c —
+      # every sharp is 0.35.4 since the miniflare update). An ignore for a
+      # package no longer present would silently pass the same advisory if it
+      # came back
       - name: Audit (bun audit)
         run: >-
           bun audit
-          --ignore GHSA-w3rx-r6r6-pgpr
-          --ignore GHSA-5p2g-fcmc-qvqq
           --ignore GHSA-9wv6-86v2-598j
-          --ignore GHSA-rgj7-g3m4-5g8c
 
       - name: 1. Format (oxfmt)
         run: bun run fmt:check
