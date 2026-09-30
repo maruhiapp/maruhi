@@ -51,7 +51,7 @@ import { cliError, CliError, usageError } from "./errors.ts";
 import { internalErrorKind } from "./failure.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { isTokenEntryName, Keychain, type KeychainShape } from "./keychain.ts";
-import { formatNotice, logNote, NoticeLedger } from "./notice.ts";
+import { logNote, NoticeLedger, NoticeObserver } from "./notice.ts";
 import { SCHEMA_UNTRUSTED_HEADER, schemaRows } from "./schema.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 import { CLI_VERSION } from "./version.ts";
@@ -252,34 +252,22 @@ function stderrConsole(io: CliIoShape): Console.Console {
  * (fresh config, session, sync, §6.3 verification, floor) and the verified
  * metadata-only pull, projected through {@link schemaRows}.
  *
- * Every `Warning:` notice the call emits — the prologue's (a corrupt invite
+ * Every warning notice the call emits — the prologue's (a corrupt invite
  * pin, unconverged rotation mandates, …) as well as the pull's — still goes
  * to stderr and is also returned in `warnings` (the human rarely sees an MCP
- * server's stderr; the agent can relay them). The notice ledger and the
- * capture are created per execution, so a resource whose effect is built
- * once still gets a fresh pair on every read.
+ * server's stderr; the agent can relay them). It is observed through the
+ * `NoticeObserver` hook by kind and text — no parsing of the rendered line
+ * (pf5-design.md §17).
  */
 function readSchema(
   flags: CommonFlags,
   environment: string | undefined,
 ): Effect.Effect<SchemaResult, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
+  return Effect.suspend(() => {
+    // Created per execution: a resource whose effect is built once still gets
+    // a fresh ledger and capture on every read
     const warnings: string[] = [];
-    const warningPrefix = formatNotice("warning", "", false);
-    const capturingIo: CliIoShape = {
-      ...io,
-      // Plain prefixes: the capture reads them, and a host log is no terminal
-      colorEnabled: () => false,
-      logError: (line) =>
-        Effect.suspend(() => {
-          if (line.startsWith(warningPrefix)) {
-            warnings.push(line.slice(warningPrefix.length));
-          }
-          return io.logError(line);
-        }),
-    };
-    const result = yield* Effect.gen(function* () {
+    return Effect.gen(function* () {
       const context = yield* openMetadataEnvironment({
         ...flags,
         env: environment ?? flags.env,
@@ -300,13 +288,17 @@ function readSchema(
           .toSorted()
           .map((environmentId) => displayText(environmentId)),
         variables: schemaRows(metadata.variables),
+        warnings,
       };
     }).pipe(
-      Effect.provideService(CliIo, capturingIo),
+      Effect.provideService(NoticeObserver, (kind, text) => {
+        if (kind === "warning") {
+          warnings.push(text);
+        }
+      }),
       // "An identical notice at most once" is per command run; here a run is one call
       Effect.provideService(NoticeLedger, new Set<string>()),
     );
-    return { ...result, warnings };
   });
 }
 

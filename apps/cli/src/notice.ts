@@ -49,6 +49,17 @@ export class NoticeLedger extends Context.Service<NoticeLedger, Set<string>>()(
   "cli/NoticeLedger",
 ) {}
 
+/**
+ * An optional observer of the notices a run emits, by kind and text (before
+ * rendering). `maruhi mcp` uses it to return a read's warnings to the agent
+ * as data (pf5-design.md §17 — a structured hook, not a parse of the rendered
+ * line). Absent everywhere else: the notices only go to stderr.
+ */
+export class NoticeObserver extends Context.Service<
+  NoticeObserver,
+  (kind: NoticeKind, text: string) => void
+>()("cli/NoticeObserver") {}
+
 /** Kind of a stderr notice (decides the prefix and its color). */
 export type NoticeKind = "note" | "warning" | "error";
 
@@ -129,6 +140,10 @@ function logNotice(
         return;
       }
       ledger.value.add(key);
+    }
+    const observer = yield* Effect.serviceOption(NoticeObserver);
+    if (Option.isSome(observer)) {
+      observer.value(kind, text);
     }
     const line = formatNotice(kind, text, io.colorEnabled());
     yield* io.logError(scope === "prompt" ? `  ${line}` : line);

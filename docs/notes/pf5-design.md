@@ -182,8 +182,9 @@ attestation — it holds no signing key).
   `initialize`, the tool description, and a `notice` field in every result
   (the framing stays adjacent to the data, as the CLI's non-TTY header does)
 - **Every warning of the call is returned** as well as written to stderr: a
-  human rarely sees an MCP server's stderr. The read captures each `Warning:`
-  notice it emits — the prologue's (a corrupt local floor or invite pin that
+  human rarely sees an MCP server's stderr. The read observes each warning
+  notice it emits through the `NoticeObserver` hook (notice.ts — by kind and
+  text, §17 B) — the prologue's (a corrupt local floor or invite pin that
   switches a check off, a token near expiry, unconverged rotation mandates) as
   well as the pull's — so the agent can relay exactly what the CLI would have
   shown (§16 D-2 / D-9: the first version returned the pull's warnings only)
@@ -335,6 +336,8 @@ Each ruling was re-attacked against the running implementation:
 - `apps/cli/src/mcp.ts`: the server (`mcpServeOp`), the tool / resource
   definitions, `narrowedContext` (Keychain / CliIo / Console), the per-read
   warning capture, the stdio discipline
+- `apps/cli/src/notice.ts`: `NoticeObserver` (an optional hook observing
+  notices by kind and text; absent outside `maruhi mcp`)
 - `apps/cli/src/effect-cli.ts`: the `maruhi mcp` command (`commonFlags`)
 - `apps/cli/src/keychain.ts`: `isTokenEntryName`
 - Tests: `apps/cli/test/mcp.test.ts` (end-to-end over the stdio framing);
@@ -407,3 +410,23 @@ metadata-only path fetches no value or DEK and records no `var.read`; no spec
 revision is needed; no telemetry; the docs' JSON example, anchors, and host
 configuration shapes.
 
+
+## 17. Exhaustion loop on the decisions made after the review (2026-09-30 — owner-requested)
+
+The review round (§16) and the CI audit failure on the PR produced new
+decisions that were first made directly, without the loop. The owner asked
+whether they were looped; they were not, so this section runs the loop on
+each (a self-review again — §15's caveat applies).
+
+| # | Decision | Round 2 — candidates | Round 3 | Outcome |
+|---|---|---|---|---|
+| A | How the narrowing is wired (D-1) | (a) one narrowed context via `Context.add` (adopted). (b) reorder the provides (narrowing innermost): correct today, but one refactor away from the same bug. (c) run the whole command body under the narrowed services so `Effect.context` captures them: equivalent to (a) but implicit. (d) a type-level split (7-E): CLI-wide. (e) process isolation — spawn `maruhi schema` per call: the child is the unnarrowed CLI, so strictly weaker | nothing new | **(a) unchanged** |
+| B | How a read's warnings are captured (D-2) | (a) wrap `CliIo.logError`, match the rendered `Warning:` prefix, and force colour off so the prefix matches (first fix). (b) **an optional `NoticeObserver` service in notice.ts that `logNotice` calls with (kind, text) before rendering** — the same shape as the existing optional `NoticeLedger`. No string parsing, no coupling to the prefix format or to colour, no behaviour change anywhere it is absent. (c) have the prologue functions return their warnings: CLI-wide refactor. (d) return the pull's warnings only: the reviewed gap | nothing new | **(b) adopted — replaces (a)** (dominates: same data, typed, no hidden coupling) |
+| C | Two environments, one view (D-3) | (a) residual (adopted). (b) `environments[]` parameter over one prologue: removes the view difference, not `env diff`'s documented specimen skew; a second result shape. (c) a separate compare tool: `env diff` exists for shells; for MCP it duplicates (b). (d) add the verified chain head seq to each result so an agent can tell whether two results share a view: detects only half the inconsistency, and no agent is likely to use it | nothing new | **(a) unchanged** |
+| D | `missingRequired` (D-4) | (a) withdraw (adopted). (b) keep with an honest description ("required with no value — not the only reason `maruhi run` refuses"): redundant with `required` + `status`. (c) add scope awareness: the keyless read can judge the person's scope but not the device cap (DK), so a partial answer would mislead | nothing new | **(a) unchanged** |
+| E | Launch flags (D-14) | (a) validate at startup (usage error, exit 2) and `displayText` (adopted). (b) neutralize only: the host log would show a server that starts and fails every call | nothing new | **(a) unchanged** |
+| F | Defects (D-13) | (a) map a defect to its type name inside the read (adopted). (b) rely on McpServer: passes the message to the model on the resource path. (c) disable the upstream log: not configurable, and (a) already removes the content | nothing new | **(a) unchanged** |
+| G | The CI audit failure (not PF5's — commit 1f5c93b) | (a) `bun audit fix` + a `miniflare>undici` → 7.29.1 override (adopted in this PR). (b) add the undici advisories to CI's ignore list: leaves the vulnerable version where an override fixes it (tests pass on 7.29.1). (c) **upgrade wrangler 4.136.1 → 4.144.0 and `@cloudflare/vitest-plugin` 1.2.1 → 1.3.3**, whose miniflare (5.20260926.1-alpha) already pins undici 7.29.1 — the proper end state, but a toolchain upgrade (workerd moves too) belongs in its own deliberate PR (CLAUDE.md), not in PF5. (d) put (a) in a separate PR merged first: the repo convention, but this session may push only to the PR's branch | nothing new | **(a) here; (c) recorded as the follow-up that removes the override** |
+
+**Round results**: one replacement (B). A, C–F unchanged. G keeps the
+override in this PR, with the toolchain upgrade (c) as a separate follow-up.
