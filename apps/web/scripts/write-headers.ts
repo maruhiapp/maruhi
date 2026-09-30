@@ -294,7 +294,7 @@ if (inviteBlock === undefined || !inviteBlock.includes("script-src 'none'")) {
 // silently dropped — measured), so keep the total at 65. The
 // conceivable failure mode is "only the shield drops and ③ survives" = a
 // redirect loop for /invite (loss of availability; no confidentiality
-// impact, and obvious the moment it is opened), but wrangler dev and
+// impact, and obvious the moment it is opened), but cf dev and
 // production share the same assets-worker implementation, so there is no
 // basis for selective omission. The e2e pins the whole behavior. The
 // residue is only mid-word typos (/invte etc.) — the same class as any

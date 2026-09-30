@@ -36,6 +36,7 @@ permissions:
 env:
   DO_NOT_TRACK: "1"
   WRANGLER_SEND_METRICS: "false"
+  CF_SEND_TELEMETRY: "false"
   # hosted-ops.md §3 row 1: warning threshold for total D1 size (decimal 5 GB)
   D1_SIZE_WARN_BYTES: "5000000000"
 
@@ -59,14 +60,17 @@ jobs:
       - name: Install age
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends age
 
-      # wrangler is the workspace-pinned version (bunx inside apps/server).
-      # --env hosted resolves the operator DB (env.hosted's d1_databases)
+      # cf is the workspace-pinned version (bun scripts inside apps/server).
+      # --mode hosted resolves the operator DB — `cf d1` subcommands take the
+      # database ID (UUID), never the binding name, so scripts/d1-export.ts
+      # resolves it from cloudflare.config.ts and owns the poll + signed-URL
+      # download loop wrangler d1 export used to hide
       - name: Export D1 (hosted)
         working-directory: apps/server
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: bunx wrangler d1 export maruhi --remote --env hosted --output "$RUNNER_TEMP/d1.sql"
+        run: bun scripts/d1-export.ts --mode hosted --output "$RUNNER_TEMP/d1.sql"
 
       - name: Encrypt (age, operator public key)
         env:
@@ -84,7 +88,7 @@ jobs:
           BUCKET: ${{ vars.OPS_BACKUP_BUCKET }}
         run: |
           stamp=$(date -u +%Y-%m-%dT%H-%M-%SZ)
-          bunx wrangler r2 object put "$BUCKET/d1/$stamp.sql.age" --file "$RUNNER_TEMP/d1.sql.age" --remote --content-type application/octet-stream
+          bunx cf r2 objects put "d1/$stamp.sql.age" --bucket-name "$BUCKET" --file "$RUNNER_TEMP/d1.sql.age" --content-type application/octet-stream
           rm -f "$RUNNER_TEMP/d1.sql.age"
 
       # Trip-wire on total D1 size (hosted-ops.md §3 row 1): at or above the
@@ -96,9 +100,11 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          # wrangler 4.124 renamed the API's file_size to database_size in its output (older versions use file_size)
-          size=$(bunx wrangler d1 info maruhi --env hosted --json | bun --print 'const o = JSON.parse(require("fs").readFileSync(0, "utf8")); o.database_size ?? o.file_size')
-          case "$size" in ''|*[!0-9]*) echo "::error::could not read database_size from wrangler d1 info"; exit 1 ;; esac
+          # wrangler 4.124 renamed the API's file_size to database_size; accept
+          # either name in cf d1 get's JSON (and a wrapped {result: {...}} shape
+          # if cf ever prints the raw API envelope)
+          size=$(bunx cf d1 get "$(bun scripts/d1-id.ts hosted)" | bun --print 'const o = JSON.parse(require("fs").readFileSync(0, "utf8")); const v = o.database_size ?? o.file_size ?? o.result?.database_size ?? o.result?.file_size; v === undefined ? "" : v')
+          case "$size" in ''|*[!0-9]*) echo "::error::could not read database_size from cf d1 get"; exit 1 ;; esac
           echo "D1 database_size=$size bytes (warn at $D1_SIZE_WARN_BYTES)"
           if [ "$size" -ge "$D1_SIZE_WARN_BYTES" ]; then
             echo "::error::D1 size crossed the warning threshold (hosted-ops.md §3 row 1: plan the audit-D1 split)"

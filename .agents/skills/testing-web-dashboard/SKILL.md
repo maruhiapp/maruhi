@@ -1,6 +1,6 @@
 ---
 name: testing-web-dashboard
-description: How to run and interactively drive the maruhi web dashboard e2e/UI tests — bunx shim, serving the built app via wrangler preview, page.route API mocking, and headful Playwright on DISPLAY :0 for recorded sessions.
+description: How to run and interactively drive the maruhi web dashboard e2e/UI tests — bunx shim, serving the built app via cf dev, page.route API mocking, and headful Playwright on DISPLAY :0 for recorded sessions.
 ---
 
 # Testing the maruhi web dashboard end-to-end
@@ -9,7 +9,7 @@ description: How to run and interactively drive the maruhi web dashboard e2e/UI 
 
 - Bun lives at `~/.bun-pinned/bun` (export PATH first). **`bunx` does not exist** — use
   `bun x <pkg>` / `bun run <script>` yourself, BUT `apps/web/test/e2e.test.ts` spawns the
-  literal string `bunx` to start wrangler. If `bunx` is missing, create it once:
+  literal string `bunx` to start cf. If `bunx` is missing, create it once:
   `ln -sf ~/.bun-pinned/bun ~/.bun-pinned/bunx` (bun dispatches on argv[0]).
 - Playwright chromium: `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` may point at
   `/opt/pw-browsers/chromium`, which does not exist on every image. If unset, Playwright
@@ -22,12 +22,12 @@ description: How to run and interactively drive the maruhi web dashboard e2e/UI 
 ## Commands
 
 - Unit: `(cd apps/web && bun x vitest run --config vitest.unit.config.ts)`
-- E2E (needs build first; spawns its own `wrangler dev`): 
+- E2E (needs build first; spawns its own `cf dev`): 
   `(cd apps/web && bun run build && bun x vitest run --config vitest.config.ts)`
 - Serve built app for manual driving: `(cd apps/web && bun run preview)` →
-  `wrangler dev --config ../server/wrangler.jsonc --port 8788` (production-like combined
+  `cd ../server && bun x cf dev --port 8788` (production-like combined
   worker + assets, strict CSP). The vite dev server (5173) does not apply `_headers`/CSP.
-- curl probes need `-H "Accept: text/html"` (dev server) — not needed for wrangler preview.
+- curl probes need `-H "Accept: text/html"` (dev server) — not needed for cf preview.
 
 ## Mocking the API for UI sessions
 

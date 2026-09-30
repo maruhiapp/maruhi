@@ -1,6 +1,6 @@
 import { defineConfig } from "vitest/config";
 
-// e2e for the apex site (wrangler dev + Playwright). Since it presumes a
+// e2e for the apex site (cf dev + Playwright). Since it presumes a
 // built dist (+ _headers), it is not in the root vitest.config.ts projects
 // and runs as its own CI step (same shape as web e2e).
 export default defineConfig({

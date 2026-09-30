@@ -9,7 +9,7 @@
 // (apps/web/public/pages.css — the frame, spacing, and confirmation-code
 // presentation shared with /invite). The logo is a self-hosted SVG
 // (`img-src 'self'`). Both are served by the same Worker as apps/web build
-// output (the assets in apps/server/wrangler.jsonc — bundled for
+// output (the assets in apps/server/cloudflare.config.ts — bundled for
 // self-hosting too). All wording is English (ADR-0017). The ruling is in
 // docs/notes/web-design-pass.md §5 (DP4).
 //

@@ -4,7 +4,7 @@
 //
 // The source keeps the plain Workers API shape (export default
 // { fetch } + DurableObject classes) while the internals are
-// implemented in Effect (ADR-0012: works under both wrangler and
+// implemented in Effect (ADR-0012: works under both cf and
 // Alchemy v2).
 //
 // Wiring of request authentication (AUTH_SPEC):
@@ -135,8 +135,8 @@ function handlerFor(env: Env): EnvHandler {
   // Disable Effect's default HTTP logger (HttpMiddleware.logger —
   // annotates `http.url` on "Sent HTTP response"). Left enabled,
   // Workers Logs would record /projects/:id (a capability — AUTH_SPEC
-  // §11-2) per request, and the hole plugged by wrangler's
-  // `observability.logs.invocation_logs: false` would reopen via the
+  // §11-2) per request, and the hole plugged by the deploy config's
+  // `observability.logs.invocationLogs: false` would reopen via the
   // console path (found by checking real Workers Logs data during an
   // ops exercise — hosted-ops.md §5-3). The console lines that remain
   // are static messages + aggregates only (DC-2)
@@ -309,7 +309,7 @@ export default {
     }
     return withSecurityHeaders(response);
   },
-  // Scheduled jobs (wrangler.jsonc's triggers.crons — branch on the
+  // Scheduled jobs (cloudflare.config.ts's triggers — branch on the
   // cron string):
   // - Hourly (OPS_HOURLY_CRON): the DO → R2 evacuation sweep
   //   (ops-backup.ts; a no-op without the binding) → tripwire

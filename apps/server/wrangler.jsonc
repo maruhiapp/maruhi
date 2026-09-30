@@ -1,7 +1,15 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   // ADR-0012's self-host path: a deploy must work from a plain
-  // wrangler config alone.
+  // config file alone. Deploys moved to `cf` (cloudflare.config.ts
+  // is the deployment source of truth — `cf deploy` / `cf dev`), but
+  // this file stays: @cloudflare/vitest-plugin reads only wrangler
+  // configs (vitest.config.ts configPath), the e2e / unit topology
+  // tests read it via unstable_readConfig, and cf's delegated
+  // bundler consumes it through wrangler.config.ts
+  // (assetsDirectory). scripts/check-hosted-config.ts asserts
+  // cloudflare.config.ts mirrors it, so it is maintained as the
+  // test-harness mirror of the deployment config.
   "name": "maruhi-server",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
@@ -103,9 +111,9 @@
     {
       "binding": "DB",
       "database_name": "maruhi",
-      // Self-host: replace with the ID from `wrangler d1 create
+      // Self-host: replace with the ID from `cf d1 create --name
       // maruhi`
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "00000000-0000-4000-8000-000000000000",
       "migrations_dir": "drizzle",
       // drizzle-kit v1's folder layout (drizzle/<name>/migration.sql)
       "migrations_pattern": "drizzle/*/migration.sql",
@@ -113,7 +121,7 @@
   ],
   // The GitHub OAuth App's GITHUB_CLIENT_ID and
   // GITHUB_CLIENT_SECRET are both registered as Workers Secrets
-  // (`wrangler secret put` — the procedure is in
+  // (`cf workers secrets update` — the procedure is in
   // docs/SELF_HOSTING.md). client_id is public information, but
   // unifying the registration path under secret makes editing this
   // file (committing it to a fork) and redeploying unnecessary
@@ -133,15 +141,15 @@
     "crons": ["17 3 * * *", "23 * * * *"],
   },
   // The hosted environment (the operator's deploy —
-  // docs/notes/hosted-ops.md §2-F).
-  // `wrangler deploy --env hosted`. The self-host default (top
-  // level) is left unchanged, so a one-shot `wrangler deploy` on an
-  // account without an R2 contract still works.
+  // docs/notes/hosted-ops.md §2-F) — the `hosted` mode of
+  // cloudflare.config.ts, `cf deploy --mode hosted`. The self-host
+  // default (top level) is left unchanged, so a one-shot
+  // `cf deploy` on an account without an R2 contract still works.
   // Non-inheritable keys (durable_objects / d1_databases /
   // ratelimits / r2_buckets) must be re-declared per wrangler's
   // rules — drift from the top level is checked by
   // scripts/check-hosted-config.ts (CI 8c). Secrets via
-  // `wrangler secret put <NAME> --env hosted`
+  // `cf workers secrets update <NAME> --text <value> --mode hosted`
   // (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET /
   // SERVER_ENC_KEY_IKM, plus OPS_ALERT_WEBHOOK_URL — optional).
   "env": {
@@ -149,7 +157,7 @@
       // The operator's serving domains (2026-09-03 owner ruling:
       // product origin = my.maruhi.app, apex maruhi.app = LP +
       // docs [/docs — the L1 revision; a separate Worker
-      // `maruhi-site`, apps/site/wrangler.jsonc], maruhi.dev is a
+      // `maruhi-site`, apps/site/cloudflare.config.ts], maruhi.dev is a
       // 301). The dashboard's origin is TCB, so it's kept apart
       // from the LP. workers.dev is disabled, pinning the auth
       // endpoints' origin to one (the OAuth callback / __Host-
@@ -198,8 +206,8 @@
         },
       ],
       // The DO → R2 evacuation destination (hosted-ops.md §2-D).
-      // The bucket is created by the operator (`wrangler r2 bucket
-      // create maruhi-ops-backup` + a lifecycle rule —
+      // The bucket is created by the operator (`cf r2 buckets
+      // create-by-name maruhi-ops-backup` + a lifecycle rule —
       // hosted-ops.md §7 O2). The worker only uses put / get
       "r2_buckets": [{ "binding": "OPS_BACKUP_BUCKET", "bucket_name": "maruhi-ops-backup" }],
       // Workers Logs (retention of static log lines —

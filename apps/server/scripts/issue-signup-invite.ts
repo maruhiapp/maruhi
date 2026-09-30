@@ -1,8 +1,8 @@
 // Issues a sign-up invite code (operations — AUTH_SPEC §3).
 //
-// The server has no issuance API or UI (hosted-design.md §2-2 — the wrangler /
+// The server has no issuance API or UI (hosted-design.md §2-2 — the cf /
 // script path). This script only generates the code and computes its hash;
-// the operator registers it in D1 by running the wrangler command it prints
+// the operator registers it in D1 by running the cf command it prints
 // (this script does not ask for CF credentials).
 //
 // - The raw value (maruhi_sgn_…) is shown on this terminal exactly once. Only
@@ -55,10 +55,10 @@ console.log(
 console.log("");
 console.log("Register it (only the SHA-256 hash is stored — run from apps/server):");
 console.log("");
-console.log(`    bunx wrangler d1 execute maruhi --remote --command "${insertSql}"`);
+console.log(`    bunx cf d1 query $(bun scripts/d1-id.ts) --sql "${insertSql}"`);
 console.log("");
 console.log(
-  "To revoke it before use: bunx wrangler d1 execute maruhi --remote --command \"DELETE FROM signup_invites WHERE id = '" +
+  "To revoke it before use: bunx cf d1 query $(bun scripts/d1-id.ts) --sql \"DELETE FROM signup_invites WHERE id = '" +
     id +
     "' AND status = 'pending';\"",
 );

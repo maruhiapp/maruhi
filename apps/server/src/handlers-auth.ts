@@ -4,7 +4,7 @@
 //   handlers and never reaches a response, a log, or storage (§10: GitHub
 //   tokens must not be persisted)
 // - `__Host-` cookies require Secure / Path=/ (note that a browser will not
-//   store them under http wrangler dev — tests verify the header instead)
+//   store them under http cf dev — tests verify the header instead)
 
 import {
   AuthFlowError,

@@ -42,6 +42,7 @@ env:
   # Apply the "say nothing" principle (CLAUDE.md) to the release path as in ci.yml
   DO_NOT_TRACK: "1"
   WRANGLER_SEND_METRICS: "false"
+  CF_SEND_TELEMETRY: "false"
 
 jobs:
   # The full quality gate (bun audit + 11 steps). Calls ci.yml via workflow_call

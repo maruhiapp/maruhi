@@ -24,6 +24,7 @@ env:
   # Apply the "say nothing" principle (CLAUDE.md) as in ci.yml / release.yml
   DO_NOT_TRACK: "1"
   WRANGLER_SEND_METRICS: "false"
+  CF_SEND_TELEMETRY: "false"
 
 concurrency:
   group: installer-${{ github.ref }}

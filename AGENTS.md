@@ -34,13 +34,13 @@ talking with the owner directly, and in the files listed in
   as CI (`.github/workflows/ci.yml`)
 - Root `bun run test` intentionally does not include the `apps/web` e2e. Run it
   with `cd apps/web && bun run build && bunx vitest run --config vitest.config.ts`.
-  A prior build is required, and the test spawns its own `wrangler dev`
+  A prior build is required, and the test spawns its own `cf dev`
   (port 8791)
 - The web dev server (`bun run --filter @maruhi/web dev`, port 5173) returns 404
   for requests without `Accept: text/html`. Pass `-H "Accept: text/html"` when
   probing with curl (browsers are fine)
 - `apps/server` is a stub (no dev script). If needed,
-  `cd apps/server && bunx wrangler dev`. No DB, secrets, or external services
+  `cd apps/server && bunx cf dev`. No DB, secrets, or external services
   are required today
 - Some entries under `.agents/skills` are symlinks into node_modules, so they
   look broken until `bun install` has run

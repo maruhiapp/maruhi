@@ -1,14 +1,17 @@
 # maruhi self-hosting guide
 
 How to run the maruhi server on your own Cloudflare account. The path is
-plain wrangler only (the self-hosting path in ADR-0012; Alchemy is not required).
+the plain `cf` CLI only (the self-hosting path in ADR-0012; Alchemy is not
+required).
 It takes about 10 minutes; the only maruhi-specific work is creating a GitHub
 OAuth App.
 
 This guide is the source of truth for first-time setup (AUTH_SPEC §3. ADR-0014:
 self-hosting is an advanced path, and the verified copy-pasteable runbook is the
 minimal form). The steps were verified with a real deploy on 2026-08-10
-(session 19) against wrangler 4.120.
+(session 19) against wrangler 4.120; the commands were re-expressed against cf
+1.0.0-beta (2026-09-30) without a fresh real deploy — see the PR for the
+verification level of each command.
 The 2026-08-11 revision (folding migrations into step 3, and making client_id a
 Workers Secret — AUTH_SPEC §3-2) is waiting on re-verification against a real
 deploy.
@@ -28,7 +31,7 @@ Plaintext secrets are stored nowhere (E2EE — the server keeps ciphertext only)
 
 - A Cloudflare account (the free plan is enough)
 - A GitHub account (authentication is GitHub OAuth only — AUTH_SPEC)
-- Bun 1.4.2 (pinned in the repository `engines`. wrangler is a dependency)
+- Bun 1.4.2 (pinned in the repository `engines`. `cf` is a dependency)
 
 ## Steps
 
@@ -38,31 +41,31 @@ Plaintext secrets are stored nowhere (E2EE — the server keeps ciphertext only)
 git clone <this-repository> && cd maruhi
 bun install
 cd apps/server
-bunx wrangler login   # authorize in the browser (in CI: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID)
+bunx cf auth login   # authorize in the browser (in CI: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID)
 ```
 
-If you do not want wrangler to send telemetry, set `WRANGLER_SEND_METRICS=false`
+If you do not want cf to send telemetry, set `CF_SEND_TELEMETRY=false`
 in the environment (maruhi itself implements no telemetry — [CLAUDE.md](../CLAUDE.md) "say nothing"; Japanese).
 
 ### 2. Create the D1 database
 
 ```sh
-bunx wrangler d1 create maruhi
+bunx cf d1 create --name maruhi
 ```
 
-Write the printed `database_id` (UUID) into `wrangler.jsonc` at
-`d1_databases[0].database_id` (placeholder `00000000-…`).
+Write the printed database UUID into `cloudflare.config.ts` at the `DB`
+binding's `id` (placeholder `00000000-0000-4000-8000-…`).
 
 ### 3. First deploy (apply migrations + pin the URL)
 
 ```sh
-bun run deploy   # = bun run db:migrate && (web dashboard build) && wrangler deploy
+bun run deploy   # = bun run db:migrate && (web dashboard build) && cf deploy
 ```
 
-The deploy script always applies D1 migrations first (it refers to the binding
-name `DB`, so it still works if you rename the database) and then deploys.
-drizzle's folder layout (`drizzle/<name>/migration.sql`) is picked up by wrangler
-as-is via `migrations_pattern` in `wrangler.jsonc`.
+The deploy script always applies D1 migrations first (it resolves the database
+ID from `cloudflare.config.ts`, so it still works if you rename the database)
+and then deploys. drizzle's folder layout (`drizzle/<name>/migration.sql`) is
+passed to `cf d1 migrations apply` via its `--dir` / `--pattern` flags.
 
 Note the printed `https://maruhi-server.<your-subdomain>.workers.dev`
 (below, `<deploy-url>` means this entire URL, including `https://`).
@@ -94,15 +97,17 @@ After creating it, copy the client_id and issue a client_secret with
 
 Register both as Workers Secrets (**do not write them into the repository or
 config files**. client_id is public information, but routing registration through
-secrets means you never have to edit `wrangler.jsonc` and redeploy —
+secrets means you never have to edit `cloudflare.config.ts` and redeploy —
 AUTH_SPEC §3-2):
 
 ```sh
-bunx wrangler secret put GITHUB_CLIENT_ID       # paste at the prompt
-bunx wrangler secret put GITHUB_CLIENT_SECRET   # same
+bunx cf workers secrets update GITHUB_CLIENT_ID --text "<paste the client_id>"
+bunx cf workers secrets update GITHUB_CLIENT_SECRET --text "<paste the client_secret>"
 ```
 
-`secret put` takes effect immediately (no redeploy).
+(`secrets update --text` takes the value inline — cf has no interactive
+prompt — so prefer `read -s` + `--text "$VAR"` if you don't want it in your
+shell history.) The update takes effect immediately (no redeploy).
 
 ### 6. Smoke-check
 
@@ -111,7 +116,7 @@ curl <deploy-url>/auth/config
 # → {"githubClientId":"<your-client-id>","signupPolicy":"open"} means setup is complete
 #   (200 means both client_id and client_secret are registered)
 # → 503 {"_tag":"SetupIncomplete",...} means a secret put from step 5 was skipped
-#   (list registered secrets with `bunx wrangler secret list` — values are not shown)
+#   (list registered secrets with `bunx cf workers secrets list` — values are not shown)
 ```
 
 ### 7. Connect from the CLI
@@ -137,7 +142,7 @@ Generate 32 bytes of randomness as hex (64 characters) and register it as a
 Workers Secret:
 
 ```sh
-openssl rand -hex 32 | bunx wrangler secret put SERVER_ENC_KEY_IKM
+bunx cf workers secrets update SERVER_ENC_KEY_IKM --text "$(openssl rand -hex 32)"
 ```
 
 The server derives an X25519 keypair from this IKM deterministically (RFC 9180
@@ -201,15 +206,18 @@ in D1 — the operator's view).
 ### Changing the policy
 
 The policy lives in the `deployment_settings` D1 table. There is deliberately no
-admin UI or settings endpoint — change it with wrangler (takes effect
+admin UI or settings endpoint — change it with `cf` (takes effect
 immediately, no redeploy):
 
 ```sh
 cd apps/server
-bunx wrangler d1 execute maruhi --remote --command \
+bunx cf d1 query $(bun scripts/d1-id.ts) --sql \
   "INSERT INTO deployment_settings (key, value, updated_at) VALUES ('signup_policy', 'invite', unixepoch() * 1000) \
    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;"
 ```
+
+(`cf d1` subcommands take the database ID, not its name — `bun scripts/d1-id.ts`
+prints the ID configured in `cloudflare.config.ts`.)
 
 Verify with `curl <deploy-url>/auth/config` — the response reports the effective
 `signupPolicy`. **A mistyped value is treated as `closed` (fail-closed)**: a typo
@@ -229,7 +237,7 @@ bun run scripts/issue-signup-invite.ts --origin <deploy-url> [--days 7]
 
 The script prints the code, the sign-up link to send to the invitee
 (`<deploy-url>/auth/github/start?signup_code=…` — the link carries the code),
-and the `wrangler d1 execute` command that registers the hash. Send the code or
+and the `cf d1 query` command that registers the hash. Send the code or
 link over a private channel. The invitee signs up in the browser first, then
 runs `maruhi login`.
 
@@ -340,7 +348,8 @@ reading of the platform's "10 GB".
 The warning and rejection lines are **static messages**: they carry no project
 id (a project id is effectively a capability — AUTH_SPEC §11-2) and no user
 id. To find out which project is affected, use the Durable Object id in the
-Workers Logs / `wrangler tail` event envelope: it is `idFromName(projectId)`,
+Workers Logs / `wrangler tail` event envelope (cf has no tail command in the
+beta — wrangler remains installed for this): it is `idFromName(projectId)`,
 so you can compute it for a project a tenant reports and compare, but the log
 line itself never reveals the project. The hourly operations job (see
 "Backups and operations" below) additionally reports the **number** of projects
@@ -349,7 +358,7 @@ the place to look for the affected Durable Object.
 
 ## Backups and operations (optional)
 
-**Nothing in this section is required.** A plain `wrangler deploy` keeps
+**Nothing in this section is required.** A plain `cf deploy` keeps
 working exactly as before; the features below are opt-in for operators who want
 backups and alerting. Enabling them never changes what tenants can do — the
 product API and its acceptance rules are untouched.
@@ -358,8 +367,10 @@ product API and its acceptance rules are untouched.
 
 - **D1 Time Travel** — point-in-time recovery for the last 30 days (7 days on
   the Free plan) is always on, at no cost:
-  `wrangler d1 time-travel info maruhi --timestamp=<RFC3339>` shows a bookmark,
-  `wrangler d1 time-travel restore maruhi --bookmark=<bookmark>` restores it
+  `bunx cf d1 time-travel get-bookmark $(bun scripts/d1-id.ts) --timestamp <RFC3339>`
+  returns a bookmark,
+  `bunx cf d1 time-travel restore $(bun scripts/d1-id.ts) --bookmark <bookmark>`
+  restores it
   **in place** (destructive; in-flight queries are cancelled).
 - **Durable Object durability** — project contents live in replicated
   Durable Object storage. There is no platform-provided export or PITR for it,
@@ -367,7 +378,7 @@ product API and its acceptance rules are untouched.
 
 ### Recommended: periodic D1 export
 
-Run `wrangler d1 export maruhi --remote --output=<file>` on a schedule
+Run `bun scripts/d1-export.ts --output <file>` on a schedule
 (it blocks other requests to the database while it runs, so pick a quiet
 hour), encrypt the dump with a key you control (e.g. `age`), and keep it
 outside the Workers account. The export contains only what D1 contains: user
@@ -384,7 +395,7 @@ permission edits to propagate.
 
 #### Restoring a D1 export
 
-`wrangler d1 export` writes each table as `CREATE TABLE` followed by its
+A D1 export writes each table as `CREATE TABLE` followed by its
 `INSERT`s, in table-creation order — so child tables (e.g. `api_tokens`, which
 references `users`) appear **before** their parents, and the leading
 `PRAGMA defer_foreign_keys=TRUE` is not honoured by the import path. Importing
@@ -393,8 +404,8 @@ the dump as-is fails with `no such table: main.users`. Reorder it first:
 ```sh
 age -d -i <keyfile> -o d1.sql d1/<timestamp>.sql.age       # decrypt (operator machine)
 bun scripts/reorder-d1-dump.ts d1.sql d1.ordered.sql       # from apps/server
-wrangler d1 create maruhi-restored                          # a NEW database — never import over a live one
-wrangler d1 execute maruhi-restored --remote --file=d1.ordered.sql -y
+bunx cf d1 create --name maruhi-restored                   # a NEW database — never import over a live one
+bun scripts/d1-import.ts <new-database-id> --file d1.ordered.sql
 rm d1.sql d1.ordered.sql                                    # the decrypted dump is operator data — do not keep it around
 ```
 
@@ -402,7 +413,8 @@ The script puts every `CREATE TABLE` first, then the `INSERT`s in foreign-key
 order (parents before children), then the indexes, and drops `BEGIN`/`COMMIT`.
 Compare per-table `select count(*)` against the source afterwards (a few tables
 per statement — D1 caps the number of terms in a compound `SELECT`), then point
-`database_id` in `wrangler.jsonc` at the new database and redeploy.
+the `DB` binding's `id` in `cloudflare.config.ts` at the new database and
+redeploy.
 
 ### Optional: project snapshots to R2 and trip-wire alerts
 
@@ -433,27 +445,27 @@ To enable both on your deployment:
 
 ```sh
 # 1. Create the bucket (requires R2 to be enabled on the account) and a retention rule
-#    (the rule name is a required positional argument; the bucket also comes with a
-#    default 7-day "abort incomplete multipart" rule)
-wrangler r2 bucket create maruhi-ops-backup
-wrangler r2 bucket lifecycle add maruhi-ops-backup retain-35d --expire-days 35 --abort-multipart-days 1
-wrangler r2 bucket dev-url get maruhi-ops-backup            # must say public access is disabled
+#    (the bucket also comes with a default 7-day "abort incomplete multipart" rule)
+bunx cf r2 buckets create-by-name maruhi-ops-backup
+bunx cf r2 buckets lifecycle update maruhi-ops-backup --rules '[{"id":"retain-35d","enabled":true,"expire_objects":{"days":35},"abort_multipart_uploads":{"days":1}}]' -f
+bunx cf r2 buckets domains managed list maruhi-ops-backup            # must say public access is disabled
 
-# 2. Deploy the `hosted` environment, which adds the R2 binding, Workers Logs and a
-#    higher CPU limit for large snapshots (see the `env.hosted` block in wrangler.jsonc;
-#    put your D1 database_id there and register the same secrets with --env hosted).
-#    Note: a named environment publishes a separate Worker, `maruhi-server-hosted`
-#    (Wrangler's `<name>-<environment>` rule) — the restore worker binds to that name.
+# 2. Deploy the `hosted` mode, which adds the R2 binding, Workers Logs and a
+#    higher CPU limit for large snapshots (see `case "hosted"` in
+#    cloudflare.config.ts; put your D1 database ID there and register the same
+#    secrets with --mode hosted).
+#    Note: a named mode publishes a separate Worker, `maruhi-server-hosted`
+#    (the `<name>-<mode>` rule) — the restore worker binds to that name.
 #    Workers Logs is enabled there with invocation logs turned OFF: the default
 #    invocation log records request URLs, which carry project ids (capabilities)
-#    and OAuth codes — keep `observability.logs.invocation_logs: false` and
-#    `observability.redact_query_string: true` (drops query strings from any
+#    and OAuth codes — keep `observability.logs.invocationLogs: false` and
+#    `observability.redactQueryString: true` (drops query strings from any
 #    URL that does reach logs or traces)
-wrangler secret put GITHUB_CLIENT_ID --env hosted
-wrangler secret put GITHUB_CLIENT_SECRET --env hosted
-wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted   # optional
-wrangler d1 migrations apply DB --remote --env hosted
-wrangler deploy --env hosted
+bunx cf workers secrets update GITHUB_CLIENT_ID --text "<value>" --mode hosted
+bunx cf workers secrets update GITHUB_CLIENT_SECRET --text "<value>" --mode hosted
+bunx cf workers secrets update OPS_ALERT_WEBHOOK_URL --text "<value>" --mode hosted   # optional
+bun run db:migrate:hosted
+bunx cf deploy --mode hosted
 ```
 
 The hourly job records its progress in the D1 tables `ops_backups`,
@@ -463,27 +475,28 @@ audit log (`AUDIT_SPEC.md`) never receives operational events.
 ### Restoring a project snapshot
 
 Restores are an operator-only path with **no HTTP surface**: a separate,
-temporary Worker (`wrangler.restore.jsonc`) polls the bucket for job files and
-writes the result back to the bucket. It can only write into an **empty**
-Durable Object — there is no path that overwrites a live project.
+temporary Worker (the `restore` mode of `cloudflare.config.ts`) polls the
+bucket for job files and writes the result back to the bucket. It can only
+write into an **empty** Durable Object — there is no path that overwrites a
+live project.
 
 ```sh
 # Deploy the restore worker only for the duration of the operation
-wrangler deploy -c wrangler.restore.jsonc
+bunx cf deploy --mode restore
 # Ask for a restore (target "drill" restores into a scratch namespace for rehearsals)
 echo '{"objectKey":"do/<id>/<timestamp>.ndjson.gz","target":"production"}' > job.json
-wrangler r2 object put maruhi-ops-backup/restore/jobs/job-1.json --file job.json --remote
+bunx cf r2 objects put restore/jobs/job-1.json --bucket-name maruhi-ops-backup --file job.json --content-type application/json
 # Within a minute the job is claimed (moved to restore/running/) and the result appears;
 # compare it with the snapshot's trailer line. A job left under restore/running/ with no
 # result means the worker died mid-restore: check the target DO before resubmitting
-wrangler r2 object get maruhi-ops-backup/restore/results/job-1.json --pipe --remote
+bunx cf r2 objects get restore/results/job-1.json --bucket-name maruhi-ops-backup --text
 # Remove the restore worker again
-wrangler delete -c wrangler.restore.jsonc
+bunx cf workers delete maruhi-restore --force
 ```
 
 The result reports the restored chain head, the audit head hash and per-table
 row counts; the snapshot's last line (its trailer) carries the same values for
-comparison (`wrangler r2 object get maruhi-ops-backup/<objectKey> --pipe --remote | gunzip | tail -1`).
+comparison (`bunx cf r2 objects get <objectKey> --bucket-name maruhi-ops-backup | gunzip | tail -1`).
 The trailer's `auditHeadHashHex` is `null` when the snapshot was taken before
 the audit-head column had been materialized; in that case compare the restored
 value with the live project's `GET /projects/:id/audit-head` (or recompute it
@@ -505,7 +518,7 @@ All four already have server-side defenses (input size caps, stateless MAC
 verification before any lookup, a fixed window per project, and a TTL cache for
 JWKS).
 
-**Since 2026-08-24 the default `wrangler.jsonc` also ships per-source-IP Workers
+**Since 2026-08-24 the default deploy config also ships per-source-IP Workers
 Rate Limiting bindings** for all paths in the table below — the same limits
 it recommends — so a default deploy now enforces them by itself (Cloudflare's
 docs list no plan requirement for the binding at the time of writing; if your
@@ -529,8 +542,8 @@ shared runners funneling many lease calls through one address, or a whole team
 logging in behind one office NAT — the per-IP defaults can throttle it (429).
 The per-colo counting already makes the effective ceiling looser than the
 nominal number, but if you still hit it, raise the `limit` values in
-`wrangler.jsonc` (or remove the binding entries) to match your traffic shape;
-the server fails open when a binding is absent.
+`cloudflare.config.ts` (or remove the binding entries) to match your traffic
+shape; the server fails open when a binding is absent.
 
 Add the following in the dashboard under Security → WAF → Rate limiting rules.
 **The Free plan allows only one rule, so in that case pick
@@ -559,14 +572,14 @@ cd apps/server
 bun run deploy   # apply migrations → deploy (always this order, automatic)
 ```
 
-Commit the local edit to `wrangler.jsonc` from step 2 (`database_id`) to your
-own fork (if upstream changes this file, `git pull` will collide with an
-uncommitted edit. If you do not commit it, re-apply the edit after pull).
+Commit the local edit to `cloudflare.config.ts` from step 2 (the database ID)
+to your own fork (if upstream changes this file, `git pull` will collide with
+an uncommitted edit. If you do not commit it, re-apply the edit after pull).
 client_id / client_secret live in Workers Secrets, so updates do not touch them.
 
-**Config-carrying updates**: some changes ship as `wrangler.jsonc` changes
-(bindings such as the per-IP rate limits), not just code. They take effect only
-after you redeploy with the updated `wrangler.jsonc`, so pull the config file
+**Config-carrying updates**: some changes ship as `cloudflare.config.ts`
+changes (bindings such as the per-IP rate limits), not just code. They take
+effect only after you redeploy with the updated config, so pull the config
 too, not just the code.
 
 Update the server before the CLIs: a CLI assumes a server of the same release
@@ -576,10 +589,10 @@ or newer.
 
 - **`/auth/config` / `/auth/github/start` / `/auth/cli/start` return 503
   `SetupIncomplete`**: either `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` is
-  unregistered (a missed `wrangler secret put` — step 5. If this happened after
-  updating an instance stood up with the old steps, see the migration in
-  "Updates"). List registered secrets with `bunx wrangler secret list` (values
-  are not shown)
+  unregistered (a missed `cf workers secrets update` — step 5. If this
+  happened after updating an instance stood up with the old steps, see the
+  migration in "Updates"). List registered secrets with
+  `bunx cf workers secrets list` (values are not shown)
 - **CLI login's verification link shows "This sign-in link can't be used"**:
   the link expired (flows last 15 minutes), was already used, or was edited in
   transit. Run `maruhi login` again for a fresh link
@@ -604,35 +617,40 @@ or newer.
   `maruhi server grant` says "The server has no deployment keypair configured"**:
   `SERVER_ENC_KEY_IKM` is unregistered, or the value is not 64 hex characters
   (a malformed value is treated as unset — this is not a 503).
-  Pipe the output of `openssl rand -hex 32` straight into `wrangler secret put`
-  (watch for stray newlines or quotes)
+  Pass the output of `openssl rand -hex 32` to `cf workers secrets update
+  --text "$(openssl rand -hex 32)"` (watch for stray newlines or quotes)
 
 ## Notes
 
 - **Rotating client_secret**: issue a new secret on the GitHub side →
-  `wrangler secret put GITHUB_CLIENT_SECRET` (put takes effect immediately; no
-  redeploy) → delete the old secret on the GitHub side
-- **Custom domain**: you may add `routes` to `wrangler.jsonc`. The OAuth callback
-  is derived from the request origin, so **update the GitHub OAuth App callback
-  URL to the same domain**
+  `cf workers secrets update GITHUB_CLIENT_SECRET --text "<new value>"`
+  (takes effect immediately; no redeploy) → delete the old secret on the
+  GitHub side
+- **Custom domain**: you may add `domains` to `cloudflare.config.ts` (the
+  hosted mode uses it for `my.maruhi.app`). The OAuth callback is derived
+  from the request origin, so **update the GitHub OAuth App callback URL to
+  the same domain**
 - **Deploy to Cloudflare button**: planned for the README after the repository
   goes public (Phase 2). Prerequisite work for the button (folding migrations
-  into deploy, referring to the binding name, and putting client_id in a secret
-  so post-deploy setup is just secret put ×2) is done.
+  into deploy, resolving the database ID from the deploy config, and putting
+  client_id in a secret so post-deploy setup is just two secret updates) is
+  done — with one re-verification item: whether the button understands
+  `cloudflare.config.ts` (it predates cf and was designed around wrangler
+  configs).
   Three points remain unverified and can only be verified against a public
   repository, so they will be checked at public release:
-  (1) whether the button's monorepo support detects `apps/server/wrangler.jsonc`
-  from the repository-root URL and auto-provisions D1. (2) whether the button's
-  build pipeline runs the `apps/server` `deploy` script (including migrations) —
-  if it falls back to a plain `wrangler deploy`, the app is published with
-  migrations unapplied and every endpoint that touches the DB returns 500.
-  The setup page will likely need the deploy command overridden. (3) whether the
-  button's provisioning replaces the committed placeholder
-  `database_id` (`00000000-…`) with the real ID —
-  Cloudflare's docs recommend documenting a default and "update the config with
-  the ID of the newly created resource", but wrangler's own auto-provisioning
-  uses a filled-in database_id as-is, so if the button does not replace it the
-  deploy fails with an API error against a UUID that does not exist (in that
-  case the placeholder has to be removed)
+  (1) whether the button's monorepo support detects
+  `apps/server/cloudflare.config.ts` from the repository-root URL and
+  auto-provisions D1. (2) whether the button's build pipeline runs the
+  `apps/server` `deploy` script (including migrations) — if it falls back to
+  a plain `cf deploy`, the app is published with migrations unapplied and
+  every endpoint that touches the DB returns 500.
+  The setup page will likely need the deploy command overridden. (3) whether
+  the button's provisioning replaces the committed placeholder
+  database ID (`00000000-0000-4000-8000-…`) with the real ID —
+  Cloudflare's docs recommend documenting a default and "update the config
+  with the ID of the newly created resource", so if the button does not
+  replace it the deploy fails with an API error against a UUID that does not
+  exist (in that case the placeholder has to be removed)
 - For the API spec including non-auth endpoints see `docs/AUTH_SPEC.md` (Japanese); for the
   crypto spec see `docs/CRYPTO_SPEC.md` (Japanese)

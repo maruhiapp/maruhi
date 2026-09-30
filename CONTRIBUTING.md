@@ -21,14 +21,14 @@ Thanks for your interest in contributing to maruhi. Issues and pull requests are
 ### Running locally
 
 - Dashboard: `bun run --filter @maruhi/web dev` (Vite, port 5173). The dev server answers 404 to requests without an `Accept: text/html` header, so add `-H "Accept: text/html"` when checking it with curl
-- Server: `cd apps/server && bun x wrangler dev`
+- Server: `cd apps/server && bun x cf dev`
 - Docs site: `bun run --filter @maruhi/site dev`
 - CLI: `cd apps/cli && bun src/bin.ts --help`
 
 ### Tests
 
 - `bun run test` runs the unit and integration suites of every package (server tests run in workerd through `@cloudflare/vitest-plugin`)
-- It does **not** run the end-to-end suites of `apps/web` and `apps/site`. They need a build first and start their own `wrangler dev`; CI runs them as separate steps:
+- It does **not** run the end-to-end suites of `apps/web` and `apps/site`. They need a build first and start their own `cf dev`; CI runs them as separate steps:
   - `bun run --filter @maruhi/web build && bun run --filter @maruhi/web e2e`
   - `bun run --filter @maruhi/site build && bun run --filter @maruhi/site e2e`
 - To run one package or one file: `cd apps/cli && bun x vitest run test/push.test.ts`

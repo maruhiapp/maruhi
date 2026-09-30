@@ -15,7 +15,7 @@ const publicOrigin = (process.env["MARUHI_WEB_ORIGIN"] ?? "https://my.maruhi.app
   "",
 );
 const description =
-  "Diskless, end-to-end encrypted secrets manager on Cloudflare. Self-hostable with a single wrangler deploy.";
+  "Diskless, end-to-end encrypted secrets manager on Cloudflare. Self-hostable with a single cf deploy.";
 
 export default function Root({ children }: { children: React.ReactNode }) {
   return (
