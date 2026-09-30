@@ -78,7 +78,8 @@ describe("serving topology (W2 ruling BM): run_worker_first covers the whole API
       uncovered,
       "an api-schema endpoint is not covered by run_worker_first — " +
         "navigation requests are silently swallowed by the SPA shell's 200 (session-43 §9). " +
-        "Add the prefix to assets.run_worker_first in apps/server/wrangler.jsonc",
+        "Add the prefix to assets.run_worker_first in apps/server/wrangler.jsonc " +
+        "and to SPA_ASSETS.runWorkerFirst in apps/server/cloudflare.config.ts",
     ).toEqual([]);
   });
 

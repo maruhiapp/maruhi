@@ -20,15 +20,15 @@ export const rpcCall = <T>(call: () => PromiseLike<unknown>): Effect.Effect<T> =
 /**
  * The period (seconds) of the ratelimits binding's fixed window.
  * Since period cannot be read from the binding, **keep it in sync
- * manually** with `ratelimits[].simple.period` in wrangler.jsonc
- * (used for the 429 response's retryAfterSeconds / the Retry-After
- * header).
+ * manually** with the `rateLimit` bindings' `simple.period` in
+ * cloudflare.config.ts (used for the 429 response's
+ * retryAfterSeconds / the Retry-After header).
  * Changing only one side makes the advertised wait drift from the
  * real window (the limit itself still works — a convenience-side
  * degradation, not a safety one). It cannot be enforced by types or
- * tests (wrangler config is unreadable at runtime and workerd tests
- * cannot read files), so the pair is marked by comments on both
- * sides (wrangler.jsonc carries the same note).
+ * tests (the deploy config is unreadable at runtime and workerd
+ * tests cannot read files), so the pair is marked by comments on
+ * both sides (cloudflare.config.ts carries the same note).
  */
 export const IP_RATE_LIMIT_PERIOD_SECONDS = 60;
 
@@ -154,7 +154,7 @@ function groupsOfPiece(piece: string, ipv4Allowed: boolean): readonly string[] |
  * - A missing CF-Connecting-IP passes as unattributable. On the
  *   production Cloudflare path it is a header the edge always
  *   **overwrites**, leaving no room for client spoofing; it is absent
- *   only on direct arrival (wrangler dev, tests)
+ *   only on direct arrival (cf dev, tests)
  * - A failure of the limiter itself passes too (auth and lease
  *   paths must not halt wholesale on a limiter failure)
  */

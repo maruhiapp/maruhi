@@ -1,8 +1,8 @@
 // e2e for the apex site (LP + docs — Blume). The built dist (+
-// scripts/postbuild.ts's _headers) is served under **the same wrangler
-// config as production** (apps/site/wrangler.jsonc — Workers Static Assets
-// only), and Playwright (Chromium) pins the following (the verification
-// items of docs/notes/web-design-pass.md §4):
+// scripts/postbuild.ts's _headers) is served under **the same cf
+// config as production** (apps/site/cloudflare.config.ts — Workers Static
+// Assets only), and Playwright (Chromium) pins the following (the
+// verification items of docs/notes/web-design-pass.md §4):
 //   1. all requests same-origin (zero outbound traffic — "say nothing")
 //   2. zero CSP violations; `script-src 'self'` / `style-src 'self'`
 //      baseline with no 'unsafe-inline'
@@ -11,7 +11,7 @@
 //   4. the vermilion accent matches DP1's theme values in light / dark
 //      (system-following)
 //   5. `/docs` opens, and trailing-slash normalization plus the 404 behave
-//      as wrangler.jsonc configures
+//      as cloudflare.config.ts configures
 // Requires `bun run build` beforehand.
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -76,7 +76,7 @@ async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
     ]);
     if (timedOut) {
       console.error(
-        `wrangler dev did not exit within 10s of SIGTERM; sending SIGKILL\n--- wrangler output ---\n${wranglerOutput()}`,
+        `cf dev did not exit within 10s of SIGTERM; sending SIGKILL\n--- cf dev output ---\n${wranglerOutput()}`,
       );
       proc.kill("SIGKILL");
       await exited;
@@ -90,7 +90,7 @@ async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
 beforeAll(async () => {
   const port = await getFreePort();
   BASE = `http://127.0.0.1:${port}`;
-  wranglerProcess = spawn("bunx", ["wrangler", "dev", "--port", String(port)], {
+  wranglerProcess = spawn("bunx", ["cf", "dev", "--port", String(port)], {
     cwd: import.meta.dirname + "/..",
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, CI: "1" },
@@ -101,10 +101,9 @@ beforeAll(async () => {
     await waitForServer(BASE, 60_000);
   } catch (cause) {
     await stopWrangler(wranglerProcess);
-    throw new Error(
-      `wrangler dev did not become ready\n--- wrangler output ---\n${wranglerOutput()}`,
-      { cause },
-    );
+    throw new Error(`cf dev did not become ready\n--- cf dev output ---\n${wranglerOutput()}`, {
+      cause,
+    });
   }
   // In environments that cannot download a browser (Claude Code on the web
   // etc.), the preinstalled Chromium's path arrives via
@@ -136,7 +135,7 @@ const foreignOrigins = (requests: string[]): string[] =>
 
 const themeCss = readFileSync(new URL("../theme.css", import.meta.url), "utf8");
 
-describe("site e2e: headers (Workers Static Assets — apps/site/wrangler.jsonc)", () => {
+describe("site e2e: headers (Workers Static Assets — apps/site/cloudflare.config.ts)", () => {
   it("serves the landing page with a self-only CSP and security headers", async () => {
     const res = await fetch(BASE);
     expect(res.status).toBe(200);

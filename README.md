@@ -2,7 +2,7 @@
 
 A general-purpose, diskless secrets manager that runs on Cloudflare.
 
-- **Self-hostable** — a serverless stack (Workers + Durable Objects + D1) that comes up on your own Cloudflare account with a single `wrangler deploy`
+- **Self-hostable** — a serverless stack (Workers + Durable Objects + D1) that comes up on your own Cloudflare account with a single `cf deploy`
 - **E2EE (zero-knowledge) by default** — encryption and decryption happen entirely on the client; plaintext secrets never reach the server
 - **Diskless CLI** — `maruhi run -- <cmd>` injects values into a child process's environment in memory only, and never writes plaintext to disk
 

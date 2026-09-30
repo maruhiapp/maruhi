@@ -2,8 +2,8 @@
 // docs/notes/hosted-ops.md §2-E / §5-2.
 //
 // Deployed only during a restore operation via
-// `wrangler deploy -c wrangler.restore.jsonc`, and deleted afterward
-// via `wrangler delete -c wrangler.restore.jsonc`. It has no HTTP
+// `cf deploy --mode restore`, and deleted afterward
+// via `cf workers delete maruhi-restore`. It has no HTTP
 // handler: it is driven by an every-minute cron, and its only work is
 // enumerating `restore/jobs/<name>.json` in the evacuation bucket,
 // executing them, and writing results (static code + verified values)
@@ -31,7 +31,7 @@ export class RestoreDrillDO extends ProjectChainDOClass {}
 
 export interface RestoreEnv {
   readonly OPS_BACKUP_BUCKET: R2Bucket;
-  /** The production worker's namespace (the script_name binding in wrangler.restore.jsonc). */
+  /** The production worker's namespace (the scriptName binding in the restore mode of cloudflare.config.ts). */
   readonly PRODUCTION_PROJECT_CHAIN?: DurableObjectNamespace<ProjectChainDO>;
   readonly DRILL_PROJECT_CHAIN?: DurableObjectNamespace<RestoreDrillDO>;
 }

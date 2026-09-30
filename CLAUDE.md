@@ -1,7 +1,7 @@
 # CLAUDE.md — maruhi
 
 maruhi (㊙) is a general-purpose diskless secrets manager running on Cloudflare.
-It is self-hostable (a single `wrangler deploy` into the user's own CF account)
+It is self-hostable (a single `cf deploy` into the user's own CF account)
 and serverless. E2EE (zero-knowledge) is the default. The brand spelling is
 always lowercase `maruhi`.
 
@@ -110,7 +110,7 @@ leaks every secret. Therefore:
 | DB | Drizzle v1 (`drizzle-kit` migrations, confined inside the Effect service boundary). D1 + DO SQLite |
 | Frontend | React + FunStack (funstack-static + funstack-router) + Astryx (StyleX-based. ADR-0013) |
 | CLI | `effect/unstable/cli` + Effect. gunshi is retired (ADR-0016). HttpApi-derived typed client |
-| IaC | Current deploys are plain wrangler. Alchemy v2 is decided (ADR-0012) but not yet adopted. The self-hosted artifact stays wrangler |
+| IaC | Current deploys are the plain `cf` CLI (Cloudflare's wrangler successor — the deployment config is `cloudflare.config.ts`; `wrangler.jsonc` stays as the test-harness config). Alchemy v2 is decided (ADR-0012) but not yet adopted. The self-hosted artifact stays `cf` |
 | LP / docs | Blume (ADR-0008 revision 1 — the LP is also Blume). `apps/site` = apex `maruhi.app` (LP `/` + docs `/docs`). Separate deploy from the product origin `my.maruhi.app` |
 | Lint/Format | oxlint + oxfmt + ImportLint + fallow + React Doctor |
 
@@ -125,7 +125,7 @@ apps/
   server/        # Workers + DO + D1. Effect HttpApi
   cli/           # `effect/unstable/cli` + Effect. `maruhi` / `mh` binaries
   web/           # FunStack dashboard (product origin my.maruhi.app)
-  site/          # Blume. LP (/) + docs (/docs) on apex maruhi.app. Independent wrangler config
+  site/          # Blume. LP (/) + docs (/docs) on apex maruhi.app. Independent cf config
 ```
 
 ## Quality gate (always pass before committing)

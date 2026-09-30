@@ -1,7 +1,7 @@
 # Quality gate (same order as the steps in CLAUDE.md) + web integration steps
 # 0. English source check → 1. oxfmt → 2. oxlint → 3. tsc → 4. ImportLint →
 # 5. fallow → 6. React Doctor → 7. tests → 8. web build (8d/8e = apex site)
-# → 9. web e2e / 9b. site e2e (wrangler dev + Playwright) → 10. astryx doctor
+# → 9. web e2e / 9b. site e2e (cf dev + Playwright) → 10. astryx doctor
 # → 11. crypto 3-environment tests (workerd / browser / Bun — CRYPTO_SPEC §11)
 name: ci
 
@@ -30,9 +30,12 @@ permissions:
 
 env:
   # The "say nothing" principle (CLAUDE.md) applies to the maintainer-side CI
-  # too: disable telemetry for wrangler / alchemy / other tools in one place
+  # too: disable telemetry for cf / wrangler / alchemy / other tools in one
+  # place (cf delegates its build/dev internals to the workspace wrangler, so
+  # WRANGLER_SEND_METRICS stays)
   DO_NOT_TRACK: "1"
   WRANGLER_SEND_METRICS: "false"
+  CF_SEND_TELEMETRY: "false"
 
 jobs:
   check:
@@ -151,31 +154,34 @@ jobs:
       # Config validity check for the combined serving layout (W2 ruling BM —
       # server bundles the web assets). A credential-free local verification
       # that follows the same path as a deploy to confirm the assets directory
-      # exists and wrangler.jsonc is consistent (path-space coverage is checked
-      # by apps/server/test/serving-topology.test.ts in step 7)
+      # exists and cloudflare.config.ts is consistent (path-space coverage is
+      # checked by apps/server/test/serving-topology.test.ts in step 7)
       - name: 8b. Server deploy dry-run (combined assets config)
-        run: bunx wrangler deploy --dry-run
+        run: bunx cf deploy --dry-run
         working-directory: apps/server
         env:
           WRANGLER_SEND_METRICS: "false"
+          CF_SEND_TELEMETRY: "false"
 
       # Ops foundation H3 (docs/notes/hosted-ops.md §2-F): check the hosted
       # environment and the restore worker through the same path, and confirm
       # via scripts/check-hosted-config.ts that the hosted environment has not
-      # drifted from the outermost bindings
+      # drifted from the outermost bindings. The environments wrangler's
+      # `--env` selected are cf `--mode`s of one cloudflare.config.ts
       - name: 8c. Hosted / restore config dry-run + drift check
         working-directory: apps/server
         env:
           WRANGLER_SEND_METRICS: "false"
+          CF_SEND_TELEMETRY: "false"
         run: |
-          bunx wrangler deploy --dry-run --env hosted
-          bunx wrangler deploy --dry-run -c wrangler.restore.jsonc
+          bunx cf deploy --dry-run --mode hosted
+          bunx cf deploy --dry-run --mode restore
           bun scripts/check-hosted-config.ts
 
       # apex site (apps/site — Blume. LP + docs, DP2). Runs blume build +
       # scripts/postbuild.ts (style-attribute externalization, inline-hash CSP,
       # zero-external-reference mechanical checks, _headers) through the build
-      # path, then validates the standalone wrangler config (maruhi-site —
+      # path, then validates the standalone cf config (maruhi-site —
       # Static Assets only) with the same dry-run as the product Worker (8b).
       # Blume runs on Bun via bunx --bun (avoids depending on the CI's Node
       # version for its Node 22.12+ requirement — web-design-pass.md §4 ruling J)
@@ -189,10 +195,11 @@ jobs:
         run: bun run --filter @maruhi/site validate
 
       - name: 8e. Site deploy dry-run (static assets config)
-        run: bunx wrangler deploy --dry-run
+        run: bunx cf deploy --dry-run
         working-directory: apps/site
         env:
           WRANGLER_SEND_METRICS: "false"
+          CF_SEND_TELEMETRY: "false"
 
       # Playwright browser install (shared by the browser tests in step 9 / 9b /
       # 11). The old layout (playwright install --with-deps inside step 9 every
@@ -272,14 +279,14 @@ jobs:
       # Per-step timeout: on a hang (actual incident on 2026-08-19, run
       # 32217317312), fail fast on the step limit rather than the 30-minute job
       # limit (set to measured time + headroom)
-      - name: 9. Web e2e (wrangler dev + Playwright)
+      - name: 9. Web e2e (cf dev + Playwright)
         timeout-minutes: 5
         run: bun run --filter @maruhi/web e2e
 
-      # apex site e2e (wrangler dev + Playwright): every request same-origin,
+      # apex site e2e (cf dev + Playwright): every request same-origin,
       # zero CSP violations, self-hosted fonts, light/dark accent, /docs
       # reachable, trailing-slash / 404 (assumes the dist from step 8d)
-      - name: 9b. Site e2e (wrangler dev + Playwright)
+      - name: 9b. Site e2e (cf dev + Playwright)
         timeout-minutes: 5
         run: bun run --filter @maruhi/site e2e
 

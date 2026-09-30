@@ -22,11 +22,12 @@
   // apps/server/scripts are ops scripts operators run directly via bun run
   // (issuing signup invite codes — AUTH_SPEC §3); product code never imports
   // them, so they are declared manually.
-  // apps/server/src/restore-worker.ts is the `main` of wrangler.restore.jsonc
-  // (the restore worker — docs/notes/hosted-ops.md §2-E), a separate entry not
-  // imported from index.ts.
-  // apps/site: the Blume CLI reads blume.config.ts and scripts/ are invoked
-  // directly via bun run.
+  // apps/server/src/restore-worker.ts is the entrypoint of the `restore`
+  // mode in cloudflare.config.ts (the restore worker — docs/notes/hosted-ops.md
+  // §2-E), a separate entry not imported from index.ts.
+  // apps/site: the Blume CLI reads blume.config.ts, scripts/ are invoked
+  // directly via bun run, and cloudflare.config.ts / wrangler.config.ts are
+  // the cf deploy / bundler shim configs read by the CLIs themselves.
   // apps/site/test/unit/shims are fake vendor CLIs launched over PATH by the
   // docs recipe checks (recipes.test.ts) (the bin/ sh wrappers run them under
   // bun); never imported, so declared manually.
@@ -43,6 +44,8 @@
     "apps/server/scripts/*.ts",
     "apps/server/src/restore-worker.ts",
     "apps/site/blume.config.ts",
+    "apps/site/cloudflare.config.ts",
+    "apps/site/wrangler.config.ts",
     "apps/site/scripts/*.ts",
     "apps/site/vitest.unit.config.ts",
     "apps/site/test/unit/*.test.ts",

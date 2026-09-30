@@ -180,7 +180,7 @@ export interface Env {
   /**
    * The destination of DO → R2 evacuations (docs/notes/hosted-ops.md
    * §2-D / §2-F). An optional binding only the hosted environment
-   * (`wrangler deploy --env hosted`) has. Absent = never evacuates (the
+   * (`cf deploy --mode hosted`) has. Absent = never evacuates (the
    * self-hosted default; the sweep leaves a static one line and is a
    * no-op).
    */

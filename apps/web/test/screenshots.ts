@@ -3,7 +3,7 @@
 //
 // No preview routes or mock data are mixed into the shipped app: only
 // the API is swapped via the same page.route as e2e, and the real
-// serving (wrangler dev) is rendered by Chromium. Shot in 3 modes —
+// serving (cf dev) is rendered by Chromium. Shot in 3 modes —
 // light / dark / mobile (390px) — and fails on any CSP violation. The
 // empty state (`empty`) of each collection is also shot — every
 // fixture is non-empty, so the empty states are never rendered unless

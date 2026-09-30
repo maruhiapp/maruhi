@@ -1,4 +1,4 @@
-// Reorders a `wrangler d1 export` dump into an importable order (operations
+// Reorders a `cf d1 export` dump into an importable order (operations
 // runbook — docs/notes/hosted-ops.md §5-1 (3) / docs/SELF_HOSTING.md
 // "Restoring a D1 export").
 //
@@ -8,7 +8,7 @@
 //   INSERTs" blocks, so INSERTs of a child table (api_tokens etc.) appear
 //   before the foreign-key parent table (users)
 // - the leading `PRAGMA defer_foreign_keys=TRUE` does not take effect on the
-//   `wrangler d1 execute --file` import path — it stops with
+//   file import path (scripts/d1-import.ts) — it stops with
 //   `no such table: main.users` / `FOREIGN KEY constraint failed`
 // So reorder to (1) all CREATE TABLEs -> (2) INSERTs in foreign-key parent ->
 // child order -> (3) CREATE INDEXes. BEGIN / COMMIT are dropped (D1 import

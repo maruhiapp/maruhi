@@ -1,5 +1,5 @@
 // e2e verification. The built dist/public is served in the
-// **combined configuration (apps/server's wrangler dev — the same
+// **combined configuration (apps/server's cf dev — the same
 // maruhi-server as production serving it as Workers Static Assets.
 // Rulings BM/BT — docs/notes/session-43.md)**, and Playwright
 // (Chromium) verifies:
@@ -13,7 +13,7 @@
 //   5. The serving topology (run_worker_first's API reach, the SPA
 //      fallback, per-path headers) pinned against the **deployed real
 //      configuration** (ruling BT. preview uses the same
-//      configuration too — a single wrangler config in apps/server —
+//      configuration too — a single cf config in apps/server —
 //      ruling BX)
 // Requires `bun run build` beforehand. Since the API is mocked inside
 // the test via page.route (ruling BS), the local server needs no D1 /
@@ -85,7 +85,7 @@ let BASE: string;
 let wranglerProcess: ChildProcess;
 let browser: Browser;
 
-// wrangler's output is not discarded (stdio: "ignore" would leave no
+// cf dev's output is not discarded (stdio: "ignore" would leave no
 // clues at all) — it goes into a buffer that is printed when (1) the
 // startup wait fails after 60 seconds or (2) SIGTERM has not worked
 // after 10 seconds (when the step's timeout-minutes is reached the
@@ -113,7 +113,7 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
 }
 
 // Falls back to SIGKILL when SIGTERM does not end it. With SIGTERM
-// alone, a lingering wrangler keeps the vitest process from exiting
+// alone, a lingering dev server keeps the vitest process from exiting
 // and CI has actually hung to the job limit (30 minutes), not the
 // step's
 async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
@@ -128,18 +128,18 @@ async function stopWrangler(proc: ChildProcess | undefined): Promise<void> {
     ]);
     if (timedOut) {
       console.error(
-        `wrangler dev did not exit within 10s of SIGTERM; sending SIGKILL\n--- wrangler output ---\n${wranglerOutput()}`,
+        `cf dev did not exit within 10s of SIGTERM; sending SIGKILL\n--- cf dev output ---\n${wranglerOutput()}`,
       );
       proc.kill("SIGKILL");
       await exited;
     }
   } finally {
-    // Unconditionally close the pipe's read end: if a wrangler
+    // Unconditionally close the pipe's read end: if a dev-server
     // descendant survives holding the write end, EOF never arrives and
     // the ref'd handle keeps vitest from exiting (a hang path created
     // by piping stdio).
     // The early-return side also takes this path to cover the case
-    // where wrangler itself dies first and only descendants remain
+    // where the dev server itself dies first and only descendants remain
     proc.stdout?.destroy();
     proc.stderr?.destroy();
   }
@@ -149,9 +149,10 @@ beforeAll(async () => {
   const port = await getFreePort();
   BASE = `http://127.0.0.1:${port}`;
   // The combined configuration (ruling BT): the thing deployed to
-  // production is apps/server/wrangler.jsonc (assets bundled), and e2e
-  // boots that very thing as the serving layer
-  wranglerProcess = spawn("bunx", ["wrangler", "dev", "--port", String(port)], {
+  // production is apps/server/cloudflare.config.ts (assets bundled), and e2e
+  // boots that very thing as the serving layer (`cf dev` runs the same
+  // workerd dev server wrangler dev does)
+  wranglerProcess = spawn("bunx", ["cf", "dev", "--port", String(port)], {
     cwd: import.meta.dirname + "/../../server",
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, CI: "1" },
@@ -162,10 +163,9 @@ beforeAll(async () => {
     await waitForServer(BASE, 60_000);
   } catch (cause) {
     await stopWrangler(wranglerProcess);
-    throw new Error(
-      `wrangler dev did not become ready\n--- wrangler output ---\n${wranglerOutput()}`,
-      { cause },
-    );
+    throw new Error(`cf dev did not become ready\n--- cf dev output ---\n${wranglerOutput()}`, {
+      cause,
+    });
   }
   // In environments that cannot download a browser (Claude Code on
   // the web etc.), the preinstalled Chromium's path is received via
@@ -261,7 +261,7 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
   // standalone static asset outside the SPA + a per-path CSP
   // `script-src 'none'`. "Carries no script at all and never
   // interprets the fragment" is pinned against the real serving
-  // (wrangler dev)
+  // (cf dev)
   it("serves /invite as a script-free static page with per-path CSP script-src 'none'", async () => {
     const res = await fetch(`${BASE}/invite`);
     expect(res.status).toBe(200);
@@ -453,7 +453,7 @@ describe("web e2e: funstack-static + funstack-router + Astryx on Workers Static 
 // ---------------------------------------------------------------------------
 // W2: e2e of the read-only dashboard (S3-S7) (ruling BS —
 // docs/notes/session-43.md).
-// Serving, real rendering, and CSP stay on the real thing (wrangler
+// Serving, real rendering, and CSP stay on the real thing (cf
 // dev + Chromium); only the API responses are swapped via Playwright's
 // page.route (staying same-origin, so the connect-src 'self'
 // verification is not weakened). The fixtures are literals conforming

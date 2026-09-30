@@ -72,7 +72,7 @@ export const OPS_RESTORE_BATCH_ROWS = 1000;
 
 /**
  * The hourly cron string (**keep in sync manually** with
- * wrangler.jsonc's `triggers.crons` — the same paired note as
+ * cloudflare.config.ts's `triggers` — the same paired note as
  * worker-env.ts's IP_RATE_LIMIT_PERIOD_SECONDS). The scheduled
  * handler branches on this string to the ops jobs (evacuation sweep +
  * evaluation); the rest is session cleanup (daily).

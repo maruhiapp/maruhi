@@ -127,7 +127,7 @@ export const apiTokens = sqliteTable(
 /**
  * Per-deployment server settings (AUTH_SPEC §3). The only key today is
  * `signup_policy` ('open' | 'invite' | 'closed'; no row = 'open').
- * No write path exists in code — changes go through the operator's wrangler
+ * No write path exists in code — changes go through the operator's cf
  * / SQL path only (docs/SELF_HOSTING.md; no admin UI or settings API will
  * be built). Readers treat an unknown value as 'closed' (fail-closed —
  * readSignupPolicy in repos.ts).
@@ -146,7 +146,7 @@ export const deploymentSettings = sqliteTable("deployment_settings", {
  * role, or provider identifier.
  *
  * - Issuance is an operator operation (scripts/issue-signup-invite.ts +
- *   wrangler d1) — the server has no issuance path
+ *   cf d1) — the server has no issuance path
  * - Consumption (status 'pending' → 'used') is a CAS inside the same D1
  *   batch as the account creation (repos.ts — eliminates both "creation
  *   failed but the code burned" and "creation succeeded but the code
