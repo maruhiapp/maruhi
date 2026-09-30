@@ -18,12 +18,14 @@ import { spawnSync } from "node:child_process";
 
 import { cfD1Binding, redactUrls } from "./cf-config.ts";
 
-// `bun <file>` does not put node_modules/.bin on PATH, so `cf` is invoked
-// through `bun x` — resolves the workspace devDependency from any environment
-// (CI runners included). The spawn cwd is the repo root: inside apps/server
-// `cf` would try to load cloudflare.config.ts, which requires Node and fails
-// on Bun; these raw API commands take explicit IDs and need no project config.
-const CF = [process.execPath, "x", "cf"];
+// cf is spawned through node on the workspace-pinned bin (isolated linker:
+// the bin only exists under apps/server/node_modules). `bun x cf` would
+// resolve cf@latest from the registry at the repo root, and running cf under
+// Bun is rejected by its own config loader — it is a Node CLI by design.
+// The spawn cwd is the repo root: inside apps/server `cf` would try to load
+// cloudflare.config.ts, which requires Node and fails on Bun; these raw API
+// commands take explicit IDs and need no project config.
+const CF_BIN = new URL("../node_modules/.bin/cf", import.meta.url).pathname;
 const ROOT = new URL("../../..", import.meta.url).pathname;
 
 const args = process.argv.slice(2);
@@ -68,9 +70,9 @@ let bookmark: string | undefined;
 let signedUrl: string | undefined;
 for (let poll = 0; poll < MAX_POLLS; poll++) {
   const run = spawnSync(
-    CF[0],
+    "node",
     [
-      ...CF.slice(1),
+      CF_BIN,
       "d1",
       "export",
       db.id,

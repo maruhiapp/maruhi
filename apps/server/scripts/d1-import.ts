@@ -19,12 +19,14 @@ import { readFileSync } from "node:fs";
 
 import { redactUrls } from "./cf-config.ts";
 
-// `bun <file>` does not put node_modules/.bin on PATH, so `cf` is invoked
-// through `bun x` — resolves the workspace devDependency from any environment.
+// cf is spawned through node on the workspace-pinned bin (isolated linker:
+// the bin only exists under apps/server/node_modules). `bun x cf` would
+// resolve cf@latest from the registry at the repo root, and running cf under
+// Bun is rejected by its own config loader — it is a Node CLI by design.
 // The spawn cwd is the repo root: inside apps/server `cf` would try to load
 // cloudflare.config.ts, which requires Node and fails on Bun; the raw import
 // actions take explicit IDs and need no project config.
-const CF = [process.execPath, "x", "cf"];
+const CF_BIN = new URL("../node_modules/.bin/cf", import.meta.url).pathname;
 const ROOT = new URL("../../..", import.meta.url).pathname;
 
 const args = process.argv.slice(2);
@@ -55,7 +57,7 @@ interface ImportResponse {
 
 // fallow-ignore-next-line complexity -- ops spawn wrapper; branches are error-reporting paths
 function cfImport(extra: string[]): ImportResponse {
-  const run = spawnSync(CF[0], [...CF.slice(1), "d1", "import", databaseId, ...extra], {
+  const run = spawnSync("node", [CF_BIN, "d1", "import", databaseId, ...extra], {
     cwd: ROOT,
     encoding: "utf8",
   });
