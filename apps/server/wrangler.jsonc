@@ -121,7 +121,7 @@
   ],
   // The GitHub OAuth App's GITHUB_CLIENT_ID and
   // GITHUB_CLIENT_SECRET are both registered as Workers Secrets
-  // (`cf workers secrets update` — the procedure is in
+  // (`wrangler secret put` — the procedure is in
   // docs/SELF_HOSTING.md). client_id is public information, but
   // unifying the registration path under secret makes editing this
   // file (committing it to a fork) and redeploying unnecessary
@@ -149,7 +149,7 @@
   // ratelimits / r2_buckets) must be re-declared per wrangler's
   // rules — drift from the top level is checked by
   // scripts/check-hosted-config.ts (CI 8c). Secrets via
-  // `cf workers secrets update <NAME> --text <value> --mode hosted`
+  // `wrangler secret put <NAME> --env hosted`
   // (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET /
   // SERVER_ENC_KEY_IKM, plus OPS_ALERT_WEBHOOK_URL — optional).
   "env": {

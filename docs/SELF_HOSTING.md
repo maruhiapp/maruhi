@@ -101,13 +101,15 @@ secrets means you never have to edit `cloudflare.config.ts` and redeploy —
 AUTH_SPEC §3-2):
 
 ```sh
-bunx cf workers secrets update GITHUB_CLIENT_ID --text "<paste the client_id>"
-bunx cf workers secrets update GITHUB_CLIENT_SECRET --text "<paste the client_secret>"
+bunx wrangler secret put GITHUB_CLIENT_ID
+bunx wrangler secret put GITHUB_CLIENT_SECRET
 ```
 
-(`secrets update --text` takes the value inline — cf has no interactive
-prompt — so prefer `read -s` + `--text "$VAR"` if you don't want it in your
-shell history.) The update takes effect immediately (no redeploy).
+(Secret registration stays on `wrangler secret put`, which reads the value on
+stdin — cf's `workers secrets update` only accepts the value inline via
+`--text`, which puts it on the process argv and in shell history. wrangler
+remains an installed devDependency for this path until cf can take secrets
+from stdin.) The update takes effect immediately (no redeploy).
 
 ### 6. Smoke-check
 
@@ -142,7 +144,7 @@ Generate 32 bytes of randomness as hex (64 characters) and register it as a
 Workers Secret:
 
 ```sh
-bunx cf workers secrets update SERVER_ENC_KEY_IKM --text "$(openssl rand -hex 32)"
+openssl rand -hex 32 | bunx wrangler secret put SERVER_ENC_KEY_IKM
 ```
 
 The server derives an X25519 keypair from this IKM deterministically (RFC 9180
@@ -454,16 +456,16 @@ bunx cf r2 buckets domains managed list maruhi-ops-backup            # must say 
 #    higher CPU limit for large snapshots (see `case "hosted"` in
 #    cloudflare.config.ts; put your D1 database ID there and register the same
 #    secrets with --mode hosted).
-#    Note: a named mode publishes a separate Worker, `maruhi-server-hosted`
-#    (the `<name>-<mode>` rule) — the restore worker binds to that name.
+#    Note: the hosted mode publishes a separate Worker, `maruhi-server-hosted`
+#    (named explicitly in cloudflare.config.ts) — the restore worker binds to that name.
 #    Workers Logs is enabled there with invocation logs turned OFF: the default
 #    invocation log records request URLs, which carry project ids (capabilities)
 #    and OAuth codes — keep `observability.logs.invocationLogs: false` and
 #    `observability.redactQueryString: true` (drops query strings from any
 #    URL that does reach logs or traces)
-bunx cf workers secrets update GITHUB_CLIENT_ID --text "<value>" --mode hosted
-bunx cf workers secrets update GITHUB_CLIENT_SECRET --text "<value>" --mode hosted
-bunx cf workers secrets update OPS_ALERT_WEBHOOK_URL --text "<value>" --mode hosted   # optional
+bunx wrangler secret put GITHUB_CLIENT_ID --env hosted
+bunx wrangler secret put GITHUB_CLIENT_SECRET --env hosted
+bunx wrangler secret put OPS_ALERT_WEBHOOK_URL --env hosted   # optional
 bun run db:migrate:hosted
 bunx cf deploy --mode hosted
 ```
@@ -589,7 +591,7 @@ or newer.
 
 - **`/auth/config` / `/auth/github/start` / `/auth/cli/start` return 503
   `SetupIncomplete`**: either `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` is
-  unregistered (a missed `cf workers secrets update` — step 5. If this
+  unregistered (a missed `wrangler secret put` — step 5. If this
   happened after updating an instance stood up with the old steps, see the
   migration in "Updates"). List registered secrets with
   `bunx cf workers secrets list` (values are not shown)
@@ -617,13 +619,13 @@ or newer.
   `maruhi server grant` says "The server has no deployment keypair configured"**:
   `SERVER_ENC_KEY_IKM` is unregistered, or the value is not 64 hex characters
   (a malformed value is treated as unset — this is not a 503).
-  Pass the output of `openssl rand -hex 32` to `cf workers secrets update
-  --text "$(openssl rand -hex 32)"` (watch for stray newlines or quotes)
+  Pass the output of `openssl rand -hex 32` to `wrangler secret put
+  SERVER_ENC_KEY_IKM` (watch for stray newlines or quotes)
 
 ## Notes
 
 - **Rotating client_secret**: issue a new secret on the GitHub side →
-  `cf workers secrets update GITHUB_CLIENT_SECRET --text "<new value>"`
+  `wrangler secret put GITHUB_CLIENT_SECRET`
   (takes effect immediately; no redeploy) → delete the old secret on the
   GitHub side
 - **Custom domain**: you may add `domains` to `cloudflare.config.ts` (the

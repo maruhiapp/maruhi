@@ -17,6 +17,16 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
+import { redactUrls } from "./cf-config.ts";
+
+// `bun <file>` does not put node_modules/.bin on PATH, so `cf` is invoked
+// through `bun x` — resolves the workspace devDependency from any environment.
+// The spawn cwd is the repo root: inside apps/server `cf` would try to load
+// cloudflare.config.ts, which requires Node and fails on Bun; the raw import
+// actions take explicit IDs and need no project config.
+const CF = [process.execPath, "x", "cf"];
+const ROOT = new URL("../../..", import.meta.url).pathname;
+
 const args = process.argv.slice(2);
 const databaseId = args[0];
 let file: string | undefined;
@@ -43,9 +53,10 @@ interface ImportResponse {
   result?: { signed_url?: string; at_bookmark?: string };
 }
 
+// fallow-ignore-next-line complexity -- ops spawn wrapper; branches are error-reporting paths
 function cfImport(extra: string[]): ImportResponse {
-  const run = spawnSync("cf", ["d1", "import", databaseId, ...extra], {
-    cwd: new URL("..", import.meta.url).pathname,
+  const run = spawnSync(CF[0], [...CF.slice(1), "d1", "import", databaseId, ...extra], {
+    cwd: ROOT,
     encoding: "utf8",
   });
   if (run.error !== undefined) throw run.error;
@@ -53,7 +64,7 @@ function cfImport(extra: string[]): ImportResponse {
     return JSON.parse(run.stdout ?? "") as ImportResponse;
   } catch {
     throw new Error(
-      `cf d1 import did not return JSON\n--- stdout ---\n${run.stdout}\n--- stderr ---\n${run.stderr}`,
+      `cf d1 import did not return JSON\n--- stdout ---\n${redactUrls(run.stdout ?? "")}\n--- stderr ---\n${redactUrls(run.stderr ?? "")}`,
     );
   }
 }
@@ -62,7 +73,7 @@ function fail(response: ImportResponse, raw: string): never {
   const detail =
     response.error ??
     response.errors?.map((e) => (typeof e === "string" ? e : e.message)).join("; ") ??
-    raw;
+    redactUrls(raw);
   throw new Error(`cf d1 import failed: ${String(detail)}`);
 }
 
@@ -79,7 +90,9 @@ if (uploadRequired) {
     body: readFileSync(file),
   });
   if (put.status !== 200) {
-    throw new Error(`SQL file upload failed with HTTP ${put.status}: ${await put.text()}`);
+    throw new Error(
+      `SQL file upload failed with HTTP ${put.status}: ${redactUrls(await put.text())}`,
+    );
   }
   const echoedEtag = put.headers.get("etag")?.replace(/^"|"$/g, "");
   if (echoedEtag !== etag) {

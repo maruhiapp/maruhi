@@ -102,7 +102,7 @@ export function redirectToGitHubAuthorize(
 
 /**
  * Detects missing self-hosted configuration (AUTH_SPEC §3): either
- * client_id or client_secret unregistered (a missed `cf workers secrets update`)
+ * client_id or client_secret unregistered (a missed `wrangler secret put`)
  * or empty (the Env type is string, but a deploy lacking the secret can
  * become undefined at runtime). Letting it pass through would land on a
  * GitHub error page or an opaque token-exchange failure (AuthFlow 400) with

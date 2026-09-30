@@ -16,7 +16,15 @@
 
 import { spawnSync } from "node:child_process";
 
-import { cfD1Binding } from "./cf-config.ts";
+import { cfD1Binding, redactUrls } from "./cf-config.ts";
+
+// `bun <file>` does not put node_modules/.bin on PATH, so `cf` is invoked
+// through `bun x` — resolves the workspace devDependency from any environment
+// (CI runners included). The spawn cwd is the repo root: inside apps/server
+// `cf` would try to load cloudflare.config.ts, which requires Node and fails
+// on Bun; these raw API commands take explicit IDs and need no project config.
+const CF = [process.execPath, "x", "cf"];
+const ROOT = new URL("../../..", import.meta.url).pathname;
 
 const args = process.argv.slice(2);
 let mode: string | undefined;
@@ -50,7 +58,7 @@ function parseExport(stdout: string, stderr: string): ExportResponse {
     return JSON.parse(stdout) as ExportResponse;
   } catch {
     throw new Error(
-      `cf d1 export did not return JSON\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`,
+      `cf d1 export did not return JSON\n--- stdout ---\n${redactUrls(stdout)}\n--- stderr ---\n${redactUrls(stderr)}`,
     );
   }
 }
@@ -60,8 +68,9 @@ let bookmark: string | undefined;
 let signedUrl: string | undefined;
 for (let poll = 0; poll < MAX_POLLS; poll++) {
   const run = spawnSync(
-    "cf",
+    CF[0],
     [
+      ...CF.slice(1),
       "d1",
       "export",
       db.id,
@@ -69,7 +78,7 @@ for (let poll = 0; poll < MAX_POLLS; poll++) {
       "polling",
       ...(bookmark === undefined ? [] : ["--current-bookmark", bookmark]),
     ],
-    { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8" },
+    { cwd: ROOT, encoding: "utf8" },
   );
   if (run.error !== undefined) throw run.error;
   const response = parseExport(run.stdout ?? "", run.stderr ?? "");
@@ -78,7 +87,9 @@ for (let poll = 0; poll < MAX_POLLS; poll++) {
   const nextBookmark = response.at_bookmark ?? response.result?.at_bookmark;
   if (url !== undefined || status === "complete") {
     if (url === undefined) {
-      throw new Error(`cf d1 export completed without a signed_url: ${run.stdout}`);
+      throw new Error(
+        `cf d1 export completed without a signed_url: ${redactUrls(run.stdout ?? "")}`,
+      );
     }
     signedUrl = url;
     break;
@@ -87,11 +98,13 @@ for (let poll = 0; poll < MAX_POLLS; poll++) {
     const detail =
       response.error ??
       response.errors?.map((e) => (typeof e === "string" ? e : e.message)).join("; ") ??
-      run.stdout;
+      redactUrls(run.stdout ?? "");
     throw new Error(`cf d1 export failed: ${String(detail)}`);
   }
   if (nextBookmark === undefined) {
-    throw new Error(`cf d1 export returned neither a bookmark nor a result: ${run.stdout}`);
+    throw new Error(
+      `cf d1 export returned neither a bookmark nor a result: ${redactUrls(run.stdout ?? "")}`,
+    );
   }
   bookmark = nextBookmark;
   await new Promise((resolve) => setTimeout(resolve, 1000));
