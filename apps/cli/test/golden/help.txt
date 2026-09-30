@@ -31,6 +31,7 @@ SUBCOMMANDS
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
+  mcp         Serve the value-free schema to AI agents over the Model Context Protocol (stdio). Never serves values
   var         Manage variables (rm, history, rollback). push / pull / run operate on values directly
   sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
 
@@ -67,6 +68,7 @@ SUBCOMMANDS
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
+  mcp         Serve the value-free schema to AI agents over the Model Context Protocol (stdio). Never serves values
   var         Manage variables (rm, history, rollback). push / pull / run operate on values directly
   sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
 
@@ -153,6 +155,22 @@ FLAGS
   --env string        Environment ID (default: the `defaultEnvironment` setting)
   --config string     Path to the sync config whose "onPush" targets are synced after the push (default: maruhi.sync.json in the working directory, when it exists and names this project)
   --no-sync           Skip the sync after the push (the default sync config is not read; run `maruhi sync apply` once after several pushes)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi mcp --help
+DESCRIPTION
+  Serve the value-free schema to AI agents over the Model Context Protocol (stdio). Never serves values
+
+USAGE
+  maruhi mcp [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID (default: the `defaultEnvironment` setting)
 
 GLOBAL FLAGS
   --help, -h       Show help information

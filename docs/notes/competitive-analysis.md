@@ -149,7 +149,7 @@ Legend: ● = present / default, ◐ = conditional / partial, ○ = absent, — 
 | GUI with values | ○ (ADR-0018. TUI → value-free `maruhi ui` → a value-ful GUI would be its own ADR) | ● Web console | ● | ● | ● | ● |
 | Web dashboard (no keys) | ● read + revoke only (W series implemented. Design pass DP in progress) | ● | ● | ● | ● | ● |
 | Refusing value display under agent detection | ● fail-closed 2 layers (primary TTY + std-env) | ● masking + blocks `shell` / `printenv` | ○ | ○ | ● blocks `pull` with `AGENT_BLOCKED` | ○ |
-| MCP server | ○ (after demand is measured, as a thin wrapper over `maruhi schema`. **Policy: never serve values**) | ○ (SKILL.md approach) | ● returns plaintext | ● returns plaintext (experimental) | ○ (distributes Agent Skills) | ● returns plaintext |
+| MCP server | ● `maruhi mcp` (PF5, 2026-09-30 — the value-free schema over stdio. **Never serves values**: read-only, keychain narrowed to the API token) | ○ (SKILL.md approach) | ● returns plaintext | ● returns plaintext (experimental) | ○ (distributes Agent Skills) | ● returns plaintext |
 | credential brokering (never giving agents the real value) | ○ planned (Phase 3 `maruhi proxy run`. Composed with E2EE so "neither server nor agent holds plaintext") | ◐ pitches an "AI egress proxy" but no implementation found | ● Agent Proxy (GA 2026-07) + Agent Vault | ○ | ○ | ○ |
 | Exposing a value-free schema to agents | ● `maruhi schema` (names, types, required, descriptions only) | ○ | ○ | ○ | ○ | ○ |
 
@@ -213,7 +213,7 @@ Differences that must not be hidden by the pitch (ADR-0014 decision 5 "separate 
 - **Zero-knowledge ceremony**: first-time key generation and recovery-code custody, mutual fingerprint verification on invite, device migration. Burdens the competitors (especially the 4 server-side ones) don't have. Frame it as "only first-time and invites"
 - **Lose your keys and recovery code and the operator cannot restore** (the price of the promise)
 - **Enterprise features**: no rotation, dynamic secrets, approval workflows, PKI / SSH / KMS / PAM. Infisical is an integrated platform, Doppler has Change Requests, Phase already has rotation + dynamic secrets
-- **credential brokering / MCP unimplemented** (Infisical has Agent Proxy GA; Doppler / Keyway have MCP). For the "try it now" side of the agent pitch there's only value-free schema + agent-gate
+- **credential brokering unimplemented** (Infisical has Agent Proxy GA). For the "try it now" side of the agent pitch there's value-free schema (CLI + `maruhi mcp` since PF5 — 2026-09-30) + agent-gate
 - **Platform dependency**: Cloudflare-only (Workers / DO / D1). Can't run on-prem or on other clouds. Competitors run anywhere Docker does
 - **Windows is experimental**, Homebrew unpublished, macOS notarized not yet, checksums unsigned
 - **Hosted version not yet open** (HP1's "first 5 minutes" cannot yet be provided). All 5 competitors ship hosted
