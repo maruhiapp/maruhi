@@ -1638,6 +1638,30 @@ describe("maruhi run", () => {
     });
   });
 
+  it("hands the runner the values to redact when an agent is detected or the output is not a terminal, and nothing on a human terminal (ROADMAP Phase 3 ⑤)", async () => {
+    const decode = (fragments: readonly Uint8Array[] | undefined) =>
+      fragments?.map((bytes) => new TextDecoder().decode(bytes)).toSorted();
+    // A human terminal (stdin / stdout / stderr all terminals): stdio inherited, no redaction
+    const terminal = await startEnv([chainHandler(), pullHandler()]);
+    expect(await runCli(["run", "--", "true"], terminal.layer)).toBe(0);
+    expect(terminal.runnerCalls[0]?.redact).toBeUndefined();
+    // A known agent on a PTY (stdout is a terminal): the secondary layer triggers
+    const agent = await startEnv([chainHandler(), pullHandler()]);
+    agent.setAgent({ isAgent: true, name: "claude-code" });
+    expect(await runCli(["run", "--", "true"], agent.layer)).toBe(0);
+    expect(decode(agent.runnerCalls[0]?.redact)).toEqual(["alpha-value", "beta-value"]);
+    // stderr redirected to a file (stdout still a terminal): triggers
+    const stderrPiped = await startEnv([chainHandler(), pullHandler()]);
+    stderrPiped.setTerminal({ stderr: false });
+    expect(await runCli(["run", "--", "true"], stderrPiped.layer)).toBe(0);
+    expect(decode(stderrPiped.runnerCalls[0]?.redact)).toEqual(["alpha-value", "beta-value"]);
+    // stdin from a heredoc alone does not trigger (the child's TTY is kept)
+    const heredoc = await startEnv([chainHandler(), pullHandler()]);
+    heredoc.setTerminal({ stdin: false });
+    expect(await runCli(["run", "--", "true"], heredoc.layer)).toBe(0);
+    expect(heredoc.runnerCalls[0]?.redact).toBeUndefined();
+  });
+
   it("run is allowed even when an AI agent is detected (the boundary)", async () => {
     const env = await startEnv([chainHandler(), pullHandler()]);
     env.setAgent({ isAgent: true, name: "cursor" });

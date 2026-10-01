@@ -12,8 +12,9 @@
 // wording ever includes the description** (never build an injection
 // surface via the logs).
 
-import { Context, Effect, Redacted } from "effect";
+import { Context, Effect, Redacted, Stdio } from "effect";
 
+import { AgentProfileRef } from "./agent-gate.ts";
 import { decodeValueText, displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
@@ -48,13 +49,32 @@ export interface ExecOutcome {
   readonly output: string;
 }
 
+/** The input of {@link ProcessRunnerShape.run}. */
+export interface RunInput {
+  readonly command: readonly string[];
+  readonly extraEnv: Readonly<Record<string, string>>;
+  /**
+   * Keep the parent alive for the child's whole life: SIGINT is ignored by
+   * the parent (the terminal delivers Ctrl+C to the child too, which owns
+   * it) and SIGTERM / SIGHUP are forwarded (`maruhi proxy run` — the proxy
+   * the child talks to lives in the parent). Default false = the parent
+   * reacts to signals as usual.
+   */
+  readonly holdSignals?: boolean | undefined;
+  /**
+   * Run-output redaction (ROADMAP Phase 3 ⑤ — run.ts's `redactionFragments`).
+   * When present, the child's stdout and stderr are received on pipes and
+   * every occurrence of these byte fragments is replaced with `[redacted]`
+   * before being relayed (byte domain, streaming). Absent = stdio inherited
+   * (a human terminal).
+   */
+  readonly redact?: readonly Uint8Array[] | undefined;
+}
+
 /** Child-process boundary: inject values, inherit non-maruhi env + stdio. */
 export interface ProcessRunnerShape {
   /** Runs `command`, merging `extraEnv` into the inherited environment. Returns the exit code. */
-  readonly run: (input: {
-    readonly command: readonly string[];
-    readonly extraEnv: Readonly<Record<string, string>>;
-  }) => Effect.Effect<number, CliError>;
+  readonly run: (input: RunInput) => Effect.Effect<number, CliError>;
   /**
    * Runs a vendor CLI with bytes on its stdin and its stdio captured
    * (`maruhi sync`). Fails with a typed error when the command cannot be
@@ -464,11 +484,43 @@ export function typeAdvisoryWarnings(variables: readonly DecryptedVariable[]): r
   return warnings;
 }
 
+/**
+ * Run-output redaction (ROADMAP Phase 3 ⑤ — the trigger). The injected
+ * values are known exactly, so the child's stdout / stderr can be scrubbed
+ * by exact match when its output may land somewhere other than a human's
+ * terminal. The trigger is **not** the value-display gate's: (1) a known
+ * agent is detected (an agent that allocates a PTY has a terminal on
+ * stdout, so without this layer `run -- printenv` stays open), or (2)
+ * stdout **or** stderr is not a terminal (CI, a pipe, a redirect, an
+ * unknown agent). stdin alone is not a trigger — a human heredoc-ing
+ * `run` keeps the child's TTY. Returns the byte fragments to scrub
+ * (undefined = no redaction: stdio is inherited). Residual: an unknown
+ * agent on a PTY is caught by neither layer; the root fix is `proxy run`.
+ */
+export function redactionFragments(
+  variables: readonly DecryptedVariable[],
+): Effect.Effect<readonly Uint8Array[] | undefined, never, CliIo | Stdio.Stdio> {
+  return Effect.gen(function* () {
+    const agent = yield* AgentProfileRef;
+    const io = yield* CliIo;
+    const stdio = yield* Stdio.Stdio;
+    const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
+    const triggered = agent.isAgent || !stdoutIsTerminal || !io.stderrIsTerminal();
+    if (!triggered || variables.length === 0) {
+      return undefined;
+    }
+    // Reason for unwrapping: the fragments are the search patterns of the
+    // redaction itself (what the child's output is scrubbed of). They stay
+    // inside the ProcessRunner boundary and never appear in any message
+    return variables.map((variable) => Redacted.value(variable.value));
+  });
+}
+
 /** `maruhi run`: inject decrypted variables into the child env and run the command. */
 export function runOp(input: {
   readonly command: readonly string[];
   readonly variables: readonly DecryptedVariable[];
-}): Effect.Effect<number, CliError, ProcessRunner> {
+}): Effect.Effect<number, CliError, ProcessRunner | CliIo | Stdio.Stdio> {
   return Effect.gen(function* () {
     // An empty string cannot execute (`maruhi run -- "$CMD"` with CMD
     // unset arrives in this shape). "One argument is present" and
@@ -479,6 +531,10 @@ export function runOp(input: {
     }
     const runner = yield* ProcessRunner;
     const extraEnv = yield* buildInjectionEnv(input.variables);
-    return yield* runner.run({ command: input.command, extraEnv });
+    return yield* runner.run({
+      command: input.command,
+      extraEnv,
+      redact: yield* redactionFragments(input.variables),
+    });
   });
 }

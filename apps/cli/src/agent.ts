@@ -587,9 +587,9 @@ export const AGENT_COMMAND_REQUIRED =
  * The parent of where the socket goes. `$XDG_RUNTIME_DIR` is ideal — a
  * per-user tmpfs (0700, removed at logout). Without it, os.tmpdir() — the
  * directory we make is itself 0700, so even a shared /tmp hides it from
- * other users.
+ * other users. Shared with `maruhi proxy run`'s CA files (proxy-run.ts).
  */
-function socketBaseDir(envVar: (name: string) => string | undefined): string {
+export function runtimeBaseDir(envVar: (name: string) => string | undefined): string {
   const runtime = envVar("XDG_RUNTIME_DIR");
   return runtime !== undefined && runtime.length > 0 ? runtime : tmpdir();
 }
@@ -639,7 +639,7 @@ export function agentOp(input: {
       );
     }
     const dir = yield* Effect.tryPromise({
-      try: () => mkdtemp(join(socketBaseDir(io.envVar), "maruhi-agent-")),
+      try: () => mkdtemp(join(runtimeBaseDir(io.envVar), "maruhi-agent-")),
       catch: () =>
         cliError(
           "Cannot create a private directory for the agent socket (under XDG_RUNTIME_DIR, or the temp directory when it is unset)",

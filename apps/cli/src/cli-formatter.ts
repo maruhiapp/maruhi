@@ -142,15 +142,15 @@ function undeclaredFlagMessage(spec: CommandSpec | undefined, commandKey: string
 
 /**
  * When an `atLeast(1)` command got 0 arguments (rc.117's
- * `MissingArgument`). The wording differs between run / ci run and agent.
+ * `MissingArgument`). The wording differs between run / ci run / proxy run and agent.
  * Not used for other missing arguments.
  */
 function isMissingRunCommand(error: CliError.MissingArgument, commandKey: string): boolean {
-  return (
-    bareName(error.argument) === "command" &&
-    (commandKey === "run" || commandKey === "ci run" || commandKey === "agent")
-  );
+  return bareName(error.argument) === "command" && RUN_SHAPED_COMMANDS.has(commandKey);
 }
+
+/** The commands whose run target follows a required `--` (ADR-0016 decision 8). */
+const RUN_SHAPED_COMMANDS: ReadonlySet<string> = new Set(["run", "ci run", "proxy run", "agent"]);
 
 function unexpectedArgumentMessage(
   error: CliError.UnexpectedArgument,
@@ -313,8 +313,7 @@ function maruhiFormatter(
   // renders it only as a variadic positional `<command...>`. The usage
   // shows how it is written (ruling F). The substitution touches only the
   // usage line's word, and the decision uses the declaration-derived key
-  const terminatorRequired =
-    commandKey === "run" || commandKey === "ci run" || commandKey === "agent";
+  const terminatorRequired = RUN_SHAPED_COMMANDS.has(commandKey);
   const adjustUsage = (text: string): string => {
     const withSubcommand = optionalSubcommand ? text.replace("<subcommand>", "[subcommand]") : text;
     return terminatorRequired

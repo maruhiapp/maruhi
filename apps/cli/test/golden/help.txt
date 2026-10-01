@@ -34,6 +34,7 @@ SUBCOMMANDS
   mcp         Serve the value-free schema to AI agents over the Model Context Protocol (stdio). Never serves values
   var         Manage variables (rm, history, rollback). push / pull / run operate on values directly
   sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
+  proxy       Credential brokering for AI agents and other programs: run a command that never holds the real values (run). Rules are declared in the proxy config committed in the repository
 
 $ maruhi --help
 DESCRIPTION
@@ -71,6 +72,7 @@ SUBCOMMANDS
   mcp         Serve the value-free schema to AI agents over the Model Context Protocol (stdio). Never serves values
   var         Manage variables (rm, history, rollback). push / pull / run operate on values directly
   sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
+  proxy       Credential brokering for AI agents and other programs: run a command that never holds the real values (run). Rules are declared in the proxy config committed in the repository
 
 $ maruhi login --help
 DESCRIPTION
@@ -1706,6 +1708,41 @@ FLAGS
   --on-push string       Sync after every `maruhi push` to the environment: apply (from this machine) or workflow (trigger the repository's workflow with gh so CI syncs); needs --project
   --workflow string      With --on-push workflow: the workflow file that runs `maruhi ci sync` (for example maruhi-sync.yml)
   --option string        Preset option as key=value (repeatable; for example environment=production, name=my-worker)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi proxy --help
+DESCRIPTION
+  Credential brokering for AI agents and other programs: run a command that never holds the real values (run). Rules are declared in the proxy config committed in the repository
+
+USAGE
+  maruhi proxy <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  run    Run a command behind a local credential-brokering proxy: brokered variables arrive as placeholders and the real values are substituted only in requests to the hosts the proxy config allows. Write the command after `--`
+
+$ maruhi proxy run --help
+DESCRIPTION
+  Run a command behind a local credential-brokering proxy: brokered variables arrive as placeholders and the real values are substituted only in requests to the hosts the proxy config allows. Write the command after `--`
+
+USAGE
+  maruhi proxy run [flags] -- <command...>
+
+ARGUMENTS
+  command... string    The command to run, written after `--` (passed to the child as-is)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Environment ID (default: the `defaultEnvironment` setting)
+  --config string     Path to the proxy config committed in the repository (default: maruhi.proxy.json)
+  --verbose           Print one line per request the proxy handles (method, host, path, and the variables substituted — never a value)
 
 GLOBAL FLAGS
   --help, -h       Show help information

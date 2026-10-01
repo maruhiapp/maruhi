@@ -219,6 +219,12 @@ import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "./passkey.ts";
 import { PinStore } from "./pins.ts";
 import { projectInitOp } from "./project-init.ts";
 import { projectListOp } from "./project-list.ts";
+import {
+  checkProxyConfigProject,
+  DEFAULT_PROXY_CONFIG_PATH,
+  loadProxyConfig,
+} from "./proxy-config.ts";
+import { proxyRunOp } from "./proxy-run.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
 import { normalizeStdinValue, pushVariable } from "./push.ts";
 import { reportRotation } from "./rotation-report.ts";
@@ -1107,6 +1113,24 @@ const schemaShowConfig = { ...commonFlags() };
  */
 const mcpConfig = { ...commonFlags() };
 
+/**
+ * `maruhi proxy run -- <command>` (PF4 — credential brokering): `run`'s
+ * flags plus the proxy config path and a per-request log switch. The run
+ * target is declared exactly like `run`'s.
+ */
+const proxyRunConfig = {
+  ...commonFlags(),
+  config: singleValued(
+    "config",
+    `Path to the proxy config committed in the repository (default: ${DEFAULT_PROXY_CONFIG_PATH})`,
+  ),
+  verbose: singleFlag(
+    "verbose",
+    "Print one line per request the proxy handles (method, host, path, and the variables substituted — never a value)",
+  ),
+  command: runCommandArgument(),
+};
+
 /** The `--type` closed set (CRYPTO_SPEC §4.2 — ruling CT) + `none` for an explicit clear. */
 const SCHEMA_TYPES = ["string", "number", "boolean", "url"] as const;
 
@@ -1418,6 +1442,7 @@ const GROUP_CONFIGS: Readonly<
   },
   var: { rm: varRmConfig, history: varHistoryConfig, rollback: varRollbackConfig },
   sync: { plan: syncPlanConfig, apply: syncApplyConfig, init: syncInitConfig },
+  proxy: { run: proxyRunConfig },
 };
 
 /**
@@ -5038,6 +5063,57 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  // `maruhi proxy run` (PF4 — pf4-design.md). The same prologue as run
+  // (config → environment → verified pull → presence fail-fast → type
+  // advisory); what differs is what the child receives (proxy-run.ts)
+  const proxyRun = Command.make("run", proxyRunConfig, (values) =>
+    Effect.gen(function* () {
+      const { command: parsed, config: configFlag, verbose, ...flags } = values;
+      // Drops before communication / decryption (at the command body's head)
+      const command = yield* commandAfterTerminator(parsed);
+      // The config is read before any network (a broken file is reported first)
+      const configPath = configFlag ?? DEFAULT_PROXY_CONFIG_PATH;
+      const proxyConfig = yield* loadProxyConfig(configPath);
+      yield* checkProxyConfigProject(proxyConfig, flags.project);
+      const context = yield* openEnvironment({
+        ...flags,
+        project: flags.project ?? proxyConfig.projectId,
+      });
+      const pulled = yield* pullVariables({
+        client: context.client,
+        verified: context.verified,
+        environmentId: context.environmentId,
+        recipient: context.recipient,
+        resync: context.resync,
+        floor: context.floorHandle,
+      });
+      yield* logWarnings(pulled.warnings);
+      yield* enforceDeclaredPresence(pulled.declared);
+      yield* logWarnings(typeAdvisoryWarnings(pulled.variables));
+      onExitCode(
+        yield* proxyRunOp({
+          command,
+          config: proxyConfig,
+          configPath,
+          environmentId: context.environmentId,
+          variables: pulled.variables,
+          verbose,
+        }),
+      );
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Run a command behind a local credential-brokering proxy: brokered variables arrive as placeholders and the real values are substituted only in requests to the hosts the proxy config allows. Write the command after `--`",
+    ),
+  );
+
+  const proxy = Command.make("proxy").pipe(
+    Command.withDescription(
+      "Credential brokering for AI agents and other programs: run a command that never holds the real values (run). Rules are declared in the proxy config committed in the repository",
+    ),
+    Command.withSubcommands([proxyRun]),
+  );
+
   const sync = Command.make("sync").pipe(
     Command.withDescription(
       "Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository",
@@ -5075,6 +5151,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       mcp,
       varGroup,
       sync,
+      proxy,
     ]),
   );
 }

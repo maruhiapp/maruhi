@@ -26,6 +26,7 @@ import { agentInfo } from "std-env";
 
 import { type AgentProfile, AgentProfileRef } from "./agent-gate.ts";
 import { AGENT_SOCKET_ENV, makeAgentKeychain } from "./agent.ts";
+import { makeStreamReplacer, scrubPatterns } from "./byte-replace.ts";
 import type { CliServices } from "./cli.ts";
 import { ConfigStore, defaultConfigPath, makeFileConfigStore } from "./config.ts";
 import { cliError } from "./errors.ts";
@@ -160,10 +161,15 @@ function execStartFailure(input: ExecInput, error: unknown): string {
 
 function makeBunProcessRunner(): ProcessRunnerShape {
   return {
-    run: ({ command, extraEnv }) =>
+    run: ({ command, extraEnv, holdSignals, redact }) =>
       Effect.tryPromise({
         try: async () => {
-          // Values are injected into the child's environment variables in memory only (the diskless invariant)
+          // Values are injected into the child's environment variables in
+          // memory only (the diskless invariant). With `redact`, the
+          // child's stdout / stderr come back on pipes and are scrubbed
+          // before being relayed (run-output redaction — relayRedacted);
+          // without it, a human terminal is inherited as before
+          const piped = redact !== undefined;
           const child = Bun.spawn({
             cmd: [...command],
             // A keychain-less / CI MARUHI_TOKEN is for the parent's
@@ -171,10 +177,16 @@ function makeBunProcessRunner(): ProcessRunnerShape {
             // credential broader than the injected values
             env: buildChildEnvironment(process.env, extraEnv),
             stdin: "inherit",
-            stdout: "inherit",
-            stderr: "inherit",
+            stdout: piped ? "pipe" : "inherit",
+            stderr: piped ? "pipe" : "inherit",
           });
-          return await child.exited;
+          const relayed = piped ? relayRedacted(child, redact) : Promise.resolve();
+          // `proxy run`: the parent must outlive the child (it is the
+          // child's proxy) — the same signal shape as `maruhi agent`
+          const exitCode = holdSignals === true ? await holdingSignals(child) : await child.exited;
+          // The pipes drain after the child exits; every byte is relayed before returning
+          await relayed;
+          return exitCode;
         },
         catch: () => cliError(`Cannot start the command: ${command[0] ?? ""}`),
       }),
@@ -224,6 +236,18 @@ async function runAgentSession(
     stdout: "inherit",
     stderr: "inherit",
   });
+  return holdingSignals(child);
+}
+
+/**
+ * Waits for `child` while the parent ignores SIGINT and forwards SIGTERM /
+ * SIGHUP to it (`maruhi agent` and `maruhi proxy run` — parents whose job
+ * is to outlive the child).
+ */
+async function holdingSignals(child: {
+  kill: (signal: NodeJS.Signals) => void;
+  exited: Promise<number>;
+}): Promise<number> {
   const forwardTerm = (): void => {
     child.kill("SIGTERM");
   };
@@ -240,6 +264,48 @@ async function runAgentSession(
     process.off("SIGTERM", forwardTerm);
     process.off("SIGHUP", forwardHup);
   }
+}
+
+/** What a scrubbed value becomes in the relayed output. */
+const REDACTED = "[redacted]";
+
+/**
+ * Run-output redaction (ROADMAP Phase 3 ⑤; the trigger is run.ts's
+ * `redactionFragments`). The child's stdout and stderr arrive on pipes
+ * and are relayed to this process's fds **in the byte domain**: the
+ * fragments (each value whole, each of its lines, the JSON-escaped forms
+ * — byte-replace.ts's scrubPatterns, the `maruhi sync` rule) are
+ * searched in the raw chunks and replaced with `[redacted]`; bytes that
+ * match nothing pass through untouched, so binary output (`pg_dump -Fc`,
+ * `tar czf -`) is not corrupted. A value straddling two chunks is caught
+ * by the replacer's carry-over (longest fragment − 1 bytes, cut at a
+ * newline when every fragment is single-line — live logs stay
+ * line-by-line). Each stream is relayed independently with synchronous
+ * writes (ordering within a stream is preserved; between the two
+ * streams it is the same race any piped child has).
+ *
+ * Limits (stated in the docs): a value transformed by the child (base64,
+ * a hash, a different encoding) is not caught — this is a second line of
+ * defence; keeping values away from an agent is `proxy run`'s job.
+ */
+type ChildStream = ReadableStream<Uint8Array> | number | undefined;
+
+async function relayRedacted(
+  child: { stdout: ChildStream; stderr: ChildStream },
+  fragments: readonly Uint8Array[],
+): Promise<void> {
+  const patterns = scrubPatterns(fragments, REDACTED);
+  const relay = async (stream: ChildStream, fd: number) => {
+    if (typeof stream !== "object") {
+      return;
+    }
+    const replacer = makeStreamReplacer(patterns);
+    for await (const chunk of stream) {
+      writeBytes(fd, replacer.push(chunk));
+    }
+    writeBytes(fd, replacer.flush());
+  };
+  await Promise.all([relay(child.stdout, 1), relay(child.stderr, 2)]);
 }
 
 /** An interruption of interactive input by Ctrl+C / Ctrl+D (distinguished from EOF and unreadability). */
@@ -493,7 +559,11 @@ function openBrowserLive(url: string): Effect.Effect<boolean> {
  * thrown as-is (never swallowed). Exported for tests.
  */
 export function writeLine(fd: number, line: string): void {
-  const buffer = Buffer.from(`${line}\n`);
+  writeBytes(fd, Buffer.from(`${line}\n`));
+}
+
+/** The byte form of {@link writeLine} (the redacted relay of a child's output writes chunks, not lines). */
+function writeBytes(fd: number, buffer: Uint8Array): void {
   let offset = 0;
   // A partial write (return value < remaining) continues from where it
   // left off, EAGAIN (a non-blocking fd) retries until written, and EPIPE

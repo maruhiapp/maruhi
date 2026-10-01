@@ -7,11 +7,12 @@ sidebar:
 
 An agent that writes or runs your code needs to know which variables the project expects. It does not need their values. maruhi gives agents the **schema** of an environment — names, declared types, whether each variable is required, whether it has a value, and descriptions — and keeps the values out of their reach:
 
-| Surface                   | For                                                  |
-| ------------------------- | ---------------------------------------------------- |
-| `maruhi mcp`              | Agent hosts that speak MCP (Claude Code, Cursor, …)  |
-| `maruhi schema`           | Agents with a shell, steered by `AGENTS.md`          |
-| `maruhi run -- <command>` | Running the program with the secrets, in memory only |
+| Surface                         | For                                                                                         |
+| ------------------------------- | ------------------------------------------------------------------------------------------- |
+| `maruhi mcp`                    | Agent hosts that speak MCP (Claude Code, Cursor, …)                                         |
+| `maruhi schema`                 | Agents with a shell, steered by `AGENTS.md`                                                 |
+| `maruhi proxy run -- <command>` | Running the agent itself: it holds placeholders, the real values are substituted at a proxy |
+| `maruhi run -- <command>`       | Running the program with the secrets, in memory only                                        |
 
 None of them hands a value to the agent or writes one to disk. What a program started with `maruhi run` prints is another matter — see [Running with the secrets](#running-with-the-secrets).
 
@@ -107,9 +108,11 @@ Run `maruhi schema` to see which environment variables this project needs, and `
 
 When the agent — or you — needs to run the program, `maruhi run -- <command>` decrypts the values in memory and injects them into that one process's environment. Nothing is written to disk, and the values do not pass through the MCP server or the agent's prompt.
 
-**What that program prints is not protected.** An agent runs `maruhi run` through its shell and reads the output, so `maruhi run -- env`, a test that dumps its configuration, or a crash report that includes the environment puts values into the agent's context. The server's instructions and the `AGENTS.md` line above tell the agent not to run such commands, but that is guidance, not a guarantee. Two rules follow:
+**What that program prints reaches the agent.** An agent runs `maruhi run` through its shell and reads the output, so `maruhi run -- env`, a test that dumps its configuration, or a crash report that includes the environment would put values into the agent's context. Two things stand in the way, and neither is a guarantee:
 
-- Review what an agent runs under `maruhi run` the way you review any command it runs with your credentials.
-- Never start the agent host itself under `maruhi run`: every tool it launches would inherit the values.
+- **Output redaction.** When a known agent is detected, or when stdout or stderr is not a terminal, the program's output is relayed through the CLI and every injected value is replaced by `[redacted]` as it streams — exact match, byte for byte, so binary output is untouched and a value the program transformed is not caught. See [Output redaction](/docs/credential-brokering#output-redaction-maruhi-run-and-proxy-run).
+- **Guidance.** The server's instructions and the `AGENTS.md` line above tell the agent not to run commands that print the environment.
 
-Keeping values away from what an agent can read even then is the job of credential brokering, a planned feature, not of the schema.
+Review what an agent runs under `maruhi run` the way you review any command it runs with your credentials, and never start the agent host itself under `maruhi run`: every tool it launches would inherit the values.
+
+**Start the agent under `maruhi proxy run` instead.** Then it never holds the values at all: each brokered variable is a placeholder, and the real value is written into requests only at a local proxy, only toward the hosts you allow. A value an API echoes back is scrubbed on the way in, a placeholder sent anywhere else is refused with a message the agent can read, and a GitHub App connector hands out hour-long installation tokens minted on your machine from an App key the agent never sees. See [Credential brokering](/docs/credential-brokering).
