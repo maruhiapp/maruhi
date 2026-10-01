@@ -256,6 +256,7 @@ describe("maruhi mcp — the surface (rulings M2 / M3)", () => {
     const tools = response(responses, 2)["tools"] as readonly Record<string, unknown>[];
     expect(tools.map((tool) => tool["name"])).toEqual(["get_schema"]);
     expect(tools[0]?.["annotations"]).toEqual({
+      title: "maruhi schema",
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,

@@ -23,7 +23,7 @@ import {
   SUITE_ID,
 } from "@maruhi/crypto";
 import { Effect } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { makeApiClient } from "../src/api.ts";

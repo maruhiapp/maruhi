@@ -17,8 +17,8 @@ import {
 } from "@maruhi/api-schema";
 import { auditActorOf, RequestAuth, SessionService, TokenService } from "@maruhi/core";
 import { Effect } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpServerResponse } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 
 import {
   authFlowFailure,

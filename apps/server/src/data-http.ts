@@ -50,8 +50,8 @@ import type { TokenPermission } from "@maruhi/core";
 import { auditActorOf, RequestAuth } from "@maruhi/core";
 import type { Role } from "@maruhi/crypto";
 import { Effect, Schema } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
-import type { HttpApiEndpoint } from "effect/unstable/httpapi";
+import { HttpServerResponse } from "effect/http";
+import type { HttpApiEndpoint } from "effect/http-api";
 
 import { ensureTokenScopeForProject } from "./authz.ts";
 import type { ProjectChainDO } from "./chain-do.ts";

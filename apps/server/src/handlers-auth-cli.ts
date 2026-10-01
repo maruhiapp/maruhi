@@ -25,9 +25,9 @@ import {
 import type { TokenScope } from "@maruhi/core";
 import { TokenService } from "@maruhi/core";
 import { Effect, Option } from "effect";
-import type { HttpServerRequest } from "effect/unstable/http";
-import { HttpServerResponse } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import type { HttpServerRequest } from "effect/http";
+import { HttpServerResponse } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 
 import {
   CLI_STATE_COOKIE,

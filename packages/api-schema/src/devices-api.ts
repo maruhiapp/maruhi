@@ -21,7 +21,7 @@
 //   rows)
 
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
 import { TokenNameSchema } from "./auth-api.ts";
 import { AuthMiddleware } from "./auth-middleware.ts";

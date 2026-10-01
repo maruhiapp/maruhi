@@ -11,7 +11,7 @@ import { maruhiApi } from "@maruhi/api-schema";
 import { RequestAuth } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { ensureActorMatches } from "./authz.ts";
 import type { EnvironmentChainResultValue } from "./composite-programs.ts";

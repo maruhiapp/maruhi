@@ -14,7 +14,7 @@
 // nowhere on the chain (DK K16).
 
 import { Effect, Stdio } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import type { MaruhiClient } from "./api.ts";
 import type { CliServices } from "./context.ts";

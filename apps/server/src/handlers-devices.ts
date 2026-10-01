@@ -32,8 +32,8 @@ import {
 import { RequestAuth } from "@maruhi/core";
 import { computeUserKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpServerResponse } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { ensureKeyMaterialAccess } from "./authz.ts";
 import type { DeviceAddRequestRecord, DeviceRecord } from "./db.package/index.ts";

@@ -24,7 +24,7 @@ import type { EnvironmentId, ProjectId } from "@maruhi/core";
 import type { LeaseClaims } from "@maruhi/crypto";
 import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import { loadRepositoryAnchor } from "./anchor.ts";
 import { makeApiClient, type MaruhiClient } from "./api.ts";

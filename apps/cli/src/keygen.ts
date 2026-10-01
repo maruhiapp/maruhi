@@ -21,7 +21,7 @@
 //   fingerprint. The secret key is never displayed
 
 import { Effect, Stdio } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import type { MaruhiClient } from "./api.ts";
 import type { IdentityBacking } from "./config.ts";

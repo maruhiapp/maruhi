@@ -29,7 +29,7 @@
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import type { MaruhiClient } from "./api.ts";
 import type { DekRecipient } from "./deks.ts";

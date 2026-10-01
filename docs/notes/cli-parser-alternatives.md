@@ -16,7 +16,7 @@ We fed each candidate the same argv for the 12 shapes actually hit with gunshi a
 The compared command definitions are all isomorphic: `pull` (boolean `--show` / string `--env` (alias `-e`) / integer `--limit`),
 `run` (variadic positional), `env create <environment-id>`.
 
-- Environment: Bun 1.3.14 / effect 4.0.0-beta.107 and **4.0.0-rc.109 both** (see §5) / @stricli/core 1.3.0 / gunshi 0.37.1
+- Environment: Bun 1.3.14 / effect 4.0.0-beta.107 and **rc.109 both** (see §5) / @stricli/core 1.3.0 / gunshi 0.37.1
 - Verdict: "reject" = typed error at parse time; "silence" = **a value different from what was written** passes with no error
 - effect behaves **identically on all 12 shapes** under beta.107 and rc.109. The probe sources also ran unmodified
 
@@ -95,7 +95,7 @@ which to adopt is a human ruling.
 - **util.parseArgs** (Bun built-in): decent pedigree — it rejects #2 — but subcommands, help, and completion are all in-house.
   Too thin a foundation for maruhi's 14 subcommands. That said, checking #4 is easy with tokens,
   which corroborates that "duplicate checking can be written in-house under any candidate"
-- **clipanion**: 4.0.0-rc.4 last updated **2024-09**. Stagnation is heavy for a dependency sitting on the security boundary
+- **clipanion**: rc.4 last updated **2024-09**. Stagnation is heavy for a dependency sitting on the security boundary
 - **commander / cac / citty**: actively maintained, but no stronger than gunshi on #2–#4 above — no reason to switch
 
 ## 4. Recommendation
@@ -115,7 +115,7 @@ which to adopt is a human ruling.
    measure how much of args.ts disappears. Migrating all 14 subcommands at once is too large a review unit
 3. Write the ADR after that measurement (envisioned as an addition under ADR-0011 "unstable dependencies" as the CLI argument-layer decision)
 
-## 5. effect 4.0.0-beta.107 → 4.0.0-rc.109 (measured)
+## 5. effect 4.0.0-beta.107 → rc.109 (measured)
 
 effect v4 entered rc in 2026-08 (`rc.108` / `rc.109`; the last beta is `beta.107` = this repo's pin).
 To decide whether to upgrade before writing the CLI migration, we swapped `effect` to rc.109 in every workspace and ran the quality gate.
@@ -228,7 +228,7 @@ This is a **per-function attribution estimate**, not a number measured by actual
 
 ## 7. Inventory of what Effect mechanisms cover (whole CLI)
 
-We also listed things beyond the argument layer. All verified to exist (effect 4.0.0-rc.109 / `@effect/platform-bun`).
+We also listed things beyond the argument layer. All verified to exist (effect rc.109 / `@effect/platform-bun`).
 
 | Current in-house implementation | Effect mechanism | Effect |
 |---|---|---|
@@ -252,7 +252,7 @@ We also listed things beyond the argument layer. All verified to exist (effect 4
 
 ### 8-1. What we learned
 
-- **Effect does not have it**. Across all of effect 4.0.0-rc.109's source, `CLAUDECODE` / `isAgent` etc. occur 0 times,
+- **Effect does not have it**. Across all of effect rc.109's source, `CLAUDECODE` / `isAgent` etc. occur 0 times,
   and the CLI module has no such feature. It is not a general CLI-library feature either
 - **Bun's `isAIAgent()` is an internal implementation (Zig), not a public JS API**.
   It's `Output.isAIAgent()` in `src/output.zig`, used to **reduce `bun test` output**
@@ -320,7 +320,7 @@ lets CI notice when upstream shrinks it.
 
 ```bash
 mkdir probe && cd probe && bun init -y
-bun add effect@4.0.0-rc.109 @effect/platform-bun@4.0.0-rc.109 gunshi@0.37.1 @stricli/core@1.3.0
+bun add effect@rc.109 @effect/platform-bun@rc.109 gunshi@0.37.1 @stricli/core@1.3.0
 # Feed each candidate the same argv (the 12 shapes above) and record values, errors, stdout byte counts
 ```
 
