@@ -554,7 +554,7 @@ adopted; 4 were considered and dismissed.
 - **Adopted form**: add an e2e test that `decodeUnknownSync`s every fixture through
   api-schema's real Schemas. The Schema runtime code runs **inside the test process
   only** (not bundled — consistent with ruling BR's "no Schema in the Web bundle".
-  The pin `effect@4.0.0` already in effect is explicitly added to web's
+  The pin `effect@4.0.0-rc.111` already in effect is explicitly added to web's
   devDependencies — zero supply-chain increment)
 - This makes "mock-to-wire-contract drift" mechanically checked in two layers:
   compile-time (types) + runtime (Schema). The remaining residual is only the

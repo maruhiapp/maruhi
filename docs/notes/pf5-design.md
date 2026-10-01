@@ -78,7 +78,7 @@ sign; the process inherits exactly the user's session (OS keychain,
 
 | # | Shape | Verdict |
 |---|---|---|
-| 2-A | **`effect/unstable/ai`'s `McpServer`** (already inside the pinned `effect@4.0.0`) | **Adopted** |
+| 2-A | **`effect/unstable/ai`'s `McpServer`** (already inside the pinned `effect@4.0.0-rc.117`) | **Adopted** |
 | 2-B | `@modelcontextprotocol/sdk` | Rejected: a new dependency tree (zod and friends) for the CLI's supply chain, and a second schema system beside Effect Schema |
 | 2-C | Hand-rolled JSON-RPC over ndjson | Rejected: re-implementing version negotiation, capability advertisement, and error mapping — the "do not invent" spirit, and more code to review |
 

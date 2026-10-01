@@ -20,7 +20,7 @@ ruling 1 round-4 synergy), so both are drafted together after the rulings are fi
 
 ## 2. Proof of the strict-acceptance implementation path (what session-31 called "PR-F1's first task")
 
-Environment: effect rc.109 (the repo's strict pin). Verification scripts are throwaway
+Environment: effect 4.0.0-rc.109 (the repo's strict pin). Verification scripts are throwaway
 (not committed).
 
 ### 2-1. Conclusion: reachable with schema AST annotations alone (no HttpApiBuilder changes needed)
