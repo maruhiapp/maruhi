@@ -72,8 +72,8 @@ export interface MetaPredecessor {
   readonly status: MetaStatementStatus;
   /**
    * The predecessor's wire layout version — the anchor of the per-variable
-   * layout monotonicity check (§4.2: a v1 successor of a v2 predecessor is
-   * rejected as `layout-regression`). **Required, not optional-with-default**:
+   * layout monotonicity check (§4.2: a successor of a lower layout than its
+   * predecessor — v1 after v2, v2 after v3 — is rejected as `layout-regression`). **Required, not optional-with-default**:
    * this structure is assembled from a *verified* stored statement, and an
    * omitted-means-1 default would make the fail-closed monotonicity check
    * fail-open — a caller that forgets the field would silently wave a v2 → v1
@@ -204,7 +204,9 @@ function prevReason(input: DistributedMetaStatementInput): MetaInvalidReason | n
   // predecessor side is a mandatory field (fail-closed — see
   // MetaPredecessor's doc); only the context side applies the wire
   // convention (omitted = 1)
-  if (predecessor.layoutVersion === 2 && metaLayoutVersionOf(context) === 1) {
+  // Generalized at layout 3 (PF6 R9): the layout never decreases (a v2
+  // successor on a v3 variable would silently drop the max-age declaration)
+  if (metaLayoutVersionOf(context) < predecessor.layoutVersion) {
     return "layout-regression";
   }
   return null;

@@ -113,6 +113,8 @@ interface ActivationPrev {
   readonly name: string;
   /** The schema column at declaration time (an activation takes it over byte-exact — the partial-update principle). */
   readonly schema: VerifiedSchemaFields;
+  /** The declaration's layout (an activation keeps it — v2 stays v2, v3 stays v3). */
+  readonly layoutVersion: 2 | 3;
 }
 
 /**
@@ -232,6 +234,7 @@ function resolveTarget(input: {
             metaSigHashHex: existing.metaSigHashHex,
             name: existing.name,
             schema: existing.schema,
+            layoutVersion: existing.layoutVersion === 3 ? 3 : 2,
           },
         },
         verified: metadata.verified,
@@ -725,6 +728,7 @@ function attemptOnce(input: PushInput, state: PushState): Effect.Effect<Accepted
         variableId: target.variableId,
         name: target.prev.name,
         schema: target.prev.schema,
+        layoutVersion: target.prev.layoutVersion,
         status: "active",
         prev: {
           metaVersion: target.prev.metaVersion,

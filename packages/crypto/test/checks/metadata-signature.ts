@@ -58,6 +58,8 @@ interface VectorContext {
   readonly var_type?: string;
   readonly required?: string;
   readonly description?: string;
+  /** Layout v3 only (PF6 R9): "" or a decimal 1..3650. */
+  readonly max_age_days?: string;
   readonly meta_version: number;
   readonly prev_meta_sig_hash_hex: string;
   readonly author_user_id: string;
@@ -120,6 +122,9 @@ function contextOf(v: VectorContext): MetaStatementContext {
             varType: (v.var_type ?? "") as MetaVariableSchema["varType"],
             required: v.required as MetaVariableSchema["required"],
             description: v.description ?? "",
+            // Layout v3's max_age_days: carried only when the vector has
+            // the key (its absence on a v3 context is the shape negative)
+            ...(v.max_age_days === undefined ? {} : { maxAgeDays: v.max_age_days }),
           },
     metaVersion: v.meta_version,
     prevMetaSigHashHex: v.prev_meta_sig_hash_hex,
@@ -254,6 +259,25 @@ function deleteRetentionChecks(c: Checks): void {
       v2Delete.context.var_type === v2Create.context.var_type &&
       v2Delete.context.required === v2Create.context.required &&
       v2Delete.context.description === v2Create.context.description,
+  );
+  deleteRetentionV3Checks(c);
+}
+
+/** A v3 deletion keeps max_age_days as well (§4.2 layout v3 — PF6 R9). */
+function deleteRetentionV3Checks(c: Checks): void {
+  const v3Delete = byName.get("var-v3-delete-keeps-max-age");
+  const v3Create = byName.get("var-v3-create-expiring");
+  const keeps =
+    v3Delete !== undefined &&
+    v3Create !== undefined &&
+    v3Delete.context.status === "deleted" &&
+    v3Delete.context.layout_version === 3 &&
+    v3Delete.context.max_age_days === "90" &&
+    v3Delete.context.max_age_days === v3Create.context.max_age_days &&
+    v3Delete.context.description === v3Create.context.description;
+  c.push(
+    "meta-sig var-v3-delete-keeps-max-age: keeps max_age_days and layout from predecessor",
+    keeps,
   );
 }
 
@@ -604,7 +628,8 @@ async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Pro
     c.push("meta-sig layout selection: base vector", false);
     return;
   }
-  const future: MetaStatementContext = { ...contextOf(base.context), layoutVersion: 3 };
+  // Layout 4 is the first unsupported one since layout v3 (PF6 R9)
+  const future: MetaStatementContext = { ...contextOf(base.context), layoutVersion: 4 };
   const pair = await generateSigningKeyPair();
   const signed = await signMetaStatement({ context: future, signingKey: pair.privateKey });
   const verified = await verifyMetaStatementSignature({
@@ -624,19 +649,19 @@ async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Pro
   });
   c.push(
     "meta-sig layout selection: sign rejects unsupported layout",
-    isUnsupportedLayout(signed, 3),
+    isUnsupportedLayout(signed, 4),
   );
   c.push(
     "meta-sig layout selection: verify rejects unsupported layout",
-    isUnsupportedLayout(verified, 3),
+    isUnsupportedLayout(verified, 4),
   );
   c.push(
     "meta-sig layout selection: hash rejects unsupported layout",
-    isUnsupportedLayout(hash, 3),
+    isUnsupportedLayout(hash, 4),
   );
   c.push(
     "meta-sig layout selection: distributed verify rejects before key resolution",
-    isUnsupportedLayout(distributed, 3),
+    isUnsupportedLayout(distributed, 4),
   );
   // Structural violations of layoutVersion (0 / non-integer) are
   // InvalidInput (a broken wire form, not version negotiation)

@@ -80,6 +80,8 @@ interface SnapshotProperty {
   readonly type?: "string" | "number" | "boolean";
   readonly format?: "uri";
   readonly description?: string;
+  /** The declared max age in days (layout v3 — a maruhi extension keyword; JSON Schema ignores unknown keywords). */
+  readonly "x-maruhi-maxAgeDays"?: number;
 }
 
 /** The snapshot document (a single JSON Schema — one environment per file). */
@@ -108,6 +110,7 @@ function propertyOf(statement: VerifiedVariableStatement): SnapshotProperty {
   return {
     ...type,
     ...(schema.description === "" ? {} : { description: schema.description }),
+    ...(schema.maxAgeDays === null ? {} : { "x-maruhi-maxAgeDays": schema.maxAgeDays }),
   };
 }
 

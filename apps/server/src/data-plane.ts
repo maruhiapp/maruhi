@@ -106,6 +106,13 @@ export interface MetaVariableSchemaInput {
   readonly varType: MetaVarTypeInput;
   readonly required: boolean;
   readonly description: string;
+  /**
+   * Layout v3 (CRYPTO_SPEC §4.2 — PF6 R9 expiring values): days after a
+   * value's push within which it should be replaced (1..3650), null = no
+   * declaration. Present iff the layout is 3 (verify-meta.ts enforces the
+   * coupling as 422 payload-mismatch); absent on a v2 statement.
+   */
+  readonly maxAgeDays?: number | null;
 }
 
 /**
@@ -128,7 +135,7 @@ export interface MetaStatementInput {
   /**
    * The wire's layoutVersion (§12-2 — omitted = 1). The wire Schema only
    * lets an explicit value of 2 or above through; an excess over the
-   * supported range ({1, 2}) is refused by the acceptance check ahead of
+   * supported range ({1, 2, 3}) is refused by the acceptance check ahead of
    * signature verification with a 422 `unsupported-layout` (ruling CR).
    */
   readonly layoutVersion?: number;
@@ -179,6 +186,8 @@ export interface DistributedVariableMetaStatementValue extends Omit<
   readonly varType?: MetaVarTypeInput;
   readonly required?: boolean;
   readonly description?: string;
+  /** Layout v3 only (present with null = no declaration). */
+  readonly maxAgeDays?: number | null;
 }
 
 /**

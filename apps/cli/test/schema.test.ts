@@ -333,12 +333,12 @@ describe("maruhi schema (display — §1-1)", () => {
     const env = await startEnv([chainHandler(), metadataHandler()]);
     expect(await runCli(["schema"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
-    expect(output).toContain("NAME\tTYPE\tREQUIRED\tSTATUS\tDESCRIPTION");
+    expect(output).toContain("NAME\tTYPE\tREQUIRED\tSTATUS\tMAX AGE\tDESCRIPTION");
     // v2 declared: type, required, description, and status in a row
-    expect(output).toContain(`SHOP_URL\turl\ttrue\tdeclared\t${DESCRIPTION_REQUIRED}`);
-    expect(output).toContain("OPTIONAL_HINT\t-\tfalse\tdeclared\t-");
+    expect(output).toContain(`SHOP_URL\turl\ttrue\tdeclared\t-\t${DESCRIPTION_REQUIRED}`);
+    expect(output).toContain("OPTIONAL_HINT\t-\tfalse\tdeclared\t-\t-");
     // v2 active: STATUS = set
-    expect(output).toContain("PORT\tnumber\ttrue\tset\tlisten port");
+    expect(output).toContain("PORT\tnumber\ttrue\tset\t-\tlisten port");
     // v1: TYPE / REQUIRED / DESCRIPTION are `-`
     expect(output).toContain("LEGACY_KEY\t-\t-\tset\t-");
     // Types are displayed as declarations (the §14.3 display rule —
@@ -468,17 +468,17 @@ describe("verifying a distribution containing declared (§6.3 / §12-7)", () => 
     expect(env.errors.join("\n")).toContain("declared statement together with a value");
   });
 
-  it("layoutVersion v3 trips the typed error 'unsupported layout (client update)' (session-46 §8 iteration 5)", async () => {
+  it("layoutVersion v4 trips the typed error 'unsupported layout (client update)' (session-46 §8 iteration 5; v3 is supported since PF6 R9)", async () => {
     // Distribution decode isn't a Literal (an integer with no pinned
     // ceiling), so v3 passes decode and the support-range check before
     // signature verification refuses it in the honest failure mode —
     // it doesn't masquerade as a Schema error or a bad signature
     // (suspected tampering)
-    const v3 = { ...activeV2.statement, layoutVersion: 3 };
+    const v4 = { ...activeV2.statement, layoutVersion: 4 };
     const env = await startEnv([
       chainHandler(),
       pullHandler({
-        variables: [{ ...activeV2, statement: v3 }, activeV1],
+        variables: [{ ...activeV2, statement: v4 }, activeV1],
         declaredVariables: [],
         // The digest is computed from the v2 canonical form (the
         // client refuses at the statement stage, so it never reaches
@@ -488,7 +488,7 @@ describe("verifying a distribution containing declared (§6.3 / §12-7)", () => 
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("layout version 3");
+    expect(errors).toContain("layout version 4");
     expect(errors).toContain("update the maruhi CLI");
     expect(errors).toContain("not a tampering indication");
     expect(errors).not.toContain("forged");
@@ -631,7 +631,9 @@ describe("maruhi schema set (§1-2)", () => {
     expect(body.value).toBeUndefined();
     expect(body.statement["status"]).toBe("declared");
     expect(body.statement["metaVersion"]).toBe(1);
-    expect(body.statement["layoutVersion"]).toBe(2);
+    // A new declaration is the current layout (v3 — PF6 R9), with no max age by default
+    expect(body.statement["layoutVersion"]).toBe(3);
+    expect(body.statement["maxAgeDays"]).toBeNull();
     expect(body.statement["varType"]).toBe("url");
     // Creation defaults: required = true (§1-2 — a declaration is the
     // environment's contract), description = ""
@@ -691,6 +693,37 @@ describe("maruhi schema set (§1-2)", () => {
     expect(body.statement["description"]).toBe("");
   });
 
+  it("--max-age declares the expiry interval on a layout-v3 statement; `none` clears it; out-of-range is a usage error (PF6 R9)", async () => {
+    const echo: MutationEcho = { body: null, base: [declaredRequired] };
+    const renameCalls: MockRequest[] = [];
+    const env = await startEnv([
+      chainHandler(),
+      metadataHandler({ variables: [declaredRequired], echo }),
+      captureRename(echo, renameCalls, "v-declared"),
+    ]);
+    expect(await runCli(["schema", "set", "SHOP_URL", "--max-age", "90"], env.layer)).toBe(0);
+    const body = renameCalls[0]?.body as { statement: Record<string, unknown> };
+    expect(body.statement["layoutVersion"]).toBe(3);
+    expect(body.statement["maxAgeDays"]).toBe(90);
+    // The other fields are inherited (partial update)
+    expect(body.statement["varType"]).toBe("url");
+    expect(body.statement["required"]).toBe(true);
+    expect(env.logs.join("\n")).toContain("max-age=90d");
+    env.logs.length = 0;
+    expect(await runCli(["schema", "set", "SHOP_URL", "--max-age", "none"], env.layer)).toBe(0);
+    const cleared = renameCalls[1]?.body as { statement: Record<string, unknown> };
+    expect(cleared.statement["layoutVersion"]).toBe(3);
+    expect(cleared.statement["maxAgeDays"]).toBeNull();
+    expect(env.logs.join("\n")).not.toContain("max-age=");
+    for (const bad of ["0", "3651", "ninety", "090"]) {
+      expect(await runCli(["schema", "set", "SHOP_URL", "--max-age", bad], env.layer)).toBe(2);
+      expect(env.errors.join("\n")).toContain("--max-age must be a number of days from 1 to 3650");
+      expect(env.errors.join("\n")).not.toContain(bad === "ninety" ? "ninety" : "\u0000");
+      env.errors.length = 0;
+    }
+    expect(renameCalls).toHaveLength(2);
+  });
+
   it("the first v2 re-issue onto a v1 variable requires an explicit required (a local refusal before signing/sending)", async () => {
     // A v1 statement has nothing to inherit required from (§1-2's
     // partial update is a 'previous value' rule). Silently applying the
@@ -724,7 +757,7 @@ describe("maruhi schema set (§1-2)", () => {
     ).toBe(0);
     expect(renameCalls).toHaveLength(1);
     const body = renameCalls[0]?.body as { statement: Record<string, unknown> };
-    expect(body.statement["layoutVersion"]).toBe(2);
+    expect(body.statement["layoutVersion"]).toBe(3);
     expect(body.statement["varType"]).toBe("string");
     expect(body.statement["required"]).toBe(false);
     expect(body.statement["description"]).toBe("");

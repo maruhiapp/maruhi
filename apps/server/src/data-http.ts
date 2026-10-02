@@ -211,6 +211,7 @@ export function toMetaStatementInput(statement: {
   readonly varType?: "" | "string" | "number" | "boolean" | "url";
   readonly required?: boolean;
   readonly description?: string;
+  readonly maxAgeDays?: number | null;
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
   readonly signatureHex: string;
@@ -232,6 +233,9 @@ export function toMetaStatementInput(statement: {
             varType: statement.varType,
             required: statement.required,
             description: statement.description,
+            // Layout v3's field rides only when the wire carries it (the
+            // layout ↔ presence coupling is verify-meta.ts's check)
+            ...(statement.maxAgeDays === undefined ? {} : { maxAgeDays: statement.maxAgeDays }),
           },
         }),
     chainHeadHashHex: statement.chainHeadHashHex,

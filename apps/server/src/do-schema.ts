@@ -355,6 +355,16 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       }
     },
   },
+  // Step 2 (2026-10-02 — PF6 R9 expiring values, CRYPTO_SPEC §4.2 layout
+  // v3): the max_age_days column of variable statements. NULL on v1 / v2
+  // rows; on a v3 row the signed string ("" = no declaration, else the
+  // decimal day count)
+  {
+    tables: [],
+    apply(sql) {
+      sql.exec("ALTER TABLE variable_meta_statements ADD COLUMN max_age_days TEXT");
+    },
+  },
 ];
 
 /**

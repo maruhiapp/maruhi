@@ -40,11 +40,7 @@ import {
 export const DEFAULT_ROTATE_CONFIG_PATH = "maruhi.rotate.json";
 
 /** The connectors (rotate-connector.ts implements them). */
-export type RotateConnectorKind =
-  | "aws-iam-access-key"
-  | "cloudflare-api-token"
-  | "postgres"
-  | "mysql";
+type RotateConnectorKind = "aws-iam-access-key" | "cloudflare-api-token" | "postgres" | "mysql";
 
 const ROTATE_CONNECTOR_KINDS: readonly RotateConnectorKind[] = [
   "aws-iam-access-key",

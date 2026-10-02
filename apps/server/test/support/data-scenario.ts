@@ -121,6 +121,14 @@ export function v2Fields(schema: Partial<WireSchemaFields> = {}): {
   };
 }
 
+/** Carrier fields for a v3 statement (layoutVersion 3 + the schema fields + maxAgeDays — PF6 R9). */
+export function v3Fields(
+  schema: Partial<WireSchemaFields> = {},
+  maxAgeDays: number | null = null,
+): ReturnType<typeof v2Fields> & { readonly maxAgeDays: number | null } {
+  return { ...v2Fields(schema), layoutVersion: 3, maxAgeDays };
+}
+
 /** Sign a variable's next statement (rename / schema re-issuance / deletion / activation) from the latest recorded one. */
 export async function nextVariableStatement(input: {
   readonly variableId: string;
@@ -128,8 +136,8 @@ export async function nextVariableStatement(input: {
   readonly status: "active" | "deleted" | "declared";
   readonly authorUserId: string;
   readonly environmentId?: string;
-  /** Layout-v2 carrier fields (v2Fields(...) — omitted = v1 statement). */
-  readonly v2?: ReturnType<typeof v2Fields>;
+  /** Layout-v2 / v3 carrier fields (v2Fields(...) / v3Fields(...) — omitted = v1 statement). */
+  readonly v2?: ReturnType<typeof v2Fields> | ReturnType<typeof v3Fields>;
 }): Promise<WireVariableMetaStatement> {
   const last = varStatements.get(input.variableId);
   if (last === undefined) {

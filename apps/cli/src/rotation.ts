@@ -25,7 +25,7 @@ import { Effect } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import type { CliServices, ProjectContextBase } from "./context.ts";
 import { floorHandleFor } from "./context.ts";
-import { countNoun, displayText } from "./display.ts";
+import { countNoun, displayText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
@@ -37,7 +37,7 @@ import {
   type RotateConfig,
   ruleFor,
 } from "./rotate-config.ts";
-import { pullVerifiedEnvironmentMetadata } from "./values.ts";
+import { pullVerifiedEnvironmentMetadata, type VerifiedEnvironmentMetadata } from "./values.ts";
 
 /** One flag of the derived view (the received form of api-schema's RotationFlagSchema). */
 interface RotationFlagView {
@@ -78,7 +78,7 @@ export interface VariableState {
   readonly deleted: boolean;
 }
 
-export type StateIndex = ReadonlyMap<string, VariableState>;
+type StateIndex = ReadonlyMap<string, VariableState>;
 
 /**
  * For each environment appearing in the list, fetches the verified
@@ -87,6 +87,33 @@ export type StateIndex = ReadonlyMap<string, VariableState>;
  * has no index = degrades to identifier display (with a warning — the
  * display is SHOULD and does not stop the listing itself).
  */
+/** One environment's verified metadata, or null with a note (the display is SHOULD — a failure never stops the listing). */
+function verifiedMetadataOrNote(
+  context: ProjectContextBase,
+  environmentId: string,
+  consequence: string,
+): Effect.Effect<VerifiedEnvironmentMetadata | null, never, CliServices> {
+  return Effect.gen(function* () {
+    const floorHandle = yield* floorHandleFor(context, environmentId);
+    return yield* pullVerifiedEnvironmentMetadata({
+      client: context.client,
+      verified: context.verified,
+      environmentId,
+      resync: context.resync,
+      floor: floorHandle,
+    });
+  }).pipe(
+    Effect.catch((error) =>
+      Effect.gen(function* () {
+        yield* logNote(
+          `could not fetch verified metadata for environment ${displayText(environmentId)} (${error.message}) — ${consequence}`,
+        );
+        return null;
+      }),
+    ),
+  );
+}
+
 function resolveVariableStates(
   context: ProjectContextBase,
   environmentIds: readonly string[],
@@ -94,37 +121,149 @@ function resolveVariableStates(
   return Effect.gen(function* () {
     const byEnvironment = new Map<string, StateIndex>();
     for (const environmentId of environmentIds) {
-      const attempted = yield* Effect.gen(function* () {
-        const floorHandle = yield* floorHandleFor(context, environmentId);
-        return yield* pullVerifiedEnvironmentMetadata({
-          client: context.client,
-          verified: context.verified,
-          environmentId,
-          resync: context.resync,
-          floor: floorHandle,
-        });
-      }).pipe(
-        Effect.map((metadata) => ({ kind: "ok", metadata }) as const),
-        Effect.catch((error) =>
-          Effect.succeed({ kind: "failed", message: error.message } as const),
-        ),
+      const metadata = yield* verifiedMetadataOrNote(
+        context,
+        environmentId,
+        "variables are shown by identifier only",
       );
-      if (attempted.kind === "failed") {
-        yield* logNote(
-          `could not fetch verified metadata for environment ${displayText(environmentId)} (${attempted.message}) — variables are shown by identifier only`,
-        );
+      if (metadata === null) {
         continue;
       }
       const states = new Map<string, VariableState>();
-      for (const statement of attempted.metadata.variables) {
+      for (const statement of metadata.variables) {
         states.set(statement.variableId, { name: statement.name, deleted: false });
       }
-      for (const tombstone of attempted.metadata.tombstones) {
+      for (const tombstone of metadata.tombstones) {
         states.set(tombstone.variableId, { name: tombstone.name, deleted: true });
       }
       byEnvironment.set(environmentId, states);
     }
     return byEnvironment;
+  });
+}
+
+/** One value past, or approaching, the max age its schema declares (PF6 R9 expiring values). */
+interface ExpiringRow {
+  readonly environmentId: string;
+  readonly variableId: string;
+  readonly name: string;
+  readonly maxAgeDays: number;
+  readonly pushedAtMs: number;
+  readonly dueAtMs: number;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** How far ahead "due soon" looks. */
+const DUE_SOON_DAYS = 14;
+
+/**
+ * The values whose schema declares a max age (layout v3 — CRYPTO_SPEC §4.2)
+ * and whose latest push is past it, or within {@link DUE_SOON_DAYS} of it.
+ * The max age comes from the verified statements; the push time is the
+ * history's server-declared `pushedAtMs` (the same material `var history`
+ * shows — advisory). A declared variable with no value has no age.
+ */
+function expiringValues(
+  context: ProjectContextBase,
+  nowMs: number,
+): Effect.Effect<readonly ExpiringRow[], never, CliServices> {
+  return Effect.gen(function* () {
+    const rows: ExpiringRow[] = [];
+    for (const environmentId of [...context.verified.state.environments.keys()].toSorted()) {
+      const metadata = yield* verifiedMetadataOrNote(
+        context,
+        environmentId,
+        "its expiring values are not listed",
+      );
+      if (metadata === null) {
+        continue;
+      }
+      for (const statement of metadata.variables) {
+        const row = yield* expiringRowFor(context, environmentId, statement, nowMs);
+        if (row !== null) {
+          rows.push(row);
+        }
+      }
+    }
+    return rows.toSorted((a, b) => a.dueAtMs - b.dueAtMs || a.name.localeCompare(b.name));
+  });
+}
+
+/** One statement's due row: null when it declares no max age, has no value, or is not due within the window. */
+function expiringRowFor(
+  context: ProjectContextBase,
+  environmentId: string,
+  statement: VerifiedEnvironmentMetadata["variables"][number],
+  nowMs: number,
+): Effect.Effect<ExpiringRow | null> {
+  const maxAgeDays = statement.schema?.maxAgeDays ?? null;
+  if (maxAgeDays === null || statement.status !== "active") {
+    return Effect.succeed(null);
+  }
+  return context.client.variables
+    .history({
+      params: { projectId: context.projectId, environmentId, variableId: statement.variableId },
+    })
+    .pipe(
+      Effect.map((response) => response.versions),
+      Effect.catch(() => Effect.succeed([])),
+      Effect.map((history) => {
+        const latest = history.toSorted((a, b) => b.version - a.version)[0];
+        if (latest === undefined) {
+          return null;
+        }
+        const dueAtMs = latest.pushedAtMs + maxAgeDays * DAY_MS;
+        return dueAtMs - nowMs > DUE_SOON_DAYS * DAY_MS
+          ? null
+          : {
+              environmentId,
+              variableId: statement.variableId,
+              name: statement.name,
+              maxAgeDays,
+              pushedAtMs: latest.pushedAtMs,
+              dueAtMs,
+            };
+      }),
+    );
+}
+
+/** Prints the expiring values (nothing when none — the section exists only when there is something to do). */
+function reportExpiringValues(
+  context: ProjectContextBase,
+  config: RotateConfig | null,
+  nowMs: number,
+): Effect.Effect<void, never, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const rows = yield* expiringValues(context, nowMs);
+    if (rows.length === 0) {
+      return;
+    }
+    const expired = rows.filter((row) => row.dueAtMs <= nowMs).length;
+    const soon = rows.length - expired;
+    const parts = [
+      ...(expired === 0 ? [] : [`${countNoun(expired, "value")} past the declared max age`]),
+      ...(soon === 0 ? [] : [`${countNoun(soon, "value")} due within ${DUE_SOON_DAYS} days`]),
+    ];
+    yield* io.log(
+      `Expiring values: ${parts.join(", ")} (the max age is declared with \`maruhi schema set --max-age\`; the push time is server-declared)`,
+    );
+    for (const row of rows) {
+      const days = Math.round(Math.abs(row.dueAtMs - nowMs) / DAY_MS);
+      const when =
+        row.dueAtMs <= nowMs
+          ? `expired ${countNoun(days, "day")} ago`
+          : `due in ${countNoun(days, "day")}`;
+      const next = rotationAction({
+        environmentId: row.environmentId,
+        variableId: row.variableId,
+        state: { name: row.name, deleted: false },
+        config,
+      });
+      yield* io.log(
+        `  [${row.dueAtMs <= nowMs ? "expired" : "due"}] ${displayText(row.environmentId)} ${displayText(row.name)}: max age ${row.maxAgeDays}d, pushed ${formatUtcDate(row.pushedAtMs)}, ${when} — next: ${next}`,
+      );
+    }
   });
 }
 
@@ -233,17 +372,20 @@ function describeBasis(basis: "read" | "readable"): string {
 /** `maruhi rotation list`: displays the currently active flags (all members — class 1). */
 export function rotationListOp(
   context: ProjectContextBase,
+  options: { readonly nowMs?: number | undefined } = {},
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
+    const nowMs = options.nowMs ?? Date.now();
+    const config = yield* checklistConfig(context.projectId);
     const flags = yield* fetchRotationFlags(context.client, context.projectId);
     if (flags.length === 0) {
       yield* io.log("No rotation flags are currently active");
+      yield* reportExpiringValues(context, config, nowMs);
       return 0;
     }
     const environmentIds = [...new Set(flags.map((flag) => flag.environmentId))].toSorted();
     const states = yield* resolveVariableStates(context, environmentIds);
-    const config = yield* checklistConfig(context.projectId);
     yield* io.log(
       `Rotation flags: ${countNoun(flags.length, "active flag")} (upstream credential rotation recommended — AUDIT_SPEC §4.1)`,
     );
@@ -283,6 +425,7 @@ export function rotationListOp(
     yield* io.log(
       "To resolve: rotate the upstream credential and save the new value with `maruhi push` after the environment's mandated rotation (a value pushed before it is still under a key the former holder has; the re-encryption alone does not resolve a flag, and rolling back to a value they could read re-opens it). For pairs that cannot be pushed (e.g. deleted variables), dismiss the flag with `maruhi rotation dismiss` as an explicit acceptance of risk (admin)",
     );
+    yield* reportExpiringValues(context, config, nowMs);
     return 0;
   });
 }

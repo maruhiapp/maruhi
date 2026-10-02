@@ -25,7 +25,7 @@ import { Context, Effect, Redacted, Stdio } from "effect";
 import type { CliServices, EnvironmentContext } from "./context.ts";
 import { floorHandleFor } from "./context.ts";
 import { environmentKeysFor } from "./deks.ts";
-import { countNoun, displayText } from "./display.ts";
+import { countNoun, displayText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import { logWarning } from "./notice.ts";
@@ -96,6 +96,8 @@ export interface VarRotateResult {
   readonly pushed: readonly { readonly name: string; readonly version: PushedVersion }[];
   readonly facts: readonly string[];
   readonly previous: string;
+  /** The max age the primary's schema declares (layout v3 — null = none). */
+  readonly maxAgeDays: number | null;
   readonly warnings: readonly string[];
 }
 
@@ -382,12 +384,14 @@ export function varRotateOp(
       catch: connectorFailure,
     });
     const pushed = yield* pushOutcome(context, pulled, target, outcome);
+    const primaryStatement = pulled.variables.find((variable) => variable.name === target.primary);
     return {
       primary: target.primary,
       connector: target.rule.connector,
       pushed,
       facts: outcome.facts,
       previous: outcome.previous,
+      maxAgeDays: primaryStatement?.schema?.maxAgeDays ?? null,
       warnings: [
         ...pulled.warnings,
         ...outcome.warnings,
@@ -479,7 +483,11 @@ export function varFinalizeOp(
 }
 
 /** The report lines of a rotation (the command prints them; values never appear). */
-export function describeRotation(result: VarRotateResult, environmentId: string): string[] {
+export function describeRotation(
+  result: VarRotateResult,
+  environmentId: string,
+  nowMs: number = Date.now(),
+): string[] {
   const versions = result.pushed
     .map(
       (entry) =>
@@ -494,6 +502,11 @@ export function describeRotation(result: VarRotateResult, environmentId: string)
   if (!result.previous.includes("nothing to finalize")) {
     lines.push(
       `Deploy the new value (${countNoun(result.pushed.length, "variable")} pushed — sync targets with onPush were synced), then run \`maruhi var rotate ${displayText(result.primary)} --finalize\` to invalidate the previous credential`,
+    );
+  }
+  if (result.maxAgeDays !== null) {
+    lines.push(
+      `Max age ${result.maxAgeDays}d declared: the next rotation is due by ${formatUtcDate(nowMs + result.maxAgeDays * 24 * 60 * 60 * 1000)} (\`maruhi rotation list\` shows it when it comes close)`,
     );
   }
   return lines;

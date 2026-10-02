@@ -307,6 +307,7 @@ describe("maruhi mcp — get_schema (rulings M5 / M6)", () => {
       required: true,
       status: "set",
       description: "listen port",
+      maxAgeDays: null,
     });
     // A v1 statement: no schema fields, nothing fabricated
     expect(variables[1]).toEqual({
@@ -315,6 +316,7 @@ describe("maruhi mcp — get_schema (rulings M5 / M6)", () => {
       required: null,
       status: "set",
       description: null,
+      maxAgeDays: null,
     });
     // One call = one keyless `maruhi schema`: only the chain and the
     // metadata-only pull — never the value pull, a DEK, or a version range
@@ -338,7 +340,7 @@ describe("maruhi mcp — get_schema (rulings M5 / M6)", () => {
     expect(description).toContain("\\u{202e}");
     // The same row the CLI table prints
     expect(await runCli(["schema"], env.layer)).toBe(0);
-    expect(env.logs.join("\n")).toContain(`EVIL\t-\tfalse\tdeclared\t${description}`);
+    expect(env.logs.join("\n")).toContain(`EVIL\t-\tfalse\tdeclared\t-\t${description}`);
   });
 
   it("reads another environment by parameter and re-verifies on every call", async () => {

@@ -344,6 +344,50 @@ export interface WireStatementSchema {
   readonly varType: "" | "string" | "number" | "boolean" | "url";
   readonly required: boolean;
   readonly description: string;
+  /** Present = a layout-v3 statement (null = no max age declared). */
+  readonly maxAgeDays?: number | null;
+}
+
+/** A schema with maxAgeDays (null included) is a layout-v3 statement; without it, v2. */
+function layoutVersionOf(schema: WireStatementSchema): 2 | 3 {
+  return schema.maxAgeDays === undefined ? 2 : 3;
+}
+
+/**
+ * The signed layout context of a schema-bearing statement (§4.2): the layout
+ * version and the schema fields in their signed string forms (required as
+ * "true" | "false"); nothing for a v1 statement.
+ */
+function signedLayoutOf(schema: WireStatementSchema | undefined): {
+  readonly layoutVersion?: 2 | 3;
+  readonly schema?: {
+    readonly varType: WireStatementSchema["varType"];
+    readonly required: "true" | "false";
+    readonly description: string;
+    readonly maxAgeDays?: string;
+  };
+} {
+  if (schema === undefined) {
+    return {};
+  }
+  return {
+    layoutVersion: layoutVersionOf(schema),
+    schema: {
+      varType: schema.varType,
+      required: schema.required ? "true" : "false",
+      description: schema.description,
+      ...signedMaxAgeOf(schema),
+    },
+  };
+}
+
+/** Layout v3's max_age_days in the signed string form ("" = none); nothing on a v2 schema. */
+function signedMaxAgeOf(schema: { readonly maxAgeDays?: number | null }): {
+  readonly maxAgeDays?: string;
+} {
+  return schema.maxAgeDays === undefined
+    ? {}
+    : { maxAgeDays: schema.maxAgeDays === null ? "" : String(schema.maxAgeDays) };
 }
 
 /** The distributed variable meta statement (DistributedVariableMetaStatement — §12-2). */
@@ -411,17 +455,7 @@ async function signDistributedStatement(
         target,
         name: input.name,
         status,
-        // v2 (§4.2): the signed required is an explicit string ("true" | "false")
-        ...(input.schema === undefined
-          ? {}
-          : {
-              layoutVersion: 2,
-              schema: {
-                varType: input.schema.varType,
-                required: input.schema.required ? ("true" as const) : ("false" as const),
-                description: input.schema.description,
-              },
-            }),
+        ...signedLayoutOf(input.schema),
         metaVersion,
         prevMetaSigHashHex,
         authorUserId: input.author.userId,
@@ -444,7 +478,9 @@ async function signDistributedStatement(
     signatureHex,
     authorUserId: input.author.userId,
     authorKeyFingerprintHex: input.author.fingerprintHex,
-    ...(input.schema === undefined ? {} : { layoutVersion: 2, ...input.schema }),
+    ...(input.schema === undefined
+      ? {}
+      : { layoutVersion: layoutVersionOf(input.schema), ...input.schema }),
   };
 }
 
@@ -517,6 +553,7 @@ export async function statementHashOf(
               varType: statement.varType,
               required: statement.required ? ("true" as const) : ("false" as const),
               description: statement.description,
+              ...signedMaxAgeOf(statement),
             },
           }),
       metaVersion: statement.metaVersion,

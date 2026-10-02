@@ -184,7 +184,8 @@ function unsupportedLayoutStatement(): Record<string, unknown> {
     metaVersion: 1,
     prevMetaSigHashHex: "",
     ...v2Fields(),
-    layoutVersion: 3,
+    // Layout 4 is the first unsupported one since layout v3 (PF6 R9)
+    layoutVersion: 4,
     chainHeadHashHex: fixture.head.hashHex,
     chainHeadSeq: fixture.head.seq,
     signatureHex: "00".repeat(64),
@@ -192,7 +193,7 @@ function unsupportedLayoutStatement(): Record<string, unknown> {
 }
 
 describe("unsupported layouts (§12-2 — ruling CR)", () => {
-  it("layoutVersion 3 is a typed 422 unsupported-layout rejection (not crushed into a bad-signature 500)", async () => {
+  it("layoutVersion 4 is a typed 422 unsupported-layout rejection (not crushed into a bad-signature 500)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
@@ -207,7 +208,7 @@ describe("unsupported layouts (§12-2 — ruling CR)", () => {
   });
 
   it("the support-range check precedes schemaPolicy (no misleading error under disabled / locked either)", async () => {
-    // The honest answer to a v3 client is always "server update
+    // The honest answer to a v4 client is always "server update
     // required"; schema-policy-disabled (unchanged by enabling) or
     // schema-required (unchanged by adding varType) must not be returned
     // first (the intent of ruling CR)
@@ -226,10 +227,10 @@ describe("unsupported layouts (§12-2 — ruling CR)", () => {
     }
   });
 
-  it("the support-range check precedes creation's pre-checks (duplicate name) (no duplicate-name for a name-colliding v3)", async () => {
+  it("the support-range check precedes creation's pre-checks (duplicate name) (no duplicate-name for a name-colliding v4)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
-    // Create an existing variable with the same name as the v3 declaration first, setting up a name collision
+    // Create an existing variable with the same name as the v4 declaration first, setting up a name collision
     await createVariableOk(dek, "var-existing", "API_KEY", "occupied");
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: unsupportedLayoutStatement(),
@@ -246,7 +247,7 @@ describe("unsupported layouts (§12-2 — ruling CR)", () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // A v3 successor statement (even in rename form with a stale
+    // A v4 successor statement (even in rename form with a stale
     // metaVersion, unsupported-layout settles before the CAS 409)
     const successor = {
       suite: "maruhi/v1",
@@ -257,7 +258,7 @@ describe("unsupported layouts (§12-2 — ruling CR)", () => {
       metaVersion: 9,
       prevMetaSigHashHex: "ab".repeat(32),
       ...v2Fields(),
-      layoutVersion: 3,
+      layoutVersion: 4,
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
       signatureHex: "00".repeat(64),
@@ -273,7 +274,7 @@ describe("unsupported layouts (§12-2 — ruling CR)", () => {
       _tag: "MetaStatementRejected",
       reason: "unsupported-layout",
     });
-    // A v3 deletion (unsupported-layout, not the just-before-match payload-mismatch)
+    // A v4 deletion (unsupported-layout, not the just-before-match payload-mismatch)
     const removed = await requestJson(
       "DELETE",
       `/environments/${ENV}/variables/${VAR}`,
@@ -288,7 +289,7 @@ describe("unsupported layouts (§12-2 — ruling CR)", () => {
       _tag: "MetaStatementRejected",
       reason: "unsupported-layout",
     });
-    // A v3 activation (unsupported-layout, not the status/name guard or
+    // A v4 activation (unsupported-layout, not the status/name guard or
     // value CAS — the activate path takes the same hoisting as rename /
     // delete)
     const activated = await requestJson(

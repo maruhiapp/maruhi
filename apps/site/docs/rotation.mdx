@@ -16,6 +16,7 @@ Rotation is always run by a member from their own machine: the CLI decrypts the 
 | Invalidate the previous credential once the new one is live | `maruhi var rotate <name> --finalize`          |
 | Rotate a credential maruhi has no connector for             | the runbook below, then `maruhi push <name>`   |
 | Accept the risk for a value you cannot push (deleted)       | `maruhi rotation dismiss <variableId> --env …` |
+| Declare how long a value should live, and be reminded       | `maruhi schema set <name> --max-age <days>`    |
 
 ## The dual-credential grace period
 
@@ -132,6 +133,27 @@ A fresh value pushed after the environment's rotation resolves a flag; `maruhi r
 `[read]` means the person fetched that value (an audit record exists); `[readable]` means they held the key and could have. `maruhi rotation list` shows the same rows with the same next step at any later time, so the checklist survives a closed terminal. The flags are server-derived; the names come from the verified statements on your machine.
 
 For `maruhi device revoke`, which spans every project the device was on, run `maruhi rotation list` in each project.
+
+## Expiring values
+
+A credential that was never leaked still ages: a key issued two years ago has been copied into more places than anyone remembers. Declare how long a value should live, and maruhi reminds you:
+
+```sh
+maruhi schema set STRIPE_SECRET_KEY --env prod --max-age 90
+# Updated the schema of STRIPE_SECRET_KEY (type=string, required=true, max-age=90d, metaVersion=3)
+```
+
+The max age is a schema field like the type and the description: it is signed by the member who declared it, verified by every client, shown by `maruhi schema` (the `MAX AGE` column), exported by `maruhi schema export` (`x-maruhi-maxAgeDays`), and visible to agents through `maruhi mcp`. It travels with the variable, so a rotation does not have to re-declare it. `none` clears it.
+
+`maruhi rotation list` adds an **Expiring values** section for every value past its max age or within 14 days of it, with the same next step as the checklist:
+
+```text
+Expiring values: 1 value past the declared max age, 1 value due within 14 days (the max age is declared with `maruhi schema set --max-age`; the push time is server-declared)
+  [expired] prod STRIPE_SECRET_KEY: max age 90d, pushed 2026-06-20, expired 14 days ago — next: rotate at the issuer, then `maruhi push STRIPE_SECRET_KEY --env prod` (runbooks: https://maruhi.app/docs/rotation)
+  [due] prod DATABASE_URL: max age 30d, pushed 2026-09-10, due in 8 days — next: `maruhi var rotate DATABASE_URL --env prod` (postgres connector in maruhi.rotate.json)
+```
+
+The age counts from the latest push, whichever way the value was pushed: `maruhi var rotate`, `maruhi push`, or a rollback. The push time is the server's record (the one `maruhi var history` shows), so this is a reminder, not a proof — the signed part is the declaration. After `maruhi var rotate` on a variable with a max age, the report names the date the next rotation is due.
 
 ## Runbooks for other issuers
 

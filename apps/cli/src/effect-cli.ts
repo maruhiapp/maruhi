@@ -51,6 +51,7 @@ import {
   type GuardianMode,
   type MetaVarType,
   type Role,
+  MAX_META_MAX_AGE_DAYS,
 } from "@maruhi/crypto";
 import {
   Cause,
@@ -1205,6 +1206,10 @@ const schemaSetConfig = {
     "clear-description",
     "Clear the description (explicit — an empty --description value is rejected as a likely unset shell variable)",
   ),
+  "max-age": singleValued(
+    "max-age",
+    "Days within which a value should be replaced after its push (1 to 3650), or `none` to clear it; `maruhi rotation list` shows values past their max age",
+  ),
   "allow-high-entropy": singleFlag(
     "allow-high-entropy",
     "Proceed without confirmation when the name or description contains a secret-like high-entropy string (fail-closed otherwise)",
@@ -1859,15 +1864,37 @@ function parseSchemaTypeFlag(
  * contradictory specification (--required and --optional etc.) is a usage
  * error.
  */
+/** Interpreting `--max-age` (unspecified = keep, `none` = clear, else a day count 1..3650). The given text never appears in the error. */
+function parseMaxAgeFlag(
+  value: string | undefined,
+): Effect.Effect<FieldUpdate<number | null>, CliError> {
+  if (value === undefined) {
+    return Effect.succeed({ kind: "keep" });
+  }
+  if (value === "none") {
+    return Effect.succeed({ kind: "set", value: null });
+  }
+  const days = /^[1-9][0-9]{0,3}$/.test(value) ? Number(value) : Number.NaN;
+  return Number.isInteger(days) && days >= 1 && days <= MAX_META_MAX_AGE_DAYS
+    ? Effect.succeed({ kind: "set", value: days })
+    : Effect.fail(
+        usageError(
+          `--max-age must be a number of days from 1 to ${MAX_META_MAX_AGE_DAYS} (or \`none\` to clear it)`,
+        ),
+      );
+}
+
 function parseSchemaFieldUpdates(values: {
   readonly type?: string | undefined;
   readonly required: boolean;
   readonly optional: boolean;
   readonly description?: string | undefined;
   readonly "clear-description": boolean;
+  readonly "max-age"?: string | undefined;
 }): Effect.Effect<SchemaFieldUpdates, CliError> {
   return Effect.gen(function* () {
     const varType = yield* parseSchemaTypeFlag(values.type);
+    const maxAgeDays = yield* parseMaxAgeFlag(values["max-age"]);
     if (values.required && values.optional) {
       return yield* Effect.fail(
         usageError("--required and --optional are mutually exclusive (specify at most one)"),
@@ -1888,17 +1915,19 @@ function parseSchemaFieldUpdates(values: {
       : values.description !== undefined
         ? { kind: "set", value: values.description }
         : { kind: "keep" };
-    return { varType, required, description };
+    return { varType, required, description, maxAgeDays };
   });
 }
 
 /** `schema set`'s success report (the type is displayed as a declaration — the word "verified" is never used, §14.3). */
 function schemaSetReport(name: string, summary: SchemaSetSummary): string {
   const typeShown = summary.schema.varType === "" ? "-" : summary.schema.varType;
+  const maxAge =
+    summary.schema.maxAgeDays === null ? "" : `, max-age=${summary.schema.maxAgeDays}d`;
   if (summary.created) {
-    return `Declared ${displayText(name)} (type=${typeShown}, required=${summary.schema.required}) — no value yet. Set the first value with: \`printf %s "$VALUE" | maruhi push ${displayText(name)}\``;
+    return `Declared ${displayText(name)} (type=${typeShown}, required=${summary.schema.required}${maxAge}) — no value yet. Set the first value with: \`printf %s "$VALUE" | maruhi push ${displayText(name)}\``;
   }
-  return `Updated the schema of ${displayText(name)} (type=${typeShown}, required=${summary.schema.required}, metaVersion=${summary.metaVersion})`;
+  return `Updated the schema of ${displayText(name)} (type=${typeShown}, required=${summary.schema.required}${maxAge}, metaVersion=${summary.metaVersion})`;
 }
 
 /** Validating a config key passed as a positional (**the given value itself never appears in the error**). */
@@ -4715,7 +4744,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Set a variable's schema fields (type / required / description) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds",
+      "Set a variable's schema fields (type / required / description / max age) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds",
     ),
   );
 

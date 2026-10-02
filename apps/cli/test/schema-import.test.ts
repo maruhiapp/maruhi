@@ -259,7 +259,7 @@ describe("approval → declared registration (values are never sent)", () => {
     expect(first.value).toBeUndefined();
     expect(first.statement["status"]).toBe("declared");
     expect(first.statement["metaVersion"]).toBe(1);
-    expect(first.statement["layoutVersion"]).toBe(2);
+    expect(first.statement["layoutVersion"]).toBe(3);
     expect(first.statement["name"]).toBe("SHOP_URL");
     expect(first.statement["varType"]).toBe("url");
     expect(first.statement["required"]).toBe(true);

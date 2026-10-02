@@ -1444,7 +1444,7 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  set                Set a variable's schema fields (type / required / description) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds
+  set                Set a variable's schema fields (type / required / description / max age) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds
   import             Import schema candidates from a .env or .env.example file with interactive per-variable approval (declares names without sending values; optionally pushes a value per variable)
   export             Print the environment's schema snapshot (a JSON Schema subset) to stdout. Commit it and check it in CI with `schema verify-snapshot`; the store stays the source of truth
   verify-snapshot    Verify a committed schema snapshot against the store and fail on any divergence (for CI; the store is the source of truth)
@@ -1452,7 +1452,7 @@ SUBCOMMANDS
 
 $ maruhi schema set --help
 DESCRIPTION
-  Set a variable's schema fields (type / required / description) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds
+  Set a variable's schema fields (type / required / description / max age) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds
 
 USAGE
   maruhi schema set [flags] <name>
@@ -1469,6 +1469,7 @@ FLAGS
   --optional              Declare the variable as not required
   --description string    Human-readable description (plaintext metadata visible to the server — never put secret values here)
   --clear-description     Clear the description (explicit — an empty --description value is rejected as a likely unset shell variable)
+  --max-age string        Days within which a value should be replaced after its push (1 to 3650), or `none` to clear it; `maruhi rotation list` shows values past their max age
   --allow-high-entropy    Proceed without confirmation when the name or description contains a secret-like high-entropy string (fail-closed otherwise)
 
 GLOBAL FLAGS

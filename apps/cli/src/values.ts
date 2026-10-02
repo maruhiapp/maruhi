@@ -287,19 +287,36 @@ function wireStatementLayoutOf(
   ) {
     return null;
   }
+  if (!maxAgeCoupled(statement.layoutVersion, statement.maxAgeDays !== undefined)) {
+    return null;
+  }
   return {
     layoutVersion: statement.layoutVersion,
     schema: {
       varType: statement.varType,
       required: statement.required,
       description: statement.description,
+      maxAgeDays: statement.maxAgeDays ?? null,
     },
   };
 }
 
-/** The refusal message for a distribution carrying a partial v2 field set (§12-2's all-or-nothing rule). */
+/**
+ * Layout v3 carries maxAgeDays (null = none) and layout v2 must not (§12-2 —
+ * the layout ↔ field coupling; a mismatch is the same partial-set refusal).
+ * Layouts beyond 3 are refused later as unsupported (the crypto layer's
+ * typed error), so the coupling is only judged for 2 and 3.
+ */
+function maxAgeCoupled(layoutVersion: number, present: boolean): boolean {
+  if (layoutVersion === 3) {
+    return present;
+  }
+  return layoutVersion === 2 ? !present : true;
+}
+
+/** The refusal message for a distribution carrying a partial v2 / v3 field set (§12-2's all-or-nothing rule). */
 function partialLayoutMessage(label: string): string {
-  return `${label} carries only part of the layout-v2 field set (layoutVersion / varType / required / description must be all present or all absent — an inconsistent server response)`;
+  return `${label} carries only part of the layout-v2 field set (layoutVersion / varType / required / description must be all present or all absent, and maxAgeDays present exactly on layout v3 — an inconsistent server response)`;
 }
 
 /** The v2 fields passed to crypto's signed context (required in the signature convention's string form — §4.2). */
@@ -313,6 +330,10 @@ function contextLayoutFields(
     varType: layout.schema.varType,
     required: layout.schema.required ? "true" : "false",
     description: layout.schema.description,
+    // Layout v3's max_age_days in the signed string form ("" = none)
+    ...(layout.layoutVersion === 3
+      ? { maxAgeDays: layout.schema.maxAgeDays === null ? "" : String(layout.schema.maxAgeDays) }
+      : {}),
   };
   return { layoutVersion: layout.layoutVersion, schema };
 }

@@ -86,6 +86,8 @@ export {
   type MetaVariableSchema,
   type MetaVarType,
   signMetaStatement,
+  isMetaMaxAgeDays,
+  MAX_META_MAX_AGE_DAYS,
   SUPPORTED_META_LAYOUT_VERSIONS,
   verifyDistributedMetaStatement,
   verifyMetaStatementSignature,
