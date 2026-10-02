@@ -45,7 +45,7 @@ import {
 } from "@maruhi/api-schema";
 import { ChainInvalidError } from "@maruhi/core";
 import { Schema } from "effect";
-import { HttpClientError } from "effect/unstable/http";
+import { HttpClientError } from "effect/http";
 
 import { displayText } from "./display.ts";
 import { CliError, cliError } from "./errors.ts";

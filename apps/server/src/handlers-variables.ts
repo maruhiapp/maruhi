@@ -19,7 +19,7 @@
 import { ForbiddenError, maruhiApi } from "@maruhi/api-schema";
 import { RequestAuth } from "@maruhi/core";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { statefulGetCsrfViolated } from "./auth.package/index.ts";
 import {

@@ -17,8 +17,8 @@
 import { AuthMiddleware, maruhiApi } from "@maruhi/api-schema";
 import { SessionService, TokenService } from "@maruhi/core";
 import { Context, Effect, FileSystem, Layer, Path } from "effect";
-import { Etag, HttpPlatform, HttpRouter } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { Etag, HttpPlatform, HttpRouter } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 
 import {
   authMiddlewareImpl,

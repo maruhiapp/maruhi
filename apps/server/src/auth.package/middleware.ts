@@ -23,8 +23,8 @@ import {
 import type { Principal } from "@maruhi/core";
 import { anonymousPrincipal, RequestAuth, SessionService, TokenService } from "@maruhi/core";
 import { Effect, Option } from "effect";
-import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import type { HttpApiMiddleware } from "effect/unstable/httpapi";
+import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/http";
+import type { HttpApiMiddleware } from "effect/http-api";
 
 export const SESSION_COOKIE = "__Host-maruhi_session";
 /**

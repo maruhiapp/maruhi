@@ -9,7 +9,7 @@ import {
   UnauthorizedError,
 } from "@maruhi/api-schema";
 import { Cause, Effect, Exit, Layer, Redacted, Schema, Stdio } from "effect";
-import { HttpClientError, HttpClientRequest } from "effect/unstable/http";
+import { HttpClientError, HttpClientRequest } from "effect/http";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentProfileRef } from "../src/agent-gate.ts";

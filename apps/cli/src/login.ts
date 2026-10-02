@@ -17,7 +17,7 @@
 
 import { MIN_CLI_POLL_INTERVAL_SECONDS } from "@maruhi/api-schema";
 import { Duration, Effect, Option, Redacted, Stdio } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import { AgentProfileRef } from "./agent-gate.ts";
 import { makeApiClient, type MaruhiClient } from "./api.ts";

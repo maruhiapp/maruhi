@@ -33,7 +33,7 @@
 import { MAX_PASSKEY_WRAPS_PER_USER } from "@maruhi/api-schema";
 import { decodeHex, derivePasskeyKek, encodeHex, unwrapMasterBlob } from "@maruhi/crypto";
 import { Duration, Effect, Stdio } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";

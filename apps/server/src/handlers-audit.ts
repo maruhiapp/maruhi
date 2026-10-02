@@ -19,7 +19,7 @@
 import { maruhiApi } from "@maruhi/api-schema";
 import { RequestAuth } from "@maruhi/core";
 import { Effect, type Schema } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { ensureSelfAuditAccess, tokenScopeAllowsForProject } from "./authz.ts";
 import { callProjectData, requireProjectChainAdmin } from "./data-http.ts";

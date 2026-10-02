@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Effect, Exit, Layer, Redacted, Stdio } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentProfileRef } from "../src/agent-gate.ts";

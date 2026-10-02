@@ -1,4 +1,4 @@
-// Entry of the maruhi CLI: the argument layer is `effect/unstable/cli`
+// Entry of the maruhi CLI: the argument layer is `effect/cli`
 // (effect-cli.ts).
 //
 // runCli holds only three things: (1) the dedicated diagnostic for a run
@@ -22,7 +22,7 @@ export type { CliServices } from "./context.ts";
 
 /**
  * The message for a run whose command name sits **after** `--`.
- * effect/unstable/cli does not resolve commands across `--` (shape #7 of
+ * effect/cli does not resolve commands across `--` (shape #7 of
  * the 12), but its diagnostic can only be "extra argument" and cannot say
  * how to fix it (put the command name first). The only position able to
  * emit a dedicated message is here, before dispatch.
@@ -68,7 +68,7 @@ function positionalTokens(argv: readonly string[]): {
 }
 
 /**
- * The diagnostic destination passed to `effect/unstable/cli` (the
+ * The diagnostic destination passed to `effect/cli` (the
  * resolved command level).
  *
  * Dispatches on the leading command name; when the second word is a known

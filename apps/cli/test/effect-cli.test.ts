@@ -1,4 +1,4 @@
-// Conformance checks for the argument layer (`effect/unstable/cli` — pull /
+// Conformance checks for the argument layer (`effect/cli` — pull /
 // run / env create / env rotate / env diff).
 //
 // Drives the parser's 12 pitfall shapes (docs/notes/cli-parser-alternatives.md)
@@ -8,7 +8,7 @@
 // interactive terminal. Operations are never stubbed — everything goes through **the real runCli**.
 
 import { Exit, Runtime } from "effect";
-import { CliError as EffectCliError } from "effect/unstable/cli";
+import { CliError as EffectCliError } from "effect/cli";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { describeError } from "../src/cli-formatter.ts";
@@ -211,7 +211,7 @@ describe("the parser's 12 pitfall shapes fail at the argument layer", () => {
 
 describe("maruhi-specific discipline", () => {
   it("undeclared built-in flags are never grown (--wizard / --completions / --log-level)", async () => {
-    // effect/unstable/cli's default adds help / version / wizard /
+    // effect/cli's default adds help / version / wizard /
     // completions / log-level to every command. `maruhi pull --wizard`
     // **launches an interactive wizard** (measured). CliConfig narrows it to
     // just help / version so a secrets tool never carries an undeclared
@@ -369,7 +369,7 @@ describe("maruhi-specific discipline", () => {
 
 describe("the diagnostic mapping (rebuilt from structured fields)", () => {
   it("InvalidValue never shows the typed value", () => {
-    // effect/unstable/cli's default wording contains the value (`Invalid
+    // effect/cli's default wording contains the value (`Invalid
     // value ...`). maruhi emits only the declared name and the expected type
     const message = describeError(
       new EffectCliError.InvalidValue({

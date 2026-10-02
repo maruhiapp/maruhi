@@ -32,7 +32,7 @@ import {
 import type { ChainEntry } from "@maruhi/crypto";
 import { env, runInDurableObject } from "cloudflare:test";
 import { Cause, Effect, Exit, Layer } from "effect";
-import type { HttpApiEndpoint } from "effect/unstable/httpapi";
+import type { HttpApiEndpoint } from "effect/http-api";
 import { describe, expect, it, vi } from "vitest";
 
 import { putHeadAttestationProgram } from "../src/attestation-accept.ts";

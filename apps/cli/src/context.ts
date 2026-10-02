@@ -10,7 +10,7 @@
 import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { Effect, type Stdio } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import { makeApiClient, type MaruhiClient } from "./api.ts";
 import {

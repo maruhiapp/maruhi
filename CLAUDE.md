@@ -106,10 +106,10 @@ leaks every secret. Therefore:
 | Runtime (dev/CLI) | Bun 1.4.2 (strictly pinned via `.bun-version`. Reached the 1.4 line per ADR-0004) |
 | Server runtime | Cloudflare Workers (workerd) + Durable Objects + D1 |
 | Server HTTP layer | Effect v4 `@effect/platform` HttpApi (no Hono) |
-| App foundation | Effect v4 line (pinned. Current `4.0.0-rc.117`) |
+| App foundation | Effect v4 line (pinned. Current `4.0.0`) |
 | DB | Drizzle v1 (`drizzle-kit` migrations, confined inside the Effect service boundary). D1 + DO SQLite |
 | Frontend | React + FunStack (funstack-static + funstack-router) + Astryx (StyleX-based. ADR-0013) |
-| CLI | `effect/unstable/cli` + Effect. gunshi is retired (ADR-0016). HttpApi-derived typed client |
+| CLI | `effect/cli` + Effect. gunshi is retired (ADR-0016). HttpApi-derived typed client |
 | IaC | Current deploys are the plain `cf` CLI (Cloudflare's wrangler successor — the deployment config is `cloudflare.config.ts`; `wrangler.jsonc` stays as the test-harness config). Alchemy v2 is decided (ADR-0012) but not yet adopted. The self-hosted artifact stays `cf` |
 | LP / docs | Blume (ADR-0008 revision 1 — the LP is also Blume). `apps/site` = apex `maruhi.app` (LP `/` + docs `/docs`). Separate deploy from the product origin `my.maruhi.app` |
 | Lint/Format | oxlint + oxfmt + ImportLint + fallow + React Doctor |
@@ -123,7 +123,7 @@ packages/
   api-schema/    # HttpApi definitions (shared source for server impl and client derivation)
 apps/
   server/        # Workers + DO + D1. Effect HttpApi
-  cli/           # `effect/unstable/cli` + Effect. `maruhi` / `mh` binaries
+  cli/           # `effect/cli` + Effect. `maruhi` / `mh` binaries
   web/           # FunStack dashboard (product origin my.maruhi.app)
   site/          # Blume. LP (/) + docs (/docs) on apex maruhi.app. Independent cf config
 ```

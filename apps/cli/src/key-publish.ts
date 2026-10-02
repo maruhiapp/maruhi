@@ -25,7 +25,7 @@
 
 import { decodeHex, encodeOpenSshEd25519PublicKey } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";

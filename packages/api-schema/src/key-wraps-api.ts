@@ -15,7 +15,7 @@
 //   learns is request_id (a value derived from E.pub)
 
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
 import { RecoveryWrapSchema, TOKEN_NAME_FORBIDDEN_CLASS } from "./auth-api.ts";
 import { AuthMiddleware } from "./auth-middleware.ts";

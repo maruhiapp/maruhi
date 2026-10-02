@@ -16,7 +16,7 @@
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect, type Stdio } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import { type CiLeaseInput, leaseEnvironments } from "./ci-lease.ts";
 import { logWarnings } from "./display.ts";

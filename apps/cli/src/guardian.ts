@@ -46,7 +46,7 @@ import {
   wrapMasterBlob,
 } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";

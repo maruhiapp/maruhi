@@ -7,7 +7,7 @@
 // apps/server side.
 
 import { RequestAuth, SessionService, TokenService } from "@maruhi/core";
-import { HttpApiMiddleware } from "effect/unstable/httpapi";
+import { HttpApiMiddleware } from "effect/http-api";
 
 import { ForbiddenError, UnauthorizedError } from "./errors/index.ts";
 

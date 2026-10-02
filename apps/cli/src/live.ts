@@ -21,7 +21,7 @@ import { stat } from "node:fs/promises";
 
 import * as BunStdio from "@effect/platform-bun/BunStdio";
 import { Duration, Effect, Layer, Redacted } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 import { agentInfo } from "std-env";
 
 import { type AgentProfile, AgentProfileRef } from "./agent-gate.ts";
