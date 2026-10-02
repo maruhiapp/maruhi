@@ -211,7 +211,7 @@ describe("the forward proxy", () => {
     const response = await httpsViaProxy({
       proxyPort: proxy.port,
       ca: [runCa.certPem],
-      url: "https://api.example.test/repo.git/info/refs",
+      url: "https://api.example.test/echo",
       headers: { authorization: `Basic ${basic}` },
     });
     expect(response.status).toBe(200);
@@ -219,6 +219,12 @@ describe("the forward proxy", () => {
     expect(Buffer.from(auth.replace(/^Basic /, ""), "base64").toString()).toBe(
       `x-access-token:${REAL_TOKEN}`,
     );
+    // The origin echoes the re-encoded header (body and header): the proxy's own
+    // Base64 is scrubbed back to the blob the client sent (§21 R-21)
+    const echoed = JSON.parse(response.body.toString()) as { authorization: string };
+    expect(echoed.authorization).toBe(`Basic ${basic}`);
+    expect(response.headers["x-echo-authorization"]).toBe(`Basic ${basic}`);
+    expect(response.body.toString()).not.toContain(auth.replace(/^Basic /, ""));
   });
 
   it("refuses a placeholder toward a host its rule does not name, naming the variable (the request is not sent)", async () => {
@@ -761,6 +767,11 @@ describe("the forward proxy", () => {
     });
     expect(query.status).toBe(200);
     expect(plainOrigin.seen[0]?.url).toBe(`/echo?key=${encodeURIComponent("a b&c=d#e/f%")}`);
+    // The origin echoes the URL percent-encoded — the proxy's own wire form is scrubbed too (§21 R-21)
+    expect((JSON.parse(query.body.toString()) as { url: string }).url).toBe(
+      `/echo?key=${awkward.placeholder}`,
+    );
+    expect(query.body.toString()).not.toContain("a%20b");
     const header = await httpsViaProxy({
       proxyPort: proxy.port,
       ca: [runCa.certPem],

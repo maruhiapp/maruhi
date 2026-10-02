@@ -527,6 +527,57 @@ function substituteAuthorization(
     : `Basic ${Buffer.from(substituted, "utf8").toString("base64")}`;
 }
 
+/**
+ * The values plus the forms the proxy itself puts on the wire (review
+ * finding §21 R-21): a value substituted into the path or query travels
+ * percent-encoded, and an origin that echoes the request URL echoes that
+ * form — the scrub must know it too. (The Basic re-encoding is per request
+ * — {@link wirePatterns}.)
+ */
+function withWireForms(values: readonly Uint8Array[]): readonly Uint8Array[] {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const extra: Uint8Array[] = [];
+  for (const value of values) {
+    let text: string;
+    try {
+      text = decoder.decode(value);
+    } catch {
+      continue;
+    }
+    const encoded = encodeURIComponent(text);
+    if (encoded !== text) {
+      extra.push(textEncoder.encode(encoded));
+    }
+  }
+  return [...values, ...extra];
+}
+
+/**
+ * Patterns for what this one request put on the wire in a form the global
+ * scrub cannot know: a `Basic` credential the proxy decoded, substituted,
+ * and re-encoded. An origin echoing the header echoes the re-encoded blob;
+ * it is scrubbed back to the blob the client sent (which carries the
+ * placeholder) — §21 R-21.
+ */
+function wirePatterns(
+  original: Readonly<Record<string, string>>,
+  sent: Readonly<Record<string, string>>,
+): readonly BytePattern[] {
+  const before = original["authorization"];
+  const after = sent["authorization"];
+  if (
+    before === undefined ||
+    after === undefined ||
+    before === after ||
+    !BASIC_PREFIX.test(after)
+  ) {
+    return [];
+  }
+  const sentBlob = after.replace(BASIC_PREFIX, "").trim();
+  const clientBlob = before.replace(BASIC_PREFIX, "").trim();
+  return scrubPatterns([textEncoder.encode(sentBlob)], clientBlob);
+}
+
 /** The target the connection goes to: the checked address when the guard resolved one (§21 R-19). */
 function pinned(target: Target, check: HostLocalCheck): Target {
   return check.refused === undefined && check.address !== null
@@ -718,7 +769,7 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
    */
   const scrubbers = (): BytePattern[] =>
     options.credentials.flatMap((credential) =>
-      scrubPatterns(credential.known(), credential.placeholder),
+      scrubPatterns(withWireForms(credential.known()), credential.placeholder),
     );
 
   /**
@@ -745,8 +796,10 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
     const path = pathOnly(requestPath);
     let outgoing: ReturnType<typeof buildUpstreamRequest>;
     let request: http.ClientRequest;
+    let scrub: readonly BytePattern[] = input.scrub;
     try {
       outgoing = buildUpstreamRequest(input);
+      scrub = [...input.scrub, ...wirePatterns(input.headers, outgoing.headers)];
       const where = connectTo(target);
       request = (target.scheme === "https" ? https : http).request({
         host: where.host,
@@ -788,7 +841,7 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
         resolve();
       });
       request.on("response", (upstream) => {
-        relayResponse(upstream, res, input.scrub, method, (outcome) => {
+        relayResponse(upstream, res, scrub, method, (outcome) => {
           if (outcome === "failed") {
             decide({
               kind: "error",

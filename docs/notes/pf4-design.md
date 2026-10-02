@@ -879,6 +879,25 @@ more, two of them against my own R-12 / R-13 residuals:
   destination; a metadata endpoint on one is not a pattern any provider
   uses).
 
+A seventh pass (Cursor Security Reviewer on the R-18 … R-20 commit):
+
+- **R-21 (MEDIUM) — the response scrub did not know the proxy's own
+  wire forms.** The scrub matched a value raw, per line, and JSON-escaped
+  (the `maruhi sync` rule), but the proxy itself puts two other forms on
+  the wire: a value substituted into the path or query travels
+  percent-encoded, and a `Basic` credential is decoded, substituted, and
+  re-encoded as Base64. An origin that echoes the request URL or the
+  `Authorization` header echoes those forms, which the child could decode.
+  Two additions: the percent-encoded form of every held value joins the
+  global patterns (when it differs from the raw text), and per request the
+  re-encoded `Basic` blob is scrubbed back to the blob the client sent
+  (which carries the placeholder). Transformations an origin applies on
+  its own (its own Base64 of a bearer token, a hash) stay out of scope —
+  exact match is the rule; what is new is that the proxy's *own* encodings
+  count as exact. Pinned: the URL echo of a query-substituted value and
+  the body-and-header echo of a `Basic` credential both come back as the
+  client sent them.
+
 Also in this round: `origin/main` merged (effect 4.0.0 stable — the
 `effect/unstable/*` import paths moved to `effect/*`; two conflicts, ROADMAP
 and ci-run.ts).
