@@ -341,8 +341,12 @@ PR):
 > only, invent no protocol, and never touch a maruhi protocol object or a
 > test vector. Adding a new class to this list is a spec revision.
 
-The ROADMAP's PF4 entry says "no spec revision pending the §13
-confirmation" until the owner decides. The CA key is now generated
+**Owner ruling (2026-10-02)**: the owner asked whether the designer saw a
+problem with the reading, and on "no" authorized writing the note. The
+scope note above is now in CRYPTO_SPEC §12 (prohibitions), word for word
+except for the pointer to this section. CLAUDE.md is left as it is (the
+owner's instruction file; its "WebCrypto only" and "no custom protocols"
+rules continue to apply to both classes). The CA key is generated
 non-extractable (only a leaf's key is exported, for node:tls — §19 D-8 nit).
 
 ## 14. Exhaustion loop (owner-requested — a self-review; pf5-design.md §15's caveat applies)
