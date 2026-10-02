@@ -616,7 +616,7 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
       "Stored so far: AWS_ACCESS_KEY_ID (version 2 — roll it back with `maruhi var rollback AWS_ACCESS_KEY_ID --to 1` so it does not stay paired with the previous value)",
     );
     expect(errors).toContain(
-      "Recovery: access key AKIANEW0000000000002 exists at the issuer and its secret is held only by this process — delete AKIANEW0000000000002 for user deployer at the issuer (a re-run refuses while two active keys exist; only an inactive key is reclaimed), or push its secret by hand",
+      "Recovery: access key AKIANEW0000000000002 exists at the issuer and its secret is held only by this process (it is not shown) — delete AKIANEW0000000000002 for user deployer at the issuer, then re-run the rotation (a re-run refuses while two active keys exist; only an inactive key is reclaimed)",
     );
     expect(errors).not.toContain("brand/new+secret");
     expect(errors).not.toContain("old/secret");

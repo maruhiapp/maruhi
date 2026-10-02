@@ -603,7 +603,7 @@ async function rotateAwsIam(
     },
     facts,
     previous: `access key ${currentId} stays active until you finalize (IAM keys take a few seconds to become usable)`,
-    recovery: `access key ${newId} exists at the issuer and its secret is held only by this process — delete ${newId} for user ${user} at the issuer (a re-run refuses while two active keys exist; only an inactive key is reclaimed), or push its secret by hand`,
+    recovery: `access key ${newId} exists at the issuer and its secret is held only by this process (it is not shown) — delete ${newId} for user ${user} at the issuer, then re-run the rotation (a re-run refuses while two active keys exist; only an inactive key is reclaimed)`,
     warnings: [],
   };
 }
@@ -817,7 +817,7 @@ async function rotateCloudflare(
       `token ${String(request["name"])}: replacement ${result.id} created with the same policies`,
     ],
     previous: `token ${id} stays valid until you finalize`,
-    recovery: `token ${result.id} exists at the issuer and its value is held only by this process — delete it at the issuer or push its value by hand (a re-run creates yet another token)`,
+    recovery: `token ${result.id} exists at the issuer and its value is held only by this process (it is not shown) — delete it at the issuer, then re-run the rotation (a re-run creates another token)`,
     warnings: [],
   };
 }
