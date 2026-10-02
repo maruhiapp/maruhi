@@ -843,6 +843,10 @@ A fifth pass (on the R-11 / R-12 commit) found the guard's own gap:
   classification. Pinned: every alias form through `isHostLocalAddress`,
   four of them over `CONNECT` in the sandbox-mode proxy test, and the
   bracketed literal over plain HTTP.
+- **R-17 (pullfrog) — the R-13 gate read a corrupt ledger as "never
+  brokered"** and injected the real values. The mark's lookup now carries
+  the three states and a `corrupt` record fails the gate closed with the
+  same message the acceptance check gives (R-15's discipline). Pinned.
 
 Also in this round: `origin/main` merged (effect 4.0.0 stable — the
 `effect/unstable/*` import paths moved to `effect/*`; two conflicts, ROADMAP

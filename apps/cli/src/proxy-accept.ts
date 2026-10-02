@@ -71,6 +71,12 @@ export type AcceptedLookup =
   | { readonly state: "missing" }
   | { readonly state: "corrupt" };
 
+/** The brokered-project mark's load result (same three states — a corrupt record fails the gate closed). */
+export type BrokeredLookup =
+  | { readonly state: "found"; readonly mark: BrokeredProject }
+  | { readonly state: "missing" }
+  | { readonly state: "corrupt" };
+
 export interface ProxyAcceptStoreShape {
   readonly filePath: string;
   /** The record for a config file (keyed by its resolved absolute path). */
@@ -80,8 +86,8 @@ export interface ProxyAcceptStoreShape {
     configPath: string,
     accepted: AcceptedProxyConfig,
   ) => Effect.Effect<void, CliError>;
-  /** The brokered-project mark (null = never brokered here; a corrupt record reads as null — the acceptance check reports it). */
-  readonly brokeredProject: (projectId: string) => Effect.Effect<BrokeredProject | null, CliError>;
+  /** The brokered-project mark (`missing` = never brokered here; `corrupt` is reported by the gate, never read as "never brokered"). */
+  readonly brokeredProject: (projectId: string) => Effect.Effect<BrokeredLookup, CliError>;
   /** Marks a project as brokered on this machine (idempotent; keeps the first mark). */
   readonly markBrokered: (
     projectId: string,
@@ -214,10 +220,13 @@ export function makeFileProxyAcceptStore(path: string): ProxyAcceptStoreShape {
     brokeredProject: (projectId) =>
       Effect.promise(async () => {
         const loaded = await loadRaw();
-        if (loaded.state !== "loaded" || !Object.hasOwn(loaded.file.projects, projectId)) {
-          return null;
+        if (loaded.state !== "loaded") {
+          return loaded;
         }
-        return loaded.file.projects[projectId] ?? null;
+        const mark = Object.hasOwn(loaded.file.projects, projectId)
+          ? loaded.file.projects[projectId]
+          : undefined;
+        return mark === undefined ? { state: "missing" } : { state: "found", mark };
       }),
     markBrokered: (projectId, mark) =>
       merge(
@@ -348,18 +357,23 @@ export function markProjectBrokered(input: {
  * values is gated like `--plain` (a person at a terminal; an agent or a
  * pipe is refused) — otherwise deleting `maruhi.proxy.json`, or running
  * from another directory, would be the shortest way around the rules
- * (review finding R-13). A project never brokered here is unchanged.
+ * (review finding R-13). A project never brokered here is unchanged; a
+ * record that cannot be read fails closed (it is reported, never taken as
+ * "never brokered" — the R-15 discipline).
  */
 export function ensurePlainRunOfBrokeredProjectAllowed(
   projectId: string,
 ): Effect.Effect<void, CliError, ProxyAcceptStore | Stdio.Stdio | CliIo> {
   return Effect.gen(function* () {
     const store = yield* ProxyAcceptStore;
-    const mark = yield* store.brokeredProject(projectId);
-    if (mark === null) {
+    const lookup = yield* store.brokeredProject(projectId);
+    if (lookup.state === "corrupt") {
+      return yield* Effect.fail(corruptRecord(store.filePath));
+    }
+    if (lookup.state === "missing") {
       return;
     }
-    const where = `this project is brokered on this machine (its proxy config ${mark.configPath} was accepted) and no proxy config is in the working directory`;
+    const where = `this project is brokered on this machine (its proxy config ${lookup.mark.configPath} was accepted) and no proxy config is in the working directory`;
     yield* ensureHumanCeremonyAllowed({
       agentRefusal: (detected) =>
         `Refused to run with the real values: an AI agent environment was detected${detected}, and ${where}. Run the command from the repository that holds the proxy config so the values are brokered, or a person runs it from a terminal`,

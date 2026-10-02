@@ -452,6 +452,13 @@ describe("maruhi proxy run", () => {
     );
     expect(await runCli(["proxy", "accept", "--config", configPath], env.layer)).toBe(1);
     expect(await readFile(recordPath, "utf8")).toBe("{ nope");
+    // … and the no-config gate fails closed on it too (a corrupt record is not "never brokered")
+    env.errors.length = 0;
+    expect(await runCli(["run", "--", "true"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "The record of accepted proxy configs cannot be read (corrupt or unreadable)",
+    );
+    expect(env.runnerCalls).toHaveLength(3);
   });
 
   it("warns when a rule names a variable the environment does not hold, and when nothing is brokered", async () => {
