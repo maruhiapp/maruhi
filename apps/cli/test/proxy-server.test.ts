@@ -347,6 +347,21 @@ describe("the forward proxy", () => {
     expect(text.split(github.placeholder).length - 1).toBe(2000);
   });
 
+  it("decompresses a response the origin compressed anyway, so the echoed value is still scrubbed", async () => {
+    const proxy = await proxyWith({ credentials: [github] });
+    const response = await httpsViaProxy({
+      proxyPort: proxy.port,
+      ca: [runCa.certPem],
+      url: "https://api.example.test/gzip",
+      headers: { authorization: `Bearer ${github.placeholder}`, "accept-encoding": "gzip" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers["content-encoding"]).toBeUndefined();
+    const text = response.body.toString("utf8");
+    expect(text).toBe(`compressed echo: Bearer ${github.placeholder}`);
+    expect(text).not.toContain(REAL_TOKEN);
+  });
+
   it("serves several requests over one tunnel (keep-alive through the loopback hop)", async () => {
     const proxy = await proxyWith({ credentials: [github] });
     const tunnel = await openTunnel(proxy.port, "api.example.test:443");

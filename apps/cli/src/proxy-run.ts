@@ -306,6 +306,10 @@ export function proxyControlEnv(input: {
     CURL_CA_BUNDLE: input.bundlePath,
     GIT_SSL_CAINFO: input.bundlePath,
     AWS_CA_BUNDLE: input.bundlePath,
+    PIP_CERT: input.bundlePath,
+    CARGO_HTTP_CAINFO: input.bundlePath,
+    NIX_SSL_CERT_FILE: input.bundlePath,
+    GRPC_DEFAULT_SSL_ROOTS_FILE_PATH: input.bundlePath,
     // Additive stores
     NODE_EXTRA_CA_CERTS: input.caPath,
     DENO_CERT: input.caPath,

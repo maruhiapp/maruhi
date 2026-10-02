@@ -8,6 +8,7 @@ import https from "node:https";
 import type { AddressInfo } from "node:net";
 import type net from "node:net";
 import tls from "node:tls";
+import zlib from "node:zlib";
 
 export interface ClientResponse {
   readonly status: number;
@@ -205,23 +206,38 @@ export async function startOrigin(input: {
   readonly marker?: string;
 }): Promise<Origin> {
   const seen: SeenRequest[] = [];
-  const respond = (req: http.IncomingMessage, res: http.ServerResponse, body: string) => {
-    const path = (req.url ?? "").split("?")[0];
-    if (path === "/echo") {
+  type Responder = (req: http.IncomingMessage, res: http.ServerResponse, body: string) => void;
+  const responders: Record<string, Responder> = {
+    "/echo": (req, res, body) => {
       res.setHeader("content-type", "application/json");
       // The credential echoed in a header as well (the header-scrubbing specimen)
       res.setHeader("x-echo-authorization", req.headers.authorization ?? "none");
       res.end(
         JSON.stringify({ authorization: req.headers.authorization ?? null, url: req.url, body }),
       );
-    } else if (path === "/binary") {
+    },
+    "/binary": (_req, res) => {
       res.setHeader("content-type", "application/octet-stream");
       res.end(binaryBody());
-    } else if (path === "/big") {
+    },
+    "/gzip": (req, res) => {
+      // Compresses whatever Accept-Encoding said (the scrubber must still see the value)
+      res.setHeader("content-type", "text/plain");
+      res.setHeader("content-encoding", "gzip");
+      res.end(zlib.gzipSync(`compressed echo: ${req.headers.authorization ?? "none"}`));
+    },
+    "/big": (_req, res) => {
       res.setHeader("content-type", "text/plain");
       res.end(`${"x".repeat(200)} ${input.marker ?? ""}\n`.repeat(2000));
-    } else {
+    },
+  };
+  const respond: Responder = (req, res, body) => {
+    const path = (req.url ?? "").split("?")[0] ?? "";
+    const responder = responders[path];
+    if (responder === undefined) {
       res.end("ok");
+    } else {
+      responder(req, res, body);
     }
   };
   const handler = (req: http.IncomingMessage, res: http.ServerResponse) => {

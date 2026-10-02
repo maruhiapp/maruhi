@@ -47,6 +47,7 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
+import zlib from "node:zlib";
 
 import { type BytePattern, makeStreamReplacer, replaceBytes } from "./byte-replace.ts";
 import type { EphemeralCa } from "./proxy-cert.ts";
@@ -404,6 +405,59 @@ function substituteAuthorization(
     : `Basic ${Buffer.from(substituted, "utf8").toString("base64")}`;
 }
 
+/** The decompressor for a `Content-Encoding` the proxy can undo (null = identity or unknown). */
+function decompressorFor(
+  encoding: string | string[] | undefined,
+): zlib.Gunzip | zlib.Inflate | zlib.BrotliDecompress | null {
+  const value = (Array.isArray(encoding) ? encoding.join(",") : (encoding ?? ""))
+    .trim()
+    .toLowerCase();
+  switch (value) {
+    case "gzip":
+    case "x-gzip":
+      return zlib.createGunzip();
+    case "deflate":
+      return zlib.createInflate();
+    case "br":
+      return zlib.createBrotliDecompress();
+    default:
+      return null;
+  }
+}
+
+/**
+ * The origin's response headers as forwarded: hop-by-hop and length
+ * dropped (the body is re-framed), `Content-Encoding` dropped when the
+ * body is decompressed here, and every value scrubbed (a token echoed in
+ * a header — the same real → placeholder replacement as the body).
+ */
+function scrubbedResponseHeaders(
+  headers: http.IncomingHttpHeaders,
+  scrub: readonly BytePattern[],
+  decompressed: boolean,
+): Record<string, string | string[]> {
+  const scrubHeader = (text: string): string =>
+    scrub.reduce(
+      (current, pattern) =>
+        current
+          .split(Buffer.from(pattern.from).toString("latin1"))
+          .join(Buffer.from(pattern.to).toString("latin1")),
+      text,
+    );
+  const out: Record<string, string | string[]> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    const dropped =
+      HOP_BY_HOP.has(name) ||
+      name === "content-length" ||
+      (decompressed && name === "content-encoding");
+    if (value === undefined || dropped) {
+      continue;
+    }
+    out[name] = Array.isArray(value) ? value.map(scrubHeader) : scrubHeader(value);
+  }
+  return out;
+}
+
 /**
  * Streams the origin's response back with every real value replaced by
  * its placeholder (byte domain). `done` receives the status, or "failed".
@@ -414,33 +468,24 @@ function relayResponse(
   scrub: readonly BytePattern[],
   done: (outcome: number | "failed") => void,
 ): void {
-  // Response headers are scrubbed too (a token echoed in a header — the
-  // same real → placeholder replacement as the body, on header text)
-  const scrubHeader = (text: string): string =>
-    scrub.reduce(
-      (current, pattern) =>
-        current
-          .split(Buffer.from(pattern.from).toString("latin1"))
-          .join(Buffer.from(pattern.to).toString("latin1")),
-      text,
-    );
-  const responseHeaders: Record<string, string | string[]> = {};
-  for (const [name, value] of Object.entries(upstream.headers)) {
-    // Length changes under scrubbing: let the server frame the body (chunked)
-    if (value === undefined || HOP_BY_HOP.has(name) || name === "content-length") {
-      continue;
-    }
-    responseHeaders[name] = Array.isArray(value) ? value.map(scrubHeader) : scrubHeader(value);
-  }
-  res.writeHead(upstream.statusCode ?? 502, responseHeaders);
+  // The proxy asked for an identity response; a server that compresses
+  // anyway would hide an echoed value from the scrubber, so a compressed
+  // body is decompressed here and delivered as identity (fail closed for
+  // the scrub — pf4-design.md §18 D)
+  const decoder = decompressorFor(upstream.headers["content-encoding"]);
+  res.writeHead(
+    upstream.statusCode ?? 502,
+    scrubbedResponseHeaders(upstream.headers, scrub, decoder !== null),
+  );
   const replacer = makeStreamReplacer(scrub);
-  upstream.on("data", (chunk: Buffer) => {
+  const body: NodeJS.ReadableStream = decoder === null ? upstream : upstream.pipe(decoder);
+  body.on("data", (chunk: Buffer) => {
     const out = replacer.push(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.length));
     if (out.length > 0) {
       res.write(Buffer.from(out));
     }
   });
-  upstream.on("end", () => {
+  body.on("end", () => {
     const tail = replacer.flush();
     if (tail.length > 0) {
       res.write(Buffer.from(tail));
@@ -448,10 +493,14 @@ function relayResponse(
     res.end();
     done(upstream.statusCode ?? 0);
   });
-  upstream.on("error", () => {
+  const failed = () => {
     res.destroy();
     done("failed");
-  });
+  };
+  upstream.on("error", failed);
+  if (decoder !== null) {
+    decoder.on("error", failed);
+  }
 }
 
 /* -------------------------------------------------------------------------- */
