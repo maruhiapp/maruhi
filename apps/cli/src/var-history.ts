@@ -516,7 +516,6 @@ function checkToVersion(name: string, toVersion: number, latestVersion: number) 
   );
 }
 
-/** Resolve → verified pull of the latest → the value range verified as its ancestry. */
 /**
  * The verified latest value of a live variable: the name resolved through
  * the metadata-only pull, then the with-values pull `maruhi push` uses to
@@ -554,6 +553,7 @@ function resolveLatestValue(
   });
 }
 
+/** Resolve → verified pull of the latest → the value range verified as its ancestry. */
 function planRollback(
   input: Omit<AncestorInput, "toVersion"> & { readonly toVersion: number | null },
   name: string,
@@ -700,11 +700,13 @@ export function verifiedAncestorRange(
 ): Effect.Effect<VerifiedAncestorRange, CliError> {
   return Effect.gen(function* () {
     const name = input.name.normalize("NFC");
-    const { pulled, latest, warnings } = yield* resolveLatestValue(
+    const resolved = yield* resolveLatestValue(
       input,
       name,
       `Variable ${displayText(name)} is declared but has no value yet`,
     );
+    const { pulled, latest } = resolved;
+    const warnings = [...resolved.warnings];
     const variableId = latest.variableId;
     if (latest.version < 2) {
       return { name, variableId, latestVersion: latest.version, ancestors: [], warnings };
@@ -733,14 +735,24 @@ export function verifiedAncestorRange(
     const ancestors: { readonly version: number; readonly value: Redacted.Redacted<Uint8Array> }[] =
       [];
     for (const variable of versions.filter((entry) => entry.version < latest.version)) {
+      // An ancestor this device cannot decrypt (an old-epoch wrap it never
+      // received — device-gaps.ts) is skipped with a warning, not fatal:
+      // the set of ids it feeds can only shrink, which never widens what a
+      // finalize invalidates. Its signature and lineage were verified above
       const value = yield* decryptVerifiedValue({
         verified: pulled.verified,
         environmentId: input.environmentId,
         variable,
         deksByEpoch: keys.deksByEpoch,
         chainEpoch: keys.currentEpoch,
-      });
-      ancestors.push({ version: variable.version, value });
+      }).pipe(Effect.catch((error) => Effect.succeed(error)));
+      if (Redacted.isRedacted(value)) {
+        ancestors.push({ version: variable.version, value });
+      } else {
+        warnings.push(
+          `version ${variable.version} of ${displayText(name)} could not be decrypted on this device (${value.message}) — the value it held is not considered`,
+        );
+      }
     }
     ancestors.reverse();
     return { name, variableId, latestVersion: latest.version, ancestors, warnings };
