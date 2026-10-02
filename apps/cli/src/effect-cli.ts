@@ -1157,6 +1157,10 @@ const proxyAcceptConfig = {
     "config",
     `Path to the proxy config to accept (default: ${DEFAULT_PROXY_CONFIG_PATH})`,
   ),
+  project: singleValued(
+    "project",
+    "The project the config is for (default: the config's `project`, else the default project)",
+  ),
 };
 
 /** The `--type` closed set (CRYPTO_SPEC §4.2 — ruling CT) + `none` for an explicit clear. */
@@ -5214,7 +5218,29 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     Effect.gen(function* () {
       const configPath = values.config ?? DEFAULT_PROXY_CONFIG_PATH;
       const loaded = yield* loadProxyConfig(configPath);
-      const outcome = yield* acceptProxyConfig({ path: configPath, content: loaded.content });
+      // The project the rules are for: the flag, the config's `project`, or
+      // the default project — resolved without any network (the mark it
+      // arms is per project, R-18)
+      yield* checkProxyConfigProject(loaded.config, values.project);
+      const projectId =
+        values.project ??
+        loaded.config.projectId ??
+        (yield* (yield* ConfigStore).load).defaultProject;
+      if (projectId === undefined) {
+        return yield* Effect.fail(
+          usageError(
+            "Cannot tell which project the proxy config is for: pass --project <id>, set `project` in the config, or set a default project (`maruhi config set defaultProject <id>`)",
+          ),
+        );
+      }
+      if (!isProjectId(projectId)) {
+        return yield* Effect.fail(usageError("Invalid project ID (64 hex digits)"));
+      }
+      const outcome = yield* acceptProxyConfig({
+        path: configPath,
+        content: loaded.content,
+        projectId,
+      });
       yield* logNote(
         outcome === "unchanged"
           ? `${configPath} is already accepted on this machine with this content; nothing changed`

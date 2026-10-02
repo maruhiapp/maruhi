@@ -60,7 +60,13 @@ import {
 } from "./byte-replace.ts";
 import type { EphemeralCa } from "./proxy-cert.ts";
 import type { Surface } from "./proxy-config.ts";
-import { formatAuthority, hostLocalReason, isLoopbackBind, type Lookup } from "./proxy-guard.ts";
+import {
+  checkHostLocal,
+  formatAuthority,
+  type HostLocalCheck,
+  isLoopbackBind,
+  type Lookup,
+} from "./proxy-guard.ts";
 import {
   authorityOf,
   type BrokeredCredential,
@@ -521,6 +527,13 @@ function substituteAuthorization(
     : `Basic ${Buffer.from(substituted, "utf8").toString("base64")}`;
 }
 
+/** The target the connection goes to: the checked address when the guard resolved one (§21 R-19). */
+function pinned(target: Target, check: HostLocalCheck): Target {
+  return check.refused === undefined && check.address !== null
+    ? { ...target, resolved: check.address }
+    : target;
+}
+
 /** The request path without its query (what decisions carry). */
 function pathOnly(requestPath: string): string {
   const questionMark = requestPath.indexOf("?");
@@ -659,16 +672,20 @@ function relayResponse(
 /** Starts the proxy on an ephemeral loopback port. */
 export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
   const decide = options.onDecision ?? (() => {});
+  // The upstream address: what the sandbox-mode guard checked when it did (Target.resolved), else the host
   const connectTo =
-    options.upstream?.connect ?? ((target: Target) => ({ host: target.host, port: target.port }));
+    options.upstream?.connect ??
+    ((target: Target) => ({ host: target.resolved ?? target.host, port: target.port }));
   const upstreamCa = options.upstream?.ca;
   const servers: net.Server[] = [];
   // Sandbox mode (bound beyond the loopback): a destination no rule names
   // must not be host-local — the proxy would reach it from the host's own
   // network namespace (proxy-guard.ts — §21 R-12). Null = may proceed
   const sandboxed = options.listen !== undefined && !isLoopbackBind(options.listen.host);
-  const hostLocalRefusal = (target: Target): Promise<string | null> =>
-    sandboxed ? hostLocalReason(target.host, options.upstream?.lookup) : Promise.resolve(null);
+  const hostLocalCheck = (target: Target): Promise<HostLocalCheck> =>
+    sandboxed
+      ? checkHostLocal(target.host, options.upstream?.lookup)
+      : Promise.resolve({ address: null });
 
   const listenOn = (server: net.Server, host: string, port: number): Promise<number> =>
     new Promise((resolve, reject) => {
@@ -947,24 +964,26 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
         reason,
       });
     };
-    if (credentialsFor(options.credentials, parsed.target).length === 0) {
+    let target = parsed.target;
+    if (credentialsFor(options.credentials, target).length === 0) {
       if (options.unmatched === "block") {
         refuse(
-          `${authorityOf(parsed.target)} is not named by any rule and this run blocks unmatched hosts`,
+          `${authorityOf(target)} is not named by any rule and this run blocks unmatched hosts`,
           "unmatched host (block)",
         );
         return;
       }
-      const hostLocal = await hostLocalRefusal(parsed.target);
-      if (hostLocal !== null) {
+      const check = await hostLocalCheck(target);
+      if (check.refused !== undefined) {
         refuse(
-          `${hostLocal}; in sandbox mode the proxy reaches only destinations outside this machine unless a rule names them`,
-          `host-local destination (sandbox mode): ${hostLocal}`,
+          `${check.refused}; in sandbox mode the proxy reaches only destinations outside this machine unless a rule names them`,
+          `host-local destination (sandbox mode): ${check.refused}`,
         );
         return;
       }
+      target = pinned(target, check);
     }
-    guarded(req, res, parsed.target, parsed.path);
+    guarded(req, res, target, parsed.path);
   };
   const plainServer = http.createServer((req, res) => {
     void plainRequest(req, res);
@@ -1077,13 +1096,13 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
         });
         return;
       }
-      const hostLocal = await hostLocalRefusal(target);
-      if (hostLocal !== null) {
+      const check = await hostLocalCheck(target);
+      if (check.refused !== undefined) {
         socket.end(
           rawResponse(
             403,
             "Forbidden",
-            `maruhi proxy: ${hostLocal}; in sandbox mode the proxy reaches only destinations outside this machine unless a rule names them\n`,
+            `maruhi proxy: ${check.refused}; in sandbox mode the proxy reaches only destinations outside this machine unless a rule names them\n`,
           ),
         );
         decide({
@@ -1091,12 +1110,12 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
           method: "CONNECT",
           target,
           path: "",
-          reason: `host-local destination (sandbox mode): ${hostLocal}`,
+          reason: `host-local destination (sandbox mode): ${check.refused}`,
         });
         return;
       }
-      // Blind tunnel: never inspected, the client's own TLS end to end
-      const where = connectTo(target);
+      // Blind tunnel: never inspected, the client's own TLS end to end (to the checked address in sandbox mode)
+      const where = connectTo(pinned(target, check));
       const upstream = net.connect(where.port, where.host, () => {
         socket.write(`HTTP/1.1 200 Connection Established\r\nProxy-Agent: maruhi\r\n\r\n`);
         if (rest.length > 0) {

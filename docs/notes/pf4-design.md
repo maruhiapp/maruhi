@@ -765,10 +765,10 @@ A third pass (on the R-1 … R-7 commit) added two:
   name is resolved *before* the connection and the result checked, so a
   name pointing at the loopback is caught; a name that does not resolve is
   refused (fail closed — the connection would fail anyway). (a) stays
-  available to the member as `unmatched: block`, and the docs say so. The
-  residual: a DNS answer that changes between the check and the connect (a
-  rebinding race in milliseconds) — connecting to the checked address would
-  close it and is the next step if the mode sees use. Pinned: literal,
+  available to the member as `unmatched: block`, and the docs say so. *The
+  residual first written here — "a DNS answer that changes between the
+  check and the connect, a race in milliseconds" — was wrong in kind, not
+  just degree: see R-19.* Pinned: literal,
   name, resolved metadata address, unresolvable name, plain `localhost`
   refused; a public name tunnelled; a rule-named loopback host still
   brokered; the loopback binding unguarded.
@@ -847,6 +847,37 @@ A fifth pass (on the R-11 / R-12 commit) found the guard's own gap:
   brokered"** and injected the real values. The mark's lookup now carries
   the three states and a `corrupt` record fails the gate closed with the
   same message the acceptance check gives (R-15's discipline). Pinned.
+
+A sixth pass (Cursor Security Reviewer on the R-17 commit) found three
+more, two of them against my own R-12 / R-13 residuals:
+
+- **R-18 (HIGH) — the R-13 mark was armed by the first brokered run, not
+  by `proxy accept`.** Between a person accepting the file and anyone
+  running under it, deleting the file (or changing directory) still
+  injected the real values, and a failure to write the mark was a Note.
+  `proxy accept` now resolves the project the rules are for (the new
+  `--project` flag, else the config's `project`, else the default
+  project — no network) and marks it; a brokered run still marks (a
+  config accepted for one project and used under another `--project`),
+  and a mark that cannot be written is an error, not a Note. Pinned: the
+  file deleted right after `proxy accept`, before any brokered run → the
+  agent is refused.
+- **R-19 (HIGH) — the guard resolved a name, then connected by name.** I
+  had called the gap "a rebinding race in milliseconds"; the reviewer is
+  right that it is not a race: a resolver the sandbox controls answers a
+  public address to the guard's query and the metadata service to the
+  connect's, deterministically (query counting). The guard's clearance now
+  carries the address it checked (`Target.resolved`), and the tunnel and
+  the plain relay connect to that address — one resolution, the one that
+  was checked. Pinned with a counting resolver (one query, the connection
+  asked for the first answer) for `CONNECT` and for plain HTTP.
+- **R-20 (MEDIUM) — metadata endpoints outside link-local.** Alibaba
+  Cloud's is `100.100.100.200`, in the shared address space (RFC 6598,
+  100.64/10), which is never a public destination; the whole range and
+  its IPv4-mapped form join the deny-list. The RFC 1918 ranges stay
+  reachable (R-12's reasoning holds: an internal API on one is an ordinary
+  destination; a metadata endpoint on one is not a pattern any provider
+  uses).
 
 Also in this round: `origin/main` merged (effect 4.0.0 stable — the
 `effect/unstable/*` import paths moved to `effect/*`; two conflicts, ROADMAP

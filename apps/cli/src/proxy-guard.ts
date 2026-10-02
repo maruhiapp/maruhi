@@ -46,12 +46,17 @@ const HOST_LOCAL = new net.BlockList();
 HOST_LOCAL.addSubnet("127.0.0.0", 8, "ipv4");
 HOST_LOCAL.addSubnet("0.0.0.0", 8, "ipv4");
 HOST_LOCAL.addSubnet("169.254.0.0", 16, "ipv4");
+// Shared address space (RFC 6598, 100.64/10): never a public destination;
+// cloud providers put metadata endpoints there (Alibaba Cloud's
+// 100.100.100.200) — §21 R-20
+HOST_LOCAL.addSubnet("100.64.0.0", 10, "ipv4");
 HOST_LOCAL.addSubnet("::1", 128, "ipv6");
 HOST_LOCAL.addSubnet("::", 128, "ipv6");
 HOST_LOCAL.addSubnet("fe80::", 10, "ipv6");
 HOST_LOCAL.addSubnet("::ffff:7f00:0", 104, "ipv6");
 HOST_LOCAL.addSubnet("::ffff:0:0", 104, "ipv6");
 HOST_LOCAL.addSubnet("::ffff:a9fe:0", 112, "ipv6");
+HOST_LOCAL.addSubnet("::ffff:6440:0", 106, "ipv6");
 HOST_LOCAL.addAddress("fd00:ec2::254", "ipv6");
 
 /** An IP literal without URL brackets (`[::1]` from `URL.hostname`) or a zone id (`fe80::1%eth0`). */
@@ -72,31 +77,49 @@ export type Lookup = (
 
 const systemLookup: Lookup = (host) => dns.promises.lookup(host, { all: true });
 
+/** The guard's answer: a refusal with its reason, or clearance with the address that was checked (null for a literal — it is its own address). */
+export type HostLocalCheck =
+  | { readonly refused: string }
+  | { readonly refused?: undefined; readonly address: string | null };
+
 /**
- * Why `host` must not be reached from the sandbox through this proxy, or
- * null when it may. A name that cannot be resolved is refused too: the
- * connection would fail anyway, and refusing keeps the rule fail-closed.
+ * Whether `host` may be reached from the sandbox through this proxy. A
+ * literal is classified as it is; a name is resolved and **every** address
+ * checked, and the first one is returned so the connection goes to the
+ * address that was checked — never to a second resolution, which a
+ * resolver under the sandbox's control could answer differently (query
+ * counting, not a timing race — §21 R-19). A name that cannot be resolved
+ * is refused: the connection would fail anyway, and refusing keeps the
+ * rule fail-closed.
  */
-export async function hostLocalReason(
+export async function checkHostLocal(
   host: string,
   lookup: Lookup = systemLookup,
-): Promise<string | null> {
+): Promise<HostLocalCheck> {
   if (isHostLocalName(host) || isHostLocalAddress(host)) {
-    return `${host} is a host-local destination (this machine's loopback or link-local, or the cloud metadata service)`;
+    return {
+      refused: `${host} is a host-local destination (this machine's loopback or link-local, shared address space, or the cloud metadata service)`,
+    };
   }
   if (net.isIP(bareLiteral(host)) !== 0) {
-    return null;
+    return { address: null };
   }
   let addresses: readonly { readonly address: string }[];
   try {
     addresses = await lookup(host);
   } catch {
-    return `${host} cannot be resolved`;
+    return { refused: `${host} cannot be resolved` };
   }
   const local = addresses.find((entry) => isHostLocalAddress(entry.address));
-  return local === undefined
-    ? null
-    : `${host} resolves to a host-local address (${local.address} — loopback or link-local, where the cloud metadata service lives)`;
+  if (local !== undefined) {
+    return {
+      refused: `${host} resolves to a host-local address (${local.address} — loopback or link-local, where the cloud metadata service lives)`,
+    };
+  }
+  const first = addresses[0];
+  return first === undefined
+    ? { refused: `${host} cannot be resolved` }
+    : { address: first.address };
 }
 
 /** `host:port`, with an IPv6 literal in brackets (RFC 3986) — for URLs and messages. */

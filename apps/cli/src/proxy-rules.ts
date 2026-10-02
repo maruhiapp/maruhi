@@ -10,6 +10,12 @@ export interface Target {
   /** Lower-cased host name or IPv4 literal. */
   readonly host: string;
   readonly port: number;
+  /**
+   * The address the sandbox-mode guard resolved and checked (proxy-guard.ts
+   * — §21 R-19). When present the connection goes to it, never to a second
+   * resolution of `host` (a counting resolver would answer differently).
+   */
+  readonly resolved?: string | undefined;
 }
 
 /**

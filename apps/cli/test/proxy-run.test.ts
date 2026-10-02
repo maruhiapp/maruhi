@@ -386,7 +386,20 @@ describe("maruhi proxy run", () => {
       `${configPath} accepted on this machine (first use): brokers GITHUB_TOKEN → api.example.test (header); passes through DATABASE_URL; unlisted variables are withheld; hosts no rule names are tunnelled untouched`,
     );
     expect(existsSync(recordPath)).toBe(true);
+    // R-18: the project is marked at acceptance — deleting the file before any brokered run is gated already
     env.setAgent({ isAgent: true, name: "cursor" });
+    const acceptedContent = await readFile(configPath, "utf8");
+    await rm(configPath);
+    const beforeDelete = cwd();
+    chdir(configDir);
+    try {
+      expect(await runCli(["run", "--", "true"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain("this project is brokered on this machine");
+      expect(env.runnerCalls).toHaveLength(0);
+    } finally {
+      chdir(beforeDelete);
+    }
+    await writeFile(configPath, acceptedContent);
     expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(0);
     expect(env.runnerCalls).toHaveLength(1);
     // The agent rewrites the file (passthrough everything): refused again until a person accepts the change

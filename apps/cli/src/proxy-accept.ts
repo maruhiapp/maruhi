@@ -312,6 +312,8 @@ export function ensureProxyConfigAccepted(input: {
 export function acceptProxyConfig(input: {
   readonly path: string;
   readonly content: string;
+  /** The project the config is for: marked as brokered on this machine at acceptance (R-18 — the gate must be armed before any run). */
+  readonly projectId: string;
 }): Effect.Effect<"first use" | "changed" | "unchanged", CliError, ProxyAcceptStore | Stdio.Stdio> {
   return Effect.gen(function* () {
     yield* ensureHumanCeremonyAllowed({
@@ -326,28 +328,36 @@ export function acceptProxyConfig(input: {
     if (lookup.state === "corrupt") {
       return yield* Effect.fail(corruptRecord(store.filePath));
     }
-    if (lookup.state === "found" && lookup.accepted.content === input.content) {
-      return "unchanged";
+    const outcome: "first use" | "changed" | "unchanged" =
+      lookup.state === "found" && lookup.accepted.content === input.content
+        ? "unchanged"
+        : lookup.state === "missing"
+          ? "first use"
+          : "changed";
+    if (outcome !== "unchanged") {
+      yield* store.accept(key, { content: input.content, acceptedAtMs: Date.now() });
     }
-    yield* store.accept(key, { content: input.content, acceptedAtMs: Date.now() });
-    return lookup.state === "missing" ? "first use" : "changed";
+    // Armed here, not at the first brokered run: between accepting and
+    // running, deleting the file must already be gated (R-18)
+    yield* store.markBrokered(input.projectId, { configPath: key, markedAtMs: Date.now() });
+    return outcome;
   });
 }
 
-/** A brokered run marks its project (idempotent). Failures are a Note, never fatal: the run itself is the safe shape. */
+/**
+ * A brokered run marks its project (idempotent — normally already marked
+ * by `proxy accept`; this covers a config accepted for one project and
+ * used under another `--project`). A mark that cannot be written is an
+ * error: the mark is what gates the plain run later (R-18).
+ */
 export function markProjectBrokered(input: {
   readonly projectId: string;
   readonly configPath: string;
-}): Effect.Effect<void, never, ProxyAcceptStore | CliIo> {
+}): Effect.Effect<void, CliError, ProxyAcceptStore> {
   return Effect.gen(function* () {
     const store = yield* ProxyAcceptStore;
-    yield* store
-      .markBrokered(input.projectId, { configPath: input.configPath, markedAtMs: Date.now() })
-      .pipe(
-        Effect.catch((error) =>
-          logNote(`could not mark the project as brokered on this machine (${error.message})`),
-        ),
-      );
+    const key = yield* resolvedPath(input.configPath);
+    yield* store.markBrokered(input.projectId, { configPath: key, markedAtMs: Date.now() });
   });
 }
 

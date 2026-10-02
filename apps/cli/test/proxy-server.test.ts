@@ -21,6 +21,7 @@ import {
   credentialsFor,
   makePlaceholder,
   matchesTarget,
+  type Target,
 } from "../src/proxy-rules.ts";
 import { type ProxyDecision, type ProxyHandle, startProxy } from "../src/proxy-server.ts";
 import {
@@ -112,6 +113,8 @@ async function proxyWith(input: {
   readonly listen?: { readonly host: string; readonly port: number };
   readonly advertise?: { readonly host: string; readonly port: number };
   readonly lookup?: Lookup;
+  /** Records the targets the proxy connects upstream for (what address it chose). */
+  readonly connected?: Target[];
 }): Promise<ProxyHandle> {
   const hopDir = mkdtempSync(join(tmpdir(), "mh-hop-"));
   hopDirs.push(hopDir);
@@ -126,10 +129,12 @@ async function proxyWith(input: {
     onDecision: (decision) => input.decisions?.push(decision),
     upstream: {
       // The rule's hosts resolve to the loopback origins
-      connect: (target) =>
-        target.scheme === "https"
+      connect: (target) => {
+        input.connected?.push(target);
+        return target.scheme === "https"
           ? { host: "127.0.0.1", port: secureOrigin.port }
-          : { host: "127.0.0.1", port: plainOrigin.port },
+          : { host: "127.0.0.1", port: plainOrigin.port };
+      },
       ca: [originCa.certPem],
       ...(input.lookup === undefined ? {} : { lookup: input.lookup }),
     },
@@ -546,70 +551,128 @@ describe("the forward proxy", () => {
     ]);
   });
 
-  it("in sandbox mode refuses host-local destinations no rule names — by literal, by name, and by resolution — and keeps the ones a rule names (§21 R-12)", async () => {
+  /** A sandbox-mode proxy (bound beyond the loopback) with a scripted resolver and a record of upstream connections. */
+  async function sandboxProxy() {
     const decisions: ProxyDecision[] = [];
-    const lookup: Lookup = (host) =>
-      host === "metadata.example.test"
-        ? Promise.resolve([{ address: "169.254.169.254", family: 4 }])
-        : host === "public.example.test"
-          ? Promise.resolve([{ address: "203.0.113.7", family: 4 }])
-          : Promise.reject(new Error("ENOTFOUND"));
+    const connected: Target[] = [];
+    // A resolver under the sandbox's control answers a public address first
+    // and the metadata service next (query counting — §21 R-19)
+    const rebind = { answers: 0 };
+    const fixed = new Map<string, string>([
+      ["metadata.example.test", "169.254.169.254"],
+      ["public.example.test", "203.0.113.7"],
+    ]);
+    const lookup: Lookup = (host) => {
+      if (host === "rebind.example.test") {
+        rebind.answers += 1;
+        const address = rebind.answers === 1 ? "203.0.113.9" : "169.254.169.254";
+        return Promise.resolve([{ address, family: 4 }]);
+      }
+      const address = fixed.get(host);
+      return address === undefined
+        ? Promise.reject(new Error("ENOTFOUND"))
+        : Promise.resolve([{ address, family: 4 }]);
+    };
     const proxy = await proxyWith({
       credentials: [github, plainKey],
       decisions,
+      connected,
       listen: { host: "0.0.0.0", port: 0 },
       lookup,
     });
+    return { proxy, decisions, connected, rebind };
+  }
+
+  /** Opens a tunnel that must be refused and returns the 403's body. */
+  async function refusedTunnel(proxyPort: number, authority: string): Promise<string> {
+    const tunnel = await openTunnel(proxyPort, authority);
+    if (!("refused" in tunnel)) {
+      tunnel.socket.destroy();
+      throw new Error(`${authority} was tunnelled`);
+    }
+    expect(tunnel.refused.status, authority).toBe(403);
+    return tunnel.refused.body.toString();
+  }
+
+  /** Opens a tunnel that must succeed and closes it at once. */
+  async function clearedTunnel(proxyPort: number, authority: string): Promise<void> {
+    const tunnel = await openTunnel(proxyPort, authority);
+    if ("refused" in tunnel) {
+      throw new Error(`${authority} was refused: ${tunnel.refused.body.toString()}`);
+    }
+    tunnel.socket.destroy();
+  }
+
+  it("in sandbox mode refuses host-local destinations no rule names — by literal in any form, by name, and by resolution (§21 R-12 / R-16)", async () => {
+    const { proxy, decisions } = await sandboxProxy();
     // CONNECT to the loopback by literal
-    const loopback = await openTunnel(proxy.port, `127.0.0.1:${secureOrigin.port}`);
-    expect("refused" in loopback && loopback.refused.status).toBe(403);
-    expect("refused" in loopback && loopback.refused.body.toString()).toContain(
-      "127.0.0.1 is a host-local destination (this machine's loopback or link-local, or the cloud metadata service); in sandbox mode the proxy reaches only destinations outside this machine unless a rule names them",
+    expect(await refusedTunnel(proxy.port, `127.0.0.1:${secureOrigin.port}`)).toContain(
+      "127.0.0.1 is a host-local destination (this machine's loopback or link-local, shared address space, or the cloud metadata service); in sandbox mode the proxy reaches only destinations outside this machine unless a rule names them",
     );
-    // The loopback and the metadata service in other textual forms (§21 R-16)
+    // The loopback and the metadata services in other textual forms (§21 R-16 / R-20)
     for (const authority of [
       `0:0:0:0:0:0:0:1:${secureOrigin.port}`,
       `::ffff:7f00:1:${secureOrigin.port}`,
       "::ffff:a9fe:a9fe:443",
       "fd00:ec2::254:443",
+      "100.100.100.200:80",
     ]) {
-      const alias = await openTunnel(proxy.port, authority);
-      expect("refused" in alias && alias.refused.status, authority).toBe(403);
-      expect("refused" in alias && alias.refused.body.toString(), authority).toContain(
+      expect(await refusedTunnel(proxy.port, authority), authority).toContain(
         "is a host-local destination",
       );
     }
     // A name that resolves to the metadata service's link-local address
-    const metadata = await openTunnel(proxy.port, "metadata.example.test:443");
-    expect("refused" in metadata && metadata.refused.body.toString()).toContain(
+    expect(await refusedTunnel(proxy.port, "metadata.example.test:443")).toContain(
       "metadata.example.test resolves to a host-local address (169.254.169.254",
     );
     // A name that cannot be resolved is refused too (fail closed)
-    const unknown = await openTunnel(proxy.port, "nowhere.example.test:443");
-    expect("refused" in unknown && unknown.refused.body.toString()).toContain(
+    expect(await refusedTunnel(proxy.port, "nowhere.example.test:443")).toContain(
       "nowhere.example.test cannot be resolved",
     );
-    // Plain HTTP toward `localhost` by name
-    const plain = await httpViaProxy({
-      proxyPort: proxy.port,
-      url: `http://localhost:${plainOrigin.port}/x`,
-    });
-    expect(plain.status).toBe(403);
-    expect(plain.body.toString()).toContain("localhost is a host-local destination");
-    // A bracketed IPv6 literal in an absolute-form URL is classified, not sent to the resolver
-    const bracketed = await httpViaProxy({
-      proxyPort: proxy.port,
-      url: `http://[::1]:${plainOrigin.port}/x`,
-    });
-    expect(bracketed.status).toBe(403);
-    expect(bracketed.body.toString()).toContain("is a host-local destination");
-    expect(plainOrigin.seen).toHaveLength(0);
-    // A public destination is tunnelled as before (the seam connects it to the origin)
-    const publicTunnel = await openTunnel(proxy.port, "public.example.test:443");
-    expect("socket" in publicTunnel).toBe(true);
-    if ("socket" in publicTunnel) {
-      publicTunnel.socket.destroy();
+    // Plain HTTP toward `localhost` by name, and a bracketed IPv6 literal (classified, not resolved)
+    for (const url of [
+      `http://localhost:${plainOrigin.port}/x`,
+      `http://[::1]:${plainOrigin.port}/x`,
+    ]) {
+      const plain = await httpViaProxy({ proxyPort: proxy.port, url });
+      expect(plain.status, url).toBe(403);
+      expect(plain.body.toString(), url).toContain("is a host-local destination");
     }
+    expect(plainOrigin.seen).toHaveLength(0);
+    const blocked = decisions.filter((d) => d.kind === "blocked");
+    expect(blocked).toHaveLength(10);
+    expect(blocked.every((d) => d.reason.startsWith("host-local destination (sandbox mode)"))).toBe(
+      true,
+    );
+  });
+
+  it("in sandbox mode connects a cleared name by the address it checked — one resolution, no rebinding — and keeps the hosts a rule names (§21 R-19)", async () => {
+    const { proxy, connected, rebind } = await sandboxProxy();
+    // A public destination is tunnelled (the seam connects it to the origin),
+    // and the connection is asked for the address the guard checked, not the name
+    await clearedTunnel(proxy.port, "public.example.test:443");
+    expect(connected.at(-1)).toMatchObject({
+      host: "public.example.test",
+      resolved: "203.0.113.7",
+    });
+    // The rebinding resolver: the one lookup's answer is what the proxy connects to
+    await clearedTunnel(proxy.port, "rebind.example.test:443");
+    expect(rebind.answers).toBe(1);
+    expect(connected.at(-1)).toMatchObject({
+      host: "rebind.example.test",
+      resolved: "203.0.113.9",
+    });
+    // Plain HTTP toward a cleared name goes to the checked address too
+    const relayed = await httpViaProxy({
+      proxyPort: proxy.port,
+      url: "http://public.example.test/r",
+    });
+    expect(relayed.status).toBe(200);
+    expect(connected.at(-1)).toMatchObject({
+      scheme: "http",
+      host: "public.example.test",
+      resolved: "203.0.113.7",
+    });
     // A host a rule names is the member's decision: `http://plain.localhost` still brokers
     const named = await httpViaProxy({
       proxyPort: proxy.port,
@@ -617,13 +680,8 @@ describe("the forward proxy", () => {
       headers: { "x-api-key": plainKey.placeholder },
     });
     expect(named.status).toBe(200);
-    expect(plainOrigin.seen[0]?.headers["x-api-key"]).toBe(REAL_KEY);
-    expect(decisions.filter((d) => d.kind === "blocked")).toHaveLength(9);
-    expect(
-      decisions
-        .filter((d) => d.kind === "blocked")
-        .every((d) => d.reason.startsWith("host-local destination (sandbox mode)")),
-    ).toBe(true);
+    expect(plainOrigin.seen.at(-1)?.headers["x-api-key"]).toBe(REAL_KEY);
+    expect(connected.at(-1)?.resolved).toBeUndefined();
   });
 
   it("on the loopback binding the guard is off, and the proxy URL brackets an IPv6 advertised address (§21 R-11)", async () => {

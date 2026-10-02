@@ -1760,7 +1760,8 @@ USAGE
   maruhi proxy accept [flags]
 
 FLAGS
-  --config string    Path to the proxy config to accept (default: maruhi.proxy.json)
+  --config string     Path to the proxy config to accept (default: maruhi.proxy.json)
+  --project string    The project the config is for (default: the config's `project`, else the default project)
 
 GLOBAL FLAGS
   --help, -h       Show help information
