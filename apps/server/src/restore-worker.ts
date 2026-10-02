@@ -23,14 +23,26 @@
 // entry_hash_hex) (no capability is carried on keys, jobs, or
 // results).
 
+import type { Role } from "@maruhi/crypto";
+
 import type { OpsRestoreOutcome, ProjectChainDO } from "./chain-do.ts";
 import { ProjectChainDO as ProjectChainDOClass } from "./chain-do.ts";
+import type { DataOutcome } from "./data-plane.ts";
+import type { ImportedIdentity, ImportProvisionResult } from "./db.package/index.ts";
+import { provisionImportedProject } from "./db.package/index.ts";
 
 /** The drill namespace (a distinct class name inside this worker — never intersects the production namespace). */
 export class RestoreDrillDO extends ProjectChainDOClass {}
 
 export interface RestoreEnv {
   readonly OPS_BACKUP_BUCKET: R2Bucket;
+  /**
+   * The production worker's D1 (PF3 — AUTH_SPEC §11-6). An import job
+   * (`identitiesKey`) provisions the imported project's members and the
+   * projects row here after the DO restore; absent on a deployment that
+   * only restores its own snapshots.
+   */
+  readonly DB?: D1Database;
   /** The production worker's namespace (the scriptName binding in the restore mode of cloudflare.config.ts). */
   readonly PRODUCTION_PROJECT_CHAIN?: DurableObjectNamespace<ProjectChainDO>;
   readonly DRILL_PROJECT_CHAIN?: DurableObjectNamespace<RestoreDrillDO>;
@@ -44,13 +56,47 @@ const RESULTS_PREFIX = "restore/results/";
 interface RestoreJob {
   readonly objectKey: string;
   readonly target: "production" | "drill";
+  /**
+   * An import (PF3): the key of the identities companion the exporting
+   * owner's `maruhi project export` wrote next to the snapshot. When
+   * present, the members and the projects row are provisioned in D1
+   * after the DO holds the project (restored by this job, or already —
+   * a `not-empty` refusal on the same genesis is the retry of a job whose
+   * D1 step failed).
+   */
+  readonly identitiesKey?: string;
 }
+
+/**
+ * The D1 side of an import job (static codes only). `db-unavailable` = no
+ * `DB` binding; `db-error` = D1 threw (a unique-key race with a concurrent
+ * first login, or an infrastructure failure — resubmit the job);
+ * `identity-not-member` / `exporter-not-owner` = the companion names ids
+ * the restored chain does not confirm (an import binds GitHub accounts
+ * only to ids that are current members, and only an owner may export).
+ */
+export type ImportOutcome =
+  | ImportProvisionResult
+  | {
+      readonly kind: "refused";
+      readonly code:
+        | "identities-missing"
+        | "identities-malformed"
+        | "identity-not-member"
+        | "exporter-not-owner"
+        | "db-unavailable"
+        | "db-error"
+        | "drill-target"
+        | "project-not-restored";
+    };
 
 export type RestoreJobResult =
   | {
       readonly status: "ok";
       readonly target: RestoreJob["target"];
       readonly verification: Extract<OpsRestoreOutcome, { kind: "restored" }>;
+      /** Only on an import job (identitiesKey). */
+      readonly identities?: ImportOutcome;
     }
   | {
       readonly status: "failed";
@@ -65,26 +111,152 @@ export type RestoreJobResult =
         | "unexpected"
         | Extract<OpsRestoreOutcome, { kind: "refused" }>["code"]
         | "no-bucket";
+      /** Only on an import job (identitiesKey). */
+      readonly identities?: ImportOutcome;
     };
 
-function parseJob(text: string): RestoreJob | null {
+/** JSON text → an object, or null (non-JSON and non-objects are "malformed" — never thrown). */
+function parseObject(text: string): Record<string, unknown> | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
     return null;
   }
-  if (typeof parsed !== "object" || parsed === null) {
+  return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : null;
+}
+
+/** An optional string field: undefined when absent, null when present with another type. */
+function optionalString(value: unknown): string | undefined | null {
+  return value === undefined || typeof value === "string" ? value : null;
+}
+
+function parseJob(text: string): RestoreJob | null {
+  const job = parseObject(text);
+  if (job === null) {
     return null;
   }
-  const job = parsed as { objectKey?: unknown; target?: unknown };
+  const { objectKey, target } = job;
+  const identitiesKey = optionalString(job["identitiesKey"]);
   if (
-    typeof job.objectKey !== "string" ||
-    (job.target !== "production" && job.target !== "drill")
+    typeof objectKey !== "string" ||
+    (target !== "production" && target !== "drill") ||
+    identitiesKey === null
   ) {
     return null;
   }
-  return { objectKey: job.objectKey, target: job.target };
+  return { objectKey, target, ...(identitiesKey === undefined ? {} : { identitiesKey }) };
+}
+
+/** The identities companion as `maruhi project export` writes it (api-schema's ExportIdentitiesSchema). */
+interface IdentitiesFile {
+  readonly exportedBy: string;
+  readonly identities: readonly ImportedIdentity[];
+}
+
+/** One entry of the companion's `identities` (null = malformed). */
+function parseIdentity(entry: unknown): ImportedIdentity | null {
+  if (typeof entry !== "object" || entry === null) {
+    return null;
+  }
+  const identity = entry as Record<string, unknown>;
+  const { userId, provider, providerUserId } = identity;
+  const providerLogin = optionalString(identity["providerLogin"]);
+  if (
+    typeof userId !== "string" ||
+    provider !== "github" ||
+    typeof providerUserId !== "string" ||
+    providerLogin === null
+  ) {
+    return null;
+  }
+  return { userId, provider: "github", providerUserId, providerLogin: providerLogin ?? null };
+}
+
+function parseIdentities(text: string): IdentitiesFile | null {
+  const file = parseObject(text);
+  if (file === null) {
+    return null;
+  }
+  const { exportedBy } = file;
+  const entries = file["identities"];
+  if (typeof exportedBy !== "string" || !Array.isArray(entries)) {
+    return null;
+  }
+  const identities: ImportedIdentity[] = [];
+  for (const entry of entries as unknown[]) {
+    const identity = parseIdentity(entry);
+    if (identity === null) {
+      return null;
+    }
+    identities.push(identity);
+  }
+  return { exportedBy, identities };
+}
+
+/**
+ * The D1 step of an import job: reads the identities companion and
+ * provisions the members and the projects row (db.package/import.ts).
+ * Runs only when the DO holds the project — restored by this job, or
+ * already (`not-empty`), which is the retry of a job whose D1 step
+ * failed. A drill never touches D1.
+ */
+async function importIdentities(
+  env: RestoreEnv,
+  job: RestoreJob & { readonly identitiesKey: string },
+  restored: RestoredProject,
+): Promise<ImportOutcome> {
+  if (job.target === "drill") {
+    return { kind: "refused", code: "drill-target" };
+  }
+  const { outcome } = restored;
+  if (
+    outcome.kind !== "restored" &&
+    !(outcome.kind === "refused" && outcome.code === "not-empty")
+  ) {
+    return { kind: "refused", code: "project-not-restored" };
+  }
+  if (env.DB === undefined) {
+    return { kind: "refused", code: "db-unavailable" };
+  }
+  const object = await env.OPS_BACKUP_BUCKET.get(job.identitiesKey);
+  if (object === null) {
+    return { kind: "refused", code: "identities-missing" };
+  }
+  const file = parseIdentities(await object.text());
+  if (file === null) {
+    return { kind: "refused", code: "identities-malformed" };
+  }
+  // The companion is checked against the restored chain before anything is
+  // written: an id the chain does not name as a current member cannot be
+  // bound to a GitHub account here, and only an owner's export attaches a
+  // project (the chain, not the file, decides who is a member)
+  const onChain = await identitiesOnChain(restored.stub, file);
+  if (onChain !== null) {
+    return onChain;
+  }
+  return provisionImportedProject(
+    env.DB,
+    { projectId: restored.projectId, exportedBy: file.exportedBy, identities: file.identities },
+    Date.now(),
+  );
+}
+
+/** Confirms every listed id is a current chain member and the exporter is an owner (one DO read per id). */
+async function identitiesOnChain(
+  stub: DurableObjectStub<ProjectChainDO>,
+  file: IdentitiesFile,
+): Promise<ImportOutcome | null> {
+  for (const identity of file.identities) {
+    const role = await (stub.memberRoleFor(identity.userId) as Promise<DataOutcome<Role>>);
+    if (role.kind !== "ok") {
+      return { kind: "refused", code: "identity-not-member" };
+    }
+    if (identity.userId === file.exportedBy && role.value !== "owner") {
+      return { kind: "refused", code: "exporter-not-owner" };
+    }
+  }
+  return null;
 }
 
 /**
@@ -180,7 +352,17 @@ function toJobResult(outcome: OpsRestoreOutcome, target: RestoreJob["target"]): 
   }
 }
 
-async function runJob(env: RestoreEnv, job: RestoreJob): Promise<RestoreJobResult> {
+interface RestoredProject {
+  readonly projectId: string;
+  readonly outcome: OpsRestoreOutcome;
+  readonly stub: DurableObjectStub<ProjectChainDO>;
+}
+
+/** The restore RPC against the DO named by the snapshot's genesis (the failure codes of the pre-RPC stages are static). */
+async function restoreFromSnapshot(
+  env: RestoreEnv,
+  job: RestoreJob,
+): Promise<RestoredProject | Extract<RestoreJobResult, { status: "failed" }>> {
   const namespace =
     job.target === "production" ? env.PRODUCTION_PROJECT_CHAIN : env.DRILL_PROJECT_CHAIN;
   if (namespace === undefined) {
@@ -210,14 +392,37 @@ async function runJob(env: RestoreEnv, job: RestoreJob): Promise<RestoreJobResul
     // values, so this converts back to the declared type (the same
     // reason as rpcCall in worker-env.ts; the restore worker has no
     // Effect runtime)
-    return toJobResult(
-      await (stub.opsRestore(job.objectKey) as Promise<OpsRestoreOutcome>),
-      job.target,
-    );
+    const outcome = await (stub.opsRestore(job.objectKey) as Promise<OpsRestoreOutcome>);
+    return { projectId, outcome, stub };
   } catch (error) {
     console.warn("restore RPC failed", error instanceof Error ? error.name : "unknown");
     return { status: "failed", code: "rpc-failed" };
   }
+}
+
+async function runJob(env: RestoreEnv, job: RestoreJob): Promise<RestoreJobResult> {
+  const restored = await restoreFromSnapshot(env, job);
+  if ("status" in restored) {
+    return restored;
+  }
+  const result = toJobResult(restored.outcome, job.target);
+  if (job.identitiesKey === undefined) {
+    return result;
+  }
+  // An import: the D1 step after the DO holds the project. A D1 failure
+  // is folded into a static code like every other failure of the job
+  let identities: ImportOutcome;
+  try {
+    identities = await importIdentities(
+      env,
+      { ...job, identitiesKey: job.identitiesKey },
+      restored,
+    );
+  } catch (error) {
+    console.warn("import provisioning failed", error instanceof Error ? error.name : "unknown");
+    identities = { kind: "refused", code: "db-error" };
+  }
+  return { ...result, identities };
 }
 
 /**

@@ -14,6 +14,11 @@ export {
 } from "./audit.ts";
 export { type DeviceAddRequestRecord, type DeviceRecord, DeviceRepo } from "./devices.ts";
 export {
+  type ImportedIdentity,
+  type ImportProvisionResult,
+  provisionImportedProject,
+} from "./import.ts";
+export {
   APPROVAL_LIMIT,
   HANDOFF_REQUEST_LIMIT,
   KEY_BLOB_FETCH_LIMIT,

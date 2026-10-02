@@ -1019,6 +1019,7 @@ SUBCOMMANDS
   verify        Verify the chain, the local floor, and the invite anchor, then print the project state
   anchor        Print the repository anchor as JSON to stdout (commit it and pass it to `ci run --anchor`)
   checkpoint    Notarize the verified data state (and, with effective admin permission, the audit head) onto the chain
+  export        Export the whole project (chain, ciphertexts, wraps, statements, audit log) as a snapshot file for import into another maruhi deployment (owner only)
   policy        Project policies (approvals)
 
 $ maruhi project init --help
@@ -1090,6 +1091,22 @@ USAGE
 FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi project export --help
+DESCRIPTION
+  Export the whole project (chain, ciphertexts, wraps, statements, audit log) as a snapshot file for import into another maruhi deployment (owner only)
+
+USAGE
+  maruhi project export [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --out string        Path of the snapshot file to write (refused if it exists); the identities companion is written as <out>.identities.json
 
 GLOBAL FLAGS
   --help, -h       Show help information

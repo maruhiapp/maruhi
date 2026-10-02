@@ -506,6 +506,102 @@ from the audit rows — `maruhi audit reconcile` does the same computation).
 The snapshot's schema version must match the deployed server —
 deploy the matching version first if it does not.
 
+### Migrating a project from another maruhi (export / import)
+
+A project is portable by construction: its id is the genesis hash, its
+membership is a signed chain every client verifies, its values are
+ciphertexts, and its audit log lives in the same Durable Object. Moving one
+from the hosted service (or any other deployment) to yours is an **export
+by the project's owner** and an **import by you, the operator**, over the
+restore path above (AUTH_SPEC §11-6; the design is
+`docs/notes/pf3-design.md`).
+
+**1. The owner exports** (any machine logged in to the source deployment;
+chain role owner):
+
+```sh
+maruhi project export --server https://my.maruhi.app --project <project-id> --out acme.ndjson.gz
+```
+
+This writes two files: the snapshot (`acme.ndjson.gz` — the same gzip NDJSON
+the backup job produces, fetched page by page; ciphertext, the chain, wrapped
+DEKs, statements and the audit log, never a plaintext) and the identities
+companion (`acme.ndjson.gz.identities.json` — the current members' GitHub
+ids, keyed by the user ids the chain names). The command prints the chain
+head and the row counts, cross-checked against the verified chain; the
+source records `project.exported` in the project's audit log. Export after
+the last write: a member whose client verified a newer head than the file
+carries refuses the destination (CRYPTO_SPEC §6.3).
+
+**Before you import.** The restore path runs in the *production* Durable
+Object and reads the snapshot from the ops bucket, so the deployment that
+receives the project must be the `hosted` mode of `cloudflare.config.ts`
+(the R2 binding plus your own D1 id — see "Optional: project snapshots to
+R2" above); the plain `maruhi-server` worker has no bucket binding and
+answers every import job with `no-bucket`. The `restore` mode's `DB`
+binding must point at the same D1 id as your `hosted` mode (edit both ids
+in `cloudflare.config.ts` before deploying either). And import only from an
+owner you trust: the identities file decides which GitHub accounts become
+which chain members — the worker confirms every listed id against the
+restored chain (a non-member is refused, and only an owner's export attaches
+a project), but it cannot tell whether the GitHub id next to a member's
+chain id is really that person.
+
+**2. You import** with the restore worker, adding `identitiesKey` to the job:
+
+```sh
+bunx cf r2 objects put import/acme.ndjson.gz --bucket-name maruhi-ops-backup --file acme.ndjson.gz
+bunx cf r2 objects put import/acme.identities.json --bucket-name maruhi-ops-backup --file acme.ndjson.gz.identities.json --content-type application/json
+bunx cf deploy --mode restore
+echo '{"objectKey":"import/acme.ndjson.gz","target":"production","identitiesKey":"import/acme.identities.json"}' > job.json
+bunx cf r2 objects put restore/jobs/import-acme.json --bucket-name maruhi-ops-backup --file job.json --content-type application/json
+bunx cf r2 objects get restore/results/import-acme.json --bucket-name maruhi-ops-backup --text
+bunx cf workers delete maruhi-restore --force
+```
+
+The job restores the Durable Object exactly like a snapshot restore (only
+into an empty one; compare the result with the trailer the owner's command
+printed) and then provisions D1 in one atomic batch: a `users` row **with
+the chain's user id** and the matching `linked_identities` row for every
+member, a personal org for each, the `projects` row under the exporting
+owner's org, and the membership projection. The result's `identities`
+field reports `provisioned` with the counts, or a static refusal:
+`identity-conflict` (a GitHub id in the file is already linked to a
+different account on your deployment — that person logged in before the
+import; remove that account and resubmit the same job: the restored
+project is kept and only the D1 step reruns, and that result reads
+`"status": "failed", "code": "not-empty"` for the Durable Object half with
+`"identities": { "kind": "provisioned", … }` for the D1 half),
+`user-id-taken`, `project-exists`, `exporter-missing`,
+`identity-not-member` / `exporter-not-owner` (the file names an id the
+restored chain does not confirm), `identities-missing` /
+`identities-malformed`, `db-unavailable` (the restore mode has no `DB`
+binding), `db-error` (D1 refused the batch — resubmit). Look at the
+identities file before placing the job: it decides which GitHub accounts
+become which chain members.
+
+**3. After the import** — what the file does not carry:
+
+- **Logins**: every member runs `maruhi login --server <your url>`; their
+  GitHub login resolves to the chain's user id, so their devices, roles and
+  scopes are what the chain says. Sessions and API tokens are not carried
+  (issue new ones)
+- **The server key**: the source server's `grant_server` wraps are useless
+  here (your server has its own key). The owner runs
+  `maruhi server revoke <source fingerprint>` and `maruhi server grant` for
+  yours, then `maruhi env rotate` on the environments the source key could
+  open (the source operator still holds wraps of those epochs — rotation
+  retires them). CI leases work once the grant exists
+- **Recovery and reserve keys**: the recovery ledger and guardian shares
+  live in the source's D1; members set recovery up again
+  (`maruhi key recovery`, `maruhi key reserve`, `maruhi guardian add`)
+- **Pending invitations and device-add requests** are gone (re-invite);
+  the advisory device registry rebuilds itself on each login
+- **Ops state** (backup records, counters) starts fresh
+
+The hosted service keeps the project until the owner asks for its removal;
+the audit log on both sides shows the export.
+
 ## Recommended hardening (optional): rate-limit unauthenticated endpoints
 
 Of maruhi's unauthenticated surface, the following four are the ones where a

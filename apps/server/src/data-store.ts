@@ -648,7 +648,7 @@ export interface DataStoreShape {
 
 /** The fixed-window kinds (§14-3 issuance / AUDIT_SPEC §3.5 denial record). */
 /** `proposed` = the sealed-proposal mint window (AUTH_SPEC §14-5 — its own counter beside issuance). */
-type LeaseWindowKind = "issued" | "denied" | "proposed";
+type LeaseWindowKind = "issued" | "denied" | "proposed" | "exported";
 
 /** The fixed-window decision (on excess it returns the window's remaining seconds — same shape as the §13-3 precedent). */
 interface LeaseWindowDecision {

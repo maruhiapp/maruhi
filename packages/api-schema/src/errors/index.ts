@@ -101,6 +101,7 @@ export {
   DekWrapRejectedError,
   DekWrapRejectReasonSchema,
 } from "./deks.ts";
+export { ExportChangedError, ExportRateLimitedError } from "./export.ts";
 export {
   InviteConflictError,
   InviteGoneError,

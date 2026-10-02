@@ -175,6 +175,17 @@ export {
   WardSummarySchema,
 } from "./key-wraps-api.ts";
 export {
+  ExportCursorSchema,
+  exportGroup,
+  ExportHeadSchema,
+  ExportIdentitiesSchema,
+  type ExportIdentities,
+  ExportIdentitySchema,
+  type ExportIdentity,
+  type ExportPage,
+  ExportPageSchema,
+} from "./export-api.ts";
+export {
   leaseGroup,
   LeaseRequestSchema,
   LeaseResponseSchema,
@@ -238,6 +249,8 @@ export {
   EnvironmentConflictReasonSchema,
   EnvironmentNotFoundError,
   EpochConflictError,
+  ExportChangedError,
+  ExportRateLimitedError,
   ForbiddenError,
   ForbiddenReasonSchema,
   HandoffConflictError,

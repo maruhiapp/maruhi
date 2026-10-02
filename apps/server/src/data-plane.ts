@@ -676,6 +676,11 @@ export type DataRejection =
   // RotationProposalNotFound (404) / RotationProposalRejected (422)
   | { readonly kind: "rotation-proposal-not-found"; readonly proposalId: string }
   | { readonly kind: "rotation-proposal-rejected"; readonly reason: RotationProposalRejectReason }
+  // Project export (AUTH_SPEC §11-6 — PF3): the project moved between two
+  // pages of one export (409 — the client starts over), and the per-project
+  // export window (429)
+  | { readonly kind: "export-changed" }
+  | { readonly kind: "export-rate-limited"; readonly retryAfterSeconds: number }
   | {
       readonly kind: "limit-exceeded";
       readonly resource: DataLimitResource;

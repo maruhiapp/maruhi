@@ -30,3 +30,13 @@ From there the full guide walks through creating the D1 database, the first depl
 - The same server, dashboard, and CLI as the hosted service. The server code is [FSL-1.1-MIT](https://github.com/maruhiapp/maruhi/blob/main/LICENSE.md) licensed; the CLI and crypto packages are MIT.
 - End-to-end encryption by default. Your deployment never sees plaintext values either.
 - Optional operations tooling: periodic D1 exports, project snapshots to R2, and trip-wire alerts.
+
+## Moving a project in or out
+
+No lock-in is a mechanism, not a promise: a project's owner can take the whole project — the signed membership chain, every ciphertext and its history, the wrapped keys, the statements, and the audit log — out of any maruhi deployment with one command, and the operator of another deployment imports it over the same restore path that handles backups:
+
+```sh
+maruhi project export --server https://my.maruhi.app --project <project-id> --out acme.ndjson.gz
+```
+
+The export is the server's own content (nothing is decrypted — your deployment never sees a plaintext either), plus a small companion file naming the members' GitHub identities so that, after the import, each member's first login on the new server lands on the user id the chain already names. The import, the identity rules, and what has to be redone afterwards (the server-key grant, recovery setup, tokens) are in the guide's [Migrating a project](https://github.com/maruhiapp/maruhi/blob/main/docs/SELF_HOSTING.md#migrating-a-project-from-another-maruhi-export--import) section.

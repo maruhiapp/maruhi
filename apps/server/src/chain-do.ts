@@ -93,6 +93,8 @@ import {
   pullEnvironmentProgram,
   renameEnvironmentProgram,
 } from "./programs-environment.ts";
+import type { ExportPageValue } from "./programs-export.ts";
+import { exportMembersProgram, exportPageProgram } from "./programs-export.ts";
 import type {
   VariableVersionHistoryValue,
   VariableVersionValuesValue,
@@ -1082,6 +1084,26 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(
       resolveRotationProposalProgram(actor, proposalId, resolution, this.#stateCache),
     );
+  }
+
+  // --- Project export RPCs (AUTH_SPEC §11-6 — PF3) ----------------------
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  exportPage(actor: DataActor, cursor: string | null): Promise<DataOutcome<ExportPageValue>> {
+    return this.#runData(
+      exportPageProgram(
+        actor,
+        cursor,
+        this.ctx.storage.sql,
+        this.ctx.id.toString(),
+        this.#stateCache,
+      ),
+    );
+  }
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  exportMembers(actor: DataActor): Promise<DataOutcome<readonly string[]>> {
+    return this.#runData(exportMembersProgram(actor, this.#stateCache));
   }
 
   // --- Audit-event read RPC (AUDIT_SPEC §6 / §7) -----------------------

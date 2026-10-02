@@ -978,7 +978,7 @@ describe("key / project nested subcommands (ADR-0016 stage 3 ②)", () => {
     const project = await makeTestEnv();
     expect(await runCli(["project", "bogus"], project.layer)).toBe(2);
     expect(project.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: init | list | verify | anchor | checkpoint | policy)",
+      "Unknown subcommand (expected one of: init | list | verify | anchor | checkpoint | export | policy)",
     );
   });
 

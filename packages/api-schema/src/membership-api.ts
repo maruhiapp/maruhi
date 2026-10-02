@@ -36,6 +36,7 @@ import {
   ProjectNotFoundError,
   ProposalLimitError,
 } from "./errors/index.ts";
+import { exportGroup } from "./export-api.ts";
 import { HeadAttestationSignatureHex, KeyFingerprintHex, PositiveInt, Sha256Hex } from "./hex.ts";
 import { invitesGroup } from "./invites-api.ts";
 import { keyWrapsGroup } from "./key-wraps-api.ts";
@@ -275,6 +276,8 @@ export const maruhiApi = HttpApi.make("maruhi")
   .add(devicesGroup)
   .add(rotationGroup)
   .add(auditGroup)
+  // Project export (AUTH_SPEC §11-6 — PF3; owner × admin scope, never session-allowed)
+  .add(exportGroup)
   // The only unauthenticated group (credential = the OIDC token itself — AUTH_SPEC §14-1)
   .add(leaseGroup);
 

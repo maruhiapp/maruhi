@@ -221,6 +221,7 @@ import {
 import { formatNotice, logNote, logWarning, NoticeLedger } from "./notice.ts";
 import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "./passkey.ts";
 import { PinStore } from "./pins.ts";
+import { describeExport, projectExportOp } from "./project-export.ts";
 import { projectInitOp } from "./project-init.ts";
 import { projectListOp } from "./project-list.ts";
 import {
@@ -972,6 +973,15 @@ const projectCheckpointConfig = {
   project: singleValued("project", "Project ID (default: the `defaultProject` setting)"),
 };
 
+const projectExportConfig = {
+  ...serverOnlyFlags(),
+  project: singleValued("project", "Project ID (default: the `defaultProject` setting)"),
+  out: singleValued(
+    "out",
+    "Path of the snapshot file to write (refused if it exists); the identities companion is written as <out>.identities.json",
+  ),
+};
+
 /** The environment ID positional (shared by env's subcommands. The key is the spelling typed). */
 const environmentIdArgument = (name: string, description: string) =>
   Argument.String(name).pipe(Argument.withDescription(description), Argument.withSchema(NonBlank));
@@ -1601,6 +1611,7 @@ const GROUP_CONFIGS: Readonly<
     verify: projectVerifyConfig,
     anchor: projectAnchorConfig,
     checkpoint: projectCheckpointConfig,
+    export: projectExportConfig,
   },
   "project policy": { approvals: projectPolicyApprovalsConfig },
   ci: { run: ciRunConfig, sync: ciSyncConfig },
@@ -4797,6 +4808,40 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     Command.withDescription("List the projects you are a member of (as reported by the server)"),
   );
 
+  const projectExport = Command.make("export", projectExportConfig, (values) =>
+    Effect.gen(function* () {
+      const io = yield* CliIo;
+      if (values.out === undefined) {
+        return yield* Effect.fail(
+          usageError("project export requires --out <file> (the snapshot file to write)"),
+        );
+      }
+      // The same keyless prologue as verify (chain sync + the floor
+      // check): the export is cross-checked against this verified view
+      const context = yield* openSession(values.server);
+      const projectId = yield* resolveProjectId(values.project, context.config);
+      const synced = yield* syncProject(context.client, projectId);
+      const verified = (yield* loadCheckedFloor(
+        projectId,
+        synced,
+        syncProject(context.client, projectId),
+      )).verified;
+      const result = yield* projectExportOp({
+        client: context.client,
+        projectId,
+        verified,
+        outPath: values.out,
+      });
+      for (const line of describeExport(result, verified)) {
+        yield* io.log(line);
+      }
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Export the whole project (chain, ciphertexts, wraps, statements, audit log) as a snapshot file for import into another maruhi deployment (owner only)",
+    ),
+  );
+
   const projectVerifyCommand = Command.make("verify", projectVerifyConfig, (values) =>
     projectVerify(values.server, values.project),
   ).pipe(
@@ -4906,6 +4951,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       projectVerifyCommand,
       projectAnchor,
       projectCheckpoint,
+      projectExport,
       projectPolicy,
     ]),
   );

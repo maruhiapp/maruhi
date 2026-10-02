@@ -265,3 +265,21 @@ export const MAX_ROTATION_PROPOSAL_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
  * re-minting; 60 is far above a weekly rotation cron's need).
  */
 export const MAX_ROTATION_PROPOSALS_PER_WINDOW = 60;
+
+/**
+ * §11-6 (PF3): one export page carries at most this many rows (the DO
+ * reads them in one synchronous statement under the permit — the same
+ * discipline as the evacuation's rowid keyset).
+ */
+export const MAX_EXPORT_PAGE_ROWS = 2000;
+
+/** §11-6: one export page's line text is cut at this many bytes (a page ends after the row that crosses it). */
+export const MAX_EXPORT_PAGE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * §11-6: the per-project fixed window of exports (first pages — the
+ * same hour-long window as leases, under its own `kind`). Twenty whole
+ * exports an hour is far above a migration's need and bounds the audit
+ * rows and the read load an owner's credential can produce.
+ */
+export const MAX_EXPORTS_PER_WINDOW = 20;

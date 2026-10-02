@@ -24,6 +24,8 @@ import {
   EnvironmentConflictError,
   EnvironmentNotFoundError,
   EpochConflictError,
+  ExportChangedError,
+  ExportRateLimitedError,
   ForbiddenError,
   LeaseRateLimitedError,
   LeaseUnauthorizedError,
@@ -293,6 +295,16 @@ const renderers: readonly Renderer[] = [
   ),
   when(isInstanceOf(LeaseUnavailableError), renderLeaseUnavailable),
   // Sealed value proposals (AUTH_SPEC §14-5). reason is a Literal (shown as-is)
+  when(
+    isInstanceOf(ExportChangedError),
+    () =>
+      "The project changed while it was being exported (a push, a chain append, or an attestation landed between two pages) and the export was restarted too many times. Wait for the writes to settle and re-run `maruhi project export`",
+  ),
+  when(
+    isInstanceOf(ExportRateLimitedError),
+    (e) =>
+      `Too many exports of this project in the last hour (HTTP 429). Retry after ${e.retryAfterSeconds} seconds`,
+  ),
   when(
     isInstanceOf(RotationProposalRejectedError),
     (e) => `The server refused the sealed proposal (${e.reason} — AUTH_SPEC §14-5)`,

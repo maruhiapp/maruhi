@@ -28,6 +28,8 @@ import {
   EnvironmentConflictError,
   EnvironmentNotFoundError,
   EpochConflictError,
+  ExportChangedError,
+  ExportRateLimitedError,
   ForbiddenError,
   ManifestRejectedError,
   ManifestVersionConflictError,
@@ -308,6 +310,8 @@ type DataApiError =
   | ProposalLimitError
   | CheckpointStateMismatchError
   | AuditHeadNotReadyError
+  | ExportChangedError
+  | ExportRateLimitedError
   | ChainHeadConflictError
   | ChainEntryInvalidError
   | ChainEntryTooLargeError
@@ -365,6 +369,10 @@ const rejectionErrors = {
   // (retryable 503 — AUDIT_SPEC §5.1 / AUTH_SPEC §16-2; empty body —
   // no count leak)
   "audit-head-not-ready": () => new AuditHeadNotReadyError(),
+  // Project export (AUTH_SPEC §11-6 — PF3)
+  "export-changed": () => new ExportChangedError({ reason: "project-changed" }),
+  "export-rate-limited": (rejection) =>
+    new ExportRateLimitedError({ retryAfterSeconds: rejection.retryAfterSeconds }),
   "chain-head-conflict": (rejection) =>
     new ChainHeadConflictError({
       currentHeadSeq: rejection.currentHeadSeq,
