@@ -236,12 +236,18 @@ import {
 import { describeProxyConfig, proxyRunOp } from "./proxy-run.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
 import { normalizeStdinValue, pushVariable } from "./push.ts";
+import {
+  DEFAULT_ROTATE_CONFIG_PATH,
+  loadRotateConfig,
+  configNamesProject as rotateConfigNamesProject,
+} from "./rotate-config.ts";
+import { SqlRunner } from "./rotate-connector.ts";
 import { reportRotation } from "./rotation-report.ts";
 import type { SweepOutcome } from "./rotation-sweep.ts";
 import { describeUnconvergedMandate, resolveUnconvergedMandates } from "./rotation-sweep.ts";
 import {
   parseDismissRequest,
-  reportRotationFlagCount,
+  reportRotationChecklist,
   resolveDismissTargets,
   rotationDismissOp,
   rotationListOp,
@@ -277,12 +283,26 @@ import {
 } from "./sync-config.ts";
 import { syncInitOp } from "./sync-init.ts";
 import { syncApplyOp, syncPlanOp } from "./sync-plan.ts";
-import { decidePushSync, loadPushSyncConfig, syncAfterPush } from "./sync-push.ts";
+import {
+  decidePushSync,
+  loadPushSyncConfig,
+  type PushSyncSetup,
+  syncAfterPush,
+} from "./sync-push.ts";
 import { advanceReceiptsAfterRotation, checkRotateConfigProject } from "./sync-rotate.ts";
 import { syncProject } from "./sync.ts";
 import { tokenListOp, tokenRevokeOp } from "./token.ts";
 import { formatVarHistory, varHistoryJson, varHistoryOp, varRollbackOp } from "./var-history.ts";
 import { varRmOp } from "./var-rm.ts";
+import {
+  describeFinalization,
+  describeRotation,
+  logRotationWarnings,
+  rotateDeps,
+  RotateSeams,
+  varFinalizeOp,
+  varRotateOp,
+} from "./var-rotate.ts";
 import { CLI_VERSION } from "./version.ts";
 
 /** The guidance attached to a run that forgot `--` (there is exactly one way to pass the run target). */
@@ -1290,6 +1310,44 @@ const varRollbackConfig = {
   ),
 };
 
+/** `maruhi var rotate <NAME> [--finalize]` (upstream rotation through a connector — PF6). */
+const varRotateConfig = {
+  ...commonFlags(),
+  finalize: singleFlag(
+    "finalize",
+    "Invalidate the credential the previous version held (after the new value is deployed) instead of rotating",
+  ),
+  previous: Flag.Int("previous").pipe(
+    Flag.withDescription(
+      "With --finalize: the version that held the credential to invalidate (default: the one before the current version)",
+    ),
+    Flag.atMost(1),
+    Flag.map((values) => values[0]),
+  ),
+  yes: singleFlag(
+    "yes",
+    "Skip the confirmation of a step that invalidates a credential (the only non-interactive path)",
+  ),
+  "rotate-config": singleValued(
+    "rotate-config",
+    `Path to the rotation config naming the connector and admin credential of each variable (default: ${DEFAULT_ROTATE_CONFIG_PATH} in the working directory)`,
+  ),
+  config: singleValued(
+    "config",
+    `Path to the sync config whose "onPush" targets are synced after the rotation (default: ${DEFAULT_SYNC_CONFIG_PATH} in the working directory, when it exists and names this project)`,
+  ),
+  "no-sync": singleFlag(
+    "no-sync",
+    "Skip the sync after the rotation (the default sync config is not read)",
+  ),
+  name: Argument.String("name").pipe(
+    Argument.withDescription(
+      "Variable name to rotate (the rule's variable, or the access key id an AWS rule pairs with it)",
+    ),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
 /**
  * The declarations of `maruhi sync plan` / `apply` (SY2 stage 1). The
  * environment is decided not by a flag but by the repository config (the
@@ -1472,7 +1530,12 @@ const GROUP_CONFIGS: Readonly<
     "verify-snapshot": schemaVerifySnapshotConfig,
     lint: schemaLintConfig,
   },
-  var: { rm: varRmConfig, history: varHistoryConfig, rollback: varRollbackConfig },
+  var: {
+    rm: varRmConfig,
+    history: varHistoryConfig,
+    rollback: varRollbackConfig,
+    rotate: varRotateConfig,
+  },
   sync: { plan: syncPlanConfig, apply: syncApplyConfig, init: syncInitConfig },
   proxy: { run: proxyRunConfig, accept: proxyAcceptConfig },
 };
@@ -2383,9 +2446,8 @@ function serverRevokeCommand(
     }
     // The needs-rotation-flag count and route (the revoke variant of AUDIT_SPEC §4.1)
     if (summary.serverKeyFingerprintHex !== null) {
-      yield* reportRotationFlagCount({
-        client: context.client,
-        projectId: context.projectId,
+      yield* reportRotationChecklist({
+        context,
         target: { kind: "server", fingerprintHex: summary.serverKeyFingerprintHex },
       });
     }
@@ -2773,9 +2835,8 @@ function memberRemoveCommand(
         // The needs-rotation-flag count and route (AUDIT_SPEC §4.1. A
         // rotation only distributes a new DEK — an already-read value
         // itself cannot be un-read)
-        yield* reportRotationFlagCount({
-          client: context.client,
-          projectId: context.projectId,
+        yield* reportRotationChecklist({
+          context,
           target: { kind: "member", userId: summary.targetUserId },
         });
         return exitCode;
@@ -2839,11 +2900,20 @@ function memberChangeRoleCommand(
             ? `Appended change_role to the chain (target=${displayText(summary.targetUserId)}, role=${summary.newRole}, scope=${describeScope(summary.newScope)})`
             : "The target already has the specified role and scope — nothing was appended (resuming any pending backfill / rotation)",
         );
-        return yield* reportRoleChangeFulfilment(
+        const exitCode = yield* reportRoleChangeFulfilment(
           io,
           summary,
           "`maruhi member change-role` with the same flags",
         );
+        if (summary.sweep !== null) {
+          // A demotion / narrowing raised flags of the change_role trigger
+          // (AUDIT_SPEC §4.1) — the leaver checklist for the narrowed part
+          yield* reportRotationChecklist({
+            context,
+            target: { kind: "member", userId: summary.targetUserId, trigger: "change_role" },
+          });
+        }
+        return exitCode;
       }),
     );
   });
@@ -3596,6 +3666,64 @@ function brokeredRun(input: {
       listen: input.listen,
       advertise: input.advertise,
     });
+  });
+}
+
+/** `--previous` rides only with `--finalize` and names a version (checked before any network). */
+function checkPreviousFlag(values: {
+  readonly previous: number | undefined;
+  readonly finalize: boolean;
+}): Effect.Effect<void, CliError> {
+  if (values.previous === undefined) {
+    return Effect.void;
+  }
+  if (!values.finalize) {
+    return Effect.fail(usageError("--previous applies to --finalize only"));
+  }
+  return values.previous < 1
+    ? Effect.fail(usageError("--previous must be a positive version number"))
+    : Effect.void;
+}
+
+/** `maruhi var rotate <name> --finalize`: invalidates the previous credential and reports. */
+function runVarFinalize(
+  input: Parameters<typeof varFinalizeOp>[0],
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const result = yield* varFinalizeOp(input);
+    yield* logRotationWarnings(result.warnings);
+    for (const line of describeFinalization(result, input.context.environmentId)) {
+      yield* io.log(line);
+    }
+  });
+}
+
+/** `maruhi var rotate <name>`: the rotation, its report, the checkpoint proposal, and the onPush sync. */
+function runVarRotate(
+  input: Parameters<typeof varRotateOp>[0],
+  syncSetup: PushSyncSetup | null,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const { context } = input;
+    const syncDecision =
+      syncSetup === null
+        ? null
+        : yield* decidePushSync(syncSetup, {
+            projectId: context.projectId,
+            environmentId: context.environmentId,
+            name: input.name,
+          });
+    const result = yield* varRotateOp(input);
+    yield* logRotationWarnings(result.warnings);
+    for (const line of describeRotation(result, context.environmentId)) {
+      yield* io.log(line);
+    }
+    yield* proposeCheckpointRefresh(context, { includeAnchor: true });
+    if (syncSetup !== null && syncDecision !== null) {
+      yield* syncAfterPush({ context, setup: syncSetup, decision: syncDecision });
+    }
   });
 }
 
@@ -4850,11 +4978,48 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const varRotate = Command.make("rotate", varRotateConfig, (values) =>
+    Effect.gen(function* () {
+      yield* checkPreviousFlag(values);
+      // Both configs are read before any network: a broken or absent rotation
+      // config is a usage problem, not something to find after a pull
+      const rotateConfigPath = values["rotate-config"] ?? DEFAULT_ROTATE_CONFIG_PATH;
+      const rotateConfig = yield* loadRotateConfig(rotateConfigPath);
+      const syncSetup = values.finalize
+        ? null
+        : yield* loadPushSyncConfig({ config: values.config, noSync: values["no-sync"] });
+      const context = yield* openEnvironment(values);
+      if (!rotateConfigNamesProject(rotateConfig, context.projectId)) {
+        return yield* Effect.fail(
+          usageError(
+            `The rotation config ${displayText(rotateConfigPath)} belongs to a different project (its \`project\` does not match)`,
+          ),
+        );
+      }
+      const shared = {
+        context,
+        config: rotateConfig,
+        configPath: rotateConfigPath,
+        name: values.name,
+        yes: values.yes,
+        deps: rotateDeps(yield* RotateSeams, yield* SqlRunner),
+      };
+      if (values.finalize) {
+        return yield* runVarFinalize({ ...shared, previousVersion: values.previous ?? null });
+      }
+      yield* runVarRotate(shared, syncSetup);
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Create a new credential at the issuer through the rule's connector and push it as a new version; the previous credential stays valid until --finalize. Never displays a value",
+    ),
+  );
+
   const varGroup = Command.make("var").pipe(
     Command.withDescription(
-      "Manage variables (rm, history, rollback). push / pull / run operate on values directly",
+      "Manage variables (rm, history, rollback, rotate). push / pull / run operate on values directly",
     ),
-    Command.withSubcommands([varRm, varHistory, varRollback]),
+    Command.withSubcommands([varRm, varHistory, varRollback, varRotate]),
   );
 
   const envCreate = Command.make("create", envCreateConfig, (values) =>

@@ -48,6 +48,7 @@ import {
   makeFileProxyAcceptStore,
   ProxyAcceptStore,
 } from "./proxy-accept.ts";
+import { SqlRunner, type SqlRunnerShape } from "./rotate-connector.ts";
 import {
   buildChildEnvironment,
   type ExecInput,
@@ -163,6 +164,40 @@ function execStartFailure(input: ExecInput, error: unknown): string {
   }
   const code = (error as NodeJS.ErrnoException).code;
   return `Cannot start ${input.command[0] ?? ""}${code === undefined ? "" : ` (${code})`}: is it installed and on PATH, or named by a \`command\` in the sync config? maruhi never downloads a vendor CLI: install it and sign in with it, then retry`;
+}
+
+/**
+ * The database client of the `postgres` / `mysql` rotation connectors:
+ * Bun's built-in SQL client (no dependency; the URL's scheme selects the
+ * driver). One short-lived connection per call, closed whatever happened.
+ * Statements are built by the connector from validated identifiers and
+ * generated passwords (rotate-connector.ts); nothing here interpolates.
+ */
+async function withSqlConnection(
+  url: string,
+  body: (sql: Bun.SQL) => Promise<void>,
+): Promise<void> {
+  const sql = new Bun.SQL(url, { max: 1 });
+  try {
+    await body(sql);
+  } finally {
+    await sql.close();
+  }
+}
+
+function makeBunSqlRunner(): SqlRunnerShape {
+  return {
+    execute: (url, statements) =>
+      withSqlConnection(url, async (sql) => {
+        for (const statement of statements) {
+          await sql.unsafe(statement);
+        }
+      }),
+    probe: (url) =>
+      withSqlConnection(url, async (sql) => {
+        await sql.unsafe("SELECT 1");
+      }),
+  };
 }
 
 function makeBunProcessRunner(): ProcessRunnerShape {
@@ -753,6 +788,7 @@ export function liveLayer(): Layer.Layer<CliServices> {
     ),
     Layer.succeed(CliIo, makeLiveIo()),
     Layer.succeed(ProcessRunner, makeBunProcessRunner()),
+    Layer.succeed(SqlRunner, makeBunSqlRunner()),
     FetchHttpClient.layer,
   );
 }

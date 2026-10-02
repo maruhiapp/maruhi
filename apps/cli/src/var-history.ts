@@ -214,10 +214,14 @@ export function varHistoryJson(result: VarHistoryResult, environmentId: string):
 // rollback
 // ---------------------------------------------------------------------------
 
-export interface VarRollbackInput extends VarHistoryBase {
+/** The input of a verified-ancestor lookup (the environment prologue's pieces plus the version asked for). */
+export interface AncestorInput extends VarHistoryBase {
   readonly recipient: DekRecipient;
-  /** The version whose value is restored. */
+  /** The version whose value is wanted (an ancestor of the verified latest). */
   readonly toVersion: number;
+}
+
+export interface VarRollbackInput extends AncestorInput {
   /** true = skip the confirmation (the only non-interactive path). */
   readonly force: boolean;
   readonly writerUserId: string;
@@ -492,10 +496,7 @@ function checkToVersion(name: string, toVersion: number, latestVersion: number) 
 }
 
 /** Resolve → verified pull of the latest → the value range verified as its ancestry. */
-function planRollback(
-  input: VarRollbackInput,
-  name: string,
-): Effect.Effect<RollbackPlan, CliError> {
+function planRollback(input: AncestorInput, name: string): Effect.Effect<RollbackPlan, CliError> {
   return Effect.gen(function* () {
     const resolved = yield* resolveLiveVariable(input, name);
     if (resolved.target.status === "declared") {
@@ -548,10 +549,17 @@ function planRollback(
  * (the current value already equal — it would only burn a version). Returns
  * the restored plaintext, still wrapped.
  */
-function decryptTarget(
-  input: VarRollbackInput,
+/** Both plaintexts of a plan (the ancestor and the latest), each decrypted with its own epoch's DEK. */
+function decryptPair(
+  input: AncestorInput,
   plan: RollbackPlan,
-): Effect.Effect<Redacted.Redacted<Uint8Array>, CliError> {
+): Effect.Effect<
+  {
+    readonly target: Redacted.Redacted<Uint8Array>;
+    readonly latest: Redacted.Redacted<Uint8Array>;
+  },
+  CliError
+> {
   return Effect.gen(function* () {
     const keys = yield* environmentKeysFor({
       client: input.client,
@@ -568,16 +576,86 @@ function decryptTarget(
         deksByEpoch: keys.deksByEpoch,
         chainEpoch: keys.currentEpoch,
       });
-    const restored = yield* decrypt(plan.target);
-    const current = yield* decrypt(plan.latest);
-    if (sameRedactedBytes(restored, current)) {
+    return { target: yield* decrypt(plan.target), latest: yield* decrypt(plan.latest) };
+  });
+}
+
+/** A verified ancestor version and the verified latest, decrypted (`maruhi var rotate --finalize` reads the previous credential this way). */
+export interface VerifiedAncestorValues {
+  readonly name: string;
+  readonly variableId: string;
+  readonly latestVersion: number;
+  readonly ancestorVersion: number;
+  readonly ancestor: Redacted.Redacted<Uint8Array>;
+  readonly latest: Redacted.Redacted<Uint8Array>;
+  readonly warnings: readonly string[];
+}
+
+/**
+ * Resolves the name, verifies the latest and the version range down to
+ * `toVersion` as its ancestry (the rollback's evidence rule — V4 step 3),
+ * and decrypts both. `toVersion` null = the version right before the latest
+ * (refused when the variable has only one version).
+ */
+export function verifiedAncestorValues(
+  input: Omit<AncestorInput, "toVersion"> & { readonly toVersion: number | null },
+): Effect.Effect<VerifiedAncestorValues, CliError> {
+  return Effect.gen(function* () {
+    const name = input.name.normalize("NFC");
+    let toVersion = input.toVersion;
+    if (toVersion === null) {
+      // The default needs the latest version first: one metadata-only
+      // history read (no value is fetched by it — §12-7)
+      const resolved = yield* resolveLiveVariable(input, name);
+      if (resolved.target.status === "declared") {
+        return yield* Effect.fail(
+          cliError(`Variable ${displayText(name)} is declared but has no value yet`),
+        );
+      }
+      const history = yield* fetchHistory(
+        input.client,
+        resolved.verified,
+        input.environmentId,
+        resolved.target.variableId,
+      );
+      const latest = history.at(-1)?.version ?? 0;
+      if (latest < 2) {
+        return yield* Effect.fail(
+          cliError(
+            `Variable ${displayText(name)} has no previous version (the current version is ${latest}) — nothing to finalize`,
+          ),
+        );
+      }
+      toVersion = latest - 1;
+    }
+    const plan = yield* planRollback({ ...input, toVersion }, name);
+    const pair = yield* decryptPair({ ...input, toVersion }, plan);
+    return {
+      name,
+      variableId: plan.variableId,
+      latestVersion: plan.latest.version,
+      ancestorVersion: toVersion,
+      ancestor: pair.target,
+      latest: pair.latest,
+      warnings: plan.warnings,
+    };
+  });
+}
+
+function decryptTarget(
+  input: VarRollbackInput,
+  plan: RollbackPlan,
+): Effect.Effect<Redacted.Redacted<Uint8Array>, CliError> {
+  return Effect.gen(function* () {
+    const pair = yield* decryptPair(input, plan);
+    if (sameRedactedBytes(pair.target, pair.latest)) {
       return yield* Effect.fail(
         cliError(
           `The current value of ${displayText(plan.name)} (version ${plan.latest.version}) already equals the value of version ${input.toVersion} — nothing to roll back`,
         ),
       );
     }
-    return restored;
+    return pair.target;
   });
 }
 

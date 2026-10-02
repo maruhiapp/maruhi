@@ -34,11 +34,14 @@ import {
   headOf,
   makeTestUser,
   manifestFor,
+  manifestHashOf,
   removeMemberOp,
   rotateEpochOp,
+  statementFor,
   type TestUser,
   type WireCheckpointSnapshot,
   type WireDistributedManifest,
+  type WireDistributedVariableStatement,
   type WireRecipientDek,
   wrapDekFor,
 } from "./support/crypto.ts";
@@ -85,6 +88,17 @@ interface RotateBody {
   readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
 }
 
+/** The wire form of one rotation flag (AUDIT_SPEC §3.3). */
+interface WireFlag {
+  readonly environmentId: string;
+  readonly variableId: string;
+  readonly basis: "read" | "readable";
+  readonly targetUserId: string;
+  readonly recommendedAtMs: number;
+  readonly triggerChainSeq: number;
+  readonly trigger: "remove_member" | "change_role";
+}
+
 interface RemoveServerState {
   readonly handlers: readonly MockHandler[];
   readonly appendedEntries: ChainEntry[];
@@ -112,6 +126,12 @@ async function makeRemoveServer(input: {
   readonly rotator?: TestUser;
   /** Environments listed with a status = "deleted" meta statement (verified deletion). */
   readonly deletedEnvironments?: readonly string[];
+  /** Rotation flags the server reports after the removal (PF6 R3 — the checklist's input). */
+  readonly flags?: readonly WireFlag[];
+  /** Verified variable statements per environment (the checklist resolves names from them). */
+  readonly variableStatements?: Readonly<
+    Record<string, readonly WireDistributedVariableStatement[]>
+  >;
 }): Promise<RemoveServerState> {
   const rotator = input.rotator ?? owner;
   const projectId = input.built.projectId;
@@ -143,7 +163,67 @@ async function makeRemoveServer(input: {
     ),
   );
 
+  /**
+   * The metadata-only pull (PF6 R3 — the checklist resolves names from it):
+   * the listed statements under a manifest continuing the stored one (the
+   * rotate composite's accepted manifest covers no variables — this mock's
+   * pull carries none; the metadata pull's manifest must bind the statements
+   * it lists — §4.3).
+   */
+  const metadataResponse = async (environmentId: string): Promise<MockResponse> => {
+    const environment = environments[environmentId];
+    const statement = listedStatements.find((item) => item.environmentId === environmentId);
+    if (environment === undefined || statement === undefined) {
+      return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } };
+    }
+    const variables = input.variableStatements?.[environmentId] ?? [];
+    const stored = manifests.get(environmentId);
+    const epoch = stored?.epoch ?? environment.currentEpoch;
+    const continuation =
+      stored === undefined
+        ? { manifestVersion: 1 }
+        : {
+            manifestVersion: stored.manifestVersion + 1,
+            prevManifestSigHashHex: await manifestHashOf(projectId, stored),
+          };
+    const manifest = await manifestFor({
+      projectId,
+      environmentId,
+      epoch,
+      issuer: owner,
+      head: { seq: entries.length, hashHex: hashes[hashes.length - 1] ?? "" },
+      envStatement: statement,
+      statements: variables,
+      ...continuation,
+    });
+    return {
+      status: 200,
+      json: {
+        environmentId,
+        currentEpoch: epoch,
+        statement,
+        variables,
+        deletedVariables: [],
+        manifest,
+        schemaPolicy: "enabled" as const,
+      },
+    };
+  };
+
   const handlers: MockHandler[] = [
+    onRequest("GET", `/projects/${projectId}/rotation/flags`, () => ({
+      status: 200,
+      json: { flags: input.flags ?? [] },
+    })),
+    async (request) => {
+      const match = new RegExp(`^/projects/${projectId}/environments/([^/]+)/pull/metadata$`).exec(
+        request.path,
+      );
+      if (match === null || request.method !== "GET") {
+        return null;
+      }
+      return metadataResponse(match[1] ?? "");
+    },
     onRequest("GET", `/projects/${projectId}/chain`, () => ({
       status: 200,
       json: {
@@ -380,6 +460,67 @@ describe("maruhi member remove", () => {
     expect(logs).toContain(
       "Done: the member removal and the rotation of every environment in the target's scope completed",
     );
+  });
+
+  it("prints the rotation checklist for the removed member's flags: confirmed fetches first, each with its next action (PF6 R3)", async () => {
+    const built = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: addMemberOp(target, "member") },
+    ]);
+    const head = headOf(built, 2);
+    const statements = await Promise.all(
+      [
+        ["v-db", "DATABASE_URL"],
+        ["v-stripe", "STRIPE_SECRET_KEY"],
+      ].map(([variableId, name]) =>
+        statementFor({
+          projectId: built.projectId,
+          environmentId: ENV_ID,
+          variableId: variableId ?? "",
+          name: name ?? "",
+          author: owner,
+          head,
+        }),
+      ),
+    );
+    const flag = (variableId: string, basis: "read" | "readable"): WireFlag => ({
+      environmentId: ENV_ID,
+      variableId,
+      basis,
+      targetUserId: target.userId,
+      recommendedAtMs: 1_700_000_000_000,
+      triggerChainSeq: 4,
+      trigger: "remove_member",
+    });
+    const state = await makeRemoveServer({
+      built,
+      environments: {
+        [ENV_ID]: { currentEpoch: 1, deks: [await ownerWrap(built.projectId, ENV_ID, 1, dek1)] },
+      },
+      // Another member's flag is not part of this checklist
+      flags: [
+        flag("v-db", "readable"),
+        flag("v-stripe", "read"),
+        { ...flag("v-db", "read"), targetUserId: admin2.userId },
+      ],
+      variableStatements: { [ENV_ID]: statements },
+    });
+    const env = await startEnv(state, built.projectId, owner);
+
+    expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(0);
+
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("Rotation checklist: 2 variables the party that lost access could read");
+    const read = logs.indexOf("[read] env-app-1 STRIPE_SECRET_KEY:");
+    const readable = logs.indexOf("[readable] env-app-1 DATABASE_URL:");
+    expect(read).toBeGreaterThan(-1);
+    expect(readable).toBeGreaterThan(read);
+    // No rotation config in the working directory: the by-hand route with the runbooks
+    expect(logs).toContain(
+      "rotate at the issuer, then `maruhi push STRIPE_SECRET_KEY --env env-app-1` (runbooks: https://maruhi.app/docs/rotation)",
+    );
+    expect(logs).toContain("`maruhi rotation list` shows what remains");
   });
 
   it("on detecting a concurrent removal during the ChainHeadConflict (409) resync, doesn't append and proceeds to the sweep (§12-4)", async () => {

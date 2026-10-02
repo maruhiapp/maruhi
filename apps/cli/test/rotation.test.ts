@@ -266,8 +266,14 @@ describe("maruhi rotation list", () => {
     expect(logs).toContain("read (confirmed fetch)");
     expect(logs).toContain("readable (fetch was possible)");
     expect(logs).toContain(`member:${target.userId}`);
-    // The resolution paths (resolve via push / dismiss for the deleted)
-    expect(logs).toContain("maruhi rotation dismiss");
+    // The resolution paths (resolve via push / dismiss for the deleted) —
+    // one "next:" action per row (PF6 R3; no rotation config in cwd = the by-hand route)
+    expect(logs).toContain(
+      "    next: rotate at the issuer, then `maruhi push ALPHA --env env-app-1` (runbooks: https://maruhi.app/docs/rotation)",
+    );
+    expect(logs).toContain(
+      "    next: deleted — rotate at the issuer, then `maruhi rotation dismiss vdel --env env-app-1` (a deleted variable cannot be pushed)",
+    );
     // The chain is converged, so no unconverged warning appears
     expect(env.errors.join("\n")).not.toContain("unconverged rotation mandate");
   });

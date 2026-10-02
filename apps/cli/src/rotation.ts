@@ -30,6 +30,13 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import { logNote } from "./notice.ts";
+import {
+  configNamesProject,
+  DEFAULT_ROTATE_CONFIG_PATH,
+  loadRotateConfigIfPresent,
+  type RotateConfig,
+  ruleFor,
+} from "./rotate-config.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 
 /** One flag of the derived view (the received form of api-schema's RotationFlagSchema). */
@@ -65,21 +72,27 @@ function fetchRotationFlags(
 /** The variable-name resolution result (only verified-statement-derived — unresolvable = null). */
 export type NameIndex = ReadonlyMap<string, string>;
 
+/** One variable's verified state: its display name, and whether its live statement is a tombstone. */
+export interface VariableState {
+  readonly name: string;
+  readonly deleted: boolean;
+}
+
+export type StateIndex = ReadonlyMap<string, VariableState>;
+
 /**
- * For each environment appearing in the list, fetches the
- * verified metadata (active + tombstone) and builds a variableId
- * → display name index. An environment whose fetch/verification
- * fails (a verified deletion etc.) has no index = degrades to
- * identifier display (with a warning — the display is SHOULD and
- * does not stop the listing itself). Shared with `maruhi audit`'s
- * display-name resolution (same TCB discipline — AUDIT_SPEC §7).
+ * For each environment appearing in the list, fetches the verified
+ * metadata (active + tombstone) and builds a variableId → state index. An
+ * environment whose fetch/verification fails (a verified deletion etc.)
+ * has no index = degrades to identifier display (with a warning — the
+ * display is SHOULD and does not stop the listing itself).
  */
-export function resolveNames(
+function resolveVariableStates(
   context: ProjectContextBase,
   environmentIds: readonly string[],
-): Effect.Effect<ReadonlyMap<string, NameIndex>, never, CliServices> {
+): Effect.Effect<ReadonlyMap<string, StateIndex>, never, CliServices> {
   return Effect.gen(function* () {
-    const byEnvironment = new Map<string, NameIndex>();
+    const byEnvironment = new Map<string, StateIndex>();
     for (const environmentId of environmentIds) {
       const attempted = yield* Effect.gen(function* () {
         const floorHandle = yield* floorHandleFor(context, environmentId);
@@ -102,17 +115,96 @@ export function resolveNames(
         );
         continue;
       }
-      const names = new Map<string, string>();
+      const states = new Map<string, VariableState>();
       for (const statement of attempted.metadata.variables) {
-        names.set(statement.variableId, statement.name);
+        states.set(statement.variableId, { name: statement.name, deleted: false });
       }
       for (const tombstone of attempted.metadata.tombstones) {
-        names.set(tombstone.variableId, tombstone.name);
+        states.set(tombstone.variableId, { name: tombstone.name, deleted: true });
       }
-      byEnvironment.set(environmentId, names);
+      byEnvironment.set(environmentId, states);
     }
     return byEnvironment;
   });
+}
+
+/**
+ * The variableId → display name index per environment (the name-only view
+ * of {@link resolveVariableStates}). Shared with `maruhi audit`'s
+ * display-name resolution (same TCB discipline — AUDIT_SPEC §7).
+ */
+export function resolveNames(
+  context: ProjectContextBase,
+  environmentIds: readonly string[],
+): Effect.Effect<ReadonlyMap<string, NameIndex>, never, CliServices> {
+  return Effect.map(resolveVariableStates(context, environmentIds), (byEnvironment) => {
+    const names = new Map<string, NameIndex>();
+    for (const [environmentId, states] of byEnvironment) {
+      names.set(
+        environmentId,
+        new Map([...states].map(([variableId, state]) => [variableId, state.name])),
+      );
+    }
+    return names;
+  });
+}
+
+/**
+ * The rotation config the checklist consults (PF6 R3): the default path in
+ * the working directory, when it exists and names this project. A broken
+ * file is a note, never a failure (the checklist is guidance).
+ */
+function checklistConfig(projectId: string): Effect.Effect<RotateConfig | null, never, CliIo> {
+  return loadRotateConfigIfPresent(DEFAULT_ROTATE_CONFIG_PATH).pipe(
+    Effect.flatMap((config) =>
+      Effect.gen(function* () {
+        if (config === null) {
+          return null;
+        }
+        if (!configNamesProject(config, projectId)) {
+          yield* logNote(
+            `the rotation config ${displayText(DEFAULT_ROTATE_CONFIG_PATH)} belongs to a different project, so it was not consulted`,
+          );
+          return null;
+        }
+        return config;
+      }),
+    ),
+    Effect.catch((error) =>
+      Effect.gen(function* () {
+        yield* logNote(`${error.message} — the checklist names no connector`);
+        return null;
+      }),
+    ),
+  );
+}
+
+/**
+ * The next action for one flagged pair (PF6 R3 — the concrete form of
+ * ADR-0014 decision 3 "human error is guarded by mechanisms"): the exact
+ * command when a connector covers the variable, the by-hand route
+ * otherwise, and the dismissal for a deleted variable (it cannot be
+ * pushed).
+ */
+export function rotationAction(input: {
+  readonly environmentId: string;
+  readonly variableId: string;
+  readonly state: VariableState | undefined;
+  readonly config: RotateConfig | null;
+}): string {
+  const env = displayText(input.environmentId);
+  if (input.state === undefined) {
+    return `rotate at the issuer; the variable could not be resolved here — see \`maruhi rotation list\``;
+  }
+  const name = displayText(input.state.name);
+  if (input.state.deleted) {
+    return `deleted — rotate at the issuer, then \`maruhi rotation dismiss ${displayText(input.variableId)} --env ${env}\` (a deleted variable cannot be pushed)`;
+  }
+  const rule = input.config === null ? null : ruleFor(input.config, input.state.name);
+  if (rule !== null) {
+    return `\`maruhi var rotate ${displayText(rule.primary)} --env ${env}\` (${rule.rule.connector} connector in ${DEFAULT_ROTATE_CONFIG_PATH})`;
+  }
+  return `rotate at the issuer, then \`maruhi push ${name} --env ${env}\` (runbooks: https://maruhi.app/docs/rotation)`;
 }
 
 function describeTarget(flag: RotationFlagView): string {
@@ -150,13 +242,14 @@ export function rotationListOp(
       return 0;
     }
     const environmentIds = [...new Set(flags.map((flag) => flag.environmentId))].toSorted();
-    const names = yield* resolveNames(context, environmentIds);
+    const states = yield* resolveVariableStates(context, environmentIds);
+    const config = yield* checklistConfig(context.projectId);
     yield* io.log(
       `Rotation flags: ${countNoun(flags.length, "active flag")} (upstream credential rotation recommended — AUDIT_SPEC §4.1)`,
     );
     for (const environmentId of environmentIds) {
       yield* io.log(`Environment ${displayText(environmentId)}:`);
-      const index = names.get(environmentId);
+      const index = states.get(environmentId);
       // Display order is detection time → (for the same time
       // within one sweep) a stable sort by variableId. The audit
       // seq does not go on the wire (AUDIT_SPEC §7 — non-leakage
@@ -168,11 +261,11 @@ export function rotationListOp(
             a.recommendedAtMs - b.recommendedAtMs || a.variableId.localeCompare(b.variableId),
         );
       for (const flag of rows) {
-        const name = index?.get(flag.variableId);
+        const state = index?.get(flag.variableId);
         const label =
-          name === undefined
+          state === undefined
             ? displayText(flag.variableId)
-            : `${displayText(name)} (${displayText(flag.variableId)})`;
+            : `${displayText(state.name)} (${displayText(flag.variableId)})`;
         // A re-opened flag says why it came back (a rollback restored a
         // value from before the flag — AUDIT_SPEC §4.1-5)
         const reopened =
@@ -181,6 +274,9 @@ export function rotationListOp(
             : `\treopened by the rollback in version ${flag.reopenedByVersion}`;
         yield* io.log(
           `  ${label}\tbasis=${describeBasis(flag.basis)}\ttarget=${describeTarget(flag)}\ttrigger seq=${flag.triggerChainSeq}${reopened}`,
+        );
+        yield* io.log(
+          `    next: ${rotationAction({ environmentId, variableId: flag.variableId, state, config })}`,
         );
       }
     }
@@ -325,23 +421,43 @@ export function rotationDismissOp(input: {
   });
 }
 
+/** Who lost access (the subject the checklist is about). */
+export type ChecklistTarget =
+  | {
+      readonly kind: "member";
+      readonly userId: string;
+      /** Only flags of this trigger (a role change / device revocation leaves the member's other flags out). */
+      readonly trigger?: RotationFlagView["trigger"] | undefined;
+    }
+  | { readonly kind: "server"; readonly fingerprintHex: string };
+
+function targetsFlag(target: ChecklistTarget, flag: RotationFlagView): boolean {
+  if (target.kind === "server") {
+    return flag.targetServerKeyFingerprintHex === target.fingerprintHex;
+  }
+  return (
+    flag.targetUserId === target.userId &&
+    (target.trigger === undefined || flag.trigger === target.trigger)
+  );
+}
+
 /**
- * The flag-count report at remove / revoke completion (ruling
- * B2 — guidance). Counts the currently active flags addressed to
- * the target (the removed user_id / the revoked server-key FP)
- * and shows it. A fetch failure does not change the command's
- * outcome (a SHOULD display).
+ * The checklist at remove / revoke / narrowing completion (PF6 R3 — the
+ * leaver checklist; formerly the flag-count report of ruling B2). Lists
+ * the currently active flags addressed to the target (the removed user_id
+ * / the revoked server-key FP) with the next action per variable: the
+ * exact `maruhi var rotate` command when `maruhi.rotate.json` covers it,
+ * the by-hand route otherwise. Confirmed fetches come first. A fetch
+ * failure does not change the command's outcome (a SHOULD display).
  */
-export function reportRotationFlagCount(input: {
-  readonly client: MaruhiClient;
-  readonly projectId: string;
-  readonly target:
-    | { readonly kind: "member"; readonly userId: string }
-    | { readonly kind: "server"; readonly fingerprintHex: string };
-}): Effect.Effect<void, never, CliIo> {
+export function reportRotationChecklist(input: {
+  readonly context: ProjectContextBase;
+  readonly target: ChecklistTarget;
+}): Effect.Effect<void, never, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const flags = yield* fetchRotationFlags(input.client, input.projectId).pipe(
+    const { context } = input;
+    const flags = yield* fetchRotationFlags(context.client, context.projectId).pipe(
       Effect.catch((error) =>
         Effect.gen(function* () {
           yield* logNote(
@@ -354,16 +470,41 @@ export function reportRotationFlagCount(input: {
     if (flags === null) {
       return;
     }
-    const count = flags.filter((flag) =>
-      input.target.kind === "member"
-        ? flag.targetUserId === input.target.userId
-        : flag.targetServerKeyFingerprintHex === input.target.fingerprintHex,
-    ).length;
-    if (count === 0) {
+    const targeted = flags.filter((flag) => targetsFlag(input.target, flag));
+    if (targeted.length === 0) {
       return;
     }
+    const environmentIds = [...new Set(targeted.map((flag) => flag.environmentId))].toSorted();
+    const states = yield* resolveVariableStates(context, environmentIds);
+    const config = yield* checklistConfig(context.projectId);
+    const who =
+      input.target.kind === "server" ? "the revoked server key" : "the party that lost access";
     yield* io.log(
-      `Rotation flags: ${countNoun(count, "active flag")} targeting the removed party (encryption cannot revoke already-read values — rotating the upstream credentials is recommended. See \`maruhi rotation list\`)`,
+      `Rotation checklist: ${countNoun(targeted.length, "variable")} ${who} could read (encryption cannot revoke already-read values — rotate each upstream credential, AUDIT_SPEC §4.1):`,
+    );
+    for (const environmentId of environmentIds) {
+      const index = states.get(environmentId);
+      // Confirmed fetches first (the certain exposure), then by name
+      const rows = targeted
+        .filter((flag) => flag.environmentId === environmentId)
+        .toSorted((a, b) => {
+          if (a.basis !== b.basis) {
+            return a.basis === "read" ? -1 : 1;
+          }
+          const nameA = index?.get(a.variableId)?.name ?? a.variableId;
+          const nameB = index?.get(b.variableId)?.name ?? b.variableId;
+          return nameA.localeCompare(nameB) || a.variableId.localeCompare(b.variableId);
+        });
+      for (const flag of rows) {
+        const state = index?.get(flag.variableId);
+        const label = state === undefined ? displayText(flag.variableId) : displayText(state.name);
+        yield* io.log(
+          `  [${flag.basis === "read" ? "read" : "readable"}] ${displayText(environmentId)} ${label}: ${rotationAction({ environmentId, variableId: flag.variableId, state, config })}`,
+        );
+      }
+    }
+    yield* io.log(
+      "A fresh value pushed after the environment's rotation resolves a flag; `maruhi rotation list` shows what remains",
     );
   });
 }
