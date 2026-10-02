@@ -734,6 +734,43 @@ A second pass of the bots on the merge commit added three findings:
   transcript, and whoever holds it can use the proxy. The credential's
   bytes join the redaction fragments. Pinned.
 
+A third pass (on the R-1 … R-7 commit) added two:
+
+- **R-11 (Bugbot) — an IPv6 `--listen` built an invalid proxy URL** (the
+  authority was `host:port` without brackets, and an advertised address
+  with a colon was taken as "already has a port"). `advertise` is parsed
+  like `listen` (`host[:port]`, port 0 = the bound port) and both are
+  formatted by one `formatAuthority` that brackets an IPv6 literal (RFC
+  3986). Pinned through the CLI (`--advertise [fd00::2]:3128` → the URL's
+  host is `[fd00::2]`).
+- **R-12 (Cursor Security Reviewer, MEDIUM) — in sandbox mode the proxy
+  could reach host-local services.** With `--listen 0.0.0.0` (the Docker
+  recipe) and `unmatched: allow`, a destination no rule names is tunnelled
+  or relayed from the host's network namespace, so a sandboxed child could
+  ask for `http://169.254.169.254/` (the cloud metadata service) or
+  `127.0.0.1:<a host service>` — crossing the isolation the mode is for.
+  Options: (a) `unmatched: block` by default in sandbox mode (an egress
+  allow-list — the strongest, but it makes every unrelated host a rule, and
+  the mode's premise is "the agent's traffic is its own except the brokered
+  hosts"); (b) a deny-list of host-local destinations (loopback, link-local,
+  unspecified — by literal, by name, and by what the name resolves to), off
+  on the loopback binding (the child is on the host already and gains
+  nothing from the proxy), bypassed by a rule naming the host (the member's
+  explicit decision — `http://localhost:8787` for a dev server); (c) (b)
+  plus private ranges (10/8, 172.16/12, 192.168/16, fc00::/7 — rejected: a
+  bridge-networked sandbox reaches them on its own, and an internal API on
+  one is an ordinary destination). **(b) adopted** (`proxy-guard.ts`): the
+  name is resolved *before* the connection and the result checked, so a
+  name pointing at the loopback is caught; a name that does not resolve is
+  refused (fail closed — the connection would fail anyway). (a) stays
+  available to the member as `unmatched: block`, and the docs say so. The
+  residual: a DNS answer that changes between the check and the connect (a
+  rebinding race in milliseconds) — connecting to the checked address would
+  close it and is the next step if the mode sees use. Pinned: literal,
+  name, resolved metadata address, unresolvable name, plain `localhost`
+  refused; a public name tunnelled; a rule-named loopback host still
+  brokered; the loopback binding unguarded.
+
 Also in this round: `origin/main` merged (effect 4.0.0 stable — the
 `effect/unstable/*` import paths moved to `effect/*`; two conflicts, ROADMAP
 and ci-run.ts).

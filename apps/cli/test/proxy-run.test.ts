@@ -570,6 +570,21 @@ describe("maruhi proxy run", () => {
     expect(env.errors.join("\n")).toMatch(
       /proxy listening on 127\.0\.0\.1:\d+, told to the command as host\.docker\.internal:\d+/,
     );
+    // An IPv6 advertised address is bracketed in the URL the command receives (§21 R-11)
+    env.setRunnerHandler(async (call) => {
+      const url = new URL(call.extraEnv["HTTPS_PROXY"] ?? "");
+      expect(url.hostname).toBe("[fd00::2]");
+      expect(url.port).toBe("3128");
+      return 0;
+    });
+    expect(
+      await runCli(
+        ["proxy", "run", "--config", configPath, "--advertise", "[fd00::2]:3128", "--", "true"],
+        env.layer,
+      ),
+    ).toBe(0);
+    expect(env.errors.join("\n")).toContain("told to the command as [fd00::2]:3128");
+    env.setRunnerHandler(async () => 0);
     expect(
       await runCli(
         ["proxy", "run", "--config", configPath, "--listen", "not a host/x", "--", "true"],

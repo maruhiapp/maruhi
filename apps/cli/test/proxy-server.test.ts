@@ -15,6 +15,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { makeEphemeralCa } from "../src/proxy-cert.ts";
 import { parseHostPattern } from "../src/proxy-config.ts";
+import type { Lookup } from "../src/proxy-guard.ts";
 import {
   type BrokeredCredential,
   credentialsFor,
@@ -108,6 +109,9 @@ async function proxyWith(input: {
   readonly unmatched?: "allow" | "block";
   readonly decisions?: ProxyDecision[];
   readonly credential?: { readonly user: string; readonly password: string };
+  readonly listen?: { readonly host: string; readonly port: number };
+  readonly advertise?: { readonly host: string; readonly port: number };
+  readonly lookup?: Lookup;
 }): Promise<ProxyHandle> {
   const hopDir = mkdtempSync(join(tmpdir(), "mh-hop-"));
   hopDirs.push(hopDir);
@@ -117,6 +121,8 @@ async function proxyWith(input: {
     ca: runCa,
     hopDir,
     ...(input.credential === undefined ? {} : { credential: input.credential }),
+    ...(input.listen === undefined ? {} : { listen: input.listen }),
+    ...(input.advertise === undefined ? {} : { advertise: input.advertise }),
     onDecision: (decision) => input.decisions?.push(decision),
     upstream: {
       // The rule's hosts resolve to the loopback origins
@@ -125,6 +131,7 @@ async function proxyWith(input: {
           ? { host: "127.0.0.1", port: secureOrigin.port }
           : { host: "127.0.0.1", port: plainOrigin.port },
       ca: [originCa.certPem],
+      ...(input.lookup === undefined ? {} : { lookup: input.lookup }),
     },
   });
   open.push(handle);
@@ -537,6 +544,88 @@ describe("the forward proxy", () => {
         status: 200,
       },
     ]);
+  });
+
+  it("in sandbox mode refuses host-local destinations no rule names — by literal, by name, and by resolution — and keeps the ones a rule names (§21 R-12)", async () => {
+    const decisions: ProxyDecision[] = [];
+    const lookup: Lookup = (host) =>
+      host === "metadata.example.test"
+        ? Promise.resolve([{ address: "169.254.169.254", family: 4 }])
+        : host === "public.example.test"
+          ? Promise.resolve([{ address: "203.0.113.7", family: 4 }])
+          : Promise.reject(new Error("ENOTFOUND"));
+    const proxy = await proxyWith({
+      credentials: [github, plainKey],
+      decisions,
+      listen: { host: "0.0.0.0", port: 0 },
+      lookup,
+    });
+    // CONNECT to the loopback by literal
+    const loopback = await openTunnel(proxy.port, `127.0.0.1:${secureOrigin.port}`);
+    expect("refused" in loopback && loopback.refused.status).toBe(403);
+    expect("refused" in loopback && loopback.refused.body.toString()).toContain(
+      "127.0.0.1 is a host-local destination (this machine's loopback); in sandbox mode the proxy reaches only destinations outside this machine unless a rule names them",
+    );
+    // A name that resolves to the metadata service's link-local address
+    const metadata = await openTunnel(proxy.port, "metadata.example.test:443");
+    expect("refused" in metadata && metadata.refused.body.toString()).toContain(
+      "metadata.example.test resolves to a host-local address (169.254.169.254",
+    );
+    // A name that cannot be resolved is refused too (fail closed)
+    const unknown = await openTunnel(proxy.port, "nowhere.example.test:443");
+    expect("refused" in unknown && unknown.refused.body.toString()).toContain(
+      "nowhere.example.test cannot be resolved",
+    );
+    // Plain HTTP toward `localhost` by name
+    const plain = await httpViaProxy({
+      proxyPort: proxy.port,
+      url: `http://localhost:${plainOrigin.port}/x`,
+    });
+    expect(plain.status).toBe(403);
+    expect(plain.body.toString()).toContain("localhost is a host-local destination");
+    expect(plainOrigin.seen).toHaveLength(0);
+    // A public destination is tunnelled as before (the seam connects it to the origin)
+    const publicTunnel = await openTunnel(proxy.port, "public.example.test:443");
+    expect("socket" in publicTunnel).toBe(true);
+    if ("socket" in publicTunnel) {
+      publicTunnel.socket.destroy();
+    }
+    // A host a rule names is the member's decision: `http://plain.localhost` still brokers
+    const named = await httpViaProxy({
+      proxyPort: proxy.port,
+      url: "http://plain.localhost/echo",
+      headers: { "x-api-key": plainKey.placeholder },
+    });
+    expect(named.status).toBe(200);
+    expect(plainOrigin.seen[0]?.headers["x-api-key"]).toBe(REAL_KEY);
+    expect(decisions.filter((d) => d.kind === "blocked")).toHaveLength(4);
+    expect(
+      decisions
+        .filter((d) => d.kind === "blocked")
+        .every((d) => d.reason.startsWith("host-local destination (sandbox mode)")),
+    ).toBe(true);
+  });
+
+  it("on the loopback binding the guard is off, and the proxy URL brackets an IPv6 advertised address (§21 R-11)", async () => {
+    const loopbackProxy = await proxyWith({ credentials: [github] });
+    const tunnel = await openTunnel(loopbackProxy.port, `127.0.0.1:${secureOrigin.port}`);
+    expect("socket" in tunnel).toBe(true);
+    if ("socket" in tunnel) {
+      tunnel.socket.destroy();
+    }
+    const advertised = await proxyWith({
+      credentials: [github],
+      credential: { user: "maruhi", password: "pw0123456789" },
+      advertise: { host: "fd00::2", port: 0 },
+    });
+    expect(advertised.url).toBe(`http://maruhi:pw0123456789@[fd00::2]:${advertised.port}`);
+    expect(advertised.advertised).toBe(`[fd00::2]:${advertised.port}`);
+    expect(new URL(advertised.url).hostname).toBe("[fd00::2]");
+    const fixedPort = await proxyWith({
+      credentials: [github],
+      advertise: { host: "host.docker.internal", port: 3128 },
+    });
+    expect(fixedPort.advertised).toBe("host.docker.internal:3128");
   });
 
   it("puts the hop servers on Unix sockets inside the private directory, never on a TCP port (§21 R-2)", async () => {

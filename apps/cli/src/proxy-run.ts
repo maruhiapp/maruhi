@@ -47,6 +47,7 @@ import { logNote, logWarning } from "./notice.ts";
 import { makeEphemeralCa } from "./proxy-cert.ts";
 import type { HostPattern, ProxyConfig, VariableRule } from "./proxy-config.ts";
 import { type ConnectorDeps, makeConnectorCredential } from "./proxy-connector.ts";
+import { isLoopbackBind } from "./proxy-guard.ts";
 import { type BrokeredCredential, makePlaceholder, randomAlphanumeric } from "./proxy-rules.ts";
 import {
   type ProxyDecision,
@@ -131,8 +132,6 @@ export function parseListenAddress(
   const port = Number(portText);
   return port <= 65535 ? { host, port } : null;
 }
-
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
 /* -------------------------------------------------------------------------- */
 /* Classification                                                               */
@@ -474,9 +473,12 @@ function injectionEnvFor(plan: Plan): Effect.Effect<Readonly<Record<string, stri
 }
 
 /** `--listen` / `--advertise` checked (usage errors) and the non-loopback warning. */
-function resolveListen(
-  input: ProxyRunInput,
-): Effect.Effect<{ readonly host: string; readonly port: number } | undefined, CliError, CliIo> {
+interface Addresses {
+  readonly listen: { readonly host: string; readonly port: number } | undefined;
+  readonly advertise: { readonly host: string; readonly port: number } | undefined;
+}
+
+function resolveListen(input: ProxyRunInput): Effect.Effect<Addresses, CliError, CliIo> {
   return Effect.gen(function* () {
     const listen = input.listen === undefined ? undefined : parseListenAddress(input.listen);
     if (listen === null) {
@@ -486,15 +488,17 @@ function resolveListen(
         ),
       );
     }
-    if (input.advertise !== undefined && parseListenAddress(input.advertise) === null) {
+    const advertise =
+      input.advertise === undefined ? undefined : parseListenAddress(input.advertise);
+    if (advertise === null) {
       return yield* Effect.fail(usageError("--advertise must be host[:port]"));
     }
-    if (listen !== undefined && !LOOPBACK_HOSTS.has(listen.host)) {
+    if (listen !== undefined && !isLoopbackBind(listen.host)) {
       yield* logWarning(
-        `proxy run: the proxy listens on ${listen.host} and is reachable from that network; every request needs this run's proxy credential, which only the command's environment carries`,
+        `proxy run: the proxy listens on ${listen.host} and is reachable from that network; every request needs this run's proxy credential, which only the command's environment carries. Destinations on this machine (loopback, link-local) are refused unless a rule names them`,
       );
     }
-    return listen;
+    return { listen, advertise };
   });
 }
 
@@ -564,7 +568,7 @@ export function proxyRunOp(
       removeFailure: (path) =>
         `proxy run: could not remove the proxy CA directory (${path}) — remove it by hand`,
     });
-    const listen = yield* resolveListen(input);
+    const { listen, advertise } = yield* resolveListen(input);
     // The run's proxy credential (userinfo of the proxy URL — §19 D-14b).
     // Whoever holds it can use the proxy, so the redaction covers it too:
     // a `printenv` under an agent must not leave it in a transcript (§21 R-10)
@@ -581,7 +585,7 @@ export function proxyRunOp(
             // the proxy URL — honoured by curl, git, Python, Go, Node, Bun; §19 D-14b)
             credential: { user: "maruhi", password: proxyPassword },
             ...(listen === undefined ? {} : { listen }),
-            ...(input.advertise === undefined ? {} : { advertise: input.advertise }),
+            ...(advertise === undefined ? {} : { advertise }),
             ...(seams?.upstream === undefined ? {} : { upstream: seams.upstream }),
             onDecision,
           }),

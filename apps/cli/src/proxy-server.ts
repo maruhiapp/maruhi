@@ -60,6 +60,7 @@ import {
 } from "./byte-replace.ts";
 import type { EphemeralCa } from "./proxy-cert.ts";
 import type { Surface } from "./proxy-config.ts";
+import { formatAuthority, hostLocalReason, isLoopbackBind, type Lookup } from "./proxy-guard.ts";
 import {
   authorityOf,
   type BrokeredCredential,
@@ -135,11 +136,11 @@ export interface ProxyOptions {
    */
   readonly listen?: { readonly host: string; readonly port: number } | undefined;
   /**
-   * The `host[:port]` the child is told to use in the proxy URL when it
-   * differs from the bound address (`host.docker.internal` from a
-   * container). Without a port the bound port is used.
+   * The address the child is told to use in the proxy URL when it differs
+   * from the bound one (`host.docker.internal` from a container). Port 0 =
+   * the bound port. An IPv6 literal is bracketed in the URL.
    */
-  readonly advertise?: string | undefined;
+  readonly advertise?: { readonly host: string; readonly port: number } | undefined;
   readonly onDecision?: (decision: ProxyDecision) => void;
   /**
    * Test seams. `connect` redirects where an upstream connection goes (the
@@ -150,6 +151,8 @@ export interface ProxyOptions {
   readonly upstream?: {
     readonly connect?: (target: Target) => { readonly host: string; readonly port: number };
     readonly ca?: readonly string[];
+    /** Name resolution for the host-local guard (sandbox mode — proxy-guard.ts); the system resolver by default. */
+    readonly lookup?: Lookup;
   };
 }
 
@@ -660,6 +663,12 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
     options.upstream?.connect ?? ((target: Target) => ({ host: target.host, port: target.port }));
   const upstreamCa = options.upstream?.ca;
   const servers: net.Server[] = [];
+  // Sandbox mode (bound beyond the loopback): a destination no rule names
+  // must not be host-local — the proxy would reach it from the host's own
+  // network namespace (proxy-guard.ts — §21 R-12). Null = may proceed
+  const sandboxed = options.listen !== undefined && !isLoopbackBind(options.listen.host);
+  const hostLocalRefusal = (target: Target): Promise<string | null> =>
+    sandboxed ? hostLocalReason(target.host, options.upstream?.lookup) : Promise.resolve(null);
 
   const listenOn = (server: net.Server, host: string, port: number): Promise<number> =>
     new Promise((resolve, reject) => {
@@ -913,7 +922,10 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
   };
 
   // The plain-HTTP loopback server (absolute-form requests; the target is in the URL)
-  const plainServer = http.createServer((req, res) => {
+  const plainRequest = async (
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> => {
     const parsed = parseAbsoluteForm(req.url ?? "");
     if (parsed === null || parsed === "https") {
       sendText(
@@ -925,23 +937,37 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
       );
       return;
     }
-    const allowed = credentialsFor(options.credentials, parsed.target);
-    if (allowed.length === 0 && options.unmatched === "block") {
-      sendText(
-        res,
-        403,
-        `maruhi proxy: ${authorityOf(parsed.target)} is not named by any rule and this run blocks unmatched hosts; the request was not sent`,
-      );
+    const refuse = (message: string, reason: string) => {
+      sendText(res, 403, `maruhi proxy: ${message}; the request was not sent`);
       decide({
         kind: "blocked",
         method: req.method ?? "GET",
         target: parsed.target,
         path: pathOnly(parsed.path),
-        reason: "unmatched host (block)",
+        reason,
       });
-      return;
+    };
+    if (credentialsFor(options.credentials, parsed.target).length === 0) {
+      if (options.unmatched === "block") {
+        refuse(
+          `${authorityOf(parsed.target)} is not named by any rule and this run blocks unmatched hosts`,
+          "unmatched host (block)",
+        );
+        return;
+      }
+      const hostLocal = await hostLocalRefusal(parsed.target);
+      if (hostLocal !== null) {
+        refuse(
+          `${hostLocal}; in sandbox mode the proxy reaches only destinations outside this machine unless a rule names them`,
+          `host-local destination (sandbox mode): ${hostLocal}`,
+        );
+        return;
+      }
     }
     guarded(req, res, parsed.target, parsed.path);
+  };
+  const plainServer = http.createServer((req, res) => {
+    void plainRequest(req, res);
   });
   const plainPath = await listenHop(plainServer, "plain");
 
@@ -1051,6 +1077,24 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
         });
         return;
       }
+      const hostLocal = await hostLocalRefusal(target);
+      if (hostLocal !== null) {
+        socket.end(
+          rawResponse(
+            403,
+            "Forbidden",
+            `maruhi proxy: ${hostLocal}; in sandbox mode the proxy reaches only destinations outside this machine unless a rule names them\n`,
+          ),
+        );
+        decide({
+          kind: "blocked",
+          method: "CONNECT",
+          target,
+          path: "",
+          reason: `host-local destination (sandbox mode): ${hostLocal}`,
+        });
+        return;
+      }
       // Blind tunnel: never inspected, the client's own TLS end to end
       const where = connectTo(target);
       const upstream = net.connect(where.port, where.host, () => {
@@ -1122,13 +1166,14 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
   const bind = options.listen ?? { host: "127.0.0.1", port: 0 };
   const port = await listenOn(proxy, bind.host, bind.port);
 
-  const address = `${bind.host}:${port}`;
+  const address = formatAuthority(bind.host, port);
   const advertised =
     options.advertise === undefined
       ? address
-      : options.advertise.includes(":")
-        ? options.advertise
-        : `${options.advertise}:${port}`;
+      : formatAuthority(
+          options.advertise.host,
+          options.advertise.port === 0 ? port : options.advertise.port,
+        );
   const userinfo =
     options.credential === undefined
       ? ""
