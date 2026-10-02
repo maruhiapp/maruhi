@@ -310,6 +310,14 @@ declares no interval.
 | R9 field | A-5: both an interval and a hard cap (`max_age_days` + `expires_by`) | Rejected: two fields for one reminder; A-3 covers the hard case later | A-1 stands |
 | R9 layout | B-6: put `max_age_days` into the manifest instead | Rejected: the manifest binds statement hashes; it is not a per-variable field carrier | B-1 stands |
 
+### 10-1. Round 4 (owner-requested after the review round — scheduling, the connector set, due notification)
+
+| Topic | Candidates | Verdict |
+|---|---|---|
+| Scheduled rotation | S-A sealed proposals (ROADMAP's recorded form: a CI process with an OIDC lease mints the credential at the issuer, HPKE-seals it to the members' keys, a human countersigns — CRYPTO_SPEC §5 addendum first) / S-B **scheduled nagging**: `maruhi rotation list --fail-on-due` (a non-zero exit when a value is past its max age) run by a CI cron, which opens an issue or fails a build — no spec, no key, no sending by maruhi / S-C server cron (rejected: the server would hold a signing key and the issuer credential) / S-D a long-lived signing key in CI (rejected by ROADMAP) / S-E a nudge at the point of use: `maruhi run` / `pull` prints a note when a pulled value is past its max age (client-side, zero spec) / S-F a leased CI job pushing the new value itself (collapses into S-A: without a signing key there is no signed version) | **S-A stays the future form** (ROADMAP line "Periodic automation comes later as sealed proposals"; integration-options.md §7 ③). **S-B and S-E are recommended as small follow-ups** before S-A: they give "a schedule" to teams with a CI cron and a reminder to everyone else, at no spec cost. Not in this PR (scope) |
+| The connector set | C-A a generic HTTP recipe (rejected 2-F: maruhi interpreting arbitrary credential-bearing requests from a repository-trusted file) / C-B a signed recipe carrier (resolves C-A's trust problem; the 1-C follow-up — larger) / C-C more code-reviewed connectors, one PR each, ranked by dual-credential fit: Azure AD app client secrets (native two secrets — `addPassword` / `removePassword`), GCP service-account keys (two keys at once; federation stays the first answer), Twilio auth tokens (secondary token → promote), SendGrid / Datadog / OpenAI project API keys (create-then-delete), MongoDB Atlas database users / C-D **an `exec` connector**: the rule names a script; maruhi runs it with the admin inputs and the current credential in the child's environment (the `maruhi run` / sync `exec` driver pattern — plaintext by memory injection only), reads the new credential from stdout, and runs a finalize script the same way with the previous one. The trust model equals running any repository script on the member's machine; maruhi interprets nothing | **C-D is the structural answer to "the connector treadmill"** and was not on the table in R2 (a new candidate from this round): it makes the set unbounded without code here, keeps "no server, no scheduler", and is strictly better than C-A on trust (the user's own code, not an interpreter inside maruhi). Recommended as the next rotation PR; C-C per demand after it. The ROADMAP records only the three built connectors — whether more are planned is the owner's to state |
+| Due notification | N-1 `rotation list` on demand (done) / N-2 S-B's CI cron (the team's own channel: an issue, Slack via CI) / N-3 S-E's point-of-use note / N-4 a server-side reminder (the server can read `max_age_days` and the push time without decrypting, so an email or webhook "X is due" is feasible on hosted) — the SY6 change-notification doorbell is the recorded shared part for any server-side send; it was demoted to demand-driven (2026-09-05) / N-5 the dashboard showing due values (the web already renders the schema; a badge is a small change) | **Not needed for v1**: N-1 + N-2 + N-3 cover every team that runs a CI cron or uses the values; N-4 only matters for parity with Infisical / Doppler's e-mail reminders for teams that do neither, and rides SY6 when demand appears (no new sending path of its own — the "say nothing" principle is about the client; a user-configured destination is SY6's shape). N-5 is a cheap follow-up for the dashboard |
+
 ## 11. Residuals (explicit)
 
 - **Self-rotation's trust**: a rule with no inputs lets whoever holds the
@@ -347,7 +355,11 @@ declares no interval.
   a per-version signed `expires_at` (9-A A-3) is the follow-up
 - **Scheduled rotation (R4 of the memo — sealed proposals)** remains
   demand-driven; nothing here precludes it (a proposal would carry a
-  connector's output)
+  connector's output). The cheap intermediates are §10-1's S-B
+  (`rotation list --fail-on-due` under a CI cron) and S-E (a note at the
+  point of use)
+- **The connector set stays at four**: §10-1's C-D (`exec` connector) is
+  the recommended next step, then one code-reviewed connector per demand
 
 ## 12. What does not change
 
