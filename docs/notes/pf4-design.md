@@ -898,6 +898,44 @@ A seventh pass (Cursor Security Reviewer on the R-18 … R-20 commit):
   the body-and-header echo of a `Basic` credential both come back as the
   client sent them.
 
+An eighth pass (Cursor Security Reviewer on the R-21 commit):
+
+- **R-22 (MEDIUM) — two more metadata endpoints outside the ranges**:
+  Oracle Cloud's `192.0.0.192` (in the IETF protocol-assignment block,
+  RFC 6890 192.0.0.0/24 — never a public destination; the block joins) and
+  Azure's wire server `168.63.129.16` (a single address in otherwise
+  public space; added as an address, with its mapped form). The list is
+  now: loopback, unspecified, link-local, 100.64/10, 192.0.0.0/24,
+  168.63.129.16, their IPv4-mapped forms, fd00:ec2::254. A deny-list of
+  this kind is only as complete as the last provider surveyed; the
+  member's complete answer remains `unmatched: block`, and the docs say so.
+- **R-23 (HIGH) — the acceptance record followed `MARUHI_CONFIG_DIR` /
+  `XDG_CONFIG_HOME`.** The ledger sat next to `config.json`, whose
+  directory those variables redirect; an agent limited to the repository
+  can set one for its own invocation, point the CLI at a directory it
+  writes (a forged ledger — or an empty one, which reads as "never
+  brokered"), and apply its own rules while the keychain still serves the
+  token. The R-8 claim ("a file outside the repository that nothing in the
+  repository points at") did not hold while an environment variable
+  pointed at it. Options: (a) ignore the override variables for this one
+  file and anchor it to the home directory — but `os.homedir()` reads
+  `$HOME`, which an agent can also set; (b) **anchor it to the account's
+  home from the system user database** (`os.userInfo().homedir`, getpwuid
+  — no environment variable moves it); (c) keep the ledger in the OS
+  keychain (a real fence on macOS; against the CLI's persistence rule —
+  the keychain is for the token and the device key — and no fence on
+  Linux); (d) an integrity tag over the ledger with a keychain-held key
+  (a new local crypto operation: a spec revision, and (c)'s rule again);
+  (e) the chain-recorded signed rules (the structural successor, already
+  the follow-up). **(b) adopted**: `acceptedProxyConfigsPathOf(home)`
+  builds `<home>/.config/maruhi/proxy-accepted.json`, and live.ts passes
+  the passwd home. Consequence: a user who set `XDG_CONFIG_HOME` globally
+  finds this one file under `~/.config/maruhi` rather than their XDG
+  directory — stated in the docs. Residual: a uid without a passwd entry
+  (some containers) falls back to `homedir()` and so to `$HOME`; the
+  record says so. The same-user residual (the user's own process can
+  write the file) is unchanged and remains the sandbox shape's job.
+
 Also in this round: `origin/main` merged (effect 4.0.0 stable — the
 `effect/unstable/*` import paths moved to `effect/*`; two conflicts, ROADMAP
 and ci-run.ts).

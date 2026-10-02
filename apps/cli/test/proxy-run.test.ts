@@ -18,6 +18,7 @@ import { chdir, cwd } from "node:process";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
+import { acceptedProxyConfigsPathOf } from "../src/proxy-accept.ts";
 import { makeEphemeralCa } from "../src/proxy-cert.ts";
 import { parseListenAddress } from "../src/proxy-run.ts";
 import {
@@ -344,7 +345,11 @@ describe("maruhi proxy run", () => {
   it("applies a config only once a person accepted it with `proxy accept`; a new or changed file is refused everywhere, and a brokered project stays gated without its config (§21 R-8 / R-13 / R-14)", async () => {
     const { env, configPath, configDir } = await startEnv(BROKER_CONFIG, { accepted: false });
     const server = servers[servers.length - 1];
-    const recordPath = join(dirname(env.configPath), "proxy-accepted.json");
+    // The record lives under the account home (the test env's config dir stands in for it), not the config dir itself (§21 R-23)
+    const recordPath = acceptedProxyConfigsPathOf(dirname(env.configPath));
+    expect(recordPath).toBe(
+      join(dirname(env.configPath), ".config", "maruhi", "proxy-accepted.json"),
+    );
     // Under an agent, before anyone accepted the file: refused before any network, child not started
     env.setAgent({ isAgent: true, name: "cursor" });
     const requestsBefore = server?.requests.length ?? 0;

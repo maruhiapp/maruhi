@@ -252,7 +252,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
     Layer.succeed(OwnDeviceStore, makeFileOwnDeviceStore(ownDevicesPathOf(configPath))),
     Layer.succeed(
       ProxyAcceptStore,
-      makeFileProxyAcceptStore(acceptedProxyConfigsPathOf(configPath)),
+      makeFileProxyAcceptStore(acceptedProxyConfigsPathOf(configDir)),
     ),
     Layer.succeed(FloorStore, {
       load: (projectId) => floorStore.load(projectId),

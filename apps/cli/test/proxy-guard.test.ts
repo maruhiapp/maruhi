@@ -38,6 +38,11 @@ describe("proxy-guard", () => {
       "100.100.100.200",
       "100.64.0.1",
       "::ffff:100.100.100.200",
+      // Oracle Cloud's metadata endpoint (IETF protocol assignments) and Azure's wire server (§21 R-22)
+      "192.0.0.192",
+      "192.0.0.1",
+      "168.63.129.16",
+      "::ffff:168.63.129.16",
     ]) {
       expect(isHostLocalAddress(ip), ip).toBe(true);
     }
@@ -48,6 +53,9 @@ describe("proxy-guard", () => {
       "203.0.113.7",
       "100.63.255.255",
       "100.128.0.1",
+      "192.0.1.1",
+      "192.0.2.1",
+      "168.63.129.17",
       "fd00::2",
       "fd00:ec2::253",
       "2001:db8::1",

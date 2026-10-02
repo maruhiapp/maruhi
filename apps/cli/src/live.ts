@@ -13,11 +13,12 @@
 //   `process.*` directly happens only inside this implementation = the
 //   argument layer arrives via services)
 
+import { writeSync } from "node:fs";
+import { stat } from "node:fs/promises";
 // Read submodules directly (a package's index pulls in BunRedis etc. and
 // crashes on environments that cannot resolve the `bun` module — vitest
 // running under Node)
-import { writeSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { homedir, userInfo } from "node:os";
 
 import * as BunStdio from "@effect/platform-bun/BunStdio";
 import { Duration, Effect, Layer, Redacted } from "effect";
@@ -703,6 +704,21 @@ function makeLiveIo(): CliIoShape {
 }
 
 /** Production service layer for the maruhi CLI (Bun runtime). */
+/**
+ * The account's home directory from the system user database (getpwuid),
+ * which no environment variable moves — the anchor of the acceptance
+ * record (proxy-accept.ts, §21 R-23). `userInfo()` throws for a uid
+ * without a passwd entry (some containers); `homedir()` ($HOME) is the
+ * fallback there, stated in the record as the residual.
+ */
+function accountHomeDir(): string {
+  try {
+    return userInfo().homedir;
+  } catch {
+    return homedir();
+  }
+}
+
 export function liveLayer(): Layer.Layer<CliServices> {
   const configPath = defaultConfigPath((name) => process.env[name]);
   // Inside a `maruhi agent` session (MARUHI_AGENT_SOCK present), use the
@@ -729,10 +745,11 @@ export function liveLayer(): Layer.Layer<CliServices> {
     // The verified-fingerprint ledger (KF) is the same family (<config dir>/known-fingerprints.json)
     Layer.succeed(FingerprintBook, makeFileFingerprintBook(fingerprintBookPathOf(configPath))),
     Layer.succeed(OwnDeviceStore, makeFileOwnDeviceStore(ownDevicesPathOf(configPath))),
-    // The proxy configs a person accepted (pf4-design.md §21 R-8) are the same family (<config dir>/proxy-accepted.json)
+    // The proxy configs a person accepted (pf4-design.md §21 R-8) live under the account's home from
+    // the system user database — not the env-redirectable config dir (R-23)
     Layer.succeed(
       ProxyAcceptStore,
-      makeFileProxyAcceptStore(acceptedProxyConfigsPathOf(configPath)),
+      makeFileProxyAcceptStore(acceptedProxyConfigsPathOf(accountHomeDir())),
     ),
     Layer.succeed(CliIo, makeLiveIo()),
     Layer.succeed(ProcessRunner, makeBunProcessRunner()),

@@ -38,9 +38,11 @@ export function isHostLocalName(host: string): boolean {
  * `0:0:0:0:0:0:0:1`, `::0:1`, the hex-mapped `::ffff:7f00:1` are the
  * loopback as much as `::1` and `::ffff:127.0.0.1` are): loopback (127/8,
  * ::1), unspecified (0/8, ::), link-local (169.254/16 — the IPv4 metadata
- * service; fe80::/10), the IPv4-mapped forms of those three, and the AWS
- * IPv6 metadata service (fd00:ec2::254). `net.BlockList` parses every
- * textual form; measured identical under Bun 1.4.2 and Node.
+ * service; fe80::/10), the shared address space (100.64/10), the IETF
+ * protocol-assignment block (192.0.0.0/24), Azure's wire server, the
+ * IPv4-mapped forms of all of those, and the AWS IPv6 metadata service
+ * (fd00:ec2::254). `net.BlockList` parses every textual form; measured
+ * identical under Bun 1.4.2 and Node.
  */
 const HOST_LOCAL = new net.BlockList();
 HOST_LOCAL.addSubnet("127.0.0.0", 8, "ipv4");
@@ -50,6 +52,11 @@ HOST_LOCAL.addSubnet("169.254.0.0", 16, "ipv4");
 // cloud providers put metadata endpoints there (Alibaba Cloud's
 // 100.100.100.200) — §21 R-20
 HOST_LOCAL.addSubnet("100.64.0.0", 10, "ipv4");
+// IETF protocol assignments (RFC 6890, 192.0.0.0/24 — Oracle Cloud's
+// metadata endpoint 192.0.0.192 sits there) and Azure's wire server
+// 168.63.129.16 (the platform endpoint that fronts its metadata) — §21 R-22
+HOST_LOCAL.addSubnet("192.0.0.0", 24, "ipv4");
+HOST_LOCAL.addAddress("168.63.129.16", "ipv4");
 HOST_LOCAL.addSubnet("::1", 128, "ipv6");
 HOST_LOCAL.addSubnet("::", 128, "ipv6");
 HOST_LOCAL.addSubnet("fe80::", 10, "ipv6");
@@ -57,6 +64,8 @@ HOST_LOCAL.addSubnet("::ffff:7f00:0", 104, "ipv6");
 HOST_LOCAL.addSubnet("::ffff:0:0", 104, "ipv6");
 HOST_LOCAL.addSubnet("::ffff:a9fe:0", 112, "ipv6");
 HOST_LOCAL.addSubnet("::ffff:6440:0", 106, "ipv6");
+HOST_LOCAL.addSubnet("::ffff:c000:0", 120, "ipv6");
+HOST_LOCAL.addAddress("::ffff:a83f:8110", "ipv6");
 HOST_LOCAL.addAddress("fd00:ec2::254", "ipv6");
 
 /** An IP literal without URL brackets (`[::1]` from `URL.hostname`) or a zone id (`fe80::1%eth0`). */

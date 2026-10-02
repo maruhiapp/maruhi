@@ -40,7 +40,9 @@
 // verbatim rather than hashed so the record needs no cryptography and a
 // mismatch can be explained. Same file discipline as the fingerprint
 // ledger: 0600, atomic rename, a corrupt or unreadable file is never
-// overwritten.
+// overwritten. The file lives under the account's home as the system user
+// database gives it — not under `MARUHI_CONFIG_DIR` / `XDG_CONFIG_HOME`,
+// which an agent can set for its own invocation (R-23).
 
 import { mkdir, realpath, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -99,9 +101,17 @@ export class ProxyAcceptStore extends Context.Service<ProxyAcceptStore, ProxyAcc
   "cli/ProxyAcceptStore",
 ) {}
 
-/** The record's location (same family as the config: <config.json's parent>/proxy-accepted.json). */
-export function acceptedProxyConfigsPathOf(configPath: string): string {
-  return join(dirname(configPath), "proxy-accepted.json");
+/**
+ * The record's location: `<account home>/.config/maruhi/proxy-accepted.json`.
+ * Deliberately **not** the config directory the CLI otherwise uses: that
+ * one follows `MARUHI_CONFIG_DIR` / `XDG_CONFIG_HOME`, and an agent
+ * limited to the repository can set an environment variable for its own
+ * invocation, point the record at a directory it writes, and apply its
+ * own rules (review finding §21 R-23). `home` is the account's home from
+ * the system user database (live.ts), which no environment variable moves.
+ */
+export function acceptedProxyConfigsPathOf(home: string): string {
+  return join(home, ".config", "maruhi", "proxy-accepted.json");
 }
 
 interface AcceptedFile {
