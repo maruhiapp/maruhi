@@ -1,7 +1,8 @@
 // Tests for the byte-domain replacer (byte-replace.ts — PF4 and the
 // run-output redaction): exact matching on raw bytes, longest first, the
-// carry-over across chunk boundaries, the newline cut, byte transparency
-// for non-UTF-8 output, and the shared scrub fragment rule.
+// carry-over across chunk boundaries (only a pattern's prefix is held),
+// byte transparency for non-UTF-8 output, and the shared scrub fragment
+// rule.
 
 import { describe, expect, it } from "vitest";
 
