@@ -152,6 +152,8 @@ export const SECURITY_CRITICAL_PAYLOAD_ENDPOINTS: ReadonlyArray<
   ["rotation", "resolveProposal"],
   ["invites", "issue"],
   ["invites", "accept"],
+  // A replication page carries the source's chain, ciphertexts and wraps (§11-7)
+  ["mirror", "pages"],
 ];
 
 /**
@@ -185,6 +187,8 @@ export const STRICT_EXEMPT_PAYLOAD_ENDPOINTS: ReadonlyArray<
   // ephemeral public key). Carries no signed structure, ciphertext, or
   // key material
   ["keyWraps", "handoffCreate"],
+  // The mirror mark names a source origin only (§11-7)
+  ["mirror", "mark"],
 ];
 
 /**

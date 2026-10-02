@@ -283,3 +283,11 @@ export const MAX_EXPORT_PAGE_BYTES = 4 * 1024 * 1024;
  * rows and the read load an owner's credential can produce.
  */
 export const MAX_EXPORTS_PER_WINDOW = 20;
+
+/**
+ * §11-7: a replication page may exceed the export's byte bound by one line
+ * (the export ends a page after the line that crosses it); the slack admits
+ * the largest line a snapshot carries (a 64 KiB ciphertext row in hex plus
+ * its envelope).
+ */
+export const MAX_MIRROR_PAGE_SLACK_BYTES = 256 * 1024;

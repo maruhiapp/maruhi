@@ -81,6 +81,7 @@ import { ensureValueDisplayAllowed } from "./agent-gate.ts";
 import { ensurePlainRunAllowed } from "./agent-gate.ts";
 import { AGENT_COMMAND_REQUIRED, agentOp, agentStatusOp, parseKeyTtl } from "./agent.ts";
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "./anchor.ts";
+import { makeApiClient, type MaruhiClient } from "./api.ts";
 import { approveProposalOp, type Fulfilment } from "./approval-approve.ts";
 import {
   DEFAULT_POLICY_OPS,
@@ -153,7 +154,9 @@ import {
   openProject,
   openSession,
   reconcileGossip,
+  resolveMirrorOrigin,
   resolveProjectId,
+  withMirrorFallback,
 } from "./context.ts";
 import { reportOwnDeviceGapFills } from "./device-gaps.ts";
 import {
@@ -218,6 +221,12 @@ import {
   memberRemoveOp,
   type RoleChangeFulfilment,
 } from "./member.ts";
+import {
+  describeMirrorStatus,
+  describeMirrorSync,
+  mirrorStatusOp,
+  mirrorSyncOp,
+} from "./mirror.ts";
 import { formatNotice, logNote, logWarning, NoticeLedger } from "./notice.ts";
 import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "./passkey.ts";
 import { PinStore } from "./pins.ts";
@@ -439,8 +448,17 @@ const serverOnlyFlags = () => ({
   server: singleValued("server", "Server URL (defaults to config server)"),
 });
 
+/** `--mirror <url>` (PF2 — AUTH_SPEC §11-7): the read-only replica a read falls back to when the server is unreachable. */
+const mirrorFlag = () => ({
+  mirror: singleValued(
+    "mirror",
+    "Mirror URL to read from when the server is unreachable (default: the `mirror` setting; reads only, announced on stderr)",
+  ),
+});
+
 const pullConfig = {
   ...commonFlags(),
+  ...mirrorFlag(),
   show: singleFlag("show", "Print the values (interactive terminals only)"),
 };
 
@@ -464,6 +482,7 @@ const runCommandArgument = () =>
 
 const runConfig = {
   ...commonFlags(),
+  ...mirrorFlag(),
   plain: singleFlag(
     "plain",
     `Inject the real values even when ${DEFAULT_PROXY_CONFIG_PATH} is present (allowed only to a person at an interactive terminal; without the config, run always injects the real values)`,
@@ -509,6 +528,10 @@ const ciRunConfig = {
   project: singleValued("project", "Project ID, which is the pinned genesis hash (required)"),
   env: singleValued("env", "Environment ID to lease (required)"),
   audience: singleValued("audience", "OIDC audience to request (default: the server origin)"),
+  mirror: singleValued(
+    "mirror",
+    "Mirror URL to lease from when the server is unreachable (a second OIDC token is requested for the mirror's audience unless --audience is given)",
+  ),
   anchor: singleValued(
     "anchor",
     "Path to the committed repository anchor file (generate it with `maruhi project anchor`)",
@@ -526,6 +549,10 @@ const ciSyncConfig = {
   server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
   project: singleValued("project", "Project ID, which is the pinned genesis hash (required)"),
   audience: singleValued("audience", "OIDC audience to request (default: the server origin)"),
+  mirror: singleValued(
+    "mirror",
+    "Mirror URL to lease from when the server is unreachable (a second OIDC token is requested for the mirror's audience unless --audience is given)",
+  ),
   anchor: singleValued(
     "anchor",
     "Path to the committed repository anchor file (generate it with `maruhi project anchor`)",
@@ -1050,7 +1077,27 @@ const serverGrantConfig = {
     "expect-fingerprint",
     "Server key fingerprint noted out of band (32 hex chars; replaces the interactive check)",
   ),
+  "key-from": singleValued(
+    "key-from",
+    "URL of the deployment whose server key to grant, such as a mirror (its /auth/config supplies the key; the grant is appended on the server and reaches the mirror by replication). Default: the server itself",
+  ),
 };
+
+/** `maruhi mirror sync` / `status`: the server (session + export) and the mirror (its own session + the pages). */
+const mirrorSyncConfig = {
+  ...projectFlags(),
+  mirror: singleValued("mirror", "Mirror URL (default: the `mirror` setting)"),
+};
+
+const mirrorStatusConfig = mirrorSyncConfig;
+
+/** `maruhi mirror mark`: --server is the mirror deployment, --source the deployment it mirrors. */
+const mirrorMarkConfig = {
+  ...projectFlags(),
+  source: singleValued("source", "URL of the deployment this project mirrors (required)"),
+};
+
+const mirrorPromoteConfig = { ...projectFlags() };
 
 const serverRevokeConfig = {
   ...projectFlags(),
@@ -1560,6 +1607,12 @@ const GROUP_CONFIGS: Readonly<
 > = {
   env: { create: envCreateConfig, rotate: envRotateConfig, diff: envDiffConfig },
   server: { grant: serverGrantConfig, revoke: serverRevokeConfig },
+  mirror: {
+    sync: mirrorSyncConfig,
+    status: mirrorStatusConfig,
+    mark: mirrorMarkConfig,
+    promote: mirrorPromoteConfig,
+  },
   invite: {
     create: inviteCreateConfig,
     accept: inviteAcceptConfig,
@@ -2028,6 +2081,131 @@ function schemaSetReport(name: string, summary: SchemaSetSummary): string {
 }
 
 /** Validating a config key passed as a positional (**the given value itself never appears in the error**). */
+/* -------------------------------------------------------------------------- */
+/* Mirrors (PF2 — AUTH_SPEC §11-7; the operations live in mirror.ts)          */
+/* -------------------------------------------------------------------------- */
+
+/** The two sessions of `mirror sync` / `status`: the server's and the mirror's (the mirror's own credential). */
+function openMirrorPair(flags: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly mirror?: string | undefined;
+}) {
+  return Effect.gen(function* () {
+    const source = yield* openSession(flags.server);
+    const projectId = yield* resolveProjectId(flags.project, source.config);
+    const mirrorOrigin = yield* resolveMirrorOrigin(flags.mirror, source.config);
+    if (mirrorOrigin === null) {
+      return yield* Effect.fail(
+        cliError(
+          "No mirror URL. Pass --mirror <url> or set it with `maruhi config set mirror <url>`",
+        ),
+      );
+    }
+    if (mirrorOrigin === source.origin) {
+      return yield* Effect.fail(
+        usageError("The mirror URL is the server URL itself (pass the mirror deployment's URL)"),
+      );
+    }
+    const mirror = yield* openSession(mirrorOrigin, "mirror");
+    // The verified view of the server (the same keyless prologue as `project export`)
+    const synced = yield* syncProject(source.client, projectId);
+    const verified = (yield* loadCheckedFloor(
+      projectId,
+      synced,
+      syncProject(source.client, projectId),
+    )).verified;
+    return { source, mirror, mirrorOrigin, projectId, verified };
+  });
+}
+
+/** `maruhi mirror sync`: the export's pages uploaded to the mirror in order. */
+function mirrorSyncCommand(flags: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly mirror?: string | undefined;
+}): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const pair = yield* openMirrorPair(flags);
+    const result = yield* mirrorSyncOp({
+      source: pair.source.client,
+      mirror: pair.mirror.client,
+      projectId: pair.projectId,
+      verified: pair.verified,
+    });
+    for (const line of describeMirrorSync(result, pair.verified, pair.mirrorOrigin)) {
+      yield* io.log(line);
+    }
+  });
+}
+
+/** `maruhi mirror status`: the server's verified head and the mirror's, side by side. */
+function mirrorStatusCommand(flags: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly mirror?: string | undefined;
+}): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const pair = yield* openMirrorPair(flags);
+    const status = yield* mirrorStatusOp({ client: pair.mirror.client, projectId: pair.projectId });
+    for (const line of describeMirrorStatus(status, pair.verified, pair.mirrorOrigin)) {
+      yield* io.log(line);
+    }
+  });
+}
+
+/** `maruhi mirror mark --server <mirror> --source <server>`: the owner marks the project read-only there. */
+function mirrorMarkCommand(flags: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly source?: string | undefined;
+}): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    if (flags.source === undefined) {
+      return yield* Effect.fail(
+        usageError("mirror mark requires --source <url> (the deployment this project mirrors)"),
+      );
+    }
+    const sourceOrigin = yield* normalizeHttpOrigin(flags.source, "the --source URL");
+    const context = yield* openSession(flags.server);
+    if (sourceOrigin === context.origin) {
+      return yield* Effect.fail(
+        usageError(
+          "--source is the server itself (run this against the mirror deployment with --server <mirror url>)",
+        ),
+      );
+    }
+    const projectId = yield* resolveProjectId(flags.project, context.config);
+    yield* context.client.mirror
+      .mark({ params: { projectId }, payload: { sourceOrigin } })
+      .pipe(Effect.mapError(toCliError));
+    yield* io.log(
+      `Marked project ${projectId} on ${context.origin} as a mirror of ${sourceOrigin}: it refuses writes from now on and serves reads and leases. Keep it current with \`maruhi mirror sync --server ${sourceOrigin} --mirror ${context.origin}\`; members fall back to it with \`maruhi config set mirror ${context.origin}\``,
+    );
+  });
+}
+
+/** `maruhi mirror promote --server <mirror>`: the owner unmarks the mirror; it accepts writes again. */
+function mirrorPromoteCommand(flags: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+}): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const context = yield* openSession(flags.server);
+    const projectId = yield* resolveProjectId(flags.project, context.config);
+    yield* context.client.mirror
+      .unmark({ params: { projectId } })
+      .pipe(Effect.mapError(toCliError));
+    yield* io.log(
+      `Promoted project ${projectId} on ${context.origin}: it accepts writes again. Members point at it with \`maruhi config set server ${context.origin}\`; a former primary that comes back is a stale server — mark it as a mirror of this one or export it away (it can never be replicated over this chain)`,
+    );
+  });
+}
+
 function requireConfigKey(value: string): Effect.Effect<ConfigKey, CliError> {
   const key = asConfigKey(value);
   return key === null
@@ -2322,12 +2500,57 @@ function requireInitFlag(value: string | undefined, flag: string): Effect.Effect
     : Effect.succeed(value);
 }
 
+/** The lease target of a CI read: the server, or the mirror on the retry. */
+interface CiTarget {
+  readonly origin: string;
+  readonly audience: string;
+}
+
+/**
+ * The CI read's fallback (PF2 — AUTH_SPEC §11-7 ruling E): when the server
+ * is unreachable and `--mirror` names a replica, the lease is requested
+ * there instead, with an OIDC token for the mirror's audience unless
+ * --audience was given (the mirror's own grant names its audience). Never
+ * on an answer of the server (a 404 or a 401 is not retried)
+ */
+function withCiMirrorFallback<A>(
+  values: { readonly mirror?: string | undefined; readonly audience?: string | undefined },
+  primary: CiTarget,
+  attempt: (target: CiTarget) => Effect.Effect<A, CliError, CliServices>,
+): Effect.Effect<A, CliError, CliServices> {
+  return Effect.gen(function* () {
+    if (values.mirror === undefined) {
+      return yield* attempt(primary);
+    }
+    const mirror = yield* normalizeHttpOrigin(values.mirror, "the mirror URL");
+    if (mirror === primary.origin) {
+      return yield* Effect.fail(
+        usageError("--mirror is the server URL itself (pass the mirror deployment's URL)"),
+      );
+    }
+    return yield* attempt(primary).pipe(
+      Effect.catch((error: CliError) =>
+        error.unreachable === true
+          ? Effect.gen(function* () {
+              const io = yield* CliIo;
+              yield* io.logError(
+                `${error.message}. Retrying against the mirror ${mirror} (a read-only replica that may be behind the server)`,
+              );
+              return yield* attempt({ origin: mirror, audience: values.audience ?? mirror });
+            })
+          : Effect.fail(error),
+      ),
+    );
+  });
+}
+
 /** `maruhi ci run -- <cmd>`'s body (verification lives in ci-run.ts / lease-client.ts). */
 function ciRunCommand(values: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly env?: string | undefined;
   readonly audience?: string | undefined;
+  readonly mirror?: string | undefined;
   readonly anchor?: string | undefined;
   readonly command: readonly string[];
 }): Effect.Effect<number, CliError, CliServices> {
@@ -2347,15 +2570,20 @@ function ciRunCommand(values: {
     if (!isEnvironmentId(envFlag)) {
       return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
     }
-    return yield* ciRunOp({
-      origin,
-      projectId: projectFlag,
-      environmentId: envFlag,
-      // audience's default is the server's normalized origin (AUTH_SPEC §14-1's recommended value)
-      audience: values.audience ?? origin,
-      anchorPath: values.anchor,
-      command: values.command,
-    });
+    // audience's default is the server's normalized origin (AUTH_SPEC §14-1's recommended value)
+    return yield* withCiMirrorFallback(
+      values,
+      { origin, audience: values.audience ?? origin },
+      (target) =>
+        ciRunOp({
+          origin: target.origin,
+          projectId: projectFlag,
+          environmentId: envFlag,
+          audience: target.audience,
+          anchorPath: values.anchor,
+          command: values.command,
+        }),
+    );
   });
 }
 
@@ -2364,6 +2592,7 @@ function ciSyncCommand(values: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly audience?: string | undefined;
+  readonly mirror?: string | undefined;
   readonly anchor?: string | undefined;
   readonly config?: string | undefined;
   readonly yes: boolean;
@@ -2386,14 +2615,16 @@ function ciSyncCommand(values: {
     const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
     const target = yield* requireSyncTarget(config, values.target);
     yield* checkConfigProject(config, projectFlag);
-    yield* ciSyncOp({
-      origin,
-      projectId: projectFlag,
-      audience: values.audience ?? origin,
-      anchorPath: values.anchor,
-      target,
-      yes: values.yes,
-    });
+    yield* withCiMirrorFallback(values, { origin, audience: values.audience ?? origin }, (where) =>
+      ciSyncOp({
+        origin: where.origin,
+        projectId: projectFlag,
+        audience: where.audience,
+        anchorPath: values.anchor,
+        target,
+        yes: values.yes,
+      }),
+    );
   });
 }
 
@@ -2570,12 +2801,49 @@ function reportProposed(
   });
 }
 
+/** The deployment whose server key `server grant --key-from` grants (a mirror — AUTH_SPEC §11-7 ruling F). */
+interface GrantKeySource {
+  readonly origin: string;
+  readonly client: MaruhiClient;
+}
+
+/**
+ * The client whose `/auth/config` supplies the key (`--key-from`; null = the
+ * server itself). The endpoint is unauthenticated, so a tokenless client
+ * reads it; naming the server itself is the default spelled out.
+ */
+function grantKeySource(
+  keyOrigin: string | null,
+  serverOrigin: string,
+): Effect.Effect<GrantKeySource | null, CliError, CliServices> {
+  return Effect.gen(function* () {
+    if (keyOrigin === null) {
+      return null;
+    }
+    if (keyOrigin === serverOrigin) {
+      yield* logNote("--key-from names the server itself; granting its own key");
+      return null;
+    }
+    return { origin: keyOrigin, client: yield* makeApiClient({ baseUrl: keyOrigin }) };
+  });
+}
+
+/** After a grant of another deployment's key: how the grant reaches it. */
+function noteGrantKeySource(keySource: GrantKeySource | null) {
+  return keySource === null
+    ? Effect.void
+    : logNote(
+        `the grant and the wraps reach ${keySource.origin} with the next \`maruhi mirror sync\` (a mirror accepts no write of its own)`,
+      );
+}
+
 function serverGrantCommand(
   flags: CommonFlags & {
     readonly environments?: string | undefined;
     readonly leasePolicyPath?: string | undefined;
     readonly expectFingerprint?: string | undefined;
     readonly expires?: string | undefined;
+    readonly keyFrom?: string | undefined;
   },
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
@@ -2587,9 +2855,17 @@ function serverGrantCommand(
       flags.expectFingerprint,
     );
     const proposal = yield* proposalInputOf(flags.expires);
+    // The key of another deployment (a mirror — AUTH_SPEC §11-7 ruling F);
+    // the URL's format check precedes any network
+    const keyOrigin =
+      flags.keyFrom === undefined
+        ? null
+        : yield* normalizeHttpOrigin(flags.keyFrom, "the --key-from URL");
     const context = yield* openProject(flags);
+    const keySource = yield* grantKeySource(keyOrigin, context.origin);
     const outcome = yield* serverGrantOp({
       client: context.client,
+      ...(keySource === null ? {} : { keySource: keySource.client }),
       verified: context.verified,
       environmentIds,
       leasePolicy,
@@ -2608,9 +2884,11 @@ function serverGrantCommand(
       summary.leasePolicyCount === 0
         ? "no lease path (lease_policy is empty)"
         : `lease_policy has ${countNoun(summary.leasePolicyCount, "element")}`;
+    const keyNote = keySource === null ? "" : ` (the key of ${keySource.origin})`;
     yield* io.log(
-      `Done: disclosure to server key ${summary.serverKeyFingerprintHex} is active (scope=${summary.scopeEnvironmentIds.join(", ")}, ${policyNote}). Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered`,
+      `Done: disclosure to server key ${summary.serverKeyFingerprintHex}${keyNote} is active (scope=${summary.scopeEnvironmentIds.join(", ")}, ${policyNote}). Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered`,
     );
+    yield* noteGrantKeySource(keySource);
     // §9: always indicate that it is being disclosed (the revocation path is also guided on the spot)
     yield* logNote(
       "the epoch DEKs of environments in the disclosure scope are disclosed to the server (CRYPTO_SPEC §9). To withdraw, run `maruhi server revoke` (it forces a rotation of every environment — §7)",
@@ -3865,16 +4143,21 @@ function brokeredRun(input: {
     if (early !== undefined) {
       yield* accepted(early);
     }
-    const context = yield* openEnvironment({
-      ...input.flags,
-      project: input.flags.project ?? config.projectId,
-    });
-    if (context.projectId !== early) {
-      yield* accepted(context.projectId);
-    }
-    // From now on plain `run` without a config is gated for this project (R-13)
-    yield* markProjectBrokered({ projectId: context.projectId, configPath: input.configPath });
-    const pulled = yield* pullForRun(context);
+    // The read may be retried against the configured mirror (PF2); the proxy then starts once
+    const { context, pulled } = yield* withMirrorFallback(input.flags, (flags) =>
+      Effect.gen(function* () {
+        const opened = yield* openEnvironment({
+          ...flags,
+          project: flags.project ?? config.projectId,
+        });
+        if (opened.projectId !== early) {
+          yield* accepted(opened.projectId);
+        }
+        // From now on plain `run` without a config is gated for this project (R-13)
+        yield* markProjectBrokered({ projectId: opened.projectId, configPath: input.configPath });
+        return { context: opened, pulled: yield* pullForRun(opened) };
+      }),
+    );
     return yield* proxyRunOp({
       command: input.command,
       config,
@@ -3958,17 +4241,24 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       if (values.show) {
         yield* ensureValueDisplayAllowed;
       }
-      const context = yield* openEnvironment(values);
-      const pulled: PulledVariables = yield* pullVariables({
-        client: context.client,
-        verified: context.verified,
-        environmentId: context.environmentId,
-        recipient: context.recipient,
-        resync: context.resync,
-        floor: context.floorHandle,
-        // Filling the missing epochs of my other devices (DK K11-4 — pull only)
-        fillOwnDeviceGaps: { signingKeyPair: context.masterKeys.sigKeyPair },
-      });
+      // The read (the prologue and the pull) may be retried against the
+      // configured mirror when the server is unreachable (PF2)
+      const { context, pulled } = yield* withMirrorFallback(values, (flags) =>
+        Effect.gen(function* () {
+          const opened = yield* openEnvironment(flags);
+          const read: PulledVariables = yield* pullVariables({
+            client: opened.client,
+            verified: opened.verified,
+            environmentId: opened.environmentId,
+            recipient: opened.recipient,
+            resync: opened.resync,
+            floor: opened.floorHandle,
+            // Filling the missing epochs of my other devices (DK K11-4 — pull only)
+            fillOwnDeviceGaps: { signingKeyPair: opened.masterKeys.sigKeyPair },
+          });
+          return { context: opened, pulled: read };
+        }),
+      );
       yield* logWarnings(pulled.warnings);
       yield* reportOwnDeviceGapFills({
         projectId: context.projectId,
@@ -4040,14 +4330,20 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           `--plain has no effect: no ${DEFAULT_PROXY_CONFIG_PATH} in the working directory`,
         );
       }
-      const context = yield* openEnvironment(flags);
-      if (proxyConfig === null) {
-        // A project brokered on this machine: the real values only to a
-        // person at a terminal (deleting the config or changing directory
-        // is not a way around the rules — pf4-design.md §21 R-13)
-        yield* ensurePlainRunOfBrokeredProjectAllowed(context.projectId);
-      }
-      const pulled = yield* pullForRun(context);
+      // The read may be retried against the configured mirror when the
+      // server is unreachable (PF2); the command then runs once
+      const pulled = yield* withMirrorFallback(flags, (read) =>
+        Effect.gen(function* () {
+          const context = yield* openEnvironment(read);
+          if (proxyConfig === null) {
+            // A project brokered on this machine: the real values only to a
+            // person at a terminal (deleting the config or changing directory
+            // is not a way around the rules — pf4-design.md §21 R-13)
+            yield* ensurePlainRunOfBrokeredProjectAllowed(context.projectId);
+          }
+          return yield* pullForRun(context);
+        }),
+      );
       // Environment-variable names go through verified statements (§4.2 /
       // §12-7). The execution-control variable-name denylist (run.ts) is a
       // defense layer applied to the verified name
@@ -5458,6 +5754,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           leasePolicyPath: values["lease-policy"],
           expectFingerprint: values["expect-fingerprint"],
           expires: values.expires,
+          keyFrom: values["key-from"],
         }),
       );
     }),
@@ -5483,6 +5780,45 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const server = Command.make("server").pipe(
     Command.withDescription("Manage selective disclosure to the server (grant / revoke)"),
     Command.withSubcommands([serverGrant, serverRevoke]),
+  );
+
+  const mirrorSync = Command.make("sync", mirrorSyncConfig, (values) =>
+    mirrorSyncCommand(values),
+  ).pipe(
+    Command.withDescription(
+      "Replicate the project from the server to the mirror (the export's pages uploaded in order; the mirror accepts only a replica that extends what it holds). From a cron: MARUHI_TOKEN / MARUHI_TOKEN_ORIGIN for the server, MARUHI_MIRROR_TOKEN for the mirror",
+    ),
+  );
+
+  const mirrorStatus = Command.make("status", mirrorStatusConfig, (values) =>
+    mirrorStatusCommand(values),
+  ).pipe(
+    Command.withDescription(
+      "Show the server's verified chain head and the mirror's side by side, with the last replication",
+    ),
+  );
+
+  const mirrorMark = Command.make("mark", mirrorMarkConfig, (values) =>
+    mirrorMarkCommand(values),
+  ).pipe(
+    Command.withDescription(
+      "Mark the project on this server (--server names the mirror deployment) as a read-only mirror of --source; writes are refused there from then on (owner only)",
+    ),
+  );
+
+  const mirrorPromote = Command.make("promote", mirrorPromoteConfig, (values) =>
+    mirrorPromoteCommand(values),
+  ).pipe(
+    Command.withDescription(
+      "Remove the mirror mark on this server (--server names the mirror deployment): the project accepts writes again and becomes the primary (owner only)",
+    ),
+  );
+
+  const mirror = Command.make("mirror").pipe(
+    Command.withDescription(
+      "Manage a read replica of the project in another deployment (sync / status / mark / promote)",
+    ),
+    Command.withSubcommands([mirrorSync, mirrorStatus, mirrorMark, mirrorPromote]),
   );
 
   const inviteCreate = Command.make("create", inviteCreateConfig, (values) =>
@@ -5825,6 +6161,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       ci,
       env,
       server,
+      mirror,
       invite,
       member,
       approval,

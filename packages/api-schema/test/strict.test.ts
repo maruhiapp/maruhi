@@ -107,6 +107,8 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       ["rotation", "resolveProposal"],
       ["invites", "issue"],
       ["invites", "accept"],
+      // A replication page carries the source's chain, ciphertexts and wraps (§11-7)
+      ["mirror", "pages"],
     ]);
   });
 
@@ -124,6 +126,8 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       ["schemaPolicy", "set"],
       // handoff request (§13-7 — KL3): request_id only
       ["keyWraps", "handoffCreate"],
+      // The mirror mark names a source origin only (§11-7)
+      ["mirror", "mark"],
     ]);
   });
 

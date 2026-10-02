@@ -404,6 +404,27 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
        )`);
     },
   },
+  // Step 4 (2026-10-02 — PF2 mirrors, AUTH_SPEC §11-7): the mirror mark and
+  // the replication position of a project that is a read replica of a
+  // source deployment. **Not a snapshot table** (declared in
+  // PROJECT_DO_LOCAL_TABLES, not in `tables`): a replica must never carry
+  // the mark, a restore must not wipe it, and an export must not emit it
+  {
+    tables: [],
+    apply(sql) {
+      sql.exec(`CREATE TABLE mirror_state (
+         id INTEGER PRIMARY KEY CHECK (id = 1),
+         source_origin TEXT NOT NULL,
+         marked_at INTEGER NOT NULL,
+         expected_sequence INTEGER NOT NULL,
+         staging_table TEXT,
+         last_synced_at INTEGER,
+         last_head_seq INTEGER,
+         last_head_hash_hex TEXT,
+         last_audit_seq INTEGER
+       )`);
+    },
+  },
 ];
 
 /**
@@ -415,6 +436,13 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
 export const PROJECT_DO_TABLES: readonly string[] = PROJECT_DO_MIGRATIONS.flatMap(
   (migration) => migration.tables,
 );
+
+/**
+ * Deployment-local tables of the project DO: never exported, never
+ * restored, never replicated (a mirror keeps them across a sync — AUTH_SPEC
+ * §11-7). The test reset helper wipes them too.
+ */
+export const PROJECT_DO_LOCAL_TABLES: readonly string[] = ["mirror_state"];
 
 // version = "number of applied steps" (0 = none applied, PROJECT_DO_MIGRATIONS.length = latest)
 const SCHEMA_META_DDL = `CREATE TABLE IF NOT EXISTS schema_meta (

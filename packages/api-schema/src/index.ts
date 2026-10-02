@@ -186,6 +186,20 @@ export {
   ExportPageSchema,
 } from "./export-api.ts";
 export {
+  MAX_MIRROR_PAGE_LINES,
+  type MirrorPage,
+  type MirrorPageOutcome,
+  MirrorPageOutcomeSchema,
+  MirrorPageSchema,
+  mirrorGroup,
+  MirrorMarkSchema,
+  MirrorSourceOriginSchema,
+  type MirrorStatus,
+  MirrorStatusSchema,
+  type MirrorSyncRecord,
+  MirrorSyncRecordSchema,
+} from "./mirror-api.ts";
+export {
   leaseGroup,
   LeaseRequestSchema,
   LeaseResponseSchema,
@@ -280,6 +294,10 @@ export {
   MetaStatementRejectedError,
   MetaStatementRejectReasonSchema,
   MetaVersionConflictError,
+  MirrorStateError,
+  MirrorStateReasonSchema,
+  MirrorSyncRejectedError,
+  MirrorSyncRejectReasonSchema,
   NameNotNfcError,
   PayloadMismatchError,
   ProjectAlreadyInitializedError,

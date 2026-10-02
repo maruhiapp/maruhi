@@ -19,6 +19,7 @@ SUBCOMMANDS
   ci          Commands for CI jobs (run / sync / rotate)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
+  mirror      Manage a read replica of the project in another deployment (sync / status / mark / promote)
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role / list)
   approval    Four-eyes proposals (list / show / approve / withdraw)
@@ -57,6 +58,7 @@ SUBCOMMANDS
   ci          Commands for CI jobs (run / sync / rotate)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
+  mirror      Manage a read replica of the project in another deployment (sync / status / mark / promote)
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role / list)
   approval    Four-eyes proposals (list / show / approve / withdraw)
@@ -116,6 +118,7 @@ FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
   --env string        Environment ID (default: the `defaultEnvironment` setting)
+  --mirror string     Mirror URL to read from when the server is unreachable (default: the `mirror` setting; reads only, announced on stderr)
   --show              Print the values (interactive terminals only)
 
 GLOBAL FLAGS
@@ -136,6 +139,7 @@ FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
   --env string        Environment ID (default: the `defaultEnvironment` setting)
+  --mirror string     Mirror URL to read from when the server is unreachable (default: the `mirror` setting; reads only, announced on stderr)
   --plain             Inject the real values even when maruhi.proxy.json is present (allowed only to a person at an interactive terminal; without the config, run always injects the real values)
 
 GLOBAL FLAGS
@@ -283,6 +287,7 @@ FLAGS
   --environments string          Comma-separated environment IDs to disclose (required; environments are always explicit)
   --lease-policy string          Path to a workload lease-policy JSON file (defaults to no lease path)
   --expect-fingerprint string    Server key fingerprint noted out of band (32 hex chars; replaces the interactive check)
+  --key-from string              URL of the deployment whose server key to grant, such as a mirror (its /auth/config supplies the key; the grant is appended on the server and reaches the mirror by replication). Default: the server itself
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -300,6 +305,86 @@ FLAGS
   --project string        Project ID (default: the `defaultProject` setting)
   --expires string        How long the proposal stays approvable when the four-eyes policy turns this into a proposal (e.g. 7d, 48h; default 7d, at most 30d)
   --fingerprint string    Server key fingerprint to revoke (may be omitted when exactly one grant is active)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi mirror --help
+DESCRIPTION
+  Manage a read replica of the project in another deployment (sync / status / mark / promote)
+
+USAGE
+  maruhi mirror <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  sync       Replicate the project from the server to the mirror (the export's pages uploaded in order; the mirror accepts only a replica that extends what it holds). From a cron: MARUHI_TOKEN / MARUHI_TOKEN_ORIGIN for the server, MARUHI_MIRROR_TOKEN for the mirror
+  status     Show the server's verified chain head and the mirror's side by side, with the last replication
+  mark       Mark the project on this server (--server names the mirror deployment) as a read-only mirror of --source; writes are refused there from then on (owner only)
+  promote    Remove the mirror mark on this server (--server names the mirror deployment): the project accepts writes again and becomes the primary (owner only)
+
+$ maruhi mirror sync --help
+DESCRIPTION
+  Replicate the project from the server to the mirror (the export's pages uploaded in order; the mirror accepts only a replica that extends what it holds). From a cron: MARUHI_TOKEN / MARUHI_TOKEN_ORIGIN for the server, MARUHI_MIRROR_TOKEN for the mirror
+
+USAGE
+  maruhi mirror sync [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --mirror string     Mirror URL (default: the `mirror` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi mirror status --help
+DESCRIPTION
+  Show the server's verified chain head and the mirror's side by side, with the last replication
+
+USAGE
+  maruhi mirror status [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --mirror string     Mirror URL (default: the `mirror` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi mirror mark --help
+DESCRIPTION
+  Mark the project on this server (--server names the mirror deployment) as a read-only mirror of --source; writes are refused there from then on (owner only)
+
+USAGE
+  maruhi mirror mark [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --source string     URL of the deployment this project mirrors (required)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi mirror promote --help
+DESCRIPTION
+  Remove the mirror mark on this server (--server names the mirror deployment): the project accepts writes again and becomes the primary (owner only)
+
+USAGE
+  maruhi mirror promote [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -1176,6 +1261,7 @@ FLAGS
   --project string     Project ID, which is the pinned genesis hash (required)
   --env string         Environment ID to lease (required)
   --audience string    OIDC audience to request (default: the server origin)
+  --mirror string      Mirror URL to lease from when the server is unreachable (a second OIDC token is requested for the mirror's audience unless --audience is given)
   --anchor string      Path to the committed repository anchor file (generate it with `maruhi project anchor`)
 
 GLOBAL FLAGS
@@ -1196,6 +1282,7 @@ FLAGS
   --server string      Server URL (required; CI mode reads no config file)
   --project string     Project ID, which is the pinned genesis hash (required)
   --audience string    OIDC audience to request (default: the server origin)
+  --mirror string      Mirror URL to lease from when the server is unreachable (a second OIDC token is requested for the mirror's audience unless --audience is given)
   --anchor string      Path to the committed repository anchor file (generate it with `maruhi project anchor`)
   --config string      Path to the sync config committed in the repository (default: maruhi.sync.json)
   --yes                Write to a production target (without it, a production target only shows the plan)
@@ -1430,7 +1517,7 @@ USAGE
   maruhi config get [flags] <key>
 
 ARGUMENTS
-  key string    Config key (server | defaultProject | defaultEnvironment | identityBacking)
+  key string    Config key (server | mirror | defaultProject | defaultEnvironment | identityBacking)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -1444,7 +1531,7 @@ USAGE
   maruhi config set [flags] <key> <value>
 
 ARGUMENTS
-  key string      Config key (server | defaultProject | defaultEnvironment | identityBacking)
+  key string      Config key (server | mirror | defaultProject | defaultEnvironment | identityBacking)
   value string    Value to set
 
 GLOBAL FLAGS

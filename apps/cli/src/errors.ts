@@ -20,6 +20,14 @@ export class CliError extends Data.TaggedError("CliError")<{
    * avoid downgrading to "re-run to fix" guidance.
    */
   readonly evidence?: boolean;
+  /**
+   * Whether the failure is the server being unreachable (no response,
+   * or a gateway error in front of it) rather than an answer. The
+   * read-only fallback to a configured mirror (PF2 — AUTH_SPEC §11-7)
+   * fires on this and on nothing else: an answer from the primary (a
+   * 403, a 404, a conflict) is never retried against a replica.
+   */
+  readonly unreachable?: boolean;
 }> {
   /**
    * The exit code is **carried by the error type itself** (ADR-0016

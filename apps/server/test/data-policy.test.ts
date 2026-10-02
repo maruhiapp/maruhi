@@ -11,6 +11,7 @@ import {
   DekWrapExistsError,
   environmentsGroup,
   exportGroup,
+  mirrorGroup,
   membershipGroup,
   rotationGroup,
   schemaPolicyGroup,
@@ -633,6 +634,9 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     "rotation-proposal-rejected": { kind: "rotation-proposal-rejected", reason: "pending-limit" },
     "export-changed": { kind: "export-changed" },
     "export-rate-limited": { kind: "export-rate-limited", retryAfterSeconds: 60 },
+    "mirror-read-only": { kind: "mirror-read-only" },
+    "mirror-state": { kind: "mirror-state", reason: "not-mirror" },
+    "mirror-sync-rejected": { kind: "mirror-sync-rejected", reason: "sequence-mismatch" },
     "attestation-rejected": { kind: "attestation-rejected", reason: "signature-invalid" },
     "attestation-regression": { kind: "attestation-regression", storedSeq: 5 },
     "attestation-rate-limited": { kind: "attestation-rate-limited", retryAfterSeconds: 60 },
@@ -682,6 +686,9 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     "rotation-proposal-rejected": "RotationProposalRejected",
     "export-changed": "ExportChanged",
     "export-rate-limited": "ExportRateLimited",
+    "mirror-read-only": "Forbidden",
+    "mirror-state": "MirrorState",
+    "mirror-sync-rejected": "MirrorSyncRejected",
     "attestation-rejected": "AttestationRejected",
     "attestation-regression": "AttestationRegression",
     "attestation-rate-limited": "AttestationRateLimited",
@@ -706,6 +713,8 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     audit: auditGroup,
     // Project export (AUTH_SPEC §11-6 — PF3): page / identities
     export: exportGroup,
+    // Mirrors (AUTH_SPEC §11-7 — PF2): status / mark / unmark / pages
+    mirror: mirrorGroup,
   }).flatMap(([groupName, group]) =>
     Object.entries(group.endpoints).flatMap(([endpointName, endpoint]) =>
       Object.values(representativeRejections).map((rejection) => ({
@@ -757,6 +766,6 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     // added (membership 5 / environments 5 / variables 9 [+ history /
     // versionValues — VH] / deks 3 / rotation 4 [+ proposals /
     // resolveProposal — PF7b] / schemaPolicy 2 / audit 4 / export 2 [PF3])
-    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(34);
+    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(38);
   });
 });

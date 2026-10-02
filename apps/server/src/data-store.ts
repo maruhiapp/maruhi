@@ -573,6 +573,14 @@ export interface DataStoreShape {
    */
   readonly recordLeaseWindowUse: (kind: LeaseWindowKind, nowMs: number) => void;
   /**
+   * Whether the project is a read-only mirror (AUTH_SPEC §11-7 — the
+   * `mirror_state` row of do-mirror.ts). Programs that must refuse a
+   * write after their own authorization step (the workload mint —
+   * existence concealment comes first) ask here; the DO's write entry
+   * points are guarded in chain-do.ts
+   */
+  readonly isMirrorSync: () => boolean;
+  /**
    * Query a first-come binding (AUTH_SPEC §14-1): returns the bound
    * ephemeral public key when a binding row within its validity period
    * exists. Expired rows are ignored by the expires_at condition,
@@ -1573,6 +1581,7 @@ const makeWrapQueries = (sql: SqlStorage) => ({
         retryAfterSeconds: Math.ceil((LEASE_WINDOW_MS - current.elapsed) / 1000),
       };
     }),
+  isMirrorSync: () => sql.exec("SELECT 1 FROM mirror_state WHERE id = 1").toArray().length > 0,
   recordLeaseWindowUse: (kind: LeaseWindowKind, nowMs: number) => {
     if (leaseWindowRow(sql, kind, nowMs) === null) {
       sql.exec(

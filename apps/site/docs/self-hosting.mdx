@@ -40,3 +40,15 @@ maruhi project export --server https://my.maruhi.app --project <project-id> --ou
 ```
 
 The export is the server's own content (nothing is decrypted — your deployment never sees a plaintext either), plus a small companion file naming the members' GitHub identities so that, after the import, each member's first login on the new server lands on the user id the chain already names. The import, the identity rules, and what has to be redone afterwards (the server-key grant, recovery setup, tokens) are in the guide's [Migrating a project](https://github.com/maruhiapp/maruhi/blob/main/docs/SELF_HOSTING.md#migrating-a-project-from-another-maruhi-export--import) section.
+
+## A mirror in your own account
+
+Read availability does not depend on one deployment being up: a project's owner can keep a **mirror** — a second deployment, yours, holding a verified read-only replica — and members fall back to it when the primary does not answer:
+
+```sh
+maruhi mirror mark --server https://mirror.example.com --project <project-id> --source https://my.maruhi.app
+maruhi mirror sync --server https://my.maruhi.app --mirror https://mirror.example.com --project <project-id>
+maruhi config set mirror https://mirror.example.com
+```
+
+The mirror accepts a replica only when it extends what it already holds, refuses every write, serves CI leases under its own server key once granted (`maruhi server grant --key-from`), and can be promoted with `maruhi mirror promote` if the primary is gone for good. The bootstrap, the cron, the fallback rules and the limits are in the guide's [Running a mirror](https://github.com/maruhiapp/maruhi/blob/main/docs/SELF_HOSTING.md#running-a-mirror-a-read-replica-for-when-the-primary-is-down) section.

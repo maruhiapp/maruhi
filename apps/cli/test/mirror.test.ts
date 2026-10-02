@@ -1,0 +1,627 @@
+// Tests for mirrors on the client side (AUTH_SPEC §11-7 — PF2,
+// docs/notes/pf2-design.md): `maruhi mirror sync | status | mark | promote`,
+// the read-only fallback of `pull` / `run` / `ci run` to a configured mirror,
+// the mirror's own credential (MARUHI_MIRROR_TOKEN), and
+// `server grant --key-from`.
+//
+// Properties pinned down:
+//  1. sync pages the export from the server and uploads the pages to the
+//     mirror in sequence (restarting at 0 when the project changed), under
+//     the mirror's own session; the report names heads and counts only
+//  2. a mirror that is not marked, or that refuses the replica, fails with
+//     the server's reason; status compares the two heads
+//  3. pull / run retry against the mirror only when the server does not
+//     answer (a connection failure, a gateway 503), never on an answer
+//     (a 403), and say so on stderr; the command runs once
+//  4. ci run requests the lease from the mirror with a token for the
+//     mirror's audience
+//  5. MARUHI_MIRROR_TOKEN opens the mirror's session (sent to the mirror only)
+//  6. server grant --key-from reads the key from the named deployment and
+//     appends the grant on the server
+
+import { type ChainEntry, computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+
+import { runCli } from "../src/cli.ts";
+import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
+import { acceptAppendedEntry, chainHandlerOf } from "./support/chain-handler.ts";
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  encryptValueFor,
+  environmentStatementFor,
+  genesisOp,
+  headOf,
+  makeTestUser,
+  statementFor,
+  type TestUser,
+  type WireDistributedEnvironmentStatement,
+  type WireRecipientDek,
+  wrapDekFor,
+} from "./support/crypto.ts";
+import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
+import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
+import { makeValueEnvironmentServer, type StoredVariable } from "./support/value-env.ts";
+
+const ENV_ID = "prod";
+const ALPHA_VALUE = "alpha-value";
+
+let owner: TestUser;
+let built: BuiltChain;
+let dek: Uint8Array;
+let wrap: WireRecipientDek;
+let envStatement: WireDistributedEnvironmentStatement;
+let alpha: StoredVariable;
+let servers: MockServer[] = [];
+
+beforeAll(async () => {
+  owner = await makeTestUser("user-owner-1111");
+  dek = crypto.getRandomValues(new Uint8Array(32));
+  built = await buildChain([
+    { actor: owner, operation: genesisOp(owner) },
+    { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
+  ]);
+  const common = { projectId: built.projectId, environmentId: ENV_ID };
+  wrap = await wrapDekFor({ ...common, epoch: 1, dek, recipient: owner, signer: owner });
+  const head = { seq: 1, hashHex: built.projectId };
+  envStatement = await environmentStatementFor({
+    ...common,
+    name: ENV_ID,
+    author: owner,
+    head,
+  });
+  alpha = {
+    variableId: "va",
+    statement: await statementFor({
+      ...common,
+      variableId: "va",
+      name: "ALPHA",
+      author: owner,
+      head,
+    }),
+    value: await encryptValueFor({
+      dek,
+      ...common,
+      epoch: 1,
+      variableId: "va",
+      version: 1,
+      plaintext: ALPHA_VALUE,
+      writer: owner,
+      head: headOf(built, 2),
+    }),
+  };
+});
+
+afterEach(async () => {
+  await Promise.all(servers.map((server) => server.close()));
+  servers = [];
+});
+
+async function start(handlers: readonly MockHandler[]): Promise<MockServer> {
+  const server = await MockServer.start(handlers);
+  servers.push(server);
+  return server;
+}
+
+/** An origin nothing listens on (the connection is refused at once). */
+async function deadOrigin(): Promise<string> {
+  const server = await MockServer.start([]);
+  const origin = server.origin;
+  await server.close();
+  return origin;
+}
+
+const headOfChain = () => ({
+  chainHeadSeq: built.entries.length,
+  chainHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
+  auditMaxSeq: 4,
+});
+
+/** The evacuation lines the server pages (two pages: 3 + 2 lines). */
+function snapshotLines(): string[] {
+  return [
+    JSON.stringify({
+      kind: "header",
+      format: "maruhi-do-snapshot",
+      version: 1,
+      schemaVersion: 4,
+      takenAtMs: 1_700_000_000_000,
+      doIdHex: "ab".repeat(32),
+    }),
+    JSON.stringify({ kind: "table", table: "audit_events", columns: ["seq", "event"] }),
+    JSON.stringify({ kind: "row", table: "audit_events", values: [1, "chain.genesis"] }),
+    JSON.stringify({ kind: "table", table: "chain_entries", columns: ["seq", "entry_hash_hex"] }),
+    JSON.stringify({
+      kind: "trailer",
+      rows: { audit_events: 1, chain_entries: 0 },
+      ...headOfChain(),
+      auditHeadHashHex: "cd".repeat(32),
+      databaseSizeBytes: 4096,
+    }),
+  ];
+}
+
+interface SourceOptions {
+  /** How many times the continuation page answers 409 before succeeding. */
+  changedPages?: number;
+}
+
+/** The server: the chain and the export's pages. */
+function sourceHandlers(options: SourceOptions = {}): MockHandler[] {
+  const lines = snapshotLines();
+  const state = { changedPages: options.changedPages ?? 0 };
+  return [
+    chainHandlerOf(built),
+    (request: MockRequest) => {
+      if (request.method !== "GET" || request.path !== `/projects/${built.projectId}/export`) {
+        return null;
+      }
+      if (request.query["cursor"] === undefined) {
+        return {
+          status: 200,
+          json: { lines: lines.slice(0, 3), next: "Y3Vyc29y", head: headOfChain() },
+        };
+      }
+      if (state.changedPages > 0) {
+        state.changedPages -= 1;
+        return { status: 409, json: { _tag: "ExportChanged", reason: "project-changed" } };
+      }
+      return { status: 200, json: { lines: lines.slice(3), head: headOfChain() } };
+    },
+  ];
+}
+
+interface MirrorState {
+  readonly pages: { readonly sequence: number; readonly lines: readonly string[] }[];
+  readonly bearers: string[];
+  status: Record<string, unknown>;
+  /** An injected answer for the page carrying the trailer. */
+  lastPage: { readonly status: number; readonly json: unknown } | null;
+}
+
+/** The mirror: the status, the pages (committing when the trailer arrives), the mark and the promotion. */
+function mirrorHandlers(state: MirrorState): MockHandler[] {
+  const path = `/projects/${built.projectId}/mirror`;
+  return [
+    (request: MockRequest) => {
+      state.bearers.push(String(request.headers["authorization"] ?? ""));
+      return null;
+    },
+    onRequest("GET", path, () => ({ status: 200, json: state.status })),
+    onRequest("PUT", path, (request) => {
+      const body = request.body as { readonly sourceOrigin: string };
+      state.status = {
+        ...state.status,
+        mirror: true,
+        sourceOrigin: body.sourceOrigin,
+        markedAtMs: 1,
+      };
+      return { status: 200, json: state.status };
+    }),
+    onRequest("DELETE", path, () => {
+      state.status = { mirror: false, head: state.status["head"] };
+      return { status: 200, json: state.status };
+    }),
+    onRequest("PUT", `${path}/pages`, (request) => {
+      const body = request.body as { readonly sequence: number; readonly lines: readonly string[] };
+      state.pages.push(body);
+      const trailer = body.lines.some((line) => line.includes('"kind":"trailer"'));
+      if (trailer && state.lastPage !== null) {
+        return state.lastPage;
+      }
+      return trailer
+        ? { status: 200, json: { nextSequence: 0, committed: { atMs: 5, ...headOfChain() } } }
+        : { status: 200, json: { nextSequence: body.sequence + 1 } };
+    }),
+    onRequest("GET", "/auth/me", () => ({
+      status: 200,
+      json: { userId: owner.userId, orgs: [] },
+    })),
+  ];
+}
+
+function mirrorState(marked = true): MirrorState {
+  return {
+    pages: [],
+    bearers: [],
+    status: marked
+      ? {
+          mirror: true,
+          sourceOrigin: "https://my.maruhi.app",
+          markedAtMs: 1,
+          head: { ...headOfChain(), chainHeadSeq: 1, chainHeadHashHex: built.projectId },
+        }
+      : { mirror: false, head: headOfChain() },
+    lastPage: null,
+  };
+}
+
+interface Pair {
+  readonly env: TestEnv;
+  readonly source: MockServer;
+  readonly mirror: MockServer;
+  readonly state: MirrorState;
+}
+
+async function startPair(
+  options: { source?: SourceOptions; marked?: boolean } = {},
+): Promise<Pair> {
+  const source = await start(sourceHandlers(options.source));
+  const state = mirrorState(options.marked);
+  const mirror = await start(mirrorHandlers(state));
+  const env = await makeTestEnv();
+  seedSession(env, source.origin, owner);
+  seedSession(env, mirror.origin, owner);
+  await seedConfig(env, { server: source.origin, defaultProject: built.projectId });
+  return { env, source, mirror, state };
+}
+
+describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
+  it("pages the export from the server and uploads the pages in sequence under the mirror's session", async () => {
+    const pair = await startPair();
+    expect(await runCli(["mirror", "sync", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
+      0,
+    );
+    const lines = snapshotLines();
+    expect(pair.state.pages).toEqual([
+      { sequence: 0, lines: lines.slice(0, 3) },
+      { sequence: 1, lines: lines.slice(3) },
+    ]);
+    const logs = pair.env.logs.join("\n");
+    expect(logs).toContain(
+      `Replicated project ${built.projectId} to ${pair.mirror.origin}: chain head seq=2 (in sync with the verified view); audit seq=4; 2 pages, 5 lines`,
+    );
+    expect(logs).toContain("Before this run: No replication since the mark");
+    expect(logs).not.toContain("chain.genesis");
+    // The export came from the server, the pages went to the mirror
+    expect(pair.source.requests.filter((r) => r.path.endsWith("/export"))).toHaveLength(2);
+    expect(pair.mirror.requests.filter((r) => r.path.endsWith("/export"))).toHaveLength(0);
+  });
+
+  it("restarts at sequence 0 when the project changed between pages, and reads the mirror from the `mirror` setting", async () => {
+    const pair = await startPair({ source: { changedPages: 1 } });
+    await seedConfig(pair.env, {
+      server: pair.source.origin,
+      defaultProject: built.projectId,
+      mirror: pair.mirror.origin,
+    });
+    expect(await runCli(["mirror", "sync"], pair.env.layer)).toBe(0);
+    expect(pair.state.pages.map((page) => page.sequence)).toEqual([0, 0, 1]);
+    expect(pair.env.logs.join("\n")).toContain("restarted 1 time because the project changed");
+  });
+
+  it("fails with the mirror's reason: not marked, a refused replica, and the mirror URL being the server", async () => {
+    const unmarked = await startPair({ marked: false });
+    expect(
+      await runCli(["mirror", "sync", "--mirror", unmarked.mirror.origin], unmarked.env.layer),
+    ).toBe(1);
+    expect(unmarked.env.errors.join("\n")).toContain("not marked as a mirror on that server");
+    expect(unmarked.state.pages).toHaveLength(0);
+
+    const refused = await startPair();
+    refused.state.lastPage = {
+      status: 422,
+      json: { _tag: "MirrorSyncRejected", reason: "chain-not-extension" },
+    };
+    expect(
+      await runCli(["mirror", "sync", "--mirror", refused.mirror.origin], refused.env.layer),
+    ).toBe(1);
+    expect(refused.env.errors.join("\n")).toContain(
+      "its chain does not extend the chain the mirror holds (chain-not-extension)",
+    );
+
+    const same = await startPair();
+    expect(await runCli(["mirror", "sync", "--mirror", same.source.origin], same.env.layer)).toBe(
+      2,
+    );
+    expect(await runCli(["mirror", "sync"], same.env.layer)).toBe(1);
+    expect(same.env.errors.join("\n")).toContain("No mirror URL");
+  });
+
+  it("status compares the two heads; mark and promote address the mirror deployment as --server", async () => {
+    const pair = await startPair();
+    expect(await runCli(["mirror", "status", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
+      0,
+    );
+    const logs = pair.env.logs.join("\n");
+    expect(logs).toContain(`Mirror ${pair.mirror.origin} of https://my.maruhi.app`);
+    expect(logs).toContain("Server: chain head seq=2 (the verified view)");
+    expect(logs).toContain(
+      "Mirror: chain head seq=1 — behind the verified view by 1 chain entry (seq 1 of 2); audit seq=4",
+    );
+    expect(logs).toContain("No replication since the mark");
+
+    const fresh = await startPair({ marked: false });
+    expect(
+      await runCli(
+        ["mirror", "mark", "--server", fresh.mirror.origin, "--source", "https://my.maruhi.app"],
+        fresh.env.layer,
+      ),
+    ).toBe(0);
+    expect(fresh.state.status).toMatchObject({
+      mirror: true,
+      sourceOrigin: "https://my.maruhi.app",
+    });
+    expect(fresh.env.logs.join("\n")).toContain(
+      `Marked project ${built.projectId} on ${fresh.mirror.origin} as a mirror of https://my.maruhi.app`,
+    );
+    expect(
+      await runCli(["mirror", "promote", "--server", fresh.mirror.origin], fresh.env.layer),
+    ).toBe(0);
+    expect(fresh.state.status).toMatchObject({ mirror: false });
+    expect(fresh.env.logs.join("\n")).toContain(
+      `Promoted project ${built.projectId} on ${fresh.mirror.origin}`,
+    );
+    // --source is required, and must not be the server itself
+    expect(await runCli(["mirror", "mark", "--server", fresh.mirror.origin], fresh.env.layer)).toBe(
+      2,
+    );
+    expect(
+      await runCli(
+        ["mirror", "mark", "--server", fresh.mirror.origin, "--source", fresh.mirror.origin],
+        fresh.env.layer,
+      ),
+    ).toBe(2);
+  });
+
+  it("MARUHI_MIRROR_TOKEN opens the mirror's session without a keychain entry, and is never sent to the server", async () => {
+    const source = await start(sourceHandlers());
+    const state = mirrorState();
+    const mirror = await start(mirrorHandlers(state));
+    const env = await makeTestEnv();
+    seedSession(env, source.origin, owner);
+    await seedConfig(env, { server: source.origin, defaultProject: built.projectId });
+    // No session for the mirror: refused with the mirror-specific guidance
+    expect(await runCli(["mirror", "sync", "--mirror", mirror.origin], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(`Not logged in to the mirror ${mirror.origin}`);
+    expect(env.errors.join("\n")).toContain("MARUHI_MIRROR_TOKEN");
+    env.setEnvVar("MARUHI_MIRROR_TOKEN", "maruhi_pat_MirrorTokenValue0000000000000000000000");
+    expect(await runCli(["mirror", "sync", "--mirror", mirror.origin], env.layer)).toBe(0);
+    expect(state.pages).toHaveLength(2);
+    expect(
+      state.bearers.every((b) => b === "Bearer maruhi_pat_MirrorTokenValue0000000000000000000000"),
+    ).toBe(true);
+    expect(
+      source.requests.some(
+        (r) =>
+          r.headers["authorization"] === "Bearer maruhi_pat_MirrorTokenValue0000000000000000000000",
+      ),
+    ).toBe(false);
+  });
+});
+
+/** The mirror as a full read server (chain + pull), plus the status it reports. */
+function readMirrorHandlers(): MockHandler[] {
+  const value = makeValueEnvironmentServer({
+    chain: built,
+    owner,
+    environmentId: ENV_ID,
+    envStatement,
+    wrap,
+    initialVariables: [alpha],
+  });
+  return [...value.handlers, ...mirrorHandlers(mirrorState())];
+}
+
+describe("the read-only fallback to a mirror (PF2)", () => {
+  it("pull retries against the mirror when the server does not answer, and says so", async () => {
+    const mirror = await start(readMirrorHandlers());
+    const dead = await deadOrigin();
+    const env = await makeTestEnv();
+    seedSession(env, dead, owner);
+    seedSession(env, mirror.origin, owner);
+    await seedConfig(env, {
+      server: dead,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+      mirror: mirror.origin,
+    });
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain("Failed to connect to the server");
+    expect(errors).toContain(`Retrying this read against the mirror ${mirror.origin}`);
+    expect(env.logs.join("\n")).toContain("Sync and verification OK: 1 variable");
+    expect(mirror.requests.some((r) => r.path.endsWith("/pull"))).toBe(true);
+  });
+
+  it("a gateway 503 from the server is retried; an answer of the server (403) is not", async () => {
+    const mirror = await start(readMirrorHandlers());
+    const gateway = await start([
+      () => ({ status: 503, bodyText: "upstream connect error", contentType: "text/plain" }),
+    ]);
+    const env = await makeTestEnv();
+    seedSession(env, gateway.origin, owner);
+    seedSession(env, mirror.origin, owner);
+    await seedConfig(env, {
+      server: gateway.origin,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    expect(await runCli(["pull", "--mirror", mirror.origin], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain("Retrying this read against the mirror");
+
+    const refusing = await start([
+      () => ({ status: 403, json: { _tag: "Forbidden", reason: "insufficient-role" } }),
+    ]);
+    const other = await makeTestEnv();
+    seedSession(other, refusing.origin, owner);
+    seedSession(other, mirror.origin, owner);
+    await seedConfig(other, {
+      server: refusing.origin,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    const before = mirror.requests.length;
+    expect(await runCli(["pull", "--mirror", mirror.origin], other.layer)).toBe(1);
+    expect(other.errors.join("\n")).not.toContain("Retrying");
+    expect(mirror.requests).toHaveLength(before);
+  });
+
+  it("run reads from the mirror and runs the command once with the values; the mirror equal to the server is no fallback", async () => {
+    const mirror = await start(readMirrorHandlers());
+    const dead = await deadOrigin();
+    const env = await makeTestEnv();
+    seedSession(env, dead, owner);
+    seedSession(env, mirror.origin, owner);
+    await seedConfig(env, {
+      server: dead,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    expect(
+      await runCli(["run", "--mirror", mirror.origin, "--", "printenv", "ALPHA"], env.layer),
+    ).toBe(0);
+    expect(env.runnerCalls).toHaveLength(1);
+    expect(env.runnerCalls[0]?.extraEnv["ALPHA"]).toBe(ALPHA_VALUE);
+    expect(env.logs.join("\n")).not.toContain(ALPHA_VALUE);
+
+    const same = await makeTestEnv();
+    seedSession(same, dead, owner);
+    await seedConfig(same, {
+      server: dead,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+      mirror: dead,
+    });
+    expect(await runCli(["run", "--", "printenv", "ALPHA"], same.layer)).toBe(1);
+    expect(same.errors.join("\n")).toContain("no fallback is possible");
+  });
+
+  it("ci run requests the lease from the mirror with a token for the mirror's audience", async () => {
+    const audiences: string[] = [];
+    const leased: string[] = [];
+    const mirror = await start([
+      (request: MockRequest) => {
+        if (request.method !== "GET" || request.path !== "/oidc/token") {
+          return null;
+        }
+        audiences.push(request.query["audience"] ?? "");
+        const payload = Buffer.from(
+          JSON.stringify({
+            iss: "https://issuer.example",
+            sub: "repo:acme/app",
+            aud: request.query["audience"],
+          }),
+        ).toString("base64url");
+        return { status: 200, json: { value: `eyJhbGciOiJSUzI1NiJ9.${payload}.c2ln` } };
+      },
+      (request: MockRequest) => {
+        if (request.method !== "POST" || !request.path.endsWith("/lease")) {
+          return null;
+        }
+        leased.push(request.path);
+        return { status: 404, json: { _tag: "ProjectNotFound", projectId: built.projectId } };
+      },
+    ]);
+    const dead = await deadOrigin();
+    const env = await makeTestEnv();
+    env.setEnvVar(OIDC_REQUEST_URL_ENV, `${mirror.origin}/oidc/token`);
+    env.setEnvVar(OIDC_REQUEST_TOKEN_ENV, "runner-token");
+    const args = [
+      "ci",
+      "run",
+      "--server",
+      dead,
+      "--project",
+      built.projectId,
+      "--env",
+      ENV_ID,
+      "--mirror",
+      mirror.origin,
+      "--",
+      "printenv",
+      "ALPHA",
+    ];
+    // The mirror answers (a 404 here): the fallback fired, with a second token for the mirror's audience
+    expect(await runCli(args, env.layer)).toBe(1);
+    expect(audiences).toEqual([dead, mirror.origin]);
+    expect(leased).toEqual([`/projects/${built.projectId}/environments/${ENV_ID}/lease`]);
+    expect(env.errors.join("\n")).toContain(`Retrying against the mirror ${mirror.origin}`);
+    expect(env.runnerCalls).toHaveLength(0);
+  });
+});
+
+describe("maruhi server grant --key-from (PF2)", () => {
+  it("reads the server key from the named deployment and appends the grant on the server", async () => {
+    const keyPub = Uint8Array.from({ length: 32 }, () => 0x6b);
+    const fp = await computeServerKeyFingerprint(keyPub);
+    if (!fp.ok) throw new Error("fingerprint failed");
+    const mirrorFp = encodeHex(fp.value);
+    const appended: unknown[] = [];
+    const entries = [...built.entries];
+    const hashes = [...built.hashes];
+    const source = await start([
+      onRequest("GET", "/auth/config", () => ({
+        status: 200,
+        json: {
+          githubClientId: "dummy",
+          signupPolicy: "open",
+          serverKeyFingerprintHex: "00".repeat(16),
+          serverEncPubHex: "11".repeat(32),
+        },
+      })),
+      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+        status: 200,
+        json: {
+          projectId: built.projectId,
+          entries,
+          headSeq: entries.length,
+          headHashHex: hashes[hashes.length - 1],
+          attestations: [],
+        },
+      })),
+      onRequest("POST", `/projects/${built.projectId}/chain/entries`, (request) => {
+        const body = request.body as { readonly entry: ChainEntry };
+        appended.push(body.entry.payload);
+        // The served chain reflects the append (the grant's resync reads it back)
+        return acceptAppendedEntry(built.projectId, entries, hashes, body.entry);
+      }),
+      (request: MockRequest) =>
+        /\/environments\/[^/]+\/deks$/.test(request.path)
+          ? request.method === "GET"
+            ? { status: 200, json: { deks: [wrap] } }
+            : { status: 204, json: undefined }
+          : null,
+    ]);
+    const keyServer = await start([
+      onRequest("GET", "/auth/config", () => ({
+        status: 200,
+        json: {
+          githubClientId: "dummy",
+          signupPolicy: "open",
+          serverKeyFingerprintHex: mirrorFp,
+          serverEncPubHex: encodeHex(keyPub),
+        },
+      })),
+    ]);
+    const env = await makeTestEnv();
+    seedSession(env, source.origin, owner);
+    await seedConfig(env, { server: source.origin, defaultProject: built.projectId });
+    const code = await runCli(
+      [
+        "server",
+        "grant",
+        "--environments",
+        ENV_ID,
+        "--key-from",
+        keyServer.origin,
+        "--expect-fingerprint",
+        mirrorFp,
+      ],
+      env.layer,
+    );
+    expect(env.errors.join("\n"), env.errors.join("\n")).not.toContain("maruhi:");
+    expect(code).toBe(0);
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toMatchObject({
+      serverKeyFingerprintHex: mirrorFp,
+      serverEncPubHex: encodeHex(keyPub),
+      scopeEnvironmentIds: [ENV_ID],
+    });
+    // The key server was asked for its config only; the grant went to the server
+    expect(keyServer.requests.map((r) => r.path)).toEqual(["/auth/config"]);
+    expect(env.logs.join("\n")).toContain(`(the key of ${keyServer.origin})`);
+    expect(env.errors.join("\n")).toContain("reach " + keyServer.origin);
+  });
+});

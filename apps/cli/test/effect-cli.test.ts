@@ -1033,7 +1033,7 @@ describe("diagnosing an unknown command (stage 3 ④ — root's UnknownSubcomman
     const { env } = await startEnv();
     expect(await runCli(["bogus"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: login | logout | pull | run | push | mcp | env | server | invite | member | approval | key | device | token | guardian | project | ci | agent | rotation | audit | config | schema | var | sync | proxy)",
+      "Unknown subcommand (expected one of: login | logout | pull | run | push | mcp | env | server | mirror | invite | member | approval | key | device | token | guardian | project | ci | agent | rotation | audit | config | schema | var | sync | proxy)",
     );
   });
 
@@ -1416,7 +1416,7 @@ describe("config's nested subcommands (ADR-0016 stage 3 ①)", () => {
     const get = await startEnv();
     expect(await runCli(["config", "get", evil], get.env.layer)).toBe(2);
     const getOutput = [...get.env.logs, ...get.env.errors].join("\n");
-    expect(getOutput).toContain("Unknown config key (server | defaultProject");
+    expect(getOutput).toContain("Unknown config key (server | mirror | defaultProject");
     expect(getOutput).not.toContain("");
     expect(getOutput).not.toContain("\r");
 

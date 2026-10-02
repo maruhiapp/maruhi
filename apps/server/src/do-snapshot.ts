@@ -42,9 +42,9 @@ export const SNAPSHOT_FORMAT = "maruhi-do-snapshot";
 export const SNAPSHOT_FORMAT_VERSION = 1;
 
 /** DO SQLite bound-parameter limit (per statement — durable-objects/platform/limits). */
-const MAX_BOUND_PARAMETERS = 100;
+export const MAX_BOUND_PARAMETERS = 100;
 
-type SnapshotScalar = number | string | null | { readonly b64: string };
+export type SnapshotScalar = number | string | null | { readonly b64: string };
 
 export interface SnapshotHeader {
   readonly kind: "header";
@@ -55,13 +55,13 @@ export interface SnapshotHeader {
   readonly doIdHex: string;
 }
 
-interface SnapshotTableLine {
+export interface SnapshotTableLine {
   readonly kind: "table";
   readonly table: string;
   readonly columns: readonly string[];
 }
 
-interface SnapshotRowLine {
+export interface SnapshotRowLine {
   readonly kind: "row";
   readonly table: string;
   readonly values: readonly SnapshotScalar[];
@@ -78,7 +78,7 @@ export interface SnapshotTrailer {
   readonly databaseSizeBytes: number;
 }
 
-type SnapshotLine = SnapshotHeader | SnapshotTableLine | SnapshotRowLine | SnapshotTrailer;
+export type SnapshotLine = SnapshotHeader | SnapshotTableLine | SnapshotRowLine | SnapshotTrailer;
 
 // ---------------------------------------------------------------------------
 // Watermarks (input to the skip rules — hosted-ops §2-D)
@@ -135,7 +135,7 @@ function isProjectDoEmpty(sql: SqlStorage): boolean {
   return sql.exec(`SELECT 1 FROM ${CHAIN_TABLE} LIMIT 1`).toArray().length === 0;
 }
 
-const CHAIN_TABLE = "chain_entries";
+export const CHAIN_TABLE = "chain_entries";
 /** The restore staging table for chain_entries. Not listed in `tables`,
  * so it never appears in evacuations; leftovers are DROPped at the start
  * / completion / failure of the next restore.
@@ -165,7 +165,7 @@ function encodeScalar(value: unknown): SnapshotScalar {
   throw new Error("unsupported SQLite value type in snapshot");
 }
 
-function decodeScalar(value: SnapshotScalar): number | string | null | ArrayBuffer {
+export function decodeScalar(value: SnapshotScalar): number | string | null | ArrayBuffer {
   if (value !== null && typeof value === "object") {
     const binary = atob(value.b64);
     const bytes = new Uint8Array(binary.length);
@@ -743,7 +743,7 @@ async function* lines(body: ReadableStream): AsyncGenerator<string> {
   }
 }
 
-function parseLine(text: string): SnapshotLine {
+export function parseLine(text: string): SnapshotLine {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -815,7 +815,7 @@ class RowInserter {
  * (column names are embedded as SQL identifiers, so only values that
  * pass here are used).
  */
-function acceptColumns(sql: SqlStorage, table: string, columns: unknown): readonly string[] {
+export function acceptColumns(sql: SqlStorage, table: string, columns: unknown): readonly string[] {
   if (!Array.isArray(columns) || !columns.every((column) => typeof column === "string")) {
     throw new RestoreRefusedError("malformed");
   }
@@ -831,7 +831,7 @@ function acceptColumns(sql: SqlStorage, table: string, columns: unknown): readon
   return live;
 }
 
-function acceptHeader(line: SnapshotLine, schemaVersion: number): SnapshotHeader {
+export function acceptHeader(line: SnapshotLine, schemaVersion: number): SnapshotHeader {
   if (
     line.kind !== "header" ||
     line.format !== SNAPSHOT_FORMAT ||

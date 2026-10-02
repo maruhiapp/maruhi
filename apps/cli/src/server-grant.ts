@@ -388,6 +388,13 @@ export function backfillServerGrant(input: {
 
 export function serverGrantOp(input: {
   readonly client: MaruhiClient;
+  /**
+   * The deployment whose server key is granted (`--key-from <mirror url>`
+   * — AUTH_SPEC §11-7 ruling F: a mirror's key is granted on the server,
+   * the only place that accepts appends; the grant and the wraps reach
+   * the mirror by replication). Default: the server itself.
+   */
+  readonly keySource?: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentIds: readonly EnvironmentId[];
   readonly leasePolicy: readonly LeasePolicyIssuer[];
@@ -402,7 +409,7 @@ export function serverGrantOp(input: {
     const io = yield* CliIo;
     // Normalizing the scope: ascending code-point order, no duplicates (§6.2's SHOULD)
     const scope = [...new Set<string>(input.environmentIds)].toSorted();
-    const serverConfig = yield* fetchServerKeyConfig(input.client);
+    const serverConfig = yield* fetchServerKeyConfig(input.keySource ?? input.client);
     const { existing } = yield* ensureGrantable({
       verified: input.verified,
       signerUserId: input.signerUserId,

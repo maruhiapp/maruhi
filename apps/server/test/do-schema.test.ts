@@ -19,6 +19,7 @@ import {
   applyProjectDoMigrations,
   ensureProjectDoTables,
   PROJECT_DO_MIGRATIONS,
+  PROJECT_DO_LOCAL_TABLES,
   PROJECT_DO_TABLES,
   readProjectDoSchemaVersion,
 } from "../src/do-schema.ts";
@@ -69,8 +70,10 @@ describe("project DO schema migrations", () => {
       }
       // The tables declaration (what PROJECT_DO_TABLES is derived from)
       // has not drifted from the real schema:
-      // real tables = declared tables + schema_meta
-      expect(tables).toEqual(new Set([...PROJECT_DO_TABLES, "schema_meta"]));
+      // real tables = declared tables + the deployment-local tables + schema_meta
+      expect(tables).toEqual(
+        new Set([...PROJECT_DO_TABLES, ...PROJECT_DO_LOCAL_TABLES, "schema_meta"]),
+      );
     });
   });
 

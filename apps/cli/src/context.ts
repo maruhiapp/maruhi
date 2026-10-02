@@ -47,8 +47,10 @@ import {
   type CliSession,
   loadMasterKeys,
   type MasterKeys,
+  normalizeHttpOrigin,
   resolveServerOrigin,
   resolveSession,
+  type SessionCredential,
 } from "./session.ts";
 import { resyncExtended, syncProject, type VerifiedProject } from "./sync.ts";
 
@@ -81,6 +83,68 @@ export interface CommonFlags {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly env?: string | undefined;
+  /** `--mirror <url>` (PF2 — AUTH_SPEC §11-7): the read-only replica a read falls back to (default: the `mirror` setting). */
+  readonly mirror?: string | undefined;
+  /** Which deployment's credential the session opens (set by {@link withMirrorFallback} on the retry; never a flag). */
+  readonly credential?: SessionCredential | undefined;
+}
+
+/** The mirror origin a read falls back to: `--mirror` → the `mirror` setting (null when none is configured). */
+export function resolveMirrorOrigin(
+  flag: string | undefined,
+  config: CliConfig,
+): Effect.Effect<string | null, CliError> {
+  const raw = flag ?? config.mirror;
+  if (raw === undefined) {
+    return Effect.succeed(null);
+  }
+  return normalizeHttpOrigin(
+    raw,
+    "the mirror URL",
+    flag === undefined ? { fix: "mirror in your config" } : "flag",
+  );
+}
+
+/**
+ * Runs a read against the configured server and, when that server is
+ * unreachable (no answer, or a gateway error in front of it — never an
+ * answer of its own such as a 403 or a 404), once more against the
+ * configured mirror with the mirror's own credential (PF2 — AUTH_SPEC
+ * §11-7 ruling E). The retry is announced on stderr. Read-only commands
+ * only: every verification duty runs unchanged against the mirror, and a
+ * mirror behind the local floor is refused like any server.
+ */
+export function withMirrorFallback<A>(
+  flags: CommonFlags,
+  read: (flags: CommonFlags) => Effect.Effect<A, CliError, CliServices>,
+): Effect.Effect<A, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const config = yield* (yield* ConfigStore).load;
+    const mirror = yield* resolveMirrorOrigin(flags.mirror, config);
+    if (mirror === null) {
+      return yield* read(flags);
+    }
+    const primary = yield* resolveServerOrigin(flags.server, config);
+    if (mirror === primary) {
+      yield* logWarning(
+        "the mirror URL is the server URL itself — no fallback is possible (point `mirror` at the mirror deployment)",
+      );
+      return yield* read(flags);
+    }
+    return yield* read(flags).pipe(
+      Effect.catch((error: CliError) =>
+        error.unreachable === true
+          ? Effect.gen(function* () {
+              const io = yield* CliIo;
+              yield* io.logError(
+                `${error.message}. Retrying this read against the mirror ${mirror} (a read-only replica that may be behind the server; writes are never retried)`,
+              );
+              return yield* read({ ...flags, server: mirror, credential: "mirror" });
+            })
+          : Effect.fail(error),
+      ),
+    );
+  });
 }
 
 // ID format validation (the client-side early check of AUTH_SPEC §12-1) uses
@@ -148,10 +212,11 @@ export interface SessionContext {
 function openSessionWith(
   config: CliConfig,
   serverFlag: string | undefined,
+  credential: SessionCredential = "server",
 ): Effect.Effect<SessionContext, CliError, CliServices> {
   return Effect.gen(function* () {
     const origin = yield* resolveServerOrigin(serverFlag, config);
-    const session = yield* resolveSession(origin);
+    const session = yield* resolveSession(origin, credential);
     const client = yield* makeApiClient({ baseUrl: origin, token: session.token });
     return { config, origin, session, client };
   });
@@ -159,10 +224,11 @@ function openSessionWith(
 
 export function openSession(
   serverFlag: string | undefined,
+  credential: SessionCredential = "server",
 ): Effect.Effect<SessionContext, CliError, CliServices> {
   return Effect.gen(function* () {
     const store = yield* ConfigStore;
-    return yield* openSessionWith(yield* store.load, serverFlag);
+    return yield* openSessionWith(yield* store.load, serverFlag, credential);
   });
 }
 
@@ -600,15 +666,21 @@ function openProjectWith(
   return Effect.gen(function* () {
     // The project ID format check runs before any network access
     const projectId = yield* resolveProjectId(flags.project, config);
-    const context = yield* openSessionWith(config, flags.server);
+    const context = yield* openSessionWith(config, flags.server, flags.credential);
     // Loading the master key stays **before** sync (traffic) and floor
     // advance: a write command run on a keyless device must not be made to
     // round-trip the server before it fails
     const masterKeys = yield* loadMasterKeys(context.session);
-    const base = yield* attachProject(context, projectId, options, {
-      userId: context.session.userId,
-      signingKey: masterKeys.sigKeyPair.privateKey,
-    });
+    // A mirror refuses attestations (AUTH_SPEC §11-7): the fallback read
+    // reconciles the gossip it serves but submits nothing there
+    const base = yield* attachProject(
+      context,
+      projectId,
+      options,
+      flags.credential === "mirror"
+        ? undefined
+        : { userId: context.session.userId, signingKey: masterKeys.sigKeyPair.privateKey },
+    );
     const recipient: DekRecipient = {
       userId: context.session.userId,
       encPubHex: masterKeys.record.encPubHex,
@@ -636,7 +708,7 @@ function openMetadataProjectWith(
 ): Effect.Effect<ProjectContextBase, CliError, CliServices> {
   return Effect.gen(function* () {
     const projectId = yield* resolveProjectId(flags.project, config);
-    const context = yield* openSessionWith(config, flags.server);
+    const context = yield* openSessionWith(config, flags.server, flags.credential);
     return yield* attachProject(context, projectId);
   });
 }

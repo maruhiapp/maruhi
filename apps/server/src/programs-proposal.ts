@@ -241,6 +241,16 @@ export const proposeRotationProgram = (
       cache,
     );
     const store = yield* DataStore;
+    // A mirror mints nothing (AUTH_SPEC §11-7) — judged after
+    // authorization like every §14-5 reason (existence concealment), in
+    // the proposal vocabulary because the workload's credential is not a
+    // member's; the job mints against the source deployment
+    if (store.isMirrorSync()) {
+      return yield* Effect.fail<ProposalRejection>({
+        kind: "proposal-rejected",
+        reason: "mirror-read-only",
+      });
+    }
     // (1) The mint window — judged after authorization (existence
     // concealment), consumed only when a proposal is stored
     const window = yield* store.checkLeaseWindow(

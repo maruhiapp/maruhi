@@ -35,6 +35,8 @@ import {
   ManifestVersionConflictError,
   MetaStatementRejectedError,
   MetaVersionConflictError,
+  MirrorStateError,
+  MirrorSyncRejectedError,
   NameNotNfcError,
   PayloadMismatchError,
   ProjectNotFoundError,
@@ -312,6 +314,8 @@ type DataApiError =
   | AuditHeadNotReadyError
   | ExportChangedError
   | ExportRateLimitedError
+  | MirrorStateError
+  | MirrorSyncRejectedError
   | ChainHeadConflictError
   | ChainEntryInvalidError
   | ChainEntryTooLargeError
@@ -373,6 +377,10 @@ const rejectionErrors = {
   "export-changed": () => new ExportChangedError({ reason: "project-changed" }),
   "export-rate-limited": (rejection) =>
     new ExportRateLimitedError({ retryAfterSeconds: rejection.retryAfterSeconds }),
+  // Mirrors (AUTH_SPEC §11-7 — PF2)
+  "mirror-read-only": () => new ForbiddenError({ reason: "mirror-read-only" }),
+  "mirror-state": (rejection) => new MirrorStateError({ reason: rejection.reason }),
+  "mirror-sync-rejected": (rejection) => new MirrorSyncRejectedError({ reason: rejection.reason }),
   "chain-head-conflict": (rejection) =>
     new ChainHeadConflictError({
       currentHeadSeq: rejection.currentHeadSeq,

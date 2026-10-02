@@ -15,15 +15,25 @@
 
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 
-import { PROJECT_DO_TABLES } from "../../src/do-schema.ts";
+import { PROJECT_DO_LOCAL_TABLES, PROJECT_DO_TABLES } from "../../src/do-schema.ts";
 
 /** Returns the given project's DO storage to empty and evicts the
  * instance. */
 export async function resetProjectDo(projectId: string): Promise<void> {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
   await runInDurableObject(stub, (_instance, state) => {
-    for (const table of PROJECT_DO_TABLES) {
+    for (const table of [...PROJECT_DO_TABLES, ...PROJECT_DO_LOCAL_TABLES]) {
       state.storage.sql.exec(`DELETE FROM ${table}`);
+    }
+    // A mirror replication left mid-way keeps staging tables (PF2); drop them
+    const staging = state.storage.sql
+      .exec(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%\\_mirror' ESCAPE '\\'",
+      )
+      .toArray()
+      .map((row) => String(row["name"]));
+    for (const table of staging) {
+      state.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
     }
   });
   await evictDurableObject(stub);

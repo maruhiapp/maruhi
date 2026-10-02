@@ -681,6 +681,14 @@ export type DataRejection =
   // export window (429)
   | { readonly kind: "export-changed" }
   | { readonly kind: "export-rate-limited"; readonly retryAfterSeconds: number }
+  // Mirrors (AUTH_SPEC §11-7 — PF2): a write on a read-only mirror (the
+  // worker maps it to Forbidden [mirror-read-only]), the mark state
+  // (409 MirrorState) and a refused replication page (422
+  // MirrorSyncRejected — the vocabulary matches api-schema's
+  // MirrorSyncRejectReasonSchema)
+  | { readonly kind: "mirror-read-only" }
+  | { readonly kind: "mirror-state"; readonly reason: MirrorStateReason }
+  | { readonly kind: "mirror-sync-rejected"; readonly reason: MirrorSyncRejectReason }
   | {
       readonly kind: "limit-exceeded";
       readonly resource: DataLimitResource;
@@ -693,6 +701,20 @@ export type DataRejection =
   | { readonly kind: "attestation-regression"; readonly storedSeq: number }
   | { readonly kind: "attestation-rate-limited"; readonly retryAfterSeconds: number };
 
+/** Why the mirror state does not admit the operation (AUTH_SPEC §11-7). */
+export type MirrorStateReason = "already-mirror" | "not-mirror";
+
+/** Why a replication page is refused (the api-schema MirrorSyncRejectReasonSchema vocabulary — AUTH_SPEC §11-7). */
+export type MirrorSyncRejectReason =
+  | "sequence-mismatch"
+  | "malformed"
+  | "schema-mismatch"
+  | "unknown-table"
+  | "row-count-mismatch"
+  | "chain-not-extension"
+  | "audit-regression"
+  | "page-too-large";
+
 /** Why a sealed value proposal or its resolution is refused (the api-schema RotationProposalRejectReasonSchema vocabulary — AUTH_SPEC §14-5). */
 export type RotationProposalRejectReason =
   | "duplicate-id"
@@ -703,7 +725,9 @@ export type RotationProposalRejectReason =
   | "expiry-out-of-range"
   | "pending-limit"
   | "storage-limit"
-  | "version-missing";
+  | "version-missing"
+  // The project is a read-only mirror (AUTH_SPEC §11-7)
+  | "mirror-read-only";
 
 /** The only typed error a data-plane program carries as a failure. */
 export class DataRejectedError extends Data.TaggedError("DataRejected")<{

@@ -602,6 +602,69 @@ become which chain members.
 The hosted service keeps the project until the owner asks for its removal;
 the audit log on both sides shows the export.
 
+### Running a mirror (a read replica for when the primary is down)
+
+A mirror is a second deployment — yours — that holds a verified copy of a
+project and answers `maruhi run`, `maruhi pull`, `ci run` and `ci sync`
+when the primary cannot. It accepts no writes (pushes and chain changes wait
+for the primary), serves CI leases under its own server key once the owner
+grants it, and can be promoted to the primary by the owner if the primary is
+gone for good (AUTH_SPEC §11-7, CRYPTO_SPEC §9.2; design
+`docs/notes/pf2-design.md`).
+
+**1. Bootstrap** = the migration above, minus the switch: the owner exports
+the project, you import it into your deployment with the identities
+companion, members log in there once (`maruhi login --server <mirror>`),
+and the owner marks the project as a mirror of the primary:
+
+```sh
+maruhi mirror mark --server https://mirror.example.com --project <project-id> --source https://my.maruhi.app
+```
+
+From this point the project on your deployment refuses writes
+(`Forbidden (mirror-read-only)`) and shows the mark in `maruhi mirror status`.
+
+**2. Keep it current** — any admin runs, by hand or from a cron:
+
+```sh
+maruhi mirror sync --server https://my.maruhi.app --mirror https://mirror.example.com --project <project-id>
+```
+
+The command exports the project from the primary (your session there; the
+export needs the owner role) and uploads the pages to the mirror (your
+session there — from a cron, `MARUHI_TOKEN` / `MARUHI_TOKEN_ORIGIN` for the
+primary and `MARUHI_MIRROR_TOKEN` for the mirror). The mirror accepts a
+replica only if it extends what it already holds; the result names both
+heads. `maruhi mirror status` compares the two at any time. Across a sync
+the mirror keeps its own lease windows and the audit rows of the reads and
+leases it served.
+
+**3. Use it**: members set `maruhi config set mirror https://mirror.example.com`
+(or pass `--mirror` to `run` / `pull`; CI workflows pass `--mirror` to
+`ci run` / `ci sync`). The primary is always tried first; when it does not
+answer (no response, a gateway error) the read is retried against the
+mirror and the CLI says so on stderr. Everything is verified as usual — a
+mirror that is behind what the member already verified is refused, not
+silently used. An answer of the primary (a 403, a 404) is never retried.
+
+**4. CI leases from the mirror**: the owner grants the mirror's server key
+on the primary — `maruhi server grant --key-from https://mirror.example.com
+--environments <ids> --lease-policy <file>` (the same fingerprint ceremony,
+against the mirror's `/auth/config`) — and the next sync brings the grant
+and the wraps to the mirror. The mirror's lease policy is its own (a
+distinct audience is fine: `ci run --mirror <url>` requests a second OIDC
+token with the mirror's origin as audience unless `--audience` is given).
+
+**5. Promotion**: if the primary will not come back, the owner runs
+`maruhi mirror promote --server https://mirror.example.com --project <id>`
+(the mark is removed; the mirror accepts writes) and members set
+`config set server` to it. A stale old primary can never be synced over the
+promoted one.
+
+What a mirror does not do: it does not forward writes, it is as fresh as its
+last sync, and the identities of members added after the bootstrap are not
+carried (re-run the identities step of the import for them).
+
 ## Recommended hardening (optional): rate-limit unauthenticated endpoints
 
 Of maruhi's unauthenticated surface, the following four are the ones where a
