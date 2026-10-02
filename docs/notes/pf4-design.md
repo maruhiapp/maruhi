@@ -950,7 +950,10 @@ A ninth pass (Cursor Security Reviewer on the R-22 / R-23 commit):
   any network when the project is known without it (the flag, the config's
   `project`, the default project), and again against the project the
   prologue resolved. A file accepted for another project is refused with a
-  message naming `maruhi proxy accept --project`. Pinned.
+  message naming `maruhi proxy accept --project`. Pinned. (pullfrog: an
+  entry written before this binding decodes as accepted for no project —
+  failing closed per project, repaired by `proxy accept` — rather than as
+  a corrupt file.)
 
 Also in this round: `origin/main` merged (effect 4.0.0 stable — the
 `effect/unstable/*` import paths moved to `effect/*`; two conflicts, ROADMAP

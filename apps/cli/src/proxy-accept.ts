@@ -133,17 +133,18 @@ function decodeAccepted(record: unknown): AcceptedProxyConfig | null {
   if (
     !isRecord(record) ||
     typeof record["content"] !== "string" ||
-    !isSafeTimestamp(record["acceptedAtMs"]) ||
-    !Array.isArray(record["projectIds"]) ||
-    !record["projectIds"].every((id) => typeof id === "string")
+    !isSafeTimestamp(record["acceptedAtMs"])
   ) {
     return null;
   }
-  return {
-    content: record["content"],
-    acceptedAtMs: record["acceptedAtMs"],
-    projectIds: record["projectIds"],
-  };
+  // An entry written before the project binding (R-24) has no `projectIds`:
+  // it reads as accepted for no project (fails closed per project, repaired
+  // by an ordinary `proxy accept`) rather than as a corrupt file
+  const projectIds = record["projectIds"] ?? [];
+  if (!Array.isArray(projectIds) || !projectIds.every((id) => typeof id === "string")) {
+    return null;
+  }
+  return { content: record["content"], acceptedAtMs: record["acceptedAtMs"], projectIds };
 }
 
 function decodeProject(record: unknown): BrokeredProject | null {
