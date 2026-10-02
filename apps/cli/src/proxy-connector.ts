@@ -167,16 +167,43 @@ async function mintGithubApp(inputs: ConnectorInputs, deps: ConnectorDeps): Prom
       authorization: `Bearer ${jwt}`,
       accept: "application/vnd.github+json",
       "x-github-api-version": "2022-11-28",
-      "user-agent": `maruhi/${CLI_VERSION}`,
+      "user-agent": `maruhi-cli/${CLI_VERSION}`,
     },
   });
   return parseTokenResponse(response.status, await response.text());
 }
 
-const MINTERS: Readonly<
-  Record<ConnectorKind, (inputs: ConnectorInputs, deps: ConnectorDeps) => Promise<Minted>>
-> = {
-  "github-app": mintGithubApp,
+/**
+ * Revokes an installation token at teardown (`DELETE /installation/token`,
+ * authenticated with the token itself) so the credential's life is the
+ * run's, not GitHub's hour (pf4-design.md §19 D-14a). A refusal (already
+ * expired, network) is reported by the caller as a Note.
+ */
+async function revokeGithubApp(token: Uint8Array, deps: ConnectorDeps): Promise<void> {
+  const base = deps.apiBase ?? GITHUB_API;
+  const response = await deps.fetch(`${base}/installation/token`, {
+    method: "DELETE",
+    headers: {
+      // Reason for unwrapping: the token authenticates its own revocation (GitHub's API shape)
+      authorization: `token ${decoder.decode(token)}`,
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28",
+      "user-agent": `maruhi-cli/${CLI_VERSION}`,
+    },
+  });
+  // 204 = revoked; 401 = already invalid (expired or revoked) — nothing left to do
+  if (response.status !== 204 && response.status !== 401) {
+    throw new Error(`GitHub answered ${response.status} to the revocation`);
+  }
+}
+
+interface ConnectorImpl {
+  readonly mint: (inputs: ConnectorInputs, deps: ConnectorDeps) => Promise<Minted>;
+  readonly revoke: (value: Uint8Array, deps: ConnectorDeps) => Promise<void>;
+}
+
+const CONNECTORS: Readonly<Record<ConnectorKind, ConnectorImpl>> = {
+  "github-app": { mint: mintGithubApp, revoke: revokeGithubApp },
 };
 
 /**
@@ -194,8 +221,10 @@ export function makeConnectorCredential(input: {
   readonly surfaces: BrokeredCredential["surfaces"];
   readonly deps: ConnectorDeps;
 }): BrokeredCredential {
-  const mint = MINTERS[input.kind];
+  const { mint, revoke } = CONNECTORS[input.kind];
   let cached: Minted | null = null;
+  // The token before a re-mint: still valid for a while and worth scrubbing
+  let previous: Minted | null = null;
   let inFlight: Promise<Uint8Array> | null = null;
   const fresh = (now: number): boolean =>
     cached !== null && (cached.expiresAt === null || cached.expiresAt - REFRESH_MARGIN_MS > now);
@@ -204,6 +233,18 @@ export function makeConnectorCredential(input: {
     placeholder: input.placeholder,
     hosts: input.hosts,
     surfaces: input.surfaces,
+    known: () =>
+      [cached, previous]
+        .filter((minted): minted is Minted => minted !== null)
+        .map((minted) => minted.value),
+    release: async () => {
+      const held = [cached, previous].filter((minted): minted is Minted => minted !== null);
+      cached = null;
+      previous = null;
+      for (const minted of held) {
+        await revoke(minted.value, input.deps);
+      }
+    },
     resolve: () => {
       if (cached !== null && fresh(input.deps.now())) {
         return Promise.resolve(cached.value);
@@ -211,6 +252,7 @@ export function makeConnectorCredential(input: {
       if (inFlight === null) {
         inFlight = mint(input.inputs, input.deps)
           .then((minted) => {
+            previous = cached;
             cached = minted;
             return minted.value;
           })

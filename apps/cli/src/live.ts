@@ -180,12 +180,21 @@ function makeBunProcessRunner(): ProcessRunnerShape {
             stdout: piped ? "pipe" : "inherit",
             stderr: piped ? "pipe" : "inherit",
           });
-          const relayed = piped ? relayRedacted(child, redact) : Promise.resolve();
+          const relays = piped ? startRedactedRelay(child, redact) : null;
           // `proxy run`: the parent must outlive the child (it is the
           // child's proxy) — the same signal shape as `maruhi agent`
           const exitCode = holdSignals === true ? await holdingSignals(child) : await child.exited;
-          // The pipes drain after the child exits; every byte is relayed before returning
-          await relayed;
+          if (relays !== null) {
+            // The pipes drain right after the child exits. A grandchild that
+            // inherited them (a daemon the child left behind) must not pin
+            // this process: after a short grace the readers are cancelled —
+            // with inherited stdio the parent would have exited at once and
+            // the daemon kept writing to the terminal; here its next write
+            // fails instead (review finding pf4-design.md §19 C-1)
+            const grace = setTimeout(() => relays.abort(), RELAY_GRACE_MS);
+            await relays.done;
+            clearTimeout(grace);
+          }
           return exitCode;
         },
         catch: () => cliError(`Cannot start the command: ${command[0] ?? ""}`),
@@ -290,22 +299,60 @@ const REDACTED = "[redacted]";
  */
 type ChildStream = ReadableStream<Uint8Array> | number | undefined;
 
-async function relayRedacted(
-  child: { stdout: ChildStream; stderr: ChildStream },
+/** How long after the child's exit its pipes may still deliver output (a grandchild's) before the relay stops. */
+const RELAY_GRACE_MS = 500;
+
+/**
+ * Starts relaying the child's stdout / stderr through the redaction.
+ * `done` settles when both pipes ended (or were aborted); `abort` cancels
+ * the readers. When this process's own output is gone (EPIPE — `maruhi run
+ * -- yes | head -1`), the child is sent SIGPIPE and that relay stops: the
+ * pipe semantics a child has with inherited stdio.
+ */
+function startRedactedRelay(
+  child: { stdout: ChildStream; stderr: ChildStream; kill: (signal: NodeJS.Signals) => void },
   fragments: readonly Uint8Array[],
-): Promise<void> {
+): { readonly done: Promise<void>; readonly abort: () => void } {
   const patterns = scrubPatterns(fragments, REDACTED);
-  const relay = async (stream: ChildStream, fd: number) => {
+  const aborts: (() => void)[] = [];
+  const relay = async (stream: ChildStream, fd: number): Promise<void> => {
     if (typeof stream !== "object") {
       return;
     }
-    const replacer = makeStreamReplacer(patterns);
-    for await (const chunk of stream) {
-      writeBytes(fd, replacer.push(chunk));
+    const reader = stream.getReader();
+    let aborted = false;
+    aborts.push(() => {
+      aborted = true;
+      void reader.cancel().catch(() => undefined);
+    });
+    // scrubPatterns carries every line of a multi-line value, so the
+    // carry-over can be cut at each newline (live logs stay line by line)
+    const replacer = makeStreamReplacer(patterns, { cutAtNewline: true });
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || aborted) {
+        break;
+      }
+      if (!writeBytes(fd, replacer.push(value))) {
+        // Our reader is gone: close the child's side as a pipe would
+        aborted = true;
+        void reader.cancel().catch(() => undefined);
+        child.kill("SIGPIPE");
+        return;
+      }
     }
-    writeBytes(fd, replacer.flush());
+    if (!aborted) {
+      writeBytes(fd, replacer.flush());
+    }
   };
-  await Promise.all([relay(child.stdout, 1), relay(child.stderr, 2)]);
+  return {
+    done: Promise.all([relay(child.stdout, 1), relay(child.stderr, 2)]).then(() => undefined),
+    abort: () => {
+      for (const abort of aborts) {
+        abort();
+      }
+    },
+  };
 }
 
 /** An interruption of interactive input by Ctrl+C / Ctrl+D (distinguished from EOF and unreadability). */
@@ -563,7 +610,12 @@ export function writeLine(fd: number, line: string): void {
 }
 
 /** The byte form of {@link writeLine} (the redacted relay of a child's output writes chunks, not lines). */
-function writeBytes(fd: number, buffer: Uint8Array): void {
+/**
+ * Returns false when the reader has left (EPIPE) — the relayed child is then
+ * told so. A non-blocking fd's EAGAIN waits a millisecond before retrying
+ * (a tight loop would spin a core while the reader catches up).
+ */
+function writeBytes(fd: number, buffer: Uint8Array): boolean {
   let offset = 0;
   // A partial write (return value < remaining) continues from where it
   // left off, EAGAIN (a non-blocking fd) retries until written, and EPIPE
@@ -574,14 +626,19 @@ function writeBytes(fd: number, buffer: Uint8Array): void {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "EPIPE") {
-        return;
+        return false;
       }
       if (code !== "EAGAIN") {
         throw error;
       }
+      Atomics.wait(EAGAIN_PAUSE, 0, 0, 1);
     }
   }
+  return true;
 }
+
+/** A shared cell `Atomics.wait` can sleep on (a synchronous millisecond pause). */
+const EAGAIN_PAUSE = new Int32Array(new SharedArrayBuffer(4));
 
 function makeLiveIo(): CliIoShape {
   // One line reader per process for non-TTY input (keeps unconsumed lines across prompts)

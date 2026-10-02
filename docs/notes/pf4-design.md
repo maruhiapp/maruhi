@@ -244,6 +244,18 @@ the token.
 
 ## 11. Run-output redaction (Phase 3 ⑤) — implementation of the ROADMAP design
 
+**Revision (2026-10-02, §19 D-4)**: the first implementation applied the
+newline cut only when no fragment spanned a line, so a PEM value held the
+carry-over for its whole length — the ROADMAP's "live logs stream line by
+line even for PEM keys" was not delivered. The replacer now takes
+`cutAtNewline`, which the redaction and the response scrub pass because
+`scrubPatterns` carries every line of a multi-line value (each line is
+caught on its own; a multi-line value renders as one `[redacted]` per
+line). The replacer core was also rewritten after §19 C-2 (a short match
+at a chunk edge could hide a longer pattern): it now scans the source bytes
+left to right, longest match first, and holds source bytes, with the
+correctness argument in byte-replace.ts.
+
 The ROADMAP entry specified the design; this session implemented it as
 written: trigger = known agent **or** stdout / stderr non-terminal (stdin
 alone is not a trigger — run.ts `redactionFragments`); the child's stdout /
@@ -308,6 +320,30 @@ CRYPTO_SPEC note stating that TLS termination certificates and connector
 protocol clients are outside the spec's scope.** The code is isolated
 (der.ts, proxy-cert.ts, proxy-connector.ts) so either outcome is a
 documentation change.
+
+**Independent review (§19 D-8) verdict**: defensible in spirit, a literal
+breach of CLAUDE.md's "do not implement crypto operations that are not in
+the spec" — recommended to take the spec note before merge rather than
+leave it as "confirm the reading". The designer agrees and **drafts the
+note here for the owner's approval** (spec changes go spec-first with
+human approval — CLAUDE.md; nothing in CRYPTO_SPEC.md is edited by this
+PR):
+
+> *Draft for CRYPTO_SPEC §12 (prohibitions) — scope note.* This
+> specification governs the protection of maruhi's own data (values, keys,
+> statements, the chain, wraps, leases). Two classes of cryptographic use in
+> the CLI are outside its scope and are not spec operations: (a) transport
+> protection the CLI terminates for its own child process (`maruhi proxy
+> run`'s per-run certificate authority: ECDSA P-256 / SHA-256 over X.509,
+> key in memory only, lifetime = the run); (b) clients of third-party
+> authentication protocols on the member's behalf (the `github-app`
+> connector's RS256 JWT with the member's own App key). Both use WebCrypto
+> only, invent no protocol, and never touch a maruhi protocol object or a
+> test vector. Adding a new class to this list is a spec revision.
+
+The ROADMAP's PF4 entry says "no spec revision pending the §13
+confirmation" until the owner decides. The CA key is now generated
+non-extractable (only a leaf's key is exported, for node:tls — §19 D-8 nit).
 
 ## 14. Exhaustion loop (owner-requested — a self-review; pf5-design.md §15's caveat applies)
 
@@ -421,3 +457,86 @@ an owner question (M).
 decompressed before scrubbing; E — four more CA-file variables), one
 follow-up (L — a pass-through exfiltration guard with a policy knob), one
 owner question (M — `run` under an agent when a proxy config exists).
+
+## 19. Independent review round (2026-10-02 — owner-requested)
+
+Two independent reviewer agents attacked the branch: one on code
+correctness and security (**C-n** below, with probes run under Node 22 and
+Bun 1.4.2), one on design, spec consistency, and docs (**D-n**). Each
+finding was verified before acting. The self-run loops (§14, §18) had
+missed every finding below — the same lesson as pf5-design.md §16.
+
+### 19-1. Code / security findings
+
+| # | Finding (severity) | Verified | Disposition |
+|---|---|---|---|
+| C-1 | **The redaction relay broke pipe semantics** (high): `maruhi run -- yes \| head -1` never ended (`writeBytes` swallowed EPIPE and kept reading the child), and a grandchild holding the pipes (`sleep 20 &`) pinned `run` until it exited | Yes — reproduced both (hang vs 12 ms with inherited stdio) | **Fixed**: on EPIPE the reader is cancelled and the child gets SIGPIPE (the semantics a pipe gives); after the child exits the relays get a 500 ms grace, then are cancelled. Pinned under Bun (`pipe-probe.ts`: flood → exit 141 in ~15 ms; grandchild → ~515 ms) |
+| C-2 | **The carry-over held *replaced* bytes**, so a shorter pattern consumed at a chunk edge hid a longer one (medium): `DATABASE_URL` ⊃ `DB_PASSWORD`, cut inside the URL → `postgres://user:[redacted]@db…` leaked the rest; 21 of 51 cuts differed from the whole-buffer result | Yes — reproduced | **Fixed**: the replacer core is a single left-to-right scan over **source** bytes, longest match first, applying only matches that start before the cut and holding source bytes (correctness argument in byte-replace.ts). Pinned over every cut position with nested secrets |
+| C-3 | **`proxy.close()` hung while any client connection was open** (medium): the raw `net.Server` has no `closeAllConnections`; a tunnel a grandchild kept open pinned `proxy run` and the CA directory was never removed | Yes — reproduced (no resolve in 3 s) | **Fixed**: client sockets are tracked and destroyed in `close()` (the bridge tears the other side down). Pinned: close with an open tunnel resolves at once |
+| C-4 | **No encoding of substituted values** (medium): a value with a space, `&`, `#`, `%` in the query, or a CR/LF in a header, ended as `500 internal error (TypeError)` (the HTTP client refused the request — no injection possible under either runtime, but the value was unusable there) | Yes | **Fixed**: path / query substitution percent-encodes the value; a header value that is not a single Latin-1 line is refused with a 502 naming the variable; a body is written as it is (documented) |
+| C-5 | **`scrubbers()` minted connectors on every inspected request**, including toward unrelated hosts (medium; = D-1) | Yes | **Fixed** (see D-1) |
+| C-6 | **No backpressure in the response relay, client disconnect ignored** (medium): a 64 MiB body read slowly grew the proxy by ~110 MiB | Yes — measured | **Fixed**: `stream.pipeline(upstream, decoder?, Transform(replacer), res)` carries backpressure and tears every stage down; `res.on("close")` destroys the upstream request |
+| C-7 | `Host` sent with the default port (medium; = D-13b) | Yes | **Fixed**: `hostHeaderOf` omits a default port |
+| C-8 | `--verbose` printed the query string (medium; = D-7) | Yes | **Fixed**: decisions carry the path without its query; the verbose line is written synchronously |
+| C-9 | Plain HTTP toward an unmatched host went through inspection but was counted "brokered" (medium; = D-3) | Yes | **Fixed**: a `relayed` decision kind and summary count; documented |
+| C-10 | **SAN `dNSName` malformed for hosts of 128+ characters** (low): the context tag's content was sliced off an IA5String whose length needed two bytes | Yes — reproduced with openssl | **Fixed**: `tlv(0x82, bytes)`; pinned with a 180-character host |
+| C-11 | Sequential `split/join` let replacement output take part in later matches (low) | Yes | **Fixed** by the single-scan rewrite (C-2); pinned |
+| C-12 | A fixed `placeholder` could be any 8 printable characters (`"password"`), rewriting ordinary traffic and tripping 403s; two placeholders could nest (low) | Yes | **Fixed**: 16 characters minimum; a placeholder that contains or is contained in another is refused |
+| C-13 | The early-ClientHello wrap works only with `socket.resume()` deferred into the `net.connect` callback (low) | Yes — both orders measured by the reviewer | **Commented** in code (a refactor that resumes early loses the ClientHello); still untested by a client (curl waits for the 200) — residual |
+| C-14 | Over-long head: 431 written but reading continued (low) | Yes | **Fixed**: listener removed, socket destroyed after the response |
+| C-15 | A failed loopback `listen` was cached forever for that authority (low) | Yes | **Fixed**: the rejected promise is dropped from the map |
+| C-16 | HEAD / 204 / 304 lost `Content-Length` (low) | Yes | **Fixed**: bodiless responses keep their framing headers and relay no body; pinned |
+| C-17 | `writeBytes` busy-looped on EAGAIN (low, pre-existing in `writeLine`, now exercised by bulk output) | Yes | **Fixed**: a one-millisecond `Atomics.wait` between retries |
+| C-18 | The response scrub lacked the per-line / JSON-escaped forms (low; = D-5) | Yes | **Fixed** (see D-5) |
+| C-19 | A trailing-dot authority (`api.example.test.`) was treated as unmatched (nit) | Yes | **Fixed**: normalized in `parseAuthority` / absolute-form parsing; pinned |
+| C-20 | Dead / odd code: `decisionLines`, a `typeof … === "string"` that was always true, a type assertion on `parseAbsoluteForm`'s result, fire-and-forget verbose logging (nit) | Yes | **Fixed** (`originFormOf`; `Effect.runSync`) |
+| C-21 | Under redaction the child loses `isTTY` even when only stderr is redirected or an agent runs on a PTY (nit) | Yes — by design | **Documented** (docs: "an interactive program loses colours and terminal detection") |
+
+### 19-2. Design / spec / docs findings
+
+| # | Finding (severity) | Verified | Disposition |
+|---|---|---|---|
+| D-1 | **The connector minted on the first brokered request to *any* host** (high): `scrubbers()` resolved every credential to build scrub patterns, so a run talking only to OpenAI minted a GitHub token, and a bad App key re-attempted a mint on every request (swallowed). Docs, P8 / 8-E and §18 J said otherwise | Yes | **Fixed**: `BrokeredCredential.known()` returns the values already held **without minting** (a broker rule's value; a connector's current and previous token); the scrub uses `known()`, and `resolve()` runs only for the credentials a request actually uses. Pinned: a request using only GITHUB_TOKEN never calls the connector |
+| D-2 | **Docs and ROADMAP promised refusal of a placeholder toward "any other host"; a blind tunnel sends it** (high) | Yes (the live probe asserts exactly that) | **Fixed**: docs reworded — refused toward a host the proxy inspects; toward a host no rule names it travels as the placeholder and the host rejects it (nothing substituted). ROADMAP entry reworded |
+| D-3 | "Hosts no rule names are not intercepted" was false for plain HTTP, and such requests were tallied "brokered" (medium) | Yes | **Fixed** (C-9): `relayed` kind; the docs state the asymmetry |
+| D-4 | **The newline cut deviated from the ROADMAP ⑤ design** (medium): applied only when no fragment spanned a line, so PEM values held lines back; §11 and the ROADMAP said "implemented as written" | Yes | **Fixed**: `cutAtNewline` (§11 revised); pinned (a PEM's lines are emitted as they complete) |
+| D-5 | The response scrub used the raw value only, not the shared fragment rule (medium) — a value with `"` or a newline echoed in JSON passed | Yes | **Fixed**: `scrubPatterns(credential.known(), placeholder)` per credential; the previous token of a re-minted connector is scrubbed too. Pinned (a quoted value echoed in JSON) |
+| D-6 | Docs said running `maruhi run` in a terminal "changes nothing", but under a detected agent host the child is piped even at a TTY (medium) | Yes | **Fixed**: docs say "in a terminal that no agent host controls" and describe the piped-output consequence |
+| D-7 | `--verbose` printed paths with the query (medium) | Yes | **Fixed** (C-8) |
+| D-8 | §13 is a literal breach of a CLAUDE.md absolute rule and should not stay as "confirm the reading"; the ROADMAP's bold "No spec revision" overstated; the CA key was extractable (medium) | Yes | **Partly fixed, rest for the owner**: the spec note is drafted in §13 for approval (spec-first with human approval — not written into CRYPTO_SPEC by this PR); the ROADMAP says "pending the §13 confirmation"; the CA key is now non-extractable |
+| D-9 | The client-compatibility list was largely untested; Go reads `SSL_CERT_FILE` on Linux only (so `gh` on macOS would fail) (medium) | Yes (Go's root_unix.go build tags) | **Fixed**: the docs separate "verified on Linux" from "expected from documented behaviour" and name the macOS Go caveat |
+| D-10 | `http://` rules could name any host — a value in cleartext over the network, contradicting "only on the loopback" (medium) | Yes | **Fixed**: plain `http://` is accepted only for `localhost`, `*.localhost`, `127.0.0.0/8`; pinned |
+| D-11 | The docs' own `AGENTS.md` snippet steered agents to `maruhi run` (medium) | Yes | **Fixed**: the snippet says `proxy run` when `maruhi.proxy.json` exists. On owner question M the reviewer recommends (b) a Warning from `run`, not an automatic switch on a fail-open detection signal — recorded with M |
+| D-12 | "Decompressed first" overstated: zstd / stacked / unknown encodings were forwarded compressed and **unscrubbed** (medium) | Yes | **Fixed**: `zstd` handled where the runtime has it; an unknown or stacked encoding is refused (502, fail closed); pinned |
+| D-13 | Record / docs inaccuracies (low): (a) "system roots" were the runtime's bundled roots (corporate roots lost); (b) default port in `Host`; (c) IPv6 CONNECT refused undocumented; (d) summary mixed units; (e) "nothing else is written" — two files; (f) a `mkdtemp` failure left the started proxy open; (g) `User-Agent` differed from sync-http's `maruhi-cli/`; (h) token exposure outlasts the run | Yes | **Fixed**: (a) bundled + `tls.getCACertificates("system")` where available, docs say so; (b) C-7; (c) documented; (d) the summary names units; (e) docs say two files; (f) the directory is created first and each resource has its own `ensuring`; (g) `maruhi-cli/`; (h) see D-14a |
+| D-14 | Strictly-better options the loops missed: (a) **revoke the installation token at teardown**; (b) **a per-run proxy credential in the proxy URL** (closes the "anyone on the machine" residual; every common client sends `Proxy-Authorization` from userinfo); (c) **add brokered values to the ⑤ redaction** for `proxy run` | (b) measured: curl, Bun (option and env), Node undici, Python urllib, git all send it | **All three adopted**: `release()` on connectors (`DELETE /installation/token`, both current and previous tokens, best effort with a Note on failure); `credential` on the proxy (407 with `Proxy-Authenticate` otherwise; constant-time compare; the address printed on stderr carries no credential); broker values join the redaction fragments. Pinned end to end |
+| D-15 | Record wording nits (0700 dir vs 0600 files; no independent-review section yet) | Yes | **Fixed** (this section) |
+
+Checked by the reviewers and found correct: no header or request-line
+injection via a substituted value under either runtime; the CONNECT target
+binding (never the `Host` header); the blind tunnel's end-to-end TLS; the
+Basic decode / substitute / re-encode; keep-alive, pipelining, `Expect:
+100-continue`, HEAD through the loopback hop; the X.509 chain (openssl and
+node:crypto), the ECDSA and PKCS#8 encodings, the CA key never serialized;
+the connector's single in-flight mint, refresh margin, error wording, and
+the structural "inputs never injected" rule; the control-variable ordering
+and `MARUHI_*` filtering; the redaction trigger; the English-only and
+no-telemetry rules; ADR-0014 / ADR-0016 consistency (the agent-triggered
+piping is a ROADMAP-authorized contract change for `run`, now stated in the
+docs); the `maruhi.proxy.json` and temp-file treatment under the diskless
+invariant.
+
+**Owner question M (§18), with the reviewer's recommendation**: prefer (b)
+— `maruhi run` under a detected agent prints a Warning pointing at `proxy
+run` when `maruhi.proxy.json` exists — over (a) an automatic switch, which
+would change `run`'s contract on a fail-open deny-list signal plus a repo
+file's presence. If the owner wants (a), make it a committed config key so
+the human's file opts in, and record it as an ADR-0016 revision. Neither is
+implemented here.
+
+**Residuals added by this round**: the early-ClientHello path is untested
+by a real client; a body value is substituted raw (an `&` or `"` inside a
+form or JSON body is the client's to encode); a background process the
+child leaves behind loses its output half a second after the child exits
+under redaction; connector revocation is best effort (a network failure
+leaves the token to expire on GitHub's side).

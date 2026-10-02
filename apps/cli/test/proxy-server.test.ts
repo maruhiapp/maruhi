@@ -64,13 +64,15 @@ beforeAll(async () => {
     hosts: [pattern("api.example.test")],
     surfaces: ["header"],
     resolve: () => Promise.resolve(enc.encode(REAL_TOKEN)),
+    known: () => [enc.encode(REAL_TOKEN)],
   };
   plainKey = {
     name: "PLAIN_KEY",
     placeholder: makePlaceholder("PLAIN_KEY"),
-    hosts: [pattern("http://plain.example.test")],
+    hosts: [pattern("http://plain.localhost")],
     surfaces: ["header", "query", "body"],
     resolve: () => Promise.resolve(enc.encode(REAL_KEY)),
+    known: () => [enc.encode(REAL_KEY)],
   };
   connectorFails = {
     name: "MINTED",
@@ -79,6 +81,7 @@ beforeAll(async () => {
     surfaces: ["header"],
     resolve: () =>
       Promise.reject(new Error("connector github-app for MINTED: installation 42 not found (404)")),
+    known: () => [],
   };
 });
 
@@ -95,11 +98,13 @@ async function proxyWith(input: {
   readonly credentials: readonly BrokeredCredential[];
   readonly unmatched?: "allow" | "block";
   readonly decisions?: ProxyDecision[];
+  readonly credential?: { readonly user: string; readonly password: string };
 }): Promise<ProxyHandle> {
   const handle = await startProxy({
     credentials: input.credentials,
     unmatched: input.unmatched ?? "allow",
     ca: runCa,
+    ...(input.credential === undefined ? {} : { credential: input.credential }),
     onDecision: (decision) => input.decisions?.push(decision),
     upstream: {
       // The rule's hosts resolve to the loopback origins
@@ -156,7 +161,7 @@ describe("the forward proxy", () => {
     const seen = secureOrigin.seen[0];
     expect(seen?.headers.authorization).toBe(`Bearer ${REAL_TOKEN}`);
     expect(seen?.headers["x-note"]).toBe(REAL_TOKEN);
-    expect(seen?.headers.host).toBe("api.example.test:443");
+    expect(seen?.headers.host).toBe("api.example.test");
     expect(seen?.headers["accept-encoding"]).toBe("identity");
     expect(seen?.url).toBe("/echo?q=1");
     // The echo came back with the placeholder, not the value — in the body and in a header
@@ -169,7 +174,7 @@ describe("the forward proxy", () => {
         kind: "brokered",
         method: "GET",
         target: { scheme: "https", host: "api.example.test", port: 443 },
-        path: "/echo?q=1",
+        path: "/echo",
         status: 200,
         substituted: ["GITHUB_TOKEN"],
       },
@@ -234,7 +239,7 @@ describe("the forward proxy", () => {
     const proxy = await proxyWith({ credentials: [github, plainKey] });
     const response = await httpViaProxy({
       proxyPort: proxy.port,
-      url: `http://plain.example.test/echo?key=${plainKey.placeholder}`,
+      url: `http://plain.localhost/echo?key=${plainKey.placeholder}`,
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: `secret=${plainKey.placeholder}&other=1`,
@@ -393,12 +398,208 @@ describe("the forward proxy", () => {
     expect(secureOrigin.seen[1]?.headers.authorization).toBe(`Bearer ${REAL_TOKEN}`);
   });
 
+  it("requires this run's proxy credential when one is set (407 otherwise), for CONNECT and plain alike", async () => {
+    const credential = { user: "maruhi", password: "r4nd0mR4nd0mR4nd0m" };
+    const proxy = await proxyWith({ credentials: [github, plainKey], credential });
+    const without = await openTunnel(proxy.port, "api.example.test:443");
+    expect("refused" in without && without.refused.status).toBe(407);
+    expect("refused" in without && without.refused.headers["proxy-authenticate"]).toContain(
+      "Basic",
+    );
+    const wrong = await openTunnel(proxy.port, "api.example.test:443", "maruhi:wrong");
+    expect("refused" in wrong && wrong.refused.status).toBe(407);
+    const plainWithout = await httpViaProxy({
+      proxyPort: proxy.port,
+      url: "http://plain.example.test/ok",
+    });
+    expect(plainWithout.status).toBe(407);
+    expect(secureOrigin.seen).toHaveLength(0);
+    expect(plainOrigin.seen).toHaveLength(0);
+    const auth = `${credential.user}:${credential.password}`;
+    const ok = await httpsViaProxy({
+      proxyPort: proxy.port,
+      ca: [runCa.certPem],
+      url: "https://api.example.test/echo",
+      headers: { authorization: `Bearer ${github.placeholder}` },
+      auth,
+    });
+    expect(ok.status).toBe(200);
+    expect(secureOrigin.seen[0]?.headers.authorization).toBe(`Bearer ${REAL_TOKEN}`);
+    // The credential is a hop-by-hop header: never forwarded to the origin
+    expect(secureOrigin.seen[0]?.headers["proxy-authorization"]).toBeUndefined();
+    const plainOk = await httpViaProxy({
+      proxyPort: proxy.port,
+      url: "http://plain.example.test/ok",
+      auth,
+    });
+    expect(plainOk.status).toBe(200);
+    expect(proxy.url).toBe(`http://maruhi:${credential.password}@127.0.0.1:${proxy.port}`);
+    expect(proxy.address).toBe(`127.0.0.1:${proxy.port}`);
+  });
+
+  it("never mints a connector credential for a request that does not use its placeholder, and scrubs with the values it already holds", async () => {
+    let mints = 0;
+    const minted = enc.encode("ghs_minted_value_000000000000");
+    const connector: BrokeredCredential = {
+      name: "MINTED",
+      placeholder: makePlaceholder("MINTED"),
+      hosts: [pattern("api.example.test")],
+      surfaces: ["header"],
+      resolve: () => {
+        mints += 1;
+        return Promise.resolve(minted);
+      },
+      known: () => (mints > 0 ? [minted] : []),
+    };
+    const proxy = await proxyWith({ credentials: [github, connector] });
+    // A brokered request that uses only GITHUB_TOKEN: the connector is not touched
+    const first = await httpsViaProxy({
+      proxyPort: proxy.port,
+      ca: [runCa.certPem],
+      url: "https://api.example.test/echo",
+      headers: { authorization: `Bearer ${github.placeholder}` },
+    });
+    expect(first.status).toBe(200);
+    expect(mints).toBe(0);
+    // A request that uses the connector's placeholder mints once
+    const second = await httpsViaProxy({
+      proxyPort: proxy.port,
+      ca: [runCa.certPem],
+      url: "https://api.example.test/echo",
+      headers: { authorization: `Bearer ${connector.placeholder}` },
+    });
+    expect(second.status).toBe(200);
+    expect(mints).toBe(1);
+    expect(secureOrigin.seen[1]?.headers.authorization).toBe(
+      "Bearer ghs_minted_value_000000000000",
+    );
+    // … and its echo is scrubbed from the body with the connector's placeholder
+    expect(second.body.toString()).toContain(`Bearer ${connector.placeholder}`);
+    expect(second.body.toString()).not.toContain("ghs_minted_value");
+  });
+
+  it("scrubs the JSON-escaped form of an echoed value (the sync fragment rule) and refuses an unreadable content encoding", async () => {
+    const quoted: BrokeredCredential = {
+      name: "QUOTED",
+      placeholder: makePlaceholder("QUOTED"),
+      hosts: [pattern("api.example.test")],
+      surfaces: ["header"],
+      resolve: () => Promise.resolve(enc.encode('va"lue-with-quote')),
+      known: () => [enc.encode('va"lue-with-quote')],
+    };
+    const proxy = await proxyWith({ credentials: [quoted] });
+    const echo = await httpsViaProxy({
+      proxyPort: proxy.port,
+      ca: [runCa.certPem],
+      url: "https://api.example.test/echo",
+      headers: { authorization: `Bearer ${quoted.placeholder}` },
+    });
+    // The origin's JSON echo carries the value escaped (`va\"lue…`); the scrub still catches it
+    const text = echo.body.toString();
+    expect(text).not.toContain("lue-with-quote");
+    expect(text).toContain(quoted.placeholder);
+    const opaque = await httpsViaProxy({
+      proxyPort: proxy.port,
+      ca: [runCa.certPem],
+      url: "https://api.example.test/unknown-encoding",
+    });
+    expect(opaque.status).toBe(502);
+    expect(opaque.body.toString()).toContain("content encoding the proxy cannot read (x-made-up)");
+    expect(opaque.body.toString()).not.toContain("opaque bytes");
+  });
+
+  it("reports a plain request toward a host no rule names as relayed, not brokered", async () => {
+    const decisions: ProxyDecision[] = [];
+    const proxy = await proxyWith({ credentials: [github], decisions });
+    const response = await httpViaProxy({
+      proxyPort: proxy.port,
+      url: "http://plain.example.test/ok?x=1",
+    });
+    expect(response.status).toBe(200);
+    expect(decisions).toEqual([
+      {
+        kind: "relayed",
+        method: "GET",
+        target: { scheme: "http", host: "plain.example.test", port: 80 },
+        path: "/ok",
+        status: 200,
+      },
+    ]);
+  });
+
+  it("percent-encodes a value substituted into the query and refuses one that cannot be a header (§19 C-4)", async () => {
+    const awkward: BrokeredCredential = {
+      name: "AWKWARD",
+      placeholder: makePlaceholder("AWKWARD"),
+      hosts: [pattern("http://plain.localhost")],
+      surfaces: ["header", "query"],
+      resolve: () => Promise.resolve(enc.encode("a b&c=d#e/f%")),
+      known: () => [enc.encode("a b&c=d#e/f%")],
+    };
+    const multiline: BrokeredCredential = {
+      name: "PEMLIKE",
+      placeholder: makePlaceholder("PEMLIKE"),
+      hosts: [pattern("api.example.test")],
+      surfaces: ["header"],
+      resolve: () => Promise.resolve(enc.encode("line1\nline2")),
+      known: () => [enc.encode("line1\nline2")],
+    };
+    const proxy = await proxyWith({ credentials: [awkward, multiline] });
+    const query = await httpViaProxy({
+      proxyPort: proxy.port,
+      url: `http://plain.localhost/echo?key=${awkward.placeholder}`,
+    });
+    expect(query.status).toBe(200);
+    expect(plainOrigin.seen[0]?.url).toBe(`/echo?key=${encodeURIComponent("a b&c=d#e/f%")}`);
+    const header = await httpsViaProxy({
+      proxyPort: proxy.port,
+      ca: [runCa.certPem],
+      url: "https://api.example.test/echo",
+      headers: { authorization: `Bearer ${multiline.placeholder}` },
+    });
+    expect(header.status).toBe(502);
+    expect(header.body.toString()).toContain(
+      "the value of PEMLIKE cannot be sent in a header (it contains a line break or a non-Latin-1 character); the request was not sent",
+    );
+    expect(header.body.toString()).not.toContain("line1");
+    expect(secureOrigin.seen).toHaveLength(0);
+  });
+
+  it("keeps a HEAD response's Content-Length, matches an absolute DNS name (trailing dot), and closes with a tunnel still open (§19 C-16 / C-19 / C-3)", async () => {
+    const proxy = await proxyWith({ credentials: [github] });
+    const head = await httpsViaProxy({
+      proxyPort: proxy.port,
+      ca: [runCa.certPem],
+      url: "https://api.example.test/ok",
+      method: "HEAD",
+    });
+    expect(head.status).toBe(200);
+    expect(head.headers["content-length"]).toBe("2");
+    expect(head.body.length).toBe(0);
+    // `api.example.test.` is the same host
+    const dotted = await httpsViaProxy({
+      proxyPort: proxy.port,
+      ca: [runCa.certPem],
+      url: "https://api.example.test./echo",
+      headers: { authorization: `Bearer ${github.placeholder}` },
+    });
+    expect(dotted.status).toBe(200);
+    expect(secureOrigin.seen[1]?.headers.authorization).toBe(`Bearer ${REAL_TOKEN}`);
+    // An open blind tunnel does not hold close() open
+    const tunnel = await openTunnel(proxy.port, "other.example.test:443");
+    expect("socket" in tunnel).toBe(true);
+    const started = Date.now();
+    await proxy.close();
+    expect(Date.now() - started).toBeLessThan(2_000);
+    open = open.filter((handle) => handle !== proxy);
+  });
+
   it("credentialsFor narrows to the rules naming the target", () => {
     expect(
       credentialsFor([github, plainKey], { scheme: "https", host: "api.example.test", port: 443 }),
     ).toEqual([github]);
     expect(
-      credentialsFor([github, plainKey], { scheme: "http", host: "plain.example.test", port: 80 }),
+      credentialsFor([github, plainKey], { scheme: "http", host: "plain.localhost", port: 80 }),
     ).toEqual([plainKey]);
   });
 });

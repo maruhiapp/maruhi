@@ -30,27 +30,6 @@ export interface BytePattern {
 
 const NEWLINE = 0x0a;
 
-/** Index of `needle` in `haystack` at or after `start` (−1 when absent). */
-function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, start: number): number {
-  const first = needle[0];
-  if (first === undefined) {
-    return -1;
-  }
-  const last = haystack.length - needle.length;
-  outer: for (let i = start; i <= last; i++) {
-    if (haystack[i] !== first) {
-      continue;
-    }
-    for (let j = 1; j < needle.length; j++) {
-      if (haystack[i + j] !== needle[j]) {
-        continue outer;
-      }
-    }
-    return i;
-  }
-  return -1;
-}
-
 function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
   const total = parts.reduce((sum, part) => sum + part.length, 0);
   const out = new Uint8Array(total);
@@ -62,29 +41,31 @@ function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
   return out;
 }
 
-/**
- * Replaces every occurrence of every pattern in `input`, longest pattern
- * first (one whole buffer — no boundary handling). Patterns with an empty
- * `from` are ignored.
- */
-export function replaceBytes(input: Uint8Array, patterns: readonly BytePattern[]): Uint8Array {
-  let current = input;
-  for (const pattern of sortedPatterns(patterns)) {
-    let at = indexOfBytes(current, pattern.from, 0);
-    if (at < 0) {
-      continue;
-    }
-    const parts: Uint8Array[] = [];
-    let cursor = 0;
-    while (at >= 0) {
-      parts.push(current.subarray(cursor, at), pattern.to);
-      cursor = at + pattern.from.length;
-      at = indexOfBytes(current, pattern.from, cursor);
-    }
-    parts.push(current.subarray(cursor));
-    current = concatBytes(parts);
+/** Whether `needle` occurs in `haystack` starting exactly at `at`. */
+function matchesAt(haystack: Uint8Array, needle: Uint8Array, at: number): boolean {
+  if (at + needle.length > haystack.length) {
+    return false;
   }
-  return current;
+  for (let j = 0; j < needle.length; j++) {
+    if (haystack[at + j] !== needle[j]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** The longest pattern (patterns sorted longest first) starting at `at`, or null. */
+function longestMatchAt(
+  haystack: Uint8Array,
+  sorted: readonly BytePattern[],
+  at: number,
+): BytePattern | null {
+  for (const pattern of sorted) {
+    if (matchesAt(haystack, pattern.from, at)) {
+      return pattern;
+    }
+  }
+  return null;
 }
 
 function sortedPatterns(patterns: readonly BytePattern[]): readonly BytePattern[] {
@@ -93,7 +74,49 @@ function sortedPatterns(patterns: readonly BytePattern[]): readonly BytePattern[
     .toSorted((a, b) => b.from.length - a.from.length);
 }
 
-/** Whether any pattern contains a newline byte (then a newline cannot be a safe cut). */
+/**
+ * One left-to-right scan over `input[0, limit)`: at each position the
+ * **longest** matching pattern wins and its `to` is emitted; replacement
+ * output is never rescanned (a `to` cannot combine with following bytes
+ * into another match — review finding pf4-design.md §19 C-11). Scanning
+ * stops at the first position ≥ `limit` not covered by a match; returns the
+ * output and the index where the scan stopped (the source bytes from there
+ * on are the caller's carry-over).
+ */
+function scan(
+  input: Uint8Array,
+  sorted: readonly BytePattern[],
+  limit: number,
+): { readonly out: Uint8Array; readonly stoppedAt: number } {
+  const parts: Uint8Array[] = [];
+  let i = 0;
+  let literalStart = 0;
+  while (i < limit) {
+    const match = longestMatchAt(input, sorted, i);
+    if (match === null) {
+      i++;
+      continue;
+    }
+    parts.push(input.subarray(literalStart, i), match.to);
+    i += match.from.length;
+    literalStart = i;
+  }
+  parts.push(input.subarray(literalStart, i));
+  return { out: concatBytes(parts), stoppedAt: i };
+}
+
+/**
+ * Replaces every occurrence of every pattern in `input` (one whole buffer —
+ * no boundary handling). At each position the longest pattern wins, so a
+ * short pattern never consumes part of a longer one. Patterns with an empty
+ * `from` are ignored.
+ */
+export function replaceBytes(input: Uint8Array, patterns: readonly BytePattern[]): Uint8Array {
+  const sorted = sortedPatterns(patterns);
+  return sorted.length === 0 ? input : scan(input, sorted, input.length).out;
+}
+
+/** Whether any pattern contains a newline byte (then a newline cannot be a safe cut on its own). */
 function anyMultiLine(patterns: readonly BytePattern[]): boolean {
   return patterns.some((pattern) => pattern.from.includes(NEWLINE));
 }
@@ -110,14 +133,36 @@ export interface StreamReplacer {
 
 /**
  * Builds a {@link StreamReplacer}. With no (non-empty) pattern, chunks pass
- * through as they are. The carry-over is (longest pattern − 1) bytes;
- * when no pattern spans a line, it is additionally cut at the last newline
- * (a pattern cannot straddle a newline it does not contain).
+ * through as they are.
+ *
+ * Correctness argument (review finding §19 C-2 replaced the first version,
+ * which held *replaced* bytes and could let a short match at the chunk
+ * edge hide a longer pattern): the scan runs over the **source** bytes and
+ * applies only matches that start before `cut = length − (longest − 1)`.
+ * Every pattern starting before `cut` fits entirely in the buffer, so the
+ * longest match found there is the one the whole-buffer scan would find.
+ * Bytes from the stop position on are held **as source** and rescanned with
+ * the next chunk. When no pattern spans a line (or the caller promises
+ * per-line fragments — `cutAtNewline`), `cut` advances to just after the
+ * last newline: a single-line pattern starting at or before a newline ends
+ * before it, so everything up to the newline is final as well.
  */
-export function makeStreamReplacer(patterns: readonly BytePattern[]): StreamReplacer {
+export function makeStreamReplacer(
+  patterns: readonly BytePattern[],
+  options: {
+    /**
+     * Cut the carry-over at a newline even when a pattern spans lines. Only
+     * correct when every multi-line pattern is accompanied by its per-line
+     * fragments (scrubPatterns builds them): each line is then caught on its
+     * own and the output shows one `[redacted]` per line — the ROADMAP ⑤
+     * design's "live logs stream line by line even for PEM keys".
+     */
+    readonly cutAtNewline?: boolean;
+  } = {},
+): StreamReplacer {
   const sorted = sortedPatterns(patterns);
   const longest = sorted[0]?.from.length ?? 0;
-  const lineBounded = !anyMultiLine(sorted);
+  const lineBounded = options.cutAtNewline === true || !anyMultiLine(sorted);
   let pending = new Uint8Array(0);
   if (longest === 0) {
     return { push: (chunk) => chunk, flush: () => new Uint8Array(0) };
@@ -125,35 +170,19 @@ export function makeStreamReplacer(patterns: readonly BytePattern[]): StreamRepl
   return {
     push(chunk) {
       const combined = pending.length === 0 ? chunk : concatBytes([pending, chunk]);
-      // Replace over the whole buffer first: a match ending inside the
-      // would-be carry-over is still confirmed when the buffer holds all
-      // of it — only the tail that could be the *start* of a match waits
-      const replaced = replaceBytes(combined, sorted);
-      // The tail that may still begin a pattern: (longest − 1) bytes, cut
-      // at the last newline when every pattern is single-line
-      let hold = Math.min(longest - 1, replaced.length);
-      if (lineBounded && hold > 0) {
-        const tail = replaced.subarray(replaced.length - hold);
-        const newlineAt = tail.lastIndexOf(NEWLINE);
-        if (newlineAt >= 0) {
-          hold = hold - newlineAt - 1;
+      let cut = Math.max(0, combined.length - (longest - 1));
+      if (lineBounded) {
+        const lastNewline = combined.lastIndexOf(NEWLINE);
+        if (lastNewline + 1 > cut) {
+          cut = lastNewline + 1;
         }
       }
-      // What is held back is the *source* bytes of that tail, not the
-      // replaced ones: a replacement's output must not be re-matched (a
-      // `to` that happens to contain another pattern), and the held tail
-      // is replaced again on the next push together with the new chunk.
-      // Replacement never touches the last `hold` bytes when no pattern
-      // ends there, so taking the tail from `replaced` equals the source
-      // except when a match ended inside it — in which case the match
-      // output is final and holding it is harmless (a `to` never contains
-      // a `from` by the caller's construction: placeholders and
-      // "[redacted]" are not secrets)
-      pending = replaced.subarray(replaced.length - hold).slice();
-      return replaced.subarray(0, replaced.length - hold);
+      const { out, stoppedAt } = scan(combined, sorted, cut);
+      pending = combined.subarray(stoppedAt).slice();
+      return out;
     },
     flush() {
-      const out = pending;
+      const { out } = scan(pending, sorted, pending.length);
       pending = new Uint8Array(0);
       return out;
     },

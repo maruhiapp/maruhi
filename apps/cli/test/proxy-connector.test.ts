@@ -71,7 +71,9 @@ describe("github-app connector", () => {
   it("signs an RS256 App JWT GitHub can verify, asks for an installation token, and caches it", async () => {
     let now = Date.UTC(2026, 9, 1, 12, 0, 0);
     const github = fakeGithub((call, index) =>
-      tokenResponse(`ghs_minted_${index}`, 60 * 60 * 1000, now),
+      call.method === "DELETE"
+        ? new Response(null, { status: 204 })
+        : tokenResponse(`ghs_minted_${index}`, 60 * 60 * 1000, now),
     );
     const credential = makeConnectorCredential({
       name: "GH_TOKEN",
@@ -93,7 +95,7 @@ describe("github-app connector", () => {
     expect(call?.method).toBe("POST");
     expect(call?.headers["accept"]).toBe("application/vnd.github+json");
     expect(call?.headers["x-github-api-version"]).toBe("2022-11-28");
-    expect(call?.headers["user-agent"]).toMatch(/^maruhi\//);
+    expect(call?.headers["user-agent"]).toMatch(/^maruhi-cli\//);
     const jwt = (call?.headers["authorization"] ?? "").replace(/^Bearer /, "");
     const decoded = decodeJwt(jwt);
     expect(decoded.header).toEqual({ alg: "RS256", typ: "JWT" });
@@ -112,6 +114,43 @@ describe("github-app connector", () => {
     now += 26 * 60 * 1000;
     expect(dec.decode(await credential.resolve())).toBe("ghs_minted_1");
     expect(github.calls).toHaveLength(2);
+    // Both the current and the previous token are known for scrubbing (the old one may still be valid)
+    expect(
+      credential
+        .known()
+        .map((bytes) => dec.decode(bytes))
+        .toSorted(),
+    ).toEqual(["ghs_minted_0", "ghs_minted_1"]);
+    // Teardown revokes both with GitHub (authenticated by the token itself); nothing is held afterwards
+    await credential.release?.();
+    const revocations = github.calls.slice(2);
+    expect(revocations.map((revocation) => `${revocation.method} ${revocation.url}`)).toEqual([
+      "DELETE https://github.test/installation/token",
+      "DELETE https://github.test/installation/token",
+    ]);
+    expect(revocations.map((revocation) => revocation.headers["authorization"]).toSorted()).toEqual(
+      ["token ghs_minted_0", "token ghs_minted_1"],
+    );
+    expect(credential.known()).toEqual([]);
+  });
+
+  it("knows nothing before the first mint (no mint happens just to scrub)", () => {
+    const github = fakeGithub(() => tokenResponse("ghs_never", 3_600_000, Date.now()));
+    const credential = makeConnectorCredential({
+      name: "GH_TOKEN",
+      kind: "github-app",
+      inputs: {
+        appId: enc.encode("1"),
+        privateKey: enc.encode(PKCS1),
+        installationId: enc.encode("1"),
+      },
+      placeholder: "mhp_GH_TOKEN_u",
+      hosts: hosts(),
+      surfaces: ["header"],
+      deps: { fetch: github.fetch, now: Date.now },
+    });
+    expect(credential.known()).toEqual([]);
+    expect(github.calls).toHaveLength(0);
   });
 
   it("imports a PKCS#8 key too, and concurrent first uses share one mint", async () => {

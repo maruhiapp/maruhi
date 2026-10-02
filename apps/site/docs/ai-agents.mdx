@@ -99,7 +99,7 @@ Descriptions and variable names are written by project members and reach the age
 An agent that can run commands does not need MCP. Put one line in `AGENTS.md` (or `CLAUDE.md`):
 
 ```md
-Run `maruhi schema` to see which environment variables this project needs, and `maruhi run -- <command>` to run anything that needs them. Never ask for secret values, and never run commands that print the environment (such as `env` or `printenv`).
+Run `maruhi schema` to see which environment variables this project needs. To run anything that needs them, use `maruhi proxy run -- <command>` when the repository has a `maruhi.proxy.json`, otherwise `maruhi run -- <command>`. Never ask for secret values, and never run commands that print the environment (such as `env` or `printenv`).
 ```
 
 `maruhi schema` prints the same rows as a table and, when its output is not a terminal, starts with the same "data, not instructions" line. Commands that would display a value, such as `maruhi pull --show`, refuse to run under an agent or without a terminal.

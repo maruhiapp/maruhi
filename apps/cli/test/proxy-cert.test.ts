@@ -40,6 +40,15 @@ describe("makeEphemeralCa", () => {
     expect((await ca.issue("other.example")).certPem).not.toBe(leaf.certPem);
   });
 
+  it("encodes a host name of 128+ characters correctly (a two-byte length — §19 C-10)", async () => {
+    const ca = await makeEphemeralCa();
+    const host = `${"a".repeat(60)}.${"b".repeat(60)}.${"c".repeat(60)}.example`;
+    expect(host.length).toBeGreaterThan(128);
+    const leaf = new X509Certificate((await ca.issue(host)).certPem);
+    expect(leaf.subjectAltName).toBe(`DNS:${host}`);
+    expect(leaf.checkHost(host)).toBe(host);
+  });
+
   it("encodes an IPv4 literal as an iPAddress name", async () => {
     const ca = await makeEphemeralCa();
     const leaf = new X509Certificate((await ca.issue("127.0.0.1")).certPem);

@@ -33,13 +33,13 @@
 // The server is not involved: no endpoint, no acceptance rule, no audit
 // row beyond the pull's own `var.read`. No spec text changes.
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import tls from "node:tls";
 
 import { Context, Effect, Redacted, type Stdio } from "effect";
 
-import { runtimeBaseDir } from "./agent.ts";
+import { privateRuntimeDir } from "./agent.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
@@ -47,7 +47,7 @@ import { logNote, logWarning } from "./notice.ts";
 import { makeEphemeralCa } from "./proxy-cert.ts";
 import type { HostPattern, ProxyConfig, VariableRule } from "./proxy-config.ts";
 import { type ConnectorDeps, makeConnectorCredential } from "./proxy-connector.ts";
-import { type BrokeredCredential, makePlaceholder } from "./proxy-rules.ts";
+import { type BrokeredCredential, makePlaceholder, randomAlphanumeric } from "./proxy-rules.ts";
 import { type ProxyDecision, type ProxyOptions, startProxy } from "./proxy-server.ts";
 import type { DecryptedVariable } from "./pull.ts";
 import { buildInjectionEnv, ProcessRunner, redactionFragments } from "./run.ts";
@@ -124,6 +124,7 @@ function brokerCredential(
     // toward a host the rule names (the sanctioned consumption path of
     // this command). Resolved per request, never stored anywhere else
     resolve: () => Promise.resolve(Redacted.value(variable.value)),
+    known: () => [Redacted.value(variable.value)],
   };
 }
 
@@ -316,9 +317,16 @@ export function proxyControlEnv(input: {
   };
 }
 
-/** PEM text of the runtime's root store (Mozilla's bundle as shipped by Node / Bun). */
+/**
+ * PEM text of the roots the child should keep trusting for the hosts the
+ * proxy only tunnels: the runtime's bundled Mozilla roots plus, where the
+ * runtime exposes it, the operating system's store (a corporate root
+ * behind a TLS-inspecting network proxy — review finding §19 D-13a).
+ */
 function rootCertificatesPem(): string {
-  return tls.rootCertificates.map((cert) => (cert.endsWith("\n") ? cert : `${cert}\n`)).join("");
+  const system = typeof tls.getCACertificates === "function" ? tls.getCACertificates("system") : [];
+  const unique = new Set<string>([...tls.rootCertificates, ...system]);
+  return [...unique].map((cert) => (cert.endsWith("\n") ? cert : `${cert}\n`)).join("");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -327,6 +335,7 @@ function rootCertificatesPem(): string {
 
 interface Tally {
   brokered: number;
+  relayed: number;
   tunnelled: number;
   blocked: number;
   errors: number;
@@ -337,6 +346,8 @@ function describeDecision(decision: ProxyDecision): string {
   switch (decision.kind) {
     case "brokered":
       return `proxy: brokered ${decision.method} ${where}${displayText(decision.path)} [${decision.substituted.join(", ") || "no substitution"}] → ${decision.status}`;
+    case "relayed":
+      return `proxy: relayed ${decision.method} ${where}${displayText(decision.path)} (plain HTTP, no rule names it) → ${decision.status}`;
     case "tunnelled":
       return `proxy: tunnelled ${where} (no rule names it; not inspected)`;
     case "blocked":
@@ -424,67 +435,87 @@ export function proxyRunOp(
       catch: () =>
         cliError("Cannot create the run's certificate authority (WebCrypto unavailable)"),
     });
-    const tally: Tally = { brokered: 0, tunnelled: 0, blocked: 0, errors: 0 };
-    const decisionLines: string[] = [];
-    const proxy = yield* Effect.tryPromise({
-      try: () =>
-        startProxy({
-          credentials: plan.credentials,
-          unmatched: input.config.unmatched,
-          ca,
-          ...(seams?.upstream === undefined ? {} : { upstream: seams.upstream }),
-          onDecision: (decision) => {
-            tally[decision.kind === "error" ? "errors" : decision.kind] += 1;
-            if (input.verbose) {
-              // Written synchronously as it happens (stderr; names, hosts, paths — never a value)
-              decisionLines.push(describeDecision(decision));
-              void Effect.runPromise(io.logError(`Note: ${describeDecision(decision)}`));
-            }
-          },
-        }),
-      catch: () => cliError("Cannot start the local proxy (no loopback port could be opened)"),
-    });
-    const dir = yield* Effect.tryPromise({
-      try: () => mkdtemp(join(runtimeBaseDir(io.envVar), "maruhi-proxy-")),
-      catch: () =>
-        cliError(
-          "Cannot create a private directory for the proxy's CA certificate (under XDG_RUNTIME_DIR, or the temp directory when it is unset)",
-        ),
-    });
-    const caPath = join(dir, "ca.pem");
-    const bundlePath = join(dir, "ca-bundle.pem");
-    const cleanup = Effect.gen(function* () {
-      yield* Effect.promise(() => proxy.close());
-      yield* Effect.tryPromise({
-        try: () => rm(dir, { recursive: true, force: true }),
-        catch: () =>
-          cliError(`could not remove the proxy CA directory (${dir}) — remove it by hand`),
-      }).pipe(Effect.catch((error) => logWarning(`proxy run: ${error.message}`)));
+    const tally: Tally = { brokered: 0, relayed: 0, tunnelled: 0, blocked: 0, errors: 0 };
+    const onDecision = (decision: ProxyDecision): void => {
+      tally[decision.kind === "error" ? "errors" : decision.kind] += 1;
+      if (input.verbose) {
+        // Written synchronously as it happens (stderr; names, hosts, paths without
+        // their query — never a value). runSync: the live CliIo writes with writeSync
+        Effect.runSync(io.logError(`Note: ${describeDecision(decision)}`));
+      }
+    };
+    // The private directory first: a failure here leaves nothing to tear down
+    const { dir, removeDir } = yield* privateRuntimeDir({
+      envVar: io.envVar,
+      prefix: "maruhi-proxy-",
+      purpose: "the proxy's CA certificate",
+      removeFailure: (path) =>
+        `proxy run: could not remove the proxy CA directory (${path}) — remove it by hand`,
     });
     const exitCode = yield* Effect.gen(function* () {
-      // The CA certificate is public; the bundle is the runtime's root
-      // store plus the CA. Neither is a secret — the CA key stays in memory
-      yield* Effect.tryPromise({
-        try: async () => {
-          await writeFile(caPath, ca.certPem, { mode: 0o600 });
-          await writeFile(bundlePath, `${rootCertificatesPem()}${ca.certPem}`, { mode: 0o600 });
-        },
-        catch: () => cliError(`Cannot write the proxy's CA certificate under ${dir}`),
+      const proxy = yield* Effect.tryPromise({
+        try: () =>
+          startProxy({
+            credentials: plan.credentials,
+            unmatched: input.config.unmatched,
+            ca,
+            // Every client must present this run's proxy credential (userinfo in
+            // the proxy URL — honoured by curl, git, Python, Go, Node, Bun; §19 D-14b)
+            credential: { user: "maruhi", password: randomAlphanumeric(22) },
+            ...(seams?.upstream === undefined ? {} : { upstream: seams.upstream }),
+            onDecision,
+          }),
+        catch: () => cliError("Cannot start the local proxy (no loopback port could be opened)"),
       });
-      const control = proxyControlEnv({ proxyUrl: proxy.url, bundlePath, caPath });
-      // Control variables are written last: a variable named HTTPS_PROXY
-      // (a co-member can choose names) must not redirect the child's traffic
-      const extraEnv = { ...injected, ...control };
-      yield* logNote(`proxy run: proxy listening on ${proxy.url}; starting the command`);
-      return yield* runner.run({
-        command: input.command,
-        extraEnv,
-        holdSignals: true,
-        redact: yield* redactionFragments(plan.passthrough),
+      // Teardown: revoke minted credentials (connectors), close the proxy
+      const closeProxy = Effect.gen(function* () {
+        for (const credential of plan.credentials) {
+          if (credential.release !== undefined) {
+            yield* Effect.tryPromise({
+              try: credential.release,
+              catch: (error) => (error instanceof Error ? error.message : "revocation failed"),
+            }).pipe(
+              Effect.catch((reason) =>
+                logNote(
+                  `proxy run: could not revoke the credential minted for ${displayText(credential.name)} (${reason}); it expires on its own`,
+                ),
+              ),
+            );
+          }
+        }
+        yield* Effect.promise(() => proxy.close());
       });
-    }).pipe(Effect.ensuring(cleanup));
+      return yield* Effect.gen(function* () {
+        // The CA certificate is public; the bundle is the roots plus the CA.
+        // Neither is a secret — the CA key stays in memory
+        const caPath = join(dir, "ca.pem");
+        const bundlePath = join(dir, "ca-bundle.pem");
+        yield* Effect.tryPromise({
+          try: async () => {
+            await writeFile(caPath, ca.certPem, { mode: 0o600 });
+            await writeFile(bundlePath, `${rootCertificatesPem()}${ca.certPem}`, { mode: 0o600 });
+          },
+          catch: () => cliError(`Cannot write the proxy's CA certificate under ${dir}`),
+        });
+        const control = proxyControlEnv({ proxyUrl: proxy.url, bundlePath, caPath });
+        // Control variables are written last: a variable named HTTPS_PROXY
+        // (a co-member can choose names) must not redirect the child's traffic
+        const extraEnv = { ...injected, ...control };
+        yield* logNote(`proxy run: proxy listening on ${proxy.address}; starting the command`);
+        // The redaction covers pass-through values and the brokered values
+        // known at start (defence in depth: the child should never print a
+        // brokered value, so there is no false positive to fear)
+        const brokeredAtStart = plan.credentials.flatMap((credential) => credential.known());
+        return yield* runner.run({
+          command: input.command,
+          extraEnv,
+          holdSignals: true,
+          redact: yield* redactionFragments(plan.passthrough, brokeredAtStart),
+        });
+      }).pipe(Effect.ensuring(closeProxy));
+    }).pipe(Effect.ensuring(removeDir));
     yield* logNote(
-      `proxy run: ${tally.brokered} brokered, ${tally.tunnelled} tunnelled, ${tally.blocked} blocked, ${tally.errors} failed`,
+      `proxy run: ${tally.brokered} requests brokered, ${tally.relayed} plain requests relayed, ${tally.tunnelled} connections tunnelled, ${tally.blocked} blocked, ${tally.errors} failed`,
     );
     return exitCode;
   });

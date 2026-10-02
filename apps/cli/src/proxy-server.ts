@@ -43,19 +43,27 @@
 // never a header value or body (the Infisical activity-log field set,
 // minus anything that could carry a value).
 
+import { timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
+import { pipeline, Transform } from "node:stream";
 import tls from "node:tls";
 import zlib from "node:zlib";
 
-import { type BytePattern, makeStreamReplacer, replaceBytes } from "./byte-replace.ts";
+import {
+  type BytePattern,
+  makeStreamReplacer,
+  replaceBytes,
+  scrubPatterns,
+} from "./byte-replace.ts";
 import type { EphemeralCa } from "./proxy-cert.ts";
 import type { Surface } from "./proxy-config.ts";
 import {
   authorityOf,
   type BrokeredCredential,
   credentialsFor,
+  hostHeaderOf,
   type Target,
 } from "./proxy-rules.ts";
 
@@ -65,11 +73,19 @@ export type ProxyDecision =
       readonly kind: "brokered";
       readonly method: string;
       readonly target: Target;
-      /** The request target as the client sent it (placeholders, never values). */
+      /** The request path **without its query** (a query can carry a pass-through value the child put there — §19 D-7). */
       readonly path: string;
       readonly status: number;
       /** Variables substituted into this request (names only). */
       readonly substituted: readonly string[];
+    }
+  | {
+      /** A plain-HTTP request toward a host no rule names: relayed through the inspection path, nothing substituted. */
+      readonly kind: "relayed";
+      readonly method: string;
+      readonly target: Target;
+      readonly path: string;
+      readonly status: number;
     }
   | { readonly kind: "tunnelled"; readonly target: Target }
   | {
@@ -92,6 +108,12 @@ export interface ProxyOptions {
   /** Destinations no rule names: tunnel untouched, or refuse. */
   readonly unmatched: "allow" | "block";
   readonly ca: EphemeralCa;
+  /**
+   * The proxy credential every client must present (`Proxy-Authorization:
+   * Basic`), carried as userinfo in the proxy URL the child receives. Keeps
+   * other local processes off this run's proxy (§19 D-14b). Absent = open.
+   */
+  readonly credential?: { readonly user: string; readonly password: string } | undefined;
   readonly onDecision?: (decision: ProxyDecision) => void;
   /**
    * Test seams. `connect` redirects where an upstream connection goes (the
@@ -106,8 +128,10 @@ export interface ProxyOptions {
 }
 
 export interface ProxyHandle {
-  /** `http://127.0.0.1:<port>` — the value of HTTP_PROXY / HTTPS_PROXY for the child. */
+  /** `http://[user:password@]127.0.0.1:<port>` — the value of HTTP_PROXY / HTTPS_PROXY for the child (carries the credential). */
   readonly url: string;
+  /** `127.0.0.1:<port>` — for messages (never the credential). */
+  readonly address: string;
   readonly port: number;
   readonly close: () => Promise<void>;
 }
@@ -133,9 +157,10 @@ const HOP_BY_HOP = new Set([
 const textEncoder = new TextEncoder();
 
 /** A short plain-text response written straight to a raw socket (before any protocol handoff). */
-function rawResponse(status: number, reason: string, body: string): string {
+function rawResponse(status: number, reason: string, body: string, extraHeader = ""): string {
   const bytes = Buffer.byteLength(body);
-  return `HTTP/1.1 ${status} ${reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${bytes}\r\nConnection: close\r\nProxy-Agent: maruhi\r\n\r\n${body}`;
+  const extra = extraHeader === "" ? "" : `${extraHeader}\r\n`;
+  return `HTTP/1.1 ${status} ${reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${bytes}\r\nConnection: close\r\nProxy-Agent: maruhi\r\n${extra}\r\n${body}`;
 }
 
 /** Parses `host[:port]` (an IPv6 literal in brackets is refused — rules cannot name one). */
@@ -147,7 +172,8 @@ function parseAuthority(
     return null;
   }
   const colon = text.lastIndexOf(":");
-  const host = (colon >= 0 ? text.slice(0, colon) : text).toLowerCase();
+  // Lower-cased, and a trailing dot (an absolute DNS name) dropped so it matches the rule
+  const host = (colon >= 0 ? text.slice(0, colon) : text).toLowerCase().replace(/\.$/, "");
   const portText = colon >= 0 ? text.slice(colon + 1) : String(defaultPort);
   if (host.length === 0 || !/^\d{1,5}$/.test(portText)) {
     return null;
@@ -174,9 +200,22 @@ function parseAbsoluteForm(
   }
   const port = parsed.port === "" ? 80 : Number(parsed.port);
   return {
-    target: { scheme: "http", host: parsed.hostname.toLowerCase(), port },
+    target: { scheme: "http", host: parsed.hostname.toLowerCase().replace(/\.$/, ""), port },
     path: `${parsed.pathname}${parsed.search}`,
   };
+}
+
+/** Inside a tunnel the client writes origin-form; an absolute-form target is reduced to its path. */
+function originFormOf(raw: string): string {
+  if (raw.startsWith("/")) {
+    return raw;
+  }
+  try {
+    const parsed = new URL(raw);
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return raw;
+  }
 }
 
 /** Pipes two sockets into each other and tears both down together. */
@@ -361,6 +400,19 @@ function buildUpstreamRequest(input: {
   readonly substituted: readonly string[];
 } {
   const { values } = input;
+  // A value in the request target must be percent-encoded (a space, `&`,
+  // `#`, `%`, `+` would change the URL's meaning or be refused by the HTTP
+  // client — review finding §19 C-4); a header value must stay a single
+  // Latin-1 line (a line break would be refused by the client; a value that
+  // cannot be a header is reported, never mangled)
+  const encoded = new Map(
+    [...values].map(([credential, value]) => [credential, encodeURIComponent(value)]),
+  );
+  for (const [credential, value] of values) {
+    if (!isHeaderSafe(value)) {
+      throw new UnsendableValueError(credential.name);
+    }
+  }
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(input.headers)) {
     if (HOP_BY_HOP.has(name)) {
@@ -376,18 +428,36 @@ function buildUpstreamRequest(input: {
     to: textEncoder.encode(value),
   }));
   const body = Buffer.from(replaceBytes(input.body, bodyPatterns));
-  headers["host"] = authorityOf(input.target);
+  headers["host"] = hostHeaderOf(input.target);
   // The response must be readable to be scrubbed (and HTTP/1.1 upstream keeps it simple)
   headers["accept-encoding"] = "identity";
   if (body.length > 0 || input.headers["content-length"] !== undefined) {
     headers["content-length"] = String(body.length);
   }
   return {
-    path: substituteText(input.path, values) + substituteText(input.query, values),
+    path: substituteText(input.path, encoded) + substituteText(input.query, encoded),
     headers,
     body,
     substituted: [...values.keys()].map((credential) => credential.name).toSorted(),
   };
+}
+
+/** A single Latin-1 line (what an HTTP header value may carry). */
+function isHeaderSafe(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code === 0x0d || code === 0x0a || code > 0xff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** A brokered value that cannot travel in a header (a line break or a non-Latin-1 character). */
+class UnsendableValueError extends Error {
+  constructor(readonly variable: string) {
+    super("unsendable value");
+  }
 }
 
 /** `Authorization`: a Basic credential is substituted decoded and re-encoded; anything else as text. */
@@ -405,24 +475,42 @@ function substituteAuthorization(
     : `Basic ${Buffer.from(substituted, "utf8").toString("base64")}`;
 }
 
-/** The decompressor for a `Content-Encoding` the proxy can undo (null = identity or unknown). */
+/** The request path without its query (what decisions carry). */
+function pathOnly(requestPath: string): string {
+  const questionMark = requestPath.indexOf("?");
+  return questionMark < 0 ? requestPath : requestPath.slice(0, questionMark);
+}
+
+type Decompressor = zlib.Gunzip | zlib.Inflate | zlib.BrotliDecompress;
+
+/**
+ * The decompressor for a `Content-Encoding`: `null` for identity, a stream
+ * for an encoding the proxy can undo, or `"unsupported"` (an unknown token
+ * or a stack of encodings) — then the body cannot be scrubbed and the
+ * response is refused rather than forwarded unread (fail closed — §19 D-12).
+ */
+const DECOMPRESSORS: Readonly<Record<string, () => Decompressor | "unsupported" | null>> = {
+  "": () => null,
+  identity: () => null,
+  gzip: () => zlib.createGunzip(),
+  "x-gzip": () => zlib.createGunzip(),
+  deflate: () => zlib.createInflate(),
+  br: () => zlib.createBrotliDecompress(),
+  // Node 22.15+ and Bun ship it; older runtimes refuse the response
+  zstd: () =>
+    "createZstdDecompress" in zlib
+      ? (zlib as unknown as { createZstdDecompress: () => Decompressor }).createZstdDecompress()
+      : "unsupported",
+};
+
 function decompressorFor(
   encoding: string | string[] | undefined,
-): zlib.Gunzip | zlib.Inflate | zlib.BrotliDecompress | null {
+): Decompressor | "unsupported" | null {
   const value = (Array.isArray(encoding) ? encoding.join(",") : (encoding ?? ""))
     .trim()
     .toLowerCase();
-  switch (value) {
-    case "gzip":
-    case "x-gzip":
-      return zlib.createGunzip();
-    case "deflate":
-      return zlib.createInflate();
-    case "br":
-      return zlib.createBrotliDecompress();
-    default:
-      return null;
-  }
+  const make = DECOMPRESSORS[value];
+  return make === undefined ? "unsupported" : make();
 }
 
 /**
@@ -435,6 +523,8 @@ function scrubbedResponseHeaders(
   headers: http.IncomingHttpHeaders,
   scrub: readonly BytePattern[],
   decompressed: boolean,
+  /** The response carries no body to re-frame (HEAD / 204 / 304): keep its length header. */
+  bodiless: boolean,
 ): Record<string, string | string[]> {
   const scrubHeader = (text: string): string =>
     scrub.reduce(
@@ -448,7 +538,7 @@ function scrubbedResponseHeaders(
   for (const [name, value] of Object.entries(headers)) {
     const dropped =
       HOP_BY_HOP.has(name) ||
-      name === "content-length" ||
+      (name === "content-length" && !bodiless) ||
       (decompressed && name === "content-encoding");
     if (value === undefined || dropped) {
       continue;
@@ -466,41 +556,54 @@ function relayResponse(
   upstream: http.IncomingMessage,
   res: http.ServerResponse,
   scrub: readonly BytePattern[],
+  method: string,
   done: (outcome: number | "failed") => void,
 ): void {
+  const status = upstream.statusCode ?? 502;
+  // No body to re-frame: a HEAD answer, 204, 304 — the origin's framing headers stay
+  if (method === "HEAD" || status === 204 || status === 304) {
+    upstream.resume();
+    res.writeHead(status, scrubbedResponseHeaders(upstream.headers, scrub, false, true));
+    res.end();
+    done(status);
+    return;
+  }
   // The proxy asked for an identity response; a server that compresses
   // anyway would hide an echoed value from the scrubber, so a compressed
   // body is decompressed here and delivered as identity (fail closed for
   // the scrub — pf4-design.md §18 D)
   const decoder = decompressorFor(upstream.headers["content-encoding"]);
-  res.writeHead(
-    upstream.statusCode ?? 502,
-    scrubbedResponseHeaders(upstream.headers, scrub, decoder !== null),
-  );
-  const replacer = makeStreamReplacer(scrub);
-  const body: NodeJS.ReadableStream = decoder === null ? upstream : upstream.pipe(decoder);
-  body.on("data", (chunk: Buffer) => {
-    const out = replacer.push(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.length));
-    if (out.length > 0) {
-      res.write(Buffer.from(out));
-    }
-  });
-  body.on("end", () => {
-    const tail = replacer.flush();
-    if (tail.length > 0) {
-      res.write(Buffer.from(tail));
-    }
-    res.end();
-    done(upstream.statusCode ?? 0);
-  });
-  const failed = () => {
-    res.destroy();
+  if (decoder === "unsupported") {
+    upstream.resume();
+    sendText(
+      res,
+      502,
+      `maruhi proxy: the response from the host used a content encoding the proxy cannot read (${String(upstream.headers["content-encoding"])}), so it could not be checked for echoed values and was not relayed`,
+    );
     done("failed");
-  };
-  upstream.on("error", failed);
-  if (decoder !== null) {
-    decoder.on("error", failed);
+    return;
   }
+  res.writeHead(status, scrubbedResponseHeaders(upstream.headers, scrub, decoder !== null, false));
+  // scrubPatterns carries each line of a multi-line value: the carry-over may be cut at newlines
+  const replacer = makeStreamReplacer(scrub, { cutAtNewline: true });
+  const scrubbing = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      callback(
+        null,
+        Buffer.from(replacer.push(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.length))),
+      );
+    },
+    flush(callback) {
+      callback(null, Buffer.from(replacer.flush()));
+    },
+  });
+  // `pipeline` carries backpressure end to end (a slow client no longer
+  // buffers the whole body in the proxy — review finding §19 C-6) and tears
+  // every stage down on an error or on the client leaving
+  const stages: NodeJS.ReadWriteStream[] = decoder === null ? [scrubbing] : [decoder, scrubbing];
+  pipeline(upstream, ...stages, res, (error) => {
+    done(error ? "failed" : status);
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -525,19 +628,17 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
       });
     });
 
-  /** Patterns scrubbing every brokered value out of a response (real → placeholder). */
-  const scrubbers = async (): Promise<BytePattern[]> => {
-    const patterns: BytePattern[] = [];
-    for (const credential of options.credentials) {
-      // A connector that has not minted yet has no value to scrub; one
-      // that fails is reported on the request path, not here
-      const bytes = await credential.resolve().catch(() => null);
-      if (bytes !== null && bytes.length > 0) {
-        patterns.push({ from: bytes, to: textEncoder.encode(credential.placeholder) });
-      }
-    }
-    return patterns;
-  };
+  /**
+   * Patterns scrubbing every brokered value out of a response (real →
+   * placeholder), from the values the credentials already hold — **never
+   * minting** (a connector mints only for a request that uses its
+   * placeholder — §19 D-1). The `maruhi sync` fragment rule applies (whole /
+   * per line / JSON-escaped — §19 D-5).
+   */
+  const scrubbers = (): BytePattern[] =>
+    options.credentials.flatMap((credential) =>
+      scrubPatterns(credential.known(), credential.placeholder),
+    );
 
   /**
    * One inspected request (over the MITM hop or plain absolute-form):
@@ -555,21 +656,44 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
     readonly body: Buffer;
     readonly values: ReadonlyMap<BrokeredCredential, string>;
     readonly scrub: readonly BytePattern[];
+    /** The credentials whose rules name this target (empty = a relayed plain request). */
+    readonly allowed: readonly BrokeredCredential[];
   }): Promise<void> => {
     const { res, target, requestPath } = input;
     const method = input.req.method ?? "GET";
-    const outgoing = buildUpstreamRequest(input);
-    const where = connectTo(target);
-    const request = (target.scheme === "https" ? https : http).request({
-      host: where.host,
-      port: where.port,
-      servername: target.scheme === "https" ? target.host : undefined,
-      ca: upstreamCa === undefined ? undefined : [...upstreamCa],
-      method,
-      path: outgoing.path,
-      headers: outgoing.headers,
-      // The run's values are not retried on another connection by the proxy
-      agent: false,
+    const path = pathOnly(requestPath);
+    let outgoing: ReturnType<typeof buildUpstreamRequest>;
+    let request: http.ClientRequest;
+    try {
+      outgoing = buildUpstreamRequest(input);
+      const where = connectTo(target);
+      request = (target.scheme === "https" ? https : http).request({
+        host: where.host,
+        port: where.port,
+        servername: target.scheme === "https" ? target.host : undefined,
+        ca: upstreamCa === undefined ? undefined : [...upstreamCa],
+        method,
+        path: outgoing.path,
+        headers: outgoing.headers,
+        // The run's values are not retried on another connection by the proxy
+        agent: false,
+      });
+    } catch (error) {
+      // A value that cannot be sent as asked (the HTTP client refuses the
+      // request before anything leaves — nothing was sent)
+      const reason =
+        error instanceof UnsendableValueError
+          ? `the value of ${error.variable} cannot be sent in a header (it contains a line break or a non-Latin-1 character)`
+          : `the request could not be built${(error as NodeJS.ErrnoException).code === undefined ? "" : ` (${(error as NodeJS.ErrnoException).code})`}`;
+      sendText(res, 502, `maruhi proxy: ${reason}; the request was not sent`);
+      decide({ kind: "error", method, target, path, reason });
+      return Promise.resolve();
+    }
+    // The client left before the answer: stop reading the origin
+    res.on("close", () => {
+      if (!res.writableFinished) {
+        request.destroy();
+      }
     });
     return new Promise<void>((resolve) => {
       request.on("error", (error: NodeJS.ErrnoException) => {
@@ -579,23 +703,32 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
         } else {
           res.destroy();
         }
-        decide({ kind: "error", method, target, path: requestPath, reason });
+        decide({ kind: "error", method, target, path, reason });
         resolve();
       });
       request.on("response", (upstream) => {
-        relayResponse(upstream, res, input.scrub, (outcome) => {
-          decide(
-            outcome === "failed"
-              ? { kind: "error", method, target, path: requestPath, reason: "upstream read failed" }
-              : {
-                  kind: "brokered",
-                  method,
-                  target,
-                  path: requestPath,
-                  status: outcome,
-                  substituted: outgoing.substituted,
-                },
-          );
+        relayResponse(upstream, res, input.scrub, method, (outcome) => {
+          if (outcome === "failed") {
+            decide({
+              kind: "error",
+              method,
+              target,
+              path,
+              reason: "upstream response not relayed",
+            });
+          } else if (input.allowed.length === 0) {
+            // Plain HTTP toward a host no rule names: inspected, nothing substituted
+            decide({ kind: "relayed", method, target, path, status: outcome });
+          } else {
+            decide({
+              kind: "brokered",
+              method,
+              target,
+              path,
+              status: outcome,
+              substituted: outgoing.substituted,
+            });
+          }
           resolve();
         });
       });
@@ -616,7 +749,7 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
     const method = req.method ?? "GET";
     const blocked = (status: number, text: string, reason: string) => {
       sendText(res, status, `maruhi proxy: ${text}`);
-      decide({ kind: "blocked", method, target, path: requestPath, reason });
+      decide({ kind: "blocked", method, target, path: pathOnly(requestPath), reason });
     };
     const allowed = credentialsFor(options.credentials, target);
     if (req.headers["upgrade"] !== undefined) {
@@ -657,14 +790,26 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
     let scrub: BytePattern[];
     try {
       values = await resolveValues(allowed, needed);
-      scrub = await scrubbers();
+      scrub = scrubbers();
     } catch (error) {
       const reason = error instanceof Error ? error.message : "credential unavailable";
       sendText(res, 502, `maruhi proxy: ${reason}; the request was not sent`);
-      decide({ kind: "error", method, target, path: requestPath, reason });
+      decide({ kind: "error", method, target, path: pathOnly(requestPath), reason });
       return;
     }
-    await forward({ req, res, target, requestPath, path, query, headers, body, values, scrub });
+    await forward({
+      req,
+      res,
+      target,
+      requestPath,
+      path,
+      query,
+      headers,
+      body,
+      values,
+      scrub,
+      allowed,
+    });
   };
 
   /** Runs an async handler, turning an unexpected failure into a 500 (never an unhandled rejection). */
@@ -681,7 +826,13 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
       } else {
         res.destroy();
       }
-      decide({ kind: "error", method: req.method ?? "GET", target, path: requestPath, reason });
+      decide({
+        kind: "error",
+        method: req.method ?? "GET",
+        target,
+        path: pathOnly(requestPath),
+        reason,
+      });
     });
   };
 
@@ -693,15 +844,12 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
     let pending = mitmServers.get(key);
     if (pending === undefined) {
       const server = http.createServer((req, res) => {
-        // Inside the tunnel the client writes origin-form; an absolute-form
-        // target is reduced to its path (the authority is the tunnel's)
-        const raw = req.url ?? "/";
-        const requestPath = raw.startsWith("/")
-          ? raw
-          : ((parseAbsoluteForm(raw) as { path: string } | null)?.path ?? raw);
-        guarded(req, res, target, typeof requestPath === "string" ? requestPath : raw);
+        // The authority is the tunnel's (never the request's)
+        guarded(req, res, target, originFormOf(req.url ?? "/"));
       });
       pending = listen(server);
+      // A failed listen is not remembered (the next CONNECT tries again)
+      pending.catch(() => mitmServers.delete(key));
       mitmServers.set(key, pending);
     }
     return pending;
@@ -731,7 +879,7 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
         kind: "blocked",
         method: req.method ?? "GET",
         target: parsed.target,
-        path: parsed.path,
+        path: pathOnly(parsed.path),
         reason: "unmatched host (block)",
       });
       return;
@@ -740,8 +888,36 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
   });
   const plainPort = await listen(plainServer);
 
+  // The expected `Proxy-Authorization` value (null = no credential required)
+  const expectedAuthorization =
+    options.credential === undefined
+      ? null
+      : Buffer.from(
+          `Basic ${Buffer.from(`${options.credential.user}:${options.credential.password}`).toString("base64")}`,
+          "latin1",
+        );
+  /** Whether the request head carries this run's proxy credential (constant-time compare). */
+  const presentsCredential = (lines: readonly string[]): boolean => {
+    if (expectedAuthorization === null) {
+      return true;
+    }
+    const header = lines.find((line) => /^proxy-authorization:/i.test(line));
+    if (header === undefined) {
+      return false;
+    }
+    const given = Buffer.from(header.slice(header.indexOf(":") + 1).trim(), "latin1");
+    return (
+      given.length === expectedAuthorization.length && timingSafeEqual(given, expectedAuthorization)
+    );
+  };
+
+  // Every client connection, so close() can end tunnels a grandchild left open (§19 C-3)
+  const clients = new Set<net.Socket>();
+
   /** One client connection to the proxy: read the first head, then dispatch. */
   const onConnection = (socket: net.Socket): void => {
+    clients.add(socket);
+    socket.on("close", () => clients.delete(socket));
     let head = Buffer.alloc(0);
     socket.on("error", () => socket.destroy());
     const onData = (chunk: Buffer) => {
@@ -749,12 +925,14 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
       const end = head.indexOf(HEAD_END);
       if (end < 0) {
         if (head.length > MAX_HEAD) {
+          socket.off("data", onData);
           socket.end(
             rawResponse(
               431,
               "Request Header Fields Too Large",
               "maruhi proxy: request head too large\n",
             ),
+            () => socket.destroy(),
           );
         }
         return;
@@ -764,6 +942,17 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
       const rest = head.subarray(end + HEAD_END.length);
       const lines = head.subarray(0, end).toString("latin1").split("\r\n");
       const [method = "", requestTarget = ""] = (lines[0] ?? "").split(" ");
+      if (!presentsCredential(lines)) {
+        socket.end(
+          rawResponse(
+            407,
+            "Proxy Authentication Required",
+            "maruhi proxy: this run's proxy credential is missing or wrong (it is the userinfo of HTTPS_PROXY / HTTP_PROXY as the command received them)\n",
+            'Proxy-Authenticate: Basic realm="maruhi proxy run"',
+          ),
+        );
+        return;
+      }
       if (method === "CONNECT") {
         void onConnect(socket, requestTarget, rest);
         return;
@@ -845,6 +1034,10 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
         // Bytes the client sent before our 200 (a TLS ClientHello sent eagerly)
         socket.unshift(rest);
       }
+      // Order matters (review finding §19 C-13, measured under Node and
+      // Bun): the socket stays paused until the loopback hop is connected
+      // and `socket.resume()` runs inside that callback — resuming earlier
+      // loses an eagerly sent ClientHello and the connection hangs
       const secure = new tls.TLSSocket(socket, {
         isServer: true,
         key: leaf.keyPem,
@@ -871,10 +1064,21 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
   const proxy = net.createServer(onConnection);
   const port = await listen(proxy);
 
+  const address = `127.0.0.1:${port}`;
+  const userinfo =
+    options.credential === undefined
+      ? ""
+      : `${encodeURIComponent(options.credential.user)}:${encodeURIComponent(options.credential.password)}@`;
   return {
-    url: `http://127.0.0.1:${port}`,
+    url: `http://${userinfo}${address}`,
+    address,
     port,
     close: async () => {
+      // Open tunnels and MITM connections would hold the listeners open
+      // (a dev server the child started and left behind): end them
+      for (const socket of clients) {
+        socket.destroy();
+      }
       await Promise.all(
         servers.map(
           (server) =>

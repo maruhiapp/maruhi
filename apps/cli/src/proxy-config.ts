@@ -105,37 +105,73 @@ const CONNECTOR_INPUTS: Readonly<Record<ConnectorKind, readonly string[]>> = {
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 // A DNS label sequence (lower-cased on parse). IPv4 literals also pass this shape
 const HOST_NAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
-// Printable ASCII without spaces (a value that survives headers, URLs, and shells)
-const PLACEHOLDER = /^[\x21-\x7E]{8,256}$/;
+// Printable ASCII without spaces (a value that survives headers, URLs, and
+// shells), long enough not to occur in ordinary traffic by accident (a
+// short word as a placeholder would be rewritten wherever it appears —
+// review finding §19 C-12)
+const PLACEHOLDER = /^[\x21-\x7E]{16,256}$/;
+
+/** `localhost`, `*.localhost`, or a 127.0.0.0/8 literal. */
+function isLoopbackHost(host: string, wildcard: boolean): boolean {
+  if (host === "localhost") {
+    return true;
+  }
+  if (wildcard) {
+    return host === "localhost";
+  }
+  return host.endsWith(".localhost") || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
 
 /**
- * Parses one host entry: `[scheme://]host[:port]`, `*.` wildcard allowed.
- * Exported for tests.
+ * Parses one host entry: `[scheme://]host[:port]`, `*.` wildcard allowed
+ * (`http://` only toward the loopback). Exported for tests.
  */
-export function parseHostPattern(text: string): HostPattern | Invalid {
-  let rest = text.trim().toLowerCase();
-  let scheme: HostPattern["scheme"] = "https";
-  if (rest.startsWith("https://")) {
-    rest = rest.slice("https://".length);
-  } else if (rest.startsWith("http://")) {
-    scheme = "http";
-    rest = rest.slice("http://".length);
-  } else if (rest.includes("://")) {
-    return "the scheme must be https (the default) or http";
+/** `[scheme://]rest` → the scheme and what follows it. */
+function splitScheme(
+  text: string,
+): { readonly scheme: HostPattern["scheme"]; readonly rest: string } | Invalid {
+  if (text.startsWith("https://")) {
+    return { scheme: "https", rest: text.slice("https://".length) };
   }
-  if (rest.includes("/")) {
+  if (text.startsWith("http://")) {
+    return { scheme: "http", rest: text.slice("http://".length) };
+  }
+  return text.includes("://")
+    ? "the scheme must be https (the default) or http"
+    : { scheme: "https", rest: text };
+}
+
+/** `host[:port]` → the host and the port (the scheme's default when absent). */
+function splitPort(
+  text: string,
+  defaultPort: number,
+): { readonly host: string; readonly port: number } | Invalid {
+  const colon = text.lastIndexOf(":");
+  if (colon < 0) {
+    return { host: text, port: defaultPort };
+  }
+  const portText = text.slice(colon + 1);
+  if (!/^\d{1,5}$/.test(portText) || Number(portText) < 1 || Number(portText) > 65535) {
+    return "the port must be a number between 1 and 65535";
+  }
+  return { host: text.slice(0, colon), port: Number(portText) };
+}
+
+export function parseHostPattern(text: string): HostPattern | Invalid {
+  const schemed = splitScheme(text.trim().toLowerCase());
+  if (typeof schemed === "string") {
+    return schemed;
+  }
+  const { scheme } = schemed;
+  if (schemed.rest.includes("/")) {
     return "a host entry carries no path (write host[:port] only)";
   }
-  let port = scheme === "https" ? 443 : 80;
-  const colon = rest.lastIndexOf(":");
-  if (colon >= 0) {
-    const portText = rest.slice(colon + 1);
-    if (!/^\d{1,5}$/.test(portText) || Number(portText) < 1 || Number(portText) > 65535) {
-      return "the port must be a number between 1 and 65535";
-    }
-    port = Number(portText);
-    rest = rest.slice(0, colon);
+  const ported = splitPort(schemed.rest, scheme === "https" ? 443 : 80);
+  if (typeof ported === "string") {
+    return ported;
   }
+  const { port } = ported;
+  let rest = ported.host;
   let wildcard = false;
   if (rest.startsWith("*.")) {
     wildcard = true;
@@ -146,6 +182,11 @@ export function parseHostPattern(text: string): HostPattern | Invalid {
   }
   if (wildcard && !rest.includes(".")) {
     return "a wildcard needs at least two labels after `*.` (for example `*.example.com`)";
+  }
+  // A value substituted into plain HTTP travels in cleartext; only the
+  // loopback is acceptable for that (a local development server)
+  if (scheme === "http" && !isLoopbackHost(rest, wildcard)) {
+    return "plain http:// is accepted only for loopback hosts (localhost, *.localhost, 127.0.0.0/8); a value toward any other host must travel over https";
   }
   return { scheme, host: rest, wildcard, port };
 }
@@ -193,7 +234,7 @@ function parsePlaceholder(
     return { placeholder: undefined };
   }
   if (typeof value !== "string" || !PLACEHOLDER.test(value)) {
-    return `variables.${name}.placeholder must be 8 to 256 printable ASCII characters without spaces`;
+    return `variables.${name}.placeholder must be 16 to 256 printable ASCII characters without spaces`;
   }
   return { placeholder: value };
 }
@@ -362,8 +403,12 @@ function registerRule(
   consumed: Map<string, string>,
 ): Invalid | null {
   if ((rule.mode === "broker" || rule.mode === "connector") && rule.placeholder !== undefined) {
-    if (placeholders.has(rule.placeholder)) {
-      return `variables.${name}.placeholder is also used by another rule (placeholders must be unique)`;
+    // One placeholder inside another would make the longer one's substitution
+    // rewrite the shorter one's — refused, like a duplicate
+    for (const other of placeholders) {
+      if (other.includes(rule.placeholder) || rule.placeholder.includes(other)) {
+        return `variables.${name}.placeholder is also used by another rule, or contains / is contained in another rule's placeholder (placeholders must be unique and independent)`;
+      }
     }
     placeholders.add(rule.placeholder);
   }

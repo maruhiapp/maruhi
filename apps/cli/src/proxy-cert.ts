@@ -27,7 +27,6 @@ import {
   bitString,
   boolTrue,
   explicit,
-  ia5String,
   octetString,
   oid,
   pem,
@@ -103,8 +102,11 @@ function generalName(host: string): Uint8Array {
   if (host === "::1") {
     return tlv(0x87, new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]));
   }
-  // [2] dNSName (IA5String — ASCII only; a non-ASCII host is refused upstream by the rule parser)
-  return tlv(0x82, ia5String(host).subarray(2));
+  // [2] dNSName (IA5String content — ASCII only; a non-ASCII host is
+  // refused upstream by the rule parser). The context tag carries its own
+  // length (review finding §19 C-10: slicing a 2-byte IA5String length
+  // broke hosts of 128+ characters)
+  return tlv(0x82, encoder.encode(host));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -140,8 +142,9 @@ interface Signer {
   readonly subject: string;
 }
 
-async function generateSigner(subject: string): Promise<Signer> {
-  const pair = await crypto.subtle.generateKey(ECDSA_P256, true, ["sign", "verify"]);
+/** `extractable` only for a leaf, whose key must be exported (PKCS#8) for node:tls; the CA key never leaves WebCrypto. */
+async function generateSigner(subject: string, extractable: boolean): Promise<Signer> {
+  const pair = await crypto.subtle.generateKey(ECDSA_P256, extractable, ["sign", "verify"]);
   const spki = new Uint8Array(await crypto.subtle.exportKey("spki", pair.publicKey));
   return { privateKey: pair.privateKey, spki, keyId: await keyIdentifier(spki), subject };
 }
@@ -211,7 +214,7 @@ const CA_SUBJECT = "maruhi ephemeral CA (one proxy run only)";
  * closure.
  */
 export async function makeEphemeralCa(now: number = Date.now()): Promise<EphemeralCa> {
-  const ca = await generateSigner(CA_SUBJECT);
+  const ca = await generateSigner(CA_SUBJECT, false);
   const caTbs = tbsCertificate({
     subject: ca,
     issuer: ca,
@@ -228,7 +231,7 @@ export async function makeEphemeralCa(now: number = Date.now()): Promise<Ephemer
   const leaves = new Map<string, Promise<LeafCertificate>>();
 
   const issueLeaf = async (host: string): Promise<LeafCertificate> => {
-    const leaf = await generateSigner(host);
+    const leaf = await generateSigner(host, true);
     const tbs = tbsCertificate({
       subject: leaf,
       issuer: ca,

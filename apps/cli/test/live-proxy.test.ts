@@ -22,7 +22,7 @@ interface ProbeResult {
 }
 
 describe("the forward proxy (live — Bun runtime, real clients)", () => {
-  it("brokers for Bun fetch and curl, tunnels another host untouched, and relays plain HTTP", () => {
+  it("brokers for Bun fetch and curl with the proxy credential from the URL, tunnels another host untouched, and refuses an unauthenticated plain request", () => {
     const result = spawnSync("bun", [PROBE], {
       encoding: "utf8",
       timeout: 60_000,
@@ -51,7 +51,9 @@ describe("the forward proxy (live — Bun runtime, real clients)", () => {
     expect(probe.curlText).toContain(`origin saw auth=Bearer ${probe.placeholder}`);
     expect(probe.curlText).toContain("exit=0");
     expect(probe.seen).toContain(`GET /curl auth=Bearer ghp_probe_real_value_0123456789`);
-    // Plain HTTP absolute form reaches the proxy's plain path (the host is unreachable here: 502 from the proxy, not a client error)
-    expect(probe.plain).toMatch(/^502 maruhi proxy: cannot reach plain\.example\.test:80/);
+    // A plain request without the run's proxy credential is refused before anything else
+    expect(probe.plain).toMatch(
+      /^407 maruhi proxy: this run's proxy credential is missing or wrong/,
+    );
   }, 60_000);
 });

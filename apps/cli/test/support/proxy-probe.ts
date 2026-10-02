@@ -64,8 +64,11 @@ const proxy = await startProxy({
       hosts: [pattern("api.example.test")],
       surfaces: ["header"],
       resolve: () => Promise.resolve(enc.encode(REAL)),
+      known: () => [enc.encode(REAL)],
     },
   ],
+  // The production shape: a per-run credential carried in the proxy URL (curl and Bun fetch read it from there)
+  credential: { user: "maruhi", password: "probe-credential-0123456789" },
   unmatched: "allow",
   ca: runCa,
   upstream: {

@@ -45,10 +45,18 @@ function collect(response: http.IncomingMessage): Promise<ClientResponse> {
   });
 }
 
+/** `Proxy-Authorization: Basic …` for a `user:password` credential (undefined = none). */
+function proxyAuthHeaders(auth: string | undefined): Record<string, string> {
+  return auth === undefined
+    ? {}
+    : { "proxy-authorization": `Basic ${Buffer.from(auth).toString("base64")}` };
+}
+
 /** CONNECT to `authority` through the proxy; resolves with the raw tunnel socket (or the proxy's refusal). */
 export function openTunnel(
   proxyPort: number,
   authority: string,
+  auth?: string,
 ): Promise<{ readonly socket: net.Socket } | { readonly refused: ClientResponse }> {
   return new Promise((resolve, reject) => {
     const request = http.request({
@@ -56,6 +64,7 @@ export function openTunnel(
       port: proxyPort,
       method: "CONNECT",
       path: authority,
+      headers: proxyAuthHeaders(auth),
     });
     // Node emits 'connect' for every response to a CONNECT, whatever its
     // status; a refusal (403 / 502) carries its body on the raw socket
@@ -128,10 +137,12 @@ export async function httpsViaProxy(input: {
   readonly method?: string;
   readonly headers?: Record<string, string>;
   readonly body?: Buffer | string;
+  /** The run's proxy credential (`user:password`), when the proxy requires one. */
+  readonly auth?: string;
 }): Promise<ClientResponse> {
   const url = new URL(input.url);
   const port = url.port === "" ? 443 : Number(url.port);
-  const tunnel = await openTunnel(input.proxyPort, `${url.hostname}:${port}`);
+  const tunnel = await openTunnel(input.proxyPort, `${url.hostname}:${port}`, input.auth);
   if ("refused" in tunnel) {
     return tunnel.refused;
   }
@@ -156,6 +167,7 @@ export function httpViaProxy(input: {
   readonly method?: string;
   readonly headers?: Record<string, string>;
   readonly body?: Buffer | string;
+  readonly auth?: string;
 }): Promise<ClientResponse> {
   const url = new URL(input.url);
   return send(
@@ -164,7 +176,7 @@ export function httpViaProxy(input: {
       port: input.proxyPort,
       method: input.method ?? "GET",
       path: input.url,
-      headers: { host: url.host, ...input.headers },
+      headers: { host: url.host, ...proxyAuthHeaders(input.auth), ...input.headers },
       agent: false,
     }),
     input.body ?? "",
@@ -226,6 +238,11 @@ export async function startOrigin(input: {
       res.setHeader("content-encoding", "gzip");
       res.end(zlib.gzipSync(`compressed echo: ${req.headers.authorization ?? "none"}`));
     },
+    "/unknown-encoding": (_req, res) => {
+      res.setHeader("content-type", "text/plain");
+      res.setHeader("content-encoding", "x-made-up");
+      res.end("opaque bytes");
+    },
     "/big": (_req, res) => {
       res.setHeader("content-type", "text/plain");
       res.end(`${"x".repeat(200)} ${input.marker ?? ""}\n`.repeat(2000));
@@ -235,6 +252,8 @@ export async function startOrigin(input: {
     const path = (req.url ?? "").split("?")[0] ?? "";
     const responder = responders[path];
     if (responder === undefined) {
+      // An explicit length so a HEAD answer carries one (the bodiless re-framing specimen)
+      res.setHeader("content-length", "2");
       res.end("ok");
     } else {
       responder(req, res, body);

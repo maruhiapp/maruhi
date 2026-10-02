@@ -901,8 +901,10 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   // of the run-output redaction (searched inside the ProcessRunner only)
   "run.ts": 3,
   // `proxy run`: a brokered value resolved per request toward the rule's
-  // hosts, and a connector's inputs consumed to mint a short-lived credential
-  "proxy-run.ts": 2,
+  // hosts, the same value as the response-scrub / redaction pattern
+  // (`known`), and a connector's inputs consumed to mint a short-lived
+  // credential
+  "proxy-run.ts": 3,
   // Importing the master secret key (hex → non-extractable CryptoKey)
   "session.ts": 2,
   // Assembling sync's stdin body (JSON — the product is Redacted again) 1 +

@@ -499,6 +499,8 @@ export function typeAdvisoryWarnings(variables: readonly DecryptedVariable[]): r
  */
 export function redactionFragments(
   variables: readonly DecryptedVariable[],
+  /** Further secrets to scrub (`proxy run`: the brokered values known at start). */
+  extraSecrets: readonly Uint8Array[] = [],
 ): Effect.Effect<readonly Uint8Array[] | undefined, never, CliIo | Stdio.Stdio> {
   return Effect.gen(function* () {
     const agent = yield* AgentProfileRef;
@@ -506,13 +508,13 @@ export function redactionFragments(
     const stdio = yield* Stdio.Stdio;
     const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
     const triggered = agent.isAgent || !stdoutIsTerminal || !io.stderrIsTerminal();
-    if (!triggered || variables.length === 0) {
+    if (!triggered || variables.length + extraSecrets.length === 0) {
       return undefined;
     }
     // Reason for unwrapping: the fragments are the search patterns of the
     // redaction itself (what the child's output is scrubbed of). They stay
     // inside the ProcessRunner boundary and never appear in any message
-    return variables.map((variable) => Redacted.value(variable.value));
+    return [...variables.map((variable) => Redacted.value(variable.value)), ...extraSecrets];
   });
 }
 

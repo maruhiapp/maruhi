@@ -33,6 +33,12 @@ describe("parseHostPattern", () => {
       wildcard: false,
       port: 8787,
     });
+    expect(parseHostPattern("http://app.localhost:3000")).toEqual({
+      scheme: "http",
+      host: "app.localhost",
+      wildcard: false,
+      port: 3000,
+    });
     expect(parseHostPattern("http://127.0.0.1")).toEqual({
       scheme: "http",
       host: "127.0.0.1",
@@ -47,6 +53,12 @@ describe("parseHostPattern", () => {
     expect(parseHostPattern("x.example:0")).toMatch(/port/);
     expect(parseHostPattern("x.example:70000")).toMatch(/port/);
     expect(parseHostPattern("*.com")).toMatch(/two labels/);
+    // Plain HTTP would carry a value in cleartext: only the loopback is accepted
+    expect(parseHostPattern("http://api.example.com")).toMatch(
+      /plain http:\/\/ is accepted only for loopback hosts/,
+    );
+    expect(parseHostPattern("http://10.0.0.5:8080")).toMatch(/loopback/);
+    expect(parseHostPattern("http://*.example.com")).toMatch(/loopback/);
     expect(parseHostPattern("bad_host.example")).toMatch(/DNS name/);
     expect(parseHostPattern("")).toMatch(/DNS name/);
   });
@@ -159,9 +171,18 @@ describe("parseProxyConfig", () => {
     const secretLooking = "SECRET-VALUE-THAT-MUST-NOT-ECHO";
     const short = parse({
       version: 1,
-      variables: { X: { mode: "broker", hosts: ["x.example"], placeholder: "short" } },
+      variables: { X: { mode: "broker", hosts: ["x.example"], placeholder: "password-ish" } },
     });
-    expect(short).toMatch(/variables.X.placeholder must be/);
+    expect(short).toMatch(/variables.X.placeholder must be 16 to 256/);
+    // One placeholder inside another is refused like a duplicate
+    const nested = parse({
+      version: 1,
+      variables: {
+        X: { mode: "broker", hosts: ["x.example"], placeholder: "fixed-placeholder-value" },
+        Y: { mode: "broker", hosts: ["y.example"], placeholder: "fixed-placeholder-value-longer" },
+      },
+    });
+    expect(nested).toMatch(/variables.Y.placeholder is also used by another rule, or contains/);
     const dup = parse({
       version: 1,
       variables: {

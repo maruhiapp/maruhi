@@ -84,6 +84,21 @@ describe("makeStreamReplacer", () => {
     }
   });
 
+  it("with cutAtNewline and per-line fragments, emits each line as it completes and redacts a PEM line by line", () => {
+    const pem = "-----BEGIN KEY-----\nabcdefghijklmnop\n-----END KEY-----";
+    const patterns = scrubPatterns([enc.encode(pem)], "[redacted]");
+    const replacer = makeStreamReplacer(patterns, { cutAtNewline: true });
+    const first = replacer.push(
+      enc.encode("log line one\n-----BEGIN KEY-----\nabcdefghijklmnop\n--"),
+    );
+    // The two complete lines are out already (not held for the whole 3-line pattern)
+    expect(dec.decode(first)).toBe("log line one\n[redacted]\n[redacted]\n");
+    const rest =
+      dec.decode(replacer.push(enc.encode("---END KEY-----\nafter\n"))) +
+      dec.decode(replacer.flush());
+    expect(rest).toBe("[redacted]\nafter\n");
+  });
+
   it("is byte-transparent for non-UTF-8 output", () => {
     const binary = new Uint8Array(4096);
     for (let i = 0; i < binary.length; i++) {

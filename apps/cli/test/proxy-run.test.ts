@@ -194,6 +194,12 @@ function proxyPortOf(call: RunnerCall): number {
   return Number(new URL(call.extraEnv["HTTPS_PROXY"] ?? "").port);
 }
 
+/** The run's proxy credential as the child sees it (the userinfo of HTTPS_PROXY). */
+function proxyAuthOf(call: RunnerCall): string {
+  const url = new URL(call.extraEnv["HTTPS_PROXY"] ?? "");
+  return `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+}
+
 describe("maruhi proxy run", () => {
   it("hands the child a placeholder for a brokered variable, the real value for a pass-through, nothing for an unlisted one, and brokers a request made through the proxy", async () => {
     const { env, configPath, configDir } = await startEnv(BROKER_CONFIG);
@@ -223,11 +229,13 @@ describe("maruhi proxy run", () => {
       // No value of the run is in the control variables
       expect(Object.values(e).join("\n")).not.toContain(REAL_TOKEN);
       // The child, as a client behind HTTPS_PROXY trusting the CA, uses the placeholder
+      expect(e["HTTPS_PROXY"]).toMatch(/^http:\/\/maruhi:[A-Za-z0-9]{22}@127\.0\.0\.1:\d+$/);
       const response = await httpsViaProxy({
         proxyPort: proxyPortOf(call),
         ca: [caOnly],
         url: "https://api.example.test/echo",
         headers: { authorization: `Bearer ${e["GITHUB_TOKEN"]}` },
+        auth: proxyAuthOf(call),
       });
       brokered = {
         status: response.status,
@@ -256,7 +264,12 @@ describe("maruhi proxy run", () => {
     expect(stderr).toContain("proxy run: passing through with the real value: DATABASE_URL");
     expect(stderr).toContain("proxy run: withheld (not injected): OTHER");
     expect(stderr).toContain("hosts no rule names are tunnelled untouched");
-    expect(stderr).toContain("proxy run: 1 brokered, 0 tunnelled, 0 blocked, 0 failed");
+    expect(stderr).toContain(
+      "proxy run: 1 requests brokered, 0 plain requests relayed, 0 connections tunnelled, 0 blocked, 0 failed",
+    );
+    // The listening address is printed without the credential
+    expect(stderr).toMatch(/proxy listening on 127\.0\.0\.1:\d+;/);
+    expect(stderr).not.toContain(proxyAuthOf(env.runnerCalls[0] as RunnerCall).split(":")[1]);
     const everything = [...env.logs, ...env.errors].join("\n");
     expect(everything).not.toContain(REAL_TOKEN);
     expect(everything).not.toContain(REAL_DB);
@@ -268,8 +281,11 @@ describe("maruhi proxy run", () => {
     const { env, configPath } = await startEnv(BROKER_CONFIG);
     env.setTerminal({ stdout: false });
     expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(0);
+    // Pass-through values and the brokered values known at start (defence in depth)
     const redact = env.runnerCalls[0]?.redact ?? [];
-    expect(redact.map((bytes) => new TextDecoder().decode(bytes))).toEqual([REAL_DB]);
+    expect(redact.map((bytes) => new TextDecoder().decode(bytes)).toSorted()).toEqual(
+      [REAL_DB, REAL_TOKEN].toSorted(),
+    );
   });
 
   it("injects unlisted variables when the config says passthrough, and prints each decision with --verbose", async () => {
@@ -284,6 +300,7 @@ describe("maruhi proxy run", () => {
         proxyPort: proxyPortOf(call),
         ca: [],
         url: "https://elsewhere.example.test/x",
+        auth: proxyAuthOf(call),
       });
       expect(blocked.status).toBe(403);
       return 0;
@@ -296,7 +313,9 @@ describe("maruhi proxy run", () => {
     expect(stderr).toContain(
       "Note: proxy: blocked CONNECT elsewhere.example.test:443 — unmatched host (block)",
     );
-    expect(stderr).toContain("proxy run: 0 brokered, 0 tunnelled, 1 blocked, 0 failed");
+    expect(stderr).toContain(
+      "proxy run: 0 requests brokered, 0 plain requests relayed, 0 connections tunnelled, 1 blocked, 0 failed",
+    );
     expect(stderr).not.toContain(REAL_OTHER);
   });
 

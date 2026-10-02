@@ -25,9 +25,23 @@ export interface BrokeredCredential {
   /**
    * The real value right now. A `broker` rule returns the variable's bytes;
    * a `connector` rule mints or refreshes a short-lived credential (and may
-   * fail with a reason that carries no secret).
+   * fail with a reason that carries no secret). Called only when a request
+   * toward one of `hosts` carries the placeholder.
    */
   readonly resolve: () => Promise<Uint8Array>;
+  /**
+   * The values already held, **without minting**: the variable's bytes for
+   * a `broker` rule; the current and the previous token for a connector
+   * (both may still be valid). Used to scrub responses (the proxy must
+   * never mint a credential just to look for it in a response — review
+   * finding pf4-design.md §19 D-1).
+   */
+  readonly known: () => readonly Uint8Array[];
+  /**
+   * Teardown for a credential that outlives nothing (a connector revokes
+   * its minted token). Best effort; failures are reported, never fatal.
+   */
+  readonly release?: (() => Promise<void>) | undefined;
 }
 
 /** Whether `pattern` names `target` (scheme, port, and host — exact or `*.` suffix). */
@@ -62,15 +76,33 @@ const PLACEHOLDER_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
  * useless to another.
  */
 export function makePlaceholder(name: string): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(22));
-  let tail = "";
-  for (const byte of bytes) {
-    tail += PLACEHOLDER_ALPHABET[byte % PLACEHOLDER_ALPHABET.length];
+  return `mhp_${name}_${randomAlphanumeric(22)}`;
+}
+
+// Bytes at or above this are discarded so every alphabet character is
+// equally likely (256 is not a multiple of 62 — rejection sampling)
+const UNBIASED_LIMIT = 256 - (256 % PLACEHOLDER_ALPHABET.length);
+
+/** `length` uniformly random alphanumerics (~5.95 bits each; 22 ≈ 131 bits). Also the run's proxy credential. */
+export function randomAlphanumeric(length: number): string {
+  let text = "";
+  while (text.length < length) {
+    for (const byte of crypto.getRandomValues(new Uint8Array(length))) {
+      if (byte < UNBIASED_LIMIT && text.length < length) {
+        text += PLACEHOLDER_ALPHABET[byte % PLACEHOLDER_ALPHABET.length];
+      }
+    }
   }
-  return `mhp_${name}_${tail}`;
+  return text;
 }
 
 /** `host:port` for messages and map keys. */
 export function authorityOf(target: Target): string {
   return `${target.host}:${target.port}`;
+}
+
+/** The `Host` header for `target` (RFC 9112 §3.2 — the port only when it is not the scheme's default). */
+export function hostHeaderOf(target: Target): string {
+  const defaultPort = target.scheme === "https" ? 443 : 80;
+  return target.port === defaultPort ? target.host : `${target.host}:${target.port}`;
 }
