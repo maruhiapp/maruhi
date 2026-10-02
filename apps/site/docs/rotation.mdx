@@ -27,7 +27,7 @@ maruhi var rotate DATABASE_URL --env prod
 # Rotated DATABASE_URL in environment prod with the postgres connector (DATABASE_URL version=8, epoch=3)
 #   role app_b now in use
 # Previous credential: role app_a keeps its previous password until you finalize
-# Deploy the new value (1 variable pushed — sync targets with onPush were synced), then run `maruhi var rotate DATABASE_URL --finalize` to invalidate the previous credential
+# Deploy the new value (1 variable pushed), then run `maruhi var rotate DATABASE_URL --finalize` to invalidate the previous credential
 
 # … deploy, confirm …
 
@@ -36,7 +36,7 @@ maruhi var rotate DATABASE_URL --env prod --finalize
 #   role app_a: password replaced by a random one nobody holds
 ```
 
-`--finalize` reads the previous version from the variable's [history](/docs/value-history) — verified as an ancestor of the current value, like a rollback — and invalidates exactly the credential it held. There is no state file: the version history is the rotation state. If someone pushed in between, `--previous <version>` names the version to finalize. Finalizing asks for confirmation, or takes `--yes` in a script; so does the one shape without a grace period (a single PostgreSQL role changing its own password in place).
+`--finalize` reads the previous version from the variable's [history](/docs/value-history) — verified as an ancestor of the current value, like a rollback — and invalidates exactly the credential it held. There is no state file: the version history is the rotation state. If someone pushed in between, `--previous <version>` names the version to finalize (for an AWS rule, the key id variable's version pushed alongside it is paired by push time). Finalizing asks for confirmation, or takes `--yes` in a script; so does the one shape without a grace period (a single PostgreSQL role changing its own password in place).
 
 A rotation pushed **after** the environment's key rotation clears the rotation flag for that variable (a value encrypted under a key the person never held). `maruhi rotation list` shows what is still open.
 

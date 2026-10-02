@@ -14,7 +14,7 @@
 // the database role may change its own password).
 //
 // The format: a single JSON file (default `maruhi.rotate.json`, overridable
-// with `--config`). A version field, a `project` check, and unknown keys
+// with `--rotate-config`; `--config` is the sync config on `var rotate`). A version field, a `project` check, and unknown keys
 // refused (a typo is never silently ignored — the sync / proxy discipline).
 // The validation's wording says "which key and why" and never shows the
 // value that was typed.
@@ -368,7 +368,7 @@ export function loadRotateConfig(path: string): Effect.Effect<RotateConfig, CliE
       try: () => readFile(path, "utf8"),
       catch: () =>
         cliError(
-          `Cannot read the rotation config ${path}. Create it (see the Rotation page in the docs), or pass --config <file>`,
+          `Cannot read the rotation config ${path}. Create it (see the Rotation page in the docs), or pass --rotate-config <file>`,
         ),
     });
     const parsed = parseRotateConfig(content);

@@ -88,6 +88,12 @@ export interface RotationOutcome {
   readonly facts: readonly string[];
   /** What the previous credential's state is now, in one line. */
   readonly previous: string;
+  /**
+   * How to recover when the issuer accepted the change but storing the new
+   * value failed (the new credential is then held only by the process that
+   * is about to exit): the issuer-specific step, in one line.
+   */
+  readonly recovery: string;
   /** Warnings (a connection test that failed after the issuer accepted the change). */
   readonly warnings: readonly string[];
 }
@@ -276,6 +282,10 @@ async function rotatePostgres(
       rule.roles === null
         ? "the previous password stopped working when the change was applied (nothing to finalize)"
         : `role ${parsed.user} keeps its previous password until you finalize`,
+    recovery:
+      rule.roles === null
+        ? `role ${role}'s password is now one nobody holds — an admin sets a new one (ALTER ROLE ${pgIdentifier(role)} WITH PASSWORD …) and pushes the URL with it`
+        : `re-running the rotation sets another password on role ${role} (role ${parsed.user} is untouched)`,
     warnings,
   };
 }
@@ -309,6 +319,10 @@ async function rotateMysql(
       rule.roles === null
         ? "the previous password keeps working as the account's secondary password until you finalize"
         : `account ${parsed.user}@${rule.host} keeps its previous password until you finalize`,
+    recovery:
+      rule.roles === null
+        ? `the primary password of ${role}@${rule.host} is now one nobody holds while the previous one still works as the secondary — an admin sets a new primary without RETAIN CURRENT PASSWORD (ALTER USER ${mysqlAccount(role, rule.host)} IDENTIFIED BY …; the secondary stays) and pushes the URL with it. Do not re-run the rotation first: RETAIN would keep the lost password and drop the working one`
+        : `re-running the rotation sets another password on ${role}@${rule.host} (${parsed.user}@${rule.host} is untouched)`,
     warnings,
   };
 }
@@ -589,6 +603,7 @@ async function rotateAwsIam(
     },
     facts,
     previous: `access key ${currentId} stays active until you finalize (IAM keys take a few seconds to become usable)`,
+    recovery: `access key ${newId} exists at the issuer and its secret is held only by this process — delete ${newId} for user ${user} at the issuer (a re-run refuses while two active keys exist; only an inactive key is reclaimed), or push its secret by hand`,
     warnings: [],
   };
 }
@@ -802,6 +817,7 @@ async function rotateCloudflare(
       `token ${String(request["name"])}: replacement ${result.id} created with the same policies`,
     ],
     previous: `token ${id} stays valid until you finalize`,
+    recovery: `token ${result.id} exists at the issuer and its value is held only by this process — delete it at the issuer or push its value by hand (a re-run creates yet another token)`,
     warnings: [],
   };
 }

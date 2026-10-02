@@ -1858,12 +1858,6 @@ function parseSchemaTypeFlag(
   );
 }
 
-/**
- * Interpreting `schema set`'s column specifications (partial update §1-2
- * — unspecified = keep, only an explicit flag returns to empty). A
- * contradictory specification (--required and --optional etc.) is a usage
- * error.
- */
 /** Interpreting `--max-age` (unspecified = keep, `none` = clear, else a day count 1..3650). The given text never appears in the error. */
 function parseMaxAgeFlag(
   value: string | undefined,
@@ -1884,6 +1878,12 @@ function parseMaxAgeFlag(
       );
 }
 
+/**
+ * Interpreting `schema set`'s column specifications (partial update §1-2
+ * — unspecified = keep, only an explicit flag returns to empty). A
+ * contradictory specification (--required and --optional etc.) is a usage
+ * error.
+ */
 function parseSchemaFieldUpdates(values: {
   readonly type?: string | undefined;
   readonly required: boolean;

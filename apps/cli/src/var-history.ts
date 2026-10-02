@@ -101,7 +101,8 @@ function resolveLiveVariable(
   });
 }
 
-function fetchHistory(
+/** The server-declared version history of one variable, ascending (shared with `var rotate --finalize`'s companion pairing). */
+export function fetchHistory(
   client: MaruhiClient,
   verified: VerifiedProject,
   environmentId: string,

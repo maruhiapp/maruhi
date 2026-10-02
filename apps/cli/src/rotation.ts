@@ -195,7 +195,7 @@ function expiringRowFor(
   environmentId: string,
   statement: VerifiedEnvironmentMetadata["variables"][number],
   nowMs: number,
-): Effect.Effect<ExpiringRow | null> {
+): Effect.Effect<ExpiringRow | null, never, CliIo> {
   const maxAgeDays = statement.schema?.maxAgeDays ?? null;
   if (maxAgeDays === null || statement.status !== "active") {
     return Effect.succeed(null);
@@ -206,7 +206,16 @@ function expiringRowFor(
     })
     .pipe(
       Effect.map((response) => response.versions),
-      Effect.catch(() => Effect.succeed([])),
+      // A history that cannot be read is said, never swallowed: the value
+      // would otherwise vanish from the list and read as "nothing due"
+      Effect.catch((error) =>
+        Effect.as(
+          logNote(
+            `could not read the history of ${displayText(statement.name)} in environment ${displayText(environmentId)} (${error.message}) — its age is not shown`,
+          ),
+          [],
+        ),
+      ),
       Effect.map((history) => {
         const latest = history.toSorted((a, b) => b.version - a.version)[0];
         if (latest === undefined) {

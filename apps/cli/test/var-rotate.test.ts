@@ -156,6 +156,8 @@ async function startEnv(input: {
   readonly prod: readonly Seed[];
   readonly ops?: readonly Seed[];
   readonly config: unknown;
+  /** Handlers consulted before the environment's own (a failure injected at one endpoint). */
+  readonly before?: readonly MockHandler[];
 }): Promise<{
   env: TestEnv;
   prod: ValueEnvironmentState;
@@ -167,7 +169,11 @@ async function startEnv(input: {
     input.ops === undefined
       ? null
       : await environmentServer({ environmentId: OPS_ID, dek: dekOps, seeds: input.ops });
-  const handlers: MockHandler[] = [...prod.handlers, ...(ops === null ? [] : ops.handlers)];
+  const handlers: MockHandler[] = [
+    ...(input.before ?? []),
+    ...prod.handlers,
+    ...(ops === null ? [] : ops.handlers),
+  ];
   const server = await MockServer.start(handlers);
   servers.push(server);
   const env = await makeTestEnv();
@@ -501,6 +507,157 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
     ).toBe(0);
     expect(iam.actions.slice(2)).toEqual(["ListAccessKeys", "UpdateAccessKey"]);
     expect(env.logs.join("\n")).toContain("access key AKIAOLD0000000000001 deactivated");
+  });
+
+  it("--finalize --previous pairs the key id companion by push time: the companion version pushed alongside that secret version is the one deactivated", async () => {
+    // Three rotations happened (versions 1..3 of both variables, pushed in
+    // step); someone finalizes version 2 explicitly. The key id of version 2
+    // (AKIAMID…) must be the one deactivated — not version 1's and not the
+    // companion's own "latest minus one" when the histories diverge
+    const { env, configPath } = await startEnv({
+      prod: [
+        {
+          variableId: "v-id",
+          name: "AWS_ACCESS_KEY_ID",
+          plaintexts: ["AKIAOLD0000000000001", "AKIAMID0000000000002", "AKIANEW0000000000003"],
+        },
+        {
+          variableId: "v-secret",
+          name: "AWS_SECRET_ACCESS_KEY",
+          plaintexts: ["old/secret", "mid/secret", "new/secret"],
+        },
+      ],
+      config: AWS_CONFIG,
+    });
+    const bodies: string[] = [];
+    const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = String(init?.body ?? "");
+      bodies.push(body);
+      const action = new URLSearchParams(body).get("Action") ?? "";
+      if (action === "ListAccessKeys") {
+        return new Response(
+          "<ListAccessKeysResponse><ListAccessKeysResult><AccessKeyMetadata><member><AccessKeyId>AKIAMID0000000000002</AccessKeyId><Status>Active</Status></member><member><AccessKeyId>AKIANEW0000000000003</AccessKeyId><Status>Active</Status></member></AccessKeyMetadata></ListAccessKeysResult></ListAccessKeysResponse>",
+          { status: 200 },
+        );
+      }
+      return new Response("<UpdateAccessKeyResponse/>", { status: 200 });
+    }) as typeof fetch;
+    env.setRotateSeams({
+      fetch: fetchImpl,
+      awsIamBase: "https://iam.test",
+      now: () => Date.parse("2026-10-02T00:00:00Z"),
+    });
+    expect(
+      await runCli(
+        [
+          "var",
+          "rotate",
+          "AWS_SECRET_ACCESS_KEY",
+          "--finalize",
+          "--previous",
+          "2",
+          "--yes",
+          "--rotate-config",
+          configPath,
+        ],
+        env.layer,
+      ),
+    ).toBe(0);
+    const update = bodies
+      .map((body) => new URLSearchParams(body))
+      .find((params) => params.get("Action") === "UpdateAccessKey");
+    expect(update?.get("AccessKeyId")).toBe("AKIAMID0000000000002");
+    expect(update?.get("Status")).toBe("Inactive");
+    const output = [...env.logs, ...env.errors].join("\n");
+    expect(output).toContain("access key AKIAMID0000000000002 deactivated");
+    expect(output).toContain("the credential of version 2 is invalidated; version 3 stays current");
+    expect(output).not.toContain("/secret");
+  });
+
+  it("a push that fails after the issuer accepted the change names what was stored, its rollback, and the issuer-specific recovery", async () => {
+    // The companion (key id) lands as version 2, then the secret's push is
+    // refused by the server: the message must not promise that a re-run
+    // reclaims the key (two active keys refuse) — it names the orphaned key
+    const { env, prod, configPath } = await startEnv({
+      prod: [
+        { variableId: "v-id", name: "AWS_ACCESS_KEY_ID", plaintexts: ["AKIAOLD0000000000001"] },
+        { variableId: "v-secret", name: "AWS_SECRET_ACCESS_KEY", plaintexts: ["old/secret"] },
+      ],
+      config: AWS_CONFIG,
+      before: [
+        (request) =>
+          request.method === "POST" && request.path.endsWith("/variables/v-secret/versions")
+            ? { status: 503, json: { _tag: "Unavailable" } }
+            : null,
+      ],
+    });
+    const iam = fakeIam();
+    env.setRotateSeams({
+      fetch: iam.fetch,
+      awsIamBase: "https://iam.test",
+      now: () => Date.parse("2026-10-02T00:00:00Z"),
+    });
+    expect(
+      await runCli(
+        ["var", "rotate", "AWS_SECRET_ACCESS_KEY", "--rotate-config", configPath],
+        env.layer,
+      ),
+    ).toBe(1);
+    expect(iam.actions).toEqual(["ListAccessKeys", "CreateAccessKey"]);
+    expect(await decryptLatest(prod, dekProd, "v-id")).toEqual({
+      plaintext: "AKIANEW0000000000002",
+      version: 2,
+    });
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      "The issuer accepted the rotation (user deployer: new access key AKIANEW0000000000002 created (the previous key AKIAOLD0000000000001 stays active)) but storing AWS_SECRET_ACCESS_KEY failed:",
+    );
+    expect(errors).toContain(
+      "Stored so far: AWS_ACCESS_KEY_ID (version 2 — roll it back with `maruhi var rollback AWS_ACCESS_KEY_ID --to 1` so it does not stay paired with the previous value)",
+    );
+    expect(errors).toContain(
+      "Recovery: access key AKIANEW0000000000002 exists at the issuer and its secret is held only by this process — delete AKIANEW0000000000002 for user deployer at the issuer (a re-run refuses while two active keys exist; only an inactive key is reclaimed), or push its secret by hand",
+    );
+    expect(errors).not.toContain("brand/new+secret");
+    expect(errors).not.toContain("old/secret");
+  });
+
+  it("--finalize when only the secret moved (the key id has a single version) has nothing to deactivate", async () => {
+    const { env, configPath } = await startEnv({
+      prod: [
+        { variableId: "v-id", name: "AWS_ACCESS_KEY_ID", plaintexts: ["AKIAOLD0000000000001"] },
+        {
+          variableId: "v-secret",
+          name: "AWS_SECRET_ACCESS_KEY",
+          plaintexts: ["old/secret", "new/secret"],
+        },
+      ],
+      config: AWS_CONFIG,
+    });
+    const iam = fakeIam();
+    env.setRotateSeams({
+      fetch: iam.fetch,
+      awsIamBase: "https://iam.test",
+      now: () => Date.parse("2026-10-02T00:00:00Z"),
+    });
+    expect(
+      await runCli(
+        [
+          "var",
+          "rotate",
+          "AWS_SECRET_ACCESS_KEY",
+          "--finalize",
+          "--yes",
+          "--rotate-config",
+          configPath,
+        ],
+        env.layer,
+      ),
+    ).toBe(0);
+    expect(iam.actions).toEqual([]);
+    expect([...env.logs, ...env.errors].join("\n")).toContain(
+      "access key AKIAOLD0000000000001 is held by both versions (nothing to deactivate)",
+    );
   });
 });
 
