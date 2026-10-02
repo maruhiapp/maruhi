@@ -14,6 +14,8 @@ export {
 } from "./audit.ts";
 export { type DeviceAddRequestRecord, type DeviceRecord, DeviceRepo } from "./devices.ts";
 export {
+  classifyImportedProject,
+  type ImportClassification,
   type ImportedIdentity,
   type ImportProvisionResult,
   provisionImportedProject,

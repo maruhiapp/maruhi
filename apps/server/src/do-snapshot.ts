@@ -97,6 +97,27 @@ export interface DoWatermarks {
    * for up to 7 days.
    */
   readonly attestationMark: number;
+  /** The deployment-local mutation counter (mutation_state — every write entry point bumps it). */
+  readonly mutationSeq: number;
+}
+
+/** The mutation counter (0 before the first write on this deployment). */
+function readMutationSeq(sql: SqlStorage): number {
+  const row = sql.exec("SELECT seq FROM mutation_state WHERE id = 1").toArray()[0];
+  return row === undefined ? 0 : Number(row["seq"]);
+}
+
+/**
+ * Advances the mutation counter (called by the DO after a write entry
+ * point succeeded, by the mint, and inside a replica commit). The
+ * counter is what a paged export compares between pages (`ExportMarks`),
+ * so every path that changes a snapshot table other than the rate-limit,
+ * binding and attestation tables must pass here.
+ */
+export function bumpMutationSeq(sql: SqlStorage): void {
+  sql.exec(
+    "INSERT INTO mutation_state (id, seq) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET seq = seq + 1",
+  );
 }
 
 function maxSeq(sql: SqlStorage, table: string): number {
@@ -127,7 +148,19 @@ export function readWatermarks(sql: SqlStorage): DoWatermarks {
     attestationMark: Number(attestation["m"]),
     auditHeadHashHex:
       auditMaxSeq === 0 ? "" : auditHead === undefined ? null : String(auditHead["head_hash_hex"]),
+    mutationSeq: readMutationSeq(sql),
   };
+}
+
+/** The audit head at a given seq (the paged export's trailer — the mark, not the live maximum); null when the column has not reached it. */
+function auditHeadHashAt(sql: SqlStorage, seq: number): string | null {
+  if (seq === 0) {
+    return "";
+  }
+  const row = sql
+    .exec("SELECT head_hash_hex FROM audit_head_hashes WHERE seq = ?", seq)
+    .toArray()[0];
+  return row === undefined ? null : String(row["head_hash_hex"]);
 }
 
 /** Whether chain_entries is empty (the restore acceptance condition — creates no overwrite path). */
@@ -389,13 +422,23 @@ export async function writeSnapshot(input: WriteSnapshotInput): Promise<WriteSna
 // rather than silently exported as a mixed state.
 // ---------------------------------------------------------------------------
 
-/** The marks a cursor binds (a change in any = the export restarts). */
+/**
+ * The marks a cursor binds. The chain head, the attestation mark and the
+ * mutation counter must not move between pages (the export restarts);
+ * `auditMaxSeq` is the **bound** of the exported audit log (rows past it
+ * are the reads served while the export ran — they are not exported and
+ * do not restart it; ruling C revision, docs/notes/pf3-design.md §8).
+ */
 export interface ExportMarks {
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string | null;
   readonly auditMaxSeq: number;
   readonly attestationMark: number;
+  readonly mutationSeq: number;
 }
+
+/** The tables whose rows the export bounds by `auditMaxSeq` (the log and its cumulative-hash column). */
+const AUDIT_SEQ_TABLES: ReadonlySet<string> = new Set(["audit_events", "audit_head_hashes"]);
 
 /** The stateless page cursor (opaque to the client — base64url JSON on the wire). */
 export interface ExportCursorState {
@@ -408,6 +451,12 @@ export interface ExportCursorState {
   /** Rows emitted so far per table (the trailer's counts). */
   readonly rows: Readonly<Record<string, number>>;
   readonly marks: ExportMarks;
+  /**
+   * The seq of the `project.exported` row the first page appended (ruling
+   * D revision): a later page is served only to the requester that row
+   * names, and only while the row still says what the cursor says.
+   */
+  readonly exportedSeq: number;
 }
 
 function marksOf(sql: SqlStorage): ExportMarks {
@@ -417,15 +466,17 @@ function marksOf(sql: SqlStorage): ExportMarks {
     chainHeadHashHex: marks.chainHeadHashHex,
     auditMaxSeq: marks.auditMaxSeq,
     attestationMark: marks.attestationMark,
+    mutationSeq: marks.mutationSeq,
   };
 }
 
+/** Whether a cursor's marks still describe the project (`auditMaxSeq` is a bound, not compared). */
 function sameMarks(a: ExportMarks, b: ExportMarks): boolean {
   return (
     a.chainHeadSeq === b.chainHeadSeq &&
     a.chainHeadHashHex === b.chainHeadHashHex &&
-    a.auditMaxSeq === b.auditMaxSeq &&
-    a.attestationMark === b.attestationMark
+    a.attestationMark === b.attestationMark &&
+    a.mutationSeq === b.mutationSeq
   );
 }
 
@@ -483,25 +534,17 @@ export function decodeExportCursor(text: string): ExportCursorState | null {
     return null;
   }
   const candidate = parsed as Partial<ExportCursorState>;
-  const marks = candidate.marks;
+  const marks = decodeMarks(candidate.marks);
   // Positions are embedded in SQL (the rowid) or index the table order:
   // only non-negative integers (rowid ≥ -1) pass — anything else is not a
   // cursor this server produced
   if (
-    typeof candidate.table !== "number" ||
-    !Number.isInteger(candidate.table) ||
-    candidate.table < 0 ||
+    !isIntegerAtLeast(candidate.table, 0) ||
     typeof candidate.started !== "boolean" ||
-    typeof candidate.rowid !== "number" ||
-    !Number.isInteger(candidate.rowid) ||
-    candidate.rowid < -1 ||
+    !isIntegerAtLeast(candidate.rowid, -1) ||
     !isRecordOfNumbers(candidate.rows) ||
-    typeof marks !== "object" ||
-    marks === null ||
-    typeof marks.chainHeadSeq !== "number" ||
-    (marks.chainHeadHashHex !== null && typeof marks.chainHeadHashHex !== "string") ||
-    typeof marks.auditMaxSeq !== "number" ||
-    typeof marks.attestationMark !== "number"
+    !isIntegerAtLeast(candidate.exportedSeq, 1) ||
+    marks === null
   ) {
     return null;
   }
@@ -510,12 +553,37 @@ export function decodeExportCursor(text: string): ExportCursorState | null {
     started: candidate.started,
     rowid: candidate.rowid,
     rows: candidate.rows,
-    marks: {
-      chainHeadSeq: marks.chainHeadSeq,
-      chainHeadHashHex: marks.chainHeadHashHex,
-      auditMaxSeq: marks.auditMaxSeq,
-      attestationMark: marks.attestationMark,
-    },
+    exportedSeq: candidate.exportedSeq,
+    marks,
+  };
+}
+
+function isIntegerAtLeast(value: unknown, floor: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= floor;
+}
+
+/** The cursor's marks, each of its declared type (null = not a cursor this server produced). */
+function decodeMarks(value: unknown): ExportMarks | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const marks = value as Partial<ExportMarks>;
+  const { chainHeadHashHex } = marks;
+  const numbers = [marks.chainHeadSeq, marks.attestationMark, marks.mutationSeq];
+  if (
+    !numbers.every((number) => typeof number === "number") ||
+    (chainHeadHashHex !== null && typeof chainHeadHashHex !== "string") ||
+    !isIntegerAtLeast(marks.auditMaxSeq, 0)
+  ) {
+    return null;
+  }
+  const [chainHeadSeq = 0, attestationMark = 0, mutationSeq = 0] = numbers;
+  return {
+    chainHeadSeq,
+    chainHeadHashHex: chainHeadHashHex ?? null,
+    auditMaxSeq: marks.auditMaxSeq,
+    attestationMark,
+    mutationSeq,
   };
 }
 
@@ -527,6 +595,8 @@ export interface ExportPageInput {
   readonly takenAtMs: number;
   /** null = the first page (the header is emitted and the marks are taken). */
   readonly cursor: ExportCursorState | null;
+  /** The seq of the `project.exported` row of this export (the first page binds it into the cursor). */
+  readonly exportedSeq: number;
   readonly maxRows: number;
   readonly maxBytes: number;
 }
@@ -572,7 +642,7 @@ function openCursor(
     doIdHex: input.doIdHex,
   };
   writer.emit(JSON.stringify(header));
-  return { table: 0, started: false, rowid: -1, rows: {}, marks };
+  return { table: 0, started: false, rowid: -1, rows: {}, marks, exportedSeq: input.exportedSeq };
 }
 
 /** Emits a table's line; the cursor then points at its first row. */
@@ -603,12 +673,14 @@ function emitRows(
   limit: number,
   maxBytes: number,
 ): { readonly state: ExportCursorState; readonly consumed: number } {
+  // The audit log is exported up to the mark: rows past it are the reads
+  // and leases served while the export ran (they belong to the next export)
+  const bounded = AUDIT_SEQ_TABLES.has(table);
   const chunk = Array.from(
     sql
       .exec(
-        `SELECT rowid AS __rid, * FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT ?`,
-        state.rowid,
-        limit,
+        `SELECT rowid AS __rid, * FROM ${table} WHERE rowid > ?${bounded ? " AND seq <= ?" : ""} ORDER BY rowid LIMIT ?`,
+        ...(bounded ? [state.rowid, state.marks.auditMaxSeq, limit] : [state.rowid, limit]),
       )
       .raw(),
   );
@@ -678,7 +750,7 @@ export function exportSnapshotPage(input: ExportPageInput): ExportPageResult {
     chainHeadSeq: marks.chainHeadSeq,
     chainHeadHashHex: marks.chainHeadHashHex,
     auditMaxSeq: marks.auditMaxSeq,
-    auditHeadHashHex: readWatermarks(sql).auditHeadHashHex,
+    auditHeadHashHex: auditHeadHashAt(sql, marks.auditMaxSeq),
     databaseSizeBytes: sql.databaseSize,
   };
   writer.emit(JSON.stringify(trailer));

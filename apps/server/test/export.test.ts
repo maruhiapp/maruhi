@@ -287,6 +287,7 @@ describe("project export (AUTH_SPEC §11-6)", () => {
           doIdHex: "ab".repeat(32),
           takenAtMs: 1_700_000_000_000,
           cursor,
+          exportedSeq: 1,
           maxRows: 3,
           maxBytes: 700,
         });
@@ -362,24 +363,64 @@ describe("project export (AUTH_SPEC §11-6)", () => {
       projectId,
       "SELECT COALESCE(MAX(accepted_at), 0) AS m FROM head_attestations",
     );
-    const current = base64Url(
-      JSON.stringify({
-        table: 0,
-        started: false,
-        rowid: -1,
-        rows: {},
-        marks: {
-          chainHeadSeq: head.chainHeadSeq,
-          chainHeadHashHex: head.chainHeadHashHex,
-          auditMaxSeq: head.auditMaxSeq,
-          attestationMark: Number(attestation[0]?.["m"] ?? 0),
-        },
-      }),
-    );
+    const mutation = await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1");
+    const cursorOf = (overrides: Record<string, unknown>) =>
+      base64Url(
+        JSON.stringify({
+          table: 0,
+          started: false,
+          rowid: -1,
+          rows: {},
+          exportedSeq: head.auditMaxSeq,
+          marks: {
+            chainHeadSeq: head.chainHeadSeq,
+            chainHeadHashHex: head.chainHeadHashHex,
+            auditMaxSeq: head.auditMaxSeq,
+            attestationMark: Number(attestation[0]?.["m"] ?? 0),
+            mutationSeq: Number(mutation[0]?.["seq"] ?? 0),
+          },
+          ...overrides,
+        }),
+      );
+    const current = cursorOf({});
     const continued = await exportPage(OWNER, current);
     expect(continued.status).toBe(200);
     const page = (await continued.json()) as WirePage;
     expect(parsedLine(page.lines[0])["kind"]).toBe("table");
+    // A read between pages (the reader's pull appends var.read) does not
+    // restart the export: the audit log is exported up to the mark, and
+    // the rows past it belong to the next export (ruling C revision)
+    expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
+    expect((await exportPage(OWNER, current)).status).toBe(200);
+    const liveAudit = await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM audit_events");
+    expect(Number(liveAudit[0]?.["n"])).toBeGreaterThan(head.auditMaxSeq);
+    // The cursor is the exporting owner's: another owner continuing it is
+    // refused (their export would have no audit row and no window of its
+    // own — ruling D revision), as is a cursor naming a row that is not the
+    // export's
+    await appendOperation(fixture, OWNER, changeRoleOperation(MEMBER, "owner"));
+    const afterPromotion = await exportPage(OWNER);
+    expect(afterPromotion.status).toBe(200);
+    const ownersHead = ((await afterPromotion.json()) as WirePage).head;
+    const ownersMutation = await queryProjectDo(
+      projectId,
+      "SELECT seq FROM mutation_state WHERE id = 1",
+    );
+    const ownersCursor = (overrides: Record<string, unknown>) =>
+      cursorOf({
+        exportedSeq: ownersHead.auditMaxSeq,
+        marks: {
+          chainHeadSeq: ownersHead.chainHeadSeq,
+          chainHeadHashHex: ownersHead.chainHeadHashHex,
+          auditMaxSeq: ownersHead.auditMaxSeq,
+          attestationMark: Number(attestation[0]?.["m"] ?? 0),
+          mutationSeq: Number(ownersMutation[0]?.["seq"] ?? 0),
+        },
+        ...overrides,
+      });
+    expect((await exportPage(OWNER, ownersCursor({}))).status).toBe(200);
+    expect((await exportPage(MEMBER, ownersCursor({}))).status).toBe(409);
+    expect((await exportPage(OWNER, ownersCursor({ exportedSeq: 1 }))).status).toBe(409);
     // A cursor past the table order is refused too (never a 500)
     const beyond = base64Url(
       JSON.stringify({ ...JSON.parse(atob(current)), table: 999, started: false }),
@@ -389,10 +430,10 @@ describe("project export (AUTH_SPEC §11-6)", () => {
       JSON.stringify({ ...JSON.parse(atob(current)), table: 0.5, rowid: -2 }),
     );
     expect((await exportPage(OWNER, fractional)).status).toBe(409);
-    // A data-only write between pages (a push appends an audit row, no chain
-    // entry) makes the same cursor stale
+    // A data-only write between pages (a push moves the mutation counter,
+    // no chain entry) makes the same cursor stale
     await createVariableOk(dek, "var-second-0002", "SECOND", "value-two");
-    const stale = await exportPage(OWNER, current);
+    const stale = await exportPage(OWNER, ownersCursor({}));
     expect(stale.status).toBe(409);
     // The window: the first page consumed one slot; an exhausted window is 429
     await queryProjectDo(
@@ -405,7 +446,47 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     expect(limited.status).toBe(429);
     expect(await limited.json()).toMatchObject({ _tag: "ExportRateLimited" });
     // A continuation is not window-counted (the cursor path skips the window)
-    expect((await exportPage(OWNER, current)).status).toBe(409);
+    expect((await exportPage(OWNER, ownersCursor({}))).status).toBe(409);
+  });
+
+  it("exports the audit log up to the mark: the trailer's counts stay the first page's after reads in between", async () => {
+    await seedProjectActivity();
+    const first = await exportPage(OWNER);
+    expect(first.status).toBe(200);
+    const page = (await first.json()) as WirePage;
+    // Reads while the export runs append rows past the mark
+    expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
+    expect((await requestJson("GET", `/environments/${ENV}/pull`, token(MEMBER))).status).toBe(200);
+    const lines = [...page.lines];
+    let cursor = page.next;
+    while (cursor !== undefined) {
+      const next = await exportPage(OWNER, cursor);
+      expect(next.status).toBe(200);
+      const parsed = (await next.json()) as WirePage;
+      lines.push(...parsed.lines);
+      cursor = parsed.next;
+    }
+    const trailer = parsedLine(lines[lines.length - 1]);
+    expect(trailer["auditMaxSeq"]).toBe(page.head.auditMaxSeq);
+    expect((trailer["rows"] as Record<string, number>)["audit_events"]).toBe(page.head.auditMaxSeq);
+    expect(trailer["rows"]).toEqual(rowCounts(lines));
+    const live = await liveCounts();
+    expect(live["audit_events"]).toBeGreaterThan(page.head.auditMaxSeq);
+    // The file restores (its counts are its own) and the restored log ends at the mark
+    const objectKey = "do/export-test/bounded.ndjson.gz";
+    await bucket.put(objectKey, await gzipLines(lines));
+    await resetProjectDo(projectId);
+    await bucket.put(
+      "restore/jobs/export-bounded.json",
+      JSON.stringify({ objectKey, target: "production" }),
+    );
+    expect(await processRestoreJobs(restoreEnv)).toEqual(["export-bounded"]);
+    const outcome = await jobResult("export-bounded");
+    expect(outcome.status).toBe("ok");
+    if (outcome.status === "ok") {
+      expect(outcome.verification.auditMaxSeq).toBe(page.head.auditMaxSeq);
+      expect(outcome.verification.auditHeadHashHex).toBe(trailer["auditHeadHashHex"]);
+    }
   });
 
   it("the identities companion lists the current members' provider identities and names an unlinked member", async () => {
@@ -452,6 +533,7 @@ describe("project import (the restore job with identitiesKey)", () => {
       existing: 0,
       created: 3,
       members: 3,
+      project: "created",
     });
     if (outcome.status === "ok") {
       expect(outcome.verification.chainHeadHashHex).toBe(trailer["chainHeadHashHex"]);
@@ -497,7 +579,9 @@ describe("project import (the restore job with identitiesKey)", () => {
     expect(pull.status).toBe(200);
     const listed = await requestJson("GET", "/chain", ownerToken);
     expect(listed.status).toBe(200);
-    // Re-running the same job: the DO refuses (not-empty) and so does D1 (project-exists)
+    // Re-running the same job: the DO refuses (not-empty); D1 keeps the
+    // exporter's project row and provisions what is missing — here nothing
+    // (ruling I revision), after a member's rows were removed, that member
     await bucket.put(
       "restore/jobs/import-2.json",
       JSON.stringify({ objectKey, target: "production", identitiesKey }),
@@ -506,10 +590,114 @@ describe("project import (the restore job with identitiesKey)", () => {
     expect(await jobResult("import-2")).toEqual({
       status: "failed",
       code: "not-empty",
+      identities: { kind: "provisioned", existing: 3, created: 0, members: 3, project: "kept" },
+    });
+    expect(await d1Rows("SELECT COUNT(*) AS n FROM projects")).toEqual([{ n: 1 }]);
+    // A member who has not logged in here yet: no account, no org (what a
+    // member added after the first import looks like)
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM project_members WHERE user_id = ?").bind(READER),
+      env.DB.prepare("DELETE FROM memberships WHERE user_id = ?").bind(READER),
+      env.DB.prepare("DELETE FROM org_audit_events WHERE actor_user_id = ?").bind(READER),
+      env.DB.prepare("DELETE FROM user_audit_events WHERE actor_user_id = ?").bind(READER),
+      env.DB.prepare("DELETE FROM organizations WHERE slug = ?").bind(`u-${READER.toLowerCase()}`),
+      env.DB.prepare("DELETE FROM linked_identities WHERE user_id = ?").bind(READER),
+      env.DB.prepare("DELETE FROM users WHERE id = ?").bind(READER),
+    ]);
+    await bucket.put(
+      "restore/jobs/import-3.json",
+      JSON.stringify({ objectKey, target: "production", identitiesKey }),
+    );
+    expect(await processRestoreJobs(restoreEnv)).toEqual(["import-3"]);
+    expect((await jobResult("import-3")).identities).toEqual({
+      kind: "provisioned",
+      existing: 2,
+      created: 1,
+      members: 3,
+      project: "kept",
+    });
+    expect(await d1Rows("SELECT COUNT(*) AS n FROM users")).toEqual([{ n: 3 }]);
+    expect(
+      await d1Rows(
+        "SELECT COUNT(*) AS n FROM org_audit_events WHERE event = 'org.project_created'",
+      ),
+    ).toEqual([{ n: 1 }]);
+    // Somebody else's project row (another org) refuses the import
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO organizations (id, slug, name, created_at) VALUES ('org-other-0001', 'other-org', 'Other', 0)",
+      ),
+      env.DB.prepare("UPDATE projects SET org_id = 'org-other-0001' WHERE id = ?").bind(projectId),
+    ]);
+    await bucket.put(
+      "restore/jobs/import-4.json",
+      JSON.stringify({ objectKey, target: "production", identitiesKey }),
+    );
+    expect(await processRestoreJobs(restoreEnv)).toEqual(["import-4"]);
+    expect(await jobResult("import-4")).toEqual({
+      status: "failed",
+      code: "import-refused",
       identities: { kind: "refused", code: "project-exists" },
     });
     // The results carry no project id (the same discipline as restores)
     expect(JSON.stringify(outcome)).not.toContain(projectId);
+  });
+
+  it("asks everything before the DO is touched: a refused import leaves the destination empty, a tampered chain is refused as such, and a drill rehearses", async () => {
+    await seedProjectActivity();
+    const { objectKey, identitiesKey, identities } = await exportToBucket();
+    const { lines } = await exportAll();
+    await resetProjectDo(projectId);
+    await resetAuthDb();
+    // A colliding account: refused by the pre-check, the DO stays empty
+    await seedUser("user-somebody-0099", 9002);
+    const conflict = await importWith("import-pre-conflict", objectKey, identities);
+    expect(conflict).toEqual({
+      status: "failed",
+      code: "import-refused",
+      identities: { kind: "refused", code: "identity-conflict" },
+    });
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
+      { n: 0 },
+    ]);
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM linked_identities"),
+      env.DB.prepare("DELETE FROM users"),
+    ]);
+    // A snapshot whose chain was altered (one entry's hash column) is
+    // refused before the restore — the verifier the DO runs on load, run first
+    const tampered = lines.map((line) => {
+      const parsed = parsedLine(line);
+      if (parsed["kind"] !== "row" || parsed["table"] !== "chain_entries") {
+        return line;
+      }
+      const values = [...(parsed["values"] as unknown[])];
+      values[2] = "00".repeat(32);
+      return JSON.stringify({ ...parsed, values });
+    });
+    const tamperedKey = "do/export-test/tampered.ndjson.gz";
+    await bucket.put(tamperedKey, await gzipLines(tampered));
+    expect(await importWith("import-tampered", tamperedKey, identities)).toEqual({
+      status: "failed",
+      code: "snapshot-chain-invalid",
+    });
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
+      { n: 0 },
+    ]);
+    // A drill with the companion rehearses the import (no drill namespace
+    // here, so the DO half is target-unavailable); D1 is untouched
+    await bucket.put(
+      "restore/jobs/import-drill.json",
+      JSON.stringify({ objectKey, target: "drill", identitiesKey }),
+    );
+    expect(await processRestoreJobs(restoreEnv)).toEqual(["import-drill"]);
+    expect(await jobResult("import-drill")).toEqual({
+      status: "failed",
+      code: "target-unavailable",
+      identities: { kind: "rehearsed", existing: 0, created: 3, members: 3, project: "absent" },
+    });
+    expect(await d1Rows("SELECT COUNT(*) AS n FROM users")).toEqual([{ n: 0 }]);
+    expect(await d1Rows("SELECT COUNT(*) AS n FROM projects")).toEqual([{ n: 0 }]);
   });
 
   it("refuses an identity already bound to another account without writing anything, and the retry after the fix provisions the restored project", async () => {
@@ -525,12 +713,17 @@ describe("project import (the restore job with identitiesKey)", () => {
     );
     expect(await processRestoreJobs(restoreEnv)).toEqual(["import-conflict"]);
     const outcome = await jobResult("import-conflict");
-    expect(outcome.status).toBe("ok");
-    expect(outcome.identities).toEqual({ kind: "refused", code: "identity-conflict" });
+    expect(outcome).toEqual({
+      status: "failed",
+      code: "import-refused",
+      identities: { kind: "refused", code: "identity-conflict" },
+    });
     expect(await d1Rows("SELECT COUNT(*) AS n FROM users")).toEqual([{ n: 1 }]);
     expect(await d1Rows("SELECT COUNT(*) AS n FROM projects")).toEqual([{ n: 0 }]);
     // The operator removes the colliding account and resubmits: the DO is
-    // already restored (not-empty) and the D1 step runs
+    // restored now (the pre-check refused before touching it) and the D1
+    // step runs. A job whose D1 step failed after the restore is retried
+    // the same way on the not-empty DO
     await env.DB.batch([
       env.DB.prepare("DELETE FROM linked_identities"),
       env.DB.prepare("DELETE FROM users"),
@@ -540,10 +733,14 @@ describe("project import (the restore job with identitiesKey)", () => {
       JSON.stringify({ objectKey, target: "production", identitiesKey }),
     );
     expect(await processRestoreJobs(restoreEnv)).toEqual(["import-retry"]);
-    expect(await jobResult("import-retry")).toEqual({
-      status: "failed",
-      code: "not-empty",
-      identities: { kind: "provisioned", existing: 0, created: 3, members: 3 },
+    const retried = await jobResult("import-retry");
+    expect(retried.status).toBe("ok");
+    expect(retried.identities).toEqual({
+      kind: "provisioned",
+      existing: 0,
+      created: 3,
+      members: 3,
+      project: "created",
     });
     expect((await requestJson("GET", "/chain", await cliToken(9002))).status).toBe(200);
     // A missing companion and a malformed one are static codes
@@ -587,9 +784,11 @@ describe("project import (the restore job with identitiesKey)", () => {
         { userId: "user-ghost-0099", provider: "github", providerUserId: "9555" },
       ],
     };
-    expect((await importWith("import-ghost", objectKey, ghost)).identities).toEqual({
-      kind: "refused",
-      code: "identity-not-member",
+    const ghosted = await importWith("import-ghost", objectKey, ghost);
+    expect(ghosted).toEqual({
+      status: "failed",
+      code: "import-refused",
+      identities: { kind: "refused", code: "identity-not-member" },
     });
     expect(
       (await importWith("import-notowner", objectKey, { ...identities, exportedBy: MEMBER }))
@@ -639,6 +838,7 @@ describe("project import (the restore job with identitiesKey)", () => {
       existing: 1,
       created: 2,
       members: 3,
+      project: "created",
     });
     expect(await d1Rows("SELECT COUNT(*) AS n FROM users")).toEqual([{ n: 3 }]);
   });

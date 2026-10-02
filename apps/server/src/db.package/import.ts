@@ -66,8 +66,21 @@ export type ImportProvisionResult =
       readonly created: number;
       /** Projection rows written (every listed member). */
       readonly members: number;
+      /** `created` on the first import; `kept` when the exporter's project row was already here (a re-run provisions the missing members only). */
+      readonly project: "created" | "kept";
     }
   | { readonly kind: "refused"; readonly code: ImportRefusalCode };
+
+/** The read-only verdict of an import against this deployment (the pre-check of a job, and the first step of provisioning). */
+export type ImportClassification =
+  | { readonly kind: "refused"; readonly code: ImportRefusalCode }
+  | {
+      readonly kind: "ok";
+      readonly toCreate: readonly ImportedIdentity[];
+      readonly existing: number;
+      /** `absent` = first import; `exporter` = the projects row is under the exporter's personal org (a re-run). */
+      readonly project: "absent" | "exporter";
+    };
 
 /** The personal org's slug, as first login names it (repos.ts createUserBatch). */
 function personalOrgSlug(userId: string): string {
@@ -175,32 +188,56 @@ function validate(input: ImportProjectInput): ImportRefusalCode | null {
 }
 
 /**
- * Writes the D1 side of an imported project in one batch. Idempotent in
- * the sense that a second run refuses (`project-exists`) rather than
- * duplicating anything.
+ * Classifies an import without writing: the companion's shape, the
+ * projects row (absent, the exporter's own — a re-run — or someone
+ * else's: `project-exists`), and every identity against the deployment.
+ * The restore worker asks this before the DO is touched (ruling H
+ * revision) and reports it as the rehearsal of a drill.
  */
-export async function provisionImportedProject(
+export async function classifyImportedProject(
   d1: D1Database,
   input: ImportProjectInput,
-  nowMs: number,
-): Promise<ImportProvisionResult> {
+): Promise<ImportClassification> {
   const invalid = validate(input);
   if (invalid !== null) {
     return { kind: "refused", code: invalid };
   }
   const db = drizzle(d1);
   const projectRow = await db
-    .select({ id: projects.id })
+    .select({ orgId: projects.orgId })
     .from(projects)
     .where(eq(projects.id, input.projectId))
     .get();
+  let project: "absent" | "exporter" = "absent";
   if (projectRow !== undefined) {
-    return { kind: "refused", code: "project-exists" };
+    // The exporter's own project row (an earlier import of the same
+    // project here) is re-run: the members missing since are provisioned,
+    // nothing else is touched. Anyone else's row refuses
+    const exporterOrg = await existingPersonalOrg(db, input.exportedBy);
+    if (exporterOrg === null || exporterOrg !== projectRow.orgId) {
+      return { kind: "refused", code: "project-exists" };
+    }
+    project = "exporter";
   }
   const classified = await classify(db, input);
+  return classified.kind === "refused" ? classified : { ...classified, project };
+}
+
+/**
+ * Writes the D1 side of an imported project in one batch. A second run on
+ * the exporter's own project provisions only what is missing (ruling I
+ * revision); a row of anyone else's refuses (`project-exists`).
+ */
+export async function provisionImportedProject(
+  d1: D1Database,
+  input: ImportProjectInput,
+  nowMs: number,
+): Promise<ImportProvisionResult> {
+  const classified = await classifyImportedProject(d1, input);
   if (classified.kind === "refused") {
     return classified;
   }
+  const db = drizzle(d1);
   const statements: BatchItem<"sqlite">[] = [];
   const orgOf = new Map<string, string>();
   for (const identity of classified.toCreate) {
@@ -262,15 +299,19 @@ export async function provisionImportedProject(
   if (exporterOrg === null) {
     return { kind: "refused", code: "exporter-org-missing" };
   }
+  if (classified.project === "absent") {
+    statements.push(
+      db.insert(projects).values({ id: input.projectId, orgId: exporterOrg, createdAt: nowMs }),
+      orgAuditInsert(db, nowMs, {
+        event: "org.project_created",
+        actor: { userId: input.exportedBy },
+        orgId: exporterOrg,
+        projectId: input.projectId,
+        payload: { imported: true },
+      }),
+    );
+  }
   statements.push(
-    db.insert(projects).values({ id: input.projectId, orgId: exporterOrg, createdAt: nowMs }),
-    orgAuditInsert(db, nowMs, {
-      event: "org.project_created",
-      actor: { userId: input.exportedBy },
-      orgId: exporterOrg,
-      projectId: input.projectId,
-      payload: { imported: true },
-    }),
     ...input.identities.map((identity) =>
       db
         .insert(projectMembers)
@@ -288,5 +329,6 @@ export async function provisionImportedProject(
     existing: classified.existing,
     created: classified.toCreate.length,
     members: input.identities.length,
+    project: classified.project === "absent" ? "created" : "kept",
   };
 }

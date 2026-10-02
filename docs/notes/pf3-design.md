@@ -153,3 +153,33 @@ Applied in the implementation change: AUTH_SPEC §11-6 (the two owner
 endpoints, consistency, acceptance policy, audit, the import's D1 rules,
 identity continuity, what is not carried) and the AUDIT_SPEC §3.3 row for
 `project.exported` (class 2). CRYPTO_SPEC is untouched (ruling K).
+
+## 8. Exhaustion loop, round 2 and later (owner-directed, 2026-10-02)
+
+After the review round the owner asked whether every ruling had been looped
+until no candidate remained; the answer was no (one enumeration plus one
+self-review, several rulings closed implicitly), and the owner directed
+additional rounds over **every** ruling until each closes. Each round sends
+independent adversarial agents over the rulings still taking candidates;
+the designer judges under the delegation; adopted candidates are
+implemented in the same change; a ruling is **CLOSED** at the round whose
+agents found nothing strictly or structurally better.
+
+### 8-1. Round 2 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| A (format) | A-4: a typed JSON bundle; A-5: a signed manifest over the file; A-7: a second serialization for mirrors | A-4 / A-7 rejected (ruling A's reason: one format, one reader). A-5 **deferred**: the restore's verification and the owner's verified head already refuse a wrong file; a signature would need a CRYPTO_SPEC addition for a property the chain carries |
+| B (transport) | B-6: a resumable download of a server-side object | Deferred (B-2's reason — R2 on the source is not a given on a self-host; the pages are the transport) |
+| C (consistency) | C-5: bound the exported audit log at the first page's seq instead of refusing when it moves; C-9: a deployment-local **mutation counter** as the mark for every write (so a read that appends an audit row does not restart the export); C-7: a server-side export lock | **C-9 + C-5 adopted** — a `mutation_state` row (step 5 of the DO schema; never exported, replicated or restored) bumped by every write entry point, the workload mint and a replica commit; the marks are the chain head, the attestation mark and the counter, and `auditMaxSeq` becomes the bound of the exported `audit_events` / `audit_head_hashes` rows (the trailer's head is the head at the bound, materialized on the first page). Before this, every pull by any member during an export restarted it. C-7 rejected again (ruling C-2's reason) |
+| D (cursor) | D-5: bind the cursor to the export's own `project.exported` row (its seq travels; a continuation is served only to the owner the row names, while the row says what the cursor says) | **Adopted** — another owner continuing a cursor would take pages without a row of their own and outside their window; a cursor naming a row that is not an export's, or a different head, is `ExportChanged` |
+| E (who) | E-7: an admin-scoped token below owner for automation; E-5: a one-time export token; E-3 / E-6: wider roles | E-7 / E-5 deferred (owner's call — the export is the whole project); E-3 / E-6 rejected (ruling E's reason) |
+| F (audit) | F-3: `project.restored` on the destination; F-4: a row per page; F-5: record the page count | F-3 **deferred, recommended** (the destination's log begins with the import; a row that says so is the natural first entry — needs a restore-time audit append the import path does not have yet); F-4 rejected (one export, one row); F-5 recorded (the trailer carries the counts) |
+| G (identity) | G-8: a key-proof claim at first login (G-2 again); G-11: carry the users' e-mail; G-7 / G-10: provider-independent ids now | G-8 deferred (the recorded follow-up); G-11 deferred low (e-mail is not identity here — AUTH_SPEC); G-7 / G-10 rejected (ruling G-1's reason) |
+| H (import) | H-6: ask everything that can refuse **before the DO is touched** (verify the snapshot's chain, confirm the companion against it, classify D1 read-only), and make a `drill` job with a companion a rehearsal; H-9: a newer export over an imported project; H-10 / H-11: an HTTP import | **H-6 adopted** — `import-check.ts`: a refused import (`import-refused`, `snapshot-chain-invalid`) leaves the destination as it was; a drill reports `rehearsed` with the counts. **H-9 adopted as documentation**: the second restore is refused by construction (`not-empty`); the path is mark the imported project as a mirror of the source → sync → promote. H-10 / H-11 rejected (ruling H-1 / H-2's reasons) |
+| I (D1) | I-5: a re-run on the exporter's own project row provisions only the missing members; I-11: provision the recovery ledger | **I-5 adopted** — a projects row under the exporting owner's personal org is kept and the members missing since are provisioned (`project: kept`); a row of anyone else's stays `project-exists`. I-11 deferred (ruling J's reason) |
+| J (not carried) | J-9: after the switch, mark the **source** as a mirror of the destination so it turns read-only instead of drifting; J-5: carry pending invitations; J-3: carry the device registry; J-6: carry sessions | **J-9 adopted** (documentation and the export command's next steps); J-5 deferred; J-3 deferred low (self-heals); J-6 rejected (a session is a credential of the source) |
+| K (no crypto) | K-3: an HMAC over the cursor; K-2: encrypt the file | K-3 deferred (ruling D-2's reason — the restore verifies); K-2 rejected (ruling K-1's reason) |
+
+Rulings C, D, H, I and J received adopted candidates in this round and
+stay open for round 3, with A, B, E, F, G and K (deferrals only).

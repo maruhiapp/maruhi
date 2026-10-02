@@ -425,6 +425,21 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
        )`);
     },
   },
+  // Step 5 (2026-10-02 — PF3 ruling C revision, AUTH_SPEC §11-6): the
+  // deployment-local mutation counter a paged export binds its cursor to.
+  // Bumped by every write entry point of the DO, the workload mint and a
+  // replica commit (do-snapshot.ts bumpMutationSeq); reads that append
+  // audit rows do not move it, so a read between two pages of an export
+  // no longer restarts it. **Not a snapshot table** (PROJECT_DO_LOCAL_TABLES)
+  {
+    tables: [],
+    apply(sql) {
+      sql.exec(`CREATE TABLE mutation_state (
+         id INTEGER PRIMARY KEY CHECK (id = 1),
+         seq INTEGER NOT NULL
+       )`);
+    },
+  },
 ];
 
 /**
@@ -442,7 +457,7 @@ export const PROJECT_DO_TABLES: readonly string[] = PROJECT_DO_MIGRATIONS.flatMa
  * restored, never replicated (a mirror keeps them across a sync — AUTH_SPEC
  * §11-7). The test reset helper wipes them too.
  */
-export const PROJECT_DO_LOCAL_TABLES: readonly string[] = ["mirror_state"];
+export const PROJECT_DO_LOCAL_TABLES: readonly string[] = ["mirror_state", "mutation_state"];
 
 // version = "number of applied steps" (0 = none applied, PROJECT_DO_MIGRATIONS.length = latest)
 const SCHEMA_META_DDL = `CREATE TABLE IF NOT EXISTS schema_meta (

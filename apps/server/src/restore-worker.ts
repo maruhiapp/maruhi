@@ -23,13 +23,19 @@
 // entry_hash_hex) (no capability is carried on keys, jobs, or
 // results).
 
-import type { Role } from "@maruhi/crypto";
-
 import type { OpsRestoreOutcome, ProjectChainDO } from "./chain-do.ts";
 import { ProjectChainDO as ProjectChainDOClass } from "./chain-do.ts";
-import type { DataOutcome } from "./data-plane.ts";
-import type { ImportedIdentity, ImportProvisionResult } from "./db.package/index.ts";
-import { provisionImportedProject } from "./db.package/index.ts";
+import type {
+  ImportClassification,
+  ImportedIdentity,
+  ImportProvisionResult,
+} from "./db.package/index.ts";
+import { classifyImportedProject, provisionImportedProject } from "./db.package/index.ts";
+import {
+  identitiesOnChain,
+  type SnapshotChainOutcome,
+  verifySnapshotChain,
+} from "./import-check.ts";
 
 /** The drill namespace (a distinct class name inside this worker — never intersects the production namespace). */
 export class RestoreDrillDO extends ProjectChainDOClass {}
@@ -68,15 +74,24 @@ interface RestoreJob {
 }
 
 /**
- * The D1 side of an import job (static codes only). `db-unavailable` = no
- * `DB` binding; `db-error` = D1 threw (a unique-key race with a concurrent
- * first login, or an infrastructure failure — resubmit the job);
- * `identity-not-member` / `exporter-not-owner` = the companion names ids
- * the restored chain does not confirm (an import binds GitHub accounts
- * only to ids that are current members, and only an owner may export).
+ * The identities side of an import job (static codes only). `db-unavailable`
+ * = no `DB` binding; `db-error` = D1 threw (a unique-key race with a
+ * concurrent first login, or an infrastructure failure — resubmit the
+ * job); `identity-not-member` / `exporter-not-owner` = the companion names
+ * ids the snapshot's verified chain does not confirm (an import binds
+ * GitHub accounts only to ids that are current members, and only an owner
+ * may export). `rehearsed` = a drill: the checks passed and this is what a
+ * production import would do; nothing was provisioned.
  */
 export type ImportOutcome =
   | ImportProvisionResult
+  | {
+      readonly kind: "rehearsed";
+      readonly existing: number;
+      readonly created: number;
+      readonly members: number;
+      readonly project: "absent" | "exporter";
+    }
   | {
       readonly kind: "refused";
       readonly code:
@@ -86,7 +101,6 @@ export type ImportOutcome =
         | "exporter-not-owner"
         | "db-unavailable"
         | "db-error"
-        | "drill-target"
         | "project-not-restored";
     };
 
@@ -107,6 +121,10 @@ export type RestoreJobResult =
         | "snapshot-missing"
         | "snapshot-malformed"
         | "genesis-missing"
+        /** An import job whose snapshot carries a chain the DO would not load (checked before the DO is touched). */
+        | "snapshot-chain-invalid"
+        /** An import job refused by its pre-checks (`identities` says why); the DO was not touched. */
+        | "import-refused"
         | "rpc-failed"
         | "unexpected"
         | Extract<OpsRestoreOutcome, { kind: "refused" }>["code"]
@@ -194,21 +212,92 @@ function parseIdentities(text: string): IdentitiesFile | null {
   return { exportedBy, identities };
 }
 
+type ImportJob = RestoreJob & { readonly identitiesKey: string };
+
+/** What the pre-checks established (the restore and the D1 step build on it). */
+interface CheckedImport {
+  readonly file: IdentitiesFile;
+  readonly classification: Extract<ImportClassification, { kind: "ok" }>;
+}
+
+type PrecheckOutcome =
+  | { readonly kind: "ok"; readonly checked: CheckedImport }
+  | { readonly kind: "failed"; readonly result: Extract<RestoreJobResult, { status: "failed" }> };
+
+function importRefused(code: Extract<ImportOutcome, { kind: "refused" }>["code"]): PrecheckOutcome {
+  return {
+    kind: "failed",
+    result: { status: "failed", code: "import-refused", identities: { kind: "refused", code } },
+  };
+}
+
 /**
- * The D1 step of an import job: reads the identities companion and
- * provisions the members and the projects row (db.package/import.ts).
- * Runs only when the DO holds the project — restored by this job, or
- * already (`not-empty`), which is the retry of a job whose D1 step
- * failed. A drill never touches D1.
+ * The pre-checks of an import (ruling H revision): the companion's shape,
+ * the snapshot's chain (verified as the DO verifies it on load), every
+ * listed id against that chain's members, and D1 read-only. All of it
+ * before the DO is touched, so a refusal leaves the destination as it was
+ * and a drill reports what a production import would do.
+ */
+async function precheckImport(env: RestoreEnv, job: ImportJob): Promise<PrecheckOutcome> {
+  const object = await env.OPS_BACKUP_BUCKET.get(job.identitiesKey);
+  if (object === null) {
+    return importRefused("identities-missing");
+  }
+  const file = parseIdentities(await object.text());
+  if (file === null) {
+    return importRefused("identities-malformed");
+  }
+  const snapshot = await env.OPS_BACKUP_BUCKET.get(job.objectKey);
+  if (snapshot === null) {
+    return { kind: "failed", result: { status: "failed", code: "snapshot-missing" } };
+  }
+  const chain: SnapshotChainOutcome = await verifySnapshotChain(snapshot.body);
+  if (chain.kind !== "ok") {
+    return { kind: "failed", result: { status: "failed", code: chain.kind } };
+  }
+  // The chain, not the file, decides who is a member
+  const onChain = identitiesOnChain(chain.state, file);
+  if (onChain !== null) {
+    return importRefused(onChain);
+  }
+  if (env.DB === undefined) {
+    return importRefused("db-unavailable");
+  }
+  const classification = await classifyImportedProject(env.DB, {
+    projectId: chain.projectId,
+    exportedBy: file.exportedBy,
+    identities: file.identities,
+  });
+  if (classification.kind === "refused") {
+    return importRefused(classification.code);
+  }
+  return { kind: "ok", checked: { file, classification } };
+}
+
+/** A drill's report of the pre-checks (nothing is provisioned). */
+function rehearsal(checked: CheckedImport): ImportOutcome {
+  const { classification, file } = checked;
+  return {
+    kind: "rehearsed",
+    existing: classification.existing,
+    created: classification.toCreate.length,
+    members: file.identities.length,
+    project: classification.project,
+  };
+}
+
+/**
+ * The D1 step of a production import: provisions the members and the
+ * projects row (db.package/import.ts) once the DO holds the project —
+ * restored by this job, or already (`not-empty`), which is the retry of a
+ * job whose D1 step failed, or a re-run that provisions the members
+ * missing since (ruling I revision).
  */
 async function importIdentities(
-  env: RestoreEnv,
-  job: RestoreJob & { readonly identitiesKey: string },
+  db: D1Database,
+  checked: CheckedImport,
   restored: RestoredProject,
 ): Promise<ImportOutcome> {
-  if (job.target === "drill") {
-    return { kind: "refused", code: "drill-target" };
-  }
   const { outcome } = restored;
   if (
     outcome.kind !== "restored" &&
@@ -216,47 +305,12 @@ async function importIdentities(
   ) {
     return { kind: "refused", code: "project-not-restored" };
   }
-  if (env.DB === undefined) {
-    return { kind: "refused", code: "db-unavailable" };
-  }
-  const object = await env.OPS_BACKUP_BUCKET.get(job.identitiesKey);
-  if (object === null) {
-    return { kind: "refused", code: "identities-missing" };
-  }
-  const file = parseIdentities(await object.text());
-  if (file === null) {
-    return { kind: "refused", code: "identities-malformed" };
-  }
-  // The companion is checked against the restored chain before anything is
-  // written: an id the chain does not name as a current member cannot be
-  // bound to a GitHub account here, and only an owner's export attaches a
-  // project (the chain, not the file, decides who is a member)
-  const onChain = await identitiesOnChain(restored.stub, file);
-  if (onChain !== null) {
-    return onChain;
-  }
+  const { file } = checked;
   return provisionImportedProject(
-    env.DB,
+    db,
     { projectId: restored.projectId, exportedBy: file.exportedBy, identities: file.identities },
     Date.now(),
   );
-}
-
-/** Confirms every listed id is a current chain member and the exporter is an owner (one DO read per id). */
-async function identitiesOnChain(
-  stub: DurableObjectStub<ProjectChainDO>,
-  file: IdentitiesFile,
-): Promise<ImportOutcome | null> {
-  for (const identity of file.identities) {
-    const role = await (stub.memberRoleFor(identity.userId) as Promise<DataOutcome<Role>>);
-    if (role.kind !== "ok") {
-      return { kind: "refused", code: "identity-not-member" };
-    }
-    if (identity.userId === file.exportedBy && role.value !== "owner") {
-      return { kind: "refused", code: "exporter-not-owner" };
-    }
-  }
-  return null;
 }
 
 /**
@@ -401,23 +455,39 @@ async function restoreFromSnapshot(
 }
 
 async function runJob(env: RestoreEnv, job: RestoreJob): Promise<RestoreJobResult> {
+  if (job.identitiesKey === undefined) {
+    const restored = await restoreFromSnapshot(env, job);
+    return "status" in restored ? restored : toJobResult(restored.outcome, job.target);
+  }
+  return runImportJob(env, { ...job, identitiesKey: job.identitiesKey });
+}
+
+/** An import job: the pre-checks, then the DO restore, then (production only) the D1 step. */
+async function runImportJob(env: RestoreEnv, job: ImportJob): Promise<RestoreJobResult> {
+  const prechecked = await precheckImport(env, job);
+  if (prechecked.kind === "failed") {
+    return prechecked.result;
+  }
+  const { checked } = prechecked;
   const restored = await restoreFromSnapshot(env, job);
+  if (job.target === "drill") {
+    // A drill rehearses the import: the DO half is the drill's own result,
+    // the identities half what production would do
+    const half = "status" in restored ? restored : toJobResult(restored.outcome, job.target);
+    return { ...half, identities: rehearsal(checked) };
+  }
   if ("status" in restored) {
     return restored;
   }
   const result = toJobResult(restored.outcome, job.target);
-  if (job.identitiesKey === undefined) {
-    return result;
-  }
-  // An import: the D1 step after the DO holds the project. A D1 failure
-  // is folded into a static code like every other failure of the job
+  // The D1 step after the DO holds the project. A D1 failure is folded into
+  // a static code like every other failure of the job
   let identities: ImportOutcome;
   try {
-    identities = await importIdentities(
-      env,
-      { ...job, identitiesKey: job.identitiesKey },
-      restored,
-    );
+    identities =
+      env.DB === undefined
+        ? { kind: "refused", code: "db-unavailable" }
+        : await importIdentities(env.DB, checked, restored);
   } catch (error) {
     console.warn("import provisioning failed", error instanceof Error ? error.name : "unknown");
     identities = { kind: "refused", code: "db-error" };

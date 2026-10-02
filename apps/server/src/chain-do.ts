@@ -73,6 +73,7 @@ import {
 } from "./do-schema.ts";
 import type { RestoreFailureCode, SnapshotTrailer } from "./do-snapshot.ts";
 import {
+  bumpMutationSeq,
   readWatermarks,
   RestoreRefusedError,
   restoreSnapshot,
@@ -749,15 +750,21 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  /** {@link #runData} for the write entry points: membership → the mirror guard → the program. */
+  /**
+   * {@link #runData} for the write entry points: membership → the mirror
+   * guard → the program → the mutation counter (do-snapshot.ts — the
+   * paged export's cursor binds it; a write that succeeded moves it).
+   */
   #runWrite<T>(
     callerUserId: string,
     program: Effect.Effect<T, DataRejectedError, DoServices>,
   ): Promise<DataOutcome<T>> {
+    const sql = this.ctx.storage.sql;
     return this.#runData(
       requireMemberState(callerUserId, "reader", this.#stateCache).pipe(
         Effect.flatMap(() => this.#ensureWritable()),
         Effect.flatMap(() => program),
+        Effect.tap(() => Effect.sync(() => bumpMutationSeq(sql))),
       ),
     );
   }
@@ -1122,6 +1129,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     facts: LeaseTokenFacts,
     proposal: RotationProposalInput,
   ): Promise<ProposalOutcome> {
+    const sql = this.ctx.storage.sql;
     return this.#runtime.runPromise(
       this.#opLock.withPermit(
         this.#invalidateCachesOnDefect(
@@ -1132,6 +1140,8 @@ export class ProjectChainDO extends DurableObject<Env> {
             proposal,
             this.#stateCache,
           ).pipe(
+            // A stored proposal is a write (the export's mutation counter)
+            Effect.tap(() => Effect.sync(() => bumpMutationSeq(sql))),
             Effect.match({
               onSuccess: (value: ProposalReceipt): ProposalOutcome => ({ kind: "ok", value }),
               onFailure: (rejection): ProposalOutcome => ({ kind: "rejected", rejection }),

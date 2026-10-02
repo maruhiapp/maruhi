@@ -572,13 +572,24 @@ import; remove that account and resubmit the same job: the restored
 project is kept and only the D1 step reruns, and that result reads
 `"status": "failed", "code": "not-empty"` for the Durable Object half with
 `"identities": { "kind": "provisioned", … }` for the D1 half),
-`user-id-taken`, `project-exists`, `exporter-missing`,
-`identity-not-member` / `exporter-not-owner` (the file names an id the
-restored chain does not confirm), `identities-missing` /
-`identities-malformed`, `db-unavailable` (the restore mode has no `DB`
-binding), `db-error` (D1 refused the batch — resubmit). Look at the
-identities file before placing the job: it decides which GitHub accounts
-become which chain members.
+`user-id-taken`, `project-exists` (the project row here belongs to someone
+other than the exporting owner), `exporter-missing`, `identity-not-member`
+/ `exporter-not-owner` (the file names an id the snapshot's chain does not
+confirm), `identities-missing` / `identities-malformed`, `db-unavailable`
+(the restore mode has no `DB` binding), `db-error` (D1 refused the batch —
+resubmit). Look at the identities file before placing the job: it decides
+which GitHub accounts become which chain members.
+
+Every refusal above is asked **before the Durable Object is touched**: the
+worker verifies the snapshot's chain itself (a file whose chain the server
+would not load is `"code": "snapshot-chain-invalid"`), confirms the
+companion against it, and classifies D1 read-only; a refused job reads
+`"status": "failed", "code": "import-refused"` with the reason under
+`identities`, and your deployment is exactly as it was. To see what an
+import would do without doing it, submit the same job with
+`"target": "drill"`: the result's `identities` reads `"kind": "rehearsed"`
+with the counts (members to create, members already here, whether the
+project row exists) and nothing is provisioned.
 
 **3. After the import** — what the file does not carry:
 
@@ -598,6 +609,23 @@ become which chain members.
 - **Pending invitations and device-add requests** are gone (re-invite);
   the advisory device registry rebuilds itself on each login
 - **Ops state** (backup records, counters) starts fresh
+
+**Switching over, and a newer export.** Once members use the destination,
+make the source read-only rather than leaving two writable copies: the owner
+marks the source project as a mirror of the destination
+(`maruhi mirror mark --server <source url> --project <id> --source <your url>`)
+— the source then refuses writes, keeps serving reads, and can be synced
+from the destination as a fallback (see "Running a mirror" below). The
+reverse order works too: if writes continued on the source after the
+export, do not re-import — the Durable Object refuses a second restore
+(`not-empty`). Mark the *imported* project as a mirror of the source
+(`maruhi mirror mark --server <your url> --project <id> --source <source url>`),
+run `maruhi mirror sync --server <source url> --mirror <your url> --project <id>`
+to bring the newer state in, then `maruhi mirror promote --server <your url>`
+to make it the primary. A re-run of the import job on the same deployment
+provisions only the members added since (the project row and the existing
+accounts are kept), so a member who joined after the first import can be
+brought in with a fresh identities companion.
 
 The hosted service keeps the project until the owner asks for its removal;
 the audit log on both sides shows the export.
