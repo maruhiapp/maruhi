@@ -100,6 +100,18 @@ import type {
 import { variableHistoryProgram, variableVersionValuesProgram } from "./programs-history.ts";
 import type { LeaseOutcome, LeaseTokenFacts, LeaseValue } from "./programs-lease.ts";
 import { leaseProgram } from "./programs-lease.ts";
+import type {
+  MemberProposalValue,
+  ProposalOutcome,
+  ProposalReceipt,
+  ProposalResolutionInput,
+  RotationProposalInput,
+} from "./programs-proposal.ts";
+import {
+  listRotationProposalsProgram,
+  proposeRotationProgram,
+  resolveRotationProposalProgram,
+} from "./programs-proposal.ts";
 import type { RotationDismissTargetInput } from "./programs-rotation.ts";
 import { dismissRotationFlagsProgram, rotationFlagsProgram } from "./programs-rotation.ts";
 import { getSchemaPolicyProgram, setSchemaPolicyProgram } from "./programs-schema-policy.ts";
@@ -1019,6 +1031,57 @@ export class ProjectChainDO extends DurableObject<Env> {
     targets: readonly RotationDismissTargetInput[],
   ): Promise<DataOutcome<void>> {
     return this.#runData(dismissRotationFlagsProgram(actor, targets, this.#stateCache));
+  }
+
+  // --- Sealed value proposals RPC (CRYPTO_SPEC §5.3 / AUTH_SPEC §14-5) --
+
+  /**
+   * The workload mint (programs-proposal.ts). Like issueLease, the OIDC
+   * verification is already done on the worker side and the result is a
+   * ProposalOutcome (the lease rejection vocabulary plus the §14-5
+   * acceptance reasons), not a DataOutcome.
+   */
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  proposeRotation(
+    environmentId: string,
+    ephemeralPubHex: string,
+    facts: LeaseTokenFacts,
+    proposal: RotationProposalInput,
+  ): Promise<ProposalOutcome> {
+    return this.#runtime.runPromise(
+      this.#opLock.withPermit(
+        this.#invalidateCachesOnDefect(
+          proposeRotationProgram(
+            environmentId,
+            ephemeralPubHex,
+            facts,
+            proposal,
+            this.#stateCache,
+          ).pipe(
+            Effect.match({
+              onSuccess: (value: ProposalReceipt): ProposalOutcome => ({ kind: "ok", value }),
+              onFailure: (rejection): ProposalOutcome => ({ kind: "rejected", rejection }),
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  listRotationProposals(actor: DataActor): Promise<DataOutcome<readonly MemberProposalValue[]>> {
+    return this.#runData(listRotationProposalsProgram(actor, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  resolveRotationProposal(
+    actor: DataActor,
+    proposalId: string,
+    resolution: ProposalResolutionInput,
+  ): Promise<DataOutcome<void>> {
+    return this.#runData(
+      resolveRotationProposalProgram(actor, proposalId, resolution, this.#stateCache),
+    );
   }
 
   // --- Audit-event read RPC (AUDIT_SPEC §6 / §7) -----------------------

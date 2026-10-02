@@ -51,6 +51,8 @@ import {
 import { SqlRunner, type SqlRunnerShape } from "./rotate-connector.ts";
 import {
   buildChildEnvironment,
+  type CaptureInput,
+  type CaptureOutcome,
   type ExecInput,
   type ExecOutcome,
   ProcessRunner,
@@ -148,6 +150,46 @@ async function execVendor(input: ExecInput): Promise<ExecOutcome> {
     child.exited,
   ]);
   return { exitCode, output: `${stdout}${stderr}` };
+}
+
+/**
+ * A script of the `exec` rotation connector (rotate-connector.ts — PF8):
+ * secrets ride in the child's environment (the `maruhi run` shape — the
+ * only path they take), stdin is closed, stdout comes back as bytes (the
+ * new credential — never decoded or logged here), stderr as text for the
+ * connector to scrub. A launch failure rejects with a message naming only
+ * the executable and the directory.
+ */
+async function captureScript(input: CaptureInput): Promise<CaptureOutcome> {
+  const cwdStat = await stat(input.cwd).catch(() => null);
+  if (cwdStat === null || !cwdStat.isDirectory()) {
+    throw new Error(
+      `the scripts' working directory does not exist or is not a directory (${input.cwd}) — fix the rule's cwd in the rotation config`,
+    );
+  }
+  let child: ReturnType<typeof Bun.spawn>;
+  try {
+    child = Bun.spawn({
+      cmd: [...input.command],
+      cwd: input.cwd,
+      env: buildChildEnvironment(process.env, input.extraEnv),
+      stdin: new Uint8Array(0),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw new Error(
+      `cannot start ${input.command[0] ?? ""}${code === undefined ? "" : ` (${code})`}: is it executable and on PATH, or a path relative to the rule's cwd?`,
+      { cause: error },
+    );
+  }
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout as ReadableStream).bytes(),
+    new Response(child.stderr as ReadableStream).text(),
+    child.exited,
+  ]);
+  return { exitCode, stdout, stderr };
 }
 
 /** The vendor CLI's execution directory (the config's cwd) is missing or not a directory. */
@@ -248,6 +290,7 @@ function makeBunProcessRunner(): ProcessRunnerShape {
         // §3 supplement 16)
         catch: (error) => cliError(execStartFailure(input, error)),
       }),
+    captureScript,
     runSession: ({ command, env }) =>
       Effect.tryPromise({
         try: () => runAgentSession(command, env),

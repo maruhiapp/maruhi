@@ -35,6 +35,8 @@ import {
   ProjectLimitError,
   ProjectNotFoundError,
   ProposalLimitError,
+  RotationProposalNotFoundError,
+  RotationProposalRejectedError,
   SetupIncompleteError,
   TokenLimitError,
   UnauthorizedError,
@@ -290,6 +292,16 @@ const renderers: readonly Renderer[] = [
       : `The project's lease rate limit is exhausted (HTTP 429). Retry after ${e.retryAfterSeconds} seconds — re-run the job later; retrying immediately only consumes the window`,
   ),
   when(isInstanceOf(LeaseUnavailableError), renderLeaseUnavailable),
+  // Sealed value proposals (AUTH_SPEC §14-5). reason is a Literal (shown as-is)
+  when(
+    isInstanceOf(RotationProposalRejectedError),
+    (e) => `The server refused the sealed proposal (${e.reason} — AUTH_SPEC §14-5)`,
+  ),
+  when(
+    isInstanceOf(RotationProposalNotFoundError),
+    (e) =>
+      `No pending sealed proposal has the id ${displayText(e.proposalId)} (it was resolved, expired, or never existed; \`maruhi rotation proposals\` lists the pending ones)`,
+  ),
   when(isInstanceOf(AuthFlowError), (e) => `The authentication flow failed (${e.reason})`),
   when(
     isInstanceOf(AuthRateLimitedError),
@@ -352,6 +364,8 @@ export function isServerRejection(error: unknown): boolean {
     PayloadMismatchError,
     ProjectLimitError,
     ProjectNotFoundError,
+    RotationProposalNotFoundError,
+    RotationProposalRejectedError,
     UnauthorizedError,
     ValueTooLargeError,
     VariableConflictError,

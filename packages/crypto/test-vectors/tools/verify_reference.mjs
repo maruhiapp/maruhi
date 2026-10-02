@@ -2092,6 +2092,87 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 }
 
+// --- sealed-value.json (Open with panva hpke) ------------------------------
+// The §5.3 sealed value proposal. The same "generate = hpke-js / verify =
+// panva" cross-check as dek-wrap, plus (1) info assembled in the spec's
+// field order, (2) the recipient key and coordinates inherited from
+// dek-wrap.json's basic (a sealed value goes to the device key that also
+// receives DEK wraps), and (3) the proposal id shared across the two
+// positives while the variable id separates them
+{
+  const doc = read("sealed-value.json");
+  const dekWrap = read("dek-wrap.json");
+  const suite = new HPKE.CipherSuite(
+    HPKE.KEM_DHKEM_X25519_HKDF_SHA256,
+    HPKE.KDF_HKDF_SHA256,
+    HPKE.AEAD_AES_256_GCM,
+  );
+  const recipientKeyPair = {
+    privateKey: await suite.DeserializePrivateKey(
+      fromHex(dekWrap.recipient_keypair.skRm_hex),
+      false,
+    ),
+    publicKey: await suite.DeserializePublicKey(fromHex(dekWrap.recipient_keypair.pkRm_hex)),
+  };
+  const vectorByName = (name) => doc.vectors.find((v) => v.name === name);
+  const basicWrap = dekWrap.vectors.find((v) => v.name === "basic");
+  const basic = vectorByName("basic");
+  check(
+    "sealed-value: recipient and coordinates match dek-wrap.json basic",
+    basic.project_id === basicWrap.project_id &&
+      basic.environment_id === basicWrap.environment_id &&
+      basic.recipient_user_id === basicWrap.recipient_user_id,
+  );
+  check(
+    "sealed-value: proposal id form (32 lowercase hex) and companion shares it",
+    /^[0-9a-f]{32}$/.test(doc.proposal.proposal_id) &&
+      vectorByName("companion").proposal_id === basic.proposal_id &&
+      vectorByName("companion").variable_id !== basic.variable_id,
+  );
+  for (const v of doc.vectors) {
+    check(
+      `sealed-value: ${v.name} info reconstruction`,
+      toHex(
+        lpEncode([
+          v.domain,
+          v.project_id,
+          v.environment_id,
+          v.proposal_id,
+          v.variable_id,
+          v.base_version,
+          v.recipient_user_id,
+        ]),
+      ) === v.info_hex,
+    );
+    check(`sealed-value: ${v.name} domain embeds suite`, v.domain === "maruhi/v1/sealed-value");
+    const opened = await suite.Open(
+      recipientKeyPair,
+      fromHex(v.enc_hex),
+      fromHex(v.ciphertext_hex),
+      { info: fromHex(v.info_hex), aad: fromHex(v.aad_hex) },
+    );
+    check(
+      `sealed-value: ${v.name} panva open == plaintext`,
+      toHex(new Uint8Array(opened)) === v.plaintext_hex,
+    );
+  }
+  for (const n of doc.negative) {
+    const base = vectorByName(n.base);
+    let failed = false;
+    try {
+      await suite.Open(
+        recipientKeyPair,
+        fromHex(n.enc_hex ?? base.enc_hex),
+        fromHex(n.ciphertext_hex ?? base.ciphertext_hex),
+        { info: fromHex(n.open_info_hex ?? base.info_hex), aad: fromHex(base.aad_hex) },
+      );
+    } catch {
+      failed = true;
+    }
+    check(`sealed-value negative: ${n.name}`, failed === n.must_fail);
+  }
+}
+
 // --- checkpoint-digest.json ------------------------------------------------------
 // §6.2 values_digest selection (0.8-draft — declared is excluded). The
 // encoder's canonical form is already pinned by chain-entries.json's

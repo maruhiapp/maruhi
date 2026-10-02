@@ -51,6 +51,11 @@ export interface DecryptedVariable {
   readonly varType: MetaVarType;
   /** The required declaration (layout v2's schema column. v1 = false). Used by `maruhi sync`'s completeness check. */
   readonly required: boolean;
+  /**
+   * The max age the schema declares (layout v3 — PF6 R9; null = none).
+   * Input of the point-of-use note of `maruhi run` / `pull` (max-age.ts).
+   */
+  readonly maxAgeDays: number | null;
   /** The plaintext bytes (memory only. Unwrapped only in run / show / re-encryption). */
   readonly value: Redacted.Redacted<Uint8Array>;
 }
@@ -303,6 +308,7 @@ export function pullVariables(input: {
         epoch: variable.epoch,
         varType: variable.schema?.varType ?? "",
         required: variable.schema?.required ?? false,
+        maxAgeDays: variable.schema?.maxAgeDays ?? null,
         value: plaintext,
       });
     }

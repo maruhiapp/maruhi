@@ -22,6 +22,7 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
+import { describeDue } from "../src/max-age.ts";
 import {
   addMemberOp,
   buildChain,
@@ -116,6 +117,8 @@ async function makeRotationServer(input: {
   readonly environmentsAvailable?: boolean;
   /** When set, a layout-v3 variable with max age 30 days exists, last pushed at this time (PF6 R9). */
   readonly expiringPushedAtMs?: number;
+  /** Whether that variable's history can be read (false = 500 — the unreadable-age path of `--fail-on-due`). */
+  readonly historyAvailable?: boolean;
 }): Promise<RotationServerState> {
   const projectId = input.built.projectId;
   const currentEpoch = input.currentEpoch ?? 1;
@@ -206,25 +209,25 @@ async function makeRotationServer(input: {
             },
           },
     ),
-    onRequest(
-      "GET",
-      `/projects/${projectId}/environments/${ENV_ID}/variables/vexp/versions`,
-      () => ({
-        status: 200,
-        json: {
-          variableId: "vexp",
-          versions: [
-            {
-              version: 3,
-              epoch: currentEpoch,
-              writerUserId: owner.userId,
-              writerKeyFingerprintHex: owner.fingerprintHex,
-              pushedAtMs: input.expiringPushedAtMs ?? 0,
-              flagsIfCurrent: 0,
+    onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/variables/vexp/versions`, () =>
+      input.historyAvailable === false
+        ? { status: 500, json: { message: "injected history failure" } }
+        : {
+            status: 200,
+            json: {
+              variableId: "vexp",
+              versions: [
+                {
+                  version: 3,
+                  epoch: currentEpoch,
+                  writerUserId: owner.userId,
+                  writerKeyFingerprintHex: owner.fingerprintHex,
+                  pushedAtMs: input.expiringPushedAtMs ?? 0,
+                  flagsIfCurrent: 0,
+                },
+              ],
             },
-          ],
-        },
-      }),
+          },
     ),
     onRequest("GET", `/projects/${projectId}/rotation/flags`, () => ({
       status: 200,
@@ -373,6 +376,111 @@ describe("maruhi rotation list", () => {
     const freshEnv = await startEnv(fresh, built.projectId);
     expect(await runCli(["rotation", "list"], freshEnv.layer)).toBe(0);
     expect(freshEnv.logs.join("\n")).not.toContain("Expiring values");
+  });
+
+  it("--fail-on-due exits 3 when a value is past its max age, --due-within widens it, and fresh values exit 0 (PF7a S-B)", async () => {
+    const built = await convergedChain();
+    const day = 24 * 60 * 60 * 1000;
+    // Expired 10 days ago: the plain listing still exits 0; --fail-on-due makes it 3
+    const expired = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [],
+      expiringPushedAtMs: Date.now() - 40 * day,
+    });
+    const plain = await startEnv(expired, built.projectId);
+    expect(await runCli(["rotation", "list"], plain.layer)).toBe(0);
+    const env = await startEnv(expired, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-due"], env.layer)).toBe(3);
+    expect(env.errors.join("\n")).toContain(
+      "Rotation due (exit 3): 1 value past the declared max age (STRIPE_SECRET_KEY)",
+    );
+    // The listing itself was still printed in full
+    expect(env.logs.join("\n")).toContain("[expired] env-app-1 STRIPE_SECRET_KEY");
+    // Due in 5 days: past-due-only passes, a 7-day window fails
+    const soon = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [],
+      expiringPushedAtMs: Date.now() - 25 * day,
+    });
+    const soonPass = await startEnv(soon, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-due"], soonPass.layer)).toBe(0);
+    const soonFail = await startEnv(soon, built.projectId);
+    expect(
+      await runCli(["rotation", "list", "--fail-on-due", "--due-within", "7"], soonFail.layer),
+    ).toBe(3);
+    expect(soonFail.errors.join("\n")).toContain(
+      "Rotation due (exit 3): 1 value due within 7 days (STRIPE_SECRET_KEY)",
+    );
+    // --due-within is meaningless without --fail-on-due (a usage error, before any network)
+    const misuse = await startEnv(soon, built.projectId);
+    expect(await runCli(["rotation", "list", "--due-within", "7"], misuse.layer)).toBe(2);
+    expect(misuse.errors.join("\n")).toContain("--due-within applies to --fail-on-due only");
+  });
+
+  it("--fail-on-due exits 1, not 0 or 3, when a history could not be read (an unknown age is not a passed check)", async () => {
+    const built = await convergedChain();
+    const unreadable = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [],
+      expiringPushedAtMs: Date.now() - 40 * 24 * 60 * 60 * 1000,
+      historyAvailable: false,
+    });
+    // The plain listing notes the failure and still exits 0
+    const plain = await startEnv(unreadable, built.projectId);
+    expect(await runCli(["rotation", "list"], plain.layer)).toBe(0);
+    expect(plain.errors.join("\n")).toContain(
+      "could not read the history of STRIPE_SECRET_KEY in environment env-app-1",
+    );
+    // The check cannot pass on an age it could not read
+    const check = await startEnv(unreadable, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-due"], check.layer)).toBe(1);
+    expect(check.errors.join("\n")).toContain(
+      "Cannot judge --fail-on-due: the history of 1 value could not be read (env-app-1/STRIPE_SECRET_KEY)",
+    );
+    // --fail-on-flags alone does not need the age
+    const flagsOnly = await startEnv(unreadable, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-flags"], flagsOnly.layer)).toBe(0);
+  });
+
+  it("describeDue counts days the way the --due-within window does (never 'due today' for a value the window would miss)", () => {
+    const day = 24 * 60 * 60 * 1000;
+    const nowMs = 1_800_000_000_000;
+    const row = (dueAtMs: number) => ({
+      environmentId: "env-app-1",
+      variableId: "vexp",
+      name: "STRIPE_SECRET_KEY",
+      maxAgeDays: 30,
+      pushedAtMs: 0,
+      dueAtMs,
+    });
+    expect(describeDue(row(nowMs + 0.4 * day), nowMs)).toBe("due in 1 day");
+    expect(describeDue(row(nowMs + 1.6 * day), nowMs)).toBe("due in 2 days");
+    expect(describeDue(row(nowMs + 7 * day), nowMs)).toBe("due in 7 days");
+    expect(describeDue(row(nowMs), nowMs)).toBe("expired today");
+    expect(describeDue(row(nowMs - 0.4 * day), nowMs)).toBe("expired today");
+    expect(describeDue(row(nowMs - 1.6 * day), nowMs)).toBe("expired 1 day ago");
+    expect(describeDue(row(nowMs - 10 * day), nowMs)).toBe("expired 10 days ago");
+  });
+
+  it("--fail-on-flags exits 3 while a rotation flag is active (and 0 once none is)", async () => {
+    const built = await convergedChain();
+    const flagged = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [flagFor({ variableId: "va", basis: "read" })],
+    });
+    const env = await startEnv(flagged, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-flags"], env.layer)).toBe(3);
+    expect(env.errors.join("\n")).toContain("Rotation due (exit 3): 1 rotation flag active");
+    const clear = await makeRotationServer({ built, currentEpoch: 2, flags: [] });
+    const clearEnv = await startEnv(clear, built.projectId);
+    expect(
+      await runCli(["rotation", "list", "--fail-on-flags", "--fail-on-due"], clearEnv.layer),
+    ).toBe(0);
+    expect(clearEnv.errors.join("\n")).not.toContain("Rotation due");
   });
 });
 

@@ -40,7 +40,13 @@ import {
 } from "../../src/proxy-accept.ts";
 import { ProxySeams, type ProxySeamsShape } from "../../src/proxy-run.ts";
 import { SqlRunner, type SqlRunnerShape } from "../../src/rotate-connector.ts";
-import { type ExecInput, type ExecOutcome, ProcessRunner } from "../../src/run.ts";
+import {
+  type CaptureInput,
+  type CaptureOutcome,
+  type ExecInput,
+  type ExecOutcome,
+  ProcessRunner,
+} from "../../src/run.ts";
 import { RotateSeams, type RotateSeamsShape } from "../../src/var-rotate.ts";
 import type { TestUser } from "./crypto.ts";
 
@@ -62,6 +68,9 @@ export interface ExecCall {
   readonly stdin: Uint8Array;
 }
 
+/** One recorded `exec` rotation-connector script (rotate-connector.ts — the env carries the secrets). */
+export type CaptureCall = CaptureInput;
+
 /** One recorded `maruhi agent` session child (agent.ts — env carries the socket path). */
 export interface SessionCall {
   readonly command: readonly string[];
@@ -79,6 +88,8 @@ export interface TestEnv {
   readonly execCalls: ExecCall[];
   /** Recorded `maruhi agent` child launches (argv and the extra env vars passed). */
   readonly sessionCalls: SessionCall[];
+  /** Recorded `exec` rotation-connector scripts (argv / cwd / the injected env). */
+  readonly captureCalls: CaptureCall[];
   readonly configPath: string;
   /** Directory of the local floor (§6.3) (<configDir>/floor). */
   readonly floorDir: string;
@@ -138,6 +149,8 @@ export interface TestEnv {
    * function so the result can differ per call (e.g. fail only the Nth call).
    */
   setExecHandler(handler: (call: ExecCall, index: number) => ExecOutcome | CliError): void;
+  /** Fakes the `exec` rotation connector's scripts (default: every script fails to start). A thrown Error is a launch failure. */
+  setCaptureHandler(handler: (call: CaptureCall, index: number) => CaptureOutcome): void;
   /** Fakes whether openBrowser succeeds (default: succeeds). */
   setBrowserOpenSucceeds(succeeds: boolean): void;
   /**
@@ -198,6 +211,10 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const runnerCalls: RunnerCall[] = [];
   const execCalls: ExecCall[] = [];
   let execHandler: (call: ExecCall, index: number) => ExecOutcome | CliError = execSucceeds;
+  const captureCalls: CaptureCall[] = [];
+  let captureHandler: (call: CaptureCall, index: number) => CaptureOutcome = () => {
+    throw new Error("cannot start the script (test injection)");
+  };
   const envVars = new Map<string, string>();
   const prompts: string[] = [];
   const promptResponses: (string | (() => string))[] = [];
@@ -396,6 +413,19 @@ export async function makeTestEnv(): Promise<TestEnv> {
           // is returned as a typed error
           return outcome instanceof CliError ? Effect.fail(outcome) : Effect.succeed(outcome);
         }),
+      captureScript: (input) => {
+        const call: CaptureCall = {
+          command: input.command,
+          cwd: input.cwd,
+          extraEnv: input.extraEnv,
+        };
+        captureCalls.push(call);
+        try {
+          return Promise.resolve(captureHandler(call, captureCalls.length - 1));
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      },
       runSession: ({ command, env }) =>
         Effect.tryPromise({
           try: () => {
@@ -436,6 +466,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
     runnerCalls,
     execCalls,
     sessionCalls,
+    captureCalls,
     configPath,
     floorDir,
     pinsDir,
@@ -488,6 +519,9 @@ export async function makeTestEnv(): Promise<TestEnv> {
     },
     setExecHandler(handler) {
       execHandler = handler;
+    },
+    setCaptureHandler(handler) {
+      captureHandler = handler;
     },
     setBrowserOpenSucceeds(succeeds) {
       browserOpenSucceeds = succeeds;

@@ -80,7 +80,7 @@ type IssueOutcome =
  * ID and your access" is member-oriented guidance and would send CI to the
  * wrong fix, so it is replaced with lease-specific guidance here.
  */
-const LEASE_NOT_FOUND_MESSAGE =
+export const LEASE_NOT_FOUND_MESSAGE =
   "The server answered 404 for the lease. The lease endpoint folds these into one uniform answer (existence hiding — AUTH_SPEC §14-1): unknown project, no active grant, a lease-policy mismatch (issuer / audience / claim constraints), and an out-of-scope or unknown environment. Check --server, --project, and the environment in the workflow, and that a project owner granted this workload's identity with `maruhi server grant --lease-policy`";
 
 /**
@@ -123,6 +123,30 @@ export function leaseEnvironments(
   CliError,
   CliIo | HttpClient.HttpClient
 > {
+  return Effect.map(leaseEnvironmentsWithCredential(input), (leased) => leased.materials);
+}
+
+/**
+ * The credential a job leased with: the OIDC token and the ephemeral key
+ * the server's first-come binding tied it to (AUTH_SPEC §14-1). The
+ * sealed-proposal mint (ci-rotate.ts) presents the same pair — a second
+ * key under the same token would be refused as replayed.
+ */
+export interface WorkloadCredential {
+  readonly token: Redacted.Redacted<string>;
+  readonly ephemeralPubHex: string;
+}
+
+export interface LeasedEnvironments {
+  readonly materials: ReadonlyMap<EnvironmentId, VerifiedLeaseMaterial>;
+  readonly credential: WorkloadCredential;
+  readonly client: MaruhiClient;
+}
+
+/** {@link leaseEnvironments} plus the credential and client for a follow-up call under the same lease. */
+export function leaseEnvironmentsWithCredential(
+  input: CiLeaseInput & { readonly environmentIds: readonly EnvironmentId[] },
+): Effect.Effect<LeasedEnvironments, CliError, CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     // The anchor is read before the network and key generation (do not put
@@ -191,6 +215,6 @@ export function leaseEnvironments(
       );
       materials.set(environmentId, material);
     }
-    return materials;
+    return { materials, credential: { token, ephemeralPubHex }, client };
   });
 }

@@ -174,14 +174,32 @@ export {
   WardListSchema,
   WardSummarySchema,
 } from "./key-wraps-api.ts";
-export { leaseGroup, LeaseRequestSchema, LeaseResponseSchema } from "./lease-api.ts";
 export {
+  leaseGroup,
+  LeaseRequestSchema,
+  LeaseResponseSchema,
+  RotationProposalRequestSchema,
+} from "./lease-api.ts";
+export {
+  ProposalIdSchema,
+  ProposedVariableSchema,
+  RotationConnectorSchema,
   RotationDismissTargetSchema,
   RotationFlagBasisSchema,
   RotationFlagListSchema,
   RotationFlagTriggerSchema,
   RotationFlagSchema,
   rotationGroup,
+  type RotationProposal,
+  type RotationProposalInput,
+  RotationProposalInputSchema,
+  RotationProposalListSchema,
+  RotationProposalReceiptSchema,
+  type RotationProposalResolution,
+  RotationProposalResolutionSchema,
+  RotationProposalSchema,
+  type SealedValueWrap,
+  SealedValueWrapSchema,
 } from "./rotation-api.ts";
 export {
   ActivationRequiredError,
@@ -260,6 +278,9 @@ export {
   RecoveryWrapNotFoundError,
   ResourceConflictReasonSchema,
   RotationFlagNotFoundError,
+  RotationProposalNotFoundError,
+  RotationProposalRejectedError,
+  RotationProposalRejectReasonSchema,
   SchemaDescriptionRejectedError,
   SchemaDescriptionRejectReasonSchema,
   SchemaPolicyRejectedError,

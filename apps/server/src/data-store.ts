@@ -335,6 +335,12 @@ export interface DataWriteOps {
    * (the setting change and the audit row are atomic).
    */
   readonly setSchemaPolicy: (policy: SchemaPolicy) => void;
+  /** Stores a sealed value proposal with its variables and wraps (AUTH_SPEC §14-5 — one synchronous block with the audit row). */
+  readonly insertProposal: (proposal: ProposalWriteInput, nowMs: number) => void;
+  /** Removes a proposal and its rows (resolution — the audit row carries the outcome). */
+  readonly deleteProposal: (proposalId: string) => void;
+  /** Sweeps expired proposals (called before a mint and a resolution). */
+  readonly deleteExpiredProposals: (nowMs: number) => void;
 }
 
 /** The coordinates of a wrap deleted by the cleanup (the input of a dek.deleted audit row). */
@@ -361,7 +367,7 @@ export interface StoredHeadAttestation {
   readonly attesterKeyFingerprintHex: string;
 }
 
-interface DataStoreShape {
+export interface DataStoreShape {
   readonly findEnvironment: (environmentId: string) => Effect.Effect<EnvironmentRow | null>;
   readonly countEnvironments: Effect.Effect<ResourceCounts>;
   readonly environmentNameTaken: (
@@ -622,16 +628,71 @@ interface DataStoreShape {
   /** Consume the head-attestation fixed window (counts 1; serialized under the permit — nothing interposes with the judgment). */
   readonly recordAttestationWindowUse: (attesterUserId: string, nowMs: number) => void;
 
+  /**
+   * Sealed value proposals (AUTH_SPEC §14-5). "Pending" = stored and
+   * unexpired at `nowMs` (resolution deletes the rows, so a stored row
+   * is unresolved by construction). Expired rows are ignored by the
+   * expires_at condition without depending on the sweep (the same
+   * discipline as leaseBinding).
+   */
+  readonly proposalExists: (proposalId: string) => Effect.Effect<boolean>;
+  readonly findPendingProposal: (
+    proposalId: string,
+    nowMs: number,
+  ) => Effect.Effect<StoredProposal | null>;
+  readonly listPendingProposals: (nowMs: number) => Effect.Effect<readonly StoredProposal[]>;
+  readonly countPendingProposals: (nowMs: number) => Effect.Effect<number>;
+
   readonly write: DataWriteOps;
 }
 
 /** The fixed-window kinds (§14-3 issuance / AUDIT_SPEC §3.5 denial record). */
-type LeaseWindowKind = "issued" | "denied";
+/** `proposed` = the sealed-proposal mint window (AUTH_SPEC §14-5 — its own counter beside issuance). */
+type LeaseWindowKind = "issued" | "denied" | "proposed";
 
 /** The fixed-window decision (on excess it returns the window's remaining seconds — same shape as the §13-3 precedent). */
 interface LeaseWindowDecision {
   readonly allowed: boolean;
   readonly retryAfterSeconds: number;
+}
+
+/** A proposed value sealed to one recipient device (a stored row — AUTH_SPEC §14-5). */
+export interface StoredProposalWrap {
+  readonly recipientUserId: string;
+  readonly recipientEncPubHex: string;
+  readonly encHex: string;
+  readonly ciphertextHex: string;
+}
+
+export interface StoredProposalVariable {
+  readonly variableId: string;
+  readonly baseVersion: number;
+  readonly wraps: readonly StoredProposalWrap[];
+}
+
+/** One stored sealed value proposal with its variables and wraps (CRYPTO_SPEC §5.3). */
+export interface StoredProposal {
+  readonly proposalId: string;
+  readonly environmentId: string;
+  readonly connector: string;
+  readonly facts: readonly string[];
+  readonly claimsDigestHex: string;
+  readonly grantChainSeq: number;
+  readonly createdAtMs: number;
+  readonly expiresAtMs: number;
+  readonly variables: readonly StoredProposalVariable[];
+}
+
+/** What the mint program hands the store (the wire proposal + the lease's attribution). */
+export interface ProposalWriteInput {
+  readonly proposalId: string;
+  readonly environmentId: string;
+  readonly connector: string;
+  readonly facts: readonly string[];
+  readonly claimsDigestHex: string;
+  readonly grantChainSeq: number;
+  readonly expiresAtMs: number;
+  readonly variables: readonly StoredProposalVariable[];
 }
 
 export class DataStore extends Context.Service<DataStore, DataStoreShape>()("DataStore") {}
@@ -1397,9 +1458,16 @@ const makeVersionQueries = (sql: SqlStorage) => ({
         epoch: numberColumn(row, "epoch"),
       };
     }),
+  // The §12-8 meter: version ciphertexts plus the sealed values of
+  // pending proposals (hex columns — two characters per byte), so a
+  // project cannot park ciphertext outside the cap in proposals
   totalCiphertextBytes: Effect.sync(() => {
     const row = sql
-      .exec("SELECT COALESCE(SUM(ciphertext_bytes), 0) AS total FROM variable_versions")
+      .exec(
+        `SELECT (SELECT COALESCE(SUM(ciphertext_bytes), 0) FROM variable_versions)
+              + (SELECT COALESCE(SUM(length(ciphertext_hex)), 0) / 2 FROM rotation_proposal_wraps)
+              AS total`,
+      )
       .toArray()[0];
     return row === undefined ? 0 : numberColumn(row, "total");
   }),
@@ -2149,7 +2217,166 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       policy,
     );
   },
+  insertProposal: (proposal, nowMs) => {
+    sql.exec(
+      `INSERT INTO rotation_proposals
+         (proposal_id, environment_id, connector, facts_json, claims_digest_hex, grant_chain_seq, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      proposal.proposalId,
+      proposal.environmentId,
+      proposal.connector,
+      JSON.stringify(proposal.facts),
+      proposal.claimsDigestHex,
+      proposal.grantChainSeq,
+      nowMs,
+      proposal.expiresAtMs,
+    );
+    // The minted order is the push order (companions first — CRYPTO_SPEC
+    // §5.3); variable ids are random, so the position is stored
+    proposal.variables.forEach((variable, position) => {
+      sql.exec(
+        "INSERT INTO rotation_proposal_variables (proposal_id, variable_id, base_version, position) VALUES (?, ?, ?, ?)",
+        proposal.proposalId,
+        variable.variableId,
+        variable.baseVersion,
+        position,
+      );
+      for (const wrap of variable.wraps) {
+        sql.exec(
+          `INSERT INTO rotation_proposal_wraps
+             (proposal_id, variable_id, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          proposal.proposalId,
+          variable.variableId,
+          wrap.recipientUserId,
+          wrap.recipientEncPubHex,
+          wrap.encHex,
+          wrap.ciphertextHex,
+        );
+      }
+    });
+  },
+  deleteProposal: (proposalId) => {
+    deleteProposalRows(sql, proposalId);
+  },
+  deleteExpiredProposals: (nowMs) => {
+    const expired = sql
+      .exec("SELECT proposal_id FROM rotation_proposals WHERE expires_at <= ?", nowMs)
+      .toArray()
+      .map((row) => stringColumn(row, "proposal_id"));
+    for (const proposalId of expired) {
+      deleteProposalRows(sql, proposalId);
+    }
+  },
 });
+
+function deleteProposalRows(sql: SqlStorage, proposalId: string): void {
+  sql.exec("DELETE FROM rotation_proposal_wraps WHERE proposal_id = ?", proposalId);
+  sql.exec("DELETE FROM rotation_proposal_variables WHERE proposal_id = ?", proposalId);
+  sql.exec("DELETE FROM rotation_proposals WHERE proposal_id = ?", proposalId);
+}
+
+/** The stored facts (a JSON array of strings written by insertProposal — anything else is storage corruption). */
+function storedFacts(value: string): readonly string[] {
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed) || !parsed.every((fact) => typeof fact === "string")) {
+    throw new Error("stored proposal facts are not a string array");
+  }
+  return parsed;
+}
+
+/**
+ * Sealed value proposals (AUTH_SPEC §14-5). A proposal is read as three
+ * queries (head / variables / wraps); the wraps are attached in variable
+ * order. Only pending rows (expires_at > now) are returned by the
+ * pending readers — expired rows wait for the sweep but never surface.
+ */
+const makeProposalQueries = (sql: SqlStorage) => {
+  const proposalOf = (row: StoredRow): StoredProposal => {
+    const proposalId = stringColumn(row, "proposal_id");
+    const wraps = sql
+      .exec(
+        `SELECT variable_id, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex
+         FROM rotation_proposal_wraps WHERE proposal_id = ?
+         ORDER BY variable_id, recipient_user_id, recipient_enc_pub_hex`,
+        proposalId,
+      )
+      .toArray();
+    const variables = sql
+      .exec(
+        "SELECT variable_id, base_version FROM rotation_proposal_variables WHERE proposal_id = ? ORDER BY position",
+        proposalId,
+      )
+      .toArray()
+      .map((variable): StoredProposalVariable => {
+        const variableId = stringColumn(variable, "variable_id");
+        return {
+          variableId,
+          baseVersion: numberColumn(variable, "base_version"),
+          wraps: wraps
+            .filter((wrap) => stringColumn(wrap, "variable_id") === variableId)
+            .map((wrap) => ({
+              recipientUserId: stringColumn(wrap, "recipient_user_id"),
+              recipientEncPubHex: stringColumn(wrap, "recipient_enc_pub_hex"),
+              encHex: stringColumn(wrap, "enc_hex"),
+              ciphertextHex: stringColumn(wrap, "ciphertext_hex"),
+            })),
+        };
+      });
+    return {
+      proposalId,
+      environmentId: stringColumn(row, "environment_id"),
+      connector: stringColumn(row, "connector"),
+      facts: storedFacts(stringColumn(row, "facts_json")),
+      claimsDigestHex: stringColumn(row, "claims_digest_hex"),
+      grantChainSeq: numberColumn(row, "grant_chain_seq"),
+      createdAtMs: numberColumn(row, "created_at"),
+      expiresAtMs: numberColumn(row, "expires_at"),
+      variables,
+    };
+  };
+  const HEAD_COLUMNS =
+    "proposal_id, environment_id, connector, facts_json, claims_digest_hex, grant_chain_seq, created_at, expires_at";
+  return {
+    proposalExists: (proposalId: string) =>
+      Effect.sync(
+        () =>
+          sql
+            .exec("SELECT 1 AS present FROM rotation_proposals WHERE proposal_id = ?", proposalId)
+            .toArray().length > 0,
+      ),
+    findPendingProposal: (proposalId: string, nowMs: number) =>
+      Effect.sync(() => {
+        const row = sql
+          .exec(
+            `SELECT ${HEAD_COLUMNS} FROM rotation_proposals WHERE proposal_id = ? AND expires_at > ?`,
+            proposalId,
+            nowMs,
+          )
+          .toArray()[0];
+        return row === undefined ? null : proposalOf(row);
+      }),
+    listPendingProposals: (nowMs: number) =>
+      Effect.sync(() =>
+        sql
+          .exec(
+            `SELECT ${HEAD_COLUMNS} FROM rotation_proposals WHERE expires_at > ? ORDER BY created_at, proposal_id`,
+            nowMs,
+          )
+          .toArray()
+          .map(proposalOf),
+      ),
+    countPendingProposals: (nowMs: number) =>
+      Effect.sync(() =>
+        numberColumn(
+          sql
+            .exec("SELECT COUNT(*) AS n FROM rotation_proposals WHERE expires_at > ?", nowMs)
+            .toArray()[0] ?? { n: 0 },
+          "n",
+        ),
+      ),
+  };
+};
 
 export const dataStoreLayer = (sql: SqlStorage): Layer.Layer<DataStore> =>
   Layer.sync(DataStore, () => ({
@@ -2159,5 +2386,6 @@ export const dataStoreLayer = (sql: SqlStorage): Layer.Layer<DataStore> =>
     ...makeWrapQueries(sql),
     ...makeSettingsQueries(sql),
     ...makeAttestationQueries(sql),
+    ...makeProposalQueries(sql),
     write: makeWriteOps(sql),
   }));

@@ -103,6 +103,8 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       ["devices", "register"],
       ["devices", "requestCreate"],
       ["lease", "issue"],
+      ["lease", "propose"],
+      ["rotation", "resolveProposal"],
       ["invites", "issue"],
       ["invites", "accept"],
     ]);

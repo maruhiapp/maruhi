@@ -99,7 +99,8 @@ function commandKeyOf(tokens: readonly string[]): string {
 
 /**
  * Runs the maruhi CLI against `argv` with the given service layer and
- * returns the process exit code (0 = success, 1 = failure, 2 = usage error).
+ * returns the process exit code (0 = success, 1 = failure, 2 = usage error,
+ * 3 = `rotation list --fail-on-due` / `--fail-on-flags` found something due).
  */
 export async function runCli(
   argv: readonly string[],

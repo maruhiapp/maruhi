@@ -1,0 +1,113 @@
+{
+  "description": "CRYPTO_SPEC §5.3: a sealed value proposal (HPKE Base mode single Seal of a proposed variable value to one recipient device key — the same primitive as §5 / §9.1). info binds the project, environment, proposal id, variable id, the version the value replaces and the recipient user id, so a sealed value cannot be re-filed under another proposal, variable, base version or recipient. Seal is pinned by hpke-js ekm derandomize (the panva implementation is verified in the Open direction + roundtrip)",
+  "info_fields_order": [
+    "domain",
+    "project_id",
+    "environment_id",
+    "proposal_id",
+    "variable_id",
+    "base_version",
+    "recipient_user_id"
+  ],
+  "recipient_note": "The recipient key pair and the project / environment coordinates are identical to dek-wrap.json's basic (recipient_keypair / project_id / environment_id / recipient_user_id): a sealed value is addressed to the device key that also receives DEK wraps (§5.3 — W(E) ⊆ R(E) minus readers and server keys). The private key for the Open direction is dek-wrap.json's recipient_keypair.skRm_hex",
+  "signature_note": "A sealed value carries no §5.1 registration signature (the workload holds no on-chain key — §5.3). Attribution is the lease's claims_digest and the grant's chain seq, recorded by the server beside the proposal (AUTH_SPEC §14-5)",
+  "proposal": {
+    "proposal_id": "303132333435363738393a3b3c3d3e3f",
+    "other_proposal_id": "3132333435363738393a3b3c3d3e3f40",
+    "note": "proposal_id is 16 random bytes as lowercase hex, chosen by the minting client (fixed here for determinism). other_proposal_id is the material for info-proposal-mismatch"
+  },
+  "vectors": [
+    {
+      "name": "basic",
+      "domain": "maruhi/v1/sealed-value",
+      "project_id": "proj-0001",
+      "environment_id": "env-prod-0001",
+      "proposal_id": "303132333435363738393a3b3c3d3e3f",
+      "variable_id": "var-database-url-0001",
+      "base_version": 3,
+      "recipient_user_id": "user-recipient-0002",
+      "info_hex": "000000166d61727568692f76312f7365616c65642d76616c75650000000970726f6a2d303030310000000d656e762d70726f642d30303031000000203330333133323333333433353336333733383339336133623363336433653366000000157661722d64617461626173652d75726c2d30303031000000013300000013757365722d726563697069656e742d30303032",
+      "plaintext_hex": "706f7374677265733a2f2f6170705f623a726f74617465642d64756d6d792d70617373776f72644064622e6578616d706c653a353433322f73686f70",
+      "ikmE_hex": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+      "aad_hex": "",
+      "enc_hex": "73005b459c8959620de9c0ca67a19f06f947f43f467c50b1e0ef6902720d4f59",
+      "ciphertext_hex": "23bf7e49f74f87eb6982164a40115492bfce3374193328a18023ea7bc1914303df2addb6b7210c16f3548a0b1e1906a70f6cbe17aeb363340bbdb7dbec89c526afa8eb38f0a664ede3d97b4f",
+      "note": "The proposed value of the rule's variable (a dummy connection string), sealed to the recipient device"
+    },
+    {
+      "name": "companion",
+      "domain": "maruhi/v1/sealed-value",
+      "project_id": "proj-0001",
+      "environment_id": "env-prod-0001",
+      "proposal_id": "303132333435363738393a3b3c3d3e3f",
+      "variable_id": "var-database-user-0001",
+      "base_version": 1,
+      "recipient_user_id": "user-recipient-0002",
+      "info_hex": "000000166d61727568692f76312f7365616c65642d76616c75650000000970726f6a2d303030310000000d656e762d70726f642d30303031000000203330333133323333333433353336333733383339336133623363336433653366000000167661722d64617461626173652d757365722d30303031000000013100000013757365722d726563697069656e742d30303032",
+      "plaintext_hex": "6170705f62",
+      "ikmE_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "aad_hex": "",
+      "enc_hex": "bad762e098446cbcc58b30c7e804f82847b8b911185996582af9f27bfd4e875f",
+      "ciphertext_hex": "6d9248b72e4df3a246cbbf43db9dbe8f8a929b8614",
+      "note": "A companion variable of the same proposal (the AWS key id / an exec rule's companion): a separate Seal under its own variable_id with an independent ephemeral key. Pins that the proposal id is shared and the variable id separates the two"
+    }
+  ],
+  "negative": [
+    {
+      "name": "info-project-mismatch",
+      "base": "basic",
+      "open_info_hex": "000000166d61727568692f76312f7365616c65642d76616c75650000000970726f6a2d303030320000000d656e762d70726f642d30303031000000203330333133323333333433353336333733383339336133623363336433653366000000157661722d64617461626173652d75726c2d30303031000000013300000013757365722d726563697069656e742d30303032",
+      "must_fail": true,
+      "note": "Transplanting to another project fails Open"
+    },
+    {
+      "name": "info-environment-mismatch",
+      "base": "basic",
+      "open_info_hex": "000000166d61727568692f76312f7365616c65642d76616c75650000000970726f6a2d303030310000000c656e762d6465762d30303032000000203330333133323333333433353336333733383339336133623363336433653366000000157661722d64617461626173652d75726c2d30303031000000013300000013757365722d726563697069656e742d30303032",
+      "must_fail": true,
+      "note": "Transplanting to another environment fails Open"
+    },
+    {
+      "name": "info-proposal-mismatch",
+      "base": "basic",
+      "open_info_hex": "000000166d61727568692f76312f7365616c65642d76616c75650000000970726f6a2d303030310000000d656e762d70726f642d30303031000000203331333233333334333533363337333833393361336233633364336533663430000000157661722d64617461626173652d75726c2d30303031000000013300000013757365722d726563697069656e742d30303032",
+      "must_fail": true,
+      "note": "Re-filing the sealed value under another proposal id fails Open (two proposals for the same variable cannot be confused)"
+    },
+    {
+      "name": "info-variable-mismatch",
+      "base": "basic",
+      "open_info_hex": "000000166d61727568692f76312f7365616c65642d76616c75650000000970726f6a2d303030310000000d656e762d70726f642d30303031000000203330333133323333333433353336333733383339336133623363336433653366000000167661722d64617461626173652d757365722d30303031000000013300000013757365722d726563697069656e742d30303032",
+      "must_fail": true,
+      "note": "Presenting the primary's sealed value as the companion's fails Open (a swapped wrap inside one proposal is detected)"
+    },
+    {
+      "name": "info-base-version-mismatch",
+      "base": "basic",
+      "open_info_hex": "000000166d61727568692f76312f7365616c65642d76616c75650000000970726f6a2d303030310000000d656e762d70726f642d30303031000000203330333133323333333433353336333733383339336133623363336433653366000000157661722d64617461626173652d75726c2d30303031000000013400000013757365722d726563697069656e742d30303032",
+      "must_fail": true,
+      "note": "Re-labelling the version the value replaces fails Open (a stale proposal cannot be presented as one minted against the current version — the member's base-version check is under the seal, not only in server-declared metadata)"
+    },
+    {
+      "name": "info-recipient-mismatch",
+      "base": "basic",
+      "open_info_hex": "000000166d61727568692f76312f7365616c65642d76616c75650000000970726f6a2d303030310000000d656e762d70726f642d30303031000000203330333133323333333433353336333733383339336133623363336433653366000000157661722d64617461626173652d75726c2d30303031000000013300000013757365722d726563697069656e742d30303033",
+      "must_fail": true,
+      "note": "A sealed value re-addressed to another user id fails Open (the recipient binding, as in §5)"
+    },
+    {
+      "name": "info-dek-wrap-domain",
+      "base": "basic",
+      "open_info_hex": "000000126d61727568692f76312f64656b2d777261700000000970726f6a2d303030310000000d656e762d70726f642d30303031000000203330333133323333333433353336333733383339336133623363336433653366000000157661722d64617461626173652d75726c2d30303031000000013300000013757365722d726563697069656e742d30303032",
+      "must_fail": true,
+      "note": "info with the domain string replaced by §5's dek-wrap fails Open (domain separation between DEK wraps and sealed values — a sealed value can never be presented as a wrap)"
+    },
+    {
+      "name": "ciphertext-tampered",
+      "base": "basic",
+      "ciphertext_hex": "23bf7e48f74f87eb6982164a40115492bfce3374193328a18023ea7bc1914303df2addb6b7210c16f3548a0b1e1906a70f6cbe17aeb363340bbdb7dbec89c526afa8eb38f0a664ede3d97b4f",
+      "must_fail": true,
+      "note": "One byte flipped inside the ciphertext fails Open (the AEAD tag covers the whole body — a server cannot alter a stored proposal unnoticed)"
+    }
+  ]
+}

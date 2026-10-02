@@ -294,6 +294,20 @@ export {
   wrapMasterBlob,
 } from "./internal.package/index.ts";
 
+// §5.3: sealed value proposals (the same primitive as §5; the info binds
+// the proposal and variable ids — a workload's proposed value, stored
+// sealed to the accepting members' device keys)
+export {
+  buildSealedValueInfo,
+  isProposalId,
+  MAX_SEALED_VALUE_BYTES,
+  openProposedValue,
+  PROPOSAL_ID_BYTES,
+  type SealedValue,
+  type SealedValueContext,
+  sealProposedValue,
+} from "./internal.package/index.ts";
+
 // §9: selective disclosure (server keys)
 export { computeServerKeyFingerprint } from "./internal.package/index.ts";
 

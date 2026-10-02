@@ -118,4 +118,9 @@ export {
   LeaseUnavailableError,
   LeaseUnavailableReasonSchema,
 } from "./lease.ts";
-export { RotationFlagNotFoundError } from "./rotation.ts";
+export {
+  RotationFlagNotFoundError,
+  RotationProposalNotFoundError,
+  RotationProposalRejectedError,
+  RotationProposalRejectReasonSchema,
+} from "./rotation.ts";

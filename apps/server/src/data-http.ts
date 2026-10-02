@@ -38,6 +38,8 @@ import {
   ProjectNotFoundError,
   ProposalLimitError,
   RotationFlagNotFoundError,
+  RotationProposalNotFoundError,
+  RotationProposalRejectedError,
   SchemaDescriptionRejectedError,
   SchemaPolicyRejectedError,
   ValueSignatureRejectedError,
@@ -328,6 +330,8 @@ type DataApiError =
   | DekWrapExistsError
   | DekWrapNotFoundError
   | RotationFlagNotFoundError
+  | RotationProposalNotFoundError
+  | RotationProposalRejectedError
   | DataLimitExceededError;
 
 // A small mapping per kind (§11-2: uninitialized and non-member are not
@@ -418,6 +422,10 @@ const rejectionErrors = {
       environmentId: rejection.environmentId,
       variableId: rejection.variableId,
     }),
+  "rotation-proposal-not-found": (rejection) =>
+    new RotationProposalNotFoundError({ proposalId: rejection.proposalId }),
+  "rotation-proposal-rejected": (rejection) =>
+    new RotationProposalRejectedError({ reason: rejection.reason }),
   "limit-exceeded": (rejection) =>
     new DataLimitExceededError({ resource: rejection.resource, limit: rejection.limit }),
   // Head attestation (AUTH_SPEC §16-1)

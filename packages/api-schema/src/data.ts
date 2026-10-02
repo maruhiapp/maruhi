@@ -60,7 +60,7 @@ const ValueCiphertextHex = Schema.String.check(
  * The chain.ts side is deliberately unbounded (§6.1 — verifyChain
  * checks the limit).
  */
-const BoundedUserId = Schema.String.check(
+export const BoundedUserId = Schema.String.check(
   Schema.isMinLength(1),
   // The limit counts UTF-8 bytes (isMaxLength counts UTF-16 code units).
   Schema.makeFilter((s: string) =>

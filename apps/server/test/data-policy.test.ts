@@ -625,6 +625,11 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
       variableId: "var-contract",
     },
     "limit-exceeded": { kind: "limit-exceeded", resource: "variables", limit: 100 },
+    "rotation-proposal-not-found": {
+      kind: "rotation-proposal-not-found",
+      proposalId: "00112233445566778899aabbccddeeff",
+    },
+    "rotation-proposal-rejected": { kind: "rotation-proposal-rejected", reason: "pending-limit" },
     "attestation-rejected": { kind: "attestation-rejected", reason: "signature-invalid" },
     "attestation-regression": { kind: "attestation-regression", storedSeq: 5 },
     "attestation-rate-limited": { kind: "attestation-rate-limited", retryAfterSeconds: 60 },
@@ -670,6 +675,8 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     "dek-wrap-not-found": "DekWrapNotFound",
     "rotation-flag-not-found": "RotationFlagNotFound",
     "limit-exceeded": "DataLimitExceeded",
+    "rotation-proposal-not-found": "RotationProposalNotFound",
+    "rotation-proposal-rejected": "RotationProposalRejected",
     "attestation-rejected": "AttestationRejected",
     "attestation-regression": "AttestationRegression",
     "attestation-rate-limited": "AttestationRateLimited",
@@ -741,7 +748,8 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     // The defense line against a broken enumeration spinning freely
     // (an unconditional pass). Update this count when endpoints are
     // added (membership 5 / environments 5 / variables 9 [+ history /
-    // versionValues — VH] / deks 3 / rotation 2 / schemaPolicy 2 / audit 4)
-    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(30);
+    // versionValues — VH] / deks 3 / rotation 4 [+ proposals /
+    // resolveProposal — PF7b] / schemaPolicy 2 / audit 4)
+    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(32);
   });
 });

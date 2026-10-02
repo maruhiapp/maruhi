@@ -120,6 +120,7 @@ import {
   checkpointProposal,
   issueCheckpoint,
 } from "./checkpoint.ts";
+import { ciRotateOp, describeProposal, MAX_PROPOSAL_DAYS } from "./ci-rotate.ts";
 import { ciRunOp } from "./ci-run.ts";
 import {
   type CommandSpec,
@@ -203,6 +204,7 @@ import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loadLeasePolicy } from "./lease-policy.ts";
 import { openLedgerReserveForChange } from "./ledger-open.ts";
 import { loginOp, logoutOp } from "./login.ts";
+import { notePastDueValues } from "./max-age.ts";
 import { mcpServeOp } from "./mcp.ts";
 import {
   type ChangeRoleRequest,
@@ -243,10 +245,18 @@ import {
   configNamesProject as rotateConfigNamesProject,
 } from "./rotate-config.ts";
 import { SqlRunner } from "./rotate-connector.ts";
+import {
+  describeAcceptance,
+  findProposal,
+  rotationAcceptOp,
+  rotationProposalsOp,
+  rotationRejectOp,
+} from "./rotation-proposals.ts";
 import { reportRotation } from "./rotation-report.ts";
 import type { SweepOutcome } from "./rotation-sweep.ts";
 import { describeUnconvergedMandate, resolveUnconvergedMandates } from "./rotation-sweep.ts";
 import {
+  fetchRotationProposals,
   parseDismissRequest,
   reportRotationChecklist,
   resolveDismissTargets,
@@ -255,6 +265,7 @@ import {
 } from "./rotation.ts";
 import {
   enforceDeclaredPresence,
+  ProcessRunner,
   RUN_COMMAND_REQUIRED,
   runOp,
   typeAdvisoryWarnings,
@@ -532,6 +543,35 @@ const ciSyncConfig = {
   ),
 };
 
+/** `maruhi ci rotate <NAME>` (a sealed value proposal from a CI job — PF7b). */
+const ciRotateConfig = {
+  server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
+  project: singleValued("project", "Project ID, which is the pinned genesis hash (required)"),
+  env: singleValued("env", "Environment ID of the variable to rotate (required)"),
+  audience: singleValued("audience", "OIDC audience to request (default: the server origin)"),
+  anchor: singleValued(
+    "anchor",
+    "Path to the committed repository anchor file (generate it with `maruhi project anchor`)",
+  ),
+  "rotate-config": singleValued(
+    "rotate-config",
+    `Path to the rotation config naming the connector and admin credential of each variable (default: ${DEFAULT_ROTATE_CONFIG_PATH} in the working directory)`,
+  ),
+  "expires-in": Flag.Int("expires-in").pipe(
+    Flag.withDescription(
+      `Days the proposal waits for a member before it expires (1 to ${MAX_PROPOSAL_DAYS}; default 7)`,
+    ),
+    Flag.atMost(1),
+    Flag.map((values) => values[0]),
+  ),
+  name: Argument.String("name").pipe(
+    Argument.withDescription(
+      "Variable name to rotate (the rule's variable, or the access key id an AWS rule pairs with it)",
+    ),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
 /**
  * `maruhi push`'s specific fix, attached to its extra positional
  * arguments. `maruhi push API_KEY "$SECRET"` is the most likely
@@ -583,7 +623,24 @@ const configSetConfig = {
   ),
 };
 
-const rotationListConfig = { ...projectFlags() };
+const rotationListConfig = {
+  ...projectFlags(),
+  "fail-on-due": singleFlag(
+    "fail-on-due",
+    "Exit with code 3 when a value is past the max age its schema declares (a CI cron turns it into a failed build or an issue; see also --due-within)",
+  ),
+  "due-within": Flag.Int("due-within").pipe(
+    Flag.withDescription(
+      "With --fail-on-due: also fail when a value comes due within this many days (default 0 = only values already past their max age)",
+    ),
+    Flag.atMost(1),
+    Flag.map((values) => values[0]),
+  ),
+  "fail-on-flags": singleFlag(
+    "fail-on-flags",
+    "Exit with code 3 while any rotation flag is active (a credential a departed party could read has not been rotated or dismissed)",
+  ),
+};
 
 const rotationDismissConfig = {
   ...projectFlags(),
@@ -598,6 +655,35 @@ const rotationDismissConfig = {
     Argument.withSchema(NonBlank),
     Argument.atMost(1),
     Argument.map((values) => values[0]),
+  ),
+};
+
+const rotationProposalsConfig = {
+  ...projectFlags(),
+  env: singleValued("env", "Only the proposals of this environment"),
+};
+
+const rotationAcceptConfig = {
+  ...projectFlags(),
+  yes: singleFlag(
+    "yes",
+    "Skip the confirmation (the only non-interactive path; the pushes are signed by you)",
+  ),
+  id: Argument.String("id").pipe(
+    Argument.withDescription(
+      "Proposal id from `maruhi rotation proposals` (a unique prefix of 8+ characters works)",
+    ),
+    Argument.withSchema(NonBlank),
+  ),
+};
+
+const rotationRejectConfig = {
+  ...projectFlags(),
+  id: Argument.String("id").pipe(
+    Argument.withDescription(
+      "Proposal id from `maruhi rotation proposals` (a unique prefix of 8+ characters works)",
+    ),
+    Argument.withSchema(NonBlank),
   ),
 };
 
@@ -2203,20 +2289,19 @@ function envDiffCommand(
 function requireCiFlag(
   value: string | undefined,
   flag: string,
-  command: "ci run" | "ci sync" = "ci run",
+  command: "ci run" | "ci sync" | "ci rotate" = "ci run",
 ): Effect.Effect<string, CliError> {
   if (value !== undefined) {
     return Effect.succeed(value);
   }
   // `ci sync` has no `--env` (the sync config's target decides the
   // environment), so the fix is stated per command
-  return Effect.fail(
-    usageError(
-      command === "ci run"
-        ? `ci run requires ${flag} (CI mode reads no config file — pass --server, --project, and --env explicitly in the workflow)`
-        : `ci sync requires ${flag} (CI mode reads no config file except the sync config — pass --server and --project explicitly in the workflow; the environment comes from the target)`,
-    ),
-  );
+  const guidance = {
+    "ci run": `ci run requires ${flag} (CI mode reads no config file — pass --server, --project, and --env explicitly in the workflow)`,
+    "ci sync": `ci sync requires ${flag} (CI mode reads no config file except the sync config — pass --server and --project explicitly in the workflow; the environment comes from the target)`,
+    "ci rotate": `ci rotate requires ${flag} (CI mode reads no config file except the rotation config — pass --server, --project, and --env explicitly in the workflow)`,
+  };
+  return Effect.fail(usageError(guidance[command]));
 }
 
 /** `maruhi sync init`'s required flags (a misspelling = 2). */
@@ -2298,6 +2383,92 @@ function ciSyncCommand(values: {
       target,
       yes: values.yes,
     });
+  });
+}
+
+/** `maruhi ci rotate <NAME>`'s body (the lease, the connector, and the sealed proposal live in ci-rotate.ts). */
+/** The coordinates of `maruhi ci rotate` (every format check before the config read and the network). */
+function ciRotateCoordinates(values: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly env?: string | undefined;
+  readonly "expires-in"?: number | undefined;
+}): Effect.Effect<
+  {
+    readonly origin: string;
+    readonly projectId: string;
+    readonly environmentId: EnvironmentId;
+    readonly expiresInDays: number;
+  },
+  CliError
+> {
+  return Effect.gen(function* () {
+    const origin = yield* normalizeHttpOrigin(
+      yield* requireCiFlag(values.server, "--server", "ci rotate"),
+      "the server URL",
+    );
+    const projectId = yield* requireCiFlag(values.project, "--project", "ci rotate");
+    if (!isProjectId(projectId)) {
+      return yield* Effect.fail(
+        usageError("Invalid project ID for --project (the genesis hash — 64 hex digits)"),
+      );
+    }
+    const environmentId = yield* requireCiFlag(values.env, "--env", "ci rotate");
+    if (!isEnvironmentId(environmentId)) {
+      return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
+    }
+    const expiresInDays = values["expires-in"] ?? 7;
+    if (
+      !Number.isInteger(expiresInDays) ||
+      expiresInDays < 1 ||
+      expiresInDays > MAX_PROPOSAL_DAYS
+    ) {
+      return yield* Effect.fail(
+        usageError(`--expires-in must be a number of days from 1 to ${MAX_PROPOSAL_DAYS}`),
+      );
+    }
+    return { origin, projectId, environmentId, expiresInDays };
+  });
+}
+
+/** `maruhi ci rotate <NAME>`'s body (the lease, the connector, and the sealed proposal live in ci-rotate.ts). */
+function ciRotateCommand(values: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly env?: string | undefined;
+  readonly audience?: string | undefined;
+  readonly anchor?: string | undefined;
+  readonly "rotate-config"?: string | undefined;
+  readonly "expires-in"?: number | undefined;
+  readonly name: string;
+}): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const coordinates = yield* ciRotateCoordinates(values);
+    // The config is read before any network / key generation (the same
+    // discipline as ci run)
+    const rotateConfigPath = values["rotate-config"] ?? DEFAULT_ROTATE_CONFIG_PATH;
+    const rotateConfig = yield* loadRotateConfig(rotateConfigPath);
+    if (!rotateConfigNamesProject(rotateConfig, coordinates.projectId)) {
+      return yield* Effect.fail(
+        usageError(
+          `The rotation config ${displayText(rotateConfigPath)} belongs to a different project (its \`project\` does not match --project)`,
+        ),
+      );
+    }
+    const result = yield* ciRotateOp({
+      ...coordinates,
+      audience: values.audience ?? coordinates.origin,
+      anchorPath: values.anchor,
+      name: values.name,
+      config: rotateConfig,
+      configPath: rotateConfigPath,
+      deps: rotateDeps(yield* RotateSeams, yield* SqlRunner, (yield* ProcessRunner).captureScript),
+    });
+    yield* logRotationWarnings(result.warnings);
+    for (const line of describeProposal(result, coordinates.environmentId)) {
+      yield* io.log(line);
+    }
   });
 }
 
@@ -3638,6 +3809,14 @@ function pullForRun(
     yield* logWarnings(pulled.warnings);
     yield* enforceDeclaredPresence(pulled.declared);
     yield* logWarnings(typeAdvisoryWarnings(pulled.variables));
+    // The point-of-use nudge (PF7a): one note when a value just pulled is
+    // past the max age its schema declares (never changes the outcome)
+    yield* notePastDueValues({
+      client: context.client,
+      projectId: context.projectId,
+      environmentId: context.environmentId,
+      variables: pulled.variables,
+    });
     return pulled;
   });
 }
@@ -3797,6 +3976,13 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       for (const declared of pulled.declared) {
         yield* io.log(`${displayText(declared.name)}\t(declared — no value set)`);
       }
+      // The point-of-use nudge (PF7a): values past their declared max age
+      yield* notePastDueValues({
+        client: context.client,
+        projectId: context.projectId,
+        environmentId: context.environmentId,
+        variables: pulled.variables,
+      });
       if (values.show) {
         yield* showValues(pulled.variables);
       }
@@ -4007,10 +4193,30 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const rotationList = Command.make("list", rotationListConfig, (values) =>
     Effect.gen(function* () {
+      const dueWithin = values["due-within"];
+      if (dueWithin !== undefined && (dueWithin < 0 || !values["fail-on-due"])) {
+        return yield* Effect.fail(
+          usageError(
+            dueWithin < 0
+              ? "--due-within must be a number of days (0 or more)"
+              : "--due-within applies to --fail-on-due only",
+          ),
+        );
+      }
       const context = yield* openMetadataProject(values);
-      onExitCode(yield* rotationListOp(context));
+      onExitCode(
+        yield* rotationListOp(context, {
+          failOnDue: values["fail-on-due"],
+          dueWithinDays: dueWithin,
+          failOnFlags: values["fail-on-flags"],
+        }),
+      );
     }),
-  ).pipe(Command.withDescription("List the currently active rotation flags"));
+  ).pipe(
+    Command.withDescription(
+      "List the currently active rotation flags and the values past their max age (--fail-on-due / --fail-on-flags make a CI cron out of it)",
+    ),
+  );
 
   const rotationDismiss = Command.make("dismiss", rotationDismissConfig, (values) =>
     Effect.gen(function* () {
@@ -4058,9 +4264,81 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   // non-secret metadata, and the name resolution is only reading verified
   // statements — the same keyless class as project verify). dismiss's
   // authority (admin or above × admin scope) is enforced server-side
+  const rotationProposals = Command.make(
+    "proposals",
+    rotationProposalsConfig,
+    (values): Effect.Effect<void, CliError, CliServices> =>
+      Effect.gen(function* () {
+        const environmentId = values.env;
+        if (environmentId !== undefined && !isEnvironmentId(environmentId)) {
+          return yield* Effect.fail(usageError(ENV_FLAG_SHAPE_MESSAGE));
+        }
+        const context = yield* openMetadataProject(values);
+        yield* rotationProposalsOp(context, { environmentId });
+      }),
+  ).pipe(
+    Command.withDescription(
+      "List the sealed proposals CI jobs minted and nobody has accepted or rejected yet (no value is opened)",
+    ),
+  );
+
+  const rotationAccept = Command.make(
+    "accept",
+    rotationAcceptConfig,
+    (values): Effect.Effect<void, CliError, CliServices> =>
+      Effect.gen(function* () {
+        const io = yield* CliIo;
+        // The proposal decides the environment: it is looked up through a
+        // keyless project context first, then the environment context (the
+        // device key) is opened for its environment
+        const lookup = yield* openMetadataProject(values);
+        const proposal = yield* findProposal(
+          yield* fetchRotationProposals(lookup.client, lookup.projectId),
+          values.id,
+        );
+        const context = yield* openEnvironment({ ...values, env: proposal.environmentId });
+        const result = yield* rotationAcceptOp({ context, proposal, yes: values.yes });
+        yield* logRotationWarnings(result.warnings);
+        for (const line of describeAcceptance(result, context.environmentId)) {
+          yield* io.log(line);
+        }
+        yield* proposeCheckpointRefresh(context, { includeAnchor: true });
+      }),
+  ).pipe(
+    Command.withDescription(
+      "Open the sealed values a CI job proposed to this device and push them as new versions signed by you (the previous credential stays valid until --finalize). Never displays a value",
+    ),
+  );
+
+  const rotationReject = Command.make(
+    "reject",
+    rotationRejectConfig,
+    (values): Effect.Effect<void, CliError, CliServices> =>
+      Effect.gen(function* () {
+        const context = yield* openMetadataProject(values);
+        const proposal = yield* findProposal(
+          yield* fetchRotationProposals(context.client, context.projectId),
+          values.id,
+        );
+        yield* rotationRejectOp({ context, proposal });
+      }),
+  ).pipe(
+    Command.withDescription(
+      "Drop a sealed proposal without pushing it (the credential the job created at the issuer is named so you can retire it)",
+    ),
+  );
+
   const rotation = Command.make("rotation").pipe(
-    Command.withDescription("Manage rotation flags (list / dismiss)"),
-    Command.withSubcommands([rotationList, rotationDismiss]),
+    Command.withDescription(
+      "Manage rotation flags and sealed proposals (list / dismiss / proposals / accept / reject)",
+    ),
+    Command.withSubcommands([
+      rotationList,
+      rotationDismiss,
+      rotationProposals,
+      rotationAccept,
+      rotationReject,
+    ]),
   );
 
   /**
@@ -4651,9 +4929,15 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  const ciRotate = Command.make("rotate", ciRotateConfig, (values) => ciRotateCommand(values)).pipe(
+    Command.withDescription(
+      "Lease the environment via OIDC, create a new credential at the issuer through the rule's connector, and store it as a sealed proposal for a member to accept (no signing key in CI). Never displays a value",
+    ),
+  );
+
   const ci = Command.make("ci").pipe(
-    Command.withDescription("Commands for CI jobs (run / sync)"),
-    Command.withSubcommands([ciRun, ciSync]),
+    Command.withDescription("Commands for CI jobs (run / sync / rotate)"),
+    Command.withSubcommands([ciRun, ciSync, ciRotate]),
   );
 
   const configGet = Command.make("get", configGetConfig, (values) =>
@@ -5031,7 +5315,11 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         configPath: rotateConfigPath,
         name: values.name,
         yes: values.yes,
-        deps: rotateDeps(yield* RotateSeams, yield* SqlRunner),
+        deps: rotateDeps(
+          yield* RotateSeams,
+          yield* SqlRunner,
+          (yield* ProcessRunner).captureScript,
+        ),
       };
       if (values.finalize) {
         return yield* runVarFinalize({ ...shared, previousVersion: values.previous ?? null });

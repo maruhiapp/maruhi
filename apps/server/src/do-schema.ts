@@ -365,6 +365,45 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       sql.exec("ALTER TABLE variable_meta_statements ADD COLUMN max_age_days TEXT");
     },
   },
+  // Step 3 (2026-10-02 — PF7b sealed value proposals, CRYPTO_SPEC §5.3 /
+  // AUTH_SPEC §14-5): a proposal minted by a leased workload, its
+  // variables (the version each replaces) and its sealed values (one row
+  // per recipient device). Rows are deleted on resolution and on expiry
+  // (the audit log keeps the history — rotation.proposed /
+  // rotation.proposal_accepted / rotation.proposal_rejected). facts_json
+  // is the connector's non-secret facts as a JSON array of strings;
+  // nothing in these tables is decryptable by the server
+  {
+    tables: ["rotation_proposals", "rotation_proposal_variables", "rotation_proposal_wraps"],
+    apply(sql) {
+      sql.exec(`CREATE TABLE rotation_proposals (
+         proposal_id TEXT PRIMARY KEY,
+         environment_id TEXT NOT NULL,
+         connector TEXT NOT NULL,
+         facts_json TEXT NOT NULL,
+         claims_digest_hex TEXT NOT NULL,
+         grant_chain_seq INTEGER NOT NULL,
+         created_at INTEGER NOT NULL,
+         expires_at INTEGER NOT NULL
+       )`);
+      sql.exec(`CREATE TABLE rotation_proposal_variables (
+         proposal_id TEXT NOT NULL,
+         variable_id TEXT NOT NULL,
+         base_version INTEGER NOT NULL,
+         position INTEGER NOT NULL,
+         PRIMARY KEY (proposal_id, variable_id)
+       )`);
+      sql.exec(`CREATE TABLE rotation_proposal_wraps (
+         proposal_id TEXT NOT NULL,
+         variable_id TEXT NOT NULL,
+         recipient_user_id TEXT NOT NULL,
+         recipient_enc_pub_hex TEXT NOT NULL,
+         enc_hex TEXT NOT NULL,
+         ciphertext_hex TEXT NOT NULL,
+         PRIMARY KEY (proposal_id, variable_id, recipient_user_id, recipient_enc_pub_hex)
+       )`);
+    },
+  },
 ];
 
 /**

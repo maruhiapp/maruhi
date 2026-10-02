@@ -49,6 +49,28 @@ export interface ExecOutcome {
   readonly output: string;
 }
 
+/**
+ * One script of the `exec` rotation connector (rotate-connector.ts — PF8).
+ * Unlike {@link ExecInput}, `extraEnv` **does** carry secrets: the current
+ * credential, its companions and the admin inputs ride into the child's
+ * environment by memory injection — the `maruhi run` shape, restricted to
+ * the rule's variables. stdin is closed; stdout is the script's answer
+ * (the new credential) and comes back as bytes; stderr is the script's
+ * commentary and is shown only after scrubbing, only on failure.
+ */
+export interface CaptureInput {
+  readonly command: readonly string[];
+  readonly cwd: string;
+  readonly extraEnv: Readonly<Record<string, string>>;
+}
+
+/** Outcome of one captured script (stdout as bytes — it is the credential, never decoded here). */
+export interface CaptureOutcome {
+  readonly exitCode: number;
+  readonly stdout: Uint8Array;
+  readonly stderr: string;
+}
+
 /** The input of {@link ProcessRunnerShape.run}. */
 export interface RunInput {
   readonly command: readonly string[];
@@ -81,6 +103,15 @@ export interface ProcessRunnerShape {
    * started (not installed / not on PATH) — never by fetching it.
    */
   readonly exec: (input: ExecInput) => Effect.Effect<ExecOutcome, CliError>;
+  /**
+   * Runs a script of the `exec` rotation connector with secrets in its
+   * environment and its stdout captured as bytes (rotate-connector.ts —
+   * PF8). Promise-shaped like the connectors' other seams (`SqlRunner`):
+   * the connector frame lives in Promise land. A launch failure (not
+   * found, cwd missing) rejects with a message that names only the
+   * executable and the directory.
+   */
+  readonly captureScript: (input: CaptureInput) => Promise<CaptureOutcome>;
   /**
    * Runs the command of a `maruhi agent` session (agent.ts): stdio inherited,
    * the parent's environment passed through **unfiltered** plus `env`.
@@ -267,7 +298,8 @@ const DENIED_ENV_NAMES = new Set([
 // invoked
 const DENIED_ENV_PREFIXES = ["LD_", "DYLD_", "GIT_", "CORECLR_", "COR_", MARUHI_ENV_PREFIX];
 
-function isDeniedEnvName(name: string): boolean {
+/** Whether `name` is an execution-control environment variable (the denylist above, upper-cased). */
+export function isDeniedEnvName(name: string): boolean {
   const upper = name.toUpperCase();
   return DENIED_ENV_NAMES.has(upper) || DENIED_ENV_PREFIXES.some((p) => upper.startsWith(p));
 }
@@ -308,7 +340,7 @@ export function buildChildEnvironment(
 // (structurally blocks injection paths containing special characters
 // like bash function-import names. The denylist covers the
 // execution-control names inside the identifier space)
-const SAFE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const SAFE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
  * Builds the env-var map to inject: variable display names become env names.

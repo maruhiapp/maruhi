@@ -680,6 +680,165 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
   });
 });
 
+describe("maruhi var rotate (exec — a script of the repository, PF8)", () => {
+  const EXEC_CONFIG = {
+    version: 1,
+    variables: {
+      STRIPE_SECRET_KEY: {
+        connector: "exec",
+        rotate: ["./rotate.sh"],
+        finalize: ["./finalize.sh"],
+        inputs: { STRIPE_ADMIN_KEY: { environment: OPS_ID, name: "STRIPE_ADMIN_KEY" } },
+      },
+    },
+  };
+  const encode = (text: string) => new TextEncoder().encode(text);
+
+  it("runs the rotate script with the credential and the admin input in its environment, pushes its stdout as the new version, and finalize hands it the previous credential", async () => {
+    const { env, prod, ops, configPath } = await startEnv({
+      prod: [{ variableId: "v-stripe", name: "STRIPE_SECRET_KEY", plaintexts: ["sk_live_old"] }],
+      ops: [{ variableId: "v-admin", name: "STRIPE_ADMIN_KEY", plaintexts: ["rk_admin"] }],
+      config: EXEC_CONFIG,
+    });
+    env.setCaptureHandler((call) => ({
+      exitCode: 0,
+      stdout: encode(call.extraEnv["MH_ROTATE_PHASE"] === "rotate" ? "sk_live_new\n" : "done\n"),
+      stderr: "talking to stripe with rk_admin\n",
+    }));
+    expect(
+      await runCli(
+        ["var", "rotate", "STRIPE_SECRET_KEY", "--rotate-config", configPath],
+        env.layer,
+      ),
+    ).toBe(0);
+    expect(env.captureCalls).toHaveLength(1);
+    const rotate = env.captureCalls[0];
+    expect(rotate?.command).toEqual(["./rotate.sh"]);
+    // The scripts run from the config's directory (they travel with the repository)
+    expect(rotate?.cwd).toBe(configPath.slice(0, configPath.lastIndexOf("/")));
+    expect(rotate?.extraEnv).toEqual({
+      MH_ROTATE_VARIABLE: "STRIPE_SECRET_KEY",
+      MH_ROTATE_ENVIRONMENT: ENV_ID,
+      MH_ROTATE_PHASE: "rotate",
+      MH_ROTATE_CURRENT: "sk_live_old",
+      STRIPE_SECRET_KEY: "sk_live_old",
+      STRIPE_ADMIN_KEY: "rk_admin",
+    });
+    // The script's stdout became version 2 (an ordinary signed push)
+    const latest = await decryptLatest(prod, dekProd, "v-stripe");
+    expect(latest).toEqual({ plaintext: "sk_live_new", version: 2 });
+    expect(ops?.writes).toEqual([]);
+    const output = [...env.logs, ...env.errors].join("\n");
+    expect(output).toContain(
+      "Rotated STRIPE_SECRET_KEY in environment prod with the exec connector (STRIPE_SECRET_KEY version=2, epoch=1)",
+    );
+    expect(output).toContain("./rotate.sh: new credential produced");
+    expect(output).toContain(
+      "Previous credential: the previous credential stays valid until you finalize (./finalize.sh runs with it)",
+    );
+    expect(output).toContain("`maruhi var rotate STRIPE_SECRET_KEY --finalize`");
+    // Nothing the script saw or printed on stderr reaches the output on success
+    expect(output).not.toContain("sk_live_old");
+    expect(output).not.toContain("sk_live_new");
+    expect(output).not.toContain("rk_admin");
+
+    env.logs.length = 0;
+    env.errors.length = 0;
+    expect(
+      await runCli(
+        [
+          "var",
+          "rotate",
+          "STRIPE_SECRET_KEY",
+          "--finalize",
+          "--yes",
+          "--rotate-config",
+          configPath,
+        ],
+        env.layer,
+      ),
+    ).toBe(0);
+    expect(env.captureCalls).toHaveLength(2);
+    const finalize = env.captureCalls[1];
+    expect(finalize?.command).toEqual(["./finalize.sh"]);
+    expect(finalize?.extraEnv).toEqual({
+      MH_ROTATE_VARIABLE: "STRIPE_SECRET_KEY",
+      MH_ROTATE_ENVIRONMENT: ENV_ID,
+      MH_ROTATE_PHASE: "finalize",
+      MH_ROTATE_CURRENT: "sk_live_new",
+      MH_ROTATE_PREVIOUS: "sk_live_old",
+      STRIPE_SECRET_KEY: "sk_live_new",
+      STRIPE_ADMIN_KEY: "rk_admin",
+    });
+    const finalized = [...env.logs, ...env.errors].join("\n");
+    expect(finalized).toContain(
+      "Finalized the rotation of STRIPE_SECRET_KEY in environment prod (exec): the credential of version 1 is invalidated; version 2 stays current",
+    );
+    expect(finalized).toContain("./finalize.sh: previous credential retired (done)");
+    expect(finalized).not.toContain("sk_live_old");
+  });
+
+  it("a failing script stops the rotation before any push, with its stderr scrubbed; a rule without a finalize script asks first", async () => {
+    const { env, prod, configPath } = await startEnv({
+      prod: [{ variableId: "v-stripe", name: "STRIPE_SECRET_KEY", plaintexts: ["sk_live_old"] }],
+      ops: [{ variableId: "v-admin", name: "STRIPE_ADMIN_KEY", plaintexts: ["rk_admin"] }],
+      config: EXEC_CONFIG,
+    });
+    env.setCaptureHandler(() => ({
+      exitCode: 2,
+      stdout: new Uint8Array(0),
+      stderr: "stripe refused rk_admin for sk_live_old\n",
+    }));
+    expect(
+      await runCli(
+        ["var", "rotate", "STRIPE_SECRET_KEY", "--rotate-config", configPath],
+        env.layer,
+      ),
+    ).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "exec: the rotate script ./rotate.sh exited with code 2 (its stderr, filtered: stripe refused [redacted] for [redacted])",
+    );
+    expect(prod.writes).toEqual([]);
+
+    const immediate = await startEnv({
+      prod: [{ variableId: "v-stripe", name: "STRIPE_SECRET_KEY", plaintexts: ["sk_live_old"] }],
+      config: {
+        version: 1,
+        variables: { STRIPE_SECRET_KEY: { connector: "exec", rotate: ["./rotate.sh"] } },
+      },
+    });
+    immediate.env.setCaptureHandler(() => ({
+      exitCode: 0,
+      stdout: encode("sk_live_new"),
+      stderr: "",
+    }));
+    immediate.env.setTerminal({ stdin: false, stdout: false });
+    expect(
+      await runCli(
+        ["var", "rotate", "STRIPE_SECRET_KEY", "--rotate-config", immediate.configPath],
+        immediate.env.layer,
+      ),
+    ).toBe(1);
+    expect(immediate.env.errors.join("\n")).toContain(
+      "this rule's rotation invalidates the current credential at once (run ./rotate.sh — the rule has no finalize script",
+    );
+    expect(immediate.env.captureCalls).toEqual([]);
+    expect(
+      await runCli(
+        ["var", "rotate", "STRIPE_SECRET_KEY", "--yes", "--rotate-config", immediate.configPath],
+        immediate.env.layer,
+      ),
+    ).toBe(0);
+    expect(immediate.env.captureCalls).toHaveLength(1);
+    expect((await decryptLatest(immediate.prod, dekProd, "v-stripe")).plaintext).toBe(
+      "sk_live_new",
+    );
+    expect([...immediate.env.logs, ...immediate.env.errors].join("\n")).toContain(
+      "Previous credential: the rotate script was expected to retire the previous credential itself (nothing to finalize)",
+    );
+  });
+});
+
 describe("maruhi var rotate refusals (before anything is sent)", () => {
   it("a variable without a rule, a missing value, and a config of another project", async () => {
     const { env, configPath } = await startEnv({

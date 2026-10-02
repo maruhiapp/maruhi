@@ -146,6 +146,10 @@ export const SECURITY_CRITICAL_PAYLOAD_ENDPOINTS: ReadonlyArray<
   ["devices", "register"],
   ["devices", "requestCreate"],
   ["lease", "issue"],
+  // sealed value proposals (§14-5 — PF7b): the mint carries ciphertexts
+  // of credentials and the resolution names the versions a member pushed
+  ["lease", "propose"],
+  ["rotation", "resolveProposal"],
   ["invites", "issue"],
   ["invites", "accept"],
 ];

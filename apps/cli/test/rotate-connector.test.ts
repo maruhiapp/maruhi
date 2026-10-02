@@ -18,6 +18,7 @@ import type { RotateRule } from "../src/rotate-config.ts";
 import {
   ConnectorError,
   type CredentialValues,
+  describeFinalize,
   finalizeCredential,
   generatePassword,
   planRotation,
@@ -25,6 +26,7 @@ import {
   rotateCredential,
   type SqlRunnerShape,
 } from "../src/rotate-connector.ts";
+import type { CaptureInput, CaptureOutcome } from "../src/run.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -79,7 +81,13 @@ function recordingSql(
   return { executed, probed, sql };
 }
 
-function deps(input: { fetch?: typeof fetch; sql?: SqlRunnerShape } = {}): RotateDeps {
+function deps(
+  input: {
+    fetch?: typeof fetch;
+    sql?: SqlRunnerShape;
+    exec?: (input: CaptureInput) => Promise<CaptureOutcome>;
+  } = {},
+): RotateDeps {
   let counter = 0;
   return {
     fetch:
@@ -89,6 +97,7 @@ function deps(input: { fetch?: typeof fetch; sql?: SqlRunnerShape } = {}): Rotat
     // Deterministic bytes: every password is "AAAA…" shifted by a counter
     randomBytes: (length) => new Uint8Array(length).fill(((counter += 1) % 26) as number),
     sql: input.sql ?? recordingSql().sql,
+    exec: input.exec ?? (() => Promise.reject(new Error("no script runner in this test"))),
     awsIamBase: "https://iam.test",
     awsStsBase: "https://sts.test",
     cloudflareBase: "https://cf.test",
@@ -659,5 +668,301 @@ describe("cloudflare-api-token connector", () => {
     expect(
       (await finalizeCredential(rule, previous, now, {}, deps({ fetch: gone.fetch }))).kind,
     ).toBe("already");
+  });
+});
+
+describe("exec connector (a script of the repository — PF8)", () => {
+  const SITE = { variable: "STRIPE_SECRET_KEY", environmentId: "prod" };
+  const withFinalize: RotateRule = {
+    connector: "exec",
+    rotate: ["./rotate.sh", "--live"],
+    finalize: ["./finalize.sh"],
+    cwd: "/repo/ops",
+    output: "value",
+    companions: {},
+    inputs: { STRIPE_ADMIN_KEY: { environment: "ops", name: "STRIPE_ADMIN_KEY" } },
+  };
+  const noFinalize: RotateRule = { ...withFinalize, finalize: null, inputs: {} };
+  const jsonRule: RotateRule = {
+    ...withFinalize,
+    output: "json",
+    companions: { STRIPE_KEY_ID: "STRIPE_KEY_ID" },
+  };
+  const current = credential("sk_live_old");
+
+  /** A fake script runner: records what the child would have seen and answers as told. */
+  function fakeScript(answer: (call: CaptureInput, index: number) => CaptureOutcome) {
+    const calls: CaptureInput[] = [];
+    const exec = (call: CaptureInput) => {
+      calls.push(call);
+      return Promise.resolve(answer(call, calls.length - 1));
+    };
+    return { calls, exec };
+  }
+
+  const ok = (stdout: string, stderr = ""): CaptureOutcome => ({
+    exitCode: 0,
+    stdout: enc.encode(stdout),
+    stderr,
+  });
+
+  it("runs the rotate script with the credential, the inputs, and the control variables in its environment, and reads the new value from stdout", async () => {
+    const script = fakeScript(() => ok("sk_live_new\n", "creating key at stripe\n"));
+    const outcome = await rotateCredential(
+      withFinalize,
+      current,
+      { STRIPE_ADMIN_KEY: enc.encode("rk_admin") },
+      deps({ exec: script.exec }),
+      SITE,
+    );
+    expect(script.calls).toHaveLength(1);
+    expect(script.calls[0]?.command).toEqual(["./rotate.sh", "--live"]);
+    expect(script.calls[0]?.cwd).toBe("/repo/ops");
+    expect(script.calls[0]?.extraEnv).toEqual({
+      MH_ROTATE_VARIABLE: "STRIPE_SECRET_KEY",
+      MH_ROTATE_ENVIRONMENT: "prod",
+      MH_ROTATE_PHASE: "rotate",
+      MH_ROTATE_CURRENT: "sk_live_old",
+      STRIPE_SECRET_KEY: "sk_live_old",
+      STRIPE_ADMIN_KEY: "rk_admin",
+    });
+    // One trailing newline is dropped, nothing else is touched
+    expect(dec.decode(outcome.values.primary)).toBe("sk_live_new");
+    expect(outcome.values.companions).toEqual({});
+    expect(outcome.facts).toEqual(["./rotate.sh: new credential produced"]);
+    expect(outcome.previous).toContain(
+      "stays valid until you finalize (./finalize.sh runs with it)",
+    );
+    expect(planRotation(withFinalize, current).immediate).toBe(false);
+    expect(planRotation(withFinalize, current).description).toContain(
+      "run ./rotate.sh to create the new credential",
+    );
+  });
+
+  it("without a finalize script the rotation is immediate (no grace) and finalize has nothing to do", async () => {
+    const script = fakeScript(() => ok("sk_live_new"));
+    expect(planRotation(noFinalize, current).immediate).toBe(true);
+    expect(planRotation(noFinalize, current).description).toContain("no finalize script");
+    const outcome = await rotateCredential(
+      noFinalize,
+      current,
+      {},
+      deps({ exec: script.exec }),
+      SITE,
+    );
+    expect(outcome.previous).toContain("nothing to finalize");
+    expect(describeFinalize(noFinalize)).toContain("nothing to invalidate");
+    const finalized = await finalizeCredential(
+      noFinalize,
+      current,
+      outcome.values,
+      {},
+      deps(),
+      {},
+      SITE,
+    );
+    expect(finalized.kind).toBe("nothing");
+  });
+
+  it("finalize runs the finalize script with the previous credential as MH_ROTATE_PREVIOUS and the current one under the variable's name", async () => {
+    const script = fakeScript(() => ok("deleted key sk_live_old at stripe\n"));
+    const previous = credential("sk_live_old");
+    const now = credential("sk_live_new");
+    const outcome = await finalizeCredential(
+      withFinalize,
+      previous,
+      now,
+      { STRIPE_ADMIN_KEY: enc.encode("rk_admin") },
+      deps({ exec: script.exec }),
+      {},
+      SITE,
+    );
+    expect(outcome.kind).toBe("finalized");
+    expect(script.calls[0]?.command).toEqual(["./finalize.sh"]);
+    expect(script.calls[0]?.extraEnv).toEqual({
+      MH_ROTATE_VARIABLE: "STRIPE_SECRET_KEY",
+      MH_ROTATE_ENVIRONMENT: "prod",
+      MH_ROTATE_PHASE: "finalize",
+      MH_ROTATE_CURRENT: "sk_live_new",
+      MH_ROTATE_PREVIOUS: "sk_live_old",
+      STRIPE_SECRET_KEY: "sk_live_new",
+      STRIPE_ADMIN_KEY: "rk_admin",
+    });
+    // The script's words are kept as facts, scrubbed of every credential it could echo
+    expect(outcome.facts).toEqual([
+      "./finalize.sh: previous credential retired (deleted key [redacted] at stripe)",
+    ]);
+    expect(describeFinalize(withFinalize)).toBe(
+      "run ./finalize.sh with the previous credential in its environment (MH_ROTATE_PREVIOUS)",
+    );
+  });
+
+  it("a JSON answer carries companions and facts; every declared companion is required and nothing undeclared is taken", async () => {
+    const script = fakeScript(() =>
+      ok(
+        JSON.stringify({
+          value: "sk_live_new",
+          companions: { STRIPE_KEY_ID: "key_123" },
+          facts: ["created key key_123 (value sk_live_new)"],
+        }),
+      ),
+    );
+    const outcome = await rotateCredential(
+      jsonRule,
+      current,
+      {},
+      deps({ exec: script.exec }),
+      SITE,
+    );
+    expect(dec.decode(outcome.values.primary)).toBe("sk_live_new");
+    expect(dec.decode(outcome.values.companions["STRIPE_KEY_ID"] ?? new Uint8Array())).toBe(
+      "key_123",
+    );
+    // The new value is scrubbed out of the script's facts
+    expect(outcome.facts).toEqual([
+      "./rotate.sh: new credential produced (created key [redacted] (value [redacted]))",
+    ]);
+    const missing = fakeScript(() => ok(JSON.stringify({ value: "x" })));
+    await expect(
+      rotateCredential(jsonRule, current, {}, deps({ exec: missing.exec }), SITE),
+    ).rejects.toThrow("lacks the companion STRIPE_KEY_ID the rule declares");
+    const extra = fakeScript(() =>
+      ok(JSON.stringify({ value: "x", companions: { STRIPE_KEY_ID: "k", OTHER: "o" } })),
+    );
+    await expect(
+      rotateCredential(jsonRule, current, {}, deps({ exec: extra.exec }), SITE),
+    ).rejects.toThrow(
+      "answered a companion the rule does not declare (the rule declares STRIPE_KEY_ID)",
+    );
+    const notJson = fakeScript(() => ok("sk_live_new"));
+    await expect(
+      rotateCredential(jsonRule, current, {}, deps({ exec: notJson.exec }), SITE),
+    ).rejects.toThrow("did not print a JSON object on stdout");
+    const unknownKey = fakeScript(() =>
+      ok(JSON.stringify({ value: "x", companions: { STRIPE_KEY_ID: "k" }, note: 1 })),
+    );
+    await expect(
+      rotateCredential(jsonRule, current, {}, deps({ exec: unknownKey.exec }), SITE),
+    ).rejects.toThrow("has 1 unknown key; it takes value, companions, facts");
+    // The script's words (an unknown key, an undeclared companion name) never reach the message
+    const leaky = fakeScript(() =>
+      ok(JSON.stringify({ value: "x", companions: { STRIPE_KEY_ID: "k", sk_live_leak: "o" } })),
+    );
+    const leakyError = await rotateCredential(
+      jsonRule,
+      current,
+      {},
+      deps({ exec: leaky.exec }),
+      SITE,
+    ).catch((e: unknown) => e);
+    expect((leakyError as Error).message).not.toContain("sk_live_leak");
+    // A produced value must be text a process environment can carry
+    const nul = fakeScript(() =>
+      ok(JSON.stringify({ value: "a\u0000b", companions: { STRIPE_KEY_ID: "k" } })),
+    );
+    await expect(
+      rotateCredential(jsonRule, current, {}, deps({ exec: nul.exec }), SITE),
+    ).rejects.toThrow("the value in the rotate script's JSON answer is not UTF-8 text without NUL");
+    const nulCompanion = fakeScript(() =>
+      ok(JSON.stringify({ value: "v", companions: { STRIPE_KEY_ID: "k\u0000" } })),
+    );
+    await expect(
+      rotateCredential(jsonRule, current, {}, deps({ exec: nulCompanion.exec }), SITE),
+    ).rejects.toThrow(
+      "the companion STRIPE_KEY_ID in the rotate script's answer is not UTF-8 text without NUL",
+    );
+  });
+
+  it("a plain answer drops one CRLF or LF, refuses bytes that are not text, and a failing finalize script is reported like a failing rotate script", async () => {
+    const crlf = fakeScript(() => ok("sk_live_new\r\n"));
+    const outcome = await rotateCredential(
+      withFinalize,
+      current,
+      {},
+      deps({ exec: crlf.exec }),
+      SITE,
+    );
+    expect(dec.decode(outcome.values.primary)).toBe("sk_live_new");
+    const twoNewlines = fakeScript(() => ok("sk_live_new\n\n"));
+    const kept = await rotateCredential(
+      withFinalize,
+      current,
+      {},
+      deps({ exec: twoNewlines.exec }),
+      SITE,
+    );
+    expect(dec.decode(kept.values.primary)).toBe("sk_live_new\n");
+    const binary = fakeScript((): CaptureOutcome => ({
+      exitCode: 0,
+      stdout: new Uint8Array([0xff, 0xfe, 0x0a]),
+      stderr: "",
+    }));
+    await expect(
+      rotateCredential(withFinalize, current, {}, deps({ exec: binary.exec }), SITE),
+    ).rejects.toThrow(
+      "the value the rotate script printed on stdout is not UTF-8 text without NUL",
+    );
+    // finalize: the exit code and the scrubbed stderr, the previous credential never shown
+    const failing = fakeScript(() => ({
+      exitCode: 5,
+      stdout: new Uint8Array(0),
+      stderr: "cannot delete sk_live_old\n",
+    }));
+    const error = await finalizeCredential(
+      withFinalize,
+      credential("sk_live_old"),
+      credential("sk_live_new"),
+      {},
+      deps({ exec: failing.exec }),
+      {},
+      SITE,
+    ).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ConnectorError);
+    expect((error as Error).message).toBe(
+      "exec: the finalize script ./finalize.sh exited with code 5 (its stderr, filtered: cannot delete [redacted])",
+    );
+  });
+
+  it("a failing script names the script and its exit code with the stderr scrubbed of every secret; an empty answer and a script that cannot start are refused", async () => {
+    const failing = fakeScript(() => ({
+      exitCode: 7,
+      stdout: new Uint8Array(0),
+      stderr: "stripe said no for sk_live_old with rk_admin\n",
+    }));
+    const error = await rotateCredential(
+      withFinalize,
+      current,
+      { STRIPE_ADMIN_KEY: enc.encode("rk_admin") },
+      deps({ exec: failing.exec }),
+      SITE,
+    ).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ConnectorError);
+    expect((error as Error).message).toBe(
+      "exec: the rotate script ./rotate.sh exited with code 7 (its stderr, filtered: stripe said no for [redacted] with [redacted])",
+    );
+    const empty = fakeScript(() => ok("\n"));
+    await expect(
+      rotateCredential(withFinalize, current, {}, deps({ exec: empty.exec }), SITE),
+    ).rejects.toThrow("printed no value on stdout");
+    const absent = deps({
+      exec: () => Promise.reject(new Error("cannot start ./rotate.sh (ENOENT)")),
+    });
+    await expect(rotateCredential(withFinalize, current, {}, absent, SITE)).rejects.toThrow(
+      "the rotate script ./rotate.sh did not start: cannot start ./rotate.sh (ENOENT)",
+    );
+    // A credential that is not text cannot ride in an environment variable
+    await expect(
+      rotateCredential(
+        withFinalize,
+        { primary: new Uint8Array([0xff, 0xfe]), companions: {} },
+        {},
+        deps(),
+        SITE,
+      ),
+    ).rejects.toThrow("the value of STRIPE_SECRET_KEY is not a UTF-8 text without NUL");
+    // The site is required for this connector (an internal inconsistency, not a user error)
+    await expect(rotateCredential(withFinalize, current, {}, deps())).rejects.toThrow(
+      "the rotation site (variable and environment) was not supplied",
+    );
   });
 });

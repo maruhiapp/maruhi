@@ -16,7 +16,7 @@ SUBCOMMANDS
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). When maruhi.proxy.json is present its brokering rules apply (as `maruhi proxy run`); --plain injects the real values instead, for a person at a terminal. Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
   agent       Hold the token and this device's key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
-  ci          Commands for CI jobs (run / sync)
+  ci          Commands for CI jobs (run / sync / rotate)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
@@ -27,7 +27,7 @@ SUBCOMMANDS
   token       Manage your API tokens (list / revoke)
   guardian    Manage guardians for reserve-key recovery (add / approve / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint / policy)
-  rotation    Manage rotation flags (list / dismiss)
+  rotation    Manage rotation flags and sealed proposals (list / dismiss / proposals / accept / reject)
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
@@ -54,7 +54,7 @@ SUBCOMMANDS
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). When maruhi.proxy.json is present its brokering rules apply (as `maruhi proxy run`); --plain injects the real values instead, for a person at a terminal. Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
   agent       Hold the token and this device's key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
-  ci          Commands for CI jobs (run / sync)
+  ci          Commands for CI jobs (run / sync / rotate)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
   invite      Manage invites (create / accept / list / revoke)
@@ -65,7 +65,7 @@ SUBCOMMANDS
   token       Manage your API tokens (list / revoke)
   guardian    Manage guardians for reserve-key recovery (add / approve / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint / policy)
-  rotation    Manage rotation flags (list / dismiss)
+  rotation    Manage rotation flags and sealed proposals (list / dismiss / proposals / accept / reject)
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
@@ -1130,7 +1130,7 @@ GLOBAL FLAGS
 
 $ maruhi ci --help
 DESCRIPTION
-  Commands for CI jobs (run / sync)
+  Commands for CI jobs (run / sync / rotate)
 
 USAGE
   maruhi ci <subcommand> [flags]
@@ -1140,8 +1140,9 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  run     Lease the environment via OIDC (no sign-in, no keychain), verify it, and run a command with the values injected. Write the command after `--`
-  sync    Lease the target's environment via OIDC (no sign-in, no keychain) and write every selected variable to the deploy target through its driver. Keeps no receipt and deletes nothing; a production target needs --yes
+  run       Lease the environment via OIDC (no sign-in, no keychain), verify it, and run a command with the values injected. Write the command after `--`
+  sync      Lease the target's environment via OIDC (no sign-in, no keychain) and write every selected variable to the deploy target through its driver. Keeps no receipt and deletes nothing; a production target needs --yes
+  rotate    Lease the environment via OIDC, create a new credential at the issuer through the rule's connector, and store it as a sealed proposal for a member to accept (no signing key in CI). Never displays a value
 
 $ maruhi ci run --help
 DESCRIPTION
@@ -1219,7 +1220,7 @@ GLOBAL FLAGS
 
 $ maruhi rotation --help
 DESCRIPTION
-  Manage rotation flags (list / dismiss)
+  Manage rotation flags and sealed proposals (list / dismiss / proposals / accept / reject)
 
 USAGE
   maruhi rotation <subcommand> [flags]
@@ -1229,19 +1230,25 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  list       List the currently active rotation flags
-  dismiss    Dismiss rotation flags without rotating (an explicit acceptance of risk; admin only)
+  list         List the currently active rotation flags and the values past their max age (--fail-on-due / --fail-on-flags make a CI cron out of it)
+  dismiss      Dismiss rotation flags without rotating (an explicit acceptance of risk; admin only)
+  proposals    List the sealed proposals CI jobs minted and nobody has accepted or rejected yet (no value is opened)
+  accept       Open the sealed values a CI job proposed to this device and push them as new versions signed by you (the previous credential stays valid until --finalize). Never displays a value
+  reject       Drop a sealed proposal without pushing it (the credential the job created at the issuer is named so you can retire it)
 
 $ maruhi rotation list --help
 DESCRIPTION
-  List the currently active rotation flags
+  List the currently active rotation flags and the values past their max age (--fail-on-due / --fail-on-flags make a CI cron out of it)
 
 USAGE
   maruhi rotation list [flags]
 
 FLAGS
-  --server string     Server URL (defaults to config server)
-  --project string    Project ID (default: the `defaultProject` setting)
+  --server string         Server URL (defaults to config server)
+  --project string        Project ID (default: the `defaultProject` setting)
+  --fail-on-due           Exit with code 3 when a value is past the max age its schema declares (a CI cron turns it into a failed build or an issue; see also --due-within)
+  --due-within integer    With --fail-on-due: also fail when a value comes due within this many days (default 0 = only values already past their max age)
+  --fail-on-flags         Exit with code 3 while any rotation flag is active (a credential a departed party could read has not been rotated or dismissed)
 
 GLOBAL FLAGS
   --help, -h       Show help information

@@ -67,12 +67,17 @@ export class RotateSeams extends Context.Reference<RotateSeamsShape | null>("cli
 }) {}
 
 /** The connector dependencies of one run: production defaults overridden by the test seams. */
-export function rotateDeps(seams: RotateSeamsShape | null, sql: RotateDeps["sql"]): RotateDeps {
+export function rotateDeps(
+  seams: RotateSeamsShape | null,
+  sql: RotateDeps["sql"],
+  exec: RotateDeps["exec"],
+): RotateDeps {
   return {
     fetch: seams?.fetch ?? globalThis.fetch,
     now: seams?.now ?? (() => Date.now()),
     randomBytes: seams?.randomBytes ?? ((length) => crypto.getRandomValues(new Uint8Array(length))),
     sql,
+    exec,
     awsIamBase: seams?.awsIamBase,
     awsStsBase: seams?.awsStsBase,
     cloudflareBase: seams?.cloudflareBase,
@@ -275,7 +280,7 @@ function currentCredential(
   });
 }
 
-function connectorFailure(error: unknown): CliError {
+export function connectorFailure(error: unknown): CliError {
   if (error instanceof ConnectorError) {
     return cliError(error.message);
   }
@@ -283,11 +288,13 @@ function connectorFailure(error: unknown): CliError {
 }
 
 /** Confirms an invalidating step: `--yes`, or a y/N prompt at a terminal; non-interactive without --yes refuses. */
-function ensureConfirmed(input: {
+export function ensureConfirmed(input: {
   readonly facts: readonly string[];
   readonly prompt: string;
   readonly refusal: string;
   readonly yes: boolean;
+  /** What a "no" answer reports (default: nothing was sent to the issuer). */
+  readonly abort?: string | undefined;
 }): Effect.Effect<void, CliError, CliIo | Stdio.Stdio> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -303,7 +310,7 @@ function ensureConfirmed(input: {
     yield* Effect.forEach(input.facts, io.logError, { discard: true });
     const answer = yield* io.promptLine({ prompt: input.prompt });
     if (!["y", "yes"].includes(answer.trim().toLowerCase())) {
-      return yield* Effect.fail(cliError("Aborted: nothing was sent to the issuer"));
+      return yield* Effect.fail(cliError(input.abort ?? "Aborted: nothing was sent to the issuer"));
     }
   });
 }
@@ -411,8 +418,9 @@ export function varRotateOp(
         yes: input.yes,
       });
     }
+    const site = { variable: target.primary, environmentId: context.environmentId };
     const outcome = yield* Effect.tryPromise({
-      try: () => rotateCredential(target.rule, current, inputs, input.deps),
+      try: () => rotateCredential(target.rule, current, inputs, input.deps, site),
       catch: connectorFailure,
     });
     const pushed = yield* pushOutcome(context, pulled, target, outcome);
@@ -489,8 +497,10 @@ export function varFinalizeOp(
       refusal: `Refusing to finalize the rotation of ${displayText(target.primary)} in a non-interactive environment without --yes (it invalidates the previous credential at the issuer). Re-run with --yes to accept that explicitly`,
       yes: input.yes,
     });
+    const site = { variable: target.primary, environmentId: context.environmentId };
     const outcome = yield* Effect.tryPromise({
-      try: () => finalizeCredential(target.rule, previous, current, inputs, input.deps, ancestors),
+      try: () =>
+        finalizeCredential(target.rule, previous, current, inputs, input.deps, ancestors, site),
       catch: connectorFailure,
     });
     return {

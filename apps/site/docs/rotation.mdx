@@ -1,22 +1,25 @@
 ---
 title: Rotating upstream credentials
-description: Replace the credentials maruhi stores at their issuers — AWS IAM access keys, Cloudflare API tokens, PostgreSQL and MySQL passwords with one command, everything else with a runbook — keep the old credential working until the new value is deployed, then invalidate it. What to rotate after someone leaves, and when a credential never needs rotating at all.
+description: Replace the credentials maruhi stores at their issuers — AWS IAM access keys, Cloudflare API tokens, PostgreSQL and MySQL passwords with one command, any other issuer with a script of your own, everything else with a runbook — keep the old credential working until the new value is deployed, then invalidate it. What to rotate after someone leaves, how to check on a schedule, how a CI cron rotates with a member's countersignature, and when a credential never needs rotating at all.
 sidebar:
   order: 14
 ---
 
 Encryption cannot un-read a value. When a member is removed, a device is revoked, or a scope is narrowed, maruhi rotates the environment's key so the person receives nothing new — but every value they could already read is still valid at its **issuer** (the AWS account, the database, the API that minted the token). Rotation means replacing those credentials at the issuer and pushing the new values. maruhi tells you which ones, and for common issuers it does the replacement for you.
 
-Rotation is always run by a member from their own machine: the CLI decrypts the current credential and the issuer's admin credential in memory, calls the issuer, and pushes the new value signed as that member. The maruhi server never holds a plaintext, a signing key, or an issuer credential, and nothing runs on a schedule. Nothing is displayed either; the report names key ids, roles, and token ids, never a secret.
+Rotation is always signed by a member from their own machine: the CLI decrypts the current credential and the issuer's admin credential in memory, calls the issuer, and pushes the new value signed as that member — or a CI job does the issuer half under a workload lease and stores the result as a sealed proposal the member accepts. The maruhi server never holds a plaintext, a signing key, or an issuer credential, and nothing runs on a schedule inside it. Nothing is displayed either; the report names key ids, roles, and token ids, never a secret.
 
-| Task                                                        | Command                                        |
-| ----------------------------------------------------------- | ---------------------------------------------- |
-| See what should be rotated and how                          | `maruhi rotation list`                         |
-| Replace a credential at its issuer and push the new value   | `maruhi var rotate <name>`                     |
-| Invalidate the previous credential once the new one is live | `maruhi var rotate <name> --finalize`          |
-| Rotate a credential maruhi has no connector for             | the runbook below, then `maruhi push <name>`   |
-| Accept the risk for a value you cannot push (deleted)       | `maruhi rotation dismiss <variableId> --env …` |
-| Declare how long a value should live, and be reminded       | `maruhi schema set <name> --max-age <days>`    |
+| Task                                                        | Command                                                       |
+| ----------------------------------------------------------- | ------------------------------------------------------------- |
+| See what should be rotated and how                          | `maruhi rotation list`                                        |
+| Replace a credential at its issuer and push the new value   | `maruhi var rotate <name>`                                    |
+| Invalidate the previous credential once the new one is live | `maruhi var rotate <name> --finalize`                         |
+| Rotate any other credential with a script of your own       | the `exec` connector below                                    |
+| Rotate a credential by hand                                 | the runbook below, then `maruhi push <name>`                  |
+| Fail a CI job while something is due                        | `maruhi rotation list --fail-on-due`                          |
+| Rotate from a CI cron, with a member's countersignature     | `maruhi ci rotate <name>`, then `maruhi rotation accept <id>` |
+| Accept the risk for a value you cannot push (deleted)       | `maruhi rotation dismiss <variableId> --env …`                |
+| Declare how long a value should live, and be reminded       | `maruhi schema set <name> --max-age <days>`                   |
 
 ## The dual-credential grace period
 
@@ -118,6 +121,59 @@ Rule: `"connector": "mysql"`, optional `"host"` for the account's host part (`'u
 - **Two accounts** (`roles`): the same alternation as PostgreSQL.
 - **Admin credential** (`inputs.adminUrl`): an account with `CREATE USER`; without inputs, the account changes its own password (it needs `APPLICATION_PASSWORD_ADMIN` for the dual-password form).
 
+### Any other issuer: the `exec` connector
+
+Rule: `"connector": "exec"`, `"rotate"` naming a script of the repository, optional `"finalize"`. maruhi does the maruhi half — the verified pull, the decryption, the signed push, the sync, the grace period, the version history — and your script does the issuer half. maruhi interprets nothing about the issuer, so the set of issuers is whatever you can script: a `curl` to a vendor API, a cloud SDK call, an `ssh` to a box that rotates a key. This is the client-side form of the custom rotation function AWS Secrets Manager and Doppler run in a Lambda — here it runs on the member's machine, inside the same trust boundary as the member's own code.
+
+```json
+{
+  "version": 1,
+  "variables": {
+    "STRIPE_SECRET_KEY": {
+      "connector": "exec",
+      "rotate": ["./scripts/rotate-stripe.sh"],
+      "finalize": ["./scripts/finalize-stripe.sh"],
+      "inputs": { "STRIPE_ADMIN_KEY": { "environment": "ops", "name": "STRIPE_ADMIN_KEY" } }
+    }
+  }
+}
+```
+
+**The rotate script** runs with these in its environment, by memory injection only (the `maruhi run` shape, restricted to the rule's variables):
+
+| Variable                                       | Value                                        |
+| ---------------------------------------------- | -------------------------------------------- |
+| the rule's own name (`STRIPE_SECRET_KEY`)      | the current credential                       |
+| `MH_ROTATE_CURRENT`                            | the same, under a fixed name                 |
+| each `inputs` key (`STRIPE_ADMIN_KEY`)         | the admin credential it points at, decrypted |
+| `MH_ROTATE_VARIABLE` / `MH_ROTATE_ENVIRONMENT` | the variable name and the environment id     |
+| `MH_ROTATE_PHASE`                              | `rotate`                                     |
+
+It prints the **new credential on stdout** (one trailing newline is dropped; nothing else is touched) and exits 0. Anything it says on stderr is kept for you only if it fails — scrubbed of every credential it was given — so a failing script reports its exit code and its last lines, never a secret. maruhi pushes stdout as the new version, exactly like the built-in connectors.
+
+**The finalize script** runs the same way, with `MH_ROTATE_PHASE=finalize`, the current credential under the variable's name, and the previous one as `MH_ROTATE_PREVIOUS`. It retires the previous credential at the issuer. Its stdout is not a value: up to ten lines of it are kept as the step's facts (scrubbed of every credential it was given), so a script that prints "revoked key id …" leaves that in the report. A rule without a `finalize` script is treated as having **no grace period**: its rotate script is expected to retire the old credential itself, so `maruhi var rotate` asks for confirmation first (or takes `--yes`).
+
+```sh
+# scripts/rotate-stripe.sh — create a second restricted key with the same name
+#!/bin/sh
+set -eu
+curl -fsS https://api.stripe.com/v1/... -u "$STRIPE_ADMIN_KEY:" ... | jq -r '.secret'
+
+# scripts/finalize-stripe.sh — delete the key the previous version held
+#!/bin/sh
+set -eu
+curl -fsS -X DELETE "https://api.stripe.com/v1/.../$(id_of "$MH_ROTATE_PREVIOUS")" -u "$STRIPE_ADMIN_KEY:"
+```
+
+Options:
+
+- `"rotate"` / `"finalize"` are the script's argv (no shell; the first element is the executable). A bare string is the executable alone.
+- `"cwd"`: the scripts' working directory, relative to `maruhi.rotate.json` (default: its directory). Scripts travel with the repository.
+- `"output": "json"`: the rotate script prints `{"value": "…", "companions": {"STRIPE_KEY_ID": "…"}, "facts": ["…"]}` instead of the bare value. `"companions"` in the rule map an environment variable name to the maruhi variable it carries (an issuer-side key id that is pushed next to the secret, the way the AWS connector pushes the access key id); every declared companion must be answered, and the current companions ride into the script's environment under their names. `facts` are shown in the report, scrubbed.
+- `inputs` keys are free-form environment variable names; `MH_ROTATE_*`, execution-control names such as `PATH` or `LD_PRELOAD`, and the rule's own variable name are refused.
+
+What the connector does **not** do: run anything on the server or on a schedule (the script runs on the member's machine, when the member runs `maruhi var rotate`), and interpret the script's output beyond the one contract above. The trust model is the one you already have for the scripts in your repository: the script runs with the member's own credentials and sees the credential it rotates.
+
 ## After someone leaves
 
 `maruhi member remove`, `maruhi member change-role` (a demotion or a narrower scope), and `maruhi server revoke` rotate the affected environments' keys and then print the **rotation checklist**: every variable the removed party could read, confirmed fetches first, each with its next step.
@@ -155,6 +211,89 @@ Expiring values: 1 value past the declared max age, 1 value due within 14 days (
 
 The age counts from the latest push, whichever way the value was pushed: `maruhi var rotate`, `maruhi push`, or a rollback. The push time is the server's record (the one `maruhi var history` shows), so this is a reminder, not a proof — the signed part is the declaration. After `maruhi var rotate` on a variable with a max age, the report names the date the next rotation is due.
 
+`maruhi run` and `maruhi pull` print the reminder where it is most likely to be read — at the point of use:
+
+```text
+Note: 1 value past the max age its schema declares: STRIPE_SECRET_KEY (max age 90d, pushed 2026-06-20, expired 14 days ago) — rotate it (`maruhi rotation list` shows the next step for each)
+```
+
+Only variables that declare a max age cost a history lookup (run concurrently, one round trip for all of them); an environment without any costs nothing. The note never changes what the command does. `maruhi ci run` prints no note: a lease carries no push times.
+
+## Checks on a schedule
+
+maruhi runs nothing on a timer. A CI cron can, and `maruhi rotation list` has the two switches that make a check out of it:
+
+```yaml
+# .github/workflows/rotation-check.yml
+on:
+  schedule: [{ cron: "0 9 * * 1" }]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: maruhiapp/maruhi/actions/setup-maruhi@<tag>
+        with: { version: <tag> }
+      - run: >-
+          maruhi rotation list --server https://my.maruhi.app --project $PROJECT_ID
+          --fail-on-due --due-within 14 --fail-on-flags
+        env:
+          PROJECT_ID: ${{ vars.MARUHI_PROJECT_ID }}
+          MARUHI_TOKEN: ${{ secrets.MARUHI_READ_TOKEN }}
+          MARUHI_TOKEN_ORIGIN: https://my.maruhi.app
+```
+
+- `--fail-on-due` exits with code **3** when a value is past its max age; `--due-within <days>` also counts values that come due within that window, so the job fails with lead time.
+- `--fail-on-flags` exits 3 while any rotation flag is active — a credential a departed party could read has neither been rotated nor dismissed.
+- Exit 3 is reserved for "something is due"; a check that could not run exits 1 as usual, so the cron tells the two apart. A history that could not be read is such a failure under `--fail-on-due` (an unknown age is not a passed check). The listing is printed in full before the verdict, with the exact command per row, so the failed job's log is the checklist.
+
+A token with read permission on the project is enough (`maruhi login --show-token --token-ttl-days 365` provisions `MARUHI_TOKEN` for a runtime without lease support; the listing reads flags and metadata, never a value). The notification is whatever your CI does with a failed scheduled job — an e-mail, a Slack message, an issue — and that is deliberate: maruhi sends nothing anywhere.
+
+## Rotation from CI: sealed proposals
+
+A cron can do more than nag. `maruhi ci rotate <name>` runs a rotation rule from a CI job that holds only a [workload lease](/docs/github-actions) — no signing key, no keychain — and stores the result as a **sealed proposal** that a member finishes from their own machine:
+
+```yaml
+# .github/workflows/rotate-stripe.yml
+on:
+  schedule: [{ cron: "0 9 1 * *" }] # monthly
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    permissions: { id-token: write, contents: read }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: maruhiapp/maruhi/actions/setup-maruhi@<tag>
+        with: { version: <tag> }
+      - run: >-
+          maruhi ci rotate STRIPE_SECRET_KEY
+          --server "$MARUHI_SERVER" --project "$MARUHI_PROJECT" --env prod
+          --anchor .maruhi/anchor.json --rotate-config maruhi.rotate.json
+```
+
+The job leases the environment (and the environment an admin input lives in), decrypts the current credential and the admin input in memory, and runs the rule's connector exactly as `maruhi var rotate` would — the `exec` script above, or a built-in connector. Then, because the job cannot sign a version, it encrypts the new value to the **device keys of every member who could push it** (members and above whose scope includes the environment — readers and the server key receive nothing) and stores the proposal on the server under the same OIDC token and ephemeral key it leased with. The server keeps ciphertexts it cannot open, records who minted the proposal (the lease's claims digest and the grant), and waits:
+
+```text
+Sealed proposal 0f3e…9c21 stored for environment prod: STRIPE_SECRET_KEY (replacing version 7) — minted with the exec connector, sealed to 3 devices of 2 members, expires 2026-10-09
+  ./scripts/rotate-stripe.sh: new credential produced
+Previous credential: the previous credential stays valid until you finalize (./scripts/finalize-stripe.sh runs with it)
+A member finishes the rotation with `maruhi rotation accept 0f3e…9c21` …
+```
+
+A member picks it up — `maruhi rotation list` counts pending proposals, `maruhi rotation proposals` lists them with the connector's facts and the workload that minted each:
+
+```sh
+maruhi rotation accept 0f3e9c21
+# Accepting proposal 0f3e…9c21 pushes STRIPE_SECRET_KEY in environment prod as new versions signed by you. It was minted with the exec connector by the workload whose lease claims digest is 7c1d… (grant at chain seq 12)
+#   ./scripts/rotate-stripe.sh: new credential produced
+# Accept and push? [y/N]: y
+# Accepted proposal 0f3e…9c21 in environment prod: STRIPE_SECRET_KEY version=8, epoch=3
+```
+
+`accept` opens the copy sealed to this device, checks that the proposal still replaces the version that is current (a value that moved since the job ran is refused — reject the proposal and let the job run again; that check is part of what the job sealed, so the server cannot re-label an old proposal), pushes the plaintext as an ordinary version signed by you, and closes the proposal. The previous credential stays valid at the issuer until you run `maruhi var rotate <name> --finalize` after the deploy, exactly as with a local rotation. `maruhi rotation reject <id>` drops a proposal and names the credential the job created so you can retire it by hand; a proposal nobody touches expires after seven days (`--expires-in`, at most 30).
+
+What the job can and cannot do: it needs a rule with a grace period (a finalize step) — a rule whose rotation invalidates the current credential at once is refused before the issuer is touched, because a proposal may be rejected or expire while the current credential is still in use. It cannot push, rename, or delete anything, and the server never holds a plaintext or a signing key. A compromised job could propose a credential it also knows — which is why a human countersigns, sees which workload identity minted the proposal, and sees the facts before pushing; the audit log keeps `rotation.proposed` (the workload, by its lease claims digest) and `rotation.proposal_accepted` / `rotation.proposal_rejected` (the member).
+
 ## Runbooks for other issuers
 
 For a credential without a connector, create a second credential at the issuer, push it, deploy, then revoke the old one. The order matters: revoking first causes an outage; pushing first and never revoking leaves the leak open.
@@ -177,6 +316,6 @@ Rotation is for the credentials that cannot be federated yet: database passwords
 
 ## What maruhi does not do
 
-- **No scheduled rotation.** Nothing runs on a timer, in CI, or on the server; a member runs each rotation. Rotation on a schedule would need a signing key outside a member's machine, which maruhi does not create.
+- **No rotation on a timer.** Nothing runs on a schedule inside maruhi. A CI cron of your own can check what is due (`--fail-on-due`) or mint a sealed proposal (`maruhi ci rotate`), and the `exec` connector lets that cron's maintainer script any issuer — but the signed push stays a member's: a proposal becomes a version only when a member accepts it from their own machine.
 - **No server-driven rotation.** The server never holds an issuer's admin credential, a plaintext, or a signing key.
-- **No new connectors by request without demand.** The set is small on purpose: AWS IAM keys, Cloudflare tokens, PostgreSQL, MySQL. Everything else is a runbook.
+- **No connector treadmill.** The built-in set is small on purpose: AWS IAM keys, Cloudflare tokens, PostgreSQL, MySQL. The `exec` connector covers every other issuer with a script you review; the runbooks cover rotating by hand.

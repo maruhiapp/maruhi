@@ -669,6 +669,13 @@ export type DataRejection =
       readonly environmentId: string;
       readonly variableId: string;
     }
+  // Sealed value proposals (AUTH_SPEC §14-5): the member-side resolution's
+  // vocabulary (unknown / resolved / expired fold into not-found; an
+  // acceptance naming a version that does not exist or is not newer than
+  // the base is version-missing). The worker maps them to api-schema's
+  // RotationProposalNotFound (404) / RotationProposalRejected (422)
+  | { readonly kind: "rotation-proposal-not-found"; readonly proposalId: string }
+  | { readonly kind: "rotation-proposal-rejected"; readonly reason: RotationProposalRejectReason }
   | {
       readonly kind: "limit-exceeded";
       readonly resource: DataLimitResource;
@@ -680,6 +687,18 @@ export type DataRejection =
   // An identical seq is an idempotent 204)
   | { readonly kind: "attestation-regression"; readonly storedSeq: number }
   | { readonly kind: "attestation-rate-limited"; readonly retryAfterSeconds: number };
+
+/** Why a sealed value proposal or its resolution is refused (the api-schema RotationProposalRejectReasonSchema vocabulary — AUTH_SPEC §14-5). */
+export type RotationProposalRejectReason =
+  | "duplicate-id"
+  | "duplicate-variable"
+  | "variable-inactive"
+  | "base-version-stale"
+  | "recipients-mismatch"
+  | "expiry-out-of-range"
+  | "pending-limit"
+  | "storage-limit"
+  | "version-missing";
 
 /** The only typed error a data-plane program carries as a failure. */
 export class DataRejectedError extends Data.TaggedError("DataRejected")<{

@@ -1,4 +1,5 @@
-// Typed errors of the rotation-required-flag API (AUDIT_SPEC §4.1 / §7).
+// Typed errors of the rotation-required-flag API (AUDIT_SPEC §4.1 / §7)
+// and of sealed value proposals (CRYPTO_SPEC §5.3 / AUTH_SPEC §14-5).
 
 import { Schema } from "effect";
 
@@ -11,5 +12,56 @@ import { Schema } from "effect";
 export class RotationFlagNotFoundError extends Schema.TaggedError<RotationFlagNotFoundError>()(
   "RotationFlagNotFound",
   { environmentId: Schema.String, variableId: Schema.String },
+  { httpApiStatus: 404 },
+) {}
+
+/**
+ * Why a sealed value proposal is refused (AUTH_SPEC §14-5 — judged after
+ * authorization, so a reason leaks nothing an authorized workload or a
+ * member would not learn from a successful call):
+ *
+ * - `duplicate-id` — a proposal with this id is already stored
+ * - `duplicate-variable` — the same variable is listed twice
+ * - `variable-inactive` — a variable is unknown, declared, or deleted
+ *   (a proposal replaces an existing value)
+ * - `base-version-stale` — the variable moved since the lease (another
+ *   push landed); the job re-leases and re-mints
+ * - `recipients-mismatch` — the wraps are not exactly the recipient set
+ *   W(E) (CRYPTO_SPEC §5.3): someone missing, someone extra, or a
+ *   duplicate device
+ * - `expiry-out-of-range` — `expiresAtMs` is in the past or more than 30
+ *   days ahead
+ * - `pending-limit` — the project already holds 32 pending proposals
+ * - `version-missing` — on acceptance, a named version does not exist or
+ *   is not newer than the proposal's base version (the member pushes
+ *   first, then resolves)
+ */
+export const RotationProposalRejectReasonSchema = Schema.Literals([
+  "duplicate-id",
+  "duplicate-variable",
+  "variable-inactive",
+  "base-version-stale",
+  "recipients-mismatch",
+  "expiry-out-of-range",
+  "pending-limit",
+  "version-missing",
+  // The proposal's sealed values would carry the project past the §12-8 ciphertext cap
+  "storage-limit",
+]);
+
+/** 422: a sealed value proposal (or its resolution) fails an acceptance check (AUTH_SPEC §14-5). */
+export class RotationProposalRejectedError extends Schema.TaggedError<RotationProposalRejectedError>()(
+  "RotationProposalRejected",
+  { reason: RotationProposalRejectReasonSchema },
+  { httpApiStatus: 422 },
+) {}
+
+/**
+ * 404: no pending proposal with this id (unknown, already resolved, or
+ * expired — the three fold into one so a resolution cannot probe which).
+ */
+export class RotationProposalNotFoundError extends Schema.TaggedError<RotationProposalNotFoundError>()(
+  "RotationProposalNotFound",
+  { proposalId: Schema.String },
   { httpApiStatus: 404 },
 ) {}

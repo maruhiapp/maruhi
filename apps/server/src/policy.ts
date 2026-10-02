@@ -246,3 +246,22 @@ export const MAX_ATTESTATIONS_PER_MEMBER_PER_WINDOW = 60;
  * invariant structurally (the 2x is extra margin for drift in GC run times).
  */
 export const LEASE_BINDING_RETENTION_MARGIN_MS = 2 * OIDC_CLOCK_SKEW_MS;
+
+/**
+ * Sealed value proposals (AUTH_SPEC §14-5 / CRYPTO_SPEC §5.3 — 2026-10-02
+ * PF7b). Pending = stored, unexpired, unresolved; the cap is judged after
+ * authorization (the mint path is the lease's), so it leaks nothing to a
+ * caller that did not match an on-chain lease policy.
+ */
+export const MAX_PENDING_ROTATION_PROPOSALS = 32;
+
+/** §14-5: `expiresAtMs` at most this far ahead of the server clock at acceptance (30 days — the four-eyes proposal's bound). */
+export const MAX_ROTATION_PROPOSAL_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * §14-5: the per-project fixed window of mints (the same hour-long window
+ * as leases, under its own `kind` — a job that re-leases in a retry loop
+ * must not be able to fill the proposal store or the audit log by
+ * re-minting; 60 is far above a weekly rotation cron's need).
+ */
+export const MAX_ROTATION_PROPOSALS_PER_WINDOW = 60;
