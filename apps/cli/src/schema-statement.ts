@@ -42,6 +42,12 @@ export interface VariableStatementV2Input {
   readonly name: string;
   /** The schema fields (§4.2 — required is a boolean. Mapped to the string form at signing). */
   readonly schema: VerifiedSchemaFields;
+  /**
+   * The layout to sign: 3 carries `maxAgeDays` (PF6 R9); 2 does not. A new
+   * declaration or a schema reissue is 3; a continuation of a v2 variable
+   * (activation, deletion) keeps 2 — the schema fields byte-exact (§12-5).
+   */
+  readonly layoutVersion: 2 | 3;
   readonly authorUserId: string;
   readonly signingKey: CryptoKey;
 }
@@ -55,10 +61,12 @@ interface WireVariableStatementV2Base {
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
   readonly signatureHex: string;
-  readonly layoutVersion: 2;
+  readonly layoutVersion: 2 | 3;
   readonly varType: VerifiedSchemaFields["varType"];
   readonly required: boolean;
   readonly description: string;
+  /** Layout v3 only (null = no declaration; absent on a v2 wire). */
+  readonly maxAgeDays?: number | null;
 }
 
 /** The declaration-creation wire form (structurally identical to DeclareVariableMetaStatementSchema). */
@@ -103,12 +111,16 @@ function statementContextV2(input: VariableStatementV2Input, lifecycle: Lifecycl
     target: { kind: "variable", variableId: input.variableId },
     name: input.name,
     status: lifecycle.status,
-    layoutVersion: 2,
+    layoutVersion: input.layoutVersion,
     schema: {
       varType: input.schema.varType,
       // §4.2: v2's required is a mandatory explicit string ("true" | "false")
       required: input.schema.required ? "true" : "false",
       description: input.schema.description,
+      // Layout v3: max_age_days as the signed string ("" = none)
+      ...(input.layoutVersion === 3
+        ? { maxAgeDays: input.schema.maxAgeDays === null ? "" : String(input.schema.maxAgeDays) }
+        : {}),
     },
     metaVersion: lifecycle.metaVersion,
     prevMetaSigHashHex: lifecycle.prevMetaSigHashHex,
@@ -145,6 +157,12 @@ function toWireStatementV2(context: StatementContextV2, signatureHex: string): W
     // The wire is boolean (§12-2) — mapped mechanically from the signed string form
     required: context.schema.required === "true",
     description: context.schema.description,
+    // Layout v3's field rides the wire as a number or null (§12-2)
+    ...(context.schema.maxAgeDays === undefined
+      ? {}
+      : {
+          maxAgeDays: context.schema.maxAgeDays === "" ? null : Number(context.schema.maxAgeDays),
+        }),
   };
 }
 

@@ -65,14 +65,16 @@ The server has one tool, `get_schema`, and the same data as resources (`maruhi:/
       "declaredType": "url",
       "required": true,
       "status": "set",
-      "description": "Primary Postgres"
+      "description": "Primary Postgres",
+      "maxAgeDays": 90
     },
     {
       "name": "STRIPE_KEY",
       "declaredType": "string",
       "required": true,
       "status": "declared",
-      "description": null
+      "description": null,
+      "maxAgeDays": null
     }
   ],
   "warnings": []
@@ -81,6 +83,7 @@ The server has one tool, `get_schema`, and the same data as resources (`maruhi:/
 
 - **`status`** is `set` when the environment holds a value and `declared` when it does not yet. `maruhi run` refuses to start while a required variable is `declared`, so a required `declared` row explains a refusal (it is not the only reason one can happen: your environment scope, for example, is checked too).
 - **`declaredType`** is what a member declared, not something checked against the value.
+- **`maxAgeDays`** is the rotation interval a member declared with `maruhi schema set --max-age` (see [Rotating upstream credentials](/docs/rotation#expiring-values)); `null` when none was declared. It says when a value should be replaced, not whether it was.
 - **`environments`** lists every environment on the project; call `get_schema` with `{ "environment": "prod" }` to read another one.
 - **`warnings`** carries every warning the read produced — verification, local state such as a damaged invite pin, a token about to expire — so the agent can pass them on; the same lines go to the server's stderr, which most hosts keep in a log you rarely see.
 

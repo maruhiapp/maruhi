@@ -252,17 +252,35 @@ const MetaLayoutVersionSchema = Schema.Number.check(
   Schema.isGreaterThanOrEqualTo(2),
 );
 
+/**
+ * Layout v3's max age (CRYPTO_SPEC §4.2 — PF6 R9 "expiring values"): the
+ * number of days after a value's push within which it should be replaced,
+ * 1..3650, or null = no declaration. The wire carries the field **iff the
+ * layout is 3** (present with null for "none"; absent on v2) — the
+ * coupling is an acceptance check (422 payload-mismatch), not a Schema
+ * 400, so the two layouts share one wire shape.
+ */
+export const MetaMaxAgeDaysSchema = Schema.NullOr(
+  Schema.Number.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(3650),
+  ),
+);
+
 // The schema fields (all required in v2 — fail-closed so the omitted
 // interpretation of required is not dispersed into client
 // implementations; CRYPTO_SPEC §4.2). The description limit (1024 code
 // points) and character class (reject control characters) are a §12-8
 // acceptance check (422), not checked in the Schema (deliberately a
-// different category from the display-name 400)
+// different category from the display-name 400). maxAgeDays is layout
+// v3's field (present iff layoutVersion is 3 — acceptance-checked)
 const varMetaV2Fields = {
   layoutVersion: MetaLayoutVersionSchema,
   varType: MetaVarTypeSchema,
   required: Schema.Boolean,
   description: Schema.String,
+  maxAgeDays: Schema.optionalKey(MetaMaxAgeDaysSchema),
 };
 
 /** The statement bundled with variable creation (metaVersion 1 — AUTH_SPEC §12-5). */
@@ -387,6 +405,8 @@ export const DistributedVariableMetaStatementSchema = Schema.Struct({
   varType: Schema.optionalKey(MetaVarTypeSchema),
   required: Schema.optionalKey(Schema.Boolean),
   description: Schema.optionalKey(Schema.String),
+  // Layout v3 (PF6 R9): present (null = no declaration) iff layoutVersion is 3
+  maxAgeDays: Schema.optionalKey(MetaMaxAgeDaysSchema),
   authorUserId: BoundedUserId,
   authorKeyFingerprintHex: KeyFingerprintHex,
 });

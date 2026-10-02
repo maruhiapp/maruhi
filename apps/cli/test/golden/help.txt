@@ -32,7 +32,7 @@ SUBCOMMANDS
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
   mcp         Serve the value-free schema to AI agents over the Model Context Protocol (stdio). Never serves values
-  var         Manage variables (rm, history, rollback). push / pull / run operate on values directly
+  var         Manage variables (rm, history, rollback, rotate). push / pull / run operate on values directly
   sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
   proxy       Credential brokering for AI agents and other programs: run a command that never holds the real values (run), after a person accepted the repository's proxy config on this machine (accept)
 
@@ -70,7 +70,7 @@ SUBCOMMANDS
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
   mcp         Serve the value-free schema to AI agents over the Model Context Protocol (stdio). Never serves values
-  var         Manage variables (rm, history, rollback). push / pull / run operate on values directly
+  var         Manage variables (rm, history, rollback, rotate). push / pull / run operate on values directly
   sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
   proxy       Credential brokering for AI agents and other programs: run a command that never holds the real values (run), after a person accepted the repository's proxy config on this machine (accept)
 
@@ -1444,7 +1444,7 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  set                Set a variable's schema fields (type / required / description) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds
+  set                Set a variable's schema fields (type / required / description / max age) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds
   import             Import schema candidates from a .env or .env.example file with interactive per-variable approval (declares names without sending values; optionally pushes a value per variable)
   export             Print the environment's schema snapshot (a JSON Schema subset) to stdout. Commit it and check it in CI with `schema verify-snapshot`; the store stays the source of truth
   verify-snapshot    Verify a committed schema snapshot against the store and fail on any divergence (for CI; the store is the source of truth)
@@ -1452,7 +1452,7 @@ SUBCOMMANDS
 
 $ maruhi schema set --help
 DESCRIPTION
-  Set a variable's schema fields (type / required / description) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds
+  Set a variable's schema fields (type / required / description / max age) as a partial update. A missing name is created as a declared variable without a value. A declaration cannot be deleted from the CLI yet; downgrade a mistaken one with --optional so `maruhi run` proceeds
 
 USAGE
   maruhi schema set [flags] <name>
@@ -1469,6 +1469,7 @@ FLAGS
   --optional              Declare the variable as not required
   --description string    Human-readable description (plaintext metadata visible to the server — never put secret values here)
   --clear-description     Clear the description (explicit — an empty --description value is rejected as a likely unset shell variable)
+  --max-age string        Days within which a value should be replaced after its push (1 to 3650), or `none` to clear it; `maruhi rotation list` shows values past their max age
   --allow-high-entropy    Proceed without confirmation when the name or description contains a secret-like high-entropy string (fail-closed otherwise)
 
 GLOBAL FLAGS
@@ -1551,7 +1552,7 @@ GLOBAL FLAGS
 
 $ maruhi var --help
 DESCRIPTION
-  Manage variables (rm, history, rollback). push / pull / run operate on values directly
+  Manage variables (rm, history, rollback, rotate). push / pull / run operate on values directly
 
 USAGE
   maruhi var <subcommand> [flags]
@@ -1564,6 +1565,7 @@ SUBCOMMANDS
   rm          Delete a variable and all of its values permanently (asks for confirmation unless --force). Works for declared and active variables
   history     Show a variable's version history (metadata only: version, epoch, writer, time, rollbacks, rotation-flag exposure — never a value)
   rollback    Restore a previous version's value as a new version (verifies the old version against the latest first; asks for confirmation unless --force). Never displays the value
+  rotate      Create a new credential at the issuer through the rule's connector and push it as a new version; the previous credential stays valid until --finalize. Never displays a value
 
 $ maruhi var rm --help
 DESCRIPTION
@@ -1623,6 +1625,31 @@ FLAGS
   --force             Skip the interactive confirmation (the only non-interactive path)
   --config string     Path to the sync config whose "onPush" targets are synced after the rollback (default: maruhi.sync.json in the working directory, when it exists and names this project)
   --no-sync           Skip the sync after the rollback (the default sync config is not read)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi var rotate --help
+DESCRIPTION
+  Create a new credential at the issuer through the rule's connector and push it as a new version; the previous credential stays valid until --finalize. Never displays a value
+
+USAGE
+  maruhi var rotate [flags] <name>
+
+ARGUMENTS
+  name string    Variable name to rotate (the rule's variable, or the access key id an AWS rule pairs with it)
+
+FLAGS
+  --server string           Server URL (defaults to config server)
+  --project string          Project ID (default: the `defaultProject` setting)
+  --env string              Environment ID (default: the `defaultEnvironment` setting)
+  --finalize                Invalidate the credential the previous version held (after the new value is deployed) instead of rotating
+  --previous integer        With --finalize: the version that held the credential to invalidate (default: the one before the current version)
+  --yes                     Skip the confirmation of a step that invalidates a credential (the only non-interactive path)
+  --rotate-config string    Path to the rotation config naming the connector and admin credential of each variable (default: maruhi.rotate.json in the working directory)
+  --config string           Path to the sync config whose "onPush" targets are synced after the rotation (default: maruhi.sync.json in the working directory, when it exists and names this project)
+  --no-sync                 Skip the sync after the rotation (the default sync config is not read)
 
 GLOBAL FLAGS
   --help, -h       Show help information

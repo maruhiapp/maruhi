@@ -58,12 +58,34 @@ function cryptoSchemaOf(statement: MetaStatementInput): MetaVariableSchema | und
   if (statement.schema === undefined) {
     return undefined;
   }
+  const maxAge = statement.schema.maxAgeDays;
   return {
     varType: statement.schema.varType,
     required: statement.schema.required ? "true" : "false",
     description: statement.schema.description,
+    // Layout v3's max_age_days: "" = no declaration, else the decimal (the
+    // LP field representation of CRYPTO_SPEC §4.2)
+    ...(maxAge === undefined ? {} : { maxAgeDays: maxAge === null ? "" : String(maxAge) }),
   };
 }
+
+/**
+ * §12-5 (layout v3 — PF6 R9): the wire carries `maxAgeDays` iff the
+ * layout is 3 (null = no declaration). A v3 statement without the field,
+ * or a v2 statement with it, is a shape mismatch between the declared
+ * layout and the fields — refused as 422 payload-mismatch before the
+ * signature (the crypto layer would refuse it too, as InvalidInput; this
+ * keeps the honest wording).
+ */
+const ensureLayoutShape = (
+  statement: MetaStatementInput,
+): Effect.Effect<void, DataRejectedError> => {
+  const layout = statementLayoutVersion(statement);
+  const present = statement.schema?.maxAgeDays !== undefined;
+  return (layout === 3) === present || layout === 1
+    ? Effect.void
+    : Effect.fail(rejectData({ kind: "payload-mismatch", field: "maxAgeDays" }));
+};
 
 /**
  * Acceptance verification of a meta statement (§12-5 items 1-3 + the prev
@@ -102,6 +124,7 @@ export const ensureMetaStatementSignature = (input: {
   readonly predecessor?: MetaPredecessor | undefined;
 }) =>
   Effect.gen(function* () {
+    yield* ensureLayoutShape(input.statement);
     const verified = yield* Effect.promise(() =>
       verifyDistributedMetaStatement({
         history: input.history,
@@ -139,7 +162,7 @@ export const ensureMetaStatementSignature = (input: {
         reason: META_REJECT_REASONS[verified.error.reason],
       });
     }
-    // A declared layoutVersion beyond this server's support range ({1, 2})
+    // A declared layoutVersion beyond this server's support range ({1, 2, 3})
     // occurs as the **normal case** of "old server × new client" once this
     // revision puts layoutVersion on the wire (ruling CR). The primary check is
     // ensureSupportedLayout at the head of each acceptance path; this is the
@@ -174,7 +197,7 @@ export const statementLayoutVersion = (statement: MetaStatementInput): number =>
 /**
  * Support-range check for the declared layoutVersion (ruling CR — §12-2 /
  * CRYPTO_SPEC §4.2). Call it **before every other v2-family acceptance check**:
- * for an unsupported layout (v3+ — the normal case of "old server × new
+ * for an unsupported layout (v4+ — the normal case of "old server × new
  * client"), the schemaPolicy gate, schema-locked check, and the
  * delete-statement predecessor match are in principle undefinable, and
  * returning those errors first would be misleading in a "fix the policy and it
@@ -259,16 +282,16 @@ function deletePreservationMismatch(
     // Layout already matched: only both-v1 (no schema fields) reaches here
     return null;
   }
-  if (statement.schema.varType !== anchor.schema.varType) {
-    return "varType";
-  }
-  if (statement.schema.required !== anchor.schema.required) {
-    return "required";
-  }
-  if (statement.schema.description !== anchor.schema.description) {
-    return "description";
-  }
-  return null;
+  const stored = anchor.schema;
+  const declared = statement.schema;
+  // Each schema field compared in turn; the first difference names the field
+  const comparisons: readonly (readonly [string, boolean])[] = [
+    ["varType", declared.varType === stored.varType],
+    ["required", declared.required === stored.required],
+    ["description", declared.description === stored.description],
+    ["maxAgeDays", (declared.maxAgeDays ?? null) === (stored.maxAgeDays ?? null)],
+  ];
+  return comparisons.find(([, same]) => !same)?.[0] ?? null;
 }
 
 /** CAS on metaVersion (§12-5): only declared == latest + 1. The 409 returns the latest number only. */

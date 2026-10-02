@@ -357,6 +357,7 @@ describe("site e2e: docs (/docs — Blume default chrome)", () => {
     expect(llms).toContain("https://maruhi.app/docs/four-eyes");
     expect(llms).toContain("https://maruhi.app/docs/devices");
     expect(llms).toContain("https://maruhi.app/docs/value-history");
+    expect(llms).toContain("https://maruhi.app/docs/rotation");
     const sitemap = await (await fetch(`${BASE}/sitemap.xml`)).text();
     expect(sitemap).toContain("<loc>https://maruhi.app/</loc>");
     expect(sitemap).toContain("<loc>https://maruhi.app/docs</loc>");

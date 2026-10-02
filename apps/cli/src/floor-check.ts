@@ -109,6 +109,13 @@ export interface VerifiedSchemaFields {
   readonly varType: MetaVarType;
   readonly required: boolean;
   readonly description: string;
+  /**
+   * Layout v3 (CRYPTO_SPEC §4.2 — PF6 R9 expiring values): the days after a
+   * value's push within which it should be replaced, null = no declaration
+   * (also null on a layout-v2 statement, which has no such field — the
+   * statement's `layoutVersion` tells the two apart). Advisory like the type.
+   */
+  readonly maxAgeDays: number | null;
 }
 
 /**

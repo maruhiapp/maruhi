@@ -221,18 +221,20 @@ function attemptDeletion(
       );
     }
     const previousStatus = target.status;
-    // Deleting a v2 variable uses the v2 form (schema fields and
+    // Deleting a v2 / v3 variable uses that form (schema fields and
     // layout kept byte-exactly from the previous statement —
     // §12-5's deletion convention); a v1 variable's deletion keeps
     // the v1 form
     const signed =
-      target.layoutVersion === 2 && target.schema !== null
+      target.layoutVersion >= 2 && target.schema !== null
         ? yield* signDeleteStatementV2({
             verified: state.verified,
             environmentId: input.environmentId,
             variableId: target.variableId,
             name: target.name,
             schema: target.schema,
+            // The deletion keeps the predecessor's layout (v2 or v3 — §12-5)
+            layoutVersion: target.layoutVersion === 3 ? 3 : 2,
             prev: { metaVersion: target.metaVersion, metaSigHashHex: target.metaSigHashHex },
             authorUserId: input.authorUserId,
             signingKey: input.signingKey,

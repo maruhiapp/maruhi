@@ -4392,7 +4392,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
           ...receipt,
           statement: {
             ...receipt.statement,
-            layoutVersion: 3,
+            layoutVersion: 4,
             varType: "",
             required: false,
             description: "",

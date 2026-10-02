@@ -1,0 +1,182 @@
+---
+title: Rotating upstream credentials
+description: Replace the credentials maruhi stores at their issuers — AWS IAM access keys, Cloudflare API tokens, PostgreSQL and MySQL passwords with one command, everything else with a runbook — keep the old credential working until the new value is deployed, then invalidate it. What to rotate after someone leaves, and when a credential never needs rotating at all.
+sidebar:
+  order: 14
+---
+
+Encryption cannot un-read a value. When a member is removed, a device is revoked, or a scope is narrowed, maruhi rotates the environment's key so the person receives nothing new — but every value they could already read is still valid at its **issuer** (the AWS account, the database, the API that minted the token). Rotation means replacing those credentials at the issuer and pushing the new values. maruhi tells you which ones, and for common issuers it does the replacement for you.
+
+Rotation is always run by a member from their own machine: the CLI decrypts the current credential and the issuer's admin credential in memory, calls the issuer, and pushes the new value signed as that member. The maruhi server never holds a plaintext, a signing key, or an issuer credential, and nothing runs on a schedule. Nothing is displayed either; the report names key ids, roles, and token ids, never a secret.
+
+| Task                                                        | Command                                        |
+| ----------------------------------------------------------- | ---------------------------------------------- |
+| See what should be rotated and how                          | `maruhi rotation list`                         |
+| Replace a credential at its issuer and push the new value   | `maruhi var rotate <name>`                     |
+| Invalidate the previous credential once the new one is live | `maruhi var rotate <name> --finalize`          |
+| Rotate a credential maruhi has no connector for             | the runbook below, then `maruhi push <name>`   |
+| Accept the risk for a value you cannot push (deleted)       | `maruhi rotation dismiss <variableId> --env …` |
+| Declare how long a value should live, and be reminded       | `maruhi schema set <name> --max-age <days>`    |
+
+## The dual-credential grace period
+
+`maruhi var rotate` never breaks what is running. Every connector creates a **second** credential and leaves the current one valid: a second IAM access key, a second Cloudflare token with the same policies, a password on the other of two database roles, or MySQL's secondary password. The new value is pushed as a new version and synced to the deploy targets whose [sync config](/docs/deploy-targets) asks for it. Consumers pick it up at their own pace. When everything runs on the new value, `--finalize` invalidates the previous credential at the issuer.
+
+```sh
+maruhi var rotate DATABASE_URL --env prod
+# Rotated DATABASE_URL in environment prod with the postgres connector (DATABASE_URL version=8, epoch=3)
+#   role app_b now in use
+# Previous credential: role app_a keeps its previous password until you finalize
+# Deploy the new value (1 variable pushed), then run `maruhi var rotate DATABASE_URL --finalize` to invalidate the previous credential
+
+# … deploy, confirm …
+
+maruhi var rotate DATABASE_URL --env prod --finalize
+# Finalized the rotation of DATABASE_URL in environment prod (postgres): the credential of version 7 is invalidated; version 8 stays current
+#   role app_a: password replaced by a random one nobody holds
+```
+
+`--finalize` reads the previous version from the variable's [history](/docs/value-history) — verified as an ancestor of the current value, like a rollback — and invalidates exactly the credential it held. There is no state file: the version history is the rotation state. If someone pushed in between, `--previous <version>` names the version to finalize. The previous credential is read back from the version history as a verified ancestor of the current value, never from the server's own account of the history. For an AWS rule, the key to deactivate is decided against the issuer: a key other than the current one is deactivated only when an earlier version of the key id variable held its id and it authenticates with that version's secret at STS, so a key created by hand is never touched. Finalizing asks for confirmation, or takes `--yes` in a script; so does the one shape without a grace period (a single PostgreSQL role changing its own password in place).
+
+A rotation pushed **after** the environment's key rotation clears the rotation flag for that variable (a value encrypted under a key the person never held). `maruhi rotation list` shows what is still open.
+
+## Set up `maruhi.rotate.json`
+
+The rotation config lives in the repository, next to `maruhi.sync.json`. It names, for each variable, the connector and where the issuer's admin credential is. It contains no secrets:
+
+```json
+{
+  "version": 1,
+  "project": "<your project id>",
+  "variables": {
+    "DATABASE_URL": {
+      "connector": "postgres",
+      "roles": ["app_a", "app_b"],
+      "inputs": { "adminUrl": { "environment": "ops", "name": "ADMIN_DATABASE_URL" } }
+    },
+    "AWS_SECRET_ACCESS_KEY": {
+      "connector": "aws-iam-access-key",
+      "accessKeyIdVariable": "AWS_ACCESS_KEY_ID",
+      "inputs": {
+        "accessKeyId": { "environment": "ops", "name": "AWS_ROTATOR_KEY_ID" },
+        "secretAccessKey": { "environment": "ops", "name": "AWS_ROTATOR_SECRET" }
+      }
+    },
+    "CLOUDFLARE_API_TOKEN": { "connector": "cloudflare-api-token" }
+  }
+}
+```
+
+- `inputs` point at ordinary maruhi variables — in the same environment (`"adminUrl": "ADMIN_DATABASE_URL"`) or in another one you can decrypt, such as an `ops` environment that only owners are [scoped](/docs/environment-scopes) into. Keeping the admin credential there means a member who can rotate `prod` values cannot read it.
+- A rule with **no `inputs`** rotates the credential with itself: an IAM user that may manage its own keys, a Cloudflare token that carries `API Tokens Write`, a database role allowed to change its own password. Simplest to set up; the trade-off is that whoever holds the credential can also rotate it.
+- Unknown keys are refused, `project` is checked against the project you run in, and the issuer hosts are fixed by the connector — the config cannot redirect a credential anywhere.
+
+`maruhi var rotate` reads `maruhi.rotate.json` from the working directory (`--rotate-config <file>` to point elsewhere). `maruhi rotation list` and the checklist after a removal read the same file to show the exact command for each covered variable.
+
+## Connectors
+
+### AWS IAM access keys
+
+Rule: `"connector": "aws-iam-access-key"`, `"accessKeyIdVariable"` naming the variable that holds the matching access key id. The rule is keyed by the secret; `maruhi var rotate` accepts either name. Optional `"user"` names the IAM user (otherwise it is derived from the current key with `GetAccessKeyLastUsed`).
+
+- **Rotate**: `CreateAccessKey` for the user. IAM allows two keys per user — a leftover key that is already **inactive** is deleted first; two active keys refuse the rotation (finalize the previous one first). Both variables are pushed, the key id then the secret. New keys take a few seconds to become usable at AWS.
+- **Finalize**: `UpdateAccessKey … Inactive` on the previous key. This is reversible from the AWS console if something still used it; the next rotation deletes an inactive key.
+- **Admin credential** (`inputs.accessKeyId` / `secretAccessKey`, optional `sessionToken` for STS credentials): `iam:ListAccessKeys`, `iam:CreateAccessKey`, `iam:UpdateAccessKey`, `iam:DeleteAccessKey`, and `iam:GetAccessKeyLastUsed` on the user. Without inputs, the user needs those permissions on itself.
+
+Requests are signed with SigV4 by the CLI (WebCrypto HMAC; no AWS SDK is installed), toward `iam.amazonaws.com` only.
+
+### Cloudflare API tokens
+
+Rule: `"connector": "cloudflare-api-token"`, optional `"accountId"` for an account-owned token (user-owned by default; Cloudflare documents account-owned tokens under "Account-owned tokens" in its API fundamentals).
+
+- **Rotate**: verify the current token to learn its id, read its definition, and create a second token with the **same name, policies, condition, and expiry**. Rolling a token in place would invalidate the old value at once, so the connector never rolls.
+- **Finalize**: delete the previous token.
+- **Admin credential** (`inputs.token`): a token with `API Tokens Write` (user) or `Account API Tokens Write` (account-owned). Without inputs, the token being rotated needs that permission itself.
+
+### PostgreSQL
+
+Rule: `"connector": "postgres"`. The variable holds a connection URL (`postgres://user:password@host/db?…`); the connector keeps the URL and replaces its user and password.
+
+- **Two roles** (`"roles": ["app_a", "app_b"]`): the pattern Infisical, Doppler, Pulumi ESC, and AWS Secrets Manager use, because PostgreSQL has no second password. Rotation sets a fresh 32-character password on the role **not** in the URL and pushes the URL with that role; the other role keeps working. Finalize replaces the previous role's password with a random one nobody holds. Create both roles once with the same grants:
+
+  ```sql
+  CREATE ROLE app_a LOGIN PASSWORD 'initial';
+  CREATE ROLE app_b LOGIN PASSWORD 'initial';
+  GRANT app TO app_a, app_b;   -- or grant the same privileges to both
+  ```
+
+- **One role** (no `roles`): `ALTER ROLE … PASSWORD` on the URL's own role. The old password stops working at once (no grace period), so the command asks for confirmation. Use it for development databases or when a restart is already planned.
+- **Admin credential** (`inputs.adminUrl`): a URL whose role may `ALTER ROLE` the application roles (`CREATEROLE` with `ADMIN OPTION`, or a superuser). Without inputs, the application role changes its own password.
+
+After the statement, the CLI connects with the new URL and runs `SELECT 1`; a failure is a warning (the password is set at the server) so you can check before finalizing. Use `sslmode=require` in the URLs — the password travels inside the connection.
+
+### MySQL and MariaDB
+
+Rule: `"connector": "mysql"`, optional `"host"` for the account's host part (`'user'@'host'`, default `%`), optional `"roles"` for the two-account pattern.
+
+- **One account** (default): MySQL 8.0.14 and later keep **two passwords** per account. Rotation runs `ALTER USER … IDENTIFIED BY … RETAIN CURRENT PASSWORD`, so the current password keeps working as the secondary one; finalize runs `ALTER USER … DISCARD OLD PASSWORD`. This is the grace period without a second account.
+- **Two accounts** (`roles`): the same alternation as PostgreSQL.
+- **Admin credential** (`inputs.adminUrl`): an account with `CREATE USER`; without inputs, the account changes its own password (it needs `APPLICATION_PASSWORD_ADMIN` for the dual-password form).
+
+## After someone leaves
+
+`maruhi member remove`, `maruhi member change-role` (a demotion or a narrower scope), and `maruhi server revoke` rotate the affected environments' keys and then print the **rotation checklist**: every variable the removed party could read, confirmed fetches first, each with its next step.
+
+```text
+Rotation checklist: 3 variables the party that lost access could read (encryption cannot revoke already-read values — rotate each upstream credential, AUDIT_SPEC §4.1):
+  [read] prod DATABASE_URL: `maruhi var rotate DATABASE_URL --env prod` (postgres connector in maruhi.rotate.json)
+  [readable] prod STRIPE_SECRET_KEY: rotate at the issuer, then `maruhi push STRIPE_SECRET_KEY --env prod` (runbooks: https://maruhi.app/docs/rotation)
+  [readable] prod OLD_WEBHOOK_SECRET: deleted — rotate at the issuer, then `maruhi rotation dismiss v-2a9c --env prod` (a deleted variable cannot be pushed)
+A fresh value pushed after the environment's rotation resolves a flag; `maruhi rotation list` shows what remains
+```
+
+`[read]` means the person fetched that value (an audit record exists); `[readable]` means they held the key and could have. `maruhi rotation list` shows the same rows with the same next step at any later time, so the checklist survives a closed terminal. The flags are server-derived; the names come from the verified statements on your machine.
+
+For `maruhi device revoke`, which spans every project the device was on, run `maruhi rotation list` in each project.
+
+## Expiring values
+
+A credential that was never leaked still ages: a key issued two years ago has been copied into more places than anyone remembers. Declare how long a value should live, and maruhi reminds you:
+
+```sh
+maruhi schema set STRIPE_SECRET_KEY --env prod --max-age 90
+# Updated the schema of STRIPE_SECRET_KEY (type=string, required=true, max-age=90d, metaVersion=3)
+```
+
+The max age is a schema field like the type and the description: it is signed by the member who declared it, verified by every client, shown by `maruhi schema` (the `MAX AGE` column), exported by `maruhi schema export` (`x-maruhi-maxAgeDays`), and visible to agents through `maruhi mcp`. It travels with the variable, so a rotation does not have to re-declare it. `none` clears it.
+
+`maruhi rotation list` adds an **Expiring values** section for every value past its max age or within 14 days of it, with the same next step as the checklist:
+
+```text
+Expiring values: 1 value past the declared max age, 1 value due within 14 days (the max age is declared with `maruhi schema set --max-age`; the push time is server-declared)
+  [expired] prod STRIPE_SECRET_KEY: max age 90d, pushed 2026-06-20, expired 14 days ago — next: rotate at the issuer, then `maruhi push STRIPE_SECRET_KEY --env prod` (runbooks: https://maruhi.app/docs/rotation)
+  [due] prod DATABASE_URL: max age 30d, pushed 2026-09-10, due in 8 days — next: `maruhi var rotate DATABASE_URL --env prod` (postgres connector in maruhi.rotate.json)
+```
+
+The age counts from the latest push, whichever way the value was pushed: `maruhi var rotate`, `maruhi push`, or a rollback. The push time is the server's record (the one `maruhi var history` shows), so this is a reminder, not a proof — the signed part is the declaration. After `maruhi var rotate` on a variable with a max age, the report names the date the next rotation is due.
+
+## Runbooks for other issuers
+
+For a credential without a connector, create a second credential at the issuer, push it, deploy, then revoke the old one. The order matters: revoking first causes an outage; pushing first and never revoking leaves the leak open.
+
+- **Stripe**: Developers → API keys → _Roll key…_ with a delay (up to 24 hours) — Stripe's own dual-credential window. Push the new key within the delay.
+- **GitHub personal access tokens**: generate a new token with the same scopes, push it, then delete the old one. For automation, prefer a [GitHub App](/docs/credential-brokering) whose installation tokens live an hour and are minted on your machine.
+- **OpenAI, Anthropic, Resend, SendGrid, Twilio and similar API keys**: create a second key, push, deploy, delete the first. Most dashboards show the last-used time of the old key — wait until it goes quiet.
+- **Vercel, Netlify, Cloudflare deploy tokens used by `maruhi sync`**: create the new token, push it under the same variable name, then revoke the old one; the next `maruhi sync apply` uses the new one.
+- **SSH keys, deploy keys, certificates**: generate the new key pair, register the public half everywhere the old one is accepted, push the private half, deploy, remove the old public key.
+- **Webhook signing secrets**: most providers let you register a second secret or show the new one next to the old; verify against both during the window, then drop the old.
+- **Shared passwords for third-party dashboards**: change the password at the issuer and push it. There is no grace period for a password; do it when nobody is mid-session.
+
+Then `maruhi push <name> --env <env>` for each, and `maruhi rotation list` to see the flag clear.
+
+## Credentials that never need rotating
+
+The best answer to rotation is a credential that does not exist. For AWS, GCP, and Azure, let your CI and your deploy platform **federate**: GitHub Actions and Vercel issue OIDC tokens that AWS STS, GCP Workload Identity Federation, and Azure federated credentials exchange for short-lived credentials. maruhi then holds only non-secret configuration — a role ARN, a project number — and there is nothing to rotate after someone leaves. The same goes for the GitHub App tokens that `maruhi proxy run` mints: an hour-long token minted on your machine is not a credential anyone carries away.
+
+Rotation is for the credentials that cannot be federated yet: database passwords, third-party API keys, tokens of platforms without OIDC. Keep that set small, and `maruhi rotation list` short.
+
+## What maruhi does not do
+
+- **No scheduled rotation.** Nothing runs on a timer, in CI, or on the server; a member runs each rotation. Rotation on a schedule would need a signing key outside a member's machine, which maruhi does not create.
+- **No server-driven rotation.** The server never holds an issuer's admin credential, a plaintext, or a signing key.
+- **No new connectors by request without demand.** The set is small on purpose: AWS IAM keys, Cloudflare tokens, PostgreSQL, MySQL. Everything else is a runbook.

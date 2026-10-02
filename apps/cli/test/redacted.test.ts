@@ -921,6 +921,12 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "sync-plan.ts": 3,
   // Parsing the receipt JSON (a name → version mapping. Not a secret value)
   "sync-receipt.ts": 1,
+  // `var rotate`: the admin inputs consumed by a connector to call the
+  // issuer 1 + the current credential (primary 1, companions 1) handed to the
+  // connector + the previous / current pair of `--finalize` (2 companions +
+  // 2 primaries) — every product is sent to the issuer or wrapped again for
+  // the push; nothing is displayed
+  "var-rotate.ts": 7,
 };
 
 // The match for the spelling (`Redacted` + `.value`). It crosses whitespace

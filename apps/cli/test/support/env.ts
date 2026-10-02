@@ -39,7 +39,9 @@ import {
   ProxyAcceptStore,
 } from "../../src/proxy-accept.ts";
 import { ProxySeams, type ProxySeamsShape } from "../../src/proxy-run.ts";
+import { SqlRunner, type SqlRunnerShape } from "../../src/rotate-connector.ts";
 import { type ExecInput, type ExecOutcome, ProcessRunner } from "../../src/run.ts";
+import { RotateSeams, type RotateSeamsShape } from "../../src/var-rotate.ts";
 import type { TestUser } from "./crypto.ts";
 
 /** One recorded child-process invocation. */
@@ -127,6 +129,10 @@ export interface TestEnv {
   setRunnerHandler(handler: (call: RunnerCall) => Promise<number>): void;
   /** Test seams of `maruhi proxy run` (where upstream connections go, the connector's API). */
   setProxySeams(seams: ProxySeamsShape | null): void;
+  /** Test seams of `maruhi var rotate` (the issuer APIs, the clock, the password bytes). */
+  setRotateSeams(seams: RotateSeamsShape | null): void;
+  /** Fakes the database client of the `postgres` / `mysql` connectors (default: refuses every connection). */
+  setSqlRunner(runner: SqlRunnerShape): void;
   /**
    * Fakes the vendor CLI's outcome (default: exit 0, no output). Taken as a
    * function so the result can differ per call (e.g. fail only the Nth call).
@@ -214,6 +220,11 @@ export async function makeTestEnv(): Promise<TestEnv> {
   let runnerExitCode = 0;
   let runnerHandler: ((call: RunnerCall) => Promise<number>) | null = null;
   let proxySeams: ProxySeamsShape | null = null;
+  let rotateSeams: RotateSeamsShape | null = null;
+  let sqlRunner: SqlRunnerShape = {
+    execute: () => Promise.reject(new Error("no database client in tests (setSqlRunner)")),
+    probe: () => Promise.reject(new Error("no database client in tests (setSqlRunner)")),
+  };
   let keychainWritable = true;
   let floorPushCommittable = true;
   let floorIntentAppendable = true;
@@ -348,6 +359,11 @@ export async function makeTestEnv(): Promise<TestEnv> {
         }),
     }),
     Layer.sync(ProxySeams, () => proxySeams),
+    Layer.sync(RotateSeams, () => rotateSeams),
+    Layer.succeed(SqlRunner, {
+      execute: (url, statements) => sqlRunner.execute(url, statements),
+      probe: (url) => sqlRunner.probe(url),
+    }),
     Layer.succeed(ProcessRunner, {
       run: ({ command, extraEnv, holdSignals, redact }) =>
         Effect.tryPromise({
@@ -463,6 +479,12 @@ export async function makeTestEnv(): Promise<TestEnv> {
     },
     setProxySeams(seams) {
       proxySeams = seams;
+    },
+    setRotateSeams(seams) {
+      rotateSeams = seams;
+    },
+    setSqlRunner(runner) {
+      sqlRunner = runner;
     },
     setExecHandler(handler) {
       execHandler = handler;

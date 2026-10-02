@@ -5150,8 +5150,26 @@ VAR_META_SIG_V2_FIELDS_ORDER = [
 ]
 
 
+# Layout v3 (CRYPTO_SPEC §4.2 — PF6 R9 "expiring values", 2026-10-02): the
+# v2 field sequence plus max_age_days right after description, under its
+# own domain string "<suite>/var-meta-sig-v3". max_age_days is "" (no
+# declaration) or a decimal 1..3650 without leading zeros
+VAR_META_SIG_V3_FIELDS_ORDER = [
+    "domain", "project_id", "environment_id", "variable_id", "name", "status",
+    "var_type", "required", "description", "max_age_days",
+    "meta_version", "prev_meta_sig_hash_hex", "author_user_id",
+    "chain_head_hash_hex", "chain_head_seq",
+]
+
+
 def meta_signed_bytes(ctx: dict) -> bytes:
-    if ctx.get("layout_version", 1) == 2:
+    layout = ctx.get("layout_version", 1)
+    if layout == 3:
+        # A context missing max_age_days (the v3-missing-max-age negative)
+        # is signed as if empty: the bytes are a legitimate v3 statement;
+        # the harness's rejection is the shape check on the context side
+        return lp_encode([ctx.get(key, "") for key in VAR_META_SIG_V3_FIELDS_ORDER])
+    if layout == 2:
         order = VAR_META_SIG_V2_FIELDS_ORDER
     else:
         order = (VAR_META_SIG_FIELDS_ORDER if ctx["kind"] == "variable"
@@ -5388,6 +5406,80 @@ def gen_metadata_signature():
         prev_base="var-v2-create-typed",
     )
     vectors += [v2_typed, v2_untyped, v2_declared, v2_activation, v2_delete]
+
+    # --- Layout-v3 positives (CRYPTO_SPEC §4.2 layout v3 — PF6 R9
+    #     expiring values, 2026-10-02; docs/notes/pf6-design.md ruling
+    #     R9). An addition of a new domain string: the v1 / v2 vectors do
+    #     not change by one byte (extend by appending — §11) ---
+    def make_v3_context(environment_id, variable_id, name, status, var_type, required,
+                        description, max_age_days, meta_version, prev_hash_hex, author_id,
+                        head_hash_hex, head_seq):
+        ctx = make_v2_context(environment_id, variable_id, name, status, var_type, required,
+                              description, meta_version, prev_hash_hex, author_id,
+                              head_hash_hex, head_seq)
+        ctx["domain"] = f"{suite}/var-meta-sig-v3"
+        ctx["layout_version"] = 3
+        ctx["max_age_days"] = max_age_days
+        # Keep the field order of the signed sequence in the context too
+        ordered = {}
+        for key in ["kind", "suite", "domain", "layout_version", "project_id", "environment_id",
+                    "variable_id", "name", "status", "var_type", "required", "description",
+                    "max_age_days", "meta_version", "prev_meta_sig_hash_hex", "author_user_id",
+                    "chain_head_hash_hex", "chain_head_seq"]:
+            ordered[key] = ctx[key]
+        return ordered
+
+    def make_v3_statement(name, environment_id, variable_id, display_name, status,
+                          var_type, required, description, max_age_days, meta_version,
+                          prev_hash_hex, author_id, head_seq, note, prev_base=None):
+        ctx = make_v3_context(environment_id, variable_id, display_name, status,
+                              var_type, required, description, max_age_days, meta_version,
+                              prev_hash_hex, author_id, head_hash(head_seq), head_seq)
+        signed = meta_signed_bytes(ctx)
+        vector = {
+            "name": name,
+            "context": ctx,
+            "author_key_fingerprint_hex": fp_of(author_id),
+            "signed_bytes_hex": signed.hex(),
+            "signed_bytes_sha256_hex": sha256(signed).hex(),
+            "signature_hex": signer_of(author_id).sign(signed).hex(),
+            "note": note,
+        }
+        if prev_base is not None:
+            vector["prev_base"] = prev_base
+        return vector
+
+    v3_expiring = make_v3_statement(
+        "var-v3-create-expiring", "env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL",
+        "active", "url", "true", "Primary database connection URL", "90", 1, "", admin_id, 12,
+        "a layout-v3 variable creation declaring max_age_days = 90 (the value should be replaced "
+        "within 90 days of its push — an advisory declaration like the type, §14.3-7). The "
+        "domain-separation string is maruhi/v1/var-meta-sig-v3; max_age_days lines up right "
+        "after description",
+    )
+    v3_no_max_age = make_v3_statement(
+        "var-v3-create-no-max-age", "env-prod-0001", "var-v3-plain-0014", "FEATURE_FLAG",
+        "declared", "boolean", "false", "", "", 1, "", admin_id, 12,
+        "a layout-v3 declared creation with max_age_days = \"\" (no declaration — the empty string "
+        "is the legitimate 'none' value; the field itself is mandatory in v3)",
+    )
+    v3_upgrade = make_v3_statement(
+        "var-v3-upgrade-from-v2", "env-prod-0001", "var-v2-untyped-0011", "OPTIONAL_FLAG",
+        "active", "", "false", "", "30", 2, v2_untyped["signed_bytes_sha256_hex"], admin_id, 12,
+        "a schema reissue that moves a v2 variable (var-v2-create-untyped) to layout v3 (metaVersion 2, "
+        "prev = the v2 statement) declaring max_age_days = 30. Raising the layout is the legitimate "
+        "direction of §4.2's per-variable monotonicity",
+        prev_base="var-v2-create-untyped",
+    )
+    v3_delete = make_v3_statement(
+        "var-v3-delete-keeps-max-age", "env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL",
+        "deleted", "url", "true", "Primary database connection URL", "90",
+        2, v3_expiring["signed_bytes_sha256_hex"], admin_id, 12,
+        "a layout-v3 deletion (status deleted). Under the same convention as name, the schema fields "
+        "including max_age_days and the layout are kept verbatim from the preceding statement (§4.2)",
+        prev_base="var-v3-create-expiring",
+    )
+    vectors += [v3_expiring, v3_no_max_age, v3_upgrade, v3_delete]
 
     # --- rename-fork (§14.2-5 / §8-2): two valid statements with
     #     different contents on the same (variable, metaVersion).
@@ -5826,6 +5918,30 @@ def gen_metadata_signature():
             "fails verification under the v2 layout too (the layout version is local to the "
             "statement kind and the suite binding is unchanged — §4.2)",
         ),
+        # Layout v3 (PF6 R9)
+        {
+            "name": "layout-confusion-v3-as-v2",
+            "base": v3_expiring["name"],
+            "context": make_v2_context("env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL", "active",
+                                       "url", "true", "Primary database connection URL",
+                                       1, "", admin_id, head_hash(12), 12),
+            "verify_signed_bytes_hex": meta_signed_bytes(
+                make_v2_context("env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL", "active",
+                                "url", "true", "Primary database connection URL",
+                                1, "", admin_id, head_hash(12), 12)).hex(),
+            "signature_hex": v3_expiring["signature_hex"],
+            "verify_key_hex": sig_pub_of(admin_id),
+            "must_fail": True,
+            "note": "recomputing a v3-signed statement (var-v3-create-expiring) with max_age_days dropped "
+                    "under the v2 layout (v2 domain string) fails signature verification (a false "
+                    "layoutVersion declaration v3 → v2 degenerates into a signature mismatch — ruling CR)",
+        },
+        v2_tamper_negative(
+            "tampered-max-age-days", {"max_age_days": "365"},
+            "rewriting max_age_days (90 → 365) fails verification of the original signature (max_age_days "
+            "is signed byte-exact like the other schema fields — §4.2 layout v3)",
+            base_vector=v3_expiring,
+        ),
     ]
 
     # Verification-rule family (kind = "authorization"): the signature is valid but rejected by transition / layout rules
@@ -5882,6 +5998,23 @@ def gen_metadata_signature():
             },
         ),
         v2_rule_negative(
+            "layout-regression-v3-to-v2",
+            make_v2_context("env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL", "active",
+                            "url", "true", "Primary database connection URL",
+                            2, v3_expiring["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12),
+            "layout-regression",
+            "a v2 successor statement (a schema reissue form) to a variable whose immediately preceding "
+            "statement is v3 is rejected even when the signature and prev chain are valid (§4.2's "
+            "per-variable layout monotonicity, generalized at layout v3 — a regression would silently "
+            "drop the max_age_days declaration)",
+            predecessor={
+                "base": "var-v3-create-expiring",
+                "signed_bytes_sha256_hex": v3_expiring["signed_bytes_sha256_hex"],
+                "status": "active",
+                "layout_version": 3,
+            },
+        ),
+        v2_rule_negative(
             "layout-regression-rename",
             make_context("variable", "env-prod-0001", "var-v2-typed-0010", "SERVICE_URL_RENAMED",
                          "active", 2, v2_typed["signed_bytes_sha256_hex"], admin_id,
@@ -5933,6 +6066,39 @@ def gen_metadata_signature():
             "the core of the migration). A status vocabulary violation is a structural violation "
             "rejected with InvalidInput — the signature is valid for this byte string; the "
             "rejection is not by cryptographic verification",
+        ),
+        v2_invalid_input_negative(
+            "v2-with-max-age",
+            dict(make_v2_context("env-prod-0001", "var-rule-0008", "RULE_VAR_V2_MAX", "active",
+                                 "string", "true", "Rule fixture", 1, "", admin_id, head_hash(12), 12),
+                 max_age_days="90"),
+            "a layout-2 statement must not carry max_age_days (the field exists only in layout v3 — "
+            "§4.2). The signed bytes are the plain v2 form; the context's extra field is a "
+            "structural violation rejected with InvalidInput",
+        ),
+        v2_invalid_input_negative(
+            "v3-missing-max-age",
+            {k: v for k, v in make_v3_context("env-prod-0001", "var-rule-0009", "RULE_VAR_V3", "active",
+                                              "string", "true", "Rule fixture", "", 1, "", admin_id,
+                                              head_hash(12), 12).items() if k != "max_age_days"},
+            "a layout-3 statement must carry max_age_days explicitly (\"\" = none; the field is "
+            "mandatory — fail-closed like v2's required). The bytes are signed as the empty "
+            "declaration; the context missing the field is a structural violation rejected with "
+            "InvalidInput",
+        ),
+        v2_invalid_input_negative(
+            "v3-max-age-leading-zero",
+            make_v3_context("env-prod-0001", "var-rule-0010", "RULE_VAR_V3_ZERO", "active",
+                            "string", "true", "Rule fixture", "090", 1, "", admin_id, head_hash(12), 12),
+            "max_age_days is a decimal without leading zeros (one value = one byte string — signature "
+            "uniqueness; §4.2 layout v3). \"090\" is rejected with InvalidInput",
+        ),
+        v2_invalid_input_negative(
+            "v3-max-age-out-of-range",
+            make_v3_context("env-prod-0001", "var-rule-0011", "RULE_VAR_V3_BIG", "active",
+                            "string", "true", "Rule fixture", "3651", 1, "", admin_id, head_hash(12), 12),
+            "max_age_days is at most 3650 (ten years — a longer interval is \"no interval\"; §4.2 "
+            "layout v3). 3651 is rejected with InvalidInput",
         ),
         v2_invalid_input_negative(
             "v2-empty-required",
@@ -6053,10 +6219,12 @@ def gen_metadata_signature():
             "var_signed_fields_order": VAR_META_SIG_FIELDS_ORDER,
             "env_signed_fields_order": ENV_META_SIG_FIELDS_ORDER,
             "var_v2_signed_fields_order": VAR_META_SIG_V2_FIELDS_ORDER,
+            "var_v3_signed_fields_order": VAR_META_SIG_V3_FIELDS_ORDER,
             "binary_encoding": "hashes go into LP as lowercase hex strings (the same convention as chain-entries.json's binary_encoding). Numbers (meta_version / chain_head_seq) are decimal-stringified. name is bound byte-exact as UTF-8 bytes (NFC normalization is the signing client's responsibility — §4.2)",
             "chain_reference": "chain-entries.json: project_id = the genesis entry hash, chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex, author keys = keys. The canonical chain is 24 entries (2026-09-14 ES + PF1 — the meaning of the positives is unchanged; the negatives gained author-environment-out-of-scope-at-head)",
             "no_epoch_anchor": "meta statements carry no epoch anchor (§4.2). Verification rules corresponding to the value signature's epoch-not-current-at-head / environment-not-created-at-head do not exist, and injecting onto a forward meta_version is a known residual undetected by v1 (§14.3-5). var-meta-head-before-env-create being a positive pins this asymmetry",
             "layout_v2": "CRYPTO_SPEC §4.2 layout v2 (0.8-draft — session-46 rulings CR / CS): the second layout of the variable-meta statement. var_meta_signed_bytes_v2 = LP(\"<suite>/var-meta-sig-v2\", project_id, environment_id, variable_id, name, status, var_type, required, description, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq). The context's layout_version (omitted = 1) corresponds to the wire layoutVersion and selects which layout signed_bytes is recomputed under. The verifier checks the supported range before signature verification, and rejects an excess with a typed error (unsupported layout) — an honest failure mode that does not crush it into a signature failure (since no reference expectation exists for this rejection case, the harness pins it per convention-21's division). status is 3 values (active | deleted | declared — declared is v2-only), var_type is a closed set (\"\" | string | number | boolean | url), and required must be explicit (\"true\" | \"false\"). Environment meta statements stay v1 (out of scope of this revision). Existing v1 vectors do not change by one byte (extend by appending — §11)",
+            "layout_v3": "CRYPTO_SPEC §4.2 layout v3 (0.13-draft — PF6 R9 expiring values, docs/notes/pf6-design.md ruling R9): the third layout of the variable-meta statement. var_meta_signed_bytes_v3 = LP(\"<suite>/var-meta-sig-v3\", project_id, environment_id, variable_id, name, status, var_type, required, description, max_age_days, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq). max_age_days is mandatory in v3: \"\" (no declaration) or a decimal 1..3650 without leading zeros (the number of days after a value's push within which it should be replaced — advisory like var_type, §14.3-7). A v2 statement must not carry it. The per-variable layout monotonicity is generalized: a successor's layout is never lower than its predecessor's (v2 → v3 is the legitimate upgrade; v3 → v2 is layout-regression). Deletion keeps max_age_days verbatim like the other schema fields. Existing v1 / v2 vectors do not change by one byte (extend by appending — §11)",
             "extra_keys": {
                 "ghost": {
                     "note": "for author-unknown-in-history (a key that exists nowhere in the chain history)",

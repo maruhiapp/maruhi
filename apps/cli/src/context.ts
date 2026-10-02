@@ -39,6 +39,7 @@ import { logNote, logWarning } from "./notice.ts";
 import type { OwnDeviceStore } from "./own-devices.ts";
 import { type InviteAnchor, PinStore } from "./pins.ts";
 import type { ProxyAcceptStore } from "./proxy-accept.ts";
+import type { SqlRunner } from "./rotate-connector.ts";
 import { warnUnconvergedMandates } from "./rotation-sweep.ts";
 import type { ProcessRunner } from "./run.ts";
 import { requireEnvironmentInScope } from "./scope.ts";
@@ -72,7 +73,8 @@ export type CliServices =
   | Stdio.Stdio
   | HttpClient.HttpClient
   | OwnDeviceStore
-  | ProxyAcceptStore;
+  | ProxyAcceptStore
+  | SqlRunner;
 
 /** Flags shared by data commands (server / project / environment overrides). */
 export interface CommonFlags {

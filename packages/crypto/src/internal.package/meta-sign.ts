@@ -76,10 +76,33 @@ export interface MetaVariableSchema {
   readonly varType: MetaVarType;
   readonly required: "true" | "false";
   readonly description: string;
+  /**
+   * Layout v3 (CRYPTO_SPEC §4.2 — PF6 R9 "expiring values"): the number of
+   * days after a value's push within which it should be replaced, as the
+   * signed decimal string (`"1"`…`"3650"`, no leading zeros), or `""` = no
+   * declaration. Present iff the layout is 3; a v2 statement has no such
+   * field. The declaration is advisory like the type (§14.3-7): the signature
+   * proves the author declared the interval, never that a value was replaced
+   * in time.
+   */
+  readonly maxAgeDays?: string | undefined;
+}
+
+/** The largest declarable max age (days — layout v3). Ten years; a longer interval is "no interval". */
+export const MAX_META_MAX_AGE_DAYS = 3650;
+
+// The signed form of max_age_days: empty, or a decimal without leading
+// zeros within the bound (one value = one byte string — signature
+// uniqueness)
+const MAX_AGE_DAYS_FORM = /^(?:[1-9][0-9]{0,3})?$/;
+
+/** Whether `text` is a well-formed signed max_age_days ("" or 1..3650 without leading zeros). */
+export function isMetaMaxAgeDays(text: string): boolean {
+  return MAX_AGE_DAYS_FORM.test(text) && (text === "" || Number(text) <= MAX_META_MAX_AGE_DAYS);
 }
 
 /** Supported wire layout versions of variable meta statements (§4.2). */
-export const SUPPORTED_META_LAYOUT_VERSIONS: readonly number[] = [1, 2];
+export const SUPPORTED_META_LAYOUT_VERSIONS: readonly number[] = [1, 2, 3];
 
 /**
  * Resolves the effective layout version of a statement or predecessor
@@ -115,11 +138,12 @@ export interface MetaStatementContext {
   readonly status: MetaStatementStatus;
   /**
    * Wire layout version (§4.2 — omitted = 1). Selects which layout's signed
-   * bytes are computed. Layout 2 is variable statements only and requires
-   * `schema`; environment statements stay layout 1 (outside this revision).
+   * bytes are computed. Layouts 2 and 3 are variable statements only and
+   * require `schema` (3 additionally `schema.maxAgeDays`); environment
+   * statements stay layout 1 (outside these revisions).
    */
   readonly layoutVersion?: number | undefined;
-  /** Layout v2 schema fields — present iff the layout version is 2. */
+  /** Layout v2 / v3 schema fields — present iff the layout version is 2 or 3. */
   readonly schema?: MetaVariableSchema | undefined;
   /** 1-based counter (creation = 1; each rename / delete increments). */
   readonly metaVersion: number;
@@ -193,10 +217,13 @@ function layoutV1FieldInvalid(context: MetaStatementContext): string | null {
   return null;
 }
 
-// Layout-2 structure check: variable statements only (environment meta
-// stays v1 — §4.2), schema fields mandatory, var_type a closed set,
-// required mandatory-explicit and the empty string not allowed
-// (fail-closed — vector v2-empty-required), status 3-valued
+// Layout-2 / layout-3 structure check: variable statements only
+// (environment meta stays v1 — §4.2), schema fields mandatory, var_type a
+// closed set, required mandatory-explicit and the empty string not allowed
+// (fail-closed — vector v2-empty-required), status 3-valued. Layout 3
+// additionally carries max_age_days (mandatory; "" or 1..3650 — vectors
+// v3-missing-max-age / v3-max-age-leading-zero / v3-max-age-out-of-range);
+// a layout-2 statement must not carry it (vector v2-with-max-age)
 function layoutV2FieldInvalid(context: MetaStatementContext): string | null {
   if (context.target.kind !== "variable") {
     return "context layoutVersion";
@@ -210,8 +237,19 @@ function layoutV2FieldInvalid(context: MetaStatementContext): string | null {
   if (context.schema.required !== "true" && context.schema.required !== "false") {
     return "context required";
   }
+  if (!maxAgeFieldValid(metaLayoutVersionOf(context), context.schema.maxAgeDays)) {
+    return "context maxAgeDays";
+  }
   const statuses: readonly string[] = ["active", "deleted", "declared"];
   return statuses.includes(context.status) ? null : "context status";
+}
+
+// Layout 3 carries max_age_days (mandatory, well-formed); layout 2 must not
+function maxAgeFieldValid(layout: number, maxAge: string | undefined): boolean {
+  if (layout === 3) {
+    return maxAge !== undefined && isMetaMaxAgeDays(maxAge);
+  }
+  return maxAge === undefined;
 }
 
 // Layout-dependent structure check (precondition: the layout version is
@@ -286,13 +324,18 @@ export function metaContextRejection(context: MetaStatementContext): CryptoError
  * assumes valid input.
  */
 export function buildMetaSignedBytes(context: MetaStatementContext): Uint8Array {
+  const layout = metaLayoutVersionOf(context);
   if (
-    metaLayoutVersionOf(context) === 2 &&
+    (layout === 2 || layout === 3) &&
     context.target.kind === "variable" &&
     context.schema !== undefined
   ) {
+    // Layout 3 = layout 2 plus max_age_days right after description, under
+    // its own domain string (a v3 signature never verifies under v2 and vice
+    // versa — §1 principle 6)
+    const maxAge: LengthPrefixedField[] = layout === 3 ? [context.schema.maxAgeDays ?? ""] : [];
     return encodeLengthPrefixed([
-      `${context.suite}/var-meta-sig-v2`,
+      `${context.suite}/var-meta-sig-v${layout}`,
       context.projectId,
       context.environmentId,
       context.target.variableId,
@@ -301,6 +344,7 @@ export function buildMetaSignedBytes(context: MetaStatementContext): Uint8Array 
       context.schema.varType,
       context.schema.required,
       context.schema.description,
+      ...maxAge,
       context.metaVersion,
       context.prevMetaSigHashHex,
       context.authorUserId,

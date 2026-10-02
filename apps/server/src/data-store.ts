@@ -769,10 +769,19 @@ function storedSchemaColumns(row: StoredRow, prefix: string): MetaVariableSchema
   if (varType === null || required === null || description === null) {
     throw new Error("layout v2 meta statement row is missing schema columns");
   }
+  if (layoutVersion === 2) {
+    return { varType: storedVarType(varType), required: storedRequired(required), description };
+  }
+  // Layout v3: max_age_days is stored as the signed string ("" = none)
+  const maxAge = nullableStringColumn(row, `${prefix}max_age_days`);
+  if (maxAge === null) {
+    throw new Error("layout v3 meta statement row is missing max_age_days");
+  }
   return {
     varType: storedVarType(varType),
     required: storedRequired(required),
     description,
+    maxAgeDays: maxAge === "" ? null : Number(maxAge),
   };
 }
 
@@ -821,7 +830,7 @@ function variableStatementV2Fields(
   prefix: string,
 ): Pick<
   DistributedVariableMetaStatementValue,
-  "layoutVersion" | "varType" | "required" | "description"
+  "layoutVersion" | "varType" | "required" | "description" | "maxAgeDays"
 > {
   const schema = storedSchemaColumns(row, prefix);
   if (schema === null) {
@@ -832,6 +841,8 @@ function variableStatementV2Fields(
     varType: schema.varType,
     required: schema.required,
     description: schema.description,
+    // Layout v3 carries maxAgeDays (null = none); a v2 row carries no such field
+    ...(schema.maxAgeDays === undefined ? {} : { maxAgeDays: schema.maxAgeDays }),
   };
 }
 
@@ -879,7 +890,7 @@ const MS_COLUMNS =
 // A variable statement also selects the v2 carried-field columns
 // (columns that do not exist in the environment side's SELECT —
 // environment_meta_statements is outside v2's scope)
-const VAR_MS_COLUMNS = `${MS_COLUMNS}, ms.layout_version, ms.var_type, ms.required, ms.description`;
+const VAR_MS_COLUMNS = `${MS_COLUMNS}, ms.layout_version, ms.var_type, ms.required, ms.description, ms.max_age_days`;
 
 const makeEnvironmentQueries = (sql: SqlStorage) => ({
   findEnvironment: (environmentId: string) =>
@@ -1057,7 +1068,8 @@ const makeVariableQueries = (sql: SqlStorage) => ({
       variableAnchorOf(
         sql
           .exec(
-            `SELECT signed_bytes_hash_hex, status, layout_version, var_type, required, description
+            `SELECT signed_bytes_hash_hex, status, layout_version, var_type, required, description,
+                    max_age_days
              FROM variable_meta_statements
              WHERE environment_id = ? AND variable_id = ? AND meta_version = ?`,
             environmentId,
@@ -1298,7 +1310,8 @@ const makeVersionQueries = (sql: SqlStorage) => ({
                   ms.author_user_id AS ms_author_user_id,
                   ms.author_key_fingerprint AS ms_author_key_fingerprint,
                   ms.layout_version AS ms_layout_version, ms.var_type AS ms_var_type,
-                  ms.required AS ms_required, ms.description AS ms_description
+                  ms.required AS ms_required, ms.description AS ms_description,
+                  ms.max_age_days AS ms_max_age_days
            FROM variables v
            JOIN variable_versions vv
              ON vv.environment_id = v.environment_id
@@ -1721,9 +1734,22 @@ function layoutColumnValues(statement: MetaStatementInput): readonly (string | n
   const layoutVersion = statement.layoutVersion ?? 1;
   const schema = statement.schema;
   if (schema === undefined) {
-    return [layoutVersion, null, null, null];
+    return [layoutVersion, null, null, null, null];
   }
-  return [layoutVersion, schema.varType, schema.required ? "true" : "false", schema.description];
+  // max_age_days: NULL on a v2 row; the signed string ("" = none) on a v3 row
+  const maxAge =
+    schema.maxAgeDays === undefined
+      ? null
+      : schema.maxAgeDays === null
+        ? ""
+        : String(schema.maxAgeDays);
+  return [
+    layoutVersion,
+    schema.varType,
+    schema.required ? "true" : "false",
+    schema.description,
+    maxAge,
+  ];
 }
 
 /**
@@ -1744,7 +1770,9 @@ function insertStatementRow(
   const keyColumns = isVariable
     ? "environment_id, variable_id, meta_version"
     : "environment_id, meta_version";
-  const layoutColumns = isVariable ? ", layout_version, var_type, required, description" : "";
+  const layoutColumns = isVariable
+    ? ", layout_version, var_type, required, description, max_age_days"
+    : "";
   const values: readonly (string | number | null)[] = [
     ...keys,
     statement.suite,

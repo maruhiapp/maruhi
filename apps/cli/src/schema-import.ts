@@ -347,6 +347,7 @@ function approvalStep(
           varType: draft.varType,
           required: draft.required,
           description: draft.description,
+          maxAgeDays: null,
         },
         pushValue: false,
       },
@@ -446,6 +447,8 @@ function declareApproved(
       varType: { kind: "set", value: approved.schema.varType },
       required: { kind: "set", value: approved.schema.required },
       description: { kind: "set", value: approved.schema.description },
+      // An import declares no max age (set it later with `schema set --max-age`)
+      maxAgeDays: { kind: "keep" },
     },
     resync: input.resync,
     floor: input.floor,

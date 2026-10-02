@@ -199,13 +199,37 @@ const VAR_V2_SIGNED_FIELDS_ORDER = [
   "chain_head_hash_hex",
   "chain_head_seq",
 ];
+// Layout v3 (CRYPTO_SPEC §4.2's 0.13-draft — PF6 R9: inserts max_age_days
+// immediately after description)
+const VAR_V3_SIGNED_FIELDS_ORDER = [
+  "domain",
+  "project_id",
+  "environment_id",
+  "variable_id",
+  "name",
+  "status",
+  "var_type",
+  "required",
+  "description",
+  "max_age_days",
+  "meta_version",
+  "prev_meta_sig_hash_hex",
+  "author_user_id",
+  "chain_head_hash_hex",
+  "chain_head_seq",
+];
 const sameOrder = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 // Meta-statement domain string (§4.2): binds the suite, var vs env
 // distinction, and layout version
-const expectedMetaDomain = (ctx) =>
-  (ctx.layout_version ?? 1) === 2
+const expectedMetaDomain = (ctx) => {
+  const layout = ctx.layout_version ?? 1;
+  if (layout === 3) {
+    return `${ctx.suite}/var-meta-sig-v3`;
+  }
+  return layout === 2
     ? `${ctx.suite}/var-meta-sig-v2`
     : `${ctx.suite}/${ctx.kind === "variable" ? "var" : "env"}-meta-sig`;
+};
 
 // --- encoding.json -----------------------------------------------------------
 {
@@ -1309,15 +1333,27 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     "meta-sig: var_v2_signed_fields_order matches spec",
     sameOrder(doc.var_v2_signed_fields_order, VAR_V2_SIGNED_FIELDS_ORDER),
   );
+  check(
+    "meta-sig: var_v3_signed_fields_order matches spec",
+    sameOrder(doc.var_v3_signed_fields_order, VAR_V3_SIGNED_FIELDS_ORDER),
+  );
   // The context's layout_version (omitted = 1) carries the layout
   // selection (§4.2 ruling CR)
   const orderOf = (ctx) => {
-    if ((ctx.layout_version ?? 1) === 2) {
+    const layout = ctx.layout_version ?? 1;
+    if (layout === 3) {
+      return VAR_V3_SIGNED_FIELDS_ORDER;
+    }
+    if (layout === 2) {
       return VAR_V2_SIGNED_FIELDS_ORDER;
     }
     return ctx.kind === "variable" ? VAR_SIGNED_FIELDS_ORDER : ENV_SIGNED_FIELDS_ORDER;
   };
-  const signedBytes = (ctx) => lpEncode(orderOf(ctx).map((key) => ctx[key]));
+  // A v3 context missing max_age_days (the v3-missing-max-age structural
+  // negative) is signed as the empty declaration: the bytes are a legitimate
+  // v3 statement and the rejection is the context's shape, not the signature
+  const signedBytes = (ctx) =>
+    lpEncode(orderOf(ctx).map((key) => (key === "max_age_days" ? (ctx[key] ?? "") : ctx[key])));
   const byName = new Map(doc.vectors.map((v) => [v.name, v]));
 
   const verifyStatement = async (v, label) => {
@@ -1513,6 +1549,47 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
         deleted.context.var_type === created.context.var_type &&
         deleted.context.required === created.context.required &&
         deleted.context.description === created.context.description,
+    );
+  }
+  // Layout v3 (§4.2's 0.13-draft): a v2 → v3 reissue links to its v2
+  // predecessor (the legitimate upgrade direction), a v3 deletion keeps
+  // max_age_days verbatim with the other schema fields, and the structural
+  // negatives carry exactly the shape the spec refuses
+  {
+    const upgraded = byName.get("var-v3-upgrade-from-v2");
+    const predecessor = byName.get(upgraded.prev_base);
+    const created = byName.get("var-v3-create-expiring");
+    const deleted = byName.get("var-v3-delete-keeps-max-age");
+    check(
+      "meta-sig v3: upgrade links a v2 predecessor",
+      (predecessor.context.layout_version ?? 1) === 2 &&
+        upgraded.context.layout_version === 3 &&
+        upgraded.context.prev_meta_sig_hash_hex === predecessor.signed_bytes_sha256_hex,
+    );
+    check(
+      "meta-sig v3: delete keeps max_age_days and the schema fields",
+      deleted.context.status === "deleted" &&
+        deleted.context.name === created.context.name &&
+        deleted.context.var_type === created.context.var_type &&
+        deleted.context.required === created.context.required &&
+        deleted.context.description === created.context.description &&
+        deleted.context.max_age_days === created.context.max_age_days,
+    );
+    const negativeContext = (name) => doc.negative.find((n) => n.name === name).context;
+    check(
+      "meta-sig v3: v2-with-max-age carries the field on a layout-2 context",
+      negativeContext("v2-with-max-age").layout_version === 2 &&
+        typeof negativeContext("v2-with-max-age").max_age_days === "string",
+    );
+    check(
+      "meta-sig v3: v3-missing-max-age omits the field on a layout-3 context",
+      negativeContext("v3-missing-max-age").layout_version === 3 &&
+        !("max_age_days" in negativeContext("v3-missing-max-age")),
+    );
+    check(
+      "meta-sig v3: leading-zero and out-of-range values are outside 1..3650 canonical form",
+      !/^(?:[1-9][0-9]{0,3})$/.test(negativeContext("v3-max-age-leading-zero").max_age_days) &&
+        Number(negativeContext("v3-max-age-out-of-range").max_age_days) > 3650,
     );
   }
   // nfc-variant: pins that the NFD variant of a name signed in NFC

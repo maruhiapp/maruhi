@@ -82,6 +82,7 @@ export {
   EnvironmentManifestSchema,
   type LeasedDek,
   LeasedDekSchema,
+  MetaMaxAgeDaysSchema,
   MetaVarTypeSchema,
   type RecipientDek,
   RecipientDekSchema,

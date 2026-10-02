@@ -607,6 +607,8 @@ export interface WireVariableMetaStatement {
   readonly varType?: "" | "string" | "number" | "boolean" | "url";
   readonly required?: boolean;
   readonly description?: string;
+  /** Layout v3 only (null = no declaration). */
+  readonly maxAgeDays?: number | null;
   readonly chainHeadHashHex: string;
   readonly chainHeadSeq: number;
   readonly signatureHex: string;
@@ -615,7 +617,7 @@ export interface WireVariableMetaStatement {
 /** Wire representation of an environment statement (EnvironmentMetaStatement — §12-2; stays v1). */
 export type WireEnvironmentMetaStatement = Omit<
   WireVariableMetaStatement,
-  "variableId" | "layoutVersion" | "varType" | "required" | "description"
+  "variableId" | "layoutVersion" | "varType" | "required" | "description" | "maxAgeDays"
 > & { readonly status: "active" | "deleted" };
 
 function metaTargetOf(statement: { readonly variableId?: string }): MetaStatementTarget {
@@ -651,6 +653,10 @@ function metaContextOf(
             varType: statement.varType,
             required: statement.required ? ("true" as const) : ("false" as const),
             description: statement.description,
+            // Layout v3: max_age_days as the signed string ("" = none)
+            ...(statement.maxAgeDays === undefined
+              ? {}
+              : { maxAgeDays: statement.maxAgeDays === null ? "" : String(statement.maxAgeDays) }),
           },
         }),
     metaVersion: statement.metaVersion,

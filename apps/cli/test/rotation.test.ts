@@ -114,6 +114,8 @@ async function makeRotationServer(input: {
   readonly metadataAvailable?: boolean;
   /** Whether the environment-list GET works (false = 500 — the deleted-environment verification failure path). */
   readonly environmentsAvailable?: boolean;
+  /** When set, a layout-v3 variable with max age 30 days exists, last pushed at this time (PF6 R9). */
+  readonly expiringPushedAtMs?: number;
 }): Promise<RotationServerState> {
   const projectId = input.built.projectId;
   const currentEpoch = input.currentEpoch ?? 1;
@@ -145,6 +147,17 @@ async function makeRotationServer(input: {
     status: "deleted",
     metaVersion: 2,
   });
+  // A layout-v3 statement declaring a max age (PF6 R9 — the expiring section)
+  const expiringStatement: WireDistributedVariableStatement = await statementFor({
+    projectId,
+    environmentId: ENV_ID,
+    variableId: "vexp",
+    name: "STRIPE_SECRET_KEY",
+    author: owner,
+    head: headOf(input.built, 1),
+    schema: { varType: "string", required: true, description: "", maxAgeDays: 30 },
+  });
+  const expiringStatements = input.expiringPushedAtMs === undefined ? [] : [expiringStatement];
   const manifest = await manifestFor({
     projectId,
     environmentId: ENV_ID,
@@ -152,7 +165,7 @@ async function makeRotationServer(input: {
     issuer: owner,
     head: headOf(input.built, input.built.entries.length),
     envStatement,
-    statements: [activeStatement, deletedStatement],
+    statements: [activeStatement, deletedStatement, ...expiringStatements],
   });
 
   const handlers: MockHandler[] = [
@@ -186,12 +199,32 @@ async function makeRotationServer(input: {
               environmentId: ENV_ID,
               currentEpoch,
               statement: envStatement,
-              variables: [activeStatement],
+              variables: [activeStatement, ...expiringStatements],
               deletedVariables: [deletedStatement],
               manifest,
               schemaPolicy: "enabled" as const,
             },
           },
+    ),
+    onRequest(
+      "GET",
+      `/projects/${projectId}/environments/${ENV_ID}/variables/vexp/versions`,
+      () => ({
+        status: 200,
+        json: {
+          variableId: "vexp",
+          versions: [
+            {
+              version: 3,
+              epoch: currentEpoch,
+              writerUserId: owner.userId,
+              writerKeyFingerprintHex: owner.fingerprintHex,
+              pushedAtMs: input.expiringPushedAtMs ?? 0,
+              flagsIfCurrent: 0,
+            },
+          ],
+        },
+      }),
     ),
     onRequest("GET", `/projects/${projectId}/rotation/flags`, () => ({
       status: 200,
@@ -266,8 +299,14 @@ describe("maruhi rotation list", () => {
     expect(logs).toContain("read (confirmed fetch)");
     expect(logs).toContain("readable (fetch was possible)");
     expect(logs).toContain(`member:${target.userId}`);
-    // The resolution paths (resolve via push / dismiss for the deleted)
-    expect(logs).toContain("maruhi rotation dismiss");
+    // The resolution paths (resolve via push / dismiss for the deleted) —
+    // one "next:" action per row (PF6 R3; no rotation config in cwd = the by-hand route)
+    expect(logs).toContain(
+      "    next: rotate at the issuer, then `maruhi push ALPHA --env env-app-1` (runbooks: https://maruhi.app/docs/rotation)",
+    );
+    expect(logs).toContain(
+      "    next: deleted — rotate at the issuer, then `maruhi rotation dismiss vdel --env env-app-1` (a deleted variable cannot be pushed)",
+    );
     // The chain is converged, so no unconverged warning appears
     expect(env.errors.join("\n")).not.toContain("unconverged rotation mandate");
   });
@@ -293,6 +332,47 @@ describe("maruhi rotation list", () => {
     const env = await startEnv(state, built.projectId);
     expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("No rotation flags are currently active");
+    expect(env.logs.join("\n")).not.toContain("Expiring values");
+  });
+
+  it("lists values past, or close to, the max age their layout-v3 schema declares, with the next step (PF6 R9)", async () => {
+    const built = await convergedChain();
+    const day = 24 * 60 * 60 * 1000;
+    // Pushed 40 days ago under a 30-day max age: expired 10 days ago
+    const expired = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [],
+      expiringPushedAtMs: Date.now() - 40 * day,
+    });
+    const env = await startEnv(expired, built.projectId);
+    expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("Expiring values: 1 value past the declared max age");
+    expect(logs).toMatch(
+      /\[expired\] env-app-1 STRIPE_SECRET_KEY: max age 30d, pushed \d{4}-\d{2}-\d{2}, expired 10 days ago — next: rotate at the issuer, then `maruhi push STRIPE_SECRET_KEY --env env-app-1`/,
+    );
+    // Pushed 25 days ago: due in 5 days (inside the 14-day window)
+    const soon = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [],
+      expiringPushedAtMs: Date.now() - 25 * day,
+    });
+    const soonEnv = await startEnv(soon, built.projectId);
+    expect(await runCli(["rotation", "list"], soonEnv.layer)).toBe(0);
+    expect(soonEnv.logs.join("\n")).toContain("Expiring values: 1 value due within 14 days");
+    expect(soonEnv.logs.join("\n")).toContain("[due] env-app-1 STRIPE_SECRET_KEY: max age 30d");
+    // Pushed yesterday: nothing to report
+    const fresh = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [],
+      expiringPushedAtMs: Date.now() - day,
+    });
+    const freshEnv = await startEnv(fresh, built.projectId);
+    expect(await runCli(["rotation", "list"], freshEnv.layer)).toBe(0);
+    expect(freshEnv.logs.join("\n")).not.toContain("Expiring values");
   });
 });
 

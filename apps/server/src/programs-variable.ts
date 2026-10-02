@@ -114,7 +114,7 @@ function writeVersionWithAudit(
 /**
  * schema-locked (§12-11 / §12-5): in a locked project, variable creation
  * (metaVersion 1 — both declared and value-bundled) requires layoutVersion 2
- * and a non-empty varType (write-time blocking of the silent creation of
+ * or above and a non-empty varType (write-time blocking of the silent creation of
  * shadow variables by typos). It is a **one-time check at creation**, not a
  * continuing invariant — a later schema reissue may set varType back to ""
  * even under locked, and it does not reach back to a declared variable's
@@ -127,7 +127,7 @@ function ensureSchemaLockedCreation(
   if (schemaPolicy !== "locked") {
     return Effect.void;
   }
-  if (statementLayoutVersion(statement) !== 2 || (statement.schema?.varType ?? "") === "") {
+  if (statementLayoutVersion(statement) < 2 || (statement.schema?.varType ?? "") === "") {
     return Effect.fail(rejectData({ kind: "schema-policy-rejected", reason: "schema-required" }));
   }
   return Effect.void;
