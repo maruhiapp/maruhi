@@ -571,11 +571,23 @@ describe("the forward proxy", () => {
       name: "PEMLIKE",
       placeholder: makePlaceholder("PEMLIKE"),
       hosts: [pattern("api.example.test")],
-      surfaces: ["header"],
+      surfaces: ["header", "body"],
       resolve: () => Promise.resolve(enc.encode("line1\nline2")),
       known: () => [enc.encode("line1\nline2")],
     };
     const proxy = await proxyWith({ credentials: [awkward, multiline] });
+    // A multi-line value substituted only into the body is sent as it is (§21 R-9)
+    const inBody = await httpsViaProxy({
+      proxyPort: proxy.port,
+      ca: [runCa.certPem],
+      url: "https://api.example.test/echo",
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: `key=${multiline.placeholder}`,
+    });
+    expect(inBody.status).toBe(200);
+    expect(secureOrigin.seen[0]?.body).toBe("key=line1\nline2");
+    secureOrigin.seen.length = 0;
     const query = await httpViaProxy({
       proxyPort: proxy.port,
       url: `http://plain.localhost/echo?key=${awkward.placeholder}`,

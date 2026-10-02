@@ -43,6 +43,11 @@ import { shouldUseColor } from "./notice.ts";
 import { makeFileOwnDeviceStore, OwnDeviceStore, ownDevicesPathOf } from "./own-devices.ts";
 import { makeFilePinStore, PinStore, pinsDirOf } from "./pins.ts";
 import {
+  acceptedProxyConfigsPathOf,
+  makeFileProxyAcceptStore,
+  ProxyAcceptStore,
+} from "./proxy-accept.ts";
+import {
   buildChildEnvironment,
   type ExecInput,
   type ExecOutcome,
@@ -724,6 +729,11 @@ export function liveLayer(): Layer.Layer<CliServices> {
     // The verified-fingerprint ledger (KF) is the same family (<config dir>/known-fingerprints.json)
     Layer.succeed(FingerprintBook, makeFileFingerprintBook(fingerprintBookPathOf(configPath))),
     Layer.succeed(OwnDeviceStore, makeFileOwnDeviceStore(ownDevicesPathOf(configPath))),
+    // The proxy configs a person accepted (pf4-design.md §21 R-8) are the same family (<config dir>/proxy-accepted.json)
+    Layer.succeed(
+      ProxyAcceptStore,
+      makeFileProxyAcceptStore(acceptedProxyConfigsPathOf(configPath)),
+    ),
     Layer.succeed(CliIo, makeLiveIo()),
     Layer.succeed(ProcessRunner, makeBunProcessRunner()),
     FetchHttpClient.layer,

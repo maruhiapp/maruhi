@@ -4,7 +4,7 @@
 // caller adds "which file and why" (the content itself is never put in the
 // message).
 
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 
 import { isProjectId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -83,4 +83,29 @@ export function loadIfPresent<A>(
     );
     return exists ? yield* load(path) : null;
   });
+}
+
+/** A per-user ledger file as read (`corrupt` is distinguishable from `missing` — a person deals with it). */
+export type LedgerRead<T> =
+  | { readonly state: "loaded"; readonly file: T }
+  | { readonly state: "missing" }
+  | { readonly state: "corrupt" };
+
+/**
+ * Reads a per-user ledger (own-devices, accepted proxy configs): absent =
+ * `missing`, unreadable by `decode` = `corrupt`. Strict decoding, no partial
+ * reads (the pins / fingerprint-ledger discipline).
+ */
+export async function readLedger<T>(
+  path: string,
+  decode: (json: string) => T | null,
+): Promise<LedgerRead<T>> {
+  let json: string;
+  try {
+    json = await readFile(path, "utf8");
+  } catch {
+    return { state: "missing" };
+  }
+  const file = decode(json);
+  return file === null ? { state: "corrupt" } : { state: "loaded", file };
 }

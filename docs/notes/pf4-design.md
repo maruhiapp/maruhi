@@ -603,8 +603,11 @@ run` again, since `run` now does the right thing.
 human gate or read another process's memory" — qualitatively meaningful
 against a prompt-injected agent, not a boundary against a hostile one; the
 repository file is editable by an agent in the repository (the trust level
-of today's `run`); `--plain` cannot be used from a pipe or CI when a config
-exists (by design — `ci run` is the CI path). The ancestry-fencing holder
+of today's `run`) — *as first written this residual undercut the bar: an
+agent could rewrite the file to `passthrough` and run again; closed by the
+acceptance ceremony of §21 R-8 (a config is applied only once a person
+accepted its content on the machine)*; `--plain` cannot be used from a pipe
+or CI when a config exists (by design — `ci run` is the CI path). The ancestry-fencing holder
 and the signed rules (5-B) stay recorded as follow-ups, both weaker than the
 sandbox shape and both large.
 
@@ -676,6 +679,60 @@ same round (R-1 … R-6), plus the CI gate's two findings (R-7).
 - **R-7 (CI fallow gate)** — the unused `ia5String` DER helper is removed;
   `loadSyncConfigIfPresent` / `loadProxyConfigIfPresent` share
   `loadIfPresent` in json-record.ts (the 17-line clone).
+
+A second pass of the bots on the merge commit added three findings:
+
+- **R-8 (Cursor Security Reviewer, HIGH) — an agent rewrites the config.**
+  `--plain` is a human ceremony, but `maruhi run` / `proxy run` applied
+  whatever `maruhi.proxy.json` said; an in-account agent could set
+  `unlisted: passthrough` or add a host it controls and run again, which is
+  the plaintext the ceremony denies. §20 had stated the residual ("the
+  repository file is editable by an agent") but framed (f)'s bar as "defeat
+  the human gate", which this shows was too strong: the bar was "edit one
+  file in the repository". Options looped: (a) document the residual
+  honestly and nothing else (leaves ruling M's rationale weaker than the
+  owner was told); (b) gate `passthrough` behind the ceremony on every run
+  (kills the agent use case — pass-through exists for the agent's non-HTTP
+  values); (c) **acceptance by a person — the direnv model**: the accepted
+  file's content is recorded per user outside the repository
+  (`<config dir>/proxy-accepted.json`); a content match applies silently;
+  a new or changed file is accepted, and recorded, when the ceremony
+  evidence is present (no known agent, stdin and stdout terminals) and
+  refused otherwise with a message naming who accepts and how; (d) the same
+  record in the OS keychain (a real fence on macOS through the item ACL,
+  none on Linux; and the keychain is reserved for the two secrets by the
+  CLI's persistence rule); (e) pure trust-on-first-use without the
+  ceremony (an agent would "first-use" its own file — rejected); (f)
+  signed rules — the config's hash recorded on the project's chain by an
+  owner, four-eyes-able, which an agent cannot forge (structural inside
+  maruhi's trust model; a spec revision; large). **(c) adopted now, (f)
+  stays the recorded structural successor** — the UX is the same (a person
+  accepts the rules), so (c) is its local precursor, not a detour. The
+  content is stored verbatim rather than hashed (no cryptography needed
+  for a non-secret file, and a mismatch can be explained); the record is
+  keyed by the config's resolved path so `./maruhi.proxy.json` and
+  `--config /…/maruhi.proxy.json` are one entry; the ledger follows the
+  fingerprint-ledger discipline (0600, atomic rename, a corrupt file is
+  reported and never overwritten). Residual, stated plainly: the record is
+  a file the same user can write — the bar is now "edit a file outside the
+  repository that nothing in the repository points at", meaningful against
+  a prompt-injected agent working in the repository, not a boundary against
+  a hostile same-user process (the sandbox shape remains that). A person
+  running `maruhi run … | tee log` for the first time is refused once and
+  told to run it from the terminal first. Pinned end to end (agent refused
+  before any network, pipe refused, a person accepts and the agent runs,
+  the agent's rewrite is refused, the person accepts the change, the cwd
+  default and `--config` share the entry, a corrupt record is reported).
+  ADR-0016 revision 2 carries the sentence.
+- **R-9 (Bugbot) — `isHeaderSafe` applied to every substituted value**,
+  so a multi-line secret with `surfaces: ["body"]` was refused although
+  body substitution is byte-based. The check now runs on the header as it
+  will be sent (a `Basic` credential is base64 and passes; a placeholder
+  found only in the path, query, or body is never a header). Pinned.
+- **R-10 (Bugbot) — the run's proxy credential was not in the redaction**:
+  `printenv` under an agent would have left the `HTTPS_PROXY` userinfo in a
+  transcript, and whoever holds it can use the proxy. The credential's
+  bytes join the redaction fragments. Pinned.
 
 Also in this round: `origin/main` merged (effect 4.0.0 stable — the
 `effect/unstable/*` import paths moved to `effect/*`; two conflicts, ROADMAP

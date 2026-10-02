@@ -38,6 +38,7 @@ import type { FingerprintBook } from "./known-fingerprints.ts";
 import { logNote, logWarning } from "./notice.ts";
 import type { OwnDeviceStore } from "./own-devices.ts";
 import { type InviteAnchor, PinStore } from "./pins.ts";
+import type { ProxyAcceptStore } from "./proxy-accept.ts";
 import { warnUnconvergedMandates } from "./rotation-sweep.ts";
 import type { ProcessRunner } from "./run.ts";
 import { requireEnvironmentInScope } from "./scope.ts";
@@ -70,7 +71,8 @@ export type CliServices =
   | ProcessRunner
   | Stdio.Stdio
   | HttpClient.HttpClient
-  | OwnDeviceStore;
+  | OwnDeviceStore
+  | ProxyAcceptStore;
 
 /** Flags shared by data commands (server / project / environment overrides). */
 export interface CommonFlags {

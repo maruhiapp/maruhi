@@ -565,6 +565,10 @@ export function proxyRunOp(
         `proxy run: could not remove the proxy CA directory (${path}) — remove it by hand`,
     });
     const listen = yield* resolveListen(input);
+    // The run's proxy credential (userinfo of the proxy URL — §19 D-14b).
+    // Whoever holds it can use the proxy, so the redaction covers it too:
+    // a `printenv` under an agent must not leave it in a transcript (§21 R-10)
+    const proxyPassword = randomAlphanumeric(22);
     const exitCode = yield* Effect.gen(function* () {
       const proxy = yield* Effect.tryPromise({
         try: () =>
@@ -575,7 +579,7 @@ export function proxyRunOp(
             hopDir: dir,
             // Every client must present this run's proxy credential (userinfo in
             // the proxy URL — honoured by curl, git, Python, Go, Node, Bun; §19 D-14b)
-            credential: { user: "maruhi", password: randomAlphanumeric(22) },
+            credential: { user: "maruhi", password: proxyPassword },
             ...(listen === undefined ? {} : { listen }),
             ...(input.advertise === undefined ? {} : { advertise: input.advertise }),
             ...(seams?.upstream === undefined ? {} : { upstream: seams.upstream }),
@@ -615,7 +619,10 @@ export function proxyRunOp(
           command: input.command,
           extraEnv,
           holdSignals: true,
-          redact: yield* redactionFragments(plan.passthrough, brokeredAtStart),
+          redact: yield* redactionFragments(plan.passthrough, [
+            ...brokeredAtStart,
+            new TextEncoder().encode(proxyPassword),
+          ]),
         });
       }).pipe(Effect.ensuring(releaseAndClose(plan.credentials, proxy)));
     }).pipe(Effect.ensuring(removeDir));

@@ -31,7 +31,7 @@
 // warning. Overwriting a corrupt file is refused (same discipline as
 // pins / the fingerprint ledger).
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { isEnvironmentId } from "@maruhi/core";
@@ -41,6 +41,7 @@ import { Context, Effect } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
+import { type LedgerRead, readLedger } from "./json-record.ts";
 import { BOOK_KEY, decodeOriginBook, isRecord } from "./origin-book.ts";
 
 /** Where the record came from (the three DK-D conditions). */
@@ -267,20 +268,7 @@ function decodeFile(json: string): OwnDevicesFile | null {
 
 /** File-backed own-devices store at `path` (used by both production and tests). */
 export function makeFileOwnDeviceStore(path: string): OwnDeviceStoreShape {
-  const loadRaw = async (): Promise<
-    | { readonly file: OwnDevicesFile; readonly state: "loaded" }
-    | { readonly state: "missing" }
-    | { readonly state: "corrupt" }
-  > => {
-    let json: string;
-    try {
-      json = await readFile(path, "utf8");
-    } catch {
-      return { state: "missing" };
-    }
-    const file = decodeFile(json);
-    return file === null ? { state: "corrupt" } : { file, state: "loaded" };
-  };
+  const loadRaw = (): Promise<LedgerRead<OwnDevicesFile>> => readLedger(path, decodeFile);
 
   const write = async (file: OwnDevicesFile): Promise<void> => {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });

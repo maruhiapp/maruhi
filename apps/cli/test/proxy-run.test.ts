@@ -157,6 +157,16 @@ function handlers(): MockHandler[] {
   ];
 }
 
+/** Accepts the config the way a person does: one run from a human terminal (pf4-design.md §21 R-8). */
+async function acceptAsPerson(env: TestEnv, configPath: string): Promise<void> {
+  env.setAgent({ isAgent: false });
+  env.setTerminal({ stdin: true, stdout: true, stderr: true });
+  expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(0);
+  expect(env.errors.join("\n")).toContain("accepted for brokering on this machine (first use)");
+  env.runnerCalls.length = 0;
+  env.errors.length = 0;
+}
+
 /** A test environment with a session, the default project / environment, and a proxy config file. */
 async function startEnv(
   config: unknown,
@@ -281,13 +291,19 @@ describe("maruhi proxy run", () => {
 
   it("passes the pass-through values to the run-output redaction when the output is not a terminal", async () => {
     const { env, configPath } = await startEnv(BROKER_CONFIG);
+    await acceptAsPerson(env, configPath);
     env.setTerminal({ stdout: false });
     expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(0);
-    // Pass-through values and the brokered values known at start (defence in depth)
-    const redact = env.runnerCalls[0]?.redact ?? [];
-    expect(redact.map((bytes) => new TextDecoder().decode(bytes)).toSorted()).toEqual(
-      [REAL_DB, REAL_TOKEN].toSorted(),
+    // Pass-through values, the brokered values known at start (defence in
+    // depth), and the run's proxy credential (§21 R-10 — `printenv` must not
+    // leave it in a transcript)
+    const redact = (env.runnerCalls[0]?.redact ?? []).map((bytes) =>
+      new TextDecoder().decode(bytes),
     );
+    const proxyUrl = env.runnerCalls[0]?.extraEnv["HTTPS_PROXY"] ?? "";
+    const password = new URL(proxyUrl).password;
+    expect(password).toMatch(/^[A-Za-z0-9]{22}$/);
+    expect(redact.toSorted()).toEqual([REAL_DB, REAL_TOKEN, password].toSorted());
   });
 
   it("injects unlisted variables when the config says passthrough, and prints each decision with --verbose", async () => {
@@ -323,10 +339,65 @@ describe("maruhi proxy run", () => {
 
   it("is allowed when an AI agent is detected (the point of the command) and without a terminal", async () => {
     const { env, configPath } = await startEnv(BROKER_CONFIG);
+    await acceptAsPerson(env, configPath);
     env.setAgent({ isAgent: true, name: "claude-code" });
     env.setTerminal({ stdin: false, stdout: false, stderr: false });
     expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(0);
     expect(env.runnerCalls).toHaveLength(1);
+  });
+
+  it("applies a config only once a person accepted its content: a new or changed file is refused under an agent or without a terminal (§21 R-8)", async () => {
+    const { env, configPath, configDir } = await startEnv(BROKER_CONFIG);
+    const server = servers[servers.length - 1];
+    // Under an agent, before anyone accepted the file: refused before any network, child not started
+    env.setAgent({ isAgent: true, name: "cursor" });
+    const requestsBefore = server?.requests.length ?? 0;
+    expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      `Refused to apply the proxy config ${configPath}: it has not been accepted on this machine yet, and an AI agent environment was detected (cursor)`,
+    );
+    expect(env.runnerCalls).toHaveLength(0);
+    expect(server?.requests.length).toBe(requestsBefore);
+    // Without a terminal (a pipe): refused too, naming what is missing
+    env.setAgent({ isAgent: false });
+    env.setTerminal({ stdout: false });
+    expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "stdout is not an interactive terminal. Accepting the rules takes a person at an interactive terminal",
+    );
+    // A person at a terminal accepts it (recorded outside the repository) — the agent may use it from then on
+    await acceptAsPerson(env, configPath);
+    const recordPath = join(dirname(env.configPath), "proxy-accepted.json");
+    expect(existsSync(recordPath)).toBe(true);
+    env.setAgent({ isAgent: true, name: "cursor" });
+    expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).not.toContain("accepted for brokering");
+    // The agent rewrites the file (passthrough everything): refused again until a person accepts the change
+    await writeFile(configPath, JSON.stringify({ ...BROKER_CONFIG, unlisted: "passthrough" }));
+    expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "it has changed since a person last accepted it on this machine, and an AI agent environment was detected (cursor)",
+    );
+    env.setAgent({ isAgent: false });
+    env.setTerminal({ stdin: true, stdout: true });
+    env.errors.length = 0;
+    expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain("accepted for brokering on this machine (changed)");
+    // The record is keyed by the resolved path: `maruhi.proxy.json` from the working directory is the same entry
+    const originalCwd = cwd();
+    chdir(configDir);
+    try {
+      env.setAgent({ isAgent: true, name: "cursor" });
+      expect(await runCli(["run", "--", "true"], env.layer)).toBe(0);
+    } finally {
+      chdir(originalCwd);
+    }
+    // A corrupt record is reported, never overwritten
+    await writeFile(recordPath, "{ nope");
+    env.setAgent({ isAgent: false });
+    await writeFile(configPath, JSON.stringify(BROKER_CONFIG));
+    expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain("The record of accepted proxy configs is corrupt");
   });
 
   it("warns when a rule names a variable the environment does not hold, and when nothing is brokered", async () => {
@@ -396,7 +467,11 @@ describe("maruhi proxy run", () => {
     chdir(configDir);
     try {
       // Plain `run` brokers: a placeholder, the pass-through value, the proxy variables
+      // (the first run from a person's terminal also accepts the file — §21 R-8)
       expect(await runCli(["run", "--", "claude"], env.layer)).toBe(0);
+      expect(env.errors.join("\n")).toContain(
+        "maruhi.proxy.json accepted for brokering on this machine (first use)",
+      );
       const brokered = env.runnerCalls[0]?.extraEnv ?? {};
       expect(brokered["GITHUB_TOKEN"]).toMatch(/^mhp_GITHUB_TOKEN_/);
       expect(brokered["DATABASE_URL"]).toBe(REAL_DB);

@@ -33,6 +33,11 @@ import {
 } from "../../src/known-fingerprints.ts";
 import { makeFileOwnDeviceStore, OwnDeviceStore, ownDevicesPathOf } from "../../src/own-devices.ts";
 import { makeFilePinStore, PinStore, pinsDirOf } from "../../src/pins.ts";
+import {
+  acceptedProxyConfigsPathOf,
+  makeFileProxyAcceptStore,
+  ProxyAcceptStore,
+} from "../../src/proxy-accept.ts";
 import { ProxySeams, type ProxySeamsShape } from "../../src/proxy-run.ts";
 import { type ExecInput, type ExecOutcome, ProcessRunner } from "../../src/run.ts";
 import type { TestUser } from "./crypto.ts";
@@ -245,6 +250,10 @@ export async function makeTestEnv(): Promise<TestEnv> {
     Layer.succeed(PinStore, pinStore),
     Layer.succeed(FingerprintBook, fingerprintBook),
     Layer.succeed(OwnDeviceStore, makeFileOwnDeviceStore(ownDevicesPathOf(configPath))),
+    Layer.succeed(
+      ProxyAcceptStore,
+      makeFileProxyAcceptStore(acceptedProxyConfigsPathOf(configPath)),
+    ),
     Layer.succeed(FloorStore, {
       load: (projectId) => floorStore.load(projectId),
       commitHead: (projectId, head) => floorStore.commitHead(projectId, head),

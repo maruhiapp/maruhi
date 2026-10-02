@@ -220,12 +220,13 @@ import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "./passkey.ts";
 import { PinStore } from "./pins.ts";
 import { projectInitOp } from "./project-init.ts";
 import { projectListOp } from "./project-list.ts";
+import { ensureProxyConfigAccepted } from "./proxy-accept.ts";
 import {
   checkProxyConfigProject,
   DEFAULT_PROXY_CONFIG_PATH,
+  type LoadedProxyConfig,
   loadProxyConfig,
   loadProxyConfigIfPresent,
-  type ProxyConfig,
 } from "./proxy-config.ts";
 import { proxyRunOp } from "./proxy-run.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
@@ -3534,22 +3535,27 @@ function pullForRun(
 function brokeredRun(input: {
   readonly command: readonly string[];
   readonly flags: CommonFlags;
-  readonly config: ProxyConfig;
+  readonly loaded: LoadedProxyConfig;
   readonly configPath: string;
   readonly verbose: boolean;
   readonly listen?: string | undefined;
   readonly advertise?: string | undefined;
 }): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
-    yield* checkProxyConfigProject(input.config, input.flags.project);
+    const { config } = input.loaded;
+    yield* checkProxyConfigProject(config, input.flags.project);
+    // A config is applied only once a person accepted its content on this
+    // machine (pf4-design.md §21 R-8 — an agent cannot accept its own
+    // rules). Before any network or decryption
+    yield* ensureProxyConfigAccepted({ path: input.configPath, content: input.loaded.content });
     const context = yield* openEnvironment({
       ...input.flags,
-      project: input.flags.project ?? input.config.projectId,
+      project: input.flags.project ?? config.projectId,
     });
     const pulled = yield* pullForRun(context);
     return yield* proxyRunOp({
       command: input.command,
-      config: input.config,
+      config,
       configPath: input.configPath,
       environmentId: context.environmentId,
       variables: pulled.variables,
@@ -3630,7 +3636,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           yield* brokeredRun({
             command,
             flags,
-            config: proxyConfig,
+            loaded: proxyConfig,
             configPath: DEFAULT_PROXY_CONFIG_PATH,
             verbose: false,
           }),
@@ -5166,7 +5172,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         yield* brokeredRun({
           command,
           flags,
-          config: proxyConfig,
+          loaded: proxyConfig,
           configPath,
           verbose,
           listen,

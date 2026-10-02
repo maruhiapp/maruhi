@@ -457,8 +457,14 @@ export function parseProxyConfig(content: string): ProxyConfig | Invalid {
   return typeof variables === "string" ? variables : { version: 1, ...root, variables };
 }
 
+/** A config as read from disk: the rules, and the exact content a person accepts (proxy-accept.ts). */
+export interface LoadedProxyConfig {
+  readonly config: ProxyConfig;
+  readonly content: string;
+}
+
 /** Loading and verifying `--config <file>` (default `maruhi.proxy.json`). */
-export function loadProxyConfig(path: string): Effect.Effect<ProxyConfig, CliError> {
+export function loadProxyConfig(path: string): Effect.Effect<LoadedProxyConfig, CliError> {
   return Effect.gen(function* () {
     const content = yield* Effect.tryPromise({
       try: () => readFile(path, "utf8"),
@@ -471,7 +477,7 @@ export function loadProxyConfig(path: string): Effect.Effect<ProxyConfig, CliErr
     if (typeof parsed === "string") {
       return yield* Effect.fail(cliError(`The proxy config ${path} is invalid: ${parsed}`));
     }
-    return parsed;
+    return { config: parsed, content };
   });
 }
 
@@ -484,7 +490,7 @@ export function loadProxyConfig(path: string): Effect.Effect<ProxyConfig, CliErr
  */
 export function loadProxyConfigIfPresent(
   path: string,
-): Effect.Effect<ProxyConfig | null, CliError> {
+): Effect.Effect<LoadedProxyConfig | null, CliError> {
   return loadIfPresent(
     path,
     loadProxyConfig,

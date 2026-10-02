@@ -436,20 +436,22 @@ function buildUpstreamRequest(input: {
   const encoded = new Map(
     [...values].map(([credential, value]) => [credential, encodeURIComponent(value)]),
   );
-  for (const [credential, value] of values) {
-    if (!isHeaderSafe(value)) {
-      throw new UnsendableValueError(credential.name);
-    }
-  }
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(input.headers)) {
     if (HOP_BY_HOP.has(name)) {
       continue;
     }
-    headers[name] =
+    const substituted =
       name === "authorization"
         ? substituteAuthorization(value, values)
         : substituteText(value, values);
+    // Only a value that lands in a header as text must be header-safe (a
+    // `Basic` credential is re-encoded as base64; a placeholder found only
+    // in the path, query, or body is never a header — review finding §21 R-9)
+    if (substituted !== value && !isHeaderSafe(substituted)) {
+      throw new UnsendableValueError(unsendableCredentialName(value, values));
+    }
+    headers[name] = substituted;
   }
   const bodyPatterns: BytePattern[] = [...values].map(([credential, value]) => ({
     from: textEncoder.encode(credential.placeholder),
@@ -468,6 +470,19 @@ function buildUpstreamRequest(input: {
     body,
     substituted: [...values.keys()].map((credential) => credential.name).toSorted(),
   };
+}
+
+/** The variable whose value made a header unsendable (the first placeholder in the header whose value is not header-safe). */
+function unsendableCredentialName(
+  header: string,
+  values: ReadonlyMap<BrokeredCredential, string>,
+): string {
+  for (const [credential, value] of values) {
+    if (header.includes(credential.placeholder) && !isHeaderSafe(value)) {
+      return credential.name;
+    }
+  }
+  return [...values.keys()].map((credential) => credential.name).join(", ");
 }
 
 /** A single Latin-1 line (what an HTTP header value may carry). */
