@@ -331,9 +331,9 @@ function startRedactedRelay(
       aborted = true;
       void reader.cancel().catch(() => undefined);
     });
-    // scrubPatterns carries every line of a multi-line value, so the
-    // carry-over can be cut at each newline (live logs stay line by line)
-    const replacer = makeStreamReplacer(patterns, { cutAtNewline: true });
+    // The replacer holds back only bytes that could still begin a match
+    // (byte-replace.ts): output that resembles no value streams at once
+    const replacer = makeStreamReplacer(patterns);
     for (;;) {
       const { done, value } = await reader.read();
       if (done || aborted) {

@@ -65,15 +65,17 @@ describe("makeStreamReplacer", () => {
     }
   });
 
-  it("emits a completed line immediately when every pattern is single-line (the newline cut)", () => {
+  it("emits everything that cannot begin a match at once, and holds only a tail that is a pattern's prefix", () => {
     const replacer = makeStreamReplacer([pattern(SECRET, "[redacted]")]);
+    // Nothing here resembles the secret: the whole chunk is out, mid-line included
     const first = replacer.push(enc.encode("line one\nline two with a tail"));
-    // Everything up to and including the newline is confirmed; only the
-    // tail (shorter than the pattern) may still begin a match
-    expect(dec.decode(first).startsWith("line one\n")).toBe(true);
-    expect(first.length).toBeGreaterThanOrEqual("line one\n".length);
-    const rest = dec.decode(replacer.flush());
-    expect(dec.decode(first) + rest).toBe("line one\nline two with a tail");
+    expect(dec.decode(first)).toBe("line one\nline two with a tail");
+    // A tail that is a prefix of the secret is held …
+    const second = replacer.push(enc.encode(" and hunter2-very"));
+    expect(dec.decode(second)).toBe(" and ");
+    // … until it diverges (then released as source) or completes (then replaced)
+    expect(dec.decode(replacer.push(enc.encode("-long-secret!")))).toBe("[redacted]!");
+    expect(replacer.flush().length).toBe(0);
   });
 
   it("holds back across newlines when a pattern itself spans lines", () => {
@@ -85,19 +87,38 @@ describe("makeStreamReplacer", () => {
     }
   });
 
-  it("with cutAtNewline and per-line fragments, emits each line as it completes and redacts a PEM line by line", () => {
+  it("holds an echoed multi-line value until it completes (one replacement) or diverges (its lines then match on their own)", () => {
     const pem = "-----BEGIN KEY-----\nabcdefghijklmnop\n-----END KEY-----";
     const patterns = scrubPatterns([enc.encode(pem)], "[redacted]");
-    const replacer = makeStreamReplacer(patterns, { cutAtNewline: true });
+    const replacer = makeStreamReplacer(patterns);
     const first = replacer.push(
       enc.encode("log line one\n-----BEGIN KEY-----\nabcdefghijklmnop\n--"),
     );
-    // The two complete lines are out already (not held for the whole 3-line pattern)
-    expect(dec.decode(first)).toBe("log line one\n[redacted]\n[redacted]\n");
+    // The log line is out; the beginning of the value is held — a shorter
+    // line match is never taken while the whole value could still complete
+    expect(dec.decode(first)).toBe("log line one\n");
     const rest =
       dec.decode(replacer.push(enc.encode("---END KEY-----\nafter\n"))) +
       dec.decode(replacer.flush());
     expect(rest).toBe("[redacted]\nafter\n");
+    // Divergence: the held beginning is rescanned, its first line matches as a fragment
+    const diverging = makeStreamReplacer(patterns);
+    const head = dec.decode(diverging.push(enc.encode("-----BEGIN KEY-----\nabc")));
+    expect(head).toBe("");
+    const tail = dec.decode(diverging.push(enc.encode("XYZ\n"))) + dec.decode(diverging.flush());
+    expect(tail).toBe("[redacted]\nabcXYZ\n");
+  });
+
+  it("never lets a multi-line value made of short lines stream out line by line (§21 R-25)", () => {
+    // Every line is under the 8-byte floor, so only the whole value is a pattern
+    const value = "abc\ndef\nghi\njkl";
+    const patterns = scrubPatterns([enc.encode(value)], "[redacted]");
+    expect(patterns).toHaveLength(2); // the value and its JSON-escaped form
+    const input = enc.encode(`before\n${value}\nafter`);
+    for (let size = 1; size <= input.length; size++) {
+      const out = dec.decode(stream(patterns, input, size));
+      expect(out, `chunk size ${size}`).toBe("before\n[redacted]\nafter");
+    }
   });
 
   it("is byte-transparent for non-UTF-8 output", () => {

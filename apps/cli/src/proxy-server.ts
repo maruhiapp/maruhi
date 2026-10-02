@@ -694,8 +694,7 @@ function relayResponse(
     return;
   }
   res.writeHead(status, scrubbedResponseHeaders(upstream.headers, scrub, decoder !== null, false));
-  // scrubPatterns carries each line of a multi-line value: the carry-over may be cut at newlines
-  const replacer = makeStreamReplacer(scrub, { cutAtNewline: true });
+  const replacer = makeStreamReplacer(scrub);
   const scrubbing = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
       callback(

@@ -196,8 +196,8 @@ tunnelled (no real value can leak through a tunnel).
 
 The byte-domain replacer (byte-replace.ts) is **shared with the ⑤
 redaction** and inherits the `maruhi sync` fragment rule (whole / per line /
-JSON-escaped, longest first); the carry-over bound is (longest pattern − 1)
-bytes, cut at a newline when every pattern is single-line.
+JSON-escaped, longest first); the carry-over is exactly the tail that could
+still begin a longer match, at most (longest pattern − 1) bytes (§21 R-25).
 
 ## 8. Ruling P7 — unmatched hosts and the egress story
 
@@ -244,16 +244,20 @@ the token.
 
 ## 11. Run-output redaction (Phase 3 ⑤) — implementation of the ROADMAP design
 
-**Revision (2026-10-02, §19 D-4)**: the first implementation applied the
-newline cut only when no fragment spanned a line, so a PEM value held the
-carry-over for its whole length — the ROADMAP's "live logs stream line by
-line even for PEM keys" was not delivered. The replacer now takes
-`cutAtNewline`, which the redaction and the response scrub pass because
-`scrubPatterns` carries every line of a multi-line value (each line is
-caught on its own; a multi-line value renders as one `[redacted]` per
-line). The replacer core was also rewritten after §19 C-2 (a short match
-at a chunk edge could hide a longer pattern): it now scans the source bytes
-left to right, longest match first, and holds source bytes, with the
+**Revision (2026-10-02, §19 D-4, superseded by §21 R-25)**: the first
+implementation applied the newline cut only when no fragment spanned a
+line, so a PEM value held the carry-over for its whole length; D-4 made the
+cut unconditional (`cutAtNewline`) on the assumption that `scrubPatterns`
+carries every line of a multi-line value. R-1's 8-byte floor made that
+false (a value whose lines are short has only the whole value as a pattern,
+and the cut let it stream out line by line). The newline cut is gone: the
+replacer holds back **exactly the tail that is a proper prefix of a pattern
+longer than any match available there** and emits everything else at once.
+Output that resembles no value streams immediately, mid-line included (a
+better streaming bound than the newline cut gave), and an echoed multi-line
+value is held until it completes (one `[redacted]`) or diverges (its lines
+that reach the floor then match on their own). The replacer core scans the
+source bytes left to right, longest match first (§19 C-2), with the
 correctness argument in byte-replace.ts.
 
 The ROADMAP entry specified the design; this session implemented it as
@@ -261,8 +265,9 @@ written: trigger = known agent **or** stdout / stderr non-terminal (stdin
 alone is not a trigger — run.ts `redactionFragments`); the child's stdout /
 stderr are received on pipes and relayed through the byte-domain replacer
 (live.ts `relayRedacted`); fragments = raw values, line-split forms,
-JSON-escaped forms, longest first; carry-over = (longest fragment − 1)
-bytes, cut at a newline when every fragment is single-line; binary output
+JSON-escaped forms, longest first; carry-over = the tail that could still
+begin a longer match, at most (longest fragment − 1) bytes (§21 R-25 —
+the ROADMAP's newline cut was dropped); binary output
 byte-transparent (pinned by a 0..255 byte sweep under Bun); `[redacted]` as
 the replacement. `run`, `ci run`, and `proxy run` (pass-through values) all
 go through it. **One decision made here**: synchronous fd writes
@@ -503,7 +508,7 @@ missed every finding below — the same lesson as pf5-design.md §16.
 | D-1 | **The connector minted on the first brokered request to *any* host** (high): `scrubbers()` resolved every credential to build scrub patterns, so a run talking only to OpenAI minted a GitHub token, and a bad App key re-attempted a mint on every request (swallowed). Docs, P8 / 8-E and §18 J said otherwise | Yes | **Fixed**: `BrokeredCredential.known()` returns the values already held **without minting** (a broker rule's value; a connector's current and previous token); the scrub uses `known()`, and `resolve()` runs only for the credentials a request actually uses. Pinned: a request using only GITHUB_TOKEN never calls the connector |
 | D-2 | **Docs and ROADMAP promised refusal of a placeholder toward "any other host"; a blind tunnel sends it** (high) | Yes (the live probe asserts exactly that) | **Fixed**: docs reworded — refused toward a host the proxy inspects; toward a host no rule names it travels as the placeholder and the host rejects it (nothing substituted). ROADMAP entry reworded |
 | D-3 | "Hosts no rule names are not intercepted" was false for plain HTTP, and such requests were tallied "brokered" (medium) | Yes | **Fixed** (C-9): `relayed` kind; the docs state the asymmetry |
-| D-4 | **The newline cut deviated from the ROADMAP ⑤ design** (medium): applied only when no fragment spanned a line, so PEM values held lines back; §11 and the ROADMAP said "implemented as written" | Yes | **Fixed**: `cutAtNewline` (§11 revised); pinned (a PEM's lines are emitted as they complete) |
+| D-4 | **The newline cut deviated from the ROADMAP ⑤ design** (medium): applied only when no fragment spanned a line, so PEM values held lines back; §11 and the ROADMAP said "implemented as written" | Yes | **Fixed** with `cutAtNewline` (§11 revised); **superseded by §21 R-25** (the cut leaked a multi-line value made of short lines after R-1; the replacer now holds only a pattern's prefix) |
 | D-5 | The response scrub used the raw value only, not the shared fragment rule (medium) — a value with `"` or a newline echoed in JSON passed | Yes | **Fixed**: `scrubPatterns(credential.known(), placeholder)` per credential; the previous token of a re-minted connector is scrubbed too. Pinned (a quoted value echoed in JSON) |
 | D-6 | Docs said running `maruhi run` in a terminal "changes nothing", but under a detected agent host the child is piped even at a TTY (medium) | Yes | **Fixed**: docs say "in a terminal that no agent host controls" and describe the piped-output consequence |
 | D-7 | `--verbose` printed paths with the query (medium) | Yes | **Fixed** (C-8) |
@@ -954,6 +959,29 @@ A ninth pass (Cursor Security Reviewer on the R-22 / R-23 commit):
   entry written before this binding decodes as accepted for no project —
   failing closed per project, repaired by `proxy accept` — rather than as
   a corrupt file.)
+- **R-25 (HIGH) — the newline cut leaked multi-line values made of short
+  lines.** The D-4 `cutAtNewline` rested on `scrubPatterns` carrying every
+  line of a multi-line value; R-1's 8-byte floor dropped the short lines,
+  so a value such as `abc\ndef\nghi\njkl` had only the whole value as a
+  pattern, and the cut released each line as it completed — the value
+  streamed out in the clear whenever a chunk boundary fell inside it.
+  Options weighed: (a) the newline cut only when every line of every
+  value is a pattern of its own (keeps the leak's shape — a per-value
+  condition the caller must get right); (b) no cut, hold (longest − 1)
+  bytes always (safe, but a live log then waits for the next chunk
+  whenever a line is shorter than the longest value); (c) hold **exactly
+  the tail that is a proper prefix of some pattern longer than the longest
+  match available at that position** — the bytes a longer match could
+  still need — and emit everything else at once. (c) is strictly better
+  than both: it is safe by construction (what is emitted could not be
+  part of any match with the whole stream in hand), and it streams more
+  than the newline cut did (output that resembles no value is out
+  immediately, mid-line included; only an echoed value's beginning waits,
+  bounded by the longest pattern). Taken. The `cutAtNewline` option is
+  gone; §11 and the ROADMAP's "cut at a newline" are revised. Pinned: a
+  four-short-line value is redacted whole at every chunk size; a PEM is
+  held until it completes (one `[redacted]`) or diverges (then its first
+  line matches as a fragment); unrelated output streams at once.
 
 Also in this round: `origin/main` merged (effect 4.0.0 stable — the
 `effect/unstable/*` import paths moved to `effect/*`; two conflicts, ROADMAP
