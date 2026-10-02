@@ -11,10 +11,11 @@
 // agent-gate (value-display gate) (the same sanctioned consumption path
 // as run — ADR-0016 decision 7). The required-services type (CliIo |
 // ProcessRunner | HttpClient) shows the absence of dependencies on
-// config, tokens, and the keychain.
+// config, tokens, and the keychain (`Stdio` is the run-output redaction's
+// terminal evidence — run.ts's redactionFragments).
 
 import type { EnvironmentId } from "@maruhi/core";
-import { Effect } from "effect";
+import { Effect, type Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
 import { type CiLeaseInput, leaseEnvironments } from "./ci-lease.ts";
@@ -36,7 +37,7 @@ export interface CiRunInput extends CiLeaseInput {
  */
 export function ciRunOp(
   input: CiRunInput,
-): Effect.Effect<number, CliError, CliIo | ProcessRunner | HttpClient.HttpClient> {
+): Effect.Effect<number, CliError, CliIo | ProcessRunner | HttpClient.HttpClient | Stdio.Stdio> {
   return Effect.gen(function* () {
     const materials = yield* leaseEnvironments({
       ...input,

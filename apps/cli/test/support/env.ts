@@ -33,6 +33,12 @@ import {
 } from "../../src/known-fingerprints.ts";
 import { makeFileOwnDeviceStore, OwnDeviceStore, ownDevicesPathOf } from "../../src/own-devices.ts";
 import { makeFilePinStore, PinStore, pinsDirOf } from "../../src/pins.ts";
+import {
+  acceptedProxyConfigsPathOf,
+  makeFileProxyAcceptStore,
+  ProxyAcceptStore,
+} from "../../src/proxy-accept.ts";
+import { ProxySeams, type ProxySeamsShape } from "../../src/proxy-run.ts";
 import { type ExecInput, type ExecOutcome, ProcessRunner } from "../../src/run.ts";
 import type { TestUser } from "./crypto.ts";
 
@@ -40,6 +46,10 @@ import type { TestUser } from "./crypto.ts";
 export interface RunnerCall {
   readonly command: readonly string[];
   readonly extraEnv: Readonly<Record<string, string>>;
+  /** `proxy run` holds signals for the child's life. */
+  readonly holdSignals: boolean;
+  /** The run-output redaction fragments handed to the runner (undefined = stdio inherited). */
+  readonly redact: readonly Uint8Array[] | undefined;
 }
 
 /** One recorded vendor-CLI invocation (`maruhi sync` — stdin is what left maruhi). */
@@ -109,6 +119,14 @@ export interface TestEnv {
   setColor(enabled: boolean): void;
   setEnvVar(name: string, value: string | undefined): void;
   setRunnerExitCode(code: number): void;
+  /**
+   * Fakes the `run` child (default: exit with the code of setRunnerExitCode).
+   * The handler runs while the parent waits = while `proxy run`'s proxy is
+   * listening, so it can send requests through it and assert what arrives.
+   */
+  setRunnerHandler(handler: (call: RunnerCall) => Promise<number>): void;
+  /** Test seams of `maruhi proxy run` (where upstream connections go, the connector's API). */
+  setProxySeams(seams: ProxySeamsShape | null): void;
   /**
    * Fakes the vendor CLI's outcome (default: exit 0, no output). Taken as a
    * function so the result can differ per call (e.g. fail only the Nth call).
@@ -194,6 +212,8 @@ export async function makeTestEnv(): Promise<TestEnv> {
   let stdoutIsTerminal = true;
   let stderrIsTerminal = true;
   let runnerExitCode = 0;
+  let runnerHandler: ((call: RunnerCall) => Promise<number>) | null = null;
+  let proxySeams: ProxySeamsShape | null = null;
   let keychainWritable = true;
   let floorPushCommittable = true;
   let floorIntentAppendable = true;
@@ -230,6 +250,10 @@ export async function makeTestEnv(): Promise<TestEnv> {
     Layer.succeed(PinStore, pinStore),
     Layer.succeed(FingerprintBook, fingerprintBook),
     Layer.succeed(OwnDeviceStore, makeFileOwnDeviceStore(ownDevicesPathOf(configPath))),
+    Layer.succeed(
+      ProxyAcceptStore,
+      makeFileProxyAcceptStore(acceptedProxyConfigsPathOf(configDir)),
+    ),
     Layer.succeed(FloorStore, {
       load: (projectId) => floorStore.load(projectId),
       commitHead: (projectId, head) => floorStore.commitHead(projectId, head),
@@ -323,11 +347,21 @@ export async function makeTestEnv(): Promise<TestEnv> {
           return browserOpenSucceeds;
         }),
     }),
+    Layer.sync(ProxySeams, () => proxySeams),
     Layer.succeed(ProcessRunner, {
-      run: ({ command, extraEnv }) =>
-        Effect.sync(() => {
-          runnerCalls.push({ command, extraEnv });
-          return runnerExitCode;
+      run: ({ command, extraEnv, holdSignals, redact }) =>
+        Effect.tryPromise({
+          try: () => {
+            const call: RunnerCall = {
+              command,
+              extraEnv,
+              holdSignals: holdSignals === true,
+              redact,
+            };
+            runnerCalls.push(call);
+            return runnerHandler === null ? Promise.resolve(runnerExitCode) : runnerHandler(call);
+          },
+          catch: () => cliError("cannot spawn the run child (test injection)"),
         }),
       exec: (input: ExecInput) =>
         Effect.suspend(() => {
@@ -423,6 +457,12 @@ export async function makeTestEnv(): Promise<TestEnv> {
     },
     setRunnerExitCode(code) {
       runnerExitCode = code;
+    },
+    setRunnerHandler(handler) {
+      runnerHandler = handler;
+    },
+    setProxySeams(seams) {
+      proxySeams = seams;
     },
     setExecHandler(handler) {
       execHandler = handler;

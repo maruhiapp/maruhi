@@ -77,6 +77,7 @@ import {
 import { ChildProcessSpawner } from "effect/process";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
+import { ensurePlainRunAllowed } from "./agent-gate.ts";
 import { AGENT_COMMAND_REQUIRED, agentOp, agentStatusOp, parseKeyTtl } from "./agent.ts";
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "./anchor.ts";
 import { approveProposalOp, type Fulfilment } from "./approval-approve.ts";
@@ -137,7 +138,7 @@ import {
   type IdentityBacking,
   identityBackingOf,
 } from "./config.ts";
-import type { CliServices, CommonFlags, ProjectContext } from "./context.ts";
+import type { CliServices, CommonFlags, EnvironmentContext, ProjectContext } from "./context.ts";
 import {
   checkInviteAnchor,
   commitVerifiedHead,
@@ -219,6 +220,20 @@ import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "./passkey.ts";
 import { PinStore } from "./pins.ts";
 import { projectInitOp } from "./project-init.ts";
 import { projectListOp } from "./project-list.ts";
+import {
+  acceptProxyConfig,
+  ensurePlainRunOfBrokeredProjectAllowed,
+  ensureProxyConfigAccepted,
+  markProjectBrokered,
+} from "./proxy-accept.ts";
+import {
+  checkProxyConfigProject,
+  DEFAULT_PROXY_CONFIG_PATH,
+  type LoadedProxyConfig,
+  loadProxyConfig,
+  loadProxyConfigIfPresent,
+} from "./proxy-config.ts";
+import { describeProxyConfig, proxyRunOp } from "./proxy-run.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
 import { normalizeStdinValue, pushVariable } from "./push.ts";
 import { reportRotation } from "./rotation-report.ts";
@@ -416,6 +431,10 @@ const runCommandArgument = () =>
 
 const runConfig = {
   ...commonFlags(),
+  plain: singleFlag(
+    "plain",
+    `Inject the real values even when ${DEFAULT_PROXY_CONFIG_PATH} is present (allowed only to a person at an interactive terminal; without the config, run always injects the real values)`,
+  ),
   command: runCommandArgument(),
 };
 
@@ -1107,6 +1126,43 @@ const schemaShowConfig = { ...commonFlags() };
  */
 const mcpConfig = { ...commonFlags() };
 
+/**
+ * `maruhi proxy run -- <command>` (PF4 — credential brokering): `run`'s
+ * flags plus the proxy config path and a per-request log switch. The run
+ * target is declared exactly like `run`'s.
+ */
+const proxyRunConfig = {
+  ...commonFlags(),
+  config: singleValued(
+    "config",
+    `Path to the proxy config committed in the repository (default: ${DEFAULT_PROXY_CONFIG_PATH})`,
+  ),
+  verbose: singleFlag(
+    "verbose",
+    "Print one line per request the proxy handles (method, host, path, and the variables substituted — never a value)",
+  ),
+  listen: singleValued(
+    "listen",
+    "Bind the proxy to host[:port] instead of the loopback, so a sandbox or container can reach it (every request still needs the run's proxy credential)",
+  ),
+  advertise: singleValued(
+    "advertise",
+    "The host[:port] the command is told to use for the proxy when it differs from the bound address (for example host.docker.internal from a container)",
+  ),
+  command: runCommandArgument(),
+};
+
+const proxyAcceptConfig = {
+  config: singleValued(
+    "config",
+    `Path to the proxy config to accept (default: ${DEFAULT_PROXY_CONFIG_PATH})`,
+  ),
+  project: singleValued(
+    "project",
+    "The project the config is for (default: the config's `project`, else the default project)",
+  ),
+};
+
 /** The `--type` closed set (CRYPTO_SPEC §4.2 — ruling CT) + `none` for an explicit clear. */
 const SCHEMA_TYPES = ["string", "number", "boolean", "url"] as const;
 
@@ -1418,6 +1474,7 @@ const GROUP_CONFIGS: Readonly<
   },
   var: { rm: varRmConfig, history: varHistoryConfig, rollback: varRollbackConfig },
   sync: { plan: syncPlanConfig, apply: syncApplyConfig, init: syncInitConfig },
+  proxy: { run: proxyRunConfig, accept: proxyAcceptConfig },
 };
 
 /**
@@ -3460,6 +3517,88 @@ function openSyncTarget(values: {
   });
 }
 
+/**
+ * The verified pull every run shape shares: decrypt the environment, show
+ * the pull's warnings, the presence fail-fast (design doc §1-4 — rulings CT /
+ * CU: a required = true declared in the verified set fails with a typed
+ * error before any child starts), the advisory type check (§14.3-7 — a
+ * mismatch warns only).
+ */
+function pullForRun(
+  context: EnvironmentContext,
+): Effect.Effect<PulledVariables, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const pulled = yield* pullVariables({
+      client: context.client,
+      verified: context.verified,
+      environmentId: context.environmentId,
+      recipient: context.recipient,
+      resync: context.resync,
+      floor: context.floorHandle,
+    });
+    yield* logWarnings(pulled.warnings);
+    yield* enforceDeclaredPresence(pulled.declared);
+    yield* logWarnings(typeAdvisoryWarnings(pulled.variables));
+    return pulled;
+  });
+}
+
+/**
+ * The brokered run shared by `maruhi proxy run` and by `maruhi run` when
+ * the repository has a proxy config: project check → environment →
+ * verified pull → presence fail-fast → type advisory → proxy-run.ts.
+ */
+function brokeredRun(input: {
+  readonly command: readonly string[];
+  readonly flags: CommonFlags;
+  readonly loaded: LoadedProxyConfig;
+  readonly configPath: string;
+  readonly verbose: boolean;
+  readonly listen?: string | undefined;
+  readonly advertise?: string | undefined;
+}): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const { config } = input.loaded;
+    yield* checkProxyConfigProject(config, input.flags.project);
+    // A config is applied only once a person accepted its content on this
+    // machine **for this project** (pf4-design.md §21 R-8 / R-24 — an agent
+    // cannot accept its own rules, nor point another project's accepted
+    // rules at this one). Checked before any network when the project is
+    // known without it, and again against the project the prologue resolved
+    const accepted = (projectId: string) =>
+      ensureProxyConfigAccepted({
+        path: input.configPath,
+        content: input.loaded.content,
+        projectId,
+      });
+    const early =
+      input.flags.project ?? config.projectId ?? (yield* (yield* ConfigStore).load).defaultProject;
+    if (early !== undefined) {
+      yield* accepted(early);
+    }
+    const context = yield* openEnvironment({
+      ...input.flags,
+      project: input.flags.project ?? config.projectId,
+    });
+    if (context.projectId !== early) {
+      yield* accepted(context.projectId);
+    }
+    // From now on plain `run` without a config is gated for this project (R-13)
+    yield* markProjectBrokered({ projectId: context.projectId, configPath: input.configPath });
+    const pulled = yield* pullForRun(context);
+    return yield* proxyRunOp({
+      command: input.command,
+      config,
+      configPath: input.configPath,
+      environmentId: context.environmentId,
+      variables: pulled.variables,
+      verbose: input.verbose,
+      listen: input.listen,
+      advertise: input.advertise,
+    });
+  });
+}
+
 function makeRootCommand(onExitCode: (code: number) => void) {
   const pull = Command.make("pull", pullConfig, (values) =>
     Effect.gen(function* () {
@@ -3517,25 +3656,44 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const run = Command.make("run", runConfig, (values) =>
     Effect.gen(function* () {
-      const { command: parsed, ...flags } = values;
+      const { command: parsed, plain, ...flags } = values;
       // Drops before communication / decryption (at the command body's head)
       const command = yield* commandAfterTerminator(parsed);
+      // The repository's proxy config, when present, decides what the child
+      // receives (ADR-0016 decision 7 revision 2 — pf4-design.md §20): the
+      // same brokering as `proxy run`. `--plain` keeps the real-value shape,
+      // only for a person at a terminal. Read before any network
+      const proxyConfig = yield* loadProxyConfigIfPresent(DEFAULT_PROXY_CONFIG_PATH);
+      if (proxyConfig !== null && !plain) {
+        onExitCode(
+          yield* brokeredRun({
+            command,
+            flags,
+            loaded: proxyConfig,
+            configPath: DEFAULT_PROXY_CONFIG_PATH,
+            verbose: false,
+          }),
+        );
+        return;
+      }
+      if (proxyConfig !== null) {
+        yield* ensurePlainRunAllowed;
+        yield* logNote(
+          `--plain: injecting the real values; ${DEFAULT_PROXY_CONFIG_PATH} is not applied to this run`,
+        );
+      } else if (plain) {
+        yield* logNote(
+          `--plain has no effect: no ${DEFAULT_PROXY_CONFIG_PATH} in the working directory`,
+        );
+      }
       const context = yield* openEnvironment(flags);
-      const pulled = yield* pullVariables({
-        client: context.client,
-        verified: context.verified,
-        environmentId: context.environmentId,
-        recipient: context.recipient,
-        resync: context.resync,
-        floor: context.floorHandle,
-      });
-      yield* logWarnings(pulled.warnings);
-      // The presence fail-fast (design doc §1-4 — rulings CT / CU): when a
-      // required = true declared is in the verified set, fail with a typed
-      // error without spawning the child process
-      yield* enforceDeclaredPresence(pulled.declared);
-      // type is advisory (§14.3-7) — a mismatch warns only and the run continues
-      yield* logWarnings(typeAdvisoryWarnings(pulled.variables));
+      if (proxyConfig === null) {
+        // A project brokered on this machine: the real values only to a
+        // person at a terminal (deleting the config or changing directory
+        // is not a way around the rules — pf4-design.md §21 R-13)
+        yield* ensurePlainRunOfBrokeredProjectAllowed(context.projectId);
+      }
+      const pulled = yield* pullForRun(context);
       // Environment-variable names go through verified statements (§4.2 /
       // §12-7). The execution-control variable-name denylist (run.ts) is a
       // defense layer applied to the verified name
@@ -3543,7 +3701,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`",
+      `Decrypt the environment and run a command with the values injected as environment variables (memory only). When ${DEFAULT_PROXY_CONFIG_PATH} is present its brokering rules apply (as \`maruhi proxy run\`); --plain injects the real values instead, for a person at a terminal. Write the command after \`--\``,
     ),
   );
 
@@ -5038,6 +5196,85 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  // `maruhi proxy run` (PF4 — pf4-design.md). The same prologue as run
+  // (config → environment → verified pull → presence fail-fast → type
+  // advisory); what differs is what the child receives (proxy-run.ts)
+  const proxyRun = Command.make("run", proxyRunConfig, (values) =>
+    Effect.gen(function* () {
+      const { command: parsed, config: configFlag, verbose, listen, advertise, ...flags } = values;
+      // Drops before communication / decryption (at the command body's head)
+      const command = yield* commandAfterTerminator(parsed);
+      // The config is read before any network (a broken file is reported first)
+      const configPath = configFlag ?? DEFAULT_PROXY_CONFIG_PATH;
+      const proxyConfig = yield* loadProxyConfig(configPath);
+      onExitCode(
+        yield* brokeredRun({
+          command,
+          flags,
+          loaded: proxyConfig,
+          configPath,
+          verbose,
+          listen,
+          advertise,
+        }),
+      );
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Run a command behind a local credential-brokering proxy: brokered variables arrive as placeholders and the real values are substituted only in requests to the hosts the proxy config allows. Write the command after `--`",
+    ),
+  );
+
+  // `maruhi proxy accept` (pf4-design.md §21 R-8 / R-14): a person at a
+  // terminal records the config's content as accepted on this machine —
+  // the explicit act the brokering rules need before they apply (the
+  // direnv model). Reads the file, contacts no server
+  const proxyAccept = Command.make("accept", proxyAcceptConfig, (values) =>
+    Effect.gen(function* () {
+      const configPath = values.config ?? DEFAULT_PROXY_CONFIG_PATH;
+      const loaded = yield* loadProxyConfig(configPath);
+      // The project the rules are for: the flag, the config's `project`, or
+      // the default project — resolved without any network (the mark it
+      // arms is per project, R-18)
+      yield* checkProxyConfigProject(loaded.config, values.project);
+      const projectId =
+        values.project ??
+        loaded.config.projectId ??
+        (yield* (yield* ConfigStore).load).defaultProject;
+      if (projectId === undefined) {
+        return yield* Effect.fail(
+          usageError(
+            "Cannot tell which project the proxy config is for: pass --project <id>, set `project` in the config, or set a default project (`maruhi config set defaultProject <id>`)",
+          ),
+        );
+      }
+      if (!isProjectId(projectId)) {
+        return yield* Effect.fail(usageError("Invalid project ID (64 hex digits)"));
+      }
+      const outcome = yield* acceptProxyConfig({
+        path: configPath,
+        content: loaded.content,
+        projectId,
+      });
+      yield* logNote(
+        outcome === "unchanged"
+          ? `${configPath} is already accepted on this machine with this content for this project; nothing changed`
+          : `${configPath} accepted on this machine for project ${projectId} (${outcome === "changed" ? "replaces the content accepted before" : outcome === "project added" ? "the same content was already accepted for another project" : "first use"}): ${describeProxyConfig(loaded.config)}. A change to the file will need \`maruhi proxy accept\` again`,
+      );
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Accept the proxy config on this machine so its rules apply to `maruhi run` and `maruhi proxy run` (a person at a terminal; a new or changed file is refused until accepted). Reads the file and contacts no server",
+    ),
+  );
+
+  const proxy = Command.make("proxy").pipe(
+    Command.withDescription(
+      "Credential brokering for AI agents and other programs: run a command that never holds the real values (run), after a person accepted the repository's proxy config on this machine (accept)",
+    ),
+    Command.withSubcommands([proxyRun, proxyAccept]),
+  );
+
   const sync = Command.make("sync").pipe(
     Command.withDescription(
       "Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository",
@@ -5075,6 +5312,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       mcp,
       varGroup,
       sync,
+      proxy,
     ]),
   );
 }

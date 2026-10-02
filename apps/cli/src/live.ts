@@ -13,11 +13,12 @@
 //   `process.*` directly happens only inside this implementation = the
 //   argument layer arrives via services)
 
+import { writeSync } from "node:fs";
+import { stat } from "node:fs/promises";
 // Read submodules directly (a package's index pulls in BunRedis etc. and
 // crashes on environments that cannot resolve the `bun` module — vitest
 // running under Node)
-import { writeSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { homedir, userInfo } from "node:os";
 
 import * as BunStdio from "@effect/platform-bun/BunStdio";
 import { Duration, Effect, Layer, Redacted } from "effect";
@@ -26,6 +27,7 @@ import { agentInfo } from "std-env";
 
 import { type AgentProfile, AgentProfileRef } from "./agent-gate.ts";
 import { AGENT_SOCKET_ENV, makeAgentKeychain } from "./agent.ts";
+import { makeStreamReplacer, scrubPatterns } from "./byte-replace.ts";
 import type { CliServices } from "./cli.ts";
 import { ConfigStore, defaultConfigPath, makeFileConfigStore } from "./config.ts";
 import { cliError } from "./errors.ts";
@@ -41,6 +43,11 @@ import {
 import { shouldUseColor } from "./notice.ts";
 import { makeFileOwnDeviceStore, OwnDeviceStore, ownDevicesPathOf } from "./own-devices.ts";
 import { makeFilePinStore, PinStore, pinsDirOf } from "./pins.ts";
+import {
+  acceptedProxyConfigsPathOf,
+  makeFileProxyAcceptStore,
+  ProxyAcceptStore,
+} from "./proxy-accept.ts";
 import {
   buildChildEnvironment,
   type ExecInput,
@@ -160,10 +167,15 @@ function execStartFailure(input: ExecInput, error: unknown): string {
 
 function makeBunProcessRunner(): ProcessRunnerShape {
   return {
-    run: ({ command, extraEnv }) =>
+    run: ({ command, extraEnv, holdSignals, redact }) =>
       Effect.tryPromise({
         try: async () => {
-          // Values are injected into the child's environment variables in memory only (the diskless invariant)
+          // Values are injected into the child's environment variables in
+          // memory only (the diskless invariant). With `redact`, the
+          // child's stdout / stderr come back on pipes and are scrubbed
+          // before being relayed (run-output redaction — relayRedacted);
+          // without it, a human terminal is inherited as before
+          const piped = redact !== undefined;
           const child = Bun.spawn({
             cmd: [...command],
             // A keychain-less / CI MARUHI_TOKEN is for the parent's
@@ -171,10 +183,25 @@ function makeBunProcessRunner(): ProcessRunnerShape {
             // credential broader than the injected values
             env: buildChildEnvironment(process.env, extraEnv),
             stdin: "inherit",
-            stdout: "inherit",
-            stderr: "inherit",
+            stdout: piped ? "pipe" : "inherit",
+            stderr: piped ? "pipe" : "inherit",
           });
-          return await child.exited;
+          const relays = piped ? startRedactedRelay(child, redact) : null;
+          // `proxy run`: the parent must outlive the child (it is the
+          // child's proxy) — the same signal shape as `maruhi agent`
+          const exitCode = holdSignals === true ? await holdingSignals(child) : await child.exited;
+          if (relays !== null) {
+            // The pipes drain right after the child exits. A grandchild that
+            // inherited them (a daemon the child left behind) must not pin
+            // this process: after a short grace the readers are cancelled —
+            // with inherited stdio the parent would have exited at once and
+            // the daemon kept writing to the terminal; here its next write
+            // fails instead (review finding pf4-design.md §19 C-1)
+            const grace = setTimeout(() => relays.abort(), RELAY_GRACE_MS);
+            await relays.done;
+            clearTimeout(grace);
+          }
+          return exitCode;
         },
         catch: () => cliError(`Cannot start the command: ${command[0] ?? ""}`),
       }),
@@ -224,6 +251,18 @@ async function runAgentSession(
     stdout: "inherit",
     stderr: "inherit",
   });
+  return holdingSignals(child);
+}
+
+/**
+ * Waits for `child` while the parent ignores SIGINT and forwards SIGTERM /
+ * SIGHUP to it (`maruhi agent` and `maruhi proxy run` — parents whose job
+ * is to outlive the child).
+ */
+async function holdingSignals(child: {
+  kill: (signal: NodeJS.Signals) => void;
+  exited: Promise<number>;
+}): Promise<number> {
   const forwardTerm = (): void => {
     child.kill("SIGTERM");
   };
@@ -240,6 +279,86 @@ async function runAgentSession(
     process.off("SIGTERM", forwardTerm);
     process.off("SIGHUP", forwardHup);
   }
+}
+
+/** What a scrubbed value becomes in the relayed output. */
+const REDACTED = "[redacted]";
+
+/**
+ * Run-output redaction (ROADMAP Phase 3 ⑤; the trigger is run.ts's
+ * `redactionFragments`). The child's stdout and stderr arrive on pipes
+ * and are relayed to this process's fds **in the byte domain**: the
+ * fragments (each value whole, each of its lines, the JSON-escaped forms
+ * — byte-replace.ts's scrubPatterns, the `maruhi sync` rule) are
+ * searched in the raw chunks and replaced with `[redacted]`; bytes that
+ * match nothing pass through untouched, so binary output (`pg_dump -Fc`,
+ * `tar czf -`) is not corrupted. A value straddling two chunks is caught
+ * by the replacer's carry-over (longest fragment − 1 bytes, cut at a
+ * newline when every fragment is single-line — live logs stay
+ * line-by-line). Each stream is relayed independently with synchronous
+ * writes (ordering within a stream is preserved; between the two
+ * streams it is the same race any piped child has).
+ *
+ * Limits (stated in the docs): a value transformed by the child (base64,
+ * a hash, a different encoding) is not caught — this is a second line of
+ * defence; keeping values away from an agent is `proxy run`'s job.
+ */
+type ChildStream = ReadableStream<Uint8Array> | number | undefined;
+
+/** How long after the child's exit its pipes may still deliver output (a grandchild's) before the relay stops. */
+const RELAY_GRACE_MS = 500;
+
+/**
+ * Starts relaying the child's stdout / stderr through the redaction.
+ * `done` settles when both pipes ended (or were aborted); `abort` cancels
+ * the readers. When this process's own output is gone (EPIPE — `maruhi run
+ * -- yes | head -1`), the child is sent SIGPIPE and that relay stops: the
+ * pipe semantics a child has with inherited stdio.
+ */
+function startRedactedRelay(
+  child: { stdout: ChildStream; stderr: ChildStream; kill: (signal: NodeJS.Signals) => void },
+  fragments: readonly Uint8Array[],
+): { readonly done: Promise<void>; readonly abort: () => void } {
+  const patterns = scrubPatterns(fragments, REDACTED);
+  const aborts: (() => void)[] = [];
+  const relay = async (stream: ChildStream, fd: number): Promise<void> => {
+    if (typeof stream !== "object") {
+      return;
+    }
+    const reader = stream.getReader();
+    let aborted = false;
+    aborts.push(() => {
+      aborted = true;
+      void reader.cancel().catch(() => undefined);
+    });
+    // The replacer holds back only bytes that could still begin a match
+    // (byte-replace.ts): output that resembles no value streams at once
+    const replacer = makeStreamReplacer(patterns);
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || aborted) {
+        break;
+      }
+      if (!writeBytes(fd, replacer.push(value))) {
+        // Our reader is gone: close the child's side as a pipe would
+        aborted = true;
+        void reader.cancel().catch(() => undefined);
+        child.kill("SIGPIPE");
+        return;
+      }
+    }
+    if (!aborted) {
+      writeBytes(fd, replacer.flush());
+    }
+  };
+  return {
+    done: Promise.all([relay(child.stdout, 1), relay(child.stderr, 2)]).then(() => undefined),
+    abort: () => {
+      for (const abort of aborts) {
+        abort();
+      }
+    },
+  };
 }
 
 /** An interruption of interactive input by Ctrl+C / Ctrl+D (distinguished from EOF and unreadability). */
@@ -493,7 +612,16 @@ function openBrowserLive(url: string): Effect.Effect<boolean> {
  * thrown as-is (never swallowed). Exported for tests.
  */
 export function writeLine(fd: number, line: string): void {
-  const buffer = Buffer.from(`${line}\n`);
+  writeBytes(fd, Buffer.from(`${line}\n`));
+}
+
+/** The byte form of {@link writeLine} (the redacted relay of a child's output writes chunks, not lines). */
+/**
+ * Returns false when the reader has left (EPIPE) — the relayed child is then
+ * told so. A non-blocking fd's EAGAIN waits a millisecond before retrying
+ * (a tight loop would spin a core while the reader catches up).
+ */
+function writeBytes(fd: number, buffer: Uint8Array): boolean {
   let offset = 0;
   // A partial write (return value < remaining) continues from where it
   // left off, EAGAIN (a non-blocking fd) retries until written, and EPIPE
@@ -504,14 +632,19 @@ export function writeLine(fd: number, line: string): void {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "EPIPE") {
-        return;
+        return false;
       }
       if (code !== "EAGAIN") {
         throw error;
       }
+      Atomics.wait(EAGAIN_PAUSE, 0, 0, 1);
     }
   }
+  return true;
 }
+
+/** A shared cell `Atomics.wait` can sleep on (a synchronous millisecond pause). */
+const EAGAIN_PAUSE = new Int32Array(new SharedArrayBuffer(4));
 
 function makeLiveIo(): CliIoShape {
   // One line reader per process for non-TTY input (keeps unconsumed lines across prompts)
@@ -571,6 +704,21 @@ function makeLiveIo(): CliIoShape {
 }
 
 /** Production service layer for the maruhi CLI (Bun runtime). */
+/**
+ * The account's home directory from the system user database (getpwuid),
+ * which no environment variable moves — the anchor of the acceptance
+ * record (proxy-accept.ts, §21 R-23). `userInfo()` throws for a uid
+ * without a passwd entry (some containers); `homedir()` ($HOME) is the
+ * fallback there, stated in the record as the residual.
+ */
+function accountHomeDir(): string {
+  try {
+    return userInfo().homedir;
+  } catch {
+    return homedir();
+  }
+}
+
 export function liveLayer(): Layer.Layer<CliServices> {
   const configPath = defaultConfigPath((name) => process.env[name]);
   // Inside a `maruhi agent` session (MARUHI_AGENT_SOCK present), use the
@@ -597,6 +745,12 @@ export function liveLayer(): Layer.Layer<CliServices> {
     // The verified-fingerprint ledger (KF) is the same family (<config dir>/known-fingerprints.json)
     Layer.succeed(FingerprintBook, makeFileFingerprintBook(fingerprintBookPathOf(configPath))),
     Layer.succeed(OwnDeviceStore, makeFileOwnDeviceStore(ownDevicesPathOf(configPath))),
+    // The proxy configs a person accepted (pf4-design.md §21 R-8) live under the account's home from
+    // the system user database — not the env-redirectable config dir (R-23)
+    Layer.succeed(
+      ProxyAcceptStore,
+      makeFileProxyAcceptStore(acceptedProxyConfigsPathOf(accountHomeDir())),
+    ),
     Layer.succeed(CliIo, makeLiveIo()),
     Layer.succeed(ProcessRunner, makeBunProcessRunner()),
     FetchHttpClient.layer,

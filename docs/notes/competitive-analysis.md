@@ -150,7 +150,7 @@ Legend: ● = present / default, ◐ = conditional / partial, ○ = absent, — 
 | Web dashboard (no keys) | ● read + revoke only (W series implemented. Design pass DP in progress) | ● | ● | ● | ● | ● |
 | Refusing value display under agent detection | ● fail-closed 2 layers (primary TTY + std-env) | ● masking + blocks `shell` / `printenv` | ○ | ○ | ● blocks `pull` with `AGENT_BLOCKED` | ○ |
 | MCP server | ● `maruhi mcp` (PF5, 2026-09-30 — the value-free schema over stdio. **Never serves values**: read-only, keychain narrowed to the API token) | ○ (SKILL.md approach) | ● returns plaintext | ● returns plaintext (experimental) | ○ (distributes Agent Skills) | ● returns plaintext |
-| credential brokering (never giving agents the real value) | ○ planned (Phase 3 `maruhi proxy run`. Composed with E2EE so "neither server nor agent holds plaintext") | ◐ pitches an "AI egress proxy" but no implementation found | ● Agent Proxy (GA 2026-07) + Agent Vault | ○ | ○ | ○ |
+| credential brokering (never giving agents the real value) | ● `maruhi proxy run` (PF4 — 2026-10-01: placeholders, a per-run loopback proxy and ephemeral CA, host- and surface-bound substitution, response scrubbing, a GitHub App connector minting hour-long tokens on the member's machine. Composed with E2EE so "neither server nor agent holds plaintext" — pf4-design.md) | ◐ pitches an "AI egress proxy" but no implementation found | ● Agent Proxy (GA 2026-07) + Agent Vault | ○ | ○ | ○ |
 | Exposing a value-free schema to agents | ● `maruhi schema` + `maruhi mcp` (names, types, required, descriptions only) | ○ | ○ | ○ | ○ | ○ |
 
 ### 2-5. License, pricing & maturity
@@ -188,7 +188,7 @@ The following are properties competitors lack or do not make the default. None o
 
 6. **Agent isolation is fail-closed by default**
    - Competitors today come in two strains: (a) handing plaintext over MCP (Infisical / Doppler / Keyway — Keyway pitches "AI-Proof" while its MCP returns plaintext), (b) detecting agents and masking / blocking (Phase, Shelve). maruhi has (b) as **2 layers — TTY primary + known-agent secondary** — plus the already-implemented third form of **value-free schema** (disclose only names, types, required, and descriptions to agents; required-fulness is verifiable from signatures, and `schema lint` checks drift against code): "hand over the contract, not the values". Since PF5 (2026-09-30) the same contract is also served over MCP (`maruhi mcp`), which never serves values.
-   - On credential brokering (substituting the real value at the communication boundary) Infisical leads (Agent Proxy GA). maruhi's Phase 3 `maruhi proxy run` plans to compose with E2EE so that "neither server nor agent holds plaintext" — the consistency is the difference (Infisical's broker presumes the server holds plaintext).
+   - On credential brokering (substituting the real value at the communication boundary) Infisical shipped first (Agent Proxy GA 2026-07). maruhi's `maruhi proxy run` (PF4, 2026-10-01) composes it with E2EE so that "neither server nor agent holds plaintext" — the consistency is the difference (Infisical's broker and its CA presume the server holds plaintext; maruhi's proxy and CA are per run, on the member's machine), and the connector mints short-lived tokens where Infisical substitutes stored values.
 
 7. **Authenticity and freshness are handled in crypto, with non-guarantees stated**
    - Value signatures, DEK commitments, meta-statements, environment manifests, checkpoints, and head declarations mean the server alone cannot forge values, names, or DEKs, and detects rollback, omission, and split view (within stated limits). CI workloads are verified too via the repository anchor. No competitor docs have this layer.
@@ -213,7 +213,7 @@ Differences that must not be hidden by the pitch (ADR-0014 decision 5 "separate 
 - **Zero-knowledge ceremony**: first-time key generation and recovery-code custody, mutual fingerprint verification on invite, device migration. Burdens the competitors (especially the 4 server-side ones) don't have. Frame it as "only first-time and invites"
 - **Lose your keys and recovery code and the operator cannot restore** (the price of the promise)
 - **Enterprise features**: no rotation, dynamic secrets, approval workflows, PKI / SSH / KMS / PAM. Infisical is an integrated platform, Doppler has Change Requests, Phase already has rotation + dynamic secrets
-- **credential brokering unimplemented** (Infisical has Agent Proxy GA). For the "try it now" side of the agent pitch there's value-free schema (CLI + `maruhi mcp` since PF5 — 2026-09-30) + agent-gate
+- ~~**credential brokering unimplemented**~~ → implemented 2026-10-01 (`maruhi proxy run` — PF4). The "try it now" side of the agent pitch is now value-free schema (CLI + `maruhi mcp` since PF5 — 2026-09-30) + agent-gate + run-output redaction + brokering
 - **Platform dependency**: Cloudflare-only (Workers / DO / D1). Can't run on-prem or on other clouds. Competitors run anywhere Docker does
 - **Windows is experimental**, Homebrew unpublished, macOS notarized not yet, checksums unsigned
 - **Hosted version not yet open** (HP1's "first 5 minutes" cannot yet be provided). All 5 competitors ship hosted
@@ -237,7 +237,7 @@ Differences that must not be hidden by the pitch (ADR-0014 decision 5 "separate 
 
 > **maruhi is secrets management that defaults to handing plaintext to no one — not the operator, not the served Web, not agents — and never writes `.env`. It stands up in your own Cloudflare account with one `wrangler deploy` and sends nothing out.**
 
-Stages: "don't show plaintext to the operator" (now) → "don't hand plaintext to the operator or agents" (Phase 3: `maruhi proxy run`) → "even if a human errs, the secret isn't there" (no-reveal policy).
+Stages: "don't show plaintext to the operator" (done) → "don't hand plaintext to the operator or agents" (done 2026-10-01: `maruhi proxy run`) → "even if a human errs, the secret isn't there" (no-reveal policy).
 
 ---
 
@@ -264,7 +264,7 @@ Display discipline: even on the LP, don't use the word "verified" outside the CL
 
 ## 7. Handoff (implications from this comparison. Not decisions)
 
-- With Phase pitching an "AI egress proxy" and Infisical GA-ing Agent Proxy, **credential brokering will likely be "normal to have" within 2026**. Material for re-checking the priority of `maruhi proxy run` (Phase 3 ②)
+- With Phase pitching an "AI egress proxy" and Infisical GA-ing Agent Proxy, **credential brokering will likely be "normal to have" within 2026**. maruhi shipped `maruhi proxy run` on 2026-10-01 (PF4); the remaining differentiators to watch are the E2EE composition (no server-held plaintext or CA) and client-side connectors
 - Keyway's "pitch / implementation gap" backs the value of **writing "what is not guaranteed" first** in maruhi's threat-model document (H5)
 - Doppler's "Per-Seat, No Agent Fees", Phase's "SAs are free", Infisical's "per identity" — for the GA pricing design (L9) the **billing unit for machine / agent IDs** is the question
 - 4 of 5 competitors offer hosted with a free tier. For the invite-only beta's "first 5 minutes" (H6), competitors' hosted experience is the comparison bar

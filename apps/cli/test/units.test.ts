@@ -218,11 +218,29 @@ describe("storeMasterKeyGuarded (save with overwrite detection)", () => {
 
 describe("runOp", () => {
   /** A runner that never spawns the child process (so reaching spawn is observable). */
-  const spawnedNothing = Layer.succeed(ProcessRunner, {
-    run: () => Effect.succeed(0),
-    exec: () => Effect.succeed({ exitCode: 0, output: "" }),
-    runSession: () => Effect.succeed(0),
-  });
+  const spawnedNothing = Layer.mergeAll(
+    Layer.succeed(ProcessRunner, {
+      run: () => Effect.succeed(0),
+      exec: () => Effect.succeed({ exitCode: 0, output: "" }),
+      runSession: () => Effect.succeed(0),
+    }),
+    // The run-output redaction's terminal evidence (run.ts) — a human terminal here
+    Layer.succeed(CliIo, {
+      log: () => Effect.void,
+      logError: () => Effect.void,
+      readStdin: Effect.succeed(new Uint8Array(0)),
+      promptLine: () => Effect.succeed(""),
+      envVar: () => undefined,
+      agentProfile: () => ({ isAgent: false }),
+      stderrIsTerminal: () => true,
+      colorEnabled: () => false,
+      openBrowser: () => Effect.succeed(false),
+    }),
+    Stdio.layerTest({
+      stdinIsTerminal: Effect.succeed(true),
+      stdoutIsTerminal: Effect.succeed(true),
+    }),
+  );
 
   it("does not spawn a child process even for a whitespace-only command (same check as the entry point)", async () => {
     const exit = await Effect.runPromiseExit(

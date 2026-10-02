@@ -13,7 +13,7 @@ SUBCOMMANDS
   login       Sign in by approving a request in your browser, and store the token in the OS keychain (or in the current `maruhi agent` session)
   logout      Revoke this machine's token and remove it from the OS keychain (or from the current `maruhi agent` session)
   pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
-  run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
+  run         Decrypt the environment and run a command with the values injected as environment variables (memory only). When maruhi.proxy.json is present its brokering rules apply (as `maruhi proxy run`); --plain injects the real values instead, for a person at a terminal. Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
   agent       Hold the token and this device's key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
   ci          Commands for CI jobs (run / sync)
@@ -34,6 +34,7 @@ SUBCOMMANDS
   mcp         Serve the value-free schema to AI agents over the Model Context Protocol (stdio). Never serves values
   var         Manage variables (rm, history, rollback). push / pull / run operate on values directly
   sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
+  proxy       Credential brokering for AI agents and other programs: run a command that never holds the real values (run), after a person accepted the repository's proxy config on this machine (accept)
 
 $ maruhi --help
 DESCRIPTION
@@ -50,7 +51,7 @@ SUBCOMMANDS
   login       Sign in by approving a request in your browser, and store the token in the OS keychain (or in the current `maruhi agent` session)
   logout      Revoke this machine's token and remove it from the OS keychain (or from the current `maruhi agent` session)
   pull        Verify the project and environment, decrypt the values in memory, and list the variables (names, versions, and sizes; values only with --show)
-  run         Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
+  run         Decrypt the environment and run a command with the values injected as environment variables (memory only). When maruhi.proxy.json is present its brokering rules apply (as `maruhi proxy run`); --plain injects the real values instead, for a person at a terminal. Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
   agent       Hold the token and this device's key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
   ci          Commands for CI jobs (run / sync)
@@ -71,6 +72,7 @@ SUBCOMMANDS
   mcp         Serve the value-free schema to AI agents over the Model Context Protocol (stdio). Never serves values
   var         Manage variables (rm, history, rollback). push / pull / run operate on values directly
   sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
+  proxy       Credential brokering for AI agents and other programs: run a command that never holds the real values (run), after a person accepted the repository's proxy config on this machine (accept)
 
 $ maruhi login --help
 DESCRIPTION
@@ -122,7 +124,7 @@ GLOBAL FLAGS
 
 $ maruhi run --help
 DESCRIPTION
-  Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`
+  Decrypt the environment and run a command with the values injected as environment variables (memory only). When maruhi.proxy.json is present its brokering rules apply (as `maruhi proxy run`); --plain injects the real values instead, for a person at a terminal. Write the command after `--`
 
 USAGE
   maruhi run [flags] -- <command...>
@@ -134,6 +136,7 @@ FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
   --env string        Environment ID (default: the `defaultEnvironment` setting)
+  --plain             Inject the real values even when maruhi.proxy.json is present (allowed only to a person at an interactive terminal; without the config, run always injects the real values)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -1706,6 +1709,59 @@ FLAGS
   --on-push string       Sync after every `maruhi push` to the environment: apply (from this machine) or workflow (trigger the repository's workflow with gh so CI syncs); needs --project
   --workflow string      With --on-push workflow: the workflow file that runs `maruhi ci sync` (for example maruhi-sync.yml)
   --option string        Preset option as key=value (repeatable; for example environment=production, name=my-worker)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi proxy --help
+DESCRIPTION
+  Credential brokering for AI agents and other programs: run a command that never holds the real values (run), after a person accepted the repository's proxy config on this machine (accept)
+
+USAGE
+  maruhi proxy <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  run       Run a command behind a local credential-brokering proxy: brokered variables arrive as placeholders and the real values are substituted only in requests to the hosts the proxy config allows. Write the command after `--`
+  accept    Accept the proxy config on this machine so its rules apply to `maruhi run` and `maruhi proxy run` (a person at a terminal; a new or changed file is refused until accepted). Reads the file and contacts no server
+
+$ maruhi proxy run --help
+DESCRIPTION
+  Run a command behind a local credential-brokering proxy: brokered variables arrive as placeholders and the real values are substituted only in requests to the hosts the proxy config allows. Write the command after `--`
+
+USAGE
+  maruhi proxy run [flags] -- <command...>
+
+ARGUMENTS
+  command... string    The command to run, written after `--` (passed to the child as-is)
+
+FLAGS
+  --server string       Server URL (defaults to config server)
+  --project string      Project ID (default: the `defaultProject` setting)
+  --env string          Environment ID (default: the `defaultEnvironment` setting)
+  --config string       Path to the proxy config committed in the repository (default: maruhi.proxy.json)
+  --verbose             Print one line per request the proxy handles (method, host, path, and the variables substituted — never a value)
+  --listen string       Bind the proxy to host[:port] instead of the loopback, so a sandbox or container can reach it (every request still needs the run's proxy credential)
+  --advertise string    The host[:port] the command is told to use for the proxy when it differs from the bound address (for example host.docker.internal from a container)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi proxy accept --help
+DESCRIPTION
+  Accept the proxy config on this machine so its rules apply to `maruhi run` and `maruhi proxy run` (a person at a terminal; a new or changed file is refused until accepted). Reads the file and contacts no server
+
+USAGE
+  maruhi proxy accept [flags]
+
+FLAGS
+  --config string     Path to the proxy config to accept (default: maruhi.proxy.json)
+  --project string    The project the config is for (default: the config's `project`, else the default project)
 
 GLOBAL FLAGS
   --help, -h       Show help information

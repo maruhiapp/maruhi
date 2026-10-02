@@ -639,6 +639,8 @@ A mechanism distributing a grant_server'd project's DEKs to a workload without l
 - Recording provider IDs or email addresses on the chain / audit log
 - Applying the §5.2-style hash commitment to low-entropy values (its secrecy depends on the input entropy. A commitment's target is only uniform-random 256-bit key material)
 
+**Scope note (2026-10-02 owner ruling — PF4, docs/notes/pf4-design.md §13)**: this specification governs the protection of maruhi's own data (values, keys, statements, the chain, wraps, leases). Two classes of cryptographic use in the CLI are outside its scope and are not spec operations: (a) **transport protection the CLI terminates for its own child process** — `maruhi proxy run`'s per-run certificate authority (ECDSA P-256 / SHA-256 over X.509; the key exists only in memory and dies with the run; only the public certificate touches disk); (b) **clients of third-party authentication protocols acting on the member's behalf** — the `github-app` connector's RS256 JWT signed with the member's own App key, in the same class as the vendor-API drivers of `maruhi sync`. Both use WebCrypto only, invent no protocol or mode, and never touch a maruhi protocol object or a test vector. Adding a class to this list is a spec revision; anything that protects maruhi's own data stays inside the sections above.
+
 ## 13. Open items
 
 1. ~~HPKE library selection~~ **Decided (2026-08-01)**: `hpke` (panva) adopted (see §2)

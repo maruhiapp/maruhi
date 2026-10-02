@@ -24,14 +24,20 @@
 // only). The validation's wording says "which key and why" and never
 // shows the value that was typed.
 
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { isEnvironmentId, isProjectId } from "@maruhi/core";
+import { isEnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import { cliError, type CliError, usageError } from "./errors.ts";
-import { parseJsonRecord } from "./json-record.ts";
+import {
+  isRecord,
+  loadIfPresent,
+  parseConfigHeader,
+  parseJsonRecord,
+  unknownKeys,
+} from "./json-record.ts";
 import type { ExecPreset } from "./sync-exec.ts";
 import type { HttpPreset } from "./sync-http.ts";
 import { defaultDriverOf, isUnavailable, type SyncPreset, SYNC_PRESETS } from "./sync-preset.ts";
@@ -130,14 +136,6 @@ const TARGET_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 /** A validation failure (the reason's string). Never includes the value itself. */
 type Invalid = string;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function unknownKeys(record: Record<string, unknown>, allowed: readonly string[]): string[] {
-  return Object.keys(record).filter((key) => !allowed.includes(key));
-}
 
 function nonEmptyStringList(value: unknown): readonly string[] | null {
   if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
@@ -633,17 +631,11 @@ export function parseSyncConfig(content: string, configDir: string): SyncConfig 
   if (typeof parsed === "string") {
     return parsed;
   }
-  const unknown = unknownKeys(parsed, ROOT_KEYS);
-  if (unknown.length > 0) {
-    return `unknown top-level keys (${unknown.join(", ")}); accepted: ${ROOT_KEYS.join(", ")}`;
+  const header = parseConfigHeader(parsed, ROOT_KEYS);
+  if (typeof header === "string") {
+    return header;
   }
-  if (parsed["version"] !== 1) {
-    return "unsupported config version (expected 1)";
-  }
-  const project = parsed["project"];
-  if (project !== undefined && (typeof project !== "string" || !isProjectId(project))) {
-    return "project must be the project ID (64 hex digits) when present";
-  }
+  const project = header.projectId;
   const receipts = parseReceipts(parsed["receipts"]);
   if (typeof receipts === "string") {
     return receipts;
@@ -717,23 +709,11 @@ export function loadSyncConfig(path: string): Effect.Effect<SyncConfig, CliError
  * is invalid — a broken config is reported, not skipped.
  */
 export function loadSyncConfigIfPresent(path: string): Effect.Effect<SyncConfig | null, CliError> {
-  return Effect.gen(function* () {
-    const exists = yield* Effect.tryPromise({
-      try: () => stat(path).then(() => true),
-      catch: (error: unknown) => error,
-    }).pipe(
-      Effect.catch((error: unknown) =>
-        (error as NodeJS.ErrnoException).code === "ENOENT"
-          ? Effect.succeed(false)
-          : Effect.fail(
-              cliError(
-                `Cannot read the sync config ${path} (it exists but is not readable). Fix it, or pass --no-sync to push without syncing`,
-              ),
-            ),
-      ),
-    );
-    return exists ? yield* loadSyncConfig(path) : null;
-  });
+  return loadIfPresent(
+    path,
+    loadSyncConfig,
+    `Cannot read the sync config ${path} (it exists but is not readable). Fix it, or pass --no-sync to push without syncing`,
+  );
 }
 
 /** Looks a target up by name (when unknown, a usage-error-equivalent wording with the candidates attached). */

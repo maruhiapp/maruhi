@@ -897,8 +897,14 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   // Right before writing to the vendor CLI's stdin (sync's exec driver — the
   // only path where a value leaves maruhi. Never lands on argv)
   "live.ts": 1,
-  // Right before injection into the child process's env
-  "run.ts": 2,
+  // Right before injection into the child process's env, and the fragments
+  // of the run-output redaction (searched inside the ProcessRunner only)
+  "run.ts": 3,
+  // `proxy run`: a brokered value resolved per request toward the rule's
+  // hosts, the same value as the response-scrub / redaction pattern
+  // (`known`), and a connector's inputs consumed to mint a short-lived
+  // credential
+  "proxy-run.ts": 3,
   // Importing the master secret key (hex → non-extractable CryptoKey)
   "session.ts": 2,
   // Assembling sync's stdin body (JSON — the product is Redacted again) 1 +

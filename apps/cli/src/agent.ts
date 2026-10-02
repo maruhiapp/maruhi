@@ -587,11 +587,44 @@ export const AGENT_COMMAND_REQUIRED =
  * The parent of where the socket goes. `$XDG_RUNTIME_DIR` is ideal — a
  * per-user tmpfs (0700, removed at logout). Without it, os.tmpdir() — the
  * directory we make is itself 0700, so even a shared /tmp hides it from
- * other users.
+ * other users. Shared with `maruhi proxy run`'s CA files and hop sockets (proxy-run.ts).
  */
-function socketBaseDir(envVar: (name: string) => string | undefined): string {
+function runtimeBaseDir(envVar: (name: string) => string | undefined): string {
   const runtime = envVar("XDG_RUNTIME_DIR");
   return runtime !== undefined && runtime.length > 0 ? runtime : tmpdir();
+}
+
+/**
+ * A fresh private (0700) directory under {@link runtimeBaseDir} and the
+ * effect that removes it (a removal failure is a Warning naming the path —
+ * never fatal, the directory holds no values). Shared by `maruhi agent` (the
+ * socket) and `maruhi proxy run` (the CA certificate files and the hop
+ * sockets of the proxy — proxy-server.ts).
+ */
+export function privateRuntimeDir(input: {
+  readonly envVar: (name: string) => string | undefined;
+  readonly prefix: string;
+  /** What the directory is for (the creation-failure wording). */
+  readonly purpose: string;
+  readonly removeFailure: (dir: string) => string;
+}): Effect.Effect<
+  { readonly dir: string; readonly removeDir: Effect.Effect<void, never, CliIo> },
+  CliError
+> {
+  return Effect.gen(function* () {
+    const dir = yield* Effect.tryPromise({
+      try: () => mkdtemp(join(runtimeBaseDir(input.envVar), input.prefix)),
+      catch: () =>
+        cliError(
+          `Cannot create a private directory for ${input.purpose} (under XDG_RUNTIME_DIR, or the temp directory when it is unset)`,
+        ),
+    });
+    const removeDir = Effect.tryPromise({
+      try: () => rm(dir, { recursive: true, force: true }),
+      catch: () => cliError(input.removeFailure(dir)),
+    }).pipe(Effect.catch((error) => logWarning(error.message)));
+    return { dir, removeDir };
+  });
 }
 
 /**
@@ -638,21 +671,16 @@ export function agentOp(input: {
         `${AGENT_SOCKET_ENV} pointed to an agent session that has already ended; starting a new one (the new value replaces it for this command's children)`,
       );
     }
-    const dir = yield* Effect.tryPromise({
-      try: () => mkdtemp(join(socketBaseDir(io.envVar), "maruhi-agent-")),
-      catch: () =>
-        cliError(
-          "Cannot create a private directory for the agent socket (under XDG_RUNTIME_DIR, or the temp directory when it is unset)",
-        ),
-    });
     // Even when removal fails the session's result (the child's exit code)
     // is not thrown away: the directory is empty or holds only the socket's
     // inode (no values in it). Not swallowed silently — warned
-    const removeDir = Effect.tryPromise({
-      try: () => rm(dir, { recursive: true, force: true }),
-      catch: () =>
-        cliError(`could not remove the agent socket directory (${dir}) — remove it by hand`),
-    }).pipe(Effect.catch((error) => logWarning(error.message)));
+    const { dir, removeDir } = yield* privateRuntimeDir({
+      envVar: io.envVar,
+      prefix: "maruhi-agent-",
+      purpose: "the agent socket",
+      removeFailure: (path) =>
+        `could not remove the agent socket directory (${path}) — remove it by hand`,
+    });
     return yield* Effect.acquireUseRelease(
       Effect.tryPromise({
         try: () => startAgentServer(dir, { keyTtlMs: input.keyTtl?.ms }),
