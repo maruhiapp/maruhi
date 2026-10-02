@@ -61,8 +61,17 @@ export interface RotateDeps {
   readonly sql: SqlRunnerShape;
   /** The issuer API origins (production: the fixed hosts). */
   readonly awsIamBase?: string | undefined;
+  readonly awsStsBase?: string | undefined;
   readonly cloudflareBase?: string | undefined;
 }
+
+/**
+ * The values every earlier version of a companion variable held (newest
+ * first), each lineage-verified against the verified latest. A finalize
+ * invalidates a credential the issuer lists only when one of these held
+ * its id — the server's history metadata never picks the target.
+ */
+export type CompanionAncestors = Readonly<Record<string, readonly Uint8Array[]>>;
 
 /** The decrypted inputs a connector consumes (input name → bytes). Empty = self-rotation. */
 export type RotateInputs = Readonly<Record<string, Uint8Array>>;
@@ -428,6 +437,17 @@ const AWS_IAM_BASE = "https://iam.amazonaws.com";
 const AWS_IAM_VERSION = "2010-05-08";
 /** IAM's Query API lives in us-east-1 whatever the caller's region. */
 const AWS_IAM_REGION = "us-east-1";
+/** The global STS endpoint (`GetCallerIdentity` needs no permission: it only proves the credential pair authenticates). */
+const AWS_STS_BASE = "https://sts.amazonaws.com";
+const AWS_STS_VERSION = "2011-06-15";
+/** STS answers one of these when the key id and the secret are not a pair (or the key is gone / inactive). */
+const AWS_AUTH_FAILURE_CODES = new Set([
+  "InvalidClientTokenId",
+  "SignatureDoesNotMatch",
+  "IncompleteSignature",
+  "AuthFailure",
+  "UnrecognizedClientException",
+]);
 
 const ACCESS_KEY_ID = /^[A-Z0-9]{16,128}$/;
 
@@ -482,23 +502,30 @@ function xmlMembers(xml: string): string[] {
   return [...xml.matchAll(/<member>([\s\S]*?)<\/member>/g)].map((match) => match[1] ?? "");
 }
 
-async function iamCall(
+interface AwsQueryService {
+  readonly name: "iam" | "sts";
+  readonly base: string;
+  readonly version: string;
+}
+
+/** One SigV4-signed Query API call; the raw response (an error answer is returned, not thrown — the caller classifies it). */
+async function awsQueryCall(
   deps: RotateDeps,
   caller: AwsCredentials,
+  service: AwsQueryService,
   action: string,
   params: Readonly<Record<string, string>>,
-): Promise<string> {
+): Promise<{ readonly ok: boolean; readonly status: number; readonly text: string }> {
   const body = new URLSearchParams({
     Action: action,
-    Version: AWS_IAM_VERSION,
+    Version: service.version,
     ...params,
   }).toString();
-  const base = deps.awsIamBase ?? AWS_IAM_BASE;
   const signed = await signV4({
     method: "POST",
-    url: `${base}/`,
+    url: `${service.base}/`,
     region: AWS_IAM_REGION,
-    service: "iam",
+    service: service.name,
     headers: { "content-type": "application/x-www-form-urlencoded; charset=utf-8" },
     body,
     credentials: caller,
@@ -506,24 +533,70 @@ async function iamCall(
   });
   let response: Response;
   try {
-    response = await deps.fetch(`${base}/`, {
+    response = await deps.fetch(`${service.base}/`, {
       method: "POST",
       headers: { ...signed.headers, "user-agent": USER_AGENT },
       body,
     });
   } catch (error) {
     const reason = error instanceof Error ? error.message : "request failed";
-    throw new ConnectorError(`aws-iam-access-key: ${action} could not reach IAM (${reason})`);
-  }
-  const text = await response.text();
-  if (!response.ok) {
-    const code = xmlText(text, "Code") ?? "unknown";
-    const message = xmlText(text, "Message") ?? "";
     throw new ConnectorError(
-      `aws-iam-access-key: IAM answered ${response.status} to ${action} (${code}${message === "" ? "" : `: ${message}`})`,
+      `aws-iam-access-key: ${action} could not reach ${service.name.toUpperCase()} (${reason})`,
     );
   }
-  return text;
+  return { ok: response.ok, status: response.status, text: await response.text() };
+}
+
+function awsErrorText(text: string): string {
+  const code = xmlText(text, "Code") ?? "unknown";
+  const message = xmlText(text, "Message") ?? "";
+  return `${code}${message === "" ? "" : `: ${message}`}`;
+}
+
+async function iamCall(
+  deps: RotateDeps,
+  caller: AwsCredentials,
+  action: string,
+  params: Readonly<Record<string, string>>,
+): Promise<string> {
+  const response = await awsQueryCall(
+    deps,
+    caller,
+    { name: "iam", base: deps.awsIamBase ?? AWS_IAM_BASE, version: AWS_IAM_VERSION },
+    action,
+    params,
+  );
+  if (!response.ok) {
+    throw new ConnectorError(
+      `aws-iam-access-key: IAM answered ${response.status} to ${action} (${awsErrorText(response.text)})`,
+    );
+  }
+  return response.text;
+}
+
+/**
+ * Whether a key id and a secret are a pair: `sts:GetCallerIdentity` needs
+ * no permission, so a success proves the pair and an authentication error
+ * refutes it. Any other answer (a network failure, a throttle) is surfaced,
+ * never read as "not the pair".
+ */
+async function awsPairAuthenticates(deps: RotateDeps, candidate: AwsCredentials): Promise<boolean> {
+  const response = await awsQueryCall(
+    deps,
+    candidate,
+    { name: "sts", base: deps.awsStsBase ?? AWS_STS_BASE, version: AWS_STS_VERSION },
+    "GetCallerIdentity",
+    {},
+  );
+  if (response.ok) {
+    return true;
+  }
+  if (AWS_AUTH_FAILURE_CODES.has(xmlText(response.text, "Code") ?? "")) {
+    return false;
+  }
+  throw new ConnectorError(
+    `aws-iam-access-key: STS answered ${response.status} to GetCallerIdentity (${awsErrorText(response.text)})`,
+  );
 }
 
 async function iamUserOf(
@@ -608,48 +681,90 @@ async function rotateAwsIam(
   };
 }
 
+/** The key ids earlier versions of the key id variable held (ill-formed values are ignored, never matched). */
+function storedKeyIds(ancestors: CompanionAncestors): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const value of ancestors[AWS_ACCESS_KEY_ID_COMPANION] ?? []) {
+    const id = decoder.decode(value).trim();
+    if (ACCESS_KEY_ID.test(id)) {
+      ids.add(id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Finalize: the key to deactivate is decided against the issuer, not
+ * against the server's history metadata. IAM lists the user's keys (at
+ * most two); a key other than the current one is deactivated only when (1)
+ * an earlier version of the key id variable held its id — lineage-verified,
+ * so a key a human created by hand is never touched — and (2) it
+ * authenticates with the previous version's secret at STS, which proves it
+ * is exactly the credential that version held. Either check failing
+ * leaves the key as it is and says so.
+ */
 async function finalizeAwsIam(
   rule: Extract<RotateRule, { connector: "aws-iam-access-key" }>,
   previous: CredentialValues,
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
+  ancestors: CompanionAncestors,
 ): Promise<FinalizeOutcome> {
   const caller = awsCallerOf(current, inputs);
   const currentId = currentKeyId(current);
-  const previousId = currentKeyId(previous);
-  if (previousId === currentId) {
-    return {
-      kind: "nothing",
-      facts: [`access key ${currentId} is held by both versions (nothing to deactivate)`],
-    };
-  }
   const user = await iamUserOf(deps, caller, rule, currentId);
   const keys = await iamListKeys(deps, caller, user);
-  const target = keys.find((key) => key.id === previousId);
-  if (target === undefined) {
+  const others = keys.filter((key) => key.id !== currentId);
+  if (others.length === 0) {
     return {
-      kind: "already",
-      facts: [`access key ${previousId} no longer exists for user ${user}`],
+      kind: "nothing",
+      facts: [`access key ${currentId} is the only key of user ${user} (nothing to deactivate)`],
     };
   }
-  if (target.status === "Inactive") {
+  const stored = storedKeyIds(ancestors);
+  const previousSecret = decoder.decode(previous.primary).trim();
+  const facts: string[] = [];
+  for (const key of others) {
+    if (!stored.has(key.id)) {
+      facts.push(
+        `access key ${key.id} of user ${user} was never a version of ${rule.accessKeyIdVariable} (not created through maruhi) — left untouched`,
+      );
+      continue;
+    }
+    if (key.status === "Inactive") {
+      return {
+        kind: "already",
+        facts: [
+          ...facts,
+          `access key ${key.id} is already inactive (the next rotation deletes it)`,
+        ],
+      };
+    }
+    const pairs = await awsPairAuthenticates(deps, {
+      accessKeyId: key.id,
+      secretAccessKey: previousSecret,
+    });
+    if (!pairs) {
+      facts.push(
+        `access key ${key.id} is active but does not authenticate with the previous version's secret (not that version's key) — left untouched`,
+      );
+      continue;
+    }
+    await iamCall(deps, caller, "UpdateAccessKey", {
+      UserName: user,
+      AccessKeyId: key.id,
+      Status: "Inactive",
+    });
     return {
-      kind: "already",
-      facts: [`access key ${previousId} is already inactive (the next rotation deletes it)`],
+      kind: "finalized",
+      facts: [
+        ...facts,
+        `access key ${key.id} deactivated (reversible at the issuer; the next rotation deletes it)`,
+      ],
     };
   }
-  await iamCall(deps, caller, "UpdateAccessKey", {
-    UserName: user,
-    AccessKeyId: previousId,
-    Status: "Inactive",
-  });
-  return {
-    kind: "finalized",
-    facts: [
-      `access key ${previousId} deactivated (reversible at the issuer; the next rotation deletes it)`,
-    ],
-  };
+  return { kind: "nothing", facts };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -918,7 +1033,7 @@ export function describeFinalize(rule: RotateRule): string {
         ? "discard the account's secondary (previous) password"
         : "replace the previous account's password with a random one nobody holds";
     case "aws-iam-access-key":
-      return "deactivate the previous access key (reversible at the issuer; deleted by the next rotation)";
+      return "deactivate the access key that authenticates with the previous version's secret at the issuer (only a key id an earlier version of the key id variable held; reversible at the issuer; deleted by the next rotation)";
     case "cloudflare-api-token":
       return "delete the previous token";
   }
@@ -931,6 +1046,7 @@ export function finalizeCredential(
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
+  ancestors: CompanionAncestors = {},
 ): Promise<FinalizeOutcome> {
   switch (rule.connector) {
     case "postgres":
@@ -938,7 +1054,7 @@ export function finalizeCredential(
     case "mysql":
       return finalizeMysql(rule, previous, current, inputs, deps);
     case "aws-iam-access-key":
-      return finalizeAwsIam(rule, previous, current, inputs, deps);
+      return finalizeAwsIam(rule, previous, current, inputs, deps, ancestors);
     case "cloudflare-api-token":
       return finalizeCloudflare(rule, previous, current, inputs, deps);
   }

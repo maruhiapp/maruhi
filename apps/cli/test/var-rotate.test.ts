@@ -442,6 +442,11 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
           );
         case "UpdateAccessKey":
           return new Response("<UpdateAccessKeyResponse/>", { status: 200 });
+        case "GetCallerIdentity":
+          return new Response(
+            "<GetCallerIdentityResponse><GetCallerIdentityResult><Arn>arn:aws:iam::123456789012:user/deployer</Arn></GetCallerIdentityResult></GetCallerIdentityResponse>",
+            { status: 200 },
+          );
         default:
           return new Response(
             "<ErrorResponse><Error><Code>Unexpected</Code></Error></ErrorResponse>",
@@ -452,6 +457,12 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
     return { actions, fetch: fetchImpl };
   }
 
+  const AWS_SEAMS = {
+    awsIamBase: "https://iam.test",
+    awsStsBase: "https://sts.test",
+    now: () => Date.parse("2026-10-02T00:00:00Z"),
+  };
+
   it("rotates the pair: the key id companion and the secret are pushed as two versions; the companion name resolves the rule", async () => {
     const { env, prod, configPath } = await startEnv({
       prod: [
@@ -461,11 +472,7 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
       config: AWS_CONFIG,
     });
     const iam = fakeIam();
-    env.setRotateSeams({
-      fetch: iam.fetch,
-      awsIamBase: "https://iam.test",
-      now: () => Date.parse("2026-10-02T00:00:00Z"),
-    });
+    env.setRotateSeams({ ...AWS_SEAMS, fetch: iam.fetch });
     expect(
       await runCli(
         ["var", "rotate", "AWS_ACCESS_KEY_ID", "--rotate-config", configPath],
@@ -505,15 +512,23 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
         env.layer,
       ),
     ).toBe(0);
-    expect(iam.actions.slice(2)).toEqual(["ListAccessKeys", "UpdateAccessKey"]);
+    // The target is decided against the issuer: the other listed key, held by
+    // version 1 of the key id variable, authenticates with version 1's secret
+    expect(iam.actions.slice(2)).toEqual([
+      "ListAccessKeys",
+      "GetCallerIdentity",
+      "UpdateAccessKey",
+    ]);
     expect(env.logs.join("\n")).toContain("access key AKIAOLD0000000000001 deactivated");
   });
 
-  it("--finalize --previous pairs the key id companion by push time: the companion version pushed alongside that secret version is the one deactivated", async () => {
-    // Three rotations happened (versions 1..3 of both variables, pushed in
-    // step); someone finalizes version 2 explicitly. The key id of version 2
-    // (AKIAMID…) must be the one deactivated — not version 1's and not the
-    // companion's own "latest minus one" when the histories diverge
+  it("--finalize --previous deactivates the key that authenticates with that version's secret, never one the server's history metadata would name", async () => {
+    // Three rotations happened (versions 1..3 of both variables); someone
+    // finalizes version 2 explicitly. The issuer lists AKIAMID… and the
+    // current key; AKIAMID… was held by version 2 of the key id variable and
+    // authenticates with version 2's secret, so it is the one deactivated.
+    // The history endpoint's versions and times play no part (a server
+    // cannot steer the target by backdating rows)
     const { env, configPath } = await startEnv({
       prod: [
         {
@@ -530,6 +545,7 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
       config: AWS_CONFIG,
     });
     const bodies: string[] = [];
+    const probes: string[] = [];
     const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
       const body = String(init?.body ?? "");
       bodies.push(body);
@@ -540,13 +556,22 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
           { status: 200 },
         );
       }
+      if (action === "GetCallerIdentity") {
+        const authorization = String(new Headers(init?.headers).get("authorization") ?? "");
+        probes.push(authorization);
+        return authorization.includes("Credential=AKIAMID0000000000002/")
+          ? new Response(
+              "<GetCallerIdentityResponse><GetCallerIdentityResult><Arn>arn:aws:iam::123456789012:user/deployer</Arn></GetCallerIdentityResult></GetCallerIdentityResponse>",
+              { status: 200 },
+            )
+          : new Response(
+              "<ErrorResponse><Error><Code>InvalidClientTokenId</Code></Error></ErrorResponse>",
+              { status: 403 },
+            );
+      }
       return new Response("<UpdateAccessKeyResponse/>", { status: 200 });
     }) as typeof fetch;
-    env.setRotateSeams({
-      fetch: fetchImpl,
-      awsIamBase: "https://iam.test",
-      now: () => Date.parse("2026-10-02T00:00:00Z"),
-    });
+    env.setRotateSeams({ ...AWS_SEAMS, fetch: fetchImpl });
     expect(
       await runCli(
         [
@@ -563,6 +588,7 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
         env.layer,
       ),
     ).toBe(0);
+    expect(probes).toHaveLength(1);
     const update = bodies
       .map((body) => new URLSearchParams(body))
       .find((params) => params.get("Action") === "UpdateAccessKey");
@@ -592,11 +618,7 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
       ],
     });
     const iam = fakeIam();
-    env.setRotateSeams({
-      fetch: iam.fetch,
-      awsIamBase: "https://iam.test",
-      now: () => Date.parse("2026-10-02T00:00:00Z"),
-    });
+    env.setRotateSeams({ ...AWS_SEAMS, fetch: iam.fetch });
     expect(
       await runCli(
         ["var", "rotate", "AWS_SECRET_ACCESS_KEY", "--rotate-config", configPath],
@@ -622,7 +644,7 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
     expect(errors).not.toContain("old/secret");
   });
 
-  it("--finalize when only the secret moved (the key id has a single version) has nothing to deactivate", async () => {
+  it("--finalize when the issuer lists only the current key has nothing to deactivate (the key id variable has a single version)", async () => {
     const { env, configPath } = await startEnv({
       prod: [
         { variableId: "v-id", name: "AWS_ACCESS_KEY_ID", plaintexts: ["AKIAOLD0000000000001"] },
@@ -635,11 +657,7 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
       config: AWS_CONFIG,
     });
     const iam = fakeIam();
-    env.setRotateSeams({
-      fetch: iam.fetch,
-      awsIamBase: "https://iam.test",
-      now: () => Date.parse("2026-10-02T00:00:00Z"),
-    });
+    env.setRotateSeams({ ...AWS_SEAMS, fetch: iam.fetch });
     expect(
       await runCli(
         [
@@ -654,9 +672,9 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
         env.layer,
       ),
     ).toBe(0);
-    expect(iam.actions).toEqual([]);
+    expect(iam.actions).toEqual(["ListAccessKeys"]);
     expect([...env.logs, ...env.errors].join("\n")).toContain(
-      "access key AKIAOLD0000000000001 is held by both versions (nothing to deactivate)",
+      "access key AKIAOLD0000000000001 is the only key of user deployer (nothing to deactivate)",
     );
   });
 });

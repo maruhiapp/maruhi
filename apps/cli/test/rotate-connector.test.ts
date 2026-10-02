@@ -90,6 +90,7 @@ function deps(input: { fetch?: typeof fetch; sql?: SqlRunnerShape } = {}): Rotat
     randomBytes: (length) => new Uint8Array(length).fill(((counter += 1) % 26) as number),
     sql: input.sql ?? recordingSql().sql,
     awsIamBase: "https://iam.test",
+    awsStsBase: "https://sts.test",
     cloudflareBase: "https://cf.test",
   };
 }
@@ -394,10 +395,16 @@ describe("aws-iam-access-key connector", () => {
     );
   });
 
-  it("finalize deactivates the previous key, and is idempotent", async () => {
+  const identityXml =
+    "<GetCallerIdentityResponse><GetCallerIdentityResult><Arn>arn:aws:iam::123456789012:user/app</Arn></GetCallerIdentityResult></GetCallerIdentityResponse>";
+  const authFailureXml =
+    "<ErrorResponse><Error><Code>InvalidClientTokenId</Code><Message>The security token included in the request is invalid.</Message></Error></ErrorResponse>";
+
+  it("finalize deactivates the other key only when an earlier version held its id and it authenticates with the previous secret; idempotent", async () => {
     const withUser: RotateRule = { ...rule, user: "app" };
     const previous = current;
     const now = credential("new", { accessKeyId: "AKIANEW0000000000002" });
+    const ancestors = { accessKeyId: [enc.encode("AKIAOLD0000000000001")] };
     let status = "Active";
     const issuer = fakeIssuer((call) => {
       switch (actionOf(call)) {
@@ -408,6 +415,12 @@ describe("aws-iam-access-key connector", () => {
               { id: "AKIANEW0000000000002", status: "Active" },
             ]),
           );
+        case "GetCallerIdentity":
+          // The probe is signed by the candidate pair (the old key id + the previous secret)
+          return call.headers["authorization"]?.includes("Credential=AKIAOLD0000000000001/") ===
+            true
+            ? xml(identityXml)
+            : new Response(authFailureXml, { status: 403 });
         case "UpdateAccessKey":
           status = "Inactive";
           return xml("<UpdateAccessKeyResponse/>");
@@ -421,8 +434,11 @@ describe("aws-iam-access-key connector", () => {
       now,
       {},
       deps({ fetch: issuer.fetch }),
+      ancestors,
     );
     expect(first.kind).toBe("finalized");
+    const probe = issuer.calls.find((call) => actionOf(call) === "GetCallerIdentity");
+    expect(probe?.url).toBe("https://sts.test/");
     const update = issuer.calls.find((call) => actionOf(call) === "UpdateAccessKey");
     expect(new URLSearchParams(update?.body).get("AccessKeyId")).toBe("AKIAOLD0000000000001");
     expect(new URLSearchParams(update?.body).get("Status")).toBe("Inactive");
@@ -434,11 +450,76 @@ describe("aws-iam-access-key connector", () => {
       now,
       {},
       deps({ fetch: issuer.fetch }),
+      ancestors,
     );
     expect(second.kind).toBe("already");
-    expect(
-      (await finalizeCredential(withUser, now, now, {}, deps({ fetch: issuer.fetch }))).kind,
-    ).toBe("nothing");
+  });
+
+  it("finalize never touches a key no version held, nor one that does not authenticate with the previous secret", async () => {
+    const withUser: RotateRule = { ...rule, user: "app" };
+    const now = credential("new", { accessKeyId: "AKIANEW0000000000002" });
+    const calls: string[] = [];
+    const issuer = fakeIssuer((call) => {
+      calls.push(actionOf(call));
+      switch (actionOf(call)) {
+        case "ListAccessKeys":
+          return xml(
+            keysXml([
+              { id: "AKIAHAND000000000003", status: "Active" },
+              { id: "AKIANEW0000000000002", status: "Active" },
+            ]),
+          );
+        case "GetCallerIdentity":
+          return new Response(authFailureXml, { status: 403 });
+        default:
+          return new Response("", { status: 500 });
+      }
+    });
+    // A key created by hand (no version of the key id variable held it): untouched, no probe
+    const stranger = await finalizeCredential(
+      withUser,
+      current,
+      now,
+      {},
+      deps({ fetch: issuer.fetch }),
+      { accessKeyId: [enc.encode("AKIAOLD0000000000001")] },
+    );
+    expect(stranger.kind).toBe("nothing");
+    expect(stranger.facts[0]).toContain(
+      "access key AKIAHAND000000000003 of user app was never a version of AWS_ACCESS_KEY_ID (not created through maruhi) — left untouched",
+    );
+    expect(calls).toEqual(["ListAccessKeys"]);
+    // A stored key id that does not pair with the previous secret (someone pushed by hand): untouched
+    calls.length = 0;
+    const mismatch = await finalizeCredential(
+      withUser,
+      current,
+      now,
+      {},
+      deps({ fetch: issuer.fetch }),
+      { accessKeyId: [enc.encode("AKIAHAND000000000003")] },
+    );
+    expect(mismatch.kind).toBe("nothing");
+    expect(mismatch.facts[0]).toContain(
+      "access key AKIAHAND000000000003 is active but does not authenticate with the previous version's secret (not that version's key) — left untouched",
+    );
+    expect(calls).toEqual(["ListAccessKeys", "GetCallerIdentity"]);
+    // Only the current key exists: nothing to deactivate (no probe)
+    calls.length = 0;
+    const alone = await finalizeCredential(
+      withUser,
+      now,
+      now,
+      {},
+      deps({
+        fetch: fakeIssuer(() => xml(keysXml([{ id: "AKIANEW0000000000002", status: "Active" }])))
+          .fetch,
+      }),
+    );
+    expect(alone.kind).toBe("nothing");
+    expect(alone.facts[0]).toBe(
+      "access key AKIANEW0000000000002 is the only key of user app (nothing to deactivate)",
+    );
   });
 });
 

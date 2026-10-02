@@ -47,7 +47,7 @@ import {
 } from "./rotate-connector.ts";
 import { requireEnvironmentInScope } from "./scope.ts";
 import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
-import { fetchHistory, verifiedAncestorValues } from "./var-history.ts";
+import { verifiedAncestorRange, verifiedAncestorValues } from "./var-history.ts";
 
 /**
  * Test seams (absent in production): where the issuer APIs are and what the
@@ -58,6 +58,7 @@ export interface RotateSeamsShape {
   readonly now?: () => number;
   readonly randomBytes?: (length: number) => Uint8Array;
   readonly awsIamBase?: string;
+  readonly awsStsBase?: string;
   readonly cloudflareBase?: string;
 }
 
@@ -73,6 +74,7 @@ export function rotateDeps(seams: RotateSeamsShape | null, sql: RotateDeps["sql"
     randomBytes: seams?.randomBytes ?? ((length) => crypto.getRandomValues(new Uint8Array(length))),
     sql,
     awsIamBase: seams?.awsIamBase,
+    awsStsBase: seams?.awsStsBase,
     cloudflareBase: seams?.cloudflareBase,
   };
 }
@@ -234,6 +236,22 @@ function resolveInputs(
   });
 }
 
+/** One companion's current value (the AWS key id), refused with the rule it belongs to when missing. */
+function companionValue(
+  local: ReadonlyMap<string, Redacted.Redacted<Uint8Array>>,
+  variable: string,
+  target: ResolvedTarget,
+): Effect.Effect<Redacted.Redacted<Uint8Array>, CliError> {
+  const value = local.get(variable);
+  return value === undefined
+    ? Effect.fail(
+        cliError(
+          `Variable ${displayText(variable)} (the companion the rule for ${displayText(target.primary)} names) has no value in this environment`,
+        ),
+      )
+    : Effect.succeed(value);
+}
+
 /** The rule's credential as currently stored: the primary and every companion, decrypted. */
 function currentCredential(
   target: ResolvedTarget,
@@ -250,14 +268,7 @@ function currentCredential(
     }
     const companions: Record<string, Uint8Array> = {};
     for (const [companion, variable] of Object.entries(companionsOf(target.rule))) {
-      const value = local.get(variable);
-      if (value === undefined) {
-        return yield* Effect.fail(
-          cliError(
-            `Variable ${displayText(variable)} (the ${companion} the rule for ${displayText(target.primary)} names) has no value in this environment`,
-          ),
-        );
-      }
+      const value = yield* companionValue(local, variable, target);
       companions[companion] = Redacted.value(value);
     }
     return { primary: Redacted.value(primary), companions };
@@ -422,86 +433,6 @@ export function varRotateOp(
   });
 }
 
-/**
- * The companion's values paired with the primary's ancestor (`--finalize`,
- * the AWS key id): a rotation pushes the companion right before the primary,
- * so the companion version that belongs to primary version N is **the latest
- * companion version pushed at or before N** (the history's server-declared
- * push times — the same material `var history` shows). This honours
- * `--previous` for the pair and needs no state. When that version is the
- * companion's current one (a single version, or nothing moved), the previous
- * companion is the current one — the connector then has nothing to
- * invalidate on that side.
- */
-function companionAncestor(
-  context: EnvironmentContext,
-  pulled: VerifiedEnvironmentPull,
-  local: ReadonlyMap<string, Redacted.Redacted<Uint8Array>>,
-  base: Omit<Parameters<typeof verifiedAncestorValues>[0], "name" | "toVersion">,
-  variable: string,
-  primary: { readonly variableId: string; readonly ancestorVersion: number },
-  target: ResolvedTarget,
-): Effect.Effect<
-  {
-    readonly previous: Uint8Array;
-    readonly current: Uint8Array;
-    readonly warnings: readonly string[];
-  },
-  CliError
-> {
-  return Effect.gen(function* () {
-    const currentStatement = pulled.variables.find((entry) => entry.name === variable);
-    if (currentStatement === undefined) {
-      return yield* Effect.fail(
-        cliError(
-          `Variable ${displayText(variable)} (the companion the rule for ${displayText(target.primary)} names) has no value in this environment`,
-        ),
-      );
-    }
-    const primaryHistory = yield* fetchHistory(
-      context.client,
-      pulled.verified,
-      context.environmentId,
-      primary.variableId,
-    );
-    const anchor = primaryHistory.find((entry) => entry.version === primary.ancestorVersion);
-    if (anchor === undefined) {
-      return yield* Effect.fail(
-        cliError(
-          `The history of ${displayText(target.primary)} has no version ${primary.ancestorVersion} (an inconsistent server response)`,
-        ),
-      );
-    }
-    const companionHistory = yield* fetchHistory(
-      context.client,
-      pulled.verified,
-      context.environmentId,
-      currentStatement.variableId,
-    );
-    const pairedVersion =
-      companionHistory
-        .filter((entry) => entry.pushedAtMs <= anchor.pushedAtMs)
-        .toSorted((a, b) => b.version - a.version)[0]?.version ?? 1;
-    const currentValue = local.get(variable);
-    if (currentValue === undefined) {
-      return yield* Effect.fail(
-        cliError(`Variable ${displayText(variable)} has no readable value in this environment`),
-      );
-    }
-    const current = Redacted.value(currentValue);
-    if (pairedVersion >= currentStatement.version) {
-      // Nothing moved on the companion side: the previous pair's companion is the current one
-      return { previous: current, current, warnings: [] };
-    }
-    const values = yield* verifiedAncestorValues({
-      ...base,
-      name: variable,
-      toVersion: pairedVersion,
-    });
-    return { previous: Redacted.value(values.ancestor), current, warnings: values.warnings };
-  });
-}
-
 /** `maruhi var rotate <NAME> --finalize`: invalidates the credential the previous version held. */
 export function varFinalizeOp(
   input: VarFinalizeInput,
@@ -527,26 +458,23 @@ export function varFinalizeOp(
     // use now authenticates a self-rotation)
     const pulled = yield* pullVerifiedEnvironment(base);
     const local = yield* decryptedByName(context, context.environmentId, pulled);
-    const previousCompanions: Record<string, Uint8Array> = {};
+    // A companion (the AWS key id): its current value from the verified
+    // pull, and the ids every earlier version held, lineage-verified. The
+    // connector decides against the issuer which of those to invalidate;
+    // nothing server-declared (the history's versions or times) takes part
     const currentCompanions: Record<string, Uint8Array> = {};
+    const ancestors: Record<string, readonly Uint8Array[]> = {};
     const warnings = [...primary.warnings];
     for (const [companion, variable] of Object.entries(companionsOf(target.rule))) {
-      const paired = yield* companionAncestor(
-        context,
-        pulled,
-        local,
-        base,
-        variable,
-        primary,
-        target,
-      );
-      previousCompanions[companion] = paired.previous;
-      currentCompanions[companion] = paired.current;
-      warnings.push(...paired.warnings);
+      const value = yield* companionValue(local, variable, target);
+      currentCompanions[companion] = Redacted.value(value);
+      const range = yield* verifiedAncestorRange({ ...base, name: variable });
+      ancestors[companion] = range.ancestors.map((entry) => Redacted.value(entry.value));
+      warnings.push(...range.warnings);
     }
     const previous: CredentialValues = {
       primary: Redacted.value(primary.ancestor),
-      companions: previousCompanions,
+      companions: {},
     };
     const current: CredentialValues = {
       primary: Redacted.value(primary.latest),
@@ -562,7 +490,7 @@ export function varFinalizeOp(
       yes: input.yes,
     });
     const outcome = yield* Effect.tryPromise({
-      try: () => finalizeCredential(target.rule, previous, current, inputs, input.deps),
+      try: () => finalizeCredential(target.rule, previous, current, inputs, input.deps, ancestors),
       catch: connectorFailure,
     });
     return {

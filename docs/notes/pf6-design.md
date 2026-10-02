@@ -319,6 +319,15 @@ declares no interval.
 - **No connection probe for AWS / Cloudflare**: IAM keys propagate in
   seconds and a probe would race them; a Cloudflare token's `/verify` is
   used only to learn ids
+- **A finalize's target is never the server's to pick** (security review,
+  round 2): the previous value is a lineage-verified ancestor of the
+  verified latest, the default "latest − 1" comes from the verified pull
+  (not the history endpoint), and the AWS key to deactivate is decided
+  against the issuer — a listed key other than the current one, only when
+  a lineage-verified earlier version of the key id variable held its id
+  **and** it authenticates with the previous version's secret
+  (`sts:GetCallerIdentity`, which needs no permission). The history
+  endpoint's versions and push times are display data only (vh-design.md)
 - **The two-variable AWS push is not atomic** (one round trip of mismatch).
   A push that fails after the issuer accepted the change leaves the new
   credential held only by the exiting process: the failure names the

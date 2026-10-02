@@ -101,8 +101,8 @@ function resolveLiveVariable(
   });
 }
 
-/** The server-declared version history of one variable, ascending (shared with `var rotate --finalize`'s companion pairing). */
-export function fetchHistory(
+/** The server-declared version history of one variable, ascending (display metadata — never a write or invalidation target). */
+function fetchHistory(
   client: MaruhiClient,
   verified: VerifiedProject,
   environmentId: string,
@@ -374,20 +374,53 @@ function verifyAncestry(input: {
   readonly latest: VerifiedPulledValue;
   readonly range: readonly DistributedEncryptedPayload[];
 }): Effect.Effect<VerifiedPulledValue, CliError> {
+  return Effect.map(verifiedRange(input), (versions) => {
+    const first = versions[0];
+    if (first === undefined) {
+      // Unreachable: verifiedRange refuses an empty range
+      throw new Error("verified range is empty");
+    }
+    return first;
+  });
+}
+
+/**
+ * Verifies the whole fetched range as the ancestry of the verified latest
+ * and returns every version as a pulled-value record (ascending), each
+ * one's meta fields being the latest statement's. The caller that needs
+ * one version takes the first; `var rotate --finalize` takes them all
+ * (the key ids earlier versions held).
+ */
+function verifiedRange(input: {
+  readonly verified: VerifiedProject;
+  readonly environmentId: string;
+  readonly latest: VerifiedPulledValue;
+  readonly range: readonly DistributedEncryptedPayload[];
+}): Effect.Effect<readonly VerifiedPulledValue[], CliError> {
   return Effect.gen(function* () {
-    const hashes: string[] = [];
+    const versions: VerifiedPulledValue[] = [];
     let predecessor: { readonly signedBytesHashHex: string; readonly epoch: number } | undefined;
     for (const payload of input.range) {
       const signedBytesHashHex = yield* verifyVersion({ ...input, payload, predecessor });
-      hashes.push(signedBytesHashHex);
       predecessor = { signedBytesHashHex, epoch: payload.aad.epoch };
+      versions.push({
+        ...input.latest,
+        version: payload.aad.version,
+        epoch: payload.aad.epoch,
+        nonceHex: payload.nonceHex,
+        ciphertextHex: payload.ciphertextHex,
+        prevValueSigHashHex: payload.prevValueSigHashHex,
+        signedBytesHashHex,
+        valueChainHeadSeq: payload.chainHeadSeq,
+        valueChainHeadHashHex: payload.chainHeadHashHex,
+        valueSignatureHex: payload.signatureHex,
+        writerUserId: payload.writerUserId,
+        writerKeyFingerprintHex: payload.writerKeyFingerprintHex,
+      });
     }
-    const first = input.range[0];
-    const firstHash = hashes[0];
     const last = input.range.at(-1);
     if (
-      first === undefined ||
-      firstHash === undefined ||
+      versions.length === 0 ||
       last?.aad.version !== input.latest.version ||
       predecessor?.signedBytesHashHex !== input.latest.signedBytesHashHex
     ) {
@@ -397,20 +430,7 @@ function verifyAncestry(input: {
         ),
       );
     }
-    return {
-      ...input.latest,
-      version: first.aad.version,
-      epoch: first.aad.epoch,
-      nonceHex: first.nonceHex,
-      ciphertextHex: first.ciphertextHex,
-      prevValueSigHashHex: first.prevValueSigHashHex,
-      signedBytesHashHex: firstHash,
-      valueChainHeadSeq: first.chainHeadSeq,
-      valueChainHeadHashHex: first.chainHeadHashHex,
-      valueSignatureHex: first.signatureHex,
-      writerUserId: first.writerUserId,
-      writerKeyFingerprintHex: first.writerKeyFingerprintHex,
-    };
+    return versions;
   });
 }
 
@@ -497,19 +517,30 @@ function checkToVersion(name: string, toVersion: number, latestVersion: number) 
 }
 
 /** Resolve → verified pull of the latest → the value range verified as its ancestry. */
-function planRollback(input: AncestorInput, name: string): Effect.Effect<RollbackPlan, CliError> {
+/**
+ * The verified latest value of a live variable: the name resolved through
+ * the metadata-only pull, then the with-values pull `maruhi push` uses to
+ * find its prev anchor (+ the all-epoch wraps). A declared variable has no
+ * value; a rename or delete in between is refused.
+ */
+function resolveLatestValue(
+  input: VarHistoryBase,
+  name: string,
+  noValueMessage: string,
+): Effect.Effect<
+  {
+    readonly pulled: VerifiedEnvironmentPull;
+    readonly latest: VerifiedPulledValue;
+    readonly warnings: readonly string[];
+  },
+  CliError
+> {
   return Effect.gen(function* () {
     const resolved = yield* resolveLiveVariable(input, name);
     if (resolved.target.status === "declared") {
-      return yield* Effect.fail(
-        cliError(
-          `Variable ${displayText(name)} is declared but has no value yet — there is nothing to roll back to`,
-        ),
-      );
+      return yield* Effect.fail(cliError(noValueMessage));
     }
     const variableId = resolved.target.variableId;
-    // The verified latest (+ the all-epoch wraps) — the same with-values
-    // pull `maruhi push` uses to find its prev anchor
     const pulled = yield* pullVerifiedEnvironment({ ...input, verified: resolved.verified });
     const latest = pulled.variables.find((variable) => variable.variableId === variableId);
     if (latest?.name !== name) {
@@ -519,13 +550,39 @@ function planRollback(input: AncestorInput, name: string): Effect.Effect<Rollbac
         ),
       );
     }
-    yield* checkToVersion(name, input.toVersion, latest.version);
+    return { pulled, latest, warnings: [...resolved.warnings, ...pulled.warnings] };
+  });
+}
+
+function planRollback(
+  input: Omit<AncestorInput, "toVersion"> & { readonly toVersion: number | null },
+  name: string,
+): Effect.Effect<RollbackPlan, CliError> {
+  return Effect.gen(function* () {
+    const { pulled, latest, warnings } = yield* resolveLatestValue(
+      input,
+      name,
+      `Variable ${displayText(name)} is declared but has no value yet — there is nothing to roll back to`,
+    );
+    const variableId = latest.variableId;
+    // The default (the version right before the latest) is derived from the
+    // verified latest, never from the server-declared history: which
+    // credential a finalize destroys must not be the server's to steer
+    if (input.toVersion === null && latest.version < 2) {
+      return yield* Effect.fail(
+        cliError(
+          `Variable ${displayText(name)} has no previous version (the current version is ${latest.version}) — nothing to finalize`,
+        ),
+      );
+    }
+    const toVersion = input.toVersion ?? latest.version - 1;
+    yield* checkToVersion(name, toVersion, latest.version);
     const range = yield* fetchVersionRange({
       client: input.client,
       verified: pulled.verified,
       environmentId: input.environmentId,
       variableId,
-      fromVersion: input.toVersion,
+      fromVersion: toVersion,
       latestVersion: latest.version,
     });
     const target = yield* verifyAncestry({
@@ -540,7 +597,7 @@ function planRollback(input: AncestorInput, name: string): Effect.Effect<Rollbac
       latest,
       target,
       pulled,
-      warnings: [...resolved.warnings, ...pulled.warnings],
+      warnings,
     };
   });
 }
@@ -552,7 +609,7 @@ function planRollback(input: AncestorInput, name: string): Effect.Effect<Rollbac
  */
 /** Both plaintexts of a plan (the ancestor and the latest), each decrypted with its own epoch's DEK. */
 function decryptPair(
-  input: AncestorInput,
+  input: Omit<AncestorInput, "toVersion">,
   plan: RollbackPlan,
 ): Effect.Effect<
   {
@@ -603,43 +660,90 @@ export function verifiedAncestorValues(
 ): Effect.Effect<VerifiedAncestorValues, CliError> {
   return Effect.gen(function* () {
     const name = input.name.normalize("NFC");
-    let toVersion = input.toVersion;
-    if (toVersion === null) {
-      // The default needs the latest version first: one metadata-only
-      // history read (no value is fetched by it — §12-7)
-      const resolved = yield* resolveLiveVariable(input, name);
-      if (resolved.target.status === "declared") {
-        return yield* Effect.fail(
-          cliError(`Variable ${displayText(name)} is declared but has no value yet`),
-        );
-      }
-      const history = yield* fetchHistory(
-        input.client,
-        resolved.verified,
-        input.environmentId,
-        resolved.target.variableId,
-      );
-      const latest = history.at(-1)?.version ?? 0;
-      if (latest < 2) {
-        return yield* Effect.fail(
-          cliError(
-            `Variable ${displayText(name)} has no previous version (the current version is ${latest}) — nothing to finalize`,
-          ),
-        );
-      }
-      toVersion = latest - 1;
-    }
-    const plan = yield* planRollback({ ...input, toVersion }, name);
-    const pair = yield* decryptPair({ ...input, toVersion }, plan);
+    const plan = yield* planRollback(input, name);
+    const pair = yield* decryptPair(input, plan);
     return {
       name,
       variableId: plan.variableId,
       latestVersion: plan.latest.version,
-      ancestorVersion: toVersion,
+      ancestorVersion: plan.target.version,
       ancestor: pair.target,
       latest: pair.latest,
       warnings: plan.warnings,
     };
+  });
+}
+
+/** Every version before the verified latest of one variable, lineage-verified and decrypted (newest first). */
+export interface VerifiedAncestorRange {
+  readonly name: string;
+  readonly variableId: string;
+  readonly latestVersion: number;
+  /** Newest first (version latest−1 … 1). Empty when the variable has one version. */
+  readonly ancestors: readonly {
+    readonly version: number;
+    readonly value: Redacted.Redacted<Uint8Array>;
+  }[];
+  readonly warnings: readonly string[];
+}
+
+/**
+ * The values every earlier version held, each verified as an ancestor of
+ * the verified latest (the same evidence rule as a rollback) and decrypted
+ * with its epoch's DEK. `var rotate --finalize` uses it for the AWS key id
+ * variable: a key the issuer lists is deactivated only when one of these
+ * versions held its id — the server's history metadata never picks the
+ * target.
+ */
+export function verifiedAncestorRange(
+  input: Omit<AncestorInput, "toVersion">,
+): Effect.Effect<VerifiedAncestorRange, CliError> {
+  return Effect.gen(function* () {
+    const name = input.name.normalize("NFC");
+    const { pulled, latest, warnings } = yield* resolveLatestValue(
+      input,
+      name,
+      `Variable ${displayText(name)} is declared but has no value yet`,
+    );
+    const variableId = latest.variableId;
+    if (latest.version < 2) {
+      return { name, variableId, latestVersion: latest.version, ancestors: [], warnings };
+    }
+    const range = yield* fetchVersionRange({
+      client: input.client,
+      verified: pulled.verified,
+      environmentId: input.environmentId,
+      variableId,
+      fromVersion: 1,
+      latestVersion: latest.version,
+    });
+    const versions = yield* verifiedRange({
+      verified: pulled.verified,
+      environmentId: input.environmentId,
+      latest,
+      range,
+    });
+    const keys = yield* environmentKeysFor({
+      client: input.client,
+      verified: pulled.verified,
+      environmentId: input.environmentId,
+      recipient: input.recipient,
+      prefetched: pulled.deks,
+    });
+    const ancestors: { readonly version: number; readonly value: Redacted.Redacted<Uint8Array> }[] =
+      [];
+    for (const variable of versions.filter((entry) => entry.version < latest.version)) {
+      const value = yield* decryptVerifiedValue({
+        verified: pulled.verified,
+        environmentId: input.environmentId,
+        variable,
+        deksByEpoch: keys.deksByEpoch,
+        chainEpoch: keys.currentEpoch,
+      });
+      ancestors.push({ version: variable.version, value });
+    }
+    ancestors.reverse();
+    return { name, variableId, latestVersion: latest.version, ancestors, warnings };
   });
 }
 
