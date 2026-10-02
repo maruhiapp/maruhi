@@ -1352,7 +1352,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   // A v3 context missing max_age_days (the v3-missing-max-age structural
   // negative) is signed as the empty declaration: the bytes are a legitimate
   // v3 statement and the rejection is the context's shape, not the signature
-  const signedBytes = (ctx) => lpEncode(orderOf(ctx).map((key) => ctx[key] ?? ""));
+  const signedBytes = (ctx) =>
+    lpEncode(orderOf(ctx).map((key) => (key === "max_age_days" ? (ctx[key] ?? "") : ctx[key])));
   const byName = new Map(doc.vectors.map((v) => [v.name, v]));
 
   const verifyStatement = async (v, label) => {
