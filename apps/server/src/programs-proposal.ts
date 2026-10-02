@@ -29,11 +29,7 @@ import { dataEvent, rejectData, requireMemberState, roleAtLeast } from "./data-p
 import type { DataStoreShape, StoredProposal, StoredProposalVariable } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
 import { deviceReceivesEnvironment } from "./dek-wraps.ts";
-import {
-  MAX_PENDING_ROTATION_PROPOSALS,
-  MAX_ROTATION_PROPOSAL_LIFETIME_MS,
-  MAX_ROTATION_PROPOSALS_PER_WINDOW,
-} from "./policy.ts";
+import { MAX_PENDING_ROTATION_PROPOSALS, MAX_ROTATION_PROPOSALS_PER_WINDOW } from "./policy.ts";
 import type { LeaseRejection, LeaseTokenFacts } from "./programs-lease.ts";
 import { authorizeWorkload, recordDenied } from "./programs-lease.ts";
 import { projectBytesExceeded } from "./quotas.ts";
@@ -70,7 +66,8 @@ export interface RotationProposalInput {
   readonly proposalId: string;
   readonly connector: RotationConnector;
   readonly facts: readonly string[];
-  readonly expiresAtMs: number;
+  /** 1 to 30 (Schema-bounded by the worker); the server sets the instant. */
+  readonly expiresInDays: number;
   readonly variables: readonly ProposalVariableInput[];
 }
 
@@ -192,12 +189,6 @@ const proposalRefusal = (
         return reason;
       }
     }
-    if (
-      proposal.expiresAtMs <= nowMs ||
-      proposal.expiresAtMs > nowMs + MAX_ROTATION_PROPOSAL_LIFETIME_MS
-    ) {
-      return "expiry-out-of-range";
-    }
     const pending = yield* store.countPendingProposals(nowMs);
     if (pending >= MAX_PENDING_ROTATION_PROPOSALS) {
       return "pending-limit";
@@ -272,6 +263,10 @@ export const proposeRotationProgram = (
     if (reason !== null) {
       return yield* Effect.fail<ProposalRejection>({ kind: "proposal-rejected", reason });
     }
+    // The lifetime is a duration on the wire (ruling O revision): the
+    // instant is the server's, so a client clock ahead of the server can
+    // never make a proposal unacceptable after the issuer was touched
+    const expiresAtMs = nowMs + proposal.expiresInDays * DAY_MS;
     // The storage-total guard observes (the caps above bound a
     // proposal's size; the mint is accepted under the warning level like
     // the lease — AUTH_SPEC §12-8)
@@ -296,7 +291,7 @@ export const proposeRotationProgram = (
           facts: proposal.facts,
           claimsDigestHex: facts.claimsDigestHex,
           grantChainSeq: grant.grantSeq,
-          expiresAtMs: proposal.expiresAtMs,
+          expiresAtMs,
           variables: proposal.variables,
         },
         nowMs,
@@ -319,7 +314,7 @@ export const proposeRotationProgram = (
         },
       });
     });
-    return { proposalId: proposal.proposalId, expiresAtMs: proposal.expiresAtMs };
+    return { proposalId: proposal.proposalId, expiresAtMs };
   });
 
 /**
@@ -329,22 +324,35 @@ export const proposeRotationProgram = (
  * exactly one closing row, so "minted but never accepted" is enumerable
  * from the log alone). Actor system, like the mint
  */
-const sweepExpired = (nowMs: number): Effect.Effect<void, never, DataStore | AuditStore> =>
+/**
+ * Drops the expired rows and leaves each one's history as an audit row
+ * (ruling P revision). The payload carries the expiry instant: the sweep
+ * runs on the next mint, pre-flight or resolution, which in a quiet
+ * project can be long after. `except` is a proposal a member is resolving
+ * right now (ruling P revision: an expired-but-unswept proposal whose
+ * member evidently did not abandon it is resolved, not swept).
+ */
+const sweepExpired = (
+  nowMs: number,
+  except?: string,
+): Effect.Effect<void, never, DataStore | AuditStore> =>
   Effect.gen(function* () {
     const store = yield* DataStore;
     const audit = yield* AuditStore;
     yield* Effect.sync(() => {
-      for (const expired of store.write.deleteExpiredProposals(nowMs)) {
+      for (const expired of store.write.deleteExpiredProposals(nowMs, except)) {
         audit.appendSync({
           event: "rotation.proposal_expired",
           serverTs: nowMs,
           actorType: "system",
           environmentId: expired.environmentId,
-          payload: { proposalId: expired.proposalId },
+          payload: { proposalId: expired.proposalId, expiresAtMs: expired.expiresAtMs },
         });
       }
     });
   });
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The pre-flight's variables (AUTH_SPEC §14-5 — O-4): what the job intends to propose, before the issuer is touched. */
 export interface PreflightVariableInput {
@@ -382,6 +390,19 @@ export const preflightRotationProgram = (
     const nowMs = Date.now();
     if (store.isMirrorSync()) {
       return yield* preflightRefusal("mirror-read-only");
+    }
+    // The mint window, read without consuming it (ruling O revision): a
+    // job that would be rate-limited learns it before the issuer is touched
+    const window = yield* store.checkLeaseWindow(
+      "proposed",
+      MAX_ROTATION_PROPOSALS_PER_WINDOW,
+      nowMs,
+    );
+    if (!window.allowed) {
+      return yield* Effect.fail<ProposalRejection>({
+        kind: "rate-limited",
+        retryAfterSeconds: window.retryAfterSeconds,
+      });
     }
     yield* sweepExpired(nowMs);
     const seen = new Set<string>();
@@ -478,11 +499,14 @@ export const resolveRotationProposalProgram = (
   Effect.gen(function* () {
     const { member } = yield* requireMemberState(actor.userId, "member", cache);
     const nowMs = Date.now();
-    yield* sweepExpired(nowMs);
+    // The resolved proposal is reached expired or not: a member who began
+    // the acceptance before the expiry has pushed signed versions already,
+    // and their outcome belongs in the log as theirs, not as "nobody's"
+    // (ruling P revision). Unknown / resolved / swept fold into one 404
+    // (indistinguishable by design — a resolution cannot probe which)
+    yield* sweepExpired(nowMs, proposalId);
     const store = yield* DataStore;
-    // Unknown / resolved / expired fold into one 404 (the three are
-    // indistinguishable by design — a resolution cannot probe which)
-    const proposal = yield* store.findPendingProposal(proposalId, nowMs);
+    const proposal = yield* store.findProposal(proposalId);
     if (proposal === null) {
       return yield* rejectData({ kind: "rotation-proposal-not-found", proposalId });
     }

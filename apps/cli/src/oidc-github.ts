@@ -222,6 +222,17 @@ function decodeTokenPayload(raw: string): unknown | null {
   }
 }
 
+/** The token's `exp` as a millisecond instant (null when absent or malformed) — the fallback check of a mint (K-6). */
+export function tokenExpiresAtMs(token: Redacted.Redacted<string>): number | null {
+  // Why it is unwrapped: reading one numeric claim of my own token; nothing else leaves
+  const payload = decodeTokenPayload(Redacted.value(token));
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+  const exp = (payload as Record<string, unknown>)["exp"];
+  return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : null;
+}
+
 /** payload → the 3 claims the lease binds (a reason code when malformed). */
 function claimsOfPayload(payload: unknown | null): LeaseClaims | ClaimsFailure {
   if (payload === null) {

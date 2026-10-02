@@ -26,6 +26,7 @@ import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import { decryptVerifiedValue } from "./pull.ts";
 import { type PushedVersion, pushVariable } from "./push.ts";
+import { valueShape } from "./rotate-connector.ts";
 import { fetchRotationProposals, resolveVariableStates, type StateIndex } from "./rotation.ts";
 import {
   pullVerifiedEnvironment,
@@ -356,7 +357,14 @@ function acceptanceFacts(
     toPush.length === 0
       ? `Accepting proposal ${proposal.proposalId}: every proposed value is already stored in environment ${displayText(environmentId)} (${already.join(", ")} — an earlier accept pushed it); nothing is pushed, the proposal is resolved as accepted. ${minter}`
       : `Accepting proposal ${proposal.proposalId} pushes ${toPush.map((entry) => displayText(entry.name)).join(", ")} in environment ${displayText(environmentId)} as new versions signed by you${already.length === 0 ? "" : ` (already stored: ${already.join(", ")})`}. ${minter}`;
-  return [head, ...proposal.facts.map((fact) => `  ${displayText(fact)}`)];
+  // The shape of each value to push, from the opened plaintext on this
+  // device (D-8): a job that produced chatter instead of a credential shows
+  // here, verified, before anything is pushed — the server never saw it
+  const shapes = toPush.map(
+    (entry) =>
+      `  ${displayText(entry.name)}: ${valueShape(Redacted.value(entry.value))} (opened on this device)`,
+  );
+  return [head, ...proposal.facts.map((fact) => `  ${displayText(fact)}`), ...shapes];
 }
 
 /** Pushes the opened values that are not stored yet, in the proposal's order, as ordinary signed versions. */

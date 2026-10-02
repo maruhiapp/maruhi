@@ -164,14 +164,19 @@ export const ProposedVariableSchema = Schema.Struct({
 
 /**
  * The proposal a workload mints (AUTH_SPEC §14-5): client-chosen id,
- * the connector, its non-secret facts, an expiry, and one to eight
- * variables (the rule's variable and its companions).
+ * the connector, its non-secret facts, a lifetime in days, and one to
+ * eight variables (the rule's variable and its companions).
  */
 export const RotationProposalInputSchema = Schema.Struct({
   proposalId: ProposalIdSchema,
   connector: RotationConnectorSchema,
   facts: Schema.Array(ProposalFactSchema).check(Schema.isMaxLength(16)),
-  expiresAtMs: Schema.Number,
+  /** How long the proposal waits for a member, in days from acceptance (the server sets the instant — a client clock plays no part; ruling O revision). */
+  expiresInDays: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(30),
+  ),
   variables: Schema.Array(ProposedVariableSchema).check(
     Schema.isMinLength(1),
     Schema.isMaxLength(8),

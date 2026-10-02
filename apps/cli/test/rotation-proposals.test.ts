@@ -346,6 +346,8 @@ describe("maruhi rotation accept (PF7b)", () => {
       "minted with the exec connector by the workload whose lease claims digest is abababababababab",
     );
     expect(errors).toContain(FACT);
+    // The value's shape, from the opened plaintext on this device (D-8)
+    expect(errors).toContain("STRIPE_SECRET_KEY: 17 bytes, 1 line (opened on this device)");
     expectNoSecretLeak(fixture.env);
   });
 

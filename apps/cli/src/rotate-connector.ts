@@ -108,6 +108,8 @@ export interface RotationPlan {
 export interface RotationOutcome {
   /** The new values to push (the primary and every companion the rule names). */
   readonly values: CredentialValues;
+  /** The primary's shape ({@link valueShape}) for the local report — never a proposal fact. */
+  readonly valueShape: string;
   /** Non-secret facts for the report (the new key id, the role now in use, the token id). */
   readonly facts: readonly string[];
   /** What the previous credential's state is now, in one line. */
@@ -285,7 +287,7 @@ async function rotatePostgres(
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
-): Promise<RotationOutcome> {
+): Promise<ConnectorOutcome> {
   const parsed = parseDbUrl(current.primary, "postgres");
   const role = nextRole(rule, parsed.user);
   const password = generatePassword(deps.randomBytes);
@@ -319,7 +321,7 @@ async function rotateMysql(
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
-): Promise<RotationOutcome> {
+): Promise<ConnectorOutcome> {
   const parsed = parseDbUrl(current.primary, "mysql");
   const role = nextRole(rule, parsed.user);
   const password = generatePassword(deps.randomBytes);
@@ -668,7 +670,7 @@ async function rotateAwsIam(
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
-): Promise<RotationOutcome> {
+): Promise<ConnectorOutcome> {
   const { caller, currentId, user, keys } = await iamKeysOf(rule, current, inputs, deps);
   const facts: string[] = [];
   if (keys.length >= 2) {
@@ -925,7 +927,7 @@ async function rotateCloudflare(
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
-): Promise<RotationOutcome> {
+): Promise<ConnectorOutcome> {
   const token = decoder.decode(current.primary).trim();
   const admin = adminTokenOf(current, inputs);
   const id = await cloudflareTokenId(deps, rule, token);
@@ -1136,12 +1138,14 @@ async function runScript(
 }
 
 /**
- * The shape of a produced value, as a fact for the member who accepts it
- * (D-7): a script that printed its own chatter on stdout, or a one-byte
- * value, shows here before the value is pushed. Nothing of the value
- * itself (its ciphertext length tells the same).
+ * The shape of a value (D-7 / D-8): "N bytes, M lines", shown in the local
+ * rotation report and, at an acceptance, computed from the opened value on
+ * the member's device — never sent to the server (a line count is
+ * plaintext-derived information the ciphertext does not give away). A
+ * script that printed its own chatter on stdout shows here before the
+ * value is pushed.
  */
-function valueShape(value: Uint8Array): string {
+export function valueShape(value: Uint8Array): string {
   let lines = 1;
   for (const byte of value) {
     if (byte === 0x0a) {
@@ -1283,7 +1287,7 @@ async function rotateExec(
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
-): Promise<RotationOutcome> {
+): Promise<ConnectorOutcome> {
   const env = scriptEnvironment({ rule, site, phase: "rotate", current, previous: null, inputs });
   const secrets = scriptSecrets({ current, previous: null, inputs });
   const outcome = await runScript(deps, rule, rule.rotate, env, secrets, "rotate");
@@ -1294,14 +1298,13 @@ async function rotateExec(
   // The script's own words may carry a credential by mistake: scrub them
   // of everything this run knows before they reach the report
   const all = scriptSecrets({ current, previous: null, inputs, produced: answer.values });
-  const facts = [
-    valueShape(answer.values.primary),
-    ...answer.facts.flatMap((fact) => scrubbedLines(fact, all, 1)),
-  ];
+  const facts = answer.facts.flatMap((fact) => scrubbedLines(fact, all, 1));
   const script = rule.rotate[0] ?? "";
   return {
     values: answer.values,
-    facts: [`${script}: new credential produced (${facts.join("; ")})`],
+    facts: [
+      `${script}: new credential produced${facts.length === 0 ? "" : ` (${facts.join("; ")})`}`,
+    ],
     previous:
       rule.finalize === null
         ? "the rotate script was expected to retire the previous credential itself (nothing to finalize)"
@@ -1387,6 +1390,20 @@ export async function rotateCredential(
   /** Where the rotation happens (the `exec` connector's scripts receive it; required for that connector). */
   site?: RotationSite,
 ): Promise<RotationOutcome> {
+  const outcome = await rotateWith(rule, current, inputs, deps, site);
+  return { ...outcome, valueShape: valueShape(outcome.values.primary) };
+}
+
+/** A connector's own outcome (the frame adds the value's shape). */
+export type ConnectorOutcome = Omit<RotationOutcome, "valueShape">;
+
+function rotateWith(
+  rule: RotateRule,
+  current: CredentialValues,
+  inputs: RotateInputs,
+  deps: RotateDeps,
+  site?: RotationSite,
+): Promise<ConnectorOutcome> {
   switch (rule.connector) {
     case "postgres":
       return rotatePostgres(rule, current, inputs, deps);

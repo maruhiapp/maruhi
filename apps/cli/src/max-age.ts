@@ -103,11 +103,11 @@ export function dueRowsFor(input: {
                 unreadable.push(candidate.name);
                 return null;
               }
-              const latest = history.toSorted((a, b) => b.version - a.version)[0];
-              if (latest === undefined) {
+              const pushedAtMs = plaintextPushedAtMs(history);
+              if (pushedAtMs === null) {
                 return null;
               }
-              const dueAtMs = latest.pushedAtMs + candidate.maxAgeDays * DAY_MS;
+              const dueAtMs = pushedAtMs + candidate.maxAgeDays * DAY_MS;
               return dueAtMs - input.nowMs > input.windowDays * DAY_MS
                 ? null
                 : {
@@ -115,12 +115,14 @@ export function dueRowsFor(input: {
                     variableId: candidate.variableId,
                     name: candidate.name,
                     maxAgeDays: candidate.maxAgeDays,
-                    pushedAtMs: latest.pushedAtMs,
+                    pushedAtMs,
                     dueAtMs,
                   };
             }),
           ),
-      { concurrency: 8 },
+      // Every read at once: a handful of metadata GETs to one DO, so the
+      // note costs one round-trip time whatever the count (and one bound)
+      { concurrency: "unbounded" },
     );
     return {
       rows: rows
@@ -129,6 +131,39 @@ export function dueRowsFor(input: {
       unreadable,
     };
   });
+}
+
+/** A history row as the age needs it (the lineage declaration included). */
+interface AgeRow {
+  readonly version: number;
+  readonly pushedAtMs: number;
+  readonly sameValueAs?: number | undefined;
+}
+
+/**
+ * The push time of the **plaintext** the current version holds (B-9): a
+ * re-encryption (`sameValueAs = version − 1` — the mandated one after a
+ * member leaves) and a rollback (`sameValueAs` older) are new versions of
+ * an old value, so the lineage is followed to its root before the age is
+ * taken. Server-declared like every history row (advisory); the only
+ * direction a lying server gains is "older".
+ */
+function plaintextPushedAtMs(history: readonly AgeRow[]): number | null {
+  const byVersion = new Map(history.map((row) => [row.version, row]));
+  let row = history.toSorted((a, b) => b.version - a.version)[0];
+  if (row === undefined) {
+    return null;
+  }
+  const seen = new Set<number>();
+  while (row.sameValueAs !== undefined && !seen.has(row.version)) {
+    seen.add(row.version);
+    const parent = byVersion.get(row.sameValueAs);
+    if (parent === undefined) {
+      break;
+    }
+    row = parent;
+  }
+  return row.pushedAtMs;
 }
 
 /**

@@ -175,13 +175,23 @@ function jwtPayload(token: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(segment, "base64url").toString("utf8")) as Record<string, unknown>;
 }
 
-function oidcHandler(state: { issued: number }): MockHandler {
+interface OidcOptions {
+  /** The `exp` (seconds) of every token issued (default: none). */
+  readonly expSeconds?: number;
+  /** After this many tokens the endpoint answers 500 (default: never). */
+  readonly failAfter?: number;
+}
+
+function oidcHandler(state: { issued: number }, options: OidcOptions = {}): MockHandler {
   return (request) => {
     if (request.method !== "GET" || request.path !== "/oidc/token") {
       return null;
     }
     if (request.headers["authorization"] !== `Bearer ${RUNNER_TOKEN}`) {
       return { status: 401, json: { message: "bad runner token" } };
+    }
+    if (options.failAfter !== undefined && state.issued >= options.failAfter) {
+      return { status: 500, json: { message: "issuance unavailable" } };
     }
     state.issued += 1;
     return {
@@ -192,6 +202,7 @@ function oidcHandler(state: { issued: number }): MockHandler {
           sub: `repo:acme/app:ref:refs/heads/main/run/${state.issued}`,
           aud: request.query["audience"] ?? "",
           jti: state.issued,
+          ...(options.expSeconds === undefined ? {} : { exp: options.expSeconds }),
         }),
       },
     };
@@ -279,7 +290,7 @@ interface MintBody {
     readonly proposalId: string;
     readonly connector: string;
     readonly facts: readonly string[];
-    readonly expiresAtMs: number;
+    readonly expiresInDays: number;
     readonly variables: readonly {
       readonly variableId: string;
       readonly baseVersion: number;
@@ -298,6 +309,8 @@ interface Minted {
   readonly bodies: MintBody[];
   /** An injected refusal (undefined = accept). */
   reject?: { status: number; json: unknown } | undefined;
+  /** An injected refusal of the next mint only. */
+  rejectOnce?: { status: number; json: unknown } | undefined;
 }
 
 function mintHandler(minted: Minted): MockHandler {
@@ -314,9 +327,18 @@ function mintHandler(minted: Minted): MockHandler {
     if (minted.reject !== undefined) {
       return minted.reject;
     }
+    if (minted.rejectOnce !== undefined) {
+      const once = minted.rejectOnce;
+      minted.rejectOnce = undefined;
+      return once;
+    }
+    // The server sets the instant from the days (the receipt)
     return {
       status: 200,
-      json: { proposalId: body.proposal.proposalId, expiresAtMs: body.proposal.expiresAtMs },
+      json: {
+        proposalId: body.proposal.proposalId,
+        expiresAtMs: Date.now() + body.proposal.expiresInDays * 24 * 60 * 60 * 1000,
+      },
     };
   };
 }
@@ -369,12 +391,12 @@ interface CiFixture {
 }
 
 /** CI environment: neither login nor config is seeded (CI mode's independence is pinned by this setup). */
-async function startCi(config: unknown = EXEC_RULE): Promise<CiFixture> {
+async function startCi(config: unknown = EXEC_RULE, oidc: OidcOptions = {}): Promise<CiFixture> {
   const leased: Leased = { bodies: [] };
   const preflighted: Preflighted = { bodies: [] };
   const minted: Minted = { requests: [], bodies: [] };
   const server = await MockServer.start([
-    oidcHandler({ issued: 0 }),
+    oidcHandler({ issued: 0 }, oidc),
     leaseHandler(leased),
     preflightHandler(preflighted),
     mintHandler(minted),
@@ -521,10 +543,10 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expect(body.ephemeralPubHex).toBe(lease.ephemeralPubHex);
     expect(body.proposal.proposalId).toMatch(/^[0-9a-f]{32}$/);
     expect(body.proposal.connector).toBe("exec");
-    // The value's shape rides as the first fact (D-7)
-    expect(body.proposal.facts).toEqual([
-      "./rotate.sh: new credential produced (17 bytes, 1 line)",
-    ]);
+    // The value's shape is shown locally, never stored with the proposal (D-8)
+    expect(body.proposal.facts).toEqual(["./rotate.sh: new credential produced"]);
+    expect(body.proposal.expiresInDays).toBe(7);
+    expect(fixture.env.logs.join("\n")).toContain("value: 17 bytes, 1 line");
     expect(body.proposal.variables).toHaveLength(1);
     const variable = nth(body.proposal.variables, 0);
     expect(variable).toMatchObject({ variableId: "vs", baseVersion: 3 });
@@ -615,19 +637,67 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expect(await openWith(member.encKeyPair, member.userId, body, keyWrap)).toBe(NEW_KEY);
     // The script's fact is scrubbed of the produced values
     expect(body.proposal.facts).toEqual([
-      "./rotate.sh: new credential produced (17 bytes, 1 line; created key [redacted] at stripe)",
+      "./rotate.sh: new credential produced (created key [redacted] at stripe)",
     ]);
     // Both variables were pre-flighted, in push order
     expect(fixture.preflighted.bodies[0]?.variables).toEqual([
       { variableId: "vk", baseVersion: 1 },
       { variableId: "vs", baseVersion: 3 },
     ]);
+    // The lifetime travels as days; the report shows the server's instant
+    expect(body.proposal.expiresInDays).toBe(30);
     const thirtyDays = 30 * 24 * 60 * 60 * 1000;
-    expect(body.proposal.expiresAtMs).toBeGreaterThanOrEqual(before + thirtyDays);
-    expect(body.proposal.expiresAtMs).toBeLessThanOrEqual(Date.now() + thirtyDays);
-    expect(fixture.env.logs.join("\n")).toContain(
+    const logs = fixture.env.logs.join("\n");
+    expect(logs).toContain(
       "STRIPE_KEY_ID (replacing version 1), STRIPE_SECRET_KEY (replacing version 3)",
     );
+    const expiresLine = logs.match(/expires (\d{4}-\d{2}-\d{2})/)?.[1];
+    expect(expiresLine).toBe(new Date(before + thirtyDays).toISOString().slice(0, 10));
+    expectNoSecretLeak(fixture);
+  });
+
+  it("re-leases and re-seals once when the recipients changed between the lease and the mint", async () => {
+    const fixture = await startCi();
+    fixture.minted.rejectOnce = {
+      status: 422,
+      json: { _tag: "RotationProposalRejected", reason: "recipients-mismatch" },
+    };
+    expect(await ciRotate(fixture)).toBe(0);
+    // One connector run, two leases, two mints under distinct proposal ids
+    expect(fixture.env.captureCalls).toHaveLength(1);
+    expect(fixture.leased.bodies).toHaveLength(2);
+    expect(fixture.minted.bodies).toHaveLength(2);
+    expect(fixture.minted.bodies[0]?.proposal.proposalId).not.toBe(
+      fixture.minted.bodies[1]?.proposal.proposalId,
+    );
+    expect(fixture.env.errors.join("\n")).toContain(
+      "leasing again and sealing the proposal to the current recipients (once)",
+    );
+    expect(fixture.env.logs.join("\n")).toContain("The proposal was sealed a second time");
+    // A second mismatch is the recovery message, not a loop
+    const twice = await startCi();
+    twice.minted.reject = {
+      status: 422,
+      json: { _tag: "RotationProposalRejected", reason: "recipients-mismatch" },
+    };
+    expect(await ciRotate(twice)).toBe(1);
+    expect(twice.minted.bodies).toHaveLength(2);
+    expect(twice.env.errors.join("\n")).toContain("The issuer accepted the rotation");
+    expectNoSecretLeak(fixture);
+  });
+
+  it("an expired lease token is not presented when no fresh token can be minted: the recovery step is named", async () => {
+    const fixture = await startCi(EXEC_RULE, {
+      expSeconds: Math.floor(Date.now() / 1000) - 60,
+      failAfter: 1,
+    });
+    expect(await ciRotate(fixture)).toBe(1);
+    const errors = fixture.env.errors.join("\n");
+    expect(errors).toContain(
+      "no token is left to store the proposal: the lease's token expired at",
+    );
+    expect(errors).toContain("Recovery for the credential that now exists at the issuer");
+    expect(fixture.minted.bodies).toHaveLength(0);
     expectNoSecretLeak(fixture);
   });
 

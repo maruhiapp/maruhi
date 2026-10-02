@@ -38,16 +38,16 @@ import type { HttpClient } from "effect/http";
 import {
   type CiLeaseInput,
   LEASE_NOT_FOUND_MESSAGE,
+  type LeasedEnvironments,
   leaseEnvironmentsWithCredential,
 } from "./ci-lease.ts";
-import { ROLE_RANK } from "./dek-wrap.ts";
-import { devicesOf } from "./device-key.ts";
+import { memberDevicesInOrder, ROLE_RANK } from "./dek-wrap.ts";
 import { countNoun, displayText, formatUtcDate, logWarnings } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import type { VerifiedLeaseMaterial } from "./lease-client.ts";
-import { fetchGitHubOidcToken } from "./oidc-github.ts";
+import { fetchGitHubOidcToken, tokenExpiresAtMs } from "./oidc-github.ts";
 import type { DecryptedVariable } from "./pull.ts";
 import { type RotateConfig, type RotateRule, ruleFor } from "./rotate-config.ts";
 import {
@@ -62,7 +62,6 @@ import {
 import type { VerifiedProject } from "./sync.ts";
 import { connectorFailure } from "./var-rotate.ts";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 /** The server's bound on a proposal's lifetime (AUTH_SPEC §14-5 — 30 days). */
 export const MAX_PROPOSAL_DAYS = 30;
 /** AUTH_SPEC §14-5: at most 16 facts of 256 characters each. */
@@ -96,8 +95,13 @@ export interface CiRotateResult {
   readonly recipientDevices: number;
   readonly recipientMembers: number;
   readonly facts: readonly string[];
+  /** The primary's shape, shown locally only (never a proposal fact — D-8). */
+  readonly valueShape: string;
   readonly previous: string;
+  /** The expiry the server set (the receipt — the lifetime travels as days). */
   readonly expiresAtMs: number;
+  /** Whether the proposal was sealed a second time after the recipients changed (O-7). */
+  readonly resealed: boolean;
   readonly warnings: readonly string[];
 }
 
@@ -118,21 +122,13 @@ function proposalRecipients(
   verified: VerifiedProject,
   environmentId: string,
 ): readonly Recipient[] {
-  const recipients: Recipient[] = [];
-  for (const member of [...verified.state.members.values()].toSorted((a, b) =>
-    a.userId < b.userId ? -1 : 1,
-  )) {
-    for (const device of devicesOf(member)) {
-      const effective = effectivePermissionOf(member, device);
-      if (
-        ROLE_RANK[effective.role] >= ROLE_RANK.member &&
-        scopeIncludesEnvironment(effective.scope, environmentId)
-      ) {
-        recipients.push({ member, device });
-      }
-    }
-  }
-  return recipients;
+  return memberDevicesInOrder(verified).filter(({ member, device }) => {
+    const effective = effectivePermissionOf(member, device);
+    return (
+      ROLE_RANK[effective.role] >= ROLE_RANK.member &&
+      scopeIncludesEnvironment(effective.scope, environmentId)
+    );
+  });
 }
 
 type ByName = ReadonlyMap<string, DecryptedVariable>;
@@ -481,8 +477,96 @@ export function ciRotateOp(
       catch: connectorFailure,
     });
     const planned = yield* plannedValues(primary, rule, local, outcome);
+    const io = yield* CliIo;
+    const mintInput = { input, rule, planned, outcome, params };
+    const minted = yield* sealAndMint({ ...mintInput, lease: leased, recipients }).pipe(
+      Effect.catch((error) =>
+        error instanceof RotationProposalRejectedError && error.reason === "recipients-mismatch"
+          ? Effect.gen(function* () {
+              // The one post-issuer refusal that is purely a race (O-7):
+              // the members or devices changed between the lease and the
+              // mint. The plaintext is still in memory, so lease again,
+              // compute W(E) from the current chain, seal again and mint
+              // once more (a new proposal id); a second mismatch stops
+              yield* io.logError(
+                "The project's members or devices changed after this job leased it: leasing again and sealing the proposal to the current recipients (once)",
+              );
+              const again = yield* leaseEnvironmentsWithCredential({
+                ...input,
+                environmentIds: [input.environmentId],
+              }).pipe(Effect.mapError((failure) => mintRefusal(failure, outcome)));
+              const againMaterial = again.materials.get(input.environmentId);
+              if (againMaterial === undefined) {
+                return yield* Effect.fail(
+                  cliError("The lease returned no material (internal inconsistency)"),
+                );
+              }
+              const againRecipients = proposalRecipients(
+                againMaterial.verified,
+                input.environmentId,
+              );
+              const second = yield* sealAndMint({
+                ...mintInput,
+                lease: again,
+                recipients: againRecipients,
+              }).pipe(Effect.mapError((failure) => mintRefusal(failure, outcome)));
+              return { ...second, resealed: true };
+            })
+          : Effect.fail(mintRefusal(error, outcome)),
+      ),
+    );
+    yield* logWarnings([...material.warnings, ...outcome.warnings]);
+    return {
+      proposalId: minted.proposalId,
+      primary,
+      connector: rule.connector,
+      variables: planned.map(({ name, variableId, baseVersion }) => ({
+        name,
+        variableId,
+        baseVersion,
+      })),
+      recipientDevices: minted.recipients.length,
+      recipientMembers: new Set(minted.recipients.map((recipient) => recipient.member.userId)).size,
+      facts: outcome.facts,
+      valueShape: outcome.valueShape,
+      previous: outcome.previous,
+      expiresAtMs: minted.expiresAtMs,
+      resealed: minted.resealed,
+      warnings: [],
+    };
+  });
+}
+
+interface SealAndMintInput {
+  readonly input: CiRotateInput;
+  readonly rule: RotateRule;
+  readonly planned: readonly PlannedValue[];
+  readonly outcome: RotationOutcome;
+  readonly params: { readonly projectId: string; readonly environmentId: EnvironmentId };
+  readonly lease: LeasedEnvironments;
+  readonly recipients: readonly Recipient[];
+}
+
+interface Minted {
+  readonly proposalId: string;
+  readonly expiresAtMs: number;
+  readonly recipients: readonly Recipient[];
+  readonly resealed: boolean;
+}
+
+/**
+ * Seals the planned values to the recipients under a fresh proposal id
+ * and stores the proposal under the lease's ephemeral key. The server's
+ * refusals come back as they are (the caller decides which one is a
+ * race); everything else is the mint refusal with the recovery step.
+ */
+function sealAndMint(
+  mint: SealAndMintInput,
+): Effect.Effect<Minted, CliError | RotationProposalRejectedError, CliIo> {
+  return Effect.gen(function* () {
+    const { input, outcome, lease, recipients } = mint;
     const proposalId = encodeHex(crypto.getRandomValues(new Uint8Array(16)));
-    const variables = yield* Effect.forEach(planned, (value) =>
+    const variables = yield* Effect.forEach(mint.planned, (value) =>
       Effect.map(
         sealToRecipients({
           projectId: input.projectId,
@@ -496,61 +580,69 @@ export function ciRotateOp(
         (wraps) => ({ variableId: value.variableId, baseVersion: value.baseVersion, wraps }),
       ),
     );
-    const expiresAtMs = (input.now ?? Date.now)() + input.expiresInDays * DAY_MS;
-    // The mint presents a token minted now, for the lease's ephemeral key
-    // (K-5): a connector can outlive the lease's token (the issuer's
-    // propagation waits; GitHub's tokens are short-lived), and the key
-    // binding, not the token, is the credential's continuity (§14-1).
-    // The lease's token is the fallback when the runner's issuance
-    // endpoint does not answer again (it may still be valid)
-    const io = yield* CliIo;
-    const mintToken = yield* fetchGitHubOidcToken(input.audience).pipe(
-      Effect.catch((error) =>
-        Effect.as(
-          io.logError(
-            `Could not mint a fresh OIDC token for the proposal (${error.message}); presenting the lease's token`,
-          ),
-          leased.credential.token,
-        ),
-      ),
-    );
-    yield* leased.client.lease
+    const mintToken = yield* mintTokenFor(input, lease, outcome);
+    const receipt = yield* lease.client.lease
       .propose({
-        params,
+        params: mint.params,
         payload: {
           // Why it is unwrapped: the wire boundary of the mint request (the
           // lease's ephemeral key under a token of the same workload —
           // AUTH_SPEC §14-5)
           oidcToken: Redacted.value(mintToken),
-          ephemeralPubHex: leased.credential.ephemeralPubHex,
+          ephemeralPubHex: lease.credential.ephemeralPubHex,
           proposal: {
             proposalId,
-            connector: rule.connector,
+            connector: mint.rule.connector,
             facts: acceptableFacts(outcome.facts),
-            expiresAtMs,
+            // The lifetime travels as days; the server sets the instant
+            // (a CI clock ahead of the server can never make the proposal
+            // unacceptable after the issuer was touched — O-9)
+            expiresInDays: input.expiresInDays,
             variables,
           },
         },
       })
-      .pipe(Effect.mapError((error) => mintRefusal(error, outcome)));
-    yield* logWarnings([...material.warnings, ...outcome.warnings]);
-    return {
-      proposalId,
-      primary,
-      connector: rule.connector,
-      variables: planned.map(({ name, variableId, baseVersion }) => ({
-        name,
-        variableId,
-        baseVersion,
-      })),
-      recipientDevices: recipients.length,
-      recipientMembers: new Set(recipients.map((recipient) => recipient.member.userId)).size,
-      facts: outcome.facts,
-      previous: outcome.previous,
-      expiresAtMs,
-      warnings: [],
-    };
+      .pipe(
+        Effect.mapError((error) =>
+          error instanceof RotationProposalRejectedError ? error : mintRefusal(error, outcome),
+        ),
+      );
+    return { proposalId, expiresAtMs: receipt.expiresAtMs, recipients, resealed: false };
   });
+}
+
+/**
+ * The mint's token: one minted now, for the lease's ephemeral key (K-5 —
+ * a connector can outlive the lease's token, and the key binding, not the
+ * token, is the credential's continuity under §14-1). The lease's token
+ * is the fallback when the runner's issuance endpoint does not answer
+ * again, unless it has expired meanwhile (K-6): then nothing can store the
+ * proposal and the recovery for the credential at the issuer is said.
+ */
+function mintTokenFor(
+  input: CiRotateInput,
+  lease: LeasedEnvironments,
+  outcome: RotationOutcome,
+): Effect.Effect<Redacted.Redacted<string>, CliError, CliIo> {
+  return fetchGitHubOidcToken(input.audience).pipe(
+    Effect.catch((error) =>
+      Effect.gen(function* () {
+        const io = yield* CliIo;
+        const expiresAtMs = tokenExpiresAtMs(lease.credential.token);
+        if (expiresAtMs !== null && expiresAtMs <= (input.now ?? Date.now)()) {
+          return yield* Effect.fail(
+            cliError(
+              `The issuer accepted the rotation (${outcome.facts.join("; ")}) but no token is left to store the proposal: the lease's token expired at ${formatUtcDate(expiresAtMs)} while the connector ran, and a fresh one could not be minted (${error.message}). Recovery for the credential that now exists at the issuer: ${outcome.recovery}`,
+            ),
+          );
+        }
+        yield* io.logError(
+          `Could not mint a fresh OIDC token for the proposal (${error.message}); presenting the lease's token`,
+        );
+        return lease.credential.token;
+      }),
+    ),
+  );
 }
 
 /** The report lines of a mint (the command prints them; values never appear). */
@@ -561,6 +653,12 @@ export function describeProposal(result: CiRotateResult, environmentId: string):
   return [
     `Sealed proposal ${result.proposalId} stored for environment ${displayText(environmentId)}: ${names.join(", ")} — minted with the ${result.connector} connector, sealed to ${countNoun(result.recipientDevices, "device")} of ${countNoun(result.recipientMembers, "member")}, expires ${formatUtcDate(result.expiresAtMs)}`,
     ...result.facts.map((fact) => `  ${fact}`),
+    `  value: ${result.valueShape} (the shape is shown here and at the acceptance only; it is not stored with the proposal)`,
+    ...(result.resealed
+      ? [
+          "The proposal was sealed a second time: the members or devices changed after the lease, so the recipients were taken from the current chain",
+        ]
+      : []),
     `Previous credential: ${result.previous}`,
     `A member finishes the rotation with \`maruhi rotation accept ${result.proposalId}\` (it pushes the new value signed as that member) or drops it with \`maruhi rotation reject ${result.proposalId}\`. Until then the current credential stays in use; if nobody accepts before the expiry, retire the new credential at the issuer by hand`,
   ];

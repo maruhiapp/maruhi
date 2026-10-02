@@ -77,6 +77,14 @@ const program = Effect.gen(function* () {
         (error: unknown) => (error instanceof Error ? error.message : String(error)),
       ),
   );
+  // A flooded stderr is dropped whole (never cut) and the script stopped (D-9)
+  const floodedStderr = yield* Effect.promise(() =>
+    runner.captureScript({
+      command: ["sh", "-c", "head -c 3000000 /dev/zero >&2; sleep 5; echo value"],
+      cwd: process.cwd(),
+      extraEnv: {},
+    }),
+  );
   return {
     exitCode: outcome.exitCode,
     output: outcome.output,
@@ -85,6 +93,8 @@ const program = Effect.gen(function* () {
     capturedBytes: captured.stdout.length,
     capturedStderr: captured.stderr,
     flooded,
+    floodedStderr: floodedStderr.stderr,
+    floodedStderrStdout: floodedStderr.stdout.length,
   };
 });
 

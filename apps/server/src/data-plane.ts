@@ -723,7 +723,6 @@ export type RotationProposalRejectReason =
   | "variable-inactive"
   | "base-version-stale"
   | "recipients-mismatch"
-  | "expiry-out-of-range"
   | "pending-limit"
   | "storage-limit"
   | "version-missing"

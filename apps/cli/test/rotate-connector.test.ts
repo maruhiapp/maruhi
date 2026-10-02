@@ -729,9 +729,11 @@ describe("exec connector (a script of the repository — PF8)", () => {
     // One trailing newline is dropped, nothing else is touched
     expect(dec.decode(outcome.values.primary)).toBe("sk_live_new");
     expect(outcome.values.companions).toEqual({});
-    // The value's shape is the first fact (D-7 — a member sees a script
-    // that printed chatter instead of a value before pushing it)
-    expect(outcome.facts).toEqual(["./rotate.sh: new credential produced (11 bytes, 1 line)"]);
+    expect(outcome.facts).toEqual(["./rotate.sh: new credential produced"]);
+    // The value's shape is for the local report and the acceptance (D-8 —
+    // a script that printed chatter instead of a value is seen before the
+    // value is pushed), never a fact the server stores
+    expect(outcome.valueShape).toBe("11 bytes, 1 line");
     expect(outcome.previous).toContain(
       "stays valid until you finalize (./finalize.sh runs with it)",
     );
@@ -849,7 +851,7 @@ describe("exec connector (a script of the repository — PF8)", () => {
     );
     // The new value is scrubbed out of the script's facts
     expect(outcome.facts).toEqual([
-      "./rotate.sh: new credential produced (11 bytes, 1 line; created key [redacted] (value [redacted]))",
+      "./rotate.sh: new credential produced (created key [redacted] (value [redacted]))",
     ]);
     const missing = fakeScript(() => ok(JSON.stringify({ value: "x" })));
     await expect(

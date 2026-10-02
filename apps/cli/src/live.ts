@@ -184,29 +184,39 @@ async function captureScript(input: CaptureInput): Promise<CaptureOutcome> {
       { cause: error },
     );
   }
-  const [stdout, stderr, exitCode] = await Promise.all([
-    readBounded(child.stdout as ReadableStream<Uint8Array>, MAX_SCRIPT_STDOUT_BYTES).then(
-      (bytes) => {
-        if (bytes === null) {
-          // The script is stopped the moment the cap is passed (D-6)
-          child.kill();
-        }
-        return bytes;
-      },
+  const stopPastCap = (bytes: Uint8Array | null) => {
+    if (bytes === null) {
+      // The script is stopped the moment a cap is passed (D-6 / D-9)
+      child.kill();
+    }
+    return bytes;
+  };
+  const [stdout, stderrBytes, exitCode] = await Promise.all([
+    readBounded(child.stdout as ReadableStream<Uint8Array>, MAX_SCRIPT_STREAM_BYTES).then(
+      stopPastCap,
     ),
-    new Response(child.stderr as ReadableStream).text(),
+    readBounded(child.stderr as ReadableStream<Uint8Array>, MAX_SCRIPT_STREAM_BYTES).then(
+      stopPastCap,
+    ),
     child.exited,
   ]);
   if (stdout === null) {
     throw new Error(
-      `${input.command[0] ?? ""} wrote more than ${MAX_SCRIPT_STDOUT_BYTES / (1024 * 1024)} MiB to stdout (a credential is small; commentary belongs on stderr): it was stopped and nothing it wrote was read`,
+      `${input.command[0] ?? ""} wrote more than ${MAX_SCRIPT_STREAM_MIB} MiB to stdout (a credential is small; commentary belongs on stderr): it was stopped and nothing it wrote was read`,
     );
   }
+  // A flooded stderr is dropped whole, never cut (a cut before the
+  // connector's scrubbing could split a secret across the cut — D-9)
+  const stderr =
+    stderrBytes === null
+      ? `(the script wrote more than ${MAX_SCRIPT_STREAM_MIB} MiB to stderr; none of it is shown)`
+      : new TextDecoder().decode(stderrBytes);
   return { exitCode, stdout, stderr };
 }
 
-/** A script's stdout is a credential: anything past this is not one (D-6). */
-const MAX_SCRIPT_STDOUT_BYTES = 1024 * 1024;
+/** A script's stdout is a credential and its stderr a few lines of commentary: anything past this is neither (D-6 / D-9). */
+const MAX_SCRIPT_STREAM_MIB = 1;
+const MAX_SCRIPT_STREAM_BYTES = MAX_SCRIPT_STREAM_MIB * 1024 * 1024;
 
 /** Reads a stream up to `limit` bytes; null (and the stream cancelled) past the limit. */
 async function readBounded(

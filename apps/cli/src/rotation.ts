@@ -477,6 +477,24 @@ function reportPendingProposals(
   });
 }
 
+/** What a check could not read (an unknown age, an unknown proposal list): a check cannot PASS on it. */
+function unknownParts(
+  options: RotationListOptions,
+  due: DueRows,
+  pending: PendingProposals,
+): readonly string[] {
+  return [
+    ...(options.failOnDue === true && due.unreadable.length > 0
+      ? [
+          `the history of ${countNoun(due.unreadable.length, "value")} could not be read (${due.unreadable.map(displayText).join(", ")})`,
+        ]
+      : []),
+    ...(options.failOnPending === true && pending.unknown !== null
+      ? [`the pending proposals are unknown: ${pending.unknown} (run it with a member's token)`]
+      : []),
+  ];
+}
+
 export function rotationListOp(
   context: ProjectContextBase,
   options: RotationListOptions = {},
@@ -490,23 +508,7 @@ export function rotationListOp(
     // The fail-on verdict closes the listing (after everything was shown)
     const conclude = (due: DueRows, pending: PendingProposals) =>
       Effect.gen(function* () {
-        // A check cannot pass on an age it could not read: that is a
-        // failed check (exit 1), not "nothing is due" (exit 0) and not
-        // "something is due" (exit 3)
-        if (options.failOnDue === true && due.unreadable.length > 0) {
-          return yield* Effect.fail(
-            cliError(
-              `Cannot judge --fail-on-due: the history of ${countNoun(due.unreadable.length, "value")} could not be read (${due.unreadable.map(displayText).join(", ")}); the check did not run to completion`,
-            ),
-          );
-        }
-        if (options.failOnPending === true && pending.unknown !== null) {
-          return yield* Effect.fail(
-            cliError(
-              `Cannot judge --fail-on-pending: ${pending.unknown}; the check did not run to completion (run it with a member's token)`,
-            ),
-          );
-        }
+        const unknown = unknownParts(options, due, pending);
         const verdict = dueVerdict({
           options,
           flagCount: flags.length,
@@ -514,13 +516,23 @@ export function rotationListOp(
           pending,
           nowMs,
         });
-        if (verdict === null) {
-          return 0;
+        // Something known due is due whatever else could not be read: exit 3
+        // routes it to "rotate now" rather than to "the check is broken"
+        // (A-10); the unread part rides along on the same line
+        if (verdict !== null) {
+          yield* io.logError(
+            `Rotation due (exit ${ROTATION_DUE_EXIT_CODE}): ${verdict}${unknown.length === 0 ? "" : `; also ${unknown.join("; ")}`}. Rotate and push the new values, or run \`maruhi rotation dismiss\` for a flag you accept`,
+          );
+          return ROTATION_DUE_EXIT_CODE;
         }
-        yield* io.logError(
-          `Rotation due (exit ${ROTATION_DUE_EXIT_CODE}): ${verdict}. Rotate and push the new values, or run \`maruhi rotation dismiss\` for a flag you accept`,
-        );
-        return ROTATION_DUE_EXIT_CODE;
+        if (unknown.length > 0) {
+          // Nothing known due and something unknown: a failed check (exit
+          // 1), not "nothing is due"
+          return yield* Effect.fail(
+            cliError(`Cannot judge the check: ${unknown.join("; ")}; it did not run to completion`),
+          );
+        }
+        return 0;
       });
     if (flags.length === 0) {
       yield* io.log("No rotation flags are currently active");

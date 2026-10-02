@@ -32,7 +32,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   MAX_PENDING_ROTATION_PROPOSALS,
-  MAX_ROTATION_PROPOSAL_LIFETIME_MS,
   MAX_ROTATION_PROPOSALS_PER_WINDOW,
 } from "../src/policy.ts";
 import { JSON_HEADERS } from "./support/auth.ts";
@@ -163,7 +162,7 @@ interface ProposalOptions {
   readonly variableId?: string;
   readonly baseVersion?: number;
   readonly recipients?: readonly string[];
-  readonly expiresAtMs?: number;
+  readonly expiresInDays?: number;
   readonly wraps?: readonly WireWrap[];
 }
 
@@ -188,7 +187,7 @@ async function proposalFor(options: ProposalOptions = {}) {
     proposalId,
     connector: "exec",
     facts: ["./scripts/rotate.sh: new credential produced"],
-    expiresAtMs: options.expiresAtMs ?? Date.now() + 7 * 24 * 60 * 60 * 1000,
+    expiresInDays: options.expiresInDays ?? 7,
     variables: [{ variableId, baseVersion: options.baseVersion ?? 1, wraps }],
   };
 }
@@ -405,14 +404,10 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       await mint({ proposal: await proposalFor({ variableId: "var-nope" }) }),
       "variable-inactive",
     );
-    await expectRejected(
-      await mint({
-        proposal: await proposalFor({
-          expiresAtMs: Date.now() + MAX_ROTATION_PROPOSAL_LIFETIME_MS + 60_000,
-        }),
-      }),
-      "expiry-out-of-range",
-    );
+    // The lifetime is a bounded duration on the wire (1 to 30 days): out of
+    // range is a payload refusal, never a reason after the issuer was touched
+    expect((await mint({ proposal: await proposalFor({ expiresInDays: 31 }) })).status).toBe(400);
+    expect((await mint({ proposal: await proposalFor({ expiresInDays: 0 }) })).status).toBe(400);
     const windows = await queryProjectDo(
       projectId,
       "SELECT count FROM lease_windows WHERE kind = 'proposed'",
@@ -508,7 +503,7 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
         proposalId: PROPOSAL_ID,
         connector: "postgres",
         facts: ["role app_b now in use"],
-        expiresAtMs: Date.now() + 60_000,
+        expiresInDays: 1,
         variables: [
           { variableId: USER_VAR, baseVersion: 1, wraps: await sealAll(USER_VAR, "app_b") },
           { variableId: VAR, baseVersion: 1, wraps: await sealAll(VAR, NEW_VALUE) },
@@ -535,7 +530,7 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
           proposalId: "ffeeddccbbaa99887766554433221100",
           connector: "postgres",
           facts: [],
-          expiresAtMs: Date.now() + 60_000,
+          expiresInDays: 1,
           variables: [
             { variableId: VAR, baseVersion: 1, wraps: await sealAll(VAR, NEW_VALUE) },
             { variableId: VAR, baseVersion: 1, wraps: await sealAll(VAR, NEW_VALUE) },
@@ -619,12 +614,17 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     ).toEqual([vectorKeyOf(OWNER).enc_pub_hex, phone.enc_pub_hex].toSorted());
   });
 
-  it("refuses an expiry in the past, caps the pending count, and rate-limits the mint window with a lease_denied row", async () => {
+  it("stores the expiry as the server's instant, caps the pending count, and rate-limits the mint window with a lease_denied row", async () => {
     await grantedProject();
-    await expectRejected(
-      await mint({ proposal: await proposalFor({ expiresAtMs: Date.now() - 1000 }) }),
-      "expiry-out-of-range",
-    );
+    const before = Date.now();
+    const first = await mint({ proposal: await proposalFor({ expiresInDays: 3 }) });
+    await expectStatus(first, 200);
+    const receipt = (await first.json()) as { expiresAtMs: number };
+    const threeDays = 3 * 24 * 60 * 60 * 1000;
+    expect(receipt.expiresAtMs).toBeGreaterThanOrEqual(before + threeDays);
+    expect(receipt.expiresAtMs).toBeLessThanOrEqual(Date.now() + threeDays);
+    await queryProjectDo(projectId, "DELETE FROM rotation_proposals");
+    await queryProjectDo(projectId, "DELETE FROM lease_windows WHERE kind = 'proposed'");
     // Fill the pending slots (distinct ids), then one more is refused
     for (let i = 0; i < MAX_PENDING_ROTATION_PROPOSALS; i += 1) {
       const proposalId = i.toString(16).padStart(32, "0");
@@ -695,11 +695,24 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     );
     expect(expired).toHaveLength(1);
     expect(expired[0]).toMatchObject({ actor_type: "system", environment_id: ENV });
-    expect(JSON.parse(String(expired[0]?.["payload"]))).toEqual({ proposalId: PROPOSAL_ID });
+    expect(JSON.parse(String(expired[0]?.["payload"]))).toEqual({
+      proposalId: PROPOSAL_ID,
+      expiresAtMs: expect.any(Number),
+    });
     expect(await proposalsOf(MEMBER)).toEqual([]);
+    // An exhausted mint window is read by the pre-flight (nothing consumed)
+    await queryProjectDo(
+      projectId,
+      "UPDATE lease_windows SET count = ?, window_start = ? WHERE kind = 'proposed'",
+      MAX_ROTATION_PROPOSALS_PER_WINDOW,
+      Date.now(),
+    );
+    const limited = await preflight({ variables: [{ variableId: VAR, baseVersion: 1 }] });
+    expect(limited.status).toBe(429);
+    await expect(limited.json()).resolves.toMatchObject({ _tag: "LeaseRateLimited" });
   });
 
-  it("an expired proposal is neither listed nor resolvable, and a listed member of another environment sees nothing", async () => {
+  it("an expired proposal is not listed but is still resolvable until swept, and a listed member of another environment sees nothing", async () => {
     await grantedProject();
     // A member listed on another environment is not in W(ENV) and sees no proposal there
     const DEV = "user-devmember-0010";
@@ -720,8 +733,14 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       PROPOSAL_ID,
     );
     expect(await proposalsOf(MEMBER)).toEqual([]);
+    // A member who began the resolution before the expiry reaches the row
+    // until a sweep drops it: the outcome is theirs, not "nobody's"
+    expect((await resolveAs(MEMBER, PROPOSAL_ID, { outcome: "rejected" })).status).toBe(204);
+    const events = (await readAuditEvents(projectId)).map((event) => event["event"]);
+    expect(events).toContain("rotation.proposal_rejected");
+    expect(events).not.toContain("rotation.proposal_expired");
     expect((await resolveAs(MEMBER, PROPOSAL_ID, { outcome: "rejected" })).status).toBe(404);
-    // The sweep on the next mint drops the expired rows and frees the id
+    // The id is free again
     await expectStatus(await mint({ proposal: await proposalFor() }), 200);
   });
 });

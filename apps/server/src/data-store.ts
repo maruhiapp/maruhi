@@ -340,13 +340,19 @@ export interface DataWriteOps {
   /** Removes a proposal and its rows (resolution — the audit row carries the outcome). */
   readonly deleteProposal: (proposalId: string) => void;
   /** Sweeps expired proposals (called before a mint, a pre-flight and a resolution); returns what it removed so the audit row can close each one (AUDIT_SPEC §3.3 — P-2). */
-  readonly deleteExpiredProposals: (nowMs: number) => readonly ExpiredProposal[];
+  /** Removes the expired rows (all but `except`, a proposal being resolved by a member who evidently did not abandon it). */
+  readonly deleteExpiredProposals: (
+    nowMs: number,
+    except?: string | undefined,
+  ) => readonly ExpiredProposal[];
 }
 
 /** A proposal the expiry sweep removed (the input of a rotation.proposal_expired audit row). */
 export interface ExpiredProposal {
   readonly proposalId: string;
   readonly environmentId: string;
+  /** When it expired (the row's history is exact whatever the sweep's time). */
+  readonly expiresAtMs: number;
 }
 
 /** The coordinates of a wrap deleted by the cleanup (the input of a dek.deleted audit row). */
@@ -650,10 +656,8 @@ export interface DataStoreShape {
    * discipline as leaseBinding).
    */
   readonly proposalExists: (proposalId: string) => Effect.Effect<boolean>;
-  readonly findPendingProposal: (
-    proposalId: string,
-    nowMs: number,
-  ) => Effect.Effect<StoredProposal | null>;
+  /** A stored proposal by id, expired or not (a resolution reaches an expired-but-unswept row — AUTH_SPEC §14-5). */
+  readonly findProposal: (proposalId: string) => Effect.Effect<StoredProposal | null>;
   readonly listPendingProposals: (nowMs: number) => Effect.Effect<readonly StoredProposal[]>;
   readonly countPendingProposals: (nowMs: number) => Effect.Effect<number>;
   /** Whether a pending proposal already targets the variable (the pre-flight's `variable-pending` — AUTH_SPEC §14-5 O-4). */
@@ -2280,16 +2284,18 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
   deleteProposal: (proposalId) => {
     deleteProposalRows(sql, proposalId);
   },
-  deleteExpiredProposals: (nowMs) => {
+  deleteExpiredProposals: (nowMs, except) => {
     const expired = sql
       .exec(
-        "SELECT proposal_id, environment_id FROM rotation_proposals WHERE expires_at <= ? ORDER BY expires_at, proposal_id",
+        "SELECT proposal_id, environment_id, expires_at FROM rotation_proposals WHERE expires_at <= ? AND proposal_id != ? ORDER BY expires_at, proposal_id",
         nowMs,
+        except ?? "",
       )
       .toArray()
       .map((row): ExpiredProposal => ({
         proposalId: stringColumn(row, "proposal_id"),
         environmentId: stringColumn(row, "environment_id"),
+        expiresAtMs: Number(row["expires_at"]),
       }));
     for (const { proposalId } of expired) {
       deleteProposalRows(sql, proposalId);
@@ -2373,14 +2379,10 @@ const makeProposalQueries = (sql: SqlStorage) => {
             .exec("SELECT 1 AS present FROM rotation_proposals WHERE proposal_id = ?", proposalId)
             .toArray().length > 0,
       ),
-    findPendingProposal: (proposalId: string, nowMs: number) =>
+    findProposal: (proposalId: string) =>
       Effect.sync(() => {
         const row = sql
-          .exec(
-            `SELECT ${HEAD_COLUMNS} FROM rotation_proposals WHERE proposal_id = ? AND expires_at > ?`,
-            proposalId,
-            nowMs,
-          )
+          .exec(`SELECT ${HEAD_COLUMNS} FROM rotation_proposals WHERE proposal_id = ?`, proposalId)
           .toArray()[0];
         return row === undefined ? null : proposalOf(row);
       }),

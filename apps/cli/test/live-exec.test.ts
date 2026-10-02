@@ -18,6 +18,8 @@ interface ProbeResult {
   readonly capturedBytes: number;
   readonly capturedStderr: string;
   readonly flooded: string;
+  readonly floodedStderr: string;
+  readonly floodedStderrStdout: number;
 }
 
 describe("ProcessRunner.exec (live — Bun.spawn)", () => {
@@ -56,5 +58,10 @@ describe("ProcessRunner.exec (live — Bun.spawn)", () => {
     expect(probe.flooded).toContain(
       "sh wrote more than 1 MiB to stdout (a credential is small; commentary belongs on stderr): it was stopped and nothing it wrote was read",
     );
+    expect(probe.floodedStderr).toBe(
+      "(the script wrote more than 1 MiB to stderr; none of it is shown)",
+    );
+    // … and the script was stopped (its stdout never arrived)
+    expect(probe.floodedStderrStdout).toBe(0);
   }, 60_000);
 });

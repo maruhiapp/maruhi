@@ -465,3 +465,18 @@ agents found nothing strictly or structurally better.
 
 Rulings A, B, C, D, K, O and P received candidates in this round and stay
 open for round 3.
+
+### 9-2. Round 3 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| A (cron) | A-10: exit 3 dominates exit 1 — a value known to be due is reported as due even when another history could not be read (the unread part rides on the same line); exit 1 only when nothing is known due and something is unknown | **Adopted** — a known due value was routed as "outage" and sat until the outage was fixed; "cannot pass on an unknown" (never exit 0) is kept |
+| B (note) | B-9 (a bug in the adopted design): the age clock reset on every re-encryption and rollback (`pushedAtMs` of the latest row); B-10: the record's "one round-trip whatever the count" was false under `concurrency: 8` with a 10 s bound each | **B-9 adopted** — the lineage (`sameValueAs`) is followed to its root and the root's push time is the plaintext's age; the mandated re-encryption after a member leaves no longer silences the note. **B-10 adopted** — every history read at once (a handful of metadata GETs to one DO) |
+| C (script env) | nothing new | **CLOSED (round 3)** |
+| D (answer) | D-8: the value's shape is computed on the accepting side from the opened plaintext, not sent as a fact (a line count is plaintext-derived information the server did not have, and a server-managed fact is unverified where it matters); D-9 (a bug in D-6): stderr was unbounded | **D-8 adopted** — the shape stays in the local report of `var rotate` / `ci rotate` and is shown at `rotation accept` from the opened value (verified, never stored). **D-9 adopted** — stderr bounded like stdout; past the bound it is dropped whole and the script stopped (never cut: a cut before scrubbing could split a secret) |
+| K (credential) | K-6: the lease-token fallback presented an already-expired token (the mint then answered the uniform 404 and the operator was sent to check grants) | **Adopted** — the fallback checks the token's `exp`; an expired one ends the job with the recovery step for the credential at the issuer. **CLOSED (round 3)** — a token-less mint under the ephemeral key alone would be new crypto |
+| O (pre-flight) | O-6: the pre-flight did not read the mint window (a 429 after the issuer was touched); O-7: recover from `recipients-mismatch` (the one post-issuer refusal that is purely a race) by leasing again and re-sealing to the current W(E), once; O-8: the workflow example lacked a `concurrency` group (two overlapping runs are the two-jobs race); O-9: the lifetime travelled as a client timestamp (a CI clock ahead of the server was refused after the issuer was touched) | **O-6 adopted** (read, not consumed; 429 `LeaseRateLimited`). **O-7 adopted** (a new proposal id; a second mismatch is the recovery message). **O-8 adopted** (the docs' example, with the reason). **O-9 adopted** — `expiresInDays` (1 to 30, a Schema bound) and the server sets the instant; `expiry-out-of-range` no longer exists |
+| P (lifetime) | P-4: a member who began an acceptance before the expiry pushed signed versions and then got a 404 on the resolution (the log then read `proposal_expired` while the value was live); P-5: the expiry row's `serverTs` is the sweep's time, months later in a quiet project | **P-4 adopted** — a resolution reaches an expired row the sweep has not dropped (the sweep spares the resolved id); only expired-and-swept folds into the 404. **P-5 adopted** — the row's payload carries the expiry instant |
+
+Rulings A, B, D, O and P received adopted candidates in this round and stay
+open for round 4; C and K are closed.

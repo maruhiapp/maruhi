@@ -29,8 +29,6 @@ export class RotationFlagNotFoundError extends Schema.TaggedError<RotationFlagNo
  * - `recipients-mismatch` — the wraps are not exactly the recipient set
  *   W(E) (CRYPTO_SPEC §5.3): someone missing, someone extra, or a
  *   duplicate device
- * - `expiry-out-of-range` — `expiresAtMs` is in the past or more than 30
- *   days ahead
  * - `pending-limit` — the project already holds 32 pending proposals
  * - `version-missing` — on acceptance, a named version does not exist or
  *   is not newer than the proposal's base version (the member pushes
@@ -42,7 +40,6 @@ export const RotationProposalRejectReasonSchema = Schema.Literals([
   "variable-inactive",
   "base-version-stale",
   "recipients-mismatch",
-  "expiry-out-of-range",
   "pending-limit",
   "version-missing",
   // The proposal's sealed values would carry the project past the §12-8 ciphertext cap

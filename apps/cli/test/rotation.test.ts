@@ -119,6 +119,8 @@ async function makeRotationServer(input: {
   readonly expiringPushedAtMs?: number;
   /** Whether that variable's history can be read (false = 500 — the unreadable-age path of `--fail-on-due`). */
   readonly historyAvailable?: boolean;
+  /** When set, the latest version is a re-encryption pushed at this time (`sameValueAs` the version pushed at `expiringPushedAtMs`). */
+  readonly reencryptedAtMs?: number;
   /** The expiries of the pending sealed proposals listed to the caller (default none); null = the list fails (500). */
   readonly pendingProposalExpiries?: readonly number[] | null;
 }): Promise<RotationServerState> {
@@ -219,6 +221,19 @@ async function makeRotationServer(input: {
             json: {
               variableId: "vexp",
               versions: [
+                ...(input.reencryptedAtMs === undefined
+                  ? []
+                  : [
+                      {
+                        version: 4,
+                        epoch: currentEpoch,
+                        writerUserId: owner.userId,
+                        writerKeyFingerprintHex: owner.fingerprintHex,
+                        pushedAtMs: input.reencryptedAtMs,
+                        sameValueAs: 3,
+                        flagsIfCurrent: 0,
+                      },
+                    ]),
                 {
                   version: 3,
                   epoch: currentEpoch,
@@ -475,8 +490,23 @@ describe("maruhi rotation list", () => {
     );
     expect(await runCli(["rotation", "list", "--fail-on-pending"], broken.layer)).toBe(1);
     expect(broken.errors.join("\n")).toContain(
-      "Cannot judge --fail-on-pending: they could not be read",
+      "Cannot judge the check: the pending proposals are unknown: they could not be read",
     );
+  });
+
+  it("the age is the plaintext's: a re-encryption of an old value does not reset the clock (B-9)", async () => {
+    const built = await convergedChain();
+    const day = 24 * 60 * 60 * 1000;
+    const reencrypted = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [],
+      expiringPushedAtMs: Date.now() - 40 * day,
+      reencryptedAtMs: Date.now() - 1 * day,
+    });
+    const env = await startEnv(reencrypted, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-due"], env.layer)).toBe(3);
+    expect(env.logs.join("\n")).toContain("[expired] env-app-1 STRIPE_SECRET_KEY");
   });
 
   it("--fail-on-due exits 1, not 0 or 3, when a history could not be read (an unknown age is not a passed check)", async () => {
@@ -498,7 +528,25 @@ describe("maruhi rotation list", () => {
     const check = await startEnv(unreadable, built.projectId);
     expect(await runCli(["rotation", "list", "--fail-on-due"], check.layer)).toBe(1);
     expect(check.errors.join("\n")).toContain(
-      "Cannot judge --fail-on-due: the history of 1 value could not be read (env-app-1/STRIPE_SECRET_KEY)",
+      "Cannot judge the check: the history of 1 value could not be read (env-app-1/STRIPE_SECRET_KEY)",
+    );
+    // Something known due is due whatever else could not be read (A-10):
+    // exit 3 carries the known part, and names the unread part on the line
+    const partly = await startEnv(
+      await makeRotationServer({
+        built,
+        currentEpoch: 2,
+        flags: [flagFor({ variableId: "va" })],
+        expiringPushedAtMs: Date.now() - 40 * 24 * 60 * 60 * 1000,
+        historyAvailable: false,
+      }),
+      built.projectId,
+    );
+    expect(
+      await runCli(["rotation", "list", "--fail-on-due", "--fail-on-flags"], partly.layer),
+    ).toBe(3);
+    expect(partly.errors.join("\n")).toContain(
+      "Rotation due (exit 3): 1 rotation flag active; also the history of 1 value could not be read (env-app-1/STRIPE_SECRET_KEY)",
     );
     // --fail-on-flags alone does not need the age
     const flagsOnly = await startEnv(unreadable, built.projectId);

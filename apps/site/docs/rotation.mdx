@@ -149,7 +149,7 @@ Rule: `"connector": "exec"`, `"rotate"` naming a script of the repository, optio
 | `MH_ROTATE_VARIABLE` / `MH_ROTATE_ENVIRONMENT` | the variable name and the environment id     |
 | `MH_ROTATE_PHASE`                              | `rotate`                                     |
 
-It prints the **new credential on stdout** (one trailing newline is dropped; nothing else is touched; a script that writes more than 1 MiB there is stopped — a credential is small) and exits 0. The size and line count of what it printed become the first fact of the rotation, so a member accepting a proposal sees a script that printed chatter instead of a value before pushing it. Anything it says on stderr is kept for you only if it fails — scrubbed of every credential it was given — so a failing script reports its exit code and its last lines, never a secret. maruhi pushes stdout as the new version, exactly like the built-in connectors.
+It prints the **new credential on stdout** (one trailing newline is dropped; nothing else is touched; a script that writes more than 1 MiB to stdout or to stderr is stopped — a credential is small, and so is commentary) and exits 0. The size and line count of what it printed are shown in the rotation's report (and, for a proposal, at the acceptance from the opened value — never stored with the proposal), so a script that printed chatter instead of a value is seen before the value is pushed. Anything it says on stderr is kept for you only if it fails — scrubbed of every credential it was given — so a failing script reports its exit code and its last lines, never a secret. maruhi pushes stdout as the new version, exactly like the built-in connectors.
 
 **The finalize script** runs the same way, with `MH_ROTATE_PHASE=finalize`, the current credential under the variable's name, and the previous one as `MH_ROTATE_PREVIOUS` (a rule with companions also gets each companion's previous value as `MH_ROTATE_PREVIOUS_<companion>`, when the version before the current one is the one being finalized — so a key id to retire needs no lookup). It retires the previous credential at the issuer. Its stdout is not a value: up to ten lines of it are kept as the step's facts (scrubbed of every credential it was given), so a script that prints "revoked key id …" leaves that in the report. A rule without a `finalize` script is treated as having **no grace period**: its rotate script is expected to retire the old credential itself, so `maruhi var rotate` asks for confirmation first (or takes `--yes`).
 
@@ -245,7 +245,8 @@ jobs:
 - `--fail-on-due` exits with code **3** when a value is past its max age; `--due-within <days>` also counts values that come due within that window, so the job fails with lead time.
 - `--fail-on-flags` exits 3 while any rotation flag is active — a credential a departed party could read has neither been rotated nor dismissed.
 - `--fail-on-pending` exits 3 while a sealed proposal minted by a CI job (below) still awaits a member; with `--due-within <days>` the verdict also says how many expire within that window. It needs a member's token (proposals are listed to members and above; a reader's token makes the check exit 1).
-- Exit 3 is reserved for "something is due"; a check that could not run exits 1 as usual, so the cron tells the two apart. A history that could not be read is such a failure under `--fail-on-due`, and a proposal list that could not be read under `--fail-on-pending` (an unknown is not a passed check). The listing is printed in full before the verdict, with the exact command per row, so the failed job's log is the checklist.
+- Exit 3 is reserved for "something is due"; a check that could not run exits 1, so the cron tells the two apart. A history that could not be read under `--fail-on-due`, or a proposal list that could not be read under `--fail-on-pending`, is such a failure — unless something else is already known to be due, in which case the job exits 3 and names what could not be read on the same line (an unknown is never a passed check, and a known due value is never hidden behind an outage). The listing is printed in full before the verdict, with the exact command per row, so the failed job's log is the checklist.
+- The age is the age of the **value**, not of its latest version: a re-encryption (the mandated one after a member leaves) and a rollback are new versions of an old value, and the clock does not reset for them.
 
 A token with read permission on the project is enough for `--fail-on-due` and `--fail-on-flags` (`maruhi login --show-token --token-ttl-days 365` provisions `MARUHI_TOKEN` for a runtime without lease support; the listing reads flags and metadata, never a value). The notification is whatever your CI does with a failed scheduled job — an e-mail, a Slack message, an issue — and that is deliberate: maruhi sends nothing anywhere.
 
@@ -272,11 +273,12 @@ jobs:
           --anchor .maruhi/anchor.json --rotate-config maruhi.rotate.json
 ```
 
-The job leases the environment (and the environment an admin input lives in), decrypts the current credential and the admin input in memory, and asks the server first whether a proposal for these variables would be stored (a member pushed since the lease, a proposal for the same variable is already pending, the project is at its pending cap) — a refusal there costs nothing, because the issuer has not been touched. Only then does it run the rule's connector exactly as `maruhi var rotate` would — the `exec` script above, or a built-in connector. Then, because the job cannot sign a version, it encrypts the new value to the **device keys of every member who could push it** (members and above whose scope includes the environment — readers and the server key receive nothing) and stores the proposal on the server under the ephemeral key it leased with and a fresh OIDC token (a connector can outlive a short-lived one). The server keeps ciphertexts it cannot open, records who minted the proposal (the lease's claims digest and the grant), and waits:
+The job leases the environment (and the environment an admin input lives in), decrypts the current credential and the admin input in memory, and asks the server first whether a proposal for these variables would be stored (a member pushed since the lease, a proposal for the same variable is already pending, the project is at its pending cap or its hourly mint window) — a refusal there costs nothing, because the issuer has not been touched. The one refusal that can still come after the issuer accepted the rotation is a change of members or devices since the lease; the job then leases again and seals the proposal to the current recipients, once. Only then does it run the rule's connector exactly as `maruhi var rotate` would — the `exec` script above, or a built-in connector. Then, because the job cannot sign a version, it encrypts the new value to the **device keys of every member who could push it** (members and above whose scope includes the environment — readers and the server key receive nothing) and stores the proposal on the server under the ephemeral key it leased with and a fresh OIDC token (a connector can outlive a short-lived one). The server keeps ciphertexts it cannot open, records who minted the proposal (the lease's claims digest and the grant), and waits:
 
 ```text
 Sealed proposal 0f3e…9c21 stored for environment prod: STRIPE_SECRET_KEY (replacing version 7) — minted with the exec connector, sealed to 3 devices of 2 members, expires 2026-10-09
-  ./scripts/rotate-stripe.sh: new credential produced (107 bytes, 1 line)
+  ./scripts/rotate-stripe.sh: new credential produced
+  value: 107 bytes, 1 line (the shape is shown here and at the acceptance only; it is not stored with the proposal)
 Previous credential: the previous credential stays valid until you finalize (./scripts/finalize-stripe.sh runs with it)
 A member finishes the rotation with `maruhi rotation accept 0f3e…9c21` …
 ```
@@ -286,7 +288,8 @@ A member picks it up — `maruhi rotation list` counts pending proposals, `maruh
 ```sh
 maruhi rotation accept 0f3e9c21
 # Accepting proposal 0f3e…9c21 pushes STRIPE_SECRET_KEY in environment prod as new versions signed by you. It was minted with the exec connector by the workload whose lease claims digest is 7c1d… (grant at chain seq 12)
-#   ./scripts/rotate-stripe.sh: new credential produced (107 bytes, 1 line)
+#   ./scripts/rotate-stripe.sh: new credential produced
+#   STRIPE_SECRET_KEY: 107 bytes, 1 line (opened on this device)
 # Accept and push? [y/N]: y
 # Accepted proposal 0f3e…9c21 in environment prod: STRIPE_SECRET_KEY version=8, epoch=3
 ```

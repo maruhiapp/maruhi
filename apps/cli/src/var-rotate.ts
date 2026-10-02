@@ -102,6 +102,8 @@ export interface VarRotateResult {
   /** Every version pushed, in push order (companions first). */
   readonly pushed: readonly { readonly name: string; readonly version: PushedVersion }[];
   readonly facts: readonly string[];
+  /** The primary's shape ("N bytes, M lines" — shown, never stored). */
+  readonly valueShape: string;
   readonly previous: string;
   /** The max age the primary's schema declares (layout v3 — null = none). */
   readonly maxAgeDays: number | null;
@@ -430,6 +432,7 @@ export function varRotateOp(
       connector: target.rule.connector,
       pushed,
       facts: outcome.facts,
+      valueShape: outcome.valueShape,
       previous: outcome.previous,
       maxAgeDays: primaryStatement?.schema?.maxAgeDays ?? null,
       warnings: [
@@ -540,6 +543,7 @@ export function describeRotation(
   const lines = [
     `Rotated ${displayText(result.primary)} in environment ${displayText(environmentId)} with the ${result.connector} connector (${versions})`,
     ...result.facts.map((fact) => `  ${fact}`),
+    `  value: ${result.valueShape}`,
     `Previous credential: ${result.previous}`,
   ];
   if (!result.previous.includes("nothing to finalize")) {

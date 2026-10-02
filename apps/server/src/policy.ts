@@ -255,9 +255,6 @@ export const LEASE_BINDING_RETENTION_MARGIN_MS = 2 * OIDC_CLOCK_SKEW_MS;
  */
 export const MAX_PENDING_ROTATION_PROPOSALS = 32;
 
-/** §14-5: `expiresAtMs` at most this far ahead of the server clock at acceptance (30 days — the four-eyes proposal's bound). */
-export const MAX_ROTATION_PROPOSAL_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
-
 /**
  * §14-5: the per-project fixed window of mints (the same hour-long window
  * as leases, under its own `kind` — a job that re-leases in a retry loop
