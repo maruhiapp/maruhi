@@ -19,6 +19,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { makeEphemeralCa } from "../src/proxy-cert.ts";
+import { parseListenAddress } from "../src/proxy-run.ts";
 import {
   buildChain,
   type BuiltChain,
@@ -508,5 +509,24 @@ describe("maruhi proxy run", () => {
     expect(await runCli(["proxy", "run", "--config", configPath], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain("Specify the command to run after `--`");
     expect(env.runnerCalls).toHaveLength(0);
+  });
+});
+
+describe("parseListenAddress", () => {
+  it("reads host[:port] for names, IPv4 and IPv6 literals (§21 R-6)", () => {
+    expect(parseListenAddress("0.0.0.0:8080")).toEqual({ host: "0.0.0.0", port: 8080 });
+    expect(parseListenAddress("host.docker.internal")).toEqual({
+      host: "host.docker.internal",
+      port: 0,
+    });
+    expect(parseListenAddress("[::1]:8080")).toEqual({ host: "::1", port: 8080 });
+    expect(parseListenAddress("[::1]")).toEqual({ host: "::1", port: 0 });
+    expect(parseListenAddress("::1")).toEqual({ host: "::1", port: 0 });
+    expect(parseListenAddress("[fd00::2]:3128")).toEqual({ host: "fd00::2", port: 3128 });
+    expect(parseListenAddress("[::1")).toBeNull();
+    expect(parseListenAddress("[::1]x")).toBeNull();
+    expect(parseListenAddress("[::1]:70000")).toBeNull();
+    expect(parseListenAddress("a/b:1")).toBeNull();
+    expect(parseListenAddress(":80")).toBeNull();
   });
 });

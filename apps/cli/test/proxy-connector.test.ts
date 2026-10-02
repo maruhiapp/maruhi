@@ -243,4 +243,38 @@ describe("github-app connector", () => {
     // GitHub was not called for the two malformed inputs
     expect(github.calls).toHaveLength(2);
   });
+  it("revokes every held token at release even when one revocation fails, and reports the failures (§21 R-3)", async () => {
+    let now = Date.UTC(2026, 9, 1, 12, 0, 0);
+    let deletes = 0;
+    const github = fakeGithub((call, index) => {
+      if (call.method === "DELETE") {
+        deletes += 1;
+        return deletes === 1
+          ? new Response("boom", { status: 500 })
+          : new Response(null, { status: 204 });
+      }
+      return tokenResponse(`ghs_minted_${index}`, 60 * 60 * 1000, now);
+    });
+    const credential = makeConnectorCredential({
+      name: "GH_TOKEN",
+      kind: "github-app",
+      inputs: {
+        appId: enc.encode("123456"),
+        privateKey: enc.encode(PKCS8),
+        installationId: enc.encode("987654"),
+      },
+      placeholder: "mhp_GH_TOKEN_x",
+      hosts: hosts(),
+      surfaces: ["header"],
+      deps: { fetch: github.fetch, now: () => now, apiBase: "https://github.test" },
+    });
+    await credential.resolve();
+    now += 56 * 60 * 1000;
+    await credential.resolve();
+    expect(credential.known()).toHaveLength(2);
+    await expect(credential.release?.()).rejects.toThrow(/revo/i);
+    // Both revocations were attempted; nothing stays held
+    expect(github.calls.filter((call) => call.method === "DELETE")).toHaveLength(2);
+    expect(credential.known()).toEqual([]);
+  });
 });

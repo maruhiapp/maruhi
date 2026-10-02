@@ -42,7 +42,6 @@ export const octetString = (bytes: Uint8Array) => tlv(0x04, bytes);
 export const boolTrue = () => tlv(0x01, new Uint8Array([0xff]));
 const asn1Null = () => tlv(0x05, new Uint8Array(0));
 export const utf8String = (text: string) => tlv(0x0c, encoder.encode(text));
-export const ia5String = (text: string) => tlv(0x16, encoder.encode(text));
 /** `[n] EXPLICIT` context tag (constructed). */
 export const explicit = (n: number, content: Uint8Array) => tlv(0xa0 | n, content);
 

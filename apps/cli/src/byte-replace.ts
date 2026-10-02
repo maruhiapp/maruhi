@@ -190,12 +190,23 @@ export function makeStreamReplacer(
 }
 
 /**
+ * The shortest fragment that is scrubbed, in bytes. A shorter value (`3000`,
+ * `true`, a `{` line of a JSON value) is ordinary text that would be
+ * rewritten wherever it appears — in a log, in a dump redirected to a file,
+ * in an API response — and carries no secret worth the corruption (review
+ * finding pf4-design.md §21 R-1). Eight bytes is the floor at which an
+ * incidental match in unrelated output stops being plausible.
+ */
+export const MIN_FRAGMENT_LENGTH = 8;
+
+/**
  * Builds the pattern set that scrubs secrets out of a stream (the `maruhi
  * sync` fragment rule — sync-exec.ts's scrubVendorOutput, shared here):
  * each secret as a whole, each of its lines, and the JSON-escaped form of
  * each (a value echoed inside a JSON body appears as `\"`, `\\`, `\n`).
- * Empty fragments are dropped. `to` is the same replacement for every
- * fragment.
+ * Fragments shorter than {@link MIN_FRAGMENT_LENGTH} bytes are dropped
+ * (the whole value included: a short value is not redacted at all). `to`
+ * is the same replacement for every fragment.
  */
 export function scrubPatterns(
   secrets: readonly Uint8Array[],
@@ -207,7 +218,7 @@ export function scrubPatterns(
   const seen = new Set<string>();
   const patterns: BytePattern[] = [];
   const add = (fragment: Uint8Array) => {
-    if (fragment.length === 0) {
+    if (fragment.length < MIN_FRAGMENT_LENGTH) {
       return;
     }
     // Deduplicate by content (a short key avoids re-encoding the whole fragment as text)

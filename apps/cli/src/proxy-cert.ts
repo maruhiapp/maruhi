@@ -259,6 +259,10 @@ export async function makeEphemeralCa(now: number = Date.now()): Promise<Ephemer
       if (pending === undefined) {
         pending = issueLeaf(host);
         leaves.set(host, pending);
+        // A failed issuance is not remembered: the next CONNECT to the host
+        // tries again (a rejected promise in the cache would keep the host
+        // unreachable for the rest of the run — review finding §21 R-5)
+        pending.catch(() => leaves.delete(host));
       }
       return pending;
     },

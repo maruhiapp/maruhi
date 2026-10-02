@@ -89,11 +89,42 @@ export interface ProxyRunInput {
   readonly advertise?: string | undefined;
 }
 
-/** `host[:port]` of a bind address (an IPv4 literal or a host name; port 0 = ephemeral). */
-function parseListenAddress(text: string): { readonly host: string; readonly port: number } | null {
+/** `[host]` or `[host]:port` → the two parts; null when the brackets are malformed. */
+function splitBracketed(text: string): { readonly host: string; readonly portText: string } | null {
+  const close = text.indexOf("]");
+  if (close < 0) {
+    return null;
+  }
+  const after = text.slice(close + 1);
+  if (after.length === 0) {
+    return { host: text.slice(1, close), portText: "0" };
+  }
+  return after.startsWith(":") ? { host: text.slice(1, close), portText: after.slice(1) } : null;
+}
+
+/** `host` or `host:port` → the two parts (more than one colon and no bracket = a bare IPv6 address). */
+function splitPlain(text: string): { readonly host: string; readonly portText: string } {
   const colon = text.lastIndexOf(":");
-  const host = (colon < 0 ? text : text.slice(0, colon)).trim();
-  const portText = colon < 0 ? "0" : text.slice(colon + 1).trim();
+  if (colon < 0 || text.indexOf(":") !== colon) {
+    return { host: text, portText: "0" };
+  }
+  return { host: text.slice(0, colon), portText: text.slice(colon + 1) };
+}
+
+/**
+ * `host[:port]` of a bind address: an IPv4 literal, a host name, or an IPv6
+ * literal (`[::1]:8080`, `[::1]`, or a bare `::1`); port 0 = ephemeral.
+ * Exported for tests.
+ */
+export function parseListenAddress(
+  text: string,
+): { readonly host: string; readonly port: number } | null {
+  const trimmed = text.trim();
+  const parts = trimmed.startsWith("[") ? splitBracketed(trimmed) : splitPlain(trimmed);
+  if (parts === null) {
+    return null;
+  }
+  const { host, portText } = parts;
   if (host.length === 0 || host.includes("/") || !/^\d{1,5}$/.test(portText)) {
     return null;
   }
@@ -541,6 +572,7 @@ export function proxyRunOp(
             credentials: plan.credentials,
             unmatched: input.config.unmatched,
             ca,
+            hopDir: dir,
             // Every client must present this run's proxy credential (userinfo in
             // the proxy URL — honoured by curl, git, Python, Go, Node, Bun; §19 D-14b)
             credential: { user: "maruhi", password: randomAlphanumeric(22) },
@@ -551,7 +583,7 @@ export function proxyRunOp(
           }),
         catch: () =>
           cliError(
-            `Cannot start the local proxy (${input.listen === undefined ? "no loopback port could be opened" : `cannot listen on ${input.listen}`})`,
+            `Cannot start the local proxy (${input.listen === undefined ? "its loopback port or its private sockets could not be opened" : `cannot listen on ${input.listen}, or its private sockets could not be opened`})`,
           ),
       });
       return yield* Effect.gen(function* () {

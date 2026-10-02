@@ -53,6 +53,21 @@ describe("parseHostPattern", () => {
     expect(parseHostPattern("x.example:0")).toMatch(/port/);
     expect(parseHostPattern("x.example:70000")).toMatch(/port/);
     expect(parseHostPattern("*.com")).toMatch(/two labels/);
+    // `*.localhost` is the one single-label wildcard (RFC 6761), and every
+    // name under `.localhost` is the loopback, wildcard or not (§21 R-4)
+    expect(parseHostPattern("http://*.localhost:3000")).toEqual({
+      scheme: "http",
+      host: "localhost",
+      wildcard: true,
+      port: 3000,
+    });
+    expect(parseHostPattern("http://*.app.localhost")).toEqual({
+      scheme: "http",
+      host: "app.localhost",
+      wildcard: true,
+      port: 80,
+    });
+    expect(parseHostPattern("http://*.127.0.0.1")).toMatch(/loopback/);
     // Plain HTTP would carry a value in cleartext: only the loopback is accepted
     expect(parseHostPattern("http://api.example.com")).toMatch(
       /plain http:\/\/ is accepted only for loopback hosts/,

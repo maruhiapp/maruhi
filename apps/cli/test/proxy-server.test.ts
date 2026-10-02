@@ -7,6 +7,10 @@
 // a message that names the variable and the rule. The origins are
 // loopback stand-ins reached through the upstream test seam.
 
+import { lstatSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { makeEphemeralCa } from "../src/proxy-cert.ts";
@@ -48,6 +52,7 @@ let github: BrokeredCredential;
 let plainKey: BrokeredCredential;
 let connectorFails: BrokeredCredential;
 let open: ProxyHandle[] = [];
+let hopDirs: string[] = [];
 
 beforeAll(async () => {
   runCa = await makeEphemeralCa();
@@ -90,6 +95,10 @@ afterEach(async () => {
     await handle.close();
   }
   open = [];
+  for (const dir of hopDirs) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  hopDirs = [];
   secureOrigin.seen.length = 0;
   plainOrigin.seen.length = 0;
 });
@@ -100,10 +109,13 @@ async function proxyWith(input: {
   readonly decisions?: ProxyDecision[];
   readonly credential?: { readonly user: string; readonly password: string };
 }): Promise<ProxyHandle> {
+  const hopDir = mkdtempSync(join(tmpdir(), "mh-hop-"));
+  hopDirs.push(hopDir);
   const handle = await startProxy({
     credentials: input.credentials,
     unmatched: input.unmatched ?? "allow",
     ca: runCa,
+    hopDir,
     ...(input.credential === undefined ? {} : { credential: input.credential }),
     onDecision: (decision) => input.decisions?.push(decision),
     upstream: {
@@ -525,6 +537,25 @@ describe("the forward proxy", () => {
         status: 200,
       },
     ]);
+  });
+
+  it("puts the hop servers on Unix sockets inside the private directory, never on a TCP port (§21 R-2)", async () => {
+    const proxy = await proxyWith({ credentials: [github, plainKey] });
+    const hopDir = hopDirs.at(-1) ?? "";
+    // Before any request: the plain-HTTP hop only
+    expect(readdirSync(hopDir)).toEqual(["plain"]);
+    const brokered = await httpsViaProxy({
+      proxyPort: proxy.port,
+      ca: [runCa.certPem],
+      url: "https://api.example.test/ok",
+      headers: { authorization: `Bearer ${github.placeholder}` },
+    });
+    expect(brokered.status).toBe(200);
+    // One TLS-terminated hop per brokered authority, a socket file (not a port)
+    expect(readdirSync(hopDir).toSorted()).toEqual(["h1", "plain"]);
+    for (const name of readdirSync(hopDir)) {
+      expect(lstatSync(join(hopDir, name)).isSocket(), name).toBe(true);
+    }
   });
 
   it("percent-encodes a value substituted into the query and refuses one that cannot be a header (§19 C-4)", async () => {

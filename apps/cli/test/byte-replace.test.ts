@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   type BytePattern,
   makeStreamReplacer,
+  MIN_FRAGMENT_LENGTH,
   replaceBytes,
   scrubPatterns,
 } from "../src/byte-replace.ts";
@@ -127,19 +128,43 @@ describe("makeStreamReplacer", () => {
 });
 
 describe("scrubPatterns", () => {
-  it("builds the whole / per-line / JSON-escaped fragments and drops empties", () => {
-    const patterns = scrubPatterns([enc.encode('a"b\nsecond\n')], "[redacted]");
+  it("builds the whole / per-line / JSON-escaped fragments and drops the short ones", () => {
+    const patterns = scrubPatterns([enc.encode('alpha"beta\nsecond-line\n')], "[redacted]");
     const froms = patterns.map((p) => dec.decode(p.from)).toSorted();
     expect(froms).toEqual(
-      ['a"b', 'a"b\nsecond\n', 'a\\"b', 'a\\"b\\nsecond\\n', "second"].toSorted(),
+      [
+        'alpha"beta',
+        'alpha"beta\nsecond-line\n',
+        'alpha\\"beta',
+        'alpha\\"beta\\nsecond-line\\n',
+        "second-line",
+      ].toSorted(),
     );
     expect(patterns.every((p) => dec.decode(p.to) === "[redacted]")).toBe(true);
   });
 
+  it("never scrubs a value or a line shorter than the floor (§21 R-1: `3000`, `true`, a `{` line are ordinary text)", () => {
+    expect(MIN_FRAGMENT_LENGTH).toBe(8);
+    expect(scrubPatterns([enc.encode("3000"), enc.encode("true"), enc.encode("1")], "[x]")).toEqual(
+      [],
+    );
+    // A JSON value: its `{` / `}` lines are dropped, its long lines kept
+    const json = '{\n  "key": "sk-0123456789abcdef"\n}';
+    const froms = scrubPatterns([enc.encode(json)], "[x]").map((p) => dec.decode(p.from));
+    expect(froms).not.toContain("{");
+    expect(froms).not.toContain("}");
+    expect(froms).toContain('  "key": "sk-0123456789abcdef"');
+    // Output that contains a short value stays byte-identical
+    const patterns = scrubPatterns([enc.encode("1")], "[redacted]");
+    expect(dec.decode(replaceBytes(enc.encode("v1.0 PORT=1"), patterns))).toBe("v1.0 PORT=1");
+    // Exactly the floor is scrubbed
+    expect(scrubPatterns([enc.encode("12345678")], "[x]")).toHaveLength(1);
+  });
+
   it("keeps the raw bytes of a non-UTF-8 secret", () => {
-    const raw = new Uint8Array([0xff, 0xfe, 0x41]);
+    const raw = new Uint8Array([0xff, 0xfe, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46]);
     const patterns = scrubPatterns([raw], "[redacted]");
     expect(patterns).toHaveLength(1);
-    expect(Array.from(patterns[0]?.from ?? [])).toEqual([0xff, 0xfe, 0x41]);
+    expect(Array.from(patterns[0]?.from ?? [])).toEqual(Array.from(raw));
   });
 });

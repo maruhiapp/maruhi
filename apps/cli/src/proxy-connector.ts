@@ -241,8 +241,16 @@ export function makeConnectorCredential(input: {
       const held = [cached, previous].filter((minted): minted is Minted => minted !== null);
       cached = null;
       previous = null;
+      // Every held token is revoked even when one revocation fails (a
+      // token left alive would outlive the run — review finding §21 R-3)
+      const failures: string[] = [];
       for (const minted of held) {
-        await revoke(minted.value, input.deps);
+        await revoke(minted.value, input.deps).catch((error: unknown) => {
+          failures.push(error instanceof Error ? error.message : "revocation failed");
+        });
+      }
+      if (failures.length > 0) {
+        throw new Error(failures.join("; "));
       }
     },
     resolve: () => {

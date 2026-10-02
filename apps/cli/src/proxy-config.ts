@@ -21,12 +21,18 @@
 // keys refused, and validation wording that names the key and the rule
 // but never echoes the value typed.
 
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 
 import { Effect } from "effect";
 
 import { cliError, type CliError, usageError } from "./errors.ts";
-import { isRecord, parseConfigHeader, parseJsonRecord, unknownKeys } from "./json-record.ts";
+import {
+  isRecord,
+  loadIfPresent,
+  parseConfigHeader,
+  parseJsonRecord,
+  unknownKeys,
+} from "./json-record.ts";
 
 /** Default location of the proxy config, relative to the working directory. */
 export const DEFAULT_PROXY_CONFIG_PATH = "maruhi.proxy.json";
@@ -111,15 +117,16 @@ const HOST_NAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])
 // review finding §19 C-12)
 const PLACEHOLDER = /^[\x21-\x7E]{16,256}$/;
 
-/** `localhost`, `*.localhost`, or a 127.0.0.0/8 literal. */
+/**
+ * `localhost`, any name under `.localhost` (RFC 6761 — with or without a
+ * wildcard: `*.localhost`, `app.localhost`, `*.app.localhost`), or a
+ * 127.0.0.0/8 literal (never a wildcard).
+ */
 function isLoopbackHost(host: string, wildcard: boolean): boolean {
-  if (host === "localhost") {
+  if (host === "localhost" || host.endsWith(".localhost")) {
     return true;
   }
-  if (wildcard) {
-    return host === "localhost";
-  }
-  return host.endsWith(".localhost") || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+  return !wildcard && /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
 
 /**
@@ -180,8 +187,10 @@ export function parseHostPattern(text: string): HostPattern | Invalid {
   if (rest.length === 0 || rest.length > 253 || !HOST_NAME.test(rest)) {
     return "the host must be a DNS name (letters, digits, `-`, `.`), optionally prefixed with `*.`, or an IPv4 address";
   }
-  if (wildcard && !rest.includes(".")) {
-    return "a wildcard needs at least two labels after `*.` (for example `*.example.com`)";
+  // `*.localhost` is the one single-label wildcard (every name under it is
+  // the loopback — RFC 6761); `*.com` would name the public suffix
+  if (wildcard && !rest.includes(".") && rest !== "localhost") {
+    return "a wildcard needs at least two labels after `*.` (for example `*.example.com`; `*.localhost` is the exception)";
   }
   // A value substituted into plain HTTP travels in cleartext; only the
   // loopback is acceptable for that (a local development server)
@@ -476,23 +485,11 @@ export function loadProxyConfig(path: string): Effect.Effect<ProxyConfig, CliErr
 export function loadProxyConfigIfPresent(
   path: string,
 ): Effect.Effect<ProxyConfig | null, CliError> {
-  return Effect.gen(function* () {
-    const exists = yield* Effect.tryPromise({
-      try: () => stat(path).then(() => true),
-      catch: (error: unknown) => error,
-    }).pipe(
-      Effect.catch((error: unknown) =>
-        (error as NodeJS.ErrnoException).code === "ENOENT"
-          ? Effect.succeed(false)
-          : Effect.fail(
-              cliError(
-                `Cannot read the proxy config ${path} (it exists but is not readable). Fix it, or run with --plain from a terminal to inject the values directly`,
-              ),
-            ),
-      ),
-    );
-    return exists ? yield* loadProxyConfig(path) : null;
-  });
+  return loadIfPresent(
+    path,
+    loadProxyConfig,
+    `Cannot read the proxy config ${path} (it exists but is not readable). Fix it, or run with --plain from a terminal to inject the values directly`,
+  );
 }
 
 /** Matching the config's `project` against the flag (a mismatch is a writing mistake = 2). */

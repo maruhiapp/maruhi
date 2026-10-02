@@ -4,7 +4,12 @@
 // caller adds "which file and why" (the content itself is never put in the
 // message).
 
+import { stat } from "node:fs/promises";
+
 import { isProjectId } from "@maruhi/core";
+import { Effect } from "effect";
+
+import { cliError, type CliError } from "./errors.ts";
 
 /** Parses `content` as a JSON object; returns the reason when it is not one. */
 export function parseJsonRecord(content: string): Record<string, unknown> | string {
@@ -52,4 +57,30 @@ export function parseConfigHeader(
     return "project must be the project ID (64 hex digits) when present";
   }
   return { projectId: project };
+}
+
+/**
+ * A config the CLI applies without being told (`maruhi push` → the sync
+ * config, `maruhi run` → the proxy config): null when the file is absent,
+ * `load(path)` when it exists, and `unreadable` as the error when it exists
+ * but cannot be stat'ed — a broken config is reported, never skipped.
+ */
+export function loadIfPresent<A>(
+  path: string,
+  load: (path: string) => Effect.Effect<A, CliError>,
+  unreadable: string,
+): Effect.Effect<A | null, CliError> {
+  return Effect.gen(function* () {
+    const exists = yield* Effect.tryPromise({
+      try: () => stat(path).then(() => true),
+      catch: (error: unknown) => error,
+    }).pipe(
+      Effect.catch((error: unknown) =>
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+          ? Effect.succeed(false)
+          : Effect.fail(cliError(unreadable)),
+      ),
+    );
+    return exists ? yield* load(path) : null;
+  });
 }

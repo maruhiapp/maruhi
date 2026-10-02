@@ -55,8 +55,10 @@ const origin = https.createServer({ key: leaf.keyPem, cert: leaf.certPem }, (req
 await new Promise<void>((resolve) => origin.listen(0, "127.0.0.1", () => resolve()));
 const originPort = (origin.address() as AddressInfo).port;
 
+const dir = await mkdtemp(join(tmpdir(), "maruhi-proxy-probe-"));
 const placeholder = makePlaceholder("GITHUB_TOKEN");
 const proxy = await startProxy({
+  hopDir: dir,
   credentials: [
     {
       name: "GITHUB_TOKEN",
@@ -77,7 +79,6 @@ const proxy = await startProxy({
   },
 });
 
-const dir = await mkdtemp(join(tmpdir(), "maruhi-proxy-probe-"));
 const caPath = join(dir, "ca.pem");
 const bundlePath = join(dir, "bundle.pem");
 await writeFile(caPath, runCa.certPem);

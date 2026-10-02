@@ -8,7 +8,7 @@ import { X509Certificate } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import tls from "node:tls";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { makeEphemeralCa } from "../src/proxy-cert.ts";
 
@@ -54,6 +54,22 @@ describe("makeEphemeralCa", () => {
     const leaf = new X509Certificate((await ca.issue("127.0.0.1")).certPem);
     expect(leaf.subjectAltName).toBe("IP Address:127.0.0.1");
     expect(leaf.checkIP("127.0.0.1")).toBe("127.0.0.1");
+  });
+
+  it("does not remember a failed leaf issuance: the next request for the host tries again (§21 R-5)", async () => {
+    const ca = await makeEphemeralCa();
+    const spy = vi
+      .spyOn(crypto.subtle, "exportKey")
+      .mockRejectedValueOnce(new Error("transient export failure"));
+    try {
+      await expect(ca.issue("flaky.example")).rejects.toThrow("transient export failure");
+      const leaf = await ca.issue("flaky.example");
+      expect(new X509Certificate(leaf.certPem).checkHost("flaky.example")).toBe("flaky.example");
+      // And the second, successful issuance is the one cached
+      expect(await ca.issue("flaky.example")).toBe(leaf);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("completes a real TLS handshake with a client that trusts only the CA", async () => {

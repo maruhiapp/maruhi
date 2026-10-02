@@ -47,6 +47,7 @@ import { timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
+import { join } from "node:path";
 import { pipeline, Transform } from "node:stream";
 import tls from "node:tls";
 import zlib from "node:zlib";
@@ -108,6 +109,18 @@ export interface ProxyOptions {
   /** Destinations no rule names: tunnel untouched, or refuse. */
   readonly unmatched: "allow" | "block";
   readonly ca: EphemeralCa;
+  /**
+   * The run's private directory (0700, removed at exit). The hop servers —
+   * the per-host plaintext handlers behind the TLS termination and the
+   * plain-HTTP handler — listen on Unix domain sockets inside it, so only
+   * what the proxy itself bridges (after the credential check) and the
+   * same OS user can reach them: a TCP loopback port would let any local
+   * process, or another OS user on the host, send a placeholder straight
+   * to a hop and have it substituted (review finding §21 R-2). Socket paths
+   * are length-limited (104 bytes on macOS, 108 on Linux): a directory too
+   * deep makes `startProxy` fail. Windows (named pipes) is outside support.
+   */
+  readonly hopDir: string;
   /**
    * The proxy credential every client must present (`Proxy-Authorization:
    * Basic`), carried as userinfo in the proxy URL the child receives. Keeps
@@ -642,8 +655,18 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
         resolve((server.address() as net.AddressInfo).port);
       });
     });
-  // The loopback hop servers always stay on the loopback (they speak plaintext)
-  const listen = (server: net.Server): Promise<number> => listenOn(server, "127.0.0.1", 0);
+  // The hop servers speak plaintext and are never on a TCP port: a Unix
+  // socket in the run's private directory (see ProxyOptions.hopDir)
+  const listenHop = (server: net.Server, name: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const path = join(options.hopDir, name);
+      server.once("error", reject);
+      server.listen(path, () => {
+        server.off("error", reject);
+        servers.push(server);
+        resolve(path);
+      });
+    });
 
   /**
    * Patterns scrubbing every brokered value out of a response (real →
@@ -855,8 +878,9 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
 
   // The MITM loopback servers, one per brokered authority (the handler
   // trusts the CONNECT target, never the Host header — ruling P6)
-  const mitmServers = new Map<string, Promise<number>>();
-  const mitmPortFor = (target: Target): Promise<number> => {
+  const mitmServers = new Map<string, Promise<string>>();
+  let mitmCount = 0;
+  const mitmPathFor = (target: Target): Promise<string> => {
     const key = authorityOf(target);
     let pending = mitmServers.get(key);
     if (pending === undefined) {
@@ -864,7 +888,8 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
         // The authority is the tunnel's (never the request's)
         guarded(req, res, target, originFormOf(req.url ?? "/"));
       });
-      pending = listen(server);
+      mitmCount += 1;
+      pending = listenHop(server, `h${mitmCount}`);
       // A failed listen is not remembered (the next CONNECT tries again)
       pending.catch(() => mitmServers.delete(key));
       mitmServers.set(key, pending);
@@ -903,7 +928,7 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
     }
     guarded(req, res, parsed.target, parsed.path);
   });
-  const plainPort = await listen(plainServer);
+  const plainPath = await listenHop(plainServer, "plain");
 
   // The expected `Proxy-Authorization` value (null = no credential required)
   const expectedAuthorization =
@@ -975,7 +1000,7 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
         return;
       }
       // Plain HTTP: hand the whole buffered bytes to the loopback server
-      const upstream = net.connect(plainPort, "127.0.0.1", () => {
+      const upstream = net.connect(plainPath, () => {
         upstream.write(head);
         socket.resume();
         bridge(socket, upstream);
@@ -1042,9 +1067,9 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
     }
     // Brokered: terminate TLS with a leaf for this host, hand the plaintext to the bound loopback server
     try {
-      const [leaf, mitmPort] = await Promise.all([
+      const [leaf, mitmPath] = await Promise.all([
         options.ca.issue(target.host),
-        mitmPortFor(target),
+        mitmPathFor(target),
       ]);
       socket.write(`HTTP/1.1 200 Connection Established\r\nProxy-Agent: maruhi\r\n\r\n`);
       if (rest.length > 0) {
@@ -1062,7 +1087,7 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
         ALPNProtocols: ["http/1.1"],
       });
       secure.on("error", () => secure.destroy());
-      const loop = net.connect(mitmPort, "127.0.0.1", () => {
+      const loop = net.connect(mitmPath, () => {
         socket.resume();
         bridge(secure, loop);
       });

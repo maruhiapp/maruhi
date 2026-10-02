@@ -616,3 +616,67 @@ plain `run` without a config is byte-identical; a broken config in the
 working directory is an error; `--listen` / `--advertise` bind and
 advertise as told and a malformed address is a usage error; the help golden
 carries the new flags.
+
+## 21. Pull-request review round (2026-10-02 — review bots on PR #243)
+
+Two review bots (pullfrog, Cursor Bugbot) read the full diff after the PR
+opened. Six findings; every one verified against the code and fixed in the
+same round (R-1 … R-6), plus the CI gate's two findings (R-7).
+
+- **R-1 (pullfrog) — the redaction over-matched short values.** Every
+  injected value and every line of a multi-line value became a pattern,
+  whatever its length; with `PORT=3000` or a JSON value's `{` line injected,
+  every occurrence of those bytes in CI logs or in redirected output became
+  `[redacted]`, and `run -- pg_dump > dump` could corrupt the dump. Options
+  looped: (a) a fixed length floor; (b) an entropy threshold (unpredictable
+  for the user — a passphrase of words fails it); (c) exempting values by
+  their declared type (`number` / `boolean` — the declaration is
+  member-written metadata, so a schema edit could switch a value's redaction
+  off: fail-open, rejected); (d) telling a file redirect from a pipe (does
+  not address CI logs, and a file is the persisted transcript the redaction
+  exists for). **(a) adopted**: `MIN_FRAGMENT_LENGTH = 8` in `scrubPatterns`
+  (whole value, lines, JSON-escaped forms alike — the proxy's response scrub
+  included, so a short brokered value is not scrubbed either). An incidental
+  8-byte match in unrelated output is not plausible; a secret under 8 bytes
+  protects nothing. The reviewer's open question (should a file redirect
+  trigger at all) is answered no change: the trigger stays "stdout or
+  stderr is not a terminal".
+- **R-2 (pullfrog) — the hop servers were on TCP loopback ports without
+  the credential check.** The per-host plaintext handlers behind the TLS
+  termination and the plain-HTTP handler listened on `127.0.0.1:0`; any
+  local process (or another OS user on the host — the sandbox shape) that
+  found the port could send a placeholder straight to a hop and have the
+  real value substituted: a confused deputy that bypassed D-14b. Options:
+  a remote-port allowlist of the sockets the proxy itself opened (racy —
+  the server's `connection` and the client's `connect` order is not
+  defined in one process), a one-connection listener per bridge (a window
+  between listen and connect), Unix domain sockets inside the run's 0700
+  directory (the OS fence; measured working under Bun 1.4.2 and Node for
+  both `net.connect(path)` and `http.Server`). **Unix sockets adopted**:
+  `ProxyOptions.hopDir` (the `privateRuntimeDir` the run already creates),
+  sockets `plain` and `h<n>`. Paths are length-limited (104 / 108 bytes) —
+  a too-deep directory fails `startProxy` with the existing message.
+  Windows (named pipes) stays outside support. Pinned: the directory holds
+  socket files only, one per brokered authority plus `plain`.
+- **R-3 (pullfrog) — `release()` stopped at the first revocation
+  failure**, leaving the second held token alive for GitHub's full hour.
+  Every revocation is attempted; the failures are reported together.
+- **R-4 (Bugbot) — `*.localhost` was unusable.** The two-label wildcard
+  check rejected it before the loopback exception ran, and the error text
+  told the user to write exactly that. `*.localhost` is now the one
+  single-label wildcard, and every name under `.localhost` is the loopback
+  (RFC 6761) with or without a wildcard; `*.127.0.0.1` stays refused.
+- **R-5 (Bugbot) — a failed leaf issuance was cached**, so one transient
+  WebCrypto failure kept a host unreachable for the rest of the run. The
+  rejected promise is evicted; pinned with a one-shot `exportKey` failure.
+- **R-6 (Bugbot) — `--listen ::1` was misparsed** (split at the last
+  colon). Bracketed `[::1]:port` / `[::1]` and a bare IPv6 literal (more
+  than one colon, no bracket) are parsed; the parser is split into two
+  helpers to stay under the complexity gate.
+- **R-7 (CI fallow gate)** — the unused `ia5String` DER helper is removed;
+  `loadSyncConfigIfPresent` / `loadProxyConfigIfPresent` share
+  `loadIfPresent` in json-record.ts (the 17-line clone).
+
+Also in this round: `origin/main` merged (effect 4.0.0 stable — the
+`effect/unstable/*` import paths moved to `effect/*`; two conflicts, ROADMAP
+and ci-run.ts).
