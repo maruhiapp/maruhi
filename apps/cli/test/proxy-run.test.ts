@@ -13,6 +13,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { chdir, cwd } from "node:process";
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -386,6 +387,120 @@ describe("maruhi proxy run", () => {
       "--project does not match the `project` in the proxy config",
     );
     expect(env.runnerCalls).toHaveLength(0);
+  });
+
+  it("`maruhi run` applies maruhi.proxy.json from the working directory, and --plain is allowed only to a person at a terminal (ADR-0016 decision 7 revision 2)", async () => {
+    const { env, configDir } = await startEnv(BROKER_CONFIG);
+    const originalCwd = cwd();
+    chdir(configDir);
+    try {
+      // Plain `run` brokers: a placeholder, the pass-through value, the proxy variables
+      expect(await runCli(["run", "--", "claude"], env.layer)).toBe(0);
+      const brokered = env.runnerCalls[0]?.extraEnv ?? {};
+      expect(brokered["GITHUB_TOKEN"]).toMatch(/^mhp_GITHUB_TOKEN_/);
+      expect(brokered["DATABASE_URL"]).toBe(REAL_DB);
+      expect(brokered["HTTPS_PROXY"]).toMatch(/^http:\/\/maruhi:/);
+      expect(env.runnerCalls[0]?.holdSignals).toBe(true);
+      expect(env.errors.join("\n")).toContain(
+        "proxy run: brokering GITHUB_TOKEN → api.example.test (header)",
+      );
+      // --plain from a human terminal: the real values, the config not applied
+      env.errors.length = 0;
+      expect(await runCli(["run", "--plain", "--", "true"], env.layer)).toBe(0);
+      const plain = env.runnerCalls[1]?.extraEnv ?? {};
+      expect(plain["GITHUB_TOKEN"]).toBe(REAL_TOKEN);
+      expect(plain["HTTPS_PROXY"]).toBeUndefined();
+      expect(env.runnerCalls[1]?.holdSignals).toBe(false);
+      expect(env.errors.join("\n")).toContain(
+        "--plain: injecting the real values; maruhi.proxy.json is not applied to this run",
+      );
+      // --plain under a detected agent: refused before any decryption, child not started
+      env.errors.length = 0;
+      env.setAgent({ isAgent: true, name: "claude-code" });
+      const server = servers[servers.length - 1];
+      const requestsBefore = server?.requests.length ?? 0;
+      expect(await runCli(["run", "--plain", "--", "true"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain(
+        "Refused to run with the real values: an AI agent environment was detected (claude-code) and this repository has a proxy config",
+      );
+      expect(env.runnerCalls).toHaveLength(2);
+      expect(server?.requests.length).toBe(requestsBefore);
+      // … and without a terminal (a pipe, CI): refused too; plain `run` still brokers there
+      env.setAgent({ isAgent: false });
+      env.setTerminal({ stdout: false });
+      expect(await runCli(["run", "--plain", "--", "true"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain("stdout is not an interactive terminal");
+      expect(await runCli(["run", "--", "true"], env.layer)).toBe(0);
+      expect(env.runnerCalls[2]?.extraEnv["GITHUB_TOKEN"]).toMatch(/^mhp_GITHUB_TOKEN_/);
+    } finally {
+      chdir(originalCwd);
+    }
+  });
+
+  it("--plain without a config is a no-op note; a broken config in the working directory is reported, not skipped", async () => {
+    const { env, configPath, configDir } = await startEnv("{ broken");
+    const originalCwd = cwd();
+    chdir(configDir);
+    try {
+      expect(await runCli(["run", "--", "true"], env.layer)).toBe(1);
+      expect(env.errors.join("\n")).toContain(
+        `The proxy config maruhi.proxy.json is invalid: not valid JSON`,
+      );
+      expect(env.runnerCalls).toHaveLength(0);
+    } finally {
+      chdir(originalCwd);
+    }
+    // No config in the (repository) working directory: --plain changes nothing
+    expect(configPath).toContain("maruhi.proxy.json");
+    expect(await runCli(["run", "--plain", "--", "true"], env.layer)).toBe(0);
+    expect(env.runnerCalls[0]?.extraEnv["GITHUB_TOKEN"]).toBe(REAL_TOKEN);
+    expect(env.errors.join("\n")).toContain(
+      "--plain has no effect: no maruhi.proxy.json in the working directory",
+    );
+  });
+
+  it("--listen binds beyond the loopback and --advertise names the address the command is told (sandbox mode)", async () => {
+    const { env, configPath } = await startEnv(BROKER_CONFIG);
+    env.setRunnerHandler(async (call) => {
+      const url = new URL(call.extraEnv["HTTPS_PROXY"] ?? "");
+      expect(url.hostname).toBe("host.docker.internal");
+      expect(url.port).not.toBe("");
+      // The proxy itself is bound to the loopback address given; the credential is required
+      const response = await httpsViaProxy({
+        proxyPort: Number(url.port),
+        ca: [],
+        url: "https://api.example.test/ok",
+      });
+      expect(response.status).toBe(407);
+      return 0;
+    });
+    expect(
+      await runCli(
+        [
+          "proxy",
+          "run",
+          "--config",
+          configPath,
+          "--listen",
+          "127.0.0.1",
+          "--advertise",
+          "host.docker.internal",
+          "--",
+          "true",
+        ],
+        env.layer,
+      ),
+    ).toBe(0);
+    expect(env.errors.join("\n")).toMatch(
+      /proxy listening on 127\.0\.0\.1:\d+, told to the command as host\.docker\.internal:\d+/,
+    );
+    expect(
+      await runCli(
+        ["proxy", "run", "--config", configPath, "--listen", "not a host/x", "--", "true"],
+        env.layer,
+      ),
+    ).toBe(2);
+    expect(env.errors.join("\n")).toContain("--listen must be host[:port]");
   });
 
   it("requires the run target after `--` like run", async () => {

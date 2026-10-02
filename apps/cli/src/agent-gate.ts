@@ -183,3 +183,19 @@ export const ensureDeviceApproveAllowed: Effect.Effect<void, CliError, Stdio.Std
     terminalRefusal: (reason) =>
       `Refused to approve a device: ${reason}. Approving a device key is done only by a person at a terminal (pipes, redirects, CI, and AI agents are refused). Run \`maruhi device approve\` yourself in a terminal, without redirecting its input or output`,
   });
+
+/**
+ * Gate for `maruhi run --plain` when a proxy config is present (ADR-0016
+ * decision 7 revision 2 — pf4-design.md §20): injecting the real values
+ * into a child while the repository has decided they are brokered is the
+ * one shape that hands an agent the plaintext, so it is allowed only to a
+ * person at an interactive terminal. The same evidence as the value-display
+ * gate; `proxy run` and plain `run` without a config are not gated.
+ */
+export const ensurePlainRunAllowed: Effect.Effect<void, CliError, Stdio.Stdio> =
+  ensureHumanCeremonyAllowed({
+    agentRefusal: (detected) =>
+      `Refused to run with the real values: an AI agent environment was detected${detected} and this repository has a proxy config (maruhi.proxy.json). Run the command without --plain so the values are brokered, or run it yourself in a terminal`,
+    terminalRefusal: (reason) =>
+      `Refused to run with the real values: ${reason}, and this repository has a proxy config (maruhi.proxy.json). --plain is allowed only to a person at an interactive terminal (pipes, redirects, CI, and AI agents are refused); run the command without --plain so the values are brokered`,
+  });

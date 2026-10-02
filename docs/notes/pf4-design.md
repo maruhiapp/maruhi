@@ -540,3 +540,75 @@ form or JSON body is the client's to encode); a background process the
 child leaves behind loses its output half a second after the child exits
 under redaction; connector revocation is best effort (a network failure
 leaves the token to expire on GitHub's side).
+
+## 20. Ruling M settled — the structural answer, and the in-account default (2026-10-02 — owner ruling)
+
+The owner asked whether a **structural** solution to M exists rather than a
+stopgap, and authorized the designer's recommendation if not.
+
+**Finding: a structural solution exists only across a security-principal
+boundary.** Inside one OS user account there is none: the OS keychain is a
+per-user store (any process of the user reads it with the same `maruhi`
+binary; macOS code-signing ACLs cannot tell the agent's `maruhi` from the
+human's), and same-user processes are mutually transparent (ptrace,
+`/proc/<pid>/mem` — KL2's record says the same of the `maruhi agent`
+holder). Every in-account mechanism — agent detection, a repository file, a
+user-config policy, a gate — is advisory against a hostile process with the
+user's keys. Considered and rejected as "structural": a key-holding daemon
+that fences callers by process ancestry (SO_PEERCRED / LOCAL_PEERPID —
+technically sound, but it requires the device key **not** to be in the OS
+keychain, a change of the workstation persistence model, and is still
+defeated by ptrace); a server-side refusal (E2EE: decryption is the key's,
+the server has no say); signed rules in the schema (5-B — hardens the rules,
+not the holder of the key).
+
+**Adopted — two tracks, both implemented**:
+
+1. **The structural track (i), first-class**: the agent runs where it has no
+   maruhi credential (a container, a devcontainer, another OS user), and the
+   host's `maruhi proxy run` is its only path. `proxy run --listen host[:port]`
+   binds beyond the loopback (the loopback MITM hop servers stay on the
+   loopback), `--advertise host[:port]` is the name the sandbox knows the
+   host by (the proxy URL and its credential carry it). A non-loopback bind
+   prints a Warning. The docs carry the Docker Desktop recipe (`--listen
+   0.0.0.0 --advertise host.docker.internal`, the CA bundle mounted). This is
+   Infisical's "the agent identity has only the Proxy permission" in maruhi's
+   terms, without a server holding anything.
+2. **The in-account default (f)** — not a stopgap but the permanent answer
+   for local use without a sandbox: when `maruhi.proxy.json` is present in
+   the working directory, **`maruhi run` brokers exactly as `proxy run`**
+   (shared `brokeredRun`), for people and agents alike — the repository's
+   file decides, detection decides nothing about injection. **`maruhi run
+   --plain`** keeps the real-value shape and is gated like a ceremony
+   (`ensurePlainRunAllowed` — a known agent is refused; stdin and stdout must
+   be terminals): the one shape that hands a program the plaintext while the
+   repository has said the values are brokered requires a person. A broken
+   config is reported, never skipped (skipping would silently inject real
+   values). Without a config, `run` is unchanged; `ci run` reads no config.
+   Recorded as **ADR-0016 revision 2**.
+
+**Why (f) over the reviewer's (b)** (a Warning): a Warning is read by neither
+an agent under injection nor reliably by a human inside an agent host, and
+it keeps the detection signal as the thing that decides. (f) inverts the
+default — protective without detection, permissive only through the
+existing fail-closed human gate — which is the structure decision 7 itself
+uses for display. The `AGENTS.md` snippet in the docs can say plain `maruhi
+run` again, since `run` now does the right thing.
+
+**Residuals stated**: (f) raises the bar from "run a command" to "defeat the
+human gate or read another process's memory" — qualitatively meaningful
+against a prompt-injected agent, not a boundary against a hostile one; the
+repository file is editable by an agent in the repository (the trust level
+of today's `run`); `--plain` cannot be used from a pipe or CI when a config
+exists (by design — `ci run` is the CI path). The ancestry-fencing holder
+and the signed rules (5-B) stay recorded as follow-ups, both weaker than the
+sandbox shape and both large.
+
+**Pinned**: `run` with a config brokers (placeholder, pass-through, proxy
+variables, signals held); `--plain` at a human terminal injects the real
+values and says the config is not applied; `--plain` under a detected agent
+or without a terminal is refused before any network, child not started;
+plain `run` without a config is byte-identical; a broken config in the
+working directory is an error; `--listen` / `--advertise` bind and
+advertise as told and a malformed address is a usage error; the help golden
+carries the new flags.

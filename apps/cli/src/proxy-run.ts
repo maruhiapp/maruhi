@@ -41,14 +41,19 @@ import { Context, Effect, Redacted, type Stdio } from "effect";
 
 import { privateRuntimeDir } from "./agent.ts";
 import { displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { cliError, type CliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { makeEphemeralCa } from "./proxy-cert.ts";
 import type { HostPattern, ProxyConfig, VariableRule } from "./proxy-config.ts";
 import { type ConnectorDeps, makeConnectorCredential } from "./proxy-connector.ts";
 import { type BrokeredCredential, makePlaceholder, randomAlphanumeric } from "./proxy-rules.ts";
-import { type ProxyDecision, type ProxyOptions, startProxy } from "./proxy-server.ts";
+import {
+  type ProxyDecision,
+  type ProxyHandle,
+  type ProxyOptions,
+  startProxy,
+} from "./proxy-server.ts";
 import type { DecryptedVariable } from "./pull.ts";
 import { buildInjectionEnv, ProcessRunner, redactionFragments } from "./run.ts";
 
@@ -74,7 +79,29 @@ export interface ProxyRunInput {
   readonly variables: readonly DecryptedVariable[];
   /** One stderr line per request the proxy handled. */
   readonly verbose: boolean;
+  /**
+   * Sandbox mode (pf4-design.md §20 — the structural answer to ruling M):
+   * `listen` = `host[:port]` to bind beyond the loopback so a container or
+   * another network namespace can reach the proxy; `advertise` = the
+   * `host[:port]` the child is told (what the sandbox sees the host as).
+   */
+  readonly listen?: string | undefined;
+  readonly advertise?: string | undefined;
 }
+
+/** `host[:port]` of a bind address (an IPv4 literal or a host name; port 0 = ephemeral). */
+function parseListenAddress(text: string): { readonly host: string; readonly port: number } | null {
+  const colon = text.lastIndexOf(":");
+  const host = (colon < 0 ? text : text.slice(0, colon)).trim();
+  const portText = colon < 0 ? "0" : text.slice(colon + 1).trim();
+  if (host.length === 0 || host.includes("/") || !/^\d{1,5}$/.test(portText)) {
+    return null;
+  }
+  const port = Number(portText);
+  return port <= 65535 ? { host, port } : null;
+}
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
 /* -------------------------------------------------------------------------- */
 /* Classification                                                               */
@@ -357,27 +384,9 @@ function describeDecision(decision: ProxyDecision): string {
   }
 }
 
-/** `maruhi proxy run`: broker the environment's values to one command. Returns the child's exit code. */
-export function proxyRunOp(
-  input: ProxyRunInput,
-): Effect.Effect<number, CliError, CliIo | ProcessRunner | Stdio.Stdio> {
+/** Says on stderr what the child will get, before anything starts (ruling P5: the config decides where values go). */
+function announcePlan(plan: Plan, input: ProxyRunInput): Effect.Effect<void, never, CliIo> {
   return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const runner = yield* ProcessRunner;
-    const seams = yield* ProxySeams;
-    const connectorDeps: ConnectorDeps = {
-      fetch: globalThis.fetch,
-      now: Date.now,
-      ...seams?.connector,
-    };
-    const plan = yield* planFor({
-      config: input.config,
-      variables: input.variables,
-      connectorDeps,
-    });
-
-    // What the child will get — said before anything starts (ruling P5: the
-    // config decides where values go, so the human sees the rules in effect)
     const brokeredRules = [...input.config.variables].filter(
       ([name, rule]) =>
         (rule.mode === "broker" || rule.mode === "connector") && plan.placeholders.has(name),
@@ -414,22 +423,94 @@ export function proxyRunOp(
         ? "proxy run: hosts no rule names are blocked"
         : "proxy run: hosts no rule names are tunnelled untouched (not inspected)",
     );
+  });
+}
 
-    // The child's variables: placeholders ride the same checks as values
-    // (name shape, execution-control names, case collisions)
-    const placeholderVariables: DecryptedVariable[] = [...plan.placeholders].map(
-      ([name, placeholder]) => ({
-        variableId: `placeholder:${name}`,
-        name,
-        version: 0,
-        epoch: 0,
-        varType: "",
-        required: false,
-        value: Redacted.make(encoder.encode(placeholder), { label: "placeholder" }),
-      }),
-    );
-    const injected = yield* buildInjectionEnv([...plan.passthrough, ...placeholderVariables]);
+/** The child's variables: placeholders ride the same checks as values (name shape, execution-control names, case collisions). */
+function injectionEnvFor(plan: Plan): Effect.Effect<Readonly<Record<string, string>>, CliError> {
+  const placeholderVariables: DecryptedVariable[] = [...plan.placeholders].map(
+    ([name, placeholder]) => ({
+      variableId: `placeholder:${name}`,
+      name,
+      version: 0,
+      epoch: 0,
+      varType: "",
+      required: false,
+      value: Redacted.make(encoder.encode(placeholder), { label: "placeholder" }),
+    }),
+  );
+  return buildInjectionEnv([...plan.passthrough, ...placeholderVariables]);
+}
 
+/** `--listen` / `--advertise` checked (usage errors) and the non-loopback warning. */
+function resolveListen(
+  input: ProxyRunInput,
+): Effect.Effect<{ readonly host: string; readonly port: number } | undefined, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const listen = input.listen === undefined ? undefined : parseListenAddress(input.listen);
+    if (listen === null) {
+      return yield* Effect.fail(
+        usageError(
+          "--listen must be host[:port] (an address of this machine; port 0 or omitted = any free port)",
+        ),
+      );
+    }
+    if (input.advertise !== undefined && parseListenAddress(input.advertise) === null) {
+      return yield* Effect.fail(usageError("--advertise must be host[:port]"));
+    }
+    if (listen !== undefined && !LOOPBACK_HOSTS.has(listen.host)) {
+      yield* logWarning(
+        `proxy run: the proxy listens on ${listen.host} and is reachable from that network; every request needs this run's proxy credential, which only the command's environment carries`,
+      );
+    }
+    return listen;
+  });
+}
+
+/** Teardown: revoke the credentials connectors minted (best effort, a Note on failure), then close the proxy. */
+function releaseAndClose(
+  credentials: readonly BrokeredCredential[],
+  proxy: ProxyHandle,
+): Effect.Effect<void, never, CliIo> {
+  return Effect.gen(function* () {
+    for (const credential of credentials) {
+      if (credential.release !== undefined) {
+        yield* Effect.tryPromise({
+          try: credential.release,
+          catch: (error) => (error instanceof Error ? error.message : "revocation failed"),
+        }).pipe(
+          Effect.catch((reason) =>
+            logNote(
+              `proxy run: could not revoke the credential minted for ${displayText(credential.name)} (${reason}); it expires on its own`,
+            ),
+          ),
+        );
+      }
+    }
+    yield* Effect.promise(() => proxy.close());
+  });
+}
+
+/** `maruhi proxy run`: broker the environment's values to one command. Returns the child's exit code. */
+export function proxyRunOp(
+  input: ProxyRunInput,
+): Effect.Effect<number, CliError, CliIo | ProcessRunner | Stdio.Stdio> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const runner = yield* ProcessRunner;
+    const seams = yield* ProxySeams;
+    const connectorDeps: ConnectorDeps = {
+      fetch: globalThis.fetch,
+      now: Date.now,
+      ...seams?.connector,
+    };
+    const plan = yield* planFor({
+      config: input.config,
+      variables: input.variables,
+      connectorDeps,
+    });
+    yield* announcePlan(plan, input);
+    const injected = yield* injectionEnvFor(plan);
     const ca = yield* Effect.tryPromise({
       try: () => makeEphemeralCa(),
       catch: () =>
@@ -452,6 +533,7 @@ export function proxyRunOp(
       removeFailure: (path) =>
         `proxy run: could not remove the proxy CA directory (${path}) — remove it by hand`,
     });
+    const listen = yield* resolveListen(input);
     const exitCode = yield* Effect.gen(function* () {
       const proxy = yield* Effect.tryPromise({
         try: () =>
@@ -462,28 +544,15 @@ export function proxyRunOp(
             // Every client must present this run's proxy credential (userinfo in
             // the proxy URL — honoured by curl, git, Python, Go, Node, Bun; §19 D-14b)
             credential: { user: "maruhi", password: randomAlphanumeric(22) },
+            ...(listen === undefined ? {} : { listen }),
+            ...(input.advertise === undefined ? {} : { advertise: input.advertise }),
             ...(seams?.upstream === undefined ? {} : { upstream: seams.upstream }),
             onDecision,
           }),
-        catch: () => cliError("Cannot start the local proxy (no loopback port could be opened)"),
-      });
-      // Teardown: revoke minted credentials (connectors), close the proxy
-      const closeProxy = Effect.gen(function* () {
-        for (const credential of plan.credentials) {
-          if (credential.release !== undefined) {
-            yield* Effect.tryPromise({
-              try: credential.release,
-              catch: (error) => (error instanceof Error ? error.message : "revocation failed"),
-            }).pipe(
-              Effect.catch((reason) =>
-                logNote(
-                  `proxy run: could not revoke the credential minted for ${displayText(credential.name)} (${reason}); it expires on its own`,
-                ),
-              ),
-            );
-          }
-        }
-        yield* Effect.promise(() => proxy.close());
+        catch: () =>
+          cliError(
+            `Cannot start the local proxy (${input.listen === undefined ? "no loopback port could be opened" : `cannot listen on ${input.listen}`})`,
+          ),
       });
       return yield* Effect.gen(function* () {
         // The CA certificate is public; the bundle is the roots plus the CA.
@@ -501,7 +570,11 @@ export function proxyRunOp(
         // Control variables are written last: a variable named HTTPS_PROXY
         // (a co-member can choose names) must not redirect the child's traffic
         const extraEnv = { ...injected, ...control };
-        yield* logNote(`proxy run: proxy listening on ${proxy.address}; starting the command`);
+        yield* logNote(
+          proxy.advertised === proxy.address
+            ? `proxy run: proxy listening on ${proxy.address}; starting the command`
+            : `proxy run: proxy listening on ${proxy.address}, told to the command as ${proxy.advertised}; starting the command`,
+        );
         // The redaction covers pass-through values and the brokered values
         // known at start (defence in depth: the child should never print a
         // brokered value, so there is no false positive to fear)
@@ -512,7 +585,7 @@ export function proxyRunOp(
           holdSignals: true,
           redact: yield* redactionFragments(plan.passthrough, brokeredAtStart),
         });
-      }).pipe(Effect.ensuring(closeProxy));
+      }).pipe(Effect.ensuring(releaseAndClose(plan.credentials, proxy)));
     }).pipe(Effect.ensuring(removeDir));
     yield* logNote(
       `proxy run: ${tally.brokered} requests brokered, ${tally.relayed} plain requests relayed, ${tally.tunnelled} connections tunnelled, ${tally.blocked} blocked, ${tally.errors} failed`,

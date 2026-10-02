@@ -77,6 +77,7 @@ import {
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
+import { ensurePlainRunAllowed } from "./agent-gate.ts";
 import { AGENT_COMMAND_REQUIRED, agentOp, agentStatusOp, parseKeyTtl } from "./agent.ts";
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "./anchor.ts";
 import { approveProposalOp, type Fulfilment } from "./approval-approve.ts";
@@ -137,7 +138,7 @@ import {
   type IdentityBacking,
   identityBackingOf,
 } from "./config.ts";
-import type { CliServices, CommonFlags, ProjectContext } from "./context.ts";
+import type { CliServices, CommonFlags, EnvironmentContext, ProjectContext } from "./context.ts";
 import {
   checkInviteAnchor,
   commitVerifiedHead,
@@ -223,6 +224,8 @@ import {
   checkProxyConfigProject,
   DEFAULT_PROXY_CONFIG_PATH,
   loadProxyConfig,
+  loadProxyConfigIfPresent,
+  type ProxyConfig,
 } from "./proxy-config.ts";
 import { proxyRunOp } from "./proxy-run.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
@@ -422,6 +425,10 @@ const runCommandArgument = () =>
 
 const runConfig = {
   ...commonFlags(),
+  plain: singleFlag(
+    "plain",
+    `Inject the real values even when ${DEFAULT_PROXY_CONFIG_PATH} is present (allowed only to a person at an interactive terminal; without the config, run always injects the real values)`,
+  ),
   command: runCommandArgument(),
 };
 
@@ -1127,6 +1134,14 @@ const proxyRunConfig = {
   verbose: singleFlag(
     "verbose",
     "Print one line per request the proxy handles (method, host, path, and the variables substituted — never a value)",
+  ),
+  listen: singleValued(
+    "listen",
+    "Bind the proxy to host[:port] instead of the loopback, so a sandbox or container can reach it (every request still needs the run's proxy credential)",
+  ),
+  advertise: singleValued(
+    "advertise",
+    "The host[:port] the command is told to use for the proxy when it differs from the bound address (for example host.docker.internal from a container)",
   ),
   command: runCommandArgument(),
 };
@@ -3485,6 +3500,66 @@ function openSyncTarget(values: {
   });
 }
 
+/**
+ * The verified pull every run shape shares: decrypt the environment, show
+ * the pull's warnings, the presence fail-fast (design doc §1-4 — rulings CT /
+ * CU: a required = true declared in the verified set fails with a typed
+ * error before any child starts), the advisory type check (§14.3-7 — a
+ * mismatch warns only).
+ */
+function pullForRun(
+  context: EnvironmentContext,
+): Effect.Effect<PulledVariables, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const pulled = yield* pullVariables({
+      client: context.client,
+      verified: context.verified,
+      environmentId: context.environmentId,
+      recipient: context.recipient,
+      resync: context.resync,
+      floor: context.floorHandle,
+    });
+    yield* logWarnings(pulled.warnings);
+    yield* enforceDeclaredPresence(pulled.declared);
+    yield* logWarnings(typeAdvisoryWarnings(pulled.variables));
+    return pulled;
+  });
+}
+
+/**
+ * The brokered run shared by `maruhi proxy run` and by `maruhi run` when
+ * the repository has a proxy config: project check → environment →
+ * verified pull → presence fail-fast → type advisory → proxy-run.ts.
+ */
+function brokeredRun(input: {
+  readonly command: readonly string[];
+  readonly flags: CommonFlags;
+  readonly config: ProxyConfig;
+  readonly configPath: string;
+  readonly verbose: boolean;
+  readonly listen?: string | undefined;
+  readonly advertise?: string | undefined;
+}): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    yield* checkProxyConfigProject(input.config, input.flags.project);
+    const context = yield* openEnvironment({
+      ...input.flags,
+      project: input.flags.project ?? input.config.projectId,
+    });
+    const pulled = yield* pullForRun(context);
+    return yield* proxyRunOp({
+      command: input.command,
+      config: input.config,
+      configPath: input.configPath,
+      environmentId: context.environmentId,
+      variables: pulled.variables,
+      verbose: input.verbose,
+      listen: input.listen,
+      advertise: input.advertise,
+    });
+  });
+}
+
 function makeRootCommand(onExitCode: (code: number) => void) {
   const pull = Command.make("pull", pullConfig, (values) =>
     Effect.gen(function* () {
@@ -3542,25 +3617,38 @@ function makeRootCommand(onExitCode: (code: number) => void) {
 
   const run = Command.make("run", runConfig, (values) =>
     Effect.gen(function* () {
-      const { command: parsed, ...flags } = values;
+      const { command: parsed, plain, ...flags } = values;
       // Drops before communication / decryption (at the command body's head)
       const command = yield* commandAfterTerminator(parsed);
+      // The repository's proxy config, when present, decides what the child
+      // receives (ADR-0016 decision 7 revision 2 — pf4-design.md §20): the
+      // same brokering as `proxy run`. `--plain` keeps the real-value shape,
+      // only for a person at a terminal. Read before any network
+      const proxyConfig = yield* loadProxyConfigIfPresent(DEFAULT_PROXY_CONFIG_PATH);
+      if (proxyConfig !== null && !plain) {
+        onExitCode(
+          yield* brokeredRun({
+            command,
+            flags,
+            config: proxyConfig,
+            configPath: DEFAULT_PROXY_CONFIG_PATH,
+            verbose: false,
+          }),
+        );
+        return;
+      }
+      if (proxyConfig !== null) {
+        yield* ensurePlainRunAllowed;
+        yield* logNote(
+          `--plain: injecting the real values; ${DEFAULT_PROXY_CONFIG_PATH} is not applied to this run`,
+        );
+      } else if (plain) {
+        yield* logNote(
+          `--plain has no effect: no ${DEFAULT_PROXY_CONFIG_PATH} in the working directory`,
+        );
+      }
       const context = yield* openEnvironment(flags);
-      const pulled = yield* pullVariables({
-        client: context.client,
-        verified: context.verified,
-        environmentId: context.environmentId,
-        recipient: context.recipient,
-        resync: context.resync,
-        floor: context.floorHandle,
-      });
-      yield* logWarnings(pulled.warnings);
-      // The presence fail-fast (design doc §1-4 — rulings CT / CU): when a
-      // required = true declared is in the verified set, fail with a typed
-      // error without spawning the child process
-      yield* enforceDeclaredPresence(pulled.declared);
-      // type is advisory (§14.3-7) — a mismatch warns only and the run continues
-      yield* logWarnings(typeAdvisoryWarnings(pulled.variables));
+      const pulled = yield* pullForRun(context);
       // Environment-variable names go through verified statements (§4.2 /
       // §12-7). The execution-control variable-name denylist (run.ts) is a
       // defense layer applied to the verified name
@@ -3568,7 +3656,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     }),
   ).pipe(
     Command.withDescription(
-      "Decrypt the environment and run a command with the values injected as environment variables (memory only). Write the command after `--`",
+      `Decrypt the environment and run a command with the values injected as environment variables (memory only). When ${DEFAULT_PROXY_CONFIG_PATH} is present its brokering rules apply (as \`maruhi proxy run\`); --plain injects the real values instead, for a person at a terminal. Write the command after \`--\``,
     ),
   );
 
@@ -5068,36 +5156,21 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   // advisory); what differs is what the child receives (proxy-run.ts)
   const proxyRun = Command.make("run", proxyRunConfig, (values) =>
     Effect.gen(function* () {
-      const { command: parsed, config: configFlag, verbose, ...flags } = values;
+      const { command: parsed, config: configFlag, verbose, listen, advertise, ...flags } = values;
       // Drops before communication / decryption (at the command body's head)
       const command = yield* commandAfterTerminator(parsed);
       // The config is read before any network (a broken file is reported first)
       const configPath = configFlag ?? DEFAULT_PROXY_CONFIG_PATH;
       const proxyConfig = yield* loadProxyConfig(configPath);
-      yield* checkProxyConfigProject(proxyConfig, flags.project);
-      const context = yield* openEnvironment({
-        ...flags,
-        project: flags.project ?? proxyConfig.projectId,
-      });
-      const pulled = yield* pullVariables({
-        client: context.client,
-        verified: context.verified,
-        environmentId: context.environmentId,
-        recipient: context.recipient,
-        resync: context.resync,
-        floor: context.floorHandle,
-      });
-      yield* logWarnings(pulled.warnings);
-      yield* enforceDeclaredPresence(pulled.declared);
-      yield* logWarnings(typeAdvisoryWarnings(pulled.variables));
       onExitCode(
-        yield* proxyRunOp({
+        yield* brokeredRun({
           command,
+          flags,
           config: proxyConfig,
           configPath,
-          environmentId: context.environmentId,
-          variables: pulled.variables,
           verbose,
+          listen,
+          advertise,
         }),
       );
     }),

@@ -114,6 +114,19 @@ export interface ProxyOptions {
    * other local processes off this run's proxy (§19 D-14b). Absent = open.
    */
   readonly credential?: { readonly user: string; readonly password: string } | undefined;
+  /**
+   * Where the proxy listens (default `127.0.0.1:0` — the loopback, an
+   * ephemeral port). A sandbox on another network namespace reaches the
+   * proxy through a reachable address (a Docker bridge, `0.0.0.0`); every
+   * request still needs the run's credential.
+   */
+  readonly listen?: { readonly host: string; readonly port: number } | undefined;
+  /**
+   * The `host[:port]` the child is told to use in the proxy URL when it
+   * differs from the bound address (`host.docker.internal` from a
+   * container). Without a port the bound port is used.
+   */
+  readonly advertise?: string | undefined;
   readonly onDecision?: (decision: ProxyDecision) => void;
   /**
    * Test seams. `connect` redirects where an upstream connection goes (the
@@ -128,10 +141,12 @@ export interface ProxyOptions {
 }
 
 export interface ProxyHandle {
-  /** `http://[user:password@]127.0.0.1:<port>` — the value of HTTP_PROXY / HTTPS_PROXY for the child (carries the credential). */
+  /** `http://[user:password@]<advertised host>:<port>` — the value of HTTP_PROXY / HTTPS_PROXY for the child (carries the credential). */
   readonly url: string;
-  /** `127.0.0.1:<port>` — for messages (never the credential). */
+  /** The bound `host:port` — for messages (never the credential). */
   readonly address: string;
+  /** The `host:port` the child is told (differs from `address` under `advertise`). */
+  readonly advertised: string;
   readonly port: number;
   readonly close: () => Promise<void>;
 }
@@ -618,15 +633,17 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
   const upstreamCa = options.upstream?.ca;
   const servers: net.Server[] = [];
 
-  const listen = (server: net.Server): Promise<number> =>
+  const listenOn = (server: net.Server, host: string, port: number): Promise<number> =>
     new Promise((resolve, reject) => {
       server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => {
+      server.listen(port, host, () => {
         server.off("error", reject);
         servers.push(server);
         resolve((server.address() as net.AddressInfo).port);
       });
     });
+  // The loopback hop servers always stay on the loopback (they speak plaintext)
+  const listen = (server: net.Server): Promise<number> => listenOn(server, "127.0.0.1", 0);
 
   /**
    * Patterns scrubbing every brokered value out of a response (real →
@@ -1062,16 +1079,24 @@ export async function startProxy(options: ProxyOptions): Promise<ProxyHandle> {
   };
 
   const proxy = net.createServer(onConnection);
-  const port = await listen(proxy);
+  const bind = options.listen ?? { host: "127.0.0.1", port: 0 };
+  const port = await listenOn(proxy, bind.host, bind.port);
 
-  const address = `127.0.0.1:${port}`;
+  const address = `${bind.host}:${port}`;
+  const advertised =
+    options.advertise === undefined
+      ? address
+      : options.advertise.includes(":")
+        ? options.advertise
+        : `${options.advertise}:${port}`;
   const userinfo =
     options.credential === undefined
       ? ""
       : `${encodeURIComponent(options.credential.user)}:${encodeURIComponent(options.credential.password)}@`;
   return {
-    url: `http://${userinfo}${address}`,
+    url: `http://${userinfo}${advertised}`,
     address,
+    advertised,
     port,
     close: async () => {
       // Open tunnels and MITM connections would hold the listeners open

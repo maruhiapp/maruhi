@@ -21,7 +21,7 @@
 // keys refused, and validation wording that names the key and the rule
 // but never echoes the value typed.
 
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 
 import { Effect } from "effect";
 
@@ -463,6 +463,35 @@ export function loadProxyConfig(path: string): Effect.Effect<ProxyConfig, CliErr
       return yield* Effect.fail(cliError(`The proxy config ${path} is invalid: ${parsed}`));
     }
     return parsed;
+  });
+}
+
+/**
+ * The default config when it exists in the working directory (`maruhi run`
+ * applies it without being told — ADR-0016 decision 7 revision 2): null
+ * when the file is absent, and the same errors as {@link loadProxyConfig}
+ * when it exists but cannot be read or is invalid — a broken config is
+ * reported, never skipped (skipping would silently inject real values).
+ */
+export function loadProxyConfigIfPresent(
+  path: string,
+): Effect.Effect<ProxyConfig | null, CliError> {
+  return Effect.gen(function* () {
+    const exists = yield* Effect.tryPromise({
+      try: () => stat(path).then(() => true),
+      catch: (error: unknown) => error,
+    }).pipe(
+      Effect.catch((error: unknown) =>
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+          ? Effect.succeed(false)
+          : Effect.fail(
+              cliError(
+                `Cannot read the proxy config ${path} (it exists but is not readable). Fix it, or run with --plain from a terminal to inject the values directly`,
+              ),
+            ),
+      ),
+    );
+    return exists ? yield* loadProxyConfig(path) : null;
   });
 }
 

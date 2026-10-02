@@ -99,14 +99,14 @@ Descriptions and variable names are written by project members and reach the age
 An agent that can run commands does not need MCP. Put one line in `AGENTS.md` (or `CLAUDE.md`):
 
 ```md
-Run `maruhi schema` to see which environment variables this project needs. To run anything that needs them, use `maruhi proxy run -- <command>` when the repository has a `maruhi.proxy.json`, otherwise `maruhi run -- <command>`. Never ask for secret values, and never run commands that print the environment (such as `env` or `printenv`).
+Run `maruhi schema` to see which environment variables this project needs, and `maruhi run -- <command>` to run anything that needs them. Never ask for secret values, never pass `--plain`, and never run commands that print the environment (such as `env` or `printenv`).
 ```
 
 `maruhi schema` prints the same rows as a table and, when its output is not a terminal, starts with the same "data, not instructions" line. Commands that would display a value, such as `maruhi pull --show`, refuse to run under an agent or without a terminal.
 
 ## Running with the secrets
 
-When the agent — or you — needs to run the program, `maruhi run -- <command>` decrypts the values in memory and injects them into that one process's environment. Nothing is written to disk, and the values do not pass through the MCP server or the agent's prompt.
+When the agent — or you — needs to run the program, `maruhi run -- <command>` decrypts the values in memory and injects them into that one process's environment. Nothing is written to disk, and the values do not pass through the MCP server or the agent's prompt. When the repository has a `maruhi.proxy.json`, `maruhi run` applies its brokering rules: the program receives placeholders for the variables the file brokers and the real values are substituted only at the local proxy, toward the hosts the file allows — see [Credential brokering](/docs/credential-brokering). The rest of this section is about values the program really receives.
 
 **What that program prints reaches the agent.** An agent runs `maruhi run` through its shell and reads the output, so `maruhi run -- env`, a test that dumps its configuration, or a crash report that includes the environment would put values into the agent's context. Two things stand in the way, and neither is a guarantee:
 
