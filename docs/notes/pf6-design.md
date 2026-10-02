@@ -319,7 +319,13 @@ declares no interval.
 - **No connection probe for AWS / Cloudflare**: IAM keys propagate in
   seconds and a probe would race them; a Cloudflare token's `/verify` is
   used only to learn ids
-- **The two-variable AWS push is not atomic** (one round trip of mismatch)
+- **The two-variable AWS push is not atomic** (one round trip of mismatch).
+  A push that fails after the issuer accepted the change leaves the new
+  credential held only by the exiting process: the failure names the
+  connector's recovery step and the rollback of a companion already stored
+  (review round 1). Narrowing the window by pre-flighting the push's
+  preconditions (scope, floor, CAS head) before the issuer call is the
+  follow-up; pushing the primary first would not shrink it for a pair
 - **Driver limits**: PostgreSQL / MySQL through Bun's client — SCRAM, TLS
   and `sslmode` are the driver's; no live database runs in CI (the runner
   is recorded in tests; the live path is a Bun probe left for a
