@@ -371,6 +371,8 @@ function renderMirrorSyncRejected(error: MirrorSyncRejectedError): string {
   switch (error.reason) {
     case "chain-not-extension":
       return "The mirror refused the replica: its chain does not extend the chain the mirror holds (chain-not-extension). The mirror holds a newer or a different project — check `maruhi mirror status`; a stale former primary is never replicated over a promoted mirror";
+    case "chain-invalid":
+      return "The mirror refused the replica: its chain does not verify (chain-invalid). The export is not the server's own content — do not use that file, and run `maruhi project verify` against the server";
     case "audit-regression":
       return "The mirror refused the replica: its audit log is behind the one the mirror last replicated (audit-regression). The export came from an older state than the last sync — re-run against the current server";
     case "sequence-mismatch":

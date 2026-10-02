@@ -17,6 +17,9 @@ import { Schema } from "effect";
  * - `row-count-mismatch` — a staged table's rows differ from the trailer
  * - `chain-not-extension` — the replica's chain does not extend the chain
  *   the mirror holds (a different project, a fork, or an older source)
+ * - `chain-invalid` — the replica's chain does not verify (an entry that
+ *   does not decode, a hash or a canonical size that does not match its
+ *   entry, a signature or a rule the chain verifier refuses)
  * - `audit-regression` — the replica's audit log is behind the one the
  *   mirror last replicated
  * - `page-too-large` — more rows or bytes than one page may carry
@@ -28,6 +31,7 @@ export const MirrorSyncRejectReasonSchema = Schema.Literals([
   "unknown-table",
   "row-count-mismatch",
   "chain-not-extension",
+  "chain-invalid",
   "audit-regression",
   "page-too-large",
 ]);

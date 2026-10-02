@@ -19,6 +19,15 @@
 // and bindings, attestation windows — the mirror's own rate-limit and
 // first-come state survives a replication).
 //
+// The commit is two steps under one permit: the page carrying the trailer
+// stages its rows and runs the synchronous checks (counts, the hash
+// extension, the audit position) and parks the trailer; the program then
+// parses and verifies the staged chain in full (programs-mirror.ts — the
+// signatures need the async WebCrypto, so this step sits between two
+// transactions, the DO's permit still held) and the swap runs as its own
+// transaction. A page retried after the trailer page was staged is out of
+// sequence (the client restarts at 0).
+//
 // The mirror's own audit rows — the reads and leases it served since the
 // last replication, `seq` past the last replicated position — are kept:
 // they are re-appended after the replica's rows (their `seq` moves; the
@@ -64,6 +73,8 @@ const MIRROR_KEPT_TABLES: readonly string[] = [
 const AUDIT_TABLE = "audit_events";
 /** Where the mirror's own audit rows wait during the swap (dropped afterwards; never exported — not in `tables`). */
 const LOCAL_AUDIT_TABLE = "audit_events_mirror_local";
+/** Where the staged replica's trailer waits between the trailer page and the commit. */
+const TRAILER_TABLE = "trailer_mirror";
 
 const stagingOf = (table: string): string => `${table}_mirror`;
 
@@ -126,6 +137,20 @@ function dropStaging(sql: SqlStorage, tables: readonly string[]): void {
     sql.exec(`DROP TABLE IF EXISTS ${stagingOf(table)}`);
   }
   sql.exec(`DROP TABLE IF EXISTS ${LOCAL_AUDIT_TABLE}`);
+  sql.exec(`DROP TABLE IF EXISTS ${TRAILER_TABLE}`);
+}
+
+/** Drops the staging in progress and resets the position (every refusal but the sequence one). */
+export function discardMirrorStaging(
+  storage: DurableObjectStorage,
+  tables: readonly string[],
+): void {
+  storage.transactionSync(() => {
+    dropStaging(storage.sql, tables);
+    storage.sql.exec(
+      "UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL WHERE id = 1",
+    );
+  });
 }
 
 /** The promotion: the mark and any staging go; the project accepts writes again. */
@@ -270,7 +295,7 @@ class PageStager {
   }
 }
 
-export interface MirrorPageInput {
+interface MirrorPageInput {
   readonly storage: DurableObjectStorage;
   readonly tables: readonly string[];
   readonly schemaVersion: number;
@@ -291,9 +316,10 @@ export interface MirrorCommit {
   readonly auditMaxSeq: number;
 }
 
-export type MirrorPageResult =
+/** A page was staged, or the trailer page was staged and the synchronous checks passed (the chain verification and the commit follow). */
+export type MirrorStageResult =
   | { readonly kind: "staged"; readonly nextSequence: number }
-  | { readonly kind: "committed"; readonly commit: MirrorCommit };
+  | { readonly kind: "trailer" };
 
 function stagedCount(sql: SqlStorage, table: string): number {
   return hasTable(sql, stagingOf(table))
@@ -301,10 +327,18 @@ function stagedCount(sql: SqlStorage, table: string): number {
     : 0;
 }
 
+/** The staged table's highest `seq` (a non-integer value — a replica that is not what the server writes — is malformed). */
 function stagedMaxSeq(sql: SqlStorage, table: string): number {
-  return hasTable(sql, stagingOf(table))
-    ? Number(sql.exec(`SELECT COALESCE(MAX(seq), 0) AS m FROM ${stagingOf(table)}`).one()["m"])
-    : 0;
+  if (!hasTable(sql, stagingOf(table))) {
+    return 0;
+  }
+  const max = Number(
+    sql.exec(`SELECT COALESCE(MAX(seq), 0) AS m FROM ${stagingOf(table)}`).one()["m"],
+  );
+  if (!Number.isInteger(max) || max < 0) {
+    throw malformed();
+  }
+  return max;
 }
 
 /** The trailer's counts against the staged tables (and no count for a table this server has not). */
@@ -366,52 +400,128 @@ function swapTables(sql: SqlStorage, tables: readonly string[]): void {
 }
 
 /**
- * The commit (inside the page's transaction): the checks, the swap, the
- * mirror's own audit rows re-appended after the replica's, the position.
+ * The trailer page's synchronous checks (inside the page's transaction):
+ * the counts, the hash extension, the audit position; then the trailer is
+ * parked and the position advanced, so a retry of this page is out of
+ * sequence rather than staged twice.
  */
-function commitReplica(
+function acceptTrailer(
   sql: SqlStorage,
   input: MirrorPageInput,
   trailer: SnapshotTrailer,
-): MirrorCommit {
+  nextSequence: number,
+): void {
   verifyCounts(sql, input.tables, trailer);
   verifyChainExtension(sql);
-  const replicaAuditSeq = stagedMaxSeq(sql, AUDIT_TABLE);
-  if (replicaAuditSeq < input.state.lastAuditSeq) {
+  if (stagedMaxSeq(sql, AUDIT_TABLE) < input.state.lastAuditSeq) {
     throw new MirrorPageRefusedError("audit-regression");
   }
-  // The mirror's own rows (past the last replicated position) wait aside
-  const auditColumns = sql.exec(`SELECT * FROM ${AUDIT_TABLE} LIMIT 0`).columnNames;
-  sql.exec(`DROP TABLE IF EXISTS ${LOCAL_AUDIT_TABLE}`);
+  sql.exec(`DROP TABLE IF EXISTS ${TRAILER_TABLE}`);
+  sql.exec(`CREATE TABLE ${TRAILER_TABLE} (trailer_json TEXT NOT NULL)`);
+  sql.exec(`INSERT INTO ${TRAILER_TABLE} (trailer_json) VALUES (?)`, JSON.stringify(trailer));
   sql.exec(
-    `CREATE TABLE ${LOCAL_AUDIT_TABLE} AS SELECT * FROM ${AUDIT_TABLE} WHERE seq > ?`,
-    input.state.lastAuditSeq,
+    "UPDATE mirror_state SET expected_sequence = ?, staging_table = NULL WHERE id = 1",
+    nextSequence,
   );
-  swapTables(sql, input.tables);
-  // … and follow the replica's rows (contiguous past the last position, so
-  // a shift keeps their order)
-  const shifted = auditColumns.map((column) => (column === "seq" ? "seq - ? + ?" : column));
-  sql.exec(
-    `INSERT INTO ${AUDIT_TABLE} (${auditColumns.join(", ")}) SELECT ${shifted.join(", ")} FROM ${LOCAL_AUDIT_TABLE} ORDER BY seq`,
-    input.state.lastAuditSeq,
-    replicaAuditSeq,
-  );
-  sql.exec(`DROP TABLE ${LOCAL_AUDIT_TABLE}`);
-  const marks = readWatermarks(sql);
-  const commit: MirrorCommit = {
-    atMs: input.nowMs,
-    chainHeadSeq: marks.chainHeadSeq,
-    chainHeadHashHex: marks.chainHeadHashHex ?? "",
-    auditMaxSeq: replicaAuditSeq,
-  };
-  sql.exec(
-    `UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL, last_synced_at = ?, last_head_seq = ?, last_head_hash_hex = ?, last_audit_seq = ? WHERE id = 1`,
-    commit.atMs,
-    commit.chainHeadSeq,
-    commit.chainHeadHashHex,
-    commit.auditMaxSeq,
-  );
-  return commit;
+}
+
+/** One staged chain row as the content verification reads it (programs-mirror.ts). */
+export interface StagedChainRow {
+  readonly seq: number;
+  readonly entryJson: string;
+  readonly entryHashHex: string;
+  readonly canonicalBytes: number;
+}
+
+/** The staged chain in seq order (contiguous from 1, every column of the shape the server writes — else malformed). */
+export function stagedChainRows(sql: SqlStorage): readonly StagedChainRow[] {
+  const staging = stagingOf(CHAIN_TABLE);
+  if (!hasTable(sql, staging)) {
+    throw new MirrorPageRefusedError("chain-not-extension");
+  }
+  const rows = sql
+    .exec(`SELECT seq, entry_json, entry_hash_hex, canonical_bytes FROM ${staging} ORDER BY seq`)
+    .toArray();
+  return rows.map((row, index) => {
+    const seq = row["seq"];
+    const entryJson = row["entry_json"];
+    const entryHashHex = row["entry_hash_hex"];
+    const canonicalBytes = row["canonical_bytes"];
+    if (
+      seq !== index + 1 ||
+      typeof entryJson !== "string" ||
+      typeof entryHashHex !== "string" ||
+      typeof canonicalBytes !== "number" ||
+      !Number.isInteger(canonicalBytes)
+    ) {
+      throw malformed();
+    }
+    return { seq, entryJson, entryHashHex, canonicalBytes };
+  });
+}
+
+export interface MirrorCommitInput {
+  readonly storage: DurableObjectStorage;
+  readonly tables: readonly string[];
+  readonly state: MirrorState;
+  readonly nowMs: number;
+}
+
+/**
+ * The commit (its own transaction, after the chain verification): the
+ * swap, the mirror's own audit rows re-appended after the replica's, the
+ * position. A constraint the live schema refuses (a duplicate key, a NULL
+ * where none is allowed) rolls the transaction back and is `malformed`.
+ */
+export function commitMirrorReplica(input: MirrorCommitInput): MirrorCommit {
+  const { storage, state } = input;
+  const sql = storage.sql;
+  try {
+    return storage.transactionSync(() => {
+      if (!hasTable(sql, TRAILER_TABLE)) {
+        throw malformed();
+      }
+      const replicaAuditSeq = stagedMaxSeq(sql, AUDIT_TABLE);
+      // The mirror's own rows (past the last replicated position) wait aside
+      const auditColumns = sql.exec(`SELECT * FROM ${AUDIT_TABLE} LIMIT 0`).columnNames;
+      sql.exec(`DROP TABLE IF EXISTS ${LOCAL_AUDIT_TABLE}`);
+      sql.exec(
+        `CREATE TABLE ${LOCAL_AUDIT_TABLE} AS SELECT * FROM ${AUDIT_TABLE} WHERE seq > ?`,
+        state.lastAuditSeq,
+      );
+      swapTables(sql, input.tables);
+      // … and follow the replica's rows (contiguous past the last position,
+      // so a shift keeps their order)
+      const shifted = auditColumns.map((column) => (column === "seq" ? "seq - ? + ?" : column));
+      sql.exec(
+        `INSERT INTO ${AUDIT_TABLE} (${auditColumns.join(", ")}) SELECT ${shifted.join(", ")} FROM ${LOCAL_AUDIT_TABLE} ORDER BY seq`,
+        state.lastAuditSeq,
+        replicaAuditSeq,
+      );
+      sql.exec(`DROP TABLE ${LOCAL_AUDIT_TABLE}`);
+      sql.exec(`DROP TABLE ${TRAILER_TABLE}`);
+      const marks = readWatermarks(sql);
+      const commit: MirrorCommit = {
+        atMs: input.nowMs,
+        chainHeadSeq: marks.chainHeadSeq,
+        chainHeadHashHex: marks.chainHeadHashHex ?? "",
+        auditMaxSeq: replicaAuditSeq,
+      };
+      sql.exec(
+        `UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL, last_synced_at = ?, last_head_seq = ?, last_head_hash_hex = ?, last_audit_seq = ? WHERE id = 1`,
+        commit.atMs,
+        commit.chainHeadSeq,
+        commit.chainHeadHashHex,
+        commit.auditMaxSeq,
+      );
+      return commit;
+    });
+  } catch (error) {
+    discardMirrorStaging(storage, input.tables);
+    // A refusal of the checks above, or SQLite refusing the replica's rows
+    // against the live schema (its message names a constraint, never a value)
+    throw error instanceof MirrorPageRefusedError ? error : malformed();
+  }
 }
 
 function toRefusal(error: unknown): MirrorPageRefusedError | null {
@@ -444,7 +554,7 @@ function ensurePageBounds(input: MirrorPageInput): void {
  * the storage guard). Throws {@link MirrorPageRefusedError}; any other
  * throw is a defect (the transaction rolled back either way).
  */
-export function applyMirrorPage(input: MirrorPageInput): MirrorPageResult {
+export function stageMirrorPage(input: MirrorPageInput): MirrorStageResult {
   const { storage, state } = input;
   const sql = storage.sql;
   if (input.sequence !== 0 && input.sequence !== state.expectedSequence) {
@@ -471,8 +581,8 @@ export function applyMirrorPage(input: MirrorPageInput): MirrorPageResult {
         }
       }
       stager.flush();
+      const nextSequence = input.sequence + 1;
       if (stager.trailer === null) {
-        const nextSequence = input.sequence + 1;
         sql.exec(
           "UPDATE mirror_state SET expected_sequence = ?, staging_table = ? WHERE id = 1",
           nextSequence,
@@ -480,15 +590,13 @@ export function applyMirrorPage(input: MirrorPageInput): MirrorPageResult {
         );
         return { kind: "staged", nextSequence };
       }
-      return { kind: "committed", commit: commitReplica(sql, input, stager.trailer) };
+      acceptTrailer(sql, input, stager.trailer, nextSequence);
+      return { kind: "trailer" };
     });
   } catch (error) {
     // The page's transaction rolled back; the staging in progress is
     // discarded on every refusal (the sequence refusal above keeps it)
-    storage.transactionSync(() => {
-      dropStaging(sql, input.tables);
-      sql.exec("UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL WHERE id = 1");
-    });
+    discardMirrorStaging(storage, input.tables);
     const refusal = toRefusal(error);
     if (refusal === null) {
       throw error;

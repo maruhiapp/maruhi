@@ -181,15 +181,19 @@ export function describeMirrorSync(
   ];
 }
 
-/** The two heads side by side (`maruhi mirror status`). */
+/** The two heads side by side (`maruhi mirror status`); without the server's view (it did not answer) the mirror's head stands alone. */
 export function describeMirrorStatus(
   status: MirrorStatus,
-  verified: VerifiedProject,
+  verified: VerifiedProject | null,
   mirrorOrigin: string,
 ): string[] {
+  const mirrorHead =
+    verified === null
+      ? `chain head seq=${status.head.chainHeadSeq} (head ${status.head.chainHeadHashHex}; the server did not answer, so it is not compared with a verified view)`
+      : `chain head seq=${status.head.chainHeadSeq} — ${headNote(status.head, verified)}`;
   if (!status.mirror) {
     return [
-      `${mirrorOrigin}: project ${verified.projectId} is not marked as a mirror there (its chain head seq=${status.head.chainHeadSeq} — ${headNote(status.head, verified)}). An owner marks it with \`maruhi mirror mark --server ${mirrorOrigin} --source <server url>\``,
+      `${mirrorOrigin}: the project is not marked as a mirror there (its ${mirrorHead}). An owner marks it with \`maruhi mirror mark --server ${mirrorOrigin} --source <server url>\``,
     ];
   }
   const inProgress =
@@ -198,8 +202,10 @@ export function describeMirrorStatus(
       : [`A replication is in progress (the next page is sequence ${status.nextSequence})`];
   return [
     `Mirror ${mirrorOrigin} of ${status.sourceOrigin ?? "an unknown source"} (marked ${status.markedAtMs === undefined ? "at an unknown time" : `${formatUtcMinutes(status.markedAtMs)} UTC`})`,
-    `Server: chain head seq=${verified.state.headSeq} (the verified view)`,
-    `Mirror: chain head seq=${status.head.chainHeadSeq} — ${headNote(status.head, verified)}; audit seq=${status.head.auditMaxSeq}`,
+    verified === null
+      ? "Server: unreachable (no verified view)"
+      : `Server: chain head seq=${verified.state.headSeq} (the verified view)`,
+    `Mirror: ${mirrorHead}; audit seq=${status.head.auditMaxSeq}`,
     describeLastSync(status),
     ...inProgress,
   ];

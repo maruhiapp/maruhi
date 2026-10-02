@@ -38,7 +38,7 @@ import { strictPayload } from "./strict.ts";
  * snapshot table and the header / trailer (the export emits at most
  * 2,000 rows a page — AUTH_SPEC §11-6; the server also bounds the bytes).
  */
-export const MAX_MIRROR_PAGE_LINES = 2_064;
+const MAX_MIRROR_PAGE_LINES = 2_064;
 
 /** The source deployment's origin (scheme + host [+ port]; no path, no trailing slash). */
 export const MirrorSourceOriginSchema = Schema.String.check(

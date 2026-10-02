@@ -2085,16 +2085,17 @@ function schemaSetReport(name: string, summary: SchemaSetSummary): string {
 /* Mirrors (PF2 — AUTH_SPEC §11-7; the operations live in mirror.ts)          */
 /* -------------------------------------------------------------------------- */
 
-/** The two sessions of `mirror sync` / `status`: the server's and the mirror's (the mirror's own credential). */
-function openMirrorPair(flags: {
+/** The mirror's session and the project of `mirror sync` / `status` (the server session is opened separately). */
+function openMirrorTarget(flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly mirror?: string | undefined;
 }) {
   return Effect.gen(function* () {
-    const source = yield* openSession(flags.server);
-    const projectId = yield* resolveProjectId(flags.project, source.config);
-    const mirrorOrigin = yield* resolveMirrorOrigin(flags.mirror, source.config);
+    const config = yield* (yield* ConfigStore).load;
+    const projectId = yield* resolveProjectId(flags.project, config);
+    const serverOrigin = yield* resolveServerOrigin(flags.server, config);
+    const mirrorOrigin = yield* resolveMirrorOrigin(flags.mirror, config);
     if (mirrorOrigin === null) {
       return yield* Effect.fail(
         cliError(
@@ -2102,20 +2103,40 @@ function openMirrorPair(flags: {
         ),
       );
     }
-    if (mirrorOrigin === source.origin) {
+    if (mirrorOrigin === serverOrigin) {
       return yield* Effect.fail(
         usageError("The mirror URL is the server URL itself (pass the mirror deployment's URL)"),
       );
     }
     const mirror = yield* openSession(mirrorOrigin, "mirror");
-    // The verified view of the server (the same keyless prologue as `project export`)
+    return { mirror, mirrorOrigin, projectId };
+  });
+}
+
+/** The server's verified view (the same keyless prologue as `project export`). */
+function verifiedServerView(serverFlag: string | undefined, projectId: string) {
+  return Effect.gen(function* () {
+    const source = yield* openSession(serverFlag);
     const synced = yield* syncProject(source.client, projectId);
-    const verified = (yield* loadCheckedFloor(
+    const checked = yield* loadCheckedFloor(
       projectId,
       synced,
       syncProject(source.client, projectId),
-    )).verified;
-    return { source, mirror, mirrorOrigin, projectId, verified };
+    );
+    return { source, verified: checked.verified };
+  });
+}
+
+/** The two sessions of `mirror sync`: the server's (the export) and the mirror's (the pages). */
+function openMirrorPair(flags: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly mirror?: string | undefined;
+}) {
+  return Effect.gen(function* () {
+    const target = yield* openMirrorTarget(flags);
+    const { source, verified } = yield* verifiedServerView(flags.server, target.projectId);
+    return { ...target, source, verified };
   });
 }
 
@@ -2140,7 +2161,13 @@ function mirrorSyncCommand(flags: {
   });
 }
 
-/** `maruhi mirror status`: the server's verified head and the mirror's, side by side. */
+/**
+ * `maruhi mirror status`: the server's verified head and the mirror's,
+ * side by side. The one command for "is my mirror usable" must answer
+ * while the server is down: a server that does not answer leaves the
+ * mirror's head alone on the report (announced), any other failure of the
+ * server side fails as usual.
+ */
 function mirrorStatusCommand(flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
@@ -2148,9 +2175,23 @@ function mirrorStatusCommand(flags: {
 }): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const pair = yield* openMirrorPair(flags);
-    const status = yield* mirrorStatusOp({ client: pair.mirror.client, projectId: pair.projectId });
-    for (const line of describeMirrorStatus(status, pair.verified, pair.mirrorOrigin)) {
+    const target = yield* openMirrorTarget(flags);
+    const status = yield* mirrorStatusOp({
+      client: target.mirror.client,
+      projectId: target.projectId,
+    });
+    const verified = yield* verifiedServerView(flags.server, target.projectId).pipe(
+      Effect.map((view) => view.verified),
+      Effect.catch((error: CliError) =>
+        error.unreachable === true
+          ? Effect.gen(function* () {
+              yield* io.logError(`${error.message}. Reporting the mirror's head alone`);
+              return null;
+            })
+          : Effect.fail(error),
+      ),
+    );
+    for (const line of describeMirrorStatus(status, verified, target.mirrorOrigin)) {
       yield* io.log(line);
     }
   });
@@ -2201,7 +2242,7 @@ function mirrorPromoteCommand(flags: {
       .unmark({ params: { projectId } })
       .pipe(Effect.mapError(toCliError));
     yield* io.log(
-      `Promoted project ${projectId} on ${context.origin}: it accepts writes again. Members point at it with \`maruhi config set server ${context.origin}\`; a former primary that comes back is a stale server — mark it as a mirror of this one or export it away (it can never be replicated over this chain)`,
+      `Promoted project ${projectId} on ${context.origin}: it accepts writes again. Members point at it with \`maruhi config set server ${context.origin}\`. A former primary that comes back is a stale server: it can never be replicated over this chain — mark it as a mirror of this one while its chain has not advanced past the fork, otherwise export it away`,
     );
   });
 }
@@ -4253,8 +4294,12 @@ function makeRootCommand(onExitCode: (code: number) => void) {
             recipient: opened.recipient,
             resync: opened.resync,
             floor: opened.floorHandle,
-            // Filling the missing epochs of my other devices (DK K11-4 — pull only)
-            fillOwnDeviceGaps: { signingKeyPair: opened.masterKeys.sigKeyPair },
+            // Filling the missing epochs of my other devices (DK K11-4 — pull
+            // only; a registration the mirror would refuse, so not on the
+            // fallback read)
+            ...(flags.mirrorOf === undefined
+              ? { fillOwnDeviceGaps: { signingKeyPair: opened.masterKeys.sigKeyPair } }
+              : {}),
           });
           return { context: opened, pulled: read };
         }),

@@ -29,6 +29,7 @@ import { makeApiClient } from "./api.ts";
 import type { CliConfig } from "./config.ts";
 import { formatUtcDate } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
+import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import {
   classifyUnreadableMasterKey,
@@ -264,15 +265,18 @@ function sessionFromEnvToken(input: {
     // instead of reusing failure.ts's generic 401 guidance (`maruhi login`
     // only), it names a real procedure that can fetch the raw value
     // (--show-token — ruling CK) (ruling CJ — session-44 §11, §12)
-    const me = yield* client.auth
-      .me({})
-      .pipe(
-        Effect.mapError(() =>
-          cliError(
-            `Authentication with ${input.variable} failed (the token may be expired or revoked, or the scope or target server may not match). Issue a new token with \`maruhi login --token-name <name> --show-token\` on an interactive workstation terminal, then update the ${input.variable} value in this environment`,
-          ),
-        ),
-      );
+    const me = yield* client.auth.me({}).pipe(
+      Effect.mapError((error) => {
+        // A server that did not answer is not an authentication failure:
+        // the flag lets a configured mirror take the read over (context.ts)
+        const failure = toCliError(error);
+        return failure.unreachable === true
+          ? failure
+          : cliError(
+              `Authentication with ${input.variable} failed (the token may be expired or revoked, or the scope or target server may not match). Issue a new token with \`maruhi login --token-name <name> --show-token\` on an interactive workstation terminal, then update the ${input.variable} value in this environment`,
+            );
+      }),
+    );
     // The early expiry warning (ruling CL): /auth/me is called on this path
     // every run anyway, so tokenExpiresAtMs (ruling CI's self-disclosure) is
     // already at hand with no extra request. It stays in CI job logs and lets

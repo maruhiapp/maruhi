@@ -85,8 +85,14 @@ export interface CommonFlags {
   readonly env?: string | undefined;
   /** `--mirror <url>` (PF2 — AUTH_SPEC §11-7): the read-only replica a read falls back to (default: the `mirror` setting). */
   readonly mirror?: string | undefined;
-  /** Which deployment's credential the session opens (set by {@link withMirrorFallback} on the retry; never a flag). */
-  readonly credential?: SessionCredential | undefined;
+  /**
+   * Set by {@link withMirrorFallback} on the retry (never a flag): the
+   * server origin this read fell back from. The session then opens the
+   * mirror's own credential, the device key is the one stored for the
+   * server origin (the key is the person's, not the deployment's), and
+   * nothing is written to the mirror (no attestation, no device sync).
+   */
+  readonly mirrorOf?: string | undefined;
 }
 
 /** The mirror origin a read falls back to: `--mirror` → the `mirror` setting (null when none is configured). */
@@ -139,7 +145,7 @@ export function withMirrorFallback<A>(
               yield* io.logError(
                 `${error.message}. Retrying this read against the mirror ${mirror} (a read-only replica that may be behind the server; writes are never retried)`,
               );
-              return yield* read({ ...flags, server: mirror, credential: "mirror" });
+              return yield* read({ ...flags, server: mirror, mirrorOf: primary });
             })
           : Effect.fail(error),
       ),
@@ -666,18 +672,23 @@ function openProjectWith(
   return Effect.gen(function* () {
     // The project ID format check runs before any network access
     const projectId = yield* resolveProjectId(flags.project, config);
-    const context = yield* openSessionWith(config, flags.server, flags.credential);
+    const mirrorRead = flags.mirrorOf !== undefined;
+    const context = yield* openSessionWith(config, flags.server, mirrorRead ? "mirror" : "server");
     // Loading the master key stays **before** sync (traffic) and floor
     // advance: a write command run on a keyless device must not be made to
-    // round-trip the server before it fails
-    const masterKeys = yield* loadMasterKeys(context.session);
+    // round-trip the server before it fails. On a mirror read the key is
+    // the one stored for the server origin (the key is the person's)
+    const masterKeys = yield* loadMasterKeys({
+      ...context.session,
+      origin: flags.mirrorOf ?? context.session.origin,
+    });
     // A mirror refuses attestations (AUTH_SPEC §11-7): the fallback read
     // reconciles the gossip it serves but submits nothing there
     const base = yield* attachProject(
       context,
       projectId,
       options,
-      flags.credential === "mirror"
+      mirrorRead
         ? undefined
         : { userId: context.session.userId, signingKey: masterKeys.sigKeyPair.privateKey },
     );
@@ -686,8 +697,11 @@ function openProjectWith(
       encPubHex: masterKeys.record.encPubHex,
       encKeyPair: masterKeys.encKeyPair,
     };
-    // Observation of the device set and registration of the first sync (DK K4-3 — keyed prologues only; idempotent, non-fatal)
-    return yield* syncOwnDevices({ ...base, masterKeys, recipient });
+    const opened: ProjectContext = { ...base, masterKeys, recipient };
+    // Observation of the device set and registration of the first sync (DK
+    // K4-3 — keyed prologues only; idempotent, non-fatal). A mirror refuses
+    // the registration, so the fallback read skips it
+    return mirrorRead ? opened : yield* syncOwnDevices(opened);
   });
 }
 
@@ -708,7 +722,11 @@ function openMetadataProjectWith(
 ): Effect.Effect<ProjectContextBase, CliError, CliServices> {
   return Effect.gen(function* () {
     const projectId = yield* resolveProjectId(flags.project, config);
-    const context = yield* openSessionWith(config, flags.server, flags.credential);
+    const context = yield* openSessionWith(
+      config,
+      flags.server,
+      flags.mirrorOf === undefined ? "server" : "mirror",
+    );
     return yield* attachProject(context, projectId);
   });
 }

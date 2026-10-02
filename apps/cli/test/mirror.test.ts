@@ -23,6 +23,7 @@ import { type ChainEntry, computeServerKeyFingerprint, encodeHex } from "@maruhi
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
+import { masterKeyEntryName, tokenEntryName } from "../src/keychain.ts";
 import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
 import { acceptAppendedEntry, chainHandlerOf } from "./support/chain-handler.ts";
 import {
@@ -391,6 +392,12 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
   });
 });
 
+/** A session on the mirror without a device key there (the key is the person's — stored for the server origin only). */
+function seedMirrorSession(env: TestEnv, mirrorOrigin: string): void {
+  seedSession(env, mirrorOrigin, owner);
+  env.keychain.delete(masterKeyEntryName(mirrorOrigin, owner.userId));
+}
+
 /** The mirror as a full read server (chain + pull), plus the status it reports. */
 function readMirrorHandlers(): MockHandler[] {
   const value = makeValueEnvironmentServer({
@@ -410,7 +417,7 @@ describe("the read-only fallback to a mirror (PF2)", () => {
     const dead = await deadOrigin();
     const env = await makeTestEnv();
     seedSession(env, dead, owner);
-    seedSession(env, mirror.origin, owner);
+    seedMirrorSession(env, mirror.origin);
     await seedConfig(env, {
       server: dead,
       defaultProject: built.projectId,
@@ -432,7 +439,7 @@ describe("the read-only fallback to a mirror (PF2)", () => {
     ]);
     const env = await makeTestEnv();
     seedSession(env, gateway.origin, owner);
-    seedSession(env, mirror.origin, owner);
+    seedMirrorSession(env, mirror.origin);
     await seedConfig(env, {
       server: gateway.origin,
       defaultProject: built.projectId,
@@ -446,7 +453,7 @@ describe("the read-only fallback to a mirror (PF2)", () => {
     ]);
     const other = await makeTestEnv();
     seedSession(other, refusing.origin, owner);
-    seedSession(other, mirror.origin, owner);
+    seedMirrorSession(other, mirror.origin);
     await seedConfig(other, {
       server: refusing.origin,
       defaultProject: built.projectId,
@@ -463,7 +470,7 @@ describe("the read-only fallback to a mirror (PF2)", () => {
     const dead = await deadOrigin();
     const env = await makeTestEnv();
     seedSession(env, dead, owner);
-    seedSession(env, mirror.origin, owner);
+    seedMirrorSession(env, mirror.origin);
     await seedConfig(env, {
       server: dead,
       defaultProject: built.projectId,
@@ -475,6 +482,10 @@ describe("the read-only fallback to a mirror (PF2)", () => {
     expect(env.runnerCalls).toHaveLength(1);
     expect(env.runnerCalls[0]?.extraEnv["ALPHA"]).toBe(ALPHA_VALUE);
     expect(env.logs.join("\n")).not.toContain(ALPHA_VALUE);
+    // Nothing was written to the mirror (no attestation, no device registration, no wrap fill)
+    expect(
+      mirror.requests.filter((r) => r.method !== "GET").map((r) => `${r.method} ${r.path}`),
+    ).toEqual([]);
 
     const same = await makeTestEnv();
     seedSession(same, dead, owner);
@@ -486,6 +497,46 @@ describe("the read-only fallback to a mirror (PF2)", () => {
     });
     expect(await runCli(["run", "--", "printenv", "ALPHA"], same.layer)).toBe(1);
     expect(same.errors.join("\n")).toContain("no fallback is possible");
+  });
+
+  it("a MARUHI_TOKEN run falls back too (the token path keeps the transport failure), through MARUHI_MIRROR_TOKEN", async () => {
+    const mirror = await start(readMirrorHandlers());
+    const dead = await deadOrigin();
+    const env = await makeTestEnv();
+    // Only the device key is in the keychain (stored for the server origin); the credentials are env vars
+    seedSession(env, dead, owner);
+    env.keychain.delete(tokenEntryName(dead));
+    env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_ServerTokenValue00000000000000000000000");
+    env.setEnvVar("MARUHI_TOKEN_ORIGIN", dead);
+    env.setEnvVar("MARUHI_MIRROR_TOKEN", "maruhi_pat_MirrorTokenValue0000000000000000000000");
+    await seedConfig(env, {
+      server: dead,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+      mirror: mirror.origin,
+    });
+    expect(await runCli(["run", "--", "printenv", "ALPHA"], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain(
+      `Retrying this read against the mirror ${mirror.origin}`,
+    );
+    expect(env.runnerCalls[0]?.extraEnv["ALPHA"]).toBe(ALPHA_VALUE);
+    const bearers = new Set(mirror.requests.map((r) => String(r.headers["authorization"])));
+    expect(bearers).toEqual(new Set(["Bearer maruhi_pat_MirrorTokenValue0000000000000000000000"]));
+  });
+
+  it("mirror status reports the mirror's head alone when the server does not answer", async () => {
+    const mirror = await start(readMirrorHandlers());
+    const dead = await deadOrigin();
+    const env = await makeTestEnv();
+    seedSession(env, dead, owner);
+    seedMirrorSession(env, mirror.origin);
+    await seedConfig(env, { server: dead, defaultProject: built.projectId });
+    expect(await runCli(["mirror", "status", "--mirror", mirror.origin], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain("Reporting the mirror's head alone");
+    const logs = env.logs.join("\n");
+    expect(logs).toContain("Server: unreachable (no verified view)");
+    expect(logs).toContain("Mirror: chain head seq=1 (head ");
+    expect(logs).toContain("the server did not answer, so it is not compared with a verified view");
   });
 
   it("ci run requests the lease from the mirror with a token for the mirror's audience", async () => {
@@ -539,6 +590,17 @@ describe("the read-only fallback to a mirror (PF2)", () => {
     expect(leased).toEqual([`/projects/${built.projectId}/environments/${ENV_ID}/lease`]);
     expect(env.errors.join("\n")).toContain(`Retrying against the mirror ${mirror.origin}`);
     expect(env.runnerCalls).toHaveLength(0);
+    // An explicit --audience is kept on the retry (a flag goes before `--`)
+    audiences.length = 0;
+    const terminator = args.indexOf("--");
+    const withAudience = [
+      ...args.slice(0, terminator),
+      "--audience",
+      "https://aud.example",
+      ...args.slice(terminator),
+    ];
+    expect(await runCli(withAudience, env.layer)).toBe(1);
+    expect(audiences).toEqual(["https://aud.example", "https://aud.example"]);
   });
 });
 

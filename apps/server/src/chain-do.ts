@@ -731,11 +731,13 @@ export class ProjectChainDO extends DurableObject<Env> {
 
   /**
    * A mirror accepts no write (AUTH_SPEC §11-7 ruling B): refused with
-   * `mirror-read-only` after authentication and the worker's membership
-   * check (the uniform 404 of §11-2 comes first) and before the program's
-   * role floor and any state change. Every member may read the mark
-   * through the status endpoint, so the refusal reveals nothing a reader
-   * could not learn. Reads and leases take `#runData` as before.
+   * `mirror-read-only` after the caller's membership (a non-member gets
+   * the uniform 404 of §11-2 — the worker checks only the token's scope,
+   * so the membership check must happen here, before the mark is
+   * consulted) and before the program's role floor and any state change.
+   * Every member may read the mark through the status endpoint, so the
+   * refusal reveals nothing a reader could not learn. Reads and leases
+   * take `#runData` as before.
    */
   #ensureWritable(): Effect.Effect<void, DataRejectedError> {
     const sql = this.ctx.storage.sql;
@@ -744,9 +746,17 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  /** {@link #runData} for the write entry points (the mirror guard first). */
-  #runWrite<T>(program: Effect.Effect<T, DataRejectedError, DoServices>): Promise<DataOutcome<T>> {
-    return this.#runData(Effect.flatMap(this.#ensureWritable(), () => program));
+  /** {@link #runData} for the write entry points: membership → the mirror guard → the program. */
+  #runWrite<T>(
+    callerUserId: string,
+    program: Effect.Effect<T, DataRejectedError, DoServices>,
+  ): Promise<DataOutcome<T>> {
+    return this.#runData(
+      requireMemberState(callerUserId, "reader", this.#stateCache).pipe(
+        Effect.flatMap(() => this.#ensureWritable()),
+        Effect.flatMap(() => program),
+      ),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
@@ -797,7 +807,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     entry: ChainEntry,
     callerUserId: string,
   ): Promise<AppendOutcome> {
-    return this.#runWrite(appendProgram(parentHeadHashHex, entry, callerUserId, this.#stateCache));
+    return this.#runWrite(
+      callerUserId,
+      appendProgram(parentHeadHashHex, entry, callerUserId, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
@@ -810,7 +823,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     callerUserId: string,
     input: HeadAttestationSubmissionInput,
   ): Promise<DataOutcome<void>> {
-    return this.#runWrite(putHeadAttestationProgram(callerUserId, input, this.#stateCache));
+    return this.#runWrite(
+      callerUserId,
+      putHeadAttestationProgram(callerUserId, input, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
@@ -835,7 +851,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     // Composite acceptance (§12-4): the chain append (CAS + verifyChain)
     // and the data registration are made atomic in the same permit and
     // the same synchronous block (the §6.4 composite acceptance)
-    return this.#runWrite(createEnvironmentCompositeProgram(actor, input, this.#stateCache));
+    return this.#runWrite(
+      actor.userId,
+      createEnvironmentCompositeProgram(actor, input, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
@@ -851,6 +870,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     },
   ): Promise<DataOutcome<EnvironmentChainResultValue>> {
     return this.#runWrite(
+      actor.userId,
       rotateEpochCompositeProgram(actor, environmentId, input, this.#stateCache),
     );
   }
@@ -863,6 +883,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     manifest: EnvManifestInput,
   ): Promise<DataOutcome<void>> {
     return this.#runWrite(
+      actor.userId,
       renameEnvironmentProgram(actor, environmentId, statement, manifest, this.#stateCache),
     );
   }
@@ -874,6 +895,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     statement: MetaStatementInput,
   ): Promise<DataOutcome<void>> {
     return this.#runWrite(
+      actor.userId,
       deleteEnvironmentProgram(actor, environmentId, statement, this.#stateCache),
     );
   }
@@ -895,7 +917,10 @@ export class ProjectChainDO extends DurableObject<Env> {
       readonly manifest: EnvManifestInput;
     },
   ): Promise<DataOutcome<VariableVersionValue>> {
-    return this.#runWrite(createVariableProgram(actor, environmentId, input, this.#stateCache));
+    return this.#runWrite(
+      actor.userId,
+      createVariableProgram(actor, environmentId, input, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
@@ -912,6 +937,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     // The activation composite (§12-5): declared → active as the atomic
     // acceptance of value version 1 + the statement + the manifest
     return this.#runWrite(
+      actor.userId,
       activateVariableProgram(actor, environmentId, variableId, input, this.#stateCache),
     );
   }
@@ -925,6 +951,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     sameValueAs: number | undefined,
   ): Promise<DataOutcome<VariableVersionValue>> {
     return this.#runWrite(
+      actor.userId,
       pushVersionProgram(actor, environmentId, variableId, value, sameValueAs, this.#stateCache),
     );
   }
@@ -963,6 +990,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     manifest: EnvManifestInput,
   ): Promise<DataOutcome<void>> {
     return this.#runWrite(
+      actor.userId,
       renameVariableProgram(
         actor,
         environmentId,
@@ -983,6 +1011,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     manifest: EnvManifestInput,
   ): Promise<DataOutcome<void>> {
     return this.#runWrite(
+      actor.userId,
       deleteVariableProgram(
         actor,
         environmentId,
@@ -1016,7 +1045,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     environmentId: string,
     wraps: readonly DekWrapInput[],
   ): Promise<DataOutcome<void>> {
-    return this.#runWrite(registerDekWrapsProgram(actor, environmentId, wraps, this.#stateCache));
+    return this.#runWrite(
+      actor.userId,
+      registerDekWrapsProgram(actor, environmentId, wraps, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
@@ -1033,7 +1065,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     environmentId: string,
     refs: readonly DekWrapRefInput[],
   ): Promise<DataOutcome<void>> {
-    return this.#runWrite(deleteDekWrapsProgram(actor, environmentId, refs, this.#stateCache));
+    return this.#runWrite(
+      actor.userId,
+      deleteDekWrapsProgram(actor, environmentId, refs, this.#stateCache),
+    );
   }
 
   // --- schemaPolicy configuration RPC (AUTH_SPEC §12-11) ----------------
@@ -1045,7 +1080,10 @@ export class ProjectChainDO extends DurableObject<Env> {
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   setSchemaPolicy(actor: DataActor, schemaPolicy: SchemaPolicy): Promise<DataOutcome<void>> {
-    return this.#runWrite(setSchemaPolicyProgram(actor, schemaPolicy, this.#stateCache));
+    return this.#runWrite(
+      actor.userId,
+      setSchemaPolicyProgram(actor, schemaPolicy, this.#stateCache),
+    );
   }
 
   // --- Rotation-needed flag RPC (AUDIT_SPEC §4.1 / §7) ------------------
@@ -1060,7 +1098,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     actor: DataActor,
     targets: readonly RotationDismissTargetInput[],
   ): Promise<DataOutcome<void>> {
-    return this.#runWrite(dismissRotationFlagsProgram(actor, targets, this.#stateCache));
+    return this.#runWrite(
+      actor.userId,
+      dismissRotationFlagsProgram(actor, targets, this.#stateCache),
+    );
   }
 
   // --- Sealed value proposals RPC (CRYPTO_SPEC §5.3 / AUTH_SPEC §14-5) --
@@ -1110,6 +1151,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     resolution: ProposalResolutionInput,
   ): Promise<DataOutcome<void>> {
     return this.#runWrite(
+      actor.userId,
       resolveRotationProposalProgram(actor, proposalId, resolution, this.#stateCache),
     );
   }

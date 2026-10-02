@@ -208,7 +208,12 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       reason: "already-mirror",
     });
 
-    // Writes are refused after authentication, before any state change
+    // Writes are refused after the membership check (a non-member keeps
+    // the uniform 404 — the mark is not an oracle), before any state change
+    expect(
+      (await requestJson("PUT", "/schema-policy", token(STRANGER), { schemaPolicy: "enabled" }))
+        .status,
+    ).toBe(404);
     const refused = await rawAppend(OWNER);
     expect(refused.status).toBe(403);
     await expect(refused.json()).resolves.toEqual({
@@ -229,10 +234,19 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       `SELECT COUNT(*) AS n FROM audit_events WHERE seq > ${Number(olderTrailer["auditMaxSeq"])}`,
     );
     expect(ownRows).toBeGreaterThan(0);
-    // … and the mirror's own first-come state
+    // … and the mirror's own rate-limit and first-come state (every kept table)
     await queryProjectDo(
       projectId,
       "INSERT INTO lease_windows (kind, window_start, count) VALUES ('issued', 1, 7)",
+    );
+    await queryProjectDo(
+      projectId,
+      "INSERT INTO lease_bindings (binding_key_hex, ephemeral_pub_hex, expires_at) VALUES ('ab', 'cd', 9999999999999)",
+    );
+    await queryProjectDo(
+      projectId,
+      "INSERT INTO attestation_windows (attester_user_id, window_start, count) VALUES (?, 1, 3)",
+      OWNER,
     );
 
     // The replication (admin or above): pages in sequence, the status shows the progress
@@ -266,6 +280,12 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(
       await queryProjectDo(projectId, "SELECT count FROM lease_windows WHERE kind = 'issued'"),
     ).toEqual([{ count: 7 }]);
+    expect(await queryProjectDo(projectId, "SELECT ephemeral_pub_hex FROM lease_bindings")).toEqual(
+      [{ ephemeral_pub_hex: "cd" }],
+    );
+    expect(await queryProjectDo(projectId, "SELECT count FROM attestation_windows")).toEqual([
+      { count: 3 },
+    ]);
     const replicaAudit = Number(newerTrailer["auditMaxSeq"]);
     expect(await count("SELECT COUNT(*) AS n FROM audit_events")).toBe(
       // the second pull above added rows after the sync too
@@ -283,6 +303,23 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     // (the pull after it extends lazily, as always)
     expect(await count("SELECT MAX(seq) AS n FROM audit_head_hashes")).toBe(replicaAudit + ownRows);
     expect(await stagingTables()).toEqual([]);
+    // A second replication of the same replica re-appends the own rows
+    // (now one more — the pull after the first sync) after the replica's again
+    const again = await upload(newer, 7);
+    expect(again.status).toBe(200);
+    expect(((await again.json()) as WirePageOutcome).committed).toBeDefined();
+    expect(await count("SELECT COUNT(*) AS n FROM audit_events")).toBe(replicaAudit + ownRows + 1);
+    expect(
+      (
+        await queryProjectDo(
+          projectId,
+          `SELECT event FROM audit_events WHERE seq > ${replicaAudit} ORDER BY seq`,
+        )
+      ).map((row) => row["event"]),
+    ).toEqual(Array.from({ length: ownRows + 1 }, () => "var.read"));
+    expect(await count("SELECT MAX(seq) AS n FROM audit_head_hashes")).toBe(
+      replicaAudit + ownRows + 1,
+    );
     // An older replica never replaces a newer one
     await expectRejected(await upload(older, 50), "chain-not-extension");
     expect((await statusOk()).nextSequence).toBeUndefined();
@@ -357,6 +394,16 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       await page(OWNER, 0, [lines[0] ?? "", tableLine, ...rows]),
       "page-too-large",
     );
+    // A page past the byte bound (one line over the export's bound plus the slack)
+    const hugeRow = JSON.stringify({
+      kind: "row",
+      table: "lease_windows",
+      values: ["k".repeat(4 * 1024 * 1024 + 300 * 1024), 1, 1],
+    });
+    await expectRejected(
+      await page(OWNER, 0, [lines[0] ?? "", tableLine, hugeRow]),
+      "page-too-large",
+    );
     // Staged pages, then a refusal: the staging is discarded (sequence 0 restarts)
     expect((await page(OWNER, 0, lines.slice(0, 4))).status).toBe(200);
     expect(await stagedHead()).toBe(1);
@@ -392,6 +439,72 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       });
     });
     await expectRejected(await upload(forked, 50), "chain-not-extension");
+    // A chain whose hashes match but whose entries do not verify never
+    // replaces the live one (the replica's content, not only its hashes)
+    const chainColumns = lines
+      .map((line) => parsedLine(line))
+      .find((parsed) => parsed["kind"] === "table" && parsed["table"] === "chain_entries")?.[
+      "columns"
+    ] as string[];
+    const entryJsonAt = chainColumns.indexOf("entry_json");
+    const withChainEntries = (rewrite: (json: string) => string) =>
+      lines.map((line) => {
+        const parsed = parsedLine(line);
+        if (parsed["kind"] !== "row" || parsed["table"] !== "chain_entries") {
+          return line;
+        }
+        const values = [...(parsed["values"] as unknown[])];
+        values[entryJsonAt] = rewrite(String(values[entryJsonAt]));
+        return JSON.stringify({ ...parsed, values });
+      });
+    await expectRejected(
+      await upload(
+        withChainEntries(() => "{}"),
+        50,
+      ),
+      "chain-invalid",
+    );
+    await expectRejected(
+      await upload(
+        withChainEntries(() => "not json"),
+        50,
+      ),
+      "malformed",
+    );
+    // An entry that decodes but whose hash column lies about it
+    await expectRejected(
+      await upload(
+        withChainEntries((json) => {
+          const entry = JSON.parse(json) as { seq: number };
+          return JSON.stringify({ ...entry, seq: entry.seq + 100 });
+        }),
+        50,
+      ),
+      "chain-invalid",
+    );
+    // The live table refuses a staged row (a duplicate audit seq): refused, never a defect
+    const firstAudit = lines.find((line) => {
+      const parsed = parsedLine(line);
+      return parsed["kind"] === "row" && parsed["table"] === "audit_events";
+    });
+    const duplicated = withTrailer(
+      lines.flatMap((line) => (line === firstAudit ? [line, line] : [line])),
+      {
+        rows: {
+          ...(parsedLine(lines[lines.length - 1])["rows"] as Record<string, number>),
+          audit_events:
+            Number(
+              (parsedLine(lines[lines.length - 1])["rows"] as Record<string, number>)[
+                "audit_events"
+              ],
+            ) + 1,
+        },
+      },
+    );
+    await expectRejected(await upload(duplicated, 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    // The project still serves (the live tables were untouched)
+    expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
     // An audit log behind the last replicated position
     const withoutAudit = withTrailer(
       lines.filter((line) => {

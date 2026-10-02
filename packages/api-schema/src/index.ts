@@ -186,7 +186,6 @@ export {
   ExportPageSchema,
 } from "./export-api.ts";
 export {
-  MAX_MIRROR_PAGE_LINES,
   type MirrorPage,
   type MirrorPageOutcome,
   MirrorPageOutcomeSchema,

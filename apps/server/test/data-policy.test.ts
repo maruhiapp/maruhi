@@ -636,7 +636,7 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     "export-rate-limited": { kind: "export-rate-limited", retryAfterSeconds: 60 },
     "mirror-read-only": { kind: "mirror-read-only" },
     "mirror-state": { kind: "mirror-state", reason: "not-mirror" },
-    "mirror-sync-rejected": { kind: "mirror-sync-rejected", reason: "sequence-mismatch" },
+    "mirror-sync-rejected": { kind: "mirror-sync-rejected", reason: "chain-invalid" },
     "attestation-rejected": { kind: "attestation-rejected", reason: "signature-invalid" },
     "attestation-regression": { kind: "attestation-regression", storedSeq: 5 },
     "attestation-rate-limited": { kind: "attestation-rate-limited", retryAfterSeconds: 60 },

@@ -635,7 +635,8 @@ export needs the owner role) and uploads the pages to the mirror (your
 session there — from a cron, `MARUHI_TOKEN` / `MARUHI_TOKEN_ORIGIN` for the
 primary and `MARUHI_MIRROR_TOKEN` for the mirror). The mirror accepts a
 replica only if it extends what it already holds; the result names both
-heads. `maruhi mirror status` compares the two at any time. Across a sync
+heads. `maruhi mirror status` compares the two at any time (and reports
+the mirror's head alone while the primary is down). Across a sync
 the mirror keeps its own lease windows and the audit rows of the reads and
 leases it served.
 

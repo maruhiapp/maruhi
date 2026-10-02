@@ -712,6 +712,7 @@ export type MirrorSyncRejectReason =
   | "unknown-table"
   | "row-count-mismatch"
   | "chain-not-extension"
+  | "chain-invalid"
   | "audit-regression"
   | "page-too-large";
 

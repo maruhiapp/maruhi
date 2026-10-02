@@ -25,10 +25,11 @@ export async function resetProjectDo(projectId: string): Promise<void> {
     for (const table of [...PROJECT_DO_TABLES, ...PROJECT_DO_LOCAL_TABLES]) {
       state.storage.sql.exec(`DELETE FROM ${table}`);
     }
-    // A mirror replication left mid-way keeps staging tables (PF2); drop them
+    // A mirror replication left mid-way keeps staging tables (PF2 —
+    // `<table>_mirror`, `trailer_mirror`, `audit_events_mirror_local`); drop them
     const staging = state.storage.sql
       .exec(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%\\_mirror' ESCAPE '\\'",
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%\\_mirror%' ESCAPE '\\'",
       )
       .toArray()
       .map((row) => String(row["name"]));
