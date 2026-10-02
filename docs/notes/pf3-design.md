@@ -182,4 +182,6 @@ agents found nothing strictly or structurally better.
 | K (no crypto) | K-3: an HMAC over the cursor; K-2: encrypt the file | K-3 deferred (ruling D-2's reason — the restore verifies); K-2 rejected (ruling K-1's reason) |
 
 Rulings C, D, H, I and J received adopted candidates in this round and
-stay open for round 3, with A, B, E, F, G and K (deferrals only).
+stay open for round 3. Rulings A, B, E, F, G and K received only rejected
+or deferred candidates — nothing strictly or structurally better — and are
+**CLOSED (round 2)**.
