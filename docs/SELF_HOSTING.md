@@ -676,13 +676,14 @@ primary and `MARUHI_MIRROR_TOKEN` for the mirror). The mirror accepts a
 replica only if it extends what it already holds; the result names both
 heads and how many of the mirror's own audit rows (the reads and leases it
 served) were re-appended after the replica's. When the primary's chain
-head, audit seq and attestation mark are the ones the last sync brought,
-the command uploads nothing and says the mirror is current — a cron can run
-it every few minutes. `maruhi mirror status` compares the two at any time
+head, audit seq and mutation counter are the ones the last sync brought
+(and the mirror still holds that head), the command uploads nothing and
+says the mirror is current — a cron can run it every few minutes. `maruhi mirror status` compares the two at any time
 (and reports the mirror's head alone while the primary is down). Across a
 sync the mirror keeps its own lease windows and rate limits, merges the
-primary's first-come token bindings into its own, and keeps the audit rows
-of the reads and leases it served.
+primary's live first-come token bindings into its own (expired ones are
+dropped on both sides), and keeps the audit rows of the reads and leases it
+served.
 
 **3. Use it**: members set `maruhi config set mirror https://mirror.example.com`
 (or pass `--mirror` to `run` / `pull`; CI workflows pass `--mirror` to
@@ -690,11 +691,13 @@ of the reads and leases it served.
 stored on that machine: log in there now (`maruhi login --server <mirror>`)
 and rehearse with `maruhi pull --server <mirror>` — a login is not possible
 once the primary is the reason you need the mirror. The primary is always
-tried first; when it does not answer (no response, no answer within 30
-seconds, a 500, a gateway error) the read is retried against the mirror
-and the CLI says so on stderr. Before the retry the CLI reads the mirror's
-mark: a copy that was promoted, or that mirrors another deployment, is not
-read (a promoted copy is a primary — point `config set server` at it).
+tried first; when it does not answer (no response, no headers within 30
+seconds or no complete answer within three minutes, a 500, a gateway
+error) the read is retried against the mirror and the CLI says so on
+stderr. Before the retry the CLI reads the mirror's mark: a copy that was
+promoted, or that mirrors another deployment, is not read (confirm a
+promotion with an owner before pointing `config set server` at the copy —
+a mirror's own word never moves a member's writes).
 Everything is verified as usual — a mirror that is behind what the member
 already verified is refused, not silently used. An answer of the primary
 about the read (a 403, a 404) is never retried.
@@ -710,15 +713,25 @@ token with the mirror's origin as audience unless `--audience` is given).
 **5. Promotion**: if the primary will not come back, the owner runs
 `maruhi mirror promote --server https://mirror.example.com --project <id>`
 (the mark is removed; the mirror accepts writes) and members set
-`config set server` to it. The command probes the primary first and refuses
-while it still answers — promoting beside a live primary leaves two
-writable copies; mark the primary as a mirror of the new one first, take it
-down, or pass `--force`. A stale old primary can never be synced over the
-promoted one. If the primary was **compromised** rather than lost, also
-revoke its server key on the promoted project (`maruhi server revoke
-<fingerprint>`) and rotate the environments that key could open
-(`maruhi env rotate`): the wraps it holds are retired by the rotation, not
-by the promotion.
+`config set server` to it. The command looks at the primary first: a
+primary that already holds the project as a mirror of this deployment is
+frozen (the planned order below) and the promotion goes through; one that
+still holds it writable is refused — promoting beside a live primary leaves
+two writable copies — and one nothing answers at (a probe of its public
+`/auth/config`; any HTTP answer, even an error, counts as alive, so a
+gateway's 52x in front of a dead worker still counts as alive — pass
+`--force` then) lets the promotion through. The **planned failover**, which
+loses no write: mark the primary as a mirror of the new one (it freezes),
+run one last `maruhi mirror sync` from it, then promote. A stale old
+primary can never be synced over the promoted one; `maruhi mirror mark`
+refuses to mark a project whose chain is not part of the source's (such a
+mirror could never be synced), unless `--force`. After the promotion the
+command lists the other server keys the chain grants, each with the
+environments its grant covers: if that deployment was **compromised**
+rather than lost, revoke the key it names (`maruhi server revoke
+<fingerprint>`) and rotate those environments (`maruhi env rotate`) — the
+wraps it holds are retired by the rotation, not by the promotion. It also
+says when this deployment's own key is not granted yet (CI leases need it).
 
 What a mirror does not do: it does not forward writes, it is as fresh as its
 last sync, and the identities of members added after the bootstrap are not

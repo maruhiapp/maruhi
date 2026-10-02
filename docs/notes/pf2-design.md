@@ -195,3 +195,17 @@ agents found nothing strictly or structurally better.
 
 Rulings C, D, E, F, G and H received adopted candidates in this round and
 stay open for round 3.
+
+### 8-2. Round 3 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (promotion) | C-6: read the source's mark before the probe (a source already demoted as the refusal instructs still answered `/auth/config` and was refused again — the honest path needed `--force`); C-7: the planned failover ordered so no write is lost (freeze the source, one last sync, promote); C-8: `mirror mark` refuses a project whose head is not an entry of the source's chain (a bricked mirror reachable by a legitimate command sequence) | **C-6 adopted** (`frozen` / `writable` / `gone`; the probe decides only without a session or on any answer but the mark). **C-7 adopted as the documented order and the refusal's text** (the one-command flag is deferred — the three commands are the mechanism). **C-8 adopted** (`--force`; warn-and-mark when the source cannot be read). The probe's "alive" (any HTTP answer) being wider than the fallback's "down" is recorded in §11-7 as the safe side |
+| D (replication) | D-19: expired bindings are filtered on the merge and purged at the commit (a fallback-only mirror never issues a lease, so nothing else collected the table) | **Adopted** |
+| E (fallback) | E-18: the "promoted" refusal told the member to point `config set server` at the copy on the mirror's own say-so (a mirror operator answering `mirror: false` during an outage would steer writes to a copy under their control); E-19 (a gap in E-7): the request bound covered the headers only — a stalled body held a read forever | **E-18 adopted** (confirm with an owner). **E-19 adopted** — a second, wider bound on the whole answer (3 min; `transformResponse`), the same transport failure |
+| F (keys) | F-7: the promotion names the concrete follow-ups from the verified chain — every other granted server key with the environments its grant covers, and whether this deployment's own key is granted | **Adopted**. **CLOSED (round 3)** |
+| G (audit) | nothing new | **CLOSED (round 3)** — a residual recorded: a former primary re-marked as a mirror takes its live audit seq as the bootstrap, so the rows it appended after its last sync and before it went down count as replica rows and are replaced by the first replication ("export it away" covers it) |
+| H (sync) | H-7: compare the source's mutation counter (PF3's, kept by the schema) instead of the attestation mark — it covers every write by construction, attestations included; H-8: also require the mirror to still hold the recorded head, and print the head in the "current" line | **H-7 adopted** — the export's head carries the counter, the trailer page records it (`sourceMutationSeq`, schema step 8), the status shows it to admins; the attestation mark stays recorded but is no longer compared. **H-8 adopted**. The comment that disagreed with the code (a source that does not answer fails the sync) is fixed |
+
+Rulings C, D, E and H received adopted candidates in this round and stay
+open for round 4; F and G are closed.

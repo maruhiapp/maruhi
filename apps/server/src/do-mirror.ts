@@ -93,6 +93,8 @@ export interface MirrorState {
   readonly lastAuditSeq: number;
   /** The replica's attestation mark at the last replication (or the mark); null on a row written before step 6. */
   readonly lastAttestationMark: number | null;
+  /** The source's mutation counter the replica was exported at (null = unknown — the bootstrap, or a sync that did not say). */
+  readonly lastMutationSeq: number | null;
 }
 
 export function readMirrorState(sql: SqlStorage): MirrorState | null {
@@ -111,6 +113,7 @@ export function readMirrorState(sql: SqlStorage): MirrorState | null {
     lastAuditSeq: Number(row["last_audit_seq"]),
     lastAttestationMark:
       row["last_attestation_mark"] === null ? null : Number(row["last_attestation_mark"]),
+    lastMutationSeq: row["last_mutation_seq"] === null ? null : Number(row["last_mutation_seq"]),
   };
 }
 
@@ -321,6 +324,8 @@ export interface MirrorCommit {
   readonly auditMaxSeq: number;
   /** The replica's attestation mark (the source's latest head-attestation acceptance time). */
   readonly attestationMark: number;
+  /** The source's mutation counter the replica was exported at (absent when the sync did not say). */
+  readonly mutationSeq?: number;
   /** The mirror's own audit rows re-appended after the replica's (ruling G revision). */
   readonly ownAuditRows: number;
 }
@@ -400,13 +405,22 @@ function verifyChainExtension(sql: SqlStorage): void {
  */
 const MERGED_TABLE = "lease_bindings";
 
-function swapTables(sql: SqlStorage, tables: readonly string[]): void {
+function swapTables(sql: SqlStorage, tables: readonly string[], nowMs: number): void {
   for (const table of tables) {
     const staging = stagingOf(table);
     if (MIRROR_KEPT_TABLES.includes(table)) {
-      if (table === MERGED_TABLE && hasTable(sql, staging)) {
-        const columns = sql.exec(`SELECT * FROM ${staging} LIMIT 0`).columnNames.join(", ");
-        sql.exec(`INSERT OR IGNORE INTO ${table} (${columns}) SELECT ${columns} FROM ${staging}`);
+      if (table === MERGED_TABLE) {
+        // Only live bindings are merged, and the mirror's own expired ones
+        // go: a mirror that never issues a lease has no other collection
+        // of this table (ruling D revision, round 3)
+        if (hasTable(sql, staging)) {
+          const columns = sql.exec(`SELECT * FROM ${staging} LIMIT 0`).columnNames.join(", ");
+          sql.exec(
+            `INSERT OR IGNORE INTO ${table} (${columns}) SELECT ${columns} FROM ${staging} WHERE expires_at > ?`,
+            nowMs,
+          );
+        }
+        sql.exec(`DELETE FROM ${table} WHERE expires_at <= ?`, nowMs);
       }
       sql.exec(`DROP TABLE IF EXISTS ${staging}`);
       continue;
@@ -486,6 +500,8 @@ export interface MirrorCommitInput {
   readonly tables: readonly string[];
   readonly state: MirrorState;
   readonly nowMs: number;
+  /** The source's mutation counter the trailer page carried (null = not said). */
+  readonly sourceMutationSeq: number | null;
 }
 
 /**
@@ -513,7 +529,7 @@ export function commitMirrorReplica(input: MirrorCommitInput): MirrorCommit {
       const ownAuditRows = Number(
         sql.exec(`SELECT COUNT(*) AS n FROM ${LOCAL_AUDIT_TABLE}`).one()["n"],
       );
-      swapTables(sql, input.tables);
+      swapTables(sql, input.tables, input.nowMs);
       // … and follow the replica's rows (contiguous past the last position,
       // so a shift keeps their order)
       const shifted = auditColumns.map((column) => (column === "seq" ? "seq - ? + ?" : column));
@@ -531,15 +547,17 @@ export function commitMirrorReplica(input: MirrorCommitInput): MirrorCommit {
         chainHeadHashHex: marks.chainHeadHashHex ?? "",
         auditMaxSeq: replicaAuditSeq,
         attestationMark: marks.attestationMark,
+        ...(input.sourceMutationSeq === null ? {} : { mutationSeq: input.sourceMutationSeq }),
         ownAuditRows,
       };
       sql.exec(
-        `UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL, last_synced_at = ?, last_head_seq = ?, last_head_hash_hex = ?, last_audit_seq = ?, last_attestation_mark = ? WHERE id = 1`,
+        `UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL, last_synced_at = ?, last_head_seq = ?, last_head_hash_hex = ?, last_audit_seq = ?, last_attestation_mark = ?, last_mutation_seq = ? WHERE id = 1`,
         commit.atMs,
         commit.chainHeadSeq,
         commit.chainHeadHashHex,
         commit.auditMaxSeq,
         commit.attestationMark,
+        input.sourceMutationSeq,
       );
       return commit;
     });

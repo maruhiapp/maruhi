@@ -42,7 +42,12 @@ export const mirrorLive = HttpApiBuilder.group(maruhiApi, "mirror", (handlers) =
         endpoint,
         projectId: params.projectId,
         permission: "admin",
-        invoke: (stub, actor) => stub.mirrorPage(actor, payload.sequence, payload.lines),
+        invoke: (stub, actor) =>
+          stub.mirrorPage(actor, {
+            sequence: payload.sequence,
+            lines: payload.lines,
+            sourceMutationSeq: payload.sourceMutationSeq,
+          }),
       }),
     ),
 );

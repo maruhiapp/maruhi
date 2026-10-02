@@ -177,7 +177,7 @@ function ensureMirrorOf(
     if (!status.mirror) {
       return yield* Effect.fail(
         cliError(
-          `${mirror} does not hold this project as a mirror (it was promoted, or never marked). If it is the primary now, point the CLI at it: \`maruhi config set server ${mirror}\` — a promoted copy is not read as a fallback`,
+          `${mirror} does not hold this project as a mirror (it was promoted, or never marked), so the read is not retried there. Confirm with an owner whether the project was promoted before pointing \`config set server\` at it — a mirror's own word is not what moves a member's writes`,
         ),
       );
     }
@@ -253,7 +253,7 @@ export interface SessionContext {
 }
 
 /** Session resolution from an already-loaded config (the inner half that does not re-read config). */
-function openSessionWith(
+export function openSessionWith(
   config: CliConfig,
   serverFlag: string | undefined,
   credential: SessionCredential = "server",

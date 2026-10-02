@@ -44,6 +44,8 @@ export const ExportHeadSchema = Schema.Struct({
   chainHeadSeq: PositiveInt,
   chainHeadHashHex: Sha256Hex,
   auditMaxSeq: Schema.Number,
+  /** The project DO's mutation counter at the export (a mirror records it with the replica — the sync's no-change check). */
+  mutationSeq: Schema.optionalKey(Schema.Number),
 });
 
 /**

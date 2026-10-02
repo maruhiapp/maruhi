@@ -60,6 +60,8 @@ export const MirrorSyncRecordSchema = Schema.Struct({
   chainHeadHashHex: Sha256Hex,
   auditMaxSeq: Schema.Number,
   attestationMark: Schema.optionalKey(Schema.Number),
+  /** The source's mutation counter the replica was exported at (the sync's no-change check — ruling H revision, round 3). */
+  mutationSeq: Schema.optionalKey(Schema.Number),
   ownAuditRows: Schema.optionalKey(Schema.Number),
 });
 
@@ -74,6 +76,8 @@ export const MirrorHeadSchema = Schema.Struct({
   chainHeadHashHex: Sha256Hex,
   auditMaxSeq: Schema.optionalKey(Schema.Number),
   attestationMark: Schema.optionalKey(Schema.Number),
+  /** The project's mutation counter (admins and owners): every write moves it, so it covers what no audit row records. */
+  mutationSeq: Schema.optionalKey(Schema.Number),
 });
 
 export type MirrorSyncRecord = typeof MirrorSyncRecordSchema.Type;
@@ -110,6 +114,8 @@ export const MirrorPageSchema = Schema.Struct({
     Schema.isMinLength(1),
     Schema.isMaxLength(MAX_MIRROR_PAGE_LINES),
   ),
+  /** The source's mutation counter as the export's head reported it (recorded with the replica by the page carrying the trailer). */
+  sourceMutationSeq: Schema.optionalKey(Schema.Number),
 });
 
 export type MirrorPage = typeof MirrorPageSchema.Type;

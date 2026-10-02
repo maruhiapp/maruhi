@@ -88,7 +88,18 @@ function replicateOnce(input: MirrorSyncInput): Effect.Effect<Attempt, CliError>
         return { kind: "changed" } as const;
       }
       const uploaded = yield* input.mirror.mirror
-        .pages({ params, payload: { sequence, lines: exported.lines } })
+        .pages({
+          params,
+          payload: {
+            sequence,
+            lines: exported.lines,
+            // The source's counter rides with every page; the mirror records
+            // the trailer page's with the replica (the no-change check)
+            ...(exported.head.mutationSeq === undefined
+              ? {}
+              : { sourceMutationSeq: exported.head.mutationSeq }),
+          },
+        })
         .pipe(Effect.mapError(toCliError));
       lines += exported.lines.length;
       cursor = exported.next;
@@ -151,21 +162,30 @@ export function mirrorSyncOp(input: MirrorSyncInput): Effect.Effect<MirrorSyncRe
   });
 }
 
-/** Whether the source's marks equal the last replication's (a source that does not answer the status is treated as changed). */
+/**
+ * Whether the source's marks equal the last replication's: the chain head
+ * (content-bound), the audit seq (the reads) and the mutation counter
+ * (every write, attestations included — it is what the export's own
+ * consistency relies on). The mirror must also still hold that head (a
+ * mirror whose record says "current" while its head is older is caught —
+ * ruling H revision, round 3). A source that does not answer the status
+ * fails the sync (the export would fail the same way).
+ */
 function sourceUnchanged(
   input: MirrorSyncInput,
   before: MirrorStatus,
 ): Effect.Effect<boolean, CliError> {
   const last = before.lastSync;
-  if (last === undefined || last.attestationMark === undefined) {
+  if (last === undefined || last.mutationSeq === undefined) {
     return Effect.succeed(false);
   }
   return input.source.mirror.status({ params: { projectId: input.projectId } }).pipe(
     Effect.map(
       (source) =>
         source.head.chainHeadHashHex === last.chainHeadHashHex &&
+        before.head.chainHeadHashHex === last.chainHeadHashHex &&
         source.head.auditMaxSeq === last.auditMaxSeq &&
-        source.head.attestationMark === last.attestationMark,
+        source.head.mutationSeq === last.mutationSeq,
     ),
     Effect.mapError(toCliError),
   );
@@ -204,7 +224,7 @@ export function describeMirrorSync(
 ): string[] {
   if (result.kind === "current") {
     return [
-      `Mirror ${mirrorOrigin} is current for project ${verified.projectId}: the server's chain head, audit seq and attestation mark are the ones the last replication brought — nothing uploaded`,
+      `Mirror ${mirrorOrigin} is current for project ${verified.projectId} (chain head seq=${result.before.head.chainHeadSeq}, head ${result.before.head.chainHeadHashHex}): the server's chain head, audit seq and mutation counter are the ones the last replication brought — nothing uploaded`,
       describeLastSync(result.before),
     ];
   }

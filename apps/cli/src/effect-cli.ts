@@ -135,6 +135,7 @@ import { maruhiTeardown } from "./cli-teardown.ts";
 import {
   asConfigKey,
   asIdentityBacking,
+  type CliConfig as MaruhiCliConfig,
   CONFIG_KEYS,
   ConfigFileCorruptError,
   type ConfigKey,
@@ -155,6 +156,7 @@ import {
   openMetadataProject,
   openProject,
   openSession,
+  openSessionWith,
   reconcileGossip,
   resolveMirrorOrigin,
   resolveProjectId,
@@ -1102,6 +1104,10 @@ const mirrorStatusConfig = mirrorSyncConfig;
 const mirrorMarkConfig = {
   ...projectFlags(),
   source: singleValued("source", "URL of the deployment this project mirrors (required)"),
+  force: singleFlag(
+    "force",
+    "Mark even though this project's chain is not part of the source's (a mirror that can never be synced)",
+  ),
 };
 
 const mirrorPromoteConfig = {
@@ -2215,6 +2221,7 @@ function mirrorMarkCommand(flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly source?: string | undefined;
+  readonly force?: boolean | undefined;
 }): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -2233,12 +2240,60 @@ function mirrorMarkCommand(flags: {
       );
     }
     const projectId = yield* resolveProjectId(flags.project, context.config);
+    // A project whose chain is not part of the source's (a former primary
+    // that advanced past the fork) can never be synced: every replica is
+    // refused as not an extension, and there is no way out but another
+    // promotion. Refused here, before the mark (ruling C revision, round 3)
+    if (flags.force !== true) {
+      yield* ensureMarkable(context.client, sourceOrigin, projectId);
+    }
     yield* context.client.mirror
       .mark({ params: { projectId }, payload: { sourceOrigin } })
       .pipe(Effect.mapError(toCliError));
     yield* io.log(
       `Marked project ${projectId} on ${context.origin} as a mirror of ${sourceOrigin}: it refuses writes from now on and serves reads and leases. Keep it current with \`maruhi mirror sync --server ${sourceOrigin} --mirror ${context.origin}\`; members fall back to it with \`maruhi config set mirror ${context.origin}\``,
     );
+  });
+}
+
+/**
+ * The mark's precondition: the project's head here is an entry of the
+ * source's verified chain (equal, or behind it). The source's view needs a
+ * session there; without one, or when the source does not answer, the mark
+ * proceeds with a warning (the first sync tells).
+ */
+function ensureMarkable(
+  client: MaruhiClient,
+  sourceOrigin: string,
+  projectId: string,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const here = yield* syncProject(client, projectId);
+    const sourceView = yield* verifiedServerView(sourceOrigin, projectId).pipe(
+      Effect.map((view) => view.verified),
+      Effect.catch((error: CliError) =>
+        Effect.as(
+          logWarning(
+            `the source's chain could not be read (${error.message}); marking without the check that this project's chain is part of it — the first \`maruhi mirror sync\` tells`,
+          ),
+          null,
+        ),
+      ),
+    );
+    if (sourceView === null) {
+      return;
+    }
+    const partOfSource =
+      here.state.headHashHex === sourceView.state.headHashHex ||
+      (here.state.headSeq < sourceView.state.headSeq &&
+        sourceView.history.entryHashAt(here.state.headSeq) === here.state.headHashHex);
+    if (!partOfSource) {
+      return yield* Effect.fail(
+        cliError(
+          `This project's chain (seq ${here.state.headSeq}, head ${here.state.headHashHex}) is not part of ${sourceOrigin}'s (seq ${sourceView.state.headSeq}): marked as a mirror it could never be synced (every replica would be refused as not an extension). It was written to after the fork — export it away, or pass --force to mark it anyway`,
+        ),
+      );
+    }
   });
 }
 
@@ -2265,11 +2320,11 @@ function mirrorPromoteCommand(flags: {
       .status({ params: { projectId } })
       .pipe(Effect.mapError(toCliError));
     if (status.sourceOrigin !== undefined && flags.force !== true) {
-      const answers = yield* sourceAnswers(status.sourceOrigin);
-      if (answers) {
+      const source = yield* sourceState(context.config, status.sourceOrigin, projectId);
+      if (source === "writable") {
         return yield* Effect.fail(
           cliError(
-            `The source ${status.sourceOrigin} still answers: promoting ${context.origin} now leaves two writable copies of the project (a split brain). Mark the source as a mirror of ${context.origin} first (\`maruhi mirror mark --server ${status.sourceOrigin} --source ${context.origin}\`) or take it down; pass --force to promote anyway`,
+            `The source ${status.sourceOrigin} still answers and holds this project writable: promoting ${context.origin} now leaves two writable copies (a split brain). The planned order: mark the source as a mirror of ${context.origin} (\`maruhi mirror mark --server ${status.sourceOrigin} --source ${context.origin}\` — it freezes), bring its last writes over (\`maruhi mirror sync --server ${status.sourceOrigin} --mirror ${context.origin}\`), then promote; or take the source down. Pass --force to promote anyway`,
           ),
         );
       }
@@ -2278,8 +2333,82 @@ function mirrorPromoteCommand(flags: {
       .unmark({ params: { projectId } })
       .pipe(Effect.mapError(toCliError));
     yield* io.log(
-      `Promoted project ${projectId} on ${context.origin}: it accepts writes again. Members point at it with \`maruhi config set server ${context.origin}\`. A former primary that comes back is a stale server: it can never be replicated over this chain — mark it as a mirror of this one while its chain has not advanced past the fork, otherwise export it away. If the former primary was compromised rather than lost, revoke its server key (\`maruhi server revoke <fingerprint>\`) and rotate the environments it could open (\`maruhi env rotate\`)`,
+      `Promoted project ${projectId} on ${context.origin}: it accepts writes again. Members point at it with \`maruhi config set server ${context.origin}\`. A former primary that comes back is a stale server: it can never be replicated over this chain — mark it as a mirror of this one while its chain has not advanced past the fork, otherwise export it away`,
     );
+    for (const line of yield* keyFollowUps(context.client, context.origin, projectId)) {
+      yield* io.log(line);
+    }
+  });
+}
+
+/**
+ * What the source holds (ruling C revision, round 3): `frozen` = it is
+ * already a mirror of this deployment (the honest path — promote without
+ * a probe), `writable` = it answers and holds the project as a primary,
+ * `gone` = nothing answers. Read with the owner's session for the source
+ * when there is one; otherwise, or on any answer but the mark, the public
+ * probe decides (any HTTP answer = writable, no answer = gone).
+ */
+function sourceState(
+  config: MaruhiCliConfig,
+  sourceOrigin: string,
+  projectId: string,
+): Effect.Effect<"frozen" | "writable" | "gone", never, CliServices> {
+  return Effect.gen(function* () {
+    const marked = yield* openSessionWith(config, sourceOrigin, "server").pipe(
+      Effect.flatMap((source) =>
+        source.client.mirror
+          .status({ params: { projectId } })
+          .pipe(
+            Effect.map((status): "frozen" | "writable" | null =>
+              status.mirror ? (status.sourceOrigin === undefined ? null : "frozen") : "writable",
+            ),
+          ),
+      ),
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    if (marked !== null) {
+      return marked;
+    }
+    return (yield* sourceAnswers(sourceOrigin)) ? "writable" : "gone";
+  });
+}
+
+/**
+ * After a promotion: the other server keys the chain grants (each with
+ * the environments its grant covers — the one to revoke and rotate if that
+ * deployment was compromised), and whether this deployment's own key is
+ * granted (CI leases need it). From the verified chain and this server's
+ * public key; never a guess at a fingerprint (ruling F revision, round 3).
+ */
+function keyFollowUps(
+  client: MaruhiClient,
+  origin: string,
+  projectId: string,
+): Effect.Effect<readonly string[], CliError, CliServices> {
+  return Effect.gen(function* () {
+    const verified = yield* syncProject(client, projectId);
+    const own = yield* client.auth.authConfig({}).pipe(
+      Effect.map((config) => config.serverKeyFingerprintHex ?? null),
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    const lines: string[] = [];
+    for (const grant of [...verified.state.serverGrants.values()].toSorted((a, b) =>
+      a.serverKeyFingerprintHex < b.serverKeyFingerprintHex ? -1 : 1,
+    )) {
+      if (grant.serverKeyFingerprintHex === own) {
+        continue;
+      }
+      lines.push(
+        `Another server key is granted on this chain: ${grant.serverKeyFingerprintHex} (environments ${grant.scopeEnvironmentIds.map(displayText).join(", ")}). If that deployment was compromised rather than lost, revoke it (\`maruhi server revoke ${grant.serverKeyFingerprintHex}\`) and rotate those environments (\`maruhi env rotate\`) — the promotion retires nothing`,
+      );
+    }
+    if (own !== null && !verified.state.serverGrants.has(own)) {
+      lines.push(
+        `This deployment's server key (${own}) is not granted on the chain: CI leases are not issued here until an owner runs \`maruhi server grant --server ${origin}\``,
+      );
+    }
+    return lines;
   });
 }
 

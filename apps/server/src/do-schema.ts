@@ -475,6 +475,15 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       }
     },
   },
+  // Step 8 (2026-10-02 — PF2 ruling H revision, round 3): the source's
+  // mutation counter the replica was exported at, so a sync's no-change
+  // check covers every write (attestations included) by construction
+  {
+    tables: [],
+    apply(sql) {
+      sql.exec("ALTER TABLE mirror_state ADD COLUMN last_mutation_seq INTEGER");
+    },
+  },
 ];
 
 /**

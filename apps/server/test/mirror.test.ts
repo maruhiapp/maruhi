@@ -198,7 +198,7 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     // the mirror's own at commit, never replacing one — ruling D revision)
     await queryProjectDo(
       projectId,
-      "INSERT INTO lease_bindings (binding_key_hex, ephemeral_pub_hex, expires_at) VALUES ('ab', 'zz', 9999999999999), ('source-only', 'ef', 9999999999999)",
+      "INSERT INTO lease_bindings (binding_key_hex, ephemeral_pub_hex, expires_at) VALUES ('ab', 'zz', 9999999999999), ('source-only', 'ef', 9999999999999), ('source-expired', 'ee', 1)",
     );
     const newer = await exportAll();
     const newerTrailer = parsedLine(newer[newer.length - 1]);
@@ -255,7 +255,7 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     );
     await queryProjectDo(
       projectId,
-      "INSERT INTO lease_bindings (binding_key_hex, ephemeral_pub_hex, expires_at) VALUES ('ab', 'cd', 9999999999999)",
+      "INSERT INTO lease_bindings (binding_key_hex, ephemeral_pub_hex, expires_at) VALUES ('ab', 'cd', 9999999999999), ('own-expired', 'dd', 1)",
     );
     await queryProjectDo(
       projectId,
@@ -308,7 +308,8 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(
       await queryProjectDo(projectId, "SELECT count FROM lease_windows WHERE kind = 'issued'"),
     ).toEqual([{ count: 7 }]);
-    // The mirror's own binding stays ('ab' → 'cd', not the source's 'zz'); the source's other one is merged
+    // The mirror's own binding stays ('ab' → 'cd', not the source's 'zz'); the
+    // source's other live one is merged; expired ones of either side are gone
     expect(
       await queryProjectDo(
         projectId,

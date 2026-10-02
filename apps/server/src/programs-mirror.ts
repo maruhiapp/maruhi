@@ -74,6 +74,7 @@ export interface MirrorStatusValue {
     readonly chainHeadHashHex: string;
     readonly auditMaxSeq?: number;
     readonly attestationMark?: number;
+    readonly mutationSeq?: number;
   };
 }
 
@@ -86,6 +87,8 @@ export interface MirrorPageValue {
 export interface MirrorPageRequest {
   readonly sequence: number;
   readonly lines: readonly string[];
+  /** The source's mutation counter as the export's head reported it (the trailer page records it). */
+  readonly sourceMutationSeq?: number | undefined;
 }
 
 function statusOf(sql: SqlStorage, role: Role): MirrorStatusValue {
@@ -95,7 +98,13 @@ function statusOf(sql: SqlStorage, role: Role): MirrorStatusValue {
     chainHeadSeq: marks.chainHeadSeq,
     // An initialized project always has a head (the role check passed)
     chainHeadHashHex: marks.chainHeadHashHex ?? "",
-    ...(admin ? { auditMaxSeq: marks.auditMaxSeq, attestationMark: marks.attestationMark } : {}),
+    ...(admin
+      ? {
+          auditMaxSeq: marks.auditMaxSeq,
+          attestationMark: marks.attestationMark,
+          mutationSeq: marks.mutationSeq,
+        }
+      : {}),
   };
   const state = readMirrorState(sql);
   if (state === null) {
@@ -114,6 +123,7 @@ function statusOf(sql: SqlStorage, role: Role): MirrorStatusValue {
             chainHeadHashHex: state.lastHeadHashHex,
             auditMaxSeq: state.lastAuditSeq,
             attestationMark: state.lastAttestationMark ?? 0,
+            ...(state.lastMutationSeq === null ? {} : { mutationSeq: state.lastMutationSeq }),
           },
         }),
     ...(state.expectedSequence === 0 ? {} : { nextSequence: state.expectedSequence }),
@@ -275,7 +285,13 @@ export const mirrorPageProgram = (
       return yield* refuse(invalid);
     }
     const commit = yield* staged(() =>
-      commitMirrorReplica({ storage, tables: PROJECT_DO_TABLES, state, nowMs: Date.now() }),
+      commitMirrorReplica({
+        storage,
+        tables: PROJECT_DO_TABLES,
+        state,
+        nowMs: Date.now(),
+        sourceMutationSeq: page.sourceMutationSeq ?? null,
+      }),
     );
     if (commit instanceof MirrorPageRefusedError) {
       return yield* refuse(commit);

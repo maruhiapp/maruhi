@@ -103,7 +103,7 @@ import type {
 import { variableHistoryProgram, variableVersionValuesProgram } from "./programs-history.ts";
 import type { LeaseOutcome, LeaseTokenFacts, LeaseValue } from "./programs-lease.ts";
 import { leaseProgram } from "./programs-lease.ts";
-import type { MirrorPageValue, MirrorStatusValue } from "./programs-mirror.ts";
+import type { MirrorPageRequest, MirrorPageValue, MirrorStatusValue } from "./programs-mirror.ts";
 import {
   markMirrorProgram,
   mirrorPageProgram,
@@ -1232,14 +1232,8 @@ export class ProjectChainDO extends DurableObject<Env> {
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
-  mirrorPage(
-    actor: DataActor,
-    sequence: number,
-    lines: readonly string[],
-  ): Promise<DataOutcome<MirrorPageValue>> {
-    return this.#runData(
-      mirrorPageProgram(actor, { sequence, lines }, this.ctx.storage, this.#stateCache),
-    );
+  mirrorPage(actor: DataActor, page: MirrorPageRequest): Promise<DataOutcome<MirrorPageValue>> {
+    return this.#runData(mirrorPageProgram(actor, page, this.ctx.storage, this.#stateCache));
   }
 
   // --- Audit-event read RPC (AUDIT_SPEC §6 / §7) -----------------------

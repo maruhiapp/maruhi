@@ -40,6 +40,7 @@ export interface ExportPageValue {
     readonly chainHeadSeq: number;
     readonly chainHeadHashHex: string;
     readonly auditMaxSeq: number;
+    readonly mutationSeq: number;
   };
 }
 
@@ -109,6 +110,7 @@ function pageValue(page: Extract<ExportPageResult, { kind: "page" }>): ExportPag
       // An initialized project always has a head (requireMemberState passed)
       chainHeadHashHex: page.marks.chainHeadHashHex ?? "",
       auditMaxSeq: page.auditMaxSeq,
+      mutationSeq: page.marks.mutationSeq,
     },
   };
 }
