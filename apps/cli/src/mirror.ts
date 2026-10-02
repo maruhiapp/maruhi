@@ -36,14 +36,18 @@ export interface MirrorSyncInput {
   readonly verified: VerifiedProject;
 }
 
-export interface MirrorSyncResult {
-  readonly pages: number;
-  readonly lines: number;
-  readonly restarts: number;
-  readonly committed: MirrorSyncRecord;
-  /** The mirror's status before the replication (the previous position). */
-  readonly before: MirrorStatus;
-}
+export type MirrorSyncResult =
+  | {
+      readonly kind: "replicated";
+      readonly pages: number;
+      readonly lines: number;
+      readonly restarts: number;
+      readonly committed: MirrorSyncRecord;
+      /** The mirror's status before the replication (the previous position). */
+      readonly before: MirrorStatus;
+    }
+  /** The source's three marks are the last replication's: nothing to upload (ruling H revision). */
+  | { readonly kind: "current"; readonly before: MirrorStatus };
 
 export function mirrorStatusOp(input: {
   readonly client: MaruhiClient;
@@ -126,6 +130,13 @@ export function mirrorSyncOp(input: MirrorSyncInput): Effect.Effect<MirrorSyncRe
         ),
       );
     }
+    // Nothing to upload when the source's chain head, audit seq and
+    // attestation mark are the ones the last replication brought (the
+    // source's status, read with the owner's session — the three marks are
+    // shown to admins and owners). A cron then costs one read, not an export
+    if (yield* sourceUnchanged(input, before)) {
+      return { kind: "current", before } as const;
+    }
     let restarts = 0;
     let attempt = yield* replicateOnce(input);
     while (attempt.kind === "changed" && restarts < MAX_RESTARTS) {
@@ -135,8 +146,29 @@ export function mirrorSyncOp(input: MirrorSyncInput): Effect.Effect<MirrorSyncRe
     if (attempt.kind === "changed") {
       return yield* Effect.fail(toCliError(new ExportChangedError({ reason: "project-changed" })));
     }
-    return { ...attempt, restarts, before };
+    const { pages, lines, committed } = attempt;
+    return { kind: "replicated", pages, lines, committed, restarts, before } as const;
   });
+}
+
+/** Whether the source's marks equal the last replication's (a source that does not answer the status is treated as changed). */
+function sourceUnchanged(
+  input: MirrorSyncInput,
+  before: MirrorStatus,
+): Effect.Effect<boolean, CliError> {
+  const last = before.lastSync;
+  if (last === undefined || last.attestationMark === undefined) {
+    return Effect.succeed(false);
+  }
+  return input.source.mirror.status({ params: { projectId: input.projectId } }).pipe(
+    Effect.map(
+      (source) =>
+        source.head.chainHeadHashHex === last.chainHeadHashHex &&
+        source.head.auditMaxSeq === last.auditMaxSeq &&
+        source.head.attestationMark === last.attestationMark,
+    ),
+    Effect.mapError(toCliError),
+  );
 }
 
 /** How a head stands against the verified view of the server (the same cross-check as `project export`). */
@@ -160,7 +192,7 @@ function headNote(
 
 function describeLastSync(status: MirrorStatus): string {
   return status.lastSync === undefined
-    ? "No replication since the mark"
+    ? "No replication recorded since the mark (the replication history is shown to admins and owners)"
     : `Last replication: chain head seq=${status.lastSync.chainHeadSeq}, audit seq=${status.lastSync.auditMaxSeq}, at ${formatUtcMinutes(status.lastSync.atMs)} (UTC)`;
 }
 
@@ -170,13 +202,23 @@ export function describeMirrorSync(
   verified: VerifiedProject,
   mirrorOrigin: string,
 ): string[] {
+  if (result.kind === "current") {
+    return [
+      `Mirror ${mirrorOrigin} is current for project ${verified.projectId}: the server's chain head, audit seq and attestation mark are the ones the last replication brought — nothing uploaded`,
+      describeLastSync(result.before),
+    ];
+  }
   const { committed } = result;
   const restarted =
     result.restarts === 0
       ? ""
       : ` (restarted ${countNoun(result.restarts, "time")} because the project changed while it was being exported)`;
+  const own =
+    committed.ownAuditRows === undefined
+      ? ""
+      : `; ${countNoun(committed.ownAuditRows, "audit row")} of the mirror's own (the reads and leases it served) re-appended after the replica's`;
   return [
-    `Replicated project ${verified.projectId} to ${mirrorOrigin}: chain head seq=${committed.chainHeadSeq} (${headNote(committed, verified)}); audit seq=${committed.auditMaxSeq}; ${countNoun(result.pages, "page")}, ${countNoun(result.lines, "line")}${restarted}`,
+    `Replicated project ${verified.projectId} to ${mirrorOrigin}: chain head seq=${committed.chainHeadSeq} (${headNote(committed, verified)}); audit seq=${committed.auditMaxSeq}; ${countNoun(result.pages, "page")}, ${countNoun(result.lines, "line")}${restarted}${own}`,
     `Before this run: ${describeLastSync(result.before)}`,
   ];
 }
@@ -205,7 +247,7 @@ export function describeMirrorStatus(
     verified === null
       ? "Server: unreachable (no verified view)"
       : `Server: chain head seq=${verified.state.headSeq} (the verified view)`,
-    `Mirror: ${mirrorHead}; audit seq=${status.head.auditMaxSeq}`,
+    `Mirror: ${mirrorHead}${status.head.auditMaxSeq === undefined ? "" : `; audit seq=${status.head.auditMaxSeq}`}`,
     describeLastSync(status),
     ...inProgress,
   ];

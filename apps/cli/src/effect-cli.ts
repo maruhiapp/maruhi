@@ -56,6 +56,7 @@ import {
 import {
   Cause,
   Console,
+  Duration,
   Effect,
   Exit,
   FileSystem,
@@ -75,6 +76,7 @@ import {
   GlobalFlag,
   Param,
 } from "effect/cli";
+import type { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
@@ -182,7 +184,7 @@ import { envCreateOp } from "./env-create.ts";
 import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp } from "./env-rotate.ts";
 import { CliError, cliError, usageError } from "./errors.ts";
-import { internalErrorKind, toCliError } from "./failure.ts";
+import { internalErrorKind, isNoAnswer, toCliError } from "./failure.ts";
 import { parseFingerprintFlag, parseUserFingerprintFlag } from "./fingerprint-flag.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import {
@@ -203,6 +205,7 @@ import { inviteAcceptOp, inviteCreateOp, inviteListOp, inviteRevokeOp } from "./
 import { CliIo, type CliIoShape } from "./io.ts";
 import { keyPublishOp } from "./key-publish.ts";
 import { keyRecoverOp, keyRecoveryOp, keyReserveRotateOp } from "./key-recover.ts";
+import { Keychain, tokenEntryName } from "./keychain.ts";
 import { keyGenerateOp, keyShowOp } from "./keygen.ts";
 import { loadLeasePolicy } from "./lease-policy.ts";
 import { openLedgerReserveForChange } from "./ledger-open.ts";
@@ -1101,7 +1104,13 @@ const mirrorMarkConfig = {
   source: singleValued("source", "URL of the deployment this project mirrors (required)"),
 };
 
-const mirrorPromoteConfig = { ...projectFlags() };
+const mirrorPromoteConfig = {
+  ...projectFlags(),
+  force: singleFlag(
+    "force",
+    "Promote even though the source still answers (two writable copies of the project — a split you accept)",
+  ),
+};
 
 const serverRevokeConfig = {
   ...projectFlags(),
@@ -2233,21 +2242,75 @@ function mirrorMarkCommand(flags: {
   });
 }
 
-/** `maruhi mirror promote --server <mirror>`: the owner unmarks the mirror; it accepts writes again. */
+/** How long the promotion waits for the source to answer its probe (a black-holed source must not hold a failover). */
+const PROMOTE_PROBE_TIMEOUT = Duration.seconds(10);
+
+/**
+ * `maruhi mirror promote --server <mirror>`: the owner unmarks the mirror;
+ * it accepts writes again. The source is probed first (its public
+ * `/auth/config`): a source that still answers means two writable copies
+ * after the promotion, so it is refused unless `--force` (ruling C
+ * revision — a split brain is an owner's explicit decision).
+ */
 function mirrorPromoteCommand(flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
+  readonly force?: boolean | undefined;
 }): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const context = yield* openSession(flags.server);
     const projectId = yield* resolveProjectId(flags.project, context.config);
+    const status = yield* context.client.mirror
+      .status({ params: { projectId } })
+      .pipe(Effect.mapError(toCliError));
+    if (status.sourceOrigin !== undefined && flags.force !== true) {
+      const answers = yield* sourceAnswers(status.sourceOrigin);
+      if (answers) {
+        return yield* Effect.fail(
+          cliError(
+            `The source ${status.sourceOrigin} still answers: promoting ${context.origin} now leaves two writable copies of the project (a split brain). Mark the source as a mirror of ${context.origin} first (\`maruhi mirror mark --server ${status.sourceOrigin} --source ${context.origin}\`) or take it down; pass --force to promote anyway`,
+          ),
+        );
+      }
+    }
     yield* context.client.mirror
       .unmark({ params: { projectId } })
       .pipe(Effect.mapError(toCliError));
     yield* io.log(
-      `Promoted project ${projectId} on ${context.origin}: it accepts writes again. Members point at it with \`maruhi config set server ${context.origin}\`. A former primary that comes back is a stale server: it can never be replicated over this chain — mark it as a mirror of this one while its chain has not advanced past the fork, otherwise export it away`,
+      `Promoted project ${projectId} on ${context.origin}: it accepts writes again. Members point at it with \`maruhi config set server ${context.origin}\`. A former primary that comes back is a stale server: it can never be replicated over this chain — mark it as a mirror of this one while its chain has not advanced past the fork, otherwise export it away. If the former primary was compromised rather than lost, revoke its server key (\`maruhi server revoke <fingerprint>\`) and rotate the environments it could open (\`maruhi env rotate\`)`,
     );
+  });
+}
+
+/** Whether the source deployment answers its public auth config within the probe's bound (an error of any kind = it does not). */
+function sourceAnswers(sourceOrigin: string): Effect.Effect<boolean, never, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const client = yield* makeApiClient({ baseUrl: sourceOrigin, timeout: PROMOTE_PROBE_TIMEOUT });
+    return yield* client.auth.authConfig({}).pipe(
+      Effect.map(() => true),
+      // Any HTTP answer counts, even an error; only no answer at all does not
+      Effect.catch((error) => Effect.succeed(!isNoAnswer(error))),
+    );
+  });
+}
+
+/**
+ * After `config set mirror`: a fallback that needs a login while the server
+ * is down is no fallback (ruling E revision), so the member is told now when
+ * no session for the mirror is in the keychain.
+ */
+function noteMirrorSession(raw: string): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const origin = yield* normalizeHttpOrigin(raw, "the mirror URL", {
+      fix: "mirror in your config",
+    });
+    const keychain = yield* Keychain;
+    if ((yield* keychain.get(tokenEntryName(origin))) === null) {
+      yield* logWarning(
+        `no session for ${origin} is stored: run \`maruhi login --server ${origin}\` now, while the server is up — a fallback read uses the mirror's own credential, and a login is not possible once the server is the reason you need the mirror. Rehearse it with \`maruhi pull --server ${origin}\``,
+      );
+    }
   });
 }
 
@@ -5379,6 +5442,9 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       );
       yield* store.save({ ...config, [configKey]: values.value });
       yield* io.log(`Set ${configKey}`);
+      if (configKey === "mirror") {
+        yield* noteMirrorSession(values.value);
+      }
     }),
   ).pipe(Command.withDescription("Set one non-secret setting"));
 

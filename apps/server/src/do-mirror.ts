@@ -92,6 +92,8 @@ export interface MirrorState {
   readonly lastHeadHashHex: string;
   /** The replica's audit seq at the last replication (or the mark): rows past it are the mirror's own. */
   readonly lastAuditSeq: number;
+  /** The replica's attestation mark at the last replication (or the mark); null on a row written before step 6. */
+  readonly lastAttestationMark: number | null;
 }
 
 export function readMirrorState(sql: SqlStorage): MirrorState | null {
@@ -108,6 +110,8 @@ export function readMirrorState(sql: SqlStorage): MirrorState | null {
     lastHeadSeq: Number(row["last_head_seq"]),
     lastHeadHashHex: String(row["last_head_hash_hex"]),
     lastAuditSeq: Number(row["last_audit_seq"]),
+    lastAttestationMark:
+      row["last_attestation_mark"] === null ? null : Number(row["last_attestation_mark"]),
   };
 }
 
@@ -115,13 +119,14 @@ export function readMirrorState(sql: SqlStorage): MirrorState | null {
 export function markMirror(sql: SqlStorage, sourceOrigin: string, nowMs: number): void {
   const marks = readWatermarks(sql);
   sql.exec(
-    `INSERT INTO mirror_state (id, source_origin, marked_at, expected_sequence, staging_table, last_synced_at, last_head_seq, last_head_hash_hex, last_audit_seq)
-     VALUES (1, ?, ?, 0, NULL, NULL, ?, ?, ?)`,
+    `INSERT INTO mirror_state (id, source_origin, marked_at, expected_sequence, staging_table, last_synced_at, last_head_seq, last_head_hash_hex, last_audit_seq, last_attestation_mark)
+     VALUES (1, ?, ?, 0, NULL, NULL, ?, ?, ?, ?)`,
     sourceOrigin,
     nowMs,
     marks.chainHeadSeq,
     marks.chainHeadHashHex ?? "",
     marks.auditMaxSeq,
+    marks.attestationMark,
   );
 }
 
@@ -315,6 +320,10 @@ export interface MirrorCommit {
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
   readonly auditMaxSeq: number;
+  /** The replica's attestation mark (the source's latest head-attestation acceptance time). */
+  readonly attestationMark: number;
+  /** The mirror's own audit rows re-appended after the replica's (ruling G revision). */
+  readonly ownAuditRows: number;
 }
 
 /** A page was staged, or the trailer page was staged and the synchronous checks passed (the chain verification and the commit follow). */
@@ -384,10 +393,22 @@ function verifyChainExtension(sql: SqlStorage): void {
 }
 
 /** Replaces every snapshot table but the kept ones with its staging table (inside the caller's transaction). */
+/**
+ * The source's first-come bindings are merged into the mirror's own (never
+ * replacing one — ruling D revision): a workload whose token was bound on
+ * the source cannot bind the same token to another key on the mirror, and
+ * the mirror's own bindings stay.
+ */
+const MERGED_TABLE = "lease_bindings";
+
 function swapTables(sql: SqlStorage, tables: readonly string[]): void {
   for (const table of tables) {
     const staging = stagingOf(table);
     if (MIRROR_KEPT_TABLES.includes(table)) {
+      if (table === MERGED_TABLE && hasTable(sql, staging)) {
+        const columns = sql.exec(`SELECT * FROM ${staging} LIMIT 0`).columnNames.join(", ");
+        sql.exec(`INSERT OR IGNORE INTO ${table} (${columns}) SELECT ${columns} FROM ${staging}`);
+      }
       sql.exec(`DROP TABLE IF EXISTS ${staging}`);
       continue;
     }
@@ -490,6 +511,9 @@ export function commitMirrorReplica(input: MirrorCommitInput): MirrorCommit {
         `CREATE TABLE ${LOCAL_AUDIT_TABLE} AS SELECT * FROM ${AUDIT_TABLE} WHERE seq > ?`,
         state.lastAuditSeq,
       );
+      const ownAuditRows = Number(
+        sql.exec(`SELECT COUNT(*) AS n FROM ${LOCAL_AUDIT_TABLE}`).one()["n"],
+      );
       swapTables(sql, input.tables);
       // … and follow the replica's rows (contiguous past the last position,
       // so a shift keeps their order)
@@ -510,13 +534,16 @@ export function commitMirrorReplica(input: MirrorCommitInput): MirrorCommit {
         chainHeadSeq: marks.chainHeadSeq,
         chainHeadHashHex: marks.chainHeadHashHex ?? "",
         auditMaxSeq: replicaAuditSeq,
+        attestationMark: marks.attestationMark,
+        ownAuditRows,
       };
       sql.exec(
-        `UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL, last_synced_at = ?, last_head_seq = ?, last_head_hash_hex = ?, last_audit_seq = ? WHERE id = 1`,
+        `UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL, last_synced_at = ?, last_head_seq = ?, last_head_hash_hex = ?, last_audit_seq = ?, last_attestation_mark = ? WHERE id = 1`,
         commit.atMs,
         commit.chainHeadSeq,
         commit.chainHeadHashHex,
         commit.auditMaxSeq,
+        commit.attestationMark,
       );
       return commit;
     });

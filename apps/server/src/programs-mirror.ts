@@ -20,7 +20,7 @@
 // by the rows the mirror itself appends while serving reads and leases).
 
 import { ChainEntrySchema } from "@maruhi/api-schema";
-import type { ChainEntry } from "@maruhi/crypto";
+import type { ChainEntry, Role } from "@maruhi/crypto";
 import {
   canonicalChainEntryBytes,
   computeChainEntryHash,
@@ -31,7 +31,7 @@ import { Effect, Schema } from "effect";
 import { AuditStore } from "./audit-store.ts";
 import type { ChainStore, StateCache } from "./chain-store.ts";
 import type { DataActor, DataRejectedError } from "./data-plane.ts";
-import { rejectData, requireMemberState } from "./data-plane.ts";
+import { rejectData, requireMemberState, roleAtLeast } from "./data-plane.ts";
 import {
   commitMirrorReplica,
   discardMirrorStaging,
@@ -52,17 +52,28 @@ import {
 } from "./policy.ts";
 import { ensureStorageAdmitsGrowth, StorageMeter } from "./storage-guard.ts";
 
-/** The status as the worker returns it (the wire shape of api-schema's MirrorStatusSchema). */
+/** The last replication as the status reports it (the commit's position; the re-appended count is a commit's answer only). */
+export type MirrorSyncPosition = Omit<MirrorCommit, "ownAuditRows">;
+
+/**
+ * The status as the worker returns it (the wire shape of api-schema's
+ * MirrorStatusSchema). The audit seq, the attestation mark and the last
+ * replication are shown to admins and owners only (ruling G revision —
+ * the audit seq is never distributed below admin, AUDIT_SPEC §7 C1); every
+ * member sees the mark, the source and the chain head (the fallback read
+ * checks them before it trusts a mirror).
+ */
 export interface MirrorStatusValue {
   readonly mirror: boolean;
   readonly sourceOrigin?: string;
   readonly markedAtMs?: number;
-  readonly lastSync?: MirrorCommit;
+  readonly lastSync?: MirrorSyncPosition;
   readonly nextSequence?: number;
   readonly head: {
     readonly chainHeadSeq: number;
     readonly chainHeadHashHex: string;
-    readonly auditMaxSeq: number;
+    readonly auditMaxSeq?: number;
+    readonly attestationMark?: number;
   };
 }
 
@@ -77,13 +88,14 @@ export interface MirrorPageRequest {
   readonly lines: readonly string[];
 }
 
-function statusOf(sql: SqlStorage): MirrorStatusValue {
+function statusOf(sql: SqlStorage, role: Role): MirrorStatusValue {
   const marks = readWatermarks(sql);
+  const admin = roleAtLeast(role, "admin");
   const head = {
     chainHeadSeq: marks.chainHeadSeq,
     // An initialized project always has a head (the role check passed)
     chainHeadHashHex: marks.chainHeadHashHex ?? "",
-    auditMaxSeq: marks.auditMaxSeq,
+    ...(admin ? { auditMaxSeq: marks.auditMaxSeq, attestationMark: marks.attestationMark } : {}),
   };
   const state = readMirrorState(sql);
   if (state === null) {
@@ -93,7 +105,7 @@ function statusOf(sql: SqlStorage): MirrorStatusValue {
     mirror: true,
     sourceOrigin: state.sourceOrigin,
     markedAtMs: state.markedAtMs,
-    ...(state.lastSyncedAtMs === null
+    ...(state.lastSyncedAtMs === null || !admin
       ? {}
       : {
           lastSync: {
@@ -101,6 +113,7 @@ function statusOf(sql: SqlStorage): MirrorStatusValue {
             chainHeadSeq: state.lastHeadSeq,
             chainHeadHashHex: state.lastHeadHashHex,
             auditMaxSeq: state.lastAuditSeq,
+            attestationMark: state.lastAttestationMark ?? 0,
           },
         }),
     ...(state.expectedSequence === 0 ? {} : { nextSequence: state.expectedSequence }),
@@ -113,7 +126,9 @@ export const mirrorStatusProgram = (
   sql: SqlStorage,
   cache: StateCache,
 ): Effect.Effect<MirrorStatusValue, DataRejectedError, ChainStore> =>
-  Effect.map(requireMemberState(actor.userId, "reader", cache), () => statusOf(sql));
+  Effect.map(requireMemberState(actor.userId, "reader", cache), ({ member }) =>
+    statusOf(sql, member.role),
+  );
 
 export const markMirrorProgram = (
   actor: DataActor,
@@ -127,7 +142,7 @@ export const markMirrorProgram = (
       return yield* rejectData({ kind: "mirror-state", reason: "already-mirror" });
     }
     markMirror(sql, sourceOrigin, Date.now());
-    return statusOf(sql);
+    return statusOf(sql, "owner");
   });
 
 /** The promotion (ruling C): the mark goes and the project accepts writes again. */
@@ -142,7 +157,7 @@ export const unmarkMirrorProgram = (
       return yield* rejectData({ kind: "mirror-state", reason: "not-mirror" });
     }
     unmarkMirror(storage, PROJECT_DO_TABLES);
-    return statusOf(storage.sql);
+    return statusOf(storage.sql, "owner");
   });
 
 /** A staging refusal as the data-plane rejection the worker maps to 422 MirrorSyncRejected. */

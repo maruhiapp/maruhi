@@ -133,10 +133,24 @@ function renderLeaseUnavailable(error: LeaseUnavailableError): string {
  * could not interpret). The read-only fallback to a configured mirror
  * (PF2 — AUTH_SPEC §11-7) fires on this and on nothing else.
  */
+/**
+ * Whether nothing answered at all (a transport failure or the request
+ * bound — never an HTTP status, not even a 500): the question of a
+ * promotion's probe ("is the source gone?"), narrower than
+ * {@link isUnreachable} ("should a read-only fallback be tried?").
+ */
+export function isNoAnswer(error: unknown): boolean {
+  return error instanceof HttpClientError.HttpClientError && error.response === undefined;
+}
+
 function isUnreachable(error: HttpClientError.HttpClientError): boolean {
   const status = error.response?.status;
+  // A 500 is the server failing to answer the read (a crashed handler), not
+  // an answer about the read (a 403, a 404): a read-only fallback is as
+  // right for it as for a gateway's 502 (PF2 ruling E revision)
   return (
     status === undefined ||
+    status === 500 ||
     status === 502 ||
     status === 503 ||
     status === 504 ||
@@ -152,6 +166,14 @@ function renderHttpFailure(error: HttpClientError.HttpClientError): string {
   }
   if (status !== undefined) {
     return `Cannot interpret the server response (HTTP ${status}). Check the server URL, and that the CLI and server versions match`;
+  }
+  // The request bound of api.ts names itself (a server that accepted the
+  // connection and never answered is told apart from one nothing reached)
+  if (
+    error.reason instanceof HttpClientError.TransportError &&
+    error.reason.description !== undefined
+  ) {
+    return `The server did not answer (${error.reason.description}; check your network and the server URL)`;
   }
   return "Failed to connect to the server (check your network and the server URL)";
 }

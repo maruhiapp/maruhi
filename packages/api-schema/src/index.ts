@@ -194,6 +194,7 @@ export {
   MirrorMarkSchema,
   MirrorSourceOriginSchema,
   type MirrorStatus,
+  MirrorHeadSchema,
   MirrorStatusSchema,
   type MirrorSyncRecord,
   MirrorSyncRecordSchema,

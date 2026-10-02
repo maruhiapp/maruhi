@@ -167,3 +167,31 @@ classification, no plaintext or key material in pages or reports.
 ## 7. Spec text status
 
 Applied in this session: CRYPTO_SPEC §9.2 (mirrors — one grant per server key, the extension rule, no writes, the client's unchanged duties, promotion, the non-guarantees) and AUTH_SPEC §11-7 (the mark, the read-only guard and the mint's vocabulary, the pages endpoint and its acceptance rules, the authorization order, the client fallback and credentials, what a replication does not carry). AUDIT_SPEC is unchanged (no new event; the re-append keeps §7 C1's wire row id).
+
+## 8. Exhaustion loop, round 2 and later (owner-directed, 2026-10-02)
+
+After the review round the owner asked whether every ruling had been looped
+until no candidate remained; the answer was no (one enumeration plus one
+self-review, several rulings closed implicitly), and the owner directed
+additional rounds over **every** ruling until each closes. Each round sends
+independent adversarial agents over the rulings still taking candidates;
+the designer judges under the delegation; adopted candidates are
+implemented in the same change; a ruling is **CLOSED** at the round whose
+agents found nothing strictly or structurally better.
+
+### 8-1. Round 2 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| A (the mark) | nothing new | **CLOSED (round 2)** |
+| B (read-only) | guard the project-delete API | **CLOSED (round 2)** — no such API exists; nothing to guard |
+| C (bootstrap / promotion) | C-5: a split-brain guard on `promote` (probe the source; refuse while it answers unless `--force`); C-4: promote while the source's chain is ahead (needs the PF3 G-2 identity claim) | **C-5 adopted** — any HTTP answer counts as alive (even a 500: the server process is up), only no answer within 10 s as gone; the refusal names the two honest paths (mark the source as a mirror of the new primary, or take it down). C-4 deferred |
+| D (replication) | D-7: merge the source's `lease_bindings` at commit (never replacing the mirror's); D-11: order chain_entries first; D-17: two syncers overlapping; D-18: a sync token below admin | **D-7 adopted** (`INSERT OR IGNORE` from the staging — a token bound on the source cannot bind to another key on the mirror); D-11 rejected (the premise is wrong: chain_entries is last by the restore invariant, which the mirror's staging relies on); D-17 deferred, recorded as a residual (two overlapping syncers refuse each other's pages as `sequence-mismatch`; the later one restarts); D-18 deferred (owner) |
+| E (fallback) | E-7: a per-request bound on the client; E-14: read the mirror's mark before a fallback read (promoted → "set config server"; another source → refuse); E-15: a 500 is fallback-eligible; E-17: `config set mirror` warns when no session for the mirror is stored; E-16: fall back on a 401 | **E-7 adopted** (30 s per request, a timeout is a transport failure — a server that accepts the connection and never answers held a read forever and the fallback never fired); **E-14 adopted** (with the mirror's own credential, before the read; the CI lease path has no member credential and is documented as unchecked); **E-15 adopted** (a crashed handler is not an answer about the read); **E-17 adopted** as the mitigation of the structural problem (a login is not possible once the server is the reason the mirror is needed — the structural fix, one session for both deployments, needs the PF3 G-2 identity claim; deferred); E-16 rejected (a 401 is an answer about the credential) |
+| F (CI leases) | F-6: say what to do with a compromised former primary's key | **Adopted** (the promotion message and the guide: revoke the key, rotate the environments it could open — the promotion itself retires nothing) |
+| G (audit) | G-5: the audit seq in the status is admin-and-above only (AUDIT_SPEC §7 C1 — `seq` is never distributed below admin); G-6: report the re-appended own rows | **G-5 adopted** (`head.auditMaxSeq`, `head.attestationMark` and `lastSync` are shown to admins and owners; every member sees the mark, the source and the chain head — what the fallback check needs); **G-6 adopted** (`ownAuditRows` in the commit's answer and the sync report) |
+| H (who syncs) | H-3: a no-change short-circuit (the source's status against the last replication); H-4: a replicate-only token permission; H-6: a server-side sync | **H-3 adopted** — the three marks (chain head, audit seq, attestation mark — the last is stored in `mirror_state` by schema step 6, since an attestation appends no audit row) compared against the source's `GET /projects/:id/mirror`; equal = nothing uploaded, so a cron costs one read. H-4 deferred (owner); H-6 rejected (rulings D-1 / D-2) |
+| I (no crypto) | nothing new | **CLOSED (round 2)** |
+
+Rulings C, D, E, F, G and H received adopted candidates in this round and
+stay open for round 3.

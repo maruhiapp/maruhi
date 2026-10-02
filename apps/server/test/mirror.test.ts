@@ -58,9 +58,17 @@ interface WirePage {
 interface WireStatus {
   readonly mirror: boolean;
   readonly sourceOrigin?: string;
-  readonly lastSync?: { readonly chainHeadSeq: number; readonly auditMaxSeq: number };
+  readonly lastSync?: {
+    readonly chainHeadSeq: number;
+    readonly auditMaxSeq: number;
+    readonly attestationMark?: number;
+  };
   readonly nextSequence?: number;
-  readonly head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string };
+  readonly head: {
+    readonly chainHeadSeq: number;
+    readonly chainHeadHashHex: string;
+    readonly auditMaxSeq?: number;
+  };
 }
 
 interface WirePageOutcome {
@@ -186,6 +194,12 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     await appendOperation(fixture, OWNER, changeRoleOperation(READER, "member"));
     await createVariableOk(dek, "var-second", "SECOND", "two");
     expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
+    // The source's first-come bindings travel with the export (merged into
+    // the mirror's own at commit, never replacing one — ruling D revision)
+    await queryProjectDo(
+      projectId,
+      "INSERT INTO lease_bindings (binding_key_hex, ephemeral_pub_hex, expires_at) VALUES ('ab', 'zz', 9999999999999), ('source-only', 'ef', 9999999999999)",
+    );
     const newer = await exportAll();
     const newerTrailer = parsedLine(newer[newer.length - 1]);
     expect(Number(newerTrailer["chainHeadSeq"])).toBe(Number(olderTrailer["chainHeadSeq"]) + 1);
@@ -261,12 +275,26 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
         chainHeadSeq: newerTrailer["chainHeadSeq"],
         chainHeadHashHex: newerTrailer["chainHeadHashHex"],
         auditMaxSeq: newerTrailer["auditMaxSeq"],
+        attestationMark: 0,
+        // The rows the mirror appended while serving (the pull above)
+        ownAuditRows: ownRows,
       },
     });
-    const synced = await statusOk();
-    expect(synced.lastSync).toMatchObject({ chainHeadSeq: newerTrailer["chainHeadSeq"] });
+    const synced = await statusOk(OWNER);
+    expect(synced.lastSync).toMatchObject({
+      chainHeadSeq: newerTrailer["chainHeadSeq"],
+      attestationMark: 0,
+    });
     expect(synced.nextSequence).toBeUndefined();
     expect(synced.head.chainHeadHashHex).toBe(newerTrailer["chainHeadHashHex"]);
+    expect(synced.head.auditMaxSeq).toBeGreaterThanOrEqual(Number(newerTrailer["auditMaxSeq"]));
+    // A reader sees the mark, the source and the chain head — never the
+    // audit seq or the replication history (AUDIT_SPEC §7 C1)
+    const readerView = await statusOk(READER);
+    expect(readerView.sourceOrigin).toBe(SOURCE);
+    expect(readerView.head.chainHeadHashHex).toBe(newerTrailer["chainHeadHashHex"]);
+    expect(readerView.head.auditMaxSeq).toBeUndefined();
+    expect(readerView.lastSync).toBeUndefined();
     // The mirror serves the replica now
     const chain = await requestJson("GET", "/chain", token(READER));
     expect(chain.status).toBe(200);
@@ -280,9 +308,16 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(
       await queryProjectDo(projectId, "SELECT count FROM lease_windows WHERE kind = 'issued'"),
     ).toEqual([{ count: 7 }]);
-    expect(await queryProjectDo(projectId, "SELECT ephemeral_pub_hex FROM lease_bindings")).toEqual(
-      [{ ephemeral_pub_hex: "cd" }],
-    );
+    // The mirror's own binding stays ('ab' → 'cd', not the source's 'zz'); the source's other one is merged
+    expect(
+      await queryProjectDo(
+        projectId,
+        "SELECT binding_key_hex, ephemeral_pub_hex FROM lease_bindings ORDER BY binding_key_hex",
+      ),
+    ).toEqual([
+      { binding_key_hex: "ab", ephemeral_pub_hex: "cd" },
+      { binding_key_hex: "source-only", ephemeral_pub_hex: "ef" },
+    ]);
     expect(await queryProjectDo(projectId, "SELECT count FROM attestation_windows")).toEqual([
       { count: 3 },
     ]);

@@ -663,18 +663,30 @@ export needs the owner role) and uploads the pages to the mirror (your
 session there — from a cron, `MARUHI_TOKEN` / `MARUHI_TOKEN_ORIGIN` for the
 primary and `MARUHI_MIRROR_TOKEN` for the mirror). The mirror accepts a
 replica only if it extends what it already holds; the result names both
-heads. `maruhi mirror status` compares the two at any time (and reports
-the mirror's head alone while the primary is down). Across a sync
-the mirror keeps its own lease windows and the audit rows of the reads and
-leases it served.
+heads and how many of the mirror's own audit rows (the reads and leases it
+served) were re-appended after the replica's. When the primary's chain
+head, audit seq and attestation mark are the ones the last sync brought,
+the command uploads nothing and says the mirror is current — a cron can run
+it every few minutes. `maruhi mirror status` compares the two at any time
+(and reports the mirror's head alone while the primary is down). Across a
+sync the mirror keeps its own lease windows and rate limits, merges the
+primary's first-come token bindings into its own, and keeps the audit rows
+of the reads and leases it served.
 
 **3. Use it**: members set `maruhi config set mirror https://mirror.example.com`
 (or pass `--mirror` to `run` / `pull`; CI workflows pass `--mirror` to
-`ci run` / `ci sync`). The primary is always tried first; when it does not
-answer (no response, a gateway error) the read is retried against the
-mirror and the CLI says so on stderr. Everything is verified as usual — a
-mirror that is behind what the member already verified is refused, not
-silently used. An answer of the primary (a 403, a 404) is never retried.
+`ci run` / `ci sync`). The command warns when no session for the mirror is
+stored on that machine: log in there now (`maruhi login --server <mirror>`)
+and rehearse with `maruhi pull --server <mirror>` — a login is not possible
+once the primary is the reason you need the mirror. The primary is always
+tried first; when it does not answer (no response, no answer within 30
+seconds, a 500, a gateway error) the read is retried against the mirror
+and the CLI says so on stderr. Before the retry the CLI reads the mirror's
+mark: a copy that was promoted, or that mirrors another deployment, is not
+read (a promoted copy is a primary — point `config set server` at it).
+Everything is verified as usual — a mirror that is behind what the member
+already verified is refused, not silently used. An answer of the primary
+about the read (a 403, a 404) is never retried.
 
 **4. CI leases from the mirror**: the owner grants the mirror's server key
 on the primary — `maruhi server grant --key-from https://mirror.example.com
@@ -687,8 +699,15 @@ token with the mirror's origin as audience unless `--audience` is given).
 **5. Promotion**: if the primary will not come back, the owner runs
 `maruhi mirror promote --server https://mirror.example.com --project <id>`
 (the mark is removed; the mirror accepts writes) and members set
-`config set server` to it. A stale old primary can never be synced over the
-promoted one.
+`config set server` to it. The command probes the primary first and refuses
+while it still answers — promoting beside a live primary leaves two
+writable copies; mark the primary as a mirror of the new one first, take it
+down, or pass `--force`. A stale old primary can never be synced over the
+promoted one. If the primary was **compromised** rather than lost, also
+revoke its server key on the promoted project (`maruhi server revoke
+<fingerprint>`) and rotate the environments that key could open
+(`maruhi env rotate`): the wraps it holds are retired by the rotation, not
+by the promotion.
 
 What a mirror does not do: it does not forward writes, it is as fresh as its
 last sync, and the identities of members added after the bootstrap are not

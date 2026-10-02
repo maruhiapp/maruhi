@@ -440,6 +440,16 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
        )`);
     },
   },
+  // Step 6 (2026-10-02 — PF2 ruling H revision, AUTH_SPEC §11-7): the
+  // replica's attestation mark at the last replication, so a sync can tell
+  // "nothing changed on the source" from the three marks (chain head, audit
+  // seq, attestation mark) without uploading a replica
+  {
+    tables: [],
+    apply(sql) {
+      sql.exec("ALTER TABLE mirror_state ADD COLUMN last_attestation_mark INTEGER");
+    },
+  },
 ];
 
 /**

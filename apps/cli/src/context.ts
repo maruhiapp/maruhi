@@ -23,6 +23,7 @@ import type { DekRecipient } from "./deks.ts";
 import { ownDeviceOrFail } from "./device-key.ts";
 import { syncOwnDevices } from "./device-sync.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
+import { toCliError } from "./failure.ts";
 import { checkChainFloor, type FloorHandle, makeFloorHandle } from "./floor-check.ts";
 import { formatFloorConflicts, formatFloorViolation } from "./floor-evidence.ts";
 import {
@@ -145,11 +146,48 @@ export function withMirrorFallback<A>(
               yield* io.logError(
                 `${error.message}. Retrying this read against the mirror ${mirror} (a read-only replica that may be behind the server; writes are never retried)`,
               );
+              yield* ensureMirrorOf(config, mirror, primary, flags.project);
               return yield* read({ ...flags, server: mirror, mirrorOf: primary });
             })
           : Effect.fail(error),
       ),
     );
+  });
+}
+
+/**
+ * Before a fallback read: the mirror must say it is a mirror of this
+ * server (ruling E revision). A project that was promoted there is a
+ * primary now (the member's config should point at it); a mirror of
+ * another deployment is not this project's replica. The check reads the
+ * mark with the mirror's own credential, like the read that follows.
+ */
+function ensureMirrorOf(
+  config: CliConfig,
+  mirror: string,
+  primary: string,
+  projectFlag: string | undefined,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const projectId = yield* resolveProjectId(projectFlag, config);
+    const session = yield* openSessionWith(config, mirror, "mirror");
+    const status = yield* session.client.mirror
+      .status({ params: { projectId } })
+      .pipe(Effect.mapError(toCliError));
+    if (!status.mirror) {
+      return yield* Effect.fail(
+        cliError(
+          `${mirror} does not hold this project as a mirror (it was promoted, or never marked). If it is the primary now, point the CLI at it: \`maruhi config set server ${mirror}\` — a promoted copy is not read as a fallback`,
+        ),
+      );
+    }
+    if (status.sourceOrigin !== primary) {
+      return yield* Effect.fail(
+        cliError(
+          `${mirror} holds this project as a mirror of ${status.sourceOrigin ?? "another deployment"}, not of ${primary}: it is not this server's replica, so the read is not retried there (fix \`mirror\` in your config)`,
+        ),
+      );
+    }
   });
 }
 

@@ -20,9 +20,13 @@
 //     appends the grant on the server
 
 import { type ChainEntry, computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
+import { Duration, Effect } from "effect";
+import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import { makeApiClient } from "../src/api.ts";
 import { runCli } from "../src/cli.ts";
+import { toCliError } from "../src/failure.ts";
 import { masterKeyEntryName, tokenEntryName } from "../src/keychain.ts";
 import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
 import { acceptAppendedEntry, chainHandlerOf } from "./support/chain-handler.ts";
@@ -148,12 +152,21 @@ interface SourceOptions {
   changedPages?: number;
 }
 
+/** The server's own `GET /projects/:id/mirror` answer (null = not served); a test sets it and resets it. */
+let sourceStatus: Record<string, unknown> | null = null;
+
 /** The server: the chain and the export's pages. */
 function sourceHandlers(options: SourceOptions = {}): MockHandler[] {
   const lines = snapshotLines();
   const state = { changedPages: options.changedPages ?? 0 };
   return [
     chainHandlerOf(built),
+    (request: MockRequest) =>
+      request.method === "GET" &&
+      request.path === `/projects/${built.projectId}/mirror` &&
+      sourceStatus !== null
+        ? { status: 200, json: sourceStatus }
+        : null,
     (request: MockRequest) => {
       if (request.method !== "GET" || request.path !== `/projects/${built.projectId}/export`) {
         return null;
@@ -273,7 +286,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     expect(logs).toContain(
       `Replicated project ${built.projectId} to ${pair.mirror.origin}: chain head seq=2 (in sync with the verified view); audit seq=4; 2 pages, 5 lines`,
     );
-    expect(logs).toContain("Before this run: No replication since the mark");
+    expect(logs).toContain("Before this run: No replication recorded since the mark");
     expect(logs).not.toContain("chain.genesis");
     // The export came from the server, the pages went to the mirror
     expect(pair.source.requests.filter((r) => r.path.endsWith("/export"))).toHaveLength(2);
@@ -290,6 +303,35 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     expect(await runCli(["mirror", "sync"], pair.env.layer)).toBe(0);
     expect(pair.state.pages.map((page) => page.sequence)).toEqual([0, 0, 1]);
     expect(pair.env.logs.join("\n")).toContain("restarted 1 time because the project changed");
+  });
+
+  it("uploads nothing when the server's chain head, audit seq and attestation mark are the last replication's", async () => {
+    const pair = await startPair();
+    const head = headOfChain();
+    pair.state.status = {
+      ...pair.state.status,
+      lastSync: { atMs: 5, ...head, attestationMark: 0 },
+    };
+    // The server's own status (the owner sees the three marks)
+    sourceStatus = { mirror: false, head: { ...head, attestationMark: 0 } };
+    try {
+      expect(await runCli(["mirror", "sync", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
+        0,
+      );
+      expect(pair.env.logs.join("\n")).toContain(
+        `Mirror ${pair.mirror.origin} is current for project ${built.projectId}`,
+      );
+      expect(pair.state.pages).toHaveLength(0);
+      // A moved attestation mark alone brings a replica
+      sourceStatus = { mirror: false, head: { ...head, attestationMark: 99 } };
+      expect(await runCli(["mirror", "sync", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
+        0,
+      );
+      expect(pair.state.pages).toHaveLength(2);
+      expect(pair.env.logs.join("\n")).toContain("Replicated project");
+    } finally {
+      sourceStatus = null;
+    }
   });
 
   it("fails with the mirror's reason: not marked, a refused replica, and the mirror URL being the server", async () => {
@@ -331,29 +373,55 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     expect(logs).toContain(
       "Mirror: chain head seq=1 — behind the verified view by 1 chain entry (seq 1 of 2); audit seq=4",
     );
-    expect(logs).toContain("No replication since the mark");
+    expect(logs).toContain("No replication recorded since the mark");
 
     const fresh = await startPair({ marked: false });
+    // The source still answers here (the pair's server): a promotion would
+    // leave two writable copies, so it is refused unless forced
     expect(
       await runCli(
-        ["mirror", "mark", "--server", fresh.mirror.origin, "--source", "https://my.maruhi.app"],
+        ["mirror", "mark", "--server", fresh.mirror.origin, "--source", fresh.source.origin],
         fresh.env.layer,
       ),
     ).toBe(0);
     expect(fresh.state.status).toMatchObject({
       mirror: true,
-      sourceOrigin: "https://my.maruhi.app",
+      sourceOrigin: fresh.source.origin,
     });
     expect(fresh.env.logs.join("\n")).toContain(
-      `Marked project ${built.projectId} on ${fresh.mirror.origin} as a mirror of https://my.maruhi.app`,
+      `Marked project ${built.projectId} on ${fresh.mirror.origin} as a mirror of ${fresh.source.origin}`,
     );
     expect(
       await runCli(["mirror", "promote", "--server", fresh.mirror.origin], fresh.env.layer),
+    ).toBe(1);
+    expect(fresh.env.errors.join("\n")).toContain(
+      `The source ${fresh.source.origin} still answers: promoting ${fresh.mirror.origin} now leaves two writable copies`,
+    );
+    expect(fresh.state.status).toMatchObject({ mirror: true });
+    expect(
+      await runCli(
+        ["mirror", "promote", "--server", fresh.mirror.origin, "--force"],
+        fresh.env.layer,
+      ),
     ).toBe(0);
     expect(fresh.state.status).toMatchObject({ mirror: false });
     expect(fresh.env.logs.join("\n")).toContain(
       `Promoted project ${built.projectId} on ${fresh.mirror.origin}`,
     );
+    // A source nothing answers at: the promotion goes through
+    const gone = await startPair({ marked: false });
+    const dead = await deadOrigin();
+    expect(
+      await runCli(
+        ["mirror", "mark", "--server", gone.mirror.origin, "--source", dead],
+        gone.env.layer,
+      ),
+    ).toBe(0);
+    expect(
+      await runCli(["mirror", "promote", "--server", gone.mirror.origin], gone.env.layer),
+    ).toBe(0);
+    expect(gone.state.status).toMatchObject({ mirror: false });
+    expect(gone.env.logs.join("\n")).toContain("revoke its server key");
     // --source is required, and must not be the server itself
     expect(await runCli(["mirror", "mark", "--server", fresh.mirror.origin], fresh.env.layer)).toBe(
       2,
@@ -398,8 +466,8 @@ function seedMirrorSession(env: TestEnv, mirrorOrigin: string): void {
   env.keychain.delete(masterKeyEntryName(mirrorOrigin, owner.userId));
 }
 
-/** The mirror as a full read server (chain + pull), plus the status it reports. */
-function readMirrorHandlers(): MockHandler[] {
+/** The mirror as a full read server (chain + pull), plus the status it reports (a mirror of `sourceOrigin`). */
+function readMirrorHandlers(sourceOrigin: string, status?: Record<string, unknown>): MockHandler[] {
   const value = makeValueEnvironmentServer({
     chain: built,
     owner,
@@ -408,13 +476,15 @@ function readMirrorHandlers(): MockHandler[] {
     wrap,
     initialVariables: [alpha],
   });
-  return [...value.handlers, ...mirrorHandlers(mirrorState())];
+  const state = mirrorState();
+  state.status = status ?? { ...state.status, sourceOrigin };
+  return [...value.handlers, ...mirrorHandlers(state)];
 }
 
 describe("the read-only fallback to a mirror (PF2)", () => {
   it("pull retries against the mirror when the server does not answer, and says so", async () => {
-    const mirror = await start(readMirrorHandlers());
     const dead = await deadOrigin();
+    const mirror = await start(readMirrorHandlers(dead));
     const env = await makeTestEnv();
     seedSession(env, dead, owner);
     seedMirrorSession(env, mirror.origin);
@@ -430,13 +500,107 @@ describe("the read-only fallback to a mirror (PF2)", () => {
     expect(errors).toContain(`Retrying this read against the mirror ${mirror.origin}`);
     expect(env.logs.join("\n")).toContain("Sync and verification OK: 1 variable");
     expect(mirror.requests.some((r) => r.path.endsWith("/pull"))).toBe(true);
+    // The mark was checked first, with the mirror's own session
+    expect(mirror.requests[0]?.path).toBe(`/projects/${built.projectId}/mirror`);
+  });
+
+  it("a promoted copy, or a mirror of another deployment, is not read as a fallback", async () => {
+    const dead = await deadOrigin();
+    const promoted = await start(readMirrorHandlers(dead, { mirror: false, head: headOfChain() }));
+    const env = await makeTestEnv();
+    seedSession(env, dead, owner);
+    seedMirrorSession(env, promoted.origin);
+    await seedConfig(env, {
+      server: dead,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+      mirror: promoted.origin,
+    });
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      `${promoted.origin} does not hold this project as a mirror (it was promoted, or never marked)`,
+    );
+    expect(errors).toContain(`maruhi config set server ${promoted.origin}`);
+    expect(promoted.requests.some((r) => r.path.endsWith("/pull"))).toBe(false);
+
+    const foreign = await start(readMirrorHandlers("https://elsewhere.example"));
+    const other = await makeTestEnv();
+    seedSession(other, dead, owner);
+    seedMirrorSession(other, foreign.origin);
+    await seedConfig(other, {
+      server: dead,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+      mirror: foreign.origin,
+    });
+    expect(await runCli(["pull"], other.layer)).toBe(1);
+    expect(other.errors.join("\n")).toContain(
+      `holds this project as a mirror of https://elsewhere.example, not of ${dead}`,
+    );
+    expect(foreign.requests.some((r) => r.path.endsWith("/pull"))).toBe(false);
+  });
+
+  it("a 500 from the server is retried (a crashed handler is not an answer about the read)", async () => {
+    const crashed = await start([
+      () => ({ status: 500, bodyText: "internal error", contentType: "text/plain" }),
+    ]);
+    const mirror = await start(readMirrorHandlers(crashed.origin));
+    const env = await makeTestEnv();
+    seedSession(env, crashed.origin, owner);
+    seedMirrorSession(env, mirror.origin);
+    await seedConfig(env, {
+      server: crashed.origin,
+      defaultProject: built.projectId,
+      defaultEnvironment: ENV_ID,
+      mirror: mirror.origin,
+    });
+    expect(await runCli(["pull"], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain("Retrying this read against the mirror");
+  });
+
+  it("a server that accepts the connection and never answers is unreachable after the request bound", async () => {
+    const silent = await start([
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve({ status: 200, json: {} }), 1500);
+        }),
+    ]);
+    const failure = await Effect.runPromise(
+      makeApiClient({ baseUrl: silent.origin, timeout: Duration.millis(200) }).pipe(
+        Effect.flatMap((client) => client.auth.authConfig({})),
+        Effect.map(() => null),
+        Effect.catch((error) => Effect.succeed(toCliError(error))),
+        Effect.provide(FetchHttpClient.layer),
+      ),
+    );
+    expect(failure?.unreachable).toBe(true);
+    expect(failure?.message).toContain("The server did not answer (no answer within 0.2 s");
+  });
+
+  it("config set mirror warns when no session for the mirror is stored", async () => {
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: "https://my.maruhi.app" });
+    expect(await runCli(["config", "set", "mirror", "https://mirror.example.com"], env.layer)).toBe(
+      0,
+    );
+    expect(env.errors.join("\n")).toContain(
+      "no session for https://mirror.example.com is stored: run `maruhi login --server https://mirror.example.com` now, while the server is up",
+    );
+    const ready = await makeTestEnv();
+    seedSession(ready, "https://mirror.example.com", owner);
+    await seedConfig(ready, { server: "https://my.maruhi.app" });
+    expect(
+      await runCli(["config", "set", "mirror", "https://mirror.example.com"], ready.layer),
+    ).toBe(0);
+    expect(ready.errors.join("\n")).not.toContain("no session for");
   });
 
   it("a gateway 503 from the server is retried; an answer of the server (403) is not", async () => {
-    const mirror = await start(readMirrorHandlers());
     const gateway = await start([
       () => ({ status: 503, bodyText: "upstream connect error", contentType: "text/plain" }),
     ]);
+    const mirror = await start(readMirrorHandlers(gateway.origin));
     const env = await makeTestEnv();
     seedSession(env, gateway.origin, owner);
     seedMirrorSession(env, mirror.origin);
@@ -466,8 +630,8 @@ describe("the read-only fallback to a mirror (PF2)", () => {
   });
 
   it("run reads from the mirror and runs the command once with the values; the mirror equal to the server is no fallback", async () => {
-    const mirror = await start(readMirrorHandlers());
     const dead = await deadOrigin();
+    const mirror = await start(readMirrorHandlers(dead));
     const env = await makeTestEnv();
     seedSession(env, dead, owner);
     seedMirrorSession(env, mirror.origin);
@@ -500,8 +664,8 @@ describe("the read-only fallback to a mirror (PF2)", () => {
   });
 
   it("a MARUHI_TOKEN run falls back too (the token path keeps the transport failure), through MARUHI_MIRROR_TOKEN", async () => {
-    const mirror = await start(readMirrorHandlers());
     const dead = await deadOrigin();
+    const mirror = await start(readMirrorHandlers(dead));
     const env = await makeTestEnv();
     // Only the device key is in the keychain (stored for the server origin); the credentials are env vars
     seedSession(env, dead, owner);
@@ -525,8 +689,8 @@ describe("the read-only fallback to a mirror (PF2)", () => {
   });
 
   it("mirror status reports the mirror's head alone when the server does not answer", async () => {
-    const mirror = await start(readMirrorHandlers());
     const dead = await deadOrigin();
+    const mirror = await start(readMirrorHandlers(dead));
     const env = await makeTestEnv();
     seedSession(env, dead, owner);
     seedMirrorSession(env, mirror.origin);

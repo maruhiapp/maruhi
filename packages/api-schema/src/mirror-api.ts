@@ -29,7 +29,6 @@ import {
   MirrorSyncRejectedError,
   ProjectNotFoundError,
 } from "./errors/index.ts";
-import { ExportHeadSchema } from "./export-api.ts";
 import { PositiveInt, Sha256Hex } from "./hex.ts";
 import { strictPayload } from "./strict.ts";
 
@@ -48,21 +47,44 @@ export const MirrorSourceOriginSchema = Schema.String.check(
   }),
 );
 
-/** The replica position a committed replication (or the mark's bootstrap) brought. */
+/**
+ * The replica position a committed replication (or the mark's bootstrap)
+ * brought. `attestationMark` is the replica's latest head-attestation
+ * acceptance time (the sync's no-change check — ruling H revision);
+ * `ownAuditRows` (a commit's answer only) is how many of the mirror's own
+ * audit rows were re-appended after the replica's (ruling G revision).
+ */
 export const MirrorSyncRecordSchema = Schema.Struct({
   atMs: Schema.Number,
   chainHeadSeq: PositiveInt,
   chainHeadHashHex: Sha256Hex,
   auditMaxSeq: Schema.Number,
+  attestationMark: Schema.optionalKey(Schema.Number),
+  ownAuditRows: Schema.optionalKey(Schema.Number),
+});
+
+/**
+ * A project's head as the status reports it. The audit seq and the
+ * attestation mark are shown to admins and owners only (the audit seq is
+ * never distributed below admin — AUDIT_SPEC §7 C1); every member sees the
+ * chain head.
+ */
+export const MirrorHeadSchema = Schema.Struct({
+  chainHeadSeq: PositiveInt,
+  chainHeadHashHex: Sha256Hex,
+  auditMaxSeq: Schema.optionalKey(Schema.Number),
+  attestationMark: Schema.optionalKey(Schema.Number),
 });
 
 export type MirrorSyncRecord = typeof MirrorSyncRecordSchema.Type;
 
 /**
- * The mark and the replication state as every member may read it: whether
- * the project is a mirror, of which source, the last committed
- * replication, the sequence a replication in progress expects next, and
- * the mirror's current head (the same watermarks the export reports).
+ * The mark and the replication state as a member may read it: whether the
+ * project is a mirror, of which source, the sequence a replication in
+ * progress expects next, and the project's current chain head (every
+ * member — the fallback read checks the mark and the source before it
+ * trusts a mirror); the last committed replication and the head's audit
+ * seq and attestation mark (admins and owners only).
  */
 export const MirrorStatusSchema = Schema.Struct({
   mirror: Schema.Boolean,
@@ -70,7 +92,7 @@ export const MirrorStatusSchema = Schema.Struct({
   markedAtMs: Schema.optionalKey(Schema.Number),
   lastSync: Schema.optionalKey(MirrorSyncRecordSchema),
   nextSequence: Schema.optionalKey(Schema.Number),
-  head: ExportHeadSchema,
+  head: MirrorHeadSchema,
 });
 
 export type MirrorStatus = typeof MirrorStatusSchema.Type;

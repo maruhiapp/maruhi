@@ -385,6 +385,7 @@ USAGE
 FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
+  --force             Promote even though the source still answers (two writable copies of the project — a split you accept)
 
 GLOBAL FLAGS
   --help, -h       Show help information
