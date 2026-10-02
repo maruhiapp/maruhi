@@ -32,6 +32,7 @@ import type {
 } from "./db.package/index.ts";
 import { classifyImportedProject, provisionImportedProject } from "./db.package/index.ts";
 import {
+  chainOwners,
   identitiesOnChain,
   type SnapshotChainOutcome,
   verifySnapshotChain,
@@ -97,6 +98,7 @@ export type ImportOutcome =
       readonly code:
         | "identities-missing"
         | "identities-malformed"
+        | "identities-stale"
         | "identity-not-member"
         | "exporter-not-owner"
         | "db-unavailable"
@@ -169,6 +171,8 @@ function parseJob(text: string): RestoreJob | null {
 /** The identities companion as `maruhi project export` writes it (api-schema's ExportIdentitiesSchema). */
 interface IdentitiesFile {
   readonly exportedBy: string;
+  /** The chain head the companion was read at (the pre-check binds it to the file's). */
+  readonly chainHeadHashHex: string;
   readonly identities: readonly ImportedIdentity[];
 }
 
@@ -197,8 +201,13 @@ function parseIdentities(text: string): IdentitiesFile | null {
     return null;
   }
   const { exportedBy } = file;
+  const chainHeadHashHex = file["chainHeadHashHex"];
   const entries = file["identities"];
-  if (typeof exportedBy !== "string" || !Array.isArray(entries)) {
+  if (
+    typeof exportedBy !== "string" ||
+    typeof chainHeadHashHex !== "string" ||
+    !Array.isArray(entries)
+  ) {
     return null;
   }
   const identities: ImportedIdentity[] = [];
@@ -209,7 +218,7 @@ function parseIdentities(text: string): IdentitiesFile | null {
     }
     identities.push(identity);
   }
-  return { exportedBy, identities };
+  return { exportedBy, chainHeadHashHex, identities };
 }
 
 type ImportJob = RestoreJob & { readonly identitiesKey: string };
@@ -217,6 +226,10 @@ type ImportJob = RestoreJob & { readonly identitiesKey: string };
 /** What the pre-checks established (the restore and the D1 step build on it). */
 interface CheckedImport {
   readonly file: IdentitiesFile;
+  /** The genesis hash of the verified chain (the DO's name — no second scan of the file). */
+  readonly projectId: string;
+  /** The verified chain's owners (a re-run is accepted under any of their project rows). */
+  readonly owners: readonly string[];
   readonly classification: Extract<ImportClassification, { kind: "ok" }>;
 }
 
@@ -263,15 +276,16 @@ async function precheckImport(env: RestoreEnv, job: ImportJob): Promise<Precheck
   if (env.DB === undefined) {
     return importRefused("db-unavailable");
   }
-  const classification = await classifyImportedProject(env.DB, {
-    projectId: chain.projectId,
-    exportedBy: file.exportedBy,
-    identities: file.identities,
-  });
+  const owners = chainOwners(chain.state);
+  const classification = await classifyImportedProject(
+    env.DB,
+    { projectId: chain.projectId, exportedBy: file.exportedBy, identities: file.identities },
+    owners,
+  );
   if (classification.kind === "refused") {
     return importRefused(classification.code);
   }
-  return { kind: "ok", checked: { file, classification } };
+  return { kind: "ok", checked: { file, projectId: chain.projectId, owners, classification } };
 }
 
 /** A drill's report of the pre-checks (nothing is provisioned). */
@@ -310,6 +324,7 @@ async function importIdentities(
     db,
     { projectId: restored.projectId, exportedBy: file.exportedBy, identities: file.identities },
     Date.now(),
+    checked.owners,
   );
 }
 
@@ -416,13 +431,38 @@ interface RestoredProject {
 async function restoreFromSnapshot(
   env: RestoreEnv,
   job: RestoreJob,
+  /** The project id the import's pre-check established from the verified chain (no second scan — ruling H revision). */
+  verifiedProjectId?: string,
 ): Promise<RestoredProject | Extract<RestoreJobResult, { status: "failed" }>> {
   const namespace =
     job.target === "production" ? env.PRODUCTION_PROJECT_CHAIN : env.DRILL_PROJECT_CHAIN;
   if (namespace === undefined) {
     return { status: "failed", code: "target-unavailable" };
   }
-  const object = await env.OPS_BACKUP_BUCKET.get(job.objectKey);
+  const projectId = verifiedProjectId ?? (await scannedProjectId(env, job.objectKey));
+  if (typeof projectId !== "string") {
+    return projectId;
+  }
+  const stub = namespace.get(namespace.idFromName(projectId));
+  try {
+    // The workers-types RPC stub types distribute over union return
+    // values, so this converts back to the declared type (the same
+    // reason as rpcCall in worker-env.ts; the restore worker has no
+    // Effect runtime)
+    const outcome = await (stub.opsRestore(job.objectKey) as Promise<OpsRestoreOutcome>);
+    return { projectId, outcome, stub };
+  } catch (error) {
+    console.warn("restore RPC failed", error instanceof Error ? error.name : "unknown");
+    return { status: "failed", code: "rpc-failed" };
+  }
+}
+
+/** The project id from the snapshot's genesis (a plain restore has no verified chain to take it from). */
+async function scannedProjectId(
+  env: RestoreEnv,
+  objectKey: string,
+): Promise<string | Extract<RestoreJobResult, { status: "failed" }>> {
+  const object = await env.OPS_BACKUP_BUCKET.get(objectKey);
   if (object === null) {
     return { status: "failed", code: "snapshot-missing" };
   }
@@ -437,21 +477,7 @@ async function restoreFromSnapshot(
     console.warn("snapshot scan failed", error instanceof Error ? error.name : "unknown");
     return { status: "failed", code: "snapshot-malformed" };
   }
-  if (projectId === null) {
-    return { status: "failed", code: "genesis-missing" };
-  }
-  const stub = namespace.get(namespace.idFromName(projectId));
-  try {
-    // The workers-types RPC stub types distribute over union return
-    // values, so this converts back to the declared type (the same
-    // reason as rpcCall in worker-env.ts; the restore worker has no
-    // Effect runtime)
-    const outcome = await (stub.opsRestore(job.objectKey) as Promise<OpsRestoreOutcome>);
-    return { projectId, outcome, stub };
-  } catch (error) {
-    console.warn("restore RPC failed", error instanceof Error ? error.name : "unknown");
-    return { status: "failed", code: "rpc-failed" };
-  }
+  return projectId === null ? { status: "failed", code: "genesis-missing" } : projectId;
 }
 
 async function runJob(env: RestoreEnv, job: RestoreJob): Promise<RestoreJobResult> {
@@ -469,7 +495,7 @@ async function runImportJob(env: RestoreEnv, job: ImportJob): Promise<RestoreJob
     return prechecked.result;
   }
   const { checked } = prechecked;
-  const restored = await restoreFromSnapshot(env, job);
+  const restored = await restoreFromSnapshot(env, job, checked.projectId);
   if (job.target === "drill") {
     // A drill rehearses the import: the DO half is the drill's own result,
     // the identities half what production would do

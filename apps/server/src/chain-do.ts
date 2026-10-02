@@ -73,7 +73,6 @@ import {
 } from "./do-schema.ts";
 import type { RestoreFailureCode, SnapshotTrailer } from "./do-snapshot.ts";
 import {
-  bumpMutationSeq,
   readWatermarks,
   RestoreRefusedError,
   restoreSnapshot,
@@ -95,7 +94,7 @@ import {
   pullEnvironmentProgram,
   renameEnvironmentProgram,
 } from "./programs-environment.ts";
-import type { ExportPageValue } from "./programs-export.ts";
+import type { ExportMembersValue, ExportPageValue } from "./programs-export.ts";
 import { exportMembersProgram, exportPageProgram } from "./programs-export.ts";
 import type {
   VariableVersionHistoryValue,
@@ -752,19 +751,18 @@ export class ProjectChainDO extends DurableObject<Env> {
 
   /**
    * {@link #runData} for the write entry points: membership → the mirror
-   * guard → the program → the mutation counter (do-snapshot.ts — the
-   * paged export's cursor binds it; a write that succeeded moves it).
+   * guard → the program. The mutation counter a paged export binds its
+   * cursor to is kept by the schema's triggers (do-schema.ts step 7), not
+   * here: any row change by any path moves it.
    */
   #runWrite<T>(
     callerUserId: string,
     program: Effect.Effect<T, DataRejectedError, DoServices>,
   ): Promise<DataOutcome<T>> {
-    const sql = this.ctx.storage.sql;
     return this.#runData(
       requireMemberState(callerUserId, "reader", this.#stateCache).pipe(
         Effect.flatMap(() => this.#ensureWritable()),
         Effect.flatMap(() => program),
-        Effect.tap(() => Effect.sync(() => bumpMutationSeq(sql))),
       ),
     );
   }
@@ -1129,7 +1127,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     facts: LeaseTokenFacts,
     proposal: RotationProposalInput,
   ): Promise<ProposalOutcome> {
-    const sql = this.ctx.storage.sql;
     return this.#runtime.runPromise(
       this.#opLock.withPermit(
         this.#invalidateCachesOnDefect(
@@ -1140,8 +1137,6 @@ export class ProjectChainDO extends DurableObject<Env> {
             proposal,
             this.#stateCache,
           ).pipe(
-            // A stored proposal is a write (the export's mutation counter)
-            Effect.tap(() => Effect.sync(() => bumpMutationSeq(sql))),
             Effect.match({
               onSuccess: (value: ProposalReceipt): ProposalOutcome => ({ kind: "ok", value }),
               onFailure: (rejection): ProposalOutcome => ({ kind: "rejected", rejection }),
@@ -1213,7 +1208,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
-  exportMembers(actor: DataActor): Promise<DataOutcome<readonly string[]>> {
+  exportMembers(actor: DataActor): Promise<DataOutcome<ExportMembersValue>> {
     return this.#runData(exportMembersProgram(actor, this.#stateCache));
   }
 

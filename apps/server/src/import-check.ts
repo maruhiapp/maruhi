@@ -187,15 +187,32 @@ export async function verifySnapshotChain(body: ReadableStream): Promise<Snapsho
     : { kind: "snapshot-chain-invalid" };
 }
 
+/** The user ids the verified chain lists as owners (a re-run is accepted under any of their project rows — ruling I revision). */
+export function chainOwners(state: ChainState): readonly string[] {
+  return [...state.members.values()]
+    .filter((member) => member.role === "owner")
+    .map((member) => member.userId);
+}
+
 /**
- * Confirms the companion against the verified chain: every listed id is a
- * current member (`identity-not-member`) and the exporter is an owner
+ * Confirms the companion against the verified chain: it was read at the
+ * file's chain head (`identities-stale`), every listed id is a current
+ * member (`identity-not-member`) and the exporter is an owner
  * (`exporter-not-owner`). The chain, not the file, decides who is a member.
  */
 export function identitiesOnChain(
   state: ChainState,
-  file: { readonly exportedBy: string; readonly identities: readonly ImportedIdentity[] },
-): "identity-not-member" | "exporter-not-owner" | null {
+  file: {
+    readonly exportedBy: string;
+    readonly chainHeadHashHex: string;
+    readonly identities: readonly ImportedIdentity[];
+  },
+): "identities-stale" | "identity-not-member" | "exporter-not-owner" | null {
+  // The companion was read at a chain head: one that is not the file's is
+  // a mismatched pair (a member added or removed between the two reads)
+  if (file.chainHeadHashHex !== state.headHashHex) {
+    return "identities-stale";
+  }
   for (const identity of file.identities) {
     const member = state.members.get(identity.userId);
     if (member === undefined) {

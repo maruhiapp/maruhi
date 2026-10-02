@@ -23,7 +23,11 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { PROJECT_DO_TABLES, readProjectDoSchemaVersion } from "../src/do-schema.ts";
+import {
+  isMutationTracked,
+  PROJECT_DO_TABLES,
+  readProjectDoSchemaVersion,
+} from "../src/do-schema.ts";
 import { type ExportCursorState, exportSnapshotPage } from "../src/do-snapshot.ts";
 import { MAX_EXPORTS_PER_WINDOW } from "../src/policy.ts";
 import type { RestoreJobResult } from "../src/restore-worker.ts";
@@ -275,6 +279,11 @@ describe("project export (AUTH_SPEC §11-6)", () => {
   it("pages respect the row and byte bounds, resume mid-table, and add up to the live tables", async () => {
     await seedProjectActivity();
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
+    const exportedSeq = Number(
+      (await queryProjectDo(projectId, "SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events"))[0]?.[
+        "m"
+      ],
+    );
     const pages = await runInDurableObject(stub, (_instance, state) => {
       const sql = state.storage.sql;
       const collected: { lines: readonly string[]; bytes: number; rows: number }[] = [];
@@ -287,12 +296,23 @@ describe("project export (AUTH_SPEC §11-6)", () => {
           doIdHex: "ab".repeat(32),
           takenAtMs: 1_700_000_000_000,
           cursor,
-          exportedSeq: 1,
+          exportedSeq,
           maxRows: 3,
           maxBytes: 700,
         });
         if (page.kind !== "page") {
           throw new Error("unexpected change");
+        }
+        if (n === 1) {
+          // A read served between pages appends audit rows past the bound:
+          // they are not exported and the trailer must say the bound, not
+          // the live maximum (ruling C revision, round 3)
+          sql.exec(
+            "INSERT INTO audit_events (seq, row_id, server_ts, event, actor_type) VALUES (?, ?, ?, 'var.read', 'user')",
+            exportedSeq + 1,
+            "row-read-between-pages",
+            Date.now(),
+          );
         }
         const encoder = new TextEncoder();
         collected.push({
@@ -311,8 +331,15 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     const all = pages.flatMap((page) => page.lines);
     expect(parsedLine(all[0])["kind"]).toBe("header");
     expect(parsedLine(all[all.length - 1])["kind"]).toBe("trailer");
-    expect(rowCounts(all)).toEqual(await liveCounts());
-    expect(parsedLine(all[all.length - 1])["rows"]).toEqual(await liveCounts());
+    const live = await liveCounts();
+    // The row appended between pages is past the bound: the file's counts
+    // are the bound's, and so is the trailer
+    expect(live["audit_events"]).toBe(exportedSeq + 1);
+    const bounded = { ...live, audit_events: exportedSeq };
+    expect(rowCounts(all)).toEqual(bounded);
+    const trailer = parsedLine(all[all.length - 1]);
+    expect(trailer["rows"]).toEqual(bounded);
+    expect(trailer["auditMaxSeq"]).toBe(exportedSeq);
     for (const page of pages) {
       expect(page.rows).toBeLessThanOrEqual(3);
       // A page passes the byte bound by at most its last line (the row that crossed it)
@@ -375,7 +402,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
           marks: {
             chainHeadSeq: head.chainHeadSeq,
             chainHeadHashHex: head.chainHeadHashHex,
-            auditMaxSeq: head.auditMaxSeq,
             attestationMark: Number(attestation[0]?.["m"] ?? 0),
             mutationSeq: Number(mutation[0]?.["seq"] ?? 0),
           },
@@ -412,7 +438,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
         marks: {
           chainHeadSeq: ownersHead.chainHeadSeq,
           chainHeadHashHex: ownersHead.chainHeadHashHex,
-          auditMaxSeq: ownersHead.auditMaxSeq,
           attestationMark: Number(attestation[0]?.["m"] ?? 0),
           mutationSeq: Number(ownersMutation[0]?.["seq"] ?? 0),
         },
@@ -641,6 +666,80 @@ describe("project import (the restore job with identitiesKey)", () => {
     });
     // The results carry no project id (the same discipline as restores)
     expect(JSON.stringify(outcome)).not.toContain(projectId);
+  });
+
+  it("the mutation counter is the schema's: every tracked snapshot table carries the three triggers and a direct row change moves it", async () => {
+    await seedProjectActivity();
+    for (const table of PROJECT_DO_TABLES) {
+      const triggers = await queryProjectDo(
+        projectId,
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? ORDER BY name",
+        table,
+      );
+      expect(triggers.map((row) => row["name"])).toEqual(
+        isMutationTracked(table)
+          ? [`mutation_${table}_delete`, `mutation_${table}_insert`, `mutation_${table}_update`]
+          : [],
+      );
+    }
+    const before = Number(
+      (await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1"))[0]?.["seq"],
+    );
+    // A change by a path no entry point knows about (a raw statement) still moves it
+    await queryProjectDo(projectId, "UPDATE variables SET name = name");
+    const after = Number(
+      (await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1"))[0]?.["seq"],
+    );
+    expect(after).toBeGreaterThan(before);
+    // … while the bounded and drift tables do not
+    await queryProjectDo(
+      projectId,
+      "INSERT INTO lease_windows (kind, window_start, count) VALUES ('issued', 1, 1)",
+    );
+    expect(
+      Number(
+        (await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1"))[0]?.[
+          "seq"
+        ],
+      ),
+    ).toBe(after);
+  });
+
+  it("refuses a companion read at another chain head than the file's, and accepts a re-run under a co-owner's project row", async () => {
+    await seedProjectActivity();
+    // A second owner on the chain before the export
+    await appendOperation(fixture, OWNER, changeRoleOperation(MEMBER, "owner"));
+    const { objectKey, identitiesKey, identities } = await exportToBucket();
+    await resetProjectDo(projectId);
+    await resetAuthDb();
+    expect(
+      await importWith("import-stale", objectKey, {
+        ...identities,
+        chainHeadHashHex: "00".repeat(32),
+      }),
+    ).toEqual({
+      status: "failed",
+      code: "import-refused",
+      identities: { kind: "refused", code: "identities-stale" },
+    });
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
+      { n: 0 },
+    ]);
+    await bucket.put(
+      "restore/jobs/import-first.json",
+      JSON.stringify({ objectKey, target: "production", identitiesKey }),
+    );
+    expect(await processRestoreJobs(restoreEnv)).toEqual(["import-first"]);
+    expect((await jobResult("import-first")).identities).toMatchObject({
+      kind: "provisioned",
+      project: "created",
+    });
+    // The co-owner re-exports the companion: the row under the first
+    // owner's org is a re-run, not someone else's project (ruling I revision)
+    expect(
+      (await importWith("import-coowner", objectKey, { ...identities, exportedBy: MEMBER }))
+        .identities,
+    ).toEqual({ kind: "provisioned", existing: 3, created: 0, members: 3, project: "kept" });
   });
 
   it("asks everything before the DO is touched: a refused import leaves the destination empty, a tampered chain is refused as such, and a drill rehearses", async () => {

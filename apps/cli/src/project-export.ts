@@ -257,6 +257,23 @@ function exportOnce(input: ProjectExportInput): Effect.Effect<Attempt, CliError>
   });
 }
 
+/** The identities companion of a completed attempt; null when its chain head is not the file's (the pair is mismatched). */
+function companionFor(
+  input: ProjectExportInput,
+  attempt: Attempt,
+  withoutData: (error: CliError) => Effect.Effect<never, CliError>,
+): Effect.Effect<ExportIdentities | null, CliError> {
+  if (attempt.kind === "changed") {
+    return Effect.succeed(null);
+  }
+  return input.client.export.identities({ params: { projectId: input.projectId } }).pipe(
+    Effect.catch((error) => withoutData(toCliError(error))),
+    Effect.map((identities) =>
+      identities.chainHeadHashHex === attempt.trailer.chainHeadHashHex ? identities : null,
+    ),
+  );
+}
+
 /** Pages the whole project into `outPath` (restarting when it changes), then writes the identities companion. */
 export function projectExportOp(
   input: ProjectExportInput,
@@ -265,22 +282,31 @@ export function projectExportOp(
     const identitiesPath = identitiesPathOf(input.outPath);
     yield* ensureAbsent(input.outPath);
     yield* ensureAbsent(identitiesPath);
-    let attempt = yield* exportOnce(input);
-    for (let restarts = 0; attempt.kind === "changed" && restarts < MAX_RESTARTS; restarts += 1) {
-      attempt = yield* exportOnce(input);
-    }
-    if (attempt.kind === "changed") {
-      return yield* Effect.fail(toCliError(new ExportChangedError({ reason: "project-changed" })));
-    }
     // The companion is half of the export: without it the data file is
     // removed too (a migration needs both, and a stale pair is worse than none)
     const withoutData = (error: CliError) =>
       Effect.promise(() => rm(input.outPath, { force: true })).pipe(
         Effect.andThen(Effect.fail(error)),
       );
-    const identities = yield* input.client.export
-      .identities({ params: { projectId: input.projectId } })
-      .pipe(Effect.catch((error) => withoutData(toCliError(error))));
+    // The companion is read at a chain head; a head other than the file's
+    // trailer's is a mismatched pair (a member added or removed between
+    // the two reads — the destination would refuse it as stale), so the
+    // export starts over like any change (bounded)
+    let attempt = yield* exportOnce(input);
+    let identities = yield* companionFor(input, attempt, withoutData);
+    for (
+      let restarts = 0;
+      (attempt.kind === "changed" || identities === null) && restarts < MAX_RESTARTS;
+      restarts += 1
+    ) {
+      yield* Effect.promise(() => rm(input.outPath, { force: true }));
+      attempt = yield* exportOnce(input);
+      identities = yield* companionFor(input, attempt, withoutData);
+    }
+    if (attempt.kind === "changed" || identities === null) {
+      yield* Effect.promise(() => rm(input.outPath, { force: true }));
+      return yield* Effect.fail(toCliError(new ExportChangedError({ reason: "project-changed" })));
+    }
     yield* Effect.tryPromise({
       try: () =>
         writeFile(identitiesPath, `${JSON.stringify(identities, null, 2)}\n`, { flag: "wx" }),
@@ -326,6 +352,6 @@ export function describeExport(result: ProjectExportResult, verified: VerifiedPr
     `Exported project ${displayText(result.outPath)} (${result.bytes} bytes gzip, ${countNoun(result.lines, "line")}): chain head seq=${trailer.chainHeadSeq} ${headNote}; audit seq=${trailer.auditMaxSeq}; rows: ${rows}`,
     `Identities companion: ${displayText(result.identitiesPath)} (${countNoun(result.identities.identities.length, "member identity")}, exported by ${displayText(result.identities.exportedBy)})`,
     ...unlinked,
-    "Next: place both files in the destination deployment's ops bucket and submit a restore job with `identitiesKey` (SELF_HOSTING.md — Migrating a project; a `drill` job rehearses it first). After the import: every member logs in to the destination (`maruhi login --server <url>`), the owner revokes this server's key and grants the destination's (`maruhi server revoke` / `maruhi server grant`), then rotates the environments the old key could open (`maruhi env rotate`). Once members use the destination, mark this project as a mirror of it (`maruhi mirror mark --source <destination url>`) so this server turns read-only instead of drifting",
+    "Next: place both files in the destination deployment's ops bucket and submit a restore job with `identitiesKey` (SELF_HOSTING.md — Migrating a project; a `drill` job rehearses it first). If this project is not yet marked as a mirror of the destination, mark it now (`maruhi mirror mark --source <destination url>`): the mark freezes it, so no write lands here after this export (re-export if anything changed in between). After the import: every member logs in to the destination (`maruhi login --server <url>`) and points the CLI at it (`maruhi config set server <url>`), the owner revokes this server's key and grants the destination's (`maruhi server revoke` / `maruhi server grant`), then rotates the environments the old key could open (`maruhi env rotate`)",
   ];
 }

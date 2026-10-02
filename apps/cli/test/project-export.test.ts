@@ -76,8 +76,11 @@ function snapshotLines(): string[] {
   ];
 }
 
-const IDENTITIES = {
+/** The companion as the server answers it (read at the chain head the file's trailer names). */
+const identitiesAt = (chainHeadHashHex: string) => ({
   exportedBy: "user-owner-1111",
+  chainHeadSeq: built.entries.length,
+  chainHeadHashHex,
   identities: [
     {
       userId: "user-owner-1111",
@@ -87,7 +90,7 @@ const IDENTITIES = {
     },
   ],
   unlinked: [],
-};
+});
 
 interface Fixture {
   readonly env: TestEnv;
@@ -103,6 +106,8 @@ interface StartOptions {
   readonly firstPage?: { readonly status: number; readonly json: unknown };
   /** An injected answer for the identities companion (undefined = normal). */
   readonly identities?: { readonly status: number; readonly json: unknown };
+  /** How many times the companion answers with another chain head before the file's (a mismatched pair). */
+  readonly staleCompanions?: number;
 }
 
 async function startEnv(options: StartOptions = {}): Promise<Fixture> {
@@ -112,7 +117,10 @@ async function startEnv(options: StartOptions = {}): Promise<Fixture> {
     chainHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
     auditMaxSeq: 2,
   };
-  const fixture: { changedPages: number } = { changedPages: options.changedPages ?? 0 };
+  const fixture: { changedPages: number; staleCompanions: number } = {
+    changedPages: options.changedPages ?? 0,
+    staleCompanions: options.staleCompanions ?? 0,
+  };
   const handlers: MockHandler[] = [
     chainHandlerOf(built),
     (request: MockRequest) => {
@@ -137,11 +145,16 @@ async function startEnv(options: StartOptions = {}): Promise<Fixture> {
       }
       return { status: 200, json: { lines: lines.slice(3), head } };
     },
-    onRequest(
-      "GET",
-      `/projects/${built.projectId}/export/identities`,
-      () => options.identities ?? { status: 200, json: IDENTITIES },
-    ),
+    onRequest("GET", `/projects/${built.projectId}/export/identities`, () => {
+      if (options.identities !== undefined) {
+        return options.identities;
+      }
+      if (fixture.staleCompanions > 0) {
+        fixture.staleCompanions -= 1;
+        return { status: 200, json: identitiesAt("00".repeat(32)) };
+      }
+      return { status: 200, json: identitiesAt(head.chainHeadHashHex) };
+    }),
   ];
   const server = await MockServer.start(handlers);
   servers.push(server);
@@ -175,7 +188,7 @@ describe("maruhi project export (PF3)", () => {
     const text = gunzipSync(await readFile(out)).toString("utf8");
     expect(text).toBe(`${snapshotLines().join("\n")}\n`);
     const companion = JSON.parse(await readFile(`${out}.identities.json`, "utf8")) as unknown;
-    expect(companion).toEqual(IDENTITIES);
+    expect(companion).toEqual(identitiesAt(built.hashes[built.hashes.length - 1] ?? ""));
     const logs = fixture.env.logs.join("\n");
     expect(logs).toContain(`Exported project ${out} (`);
     expect(logs).toContain("7 lines): chain head seq=1 matches the verified view; audit seq=2");
@@ -203,6 +216,26 @@ describe("maruhi project export (PF3)", () => {
     const never = join(restless.dir, "never.ndjson.gz");
     expect(await runCli(["project", "export", "--out", never], restless.env.layer)).toBe(1);
     expect(restless.env.errors.join("\n")).toContain(
+      "The project changed while it was being exported",
+    );
+    await expect(stat(never)).rejects.toThrow();
+    await expect(stat(`${never}.identities.json`)).rejects.toThrow();
+  });
+
+  it("starts over when the companion was read at another chain head than the file's, and gives up when it never matches", async () => {
+    const once = await startEnv({ staleCompanions: 1 });
+    const out = join(once.dir, "stale-once.ndjson.gz");
+    expect(await runCli(["project", "export", "--out", out], once.env.layer)).toBe(0);
+    const companion = JSON.parse(await readFile(`${out}.identities.json`, "utf8")) as {
+      chainHeadHashHex: string;
+    };
+    expect(companion.chainHeadHashHex).toBe(built.hashes[built.hashes.length - 1]);
+    // two attempts: 2 pages each
+    expect(pageRequests(once.server)).toBe(4);
+    const always = await startEnv({ staleCompanions: 10 });
+    const never = join(always.dir, "stale-always.ndjson.gz");
+    expect(await runCli(["project", "export", "--out", never], always.env.layer)).toBe(1);
+    expect(always.env.errors.join("\n")).toContain(
       "The project changed while it was being exported",
     );
     await expect(stat(never)).rejects.toThrow();

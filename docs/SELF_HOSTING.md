@@ -573,9 +573,12 @@ project is kept and only the D1 step reruns, and that result reads
 `"status": "failed", "code": "not-empty"` for the Durable Object half with
 `"identities": { "kind": "provisioned", … }` for the D1 half),
 `user-id-taken`, `project-exists` (the project row here belongs to someone
-other than the exporting owner), `exporter-missing`, `identity-not-member`
-/ `exporter-not-owner` (the file names an id the snapshot's chain does not
-confirm), `identities-missing` / `identities-malformed`, `db-unavailable`
+who is not an owner on the project's chain), `exporter-missing`,
+`identity-not-member` / `exporter-not-owner` (the file names an id the
+snapshot's chain does not confirm), `identities-stale` (the companion was
+read at another chain head than the file's — re-run the export so both
+come from the same state), `identities-missing` / `identities-malformed`,
+`db-unavailable`
 (the restore mode has no `DB` binding), `db-error` (D1 refused the batch —
 resubmit). Look at the identities file before placing the job: it decides
 which GitHub accounts become which chain members.
@@ -610,13 +613,21 @@ project row exists) and nothing is provisioned.
   the advisory device registry rebuilds itself on each login
 - **Ops state** (backup records, counters) starts fresh
 
-**Switching over, and a newer export.** Once members use the destination,
-make the source read-only rather than leaving two writable copies: the owner
-marks the source project as a mirror of the destination
-(`maruhi mirror mark --server <source url> --project <id> --source <your url>`)
-— the source then refuses writes, keeps serving reads, and can be synced
-from the destination as a fallback (see "Running a mirror" below). The
-reverse order works too: if writes continued on the source after the
+**The order that never leaves two writable copies.** Freeze the source
+*before* the export: the owner marks the source project as a mirror of
+the destination
+(`maruhi mirror mark --server <source url> --project <id> --source <your url>`).
+From that moment every write on the source answers `mirror-read-only`
+(that is the members' signal to switch), reads keep working, and the
+export is of a frozen state by construction — nothing can land on the
+source after it. Then export, import, and have members log in to the
+destination and point the CLI at it. If the import fails and you want the
+source back, promote it again (`maruhi mirror promote --server <source url>
+--force` — the guard refuses without `--force` while the destination
+answers). Once the destination is live, the frozen source can stay as its
+mirror and be synced from it as a fallback (see "Running a mirror" below).
+
+If the source was *not* frozen first and writes continued after the
 export, do not re-import — the Durable Object refuses a second restore
 (`not-empty`). Mark the *imported* project as a mirror of the source
 (`maruhi mirror mark --server <your url> --project <id> --source <source url>`),
@@ -624,8 +635,8 @@ run `maruhi mirror sync --server <source url> --mirror <your url> --project <id>
 to bring the newer state in, then `maruhi mirror promote --server <your url>`
 to make it the primary. A re-run of the import job on the same deployment
 provisions only the members added since (the project row and the existing
-accounts are kept), so a member who joined after the first import can be
-brought in with a fresh identities companion.
+accounts are kept; any owner on the chain may export the fresh companion),
+so a member who joined after the first import can be brought in that way.
 
 The hosted service keeps the project until the owner asks for its removal;
 the audit log on both sides shows the export.

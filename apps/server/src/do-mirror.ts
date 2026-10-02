@@ -48,7 +48,6 @@ import {
   decodeScalar,
   MAX_BOUND_PARAMETERS,
   parseLine,
-  bumpMutationSeq,
   readWatermarks,
   RestoreRefusedError,
   type SnapshotLine,
@@ -525,9 +524,6 @@ export function commitMirrorReplica(input: MirrorCommitInput): MirrorCommit {
       );
       sql.exec(`DROP TABLE ${LOCAL_AUDIT_TABLE}`);
       sql.exec(`DROP TABLE ${TRAILER_TABLE}`);
-      // A replica commit replaces the snapshot tables: an export of the
-      // mirror in progress must restart (the mutation counter — do-snapshot.ts)
-      bumpMutationSeq(sql);
       const marks = readWatermarks(sql);
       const commit: MirrorCommit = {
         atMs: input.nowMs,

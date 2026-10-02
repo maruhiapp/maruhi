@@ -107,19 +107,6 @@ function readMutationSeq(sql: SqlStorage): number {
   return row === undefined ? 0 : Number(row["seq"]);
 }
 
-/**
- * Advances the mutation counter (called by the DO after a write entry
- * point succeeded, by the mint, and inside a replica commit). The
- * counter is what a paged export compares between pages (`ExportMarks`),
- * so every path that changes a snapshot table other than the rate-limit,
- * binding and attestation tables must pass here.
- */
-export function bumpMutationSeq(sql: SqlStorage): void {
-  sql.exec(
-    "INSERT INTO mutation_state (id, seq) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET seq = seq + 1",
-  );
-}
-
 function maxSeq(sql: SqlStorage, table: string): number {
   const row = sql.exec(`SELECT COALESCE(MAX(seq), 0) AS m FROM ${table}`).one();
   return Number(row["m"]);
@@ -423,16 +410,17 @@ export async function writeSnapshot(input: WriteSnapshotInput): Promise<WriteSna
 // ---------------------------------------------------------------------------
 
 /**
- * The marks a cursor binds. The chain head, the attestation mark and the
- * mutation counter must not move between pages (the export restarts);
- * `auditMaxSeq` is the **bound** of the exported audit log (rows past it
- * are the reads served while the export ran — they are not exported and
- * do not restart it; ruling C revision, docs/notes/pf3-design.md §8).
+ * The marks a cursor binds: the chain head, the attestation mark and the
+ * mutation counter (kept by the schema's triggers — do-schema.ts step 7)
+ * must not move between pages, or the export restarts. The exported audit
+ * log is bounded by the cursor's `exportedSeq` (the export's own audit
+ * row, the last one before the marks were taken): rows past it are the
+ * reads served while the export ran — not exported, and not a restart
+ * (ruling C revision, docs/notes/pf3-design.md §8).
  */
 export interface ExportMarks {
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string | null;
-  readonly auditMaxSeq: number;
   readonly attestationMark: number;
   readonly mutationSeq: number;
 }
@@ -454,7 +442,9 @@ export interface ExportCursorState {
   /**
    * The seq of the `project.exported` row the first page appended (ruling
    * D revision): a later page is served only to the requester that row
-   * names, and only while the row still says what the cursor says.
+   * names, and only while the row still says what the cursor says. It is
+   * also the bound of the exported audit log (the row is the last one
+   * before the marks were taken).
    */
   readonly exportedSeq: number;
 }
@@ -464,13 +454,12 @@ function marksOf(sql: SqlStorage): ExportMarks {
   return {
     chainHeadSeq: marks.chainHeadSeq,
     chainHeadHashHex: marks.chainHeadHashHex,
-    auditMaxSeq: marks.auditMaxSeq,
     attestationMark: marks.attestationMark,
     mutationSeq: marks.mutationSeq,
   };
 }
 
-/** Whether a cursor's marks still describe the project (`auditMaxSeq` is a bound, not compared). */
+/** Whether a cursor's marks still describe the project. */
 function sameMarks(a: ExportMarks, b: ExportMarks): boolean {
   return (
     a.chainHeadSeq === b.chainHeadSeq &&
@@ -572,19 +561,12 @@ function decodeMarks(value: unknown): ExportMarks | null {
   const numbers = [marks.chainHeadSeq, marks.attestationMark, marks.mutationSeq];
   if (
     !numbers.every((number) => typeof number === "number") ||
-    (chainHeadHashHex !== null && typeof chainHeadHashHex !== "string") ||
-    !isIntegerAtLeast(marks.auditMaxSeq, 0)
+    (chainHeadHashHex !== null && typeof chainHeadHashHex !== "string")
   ) {
     return null;
   }
   const [chainHeadSeq = 0, attestationMark = 0, mutationSeq = 0] = numbers;
-  return {
-    chainHeadSeq,
-    chainHeadHashHex: chainHeadHashHex ?? null,
-    auditMaxSeq: marks.auditMaxSeq,
-    attestationMark,
-    mutationSeq,
-  };
+  return { chainHeadSeq, chainHeadHashHex: chainHeadHashHex ?? null, attestationMark, mutationSeq };
 }
 
 export interface ExportPageInput {
@@ -608,6 +590,8 @@ export type ExportPageResult =
       /** null = the trailer was emitted (the export is complete). */
       readonly next: ExportCursorState | null;
       readonly marks: ExportMarks;
+      /** The bound of the exported audit log (the cursor's `exportedSeq` — the trailer repeats it). */
+      readonly auditMaxSeq: number;
     }
   | { readonly kind: "changed" };
 
@@ -680,7 +664,7 @@ function emitRows(
     sql
       .exec(
         `SELECT rowid AS __rid, * FROM ${table} WHERE rowid > ?${bounded ? " AND seq <= ?" : ""} ORDER BY rowid LIMIT ?`,
-        ...(bounded ? [state.rowid, state.marks.auditMaxSeq, limit] : [state.rowid, limit]),
+        ...(bounded ? [state.rowid, state.exportedSeq, limit] : [state.rowid, limit]),
       )
       .raw(),
   );
@@ -741,20 +725,24 @@ export function exportSnapshotPage(input: ExportPageInput): ExportPageResult {
     state = step.state;
     emitted += step.consumed;
   }
+  const auditMaxSeq = state.exportedSeq;
   if (state.table < order.length || writer.bytes >= input.maxBytes) {
-    return { kind: "page", lines: writer.lines, next: state, marks };
+    return { kind: "page", lines: writer.lines, next: state, marks, auditMaxSeq };
   }
+  // The trailer describes the exported state (the cursor's marks and
+  // bound), never the live one: a page after a read in between must say
+  // what the rows say
   const trailer: SnapshotTrailer = {
     kind: "trailer",
     rows: state.rows,
-    chainHeadSeq: marks.chainHeadSeq,
-    chainHeadHashHex: marks.chainHeadHashHex,
-    auditMaxSeq: marks.auditMaxSeq,
-    auditHeadHashHex: auditHeadHashAt(sql, marks.auditMaxSeq),
+    chainHeadSeq: state.marks.chainHeadSeq,
+    chainHeadHashHex: state.marks.chainHeadHashHex,
+    auditMaxSeq,
+    auditHeadHashHex: auditHeadHashAt(sql, auditMaxSeq),
     databaseSizeBytes: sql.databaseSize,
   };
   writer.emit(JSON.stringify(trailer));
-  return { kind: "page", lines: writer.lines, next: null, marks };
+  return { kind: "page", lines: writer.lines, next: null, marks, auditMaxSeq };
 }
 
 // ---------------------------------------------------------------------------

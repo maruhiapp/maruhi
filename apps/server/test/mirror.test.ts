@@ -576,7 +576,7 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
               proposalId: "00112233445566778899aabbccddeeff",
               connector: "exec",
               facts: ["./scripts/rotate.sh: new credential produced"],
-              expiresAtMs: Date.now() + 7 * 24 * 60 * 60 * 1000,
+              expiresInDays: 7,
               variables: [
                 {
                   variableId: VAR,

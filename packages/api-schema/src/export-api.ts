@@ -80,6 +80,9 @@ export type ExportIdentity = typeof ExportIdentitySchema.Type;
  */
 export const ExportIdentitiesSchema = Schema.Struct({
   exportedBy: BoundedUserId,
+  /** The chain head the members were read at: the companion belongs to the file whose trailer names this head (ruling H revision). */
+  chainHeadSeq: PositiveInt,
+  chainHeadHashHex: Sha256Hex,
   identities: Schema.Array(ExportIdentitySchema),
   unlinked: Schema.Array(BoundedUserId),
 });

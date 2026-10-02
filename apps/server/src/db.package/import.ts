@@ -162,6 +162,20 @@ async function classify(
   return { kind: "ok", toCreate, existing };
 }
 
+/** Whether `orgId` is the personal org of one of the chain's owners. */
+async function ownedByChainOwner(
+  db: Db,
+  orgId: string,
+  owners: readonly string[],
+): Promise<boolean> {
+  for (const owner of owners) {
+    if ((await existingPersonalOrg(db, owner)) === orgId) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** The personal org id of an already-existing exporter (by the slug first login assigned). */
 async function existingPersonalOrg(db: Db, userId: string): Promise<string | null> {
   const row = await db
@@ -197,6 +211,8 @@ function validate(input: ImportProjectInput): ImportRefusalCode | null {
 export async function classifyImportedProject(
   d1: D1Database,
   input: ImportProjectInput,
+  /** The user ids the verified chain lists as owners: a project row under any of their personal orgs is a re-run (ruling I revision). */
+  owners: readonly string[],
 ): Promise<ImportClassification> {
   const invalid = validate(input);
   if (invalid !== null) {
@@ -210,11 +226,11 @@ export async function classifyImportedProject(
     .get();
   let project: "absent" | "exporter" = "absent";
   if (projectRow !== undefined) {
-    // The exporter's own project row (an earlier import of the same
-    // project here) is re-run: the members missing since are provisioned,
-    // nothing else is touched. Anyone else's row refuses
-    const exporterOrg = await existingPersonalOrg(db, input.exportedBy);
-    if (exporterOrg === null || exporterOrg !== projectRow.orgId) {
+    // A chain owner's own project row (an earlier import of the same
+    // project here, by this exporter or a co-owner) is re-run: the members
+    // missing since are provisioned, nothing else is touched. Anyone
+    // else's row refuses
+    if (!(await ownedByChainOwner(db, projectRow.orgId, owners))) {
       return { kind: "refused", code: "project-exists" };
     }
     project = "exporter";
@@ -232,8 +248,9 @@ export async function provisionImportedProject(
   d1: D1Database,
   input: ImportProjectInput,
   nowMs: number,
+  owners: readonly string[],
 ): Promise<ImportProvisionResult> {
-  const classified = await classifyImportedProject(d1, input);
+  const classified = await classifyImportedProject(d1, input, owners);
   if (classified.kind === "refused") {
     return classified;
   }

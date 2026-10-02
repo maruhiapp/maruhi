@@ -108,7 +108,7 @@ function pageValue(page: Extract<ExportPageResult, { kind: "page" }>): ExportPag
       chainHeadSeq: page.marks.chainHeadSeq,
       // An initialized project always has a head (requireMemberState passed)
       chainHeadHashHex: page.marks.chainHeadHashHex ?? "",
-      auditMaxSeq: page.marks.auditMaxSeq,
+      auditMaxSeq: page.auditMaxSeq,
     },
   };
 }
@@ -159,9 +159,6 @@ function lastAuditSeq(sql: SqlStorage): number {
 
 /** Whether the cursor's `project.exported` row exists, is the requester's, and names the cursor's head (within the exported bound). */
 function exportRowBinds(sql: SqlStorage, cursor: ExportCursorState, userId: string): boolean {
-  if (cursor.exportedSeq > cursor.marks.auditMaxSeq) {
-    return false;
-  }
   const row = sql
     .exec(
       "SELECT event, actor_user_id, payload FROM audit_events WHERE seq = ?",
@@ -187,11 +184,20 @@ function exportRowBinds(sql: SqlStorage, cursor: ExportCursorState, userId: stri
   );
 }
 
-/** The current members' user ids (owner only — the identities companion of an export). */
+/** The members of the companion and the chain head they were read at (the companion is bound to it — ruling H revision). */
+export interface ExportMembersValue {
+  readonly members: readonly string[];
+  readonly chainHeadSeq: number;
+  readonly chainHeadHashHex: string;
+}
+
+/** The current members' user ids (owner only — the identities companion of an export), with the chain head. */
 export const exportMembersProgram = (
   actor: DataActor,
   cache: StateCache,
-): Effect.Effect<readonly string[], DataRejectedError, ChainStore> =>
-  Effect.map(requireMemberState(actor.userId, "owner", cache), ({ state }) =>
-    [...state.members.keys()].toSorted(),
-  );
+): Effect.Effect<ExportMembersValue, DataRejectedError, ChainStore> =>
+  Effect.map(requireMemberState(actor.userId, "owner", cache), ({ state }) => ({
+    members: [...state.members.keys()].toSorted(),
+    chainHeadSeq: state.headSeq,
+    chainHeadHashHex: state.headHashHex,
+  }));

@@ -450,7 +450,65 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       sql.exec("ALTER TABLE mirror_state ADD COLUMN last_attestation_mark INTEGER");
     },
   },
+  // Step 7 (2026-10-02 — PF3 ruling C revision, round 3): the mutation
+  // counter is maintained by the schema, not by the write entry points —
+  // an AFTER INSERT / UPDATE / DELETE trigger on every snapshot table that
+  // takes part in an export's consistency (every table but the audit log
+  // and its cumulative-hash column, which the export bounds by seq, and
+  // the deployment-local drift tables — rate-limit windows, first-come
+  // bindings, attestation windows — which ruling C accepts as drift). Any
+  // row change by any path bumps it, so a writer added later cannot forget
+  // to. **A table added by a later step declares its own triggers in that
+  // step** (mutationTriggers below)
+  {
+    tables: [],
+    apply(sql) {
+      const tables = sql
+        .exec("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        .toArray()
+        .map((row) => String(row["name"]))
+        .filter((name) => !MUTATION_UNTRACKED_TABLES.has(name) && !name.endsWith("_mirror"));
+      for (const table of tables) {
+        for (const statement of mutationTriggers(table)) {
+          sql.exec(statement);
+        }
+      }
+    },
+  },
 ];
+
+/**
+ * Tables whose row changes do not move the mutation counter: the audit log
+ * and its cumulative-hash column (bounded by seq in an export), the
+ * deployment-local drift tables of ruling C, the local state tables, and
+ * the migration meta row.
+ */
+const MUTATION_UNTRACKED_TABLES: ReadonlySet<string> = new Set([
+  "audit_events",
+  "audit_head_hashes",
+  "lease_windows",
+  "lease_bindings",
+  "attestation_windows",
+  "mirror_state",
+  "mutation_state",
+  "schema_meta",
+]);
+
+/** The three triggers that make a table's row changes bump the mutation counter (step 7). */
+function mutationTriggers(table: string): readonly string[] {
+  return ["INSERT", "UPDATE", "DELETE"].map(
+    (event) =>
+      `CREATE TRIGGER IF NOT EXISTS mutation_${table}_${event.toLowerCase()} AFTER ${event} ON ${table}
+       BEGIN
+         INSERT INTO mutation_state (id, seq) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET seq = seq + 1;
+       END`,
+  );
+}
+
+/** Whether a table's row changes bump the mutation counter (the test pins every snapshot table's triggers). */
+export function isMutationTracked(table: string): boolean {
+  return !MUTATION_UNTRACKED_TABLES.has(table);
+}
 
 /**
  * All project-DO table names, derived from the migration steps. The test

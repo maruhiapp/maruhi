@@ -1395,7 +1395,7 @@ export async function rotateCredential(
 }
 
 /** A connector's own outcome (the frame adds the value's shape). */
-export type ConnectorOutcome = Omit<RotationOutcome, "valueShape">;
+type ConnectorOutcome = Omit<RotationOutcome, "valueShape">;
 
 function rotateWith(
   rule: RotateRule,

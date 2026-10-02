@@ -16,6 +16,7 @@ import { HttpApiBuilder } from "effect/http-api";
 
 import { callProjectData } from "./data-http.ts";
 import { IdentityRepo } from "./db.package/index.ts";
+import type { ExportMembersValue } from "./programs-export.ts";
 import type { ExportPageValue } from "./programs-export.ts";
 
 export const exportLive = HttpApiBuilder.group(maruhiApi, "export", (handlers) =>
@@ -37,17 +38,20 @@ export const exportLive = HttpApiBuilder.group(maruhiApi, "export", (handlers) =
     .handle("identities", ({ params, endpoint }) =>
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
-        const members = yield* callProjectData<readonly string[]>()({
-          endpoint,
-          projectId: params.projectId,
-          permission: "admin",
-          invoke: (stub, actor) => stub.exportMembers(actor),
-        });
+        const { members, chainHeadSeq, chainHeadHashHex } =
+          yield* callProjectData<ExportMembersValue>()({
+            endpoint,
+            projectId: params.projectId,
+            permission: "admin",
+            invoke: (stub, actor) => stub.exportMembers(actor),
+          });
         const identities = yield* IdentityRepo;
         const linked = yield* identities.identitiesOf(members);
         const known = new Set(linked.map((identity) => identity.userId));
         return {
           exportedBy: principal.userId,
+          chainHeadSeq,
+          chainHeadHashHex,
           identities: linked.map((identity) => ({
             userId: identity.userId,
             provider: identity.provider,
