@@ -87,7 +87,7 @@ Requests are signed with SigV4 by the CLI (WebCrypto HMAC; no AWS SDK is install
 
 ### Cloudflare API tokens
 
-Rule: `"connector": "cloudflare-api-token"`, optional `"accountId"` for an [account-owned token](https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/) (user-owned by default).
+Rule: `"connector": "cloudflare-api-token"`, optional `"accountId"` for an account-owned token (user-owned by default; Cloudflare documents account-owned tokens under "Account-owned tokens" in its API fundamentals).
 
 - **Rotate**: verify the current token to learn its id, read its definition, and create a second token with the **same name, policies, condition, and expiry**. Rolling a token in place would invalidate the old value at once, so the connector never rolls.
 - **Finalize**: delete the previous token.
