@@ -112,6 +112,8 @@ import {
 } from "./programs-mirror.ts";
 import type {
   MemberProposalValue,
+  PreflightOutcome,
+  PreflightVariableInput,
   ProposalOutcome,
   ProposalReceipt,
   ProposalResolutionInput,
@@ -119,6 +121,7 @@ import type {
 } from "./programs-proposal.ts";
 import {
   listRotationProposalsProgram,
+  preflightRotationProgram,
   proposeRotationProgram,
   resolveRotationProposalProgram,
 } from "./programs-proposal.ts";
@@ -1132,6 +1135,34 @@ export class ProjectChainDO extends DurableObject<Env> {
             Effect.match({
               onSuccess: (value: ProposalReceipt): ProposalOutcome => ({ kind: "ok", value }),
               onFailure: (rejection): ProposalOutcome => ({ kind: "rejected", rejection }),
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /** The mint's pre-flight (AUTH_SPEC §14-5 O-4 — programs-proposal.ts): the same split as proposeRotation, no value. */
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  preflightRotation(
+    environmentId: string,
+    ephemeralPubHex: string,
+    facts: LeaseTokenFacts,
+    variables: readonly PreflightVariableInput[],
+  ): Promise<PreflightOutcome> {
+    return this.#runtime.runPromise(
+      this.#opLock.withPermit(
+        this.#invalidateCachesOnDefect(
+          preflightRotationProgram(
+            environmentId,
+            ephemeralPubHex,
+            facts,
+            variables,
+            this.#stateCache,
+          ).pipe(
+            Effect.match({
+              onSuccess: (): PreflightOutcome => ({ kind: "ok" }),
+              onFailure: (rejection): PreflightOutcome => ({ kind: "rejected", rejection }),
             }),
           ),
         ),

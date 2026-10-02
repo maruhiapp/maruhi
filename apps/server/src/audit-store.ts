@@ -231,6 +231,7 @@ const CLASS1_EVENTS: readonly string[] = [
   "rotation.proposed",
   "rotation.proposal_accepted",
   "rotation.proposal_rejected",
+  "rotation.proposal_expired",
   // Class 1 because the setting itself is advisory-distributed to every
   // member in pull responses (AUDIT_SPEC §3.3 — AUTH_SPEC §12-11)
   "project.schema_policy_changed",

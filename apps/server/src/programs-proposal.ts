@@ -267,9 +267,7 @@ export const proposeRotationProgram = (
     }
     // Expired rows leave before the id and pending-count checks (an
     // expired proposal neither blocks its id nor counts)
-    yield* Effect.sync(() => {
-      store.write.deleteExpiredProposals(nowMs);
-    });
+    yield* sweepExpired(nowMs);
     const reason = yield* proposalRefusal(store, state, environmentId, proposal, nowMs);
     if (reason !== null) {
       return yield* Effect.fail<ProposalRejection>({ kind: "proposal-rejected", reason });
@@ -322,6 +320,104 @@ export const proposeRotationProgram = (
       });
     });
     return { proposalId: proposal.proposalId, expiresAtMs: proposal.expiresAtMs };
+  });
+
+/**
+ * The expiry sweep (before a mint, a pre-flight and a resolution): every
+ * proposal past its expiry leaves, and a `rotation.proposal_expired` row
+ * closes it (AUDIT_SPEC §3.3 — ruling P-2: every `proposed` row gets
+ * exactly one closing row, so "minted but never accepted" is enumerable
+ * from the log alone). Actor system, like the mint
+ */
+const sweepExpired = (nowMs: number): Effect.Effect<void, never, DataStore | AuditStore> =>
+  Effect.gen(function* () {
+    const store = yield* DataStore;
+    const audit = yield* AuditStore;
+    yield* Effect.sync(() => {
+      for (const expired of store.write.deleteExpiredProposals(nowMs)) {
+        audit.appendSync({
+          event: "rotation.proposal_expired",
+          serverTs: nowMs,
+          actorType: "system",
+          environmentId: expired.environmentId,
+          payload: { proposalId: expired.proposalId },
+        });
+      }
+    });
+  });
+
+/** The pre-flight's variables (AUTH_SPEC §14-5 — O-4): what the job intends to propose, before the issuer is touched. */
+export interface PreflightVariableInput {
+  readonly variableId: string;
+  readonly baseVersion: number;
+}
+
+/** The pre-flight result crossing the RPC boundary (the same split as ProposalOutcome, no value). */
+export type PreflightOutcome =
+  | { readonly kind: "ok" }
+  | { readonly kind: "rejected"; readonly rejection: ProposalRejection };
+
+/**
+ * The mint's pre-flight (AUTH_SPEC §14-5 — ruling O-4): the lease's
+ * authorization, then every §14-5 check a sealed value is not needed
+ * for — the variables active at the named base versions, no pending
+ * proposal targeting one of them (`variable-pending`), the pending cap,
+ * the mirror mark. Nothing is stored and no window is consumed; the
+ * token's first-come binding is taken like the lease's.
+ */
+export const preflightRotationProgram = (
+  environmentId: string,
+  ephemeralPubHex: string,
+  facts: LeaseTokenFacts,
+  variables: readonly PreflightVariableInput[],
+  cache: StateCache,
+): Effect.Effect<
+  void,
+  ProposalRejection,
+  ChainStore | DataStore | AuditStore | ServerKey | StorageMeter
+> =>
+  Effect.gen(function* () {
+    yield* authorizeWorkload(environmentId, ephemeralPubHex, facts, cache);
+    const store = yield* DataStore;
+    const nowMs = Date.now();
+    if (store.isMirrorSync()) {
+      return yield* preflightRefusal("mirror-read-only");
+    }
+    yield* sweepExpired(nowMs);
+    const seen = new Set<string>();
+    for (const variable of variables) {
+      if (seen.has(variable.variableId)) {
+        return yield* preflightRefusal("duplicate-variable");
+      }
+      seen.add(variable.variableId);
+      yield* preflightVariable(store, environmentId, variable, nowMs);
+    }
+    if ((yield* store.countPendingProposals(nowMs)) >= MAX_PENDING_ROTATION_PROPOSALS) {
+      return yield* preflightRefusal("pending-limit");
+    }
+  });
+
+const preflightRefusal = (reason: RotationProposalRejectReason) =>
+  Effect.fail<ProposalRejection>({ kind: "proposal-rejected", reason });
+
+/** The mint's per-variable checks that do not depend on the sealed content (the same order as the mint). */
+const preflightVariable = (
+  store: DataStore["Service"],
+  environmentId: string,
+  variable: PreflightVariableInput,
+  nowMs: number,
+): Effect.Effect<void, ProposalRejection> =>
+  Effect.gen(function* () {
+    const stored = yield* store.findVariable(environmentId, variable.variableId);
+    if (stored === null || stored.deletedAtMs !== null || stored.latestStatus !== "active") {
+      return yield* preflightRefusal("variable-inactive");
+    }
+    if (stored.latestVersion !== variable.baseVersion) {
+      return yield* preflightRefusal("base-version-stale");
+    }
+    if (yield* store.variableHasPendingProposal(environmentId, variable.variableId, nowMs)) {
+      return yield* preflightRefusal("variable-pending");
+    }
   });
 
 /** A stored proposal narrowed to one member's view: the caller's own wraps only. */
@@ -381,11 +477,9 @@ export const resolveRotationProposalProgram = (
 ): Effect.Effect<void, DataRejectedError, ChainStore | DataStore | AuditStore> =>
   Effect.gen(function* () {
     const { member } = yield* requireMemberState(actor.userId, "member", cache);
-    const store = yield* DataStore;
     const nowMs = Date.now();
-    yield* Effect.sync(() => {
-      store.write.deleteExpiredProposals(nowMs);
-    });
+    yield* sweepExpired(nowMs);
+    const store = yield* DataStore;
     // Unknown / resolved / expired fold into one 404 (the three are
     // indistinguishable by design — a resolution cannot probe which)
     const proposal = yield* store.findPendingProposal(proposalId, nowMs);

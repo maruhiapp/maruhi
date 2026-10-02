@@ -55,7 +55,37 @@ const program = Effect.gen(function* () {
       Effect.map(() => "unexpectedly started"),
       Effect.catch((error) => Effect.succeed(error.message)),
     );
-  return { exitCode: outcome.exitCode, output: outcome.output, missing, badCwd };
+  // The rotation connector's script capture (captureScript): stdout is
+  // the credential and is read whole up to 1 MiB; past that the script is
+  // stopped and nothing of it is kept (D-6)
+  const captured = yield* Effect.promise(() =>
+    runner.captureScript({
+      command: ["sh", "-c", 'head -c 300000 /dev/zero | tr "\\0" y; printf "note\\n" >&2'],
+      cwd: process.cwd(),
+      extraEnv: {},
+    }),
+  );
+  const flooded = yield* Effect.promise(() =>
+    runner
+      .captureScript({
+        command: ["sh", "-c", "head -c 3000000 /dev/zero; sleep 5; echo late"],
+        cwd: process.cwd(),
+        extraEnv: {},
+      })
+      .then(
+        () => "unexpectedly captured",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      ),
+  );
+  return {
+    exitCode: outcome.exitCode,
+    output: outcome.output,
+    missing,
+    badCwd,
+    capturedBytes: captured.stdout.length,
+    capturedStderr: captured.stderr,
+    flooded,
+  };
 });
 
 const result = await Effect.runPromise(program.pipe(Effect.provide(liveLayer())));

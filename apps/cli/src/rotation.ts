@@ -369,29 +369,70 @@ export interface RotationListOptions {
   readonly dueWithinDays?: number | undefined;
   /** Exit {@link ROTATION_DUE_EXIT_CODE} when any rotation flag is active. */
   readonly failOnFlags?: boolean | undefined;
+  /** Exit {@link ROTATION_DUE_EXIT_CODE} while a sealed proposal minted by a CI job awaits a member (PF7b — A-9). */
+  readonly failOnPending?: boolean | undefined;
 }
 
-/** The fail-on verdict: which switch fired, in the order they are reported. */
-function dueVerdict(input: {
+interface VerdictInput {
   readonly options: RotationListOptions;
   readonly flagCount: number;
   readonly due: readonly DueRow[];
+  readonly pending: PendingProposals;
   readonly nowMs: number;
-}): string | null {
+}
+
+/** `--fail-on-flags`: the active flags. */
+function flagsReason(input: VerdictInput): string | null {
+  return input.options.failOnFlags === true && input.flagCount > 0
+    ? `${countNoun(input.flagCount, "rotation flag")} active`
+    : null;
+}
+
+/** `--fail-on-due`: the values past their max age, or due within the window. */
+function dueReason(input: VerdictInput): string | null {
   const windowDays = input.options.dueWithinDays ?? 0;
   const dueRows = input.due.filter((row) => row.dueAtMs - input.nowMs <= windowDays * DAY_MS);
-  const reasons = [
-    ...(input.options.failOnFlags === true && input.flagCount > 0
-      ? [`${countNoun(input.flagCount, "rotation flag")} active`]
-      : []),
-    ...(input.options.failOnDue === true && dueRows.length > 0
-      ? [
-          `${countNoun(dueRows.length, "value")} ${windowDays === 0 ? "past the declared max age" : `due within ${countNoun(windowDays, "day")}`} (${dueRows.map((row) => displayText(row.name)).join(", ")})`,
-        ]
-      : []),
-  ];
+  if (input.options.failOnDue !== true || dueRows.length === 0) {
+    return null;
+  }
+  const when =
+    windowDays === 0 ? "past the declared max age" : `due within ${countNoun(windowDays, "day")}`;
+  return `${countNoun(dueRows.length, "value")} ${when} (${dueRows.map((row) => displayText(row.name)).join(", ")})`;
+}
+
+/** `--fail-on-pending`: the sealed proposals awaiting a member (and how many expire within the window). */
+function pendingReason(input: VerdictInput): string | null {
+  if (input.options.failOnPending !== true || input.pending.count === 0) {
+    return null;
+  }
+  const windowDays = input.options.dueWithinDays ?? 0;
+  const expiring = input.pending.expiresAtMs.filter(
+    (expiresAtMs) => expiresAtMs - input.nowMs <= windowDays * DAY_MS,
+  ).length;
+  const soon =
+    windowDays > 0 && expiring > 0
+      ? ` (${expiring} expiring within ${countNoun(windowDays, "day")})`
+      : "";
+  return `${countNoun(input.pending.count, "sealed proposal")} awaiting a member${soon}`;
+}
+
+/** The fail-on verdict: which switch fired, in the order they are reported. */
+function dueVerdict(input: VerdictInput): string | null {
+  const reasons = [flagsReason(input), dueReason(input), pendingReason(input)].filter(
+    (reason) => reason !== null,
+  );
   return reasons.length === 0 ? null : reasons.join("; ");
 }
+
+/** What the pending-proposal line found (the count and the expiries — a verdict input of `--fail-on-pending`). */
+interface PendingProposals {
+  readonly count: number;
+  readonly expiresAtMs: readonly number[];
+  /** Why the list is unknown (a reader's token, or a failed read) — `--fail-on-pending` cannot pass on it. */
+  readonly unknown: string | null;
+}
+
+const NO_PENDING: PendingProposals = { count: 0, expiresAtMs: [], unknown: null };
 
 /** `maruhi rotation list`: displays the currently active flags (all members — class 1). */
 /**
@@ -402,12 +443,12 @@ function dueVerdict(input: {
  */
 function reportPendingProposals(
   context: ProjectContextBase,
-): Effect.Effect<void, never, CliServices> {
+): Effect.Effect<PendingProposals, never, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const self = context.verified.state.members.get(context.session.userId);
     if (self === undefined || self.role === "reader") {
-      return;
+      return { ...NO_PENDING, unknown: "the proposals are listed to members and above only" };
     }
     const proposals = yield* fetchRotationProposals(context.client, context.projectId).pipe(
       Effect.catch((error) =>
@@ -415,16 +456,24 @@ function reportPendingProposals(
           logNote(
             `could not read the pending sealed proposals (${error.message}) — they are not shown`,
           ),
-          () => null,
+          () => error.message,
         ),
       ),
     );
-    if (proposals === null || proposals.length === 0) {
-      return;
+    if (typeof proposals === "string") {
+      return { ...NO_PENDING, unknown: `they could not be read (${proposals})` };
+    }
+    if (proposals.length === 0) {
+      return NO_PENDING;
     }
     yield* io.log(
       `Pending sealed proposals: ${countNoun(proposals.length, "proposal")} minted by CI jobs await a member (\`maruhi rotation proposals\` lists them; \`maruhi rotation accept <id>\` pushes one)`,
     );
+    return {
+      count: proposals.length,
+      expiresAtMs: proposals.map((proposal) => proposal.expiresAtMs),
+      unknown: null,
+    };
   });
 }
 
@@ -439,7 +488,7 @@ export function rotationListOp(
     const config = yield* checklistConfig(context.projectId);
     const flags = yield* fetchRotationFlags(context.client, context.projectId);
     // The fail-on verdict closes the listing (after everything was shown)
-    const conclude = (due: DueRows) =>
+    const conclude = (due: DueRows, pending: PendingProposals) =>
       Effect.gen(function* () {
         // A check cannot pass on an age it could not read: that is a
         // failed check (exit 1), not "nothing is due" (exit 0) and not
@@ -451,7 +500,20 @@ export function rotationListOp(
             ),
           );
         }
-        const verdict = dueVerdict({ options, flagCount: flags.length, due: due.rows, nowMs });
+        if (options.failOnPending === true && pending.unknown !== null) {
+          return yield* Effect.fail(
+            cliError(
+              `Cannot judge --fail-on-pending: ${pending.unknown}; the check did not run to completion (run it with a member's token)`,
+            ),
+          );
+        }
+        const verdict = dueVerdict({
+          options,
+          flagCount: flags.length,
+          due: due.rows,
+          pending,
+          nowMs,
+        });
         if (verdict === null) {
           return 0;
         }
@@ -463,8 +525,8 @@ export function rotationListOp(
     if (flags.length === 0) {
       yield* io.log("No rotation flags are currently active");
       const due = yield* reportExpiringValues(context, config, nowMs, windowDays);
-      yield* reportPendingProposals(context);
-      return yield* conclude(due);
+      const pending = yield* reportPendingProposals(context);
+      return yield* conclude(due, pending);
     }
     const environmentIds = [...new Set(flags.map((flag) => flag.environmentId))].toSorted();
     const states = yield* resolveVariableStates(context, environmentIds);
@@ -508,8 +570,8 @@ export function rotationListOp(
       "To resolve: rotate the upstream credential and save the new value with `maruhi push` after the environment's mandated rotation (a value pushed before it is still under a key the former holder has; the re-encryption alone does not resolve a flag, and rolling back to a value they could read re-opens it). For pairs that cannot be pushed (e.g. deleted variables), dismiss the flag with `maruhi rotation dismiss` as an explicit acceptance of risk (admin)",
     );
     const due = yield* reportExpiringValues(context, config, nowMs, windowDays);
-    yield* reportPendingProposals(context);
-    return yield* conclude(due);
+    const pending = yield* reportPendingProposals(context);
+    return yield* conclude(due, pending);
   });
 }
 

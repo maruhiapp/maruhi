@@ -13,7 +13,7 @@
 // LeasedDek (a separate type with no registration signature —
 // data.ts).
 
-import { EnvironmentIdSchema, ProjectIdSchema } from "@maruhi/core";
+import { EnvironmentIdSchema, ProjectIdSchema, VariableIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -150,6 +150,25 @@ export const RotationProposalRequestSchema = Schema.Struct({
   proposal: RotationProposalInputSchema,
 });
 
+/**
+ * The mint's pre-flight (AUTH_SPEC §14-5 — ruling O-4): the same credential
+ * and authorization as the mint, no wraps; every §14-5 check that needs no
+ * sealed value runs (the variables exist and are active at the named base
+ * versions, no proposal already targets one of them, the pending cap, the
+ * mirror mark), so a CI job learns **before the issuer is touched** that
+ * its proposal would be refused or would stack on one a member has not
+ * acted on. Nothing is stored; the token's first-come binding is taken.
+ */
+export const RotationPreflightRequestSchema = Schema.Struct({
+  ...LeaseRequestSchema.fields,
+  variables: Schema.Array(
+    Schema.Struct({ variableId: VariableIdSchema, baseVersion: PositiveInt }),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(8)),
+});
+
+/** The pre-flight passed (the proposal would be accepted as far as its content is not involved). */
+export const RotationPreflightResultSchema = Schema.Struct({ ok: Schema.Literal(true) });
+
 export const leaseGroup = HttpApiGroup.make("lease")
   .add(
     HttpApiEndpoint.post(
@@ -166,6 +185,24 @@ export const leaseGroup = HttpApiGroup.make("lease")
           LeaseRateLimitedError,
           LeaseUnavailableError,
           // Judged after authorization (§14-5 — the reason leaks nothing new)
+          RotationProposalRejectedError,
+        ],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "preflight",
+      "/projects/:projectId/environments/:environmentId/rotation-proposals/preflight",
+      {
+        params: { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema },
+        payload: strictPayload(RotationPreflightRequestSchema),
+        success: RotationPreflightResultSchema,
+        error: [
+          LeaseUnauthorizedError,
+          ProjectNotFoundError,
+          LeaseRateLimitedError,
+          LeaseUnavailableError,
           RotationProposalRejectedError,
         ],
       },

@@ -649,16 +649,27 @@ async function iamListKeys(
   });
 }
 
+/** The IAM user the current key belongs to and its keys (the opening read of a rotation and of a finalize). */
+async function iamKeysOf(
+  rule: Extract<RotateRule, { connector: "aws-iam-access-key" }>,
+  current: CredentialValues,
+  inputs: RotateInputs,
+  deps: RotateDeps,
+) {
+  const caller = awsCallerOf(current, inputs);
+  const currentId = currentKeyId(current);
+  const user = await iamUserOf(deps, caller, rule, currentId);
+  const keys = await iamListKeys(deps, caller, user);
+  return { caller, currentId, user, keys };
+}
+
 async function rotateAwsIam(
   rule: Extract<RotateRule, { connector: "aws-iam-access-key" }>,
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
 ): Promise<RotationOutcome> {
-  const caller = awsCallerOf(current, inputs);
-  const currentId = currentKeyId(current);
-  const user = await iamUserOf(deps, caller, rule, currentId);
-  const keys = await iamListKeys(deps, caller, user);
+  const { caller, currentId, user, keys } = await iamKeysOf(rule, current, inputs, deps);
   const facts: string[] = [];
   if (keys.length >= 2) {
     // IAM allows two keys per user. An inactive one that is not the key in
@@ -726,10 +737,7 @@ async function finalizeAwsIam(
   deps: RotateDeps,
   ancestors: CompanionAncestors,
 ): Promise<FinalizeOutcome> {
-  const caller = awsCallerOf(current, inputs);
-  const currentId = currentKeyId(current);
-  const user = await iamUserOf(deps, caller, rule, currentId);
-  const keys = await iamListKeys(deps, caller, user);
+  const { caller, currentId, user, keys } = await iamKeysOf(rule, current, inputs, deps);
   const others = keys.filter((key) => key.id !== currentId);
   if (others.length === 0) {
     return {
@@ -1021,7 +1029,7 @@ function scriptEnvironment(input: {
   readonly site: RotationSite;
   readonly phase: "rotate" | "finalize";
   readonly current: CredentialValues;
-  readonly previous: Uint8Array | null;
+  readonly previous: CredentialValues | null;
   readonly inputs: RotateInputs;
 }): Readonly<Record<string, string>> {
   const env: Record<string, string> = {
@@ -1049,12 +1057,22 @@ function scriptEnvironment(input: {
     `the value of ${displayText(input.site.variable)}`,
   );
   if (input.previous !== null) {
-    set(`${EXEC_CONTROL_PREFIX}PREVIOUS`, input.previous, "the previous credential");
+    set(`${EXEC_CONTROL_PREFIX}PREVIOUS`, input.previous.primary, "the previous credential");
   }
   for (const [envName, variable] of Object.entries(input.rule.companions)) {
     const bytes = input.current.companions[envName];
     if (bytes !== undefined) {
       set(envName, bytes, `the value of ${displayText(variable)}`);
+    }
+    // The companion the previous credential carried (the key id to
+    // retire), when the finalize knows it (C-7)
+    const previousBytes = input.previous?.companions[envName];
+    if (previousBytes !== undefined) {
+      set(
+        `${EXEC_CONTROL_PREFIX}PREVIOUS_${envName}`,
+        previousBytes,
+        `the previous value of ${displayText(variable)}`,
+      );
     }
   }
   for (const [envName, bytes] of Object.entries(input.inputs)) {
@@ -1066,7 +1084,7 @@ function scriptEnvironment(input: {
 /** The secrets a script of this rotation could echo (scrubbed out of anything shown). */
 function scriptSecrets(input: {
   readonly current: CredentialValues;
-  readonly previous: Uint8Array | null;
+  readonly previous: CredentialValues | null;
   readonly inputs: RotateInputs;
   readonly produced?: CredentialValues | undefined;
 }): SyncWrite[] {
@@ -1075,7 +1093,10 @@ function scriptSecrets(input: {
     secrets.push(secretOf(`current:${name}`, bytes));
   }
   if (input.previous !== null) {
-    secrets.push(secretOf("previous", input.previous));
+    secrets.push(secretOf("previous", input.previous.primary));
+    for (const [name, bytes] of Object.entries(input.previous.companions)) {
+      secrets.push(secretOf(`previous:${name}`, bytes));
+    }
   }
   for (const [name, bytes] of Object.entries(input.inputs)) {
     secrets.push(secretOf(`input:${name}`, bytes));
@@ -1112,6 +1133,22 @@ async function runScript(
     );
   }
   return outcome;
+}
+
+/**
+ * The shape of a produced value, as a fact for the member who accepts it
+ * (D-7): a script that printed its own chatter on stdout, or a one-byte
+ * value, shows here before the value is pushed. Nothing of the value
+ * itself (its ciphertext length tells the same).
+ */
+function valueShape(value: Uint8Array): string {
+  let lines = 1;
+  for (const byte of value) {
+    if (byte === 0x0a) {
+      lines += 1;
+    }
+  }
+  return `${countNoun(value.length, "byte")}, ${countNoun(lines, "line")}`;
 }
 
 /** The new value as the rotate script printed it: one trailing newline (LF or CRLF) is dropped, nothing else is touched. */
@@ -1257,13 +1294,14 @@ async function rotateExec(
   // The script's own words may carry a credential by mistake: scrub them
   // of everything this run knows before they reach the report
   const all = scriptSecrets({ current, previous: null, inputs, produced: answer.values });
-  const facts = answer.facts.flatMap((fact) => scrubbedLines(fact, all, 1));
+  const facts = [
+    valueShape(answer.values.primary),
+    ...answer.facts.flatMap((fact) => scrubbedLines(fact, all, 1)),
+  ];
   const script = rule.rotate[0] ?? "";
   return {
     values: answer.values,
-    facts: [
-      `${script}: new credential produced${facts.length === 0 ? "" : ` (${facts.join("; ")})`}`,
-    ],
+    facts: [`${script}: new credential produced (${facts.join("; ")})`],
     previous:
       rule.finalize === null
         ? "the rotate script was expected to retire the previous credential itself (nothing to finalize)"
@@ -1289,15 +1327,8 @@ async function finalizeExec(
       ],
     };
   }
-  const env = scriptEnvironment({
-    rule,
-    site,
-    phase: "finalize",
-    current,
-    previous: previous.primary,
-    inputs,
-  });
-  const secrets = scriptSecrets({ current, previous: previous.primary, inputs });
+  const env = scriptEnvironment({ rule, site, phase: "finalize", current, previous, inputs });
+  const secrets = scriptSecrets({ current, previous, inputs });
   const outcome = await runScript(deps, rule, rule.finalize, env, secrets, "finalize");
   const said = scrubbedLines(decoder.decode(outcome.stdout), secrets, EXEC_FACT_LINES);
   return {

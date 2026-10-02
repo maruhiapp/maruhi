@@ -29,7 +29,7 @@ import { toWireVariable } from "./data-http.ts";
 import { OidcVerifier, type VerifiedOidcToken } from "./oidc.package/index.ts";
 import { LEASE_BINDING_RETENTION_MARGIN_MS } from "./policy.ts";
 import type { LeaseOutcome, LeaseRejection, LeaseTokenFacts } from "./programs-lease.ts";
-import type { ProposalOutcome } from "./programs-proposal.ts";
+import type { PreflightOutcome, ProposalOutcome, ProposalRejection } from "./programs-proposal.ts";
 import {
   IP_RATE_LIMIT_PERIOD_SECONDS,
   ipRateLimitAllowed,
@@ -171,16 +171,16 @@ const authenticateWorkload = (
   });
 
 /** The mint's rejections → api-schema errors: the lease vocabulary as-is, plus the §14-5 acceptance reasons (422). */
+function proposalRejectionError(rejection: ProposalRejection, projectId: string) {
+  return rejection.kind === "proposal-rejected"
+    ? new RotationProposalRejectedError({ reason: rejection.reason })
+    : leaseRejectionError(rejection, projectId);
+}
+
 function unwrapProposalOutcome(outcome: ProposalOutcome, projectId: string) {
-  if (outcome.kind === "ok") {
-    return Effect.succeed(outcome.value);
-  }
-  const { rejection } = outcome;
-  return Effect.fail(
-    rejection.kind === "proposal-rejected"
-      ? new RotationProposalRejectedError({ reason: rejection.reason })
-      : leaseRejectionError(rejection, projectId),
-  );
+  return outcome.kind === "ok"
+    ? Effect.succeed(outcome.value)
+    : Effect.fail(proposalRejectionError(outcome.rejection, projectId));
 }
 
 export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
@@ -225,6 +225,26 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
             ? {}
             : { checkpointSnapshot: leased.checkpointSnapshot }),
         };
+      }),
+    )
+    // The mint's pre-flight (§14-5 — O-4): the same credential and
+    // authorization, no wraps, nothing stored — a job learns before the
+    // issuer is touched that its proposal would be refused or would stack
+    .handle("preflight", ({ params, payload, request }) =>
+      Effect.gen(function* () {
+        const { env, facts } = yield* authenticateWorkload(payload, request);
+        const outcome = yield* rpcCall<PreflightOutcome>(() =>
+          projectStub(env, params.projectId).preflightRotation(
+            params.environmentId,
+            payload.ephemeralPubHex,
+            facts,
+            payload.variables,
+          ),
+        );
+        if (outcome.kind === "rejected") {
+          return yield* Effect.fail(proposalRejectionError(outcome.rejection, params.projectId));
+        }
+        return { ok: true as const };
       }),
     )
     // The sealed-proposal mint (§14-5 = CRYPTO_SPEC §5.3): the same

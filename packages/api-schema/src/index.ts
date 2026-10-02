@@ -201,6 +201,8 @@ export {
 export {
   leaseGroup,
   LeaseRequestSchema,
+  RotationPreflightRequestSchema,
+  RotationPreflightResultSchema,
   LeaseResponseSchema,
   RotationProposalRequestSchema,
 } from "./lease-api.ts";

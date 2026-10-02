@@ -434,3 +434,34 @@ implementation. Everything they found was applied in the same change:
   no-finalize confirmation), the help golden
 - Public docs: `/docs/rotation` (the `exec` connector, the point-of-use
   note, "Checks on a schedule"), the docs index, README
+
+## 9. Exhaustion loop, round 2 and later (owner-directed, 2026-10-02)
+
+After the review round the owner asked whether every ruling had been looped
+until no candidate remained; the honest answer was no (one enumeration plus
+one self-review, several rulings closed implicitly), and the owner directed
+additional rounds over **every** ruling until each closes. Each round sends
+independent adversarial agents over the rulings that still take candidates;
+the designer judges under the delegation; adopted candidates are
+implemented in the same change; a ruling is **CLOSED** at the round whose
+agents found nothing strictly or structurally better.
+
+### 9-1. Round 2 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| A (cron) | A-9: `--fail-on-pending` — exit 3 while a sealed proposal awaits a member (the check that closes the PF7b loop; `--due-within` counts the ones expiring in the window) | **Adopted**. A proposal nobody answers is the one rotation state the listing could see and the cron could not act on. It needs a member's token (readers are not recipients): a reader's token or a failed list is "cannot judge" (exit 1), the same rule as an unreadable history |
+| B (note) | B-7: a bound on the history calls so a slow server cannot stall `run` | **Adopted** — 10 s per history read (`Effect.timeout`); the timeout is a failed read and is said as a note, the run proceeds. B-8: a `--no-note` switch — deferred (one line on stderr; a case for it has not appeared) |
+| C (script env) | C-7: pass the previous credential's companions to finalize as `MH_ROTATE_PREVIOUS_<companion>` | **Adopted**. The pairing is positional (a rotation pushes the pair together), so the companion's value directly before the current one is passed only when the primary's previous version is also the one directly before; otherwise nothing is claimed. Scrubbed like every other value |
+| D (answer) | D-6: cap the script's stdout (1 MiB) and stop the script past it | **Adopted** — a credential is small; an unbounded read is a memory hole a script can open by accident (`cat` of the wrong file). D-7: the value's shape (bytes, lines) as the first fact | **Adopted** — a member accepting a proposal sees a script that printed chatter instead of a value before pushing it; the ciphertext length tells the server the same, so nothing new leaks |
+| E / F / G | nothing new | **CLOSED (round 2)** |
+| H (who seals) | H-6: seal to a per-project rotating "acceptor key" distributed through DEK wraps; H-7: seal to the environment DEK | Rejected: H-6 is a second key to revoke on departure (ruling H's reason); H-7 lets every reader and the server-wrap path open the value (ruling I's reason). **CLOSED (round 2)** |
+| I / J / M | nothing new | **CLOSED (round 2)** |
+| K (credential) | K-5: present a token minted after the connector, under the lease's ephemeral key | **Adopted** — a connector can outlive a short-lived token (propagation waits at the issuer); §14-1's binding makes the key, not the token, the continuity, so a fresh token binds to the same key. The lease's token stays the fallback when the runner's issuance endpoint does not answer again. (K-3 was rejected in §6-2 as "a second binding for nothing"; K-5 is the same mechanism with a reason) |
+| L (acceptance) | L-6: a server-side "accept" that applies a member-signed envelope; L-7: a resolution deadline | Rejected: L-6 is ruling L-1 again; L-7 is the expiry. **CLOSED (round 2)** |
+| N (caps) | N-3: per-workload mint caps | Rejected: the per-project window already bounds it and the workload has no stable identity below the claims digest. **CLOSED (round 2)** |
+| O (immediate rules) | O-4: a pre-flight — the mint's checks that do not depend on the sealed content, asked before the issuer is touched; O-5: a dry-run flag | **O-4 adopted** — `POST …/rotation-proposals/preflight` under the lease's credential, storing nothing and consuming no window; a refusal strands nothing. New reason `variable-pending` (one pending proposal per variable — two jobs cannot race a member into two pushes), checked by the mint as well. O-5 deferred (the pre-flight is the dry run of what matters) |
+| P (lifetime) | P-2: an audit row for an expiry; P-3: a notification | **P-2 adopted** — `rotation.proposal_expired` (actor system) when the sweep drops the row, so `rotation.proposed` is never without a closing row. P-3 deferred (maruhi sends nothing; `--fail-on-pending` is the cron's notification) |
+
+Rulings A, B, C, D, K, O and P received candidates in this round and stay
+open for round 3.

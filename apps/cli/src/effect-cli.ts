@@ -668,6 +668,10 @@ const rotationListConfig = {
     "fail-on-flags",
     "Exit with code 3 while any rotation flag is active (a credential a departed party could read has not been rotated or dismissed)",
   ),
+  "fail-on-pending": singleFlag(
+    "fail-on-pending",
+    "Exit with code 3 while a sealed proposal minted by a CI job awaits a member (with --due-within, the ones expiring inside the window are counted in the message); needs a member's token",
+  ),
 };
 
 const rotationDismissConfig = {
@@ -4546,12 +4550,15 @@ function makeRootCommand(onExitCode: (code: number) => void) {
   const rotationList = Command.make("list", rotationListConfig, (values) =>
     Effect.gen(function* () {
       const dueWithin = values["due-within"];
-      if (dueWithin !== undefined && (dueWithin < 0 || !values["fail-on-due"])) {
+      if (
+        dueWithin !== undefined &&
+        (dueWithin < 0 || (!values["fail-on-due"] && !values["fail-on-pending"]))
+      ) {
         return yield* Effect.fail(
           usageError(
             dueWithin < 0
               ? "--due-within must be a number of days (0 or more)"
-              : "--due-within applies to --fail-on-due only",
+              : "--due-within applies to --fail-on-due / --fail-on-pending only",
           ),
         );
       }
@@ -4561,6 +4568,7 @@ function makeRootCommand(onExitCode: (code: number) => void) {
           failOnDue: values["fail-on-due"],
           dueWithinDays: dueWithin,
           failOnFlags: values["fail-on-flags"],
+          failOnPending: values["fail-on-pending"],
         }),
       );
     }),

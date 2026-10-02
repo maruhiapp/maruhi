@@ -471,18 +471,29 @@ export function varFinalizeOp(
     // connector decides against the issuer which of those to invalidate;
     // nothing server-declared (the history's versions or times) takes part
     const currentCompanions: Record<string, Uint8Array> = {};
+    const previousCompanions: Record<string, Uint8Array> = {};
     const ancestors: Record<string, readonly Uint8Array[]> = {};
     const warnings = [...primary.warnings];
+    // The previous credential's companions are positional: the version
+    // directly before the current one pairs with the primary's only when
+    // the primary's previous version is also the one directly before
+    // (one rotation pushes the pair together); otherwise no pairing is
+    // claimed and the finalize sees the ancestors alone (C-7)
+    const paired = primary.ancestorVersion === primary.latestVersion - 1;
     for (const [companion, variable] of Object.entries(companionsOf(target.rule))) {
       const value = yield* companionValue(local, variable, target);
       currentCompanions[companion] = Redacted.value(value);
       const range = yield* verifiedAncestorRange({ ...base, name: variable });
       ancestors[companion] = range.ancestors.map((entry) => Redacted.value(entry.value));
+      const before = range.ancestors[0];
+      if (paired && before !== undefined && before.version === range.latestVersion - 1) {
+        previousCompanions[companion] = Redacted.value(before.value);
+      }
       warnings.push(...range.warnings);
     }
     const previous: CredentialValues = {
       primary: Redacted.value(primary.ancestor),
-      companions: {},
+      companions: previousCompanions,
     };
     const current: CredentialValues = {
       primary: Redacted.value(primary.latest),

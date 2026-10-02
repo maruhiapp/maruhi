@@ -45,8 +45,9 @@ import { devicesOf } from "./device-key.ts";
 import { countNoun, displayText, formatUtcDate, logWarnings } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import type { CliIo } from "./io.ts";
+import { CliIo } from "./io.ts";
 import type { VerifiedLeaseMaterial } from "./lease-client.ts";
+import { fetchGitHubOidcToken } from "./oidc-github.ts";
 import type { DecryptedVariable } from "./pull.ts";
 import { type RotateConfig, type RotateRule, ruleFor } from "./rotate-config.ts";
 import {
@@ -321,6 +322,58 @@ function sealToRecipients(input: {
 }
 
 /** Why the server refused the mint, with the job's next step (the issuer already accepted the rotation). */
+/** The variables the mint will name, with the versions the lease holds (the pre-flight's input — O-4). */
+function preflightVariables(
+  primary: string,
+  rule: RotateRule,
+  local: ByName,
+): Effect.Effect<readonly { variableId: string; baseVersion: number }[], CliError> {
+  return Effect.gen(function* () {
+    const variables: { variableId: string; baseVersion: number }[] = [];
+    for (const name of [...Object.values(companionsOf(rule)), primary]) {
+      const variable = local.get(name);
+      if (variable === undefined) {
+        return yield* Effect.fail(missingValue(name, "this environment", primary));
+      }
+      variables.push({ variableId: variable.variableId, baseVersion: variable.version });
+    }
+    return variables;
+  });
+}
+
+/** The pre-flight's refusal (before the issuer is touched — nothing exists to recover). */
+function preflightRefusal(error: unknown, primary: string): CliError {
+  const refuse = (why: string, step: string) =>
+    cliError(
+      `Refusing to rotate ${displayText(primary)} from CI: the server would not store the proposal (${why}). ${step}. Nothing was sent to the issuer`,
+    );
+  if (error instanceof RotationProposalRejectedError) {
+    switch (error.reason) {
+      case "variable-pending":
+        return refuse(
+          "a sealed proposal for one of its variables is already pending",
+          "A member accepts or rejects it first (`maruhi rotation proposals`, then `maruhi rotation accept <id>` or `maruhi rotation reject <id>`); re-run the job after that",
+        );
+      case "base-version-stale":
+        return refuse(
+          "a member pushed the variable after this job leased it",
+          "Re-run the job once the members are done",
+        );
+      case "pending-limit":
+        return refuse(
+          "the project already holds the maximum number of pending proposals",
+          "A member accepts or rejects some with `maruhi rotation proposals`, then re-run the job",
+        );
+      default:
+        return refuse(`${error.reason} (AUTH_SPEC §14-5)`, "Check the rule and re-run the job");
+    }
+  }
+  if (error instanceof ProjectNotFoundError) {
+    return refuse("a uniform 404", LEASE_NOT_FOUND_MESSAGE);
+  }
+  return refuse(toCliError(error).message, "Re-run the job");
+}
+
 function mintRefusal(error: unknown, outcome: RotationOutcome): CliError {
   const next = (why: string, step: string) =>
     cliError(
@@ -407,6 +460,21 @@ export function ciRotateOp(
         ),
       );
     }
+    // The pre-flight (O-4): the mint's checks that the issuer cannot undo
+    // once a credential exists (a stale base, a pending proposal for the
+    // same variable, the pending cap) are asked first, under the lease's
+    // credential; a refusal here strands nothing
+    const params = { projectId: input.projectId, environmentId: input.environmentId };
+    yield* leased.client.lease
+      .preflight({
+        params,
+        payload: {
+          oidcToken: Redacted.value(leased.credential.token),
+          ephemeralPubHex: leased.credential.ephemeralPubHex,
+          variables: yield* preflightVariables(primary, rule, local),
+        },
+      })
+      .pipe(Effect.mapError((error) => preflightRefusal(error, primary)));
     const site = { variable: primary, environmentId: input.environmentId };
     const outcome = yield* Effect.tryPromise({
       try: () => rotateCredential(rule, current, inputs, input.deps, site),
@@ -429,13 +497,31 @@ export function ciRotateOp(
       ),
     );
     const expiresAtMs = (input.now ?? Date.now)() + input.expiresInDays * DAY_MS;
+    // The mint presents a token minted now, for the lease's ephemeral key
+    // (K-5): a connector can outlive the lease's token (the issuer's
+    // propagation waits; GitHub's tokens are short-lived), and the key
+    // binding, not the token, is the credential's continuity (§14-1).
+    // The lease's token is the fallback when the runner's issuance
+    // endpoint does not answer again (it may still be valid)
+    const io = yield* CliIo;
+    const mintToken = yield* fetchGitHubOidcToken(input.audience).pipe(
+      Effect.catch((error) =>
+        Effect.as(
+          io.logError(
+            `Could not mint a fresh OIDC token for the proposal (${error.message}); presenting the lease's token`,
+          ),
+          leased.credential.token,
+        ),
+      ),
+    );
     yield* leased.client.lease
       .propose({
-        params: { projectId: input.projectId, environmentId: input.environmentId },
+        params,
         payload: {
           // Why it is unwrapped: the wire boundary of the mint request (the
-          // same token the lease was issued under — AUTH_SPEC §14-5)
-          oidcToken: Redacted.value(leased.credential.token),
+          // lease's ephemeral key under a token of the same workload —
+          // AUTH_SPEC §14-5)
+          oidcToken: Redacted.value(mintToken),
           ephemeralPubHex: leased.credential.ephemeralPubHex,
           proposal: {
             proposalId,

@@ -98,8 +98,9 @@ export const UNAUTHENTICATED_ENDPOINTS: ReadonlyArray<readonly [group: string, e
     ["authCli", "cliApprove"],
     ["authCli", "cliPoll"],
     ["lease", "issue"],
-    // The sealed-proposal mint (AUTH_SPEC §14-5): the same OIDC credential as the lease
+    // The sealed-proposal mint and its pre-flight (AUTH_SPEC §14-5): the same OIDC credential as the lease
     ["lease", "propose"],
+    ["lease", "preflight"],
   ];
 
 const sessionAllowed = new Set(SESSION_ALLOWED_ENDPOINTS.map(([g, e]) => `${g}.${e}`));

@@ -729,7 +729,9 @@ describe("exec connector (a script of the repository — PF8)", () => {
     // One trailing newline is dropped, nothing else is touched
     expect(dec.decode(outcome.values.primary)).toBe("sk_live_new");
     expect(outcome.values.companions).toEqual({});
-    expect(outcome.facts).toEqual(["./rotate.sh: new credential produced"]);
+    // The value's shape is the first fact (D-7 — a member sees a script
+    // that printed chatter instead of a value before pushing it)
+    expect(outcome.facts).toEqual(["./rotate.sh: new credential produced (11 bytes, 1 line)"]);
     expect(outcome.previous).toContain(
       "stays valid until you finalize (./finalize.sh runs with it)",
     );
@@ -797,6 +799,33 @@ describe("exec connector (a script of the repository — PF8)", () => {
     );
   });
 
+  it("finalize passes the previous credential's companions as MH_ROTATE_PREVIOUS_<name>, scrubbed from the facts like every other value", async () => {
+    const script = fakeScript(() => ok("deleted key key_old (secret sk_live_old)\n"));
+    const outcome = await finalizeCredential(
+      jsonRule,
+      { primary: enc.encode("sk_live_old"), companions: { STRIPE_KEY_ID: enc.encode("key_old") } },
+      { primary: enc.encode("sk_live_new"), companions: { STRIPE_KEY_ID: enc.encode("key_new") } },
+      {},
+      deps({ exec: script.exec }),
+      {},
+      SITE,
+    );
+    expect(outcome.kind).toBe("finalized");
+    expect(script.calls[0]?.extraEnv).toEqual({
+      MH_ROTATE_VARIABLE: "STRIPE_SECRET_KEY",
+      MH_ROTATE_ENVIRONMENT: "prod",
+      MH_ROTATE_PHASE: "finalize",
+      MH_ROTATE_CURRENT: "sk_live_new",
+      MH_ROTATE_PREVIOUS: "sk_live_old",
+      MH_ROTATE_PREVIOUS_STRIPE_KEY_ID: "key_old",
+      STRIPE_SECRET_KEY: "sk_live_new",
+      STRIPE_KEY_ID: "key_new",
+    });
+    expect(outcome.facts).toEqual([
+      "./finalize.sh: previous credential retired (deleted key [redacted] (secret [redacted]))",
+    ]);
+  });
+
   it("a JSON answer carries companions and facts; every declared companion is required and nothing undeclared is taken", async () => {
     const script = fakeScript(() =>
       ok(
@@ -820,7 +849,7 @@ describe("exec connector (a script of the repository — PF8)", () => {
     );
     // The new value is scrubbed out of the script's facts
     expect(outcome.facts).toEqual([
-      "./rotate.sh: new credential produced (created key [redacted] (value [redacted]))",
+      "./rotate.sh: new credential produced (11 bytes, 1 line; created key [redacted] (value [redacted]))",
     ]);
     const missing = fakeScript(() => ok(JSON.stringify({ value: "x" })));
     await expect(

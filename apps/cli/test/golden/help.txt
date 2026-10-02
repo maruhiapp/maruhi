@@ -1353,6 +1353,7 @@ FLAGS
   --fail-on-due           Exit with code 3 when a value is past the max age its schema declares (a CI cron turns it into a failed build or an issue; see also --due-within)
   --due-within integer    With --fail-on-due: also fail when a value comes due within this many days (default 0 = only values already past their max age)
   --fail-on-flags         Exit with code 3 while any rotation flag is active (a credential a departed party could read has not been rotated or dismissed)
+  --fail-on-pending       Exit with code 3 while a sealed proposal minted by a CI job awaits a member (with --due-within, the ones expiring inside the window are counted in the message); needs a member's token
 
 GLOBAL FLAGS
   --help, -h       Show help information

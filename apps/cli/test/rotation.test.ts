@@ -119,6 +119,8 @@ async function makeRotationServer(input: {
   readonly expiringPushedAtMs?: number;
   /** Whether that variable's history can be read (false = 500 — the unreadable-age path of `--fail-on-due`). */
   readonly historyAvailable?: boolean;
+  /** The expiries of the pending sealed proposals listed to the caller (default none); null = the list fails (500). */
+  readonly pendingProposalExpiries?: readonly number[] | null;
 }): Promise<RotationServerState> {
   const projectId = input.built.projectId;
   const currentEpoch = input.currentEpoch ?? 1;
@@ -233,6 +235,26 @@ async function makeRotationServer(input: {
       status: 200,
       json: { flags: input.flags },
     })),
+    onRequest("GET", `/projects/${projectId}/rotation/proposals`, () =>
+      input.pendingProposalExpiries === null
+        ? { status: 500, json: { message: "injected proposal-list failure" } }
+        : {
+            status: 200,
+            json: {
+              proposals: (input.pendingProposalExpiries ?? []).map((expiresAtMs, index) => ({
+                proposalId: `0000000000000000000000000000000${index}`,
+                environmentId: ENV_ID,
+                connector: "exec",
+                facts: [],
+                claimsDigestHex: "00".repeat(32),
+                grantChainSeq: 1,
+                createdAtMs: 0,
+                expiresAtMs,
+                variables: [],
+              })),
+            },
+          },
+    ),
     (request) => {
       if (
         request.method !== "POST" ||
@@ -416,7 +438,45 @@ describe("maruhi rotation list", () => {
     // --due-within is meaningless without --fail-on-due (a usage error, before any network)
     const misuse = await startEnv(soon, built.projectId);
     expect(await runCli(["rotation", "list", "--due-within", "7"], misuse.layer)).toBe(2);
-    expect(misuse.errors.join("\n")).toContain("--due-within applies to --fail-on-due only");
+    expect(misuse.errors.join("\n")).toContain(
+      "--due-within applies to --fail-on-due / --fail-on-pending only",
+    );
+  });
+
+  it("--fail-on-pending exits 3 while a sealed proposal awaits a member, 0 once none does, and 1 when the list could not be read (PF7b A-9)", async () => {
+    const built = await convergedChain();
+    const day = 24 * 60 * 60 * 1000;
+    const pending = await makeRotationServer({
+      built,
+      flags: [],
+      pendingProposalExpiries: [Date.now() + 3 * day, Date.now() + 20 * day],
+    });
+    const plain = await startEnv(pending, built.projectId);
+    expect(await runCli(["rotation", "list"], plain.layer)).toBe(0);
+    expect(plain.logs.join("\n")).toContain(
+      "Pending sealed proposals: 2 proposals minted by CI jobs await a member",
+    );
+    const env = await startEnv(pending, built.projectId);
+    expect(
+      await runCli(["rotation", "list", "--fail-on-pending", "--due-within", "7"], env.layer),
+    ).toBe(3);
+    expect(env.errors.join("\n")).toContain(
+      "Rotation due (exit 3): 2 sealed proposals awaiting a member (1 expiring within 7 days)",
+    );
+    const none = await startEnv(
+      await makeRotationServer({ built, flags: [], pendingProposalExpiries: [] }),
+      built.projectId,
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-pending"], none.layer)).toBe(0);
+    // An unreadable list is a failed check, not a passed one
+    const broken = await startEnv(
+      await makeRotationServer({ built, flags: [], pendingProposalExpiries: null }),
+      built.projectId,
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-pending"], broken.layer)).toBe(1);
+    expect(broken.errors.join("\n")).toContain(
+      "Cannot judge --fail-on-pending: they could not be read",
+    );
   });
 
   it("--fail-on-due exits 1, not 0 or 3, when a history could not be read (an unknown age is not a passed check)", async () => {

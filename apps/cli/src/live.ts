@@ -185,11 +185,56 @@ async function captureScript(input: CaptureInput): Promise<CaptureOutcome> {
     );
   }
   const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout as ReadableStream).bytes(),
+    readBounded(child.stdout as ReadableStream<Uint8Array>, MAX_SCRIPT_STDOUT_BYTES).then(
+      (bytes) => {
+        if (bytes === null) {
+          // The script is stopped the moment the cap is passed (D-6)
+          child.kill();
+        }
+        return bytes;
+      },
+    ),
     new Response(child.stderr as ReadableStream).text(),
     child.exited,
   ]);
+  if (stdout === null) {
+    throw new Error(
+      `${input.command[0] ?? ""} wrote more than ${MAX_SCRIPT_STDOUT_BYTES / (1024 * 1024)} MiB to stdout (a credential is small; commentary belongs on stderr): it was stopped and nothing it wrote was read`,
+    );
+  }
   return { exitCode, stdout, stderr };
+}
+
+/** A script's stdout is a credential: anything past this is not one (D-6). */
+const MAX_SCRIPT_STDOUT_BYTES = 1024 * 1024;
+
+/** Reads a stream up to `limit` bytes; null (and the stream cancelled) past the limit. */
+async function readBounded(
+  stream: ReadableStream<Uint8Array>,
+  limit: number,
+): Promise<Uint8Array | null> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }
 
 /** The vendor CLI's execution directory (the config's cwd) is missing or not a directory. */

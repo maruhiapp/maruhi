@@ -727,6 +727,7 @@ export type RotationProposalRejectReason =
   | "pending-limit"
   | "storage-limit"
   | "version-missing"
+  | "variable-pending"
   // The project is a read-only mirror (AUTH_SPEC §11-7)
   | "mirror-read-only";
 

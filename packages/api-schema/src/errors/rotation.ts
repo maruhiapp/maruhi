@@ -47,6 +47,9 @@ export const RotationProposalRejectReasonSchema = Schema.Literals([
   "version-missing",
   // The proposal's sealed values would carry the project past the §12-8 ciphertext cap
   "storage-limit",
+  // The pre-flight (AUTH_SPEC §14-5 — O-4): a pending proposal already
+  // targets the variable; the job stops before the issuer is touched
+  "variable-pending",
   // The project is a read-only mirror (AUTH_SPEC §11-7): the workload's
   // credential is not a member's, so the refusal rides this vocabulary
   // rather than Forbidden; the job mints against the source deployment

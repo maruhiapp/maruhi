@@ -15,6 +15,9 @@ interface ProbeResult {
   readonly output: string;
   readonly missing: string;
   readonly badCwd: string;
+  readonly capturedBytes: number;
+  readonly capturedStderr: string;
+  readonly flooded: string;
 }
 
 describe("ProcessRunner.exec (live — Bun.spawn)", () => {
@@ -45,5 +48,13 @@ describe("ProcessRunner.exec (live — Bun.spawn)", () => {
     expect(probe.badCwd).toContain(
       "the target's working directory does not exist or is not a directory (/nonexistent-maruhi-probe-dir)",
     );
-  });
+    // captureScript: stdout whole (300,000 bytes) and stderr as text; a
+    // flood past 1 MiB is refused with the script stopped (the probe does
+    // not wait out its sleep)
+    expect(probe.capturedBytes).toBe(300_000);
+    expect(probe.capturedStderr).toBe("note\n");
+    expect(probe.flooded).toContain(
+      "sh wrote more than 1 MiB to stdout (a credential is small; commentary belongs on stderr): it was stopped and nothing it wrote was read",
+    );
+  }, 60_000);
 });

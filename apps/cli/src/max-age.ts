@@ -15,7 +15,7 @@
 // pays one round-trip time whatever the count (the pull wire carries no
 // push time — AUTH_SPEC §12-7; pf6-design.md ruling R9-C kept it that way).
 
-import { Effect } from "effect";
+import { Duration, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { countNoun, displayText, formatUtcDate } from "./display.ts";
@@ -59,6 +59,9 @@ export interface DueRows {
   readonly unreadable: readonly string[];
 }
 
+/** The bound on one history read (an advisory lookup never holds the command — B-7). */
+const HISTORY_TIMEOUT = Duration.seconds(10);
+
 export function dueRowsFor(input: {
   readonly client: MaruhiClient;
   readonly projectId: string;
@@ -81,6 +84,9 @@ export function dueRowsFor(input: {
             },
           })
           .pipe(
+            // A stalled read is bounded like a failed one: the note must
+            // never hold `maruhi run` (B-7), and a check cannot wait forever
+            Effect.timeout(HISTORY_TIMEOUT),
             Effect.map((response) => response.versions),
             // A failed read is noted and counted: the listing goes on, but
             // a check (`--fail-on-due`) cannot pass on an unknown age

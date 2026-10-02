@@ -339,8 +339,14 @@ export interface DataWriteOps {
   readonly insertProposal: (proposal: ProposalWriteInput, nowMs: number) => void;
   /** Removes a proposal and its rows (resolution — the audit row carries the outcome). */
   readonly deleteProposal: (proposalId: string) => void;
-  /** Sweeps expired proposals (called before a mint and a resolution). */
-  readonly deleteExpiredProposals: (nowMs: number) => void;
+  /** Sweeps expired proposals (called before a mint, a pre-flight and a resolution); returns what it removed so the audit row can close each one (AUDIT_SPEC §3.3 — P-2). */
+  readonly deleteExpiredProposals: (nowMs: number) => readonly ExpiredProposal[];
+}
+
+/** A proposal the expiry sweep removed (the input of a rotation.proposal_expired audit row). */
+export interface ExpiredProposal {
+  readonly proposalId: string;
+  readonly environmentId: string;
 }
 
 /** The coordinates of a wrap deleted by the cleanup (the input of a dek.deleted audit row). */
@@ -650,6 +656,12 @@ export interface DataStoreShape {
   ) => Effect.Effect<StoredProposal | null>;
   readonly listPendingProposals: (nowMs: number) => Effect.Effect<readonly StoredProposal[]>;
   readonly countPendingProposals: (nowMs: number) => Effect.Effect<number>;
+  /** Whether a pending proposal already targets the variable (the pre-flight's `variable-pending` — AUTH_SPEC §14-5 O-4). */
+  readonly variableHasPendingProposal: (
+    environmentId: string,
+    variableId: string,
+    nowMs: number,
+  ) => Effect.Effect<boolean>;
 
   readonly write: DataWriteOps;
 }
@@ -2270,12 +2282,19 @@ const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
   },
   deleteExpiredProposals: (nowMs) => {
     const expired = sql
-      .exec("SELECT proposal_id FROM rotation_proposals WHERE expires_at <= ?", nowMs)
+      .exec(
+        "SELECT proposal_id, environment_id FROM rotation_proposals WHERE expires_at <= ? ORDER BY expires_at, proposal_id",
+        nowMs,
+      )
       .toArray()
-      .map((row) => stringColumn(row, "proposal_id"));
-    for (const proposalId of expired) {
+      .map((row): ExpiredProposal => ({
+        proposalId: stringColumn(row, "proposal_id"),
+        environmentId: stringColumn(row, "environment_id"),
+      }));
+    for (const { proposalId } of expired) {
       deleteProposalRows(sql, proposalId);
     }
+    return expired;
   },
 });
 
@@ -2383,6 +2402,20 @@ const makeProposalQueries = (sql: SqlStorage) => {
             .toArray()[0] ?? { n: 0 },
           "n",
         ),
+      ),
+    variableHasPendingProposal: (environmentId: string, variableId: string, nowMs: number) =>
+      Effect.sync(
+        () =>
+          sql
+            .exec(
+              `SELECT 1 AS present FROM rotation_proposals AS p
+               JOIN rotation_proposal_variables AS v ON v.proposal_id = p.proposal_id
+               WHERE p.environment_id = ? AND v.variable_id = ? AND p.expires_at > ? LIMIT 1`,
+              environmentId,
+              variableId,
+              nowMs,
+            )
+            .toArray().length > 0,
       ),
   };
 };

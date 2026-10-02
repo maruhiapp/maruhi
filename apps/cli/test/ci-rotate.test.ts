@@ -333,21 +333,50 @@ const EXEC_RULE = {
   },
 };
 
+interface PreflightBody {
+  readonly oidcToken: string;
+  readonly ephemeralPubHex: string;
+  readonly variables: readonly { variableId: string; baseVersion: number }[];
+}
+
+interface Preflighted {
+  readonly bodies: PreflightBody[];
+  /** An injected refusal (undefined = ok). */
+  reject?: { status: number; json: unknown } | undefined;
+}
+
+function preflightHandler(preflighted: Preflighted): MockHandler {
+  return (request) => {
+    if (
+      request.method !== "POST" ||
+      request.path !==
+        `/projects/${built.projectId}/environments/${ENV_ID}/rotation-proposals/preflight`
+    ) {
+      return null;
+    }
+    preflighted.bodies.push(request.body as PreflightBody);
+    return preflighted.reject ?? { status: 200, json: { ok: true } };
+  };
+}
+
 interface CiFixture {
   readonly env: TestEnv;
   readonly server: MockServer;
   readonly configPath: string;
   readonly leased: Leased;
+  readonly preflighted: Preflighted;
   readonly minted: Minted;
 }
 
 /** CI environment: neither login nor config is seeded (CI mode's independence is pinned by this setup). */
 async function startCi(config: unknown = EXEC_RULE): Promise<CiFixture> {
   const leased: Leased = { bodies: [] };
+  const preflighted: Preflighted = { bodies: [] };
   const minted: Minted = { requests: [], bodies: [] };
   const server = await MockServer.start([
     oidcHandler({ issued: 0 }),
     leaseHandler(leased),
+    preflightHandler(preflighted),
     mintHandler(minted),
   ]);
   servers.push(server);
@@ -364,7 +393,7 @@ async function startCi(config: unknown = EXEC_RULE): Promise<CiFixture> {
   const configDir = await mkdtemp(join(tmpdir(), "maruhi-ci-rotate-test-"));
   const configPath = join(configDir, "maruhi.rotate.json");
   await writeFile(configPath, JSON.stringify(config));
-  return { env, server, configPath, leased, minted };
+  return { env, server, configPath, leased, preflighted, minted };
 }
 
 function ciRotate(fixture: CiFixture, ...extra: string[]): Promise<number> {
@@ -446,8 +475,22 @@ function openedByOwnerDevices(
   );
 }
 
+/** The one mint of a run (a missing or second mint fails the test). */
+function onlyMint(fixture: CiFixture): MintBody {
+  expect(fixture.minted.bodies).toHaveLength(1);
+  return nth(fixture.minted.bodies, 0);
+}
+
+function nth<T>(items: readonly T[], index: number): T {
+  const item = items[index];
+  if (item === undefined) {
+    throw new Error(`no item at index ${index}`);
+  }
+  return item;
+}
+
 describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
-  it("runs the connector from the lease and stores the new value sealed to every member device in scope, under the lease's token and key", async () => {
+  it("runs the connector from the lease and stores the new value sealed to every member device in scope, under the lease's key and a fresh token", async () => {
     const fixture = await startCi();
     expect(await ciRotate(fixture)).toBe(0);
 
@@ -459,43 +502,52 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expect(call?.extraEnv["STRIPE_ADMIN_KEY"]).toBe(ADMIN_KEY);
     expect(call?.extraEnv["MH_ROTATE_PHASE"]).toBe("rotate");
 
-    // One mint, under the same token and ephemeral key as the lease (§14-5)
-    expect(fixture.minted.bodies).toHaveLength(1);
-    const body = fixture.minted.bodies[0];
-    expect(body).toBeDefined();
-    if (body === undefined) {
-      return;
-    }
+    // The pre-flight ran before the connector, under the lease's own
+    // credential, naming the leased versions (O-4)
     expect(fixture.leased.bodies).toHaveLength(1);
-    expect(body.oidcToken).toBe(fixture.leased.bodies[0]?.oidcToken);
-    expect(body.ephemeralPubHex).toBe(fixture.leased.bodies[0]?.ephemeralPubHex);
+    const lease = nth(fixture.leased.bodies, 0);
+    expect(fixture.preflighted.bodies).toEqual([
+      {
+        oidcToken: lease.oidcToken,
+        ephemeralPubHex: lease.ephemeralPubHex,
+        variables: [{ variableId: "vs", baseVersion: 3 }],
+      },
+    ]);
+    // One mint, under the lease's ephemeral key and a token minted for it
+    // after the connector (K-5 — the lease's token may have aged out)
+    const body = onlyMint(fixture);
+    expect(body.oidcToken).not.toBe(lease.oidcToken);
+    expect(jwtPayload(body.oidcToken)["jti"]).toBe(2);
+    expect(body.ephemeralPubHex).toBe(lease.ephemeralPubHex);
     expect(body.proposal.proposalId).toMatch(/^[0-9a-f]{32}$/);
     expect(body.proposal.connector).toBe("exec");
-    expect(body.proposal.facts).toEqual(["./rotate.sh: new credential produced"]);
+    // The value's shape rides as the first fact (D-7)
+    expect(body.proposal.facts).toEqual([
+      "./rotate.sh: new credential produced (17 bytes, 1 line)",
+    ]);
     expect(body.proposal.variables).toHaveLength(1);
-    const variable = body.proposal.variables[0];
+    const variable = nth(body.proposal.variables, 0);
     expect(variable).toMatchObject({ variableId: "vs", baseVersion: 3 });
     // W(E): the member's device and both of the owner's devices with an
     // effective role of member or above — not the reader, and not the
     // owner's reader-capped device (it could open the value but never push it)
     const ownerDevices = ownerDevicesInOrder();
-    expect(variable?.wraps.map((wrap) => wrap.recipientUserId)).toEqual([
+    expect(variable.wraps.map((wrap) => wrap.recipientUserId)).toEqual([
       member.userId,
       owner.userId,
       owner.userId,
     ]);
-    expect(variable?.wraps.map((wrap) => wrap.recipientEncPubHex)).toEqual([
+    expect(variable.wraps.map((wrap) => wrap.recipientEncPubHex)).toEqual([
       member.encPubHex,
       ...ownerDevices.map((device) => device.encPubHex),
     ]);
-    expect(variable?.wraps.map((wrap) => wrap.recipientEncPubHex)).not.toContain(
+    expect(variable.wraps.map((wrap) => wrap.recipientEncPubHex)).not.toContain(
       ownerReaderCap.encPubHex,
     );
-    const [memberWrap, ...ownerWraps] = variable?.wraps ?? [];
-    expect(memberWrap).toBeDefined();
+    const [memberWrap, ...ownerWraps] = variable.wraps;
     expect(ownerWraps).toHaveLength(2);
     if (memberWrap === undefined) {
-      return;
+      throw new Error("no member wrap");
     }
     expect(await openWith(member.encKeyPair, member.userId, body, memberWrap)).toBe(NEW_KEY);
     expect(await openedByOwnerDevices(body, ownerWraps)).toEqual([NEW_KEY, NEW_KEY]);
@@ -563,7 +615,12 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expect(await openWith(member.encKeyPair, member.userId, body, keyWrap)).toBe(NEW_KEY);
     // The script's fact is scrubbed of the produced values
     expect(body.proposal.facts).toEqual([
-      "./rotate.sh: new credential produced (created key [redacted] at stripe)",
+      "./rotate.sh: new credential produced (17 bytes, 1 line; created key [redacted] at stripe)",
+    ]);
+    // Both variables were pre-flighted, in push order
+    expect(fixture.preflighted.bodies[0]?.variables).toEqual([
+      { variableId: "vk", baseVersion: 1 },
+      { variableId: "vs", baseVersion: 3 },
     ]);
     const thirtyDays = 30 * 24 * 60 * 60 * 1000;
     expect(body.proposal.expiresAtMs).toBeGreaterThanOrEqual(before + thirtyDays);
@@ -585,6 +642,36 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     );
     expect(fixture.env.captureCalls).toHaveLength(0);
     expect(fixture.minted.bodies).toHaveLength(0);
+    expectNoSecretLeak(fixture);
+  });
+
+  it("the pre-flight refuses a pending or stale variable before the issuer is touched", async () => {
+    const fixture = await startCi();
+    fixture.preflighted.reject = {
+      status: 422,
+      json: { _tag: "RotationProposalRejected", reason: "variable-pending" },
+    };
+    expect(await ciRotate(fixture)).toBe(1);
+    const errors = fixture.env.errors.join("\n");
+    expect(errors).toContain(
+      "Refusing to rotate STRIPE_SECRET_KEY from CI: the server would not store the proposal (a sealed proposal for one of its variables is already pending)",
+    );
+    expect(errors).toContain("Nothing was sent to the issuer");
+    expect(errors).not.toContain("Recovery");
+    expect(fixture.env.captureCalls).toHaveLength(0);
+    expect(fixture.minted.bodies).toHaveLength(0);
+    // Only the lease's token was minted (no fresh token for a mint that never happened)
+    expect(fixture.preflighted.bodies).toHaveLength(1);
+    const stale = await startCi();
+    stale.preflighted.reject = {
+      status: 422,
+      json: { _tag: "RotationProposalRejected", reason: "base-version-stale" },
+    };
+    expect(await ciRotate(stale)).toBe(1);
+    expect(stale.env.errors.join("\n")).toContain(
+      "a member pushed the variable after this job leased it",
+    );
+    expect(stale.env.captureCalls).toHaveLength(0);
     expectNoSecretLeak(fixture);
   });
 

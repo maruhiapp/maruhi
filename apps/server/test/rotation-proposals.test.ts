@@ -193,6 +193,25 @@ async function proposalFor(options: ProposalOptions = {}) {
   };
 }
 
+/** The pre-flight of a mint (AUTH_SPEC §14-5 — the mint's checks before the issuer is touched). */
+async function preflight(input: {
+  readonly variables: readonly { variableId: string; baseVersion: number }[];
+  readonly oidcToken?: string;
+}): Promise<Response> {
+  return SELF.fetch(
+    `https://maruhi.test/projects/${projectId}/environments/${ENV}/rotation-proposals/preflight`,
+    {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        oidcToken: input.oidcToken ?? (await makeOidcToken()),
+        ephemeralPubHex: workload.publicKeyHex,
+        variables: input.variables,
+      }),
+    },
+  );
+}
+
 async function mint(input: {
   readonly proposal: unknown;
   readonly oidcToken?: string;
@@ -629,6 +648,55 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     );
     expect(denied).toHaveLength(1);
     expect(JSON.parse(String(denied[0]?.["payload"]))).toMatchObject({ reason: "rate-limited" });
+  });
+
+  it("the pre-flight answers the mint's checks without storing anything: ok, then variable-pending once a proposal is stored, stale base, and the uniform 404 without a grant", async () => {
+    // No grant: the same uniform 404 as the lease (existence concealment)
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    expect((await preflight({ variables: [{ variableId: VAR, baseVersion: 1 }] })).status).toBe(
+      404,
+    );
+    await grantServer({ scope: [ENV] });
+    await expectStatus(await preflight({ variables: [{ variableId: VAR, baseVersion: 1 }] }), 200);
+    await expectRejected(
+      await preflight({ variables: [{ variableId: VAR, baseVersion: 2 }] }),
+      "base-version-stale",
+    );
+    await expectRejected(
+      await preflight({ variables: [{ variableId: "var-unknown-0000000000", baseVersion: 1 }] }),
+      "variable-inactive",
+    );
+    // Nothing was stored or counted by the pre-flights
+    expect(await proposalsOf(MEMBER)).toEqual([]);
+    expect(
+      await queryProjectDo(projectId, "SELECT count FROM lease_windows WHERE kind = 'proposed'"),
+    ).toEqual([]);
+    expect(
+      (await readAuditEvents(projectId)).filter((event) => event["event"] === "rotation.proposed"),
+    ).toEqual([]);
+    // A stored proposal makes the same variable pending for the next job
+    await expectStatus(await mint({ proposal: await proposalFor() }), 200);
+    await expectRejected(
+      await preflight({ variables: [{ variableId: VAR, baseVersion: 1 }] }),
+      "variable-pending",
+    );
+    // The expiry sweep (on a pre-flight too) leaves the proposal's history
+    // as an audit row and frees the variable
+    await queryProjectDo(
+      projectId,
+      "UPDATE rotation_proposals SET expires_at = ? WHERE proposal_id = ?",
+      Date.now() - 1000,
+      PROPOSAL_ID,
+    );
+    await expectStatus(await preflight({ variables: [{ variableId: VAR, baseVersion: 1 }] }), 200);
+    const expired = (await readAuditEvents(projectId)).filter(
+      (event) => event["event"] === "rotation.proposal_expired",
+    );
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({ actor_type: "system", environment_id: ENV });
+    expect(JSON.parse(String(expired[0]?.["payload"]))).toEqual({ proposalId: PROPOSAL_ID });
+    expect(await proposalsOf(MEMBER)).toEqual([]);
   });
 
   it("an expired proposal is neither listed nor resolvable, and a listed member of another environment sees nothing", async () => {
