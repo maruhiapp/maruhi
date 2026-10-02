@@ -376,6 +376,8 @@ declares no interval.
 
 ## 13. Item flagged for the owner — the R9 spec revision
 
+**Resolved 2026-10-02**: the owner approved the R9 spec revision in the PF6 session; the drafts in pf6-spec-drafts.md were applied to CRYPTO_SPEC (0.13-draft) and AUTH_SPEC (0.26-draft) in the implementation PR. The owner also ruled that scheduled rotation (§10-1 S-A with S-B / S-E first) and the connector additions (§10-1 C-D, then C-C) are done **before the release** — ROADMAP PF7 / PF8.
+
 R9 is a CRYPTO_SPEC §4.2 revision (test vectors first, human review — the
 ROADMAP's own words). Under the delegation the designer **drafted** the
 revision text (pf6-spec-drafts.md), **appended** the vectors

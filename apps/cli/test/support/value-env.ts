@@ -52,8 +52,12 @@ export interface ValueEnvironmentServerInput {
   readonly owner: TestUser;
   readonly environmentId: string;
   readonly envStatement: WireDistributedEnvironmentStatement;
-  /** Self-addressed DEK wrap (epoch 1). */
+  /** Self-addressed DEK wrap of the current epoch (epoch 1 unless `currentEpoch` says otherwise). */
   readonly wrap: WireRecipientDek;
+  /** The environment's current epoch (default 1 — the chain must carry the matching rotations). */
+  readonly currentEpoch?: number;
+  /** Every wrap addressed to the device (default: `wrap` alone — a device missing an older epoch's wrap lists only the current one). */
+  readonly wraps?: readonly WireRecipientDek[];
   readonly initialVariables?: readonly StoredVariable[];
   readonly initialDeclared?: readonly WireDistributedVariableStatement[];
   /**
@@ -110,12 +114,14 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
     writerUserId: input.owner.userId,
     writerKeyFingerprintHex: input.owner.fingerprintHex,
   });
+  const currentEpoch = input.currentEpoch ?? 1;
+  const wraps = input.wraps ?? [input.wrap];
   const manifest = async (): Promise<WireDistributedManifest> =>
     state.manifest ??
     manifestFor({
       projectId: input.chain.projectId,
       environmentId: input.environmentId,
-      epoch: 1,
+      epoch: currentEpoch,
       issuer: input.owner,
       head,
       envStatement: input.envStatement,
@@ -142,7 +148,7 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
 
   const handlers: MockHandler[] = [
     chainHandlerOf(input.chain),
-    deksHandlerOf(input.chain.projectId, input.environmentId, [input.wrap]),
+    deksHandlerOf(input.chain.projectId, input.environmentId, wraps),
     async (request) => {
       if (request.method !== "GET" || request.path !== `${base}/pull`) {
         return null;
@@ -151,7 +157,7 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
         status: 200,
         json: {
           environmentId: input.environmentId,
-          currentEpoch: 1,
+          currentEpoch,
           statement: input.envStatement,
           variables: state.variables.map((entry) => ({
             variableId: entry.variableId,
@@ -160,7 +166,7 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
           })),
           deletedVariables: [],
           ...(state.declared.length === 0 ? {} : { declaredVariables: state.declared }),
-          deks: [input.wrap],
+          deks: wraps,
           manifest: await manifest(),
           schemaPolicy: "enabled" as const,
         },
@@ -174,7 +180,7 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
         status: 200,
         json: {
           environmentId: input.environmentId,
-          currentEpoch: 1,
+          currentEpoch,
           statement: input.envStatement,
           variables: [...state.variables.map((entry) => entry.statement), ...state.declared],
           deletedVariables: [],
@@ -206,7 +212,7 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
       };
       return {
         status: 200,
-        json: { variableId: statement.variableId, version: 1, epoch: 1 },
+        json: { variableId: statement.variableId, version: 1, epoch: currentEpoch },
       };
     },
     (request) => {
@@ -231,7 +237,7 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
       ]);
       return {
         status: 200,
-        json: { variableId, version: body.value.aad.version, epoch: 1 },
+        json: { variableId, version: body.value.aad.version, epoch: currentEpoch },
       };
     },
     (request) => {

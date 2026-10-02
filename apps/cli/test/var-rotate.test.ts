@@ -34,6 +34,7 @@ import {
   headOf,
   hexBytes,
   makeTestUser,
+  rotateEpochOp,
   statementFor,
   type TestUser,
   valueHashOf,
@@ -755,5 +756,173 @@ describe("maruhi var rotate refusals (before anything is sent)", () => {
       "postgres: setting the password of role app_b failed: FATAL: password authentication failed for user admin",
     );
     expect(prod.writes).toEqual([]);
+  });
+});
+
+describe("maruhi var rotate --finalize with an ancestor this device cannot decrypt", () => {
+  it("skips the undecryptable version with a warning and never treats its key as one maruhi stored", async () => {
+    // The environment rotated from epoch 1 to 2 and this device holds only
+    // the epoch-2 wrap (an unfilled gap — device-gaps.ts). Version 1 of the
+    // key id variable (epoch 1, AKIAOLD…) cannot be decrypted here. The
+    // finalize must still run: that version is skipped with a warning, and
+    // because its id is then not one of the ids maruhi is known to have
+    // stored, the issuer's AKIAOLD… key is left untouched (fail-safe: the
+    // skipped version can only shrink what gets deactivated)
+    const dek1 = crypto.getRandomValues(new Uint8Array(32));
+    const dek2 = crypto.getRandomValues(new Uint8Array(32));
+    const chain = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
+    ]);
+    const projectId = chain.projectId;
+    const wrap2 = await wrapDekFor({
+      projectId,
+      environmentId: ENV_ID,
+      recipient: owner,
+      signer: owner,
+      epoch: 2,
+      dek: dek2,
+    });
+    const head = { seq: 1, hashHex: projectId };
+    const envStatement = await environmentStatementFor({
+      projectId,
+      environmentId: ENV_ID,
+      name: ENV_ID,
+      author: owner,
+      head,
+    });
+    const seeded = async (
+      variableId: string,
+      name: string,
+      entries: readonly { readonly plaintext: string; readonly epoch: 1 | 2 }[],
+    ) => {
+      const statement = await statementFor({
+        projectId,
+        environmentId: ENV_ID,
+        variableId,
+        name,
+        author: owner,
+        head,
+      });
+      const values: WireDistributedValue[] = [];
+      for (const [index, entry] of entries.entries()) {
+        const previous = values.at(-1);
+        values.push(
+          await encryptValueFor({
+            dek: entry.epoch === 1 ? dek1 : dek2,
+            projectId,
+            environmentId: ENV_ID,
+            epoch: entry.epoch,
+            variableId,
+            version: index + 1,
+            plaintext: entry.plaintext,
+            writer: owner,
+            // Signed at the head where that epoch is current
+            head: headOf(chain, entry.epoch === 1 ? 2 : 3),
+            ...(previous === undefined
+              ? {}
+              : { prevValueSigHashHex: await valueHashOf(previous, owner.userId) }),
+          }),
+        );
+      }
+      const latest = values.at(-1);
+      if (latest === undefined) {
+        throw new Error("a seed needs at least one version");
+      }
+      return { variableId, statement, value: latest, values };
+    };
+    const keyId = await seeded("v-id", "AWS_ACCESS_KEY_ID", [
+      { plaintext: "AKIAOLD0000000000001", epoch: 1 },
+      { plaintext: "AKIAMID0000000000002", epoch: 2 },
+      { plaintext: "AKIANEW0000000000003", epoch: 2 },
+    ]);
+    const secret = await seeded("v-secret", "AWS_SECRET_ACCESS_KEY", [
+      { plaintext: "old/secret", epoch: 2 },
+      { plaintext: "new/secret", epoch: 2 },
+    ]);
+    const prod = makeValueEnvironmentServer({
+      chain,
+      owner,
+      environmentId: ENV_ID,
+      envStatement,
+      wrap: wrap2,
+      wraps: [wrap2],
+      currentEpoch: 2,
+      initialVariables: [keyId, secret].map((entry) => ({
+        variableId: entry.variableId,
+        statement: entry.statement,
+        value: entry.value,
+      })),
+      initialHistory: new Map([keyId, secret].map((entry) => [entry.variableId, entry.values])),
+    });
+    const server = await MockServer.start(prod.handlers);
+    servers.push(server);
+    const env = await makeTestEnv();
+    seedSession(env, server.origin, owner);
+    await seedConfig(env, {
+      server: server.origin,
+      defaultProject: projectId,
+      defaultEnvironment: ENV_ID,
+    });
+    const dir = await mkdtemp(join(tmpdir(), "maruhi-var-rotate-gap-test-"));
+    const configPath = join(dir, "maruhi.rotate.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        variables: {
+          AWS_SECRET_ACCESS_KEY: {
+            connector: "aws-iam-access-key",
+            accessKeyIdVariable: "AWS_ACCESS_KEY_ID",
+            user: "deployer",
+          },
+        },
+      }),
+    );
+    const actions: string[] = [];
+    const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+      const action = new URLSearchParams(String(init?.body ?? "")).get("Action") ?? "";
+      actions.push(action);
+      if (action === "ListAccessKeys") {
+        return new Response(
+          "<ListAccessKeysResponse><ListAccessKeysResult><AccessKeyMetadata><member><AccessKeyId>AKIAOLD0000000000001</AccessKeyId><Status>Active</Status></member><member><AccessKeyId>AKIANEW0000000000003</AccessKeyId><Status>Active</Status></member></AccessKeyMetadata></ListAccessKeysResult></ListAccessKeysResponse>",
+          { status: 200 },
+        );
+      }
+      return new Response("<UpdateAccessKeyResponse/>", { status: 200 });
+    }) as typeof fetch;
+    env.setRotateSeams({
+      fetch: fetchImpl,
+      awsIamBase: "https://iam.test",
+      awsStsBase: "https://sts.test",
+      now: () => Date.parse("2026-10-02T00:00:00Z"),
+    });
+    expect(
+      await runCli(
+        [
+          "var",
+          "rotate",
+          "AWS_SECRET_ACCESS_KEY",
+          "--finalize",
+          "--yes",
+          "--rotate-config",
+          configPath,
+        ],
+        env.layer,
+      ),
+    ).toBe(0);
+    const output = [...env.logs, ...env.errors].join("\n");
+    expect(output).toContain(
+      "version 1 of AWS_ACCESS_KEY_ID could not be decrypted on this device",
+    );
+    expect(output).toContain("the value it held is not considered");
+    expect(output).toContain(
+      "access key AKIAOLD0000000000001 of user deployer was never a version of AWS_ACCESS_KEY_ID (not created through maruhi) — left untouched",
+    );
+    // No probe and no deactivation: the skipped version's key is not touched
+    expect(actions).toEqual(["ListAccessKeys"]);
+    expect(output).not.toContain("old/secret");
+    expect(output).not.toContain("new/secret");
   });
 });

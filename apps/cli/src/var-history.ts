@@ -735,10 +735,11 @@ export function verifiedAncestorRange(
     const ancestors: { readonly version: number; readonly value: Redacted.Redacted<Uint8Array> }[] =
       [];
     for (const variable of versions.filter((entry) => entry.version < latest.version)) {
-      // An ancestor this device cannot decrypt (an old-epoch wrap it never
-      // received — device-gaps.ts) is skipped with a warning, not fatal:
-      // the set of ids it feeds can only shrink, which never widens what a
-      // finalize invalidates. Its signature and lineage were verified above
+      // An ancestor this device cannot decrypt is skipped with a warning,
+      // not fatal — whatever the reason (an old-epoch wrap it never received
+      // [device-gaps.ts], the epoch-cap defense, an AEAD failure): the set
+      // of ids it feeds can only shrink, which never widens what a finalize
+      // invalidates. Its signature and lineage were verified above
       const value = yield* decryptVerifiedValue({
         verified: pulled.verified,
         environmentId: input.environmentId,
