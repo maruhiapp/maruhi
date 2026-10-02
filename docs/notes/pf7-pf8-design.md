@@ -327,10 +327,9 @@ cannot express it without a new composite. Enumeration closed.
 - **Spec text**: CRYPTO_SPEC §5.3 and §11 are applied in this change. The
   AUTH_SPEC additions (§14-5 — the mint endpoint, its acceptance checks,
   the two member endpoints and their rows in §12-3 and §12-8) and the
-  AUDIT_SPEC §3.3 rows for the three events were drafted in this session
-  but **could not be written to those two files** (the editing tool refused
-  the edit); the implementation and this record are the current source for
-  them until the owner applies the text
+  AUDIT_SPEC §3.3 rows for the three events were drafted in this session,
+  refused by the editing tool at first, and **applied later in the same
+  session** (after the PF2 review round) from the implementation
 
 ### 6-6. Implementation (PF7b)
 
