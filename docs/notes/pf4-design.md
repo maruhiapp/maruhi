@@ -936,6 +936,22 @@ An eighth pass (Cursor Security Reviewer on the R-21 commit):
   record says so. The same-user residual (the user's own process can
   write the file) is unchanged and remains the sandbox shape's job.
 
+A ninth pass (Cursor Security Reviewer on the R-22 / R-23 commit):
+
+- **R-24 (MEDIUM) — acceptance was not bound to a project.** The record
+  was keyed by the file's resolved path and content; a file accepted for
+  one project (another checkout, a more permissive one) could be pointed
+  at this project's values with `--config`, since `checkProxyConfigProject`
+  only fires when both the config's `project` and `--project` are set. The
+  accepted entry now carries the projects it was accepted for;
+  `proxy accept` adds the current project (the same content for a second
+  project is "project added", a changed content starts the list over),
+  and the check requires the project the run is about to decrypt — before
+  any network when the project is known without it (the flag, the config's
+  `project`, the default project), and again against the project the
+  prologue resolved. A file accepted for another project is refused with a
+  message naming `maruhi proxy accept --project`. Pinned.
+
 Also in this round: `origin/main` merged (effect 4.0.0 stable — the
 `effect/unstable/*` import paths moved to `effect/*`; two conflicts, ROADMAP
 and ci-run.ts).

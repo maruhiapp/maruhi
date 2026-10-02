@@ -180,7 +180,7 @@ async function startEnv(
   // A person accepted the config on this machine (§21 R-8 / R-14) — unless a test says otherwise
   if (typeof config !== "string" && options.accepted !== false) {
     expect(await runCli(["proxy", "accept", "--config", configPath], env.layer)).toBe(0);
-    expect(env.errors.join("\n")).toContain("accepted on this machine (first use)");
+    expect(env.errors.join("\n")).toContain("(first use)");
     env.errors.length = 0;
   }
   env.setProxySeams({
@@ -388,7 +388,7 @@ describe("maruhi proxy run", () => {
     env.errors.length = 0;
     expect(await runCli(["proxy", "accept", "--config", configPath], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain(
-      `${configPath} accepted on this machine (first use): brokers GITHUB_TOKEN → api.example.test (header); passes through DATABASE_URL; unlisted variables are withheld; hosts no rule names are tunnelled untouched`,
+      `${configPath} accepted on this machine for project ${fixture.built.projectId} (first use): brokers GITHUB_TOKEN → api.example.test (header); passes through DATABASE_URL; unlisted variables are withheld; hosts no rule names are tunnelled untouched`,
     );
     expect(existsSync(recordPath)).toBe(true);
     // R-18: the project is marked at acceptance — deleting the file before any brokered run is gated already
@@ -417,13 +417,45 @@ describe("maruhi proxy run", () => {
     env.errors.length = 0;
     expect(await runCli(["proxy", "accept", "--config", configPath], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain(
-      "accepted on this machine (replaces the content accepted before): brokers GITHUB_TOKEN → api.example.test (header); passes through DATABASE_URL; unlisted variables are passed through with their real value",
+      "(replaces the content accepted before): brokers GITHUB_TOKEN → api.example.test (header); passes through DATABASE_URL; unlisted variables are passed through with their real value",
     );
     env.errors.length = 0;
     expect(await runCli(["proxy", "accept", "--config", configPath], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain(
-      "is already accepted on this machine with this content; nothing changed",
+      "is already accepted on this machine with this content for this project; nothing changed",
     );
+    // R-24: a file accepted for another project is not accepted for this one — the acceptance is per project
+    const otherProject = "f".repeat(64);
+    const otherConfigDir = await mkdtemp(join(tmpdir(), "maruhi-proxy-other-"));
+    const otherConfigPath = join(otherConfigDir, "maruhi.proxy.json");
+    await writeFile(otherConfigPath, JSON.stringify({ ...BROKER_CONFIG, unlisted: "passthrough" }));
+    expect(
+      await runCli(
+        ["proxy", "accept", "--config", otherConfigPath, "--project", otherProject],
+        env.layer,
+      ),
+    ).toBe(0);
+    env.setAgent({ isAgent: true, name: "cursor" });
+    env.errors.length = 0;
+    expect(
+      await runCli(["proxy", "run", "--config", otherConfigPath, "--", "true"], env.layer),
+    ).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      "it is accepted on this machine for a different project, not for this one; a person reviews it and runs `maruhi proxy accept` with --project for this project",
+    );
+    env.setAgent({ isAgent: false });
+    env.errors.length = 0;
+    expect(await runCli(["proxy", "accept", "--config", otherConfigPath], env.layer)).toBe(0);
+    expect(env.errors.join("\n")).toContain(
+      "the same content was already accepted for another project",
+    );
+    env.setAgent({ isAgent: true, name: "cursor" });
+    expect(
+      await runCli(["proxy", "run", "--config", otherConfigPath, "--", "true"], env.layer),
+    ).toBe(0);
+    env.setAgent({ isAgent: false });
+    // (that run is not part of the counts below)
+    env.runnerCalls.pop();
     // The record is keyed by the resolved path: `maruhi.proxy.json` from the working directory is the same entry
     const originalCwd = cwd();
     chdir(configDir);

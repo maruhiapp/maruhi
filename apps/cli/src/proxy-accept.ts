@@ -12,10 +12,14 @@
 // 1. A config is **applied only once a person has accepted it** with
 //    `maruhi proxy accept`, the way direnv applies an `.envrc` only after
 //    `direnv allow`: the accepted file's content is recorded here, per
-//    user, outside the repository (<config dir>/proxy-accepted.json). A
-//    config whose content matches its record is applied by anyone; one
-//    that is new or has changed is refused — at a terminal too — with a
-//    message naming the command. Accepting is a human ceremony (the
+//    user, outside the repository
+//    (<account home>/.config/maruhi/proxy-accepted.json), **for the
+//    project it was accepted for** (R-24 — a permissive file accepted for
+//    one project must not be pointed at another with `--config`). A
+//    config whose content matches its record for the project is applied by
+//    anyone; one that is new, has changed, or was accepted for another
+//    project is refused — at a terminal too — with a message naming the
+//    command. Accepting is a human ceremony (the
 //    evidence of the value-display gate: no known agent, stdin and stdout
 //    terminals) and an explicit act, never a side effect of an unrelated
 //    run (an agent's rewrite would otherwise ride the person's next
@@ -55,10 +59,11 @@ import type { CliIo } from "./io.ts";
 import { isRecord, readLedger } from "./json-record.ts";
 import { logNote } from "./notice.ts";
 
-/** One accepted config (the content a person accepted, and when). */
+/** One accepted config: the content a person accepted, when, and for which projects (R-24). */
 export interface AcceptedProxyConfig {
   readonly content: string;
   readonly acceptedAtMs: number;
+  readonly projectIds: readonly string[];
 }
 
 /** A project a brokered run has used on this machine (which config, and when first seen). */
@@ -128,11 +133,17 @@ function decodeAccepted(record: unknown): AcceptedProxyConfig | null {
   if (
     !isRecord(record) ||
     typeof record["content"] !== "string" ||
-    !isSafeTimestamp(record["acceptedAtMs"])
+    !isSafeTimestamp(record["acceptedAtMs"]) ||
+    !Array.isArray(record["projectIds"]) ||
+    !record["projectIds"].every((id) => typeof id === "string")
   ) {
     return null;
   }
-  return { content: record["content"], acceptedAtMs: record["acceptedAtMs"] };
+  return {
+    content: record["content"],
+    acceptedAtMs: record["acceptedAtMs"],
+    projectIds: record["projectIds"],
+  };
 }
 
 function decodeProject(record: unknown): BrokeredProject | null {
@@ -292,6 +303,8 @@ function howToAccept(): Effect.Effect<string, never, Stdio.Stdio> {
 export function ensureProxyConfigAccepted(input: {
   readonly path: string;
   readonly content: string;
+  /** The project whose values the config is about to govern — the acceptance must name it (R-24). */
+  readonly projectId: string;
 }): Effect.Effect<void, CliError, ProxyAcceptStore | Stdio.Stdio> {
   return Effect.gen(function* () {
     const store = yield* ProxyAcceptStore;
@@ -300,7 +313,16 @@ export function ensureProxyConfigAccepted(input: {
       return yield* Effect.fail(corruptRecord(store.filePath));
     }
     if (lookup.state === "found" && lookup.accepted.content === input.content) {
-      return;
+      if (lookup.accepted.projectIds.includes(input.projectId)) {
+        return;
+      }
+      // Accepted as it is, but for another project: a permissive file accepted
+      // elsewhere must not be pointed at this project's values (R-24)
+      return yield* Effect.fail(
+        cliError(
+          `Refused to apply the proxy config ${input.path}: it is accepted on this machine for a different project, not for this one; a person reviews it and runs ${ACCEPT_COMMAND} with --project for this project`,
+        ),
+      );
     }
     const change =
       lookup.state === "missing"
@@ -324,7 +346,11 @@ export function acceptProxyConfig(input: {
   readonly content: string;
   /** The project the config is for: marked as brokered on this machine at acceptance (R-18 — the gate must be armed before any run). */
   readonly projectId: string;
-}): Effect.Effect<"first use" | "changed" | "unchanged", CliError, ProxyAcceptStore | Stdio.Stdio> {
+}): Effect.Effect<
+  "first use" | "changed" | "project added" | "unchanged",
+  CliError,
+  ProxyAcceptStore | Stdio.Stdio
+> {
   return Effect.gen(function* () {
     yield* ensureHumanCeremonyAllowed({
       agentRefusal: (detected) =>
@@ -338,14 +364,20 @@ export function acceptProxyConfig(input: {
     if (lookup.state === "corrupt") {
       return yield* Effect.fail(corruptRecord(store.filePath));
     }
-    const outcome: "first use" | "changed" | "unchanged" =
-      lookup.state === "found" && lookup.accepted.content === input.content
+    const same = lookup.state === "found" && lookup.accepted.content === input.content;
+    const outcome: "first use" | "changed" | "project added" | "unchanged" = same
+      ? lookup.accepted.projectIds.includes(input.projectId)
         ? "unchanged"
-        : lookup.state === "missing"
-          ? "first use"
-          : "changed";
+        : "project added"
+      : lookup.state === "missing"
+        ? "first use"
+        : "changed";
     if (outcome !== "unchanged") {
-      yield* store.accept(key, { content: input.content, acceptedAtMs: Date.now() });
+      // A changed content starts the project list over: the acceptance is of this content, for these projects
+      const projectIds = same
+        ? [...lookup.accepted.projectIds, input.projectId]
+        : [input.projectId];
+      yield* store.accept(key, { content: input.content, acceptedAtMs: Date.now(), projectIds });
     }
     // Armed here, not at the first brokered run: between accepting and
     // running, deleting the file must already be gated (R-18)

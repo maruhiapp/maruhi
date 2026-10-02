@@ -3561,13 +3561,28 @@ function brokeredRun(input: {
     const { config } = input.loaded;
     yield* checkProxyConfigProject(config, input.flags.project);
     // A config is applied only once a person accepted its content on this
-    // machine (pf4-design.md §21 R-8 — an agent cannot accept its own
-    // rules). Before any network or decryption
-    yield* ensureProxyConfigAccepted({ path: input.configPath, content: input.loaded.content });
+    // machine **for this project** (pf4-design.md §21 R-8 / R-24 — an agent
+    // cannot accept its own rules, nor point another project's accepted
+    // rules at this one). Checked before any network when the project is
+    // known without it, and again against the project the prologue resolved
+    const accepted = (projectId: string) =>
+      ensureProxyConfigAccepted({
+        path: input.configPath,
+        content: input.loaded.content,
+        projectId,
+      });
+    const early =
+      input.flags.project ?? config.projectId ?? (yield* (yield* ConfigStore).load).defaultProject;
+    if (early !== undefined) {
+      yield* accepted(early);
+    }
     const context = yield* openEnvironment({
       ...input.flags,
       project: input.flags.project ?? config.projectId,
     });
+    if (context.projectId !== early) {
+      yield* accepted(context.projectId);
+    }
     // From now on plain `run` without a config is gated for this project (R-13)
     yield* markProjectBrokered({ projectId: context.projectId, configPath: input.configPath });
     const pulled = yield* pullForRun(context);
@@ -5243,8 +5258,8 @@ function makeRootCommand(onExitCode: (code: number) => void) {
       });
       yield* logNote(
         outcome === "unchanged"
-          ? `${configPath} is already accepted on this machine with this content; nothing changed`
-          : `${configPath} accepted on this machine (${outcome === "changed" ? "replaces the content accepted before" : "first use"}): ${describeProxyConfig(loaded.config)}. A change to the file will need \`maruhi proxy accept\` again`,
+          ? `${configPath} is already accepted on this machine with this content for this project; nothing changed`
+          : `${configPath} accepted on this machine for project ${projectId} (${outcome === "changed" ? "replaces the content accepted before" : outcome === "project added" ? "the same content was already accepted for another project" : "first use"}): ${describeProxyConfig(loaded.config)}. A change to the file will need \`maruhi proxy accept\` again`,
       );
     }),
   ).pipe(
