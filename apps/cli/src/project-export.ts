@@ -101,6 +101,12 @@ class GzipFileSink {
       this.#file.on("error", reject);
       this.#gzip.on("error", reject);
     });
+    // `finish` observes a failure through `#done`; after `abort` nobody
+    // waits for it, and the teardown itself raises ERR_STREAM_DESTROYED on
+    // a write still in flight — that rejection must not surface as an
+    // unhandled one (the file is being removed; the caller already has the
+    // error it is aborting for). Not a swallowed error: `finish` still fails
+    this.#done.catch(() => undefined);
     this.#gzip.pipe(this.#file);
   }
 
