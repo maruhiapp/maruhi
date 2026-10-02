@@ -821,6 +821,29 @@ agent and pipe refused, a person allowed with the Note; another directory
 → the same gate; a corrupt record reported by both commands and never
 overwritten.
 
+A fifth pass (on the R-11 / R-12 commit) found the guard's own gap:
+
+- **R-16 (pullfrog, Bugbot, Cursor Security Reviewer — all three) — the
+  host-local guard matched text, not value.** `::1`, `::`, `fe80:` and the
+  dotted mapped form were strings; `CONNECT 0:0:0:0:0:0:0:1:443`,
+  `::0:1`, the hex-mapped `::ffff:7f00:1` and `::ffff:a9fe:a9fe` passed
+  as "an IP literal, not local" and were tunnelled to the loopback or the
+  metadata service — the exact confused deputy R-12 closed. A bracketed
+  `[::1]` from `URL.hostname` went the other way (sent to the resolver,
+  refused as unresolvable). Options: hand-written IPv6 parsing to bytes
+  (forty lines, our own bugs), canonicalizing through `new URL(…)` and
+  unwrapping mapped hex pairs by hand, or `net.BlockList` with the ranges
+  (parses every textual form; measured identical under Bun 1.4.2 and
+  Node, hex-mapped forms included). **`net.BlockList` adopted**: 127/8,
+  0/8, 169.254/16, ::1, ::, fe80::/10, the IPv4-mapped forms of the three
+  IPv4 ranges (`::ffff:7f00:0/104`, `::ffff:0:0/104`,
+  `::ffff:a9fe:0/112`), and the AWS IPv6 metadata address
+  (`fd00:ec2::254`, which the security reviewer named — a ULA, so a range
+  rule would not catch it). Brackets and zone ids are stripped before
+  classification. Pinned: every alias form through `isHostLocalAddress`,
+  four of them over `CONNECT` in the sandbox-mode proxy test, and the
+  bracketed literal over plain HTTP.
+
 Also in this round: `origin/main` merged (effect 4.0.0 stable — the
 `effect/unstable/*` import paths moved to `effect/*`; two conflicts, ROADMAP
 and ci-run.ts).

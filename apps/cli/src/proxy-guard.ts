@@ -33,20 +33,37 @@ export function isHostLocalName(host: string): boolean {
   return lower === "localhost" || lower.endsWith(".localhost");
 }
 
-/** Loopback (127/8, ::1), link-local (169.254/16, fe80::/10 — the metadata service lives there), unspecified (0.0.0.0, ::). */
+/**
+ * The host-local ranges, matched **by value** (review findings §21 R-16 —
+ * `0:0:0:0:0:0:0:1`, `::0:1`, the hex-mapped `::ffff:7f00:1` are the
+ * loopback as much as `::1` and `::ffff:127.0.0.1` are): loopback (127/8,
+ * ::1), unspecified (0/8, ::), link-local (169.254/16 — the IPv4 metadata
+ * service; fe80::/10), the IPv4-mapped forms of those three, and the AWS
+ * IPv6 metadata service (fd00:ec2::254). `net.BlockList` parses every
+ * textual form; measured identical under Bun 1.4.2 and Node.
+ */
+const HOST_LOCAL = new net.BlockList();
+HOST_LOCAL.addSubnet("127.0.0.0", 8, "ipv4");
+HOST_LOCAL.addSubnet("0.0.0.0", 8, "ipv4");
+HOST_LOCAL.addSubnet("169.254.0.0", 16, "ipv4");
+HOST_LOCAL.addSubnet("::1", 128, "ipv6");
+HOST_LOCAL.addSubnet("::", 128, "ipv6");
+HOST_LOCAL.addSubnet("fe80::", 10, "ipv6");
+HOST_LOCAL.addSubnet("::ffff:7f00:0", 104, "ipv6");
+HOST_LOCAL.addSubnet("::ffff:0:0", 104, "ipv6");
+HOST_LOCAL.addSubnet("::ffff:a9fe:0", 112, "ipv6");
+HOST_LOCAL.addAddress("fd00:ec2::254", "ipv6");
+
+/** An IP literal without URL brackets (`[::1]` from `URL.hostname`) or a zone id (`fe80::1%eth0`). */
+function bareLiteral(ip: string): string {
+  return ip.replace(/^\[|\]$/g, "").replace(/%.*$/, "");
+}
+
+/** Whether `ip` (any textual form) is a host-local address — see {@link HOST_LOCAL}. */
 export function isHostLocalAddress(ip: string): boolean {
-  const lower = ip.toLowerCase();
-  const mapped = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(lower);
-  if (mapped?.[1] !== undefined) {
-    return isHostLocalAddress(mapped[1]);
-  }
-  if (net.isIPv4(lower)) {
-    return /^(127|0)\./.test(lower) || lower.startsWith("169.254.");
-  }
-  if (net.isIPv6(lower)) {
-    return lower === "::1" || lower === "::" || /^fe[89ab][0-9a-f]:/.test(lower);
-  }
-  return false;
+  const bare = bareLiteral(ip);
+  const family = net.isIP(bare);
+  return family !== 0 && HOST_LOCAL.check(bare, family === 4 ? "ipv4" : "ipv6");
 }
 
 export type Lookup = (
@@ -65,9 +82,9 @@ export async function hostLocalReason(
   lookup: Lookup = systemLookup,
 ): Promise<string | null> {
   if (isHostLocalName(host) || isHostLocalAddress(host)) {
-    return `${host} is a host-local destination (this machine's loopback)`;
+    return `${host} is a host-local destination (this machine's loopback or link-local, or the cloud metadata service)`;
   }
-  if (net.isIP(host) !== 0) {
+  if (net.isIP(bareLiteral(host)) !== 0) {
     return null;
   }
   let addresses: readonly { readonly address: string }[];

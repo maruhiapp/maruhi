@@ -24,6 +24,17 @@ describe("proxy-guard", () => {
       "FE80::abcd",
       "::ffff:127.0.0.1",
       "::ffff:169.254.1.1",
+      // By value, not by text (§21 R-16): expanded, compressed elsewhere, hex-mapped, bracketed, zoned
+      "0:0:0:0:0:0:0:1",
+      "::0:1",
+      "0::1",
+      "::ffff:7f00:1",
+      "::ffff:a9fe:a9fe",
+      "::ffff:0:1",
+      "[::1]",
+      "fe80::1%eth0",
+      // The AWS IPv6 metadata service
+      "fd00:ec2::254",
     ]) {
       expect(isHostLocalAddress(ip), ip).toBe(true);
     }
@@ -33,8 +44,10 @@ describe("proxy-guard", () => {
       "192.168.1.1",
       "203.0.113.7",
       "fd00::2",
+      "fd00:ec2::253",
       "2001:db8::1",
       "::ffff:8.8.8.8",
+      "::ffff:808:808",
       "not-an-ip",
     ]) {
       expect(isHostLocalAddress(ip), ip).toBe(false);
@@ -55,8 +68,15 @@ describe("proxy-guard", () => {
 
   it("explains why a destination is refused, and resolves names before deciding", async () => {
     expect(await hostLocalReason("169.254.169.254")).toBe(
-      "169.254.169.254 is a host-local destination (this machine's loopback)",
+      "169.254.169.254 is a host-local destination (this machine's loopback or link-local, or the cloud metadata service)",
     );
+    // A literal in any form never reaches the resolver (and is classified by value)
+    expect(await hostLocalReason("::ffff:7f00:1", () => Promise.reject(new Error("no")))).toMatch(
+      /host-local destination/,
+    );
+    expect(
+      await hostLocalReason("[2001:db8::1]", () => Promise.reject(new Error("no"))),
+    ).toBeNull();
     expect(await hostLocalReason("203.0.113.7")).toBeNull();
     const lookup = (host: string) =>
       host === "meta.example"

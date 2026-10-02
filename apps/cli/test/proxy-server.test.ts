@@ -564,8 +564,21 @@ describe("the forward proxy", () => {
     const loopback = await openTunnel(proxy.port, `127.0.0.1:${secureOrigin.port}`);
     expect("refused" in loopback && loopback.refused.status).toBe(403);
     expect("refused" in loopback && loopback.refused.body.toString()).toContain(
-      "127.0.0.1 is a host-local destination (this machine's loopback); in sandbox mode the proxy reaches only destinations outside this machine unless a rule names them",
+      "127.0.0.1 is a host-local destination (this machine's loopback or link-local, or the cloud metadata service); in sandbox mode the proxy reaches only destinations outside this machine unless a rule names them",
     );
+    // The loopback and the metadata service in other textual forms (§21 R-16)
+    for (const authority of [
+      `0:0:0:0:0:0:0:1:${secureOrigin.port}`,
+      `::ffff:7f00:1:${secureOrigin.port}`,
+      "::ffff:a9fe:a9fe:443",
+      "fd00:ec2::254:443",
+    ]) {
+      const alias = await openTunnel(proxy.port, authority);
+      expect("refused" in alias && alias.refused.status, authority).toBe(403);
+      expect("refused" in alias && alias.refused.body.toString(), authority).toContain(
+        "is a host-local destination",
+      );
+    }
     // A name that resolves to the metadata service's link-local address
     const metadata = await openTunnel(proxy.port, "metadata.example.test:443");
     expect("refused" in metadata && metadata.refused.body.toString()).toContain(
@@ -583,6 +596,13 @@ describe("the forward proxy", () => {
     });
     expect(plain.status).toBe(403);
     expect(plain.body.toString()).toContain("localhost is a host-local destination");
+    // A bracketed IPv6 literal in an absolute-form URL is classified, not sent to the resolver
+    const bracketed = await httpViaProxy({
+      proxyPort: proxy.port,
+      url: `http://[::1]:${plainOrigin.port}/x`,
+    });
+    expect(bracketed.status).toBe(403);
+    expect(bracketed.body.toString()).toContain("is a host-local destination");
     expect(plainOrigin.seen).toHaveLength(0);
     // A public destination is tunnelled as before (the seam connects it to the origin)
     const publicTunnel = await openTunnel(proxy.port, "public.example.test:443");
@@ -598,7 +618,7 @@ describe("the forward proxy", () => {
     });
     expect(named.status).toBe(200);
     expect(plainOrigin.seen[0]?.headers["x-api-key"]).toBe(REAL_KEY);
-    expect(decisions.filter((d) => d.kind === "blocked")).toHaveLength(4);
+    expect(decisions.filter((d) => d.kind === "blocked")).toHaveLength(9);
     expect(
       decisions
         .filter((d) => d.kind === "blocked")
