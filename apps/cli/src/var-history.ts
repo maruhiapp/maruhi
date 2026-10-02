@@ -557,13 +557,11 @@ function resolveLatestValue(
 function planRollback(
   input: Omit<AncestorInput, "toVersion"> & { readonly toVersion: number | null },
   name: string,
+  /** The refusal for a declared (valueless) variable, in the calling command's words. */
+  noValueMessage: string = `Variable ${displayText(name)} is declared but has no value yet — there is nothing to roll back to`,
 ): Effect.Effect<RollbackPlan, CliError> {
   return Effect.gen(function* () {
-    const { pulled, latest, warnings } = yield* resolveLatestValue(
-      input,
-      name,
-      `Variable ${displayText(name)} is declared but has no value yet — there is nothing to roll back to`,
-    );
+    const { pulled, latest, warnings } = yield* resolveLatestValue(input, name, noValueMessage);
     const variableId = latest.variableId;
     // The default (the version right before the latest) is derived from the
     // verified latest, never from the server-declared history: which
@@ -660,7 +658,11 @@ export function verifiedAncestorValues(
 ): Effect.Effect<VerifiedAncestorValues, CliError> {
   return Effect.gen(function* () {
     const name = input.name.normalize("NFC");
-    const plan = yield* planRollback(input, name);
+    const plan = yield* planRollback(
+      input,
+      name,
+      `Variable ${displayText(name)} is declared but has no value yet — nothing to finalize`,
+    );
     const pair = yield* decryptPair(input, plan);
     return {
       name,
