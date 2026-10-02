@@ -713,7 +713,9 @@ A second pass of the bots on the merge commit added three findings:
   keyed by the config's resolved path so `./maruhi.proxy.json` and
   `--config /…/maruhi.proxy.json` are one entry; the ledger follows the
   fingerprint-ledger discipline (0600, atomic rename, a corrupt file is
-  reported and never overwritten). Residual, stated plainly: the record is
+  reported and never overwritten). *As first implemented, acceptance was
+  implicit — a person's next terminal run recorded a new or changed file;
+  R-14 below replaced it with the explicit `maruhi proxy accept`.* Residual, stated plainly: the record is
   a file the same user can write — the bar is now "edit a file outside the
   repository that nothing in the repository points at", meaningful against
   a prompt-injected agent working in the repository, not a boundary against
@@ -770,6 +772,54 @@ A third pass (on the R-1 … R-7 commit) added two:
   name, resolved metadata address, unresolvable name, plain `localhost`
   refused; a public name tunnelled; a rule-named loopback host still
   brokered; the loopback binding unguarded.
+
+A fourth pass (on the R-8 … R-10 commit) found the acceptance ceremony's
+two gaps and one ledger nit:
+
+- **R-13 (pullfrog) — delete the file, or change directory.** R-8 applied
+  only when a config was present; `rm maruhi.proxy.json` (or
+  `maruhi run --project <id>` from another directory) made `proxyConfig`
+  null and the real values were injected with no ceremony — the same
+  outcome with less effort. **Every brokered run now marks its project as
+  brokered on this machine** (in the same ledger, `projects`), and plain
+  `run` for a marked project without a config in the working directory is
+  gated like `--plain`: a person at a terminal may inject the real values
+  (with a Note saying what is happening), an agent or a pipe is refused
+  and told to run from the repository that holds the config. A project
+  never brokered on the machine is unchanged. The mark is written after the
+  project resolves (a failure to write it is a Note — the run itself is the
+  safe shape).
+- **R-14 (pullfrog) — implicit acceptance.** A changed file was recorded
+  as a side effect of the person's next ordinary `maruhi run` in a
+  terminal, so an agent's rewrite only had to wait for the user's next
+  `maruhi run -- npm run dev`. Options: (a) an interactive confirmation
+  inside `run` showing the rules (the person is already there, but a
+  reflexive "y" in a flow about something else is weak evidence of
+  review); (b) **an explicit command, `maruhi proxy accept [--config]`**,
+  the direnv shape — a new or changed file is refused everywhere, at a
+  terminal too, with a message naming the command; the command is itself
+  the human ceremony (agent and non-terminal refused), prints the rules it
+  accepts (brokered variables and hosts, pass-through and withheld names,
+  the two defaults — names only), and says whether it is a first use, a
+  replacement, or a no-op. **(b) adopted.** Nothing in `run` or
+  `proxy run` writes the record any more.
+- **R-15 (Bugbot) — `readLedger` folded every read error into
+  `missing`**, so an `EACCES` / `EISDIR` on the ledger would have let a
+  writer replace it with an empty book. Only `ENOENT` is `missing`; any
+  other read failure reads as `corrupt`, which no writer overwrites (the
+  pins / fingerprint-ledger discipline). own-devices.ts shares the reader
+  and gains the same behaviour.
+- (nit) `privateRuntimeDir`'s JSDoc now names the hop sockets as well as
+  the CA files.
+
+Pinned end to end: agent and pipe refused with the command named; a person
+at a terminal refused too until `proxy accept`; `proxy accept` refused to
+an agent and to a pipe; accept → agent runs; rewrite → refused → accept
+("replaces the content accepted before") → runs; a second accept is a
+no-op; the cwd default and `--config` share one entry; the file deleted →
+agent and pipe refused, a person allowed with the Note; another directory
+→ the same gate; a corrupt record reported by both commands and never
+overwritten.
 
 Also in this round: `origin/main` merged (effect 4.0.0 stable — the
 `effect/unstable/*` import paths moved to `effect/*`; two conflicts, ROADMAP

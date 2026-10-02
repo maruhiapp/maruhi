@@ -332,6 +332,39 @@ function describeRule(name: string, rule: VariableRule): string {
   }
 }
 
+/**
+ * One line summarizing a config's rules, for `maruhi proxy accept` (what a
+ * person is accepting: brokered variables and their hosts, pass-through
+ * and withheld names, the two defaults). Names only, never a value.
+ */
+export function describeProxyConfig(config: ProxyConfig): string {
+  const rules = [...config.variables];
+  const brokered = rules.filter(([, rule]) => rule.mode === "broker" || rule.mode === "connector");
+  const names = (mode: VariableRule["mode"]) =>
+    rules
+      .filter(([, rule]) => rule.mode === mode)
+      .map(([name]) => displayText(name))
+      .toSorted();
+  const parts = [
+    brokered.length === 0
+      ? "brokers nothing"
+      : `brokers ${brokered.map(([name, rule]) => describeRule(name, rule)).join("; ")}`,
+  ];
+  const passthrough = names("passthrough");
+  if (passthrough.length > 0) {
+    parts.push(`passes through ${passthrough.join(", ")}`);
+  }
+  const withheld = names("withhold");
+  if (withheld.length > 0) {
+    parts.push(`withholds ${withheld.join(", ")}`);
+  }
+  parts.push(
+    `unlisted variables are ${config.unlisted === "passthrough" ? "passed through with their real value" : "withheld"}`,
+    `hosts no rule names are ${config.unmatched === "block" ? "blocked" : "tunnelled untouched"}`,
+  );
+  return parts.join("; ");
+}
+
 /* -------------------------------------------------------------------------- */
 /* The child's control environment                                             */
 /* -------------------------------------------------------------------------- */

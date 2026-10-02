@@ -220,7 +220,12 @@ import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "./passkey.ts";
 import { PinStore } from "./pins.ts";
 import { projectInitOp } from "./project-init.ts";
 import { projectListOp } from "./project-list.ts";
-import { ensureProxyConfigAccepted } from "./proxy-accept.ts";
+import {
+  acceptProxyConfig,
+  ensurePlainRunOfBrokeredProjectAllowed,
+  ensureProxyConfigAccepted,
+  markProjectBrokered,
+} from "./proxy-accept.ts";
 import {
   checkProxyConfigProject,
   DEFAULT_PROXY_CONFIG_PATH,
@@ -228,7 +233,7 @@ import {
   loadProxyConfig,
   loadProxyConfigIfPresent,
 } from "./proxy-config.ts";
-import { proxyRunOp } from "./proxy-run.ts";
+import { describeProxyConfig, proxyRunOp } from "./proxy-run.ts";
 import { type PulledVariables, pullVariables } from "./pull.ts";
 import { normalizeStdinValue, pushVariable } from "./push.ts";
 import { reportRotation } from "./rotation-report.ts";
@@ -1147,6 +1152,13 @@ const proxyRunConfig = {
   command: runCommandArgument(),
 };
 
+const proxyAcceptConfig = {
+  config: singleValued(
+    "config",
+    `Path to the proxy config to accept (default: ${DEFAULT_PROXY_CONFIG_PATH})`,
+  ),
+};
+
 /** The `--type` closed set (CRYPTO_SPEC §4.2 — ruling CT) + `none` for an explicit clear. */
 const SCHEMA_TYPES = ["string", "number", "boolean", "url"] as const;
 
@@ -1458,7 +1470,7 @@ const GROUP_CONFIGS: Readonly<
   },
   var: { rm: varRmConfig, history: varHistoryConfig, rollback: varRollbackConfig },
   sync: { plan: syncPlanConfig, apply: syncApplyConfig, init: syncInitConfig },
-  proxy: { run: proxyRunConfig },
+  proxy: { run: proxyRunConfig, accept: proxyAcceptConfig },
 };
 
 /**
@@ -3552,6 +3564,8 @@ function brokeredRun(input: {
       ...input.flags,
       project: input.flags.project ?? config.projectId,
     });
+    // From now on plain `run` without a config is gated for this project (R-13)
+    yield* markProjectBrokered({ projectId: context.projectId, configPath: input.configPath });
     const pulled = yield* pullForRun(context);
     return yield* proxyRunOp({
       command: input.command,
@@ -3654,6 +3668,12 @@ function makeRootCommand(onExitCode: (code: number) => void) {
         );
       }
       const context = yield* openEnvironment(flags);
+      if (proxyConfig === null) {
+        // A project brokered on this machine: the real values only to a
+        // person at a terminal (deleting the config or changing directory
+        // is not a way around the rules — pf4-design.md §21 R-13)
+        yield* ensurePlainRunOfBrokeredProjectAllowed(context.projectId);
+      }
       const pulled = yield* pullForRun(context);
       // Environment-variable names go through verified statements (§4.2 /
       // §12-7). The execution-control variable-name denylist (run.ts) is a
@@ -5186,11 +5206,32 @@ function makeRootCommand(onExitCode: (code: number) => void) {
     ),
   );
 
+  // `maruhi proxy accept` (pf4-design.md §21 R-8 / R-14): a person at a
+  // terminal records the config's content as accepted on this machine —
+  // the explicit act the brokering rules need before they apply (the
+  // direnv model). Reads the file, contacts no server
+  const proxyAccept = Command.make("accept", proxyAcceptConfig, (values) =>
+    Effect.gen(function* () {
+      const configPath = values.config ?? DEFAULT_PROXY_CONFIG_PATH;
+      const loaded = yield* loadProxyConfig(configPath);
+      const outcome = yield* acceptProxyConfig({ path: configPath, content: loaded.content });
+      yield* logNote(
+        outcome === "unchanged"
+          ? `${configPath} is already accepted on this machine with this content; nothing changed`
+          : `${configPath} accepted on this machine (${outcome === "changed" ? "replaces the content accepted before" : "first use"}): ${describeProxyConfig(loaded.config)}. A change to the file will need \`maruhi proxy accept\` again`,
+      );
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Accept the proxy config on this machine so its rules apply to `maruhi run` and `maruhi proxy run` (a person at a terminal; a new or changed file is refused until accepted). Reads the file and contacts no server",
+    ),
+  );
+
   const proxy = Command.make("proxy").pipe(
     Command.withDescription(
-      "Credential brokering for AI agents and other programs: run a command that never holds the real values (run). Rules are declared in the proxy config committed in the repository",
+      "Credential brokering for AI agents and other programs: run a command that never holds the real values (run), after a person accepted the repository's proxy config on this machine (accept)",
     ),
-    Command.withSubcommands([proxyRun]),
+    Command.withSubcommands([proxyRun, proxyAccept]),
   );
 
   const sync = Command.make("sync").pipe(

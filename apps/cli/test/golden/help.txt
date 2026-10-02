@@ -34,7 +34,7 @@ SUBCOMMANDS
   mcp         Serve the value-free schema to AI agents over the Model Context Protocol (stdio). Never serves values
   var         Manage variables (rm, history, rollback). push / pull / run operate on values directly
   sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
-  proxy       Credential brokering for AI agents and other programs: run a command that never holds the real values (run). Rules are declared in the proxy config committed in the repository
+  proxy       Credential brokering for AI agents and other programs: run a command that never holds the real values (run), after a person accepted the repository's proxy config on this machine (accept)
 
 $ maruhi --help
 DESCRIPTION
@@ -72,7 +72,7 @@ SUBCOMMANDS
   mcp         Serve the value-free schema to AI agents over the Model Context Protocol (stdio). Never serves values
   var         Manage variables (rm, history, rollback). push / pull / run operate on values directly
   sync        Copy variables to deploy targets (init / plan / apply) through the installed vendor CLI or the vendor API. Targets are declared in the sync config committed in the repository
-  proxy       Credential brokering for AI agents and other programs: run a command that never holds the real values (run). Rules are declared in the proxy config committed in the repository
+  proxy       Credential brokering for AI agents and other programs: run a command that never holds the real values (run), after a person accepted the repository's proxy config on this machine (accept)
 
 $ maruhi login --help
 DESCRIPTION
@@ -1716,7 +1716,7 @@ GLOBAL FLAGS
 
 $ maruhi proxy --help
 DESCRIPTION
-  Credential brokering for AI agents and other programs: run a command that never holds the real values (run). Rules are declared in the proxy config committed in the repository
+  Credential brokering for AI agents and other programs: run a command that never holds the real values (run), after a person accepted the repository's proxy config on this machine (accept)
 
 USAGE
   maruhi proxy <subcommand> [flags]
@@ -1726,7 +1726,8 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  run    Run a command behind a local credential-brokering proxy: brokered variables arrive as placeholders and the real values are substituted only in requests to the hosts the proxy config allows. Write the command after `--`
+  run       Run a command behind a local credential-brokering proxy: brokered variables arrive as placeholders and the real values are substituted only in requests to the hosts the proxy config allows. Write the command after `--`
+  accept    Accept the proxy config on this machine so its rules apply to `maruhi run` and `maruhi proxy run` (a person at a terminal; a new or changed file is refused until accepted). Reads the file and contacts no server
 
 $ maruhi proxy run --help
 DESCRIPTION
@@ -1746,6 +1747,20 @@ FLAGS
   --verbose             Print one line per request the proxy handles (method, host, path, and the variables substituted — never a value)
   --listen string       Bind the proxy to host[:port] instead of the loopback, so a sandbox or container can reach it (every request still needs the run's proxy credential)
   --advertise string    The host[:port] the command is told to use for the proxy when it differs from the bound address (for example host.docker.internal from a container)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi proxy accept --help
+DESCRIPTION
+  Accept the proxy config on this machine so its rules apply to `maruhi run` and `maruhi proxy run` (a person at a terminal; a new or changed file is refused until accepted). Reads the file and contacts no server
+
+USAGE
+  maruhi proxy accept [flags]
+
+FLAGS
+  --config string    Path to the proxy config to accept (default: maruhi.proxy.json)
 
 GLOBAL FLAGS
   --help, -h       Show help information

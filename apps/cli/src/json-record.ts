@@ -103,8 +103,13 @@ export async function readLedger<T>(
   let json: string;
   try {
     json = await readFile(path, "utf8");
-  } catch {
-    return { state: "missing" };
+  } catch (error: unknown) {
+    // Only "not created yet" (ENOENT) is `missing`. EACCES / EISDIR / EIO
+    // read as `corrupt` so a writer never replaces a file it could not read
+    // (the pins / fingerprint-ledger discipline — review finding §21 R-15)
+    return (error as NodeJS.ErrnoException).code === "ENOENT"
+      ? { state: "missing" }
+      : { state: "corrupt" };
   }
   const file = decode(json);
   return file === null ? { state: "corrupt" } : { state: "loaded", file };

@@ -1,20 +1,30 @@
-// Acceptance of a proxy config by a person (pf4-design.md §21 R-8 — the
-// answer to "an agent rewrites `maruhi.proxy.json`").
+// Acceptance of a proxy config by a person (pf4-design.md §21 R-8 / R-13 /
+// R-14 — the answer to "an agent rewrites, deletes, or sidesteps
+// `maruhi.proxy.json`").
 //
 // The repository's proxy config decides what a child receives (ADR-0016
 // decision 7 revision 2): placeholders, pass-through values, withheld
 // variables. An agent working in the repository can edit that file — set
-// `unlisted: passthrough`, add a host it controls to a rule — and run
-// `maruhi run` again, which would hand it the plaintext the `--plain`
-// ceremony denies. So a config is **applied only once a person has
-// accepted it**, the way direnv applies an `.envrc` only after
-// `direnv allow`: the accepted file's content is recorded here, per user,
-// outside the repository (<config dir>/proxy-accepted.json); a config whose
-// content matches its record is applied by anyone; one that is new or has
-// changed is accepted — and recorded — when the evidence of a person at a
-// terminal is present (the same evidence as the value-display gate: no
-// known agent, stdin and stdout are terminals), and refused otherwise, with
-// a message that says who can accept it and how.
+// `unlisted: passthrough`, add a host it controls — or remove it, or run
+// from another directory, and `maruhi run` again would hand it the
+// plaintext the `--plain` ceremony denies. So:
+//
+// 1. A config is **applied only once a person has accepted it** with
+//    `maruhi proxy accept`, the way direnv applies an `.envrc` only after
+//    `direnv allow`: the accepted file's content is recorded here, per
+//    user, outside the repository (<config dir>/proxy-accepted.json). A
+//    config whose content matches its record is applied by anyone; one
+//    that is new or has changed is refused — at a terminal too — with a
+//    message naming the command. Accepting is a human ceremony (the
+//    evidence of the value-display gate: no known agent, stdin and stdout
+//    terminals) and an explicit act, never a side effect of an unrelated
+//    run (an agent's rewrite would otherwise ride the person's next
+//    `maruhi run` — review finding R-14).
+// 2. Every brokered run **marks its project as brokered on this machine**.
+//    Plain `maruhi run` for a marked project without a config in the
+//    working directory (the file deleted, or another directory) is then
+//    gated like `--plain`: a person at a terminal may inject the real
+//    values, an agent or a pipe is refused (R-13).
 //
 // What this is: a bar raised from "edit one file in the repository" to
 // "edit a file outside the repository that nothing in the repository points
@@ -26,17 +36,18 @@
 // here is its local precursor with the same UX (a person accepts the rules).
 //
 // Non-secret by construction (the config names variables and hosts, never
-// values); the content is stored verbatim rather than hashed so the record
-// needs no cryptography and a mismatch can be explained. Same file
-// discipline as the fingerprint ledger: 0600, atomic rename, a corrupt file
-// is never overwritten.
+// values; project IDs are public identifiers); the content is stored
+// verbatim rather than hashed so the record needs no cryptography and a
+// mismatch can be explained. Same file discipline as the fingerprint
+// ledger: 0600, atomic rename, a corrupt or unreadable file is never
+// overwritten.
 
 import { mkdir, realpath, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { Context, Effect, Stdio } from "effect";
 
-import { AgentProfileRef, describeNonTerminal } from "./agent-gate.ts";
+import { AgentProfileRef, describeNonTerminal, ensureHumanCeremonyAllowed } from "./agent-gate.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { CliIo } from "./io.ts";
 import { isRecord, readLedger } from "./json-record.ts";
@@ -46,6 +57,12 @@ import { logNote } from "./notice.ts";
 export interface AcceptedProxyConfig {
   readonly content: string;
   readonly acceptedAtMs: number;
+}
+
+/** A project a brokered run has used on this machine (which config, and when first seen). */
+export interface BrokeredProject {
+  readonly configPath: string;
+  readonly markedAtMs: number;
 }
 
 /** Load result (`corrupt` is distinguishable from `missing` — a person deals with it). */
@@ -63,6 +80,13 @@ export interface ProxyAcceptStoreShape {
     configPath: string,
     accepted: AcceptedProxyConfig,
   ) => Effect.Effect<void, CliError>;
+  /** The brokered-project mark (null = never brokered here; a corrupt record reads as null — the acceptance check reports it). */
+  readonly brokeredProject: (projectId: string) => Effect.Effect<BrokeredProject | null, CliError>;
+  /** Marks a project as brokered on this machine (idempotent; keeps the first mark). */
+  readonly markBrokered: (
+    projectId: string,
+    mark: BrokeredProject,
+  ) => Effect.Effect<void, CliError>;
 }
 
 export class ProxyAcceptStore extends Context.Service<ProxyAcceptStore, ProxyAcceptStoreShape>()(
@@ -77,21 +101,55 @@ export function acceptedProxyConfigsPathOf(configPath: string): string {
 interface AcceptedFile {
   readonly v: 1;
   readonly accepted: Readonly<Record<string, AcceptedProxyConfig>>;
+  readonly projects: Readonly<Record<string, BrokeredProject>>;
+}
+
+function isSafeTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value);
 }
 
 function decodeAccepted(record: unknown): AcceptedProxyConfig | null {
   if (
     !isRecord(record) ||
     typeof record["content"] !== "string" ||
-    typeof record["acceptedAtMs"] !== "number" ||
-    !Number.isSafeInteger(record["acceptedAtMs"])
+    !isSafeTimestamp(record["acceptedAtMs"])
   ) {
     return null;
   }
   return { content: record["content"], acceptedAtMs: record["acceptedAtMs"] };
 }
 
-/** Strict decoding (no partial reads — same as pins / the fingerprint ledger). */
+function decodeProject(record: unknown): BrokeredProject | null {
+  if (
+    !isRecord(record) ||
+    typeof record["configPath"] !== "string" ||
+    !isSafeTimestamp(record["markedAtMs"])
+  ) {
+    return null;
+  }
+  return { configPath: record["configPath"], markedAtMs: record["markedAtMs"] };
+}
+
+/** Every entry decoded, or null when one is not what it should be (strict — no partial reads). */
+function decodeAll<T>(
+  entries: unknown,
+  decode: (record: unknown) => T | null,
+): Record<string, T> | null {
+  if (!isRecord(entries)) {
+    return null;
+  }
+  const out: Record<string, T> = {};
+  for (const [key, record] of Object.entries(entries)) {
+    const decoded = decode(record);
+    if (decoded === null) {
+      return null;
+    }
+    out[key] = decoded;
+  }
+  return out;
+}
+
+/** Strict decoding (no partial reads — same as pins / the fingerprint ledger). `projects` may be absent (an older file). */
 function decodeFile(json: string): AcceptedFile | null {
   let parsed: unknown;
   try {
@@ -99,19 +157,15 @@ function decodeFile(json: string): AcceptedFile | null {
   } catch {
     return null;
   }
-  if (!isRecord(parsed) || parsed["v"] !== 1 || !isRecord(parsed["accepted"])) {
+  if (!isRecord(parsed) || parsed["v"] !== 1) {
     return null;
   }
-  const accepted: Record<string, AcceptedProxyConfig> = {};
-  for (const [path, record] of Object.entries(parsed["accepted"])) {
-    const decoded = decodeAccepted(record);
-    if (decoded === null) {
-      return null;
-    }
-    accepted[path] = decoded;
-  }
-  return { v: 1, accepted };
+  const accepted = decodeAll(parsed["accepted"], decodeAccepted);
+  const projects = decodeAll(parsed["projects"] ?? {}, decodeProject);
+  return accepted === null || projects === null ? null : { v: 1, accepted, projects };
 }
+
+const EMPTY_FILE: AcceptedFile = { v: 1, accepted: {}, projects: {} };
 
 export function makeFileProxyAcceptStore(path: string): ProxyAcceptStoreShape {
   const loadRaw = () => readLedger(path, decodeFile);
@@ -122,6 +176,22 @@ export function makeFileProxyAcceptStore(path: string): ProxyAcceptStoreShape {
     await writeFile(temp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
     await rename(temp, path);
   };
+
+  /** Read-merge-write; a corrupt (or unreadable) file is never overwritten. */
+  const merge = (apply: (file: AcceptedFile) => AcceptedFile, what: string) =>
+    Effect.tryPromise({
+      try: async () => {
+        const loaded = await loadRaw();
+        if (loaded.state === "corrupt") {
+          throw new Error("corrupt");
+        }
+        await write(apply(loaded.state === "missing" ? EMPTY_FILE : loaded.file));
+      },
+      catch: () =>
+        cliError(
+          `Cannot record ${what} (the record is corrupt, unreadable, or cannot be written): ${path} — inspect it, and if the modification was unintended, delete it and re-run`,
+        ),
+    });
 
   return {
     filePath: path,
@@ -137,72 +207,78 @@ export function makeFileProxyAcceptStore(path: string): ProxyAcceptStoreShape {
         return accepted === undefined ? { state: "missing" } : { state: "found", accepted };
       }),
     accept: (configPath, accepted) =>
-      Effect.tryPromise({
-        try: async () => {
-          const loaded = await loadRaw();
-          if (loaded.state === "corrupt") {
-            // Refuse overwriting a corrupt file (same discipline as the fingerprint ledger)
-            throw new Error("corrupt");
-          }
-          const base: AcceptedFile =
-            loaded.state === "missing" ? { v: 1, accepted: {} } : loaded.file;
-          await write({ v: 1, accepted: { ...base.accepted, [configPath]: accepted } });
-        },
-        catch: () =>
-          cliError(
-            `Cannot record the accepted proxy config (corrupt or an I/O failure): ${path} — inspect it, and if the modification was unintended, delete it and re-run`,
-          ),
+      merge(
+        (file) => ({ ...file, accepted: { ...file.accepted, [configPath]: accepted } }),
+        "the accepted proxy config",
+      ),
+    brokeredProject: (projectId) =>
+      Effect.promise(async () => {
+        const loaded = await loadRaw();
+        if (loaded.state !== "loaded" || !Object.hasOwn(loaded.file.projects, projectId)) {
+          return null;
+        }
+        return loaded.file.projects[projectId] ?? null;
       }),
+    markBrokered: (projectId, mark) =>
+      merge(
+        (file) =>
+          Object.hasOwn(file.projects, projectId)
+            ? file
+            : { ...file, projects: { ...file.projects, [projectId]: mark } },
+        "the brokered project",
+      ),
   };
 }
 
-/** Why a new or changed config cannot be accepted right now (null = a person at a terminal is present). */
-function acceptanceRefusal(input: {
-  readonly path: string;
-  readonly change: string;
-}): Effect.Effect<string | null, never, Stdio.Stdio> {
+const ACCEPT_COMMAND = "`maruhi proxy accept`";
+
+/** The resolved absolute path of the config (the record's key; `./x` and `--config /…/x` are one entry). */
+function resolvedPath(path: string): Effect.Effect<string, CliError> {
+  return Effect.tryPromise({
+    try: () => realpath(path),
+    catch: () => cliError(`Cannot resolve the path of the proxy config ${path}`),
+  });
+}
+
+function corruptRecord(filePath: string): CliError {
+  return cliError(
+    `The record of accepted proxy configs cannot be read (corrupt or unreadable): ${filePath} — inspect it, and if the modification was unintended, delete it and run ${ACCEPT_COMMAND} again from a terminal`,
+  );
+}
+
+/** Who may accept, and how — the tail of every refusal of an unaccepted config. */
+function howToAccept(): Effect.Effect<string, never, Stdio.Stdio> {
   return Effect.gen(function* () {
     const agent = yield* AgentProfileRef;
     if (agent.isAgent) {
       const detected = agent.name === undefined ? "" : ` (${agent.name})`;
-      return `Refused to apply the proxy config ${input.path}: ${input.change}, and an AI agent environment was detected${detected}. A person reviews the file and runs \`maruhi run\` once from a terminal to accept it (an agent cannot accept its own rules); until then the values are neither brokered nor injected`;
+      return `an AI agent environment was detected${detected}: a person reviews the file and runs ${ACCEPT_COMMAND} from a terminal (an agent cannot accept its own rules); until then the values are neither brokered nor injected`;
     }
     const stdio = yield* Stdio.Stdio;
     const stdinIsTerminal = yield* stdio.stdinIsTerminal;
     const stdoutIsTerminal = yield* stdio.stdoutIsTerminal;
     if (!stdinIsTerminal || !stdoutIsTerminal) {
-      return `Refused to apply the proxy config ${input.path}: ${input.change}, and ${describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal })}. Accepting the rules takes a person at an interactive terminal: review the file and run \`maruhi run\` once there (pipes, redirects, CI, and AI agents cannot accept it)`;
+      return `${describeNonTerminal({ stdinIsTerminal, stdoutIsTerminal })}: review the file and run ${ACCEPT_COMMAND} from a terminal (pipes, redirects, CI, and AI agents cannot accept it)`;
     }
-    return null;
+    return `review it, then run ${ACCEPT_COMMAND} to accept it`;
   });
 }
 
 /**
- * Applies the acceptance rule to the config about to be used: a content
- * match with the record passes silently; otherwise the evidence of a
- * person at a terminal accepts (and records) it, and anything else is
- * refused before any network or decryption. `path` is the path as the
- * user wrote it (for messages); the record is keyed by its resolved
- * absolute path so `./maruhi.proxy.json` and `--config /…/maruhi.proxy.json`
- * are one entry.
+ * The acceptance rule for the config about to be applied: a content match
+ * with the record passes silently; anything else is refused before any
+ * network or decryption, naming who can accept it and how. `path` is the
+ * path as the user wrote it (for messages).
  */
 export function ensureProxyConfigAccepted(input: {
   readonly path: string;
   readonly content: string;
-}): Effect.Effect<void, CliError, ProxyAcceptStore | Stdio.Stdio | CliIo> {
+}): Effect.Effect<void, CliError, ProxyAcceptStore | Stdio.Stdio> {
   return Effect.gen(function* () {
     const store = yield* ProxyAcceptStore;
-    const key = yield* Effect.tryPromise({
-      try: () => realpath(input.path),
-      catch: () => cliError(`Cannot resolve the path of the proxy config ${input.path}`),
-    });
-    const lookup = yield* store.lookup(key);
+    const lookup = yield* store.lookup(yield* resolvedPath(input.path));
     if (lookup.state === "corrupt") {
-      return yield* Effect.fail(
-        cliError(
-          `The record of accepted proxy configs is corrupt: ${store.filePath} — inspect it, and if the modification was unintended, delete it and run \`maruhi run\` again from a terminal`,
-        ),
-      );
+      return yield* Effect.fail(corruptRecord(store.filePath));
     }
     if (lookup.state === "found" && lookup.accepted.content === input.content) {
       return;
@@ -210,14 +286,86 @@ export function ensureProxyConfigAccepted(input: {
     const change =
       lookup.state === "missing"
         ? "it has not been accepted on this machine yet"
-        : "it has changed since a person last accepted it on this machine";
-    const refusal = yield* acceptanceRefusal({ path: input.path, change });
-    if (refusal !== null) {
-      return yield* Effect.fail(cliError(refusal));
+        : "it has changed since it was accepted on this machine";
+    return yield* Effect.fail(
+      cliError(
+        `Refused to apply the proxy config ${input.path}: ${change}, and ${yield* howToAccept()}`,
+      ),
+    );
+  });
+}
+
+/**
+ * `maruhi proxy accept`: a person at a terminal records the config's
+ * content as accepted on this machine. Returns what changed (for the
+ * command's own summary of the rules).
+ */
+export function acceptProxyConfig(input: {
+  readonly path: string;
+  readonly content: string;
+}): Effect.Effect<"first use" | "changed" | "unchanged", CliError, ProxyAcceptStore | Stdio.Stdio> {
+  return Effect.gen(function* () {
+    yield* ensureHumanCeremonyAllowed({
+      agentRefusal: (detected) =>
+        `Refused to accept the proxy config: an AI agent environment was detected${detected}. Accepting the rules is a person's act (an agent cannot accept its own rules): run ${ACCEPT_COMMAND} yourself from a terminal`,
+      terminalRefusal: (reason) =>
+        `Refused to accept the proxy config: ${reason}. Accepting the rules takes a person at an interactive terminal (pipes, redirects, CI, and AI agents are refused)`,
+    });
+    const store = yield* ProxyAcceptStore;
+    const key = yield* resolvedPath(input.path);
+    const lookup = yield* store.lookup(key);
+    if (lookup.state === "corrupt") {
+      return yield* Effect.fail(corruptRecord(store.filePath));
+    }
+    if (lookup.state === "found" && lookup.accepted.content === input.content) {
+      return "unchanged";
     }
     yield* store.accept(key, { content: input.content, acceptedAtMs: Date.now() });
-    yield* logNote(
-      `${input.path} accepted for brokering on this machine (${lookup.state === "missing" ? "first use" : "changed"}); the next change to the file will again need a person at a terminal`,
-    );
+    return lookup.state === "missing" ? "first use" : "changed";
+  });
+}
+
+/** A brokered run marks its project (idempotent). Failures are a Note, never fatal: the run itself is the safe shape. */
+export function markProjectBrokered(input: {
+  readonly projectId: string;
+  readonly configPath: string;
+}): Effect.Effect<void, never, ProxyAcceptStore | CliIo> {
+  return Effect.gen(function* () {
+    const store = yield* ProxyAcceptStore;
+    yield* store
+      .markBrokered(input.projectId, { configPath: input.configPath, markedAtMs: Date.now() })
+      .pipe(
+        Effect.catch((error) =>
+          logNote(`could not mark the project as brokered on this machine (${error.message})`),
+        ),
+      );
+  });
+}
+
+/**
+ * Plain `maruhi run` without a config in the working directory, for a
+ * project a brokered run has used on this machine: injecting the real
+ * values is gated like `--plain` (a person at a terminal; an agent or a
+ * pipe is refused) — otherwise deleting `maruhi.proxy.json`, or running
+ * from another directory, would be the shortest way around the rules
+ * (review finding R-13). A project never brokered here is unchanged.
+ */
+export function ensurePlainRunOfBrokeredProjectAllowed(
+  projectId: string,
+): Effect.Effect<void, CliError, ProxyAcceptStore | Stdio.Stdio | CliIo> {
+  return Effect.gen(function* () {
+    const store = yield* ProxyAcceptStore;
+    const mark = yield* store.brokeredProject(projectId);
+    if (mark === null) {
+      return;
+    }
+    const where = `this project is brokered on this machine (its proxy config ${mark.configPath} was accepted) and no proxy config is in the working directory`;
+    yield* ensureHumanCeremonyAllowed({
+      agentRefusal: (detected) =>
+        `Refused to run with the real values: an AI agent environment was detected${detected}, and ${where}. Run the command from the repository that holds the proxy config so the values are brokered, or a person runs it from a terminal`,
+      terminalRefusal: (reason) =>
+        `Refused to run with the real values: ${reason}, and ${where}. Run the command from the repository that holds the proxy config so the values are brokered, or run it yourself in a terminal`,
+    });
+    yield* logNote(`${where}; injecting the real values`);
   });
 }

@@ -587,7 +587,7 @@ export const AGENT_COMMAND_REQUIRED =
  * The parent of where the socket goes. `$XDG_RUNTIME_DIR` is ideal — a
  * per-user tmpfs (0700, removed at logout). Without it, os.tmpdir() — the
  * directory we make is itself 0700, so even a shared /tmp hides it from
- * other users. Shared with `maruhi proxy run`'s CA files (proxy-run.ts).
+ * other users. Shared with `maruhi proxy run`'s CA files and hop sockets (proxy-run.ts).
  */
 function runtimeBaseDir(envVar: (name: string) => string | undefined): string {
   const runtime = envVar("XDG_RUNTIME_DIR");
@@ -598,7 +598,8 @@ function runtimeBaseDir(envVar: (name: string) => string | undefined): string {
  * A fresh private (0700) directory under {@link runtimeBaseDir} and the
  * effect that removes it (a removal failure is a Warning naming the path —
  * never fatal, the directory holds no values). Shared by `maruhi agent` (the
- * socket) and `maruhi proxy run` (the CA certificate files).
+ * socket) and `maruhi proxy run` (the CA certificate files and the hop
+ * sockets of the proxy — proxy-server.ts).
  */
 export function privateRuntimeDir(input: {
   readonly envVar: (name: string) => string | undefined;
