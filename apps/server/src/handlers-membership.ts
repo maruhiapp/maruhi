@@ -23,8 +23,8 @@ import { auditActorOf, RequestAuth } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, Role } from "@maruhi/crypto";
 import { canonicalChainEntryBytes, computeChainEntryHash } from "@maruhi/crypto";
 import { Effect } from "effect";
-import type { HttpApiEndpoint } from "effect/unstable/httpapi";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import type { HttpApiEndpoint } from "effect/http-api";
+import { HttpApiBuilder } from "effect/http-api";
 
 import {
   ensureActorMatches,

@@ -38,7 +38,7 @@ import {
   type SigningKeyPair,
 } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import type { MaruhiClient } from "./api.ts";
 import { describeKeyReuse, isApprovalTarget, keyReuseOf } from "./approval-rules.ts";

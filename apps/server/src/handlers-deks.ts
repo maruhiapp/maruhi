@@ -10,7 +10,7 @@
 
 import { maruhiApi } from "@maruhi/api-schema";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { callProjectData, noContent } from "./data-http.ts";
 import type { RecipientDekValue } from "./data-plane.ts";

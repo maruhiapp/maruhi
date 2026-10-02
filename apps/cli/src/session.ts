@@ -23,7 +23,7 @@ import {
   SUITE_ID,
 } from "@maruhi/crypto";
 import { Data, Effect, Redacted } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import { makeApiClient } from "./api.ts";
 import type { CliConfig } from "./config.ts";

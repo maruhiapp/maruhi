@@ -23,7 +23,7 @@
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import { type CiLeaseInput, leaseEnvironments } from "./ci-lease.ts";
 import { countNoun, displayText } from "./display.ts";

@@ -3419,7 +3419,7 @@ describe("maruhi env rotate", () => {
       2,
     );
     expect(env.errors.join("\n")).toContain("Unknown flag");
-    // A value for a boolean: effect/unstable/cli **interprets** both the
+    // A value for a boolean: effect/cli **interprets** both the
     // inline form (`=false`) and the space-separated form (`--new-epoch
     // false`) as the boolean's value, so these are not mistakes — they are normal runs read as written
     expect(

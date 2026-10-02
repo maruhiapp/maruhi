@@ -2,14 +2,14 @@
 // (`CliOutput.Formatter`)** (ADR-0016 decision 3). The wording is English
 // (ADR-0017).
 //
-// Why a replacement is needed: effect/unstable/cli's default wording
+// Why a replacement is needed: effect/cli's default wording
 // **contains the typed value as-is** (`Invalid value for flag --env: "  "` /
 // `Unexpected positional argument: "..."`). A positional argument or option
 // value may hold plaintext (the `maruhi push API_KEY "$SECRET"` shape), so
 // with the default, plaintext would flow to stderr → CI / agent logs.
 //
 // Why a Formatter and **not runner-side custom rendering**: the rendering
-// call is owned by effect/unstable/cli itself (`showHelp` → `Console`).
+// call is owned by effect/cli itself (`showHelp` → `Console`).
 // Plugging in a Formatter keeps that path while putting **only the
 // wording** into maruhi's vocabulary. Adding ifs to the runner leaves a
 // path that slips through whenever upstream adds a rendering.
@@ -22,8 +22,8 @@
 // `Expected even number, got ${n}`) leaks plaintext from the expectation
 // side. Show it **only when it matches wording we wrote**.
 
-import type { HelpDoc } from "effect/unstable/cli";
-import { CliError, CliOutput } from "effect/unstable/cli";
+import type { HelpDoc } from "effect/cli";
+import { CliError, CliOutput } from "effect/cli";
 
 import { AGENT_COMMAND_REQUIRED } from "./agent.ts";
 import { formatNotice } from "./notice.ts";

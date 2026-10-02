@@ -1,4 +1,4 @@
-// The `effect/unstable/cli` argument layer (ADR-0016 decision 1 — stage 1:
+// The `effect/cli` argument layer (ADR-0016 decision 1 — stage 1:
 // pull / run / env create, stage 2: env rotate / diff, server, invite,
 // member, stage 3: push, config, key, project, rotation, audit, login,
 // logout). The entry is cli.ts's runCli.
@@ -73,8 +73,8 @@ import {
   Flag,
   GlobalFlag,
   Param,
-} from "effect/unstable/cli";
-import { ChildProcessSpawner } from "effect/unstable/process";
+} from "effect/cli";
+import { ChildProcessSpawner } from "effect/process";
 
 import { ensureValueDisplayAllowed } from "./agent-gate.ts";
 import { AGENT_COMMAND_REQUIRED, agentOp, agentStatusOp, parseKeyTtl } from "./agent.ts";
@@ -5186,7 +5186,7 @@ function reportFailure(io: CliIoShape, cause: Cause.Cause<unknown>): Effect.Effe
 
 /**
  * Runs one of the migrated commands (`pull` / `run` / `env create`) through
- * `effect/unstable/cli` and returns the process exit code.
+ * `effect/cli` and returns the process exit code.
  *
  * `commandKey` is the **resolved command stage** decided by runCli's
  * dispatch, used as the diagnostics' destination (which declaration to

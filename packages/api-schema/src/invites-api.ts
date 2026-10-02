@@ -22,7 +22,7 @@
 
 import { EnvironmentIdSchema, ProjectIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
 import { AuthMiddleware } from "./auth-middleware.ts";
 import { ScopeKindSchema } from "./chain.ts";

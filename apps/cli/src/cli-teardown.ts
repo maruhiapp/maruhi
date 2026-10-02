@@ -17,7 +17,7 @@
 // production both pass through this teardown via the single cli.ts path.
 
 import { Cause, Exit, Runtime } from "effect";
-import { CliError } from "effect/unstable/cli";
+import { CliError } from "effect/cli";
 
 /** Usage error. If indistinguishable from an execution failure (1), a typo cannot be fixed. */
 const USAGE_EXIT_CODE = 2;

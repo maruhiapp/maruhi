@@ -15,7 +15,7 @@
 
 import { EnvironmentIdSchema, ProjectIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { ChainEntrySchema } from "./chain.ts";
 import { PulledVariableSchema } from "./data-api.ts";

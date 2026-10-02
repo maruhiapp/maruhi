@@ -62,7 +62,7 @@
 // through sync-exec.ts's scrubVendorOutput (redact, then truncate).
 
 import { Duration, Effect, Redacted } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 
 import { decodeValueText, displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";

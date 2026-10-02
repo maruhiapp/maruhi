@@ -6,8 +6,8 @@
 
 import { maruhiApi } from "@maruhi/api-schema";
 import type { Effect, Redacted } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import { HttpApiClient } from "effect/http-api";
 
 /** The typed maruhi API client derived from {@link maruhiApi}. */
 export type MaruhiClient = HttpApiClient.ForApi<typeof maruhiApi>;

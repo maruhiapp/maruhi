@@ -20,7 +20,7 @@ import {
 } from "@maruhi/api-schema";
 import { computeLeaseClaimsDigest } from "@maruhi/crypto";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 
 import { toWireVariable } from "./data-http.ts";
 import { OidcVerifier, type VerifiedOidcToken } from "./oidc.package/index.ts";

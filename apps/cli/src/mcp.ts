@@ -43,7 +43,7 @@ import {
   Semaphore,
   Stdio,
 } from "effect";
-import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/unstable/ai";
+import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 
 import { type CommonFlags, type CliServices, openMetadataEnvironment } from "./context.ts";
 import { displayText, logWarnings } from "./display.ts";

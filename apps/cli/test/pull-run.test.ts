@@ -348,7 +348,7 @@ describe("maruhi pull", () => {
   });
 
   it("command output goes only through CliIo (no path that hits real fds directly)", async () => {
-    // The layer the argument handling moved to (effect/unstable/cli) emits via
+    // The layer the argument handling moved to (effect/cli) emits via
     // the `Console` / `Stdio` services, but an upstream addition of a rendering
     // path could open a hole that passes through to real fds. Put the safety
     // net on the one command where **a decrypted value** can appear

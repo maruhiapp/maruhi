@@ -30,7 +30,7 @@ import {
   wrapMasterSecret,
 } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 
 import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";

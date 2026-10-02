@@ -8,7 +8,7 @@
 
 import { ProjectIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
 import { auditGroup } from "./audit-api.ts";
 import { authGroup } from "./auth-api.ts";

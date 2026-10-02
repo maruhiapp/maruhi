@@ -8,8 +8,8 @@
 
 import { AuthFlowError, SetupIncompleteError } from "@maruhi/api-schema";
 import { Effect } from "effect";
-import type { Cookies, HttpServerRequest } from "effect/unstable/http";
-import { HttpServerResponse } from "effect/unstable/http";
+import type { Cookies, HttpServerRequest } from "effect/http";
+import { HttpServerResponse } from "effect/http";
 
 import type { SignupDenialReason } from "./auth-domain.ts";
 import { D1AuditRepo } from "./db.package/index.ts";

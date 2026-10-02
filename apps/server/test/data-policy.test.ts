@@ -16,7 +16,7 @@ import {
   variablesGroup,
 } from "@maruhi/api-schema";
 import { Cause, Effect, Exit } from "effect";
-import type { HttpApiEndpoint } from "effect/unstable/httpapi";
+import type { HttpApiEndpoint } from "effect/http-api";
 import { describe, expect, it } from "vitest";
 
 import { dataRejectionError, unwrapDataOutcome } from "../src/data-http.ts";
