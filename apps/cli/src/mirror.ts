@@ -437,7 +437,7 @@ function headNote(
   if (head.chainHeadSeq < verified.state.headSeq) {
     return `behind the verified view by ${countNoun(verified.state.headSeq - head.chainHeadSeq, "chain entry")} (seq ${head.chainHeadSeq} of ${verified.state.headSeq})`;
   }
-  return `ahead of the verified view (seq ${head.chainHeadSeq} > ${verified.state.headSeq}) — the mirror was promoted and written to, the server rolled back, or the mirror's recorded source is not this server; run \`maruhi project verify\``;
+  return `ahead of the verified view (seq ${head.chainHeadSeq} > ${verified.state.headSeq}) — the mirror was promoted and written to, the server rolled back, the mirror's recorded source is not this server, or a replication was forced from another server; run \`maruhi project verify\``;
 }
 
 /**

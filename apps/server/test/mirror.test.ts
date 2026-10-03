@@ -793,6 +793,75 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect((await unmark(OWNER)).status).toBe(200);
   });
 
+  it("the row shape in SQL refuses exactly what the canonical form refuses at the boundary, and never accepts a value the form refuses (ruling J revision, round 12)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    expect((await mark(OWNER)).status).toBe(200);
+    const lines = await exportAll();
+    const columns = parsedLine(
+      lines[
+        lines.findIndex((line) => {
+          const parsed = parsedLine(line);
+          return parsed["kind"] === "table" && parsed["table"] === "audit_events";
+        })
+      ],
+    )["columns"] as string[];
+    const seqIndex = columns.indexOf("seq");
+    const rowIdIndex = columns.indexOf("row_id");
+    // Foreign row ids (the carried-row rule never matches), and one
+    // column of one row rewritten; the uploaded head column is dropped so
+    // every row is derived over as well as shape-checked
+    let tag = 0xa0;
+    const variant = (seq: number, column: string, value: unknown) =>
+      withTrailer(
+        lines
+          .filter((line) => parsedLine(line)["table"] !== "audit_head_hashes")
+          .map((line) => {
+            const parsed = parsedLine(line);
+            if (parsed["kind"] !== "row" || parsed["table"] !== "audit_events") {
+              return line;
+            }
+            const values = [...(parsed["values"] as unknown[])];
+            // A row id set of its own per variant: a carried row id with
+            // other content is a rewrite, refused for its own reason
+            values[rowIdIndex] = `${tag.toString(16)}${String(values[rowIdIndex]).slice(2)}`;
+            if (values[seqIndex] === seq) {
+              values[columns.indexOf(column)] = value;
+            }
+            return JSON.stringify({ ...parsed, values });
+          }),
+        {
+          rows: {
+            ...(parsedLine(lines[lines.length - 1])["rows"] as object),
+            audit_head_hashes: 0,
+          },
+        },
+      );
+    // Each accepted replica commits at position 0 (a re-point before each)
+    let repoint = 0;
+    const repointed = async () => {
+      repoint += 1;
+      tag += 1;
+      expect((await mark(OWNER, `https://successor-${repoint}.maruhi.app`)).status).toBe(200);
+    };
+    // Accepted by both (the affinity converts the text and the real)
+    for (const value of [9007199254740991, 2, "5"]) {
+      await repointed();
+      const response = await upload(variant(1, "server_ts", value), 50);
+      expect(response.status, String(value)).toBe(200);
+    }
+    // Refused by both, or by the SQL alone in the fail-closed direction
+    for (const value of [9007199254740992, -1, 1.5, "", "0x10", null]) {
+      await repointed();
+      await expectRejected(await upload(variant(1, "server_ts", value), 50), "malformed");
+      expect(await stagingTables()).toEqual([]);
+    }
+    // A fractional seq is refused at the trailer, not at the swap's rowid
+    await repointed();
+    await expectRejected(await upload(variant(2, "seq", 1.5), 50), "malformed");
+    expect((await unmark(OWNER)).status).toBe(200);
+  });
+
   it("refuses out-of-sequence and malformed pages with static reasons and discards the staging", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");

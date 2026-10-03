@@ -773,9 +773,10 @@ export async function deriveAuditHeads(
 /**
  * The shape the audit canonical form requires of a row's numbers, as SQL
  * over a table with the live affinities (ruling J revision, round 11):
- * `seq` and `server_ts` safe non-negative integers (`seq` ≥ 1 — the
- * contiguity check), the nullable `client_ts`, `epoch`, `version` and
- * `chain_seq` the same when present. The one statement of the acceptance
+ * `seq` and `server_ts` safe non-negative integers (`seq` ≥ 1; round 12 —
+ * a fractional `seq` passed the aggregates and died at the swap's rowid
+ * instead), the nullable `client_ts`, `epoch`, `version` and `chain_seq`
+ * the same when present. The one statement of the acceptance
  * the derivation applies row by row, so every row of a replica or a
  * snapshot is checked — including the rows under an uploaded head column,
  * which the derivation never touches — before anything is installed.
@@ -784,7 +785,7 @@ export function auditRowShapeViolations(sql: SqlStorage, table: string): number 
   return Number(
     sql
       .exec(
-        `SELECT COUNT(*) AS n FROM ${table} WHERE ${notCounting("server_ts")} OR ${nullableNotCounting("client_ts")} OR ${nullableNotCounting("epoch")} OR ${nullableNotCounting("version")} OR ${nullableNotCounting("chain_seq")}`,
+        `SELECT COUNT(*) AS n FROM ${table} WHERE ${notCounting("seq")} OR seq < 1 OR ${notCounting("server_ts")} OR ${nullableNotCounting("client_ts")} OR ${nullableNotCounting("epoch")} OR ${nullableNotCounting("version")} OR ${nullableNotCounting("chain_seq")}`,
       )
       .one()["n"],
   );

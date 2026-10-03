@@ -593,7 +593,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     // --force still reads the source and says what it overrides (ruling C
     // revision, round 9) — as the consequence, not the dead remedy (round 12)
     expect(fresh.env.errors.join("\n")).toContain(
-      `Warning: promoting with --force. The source ${fresh.source.origin} still answers and holds this project writable: two writable copies from now on (a split brain) until the source is marked as a mirror of ${fresh.mirror.origin}`,
+      `Warning: promoting with --force. The source ${fresh.source.origin} still answers and holds this project writable: two writable copies from now on (a split brain) until one is marked as a mirror of the other — the source as a mirror of ${fresh.mirror.origin}`,
     );
     expect(fresh.env.errors.join("\n")).not.toContain("Pass --force to promote anyway");
     expect(fresh.env.errors.join("\n")).not.toContain("bring its last writes over");
@@ -685,12 +685,20 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
         `maruhi mirror mark --server ${moved.mirror.origin} --source ${elsewhere}`,
       );
       expect(moved.state.status).toMatchObject({ mirror: true });
+      const movedErrorsBefore = moved.env.errors.length;
       expect(
         await runCli(
           ["mirror", "promote", "--server", moved.mirror.origin, "--force"],
           moved.env.layer,
         ),
       ).toBe(0);
+      // The forced consequence names the two copies and the mark that
+      // stops the split while this one has taken no write (round 13)
+      const forcedOutput = moved.env.errors.slice(movedErrorsBefore).join("\n");
+      expect(forcedOutput).toContain(
+        `Warning: promoting with --force. The source ${moved.source.origin} holds this project as a mirror of ${elsewhere}: two writable copies from now on, this one and the primary at ${elsewhere}`,
+      );
+      expect(forcedOutput).not.toContain("would leave two writable copies");
     } finally {
       sourceStatus = null;
     }
@@ -1386,7 +1394,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       await runCli(["mirror", "status", "--mirror", promoted.mirror.origin], promoted.env.layer),
     ).toBe(1);
     expect(promoted.env.errors.join("\n")).toContain(
-      `${promoted.mirror.origin} is not marked as a mirror (a promoted copy) and holds a chain head that is a different chain at the same height as the verified view`,
+      `${promoted.mirror.origin} is not marked as a mirror (promoted, or never marked) and holds a chain head that is a different chain at the same height as the verified view`,
     );
     expect(promoted.env.errors.join("\n")).toContain(
       "two writable copies have diverged (a split brain)",

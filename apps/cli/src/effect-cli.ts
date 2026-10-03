@@ -2320,9 +2320,22 @@ function mirrorStatusCommand(flags: {
     // cron or a member's "is my mirror usable" must not read it as fine
     const evidence = verified === null ? null : statusEvidence(status, verified);
     if (evidence !== null) {
+      // A recorded source that is this server under another hostname is
+      // this server (the fingerprints decide, on the failing path only — round 13)
+      const recordedElsewhere =
+        status.mirror &&
+        status.sourceOrigin !== undefined &&
+        status.sourceOrigin !== target.serverOrigin &&
+        !(yield* sameDeployment(status.sourceOrigin, target.serverOrigin));
       return yield* Effect.fail(
         evidenceError(
-          statusEvidenceText(status, target.mirrorOrigin, target.serverOrigin, evidence),
+          statusEvidenceText(
+            status,
+            target.mirrorOrigin,
+            target.serverOrigin,
+            evidence,
+            recordedElsewhere,
+          ),
         ),
       );
     }
@@ -2341,11 +2354,12 @@ function statusEvidenceText(
   mirrorOrigin: string,
   serverOrigin: string,
   evidence: string,
+  recordedElsewhere: boolean,
 ): string {
   if (!status.mirror) {
-    return `${mirrorOrigin} is not marked as a mirror (a promoted copy) and holds a chain head that is ${evidence} of ${serverOrigin}: two writable copies have diverged (a split brain). Decide which chain is the project's with \`maruhi project verify\` against both, and mark or export the other away`;
+    return `${mirrorOrigin} is not marked as a mirror (promoted, or never marked) and holds a chain head that is ${evidence} of ${serverOrigin}: two writable copies have diverged (a split brain). Decide which chain is the project's with \`maruhi project verify\` against both, and mark or export the other away`;
   }
-  if (status.sourceOrigin !== undefined && status.sourceOrigin !== serverOrigin) {
+  if (recordedElsewhere && status.sourceOrigin !== undefined) {
     return `${mirrorOrigin} is a mirror of ${status.sourceOrigin}, not of ${serverOrigin}, and holds a chain head that is ${evidence} of ${serverOrigin}: the comparison is against a server that is not its source — run the status against ${status.sourceOrigin} (\`maruhi mirror status --server ${status.sourceOrigin} --mirror ${mirrorOrigin}\`)`;
   }
   return `The mirror ${mirrorOrigin} holds a chain head that is ${evidence} — against ${serverOrigin} and against the mirror`;
@@ -2737,7 +2751,7 @@ function promotionRefusal(
     return {
       body: `The source ${sourceOrigin} still answers and holds this project writable: promoting ${thisOrigin} now leaves two writable copies (a split brain). The planned order: mark the source as a mirror of ${thisOrigin} (\`maruhi mirror mark --server ${sourceOrigin} --source ${thisOrigin}\` — it freezes), bring its last writes over (\`maruhi mirror sync --server ${sourceOrigin} --mirror ${thisOrigin}\`), then promote; or take the source down`,
       escape: ". Pass --force to promote anyway",
-      forced: `The source ${sourceOrigin} still answers and holds this project writable: two writable copies from now on (a split brain) until the source is marked as a mirror of ${thisOrigin} (\`maruhi mirror mark --server ${sourceOrigin} --source ${thisOrigin}\`) or taken down; writes it takes meanwhile stay on it`,
+      forced: `The source ${sourceOrigin} still answers and holds this project writable: two writable copies from now on (a split brain) until one is marked as a mirror of the other — the source as a mirror of ${thisOrigin} (\`maruhi mirror mark --server ${sourceOrigin} --source ${thisOrigin}\`) while it has taken no write, else this copy as a mirror of the source and a sync from it; writes both take meanwhile fork the project`,
     };
   }
   if (source === "answers") {
@@ -2757,10 +2771,12 @@ function promotionRefusal(
     ? {
         body: `The source ${sourceOrigin} holds this project as a mirror of ${source.movedTo}, which publishes this server's key fingerprint. If that is this deployment under another hostname, promote it under that name (\`maruhi mirror promote --server ${source.movedTo}\` — the source is frozen for it); if it is another deployment sharing one SERVER_ENC_KEY_IKM, that is the misconfiguration to fix first (one key per deployment)`,
         escape: "; or pass --force to promote anyway",
+        forced: `The source ${sourceOrigin} holds this project as a mirror of ${source.movedTo}, which publishes this server's key fingerprint. If that is this deployment under another hostname, nothing is lost: the source is frozen for a name of this deployment, and members may use either; if it is another deployment sharing one SERVER_ENC_KEY_IKM, two writable copies exist from now on — fix the shared key, then mark one as a mirror of the other`,
       }
     : {
         body: `The source ${sourceOrigin} holds this project as a mirror of ${source.movedTo}, not of ${thisOrigin}: the project's primary moved there, and promoting this copy would leave two writable copies (a split brain). Re-point this mirror at it (\`maruhi mirror mark --server ${thisOrigin} --source ${source.movedTo}\`) and sync from there`,
         escape: "; or pass --force to promote anyway",
+        forced: `The source ${sourceOrigin} holds this project as a mirror of ${source.movedTo}: two writable copies from now on, this one and the primary at ${source.movedTo} (a split brain). Mark this copy as a mirror of it (\`maruhi mirror mark --server ${thisOrigin} --source ${source.movedTo}\`) while it has taken no write, and sync from there`,
       };
 }
 

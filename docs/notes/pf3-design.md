@@ -279,3 +279,11 @@ round 11; C, D, H and I are closed.
 
 Ruling J received adopted candidates in this round and stays open for
 round 12; C, D, H and I are closed.
+
+### 8-11. Round 12 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| J (switch-over) | J-30 (text, or a trivial guard): the spec said the one SQL statement covered `seq`, which it did not — a fractional `seq` under a full uploaded column passed the aggregates and died at the swap's rowid (`malformed` all the same); J-T4 (tests only): the SQL/digest boundary was pinned by two values. Verified by experiment: on the live and the staged affinities the statement is exact or strictly stricter than the canonical form's acceptance — no value the SQL accepts is one the digest refuses (the brick direction), the divergences (`''`, `'0x10'`, a NULL `server_ts`) are fail-closed. Considered, not proposed: a hex shape over the uploaded column's body (a garbage head below the tail is never served, never becomes the tail, and compares equal at a position — a well-formed false claim's equal under bootstrap trust); a TEXT storage-class check (a BLOB is coerced consistently on the hashing and the read path); a resumable trailer (J-23's shape) | **J-30 adopted** (`seq` in the statement; refused at the trailer). **J-T4 adopted** (the boundary table). **J CLOSED (round 12)** — no behaviour or guard candidate |
+
+Every PF3 ruling is closed: D, H, I (earlier), C (round 9), J (round 12).
