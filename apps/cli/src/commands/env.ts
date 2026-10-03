@@ -22,8 +22,11 @@ import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
 import { logNote } from "../notice.ts";
 import { reportRotation } from "../rotation-report.ts";
-import { loadSyncConfig } from "../sync.package/index.ts";
-import { advanceReceiptsAfterRotation, checkRotateConfigProject } from "../sync.package/index.ts";
+import {
+  loadSyncConfig,
+  advanceReceiptsAfterRotation,
+  checkRotateConfigProject,
+} from "../sync.package/index.ts";
 import { NonBlank, projectFlags, singleFlag, singleValued } from "./flags.ts";
 
 /** The environment ID positional (shared by env's subcommands. The key is the spelling typed). */

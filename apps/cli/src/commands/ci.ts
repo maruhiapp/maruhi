@@ -18,8 +18,8 @@ import {
 import { SqlRunner } from "../rotate-connector.ts";
 import { ProcessRunner } from "../run.ts";
 import { normalizeHttpOrigin } from "../session.ts";
-import { ciSyncOp } from "../sync.package/index.ts";
 import {
+  ciSyncOp,
   DEFAULT_SYNC_CONFIG_PATH,
   checkConfigProject,
   loadSyncConfig,

@@ -15,8 +15,8 @@ import {
 } from "../rotate-config.ts";
 import { SqlRunner } from "../rotate-connector.ts";
 import { ProcessRunner } from "../run.ts";
-import { DEFAULT_SYNC_CONFIG_PATH } from "../sync.package/index.ts";
 import {
+  DEFAULT_SYNC_CONFIG_PATH,
   type PushSyncSetup,
   decidePushSync,
   loadPushSyncConfig,
