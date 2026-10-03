@@ -42,8 +42,8 @@ import { CliIo } from "./io.ts";
 import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts";
 import { signStatementAndHash } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
-import { signDeleteStatementV2 } from "./schema.package/index.ts";
 import {
+  signDeleteStatementV2,
   requireVerifiedEnvironment,
   resolveSchemaTarget,
   type SchemaSetState,
