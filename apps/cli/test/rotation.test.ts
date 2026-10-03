@@ -122,6 +122,8 @@ async function makeRotationServer(input: {
   readonly expiringPushedAtMs?: number;
   /** Whether that variable's history can be read (false = 500 — the unreadable-age path of `--fail-on-due`). */
   readonly historyAvailable?: boolean;
+  /** Whether the flags GET works (false = 500 — an unknown part of `--fail-on-flags`, A-16). */
+  readonly flagsAvailable?: boolean;
   /** When set, the latest version is a re-encryption pushed at this time (`sameValueAs` the version pushed at `expiringPushedAtMs`). */
   readonly reencryptedAtMs?: number;
   /** The expiries of the pending sealed proposals listed to the caller (default none); null = the list fails (500). */
@@ -270,10 +272,11 @@ async function makeRotationServer(input: {
             },
           },
     ),
-    onRequest("GET", `/projects/${projectId}/rotation/flags`, () => ({
-      status: 200,
-      json: { flags: input.flags },
-    })),
+    onRequest("GET", `/projects/${projectId}/rotation/flags`, () =>
+      input.flagsAvailable === false
+        ? { status: 500, json: { message: "injected flags failure" } }
+        : { status: 200, json: { flags: input.flags } },
+    ),
     onRequest("GET", `/projects/${projectId}/rotation/proposals`, () =>
       input.pendingProposalExpiries === null
         ? { status: 500, json: { message: "injected proposal-list failure" } }
@@ -440,6 +443,60 @@ describe("maruhi rotation list", () => {
     expect(
       server.requests.some((r) => r.path.includes(`/environments/${ENV_ID}/pull/metadata`)),
     ).toBe(true);
+    // … including an environment OUTSIDE the member's scope: a value past
+    // its max age there is due (A-17 pins A-15 against A-14's reading)
+    const outOfScope = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: createEnvironmentOp(GONE, dek2) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [GONE]) },
+    ]);
+    const dueState = await makeRotationServer({
+      built: outOfScope,
+      flags: [],
+      deletedEnvironment: GONE,
+      expiringPushedAtMs: Date.now() - 60 * 24 * 60 * 60 * 1000,
+    });
+    const dueServer = await MockServer.start([...dueState.handlers]);
+    servers.push(dueServer);
+    const scopedElsewhere = await makeTestEnv();
+    seedSession(scopedElsewhere, dueServer.origin, target);
+    await seedConfig(scopedElsewhere, {
+      server: dueServer.origin,
+      defaultProject: outOfScope.projectId,
+    });
+    expect(await runCli(["rotation", "list", "--fail-on-due"], scopedElsewhere.layer)).toBe(3);
+    expect(
+      dueServer.requests.some((r) => r.path.includes(`/environments/${ENV_ID}/pull/metadata`)),
+    ).toBe(true);
+    expect(dueServer.requests.some((r) => r.path.endsWith("/versions"))).toBe(true);
+  });
+
+  it("--fail-on-flags cannot pass when the flags could not be read, and a known due value is still exit 3 (A-16)", async () => {
+    const built = await convergedChain();
+    const day = 24 * 60 * 60 * 1000;
+    const broken = await startEnv(
+      await makeRotationServer({ built, currentEpoch: 2, flags: [], flagsAvailable: false }),
+      built.projectId,
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-flags"], broken.layer)).toBe(1);
+    expect(broken.errors.join("\n")).toContain(
+      "Cannot judge the check: the rotation flags could not be read (",
+    );
+    const due = await startEnv(
+      await makeRotationServer({
+        built,
+        currentEpoch: 2,
+        flags: [],
+        flagsAvailable: false,
+        expiringPushedAtMs: Date.now() - 60 * day,
+      }),
+      built.projectId,
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-flags", "--fail-on-due"], due.layer)).toBe(
+      3,
+    );
+    expect(due.errors.join("\n")).toContain("also the rotation flags could not be read");
   });
 
   it("--fail-on-pending under a scoped member's token cannot pass: the server lists that scope only (A-12)", async () => {

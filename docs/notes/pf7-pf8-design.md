@@ -516,3 +516,14 @@ for round 6; P is closed (with B, C and K).
 
 Rulings A, D and O received adopted candidates in this round and stay open
 for round 7; B, C, K and P are closed.
+
+### 9-6. Round 7 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| A (cron) | A-16 (a bug against A-10): a failed flags read aborted the whole command — a known due value was routed as an outage; A-17: the A-15 test did not discriminate A-15 from A-14 (the out-of-scope environment was deleted) | **A-16 adopted** — a failed flags read is one unknown part (`--fail-on-flags` cannot pass on it); the due walk and the pending read go on. **A-17 adopted** — a scoped member with a due value in an environment outside their scope exits 3, and the mock sees the reads |
+| D (answer) | D-15 (a bug in D-14): the leftover verdict preceded the exit code, so a script that failed on its own had its report (code, stderr) replaced by "a process it started kept writing"; D-16 (structural): the within-settle leftover is undetectable by timing, but a polluted credential changes shape — compare line counts with the current value and warn; D-17: a rotate script stopped for flooding stdout had started printing, so the credential may exist — name the recovery | **D-15 adopted** — the leftover verdict applies to a script that exited 0 only; a stop by maruhi is reported as such first. **D-16 adopted** — `var rotate` warns before the push when the line count changed, `ci rotate`'s report shows the current value's shape beside the new one (the acceptance already shows the opened value's); never a refusal. **D-17 adopted** |
+| O (credential) | O-18 (strict, narrow): both fetch-first fallbacks ran under the fixed 30 s bound, so a hung endpoint ate the fallback when the token in hand had less life left | **Adopted** — the fetch's bound is the token in hand's remaining life minus a margin (never above 30 s; a floor of 1 s), on the mint and on the re-lease; a hanging issuance mock pins it (and O-16) |
+
+Rulings A, D and O received adopted candidates in this round and stay open
+for round 8; B, C, K and P are closed.

@@ -51,7 +51,12 @@ import {
   type WireDistributedVariableStatement,
 } from "./support/crypto.ts";
 import { makeTestEnv, type TestEnv } from "./support/env.ts";
-import { type MockHandler, type MockRequest, MockServer } from "./support/server.ts";
+import {
+  type MockHandler,
+  type MockRequest,
+  type MockResponse,
+  MockServer,
+} from "./support/server.ts";
 
 const ENV_ID = "prod";
 const ISSUER = "https://token.actions.githubusercontent.com";
@@ -180,6 +185,24 @@ interface OidcOptions {
   readonly expSeconds?: number;
   /** After this many tokens the endpoint answers 500 (default: never). */
   readonly failAfter?: number;
+  /** After this many tokens the endpoint hangs (answers only after a minute — the fetch's bound ends the wait). */
+  readonly hangAfter?: number;
+}
+
+/** The endpoint's injected outage after `issued` tokens: a 500, or an answer only after a minute (the fetch's bound ends the wait). */
+function issuanceOutage(
+  issued: number,
+  options: OidcOptions,
+): MockResponse | Promise<MockResponse> | null {
+  if (options.failAfter !== undefined && issued >= options.failAfter) {
+    return { status: 500, json: { message: "issuance unavailable" } };
+  }
+  if (options.hangAfter !== undefined && issued >= options.hangAfter) {
+    return new Promise((resolve) => {
+      setTimeout(() => resolve({ status: 500, json: { message: "late" } }), 60_000).unref();
+    });
+  }
+  return null;
 }
 
 function oidcHandler(state: { issued: number }, options: OidcOptions = {}): MockHandler {
@@ -190,8 +213,9 @@ function oidcHandler(state: { issued: number }, options: OidcOptions = {}): Mock
     if (request.headers["authorization"] !== `Bearer ${RUNNER_TOKEN}`) {
       return { status: 401, json: { message: "bad runner token" } };
     }
-    if (options.failAfter !== undefined && state.issued >= options.failAfter) {
-      return { status: 500, json: { message: "issuance unavailable" } };
+    const outage = issuanceOutage(state.issued, options);
+    if (outage !== null) {
+      return outage;
     }
     state.issued += 1;
     return {
@@ -728,6 +752,20 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expect(twice.env.errors.join("\n")).toContain("The issuer accepted the rotation");
     expectNoSecretLeak(fixture);
   });
+
+  it("a hung issuance endpoint does not eat the fallback: the fetch's bound follows the life of the token in hand (O-18)", async () => {
+    // The lease token lives 8 s; the mint's fetch hangs, so its bound is the
+    // token's remaining life minus the margin, and the lease's token is
+    // presented while it still lives
+    const fixture = await startCi(EXEC_RULE, {
+      expSeconds: Math.floor(Date.now() / 1000) + 8,
+      hangAfter: 1,
+    });
+    expect(await ciRotate(fixture)).toBe(0);
+    const body = onlyMint(fixture);
+    expect(jwtPayload(body.oidcToken)["jti"]).toBe(1);
+    expect(fixture.env.errors.join("\n")).toContain("presenting the lease's token");
+  }, 20_000);
 
   it("an expired lease token is not presented when no fresh token can be minted: the recovery step is named", async () => {
     const fixture = await startCi(EXEC_RULE, {

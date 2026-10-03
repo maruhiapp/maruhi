@@ -104,6 +104,15 @@ const program = Effect.gen(function* () {
   // silently the answer (D-14): a late line, or a flood past the cap after
   // the exit, is refused naming the script's own exit code
   const polluted = yield* refusal("(sleep 1; echo junk) & echo value");
+  // A script that failed on its own reports its own failure; what a
+  // leftover wrote is moot since nothing is pushed (D-15)
+  const failedItself = yield* Effect.promise(() =>
+    runner.captureScript({
+      command: ["sh", "-c", "(sleep 0.3; echo junk) & echo 'issuer said no' >&2; exit 7"],
+      cwd: process.cwd(),
+      extraEnv: {},
+    }),
+  );
   const floodedAfterExit = yield* refusal(
     "(sleep 0.5; head -c 3000000 /dev/zero | tr '\\0' z; sleep 10) & echo value",
   );
@@ -117,6 +126,8 @@ const program = Effect.gen(function* () {
     stubbornMs,
     polluted,
     floodedAfterExit,
+    failedItselfCode: failedItself.exitCode,
+    failedItselfStderr: failedItself.stderr,
     missing,
     badCwd,
     capturedBytes: captured.stdout.length,

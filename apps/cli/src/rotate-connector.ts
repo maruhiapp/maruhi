@@ -115,6 +115,8 @@ export interface RotationOutcome {
   readonly values: CredentialValues;
   /** The shape of every value to push — the primary's, then each companion's by name ({@link valueShape}) — for the local report; never a proposal fact. */
   readonly valueShape: string;
+  /** The current primary's shape, for the same report: a new value of another line count is worth a look before it is pushed (D-16 — a leftover's line is the common form). */
+  readonly currentShape: string;
   /** Non-secret facts for the report (the new key id, the role now in use, the token id). */
   readonly facts: readonly string[];
   /** What the previous credential's state is now, in one line. */
@@ -1125,8 +1127,15 @@ function captureFailure(
 ): ConnectorError {
   if (error instanceof ScriptStoppedError) {
     // Stopped by maruhi after it started (a flooded stdout) — not a
-    // launch failure (ruling D revision, round 4)
-    return new ConnectorError(`exec: the ${phase} script ${script} was stopped: ${error.message}`);
+    // launch failure (ruling D revision, round 4); a rotate script had
+    // started printing, so the credential may exist at the issuer (D-17)
+    const created =
+      phase === "rotate"
+        ? ". The new credential may exist at the issuer: re-run the rotation once the script prints only the value (make it idempotent, or retire the unused credential at the issuer by hand)"
+        : "";
+    return new ConnectorError(
+      `exec: the ${phase} script ${script} was stopped: ${error.message}${created}`,
+    );
   }
   if (error instanceof ScriptLeftoverError) {
     // The script's own answer cannot be told from a leftover process's
@@ -1420,7 +1429,11 @@ export async function rotateCredential(
   site?: RotationSite,
 ): Promise<RotationOutcome> {
   const outcome = await rotateWith(rule, current, inputs, deps, site);
-  return { ...outcome, valueShape: valuesShape(outcome.values) };
+  return {
+    ...outcome,
+    valueShape: valuesShape(outcome.values),
+    currentShape: valueShape(current.primary),
+  };
 }
 
 /** The primary's shape, then each companion's by name (the same parity as the acceptance's per-value shapes). */
@@ -1434,7 +1447,7 @@ function valuesShape(values: CredentialValues): string {
 }
 
 /** A connector's own outcome (the frame adds the value's shape). */
-type ConnectorOutcome = Omit<RotationOutcome, "valueShape">;
+type ConnectorOutcome = Omit<RotationOutcome, "valueShape" | "currentShape">;
 
 function rotateWith(
   rule: RotateRule,

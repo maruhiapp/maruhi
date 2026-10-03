@@ -388,6 +388,24 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     );
     await expectRejected(await upload(otherLog, 50), "audit-not-extension");
     expect(await stagingTables()).toEqual([]);
+    // … and so is one that rewrites a row at or below the replicated
+    // position while carrying the column untouched: the prefix is compared
+    // row for row, not by an uploaded hash (ruling J revision, round 7)
+    const firstRowIndex = newer.findIndex((line) => {
+      const parsed = parsedLine(line);
+      return parsed["kind"] === "row" && parsed["table"] === "audit_events";
+    });
+    const rewrittenPrefix = newer.map((line, index) => {
+      if (index !== firstRowIndex) {
+        return line;
+      }
+      const row = parsedLine(line) as { values: unknown[] };
+      const values = [...row.values];
+      values[1] = Number(values[1]) + 1;
+      return JSON.stringify({ ...row, values });
+    });
+    await expectRejected(await upload(rewrittenPrefix, 50), "audit-not-extension");
+    expect(await stagingTables()).toEqual([]);
     // An older replica never replaces a newer one
     await expectRejected(await upload(older, 50), "chain-not-extension");
     expect((await statusOk()).nextSequence).toBeUndefined();

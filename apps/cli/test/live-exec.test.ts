@@ -27,6 +27,8 @@ interface ProbeResult {
   readonly stubbornMs: number;
   readonly polluted: string;
   readonly floodedAfterExit: string;
+  readonly failedItselfCode: number;
+  readonly failedItselfStderr: string;
 }
 
 describe("ProcessRunner.exec (live — Bun.spawn)", () => {
@@ -85,5 +87,8 @@ describe("ProcessRunner.exec (live — Bun.spawn)", () => {
     );
     expect(probe.floodedAfterExit).toContain("ScriptLeftoverError: sh exited (code 0)");
     expect(probe.floodedAfterExit).not.toContain("it was stopped");
+    // A script that failed on its own is reported as such, leftover or not (D-15)
+    expect(probe.failedItselfCode).toBe(7);
+    expect(probe.failedItselfStderr).toContain("issuer said no");
   }, 60_000);
 });

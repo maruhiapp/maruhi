@@ -739,6 +739,8 @@ describe("exec connector (a script of the repository — PF8)", () => {
     // a script that printed chatter instead of a value is seen before the
     // value is pushed), never a fact the server stores
     expect(outcome.valueShape).toBe("11 bytes, 1 line");
+    // … beside the current value's, for the report's line-count comparison (D-16)
+    expect(outcome.currentShape).toBe("11 bytes, 1 line");
     expect(outcome.previous).toContain(
       "stays valid until you finalize (./finalize.sh runs with it)",
     );
@@ -995,7 +997,7 @@ describe("exec connector (a script of the repository — PF8)", () => {
       exec: () => Promise.reject(new ScriptStoppedError("sh wrote more than 1 MiB to stdout")),
     });
     await expect(rotateCredential(withFinalize, current, {}, stopped, SITE)).rejects.toThrow(
-      "the rotate script ./rotate.sh was stopped: sh wrote more than 1 MiB to stdout",
+      "the rotate script ./rotate.sh was stopped: sh wrote more than 1 MiB to stdout. The new credential may exist at the issuer",
     );
     // A leftover process's output: refused with the recovery when the
     // script itself exited 0 (D-14)

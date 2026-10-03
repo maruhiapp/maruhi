@@ -489,20 +489,14 @@ function acceptTrailer(
   if (stagedMaxSeq(sql, AUDIT_TABLE) < input.state.lastAuditSeq) {
     throw new MirrorPageRefusedError("audit-regression");
   }
-  // The replica's log must extend the one replicated last — the same log by
-  // cumulative hash at the replicated position, not merely a log of the
-  // same length (ruling J revision, round 6: the rows the mirror served to
-  // its readers are never rewritten under their row ids)
-  if (input.state.lastAuditSeq > 0 && input.state.lastAuditHeadHashHex !== null) {
-    const staged = stagingOf(AUDIT_HEAD_TABLE);
-    const row = hasTable(sql, staged)
-      ? sql
-          .exec(`SELECT head_hash_hex FROM ${staged} WHERE seq = ?`, input.state.lastAuditSeq)
-          .toArray()[0]
-      : undefined;
-    if (row === undefined || String(row["head_hash_hex"]) !== input.state.lastAuditHeadHashHex) {
-      throw new MirrorPageRefusedError("audit-not-extension");
-    }
+  // The replica's log must extend the one replicated last: every live row
+  // up to the replicated position — the mirror's own accepted evidence,
+  // the rows it served to its readers — must be in the staged log, row for
+  // row (ruling J revision, round 7: the carried cumulative-hash column is
+  // an uploaded value, so it proves nothing by itself; it stays as a first
+  // check). A mark or a re-point records no position, so the first replica is free
+  if (input.state.lastAuditSeq > 0) {
+    verifyAuditPrefix(sql, input.state);
   }
   sql.exec(`DROP TABLE IF EXISTS ${TRAILER_TABLE}`);
   sql.exec(`CREATE TABLE ${TRAILER_TABLE} (trailer_json TEXT NOT NULL)`);
@@ -511,6 +505,39 @@ function acceptTrailer(
     "UPDATE mirror_state SET expected_sequence = ?, staging_table = NULL WHERE id = 1",
     nextSequence,
   );
+}
+
+/** The replicated prefix, row for row: a live row at or below the position that the staged log lacks or carries differently is `audit-not-extension`. */
+function verifyAuditPrefix(sql: SqlStorage, state: MirrorState): void {
+  const staged = stagingOf(AUDIT_TABLE);
+  if (!hasTable(sql, staged)) {
+    throw new MirrorPageRefusedError("audit-not-extension");
+  }
+  if (state.lastAuditHeadHashHex !== null) {
+    const stagedHeads = stagingOf(AUDIT_HEAD_TABLE);
+    const row = hasTable(sql, stagedHeads)
+      ? sql
+          .exec(`SELECT head_hash_hex FROM ${stagedHeads} WHERE seq = ?`, state.lastAuditSeq)
+          .toArray()[0]
+      : undefined;
+    if (row === undefined || String(row["head_hash_hex"]) !== state.lastAuditHeadHashHex) {
+      throw new MirrorPageRefusedError("audit-not-extension");
+    }
+  }
+  const columns = sql.exec(`SELECT * FROM ${AUDIT_TABLE} LIMIT 0`).columnNames;
+  const differs = columns
+    .filter((column) => column !== "seq")
+    .map((column) => `own.${column} IS NOT theirs.${column}`)
+    .join(" OR ");
+  const rewritten = sql
+    .exec(
+      `SELECT COUNT(*) AS n FROM ${AUDIT_TABLE} AS own LEFT JOIN ${staged} AS theirs ON theirs.seq = own.seq WHERE own.seq <= ? AND (theirs.seq IS NULL OR ${differs})`,
+      state.lastAuditSeq,
+    )
+    .one()["n"];
+  if (Number(rewritten) !== 0) {
+    throw new MirrorPageRefusedError("audit-not-extension");
+  }
 }
 
 /** One staged chain row as the content verification reads it (programs-mirror.ts). */

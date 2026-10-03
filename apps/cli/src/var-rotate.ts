@@ -425,6 +425,14 @@ export function varRotateOp(
       try: () => rotateCredential(target.rule, current, inputs, input.deps, site),
       catch: connectorFailure,
     });
+    // A line count that changed is worth a look before the push: the one
+    // form of a leftover's output no timing can tell apart (D-16). A
+    // warning, never a refusal (a token becoming a PEM is legitimate)
+    if (lineCountOf(outcome.valueShape) !== lineCountOf(outcome.currentShape)) {
+      yield* logWarning(
+        `the new value of ${displayText(target.primary)} has ${lineCountOf(outcome.valueShape)} line(s) where the current value has ${lineCountOf(outcome.currentShape)}: check that the rotate script printed only the credential (a process it started may have written to its stdout)`,
+      );
+    }
     const pushed = yield* pushOutcome(context, pulled, target, outcome);
     const primaryStatement = pulled.variables.find((variable) => variable.name === target.primary);
     return {
@@ -574,4 +582,10 @@ export function logRotationWarnings(
   warnings: readonly string[],
 ): Effect.Effect<void, never, CliIo> {
   return Effect.forEach(warnings, (warning) => logWarning(warning), { discard: true });
+}
+
+/** The line count a {@link valueShape} text carries ("N bytes, M lines" — the first value's). */
+function lineCountOf(shape: string): number {
+  const match = /(\d+) lines?/.exec(shape);
+  return match === null ? 1 : Number(match[1]);
 }

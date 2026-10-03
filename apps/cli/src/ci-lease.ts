@@ -34,7 +34,12 @@ import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import type { LeaseResponseWire, VerifiedLeaseMaterial } from "./lease-client.ts";
 import { verifyLeaseResponse } from "./lease-client.ts";
-import { fetchGitHubOidcToken, readLeaseClaims, tokenExpiresAtMs } from "./oidc-github.ts";
+import {
+  fetchGitHubOidcToken,
+  issuanceBoundFor,
+  readLeaseClaims,
+  tokenExpiresAtMs,
+} from "./oidc-github.ts";
 
 /** Input shared by the CI commands (all from explicit flags — session-25 §2). */
 export interface CiLeaseInput {
@@ -171,7 +176,12 @@ export function leaseEnvironmentsWithCredential(
     const client = yield* makeApiClient({ baseUrl: input.origin });
     const credential =
       reusableCredential(input.credential) ??
-      (yield* freshCredential(input.audience).pipe(
+      (yield* freshCredential(
+        input.audience,
+        input.credential === undefined
+          ? undefined
+          : issuanceBoundFor(input.credential.token, Date.now()),
+      ).pipe(
         Effect.catch((error) => {
           // No fresh token, but an unexpired one in hand (within the reuse
           // margin): present it — the same fallback shape as the mint's
@@ -245,7 +255,11 @@ export function leaseEnvironmentsWithCredential(
  * token = one key (session-25 §3 — §14-1's "the same key for all requests
  * under one token" is satisfied by construction).
  */
-function freshCredential(audience: string): Effect.Effect<WorkloadCredential, CliError, CliIo> {
+function freshCredential(
+  audience: string,
+  /** The fetch's bound (the life of a token in hand — O-18); undefined = the default. */
+  timeoutMs?: number,
+): Effect.Effect<WorkloadCredential, CliError, CliIo> {
   return Effect.gen(function* () {
     const keyPair = yield* Effect.tryPromise({
       try: () => generateEncryptionKeyPair(),
@@ -257,7 +271,7 @@ function freshCredential(audience: string): Effect.Effect<WorkloadCredential, Cl
         catch: () => cliError("Failed to export the ephemeral public key (crypto error)"),
       }),
     );
-    const token = yield* fetchGitHubOidcToken(audience);
+    const token = yield* fetchGitHubOidcToken(audience, timeoutMs);
     return { token, ephemeralPubHex, keyPair };
   });
 }

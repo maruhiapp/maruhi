@@ -398,7 +398,7 @@ function renderMirrorSyncRejected(error: MirrorSyncRejectedError): string {
     case "audit-regression":
       return "The mirror refused the replica: its audit log is behind the one the mirror last replicated (audit-regression). The export came from an older state than the last sync — re-run against the current server";
     case "audit-not-extension":
-      return "The mirror refused the replica: its audit log is not the one the mirror last replicated (audit-not-extension — the cumulative hash at the replicated position differs). The server's log was rewritten or restored from another copy; investigate before relying on either side";
+      return "The mirror refused the replica: its audit log is not the one the mirror last replicated (audit-not-extension — a row at or below the replicated position is missing or differs). A mirror that itself syncs cannot be a source (its own rows are renumbered at every commit): re-point this mirror at the primary; if the server is the primary, its log was rewritten or restored from another copy — investigate before relying on either side";
     case "sequence-mismatch":
       return "The mirror refused a page as out of sequence (sequence-mismatch) — another sync is running against the same mirror, or a page was lost. Re-run `maruhi mirror sync`";
     case "schema-mismatch":

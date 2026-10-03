@@ -171,12 +171,14 @@ async function captureScript(input: CaptureInput): Promise<CaptureOutcome> {
     postExitBytes: 0,
     stdoutClosedAtMs: null,
     leftover: false,
+    stopped: false,
   };
   const out = (child.stdout as ReadableStream<Uint8Array>).getReader();
   const err = (child.stderr as ReadableStream<Uint8Array>).getReader();
   const stopPastCap = (bytes: Uint8Array | null) => {
     watch.stdoutClosedAtMs = Date.now();
     if (bytes === null && watch.exitedAtMs === null) {
+      watch.stopped = true;
       // A stdout past the cap is never the value: the script is stopped
       // the moment it is passed (D-6). A flooded stderr is only dropped —
       // the script may have created the credential already and be about
@@ -254,6 +256,8 @@ interface ScriptWatch {
   stdoutClosedAtMs: number | null;
   /** Whether a pipe was still open at the end of the grace (a process the script left behind). */
   leftover: boolean;
+  /** Whether maruhi stopped the script (a stdout past the cap while it ran). */
+  stopped: boolean;
 }
 
 /**
@@ -270,31 +274,47 @@ function judgeCapture(
     readonly exitCode: number;
   },
 ): CaptureOutcome {
-  const closedAtOnce =
-    watch.exitedAtMs !== null &&
-    watch.stdoutClosedAtMs !== null &&
-    watch.stdoutClosedAtMs - watch.exitedAtMs <= SCRIPT_SETTLE_MS;
-  if (watch.postExitBytes > 0 && (read.stdout === null || !closedAtOnce)) {
+  if (watch.stopped) {
+    throw new ScriptStoppedError(
+      `${name} wrote more than ${MAX_SCRIPT_STREAM_MIB} MiB to stdout (a credential is small; commentary belongs on stderr): it was stopped and nothing it wrote was read`,
+    );
+  }
+  // A script that failed on its own reports its own failure (exit code and
+  // stderr); what a leftover wrote is moot since nothing is pushed (D-15)
+  if (read.exitCode === 0 && leftoverWrote(watch, read.stdout)) {
     throw new ScriptLeftoverError(
       read.exitCode,
       `${name} exited (code ${read.exitCode}) while a process it started kept writing to its stdout: the answer cannot be told from that output. Redirect that process's output in the script (\`>/dev/null 2>&1\`)`,
     );
   }
-  if (read.stdout === null) {
-    throw new ScriptStoppedError(
-      `${name} wrote more than ${MAX_SCRIPT_STREAM_MIB} MiB to stdout (a credential is small; commentary belongs on stderr): it was stopped and nothing it wrote was read`,
-    );
-  }
-  // A flooded stderr is dropped whole, never cut (a cut before the
-  // connector's scrubbing could split a secret across the cut — D-9)
+  // A stdout past the cap after a non-zero self-exit is a leftover's; the
+  // script's own report is what matters
+  return {
+    exitCode: read.exitCode,
+    stdout: read.stdout ?? new Uint8Array(0),
+    stderr: stderrText(read.stderrBytes, watch.leftover),
+  };
+}
+
+/** Whether bytes reached stdout after the script exited that are not its own flushed tail (the pipe did not close at once, or the cap was passed). */
+function leftoverWrote(watch: ScriptWatch, stdout: Uint8Array | null): boolean {
+  const closedAtOnce =
+    watch.exitedAtMs !== null &&
+    watch.stdoutClosedAtMs !== null &&
+    watch.stdoutClosedAtMs - watch.exitedAtMs <= SCRIPT_SETTLE_MS;
+  return watch.postExitBytes > 0 && (stdout === null || !closedAtOnce);
+}
+
+/** The stderr text: a flooded stderr is dropped whole, never cut (a cut before the connector's scrubbing could split a secret — D-9); a pipe held past the grace is said. */
+function stderrText(bytes: Uint8Array | null, leftover: boolean): string {
   const stderr =
-    read.stderrBytes === null
+    bytes === null
       ? `(the script wrote more than ${MAX_SCRIPT_STREAM_MIB} MiB to stderr; none of it is shown)`
-      : new TextDecoder().decode(read.stderrBytes);
-  const held = watch.leftover
+      : new TextDecoder().decode(bytes);
+  const held = leftover
     ? `\n(a process the script started still held its output ${SCRIPT_GRACE_MS / 1000} s after the script exited; what it wrote later was not read)`
     : "";
-  return { exitCode: read.exitCode, stdout: read.stdout, stderr: `${stderr}${held}` };
+  return `${stderr}${held}`;
 }
 
 /** How long after the script exited (or was told to stop) its pipes may stay open before they are closed (and a stop escalated). */

@@ -21,8 +21,10 @@ import { Schema } from "effect";
  *   does not decode, a hash or a canonical size that does not match its
  *   entry, a signature or a rule the chain verifier refuses)
  * - `audit-not-extension` — the replica's audit log is not the one the
- *   mirror last replicated (its cumulative hash at the replicated position
- *   differs — the rows the mirror served are never rewritten)
+ *   mirror last replicated: a row at or below the replicated position is
+ *   missing or differs (the rows the mirror served are never rewritten);
+ *   mirrors sync from the primary — a mirror that syncs cannot be a
+ *   source, since its own rows are renumbered at every commit
  * - `audit-regression` — the replica's audit log is behind the one the
  *   mirror last replicated
  * - `page-too-large` — more rows or bytes than one page may carry

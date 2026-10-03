@@ -58,7 +58,12 @@ import {
   token,
   VAR,
 } from "./support/data-scenario.ts";
-import { queryProjectDo, readAuditEvents, resetProjectDo } from "./support/project-do.ts";
+import {
+  evictProjectDo,
+  queryProjectDo,
+  readAuditEvents,
+  resetProjectDo,
+} from "./support/project-do.ts";
 
 registerDataScenario();
 
@@ -694,6 +699,20 @@ describe("project import (the restore job with identitiesKey)", () => {
     expect(JSON.stringify(outcome)).not.toContain(projectId);
   });
 
+  /** The triggers a snapshot table carries: the three of step 7 on a tracked one, step 9's on the audit log, none elsewhere. */
+  function expectedTriggers(table: string): string[] {
+    if (isMutationTracked(table)) {
+      return [`mutation_${table}_delete`, `mutation_${table}_insert`, `mutation_${table}_update`];
+    }
+    return table === "audit_events" ? ["mutation_audit_events_write"] : [];
+  }
+
+  /** The mutation counter's current value. */
+  async function counterSeq(): Promise<number> {
+    const rows = await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1");
+    return Number(rows[0]?.["seq"]);
+  }
+
   it("the mutation counter is the schema's: every tracked snapshot table carries the three triggers and a direct row change moves it", async () => {
     await seedProjectActivity();
     for (const table of PROJECT_DO_TABLES) {
@@ -702,13 +721,7 @@ describe("project import (the restore job with identitiesKey)", () => {
         "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? ORDER BY name",
         table,
       );
-      expect(triggers.map((row) => row["name"])).toEqual(
-        isMutationTracked(table)
-          ? [`mutation_${table}_delete`, `mutation_${table}_insert`, `mutation_${table}_update`]
-          : table === "audit_events"
-            ? ["mutation_audit_events_write"]
-            : [],
-      );
+      expect(triggers.map((row) => row["name"])).toEqual(expectedTriggers(table));
     }
     // No other table carries a trigger (step 7 goes on the declared tables only — ruling C revision, round 5)
     const triggered = await queryProjectDo(
@@ -720,14 +733,10 @@ describe("project import (the restore job with identitiesKey)", () => {
         .map((row) => String(row["tbl_name"]))
         .every((table) => PROJECT_DO_TABLES.includes(table)),
     ).toBe(true);
-    const before = Number(
-      (await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1"))[0]?.["seq"],
-    );
+    const before = await counterSeq();
     // A change by a path no entry point knows about (a raw statement) still moves it
     await queryProjectDo(projectId, "UPDATE variables SET name = name");
-    const after = Number(
-      (await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1"))[0]?.["seq"],
-    );
+    const after = await counterSeq();
     expect(after).toBeGreaterThan(before);
     // A write-class audit row (a dismissal's only effect) moves it; a
     // read-path row does not (ruling C revision, round 6)
@@ -739,30 +748,31 @@ describe("project import (the restore job with identitiesKey)", () => {
         rowId,
       );
     await auditRow("rotation.dismissed", "ff".repeat(16));
-    const afterWrite = Number(
-      (await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1"))[0]?.["seq"],
-    );
+    const afterWrite = await counterSeq();
     expect(afterWrite).toBe(after + 1);
     await auditRow("var.read", "fe".repeat(16));
-    expect(
-      Number(
-        (await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1"))[0]?.[
-          "seq"
-        ],
-      ),
-    ).toBe(afterWrite);
+    expect(await counterSeq()).toBe(afterWrite);
+    // The trigger's deny list is re-asserted at every open (ruling C
+    // revision, round 7): a deployed trigger naming fewer read-path rows is
+    // re-created with the list the code carries
+    await queryProjectDo(projectId, "DROP TRIGGER mutation_audit_events_write");
+    await queryProjectDo(
+      projectId,
+      "CREATE TRIGGER mutation_audit_events_write AFTER INSERT ON audit_events WHEN NEW.event NOT IN ('var.read') BEGIN INSERT INTO mutation_state (id, seq) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET seq = seq + 1; END",
+    );
+    await evictProjectDo(projectId);
+    const reasserted = await queryProjectDo(
+      projectId,
+      "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'mutation_audit_events_write'",
+    );
+    expect(String(reasserted[0]?.["sql"])).toContain("'server.lease_issued'");
+    expect(String(reasserted[0]?.["sql"])).toContain("'project.exported'");
     // … while the bounded and drift tables do not
     await queryProjectDo(
       projectId,
       "INSERT INTO lease_windows (kind, window_start, count) VALUES ('issued', 1, 1)",
     );
-    expect(
-      Number(
-        (await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1"))[0]?.[
-          "seq"
-        ],
-      ),
-    ).toBe(afterWrite);
+    expect(await counterSeq()).toBe(afterWrite);
   });
 
   it("refuses a companion read at another chain head than the file's, and accepts a re-run under a co-owner's project row", async () => {

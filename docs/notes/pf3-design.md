@@ -231,3 +231,13 @@ for round 6.
 
 Rulings C and J received adopted candidates in this round and stay open
 for round 7; D, H and I are closed.
+
+### 8-6. Round 7 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (consistency) | C-18 (latent, structural): the trigger's deny list is baked into its SQL at apply time, so a read-path row added later (the spec already reserves `server.value_decrypted`) would never reach a deployed DO — every such read would restart exports there, the regression C-9 removed, silently in CI | **Adopted** — the trigger is derived schema, re-created at every open when its stored text no longer names the list the code carries; step 9 stays the creator on a fresh DO. Considered, not adopted: a table-name cursor (reachable only by violating the append-only rule) |
+| J (switch-over) | J-16 (a bug in J-15): the check compared two uploader-supplied values — a replica that rewrote a row at or below the position while carrying the column untouched passed, and an absent column row disabled the next check; J-17: the check requires a prefix-stable source, which a mirror that itself syncs is not (its own rows are renumbered at every commit) | **J-16 adopted** — the live rows at or below the position are compared with the staged log row for row (the mirror's own accepted evidence, not an uploaded value); the hash stays as a first check. **J-17 adopted** as documentation: mirrors sync from the primary (a star); a frozen former primary is a source only until it first syncs back; the refusal names the re-point |
+
+Rulings C and J received adopted candidates in this round and stay open
+for round 8; D, H and I are closed.

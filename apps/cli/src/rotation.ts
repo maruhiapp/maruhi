@@ -424,7 +424,8 @@ export interface RotationListOptions {
 
 interface VerdictInput {
   readonly options: RotationListOptions;
-  readonly flagCount: number;
+  /** null = the flags could not be read (an unknown part — A-16). */
+  readonly flagCount: number | null;
   readonly due: readonly DueRow[];
   readonly pending: PendingProposals;
   readonly nowMs: number;
@@ -432,7 +433,7 @@ interface VerdictInput {
 
 /** `--fail-on-flags`: the active flags. */
 function flagsReason(input: VerdictInput): string | null {
-  return input.options.failOnFlags === true && input.flagCount > 0
+  return input.options.failOnFlags === true && input.flagCount !== null && input.flagCount > 0
     ? `${countNoun(input.flagCount, "rotation flag")} active`
     : null;
 }
@@ -536,90 +537,102 @@ function reportPendingProposals(
   });
 }
 
-/** What a check could not read (an unknown age, an unknown proposal list): a check cannot PASS on it. */
+/** What a check could not read (an unknown age, an unknown proposal list, the flags): a check cannot PASS on it. */
 function unknownParts(
   options: RotationListOptions,
   due: ExpiringRows,
   pending: PendingProposals,
+  /** The flags, or why they could not be read. */
+  flags: readonly unknown[] | string,
 ): readonly string[] {
   return [
-    ...(options.failOnDue === true && due.listUnreadable !== null
-      ? [`the environment list could not be read (${due.listUnreadable})`]
+    ...(options.failOnFlags === true && typeof flags === "string"
+      ? [`the rotation flags could not be read (${flags})`]
       : []),
-    ...(options.failOnDue === true && due.unreadable.length > 0
-      ? [
-          `the history of ${countNoun(due.unreadable.length, "value")} could not be read (${due.unreadable.map(displayText).join(", ")})`,
-        ]
-      : []),
-    ...(options.failOnDue === true && due.unreadableEnvironments.length > 0
-      ? [
-          `the expiring values of ${countNoun(due.unreadableEnvironments.length, "environment")} could not be listed (${due.unreadableEnvironments.map(displayText).join(", ")})`,
-        ]
-      : []),
+    ...(options.failOnDue === true ? dueUnknownParts(due) : []),
     ...(options.failOnPending === true && pending.unknown !== null
       ? [`the pending proposals are unknown: ${pending.unknown}`]
       : []),
   ];
 }
 
-export function rotationListOp(
-  context: ProjectContextBase,
-  options: RotationListOptions = {},
-): Effect.Effect<number, CliError, CliServices> {
+/** The parts of the max-age walk a `--fail-on-due` check could not cover. */
+function dueUnknownParts(due: ExpiringRows): readonly string[] {
+  return [
+    ...(due.listUnreadable === null
+      ? []
+      : [`the environment list could not be read (${due.listUnreadable})`]),
+    ...(due.unreadable.length === 0
+      ? []
+      : [
+          `the history of ${countNoun(due.unreadable.length, "value")} could not be read (${due.unreadable.map(displayText).join(", ")})`,
+        ]),
+    ...(due.unreadableEnvironments.length === 0
+      ? []
+      : [
+          `the expiring values of ${countNoun(due.unreadableEnvironments.length, "environment")} could not be listed (${due.unreadableEnvironments.map(displayText).join(", ")})`,
+        ]),
+  ];
+}
+
+/**
+ * The fail-on verdict that closes the listing (after everything was
+ * shown): something known due is due whatever else could not be read —
+ * exit 3 routes it to "rotate now" rather than to "the check is broken"
+ * (A-10), the unread part riding along on the same line; nothing known
+ * due and something unknown is a failed check (exit 1), not "nothing is
+ * due".
+ */
+function concludeListing(input: {
+  readonly options: RotationListOptions;
+  readonly flags: readonly unknown[] | string;
+  readonly nowMs: number;
+  readonly due: ExpiringRows;
+  readonly pending: PendingProposals;
+}): Effect.Effect<number, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const nowMs = options.nowMs ?? Date.now();
-    const windowDays = options.dueWithinDays ?? 0;
-    const config = yield* checklistConfig(context.projectId);
-    const flags = yield* fetchRotationFlags(context.client, context.projectId);
-    // The fail-on verdict closes the listing (after everything was shown)
-    const conclude = (due: ExpiringRows, pending: PendingProposals) =>
-      Effect.gen(function* () {
-        const unknown = unknownParts(options, due, pending);
-        const verdict = dueVerdict({
-          options,
-          flagCount: flags.length,
-          due: due.rows,
-          pending,
-          nowMs,
-        });
-        // Something known due is due whatever else could not be read: exit 3
-        // routes it to "rotate now" rather than to "the check is broken"
-        // (A-10); the unread part rides along on the same line
-        if (verdict !== null) {
-          yield* io.logError(
-            `Rotation due (exit ${ROTATION_DUE_EXIT_CODE}): ${verdict}${unknown.length === 0 ? "" : `; also ${unknown.join("; ")}`}. Rotate and push the new values, or run \`maruhi rotation dismiss\` for a flag you accept`,
-          );
-          return ROTATION_DUE_EXIT_CODE;
-        }
-        if (unknown.length > 0) {
-          // Nothing known due and something unknown: a failed check (exit
-          // 1), not "nothing is due"
-          return yield* Effect.fail(
-            cliError(`Cannot judge the check: ${unknown.join("; ")}; it did not run to completion`),
-          );
-        }
-        return 0;
-      });
-    if (flags.length === 0) {
-      yield* io.log("No rotation flags are currently active");
-      const due = yield* reportExpiringValues(context, config, nowMs, windowDays);
-      const pending = yield* reportPendingProposals(context);
-      return yield* conclude(due, pending);
+    const { options, flags, due, pending } = input;
+    const unknown = unknownParts(options, due, pending, flags);
+    const verdict = dueVerdict({
+      options,
+      flagCount: typeof flags === "string" ? null : flags.length,
+      due: due.rows,
+      pending,
+      nowMs: input.nowMs,
+    });
+    if (verdict !== null) {
+      yield* io.logError(
+        `Rotation due (exit ${ROTATION_DUE_EXIT_CODE}): ${verdict}${unknown.length === 0 ? "" : `; also ${unknown.join("; ")}`}. Rotate and push the new values, or run \`maruhi rotation dismiss\` for a flag you accept`,
+      );
+      return ROTATION_DUE_EXIT_CODE;
     }
-    const environmentIds = [...new Set(flags.map((flag) => flag.environmentId))].toSorted();
-    const states = yield* resolveVariableStates(context, environmentIds);
-    yield* io.log(
-      `Rotation flags: ${countNoun(flags.length, "active flag")} (upstream credential rotation recommended — AUDIT_SPEC §4.1)`,
-    );
-    for (const environmentId of environmentIds) {
+    if (unknown.length > 0) {
+      return yield* Effect.fail(
+        cliError(`Cannot judge the check: ${unknown.join("; ")}; it did not run to completion`),
+      );
+    }
+    return 0;
+  });
+}
+
+/** The flag rows per environment: the name when the verified metadata gives it, the basis, the target, the trigger, and the next step. */
+function printFlagRows(input: {
+  readonly flags: readonly RotationFlagView[];
+  readonly environmentIds: readonly string[];
+  readonly states: ReadonlyMap<string, StateIndex>;
+  readonly config: RotateConfig | null;
+}): Effect.Effect<void, never, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    for (const environmentId of input.environmentIds) {
       yield* io.log(`Environment ${displayText(environmentId)}:`);
-      const index = states.get(environmentId);
+      const index = input.states.get(environmentId);
       // Display order is detection time → (for the same time
       // within one sweep) a stable sort by variableId. The audit
       // seq does not go on the wire (AUDIT_SPEC §7 — non-leakage
       // of the ordinal)
-      const rows = flags
+      const rows = input.flags
         .filter((flag) => flag.environmentId === environmentId)
         .toSorted(
           (a, b) =>
@@ -641,10 +654,49 @@ export function rotationListOp(
           `  ${label}\tbasis=${describeBasis(flag.basis)}\ttarget=${describeTarget(flag)}\ttrigger seq=${flag.triggerChainSeq}${reopened}`,
         );
         yield* io.log(
-          `    next: ${rotationAction({ environmentId, variableId: flag.variableId, state, config })}`,
+          `    next: ${rotationAction({ environmentId, variableId: flag.variableId, state, config: input.config })}`,
         );
       }
     }
+  });
+}
+
+export function rotationListOp(
+  context: ProjectContextBase,
+  options: RotationListOptions = {},
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const nowMs = options.nowMs ?? Date.now();
+    const windowDays = options.dueWithinDays ?? 0;
+    const config = yield* checklistConfig(context.projectId);
+    // A failed flags read is one unknown part, not an outage of the whole
+    // check: the due walk and the pending read go on, a known due value is
+    // still exit 3 (A-16 — A-10's rule applied to the flags)
+    const flags = yield* fetchRotationFlags(context.client, context.projectId).pipe(
+      Effect.catch((error) =>
+        Effect.as(
+          logNote(`could not read the rotation flags (${error.message}) — they are not shown`),
+          error.message,
+        ),
+      ),
+    );
+    const conclude = (due: ExpiringRows, pending: PendingProposals) =>
+      concludeListing({ options, flags, nowMs, due, pending });
+    if (typeof flags === "string" || flags.length === 0) {
+      if (typeof flags !== "string") {
+        yield* io.log("No rotation flags are currently active");
+      }
+      const due = yield* reportExpiringValues(context, config, nowMs, windowDays);
+      const pending = yield* reportPendingProposals(context);
+      return yield* conclude(due, pending);
+    }
+    const environmentIds = [...new Set(flags.map((flag) => flag.environmentId))].toSorted();
+    const states = yield* resolveVariableStates(context, environmentIds);
+    yield* io.log(
+      `Rotation flags: ${countNoun(flags.length, "active flag")} (upstream credential rotation recommended — AUDIT_SPEC §4.1)`,
+    );
+    yield* printFlagRows({ flags, environmentIds, states, config });
     yield* io.log(
       "To resolve: rotate the upstream credential and save the new value with `maruhi push` after the environment's mandated rotation (a value pushed before it is still under a key the former holder has; the re-encryption alone does not resolve a flag, and rolling back to a value they could read re-opens it). For pairs that cannot be pushed (e.g. deleted variables), dismiss the flag with `maruhi rotation dismiss` as an explicit acceptance of risk (admin)",
     );

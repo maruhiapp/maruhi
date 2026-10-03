@@ -499,17 +499,45 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
   {
     tables: [],
     apply(sql) {
-      sql.exec(
-        `CREATE TRIGGER IF NOT EXISTS mutation_audit_events_write AFTER INSERT ON audit_events
-         WHEN NEW.event NOT IN (${READ_PATH_AUDIT_EVENTS.map((event) => `'${event}'`).join(", ")})
-         BEGIN
-           INSERT INTO mutation_state (id, seq) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET seq = seq + 1;
-         END`,
-      );
+      sql.exec(auditWriteTrigger());
       sql.exec("ALTER TABLE mirror_state ADD COLUMN last_audit_head_hash_hex TEXT");
     },
   },
 ];
+
+const AUDIT_WRITE_TRIGGER = "mutation_audit_events_write";
+
+/** The read-path deny list as the trigger's SQL carries it. */
+function readPathList(): string {
+  return READ_PATH_AUDIT_EVENTS.map((event) => `'${event}'`).join(", ");
+}
+
+/** Step 9's trigger (also re-asserted at every open — {@link ensureAuditWriteTrigger}). */
+function auditWriteTrigger(): string {
+  return `CREATE TRIGGER IF NOT EXISTS ${AUDIT_WRITE_TRIGGER} AFTER INSERT ON audit_events
+         WHEN NEW.event NOT IN (${readPathList()})
+         BEGIN
+           INSERT INTO mutation_state (id, seq) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET seq = seq + 1;
+         END`;
+}
+
+/**
+ * The deny list is baked into the trigger's SQL at apply time, so an
+ * event added to {@link READ_PATH_AUDIT_EVENTS} later would never reach a
+ * DO that already applied step 9 — and every such read would restart
+ * exports there. A trigger carries no data: it is derived schema,
+ * re-created whenever its stored text no longer names the list the code
+ * does (ruling C revision, round 7). Step 9 stays the creator on a fresh DO.
+ */
+function ensureAuditWriteTrigger(sql: SqlStorage): void {
+  const row = sql
+    .exec("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?", AUDIT_WRITE_TRIGGER)
+    .toArray()[0];
+  if (row === undefined || !String(row["sql"]).includes(`NOT IN (${readPathList()})`)) {
+    sql.exec(`DROP TRIGGER IF EXISTS ${AUDIT_WRITE_TRIGGER}`);
+    sql.exec(auditWriteTrigger());
+  }
+}
 
 /**
  * The audit rows a read appends (AUDIT_SPEC §3.3): they do not restart an
@@ -646,4 +674,5 @@ export function applyProjectDoMigrations(
 /** Called from the DO constructor (idempotent). Applies only the not-yet-applied steps in order. */
 export function ensureProjectDoTables(storage: DurableObjectStorage): void {
   applyProjectDoMigrations(storage, PROJECT_DO_MIGRATIONS);
+  ensureAuditWriteTrigger(storage.sql);
 }

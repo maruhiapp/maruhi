@@ -669,7 +669,10 @@ maruhi mirror mark --server https://mirror.example.com --project <project-id> --
 From this point the project on your deployment refuses writes
 (`Forbidden (mirror-read-only)`) and shows the mark in `maruhi mirror status`.
 
-**2. Keep it current** — any admin runs, by hand or from a cron:
+**2. Keep it current** — any admin runs, by hand or from a cron (always
+from the primary: mirrors form a star, since a mirror that itself syncs
+renumbers its own audit rows at every commit and cannot be another mirror's
+source; a frozen former primary is a source only until it first syncs back):
 
 ```sh
 maruhi mirror sync --server https://my.maruhi.app --mirror https://mirror.example.com --project <project-id>

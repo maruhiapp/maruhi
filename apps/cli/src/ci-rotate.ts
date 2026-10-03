@@ -47,7 +47,7 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import type { VerifiedLeaseMaterial } from "./lease-client.ts";
-import { fetchGitHubOidcToken, tokenExpiresAtMs } from "./oidc-github.ts";
+import { fetchGitHubOidcToken, issuanceBoundFor, tokenExpiresAtMs } from "./oidc-github.ts";
 import type { DecryptedVariable } from "./pull.ts";
 import { type RotateConfig, type RotateRule, ruleFor } from "./rotate-config.ts";
 import {
@@ -97,6 +97,8 @@ export interface CiRotateResult {
   readonly facts: readonly string[];
   /** The primary's shape, shown locally only (never a proposal fact — D-8). */
   readonly valueShape: string;
+  /** The current primary's shape, beside the new one (D-16). */
+  readonly currentShape: string;
   readonly previous: string;
   /** The expiry the server set (the receipt — the lifetime travels as days). */
   readonly expiresAtMs: number;
@@ -549,6 +551,7 @@ export function ciRotateOp(
       recipientMembers: new Set(minted.recipients.map((recipient) => recipient.member.userId)).size,
       facts: outcome.facts,
       valueShape: outcome.valueShape,
+      currentShape: outcome.currentShape,
       previous: outcome.previous,
       expiresAtMs: minted.expiresAtMs,
       resealed: minted.resealed,
@@ -645,7 +648,12 @@ function mintTokenFor(
   lease: LeasedEnvironments,
   outcome: RotationOutcome,
 ): Effect.Effect<Redacted.Redacted<string>, CliError, CliIo> {
-  return fetchGitHubOidcToken(input.audience).pipe(
+  // The fetch's bound follows the lease token's life (O-18): a hung
+  // endpoint must not eat the fallback to a token that still lives
+  return fetchGitHubOidcToken(
+    input.audience,
+    issuanceBoundFor(lease.credential.token, (input.now ?? Date.now)()),
+  ).pipe(
     Effect.catch((error) =>
       Effect.gen(function* () {
         const io = yield* CliIo;
@@ -674,7 +682,7 @@ export function describeProposal(result: CiRotateResult, environmentId: string):
   return [
     `Sealed proposal ${result.proposalId} stored for environment ${displayText(environmentId)}: ${names.join(", ")} — minted with the ${result.connector} connector, sealed to ${countNoun(result.recipientDevices, "device")} of ${countNoun(result.recipientMembers, "member")}, expires ${formatUtcDate(result.expiresAtMs)}`,
     ...result.facts.map((fact) => `  ${fact}`),
-    `  value: ${result.valueShape} (the shape is shown here and at the acceptance only; it is not stored with the proposal)`,
+    `  value: ${result.valueShape} (the current value: ${result.currentShape}; the shape is shown here and at the acceptance only; it is not stored with the proposal)`,
     ...(result.resealed
       ? [
           "The proposal was sealed a second time: the members or devices changed after the lease, so the recipients were taken from the current chain",
