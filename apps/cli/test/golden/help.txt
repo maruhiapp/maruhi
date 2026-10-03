@@ -370,6 +370,7 @@ FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
   --source string     URL of the deployment this project mirrors (required)
+  --force             Mark even though this project's chain is not part of the source's (a mirror that can never be synced)
 
 GLOBAL FLAGS
   --help, -h       Show help information
