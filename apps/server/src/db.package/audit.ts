@@ -347,7 +347,7 @@ async function selectAuditPage(
  * into a cost amplifier. Window reset, increment, and cap judgment are
  * folded into one conditional UPSERT statement, and the decision is
  * derived from RETURNING's new counts (the same shape as the recovery
- * fetch count — repos.ts). The counter table loginFailedWindows is shared
+ * fetch count — recovery.ts). The counter table loginFailedWindows is shared
  * (bucketKey separates the namespaces — it is mutable state, not an audit
  * row; the table name is the historical name of the introducing event).
  */
