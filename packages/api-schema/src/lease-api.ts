@@ -169,11 +169,13 @@ export const RotationPreflightRequestSchema = Schema.Struct({
    * The recipient set the job will seal to (public chain facts — user id
    * and device enc public key), checked against W(E) before the issuer is
    * touched (ruling O revision, round 4); the mint repeats the check on
-   * the wraps. Bounded by the §12-8 device cap times the member cap.
+   * the wraps. W(E) is bounded by the chain's capacity, not by a member
+   * cap; the bound is the §12-8 DEK-wrap row cap, set above that for the
+   * same reason (the mint's wraps carry the same set).
    */
   recipients: Schema.optionalKey(
     Schema.Array(Schema.Struct({ userId: BoundedUserId, encPubHex: EncPubHex })).check(
-      Schema.isMaxLength(4096),
+      Schema.isMaxLength(10_000),
     ),
   ),
 });

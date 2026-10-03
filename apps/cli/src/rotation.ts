@@ -21,6 +21,7 @@
 
 import type { RotationProposal } from "@maruhi/api-schema";
 import { RotationFlagNotFoundError } from "@maruhi/api-schema";
+import { scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -47,6 +48,7 @@ import {
   type RotateConfig,
   ruleFor,
 } from "./rotate-config.ts";
+import { verifiedDeletedEnvironmentSet } from "./rotation-sweep.ts";
 import { pullVerifiedEnvironmentMetadata, type VerifiedEnvironmentMetadata } from "./values.ts";
 
 /** One flag of the derived view (the received form of api-schema's RotationFlagSchema). */
@@ -170,16 +172,73 @@ export function resolveVariableStates(
  * push time is the history's server-declared `pushedAtMs` (advisory). A
  * declared variable with no value has no age.
  */
+/** The expiring values plus what the walk could not cover (every part a check cannot pass on). */
+interface ExpiringRows extends DueRows {
+  /** Why the environment list could not be read (deleted environments then cannot be told apart — A-13); null when it was. */
+  readonly listUnreadable: string | null;
+  /** The environments outside the caller's scope (not checked — a scoped member's check is partial by construction, A-14). */
+  readonly outOfScope: readonly string[];
+}
+
+/**
+ * The environments to walk: the chain's set minus the ones verified as
+ * deleted (an environment's deletion is a signed data-plane statement, not
+ * a chain op — a deleted one stays in the chain's set forever, and its
+ * metadata pull answers not-found; A-13) and minus the ones outside the
+ * caller's scope (named, not fetched — A-14). A failed list read is
+ * reported as such and the walk goes on with the chain's set.
+ */
+function environmentsToWalk(
+  context: ProjectContextBase,
+): Effect.Effect<
+  {
+    readonly ids: readonly string[];
+    readonly listUnreadable: string | null;
+    readonly outOfScope: readonly string[];
+  },
+  never,
+  CliServices
+> {
+  return Effect.gen(function* () {
+    const listed = yield* verifiedDeletedEnvironmentSet(context.client, context.verified).pipe(
+      Effect.map((deleted) => ({ deleted, failure: null })),
+      Effect.catch((error: CliError) =>
+        Effect.as(
+          logNote(
+            `could not read the environment list (${error.message}) — deleted environments are not told apart from unreadable ones`,
+          ),
+          { deleted: new Set<string>(), failure: error.message },
+        ),
+      ),
+    );
+    const self = context.verified.state.members.get(context.session.userId);
+    const ids: string[] = [];
+    const outOfScope: string[] = [];
+    for (const environmentId of [...context.verified.state.environments.keys()].toSorted()) {
+      if (listed.deleted.has(environmentId)) {
+        continue;
+      }
+      if (self !== undefined && !scopeIncludesEnvironment(self.scope, environmentId)) {
+        outOfScope.push(environmentId);
+        continue;
+      }
+      ids.push(environmentId);
+    }
+    return { ids, listUnreadable: listed.failure, outOfScope };
+  });
+}
+
 function expiringValues(
   context: ProjectContextBase,
   nowMs: number,
   windowDays: number,
-): Effect.Effect<DueRows, never, CliServices> {
+): Effect.Effect<ExpiringRows, never, CliServices> {
   return Effect.gen(function* () {
     const rows: DueRow[] = [];
     const unreadable: string[] = [];
     const unreadableEnvironments: string[] = [];
-    for (const environmentId of [...context.verified.state.environments.keys()].toSorted()) {
+    const walk = yield* environmentsToWalk(context);
+    for (const environmentId of walk.ids) {
       const metadata = yield* verifiedMetadataOrNote(
         context,
         environmentId,
@@ -212,6 +271,8 @@ function expiringValues(
       rows: rows.toSorted((a, b) => a.dueAtMs - b.dueAtMs || a.name.localeCompare(b.name)),
       unreadable,
       unreadableEnvironments,
+      listUnreadable: walk.listUnreadable,
+      outOfScope: walk.outOfScope,
     };
   });
 }
@@ -222,7 +283,7 @@ function reportExpiringValues(
   config: RotateConfig | null,
   nowMs: number,
   windowDays: number,
-): Effect.Effect<DueRows, never, CliServices> {
+): Effect.Effect<ExpiringRows, never, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const due = yield* expiringValues(context, nowMs, Math.max(windowDays, DUE_SOON_DAYS));
@@ -494,10 +555,18 @@ function reportPendingProposals(
 /** What a check could not read (an unknown age, an unknown proposal list): a check cannot PASS on it. */
 function unknownParts(
   options: RotationListOptions,
-  due: DueRows,
+  due: ExpiringRows,
   pending: PendingProposals,
 ): readonly string[] {
   return [
+    ...(options.failOnDue === true && due.listUnreadable !== null
+      ? [`the environment list could not be read (${due.listUnreadable})`]
+      : []),
+    ...(options.failOnDue === true && due.outOfScope.length > 0
+      ? [
+          `the environments outside your scope are not checked (${due.outOfScope.map(displayText).join(", ")}); run it with a member whose scope covers every environment`,
+        ]
+      : []),
     ...(options.failOnDue === true && due.unreadable.length > 0
       ? [
           `the history of ${countNoun(due.unreadable.length, "value")} could not be read (${due.unreadable.map(displayText).join(", ")})`,
@@ -525,7 +594,7 @@ export function rotationListOp(
     const config = yield* checklistConfig(context.projectId);
     const flags = yield* fetchRotationFlags(context.client, context.projectId);
     // The fail-on verdict closes the listing (after everything was shown)
-    const conclude = (due: DueRows, pending: PendingProposals) =>
+    const conclude = (due: ExpiringRows, pending: PendingProposals) =>
       Effect.gen(function* () {
         const unknown = unknownParts(options, due, pending);
         const verdict = dueVerdict({

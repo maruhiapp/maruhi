@@ -663,9 +663,14 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
   });
 
   it("re-leases and re-seals once when the recipients changed between the lease and the mint", async () => {
-    // The tokens carry an expiry (as GitHub's do): the re-lease may present
-    // the lease's own token while it is unexpired
-    const fixture = await startCi(EXEC_RULE, { expSeconds: Math.floor(Date.now() / 1000) + 600 });
+    // The tokens carry an expiry (as GitHub's do): the re-lease presents
+    // the newest token the job holds for the lease's key while it is
+    // unexpired. The issuance endpoint stops answering after the mint's
+    // token (jti 2): the recovery still goes through on that token (O-15)
+    const fixture = await startCi(EXEC_RULE, {
+      expSeconds: Math.floor(Date.now() / 1000) + 600,
+      failAfter: 2,
+    });
     fixture.minted.rejectOnce = {
       status: 422,
       json: { _tag: "RotationProposalRejected", reason: "recipients-mismatch" },
@@ -675,12 +680,15 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expect(fixture.env.captureCalls).toHaveLength(1);
     expect(fixture.leased.bodies).toHaveLength(2);
     expect(fixture.minted.bodies).toHaveLength(2);
-    // The re-lease presents the lease's own token and key (unexpired —
-    // AUTH_SPEC §14-1's idempotent re-claim; O-13), so no issuance endpoint
-    // is needed for it: the lease's token is jti 1, the mint's jti 2, the
-    // second mint's jti 3 — no token between
-    expect(fixture.leased.bodies[1]).toEqual(fixture.leased.bodies[0]);
-    expect(jwtPayload(fixture.minted.bodies[1]?.oidcToken ?? "")["jti"]).toBe(3);
+    // The re-lease presents the mint's token (jti 2 — the newest) under the
+    // lease's key (AUTH_SPEC §14-1's idempotent re-claim; O-13 / O-15), and
+    // the second mint falls back to it as well (the endpoint is down)
+    expect(jwtPayload(fixture.leased.bodies[0]?.oidcToken ?? "")["jti"]).toBe(1);
+    expect(jwtPayload(fixture.leased.bodies[1]?.oidcToken ?? "")["jti"]).toBe(2);
+    expect(fixture.leased.bodies[1]?.ephemeralPubHex).toBe(
+      fixture.leased.bodies[0]?.ephemeralPubHex,
+    );
+    expect(jwtPayload(fixture.minted.bodies[1]?.oidcToken ?? "")["jti"]).toBe(2);
     expect(fixture.minted.bodies[0]?.proposal.proposalId).not.toBe(
       fixture.minted.bodies[1]?.proposal.proposalId,
     );

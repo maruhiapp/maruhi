@@ -87,9 +87,40 @@ const program = Effect.gen(function* () {
       extraEnv: {},
     }),
   );
+  // A process the script left behind holds its pipes: the capture ends
+  // after the grace with the script's own answer (D-12); a script that
+  // ignores the stop is killed after the grace (D-13)
+  const leftoverStart = Date.now();
+  const leftover = yield* Effect.promise(() =>
+    runner.captureScript({
+      command: ["sh", "-c", "sleep 20 & echo value"],
+      cwd: process.cwd(),
+      extraEnv: {},
+    }),
+  );
+  const leftoverMs = Date.now() - leftoverStart;
+  const stubbornStart = Date.now();
+  const stubborn = yield* Effect.promise(() =>
+    runner
+      .captureScript({
+        command: ["sh", "-c", "trap '' TERM; head -c 3000000 /dev/zero; sleep 20"],
+        cwd: process.cwd(),
+        extraEnv: {},
+      })
+      .then(
+        () => "unexpectedly captured",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      ),
+  );
+  const stubbornMs = Date.now() - stubbornStart;
   return {
     exitCode: outcome.exitCode,
     output: outcome.output,
+    leftoverStdout: new TextDecoder().decode(leftover.stdout),
+    leftoverStderr: leftover.stderr,
+    leftoverMs,
+    stubborn,
+    stubbornMs,
     missing,
     badCwd,
     capturedBytes: captured.stdout.length,

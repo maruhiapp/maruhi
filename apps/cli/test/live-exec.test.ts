@@ -20,6 +20,11 @@ interface ProbeResult {
   readonly flooded: string;
   readonly floodedStderr: string;
   readonly floodedStderrStdout: number;
+  readonly leftoverStdout: string;
+  readonly leftoverStderr: string;
+  readonly leftoverMs: number;
+  readonly stubborn: string;
+  readonly stubbornMs: number;
 }
 
 describe("ProcessRunner.exec (live — Bun.spawn)", () => {
@@ -63,5 +68,13 @@ describe("ProcessRunner.exec (live — Bun.spawn)", () => {
     );
     // … and the script ran on: its value arrived whole (D-10)
     expect(probe.floodedStderrStdout).toBe("value\n".length);
+    // A process the script left behind (`… &`) holds the pipes; the capture
+    // ends after the grace with the script's answer and says so (D-12)
+    expect(probe.leftoverStdout).toBe("value\n");
+    expect(probe.leftoverStderr).toContain("a process the script started still held its output");
+    expect(probe.leftoverMs).toBeLessThan(15_000);
+    // A script that ignores the stop is killed after the grace (D-13)
+    expect(probe.stubborn).toContain("wrote more than 1 MiB to stdout");
+    expect(probe.stubbornMs).toBeLessThan(15_000);
   }, 60_000);
 });

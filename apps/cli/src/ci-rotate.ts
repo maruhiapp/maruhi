@@ -486,7 +486,13 @@ export function ciRotateOp(
     const planned = yield* plannedValues(primary, rule, local, outcome);
     const io = yield* CliIo;
     const mintInput = { input, rule, planned, outcome, params };
-    const minted = yield* sealAndMint({ ...mintInput, lease: leased, recipients }).pipe(
+    const mintToken = yield* mintTokenFor(input, leased, outcome);
+    const minted = yield* sealAndMint({
+      ...mintInput,
+      lease: leased,
+      recipients,
+      token: mintToken,
+    }).pipe(
       Effect.catch((error) =>
         error instanceof RotationProposalRejectedError && error.reason === "recipients-mismatch"
           ? Effect.gen(function* () {
@@ -498,13 +504,15 @@ export function ciRotateOp(
               yield* io.logError(
                 "The project's members or devices changed after this job leased it: leasing again and sealing the proposal to the current recipients (once)",
               );
-              // Under the lease's own credential while its token lasts (a
-              // runner whose issuance endpoint stopped answering can still
-              // recover — O-13); a fresh pair otherwise
+              // Under the lease's key and the newest token the job holds
+              // for it — the mint's, minted seconds ago, else the lease's —
+              // while it lasts (a runner whose issuance endpoint stopped
+              // answering can still recover — O-13 / O-15); a fresh pair
+              // otherwise
               const again = yield* leaseEnvironmentsWithCredential({
                 ...input,
                 environmentIds: [input.environmentId],
-                credential: leased.credential,
+                credential: { ...leased.credential, token: mintToken },
               }).pipe(Effect.mapError((failure) => mintRefusal(failure, outcome)));
               const againMaterial = again.materials.get(input.environmentId);
               if (againMaterial === undefined) {
@@ -520,6 +528,7 @@ export function ciRotateOp(
                 ...mintInput,
                 lease: again,
                 recipients: againRecipients,
+                token: yield* mintTokenFor(input, again, outcome),
               }).pipe(Effect.mapError((failure) => mintRefusal(failure, outcome)));
               return { ...second, resealed: true };
             })
@@ -556,6 +565,8 @@ interface SealAndMintInput {
   readonly params: { readonly projectId: string; readonly environmentId: EnvironmentId };
   readonly lease: LeasedEnvironments;
   readonly recipients: readonly Recipient[];
+  /** The token the mint presents (minted after the connector for the lease's key — K-5; `mintTokenFor`). */
+  readonly token: Redacted.Redacted<string>;
 }
 
 interface Minted {
@@ -591,7 +602,6 @@ function sealAndMint(
         (wraps) => ({ variableId: value.variableId, baseVersion: value.baseVersion, wraps }),
       ),
     );
-    const mintToken = yield* mintTokenFor(input, lease, outcome);
     const receipt = yield* lease.client.lease
       .propose({
         params: mint.params,
@@ -599,7 +609,7 @@ function sealAndMint(
           // Why it is unwrapped: the wire boundary of the mint request (the
           // lease's ephemeral key under a token of the same workload —
           // AUTH_SPEC §14-5)
-          oidcToken: Redacted.value(mintToken),
+          oidcToken: Redacted.value(mint.token),
           ephemeralPubHex: lease.credential.ephemeralPubHex,
           proposal: {
             proposalId,

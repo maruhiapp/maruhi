@@ -185,24 +185,47 @@ async function captureScript(input: CaptureInput): Promise<CaptureOutcome> {
       { cause: error },
     );
   }
+  const timers: ReturnType<typeof setTimeout>[] = [];
   const stopPastCap = (bytes: Uint8Array | null) => {
     if (bytes === null) {
       // A stdout past the cap is never the value: the script is stopped
       // the moment it is passed (D-6). A flooded stderr is only dropped —
       // the script may have created the credential already and be about
       // to print it, and stopping it would strand the credential by
-      // maruhi's own hand (ruling D revision, round 4)
+      // maruhi's own hand (ruling D revision, round 4). A script that
+      // ignores the stop is killed after the grace (D-13)
       child.kill();
+      timers.push(setTimeout(() => child.kill("SIGKILL"), SCRIPT_GRACE_MS));
     }
     return bytes;
   };
+  const out = (child.stdout as ReadableStream<Uint8Array>).getReader();
+  const err = (child.stderr as ReadableStream<Uint8Array>).getReader();
+  // A process the script left behind (a daemon, a `… &`) that inherited
+  // its pipes would hold both reads open after the script exited — and
+  // with them the whole job, the credential it created stranded by
+  // maruhi's own wait (D-12). The script's own writes are flushed before
+  // it exits, so once it has, the reads end after a short grace
+  let leftover = false;
+  const exited = child.exited.then((code) => {
+    timers.push(
+      setTimeout(() => {
+        leftover = true;
+        void out.cancel().catch(() => undefined);
+        void err.cancel().catch(() => undefined);
+      }, SCRIPT_GRACE_MS),
+    );
+    return code;
+  });
   const [stdout, stderrBytes, exitCode] = await Promise.all([
-    readBounded(child.stdout as ReadableStream<Uint8Array>, MAX_SCRIPT_STREAM_BYTES, "cancel").then(
-      stopPastCap,
-    ),
-    readBounded(child.stderr as ReadableStream<Uint8Array>, MAX_SCRIPT_STREAM_BYTES, "drain"),
-    child.exited,
-  ]);
+    readBounded(out, MAX_SCRIPT_STREAM_BYTES, "cancel").then(stopPastCap),
+    readBounded(err, MAX_SCRIPT_STREAM_BYTES, "drain"),
+    exited,
+  ]).finally(() => {
+    for (const timer of timers) {
+      clearTimeout(timer);
+    }
+  });
   if (stdout === null) {
     throw new ScriptStoppedError(
       `${input.command[0] ?? ""} wrote more than ${MAX_SCRIPT_STREAM_MIB} MiB to stdout (a credential is small; commentary belongs on stderr): it was stopped and nothing it wrote was read`,
@@ -214,8 +237,14 @@ async function captureScript(input: CaptureInput): Promise<CaptureOutcome> {
     stderrBytes === null
       ? `(the script wrote more than ${MAX_SCRIPT_STREAM_MIB} MiB to stderr; none of it is shown)`
       : new TextDecoder().decode(stderrBytes);
-  return { exitCode, stdout, stderr };
+  const held = leftover
+    ? `\n(a process the script started still held its output ${SCRIPT_GRACE_MS / 1000} s after the script exited; what it wrote later was not read)`
+    : "";
+  return { exitCode, stdout, stderr: `${stderr}${held}` };
 }
+
+/** How long after the script exited (or was told to stop) its pipes may stay open before they are closed (and a stop escalated). */
+const SCRIPT_GRACE_MS = 3000;
 
 /** A script's stdout is a credential and its stderr a few lines of commentary: anything past this is neither (D-6 / D-9). */
 const MAX_SCRIPT_STREAM_MIB = 1;
@@ -227,11 +256,10 @@ const MAX_SCRIPT_STREAM_BYTES = MAX_SCRIPT_STREAM_MIB * 1024 * 1024;
  * or read to its end and discarded (`drain`: the writer never notices).
  */
 async function readBounded(
-  stream: ReadableStream<Uint8Array>,
+  reader: ReadableStreamDefaultReader<Uint8Array>,
   limit: number,
   pastLimit: "cancel" | "drain",
 ): Promise<Uint8Array | null> {
-  const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
   for (;;) {
