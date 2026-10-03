@@ -435,9 +435,15 @@ if (cRestore.workersDev !== false || cRestore.routes.length > 0) {
   failures.push("cf restore: must not expose a serving origin (workers.dev/route)");
 }
 expectSame("cf restore: doExports", cRestore.doExports, ["RestoreDrillDO"]);
-if (cRestore.d1 !== undefined || cRestore.doBindings["DRILL_PROJECT_CHAIN"] === undefined) {
-  failures.push("cf restore: must bind DRILL_PROJECT_CHAIN and must not bind D1");
+if (cRestore.doBindings["DRILL_PROJECT_CHAIN"] === undefined) {
+  failures.push("cf restore: must bind DRILL_PROJECT_CHAIN");
 }
+// The restore worker is also the import path (PF3 — pf3-design.md ruling H):
+// after the DO restore it provisions the imported project's rows in D1, so
+// it must bind the production database — the hosted worker's, under the same
+// binding name (`DB` in src/restore-worker.ts) and the same id. Any other
+// database would provision the import somewhere the product never reads
+expectSame("cf restore: d1 (must equal the hosted worker's)", cRestore.d1, cHosted.d1);
 
 if (failures.length > 0) {
   for (const failure of failures) {
