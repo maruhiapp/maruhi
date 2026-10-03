@@ -192,7 +192,7 @@ import {
 import { envCreateOp } from "./env-create.ts";
 import { envDiffOp, reportEnvironmentDiff } from "./env-diff.ts";
 import { envRotateOp } from "./env-rotate.ts";
-import { CliError, cliError, usageError } from "./errors.ts";
+import { CliError, cliError, evidenceError, usageError } from "./errors.ts";
 import { internalErrorKind, isNoAnswer, toCliError } from "./failure.ts";
 import { parseFingerprintFlag, parseUserFingerprintFlag } from "./fingerprint-flag.ts";
 import type { FloorHandle } from "./floor-check.ts";
@@ -241,6 +241,7 @@ import {
   mirrorStatusOp,
   mirrorSyncOp,
   replicaVerdict,
+  statusEvidence,
 } from "./mirror.ts";
 import { formatNotice, logNote, logWarning, NoticeLedger } from "./notice.ts";
 import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "./passkey.ts";
@@ -2315,6 +2316,16 @@ function mirrorStatusCommand(flags: {
     for (const line of describeMirrorStatus(status, verified, target.mirrorOrigin)) {
       yield* io.log(line);
     }
+    // Fork evidence fails the status as it fails the sync (round 11): a
+    // cron or a member's "is my mirror usable" must not read it as fine
+    const evidence = verified === null ? null : statusEvidence(status, verified);
+    if (evidence !== null) {
+      return yield* Effect.fail(
+        evidenceError(
+          `The mirror ${target.mirrorOrigin} holds a chain head that is ${evidence} — against ${flags.server ?? "the server"} and against the mirror`,
+        ),
+      );
+    }
   });
 }
 
@@ -2401,19 +2412,27 @@ function ensureMarkable(
         ),
       ),
     );
-    const refusal = source === null ? null : markRefusal(context, sourceOrigin, here, source);
-    if (refusal === null) {
+    const verdict = source === null ? null : markRefusal(context, sourceOrigin, here, source);
+    if (verdict === null) {
       return;
     }
-    if (refusal.kind === "note") {
-      yield* logNote(refusal.text);
+    if (verdict.kind === "note") {
+      yield* logNote(verdict.text);
       return;
     }
-    // --force marks anyway, but says what it overrides (round 10)
+    // A source frozen for this deployment under another hostname (C-13):
+    // the star instruction would be refused as a self-mark, so the way out
+    // is the mark under that name (round 11)
+    const body =
+      verdict.star !== undefined && (yield* sameDeployment(verdict.star, context.origin))
+        ? `${sourceOrigin} holds this project as a mirror of ${verdict.star}, which publishes this server's key fingerprint: that is this deployment under the name the freeze used — run the mark with \`--server ${verdict.star}\`; if it is another deployment sharing one SERVER_ENC_KEY_IKM, that is the misconfiguration to fix first (one key per deployment)`
+        : verdict.body;
+    // --force marks anyway, but says what it overrides (round 10) — without
+    // the refusal's own escape clause (round 11)
     if (!forced) {
-      return yield* Effect.fail(cliError(refusal.text));
+      return yield* Effect.fail(cliError(`${body}${verdict.escape}`));
     }
-    yield* logWarning(`marking with --force. ${refusal.text}`);
+    yield* logWarning(`marking with --force. ${body}`);
   });
 }
 
@@ -2431,7 +2450,20 @@ function sourceUnread(
     );
 }
 
-type MarkVerdict = { readonly kind: "refusal" | "note"; readonly text: string } | null;
+/** A refusal's text, with its "pass --force" clause apart: the clause is printed on the refusing path only (round 11). */
+interface Refusal {
+  readonly body: string;
+  readonly escape: string;
+}
+
+type MarkVerdict =
+  | { readonly kind: "note"; readonly text: string }
+  | (Refusal & {
+      readonly kind: "refusal";
+      /** The third origin the source is a mirror of (the star refusal). */
+      readonly star?: string | undefined;
+    })
+  | null;
 
 /** What the mark's guard says about the source: a refusal, a note to print, or nothing. */
 function markRefusal(
@@ -2446,12 +2478,22 @@ function markRefusal(
   if (source.mark?.mirror === true && source.mark.sourceOrigin !== context.origin) {
     return {
       kind: "refusal",
-      text: `${sourceOrigin} holds this project as a mirror of ${source.mark.sourceOrigin ?? "another deployment"}: mirrors sync from the primary, so this project is marked against it (\`maruhi mirror mark --server ${context.origin} --source ${source.mark.sourceOrigin ?? "<primary url>"}\`), or pass --force to mark it against ${sourceOrigin} anyway`,
+      body: `${sourceOrigin} holds this project as a mirror of ${source.mark.sourceOrigin ?? "another deployment"}: mirrors sync from the primary, so this project is marked against it (\`maruhi mirror mark --server ${context.origin} --source ${source.mark.sourceOrigin ?? "<primary url>"}\`)`,
+      escape: `, or pass --force to mark it against ${sourceOrigin} anyway`,
+      star: source.mark.sourceOrigin,
     };
   }
-  return source.view === null
-    ? null
-    : markChainVerdict(context, sourceOrigin, here, source.view, source.mark);
+  if (source.view === null) {
+    // The chain could not be read, but the mark alone tells that the
+    // source is frozen for this deployment: the undo note stands (round 11)
+    return source.mark?.mirror === true
+      ? {
+          kind: "note",
+          text: `${sourceOrigin} is frozen as a mirror of this deployment, so after this mark neither copy accepts writes: promote one of them`,
+        }
+      : null;
+  }
+  return markChainVerdict(context, sourceOrigin, here, source.view, source.mark);
 }
 
 /** The chain relation's verdict: one chain in either direction passes (with the note the mark's state earns), a fork is refused. */
@@ -2477,18 +2519,26 @@ function markChainVerdict(
   if (!onChain(headOfView(view), here)) {
     return {
       kind: "refusal",
-      text: `This project's chain (seq ${here.state.headSeq}, head ${here.state.headHashHex}) and ${sourceOrigin}'s (seq ${view.state.headSeq}, head ${view.state.headHashHex}) are not one chain: neither head is an entry of the other. Marked as a mirror it could never be synced (every replica would be refused as not an extension). It was written to after the fork — export it away, or pass --force to mark it anyway`,
+      body: `This project's chain (seq ${here.state.headSeq}, head ${here.state.headHashHex}) and ${sourceOrigin}'s (seq ${view.state.headSeq}, head ${view.state.headHashHex}) are not one chain: neither head is an entry of the other. Marked as a mirror it could never be synced (every replica would be refused as not an extension). It was written to after the fork — export it away`,
+      escape: ", or pass --force to mark it anyway",
     };
   }
   if (source.mark !== null && !source.mark.mirror) {
     return {
       kind: "refusal",
-      text: `${sourceOrigin} holds this project writable, and this project holds ${ahead} it lacks (seq ${here.state.headSeq} against ${view.state.headSeq}): no sync brings them into a writable deployment (a replication writes into a marked mirror only). If this project is the primary, mark ${sourceOrigin} as a mirror of it instead (\`maruhi mirror mark --server ${sourceOrigin} --source ${context.origin}\`) and sync from here; if ${sourceOrigin} is the primary, those entries were written here after the fork — export them away. --force marks anyway and abandons them`,
+      body: `${sourceOrigin} holds this project writable, and this project holds ${ahead} it lacks (seq ${here.state.headSeq} against ${view.state.headSeq}): no sync brings them into a writable deployment (a replication writes into a marked mirror only). If this project is the primary, mark ${sourceOrigin} as a mirror of it instead (\`maruhi mirror mark --server ${sourceOrigin} --source ${context.origin}\`) and sync from here; if ${sourceOrigin} is the primary, those entries were written here after the fork — export them away`,
+      escape: ". --force marks anyway and abandons them",
     };
   }
+  // The mark unread: the sync below presumes a source frozen for this
+  // project, so the note says what holds otherwise (round 11)
+  const unread =
+    source.mark === null
+      ? ` — if ${sourceOrigin} is frozen for this project; if it holds the project writable, the mark goes the other way round (\`maruhi mirror mark --server ${sourceOrigin} --source ${context.origin}\`)`
+      : "";
   return {
     kind: "note",
-    text: `this project holds ${ahead} that ${sourceOrigin} lacks (seq ${here.state.headSeq} against ${view.state.headSeq}): after the mark, bring them over with \`maruhi mirror sync --server ${context.origin} --mirror ${sourceOrigin}\` before promoting ${sourceOrigin} (the planned failover's last sync)`,
+    text: `this project holds ${ahead} that ${sourceOrigin} lacks (seq ${here.state.headSeq} against ${view.state.headSeq}): after the mark, bring them over with \`maruhi mirror sync --server ${context.origin} --mirror ${sourceOrigin}\` before promoting ${sourceOrigin} (the planned failover's last sync)${unread}`,
   };
 }
 
@@ -2591,24 +2641,18 @@ function promotionGuard(
       mirrorChain,
     );
     if (refusal !== null) {
-      // --force promotes anyway, but says what it abandons (round 9)
+      // --force promotes anyway, but says what it abandons (round 9),
+      // without the refusal's own escape clause (round 10)
       if (!forced) {
-        return yield* Effect.fail(cliError(refusal));
+        return yield* Effect.fail(cliError(`${refusal.body}${refusal.escape}`));
       }
-      yield* logWarning(`promoting with --force. ${withoutForceClause(refusal)}`);
+      yield* logWarning(`promoting with --force. ${refusal.body}`);
     }
     return {
       leftBehind: frozenAt === null ? null : rowsLeftBehind(frozenAt, sourceOrigin, status),
       mirrorChain,
     };
   });
-}
-
-/** A refusal's text without its trailing "pass --force" clause (the warning printed when --force was passed — round 10). */
-function withoutForceClause(refusal: string): string {
-  return refusal
-    .replace(/[;,.]? (?:or pass|Pass) --force[^.]*$/u, "")
-    .replace(/; --force[^.]*$/u, "");
 }
 
 /**
@@ -2660,12 +2704,18 @@ function promotionRefusal(
   mirrorHead: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
   thisOrigin: string,
   mirrorChain: VerifiedProject | null,
-): string | null {
+): Refusal | null {
   if (source === "writable") {
-    return `The source ${sourceOrigin} still answers and holds this project writable: promoting ${thisOrigin} now leaves two writable copies (a split brain). The planned order: mark the source as a mirror of ${thisOrigin} (\`maruhi mirror mark --server ${sourceOrigin} --source ${thisOrigin}\` — it freezes), bring its last writes over (\`maruhi mirror sync --server ${sourceOrigin} --mirror ${thisOrigin}\`), then promote; or take the source down. Pass --force to promote anyway`;
+    return {
+      body: `The source ${sourceOrigin} still answers and holds this project writable: promoting ${thisOrigin} now leaves two writable copies (a split brain). The planned order: mark the source as a mirror of ${thisOrigin} (\`maruhi mirror mark --server ${sourceOrigin} --source ${thisOrigin}\` — it freezes), bring its last writes over (\`maruhi mirror sync --server ${sourceOrigin} --mirror ${thisOrigin}\`), then promote; or take the source down`,
+      escape: ". Pass --force to promote anyway",
+    };
   }
   if (source === "answers") {
-    return `The source ${sourceOrigin} still answers, and its mark could not be read from this machine (no session for it here, or it refused the read): promoting ${thisOrigin} now may leave two writable copies (a split brain). Log in there (\`maruhi login --server ${sourceOrigin}\`) so the promotion can read whether it is frozen, follow the planned order (mark the source as a mirror of ${thisOrigin}, one last \`maruhi mirror sync\`, then promote), or pass --force to promote anyway`;
+    return {
+      body: `The source ${sourceOrigin} still answers, and its mark could not be read from this machine (no session for it here, or it refused the read): promoting ${thisOrigin} now may leave two writable copies (a split brain). Log in there (\`maruhi login --server ${sourceOrigin}\`) so the promotion can read whether it is frozen, follow the planned order (mark the source as a mirror of ${thisOrigin}, one last \`maruhi mirror sync\`, then promote)`,
+      escape: ", or pass --force to promote anyway",
+    };
   }
   if (source === "gone") {
     return null;
@@ -2674,8 +2724,14 @@ function promotionRefusal(
     return frozenRefusal(source.frozenAt, sourceOrigin, mirrorHead, thisOrigin, mirrorChain);
   }
   return source.sameKey
-    ? `The source ${sourceOrigin} holds this project as a mirror of ${source.movedTo}, which publishes this server's key fingerprint. If that is this deployment under another hostname, promote it under that name (\`maruhi mirror promote --server ${source.movedTo}\` — the source is frozen for it); if it is another deployment sharing one SERVER_ENC_KEY_IKM, that is the misconfiguration to fix first (one key per deployment); or pass --force to promote anyway`
-    : `The source ${sourceOrigin} holds this project as a mirror of ${source.movedTo}, not of ${thisOrigin}: the project's primary moved there, and promoting this copy would leave two writable copies (a split brain). Re-point this mirror at it (\`maruhi mirror mark --server ${thisOrigin} --source ${source.movedTo}\`) and sync from there; or pass --force to promote anyway`;
+    ? {
+        body: `The source ${sourceOrigin} holds this project as a mirror of ${source.movedTo}, which publishes this server's key fingerprint. If that is this deployment under another hostname, promote it under that name (\`maruhi mirror promote --server ${source.movedTo}\` — the source is frozen for it); if it is another deployment sharing one SERVER_ENC_KEY_IKM, that is the misconfiguration to fix first (one key per deployment)`,
+        escape: "; or pass --force to promote anyway",
+      }
+    : {
+        body: `The source ${sourceOrigin} holds this project as a mirror of ${source.movedTo}, not of ${thisOrigin}: the project's primary moved there, and promoting this copy would leave two writable copies (a split brain). Re-point this mirror at it (\`maruhi mirror mark --server ${thisOrigin} --source ${source.movedTo}\`) and sync from there`,
+        escape: "; or pass --force to promote anyway",
+      };
 }
 
 /**
@@ -2693,7 +2749,7 @@ function frozenRefusal(
   mirrorHead: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
   thisOrigin: string,
   mirrorChain: VerifiedProject | null,
-): string | null {
+): Refusal | null {
   if (frozenAt.chainHeadHashHex === mirrorHead.chainHeadHashHex) {
     return null;
   }
@@ -2705,9 +2761,15 @@ function frozenRefusal(
       mirrorChain !== null &&
       onChain(frozenAt, mirrorChain)
       ? null
-      : `The source ${sourceOrigin} is frozen at chain seq ${frozenAt.chainHeadSeq} (head ${frozenAt.chainHeadHashHex}), which is not an entry of this mirror's chain (seq ${mirrorHead.chainHeadSeq}, head ${mirrorHead.chainHeadHashHex}): the two copies forked, and a promotion would bury the fork. Run \`maruhi project verify\` against both and decide which chain is the project's; --force promotes this copy anyway`;
+      : {
+          body: `The source ${sourceOrigin} is frozen at chain seq ${frozenAt.chainHeadSeq} (head ${frozenAt.chainHeadHashHex}), which is not an entry of this mirror's chain (seq ${mirrorHead.chainHeadSeq}, head ${mirrorHead.chainHeadHashHex}): the two copies forked, and a promotion would bury the fork. Run \`maruhi project verify\` against both and decide which chain is the project's`,
+          escape: "; --force promotes this copy anyway",
+        };
   }
-  return `The source ${sourceOrigin} is frozen at chain seq ${frozenAt.chainHeadSeq} (head ${frozenAt.chainHeadHashHex}) but this mirror holds seq ${mirrorHead.chainHeadSeq} (head ${mirrorHead.chainHeadHashHex}): its last writes have not been brought over. Run \`maruhi mirror sync --server ${sourceOrigin} --mirror ${thisOrigin}\` first; or pass --force to promote without them`;
+  return {
+    body: `The source ${sourceOrigin} is frozen at chain seq ${frozenAt.chainHeadSeq} (head ${frozenAt.chainHeadHashHex}) but this mirror holds seq ${mirrorHead.chainHeadSeq} (head ${mirrorHead.chainHeadHashHex}): its last writes have not been brought over. Run \`maruhi mirror sync --server ${sourceOrigin} --mirror ${thisOrigin}\` first`,
+    escape: "; or pass --force to promote without them",
+  };
 }
 
 /** The frozen source's head as its status reports it (the audit seq to admins and owners only). */

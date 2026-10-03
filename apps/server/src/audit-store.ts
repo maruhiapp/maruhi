@@ -711,6 +711,59 @@ async function hashNextChunk(
   return rows.length < HEAD_CHUNK_ROWS;
 }
 
+/** Whether a stored head hash is one the chaining accepts (64 lowercase hex). */
+export function isAuditHeadHex(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
+}
+
+/**
+ * Derives the audit-head column over `table`'s rows past `fromSeq`, from
+ * `prevHead` (the empty string before seq 1), in memory: the rows must be
+ * exactly `fromSeq + 1 …` and every one must pass the canonical form.
+ * null = a gap, or a row the canonical form refuses — what a replica or
+ * a snapshot must never install (ruling J revision, round 10: such a log
+ * committed, and the extension afterwards threw the append-only defect on
+ * every later read). Chunked reads; the hashing is the extension's own.
+ */
+export async function deriveAuditHeads(
+  sql: SqlStorage,
+  table: string,
+  fromSeq: number,
+  prevHead: string,
+): Promise<readonly (readonly [seq: number, headHashHex: string])[] | null> {
+  const heads: (readonly [number, string])[] = [];
+  const state = { hashedUpTo: fromSeq, head: prevHead };
+  for (;;) {
+    const rows = sql
+      .exec(
+        `SELECT ${HEAD_ROW_COLUMNS} FROM ${table} WHERE seq > ? ORDER BY seq LIMIT ?`,
+        state.hashedUpTo,
+        HEAD_CHUNK_ROWS,
+      )
+      .toArray()
+      .map(toAuditHeadRow);
+    if (rows.length === 0) {
+      return heads;
+    }
+    for (const row of rows) {
+      if (row.seq !== state.hashedUpTo + 1) {
+        return null;
+      }
+      const digest = await computeAuditRowDigest(row);
+      if (!digest.ok) {
+        return null;
+      }
+      const next = await computeAuditHeadHash(SUITE_ID, state.head, row.seq, digest.value);
+      if (!next.ok) {
+        return null;
+      }
+      state.head = next.value;
+      state.hashedUpTo = row.seq;
+      heads.push([row.seq, state.head]);
+    }
+  }
+}
+
 /** The SELECT columns of queryEventsSync (same order as StoredAuditEventRow). */
 const EVENT_ROW_COLUMNS = `seq, row_id, server_ts, client_ts, event, actor_type, actor_user_id,
   actor_key_fingerprint, actor_api_token_id, target_user_id, target_key_fingerprint,

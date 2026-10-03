@@ -282,3 +282,13 @@ for round 10; D, E, F and G are closed.
 
 Rulings C and H received adopted candidates in this round and stay open
 for round 11; D, E, F and G are closed.
+
+### 8-10. Round 11 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (promotion) | C-29 (record/code gap, structural): the forced mark's warning kept the refusal's escape clause, and the regex that stripped it on the promotion could not be reused (origins carry dots); C-30 (delivery gap of C-25/C-28): the undo note was lost when the chain's read failed although it depends on the mark alone, and the ahead note presumed a frozen source when the mark's read failed; C-31 (dead-end, the C-13/C-15 parity): the star refusal's instruction was a self-mark when the third origin is this deployment under another hostname | **All adopted** — refusals carry `{ body, escape }` and the callers compose them (the regex is gone); the undo note stands on the mark alone, the ahead note hedges when the mark is unread; the star refusal fetches the two fingerprints only when refusing and names the mark under the freeze's name |
+| H (sync) | H-24 (precision bug in H-23): every failure of the view taken after the commit was reported as "the server failed verification" — a server that stopped answering, or refused the session, condemned the replica and told the owner not to promote; H-25 (text): the sync's report listed `mirror status`'s "ahead" causes, impossible on the sync path; H-26 (text): the fourth "changed" failed with the export's own message naming `project export`; H-27 (asymmetry): `mirror status` exited 0 on fork evidence the sync fails on | **All adopted** — the second view's failure branches on the error's `unreachable` / `evidence` flags (kept on the mapped error; the chain floor violation now carries `evidence` like the value pull's); a sync-specific "ahead" note; a sync-specific exhaustion message; `mirror status` fails with evidence on a fork note |
+
+Rulings C and H received adopted candidates in this round and stay open
+for round 12; D, E, F and G are closed.

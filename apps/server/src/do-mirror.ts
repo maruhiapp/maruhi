@@ -42,6 +42,7 @@
 // (the next upload starts at sequence 0). No audit row is written for a
 // replication (ruling G).
 
+import { deriveAuditHeads, isAuditHeadHex } from "./audit-store.ts";
 import type { MirrorSyncRejectReason } from "./data-plane.ts";
 import {
   acceptColumns,
@@ -484,41 +485,63 @@ function swapTables(
   replicatedAuditSeq: number,
 ): void {
   for (const table of tables) {
-    const staging = stagingOf(table);
     if (table === AUDIT_HEAD_TABLE && replicatedAuditSeq > 0) {
-      // Past a replicated position the served heads are the mirror's own
-      // derivation (ruling J revision, round 8): the rows up to the position
-      // were verified identical to the replica's, so their heads are kept,
-      // the rest is derived from the replica's rows after the commit (the
-      // ordinary lazy extension); the uploaded column is a claim checked
-      // against them (verifyAuditPrefix), never installed
-      sql.exec(`DELETE FROM ${table} WHERE seq > ?`, replicatedAuditSeq);
-      sql.exec(`DROP TABLE IF EXISTS ${staging}`);
-      continue;
+      swapAuditHeads(sql, replicatedAuditSeq);
+    } else if (MIRROR_KEPT_TABLES.includes(table)) {
+      keepTable(sql, table, nowMs);
+    } else {
+      replaceTable(sql, table);
     }
-    if (MIRROR_KEPT_TABLES.includes(table)) {
-      if (table === MERGED_TABLE) {
-        // Only live bindings are merged, and the mirror's own expired ones
-        // go: a mirror that never issues a lease has no other collection
-        // of this table (ruling D revision, round 3)
-        if (hasTable(sql, staging)) {
-          const columns = sql.exec(`SELECT * FROM ${staging} LIMIT 0`).columnNames.join(", ");
-          sql.exec(
-            `INSERT OR IGNORE INTO ${table} (${columns}) SELECT ${columns} FROM ${staging} WHERE expires_at > ?`,
-            nowMs,
-          );
-        }
-        sql.exec(`DELETE FROM ${table} WHERE expires_at <= ?`, nowMs);
-      }
-      sql.exec(`DROP TABLE IF EXISTS ${staging}`);
-      continue;
-    }
-    sql.exec(`DELETE FROM ${table}`);
+  }
+}
+
+/**
+ * Past a replicated position the served heads are the mirror's own
+ * derivation (ruling J revision, round 8): the rows up to the position were
+ * verified identical to the replica's, so their heads are kept; the rest
+ * was derived from the staged rows before the swap (verifyStagedAuditHeads
+ * — round 10) and is installed from the staging, where it replaced the
+ * uploaded claim.
+ */
+function swapAuditHeads(sql: SqlStorage, replicatedAuditSeq: number): void {
+  const staging = stagingOf(AUDIT_HEAD_TABLE);
+  sql.exec(`DELETE FROM ${AUDIT_HEAD_TABLE} WHERE seq > ?`, replicatedAuditSeq);
+  if (hasTable(sql, staging)) {
+    sql.exec(
+      `INSERT INTO ${AUDIT_HEAD_TABLE} (seq, head_hash_hex) SELECT seq, head_hash_hex FROM ${staging} WHERE seq > ? ORDER BY seq`,
+      replicatedAuditSeq,
+    );
+    sql.exec(`DROP TABLE ${staging}`);
+  }
+}
+
+/** A deployment-local table keeps its rows; the merged one takes the source's live bindings and drops the expired of either side (ruling D revision, round 3). */
+function keepTable(sql: SqlStorage, table: string, nowMs: number): void {
+  const staging = stagingOf(table);
+  if (table === MERGED_TABLE) {
+    // Only live bindings are merged, and the mirror's own expired ones
+    // go: a mirror that never issues a lease has no other collection
+    // of this table
     if (hasTable(sql, staging)) {
       const columns = sql.exec(`SELECT * FROM ${staging} LIMIT 0`).columnNames.join(", ");
-      sql.exec(`INSERT INTO ${table} (${columns}) SELECT ${columns} FROM ${staging}`);
-      sql.exec(`DROP TABLE ${staging}`);
+      sql.exec(
+        `INSERT OR IGNORE INTO ${table} (${columns}) SELECT ${columns} FROM ${staging} WHERE expires_at > ?`,
+        nowMs,
+      );
     }
+    sql.exec(`DELETE FROM ${table} WHERE expires_at <= ?`, nowMs);
+  }
+  sql.exec(`DROP TABLE IF EXISTS ${staging}`);
+}
+
+/** Every other snapshot table is replaced by the staged replica's rows. */
+function replaceTable(sql: SqlStorage, table: string): void {
+  const staging = stagingOf(table);
+  sql.exec(`DELETE FROM ${table}`);
+  if (hasTable(sql, staging)) {
+    const columns = sql.exec(`SELECT * FROM ${staging} LIMIT 0`).columnNames.join(", ");
+    sql.exec(`INSERT INTO ${table} (${columns}) SELECT ${columns} FROM ${staging}`);
+    sql.exec(`DROP TABLE ${staging}`);
   }
 }
 
@@ -598,6 +621,53 @@ function verifyAuditPrefix(sql: SqlStorage, state: MirrorState): void {
   if (Number(rewritten) !== 0) {
     throw new MirrorPageRefusedError("audit-not-extension");
   }
+}
+
+/**
+ * The heads over the staged audit log, derived before the swap (ruling J
+ * revision, round 10): from the mirror's own head at the replicated
+ * position, or — on a first replica — from the uploaded column's tail
+ * (which must be a head hash); a row the canonical form refuses, or a gap,
+ * is `malformed` with the live log untouched (the extension after the
+ * commit would have thrown the append-only defect on every later read).
+ * The derived heads replace the uploaded claim past the start in the
+ * staging, so the swap installs a column that is a prefix-contiguous
+ * derivation over the rows it covers. Runs between the two transactions,
+ * under the permit, like the staged chain's content verification.
+ */
+export async function verifyStagedAuditHeads(
+  sql: SqlStorage,
+  state: MirrorState,
+): Promise<MirrorPageRefusedError | null> {
+  const stagedHeads = stagingOf(AUDIT_HEAD_TABLE);
+  const stagedLog = stagingOf(AUDIT_TABLE);
+  if (!hasTable(sql, stagedLog) || !hasTable(sql, stagedHeads)) {
+    return null;
+  }
+  const from = state.lastAuditSeq > 0 ? state.lastAuditSeq : stagedMaxSeq(sql, AUDIT_HEAD_TABLE);
+  const table = state.lastAuditSeq > 0 ? AUDIT_HEAD_TABLE : stagedHeads;
+  const start =
+    from === 0
+      ? ""
+      : sql.exec(`SELECT head_hash_hex FROM ${table} WHERE seq = ?`, from).toArray()[0]?.[
+          "head_hash_hex"
+        ];
+  if (from !== 0 && !isAuditHeadHex(start)) {
+    return malformed();
+  }
+  const derived = await deriveAuditHeads(sql, stagedLog, from, from === 0 ? "" : String(start));
+  if (derived === null) {
+    return malformed();
+  }
+  sql.exec(`DELETE FROM ${stagedHeads} WHERE seq > ?`, from);
+  for (let at = 0; at < derived.length; at += 500) {
+    const chunk = derived.slice(at, at + 500);
+    sql.exec(
+      `INSERT INTO ${stagedHeads} (seq, head_hash_hex) VALUES ${chunk.map(() => "(?, ?)").join(", ")}`,
+      ...chunk.flat(),
+    );
+  }
+  return null;
 }
 
 /** One staged chain row as the content verification reads it (programs-mirror.ts). */

@@ -171,6 +171,8 @@ interface SourceOptions {
   /** The chain the server serves (default: `built`); a prefix of it with `chainEntries`. */
   chain?: BuiltChain;
   chainEntries?: number;
+  /** An HTTP status the chain read answers instead of the chain. */
+  chainStatus?: number;
 }
 
 /** The server's own `GET /projects/:id/mirror` answer (null = a writable primary with no marks); a test sets it and resets it. */
@@ -185,11 +187,13 @@ function sourceHandlers(options: SourceOptions = {}): MockHandler[] {
   return [
     (request: MockRequest) =>
       request.method === "GET" && request.path === `/projects/${built.projectId}/chain`
-        ? servedChainResponse(
-            built.projectId,
-            chain.entries.slice(0, entries),
-            chain.hashes.slice(0, entries),
-          )
+        ? options.chainStatus === undefined
+          ? servedChainResponse(
+              built.projectId,
+              chain.entries.slice(0, entries),
+              chain.hashes.slice(0, entries),
+            )
+          : { status: options.chainStatus, json: { message: "no chain" } }
         : null,
     (request: MockRequest) =>
       request.method === "GET" && request.path === `/projects/${built.projectId}/mirror`
@@ -807,6 +811,19 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     expect(fork.env.errors.slice(forkErrorsBefore).join("\n")).toContain(
       "Warning: marking with --force. This project's chain",
     );
+    // … without the refusal's own escape clause (round 11)
+    expect(fork.env.errors.slice(forkErrorsBefore).join("\n")).not.toContain("pass --force");
+    expect(third.env.errors.join("\n")).not.toContain(
+      "Warning: marking with --force. " +
+        third.source.origin +
+        " holds this project as a mirror of " +
+        primary +
+        ": mirrors sync from the primary, so this project is marked against it (`maruhi mirror mark --server " +
+        third.mirror.origin +
+        " --source " +
+        primary +
+        "`), or pass --force",
+    );
     // Equal to a source frozen for this project: both copies frozen after
     // the mark — the note names the promotion to run (round 10)
     const undo = await startPair({ marked: false });
@@ -846,6 +863,86 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     }
     expect(halfRead.env.errors.join("\n")).toContain("the source's mark could not be read");
     expect(halfRead.env.errors.join("\n")).toContain("are not one chain");
+    // The chain's read fails alone while the mark says frozen for this
+    // deployment: the undo note stands on the mark (round 11)
+    const chainless = await startPair({ marked: false, source: { chainStatus: 500 } });
+    sourceStatus = { mirror: true, sourceOrigin: chainless.mirror.origin, head: headOfChain() };
+    try {
+      expect(
+        await runCli(
+          [
+            "mirror",
+            "mark",
+            "--server",
+            chainless.mirror.origin,
+            "--source",
+            chainless.source.origin,
+          ],
+          chainless.env.layer,
+        ),
+      ).toBe(0);
+    } finally {
+      sourceStatus = null;
+    }
+    expect(chainless.env.errors.join("\n")).toContain("the source's chain could not be read");
+    expect(chainless.env.errors.join("\n")).toContain(
+      "so after this mark neither copy accepts writes: promote one of them",
+    );
+    // The mark's read fails while this project is ahead: the note hedges
+    // the sync on what the source holds (round 11)
+    const hedged = await startPair({ marked: false, source: { chainEntries: 1 } });
+    sourceStatus = "refused";
+    try {
+      expect(
+        await runCli(
+          ["mirror", "mark", "--server", hedged.mirror.origin, "--source", hedged.source.origin],
+          hedged.env.layer,
+        ),
+      ).toBe(0);
+    } finally {
+      sourceStatus = null;
+    }
+    expect(hedged.env.errors.join("\n")).toContain(
+      `if ${hedged.source.origin} is frozen for this project; if it holds the project writable, the mark goes the other way round`,
+    );
+    // A source frozen for this deployment under another hostname: the star
+    // instruction would be a self-mark, so the way out is the mark under
+    // that name (round 11)
+    const fingerprint = "ab".repeat(16);
+    const config = () => ({
+      status: 200,
+      json: {
+        githubClientId: "dummy",
+        signupPolicy: "open",
+        serverKeyFingerprintHex: fingerprint,
+        serverEncPubHex: "11".repeat(32),
+      },
+    });
+    const aliasState = mirrorState(false);
+    const aliased = await start([
+      onRequest("GET", "/auth/config", config),
+      ...mirrorHandlers(aliasState),
+    ]);
+    const alias = await start([onRequest("GET", "/auth/config", config)]);
+    const aliasSource = await start(sourceHandlers());
+    const aliasEnv = await makeTestEnv();
+    seedSession(aliasEnv, aliased.origin, owner);
+    seedSession(aliasEnv, aliasSource.origin, owner);
+    await seedConfig(aliasEnv, { server: aliasSource.origin, defaultProject: built.projectId });
+    sourceStatus = { mirror: true, sourceOrigin: alias.origin, head: headOfChain() };
+    try {
+      expect(
+        await runCli(
+          ["mirror", "mark", "--server", aliased.origin, "--source", aliasSource.origin],
+          aliasEnv.layer,
+        ),
+      ).toBe(1);
+    } finally {
+      sourceStatus = null;
+    }
+    expect(aliasEnv.errors.join("\n")).toContain(
+      `${aliasSource.origin} holds this project as a mirror of ${alias.origin}, which publishes this server's key fingerprint: that is this deployment under the name the freeze used — run the mark with \`--server ${alias.origin}\``,
+    );
   });
 
   it("a frozen source behind the mirror promotes when its head is on the mirror's chain, is refused as a fork otherwise, and the rows left behind are counted (ruling C revision, round 8)", async () => {
@@ -1104,11 +1201,13 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     expect(past.env.errors.join("\n")).toContain(
       `The replica ${past.mirror.origin} now holds is ahead of the verified view taken after the commit (seq 3 > 2): the server exported entries it no longer serves — a rollback at the server, not a race`,
     );
-    // The report never calls it a write that landed (round 10)
+    // The report never calls it a write that landed (round 10), and on the
+    // sync path names the sync's own causes only (round 11)
     expect(past.env.logs.join("\n")).toContain(
-      "ahead of the verified view (seq 3 > 2) — the mirror was promoted and written to, the server rolled back",
+      "ahead of the verified view taken after the commit (seq 3 > 2) — the server exported entries it no longer serves (a rollback at the server), or the replication was forced",
     );
     expect(past.env.logs.join("\n")).not.toContain("a write landed");
+    expect(past.env.logs.join("\n")).not.toContain("the mirror was promoted and written to");
     // The view taken after the commit fails (the server now serves a chain
     // the local floor refuses): the failure names the replica the mirror
     // holds and the no-promotion advice (round 10)
@@ -1142,6 +1241,65 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       `The mirror now holds a replica at chain seq 3 (head ${"ab".repeat(32)}), past the view taken before the export (seq 2), and the server failed verification right after exporting it:`,
     );
     expect(failing.env.errors.join("\n")).toContain("Do not promote the mirror");
+    expect(failing.env.errors.join("\n")).not.toContain("stopped answering");
+    // A server that stops answering after the commit did not fail
+    // verification: the replica is unchecked, not condemned (round 11)
+    const gone = await startPair();
+    gone.state.lastPage = past.state.lastPage;
+    let chainAnswers = 0;
+    const dying = await start([
+      (request: MockRequest) => {
+        if (request.method !== "GET" || request.path !== `/projects/${built.projectId}/chain`) {
+          return null;
+        }
+        chainAnswers += 1;
+        return chainAnswers === 1
+          ? servedChainResponse(built.projectId, built.entries, built.hashes)
+          : { status: 503, json: { message: "gateway" } };
+      },
+      ...sourceHandlers(),
+    ]);
+    seedSession(gone.env, dying.origin, owner);
+    expect(
+      await runCli(
+        ["mirror", "sync", "--server", dying.origin, "--mirror", gone.mirror.origin, "--force"],
+        gone.env.layer,
+      ),
+    ).toBe(1);
+    const goneErrors = gone.env.errors.join("\n");
+    expect(goneErrors).toContain("The server stopped answering after the commit (");
+    expect(goneErrors).toContain(
+      `the replica the mirror now holds (chain seq 3, head ${"ab".repeat(32)}) is past the view taken before the export (seq 2) and could not be checked against a second view`,
+    );
+    expect(goneErrors).not.toContain("failed verification");
+  });
+
+  it("an export that keeps changing fails the sync naming the sync, not the export (ruling H revision, round 11)", async () => {
+    const pair = await startPair({ source: { changedPages: 4 } });
+    expect(await runCli(["mirror", "sync", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
+      1,
+    );
+    expect(pair.env.errors.join("\n")).toContain(
+      `The project changed on ${pair.source.origin} while it was being exported, 4 times in a row: re-run \`maruhi mirror sync\` when the writes settle`,
+    );
+    expect(pair.env.errors.join("\n")).not.toContain("maruhi project export");
+  });
+
+  it("mirror status fails on fork evidence as the sync does (ruling H revision, round 11)", async () => {
+    const pair = await startPair();
+    pair.state.status = {
+      ...pair.state.status,
+      head: { ...headOfChain(), chainHeadHashHex: "ab".repeat(32) },
+    };
+    expect(await runCli(["mirror", "status", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
+      1,
+    );
+    expect(pair.env.logs.join("\n")).toContain(
+      "a different chain at the same height as the verified view",
+    );
+    expect(pair.env.errors.join("\n")).toContain(
+      `The mirror ${pair.mirror.origin} holds a chain head that is a different chain at the same height as the verified view`,
+    );
   });
 
   it("MARUHI_MIRROR_TOKEN opens the mirror's session without a keychain entry, and is never sent to the server", async () => {

@@ -32,6 +32,7 @@
 //   that fails midway holds no chain and stays "uninitialized"; reruns
 //   wipe the non-chain tables and redo (no overwrite path exists)
 
+import { deriveAuditHeads, isAuditHeadHex } from "./audit-store.ts";
 import {
   OPS_RESTORE_BATCH_ROWS,
   OPS_SNAPSHOT_PART_BYTES,
@@ -959,8 +960,8 @@ class RestoreReader {
     }
   }
 
-  /** Verifies every table's row count against the trailer, promotes the chain to the real table, and returns the result. */
-  verify(tables: readonly string[]): RestoreSnapshotResult {
+  /** Verifies every table's row count against the trailer, derives the audit heads, promotes the chain to the real table, and returns the result. */
+  async verify(tables: readonly string[]): Promise<RestoreSnapshotResult> {
     const { header, trailer } = this;
     if (header === null || trailer === null) {
       throw new RestoreRefusedError("trailer-missing");
@@ -971,8 +972,40 @@ class RestoreReader {
       }
     }
     this.#verifyAuditContiguity();
+    await this.#deriveAuditHeads();
     this.#promoteChainStaging();
     return { header, trailer, rows: this.rows };
+  }
+
+  /**
+   * The audit heads past the snapshot's column, derived from its tail (a
+   * head hash, or the empty string with no column) before the chain is
+   * promoted (ruling J revision, round 10): a row the canonical form
+   * refuses is `malformed` and the DO stays empty — restored, it threw the
+   * append-only defect on every later read, with the DO `not-empty` for a
+   * re-run. The convergence after the restore then has nothing to do.
+   */
+  async #deriveAuditHeads(): Promise<void> {
+    const sql = this.storage.sql;
+    const tail = sql
+      .exec("SELECT seq, head_hash_hex FROM audit_head_hashes ORDER BY seq DESC LIMIT 1")
+      .toArray()[0];
+    const from = tail === undefined ? 0 : Number(tail["seq"]);
+    const start = tail === undefined ? "" : tail["head_hash_hex"];
+    if (tail !== undefined && !isAuditHeadHex(start)) {
+      throw new RestoreRefusedError("malformed");
+    }
+    const derived = await deriveAuditHeads(sql, "audit_events", from, String(start));
+    if (derived === null) {
+      throw new RestoreRefusedError("malformed");
+    }
+    for (let at = 0; at < derived.length; at += 500) {
+      const chunk = derived.slice(at, at + 500);
+      sql.exec(
+        `INSERT INTO audit_head_hashes (seq, head_hash_hex) VALUES ${chunk.map(() => "(?, ?)").join(", ")}`,
+        ...chunk.flat(),
+      );
+    }
   }
 
   /**
@@ -1092,7 +1125,7 @@ export async function restoreSnapshot(input: RestoreSnapshotInput): Promise<Rest
         reader.accept(parseLine(text));
       }
     }
-    return reader.verify(tables);
+    return await reader.verify(tables);
   } catch (error) {
     wipeTables(storage.sql, tables);
     storage.sql.exec(`DROP TABLE IF EXISTS ${CHAIN_STAGING_TABLE}`);

@@ -22,7 +22,7 @@ import { ConfigStore } from "./config.ts";
 import type { DekRecipient } from "./deks.ts";
 import { ownDeviceOrFail } from "./device-key.ts";
 import { syncOwnDevices } from "./device-sync.ts";
-import { cliError, type CliError, usageError } from "./errors.ts";
+import { cliError, type CliError, evidenceError, usageError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { checkChainFloor, type FloorHandle, makeFloorHandle } from "./floor-check.ts";
 import { formatFloorConflicts, formatFloorViolation } from "./floor-evidence.ts";
@@ -378,8 +378,10 @@ export function loadCheckedFloor(
         violation = checkChainFloor(loaded.floor, view);
       }
       if (violation !== null) {
-        // Reject + presentable evidence (the floor's recorded head and this sync's head)
-        return yield* Effect.fail(cliError(formatFloorViolation({ projectId }, violation)));
+        // Reject + presentable evidence (the floor's recorded head and this
+        // sync's head): a contradiction between signed data, as the value
+        // pull's floor check flags it (round 11)
+        return yield* Effect.fail(evidenceError(formatFloorViolation({ projectId }, violation)));
       }
     }
     return { floor: loaded.floor, verified: view };

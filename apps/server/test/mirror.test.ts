@@ -634,6 +634,102 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect((await unmark(OWNER)).status).toBe(200);
   });
 
+  it("a staged audit row the canonical form refuses, or an uploaded head column whose tail is no head hash, is malformed before anything live is touched (ruling J revision, round 10)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    expect((await mark(OWNER)).status).toBe(200);
+    const lines = await exportAll();
+    const columnsOf = (table: string) =>
+      parsedLine(
+        lines[
+          lines.findIndex((line) => {
+            const parsed = parsedLine(line);
+            return parsed["kind"] === "table" && parsed["table"] === table;
+          })
+        ],
+      )["columns"] as string[];
+    const rowIndex = (table: string, seq: number) =>
+      lines.findIndex((line) => {
+        const parsed = parsedLine(line);
+        return (
+          parsed["kind"] === "row" &&
+          parsed["table"] === table &&
+          (parsed["values"] as unknown[])[columnsOf(table).indexOf("seq")] === seq
+        );
+      });
+    const rewrite = (index: number, column: string, value: unknown, table: string) =>
+      lines.map((line, at) => {
+        if (at !== index) {
+          return line;
+        }
+        const row = parsedLine(line) as { values: unknown[] };
+        const values = [...row.values];
+        values[columnsOf(table).indexOf(column)] = value;
+        return JSON.stringify({ ...row, values });
+      });
+    const liveHeads = await queryProjectDo(
+      projectId,
+      "SELECT seq, head_hash_hex FROM audit_head_hashes ORDER BY seq",
+    );
+    // A server_ts the canonical form refuses (the schema accepts it)
+    const negative = rewrite(rowIndex("audit_events", 2), "server_ts", -1, "audit_events");
+    await expectRejected(await upload(negative, 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    expect(
+      await queryProjectDo(
+        projectId,
+        "SELECT seq, head_hash_hex FROM audit_head_hashes ORDER BY seq",
+      ),
+    ).toEqual(liveHeads);
+    // A first replica whose uploaded column's tail is no head hash (with
+    // the column reaching the log's end, nothing would have derived from it
+    // until the mirror's first own row)
+    const headCount = Number(
+      (parsedLine(lines[lines.length - 1])["rows"] as Record<string, number>)["audit_head_hashes"],
+    );
+    const bogusTail = rewrite(
+      rowIndex("audit_head_hashes", headCount),
+      "head_hash_hex",
+      "not-a-hash",
+      "audit_head_hashes",
+    );
+    await expectRejected(await upload(bogusTail, 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    // The intact replica commits, its heads derived past the uploaded
+    // column; the column reaches the end at the commit
+    expect((await upload(lines, 50)).status).toBe(200);
+    expect(await count("SELECT MAX(seq) AS n FROM audit_head_hashes")).toBe(
+      await count("SELECT MAX(seq) AS n FROM audit_events"),
+    );
+    // Past a replicated position the same row is refused the same way (the
+    // derivation starts from the mirror's own head at the position)
+    expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
+    const later = await exportAll();
+    const laterSeq =
+      (parsedLine(later[later.length - 1])["rows"] as Record<string, number>)["audit_events"] ?? 0;
+    const lastRow = later.findIndex((line) => {
+      const parsed = parsedLine(line);
+      return (
+        parsed["kind"] === "row" &&
+        parsed["table"] === "audit_events" &&
+        (parsed["values"] as unknown[])[columnsOf("audit_events").indexOf("seq")] === laterSeq
+      );
+    });
+    expect(lastRow).toBeGreaterThan(-1);
+    const laterNegative = later.map((line, at) => {
+      if (at !== lastRow) {
+        return line;
+      }
+      const row = parsedLine(line) as { values: unknown[] };
+      const values = [...row.values];
+      values[columnsOf("audit_events").indexOf("server_ts")] = 1.5;
+      return JSON.stringify({ ...row, values });
+    });
+    await expectRejected(await upload(laterNegative, 50), "malformed");
+    expect((await upload(later, 50)).status).toBe(200);
+    expect((await unmark(OWNER)).status).toBe(200);
+  });
+
   it("refuses out-of-sequence and malformed pages with static reasons and discards the staging", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");

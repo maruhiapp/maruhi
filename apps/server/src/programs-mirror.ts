@@ -34,6 +34,7 @@ import type { DataActor, DataRejectedError } from "./data-plane.ts";
 import { rejectData, requireMemberState, roleAtLeast } from "./data-plane.ts";
 import {
   commitMirrorReplica,
+  verifyStagedAuditHeads,
   discardMirrorStaging,
   markMirror,
   remarkMirror,
@@ -298,6 +299,13 @@ export const mirrorPageProgram = (
     if (invalid !== null) {
       yield* Effect.sync(() => discardMirrorStaging(storage, PROJECT_DO_TABLES));
       return yield* refuse(invalid);
+    }
+    // … and the staged audit log's heads, derived before anything live is
+    // touched (ruling J revision, round 10)
+    const unhashable = yield* Effect.promise(() => verifyStagedAuditHeads(sql, state));
+    if (unhashable !== null) {
+      yield* Effect.sync(() => discardMirrorStaging(storage, PROJECT_DO_TABLES));
+      return yield* refuse(unhashable);
     }
     const commit = yield* staged(() =>
       commitMirrorReplica({

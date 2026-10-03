@@ -18,7 +18,7 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { countNoun, formatUtcMinutes } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { CliError, cliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import type { VerifiedProject } from "./sync.ts";
 
@@ -293,7 +293,13 @@ function replicateWithRestarts<R>(
       attempt = yield* replicateOnce(input);
     }
     if (attempt.kind === "changed") {
-      return yield* Effect.fail(toCliError(new ExportChangedError({ reason: "project-changed" })));
+      // The export's own renderer names `project export`; this is a sync
+      // (round 11)
+      return yield* Effect.fail(
+        cliError(
+          `The project changed on ${input.sourceOrigin} while it was being exported, ${countNoun(MAX_RESTARTS + 1, "time")} in a row: re-run \`maruhi mirror sync\` when the writes settle (the mirror keeps the replication in progress, which the next run restarts at sequence 0)`,
+        ),
+      );
     }
     const { pages, lines, committed } = attempt;
     // A replica past the view taken before the export is the one honest
@@ -305,17 +311,38 @@ function replicateWithRestarts<R>(
       committed.chainHeadSeq > viewBefore.state.headSeq
         ? yield* input.verified.pipe(
             // The strongest evidence gets the most specific report (round
-            // 10): the mirror now holds a replica from a server that failed
-            // verification right after exporting it
-            Effect.mapError((error) =>
-              cliError(
-                `The mirror now holds a replica at chain seq ${committed.chainHeadSeq} (head ${committed.chainHeadHashHex}), past the view taken before the export (seq ${viewBefore.state.headSeq}), and the server failed verification right after exporting it: ${error.message}. Do not promote the mirror; run \`maruhi project verify\` against the server`,
-              ),
-            ),
+            // 10) — and a server that merely stopped answering, or refused
+            // the session, is not one that failed verification (round 11)
+            Effect.mapError((error) => secondViewFailure(error, committed, viewBefore)),
           )
         : viewBefore;
     return { pages, lines, committed, restarts, verified, viewBefore };
   });
+}
+
+/** What the failure of the view taken after the commit means for the replica the mirror now holds (its flags are kept). */
+function secondViewFailure(
+  error: CliError,
+  committed: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
+  viewBefore: VerifiedProject,
+): CliError {
+  const replica = `the replica the mirror now holds (chain seq ${committed.chainHeadSeq}, head ${committed.chainHeadHashHex}) is past the view taken before the export (seq ${viewBefore.state.headSeq})`;
+  const message =
+    error.unreachable === true
+      ? `The server stopped answering after the commit (${error.message}): ${replica} and could not be checked against a second view. Verify the server (\`maruhi project verify\`) before promoting the mirror`
+      : error.evidence === true
+        ? `The mirror now holds a replica at chain seq ${committed.chainHeadSeq} (head ${committed.chainHeadHashHex}), past the view taken before the export (seq ${viewBefore.state.headSeq}), and the server failed verification right after exporting it: ${error.message}. Do not promote the mirror; run \`maruhi project verify\` against the server`
+        : `The server could not be verified again after the commit (${error.message}): ${replica} and was not checked against a second view. Re-run \`maruhi mirror sync\`, or \`maruhi project verify\` against the server, before promoting the mirror`;
+  return new CliError({
+    message,
+    ...(error.evidence === undefined ? {} : { evidence: error.evidence }),
+    ...(error.unreachable === undefined ? {} : { unreachable: error.unreachable }),
+  });
+}
+
+/** The fork evidence a mirror's reported head carries against the verified view (`maruhi mirror status` fails on it — round 11); null = none. */
+export function statusEvidence(status: MirrorStatus, verified: VerifiedProject): string | null {
+  return forkNote(status.head, verified);
 }
 
 /** Whether a head is an entry of a verified chain (its head, or an earlier entry). */
@@ -438,6 +465,16 @@ function forkNote(
   return null;
 }
 
+/** The sync's own note on the committed head: on the sync path an "ahead" has one honest cause less than the status's (round 11). */
+function syncHeadNote(
+  head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
+  verified: VerifiedProject,
+): string {
+  return head.chainHeadSeq > verified.state.headSeq && forkNote(head, verified) === null
+    ? `ahead of the verified view taken after the commit (seq ${head.chainHeadSeq} > ${verified.state.headSeq}) — the server exported entries it no longer serves (a rollback at the server), or the replication was forced from a server that is not the mirror's recorded source`
+    : headNote(head, verified);
+}
+
 function describeLastSync(status: MirrorStatus): string {
   return status.lastSync === undefined
     ? "No replication recorded since the mark (the replication history is shown to admins and owners)"
@@ -466,7 +503,7 @@ export function describeMirrorSync(
       ? ""
       : `; ${countNoun(committed.ownAuditRows, "audit row")} of the mirror's own (the reads and leases it served) re-appended after the replica's`;
   return [
-    `Replicated project ${projectId} to ${mirrorOrigin}: chain head seq=${committed.chainHeadSeq} (${headNote(committed, verified)}); audit seq=${committed.auditMaxSeq}; ${countNoun(result.pages, "page")}, ${countNoun(result.lines, "line")}${restarted}${own}`,
+    `Replicated project ${projectId} to ${mirrorOrigin}: chain head seq=${committed.chainHeadSeq} (${syncHeadNote(committed, verified)}); audit seq=${committed.auditMaxSeq}; ${countNoun(result.pages, "page")}, ${countNoun(result.lines, "line")}${restarted}${own}`,
     `Before this run: ${describeLastSync(result.before)}`,
   ];
 }

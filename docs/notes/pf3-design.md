@@ -261,3 +261,12 @@ for round 9; D, H and I are closed.
 
 Ruling J received an adopted candidate in this round and stays open for
 round 10; C, D, H and I are closed.
+
+### 8-9. Round 10 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| J (switch-over) | J-24 (strict, J-21's own class): a staged audit row the canonical form refuses (a negative or fractional `server_ts`, a TEXT `epoch` — the schema carries no CHECK) passed every trailer check and the swap, and the extension after the commit threw the same defect J-21 closed for gaps — the mirror bricked; on the restore path the convergence ran after the chain was promoted, leaving a `not-empty`, unprovisioned destination. An uploaded column whose tail is no head hash did the same at the mirror's first own row. J-25 (minor): the plain restore does not check the chain's seq shape (the import's pre-check and the mirror do); J-26 (cosmetic): a schema-refused row on the restore path surfaces as the raw SQLite error; J-T2 (tests only): "duplicates die at the swap" unpinned | **J-24 adopted** — the heads are derived over the staged rows before the swap (from the mirror's own head at the position, or from the uploaded column's tail, which must be a head hash) by the extension's own hashing, moved earlier at no net cost; a failure is `malformed` with the live log untouched; the swap installs the derived heads; the restore derives before promoting the chain. J-25, J-26 recorded, not adopted (the operator's own file; ruling H's domain). Residuals recorded: a replica of half the storage guard can never be staged (ruling A's matter); crafted audit rows can fail single reads through two read-path defects, recoverable by the next replica |
+
+Ruling J received an adopted candidate in this round and stays open for
+round 11; C, D, H and I are closed.
