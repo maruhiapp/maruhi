@@ -113,6 +113,7 @@ import {
 import type {
   MemberProposalValue,
   PreflightOutcome,
+  PreflightRecipientInput,
   PreflightVariableInput,
   ProposalOutcome,
   ProposalReceipt,
@@ -1154,6 +1155,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     ephemeralPubHex: string,
     facts: LeaseTokenFacts,
     variables: readonly PreflightVariableInput[],
+    recipients?: readonly PreflightRecipientInput[],
   ): Promise<PreflightOutcome> {
     return this.#runtime.runPromise(
       this.#opLock.withPermit(
@@ -1164,6 +1166,7 @@ export class ProjectChainDO extends DurableObject<Env> {
             facts,
             variables,
             this.#stateCache,
+            recipients,
           ).pipe(
             Effect.match({
               onSuccess: (): PreflightOutcome => ({ kind: "ok" }),
@@ -1222,7 +1225,7 @@ export class ProjectChainDO extends DurableObject<Env> {
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   markMirror(actor: DataActor, sourceOrigin: string): Promise<DataOutcome<MirrorStatusValue>> {
     return this.#runData(
-      markMirrorProgram(actor, sourceOrigin, this.ctx.storage.sql, this.#stateCache),
+      markMirrorProgram(actor, sourceOrigin, this.ctx.storage, this.#stateCache),
     );
   }
 
@@ -1377,7 +1380,7 @@ export class ProjectChainDO extends DurableObject<Env> {
    * audit head is returned (for cross-checking).
    */
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the restore worker calls it via the stub)
-  opsRestore(objectKey: string): Promise<OpsRestoreOutcome> {
+  opsRestore(objectKey: string, etag?: string): Promise<OpsRestoreOutcome> {
     const bucket = this.env.OPS_BACKUP_BUCKET;
     if (bucket === undefined) {
       return Promise.resolve({ kind: "no-bucket" });
@@ -1390,9 +1393,18 @@ export class ProjectChainDO extends DurableObject<Env> {
         Effect.gen(function* () {
           const audit = yield* AuditStore;
           const restored = yield* Effect.promise(async () => {
-            const object = await bucket.get(objectKey);
+            // An import restores the body its pre-check verified, by its
+            // etag (ruling H revision, round 4): a re-put between the two
+            // reads is refused, never restored unchecked
+            const object =
+              etag === undefined
+                ? await bucket.get(objectKey)
+                : await bucket.get(objectKey, { onlyIf: { etagMatches: etag } });
             if (object === null) {
               return new RestoreRefusedError("object-missing");
+            }
+            if (!("body" in object)) {
+              return new RestoreRefusedError("object-changed");
             }
             try {
               return await restoreSnapshot({

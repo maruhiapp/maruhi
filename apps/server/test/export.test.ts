@@ -402,7 +402,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
           marks: {
             chainHeadSeq: head.chainHeadSeq,
             chainHeadHashHex: head.chainHeadHashHex,
-            attestationMark: Number(attestation[0]?.["m"] ?? 0),
             mutationSeq: Number(mutation[0]?.["seq"] ?? 0),
           },
           ...overrides,
@@ -438,7 +437,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
         marks: {
           chainHeadSeq: ownersHead.chainHeadSeq,
           chainHeadHashHex: ownersHead.chainHeadHashHex,
-          attestationMark: Number(attestation[0]?.["m"] ?? 0),
           mutationSeq: Number(ownersMutation[0]?.["seq"] ?? 0),
         },
         ...overrides,

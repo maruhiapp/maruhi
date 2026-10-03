@@ -133,7 +133,7 @@ function storedConnector(value: string): RotationConnector {
 /** §14-5 (5): the wraps of one variable are exactly W(E) — nobody missing, nobody extra, no duplicate device. */
 function recipientsMatch(
   expected: ReadonlySet<string>,
-  wraps: readonly ProposalWrapInput[],
+  wraps: readonly Pick<ProposalWrapInput, "recipientUserId" | "recipientEncPubHex">[],
 ): boolean {
   const seen = new Set<string>();
   for (const wrap of wraps) {
@@ -146,19 +146,20 @@ function recipientsMatch(
   return seen.size === expected.size;
 }
 
-/** §14-5 (3)–(5): one variable's checks (distinct, active, base version current, recipients exact). */
+/** §14-5 (3): whether a variable is named twice (judged over the whole list, before any per-variable check). */
+function namesVariableTwice(variables: readonly { readonly variableId: string }[]): boolean {
+  return new Set(variables.map((variable) => variable.variableId)).size !== variables.length;
+}
+
+/** §14-5 (4)–(6): one variable's checks (active, base version current, recipients exact, no pending proposal). */
 const variableRefusal = (
   store: DataStoreShape,
   environmentId: string,
   recipients: ReadonlySet<string>,
-  seen: Set<string>,
   variable: ProposalVariableInput,
+  nowMs: number,
 ): Effect.Effect<RotationProposalRejectReason | null> =>
   Effect.gen(function* () {
-    if (seen.has(variable.variableId)) {
-      return "duplicate-variable";
-    }
-    seen.add(variable.variableId);
     const stored = yield* store.findVariable(environmentId, variable.variableId);
     if (stored === null || stored.deletedAtMs !== null || stored.latestStatus !== "active") {
       return "variable-inactive";
@@ -166,7 +167,15 @@ const variableRefusal = (
     if (stored.latestVersion !== variable.baseVersion) {
       return "base-version-stale";
     }
-    return recipientsMatch(recipients, variable.wraps) ? null : "recipients-mismatch";
+    if (!recipientsMatch(recipients, variable.wraps)) {
+      return "recipients-mismatch";
+    }
+    // One proposal per variable at a time, at the mint as at the pre-flight
+    // (ruling O revision, round 4 — two jobs that both pre-flighted before
+    // either minted must not both store)
+    return (yield* store.variableHasPendingProposal(environmentId, variable.variableId, nowMs))
+      ? "variable-pending"
+      : null;
   });
 
 /** The §14-5 acceptance checks in their order ((2)–(7)); null = acceptable. */
@@ -181,10 +190,12 @@ const proposalRefusal = (
     if (yield* store.proposalExists(proposal.proposalId)) {
       return "duplicate-id";
     }
+    if (namesVariableTwice(proposal.variables)) {
+      return "duplicate-variable";
+    }
     const recipients = proposalRecipientKeys(state, environmentId);
-    const seen = new Set<string>();
     for (const variable of proposal.variables) {
-      const reason = yield* variableRefusal(store, environmentId, recipients, seen, variable);
+      const reason = yield* variableRefusal(store, environmentId, recipients, variable, nowMs);
       if (reason !== null) {
         return reason;
       }
@@ -360,6 +371,12 @@ export interface PreflightVariableInput {
   readonly baseVersion: number;
 }
 
+/** The recipient set the job will seal to (public chain facts — ruling O revision, round 4): checked against W(E) before the issuer is touched. */
+export interface PreflightRecipientInput {
+  readonly userId: string;
+  readonly encPubHex: string;
+}
+
 /** The pre-flight result crossing the RPC boundary (the same split as ProposalOutcome, no value). */
 export type PreflightOutcome =
   | { readonly kind: "ok" }
@@ -379,13 +396,14 @@ export const preflightRotationProgram = (
   facts: LeaseTokenFacts,
   variables: readonly PreflightVariableInput[],
   cache: StateCache,
+  recipients?: readonly PreflightRecipientInput[],
 ): Effect.Effect<
   void,
   ProposalRejection,
   ChainStore | DataStore | AuditStore | ServerKey | StorageMeter
 > =>
   Effect.gen(function* () {
-    yield* authorizeWorkload(environmentId, ephemeralPubHex, facts, cache);
+    const { state } = yield* authorizeWorkload(environmentId, ephemeralPubHex, facts, cache);
     const store = yield* DataStore;
     const nowMs = Date.now();
     if (store.isMirrorSync()) {
@@ -405,13 +423,27 @@ export const preflightRotationProgram = (
       });
     }
     yield* sweepExpired(nowMs);
-    const seen = new Set<string>();
+    if (namesVariableTwice(variables)) {
+      return yield* preflightRefusal("duplicate-variable");
+    }
     for (const variable of variables) {
-      if (seen.has(variable.variableId)) {
-        return yield* preflightRefusal("duplicate-variable");
-      }
-      seen.add(variable.variableId);
       yield* preflightVariable(store, environmentId, variable, nowMs);
+    }
+    // The recipient set the job will seal to, when it says (ruling O
+    // revision, round 4): a disagreement with W(E) that is not a race — a
+    // chain view that differs, a device registered since the lease — is
+    // answered here, before the issuer is touched; the mint repeats it
+    if (
+      recipients !== undefined &&
+      !recipientsMatch(
+        proposalRecipientKeys(state, environmentId),
+        recipients.map((recipient) => ({
+          recipientUserId: recipient.userId,
+          recipientEncPubHex: recipient.encPubHex,
+        })),
+      )
+    ) {
+      return yield* preflightRefusal("recipients-mismatch");
     }
     if ((yield* store.countPendingProposals(nowMs)) >= MAX_PENDING_ROTATION_PROPOSALS) {
       return yield* preflightRefusal("pending-limit");
@@ -460,7 +492,16 @@ export const listRotationProposalsProgram = (actor: DataActor, cache: StateCache
     // explicitly). Environments outside the person's scope are filtered
     const { member } = yield* requireMemberState(actor.userId, "member", cache);
     const store = yield* DataStore;
-    const pending = yield* store.listPendingProposals(Date.now());
+    const nowMs = Date.now();
+    // The list is the read that is about proposals, and the one a project
+    // whose rotation job is gone still runs (the cron's --fail-on-pending):
+    // it sweeps too, so expired rows get their closing audit row and leave
+    // the §12-8 meter (ruling P revision, round 4 — the var.read precedent
+    // for a read that appends). A mirror writes nothing; its source sweeps
+    if (!store.isMirrorSync()) {
+      yield* sweepExpired(nowMs);
+    }
+    const pending = yield* store.listPendingProposals(nowMs);
     return pending
       .filter((proposal) => scopeIncludesEnvironment(member.scope, proposal.environmentId))
       .map((proposal) => ownView(proposal, actor.userId));

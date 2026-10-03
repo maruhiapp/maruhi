@@ -172,6 +172,18 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
       kind: "refused",
       code: "trailer-missing",
     });
+    // An import restores the body its pre-check verified, by etag (ruling H
+    // revision, round 4): another etag is `object-changed` before any byte
+    // is read; the verified one reaches the content checks as before
+    expect(await stub().opsRestore("do/test/truncated.ndjson.gz", "0".repeat(32))).toEqual({
+      kind: "refused",
+      code: "object-changed",
+    });
+    const current = await bucket.head("do/test/truncated.ndjson.gz");
+    expect(await stub().opsRestore("do/test/truncated.ndjson.gz", current?.etag)).toEqual({
+      kind: "refused",
+      code: "trailer-missing",
+    });
     // The partially written rows are gone (rolled back to empty)
     expect(await queryProjectDo(projectId, "SELECT * FROM environments")).toEqual([]);
 

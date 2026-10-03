@@ -36,6 +36,7 @@ import {
   commitMirrorReplica,
   discardMirrorStaging,
   markMirror,
+  remarkMirror,
   type MirrorCommit,
   MirrorPageRefusedError,
   readMirrorState,
@@ -143,15 +144,22 @@ export const mirrorStatusProgram = (
 export const markMirrorProgram = (
   actor: DataActor,
   sourceOrigin: string,
-  sql: SqlStorage,
+  storage: DurableObjectStorage,
   cache: StateCache,
 ): Effect.Effect<MirrorStatusValue, DataRejectedError, ChainStore> =>
   Effect.gen(function* () {
     yield* requireMemberState(actor.userId, "owner", cache);
-    if (readMirrorState(sql) !== null) {
+    const sql = storage.sql;
+    const current = readMirrorState(sql);
+    if (current === null) {
+      markMirror(sql, sourceOrigin, Date.now());
+    } else if (current.sourceOrigin === sourceOrigin) {
       return yield* rejectData({ kind: "mirror-state", reason: "already-mirror" });
+    } else {
+      // A mark naming another source re-points the mirror (ruling C
+      // revision, round 4): the project stays frozen throughout
+      remarkMirror(storage, PROJECT_DO_TABLES, sourceOrigin, Date.now());
     }
-    markMirror(sql, sourceOrigin, Date.now());
     return statusOf(sql, "owner");
   });
 

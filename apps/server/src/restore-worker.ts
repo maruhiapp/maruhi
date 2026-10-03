@@ -231,6 +231,8 @@ interface CheckedImport {
   /** The verified chain's owners (a re-run is accepted under any of their project rows). */
   readonly owners: readonly string[];
   readonly classification: Extract<ImportClassification, { kind: "ok" }>;
+  /** The etag of the snapshot object the chain was verified from (the DO restores that body or refuses). */
+  readonly etag: string;
 }
 
 type PrecheckOutcome =
@@ -285,7 +287,11 @@ async function precheckImport(env: RestoreEnv, job: ImportJob): Promise<Precheck
   if (classification.kind === "refused") {
     return importRefused(classification.code);
   }
-  return { kind: "ok", checked: { file, projectId: chain.projectId, owners, classification } };
+  return {
+    kind: "ok",
+    // The DO restores this body and no other (its etag — ruling H revision, round 4)
+    checked: { file, projectId: chain.projectId, owners, classification, etag: snapshot.etag },
+  };
 }
 
 /** A drill's report of the pre-checks (nothing is provisioned). */
@@ -433,6 +439,8 @@ async function restoreFromSnapshot(
   job: RestoreJob,
   /** The project id the import's pre-check established from the verified chain (no second scan — ruling H revision). */
   verifiedProjectId?: string,
+  /** The etag of the snapshot the pre-check verified: the DO restores that body or refuses `object-changed`. */
+  etag?: string,
 ): Promise<RestoredProject | Extract<RestoreJobResult, { status: "failed" }>> {
   const namespace =
     job.target === "production" ? env.PRODUCTION_PROJECT_CHAIN : env.DRILL_PROJECT_CHAIN;
@@ -449,7 +457,7 @@ async function restoreFromSnapshot(
     // values, so this converts back to the declared type (the same
     // reason as rpcCall in worker-env.ts; the restore worker has no
     // Effect runtime)
-    const outcome = await (stub.opsRestore(job.objectKey) as Promise<OpsRestoreOutcome>);
+    const outcome = await (stub.opsRestore(job.objectKey, etag) as Promise<OpsRestoreOutcome>);
     return { projectId, outcome, stub };
   } catch (error) {
     console.warn("restore RPC failed", error instanceof Error ? error.name : "unknown");
@@ -495,7 +503,7 @@ async function runImportJob(env: RestoreEnv, job: ImportJob): Promise<RestoreJob
     return prechecked.result;
   }
   const { checked } = prechecked;
-  const restored = await restoreFromSnapshot(env, job, checked.projectId);
+  const restored = await restoreFromSnapshot(env, job, checked.projectId, checked.etag);
   if (job.target === "drill") {
     // A drill rehearses the import: the DO half is the drill's own result,
     // the identities half what production would do

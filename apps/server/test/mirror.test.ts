@@ -221,6 +221,19 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       _tag: "MirrorState",
       reason: "already-mirror",
     });
+    // A mark naming another source re-points the mirror without a writable
+    // window (ruling C revision, round 4); the same source is still a
+    // second mark. The replicated positions stay (the chain head below
+    // still bootstraps the replication)
+    const repointed = await mark(OWNER, "https://other.maruhi.app");
+    expect(repointed.status).toBe(200);
+    expect(await repointed.json()).toMatchObject({
+      mirror: true,
+      sourceOrigin: "https://other.maruhi.app",
+      head: { chainHeadSeq: olderTrailer["chainHeadSeq"] },
+    });
+    expect((await mark(OWNER)).status).toBe(200);
+    expect((await statusOk()).sourceOrigin).toBe(SOURCE);
 
     // Writes are refused after the membership check (a non-member keeps
     // the uniform 404 — the mark is not an oracle), before any state change
@@ -378,6 +391,38 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       hashHex: String(newerTrailer["chainHeadHashHex"]),
     };
     await appendOperation(fixture, OWNER, changeRoleOperation(READER, "reader"));
+  });
+
+  it("a frozen former primary syncs back from the destination: the rows its export carried are not re-appended (ruling J revision, round 4)", async () => {
+    // The switch-over order of §11-6: the source is marked (frozen) first,
+    // then exported. Its audit rows between the mark and the export's own
+    // row travel in the file and come back in the destination's replica;
+    // only the rows the replica does not carry are the mirror's own
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    expect((await mark(OWNER, "https://destination.maruhi.app")).status).toBe(200);
+    const markedAudit = await count("SELECT MAX(seq) AS n FROM audit_events");
+    expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
+    const exported = await exportAll();
+    const trailer = parsedLine(exported[exported.length - 1]);
+    const exportedAudit = Number(trailer["auditMaxSeq"]);
+    expect(exportedAudit).toBeGreaterThan(markedAudit + 1);
+    // A read after the export: the one row the replica does not carry
+    expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
+    const last = await upload(exported, 50);
+    expect(last.status).toBe(200);
+    expect(((await last.json()) as WirePageOutcome).committed).toMatchObject({
+      chainHeadSeq: trailer["chainHeadSeq"],
+      auditMaxSeq: exportedAudit,
+      ownAuditRows: 1,
+    });
+    expect(await count("SELECT COUNT(*) AS n FROM audit_events")).toBe(exportedAudit + 1);
+    expect(await count("SELECT COUNT(DISTINCT row_id) AS n FROM audit_events")).toBe(
+      exportedAudit + 1,
+    );
+    expect(await count("SELECT MAX(seq) AS n FROM audit_events")).toBe(exportedAudit + 1);
+    expect(await stagingTables()).toEqual([]);
+    expect((await unmark(OWNER)).status).toBe(200);
   });
 
   it("refuses out-of-sequence and malformed pages with static reasons and discards the staging", async () => {

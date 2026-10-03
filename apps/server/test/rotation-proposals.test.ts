@@ -196,6 +196,7 @@ async function proposalFor(options: ProposalOptions = {}) {
 async function preflight(input: {
   readonly variables: readonly { variableId: string; baseVersion: number }[];
   readonly oidcToken?: string;
+  readonly recipients?: readonly { userId: string; encPubHex: string }[];
 }): Promise<Response> {
   return SELF.fetch(
     `https://maruhi.test/projects/${projectId}/environments/${ENV}/rotation-proposals/preflight`,
@@ -206,6 +207,7 @@ async function preflight(input: {
         oidcToken: input.oidcToken ?? (await makeOidcToken()),
         ephemeralPubHex: workload.publicKeyHex,
         variables: input.variables,
+        ...(input.recipients === undefined ? {} : { recipients: input.recipients }),
       }),
     },
   );
@@ -615,7 +617,7 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
   });
 
   it("stores the expiry as the server's instant, caps the pending count, and rate-limits the mint window with a lease_denied row", async () => {
-    await grantedProject();
+    const { dek } = await grantedProject();
     const before = Date.now();
     const first = await mint({ proposal: await proposalFor({ expiresInDays: 3 }) });
     await expectStatus(first, 200);
@@ -625,13 +627,24 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     expect(receipt.expiresAtMs).toBeLessThanOrEqual(Date.now() + threeDays);
     await queryProjectDo(projectId, "DELETE FROM rotation_proposals");
     await queryProjectDo(projectId, "DELETE FROM lease_windows WHERE kind = 'proposed'");
-    // Fill the pending slots (distinct ids), then one more is refused
+    // Fill the pending slots (distinct ids, one variable each — a variable
+    // holds one pending proposal at a time), then one more is refused
     for (let i = 0; i < MAX_PENDING_ROTATION_PROPOSALS; i += 1) {
       const proposalId = i.toString(16).padStart(32, "0");
-      await expectStatus(await mint({ proposal: await proposalFor({ proposalId }) }), 200);
+      const variableId = i === 0 ? VAR : `var-slot-${i.toString().padStart(14, "0")}`;
+      if (i > 0) {
+        await createVariableOk(dek, variableId, `SLOT_${i}`, `value-${i}`);
+      }
+      await expectStatus(
+        await mint({ proposal: await proposalFor({ proposalId, variableId }) }),
+        200,
+      );
     }
+    await createVariableOk(dek, "var-slot-overflow", "SLOT_OVERFLOW", "value-overflow");
     await expectRejected(
-      await mint({ proposal: await proposalFor({ proposalId: "f".repeat(32) }) }),
+      await mint({
+        proposal: await proposalFor({ proposalId: "f".repeat(32), variableId: "var-slot-overflow" }),
+      }),
       "pending-limit",
     );
     // The window: exhausted = 429 after authorization, with a denied row (reason only)
@@ -659,6 +672,24 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     );
     await grantServer({ scope: [ENV] });
     await expectStatus(await preflight({ variables: [{ variableId: VAR, baseVersion: 1 }] }), 200);
+    // The recipient set the job will seal to is checked here too when the
+    // job says it (ruling O revision, round 4): exactly W(E) passes, a
+    // missing writer is refused before the issuer is touched
+    const writers = WRITERS.map((userId) => ({
+      userId,
+      encPubHex: vectorKeyOf(userId).enc_pub_hex,
+    }));
+    await expectStatus(
+      await preflight({ variables: [{ variableId: VAR, baseVersion: 1 }], recipients: writers }),
+      200,
+    );
+    await expectRejected(
+      await preflight({
+        variables: [{ variableId: VAR, baseVersion: 1 }],
+        recipients: writers.slice(0, 1),
+      }),
+      "recipients-mismatch",
+    );
     await expectRejected(
       await preflight({ variables: [{ variableId: VAR, baseVersion: 2 }] }),
       "base-version-stale",
@@ -675,12 +706,19 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     expect(
       (await readAuditEvents(projectId)).filter((event) => event["event"] === "rotation.proposed"),
     ).toEqual([]);
-    // A stored proposal makes the same variable pending for the next job
+    // A stored proposal makes the same variable pending for the next job —
+    // at the mint as well as at the pre-flight (two jobs that both
+    // pre-flighted before either minted — ruling O revision, round 4)
     await expectStatus(await mint({ proposal: await proposalFor() }), 200);
     await expectRejected(
       await preflight({ variables: [{ variableId: VAR, baseVersion: 1 }] }),
       "variable-pending",
     );
+    await expectRejected(
+      await mint({ proposal: await proposalFor({ proposalId: "f".repeat(32) }) }),
+      "variable-pending",
+    );
+    expect(await proposalsOf(MEMBER)).toHaveLength(1);
     // The expiry sweep (on a pre-flight too) leaves the proposal's history
     // as an audit row and frees the variable
     await queryProjectDo(
@@ -732,7 +770,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       Date.now() - 1000,
       PROPOSAL_ID,
     );
-    expect(await proposalsOf(MEMBER)).toEqual([]);
     // A member who began the resolution before the expiry reaches the row
     // until a sweep drops it: the outcome is theirs, not "nobody's"
     expect((await resolveAs(MEMBER, PROPOSAL_ID, { outcome: "rejected" })).status).toBe(204);
@@ -742,5 +779,25 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     expect((await resolveAs(MEMBER, PROPOSAL_ID, { outcome: "rejected" })).status).toBe(404);
     // The id is free again
     await expectStatus(await mint({ proposal: await proposalFor() }), 200);
+    // The member list sweeps too (ruling P revision, round 4): a project
+    // whose rotation job is gone still closes its expired proposals' history
+    // on the next `rotation proposals` / `--fail-on-pending`, and the
+    // sealed values leave the §12-8 meter
+    await queryProjectDo(
+      projectId,
+      "UPDATE rotation_proposals SET expires_at = ? WHERE proposal_id = ?",
+      Date.now() - 1000,
+      PROPOSAL_ID,
+    );
+    expect(await proposalsOf(MEMBER)).toEqual([]);
+    expect(
+      (await readAuditEvents(projectId)).filter(
+        (event) => event["event"] === "rotation.proposal_expired",
+      ),
+    ).toHaveLength(1);
+    expect(await queryProjectDo(projectId, "SELECT proposal_id FROM rotation_proposals")).toEqual(
+      [],
+    );
+    expect((await resolveAs(MEMBER, PROPOSAL_ID, { outcome: "rejected" })).status).toBe(404);
   });
 });

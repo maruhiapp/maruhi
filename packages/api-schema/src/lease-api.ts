@@ -20,6 +20,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { ChainEntrySchema } from "./chain.ts";
 import { PulledVariableSchema } from "./data-api.ts";
 import {
+  BoundedUserId,
   CheckpointValueSnapshotSchema,
   DistributedEnvironmentManifestSchema,
   DistributedEnvironmentMetaStatementSchema,
@@ -164,6 +165,17 @@ export const RotationPreflightRequestSchema = Schema.Struct({
   variables: Schema.Array(
     Schema.Struct({ variableId: VariableIdSchema, baseVersion: PositiveInt }),
   ).check(Schema.isMinLength(1), Schema.isMaxLength(8)),
+  /**
+   * The recipient set the job will seal to (public chain facts — user id
+   * and device enc public key), checked against W(E) before the issuer is
+   * touched (ruling O revision, round 4); the mint repeats the check on
+   * the wraps. Bounded by the §12-8 device cap times the member cap.
+   */
+  recipients: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ userId: BoundedUserId, encPubHex: EncPubHex })).check(
+      Schema.isMaxLength(4096),
+    ),
+  ),
 });
 
 /** The pre-flight passed (the proposal would be accepted as far as its content is not involved). */

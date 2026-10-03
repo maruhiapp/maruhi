@@ -421,7 +421,7 @@ export async function writeSnapshot(input: WriteSnapshotInput): Promise<WriteSna
 export interface ExportMarks {
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string | null;
-  readonly attestationMark: number;
+  /** The mutation counter covers every tracked table, head attestations included (ruling C revision, round 4 — no separate attestation mark). */
   readonly mutationSeq: number;
 }
 
@@ -454,7 +454,6 @@ function marksOf(sql: SqlStorage): ExportMarks {
   return {
     chainHeadSeq: marks.chainHeadSeq,
     chainHeadHashHex: marks.chainHeadHashHex,
-    attestationMark: marks.attestationMark,
     mutationSeq: marks.mutationSeq,
   };
 }
@@ -464,7 +463,6 @@ function sameMarks(a: ExportMarks, b: ExportMarks): boolean {
   return (
     a.chainHeadSeq === b.chainHeadSeq &&
     a.chainHeadHashHex === b.chainHeadHashHex &&
-    a.attestationMark === b.attestationMark &&
     a.mutationSeq === b.mutationSeq
   );
 }
@@ -558,15 +556,15 @@ function decodeMarks(value: unknown): ExportMarks | null {
   }
   const marks = value as Partial<ExportMarks>;
   const { chainHeadHashHex } = marks;
-  const numbers = [marks.chainHeadSeq, marks.attestationMark, marks.mutationSeq];
+  const numbers = [marks.chainHeadSeq, marks.mutationSeq];
   if (
     !numbers.every((number) => typeof number === "number") ||
     (chainHeadHashHex !== null && typeof chainHeadHashHex !== "string")
   ) {
     return null;
   }
-  const [chainHeadSeq = 0, attestationMark = 0, mutationSeq = 0] = numbers;
-  return { chainHeadSeq, chainHeadHashHex: chainHeadHashHex ?? null, attestationMark, mutationSeq };
+  const [chainHeadSeq = 0, mutationSeq = 0] = numbers;
+  return { chainHeadSeq, chainHeadHashHex: chainHeadHashHex ?? null, mutationSeq };
 }
 
 export interface ExportPageInput {
@@ -753,6 +751,8 @@ export function exportSnapshotPage(input: ExportPageInput): ExportPageResult {
 export type RestoreFailureCode =
   | "not-empty"
   | "object-missing"
+  /** The object's etag is not the one the import's pre-check verified (replaced between the two reads). */
+  | "object-changed"
   | "malformed"
   | "schema-mismatch"
   | "trailer-missing"

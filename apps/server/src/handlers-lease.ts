@@ -239,6 +239,7 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
             payload.ephemeralPubHex,
             facts,
             payload.variables,
+            payload.recipients,
           ),
         );
         if (outcome.kind === "rejected") {

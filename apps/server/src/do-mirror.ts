@@ -117,6 +117,31 @@ export function readMirrorState(sql: SqlStorage): MirrorState | null {
   };
 }
 
+/**
+ * Re-points a marked project at another source (ruling C revision, round
+ * 4 — the honest path after a failover elsewhere, without a writable
+ * window): the staging in progress goes, the source changes, the
+ * replicated positions stay (the chain head is checked against the new
+ * source's chain by the client's mark guard; the audit position is the
+ * floor the next replica must reach), and the mutation counter is
+ * forgotten — it is per deployment.
+ */
+export function remarkMirror(
+  storage: DurableObjectStorage,
+  tables: readonly string[],
+  sourceOrigin: string,
+  nowMs: number,
+): void {
+  storage.transactionSync(() => {
+    dropStaging(storage.sql, tables);
+    storage.sql.exec(
+      "UPDATE mirror_state SET source_origin = ?, marked_at = ?, expected_sequence = 0, staging_table = NULL, last_mutation_seq = NULL WHERE id = 1",
+      sourceOrigin,
+      nowMs,
+    );
+  });
+}
+
 /** Marks the project (the caller checked it is not marked); the current heads are the bootstrap position. */
 export function markMirror(sql: SqlStorage, sourceOrigin: string, nowMs: number): void {
   const marks = readWatermarks(sql);
@@ -519,23 +544,32 @@ export function commitMirrorReplica(input: MirrorCommitInput): MirrorCommit {
         throw malformed();
       }
       const replicaAuditSeq = stagedMaxSeq(sql, AUDIT_TABLE);
-      // The mirror's own rows (past the last replicated position) wait aside
+      // The mirror's own rows (past the last replicated position) wait
+      // aside — minus the ones the replica carries by their wire row id
+      // (AUDIT_SPEC §7 C1): a frozen former primary's rows between its mark
+      // and its export came back through the destination, and re-appending
+      // them would collide on the row id (ruling J revision, round 4)
       const auditColumns = sql.exec(`SELECT * FROM ${AUDIT_TABLE} LIMIT 0`).columnNames;
       sql.exec(`DROP TABLE IF EXISTS ${LOCAL_AUDIT_TABLE}`);
+      const stagedAudit = stagingOf(AUDIT_TABLE);
+      const carried = hasTable(sql, stagedAudit)
+        ? ` AND row_id NOT IN (SELECT row_id FROM ${stagedAudit})`
+        : "";
       sql.exec(
-        `CREATE TABLE ${LOCAL_AUDIT_TABLE} AS SELECT * FROM ${AUDIT_TABLE} WHERE seq > ?`,
+        `CREATE TABLE ${LOCAL_AUDIT_TABLE} AS SELECT * FROM ${AUDIT_TABLE} WHERE seq > ?${carried}`,
         state.lastAuditSeq,
       );
       const ownAuditRows = Number(
         sql.exec(`SELECT COUNT(*) AS n FROM ${LOCAL_AUDIT_TABLE}`).one()["n"],
       );
       swapTables(sql, input.tables, input.nowMs);
-      // … and follow the replica's rows (contiguous past the last position,
-      // so a shift keeps their order)
-      const shifted = auditColumns.map((column) => (column === "seq" ? "seq - ? + ?" : column));
+      // … and follow the replica's rows, renumbered densely in their order
+      // (the rows the replica carried left holes)
+      const shifted = auditColumns.map((column) =>
+        column === "seq" ? "? + ROW_NUMBER() OVER (ORDER BY seq)" : column,
+      );
       sql.exec(
         `INSERT INTO ${AUDIT_TABLE} (${auditColumns.join(", ")}) SELECT ${shifted.join(", ")} FROM ${LOCAL_AUDIT_TABLE} ORDER BY seq`,
-        state.lastAuditSeq,
         replicaAuditSeq,
       );
       sql.exec(`DROP TABLE ${LOCAL_AUDIT_TABLE}`);
