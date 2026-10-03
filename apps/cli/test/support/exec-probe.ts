@@ -77,10 +77,12 @@ const program = Effect.gen(function* () {
         (error: unknown) => (error instanceof Error ? error.message : String(error)),
       ),
   );
-  // A flooded stderr is dropped whole (never cut) and the script stopped (D-9)
+  // A flooded stderr is dropped whole (never cut — D-9) and drained: the
+  // script runs on and its value is read (D-10 — a stopped script would
+  // strand the credential it may have created)
   const floodedStderr = yield* Effect.promise(() =>
     runner.captureScript({
-      command: ["sh", "-c", "head -c 3000000 /dev/zero >&2; sleep 5; echo value"],
+      command: ["sh", "-c", "head -c 3000000 /dev/zero >&2; echo value"],
       cwd: process.cwd(),
       extraEnv: {},
     }),

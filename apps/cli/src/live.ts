@@ -53,6 +53,7 @@ import {
   buildChildEnvironment,
   type CaptureInput,
   type CaptureOutcome,
+  ScriptStoppedError,
   type ExecInput,
   type ExecOutcome,
   ProcessRunner,
@@ -186,22 +187,24 @@ async function captureScript(input: CaptureInput): Promise<CaptureOutcome> {
   }
   const stopPastCap = (bytes: Uint8Array | null) => {
     if (bytes === null) {
-      // The script is stopped the moment a cap is passed (D-6 / D-9)
+      // A stdout past the cap is never the value: the script is stopped
+      // the moment it is passed (D-6). A flooded stderr is only dropped —
+      // the script may have created the credential already and be about
+      // to print it, and stopping it would strand the credential by
+      // maruhi's own hand (ruling D revision, round 4)
       child.kill();
     }
     return bytes;
   };
   const [stdout, stderrBytes, exitCode] = await Promise.all([
-    readBounded(child.stdout as ReadableStream<Uint8Array>, MAX_SCRIPT_STREAM_BYTES).then(
+    readBounded(child.stdout as ReadableStream<Uint8Array>, MAX_SCRIPT_STREAM_BYTES, "cancel").then(
       stopPastCap,
     ),
-    readBounded(child.stderr as ReadableStream<Uint8Array>, MAX_SCRIPT_STREAM_BYTES).then(
-      stopPastCap,
-    ),
+    readBounded(child.stderr as ReadableStream<Uint8Array>, MAX_SCRIPT_STREAM_BYTES, "drain"),
     child.exited,
   ]);
   if (stdout === null) {
-    throw new Error(
+    throw new ScriptStoppedError(
       `${input.command[0] ?? ""} wrote more than ${MAX_SCRIPT_STREAM_MIB} MiB to stdout (a credential is small; commentary belongs on stderr): it was stopped and nothing it wrote was read`,
     );
   }
@@ -218,10 +221,15 @@ async function captureScript(input: CaptureInput): Promise<CaptureOutcome> {
 const MAX_SCRIPT_STREAM_MIB = 1;
 const MAX_SCRIPT_STREAM_BYTES = MAX_SCRIPT_STREAM_MIB * 1024 * 1024;
 
-/** Reads a stream up to `limit` bytes; null (and the stream cancelled) past the limit. */
+/**
+ * Reads a stream up to `limit` bytes; null past the limit — with the
+ * stream cancelled (`cancel`: the writer gets EPIPE on its next write),
+ * or read to its end and discarded (`drain`: the writer never notices).
+ */
 async function readBounded(
   stream: ReadableStream<Uint8Array>,
   limit: number,
+  pastLimit: "cancel" | "drain",
 ): Promise<Uint8Array | null> {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
@@ -233,7 +241,13 @@ async function readBounded(
     }
     total += value.byteLength;
     if (total > limit) {
-      await reader.cancel();
+      if (pastLimit === "cancel") {
+        await reader.cancel();
+      } else {
+        while (!(await reader.read()).done) {
+          // discarded
+        }
+      }
       return null;
     }
     chunks.push(value);

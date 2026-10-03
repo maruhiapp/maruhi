@@ -198,3 +198,14 @@ or deferred candidates — nothing strictly or structurally better — and are
 
 Rulings C, H and J received adopted candidates in this round and stay open
 for round 4; D and I are closed.
+
+### 8-3. Round 4 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (consistency) | C-13 (cleanup): drop the attestation mark from the cursor — `head_attestations` is a tracked table since C-12, so the mutation counter already covers it; the chain head stays (it binds the `project.exported` row and fills the trailer). The round-3 implementation was checked on every point (trigger coverage of every snapshot table and no staging table, swap and restore by `DELETE` + `INSERT … SELECT` so the triggers stay on the live tables, the trailer's head read from the prefix after the first page's materialization, the identities head from one cached state, no freeze bypass) | **C-13 adopted** — one client-controlled number fewer in the cursor, one comparison fewer, no lost coverage; §11-6 revised. Stays open for one round on the adoption |
+| H (import) | H-14: the chain is verified from one read of the object and the DO restores from a second, later read of the same key — the documented retry flow (re-export after `identities-stale`, re-put under the same keys) can restore bytes that were never pre-checked | **Adopted** — the pre-check records the object's etag and the DO fetches with `onlyIf: { etagMatches }`, refusing `object-changed` when the body is absent; "the DO restored the file the worker verified" holds by construction. Not a security gain (only the operator can replace the object); a removed failure mode |
+| J (switch-over) | J-11 (a bug in the J-10 path): a frozen source could not be synced back from the destination — its audit rows between the mark and its export (`project.exported` at E > M) came back in the destination's replica, and "own rows = seq > M" re-appended them on the unique wire row id, so every sync was `malformed`; J-12: `project export` reports the project's mark (frozen / writable / unreadable) instead of a next-step that cannot tell | **J-11 adopted** — own rows are the rows past the position that the replica does not carry by row id, renumbered densely; a server test syncs a marked, exported project back over itself. **J-12 adopted** — a status read (every member may), a warning when writable, never a refusal (a sync exports writable primaries by design) |
+
+Rulings C, H and J received adopted candidates in this round and stay open
+for round 5.

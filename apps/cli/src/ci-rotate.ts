@@ -468,6 +468,13 @@ export function ciRotateOp(
           oidcToken: Redacted.value(leased.credential.token),
           ephemeralPubHex: leased.credential.ephemeralPubHex,
           variables: yield* preflightVariables(primary, rule, local),
+          // The set the job will seal to, checked against W(E) here too
+          // (ruling O revision, round 4): a disagreement that is not a race
+          // is answered before the issuer is touched
+          recipients: recipients.map(({ member, device }) => ({
+            userId: member.userId,
+            encPubHex: device.encPubHex,
+          })),
         },
       })
       .pipe(Effect.mapError((error) => preflightRefusal(error, primary)));
@@ -491,9 +498,13 @@ export function ciRotateOp(
               yield* io.logError(
                 "The project's members or devices changed after this job leased it: leasing again and sealing the proposal to the current recipients (once)",
               );
+              // Under the lease's own credential while its token lasts (a
+              // runner whose issuance endpoint stopped answering can still
+              // recover — O-13); a fresh pair otherwise
               const again = yield* leaseEnvironmentsWithCredential({
                 ...input,
                 environmentIds: [input.environmentId],
+                credential: leased.credential,
               }).pipe(Effect.mapError((failure) => mintRefusal(failure, outcome)));
               const againMaterial = again.materials.get(input.environmentId);
               if (againMaterial === undefined) {

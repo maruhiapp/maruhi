@@ -71,6 +71,11 @@ export interface CaptureOutcome {
   readonly stderr: string;
 }
 
+/** A captured script that maruhi stopped after it started (its stdout passed the cap) — distinct from a launch failure. */
+export class ScriptStoppedError extends Error {
+  override readonly name = "ScriptStoppedError";
+}
+
 /** The input of {@link ProcessRunnerShape.run}. */
 export interface RunInput {
   readonly command: readonly string[];

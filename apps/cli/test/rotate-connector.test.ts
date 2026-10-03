@@ -26,7 +26,7 @@ import {
   rotateCredential,
   type SqlRunnerShape,
 } from "../src/rotate-connector.ts";
-import type { CaptureInput, CaptureOutcome } from "../src/run.ts";
+import { type CaptureInput, type CaptureOutcome, ScriptStoppedError } from "../src/run.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -853,6 +853,9 @@ describe("exec connector (a script of the repository — PF8)", () => {
     expect(outcome.facts).toEqual([
       "./rotate.sh: new credential produced (created key [redacted] (value [redacted]))",
     ]);
+    // Every value to push is shaped in the local report (the primary first,
+    // then the companions by name — the acceptance's parity)
+    expect(outcome.valueShape).toBe("11 bytes, 1 line; STRIPE_KEY_ID 7 bytes, 1 line");
     const missing = fakeScript(() => ok(JSON.stringify({ value: "x" })));
     await expect(
       rotateCredential(jsonRule, current, {}, deps({ exec: missing.exec }), SITE),
@@ -980,6 +983,14 @@ describe("exec connector (a script of the repository — PF8)", () => {
     });
     await expect(rotateCredential(withFinalize, current, {}, absent, SITE)).rejects.toThrow(
       "the rotate script ./rotate.sh did not start: cannot start ./rotate.sh (ENOENT)",
+    );
+    // A script maruhi stopped after it started (a flooded stdout) is not a
+    // launch failure (D-11)
+    const stopped = deps({
+      exec: () => Promise.reject(new ScriptStoppedError("sh wrote more than 1 MiB to stdout")),
+    });
+    await expect(rotateCredential(withFinalize, current, {}, stopped, SITE)).rejects.toThrow(
+      "the rotate script ./rotate.sh was stopped: sh wrote more than 1 MiB to stdout",
     );
     // A credential that is not text cannot ride in an environment variable
     await expect(

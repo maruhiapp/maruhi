@@ -57,6 +57,8 @@ export interface DueRows {
   readonly rows: readonly DueRow[];
   /** The names of the candidates whose history could not be read (noted on stderr already). */
   readonly unreadable: readonly string[];
+  /** The environments whose verified metadata could not be read at all (their candidates are unknown — noted on stderr already). */
+  readonly unreadableEnvironments: readonly string[];
 }
 
 /** The bound on one history read (an advisory lookup never holds the command — B-7). */
@@ -129,6 +131,7 @@ export function dueRowsFor(input: {
         .filter((row): row is DueRow => row !== null)
         .toSorted((a, b) => a.dueAtMs - b.dueAtMs || a.name.localeCompare(b.name)),
       unreadable,
+      unreadableEnvironments: [],
     };
   });
 }

@@ -1403,7 +1403,9 @@ export class ProjectChainDO extends DurableObject<Env> {
             if (object === null) {
               return new RestoreRefusedError("object-missing");
             }
-            if (!("body" in object)) {
+            // A precondition failure answers the object without a body
+            const verified = "body" in object ? (object as R2ObjectBody) : null;
+            if (verified === null) {
               return new RestoreRefusedError("object-changed");
             }
             try {
@@ -1411,7 +1413,7 @@ export class ProjectChainDO extends DurableObject<Env> {
                 storage,
                 tables: PROJECT_DO_TABLES,
                 schemaVersion: readProjectDoSchemaVersion(sql),
-                body: object.body,
+                body: verified.body,
               });
             } catch (error) {
               if (error instanceof RestoreRefusedError) {

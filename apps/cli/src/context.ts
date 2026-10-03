@@ -9,7 +9,7 @@
 
 import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
-import { Effect, type Stdio } from "effect";
+import { Duration, Effect, type Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
 import { makeApiClient, type MaruhiClient } from "./api.ts";
@@ -253,15 +253,25 @@ export interface SessionContext {
 }
 
 /** Session resolution from an already-loaded config (the inner half that does not re-read config). */
+/** The client's bounds a session may be opened with (an uploader takes the body bound on its headers — ruling H revision, round 4). */
+export interface SessionClientOptions {
+  readonly timeout?: Duration.Duration;
+}
+
 export function openSessionWith(
   config: CliConfig,
   serverFlag: string | undefined,
   credential: SessionCredential = "server",
+  clientOptions: SessionClientOptions = {},
 ): Effect.Effect<SessionContext, CliError, CliServices> {
   return Effect.gen(function* () {
     const origin = yield* resolveServerOrigin(serverFlag, config);
     const session = yield* resolveSession(origin, credential);
-    const client = yield* makeApiClient({ baseUrl: origin, token: session.token });
+    const client = yield* makeApiClient({
+      baseUrl: origin,
+      token: session.token,
+      ...(clientOptions.timeout === undefined ? {} : { timeout: clientOptions.timeout }),
+    });
     return { config, origin, session, client };
   });
 }
@@ -269,10 +279,11 @@ export function openSessionWith(
 export function openSession(
   serverFlag: string | undefined,
   credential: SessionCredential = "server",
+  clientOptions: SessionClientOptions = {},
 ): Effect.Effect<SessionContext, CliError, CliServices> {
   return Effect.gen(function* () {
     const store = yield* ConfigStore;
-    return yield* openSessionWith(yield* store.load, serverFlag, credential);
+    return yield* openSessionWith(yield* store.load, serverFlag, credential, clientOptions);
   });
 }
 

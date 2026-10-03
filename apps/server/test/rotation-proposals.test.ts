@@ -643,7 +643,10 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     await createVariableOk(dek, "var-slot-overflow", "SLOT_OVERFLOW", "value-overflow");
     await expectRejected(
       await mint({
-        proposal: await proposalFor({ proposalId: "f".repeat(32), variableId: "var-slot-overflow" }),
+        proposal: await proposalFor({
+          proposalId: "f".repeat(32),
+          variableId: "var-slot-overflow",
+        }),
       }),
       "pending-limit",
     );

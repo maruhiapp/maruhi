@@ -25,6 +25,7 @@ import { runCli } from "../src/cli.ts";
 import { describeDue } from "../src/max-age.ts";
 import {
   addMemberOp,
+  addScopedMemberOp,
   buildChain,
   type BuiltChain,
   changeRoleOp,
@@ -364,6 +365,46 @@ describe("maruhi rotation list", () => {
     expect(env.logs.join("\n")).toContain("va");
     expect(env.logs.join("\n")).not.toContain("ALPHA");
     expect(env.errors.join("\n")).toContain("could not fetch verified metadata");
+    // The check cannot pass on it: the environment's ages are unknown (A-11)
+    const check = await startEnv(state, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-due"], check.layer)).toBe(1);
+    expect(check.errors.join("\n")).toContain(
+      `Cannot judge the check: the expiring values of 1 environment could not be listed (${ENV_ID})`,
+    );
+  });
+
+  it("--fail-on-pending under a scoped member's token cannot pass: the server lists that scope only (A-12)", async () => {
+    const scoped = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_ID]) },
+    ]);
+    const asScoped = async (state: RotationServerState) => {
+      const server = await MockServer.start([...state.handlers]);
+      servers.push(server);
+      const env = await makeTestEnv();
+      seedSession(env, server.origin, target);
+      await seedConfig(env, { server: server.origin, defaultProject: scoped.projectId });
+      return env;
+    };
+    const none = await asScoped(
+      await makeRotationServer({ built: scoped, flags: [], pendingProposalExpiries: [] }),
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-pending"], none.layer)).toBe(1);
+    expect(none.errors.join("\n")).toContain(
+      `Cannot judge the check: the pending proposals are unknown: only the environments in your scope are listed (${ENV_ID}); run it with a member whose scope covers every environment`,
+    );
+    // A known pending proposal is still exit 3 (due over unknown — A-10)
+    const some = await asScoped(
+      await makeRotationServer({
+        built: scoped,
+        flags: [],
+        pendingProposalExpiries: [Date.now() + 24 * 60 * 60 * 1000],
+      }),
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-pending"], some.layer)).toBe(3);
+    expect(some.errors.join("\n")).toContain("1 sealed proposal awaiting a member");
+    expect(some.errors.join("\n")).toContain("also the pending proposals are unknown");
   });
 
   it("with no flags it says just that", async () => {

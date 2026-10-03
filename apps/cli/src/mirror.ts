@@ -27,13 +27,18 @@ const MAX_RESTARTS = 3;
 /** The bound on pages of one replication (far above any project the storage guard admits). */
 const MAX_PAGES = 100_000;
 
-export interface MirrorSyncInput {
+export interface MirrorSyncInput<R = never> {
   /** The server (the source of the export). */
   readonly source: MaruhiClient;
   /** The mirror (the destination of the pages). */
   readonly mirror: MaruhiClient;
   readonly projectId: string;
-  readonly verified: VerifiedProject;
+  /**
+   * The server's verified view, built only when something is uploaded
+   * (ruling H revision, round 4): a "current" tick costs the two status
+   * reads and no chain download.
+   */
+  readonly verified: Effect.Effect<VerifiedProject, CliError, R>;
 }
 
 export type MirrorSyncResult =
@@ -45,6 +50,8 @@ export type MirrorSyncResult =
       readonly committed: MirrorSyncRecord;
       /** The mirror's status before the replication (the previous position). */
       readonly before: MirrorStatus;
+      /** The server's verified view the replica is compared with. */
+      readonly verified: VerifiedProject;
     }
   /** The source's three marks are the last replication's: nothing to upload (ruling H revision). */
   | { readonly kind: "current"; readonly before: MirrorStatus };
@@ -68,7 +75,7 @@ type Attempt =
   | { readonly kind: "changed" };
 
 /** One pass over the export's pages into the mirror; "changed" = the project moved (the caller restarts at sequence 0). */
-function replicateOnce(input: MirrorSyncInput): Effect.Effect<Attempt, CliError> {
+function replicateOnce(input: MirrorSyncInput<unknown>): Effect.Effect<Attempt, CliError> {
   return Effect.gen(function* () {
     const params = { projectId: input.projectId };
     let cursor: string | undefined;
@@ -131,7 +138,9 @@ function replicateOnce(input: MirrorSyncInput): Effect.Effect<Attempt, CliError>
 }
 
 /** Replicates the whole project (restarting when it changes) into a mirror that is marked. */
-export function mirrorSyncOp(input: MirrorSyncInput): Effect.Effect<MirrorSyncResult, CliError> {
+export function mirrorSyncOp<R>(
+  input: MirrorSyncInput<R>,
+): Effect.Effect<MirrorSyncResult, CliError, R> {
   return Effect.gen(function* () {
     const before = yield* mirrorStatusOp({ client: input.mirror, projectId: input.projectId });
     if (!before.mirror) {
@@ -148,6 +157,7 @@ export function mirrorSyncOp(input: MirrorSyncInput): Effect.Effect<MirrorSyncRe
     if (yield* sourceUnchanged(input, before)) {
       return { kind: "current", before } as const;
     }
+    const verified = yield* input.verified;
     let restarts = 0;
     let attempt = yield* replicateOnce(input);
     while (attempt.kind === "changed" && restarts < MAX_RESTARTS) {
@@ -158,7 +168,7 @@ export function mirrorSyncOp(input: MirrorSyncInput): Effect.Effect<MirrorSyncRe
       return yield* Effect.fail(toCliError(new ExportChangedError({ reason: "project-changed" })));
     }
     const { pages, lines, committed } = attempt;
-    return { kind: "replicated", pages, lines, committed, restarts, before } as const;
+    return { kind: "replicated", pages, lines, committed, restarts, before, verified } as const;
   });
 }
 
@@ -172,7 +182,7 @@ export function mirrorSyncOp(input: MirrorSyncInput): Effect.Effect<MirrorSyncRe
  * fails the sync (the export would fail the same way).
  */
 function sourceUnchanged(
-  input: MirrorSyncInput,
+  input: MirrorSyncInput<unknown>,
   before: MirrorStatus,
 ): Effect.Effect<boolean, CliError> {
   const last = before.lastSync;
@@ -219,16 +229,16 @@ function describeLastSync(status: MirrorStatus): string {
 /** The report of a replication (heads and counts only). */
 export function describeMirrorSync(
   result: MirrorSyncResult,
-  verified: VerifiedProject,
+  projectId: string,
   mirrorOrigin: string,
 ): string[] {
   if (result.kind === "current") {
     return [
-      `Mirror ${mirrorOrigin} is current for project ${verified.projectId} (chain head seq=${result.before.head.chainHeadSeq}, head ${result.before.head.chainHeadHashHex}): the server's chain head, audit seq and mutation counter are the ones the last replication brought — nothing uploaded`,
+      `Mirror ${mirrorOrigin} is current for project ${projectId} (chain head seq=${result.before.head.chainHeadSeq}, head ${result.before.head.chainHeadHashHex}): the server's chain head, audit seq and mutation counter are the ones the last replication brought — nothing uploaded`,
       describeLastSync(result.before),
     ];
   }
-  const { committed } = result;
+  const { committed, verified } = result;
   const restarted =
     result.restarts === 0
       ? ""
@@ -238,7 +248,7 @@ export function describeMirrorSync(
       ? ""
       : `; ${countNoun(committed.ownAuditRows, "audit row")} of the mirror's own (the reads and leases it served) re-appended after the replica's`;
   return [
-    `Replicated project ${verified.projectId} to ${mirrorOrigin}: chain head seq=${committed.chainHeadSeq} (${headNote(committed, verified)}); audit seq=${committed.auditMaxSeq}; ${countNoun(result.pages, "page")}, ${countNoun(result.lines, "line")}${restarted}${own}`,
+    `Replicated project ${projectId} to ${mirrorOrigin}: chain head seq=${committed.chainHeadSeq} (${headNote(committed, verified)}); audit seq=${committed.auditMaxSeq}; ${countNoun(result.pages, "page")}, ${countNoun(result.lines, "line")}${restarted}${own}`,
     `Before this run: ${describeLastSync(result.before)}`,
   ];
 }

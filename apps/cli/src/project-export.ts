@@ -53,7 +53,14 @@ export interface ProjectExportResult {
   readonly lines: number;
   readonly trailer: ExportTrailer;
   readonly identities: ExportIdentities;
+  /** Whether the project is frozen here (a mirror of the named origin), still writable, or the mark could not be read. */
+  readonly mark: ExportMark;
 }
+
+export type ExportMark =
+  | { readonly kind: "frozen"; readonly sourceOrigin: string }
+  | { readonly kind: "writable" }
+  | { readonly kind: "unknown"; readonly reason: string };
 
 /** The trailer line as the snapshot format writes it (the fields this command reports). */
 interface ExportTrailer {
@@ -322,8 +329,37 @@ export function projectExportOp(
       lines: attempt.lines,
       trailer: attempt.trailer,
       identities,
+      mark: yield* exportMark(input),
     };
   });
+}
+
+/** The project's mark on this server (every member may read it — AUTH_SPEC §11-7); a failed read is reported, never fatal (ruling J revision, round 4). */
+function exportMark(input: ProjectExportInput): Effect.Effect<ExportMark, never> {
+  return input.client.mirror.status({ params: { projectId: input.projectId } }).pipe(
+    Effect.map((status): ExportMark =>
+      status.mirror && status.sourceOrigin !== undefined
+        ? { kind: "frozen", sourceOrigin: status.sourceOrigin }
+        : status.mirror
+          ? { kind: "unknown", reason: "the server says the project is marked but names no source" }
+          : { kind: "writable" },
+    ),
+    Effect.catch((error) =>
+      Effect.succeed<ExportMark>({ kind: "unknown", reason: toCliError(error).message }),
+    ),
+  );
+}
+
+/** What the export's mark means for the migration (the next steps follow it). */
+function describeMark(mark: ExportMark): string {
+  switch (mark.kind) {
+    case "frozen":
+      return `This project is frozen here (a mirror of ${mark.sourceOrigin}): nothing can land on this server after the export`;
+    case "writable":
+      return "Warning: this project is still writable here — a write after this export does not reach the destination. For a migration, freeze it first with `maruhi mirror mark --source <destination url>` and re-export if anything changed in between";
+    default:
+      return `The project's mark could not be read (${mark.reason}); if this project is not yet marked as a mirror of the destination, mark it now (\`maruhi mirror mark --source <destination url>\`) and re-export if anything changed in between`;
+  }
 }
 
 /** The report (counts and heads only — no row content). */
@@ -352,6 +388,7 @@ export function describeExport(result: ProjectExportResult, verified: VerifiedPr
     `Exported project ${displayText(result.outPath)} (${result.bytes} bytes gzip, ${countNoun(result.lines, "line")}): chain head seq=${trailer.chainHeadSeq} ${headNote}; audit seq=${trailer.auditMaxSeq}; rows: ${rows}`,
     `Identities companion: ${displayText(result.identitiesPath)} (${countNoun(result.identities.identities.length, "member identity")}, exported by ${displayText(result.identities.exportedBy)})`,
     ...unlinked,
-    "Next: place both files in the destination deployment's ops bucket and submit a restore job with `identitiesKey` (SELF_HOSTING.md — Migrating a project; a `drill` job rehearses it first). If this project is not yet marked as a mirror of the destination, mark it now (`maruhi mirror mark --source <destination url>`): the mark freezes it, so no write lands here after this export (re-export if anything changed in between). After the import: every member logs in to the destination (`maruhi login --server <url>`) and points the CLI at it (`maruhi config set server <url>`), the owner revokes this server's key and grants the destination's (`maruhi server revoke` / `maruhi server grant`), then rotates the environments the old key could open (`maruhi env rotate`)",
+    describeMark(result.mark),
+    "Next: place both files in the destination deployment's ops bucket and submit a restore job with `identitiesKey` (SELF_HOSTING.md — Migrating a project; a `drill` job rehearses it first). After the import: every member logs in to the destination (`maruhi login --server <url>`) and points the CLI at it (`maruhi config set server <url>`), the owner revokes this server's key and grants the destination's (`maruhi server revoke` / `maruhi server grant`), then rotates the environments the old key could open (`maruhi env rotate`)",
   ];
 }

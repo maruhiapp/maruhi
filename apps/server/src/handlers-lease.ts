@@ -183,20 +183,35 @@ function unwrapProposalOutcome(outcome: ProposalOutcome, projectId: string) {
     : Effect.fail(proposalRejectionError(outcome.rejection, projectId));
 }
 
+/** The coordinates of a workload call: the project and the environment. */
+interface WorkloadParams {
+  readonly projectId: string;
+  readonly environmentId: string;
+}
+
+/**
+ * Authenticates the workload (step 1), then runs one DO RPC under its
+ * credential — everything from authorization onward is that single RPC
+ * (the audit is written under the same permit, in the same sync block).
+ */
+function workloadRpc<T>(
+  params: WorkloadParams,
+  payload: Parameters<typeof authenticateWorkload>[0],
+  request: Parameters<typeof authenticateWorkload>[1],
+  call: (stub: ReturnType<typeof projectStub>, facts: LeaseTokenFacts) => Promise<T>,
+) {
+  return Effect.gen(function* () {
+    const { env, facts } = yield* authenticateWorkload(payload, request);
+    return yield* rpcCall<T>(() => call(projectStub(env, params.projectId), facts));
+  });
+}
+
 export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
   handlers
     .handle("issue", ({ params, payload, request }) =>
       Effect.gen(function* () {
-        const { env, facts } = yield* authenticateWorkload(payload, request);
-        // 2. Everything from authorization onward is a single DO RPC
-        //    (audit is written under the same permit, in the same sync
-        //    block)
-        const outcome = yield* rpcCall<LeaseOutcome>(() =>
-          projectStub(env, params.projectId).issueLease(
-            params.environmentId,
-            payload.ephemeralPubHex,
-            facts,
-          ),
+        const outcome = yield* workloadRpc<LeaseOutcome>(params, payload, request, (stub, facts) =>
+          stub.issueLease(params.environmentId, payload.ephemeralPubHex, facts),
         );
         const leased = yield* unwrapLeaseOutcome(outcome, params.projectId);
         // The value wire form is identical to the bulk pull (§12-7) —
@@ -232,15 +247,18 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
     // issuer is touched that its proposal would be refused or would stack
     .handle("preflight", ({ params, payload, request }) =>
       Effect.gen(function* () {
-        const { env, facts } = yield* authenticateWorkload(payload, request);
-        const outcome = yield* rpcCall<PreflightOutcome>(() =>
-          projectStub(env, params.projectId).preflightRotation(
-            params.environmentId,
-            payload.ephemeralPubHex,
-            facts,
-            payload.variables,
-            payload.recipients,
-          ),
+        const outcome = yield* workloadRpc<PreflightOutcome>(
+          params,
+          payload,
+          request,
+          (stub, facts) =>
+            stub.preflightRotation(
+              params.environmentId,
+              payload.ephemeralPubHex,
+              facts,
+              payload.variables,
+              payload.recipients,
+            ),
         );
         if (outcome.kind === "rejected") {
           return yield* Effect.fail(proposalRejectionError(outcome.rejection, params.projectId));
@@ -253,14 +271,17 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
     // server stores ciphertexts it cannot open and touches no key
     .handle("propose", ({ params, payload, request }) =>
       Effect.gen(function* () {
-        const { env, facts } = yield* authenticateWorkload(payload, request);
-        const outcome = yield* rpcCall<ProposalOutcome>(() =>
-          projectStub(env, params.projectId).proposeRotation(
-            params.environmentId,
-            payload.ephemeralPubHex,
-            facts,
-            payload.proposal,
-          ),
+        const outcome = yield* workloadRpc<ProposalOutcome>(
+          params,
+          payload,
+          request,
+          (stub, facts) =>
+            stub.proposeRotation(
+              params.environmentId,
+              payload.ephemeralPubHex,
+              facts,
+              payload.proposal,
+            ),
         );
         return yield* unwrapProposalOutcome(outcome, params.projectId);
       }),

@@ -83,7 +83,7 @@ import { ensureValueDisplayAllowed } from "./agent-gate.ts";
 import { ensurePlainRunAllowed } from "./agent-gate.ts";
 import { AGENT_COMMAND_REQUIRED, agentOp, agentStatusOp, parseKeyTtl } from "./agent.ts";
 import { buildRepositoryAnchor, formatRepositoryAnchor } from "./anchor.ts";
-import { makeApiClient, type MaruhiClient } from "./api.ts";
+import { BODY_TIMEOUT, makeApiClient, type MaruhiClient } from "./api.ts";
 import { approveProposalOp, type Fulfilment } from "./approval-approve.ts";
 import {
   DEFAULT_POLICY_OPS,
@@ -144,7 +144,13 @@ import {
   type IdentityBacking,
   identityBackingOf,
 } from "./config.ts";
-import type { CliServices, CommonFlags, EnvironmentContext, ProjectContext } from "./context.ts";
+import type {
+  CliServices,
+  CommonFlags,
+  EnvironmentContext,
+  ProjectContext,
+  SessionContext,
+} from "./context.ts";
 import {
   checkInviteAnchor,
   commitVerifiedHead,
@@ -2111,11 +2117,15 @@ function schemaSetReport(name: string, summary: SchemaSetSummary): string {
 /* -------------------------------------------------------------------------- */
 
 /** The mirror's session and the project of `mirror sync` / `status` (the server session is opened separately). */
-function openMirrorTarget(flags: {
-  readonly server?: string | undefined;
-  readonly project?: string | undefined;
-  readonly mirror?: string | undefined;
-}) {
+function openMirrorTarget(
+  flags: {
+    readonly server?: string | undefined;
+    readonly project?: string | undefined;
+    readonly mirror?: string | undefined;
+  },
+  /** Whether the session uploads pages (the body bound on its headers — a full page on a slow uplink is not "did not answer"; ruling H revision, round 4). */
+  uploads = false,
+) {
   return Effect.gen(function* () {
     const config = yield* (yield* ConfigStore).load;
     const projectId = yield* resolveProjectId(flags.project, config);
@@ -2133,7 +2143,11 @@ function openMirrorTarget(flags: {
         usageError("The mirror URL is the server URL itself (pass the mirror deployment's URL)"),
       );
     }
-    const mirror = yield* openSession(mirrorOrigin, "mirror");
+    const mirror = yield* openSession(
+      mirrorOrigin,
+      "mirror",
+      uploads ? { timeout: BODY_TIMEOUT } : {},
+    );
     return { mirror, mirrorOrigin, projectId };
   });
 }
@@ -2142,30 +2156,31 @@ function openMirrorTarget(flags: {
 function verifiedServerView(serverFlag: string | undefined, projectId: string) {
   return Effect.gen(function* () {
     const source = yield* openSession(serverFlag);
+    const verified = yield* verifiedViewOf(source, projectId);
+    return { source, verified };
+  });
+}
+
+/** The server's verified view from an open session (the same keyless prologue as `project export`). */
+function verifiedViewOf(source: SessionContext, projectId: string) {
+  return Effect.gen(function* () {
     const synced = yield* syncProject(source.client, projectId);
     const checked = yield* loadCheckedFloor(
       projectId,
       synced,
       syncProject(source.client, projectId),
     );
-    return { source, verified: checked.verified };
+    return checked.verified;
   });
 }
 
-/** The two sessions of `mirror sync`: the server's (the export) and the mirror's (the pages). */
-function openMirrorPair(flags: {
-  readonly server?: string | undefined;
-  readonly project?: string | undefined;
-  readonly mirror?: string | undefined;
-}) {
-  return Effect.gen(function* () {
-    const target = yield* openMirrorTarget(flags);
-    const { source, verified } = yield* verifiedServerView(flags.server, target.projectId);
-    return { ...target, source, verified };
-  });
-}
-
-/** `maruhi mirror sync`: the export's pages uploaded to the mirror in order. */
+/**
+ * `maruhi mirror sync`: the export's pages uploaded to the mirror in
+ * order. The two sessions are opened first (the server's for the export,
+ * the mirror's for the pages); the server's chain is fetched and verified
+ * only when something is uploaded — a cron's "current" tick is the two
+ * status reads (ruling H revision, round 4).
+ */
 function mirrorSyncCommand(flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
@@ -2173,14 +2188,15 @@ function mirrorSyncCommand(flags: {
 }): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const pair = yield* openMirrorPair(flags);
+    const target = yield* openMirrorTarget(flags, true);
+    const source = yield* openSession(flags.server);
     const result = yield* mirrorSyncOp({
-      source: pair.source.client,
-      mirror: pair.mirror.client,
-      projectId: pair.projectId,
-      verified: pair.verified,
+      source: source.client,
+      mirror: target.mirror.client,
+      projectId: target.projectId,
+      verified: verifiedViewOf(source, target.projectId),
     });
-    for (const line of describeMirrorSync(result, pair.verified, pair.mirrorOrigin)) {
+    for (const line of describeMirrorSync(result, target.projectId, target.mirrorOrigin)) {
       yield* io.log(line);
     }
   });
@@ -2275,8 +2291,7 @@ function ensureMarkable(
 ): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const here = yield* syncProject(client, projectId);
-    const sourceView = yield* verifiedServerView(sourceOrigin, projectId).pipe(
-      Effect.map((view) => view.verified),
+    const view = yield* verifiedServerView(sourceOrigin, projectId).pipe(
       Effect.catch((error: CliError) =>
         Effect.as(
           logWarning(
@@ -2286,9 +2301,10 @@ function ensureMarkable(
         ),
       ),
     );
-    if (sourceView === null) {
+    if (view === null) {
       return;
     }
+    const sourceView = view.verified;
     const partOfSource =
       here.state.headHashHex === sourceView.state.headHashHex ||
       (here.state.headSeq < sourceView.state.headSeq &&
@@ -2300,6 +2316,38 @@ function ensureMarkable(
         ),
       );
     }
+    yield* noteAuditPosition(client, view.source.client, sourceOrigin, projectId);
+  });
+}
+
+/**
+ * A project whose audit log is ahead of the source's (a former primary that
+ * served reads after its last export) is refused `audit-regression` on
+ * every sync until the source's log passes it — said at the mark rather
+ * than by the first sync's bare reason (ruling C revision, round 4). Both
+ * audit seqs are in the status for admins and owners; nothing to say when
+ * either is not.
+ */
+function noteAuditPosition(
+  here: MaruhiClient,
+  source: MaruhiClient,
+  sourceOrigin: string,
+  projectId: string,
+): Effect.Effect<void, never, CliServices> {
+  return Effect.gen(function* () {
+    const params = { params: { projectId } };
+    const [mine, theirs] = yield* Effect.all([
+      here.mirror.status(params).pipe(Effect.catch(() => Effect.succeed(null))),
+      source.mirror.status(params).pipe(Effect.catch(() => Effect.succeed(null))),
+    ]);
+    const hereSeq = mine?.head.auditMaxSeq;
+    const sourceSeq = theirs?.head.auditMaxSeq;
+    if (hereSeq === undefined || sourceSeq === undefined || hereSeq <= sourceSeq) {
+      return;
+    }
+    yield* logWarning(
+      `this project's audit log (seq ${hereSeq}) is ahead of ${sourceOrigin}'s (seq ${sourceSeq}): every \`maruhi mirror sync\` is refused as audit-regression until the source's log grows past it (the rows this project appended after its last export are replaced by the first replication that succeeds)`,
+    );
   });
 }
 
@@ -2326,11 +2374,23 @@ function mirrorPromoteCommand(flags: {
       .status({ params: { projectId } })
       .pipe(Effect.mapError(toCliError));
     if (status.sourceOrigin !== undefined && flags.force !== true) {
-      const source = yield* sourceState(context.config, status.sourceOrigin, projectId);
+      const source = yield* sourceState(
+        context.config,
+        status.sourceOrigin,
+        projectId,
+        context.origin,
+      );
       if (source === "writable") {
         return yield* Effect.fail(
           cliError(
             `The source ${status.sourceOrigin} still answers and holds this project writable: promoting ${context.origin} now leaves two writable copies (a split brain). The planned order: mark the source as a mirror of ${context.origin} (\`maruhi mirror mark --server ${status.sourceOrigin} --source ${context.origin}\` — it freezes), bring its last writes over (\`maruhi mirror sync --server ${status.sourceOrigin} --mirror ${context.origin}\`), then promote; or take the source down. Pass --force to promote anyway`,
+          ),
+        );
+      }
+      if (typeof source === "object") {
+        return yield* Effect.fail(
+          cliError(
+            `The source ${status.sourceOrigin} holds this project as a mirror of ${source.movedTo}, not of ${context.origin}: the project's primary moved there, and promoting this copy would leave two writable copies (a split brain). Re-point this mirror at it (\`maruhi mirror mark --server ${context.origin} --source ${source.movedTo}\`) and sync from there; or pass --force to promote anyway`,
           ),
         );
       }
@@ -2347,29 +2407,39 @@ function mirrorPromoteCommand(flags: {
   });
 }
 
+/** What the source holds; `movedTo` = it is a mirror of another deployment (the primary moved there). */
+type SourceState = "frozen" | "writable" | "gone" | { readonly movedTo: string };
+
 /**
  * What the source holds (ruling C revision, round 3): `frozen` = it is
- * already a mirror of this deployment (the honest path — promote without
- * a probe), `writable` = it answers and holds the project as a primary,
- * `gone` = nothing answers. Read with the owner's session for the source
- * when there is one; otherwise, or on any answer but the mark, the public
- * probe decides (any HTTP answer = writable, no answer = gone).
+ * already a mirror of **this** deployment (the honest path — promote
+ * without a probe), `movedTo` = it is a mirror of another deployment (the
+ * primary moved there; promoting this copy is a split brain — round 4),
+ * `writable` = it answers and holds the project as a primary, `gone` =
+ * nothing answers. Read with the owner's session for the source when
+ * there is one; otherwise, or on any answer but the mark, the public probe
+ * decides (any HTTP answer = writable, no answer = gone).
  */
 function sourceState(
   config: MaruhiCliConfig,
   sourceOrigin: string,
   projectId: string,
-): Effect.Effect<"frozen" | "writable" | "gone", never, CliServices> {
+  thisOrigin: string,
+): Effect.Effect<SourceState, never, CliServices> {
   return Effect.gen(function* () {
     const marked = yield* openSessionWith(config, sourceOrigin, "server").pipe(
       Effect.flatMap((source) =>
-        source.client.mirror
-          .status({ params: { projectId } })
-          .pipe(
-            Effect.map((status): "frozen" | "writable" | null =>
-              status.mirror ? (status.sourceOrigin === undefined ? null : "frozen") : "writable",
-            ),
-          ),
+        source.client.mirror.status({ params: { projectId } }).pipe(
+          Effect.map((status): SourceState | null => {
+            if (!status.mirror) {
+              return "writable";
+            }
+            if (status.sourceOrigin === undefined) {
+              return null;
+            }
+            return status.sourceOrigin === thisOrigin ? "frozen" : { movedTo: status.sourceOrigin };
+          }),
+        ),
       ),
       Effect.catch(() => Effect.succeed(null)),
     );

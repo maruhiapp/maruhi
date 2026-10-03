@@ -625,7 +625,10 @@ destination and point the CLI at it. If the import fails and you want the
 source back, promote it again (`maruhi mirror promote --server <source url>
 --force` — the guard refuses without `--force` while the destination
 answers). Once the destination is live, the frozen source can stay as its
-mirror and be synced from it as a fallback (see "Running a mirror" below).
+mirror and be synced from it as a fallback (see "Running a mirror" below);
+the first sync from the destination replaces the source's content with the
+destination's replica and keeps only the rows the source appended that the
+replica does not carry.
 
 If the source was *not* frozen first and writes continued after the
 export, do not re-import — the Durable Object refuses a second restore
@@ -678,7 +681,8 @@ heads and how many of the mirror's own audit rows (the reads and leases it
 served) were re-appended after the replica's. When the primary's chain
 head, audit seq and mutation counter are the ones the last sync brought
 (and the mirror still holds that head), the command uploads nothing and
-says the mirror is current — a cron can run it every few minutes. `maruhi mirror status` compares the two at any time
+says the mirror is current — two status reads, no chain download — so a
+cron can run it every few minutes. `maruhi mirror status` compares the two at any time
 (and reports the mirror's head alone while the primary is down). Across a
 sync the mirror keeps its own lease windows and rate limits, merges the
 primary's live first-come token bindings into its own (expired ones are
@@ -716,8 +720,13 @@ token with the mirror's origin as audience unless `--audience` is given).
 `config set server` to it. The command looks at the primary first: a
 primary that already holds the project as a mirror of this deployment is
 frozen (the planned order below) and the promotion goes through; one that
-still holds it writable is refused — promoting beside a live primary leaves
-two writable copies — and one nothing answers at (a probe of its public
+holds it as a mirror of **another** deployment is refused — the primary
+moved there, so re-point this mirror at it with `maruhi mirror mark
+--server <mirror> --source <new primary>` (a mark naming another source
+re-points a marked project in place; the project stays frozen throughout)
+and sync from there; one that still holds it writable is refused —
+promoting beside a live primary leaves two writable copies — and one
+nothing answers at (a probe of its public
 `/auth/config`; any HTTP answer, even an error, counts as alive, so a
 gateway's 52x in front of a dead worker still counts as alive — pass
 `--force` then) lets the promotion through. The **planned failover**, which
@@ -725,7 +734,9 @@ loses no write: mark the primary as a mirror of the new one (it freezes),
 run one last `maruhi mirror sync` from it, then promote. A stale old
 primary can never be synced over the promoted one; `maruhi mirror mark`
 refuses to mark a project whose chain is not part of the source's (such a
-mirror could never be synced), unless `--force`. After the promotion the
+mirror could never be synced), unless `--force`, and warns when the
+project's audit log is ahead of the source's (syncs are refused as
+`audit-regression` until the source's log grows past it). After the promotion the
 command lists the other server keys the chain grants, each with the
 environments its grant covers: if that deployment was **compromised**
 rather than lost, revoke the key it names (`maruhi server revoke

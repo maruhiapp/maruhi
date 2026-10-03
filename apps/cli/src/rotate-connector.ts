@@ -38,7 +38,7 @@ import { Context, Redacted } from "effect";
 
 import { countNoun, decodeValueText, displayText } from "./display.ts";
 import { companionVariablesOf, EXEC_CONTROL_PREFIX, type RotateRule } from "./rotate-config.ts";
-import type { CaptureInput, CaptureOutcome } from "./run.ts";
+import { type CaptureInput, type CaptureOutcome, ScriptStoppedError } from "./run.ts";
 import { type AwsCredentials, signV4 } from "./sigv4.ts";
 import { scrubVendorOutput, type SyncWrite } from "./sync-exec.ts";
 import { CLI_VERSION } from "./version.ts";
@@ -108,7 +108,7 @@ export interface RotationPlan {
 export interface RotationOutcome {
   /** The new values to push (the primary and every companion the rule names). */
   readonly values: CredentialValues;
-  /** The primary's shape ({@link valueShape}) for the local report — never a proposal fact. */
+  /** The shape of every value to push — the primary's, then each companion's by name ({@link valueShape}) — for the local report; never a proposal fact. */
   readonly valueShape: string;
   /** Non-secret facts for the report (the new key id, the role now in use, the token id). */
   readonly facts: readonly string[];
@@ -1125,6 +1125,13 @@ async function runScript(
   try {
     outcome = await deps.exec({ command: argv, cwd: rule.cwd, extraEnv: env });
   } catch (error) {
+    if (error instanceof ScriptStoppedError) {
+      // Stopped by maruhi after it started (a flooded stdout) — not a
+      // launch failure (ruling D revision, round 4)
+      throw new ConnectorError(
+        `exec: the ${phase} script ${argv[0] ?? ""} was stopped: ${error.message}`,
+      );
+    }
     const reason = error instanceof Error ? error.message : "it could not be started";
     throw new ConnectorError(`exec: the ${phase} script ${argv[0] ?? ""} did not start: ${reason}`);
   }
@@ -1391,7 +1398,17 @@ export async function rotateCredential(
   site?: RotationSite,
 ): Promise<RotationOutcome> {
   const outcome = await rotateWith(rule, current, inputs, deps, site);
-  return { ...outcome, valueShape: valueShape(outcome.values.primary) };
+  return { ...outcome, valueShape: valuesShape(outcome.values) };
+}
+
+/** The primary's shape, then each companion's by name (the same parity as the acceptance's per-value shapes). */
+function valuesShape(values: CredentialValues): string {
+  return [
+    valueShape(values.primary),
+    ...Object.entries(values.companions)
+      .toSorted(([a], [b]) => a.localeCompare(b))
+      .map(([name, bytes]) => `${name} ${valueShape(bytes)}`),
+  ].join("; ");
 }
 
 /** A connector's own outcome (the frame adds the value's shape). */

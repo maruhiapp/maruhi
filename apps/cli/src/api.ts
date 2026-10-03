@@ -21,7 +21,8 @@ export type MaruhiClient = HttpApiClient.ForApi<typeof maruhiApi>;
  * and stalls the body is the same failure.
  */
 const REQUEST_TIMEOUT = Duration.seconds(30);
-const BODY_TIMEOUT = Duration.minutes(3);
+/** The bound on the whole answer, body included; also the header bound of a client that uploads large bodies (a mirror sync's pages). */
+export const BODY_TIMEOUT = Duration.minutes(3);
 
 /** A request past the timeout is a transport failure (the `unreachable` class of failure.ts), never an answer. */
 function withRequestTimeout(

@@ -61,7 +61,7 @@ describe("ProcessRunner.exec (live — Bun.spawn)", () => {
     expect(probe.floodedStderr).toBe(
       "(the script wrote more than 1 MiB to stderr; none of it is shown)",
     );
-    // … and the script was stopped (its stdout never arrived)
-    expect(probe.floodedStderrStdout).toBe(0);
+    // … and the script ran on: its value arrived whole (D-10)
+    expect(probe.floodedStderrStdout).toBe("value\n".length);
   }, 60_000);
 });

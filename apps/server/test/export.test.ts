@@ -386,10 +386,6 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     expect(foreign.status).toBe(409);
     expect(await foreign.json()).toMatchObject({ _tag: "ExportChanged" });
     // A cursor carrying the current marks continues (no header on a continuation)
-    const attestation = await queryProjectDo(
-      projectId,
-      "SELECT COALESCE(MAX(accepted_at), 0) AS m FROM head_attestations",
-    );
     const mutation = await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1");
     const cursorOf = (overrides: Record<string, unknown>) =>
       base64Url(

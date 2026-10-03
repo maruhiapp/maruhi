@@ -108,6 +108,8 @@ interface StartOptions {
   readonly identities?: { readonly status: number; readonly json: unknown };
   /** How many times the companion answers with another chain head before the file's (a mismatched pair). */
   readonly staleCompanions?: number;
+  /** Further endpoints of the mock (the mark's status, for the report's mark line). */
+  readonly extraHandlers?: readonly MockHandler[];
 }
 
 async function startEnv(options: StartOptions = {}): Promise<Fixture> {
@@ -122,6 +124,7 @@ async function startEnv(options: StartOptions = {}): Promise<Fixture> {
     staleCompanions: options.staleCompanions ?? 0,
   };
   const handlers: MockHandler[] = [
+    ...(options.extraHandlers ?? []),
     chainHandlerOf(built),
     (request: MockRequest) => {
       if (request.method !== "GET" || request.path !== `/projects/${built.projectId}/export`) {
@@ -197,9 +200,43 @@ describe("maruhi project export (PF3)", () => {
       `Identities companion: ${out}.identities.json (1 member identity, exported by user-owner-1111)`,
     );
     expect(logs).toContain("submit a restore job with `identitiesKey`");
+    // The mark could not be read here (the mock has no status endpoint):
+    // the next steps say to mark before relying on the file
+    expect(logs).toContain("The project's mark could not be read (");
+    expect(logs).toContain("mark it now (`maruhi mirror mark --source <destination url>`)");
     // No row content in the report
     expect(logs).not.toContain("chain.genesis");
     expect(pageRequests(fixture.server)).toBe(2);
+  });
+
+  it("reports whether the project is frozen here or still writable (ruling J revision, round 4)", async () => {
+    const head = { chainHeadSeq: 1, chainHeadHashHex: built.hashes[0] ?? "" };
+    const writable = await startEnv({
+      extraHandlers: [
+        onRequest("GET", `/projects/${built.projectId}/mirror`, () => ({
+          status: 200,
+          json: { mirror: false, head },
+        })),
+      ],
+    });
+    const out = join(writable.dir, "writable.ndjson.gz");
+    expect(await runCli(["project", "export", "--out", out], writable.env.layer)).toBe(0);
+    expect(writable.env.logs.join("\n")).toContain(
+      "Warning: this project is still writable here — a write after this export does not reach the destination. For a migration, freeze it first with `maruhi mirror mark --source <destination url>`",
+    );
+    const frozen = await startEnv({
+      extraHandlers: [
+        onRequest("GET", `/projects/${built.projectId}/mirror`, () => ({
+          status: 200,
+          json: { mirror: true, sourceOrigin: "https://new.maruhi.app", markedAtMs: 1, head },
+        })),
+      ],
+    });
+    const frozenOut = join(frozen.dir, "frozen.ndjson.gz");
+    expect(await runCli(["project", "export", "--out", frozenOut], frozen.env.layer)).toBe(0);
+    expect(frozen.env.logs.join("\n")).toContain(
+      "This project is frozen here (a mirror of https://new.maruhi.app): nothing can land on this server after the export",
+    );
   });
 
   it("restarts from the first page when the project changed between pages, removing the partial file", async () => {

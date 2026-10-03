@@ -178,6 +178,7 @@ function expiringValues(
   return Effect.gen(function* () {
     const rows: DueRow[] = [];
     const unreadable: string[] = [];
+    const unreadableEnvironments: string[] = [];
     for (const environmentId of [...context.verified.state.environments.keys()].toSorted()) {
       const metadata = yield* verifiedMetadataOrNote(
         context,
@@ -185,6 +186,8 @@ function expiringValues(
         "its expiring values are not listed",
       );
       if (metadata === null) {
+        // Its ages are unknown, which a check cannot pass on (A-11)
+        unreadableEnvironments.push(environmentId);
         continue;
       }
       const candidates: MaxAgeCandidate[] = [];
@@ -208,6 +211,7 @@ function expiringValues(
     return {
       rows: rows.toSorted((a, b) => a.dueAtMs - b.dueAtMs || a.name.localeCompare(b.name)),
       unreadable,
+      unreadableEnvironments,
     };
   });
 }
@@ -448,8 +452,18 @@ function reportPendingProposals(
     const io = yield* CliIo;
     const self = context.verified.state.members.get(context.session.userId);
     if (self === undefined || self.role === "reader") {
-      return { ...NO_PENDING, unknown: "the proposals are listed to members and above only" };
+      return {
+        ...NO_PENDING,
+        unknown:
+          "the proposals are listed to members and above only (run it with a member's token)",
+      };
     }
+    // The server lists the environments in the member's scope only: a
+    // scoped member's list is partial, which a check cannot pass on (A-12)
+    const partial =
+      self.scope.kind === "all"
+        ? null
+        : `only the environments in your scope are listed (${self.scope.environmentIds.map(displayText).join(", ")}); run it with a member whose scope covers every environment`;
     const proposals = yield* fetchRotationProposals(context.client, context.projectId).pipe(
       Effect.catch((error) =>
         Effect.map(
@@ -464,7 +478,7 @@ function reportPendingProposals(
       return { ...NO_PENDING, unknown: `they could not be read (${proposals})` };
     }
     if (proposals.length === 0) {
-      return NO_PENDING;
+      return { ...NO_PENDING, unknown: partial };
     }
     yield* io.log(
       `Pending sealed proposals: ${countNoun(proposals.length, "proposal")} minted by CI jobs await a member (\`maruhi rotation proposals\` lists them; \`maruhi rotation accept <id>\` pushes one)`,
@@ -472,7 +486,7 @@ function reportPendingProposals(
     return {
       count: proposals.length,
       expiresAtMs: proposals.map((proposal) => proposal.expiresAtMs),
-      unknown: null,
+      unknown: partial,
     };
   });
 }
@@ -489,8 +503,13 @@ function unknownParts(
           `the history of ${countNoun(due.unreadable.length, "value")} could not be read (${due.unreadable.map(displayText).join(", ")})`,
         ]
       : []),
+    ...(options.failOnDue === true && due.unreadableEnvironments.length > 0
+      ? [
+          `the expiring values of ${countNoun(due.unreadableEnvironments.length, "environment")} could not be listed (${due.unreadableEnvironments.map(displayText).join(", ")})`,
+        ]
+      : []),
     ...(options.failOnPending === true && pending.unknown !== null
-      ? [`the pending proposals are unknown: ${pending.unknown} (run it with a member's token)`]
+      ? [`the pending proposals are unknown: ${pending.unknown}`]
       : []),
   ];
 }

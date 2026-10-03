@@ -309,7 +309,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     expect(pair.env.logs.join("\n")).toContain("restarted 1 time because the project changed");
   });
 
-  it("uploads nothing when the server's chain head, audit seq and attestation mark are the last replication's", async () => {
+  it("uploads nothing — and fetches no chain — when the server's chain head, audit seq and mutation counter are the last replication's", async () => {
     const pair = await startPair();
     const head = headOfChain();
     // The mirror holds the head the last replication recorded, with the
@@ -329,6 +329,14 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
         `Mirror ${pair.mirror.origin} is current for project ${built.projectId}`,
       );
       expect(pair.state.pages).toHaveLength(0);
+      // A "current" tick is the two status reads: no chain download, no
+      // export (ruling H revision, round 4)
+      expect(pair.source.requests.map((r) => r.path)).toEqual([
+        `/projects/${built.projectId}/mirror`,
+      ]);
+      expect(pair.mirror.requests.map((r) => r.path)).toEqual([
+        `/projects/${built.projectId}/mirror`,
+      ]);
       // A moved attestation mark alone brings a replica
       // A moved mutation counter alone (a write that appends no audit row
       // and no chain entry — an attestation) brings a replica
@@ -386,13 +394,24 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
 
     const fresh = await startPair({ marked: false });
     // The source still answers here (the pair's server): a promotion would
-    // leave two writable copies, so it is refused unless forced
-    expect(
-      await runCli(
-        ["mirror", "mark", "--server", fresh.mirror.origin, "--source", fresh.source.origin],
-        fresh.env.layer,
-      ),
-    ).toBe(0);
+    // leave two writable copies, so it is refused unless forced. The mark
+    // compares the audit positions too (ruling C revision, round 4): a log
+    // ahead of the source's is said now, not by the first sync's refusal
+    fresh.state.status = { mirror: false, head: { ...headOfChain(), auditMaxSeq: 9 } };
+    sourceStatus = { mirror: false, head: { ...headOfChain(), auditMaxSeq: 4 } };
+    try {
+      expect(
+        await runCli(
+          ["mirror", "mark", "--server", fresh.mirror.origin, "--source", fresh.source.origin],
+          fresh.env.layer,
+        ),
+      ).toBe(0);
+    } finally {
+      sourceStatus = null;
+    }
+    expect(fresh.env.errors.join("\n")).toContain(
+      `this project's audit log (seq 9) is ahead of ${fresh.source.origin}'s (seq 4): every \`maruhi mirror sync\` is refused as audit-regression`,
+    );
     expect(fresh.state.status).toMatchObject({
       mirror: true,
       sourceOrigin: fresh.source.origin,
@@ -435,6 +454,38 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       sourceStatus = null;
     }
     expect(frozen.state.status).toMatchObject({ mirror: false });
+    // A source that is a mirror of ANOTHER deployment: the primary moved
+    // there, so promoting this copy is the split brain (ruling C revision,
+    // round 4) — refused with the re-point, unless forced
+    const moved = await startPair({ marked: false });
+    expect(
+      await runCli(
+        ["mirror", "mark", "--server", moved.mirror.origin, "--source", moved.source.origin],
+        moved.env.layer,
+      ),
+    ).toBe(0);
+    sourceStatus = { mirror: true, sourceOrigin: "https://elsewhere.example", head: headOfChain() };
+    try {
+      expect(
+        await runCli(["mirror", "promote", "--server", moved.mirror.origin], moved.env.layer),
+      ).toBe(1);
+      expect(moved.env.errors.join("\n")).toContain(
+        `The source ${moved.source.origin} holds this project as a mirror of https://elsewhere.example, not of ${moved.mirror.origin}: the project's primary moved there`,
+      );
+      expect(moved.env.errors.join("\n")).toContain(
+        `maruhi mirror mark --server ${moved.mirror.origin} --source https://elsewhere.example`,
+      );
+      expect(moved.state.status).toMatchObject({ mirror: true });
+      expect(
+        await runCli(
+          ["mirror", "promote", "--server", moved.mirror.origin, "--force"],
+          moved.env.layer,
+        ),
+      ).toBe(0);
+    } finally {
+      sourceStatus = null;
+    }
+    expect(moved.state.status).toMatchObject({ mirror: false });
     // A source nothing answers at: the mark proceeds with a warning (the
     // chain check needs the source), and the promotion goes through
     const gone = await startPair({ marked: false });

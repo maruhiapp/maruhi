@@ -209,3 +209,15 @@ stay open for round 3.
 
 Rulings C, D, E and H received adopted candidates in this round and stay
 open for round 4; F and G are closed.
+
+### 8-3. Round 4 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (promotion) | C-9 (a bug in C-6): `sourceState` answered "frozen" for a source marked as a mirror of **any** deployment — a mirror of an older primary that had failed over elsewhere was promoted without a probe (two writable copies by honest commands); C-10 (structural): re-point a marked project at another source without the writable window of `promote --force` + `mark`; C-11: say at mark time when the project's audit seq is ahead of the source's (the first sync's bare `audit-regression` otherwise) | **C-9 adopted** — the source's `sourceOrigin` is compared with this deployment; a mirror of another deployment is "moved" and the refusal names the re-point (`--force` promotes anyway). **C-10 adopted** — a mark naming another source re-points in place (staging dropped, positions kept, the local mutation counter forgotten; the same source is still `already-mirror`); §11-7 revised. **C-11 adopted** — a warning from the two statuses (admin+; nothing to say below) |
+| D (replication) | D-20: drop and re-create the mutation triggers around the commit's bulk copy (per-row trigger cost on large projects) | **Declined** — a cost optimization only (no behavior changes; DDL inside the commit transaction adds risk for no correctness gain). **CLOSED (round 4)** — the merge filter, the purge, the `INSERT OR IGNORE`, and the trailer counts were checked and hold |
+| E (fallback) | nothing new (the body bound's synthetic request reaches only the failure's description; the fallback closure ends before the child runs; the mark read with the mirror's credential moves neither writes nor a stale read) | **CLOSED (round 4)** |
+| H (sync) | H-9 (the implementation did not deliver H-3's claim): the verified view was built — a full chain download — before the no-change check, so a "current" tick was not "one status read"; H-10: the pages were uploaded under the 30 s header bound, which includes sending a 4 MiB body — below ~1.2 Mbit/s every full page was "did not answer" | **H-9 adopted** — the two sessions open first, the no-change check runs, and the chain is fetched and verified only on the replicating path (the test pins a "current" tick to the two status reads). **H-10 adopted** — the mirror's session of a sync takes the body bound (3 min) on its headers |
+
+Rulings C and H received adopted candidates in this round and stay open
+for round 5; D and E are closed.
