@@ -656,8 +656,8 @@ gone for good (AUTH_SPEC §11-7, CRYPTO_SPEC §9.2; design
 
 **1. Bootstrap** = the migration above, minus the switch: generate a
 distinct `SERVER_ENC_KEY_IKM` for the mirror (two deployments with one key
-can open each other's grants, and the CLI tells deployments apart by that
-key), the owner exports the project, you import it into your deployment
+can open each other's grants, and the CLI refuses to mark a source that
+publishes this server's key), the owner exports the project, you import it into your deployment
 with the identities companion, members log in there once (`maruhi login
 --server <mirror>`), and the owner marks the project as a mirror of the
 primary:
@@ -737,7 +737,9 @@ nothing answers at (a probe of its public
 gateway's 52x in front of a dead worker still counts as alive — pass
 `--force` then) lets the promotion through. The **planned failover**, which
 loses no write: mark the primary as a mirror of the new one (it freezes),
-run one last `maruhi mirror sync` from it, then promote. A stale old
+run one last `maruhi mirror sync` from it, then promote — the promotion
+refuses, without `--force`, while the frozen primary holds chain entries
+the mirror lacks (the last sync was skipped). A stale old
 primary can never be synced over the promoted one; `maruhi mirror mark`
 refuses to mark a project whose chain is not part of the source's (such a
 mirror could never be synced), unless `--force`. The mark starts the

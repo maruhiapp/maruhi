@@ -242,3 +242,13 @@ for round 6; D and E are closed.
 
 Rulings C and H received adopted candidates in this round and stay open
 for round 7; D and E are closed.
+
+### 8-6. Round 7 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (promotion) | C-16: the "frozen" path promoted without checking that the planned order's last sync happened — a frozen source holding chain entries the mirror lacks was promoted, and those entries became unreachable forever (the test pinned exactly that as a pass). Record bug: the guide's bootstrap step still said the CLI tells deployments apart by the key | **C-16 adopted** — the source's status already carries its head: a frozen source whose chain head is not the mirror's is refused with the sync to run (`--force` promotes without its last writes); the audit seq is not compared (a frozen source still appends read rows). **The guide corrected** |
+| H (sync) | H-16 (a bug in H-14's delivery): the sync's view never advanced the local floor (only the gossip reconciliation does), so on any machine whose floor sat below the source's head the H-14 branch — a full chain download — was taken on every tick, forever; the H-9 cost claim held only for a machine with no floor | **Adopted** — the sync's view is `project verify`'s keyless prologue (floor check, invite anchor, head gossip), which advances the floor once every check passes; the view is taken once per machine, never in steady state, and a gossip contradiction now aborts the sync instead of replicating a contradicted view |
+
+Rulings C and H received adopted candidates in this round and stay open
+for round 8; D, E, F and G are closed.

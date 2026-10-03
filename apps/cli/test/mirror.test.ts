@@ -396,6 +396,33 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       expect(pair.mirror.requests.map((r) => r.path)).toEqual([
         `/projects/${built.projectId}/mirror`,
       ]);
+      // A floor below the source's head is proved on the chain by the view
+      // once (H-14), which advances the floor (H-16): the next tick is the
+      // two status reads again
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* (yield* FloorStore).commitHead(built.projectId, {
+            seq: 1,
+            hashHex: built.hashes[0] ?? "",
+          });
+        }).pipe(Effect.provide(pair.env.layer)),
+      );
+      const requestsBefore = pair.source.requests.length;
+      expect(await runCli(["mirror", "sync", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
+        0,
+      );
+      expect(pair.env.logs.at(-2)).toContain("is current for project");
+      expect(
+        pair.source.requests.slice(requestsBefore).filter((r) => r.path.endsWith("/chain")),
+      ).toHaveLength(1);
+      const requestsAfter = pair.source.requests.length;
+      expect(await runCli(["mirror", "sync", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
+        0,
+      );
+      expect(
+        pair.source.requests.slice(requestsAfter).filter((r) => r.path.endsWith("/chain")),
+      ).toHaveLength(0);
+      expect(pair.state.pages).toHaveLength(0);
       // A moved attestation mark alone brings a replica
       // A moved mutation counter alone (a write that appends no audit row
       // and no chain entry — an attestation) brings a replica
@@ -534,6 +561,20 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     ).toBe(0);
     sourceStatus = { mirror: true, sourceOrigin: frozen.mirror.origin, head: headOfChain() };
     try {
+      // … unless the mirror lacks the frozen source's last writes (the
+      // planned order's last sync was skipped — ruling C revision, round 7)
+      frozen.state.status = {
+        ...frozen.state.status,
+        head: { ...headOfChain(), chainHeadSeq: 1, chainHeadHashHex: built.projectId },
+      };
+      expect(
+        await runCli(["mirror", "promote", "--server", frozen.mirror.origin], frozen.env.layer),
+      ).toBe(1);
+      expect(frozen.env.errors.join("\n")).toContain(
+        `is frozen at chain seq ${headOfChain().chainHeadSeq} (head ${headOfChain().chainHeadHashHex}) but this mirror holds seq 1`,
+      );
+      expect(frozen.state.status).toMatchObject({ mirror: true });
+      frozen.state.status = { ...frozen.state.status, head: headOfChain() };
       expect(
         await runCli(["mirror", "promote", "--server", frozen.mirror.origin], frozen.env.layer),
       ).toBe(0);

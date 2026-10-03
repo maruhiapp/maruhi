@@ -68,13 +68,11 @@ const program = Effect.gen(function* () {
   /** A capture expected to reject: its error's name and message. */
   const refusal = (shell: string) =>
     Effect.promise(() =>
-      runner
-        .captureScript({ command: ["sh", "-c", shell], cwd: process.cwd(), extraEnv: {} })
-        .then(
-          () => "unexpectedly captured",
-          (error: unknown) =>
-            error instanceof Error ? `${error.name}: ${error.message}` : String(error),
-        ),
+      runner.captureScript({ command: ["sh", "-c", shell], cwd: process.cwd(), extraEnv: {} }).then(
+        () => "unexpectedly captured",
+        (error: unknown) =>
+          error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      ),
     );
   const flooded = yield* refusal("head -c 3000000 /dev/zero; sleep 5; echo late");
   // A flooded stderr is dropped whole (never cut — D-9) and drained: the

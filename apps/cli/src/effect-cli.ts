@@ -2197,7 +2197,13 @@ function verifiedServerView(serverFlag: string | undefined, projectId: string) {
   });
 }
 
-/** The server's verified view from an open session (the same keyless prologue as `project export`). */
+/**
+ * The server's verified view from an open session: the same keyless
+ * prologue as `project verify` — the floor check, the invite anchor and
+ * the head gossip, which advances the local floor to the verified head
+ * once every check passes (ruling H revision, round 7: a sync whose view
+ * left the floor behind took the view on every tick, forever).
+ */
 function verifiedViewOf(source: SessionContext, projectId: string) {
   return Effect.gen(function* () {
     const synced = yield* syncProject(source.client, projectId);
@@ -2206,7 +2212,12 @@ function verifiedViewOf(source: SessionContext, projectId: string) {
       synced,
       syncProject(source.client, projectId),
     );
-    return checked.verified;
+    yield* checkInviteAnchor(projectId, checked.verified);
+    return yield* reconcileGossip(
+      projectId,
+      checked.verified,
+      syncProject(source.client, projectId),
+    );
   });
 }
 
@@ -2400,28 +2411,9 @@ function mirrorPromoteCommand(flags: {
         projectId,
         context.origin,
       );
-      if (source === "writable") {
-        return yield* Effect.fail(
-          cliError(
-            `The source ${status.sourceOrigin} still answers and holds this project writable: promoting ${context.origin} now leaves two writable copies (a split brain). The planned order: mark the source as a mirror of ${context.origin} (\`maruhi mirror mark --server ${status.sourceOrigin} --source ${context.origin}\` — it freezes), bring its last writes over (\`maruhi mirror sync --server ${status.sourceOrigin} --mirror ${context.origin}\`), then promote; or take the source down. Pass --force to promote anyway`,
-          ),
-        );
-      }
-      if (source === "answers") {
-        return yield* Effect.fail(
-          cliError(
-            `The source ${status.sourceOrigin} still answers, and its mark could not be read from this machine (no session for it here, or it refused the read): promoting ${context.origin} now may leave two writable copies (a split brain). Log in there (\`maruhi login --server ${status.sourceOrigin}\`) so the promotion can read whether it is frozen, follow the planned order (mark the source as a mirror of ${context.origin}, one last \`maruhi mirror sync\`, then promote), or pass --force to promote anyway`,
-          ),
-        );
-      }
-      if (typeof source === "object") {
-        return yield* Effect.fail(
-          cliError(
-            source.sameKey
-              ? `The source ${status.sourceOrigin} holds this project as a mirror of ${source.movedTo}, which publishes this server's key fingerprint. If that is this deployment under another hostname, promote it under that name (\`maruhi mirror promote --server ${source.movedTo}\` — the source is frozen for it); if it is another deployment sharing one SERVER_ENC_KEY_IKM, that is the misconfiguration to fix first (one key per deployment); or pass --force to promote anyway`
-              : `The source ${status.sourceOrigin} holds this project as a mirror of ${source.movedTo}, not of ${context.origin}: the project's primary moved there, and promoting this copy would leave two writable copies (a split brain). Re-point this mirror at it (\`maruhi mirror mark --server ${context.origin} --source ${source.movedTo}\`) and sync from there; or pass --force to promote anyway`,
-          ),
-        );
+      const refusal = promotionRefusal(source, status.sourceOrigin, status.head, context.origin);
+      if (refusal !== null) {
+        return yield* Effect.fail(cliError(refusal));
       }
     }
     yield* context.client.mirror
@@ -2436,9 +2428,43 @@ function mirrorPromoteCommand(flags: {
   });
 }
 
+/**
+ * Why a promotion is refused for what the source holds (null = it goes
+ * through): a writable source and an unread mark are split brains, a
+ * frozen source whose head the mirror lacks loses its last writes (round
+ * 7), a source frozen for another origin moved; `--force` skips all four.
+ */
+function promotionRefusal(
+  source: SourceState,
+  sourceOrigin: string,
+  mirrorHead: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
+  thisOrigin: string,
+): string | null {
+  if (source === "writable") {
+    return `The source ${sourceOrigin} still answers and holds this project writable: promoting ${thisOrigin} now leaves two writable copies (a split brain). The planned order: mark the source as a mirror of ${thisOrigin} (\`maruhi mirror mark --server ${sourceOrigin} --source ${thisOrigin}\` — it freezes), bring its last writes over (\`maruhi mirror sync --server ${sourceOrigin} --mirror ${thisOrigin}\`), then promote; or take the source down. Pass --force to promote anyway`;
+  }
+  if (source === "answers") {
+    return `The source ${sourceOrigin} still answers, and its mark could not be read from this machine (no session for it here, or it refused the read): promoting ${thisOrigin} now may leave two writable copies (a split brain). Log in there (\`maruhi login --server ${sourceOrigin}\`) so the promotion can read whether it is frozen, follow the planned order (mark the source as a mirror of ${thisOrigin}, one last \`maruhi mirror sync\`, then promote), or pass --force to promote anyway`;
+  }
+  if (source === "gone") {
+    return null;
+  }
+  if ("frozenAt" in source) {
+    // The planned order's last sync did not happen: the frozen source
+    // holds chain entries this mirror lacks, which a promotion makes
+    // unreachable forever (ruling C revision, round 7)
+    return source.frozenAt.chainHeadHashHex === mirrorHead.chainHeadHashHex
+      ? null
+      : `The source ${sourceOrigin} is frozen at chain seq ${source.frozenAt.chainHeadSeq} (head ${source.frozenAt.chainHeadHashHex}) but this mirror holds seq ${mirrorHead.chainHeadSeq} (head ${mirrorHead.chainHeadHashHex}): its last writes have not been brought over. Run \`maruhi mirror sync --server ${sourceOrigin} --mirror ${thisOrigin}\` first; or pass --force to promote without them`;
+  }
+  return source.sameKey
+    ? `The source ${sourceOrigin} holds this project as a mirror of ${source.movedTo}, which publishes this server's key fingerprint. If that is this deployment under another hostname, promote it under that name (\`maruhi mirror promote --server ${source.movedTo}\` — the source is frozen for it); if it is another deployment sharing one SERVER_ENC_KEY_IKM, that is the misconfiguration to fix first (one key per deployment); or pass --force to promote anyway`
+    : `The source ${sourceOrigin} holds this project as a mirror of ${source.movedTo}, not of ${thisOrigin}: the project's primary moved there, and promoting this copy would leave two writable copies (a split brain). Re-point this mirror at it (\`maruhi mirror mark --server ${thisOrigin} --source ${source.movedTo}\`) and sync from there; or pass --force to promote anyway`;
+}
+
 /** What the source holds; `movedTo` = it is a mirror of another deployment (the primary moved there). */
 type SourceState =
-  | "frozen"
+  | { readonly frozenAt: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string } }
   | "writable"
   | "answers"
   | "gone"
@@ -2474,7 +2500,7 @@ function sourceState(
             }
             const movedTo = status.sourceOrigin;
             if (movedTo === thisOrigin) {
-              return Effect.succeed("frozen");
+              return Effect.succeed({ frozenAt: status.head });
             }
             // A fingerprint match never lifts the guard (it is self-reported
             // and shared by deployments cloned from one secrets set — round
