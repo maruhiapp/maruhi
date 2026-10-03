@@ -447,17 +447,24 @@ async function restoreFromSnapshot(
   if (namespace === undefined) {
     return { status: "failed", code: "target-unavailable" };
   }
-  const projectId = verifiedProjectId ?? (await scannedProjectId(env, job.objectKey));
-  if (typeof projectId !== "string") {
-    return projectId;
+  const scanned =
+    verifiedProjectId === undefined
+      ? await scannedProjectId(env, job.objectKey)
+      : { projectId: verifiedProjectId, etag };
+  if ("status" in scanned) {
+    return scanned;
   }
+  const { projectId } = scanned;
   const stub = namespace.get(namespace.idFromName(projectId));
   try {
     // The workers-types RPC stub types distribute over union return
     // values, so this converts back to the declared type (the same
     // reason as rpcCall in worker-env.ts; the restore worker has no
     // Effect runtime)
-    const outcome = await (stub.opsRestore(job.objectKey, etag) as Promise<OpsRestoreOutcome>);
+    const outcome = await (stub.opsRestore(
+      job.objectKey,
+      scanned.etag,
+    ) as Promise<OpsRestoreOutcome>);
     return { projectId, outcome, stub };
   } catch (error) {
     console.warn("restore RPC failed", error instanceof Error ? error.name : "unknown");
@@ -465,11 +472,20 @@ async function restoreFromSnapshot(
   }
 }
 
-/** The project id from the snapshot's genesis (a plain restore has no verified chain to take it from). */
+/**
+ * The project id from the snapshot's genesis (a plain restore has no
+ * verified chain to take it from), with the etag of the object it was
+ * read from: the DO restores that body or refuses (a re-put between the
+ * scan and the restore would land another file under the DO this one's
+ * genesis names — ruling H revision, round 5).
+ */
 async function scannedProjectId(
   env: RestoreEnv,
   objectKey: string,
-): Promise<string | Extract<RestoreJobResult, { status: "failed" }>> {
+): Promise<
+  | { readonly projectId: string; readonly etag: string }
+  | Extract<RestoreJobResult, { status: "failed" }>
+> {
   const object = await env.OPS_BACKUP_BUCKET.get(objectKey);
   if (object === null) {
     return { status: "failed", code: "snapshot-missing" };
@@ -485,7 +501,9 @@ async function scannedProjectId(
     console.warn("snapshot scan failed", error instanceof Error ? error.name : "unknown");
     return { status: "failed", code: "snapshot-malformed" };
   }
-  return projectId === null ? { status: "failed", code: "genesis-missing" } : projectId;
+  return projectId === null
+    ? { status: "failed", code: "genesis-missing" }
+    : { projectId, etag: object.etag };
 }
 
 async function runJob(env: RestoreEnv, job: RestoreJob): Promise<RestoreJobResult> {

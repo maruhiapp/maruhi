@@ -627,8 +627,8 @@ source back, promote it again (`maruhi mirror promote --server <source url>
 answers). Once the destination is live, the frozen source can stay as its
 mirror and be synced from it as a fallback (see "Running a mirror" below);
 the first sync from the destination replaces the source's content with the
-destination's replica and keeps only the rows the source appended that the
-replica does not carry.
+destination's replica and keeps the rows the source appended that the
+replica does not carry, re-appended after it.
 
 If the source was *not* frozen first and writes continued after the
 export, do not re-import — the Durable Object refuses a second restore
@@ -734,9 +734,13 @@ loses no write: mark the primary as a mirror of the new one (it freezes),
 run one last `maruhi mirror sync` from it, then promote. A stale old
 primary can never be synced over the promoted one; `maruhi mirror mark`
 refuses to mark a project whose chain is not part of the source's (such a
-mirror could never be synced), unless `--force`, and warns when the
-project's audit log is ahead of the source's (syncs are refused as
-`audit-regression` until the source's log grows past it). After the promotion the
+mirror could never be synced), unless `--force`. The mark starts the
+project's audit position at 0: the first sync accepts the new source's log
+whatever its length, and keeps every row of this project's own log the
+replica does not carry, re-appended after it. A deployment is recognized by
+its server key fingerprint, not its hostname: a source under another
+hostname is still "this deployment" to the promotion, and the mark refuses
+a source that is the server itself. After the promotion the
 command lists the other server keys the chain grants, each with the
 environments its grant covers: if that deployment was **compromised**
 rather than lost, revoke the key it names (`maruhi server revoke

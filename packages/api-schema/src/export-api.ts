@@ -46,6 +46,13 @@ export const ExportHeadSchema = Schema.Struct({
   auditMaxSeq: Schema.Number,
   /** The project DO's mutation counter at the export (a mirror records it with the replica — the sync's no-change check). */
   mutationSeq: Schema.optionalKey(Schema.Number),
+  /**
+   * The source this project is marked as a mirror of, read in the same
+   * call as the marks (AUTH_SPEC §11-6 — the switch-over): a last page
+   * carrying it, with the marks unchanged since the first, says no write
+   * landed on this server after the export. Absent on a writable project.
+   */
+  mirrorOf: Schema.optionalKey(Schema.String),
 });
 
 /**

@@ -422,6 +422,38 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     );
     expect(await count("SELECT MAX(seq) AS n FROM audit_events")).toBe(exportedAudit + 1);
     expect(await stagingTables()).toEqual([]);
+    // A re-point resets the audit floor (ruling C revision, round 5): every
+    // row of the log is the mirror's own against the new source
+    expect((await mark(OWNER, "https://successor.maruhi.app")).status).toBe(200);
+    // A carried row is the mirror's own row byte for byte: a replica that
+    // carries one of its row ids with other content cannot rewrite the
+    // evidence the mirror witnessed (ruling J revision, round 5)
+    const auditLineIndex = exported.findIndex((line) => {
+      const parsed = parsedLine(line);
+      return parsed["kind"] === "row" && parsed["table"] === "audit_events";
+    });
+    const rewritten = exported.map((line, index) => {
+      if (index !== auditLineIndex) {
+        return line;
+      }
+      const row = parsedLine(line) as { values: unknown[] };
+      const values = [...row.values];
+      const eventIndex = values.findIndex((value) => value === "chain.genesis");
+      values[eventIndex === -1 ? 1 : eventIndex] = "chain.rewritten";
+      return JSON.stringify({ ...row, values });
+    });
+    await expectRejected(await upload(rewritten, 50), "malformed");
+    expect(await count("SELECT COUNT(*) AS n FROM audit_events")).toBe(exportedAudit + 1);
+    // The first replica from the new source commits whatever its audit seq,
+    // and the rows it does not carry (the two reads) follow it
+    expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
+    const shorter = await upload(exported, 50);
+    expect(shorter.status).toBe(200);
+    expect(((await shorter.json()) as WirePageOutcome).committed).toMatchObject({
+      auditMaxSeq: exportedAudit,
+      ownAuditRows: 2,
+    });
+    expect(await count("SELECT COUNT(*) AS n FROM audit_events")).toBe(exportedAudit + 2);
     expect((await unmark(OWNER)).status).toBe(200);
   });
 
@@ -594,11 +626,13 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       }),
       { rows: { ...(parsedLine(lines[lines.length - 1])["rows"] as object), audit_events: 0 } },
     );
-    await expectRejected(await upload(withoutAudit, 50), "audit-regression");
-    // The same replica (no change) commits
+    // The same replica (no change) commits — and sets the audit position:
+    // the mark itself starts the position at 0 (ruling C revision, round
+    // 5), so only a replica behind a replicated position regresses
     const same = await upload(lines, 50);
     expect(same.status).toBe(200);
     expect(((await same.json()) as WirePageOutcome).committed).toBeDefined();
+    await expectRejected(await upload(withoutAudit, 50), "audit-regression");
     expect(await stagingTables()).toEqual([]);
   });
 

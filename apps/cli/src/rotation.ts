@@ -188,9 +188,7 @@ interface ExpiringRows extends DueRows {
  * caller's scope (named, not fetched — A-14). A failed list read is
  * reported as such and the walk goes on with the chain's set.
  */
-function environmentsToWalk(
-  context: ProjectContextBase,
-): Effect.Effect<
+function environmentsToWalk(context: ProjectContextBase): Effect.Effect<
   {
     readonly ids: readonly string[];
     readonly listUnreadable: string | null;

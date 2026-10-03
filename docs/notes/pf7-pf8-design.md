@@ -493,3 +493,15 @@ open for round 4; C and K are closed.
 
 Rulings A, D, O and P received adopted candidates in this round and stay
 open for round 5; B is closed (with C and K).
+
+### 9-4. Round 5 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| A (cron) | A-13 (a bug against A-11): the max-age walk took the chain's environment set, which keeps a deleted environment forever (its deletion is a signed statement, not a chain op); its metadata pull answers not-found, so `--fail-on-due` exited 1 permanently in every project that ever deleted an environment; A-14: a scoped member's check fetched every out-of-scope environment (403 each) and reported them as unreadable without the remedy | **A-13 adopted** — the environments verified as deleted (the signed deletion statements, the same helper the mandate sweep uses) are skipped; a failed list read is an unknown part. **A-14 adopted** — the out-of-scope environments are named, not fetched |
+| D (answer) | D-12 (an unbounded wait left by D-6 / D-10): a process the script left behind that inherited its pipes held both reads open after the script exited, and the job with them — the credential it created stranded by maruhi's own wait; D-13: a script that ignores the stop (`trap '' TERM`) held the stop path the same way | **D-12 adopted** — once the script exited, the reads end after a short grace (3 s), the script's own answer is the capture, and the report says a process it started still held its output. **D-13 adopted** — the stop escalates to SIGKILL after the same grace |
+| O (pre-flight / credential) | O-14 (a bound bug in O-11): the recipients array was capped at 4096 on a false rationale (there is no member cap; W(E) is bounded by the chain's capacity and the mint's wraps carry the same set unbounded); O-15 (a superset of O-13): the re-lease presented the original lease token, discarding the mint's token minted seconds earlier for the same key — in K-5's own case (the lease token aged out, the issuance endpoint then quiet) the recovery was lost although an unexpired token was in hand | **O-14 adopted** — the bound is the §12-8 DEK-wrap row cap (10,000), the precedent for the same reason. **O-15 adopted** — the mint's token is minted before the seal and handed to the re-lease (the newest token the job holds for the lease's key); the second mint falls back to it as well. Recorded, no candidate: a token without `exp` is never reused, which is right — the server's verifier refuses such a token, so it never leased |
+| P (lifetime) | nothing new (the list sweep runs under the DO's permit in the same synchronous block as the mint's, behind the member floor, skipped on a mirror; its writes are bounded by the pending cap and the mint window; P-4 survives) | **CLOSED (round 5)** |
+
+Rulings A, D and O received adopted candidates in this round and stay open
+for round 6; P is closed (with B, C and K).

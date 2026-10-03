@@ -30,9 +30,22 @@ const MAX_PAGES = 100_000;
 export interface MirrorSyncInput<R = never> {
   /** The server (the source of the export). */
   readonly source: MaruhiClient;
-  /** The mirror (the destination of the pages). */
+  /** The mirror (its status). */
   readonly mirror: MaruhiClient;
+  /**
+   * The client the pages go through (the mirror under the body bound on
+   * its headers — a full page on a slow uplink is not "did not answer");
+   * defaults to `mirror`. Opened by the caller; used on the replicating
+   * path only (ruling H revision, round 5).
+   */
+  readonly pages?: MaruhiClient;
   readonly projectId: string;
+  /**
+   * The local floor's chain head (null = none): a source whose reported
+   * head is behind it is never "current" — the replicating path's floor
+   * check decides, with its evidence (ruling H revision, round 5).
+   */
+  readonly floorHead: { readonly seq: number; readonly hashHex: string } | null;
   /**
    * The server's verified view, built only when something is uploaded
    * (ruling H revision, round 4): a "current" tick costs the two status
@@ -78,6 +91,7 @@ type Attempt =
 function replicateOnce(input: MirrorSyncInput<unknown>): Effect.Effect<Attempt, CliError> {
   return Effect.gen(function* () {
     const params = { projectId: input.projectId };
+    const pages = input.pages ?? input.mirror;
     let cursor: string | undefined;
     let sequence = 0;
     let lines = 0;
@@ -94,7 +108,7 @@ function replicateOnce(input: MirrorSyncInput<unknown>): Effect.Effect<Attempt, 
       if (exported === null) {
         return { kind: "changed" } as const;
       }
-      const uploaded = yield* input.mirror.mirror
+      const uploaded = yield* pages.mirror
         .pages({
           params,
           payload: {
@@ -157,11 +171,15 @@ export function mirrorSyncOp<R>(
     if (yield* sourceUnchanged(input, before)) {
       return { kind: "current", before } as const;
     }
-    const verified = yield* input.verified;
+    let verified = yield* input.verified;
     let restarts = 0;
     let attempt = yield* replicateOnce(input);
     while (attempt.kind === "changed" && restarts < MAX_RESTARTS) {
       restarts += 1;
+      // The project moved: the view is rebuilt before the next pass, so the
+      // floor check covers what is uploaded and the report compares the
+      // committed head with the view it was exported from (H-13)
+      verified = yield* input.verified;
       attempt = yield* replicateOnce(input);
     }
     if (attempt.kind === "changed") {
@@ -195,9 +213,24 @@ function sourceUnchanged(
         source.head.chainHeadHashHex === last.chainHeadHashHex &&
         before.head.chainHeadHashHex === last.chainHeadHashHex &&
         source.head.auditMaxSeq === last.auditMaxSeq &&
-        source.head.mutationSeq === last.mutationSeq,
+        source.head.mutationSeq === last.mutationSeq &&
+        // A source behind this machine's floor (rebuilt from a backup taken
+        // at the last synced head) is not current: the replicating path's
+        // floor check says so with evidence (H-11)
+        !floorAhead(input.floorHead, source.head),
     ),
     Effect.mapError(toCliError),
+  );
+}
+
+function floorAhead(
+  floor: MirrorSyncInput<unknown>["floorHead"],
+  head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
+): boolean {
+  return (
+    floor !== null &&
+    (floor.seq > head.chainHeadSeq ||
+      (floor.seq === head.chainHeadSeq && floor.hashHex !== head.chainHeadHashHex))
   );
 }
 

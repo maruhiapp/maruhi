@@ -25,6 +25,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   isMutationTracked,
+  PROJECT_DO_MIGRATIONS,
   PROJECT_DO_TABLES,
   readProjectDoSchemaVersion,
 } from "../src/do-schema.ts";
@@ -216,6 +217,11 @@ async function d1Rows(query: string, ...bindings: (string | number)[]) {
   ).results;
 }
 
+/** The DO's schema version as the export's marks carry it (the last migration step). */
+function readProjectDoSchemaVersionOf(): number {
+  return PROJECT_DO_MIGRATIONS.length;
+}
+
 describe("project export (AUTH_SPEC §11-6)", () => {
   it("pages the project in the evacuation format, records project.exported, and the restore path accepts the file", async () => {
     await seedProjectActivity();
@@ -399,6 +405,7 @@ describe("project export (AUTH_SPEC §11-6)", () => {
             chainHeadSeq: head.chainHeadSeq,
             chainHeadHashHex: head.chainHeadHashHex,
             mutationSeq: Number(mutation[0]?.["seq"] ?? 0),
+            schemaVersion: readProjectDoSchemaVersionOf(),
           },
           ...overrides,
         }),
@@ -434,11 +441,29 @@ describe("project export (AUTH_SPEC §11-6)", () => {
           chainHeadSeq: ownersHead.chainHeadSeq,
           chainHeadHashHex: ownersHead.chainHeadHashHex,
           mutationSeq: Number(ownersMutation[0]?.["seq"] ?? 0),
+          schemaVersion: readProjectDoSchemaVersionOf(),
         },
         ...overrides,
       });
     expect((await exportPage(OWNER, ownersCursor({}))).status).toBe(200);
     expect((await exportPage(MEMBER, ownersCursor({}))).status).toBe(409);
+    // A cursor from another schema version (an export spanning a deploy
+    // that migrated the schema) restarts at the source (ruling C revision, round 5)
+    expect(
+      (
+        await exportPage(
+          OWNER,
+          ownersCursor({
+            marks: {
+              chainHeadSeq: ownersHead.chainHeadSeq,
+              chainHeadHashHex: ownersHead.chainHeadHashHex,
+              mutationSeq: Number(ownersMutation[0]?.["seq"] ?? 0),
+              schemaVersion: readProjectDoSchemaVersionOf() + 1,
+            },
+          }),
+        )
+      ).status,
+    ).toBe(409);
     expect((await exportPage(OWNER, ownersCursor({ exportedSeq: 1 }))).status).toBe(409);
     // A cursor past the table order is refused too (never a 500)
     const beyond = base64Url(

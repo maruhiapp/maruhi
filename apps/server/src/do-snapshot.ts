@@ -423,6 +423,8 @@ export interface ExportMarks {
   readonly chainHeadHashHex: string | null;
   /** The mutation counter covers every tracked table, head attestations included (ruling C revision, round 4 — no separate attestation mark). */
   readonly mutationSeq: number;
+  /** The DO schema version: an export spanning a deploy that migrates the schema restarts at the source, not at the destination (ruling C revision, round 5). */
+  readonly schemaVersion: number;
 }
 
 /** The tables whose rows the export bounds by `auditMaxSeq` (the log and its cumulative-hash column). */
@@ -449,12 +451,13 @@ export interface ExportCursorState {
   readonly exportedSeq: number;
 }
 
-function marksOf(sql: SqlStorage): ExportMarks {
+function marksOf(sql: SqlStorage, schemaVersion: number): ExportMarks {
   const marks = readWatermarks(sql);
   return {
     chainHeadSeq: marks.chainHeadSeq,
     chainHeadHashHex: marks.chainHeadHashHex,
     mutationSeq: marks.mutationSeq,
+    schemaVersion,
   };
 }
 
@@ -463,7 +466,8 @@ function sameMarks(a: ExportMarks, b: ExportMarks): boolean {
   return (
     a.chainHeadSeq === b.chainHeadSeq &&
     a.chainHeadHashHex === b.chainHeadHashHex &&
-    a.mutationSeq === b.mutationSeq
+    a.mutationSeq === b.mutationSeq &&
+    a.schemaVersion === b.schemaVersion
   );
 }
 
@@ -556,15 +560,15 @@ function decodeMarks(value: unknown): ExportMarks | null {
   }
   const marks = value as Partial<ExportMarks>;
   const { chainHeadHashHex } = marks;
-  const numbers = [marks.chainHeadSeq, marks.mutationSeq];
+  const numbers = [marks.chainHeadSeq, marks.mutationSeq, marks.schemaVersion];
   if (
     !numbers.every((number) => typeof number === "number") ||
     (chainHeadHashHex !== null && typeof chainHeadHashHex !== "string")
   ) {
     return null;
   }
-  const [chainHeadSeq = 0, mutationSeq = 0] = numbers;
-  return { chainHeadSeq, chainHeadHashHex: chainHeadHashHex ?? null, mutationSeq };
+  const [chainHeadSeq = 0, mutationSeq = 0, schemaVersion = 0] = numbers;
+  return { chainHeadSeq, chainHeadHashHex: chainHeadHashHex ?? null, mutationSeq, schemaVersion };
 }
 
 export interface ExportPageInput {
@@ -698,7 +702,7 @@ function emitRows(
 export function exportSnapshotPage(input: ExportPageInput): ExportPageResult {
   const { sql } = input;
   const order = snapshotTableOrder(input.tables);
-  const marks = marksOf(sql);
+  const marks = marksOf(sql, input.schemaVersion);
   // A cursor past the table order (another server's, or a forged one) is
   // treated like a changed project: the client starts over
   if (

@@ -120,11 +120,13 @@ export function readMirrorState(sql: SqlStorage): MirrorState | null {
 /**
  * Re-points a marked project at another source (ruling C revision, round
  * 4 — the honest path after a failover elsewhere, without a writable
- * window): the staging in progress goes, the source changes, the
- * replicated positions stay (the chain head is checked against the new
- * source's chain by the client's mark guard; the audit position is the
- * floor the next replica must reach), and the mutation counter is
- * forgotten — it is per deployment.
+ * window): the staging in progress goes, the source changes, the chain
+ * position stays (checked against the new source's chain by the client's
+ * mark guard), the audit position resets to 0 (a seq floor compares
+ * positions of one source's log only — the new source's log is another;
+ * the first replica from it is accepted whatever its audit seq, and the
+ * rows it does not carry are re-appended after it — round 5), and the
+ * mutation counter is forgotten — it is per deployment.
  */
 export function remarkMirror(
   storage: DurableObjectStorage,
@@ -135,24 +137,30 @@ export function remarkMirror(
   storage.transactionSync(() => {
     dropStaging(storage.sql, tables);
     storage.sql.exec(
-      "UPDATE mirror_state SET source_origin = ?, marked_at = ?, expected_sequence = 0, staging_table = NULL, last_mutation_seq = NULL WHERE id = 1",
+      "UPDATE mirror_state SET source_origin = ?, marked_at = ?, expected_sequence = 0, staging_table = NULL, last_audit_seq = 0, last_mutation_seq = NULL WHERE id = 1",
       sourceOrigin,
       nowMs,
     );
   });
 }
 
-/** Marks the project (the caller checked it is not marked); the current heads are the bootstrap position. */
+/**
+ * Marks the project (the caller checked it is not marked); the current
+ * chain head is the bootstrap position. The audit position starts at 0
+ * (ruling C revision, round 5): the first replica is accepted whatever
+ * its audit seq, and every row of this project's log that the replica
+ * does not carry — a former primary's rows after its last export — is
+ * re-appended after it, never replaced.
+ */
 export function markMirror(sql: SqlStorage, sourceOrigin: string, nowMs: number): void {
   const marks = readWatermarks(sql);
   sql.exec(
     `INSERT INTO mirror_state (id, source_origin, marked_at, expected_sequence, staging_table, last_synced_at, last_head_seq, last_head_hash_hex, last_audit_seq, last_attestation_mark)
-     VALUES (1, ?, ?, 0, NULL, NULL, ?, ?, ?, ?)`,
+     VALUES (1, ?, ?, 0, NULL, NULL, ?, ?, 0, ?)`,
     sourceOrigin,
     nowMs,
     marks.chainHeadSeq,
     marks.chainHeadHashHex ?? "",
-    marks.auditMaxSeq,
     marks.attestationMark,
   );
 }
@@ -552,6 +560,24 @@ export function commitMirrorReplica(input: MirrorCommitInput): MirrorCommit {
       const auditColumns = sql.exec(`SELECT * FROM ${AUDIT_TABLE} LIMIT 0`).columnNames;
       sql.exec(`DROP TABLE IF EXISTS ${LOCAL_AUDIT_TABLE}`);
       const stagedAudit = stagingOf(AUDIT_TABLE);
+      if (hasTable(sql, stagedAudit)) {
+        // A carried row is the mirror's own row, byte for byte (its seq may
+        // differ): the replica cannot rewrite the evidence the mirror
+        // itself witnessed under the same row id (ruling J revision, round 5)
+        const differs = auditColumns
+          .filter((column) => column !== "seq")
+          .map((column) => `own.${column} IS NOT staged.${column}`)
+          .join(" OR ");
+        const rewritten = sql
+          .exec(
+            `SELECT COUNT(*) AS n FROM ${AUDIT_TABLE} AS own JOIN ${stagedAudit} AS staged ON staged.row_id = own.row_id WHERE own.seq > ? AND (${differs})`,
+            state.lastAuditSeq,
+          )
+          .one()["n"];
+        if (Number(rewritten) !== 0) {
+          throw malformed();
+        }
+      }
       const carried = hasTable(sql, stagedAudit)
         ? ` AND row_id NOT IN (SELECT row_id FROM ${stagedAudit})`
         : "";

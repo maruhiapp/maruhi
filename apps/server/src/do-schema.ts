@@ -459,15 +459,19 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
   // bindings, attestation windows — which ruling C accepts as drift). Any
   // row change by any path bumps it, so a writer added later cannot forget
   // to. **A table added by a later step declares its own triggers in that
-  // step** (mutationTriggers below)
+  // step** (mutationTriggers below). The tables are the ones the steps
+  // before this one declare (never a runtime-internal `_cf_*` /
+  // `sqlite_*` table or a leftover staging table, on which a trigger
+  // would be refused or pointless — ruling C revision, round 5)
   {
     tables: [],
     apply(sql) {
+      const declared = new Set(PROJECT_DO_MIGRATIONS.slice(0, 6).flatMap((step) => step.tables));
       const tables = sql
         .exec("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         .toArray()
         .map((row) => String(row["name"]))
-        .filter((name) => !MUTATION_UNTRACKED_TABLES.has(name) && !name.endsWith("_mirror"));
+        .filter((name) => declared.has(name) && isMutationTracked(name));
       for (const table of tables) {
         for (const statement of mutationTriggers(table)) {
           sql.exec(statement);

@@ -209,3 +209,14 @@ for round 4; D and I are closed.
 
 Rulings C, H and J received adopted candidates in this round and stay open
 for round 5.
+
+### 8-4. Round 5 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (consistency) | C-14: an export spanning a deploy that migrates the schema was not refused at the source (the counter does not move on a migration; the cursor's table index silently re-targets) and failed only at the destination, after the owner had frozen the source; C-15 (latent, structural): step 7 enumerated `sqlite_master`, so a runtime-internal table (`_cf_KV`, `_cf_METADATA`, `sqlite_stat1`) or a leftover staging table would have received a trigger — refused by the runtime, which would throw on every open of the project | **C-14 adopted** — the schema version is a mark (409 at the source). **C-15 adopted** — the triggers go on the tables the earlier steps declare, intersected with what exists |
+| H (import) | H-15 (the H-14 gap on the plain restore): the genesis scan read the object once and the DO read it again unconditionally — a re-put in between restored another file under the DO the first file's genesis named | **Adopted** — the scan records the etag and the DO restores that body or refuses `object-changed`, on the plain and the drill paths alike |
+| J (switch-over) | J-13 (a J-11 regression of an invariant): a replica carrying one of the mirror's own row ids with other content silently replaced the row — the evidence the mirror itself witnessed; J-14 (a race in J-12): the mark was read after the last page, outside the permit — a write and a mark between the two made "frozen: nothing can land after the export" false | **J-13 adopted** — a carried row must equal the mirror's own row in every column but `seq`, else `malformed`. **J-14 adopted** — every page's head carries the mark, read in the same call as the marks; the CLI takes the last page's, and the status call, the "unreadable" branch and the race are gone |
+
+Rulings C, H and J received adopted candidates in this round and stay open
+for round 6.

@@ -21,6 +21,7 @@ import type { ChainStore } from "./chain-store.ts";
 import type { DataActor, DataRejectedError } from "./data-plane.ts";
 import { dataEvent, rejectData, requireMemberState } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
+import { readMirrorState } from "./do-mirror.ts";
 import { PROJECT_DO_TABLES, readProjectDoSchemaVersion } from "./do-schema.ts";
 import {
   decodeExportCursor,
@@ -41,6 +42,8 @@ export interface ExportPageValue {
     readonly chainHeadHashHex: string;
     readonly auditMaxSeq: number;
     readonly mutationSeq: number;
+    /** The source this project is marked as a mirror of (read with the marks — ruling J revision, round 5); absent on a writable project. */
+    readonly mirrorOf?: string;
   };
 }
 
@@ -59,8 +62,11 @@ export const exportPageProgram = (
       cursor === null
         ? yield* openExport(actor, state.headSeq, state.headHashHex, sql, nowMs)
         : cursor.exportedSeq;
-    const page = yield* Effect.sync(() =>
-      exportSnapshotPage({
+    // The mark is read in the same synchronous call as the page's marks:
+    // "marked at the last page, marks unchanged since the first" then
+    // says by construction that no write landed after the export
+    const { page, mirrorOf } = yield* Effect.sync(() => ({
+      page: exportSnapshotPage({
         sql,
         tables: PROJECT_DO_TABLES,
         schemaVersion: readProjectDoSchemaVersion(sql),
@@ -71,11 +77,12 @@ export const exportPageProgram = (
         maxRows: MAX_EXPORT_PAGE_ROWS,
         maxBytes: MAX_EXPORT_PAGE_BYTES,
       }),
-    );
+      mirrorOf: readMirrorState(sql)?.sourceOrigin ?? null,
+    }));
     if (page.kind === "changed") {
       return yield* rejectData({ kind: "export-changed" });
     }
-    return pageValue(page);
+    return pageValue(page, mirrorOf);
   });
 
 /**
@@ -101,7 +108,10 @@ function continuationOf(
     : rejectData({ kind: "export-changed" });
 }
 
-function pageValue(page: Extract<ExportPageResult, { kind: "page" }>): ExportPageValue {
+function pageValue(
+  page: Extract<ExportPageResult, { kind: "page" }>,
+  mirrorOf: string | null,
+): ExportPageValue {
   return {
     lines: page.lines,
     next: page.next === null ? null : encodeExportCursor(page.next),
@@ -111,6 +121,7 @@ function pageValue(page: Extract<ExportPageResult, { kind: "page" }>): ExportPag
       chainHeadHashHex: page.marks.chainHeadHashHex ?? "",
       auditMaxSeq: page.auditMaxSeq,
       mutationSeq: page.marks.mutationSeq,
+      ...(mirrorOf === null ? {} : { mirrorOf }),
     },
   };
 }

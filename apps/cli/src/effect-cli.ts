@@ -195,6 +195,7 @@ import { CliError, cliError, usageError } from "./errors.ts";
 import { internalErrorKind, isNoAnswer, toCliError } from "./failure.ts";
 import { parseFingerprintFlag, parseUserFingerprintFlag } from "./fingerprint-flag.ts";
 import type { FloorHandle } from "./floor-check.ts";
+import { FloorStore } from "./floor.ts";
 import {
   guardianAddOp,
   guardianApproveOp,
@@ -2117,15 +2118,11 @@ function schemaSetReport(name: string, summary: SchemaSetSummary): string {
 /* -------------------------------------------------------------------------- */
 
 /** The mirror's session and the project of `mirror sync` / `status` (the server session is opened separately). */
-function openMirrorTarget(
-  flags: {
-    readonly server?: string | undefined;
-    readonly project?: string | undefined;
-    readonly mirror?: string | undefined;
-  },
-  /** Whether the session uploads pages (the body bound on its headers — a full page on a slow uplink is not "did not answer"; ruling H revision, round 4). */
-  uploads = false,
-) {
+function openMirrorTarget(flags: {
+  readonly server?: string | undefined;
+  readonly project?: string | undefined;
+  readonly mirror?: string | undefined;
+}) {
   return Effect.gen(function* () {
     const config = yield* (yield* ConfigStore).load;
     const projectId = yield* resolveProjectId(flags.project, config);
@@ -2138,17 +2135,48 @@ function openMirrorTarget(
         ),
       );
     }
+    // By string here (a cron's "current" tick stays the two status reads
+    // — H-9); the mark, where a self-mirror would be created, and the
+    // promotion compare deployments by server key fingerprint (C-13)
     if (mirrorOrigin === serverOrigin) {
       return yield* Effect.fail(
         usageError("The mirror URL is the server URL itself (pass the mirror deployment's URL)"),
       );
     }
-    const mirror = yield* openSession(
-      mirrorOrigin,
-      "mirror",
-      uploads ? { timeout: BODY_TIMEOUT } : {},
-    );
+    const mirror = yield* openSession(mirrorOrigin, "mirror");
     return { mirror, mirrorOrigin, projectId };
+  });
+}
+
+/**
+ * Whether two origins are one deployment: equal strings, or equal server
+ * key fingerprints from their public `/auth/config` (a deployment answers
+ * under its workers.dev hostname and its custom domain alike — ruling C
+ * revision, round 5). Without a fingerprint on either side, the strings
+ * decide; a config that does not answer within the probe's bound counts
+ * as no fingerprint.
+ */
+function sameDeployment(a: string, b: string): Effect.Effect<boolean, never, CliServices> {
+  if (a === b) {
+    return Effect.succeed(true);
+  }
+  return Effect.gen(function* () {
+    const [fingerprintA, fingerprintB] = yield* Effect.all([
+      deploymentFingerprint(a),
+      deploymentFingerprint(b),
+    ]);
+    return fingerprintA !== null && fingerprintA === fingerprintB;
+  });
+}
+
+/** The server key fingerprint a deployment publishes (null = none, or no answer within the probe's bound). */
+function deploymentFingerprint(origin: string): Effect.Effect<string | null, never, CliServices> {
+  return Effect.gen(function* () {
+    const client = yield* makeApiClient({ baseUrl: origin, timeout: PROMOTE_PROBE_TIMEOUT });
+    return yield* client.auth.authConfig({}).pipe(
+      Effect.map((config) => config.serverKeyFingerprintHex ?? null),
+      Effect.catch(() => Effect.succeed(null)),
+    );
   });
 }
 
@@ -2188,12 +2216,23 @@ function mirrorSyncCommand(flags: {
 }): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const target = yield* openMirrorTarget(flags, true);
+    const target = yield* openMirrorTarget(flags);
     const source = yield* openSession(flags.server);
+    // The pages go through the mirror under the body bound on their
+    // headers (a full page on a slow uplink is not "did not answer" — H-10);
+    // the status reads keep the usual bound (H-12)
+    const pages = yield* makeApiClient({
+      baseUrl: target.mirrorOrigin,
+      token: target.mirror.session.token,
+      timeout: BODY_TIMEOUT,
+    });
+    const floor = yield* (yield* FloorStore).load(target.projectId);
     const result = yield* mirrorSyncOp({
       source: source.client,
       mirror: target.mirror.client,
+      pages,
       projectId: target.projectId,
+      floorHead: floor.floor?.chainHead ?? null,
       verified: verifiedViewOf(source, target.projectId),
     });
     for (const line of describeMirrorSync(result, target.projectId, target.mirrorOrigin)) {
@@ -2254,10 +2293,10 @@ function mirrorMarkCommand(flags: {
     }
     const sourceOrigin = yield* normalizeHttpOrigin(flags.source, "the --source URL");
     const context = yield* openSession(flags.server);
-    if (sourceOrigin === context.origin) {
+    if (yield* sameDeployment(sourceOrigin, context.origin)) {
       return yield* Effect.fail(
         usageError(
-          "--source is the server itself (run this against the mirror deployment with --server <mirror url>)",
+          "--source is the server itself (the same deployment, possibly under another hostname) — run this against the mirror deployment with --server <mirror url>",
         ),
       );
     }
@@ -2291,7 +2330,8 @@ function ensureMarkable(
 ): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const here = yield* syncProject(client, projectId);
-    const view = yield* verifiedServerView(sourceOrigin, projectId).pipe(
+    const sourceView = yield* verifiedServerView(sourceOrigin, projectId).pipe(
+      Effect.map((view) => view.verified),
       Effect.catch((error: CliError) =>
         Effect.as(
           logWarning(
@@ -2301,10 +2341,9 @@ function ensureMarkable(
         ),
       ),
     );
-    if (view === null) {
+    if (sourceView === null) {
       return;
     }
-    const sourceView = view.verified;
     const partOfSource =
       here.state.headHashHex === sourceView.state.headHashHex ||
       (here.state.headSeq < sourceView.state.headSeq &&
@@ -2316,38 +2355,6 @@ function ensureMarkable(
         ),
       );
     }
-    yield* noteAuditPosition(client, view.source.client, sourceOrigin, projectId);
-  });
-}
-
-/**
- * A project whose audit log is ahead of the source's (a former primary that
- * served reads after its last export) is refused `audit-regression` on
- * every sync until the source's log passes it — said at the mark rather
- * than by the first sync's bare reason (ruling C revision, round 4). Both
- * audit seqs are in the status for admins and owners; nothing to say when
- * either is not.
- */
-function noteAuditPosition(
-  here: MaruhiClient,
-  source: MaruhiClient,
-  sourceOrigin: string,
-  projectId: string,
-): Effect.Effect<void, never, CliServices> {
-  return Effect.gen(function* () {
-    const params = { params: { projectId } };
-    const [mine, theirs] = yield* Effect.all([
-      here.mirror.status(params).pipe(Effect.catch(() => Effect.succeed(null))),
-      source.mirror.status(params).pipe(Effect.catch(() => Effect.succeed(null))),
-    ]);
-    const hereSeq = mine?.head.auditMaxSeq;
-    const sourceSeq = theirs?.head.auditMaxSeq;
-    if (hereSeq === undefined || sourceSeq === undefined || hereSeq <= sourceSeq) {
-      return;
-    }
-    yield* logWarning(
-      `this project's audit log (seq ${hereSeq}) is ahead of ${sourceOrigin}'s (seq ${sourceSeq}): every \`maruhi mirror sync\` is refused as audit-regression until the source's log grows past it (the rows this project appended after its last export are replaced by the first replication that succeeds)`,
-    );
   });
 }
 
@@ -2387,6 +2394,13 @@ function mirrorPromoteCommand(flags: {
           ),
         );
       }
+      if (source === "answers") {
+        return yield* Effect.fail(
+          cliError(
+            `The source ${status.sourceOrigin} still answers, and its mark could not be read from this machine (no session for it here, or it refused the read): promoting ${context.origin} now may leave two writable copies (a split brain). Log in there (\`maruhi login --server ${status.sourceOrigin}\`) so the promotion can read whether it is frozen, follow the planned order (mark the source as a mirror of ${context.origin}, one last \`maruhi mirror sync\`, then promote), or pass --force to promote anyway`,
+          ),
+        );
+      }
       if (typeof source === "object") {
         return yield* Effect.fail(
           cliError(
@@ -2408,17 +2422,18 @@ function mirrorPromoteCommand(flags: {
 }
 
 /** What the source holds; `movedTo` = it is a mirror of another deployment (the primary moved there). */
-type SourceState = "frozen" | "writable" | "gone" | { readonly movedTo: string };
+type SourceState = "frozen" | "writable" | "answers" | "gone" | { readonly movedTo: string };
 
 /**
  * What the source holds (ruling C revision, round 3): `frozen` = it is
- * already a mirror of **this** deployment (the honest path — promote
- * without a probe), `movedTo` = it is a mirror of another deployment (the
- * primary moved there; promoting this copy is a split brain — round 4),
- * `writable` = it answers and holds the project as a primary, `gone` =
- * nothing answers. Read with the owner's session for the source when
- * there is one; otherwise, or on any answer but the mark, the public probe
- * decides (any HTTP answer = writable, no answer = gone).
+ * already a mirror of **this** deployment — by server key fingerprint, so
+ * a deployment under another hostname is still this one (round 5) — the
+ * honest path, promoted without a probe; `movedTo` = it is a mirror of
+ * another deployment (the primary moved there; promoting this copy is a
+ * split brain — round 4); `writable` = its mark says it holds the project
+ * as a primary; `answers` = its mark could not be read (no session for it
+ * here, or a refusal) but its public `/auth/config` answers (any HTTP
+ * answer counts); `gone` = nothing answers.
  */
 function sourceState(
   config: MaruhiCliConfig,
@@ -2430,14 +2445,17 @@ function sourceState(
     const marked = yield* openSessionWith(config, sourceOrigin, "server").pipe(
       Effect.flatMap((source) =>
         source.client.mirror.status({ params: { projectId } }).pipe(
-          Effect.map((status): SourceState | null => {
+          Effect.flatMap((status): Effect.Effect<SourceState | null, never, CliServices> => {
             if (!status.mirror) {
-              return "writable";
+              return Effect.succeed("writable");
             }
             if (status.sourceOrigin === undefined) {
-              return null;
+              return Effect.succeed(null);
             }
-            return status.sourceOrigin === thisOrigin ? "frozen" : { movedTo: status.sourceOrigin };
+            const movedTo = status.sourceOrigin;
+            return Effect.map(sameDeployment(movedTo, thisOrigin), (same) =>
+              same ? "frozen" : { movedTo },
+            );
           }),
         ),
       ),
@@ -2446,7 +2464,7 @@ function sourceState(
     if (marked !== null) {
       return marked;
     }
-    return (yield* sourceAnswers(sourceOrigin)) ? "writable" : "gone";
+    return (yield* sourceAnswers(sourceOrigin)) ? "answers" : "gone";
   });
 }
 

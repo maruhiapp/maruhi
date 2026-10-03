@@ -53,14 +53,13 @@ export interface ProjectExportResult {
   readonly lines: number;
   readonly trailer: ExportTrailer;
   readonly identities: ExportIdentities;
-  /** Whether the project is frozen here (a mirror of the named origin), still writable, or the mark could not be read. */
+  /** Whether the project is frozen here (a mirror of the named origin) or still writable — read with the last page's marks. */
   readonly mark: ExportMark;
 }
 
 export type ExportMark =
   | { readonly kind: "frozen"; readonly sourceOrigin: string }
-  | { readonly kind: "writable" }
-  | { readonly kind: "unknown"; readonly reason: string };
+  | { readonly kind: "writable" };
 
 /** The trailer line as the snapshot format writes it (the fields this command reports). */
 interface ExportTrailer {
@@ -195,6 +194,7 @@ type Attempt =
       readonly bytes: number;
       readonly lines: number;
       readonly trailer: ExportTrailer;
+      readonly mark: ExportMark;
     }
   | { readonly kind: "changed" };
 
@@ -212,6 +212,7 @@ function exportOnce(input: ProjectExportInput): Effect.Effect<Attempt, CliError>
     let cursor: string | undefined;
     let lines = 0;
     let last: string | undefined;
+    let mirrorOf: string | null = null;
     for (let page = 0; page < MAX_PAGES; page += 1) {
       const response = yield* input.client.export
         .page({
@@ -236,6 +237,10 @@ function exportOnce(input: ProjectExportInput): Effect.Effect<Attempt, CliError>
       }).pipe(Effect.catch(fail));
       lines += response.lines.length;
       last = response.lines[response.lines.length - 1] ?? last;
+      // The mark the server read with this page's marks (ruling J revision,
+      // round 5): on the last page, with the marks unchanged since the
+      // first, "marked" means no write landed here after the export
+      mirrorOf = response.head.mirrorOf ?? null;
       cursor = response.next;
       if (cursor === undefined) {
         const trailer = parseTrailer(last);
@@ -253,7 +258,15 @@ function exportOnce(input: ProjectExportInput): Effect.Effect<Attempt, CliError>
               `Writing ${displayText(input.outPath)} failed (${error instanceof Error ? error.name : "unknown"})`,
             ),
         }).pipe(Effect.catch(fail));
-        return { kind: "done", bytes, lines, trailer } as const;
+        return {
+          kind: "done",
+          bytes,
+          lines,
+          trailer,
+          mark: (mirrorOf === null
+            ? { kind: "writable" }
+            : { kind: "frozen", sourceOrigin: mirrorOf }) satisfies ExportMark,
+        } as const;
       }
     }
     return yield* fail(
@@ -329,37 +342,16 @@ export function projectExportOp(
       lines: attempt.lines,
       trailer: attempt.trailer,
       identities,
-      mark: yield* exportMark(input),
+      mark: attempt.mark,
     };
   });
 }
 
-/** The project's mark on this server (every member may read it — AUTH_SPEC §11-7); a failed read is reported, never fatal (ruling J revision, round 4). */
-function exportMark(input: ProjectExportInput): Effect.Effect<ExportMark, never> {
-  return input.client.mirror.status({ params: { projectId: input.projectId } }).pipe(
-    Effect.map((status): ExportMark =>
-      status.mirror && status.sourceOrigin !== undefined
-        ? { kind: "frozen", sourceOrigin: status.sourceOrigin }
-        : status.mirror
-          ? { kind: "unknown", reason: "the server says the project is marked but names no source" }
-          : { kind: "writable" },
-    ),
-    Effect.catch((error) =>
-      Effect.succeed<ExportMark>({ kind: "unknown", reason: toCliError(error).message }),
-    ),
-  );
-}
-
 /** What the export's mark means for the migration (the next steps follow it). */
 function describeMark(mark: ExportMark): string {
-  switch (mark.kind) {
-    case "frozen":
-      return `This project is frozen here (a mirror of ${mark.sourceOrigin}): nothing can land on this server after the export`;
-    case "writable":
-      return "Warning: this project is still writable here — a write after this export does not reach the destination. For a migration, freeze it first with `maruhi mirror mark --source <destination url>` and re-export if anything changed in between";
-    default:
-      return `The project's mark could not be read (${mark.reason}); if this project is not yet marked as a mirror of the destination, mark it now (\`maruhi mirror mark --source <destination url>\`) and re-export if anything changed in between`;
-  }
+  return mark.kind === "frozen"
+    ? `This project is frozen here (a mirror of ${mark.sourceOrigin}): nothing can land on this server after the export`
+    : "Warning: this project is still writable here — a write after this export does not reach the destination. For a migration, freeze it first with `maruhi mirror mark --source <destination url>` and re-export if anything changed in between";
 }
 
 /** The report (counts and heads only — no row content). */
