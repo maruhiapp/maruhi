@@ -241,3 +241,13 @@ for round 7; D, H and I are closed.
 
 Rulings C and J received adopted candidates in this round and stay open
 for round 8; D, H and I are closed.
+
+### 8-7. Round 8 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (consistency) | C-19 (hardening of C-18): the re-assert compared only the `NOT IN (…)` substring, so any other drift of the trigger's text had the latent property C-18 closed for the list; and no test pinned that an up-to-date DO performs no DDL at open | **Adopted** — the whole stored text is compared (SQLite stores it verbatim from the name); the test pins a re-creation on a drifted bump statement and no DDL on an up-to-date trigger (the schema row stays the same row). Considered, not adopted: the deny list in a data table (DML at every open, one more table to exclude everywhere) |
+| J (switch-over) | J-18 (a bug in the round-7 implementation — scaling): the staging tables had typeless columns, so the `seq` joins of the prefix checks could drive no index (BLOB affinity against INTEGER) — a scan of the staged log per live row, O(P × S) inside the trailer's transaction (9.9 s at 20k × 20k; past the CPU limit near 10⁵ rows, where a busy project's mirror would never sync again); J-19 (structural, J-16's line completed): the replica's `audit_head_hashes` column was installed wholesale, so the heads the mirror served stayed an uploaded value above and below the position; J-20 (structural): the client held the facts to refuse a mirror-of-a-mirror source before uploading | **J-18 adopted** — the staging tables are created from the live table (`CREATE TABLE … AS SELECT … LIMIT 0`, the live affinities) with an index on `seq`; the plan is pinned (`SEARCH theirs USING`, never a scan). **J-19 adopted** — past a replicated position the mirror keeps its own heads up to it, derives the rest, and compares the uploaded column with its own rows up to the position (a differing head below the position is refused too); the recorded head hash is no longer read. **J-20 adopted** with PF2's H-17 (one implementation in `maruhi mirror sync`) |
+
+Rulings C and J received adopted candidates in this round and stay open
+for round 9; D, H and I are closed.

@@ -266,6 +266,13 @@ export const mirrorPageProgram = (
       return yield* rejectData({ kind: "mirror-state", reason: "not-mirror" });
     }
     yield* ensureStorageAdmitsGrowth;
+    // The mirror's own audit-head column must reach the replicated position
+    // before the trailer compares the replica's column with it (ruling J
+    // revision, round 8); a column that is current costs one read
+    const audit = yield* AuditStore;
+    while ((yield* audit.ensureHeadCurrent) === "more-remains") {
+      // Terminates: every call makes progress (the bounded contract of audit-store.ts)
+    }
     const stagedPage = yield* staged(() =>
       stageMirrorPage({
         storage,
@@ -307,7 +314,6 @@ export const mirrorPageProgram = (
     // The chain and the audit log were replaced: the derived memory is
     // discarded and the audit-head column extended to the end (the same
     // convergence as a restore — chain-do.ts opsRestore)
-    const audit = yield* AuditStore;
     yield* Effect.sync(() => {
       cache.chain = null;
       cache.current = null;

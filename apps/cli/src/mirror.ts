@@ -42,6 +42,8 @@ export interface MirrorSyncInput<R = never> {
   readonly projectId: string;
   /** The server's origin: the mirror's recorded source must be it, else the sync is refused (`force` overrides — ruling H revision, round 6). */
   readonly sourceOrigin: string;
+  /** The mirror's origin: a server that is itself a mirror of another origin, or a frozen former primary that already synced back, is no source for it (`force` overrides — ruling H revision, round 8). */
+  readonly mirrorOrigin: string;
   readonly force?: boolean;
   /**
    * The local floor's chain head (null = none): a source whose reported
@@ -160,7 +162,8 @@ export function mirrorSyncOp<R>(
 ): Effect.Effect<MirrorSyncResult, CliError, R> {
   return Effect.gen(function* () {
     const before = yield* markedMirrorStatus(input);
-    const verdict = yield* syncVerdict(input, before);
+    const source = yield* starSource(input);
+    const verdict = yield* syncVerdict(input, before, source);
     if (verdict === "current") {
       return { kind: "current", before } as const;
     }
@@ -201,10 +204,47 @@ function markedMirrorStatus(
 }
 
 /**
+ * The server's own mark (its status, read with the owner's session): mirrors
+ * sync from the primary — a star (AUTH_SPEC §11-7). A server that is itself
+ * a mirror of another origin is refused before anything is exported (a
+ * replica of it would commit once and be refused after its next sync, when
+ * its own rows are renumbered); so is a frozen former primary of this
+ * mirror that already synced back (its rows are renumbered too). The
+ * planned failover's last sync — the server frozen as a mirror of this
+ * mirror, nothing replicated into it yet — goes through. `force` overrides
+ * (ruling H revision, round 8).
+ */
+function starSource(input: MirrorSyncInput<unknown>): Effect.Effect<MirrorStatus, CliError> {
+  return Effect.gen(function* () {
+    const source = yield* input.source.mirror
+      .status({ params: { projectId: input.projectId } })
+      .pipe(Effect.mapError(toCliError));
+    if (!source.mirror || input.force === true || source.sourceOrigin === undefined) {
+      return source;
+    }
+    if (source.sourceOrigin !== input.mirrorOrigin) {
+      return yield* Effect.fail(
+        cliError(
+          `The server ${input.sourceOrigin} holds this project as a mirror of ${source.sourceOrigin}: mirrors sync from the primary (a mirror's own audit rows are renumbered at every replication, so a replica taken from it is refused by this mirror after the next one). Sync from ${source.sourceOrigin} (\`maruhi mirror sync --server ${source.sourceOrigin} --mirror ${input.mirrorOrigin}\`, after re-pointing the mirror at it with \`maruhi mirror mark --server ${input.mirrorOrigin} --source ${source.sourceOrigin}\`), or pass --force to replicate from here anyway`,
+        ),
+      );
+    }
+    if (source.lastSync !== undefined) {
+      return yield* Effect.fail(
+        cliError(
+          `The server ${input.sourceOrigin} is a frozen former primary of ${input.mirrorOrigin} that already synced back from it (last replication at chain head seq ${source.lastSync.chainHeadSeq}): its own audit rows were renumbered, so it is no longer a source for this mirror. Promote the mirror (\`maruhi mirror promote --server ${input.mirrorOrigin}\`), or pass --force to replicate from here anyway`,
+        ),
+      );
+    }
+    return source;
+  });
+}
+
+/**
  * Nothing to upload when the source's chain head, audit seq and mutation
  * counter are the ones the last replication brought (the source's status,
  * read with the owner's session — the marks are shown to admins and
- * owners). A cron then costs two status reads, not an export. A floor
+ * owners). A cron then costs the status reads, not an export. A floor
  * below the source's head cannot be checked from the two statuses: the
  * verdict then waits for the view, whose floor check proves the floor's
  * entry is on the source's chain (H-14); the view is handed on to the
@@ -213,9 +253,10 @@ function markedMirrorStatus(
 function syncVerdict<R>(
   input: MirrorSyncInput<R>,
   before: MirrorStatus,
+  source: MirrorStatus,
 ): Effect.Effect<"current" | { readonly verified: VerifiedProject }, CliError, R> {
   return Effect.gen(function* () {
-    const unchanged = yield* sourceUnchanged(input, before);
+    const unchanged = sourceUnchanged(input, before, source);
     if (unchanged === "current") {
       return "current";
     }
@@ -264,30 +305,31 @@ type Unchanged = "changed" | "current" | "current-if-floor-on-chain";
 function sourceUnchanged(
   input: MirrorSyncInput<unknown>,
   before: MirrorStatus,
-): Effect.Effect<Unchanged, CliError> {
+  source: MirrorStatus,
+): Unchanged {
+  // A source behind this machine's floor (rebuilt from a backup taken
+  // at the last synced head) is not current: the replicating path's
+  // floor check says so with evidence (H-11). A floor below the
+  // source's head is checked by the view before the verdict (H-14)
+  if (!marksUnchanged(before, source) || floorAhead(input.floorHead, source.head)) {
+    return "changed";
+  }
+  return input.floorHead !== null && input.floorHead.seq < source.head.chainHeadSeq
+    ? "current-if-floor-on-chain"
+    : "current";
+}
+
+/** The three marks the last replication brought are the source's current ones, and the mirror still holds that head. */
+function marksUnchanged(before: MirrorStatus, source: MirrorStatus): boolean {
   const last = before.lastSync;
   if (last === undefined || last.mutationSeq === undefined) {
-    return Effect.succeed("changed");
+    return false;
   }
-  return input.source.mirror.status({ params: { projectId: input.projectId } }).pipe(
-    Effect.map((source): Unchanged => {
-      const marksUnchanged =
-        source.head.chainHeadHashHex === last.chainHeadHashHex &&
-        before.head.chainHeadHashHex === last.chainHeadHashHex &&
-        source.head.auditMaxSeq === last.auditMaxSeq &&
-        source.head.mutationSeq === last.mutationSeq;
-      // A source behind this machine's floor (rebuilt from a backup taken
-      // at the last synced head) is not current: the replicating path's
-      // floor check says so with evidence (H-11). A floor below the
-      // source's head is checked by the view before the verdict (H-14)
-      if (!marksUnchanged || floorAhead(input.floorHead, source.head)) {
-        return "changed";
-      }
-      return input.floorHead !== null && input.floorHead.seq < source.head.chainHeadSeq
-        ? "current-if-floor-on-chain"
-        : "current";
-    }),
-    Effect.mapError(toCliError),
+  return (
+    source.head.chainHeadHashHex === last.chainHeadHashHex &&
+    before.head.chainHeadHashHex === last.chainHeadHashHex &&
+    source.head.auditMaxSeq === last.auditMaxSeq &&
+    source.head.mutationSeq === last.mutationSeq
   );
 }
 
@@ -307,18 +349,42 @@ function headNote(
   head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
   verified: VerifiedProject,
 ): string {
+  const fork = forkNote(head, verified);
+  if (fork !== null) {
+    return fork;
+  }
   if (head.chainHeadHashHex === verified.state.headHashHex) {
     return "in sync with the verified view";
   }
   if (head.chainHeadSeq < verified.state.headSeq) {
+    return `behind the verified view by ${countNoun(verified.state.headSeq - head.chainHeadSeq, "chain entry")} (seq ${head.chainHeadSeq} of ${verified.state.headSeq})`;
+  }
+  return `ahead of the verified view (seq ${head.chainHeadSeq} > ${verified.state.headSeq}) — a write landed on the server after this sync, or the mirror was promoted and written to; re-run \`maruhi project verify\``;
+}
+
+/**
+ * A head that is not on the verified view's chain and not past it: the
+ * view and the head are both signature-verified, so only an equivocating
+ * server produces this (never an honest race — "behind" and "ahead" are
+ * those). A sync whose replica shows it fails after the commit (ruling H
+ * revision, round 8: a cron must notice). null = no fork evidence.
+ */
+export function forkNote(
+  head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
+  verified: VerifiedProject,
+): string | null {
+  if (head.chainHeadHashHex === verified.state.headHashHex) {
+    return null;
+  }
+  if (head.chainHeadSeq < verified.state.headSeq) {
     return verified.history.entryHashAt(head.chainHeadSeq) === head.chainHeadHashHex
-      ? `behind the verified view by ${countNoun(verified.state.headSeq - head.chainHeadSeq, "chain entry")} (seq ${head.chainHeadSeq} of ${verified.state.headSeq})`
+      ? null
       : `on a different chain (its seq ${head.chainHeadSeq} is not the verified view's entry) — evidence of a fork (CRYPTO_SPEC §6.3); do not promote it and run \`maruhi project verify\``;
   }
   if (head.chainHeadSeq === verified.state.headSeq) {
     return `a different chain at the same height as the verified view (head ${verified.state.headHashHex}) — evidence of a fork (CRYPTO_SPEC §6.3); do not promote it and run \`maruhi project verify\``;
   }
-  return `ahead of the verified view (seq ${head.chainHeadSeq} > ${verified.state.headSeq}) — a write landed on the server after this sync, or the mirror was promoted and written to; re-run \`maruhi project verify\``;
+  return null;
 }
 
 function describeLastSync(status: MirrorStatus): string {

@@ -252,3 +252,13 @@ for round 7; D and E are closed.
 
 Rulings C and H received adopted candidates in this round and stay open
 for round 8; D, E, F and G are closed.
+
+### 8-7. Round 8 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (promotion) | C-17 (a bug in C-8's delivery of C-7): the mark accepted only a project equal to or behind the source, so the planned failover's freeze (the primary ahead of the mirror — the normal case) was refused without `--force`, and on a machine whose floor sat at the primary's head the floored view of the mirror failed and the mark proceeded on the "could not be read" path instead; C-18 (structural): a frozen source behind the mirror (restored from an older backup, then frozen) was refused with a sync that cannot succeed (`chain-not-extension`), leaving only `--force`, which skips every guard; C-19 (informational, F-7 precedent): the promotion did not say what stays on the frozen source | **C-17 adopted** — both views are plain verified chains; a prefix in either direction passes (ahead: a note names the last sync to run), only a fork is refused. **C-18 adopted** — a frozen head behind the mirror's is checked against the mirror's own chain: an entry of it promotes, anything else is refused as a fork (no sync suggested). **C-19 adopted** — the promotion counts the source's audit rows past the mirror's last replication and names `project export` on the source. Record corrected: a "current" tick is three status reads (plus `/auth/me` per session on the token path), not two |
+| H (sync) | H-17 (structural): the star rule the spec states was enforced by nothing — a mirror marked with another mirror as its source synced once and was refused `audit-not-extension` forever after that source's next sync; H-18 (structural): a replica on another chain than the verified view was reported and exited 0, so a cron never noticed | **H-17 adopted** (with PF3's J-20 — one implementation): the server's own mark is read before any export; a server that is a mirror of another origin, or a frozen former primary that already synced back, is refused with the honest path, the planned failover's last sync passes, `--force` overrides. The page head's `mirrorOf` variant is subsumed (the status read is one request and names `lastSync` too). **H-18 adopted** — the two fork notes fail the sync after the commit; "behind" and "ahead" stay notes |
+
+Rulings C and H received adopted candidates in this round and stay open
+for round 9; D, E, F and G are closed.

@@ -148,6 +148,8 @@ interface OpenedValue {
    * top of the base version.
    */
   readonly storedAs: number | null;
+  /** The opened value's shape, for the report (D-8) — computed where the value was opened, so the report unwraps nothing. */
+  readonly shape: ValueShape;
   /** The verified current value's shape, opened on this device for the report's comparison (D-18). */
   readonly currentShape: ValueShape;
 }
@@ -290,6 +292,7 @@ function openOne(
       name: current.name,
       value: Redacted.make(value, { label: "variable-value" }),
       storedAs: moved ? current.version : null,
+      shape: shapeOf(value),
       currentShape: shapeOf(stored),
     };
   });
@@ -328,11 +331,7 @@ export function rotationAcceptOp(
     // where the decision is made (D-18; the CI job's report already showed it)
     yield* Effect.forEach(
       toPush.flatMap((entry) => {
-        const warning = lineCountWarning(
-          displayText(entry.name),
-          shapeOf(Redacted.value(entry.value)),
-          entry.currentShape,
-        );
+        const warning = lineCountWarning(displayText(entry.name), entry.shape, entry.currentShape);
         return warning === null ? [] : [warning];
       }),
       (warning) => logWarning(warning),
@@ -386,7 +385,7 @@ function acceptanceFacts(
   // is pushed — the server never saw it
   const shapes = toPush.map(
     (entry) =>
-      `  ${displayText(entry.name)}: ${describeShape(shapeOf(Redacted.value(entry.value)))} (opened on this device; the current value: ${describeShape(entry.currentShape)})`,
+      `  ${displayText(entry.name)}: ${describeShape(entry.shape)} (opened on this device; the current value: ${describeShape(entry.currentShape)})`,
   );
   return [head, ...proposal.facts.map((fact) => `  ${displayText(fact)}`), ...shapes];
 }

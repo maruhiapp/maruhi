@@ -388,6 +388,59 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     );
     await expectRejected(await upload(otherLog, 50), "audit-not-extension");
     expect(await stagingTables()).toEqual([]);
+    // … and one whose column differs BELOW the position: the served heads
+    // are the mirror's own derivation, so the uploaded column is a claim
+    // checked against them in full, never installed (ruling J revision,
+    // round 8)
+    const firstHeadIndex = newer.findIndex((line) => {
+      const parsed = parsedLine(line);
+      return (
+        parsed["kind"] === "row" &&
+        parsed["table"] === "audit_head_hashes" &&
+        (parsed["values"] as unknown[])[0] === 1
+      );
+    });
+    expect(firstHeadIndex).toBeGreaterThan(-1);
+    const ownHeads = await queryProjectDo(
+      projectId,
+      `SELECT seq, head_hash_hex FROM audit_head_hashes WHERE seq <= ${replicaAudit} ORDER BY seq`,
+    );
+    const earlyTamper = newer.map((line, index) =>
+      index === firstHeadIndex
+        ? JSON.stringify({ ...parsedLine(line), values: [1, "ab".repeat(32)] })
+        : line,
+    );
+    await expectRejected(await upload(earlyTamper, 50), "audit-not-extension");
+    expect(await stagingTables()).toEqual([]);
+    // A legitimate replica leaves the heads up to the position untouched and
+    // derives the rest (the whole column reaches the end again)
+    expect((await upload(newer, 7)).status).toBe(200);
+    expect(
+      await queryProjectDo(
+        projectId,
+        `SELECT seq, head_hash_hex FROM audit_head_hashes WHERE seq <= ${replicaAudit} ORDER BY seq`,
+      ),
+    ).toEqual(ownHeads);
+    expect(await count("SELECT MAX(seq) AS n FROM audit_head_hashes")).toBe(
+      replicaAudit + ownRows + 1,
+    );
+    // The prefix checks join the staged log on an index, never a scan of it
+    // (ruling J revision, round 8): the staging tables carry the live
+    // tables' column affinities and an index on seq
+    const stagedOnly = newer.slice(0, -1);
+    expect((await page(OWNER, 0, stagedOnly)).status).toBe(200);
+    const plan = (
+      await queryProjectDo(
+        projectId,
+        `EXPLAIN QUERY PLAN SELECT COUNT(*) AS n FROM audit_events AS own LEFT JOIN audit_events_mirror AS theirs ON theirs.seq = own.seq WHERE own.seq <= ${replicaAudit} AND theirs.seq IS NULL`,
+      )
+    )
+      .map((row) => String(row["detail"]))
+      .join("\n");
+    expect(plan).toContain("SEARCH theirs USING");
+    expect(plan).not.toContain("SCAN theirs");
+    expect((await page(OWNER, 0, newer)).status).toBe(200);
+    expect(await stagingTables()).toEqual([]);
     // … and so is one that rewrites a row at or below the replicated
     // position while carrying the column untouched: the prefix is compared
     // row for row, not by an uploaded hash (ruling J revision, round 7)

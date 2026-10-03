@@ -32,8 +32,13 @@ import { toCliError } from "../src/failure.ts";
 import { FloorStore } from "../src/floor.ts";
 import { masterKeyEntryName, tokenEntryName } from "../src/keychain.ts";
 import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
-import { acceptAppendedEntry, chainHandlerOf } from "./support/chain-handler.ts";
 import {
+  acceptAppendedEntry,
+  chainHandlerOf,
+  servedChainResponse,
+} from "./support/chain-handler.ts";
+import {
+  addMemberOp,
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
@@ -57,6 +62,8 @@ const ALPHA_VALUE = "alpha-value";
 
 let owner: TestUser;
 let built: BuiltChain;
+/** The same genesis, another second entry: a fork of `built` (entries are deterministic). */
+let forked: BuiltChain;
 let dek: Uint8Array;
 let wrap: WireRecipientDek;
 let envStatement: WireDistributedEnvironmentStatement;
@@ -70,6 +77,14 @@ beforeAll(async () => {
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
   ]);
+  const other = await makeTestUser("user-other-4444");
+  forked = await buildChain([
+    { actor: owner, operation: genesisOp(owner) },
+    { actor: owner, operation: addMemberOp(other, "reader") },
+  ]);
+  if (forked.projectId !== built.projectId) {
+    throw new Error("the fork fixture must share the genesis");
+  }
   const common = { projectId: built.projectId, environmentId: ENV_ID };
   wrap = await wrapDekFor({ ...common, epoch: 1, dek, recipient: owner, signer: owner });
   const head = { seq: 1, hashHex: built.projectId };
@@ -153,22 +168,40 @@ function snapshotLines(): string[] {
 interface SourceOptions {
   /** How many times the continuation page answers 409 before succeeding. */
   changedPages?: number;
+  /** The chain the server serves (default: `built`); a prefix of it with `chainEntries`. */
+  chain?: BuiltChain;
+  chainEntries?: number;
 }
 
-/** The server's own `GET /projects/:id/mirror` answer (null = not served); a test sets it and resets it. */
-let sourceStatus: Record<string, unknown> | null = null;
+/** The server's own `GET /projects/:id/mirror` answer (null = a writable primary with no marks); a test sets it and resets it. */
+let sourceStatus: Record<string, unknown> | "refused" | null = null;
 
 /** The server: the chain and the export's pages. */
 function sourceHandlers(options: SourceOptions = {}): MockHandler[] {
   const lines = snapshotLines();
   const state = { changedPages: options.changedPages ?? 0 };
+  const chain = options.chain ?? built;
+  const entries = options.chainEntries ?? chain.entries.length;
   return [
-    chainHandlerOf(built),
     (request: MockRequest) =>
-      request.method === "GET" &&
-      request.path === `/projects/${built.projectId}/mirror` &&
-      sourceStatus !== null
-        ? { status: 200, json: sourceStatus }
+      request.method === "GET" && request.path === `/projects/${built.projectId}/chain`
+        ? servedChainResponse(
+            built.projectId,
+            chain.entries.slice(0, entries),
+            chain.hashes.slice(0, entries),
+          )
+        : null,
+    (request: MockRequest) =>
+      request.method === "GET" && request.path === `/projects/${built.projectId}/mirror`
+        ? sourceStatus === "refused"
+          ? { status: 403, json: { _tag: "InsufficientScope" } }
+          : {
+              status: 200,
+              json: sourceStatus ?? {
+                mirror: false,
+                head: { chainHeadSeq: 2, chainHeadHashHex: built.hashes[1] ?? "" },
+              },
+            }
         : null,
     (request: MockRequest) => {
       if (request.method !== "GET" || request.path !== `/projects/${built.projectId}/export`) {
@@ -388,7 +421,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
         `Mirror ${pair.mirror.origin} is current for project ${built.projectId}`,
       );
       expect(pair.state.pages).toHaveLength(0);
-      // A "current" tick is the two status reads: no chain download, no
+      // A "current" tick is the status reads: no chain download, no
       // export (ruling H revision, round 4)
       expect(pair.source.requests.map((r) => r.path)).toEqual([
         `/projects/${built.projectId}/mirror`,
@@ -398,7 +431,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       ]);
       // A floor below the source's head is proved on the chain by the view
       // once (H-14), which advances the floor (H-16): the next tick is the
-      // two status reads again
+      // status reads again
       await Effect.runPromise(
         Effect.gen(function* () {
           yield* (yield* FloorStore).commitHead(built.projectId, {
@@ -497,9 +530,11 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     expect(logs).toContain("No replication recorded since the mark");
 
     const fresh = await startPair({ marked: false });
-    // The source still answers here (the pair's server) but serves no mark
-    // to read: a promotion may leave two writable copies, so it is refused
-    // unless forced, naming what could not be read (ruling C revision, round 5)
+    // The source still answers here (the pair's server) but refuses the
+    // read of its mark: a promotion may leave two writable copies, so it is
+    // refused unless forced, naming what could not be read (ruling C
+    // revision, round 5)
+    sourceStatus = "refused";
     expect(
       await runCli(
         ["mirror", "mark", "--server", fresh.mirror.origin, "--source", fresh.source.origin],
@@ -519,6 +554,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     expect(fresh.env.errors.join("\n")).toContain(
       `The source ${fresh.source.origin} still answers, and its mark could not be read from this machine (no session for it here, or it refused the read): promoting ${fresh.mirror.origin} now may leave two writable copies`,
     );
+    sourceStatus = null;
     // … and one whose mark says it holds the project writable is refused
     // with the planned order
     const live = await startPair({ marked: false });
@@ -640,6 +676,175 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
         fresh.env.layer,
       ),
     ).toBe(2);
+  });
+
+  it("the mark accepts a project ahead of the source on one chain (the planned freeze) and refuses only a fork (ruling C revision, round 8)", async () => {
+    // The primary P (the project being marked, holding the full chain)
+    // against a mirror M whose chain is a prefix: the freeze of the planned
+    // failover, with the last sync named as the next step
+    const ahead = await startPair({ marked: false, source: { chainEntries: 1 } });
+    expect(
+      await runCli(
+        ["mirror", "mark", "--server", ahead.mirror.origin, "--source", ahead.source.origin],
+        ahead.env.layer,
+      ),
+    ).toBe(0);
+    expect(ahead.state.status).toMatchObject({ mirror: true, sourceOrigin: ahead.source.origin });
+    expect(ahead.env.errors.join("\n")).toContain(
+      `this project holds 1 chain entry that ${ahead.source.origin} lacks (seq 2 against 1): after the mark, bring them over with \`maruhi mirror sync --server ${ahead.mirror.origin} --mirror ${ahead.source.origin}\` before promoting ${ahead.source.origin}`,
+    );
+    // Two chains sharing the genesis and nothing after it: neither head is
+    // an entry of the other — refused, unless forced
+    const fork = await startPair({ marked: false, source: { chain: forked } });
+    expect(
+      await runCli(
+        ["mirror", "mark", "--server", fork.mirror.origin, "--source", fork.source.origin],
+        fork.env.layer,
+      ),
+    ).toBe(1);
+    expect(fork.env.errors.join("\n")).toContain(
+      "are not one chain: neither head is an entry of the other",
+    );
+    expect(fork.state.status).toMatchObject({ mirror: false });
+    expect(
+      await runCli(
+        [
+          "mirror",
+          "mark",
+          "--server",
+          fork.mirror.origin,
+          "--source",
+          fork.source.origin,
+          "--force",
+        ],
+        fork.env.layer,
+      ),
+    ).toBe(0);
+    expect(fork.state.status).toMatchObject({ mirror: true });
+  });
+
+  it("a frozen source behind the mirror promotes when its head is on the mirror's chain, is refused as a fork otherwise, and the rows left behind are counted (ruling C revision, round 8)", async () => {
+    const pair = await startPair({ marked: false });
+    expect(
+      await runCli(
+        ["mirror", "mark", "--server", pair.mirror.origin, "--source", pair.source.origin],
+        pair.env.layer,
+      ),
+    ).toBe(0);
+    pair.state.status = {
+      ...pair.state.status,
+      head: headOfChain(),
+      lastSync: { atMs: 5, ...headOfChain(), attestationMark: 0 },
+    };
+    // Frozen at seq 1 with an entry that is not the mirror's: a fork, no
+    // sync can repair it, and the refusal says so (no sync is suggested)
+    sourceStatus = {
+      mirror: true,
+      sourceOrigin: pair.mirror.origin,
+      head: { chainHeadSeq: 1, chainHeadHashHex: "ab".repeat(32), auditMaxSeq: 9 },
+    };
+    try {
+      expect(
+        await runCli(["mirror", "promote", "--server", pair.mirror.origin], pair.env.layer),
+      ).toBe(1);
+      const errors = pair.env.errors.join("\n");
+      expect(errors).toContain(
+        `is frozen at chain seq 1 (head ${"ab".repeat(32)}), which is not an entry of this mirror's chain (seq 2`,
+      );
+      expect(errors).toContain("the two copies forked, and a promotion would bury the fork");
+      expect(errors).not.toContain("maruhi mirror sync");
+      expect(pair.state.status).toMatchObject({ mirror: true });
+      // Frozen at seq 1 with the mirror's own genesis (restored from an
+      // older backup, then frozen): a strict prefix holds nothing the
+      // mirror lacks — promoted; the five audit rows it wrote since the last
+      // replication are named as what stays there
+      sourceStatus = {
+        mirror: true,
+        sourceOrigin: pair.mirror.origin,
+        head: { chainHeadSeq: 1, chainHeadHashHex: built.hashes[0] ?? "", auditMaxSeq: 9 },
+      };
+      expect(
+        await runCli(["mirror", "promote", "--server", pair.mirror.origin], pair.env.layer),
+      ).toBe(0);
+    } finally {
+      sourceStatus = null;
+    }
+    expect(pair.state.status).toMatchObject({ mirror: false });
+    const logs = pair.env.logs.join("\n");
+    expect(logs).toContain(`Promoted project ${built.projectId} on ${pair.mirror.origin}`);
+    expect(logs).toContain(
+      `5 audit rows stay on the frozen source ${pair.source.origin} (the reads and leases it served since the last replication): a promoted copy takes no page, so they can never be brought over — keep them with \`maruhi project export --server ${pair.source.origin}\``,
+    );
+  });
+
+  it("a server that is itself a mirror of another origin, or a frozen former primary that synced back, is no source — refused before any page, unless forced (ruling H revision, round 8)", async () => {
+    const pair = await startPair();
+    const elsewhere = await deadOrigin();
+    sourceStatus = { mirror: true, sourceOrigin: elsewhere, head: headOfChain() };
+    try {
+      expect(await runCli(["mirror", "sync", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
+        1,
+      );
+      expect(pair.env.errors.join("\n")).toContain(
+        `The server ${pair.source.origin} holds this project as a mirror of ${elsewhere}: mirrors sync from the primary`,
+      );
+      expect(pair.env.errors.join("\n")).toContain(
+        `maruhi mirror mark --server ${pair.mirror.origin} --source ${elsewhere}`,
+      );
+      expect(pair.state.pages).toHaveLength(0);
+      expect(pair.source.requests.some((r) => r.path.endsWith("/export"))).toBe(false);
+      // A frozen former primary of this mirror that already synced back
+      sourceStatus = {
+        mirror: true,
+        sourceOrigin: pair.mirror.origin,
+        head: headOfChain(),
+        lastSync: { atMs: 5, ...headOfChain(), attestationMark: 0 },
+      };
+      expect(await runCli(["mirror", "sync", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
+        1,
+      );
+      expect(pair.env.errors.join("\n")).toContain(
+        `is a frozen former primary of ${pair.mirror.origin} that already synced back from it (last replication at chain head seq 2)`,
+      );
+      expect(pair.state.pages).toHaveLength(0);
+      // … while the planned failover's last sync (frozen, nothing replicated
+      // into it yet) goes through, and --force overrides the rest
+      sourceStatus = { mirror: true, sourceOrigin: pair.mirror.origin, head: headOfChain() };
+      expect(await runCli(["mirror", "sync", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
+        0,
+      );
+      expect(pair.state.pages).toHaveLength(2);
+      sourceStatus = { mirror: true, sourceOrigin: elsewhere, head: headOfChain() };
+      expect(
+        await runCli(["mirror", "sync", "--mirror", pair.mirror.origin, "--force"], pair.env.layer),
+      ).toBe(0);
+      expect(pair.state.pages).toHaveLength(4);
+    } finally {
+      sourceStatus = null;
+    }
+  });
+
+  it("a replica on another chain than the verified view is reported and fails the sync (ruling H revision, round 8)", async () => {
+    const pair = await startPair();
+    pair.state.lastPage = {
+      status: 200,
+      json: {
+        nextSequence: 0,
+        committed: { atMs: 5, ...headOfChain(), chainHeadHashHex: "ab".repeat(32) },
+      },
+    };
+    expect(await runCli(["mirror", "sync", "--mirror", pair.mirror.origin], pair.env.layer)).toBe(
+      1,
+    );
+    expect(pair.env.logs.join("\n")).toContain(
+      "a different chain at the same height as the verified view",
+    );
+    expect(pair.env.errors.join("\n")).toContain(
+      `The replica ${pair.mirror.origin} now holds is a different chain at the same height as the verified view`,
+    );
+    expect(pair.env.errors.join("\n")).toContain(
+      "do not promote it and run `maruhi project verify`",
+    );
   });
 
   it("MARUHI_MIRROR_TOKEN opens the mirror's session without a keychain entry, and is never sent to the server", async () => {

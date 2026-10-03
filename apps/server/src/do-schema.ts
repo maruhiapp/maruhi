@@ -493,9 +493,9 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
   // counter — the one write entry point that touches no tracked table is
   // a dismissal, whose only effect is its audit row; the deny list names
   // the read-path rows (which must not restart an export), so any audit-
-  // only write added later restarts exports by default; (b) the replica's
-  // audit head hash at the replicated position, so the next replica must
-  // extend the same log, not merely a log of the same length
+  // only write added later restarts exports by default; (b) a column for
+  // the replica's audit head hash at the replicated position (unused since
+  // ruling J revision, round 8: the mirror's own head column decides)
   {
     tables: [],
     apply(sql) {
@@ -533,7 +533,14 @@ function ensureAuditWriteTrigger(sql: SqlStorage): void {
   const row = sql
     .exec("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?", AUDIT_WRITE_TRIGGER)
     .toArray()[0];
-  if (row === undefined || !String(row["sql"]).includes(`NOT IN (${readPathList()})`)) {
+  // SQLite stores the statement's text verbatim from the trigger's name on,
+  // so the whole text is compared (any drift of the trigger — the list, the
+  // bump, the condition — is re-created; an up-to-date one is left alone —
+  // ruling C revision, round 8)
+  if (
+    row === undefined ||
+    String(row["sql"]) !== auditWriteTrigger().replace("IF NOT EXISTS ", "")
+  ) {
     sql.exec(`DROP TRIGGER IF EXISTS ${AUDIT_WRITE_TRIGGER}`);
     sql.exec(auditWriteTrigger());
   }

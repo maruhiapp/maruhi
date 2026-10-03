@@ -33,8 +33,10 @@
 // they are re-appended after the replica's rows (their `seq` moves; the
 // wire row id does not — AUDIT_SPEC §7 ruling C1). So the mirror's log is
 // the source's log followed by what the mirror itself did, and the
-// derived audit-head column (audit_head_hashes, replaced with the
-// replica's) is extended over them by the ordinary lazy materialization.
+// derived audit-head column (audit_head_hashes — installed from the first
+// replica after a mark, the mirror's own derivation from then on: kept up
+// to the replicated position, derived past it) is extended over them by
+// the ordinary lazy materialization.
 //
 // Every refusal but `sequence-mismatch` discards the staging in progress
 // (the next upload starts at sequence 0). No audit row is written for a
@@ -96,8 +98,6 @@ export interface MirrorState {
   readonly lastAttestationMark: number | null;
   /** The source's mutation counter the replica was exported at (null = unknown — the bootstrap, or a sync that did not say). */
   readonly lastMutationSeq: number | null;
-  /** The replica's audit head hash at the replicated position (null = none recorded — the mark, a re-point): the next replica must extend that log (ruling J revision, round 6). */
-  readonly lastAuditHeadHashHex: string | null;
 }
 
 export function readMirrorState(sql: SqlStorage): MirrorState | null {
@@ -117,8 +117,6 @@ export function readMirrorState(sql: SqlStorage): MirrorState | null {
     lastAttestationMark:
       row["last_attestation_mark"] === null ? null : Number(row["last_attestation_mark"]),
     lastMutationSeq: row["last_mutation_seq"] === null ? null : Number(row["last_mutation_seq"]),
-    lastAuditHeadHashHex:
-      row["last_audit_head_hash_hex"] === null ? null : String(row["last_audit_head_hash_hex"]),
   };
 }
 
@@ -142,7 +140,7 @@ export function remarkMirror(
   storage.transactionSync(() => {
     dropStaging(storage.sql, tables);
     storage.sql.exec(
-      "UPDATE mirror_state SET source_origin = ?, marked_at = ?, expected_sequence = 0, staging_table = NULL, last_audit_seq = 0, last_mutation_seq = NULL, last_audit_head_hash_hex = NULL WHERE id = 1",
+      "UPDATE mirror_state SET source_origin = ?, marked_at = ?, expected_sequence = 0, staging_table = NULL, last_audit_seq = 0, last_mutation_seq = NULL WHERE id = 1",
       sourceOrigin,
       nowMs,
     );
@@ -294,9 +292,18 @@ class PageStager {
     // table's own list passes (acceptColumns — the restore's rule)
     const columns = acceptColumns(this.sql, line.table, line.columns);
     const staging = stagingOf(line.table);
-    // A table line repeated inside one replica restarts that table
+    // A table line repeated inside one replica restarts that table. The
+    // staging table takes the live table's column affinities (a typeless
+    // column cannot drive an index against the live INTEGER `seq`, which
+    // made the prefix checks a scan of the staged log per live row — ruling
+    // J revision, round 8), and its `seq` is indexed for the joins
     this.sql.exec(`DROP TABLE IF EXISTS ${staging}`);
-    this.sql.exec(`CREATE TABLE ${staging} (${columns.join(", ")})`);
+    this.sql.exec(
+      `CREATE TABLE ${staging} AS SELECT ${columns.join(", ")} FROM ${line.table} LIMIT 0`,
+    );
+    if (columns.includes("seq")) {
+      this.sql.exec(`CREATE INDEX ${staging}_seq ON ${staging} (seq)`);
+    }
     this.table = line.table;
     this.#useColumns(columns);
   }
@@ -443,9 +450,25 @@ function verifyChainExtension(sql: SqlStorage): void {
  */
 const MERGED_TABLE = "lease_bindings";
 
-function swapTables(sql: SqlStorage, tables: readonly string[], nowMs: number): void {
+function swapTables(
+  sql: SqlStorage,
+  tables: readonly string[],
+  nowMs: number,
+  replicatedAuditSeq: number,
+): void {
   for (const table of tables) {
     const staging = stagingOf(table);
+    if (table === AUDIT_HEAD_TABLE && replicatedAuditSeq > 0) {
+      // Past a replicated position the served heads are the mirror's own
+      // derivation (ruling J revision, round 8): the rows up to the position
+      // were verified identical to the replica's, so their heads are kept,
+      // the rest is derived from the replica's rows after the commit (the
+      // ordinary lazy extension); the uploaded column is a claim checked
+      // against them (verifyAuditPrefix), never installed
+      sql.exec(`DELETE FROM ${table} WHERE seq > ?`, replicatedAuditSeq);
+      sql.exec(`DROP TABLE IF EXISTS ${staging}`);
+      continue;
+    }
     if (MIRROR_KEPT_TABLES.includes(table)) {
       if (table === MERGED_TABLE) {
         // Only live bindings are merged, and the mirror's own expired ones
@@ -507,22 +530,31 @@ function acceptTrailer(
   );
 }
 
-/** The replicated prefix, row for row: a live row at or below the position that the staged log lacks or carries differently is `audit-not-extension`. */
+/**
+ * The replicated prefix, row for row: a live row at or below the position
+ * that the staged log lacks or carries differently is `audit-not-extension`;
+ * so is a staged head that differs from the mirror's own at or below the
+ * position (the mirror's column is its own derivation over those rows —
+ * ruling J revision, round 8 — so the uploaded column must agree with it;
+ * a staged column that does not reach the position is one such claim too).
+ */
 function verifyAuditPrefix(sql: SqlStorage, state: MirrorState): void {
   const staged = stagingOf(AUDIT_TABLE);
-  if (!hasTable(sql, staged)) {
+  const stagedHeads = stagingOf(AUDIT_HEAD_TABLE);
+  if (!hasTable(sql, staged) || !hasTable(sql, stagedHeads)) {
     throw new MirrorPageRefusedError("audit-not-extension");
   }
-  if (state.lastAuditHeadHashHex !== null) {
-    const stagedHeads = stagingOf(AUDIT_HEAD_TABLE);
-    const row = hasTable(sql, stagedHeads)
-      ? sql
-          .exec(`SELECT head_hash_hex FROM ${stagedHeads} WHERE seq = ?`, state.lastAuditSeq)
-          .toArray()[0]
-      : undefined;
-    if (row === undefined || String(row["head_hash_hex"]) !== state.lastAuditHeadHashHex) {
-      throw new MirrorPageRefusedError("audit-not-extension");
-    }
+  const headsDiffer = sql
+    .exec(
+      `SELECT COUNT(*) AS n FROM ${AUDIT_HEAD_TABLE} AS own LEFT JOIN ${stagedHeads} AS theirs ON theirs.seq = own.seq WHERE own.seq <= ? AND (theirs.seq IS NULL OR theirs.head_hash_hex IS NOT own.head_hash_hex)`,
+      state.lastAuditSeq,
+    )
+    .one()["n"];
+  const ownReaches = sql
+    .exec(`SELECT 1 FROM ${AUDIT_HEAD_TABLE} WHERE seq = ?`, state.lastAuditSeq)
+    .toArray()[0];
+  if (Number(headsDiffer) !== 0 || ownReaches === undefined) {
+    throw new MirrorPageRefusedError("audit-not-extension");
   }
   const columns = sql.exec(`SELECT * FROM ${AUDIT_TABLE} LIMIT 0`).columnNames;
   const differs = columns
@@ -635,13 +667,7 @@ export function commitMirrorReplica(input: MirrorCommitInput): MirrorCommit {
       const ownAuditRows = Number(
         sql.exec(`SELECT COUNT(*) AS n FROM ${LOCAL_AUDIT_TABLE}`).one()["n"],
       );
-      swapTables(sql, input.tables, input.nowMs);
-      // The replica's audit head at the committed position (its own column,
-      // materialized by the source's first page to its bound)
-      const headRow = sql
-        .exec(`SELECT head_hash_hex FROM ${AUDIT_HEAD_TABLE} WHERE seq = ?`, replicaAuditSeq)
-        .toArray()[0];
-      const auditHeadHashHex = headRow === undefined ? null : String(headRow["head_hash_hex"]);
+      swapTables(sql, input.tables, input.nowMs, state.lastAuditSeq);
       // … and follow the replica's rows, renumbered densely in their order
       // (the rows the replica carried left holes)
       const shifted = auditColumns.map((column) =>
@@ -664,14 +690,13 @@ export function commitMirrorReplica(input: MirrorCommitInput): MirrorCommit {
         ownAuditRows,
       };
       sql.exec(
-        `UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL, last_synced_at = ?, last_head_seq = ?, last_head_hash_hex = ?, last_audit_seq = ?, last_attestation_mark = ?, last_mutation_seq = ?, last_audit_head_hash_hex = ? WHERE id = 1`,
+        `UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL, last_synced_at = ?, last_head_seq = ?, last_head_hash_hex = ?, last_audit_seq = ?, last_attestation_mark = ?, last_mutation_seq = ? WHERE id = 1`,
         commit.atMs,
         commit.chainHeadSeq,
         commit.chainHeadHashHex,
         commit.auditMaxSeq,
         commit.attestationMark,
         input.sourceMutationSeq,
-        auditHeadHashHex,
       );
       return commit;
     });

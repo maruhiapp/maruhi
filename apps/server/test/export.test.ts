@@ -767,6 +767,28 @@ describe("project import (the restore job with identitiesKey)", () => {
     );
     expect(String(reasserted[0]?.["sql"])).toContain("'server.lease_issued'");
     expect(String(reasserted[0]?.["sql"])).toContain("'project.exported'");
+    // Any other drift of the trigger's text is re-created too (the whole
+    // stored text is compared — ruling C revision, round 8) …
+    const current = String(reasserted[0]?.["sql"]);
+    await queryProjectDo(projectId, "DROP TRIGGER mutation_audit_events_write");
+    await queryProjectDo(projectId, current.replace("seq = seq + 1", "seq = seq + 2"));
+    await evictProjectDo(projectId);
+    const redone = await queryProjectDo(
+      projectId,
+      "SELECT rowid, sql FROM sqlite_master WHERE type = 'trigger' AND name = 'mutation_audit_events_write'",
+    );
+    expect(String(redone[0]?.["sql"])).toBe(current);
+    // … while an up-to-date trigger is left alone at an open: no DDL (the
+    // schema row is the same row; a later object keeps a re-creation from
+    // reusing its rowid)
+    await queryProjectDo(projectId, "CREATE TABLE later_marker (id INTEGER PRIMARY KEY)");
+    await evictProjectDo(projectId);
+    const untouched = await queryProjectDo(
+      projectId,
+      "SELECT rowid, sql FROM sqlite_master WHERE type = 'trigger' AND name = 'mutation_audit_events_write'",
+    );
+    expect(untouched).toEqual(redone);
+    await queryProjectDo(projectId, "DROP TABLE later_marker");
     // … while the bounded and drift tables do not
     await queryProjectDo(
       projectId,

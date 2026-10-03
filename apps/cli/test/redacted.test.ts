@@ -858,7 +858,7 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   "ci-lease.ts": 1,
   // ci rotate (PF7b): the leased credential and admin inputs handed to the connector in memory, and the lease token on the mint request
   "ci-rotate.ts": 5,
-  "rotation-proposals.ts": 2,
+  "rotation-proposals.ts": 1,
   // Input to the HPKE wrap (a cryptographic boundary)
   "dek-wrap.ts": 1,
   // Byte length for list rows (the value is never shown) + --show's display (after the gate)
