@@ -37,8 +37,10 @@ import {
   ConnectorError,
   type CredentialValues,
   describeFinalize,
+  describeValueShapes,
   type FinalizeOutcome,
   finalizeCredential,
+  lineCountWarning,
   planRotation,
   type RotateDeps,
   type RotateInputs,
@@ -102,7 +104,7 @@ export interface VarRotateResult {
   /** Every version pushed, in push order (companions first). */
   readonly pushed: readonly { readonly name: string; readonly version: PushedVersion }[];
   readonly facts: readonly string[];
-  /** The primary's shape ("N bytes, M lines" — shown, never stored). */
+  /** The shape of every value pushed ("N bytes, M lines"; the primary first — shown, never stored). */
   readonly valueShape: string;
   readonly previous: string;
   /** The max age the primary's schema declares (layout v3 — null = none). */
@@ -425,13 +427,14 @@ export function varRotateOp(
       try: () => rotateCredential(target.rule, current, inputs, input.deps, site),
       catch: connectorFailure,
     });
-    // A line count that changed is worth a look before the push: the one
-    // form of a leftover's output no timing can tell apart (D-16). A
-    // warning, never a refusal (a token becoming a PEM is legitimate)
-    if (lineCountOf(outcome.valueShape) !== lineCountOf(outcome.currentShape)) {
-      yield* logWarning(
-        `the new value of ${displayText(target.primary)} has ${lineCountOf(outcome.valueShape)} line(s) where the current value has ${lineCountOf(outcome.currentShape)}: check that the rotate script printed only the credential (a process it started may have written to its stdout)`,
-      );
+    // A line count that changed is worth a look before the push (D-16)
+    const lineWarning = lineCountWarning(
+      displayText(target.primary),
+      outcome.shape,
+      outcome.currentShape,
+    );
+    if (lineWarning !== null) {
+      yield* logWarning(lineWarning);
     }
     const pushed = yield* pushOutcome(context, pulled, target, outcome);
     const primaryStatement = pulled.variables.find((variable) => variable.name === target.primary);
@@ -440,7 +443,7 @@ export function varRotateOp(
       connector: target.rule.connector,
       pushed,
       facts: outcome.facts,
-      valueShape: outcome.valueShape,
+      valueShape: describeValueShapes(outcome),
       previous: outcome.previous,
       maxAgeDays: primaryStatement?.schema?.maxAgeDays ?? null,
       warnings: [
@@ -582,10 +585,4 @@ export function logRotationWarnings(
   warnings: readonly string[],
 ): Effect.Effect<void, never, CliIo> {
   return Effect.forEach(warnings, (warning) => logWarning(warning), { discard: true });
-}
-
-/** The line count a {@link valueShape} text carries ("N bytes, M lines" — the first value's). */
-function lineCountOf(shape: string): number {
-  const match = /(\d+) lines?/.exec(shape);
-  return match === null ? 1 : Number(match[1]);
 }

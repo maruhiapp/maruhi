@@ -19,6 +19,7 @@ import {
   ConnectorError,
   type CredentialValues,
   describeFinalize,
+  describeValueShapes,
   finalizeCredential,
   generatePassword,
   planRotation,
@@ -738,9 +739,11 @@ describe("exec connector (a script of the repository — PF8)", () => {
     // The value's shape is for the local report and the acceptance (D-8 —
     // a script that printed chatter instead of a value is seen before the
     // value is pushed), never a fact the server stores
-    expect(outcome.valueShape).toBe("11 bytes, 1 line");
-    // … beside the current value's, for the report's line-count comparison (D-16)
-    expect(outcome.currentShape).toBe("11 bytes, 1 line");
+    expect(describeValueShapes(outcome)).toBe("11 bytes, 1 line");
+    // … beside the current value's, for the report's line-count comparison
+    // (D-16), carried as numbers (D-19)
+    expect(outcome.shape).toEqual({ bytes: 11, lines: 1 });
+    expect(outcome.currentShape).toEqual({ bytes: 11, lines: 1 });
     expect(outcome.previous).toContain(
       "stays valid until you finalize (./finalize.sh runs with it)",
     );
@@ -862,7 +865,7 @@ describe("exec connector (a script of the repository — PF8)", () => {
     ]);
     // Every value to push is shaped in the local report (the primary first,
     // then the companions by name — the acceptance's parity)
-    expect(outcome.valueShape).toBe("11 bytes, 1 line; STRIPE_KEY_ID 7 bytes, 1 line");
+    expect(describeValueShapes(outcome)).toBe("11 bytes, 1 line; STRIPE_KEY_ID 7 bytes, 1 line");
     const missing = fakeScript(() => ok(JSON.stringify({ value: "x" })));
     await expect(
       rotateCredential(jsonRule, current, {}, deps({ exec: missing.exec }), SITE),

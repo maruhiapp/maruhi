@@ -113,10 +113,12 @@ export interface RotationPlan {
 export interface RotationOutcome {
   /** The new values to push (the primary and every companion the rule names). */
   readonly values: CredentialValues;
-  /** The shape of every value to push — the primary's, then each companion's by name ({@link valueShape}) — for the local report; never a proposal fact. */
-  readonly valueShape: string;
+  /** The primary's shape ({@link shapeOf}) — for the local report; never a proposal fact. */
+  readonly shape: ValueShape;
+  /** Each companion's shape by name, for the same report. */
+  readonly companionShapes: Readonly<Record<string, ValueShape>>;
   /** The current primary's shape, for the same report: a new value of another line count is worth a look before it is pushed (D-16 — a leftover's line is the common form). */
-  readonly currentShape: string;
+  readonly currentShape: ValueShape;
   /** Non-secret facts for the report (the new key id, the role now in use, the token id). */
   readonly facts: readonly string[];
   /** What the previous credential's state is now, in one line. */
@@ -1183,14 +1185,54 @@ async function runScript(
  * script that printed its own chatter on stdout shows here before the
  * value is pushed.
  */
-export function valueShape(value: Uint8Array): string {
+export function shapeOf(value: Uint8Array): ValueShape {
   let lines = 1;
   for (const byte of value) {
     if (byte === 0x0a) {
       lines += 1;
     }
   }
-  return `${countNoun(value.length, "byte")}, ${countNoun(lines, "line")}`;
+  return { bytes: value.length, lines };
+}
+
+/** The numbers a value's shape is made of; the text is formatted at display time ({@link describeShape}) and never parsed back (D-19). */
+export interface ValueShape {
+  readonly bytes: number;
+  readonly lines: number;
+}
+
+/** "N bytes, M lines". */
+export function describeShape(shape: ValueShape): string {
+  return `${countNoun(shape.bytes, "byte")}, ${countNoun(shape.lines, "line")}`;
+}
+
+/** The primary's shape, then each companion's by name (the same parity as the acceptance's per-value shapes). */
+export function describeValueShapes(
+  outcome: Pick<RotationOutcome, "shape" | "companionShapes">,
+): string {
+  return [
+    describeShape(outcome.shape),
+    ...Object.entries(outcome.companionShapes)
+      .toSorted(([a], [b]) => a.localeCompare(b))
+      .map(([name, shape]) => `${name} ${describeShape(shape)}`),
+  ].join("; ");
+}
+
+/**
+ * The warning a changed line count earns before the push (D-16 at `var
+ * rotate`, D-18 at the acceptance): the one form of a leftover's output no
+ * timing can tell apart. A warning, never a refusal (a token becoming a
+ * PEM is legitimate). null = the line count is unchanged.
+ */
+export function lineCountWarning(
+  name: string,
+  next: ValueShape,
+  current: ValueShape,
+): string | null {
+  if (next.lines === current.lines) {
+    return null;
+  }
+  return `the new value of ${name} has ${countNoun(next.lines, "line")} where the current value has ${countNoun(current.lines, "line")}: check that the rotate script printed only the credential (a process it started may have written to its stdout)`;
 }
 
 /** The new value as the rotate script printed it: one trailing newline (LF or CRLF) is dropped, nothing else is touched. */
@@ -1431,23 +1473,16 @@ export async function rotateCredential(
   const outcome = await rotateWith(rule, current, inputs, deps, site);
   return {
     ...outcome,
-    valueShape: valuesShape(outcome.values),
-    currentShape: valueShape(current.primary),
+    shape: shapeOf(outcome.values.primary),
+    companionShapes: Object.fromEntries(
+      Object.entries(outcome.values.companions).map(([name, bytes]) => [name, shapeOf(bytes)]),
+    ),
+    currentShape: shapeOf(current.primary),
   };
 }
 
-/** The primary's shape, then each companion's by name (the same parity as the acceptance's per-value shapes). */
-function valuesShape(values: CredentialValues): string {
-  return [
-    valueShape(values.primary),
-    ...Object.entries(values.companions)
-      .toSorted(([a], [b]) => a.localeCompare(b))
-      .map(([name, bytes]) => `${name} ${valueShape(bytes)}`),
-  ].join("; ");
-}
-
-/** A connector's own outcome (the frame adds the value's shape). */
-type ConnectorOutcome = Omit<RotationOutcome, "valueShape" | "currentShape">;
+/** A connector's own outcome (the frame adds the values' shapes). */
+type ConnectorOutcome = Omit<RotationOutcome, "shape" | "companionShapes" | "currentShape">;
 
 function rotateWith(
   rule: RotateRule,

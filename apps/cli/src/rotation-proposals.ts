@@ -24,9 +24,10 @@ import { countNoun, displayText, formatUtcDate, formatUtcMinutes } from "./displ
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
+import { logWarning } from "./notice.ts";
 import { decryptVerifiedValue } from "./pull.ts";
 import { type PushedVersion, pushVariable } from "./push.ts";
-import { valueShape } from "./rotate-connector.ts";
+import { describeShape, lineCountWarning, shapeOf, type ValueShape } from "./rotate-connector.ts";
 import { fetchRotationProposals, resolveVariableStates, type StateIndex } from "./rotation.ts";
 import {
   pullVerifiedEnvironment,
@@ -147,21 +148,25 @@ interface OpenedValue {
    * top of the base version.
    */
   readonly storedAs: number | null;
+  /** The verified current value's shape, opened on this device for the report's comparison (D-18). */
+  readonly currentShape: ValueShape;
 }
 
 /**
- * Whether the verified current value already is the proposed one: an
- * earlier `accept` whose push succeeded but whose resolution (or a later
- * variable's push) failed leaves exactly this state. Decrypts the current
+ * The verified current value, decrypted on this device: its shape stands
+ * beside the proposed value's in the acceptance (D-18 — the acceptor is
+ * the pusher, so the comparison is made where the decision is), and its
+ * bytes tell whether an earlier `accept` already pushed the proposed value
+ * (a push that succeeded while the resolution, or a later variable's push,
+ * failed leaves exactly that state). Decrypts the current
  * value with this device's DEK and compares the bytes; a different value
  * means the variable moved.
  */
-function alreadyStored(
+function storedValue(
   context: EnvironmentContext,
   pulled: VerifiedEnvironmentPull,
   current: VerifiedPulledValue,
-  proposed: Uint8Array,
-): Effect.Effect<boolean, CliError> {
+): Effect.Effect<Redacted.Redacted<Uint8Array>, CliError> {
   return Effect.gen(function* () {
     const keys = yield* environmentKeysFor({
       client: context.client,
@@ -170,17 +175,18 @@ function alreadyStored(
       recipient: context.recipient,
       prefetched: pulled.deks,
     });
-    const stored = yield* decryptVerifiedValue({
+    return yield* decryptVerifiedValue({
       verified: pulled.verified,
       environmentId: context.environmentId,
       variable: current,
       deksByEpoch: keys.deksByEpoch,
       chainEpoch: keys.currentEpoch,
     });
-    // Reason for unwrapping: the byte comparison (both values are this device's to know)
-    const bytes = Redacted.value(stored);
-    return bytes.length === proposed.length && bytes.every((byte, i) => byte === proposed[i]);
   });
+}
+
+function sameBytes(stored: Uint8Array, proposed: Uint8Array): boolean {
+  return stored.length === proposed.length && stored.every((byte, i) => byte === proposed[i]);
 }
 
 /** The verified current value a proposed variable targets (missing or behind the base = refused). */
@@ -266,11 +272,13 @@ function openOne(
     const { context, proposal } = input;
     const current = yield* currentOf(input, pulled, variable);
     const value = yield* openOwnWrap(input, variable, current.name);
+    // Reason for unwrapping: the shape and the byte comparison (both values are this device's to know)
+    const stored = Redacted.value(yield* storedValue(context, pulled, current));
     // A current version past the base is either an earlier accept's own
     // push (the same bytes — nothing to push, only to resolve) or a
     // move, which makes the proposal stale
     const moved = current.version > variable.baseVersion;
-    if (moved && !(yield* alreadyStored(context, pulled, current, value))) {
+    if (moved && !sameBytes(stored, value)) {
       return yield* Effect.fail(
         cliError(
           `${displayText(current.name)} moved since the proposal was minted (it replaces version ${variable.baseVersion}, the current version is ${current.version}). Reject the proposal (\`maruhi rotation reject ${proposal.proposalId}\`), retire the credential it created at the issuer, and let the job run again`,
@@ -282,6 +290,7 @@ function openOne(
       name: current.name,
       value: Redacted.make(value, { label: "variable-value" }),
       storedAs: moved ? current.version : null,
+      currentShape: shapeOf(stored),
     };
   });
 }
@@ -315,6 +324,20 @@ export function rotationAcceptOp(
       openOne(input, pulled, variable),
     );
     const toPush = opened.filter((entry) => entry.storedAs === null);
+    // A line count that changed is worth a look before the push, here
+    // where the decision is made (D-18; the CI job's report already showed it)
+    yield* Effect.forEach(
+      toPush.flatMap((entry) => {
+        const warning = lineCountWarning(
+          displayText(entry.name),
+          shapeOf(Redacted.value(entry.value)),
+          entry.currentShape,
+        );
+        return warning === null ? [] : [warning];
+      }),
+      (warning) => logWarning(warning),
+      { discard: true },
+    );
     yield* ensureConfirmed({
       facts: acceptanceFacts(proposal, context.environmentId, opened),
       prompt: "Accept and push? [y/N]: ",
@@ -358,11 +381,12 @@ function acceptanceFacts(
       ? `Accepting proposal ${proposal.proposalId}: every proposed value is already stored in environment ${displayText(environmentId)} (${already.join(", ")} — an earlier accept pushed it); nothing is pushed, the proposal is resolved as accepted. ${minter}`
       : `Accepting proposal ${proposal.proposalId} pushes ${toPush.map((entry) => displayText(entry.name)).join(", ")} in environment ${displayText(environmentId)} as new versions signed by you${already.length === 0 ? "" : ` (already stored: ${already.join(", ")})`}. ${minter}`;
   // The shape of each value to push, from the opened plaintext on this
-  // device (D-8): a job that produced chatter instead of a credential shows
-  // here, verified, before anything is pushed — the server never saw it
+  // device (D-8), beside the current value's (D-18): a job that produced
+  // chatter instead of a credential shows here, verified, before anything
+  // is pushed — the server never saw it
   const shapes = toPush.map(
     (entry) =>
-      `  ${displayText(entry.name)}: ${valueShape(Redacted.value(entry.value))} (opened on this device)`,
+      `  ${displayText(entry.name)}: ${describeShape(shapeOf(Redacted.value(entry.value)))} (opened on this device; the current value: ${describeShape(entry.currentShape)})`,
   );
   return [head, ...proposal.facts.map((fact) => `  ${displayText(fact)}`), ...shapes];
 }

@@ -499,6 +499,22 @@ describe("maruhi rotation list", () => {
     expect(due.errors.join("\n")).toContain("also the rotation flags could not be read");
   });
 
+  it("a listing with no switch exits 0 on an unreadable flags read with the note on stderr, never claiming no flags; a dismissal of all needs the read (A-18)", async () => {
+    const built = await convergedChain();
+    const state = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [],
+      flagsAvailable: false,
+    });
+    const broken = await startEnv(state, built.projectId);
+    expect(await runCli(["rotation", "list"], broken.layer)).toBe(0);
+    expect(broken.errors.join("\n")).toContain("could not read the rotation flags (");
+    expect(broken.logs.join("\n")).not.toContain("No rotation flags are currently active");
+    expect(await runCli(["rotation", "dismiss", "--all", "--env", ENV_ID], broken.layer)).toBe(1);
+    expect(state.dismissBodies).toHaveLength(0);
+  });
+
   it("--fail-on-pending under a scoped member's token cannot pass: the server lists that scope only (A-12)", async () => {
     const scoped = await buildChain([
       { actor: owner, operation: genesisOp(owner) },

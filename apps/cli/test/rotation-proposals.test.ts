@@ -347,8 +347,30 @@ describe("maruhi rotation accept (PF7b)", () => {
     );
     expect(errors).toContain(FACT);
     // The value's shape, from the opened plaintext on this device (D-8)
-    expect(errors).toContain("STRIPE_SECRET_KEY: 17 bytes, 1 line (opened on this device)");
+    expect(errors).toContain(
+      "STRIPE_SECRET_KEY: 17 bytes, 1 line (opened on this device; the current value: 17 bytes, 1 line)",
+    );
+    expect(errors).not.toContain("where the current value has");
     expectNoSecretLeak(fixture.env);
+  });
+
+  it("a proposed value whose line count differs from the current value's is warned about before the push, never refused (D-18)", async () => {
+    // A rotate script whose child wrote to its stdout within the settle
+    // produced "junk\n<credential>": the acceptance shows both shapes and
+    // warns where the decision is made; the push is the member's
+    const polluted = `junk_line_dummy\n${NEW_KEY}`;
+    const fixture = await startEnv([await proposalFor({ plaintext: polluted })]);
+    expect(await runCli(["rotation", "accept", PROPOSAL_ID, "--yes"], fixture.env.layer)).toBe(0);
+    expect(await latestPlaintext(fixture.state)).toEqual({ plaintext: polluted, version: 4 });
+    const errors = fixture.env.errors.join("\n");
+    expect(errors).toContain(
+      "STRIPE_SECRET_KEY: 33 bytes, 2 lines (opened on this device; the current value: 17 bytes, 1 line)",
+    );
+    expect(errors).toContain(
+      "Warning: the new value of STRIPE_SECRET_KEY has 2 lines where the current value has 1 line: check that the rotate script printed only the credential",
+    );
+    expectNoSecretLeak(fixture.env);
+    expect(errors).not.toContain("junk_line_dummy");
   });
 
   it("a prefix of the id works; a non-interactive accept without --yes refuses before pushing", async () => {

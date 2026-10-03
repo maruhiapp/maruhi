@@ -187,6 +187,9 @@ interface OidcOptions {
   readonly failAfter?: number;
   /** After this many tokens the endpoint hangs (answers only after a minute — the fetch's bound ends the wait). */
   readonly hangAfter?: number;
+  /** After this many tokens the endpoint answers late, after `delayMs` (a slow runner endpoint; default 3 s). */
+  readonly delayAfter?: number;
+  readonly delayMs?: number;
 }
 
 /** The endpoint's injected outage after `issued` tokens: a 500, or an answer only after a minute (the fetch's bound ends the wait). */
@@ -205,6 +208,16 @@ function issuanceOutage(
   return null;
 }
 
+/** A delayed `null` (the token is issued, late) after `delayAfter` tokens. */
+function issuanceDelay(issued: number, options: OidcOptions): Promise<null> | null {
+  if (options.delayAfter === undefined || issued < options.delayAfter) {
+    return null;
+  }
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(null), options.delayMs ?? 3000).unref();
+  });
+}
+
 function oidcHandler(state: { issued: number }, options: OidcOptions = {}): MockHandler {
   return (request) => {
     if (request.method !== "GET" || request.path !== "/oidc/token") {
@@ -217,19 +230,23 @@ function oidcHandler(state: { issued: number }, options: OidcOptions = {}): Mock
     if (outage !== null) {
       return outage;
     }
-    state.issued += 1;
-    return {
-      status: 200,
-      json: {
-        value: fakeJwt({
-          iss: ISSUER,
-          sub: `repo:acme/app:ref:refs/heads/main/run/${state.issued}`,
-          aud: request.query["audience"] ?? "",
-          jti: state.issued,
-          ...(options.expSeconds === undefined ? {} : { exp: options.expSeconds }),
-        }),
-      },
+    const issue = (): MockResponse => {
+      state.issued += 1;
+      return {
+        status: 200,
+        json: {
+          value: fakeJwt({
+            iss: ISSUER,
+            sub: `repo:acme/app:ref:refs/heads/main/run/${state.issued}`,
+            aud: request.query["audience"] ?? "",
+            jti: state.issued,
+            ...(options.expSeconds === undefined ? {} : { exp: options.expSeconds }),
+          }),
+        },
+      };
     };
+    const delay = issuanceDelay(state.issued, options);
+    return delay === null ? issue() : delay.then(issue);
   };
 }
 
@@ -765,6 +782,21 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     const body = onlyMint(fixture);
     expect(jwtPayload(body.oidcToken)["jti"]).toBe(1);
     expect(fixture.env.errors.join("\n")).toContain("presenting the lease's token");
+  }, 20_000);
+
+  it("an expired lease token does not shorten the fetch of a fresh one: a slow issuance endpoint still mints (O-19)", async () => {
+    // The lease's token expired while the connector ran, so there is no
+    // fallback to protect: the mint's fetch gets the default bound, not
+    // the floor, and the endpoint's late answer (3 s) is waited for
+    const fixture = await startCi(EXEC_RULE, {
+      expSeconds: Math.floor(Date.now() / 1000) - 60,
+      delayAfter: 1,
+    });
+    expect(await ciRotate(fixture)).toBe(0);
+    const body = onlyMint(fixture);
+    expect(jwtPayload(body.oidcToken)["jti"]).toBe(2);
+    expect(fixture.env.errors.join("\n")).not.toContain("presenting the lease's token");
+    expectNoSecretLeak(fixture);
   }, 20_000);
 
   it("an expired lease token is not presented when no fresh token can be minted: the recovery step is named", async () => {

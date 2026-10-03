@@ -527,3 +527,14 @@ for round 7; B, C, K and P are closed.
 
 Rulings A, D and O received adopted candidates in this round and stay open
 for round 8; B, C, K and P are closed.
+
+### 9-7. Round 8 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| A (cron) | A-18 (test-only): pin the two claims the record makes that no test covered — a listing with no switch exits 0 on an unreadable flags read with the note on stderr and never prints "no flags"; `rotation dismiss --all` fails on the same read. No behaviour candidate: every pass/fail path of the three switches over an unknown part was traced and none passes | **A-18 adopted** (a test pin). **A CLOSED (round 8)** |
+| D (answer) | D-18 (structural): put the D-16 comparison where the decision is made — the acceptance decrypts the verified current value (as the already-stored check did on the moved path), shows its shape beside the opened value's and warns on a changed line count before the prompt; D-19 (robustness): carry the shape as numbers on the outcome and format at display time — the text parser `lineCountOf` returned 1 on a no-match, so a wording change would have switched D-16 off silently | **D-18 adopted** — one in-memory decryption per proposed variable; the shape is still never stored (D-8), a shape is not a value (D-7). **D-19 adopted** — `shape` / `companionShapes` / `currentShape` are `{ bytes, lines }`; `describeShape` / `describeValueShapes` format; `lineCountWarning` is shared by `var rotate` and the acceptance |
+| O (credential) | O-19 (a bug in O-18): for an expired token in hand the bound fell to the 1 s floor — there is no fallback to protect in that case (the mint refuses an expired token, the re-lease too), so the floor only removed the one path to success; K-5's own motivating case (a connector that outlived a short lease token) failed on a merely slow issuance endpoint | **Adopted** — a token in hand that cannot outlive the shortest bound gets the default bound; a delayed-issuance mock (3 s, expired lease token) pins that the fresh token is minted |
+
+Rulings D and O received adopted candidates in this round and stay open
+for round 9; A, B, C, K and P are closed.
