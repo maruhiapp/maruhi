@@ -654,10 +654,13 @@ grants it, and can be promoted to the primary by the owner if the primary is
 gone for good (AUTH_SPEC §11-7, CRYPTO_SPEC §9.2; design
 `docs/notes/pf2-design.md`).
 
-**1. Bootstrap** = the migration above, minus the switch: the owner exports
-the project, you import it into your deployment with the identities
-companion, members log in there once (`maruhi login --server <mirror>`),
-and the owner marks the project as a mirror of the primary:
+**1. Bootstrap** = the migration above, minus the switch: generate a
+distinct `SERVER_ENC_KEY_IKM` for the mirror (two deployments with one key
+can open each other's grants, and the CLI tells deployments apart by that
+key), the owner exports the project, you import it into your deployment
+with the identities companion, members log in there once (`maruhi login
+--server <mirror>`), and the owner marks the project as a mirror of the
+primary:
 
 ```sh
 maruhi mirror mark --server https://mirror.example.com --project <project-id> --source https://my.maruhi.app
@@ -682,7 +685,10 @@ served) were re-appended after the replica's. When the primary's chain
 head, audit seq and mutation counter are the ones the last sync brought
 (and the mirror still holds that head), the command uploads nothing and
 says the mirror is current — two status reads, no chain download — so a
-cron can run it every few minutes. `maruhi mirror status` compares the two at any time
+cron can run it every few minutes. The command refuses to replicate from a
+server that is not the mirror's recorded source (a cron left pointing at a
+former primary after a failover): sync from the recorded source, re-point
+the mirror, or pass `--force`. `maruhi mirror status` compares the two at any time
 (and reports the mirror's head alone while the primary is down). Across a
 sync the mirror keeps its own lease windows and rate limits, merges the
 primary's live first-come token bindings into its own (expired ones are
@@ -737,10 +743,12 @@ refuses to mark a project whose chain is not part of the source's (such a
 mirror could never be synced), unless `--force`. The mark starts the
 project's audit position at 0: the first sync accepts the new source's log
 whatever its length, and keeps every row of this project's own log the
-replica does not carry, re-appended after it. A deployment is recognized by
-its server key fingerprint, not its hostname: a source under another
-hostname is still "this deployment" to the promotion, and the mark refuses
-a source that is the server itself. After the promotion the
+replica does not carry, re-appended after it. A deployment is named by its
+origin string — the one the freeze used: promote under that name. Its
+server key fingerprint only refuses (`maruhi mirror mark` refuses a source
+that publishes this server's key: the server itself under another hostname,
+or another deployment sharing one `SERVER_ENC_KEY_IKM`) or names a way out;
+it never lifts a guard, since it is self-reported. After the promotion the
 command lists the other server keys the chain grants, each with the
 environments its grant covers: if that deployment was **compromised**
 rather than lost, revoke the key it names (`maruhi server revoke

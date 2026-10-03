@@ -65,18 +65,18 @@ const program = Effect.gen(function* () {
       extraEnv: {},
     }),
   );
-  const flooded = yield* Effect.promise(() =>
-    runner
-      .captureScript({
-        command: ["sh", "-c", "head -c 3000000 /dev/zero; sleep 5; echo late"],
-        cwd: process.cwd(),
-        extraEnv: {},
-      })
-      .then(
-        () => "unexpectedly captured",
-        (error: unknown) => (error instanceof Error ? error.message : String(error)),
-      ),
-  );
+  /** A capture expected to reject: its error's name and message. */
+  const refusal = (shell: string) =>
+    Effect.promise(() =>
+      runner
+        .captureScript({ command: ["sh", "-c", shell], cwd: process.cwd(), extraEnv: {} })
+        .then(
+          () => "unexpectedly captured",
+          (error: unknown) =>
+            error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        ),
+    );
+  const flooded = yield* refusal("head -c 3000000 /dev/zero; sleep 5; echo late");
   // A flooded stderr is dropped whole (never cut — D-9) and drained: the
   // script runs on and its value is read (D-10 — a stopped script would
   // strand the credential it may have created)
@@ -100,19 +100,15 @@ const program = Effect.gen(function* () {
   );
   const leftoverMs = Date.now() - leftoverStart;
   const stubbornStart = Date.now();
-  const stubborn = yield* Effect.promise(() =>
-    runner
-      .captureScript({
-        command: ["sh", "-c", "trap '' TERM; head -c 3000000 /dev/zero; sleep 20"],
-        cwd: process.cwd(),
-        extraEnv: {},
-      })
-      .then(
-        () => "unexpectedly captured",
-        (error: unknown) => (error instanceof Error ? error.message : String(error)),
-      ),
-  );
+  const stubborn = yield* refusal("trap '' TERM; head -c 3000000 /dev/zero; sleep 20");
   const stubbornMs = Date.now() - stubbornStart;
+  // Bytes a leftover process writes after the script exited are never
+  // silently the answer (D-14): a late line, or a flood past the cap after
+  // the exit, is refused naming the script's own exit code
+  const polluted = yield* refusal("(sleep 1; echo junk) & echo value");
+  const floodedAfterExit = yield* refusal(
+    "(sleep 0.5; head -c 3000000 /dev/zero | tr '\\0' z; sleep 10) & echo value",
+  );
   return {
     exitCode: outcome.exitCode,
     output: outcome.output,
@@ -121,6 +117,8 @@ const program = Effect.gen(function* () {
     leftoverMs,
     stubborn,
     stubbornMs,
+    polluted,
+    floodedAfterExit,
     missing,
     badCwd,
     capturedBytes: captured.stdout.length,

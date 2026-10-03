@@ -505,3 +505,14 @@ open for round 5; B is closed (with C and K).
 
 Rulings A, D and O received adopted candidates in this round and stay open
 for round 6; P is closed (with B, C and K).
+
+### 9-5. Round 6 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| A (cron) | A-15 (a bug in A-14): the metadata-only pull and the version history are read under scope "any" (AUTH_SPEC §12-3), so a scoped member's `--fail-on-due` was whole all along; A-14 made every scoped-member cron exit 1 permanently — the class A-13 removed | **Adopted** — every member walks every environment; A-12's partial note stays for `--fail-on-pending` only (that list is scope-filtered by the server) |
+| D (answer) | D-14 (two probe-confirmed bugs against D-12's claim): bytes a leftover process wrote within the grace were pushed as part of the value with nothing said; a flood past the cap after the script had exited 0 killed an exited process and reported "the script was stopped" with no recovery — a complete answer lost and the credential stranded | **Adopted** — bytes on stdout after the script exited are the script's own only when its pipe closed at once (200 ms); otherwise, and on a cap passed after the exit, the capture is refused as a leftover's output, naming the script's exit code, and the exec connector names the recovery when that code is 0. Residual: a leftover that writes and quits within the settle |
+| O (credential) | O-16 (a bug): the issuance fetch had no bound, so a hung endpoint held the job past the lease token's life and K-5's fallback was unreachable; O-17 (structural): the re-lease refused a token within the reuse margin and then required a fresh one, failing although an unexpired token was in hand | **O-16 adopted** — the fetch is bounded at 30 s (the API client's bound). **O-17 adopted** — when no fresh token can be minted, an unexpired token in hand is presented (the same fallback shape as the mint's). Noted: the re-seal does not repeat the empty-W(E) check (the recovery is still named) |
+
+Rulings A, D and O received adopted candidates in this round and stay open
+for round 7; B, C, K and P are closed.

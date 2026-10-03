@@ -20,6 +20,9 @@ import { Schema } from "effect";
  * - `chain-invalid` — the replica's chain does not verify (an entry that
  *   does not decode, a hash or a canonical size that does not match its
  *   entry, a signature or a rule the chain verifier refuses)
+ * - `audit-not-extension` — the replica's audit log is not the one the
+ *   mirror last replicated (its cumulative hash at the replicated position
+ *   differs — the rows the mirror served are never rewritten)
  * - `audit-regression` — the replica's audit log is behind the one the
  *   mirror last replicated
  * - `page-too-large` — more rows or bytes than one page may carry
@@ -32,6 +35,7 @@ export const MirrorSyncRejectReasonSchema = Schema.Literals([
   "row-count-mismatch",
   "chain-not-extension",
   "chain-invalid",
+  "audit-not-extension",
   "audit-regression",
   "page-too-large",
 ]);

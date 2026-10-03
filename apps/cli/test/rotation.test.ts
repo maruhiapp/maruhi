@@ -422,25 +422,24 @@ describe("maruhi rotation list", () => {
     const errors = listless.errors.join("\n");
     expect(errors).toContain("Cannot judge the check: the environment list could not be read (");
     expect(errors).toContain(`the expiring values of 1 environment could not be listed (${GONE})`);
-    // A scoped member's check names the environments it does not cover
-    // instead of fetching them (A-14)
+    // A scoped member's check covers every environment: the metadata-only
+    // pull and the history are read under scope "any" (A-15)
     const scoped = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: createEnvironmentOp(GONE, dek2) },
       { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_ID]) },
     ]);
-    const state = await makeRotationServer({ built: scoped, flags: [] });
+    const state = await makeRotationServer({ built: scoped, flags: [], deletedEnvironment: GONE });
     const server = await MockServer.start([...state.handlers]);
     servers.push(server);
     const asScoped = await makeTestEnv();
     seedSession(asScoped, server.origin, target);
     await seedConfig(asScoped, { server: server.origin, defaultProject: scoped.projectId });
-    expect(await runCli(["rotation", "list", "--fail-on-due"], asScoped.layer)).toBe(1);
-    expect(asScoped.errors.join("\n")).toContain(
-      `Cannot judge the check: the environments outside your scope are not checked (${GONE}); run it with a member whose scope covers every environment`,
-    );
-    expect(server.requests.some((r) => r.path.includes(`/environments/${GONE}/`))).toBe(false);
+    expect(await runCli(["rotation", "list", "--fail-on-due"], asScoped.layer)).toBe(0);
+    expect(
+      server.requests.some((r) => r.path.includes(`/environments/${ENV_ID}/pull/metadata`)),
+    ).toBe(true);
   });
 
   it("--fail-on-pending under a scoped member's token cannot pass: the server lists that scope only (A-12)", async () => {

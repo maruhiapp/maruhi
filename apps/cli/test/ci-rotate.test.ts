@@ -504,6 +504,11 @@ function onlyMint(fixture: CiFixture): MintBody {
   return nth(fixture.minted.bodies, 0);
 }
 
+/** The `jti` of a body's token (the issuance order of the mock's tokens). */
+function jtiOf(body: { readonly oidcToken: string }): unknown {
+  return jwtPayload(body.oidcToken)["jti"];
+}
+
 function nth<T>(items: readonly T[], index: number): T {
   const item = items[index];
   if (item === undefined) {
@@ -683,19 +688,35 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     // The re-lease presents the mint's token (jti 2 — the newest) under the
     // lease's key (AUTH_SPEC §14-1's idempotent re-claim; O-13 / O-15), and
     // the second mint falls back to it as well (the endpoint is down)
-    expect(jwtPayload(fixture.leased.bodies[0]?.oidcToken ?? "")["jti"]).toBe(1);
-    expect(jwtPayload(fixture.leased.bodies[1]?.oidcToken ?? "")["jti"]).toBe(2);
-    expect(fixture.leased.bodies[1]?.ephemeralPubHex).toBe(
-      fixture.leased.bodies[0]?.ephemeralPubHex,
+    expect(jtiOf(nth(fixture.leased.bodies, 0))).toBe(1);
+    expect(jtiOf(nth(fixture.leased.bodies, 1))).toBe(2);
+    expect(nth(fixture.leased.bodies, 1).ephemeralPubHex).toBe(
+      nth(fixture.leased.bodies, 0).ephemeralPubHex,
     );
-    expect(jwtPayload(fixture.minted.bodies[1]?.oidcToken ?? "")["jti"]).toBe(2);
-    expect(fixture.minted.bodies[0]?.proposal.proposalId).not.toBe(
-      fixture.minted.bodies[1]?.proposal.proposalId,
+    expect(jtiOf(nth(fixture.minted.bodies, 1))).toBe(2);
+    expect(nth(fixture.minted.bodies, 0).proposal.proposalId).not.toBe(
+      nth(fixture.minted.bodies, 1).proposal.proposalId,
     );
     expect(fixture.env.errors.join("\n")).toContain(
       "leasing again and sealing the proposal to the current recipients (once)",
     );
     expect(fixture.env.logs.join("\n")).toContain("The proposal was sealed a second time");
+    // A token within the reuse margin of its expiry is still presented
+    // when no fresh one can be minted (O-17): the re-lease goes through
+    const nearExpiry = await startCi(EXEC_RULE, {
+      expSeconds: Math.floor(Date.now() / 1000) + 20,
+      failAfter: 2,
+    });
+    nearExpiry.minted.rejectOnce = {
+      status: 422,
+      json: { _tag: "RotationProposalRejected", reason: "recipients-mismatch" },
+    };
+    expect(await ciRotate(nearExpiry)).toBe(0);
+    expect(nearExpiry.leased.bodies).toHaveLength(2);
+    expect(jtiOf(nth(nearExpiry.leased.bodies, 1))).toBe(2);
+    expect(nearExpiry.env.errors.join("\n")).toContain(
+      "Could not mint a fresh OIDC token for the lease",
+    );
     // A second mismatch is the recovery message, not a loop
     const twice = await startCi();
     twice.minted.reject = {

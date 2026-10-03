@@ -40,6 +40,9 @@ export interface MirrorSyncInput<R = never> {
    */
   readonly pages?: MaruhiClient;
   readonly projectId: string;
+  /** The server's origin: the mirror's recorded source must be it, else the sync is refused (`force` overrides — ruling H revision, round 6). */
+  readonly sourceOrigin: string;
+  readonly force?: boolean;
   /**
    * The local floor's chain head (null = none): a source whose reported
    * head is behind it is never "current" — the replicating path's floor
@@ -156,6 +159,21 @@ export function mirrorSyncOp<R>(
   input: MirrorSyncInput<R>,
 ): Effect.Effect<MirrorSyncResult, CliError, R> {
   return Effect.gen(function* () {
+    const before = yield* markedMirrorStatus(input);
+    const verdict = yield* syncVerdict(input, before);
+    if (verdict === "current") {
+      return { kind: "current", before } as const;
+    }
+    const replicated = yield* replicateWithRestarts(input, verdict.verified);
+    return { kind: "replicated", ...replicated, before } as const;
+  });
+}
+
+/** The mirror's status: it must be marked, and marked as a mirror of the server the sync exports from (H-15). */
+function markedMirrorStatus(
+  input: MirrorSyncInput<unknown>,
+): Effect.Effect<MirrorStatus, CliError> {
+  return Effect.gen(function* () {
     const before = yield* mirrorStatusOp({ client: input.mirror, projectId: input.projectId });
     if (!before.mirror) {
       return yield* Effect.fail(
@@ -164,21 +182,72 @@ export function mirrorSyncOp<R>(
         ),
       );
     }
-    // Nothing to upload when the source's chain head, audit seq and
-    // attestation mark are the ones the last replication brought (the
-    // source's status, read with the owner's session — the three marks are
-    // shown to admins and owners). A cron then costs one read, not an export
-    if (yield* sourceUnchanged(input, before)) {
-      return { kind: "current", before } as const;
+    // A cron left at the former primary after a failover elsewhere would
+    // export a frozen copy into a mirror of another source (an equal-head
+    // replica commits): the recorded source must be this server
+    if (
+      before.sourceOrigin !== undefined &&
+      before.sourceOrigin !== input.sourceOrigin &&
+      input.force !== true
+    ) {
+      return yield* Effect.fail(
+        cliError(
+          `The mirror holds this project as a mirror of ${before.sourceOrigin}, not of ${input.sourceOrigin}: sync from that server, re-point the mirror at this one (\`maruhi mirror mark --source ${input.sourceOrigin}\`), or pass --force to replicate from here anyway`,
+        ),
+      );
     }
-    let verified = yield* input.verified;
+    return before;
+  });
+}
+
+/**
+ * Nothing to upload when the source's chain head, audit seq and mutation
+ * counter are the ones the last replication brought (the source's status,
+ * read with the owner's session — the marks are shown to admins and
+ * owners). A cron then costs two status reads, not an export. A floor
+ * below the source's head cannot be checked from the two statuses: the
+ * verdict then waits for the view, whose floor check proves the floor's
+ * entry is on the source's chain (H-14); the view is handed on to the
+ * replication otherwise.
+ */
+function syncVerdict<R>(
+  input: MirrorSyncInput<R>,
+  before: MirrorStatus,
+): Effect.Effect<"current" | { readonly verified: VerifiedProject }, CliError, R> {
+  return Effect.gen(function* () {
+    const unchanged = yield* sourceUnchanged(input, before);
+    if (unchanged === "current") {
+      return "current";
+    }
+    const verified = yield* input.verified;
+    return unchanged === "current-if-floor-on-chain" &&
+      verified.state.headHashHex === before.lastSync?.chainHeadHashHex
+      ? "current"
+      : { verified };
+  });
+}
+
+/** The passes over the export (restarting when the project changed, the view rebuilt before each — H-13). */
+function replicateWithRestarts<R>(
+  input: MirrorSyncInput<R>,
+  firstView: VerifiedProject,
+): Effect.Effect<
+  {
+    readonly pages: number;
+    readonly lines: number;
+    readonly restarts: number;
+    readonly committed: MirrorSyncRecord;
+    readonly verified: VerifiedProject;
+  },
+  CliError,
+  R
+> {
+  return Effect.gen(function* () {
+    let verified = firstView;
     let restarts = 0;
     let attempt = yield* replicateOnce(input);
     while (attempt.kind === "changed" && restarts < MAX_RESTARTS) {
       restarts += 1;
-      // The project moved: the view is rebuilt before the next pass, so the
-      // floor check covers what is uploaded and the report compares the
-      // committed head with the view it was exported from (H-13)
       verified = yield* input.verified;
       attempt = yield* replicateOnce(input);
     }
@@ -186,39 +255,38 @@ export function mirrorSyncOp<R>(
       return yield* Effect.fail(toCliError(new ExportChangedError({ reason: "project-changed" })));
     }
     const { pages, lines, committed } = attempt;
-    return { kind: "replicated", pages, lines, committed, restarts, before, verified } as const;
+    return { pages, lines, committed, restarts, verified };
   });
 }
 
-/**
- * Whether the source's marks equal the last replication's: the chain head
- * (content-bound), the audit seq (the reads) and the mutation counter
- * (every write, attestations included — it is what the export's own
- * consistency relies on). The mirror must also still hold that head (a
- * mirror whose record says "current" while its head is older is caught —
- * ruling H revision, round 3). A source that does not answer the status
- * fails the sync (the export would fail the same way).
- */
+type Unchanged = "changed" | "current" | "current-if-floor-on-chain";
+
 function sourceUnchanged(
   input: MirrorSyncInput<unknown>,
   before: MirrorStatus,
-): Effect.Effect<boolean, CliError> {
+): Effect.Effect<Unchanged, CliError> {
   const last = before.lastSync;
   if (last === undefined || last.mutationSeq === undefined) {
-    return Effect.succeed(false);
+    return Effect.succeed("changed");
   }
   return input.source.mirror.status({ params: { projectId: input.projectId } }).pipe(
-    Effect.map(
-      (source) =>
+    Effect.map((source): Unchanged => {
+      const marksUnchanged =
         source.head.chainHeadHashHex === last.chainHeadHashHex &&
         before.head.chainHeadHashHex === last.chainHeadHashHex &&
         source.head.auditMaxSeq === last.auditMaxSeq &&
-        source.head.mutationSeq === last.mutationSeq &&
-        // A source behind this machine's floor (rebuilt from a backup taken
-        // at the last synced head) is not current: the replicating path's
-        // floor check says so with evidence (H-11)
-        !floorAhead(input.floorHead, source.head),
-    ),
+        source.head.mutationSeq === last.mutationSeq;
+      // A source behind this machine's floor (rebuilt from a backup taken
+      // at the last synced head) is not current: the replicating path's
+      // floor check says so with evidence (H-11). A floor below the
+      // source's head is checked by the view before the verdict (H-14)
+      if (!marksUnchanged || floorAhead(input.floorHead, source.head)) {
+        return "changed";
+      }
+      return input.floorHead !== null && input.floorHead.seq < source.head.chainHeadSeq
+        ? "current-if-floor-on-chain"
+        : "current";
+    }),
     Effect.mapError(toCliError),
   );
 }

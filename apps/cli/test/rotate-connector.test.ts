@@ -26,7 +26,12 @@ import {
   rotateCredential,
   type SqlRunnerShape,
 } from "../src/rotate-connector.ts";
-import { type CaptureInput, type CaptureOutcome, ScriptStoppedError } from "../src/run.ts";
+import {
+  type CaptureInput,
+  type CaptureOutcome,
+  ScriptLeftoverError,
+  ScriptStoppedError,
+} from "../src/run.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -991,6 +996,17 @@ describe("exec connector (a script of the repository — PF8)", () => {
     });
     await expect(rotateCredential(withFinalize, current, {}, stopped, SITE)).rejects.toThrow(
       "the rotate script ./rotate.sh was stopped: sh wrote more than 1 MiB to stdout",
+    );
+    // A leftover process's output: refused with the recovery when the
+    // script itself exited 0 (D-14)
+    const leftover = deps({
+      exec: () =>
+        Promise.reject(
+          new ScriptLeftoverError(0, "sh exited (code 0) while a process it started kept writing"),
+        ),
+    });
+    await expect(rotateCredential(withFinalize, current, {}, leftover, SITE)).rejects.toThrow(
+      "exec: sh exited (code 0) while a process it started kept writing. The script exited 0, so the new credential may exist at the issuer",
     );
     // A credential that is not text cannot ride in an environment variable
     await expect(

@@ -397,6 +397,8 @@ function renderMirrorSyncRejected(error: MirrorSyncRejectedError): string {
       return "The mirror refused the replica: its chain does not verify (chain-invalid). The export is not the server's own content — do not use that file, and run `maruhi project verify` against the server";
     case "audit-regression":
       return "The mirror refused the replica: its audit log is behind the one the mirror last replicated (audit-regression). The export came from an older state than the last sync — re-run against the current server";
+    case "audit-not-extension":
+      return "The mirror refused the replica: its audit log is not the one the mirror last replicated (audit-not-extension — the cumulative hash at the replicated position differs). The server's log was rewritten or restored from another copy; investigate before relying on either side";
     case "sequence-mismatch":
       return "The mirror refused a page as out of sequence (sequence-mismatch) — another sync is running against the same mirror, or a page was lost. Re-run `maruhi mirror sync`";
     case "schema-mismatch":

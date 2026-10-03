@@ -76,6 +76,22 @@ export class ScriptStoppedError extends Error {
   override readonly name = "ScriptStoppedError";
 }
 
+/**
+ * A captured script that exited while a process it started kept writing
+ * to its stdout: the answer cannot be told from that output (D-14). The
+ * script's own exit code is carried — a 0 means the credential may exist
+ * at the issuer.
+ */
+export class ScriptLeftoverError extends Error {
+  override readonly name = "ScriptLeftoverError";
+  constructor(
+    readonly exitCode: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 /** The input of {@link ProcessRunnerShape.run}. */
 export interface RunInput {
   readonly command: readonly string[];

@@ -425,6 +425,8 @@ export interface ExportMarks {
   readonly mutationSeq: number;
   /** The DO schema version: an export spanning a deploy that migrates the schema restarts at the source, not at the destination (ruling C revision, round 5). */
   readonly schemaVersion: number;
+  /** The line format's version, for the same reason (round 6 — a mixed file would be refused at the destination). */
+  readonly formatVersion: number;
 }
 
 /** The tables whose rows the export bounds by `auditMaxSeq` (the log and its cumulative-hash column). */
@@ -458,6 +460,7 @@ function marksOf(sql: SqlStorage, schemaVersion: number): ExportMarks {
     chainHeadHashHex: marks.chainHeadHashHex,
     mutationSeq: marks.mutationSeq,
     schemaVersion,
+    formatVersion: SNAPSHOT_FORMAT_VERSION,
   };
 }
 
@@ -467,7 +470,8 @@ function sameMarks(a: ExportMarks, b: ExportMarks): boolean {
     a.chainHeadSeq === b.chainHeadSeq &&
     a.chainHeadHashHex === b.chainHeadHashHex &&
     a.mutationSeq === b.mutationSeq &&
-    a.schemaVersion === b.schemaVersion
+    a.schemaVersion === b.schemaVersion &&
+    a.formatVersion === b.formatVersion
   );
 }
 
@@ -560,15 +564,21 @@ function decodeMarks(value: unknown): ExportMarks | null {
   }
   const marks = value as Partial<ExportMarks>;
   const { chainHeadHashHex } = marks;
-  const numbers = [marks.chainHeadSeq, marks.mutationSeq, marks.schemaVersion];
+  const numbers = [marks.chainHeadSeq, marks.mutationSeq, marks.schemaVersion, marks.formatVersion];
   if (
     !numbers.every((number) => typeof number === "number") ||
     (chainHeadHashHex !== null && typeof chainHeadHashHex !== "string")
   ) {
     return null;
   }
-  const [chainHeadSeq = 0, mutationSeq = 0, schemaVersion = 0] = numbers;
-  return { chainHeadSeq, chainHeadHashHex: chainHeadHashHex ?? null, mutationSeq, schemaVersion };
+  const [chainHeadSeq = 0, mutationSeq = 0, schemaVersion = 0, formatVersion = 0] = numbers;
+  return {
+    chainHeadSeq,
+    chainHeadHashHex: chainHeadHashHex ?? null,
+    mutationSeq,
+    schemaVersion,
+    formatVersion,
+  };
 }
 
 export interface ExportPageInput {

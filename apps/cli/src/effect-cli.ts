@@ -1100,12 +1100,18 @@ const serverGrantConfig = {
 };
 
 /** `maruhi mirror sync` / `status`: the server (session + export) and the mirror (its own session + the pages). */
-const mirrorSyncConfig = {
+const mirrorStatusConfig = {
   ...projectFlags(),
   mirror: singleValued("mirror", "Mirror URL (default: the `mirror` setting)"),
 };
 
-const mirrorStatusConfig = mirrorSyncConfig;
+const mirrorSyncConfig = {
+  ...mirrorStatusConfig,
+  force: singleFlag(
+    "force",
+    "Replicate even though the mirror is marked as a mirror of another server",
+  ),
+};
 
 /** `maruhi mirror mark`: --server is the mirror deployment, --source the deployment it mirrors. */
 const mirrorMarkConfig = {
@@ -2149,10 +2155,12 @@ function openMirrorTarget(flags: {
 }
 
 /**
- * Whether two origins are one deployment: equal strings, or equal server
- * key fingerprints from their public `/auth/config` (a deployment answers
+ * Whether two origins publish one server key: equal strings, or equal
+ * fingerprints from their public `/auth/config` (a deployment answers
  * under its workers.dev hostname and its custom domain alike — ruling C
- * revision, round 5). Without a fingerprint on either side, the strings
+ * revision, round 5). The fingerprint is self-reported, so equality only
+ * ever refuses (a mirror of itself) or names a way out — never lifts a
+ * guard (round 6). Without a fingerprint on either side the strings
  * decide; a config that does not answer within the probe's bound counts
  * as no fingerprint.
  */
@@ -2161,10 +2169,10 @@ function sameDeployment(a: string, b: string): Effect.Effect<boolean, never, Cli
     return Effect.succeed(true);
   }
   return Effect.gen(function* () {
-    const [fingerprintA, fingerprintB] = yield* Effect.all([
-      deploymentFingerprint(a),
-      deploymentFingerprint(b),
-    ]);
+    const [fingerprintA, fingerprintB] = yield* Effect.all(
+      [deploymentFingerprint(a), deploymentFingerprint(b)],
+      { concurrency: 2 },
+    );
     return fingerprintA !== null && fingerprintA === fingerprintB;
   });
 }
@@ -2213,6 +2221,7 @@ function mirrorSyncCommand(flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly mirror?: string | undefined;
+  readonly force?: boolean | undefined;
 }): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -2232,6 +2241,8 @@ function mirrorSyncCommand(flags: {
       mirror: target.mirror.client,
       pages,
       projectId: target.projectId,
+      sourceOrigin: source.origin,
+      ...(flags.force === true ? { force: true } : {}),
       floorHead: floor.floor?.chainHead ?? null,
       verified: verifiedViewOf(source, target.projectId),
     });
@@ -2296,7 +2307,9 @@ function mirrorMarkCommand(flags: {
     if (yield* sameDeployment(sourceOrigin, context.origin)) {
       return yield* Effect.fail(
         usageError(
-          "--source is the server itself (the same deployment, possibly under another hostname) — run this against the mirror deployment with --server <mirror url>",
+          sourceOrigin === context.origin
+            ? "--source is the server itself (run this against the mirror deployment with --server <mirror url>)"
+            : "--source publishes this server's key fingerprint: it is this deployment under another hostname (run this against the mirror deployment with --server <mirror url>), or another deployment sharing one SERVER_ENC_KEY_IKM — one key per deployment; generate a distinct IKM for the mirror first",
         ),
       );
     }
@@ -2404,7 +2417,9 @@ function mirrorPromoteCommand(flags: {
       if (typeof source === "object") {
         return yield* Effect.fail(
           cliError(
-            `The source ${status.sourceOrigin} holds this project as a mirror of ${source.movedTo}, not of ${context.origin}: the project's primary moved there, and promoting this copy would leave two writable copies (a split brain). Re-point this mirror at it (\`maruhi mirror mark --server ${context.origin} --source ${source.movedTo}\`) and sync from there; or pass --force to promote anyway`,
+            source.sameKey
+              ? `The source ${status.sourceOrigin} holds this project as a mirror of ${source.movedTo}, which publishes this server's key fingerprint. If that is this deployment under another hostname, promote it under that name (\`maruhi mirror promote --server ${source.movedTo}\` — the source is frozen for it); if it is another deployment sharing one SERVER_ENC_KEY_IKM, that is the misconfiguration to fix first (one key per deployment); or pass --force to promote anyway`
+              : `The source ${status.sourceOrigin} holds this project as a mirror of ${source.movedTo}, not of ${context.origin}: the project's primary moved there, and promoting this copy would leave two writable copies (a split brain). Re-point this mirror at it (\`maruhi mirror mark --server ${context.origin} --source ${source.movedTo}\`) and sync from there; or pass --force to promote anyway`,
           ),
         );
       }
@@ -2422,7 +2437,12 @@ function mirrorPromoteCommand(flags: {
 }
 
 /** What the source holds; `movedTo` = it is a mirror of another deployment (the primary moved there). */
-type SourceState = "frozen" | "writable" | "answers" | "gone" | { readonly movedTo: string };
+type SourceState =
+  | "frozen"
+  | "writable"
+  | "answers"
+  | "gone"
+  | { readonly movedTo: string; readonly sameKey: boolean };
 
 /**
  * What the source holds (ruling C revision, round 3): `frozen` = it is
@@ -2453,9 +2473,16 @@ function sourceState(
               return Effect.succeed(null);
             }
             const movedTo = status.sourceOrigin;
-            return Effect.map(sameDeployment(movedTo, thisOrigin), (same) =>
-              same ? "frozen" : { movedTo },
-            );
+            if (movedTo === thisOrigin) {
+              return Effect.succeed("frozen");
+            }
+            // A fingerprint match never lifts the guard (it is self-reported
+            // and shared by deployments cloned from one secrets set — round
+            // 6); it only names the honest way out
+            return Effect.map(sameDeployment(movedTo, thisOrigin), (same) => ({
+              movedTo,
+              sameKey: same,
+            }));
           }),
         ),
       ),

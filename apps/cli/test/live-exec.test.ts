@@ -25,6 +25,8 @@ interface ProbeResult {
   readonly leftoverMs: number;
   readonly stubborn: string;
   readonly stubbornMs: number;
+  readonly polluted: string;
+  readonly floodedAfterExit: string;
 }
 
 describe("ProcessRunner.exec (live — Bun.spawn)", () => {
@@ -76,5 +78,12 @@ describe("ProcessRunner.exec (live — Bun.spawn)", () => {
     // A script that ignores the stop is killed after the grace (D-13)
     expect(probe.stubborn).toContain("wrote more than 1 MiB to stdout");
     expect(probe.stubbornMs).toBeLessThan(15_000);
+    // Bytes after the exit are told from the answer and refused, never
+    // pushed and never reported as "the script was stopped" (D-14)
+    expect(probe.polluted).toContain(
+      "ScriptLeftoverError: sh exited (code 0) while a process it started kept writing to its stdout",
+    );
+    expect(probe.floodedAfterExit).toContain("ScriptLeftoverError: sh exited (code 0)");
+    expect(probe.floodedAfterExit).not.toContain("it was stopped");
   }, 60_000);
 });

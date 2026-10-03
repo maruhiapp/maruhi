@@ -338,6 +338,7 @@ FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
   --mirror string     Mirror URL (default: the `mirror` setting)
+  --force             Replicate even though the mirror is marked as a mirror of another server
 
 GLOBAL FLAGS
   --help, -h       Show help information

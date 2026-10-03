@@ -714,6 +714,7 @@ export type MirrorSyncRejectReason =
   | "chain-not-extension"
   | "chain-invalid"
   | "audit-regression"
+  | "audit-not-extension"
   | "page-too-large";
 
 /** Why a sealed value proposal or its resolution is refused (the api-schema RotationProposalRejectReasonSchema vocabulary — AUTH_SPEC §14-5). */

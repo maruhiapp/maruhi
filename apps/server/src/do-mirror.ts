@@ -73,6 +73,7 @@ const MIRROR_KEPT_TABLES: readonly string[] = [
 const AUDIT_TABLE = "audit_events";
 /** Where the mirror's own audit rows wait during the swap (dropped afterwards; never exported — not in `tables`). */
 const LOCAL_AUDIT_TABLE = "audit_events_mirror_local";
+const AUDIT_HEAD_TABLE = "audit_head_hashes";
 /** Where the staged replica's trailer waits between the trailer page and the commit. */
 const TRAILER_TABLE = "trailer_mirror";
 
@@ -95,6 +96,8 @@ export interface MirrorState {
   readonly lastAttestationMark: number | null;
   /** The source's mutation counter the replica was exported at (null = unknown — the bootstrap, or a sync that did not say). */
   readonly lastMutationSeq: number | null;
+  /** The replica's audit head hash at the replicated position (null = none recorded — the mark, a re-point): the next replica must extend that log (ruling J revision, round 6). */
+  readonly lastAuditHeadHashHex: string | null;
 }
 
 export function readMirrorState(sql: SqlStorage): MirrorState | null {
@@ -114,6 +117,8 @@ export function readMirrorState(sql: SqlStorage): MirrorState | null {
     lastAttestationMark:
       row["last_attestation_mark"] === null ? null : Number(row["last_attestation_mark"]),
     lastMutationSeq: row["last_mutation_seq"] === null ? null : Number(row["last_mutation_seq"]),
+    lastAuditHeadHashHex:
+      row["last_audit_head_hash_hex"] === null ? null : String(row["last_audit_head_hash_hex"]),
   };
 }
 
@@ -137,7 +142,7 @@ export function remarkMirror(
   storage.transactionSync(() => {
     dropStaging(storage.sql, tables);
     storage.sql.exec(
-      "UPDATE mirror_state SET source_origin = ?, marked_at = ?, expected_sequence = 0, staging_table = NULL, last_audit_seq = 0, last_mutation_seq = NULL WHERE id = 1",
+      "UPDATE mirror_state SET source_origin = ?, marked_at = ?, expected_sequence = 0, staging_table = NULL, last_audit_seq = 0, last_mutation_seq = NULL, last_audit_head_hash_hex = NULL WHERE id = 1",
       sourceOrigin,
       nowMs,
     );
@@ -484,6 +489,21 @@ function acceptTrailer(
   if (stagedMaxSeq(sql, AUDIT_TABLE) < input.state.lastAuditSeq) {
     throw new MirrorPageRefusedError("audit-regression");
   }
+  // The replica's log must extend the one replicated last — the same log by
+  // cumulative hash at the replicated position, not merely a log of the
+  // same length (ruling J revision, round 6: the rows the mirror served to
+  // its readers are never rewritten under their row ids)
+  if (input.state.lastAuditSeq > 0 && input.state.lastAuditHeadHashHex !== null) {
+    const staged = stagingOf(AUDIT_HEAD_TABLE);
+    const row = hasTable(sql, staged)
+      ? sql
+          .exec(`SELECT head_hash_hex FROM ${staged} WHERE seq = ?`, input.state.lastAuditSeq)
+          .toArray()[0]
+      : undefined;
+    if (row === undefined || String(row["head_hash_hex"]) !== input.state.lastAuditHeadHashHex) {
+      throw new MirrorPageRefusedError("audit-not-extension");
+    }
+  }
   sql.exec(`DROP TABLE IF EXISTS ${TRAILER_TABLE}`);
   sql.exec(`CREATE TABLE ${TRAILER_TABLE} (trailer_json TEXT NOT NULL)`);
   sql.exec(`INSERT INTO ${TRAILER_TABLE} (trailer_json) VALUES (?)`, JSON.stringify(trailer));
@@ -589,6 +609,12 @@ export function commitMirrorReplica(input: MirrorCommitInput): MirrorCommit {
         sql.exec(`SELECT COUNT(*) AS n FROM ${LOCAL_AUDIT_TABLE}`).one()["n"],
       );
       swapTables(sql, input.tables, input.nowMs);
+      // The replica's audit head at the committed position (its own column,
+      // materialized by the source's first page to its bound)
+      const headRow = sql
+        .exec(`SELECT head_hash_hex FROM ${AUDIT_HEAD_TABLE} WHERE seq = ?`, replicaAuditSeq)
+        .toArray()[0];
+      const auditHeadHashHex = headRow === undefined ? null : String(headRow["head_hash_hex"]);
       // … and follow the replica's rows, renumbered densely in their order
       // (the rows the replica carried left holes)
       const shifted = auditColumns.map((column) =>
@@ -611,13 +637,14 @@ export function commitMirrorReplica(input: MirrorCommitInput): MirrorCommit {
         ownAuditRows,
       };
       sql.exec(
-        `UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL, last_synced_at = ?, last_head_seq = ?, last_head_hash_hex = ?, last_audit_seq = ?, last_attestation_mark = ?, last_mutation_seq = ? WHERE id = 1`,
+        `UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL, last_synced_at = ?, last_head_seq = ?, last_head_hash_hex = ?, last_audit_seq = ?, last_attestation_mark = ?, last_mutation_seq = ?, last_audit_head_hash_hex = ? WHERE id = 1`,
         commit.atMs,
         commit.chainHeadSeq,
         commit.chainHeadHashHex,
         commit.auditMaxSeq,
         commit.attestationMark,
         input.sourceMutationSeq,
+        auditHeadHashHex,
       );
       return commit;
     });

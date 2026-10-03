@@ -29,7 +29,11 @@ import {
   PROJECT_DO_TABLES,
   readProjectDoSchemaVersion,
 } from "../src/do-schema.ts";
-import { type ExportCursorState, exportSnapshotPage } from "../src/do-snapshot.ts";
+import {
+  exportSnapshotPage,
+  SNAPSHOT_FORMAT_VERSION,
+  type ExportCursorState,
+} from "../src/do-snapshot.ts";
 import { MAX_EXPORTS_PER_WINDOW } from "../src/policy.ts";
 import type { RestoreJobResult } from "../src/restore-worker.ts";
 import { processRestoreJobs } from "../src/restore-worker.ts";
@@ -406,6 +410,7 @@ describe("project export (AUTH_SPEC §11-6)", () => {
             chainHeadHashHex: head.chainHeadHashHex,
             mutationSeq: Number(mutation[0]?.["seq"] ?? 0),
             schemaVersion: readProjectDoSchemaVersionOf(),
+            formatVersion: SNAPSHOT_FORMAT_VERSION,
           },
           ...overrides,
         }),
@@ -442,6 +447,7 @@ describe("project export (AUTH_SPEC §11-6)", () => {
           chainHeadHashHex: ownersHead.chainHeadHashHex,
           mutationSeq: Number(ownersMutation[0]?.["seq"] ?? 0),
           schemaVersion: readProjectDoSchemaVersionOf(),
+          formatVersion: SNAPSHOT_FORMAT_VERSION,
         },
         ...overrides,
       });
@@ -459,6 +465,7 @@ describe("project export (AUTH_SPEC §11-6)", () => {
               chainHeadHashHex: ownersHead.chainHeadHashHex,
               mutationSeq: Number(ownersMutation[0]?.["seq"] ?? 0),
               schemaVersion: readProjectDoSchemaVersionOf() + 1,
+              formatVersion: SNAPSHOT_FORMAT_VERSION,
             },
           }),
         )
@@ -698,9 +705,21 @@ describe("project import (the restore job with identitiesKey)", () => {
       expect(triggers.map((row) => row["name"])).toEqual(
         isMutationTracked(table)
           ? [`mutation_${table}_delete`, `mutation_${table}_insert`, `mutation_${table}_update`]
-          : [],
+          : table === "audit_events"
+            ? ["mutation_audit_events_write"]
+            : [],
       );
     }
+    // No other table carries a trigger (step 7 goes on the declared tables only — ruling C revision, round 5)
+    const triggered = await queryProjectDo(
+      projectId,
+      "SELECT DISTINCT tbl_name FROM sqlite_master WHERE type = 'trigger' ORDER BY tbl_name",
+    );
+    expect(
+      triggered
+        .map((row) => String(row["tbl_name"]))
+        .every((table) => PROJECT_DO_TABLES.includes(table)),
+    ).toBe(true);
     const before = Number(
       (await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1"))[0]?.["seq"],
     );
@@ -710,6 +729,28 @@ describe("project import (the restore job with identitiesKey)", () => {
       (await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1"))[0]?.["seq"],
     );
     expect(after).toBeGreaterThan(before);
+    // A write-class audit row (a dismissal's only effect) moves it; a
+    // read-path row does not (ruling C revision, round 6)
+    const auditRow = (event: string, rowId: string) =>
+      queryProjectDo(
+        projectId,
+        "INSERT INTO audit_events (server_ts, event, actor_type, row_id) VALUES (1, ?, 'system', ?)",
+        event,
+        rowId,
+      );
+    await auditRow("rotation.dismissed", "ff".repeat(16));
+    const afterWrite = Number(
+      (await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1"))[0]?.["seq"],
+    );
+    expect(afterWrite).toBe(after + 1);
+    await auditRow("var.read", "fe".repeat(16));
+    expect(
+      Number(
+        (await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1"))[0]?.[
+          "seq"
+        ],
+      ),
+    ).toBe(afterWrite);
     // … while the bounded and drift tables do not
     await queryProjectDo(
       projectId,
@@ -721,7 +762,7 @@ describe("project import (the restore job with identitiesKey)", () => {
           "seq"
         ],
       ),
-    ).toBe(after);
+    ).toBe(afterWrite);
   });
 
   it("refuses a companion read at another chain head than the file's, and accepts a re-run under a co-owner's project row", async () => {

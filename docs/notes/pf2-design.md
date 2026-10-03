@@ -82,9 +82,10 @@ by its owner alone.
   residue CRYPTO_SPEC §9.1 already states for cross-project policies, now
   cross-deployment. The lease policy can name an audience per deployment
 - **The bootstrap window**: audit rows the mirror appends between the
-  import and the mark count as replica rows (the mark takes the live
-  positions as the bootstrap) and are replaced by the first replication.
-  Marking right after the import keeps the window empty
+  import and the mark are kept — the mark starts the audit position at 0
+  (ruling C revision, round 5), so the first replication re-appends every
+  row the replica does not carry after the replica's rows (their seq
+  moves, the wire row id does not)
 - **The commit is one transaction** (the swap of every snapshot table plus
   the re-append): a project near the storage guard doubles its footprint
   transiently (staging + live) and commits in one DO transaction. The
@@ -231,3 +232,13 @@ for round 5; D and E are closed.
 
 Rulings C and H received adopted candidates in this round and stay open
 for round 6; D and E are closed.
+
+### 8-5. Round 6 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (promotion) | C-15 (a fail-open in C-13): the promotion took "frozen" from a fingerprint match of the source's recorded origin with this deployment — the fingerprint is self-reported, and deployments cloned from one secrets set (one `SERVER_ENC_KEY_IKM`) share it, so a sibling mirror was promoted beside a promoted sibling without a probe; the mark's self-check named "the server itself" with no way out for shared-key siblings; the fallback's own check compares strings, so the guide's "recognized by its fingerprint" was false for the only path members hit. Record bug: §11-7 and §5 still said the bootstrap window's rows are replaced (with the position at 0 they are kept) | **C-15 adopted** — "frozen" is by origin string only (the name the freeze used); a fingerprint match only names the way out (promote under that name, or fix the shared key); the mark's refusal names the shared-IKM cause; the fingerprints are fetched concurrently and only on the refusing branch. **The record corrected** (the window is kept). The guide's bootstrap step asks for a distinct IKM per deployment |
+| H (sync) | H-14 (an escape of H-11's rationale): a floor below the source's reported head could not be checked from the two statuses — a machine whose floor sits on another fork reported "current" while a pull there would refuse the server; H-15 (a silent misconfiguration): nothing checked that the server the sync exports from is the mirror's recorded source — a cron left at a former primary after a failover replicated the frozen copy into a mirror of another source (an equal-head replica commits) | **H-14 adopted** — with a floor below the source's head, "current" waits for the view (its floor check proves the floor's entry is on the source's chain); the steady state stays two reads. **H-15 adopted** — refused before any export, `--force` overrides |
+
+Rulings C and H received adopted candidates in this round and stay open
+for round 7; D and E are closed.

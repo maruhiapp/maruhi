@@ -170,7 +170,24 @@ export function leaseEnvironmentsWithCredential(
       input.anchorPath === undefined ? null : yield* loadRepositoryAnchor(input.anchorPath);
     const client = yield* makeApiClient({ baseUrl: input.origin });
     const credential =
-      reusableCredential(input.credential) ?? (yield* freshCredential(input.audience));
+      reusableCredential(input.credential) ??
+      (yield* freshCredential(input.audience).pipe(
+        Effect.catch((error) => {
+          // No fresh token, but an unexpired one in hand (within the reuse
+          // margin): present it — the same fallback shape as the mint's
+          // (ruling O revision, round 6)
+          const inHand = input.credential;
+          if (inHand === undefined || !unexpired(inHand)) {
+            return Effect.fail(error);
+          }
+          return Effect.as(
+            io.logError(
+              `Could not mint a fresh OIDC token for the lease (${error.message}); presenting the token in hand`,
+            ),
+            inHand,
+          );
+        }),
+      ));
     const { keyPair: workloadKeyPair, ephemeralPubHex } = credential;
     let { token } = credential;
     let claims: LeaseClaims = yield* readLeaseClaims(token);
@@ -252,4 +269,10 @@ function reusableCredential(credential: WorkloadCredential | undefined): Workloa
   }
   const expiresAtMs = tokenExpiresAtMs(credential.token);
   return expiresAtMs !== null && expiresAtMs - REUSE_MARGIN_MS > Date.now() ? credential : null;
+}
+
+/** Whether a credential's token is unexpired by its `exp` alone (no margin — the last resort when no fresh token can be minted). */
+function unexpired(credential: WorkloadCredential): boolean {
+  const expiresAtMs = tokenExpiresAtMs(credential.token);
+  return expiresAtMs !== null && expiresAtMs > Date.now();
 }

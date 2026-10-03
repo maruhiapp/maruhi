@@ -369,6 +369,25 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(await count("SELECT MAX(seq) AS n FROM audit_head_hashes")).toBe(
       replicaAudit + ownRows + 1,
     );
+    // A replica of the same length whose audit log is not the replicated
+    // one (the cumulative hash at the position differs) is refused — the
+    // rows the mirror served are never rewritten (ruling J revision, round 6)
+    const headLineIndex = newer.findIndex((line) => {
+      const parsed = parsedLine(line);
+      return (
+        parsed["kind"] === "row" &&
+        parsed["table"] === "audit_head_hashes" &&
+        (parsed["values"] as unknown[])[0] === replicaAudit
+      );
+    });
+    expect(headLineIndex).toBeGreaterThan(-1);
+    const otherLog = newer.map((line, index) =>
+      index === headLineIndex
+        ? JSON.stringify({ ...parsedLine(line), values: [replicaAudit, "ab".repeat(32)] })
+        : line,
+    );
+    await expectRejected(await upload(otherLog, 50), "audit-not-extension");
+    expect(await stagingTables()).toEqual([]);
     // An older replica never replaces a newer one
     await expectRejected(await upload(older, 50), "chain-not-extension");
     expect((await statusOk()).nextSequence).toBeUndefined();

@@ -220,3 +220,14 @@ for round 5.
 
 Rulings C, H and J received adopted candidates in this round and stay open
 for round 6.
+
+### 8-5. Round 6 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (consistency) | C-16 (a gap in the counter design): the one write entry point that touches no tracked table — a dismissal, whose only effect is its audit row — moved nothing, so an export spanning it was served without it, the J-14 race lost it silently, and nothing detected it; C-17: the line format's version is the schema version's analog (a mixed file refused at the destination after the owner froze the source) | **C-16 adopted** — step 9 adds a trigger on the audit log's inserts with a deny list of the read-path rows, so any audit-only write restarts an export by default while reads do not. **C-17 adopted** — the format version is a mark. Considered, not adopted: passing the applied prefix to step 7 instead of its index (no failure mode under the append-only rule); dropping the `sqlite_master` intersection (an unreachable state); the test now also pins that no other table carries a trigger |
+| H (import) | nothing new (every read the DO restores from is pinned by etag on the import, plain and drill paths; the remaining ideas were examined and none dominates) | **CLOSED (round 6)** |
+| J (switch-over) | J-15 (J-13's line, structural): the rows the mirror replicated and served to its readers were compared by length only — a replica from the same source could rewrite distributed history under the same row ids; the chain has its extension rule, the audit log has its cumulative hash | **Adopted** — the commit records the replica's audit head hash at the committed position; the next replica's staged column at that position must equal it (`audit-not-extension`); a mark or a re-point records none, so the first replica and the J-11 sync-back are untouched |
+
+Rulings C and J received adopted candidates in this round and stay open
+for round 7; D, H and I are closed.

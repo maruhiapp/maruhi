@@ -101,6 +101,9 @@ function tokenOfIssuanceBody(body: unknown): string | null {
  * exposure window). Since each call mints a fresh token, retrying
  * `token-replayed` (ci-run.ts) is just calling this function again.
  */
+/** The bound on the runner's issuance endpoint (the same as the API client's header bound). */
+const OIDC_FETCH_TIMEOUT_MS = 30_000;
+
 export function fetchGitHubOidcToken(
   audience: string,
 ): Effect.Effect<Redacted.Redacted<string>, CliError, CliIo> {
@@ -134,6 +137,10 @@ export function fetchGitHubOidcToken(
         const response = await fetch(url, {
           method: "GET",
           redirect: "manual",
+          // A hung issuance endpoint must not hold the job: the lease's
+          // token fallback and the recovery message are reached while that
+          // token lives (ruling O revision, round 6 — the API client's bound)
+          signal: AbortSignal.timeout(OIDC_FETCH_TIMEOUT_MS),
           headers: {
             accept: "application/json",
             authorization: `Bearer ${endpoint.requestToken}`,

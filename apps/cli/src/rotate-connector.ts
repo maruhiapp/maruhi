@@ -38,7 +38,12 @@ import { Context, Redacted } from "effect";
 
 import { countNoun, decodeValueText, displayText } from "./display.ts";
 import { companionVariablesOf, EXEC_CONTROL_PREFIX, type RotateRule } from "./rotate-config.ts";
-import { type CaptureInput, type CaptureOutcome, ScriptStoppedError } from "./run.ts";
+import {
+  type CaptureInput,
+  type CaptureOutcome,
+  ScriptLeftoverError,
+  ScriptStoppedError,
+} from "./run.ts";
 import { type AwsCredentials, signV4 } from "./sigv4.ts";
 import { scrubVendorOutput, type SyncWrite } from "./sync-exec.ts";
 import { CLI_VERSION } from "./version.ts";
@@ -1112,6 +1117,31 @@ function scriptSecrets(input: {
   return secrets;
 }
 
+/** A capture that rejected, as the connector's error: stopped by maruhi (D-6), a leftover's output (D-14), or a launch failure. */
+function captureFailure(
+  error: unknown,
+  phase: "rotate" | "finalize",
+  script: string,
+): ConnectorError {
+  if (error instanceof ScriptStoppedError) {
+    // Stopped by maruhi after it started (a flooded stdout) — not a
+    // launch failure (ruling D revision, round 4)
+    return new ConnectorError(`exec: the ${phase} script ${script} was stopped: ${error.message}`);
+  }
+  if (error instanceof ScriptLeftoverError) {
+    // The script's own answer cannot be told from a leftover process's
+    // output (D-14); a script that exited 0 may have created the
+    // credential, so the recovery is named
+    const created =
+      error.exitCode === 0 && phase === "rotate"
+        ? ". The script exited 0, so the new credential may exist at the issuer: re-run the rotation once the script redirects that output (make it idempotent, or retire the unused credential at the issuer by hand)"
+        : "";
+    return new ConnectorError(`exec: ${error.message}${created}`);
+  }
+  const reason = error instanceof Error ? error.message : "it could not be started";
+  return new ConnectorError(`exec: the ${phase} script ${script} did not start: ${reason}`);
+}
+
 /** Runs one script; a launch failure or a non-zero exit is a connector error naming the script and the scrubbed stderr tail. */
 async function runScript(
   deps: RotateDeps,
@@ -1125,15 +1155,7 @@ async function runScript(
   try {
     outcome = await deps.exec({ command: argv, cwd: rule.cwd, extraEnv: env });
   } catch (error) {
-    if (error instanceof ScriptStoppedError) {
-      // Stopped by maruhi after it started (a flooded stdout) — not a
-      // launch failure (ruling D revision, round 4)
-      throw new ConnectorError(
-        `exec: the ${phase} script ${argv[0] ?? ""} was stopped: ${error.message}`,
-      );
-    }
-    const reason = error instanceof Error ? error.message : "it could not be started";
-    throw new ConnectorError(`exec: the ${phase} script ${argv[0] ?? ""} did not start: ${reason}`);
+    throw captureFailure(error, phase, argv[0] ?? "");
   }
   if (outcome.exitCode !== 0) {
     const tail = scrubbedLines(outcome.stderr, secrets, EXEC_SHOWN_LINES);

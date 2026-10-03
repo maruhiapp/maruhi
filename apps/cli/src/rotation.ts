@@ -21,7 +21,6 @@
 
 import type { RotationProposal } from "@maruhi/api-schema";
 import { RotationFlagNotFoundError } from "@maruhi/api-schema";
-import { scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -176,24 +175,22 @@ export function resolveVariableStates(
 interface ExpiringRows extends DueRows {
   /** Why the environment list could not be read (deleted environments then cannot be told apart — A-13); null when it was. */
   readonly listUnreadable: string | null;
-  /** The environments outside the caller's scope (not checked — a scoped member's check is partial by construction, A-14). */
-  readonly outOfScope: readonly string[];
 }
 
 /**
  * The environments to walk: the chain's set minus the ones verified as
  * deleted (an environment's deletion is a signed data-plane statement, not
  * a chain op — a deleted one stays in the chain's set forever, and its
- * metadata pull answers not-found; A-13) and minus the ones outside the
- * caller's scope (named, not fetched — A-14). A failed list read is
- * reported as such and the walk goes on with the chain's set.
+ * metadata pull answers not-found; A-13). Every member walks every
+ * environment: the metadata-only pull and the version history are read
+ * under scope "any" (AUTH_SPEC §12-3), so a scoped member's check is whole
+ * (A-15 — the opposite was recorded in A-14 and was wrong). A failed list
+ * read is reported as such and the walk goes on with the chain's set.
  */
-function environmentsToWalk(context: ProjectContextBase): Effect.Effect<
-  {
-    readonly ids: readonly string[];
-    readonly listUnreadable: string | null;
-    readonly outOfScope: readonly string[];
-  },
+function environmentsToWalk(
+  context: ProjectContextBase,
+): Effect.Effect<
+  { readonly ids: readonly string[]; readonly listUnreadable: string | null },
   never,
   CliServices
 > {
@@ -209,20 +206,10 @@ function environmentsToWalk(context: ProjectContextBase): Effect.Effect<
         ),
       ),
     );
-    const self = context.verified.state.members.get(context.session.userId);
-    const ids: string[] = [];
-    const outOfScope: string[] = [];
-    for (const environmentId of [...context.verified.state.environments.keys()].toSorted()) {
-      if (listed.deleted.has(environmentId)) {
-        continue;
-      }
-      if (self !== undefined && !scopeIncludesEnvironment(self.scope, environmentId)) {
-        outOfScope.push(environmentId);
-        continue;
-      }
-      ids.push(environmentId);
-    }
-    return { ids, listUnreadable: listed.failure, outOfScope };
+    const ids = [...context.verified.state.environments.keys()]
+      .toSorted()
+      .filter((environmentId) => !listed.deleted.has(environmentId));
+    return { ids, listUnreadable: listed.failure };
   });
 }
 
@@ -270,7 +257,6 @@ function expiringValues(
       unreadable,
       unreadableEnvironments,
       listUnreadable: walk.listUnreadable,
-      outOfScope: walk.outOfScope,
     };
   });
 }
@@ -559,11 +545,6 @@ function unknownParts(
   return [
     ...(options.failOnDue === true && due.listUnreadable !== null
       ? [`the environment list could not be read (${due.listUnreadable})`]
-      : []),
-    ...(options.failOnDue === true && due.outOfScope.length > 0
-      ? [
-          `the environments outside your scope are not checked (${due.outOfScope.map(displayText).join(", ")}); run it with a member whose scope covers every environment`,
-        ]
       : []),
     ...(options.failOnDue === true && due.unreadable.length > 0
       ? [

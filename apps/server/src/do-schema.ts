@@ -488,13 +488,49 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       sql.exec("ALTER TABLE mirror_state ADD COLUMN last_mutation_seq INTEGER");
     },
   },
+  // Step 9 (2026-10-02 — PF3 ruling C revision, round 6 / PF3 ruling J
+  // revision, round 6): (a) a write-class audit row moves the mutation
+  // counter — the one write entry point that touches no tracked table is
+  // a dismissal, whose only effect is its audit row; the deny list names
+  // the read-path rows (which must not restart an export), so any audit-
+  // only write added later restarts exports by default; (b) the replica's
+  // audit head hash at the replicated position, so the next replica must
+  // extend the same log, not merely a log of the same length
+  {
+    tables: [],
+    apply(sql) {
+      sql.exec(
+        `CREATE TRIGGER IF NOT EXISTS mutation_audit_events_write AFTER INSERT ON audit_events
+         WHEN NEW.event NOT IN (${READ_PATH_AUDIT_EVENTS.map((event) => `'${event}'`).join(", ")})
+         BEGIN
+           INSERT INTO mutation_state (id, seq) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET seq = seq + 1;
+         END`,
+      );
+      sql.exec("ALTER TABLE mirror_state ADD COLUMN last_audit_head_hash_hex TEXT");
+    },
+  },
+];
+
+/**
+ * The audit rows a read appends (AUDIT_SPEC §3.3): they do not restart an
+ * export — the export bounds the log by seq instead. Every other audit row
+ * is a write's, and moves the mutation counter (step 9).
+ */
+const READ_PATH_AUDIT_EVENTS: readonly string[] = [
+  "var.read",
+  "server.lease_issued",
+  "server.lease_denied",
+  "server.dek_unwrapped",
+  "server.value_decrypted",
+  "project.exported",
 ];
 
 /**
  * Tables whose row changes do not move the mutation counter: the audit log
- * and its cumulative-hash column (bounded by seq in an export), the
- * deployment-local drift tables of ruling C, the local state tables, and
- * the migration meta row.
+ * (a write-class row moves it through step 9's own trigger; a read-path
+ * row does not — the export bounds the log by seq instead) and its
+ * cumulative-hash column, the deployment-local drift tables of ruling C,
+ * the local state tables, and the migration meta row.
  */
 const MUTATION_UNTRACKED_TABLES: ReadonlySet<string> = new Set([
   "audit_events",

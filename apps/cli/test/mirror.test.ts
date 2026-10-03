@@ -240,14 +240,14 @@ function mirrorHandlers(state: MirrorState): MockHandler[] {
   ];
 }
 
-function mirrorState(marked = true): MirrorState {
+function mirrorState(marked = true, sourceOrigin = "https://my.maruhi.app"): MirrorState {
   return {
     pages: [],
     bearers: [],
     status: marked
       ? {
           mirror: true,
-          sourceOrigin: "https://my.maruhi.app",
+          sourceOrigin,
           markedAtMs: 1,
           head: { ...headOfChain(), chainHeadSeq: 1, chainHeadHashHex: built.projectId },
         }
@@ -267,7 +267,8 @@ async function startPair(
   options: { source?: SourceOptions; marked?: boolean } = {},
 ): Promise<Pair> {
   const source = await start(sourceHandlers(options.source));
-  const state = mirrorState(options.marked);
+  // The mirror's recorded source is the pair's server (a sync refuses any other — H-15)
+  const state = mirrorState(options.marked, source.origin);
   const mirror = await start(mirrorHandlers(state));
   const env = await makeTestEnv();
   seedSession(env, source.origin, owner);
@@ -314,6 +315,27 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     expect(pair.env.logs.join("\n")).toContain("in sync with the verified view");
   });
 
+  it("refuses to replicate from a server that is not the mirror's recorded source, unless forced (ruling H revision, round 6)", async () => {
+    const source = await start(sourceHandlers());
+    const state = mirrorState(true, "https://elsewhere.maruhi.app");
+    const mirror = await start(mirrorHandlers(state));
+    const env = await makeTestEnv();
+    seedSession(env, source.origin, owner);
+    seedSession(env, mirror.origin, owner);
+    await seedConfig(env, { server: source.origin, defaultProject: built.projectId });
+    expect(await runCli(["mirror", "sync", "--mirror", mirror.origin], env.layer)).toBe(1);
+    expect(env.errors.join("\n")).toContain(
+      `The mirror holds this project as a mirror of https://elsewhere.maruhi.app, not of ${source.origin}`,
+    );
+    expect(state.pages).toHaveLength(0);
+    // Nothing was exported before the refusal
+    expect(source.requests.filter((r) => r.path.endsWith("/export"))).toHaveLength(0);
+    expect(await runCli(["mirror", "sync", "--mirror", mirror.origin, "--force"], env.layer)).toBe(
+      0,
+    );
+    expect(state.pages).toHaveLength(2);
+  });
+
   it("a deployment under another hostname is the same deployment: the mark refuses it as the source of itself (ruling C revision, round 5)", async () => {
     const fingerprint = "ab".repeat(16);
     const config = () => ({
@@ -341,7 +363,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       ),
     ).toBe(2);
     expect(env.errors.join("\n")).toContain(
-      "--source is the server itself (the same deployment, possibly under another hostname)",
+      "--source publishes this server's key fingerprint: it is this deployment under another hostname",
     );
     expect(state.status).toMatchObject({ mirror: false });
   });
@@ -440,7 +462,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       0,
     );
     const logs = pair.env.logs.join("\n");
-    expect(logs).toContain(`Mirror ${pair.mirror.origin} of https://my.maruhi.app`);
+    expect(logs).toContain(`Mirror ${pair.mirror.origin} of ${pair.source.origin}`);
     expect(logs).toContain("Server: chain head seq=2 (the verified view)");
     expect(logs).toContain(
       "Mirror: chain head seq=1 — behind the verified view by 1 chain entry (seq 1 of 2); audit seq=4",
@@ -581,7 +603,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
 
   it("MARUHI_MIRROR_TOKEN opens the mirror's session without a keychain entry, and is never sent to the server", async () => {
     const source = await start(sourceHandlers());
-    const state = mirrorState();
+    const state = mirrorState(true, source.origin);
     const mirror = await start(mirrorHandlers(state));
     const env = await makeTestEnv();
     seedSession(env, source.origin, owner);
