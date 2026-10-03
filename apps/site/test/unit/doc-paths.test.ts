@@ -135,7 +135,7 @@ function targetDocs(): readonly string[] {
   return ["CLAUDE.md", "AGENTS.md", "README.md", "CONTRIBUTING.md", ...rootDocs, ...siteDocs];
 }
 
-/** Target B — the comments of every .ts under each app's or package's src/. */
+/** Target B — the comments of every .ts/.tsx under each app's or package's src/. */
 function targetSources(): readonly string[] {
   return ["apps", "packages"].flatMap((root) =>
     readdirSync(join(repoRoot, root)).flatMap((project) => {
@@ -144,7 +144,7 @@ function targetSources(): readonly string[] {
         return [];
       }
       return walk(srcDir)
-        .filter((path) => path.endsWith(".ts"))
+        .filter((path) => path.endsWith(".ts") || path.endsWith(".tsx"))
         .map((path) => path.slice(repoRoot.length + 1));
     }),
   );
