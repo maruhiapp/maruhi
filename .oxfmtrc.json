@@ -1,5 +1,13 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
   "sortImports": true,
-  "ignorePatterns": ["**/*.md", "bun.lock", "fallow-baselines", ".agents", ".claude", ".deepsec"]
+  "ignorePatterns": [
+    "**/*.md",
+    "bun.lock",
+    "fallow-baselines",
+    ".agents",
+    ".claude",
+    ".deepsec",
+    "apps/cli/test/golden"
+  ]
 }

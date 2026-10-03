@@ -362,7 +362,7 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
 // with values filled in (environment-scopes / four-eyes) are out of scope.
 describe("devices.mdx quotes CLI messages as the CLI prints them", () => {
   const cliDir = join(repoRoot, "apps", "cli", "src");
-  const cliSource = readdirSync(cliDir)
+  const cliSource = readdirSync(cliDir, { recursive: true, encoding: "utf8" })
     .filter((name) => name.endsWith(".ts"))
     .map((name) => readFileSync(join(cliDir, name), "utf8"))
     .join("\n")

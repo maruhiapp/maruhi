@@ -15,7 +15,7 @@
 // registry (`GET /auth/devices` — a server declaration = advisory) is
 // **neither a reader nor a writer** (if the registry were a source of
 // truth, the server could insert a fake public key and make the CLI
-// append a ghost device — DK-D). The negative in own-devices.test.ts
+// append a ghost device — DK-D). The negative in device.test.ts
 // pins this.
 //
 // Recording revocation (`revokedAtMs`): set on running `device

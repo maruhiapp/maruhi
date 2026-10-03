@@ -8,7 +8,7 @@
 // only the 2 WebAuthn calls (create / get) and one fetch to the
 // CLI, and never puts values or key material onto the DOM.
 //
-// Invariants (passkey-page.test.ts checks them mechanically):
+// Invariants (passkey-listener.test.ts checks them mechanically):
 //   - No inline script (only the one `<script src="./app.js">`), no
 //     `on*=` attributes, no `javascript:`, no inline style (CSS is a
 //     separate response)

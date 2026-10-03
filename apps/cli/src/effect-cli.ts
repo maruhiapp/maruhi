@@ -4985,7 +4985,7 @@ function runVarRotate(
   });
 }
 
-function makeRootCommand(onExitCode: (code: number) => void) {
+export function makeRootCommand(onExitCode: (code: number) => void) {
   const pull = Command.make("pull", pullConfig, (values) =>
     Effect.gen(function* () {
       const io = yield* CliIo;
