@@ -1,6 +1,6 @@
 // Loading and normalizing `maruhi server grant --lease-policy
 // <file>` (lease_policy — CRYPTO_SPEC §6.2). The argument layer is
-// effect-cli.ts. Wording is English per ADR-0017.
+// commands/server.ts. Wording is English per ADR-0017.
 
 import { readFile } from "node:fs/promises";
 

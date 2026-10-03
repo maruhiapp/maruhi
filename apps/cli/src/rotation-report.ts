@@ -1,7 +1,8 @@
 // Reporting of rotation results and exit-code derivation (shared
 // by the sweeps of env rotate / server revoke / member remove /
-// change-role). The consumer is effect-cli.ts. Text is English per
-// ADR-0017 (all user-facing wording is English).
+// change-role). The consumers are commands/env.ts and
+// commands/shared.ts. Text is English per ADR-0017 (all user-facing
+// wording is English).
 
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";

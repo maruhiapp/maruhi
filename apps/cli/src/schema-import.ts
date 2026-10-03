@@ -84,7 +84,7 @@ export const ensureImportCeremonyAllowed: Effect.Effect<void, CliError, Stdio.St
       `Refused to run schema import: ${reason} (pipes, redirects, CI, and AI agents are refused; the per-variable approval is the core of the ceremony and there is no --yes bypass). Run it yourself in a terminal`,
   });
 
-/** The import's input (effect-cli.ts assembles it from EnvironmentContext). */
+/** The import's input (commands/schema.ts assembles it from EnvironmentContext). */
 export interface SchemaImportInput {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;

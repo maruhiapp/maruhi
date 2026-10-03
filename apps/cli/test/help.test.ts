@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
-import { COMMAND_SPECS, ROOT_SPEC_KEY } from "../src/effect-cli.ts";
+import { COMMAND_SPECS, ROOT_SPEC_KEY } from "../src/commands/index.ts";
 import { makeTestEnv } from "./support/env.ts";
 
 const GOLDEN_PATH = join(import.meta.dirname, "golden", "help.txt");

@@ -1,4 +1,4 @@
-// Tests for `maruhi proxy run` (proxy-run.ts / effect-cli.ts — PF4,
+// Tests for `maruhi proxy run` (proxy-run.ts / commands/proxy.ts — PF4,
 // docs/notes/pf4-design.md), end to end through runCli against a mock
 // maruhi server: the environment is pulled and verified like `run`, the
 // child receives placeholders for brokered variables and real values only

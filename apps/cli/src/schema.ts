@@ -229,7 +229,7 @@ export type FieldUpdate<T> =
   | { readonly kind: "keep" }
   | { readonly kind: "set"; readonly value: T };
 
-/** schema set's column specification (the shape is settled by effect-cli.ts's flag interpretation). */
+/** schema set's column specification (the shape is settled by commands/schema.ts's flag interpretation). */
 export interface SchemaFieldUpdates {
   readonly varType: FieldUpdate<MetaVarType>;
   readonly required: FieldUpdate<boolean>;
@@ -267,7 +267,7 @@ export interface SchemaSetInput {
   readonly quietDisabledAdvisory?: boolean;
 }
 
-/** schema set's result (display is the caller's — effect-cli.ts). */
+/** schema set's result (display is the caller's — commands/schema.ts). */
 export interface SchemaSetSummary {
   /** true = newly created as a declaration (declared, metaVersion 1), false = a reissue. */
   readonly created: boolean;

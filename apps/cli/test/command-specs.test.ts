@@ -16,7 +16,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { COMMAND_SPECS, makeRootCommand, ROOT_SPEC_KEY } from "../src/effect-cli.ts";
+import { COMMAND_SPECS, makeRootCommand, ROOT_SPEC_KEY } from "../src/commands/index.ts";
 
 const GOLDEN_PATH = join(import.meta.dirname, "golden", "command-specs.json");
 

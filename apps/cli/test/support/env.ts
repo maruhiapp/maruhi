@@ -256,7 +256,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
   const fingerprintBookPath = fingerprintBookPathOf(configPath);
   const fingerprintBook = makeFileFingerprintBook(fingerprintBookPath);
   const layer = Layer.mergeAll(
-    // argv is passed per run by runCli (effect-cli.ts remounts it onto Stdio).
+    // argv is passed per run by runCli (cli-runner.ts remounts it onto Stdio).
     // What gets fixed here is terminal detection — the primary boundary for
     // whether values may be displayed (agent-gate.ts)
     Stdio.layerTest({
