@@ -21,7 +21,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { COMMAND_SPECS, ROOT_SPEC_KEY } from "../src/effect-cli.ts";
+import { COMMAND_SPECS, ROOT_SPEC_KEY } from "../src/commands/index.ts";
 
 const SRC_DIR = join(import.meta.dirname, "..", "src");
 

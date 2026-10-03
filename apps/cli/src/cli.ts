@@ -1,5 +1,5 @@
 // Entry of the maruhi CLI: the argument layer is `effect/cli`
-// (effect-cli.ts).
+// (commands/index.ts + cli-runner.ts).
 //
 // runCli holds only three things: (1) the dedicated diagnostic for a run
 // with no command name before `--` (the effect side can only say "extra
@@ -13,8 +13,9 @@
 
 import { Effect, type Layer } from "effect";
 
+import { runEffectCli } from "./cli-runner.ts";
+import { COMMAND_SPECS, ROOT_SPEC_KEY } from "./commands/index.ts";
 import type { CliServices } from "./context.ts";
-import { COMMAND_SPECS, ROOT_SPEC_KEY, runEffectCli } from "./effect-cli.ts";
 import { internalErrorKind } from "./failure.ts";
 import { logFailure } from "./notice.ts";
 
