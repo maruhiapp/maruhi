@@ -160,6 +160,33 @@ function expectedBootstrap(workflow: Workflow): {
  * only the target name and the bootstrap token (the values go to maruhi's child process or request
  * body, nowhere else).
  */
+/** Every `maruhi ci` invocation names its coordinates and the anchor; each subcommand carries its own required flags. */
+function expectCiInvocation(run: string): void {
+  expect(run).toMatch(/--server "\$MARUHI_SERVER"/);
+  expect(run).toMatch(/--project "\$MARUHI_PROJECT"/);
+  expect(run).toMatch(/--anchor \.maruhi\/anchor\.json/);
+  expectCiSubcommandFlags(run);
+}
+
+const CI_SUBCOMMAND_FLAGS: readonly (readonly [RegExp, readonly RegExp[]])[] = [
+  [/\bmaruhi ci sync\b/, [/\bmaruhi ci sync (\w+|"\$TARGET") --yes\b/]],
+  [/\bmaruhi ci run\b/, [/--env \w+/, / -- \S/]],
+  [
+    /\bmaruhi ci rotate\b/,
+    [/\bmaruhi ci rotate [A-Z_]+ /, /--env \w+/, /--rotate-config maruhi\.rotate\.json/],
+  ],
+];
+
+function expectCiSubcommandFlags(run: string): void {
+  for (const [subcommand, flags] of CI_SUBCOMMAND_FLAGS) {
+    if (subcommand.test(run)) {
+      for (const flag of flags) {
+        expect(run).toMatch(flag);
+      }
+    }
+  }
+}
+
 function expectMaruhiStepKeepsValues(step: Step): void {
   expect(step.run).not.toMatch(
     /GITHUB_OUTPUT|GITHUB_ENV|\becho\b|set -x|printenv|--value|>(?!\s*\/dev\/null)|tee\b/,
@@ -254,26 +281,11 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
       });
 
       it("passes every maruhi ci command its coordinates and the anchor as flags", () => {
-        const runs = Object.values(workflow.jobs)
-          .flatMap((job) => job.steps)
+        const runs = stepsOf(workflow)
           .map((s) => s.run ?? "")
           .filter((run) => /\bmaruhi ci\b/.test(run));
         for (const run of runs) {
-          expect(run).toMatch(/--server "\$MARUHI_SERVER"/);
-          expect(run).toMatch(/--project "\$MARUHI_PROJECT"/);
-          expect(run).toMatch(/--anchor \.maruhi\/anchor\.json/);
-          if (/\bmaruhi ci sync\b/.test(run)) {
-            expect(run).toMatch(/\bmaruhi ci sync (\w+|"\$TARGET") --yes\b/);
-          }
-          if (/\bmaruhi ci run\b/.test(run)) {
-            expect(run).toMatch(/--env \w+/);
-            expect(run).toMatch(/ -- \S/);
-          }
-          if (/\bmaruhi ci rotate\b/.test(run)) {
-            expect(run).toMatch(/\bmaruhi ci rotate [A-Z_]+ /);
-            expect(run).toMatch(/--env \w+/);
-            expect(run).toMatch(/--rotate-config maruhi\.rotate\.json/);
-          }
+          expectCiInvocation(run);
         }
         expect(workflow.env).toMatchObject({
           MARUHI_SERVER: "https://my.maruhi.app",
