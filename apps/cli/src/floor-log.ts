@@ -27,19 +27,11 @@
 //   enter the join's lattice — fold surfaces an unresolved intent as
 //   "needs reconciliation"
 
-import {
-  type FileHandle,
-  mkdir,
-  open,
-  readdir,
-  readFile,
-  rename,
-  writeFile,
-} from "node:fs/promises";
 import { join } from "node:path";
 
+import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import { isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
-import { Effect } from "effect";
+import { Data, Effect, FileSystem, type PlatformError } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { formatFloorConflicts } from "./floor-evidence.ts";
@@ -761,17 +753,25 @@ function foldRecords(lines: readonly string[]): FoldOutcome {
 
 // ---- File store ----
 
-function isFileMissingError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as NodeJS.ErrnoException).code === "ENOENT"
-  );
+function isFileMissingError(error: PlatformError.PlatformError): boolean {
+  // Direct `_tag` access is banned by oxlint — read it through a record
+  // (the failure.ts discipline)
+  return (error.reason as unknown as Record<string, unknown>)["_tag"] === "NotFound";
 }
 
 /**
+ * A logical append that stayed unwritten past the full-length rewrite
+ * budget (appendAll — including a 0-byte write).
+ */
+class ShortWriteError extends Data.TaggedError("ShortWrite")<{
+  readonly logName: string;
+  readonly bytesWritten: number;
+  readonly payloadBytes: number;
+}> {}
+
+/**
  * Writes payload to an O_APPEND-opened handle as one logical append and
- * waits through datasync (the physical discipline for appends to the
+ * waits through fsync (the physical discipline for appends to the
  * floor log / evidence log).
  *
  * One logical append = one write syscall (the unit O_APPEND's atomicity
@@ -781,22 +781,29 @@ function isFileMissingError(error: unknown): boolean {
  * that must never return success). Since readers discard the fragment as
  * a torn line already isolated by newline-prefixing, rewrite the
  * **whole** payload from the start. If it runs out still unwritten
- * (including a 0-byte write), throw.
+ * (including a 0-byte write), fail.
  */
-async function appendAll(handle: FileHandle, payload: Buffer, logName: string): Promise<void> {
-  for (let attempt = 1; ; attempt += 1) {
-    const result = await handle.write(payload, 0, payload.length);
-    if (result.bytesWritten === payload.length) {
-      break;
+const appendAll = (
+  handle: FileSystem.File,
+  payload: Uint8Array,
+  logName: string,
+): Effect.Effect<void, PlatformError.PlatformError | ShortWriteError> =>
+  Effect.gen(function* () {
+    for (let attempt = 1; ; attempt += 1) {
+      const bytesWritten = yield* handle.write(payload);
+      if (bytesWritten === payload.length) {
+        break;
+      }
+      if (bytesWritten === 0 || attempt >= MAX_APPEND_WRITE_ATTEMPTS) {
+        return yield* new ShortWriteError({
+          logName,
+          bytesWritten,
+          payloadBytes: payload.length,
+        });
+      }
     }
-    if (result.bytesWritten === 0 || attempt >= MAX_APPEND_WRITE_ATTEMPTS) {
-      throw new Error(
-        `short write on the ${logName} (${result.bytesWritten}/${payload.length} bytes)`,
-      );
-    }
-  }
-  await handle.datasync();
-}
+    yield* handle.sync;
+  });
 
 function encodeRecord(record: FloorLogRecord): string {
   return `${JSON.stringify(record)}\n`;
@@ -842,73 +849,115 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
    * the O_APPEND write (once interrupted, our complete record would be
    * concatenated onto that line and lost, silently breaking
    * journal-before-release). write loops until every byte is written,
-   * guarding against short writes (datasync is the durability standard —
+   * guarding against short writes (fsync is the durability standard —
    * 3-E′).
    */
-  const appendRecords = async (
+  /**
+   * `pathOf` lifted into the effect channel: an invalid id (a guard for
+   * paths assembled from an untrusted string) surfaces as the write
+   * failure, matching the envelope a thrown Error took through
+   * `tryPromise` before.
+   */
+  const logPathOf = (projectId: string): Effect.Effect<string, CliError> =>
+    Effect.try({
+      try: () => pathOf(projectId),
+      catch: () =>
+        cliError(
+          `Cannot write the local floor log: ${join(dir, `${projectId}.jsonl`)} (aborting because rollback detection cannot continue)`,
+        ),
+    });
+
+  /**
+   * mkdir-if-missing → open("a") → appendAll — the shared physical
+   * append sequence for the floor log and the evidence log (the file
+   * is created lazily on first append).
+   */
+  const appendPayload = (
+    path: string,
+    payload: Uint8Array,
+    logName: string,
+  ): Effect.Effect<void, PlatformError.PlatformError | ShortWriteError, FileSystem.FileSystem> =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(dir, { recursive: true, mode: 0o700 });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const handle = yield* fs.open(path, { flag: "a", mode: 0o600 });
+          yield* appendAll(handle, payload, logName);
+        }),
+      );
+    });
+
+  const appendRecords = (
     projectId: string,
     records: readonly FloorLogRecord[],
-  ): Promise<void> => {
-    const path = pathOf(projectId);
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    const handle = await open(path, "a", 0o600);
-    try {
-      const payload = Buffer.from(`\n${records.map(encodeRecord).join("")}`, "utf8");
-      // If it runs out still unwritten it throws as a failure (mutate
-      // converts it to a floor error and the caller never treats it as
-      // "persisted"). Duplicate records are harmless via the join's
-      // idempotence
-      await appendAll(handle, payload, "floor log");
-    } finally {
-      await handle.close();
-    }
-  };
+  ): Effect.Effect<
+    void,
+    CliError | PlatformError.PlatformError | ShortWriteError,
+    FileSystem.FileSystem
+  > =>
+    Effect.gen(function* () {
+      const path = yield* logPathOf(projectId);
+      // If it runs out still unwritten it fails (the caller never
+      // treats it as "persisted"). Duplicate records are harmless
+      // via the join's idempotence
+      yield* appendPayload(
+        path,
+        Buffer.from(`\n${records.map(encodeRecord).join("")}`, "utf8"),
+        "floor log",
+      );
+    });
 
-  const readAndFold = async (projectId: string): Promise<FoldOutcome> => {
-    const raw = await readFile(pathOf(projectId), "utf8");
-    return foldRecords(raw.split("\n"));
-  };
+  const readAndFold = (
+    projectId: string,
+  ): Effect.Effect<FoldOutcome, CliError | PlatformError.PlatformError, FileSystem.FileSystem> =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* logPathOf(projectId);
+      const raw = yield* fs.readFileString(path, "utf8");
+      return foldRecords(raw.split("\n"));
+    });
 
   /** Append → fold. If fold produced a conflict it is a typed error (the evidence remains in the log). */
   const mutate = (
     projectId: string,
     records: readonly FloorLogRecord[],
   ): Effect.Effect<ProjectFloor, CliError> =>
-    Effect.tryPromise({
-      try: async () => {
-        await appendRecords(projectId, records);
-        let outcome = await readAndFold(projectId);
-        if (outcome.recordsSinceSnapshot > compactionThreshold) {
-          // Compaction = only appending a snapshot record (never a
-          // rewrite). Two concurrent snapshots are harmless (fold bases
-          // on the latest one, and the position basis + join idempotence
-          // keep even a double fold correct)
-          await appendRecords(projectId, [
-            {
-              r: "snapshot",
-              folded: outcome.decodedRecords,
-              state: {
-                chainHead: outcome.floor.chainHead,
-                environments: outcome.floor.environments,
-                conflicts: outcome.floor.conflicts,
-                intents: outcome.floor.intents,
-              },
+    Effect.gen(function* () {
+      yield* appendRecords(projectId, records);
+      let outcome = yield* readAndFold(projectId);
+      if (outcome.recordsSinceSnapshot > compactionThreshold) {
+        // Compaction = only appending a snapshot record (never a
+        // rewrite). Two concurrent snapshots are harmless (fold bases
+        // on the latest one, and the position basis + join idempotence
+        // keep even a double fold correct)
+        yield* appendRecords(projectId, [
+          {
+            r: "snapshot",
+            folded: outcome.decodedRecords,
+            state: {
+              chainHead: outcome.floor.chainHead,
+              environments: outcome.floor.environments,
+              conflicts: outcome.floor.conflicts,
+              intents: outcome.floor.intents,
             },
-          ]);
-          outcome = await readAndFold(projectId);
-        }
-        return outcome.floor;
-      },
-      catch: () =>
+          },
+        ]);
+        outcome = yield* readAndFold(projectId);
+      }
+      return outcome.floor;
+    }).pipe(
+      Effect.mapError(() =>
         cliError(
           `Cannot write the local floor log: ${join(dir, `${projectId}.jsonl`)} (aborting because rollback detection cannot continue)`,
         ),
-    }).pipe(
+      ),
       Effect.flatMap((floor) =>
         floor.conflicts.length > 0
           ? Effect.fail(cliError(formatFloorConflicts(projectId, floor.conflicts)))
           : Effect.succeed(floor),
       ),
+      Effect.provide(BunFileSystem.layer),
     );
 
   const attestedPathOf = (projectId: string): string => {
@@ -927,51 +976,66 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
 
   /**
    * Appending evidence (the same discipline as the floor log: O_APPEND
-   * + newline prefixing + waiting through datasync). It is kept separate
+   * + newline prefixing + waiting through fsync). It is kept separate
    * from the floor log's appendRecords because that one is specific to
    * the floor record type — the append's physical discipline
-   * (full-length rewrite on short write + datasync) is carried by the
+   * (full-length rewrite on short write + fsync) is carried by the
    * shared appendAll.
    */
-  const appendJsonLine = async (path: string, value: AttestationEvidenceRecord): Promise<void> => {
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    const handle = await open(path, "a", 0o600);
-    try {
-      const payload = Buffer.from(`\n${JSON.stringify(value)}\n`, "utf8");
-      await appendAll(handle, payload, "attestation-evidence log");
-    } finally {
-      await handle.close();
-    }
-  };
+  const appendJsonLine = (
+    path: string,
+    value: AttestationEvidenceRecord,
+  ): Effect.Effect<void, PlatformError.PlatformError | ShortWriteError, FileSystem.FileSystem> =>
+    appendPayload(
+      path,
+      Buffer.from(`\n${JSON.stringify(value)}\n`, "utf8"),
+      "attestation-evidence log",
+    );
 
   return {
     load: (projectId) =>
-      Effect.tryPromise({
-        try: async (): Promise<FloorLoadResult> => {
-          let raw: string;
-          try {
-            raw = await readFile(pathOf(projectId), "utf8");
-          } catch (error) {
-            if (!isFileMissingError(error)) {
-              throw error;
-            }
-            return { floor: null, state: "missing", droppedRecords: 0 };
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Effect.try({
+          try: () => pathOf(projectId),
+          catch: () =>
+            cliError(`Cannot read the local floor log: ${join(dir, `${projectId}.jsonl`)}`),
+        });
+        const raw = yield* fs
+          .readFileString(path, "utf8")
+          .pipe(
+            Effect.catch((error) =>
+              isFileMissingError(error) ? Effect.succeed(null) : Effect.fail(error),
+            ),
+          );
+        if (raw === null) {
+          return { floor: null, state: "missing", droppedRecords: 0 } satisfies FloorLoadResult;
+        }
+        const outcome = foldRecords(raw.split("\n"));
+        if (outcome.decodedRecords === 0) {
+          if (raw.trim() !== "") {
+            // Non-empty yet not a single record decodable = wholesale corruption
+            return {
+              floor: null,
+              state: "corrupt",
+              droppedRecords: outcome.droppedLines,
+            } satisfies FloorLoadResult;
           }
-          const outcome = foldRecords(raw.split("\n"));
-          if (outcome.decodedRecords === 0) {
-            if (raw.trim() !== "") {
-              // Non-empty yet not a single record decodable = wholesale corruption
-              return { floor: null, state: "corrupt", droppedRecords: outcome.droppedLines };
-            }
-            // An empty file may also be a remnant dropped between
-            // open("a") and write (= never created)
-            return { floor: null, state: "missing", droppedRecords: 0 };
-          }
-          return { floor: outcome.floor, state: "loaded", droppedRecords: outcome.droppedLines };
-        },
-        catch: () =>
+          // An empty file may also be a remnant dropped between
+          // open("a") and write (= never created)
+          return { floor: null, state: "missing", droppedRecords: 0 } satisfies FloorLoadResult;
+        }
+        return {
+          floor: outcome.floor,
+          state: "loaded",
+          droppedRecords: outcome.droppedLines,
+        } satisfies FloorLoadResult;
+      }).pipe(
+        Effect.mapError(() =>
           cliError(`Cannot read the local floor log: ${join(dir, `${projectId}.jsonl`)}`),
-      }),
+        ),
+        Effect.provide(BunFileSystem.layer),
+      ),
     commitHead: (projectId, head) => Effect.asVoid(mutate(projectId, [{ r: "head", head }])),
     commitPull: (projectId, commit: PullCommit) =>
       mutate(projectId, [
@@ -1022,88 +1086,121 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
       // the join's lattice). Do not fail it on an existing-conflict check
       // — recording a resolution only ever works toward more evidence
       Effect.asVoid(
-        Effect.tryPromise({
-          try: () => appendRecords(projectId, [{ r: "resolution", intentId, outcome }]),
-          catch: () =>
+        appendRecords(projectId, [{ r: "resolution", intentId, outcome }]).pipe(
+          Effect.mapError(() =>
             cliError(
               `Cannot write the local floor log: ${join(dir, `${projectId}.jsonl`)} (aborting because rollback detection cannot continue)`,
             ),
-        }),
+          ),
+          Effect.provide(BunFileSystem.layer),
+        ),
       ),
     listProjectIds: () =>
-      Effect.tryPromise({
-        try: async () => {
-          let names: readonly string[];
-          try {
-            names = await readdir(dir);
-          } catch (error) {
-            if (isFileMissingError(error)) {
-              return [];
-            }
-            throw error;
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const names = yield* fs
+          .readDirectory(dir)
+          .pipe(
+            Effect.catch((error) =>
+              isFileMissingError(error) ? Effect.succeed([] as string[]) : Effect.fail(error),
+            ),
+          );
+        // Only the body (`<id>.jsonl`). `<id>.attestation-evidence.jsonl`
+        // etc. fall out for not matching the ID form (hex 64)
+        const ids = new Set<string>();
+        for (const name of names) {
+          const match = /^(.+)\.jsonl$/.exec(name);
+          if (match?.[1] !== undefined && isProjectId(match[1])) {
+            ids.add(match[1]);
           }
-          // Only the body (`<id>.jsonl`). `<id>.attestation-evidence.jsonl`
-          // etc. fall out for not matching the ID form (hex 64)
-          const ids = new Set<string>();
-          for (const name of names) {
-            const match = /^(.+)\.jsonl$/.exec(name);
-            if (match?.[1] !== undefined && isProjectId(match[1])) {
-              ids.add(match[1]);
-            }
-          }
-          return [...ids].toSorted();
-        },
-        catch: () => cliError(`Cannot list the local floor directory: ${dir}`),
-      }),
+        }
+        return [...ids].toSorted();
+      }).pipe(
+        Effect.mapError(() => cliError(`Cannot list the local floor directory: ${dir}`)),
+        Effect.provide(BunFileSystem.layer),
+      ),
     loadAttestedHead: (projectId) =>
-      Effect.tryPromise({
-        try: async () => {
-          let raw: string;
-          try {
-            raw = await readFile(attestedPathOf(projectId), "utf8");
-          } catch (error) {
-            if (isFileMissingError(error)) {
-              return null;
-            }
-            throw error;
-          }
-          // Corruption becomes null (tracking the previous attestation
-          // is best-effort — the consequence of losing it is a
-          // resubmission of the same seq, which the server's idempotent
-          // 204 absorbs)
-          let value: unknown;
-          try {
-            value = JSON.parse(raw);
-          } catch {
-            return null;
-          }
-          return decodeChainHead(isRecord(value) ? value["head"] : undefined);
-        },
-        catch: () => cliError(`Cannot read the attested-head file: ${attestedPathOf(projectId)}`),
-      }),
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Effect.try({
+          try: () => attestedPathOf(projectId),
+          catch: () =>
+            cliError(
+              `Cannot read the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
+            ),
+        });
+        const raw = yield* fs
+          .readFileString(path, "utf8")
+          .pipe(
+            Effect.catch((error) =>
+              isFileMissingError(error) ? Effect.succeed(null) : Effect.fail(error),
+            ),
+          );
+        if (raw === null) {
+          return null;
+        }
+        // Corruption becomes null (tracking the previous attestation
+        // is best-effort — the consequence of losing it is a
+        // resubmission of the same seq, which the server's idempotent
+        // 204 absorbs)
+        let value: unknown;
+        try {
+          value = JSON.parse(raw);
+        } catch {
+          return null;
+        }
+        return decodeChainHead(isRecord(value) ? value["head"] : undefined);
+      }).pipe(
+        Effect.mapError(() =>
+          cliError(
+            `Cannot read the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
+          ),
+        ),
+        Effect.provide(BunFileSystem.layer),
+      ),
     saveAttestedHead: (projectId, head) =>
-      Effect.tryPromise({
-        try: async () => {
-          await mkdir(dir, { recursive: true, mode: 0o700 });
-          // tmp → rename substitution (never show a partial write to a
-          // reader). Tracking is a separate, overwritable class (not a
-          // verified observation — floor.ts's doc)
-          const path = attestedPathOf(projectId);
-          const tmp = `${path}.tmp`;
-          await writeFile(tmp, `${JSON.stringify({ v: 1, head })}\n`, { mode: 0o600 });
-          await rename(tmp, path);
-        },
-        catch: () => cliError(`Cannot write the attested-head file: ${attestedPathOf(projectId)}`),
-      }),
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Effect.try({
+          try: () => attestedPathOf(projectId),
+          catch: () =>
+            cliError(
+              `Cannot write the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
+            ),
+        });
+        yield* fs.makeDirectory(dir, { recursive: true, mode: 0o700 });
+        // tmp → rename substitution (never show a partial write to a
+        // reader). Tracking is a separate, overwritable class (not a
+        // verified observation — floor.ts's doc)
+        const tmp = `${path}.tmp`;
+        yield* fs.writeFileString(tmp, `${JSON.stringify({ v: 1, head })}\n`, { mode: 0o600 });
+        yield* fs.rename(tmp, path);
+      }).pipe(
+        Effect.mapError(() =>
+          cliError(
+            `Cannot write the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
+          ),
+        ),
+        Effect.provide(BunFileSystem.layer),
+      ),
     appendAttestationEvidence: (projectId, evidence) =>
-      Effect.tryPromise({
-        try: async () => {
-          const path = evidencePathOf(projectId);
-          await appendJsonLine(path, evidence);
-          return path;
-        },
-        catch: () =>
-          cliError(`Cannot write the attestation-evidence log: ${evidencePathOf(projectId)}`),
-      }),
+      Effect.gen(function* () {
+        const path = yield* Effect.try({
+          try: () => evidencePathOf(projectId),
+          catch: () =>
+            cliError(
+              `Cannot write the attestation-evidence log: ${join(dir, `${projectId}.attestation-evidence.jsonl`)}`,
+            ),
+        });
+        yield* appendJsonLine(path, evidence);
+        return path;
+      }).pipe(
+        Effect.mapError(() =>
+          cliError(
+            `Cannot write the attestation-evidence log: ${join(dir, `${projectId}.attestation-evidence.jsonl`)}`,
+          ),
+        ),
+        Effect.provide(BunFileSystem.layer),
+      ),
   };
 }

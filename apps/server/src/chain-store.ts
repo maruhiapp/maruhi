@@ -9,10 +9,11 @@
 //
 // The tables' DDL lives in do-schema.ts (applied by the DO constructor).
 
+import { ChainEntrySchema } from "@maruhi/api-schema";
 import { ChainInvalidError, toWrappedCryptoError } from "@maruhi/core";
 import type { ChainEntry, ChainHistoryIndex, ChainState } from "@maruhi/crypto";
 import { canonicalChainEntryBytes, verifyChainWithHistory } from "@maruhi/crypto";
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Result, Schema } from "effect";
 
 export interface StoredChain {
   readonly entries: readonly ChainEntry[];
@@ -50,6 +51,24 @@ interface LoadedRows {
   readonly addedBytes: number;
 }
 
+/**
+ * Decodes one stored `entry_json` row through the shared wire schema
+ * (the same transport shape the API boundary enforces — the
+ * WireChainEntry-extends-ChainEntry static check in api-schema keeps it
+ * aligned with the crypto type). A row that fails JSON parse or decode
+ * is storage corruption, which lands on `invalid-payload` like every
+ * malformed chain datum; the throw drops out of `load` as a defect
+ * (the same channel a `JSON.parse` SyntaxError took before — `load`
+ * has no typed error channel).
+ */
+function decodeStoredEntry(seq: number, entryJson: string): ChainEntry {
+  const decoded = Schema.decodeUnknownResult(Schema.fromJsonString(ChainEntrySchema))(entryJson);
+  if (Result.isFailure(decoded)) {
+    throw new ChainInvalidError({ seq, reason: "invalid-payload" });
+  }
+  return decoded.success;
+}
+
 function loadRowsAfter(sql: SqlStorage, afterSeq: number): LoadedRows {
   const rows = sql
     .exec(
@@ -63,7 +82,7 @@ function loadRowsAfter(sql: SqlStorage, afterSeq: number): LoadedRows {
   }
   const last = rows[rows.length - 1];
   return {
-    entries: rows.map((row) => JSON.parse(String(row["entry_json"])) as ChainEntry),
+    entries: rows.map((row) => decodeStoredEntry(Number(row["seq"]), String(row["entry_json"]))),
     hashes: rows.map((row) => String(row["entry_hash_hex"])),
     lastSeq: last === undefined ? null : Number(last["seq"]),
     addedBytes,
