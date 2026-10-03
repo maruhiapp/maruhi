@@ -1228,11 +1228,19 @@ export function lineCountWarning(
   name: string,
   next: ValueShape,
   current: ValueShape,
+  connector: string,
 ): string | null {
   if (next.lines === current.lines) {
     return null;
   }
-  return `the new value of ${name} has ${countNoun(next.lines, "line")} where the current value has ${countNoun(current.lines, "line")}: check that the rotate script printed only the credential (a process it started may have written to its stdout)`;
+  // Only a script can have printed more than the credential; an API
+  // connector's value is the issuer's answer, so the difference is the
+  // current value's layout (round 9)
+  const cause =
+    connector === "exec"
+      ? "check that the rotate script printed only the credential (a process it started may have written to its stdout)"
+      : `the ${connector} connector produced it as the issuer answered, so the current value had another layout (pushed by hand?) — nothing to fix unless the issuer's answer changed shape`;
+  return `the new value of ${name} has ${countNoun(next.lines, "line")} where the current value has ${countNoun(current.lines, "line")}: ${cause}`;
 }
 
 /** The new value as the rotate script printed it: one trailing newline (LF or CRLF) is dropped, nothing else is touched. */

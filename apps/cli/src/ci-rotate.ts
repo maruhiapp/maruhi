@@ -663,7 +663,7 @@ function mintTokenFor(
         if (expiresAtMs !== null && expiresAtMs <= (input.now ?? Date.now)()) {
           return yield* Effect.fail(
             cliError(
-              `The issuer accepted the rotation (${outcome.facts.join("; ")}) but no token is left to store the proposal: the lease's token expired at ${formatUtcDate(expiresAtMs)} while the connector ran, and a fresh one could not be minted (${error.message}). Recovery for the credential that now exists at the issuer: ${outcome.recovery}`,
+              `The issuer accepted the rotation (${outcome.facts.join("; ")}) but no token is left to store the proposal: the lease's token expired at ${formatUtcDate(expiresAtMs)} before a fresh one could be minted (${error.message}). Recovery for the credential that now exists at the issuer: ${outcome.recovery}`,
             ),
           );
         }

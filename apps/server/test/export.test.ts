@@ -752,6 +752,19 @@ describe("project import (the restore job with identitiesKey)", () => {
     expect(afterWrite).toBe(after + 1);
     await auditRow("var.read", "fe".repeat(16));
     expect(await counterSeq()).toBe(afterWrite);
+    // A fresh DO's step-9 trigger is the text the re-assert expects: its
+    // first re-open performs no DDL (the schema row stays — round 9)
+    const stepNine = await queryProjectDo(
+      projectId,
+      "SELECT rowid, sql FROM sqlite_master WHERE type = 'trigger' AND name = 'mutation_audit_events_write'",
+    );
+    await evictProjectDo(projectId);
+    expect(
+      await queryProjectDo(
+        projectId,
+        "SELECT rowid, sql FROM sqlite_master WHERE type = 'trigger' AND name = 'mutation_audit_events_write'",
+      ),
+    ).toEqual(stepNine);
     // The trigger's deny list is re-asserted at every open (ruling C
     // revision, round 7): a deployed trigger naming fewer read-path rows is
     // re-created with the list the code carries

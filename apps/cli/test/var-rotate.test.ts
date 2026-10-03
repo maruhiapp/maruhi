@@ -778,6 +778,36 @@ describe("maruhi var rotate (exec — a script of the repository, PF8)", () => {
     expect(finalized).not.toContain("sk_live_old");
   });
 
+  it("a script whose stdout gained a line is warned about before the push, never refused (D-16), naming the script", async () => {
+    const { env, prod, configPath } = await startEnv({
+      prod: [{ variableId: "v-stripe", name: "STRIPE_SECRET_KEY", plaintexts: ["sk_live_old"] }],
+      ops: [{ variableId: "v-admin", name: "STRIPE_ADMIN_KEY", plaintexts: ["rk_admin"] }],
+      config: EXEC_CONFIG,
+    });
+    env.setCaptureHandler(() => ({
+      exitCode: 0,
+      stdout: encode("junk_line_dummy\nsk_live_new\n"),
+      stderr: "",
+    }));
+    expect(
+      await runCli(
+        ["var", "rotate", "STRIPE_SECRET_KEY", "--rotate-config", configPath],
+        env.layer,
+      ),
+    ).toBe(0);
+    expect(await decryptLatest(prod, dekProd, "v-stripe")).toEqual({
+      plaintext: "junk_line_dummy\nsk_live_new",
+      version: 2,
+    });
+    const errors = env.errors.join("\n");
+    expect(errors).toContain(
+      "Warning: the new value of STRIPE_SECRET_KEY has 2 lines where the current value has 1 line: check that the rotate script printed only the credential",
+    );
+    expect(env.logs.join("\n")).toContain("value: 27 bytes, 2 lines");
+    expect([...env.logs, ...env.errors].join("\n")).not.toContain("sk_live_new");
+    expect([...env.logs, ...env.errors].join("\n")).not.toContain("junk_line_dummy");
+  });
+
   it("a failing script stops the rotation before any push, with its stderr scrubbed; a rule without a finalize script asks first", async () => {
     const { env, prod, configPath } = await startEnv({
       prod: [{ variableId: "v-stripe", name: "STRIPE_SECRET_KEY", plaintexts: ["sk_live_old"] }],

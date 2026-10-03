@@ -538,3 +538,13 @@ for round 8; B, C, K and P are closed.
 
 Rulings D and O received adopted candidates in this round and stay open
 for round 9; A, B, C, K and P are closed.
+
+### 9-8. Round 9 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| D (answer) | D-20 (spec sync): §14-5's accept sentence lagged D-18; D-21 (tests only): the D-16 warning at `var rotate`, the `ci rotate` report's current-value fragment and a companion warning at the acceptance were unpinned; D-22 (wording): the warning always blamed a rotate script, wrong for an API connector whose current value was multi-line by hand. Considered, no candidate: the acceptance's extra decryption fails where this device cannot open the current value (a missing all-epoch backfill, an out-of-scope environment) — degrading to "shape unknown" would restore a blind push by a device whose key reach is incomplete, so the failure stands with the remedy named; companions are compared at the acceptance (every variable is opened) and need no comparison at `var rotate` (JSON output breaks on a leftover rather than polluting a field) | **D-20, D-21, D-22 adopted** (the warning names the connector's cause; the cannot-open failure names the approving device). **D CLOSED (round 9)** — no behaviour candidate |
+| O (credential) | O-20 (tests only): `issuanceBoundFor` had no unit table (the 1–3 s band was unpinned); O-21 (wording): the K-6 message said the token expired "while the connector ran", also wrong when it expired during the fetch. Considered, no candidate: clock skew beyond the server's ±60 s needs a runner off NTP and the only estimator improves the message, not the outcome; the three margins (30 s reuse, 2 s issuance, none for the last resort) are an ordered superset; the replay retry's default bound is right (the refused token protects nothing) | **O-20, O-21 adopted**. **O CLOSED (round 9)** — no behaviour candidate |
+
+Every PF7 / PF8 ruling is closed: A (round 8), B, C, K, P (earlier), D and O
+(round 9).

@@ -27,10 +27,15 @@ import {
   openProposedValue,
   wrapLeaseDek,
 } from "@maruhi/crypto";
+import { Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
-import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
+import {
+  issuanceBoundFor,
+  OIDC_REQUEST_TOKEN_ENV,
+  OIDC_REQUEST_URL_ENV,
+} from "../src/oidc-github.ts";
 import {
   addMemberOp,
   buildChain,
@@ -598,7 +603,9 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     // The value's shape is shown locally, never stored with the proposal (D-8)
     expect(body.proposal.facts).toEqual(["./rotate.sh: new credential produced"]);
     expect(body.proposal.expiresInDays).toBe(7);
-    expect(fixture.env.logs.join("\n")).toContain("value: 17 bytes, 1 line");
+    expect(fixture.env.logs.join("\n")).toContain(
+      "value: 17 bytes, 1 line (the current value: 17 bytes, 1 line; the shape is shown here and at the acceptance only; it is not stored with the proposal)",
+    );
     expect(body.proposal.variables).toHaveLength(1);
     const variable = nth(body.proposal.variables, 0);
     expect(variable).toMatchObject({ variableId: "vs", baseVersion: 3 });
@@ -799,6 +806,26 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expectNoSecretLeak(fixture);
   }, 20_000);
 
+  it("the issuance bound follows the token in hand: capped at the default, the remaining life minus the margin, the default again when the token cannot outlive the floor (O-18 / O-19)", () => {
+    const now = 1_700_000_000_000;
+    const tokenWith = (exp?: number) =>
+      Redacted.make(
+        fakeJwt({ iss: ISSUER, sub: "x", aud: "y", ...(exp === undefined ? {} : { exp }) }),
+      );
+    const bound = (secondsLeft?: number) =>
+      issuanceBoundFor(
+        tokenWith(secondsLeft === undefined ? undefined : Math.floor(now / 1000) + secondsLeft),
+        now,
+      );
+    expect(bound()).toBe(30_000);
+    expect(bound(600)).toBe(30_000);
+    expect(bound(8)).toBe(6000);
+    expect(bound(3.5)).toBe(1500);
+    // Less than the margin plus the floor left: no fallback to protect
+    expect(bound(2.5)).toBe(30_000);
+    expect(bound(-60)).toBe(30_000);
+  });
+
   it("an expired lease token is not presented when no fresh token can be minted: the recovery step is named", async () => {
     const fixture = await startCi(EXEC_RULE, {
       expSeconds: Math.floor(Date.now() / 1000) - 60,
@@ -809,6 +836,7 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expect(errors).toContain(
       "no token is left to store the proposal: the lease's token expired at",
     );
+    expect(errors).toContain("before a fresh one could be minted (");
     expect(errors).toContain("Recovery for the credential that now exists at the issuer");
     expect(fixture.minted.bodies).toHaveLength(0);
     expectNoSecretLeak(fixture);

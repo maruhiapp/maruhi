@@ -251,3 +251,13 @@ for round 8; D, H and I are closed.
 
 Rulings C and J received adopted candidates in this round and stay open
 for round 9; D, H and I are closed.
+
+### 8-8. Round 9 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (consistency) | C-20 (tests only): nothing pinned that a fresh DO's step-9 trigger survives its first re-open without DDL (equal by construction; a later edit to step 9 would turn every open into a DROP + CREATE unnoticed). No functional candidate: the counter's coverage, the four marks, the bound, the binding and the per-page mark were re-walked | **C-20 adopted** (the pin precedes the drift section of the existing test). **C CLOSED (round 9)** |
+| J (switch-over) | J-21 (strict, a concrete failure): a staged audit log with a gap or a seq at or below 0 committed (the count check matches the uploader's trailer; the prefix check does not cover a gap above the position or a first replica), and the post-commit extension then threw the append-only defect on every later page, read, export and checkpoint of the mirror — bricked until an operator edits SQL; a head column longer than the log installed phantom heads at a first replica. J-22 (considered, not adopted): never install the column — a full-log derivation inside page requests at every mark and re-point, and the import installs it anyway; J-23 (considered, not adopted): a bounded pre-staging extension with a retryable refusal — the loop converges with persisted progress at the cost of page-0 restarts only; J-T1 (tests only): the plan pins use a simplified query | **J-21 adopted** — at the trailer the staged log must be exactly seq 1..N and the staged column exactly 1..M with M ≤ N (`malformed`; a seq below 1 is malformed in the staged aggregates); the import's restore applies the same rule to the snapshot (a gapped log restored, then threw on every read — the same hole, closed with the same two aggregates). Recorded residual: a change of the audit canonical form or suite id makes every sync `audit-not-extension` between deployments on different versions (the mirror derives with the new code while the source's column holds old heads) — both sides re-derive in such a migration |
+
+Ruling J received an adopted candidate in this round and stays open for
+round 10; C, D, H and I are closed.

@@ -687,16 +687,17 @@ heads and how many of the mirror's own audit rows (the reads and leases it
 served) were re-appended after the replica's. When the primary's chain
 head, audit seq and mutation counter are the ones the last sync brought
 (and the mirror still holds that head), the command uploads nothing and
-says the mirror is current — three status reads, no chain download — so a
+says the mirror is current — two status reads, no chain download — so a
 cron can run it every few minutes. The command refuses to replicate from a
 server that is not the mirror's recorded source (a cron left pointing at a
 former primary after a failover): sync from the recorded source, re-point
 the mirror, or pass `--force`. It also refuses a server that is itself a
-mirror of another origin (sync from that origin — the star above), and a
-frozen former primary that already synced back from this mirror (promote
-the mirror instead); `--force` overrides both. A replica that lands on
-another chain than the verified view is reported as evidence of a fork and
-fails the command, so a cron sees it. `maruhi mirror status` compares the two at any time
+mirror of another origin (sync from that origin — the star above); a server
+frozen as a mirror of this one is a source whatever it replicated before;
+`--force` overrides. A replica that lands behind the chain the primary
+served before the export, past the chain it serves after the commit, or on
+another chain altogether is reported as a rollback or a fork at the primary
+and fails the command, so a cron sees it. `maruhi mirror status` compares the two at any time
 (and reports the mirror's head alone while the primary is down). Across a
 sync the mirror keeps its own lease windows and rate limits, merges the
 primary's live first-come token bindings into its own (expired ones are
@@ -753,13 +754,20 @@ with `maruhi project verify` on both). A frozen primary whose head is an
 earlier entry of the mirror's chain (restored from an older backup, then
 frozen) holds nothing the mirror lacks and is promoted over. The promotion
 counts the audit rows the frozen primary wrote since the last sync (the
-reads and leases it served); they can never be brought over afterwards —
-keep them with `maruhi project export --server <old primary>`. A stale old
-primary can never be synced over the promoted one; `maruhi mirror mark`
-refuses to mark a project whose chain and the source's are not one chain
-(neither head an entry of the other — such a mirror could never be
-synced), unless `--force`; marking a primary that is ahead of the mirror
-(the freeze) is accepted with a note naming the last sync to run. The mark starts the
+reads and leases it served) when the frozen head is the mirror's and a sync
+from it is recorded, and says they cannot be counted from here otherwise;
+either way they can never be brought over afterwards — keep them with
+`maruhi project export --server <old primary>`. `--force` promotes past
+every guard but still says what it overrides. A stale old primary can never
+be synced over the promoted one; `maruhi mirror mark` refuses to mark a
+project whose chain and the source's are not one chain (neither head an
+entry of the other — such a mirror could never be synced), refuses a
+source that is itself a mirror of a third deployment (mark against that
+one — the star), and refuses to freeze a project ahead of a source that
+holds it writable (no sync brings entries into a writable deployment: mark
+the other way round), all unless `--force`; marking a primary that is ahead
+of a mirror frozen for it (the freeze) is accepted with a note naming the
+last sync to run. The mark starts the
 project's audit position at 0: the first sync accepts the new source's log
 whatever its length, and keeps every row of this project's own log the
 replica does not carry, re-appended after it. A deployment is named by its

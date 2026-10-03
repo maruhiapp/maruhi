@@ -513,8 +513,12 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(await count("SELECT MAX(seq) AS n FROM audit_events")).toBe(exportedAudit + 1);
     expect(await stagingTables()).toEqual([]);
     // A re-point resets the audit floor (ruling C revision, round 5): every
-    // row of the log is the mirror's own against the new source
+    // row of the log is the mirror's own against the new source — and
+    // clears the replication record (ruling H revision, round 9: what the
+    // status reports as the last replication is one from the current source)
+    expect((await statusOk(OWNER)).lastSync).toBeDefined();
     expect((await mark(OWNER, "https://successor.maruhi.app")).status).toBe(200);
+    expect((await statusOk(OWNER)).lastSync).toBeUndefined();
     // A carried row is the mirror's own row byte for byte: a replica that
     // carries one of its row ids with other content cannot rewrite the
     // evidence the mirror witnessed (ruling J revision, round 5)
@@ -544,6 +548,89 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       ownAuditRows: 2,
     });
     expect(await count("SELECT COUNT(*) AS n FROM audit_events")).toBe(exportedAudit + 2);
+    expect((await unmark(OWNER)).status).toBe(200);
+  });
+
+  it("a staged audit log with a gap or a seq at or below 0, or a head column longer than the log, is malformed and never replaces the live log (ruling J revision, round 9)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    expect((await mark(OWNER)).status).toBe(200);
+    const lines = await exportAll();
+    const trailer = parsedLine(lines[lines.length - 1]);
+    const rowsOf = (table: string) => Number((trailer["rows"] as Record<string, number>)[table]);
+    const tableLine = lines.findIndex((line) => {
+      const parsed = parsedLine(line);
+      return parsed["kind"] === "table" && parsed["table"] === "audit_events";
+    });
+    const seqIndex = (parsedLine(lines[tableLine])["columns"] as string[]).indexOf("seq");
+    const auditRowAt = (seq: number) =>
+      lines.findIndex((line) => {
+        const parsed = parsedLine(line);
+        return (
+          parsed["kind"] === "row" &&
+          parsed["table"] === "audit_events" &&
+          (parsed["values"] as unknown[])[seqIndex] === seq
+        );
+      });
+    const liveRows = await count("SELECT COUNT(*) AS n FROM audit_events");
+    // A gap: row 2 missing (the trailer agrees on the count)
+    const second = auditRowAt(2);
+    expect(second).toBeGreaterThan(-1);
+    const gapped = withTrailer(
+      lines.filter((_, index) => index !== second),
+      { rows: { ...(trailer["rows"] as object), audit_events: rowsOf("audit_events") - 1 } },
+    );
+    await expectRejected(await upload(gapped, 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    expect(await count("SELECT COUNT(*) AS n FROM audit_events")).toBe(liveRows);
+    // A seq at 0 (the live primary key accepts it; the log would not be hashable)
+    const first = auditRowAt(1);
+    const zeroed = lines.map((line, index) => {
+      if (index !== first) {
+        return line;
+      }
+      const row = parsedLine(line) as { values: unknown[] };
+      const values = [...row.values];
+      values[seqIndex] = 0;
+      return JSON.stringify({ ...row, values });
+    });
+    await expectRejected(await upload(zeroed, 50), "malformed");
+    // A head column longer than the log (no audit rows, the full column):
+    // the first replica after a mark installs the column, so phantom heads
+    // would be served from nothing
+    const headsOnly = withTrailer(
+      lines.filter((line) => {
+        const parsed = parsedLine(line);
+        return !(parsed["kind"] === "row" && parsed["table"] === "audit_events");
+      }),
+      { rows: { ...(trailer["rows"] as object), audit_events: 0 } },
+    );
+    await expectRejected(await upload(headsOnly, 50), "malformed");
+    // A column shorter than the log is the normal lazy state: accepted and extended
+    const lastHead = lines.findIndex((line) => {
+      const parsed = parsedLine(line);
+      return (
+        parsed["kind"] === "row" &&
+        parsed["table"] === "audit_head_hashes" &&
+        (parsed["values"] as unknown[])[0] === rowsOf("audit_head_hashes")
+      );
+    });
+    expect(lastHead).toBeGreaterThan(-1);
+    const shorter = withTrailer(
+      lines.filter((_, index) => index !== lastHead),
+      {
+        rows: {
+          ...(trailer["rows"] as object),
+          audit_head_hashes: rowsOf("audit_head_hashes") - 1,
+        },
+      },
+    );
+    expect((await upload(shorter, 50)).status).toBe(200);
+    expect(await count("SELECT MAX(seq) AS n FROM audit_head_hashes")).toBe(
+      await count("SELECT MAX(seq) AS n FROM audit_events"),
+    );
+    // … and the mirror still syncs (nothing was bricked)
+    expect((await upload(lines, 50)).status).toBe(200);
     expect((await unmark(OWNER)).status).toBe(200);
   });
 
@@ -708,13 +795,25 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(await stagingTables()).toEqual([]);
     // The project still serves (the live tables were untouched)
     expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
-    // An audit log behind the last replicated position
+    // An audit log behind the last replicated position (contiguous — a
+    // log that is not 1..N is malformed before any position is compared,
+    // ruling J revision, round 9): the first row and the first head only
+    const seqOf = (line: string): number => Number((parsedLine(line)["values"] as unknown[])[0]);
     const withoutAudit = withTrailer(
       lines.filter((line) => {
         const parsed = parsedLine(line);
-        return !(parsed["kind"] === "row" && parsed["table"] === "audit_events");
+        const auditLike =
+          parsed["kind"] === "row" &&
+          (parsed["table"] === "audit_events" || parsed["table"] === "audit_head_hashes");
+        return !auditLike || seqOf(line) === 1;
       }),
-      { rows: { ...(parsedLine(lines[lines.length - 1])["rows"] as object), audit_events: 0 } },
+      {
+        rows: {
+          ...(parsedLine(lines[lines.length - 1])["rows"] as object),
+          audit_events: 1,
+          audit_head_hashes: 1,
+        },
+      },
     );
     // The same replica (no change) commits — and sets the audit position:
     // the mark itself starts the position at 0 (ruling C revision, round

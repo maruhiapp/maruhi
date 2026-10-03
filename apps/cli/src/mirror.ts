@@ -68,8 +68,10 @@ export type MirrorSyncResult =
       readonly committed: MirrorSyncRecord;
       /** The mirror's status before the replication (the previous position). */
       readonly before: MirrorStatus;
-      /** The server's verified view the replica is compared with. */
+      /** The server's verified view the replica is compared with: the one taken before the export, or taken again after the commit when the replica's head is past it (ruling H revision, round 9). */
       readonly verified: VerifiedProject;
+      /** The view taken before the export (the one the replica cannot honestly be behind). */
+      readonly viewBefore: VerifiedProject;
     }
   /** The source's three marks are the last replication's: nothing to upload (ruling H revision). */
   | { readonly kind: "current"; readonly before: MirrorStatus };
@@ -208,11 +210,9 @@ function markedMirrorStatus(
  * sync from the primary — a star (AUTH_SPEC §11-7). A server that is itself
  * a mirror of another origin is refused before anything is exported (a
  * replica of it would commit once and be refused after its next sync, when
- * its own rows are renumbered); so is a frozen former primary of this
- * mirror that already synced back (its rows are renumbered too). The
- * planned failover's last sync — the server frozen as a mirror of this
- * mirror, nothing replicated into it yet — goes through. `force` overrides
- * (ruling H revision, round 8).
+ * its own rows are renumbered). A server frozen as a mirror of this mirror
+ * (the planned failover's last sync, or a sibling re-pointed here) goes
+ * through. `force` overrides (ruling H revision, rounds 8 and 9).
  */
 function starSource(input: MirrorSyncInput<unknown>): Effect.Effect<MirrorStatus, CliError> {
   return Effect.gen(function* () {
@@ -229,13 +229,12 @@ function starSource(input: MirrorSyncInput<unknown>): Effect.Effect<MirrorStatus
         ),
       );
     }
-    if (source.lastSync !== undefined) {
-      return yield* Effect.fail(
-        cliError(
-          `The server ${input.sourceOrigin} is a frozen former primary of ${input.mirrorOrigin} that already synced back from it (last replication at chain head seq ${source.lastSync.chainHeadSeq}): its own audit rows were renumbered, so it is no longer a source for this mirror. Promote the mirror (\`maruhi mirror promote --server ${input.mirrorOrigin}\`), or pass --force to replicate from here anyway`,
-        ),
-      );
-    }
+    // A server frozen for this mirror is a source whatever it replicated
+    // from it before (ruling H revision, round 9): the pair stays
+    // consistent — this mirror's rows up to its position travel in the
+    // server's log verbatim, and its own rows are carried by row id. The
+    // renumbering hurts a third mirror of that server only, which the
+    // refusal above covers
     return source;
   });
 }
@@ -279,25 +278,66 @@ function replicateWithRestarts<R>(
     readonly restarts: number;
     readonly committed: MirrorSyncRecord;
     readonly verified: VerifiedProject;
+    readonly viewBefore: VerifiedProject;
   },
   CliError,
   R
 > {
   return Effect.gen(function* () {
-    let verified = firstView;
+    let viewBefore = firstView;
     let restarts = 0;
     let attempt = yield* replicateOnce(input);
     while (attempt.kind === "changed" && restarts < MAX_RESTARTS) {
       restarts += 1;
-      verified = yield* input.verified;
+      viewBefore = yield* input.verified;
       attempt = yield* replicateOnce(input);
     }
     if (attempt.kind === "changed") {
       return yield* Effect.fail(toCliError(new ExportChangedError({ reason: "project-changed" })));
     }
     const { pages, lines, committed } = attempt;
-    return { pages, lines, committed, restarts, verified };
+    // A replica past the view taken before the export is the one honest
+    // race (a write landed in between) — or a server that serves one chain
+    // and exports another: the view is taken again, and its floor check
+    // (against the floor the first view advanced) proves it extends the
+    // first; the replica must be on it (ruling H revision, round 9)
+    const verified =
+      committed.chainHeadSeq > viewBefore.state.headSeq ? yield* input.verified : viewBefore;
+    return { pages, lines, committed, restarts, verified, viewBefore };
   });
+}
+
+/** Whether a head is an entry of a verified chain (its head, or an earlier entry). */
+export function headOnChain(
+  head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
+  chain: VerifiedProject,
+): boolean {
+  return head.chainHeadSeq === chain.state.headSeq
+    ? head.chainHeadHashHex === chain.state.headHashHex
+    : head.chainHeadSeq < chain.state.headSeq &&
+        chain.history.entryHashAt(head.chainHeadSeq) === head.chainHeadHashHex;
+}
+
+/**
+ * Why a committed replica fails the sync (null = it stands): behind the
+ * view taken before the export is a rollback at the server, never a race
+ * (the view precedes every export); past the view taken again after the
+ * commit, the server exported entries it no longer serves; off either
+ * view's chain is a fork. Only an equivocating server produces any of
+ * them, so a cron must see exit 1 (ruling H revision, rounds 8 and 9).
+ */
+export function replicaVerdict(
+  committed: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
+  viewBefore: VerifiedProject,
+  verified: VerifiedProject,
+): string | null {
+  if (committed.chainHeadSeq < viewBefore.state.headSeq) {
+    return `behind the verified view taken before the export (seq ${committed.chainHeadSeq} of ${viewBefore.state.headSeq}): the server exported a chain shorter than the one it served — a rollback at the server, not a race (CRYPTO_SPEC §6.3); do not promote the mirror and run \`maruhi project verify\``;
+  }
+  if (committed.chainHeadSeq > verified.state.headSeq) {
+    return `ahead of the verified view taken after the commit (seq ${committed.chainHeadSeq} > ${verified.state.headSeq}): the server exported entries it no longer serves — a rollback at the server, not a race (CRYPTO_SPEC §6.3); do not promote the mirror and run \`maruhi project verify\``;
+  }
+  return headOnChain(committed, verified) ? null : (forkNote(committed, verified) ?? null);
 }
 
 type Unchanged = "changed" | "current" | "current-if-floor-on-chain";
@@ -369,7 +409,7 @@ function headNote(
  * those). A sync whose replica shows it fails after the commit (ruling H
  * revision, round 8: a cron must notice). null = no fork evidence.
  */
-export function forkNote(
+function forkNote(
   head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
   verified: VerifiedProject,
 ): string | null {

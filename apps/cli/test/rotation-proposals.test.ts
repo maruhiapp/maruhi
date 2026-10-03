@@ -438,6 +438,29 @@ describe("maruhi rotation accept (PF7b)", () => {
     expect(fixture.env.logs.join("\n")).toContain(
       "STRIPE_KEY_ID version=2, epoch=1; STRIPE_SECRET_KEY version=4, epoch=1",
     );
+    expect(fixture.env.errors.join("\n")).not.toContain("where the current value has");
+    // A companion is compared too (every proposed variable is opened on
+    // this device): only its line count differs here
+    const companionPolluted = await startEnv([
+      await proposalFor({
+        variables: [
+          { variableId: "vk", baseVersion: 1, plaintext: `junk_line_dummy\n${NEW_ID}` },
+          { variableId: "vs", baseVersion: 3, plaintext: NEW_KEY },
+        ],
+      }),
+    ]);
+    expect(
+      await runCli(["rotation", "accept", PROPOSAL_ID, "--yes"], companionPolluted.env.layer),
+    ).toBe(0);
+    const warnings = companionPolluted.env.errors
+      .join("\n")
+      .split("\n")
+      .filter((line) => line.includes("where the current value has"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(
+      "the new value of STRIPE_KEY_ID has 2 lines where the current value has 1 line",
+    );
+    expectNoSecretLeak(companionPolluted.env);
     expectNoSecretLeak(fixture.env);
   });
 

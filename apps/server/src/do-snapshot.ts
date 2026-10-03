@@ -970,8 +970,38 @@ class RestoreReader {
         throw new RestoreRefusedError("row-count-mismatch");
       }
     }
+    this.#verifyAuditContiguity();
     this.#promoteChainStaging();
     return { header, trailer, rows: this.rows };
+  }
+
+  /**
+   * The audit log is exactly seq 1..N and the head column exactly 1..M with
+   * M ≤ N (the append-only invariant the lazy extension relies on — a
+   * restored log with a gap threw the defect on every later read; the
+   * mirror's trailer applies the same rule — ruling J revision, round 9).
+   */
+  #verifyAuditContiguity(): void {
+    const sql = this.storage.sql;
+    const shape = (table: string) => {
+      const row = sql
+        .exec(
+          `SELECT COUNT(*) AS c, COALESCE(MAX(seq), 0) AS mx, COALESCE(MIN(seq), 1) AS mn FROM ${table}`,
+        )
+        .one();
+      return { count: Number(row["c"]), max: Number(row["mx"]), min: Number(row["mn"]) };
+    };
+    const audit = shape("audit_events");
+    const heads = shape("audit_head_hashes");
+    if (
+      audit.count !== audit.max ||
+      audit.min < 1 ||
+      heads.count !== heads.max ||
+      heads.min < 1 ||
+      heads.count > audit.count
+    ) {
+      throw new RestoreRefusedError("malformed");
+    }
   }
 
   #beginTable(line: SnapshotTableLine): void {

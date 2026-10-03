@@ -236,9 +236,10 @@ import {
 import {
   describeMirrorStatus,
   describeMirrorSync,
-  forkNote,
+  headOnChain,
   mirrorStatusOp,
   mirrorSyncOp,
+  replicaVerdict,
 } from "./mirror.ts";
 import { formatNotice, logNote, logWarning, NoticeLedger } from "./notice.ts";
 import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "./passkey.ts";
@@ -2262,14 +2263,18 @@ function mirrorSyncCommand(flags: {
     for (const line of describeMirrorSync(result, target.projectId, target.mirrorOrigin)) {
       yield* io.log(line);
     }
-    // A replica on another chain than the verified view is evidence of a
-    // fork at the server, reported above; the sync fails so a cron notices
-    // (ruling H revision, round 8)
-    const fork = result.kind === "replicated" ? forkNote(result.committed, result.verified) : null;
-    if (fork !== null) {
+    // A replica behind the view taken before the export, past the one
+    // taken after the commit, or off either's chain is evidence against
+    // the server, reported above; the sync fails so a cron notices (ruling
+    // H revision, rounds 8 and 9)
+    const verdict =
+      result.kind === "replicated"
+        ? replicaVerdict(result.committed, result.viewBefore, result.verified)
+        : null;
+    if (verdict !== null) {
       return yield* Effect.fail(
         cliError(
-          `The replica ${target.mirrorOrigin} now holds is ${fork} — against ${source.origin} and against the mirror`,
+          `The replica ${target.mirrorOrigin} now holds is ${verdict} — against ${source.origin} and against the mirror`,
         ),
       );
     }
@@ -2373,33 +2378,57 @@ function ensureMarkable(
 ): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const here = yield* syncProject(context.client, projectId);
-    const sourceView = yield* openSessionWith(context.config, sourceOrigin, "server").pipe(
-      Effect.flatMap((source) => syncProject(source.client, projectId)),
+    const source = yield* openSessionWith(context.config, sourceOrigin, "server").pipe(
+      Effect.flatMap((session) =>
+        Effect.all({
+          view: syncProject(session.client, projectId),
+          mark: session.client.mirror
+            .status({ params: { projectId } })
+            .pipe(Effect.mapError(toCliError)),
+        }),
+      ),
       Effect.catch((error: CliError) =>
         Effect.as(
           logWarning(
-            `the source's chain could not be read (${error.message}); marking without the check that this project's chain is part of it — the first \`maruhi mirror sync\` tells`,
+            `the source's chain and mark could not be read (${error.message}); marking without the check that this project's chain is part of it and that the source is a primary — the first \`maruhi mirror sync\` tells`,
           ),
           null,
         ),
       ),
     );
-    if (sourceView === null) {
+    if (source === null) {
       return;
     }
-    if (onChain(headOfView(here), sourceView)) {
-      return;
-    }
-    if (onChain(headOfView(sourceView), here)) {
-      yield* logNote(
-        `this project holds ${countNoun(here.state.headSeq - sourceView.state.headSeq, "chain entry")} that ${sourceOrigin} lacks (seq ${here.state.headSeq} against ${sourceView.state.headSeq}): after the mark, bring them over with \`maruhi mirror sync --server ${context.origin} --mirror ${sourceOrigin}\` before promoting ${sourceOrigin} (the planned failover's last sync)`,
+    // The source's own mark decides whether the sync the mark leads to can
+    // run at all (ruling C revision, round 9): a mirror of a third origin
+    // is no source (the star), and a writable source takes no page
+    if (source.mark.mirror && source.mark.sourceOrigin !== context.origin) {
+      return yield* Effect.fail(
+        cliError(
+          `${sourceOrigin} holds this project as a mirror of ${source.mark.sourceOrigin ?? "another deployment"}: mirrors sync from the primary, so this project is marked against it (\`maruhi mirror mark --server ${context.origin} --source ${source.mark.sourceOrigin ?? "<primary url>"}\`), or pass --force to mark it against ${sourceOrigin} anyway`,
+        ),
       );
+    }
+    if (onChain(headOfView(here), source.view)) {
       return;
     }
-    return yield* Effect.fail(
-      cliError(
-        `This project's chain (seq ${here.state.headSeq}, head ${here.state.headHashHex}) and ${sourceOrigin}'s (seq ${sourceView.state.headSeq}, head ${sourceView.state.headHashHex}) are not one chain: neither head is an entry of the other. Marked as a mirror it could never be synced (every replica would be refused as not an extension). It was written to after the fork — export it away, or pass --force to mark it anyway`,
-      ),
+    const ahead = countNoun(here.state.headSeq - source.view.state.headSeq, "chain entry");
+    if (!onChain(headOfView(source.view), here)) {
+      return yield* Effect.fail(
+        cliError(
+          `This project's chain (seq ${here.state.headSeq}, head ${here.state.headHashHex}) and ${sourceOrigin}'s (seq ${source.view.state.headSeq}, head ${source.view.state.headHashHex}) are not one chain: neither head is an entry of the other. Marked as a mirror it could never be synced (every replica would be refused as not an extension). It was written to after the fork — export it away, or pass --force to mark it anyway`,
+        ),
+      );
+    }
+    if (!source.mark.mirror) {
+      return yield* Effect.fail(
+        cliError(
+          `${sourceOrigin} holds this project writable, and this project holds ${ahead} it lacks (seq ${here.state.headSeq} against ${source.view.state.headSeq}): no sync brings them into a writable deployment (a replication writes into a marked mirror only). If this project is the primary, mark ${sourceOrigin} as a mirror of it instead (\`maruhi mirror mark --server ${sourceOrigin} --source ${context.origin}\`) and sync from here; if ${sourceOrigin} is the primary, those entries were written here after the fork — export them away. --force marks anyway and abandons them`,
+        ),
+      );
+    }
+    yield* logNote(
+      `this project holds ${ahead} that ${sourceOrigin} lacks (seq ${here.state.headSeq} against ${source.view.state.headSeq}): after the mark, bring them over with \`maruhi mirror sync --server ${context.origin} --mirror ${sourceOrigin}\` before promoting ${sourceOrigin} (the planned failover's last sync)`,
     );
   });
 }
@@ -2411,16 +2440,7 @@ function headOfView(view: VerifiedProject): {
   return { chainHeadSeq: view.state.headSeq, chainHeadHashHex: view.state.headHashHex };
 }
 
-/** Whether a head is an entry of a verified chain (its head, or an earlier entry). */
-function onChain(
-  head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
-  chain: VerifiedProject,
-): boolean {
-  return head.chainHeadSeq === chain.state.headSeq
-    ? head.chainHeadHashHex === chain.state.headHashHex
-    : head.chainHeadSeq < chain.state.headSeq &&
-        chain.history.entryHashAt(head.chainHeadSeq) === head.chainHeadHashHex;
-}
+const onChain = headOnChain;
 
 /** How long the promotion waits for the source to answer its probe (a black-holed source must not hold a failover). */
 const PROMOTE_PROBE_TIMEOUT = Duration.seconds(10);
@@ -2445,8 +2465,14 @@ function mirrorPromoteCommand(flags: {
       .status({ params: { projectId } })
       .pipe(Effect.mapError(toCliError));
     const guard =
-      status.sourceOrigin !== undefined && flags.force !== true
-        ? yield* promotionGuard(context, projectId, status.sourceOrigin, status)
+      status.sourceOrigin !== undefined
+        ? yield* promotionGuard(
+            context,
+            projectId,
+            status.sourceOrigin,
+            status,
+            flags.force === true,
+          )
         : { leftBehind: null, mirrorChain: null };
     const { leftBehind, mirrorChain } = guard;
     yield* context.client.mirror
@@ -2455,10 +2481,8 @@ function mirrorPromoteCommand(flags: {
     yield* io.log(
       `Promoted project ${projectId} on ${context.origin}: it accepts writes again. Members point at it with \`maruhi config set server ${context.origin}\`. A former primary that comes back is a stale server: it can never be replicated over this chain — mark it as a mirror of this one while its chain has not advanced past the fork, otherwise export it away`,
     );
-    if (leftBehind !== null && status.sourceOrigin !== undefined) {
-      yield* io.log(
-        `${leftBehind} stay on the frozen source ${status.sourceOrigin} (the reads and leases it served since the last replication): a promoted copy takes no page, so they can never be brought over — keep them with \`maruhi project export --server ${status.sourceOrigin}\``,
-      );
+    if (leftBehind !== null) {
+      yield* io.log(leftBehind);
     }
     for (const line of yield* keyFollowUps(
       context.client,
@@ -2482,7 +2506,11 @@ function promotionGuard(
   context: SessionContext,
   projectId: string,
   sourceOrigin: string,
-  status: { readonly head: SourceHead; readonly lastSync?: { readonly auditMaxSeq: number } },
+  status: {
+    readonly head: SourceHead;
+    readonly lastSync?: { readonly auditMaxSeq: number } | undefined;
+  },
+  forced: boolean,
 ): Effect.Effect<
   { readonly leftBehind: string | null; readonly mirrorChain: VerifiedProject | null },
   CliError,
@@ -2504,22 +2532,46 @@ function promotionGuard(
       mirrorChain,
     );
     if (refusal !== null) {
-      return yield* Effect.fail(cliError(refusal));
+      // --force promotes anyway, but says what it abandons (round 9)
+      if (!forced) {
+        return yield* Effect.fail(cliError(refusal));
+      }
+      yield* logWarning(`promoting with --force. ${refusal}`);
     }
-    return { leftBehind: frozenAt === null ? null : rowsLeftBehind(frozenAt, status), mirrorChain };
+    return {
+      leftBehind: frozenAt === null ? null : rowsLeftBehind(frozenAt, sourceOrigin, status),
+      mirrorChain,
+    };
   });
 }
 
-/** The frozen source's audit rows past the mirror's last replication (ruling C revision, round 8); null = none, or not told (the marks are admin-only). */
+/**
+ * What stays on the frozen source after the promotion (ruling C revision,
+ * rounds 8 and 9): its audit rows past the mirror's last replication —
+ * counted only when the frozen head is the mirror's and a replication is
+ * recorded (positions of one log; a re-point clears the record), else
+ * said to be uncountable from here. null = nothing to say (none, or the
+ * source's marks are not shown to this session).
+ */
 function rowsLeftBehind(
   frozenAt: SourceHead,
-  mirror: { readonly lastSync?: { readonly auditMaxSeq: number } | undefined },
+  sourceOrigin: string,
+  mirror: {
+    readonly head: SourceHead;
+    readonly lastSync?: { readonly auditMaxSeq: number } | undefined;
+  },
 ): string | null {
-  if (frozenAt.auditMaxSeq === undefined || mirror.lastSync === undefined) {
+  if (frozenAt.auditMaxSeq === undefined) {
     return null;
   }
+  const keep = `a promoted copy takes no page, so they can never be brought over — keep them with \`maruhi project export --server ${sourceOrigin}\``;
+  if (mirror.lastSync === undefined || frozenAt.chainHeadHashHex !== mirror.head.chainHeadHashHex) {
+    return `The audit rows the frozen source ${sourceOrigin} wrote since the last replication (the reads and leases it served) cannot be counted from here: ${keep}`;
+  }
   const rows = frozenAt.auditMaxSeq - mirror.lastSync.auditMaxSeq;
-  return rows > 0 ? countNoun(rows, "audit row") : null;
+  return rows > 0
+    ? `${countNoun(rows, "audit row")} stay on the frozen source ${sourceOrigin} (the reads and leases it served since the last replication): ${keep}`
+    : null;
 }
 
 /**

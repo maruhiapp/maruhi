@@ -128,8 +128,10 @@ export function readMirrorState(sql: SqlStorage): MirrorState | null {
  * mark guard), the audit position resets to 0 (a seq floor compares
  * positions of one source's log only — the new source's log is another;
  * the first replica from it is accepted whatever its audit seq, and the
- * rows it does not carry are re-appended after it — round 5), and the
- * mutation counter is forgotten — it is per deployment.
+ * rows it does not carry are re-appended after it — round 5), the
+ * mutation counter is forgotten — it is per deployment — and so is the
+ * replication record: what the status reports as the last replication is
+ * one from the current source, or nothing (ruling H revision, round 9).
  */
 export function remarkMirror(
   storage: DurableObjectStorage,
@@ -140,7 +142,7 @@ export function remarkMirror(
   storage.transactionSync(() => {
     dropStaging(storage.sql, tables);
     storage.sql.exec(
-      "UPDATE mirror_state SET source_origin = ?, marked_at = ?, expected_sequence = 0, staging_table = NULL, last_audit_seq = 0, last_mutation_seq = NULL WHERE id = 1",
+      "UPDATE mirror_state SET source_origin = ?, marked_at = ?, expected_sequence = 0, staging_table = NULL, last_synced_at = NULL, last_audit_seq = 0, last_mutation_seq = NULL WHERE id = 1",
       sourceOrigin,
       nowMs,
     );
@@ -394,10 +396,35 @@ function stagedMaxSeq(sql: SqlStorage, table: string): number {
   const max = Number(
     sql.exec(`SELECT COALESCE(MAX(seq), 0) AS m FROM ${stagingOf(table)}`).one()["m"],
   );
-  if (!Number.isInteger(max) || max < 0) {
+  const min = Number(
+    sql.exec(`SELECT COALESCE(MIN(seq), 1) AS m FROM ${stagingOf(table)}`).one()["m"],
+  );
+  if (!Number.isInteger(max) || max < 0 || !Number.isInteger(min) || min < 1) {
     throw malformed();
   }
   return max;
+}
+
+/**
+ * The staged audit log is exactly seq 1..N and the staged head column
+ * exactly 1..M with M ≤ N (ruling J revision, round 9): a log with a gap or
+ * a seq at or below 0 committed, and the post-commit extension then threw
+ * the append-only defect on every later page, read and export of this
+ * mirror — a replica the mirror cannot hash never replaces the live log
+ * (the chain's `chain-invalid` principle). A column longer than the log
+ * installed phantom heads nothing derives. Duplicates still die at the
+ * swap (the live primary key).
+ */
+function verifyAuditContiguity(sql: SqlStorage): void {
+  const auditRows = stagedCount(sql, AUDIT_TABLE);
+  const headRows = stagedCount(sql, AUDIT_HEAD_TABLE);
+  if (
+    auditRows !== stagedMaxSeq(sql, AUDIT_TABLE) ||
+    headRows !== stagedMaxSeq(sql, AUDIT_HEAD_TABLE) ||
+    headRows > auditRows
+  ) {
+    throw malformed();
+  }
 }
 
 /** The trailer's counts against the staged tables (and no count for a table this server has not). */
@@ -508,6 +535,7 @@ function acceptTrailer(
   nextSequence: number,
 ): void {
   verifyCounts(sql, input.tables, trailer);
+  verifyAuditContiguity(sql);
   verifyChainExtension(sql);
   if (stagedMaxSeq(sql, AUDIT_TABLE) < input.state.lastAuditSeq) {
     throw new MirrorPageRefusedError("audit-regression");

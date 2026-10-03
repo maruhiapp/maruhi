@@ -183,7 +183,18 @@ function storedValue(
       variable: current,
       deksByEpoch: keys.deksByEpoch,
       chainEpoch: keys.currentEpoch,
-    });
+    }).pipe(
+      // The device cannot open the current value (no wrap for its epoch —
+      // the post-add_device backfill is missing — or the environment is
+      // outside this device's scope): the same remedy as a missing proposal
+      // wrap, since a blind push by a device whose key reach is incomplete
+      // is not an acceptance (round 9)
+      Effect.mapError((error) =>
+        cliError(
+          `The current value of ${displayText(current.name)} cannot be opened on this device (${error.message}); the acceptance compares the proposed value with it before the push. Accept from a device that can read the environment (the one that approved this device's registration backfills its wraps — \`maruhi key device approve\`), or reject the proposal`,
+        ),
+      ),
+    );
   });
 }
 
@@ -331,7 +342,12 @@ export function rotationAcceptOp(
     // where the decision is made (D-18; the CI job's report already showed it)
     yield* Effect.forEach(
       toPush.flatMap((entry) => {
-        const warning = lineCountWarning(displayText(entry.name), entry.shape, entry.currentShape);
+        const warning = lineCountWarning(
+          displayText(entry.name),
+          entry.shape,
+          entry.currentShape,
+          proposal.connector,
+        );
         return warning === null ? [] : [warning];
       }),
       (warning) => logWarning(warning),

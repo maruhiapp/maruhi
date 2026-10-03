@@ -432,6 +432,7 @@ export function varRotateOp(
       displayText(target.primary),
       outcome.shape,
       outcome.currentShape,
+      target.rule.connector,
     );
     if (lineWarning !== null) {
       yield* logWarning(lineWarning);
