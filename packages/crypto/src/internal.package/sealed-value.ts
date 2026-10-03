@@ -138,6 +138,9 @@ export async function sealProposedValue(input: {
     );
     return { ok: true, value: { enc: encapsulatedSecret, ciphertext } };
   } catch {
+    // The HPKE seal failed: the same failure class as a DEK wrap (§5), so the
+    // error vocabulary stays closed — no caller tells the two apart (both are
+    // "the recipient's key did not take this value")
     return { ok: false, error: { kind: "DekWrapFailed" } };
   }
 }
@@ -167,6 +170,9 @@ export async function openProposedValue(input: {
     );
     return { ok: true, value };
   } catch {
+    // The HPKE open failed (a wrong key, a tampered ciphertext, or another
+    // context): the same failure class as a DEK unwrap (§5), reported under
+    // its kind for the same reason as above
     return { ok: false, error: { kind: "DekUnwrapFailed" } };
   }
 }

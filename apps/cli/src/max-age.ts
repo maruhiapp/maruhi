@@ -44,14 +44,6 @@ export interface DueRow {
   readonly dueAtMs: number;
 }
 
-/**
- * The due rows of one environment: each candidate's latest push time is
- * read from the history (concurrently — one round-trip time in all), the
- * due date is push time + interval, and a row is kept when it falls within
- * `windowDays` of now (0 = past due only). A history that cannot be read
- * is said, never swallowed: the value would otherwise vanish from the
- * list and read as "nothing due".
- */
 /** The rows due inside the window plus the variables whose age could not be judged (history read failed). */
 export interface DueRows {
   readonly rows: readonly DueRow[];
@@ -64,6 +56,14 @@ export interface DueRows {
 /** The bound on one history read (an advisory lookup never holds the command — B-7). */
 const HISTORY_TIMEOUT = Duration.seconds(10);
 
+/**
+ * The due rows of one environment: each candidate's latest push time is
+ * read from the history (concurrently — one round-trip time in all), the
+ * due date is push time + interval, and a row is kept when it falls within
+ * `windowDays` of now (0 = past due only). A history that cannot be read
+ * is said, never swallowed: the value would otherwise vanish from the
+ * list and read as "nothing due".
+ */
 export function dueRowsFor(input: {
   readonly client: MaruhiClient;
   readonly projectId: string;
