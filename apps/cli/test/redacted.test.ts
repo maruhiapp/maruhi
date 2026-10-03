@@ -14,7 +14,7 @@
 // #3 is close to the real aim: more than the redaction itself, "the unwrap sites have not grown" is what works.
 
 import { readdir, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Effect, Exit, Layer, Redacted, Stdio } from "effect";
@@ -1060,17 +1060,35 @@ async function srcFiles(): Promise<readonly string[]> {
  *   counting is fine
  * - **Never require `(`**. A point-free pass like `map(Redacted.value)` is
  *   also an unwrap; requiring the paren would miss it
+ * - **Key by basename**. Counts are keyed by the file name alone, so moving a
+ *   file into a directory (`*.package/` etc.) never rewrites the ledger. Two
+ *   unwrap-carrying files sharing one basename would collapse into a single
+ *   key — the second count silently replacing the first — so that overlap is
+ *   rejected, listing every collided relative path (fail-closed again: a
+ *   same-name pair is fine as long as at most one of them unwraps)
  */
 async function collectUnwrapSites(): Promise<Record<string, number>> {
   const files = await srcFiles();
   const counts: Record<string, number> = {};
+  const collisions = new Map<string, string[]>();
   for (const name of files) {
     const source = await readFile(join(SRC_DIR, name), "utf8");
     const matches = source.match(SPELLING_PATTERN);
     if (matches !== null) {
-      // Keys are paths relative to src/ (a shape that distinguishes subdirectories)
-      counts[name.replaceAll("\\", "/")] = matches.length;
+      const rel = name.replaceAll("\\", "/");
+      const base = basename(rel);
+      const collided = collisions.get(base) ?? [];
+      collisions.set(base, [...collided, rel]);
+      counts[base] = matches.length;
     }
+  }
+  const duplicates = [...collisions].filter(([, rels]) => rels.length > 1);
+  if (duplicates.length > 0) {
+    throw new Error(
+      `unwrap sites exist under a shared basename — the ledger key would collide: ${duplicates
+        .map(([base, rels]) => `${base} (${rels.join(", ")})`)
+        .join("; ")}`,
+    );
   }
   return counts;
 }
