@@ -34,7 +34,7 @@ import { RUN_COMMAND_REQUIRED } from "./run.ts";
  * itself lives on the Flag / Argument side).
  *
  * The contents are **derived from the command definitions themselves** by
- * effect-cli.ts (no hand-written copy — so that adding a declaration never
+ * commands/index.ts (no hand-written copy — so that adding a declaration never
  * leaves only the diagnostics stale).
  */
 export interface CommandSpec {
@@ -202,7 +202,7 @@ function invalidValueMessage(error: CliError.InvalidValue, commandKey: string): 
  * value — for the same reason `InvalidValue.expected` is plugged by
  * {@link SAFE_EXPECTATIONS}, it is not passed through.
  *
- * The current declarations (effect-cli.ts) do not use `mapEffect`, so
+ * The current declarations (commands/) do not use `mapEffect`, so
  * this is unreachable — but it is a position where **a hole opens the
  * moment one is added**, so it is bound here.
  */

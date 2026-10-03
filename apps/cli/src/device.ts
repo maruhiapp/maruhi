@@ -1216,7 +1216,7 @@ function appendOnProject(input: {
   }).pipe(Effect.catch((error) => Effect.succeed(outcome("failed", error.message))));
 }
 
-/** Reporting the approval result (called by effect-cli). */
+/** Reporting the approval result (called by commands/device.ts). */
 export function reportApproveOutcomes(
   outcomes: readonly ProjectApproveOutcome[],
 ): Effect.Effect<number, never, CliIo> {
@@ -1537,7 +1537,7 @@ interface ProjectRevokePlan {
   readonly warnings: readonly string[];
 }
 
-/** The revocation result on one project (reported by effect-cli). */
+/** The revocation result on one project (reported by commands/device.ts). */
 export interface ProjectRevokeOutcome {
   readonly projectId: string;
   readonly revoked: readonly string[];
