@@ -1124,7 +1124,10 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Effect.try({
           try: () => attestedPathOf(projectId),
-          catch: () => cliError(`Cannot read the attested-head file: ${attestedPathOf(projectId)}`),
+          catch: () =>
+            cliError(
+              `Cannot read the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
+            ),
         });
         const raw = yield* fs
           .readFileString(path, "utf8")
@@ -1149,7 +1152,9 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
         return decodeChainHead(isRecord(value) ? value["head"] : undefined);
       }).pipe(
         Effect.mapError(() =>
-          cliError(`Cannot read the attested-head file: ${attestedPathOf(projectId)}`),
+          cliError(
+            `Cannot read the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
+          ),
         ),
         Effect.provide(BunFileSystem.layer),
       ),
@@ -1159,7 +1164,9 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
         const path = yield* Effect.try({
           try: () => attestedPathOf(projectId),
           catch: () =>
-            cliError(`Cannot write the attested-head file: ${attestedPathOf(projectId)}`),
+            cliError(
+              `Cannot write the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
+            ),
         });
         yield* fs.makeDirectory(dir, { recursive: true, mode: 0o700 });
         // tmp → rename substitution (never show a partial write to a
@@ -1170,7 +1177,9 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
         yield* fs.rename(tmp, path);
       }).pipe(
         Effect.mapError(() =>
-          cliError(`Cannot write the attested-head file: ${attestedPathOf(projectId)}`),
+          cliError(
+            `Cannot write the attested-head file: ${join(dir, `${projectId}.attested.json`)}`,
+          ),
         ),
         Effect.provide(BunFileSystem.layer),
       ),
@@ -1179,13 +1188,17 @@ export function makeFileFloorStore(dir: string, options?: FileFloorStoreOptions)
         const path = yield* Effect.try({
           try: () => evidencePathOf(projectId),
           catch: () =>
-            cliError(`Cannot write the attestation-evidence log: ${evidencePathOf(projectId)}`),
+            cliError(
+              `Cannot write the attestation-evidence log: ${join(dir, `${projectId}.attestation-evidence.jsonl`)}`,
+            ),
         });
         yield* appendJsonLine(path, evidence);
         return path;
       }).pipe(
         Effect.mapError(() =>
-          cliError(`Cannot write the attestation-evidence log: ${evidencePathOf(projectId)}`),
+          cliError(
+            `Cannot write the attestation-evidence log: ${join(dir, `${projectId}.attestation-evidence.jsonl`)}`,
+          ),
         ),
         Effect.provide(BunFileSystem.layer),
       ),
