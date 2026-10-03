@@ -82,12 +82,12 @@ export type ImportClassification =
       readonly project: "absent" | "exporter";
     };
 
-/** The personal org's slug, as first login names it (repos.ts createUserBatch). */
+/** The personal org's slug, as first login names it (identities.ts createUserBatch). */
 function personalOrgSlug(userId: string): string {
   return `u-${userId.toLowerCase()}`;
 }
 
-/** The IN chunk (inside D1's bound-parameter cap with headroom — the same width as repos.ts identitiesOf). */
+/** The IN chunk (inside D1's bound-parameter cap with headroom — the same width as identities.ts identitiesOf). */
 const IN_CHUNK = 90;
 
 function chunked(values: readonly string[]): readonly (readonly string[])[] {

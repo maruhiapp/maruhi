@@ -130,7 +130,7 @@ export const apiTokens = sqliteTable(
  * No write path exists in code — changes go through the operator's cf
  * / SQL path only (docs/SELF_HOSTING.md; no admin UI or settings API will
  * be built). Readers treat an unknown value as 'closed' (fail-closed —
- * readSignupPolicy in repos.ts).
+ * readSignupPolicy in identities.ts).
  */
 export const deploymentSettings = sqliteTable("deployment_settings", {
   key: text("key").primaryKey(),
@@ -148,7 +148,7 @@ export const deploymentSettings = sqliteTable("deployment_settings", {
  * - Issuance is an operator operation (scripts/issue-signup-invite.ts +
  *   cf d1) — the server has no issuance path
  * - Consumption (status 'pending' → 'used') is a CAS inside the same D1
- *   batch as the account creation (repos.ts — eliminates both "creation
+ *   batch as the account creation (identities.ts — eliminates both "creation
  *   failed but the code burned" and "creation succeeded but the code
  *   survives")
  * - No FK on used_by_user_id: the consumption UPDATE runs **before** the
