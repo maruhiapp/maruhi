@@ -20,8 +20,8 @@ import type { MetaStatementContext } from "@maruhi/crypto";
 import { computeMetaSignedBytesHash, encodeHex, signMetaStatement, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import type { VerifiedProject } from "./chain-sync.ts";
 import { cliError, type CliError } from "./errors.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /**
  * The client-issued variable ID (AUTH_SPEC §12-1 format). It is a

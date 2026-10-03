@@ -44,6 +44,7 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import type { DekRecipient } from "./deks.ts";
 import { countNoun, displayText, logWarnings } from "./display.ts";
 import type { ReencryptedVariable } from "./env-rotate.ts";
@@ -59,7 +60,6 @@ import {
   storeReceipt,
   type SyncReceipt,
 } from "./sync-receipt.ts";
-import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 /**
  * Collates the config's `project` against the project actually

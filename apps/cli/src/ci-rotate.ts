@@ -35,6 +35,7 @@ import {
 import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
+import type { VerifiedProject } from "./chain-sync.ts";
 import {
   type CiLeaseInput,
   LEASE_NOT_FOUND_MESSAGE,
@@ -61,7 +62,6 @@ import {
   rotateCredential,
   type RotationOutcome,
 } from "./rotate-connector.ts";
-import type { VerifiedProject } from "./sync.ts";
 import { connectorFailure } from "./var-rotate.ts";
 
 /** The server's bound on a proposal's lifetime (AUTH_SPEC §14-5 — 30 days). */

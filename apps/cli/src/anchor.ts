@@ -20,9 +20,9 @@ import { readFile } from "node:fs/promises";
 import { isEnvironmentId, isProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 
+import type { VerifiedProject } from "./chain-sync.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { parseJsonRecord } from "./json-record.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /** A repository anchor file (CRYPTO_SPEC §6.3 out-of-band anchor (b)). */
 export interface RepositoryAnchor {

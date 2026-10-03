@@ -31,12 +31,12 @@ import {
 import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { ownDeviceOrFail } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { describeScope, outOfScopeMessage } from "./scope.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /** The caller as a DEK recipient (own coordinates for §5.1 verification). */
 export interface DekRecipient {

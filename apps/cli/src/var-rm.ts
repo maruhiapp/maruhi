@@ -33,6 +33,7 @@ import { SUITE_ID } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
@@ -43,7 +44,6 @@ import { signStatementAndHash } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signDeleteStatementV2 } from "./schema-statement.ts";
 import { requireVerifiedEnvironment, resolveSchemaTarget, type SchemaSetState } from "./schema.ts";
-import type { VerifiedProject } from "./sync.ts";
 import type { VerifiedEnvironmentMetadata } from "./values.ts";
 
 const MAX_ATTEMPTS = 5;

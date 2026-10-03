@@ -60,6 +60,7 @@ import { Duration, Effect, Result } from "effect";
 
 import { ensureDeviceApproveAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
+import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import {
   type CliServices,
   openMetadataProject,
@@ -116,7 +117,6 @@ import {
   storeMasterKeyAndReport,
 } from "./session.ts";
 import { sweepRotateFor } from "./sweep-rotate.ts";
-import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 /** One registry row (server-reported). */
 interface RegistryRow {

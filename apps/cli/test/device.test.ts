@@ -42,6 +42,7 @@ import {
 import { Effect, Exit, Redacted, Schema } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import type { VerifiedProject } from "../src/chain-sync.ts";
 import { runCli } from "../src/cli.ts";
 import { expectedWrapRecipientCount } from "../src/dek-wrap.ts";
 import { DEVICE_ADD_WAIT_HINT_AFTER_MS } from "../src/device.ts";
@@ -54,7 +55,6 @@ import {
 } from "../src/own-devices.ts";
 import { formatRecoveryCode } from "../src/recovery-code.ts";
 import { rotationMandates } from "../src/rotation-sweep.ts";
-import type { VerifiedProject } from "../src/sync.ts";
 import { appendableProjectHandlers } from "./support/chain-handler.ts";
 import {
   addScopedMemberOp,

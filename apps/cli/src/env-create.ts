@@ -32,6 +32,7 @@ import { Effect, Redacted } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
 import { signEntryAtHead } from "./chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { type FloorHandle, rejectIntentOnServerRejection } from "./floor-check.ts";
@@ -39,7 +40,6 @@ import type { ManifestFloor } from "./floor.ts";
 import { signNextManifest } from "./manifest.ts";
 import { signCreateStatement } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
-import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
 

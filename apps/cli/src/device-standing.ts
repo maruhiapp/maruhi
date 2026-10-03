@@ -26,13 +26,13 @@ import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Effect, Result } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { type CliServices, openMetadataProject, type ProjectContextBase } from "./context.ts";
 import { revokedFingerprintsOf } from "./device-key.ts";
 import type { CliError } from "./errors.ts";
 import { fetchProjectMemberships } from "./project-list.ts";
 import { compareCodePoints } from "./scope.ts";
 import type { CliSession } from "./session.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /** A key's standing on a verified chain (excludes sync success/failure). */
 export type ChainKeyStanding =

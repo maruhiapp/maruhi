@@ -32,6 +32,7 @@ import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import type { DekRecipient } from "./deks.ts";
 import { countNoun, decodeValueText, displayText, logWarnings } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -64,7 +65,6 @@ import {
   storeReceipt,
   type SyncReceipt,
 } from "./sync-receipt.ts";
-import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
 
 /** One line of a plan. `blocked` = apply would refuse it (reason names only the variable). */

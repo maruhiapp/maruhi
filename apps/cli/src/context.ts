@@ -17,6 +17,7 @@ import {
   reconcileDistributedAttestations,
   submitHeadAttestationIfAdvanced,
 } from "./attestation.ts";
+import { resyncExtended, syncProject, type VerifiedProject } from "./chain-sync.ts";
 import type { CliConfig } from "./config.ts";
 import { ConfigStore } from "./config.ts";
 import type { DekRecipient } from "./deks.ts";
@@ -53,7 +54,6 @@ import {
   resolveSession,
   type SessionCredential,
 } from "./session.ts";
-import { resyncExtended, syncProject, type VerifiedProject } from "./sync.ts";
 
 /**
  * Services every CLI command may need (production wiring lives in live.ts).

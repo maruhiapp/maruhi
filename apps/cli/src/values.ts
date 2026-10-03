@@ -13,7 +13,7 @@
 //
 // A future head (declared seq > own view's head), on a value or a
 // statement, is not refused immediately: re-sync **exactly once**, pass the
-// extension check (sync.ts's ensureExtensionOf), and re-verify everything
+// extension check (chain-sync.ts's ensureExtensionOf), and re-verify everything
 // against the new view (bounded — §6.3-2b).
 //
 // When several same-named active statements in one environment pass
@@ -48,6 +48,7 @@ import { verifyDistributedMetaStatement, verifyDistributedValue } from "@maruhi/
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { checkCheckpointIntegrity } from "./checkpoint-integrity.ts";
 import { requireChainEnvironment } from "./deks.ts";
 import { displayText } from "./display.ts";
@@ -72,7 +73,6 @@ import {
   type VerifiedManifest,
   verifyDistributedManifest,
 } from "./manifest.ts";
-import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 /** One pulled variable whose write signature and statement passed §6.3. */
 export interface VerifiedPulledValue {

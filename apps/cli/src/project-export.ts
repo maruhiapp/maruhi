@@ -29,10 +29,10 @@ import { ExportChangedError } from "@maruhi/api-schema";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { countNoun, displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /** How many times a changed project restarts the export before giving up. */
 const MAX_RESTARTS = 3;

@@ -36,6 +36,7 @@ import {
   type ProposedSummary,
 } from "./approval.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { retryOnConflict } from "./retry.ts";
 import {
@@ -47,7 +48,6 @@ import {
   verifiedDeletedEnvironmentSet,
 } from "./rotation-sweep.ts";
 import { compareCodePoints } from "./scope.ts";
-import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
 

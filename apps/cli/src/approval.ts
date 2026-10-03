@@ -37,11 +37,11 @@ import {
 } from "./approval-rules.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
 import { proposalIndexOf } from "./chain-applied.ts";
+import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { ownDeviceBySigningKey } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { retryOnConflict } from "./retry.ts";
 import { sameScope } from "./scope.ts";
-import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
 

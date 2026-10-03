@@ -23,9 +23,9 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import type { VerifiedProject } from "./chain-sync.ts";
 import { ownDeviceOrFail } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /**
  * Signs the boundary checkpoint (H+2) that follows the H+1 composite entry.

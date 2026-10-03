@@ -7,7 +7,7 @@ import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { makeApiClient } from "../src/api.ts";
-import { syncProject } from "../src/sync.ts";
+import { syncProject } from "../src/chain-sync.ts";
 import {
   addMemberOp,
   type BuiltChain,

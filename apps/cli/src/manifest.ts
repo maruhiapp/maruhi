@@ -27,10 +27,10 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import type { VerifiedProject } from "./chain-sync.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { ManifestFloor } from "./floor.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /**
  * The evidence material of a verified manifest (§14.2-5's

@@ -33,6 +33,7 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import type { DekRecipient } from "./deks.ts";
 import { decodeValueText, displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -41,7 +42,6 @@ import { parseJsonRecord } from "./json-record.ts";
 import { pullVariables } from "./pull.ts";
 import { pushVariable } from "./push.ts";
 import { PRESET_IDS, type PresetId } from "./sync-types.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /** What the last apply delivered to one target: variable name → version. */
 export interface SyncReceipt {

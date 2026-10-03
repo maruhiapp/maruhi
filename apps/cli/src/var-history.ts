@@ -31,6 +31,7 @@ import { verifyDistributedValue } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { countNoun, displayText, formatUtcSeconds } from "./display.ts";
 import { cliError, type CliError, evidenceError } from "./errors.ts";
@@ -40,7 +41,6 @@ import { CliIo } from "./io.ts";
 import { decryptVerifiedValue } from "./pull.ts";
 import { type PushedVersion, pushVariable, sameRedactedBytes } from "./push.ts";
 import { resolveSchemaTarget } from "./schema.ts";
-import type { VerifiedProject } from "./sync.ts";
 import {
   pullVerifiedEnvironment,
   type VerifiedEnvironmentPull,

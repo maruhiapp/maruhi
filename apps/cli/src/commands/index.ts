@@ -50,6 +50,7 @@ import {
   auditVerifyConfig,
   makeAuditCommands,
 } from "./audit.ts";
+import { syncApplyConfig, syncInitConfig, syncPlanConfig, makeSyncCommands } from "./sync.ts";
 import { ciRotateConfig, ciRunConfig, ciSyncConfig, makeCiCommands } from "./ci.ts";
 import { configGetConfig, configSetConfig, makeConfigCommands } from "./config.ts";
 import {
@@ -130,7 +131,6 @@ import {
   makeSchemaCommands,
 } from "./schema.ts";
 import { serverGrantConfig, serverRevokeConfig, makeServerCommands } from "./server.ts";
-import { syncApplyConfig, syncInitConfig, syncPlanConfig, makeSyncCommands } from "./sync.ts";
 import { tokenListConfig, tokenRevokeConfig, makeTokenCommands } from "./token.ts";
 import {
   varHistoryConfig,

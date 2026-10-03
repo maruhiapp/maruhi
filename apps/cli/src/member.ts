@@ -52,6 +52,7 @@ import {
 } from "./approval.ts";
 import { backfillEachEnvironment, backfillEnvironmentFor, registerWraps } from "./backfill.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import type { IdentityBacking } from "./config.ts";
 import { deviceReceivesEnvironment, ROLE_RANK } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
@@ -100,7 +101,6 @@ import {
   scopeChangeAt,
   scopeContains,
 } from "./scope.ts";
-import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
 

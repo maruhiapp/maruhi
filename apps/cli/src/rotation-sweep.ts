@@ -40,6 +40,7 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { AppliedOperation } from "./chain-applied.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import { displayText } from "./display.ts";
 import type { RotationSummary } from "./env-rotate.ts";
@@ -48,7 +49,6 @@ import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { compareCodePoints, environmentsOfScopeAt, scopeChangeAt } from "./scope.ts";
-import type { VerifiedProject } from "./sync.ts";
 import { verifiedDeletedEnvironments } from "./values.ts";
 
 /** The injected rotation's mode: force = a new epoch is mandatory / verify = resume-or-confirm only. */
