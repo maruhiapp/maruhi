@@ -1239,7 +1239,7 @@ describe("rotation / audit nested subcommands (ADR-0016 stage 3 ③)", () => {
     const bogus = await startEnv();
     expect(await runCli(["rotation", "bogus"], bogus.env.layer)).toBe(2);
     expect(bogus.env.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: list | dismiss)",
+      "Unknown subcommand (expected one of: list | dismiss | proposals | accept | reject)",
     );
   });
 
