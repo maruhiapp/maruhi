@@ -87,6 +87,15 @@ jobs:
       #     @astrojs/vercel > @vercel/routing-utils. No deploys to Vercel means
       #     no execution path. A name-scoped override to 6.3.0 would drag in
       #     router (express 5 line, ^8), so it is not taken (same source)
+      #   GHSA-vfj7-8cjw-p6xm: braces@3.0.3 (stack exhaustion on deeply nested
+      #     glob patterns) via @stylexjs/eslint-plugin > micromatch and
+      #     @astryxdesign/build > fast-glob > micromatch — lint and build time
+      #     only, over the repository's own glob patterns. No published fix
+      #     at the time of the ignore (2026-10-03); `bun audit fix` finds none
+      #   GHSA-ch52-4w7c-c8xp: http-cache-semantics@4.2.0 (max-stale handling
+      #     of cached responses) via blume > @scalar/astro > astro — the docs
+      #     site's build-time asset fetching, no served cache. No published
+      #     fix at the time of the ignore (2026-10-03)
       # Removed as stale (2026-09-30): the image-size@2.0.2 ignores
       # (GHSA-w3rx-r6r6-pgpr / GHSA-5p2g-fcmc-qvqq — image-size left the tree
       # with a Blume update) and the sharp@0.35.2 ignore (GHSA-rgj7-g3m4-5g8c —
@@ -97,6 +106,8 @@ jobs:
         run: >-
           bun audit
           --ignore GHSA-9wv6-86v2-598j
+          --ignore GHSA-vfj7-8cjw-p6xm
+          --ignore GHSA-ch52-4w7c-c8xp
 
       - name: 1. Format (oxfmt)
         run: bun run fmt:check
