@@ -37,8 +37,10 @@ import {
   ConnectorError,
   type CredentialValues,
   describeFinalize,
+  describeValueShapes,
   type FinalizeOutcome,
   finalizeCredential,
+  lineCountWarning,
   planRotation,
   type RotateDeps,
   type RotateInputs,
@@ -67,12 +69,17 @@ export class RotateSeams extends Context.Reference<RotateSeamsShape | null>("cli
 }) {}
 
 /** The connector dependencies of one run: production defaults overridden by the test seams. */
-export function rotateDeps(seams: RotateSeamsShape | null, sql: RotateDeps["sql"]): RotateDeps {
+export function rotateDeps(
+  seams: RotateSeamsShape | null,
+  sql: RotateDeps["sql"],
+  exec: RotateDeps["exec"],
+): RotateDeps {
   return {
     fetch: seams?.fetch ?? globalThis.fetch,
     now: seams?.now ?? (() => Date.now()),
     randomBytes: seams?.randomBytes ?? ((length) => crypto.getRandomValues(new Uint8Array(length))),
     sql,
+    exec,
     awsIamBase: seams?.awsIamBase,
     awsStsBase: seams?.awsStsBase,
     cloudflareBase: seams?.cloudflareBase,
@@ -97,6 +104,8 @@ export interface VarRotateResult {
   /** Every version pushed, in push order (companions first). */
   readonly pushed: readonly { readonly name: string; readonly version: PushedVersion }[];
   readonly facts: readonly string[];
+  /** The shape of every value pushed ("N bytes, M lines"; the primary first — shown, never stored). */
+  readonly valueShape: string;
   readonly previous: string;
   /** The max age the primary's schema declares (layout v3 — null = none). */
   readonly maxAgeDays: number | null;
@@ -275,7 +284,7 @@ function currentCredential(
   });
 }
 
-function connectorFailure(error: unknown): CliError {
+export function connectorFailure(error: unknown): CliError {
   if (error instanceof ConnectorError) {
     return cliError(error.message);
   }
@@ -283,11 +292,13 @@ function connectorFailure(error: unknown): CliError {
 }
 
 /** Confirms an invalidating step: `--yes`, or a y/N prompt at a terminal; non-interactive without --yes refuses. */
-function ensureConfirmed(input: {
+export function ensureConfirmed(input: {
   readonly facts: readonly string[];
   readonly prompt: string;
   readonly refusal: string;
   readonly yes: boolean;
+  /** What a "no" answer reports (default: nothing was sent to the issuer). */
+  readonly abort?: string | undefined;
 }): Effect.Effect<void, CliError, CliIo | Stdio.Stdio> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -303,7 +314,7 @@ function ensureConfirmed(input: {
     yield* Effect.forEach(input.facts, io.logError, { discard: true });
     const answer = yield* io.promptLine({ prompt: input.prompt });
     if (!["y", "yes"].includes(answer.trim().toLowerCase())) {
-      return yield* Effect.fail(cliError("Aborted: nothing was sent to the issuer"));
+      return yield* Effect.fail(cliError(input.abort ?? "Aborted: nothing was sent to the issuer"));
     }
   });
 }
@@ -411,10 +422,21 @@ export function varRotateOp(
         yes: input.yes,
       });
     }
+    const site = { variable: target.primary, environmentId: context.environmentId };
     const outcome = yield* Effect.tryPromise({
-      try: () => rotateCredential(target.rule, current, inputs, input.deps),
+      try: () => rotateCredential(target.rule, current, inputs, input.deps, site),
       catch: connectorFailure,
     });
+    // A line count that changed is worth a look before the push (D-16)
+    const lineWarning = lineCountWarning(
+      displayText(target.primary),
+      outcome.shape,
+      outcome.currentShape,
+      target.rule.connector,
+    );
+    if (lineWarning !== null) {
+      yield* logWarning(lineWarning);
+    }
     const pushed = yield* pushOutcome(context, pulled, target, outcome);
     const primaryStatement = pulled.variables.find((variable) => variable.name === target.primary);
     return {
@@ -422,6 +444,7 @@ export function varRotateOp(
       connector: target.rule.connector,
       pushed,
       facts: outcome.facts,
+      valueShape: describeValueShapes(outcome),
       previous: outcome.previous,
       maxAgeDays: primaryStatement?.schema?.maxAgeDays ?? null,
       warnings: [
@@ -463,18 +486,29 @@ export function varFinalizeOp(
     // connector decides against the issuer which of those to invalidate;
     // nothing server-declared (the history's versions or times) takes part
     const currentCompanions: Record<string, Uint8Array> = {};
+    const previousCompanions: Record<string, Uint8Array> = {};
     const ancestors: Record<string, readonly Uint8Array[]> = {};
     const warnings = [...primary.warnings];
+    // The previous credential's companions are positional: the version
+    // directly before the current one pairs with the primary's only when
+    // the primary's previous version is also the one directly before
+    // (one rotation pushes the pair together); otherwise no pairing is
+    // claimed and the finalize sees the ancestors alone (C-7)
+    const paired = primary.ancestorVersion === primary.latestVersion - 1;
     for (const [companion, variable] of Object.entries(companionsOf(target.rule))) {
       const value = yield* companionValue(local, variable, target);
       currentCompanions[companion] = Redacted.value(value);
       const range = yield* verifiedAncestorRange({ ...base, name: variable });
       ancestors[companion] = range.ancestors.map((entry) => Redacted.value(entry.value));
+      const before = range.ancestors[0];
+      if (paired && before !== undefined && before.version === range.latestVersion - 1) {
+        previousCompanions[companion] = Redacted.value(before.value);
+      }
       warnings.push(...range.warnings);
     }
     const previous: CredentialValues = {
       primary: Redacted.value(primary.ancestor),
-      companions: {},
+      companions: previousCompanions,
     };
     const current: CredentialValues = {
       primary: Redacted.value(primary.latest),
@@ -489,8 +523,10 @@ export function varFinalizeOp(
       refusal: `Refusing to finalize the rotation of ${displayText(target.primary)} in a non-interactive environment without --yes (it invalidates the previous credential at the issuer). Re-run with --yes to accept that explicitly`,
       yes: input.yes,
     });
+    const site = { variable: target.primary, environmentId: context.environmentId };
     const outcome = yield* Effect.tryPromise({
-      try: () => finalizeCredential(target.rule, previous, current, inputs, input.deps, ancestors),
+      try: () =>
+        finalizeCredential(target.rule, previous, current, inputs, input.deps, ancestors, site),
       catch: connectorFailure,
     });
     return {
@@ -519,6 +555,7 @@ export function describeRotation(
   const lines = [
     `Rotated ${displayText(result.primary)} in environment ${displayText(environmentId)} with the ${result.connector} connector (${versions})`,
     ...result.facts.map((fact) => `  ${fact}`),
+    `  value: ${result.valueShape}`,
     `Previous credential: ${result.previous}`,
   ];
   if (!result.previous.includes("nothing to finalize")) {

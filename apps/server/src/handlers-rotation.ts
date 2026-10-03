@@ -17,6 +17,7 @@ import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { callProjectData, noContent } from "./data-http.ts";
+import type { MemberProposalValue } from "./programs-proposal.ts";
 import type { EffectiveRotationFlag } from "./rotation-detect.ts";
 
 export const rotationLive = HttpApiBuilder.group(maruhiApi, "rotation", (handlers) =>
@@ -39,6 +40,31 @@ export const rotationLive = HttpApiBuilder.group(maruhiApi, "rotation", (handler
         projectId: params.projectId,
         permission: "admin",
         invoke: (stub, actor) => stub.dismissRotationFlags(actor, payload.targets),
+      }).pipe(Effect.as(noContent)),
+    )
+    // Sealed value proposals (AUTH_SPEC §14-5): a member's view (read
+    // scope × chain role member — own wraps only; the role floor and the
+    // scope filter are on the DO side)
+    .handle("proposals", ({ params, endpoint }) =>
+      callProjectData<readonly MemberProposalValue[]>()({
+        endpoint,
+        projectId: params.projectId,
+        permission: "read",
+        invoke: (stub, actor) => stub.listRotationProposals(actor),
+      }).pipe(Effect.map((proposals) => ({ proposals }))),
+    )
+    // A member's resolution (write scope × chain role member × environment
+    // ∈ scope — the DO verifies the named versions on acceptance)
+    .handle("resolveProposal", ({ params, payload, endpoint }) =>
+      callProjectData<void>()({
+        endpoint,
+        projectId: params.projectId,
+        permission: "write",
+        invoke: (stub, actor) =>
+          stub.resolveRotationProposal(actor, params.proposalId, {
+            outcome: payload.outcome,
+            versions: payload.versions ?? [],
+          }),
       }).pipe(Effect.as(noContent)),
     ),
 );

@@ -5,7 +5,7 @@
   "description": "Reference generation / verification tools for the test vectors (throwaway; not product code). bun install as an independent project outside the workspace (see bunfig.toml)",
   "type": "module",
   "scripts": {
-    "generate": "bun run generate-dek-wrap.mjs && bun run generate-lease-wrap.mjs && python3 generate_reference.py && bun run generate-master-key-wrap.mjs",
+    "generate": "bun run generate-dek-wrap.mjs && bun run generate-lease-wrap.mjs && bun run generate-sealed-value.mjs && python3 generate_reference.py && bun run generate-master-key-wrap.mjs",
     "verify": "bun run verify_reference.mjs"
   },
   "devDependencies": {

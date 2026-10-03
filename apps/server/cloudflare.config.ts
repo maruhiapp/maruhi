@@ -147,6 +147,14 @@ export default defineConfig((ctx) => {
             }),
           ],
           env: {
+            // The production worker's D1 (the same database as the hosted
+            // mode): an import job (PF3 — identitiesKey) provisions the
+            // imported project's users, identities, org, projects row and
+            // membership projection here after the DO restore
+            DB: bindings.d1({
+              name: "maruhi",
+              id: "c45d4f84-3142-46cf-ab3b-c9571ca7eed0",
+            }),
             OPS_BACKUP_BUCKET: bindings.r2({
               name: "maruhi-ops-backup",
             }),

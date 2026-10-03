@@ -499,6 +499,7 @@ function injectionEnvFor(plan: Plan): Effect.Effect<Readonly<Record<string, stri
       epoch: 0,
       varType: "",
       required: false,
+      maxAgeDays: null,
       value: Redacted.make(encoder.encode(placeholder), { label: "placeholder" }),
     }),
   );

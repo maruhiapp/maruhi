@@ -34,10 +34,18 @@
 // Error wording carries the connector, the issuer's status code and
 // message — never a credential, a password, or a URL with a password in it.
 
-import { Context } from "effect";
+import { Context, Redacted } from "effect";
 
-import type { RotateRule } from "./rotate-config.ts";
+import { countNoun, decodeValueText, displayText } from "./display.ts";
+import { companionVariablesOf, EXEC_CONTROL_PREFIX, type RotateRule } from "./rotate-config.ts";
+import {
+  type CaptureInput,
+  type CaptureOutcome,
+  ScriptLeftoverError,
+  ScriptStoppedError,
+} from "./run.ts";
 import { type AwsCredentials, signV4 } from "./sigv4.ts";
+import { scrubVendorOutput, type SyncWrite } from "./sync-exec.ts";
 import { CLI_VERSION } from "./version.ts";
 
 const decoder = new TextDecoder();
@@ -59,6 +67,8 @@ export interface RotateDeps {
   readonly now: () => number;
   readonly randomBytes: (length: number) => Uint8Array;
   readonly sql: SqlRunnerShape;
+  /** Runs a script of the `exec` connector (production: Bun.spawn — live.ts; tests: a fake). */
+  readonly exec: (input: CaptureInput) => Promise<CaptureOutcome>;
   /** The issuer API origins (production: the fixed hosts). */
   readonly awsIamBase?: string | undefined;
   readonly awsStsBase?: string | undefined;
@@ -75,6 +85,16 @@ export type CompanionAncestors = Readonly<Record<string, readonly Uint8Array[]>>
 
 /** The decrypted inputs a connector consumes (input name → bytes). Empty = self-rotation. */
 export type RotateInputs = Readonly<Record<string, Uint8Array>>;
+
+/**
+ * Where the rotation happens — the rule's variable and the environment
+ * (the `exec` connector hands both to its scripts; the other connectors
+ * do not need them).
+ */
+export interface RotationSite {
+  readonly variable: string;
+  readonly environmentId: string;
+}
 
 /** One credential as stored: the rule's variable and its companions (the AWS access key id). */
 export interface CredentialValues {
@@ -93,6 +113,12 @@ export interface RotationPlan {
 export interface RotationOutcome {
   /** The new values to push (the primary and every companion the rule names). */
   readonly values: CredentialValues;
+  /** The primary's shape ({@link shapeOf}) — for the local report; never a proposal fact. */
+  readonly shape: ValueShape;
+  /** Each companion's shape by name, for the same report. */
+  readonly companionShapes: Readonly<Record<string, ValueShape>>;
+  /** The current primary's shape, for the same report: a new value of another line count is worth a look before it is pushed (D-16 — a leftover's line is the common form). */
+  readonly currentShape: ValueShape;
   /** Non-secret facts for the report (the new key id, the role now in use, the token id). */
   readonly facts: readonly string[];
   /** What the previous credential's state is now, in one line. */
@@ -270,7 +296,7 @@ async function rotatePostgres(
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
-): Promise<RotationOutcome> {
+): Promise<ConnectorOutcome> {
   const parsed = parseDbUrl(current.primary, "postgres");
   const role = nextRole(rule, parsed.user);
   const password = generatePassword(deps.randomBytes);
@@ -304,7 +330,7 @@ async function rotateMysql(
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
-): Promise<RotationOutcome> {
+): Promise<ConnectorOutcome> {
   const parsed = parseDbUrl(current.primary, "mysql");
   const role = nextRole(rule, parsed.user);
   const password = generatePassword(deps.randomBytes);
@@ -634,16 +660,27 @@ async function iamListKeys(
   });
 }
 
+/** The IAM user the current key belongs to and its keys (the opening read of a rotation and of a finalize). */
+async function iamKeysOf(
+  rule: Extract<RotateRule, { connector: "aws-iam-access-key" }>,
+  current: CredentialValues,
+  inputs: RotateInputs,
+  deps: RotateDeps,
+) {
+  const caller = awsCallerOf(current, inputs);
+  const currentId = currentKeyId(current);
+  const user = await iamUserOf(deps, caller, rule, currentId);
+  const keys = await iamListKeys(deps, caller, user);
+  return { caller, currentId, user, keys };
+}
+
 async function rotateAwsIam(
   rule: Extract<RotateRule, { connector: "aws-iam-access-key" }>,
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
-): Promise<RotationOutcome> {
-  const caller = awsCallerOf(current, inputs);
-  const currentId = currentKeyId(current);
-  const user = await iamUserOf(deps, caller, rule, currentId);
-  const keys = await iamListKeys(deps, caller, user);
+): Promise<ConnectorOutcome> {
+  const { caller, currentId, user, keys } = await iamKeysOf(rule, current, inputs, deps);
   const facts: string[] = [];
   if (keys.length >= 2) {
     // IAM allows two keys per user. An inactive one that is not the key in
@@ -711,10 +748,7 @@ async function finalizeAwsIam(
   deps: RotateDeps,
   ancestors: CompanionAncestors,
 ): Promise<FinalizeOutcome> {
-  const caller = awsCallerOf(current, inputs);
-  const currentId = currentKeyId(current);
-  const user = await iamUserOf(deps, caller, rule, currentId);
-  const keys = await iamListKeys(deps, caller, user);
+  const { caller, currentId, user, keys } = await iamKeysOf(rule, current, inputs, deps);
   const others = keys.filter((key) => key.id !== currentId);
   if (others.length === 0) {
     return {
@@ -902,7 +936,7 @@ async function rotateCloudflare(
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
-): Promise<RotationOutcome> {
+): Promise<ConnectorOutcome> {
   const token = decoder.decode(current.primary).trim();
   const admin = adminTokenOf(current, inputs);
   const id = await cloudflareTokenId(deps, rule, token);
@@ -972,14 +1006,437 @@ async function finalizeCloudflare(
 }
 
 /* -------------------------------------------------------------------------- */
+/* The exec connector (a script of the repository — PF8)                        */
+/* -------------------------------------------------------------------------- */
+
+type ExecRule = Extract<RotateRule, { connector: "exec" }>;
+
+/** The lines of a script's stderr shown on failure (the tail, scrubbed). */
+const EXEC_SHOWN_LINES = 20;
+/** The lines of a finalize script's stdout kept as facts. */
+const EXEC_FACT_LINES = 10;
+
+/** A secret the script could echo, in the shape the scrubber takes. */
+function secretOf(name: string, bytes: Uint8Array): SyncWrite {
+  return { name, value: Redacted.make(bytes, { label: "exec-secret" }) };
+}
+
+/** Scrubs script output of every secret it could carry and keeps the tail (the sync driver's discipline). */
+function scrubbedLines(output: string, secrets: readonly SyncWrite[], lines: number): string[] {
+  return scrubVendorOutput(output, secrets).slice(-lines);
+}
+
+/**
+ * The environment of a script: the credential under the rule's variable
+ * name and `MH_ROTATE_CURRENT`, its companions and the admin inputs under
+ * their names (the `maruhi run` shape — every value is a UTF-8 text
+ * without NUL, as an environment variable must be), and the control
+ * variables. The previous credential (finalize) rides as
+ * `MH_ROTATE_PREVIOUS`. Names were validated at config time; here only
+ * the values can refuse, each naming the variable and never the value.
+ */
+function scriptEnvironment(input: {
+  readonly rule: ExecRule;
+  readonly site: RotationSite;
+  readonly phase: "rotate" | "finalize";
+  readonly current: CredentialValues;
+  readonly previous: CredentialValues | null;
+  readonly inputs: RotateInputs;
+}): Readonly<Record<string, string>> {
+  const env: Record<string, string> = {
+    [`${EXEC_CONTROL_PREFIX}VARIABLE`]: input.site.variable,
+    [`${EXEC_CONTROL_PREFIX}ENVIRONMENT`]: input.site.environmentId,
+    [`${EXEC_CONTROL_PREFIX}PHASE`]: input.phase,
+  };
+  const set = (name: string, bytes: Uint8Array, what: string): void => {
+    const text = decodeValueText(bytes);
+    if (text === null || text.includes("\0")) {
+      throw new ConnectorError(
+        `exec: ${what} is not a UTF-8 text without NUL, so it cannot be set in the script's environment`,
+      );
+    }
+    env[name] = text;
+  };
+  set(
+    input.site.variable,
+    input.current.primary,
+    `the value of ${displayText(input.site.variable)}`,
+  );
+  set(
+    `${EXEC_CONTROL_PREFIX}CURRENT`,
+    input.current.primary,
+    `the value of ${displayText(input.site.variable)}`,
+  );
+  if (input.previous !== null) {
+    set(`${EXEC_CONTROL_PREFIX}PREVIOUS`, input.previous.primary, "the previous credential");
+  }
+  for (const [envName, variable] of Object.entries(input.rule.companions)) {
+    const bytes = input.current.companions[envName];
+    if (bytes !== undefined) {
+      set(envName, bytes, `the value of ${displayText(variable)}`);
+    }
+    // The companion the previous credential carried (the key id to
+    // retire), when the finalize knows it (C-7)
+    const previousBytes = input.previous?.companions[envName];
+    if (previousBytes !== undefined) {
+      set(
+        `${EXEC_CONTROL_PREFIX}PREVIOUS_${envName}`,
+        previousBytes,
+        `the previous value of ${displayText(variable)}`,
+      );
+    }
+  }
+  for (const [envName, bytes] of Object.entries(input.inputs)) {
+    set(envName, bytes, `the input ${displayText(envName)}`);
+  }
+  return env;
+}
+
+/** The secrets a script of this rotation could echo (scrubbed out of anything shown). */
+function scriptSecrets(input: {
+  readonly current: CredentialValues;
+  readonly previous: CredentialValues | null;
+  readonly inputs: RotateInputs;
+  readonly produced?: CredentialValues | undefined;
+}): SyncWrite[] {
+  const secrets = [secretOf("current", input.current.primary)];
+  for (const [name, bytes] of Object.entries(input.current.companions)) {
+    secrets.push(secretOf(`current:${name}`, bytes));
+  }
+  if (input.previous !== null) {
+    secrets.push(secretOf("previous", input.previous.primary));
+    for (const [name, bytes] of Object.entries(input.previous.companions)) {
+      secrets.push(secretOf(`previous:${name}`, bytes));
+    }
+  }
+  for (const [name, bytes] of Object.entries(input.inputs)) {
+    secrets.push(secretOf(`input:${name}`, bytes));
+  }
+  if (input.produced !== undefined) {
+    secrets.push(secretOf("new", input.produced.primary));
+    for (const [name, bytes] of Object.entries(input.produced.companions)) {
+      secrets.push(secretOf(`new:${name}`, bytes));
+    }
+  }
+  return secrets;
+}
+
+/** A capture that rejected, as the connector's error: stopped by maruhi (D-6), a leftover's output (D-14), or a launch failure. */
+function captureFailure(
+  error: unknown,
+  phase: "rotate" | "finalize",
+  script: string,
+): ConnectorError {
+  if (error instanceof ScriptStoppedError) {
+    // Stopped by maruhi after it started (a flooded stdout) — not a
+    // launch failure (ruling D revision, round 4); a rotate script had
+    // started printing, so the credential may exist at the issuer (D-17)
+    const created =
+      phase === "rotate"
+        ? ". The new credential may exist at the issuer: re-run the rotation once the script prints only the value (make it idempotent, or retire the unused credential at the issuer by hand)"
+        : "";
+    return new ConnectorError(
+      `exec: the ${phase} script ${script} was stopped: ${error.message}${created}`,
+    );
+  }
+  if (error instanceof ScriptLeftoverError) {
+    // The script's own answer cannot be told from a leftover process's
+    // output (D-14); a script that exited 0 may have created the
+    // credential, so the recovery is named
+    const created =
+      error.exitCode === 0 && phase === "rotate"
+        ? ". The script exited 0, so the new credential may exist at the issuer: re-run the rotation once the script redirects that output (make it idempotent, or retire the unused credential at the issuer by hand)"
+        : "";
+    return new ConnectorError(`exec: ${error.message}${created}`);
+  }
+  const reason = error instanceof Error ? error.message : "it could not be started";
+  return new ConnectorError(`exec: the ${phase} script ${script} did not start: ${reason}`);
+}
+
+/** Runs one script; a launch failure or a non-zero exit is a connector error naming the script and the scrubbed stderr tail. */
+async function runScript(
+  deps: RotateDeps,
+  rule: ExecRule,
+  argv: readonly string[],
+  env: Readonly<Record<string, string>>,
+  secrets: readonly SyncWrite[],
+  phase: "rotate" | "finalize",
+): Promise<CaptureOutcome> {
+  let outcome: CaptureOutcome;
+  try {
+    outcome = await deps.exec({ command: argv, cwd: rule.cwd, extraEnv: env });
+  } catch (error) {
+    throw captureFailure(error, phase, argv[0] ?? "");
+  }
+  if (outcome.exitCode !== 0) {
+    const tail = scrubbedLines(outcome.stderr, secrets, EXEC_SHOWN_LINES);
+    throw new ConnectorError(
+      `exec: the ${phase} script ${argv[0] ?? ""} exited with code ${outcome.exitCode}${tail.length === 0 ? "" : ` (its stderr, filtered: ${tail.join(" | ")})`}`,
+    );
+  }
+  return outcome;
+}
+
+/**
+ * The shape of a value (D-7 / D-8): "N bytes, M lines", shown in the local
+ * rotation report and, at an acceptance, computed from the opened value on
+ * the member's device — never sent to the server (a line count is
+ * plaintext-derived information the ciphertext does not give away). A
+ * script that printed its own chatter on stdout shows here before the
+ * value is pushed.
+ */
+export function shapeOf(value: Uint8Array): ValueShape {
+  let lines = 1;
+  for (const byte of value) {
+    if (byte === 0x0a) {
+      lines += 1;
+    }
+  }
+  return { bytes: value.length, lines };
+}
+
+/** The numbers a value's shape is made of; the text is formatted at display time ({@link describeShape}) and never parsed back (D-19). */
+export interface ValueShape {
+  readonly bytes: number;
+  readonly lines: number;
+}
+
+/** "N bytes, M lines". */
+export function describeShape(shape: ValueShape): string {
+  return `${countNoun(shape.bytes, "byte")}, ${countNoun(shape.lines, "line")}`;
+}
+
+/** The primary's shape, then each companion's by name (the same parity as the acceptance's per-value shapes). */
+export function describeValueShapes(
+  outcome: Pick<RotationOutcome, "shape" | "companionShapes">,
+): string {
+  return [
+    describeShape(outcome.shape),
+    ...Object.entries(outcome.companionShapes)
+      .toSorted(([a], [b]) => a.localeCompare(b))
+      .map(([name, shape]) => `${name} ${describeShape(shape)}`),
+  ].join("; ");
+}
+
+/**
+ * The warning a changed line count earns before the push (D-16 at `var
+ * rotate`, D-18 at the acceptance): the one form of a leftover's output no
+ * timing can tell apart. A warning, never a refusal (a token becoming a
+ * PEM is legitimate). null = the line count is unchanged.
+ */
+export function lineCountWarning(
+  name: string,
+  next: ValueShape,
+  current: ValueShape,
+  connector: string,
+): string | null {
+  if (next.lines === current.lines) {
+    return null;
+  }
+  // Only a script can have printed more than the credential; an API
+  // connector's value is the issuer's answer, so the difference is the
+  // current value's layout (round 9)
+  const cause =
+    connector === "exec"
+      ? "check that the rotate script printed only the credential (a process it started may have written to its stdout)"
+      : `the ${connector} connector produced it as the issuer answered, so the current value had another layout (pushed by hand?) — nothing to fix unless the issuer's answer changed shape`;
+  return `the new value of ${name} has ${countNoun(next.lines, "line")} where the current value has ${countNoun(current.lines, "line")}: ${cause}`;
+}
+
+/** The new value as the rotate script printed it: one trailing newline (LF or CRLF) is dropped, nothing else is touched. */
+function valueFromStdout(stdout: Uint8Array): Uint8Array {
+  let end = stdout.length;
+  if (end > 0 && stdout[end - 1] === 0x0a) {
+    end -= 1;
+    if (end > 0 && stdout[end - 1] === 0x0d) {
+      end -= 1;
+    }
+  }
+  const value = stdout.subarray(0, end);
+  if (value.length === 0) {
+    throw new ConnectorError(
+      "exec: the rotate script printed no value on stdout (its stdout is the new credential; commentary belongs on stderr)",
+    );
+  }
+  return producedText(value, "the value the rotate script printed on stdout");
+}
+
+interface ScriptAnswer {
+  readonly values: CredentialValues;
+  readonly facts: readonly string[];
+}
+
+/** The rotate script's stdout as a JSON object (anything else is refused with the contract spelled out). */
+function jsonObjectFromStdout(stdout: Uint8Array): Record<string, unknown> {
+  const text = decodeValueText(stdout);
+  let parsed: unknown;
+  try {
+    parsed = text === null ? undefined : JSON.parse(text);
+  } catch {
+    parsed = undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new ConnectorError(
+      'exec: the rotate script did not print a JSON object on stdout (the rule declares "output": "json": print {"value": "<new credential>", "companions": {…}, "facts": […]})',
+    );
+  }
+  const record = parsed as Record<string, unknown>;
+  const unknown = Object.keys(record).filter(
+    (key) => !["value", "companions", "facts"].includes(key),
+  );
+  // The keys are the script's words: counted, never echoed
+  if (unknown.length > 0) {
+    throw new ConnectorError(
+      `exec: the rotate script's JSON answer has ${countNoun(unknown.length, "unknown key")}; it takes value, companions, facts`,
+    );
+  }
+  return record;
+}
+
+/** One answered companion: declared by the rule and a non-empty string. */
+function companionBytes(rule: ExecRule, name: string, value: unknown): Uint8Array {
+  // The script's own words never reach an error message (a mistyped key
+  // could be a credential): the message names what the rule declares
+  if (!(name in rule.companions)) {
+    throw new ConnectorError(
+      `exec: the rotate script answered a companion the rule does not declare (the rule declares ${declaredCompanions(rule)}); declare it under companions in the rotation config`,
+    );
+  }
+  return producedBytes(value, `the companion ${displayText(name)} in the rotate script's answer`);
+}
+
+/** The declared companion names for a message ("STRIPE_KEY_ID", "none"). */
+function declaredCompanions(rule: ExecRule): string {
+  const names = Object.keys(rule.companions);
+  return names.length === 0 ? "none" : names.map(displayText).join(", ");
+}
+
+/**
+ * A produced value (the primary or a companion) as bytes: a non-empty
+ * string of UTF-8 text without NUL — what a value must be to be injected
+ * by `maruhi run` later. `what` names the value, never carries it.
+ */
+function producedBytes(value: unknown, what: string): Uint8Array {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ConnectorError(`exec: ${what} is not a non-empty string`);
+  }
+  return producedText(encoder.encode(value), what);
+}
+
+/** The produced bytes checked as UTF-8 text without NUL (a value that could not be injected is refused before it is stored). */
+function producedText(bytes: Uint8Array, what: string): Uint8Array {
+  const text = decodeValueText(bytes);
+  if (text === null || text.includes("\0")) {
+    throw new ConnectorError(
+      `exec: ${what} is not UTF-8 text without NUL, so it could never be injected into a process environment; it is refused before anything is stored`,
+    );
+  }
+  return bytes;
+}
+
+/** The answer's companions: every one the rule declares, nothing it does not, each a non-empty string. */
+function companionsFromAnswer(rule: ExecRule, raw: unknown): Record<string, Uint8Array> {
+  const companionsRaw = raw ?? {};
+  if (typeof companionsRaw !== "object" || companionsRaw === null || Array.isArray(companionsRaw)) {
+    throw new ConnectorError(
+      "exec: the rotate script's JSON answer has a companions field that is not an object",
+    );
+  }
+  const companions: Record<string, Uint8Array> = {};
+  for (const [name, value] of Object.entries(companionsRaw as Record<string, unknown>)) {
+    companions[name] = companionBytes(rule, name, value);
+  }
+  const missing = Object.keys(rule.companions).find((name) => !(name in companions));
+  if (missing !== undefined) {
+    throw new ConnectorError(
+      `exec: the rotate script's answer lacks the companion ${displayText(missing)} the rule declares (every declared companion is pushed with the new value, so all of them must be answered)`,
+    );
+  }
+  return companions;
+}
+
+/** The rotate script's JSON answer: `{ value, companions?, facts? }`. */
+function answerFromJson(rule: ExecRule, stdout: Uint8Array): ScriptAnswer {
+  const record = jsonObjectFromStdout(stdout);
+  const primary = producedBytes(record["value"], "the value in the rotate script's JSON answer");
+  const companions = companionsFromAnswer(rule, record["companions"]);
+  const factsRaw = record["facts"] ?? [];
+  if (!Array.isArray(factsRaw) || !factsRaw.every((fact) => typeof fact === "string")) {
+    throw new ConnectorError(
+      "exec: the rotate script's JSON answer has a facts field that is not a list of strings",
+    );
+  }
+  return { values: { primary, companions }, facts: factsRaw as string[] };
+}
+
+async function rotateExec(
+  rule: ExecRule,
+  site: RotationSite,
+  current: CredentialValues,
+  inputs: RotateInputs,
+  deps: RotateDeps,
+): Promise<ConnectorOutcome> {
+  const env = scriptEnvironment({ rule, site, phase: "rotate", current, previous: null, inputs });
+  const secrets = scriptSecrets({ current, previous: null, inputs });
+  const outcome = await runScript(deps, rule, rule.rotate, env, secrets, "rotate");
+  const answer: ScriptAnswer =
+    rule.output === "json"
+      ? answerFromJson(rule, outcome.stdout)
+      : { values: { primary: valueFromStdout(outcome.stdout), companions: {} }, facts: [] };
+  // The script's own words may carry a credential by mistake: scrub them
+  // of everything this run knows before they reach the report
+  const all = scriptSecrets({ current, previous: null, inputs, produced: answer.values });
+  const facts = answer.facts.flatMap((fact) => scrubbedLines(fact, all, 1));
+  const script = rule.rotate[0] ?? "";
+  return {
+    values: answer.values,
+    facts: [
+      `${script}: new credential produced${facts.length === 0 ? "" : ` (${facts.join("; ")})`}`,
+    ],
+    previous:
+      rule.finalize === null
+        ? "the rotate script was expected to retire the previous credential itself (nothing to finalize)"
+        : `the previous credential stays valid until you finalize (${rule.finalize[0] ?? ""} runs with it)`,
+    recovery: `the new credential is held only by this process (it is not shown) — re-run the rotation (${script} runs again; make it idempotent, or retire the unused credential at the issuer by hand)`,
+    warnings: [],
+  };
+}
+
+async function finalizeExec(
+  rule: ExecRule,
+  site: RotationSite,
+  previous: CredentialValues,
+  current: CredentialValues,
+  inputs: RotateInputs,
+  deps: RotateDeps,
+): Promise<FinalizeOutcome> {
+  if (rule.finalize === null) {
+    return {
+      kind: "nothing",
+      facts: [
+        "the rule has no finalize script (its rotate script retires the previous credential itself)",
+      ],
+    };
+  }
+  const env = scriptEnvironment({ rule, site, phase: "finalize", current, previous, inputs });
+  const secrets = scriptSecrets({ current, previous, inputs });
+  const outcome = await runScript(deps, rule, rule.finalize, env, secrets, "finalize");
+  const said = scrubbedLines(decoder.decode(outcome.stdout), secrets, EXEC_FACT_LINES);
+  return {
+    kind: "finalized",
+    facts: [
+      `${rule.finalize[0] ?? ""}: previous credential retired${said.length === 0 ? "" : ` (${said.join("; ")})`}`,
+    ],
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* The frame                                                                     */
 /* -------------------------------------------------------------------------- */
 
 /** The companions a rule's credential carries (companion name → the variable that holds it). */
 export function companionsOf(rule: RotateRule): Readonly<Record<string, string>> {
-  return rule.connector === "aws-iam-access-key"
-    ? { [AWS_ACCESS_KEY_ID_COMPANION]: rule.accessKeyIdVariable }
-    : {};
+  return companionVariablesOf(rule);
 }
 
 /** What the rotation will do at the issuer (decided from the current value alone — nothing is sent). */
@@ -999,16 +1456,49 @@ export function planRotation(rule: RotateRule, current: CredentialValues): Rotat
           "create a second token with the current token's policies (the current token stays valid until you finalize)",
         immediate: false,
       };
+    case "exec":
+      return rule.finalize === null
+        ? {
+            description: `run ${rule.rotate[0] ?? ""} — the rule has no finalize script, so that script is expected to retire the current credential itself (no grace period)`,
+            immediate: true,
+          }
+        : {
+            description: `run ${rule.rotate[0] ?? ""} to create the new credential (the current one stays valid until you finalize with ${rule.finalize[0] ?? ""})`,
+            immediate: false,
+          };
   }
 }
 
-/** Creates the new credential at the issuer. Throws {@link ConnectorError}. */
-export function rotateCredential(
+/** Creates the new credential at the issuer. Rejects with {@link ConnectorError}. */
+export async function rotateCredential(
   rule: RotateRule,
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
+  /** Where the rotation happens (the `exec` connector's scripts receive it; required for that connector). */
+  site?: RotationSite,
 ): Promise<RotationOutcome> {
+  const outcome = await rotateWith(rule, current, inputs, deps, site);
+  return {
+    ...outcome,
+    shape: shapeOf(outcome.values.primary),
+    companionShapes: Object.fromEntries(
+      Object.entries(outcome.values.companions).map(([name, bytes]) => [name, shapeOf(bytes)]),
+    ),
+    currentShape: shapeOf(current.primary),
+  };
+}
+
+/** A connector's own outcome (the frame adds the values' shapes). */
+type ConnectorOutcome = Omit<RotationOutcome, "shape" | "companionShapes" | "currentShape">;
+
+function rotateWith(
+  rule: RotateRule,
+  current: CredentialValues,
+  inputs: RotateInputs,
+  deps: RotateDeps,
+  site?: RotationSite,
+): Promise<ConnectorOutcome> {
   switch (rule.connector) {
     case "postgres":
       return rotatePostgres(rule, current, inputs, deps);
@@ -1018,6 +1508,8 @@ export function rotateCredential(
       return rotateAwsIam(rule, current, inputs, deps);
     case "cloudflare-api-token":
       return rotateCloudflare(rule, current, inputs, deps);
+    case "exec":
+      return rotateExec(rule, requireSite(site), current, inputs, deps);
   }
 }
 
@@ -1036,17 +1528,23 @@ export function describeFinalize(rule: RotateRule): string {
       return "deactivate the access key that authenticates with the previous version's secret at the issuer (only a key id an earlier version of the key id variable held; reversible at the issuer; deleted by the next rotation)";
     case "cloudflare-api-token":
       return "delete the previous token";
+    case "exec":
+      return rule.finalize === null
+        ? "nothing to invalidate (the rule has no finalize script — its rotate script retires the previous credential itself)"
+        : `run ${rule.finalize[0] ?? ""} with the previous credential in its environment (MH_ROTATE_PREVIOUS)`;
   }
 }
 
-/** Invalidates the previous credential at the issuer. Throws {@link ConnectorError}. */
-export function finalizeCredential(
+/** Invalidates the previous credential at the issuer. Rejects with {@link ConnectorError}. */
+export async function finalizeCredential(
   rule: RotateRule,
   previous: CredentialValues,
   current: CredentialValues,
   inputs: RotateInputs,
   deps: RotateDeps,
   ancestors: CompanionAncestors = {},
+  /** Where the rotation happens (required for the `exec` connector). */
+  site?: RotationSite,
 ): Promise<FinalizeOutcome> {
   switch (rule.connector) {
     case "postgres":
@@ -1057,5 +1555,15 @@ export function finalizeCredential(
       return finalizeAwsIam(rule, previous, current, inputs, deps, ancestors);
     case "cloudflare-api-token":
       return finalizeCloudflare(rule, previous, current, inputs, deps);
+    case "exec":
+      return finalizeExec(rule, requireSite(site), previous, current, inputs, deps);
   }
+}
+
+/** The exec connector cannot run without knowing the variable and environment (an internal inconsistency, never a user error). */
+function requireSite(site: RotationSite | undefined): RotationSite {
+  if (site === undefined) {
+    throw new ConnectorError("exec: the rotation site (variable and environment) was not supplied");
+  }
+  return site;
 }

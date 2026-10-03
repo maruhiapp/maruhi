@@ -19,6 +19,7 @@
 // kinds, targets); plaintext values and key material never pass
 // through this module.
 
+import type { RotationProposal } from "@maruhi/api-schema";
 import { RotationFlagNotFoundError } from "@maruhi/api-schema";
 import { Effect } from "effect";
 
@@ -29,6 +30,15 @@ import { countNoun, displayText, formatUtcDate } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
+import {
+  DAY_MS,
+  describeDue,
+  DUE_SOON_DAYS,
+  type DueRow,
+  type DueRows,
+  dueRowsFor,
+  type MaxAgeCandidate,
+} from "./max-age.ts";
 import { logNote } from "./notice.ts";
 import {
   configNamesProject,
@@ -37,6 +47,7 @@ import {
   type RotateConfig,
   ruleFor,
 } from "./rotate-config.ts";
+import { verifiedDeletedEnvironmentSet } from "./rotation-sweep.ts";
 import { pullVerifiedEnvironmentMetadata, type VerifiedEnvironmentMetadata } from "./values.ts";
 
 /** One flag of the derived view (the received form of api-schema's RotationFlagSchema). */
@@ -69,6 +80,17 @@ function fetchRotationFlags(
   );
 }
 
+/** Fetches the pending sealed proposals addressed to the caller (member or above — the server filters by scope; PF7b). */
+export function fetchRotationProposals(
+  client: MaruhiClient,
+  projectId: string,
+): Effect.Effect<readonly RotationProposal[], CliError> {
+  return client.rotation.proposals({ params: { projectId } }).pipe(
+    Effect.mapError(toCliError),
+    Effect.map((response) => response.proposals),
+  );
+}
+
 /** The variable-name resolution result (only verified-statement-derived — unresolvable = null). */
 export type NameIndex = ReadonlyMap<string, string>;
 
@@ -78,7 +100,7 @@ export interface VariableState {
   readonly deleted: boolean;
 }
 
-type StateIndex = ReadonlyMap<string, VariableState>;
+export type StateIndex = ReadonlyMap<string, VariableState>;
 
 /**
  * For each environment appearing in the list, fetches the verified
@@ -114,7 +136,7 @@ function verifiedMetadataOrNote(
   );
 }
 
-function resolveVariableStates(
+export function resolveVariableStates(
   context: ProjectContextBase,
   environmentIds: readonly string[],
 ): Effect.Effect<ReadonlyMap<string, StateIndex>, never, CliServices> {
@@ -142,127 +164,128 @@ function resolveVariableStates(
   });
 }
 
-/** One value past, or approaching, the max age its schema declares (PF6 R9 expiring values). */
-interface ExpiringRow {
-  readonly environmentId: string;
-  readonly variableId: string;
-  readonly name: string;
-  readonly maxAgeDays: number;
-  readonly pushedAtMs: number;
-  readonly dueAtMs: number;
-}
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-/** How far ahead "due soon" looks. */
-const DUE_SOON_DAYS = 14;
-
 /**
  * The values whose schema declares a max age (layout v3 — CRYPTO_SPEC §4.2)
- * and whose latest push is past it, or within {@link DUE_SOON_DAYS} of it.
- * The max age comes from the verified statements; the push time is the
- * history's server-declared `pushedAtMs` (the same material `var history`
- * shows — advisory). A declared variable with no value has no age.
+ * and whose latest push is past it, or within `windowDays` of it (PF6 R9 /
+ * PF7a — max-age.ts). The max age comes from the verified statements; the
+ * push time is the history's server-declared `pushedAtMs` (advisory). A
+ * declared variable with no value has no age.
  */
+/** The expiring values plus what the walk could not cover (every part a check cannot pass on). */
+interface ExpiringRows extends DueRows {
+  /** Why the environment list could not be read (deleted environments then cannot be told apart — A-13); null when it was. */
+  readonly listUnreadable: string | null;
+}
+
+/**
+ * The environments to walk: the chain's set minus the ones verified as
+ * deleted (an environment's deletion is a signed data-plane statement, not
+ * a chain op — a deleted one stays in the chain's set forever, and its
+ * metadata pull answers not-found; A-13). Every member walks every
+ * environment: the metadata-only pull and the version history are read
+ * under scope "any" (AUTH_SPEC §12-3), so a scoped member's check is whole
+ * (A-15 — the opposite was recorded in A-14 and was wrong). A failed list
+ * read is reported as such and the walk goes on with the chain's set.
+ */
+function environmentsToWalk(
+  context: ProjectContextBase,
+): Effect.Effect<
+  { readonly ids: readonly string[]; readonly listUnreadable: string | null },
+  never,
+  CliServices
+> {
+  return Effect.gen(function* () {
+    const listed = yield* verifiedDeletedEnvironmentSet(context.client, context.verified).pipe(
+      Effect.map((deleted) => ({ deleted, failure: null })),
+      Effect.catch((error: CliError) =>
+        Effect.as(
+          logNote(
+            `could not read the environment list (${error.message}) — deleted environments are not told apart from unreadable ones`,
+          ),
+          { deleted: new Set<string>(), failure: error.message },
+        ),
+      ),
+    );
+    const ids = [...context.verified.state.environments.keys()]
+      .toSorted()
+      .filter((environmentId) => !listed.deleted.has(environmentId));
+    return { ids, listUnreadable: listed.failure };
+  });
+}
+
 function expiringValues(
   context: ProjectContextBase,
   nowMs: number,
-): Effect.Effect<readonly ExpiringRow[], never, CliServices> {
+  windowDays: number,
+): Effect.Effect<ExpiringRows, never, CliServices> {
   return Effect.gen(function* () {
-    const rows: ExpiringRow[] = [];
-    for (const environmentId of [...context.verified.state.environments.keys()].toSorted()) {
+    const rows: DueRow[] = [];
+    const unreadable: string[] = [];
+    const unreadableEnvironments: string[] = [];
+    const walk = yield* environmentsToWalk(context);
+    for (const environmentId of walk.ids) {
       const metadata = yield* verifiedMetadataOrNote(
         context,
         environmentId,
         "its expiring values are not listed",
       );
       if (metadata === null) {
+        // Its ages are unknown, which a check cannot pass on (A-11)
+        unreadableEnvironments.push(environmentId);
         continue;
       }
+      const candidates: MaxAgeCandidate[] = [];
       for (const statement of metadata.variables) {
-        const row = yield* expiringRowFor(context, environmentId, statement, nowMs);
-        if (row !== null) {
-          rows.push(row);
+        const maxAgeDays = statement.schema?.maxAgeDays ?? null;
+        if (maxAgeDays !== null && statement.status === "active") {
+          candidates.push({ variableId: statement.variableId, name: statement.name, maxAgeDays });
         }
       }
+      const due = yield* dueRowsFor({
+        client: context.client,
+        projectId: context.projectId,
+        environmentId,
+        candidates,
+        nowMs,
+        windowDays,
+      });
+      rows.push(...due.rows);
+      unreadable.push(...due.unreadable.map((name) => `${environmentId}/${name}`));
     }
-    return rows.toSorted((a, b) => a.dueAtMs - b.dueAtMs || a.name.localeCompare(b.name));
+    return {
+      rows: rows.toSorted((a, b) => a.dueAtMs - b.dueAtMs || a.name.localeCompare(b.name)),
+      unreadable,
+      unreadableEnvironments,
+      listUnreadable: walk.listUnreadable,
+    };
   });
 }
 
-/** One statement's due row: null when it declares no max age, has no value, or is not due within the window. */
-function expiringRowFor(
-  context: ProjectContextBase,
-  environmentId: string,
-  statement: VerifiedEnvironmentMetadata["variables"][number],
-  nowMs: number,
-): Effect.Effect<ExpiringRow | null, never, CliIo> {
-  const maxAgeDays = statement.schema?.maxAgeDays ?? null;
-  if (maxAgeDays === null || statement.status !== "active") {
-    return Effect.succeed(null);
-  }
-  return context.client.variables
-    .history({
-      params: { projectId: context.projectId, environmentId, variableId: statement.variableId },
-    })
-    .pipe(
-      Effect.map((response) => response.versions),
-      // A history that cannot be read is said, never swallowed: the value
-      // would otherwise vanish from the list and read as "nothing due"
-      Effect.catch((error) =>
-        Effect.as(
-          logNote(
-            `could not read the history of ${displayText(statement.name)} in environment ${displayText(environmentId)} (${error.message}) — its age is not shown`,
-          ),
-          [],
-        ),
-      ),
-      Effect.map((history) => {
-        const latest = history.toSorted((a, b) => b.version - a.version)[0];
-        if (latest === undefined) {
-          return null;
-        }
-        const dueAtMs = latest.pushedAtMs + maxAgeDays * DAY_MS;
-        return dueAtMs - nowMs > DUE_SOON_DAYS * DAY_MS
-          ? null
-          : {
-              environmentId,
-              variableId: statement.variableId,
-              name: statement.name,
-              maxAgeDays,
-              pushedAtMs: latest.pushedAtMs,
-              dueAtMs,
-            };
-      }),
-    );
-}
-
-/** Prints the expiring values (nothing when none — the section exists only when there is something to do). */
+/** Prints the expiring values (nothing when none — the section exists only when there is something to do). Returns the rows for `--fail-on-due`. */
 function reportExpiringValues(
   context: ProjectContextBase,
   config: RotateConfig | null,
   nowMs: number,
-): Effect.Effect<void, never, CliServices> {
+  windowDays: number,
+): Effect.Effect<ExpiringRows, never, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const rows = yield* expiringValues(context, nowMs);
+    const due = yield* expiringValues(context, nowMs, Math.max(windowDays, DUE_SOON_DAYS));
+    const { rows } = due;
     if (rows.length === 0) {
-      return;
+      return due;
     }
     const expired = rows.filter((row) => row.dueAtMs <= nowMs).length;
     const soon = rows.length - expired;
+    const horizon = Math.max(windowDays, DUE_SOON_DAYS);
     const parts = [
       ...(expired === 0 ? [] : [`${countNoun(expired, "value")} past the declared max age`]),
-      ...(soon === 0 ? [] : [`${countNoun(soon, "value")} due within ${DUE_SOON_DAYS} days`]),
+      ...(soon === 0 ? [] : [`${countNoun(soon, "value")} due within ${horizon} days`]),
     ];
     yield* io.log(
       `Expiring values: ${parts.join(", ")} (the max age is declared with \`maruhi schema set --max-age\`; the push time is server-declared)`,
     );
     for (const row of rows) {
-      const days = Math.round(Math.abs(row.dueAtMs - nowMs) / DAY_MS);
-      const when =
-        row.dueAtMs <= nowMs
-          ? `expired ${countNoun(days, "day")} ago`
-          : `due in ${countNoun(days, "day")}`;
       const next = rotationAction({
         environmentId: row.environmentId,
         variableId: row.variableId,
@@ -270,9 +293,10 @@ function reportExpiringValues(
         config,
       });
       yield* io.log(
-        `  [${row.dueAtMs <= nowMs ? "expired" : "due"}] ${displayText(row.environmentId)} ${displayText(row.name)}: max age ${row.maxAgeDays}d, pushed ${formatUtcDate(row.pushedAtMs)}, ${when} — next: ${next}`,
+        `  [${row.dueAtMs <= nowMs ? "expired" : "due"}] ${displayText(row.environmentId)} ${displayText(row.name)}: max age ${row.maxAgeDays}d, pushed ${formatUtcDate(row.pushedAtMs)}, ${describeDue(row, nowMs)} — next: ${next}`,
       );
     }
+    return due;
   });
 }
 
@@ -378,34 +402,237 @@ function describeBasis(basis: "read" | "readable"): string {
   return basis === "read" ? "read (confirmed fetch)" : "readable (fetch was possible)";
 }
 
+/**
+ * The exit code `maruhi rotation list` uses to say "something is due" under
+ * `--fail-on-due` / `--fail-on-flags` (PF7a S-B). Distinct from 1 (the check
+ * itself failed) so a CI cron can tell a due credential from an outage.
+ */
+const ROTATION_DUE_EXIT_CODE = 3;
+
+/** The options of `maruhi rotation list` (the fail-on switches are the CI-cron shape — PF7a). */
+export interface RotationListOptions {
+  readonly nowMs?: number | undefined;
+  /** Exit {@link ROTATION_DUE_EXIT_CODE} when a value is past its max age (or within `dueWithinDays` of it). */
+  readonly failOnDue?: boolean | undefined;
+  /** How many days ahead `--fail-on-due` looks (0 = past due only; the listing always shows the 14-day window). */
+  readonly dueWithinDays?: number | undefined;
+  /** Exit {@link ROTATION_DUE_EXIT_CODE} when any rotation flag is active. */
+  readonly failOnFlags?: boolean | undefined;
+  /** Exit {@link ROTATION_DUE_EXIT_CODE} while a sealed proposal minted by a CI job awaits a member (PF7b — A-9). */
+  readonly failOnPending?: boolean | undefined;
+}
+
+interface VerdictInput {
+  readonly options: RotationListOptions;
+  /** null = the flags could not be read (an unknown part — A-16). */
+  readonly flagCount: number | null;
+  readonly due: readonly DueRow[];
+  readonly pending: PendingProposals;
+  readonly nowMs: number;
+}
+
+/** `--fail-on-flags`: the active flags. */
+function flagsReason(input: VerdictInput): string | null {
+  return input.options.failOnFlags === true && input.flagCount !== null && input.flagCount > 0
+    ? `${countNoun(input.flagCount, "rotation flag")} active`
+    : null;
+}
+
+/** `--fail-on-due`: the values past their max age, or due within the window. */
+function dueReason(input: VerdictInput): string | null {
+  const windowDays = input.options.dueWithinDays ?? 0;
+  const dueRows = input.due.filter((row) => row.dueAtMs - input.nowMs <= windowDays * DAY_MS);
+  if (input.options.failOnDue !== true || dueRows.length === 0) {
+    return null;
+  }
+  const when =
+    windowDays === 0 ? "past the declared max age" : `due within ${countNoun(windowDays, "day")}`;
+  return `${countNoun(dueRows.length, "value")} ${when} (${dueRows.map((row) => displayText(row.name)).join(", ")})`;
+}
+
+/** `--fail-on-pending`: the sealed proposals awaiting a member (and how many expire within the window). */
+function pendingReason(input: VerdictInput): string | null {
+  if (input.options.failOnPending !== true || input.pending.count === 0) {
+    return null;
+  }
+  const windowDays = input.options.dueWithinDays ?? 0;
+  const expiring = input.pending.expiresAtMs.filter(
+    (expiresAtMs) => expiresAtMs - input.nowMs <= windowDays * DAY_MS,
+  ).length;
+  const soon =
+    windowDays > 0 && expiring > 0
+      ? ` (${expiring} expiring within ${countNoun(windowDays, "day")})`
+      : "";
+  return `${countNoun(input.pending.count, "sealed proposal")} awaiting a member${soon}`;
+}
+
+/** The fail-on verdict: which switch fired, in the order they are reported. */
+function dueVerdict(input: VerdictInput): string | null {
+  const reasons = [flagsReason(input), dueReason(input), pendingReason(input)].filter(
+    (reason) => reason !== null,
+  );
+  return reasons.length === 0 ? null : reasons.join("; ");
+}
+
+/** What the pending-proposal line found (the count and the expiries — a verdict input of `--fail-on-pending`). */
+interface PendingProposals {
+  readonly count: number;
+  readonly expiresAtMs: readonly number[];
+  /** Why the list is unknown (a reader's token, or a failed read) — `--fail-on-pending` cannot pass on it. */
+  readonly unknown: string | null;
+}
+
+const NO_PENDING: PendingProposals = { count: 0, expiresAtMs: [], unknown: null };
+
 /** `maruhi rotation list`: displays the currently active flags (all members — class 1). */
-export function rotationListOp(
+/**
+ * The pending sealed proposals (PF7b — CRYPTO_SPEC §5.3), one line: a
+ * member or above sees the count and the command; a reader is never a
+ * recipient and asks nothing. A failed read is a note (the listing is
+ * SHOULD and does not stop).
+ */
+function reportPendingProposals(
   context: ProjectContextBase,
-  options: { readonly nowMs?: number | undefined } = {},
-): Effect.Effect<number, CliError, CliServices> {
+): Effect.Effect<PendingProposals, never, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const nowMs = options.nowMs ?? Date.now();
-    const config = yield* checklistConfig(context.projectId);
-    const flags = yield* fetchRotationFlags(context.client, context.projectId);
-    if (flags.length === 0) {
-      yield* io.log("No rotation flags are currently active");
-      yield* reportExpiringValues(context, config, nowMs);
-      return 0;
+    const self = context.verified.state.members.get(context.session.userId);
+    if (self === undefined || self.role === "reader") {
+      return {
+        ...NO_PENDING,
+        unknown:
+          "the proposals are listed to members and above only (run it with a member's token)",
+      };
     }
-    const environmentIds = [...new Set(flags.map((flag) => flag.environmentId))].toSorted();
-    const states = yield* resolveVariableStates(context, environmentIds);
-    yield* io.log(
-      `Rotation flags: ${countNoun(flags.length, "active flag")} (upstream credential rotation recommended — AUDIT_SPEC §4.1)`,
+    // The server lists the environments in the member's scope only: a
+    // scoped member's list is partial, which a check cannot pass on (A-12)
+    const partial =
+      self.scope.kind === "all"
+        ? null
+        : `only the environments in your scope are listed (${self.scope.environmentIds.map(displayText).join(", ")}); run it with a member whose scope covers every environment`;
+    const proposals = yield* fetchRotationProposals(context.client, context.projectId).pipe(
+      Effect.catch((error) =>
+        Effect.map(
+          logNote(
+            `could not read the pending sealed proposals (${error.message}) — they are not shown`,
+          ),
+          () => error.message,
+        ),
+      ),
     );
-    for (const environmentId of environmentIds) {
+    if (typeof proposals === "string") {
+      return { ...NO_PENDING, unknown: `they could not be read (${proposals})` };
+    }
+    if (proposals.length === 0) {
+      return { ...NO_PENDING, unknown: partial };
+    }
+    yield* io.log(
+      `Pending sealed proposals: ${countNoun(proposals.length, "proposal")} minted by CI jobs await a member (\`maruhi rotation proposals\` lists them; \`maruhi rotation accept <id>\` pushes one)`,
+    );
+    return {
+      count: proposals.length,
+      expiresAtMs: proposals.map((proposal) => proposal.expiresAtMs),
+      unknown: partial,
+    };
+  });
+}
+
+/** What a check could not read (an unknown age, an unknown proposal list, the flags): a check cannot PASS on it. */
+function unknownParts(
+  options: RotationListOptions,
+  due: ExpiringRows,
+  pending: PendingProposals,
+  /** The flags, or why they could not be read. */
+  flags: readonly unknown[] | string,
+): readonly string[] {
+  return [
+    ...(options.failOnFlags === true && typeof flags === "string"
+      ? [`the rotation flags could not be read (${flags})`]
+      : []),
+    ...(options.failOnDue === true ? dueUnknownParts(due) : []),
+    ...(options.failOnPending === true && pending.unknown !== null
+      ? [`the pending proposals are unknown: ${pending.unknown}`]
+      : []),
+  ];
+}
+
+/** The parts of the max-age walk a `--fail-on-due` check could not cover. */
+function dueUnknownParts(due: ExpiringRows): readonly string[] {
+  return [
+    ...(due.listUnreadable === null
+      ? []
+      : [`the environment list could not be read (${due.listUnreadable})`]),
+    ...(due.unreadable.length === 0
+      ? []
+      : [
+          `the history of ${countNoun(due.unreadable.length, "value")} could not be read (${due.unreadable.map(displayText).join(", ")})`,
+        ]),
+    ...(due.unreadableEnvironments.length === 0
+      ? []
+      : [
+          `the expiring values of ${countNoun(due.unreadableEnvironments.length, "environment")} could not be listed (${due.unreadableEnvironments.map(displayText).join(", ")})`,
+        ]),
+  ];
+}
+
+/**
+ * The fail-on verdict that closes the listing (after everything was
+ * shown): something known due is due whatever else could not be read —
+ * exit 3 routes it to "rotate now" rather than to "the check is broken"
+ * (A-10), the unread part riding along on the same line; nothing known
+ * due and something unknown is a failed check (exit 1), not "nothing is
+ * due".
+ */
+function concludeListing(input: {
+  readonly options: RotationListOptions;
+  readonly flags: readonly unknown[] | string;
+  readonly nowMs: number;
+  readonly due: ExpiringRows;
+  readonly pending: PendingProposals;
+}): Effect.Effect<number, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const { options, flags, due, pending } = input;
+    const unknown = unknownParts(options, due, pending, flags);
+    const verdict = dueVerdict({
+      options,
+      flagCount: typeof flags === "string" ? null : flags.length,
+      due: due.rows,
+      pending,
+      nowMs: input.nowMs,
+    });
+    if (verdict !== null) {
+      yield* io.logError(
+        `Rotation due (exit ${ROTATION_DUE_EXIT_CODE}): ${verdict}${unknown.length === 0 ? "" : `; also ${unknown.join("; ")}`}. Rotate and push the new values, or run \`maruhi rotation dismiss\` for a flag you accept`,
+      );
+      return ROTATION_DUE_EXIT_CODE;
+    }
+    if (unknown.length > 0) {
+      return yield* Effect.fail(
+        cliError(`Cannot judge the check: ${unknown.join("; ")}; it did not run to completion`),
+      );
+    }
+    return 0;
+  });
+}
+
+/** The flag rows per environment: the name when the verified metadata gives it, the basis, the target, the trigger, and the next step. */
+function printFlagRows(input: {
+  readonly flags: readonly RotationFlagView[];
+  readonly environmentIds: readonly string[];
+  readonly states: ReadonlyMap<string, StateIndex>;
+  readonly config: RotateConfig | null;
+}): Effect.Effect<void, never, CliIo> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    for (const environmentId of input.environmentIds) {
       yield* io.log(`Environment ${displayText(environmentId)}:`);
-      const index = states.get(environmentId);
+      const index = input.states.get(environmentId);
       // Display order is detection time → (for the same time
       // within one sweep) a stable sort by variableId. The audit
       // seq does not go on the wire (AUDIT_SPEC §7 — non-leakage
       // of the ordinal)
-      const rows = flags
+      const rows = input.flags
         .filter((flag) => flag.environmentId === environmentId)
         .toSorted(
           (a, b) =>
@@ -427,15 +654,55 @@ export function rotationListOp(
           `  ${label}\tbasis=${describeBasis(flag.basis)}\ttarget=${describeTarget(flag)}\ttrigger seq=${flag.triggerChainSeq}${reopened}`,
         );
         yield* io.log(
-          `    next: ${rotationAction({ environmentId, variableId: flag.variableId, state, config })}`,
+          `    next: ${rotationAction({ environmentId, variableId: flag.variableId, state, config: input.config })}`,
         );
       }
     }
+  });
+}
+
+export function rotationListOp(
+  context: ProjectContextBase,
+  options: RotationListOptions = {},
+): Effect.Effect<number, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const io = yield* CliIo;
+    const nowMs = options.nowMs ?? Date.now();
+    const windowDays = options.dueWithinDays ?? 0;
+    const config = yield* checklistConfig(context.projectId);
+    // A failed flags read is one unknown part, not an outage of the whole
+    // check: the due walk and the pending read go on, a known due value is
+    // still exit 3 (A-16 — A-10's rule applied to the flags)
+    const flags = yield* fetchRotationFlags(context.client, context.projectId).pipe(
+      Effect.catch((error) =>
+        Effect.as(
+          logNote(`could not read the rotation flags (${error.message}) — they are not shown`),
+          error.message,
+        ),
+      ),
+    );
+    const conclude = (due: ExpiringRows, pending: PendingProposals) =>
+      concludeListing({ options, flags, nowMs, due, pending });
+    if (typeof flags === "string" || flags.length === 0) {
+      if (typeof flags !== "string") {
+        yield* io.log("No rotation flags are currently active");
+      }
+      const due = yield* reportExpiringValues(context, config, nowMs, windowDays);
+      const pending = yield* reportPendingProposals(context);
+      return yield* conclude(due, pending);
+    }
+    const environmentIds = [...new Set(flags.map((flag) => flag.environmentId))].toSorted();
+    const states = yield* resolveVariableStates(context, environmentIds);
+    yield* io.log(
+      `Rotation flags: ${countNoun(flags.length, "active flag")} (upstream credential rotation recommended — AUDIT_SPEC §4.1)`,
+    );
+    yield* printFlagRows({ flags, environmentIds, states, config });
     yield* io.log(
       "To resolve: rotate the upstream credential and save the new value with `maruhi push` after the environment's mandated rotation (a value pushed before it is still under a key the former holder has; the re-encryption alone does not resolve a flag, and rolling back to a value they could read re-opens it). For pairs that cannot be pushed (e.g. deleted variables), dismiss the flag with `maruhi rotation dismiss` as an explicit acceptance of risk (admin)",
     );
-    yield* reportExpiringValues(context, config, nowMs);
-    return 0;
+    const due = yield* reportExpiringValues(context, config, nowMs, windowDays);
+    const pending = yield* reportPendingProposals(context);
+    return yield* conclude(due, pending);
   });
 }
 

@@ -22,8 +22,10 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
+import { describeDue } from "../src/max-age.ts";
 import {
   addMemberOp,
+  addScopedMemberOp,
   buildChain,
   type BuiltChain,
   changeRoleOp,
@@ -114,8 +116,18 @@ async function makeRotationServer(input: {
   readonly metadataAvailable?: boolean;
   /** Whether the environment-list GET works (false = 500 — the deleted-environment verification failure path). */
   readonly environmentsAvailable?: boolean;
+  /** An environment of the chain the list reports as deleted (a signed deletion statement); its metadata pull is 404 (A-13). */
+  readonly deletedEnvironment?: string;
   /** When set, a layout-v3 variable with max age 30 days exists, last pushed at this time (PF6 R9). */
   readonly expiringPushedAtMs?: number;
+  /** Whether that variable's history can be read (false = 500 — the unreadable-age path of `--fail-on-due`). */
+  readonly historyAvailable?: boolean;
+  /** Whether the flags GET works (false = 500 — an unknown part of `--fail-on-flags`, A-16). */
+  readonly flagsAvailable?: boolean;
+  /** When set, the latest version is a re-encryption pushed at this time (`sameValueAs` the version pushed at `expiringPushedAtMs`). */
+  readonly reencryptedAtMs?: number;
+  /** The expiries of the pending sealed proposals listed to the caller (default none); null = the list fails (500). */
+  readonly pendingProposalExpiries?: readonly number[] | null;
 }): Promise<RotationServerState> {
   const projectId = input.built.projectId;
   const currentEpoch = input.currentEpoch ?? 1;
@@ -158,6 +170,24 @@ async function makeRotationServer(input: {
     schema: { varType: "string", required: true, description: "", maxAgeDays: 30 },
   });
   const expiringStatements = input.expiringPushedAtMs === undefined ? [] : [expiringStatement];
+  const deletedEnvironments =
+    input.deletedEnvironment === undefined
+      ? []
+      : [
+          {
+            environmentId: input.deletedEnvironment,
+            currentEpoch: 1,
+            statement: await environmentStatementFor({
+              projectId,
+              environmentId: input.deletedEnvironment,
+              name: input.deletedEnvironment,
+              author: owner,
+              head: headOf(input.built, 1),
+              status: "deleted",
+              metaVersion: 2,
+            }),
+          },
+        ];
   const manifest = await manifestFor({
     projectId,
     environmentId: ENV_ID,
@@ -185,7 +215,10 @@ async function makeRotationServer(input: {
         : {
             status: 200,
             json: {
-              environments: [{ environmentId: ENV_ID, currentEpoch, statement: envStatement }],
+              environments: [
+                { environmentId: ENV_ID, currentEpoch, statement: envStatement },
+                ...deletedEnvironments,
+              ],
               schemaPolicy: "enabled",
             },
           },
@@ -206,30 +239,64 @@ async function makeRotationServer(input: {
             },
           },
     ),
-    onRequest(
-      "GET",
-      `/projects/${projectId}/environments/${ENV_ID}/variables/vexp/versions`,
-      () => ({
-        status: 200,
-        json: {
-          variableId: "vexp",
-          versions: [
-            {
-              version: 3,
-              epoch: currentEpoch,
-              writerUserId: owner.userId,
-              writerKeyFingerprintHex: owner.fingerprintHex,
-              pushedAtMs: input.expiringPushedAtMs ?? 0,
-              flagsIfCurrent: 0,
+    onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/variables/vexp/versions`, () =>
+      input.historyAvailable === false
+        ? { status: 500, json: { message: "injected history failure" } }
+        : {
+            status: 200,
+            json: {
+              variableId: "vexp",
+              versions: [
+                ...(input.reencryptedAtMs === undefined
+                  ? []
+                  : [
+                      {
+                        version: 4,
+                        epoch: currentEpoch,
+                        writerUserId: owner.userId,
+                        writerKeyFingerprintHex: owner.fingerprintHex,
+                        pushedAtMs: input.reencryptedAtMs,
+                        sameValueAs: 3,
+                        flagsIfCurrent: 0,
+                      },
+                    ]),
+                {
+                  version: 3,
+                  epoch: currentEpoch,
+                  writerUserId: owner.userId,
+                  writerKeyFingerprintHex: owner.fingerprintHex,
+                  pushedAtMs: input.expiringPushedAtMs ?? 0,
+                  flagsIfCurrent: 0,
+                },
+              ],
             },
-          ],
-        },
-      }),
+          },
     ),
-    onRequest("GET", `/projects/${projectId}/rotation/flags`, () => ({
-      status: 200,
-      json: { flags: input.flags },
-    })),
+    onRequest("GET", `/projects/${projectId}/rotation/flags`, () =>
+      input.flagsAvailable === false
+        ? { status: 500, json: { message: "injected flags failure" } }
+        : { status: 200, json: { flags: input.flags } },
+    ),
+    onRequest("GET", `/projects/${projectId}/rotation/proposals`, () =>
+      input.pendingProposalExpiries === null
+        ? { status: 500, json: { message: "injected proposal-list failure" } }
+        : {
+            status: 200,
+            json: {
+              proposals: (input.pendingProposalExpiries ?? []).map((expiresAtMs, index) => ({
+                proposalId: `0000000000000000000000000000000${index}`,
+                environmentId: ENV_ID,
+                connector: "exec",
+                facts: [],
+                claimsDigestHex: "00".repeat(32),
+                grantChainSeq: 1,
+                createdAtMs: 0,
+                expiresAtMs,
+                variables: [],
+              })),
+            },
+          },
+    ),
     (request) => {
       if (
         request.method !== "POST" ||
@@ -324,6 +391,162 @@ describe("maruhi rotation list", () => {
     expect(env.logs.join("\n")).toContain("va");
     expect(env.logs.join("\n")).not.toContain("ALPHA");
     expect(env.errors.join("\n")).toContain("could not fetch verified metadata");
+    // The check cannot pass on it: the environment's ages are unknown (A-11)
+    const check = await startEnv(state, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-due"], check.layer)).toBe(1);
+    expect(check.errors.join("\n")).toContain(
+      `Cannot judge the check: the expiring values of 1 environment could not be listed (${ENV_ID})`,
+    );
+  });
+
+  it("--fail-on-due skips an environment verified as deleted, and cannot pass when the environment list is unreadable (A-13)", async () => {
+    const GONE = "env-gone";
+    const withGone = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: createEnvironmentOp(GONE, dek2) },
+    ]);
+    // The deleted environment stays in the chain's set forever (its
+    // deletion is a signed statement, not a chain op): verified deleted, it
+    // is not walked and the check passes
+    const deleted = await startEnv(
+      await makeRotationServer({ built: withGone, flags: [], deletedEnvironment: GONE }),
+      withGone.projectId,
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-due"], deleted.layer)).toBe(0);
+    expect(deleted.errors.join("\n")).not.toContain(GONE);
+    // Without the list, deleted and unreadable cannot be told apart: both
+    // are unknown parts of the check
+    const listless = await startEnv(
+      await makeRotationServer({ built: withGone, flags: [], environmentsAvailable: false }),
+      withGone.projectId,
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-due"], listless.layer)).toBe(1);
+    const errors = listless.errors.join("\n");
+    expect(errors).toContain("Cannot judge the check: the environment list could not be read (");
+    expect(errors).toContain(`the expiring values of 1 environment could not be listed (${GONE})`);
+    // A scoped member's check covers every environment: the metadata-only
+    // pull and the history are read under scope "any" (A-15)
+    const scoped = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: createEnvironmentOp(GONE, dek2) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_ID]) },
+    ]);
+    const state = await makeRotationServer({ built: scoped, flags: [], deletedEnvironment: GONE });
+    const server = await MockServer.start([...state.handlers]);
+    servers.push(server);
+    const asScoped = await makeTestEnv();
+    seedSession(asScoped, server.origin, target);
+    await seedConfig(asScoped, { server: server.origin, defaultProject: scoped.projectId });
+    expect(await runCli(["rotation", "list", "--fail-on-due"], asScoped.layer)).toBe(0);
+    expect(
+      server.requests.some((r) => r.path.includes(`/environments/${ENV_ID}/pull/metadata`)),
+    ).toBe(true);
+    // … including an environment OUTSIDE the member's scope: a value past
+    // its max age there is due (A-17 pins A-15 against A-14's reading)
+    const outOfScope = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: createEnvironmentOp(GONE, dek2) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [GONE]) },
+    ]);
+    const dueState = await makeRotationServer({
+      built: outOfScope,
+      flags: [],
+      deletedEnvironment: GONE,
+      expiringPushedAtMs: Date.now() - 60 * 24 * 60 * 60 * 1000,
+    });
+    const dueServer = await MockServer.start([...dueState.handlers]);
+    servers.push(dueServer);
+    const scopedElsewhere = await makeTestEnv();
+    seedSession(scopedElsewhere, dueServer.origin, target);
+    await seedConfig(scopedElsewhere, {
+      server: dueServer.origin,
+      defaultProject: outOfScope.projectId,
+    });
+    expect(await runCli(["rotation", "list", "--fail-on-due"], scopedElsewhere.layer)).toBe(3);
+    expect(
+      dueServer.requests.some((r) => r.path.includes(`/environments/${ENV_ID}/pull/metadata`)),
+    ).toBe(true);
+    expect(dueServer.requests.some((r) => r.path.endsWith("/versions"))).toBe(true);
+  });
+
+  it("--fail-on-flags cannot pass when the flags could not be read, and a known due value is still exit 3 (A-16)", async () => {
+    const built = await convergedChain();
+    const day = 24 * 60 * 60 * 1000;
+    const broken = await startEnv(
+      await makeRotationServer({ built, currentEpoch: 2, flags: [], flagsAvailable: false }),
+      built.projectId,
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-flags"], broken.layer)).toBe(1);
+    expect(broken.errors.join("\n")).toContain(
+      "Cannot judge the check: the rotation flags could not be read (",
+    );
+    const due = await startEnv(
+      await makeRotationServer({
+        built,
+        currentEpoch: 2,
+        flags: [],
+        flagsAvailable: false,
+        expiringPushedAtMs: Date.now() - 60 * day,
+      }),
+      built.projectId,
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-flags", "--fail-on-due"], due.layer)).toBe(
+      3,
+    );
+    expect(due.errors.join("\n")).toContain("also the rotation flags could not be read");
+  });
+
+  it("a listing with no switch exits 0 on an unreadable flags read with the note on stderr, never claiming no flags; a dismissal of all needs the read (A-18)", async () => {
+    const built = await convergedChain();
+    const state = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [],
+      flagsAvailable: false,
+    });
+    const broken = await startEnv(state, built.projectId);
+    expect(await runCli(["rotation", "list"], broken.layer)).toBe(0);
+    expect(broken.errors.join("\n")).toContain("could not read the rotation flags (");
+    expect(broken.logs.join("\n")).not.toContain("No rotation flags are currently active");
+    expect(await runCli(["rotation", "dismiss", "--all", "--env", ENV_ID], broken.layer)).toBe(1);
+    expect(state.dismissBodies).toHaveLength(0);
+  });
+
+  it("--fail-on-pending under a scoped member's token cannot pass: the server lists that scope only (A-12)", async () => {
+    const scoped = await buildChain([
+      { actor: owner, operation: genesisOp(owner) },
+      { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
+      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_ID]) },
+    ]);
+    const asScoped = async (state: RotationServerState) => {
+      const server = await MockServer.start([...state.handlers]);
+      servers.push(server);
+      const env = await makeTestEnv();
+      seedSession(env, server.origin, target);
+      await seedConfig(env, { server: server.origin, defaultProject: scoped.projectId });
+      return env;
+    };
+    const none = await asScoped(
+      await makeRotationServer({ built: scoped, flags: [], pendingProposalExpiries: [] }),
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-pending"], none.layer)).toBe(1);
+    expect(none.errors.join("\n")).toContain(
+      `Cannot judge the check: the pending proposals are unknown: only the environments in your scope are listed (${ENV_ID}); run it with a member whose scope covers every environment`,
+    );
+    // A known pending proposal is still exit 3 (due over unknown — A-10)
+    const some = await asScoped(
+      await makeRotationServer({
+        built: scoped,
+        flags: [],
+        pendingProposalExpiries: [Date.now() + 24 * 60 * 60 * 1000],
+      }),
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-pending"], some.layer)).toBe(3);
+    expect(some.errors.join("\n")).toContain("1 sealed proposal awaiting a member");
+    expect(some.errors.join("\n")).toContain("also the pending proposals are unknown");
   });
 
   it("with no flags it says just that", async () => {
@@ -373,6 +596,182 @@ describe("maruhi rotation list", () => {
     const freshEnv = await startEnv(fresh, built.projectId);
     expect(await runCli(["rotation", "list"], freshEnv.layer)).toBe(0);
     expect(freshEnv.logs.join("\n")).not.toContain("Expiring values");
+  });
+
+  it("--fail-on-due exits 3 when a value is past its max age, --due-within widens it, and fresh values exit 0 (PF7a S-B)", async () => {
+    const built = await convergedChain();
+    const day = 24 * 60 * 60 * 1000;
+    // Expired 10 days ago: the plain listing still exits 0; --fail-on-due makes it 3
+    const expired = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [],
+      expiringPushedAtMs: Date.now() - 40 * day,
+    });
+    const plain = await startEnv(expired, built.projectId);
+    expect(await runCli(["rotation", "list"], plain.layer)).toBe(0);
+    const env = await startEnv(expired, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-due"], env.layer)).toBe(3);
+    expect(env.errors.join("\n")).toContain(
+      "Rotation due (exit 3): 1 value past the declared max age (STRIPE_SECRET_KEY)",
+    );
+    // The listing itself was still printed in full
+    expect(env.logs.join("\n")).toContain("[expired] env-app-1 STRIPE_SECRET_KEY");
+    // Due in 5 days: past-due-only passes, a 7-day window fails
+    const soon = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [],
+      expiringPushedAtMs: Date.now() - 25 * day,
+    });
+    const soonPass = await startEnv(soon, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-due"], soonPass.layer)).toBe(0);
+    const soonFail = await startEnv(soon, built.projectId);
+    expect(
+      await runCli(["rotation", "list", "--fail-on-due", "--due-within", "7"], soonFail.layer),
+    ).toBe(3);
+    expect(soonFail.errors.join("\n")).toContain(
+      "Rotation due (exit 3): 1 value due within 7 days (STRIPE_SECRET_KEY)",
+    );
+    // --due-within is meaningless without --fail-on-due (a usage error, before any network)
+    const misuse = await startEnv(soon, built.projectId);
+    expect(await runCli(["rotation", "list", "--due-within", "7"], misuse.layer)).toBe(2);
+    expect(misuse.errors.join("\n")).toContain(
+      "--due-within applies to --fail-on-due / --fail-on-pending only",
+    );
+  });
+
+  it("--fail-on-pending exits 3 while a sealed proposal awaits a member, 0 once none does, and 1 when the list could not be read (PF7b A-9)", async () => {
+    const built = await convergedChain();
+    const day = 24 * 60 * 60 * 1000;
+    const pending = await makeRotationServer({
+      built,
+      flags: [],
+      pendingProposalExpiries: [Date.now() + 3 * day, Date.now() + 20 * day],
+    });
+    const plain = await startEnv(pending, built.projectId);
+    expect(await runCli(["rotation", "list"], plain.layer)).toBe(0);
+    expect(plain.logs.join("\n")).toContain(
+      "Pending sealed proposals: 2 proposals minted by CI jobs await a member",
+    );
+    const env = await startEnv(pending, built.projectId);
+    expect(
+      await runCli(["rotation", "list", "--fail-on-pending", "--due-within", "7"], env.layer),
+    ).toBe(3);
+    expect(env.errors.join("\n")).toContain(
+      "Rotation due (exit 3): 2 sealed proposals awaiting a member (1 expiring within 7 days)",
+    );
+    const none = await startEnv(
+      await makeRotationServer({ built, flags: [], pendingProposalExpiries: [] }),
+      built.projectId,
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-pending"], none.layer)).toBe(0);
+    // An unreadable list is a failed check, not a passed one
+    const broken = await startEnv(
+      await makeRotationServer({ built, flags: [], pendingProposalExpiries: null }),
+      built.projectId,
+    );
+    expect(await runCli(["rotation", "list", "--fail-on-pending"], broken.layer)).toBe(1);
+    expect(broken.errors.join("\n")).toContain(
+      "Cannot judge the check: the pending proposals are unknown: they could not be read",
+    );
+  });
+
+  it("the age is the plaintext's: a re-encryption of an old value does not reset the clock (B-9)", async () => {
+    const built = await convergedChain();
+    const day = 24 * 60 * 60 * 1000;
+    const reencrypted = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [],
+      expiringPushedAtMs: Date.now() - 40 * day,
+      reencryptedAtMs: Date.now() - 1 * day,
+    });
+    const env = await startEnv(reencrypted, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-due"], env.layer)).toBe(3);
+    expect(env.logs.join("\n")).toContain("[expired] env-app-1 STRIPE_SECRET_KEY");
+  });
+
+  it("--fail-on-due exits 1, not 0 or 3, when a history could not be read (an unknown age is not a passed check)", async () => {
+    const built = await convergedChain();
+    const unreadable = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [],
+      expiringPushedAtMs: Date.now() - 40 * 24 * 60 * 60 * 1000,
+      historyAvailable: false,
+    });
+    // The plain listing notes the failure and still exits 0
+    const plain = await startEnv(unreadable, built.projectId);
+    expect(await runCli(["rotation", "list"], plain.layer)).toBe(0);
+    expect(plain.errors.join("\n")).toContain(
+      "could not read the history of STRIPE_SECRET_KEY in environment env-app-1",
+    );
+    // The check cannot pass on an age it could not read
+    const check = await startEnv(unreadable, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-due"], check.layer)).toBe(1);
+    expect(check.errors.join("\n")).toContain(
+      "Cannot judge the check: the history of 1 value could not be read (env-app-1/STRIPE_SECRET_KEY)",
+    );
+    // Something known due is due whatever else could not be read (A-10):
+    // exit 3 carries the known part, and names the unread part on the line
+    const partly = await startEnv(
+      await makeRotationServer({
+        built,
+        currentEpoch: 2,
+        flags: [flagFor({ variableId: "va" })],
+        expiringPushedAtMs: Date.now() - 40 * 24 * 60 * 60 * 1000,
+        historyAvailable: false,
+      }),
+      built.projectId,
+    );
+    expect(
+      await runCli(["rotation", "list", "--fail-on-due", "--fail-on-flags"], partly.layer),
+    ).toBe(3);
+    expect(partly.errors.join("\n")).toContain(
+      "Rotation due (exit 3): 1 rotation flag active; also the history of 1 value could not be read (env-app-1/STRIPE_SECRET_KEY)",
+    );
+    // --fail-on-flags alone does not need the age
+    const flagsOnly = await startEnv(unreadable, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-flags"], flagsOnly.layer)).toBe(0);
+  });
+
+  it("describeDue counts days the way the --due-within window does (never 'due today' for a value the window would miss)", () => {
+    const day = 24 * 60 * 60 * 1000;
+    const nowMs = 1_800_000_000_000;
+    const row = (dueAtMs: number) => ({
+      environmentId: "env-app-1",
+      variableId: "vexp",
+      name: "STRIPE_SECRET_KEY",
+      maxAgeDays: 30,
+      pushedAtMs: 0,
+      dueAtMs,
+    });
+    expect(describeDue(row(nowMs + 0.4 * day), nowMs)).toBe("due in 1 day");
+    expect(describeDue(row(nowMs + 1.6 * day), nowMs)).toBe("due in 2 days");
+    expect(describeDue(row(nowMs + 7 * day), nowMs)).toBe("due in 7 days");
+    expect(describeDue(row(nowMs), nowMs)).toBe("expired today");
+    expect(describeDue(row(nowMs - 0.4 * day), nowMs)).toBe("expired today");
+    expect(describeDue(row(nowMs - 1.6 * day), nowMs)).toBe("expired 1 day ago");
+    expect(describeDue(row(nowMs - 10 * day), nowMs)).toBe("expired 10 days ago");
+  });
+
+  it("--fail-on-flags exits 3 while a rotation flag is active (and 0 once none is)", async () => {
+    const built = await convergedChain();
+    const flagged = await makeRotationServer({
+      built,
+      currentEpoch: 2,
+      flags: [flagFor({ variableId: "va", basis: "read" })],
+    });
+    const env = await startEnv(flagged, built.projectId);
+    expect(await runCli(["rotation", "list", "--fail-on-flags"], env.layer)).toBe(3);
+    expect(env.errors.join("\n")).toContain("Rotation due (exit 3): 1 rotation flag active");
+    const clear = await makeRotationServer({ built, currentEpoch: 2, flags: [] });
+    const clearEnv = await startEnv(clear, built.projectId);
+    expect(
+      await runCli(["rotation", "list", "--fail-on-flags", "--fail-on-due"], clearEnv.layer),
+    ).toBe(0);
+    expect(clearEnv.errors.join("\n")).not.toContain("Rotation due");
   });
 });
 

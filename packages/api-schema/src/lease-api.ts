@@ -13,13 +13,14 @@
 // LeasedDek (a separate type with no registration signature —
 // data.ts).
 
-import { EnvironmentIdSchema, ProjectIdSchema } from "@maruhi/core";
+import { EnvironmentIdSchema, ProjectIdSchema, VariableIdSchema } from "@maruhi/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { ChainEntrySchema } from "./chain.ts";
 import { PulledVariableSchema } from "./data-api.ts";
 import {
+  BoundedUserId,
   CheckpointValueSnapshotSchema,
   DistributedEnvironmentManifestSchema,
   DistributedEnvironmentMetaStatementSchema,
@@ -31,8 +32,10 @@ import {
   LeaseUnauthorizedError,
   LeaseUnavailableError,
   ProjectNotFoundError,
+  RotationProposalRejectedError,
 } from "./errors/index.ts";
 import { EncPubHex, PositiveInt, Sha256Hex } from "./hex.ts";
+import { RotationProposalInputSchema, RotationProposalReceiptSchema } from "./rotation-api.ts";
 import { strictPayload } from "./strict.ts";
 
 /**
@@ -134,29 +137,114 @@ export const LeaseResponseSchema = Schema.Struct({
  * with existence concealment (LeaseUnauthorizedReasonSchema in
  * errors/lease.ts).
  */
-export const leaseGroup = HttpApiGroup.make("lease").add(
-  HttpApiEndpoint.post("issue", "/projects/:projectId/environments/:environmentId/lease", {
-    params: { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema },
-    // strict acceptance (§12-10 (1)). The shared LeaseRequestSchema
-    // itself is not wrapped (so it does not propagate into other
-    // endpoints' responses). strict covers only this payload's decode /
-    // encode; it does not reach the success / error encodings.
-    payload: strictPayload(LeaseRequestSchema),
-    success: LeaseResponseSchema,
-    error: [
-      LeaseUnauthorizedError,
-      // Unknown project / no grant / policy mismatch / out of scope /
-      // missing environment all fold into **this one kind** (§14-1
-      // existence concealment). EnvironmentNotFound is not declared
-      // separately: a form that reveals an environment's absence only to
-      // callers who passed authorization is worthless on the lease path
-      // (the workload holds the environment ID as configuration, so an
-      // absent one is a configuration mistake and a 404 suffices),
-      // while two 404s side by side in the contract would give the
-      // implementation a choice of which to return
-      ProjectNotFoundError,
-      LeaseRateLimitedError,
-      LeaseUnavailableError,
-    ],
-  }),
-);
+/**
+ * The sealed-proposal mint (AUTH_SPEC §14-5 = CRYPTO_SPEC §5.3): the
+ * same credential as the lease (the OIDC token and the ephemeral key the
+ * job leased with — one token, one key) plus the proposal. Authentication
+ * and authorization are the lease's; the server never touches the server
+ * key on this path (nothing is unwrapped), so a copy of the token in
+ * other hands is refused by the first-come binding before anything is
+ * stored.
+ */
+export const RotationProposalRequestSchema = Schema.Struct({
+  ...LeaseRequestSchema.fields,
+  proposal: RotationProposalInputSchema,
+});
+
+/**
+ * The mint's pre-flight (AUTH_SPEC §14-5 — ruling O-4): the same credential
+ * and authorization as the mint, no wraps; every §14-5 check that needs no
+ * sealed value runs (the variables exist and are active at the named base
+ * versions, no proposal already targets one of them, the pending cap, the
+ * mirror mark), so a CI job learns **before the issuer is touched** that
+ * its proposal would be refused or would stack on one a member has not
+ * acted on. Nothing is stored; the token's first-come binding is taken.
+ */
+export const RotationPreflightRequestSchema = Schema.Struct({
+  ...LeaseRequestSchema.fields,
+  variables: Schema.Array(
+    Schema.Struct({ variableId: VariableIdSchema, baseVersion: PositiveInt }),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(8)),
+  /**
+   * The recipient set the job will seal to (public chain facts — user id
+   * and device enc public key), checked against W(E) before the issuer is
+   * touched (ruling O revision, round 4); the mint repeats the check on
+   * the wraps. W(E) is bounded by the chain's capacity, not by a member
+   * cap; the bound is the §12-8 DEK-wrap row cap, set above that for the
+   * same reason (the mint's wraps carry the same set).
+   */
+  recipients: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ userId: BoundedUserId, encPubHex: EncPubHex })).check(
+      Schema.isMaxLength(10_000),
+    ),
+  ),
+});
+
+/** The pre-flight passed (the proposal would be accepted as far as its content is not involved). */
+export const RotationPreflightResultSchema = Schema.Struct({ ok: Schema.Literal(true) });
+
+export const leaseGroup = HttpApiGroup.make("lease")
+  .add(
+    HttpApiEndpoint.post(
+      "propose",
+      "/projects/:projectId/environments/:environmentId/rotation-proposals",
+      {
+        params: { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema },
+        payload: strictPayload(RotationProposalRequestSchema),
+        success: RotationProposalReceiptSchema,
+        error: [
+          LeaseUnauthorizedError,
+          // The same uniform 404 as the lease (§14-1 existence concealment)
+          ProjectNotFoundError,
+          LeaseRateLimitedError,
+          LeaseUnavailableError,
+          // Judged after authorization (§14-5 — the reason leaks nothing new)
+          RotationProposalRejectedError,
+        ],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "preflight",
+      "/projects/:projectId/environments/:environmentId/rotation-proposals/preflight",
+      {
+        params: { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema },
+        payload: strictPayload(RotationPreflightRequestSchema),
+        success: RotationPreflightResultSchema,
+        error: [
+          LeaseUnauthorizedError,
+          ProjectNotFoundError,
+          LeaseRateLimitedError,
+          LeaseUnavailableError,
+          RotationProposalRejectedError,
+        ],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post("issue", "/projects/:projectId/environments/:environmentId/lease", {
+      params: { projectId: ProjectIdSchema, environmentId: EnvironmentIdSchema },
+      // strict acceptance (§12-10 (1)). The shared LeaseRequestSchema
+      // itself is not wrapped (so it does not propagate into other
+      // endpoints' responses). strict covers only this payload's decode /
+      // encode; it does not reach the success / error encodings.
+      payload: strictPayload(LeaseRequestSchema),
+      success: LeaseResponseSchema,
+      error: [
+        LeaseUnauthorizedError,
+        // Unknown project / no grant / policy mismatch / out of scope /
+        // missing environment all fold into **this one kind** (§14-1
+        // existence concealment). EnvironmentNotFound is not declared
+        // separately: a form that reveals an environment's absence only to
+        // callers who passed authorization is worthless on the lease path
+        // (the workload holds the environment ID as configuration, so an
+        // absent one is a configuration mistake and a 404 suffices),
+        // while two 404s side by side in the contract would give the
+        // implementation a choice of which to return
+        ProjectNotFoundError,
+        LeaseRateLimitedError,
+        LeaseUnavailableError,
+      ],
+    }),
+  );

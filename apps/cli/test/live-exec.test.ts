@@ -15,6 +15,20 @@ interface ProbeResult {
   readonly output: string;
   readonly missing: string;
   readonly badCwd: string;
+  readonly capturedBytes: number;
+  readonly capturedStderr: string;
+  readonly flooded: string;
+  readonly floodedStderr: string;
+  readonly floodedStderrStdout: number;
+  readonly leftoverStdout: string;
+  readonly leftoverStderr: string;
+  readonly leftoverMs: number;
+  readonly stubborn: string;
+  readonly stubbornMs: number;
+  readonly polluted: string;
+  readonly floodedAfterExit: string;
+  readonly failedItselfCode: number;
+  readonly failedItselfStderr: string;
 }
 
 describe("ProcessRunner.exec (live — Bun.spawn)", () => {
@@ -45,5 +59,36 @@ describe("ProcessRunner.exec (live — Bun.spawn)", () => {
     expect(probe.badCwd).toContain(
       "the target's working directory does not exist or is not a directory (/nonexistent-maruhi-probe-dir)",
     );
-  });
+    // captureScript: stdout whole (300,000 bytes) and stderr as text; a
+    // flood past 1 MiB is refused with the script stopped (the probe does
+    // not wait out its sleep)
+    expect(probe.capturedBytes).toBe(300_000);
+    expect(probe.capturedStderr).toBe("note\n");
+    expect(probe.flooded).toContain(
+      "sh wrote more than 1 MiB to stdout (a credential is small; commentary belongs on stderr): it was stopped and nothing it wrote was read",
+    );
+    expect(probe.floodedStderr).toBe(
+      "(the script wrote more than 1 MiB to stderr; none of it is shown)",
+    );
+    // … and the script ran on: its value arrived whole (D-10)
+    expect(probe.floodedStderrStdout).toBe("value\n".length);
+    // A process the script left behind (`… &`) holds the pipes; the capture
+    // ends after the grace with the script's answer and says so (D-12)
+    expect(probe.leftoverStdout).toBe("value\n");
+    expect(probe.leftoverStderr).toContain("a process the script started still held its output");
+    expect(probe.leftoverMs).toBeLessThan(15_000);
+    // A script that ignores the stop is killed after the grace (D-13)
+    expect(probe.stubborn).toContain("wrote more than 1 MiB to stdout");
+    expect(probe.stubbornMs).toBeLessThan(15_000);
+    // Bytes after the exit are told from the answer and refused, never
+    // pushed and never reported as "the script was stopped" (D-14)
+    expect(probe.polluted).toContain(
+      "ScriptLeftoverError: sh exited (code 0) while a process it started kept writing to its stdout",
+    );
+    expect(probe.floodedAfterExit).toContain("ScriptLeftoverError: sh exited (code 0)");
+    expect(probe.floodedAfterExit).not.toContain("it was stopped");
+    // A script that failed on its own is reported as such, leftover or not (D-15)
+    expect(probe.failedItselfCode).toBe(7);
+    expect(probe.failedItselfStderr).toContain("issuer said no");
+  }, 60_000);
 });

@@ -29,6 +29,7 @@ import { makeApiClient } from "./api.ts";
 import type { CliConfig } from "./config.ts";
 import { formatUtcDate } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
+import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import {
   classifyUnreadableMasterKey,
@@ -219,6 +220,8 @@ function sessionFromEnvToken(input: {
   readonly token: string;
   readonly origin: string;
   readonly declaredOrigin: string | undefined;
+  /** The env var the token came from (its name in diagnostics). */
+  readonly variable: "MARUHI_TOKEN" | "MARUHI_MIRROR_TOKEN";
 }): Effect.Effect<CliSession, CliError, CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     // If the placeholder itself was supplied, name the reason before any
@@ -262,22 +265,25 @@ function sessionFromEnvToken(input: {
     // instead of reusing failure.ts's generic 401 guidance (`maruhi login`
     // only), it names a real procedure that can fetch the raw value
     // (--show-token — ruling CK) (ruling CJ — session-44 §11, §12)
-    const me = yield* client.auth
-      .me({})
-      .pipe(
-        Effect.mapError(() =>
-          cliError(
-            "Authentication with MARUHI_TOKEN failed (the token may be expired or revoked, or the scope or target server may not match). Issue a new token with `maruhi login --token-name <name> --show-token` on an interactive workstation terminal, then update the MARUHI_TOKEN value in this environment",
-          ),
-        ),
-      );
+    const me = yield* client.auth.me({}).pipe(
+      Effect.mapError((error) => {
+        // A server that did not answer is not an authentication failure:
+        // the flag lets a configured mirror take the read over (context.ts)
+        const failure = toCliError(error);
+        return failure.unreachable === true
+          ? failure
+          : cliError(
+              `Authentication with ${input.variable} failed (the token may be expired or revoked, or the scope or target server may not match). Issue a new token with \`maruhi login --token-name <name> --show-token\` on an interactive workstation terminal, then update the ${input.variable} value in this environment`,
+            );
+      }),
+    );
     // The early expiry warning (ruling CL): /auth/me is called on this path
     // every run anyway, so tokenExpiresAtMs (ruling CI's self-disclosure) is
     // already at hand with no extra request. It stays in CI job logs and lets
     // a re-issuance be planted before a 401 halts the job
     yield* warnNearExpiry(
       me.tokenExpiresAtMs,
-      "Re-issue it with `maruhi login --token-name <name> --show-token` on a workstation and update MARUHI_TOKEN before it stops working",
+      `Re-issue it with \`maruhi login --token-name <name> --show-token\` on a workstation and update ${input.variable} before it stops working`,
     );
     return { origin: input.origin, token: envToken, userId: me.userId } satisfies CliSession;
   });
@@ -339,14 +345,40 @@ export function envTokenStatus(origin: string): Effect.Effect<EnvTokenStatus, ne
 }
 
 /**
+ * Which deployment a session is for (PF2 — AUTH_SPEC §11-7): the server a
+ * command addresses, or the configured mirror a read falls back to. The
+ * mirror's keychain token is the one `maruhi login --server <mirror>`
+ * stored for that origin; without a keychain, `MARUHI_MIRROR_TOKEN` names
+ * it (bound to the mirror origin the member declared with `--mirror` or
+ * `config set mirror` — no origin env var, as that declaration is the
+ * member's own, never the server's)
+ */
+export type SessionCredential = "server" | "mirror";
+
+/**
  * Resolves the authenticated session for `origin`. The MARUHI_TOKEN env path
  * resolves the user id via `GET /auth/me` (the keychain record carries it).
  */
 export function resolveSession(
   origin: string,
+  credential: SessionCredential = "server",
 ): Effect.Effect<CliSession, CliError, Keychain | CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
+    if (credential === "mirror") {
+      const mirrorToken = io.envVar("MARUHI_MIRROR_TOKEN")?.trim();
+      if (mirrorToken !== undefined && mirrorToken.length > 0) {
+        return yield* sessionFromEnvToken({
+          origin,
+          token: mirrorToken,
+          declaredOrigin: origin,
+          variable: "MARUHI_MIRROR_TOKEN",
+        });
+      }
+      // MARUHI_TOKEN is the server's credential (bound to MARUHI_TOKEN_ORIGIN);
+      // it is never sent to the mirror. The keychain token of the mirror origin follows
+      return yield* keychainSession(origin, "the mirror");
+    }
     // Surrounding whitespace is dropped exactly once here. Newlines and
     // spaces mixed in by pasting are perfectly normal, and using different
     // values for the check and for sending would (a) make the placeholder
@@ -360,12 +392,29 @@ export function resolveSession(
         origin,
         token: envToken,
         declaredOrigin: io.envVar("MARUHI_TOKEN_ORIGIN"),
+        variable: "MARUHI_TOKEN",
       });
     }
+    return yield* keychainSession(origin, null);
+  });
+}
+
+/** The keychain half of {@link resolveSession} (`what` names a mirror in the not-logged-in guidance). */
+function keychainSession(
+  origin: string,
+  what: string | null,
+): Effect.Effect<CliSession, CliError, Keychain | CliIo> {
+  return Effect.gen(function* () {
     const keychain = yield* Keychain;
     const stored = yield* keychain.get(tokenEntryName(origin));
     if (stored === null) {
-      return yield* Effect.fail(noSessionError(keychain.kind));
+      return yield* Effect.fail(
+        what === null
+          ? noSessionError(keychain.kind)
+          : cliError(
+              `Not logged in to ${what} ${origin}. Run \`maruhi login --server ${origin}\` (or, without a keychain, set MARUHI_MIRROR_TOKEN to a token issued there)`,
+            ),
+      );
     }
     const record = parseStoredToken(stored);
     if (record === null) {

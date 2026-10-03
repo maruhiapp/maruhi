@@ -10,6 +10,8 @@ import {
   deksGroup,
   DekWrapExistsError,
   environmentsGroup,
+  exportGroup,
+  mirrorGroup,
   membershipGroup,
   rotationGroup,
   schemaPolicyGroup,
@@ -625,6 +627,16 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
       variableId: "var-contract",
     },
     "limit-exceeded": { kind: "limit-exceeded", resource: "variables", limit: 100 },
+    "rotation-proposal-not-found": {
+      kind: "rotation-proposal-not-found",
+      proposalId: "00112233445566778899aabbccddeeff",
+    },
+    "rotation-proposal-rejected": { kind: "rotation-proposal-rejected", reason: "pending-limit" },
+    "export-changed": { kind: "export-changed" },
+    "export-rate-limited": { kind: "export-rate-limited", retryAfterSeconds: 60 },
+    "mirror-read-only": { kind: "mirror-read-only" },
+    "mirror-state": { kind: "mirror-state", reason: "not-mirror" },
+    "mirror-sync-rejected": { kind: "mirror-sync-rejected", reason: "chain-invalid" },
     "attestation-rejected": { kind: "attestation-rejected", reason: "signature-invalid" },
     "attestation-regression": { kind: "attestation-regression", storedSeq: 5 },
     "attestation-rate-limited": { kind: "attestation-rate-limited", retryAfterSeconds: 60 },
@@ -670,6 +682,13 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     "dek-wrap-not-found": "DekWrapNotFound",
     "rotation-flag-not-found": "RotationFlagNotFound",
     "limit-exceeded": "DataLimitExceeded",
+    "rotation-proposal-not-found": "RotationProposalNotFound",
+    "rotation-proposal-rejected": "RotationProposalRejected",
+    "export-changed": "ExportChanged",
+    "export-rate-limited": "ExportRateLimited",
+    "mirror-read-only": "Forbidden",
+    "mirror-state": "MirrorState",
+    "mirror-sync-rejected": "MirrorSyncRejected",
     "attestation-rejected": "AttestationRejected",
     "attestation-regression": "AttestationRegression",
     "attestation-rate-limited": "AttestationRateLimited",
@@ -692,6 +711,10 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     // same discipline (every rejection absent from the declarations
     // becomes a die judgment)
     audit: auditGroup,
+    // Project export (AUTH_SPEC §11-6 — PF3): page / identities
+    export: exportGroup,
+    // Mirrors (AUTH_SPEC §11-7 — PF2): status / mark / unmark / pages
+    mirror: mirrorGroup,
   }).flatMap(([groupName, group]) =>
     Object.entries(group.endpoints).flatMap(([endpointName, endpoint]) =>
       Object.values(representativeRejections).map((rejection) => ({
@@ -741,7 +764,8 @@ describe("deriving the error contract from declarations (data-http.ts unwrapData
     // The defense line against a broken enumeration spinning freely
     // (an unconditional pass). Update this count when endpoints are
     // added (membership 5 / environments 5 / variables 9 [+ history /
-    // versionValues — VH] / deks 3 / rotation 2 / schemaPolicy 2 / audit 4)
-    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(30);
+    // versionValues — VH] / deks 3 / rotation 4 [+ proposals /
+    // resolveProposal — PF7b] / schemaPolicy 2 / audit 4 / export 2 [PF3])
+    expect(new Set(contractCases.map((contractCase) => contractCase.endpointLabel)).size).toBe(38);
   });
 });

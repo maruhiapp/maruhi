@@ -144,6 +144,7 @@ function variable(name: string, value: string | Uint8Array): DecryptedVariable {
     epoch: 1,
     required: false,
     varType: "",
+    maxAgeDays: null,
     value: Redacted.make(typeof value === "string" ? new TextEncoder().encode(value) : value, {
       label: "variable-value",
     }),
@@ -222,6 +223,7 @@ describe("runOp", () => {
     Layer.succeed(ProcessRunner, {
       run: () => Effect.succeed(0),
       exec: () => Effect.succeed({ exitCode: 0, output: "" }),
+      captureScript: () => Promise.resolve({ exitCode: 0, stdout: new Uint8Array(0), stderr: "" }),
       runSession: () => Effect.succeed(0),
     }),
     // The run-output redaction's terminal evidence (run.ts) — a human terminal here

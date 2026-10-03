@@ -9,7 +9,7 @@
 
 import { type EnvironmentId, isEnvironmentId, isProjectId } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
-import { Effect, type Stdio } from "effect";
+import { Duration, Effect, type Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
 import { makeApiClient, type MaruhiClient } from "./api.ts";
@@ -22,7 +22,8 @@ import { ConfigStore } from "./config.ts";
 import type { DekRecipient } from "./deks.ts";
 import { ownDeviceOrFail } from "./device-key.ts";
 import { syncOwnDevices } from "./device-sync.ts";
-import { cliError, type CliError, usageError } from "./errors.ts";
+import { cliError, type CliError, evidenceError, usageError } from "./errors.ts";
+import { toCliError } from "./failure.ts";
 import { checkChainFloor, type FloorHandle, makeFloorHandle } from "./floor-check.ts";
 import { formatFloorConflicts, formatFloorViolation } from "./floor-evidence.ts";
 import {
@@ -47,8 +48,10 @@ import {
   type CliSession,
   loadMasterKeys,
   type MasterKeys,
+  normalizeHttpOrigin,
   resolveServerOrigin,
   resolveSession,
+  type SessionCredential,
 } from "./session.ts";
 import { resyncExtended, syncProject, type VerifiedProject } from "./sync.ts";
 
@@ -81,6 +84,111 @@ export interface CommonFlags {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
   readonly env?: string | undefined;
+  /** `--mirror <url>` (PF2 — AUTH_SPEC §11-7): the read-only replica a read falls back to (default: the `mirror` setting). */
+  readonly mirror?: string | undefined;
+  /**
+   * Set by {@link withMirrorFallback} on the retry (never a flag): the
+   * server origin this read fell back from. The session then opens the
+   * mirror's own credential, the device key is the one stored for the
+   * server origin (the key is the person's, not the deployment's), and
+   * nothing is written to the mirror (no attestation, no device sync).
+   */
+  readonly mirrorOf?: string | undefined;
+}
+
+/** The mirror origin a read falls back to: `--mirror` → the `mirror` setting (null when none is configured). */
+export function resolveMirrorOrigin(
+  flag: string | undefined,
+  config: CliConfig,
+): Effect.Effect<string | null, CliError> {
+  const raw = flag ?? config.mirror;
+  if (raw === undefined) {
+    return Effect.succeed(null);
+  }
+  return normalizeHttpOrigin(
+    raw,
+    "the mirror URL",
+    flag === undefined ? { fix: "mirror in your config" } : "flag",
+  );
+}
+
+/**
+ * Runs a read against the configured server and, when that server is
+ * unreachable (no answer, or a gateway error in front of it — never an
+ * answer of its own such as a 403 or a 404), once more against the
+ * configured mirror with the mirror's own credential (PF2 — AUTH_SPEC
+ * §11-7 ruling E). The retry is announced on stderr. Read-only commands
+ * only: every verification duty runs unchanged against the mirror, and a
+ * mirror behind the local floor is refused like any server.
+ */
+export function withMirrorFallback<A>(
+  flags: CommonFlags,
+  read: (flags: CommonFlags) => Effect.Effect<A, CliError, CliServices>,
+): Effect.Effect<A, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const config = yield* (yield* ConfigStore).load;
+    const mirror = yield* resolveMirrorOrigin(flags.mirror, config);
+    if (mirror === null) {
+      return yield* read(flags);
+    }
+    const primary = yield* resolveServerOrigin(flags.server, config);
+    if (mirror === primary) {
+      yield* logWarning(
+        "the mirror URL is the server URL itself — no fallback is possible (point `mirror` at the mirror deployment)",
+      );
+      return yield* read(flags);
+    }
+    return yield* read(flags).pipe(
+      Effect.catch((error: CliError) =>
+        error.unreachable === true
+          ? Effect.gen(function* () {
+              const io = yield* CliIo;
+              yield* io.logError(
+                `${error.message}. Retrying this read against the mirror ${mirror} (a read-only replica that may be behind the server; writes are never retried)`,
+              );
+              yield* ensureMirrorOf(config, mirror, primary, flags.project);
+              return yield* read({ ...flags, server: mirror, mirrorOf: primary });
+            })
+          : Effect.fail(error),
+      ),
+    );
+  });
+}
+
+/**
+ * Before a fallback read: the mirror must say it is a mirror of this
+ * server (ruling E revision). A project that was promoted there is a
+ * primary now (the member's config should point at it); a mirror of
+ * another deployment is not this project's replica. The check reads the
+ * mark with the mirror's own credential, like the read that follows.
+ */
+function ensureMirrorOf(
+  config: CliConfig,
+  mirror: string,
+  primary: string,
+  projectFlag: string | undefined,
+): Effect.Effect<void, CliError, CliServices> {
+  return Effect.gen(function* () {
+    const projectId = yield* resolveProjectId(projectFlag, config);
+    const session = yield* openSessionWith(config, mirror, "mirror");
+    const status = yield* session.client.mirror
+      .status({ params: { projectId } })
+      .pipe(Effect.mapError(toCliError));
+    if (!status.mirror) {
+      return yield* Effect.fail(
+        cliError(
+          `${mirror} does not hold this project as a mirror (it was promoted, or never marked), so the read is not retried there. Confirm with an owner whether the project was promoted before pointing \`config set server\` at it — a mirror's own word is not what moves a member's writes`,
+        ),
+      );
+    }
+    if (status.sourceOrigin !== primary) {
+      return yield* Effect.fail(
+        cliError(
+          `${mirror} holds this project as a mirror of ${status.sourceOrigin ?? "another deployment"}, not of ${primary}: it is not this server's replica, so the read is not retried there (fix \`mirror\` in your config)`,
+        ),
+      );
+    }
+  });
 }
 
 // ID format validation (the client-side early check of AUTH_SPEC §12-1) uses
@@ -145,24 +253,37 @@ export interface SessionContext {
 }
 
 /** Session resolution from an already-loaded config (the inner half that does not re-read config). */
-function openSessionWith(
+/** The client's bounds a session may be opened with (an uploader takes the body bound on its headers — ruling H revision, round 4). */
+export interface SessionClientOptions {
+  readonly timeout?: Duration.Duration;
+}
+
+export function openSessionWith(
   config: CliConfig,
   serverFlag: string | undefined,
+  credential: SessionCredential = "server",
+  clientOptions: SessionClientOptions = {},
 ): Effect.Effect<SessionContext, CliError, CliServices> {
   return Effect.gen(function* () {
     const origin = yield* resolveServerOrigin(serverFlag, config);
-    const session = yield* resolveSession(origin);
-    const client = yield* makeApiClient({ baseUrl: origin, token: session.token });
+    const session = yield* resolveSession(origin, credential);
+    const client = yield* makeApiClient({
+      baseUrl: origin,
+      token: session.token,
+      ...(clientOptions.timeout === undefined ? {} : { timeout: clientOptions.timeout }),
+    });
     return { config, origin, session, client };
   });
 }
 
 export function openSession(
   serverFlag: string | undefined,
+  credential: SessionCredential = "server",
+  clientOptions: SessionClientOptions = {},
 ): Effect.Effect<SessionContext, CliError, CliServices> {
   return Effect.gen(function* () {
     const store = yield* ConfigStore;
-    return yield* openSessionWith(yield* store.load, serverFlag);
+    return yield* openSessionWith(yield* store.load, serverFlag, credential, clientOptions);
   });
 }
 
@@ -244,7 +365,7 @@ export function loadCheckedFloor(
         // verified observations with the same version but different hashes)
         // is hard evidence of equivocation. Refuse to use or advance the floor
         return yield* Effect.fail(
-          cliError(formatFloorConflicts(projectId, loaded.floor.conflicts)),
+          evidenceError(formatFloorConflicts(projectId, loaded.floor.conflicts)),
         );
       }
       let violation = checkChainFloor(loaded.floor, view);
@@ -257,8 +378,10 @@ export function loadCheckedFloor(
         violation = checkChainFloor(loaded.floor, view);
       }
       if (violation !== null) {
-        // Reject + presentable evidence (the floor's recorded head and this sync's head)
-        return yield* Effect.fail(cliError(formatFloorViolation({ projectId }, violation)));
+        // Reject + presentable evidence (the floor's recorded head and this
+        // sync's head): a contradiction between signed data, as the value
+        // pull's floor check flags it (round 11)
+        return yield* Effect.fail(evidenceError(formatFloorViolation({ projectId }, violation)));
       }
     }
     return { floor: loaded.floor, verified: view };
@@ -459,7 +582,7 @@ export function checkInviteAnchor(
     }
     const failure = anchorFailureOf(projectId, anchor, verified);
     if (failure !== null) {
-      return yield* Effect.fail(cliError(failure));
+      return yield* Effect.fail(evidenceError(failure));
     }
     if (anchor.verifiedAtSeq === null) {
       yield* io.log(
@@ -567,7 +690,9 @@ function attachProject(
         // loadCheckedFloor, kept intact at every point that re-reads the floor)
         const reloaded = (yield* store.load(projectId)).floor;
         if (reloaded !== null && reloaded.conflicts.length > 0) {
-          return yield* Effect.fail(cliError(formatFloorConflicts(projectId, reloaded.conflicts)));
+          return yield* Effect.fail(
+            evidenceError(formatFloorConflicts(projectId, reloaded.conflicts)),
+          );
         }
         floor = reloaded;
       }
@@ -600,22 +725,36 @@ function openProjectWith(
   return Effect.gen(function* () {
     // The project ID format check runs before any network access
     const projectId = yield* resolveProjectId(flags.project, config);
-    const context = yield* openSessionWith(config, flags.server);
+    const mirrorRead = flags.mirrorOf !== undefined;
+    const context = yield* openSessionWith(config, flags.server, mirrorRead ? "mirror" : "server");
     // Loading the master key stays **before** sync (traffic) and floor
     // advance: a write command run on a keyless device must not be made to
-    // round-trip the server before it fails
-    const masterKeys = yield* loadMasterKeys(context.session);
-    const base = yield* attachProject(context, projectId, options, {
-      userId: context.session.userId,
-      signingKey: masterKeys.sigKeyPair.privateKey,
+    // round-trip the server before it fails. On a mirror read the key is
+    // the one stored for the server origin (the key is the person's)
+    const masterKeys = yield* loadMasterKeys({
+      ...context.session,
+      origin: flags.mirrorOf ?? context.session.origin,
     });
+    // A mirror refuses attestations (AUTH_SPEC §11-7): the fallback read
+    // reconciles the gossip it serves but submits nothing there
+    const base = yield* attachProject(
+      context,
+      projectId,
+      options,
+      mirrorRead
+        ? undefined
+        : { userId: context.session.userId, signingKey: masterKeys.sigKeyPair.privateKey },
+    );
     const recipient: DekRecipient = {
       userId: context.session.userId,
       encPubHex: masterKeys.record.encPubHex,
       encKeyPair: masterKeys.encKeyPair,
     };
-    // Observation of the device set and registration of the first sync (DK K4-3 — keyed prologues only; idempotent, non-fatal)
-    return yield* syncOwnDevices({ ...base, masterKeys, recipient });
+    const opened: ProjectContext = { ...base, masterKeys, recipient };
+    // Observation of the device set and registration of the first sync (DK
+    // K4-3 — keyed prologues only; idempotent, non-fatal). A mirror refuses
+    // the registration, so the fallback read skips it
+    return mirrorRead ? opened : yield* syncOwnDevices(opened);
   });
 }
 
@@ -636,7 +775,11 @@ function openMetadataProjectWith(
 ): Effect.Effect<ProjectContextBase, CliError, CliServices> {
   return Effect.gen(function* () {
     const projectId = yield* resolveProjectId(flags.project, config);
-    const context = yield* openSessionWith(config, flags.server);
+    const context = yield* openSessionWith(
+      config,
+      flags.server,
+      flags.mirrorOf === undefined ? "server" : "mirror",
+    );
     return yield* attachProject(context, projectId);
   });
 }

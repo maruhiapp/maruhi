@@ -38,7 +38,7 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { CliServices } from "./context.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { type CliError, evidenceError } from "./errors.ts";
 import { internalErrorKind } from "./failure.ts";
 import { formatAttestationEvidence } from "./floor-evidence.ts";
 import { type AttestationEvidenceRecord, FloorStore } from "./floor.ts";
@@ -175,8 +175,10 @@ function failWithEvidence(
         evidencePath = written;
       }
     }
+    // A contradiction between signed data: evidence, which a re-run does
+    // not resolve (round 12)
     return yield* Effect.fail(
-      cliError(formatAttestationEvidence(projectId, evidence, evidencePath)),
+      evidenceError(formatAttestationEvidence(projectId, evidence, evidencePath)),
     );
   });
 }

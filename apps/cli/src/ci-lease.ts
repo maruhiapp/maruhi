@@ -21,7 +21,7 @@
 
 import { LeaseUnauthorizedError, ProjectNotFoundError } from "@maruhi/api-schema";
 import type { EnvironmentId, ProjectId } from "@maruhi/core";
-import type { LeaseClaims } from "@maruhi/crypto";
+import type { EncryptionKeyPair, LeaseClaims } from "@maruhi/crypto";
 import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
@@ -34,7 +34,12 @@ import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import type { LeaseResponseWire, VerifiedLeaseMaterial } from "./lease-client.ts";
 import { verifyLeaseResponse } from "./lease-client.ts";
-import { fetchGitHubOidcToken, readLeaseClaims } from "./oidc-github.ts";
+import {
+  fetchGitHubOidcToken,
+  issuanceBoundFor,
+  readLeaseClaims,
+  tokenExpiresAtMs,
+} from "./oidc-github.ts";
 
 /** Input shared by the CI commands (all from explicit flags — session-25 §2). */
 export interface CiLeaseInput {
@@ -80,7 +85,7 @@ type IssueOutcome =
  * ID and your access" is member-oriented guidance and would send CI to the
  * wrong fix, so it is replaced with lease-specific guidance here.
  */
-const LEASE_NOT_FOUND_MESSAGE =
+export const LEASE_NOT_FOUND_MESSAGE =
   "The server answered 404 for the lease. The lease endpoint folds these into one uniform answer (existence hiding — AUTH_SPEC §14-1): unknown project, no active grant, a lease-policy mismatch (issuer / audience / claim constraints), and an out-of-scope or unknown environment. Check --server, --project, and the environment in the workflow, and that a project owner granted this workload's identity with `maruhi server grant --lease-policy`";
 
 /**
@@ -123,6 +128,45 @@ export function leaseEnvironments(
   CliError,
   CliIo | HttpClient.HttpClient
 > {
+  return Effect.map(leaseEnvironmentsWithCredential(input), (leased) => leased.materials);
+}
+
+/**
+ * The credential a job leased with: the OIDC token and the ephemeral key
+ * the server's first-come binding tied it to (AUTH_SPEC §14-1). The
+ * sealed-proposal mint (ci-rotate.ts) presents the same pair — a second
+ * key under the same token would be refused as replayed.
+ */
+export interface WorkloadCredential {
+  readonly token: Redacted.Redacted<string>;
+  readonly ephemeralPubHex: string;
+  /** The ephemeral key pair itself (in memory, non-extractable) — a re-lease under the same credential needs it. */
+  readonly keyPair: EncryptionKeyPair;
+}
+
+/** How long before its `exp` a token is still presented for a re-lease (clock skew and the request's own time). */
+const REUSE_MARGIN_MS = 30_000;
+
+export interface LeasedEnvironments {
+  readonly materials: ReadonlyMap<EnvironmentId, VerifiedLeaseMaterial>;
+  readonly credential: WorkloadCredential;
+  readonly client: MaruhiClient;
+}
+
+/**
+ * {@link leaseEnvironments} plus the credential and client for a follow-up
+ * call under the same lease. A `credential` from an earlier lease of this
+ * job is presented again while its token is unexpired (AUTH_SPEC §14-1 —
+ * a re-claim under the same token and key is idempotent): the re-lease
+ * then needs no issuance endpoint, which is the one that may have stopped
+ * answering (ruling O revision, round 4); a fresh token and key otherwise.
+ */
+export function leaseEnvironmentsWithCredential(
+  input: CiLeaseInput & {
+    readonly environmentIds: readonly EnvironmentId[];
+    readonly credential?: WorkloadCredential;
+  },
+): Effect.Effect<LeasedEnvironments, CliError, CliIo | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     // The anchor is read before the network and key generation (do not put
@@ -130,24 +174,32 @@ export function leaseEnvironments(
     const anchor =
       input.anchorPath === undefined ? null : yield* loadRepositoryAnchor(input.anchorPath);
     const client = yield* makeApiClient({ baseUrl: input.origin });
-    // The ephemeral X25519 key pair is generated in memory (the private key
-    // is non-extractable) and disappears with the job (§9.1). One call =
-    // one token = one key (session-25 §3 — §14-1's "the same key for all
-    // requests under one token" is satisfied by construction)
-    const workloadKeyPair = yield* Effect.tryPromise({
-      try: () => generateEncryptionKeyPair(),
-      catch: () => cliError("Failed to generate the ephemeral key pair (crypto error)"),
-    });
-    const ephemeralPubHex = encodeHex(
-      yield* Effect.tryPromise({
-        try: () => exportEncryptionPublicKey(workloadKeyPair.publicKey),
-        catch: () => cliError("Failed to export the ephemeral public key (crypto error)"),
-      }),
-    );
-
-    // The token is minted right before the lease request (session-24 §8
-    // SHOULD — minimize the exposure window of the first-come binding)
-    let token = yield* fetchGitHubOidcToken(input.audience);
+    const credential =
+      reusableCredential(input.credential) ??
+      (yield* freshCredential(
+        input.audience,
+        input.credential === undefined
+          ? undefined
+          : issuanceBoundFor(input.credential.token, Date.now()),
+      ).pipe(
+        Effect.catch((error) => {
+          // No fresh token, but an unexpired one in hand (within the reuse
+          // margin): present it — the same fallback shape as the mint's
+          // (ruling O revision, round 6)
+          const inHand = input.credential;
+          if (inHand === undefined || !unexpired(inHand)) {
+            return Effect.fail(error);
+          }
+          return Effect.as(
+            io.logError(
+              `Could not mint a fresh OIDC token for the lease (${error.message}); presenting the token in hand`,
+            ),
+            inHand,
+          );
+        }),
+      ));
+    const { keyPair: workloadKeyPair, ephemeralPubHex } = credential;
+    let { token } = credential;
     let claims: LeaseClaims = yield* readLeaseClaims(token);
     // GitHub is a runtime-minting issuer, so one automatic retry with a
     // fresh token is allowed (session-24 §8 MAY — cap of 1, total 1 even
@@ -191,6 +243,50 @@ export function leaseEnvironments(
       );
       materials.set(environmentId, material);
     }
-    return materials;
+    return { materials, credential: { token, ephemeralPubHex, keyPair: workloadKeyPair }, client };
   });
+}
+
+/**
+ * A fresh credential: the ephemeral X25519 key pair is generated in memory
+ * (the private key is non-extractable) and disappears with the job (§9.1);
+ * the token is minted right before the lease request (session-24 §8 SHOULD
+ * — minimize the exposure window of the first-come binding). One call = one
+ * token = one key (session-25 §3 — §14-1's "the same key for all requests
+ * under one token" is satisfied by construction).
+ */
+function freshCredential(
+  audience: string,
+  /** The fetch's bound (the life of a token in hand — O-18); undefined = the default. */
+  timeoutMs?: number,
+): Effect.Effect<WorkloadCredential, CliError, CliIo> {
+  return Effect.gen(function* () {
+    const keyPair = yield* Effect.tryPromise({
+      try: () => generateEncryptionKeyPair(),
+      catch: () => cliError("Failed to generate the ephemeral key pair (crypto error)"),
+    });
+    const ephemeralPubHex = encodeHex(
+      yield* Effect.tryPromise({
+        try: () => exportEncryptionPublicKey(keyPair.publicKey),
+        catch: () => cliError("Failed to export the ephemeral public key (crypto error)"),
+      }),
+    );
+    const token = yield* fetchGitHubOidcToken(audience, timeoutMs);
+    return { token, ephemeralPubHex, keyPair };
+  });
+}
+
+/** The earlier credential when its token is still presentable (its `exp` is known and not within the margin), else null. */
+function reusableCredential(credential: WorkloadCredential | undefined): WorkloadCredential | null {
+  if (credential === undefined) {
+    return null;
+  }
+  const expiresAtMs = tokenExpiresAtMs(credential.token);
+  return expiresAtMs !== null && expiresAtMs - REUSE_MARGIN_MS > Date.now() ? credential : null;
+}
+
+/** Whether a credential's token is unexpired by its `exp` alone (no margin — the last resort when no fresh token can be minted). */
+function unexpired(credential: WorkloadCredential): boolean {
+  const expiresAtMs = tokenExpiresAtMs(credential.token);
+  return expiresAtMs !== null && expiresAtMs > Date.now();
 }

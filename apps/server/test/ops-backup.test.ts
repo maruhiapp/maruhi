@@ -129,6 +129,108 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
     expect(await auditHeadViaApi()).not.toBe(headBefore); // the pull adds a var.read = the head advances
   });
 
+  it("refuses a snapshot whose audit log has a gap: the restored DO stays empty (ruling J revision, round 9)", async () => {
+    await seedProjectActivity();
+    const outcome = await backup();
+    expect(outcome.kind).toBe("uploaded");
+    if (outcome.kind !== "uploaded") {
+      return;
+    }
+    const object = await bucket.get(outcome.objectKey);
+    const text = await new Response(
+      object?.body.pipeThrough(new DecompressionStream("gzip")),
+    ).text();
+    const lines = text.split("\n").filter((line) => line !== "");
+    const tableLine = lines.findIndex((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return parsed["kind"] === "table" && parsed["table"] === "audit_events";
+    });
+    const seqIndex = (
+      (JSON.parse(lines[tableLine] ?? "{}") as { columns: string[] }).columns ?? []
+    ).indexOf("seq");
+    const second = lines.findIndex((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return (
+        parsed["kind"] === "row" &&
+        parsed["table"] === "audit_events" &&
+        (parsed["values"] as unknown[])[seqIndex] === 2
+      );
+    });
+    expect(second).toBeGreaterThan(-1);
+    const trailer = JSON.parse(lines[lines.length - 1] ?? "{}") as {
+      rows: Record<string, number>;
+    };
+    const gapped = [
+      ...lines.slice(0, second),
+      ...lines.slice(second + 1, -1),
+      JSON.stringify({
+        ...trailer,
+        rows: { ...trailer.rows, audit_events: (trailer.rows["audit_events"] ?? 1) - 1 },
+      }),
+    ];
+    await bucket.put("do/test/gapped.ndjson.gz", await gzipLines(gapped));
+    await resetProjectDo(projectId);
+    expect(await restore("do/test/gapped.ndjson.gz")).toEqual({
+      kind: "refused",
+      code: "malformed",
+    });
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM audit_events")).toEqual([
+      { n: 0 },
+    ]);
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
+      { n: 0 },
+    ]);
+    // The intact snapshot still restores
+    expect((await restore(outcome.objectKey)).kind).toBe("restored");
+  });
+
+  it("refuses a snapshot with an audit row the canonical form refuses: nothing is promoted, the DO stays empty (ruling J revision, round 10)", async () => {
+    await seedProjectActivity();
+    const outcome = await backup();
+    expect(outcome.kind).toBe("uploaded");
+    if (outcome.kind !== "uploaded") {
+      return;
+    }
+    const object = await bucket.get(outcome.objectKey);
+    const text = await new Response(
+      object?.body.pipeThrough(new DecompressionStream("gzip")),
+    ).text();
+    const lines = text.split("\n").filter((line) => line !== "");
+    const tableLine = lines.findIndex((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return parsed["kind"] === "table" && parsed["table"] === "audit_events";
+    });
+    const columns = (JSON.parse(lines[tableLine] ?? "{}") as { columns: string[] }).columns ?? [];
+    const second = lines.findIndex((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      return (
+        parsed["kind"] === "row" &&
+        parsed["table"] === "audit_events" &&
+        (parsed["values"] as unknown[])[columns.indexOf("seq")] === 2
+      );
+    });
+    expect(second).toBeGreaterThan(-1);
+    const row = JSON.parse(lines[second] ?? "{}") as { values: unknown[] };
+    const values = [...row.values];
+    values[columns.indexOf("server_ts")] = -1;
+    const corrupt = lines.map((line, at) =>
+      at === second ? JSON.stringify({ ...row, values }) : line,
+    );
+    await bucket.put("do/test/unhashable.ndjson.gz", await gzipLines(corrupt));
+    await resetProjectDo(projectId);
+    expect(await restore("do/test/unhashable.ndjson.gz")).toEqual({
+      kind: "refused",
+      code: "malformed",
+    });
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM chain_entries")).toEqual([
+      { n: 0 },
+    ]);
+    expect(await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM audit_head_hashes")).toEqual([
+      { n: 0 },
+    ]);
+    expect((await restore(outcome.objectKey)).kind).toBe("restored");
+  });
+
   it("refuses to restore into a non-empty DO (no overwrite path) and leaves it untouched", async () => {
     await seedProjectActivity();
     const outcome = await backup();
@@ -169,6 +271,18 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
       ]),
     );
     expect(await restore("do/test/truncated.ndjson.gz")).toEqual({
+      kind: "refused",
+      code: "trailer-missing",
+    });
+    // An import restores the body its pre-check verified, by etag (ruling H
+    // revision, round 4): another etag is `object-changed` before any byte
+    // is read; the verified one reaches the content checks as before
+    expect(await stub().opsRestore("do/test/truncated.ndjson.gz", "0".repeat(32))).toEqual({
+      kind: "refused",
+      code: "object-changed",
+    });
+    const current = await bucket.head("do/test/truncated.ndjson.gz");
+    expect(await stub().opsRestore("do/test/truncated.ndjson.gz", current?.etag)).toEqual({
       kind: "refused",
       code: "trailer-missing",
     });

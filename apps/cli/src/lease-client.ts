@@ -89,6 +89,8 @@ export interface LeaseResponseWire {
 
 /** The execution material verified and decrypted from a lease response (crosses the same injection boundary as run). */
 export interface VerifiedLeaseMaterial {
+  /** The verified chain view the material was checked under (the recipient set of a sealed proposal — ci-rotate.ts). */
+  readonly verified: VerifiedProject;
   readonly variables: readonly DecryptedVariable[];
   /** The verified declared (no values — the presence check is the caller ci-run.ts). */
   readonly declared: readonly DeclaredVariable[];
@@ -338,6 +340,7 @@ export function verifyLeaseResponse(input: {
       chainEpoch,
     });
     return {
+      verified,
       variables,
       declared: toDeclaredVariables(distribution.declared),
       warnings: distribution.warnings,
@@ -369,6 +372,7 @@ function decryptDistributed(input: {
         epoch: variable.epoch,
         varType: variable.schema?.varType ?? "",
         required: variable.schema?.required ?? false,
+        maxAgeDays: variable.schema?.maxAgeDays ?? null,
         value: plaintext,
       }),
     ),

@@ -9,6 +9,8 @@
 // - invites.ts: invites (AUTH_SPEC §15)
 // - lease.ts: workload leases (AUTH_SPEC §14)
 // - rotation.ts: rotation-required flags (AUDIT_SPEC §4.1 / §7)
+// - export.ts: project export (AUTH_SPEC §11-6)
+// - mirror.ts: mirrors (AUTH_SPEC §11-7)
 
 export {
   AuthFlowError,
@@ -101,6 +103,13 @@ export {
   DekWrapRejectedError,
   DekWrapRejectReasonSchema,
 } from "./deks.ts";
+export { ExportChangedError, ExportRateLimitedError } from "./export.ts";
+export {
+  MirrorStateError,
+  MirrorStateReasonSchema,
+  MirrorSyncRejectedError,
+  MirrorSyncRejectReasonSchema,
+} from "./mirror.ts";
 export {
   InviteConflictError,
   InviteGoneError,
@@ -118,4 +127,9 @@ export {
   LeaseUnavailableError,
   LeaseUnavailableReasonSchema,
 } from "./lease.ts";
-export { RotationFlagNotFoundError } from "./rotation.ts";
+export {
+  RotationFlagNotFoundError,
+  RotationProposalNotFoundError,
+  RotationProposalRejectedError,
+  RotationProposalRejectReasonSchema,
+} from "./rotation.ts";

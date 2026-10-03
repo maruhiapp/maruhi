@@ -146,8 +146,15 @@ export const SECURITY_CRITICAL_PAYLOAD_ENDPOINTS: ReadonlyArray<
   ["devices", "register"],
   ["devices", "requestCreate"],
   ["lease", "issue"],
+  // sealed value proposals (§14-5 — PF7b): the mint carries ciphertexts
+  // of credentials and the resolution names the versions a member pushed
+  ["lease", "propose"],
+  ["lease", "preflight"],
+  ["rotation", "resolveProposal"],
   ["invites", "issue"],
   ["invites", "accept"],
+  // A replication page carries the source's chain, ciphertexts and wraps (§11-7)
+  ["mirror", "pages"],
 ];
 
 /**
@@ -181,6 +188,8 @@ export const STRICT_EXEMPT_PAYLOAD_ENDPOINTS: ReadonlyArray<
   // ephemeral public key). Carries no signed structure, ciphertext, or
   // key material
   ["keyWraps", "handoffCreate"],
+  // The mirror mark names a source origin only (§11-7)
+  ["mirror", "mark"],
 ];
 
 /**

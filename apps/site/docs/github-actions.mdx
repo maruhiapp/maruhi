@@ -330,6 +330,54 @@ Replace `<tag>`, the two coordinates, and `SCHEDULED_TARGETS`. The lease policy 
 - **Receipts.** CI keeps none, so a `maruhi sync plan web` on your machine still shows what CI delivered as pending, and the next local `maruhi sync apply web --yes` rewrites it once. This is described under [Receipts](/docs/deploy-targets#receipts).
 - In a public repository, GitHub disables the schedule after 60 days without repository activity; a push re-enables it. Scheduled runs can be delayed under load.
 
+## Rotate a credential from CI
+
+`maruhi ci rotate <name>` runs a rotation rule of `maruhi.rotate.json` under the job's lease and stores the new credential as a **sealed proposal** — encrypted to the device keys of the members who may accept it — instead of pushing it (a job holds no signing key). A member finishes the rotation with `maruhi rotation accept <id>` from their own machine. The job needs the same grant and policy as `maruhi ci run`, plus an environment that holds the admin input the rule names:
+
+```yaml
+# .github/workflows/rotate.yml
+name: rotate
+
+on:
+  schedule: [{ cron: "0 9 1 * *" }]
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  MARUHI_SERVER: https://my.maruhi.app
+  MARUHI_PROJECT: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+# One rotation of this environment at a time: two overlapping runs would
+# both create a credential at the issuer, and only one proposal per
+# variable can be pending (the second strands its credential)
+concurrency:
+  group: maruhi-rotate-prod
+  cancel-in-progress: false
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: maruhiapp/maruhi/actions/setup-maruhi@<tag>
+        with:
+          version: <tag>
+      - run: >-
+          maruhi ci rotate STRIPE_SECRET_KEY
+          --server "$MARUHI_SERVER"
+          --project "$MARUHI_PROJECT"
+          --env prod
+          --anchor .maruhi/anchor.json
+          --rotate-config maruhi.rotate.json
+```
+
+The rule must leave the previous credential valid until a member finalizes (a dual-credential rule — every built-in connector except a PostgreSQL rule without `roles`, which rotates the password in place, or an `exec` rule with a `finalize` script); one that invalidates the current credential at once is refused before the issuer is touched. The proposal expires after seven days unless `--expires-in` says otherwise (at most 30). See [Rotation from CI](/docs/rotation#rotation-from-ci-sealed-proposals) for what the member sees and the audit rows.
+
 ### GitHub secrets as a target
 
 The goal of this page is a repository whose GitHub secrets are empty. `maruhi ci run` gets there for everything that runs as a command of yours. What it cannot reach is read by GitHub itself before your command runs: the `with:` input of a prebuilt action, a Dependabot secret (registry credentials for its updates), the `secrets: inherit` of a reusable workflow. For the prebuilt action, the better fix is usually to run the vendor CLI it wraps under `maruhi ci run` and drop the secret. For the rest, a `github-actions` target copies the values from maruhi into GitHub secrets, so that they too have one source of truth and one place to rotate them. It runs `gh secret set` on the runner, where `gh` is preinstalled, through the `exec` driver (the preset has no other; see [GitHub Actions secrets](/docs/deploy-targets#github-actions-secrets) for what it writes and refuses):

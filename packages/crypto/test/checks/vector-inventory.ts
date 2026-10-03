@@ -31,6 +31,7 @@ import leaseWrap from "../../test-vectors/lease-wrap.json" with { type: "json" }
 import masterKeyWrap from "../../test-vectors/master-key-wrap.json" with { type: "json" };
 import metaVectors from "../../test-vectors/metadata-signature.json" with { type: "json" };
 import recoveryWrap from "../../test-vectors/recovery-wrap.json" with { type: "json" };
+import sealedValue from "../../test-vectors/sealed-value.json" with { type: "json" };
 import valueSignature from "../../test-vectors/value-signature.json" with { type: "json" };
 import variableEncryption from "../../test-vectors/variable-encryption.json" with { type: "json" };
 import { type CheckResult, Checks } from "./support.ts";
@@ -628,6 +629,25 @@ const NAMED_COLLECTIONS: readonly NamedCollection[] = [
     ],
   },
   {
+    label: "sealed-value.vectors",
+    actual: sealedValue.vectors,
+    expected: ["basic", "companion"],
+  },
+  {
+    label: "sealed-value.negative",
+    actual: sealedValue.negative,
+    expected: [
+      "info-project-mismatch",
+      "info-environment-mismatch",
+      "info-proposal-mismatch",
+      "info-variable-mismatch",
+      "info-base-version-mismatch",
+      "info-recipient-mismatch",
+      "info-dek-wrap-domain",
+      "ciphertext-tampered",
+    ],
+  },
+  {
     label: "master-key-wrap.vectors",
     actual: masterKeyWrap.vectors,
     expected: ["passkey-prf-basic", "guardian-any-2", "guardian-all-3", "handoff-guardian-share"],
@@ -1018,6 +1038,7 @@ const CHAIN_INDEPENDENT_FILES: readonly { readonly label: string; readonly doc: 
   { label: "lease-wrap", doc: leaseWrap },
   { label: "master-key-wrap", doc: masterKeyWrap },
   { label: "recovery-wrap", doc: recoveryWrap },
+  { label: "sealed-value", doc: sealedValue },
   { label: "variable-encryption", doc: variableEncryption },
 ];
 

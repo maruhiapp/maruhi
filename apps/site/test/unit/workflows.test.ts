@@ -160,6 +160,33 @@ function expectedBootstrap(workflow: Workflow): {
  * only the target name and the bootstrap token (the values go to maruhi's child process or request
  * body, nowhere else).
  */
+/** Every `maruhi ci` invocation names its coordinates and the anchor; each subcommand carries its own required flags. */
+function expectCiInvocation(run: string): void {
+  expect(run).toMatch(/--server "\$MARUHI_SERVER"/);
+  expect(run).toMatch(/--project "\$MARUHI_PROJECT"/);
+  expect(run).toMatch(/--anchor \.maruhi\/anchor\.json/);
+  expectCiSubcommandFlags(run);
+}
+
+const CI_SUBCOMMAND_FLAGS: readonly (readonly [RegExp, readonly RegExp[]])[] = [
+  [/\bmaruhi ci sync\b/, [/\bmaruhi ci sync (\w+|"\$TARGET") --yes\b/]],
+  [/\bmaruhi ci run\b/, [/--env \w+/, / -- \S/]],
+  [
+    /\bmaruhi ci rotate\b/,
+    [/\bmaruhi ci rotate [A-Z_]+ /, /--env \w+/, /--rotate-config maruhi\.rotate\.json/],
+  ],
+];
+
+function expectCiSubcommandFlags(run: string): void {
+  for (const [subcommand, flags] of CI_SUBCOMMAND_FLAGS) {
+    if (subcommand.test(run)) {
+      for (const flag of flags) {
+        expect(run).toMatch(flag);
+      }
+    }
+  }
+}
+
 function expectMaruhiStepKeepsValues(step: Step): void {
   expect(step.run).not.toMatch(
     /GITHUB_OUTPUT|GITHUB_ENV|\becho\b|set -x|printenv|--value|>(?!\s*\/dev\/null)|tee\b/,
@@ -185,8 +212,13 @@ afterEach(() => {
 });
 
 describe("github-actions.mdx workflow templates (extracted from the page)", () => {
-  it("has the three workflows: test (ci run), deploy (shape 1), maruhi sync (shape 2)", () => {
-    expect(workflows.map((w) => w.workflow.name)).toEqual(["test", "deploy", "maruhi sync"]);
+  it("has the four workflows: test (ci run), deploy (shape 1), maruhi sync (shape 2), rotate (ci rotate)", () => {
+    expect(workflows.map((w) => w.workflow.name)).toEqual([
+      "test",
+      "deploy",
+      "maruhi sync",
+      "rotate",
+    ]);
   });
 
   it("keeps the dispatch contract of deploy-targets.mdx (workflow_dispatch + a required target input)", () => {
@@ -249,21 +281,11 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
       });
 
       it("passes every maruhi ci command its coordinates and the anchor as flags", () => {
-        const runs = Object.values(workflow.jobs)
-          .flatMap((job) => job.steps)
+        const runs = stepsOf(workflow)
           .map((s) => s.run ?? "")
           .filter((run) => /\bmaruhi ci\b/.test(run));
         for (const run of runs) {
-          expect(run).toMatch(/--server "\$MARUHI_SERVER"/);
-          expect(run).toMatch(/--project "\$MARUHI_PROJECT"/);
-          expect(run).toMatch(/--anchor \.maruhi\/anchor\.json/);
-          if (/\bmaruhi ci sync\b/.test(run)) {
-            expect(run).toMatch(/\bmaruhi ci sync (\w+|"\$TARGET") --yes\b/);
-          }
-          if (/\bmaruhi ci run\b/.test(run)) {
-            expect(run).toMatch(/--env \w+/);
-            expect(run).toMatch(/ -- \S/);
-          }
+          expectCiInvocation(run);
         }
         expect(workflow.env).toMatchObject({
           MARUHI_SERVER: "https://my.maruhi.app",
@@ -297,6 +319,26 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
       expect(runs[deployIndex]).toMatch(/ -- \.\/node_modules\/\.bin\/wrangler deploy$/);
       // The vendor CLI comes in as a project dependency (never fetched)
       expect(runs.slice(0, syncIndex).some((r) => /^npm ci$/.test(r.trim()))).toBe(true);
+    });
+  });
+
+  describe("rotate a credential from CI (rotate)", () => {
+    const { workflow } = byName("rotate");
+    const rotate = workflow.jobs["rotate"] as Job;
+
+    it("runs on a schedule and on dispatch, one rotation at a time, and mints through maruhi ci rotate", () => {
+      expect(Object.keys(workflow.on)).toEqual(["schedule", "workflow_dispatch"]);
+      // Two overlapping runs would both create a credential at the issuer
+      // while only one proposal per variable can be pending (PF7b ruling O-8)
+      expect(workflow.concurrency).toEqual({
+        group: "maruhi-rotate-prod",
+        "cancel-in-progress": false,
+      });
+      expect(Object.keys(workflow.jobs)).toEqual(["rotate"]);
+      expect(rotate.permissions).toEqual({ "id-token": "write", contents: "read" });
+      const runs = rotate.steps.map((s) => s.run ?? "").filter((r) => r !== "");
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatch(/^maruhi ci rotate STRIPE_SECRET_KEY /);
     });
   });
 

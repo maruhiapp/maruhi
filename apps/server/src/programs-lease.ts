@@ -37,19 +37,19 @@
 //   5. Unwrap → re-wrap → audit → response (the first-come-binding record is
 //      in the same synchronous block)
 
-import type { ChainEntry } from "@maruhi/crypto";
+import type { ChainEntry, ChainState, ServerGrant } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import { AuditStore } from "./audit-store.ts";
 import type { StateCache } from "./chain-store.ts";
 import { ChainStore, deriveStoredState } from "./chain-store.ts";
-import type { EnvironmentPullValue } from "./data-plane.ts";
+import type { EnvironmentPullValue, InitializedChain } from "./data-plane.ts";
 import { currentEpochOf, loadInitializedChain, optionalDistributionFields } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
 import { grantCoversEnvironment, leasePolicyAuthorizes } from "./lease-policy.ts";
 import { MAX_LEASE_DENIED_ROWS_PER_WINDOW, MAX_LEASES_PER_WINDOW } from "./policy.ts";
 import { requireActiveEnvironment } from "./quotas.ts";
-import type { LeaseWrapOutput } from "./server-key.ts";
+import type { LeaseWrapOutput, ServerKeyInfo } from "./server-key.ts";
 import { ServerKey } from "./server-key.ts";
 import { observeStorageLevel, StorageMeter } from "./storage-guard.ts";
 
@@ -130,7 +130,7 @@ export type LeaseOutcome =
  * server key. Only the reason code and claims_digest go on the payload;
  * external identifiers such as repository names are not written (§14-4).
  */
-const recordDenied = (reason: string, claimsDigestHex: string, nowMs: number) =>
+export const recordDenied = (reason: string, claimsDigestHex: string, nowMs: number) =>
   Effect.gen(function* () {
     const store = yield* DataStore;
     const decision = yield* store.checkLeaseWindow(
@@ -178,15 +178,32 @@ const rejectReplayedToken = (facts: LeaseTokenFacts, ephemeralPubHex: string, no
     }
   });
 
-export const leaseProgram = (
+/** What the shared authorization front stage hands the lease and the proposal programs. */
+export interface AuthorizedWorkload {
+  readonly serverKeyInfo: ServerKeyInfo;
+  readonly chain: InitializedChain;
+  readonly state: ChainState;
+  readonly grant: ServerGrant;
+  readonly nowMs: number;
+}
+
+/**
+ * The front stage shared by the lease (§14-2) and the sealed-proposal
+ * mint (§14-5): steps 0–2 of the check order — the server key's
+ * presence, the initialized chain, our own grant × lease_policy × scope
+ * (every mismatch a uniform 404 with a lease_denied row), the first-come
+ * binding (401 replayed), the environment's existence. Everything after
+ * it (windows, material, writes) is per program.
+ */
+export const authorizeWorkload = (
   environmentId: string,
   ephemeralPubHex: string,
   facts: LeaseTokenFacts,
   cache: StateCache,
 ): Effect.Effect<
-  LeaseValue,
+  AuthorizedWorkload,
   LeaseRejection,
-  ChainStore | DataStore | AuditStore | ServerKey | StorageMeter
+  ChainStore | DataStore | AuditStore | ServerKey
 > =>
   Effect.gen(function* () {
     const serverKey = yield* ServerKey;
@@ -246,8 +263,6 @@ export const leaseProgram = (
     // environment exists or is deleted, so no existence information is given
     // (§14-3)
     yield* rejectReplayedToken(facts, ephemeralPubHex, nowMs);
-    const store = yield* DataStore;
-
     // 2. Environment existence (a deleted tombstone is 404)
     yield* requireActiveEnvironment(environmentId).pipe(
       Effect.matchEffect({
@@ -255,6 +270,29 @@ export const leaseProgram = (
         onSuccess: () => Effect.void,
       }),
     );
+
+    return { serverKeyInfo, chain, state, grant, nowMs };
+  });
+
+export const leaseProgram = (
+  environmentId: string,
+  ephemeralPubHex: string,
+  facts: LeaseTokenFacts,
+  cache: StateCache,
+): Effect.Effect<
+  LeaseValue,
+  LeaseRejection,
+  ChainStore | DataStore | AuditStore | ServerKey | StorageMeter
+> =>
+  Effect.gen(function* () {
+    const serverKey = yield* ServerKey;
+    const { serverKeyInfo, chain, state, grant, nowMs } = yield* authorizeWorkload(
+      environmentId,
+      ephemeralPubHex,
+      facts,
+      cache,
+    );
+    const store = yield* DataStore;
 
     // 3. The rate limit **check** (after authorization — for existence
     // concealment; errors/lease.ts). Consumption happens only "when a lease is

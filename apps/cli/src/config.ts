@@ -34,6 +34,13 @@ export type IdentityBacking = (typeof IDENTITY_BACKINGS)[number];
 /** Non-secret CLI configuration. */
 export interface CliConfig {
   readonly server?: string;
+  /**
+   * The read-only mirror of `server` (PF2 — AUTH_SPEC §11-7): the origin
+   * `run` / `pull` / `ci run` / `ci sync` fall back to when the server
+   * is unreachable. Its session is the mirror's own (`maruhi login
+   * --server <mirror>`).
+   */
+  readonly mirror?: string;
   readonly defaultProject?: string;
   readonly defaultEnvironment?: string;
   readonly identityBacking?: IdentityBacking;
@@ -42,6 +49,7 @@ export interface CliConfig {
 /** Keys accepted by `maruhi config set` (all non-secret). */
 export const CONFIG_KEYS = [
   "server",
+  "mirror",
   "defaultProject",
   "defaultEnvironment",
   "identityBacking",

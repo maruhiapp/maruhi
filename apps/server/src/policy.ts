@@ -246,3 +246,45 @@ export const MAX_ATTESTATIONS_PER_MEMBER_PER_WINDOW = 60;
  * invariant structurally (the 2x is extra margin for drift in GC run times).
  */
 export const LEASE_BINDING_RETENTION_MARGIN_MS = 2 * OIDC_CLOCK_SKEW_MS;
+
+/**
+ * Sealed value proposals (AUTH_SPEC §14-5 / CRYPTO_SPEC §5.3 — 2026-10-02
+ * PF7b). Pending = stored, unexpired, unresolved; the cap is judged after
+ * authorization (the mint path is the lease's), so it leaks nothing to a
+ * caller that did not match an on-chain lease policy.
+ */
+export const MAX_PENDING_ROTATION_PROPOSALS = 32;
+
+/**
+ * §14-5: the per-project fixed window of mints (the same hour-long window
+ * as leases, under its own `kind` — a job that re-leases in a retry loop
+ * must not be able to fill the proposal store or the audit log by
+ * re-minting; 60 is far above a weekly rotation cron's need).
+ */
+export const MAX_ROTATION_PROPOSALS_PER_WINDOW = 60;
+
+/**
+ * §11-6 (PF3): one export page carries at most this many rows (the DO
+ * reads them in one synchronous statement under the permit — the same
+ * discipline as the evacuation's rowid keyset).
+ */
+export const MAX_EXPORT_PAGE_ROWS = 2000;
+
+/** §11-6: one export page's line text is cut at this many bytes (a page ends after the row that crosses it). */
+export const MAX_EXPORT_PAGE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * §11-6: the per-project fixed window of exports (first pages — the
+ * same hour-long window as leases, under its own `kind`). Twenty whole
+ * exports an hour is far above a migration's need and bounds the audit
+ * rows and the read load an owner's credential can produce.
+ */
+export const MAX_EXPORTS_PER_WINDOW = 20;
+
+/**
+ * §11-7: a replication page may exceed the export's byte bound by one line
+ * (the export ends a page after the line that crosses it); the slack admits
+ * the largest line a snapshot carries (a 64 KiB ciphertext row in hex plus
+ * its envelope).
+ */
+export const MAX_MIRROR_PAGE_SLACK_BYTES = 256 * 1024;

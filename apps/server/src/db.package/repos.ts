@@ -117,6 +117,14 @@ interface IdentityRepoShape {
    */
   readonly providerLoginOf: (userId: string) => Effect.Effect<string | null>;
   /**
+   * The linked GitHub identities of the given users (the identities
+   * companion of a project export — AUTH_SPEC §11-6, PF3). Users without
+   * a link are absent from the result (never invented).
+   */
+  readonly identitiesOf: (
+    userIds: readonly string[],
+  ) => Effect.Effect<readonly LinkedIdentityRecord[]>;
+  /**
    * The signupPolicy at acceptance time (AUTH_SPEC §3). No row = 'open'
    * (the default = legacy behavior); an unknown stored value = 'closed'
    * (fail-closed — an operator's misconfiguration never silently turns
@@ -138,6 +146,41 @@ interface IdentityRepoShape {
 export class IdentityRepo extends Context.Service<IdentityRepo, IdentityRepoShape>()(
   "IdentityRepo",
 ) {}
+
+/** One linked provider identity as the export carries it (AUTH_SPEC §2's lookup key plus the display login). */
+interface LinkedIdentityRecord {
+  readonly userId: string;
+  readonly provider: "github";
+  readonly providerUserId: string;
+  readonly providerLogin: string | null;
+}
+
+/** The IN chunk of identitiesOf (inside D1's bound-parameter cap with headroom). */
+const IDENTITY_IN_CHUNK = 90;
+
+function identitiesOf(
+  db: Db,
+  userIds: readonly string[],
+): Effect.Effect<readonly LinkedIdentityRecord[]> {
+  return run(async () => {
+    const rows: LinkedIdentityRecord[] = [];
+    for (let start = 0; start < userIds.length; start += IDENTITY_IN_CHUNK) {
+      const chunk = userIds.slice(start, start + IDENTITY_IN_CHUNK);
+      const found = await db
+        .select({
+          userId: linkedIdentities.userId,
+          providerUserId: linkedIdentities.providerUserId,
+          providerLogin: linkedIdentities.providerLogin,
+        })
+        .from(linkedIdentities)
+        .where(
+          and(eq(linkedIdentities.provider, "github"), inArray(linkedIdentities.userId, chunk)),
+        );
+      rows.push(...found.map((row) => ({ ...row, provider: "github" as const })));
+    }
+    return rows.toSorted((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
+  });
+}
 
 function lookupLinkedUser(db: Db, identity: VerifiedIdentity): Effect.Effect<string | null> {
   return run(async () => {
@@ -531,6 +574,7 @@ function makeIdentityRepo(db: Db): IdentityRepoShape {
     lookupUser: (identity) => lookupLinkedUser(db, identity),
     listUserOrgs: (userId) => listUserOrgs(db, userId),
     providerLoginOf: (userId) => providerLoginOf(db, userId),
+    identitiesOf: (userIds) => identitiesOf(db, userIds),
     signupPolicy: Effect.suspend(() => run(() => readSignupPolicy(db))),
     hasPendingSignupInvite: (tokenHashHex, nowMs) =>
       Effect.map(findPendingSignupInvite(db, tokenHashHex, nowMs), (row) => row !== null),

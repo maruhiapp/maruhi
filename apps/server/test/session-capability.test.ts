@@ -100,6 +100,8 @@ const PATH_PARAM_SUBSTITUTIONS: Readonly<Record<string, () => string>> = {
   groupId: () => "01ARZ3NDEKTSV4RRFFQ69G5FAV",
   requestId: () => "ab".repeat(32),
   fp: () => "ab".repeat(16),
+  // A sealed value proposal id (AUTH_SPEC §14-5 — 16 random bytes as hex)
+  proposalId: () => "00112233445566778899aabbccddeeff",
 };
 
 function concreteUrl(path: string): string {

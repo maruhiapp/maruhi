@@ -365,7 +365,234 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
       sql.exec("ALTER TABLE variable_meta_statements ADD COLUMN max_age_days TEXT");
     },
   },
+  // Step 3 (2026-10-02 — PF7b sealed value proposals, CRYPTO_SPEC §5.3 /
+  // AUTH_SPEC §14-5): a proposal minted by a leased workload, its
+  // variables (the version each replaces) and its sealed values (one row
+  // per recipient device). Rows are deleted on resolution and on expiry
+  // (the audit log keeps the history — rotation.proposed /
+  // rotation.proposal_accepted / rotation.proposal_rejected). facts_json
+  // is the connector's non-secret facts as a JSON array of strings;
+  // nothing in these tables is decryptable by the server
+  {
+    tables: ["rotation_proposals", "rotation_proposal_variables", "rotation_proposal_wraps"],
+    apply(sql) {
+      sql.exec(`CREATE TABLE rotation_proposals (
+         proposal_id TEXT PRIMARY KEY,
+         environment_id TEXT NOT NULL,
+         connector TEXT NOT NULL,
+         facts_json TEXT NOT NULL,
+         claims_digest_hex TEXT NOT NULL,
+         grant_chain_seq INTEGER NOT NULL,
+         created_at INTEGER NOT NULL,
+         expires_at INTEGER NOT NULL
+       )`);
+      sql.exec(`CREATE TABLE rotation_proposal_variables (
+         proposal_id TEXT NOT NULL,
+         variable_id TEXT NOT NULL,
+         base_version INTEGER NOT NULL,
+         position INTEGER NOT NULL,
+         PRIMARY KEY (proposal_id, variable_id)
+       )`);
+      sql.exec(`CREATE TABLE rotation_proposal_wraps (
+         proposal_id TEXT NOT NULL,
+         variable_id TEXT NOT NULL,
+         recipient_user_id TEXT NOT NULL,
+         recipient_enc_pub_hex TEXT NOT NULL,
+         enc_hex TEXT NOT NULL,
+         ciphertext_hex TEXT NOT NULL,
+         PRIMARY KEY (proposal_id, variable_id, recipient_user_id, recipient_enc_pub_hex)
+       )`);
+    },
+  },
+  // Step 4 (2026-10-02 — PF2 mirrors, AUTH_SPEC §11-7): the mirror mark and
+  // the replication position of a project that is a read replica of a
+  // source deployment. **Not a snapshot table** (declared in
+  // PROJECT_DO_LOCAL_TABLES, not in `tables`): a replica must never carry
+  // the mark, a restore must not wipe it, and an export must not emit it
+  {
+    tables: [],
+    apply(sql) {
+      sql.exec(`CREATE TABLE mirror_state (
+         id INTEGER PRIMARY KEY CHECK (id = 1),
+         source_origin TEXT NOT NULL,
+         marked_at INTEGER NOT NULL,
+         expected_sequence INTEGER NOT NULL,
+         staging_table TEXT,
+         last_synced_at INTEGER,
+         last_head_seq INTEGER,
+         last_head_hash_hex TEXT,
+         last_audit_seq INTEGER
+       )`);
+    },
+  },
+  // Step 5 (2026-10-02 — PF3 ruling C revision, AUTH_SPEC §11-6): the
+  // deployment-local mutation counter a paged export binds its cursor to.
+  // Bumped by every write entry point of the DO, the workload mint and a
+  // replica commit (do-snapshot.ts bumpMutationSeq); reads that append
+  // audit rows do not move it, so a read between two pages of an export
+  // no longer restarts it. **Not a snapshot table** (PROJECT_DO_LOCAL_TABLES)
+  {
+    tables: [],
+    apply(sql) {
+      sql.exec(`CREATE TABLE mutation_state (
+         id INTEGER PRIMARY KEY CHECK (id = 1),
+         seq INTEGER NOT NULL
+       )`);
+    },
+  },
+  // Step 6 (2026-10-02 — PF2 ruling H revision, AUTH_SPEC §11-7): the
+  // replica's attestation mark at the last replication, so a sync can tell
+  // "nothing changed on the source" from the three marks (chain head, audit
+  // seq, attestation mark) without uploading a replica
+  {
+    tables: [],
+    apply(sql) {
+      sql.exec("ALTER TABLE mirror_state ADD COLUMN last_attestation_mark INTEGER");
+    },
+  },
+  // Step 7 (2026-10-02 — PF3 ruling C revision, round 3): the mutation
+  // counter is maintained by the schema, not by the write entry points —
+  // an AFTER INSERT / UPDATE / DELETE trigger on every snapshot table that
+  // takes part in an export's consistency (every table but the audit log
+  // and its cumulative-hash column, which the export bounds by seq, and
+  // the deployment-local drift tables — rate-limit windows, first-come
+  // bindings, attestation windows — which ruling C accepts as drift). Any
+  // row change by any path bumps it, so a writer added later cannot forget
+  // to. **A table added by a later step declares its own triggers in that
+  // step** (mutationTriggers below). The tables are the ones the steps
+  // before this one declare (never a runtime-internal `_cf_*` /
+  // `sqlite_*` table or a leftover staging table, on which a trigger
+  // would be refused or pointless — ruling C revision, round 5)
+  {
+    tables: [],
+    apply(sql) {
+      const declared = new Set(PROJECT_DO_MIGRATIONS.slice(0, 6).flatMap((step) => step.tables));
+      const tables = sql
+        .exec("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        .toArray()
+        .map((row) => String(row["name"]))
+        .filter((name) => declared.has(name) && isMutationTracked(name));
+      for (const table of tables) {
+        for (const statement of mutationTriggers(table)) {
+          sql.exec(statement);
+        }
+      }
+    },
+  },
+  // Step 8 (2026-10-02 — PF2 ruling H revision, round 3): the source's
+  // mutation counter the replica was exported at, so a sync's no-change
+  // check covers every write (attestations included) by construction
+  {
+    tables: [],
+    apply(sql) {
+      sql.exec("ALTER TABLE mirror_state ADD COLUMN last_mutation_seq INTEGER");
+    },
+  },
+  // Step 9 (2026-10-02 — PF3 ruling C revision, round 6 / PF3 ruling J
+  // revision, round 6): (a) a write-class audit row moves the mutation
+  // counter — the one write entry point that touches no tracked table is
+  // a dismissal, whose only effect is its audit row; the deny list names
+  // the read-path rows (which must not restart an export), so any audit-
+  // only write added later restarts exports by default; (b) a column for
+  // the replica's audit head hash at the replicated position (unused since
+  // ruling J revision, round 8: the mirror's own head column decides)
+  {
+    tables: [],
+    apply(sql) {
+      sql.exec(auditWriteTrigger());
+      sql.exec("ALTER TABLE mirror_state ADD COLUMN last_audit_head_hash_hex TEXT");
+    },
+  },
 ];
+
+const AUDIT_WRITE_TRIGGER = "mutation_audit_events_write";
+
+/** The read-path deny list as the trigger's SQL carries it. */
+function readPathList(): string {
+  return READ_PATH_AUDIT_EVENTS.map((event) => `'${event}'`).join(", ");
+}
+
+/** Step 9's trigger (also re-asserted at every open — {@link ensureAuditWriteTrigger}). */
+function auditWriteTrigger(): string {
+  return `CREATE TRIGGER IF NOT EXISTS ${AUDIT_WRITE_TRIGGER} AFTER INSERT ON audit_events
+         WHEN NEW.event NOT IN (${readPathList()})
+         BEGIN
+           INSERT INTO mutation_state (id, seq) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET seq = seq + 1;
+         END`;
+}
+
+/**
+ * The deny list is baked into the trigger's SQL at apply time, so an
+ * event added to {@link READ_PATH_AUDIT_EVENTS} later would never reach a
+ * DO that already applied step 9 — and every such read would restart
+ * exports there. A trigger carries no data: it is derived schema,
+ * re-created whenever its stored text no longer names the list the code
+ * does (ruling C revision, round 7). Step 9 stays the creator on a fresh DO.
+ */
+function ensureAuditWriteTrigger(sql: SqlStorage): void {
+  const row = sql
+    .exec("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?", AUDIT_WRITE_TRIGGER)
+    .toArray()[0];
+  // SQLite stores the statement's text verbatim from the trigger's name on,
+  // so the whole text is compared (any drift of the trigger — the list, the
+  // bump, the condition — is re-created; an up-to-date one is left alone —
+  // ruling C revision, round 8)
+  if (
+    row === undefined ||
+    String(row["sql"]) !== auditWriteTrigger().replace("IF NOT EXISTS ", "")
+  ) {
+    sql.exec(`DROP TRIGGER IF EXISTS ${AUDIT_WRITE_TRIGGER}`);
+    sql.exec(auditWriteTrigger());
+  }
+}
+
+/**
+ * The audit rows a read appends (AUDIT_SPEC §3.3): they do not restart an
+ * export — the export bounds the log by seq instead. Every other audit row
+ * is a write's, and moves the mutation counter (step 9).
+ */
+const READ_PATH_AUDIT_EVENTS: readonly string[] = [
+  "var.read",
+  "server.lease_issued",
+  "server.lease_denied",
+  "server.dek_unwrapped",
+  "server.value_decrypted",
+  "project.exported",
+];
+
+/**
+ * Tables whose row changes do not move the mutation counter: the audit log
+ * (a write-class row moves it through step 9's own trigger; a read-path
+ * row does not — the export bounds the log by seq instead) and its
+ * cumulative-hash column, the deployment-local drift tables of ruling C,
+ * the local state tables, and the migration meta row.
+ */
+const MUTATION_UNTRACKED_TABLES: ReadonlySet<string> = new Set([
+  "audit_events",
+  "audit_head_hashes",
+  "lease_windows",
+  "lease_bindings",
+  "attestation_windows",
+  "mirror_state",
+  "mutation_state",
+  "schema_meta",
+]);
+
+/** The three triggers that make a table's row changes bump the mutation counter (step 7). */
+function mutationTriggers(table: string): readonly string[] {
+  return ["INSERT", "UPDATE", "DELETE"].map(
+    (event) =>
+      `CREATE TRIGGER IF NOT EXISTS mutation_${table}_${event.toLowerCase()} AFTER ${event} ON ${table}
+       BEGIN
+         INSERT INTO mutation_state (id, seq) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET seq = seq + 1;
+       END`,
+  );
+}
+
+/** Whether a table's row changes bump the mutation counter (the test pins every snapshot table's triggers). */
+export function isMutationTracked(table: string): boolean {
+  return !MUTATION_UNTRACKED_TABLES.has(table);
+}
 
 /**
  * All project-DO table names, derived from the migration steps. The test
@@ -376,6 +603,13 @@ export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
 export const PROJECT_DO_TABLES: readonly string[] = PROJECT_DO_MIGRATIONS.flatMap(
   (migration) => migration.tables,
 );
+
+/**
+ * Deployment-local tables of the project DO: never exported, never
+ * restored, never replicated (a mirror keeps them across a sync — AUTH_SPEC
+ * §11-7). The test reset helper wipes them too.
+ */
+export const PROJECT_DO_LOCAL_TABLES: readonly string[] = ["mirror_state", "mutation_state"];
 
 // version = "number of applied steps" (0 = none applied, PROJECT_DO_MIGRATIONS.length = latest)
 const SCHEMA_META_DDL = `CREATE TABLE IF NOT EXISTS schema_meta (
@@ -447,4 +681,5 @@ export function applyProjectDoMigrations(
 /** Called from the DO constructor (idempotent). Applies only the not-yet-applied steps in order. */
 export function ensureProjectDoTables(storage: DurableObjectStorage): void {
   applyProjectDoMigrations(storage, PROJECT_DO_MIGRATIONS);
+  ensureAuditWriteTrigger(storage.sql);
 }

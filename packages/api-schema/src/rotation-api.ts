@@ -19,13 +19,24 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
 import { AuthMiddleware } from "./auth-middleware.ts";
+import { BoundedUserId } from "./data.ts";
 import {
   DataLimitExceededError,
   ForbiddenError,
   ProjectNotFoundError,
   RotationFlagNotFoundError,
+  RotationProposalNotFoundError,
+  RotationProposalRejectedError,
 } from "./errors/index.ts";
-import { KeyFingerprintHex, PositiveInt } from "./hex.ts";
+import {
+  EncPubHex,
+  hexString,
+  HpkeEncHex,
+  KeyFingerprintHex,
+  PositiveInt,
+  Sha256Hex,
+} from "./hex.ts";
+import { strictPayload } from "./strict.ts";
 
 /**
  * Evidence rank of a rotation flag (AUDIT_SPEC §4.1 step 3): `read` = the
@@ -91,6 +102,141 @@ export const RotationDismissTargetSchema = Schema.Struct({
   variableId: VariableIdSchema,
 });
 
+/* -------------------------------------------------------------------------- */
+/* Sealed value proposals (CRYPTO_SPEC §5.3 / AUTH_SPEC §14-5 — PF7b)         */
+/* -------------------------------------------------------------------------- */
+
+/** The proposal id: 16 random bytes as lowercase hex, chosen by the minting workload (§5.3). */
+export const ProposalIdSchema = hexString(16);
+
+/** The connector that minted a proposal (the rotation config's vocabulary — docs/rotation). */
+export const RotationConnectorSchema = Schema.Literals([
+  "aws-iam-access-key",
+  "cloudflare-api-token",
+  "postgres",
+  "mysql",
+  "exec",
+]);
+
+/**
+ * One non-secret fact a connector reports (the new key id, the role now
+ * in use). Shown to members verbatim after display neutralization;
+ * bounded and free of control characters at acceptance (§14-5).
+ */
+const ProposalFactSchema = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(256),
+  Schema.isPattern(/^\P{Cc}*$/u, { description: "no control characters" }),
+);
+
+/**
+ * AES-256-GCM ct || tag of a sealed value: the §4 value cap (64 KiB)
+ * bounds the whole, and the plaintext is at least one byte (17 to
+ * 65,536 bytes as lowercase hex).
+ */
+const SealedValueCiphertextHex = Schema.String.check(
+  Schema.isPattern(/^(?:[0-9a-f]{2}){17,65536}$/, {
+    description: "lowercase hex HPKE ciphertext (17 to 65536 bytes incl. tag)",
+  }),
+);
+
+/**
+ * A proposed value sealed to one recipient device (CRYPTO_SPEC §5.3). No
+ * registration signature and no signer: the minting workload holds no
+ * on-chain key (attribution is the lease's claims digest, recorded by the
+ * server beside the proposal).
+ */
+export const SealedValueWrapSchema = Schema.Struct({
+  recipientUserId: BoundedUserId,
+  recipientEncPubHex: EncPubHex,
+  encHex: HpkeEncHex,
+  ciphertextHex: SealedValueCiphertextHex,
+});
+
+export type SealedValueWrap = typeof SealedValueWrapSchema.Type;
+
+/** One proposed variable: the target, the version it replaces, and its sealed values (one per recipient device). */
+export const ProposedVariableSchema = Schema.Struct({
+  variableId: VariableIdSchema,
+  baseVersion: PositiveInt,
+  wraps: Schema.Array(SealedValueWrapSchema).check(Schema.isMinLength(1)),
+});
+
+/**
+ * The proposal a workload mints (AUTH_SPEC §14-5): client-chosen id,
+ * the connector, its non-secret facts, a lifetime in days, and one to
+ * eight variables (the rule's variable and its companions).
+ */
+export const RotationProposalInputSchema = Schema.Struct({
+  proposalId: ProposalIdSchema,
+  connector: RotationConnectorSchema,
+  facts: Schema.Array(ProposalFactSchema).check(Schema.isMaxLength(16)),
+  /** How long the proposal waits for a member, in days from acceptance (the server sets the instant — a client clock plays no part; ruling O revision). */
+  expiresInDays: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(30),
+  ),
+  variables: Schema.Array(ProposedVariableSchema).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(8),
+  ),
+});
+
+export type RotationProposalInput = typeof RotationProposalInputSchema.Type;
+
+/** What the mint returns: the stored id and the expiry the server will apply. */
+export const RotationProposalReceiptSchema = Schema.Struct({
+  proposalId: ProposalIdSchema,
+  expiresAtMs: Schema.Number,
+});
+
+/**
+ * One pending proposal as a member sees it (§14-5): every field of the
+ * stored proposal, with **only the caller's own wraps** (every device of
+ * the caller). `claimsDigestHex` + `grantChainSeq` identify the workload
+ * that minted it (the same cross-check as `server.lease_issued`).
+ */
+export const RotationProposalSchema = Schema.Struct({
+  proposalId: ProposalIdSchema,
+  environmentId: EnvironmentIdSchema,
+  connector: RotationConnectorSchema,
+  facts: Schema.Array(ProposalFactSchema),
+  claimsDigestHex: Sha256Hex,
+  grantChainSeq: PositiveInt,
+  createdAtMs: Schema.Number,
+  expiresAtMs: Schema.Number,
+  variables: Schema.Array(
+    Schema.Struct({
+      variableId: VariableIdSchema,
+      baseVersion: PositiveInt,
+      wraps: Schema.Array(SealedValueWrapSchema),
+    }),
+  ),
+});
+
+export type RotationProposal = typeof RotationProposalSchema.Type;
+
+export const RotationProposalListSchema = Schema.Struct({
+  proposals: Schema.Array(RotationProposalSchema),
+});
+
+/**
+ * A member's resolution (§14-5). `accepted` names the versions the member
+ * pushed (one per proposed variable — the resolution creates no version);
+ * `rejected` carries nothing.
+ */
+export const RotationProposalResolutionSchema = Schema.Struct({
+  outcome: Schema.Literals(["accepted", "rejected"]),
+  versions: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ variableId: VariableIdSchema, version: PositiveInt })).check(
+      Schema.isMaxLength(8),
+    ),
+  ),
+});
+
+export type RotationProposalResolution = typeof RotationProposalResolutionSchema.Type;
+
 export const rotationGroup = HttpApiGroup.make("rotation")
   .add(
     HttpApiEndpoint.get("flags", "/projects/:projectId/rotation/flags", {
@@ -117,4 +263,35 @@ export const rotationGroup = HttpApiGroup.make("rotation")
         DataLimitExceededError,
       ],
     }).middleware(AuthMiddleware),
+  )
+  // Sealed value proposals (AUTH_SPEC §14-5): read scope × chain role
+  // member or above; environments outside the caller's scope are
+  // filtered out, and only the caller's own wraps travel. Session
+  // principals are refused (outside §5's allowlist)
+  .add(
+    HttpApiEndpoint.get("proposals", "/projects/:projectId/rotation/proposals", {
+      params: { projectId: ProjectIdSchema },
+      success: RotationProposalListSchema,
+      error: [ProjectNotFoundError, ForbiddenError],
+    }).middleware(AuthMiddleware),
+  )
+  // A member's resolution of a proposal (§14-5): write scope × chain
+  // role member or above × environment ∈ scope. `accepted` is checked
+  // against the stored versions the member pushed just before
+  .add(
+    HttpApiEndpoint.post(
+      "resolveProposal",
+      "/projects/:projectId/rotation/proposals/:proposalId/resolution",
+      {
+        params: { projectId: ProjectIdSchema, proposalId: ProposalIdSchema },
+        payload: strictPayload(RotationProposalResolutionSchema),
+        success: HttpApiSchema.NoContent,
+        error: [
+          ProjectNotFoundError,
+          ForbiddenError,
+          RotationProposalNotFoundError,
+          RotationProposalRejectedError,
+        ],
+      },
+    ).middleware(AuthMiddleware),
   );

@@ -86,7 +86,7 @@ function wrapStorageKey(ref: {
  * across recipient classes, the single predicate 'identification (id + key) ∧
  * E ∈ effective scope'" (§6.2 / AUTH_SPEC §12-6).
  */
-function deviceReceivesEnvironment(
+export function deviceReceivesEnvironment(
   member: ChainMember,
   device: { readonly roleCap: ChainMember["role"]; readonly scope: ChainMember["scope"] },
   environmentId: string,

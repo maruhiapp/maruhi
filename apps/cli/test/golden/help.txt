@@ -16,9 +16,10 @@ SUBCOMMANDS
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). When maruhi.proxy.json is present its brokering rules apply (as `maruhi proxy run`); --plain injects the real values instead, for a person at a terminal. Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
   agent       Hold the token and this device's key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
-  ci          Commands for CI jobs (run / sync)
+  ci          Commands for CI jobs (run / sync / rotate)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
+  mirror      Manage a read replica of the project in another deployment (sync / status / mark / promote)
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role / list)
   approval    Four-eyes proposals (list / show / approve / withdraw)
@@ -27,7 +28,7 @@ SUBCOMMANDS
   token       Manage your API tokens (list / revoke)
   guardian    Manage guardians for reserve-key recovery (add / approve / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint / policy)
-  rotation    Manage rotation flags (list / dismiss)
+  rotation    Manage rotation flags and sealed proposals (list / dismiss / proposals / accept / reject)
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
@@ -54,9 +55,10 @@ SUBCOMMANDS
   run         Decrypt the environment and run a command with the values injected as environment variables (memory only). When maruhi.proxy.json is present its brokering rules apply (as `maruhi proxy run`); --plain injects the real values instead, for a person at a terminal. Write the command after `--`
   push        Encrypt a value read from stdin and push it to the environment (one trailing newline is stripped), then sync the deploy targets whose config asks for it
   agent       Hold the token and this device's key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
-  ci          Commands for CI jobs (run / sync)
+  ci          Commands for CI jobs (run / sync / rotate)
   env         Manage environments (create / rotate / diff)
   server      Manage selective disclosure to the server (grant / revoke)
+  mirror      Manage a read replica of the project in another deployment (sync / status / mark / promote)
   invite      Manage invites (create / accept / list / revoke)
   member      Manage members (add / remove / change-role / list)
   approval    Four-eyes proposals (list / show / approve / withdraw)
@@ -65,7 +67,7 @@ SUBCOMMANDS
   token       Manage your API tokens (list / revoke)
   guardian    Manage guardians for reserve-key recovery (add / approve / list / remove / wards)
   project     Manage projects (init / list / verify / anchor / checkpoint / policy)
-  rotation    Manage rotation flags (list / dismiss)
+  rotation    Manage rotation flags and sealed proposals (list / dismiss / proposals / accept / reject)
   audit       View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list
   config      Manage non-secret settings (get / set). Secrets are never stored here
   schema      Show the environment's declared variable schema (names, types, required, status, descriptions; no values). Bare `maruhi schema` shows; `schema set` writes
@@ -116,6 +118,7 @@ FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
   --env string        Environment ID (default: the `defaultEnvironment` setting)
+  --mirror string     Mirror URL to read from when the server is unreachable (default: the `mirror` setting; reads only, announced on stderr)
   --show              Print the values (interactive terminals only)
 
 GLOBAL FLAGS
@@ -136,6 +139,7 @@ FLAGS
   --server string     Server URL (defaults to config server)
   --project string    Project ID (default: the `defaultProject` setting)
   --env string        Environment ID (default: the `defaultEnvironment` setting)
+  --mirror string     Mirror URL to read from when the server is unreachable (default: the `mirror` setting; reads only, announced on stderr)
   --plain             Inject the real values even when maruhi.proxy.json is present (allowed only to a person at an interactive terminal; without the config, run always injects the real values)
 
 GLOBAL FLAGS
@@ -283,6 +287,7 @@ FLAGS
   --environments string          Comma-separated environment IDs to disclose (required; environments are always explicit)
   --lease-policy string          Path to a workload lease-policy JSON file (defaults to no lease path)
   --expect-fingerprint string    Server key fingerprint noted out of band (32 hex chars; replaces the interactive check)
+  --key-from string              URL of the deployment whose server key to grant, such as a mirror (its /auth/config supplies the key; the grant is appended on the server and reaches the mirror by replication). Default: the server itself
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -300,6 +305,89 @@ FLAGS
   --project string        Project ID (default: the `defaultProject` setting)
   --expires string        How long the proposal stays approvable when the four-eyes policy turns this into a proposal (e.g. 7d, 48h; default 7d, at most 30d)
   --fingerprint string    Server key fingerprint to revoke (may be omitted when exactly one grant is active)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi mirror --help
+DESCRIPTION
+  Manage a read replica of the project in another deployment (sync / status / mark / promote)
+
+USAGE
+  maruhi mirror <subcommand> [flags]
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+SUBCOMMANDS
+  sync       Replicate the project from the server to the mirror (the export's pages uploaded in order; the mirror accepts only a replica that extends what it holds). From a cron: MARUHI_TOKEN / MARUHI_TOKEN_ORIGIN for the server, MARUHI_MIRROR_TOKEN for the mirror
+  status     Show the server's verified chain head and the mirror's side by side, with the last replication
+  mark       Mark the project on this server (--server names the mirror deployment) as a read-only mirror of --source; writes are refused there from then on (owner only)
+  promote    Remove the mirror mark on this server (--server names the mirror deployment): the project accepts writes again and becomes the primary (owner only)
+
+$ maruhi mirror sync --help
+DESCRIPTION
+  Replicate the project from the server to the mirror (the export's pages uploaded in order; the mirror accepts only a replica that extends what it holds). From a cron: MARUHI_TOKEN / MARUHI_TOKEN_ORIGIN for the server, MARUHI_MIRROR_TOKEN for the mirror
+
+USAGE
+  maruhi mirror sync [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --mirror string     Mirror URL (default: the `mirror` setting)
+  --force             Replicate even though the mirror is marked as a mirror of another server
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi mirror status --help
+DESCRIPTION
+  Show the server's verified chain head and the mirror's side by side, with the last replication
+
+USAGE
+  maruhi mirror status [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --mirror string     Mirror URL (default: the `mirror` setting)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi mirror mark --help
+DESCRIPTION
+  Mark the project on this server (--server names the mirror deployment) as a read-only mirror of --source; writes are refused there from then on (owner only)
+
+USAGE
+  maruhi mirror mark [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --source string     URL of the deployment this project mirrors (required)
+  --force             Mark even though this project's chain is not part of the source's (a mirror that can never be synced)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi mirror promote --help
+DESCRIPTION
+  Remove the mirror mark on this server (--server names the mirror deployment): the project accepts writes again and becomes the primary (owner only)
+
+USAGE
+  maruhi mirror promote [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --force             Promote even though the source still answers (two writable copies of the project — a split you accept)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -1019,6 +1107,7 @@ SUBCOMMANDS
   verify        Verify the chain, the local floor, and the invite anchor, then print the project state
   anchor        Print the repository anchor as JSON to stdout (commit it and pass it to `ci run --anchor`)
   checkpoint    Notarize the verified data state (and, with effective admin permission, the audit head) onto the chain
+  export        Export the whole project (chain, ciphertexts, wraps, statements, audit log) as a snapshot file for import into another maruhi deployment (owner only)
   policy        Project policies (approvals)
 
 $ maruhi project init --help
@@ -1095,6 +1184,22 @@ GLOBAL FLAGS
   --help, -h       Show help information
   --version, -v    Show version information
 
+$ maruhi project export --help
+DESCRIPTION
+  Export the whole project (chain, ciphertexts, wraps, statements, audit log) as a snapshot file for import into another maruhi deployment (owner only)
+
+USAGE
+  maruhi project export [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --out string        Path of the snapshot file to write (refused if it exists); the identities companion is written as <out>.identities.json
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
 $ maruhi project policy --help
 DESCRIPTION
   Project policies (approvals)
@@ -1130,7 +1235,7 @@ GLOBAL FLAGS
 
 $ maruhi ci --help
 DESCRIPTION
-  Commands for CI jobs (run / sync)
+  Commands for CI jobs (run / sync / rotate)
 
 USAGE
   maruhi ci <subcommand> [flags]
@@ -1140,8 +1245,9 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  run     Lease the environment via OIDC (no sign-in, no keychain), verify it, and run a command with the values injected. Write the command after `--`
-  sync    Lease the target's environment via OIDC (no sign-in, no keychain) and write every selected variable to the deploy target through its driver. Keeps no receipt and deletes nothing; a production target needs --yes
+  run       Lease the environment via OIDC (no sign-in, no keychain), verify it, and run a command with the values injected. Write the command after `--`
+  sync      Lease the target's environment via OIDC (no sign-in, no keychain) and write every selected variable to the deploy target through its driver. Keeps no receipt and deletes nothing; a production target needs --yes
+  rotate    Lease the environment via OIDC, create a new credential at the issuer through the rule's connector, and store it as a sealed proposal for a member to accept (no signing key in CI). Never displays a value
 
 $ maruhi ci run --help
 DESCRIPTION
@@ -1158,6 +1264,7 @@ FLAGS
   --project string     Project ID, which is the pinned genesis hash (required)
   --env string         Environment ID to lease (required)
   --audience string    OIDC audience to request (default: the server origin)
+  --mirror string      Mirror URL to lease from when the server is unreachable (a second OIDC token is requested for the mirror's audience unless --audience is given)
   --anchor string      Path to the committed repository anchor file (generate it with `maruhi project anchor`)
 
 GLOBAL FLAGS
@@ -1178,9 +1285,33 @@ FLAGS
   --server string      Server URL (required; CI mode reads no config file)
   --project string     Project ID, which is the pinned genesis hash (required)
   --audience string    OIDC audience to request (default: the server origin)
+  --mirror string      Mirror URL to lease from when the server is unreachable (a second OIDC token is requested for the mirror's audience unless --audience is given)
   --anchor string      Path to the committed repository anchor file (generate it with `maruhi project anchor`)
   --config string      Path to the sync config committed in the repository (default: maruhi.sync.json)
   --yes                Write to a production target (without it, a production target only shows the plan)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi ci rotate --help
+DESCRIPTION
+  Lease the environment via OIDC, create a new credential at the issuer through the rule's connector, and store it as a sealed proposal for a member to accept (no signing key in CI). Never displays a value
+
+USAGE
+  maruhi ci rotate [flags] <name>
+
+ARGUMENTS
+  name string    Variable name to rotate (the rule's variable, or the access key id an AWS rule pairs with it)
+
+FLAGS
+  --server string           Server URL (required; CI mode reads no config file)
+  --project string          Project ID, which is the pinned genesis hash (required)
+  --env string              Environment ID of the variable to rotate (required)
+  --audience string         OIDC audience to request (default: the server origin)
+  --anchor string           Path to the committed repository anchor file (generate it with `maruhi project anchor`)
+  --rotate-config string    Path to the rotation config naming the connector and admin credential of each variable (default: maruhi.rotate.json in the working directory)
+  --expires-in integer      Days the proposal waits for a member before it expires (1 to 30; default 7)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -1219,7 +1350,7 @@ GLOBAL FLAGS
 
 $ maruhi rotation --help
 DESCRIPTION
-  Manage rotation flags (list / dismiss)
+  Manage rotation flags and sealed proposals (list / dismiss / proposals / accept / reject)
 
 USAGE
   maruhi rotation <subcommand> [flags]
@@ -1229,19 +1360,26 @@ GLOBAL FLAGS
   --version, -v    Show version information
 
 SUBCOMMANDS
-  list       List the currently active rotation flags
-  dismiss    Dismiss rotation flags without rotating (an explicit acceptance of risk; admin only)
+  list         List the currently active rotation flags and the values past their max age (--fail-on-due / --fail-on-flags make a CI cron out of it)
+  dismiss      Dismiss rotation flags without rotating (an explicit acceptance of risk; admin only)
+  proposals    List the sealed proposals CI jobs minted and nobody has accepted or rejected yet (no value is opened)
+  accept       Open the sealed values a CI job proposed to this device and push them as new versions signed by you (the previous credential stays valid until --finalize). Never displays a value
+  reject       Drop a sealed proposal without pushing it (the credential the job created at the issuer is named so you can retire it)
 
 $ maruhi rotation list --help
 DESCRIPTION
-  List the currently active rotation flags
+  List the currently active rotation flags and the values past their max age (--fail-on-due / --fail-on-flags make a CI cron out of it)
 
 USAGE
   maruhi rotation list [flags]
 
 FLAGS
-  --server string     Server URL (defaults to config server)
-  --project string    Project ID (default: the `defaultProject` setting)
+  --server string         Server URL (defaults to config server)
+  --project string        Project ID (default: the `defaultProject` setting)
+  --fail-on-due           Exit with code 3 when a value is past the max age its schema declares (a CI cron turns it into a failed build or an issue; see also --due-within)
+  --due-within integer    With --fail-on-due: also fail when a value comes due within this many days (default 0 = only values already past their max age)
+  --fail-on-flags         Exit with code 3 while any rotation flag is active (a credential a departed party could read has not been rotated or dismissed)
+  --fail-on-pending       Exit with code 3 while a sealed proposal minted by a CI job awaits a member (with --due-within, the ones expiring inside the window are counted in the message); needs a member's token
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -1262,6 +1400,59 @@ FLAGS
   --project string    Project ID (default: the `defaultProject` setting)
   --env string        Environment ID of the flag to dismiss (with --all, narrows the dismissal to that environment)
   --all               Dismiss every currently-active flag (an explicit acceptance of risk)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi rotation proposals --help
+DESCRIPTION
+  List the sealed proposals CI jobs minted and nobody has accepted or rejected yet (no value is opened)
+
+USAGE
+  maruhi rotation proposals [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Only the proposals of this environment
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi rotation accept --help
+DESCRIPTION
+  Open the sealed values a CI job proposed to this device and push them as new versions signed by you (the previous credential stays valid until --finalize). Never displays a value
+
+USAGE
+  maruhi rotation accept [flags] <id>
+
+ARGUMENTS
+  id string    Proposal id from `maruhi rotation proposals` (a unique prefix of 8+ characters works)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --yes               Skip the confirmation (the only non-interactive path; the pushes are signed by you)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi rotation reject --help
+DESCRIPTION
+  Drop a sealed proposal without pushing it (the credential the job created at the issuer is named so you can retire it)
+
+USAGE
+  maruhi rotation reject [flags] <id>
+
+ARGUMENTS
+  id string    Proposal id from `maruhi rotation proposals` (a unique prefix of 8+ characters works)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -1406,7 +1597,7 @@ USAGE
   maruhi config get [flags] <key>
 
 ARGUMENTS
-  key string    Config key (server | defaultProject | defaultEnvironment | identityBacking)
+  key string    Config key (server | mirror | defaultProject | defaultEnvironment | identityBacking)
 
 GLOBAL FLAGS
   --help, -h       Show help information
@@ -1420,7 +1611,7 @@ USAGE
   maruhi config set [flags] <key> <value>
 
 ARGUMENTS
-  key string      Config key (server | defaultProject | defaultEnvironment | identityBacking)
+  key string      Config key (server | mirror | defaultProject | defaultEnvironment | identityBacking)
   value string    Value to set
 
 GLOBAL FLAGS

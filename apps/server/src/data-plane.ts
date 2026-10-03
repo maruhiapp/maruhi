@@ -669,6 +669,26 @@ export type DataRejection =
       readonly environmentId: string;
       readonly variableId: string;
     }
+  // Sealed value proposals (AUTH_SPEC §14-5): the member-side resolution's
+  // vocabulary (unknown / resolved / expired fold into not-found; an
+  // acceptance naming a version that does not exist or is not newer than
+  // the base is version-missing). The worker maps them to api-schema's
+  // RotationProposalNotFound (404) / RotationProposalRejected (422)
+  | { readonly kind: "rotation-proposal-not-found"; readonly proposalId: string }
+  | { readonly kind: "rotation-proposal-rejected"; readonly reason: RotationProposalRejectReason }
+  // Project export (AUTH_SPEC §11-6 — PF3): the project moved between two
+  // pages of one export (409 — the client starts over), and the per-project
+  // export window (429)
+  | { readonly kind: "export-changed" }
+  | { readonly kind: "export-rate-limited"; readonly retryAfterSeconds: number }
+  // Mirrors (AUTH_SPEC §11-7 — PF2): a write on a read-only mirror (the
+  // worker maps it to Forbidden [mirror-read-only]), the mark state
+  // (409 MirrorState) and a refused replication page (422
+  // MirrorSyncRejected — the vocabulary matches api-schema's
+  // MirrorSyncRejectReasonSchema)
+  | { readonly kind: "mirror-read-only" }
+  | { readonly kind: "mirror-state"; readonly reason: MirrorStateReason }
+  | { readonly kind: "mirror-sync-rejected"; readonly reason: MirrorSyncRejectReason }
   | {
       readonly kind: "limit-exceeded";
       readonly resource: DataLimitResource;
@@ -680,6 +700,36 @@ export type DataRejection =
   // An identical seq is an idempotent 204)
   | { readonly kind: "attestation-regression"; readonly storedSeq: number }
   | { readonly kind: "attestation-rate-limited"; readonly retryAfterSeconds: number };
+
+/** Why the mirror state does not admit the operation (AUTH_SPEC §11-7). */
+export type MirrorStateReason = "already-mirror" | "not-mirror";
+
+/** Why a replication page is refused (the api-schema MirrorSyncRejectReasonSchema vocabulary — AUTH_SPEC §11-7). */
+export type MirrorSyncRejectReason =
+  | "sequence-mismatch"
+  | "malformed"
+  | "schema-mismatch"
+  | "unknown-table"
+  | "row-count-mismatch"
+  | "chain-not-extension"
+  | "chain-invalid"
+  | "audit-regression"
+  | "audit-not-extension"
+  | "page-too-large";
+
+/** Why a sealed value proposal or its resolution is refused (the api-schema RotationProposalRejectReasonSchema vocabulary — AUTH_SPEC §14-5). */
+export type RotationProposalRejectReason =
+  | "duplicate-id"
+  | "duplicate-variable"
+  | "variable-inactive"
+  | "base-version-stale"
+  | "recipients-mismatch"
+  | "pending-limit"
+  | "storage-limit"
+  | "version-missing"
+  | "variable-pending"
+  // The project is a read-only mirror (AUTH_SPEC §11-7)
+  | "mirror-read-only";
 
 /** The only typed error a data-plane program carries as a failure. */
 export class DataRejectedError extends Data.TaggedError("DataRejected")<{

@@ -22,6 +22,7 @@ import { masterKeyWrapChecks } from "./checks/master-key-wrap.ts";
 import { metadataSignatureChecks } from "./checks/metadata-signature.ts";
 import { recoveryChecks } from "./checks/recovery.ts";
 import { rfc9180Checks } from "./checks/rfc9180.ts";
+import { sealedValueChecks } from "./checks/sealed-value.ts";
 import type { CheckResult } from "./checks/support.ts";
 import { valueSignatureChecks } from "./checks/value-signature.ts";
 import { variableChecks } from "./checks/variable.ts";
@@ -50,6 +51,7 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   groups.push(await inviteLinkChecks());
   groups.push(await dekCommitmentChecks());
   groups.push(await leaseWrapChecks());
+  groups.push(await sealedValueChecks());
   groups.push(await rfc9180Checks());
   groups.push(await chainChecks());
   groups.push(await chainNegativeChecks());

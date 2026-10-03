@@ -51,6 +51,10 @@ import {
 import { SqlRunner, type SqlRunnerShape } from "./rotate-connector.ts";
 import {
   buildChildEnvironment,
+  type CaptureInput,
+  type CaptureOutcome,
+  ScriptLeftoverError,
+  ScriptStoppedError,
   type ExecInput,
   type ExecOutcome,
   ProcessRunner,
@@ -148,6 +152,219 @@ async function execVendor(input: ExecInput): Promise<ExecOutcome> {
     child.exited,
   ]);
   return { exitCode, output: `${stdout}${stderr}` };
+}
+
+/**
+ * A script of the `exec` rotation connector (rotate-connector.ts — PF8):
+ * secrets ride in the child's environment (the `maruhi run` shape — the
+ * only path they take), stdin is closed, stdout comes back as bytes (the
+ * new credential — never decoded or logged here), stderr as text for the
+ * connector to scrub. A launch failure rejects with a message naming only
+ * the executable and the directory.
+ */
+async function captureScript(input: CaptureInput): Promise<CaptureOutcome> {
+  const child = await startScript(input);
+  const name = input.command[0] ?? "";
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const watch: ScriptWatch = {
+    exitedAtMs: null,
+    postExitBytes: 0,
+    stdoutClosedAtMs: null,
+    leftover: false,
+    stopped: false,
+  };
+  const out = (child.stdout as ReadableStream<Uint8Array>).getReader();
+  const err = (child.stderr as ReadableStream<Uint8Array>).getReader();
+  const stopPastCap = (bytes: Uint8Array | null) => {
+    watch.stdoutClosedAtMs = Date.now();
+    if (bytes === null && watch.exitedAtMs === null) {
+      watch.stopped = true;
+      // A stdout past the cap is never the value: the script is stopped
+      // the moment it is passed (D-6). A flooded stderr is only dropped —
+      // the script may have created the credential already and be about
+      // to print it, and stopping it would strand the credential by
+      // maruhi's own hand (ruling D revision, round 4). A script that
+      // ignores the stop is killed after the grace (D-13)
+      child.kill();
+      timers.push(setTimeout(() => child.kill("SIGKILL"), SCRIPT_GRACE_MS));
+    }
+    return bytes;
+  };
+  // A process the script left behind (a daemon, a `… &`) that inherited
+  // its pipes would hold both reads open after the script exited — and
+  // with them the whole job, the credential it created stranded by
+  // maruhi's own wait (D-12). The script's own writes are flushed before
+  // it exits, so once it has, the reads end after a short grace
+  const exited = child.exited.then((code) => {
+    watch.exitedAtMs = Date.now();
+    timers.push(
+      setTimeout(() => {
+        watch.leftover = true;
+        void out.cancel().catch(() => undefined);
+        void err.cancel().catch(() => undefined);
+      }, SCRIPT_GRACE_MS),
+    );
+    return code;
+  });
+  const [stdout, stderrBytes, exitCode] = await Promise.all([
+    readBounded(out, MAX_SCRIPT_STREAM_BYTES, "cancel", (bytes) => {
+      if (watch.exitedAtMs !== null) {
+        watch.postExitBytes += bytes;
+      }
+    }).then(stopPastCap),
+    readBounded(err, MAX_SCRIPT_STREAM_BYTES, "drain"),
+    exited,
+  ]).finally(() => {
+    for (const timer of timers) {
+      clearTimeout(timer);
+    }
+  });
+  return judgeCapture(name, watch, { stdout, stderrBytes, exitCode });
+}
+
+/** The working directory check and the spawn (a launch failure names only the executable and the directory). */
+async function startScript(input: CaptureInput): Promise<ReturnType<typeof Bun.spawn>> {
+  const cwdStat = await stat(input.cwd).catch(() => null);
+  if (cwdStat === null || !cwdStat.isDirectory()) {
+    throw new Error(
+      `the scripts' working directory does not exist or is not a directory (${input.cwd}) — fix the rule's cwd in the rotation config`,
+    );
+  }
+  try {
+    return Bun.spawn({
+      cmd: [...input.command],
+      cwd: input.cwd,
+      env: buildChildEnvironment(process.env, input.extraEnv),
+      stdin: new Uint8Array(0),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw new Error(
+      `cannot start ${input.command[0] ?? ""}${code === undefined ? "" : ` (${code})`}: is it executable and on PATH, or a path relative to the rule's cwd?`,
+      { cause: error },
+    );
+  }
+}
+
+/** What the capture observed about the script's exit and its pipes (D-12 / D-14). */
+interface ScriptWatch {
+  /** When the script exited (null = not yet): bytes on stdout after that are not its answer unless its pipe closed at once. */
+  exitedAtMs: number | null;
+  postExitBytes: number;
+  stdoutClosedAtMs: number | null;
+  /** Whether a pipe was still open at the end of the grace (a process the script left behind). */
+  leftover: boolean;
+  /** Whether maruhi stopped the script (a stdout past the cap while it ran). */
+  stopped: boolean;
+}
+
+/**
+ * The capture's verdict: a leftover's output is told from the answer and
+ * refused (D-14), a stdout past the cap was stopped (D-6), a flooded
+ * stderr is dropped whole (D-9), and a pipe held past the grace is said.
+ */
+function judgeCapture(
+  name: string,
+  watch: ScriptWatch,
+  read: {
+    readonly stdout: Uint8Array | null;
+    readonly stderrBytes: Uint8Array | null;
+    readonly exitCode: number;
+  },
+): CaptureOutcome {
+  if (watch.stopped) {
+    throw new ScriptStoppedError(
+      `${name} wrote more than ${MAX_SCRIPT_STREAM_MIB} MiB to stdout (a credential is small; commentary belongs on stderr): it was stopped and nothing it wrote was read`,
+    );
+  }
+  // A script that failed on its own reports its own failure (exit code and
+  // stderr); what a leftover wrote is moot since nothing is pushed (D-15)
+  if (read.exitCode === 0 && leftoverWrote(watch, read.stdout)) {
+    throw new ScriptLeftoverError(
+      read.exitCode,
+      `${name} exited (code ${read.exitCode}) while a process it started kept writing to its stdout: the answer cannot be told from that output. Redirect that process's output in the script (\`>/dev/null 2>&1\`)`,
+    );
+  }
+  // A stdout past the cap after a non-zero self-exit is a leftover's; the
+  // script's own report is what matters
+  return {
+    exitCode: read.exitCode,
+    stdout: read.stdout ?? new Uint8Array(0),
+    stderr: stderrText(read.stderrBytes, watch.leftover),
+  };
+}
+
+/** Whether bytes reached stdout after the script exited that are not its own flushed tail (the pipe did not close at once, or the cap was passed). */
+function leftoverWrote(watch: ScriptWatch, stdout: Uint8Array | null): boolean {
+  const closedAtOnce =
+    watch.exitedAtMs !== null &&
+    watch.stdoutClosedAtMs !== null &&
+    watch.stdoutClosedAtMs - watch.exitedAtMs <= SCRIPT_SETTLE_MS;
+  return watch.postExitBytes > 0 && (stdout === null || !closedAtOnce);
+}
+
+/** The stderr text: a flooded stderr is dropped whole, never cut (a cut before the connector's scrubbing could split a secret — D-9); a pipe held past the grace is said. */
+function stderrText(bytes: Uint8Array | null, leftover: boolean): string {
+  const stderr =
+    bytes === null
+      ? `(the script wrote more than ${MAX_SCRIPT_STREAM_MIB} MiB to stderr; none of it is shown)`
+      : new TextDecoder().decode(bytes);
+  const held = leftover
+    ? `\n(a process the script started still held its output ${SCRIPT_GRACE_MS / 1000} s after the script exited; what it wrote later was not read)`
+    : "";
+  return `${stderr}${held}`;
+}
+
+/** How long after the script exited (or was told to stop) its pipes may stay open before they are closed (and a stop escalated). */
+const SCRIPT_GRACE_MS = 3000;
+/** How long after the script exited its stdout may still close as the script's own flushed tail (a pipe buffer drains in milliseconds). */
+const SCRIPT_SETTLE_MS = 200;
+
+/** A script's stdout is a credential and its stderr a few lines of commentary: anything past this is neither (D-6 / D-9). */
+const MAX_SCRIPT_STREAM_MIB = 1;
+const MAX_SCRIPT_STREAM_BYTES = MAX_SCRIPT_STREAM_MIB * 1024 * 1024;
+
+/**
+ * Reads a stream up to `limit` bytes; null past the limit — with the
+ * stream cancelled (`cancel`: the writer gets EPIPE on its next write),
+ * or read to its end and discarded (`drain`: the writer never notices).
+ */
+async function readBounded(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  limit: number,
+  pastLimit: "cancel" | "drain",
+  onChunk?: (bytes: number) => void,
+): Promise<Uint8Array | null> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    onChunk?.(value.byteLength);
+    total += value.byteLength;
+    if (total > limit) {
+      if (pastLimit === "cancel") {
+        await reader.cancel();
+      } else {
+        while (!(await reader.read()).done) {
+          // discarded
+        }
+      }
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }
 
 /** The vendor CLI's execution directory (the config's cwd) is missing or not a directory. */
@@ -248,6 +465,7 @@ function makeBunProcessRunner(): ProcessRunnerShape {
         // §3 supplement 16)
         catch: (error) => cliError(execStartFailure(input, error)),
       }),
+    captureScript,
     runSession: ({ command, env }) =>
       Effect.tryPromise({
         try: () => runAgentSession(command, env),

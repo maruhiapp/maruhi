@@ -127,6 +127,16 @@ export {
   wrapLeaseDek,
 } from "./lease-wrap.ts";
 export {
+  buildSealedValueInfo,
+  isProposalId,
+  MAX_SEALED_VALUE_BYTES,
+  openProposedValue,
+  PROPOSAL_ID_BYTES,
+  type SealedValue,
+  type SealedValueContext,
+  sealProposedValue,
+} from "./sealed-value.ts";
+export {
   generateRecoverySecret,
   unwrapMasterSecret,
   type WrappedMasterSecret,

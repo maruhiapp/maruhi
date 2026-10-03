@@ -978,7 +978,7 @@ describe("key / project nested subcommands (ADR-0016 stage 3 ②)", () => {
     const project = await makeTestEnv();
     expect(await runCli(["project", "bogus"], project.layer)).toBe(2);
     expect(project.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: init | list | verify | anchor | checkpoint | policy)",
+      "Unknown subcommand (expected one of: init | list | verify | anchor | checkpoint | export | policy)",
     );
   });
 
@@ -1033,7 +1033,7 @@ describe("diagnosing an unknown command (stage 3 ④ — root's UnknownSubcomman
     const { env } = await startEnv();
     expect(await runCli(["bogus"], env.layer)).toBe(2);
     expect(env.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: login | logout | pull | run | push | mcp | env | server | invite | member | approval | key | device | token | guardian | project | ci | agent | rotation | audit | config | schema | var | sync | proxy)",
+      "Unknown subcommand (expected one of: login | logout | pull | run | push | mcp | env | server | mirror | invite | member | approval | key | device | token | guardian | project | ci | agent | rotation | audit | config | schema | var | sync | proxy)",
     );
   });
 
@@ -1239,7 +1239,7 @@ describe("rotation / audit nested subcommands (ADR-0016 stage 3 ③)", () => {
     const bogus = await startEnv();
     expect(await runCli(["rotation", "bogus"], bogus.env.layer)).toBe(2);
     expect(bogus.env.errors.join("\n")).toContain(
-      "Unknown subcommand (expected one of: list | dismiss)",
+      "Unknown subcommand (expected one of: list | dismiss | proposals | accept | reject)",
     );
   });
 
@@ -1416,7 +1416,7 @@ describe("config's nested subcommands (ADR-0016 stage 3 ①)", () => {
     const get = await startEnv();
     expect(await runCli(["config", "get", evil], get.env.layer)).toBe(2);
     const getOutput = [...get.env.logs, ...get.env.errors].join("\n");
-    expect(getOutput).toContain("Unknown config key (server | defaultProject");
+    expect(getOutput).toContain("Unknown config key (server | mirror | defaultProject");
     expect(getOutput).not.toContain("");
     expect(getOutput).not.toContain("\r");
 

@@ -99,6 +99,21 @@ export function deviceReceivesEnvironment(
  * here. A wrap addressed to an out-of-scope device is refused by the
  * server with 422 `scope-out-of-range` (§12-6).
  */
+/** Every (member, device) pair of the verified state, members by user id and devices in their registry order (the deterministic recipient order). */
+export function memberDevicesInOrder(
+  verified: VerifiedProject,
+): readonly { readonly member: ChainMember; readonly device: ChainDevice }[] {
+  const pairs: { readonly member: ChainMember; readonly device: ChainDevice }[] = [];
+  for (const member of [...verified.state.members.values()].toSorted((a, b) =>
+    a.userId < b.userId ? -1 : 1,
+  )) {
+    for (const device of devicesOf(member)) {
+      pairs.push({ member, device });
+    }
+  }
+  return pairs;
+}
+
 function wrapRecipientsFor(
   verified: VerifiedProject,
   environmentId: string,
@@ -112,13 +127,9 @@ function wrapRecipientsFor(
       recipients.push(recipient);
     }
   };
-  for (const member of [...verified.state.members.values()].toSorted((a, b) =>
-    a.userId < b.userId ? -1 : 1,
-  )) {
-    for (const device of devicesOf(member)) {
-      if (deviceReceivesEnvironment(member, device, environmentId)) {
-        push({ kind: "member", member, device });
-      }
+  for (const { member, device } of memberDevicesInOrder(verified)) {
+    if (deviceReceivesEnvironment(member, device, environmentId)) {
+      push({ kind: "member", member, device });
     }
   }
   for (const grant of [...verified.state.serverGrants.values()]

@@ -10,12 +10,15 @@ import { rotationAction } from "../src/rotation.ts";
 
 const PROJECT = "a".repeat(64);
 
-function parse(config: unknown) {
-  return parseRotateConfig(JSON.stringify(config));
+function parse(config: unknown, configDir?: string) {
+  return parseRotateConfig(
+    typeof config === "string" ? config : JSON.stringify(config),
+    configDir === undefined ? {} : { configDir },
+  );
 }
 
-function expectValid(config: unknown) {
-  const parsed = parse(config);
+function expectValid(config: unknown, configDir?: string) {
+  const parsed = parse(config, configDir);
   if (typeof parsed === "string") {
     throw new Error(parsed);
   }
@@ -79,7 +82,7 @@ describe("parseRotateConfig", () => {
       "unknown top-level keys (hosts)",
     );
     expect(parse({ version: 1, variables: { X: { connector: "vault" } } })).toBe(
-      "variables.X.connector must be one of aws-iam-access-key, cloudflare-api-token, postgres, mysql",
+      "variables.X.connector must be one of aws-iam-access-key, cloudflare-api-token, postgres, mysql, exec",
     );
     expect(
       parse({ version: 1, variables: { X: { connector: "postgres", host: "db" } } }),
@@ -174,6 +177,173 @@ describe("parseRotateConfig", () => {
     expect(ruleFor(parsed, "AWS_ACCESS_KEY_ID")?.primary).toBe("AWS_SECRET_ACCESS_KEY");
     expect(ruleFor(parsed, "AWS_SECRET_ACCESS_KEY")?.primary).toBe("AWS_SECRET_ACCESS_KEY");
     expect(ruleFor(parsed, "OTHER")).toBeNull();
+  });
+
+  it("parses an exec rule: scripts as argv, cwd from the config's directory, companions and free-form inputs (PF8)", () => {
+    const parsed = expectValid(
+      {
+        version: 1,
+        variables: {
+          STRIPE_SECRET_KEY: {
+            connector: "exec",
+            rotate: ["./scripts/rotate-stripe.sh", "--live"],
+            finalize: "./scripts/finalize-stripe.sh",
+            cwd: "ops",
+            output: "json",
+            companions: { STRIPE_KEY_ID: "STRIPE_KEY_ID" },
+            inputs: { STRIPE_ADMIN_KEY: { environment: "ops", name: "STRIPE_ADMIN_KEY" } },
+          },
+          PLAIN: { connector: "exec", rotate: ["./rotate.sh"] },
+        },
+      },
+      "/repo",
+    );
+    expect(parsed.variables.get("STRIPE_SECRET_KEY")).toEqual({
+      connector: "exec",
+      rotate: ["./scripts/rotate-stripe.sh", "--live"],
+      finalize: ["./scripts/finalize-stripe.sh"],
+      cwd: "/repo/ops",
+      output: "json",
+      companions: { STRIPE_KEY_ID: "STRIPE_KEY_ID" },
+      inputs: { STRIPE_ADMIN_KEY: { environment: "ops", name: "STRIPE_ADMIN_KEY" } },
+    });
+    expect(parsed.variables.get("PLAIN")).toEqual({
+      connector: "exec",
+      rotate: ["./rotate.sh"],
+      finalize: null,
+      cwd: "/repo",
+      output: "value",
+      companions: {},
+      inputs: {},
+    });
+    // A companion resolves the rule, like the AWS key id
+    expect(ruleFor(parsed, "STRIPE_KEY_ID")?.primary).toBe("STRIPE_SECRET_KEY");
+  });
+
+  it("refuses exec rules whose scripts, names, or shapes a child could not carry", () => {
+    const exec = (rule: Record<string, unknown>) =>
+      parse({ version: 1, variables: { KEY: { connector: "exec", ...rule } } });
+    expect(exec({})).toContain("variables.KEY.rotate must be the script's command");
+    expect(exec({ rotate: [] })).toContain("variables.KEY.rotate must be the script's command");
+    expect(exec({ rotate: [" "] })).toContain("variables.KEY.rotate must be the script's command");
+    expect(exec({ rotate: ["./r.sh"], finalize: 7 })).toContain(
+      "variables.KEY.finalize must be the script's command",
+    );
+    expect(exec({ rotate: ["./r.sh"], cwd: "/abs" })).toContain(
+      "variables.KEY.cwd must be a non-empty relative path",
+    );
+    expect(exec({ rotate: ["./r.sh"], output: "yaml" })).toContain(
+      'variables.KEY.output must be "value"',
+    );
+    expect(exec({ rotate: ["./r.sh"], companions: { ID: "KEY_ID" } })).toContain(
+      'variables.KEY.companions needs "output": "json"',
+    );
+    expect(exec({ rotate: ["./r.sh"], output: "json", companions: { ID: "KEY" } })).toContain(
+      "must differ from the rule's own variable",
+    );
+    expect(exec({ rotate: ["./r.sh"], output: "json", companions: { "bad-name": "X" } })).toContain(
+      "variables.KEY.companions.bad-name: must be an environment variable name",
+    );
+    expect(exec({ rotate: ["./r.sh"], inputs: { PATH: "ADMIN" } })).toContain(
+      "variables.KEY.inputs.PATH: is an execution-control environment variable",
+    );
+    expect(exec({ rotate: ["./r.sh"], inputs: { MH_ROTATE_X: "ADMIN" } })).toContain(
+      "variables.KEY.inputs.MH_ROTATE_X: starts with MH_ROTATE_",
+    );
+    expect(exec({ rotate: ["./r.sh"], inputs: { KEY: "ADMIN" } })).toContain(
+      "variables.KEY.inputs.KEY collides with the rule's own variable",
+    );
+    expect(
+      exec({
+        rotate: ["./r.sh"],
+        output: "json",
+        companions: { ID: "KEY_ID" },
+        inputs: { ID: "ADMIN" },
+      }),
+    ).toContain("variables.KEY.companions.ID is also an input name");
+    // The credential is injected under the rule's own name, so that name
+    // must be one a script may carry
+    expect(
+      parse({
+        version: 1,
+        variables: { LD_PRELOAD: { connector: "exec", rotate: ["./r.sh"] } },
+      }),
+    ).toContain(
+      "variables.LD_PRELOAD: the exec connector injects the credential under the variable's own name, which is an execution-control environment variable",
+    );
+    expect(
+      parse({
+        version: 1,
+        variables: { MH_ROTATE_KEY: { connector: "exec", rotate: ["./r.sh"] } },
+      }),
+    ).toContain(
+      "variables.MH_ROTATE_KEY: the exec connector injects the credential under the variable's own name, which starts with MH_ROTATE_",
+    );
+    // A companion under the rule's own name would overwrite the credential
+    expect(exec({ rotate: ["./r.sh"], output: "json", companions: { KEY: "OTHER" } })).toContain(
+      "variables.KEY.companions.KEY collides with the rule's own variable",
+    );
+    // Collisions are judged case-insensitively (a script may run where names are)
+    expect(exec({ rotate: ["./r.sh"], inputs: { key: "ADMIN" } })).toContain(
+      "variables.KEY.inputs.key collides with the rule's own variable",
+    );
+    expect(exec({ rotate: ["./r.sh"], inputs: { Admin: "A", ADMIN: "B" } })).toContain(
+      "variables.KEY.inputs has two names that differ only by case (Admin and ADMIN)",
+    );
+    expect(
+      exec({ rotate: ["./r.sh"], output: "json", companions: { ID: "X", id: "Y" } }),
+    ).toContain("variables.KEY.companions.id repeats another companion name");
+    expect(
+      exec({
+        rotate: ["./r.sh"],
+        output: "json",
+        companions: { Admin: "X" },
+        inputs: { ADMIN: "A" },
+      }),
+    ).toContain("variables.KEY.companions.Admin is also an input name");
+    // The working directory stays inside the config's directory
+    expect(exec({ rotate: ["./r.sh"], cwd: "../elsewhere" })).toContain(
+      "variables.KEY.cwd must stay inside the rotation config's directory (../elsewhere climbs out of it)",
+    );
+    expect(exec({ rotate: ["./r.sh"], cwd: "ops/../.." })).toContain(
+      "variables.KEY.cwd must stay inside the rotation config's directory",
+    );
+    expect(exec({ rotate: ["./r.sh"], cwd: ".." })).toContain(
+      "variables.KEY.cwd must stay inside the rotation config's directory",
+    );
+    const inside = parse({
+      version: 1,
+      variables: { KEY: { connector: "exec", rotate: ["./r.sh"], cwd: "ops/../ops" } },
+    });
+    expect(typeof inside).not.toBe("string");
+    // A companion is a variable of exactly one rule and carries no rule of its own
+    expect(
+      parse({
+        version: 1,
+        variables: {
+          KEY: {
+            connector: "exec",
+            rotate: ["./r.sh"],
+            output: "json",
+            companions: { ID: "KEY_ID" },
+          },
+          KEY_ID: { connector: "exec", rotate: ["./r.sh"] },
+        },
+      }),
+    ).toContain("variables.KEY_ID is a companion of KEY and cannot carry a rule of its own");
+    expect(
+      parse({
+        version: 1,
+        variables: {
+          KEY: {
+            connector: "exec",
+            rotate: ["./r.sh"],
+            output: "json",
+            companions: { ID: "KEY_ID", ID2: "KEY_ID" },
+          },
+        },
+      }),
+    ).toContain("variables.KEY.companions name the variable KEY_ID twice");
   });
 });
 

@@ -65,6 +65,7 @@ import type {
 import { rejectData, requireMemberState } from "./data-plane.ts";
 import type { StoredHeadAttestation } from "./data-store.ts";
 import { DataStore, dataStoreLayer } from "./data-store.ts";
+import { readMirrorState } from "./do-mirror.ts";
 import {
   ensureProjectDoTables,
   PROJECT_DO_TABLES,
@@ -93,6 +94,8 @@ import {
   pullEnvironmentProgram,
   renameEnvironmentProgram,
 } from "./programs-environment.ts";
+import type { ExportMembersValue, ExportPageValue } from "./programs-export.ts";
+import { exportMembersProgram, exportPageProgram } from "./programs-export.ts";
 import type {
   VariableVersionHistoryValue,
   VariableVersionValuesValue,
@@ -100,6 +103,29 @@ import type {
 import { variableHistoryProgram, variableVersionValuesProgram } from "./programs-history.ts";
 import type { LeaseOutcome, LeaseTokenFacts, LeaseValue } from "./programs-lease.ts";
 import { leaseProgram } from "./programs-lease.ts";
+import type { MirrorPageRequest, MirrorPageValue, MirrorStatusValue } from "./programs-mirror.ts";
+import {
+  markMirrorProgram,
+  mirrorPageProgram,
+  mirrorStatusProgram,
+  unmarkMirrorProgram,
+} from "./programs-mirror.ts";
+import type {
+  MemberProposalValue,
+  PreflightOutcome,
+  PreflightRecipientInput,
+  PreflightVariableInput,
+  ProposalOutcome,
+  ProposalReceipt,
+  ProposalResolutionInput,
+  RotationProposalInput,
+} from "./programs-proposal.ts";
+import {
+  listRotationProposalsProgram,
+  preflightRotationProgram,
+  proposeRotationProgram,
+  resolveRotationProposalProgram,
+} from "./programs-proposal.ts";
 import type { RotationDismissTargetInput } from "./programs-rotation.ts";
 import { dismissRotationFlagsProgram, rotationFlagsProgram } from "./programs-rotation.ts";
 import { getSchemaPolicyProgram, setSchemaPolicyProgram } from "./programs-schema-policy.ts";
@@ -707,6 +733,41 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
+  /**
+   * A mirror accepts no write (AUTH_SPEC §11-7 ruling B): refused with
+   * `mirror-read-only` after the caller's membership (a non-member gets
+   * the uniform 404 of §11-2 — the worker checks only the token's scope,
+   * so the membership check must happen here, before the mark is
+   * consulted) and before the program's role floor and any state change.
+   * Every member may read the mark through the status endpoint, so the
+   * refusal reveals nothing a reader could not learn. Reads and leases
+   * take `#runData` as before.
+   */
+  #ensureWritable(): Effect.Effect<void, DataRejectedError> {
+    const sql = this.ctx.storage.sql;
+    return Effect.suspend(() =>
+      readMirrorState(sql) === null ? Effect.void : rejectData({ kind: "mirror-read-only" }),
+    );
+  }
+
+  /**
+   * {@link #runData} for the write entry points: membership → the mirror
+   * guard → the program. The mutation counter a paged export binds its
+   * cursor to is kept by the schema's triggers (do-schema.ts step 7), not
+   * here: any row change by any path moves it.
+   */
+  #runWrite<T>(
+    callerUserId: string,
+    program: Effect.Effect<T, DataRejectedError, DoServices>,
+  ): Promise<DataOutcome<T>> {
+    return this.#runData(
+      requireMemberState(callerUserId, "reader", this.#stateCache).pipe(
+        Effect.flatMap(() => this.#ensureWritable()),
+        Effect.flatMap(() => program),
+      ),
+    );
+  }
+
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   init(
     expectedProjectId: string,
@@ -755,7 +816,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     entry: ChainEntry,
     callerUserId: string,
   ): Promise<AppendOutcome> {
-    return this.#runData(appendProgram(parentHeadHashHex, entry, callerUserId, this.#stateCache));
+    return this.#runWrite(
+      callerUserId,
+      appendProgram(parentHeadHashHex, entry, callerUserId, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
@@ -768,7 +832,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     callerUserId: string,
     input: HeadAttestationSubmissionInput,
   ): Promise<DataOutcome<void>> {
-    return this.#runData(putHeadAttestationProgram(callerUserId, input, this.#stateCache));
+    return this.#runWrite(
+      callerUserId,
+      putHeadAttestationProgram(callerUserId, input, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
@@ -793,7 +860,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     // Composite acceptance (§12-4): the chain append (CAS + verifyChain)
     // and the data registration are made atomic in the same permit and
     // the same synchronous block (the §6.4 composite acceptance)
-    return this.#runData(createEnvironmentCompositeProgram(actor, input, this.#stateCache));
+    return this.#runWrite(
+      actor.userId,
+      createEnvironmentCompositeProgram(actor, input, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
@@ -808,7 +878,8 @@ export class ProjectChainDO extends DurableObject<Env> {
       readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
     },
   ): Promise<DataOutcome<EnvironmentChainResultValue>> {
-    return this.#runData(
+    return this.#runWrite(
+      actor.userId,
       rotateEpochCompositeProgram(actor, environmentId, input, this.#stateCache),
     );
   }
@@ -820,7 +891,8 @@ export class ProjectChainDO extends DurableObject<Env> {
     statement: MetaStatementInput,
     manifest: EnvManifestInput,
   ): Promise<DataOutcome<void>> {
-    return this.#runData(
+    return this.#runWrite(
+      actor.userId,
       renameEnvironmentProgram(actor, environmentId, statement, manifest, this.#stateCache),
     );
   }
@@ -831,7 +903,8 @@ export class ProjectChainDO extends DurableObject<Env> {
     environmentId: string,
     statement: MetaStatementInput,
   ): Promise<DataOutcome<void>> {
-    return this.#runData(
+    return this.#runWrite(
+      actor.userId,
       deleteEnvironmentProgram(actor, environmentId, statement, this.#stateCache),
     );
   }
@@ -853,7 +926,10 @@ export class ProjectChainDO extends DurableObject<Env> {
       readonly manifest: EnvManifestInput;
     },
   ): Promise<DataOutcome<VariableVersionValue>> {
-    return this.#runData(createVariableProgram(actor, environmentId, input, this.#stateCache));
+    return this.#runWrite(
+      actor.userId,
+      createVariableProgram(actor, environmentId, input, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
@@ -869,7 +945,8 @@ export class ProjectChainDO extends DurableObject<Env> {
   ): Promise<DataOutcome<VariableVersionValue>> {
     // The activation composite (§12-5): declared → active as the atomic
     // acceptance of value version 1 + the statement + the manifest
-    return this.#runData(
+    return this.#runWrite(
+      actor.userId,
       activateVariableProgram(actor, environmentId, variableId, input, this.#stateCache),
     );
   }
@@ -882,7 +959,8 @@ export class ProjectChainDO extends DurableObject<Env> {
     value: ValueInput,
     sameValueAs: number | undefined,
   ): Promise<DataOutcome<VariableVersionValue>> {
-    return this.#runData(
+    return this.#runWrite(
+      actor.userId,
       pushVersionProgram(actor, environmentId, variableId, value, sameValueAs, this.#stateCache),
     );
   }
@@ -920,7 +998,8 @@ export class ProjectChainDO extends DurableObject<Env> {
     statement: MetaStatementInput,
     manifest: EnvManifestInput,
   ): Promise<DataOutcome<void>> {
-    return this.#runData(
+    return this.#runWrite(
+      actor.userId,
       renameVariableProgram(
         actor,
         environmentId,
@@ -940,7 +1019,8 @@ export class ProjectChainDO extends DurableObject<Env> {
     statement: MetaStatementInput,
     manifest: EnvManifestInput,
   ): Promise<DataOutcome<void>> {
-    return this.#runData(
+    return this.#runWrite(
+      actor.userId,
       deleteVariableProgram(
         actor,
         environmentId,
@@ -974,7 +1054,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     environmentId: string,
     wraps: readonly DekWrapInput[],
   ): Promise<DataOutcome<void>> {
-    return this.#runData(registerDekWrapsProgram(actor, environmentId, wraps, this.#stateCache));
+    return this.#runWrite(
+      actor.userId,
+      registerDekWrapsProgram(actor, environmentId, wraps, this.#stateCache),
+    );
   }
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
@@ -991,7 +1074,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     environmentId: string,
     refs: readonly DekWrapRefInput[],
   ): Promise<DataOutcome<void>> {
-    return this.#runData(deleteDekWrapsProgram(actor, environmentId, refs, this.#stateCache));
+    return this.#runWrite(
+      actor.userId,
+      deleteDekWrapsProgram(actor, environmentId, refs, this.#stateCache),
+    );
   }
 
   // --- schemaPolicy configuration RPC (AUTH_SPEC §12-11) ----------------
@@ -1003,7 +1089,10 @@ export class ProjectChainDO extends DurableObject<Env> {
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   setSchemaPolicy(actor: DataActor, schemaPolicy: SchemaPolicy): Promise<DataOutcome<void>> {
-    return this.#runData(setSchemaPolicyProgram(actor, schemaPolicy, this.#stateCache));
+    return this.#runWrite(
+      actor.userId,
+      setSchemaPolicyProgram(actor, schemaPolicy, this.#stateCache),
+    );
   }
 
   // --- Rotation-needed flag RPC (AUDIT_SPEC §4.1 / §7) ------------------
@@ -1018,7 +1107,136 @@ export class ProjectChainDO extends DurableObject<Env> {
     actor: DataActor,
     targets: readonly RotationDismissTargetInput[],
   ): Promise<DataOutcome<void>> {
-    return this.#runData(dismissRotationFlagsProgram(actor, targets, this.#stateCache));
+    return this.#runWrite(
+      actor.userId,
+      dismissRotationFlagsProgram(actor, targets, this.#stateCache),
+    );
+  }
+
+  // --- Sealed value proposals RPC (CRYPTO_SPEC §5.3 / AUTH_SPEC §14-5) --
+
+  /**
+   * The workload mint (programs-proposal.ts). Like issueLease, the OIDC
+   * verification is already done on the worker side and the result is a
+   * ProposalOutcome (the lease rejection vocabulary plus the §14-5
+   * acceptance reasons), not a DataOutcome.
+   */
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  proposeRotation(
+    environmentId: string,
+    ephemeralPubHex: string,
+    facts: LeaseTokenFacts,
+    proposal: RotationProposalInput,
+  ): Promise<ProposalOutcome> {
+    return this.#runtime.runPromise(
+      this.#opLock.withPermit(
+        this.#invalidateCachesOnDefect(
+          proposeRotationProgram(
+            environmentId,
+            ephemeralPubHex,
+            facts,
+            proposal,
+            this.#stateCache,
+          ).pipe(
+            Effect.match({
+              onSuccess: (value: ProposalReceipt): ProposalOutcome => ({ kind: "ok", value }),
+              onFailure: (rejection): ProposalOutcome => ({ kind: "rejected", rejection }),
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /** The mint's pre-flight (AUTH_SPEC §14-5 O-4 — programs-proposal.ts): the same split as proposeRotation, no value. */
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  preflightRotation(
+    environmentId: string,
+    ephemeralPubHex: string,
+    facts: LeaseTokenFacts,
+    variables: readonly PreflightVariableInput[],
+    recipients?: readonly PreflightRecipientInput[],
+  ): Promise<PreflightOutcome> {
+    return this.#runtime.runPromise(
+      this.#opLock.withPermit(
+        this.#invalidateCachesOnDefect(
+          preflightRotationProgram(
+            environmentId,
+            ephemeralPubHex,
+            facts,
+            variables,
+            this.#stateCache,
+            recipients,
+          ).pipe(
+            Effect.match({
+              onSuccess: (): PreflightOutcome => ({ kind: "ok" }),
+              onFailure: (rejection): PreflightOutcome => ({ kind: "rejected", rejection }),
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  listRotationProposals(actor: DataActor): Promise<DataOutcome<readonly MemberProposalValue[]>> {
+    return this.#runData(listRotationProposalsProgram(actor, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  resolveRotationProposal(
+    actor: DataActor,
+    proposalId: string,
+    resolution: ProposalResolutionInput,
+  ): Promise<DataOutcome<void>> {
+    return this.#runWrite(
+      actor.userId,
+      resolveRotationProposalProgram(actor, proposalId, resolution, this.#stateCache),
+    );
+  }
+
+  // --- Project export RPCs (AUTH_SPEC §11-6 — PF3) ----------------------
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  exportPage(actor: DataActor, cursor: string | null): Promise<DataOutcome<ExportPageValue>> {
+    return this.#runData(
+      exportPageProgram(
+        actor,
+        cursor,
+        this.ctx.storage.sql,
+        this.ctx.id.toString(),
+        this.#stateCache,
+      ),
+    );
+  }
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  exportMembers(actor: DataActor): Promise<DataOutcome<ExportMembersValue>> {
+    return this.#runData(exportMembersProgram(actor, this.#stateCache));
+  }
+
+  // --- Mirrors (AUTH_SPEC §11-7 — PF2; programs-mirror.ts) ------------------
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  mirrorStatus(actor: DataActor): Promise<DataOutcome<MirrorStatusValue>> {
+    return this.#runData(mirrorStatusProgram(actor, this.ctx.storage.sql, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  markMirror(actor: DataActor, sourceOrigin: string): Promise<DataOutcome<MirrorStatusValue>> {
+    return this.#runData(
+      markMirrorProgram(actor, sourceOrigin, this.ctx.storage, this.#stateCache),
+    );
+  }
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  unmarkMirror(actor: DataActor): Promise<DataOutcome<MirrorStatusValue>> {
+    return this.#runData(unmarkMirrorProgram(actor, this.ctx.storage, this.#stateCache));
+  }
+
+  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
+  mirrorPage(actor: DataActor, page: MirrorPageRequest): Promise<DataOutcome<MirrorPageValue>> {
+    return this.#runData(mirrorPageProgram(actor, page, this.ctx.storage, this.#stateCache));
   }
 
   // --- Audit-event read RPC (AUDIT_SPEC §6 / §7) -----------------------
@@ -1162,7 +1380,7 @@ export class ProjectChainDO extends DurableObject<Env> {
    * audit head is returned (for cross-checking).
    */
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the restore worker calls it via the stub)
-  opsRestore(objectKey: string): Promise<OpsRestoreOutcome> {
+  opsRestore(objectKey: string, etag?: string): Promise<OpsRestoreOutcome> {
     const bucket = this.env.OPS_BACKUP_BUCKET;
     if (bucket === undefined) {
       return Promise.resolve({ kind: "no-bucket" });
@@ -1175,16 +1393,27 @@ export class ProjectChainDO extends DurableObject<Env> {
         Effect.gen(function* () {
           const audit = yield* AuditStore;
           const restored = yield* Effect.promise(async () => {
-            const object = await bucket.get(objectKey);
+            // An import restores the body its pre-check verified, by its
+            // etag (ruling H revision, round 4): a re-put between the two
+            // reads is refused, never restored unchecked
+            const object =
+              etag === undefined
+                ? await bucket.get(objectKey)
+                : await bucket.get(objectKey, { onlyIf: { etagMatches: etag } });
             if (object === null) {
               return new RestoreRefusedError("object-missing");
+            }
+            // A precondition failure answers the object without a body
+            const verified = "body" in object ? (object as R2ObjectBody) : null;
+            if (verified === null) {
+              return new RestoreRefusedError("object-changed");
             }
             try {
               return await restoreSnapshot({
                 storage,
                 tables: PROJECT_DO_TABLES,
                 schemaVersion: readProjectDoSchemaVersion(sql),
-                body: object.body,
+                body: verified.body,
               });
             } catch (error) {
               if (error instanceof RestoreRefusedError) {

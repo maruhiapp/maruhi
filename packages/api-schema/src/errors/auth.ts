@@ -39,6 +39,10 @@ export const ForbiddenReasonSchema = Schema.Literals([
   "org-membership-required",
   "insufficient-role",
   "insufficient-scope",
+  // The project is a read-only mirror of another deployment (AUTH_SPEC
+  // §11-7 — PF2): every write is refused after authentication; the
+  // member writes to the source. Reads and leases are served
+  "mirror-read-only",
 ]);
 
 /** 403: the authenticated principal may not perform this operation. */

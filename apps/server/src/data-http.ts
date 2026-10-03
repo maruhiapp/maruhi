@@ -28,16 +28,22 @@ import {
   EnvironmentConflictError,
   EnvironmentNotFoundError,
   EpochConflictError,
+  ExportChangedError,
+  ExportRateLimitedError,
   ForbiddenError,
   ManifestRejectedError,
   ManifestVersionConflictError,
   MetaStatementRejectedError,
   MetaVersionConflictError,
+  MirrorStateError,
+  MirrorSyncRejectedError,
   NameNotNfcError,
   PayloadMismatchError,
   ProjectNotFoundError,
   ProposalLimitError,
   RotationFlagNotFoundError,
+  RotationProposalNotFoundError,
+  RotationProposalRejectedError,
   SchemaDescriptionRejectedError,
   SchemaPolicyRejectedError,
   ValueSignatureRejectedError,
@@ -306,6 +312,10 @@ type DataApiError =
   | ProposalLimitError
   | CheckpointStateMismatchError
   | AuditHeadNotReadyError
+  | ExportChangedError
+  | ExportRateLimitedError
+  | MirrorStateError
+  | MirrorSyncRejectedError
   | ChainHeadConflictError
   | ChainEntryInvalidError
   | ChainEntryTooLargeError
@@ -328,6 +338,8 @@ type DataApiError =
   | DekWrapExistsError
   | DekWrapNotFoundError
   | RotationFlagNotFoundError
+  | RotationProposalNotFoundError
+  | RotationProposalRejectedError
   | DataLimitExceededError;
 
 // A small mapping per kind (§11-2: uninitialized and non-member are not
@@ -361,6 +373,14 @@ const rejectionErrors = {
   // (retryable 503 — AUDIT_SPEC §5.1 / AUTH_SPEC §16-2; empty body —
   // no count leak)
   "audit-head-not-ready": () => new AuditHeadNotReadyError(),
+  // Project export (AUTH_SPEC §11-6 — PF3)
+  "export-changed": () => new ExportChangedError({ reason: "project-changed" }),
+  "export-rate-limited": (rejection) =>
+    new ExportRateLimitedError({ retryAfterSeconds: rejection.retryAfterSeconds }),
+  // Mirrors (AUTH_SPEC §11-7 — PF2)
+  "mirror-read-only": () => new ForbiddenError({ reason: "mirror-read-only" }),
+  "mirror-state": (rejection) => new MirrorStateError({ reason: rejection.reason }),
+  "mirror-sync-rejected": (rejection) => new MirrorSyncRejectedError({ reason: rejection.reason }),
   "chain-head-conflict": (rejection) =>
     new ChainHeadConflictError({
       currentHeadSeq: rejection.currentHeadSeq,
@@ -418,6 +438,10 @@ const rejectionErrors = {
       environmentId: rejection.environmentId,
       variableId: rejection.variableId,
     }),
+  "rotation-proposal-not-found": (rejection) =>
+    new RotationProposalNotFoundError({ proposalId: rejection.proposalId }),
+  "rotation-proposal-rejected": (rejection) =>
+    new RotationProposalRejectedError({ reason: rejection.reason }),
   "limit-exceeded": (rejection) =>
     new DataLimitExceededError({ resource: rejection.resource, limit: rejection.limit }),
   // Head attestation (AUTH_SPEC §16-1)

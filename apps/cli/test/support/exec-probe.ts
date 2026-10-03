@@ -55,7 +55,87 @@ const program = Effect.gen(function* () {
       Effect.map(() => "unexpectedly started"),
       Effect.catch((error) => Effect.succeed(error.message)),
     );
-  return { exitCode: outcome.exitCode, output: outcome.output, missing, badCwd };
+  // The rotation connector's script capture (captureScript): stdout is
+  // the credential and is read whole up to 1 MiB; past that the script is
+  // stopped and nothing of it is kept (D-6)
+  const captured = yield* Effect.promise(() =>
+    runner.captureScript({
+      command: ["sh", "-c", 'head -c 300000 /dev/zero | tr "\\0" y; printf "note\\n" >&2'],
+      cwd: process.cwd(),
+      extraEnv: {},
+    }),
+  );
+  /** A capture expected to reject: its error's name and message. */
+  const refusal = (shell: string) =>
+    Effect.promise(() =>
+      runner.captureScript({ command: ["sh", "-c", shell], cwd: process.cwd(), extraEnv: {} }).then(
+        () => "unexpectedly captured",
+        (error: unknown) =>
+          error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      ),
+    );
+  const flooded = yield* refusal("head -c 3000000 /dev/zero; sleep 5; echo late");
+  // A flooded stderr is dropped whole (never cut — D-9) and drained: the
+  // script runs on and its value is read (D-10 — a stopped script would
+  // strand the credential it may have created)
+  const floodedStderr = yield* Effect.promise(() =>
+    runner.captureScript({
+      command: ["sh", "-c", "head -c 3000000 /dev/zero >&2; echo value"],
+      cwd: process.cwd(),
+      extraEnv: {},
+    }),
+  );
+  // A process the script left behind holds its pipes: the capture ends
+  // after the grace with the script's own answer (D-12); a script that
+  // ignores the stop is killed after the grace (D-13)
+  const leftoverStart = Date.now();
+  const leftover = yield* Effect.promise(() =>
+    runner.captureScript({
+      command: ["sh", "-c", "sleep 20 & echo value"],
+      cwd: process.cwd(),
+      extraEnv: {},
+    }),
+  );
+  const leftoverMs = Date.now() - leftoverStart;
+  const stubbornStart = Date.now();
+  const stubborn = yield* refusal("trap '' TERM; head -c 3000000 /dev/zero; sleep 20");
+  const stubbornMs = Date.now() - stubbornStart;
+  // Bytes a leftover process writes after the script exited are never
+  // silently the answer (D-14): a late line, or a flood past the cap after
+  // the exit, is refused naming the script's own exit code
+  const polluted = yield* refusal("(sleep 1; echo junk) & echo value");
+  // A script that failed on its own reports its own failure; what a
+  // leftover wrote is moot since nothing is pushed (D-15)
+  const failedItself = yield* Effect.promise(() =>
+    runner.captureScript({
+      command: ["sh", "-c", "(sleep 0.3; echo junk) & echo 'issuer said no' >&2; exit 7"],
+      cwd: process.cwd(),
+      extraEnv: {},
+    }),
+  );
+  const floodedAfterExit = yield* refusal(
+    "(sleep 0.5; head -c 3000000 /dev/zero | tr '\\0' z; sleep 10) & echo value",
+  );
+  return {
+    exitCode: outcome.exitCode,
+    output: outcome.output,
+    leftoverStdout: new TextDecoder().decode(leftover.stdout),
+    leftoverStderr: leftover.stderr,
+    leftoverMs,
+    stubborn,
+    stubbornMs,
+    polluted,
+    floodedAfterExit,
+    failedItselfCode: failedItself.exitCode,
+    failedItselfStderr: failedItself.stderr,
+    missing,
+    badCwd,
+    capturedBytes: captured.stdout.length,
+    capturedStderr: captured.stderr,
+    flooded,
+    floodedStderr: floodedStderr.stderr,
+    floodedStderrStdout: floodedStderr.stdout.length,
+  };
 });
 
 const result = await Effect.runPromise(program.pipe(Effect.provide(liveLayer())));

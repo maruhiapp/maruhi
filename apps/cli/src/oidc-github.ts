@@ -101,8 +101,39 @@ function tokenOfIssuanceBody(body: unknown): string | null {
  * exposure window). Since each call mints a fresh token, retrying
  * `token-replayed` (ci-run.ts) is just calling this function again.
  */
+/** The bound on the runner's issuance endpoint (the same as the API client's header bound). */
+const OIDC_FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * The bound on the issuance fetch when a token is in hand: its remaining
+ * life minus a margin, never above the default — a hung endpoint must not
+ * eat the fallback to that token (ruling O revision, round 7). With no
+ * token in hand, or one that cannot outlive even the shortest bound (an
+ * expired one — there is no fallback left to protect, so a short bound
+ * would only remove the one path to success; round 8, O-19), the default
+ * applies.
+ */
+export function issuanceBoundFor(token: Redacted.Redacted<string>, nowMs: number): number {
+  const expiresAtMs = tokenExpiresAtMs(token);
+  if (expiresAtMs === null) {
+    return OIDC_FETCH_TIMEOUT_MS;
+  }
+  const remaining = expiresAtMs - nowMs - ISSUANCE_MARGIN_MS;
+  if (remaining < ISSUANCE_FLOOR_MS) {
+    return OIDC_FETCH_TIMEOUT_MS;
+  }
+  return Math.min(OIDC_FETCH_TIMEOUT_MS, remaining);
+}
+
+/** Left of the token's life for the request that presents it, after a fetch that times out. */
+const ISSUANCE_MARGIN_MS = 2000;
+/** The shortest bound worth giving the fetch; a token in hand with less life than this is no fallback. */
+const ISSUANCE_FLOOR_MS = 1000;
+
 export function fetchGitHubOidcToken(
   audience: string,
+  /** The bound on the fetch (default {@link OIDC_FETCH_TIMEOUT_MS}; shorter when a token in hand would expire first). */
+  timeoutMs: number = OIDC_FETCH_TIMEOUT_MS,
 ): Effect.Effect<Redacted.Redacted<string>, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -134,6 +165,10 @@ export function fetchGitHubOidcToken(
         const response = await fetch(url, {
           method: "GET",
           redirect: "manual",
+          // A hung issuance endpoint must not hold the job: the lease's
+          // token fallback and the recovery message are reached while that
+          // token lives (ruling O revision, round 6 — the API client's bound)
+          signal: AbortSignal.timeout(timeoutMs),
           headers: {
             accept: "application/json",
             authorization: `Bearer ${endpoint.requestToken}`,
@@ -220,6 +255,17 @@ function decodeTokenPayload(raw: string): unknown | null {
   } catch {
     return null;
   }
+}
+
+/** The token's `exp` as a millisecond instant (null when absent or malformed) — the fallback check of a mint (K-6). */
+export function tokenExpiresAtMs(token: Redacted.Redacted<string>): number | null {
+  // Why it is unwrapped: reading one numeric claim of my own token; nothing else leaves
+  const payload = decodeTokenPayload(Redacted.value(token));
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+  const exp = (payload as Record<string, unknown>)["exp"];
+  return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : null;
 }
 
 /** payload → the 3 claims the lease binds (a reason code when malformed). */

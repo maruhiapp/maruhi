@@ -506,6 +506,294 @@ from the audit rows — `maruhi audit reconcile` does the same computation).
 The snapshot's schema version must match the deployed server —
 deploy the matching version first if it does not.
 
+### Migrating a project from another maruhi (export / import)
+
+A project is portable by construction: its id is the genesis hash, its
+membership is a signed chain every client verifies, its values are
+ciphertexts, and its audit log lives in the same Durable Object. Moving one
+from the hosted service (or any other deployment) to yours is an **export
+by the project's owner** and an **import by you, the operator**, over the
+restore path above (AUTH_SPEC §11-6; the design is
+`docs/notes/pf3-design.md`).
+
+**1. The owner exports** (any machine logged in to the source deployment;
+chain role owner):
+
+```sh
+maruhi project export --server https://my.maruhi.app --project <project-id> --out acme.ndjson.gz
+```
+
+This writes two files: the snapshot (`acme.ndjson.gz` — the same gzip NDJSON
+the backup job produces, fetched page by page; ciphertext, the chain, wrapped
+DEKs, statements and the audit log, never a plaintext) and the identities
+companion (`acme.ndjson.gz.identities.json` — the current members' GitHub
+ids, keyed by the user ids the chain names). The command prints the chain
+head and the row counts, cross-checked against the verified chain; the
+source records `project.exported` in the project's audit log. Export after
+the last write: a member whose client verified a newer head than the file
+carries refuses the destination (CRYPTO_SPEC §6.3).
+
+**Before you import.** The restore path runs in the *production* Durable
+Object and reads the snapshot from the ops bucket, so the deployment that
+receives the project must be the `hosted` mode of `cloudflare.config.ts`
+(the R2 binding plus your own D1 id — see "Optional: project snapshots to
+R2" above); the plain `maruhi-server` worker has no bucket binding and
+answers every import job with `no-bucket`. The `restore` mode's `DB`
+binding must point at the same D1 id as your `hosted` mode (edit both ids
+in `cloudflare.config.ts` before deploying either). And import only from an
+owner you trust: the identities file decides which GitHub accounts become
+which chain members — the worker confirms every listed id against the
+restored chain (a non-member is refused, and only an owner's export attaches
+a project), but it cannot tell whether the GitHub id next to a member's
+chain id is really that person.
+
+**2. You import** with the restore worker, adding `identitiesKey` to the job:
+
+```sh
+bunx cf r2 objects put import/acme.ndjson.gz --bucket-name maruhi-ops-backup --file acme.ndjson.gz
+bunx cf r2 objects put import/acme.identities.json --bucket-name maruhi-ops-backup --file acme.ndjson.gz.identities.json --content-type application/json
+bunx cf deploy --mode restore
+echo '{"objectKey":"import/acme.ndjson.gz","target":"production","identitiesKey":"import/acme.identities.json"}' > job.json
+bunx cf r2 objects put restore/jobs/import-acme.json --bucket-name maruhi-ops-backup --file job.json --content-type application/json
+bunx cf r2 objects get restore/results/import-acme.json --bucket-name maruhi-ops-backup --text
+bunx cf workers delete maruhi-restore --force
+```
+
+The job restores the Durable Object exactly like a snapshot restore (only
+into an empty one; compare the result with the trailer the owner's command
+printed) and then provisions D1 in one atomic batch: a `users` row **with
+the chain's user id** and the matching `linked_identities` row for every
+member, a personal org for each, the `projects` row under the exporting
+owner's org, and the membership projection. The result's `identities`
+field reports `provisioned` with the counts, or a static refusal:
+`identity-conflict` (a GitHub id in the file is already linked to a
+different account on your deployment — that person logged in before the
+import; remove that account and resubmit the same job: the restored
+project is kept and only the D1 step reruns, and that result reads
+`"status": "failed", "code": "not-empty"` for the Durable Object half with
+`"identities": { "kind": "provisioned", … }` for the D1 half),
+`user-id-taken`, `project-exists` (the project row here belongs to someone
+who is not an owner on the project's chain), `exporter-missing`,
+`identity-not-member` / `exporter-not-owner` (the file names an id the
+snapshot's chain does not confirm), `identities-stale` (the companion was
+read at another chain head than the file's — re-run the export so both
+come from the same state), `identities-missing` / `identities-malformed`,
+`db-unavailable`
+(the restore mode has no `DB` binding), `db-error` (D1 refused the batch —
+resubmit). Look at the identities file before placing the job: it decides
+which GitHub accounts become which chain members.
+
+Every refusal above is asked **before the Durable Object is touched**: the
+worker verifies the snapshot's chain itself (a file whose chain the server
+would not load is `"code": "snapshot-chain-invalid"`), confirms the
+companion against it, and classifies D1 read-only; a refused job reads
+`"status": "failed", "code": "import-refused"` with the reason under
+`identities`, and your deployment is exactly as it was. To see what an
+import would do without doing it, submit the same job with
+`"target": "drill"`: the result's `identities` reads `"kind": "rehearsed"`
+with the counts (members to create, members already here, whether the
+project row exists) and nothing is provisioned.
+
+**3. After the import** — what the file does not carry:
+
+- **Logins**: every member runs `maruhi login --server <your url>`; their
+  GitHub login resolves to the chain's user id, so their devices, roles and
+  scopes are what the chain says. Sessions and API tokens are not carried
+  (issue new ones)
+- **The server key**: the source server's `grant_server` wraps are useless
+  here (your server has its own key). The owner runs
+  `maruhi server revoke <source fingerprint>` and `maruhi server grant` for
+  yours, then `maruhi env rotate` on the environments the source key could
+  open (the source operator still holds wraps of those epochs — rotation
+  retires them). CI leases work once the grant exists
+- **Recovery and reserve keys**: the recovery ledger and guardian shares
+  live in the source's D1; members set recovery up again
+  (`maruhi key recovery`, `maruhi key reserve`, `maruhi guardian add`)
+- **Pending invitations and device-add requests** are gone (re-invite);
+  the advisory device registry rebuilds itself on each login
+- **Ops state** (backup records, counters) starts fresh
+
+**The order that never leaves two writable copies.** Freeze the source
+*before* the export: the owner marks the source project as a mirror of
+the destination
+(`maruhi mirror mark --server <source url> --project <id> --source <your url>`).
+From that moment every write on the source answers `mirror-read-only`
+(that is the members' signal to switch), reads keep working, and the
+export is of a frozen state by construction — nothing can land on the
+source after it. Then export, import, and have members log in to the
+destination and point the CLI at it. If the import fails and you want the
+source back, promote it again (`maruhi mirror promote --server <source url>
+--force` — the guard refuses without `--force` while the destination
+answers). Once the destination is live, the frozen source can stay as its
+mirror and be synced from it as a fallback (see "Running a mirror" below);
+the first sync from the destination replaces the source's content with the
+destination's replica and keeps the rows the source appended that the
+replica does not carry, re-appended after it.
+
+If the source was *not* frozen first and writes continued after the
+export, do not re-import — the Durable Object refuses a second restore
+(`not-empty`). Mark the *imported* project as a mirror of the source
+(`maruhi mirror mark --server <your url> --project <id> --source <source url>`),
+run `maruhi mirror sync --server <source url> --mirror <your url> --project <id>`
+to bring the newer state in, then `maruhi mirror promote --server <your url>`
+to make it the primary. A re-run of the import job on the same deployment
+provisions only the members added since (the project row and the existing
+accounts are kept; any owner on the chain may export the fresh companion),
+so a member who joined after the first import can be brought in that way.
+
+The hosted service keeps the project until the owner asks for its removal;
+the audit log on both sides shows the export.
+
+### Running a mirror (a read replica for when the primary is down)
+
+A mirror is a second deployment — yours — that holds a verified copy of a
+project and answers `maruhi run`, `maruhi pull`, `ci run` and `ci sync`
+when the primary cannot. It accepts no writes (pushes and chain changes wait
+for the primary), serves CI leases under its own server key once the owner
+grants it, and can be promoted to the primary by the owner if the primary is
+gone for good (AUTH_SPEC §11-7, CRYPTO_SPEC §9.2; design
+`docs/notes/pf2-design.md`).
+
+**1. Bootstrap** = the migration above, minus the switch: generate a
+distinct `SERVER_ENC_KEY_IKM` for the mirror (two deployments with one key
+can open each other's grants, and the CLI refuses to mark a source that
+publishes this server's key), the owner exports the project, you import it into your deployment
+with the identities companion, members log in there once (`maruhi login
+--server <mirror>`), and the owner marks the project as a mirror of the
+primary:
+
+```sh
+maruhi mirror mark --server https://mirror.example.com --project <project-id> --source https://my.maruhi.app
+```
+
+From this point the project on your deployment refuses writes
+(`Forbidden (mirror-read-only)`) and shows the mark in `maruhi mirror status`.
+
+**2. Keep it current** — any admin runs, by hand or from a cron (always
+from the primary: mirrors form a star, since a mirror that itself syncs
+renumbers its own audit rows at every commit and cannot be another mirror's
+source; a frozen former primary is a source only until it first syncs back):
+
+```sh
+maruhi mirror sync --server https://my.maruhi.app --mirror https://mirror.example.com --project <project-id>
+```
+
+The command exports the project from the primary (your session there; the
+export needs the owner role) and uploads the pages to the mirror (your
+session there — from a cron, `MARUHI_TOKEN` / `MARUHI_TOKEN_ORIGIN` for the
+primary and `MARUHI_MIRROR_TOKEN` for the mirror). The mirror accepts a
+replica only if it extends what it already holds; the result names both
+heads and how many of the mirror's own audit rows (the reads and leases it
+served) were re-appended after the replica's. When the primary's chain
+head, audit seq and mutation counter are the ones the last sync brought
+(and the mirror still holds that head), the command uploads nothing and
+says the mirror is current — two status reads, no chain download — so a
+cron can run it every few minutes. The command refuses to replicate from a
+server that is not the mirror's recorded source (a cron left pointing at a
+former primary after a failover): sync from the recorded source, re-point
+the mirror, or pass `--force`. It also refuses a server that is itself a
+mirror of another origin (sync from that origin — the star above); a server
+frozen as a mirror of this one is a source whatever it replicated before;
+`--force` overrides. A replica that lands behind the chain the primary
+served before the export, past the chain it serves after the commit, or on
+another chain altogether is reported as a rollback or a fork at the primary
+and fails the command, so a cron sees it. `maruhi mirror status` compares the two at any time
+(and reports the mirror's head alone while the primary is down); it fails
+too when the mirror's head is on another chain than the primary's (so a
+cron's "is my mirror usable" check sees that as well), saying whether the
+copy is a mirror of this primary, a promoted copy that diverged, or a
+mirror of another deployment. Across a
+sync the mirror keeps its own lease windows and rate limits, merges the
+primary's live first-come token bindings into its own (expired ones are
+dropped on both sides), and keeps the audit rows of the reads and leases it
+served.
+
+**3. Use it**: members set `maruhi config set mirror https://mirror.example.com`
+(or pass `--mirror` to `run` / `pull`; CI workflows pass `--mirror` to
+`ci run` / `ci sync`). The command warns when no session for the mirror is
+stored on that machine: log in there now (`maruhi login --server <mirror>`)
+and rehearse with `maruhi pull --server <mirror>` — a login is not possible
+once the primary is the reason you need the mirror. The primary is always
+tried first; when it does not answer (no response, no headers within 30
+seconds or no complete answer within three minutes, a 500, a gateway
+error) the read is retried against the mirror and the CLI says so on
+stderr. Before the retry the CLI reads the mirror's mark: a copy that was
+promoted, or that mirrors another deployment, is not read (confirm a
+promotion with an owner before pointing `config set server` at the copy —
+a mirror's own word never moves a member's writes).
+Everything is verified as usual — a mirror that is behind what the member
+already verified is refused, not silently used. An answer of the primary
+about the read (a 403, a 404) is never retried.
+
+**4. CI leases from the mirror**: the owner grants the mirror's server key
+on the primary — `maruhi server grant --key-from https://mirror.example.com
+--environments <ids> --lease-policy <file>` (the same fingerprint ceremony,
+against the mirror's `/auth/config`) — and the next sync brings the grant
+and the wraps to the mirror. The mirror's lease policy is its own (a
+distinct audience is fine: `ci run --mirror <url>` requests a second OIDC
+token with the mirror's origin as audience unless `--audience` is given).
+
+**5. Promotion**: if the primary will not come back, the owner runs
+`maruhi mirror promote --server https://mirror.example.com --project <id>`
+(the mark is removed; the mirror accepts writes) and members set
+`config set server` to it. The command looks at the primary first: a
+primary that already holds the project as a mirror of this deployment is
+frozen (the planned order below) and the promotion goes through; one that
+holds it as a mirror of **another** deployment is refused — the primary
+moved there, so re-point this mirror at it with `maruhi mirror mark
+--server <mirror> --source <new primary>` (a mark naming another source
+re-points a marked project in place; the project stays frozen throughout)
+and sync from there; one that still holds it writable is refused —
+promoting beside a live primary leaves two writable copies — and one
+nothing answers at (a probe of its public
+`/auth/config`; any HTTP answer, even an error, counts as alive, so a
+gateway's 52x in front of a dead worker still counts as alive — pass
+`--force` then) lets the promotion through. The **planned failover**, which
+loses no write: mark the primary as a mirror of the new one (it freezes),
+run one last `maruhi mirror sync` from it, then promote — the promotion
+refuses, without `--force`, while the frozen primary holds chain entries
+the mirror lacks (the last sync was skipped), and refuses a frozen primary
+whose head is behind the mirror's and not on its chain, or at its height
+on another chain (a fork — decide with `maruhi project verify` on both). A frozen primary whose head is an
+earlier entry of the mirror's chain (restored from an older backup, then
+frozen) holds nothing the mirror lacks and is promoted over. The promotion
+counts the audit rows the frozen primary wrote since the last sync (the
+reads and leases it served) from the primary's own record when it synced
+back from the mirror, else from the mirror's record when the frozen head is
+the mirror's, and says they cannot be counted from here otherwise;
+either way they can never be brought over afterwards — keep them with
+`maruhi project export --server <old primary>`. `--force` promotes past
+every guard but still says what it overrides. A stale old primary can never
+be synced over the promoted one; `maruhi mirror mark` refuses to mark a
+project whose chain and the source's are not one chain (neither head an
+entry of the other — such a mirror could never be synced), refuses a
+source that is itself a mirror of a third deployment (mark against that
+one — the star), and refuses to freeze a project ahead of a source that
+holds it writable (no sync brings entries into a writable deployment: mark
+the other way round), all unless `--force`, which marks anyway and says what it overrides;
+marking a primary that is ahead of a mirror frozen for it (the freeze) is
+accepted with a note naming the last sync to run, and marking a copy equal
+to or behind one frozen for it with a note naming the promotion to run
+(neither copy accepts writes until one is promoted). The mark starts the
+project's audit position at 0: the first sync accepts the new source's log
+whatever its length, and keeps every row of this project's own log the
+replica does not carry, re-appended after it. A deployment is named by its
+origin string — the one the freeze used: promote under that name. Its
+server key fingerprint only refuses (`maruhi mirror mark` refuses a source
+that publishes this server's key: the server itself under another hostname,
+or another deployment sharing one `SERVER_ENC_KEY_IKM`) or names a way out;
+it never lifts a guard, since it is self-reported. After the promotion the
+command lists the other server keys the chain grants, each with the
+environments its grant covers: if that deployment was **compromised**
+rather than lost, revoke the key it names (`maruhi server revoke
+<fingerprint>`) and rotate those environments (`maruhi env rotate`) — the
+wraps it holds are retired by the rotation, not by the promotion. It also
+says when this deployment's own key is not granted yet (CI leases need it).
+
+What a mirror does not do: it does not forward writes, it is as fresh as its
+last sync, and the identities of members added after the bootstrap are not
+carried (re-run the identities step of the import for them).
+
 ## Recommended hardening (optional): rate-limit unauthenticated endpoints
 
 Of maruhi's unauthenticated surface, the following four are the ones where a

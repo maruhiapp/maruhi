@@ -24,17 +24,23 @@ import {
   EnvironmentConflictError,
   EnvironmentNotFoundError,
   EpochConflictError,
+  ExportChangedError,
+  ExportRateLimitedError,
   ForbiddenError,
   LeaseRateLimitedError,
   LeaseUnauthorizedError,
   LeaseUnavailableError,
   ManifestRejectedError,
   ManifestVersionConflictError,
+  MirrorStateError,
+  MirrorSyncRejectedError,
   PayloadMismatchError,
   ProjectAlreadyInitializedError,
   ProjectLimitError,
   ProjectNotFoundError,
   ProposalLimitError,
+  RotationProposalNotFoundError,
+  RotationProposalRejectedError,
   SetupIncompleteError,
   TokenLimitError,
   UnauthorizedError,
@@ -119,6 +125,39 @@ function renderLeaseUnavailable(error: LeaseUnavailableError): string {
   return "The lease is authorized, but the epoch DEKs have not been re-wrapped to the server key yet (server-wraps-missing). An administrator should complete the pending rotation or grant backfill (`maruhi env rotate` / `maruhi server grant`), then retry";
 }
 
+/**
+ * Whether the failure is the server not answering at all — no response
+ * (DNS, connection, TLS, a cut-off transfer) or a gateway's own status in
+ * front of it (502 / 503 / 504, Cloudflare's 52x) — as opposed to an
+ * answer of the server (any typed error, or a 4xx / other 5xx the schema
+ * could not interpret). The read-only fallback to a configured mirror
+ * (PF2 — AUTH_SPEC §11-7) fires on this and on nothing else.
+ */
+/**
+ * Whether nothing answered at all (a transport failure or the request
+ * bound — never an HTTP status, not even a 500): the question of a
+ * promotion's probe ("is the source gone?"), narrower than
+ * {@link isUnreachable} ("should a read-only fallback be tried?").
+ */
+export function isNoAnswer(error: unknown): boolean {
+  return error instanceof HttpClientError.HttpClientError && error.response === undefined;
+}
+
+function isUnreachable(error: HttpClientError.HttpClientError): boolean {
+  const status = error.response?.status;
+  // A 500 is the server failing to answer the read (a crashed handler), not
+  // an answer about the read (a 403, a 404): a read-only fallback is as
+  // right for it as for a gateway's 502 (PF2 ruling E revision)
+  return (
+    status === undefined ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    (status >= 520 && status <= 530)
+  );
+}
+
 function renderHttpFailure(error: HttpClientError.HttpClientError): string {
   const status = error.response?.status;
   if (status === 413) {
@@ -127,6 +166,14 @@ function renderHttpFailure(error: HttpClientError.HttpClientError): string {
   }
   if (status !== undefined) {
     return `Cannot interpret the server response (HTTP ${status}). Check the server URL, and that the CLI and server versions match`;
+  }
+  // The request bound of api.ts names itself (a server that accepted the
+  // connection and never answered is told apart from one nothing reached)
+  if (
+    error.reason instanceof HttpClientError.TransportError &&
+    error.reason.description !== undefined
+  ) {
+    return `The server did not answer (${error.reason.description}; check your network and the server URL)`;
   }
   return "Failed to connect to the server (check your network and the server URL)";
 }
@@ -290,6 +337,26 @@ const renderers: readonly Renderer[] = [
       : `The project's lease rate limit is exhausted (HTTP 429). Retry after ${e.retryAfterSeconds} seconds — re-run the job later; retrying immediately only consumes the window`,
   ),
   when(isInstanceOf(LeaseUnavailableError), renderLeaseUnavailable),
+  // Sealed value proposals (AUTH_SPEC §14-5). reason is a Literal (shown as-is)
+  when(
+    isInstanceOf(ExportChangedError),
+    () =>
+      "The project changed while it was being exported (a push, a chain append, or an attestation landed between two pages) and the export was restarted too many times. Wait for the writes to settle and re-run `maruhi project export`",
+  ),
+  when(
+    isInstanceOf(ExportRateLimitedError),
+    (e) =>
+      `Too many exports of this project in the last hour (HTTP 429). Retry after ${e.retryAfterSeconds} seconds`,
+  ),
+  when(
+    isInstanceOf(RotationProposalRejectedError),
+    (e) => `The server refused the sealed proposal (${e.reason} — AUTH_SPEC §14-5)`,
+  ),
+  when(
+    isInstanceOf(RotationProposalNotFoundError),
+    (e) =>
+      `No pending sealed proposal has the id ${displayText(e.proposalId)} (it was resolved, expired, or never existed; \`maruhi rotation proposals\` lists the pending ones)`,
+  ),
   when(isInstanceOf(AuthFlowError), (e) => `The authentication flow failed (${e.reason})`),
   when(
     isInstanceOf(AuthRateLimitedError),
@@ -313,10 +380,41 @@ const renderers: readonly Renderer[] = [
     (e) =>
       `This organization already holds the maximum number of projects (${e.limit} — AUTH_SPEC §11-3). New projects are rejected until the limit is raised by the server operator; existing projects are unaffected`,
   ),
+  // Mirrors (AUTH_SPEC §11-7 — PF2)
+  when(isInstanceOf(MirrorSyncRejectedError), renderMirrorSyncRejected),
+  when(isInstanceOf(MirrorStateError), renderMirrorState),
   when(isInstanceOf(HttpClientError.HttpClientError), renderHttpFailure),
   // The third kind of typed-client failure (with the two above, the declaration is exhausted)
   when(Schema.isSchemaError, renderSchemaFailure),
 ];
+
+/** Why a replication page was refused (AUTH_SPEC §11-7 — `maruhi mirror sync`). */
+function renderMirrorSyncRejected(error: MirrorSyncRejectedError): string {
+  switch (error.reason) {
+    case "chain-not-extension":
+      return "The mirror refused the replica: its chain does not extend the chain the mirror holds (chain-not-extension). The mirror holds a newer or a different project — check `maruhi mirror status`; a stale former primary is never replicated over a promoted mirror";
+    case "chain-invalid":
+      return "The mirror refused the replica: its chain does not verify (chain-invalid). The export is not the server's own content — do not use that file, and run `maruhi project verify` against the server";
+    case "audit-regression":
+      return "The mirror refused the replica: its audit log is behind the one the mirror last replicated (audit-regression). The export came from an older state than the last sync — re-run against the current server";
+    case "audit-not-extension":
+      return "The mirror refused the replica: its audit log is not the one the mirror last replicated (audit-not-extension — a row at or below the replicated position is missing or differs). A mirror that itself syncs cannot be a source (its own rows are renumbered at every commit): re-point this mirror at the primary; if the server is the primary, its log was rewritten or restored from another copy — investigate before relying on either side";
+    case "sequence-mismatch":
+      return "The mirror refused a page as out of sequence (sequence-mismatch) — another sync is running against the same mirror, or a page was lost. Re-run `maruhi mirror sync`";
+    case "schema-mismatch":
+      return "The mirror refused the replica: its schema version is not the mirror's (schema-mismatch). Upgrade the deployment that is behind, then re-run";
+    case "page-too-large":
+      return "The mirror refused a page as too large (page-too-large). The CLI and the mirror disagree on the page bounds — check that their versions match";
+    default:
+      return `The mirror refused the replica (${error.reason}). The export is not a snapshot the mirror can accept — check that the CLI, the server and the mirror versions match`;
+  }
+}
+
+function renderMirrorState(error: MirrorStateError): string {
+  return error.reason === "already-mirror"
+    ? "This project is already marked as a mirror (already-mirror). Promote it first with `maruhi mirror promote` to mark it again"
+    : "This project is not marked as a mirror on that server (not-mirror). An owner marks it with `maruhi mirror mark --server <mirror url> --source <server url>`";
+}
 
 /**
  * Whether the server **rejected with its own error body** (= it is
@@ -349,9 +447,13 @@ export function isServerRejection(error: unknown): boolean {
     ForbiddenError,
     ManifestRejectedError,
     ManifestVersionConflictError,
+    MirrorStateError,
+    MirrorSyncRejectedError,
     PayloadMismatchError,
     ProjectLimitError,
     ProjectNotFoundError,
+    RotationProposalNotFoundError,
+    RotationProposalRejectedError,
     UnauthorizedError,
     ValueTooLargeError,
     VariableConflictError,
@@ -384,6 +486,11 @@ export function toCliError(error: unknown): CliError {
   // Already a CliError: return it as-is without dropping the usage flag (exit code 2)
   if (error instanceof CliError) {
     return error;
+  }
+  // The server did not answer (transport, or a gateway in front of it):
+  // the one failure a configured mirror may take over (context.ts)
+  if (error instanceof HttpClientError.HttpClientError && isUnreachable(error)) {
+    return new CliError({ message: renderHttpFailure(error), unreachable: true });
   }
   for (const render of renderers) {
     const message = render(error);
