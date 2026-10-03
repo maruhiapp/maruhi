@@ -258,6 +258,9 @@ A cron can do more than nag. `maruhi ci rotate <name>` runs a rotation rule from
 # .github/workflows/rotate-stripe.yml
 on:
   schedule: [{ cron: "0 9 1 * *" }] # monthly
+# One rotation at a time: two overlapping runs would both create a credential
+# at the issuer, and only one proposal per variable can be pending
+concurrency: { group: maruhi-rotate-prod, cancel-in-progress: false }
 jobs:
   rotate:
     runs-on: ubuntu-latest

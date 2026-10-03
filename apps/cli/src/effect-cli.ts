@@ -1686,9 +1686,15 @@ const GROUP_CONFIGS: Readonly<
     export: projectExportConfig,
   },
   "project policy": { approvals: projectPolicyApprovalsConfig },
-  ci: { run: ciRunConfig, sync: ciSyncConfig },
+  ci: { run: ciRunConfig, sync: ciSyncConfig, rotate: ciRotateConfig },
   agent: { status: agentStatusConfig },
-  rotation: { list: rotationListConfig, dismiss: rotationDismissConfig },
+  rotation: {
+    list: rotationListConfig,
+    dismiss: rotationDismissConfig,
+    proposals: rotationProposalsConfig,
+    accept: rotationAcceptConfig,
+    reject: rotationRejectConfig,
+  },
   audit: {
     list: auditListConfig,
     invites: auditInvitesConfig,

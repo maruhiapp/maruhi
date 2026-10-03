@@ -185,8 +185,13 @@ afterEach(() => {
 });
 
 describe("github-actions.mdx workflow templates (extracted from the page)", () => {
-  it("has the three workflows: test (ci run), deploy (shape 1), maruhi sync (shape 2)", () => {
-    expect(workflows.map((w) => w.workflow.name)).toEqual(["test", "deploy", "maruhi sync"]);
+  it("has the four workflows: test (ci run), deploy (shape 1), maruhi sync (shape 2), rotate (ci rotate)", () => {
+    expect(workflows.map((w) => w.workflow.name)).toEqual([
+      "test",
+      "deploy",
+      "maruhi sync",
+      "rotate",
+    ]);
   });
 
   it("keeps the dispatch contract of deploy-targets.mdx (workflow_dispatch + a required target input)", () => {
@@ -264,6 +269,11 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
             expect(run).toMatch(/--env \w+/);
             expect(run).toMatch(/ -- \S/);
           }
+          if (/\bmaruhi ci rotate\b/.test(run)) {
+            expect(run).toMatch(/\bmaruhi ci rotate [A-Z_]+ /);
+            expect(run).toMatch(/--env \w+/);
+            expect(run).toMatch(/--rotate-config maruhi\.rotate\.json/);
+          }
         }
         expect(workflow.env).toMatchObject({
           MARUHI_SERVER: "https://my.maruhi.app",
@@ -297,6 +307,26 @@ describe("github-actions.mdx workflow templates (extracted from the page)", () =
       expect(runs[deployIndex]).toMatch(/ -- \.\/node_modules\/\.bin\/wrangler deploy$/);
       // The vendor CLI comes in as a project dependency (never fetched)
       expect(runs.slice(0, syncIndex).some((r) => /^npm ci$/.test(r.trim()))).toBe(true);
+    });
+  });
+
+  describe("rotate a credential from CI (rotate)", () => {
+    const { workflow } = byName("rotate");
+    const rotate = workflow.jobs["rotate"] as Job;
+
+    it("runs on a schedule and on dispatch, one rotation at a time, and mints through maruhi ci rotate", () => {
+      expect(Object.keys(workflow.on)).toEqual(["schedule", "workflow_dispatch"]);
+      // Two overlapping runs would both create a credential at the issuer
+      // while only one proposal per variable can be pending (PF7b ruling O-8)
+      expect(workflow.concurrency).toEqual({
+        group: "maruhi-rotate-prod",
+        "cancel-in-progress": false,
+      });
+      expect(Object.keys(workflow.jobs)).toEqual(["rotate"]);
+      expect(rotate.permissions).toEqual({ "id-token": "write", contents: "read" });
+      const runs = rotate.steps.map((s) => s.run ?? "").filter((r) => r !== "");
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatch(/^maruhi ci rotate STRIPE_SECRET_KEY /);
     });
   });
 

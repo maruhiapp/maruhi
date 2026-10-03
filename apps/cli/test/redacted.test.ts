@@ -857,8 +857,8 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   // Wire boundary: the lease request's oidcToken field (A3 — AUTH_SPEC §14-2)
   "ci-lease.ts": 1,
   // ci rotate (PF7b): the leased credential and admin inputs handed to the connector in memory, and the lease token on the mint request
-  "ci-rotate.ts": 4,
-  "rotation-proposals.ts": 1,
+  "ci-rotate.ts": 5,
+  "rotation-proposals.ts": 2,
   // Input to the HPKE wrap (a cryptographic boundary)
   "dek-wrap.ts": 1,
   // Byte length for list rows (the value is never shown) + --show's display (after the gate)
@@ -882,7 +882,7 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   // §6 — after the display gate. Ruling CK)
   "login.ts": 1,
   // Reading the claims of our own OIDC token (decoding the payload segment — A3)
-  "oidc-github.ts": 1,
+  "oidc-github.ts": 2,
   // The decryption key input (a cryptographic boundary)
   "pull.ts": 1,
   // The encryption key input and plaintext input (a cryptographic boundary) 2 +
@@ -929,7 +929,7 @@ const EXPECTED_UNWRAP_SITES: Readonly<Record<string, number>> = {
   // connector + the previous / current pair of `--finalize` (2 companions +
   // 2 primaries) — every product is sent to the issuer or wrapped again for
   // the push; nothing is displayed
-  "var-rotate.ts": 7,
+  "var-rotate.ts": 8,
 };
 
 // The match for the spelling (`Redacted` + `.value`). It crosses whitespace

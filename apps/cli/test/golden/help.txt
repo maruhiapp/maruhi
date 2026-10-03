@@ -1293,6 +1293,29 @@ GLOBAL FLAGS
   --help, -h       Show help information
   --version, -v    Show version information
 
+$ maruhi ci rotate --help
+DESCRIPTION
+  Lease the environment via OIDC, create a new credential at the issuer through the rule's connector, and store it as a sealed proposal for a member to accept (no signing key in CI). Never displays a value
+
+USAGE
+  maruhi ci rotate [flags] <name>
+
+ARGUMENTS
+  name string    Variable name to rotate (the rule's variable, or the access key id an AWS rule pairs with it)
+
+FLAGS
+  --server string           Server URL (required; CI mode reads no config file)
+  --project string          Project ID, which is the pinned genesis hash (required)
+  --env string              Environment ID of the variable to rotate (required)
+  --audience string         OIDC audience to request (default: the server origin)
+  --anchor string           Path to the committed repository anchor file (generate it with `maruhi project anchor`)
+  --rotate-config string    Path to the rotation config naming the connector and admin credential of each variable (default: maruhi.rotate.json in the working directory)
+  --expires-in integer      Days the proposal waits for a member before it expires (1 to 30; default 7)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
 $ maruhi agent --help
 DESCRIPTION
   Hold the token and this device's key in memory for the lifetime of a command, for machines without an OS keychain (ssh-agent style; nothing is written to disk). Write the command after `--`; `agent status` shows what the session holds
@@ -1376,6 +1399,59 @@ FLAGS
   --project string    Project ID (default: the `defaultProject` setting)
   --env string        Environment ID of the flag to dismiss (with --all, narrows the dismissal to that environment)
   --all               Dismiss every currently-active flag (an explicit acceptance of risk)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi rotation proposals --help
+DESCRIPTION
+  List the sealed proposals CI jobs minted and nobody has accepted or rejected yet (no value is opened)
+
+USAGE
+  maruhi rotation proposals [flags]
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --env string        Only the proposals of this environment
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi rotation accept --help
+DESCRIPTION
+  Open the sealed values a CI job proposed to this device and push them as new versions signed by you (the previous credential stays valid until --finalize). Never displays a value
+
+USAGE
+  maruhi rotation accept [flags] <id>
+
+ARGUMENTS
+  id string    Proposal id from `maruhi rotation proposals` (a unique prefix of 8+ characters works)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
+  --yes               Skip the confirmation (the only non-interactive path; the pushes are signed by you)
+
+GLOBAL FLAGS
+  --help, -h       Show help information
+  --version, -v    Show version information
+
+$ maruhi rotation reject --help
+DESCRIPTION
+  Drop a sealed proposal without pushing it (the credential the job created at the issuer is named so you can retire it)
+
+USAGE
+  maruhi rotation reject [flags] <id>
+
+ARGUMENTS
+  id string    Proposal id from `maruhi rotation proposals` (a unique prefix of 8+ characters works)
+
+FLAGS
+  --server string     Server URL (defaults to config server)
+  --project string    Project ID (default: the `defaultProject` setting)
 
 GLOBAL FLAGS
   --help, -h       Show help information

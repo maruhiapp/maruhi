@@ -336,10 +336,18 @@ Replace `<tag>`, the two coordinates, and `SCHEDULED_TARGETS`. The lease policy 
 
 ```yaml
 # .github/workflows/rotate.yml
+name: rotate
+
 on:
   schedule: [{ cron: "0 9 1 * *" }]
   workflow_dispatch:
+
 permissions: {}
+
+env:
+  MARUHI_SERVER: https://my.maruhi.app
+  MARUHI_PROJECT: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
 # One rotation of this environment at a time: two overlapping runs would
 # both create a credential at the issuer, and only one proposal per
 # variable can be pending (the second strands its credential)
