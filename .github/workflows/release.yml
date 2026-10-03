@@ -55,7 +55,7 @@ jobs:
   # (imported by cli.ts). If it does not match the tag, stop here (do not
   # build artifacts of a mismatched version)
   version-check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -116,7 +116,7 @@ jobs:
   # centralized in scripts/build-binaries.ts; the build procedure is not
   # duplicated here)
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     needs: version-check
     permissions:
@@ -260,7 +260,7 @@ jobs:
     # is broken, build fails and the irreversible Release creation is never
     # reached
     needs: [verify, version-check, smoke]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: write
@@ -302,7 +302,7 @@ jobs:
     # publish-github's needs would fail at download after the irreversible
     # Release creation)
     needs: [version-check, build, publish-github]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       # Required for npm trusted publishing (OIDC) and provenance generation

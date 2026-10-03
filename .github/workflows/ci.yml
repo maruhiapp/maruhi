@@ -39,7 +39,7 @@ env:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # An explicit cap because this also gates releases via workflow_call
     # (the calling release.yml can't put a timeout on a `uses:` job.
     # Measured at 10–15 min + headroom. The 360-min default would let a hang
@@ -71,7 +71,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       # The docs recipe checks (apps/site/test/unit/recipes.test.ts) run on every
-      # installed shell (sh / bash / zsh / dash). ubuntu-latest has no zsh, so
+      # installed shell (sh / bash / zsh / dash). ubuntu-26.04 has no zsh, so
       # install it (the page promises zsh by name, and the check asserts its
       # presence in CI — PR #153 revision 5)
       - name: Install zsh (docs recipe checks)
@@ -204,7 +204,7 @@ jobs:
       # Playwright browser install (shared by the browser tests in step 9 / 9b /
       # 11). The old layout (playwright install --with-deps inside step 9 every
       # run) accounted for the measured 35s–6m42s variance of step 9. Breakdown
-      # from measured logs: ubuntu-latest (ubuntu-24.04 noble image at the time)
+      # from measured logs: ubuntu-26.04 (ubuntu-24.04 noble image at the time)
       # already ships all of Chromium's runtime libraries; apt only installs 9
       # fonts (21.1MB). That apt fetch can take 5+ minutes on a slow mirror —
       # the actual source of the variance. e2e / crypto:browser were proven to

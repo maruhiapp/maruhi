@@ -34,7 +34,7 @@ jobs:
   # Artifacts for validation (built via the same path as the release) and
   # static checks of the shell script and formula
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -154,7 +154,7 @@ jobs:
   # MARUHI_BASE_URL (file://)
   action-smoke:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
