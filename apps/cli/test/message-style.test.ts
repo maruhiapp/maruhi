@@ -54,9 +54,22 @@ interface Hit {
   readonly kind: "call" | "const";
 }
 
+/**
+ * The .ts files under src/, as src-relative paths in a stable order.
+ * Recursive so a file added under a new src/ subdirectory is still picked
+ * up — a flat listing would silently skip it, and the conventions below
+ * would pass on a corpus that shrank.
+ */
+async function srcFiles(): Promise<readonly string[]> {
+  return (await readdir(SRC_DIR, { recursive: true }))
+    .filter((entry) => entry.endsWith(".ts"))
+    .map((name) => name.replaceAll("\\", "/"))
+    .toSorted();
+}
+
 async function collectMessages(): Promise<Hit[]> {
   const hits: Hit[] = [];
-  for (const name of (await readdir(SRC_DIR)).filter((entry) => entry.endsWith(".ts")).toSorted()) {
+  for (const name of await srcFiles()) {
     const source = await readFile(join(SRC_DIR, name), "utf8");
     for (const match of source.matchAll(MESSAGE_CALL)) {
       const text = match[3] ?? "";
@@ -79,9 +92,13 @@ const label = (hit: Hit) => `${hit.file}:${hit.line}: ${hit.text.slice(0, 80)}`;
 
 describe("user-visible wording conventions (apps/cli/src)", () => {
   it("collects a sufficient number of messages (the check isn't idling)", async () => {
+    // Floors ≈90% of the counts at main 94d3b72 (139 files, 1108 calls, 66
+    // constants): a scan that stops walking files fails here before the
+    // conventions it was meant to check can silently pass
+    expect((await srcFiles()).length).toBeGreaterThan(125);
     const hits = await collectMessages();
-    expect(hits.filter((hit) => hit.kind === "call").length).toBeGreaterThan(300);
-    expect(hits.filter((hit) => hit.kind === "const").length).toBeGreaterThan(20);
+    expect(hits.filter((hit) => hit.kind === "call").length).toBeGreaterThan(995);
+    expect(hits.filter((hit) => hit.kind === "const").length).toBeGreaterThan(59);
   });
 
   it("1. no trailing period", async () => {

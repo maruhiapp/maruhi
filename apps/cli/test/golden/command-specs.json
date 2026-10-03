@@ -1,0 +1,1070 @@
+{
+  "login": {
+    "flags": [
+      "server",
+      "token-name",
+      "token-ttl-days",
+      "show-token"
+    ],
+    "positionals": []
+  },
+  "logout": {
+    "flags": [
+      "server"
+    ],
+    "positionals": []
+  },
+  "pull": {
+    "flags": [
+      "server",
+      "project",
+      "env",
+      "mirror",
+      "show"
+    ],
+    "positionals": []
+  },
+  "run": {
+    "flags": [
+      "server",
+      "project",
+      "env",
+      "mirror",
+      "plain"
+    ],
+    "positionals": [
+      "command"
+    ]
+  },
+  "push": {
+    "flags": [
+      "server",
+      "project",
+      "env",
+      "config",
+      "no-sync"
+    ],
+    "positionals": [
+      "name"
+    ],
+    "strayHint": ". Values are read from stdin (example: `printf %s \"$SECRET\" | maruhi push API_KEY`)"
+  },
+  "mcp": {
+    "flags": [
+      "server",
+      "project",
+      "env"
+    ],
+    "positionals": []
+  },
+  "env": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "create",
+      "rotate",
+      "diff"
+    ]
+  },
+  "env create": {
+    "flags": [
+      "server",
+      "project",
+      "name"
+    ],
+    "positionals": [
+      "environment-id"
+    ]
+  },
+  "env rotate": {
+    "flags": [
+      "server",
+      "project",
+      "reason",
+      "new-epoch",
+      "config"
+    ],
+    "positionals": [
+      "environment-id"
+    ]
+  },
+  "env diff": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": [
+      "environment-id",
+      "other-environment-id"
+    ]
+  },
+  "server": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "grant",
+      "revoke"
+    ]
+  },
+  "server grant": {
+    "flags": [
+      "server",
+      "project",
+      "expires",
+      "environments",
+      "lease-policy",
+      "expect-fingerprint",
+      "key-from"
+    ],
+    "positionals": []
+  },
+  "server revoke": {
+    "flags": [
+      "server",
+      "project",
+      "expires",
+      "fingerprint"
+    ],
+    "positionals": []
+  },
+  "mirror": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "sync",
+      "status",
+      "mark",
+      "promote"
+    ]
+  },
+  "mirror sync": {
+    "flags": [
+      "server",
+      "project",
+      "mirror",
+      "force"
+    ],
+    "positionals": []
+  },
+  "mirror status": {
+    "flags": [
+      "server",
+      "project",
+      "mirror"
+    ],
+    "positionals": []
+  },
+  "mirror mark": {
+    "flags": [
+      "server",
+      "project",
+      "source",
+      "force"
+    ],
+    "positionals": []
+  },
+  "mirror promote": {
+    "flags": [
+      "server",
+      "project",
+      "force"
+    ],
+    "positionals": []
+  },
+  "invite": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "create",
+      "accept",
+      "list",
+      "revoke"
+    ]
+  },
+  "invite create": {
+    "flags": [
+      "server",
+      "project",
+      "role",
+      "env",
+      "no-envs",
+      "github"
+    ],
+    "positionals": []
+  },
+  "invite accept": {
+    "flags": [
+      "server",
+      "from",
+      "inviter-fingerprint"
+    ],
+    "positionals": [
+      "target"
+    ]
+  },
+  "invite list": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": []
+  },
+  "invite revoke": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": [
+      "invite-id"
+    ]
+  },
+  "member": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "add",
+      "remove",
+      "change-role",
+      "list"
+    ]
+  },
+  "member add": {
+    "flags": [
+      "server",
+      "project",
+      "expires",
+      "github",
+      "expect-fingerprint"
+    ],
+    "positionals": [
+      "invite-id"
+    ]
+  },
+  "member remove": {
+    "flags": [
+      "server",
+      "project",
+      "expires"
+    ],
+    "positionals": [
+      "user-id"
+    ]
+  },
+  "member change-role": {
+    "flags": [
+      "server",
+      "project",
+      "expires",
+      "role",
+      "env",
+      "all-envs",
+      "no-envs"
+    ],
+    "positionals": [
+      "user-id"
+    ]
+  },
+  "member list": {
+    "flags": [
+      "server",
+      "project",
+      "json"
+    ],
+    "positionals": []
+  },
+  "approval": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "list",
+      "show",
+      "approve",
+      "withdraw"
+    ]
+  },
+  "approval list": {
+    "flags": [
+      "server",
+      "project",
+      "json"
+    ],
+    "positionals": []
+  },
+  "approval show": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": [
+      "proposal-id"
+    ]
+  },
+  "approval approve": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": [
+      "proposal-id"
+    ]
+  },
+  "approval withdraw": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": [
+      "proposal-id"
+    ]
+  },
+  "key": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "generate",
+      "show",
+      "publish",
+      "recover",
+      "recovery",
+      "seal",
+      "reserve"
+    ]
+  },
+  "key generate": {
+    "flags": [
+      "server",
+      "new-identity"
+    ],
+    "positionals": []
+  },
+  "key show": {
+    "flags": [
+      "server"
+    ],
+    "positionals": []
+  },
+  "key publish": {
+    "flags": [
+      "server",
+      "gh"
+    ],
+    "positionals": []
+  },
+  "key recover": {
+    "flags": [
+      "server",
+      "handoff",
+      "passkey",
+      "resume"
+    ],
+    "positionals": []
+  },
+  "key recovery": {
+    "flags": [
+      "server",
+      "passkey",
+      "replace"
+    ],
+    "positionals": []
+  },
+  "key seal": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "passkey",
+      "list",
+      "remove"
+    ]
+  },
+  "key seal passkey": {
+    "flags": [
+      "server",
+      "passkey",
+      "label"
+    ],
+    "positionals": []
+  },
+  "key seal list": {
+    "flags": [
+      "server"
+    ],
+    "positionals": []
+  },
+  "key seal remove": {
+    "flags": [
+      "server"
+    ],
+    "positionals": [
+      "wrap-id"
+    ]
+  },
+  "key reserve": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "rotate"
+    ]
+  },
+  "key reserve rotate": {
+    "flags": [
+      "server",
+      "passkey"
+    ],
+    "positionals": []
+  },
+  "device": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "add",
+      "approve",
+      "list",
+      "revoke"
+    ]
+  },
+  "device add": {
+    "flags": [
+      "server",
+      "label",
+      "replace"
+    ],
+    "positionals": []
+  },
+  "device approve": {
+    "flags": [
+      "server",
+      "project",
+      "cap",
+      "env",
+      "all-envs",
+      "no-envs"
+    ],
+    "positionals": [
+      "ref"
+    ]
+  },
+  "device list": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": []
+  },
+  "device revoke": {
+    "flags": [
+      "server",
+      "project",
+      "user",
+      "yes",
+      "revoke-token"
+    ],
+    "positionals": [
+      "ref"
+    ]
+  },
+  "token": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "list",
+      "revoke"
+    ]
+  },
+  "token list": {
+    "flags": [
+      "server"
+    ],
+    "positionals": []
+  },
+  "token revoke": {
+    "flags": [
+      "server"
+    ],
+    "positionals": [
+      "token-id"
+    ]
+  },
+  "guardian": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "add",
+      "approve",
+      "list",
+      "remove",
+      "wards"
+    ]
+  },
+  "guardian add": {
+    "flags": [
+      "server",
+      "project",
+      "mode"
+    ],
+    "positionals": [
+      "user-id"
+    ]
+  },
+  "guardian approve": {
+    "flags": [
+      "server"
+    ],
+    "positionals": [
+      "code"
+    ]
+  },
+  "guardian list": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": []
+  },
+  "guardian remove": {
+    "flags": [
+      "server"
+    ],
+    "positionals": [
+      "group-id"
+    ]
+  },
+  "guardian wards": {
+    "flags": [
+      "server"
+    ],
+    "positionals": []
+  },
+  "project": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "init",
+      "list",
+      "verify",
+      "anchor",
+      "checkpoint",
+      "export",
+      "policy"
+    ]
+  },
+  "project init": {
+    "flags": [
+      "server",
+      "org"
+    ],
+    "positionals": []
+  },
+  "project list": {
+    "flags": [
+      "server"
+    ],
+    "positionals": []
+  },
+  "project verify": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": []
+  },
+  "project anchor": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": []
+  },
+  "project checkpoint": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": []
+  },
+  "project export": {
+    "flags": [
+      "server",
+      "project",
+      "out"
+    ],
+    "positionals": []
+  },
+  "project policy": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "approvals"
+    ]
+  },
+  "project policy approvals": {
+    "flags": [
+      "server",
+      "project",
+      "expires",
+      "required",
+      "ops",
+      "off"
+    ],
+    "positionals": []
+  },
+  "ci": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "run",
+      "sync",
+      "rotate"
+    ]
+  },
+  "ci run": {
+    "flags": [
+      "server",
+      "project",
+      "env",
+      "audience",
+      "mirror",
+      "anchor"
+    ],
+    "positionals": [
+      "command"
+    ]
+  },
+  "ci sync": {
+    "flags": [
+      "server",
+      "project",
+      "audience",
+      "mirror",
+      "anchor",
+      "config",
+      "yes"
+    ],
+    "positionals": [
+      "target"
+    ]
+  },
+  "ci rotate": {
+    "flags": [
+      "server",
+      "project",
+      "env",
+      "audience",
+      "anchor",
+      "rotate-config",
+      "expires-in"
+    ],
+    "positionals": [
+      "name"
+    ]
+  },
+  "agent": {
+    "flags": [
+      "key-ttl"
+    ],
+    "positionals": [
+      "command"
+    ],
+    "subcommands": [
+      "status"
+    ]
+  },
+  "agent status": {
+    "flags": [],
+    "positionals": []
+  },
+  "rotation": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "list",
+      "dismiss",
+      "proposals",
+      "accept",
+      "reject"
+    ]
+  },
+  "rotation list": {
+    "flags": [
+      "server",
+      "project",
+      "fail-on-due",
+      "due-within",
+      "fail-on-flags",
+      "fail-on-pending"
+    ],
+    "positionals": []
+  },
+  "rotation dismiss": {
+    "flags": [
+      "server",
+      "project",
+      "env",
+      "all"
+    ],
+    "positionals": [
+      "variable"
+    ]
+  },
+  "rotation proposals": {
+    "flags": [
+      "server",
+      "project",
+      "env"
+    ],
+    "positionals": []
+  },
+  "rotation accept": {
+    "flags": [
+      "server",
+      "project",
+      "yes"
+    ],
+    "positionals": [
+      "id"
+    ]
+  },
+  "rotation reject": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": [
+      "id"
+    ]
+  },
+  "audit": {
+    "flags": [
+      "server",
+      "project",
+      "limit",
+      "before",
+      "event",
+      "actor",
+      "target",
+      "env",
+      "var",
+      "expandReads"
+    ],
+    "positionals": [],
+    "subcommands": [
+      "list",
+      "invites",
+      "self",
+      "verify",
+      "reconcile"
+    ]
+  },
+  "audit list": {
+    "flags": [
+      "server",
+      "project",
+      "limit",
+      "before",
+      "event",
+      "actor",
+      "target",
+      "env",
+      "var",
+      "expandReads"
+    ],
+    "positionals": []
+  },
+  "audit invites": {
+    "flags": [
+      "server",
+      "project",
+      "limit",
+      "before"
+    ],
+    "positionals": []
+  },
+  "audit self": {
+    "flags": [
+      "server",
+      "limit",
+      "before"
+    ],
+    "positionals": []
+  },
+  "audit verify": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": []
+  },
+  "audit reconcile": {
+    "flags": [
+      "server",
+      "project"
+    ],
+    "positionals": []
+  },
+  "config": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "get",
+      "set"
+    ]
+  },
+  "config get": {
+    "flags": [],
+    "positionals": [
+      "key"
+    ]
+  },
+  "config set": {
+    "flags": [],
+    "positionals": [
+      "key",
+      "value"
+    ]
+  },
+  "schema": {
+    "flags": [
+      "server",
+      "project",
+      "env"
+    ],
+    "positionals": [],
+    "subcommands": [
+      "set",
+      "import",
+      "export",
+      "verify-snapshot",
+      "lint"
+    ]
+  },
+  "schema set": {
+    "flags": [
+      "server",
+      "project",
+      "env",
+      "type",
+      "required",
+      "optional",
+      "description",
+      "clear-description",
+      "max-age",
+      "allow-high-entropy"
+    ],
+    "positionals": [
+      "name"
+    ]
+  },
+  "schema import": {
+    "flags": [
+      "server",
+      "project",
+      "env"
+    ],
+    "positionals": [
+      "file"
+    ]
+  },
+  "schema export": {
+    "flags": [
+      "server",
+      "project",
+      "env"
+    ],
+    "positionals": []
+  },
+  "schema verify-snapshot": {
+    "flags": [
+      "server",
+      "project",
+      "env"
+    ],
+    "positionals": [
+      "file"
+    ]
+  },
+  "schema lint": {
+    "flags": [
+      "server",
+      "project",
+      "env",
+      "ignore"
+    ],
+    "positionals": [
+      "paths"
+    ]
+  },
+  "var": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "rm",
+      "history",
+      "rollback",
+      "rotate"
+    ]
+  },
+  "var rm": {
+    "flags": [
+      "server",
+      "project",
+      "env",
+      "force"
+    ],
+    "positionals": [
+      "name"
+    ]
+  },
+  "var history": {
+    "flags": [
+      "server",
+      "project",
+      "env",
+      "json"
+    ],
+    "positionals": [
+      "name"
+    ]
+  },
+  "var rollback": {
+    "flags": [
+      "server",
+      "project",
+      "env",
+      "to",
+      "force",
+      "config",
+      "no-sync"
+    ],
+    "positionals": [
+      "name"
+    ]
+  },
+  "var rotate": {
+    "flags": [
+      "server",
+      "project",
+      "env",
+      "finalize",
+      "previous",
+      "yes",
+      "rotate-config",
+      "config",
+      "no-sync"
+    ],
+    "positionals": [
+      "name"
+    ]
+  },
+  "sync": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "plan",
+      "apply",
+      "init"
+    ]
+  },
+  "sync plan": {
+    "flags": [
+      "server",
+      "project",
+      "config"
+    ],
+    "positionals": [
+      "target"
+    ]
+  },
+  "sync apply": {
+    "flags": [
+      "server",
+      "project",
+      "config",
+      "yes"
+    ],
+    "positionals": [
+      "target"
+    ]
+  },
+  "sync init": {
+    "flags": [
+      "preset",
+      "driver",
+      "env",
+      "receipts",
+      "project",
+      "variables",
+      "exclude",
+      "production",
+      "cwd",
+      "command",
+      "token-env",
+      "token-name",
+      "on-push",
+      "workflow",
+      "option"
+    ],
+    "positionals": [
+      "target"
+    ]
+  },
+  "proxy": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "run",
+      "accept"
+    ]
+  },
+  "proxy run": {
+    "flags": [
+      "server",
+      "project",
+      "env",
+      "config",
+      "verbose",
+      "listen",
+      "advertise"
+    ],
+    "positionals": [
+      "command"
+    ]
+  },
+  "proxy accept": {
+    "flags": [
+      "config",
+      "project"
+    ],
+    "positionals": []
+  },
+  "": {
+    "flags": [],
+    "positionals": [],
+    "subcommands": [
+      "login",
+      "logout",
+      "pull",
+      "run",
+      "push",
+      "mcp",
+      "env",
+      "server",
+      "mirror",
+      "invite",
+      "member",
+      "approval",
+      "key",
+      "device",
+      "token",
+      "guardian",
+      "project",
+      "ci",
+      "agent",
+      "rotation",
+      "audit",
+      "config",
+      "schema",
+      "var",
+      "sync",
+      "proxy"
+    ]
+  }
+}
