@@ -45,7 +45,7 @@ import {
   ScriptStoppedError,
 } from "./run.ts";
 import { type AwsCredentials, signV4 } from "./sigv4.ts";
-import { scrubVendorOutput, type SyncWrite } from "./sync-exec.ts";
+import { scrubVendorOutput, type SyncWrite } from "./sync.package/index.ts";
 import { CLI_VERSION } from "./version.ts";
 
 const decoder = new TextDecoder();

@@ -18,9 +18,9 @@
 
 import { Effect } from "effect";
 
-import { type CliError, usageError } from "./errors.ts";
-import { CliIo } from "./io.ts";
-import { logNote } from "./notice.ts";
+import { type CliError, usageError } from "../errors.ts";
+import { CliIo } from "../io.ts";
+import { logNote } from "../notice.ts";
 import { parseSyncConfig } from "./sync-config.ts";
 import { defaultDriverOf, isUnavailable, SYNC_PRESETS } from "./sync-preset.ts";
 import type { DriverKind, OptionSpec, PresetId } from "./sync-types.ts";

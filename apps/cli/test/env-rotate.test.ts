@@ -43,7 +43,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import type { ProjectFloor } from "../src/floor.ts";
-import { receiptVariableName } from "../src/sync-receipt.ts";
+import { receiptVariableName } from "../src/sync.package/sync-receipt.ts";
 import {
   addMemberOp,
   addScopedMemberOp,

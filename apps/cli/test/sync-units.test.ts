@@ -8,16 +8,24 @@
 import { Effect, Exit, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { parseSyncConfig, type SyncTarget, type TargetDriver } from "../src/sync-config.ts";
+import {
+  parseSyncConfig,
+  type SyncTarget,
+  type TargetDriver,
+} from "../src/sync.package/sync-config.ts";
 import {
   buildInvocations,
   checkValueConstraints,
   EXEC_PRESETS,
   scrubVendorOutput,
   type SyncWrite,
-} from "../src/sync-exec.ts";
-import { computePlan } from "../src/sync-plan.ts";
-import { decodeReceipt, encodeReceipt, receiptVariableName } from "../src/sync-receipt.ts";
+} from "../src/sync.package/sync-exec.ts";
+import { computePlan } from "../src/sync.package/sync-plan.ts";
+import {
+  decodeReceipt,
+  encodeReceipt,
+  receiptVariableName,
+} from "../src/sync.package/sync-receipt.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

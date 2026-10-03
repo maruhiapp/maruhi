@@ -34,6 +34,12 @@
 import { Command, Param } from "effect/cli";
 
 import { type CommandSpec } from "../cli-formatter.ts";
+import {
+  syncApplyConfig,
+  syncInitConfig,
+  syncPlanConfig,
+  makeSyncCommands,
+} from "../sync.package/index.ts";
 import { agentConfig, agentStatusConfig, makeAgentCommands } from "./agent.ts";
 import {
   approvalApproveConfig,
@@ -50,7 +56,6 @@ import {
   auditVerifyConfig,
   makeAuditCommands,
 } from "./audit.ts";
-import { syncApplyConfig, syncInitConfig, syncPlanConfig, makeSyncCommands } from "./sync.ts";
 import { ciRotateConfig, ciRunConfig, ciSyncConfig, makeCiCommands } from "./ci.ts";
 import { configGetConfig, configSetConfig, makeConfigCommands } from "./config.ts";
 import {

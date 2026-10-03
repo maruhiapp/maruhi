@@ -25,12 +25,12 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 import type { HttpClient } from "effect/http";
 
-import { type CiLeaseInput, leaseEnvironments } from "./ci-lease.ts";
-import { countNoun, displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { CliIo } from "./io.ts";
-import type { VerifiedLeaseMaterial } from "./lease-client.ts";
-import type { ProcessRunner } from "./run.ts";
+import { type CiLeaseInput, leaseEnvironments } from "../ci-lease.ts";
+import { countNoun, displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { CliIo } from "../io.ts";
+import type { VerifiedLeaseMaterial } from "../lease-client.ts";
+import type { ProcessRunner } from "../run.ts";
 import type { SyncTarget } from "./sync-config.ts";
 import { DEFAULT_HTTP_RETRY, type HttpRetryPolicy, type IntegrationToken } from "./sync-http.ts";
 import {

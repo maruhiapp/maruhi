@@ -20,8 +20,11 @@
   "include": ["."],
 
   // Extra glob patterns to skip, on top of .gitignore. Relative to the project root.
-  // .agents / .claude are agent skills (vendored content) — excluded
-  "exclude": [".agents/**", ".claude/**", ".deepsec/**"],
+  // .agents / .claude are agent skills (vendored content) — excluded.
+  // apps/cli/test/** is excluded so tests keep inspecting package internals
+  // directly — boundaries apply between src files only, and the public
+  // surface is never widened just to satisfy a test import.
+  "exclude": [".agents/**", ".claude/**", ".deepsec/**", "apps/cli/test/**"],
 
   // Path to tsconfig.json (for resolver `paths`/`baseUrl`), relative to the
   // project root. Defaults to "<project root>/tsconfig.json" if it exists.

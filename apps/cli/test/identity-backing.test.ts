@@ -19,7 +19,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { checkSigningKeyBacking } from "../src/github-signing-keys.ts";
 import { masterKeyEntryName, serializeStoredToken, tokenEntryName } from "../src/keychain.ts";
-import { GH_ENV } from "../src/sync-exec.ts";
+import { GH_ENV } from "../src/sync.package/sync-exec.ts";
 import { makeTestUser, type TestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { githubSigningKeysHandler, sshLineOf } from "./support/invite.ts";

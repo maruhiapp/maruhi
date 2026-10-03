@@ -15,13 +15,13 @@ import {
 } from "../rotate-config.ts";
 import { SqlRunner } from "../rotate-connector.ts";
 import { ProcessRunner } from "../run.ts";
-import { DEFAULT_SYNC_CONFIG_PATH } from "../sync-config.ts";
+import { DEFAULT_SYNC_CONFIG_PATH } from "../sync.package/index.ts";
 import {
   type PushSyncSetup,
   decidePushSync,
   loadPushSyncConfig,
   syncAfterPush,
-} from "../sync-push.ts";
+} from "../sync.package/index.ts";
 import { formatVarHistory, varHistoryJson, varHistoryOp, varRollbackOp } from "../var-history.ts";
 import { varRmOp } from "../var-rm.ts";
 import {
