@@ -12,11 +12,11 @@
 // resolution was dropped) — if left in an existing file it is harmlessly
 // ignored as an unknown key (decodeConfig picks up only allowed keys).
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { Context, Effect } from "effect";
+import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
+import { Context, Effect, FileSystem, Result, Schema } from "effect";
 
 import { CliError, cliError } from "./errors.ts";
 
@@ -96,44 +96,52 @@ export function defaultConfigPath(env: (name: string) => string | undefined): st
   return join(base, "maruhi", "config.json");
 }
 
-function pickString(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
+/**
+ * The accepted config keys as a Struct: decoding shapes a record into
+ * `CliConfig` (unknown keys drop out of the Struct result, and every
+ * key stays optional so an absent key stays absent).
+ */
+const CliConfigSchema = Schema.Struct({
+  server: Schema.optionalKey(Schema.String),
+  mirror: Schema.optionalKey(Schema.String),
+  defaultProject: Schema.optionalKey(Schema.String),
+  defaultEnvironment: Schema.optionalKey(Schema.String),
+  identityBacking: Schema.optionalKey(Schema.String),
+});
 
+/**
+ * Decodes the config file's JSON, per-key tolerant as before: anything
+ * that is not a JSON object is `null` (never throws), a key holding a
+ * non-string (or empty) value is dropped rather than failing the whole
+ * decode — one bad value must not take down the other settings.
+ */
 function decodeConfig(json: string): CliConfig | null {
-  try {
-    const value: unknown = JSON.parse(json);
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      return null;
-    }
-    const record = value as Record<string, unknown>;
-    const config: { -readonly [K in keyof CliConfig]: CliConfig[K] } = {};
-    for (const key of CONFIG_KEYS) {
-      const picked = pickString(record, key);
-      if (picked === undefined) {
-        continue;
-      }
-      if (key === "identityBacking") {
-        // An unknown value falls back to the default (with check): never
-        // fall toward a typo **removing** the check (`none` works only
-        // when spelled out explicitly)
-        const backing = asIdentityBacking(picked);
-        if (backing !== null) {
-          config.identityBacking = backing;
-        }
-        continue;
-      }
-      config[key] = picked;
-    }
-    return config;
-  } catch {
+  const parsed = Schema.decodeUnknownResult(
+    Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+  )(json);
+  if (Result.isFailure(parsed)) {
     return null;
   }
+  const strings: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed.success)) {
+    if (typeof value === "string" && value.length > 0) {
+      strings[key] = value;
+    }
+  }
+  const decoded = Schema.decodeUnknownResult(CliConfigSchema)(strings);
+  if (Result.isFailure(decoded)) {
+    return null;
+  }
+  const { identityBacking: backing, ...config } = decoded.success;
+  if (backing === undefined) {
+    return config;
+  }
+  // An unknown value falls back to the default (with check): never
+  // fall toward a typo **removing** the check (`none` works only
+  // when spelled out explicitly)
+  const identityBacking = asIdentityBacking(backing);
+  return identityBacking === null ? config : { ...config, identityBacking };
 }
-
-/** Internal marker distinguishing a read failure (other than ENOENT) from a parse failure. */
-class ConfigUnreadableError extends Error {}
 
 /**
  * A failure where the config file's **content** cannot be interpreted as
@@ -147,47 +155,50 @@ export class ConfigFileCorruptError extends CliError {}
 /** File-backed config store at `path` (used by both production and tests). */
 export function makeFileConfigStore(path: string): ConfigStoreShape {
   return {
-    load: Effect.tryPromise({
-      try: async () => {
-        let json: string;
-        try {
-          json = await readFile(path, "utf8");
-        } catch (error) {
+    load: Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const json = yield* fs.readFileString(path, "utf8").pipe(
+        Effect.catch((error) => {
           // Treat **only** not-created (ENOENT) as empty settings (first
           // run). Folding read failures like EACCES / EISDIR / EIO into
           // empty settings would let a later `config set` replace,
           // without warning, settings that merely failed to be read
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            return {};
+          // (direct `_tag` access is banned by oxlint — read it
+          // through a record, the failure.ts discipline)
+          if ((error.reason as unknown as Record<string, unknown>)["_tag"] === "NotFound") {
+            return Effect.succeed(null);
           }
-          const code = (error as NodeJS.ErrnoException).code ?? "unknown error";
-          throw new ConfigUnreadableError(code);
-        }
-        const config = decodeConfig(json);
-        if (config === null) {
-          throw new Error("corrupt");
-        }
-        return config;
-      },
-      catch: (error) =>
-        error instanceof ConfigUnreadableError
-          ? cliError(
-              `Cannot read the config file (${error.message}). Fix the file's permissions or move it out of the way, then retry: ${path}`,
-            )
-          : new ConfigFileCorruptError({
-              message: `Cannot read the config file (it is corrupt): ${path}`,
-            }),
-    }),
+          const code =
+            (error.reason.cause as NodeJS.ErrnoException | undefined)?.code ?? "unknown error";
+          return Effect.fail(
+            cliError(
+              `Cannot read the config file (${code}). Fix the file's permissions or move it out of the way, then retry: ${path}`,
+            ),
+          );
+        }),
+      );
+      if (json === null) {
+        return {};
+      }
+      const config = decodeConfig(json);
+      if (config === null) {
+        return yield* new ConfigFileCorruptError({
+          message: `Cannot read the config file (it is corrupt): ${path}`,
+        });
+      }
+      return config;
+    }).pipe(Effect.provide(BunFileSystem.layer)),
     save: (config) =>
-      Effect.tryPromise({
-        try: async () => {
-          await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-          // temp + rename prevents torn writes (the last write among concurrent runs wins)
-          const temp = `${path}.${process.pid}.tmp`;
-          await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-          await rename(temp, path);
-        },
-        catch: () => cliError(`Cannot write the config file: ${path}`),
-      }),
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(dirname(path), { recursive: true, mode: 0o700 });
+        // temp + rename prevents torn writes (the last write among concurrent runs wins)
+        const temp = `${path}.${process.pid}.tmp`;
+        yield* fs.writeFileString(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+        yield* fs.rename(temp, path);
+      }).pipe(
+        Effect.mapError(() => cliError(`Cannot write the config file: ${path}`)),
+        Effect.provide(BunFileSystem.layer),
+      ),
   };
 }
