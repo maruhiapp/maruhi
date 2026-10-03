@@ -730,6 +730,69 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect((await unmark(OWNER)).status).toBe(200);
   });
 
+  it("a replica without the head column's table line is derived from seq 1; a row under an intact column is checked by shape, not only by hashing (ruling J revision, round 11)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    expect((await mark(OWNER)).status).toBe(200);
+    const lines = await exportAll();
+    const trailer = parsedLine(lines[lines.length - 1]);
+    const columnsOf = (table: string) =>
+      parsedLine(
+        lines[
+          lines.findIndex((line) => {
+            const parsed = parsedLine(line);
+            return parsed["kind"] === "table" && parsed["table"] === table;
+          })
+        ],
+      )["columns"] as string[];
+    const withoutHeads = (from: readonly string[]) =>
+      withTrailer(
+        from.filter((line) => {
+          const parsed = parsedLine(line);
+          return parsed["table"] !== "audit_head_hashes";
+        }),
+        { rows: { ...(trailer["rows"] as object), audit_head_hashes: 0 } },
+      );
+    // No column at all: derived from seq 1 before the swap, so the commit
+    // installs a column reaching the log's end
+    expect((await upload(withoutHeads(lines), 50)).status).toBe(200);
+    expect(await count("SELECT MAX(seq) AS n FROM audit_head_hashes")).toBe(
+      await count("SELECT MAX(seq) AS n FROM audit_events"),
+    );
+    // … and a bad row in such a replica is refused before anything live is
+    // touched (every row is derived over). A re-point makes the next
+    // replica a first one again (position 0), with the mirror's rows now
+    // its own (a foreign row id never matches the carried-row rule)
+    expect((await mark(OWNER, "https://successor.maruhi.app")).status).toBe(200);
+    const seqIndex = columnsOf("audit_events").indexOf("seq");
+    const tsIndex = columnsOf("audit_events").indexOf("server_ts");
+    const rowIdIndex = columnsOf("audit_events").indexOf("row_id");
+    const foreign = (from: readonly string[], badSeq: number | null) =>
+      from.map((line) => {
+        const parsed = parsedLine(line);
+        if (parsed["kind"] !== "row" || parsed["table"] !== "audit_events") {
+          return line;
+        }
+        const values = [...(parsed["values"] as unknown[])];
+        values[rowIdIndex] = `ff${String(values[rowIdIndex]).slice(2)}`;
+        if (values[seqIndex] === badSeq) {
+          values[tsIndex] = -1;
+        }
+        return JSON.stringify({ ...parsed, values });
+      });
+    const liveRows = await count("SELECT COUNT(*) AS n FROM audit_events");
+    await expectRejected(await upload(withoutHeads(foreign(lines, 2)), 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    expect(await count("SELECT COUNT(*) AS n FROM audit_events")).toBe(liveRows);
+    // Under an intact column that reaches the log's end nothing is derived
+    // over the row: its shape refuses it all the same (round 11)
+    await expectRejected(await upload(foreign(lines, 2), 50), "malformed");
+    expect(await stagingTables()).toEqual([]);
+    // The same replica with the row intact commits (a first replica after the re-point)
+    expect((await upload(foreign(lines, null), 50)).status).toBe(200);
+    expect((await unmark(OWNER)).status).toBe(200);
+  });
+
   it("refuses out-of-sequence and malformed pages with static reasons and discards the staging", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");

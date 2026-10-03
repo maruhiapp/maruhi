@@ -669,46 +669,73 @@ async function hashNextChunk(
   sql: SqlStorage,
   state: { hashedUpTo: number; head: string },
 ): Promise<boolean> {
+  const outcome = await deriveChunk(sql, "audit_events", "audit_head_hashes", state);
+  if (outcome.kind === "invalid") {
+    // A structural invalidity on input derived from a stored row is an
+    // implementation bug (the error value carries no secrets): the staged
+    // and restored logs are refused before they are installed (ruling J
+    // revision, rounds 9–11), so a live log never carries one
+    throw new Error(`audit log cannot be hashed at seq ${outcome.seq}: ${outcome.reason}`);
+  }
+  return outcome.kind === "done";
+}
+
+type DeriveChunkOutcome =
+  /** The chunk reached the source's end (empty or short). */
+  | { readonly kind: "done" }
+  /** A full chunk was written; more may remain. */
+  | { readonly kind: "more" }
+  /** The row at `seq` is not the next one, or the canonical form refuses it. */
+  | { readonly kind: "invalid"; readonly seq: number; readonly reason: string };
+
+/**
+ * Hashes the next chunk (up to HEAD_CHUNK_ROWS rows) of `source` past
+ * `state.hashedUpTo`, from `state.head`, and writes its heads into
+ * `target` in one INSERT — the one loop body of the lazy extension (the
+ * live log into the live column) and of the derivation over a staged or
+ * restored log (ruling J revision, rounds 10 and 11): memory stays at one
+ * chunk whatever the log's size.
+ */
+async function deriveChunk(
+  sql: SqlStorage,
+  source: string,
+  target: string,
+  state: { hashedUpTo: number; head: string },
+): Promise<DeriveChunkOutcome> {
   const rows = sql
     .exec(
-      `SELECT ${HEAD_ROW_COLUMNS} FROM audit_events WHERE seq > ? ORDER BY seq LIMIT ?`,
+      `SELECT ${HEAD_ROW_COLUMNS} FROM ${source} WHERE seq > ? ORDER BY seq LIMIT ?`,
       state.hashedUpTo,
       HEAD_CHUNK_ROWS,
     )
     .toArray()
     .map(toAuditHeadRow);
   if (rows.length === 0) {
-    return true;
+    return { kind: "done" };
   }
   const inserts: (string | number)[] = [];
   for (const row of rows) {
     if (row.seq !== state.hashedUpTo + 1) {
-      throw new Error(
-        `audit log has a seq gap at ${state.hashedUpTo + 1} (append-only invariant violated)`,
-      );
+      return { kind: "invalid", seq: state.hashedUpTo + 1, reason: "seq gap" };
     }
     const digest = await computeAuditRowDigest(row);
     if (!digest.ok) {
-      // A structural invalidity on input derived from a stored row is an
-      // implementation bug (the error value carries no secrets)
-      throw new Error(`audit row digest failed at seq ${row.seq}: ${digest.error.kind}`);
+      return { kind: "invalid", seq: row.seq, reason: `row digest: ${digest.error.kind}` };
     }
     const next = await computeAuditHeadHash(SUITE_ID, state.head, row.seq, digest.value);
     if (!next.ok) {
-      throw new Error(`audit head hash failed at seq ${row.seq}: ${next.error.kind}`);
+      return { kind: "invalid", seq: row.seq, reason: `head hash: ${next.error.kind}` };
     }
     state.head = next.value;
     state.hashedUpTo = row.seq;
     inserts.push(row.seq, state.head);
   }
   sql.exec(
-    `INSERT INTO audit_head_hashes (seq, head_hash_hex) VALUES ${rows
-      .map(() => "(?, ?)")
-      .join(", ")}`,
+    `INSERT INTO ${target} (seq, head_hash_hex) VALUES ${rows.map(() => "(?, ?)").join(", ")}`,
     ...inserts,
   );
   // A short chunk = this chunk reached MAX(seq) (no extra SELECT needed)
-  return rows.length < HEAD_CHUNK_ROWS;
+  return rows.length < HEAD_CHUNK_ROWS ? { kind: "done" } : { kind: "more" };
 }
 
 /** Whether a stored head hash is one the chaining accepts (64 lowercase hex). */
@@ -717,51 +744,59 @@ export function isAuditHeadHex(value: unknown): value is string {
 }
 
 /**
- * Derives the audit-head column over `table`'s rows past `fromSeq`, from
- * `prevHead` (the empty string before seq 1), in memory: the rows must be
- * exactly `fromSeq + 1 …` and every one must pass the canonical form.
- * null = a gap, or a row the canonical form refuses — what a replica or
- * a snapshot must never install (ruling J revision, round 10: such a log
- * committed, and the extension afterwards threw the append-only defect on
- * every later read). Chunked reads; the hashing is the extension's own.
+ * Derives the audit-head column over `source`'s rows past `fromSeq`, from
+ * `prevHead` (the empty string before seq 1), into `target`, chunk by
+ * chunk (one chunk of memory — round 11): the rows must be exactly
+ * `fromSeq + 1 …` and every one must pass the canonical form. false = a
+ * gap, or a row the canonical form refuses — what a replica or a snapshot
+ * must never install (ruling J revision, round 10: such a log committed,
+ * and the extension afterwards threw the append-only defect on every
+ * later read). The target's rows written before a failure are the
+ * caller's to discard (a staging, or a restore that is wiped).
  */
 export async function deriveAuditHeads(
   sql: SqlStorage,
-  table: string,
+  source: string,
+  target: string,
   fromSeq: number,
   prevHead: string,
-): Promise<readonly (readonly [seq: number, headHashHex: string])[] | null> {
-  const heads: (readonly [number, string])[] = [];
+): Promise<boolean> {
   const state = { hashedUpTo: fromSeq, head: prevHead };
   for (;;) {
-    const rows = sql
-      .exec(
-        `SELECT ${HEAD_ROW_COLUMNS} FROM ${table} WHERE seq > ? ORDER BY seq LIMIT ?`,
-        state.hashedUpTo,
-        HEAD_CHUNK_ROWS,
-      )
-      .toArray()
-      .map(toAuditHeadRow);
-    if (rows.length === 0) {
-      return heads;
-    }
-    for (const row of rows) {
-      if (row.seq !== state.hashedUpTo + 1) {
-        return null;
-      }
-      const digest = await computeAuditRowDigest(row);
-      if (!digest.ok) {
-        return null;
-      }
-      const next = await computeAuditHeadHash(SUITE_ID, state.head, row.seq, digest.value);
-      if (!next.ok) {
-        return null;
-      }
-      state.head = next.value;
-      state.hashedUpTo = row.seq;
-      heads.push([row.seq, state.head]);
+    const outcome = await deriveChunk(sql, source, target, state);
+    if (outcome.kind !== "more") {
+      return outcome.kind === "done";
     }
   }
+}
+
+/**
+ * The shape the audit canonical form requires of a row's numbers, as SQL
+ * over a table with the live affinities (ruling J revision, round 11):
+ * `seq` and `server_ts` safe non-negative integers (`seq` ≥ 1 — the
+ * contiguity check), the nullable `client_ts`, `epoch`, `version` and
+ * `chain_seq` the same when present. The one statement of the acceptance
+ * the derivation applies row by row, so every row of a replica or a
+ * snapshot is checked — including the rows under an uploaded head column,
+ * which the derivation never touches — before anything is installed.
+ */
+export function auditRowShapeViolations(sql: SqlStorage, table: string): number {
+  return Number(
+    sql
+      .exec(
+        `SELECT COUNT(*) AS n FROM ${table} WHERE ${notCounting("server_ts")} OR ${nullableNotCounting("client_ts")} OR ${nullableNotCounting("epoch")} OR ${nullableNotCounting("version")} OR ${nullableNotCounting("chain_seq")}`,
+      )
+      .one()["n"],
+  );
+}
+
+/** SQL: the column is not a safe non-negative integer (the canonical form's `isCountingNumber`). */
+function notCounting(column: string): string {
+  return `(typeof(${column}) <> 'integer' OR ${column} < 0 OR ${column} > 9007199254740991)`;
+}
+
+function nullableNotCounting(column: string): string {
+  return `(${column} IS NOT NULL AND ${notCounting(column)})`;
 }
 
 /** The SELECT columns of queryEventsSync (same order as StoredAuditEventRow). */

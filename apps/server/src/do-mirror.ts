@@ -42,7 +42,7 @@
 // (the next upload starts at sequence 0). No audit row is written for a
 // replication (ruling G).
 
-import { deriveAuditHeads, isAuditHeadHex } from "./audit-store.ts";
+import { auditRowShapeViolations, deriveAuditHeads, isAuditHeadHex } from "./audit-store.ts";
 import type { MirrorSyncRejectReason } from "./data-plane.ts";
 import {
   acceptColumns,
@@ -559,6 +559,15 @@ function acceptTrailer(
 ): void {
   verifyCounts(sql, input.tables, trailer);
   verifyAuditContiguity(sql);
+  // Every staged row's numbers in the canonical form's domain (round 11):
+  // the rows under an uploaded head column are never derived over, so a
+  // row the extension cannot hash would otherwise be installed with them
+  if (
+    hasTable(sql, stagingOf(AUDIT_TABLE)) &&
+    auditRowShapeViolations(sql, stagingOf(AUDIT_TABLE)) !== 0
+  ) {
+    throw malformed();
+  }
   verifyChainExtension(sql);
   if (stagedMaxSeq(sql, AUDIT_TABLE) < input.state.lastAuditSeq) {
     throw new MirrorPageRefusedError("audit-regression");
@@ -641,8 +650,18 @@ export async function verifyStagedAuditHeads(
 ): Promise<MirrorPageRefusedError | null> {
   const stagedHeads = stagingOf(AUDIT_HEAD_TABLE);
   const stagedLog = stagingOf(AUDIT_TABLE);
-  if (!hasTable(sql, stagedLog) || !hasTable(sql, stagedHeads)) {
+  if (!hasTable(sql, stagedLog)) {
     return null;
+  }
+  // A replica without the head column's table line is derived from seq 1
+  // into a staged column created for it (round 11: an absent column
+  // installed an empty one, and the extension after the commit met the
+  // replica's rows unchecked)
+  if (!hasTable(sql, stagedHeads)) {
+    sql.exec(
+      `CREATE TABLE ${stagedHeads} AS SELECT seq, head_hash_hex FROM ${AUDIT_HEAD_TABLE} LIMIT 0`,
+    );
+    sql.exec(`CREATE INDEX ${stagedHeads}_seq ON ${stagedHeads} (seq)`);
   }
   const from = state.lastAuditSeq > 0 ? state.lastAuditSeq : stagedMaxSeq(sql, AUDIT_HEAD_TABLE);
   const table = state.lastAuditSeq > 0 ? AUDIT_HEAD_TABLE : stagedHeads;
@@ -655,19 +674,17 @@ export async function verifyStagedAuditHeads(
   if (from !== 0 && !isAuditHeadHex(start)) {
     return malformed();
   }
-  const derived = await deriveAuditHeads(sql, stagedLog, from, from === 0 ? "" : String(start));
-  if (derived === null) {
-    return malformed();
-  }
+  // The uploaded claim past the start goes first; the derivation then
+  // writes chunk by chunk into the staged column (one chunk of memory)
   sql.exec(`DELETE FROM ${stagedHeads} WHERE seq > ?`, from);
-  for (let at = 0; at < derived.length; at += 500) {
-    const chunk = derived.slice(at, at + 500);
-    sql.exec(
-      `INSERT INTO ${stagedHeads} (seq, head_hash_hex) VALUES ${chunk.map(() => "(?, ?)").join(", ")}`,
-      ...chunk.flat(),
-    );
-  }
-  return null;
+  const derived = await deriveAuditHeads(
+    sql,
+    stagedLog,
+    stagedHeads,
+    from,
+    from === 0 ? "" : String(start),
+  );
+  return derived ? null : malformed();
 }
 
 /** One staged chain row as the content verification reads it (programs-mirror.ts). */

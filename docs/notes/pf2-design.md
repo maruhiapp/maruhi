@@ -292,3 +292,13 @@ for round 11; D, E, F and G are closed.
 
 Rulings C and H received adopted candidates in this round and stay open
 for round 12; D, E, F and G are closed.
+
+### 8-11. Round 12 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (promotion) | C-32 (the C-27/C-29 class): three promotion refusal bodies end in a remedy the forced promotion has just made impossible (a sync into a promoted copy, a login to read the mark), and the forced path printed it verbatim — while the real loss of a forced promotion past a frozen source behind, the chain entries it holds past the mirror, was named nowhere. Cost observation adopted alongside: the mark's two source reads ran in sequence (a source that does not answer cost two bounds) | **C-32 adopted** — a refusal carries an optional `forced` consequence the forced path prints instead of the body (the entries that become unreachable with the export that keeps them; two writable copies until the source is marked or taken down). The mark's reads run concurrently |
+| H (sync) | H-28 (delivery gap of H-24): the record claimed evidence coverage for the floor and the gossip, but the gossip contradiction, the invite-anchor failure and the floor's same-coordinate conflict were plain errors, so the second view's failure told the owner to re-run on them; H-29 (text): the sync's "ahead" note named a forced replication from a non-recorded source as a cause, impossible on the sync path (the replica and the view are of the same server); H-30 (precision): the status's fork evidence named "do not promote the mirror" for a promoted copy that diverged (two writable copies) and for a mirror of another source (judged against the wrong server); H-31 (tests only): the second view's session-refused branch was unpinned | **All adopted** — the three failures carry the evidence flag (the rotate/push cleanup then fails on them instead of warning, by its own contract); the phantom cause is gone from the note and the spec; the status's failure is attributed to its state and prints the resolved server origin; the 401 re-read is pinned |
+
+Rulings C and H received adopted candidates in this round and stay open
+for round 13; D, E, F and G are closed.

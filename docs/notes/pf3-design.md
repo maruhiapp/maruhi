@@ -270,3 +270,12 @@ round 10; C, D, H and I are closed.
 
 Ruling J received an adopted candidate in this round and stays open for
 round 11; C, D, H and I are closed.
+
+### 8-10. Round 11 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| J (switch-over) | J-27 (J-24's own class): a replica without the head column's table line skipped the derivation, installed an empty column, and the extension after the commit met the replica's rows unchecked — the brick again; J-28 (a regression of J-24 against rounds 8 and 9, honestly reachable): the derivation accumulated every head in memory (194 B per row measured — past the isolate's limit near 6.5 × 10⁵ derived rows), where the extension after the commit had streamed per chunk; a CI-heavy project synced weekly, or a backup of a project not read since that many appends, could never sync or restore again; J-29 (structural): the canonical form's acceptance is a shape, so one SQL statement over the staged log checks every row at the trailer — the rows under an uploaded column too, which the derivation never touches (a crafted first replica with a bad row under an intact column committed under bootstrap trust; the row became an own row after a promotion and bricked a later mirror); J-T3 (tests only): the round-10 test's first case was refused by the carried-row rule, not by the derivation | **J-27, J-28, J-29 adopted** — a staged column is created for a replica without one and the derivation starts at seq 1; one loop body (`deriveChunk`) serves the lazy extension and the derivations, writing each chunk into its target (the staged column, or the live column on the restore, wiped on failure); `auditRowShapeViolations` states the canonical form's numeric domain in SQL and runs at the trailer and in the restore's verify, pinned against the form's own refusals; the round-10 test now re-points first so the rows are foreign. Recorded residual: a derivation killed by the CPU limit mid-trailer (millions of rows in one replica) leaves no progress, where the post-commit convergence used to resume — a resumable trailer is J-23's shape, not cost-justified |
+
+Ruling J received adopted candidates in this round and stays open for
+round 12; C, D, H and I are closed.

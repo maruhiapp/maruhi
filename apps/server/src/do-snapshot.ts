@@ -32,7 +32,7 @@
 //   that fails midway holds no chain and stays "uninitialized"; reruns
 //   wipe the non-chain tables and redo (no overwrite path exists)
 
-import { deriveAuditHeads, isAuditHeadHex } from "./audit-store.ts";
+import { auditRowShapeViolations, deriveAuditHeads, isAuditHeadHex } from "./audit-store.ts";
 import {
   OPS_RESTORE_BATCH_ROWS,
   OPS_SNAPSHOT_PART_BYTES,
@@ -995,16 +995,21 @@ class RestoreReader {
     if (tail !== undefined && !isAuditHeadHex(start)) {
       throw new RestoreRefusedError("malformed");
     }
-    const derived = await deriveAuditHeads(sql, "audit_events", from, String(start));
-    if (derived === null) {
+    // Every row's numbers in the canonical form's domain, the rows under
+    // the snapshot's column included (round 11); then the heads past the
+    // column, chunk by chunk into the live column (wiped on a failure)
+    if (auditRowShapeViolations(sql, "audit_events") !== 0) {
       throw new RestoreRefusedError("malformed");
     }
-    for (let at = 0; at < derived.length; at += 500) {
-      const chunk = derived.slice(at, at + 500);
-      sql.exec(
-        `INSERT INTO audit_head_hashes (seq, head_hash_hex) VALUES ${chunk.map(() => "(?, ?)").join(", ")}`,
-        ...chunk.flat(),
-      );
+    const derived = await deriveAuditHeads(
+      sql,
+      "audit_events",
+      "audit_head_hashes",
+      from,
+      String(start),
+    );
+    if (!derived) {
+      throw new RestoreRefusedError("malformed");
     }
   }
 

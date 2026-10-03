@@ -465,13 +465,13 @@ function forkNote(
   return null;
 }
 
-/** The sync's own note on the committed head: on the sync path an "ahead" has one honest cause less than the status's (round 11). */
+/** The sync's own note on the committed head: on the sync path an "ahead" past the view taken after the commit has one cause (rounds 11 and 12 — the replica and the view are of the same server). */
 function syncHeadNote(
   head: { readonly chainHeadSeq: number; readonly chainHeadHashHex: string },
   verified: VerifiedProject,
 ): string {
   return head.chainHeadSeq > verified.state.headSeq && forkNote(head, verified) === null
-    ? `ahead of the verified view taken after the commit (seq ${head.chainHeadSeq} > ${verified.state.headSeq}) — the server exported entries it no longer serves (a rollback at the server), or the replication was forced from a server that is not the mirror's recorded source`
+    ? `ahead of the verified view taken after the commit (seq ${head.chainHeadSeq} > ${verified.state.headSeq}) — the server exported entries it no longer serves (a rollback at the server)`
     : headNote(head, verified);
 }
 

@@ -698,7 +698,11 @@ frozen as a mirror of this one is a source whatever it replicated before;
 served before the export, past the chain it serves after the commit, or on
 another chain altogether is reported as a rollback or a fork at the primary
 and fails the command, so a cron sees it. `maruhi mirror status` compares the two at any time
-(and reports the mirror's head alone while the primary is down). Across a
+(and reports the mirror's head alone while the primary is down); it fails
+too when the mirror's head is on another chain than the primary's (so a
+cron's "is my mirror usable" check sees that as well), saying whether the
+copy is a mirror of this primary, a promoted copy that diverged, or a
+mirror of another deployment. Across a
 sync the mirror keeps its own lease windows and rate limits, merges the
 primary's live first-come token bindings into its own (expired ones are
 dropped on both sides), and keeps the audit rows of the reads and leases it

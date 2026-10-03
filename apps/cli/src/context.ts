@@ -365,7 +365,7 @@ export function loadCheckedFloor(
         // verified observations with the same version but different hashes)
         // is hard evidence of equivocation. Refuse to use or advance the floor
         return yield* Effect.fail(
-          cliError(formatFloorConflicts(projectId, loaded.floor.conflicts)),
+          evidenceError(formatFloorConflicts(projectId, loaded.floor.conflicts)),
         );
       }
       let violation = checkChainFloor(loaded.floor, view);
@@ -582,7 +582,7 @@ export function checkInviteAnchor(
     }
     const failure = anchorFailureOf(projectId, anchor, verified);
     if (failure !== null) {
-      return yield* Effect.fail(cliError(failure));
+      return yield* Effect.fail(evidenceError(failure));
     }
     if (anchor.verifiedAtSeq === null) {
       yield* io.log(
@@ -690,7 +690,9 @@ function attachProject(
         // loadCheckedFloor, kept intact at every point that re-reads the floor)
         const reloaded = (yield* store.load(projectId)).floor;
         if (reloaded !== null && reloaded.conflicts.length > 0) {
-          return yield* Effect.fail(cliError(formatFloorConflicts(projectId, reloaded.conflicts)));
+          return yield* Effect.fail(
+            evidenceError(formatFloorConflicts(projectId, reloaded.conflicts)),
+          );
         }
         floor = reloaded;
       }

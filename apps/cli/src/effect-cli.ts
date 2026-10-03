@@ -2154,7 +2154,7 @@ function openMirrorTarget(flags: {
       );
     }
     const mirror = yield* openSession(mirrorOrigin, "mirror");
-    return { mirror, mirrorOrigin, projectId };
+    return { mirror, mirrorOrigin, serverOrigin, projectId };
   });
 }
 
@@ -2322,11 +2322,33 @@ function mirrorStatusCommand(flags: {
     if (evidence !== null) {
       return yield* Effect.fail(
         evidenceError(
-          `The mirror ${target.mirrorOrigin} holds a chain head that is ${evidence} — against ${flags.server ?? "the server"} and against the mirror`,
+          statusEvidenceText(status, target.mirrorOrigin, target.serverOrigin, evidence),
         ),
       );
     }
   });
+}
+
+/**
+ * The status's fork evidence attributed to the state it was seen in (round
+ * 12): a copy that is not marked (promoted and written to) diverging from
+ * the server is two writable copies, a copy marked for another source was
+ * judged against a server that is not its source, a marked mirror of this
+ * server holds fork evidence against it.
+ */
+function statusEvidenceText(
+  status: MirrorStatus,
+  mirrorOrigin: string,
+  serverOrigin: string,
+  evidence: string,
+): string {
+  if (!status.mirror) {
+    return `${mirrorOrigin} is not marked as a mirror (a promoted copy) and holds a chain head that is ${evidence} of ${serverOrigin}: two writable copies have diverged (a split brain). Decide which chain is the project's with \`maruhi project verify\` against both, and mark or export the other away`;
+  }
+  if (status.sourceOrigin !== undefined && status.sourceOrigin !== serverOrigin) {
+    return `${mirrorOrigin} is a mirror of ${status.sourceOrigin}, not of ${serverOrigin}, and holds a chain head that is ${evidence} of ${serverOrigin}: the comparison is against a server that is not its source — run the status against ${status.sourceOrigin} (\`maruhi mirror status --server ${status.sourceOrigin} --mirror ${mirrorOrigin}\`)`;
+  }
+  return `The mirror ${mirrorOrigin} holds a chain head that is ${evidence} — against ${serverOrigin} and against the mirror`;
 }
 
 /** `maruhi mirror mark --server <mirror> --source <server>`: the owner marks the project read-only there. */
@@ -2393,17 +2415,21 @@ function ensureMarkable(
     // read does not discard the chain already read, nor the other way round
     const source = yield* openSessionWith(context.config, sourceOrigin, "server").pipe(
       Effect.flatMap((session) =>
-        Effect.all({
-          view: syncProject(session.client, projectId).pipe(
-            Effect.catch(sourceUnread("chain", "this project's chain is part of it")),
-          ),
-          mark: session.client.mirror
-            .status({ params: { projectId } })
-            .pipe(
-              Effect.mapError(toCliError),
-              Effect.catch(sourceUnread("mark", "it is a primary, or frozen for this project")),
+        Effect.all(
+          {
+            view: syncProject(session.client, projectId).pipe(
+              Effect.catch(sourceUnread("chain", "this project's chain is part of it")),
             ),
-        }),
+            mark: session.client.mirror
+              .status({ params: { projectId } })
+              .pipe(
+                Effect.mapError(toCliError),
+                Effect.catch(sourceUnread("mark", "it is a primary, or frozen for this project")),
+              ),
+          },
+          // Concurrently: a source that does not answer costs one bound, not two (round 12)
+          { concurrency: 2 },
+        ),
       ),
       Effect.catch(
         sourceUnread(
@@ -2454,6 +2480,8 @@ function sourceUnread(
 interface Refusal {
   readonly body: string;
   readonly escape: string;
+  /** What `--force` does instead of the body's remedy, when the remedy is dead after the override (round 12); the body otherwise. */
+  readonly forced?: string | undefined;
 }
 
 type MarkVerdict =
@@ -2646,7 +2674,7 @@ function promotionGuard(
       if (!forced) {
         return yield* Effect.fail(cliError(`${refusal.body}${refusal.escape}`));
       }
-      yield* logWarning(`promoting with --force. ${refusal.body}`);
+      yield* logWarning(`promoting with --force. ${refusal.forced ?? refusal.body}`);
     }
     return {
       leftBehind: frozenAt === null ? null : rowsLeftBehind(frozenAt, sourceOrigin, status),
@@ -2709,12 +2737,14 @@ function promotionRefusal(
     return {
       body: `The source ${sourceOrigin} still answers and holds this project writable: promoting ${thisOrigin} now leaves two writable copies (a split brain). The planned order: mark the source as a mirror of ${thisOrigin} (\`maruhi mirror mark --server ${sourceOrigin} --source ${thisOrigin}\` — it freezes), bring its last writes over (\`maruhi mirror sync --server ${sourceOrigin} --mirror ${thisOrigin}\`), then promote; or take the source down`,
       escape: ". Pass --force to promote anyway",
+      forced: `The source ${sourceOrigin} still answers and holds this project writable: two writable copies from now on (a split brain) until the source is marked as a mirror of ${thisOrigin} (\`maruhi mirror mark --server ${sourceOrigin} --source ${thisOrigin}\`) or taken down; writes it takes meanwhile stay on it`,
     };
   }
   if (source === "answers") {
     return {
       body: `The source ${sourceOrigin} still answers, and its mark could not be read from this machine (no session for it here, or it refused the read): promoting ${thisOrigin} now may leave two writable copies (a split brain). Log in there (\`maruhi login --server ${sourceOrigin}\`) so the promotion can read whether it is frozen, follow the planned order (mark the source as a mirror of ${thisOrigin}, one last \`maruhi mirror sync\`, then promote)`,
       escape: ", or pass --force to promote anyway",
+      forced: `The source ${sourceOrigin} still answers, and its mark could not be read from this machine: two writable copies may exist from now on (a split brain) — check its mark there, and mark it as a mirror of ${thisOrigin} or take it down`,
     };
   }
   if (source === "gone") {
@@ -2769,6 +2799,7 @@ function frozenRefusal(
   return {
     body: `The source ${sourceOrigin} is frozen at chain seq ${frozenAt.chainHeadSeq} (head ${frozenAt.chainHeadHashHex}) but this mirror holds seq ${mirrorHead.chainHeadSeq} (head ${mirrorHead.chainHeadHashHex}): its last writes have not been brought over. Run \`maruhi mirror sync --server ${sourceOrigin} --mirror ${thisOrigin}\` first`,
     escape: "; or pass --force to promote without them",
+    forced: `promoting without the chain entries ${sourceOrigin} holds past seq ${mirrorHead.chainHeadSeq} (its head is seq ${frozenAt.chainHeadSeq}): a promoted copy takes no page, so they are unreachable from ${thisOrigin} from now on — keep them with \`maruhi project export --server ${sourceOrigin}\``,
   };
 }
 
