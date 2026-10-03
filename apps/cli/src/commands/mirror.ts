@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import { Command } from "effect/cli";
 
 import { BODY_TIMEOUT, makeApiClient } from "../api.ts";
+import { syncProject } from "../chain-sync.ts";
 import { ConfigStore } from "../config.ts";
 import {
   type CliServices,
@@ -28,7 +29,6 @@ import {
   statusEvidence,
 } from "../mirror.ts";
 import { resolveServerOrigin } from "../session.ts";
-import { syncProject } from "../sync.ts";
 import { projectFlags, singleFlag, singleValued } from "./flags.ts";
 import { sameDeployment } from "./mirror-core.ts";
 import { mirrorMark, mirrorPromote } from "./mirror-write.ts";

@@ -30,9 +30,9 @@ import {
 } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import type { VerifiedProject } from "./chain-sync.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /** The user-facing scope display (`all` / `no environments` / an enumeration of environment ids. Ids are neutralized). */
 export function describeScope(scope: MemberScope | ScopePayloadFields): string {

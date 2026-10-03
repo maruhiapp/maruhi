@@ -42,6 +42,7 @@ import { Effect } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import { backfillEachEnvironment, backfillEnvironmentFor } from "./backfill.ts";
 import { appendEntry } from "./chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
 import { capWithinSignerCap, describeCap, ownDeviceBySigningKey } from "./device-key.ts";
@@ -59,7 +60,6 @@ import {
   verifiedDeletedEnvironmentSet,
 } from "./rotation-sweep.ts";
 import { compareCodePoints, requireScopeEnvironmentsExist, scopeContains } from "./scope.ts";
-import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
 

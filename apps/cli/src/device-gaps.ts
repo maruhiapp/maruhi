@@ -33,13 +33,13 @@ import { Effect, type Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { backfillEnvironmentFor } from "./backfill.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { deviceReceivesEnvironment } from "./dek-wrap.ts";
 import type { DekRecipient } from "./deks.ts";
 import { devicesOf } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { CliIo } from "./io.ts";
 import { logNote } from "./notice.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /** Result of filling one sibling device's gap (carries only facts — wording lives on the reporting side). */
 export interface OwnDeviceGapFill {

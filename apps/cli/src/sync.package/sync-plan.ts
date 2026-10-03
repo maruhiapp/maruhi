@@ -31,15 +31,17 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
-import type { MaruhiClient } from "./api.ts";
-import type { DekRecipient } from "./deks.ts";
-import { countNoun, decodeValueText, displayText, logWarnings } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import type { FloorHandle } from "./floor-check.ts";
-import { CliIo } from "./io.ts";
-import { logNote, logWarning } from "./notice.ts";
-import { type DeclaredVariable, pullVariables, toDeclaredVariables } from "./pull.ts";
-import { enforceDeclaredPresence, ProcessRunner } from "./run.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import type { DekRecipient } from "../deks.ts";
+import { countNoun, decodeValueText, displayText, logWarnings } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import type { FloorHandle } from "../floor-check.ts";
+import { CliIo } from "../io.ts";
+import { logNote, logWarning } from "../notice.ts";
+import { type DeclaredVariable, pullVariables, toDeclaredVariables } from "../pull.ts";
+import { enforceDeclaredPresence, ProcessRunner } from "../run.ts";
+import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "../values.ts";
 import type { SyncTarget, TargetDriver } from "./sync-config.ts";
 import {
   buildInvocations,
@@ -64,8 +66,6 @@ import {
   storeReceipt,
   type SyncReceipt,
 } from "./sync-receipt.ts";
-import type { VerifiedProject } from "./sync.ts";
-import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
 
 /** One line of a plan. `blocked` = apply would refuse it (reason names only the variable). */
 export type PlanEntry =

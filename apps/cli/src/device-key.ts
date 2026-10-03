@@ -22,10 +22,10 @@ import type { ChainDevice, ChainMember, DeviceCap, SigningKeyPair } from "@maruh
 import { encodeHex, exportSigningPublicKey } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import type { VerifiedProject } from "./chain-sync.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { describeScope, scopeContains } from "./scope.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /** Order of roles (CRYPTO_SPEC §6.2). `satisfies` exposes changes to Role to the type checker. */
 const ROLE_RANK = { reader: 0, member: 1, admin: 2, owner: 3 } as const;

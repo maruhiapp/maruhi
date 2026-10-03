@@ -32,9 +32,9 @@ import {
 } from "@maruhi/crypto";
 
 import { proposalIndexOf } from "./chain-applied.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
 import { describeScope } from "./scope.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;

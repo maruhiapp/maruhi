@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
-import { parseSyncConfig } from "../src/sync-config.ts";
+import { parseSyncConfig } from "../src/sync.package/sync-config.ts";
 import { makeTestEnv } from "./support/env.ts";
 
 async function init(...args: string[]) {

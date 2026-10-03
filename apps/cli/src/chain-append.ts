@@ -15,10 +15,10 @@ import { signChainEntry, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { ownDeviceBySigningKey } from "./device-key.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /**
  * Signs one entry with the signer's key right after the verified view's

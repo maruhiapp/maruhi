@@ -6,6 +6,7 @@ import { Command } from "effect/cli";
 import { type HttpClient } from "effect/http";
 
 import { type MaruhiClient, makeApiClient } from "../api.ts";
+import { type VerifiedProject, syncProject } from "../chain-sync.ts";
 import { type CliConfig as MaruhiCliConfig } from "../config.ts";
 import {
   type CliServices,
@@ -21,7 +22,6 @@ import { CliIo } from "../io.ts";
 import { headOnChain } from "../mirror.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { normalizeHttpOrigin } from "../session.ts";
-import { type VerifiedProject, syncProject } from "../sync.ts";
 import { projectFlags, singleFlag, singleValued } from "./flags.ts";
 import { PROMOTE_PROBE_TIMEOUT, sameDeployment } from "./mirror-core.ts";
 

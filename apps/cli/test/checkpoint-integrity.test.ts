@@ -22,9 +22,9 @@ import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Exit } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import { verifyChainSnapshot } from "../src/chain-sync.ts";
 import { checkCheckpointIntegrity } from "../src/checkpoint-integrity.ts";
 import { runCli } from "../src/cli.ts";
-import { verifyChainSnapshot } from "../src/sync.ts";
 import { verifyLeaseDistribution } from "../src/values.ts";
 import {
   buildChain,

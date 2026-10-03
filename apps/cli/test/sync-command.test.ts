@@ -20,7 +20,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { cliError } from "../src/errors.ts";
-import { receiptVariableName } from "../src/sync-receipt.ts";
+import { receiptVariableName } from "../src/sync.package/sync-receipt.ts";
 import {
   buildChain,
   type BuiltChain,

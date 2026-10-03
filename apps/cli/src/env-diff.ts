@@ -67,13 +67,13 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import type { CliServices } from "./context.ts";
 import { countNoun, displayText, logWarnings } from "./display.ts";
 import type { CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
 import { logNote } from "./notice.ts";
-import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 
 /** One environment under comparison. The floor is used for §6.3's meta-level checks (not committed). */

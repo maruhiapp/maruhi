@@ -23,6 +23,7 @@ import { decodeHex, decryptVariable } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { type DekRecipient, environmentKeysFor, missingEpochsOf } from "./deks.ts";
 import {
   describeMissingOwnEpochs,
@@ -33,7 +34,6 @@ import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
 import { requireEnvironmentInScope } from "./scope.ts";
-import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironment, type VerifiedPulledValue } from "./values.ts";
 
 /** One decrypted variable (plaintext bytes live in memory only). */

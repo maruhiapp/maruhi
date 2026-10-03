@@ -61,13 +61,13 @@
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
 
-import { type CliServices, type EnvironmentContext, floorHandleFor } from "./context.ts";
-import { displayText } from "./display.ts";
-import { asCleanupOutcome, type CliError, usageError } from "./errors.ts";
-import type { FloorHandle } from "./floor-check.ts";
-import { CliIo } from "./io.ts";
-import { logNote, logWarning } from "./notice.ts";
-import { type ExecInput, ProcessRunner } from "./run.ts";
+import { type CliServices, type EnvironmentContext, floorHandleFor } from "../context.ts";
+import { displayText } from "../display.ts";
+import { asCleanupOutcome, type CliError, usageError } from "../errors.ts";
+import type { FloorHandle } from "../floor-check.ts";
+import { CliIo } from "../io.ts";
+import { logNote, logWarning } from "../notice.ts";
+import { type ExecInput, ProcessRunner } from "../run.ts";
 import {
   DEFAULT_SYNC_CONFIG_PATH,
   loadSyncConfig,

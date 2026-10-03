@@ -27,9 +27,9 @@ import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { makeApiClient } from "../src/api.ts";
+import { verifyChainSnapshot } from "../src/chain-sync.ts";
 import { checkpointProposal } from "../src/checkpoint.ts";
 import { runCli } from "../src/cli.ts";
-import { verifyChainSnapshot } from "../src/sync.ts";
 import {
   addMemberOp,
   addScopedMemberOp,

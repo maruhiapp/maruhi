@@ -62,6 +62,7 @@ import {
 import { Effect, Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -76,7 +77,6 @@ import { generateVariableId, signCreateStatement } from "./meta-statement.ts";
 import { decryptVerifiedValue } from "./pull.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signContinuationStatementV2 } from "./schema-statement.ts";
-import { resyncExtended, type VerifiedProject } from "./sync.ts";
 import {
   type ManifestIssueBase,
   manifestIssueBaseOf,

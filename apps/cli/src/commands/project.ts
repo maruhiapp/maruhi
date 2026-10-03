@@ -12,6 +12,7 @@ import {
   proposalViews,
 } from "../approval-rules.ts";
 import { type PolicyRequest, setApprovalPolicyOp } from "../approval.ts";
+import { syncProject } from "../chain-sync.ts";
 import { issueCheckpoint } from "../checkpoint.ts";
 import {
   type CliServices,
@@ -36,7 +37,6 @@ import { projectInitOp } from "../project-init.ts";
 import { projectListOp } from "../project-list.ts";
 import { describeUnconvergedMandate, resolveUnconvergedMandates } from "../rotation-sweep.ts";
 import { loadMasterKeys } from "../session.ts";
-import { syncProject } from "../sync.ts";
 import { projectFlags, proposalFlags, serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
 import { proposalInputOf, reportProposed } from "./shared.ts";
 

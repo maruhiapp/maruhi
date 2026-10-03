@@ -55,9 +55,9 @@
 
 import { Redacted } from "effect";
 
-import { decodeValueText, displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import type { ExecInput } from "./run.ts";
+import { decodeValueText, displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import type { ExecInput } from "../run.ts";
 import type { OptionSpec, ResolvedOptions, ValueConstraints } from "./sync-types.ts";
 
 /**

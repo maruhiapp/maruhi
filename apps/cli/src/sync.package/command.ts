@@ -4,6 +4,7 @@ import { type EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
+import { NonBlank, projectFlags, singleFlag, singleValued } from "../commands/flags.ts";
 import { floorHandleFor, openProject } from "../context.ts";
 import { CliError, usageError } from "../errors.ts";
 import {
@@ -11,10 +12,9 @@ import {
   checkConfigProject,
   loadSyncConfig,
   requireSyncTarget,
-} from "../sync-config.ts";
-import { syncInitOp } from "../sync-init.ts";
-import { syncApplyOp, syncPlanOp } from "../sync-plan.ts";
-import { NonBlank, projectFlags, singleFlag, singleValued } from "./flags.ts";
+} from "./sync-config.ts";
+import { syncInitOp } from "./sync-init.ts";
+import { syncApplyOp, syncPlanOp } from "./sync-plan.ts";
 
 /**
  * The declarations of `maruhi sync plan` / `apply` (SY2 stage 1). The

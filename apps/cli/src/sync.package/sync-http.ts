@@ -64,11 +64,11 @@
 import { Duration, Effect, Redacted } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 
-import { decodeValueText, displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
+import { decodeValueText, displayText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { CLI_VERSION } from "../version.ts";
 import { scrubVendorOutput, type SyncWrite } from "./sync-exec.ts";
 import type { OptionSpec, ResolvedOptions, ValueConstraints } from "./sync-types.ts";
-import { CLI_VERSION } from "./version.ts";
 
 /**
  * One token of a URL path or query. A literal, an option value, the target-side

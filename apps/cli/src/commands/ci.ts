@@ -18,13 +18,13 @@ import {
 import { SqlRunner } from "../rotate-connector.ts";
 import { ProcessRunner } from "../run.ts";
 import { normalizeHttpOrigin } from "../session.ts";
-import { ciSyncOp } from "../sync-ci.ts";
 import {
+  ciSyncOp,
   DEFAULT_SYNC_CONFIG_PATH,
   checkConfigProject,
   loadSyncConfig,
   requireSyncTarget,
-} from "../sync-config.ts";
+} from "../sync.package/index.ts";
 import { RotateSeams, logRotationWarnings, rotateDeps } from "../var-rotate.ts";
 import { NonBlank, runCommandArgument, singleFlag, singleValued } from "./flags.ts";
 import { ENV_FLAG_SHAPE_MESSAGE, commandAfterTerminator } from "./shared.ts";

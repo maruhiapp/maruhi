@@ -33,7 +33,7 @@ import {
   signersOf,
   voteEligibility,
 } from "../src/approval-rules.ts";
-import { type VerifiedProject, verifyChainSnapshot } from "../src/sync.ts";
+import { type VerifiedProject, verifyChainSnapshot } from "../src/chain-sync.ts";
 import {
   addMemberOp,
   approveOp,
@@ -64,7 +64,7 @@ beforeAll(async () => {
   member = await makeTestUser("user-member-5555");
 });
 
-/** Turns a built chain into the CLI's verified view (same path as sync.ts). */
+/** Turns a built chain into the CLI's verified view (same path as chain-sync.ts). */
 function verifiedOf(built: BuiltChain): Promise<VerifiedProject> {
   return Effect.runPromise(
     verifyChainSnapshot({

@@ -60,6 +60,7 @@ import type { HttpClient } from "effect/http";
 
 import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import type { IdentityBacking } from "./config.ts";
 import type { CliServices } from "./context.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
@@ -83,7 +84,6 @@ import { logNote, logWarning } from "./notice.ts";
 import { type InvitePins, issuedPinOf, PinStore } from "./pins.ts";
 import { describeScope, requireScopeEnvironmentsExist, sameScope, scopeContains } from "./scope.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /** The warning for a failed anchor pin (a SHOULD-level degradation — the acceptance itself is already established). */
 const warnUnpinned = (detail: string) =>

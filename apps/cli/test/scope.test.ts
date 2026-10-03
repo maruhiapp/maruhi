@@ -17,10 +17,10 @@ import { Effect } from "effect";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import type { MaruhiClient } from "../src/api.ts";
+import { type VerifiedProject, verifyChainSnapshot } from "../src/chain-sync.ts";
 import { environmentKeysFor } from "../src/deks.ts";
 import { scopeChangesOf } from "../src/member.ts";
 import { environmentsOfScopeAt, sameScope, scopeChangeAt, scopeContains } from "../src/scope.ts";
-import { type VerifiedProject, verifyChainSnapshot } from "../src/sync.ts";
 import {
   addScopedMemberOp,
   buildChain,

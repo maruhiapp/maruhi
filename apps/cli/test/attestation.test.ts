@@ -18,12 +18,12 @@ import {
   reconcileDistributedAttestations,
   submitHeadAttestationIfAdvanced,
 } from "../src/attestation.ts";
-import type { CliError } from "../src/errors.ts";
 import {
   type DistributedAttestationWire,
   verifyChainSnapshot,
   type VerifiedProject,
-} from "../src/sync.ts";
+} from "../src/chain-sync.ts";
+import type { CliError } from "../src/errors.ts";
 import {
   addMemberOp,
   type BuiltChain,

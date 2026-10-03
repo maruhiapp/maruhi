@@ -27,6 +27,7 @@
 import type { MetaVarType } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import type { VerifiedProject } from "./chain-sync.ts";
 import type { CliError } from "./errors.ts";
 import { isServerRejection } from "./failure.ts";
 import {
@@ -45,7 +46,6 @@ import {
   type VariableFloor,
 } from "./floor.ts";
 import type { VerifiedManifest } from "./manifest.ts";
-import type { VerifiedProject } from "./sync.ts";
 import type { VerifiedPulledValue } from "./values.ts";
 
 /** Evidence material of a verified meta-statement, including deleted / declared (variables only — §4.2 layout v2). */

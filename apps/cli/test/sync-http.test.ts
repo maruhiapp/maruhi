@@ -27,15 +27,15 @@ import { Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
-import { parseSyncConfig, type SyncTarget } from "../src/sync-config.ts";
+import { parseSyncConfig, type SyncTarget } from "../src/sync.package/sync-config.ts";
 import {
   buildBatches,
   checkIntegrationToken,
   HTTP_PRESETS,
   type HttpPreset,
   type PathToken,
-} from "../src/sync-http.ts";
-import { receiptVariableName } from "../src/sync-receipt.ts";
+} from "../src/sync.package/sync-http.ts";
+import { receiptVariableName } from "../src/sync.package/sync-receipt.ts";
 import {
   buildChain,
   type BuiltChain,

@@ -11,7 +11,7 @@
 //
 // Verification obligations, mapped:
 //   (1) Chain verification — verifyChainSnapshot (the same
-//       implementation as sync.ts). genesis = projectId is checked
+//       implementation as chain-sync.ts). genesis = projectId is checked
 //       against the value pre-pinned in the CI config (--project)
 //   (2) Repository anchor (SHOULD) — anchor.ts (when --anchor is
 //       given)
@@ -51,11 +51,11 @@ import { Effect, Redacted } from "effect";
 
 import type { RepositoryAnchor } from "./anchor.ts";
 import { checkRepositoryAnchor } from "./anchor.ts";
+import { verifyChainSnapshot, type VerifiedProject } from "./chain-sync.ts";
 import { requireChainEnvironment } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { DeclaredVariable, DecryptedVariable } from "./pull.ts";
 import { decryptVerifiedValue, toDeclaredVariables } from "./pull.ts";
-import { verifyChainSnapshot, type VerifiedProject } from "./sync.ts";
 import { type PulledWire, type VerifiedPulledValue, verifyLeaseDistribution } from "./values.ts";
 
 /** The wire shape of a lease response (the structural type of api-schema's LeaseResponseSchema). */
@@ -284,7 +284,7 @@ export function verifyLeaseResponse(input: {
     // (1) Chain verification: full re-verification of the bundled
     // chain + genesis hash = the pre-pinned projectId + consistency
     // of declared head vs derived head (the same implementation as
-    // sync.ts)
+    // chain-sync.ts)
     const verified = yield* verifyChainSnapshot({
       projectId: input.projectId,
       entries: response.chain,

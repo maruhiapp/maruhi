@@ -35,6 +35,7 @@ import type { MetaVarType } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import { type VerifiedProject } from "./chain-sync.ts";
 import { displayText, escapeText, logWarnings } from "./display.ts";
 import { findHighEntropySubstring } from "./entropy.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -46,7 +47,6 @@ import { generateVariableId } from "./meta-statement.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signContinuationStatementV2, signDeclareStatement } from "./schema-statement.ts";
-import { type VerifiedProject } from "./sync.ts";
 import {
   type ManifestIssueBase,
   manifestIssueBaseOf,

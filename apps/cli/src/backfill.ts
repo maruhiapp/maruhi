@@ -14,11 +14,11 @@ import type { SigningKeyPair } from "@maruhi/crypto";
 import { Effect, type Redacted } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { wrapAndSignFor, type WrapRecipient } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /**
  * Result of a registration attempt (409 = existing slot).

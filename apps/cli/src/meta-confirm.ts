@@ -25,11 +25,11 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle } from "./floor-check.ts";
 import type { ManifestFloor } from "./floor.ts";
 import { type ManifestDigestEntry, type SignedManifest, signNextManifest } from "./manifest.ts";
-import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironmentMetadata, type VerifiedEnvironmentMetadata } from "./values.ts";
 
 /**

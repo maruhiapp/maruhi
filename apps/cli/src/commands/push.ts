@@ -7,8 +7,12 @@ import { openEnvironment } from "../context.ts";
 import { displayText, logWarnings } from "../display.ts";
 import { CliIo } from "../io.ts";
 import { normalizeStdinValue, pushVariable } from "../push.ts";
-import { DEFAULT_SYNC_CONFIG_PATH } from "../sync-config.ts";
-import { decidePushSync, loadPushSyncConfig, syncAfterPush } from "../sync-push.ts";
+import {
+  DEFAULT_SYNC_CONFIG_PATH,
+  decidePushSync,
+  loadPushSyncConfig,
+  syncAfterPush,
+} from "../sync.package/index.ts";
 import { NonBlank, commonFlags, singleFlag, singleValued } from "./flags.ts";
 import { proposeCheckpointRefresh } from "./shared.ts";
 

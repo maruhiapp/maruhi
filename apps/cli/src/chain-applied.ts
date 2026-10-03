@@ -14,7 +14,7 @@
 import { indexProposals, type ProposalIndex } from "@maruhi/core";
 import type { ChainEntry, ProposableOperation } from "@maruhi/crypto";
 
-import type { VerifiedProject } from "./sync.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 
 /**
  * The proposal index of a verified view (judging completed / withdrawn —
@@ -44,7 +44,7 @@ export interface AppliedOperation {
  * Derives the applied-operations column. `propose` / incomplete `approve` /
  * `withdraw` change no state, so they are not listed. `entryHashAt` and
  * `pendingHashes` are passed from the verified chain's derived state
- * (sync.ts derives them once and carries them as `VerifiedProject.applied`).
+ * (chain-sync.ts derives them once and carries them as `VerifiedProject.applied`).
  */
 export function appliedOperations(
   entries: readonly ChainEntry[],

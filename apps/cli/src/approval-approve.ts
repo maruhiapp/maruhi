@@ -35,6 +35,7 @@ import {
 } from "./approval-rules.ts";
 import { proposalStatusOf } from "./approval.ts";
 import { appendEntry, signEntryAtHead } from "./chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import type { DekRecipient } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -52,7 +53,6 @@ import { retryOnConflict } from "./retry.ts";
 import type { SweepOutcome, SweepRotate } from "./rotation-sweep.ts";
 import { backfillServerGrant } from "./server-grant.ts";
 import { sweepAfterRevoke } from "./server-revoke.ts";
-import { resyncExtended, type VerifiedProject } from "./sync.ts";
 
 const MAX_ATTEMPTS = 5;
 

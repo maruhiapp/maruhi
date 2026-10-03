@@ -38,6 +38,7 @@ import { Effect, Redacted, Stdio } from "effect";
 
 import { ensureHumanCeremonyAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import type { DekRecipient } from "./deks.ts";
 import { countNoun, displayText, escapeText, logWarnings } from "./display.ts";
 import { findHighEntropySubstring } from "./entropy.ts";
@@ -54,7 +55,6 @@ import { CliIo, type CliIoShape } from "./io.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { pushVariable } from "./push.ts";
 import { schemaSetOp } from "./schema.ts";
-import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 
 /** The server's description acceptance cap (AUTH_SPEC §12-8 — used only for pre-filtering). */

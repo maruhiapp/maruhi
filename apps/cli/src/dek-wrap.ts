@@ -38,11 +38,11 @@ import {
 } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
+import type { VerifiedProject } from "./chain-sync.ts";
 import { devicesOf, ownDeviceBySigningKey } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { outOfScopeMessage } from "./scope.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /**
  * A wrap recipient (recipient class — AUTH_SPEC §12-6). A member's

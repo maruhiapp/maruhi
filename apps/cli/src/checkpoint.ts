@@ -50,6 +50,7 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { signEntryAtHead } from "./chain-append.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { isServerRejection, toCliError } from "./failure.ts";
@@ -57,7 +58,6 @@ import type { FloorHandle } from "./floor-check.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { verifiedDeletedEnvironmentSet } from "./rotation-sweep.ts";
 import { requireEnvironmentInScope } from "./scope.ts";
-import type { VerifiedProject } from "./sync.ts";
 import { pullVerifiedEnvironment } from "./values.ts";
 
 /** The cap on 422 retries (when spent, a subset issuance is attempted exactly once). */

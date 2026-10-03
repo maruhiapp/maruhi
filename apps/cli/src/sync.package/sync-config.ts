@@ -30,14 +30,14 @@ import { dirname, join } from "node:path";
 import { isEnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
-import { cliError, type CliError, usageError } from "./errors.ts";
+import { cliError, type CliError, usageError } from "../errors.ts";
 import {
   isRecord,
   loadIfPresent,
   parseConfigHeader,
   parseJsonRecord,
   unknownKeys,
-} from "./json-record.ts";
+} from "../json-record.ts";
 import type { ExecPreset } from "./sync-exec.ts";
 import type { HttpPreset } from "./sync-http.ts";
 import { defaultDriverOf, isUnavailable, type SyncPreset, SYNC_PRESETS } from "./sync-preset.ts";

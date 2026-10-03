@@ -46,6 +46,7 @@ import { Effect, Redacted } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
 import { signEntryAtHead } from "./chain-append.ts";
+import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
 import { issueCheckpoint } from "./checkpoint.ts";
 import { buildWrapCompleteSet, requireWritingMember, sameWrapRecipientSet } from "./dek-wrap.ts";
 import { type DekRecipient, environmentKeysFor, requireChainEnvironment } from "./deks.ts";
@@ -61,7 +62,6 @@ import { logWarning } from "./notice.ts";
 import { decryptVerifiedValue, missingWrapReason } from "./pull.ts";
 import { encryptAndSignPayload, winnerInconsistency } from "./push.ts";
 import { retryOnConflict } from "./retry.ts";
-import { resyncExtended, type VerifiedProject } from "./sync.ts";
 import {
   pullVerifiedEnvironment,
   type VerifiedEnvironmentPull,

@@ -12,7 +12,7 @@
 //       floor-evidence format)
 //   (b) attested seq > own head = possibly just a stale local chain —
 //       resolved as an extension by the existing bounded resync
-//       (sync.ts's resyncExtended — once) it is fine; if it does not
+//       (chain-sync.ts's resyncExtended — once) it is fine; if it does not
 //       resolve, treat it like (a)
 // Attestations that fail verification (signature, out-of-history attester,
 // etc.) are **not made reconciliation material** (eliminates
@@ -37,14 +37,14 @@ import { SUITE_ID, signHeadAttestation, verifyDistributedHeadAttestation } from 
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { DistributedAttestationWire, VerifiedProject } from "./chain-sync.ts";
+import { resyncExtended } from "./chain-sync.ts";
 import type { CliServices } from "./context.ts";
 import { type CliError, evidenceError } from "./errors.ts";
 import { internalErrorKind } from "./failure.ts";
 import { formatAttestationEvidence } from "./floor-evidence.ts";
 import { type AttestationEvidenceRecord, FloorStore } from "./floor.ts";
 import { logNote, logWarning } from "./notice.ts";
-import type { DistributedAttestationWire, VerifiedProject } from "./sync.ts";
-import { resyncExtended } from "./sync.ts";
 
 /** The reconciliation outcome of one attestation (internal). */
 type MatchOutcome =

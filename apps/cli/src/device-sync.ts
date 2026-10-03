@@ -31,6 +31,7 @@ import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Effect, type Stdio } from "effect";
 
 import { ensureHumanCeremonyAllowed } from "./agent-gate.ts";
+import type { VerifiedProject } from "./chain-sync.ts";
 import type { ProjectContext } from "./context.ts";
 import { gapFillCommandOf } from "./device-gaps.ts";
 import {
@@ -54,7 +55,6 @@ import {
   type OwnDeviceStoreShape,
 } from "./own-devices.ts";
 import { requireScopeEnvironmentsExist } from "./scope.ts";
-import type { VerifiedProject } from "./sync.ts";
 
 /**
  * Runs the device-set reconciliation for one keyed command (idempotent). Returns
