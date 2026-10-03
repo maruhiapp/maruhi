@@ -40,7 +40,7 @@ import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
 import { CliIo } from "./io.ts";
 import { decryptVerifiedValue } from "./pull.ts";
 import { type PushedVersion, pushVariable, sameRedactedBytes } from "./push.ts";
-import { resolveSchemaTarget } from "./schema.ts";
+import { resolveSchemaTarget } from "./schema.package/index.ts";
 import {
   pullVerifiedEnvironment,
   type VerifiedEnvironmentPull,

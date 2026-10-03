@@ -13,7 +13,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName } from "../src/keychain.ts";
-import { scanEnvReferences } from "../src/schema-lint.ts";
+import { scanEnvReferences } from "../src/schema.package/schema-lint.ts";
 import {
   buildChain,
   type BuiltChain,

@@ -52,7 +52,7 @@ import { internalErrorKind } from "./failure.ts";
 import { CliIo, type CliIoShape } from "./io.ts";
 import { isTokenEntryName, Keychain, type KeychainShape } from "./keychain.ts";
 import { logNote, NoticeLedger, NoticeObserver } from "./notice.ts";
-import { SCHEMA_UNTRUSTED_HEADER, schemaRows } from "./schema.ts";
+import { SCHEMA_UNTRUSTED_HEADER, schemaRows } from "./schema.package/index.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 import { CLI_VERSION } from "./version.ts";
 
