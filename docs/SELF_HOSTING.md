@@ -749,13 +749,14 @@ loses no write: mark the primary as a mirror of the new one (it freezes),
 run one last `maruhi mirror sync` from it, then promote — the promotion
 refuses, without `--force`, while the frozen primary holds chain entries
 the mirror lacks (the last sync was skipped), and refuses a frozen primary
-whose head is behind the mirror's and not on its chain (a fork — decide
-with `maruhi project verify` on both). A frozen primary whose head is an
+whose head is behind the mirror's and not on its chain, or at its height
+on another chain (a fork — decide with `maruhi project verify` on both). A frozen primary whose head is an
 earlier entry of the mirror's chain (restored from an older backup, then
 frozen) holds nothing the mirror lacks and is promoted over. The promotion
 counts the audit rows the frozen primary wrote since the last sync (the
-reads and leases it served) when the frozen head is the mirror's and a sync
-from it is recorded, and says they cannot be counted from here otherwise;
+reads and leases it served) from the primary's own record when it synced
+back from the mirror, else from the mirror's record when the frozen head is
+the mirror's, and says they cannot be counted from here otherwise;
 either way they can never be brought over afterwards — keep them with
 `maruhi project export --server <old primary>`. `--force` promotes past
 every guard but still says what it overrides. A stale old primary can never
@@ -765,9 +766,11 @@ entry of the other — such a mirror could never be synced), refuses a
 source that is itself a mirror of a third deployment (mark against that
 one — the star), and refuses to freeze a project ahead of a source that
 holds it writable (no sync brings entries into a writable deployment: mark
-the other way round), all unless `--force`; marking a primary that is ahead
-of a mirror frozen for it (the freeze) is accepted with a note naming the
-last sync to run. The mark starts the
+the other way round), all unless `--force`, which marks anyway and says what it overrides;
+marking a primary that is ahead of a mirror frozen for it (the freeze) is
+accepted with a note naming the last sync to run, and marking a copy equal
+to or behind one frozen for it with a note naming the promotion to run
+(neither copy accepts writes until one is promoted). The mark starts the
 project's audit position at 0: the first sync accepts the new source's log
 whatever its length, and keeps every row of this project's own log the
 replica does not carry, re-appended after it. A deployment is named by its

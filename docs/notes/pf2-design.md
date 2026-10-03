@@ -272,3 +272,13 @@ for round 9; D, E, F and G are closed.
 
 Rulings C and H received adopted candidates in this round and stay open
 for round 10; D, E, F and G are closed.
+
+### 8-9. Round 10 — candidates and verdicts
+
+| Ruling | Candidate | Verdict |
+|---|---|---|
+| C (promotion) | C-23 (precision bug in C-18): a frozen source at the mirror's height on another chain fell through to "run `mirror sync` first", the dead-end C-18 removed for the behind case; C-24 (parity with C-22): the mark's `--force` skipped the guard and named nothing; C-25 (precision): one `Effect.all` under one catch discarded a chain already read when the mark's read failed, and said both could not be read; C-26 (precision bug in C-21): a frozen source that synced back from this mirror holds the mirror's log followed by its own rows, so the mirror's record over-counted by every own row the mirror carried into it; C-27 (text): the forced warning ended with "pass --force"; C-28 (informational): a mark equal to or behind a source frozen for it left two frozen copies silently | **All adopted** — the same height with another hash is the fork refusal (no chain fetch); `ensureMarkable` runs in warn mode under `--force`; the chain and the mark are read on their own and each check runs when its read succeeded; the source's own replication record counts when present; the escape clause is stripped on the forced path; the undo note names the promotion. Record precision: the round-9 note fires for a project ahead of the frozen source only |
+| H (sync) | H-22 (text contradiction): the sync's report called a replica past the second view "a write landed on the server after this sync" one line before the verdict called it a rollback — and the clause was wrong for `mirror status` too (a write on the server lengthens the view, never the mirror's head); H-23 (reporting gap): when the view taken after the commit fails, the sync exited 1 with the prologue's generic message and never said that the mirror now holds a replica from a server that failed verification right after exporting it | **H-22 adopted** — the "ahead" note names the promotion, a rollback at the server or a recorded source that is not this server. **H-23 adopted** — the second view's failure names the committed head, the cause and the no-promotion advice |
+
+Rulings C and H received adopted candidates in this round and stay open
+for round 11; D, E, F and G are closed.

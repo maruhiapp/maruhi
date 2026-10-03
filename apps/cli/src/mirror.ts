@@ -302,7 +302,18 @@ function replicateWithRestarts<R>(
     // (against the floor the first view advanced) proves it extends the
     // first; the replica must be on it (ruling H revision, round 9)
     const verified =
-      committed.chainHeadSeq > viewBefore.state.headSeq ? yield* input.verified : viewBefore;
+      committed.chainHeadSeq > viewBefore.state.headSeq
+        ? yield* input.verified.pipe(
+            // The strongest evidence gets the most specific report (round
+            // 10): the mirror now holds a replica from a server that failed
+            // verification right after exporting it
+            Effect.mapError((error) =>
+              cliError(
+                `The mirror now holds a replica at chain seq ${committed.chainHeadSeq} (head ${committed.chainHeadHashHex}), past the view taken before the export (seq ${viewBefore.state.headSeq}), and the server failed verification right after exporting it: ${error.message}. Do not promote the mirror; run \`maruhi project verify\` against the server`,
+              ),
+            ),
+          )
+        : viewBefore;
     return { pages, lines, committed, restarts, verified, viewBefore };
   });
 }
@@ -399,7 +410,7 @@ function headNote(
   if (head.chainHeadSeq < verified.state.headSeq) {
     return `behind the verified view by ${countNoun(verified.state.headSeq - head.chainHeadSeq, "chain entry")} (seq ${head.chainHeadSeq} of ${verified.state.headSeq})`;
   }
-  return `ahead of the verified view (seq ${head.chainHeadSeq} > ${verified.state.headSeq}) — a write landed on the server after this sync, or the mirror was promoted and written to; re-run \`maruhi project verify\``;
+  return `ahead of the verified view (seq ${head.chainHeadSeq} > ${verified.state.headSeq}) — the mirror was promoted and written to, the server rolled back, or the mirror's recorded source is not this server; run \`maruhi project verify\``;
 }
 
 /**

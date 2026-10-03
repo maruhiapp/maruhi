@@ -41,6 +41,7 @@ import {
   MAX_AUDIT_EVENTS_PAGE_LIMIT,
   MAX_TOKEN_NAME_LENGTH,
   MAX_TOKEN_TTL_DAYS,
+  type MirrorStatus,
   PASSKEY_LABEL_PATTERN,
 } from "@maruhi/api-schema";
 import { type EnvironmentId, isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
@@ -2347,9 +2348,7 @@ function mirrorMarkCommand(flags: {
     // that advanced past the fork) can never be synced: every replica is
     // refused as not an extension, and there is no way out but another
     // promotion. Refused here, before the mark (ruling C revision, round 3)
-    if (flags.force !== true) {
-      yield* ensureMarkable(context, sourceOrigin, projectId);
-    }
+    yield* ensureMarkable(context, sourceOrigin, projectId, flags.force === true);
     yield* context.client.mirror
       .mark({ params: { projectId }, payload: { sourceOrigin } })
       .pipe(Effect.mapError(toCliError));
@@ -2375,62 +2374,122 @@ function ensureMarkable(
   context: SessionContext,
   sourceOrigin: string,
   projectId: string,
+  forced: boolean,
 ): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const here = yield* syncProject(context.client, projectId);
+    // Each read stands alone (round 10): a transient failure of the mark's
+    // read does not discard the chain already read, nor the other way round
     const source = yield* openSessionWith(context.config, sourceOrigin, "server").pipe(
       Effect.flatMap((session) =>
         Effect.all({
-          view: syncProject(session.client, projectId),
+          view: syncProject(session.client, projectId).pipe(
+            Effect.catch(sourceUnread("chain", "this project's chain is part of it")),
+          ),
           mark: session.client.mirror
             .status({ params: { projectId } })
-            .pipe(Effect.mapError(toCliError)),
+            .pipe(
+              Effect.mapError(toCliError),
+              Effect.catch(sourceUnread("mark", "it is a primary, or frozen for this project")),
+            ),
         }),
       ),
-      Effect.catch((error: CliError) =>
-        Effect.as(
-          logWarning(
-            `the source's chain and mark could not be read (${error.message}); marking without the check that this project's chain is part of it and that the source is a primary — the first \`maruhi mirror sync\` tells`,
-          ),
-          null,
+      Effect.catch(
+        sourceUnread(
+          "chain and mark",
+          "this project's chain is part of it and that it is a primary",
         ),
       ),
     );
-    if (source === null) {
+    const refusal = source === null ? null : markRefusal(context, sourceOrigin, here, source);
+    if (refusal === null) {
       return;
     }
-    // The source's own mark decides whether the sync the mark leads to can
-    // run at all (ruling C revision, round 9): a mirror of a third origin
-    // is no source (the star), and a writable source takes no page
-    if (source.mark.mirror && source.mark.sourceOrigin !== context.origin) {
-      return yield* Effect.fail(
-        cliError(
-          `${sourceOrigin} holds this project as a mirror of ${source.mark.sourceOrigin ?? "another deployment"}: mirrors sync from the primary, so this project is marked against it (\`maruhi mirror mark --server ${context.origin} --source ${source.mark.sourceOrigin ?? "<primary url>"}\`), or pass --force to mark it against ${sourceOrigin} anyway`,
-        ),
-      );
-    }
-    if (onChain(headOfView(here), source.view)) {
+    if (refusal.kind === "note") {
+      yield* logNote(refusal.text);
       return;
     }
-    const ahead = countNoun(here.state.headSeq - source.view.state.headSeq, "chain entry");
-    if (!onChain(headOfView(source.view), here)) {
-      return yield* Effect.fail(
-        cliError(
-          `This project's chain (seq ${here.state.headSeq}, head ${here.state.headHashHex}) and ${sourceOrigin}'s (seq ${source.view.state.headSeq}, head ${source.view.state.headHashHex}) are not one chain: neither head is an entry of the other. Marked as a mirror it could never be synced (every replica would be refused as not an extension). It was written to after the fork — export it away, or pass --force to mark it anyway`,
-        ),
-      );
+    // --force marks anyway, but says what it overrides (round 10)
+    if (!forced) {
+      return yield* Effect.fail(cliError(refusal.text));
     }
-    if (!source.mark.mirror) {
-      return yield* Effect.fail(
-        cliError(
-          `${sourceOrigin} holds this project writable, and this project holds ${ahead} it lacks (seq ${here.state.headSeq} against ${source.view.state.headSeq}): no sync brings them into a writable deployment (a replication writes into a marked mirror only). If this project is the primary, mark ${sourceOrigin} as a mirror of it instead (\`maruhi mirror mark --server ${sourceOrigin} --source ${context.origin}\`) and sync from here; if ${sourceOrigin} is the primary, those entries were written here after the fork — export them away. --force marks anyway and abandons them`,
-        ),
-      );
-    }
-    yield* logNote(
-      `this project holds ${ahead} that ${sourceOrigin} lacks (seq ${here.state.headSeq} against ${source.view.state.headSeq}): after the mark, bring them over with \`maruhi mirror sync --server ${context.origin} --mirror ${sourceOrigin}\` before promoting ${sourceOrigin} (the planned failover's last sync)`,
-    );
+    yield* logWarning(`marking with --force. ${refusal.text}`);
   });
+}
+
+/** The mark proceeds without the check a failed read of the source would feed, with a warning. */
+function sourceUnread(
+  what: string,
+  check: string,
+): (error: CliError) => Effect.Effect<null, never, CliServices> {
+  return (error) =>
+    Effect.as(
+      logWarning(
+        `the source's ${what} could not be read (${error.message}); marking without the check that ${check} — the first \`maruhi mirror sync\` tells`,
+      ),
+      null,
+    );
+}
+
+type MarkVerdict = { readonly kind: "refusal" | "note"; readonly text: string } | null;
+
+/** What the mark's guard says about the source: a refusal, a note to print, or nothing. */
+function markRefusal(
+  context: SessionContext,
+  sourceOrigin: string,
+  here: VerifiedProject,
+  source: { readonly view: VerifiedProject | null; readonly mark: MirrorStatus | null },
+): MarkVerdict {
+  // The source's own mark decides whether the sync the mark leads to can
+  // run at all (ruling C revision, round 9): a mirror of a third origin
+  // is no source (the star), and a writable source takes no page
+  if (source.mark?.mirror === true && source.mark.sourceOrigin !== context.origin) {
+    return {
+      kind: "refusal",
+      text: `${sourceOrigin} holds this project as a mirror of ${source.mark.sourceOrigin ?? "another deployment"}: mirrors sync from the primary, so this project is marked against it (\`maruhi mirror mark --server ${context.origin} --source ${source.mark.sourceOrigin ?? "<primary url>"}\`), or pass --force to mark it against ${sourceOrigin} anyway`,
+    };
+  }
+  return source.view === null
+    ? null
+    : markChainVerdict(context, sourceOrigin, here, source.view, source.mark);
+}
+
+/** The chain relation's verdict: one chain in either direction passes (with the note the mark's state earns), a fork is refused. */
+function markChainVerdict(
+  context: SessionContext,
+  sourceOrigin: string,
+  here: VerifiedProject,
+  view: VerifiedProject,
+  mark: MirrorStatus | null,
+): MarkVerdict {
+  const source = { view, mark };
+  if (onChain(headOfView(here), view)) {
+    // Equal to or behind a source frozen for this project: two frozen
+    // copies and no primary — the undo of a planned failover (round 10)
+    return source.mark?.mirror === true
+      ? {
+          kind: "note",
+          text: `${sourceOrigin} is frozen as a mirror of this deployment, so after this mark neither copy accepts writes: promote one (\`maruhi mirror promote --server ${sourceOrigin}\`, or this one after a sync from it)`,
+        }
+      : null;
+  }
+  const ahead = countNoun(here.state.headSeq - view.state.headSeq, "chain entry");
+  if (!onChain(headOfView(view), here)) {
+    return {
+      kind: "refusal",
+      text: `This project's chain (seq ${here.state.headSeq}, head ${here.state.headHashHex}) and ${sourceOrigin}'s (seq ${view.state.headSeq}, head ${view.state.headHashHex}) are not one chain: neither head is an entry of the other. Marked as a mirror it could never be synced (every replica would be refused as not an extension). It was written to after the fork — export it away, or pass --force to mark it anyway`,
+    };
+  }
+  if (source.mark !== null && !source.mark.mirror) {
+    return {
+      kind: "refusal",
+      text: `${sourceOrigin} holds this project writable, and this project holds ${ahead} it lacks (seq ${here.state.headSeq} against ${view.state.headSeq}): no sync brings them into a writable deployment (a replication writes into a marked mirror only). If this project is the primary, mark ${sourceOrigin} as a mirror of it instead (\`maruhi mirror mark --server ${sourceOrigin} --source ${context.origin}\`) and sync from here; if ${sourceOrigin} is the primary, those entries were written here after the fork — export them away. --force marks anyway and abandons them`,
+    };
+  }
+  return {
+    kind: "note",
+    text: `this project holds ${ahead} that ${sourceOrigin} lacks (seq ${here.state.headSeq} against ${view.state.headSeq}): after the mark, bring them over with \`maruhi mirror sync --server ${context.origin} --mirror ${sourceOrigin}\` before promoting ${sourceOrigin} (the planned failover's last sync)`,
+  };
 }
 
 function headOfView(view: VerifiedProject): {
@@ -2536,13 +2595,20 @@ function promotionGuard(
       if (!forced) {
         return yield* Effect.fail(cliError(refusal));
       }
-      yield* logWarning(`promoting with --force. ${refusal}`);
+      yield* logWarning(`promoting with --force. ${withoutForceClause(refusal)}`);
     }
     return {
       leftBehind: frozenAt === null ? null : rowsLeftBehind(frozenAt, sourceOrigin, status),
       mirrorChain,
     };
   });
+}
+
+/** A refusal's text without its trailing "pass --force" clause (the warning printed when --force was passed — round 10). */
+function withoutForceClause(refusal: string): string {
+  return refusal
+    .replace(/[;,.]? (?:or pass|Pass) --force[^.]*$/u, "")
+    .replace(/; --force[^.]*$/u, "");
 }
 
 /**
@@ -2565,12 +2631,20 @@ function rowsLeftBehind(
     return null;
   }
   const keep = `a promoted copy takes no page, so they can never be brought over — keep them with \`maruhi project export --server ${sourceOrigin}\``;
-  if (mirror.lastSync === undefined || frozenAt.chainHeadHashHex !== mirror.head.chainHeadHashHex) {
+  // A source that synced back from this mirror holds this mirror's log
+  // followed by its own rows: its own record counts them exactly (round
+  // 10); otherwise the mirror's record counts, at the same head only
+  const counted =
+    frozenAt.lastSync !== undefined
+      ? frozenAt.auditMaxSeq - frozenAt.lastSync.auditMaxSeq
+      : mirror.lastSync !== undefined && frozenAt.chainHeadHashHex === mirror.head.chainHeadHashHex
+        ? frozenAt.auditMaxSeq - mirror.lastSync.auditMaxSeq
+        : null;
+  if (counted === null) {
     return `The audit rows the frozen source ${sourceOrigin} wrote since the last replication (the reads and leases it served) cannot be counted from here: ${keep}`;
   }
-  const rows = frozenAt.auditMaxSeq - mirror.lastSync.auditMaxSeq;
-  return rows > 0
-    ? `${countNoun(rows, "audit row")} stay on the frozen source ${sourceOrigin} (the reads and leases it served since the last replication): ${keep}`
+  return counted > 0
+    ? `${countNoun(counted, "audit row")} stay on the frozen source ${sourceOrigin} (the reads and leases it served since the last replication): ${keep}`
     : null;
 }
 
@@ -2623,8 +2697,13 @@ function frozenRefusal(
   if (frozenAt.chainHeadHashHex === mirrorHead.chainHeadHashHex) {
     return null;
   }
-  if (frozenAt.chainHeadSeq < mirrorHead.chainHeadSeq) {
-    return mirrorChain !== null && onChain(frozenAt, mirrorChain)
+  if (frozenAt.chainHeadSeq <= mirrorHead.chainHeadSeq) {
+    // At the mirror's height with another hash, or behind it and not on
+    // its chain: a fork (round 10 — the same height was sent to a sync
+    // the mirror refuses)
+    return frozenAt.chainHeadSeq < mirrorHead.chainHeadSeq &&
+      mirrorChain !== null &&
+      onChain(frozenAt, mirrorChain)
       ? null
       : `The source ${sourceOrigin} is frozen at chain seq ${frozenAt.chainHeadSeq} (head ${frozenAt.chainHeadHashHex}), which is not an entry of this mirror's chain (seq ${mirrorHead.chainHeadSeq}, head ${mirrorHead.chainHeadHashHex}): the two copies forked, and a promotion would bury the fork. Run \`maruhi project verify\` against both and decide which chain is the project's; --force promotes this copy anyway`;
   }
@@ -2636,6 +2715,8 @@ interface SourceHead {
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
   readonly auditMaxSeq?: number | undefined;
+  /** The source's own last replication (from this mirror, after a sync back — shown to admins and owners). */
+  readonly lastSync?: { readonly auditMaxSeq: number } | undefined;
 }
 
 /** What the source holds; `movedTo` = it is a mirror of another deployment (the primary moved there). */
@@ -2676,7 +2757,12 @@ function sourceState(
             }
             const movedTo = status.sourceOrigin;
             if (movedTo === thisOrigin) {
-              return Effect.succeed({ frozenAt: status.head });
+              return Effect.succeed({
+                frozenAt: {
+                  ...status.head,
+                  ...(status.lastSync === undefined ? {} : { lastSync: status.lastSync }),
+                },
+              });
             }
             // A fingerprint match never lifts the guard (it is self-reported
             // and shared by deployments cloned from one secrets set — round
