@@ -49,7 +49,7 @@ import { toCliError } from "./failure.ts";
 import { CliIo } from "./io.ts";
 import { logNote, logWarning } from "./notice.ts";
 import { compareCodePoints, environmentsOfScopeAt, scopeChangeAt } from "./scope.ts";
-import { verifiedDeletedEnvironments } from "./values.ts";
+import { verifiedDeletedEnvironments } from "./values-verify.ts";
 
 /** The injected rotation's mode: force = a new epoch is mandatory / verify = resume-or-confirm only. */
 export type SweepRotateMode = "force" | "verify";

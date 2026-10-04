@@ -828,7 +828,7 @@ export function floorHandleFor(
       // floor.ts's floorRecordGet)
       initial: floorRecordGet(context.floor?.environments, environmentId) ?? null,
       // This environment's unresolved intents (only meta-ops remain after
-      // the prologue's reconciliation — values.ts reconciles them when a
+      // the prologue's reconciliation — values-floor.ts reconciles them when a
       // verified pull arrives)
       intents:
         context.floor?.intents.filter((intent) => intent.environmentId === environmentId) ?? [],

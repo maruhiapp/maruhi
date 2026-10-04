@@ -417,7 +417,7 @@ describe("maruhi env diff", () => {
     // On the terminal both look like "CAFÉ", but byte-exact they are
     // different. A parity check is exactly where this misunderstanding is
     // likely, so instead of treating them as equal, report them as a diff on
-    // both sides, and attach the §12-1 SHOULD warning to the non-NFC side (detection stays in values.ts)
+    // both sides, and attach the §12-1 SHOULD warning to the non-NFC side (detection stays in values-verify.ts)
     const nfc = "CAF\u00C9";
     const nfd = "CAFE\u0301";
     expect(nfd.normalize("NFC")).toBe(nfc);
