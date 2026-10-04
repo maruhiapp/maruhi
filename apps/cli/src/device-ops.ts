@@ -1,10 +1,11 @@
 // Signing and appending (parent-head CAS) of device ops (`add_device` /
 // `revoke_device` — CRYPTO_SPEC §6.2, 2026-09-19 DK), plus the shared
 // core of the device-addition backfill (§7) and the device-revocation
-// sweep (§7) (K4). Users: device.ts (`device approve` / `revoke`),
-// device-sync.ts (registration on first sync), key-recover.ts
-// (registering the new device key after recovery, rotating the reserve
-// key).
+// sweep (§7) (K4). Users: device-add.ts (`device add`'s key-arrival
+// check), device-approve.ts (`device approve`), device-revoke.ts
+// (`device revoke`), device-sync.ts (registration on first sync),
+// key-recover.ts (registering the new device key after recovery,
+// rotating the reserve key).
 //
 // The pre-flight checks are a copy of the consensus rules (§6.2) and do
 // not wait for the server's 422: actor = the current device matching
