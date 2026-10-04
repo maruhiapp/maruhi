@@ -38,6 +38,7 @@ import {
   type ProjectContextBase,
 } from "./context.ts";
 import type { DekRecipient } from "./deks.ts";
+import { describeBackfill, reportRegisteredDevice } from "./device-approve.ts";
 import { describeGapFillRoute } from "./device-gaps.ts";
 import { findOwnDevice } from "./device-key.ts";
 import {
@@ -56,7 +57,6 @@ import {
   type ReserveVerdict,
   reserveVerdictOf,
 } from "./device-standing.ts";
-import { describeBackfill, reportRegisteredDevice } from "./device.ts";
 import {
   countNoun,
   describeListedScope,

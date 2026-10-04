@@ -7,17 +7,15 @@ import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
 import { type CliServices, openSession } from "../context.ts";
+import { deviceAddOp } from "../device-add.ts";
+import { deviceApproveOp, parseApproveRef, reportApproveOutcomes } from "../device-approve.ts";
+import { deviceListOp } from "../device-list.ts";
 import {
   type DeviceRevokeSummary,
   type ProjectRevokeOutcome,
-  deviceAddOp,
-  deviceApproveOp,
-  deviceListOp,
   deviceRevokeOp,
-  parseApproveRef,
   parseCapRole,
-  reportApproveOutcomes,
-} from "../device.ts";
+} from "../device-revoke.ts";
 import { displayText } from "../display.ts";
 import { CliError } from "../errors.ts";
 import { CliIo } from "../io.ts";
