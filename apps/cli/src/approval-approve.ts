@@ -40,15 +40,13 @@ import type { DekRecipient } from "./deks.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
+import { backfillNewMember, type MemberAddSummary } from "./member-add.ts";
 import {
-  backfillNewMember,
   fulfilRoleChange,
-  type MemberAddSummary,
-  type MemberSweepOutcome,
   type RoleChangeFulfilment,
   selfObligationReason,
-  sweepMemberMandates,
-} from "./member.ts";
+} from "./member-change-role.ts";
+import { type MemberSweepOutcome, sweepMemberMandates } from "./member.ts";
 import { retryOnConflict } from "./retry.ts";
 import type { SweepOutcome, SweepRotate } from "./rotation-sweep.ts";
 import { backfillServerGrant } from "./server-grant.ts";
@@ -122,7 +120,7 @@ function selfObligationRejection(
   ) {
     return null;
   }
-  // Demotion / scope narrowing is judged by the same single predicate as the self-obligation check of a direct append (member.ts)
+  // Demotion / scope narrowing is judged by the same single predicate as the self-obligation check of a direct append (member-change-role.ts)
   switch (
     selfObligationReason(verified, self, {
       role: inner.payload.newRole,

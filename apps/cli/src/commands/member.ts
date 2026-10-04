@@ -14,18 +14,15 @@ import { countNoun, displayText } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { parseUserFingerprintFlag } from "../fingerprint-flag.ts";
 import { CliIo, type CliIoShape } from "../io.ts";
+import { type MemberAddSummary, memberAddOp } from "../member-add.ts";
 import {
   type ChangeRoleRequest,
-  type MemberAddSummary,
-  type MemberOpOutcome,
-  type RoleChangeFulfilment,
-  formatMemberListRow,
-  memberAddOp,
   memberChangeRoleOp,
-  memberListJson,
-  memberListRows,
-  memberRemoveOp,
-} from "../member.ts";
+  type RoleChangeFulfilment,
+} from "../member-change-role.ts";
+import { formatMemberListRow, memberListJson, memberListRows } from "../member-list.ts";
+import { memberRemoveOp } from "../member-remove.ts";
+import { type MemberOpOutcome } from "../member.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { PinStore } from "../pins.ts";
 import { reportRotationChecklist } from "../rotation.ts";
