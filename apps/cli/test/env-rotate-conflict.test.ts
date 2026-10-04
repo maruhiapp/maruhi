@@ -1,6 +1,6 @@
 // Tests for epoch rotation (`maruhi env rotate`).
 //
-// Pillars verified:
+// Pillars verified (numbered as in env-rotate-composite.test.ts):
 //  3. **Interruption recovery**: a state interrupted after the composite was
 //     accepted but before re-encryption finished (= the epoch advanced yet a
 //     latest value's epoch is below the current epoch) is detected on re-run,

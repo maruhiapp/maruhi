@@ -38,7 +38,7 @@ import {
   variableAt,
 } from "./support/env-rotate.ts";
 import type { TestEnv } from "./support/env.ts";
-import { type MockHandler } from "./support/server.ts";
+import type { MockHandler } from "./support/server.ts";
 import {
   makeValueEnvironmentServer,
   type StoredVariable,
