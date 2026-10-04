@@ -32,12 +32,12 @@
 //   that fails midway holds no chain and stays "uninitialized"; reruns
 //   wipe the non-chain tables and redo (no overwrite path exists)
 
-import { auditRowShapeViolations, deriveAuditHeads, isAuditHeadHex } from "./audit-store.ts";
+import { auditRowShapeViolations, deriveAuditHeads, isAuditHeadHex } from "../audit-store.ts";
 import {
   OPS_RESTORE_BATCH_ROWS,
   OPS_SNAPSHOT_PART_BYTES,
   OPS_SNAPSHOT_ROW_PAGE,
-} from "./ops-policy.ts";
+} from "../ops/ops-policy.ts";
 
 export const SNAPSHOT_FORMAT = "maruhi-do-snapshot";
 export const SNAPSHOT_FORMAT_VERSION = 1;

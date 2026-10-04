@@ -40,7 +40,7 @@ import {
 } from "@maruhi/crypto";
 import { Context, Effect } from "effect";
 
-import type { WireSuite } from "./data-plane.ts";
+import type { WireSuite } from "./data/data-plane.ts";
 
 const IKM_BYTES = 32;
 

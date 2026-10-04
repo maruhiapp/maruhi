@@ -31,7 +31,7 @@ import {
   requestOrigin,
   SIGNUP_CODE_COOKIE,
   STATE_COOKIE,
-} from "./auth-shared.ts";
+} from "../auth-shared.ts";
 import {
   GitHubApi,
   parseBearerToken,
@@ -40,13 +40,13 @@ import {
   renderSignupInviteRequiredPage,
   SESSION_COOKIE,
   statefulGetCsrfViolated,
-} from "./auth.package/index.ts";
-import { ensureKeyMaterialAccess, ensureTokenManagementAccess } from "./authz.ts";
-import { IdentityRepo, RecoveryRepo, TokenRepo } from "./db.package/index.ts";
+} from "../auth.package/index.ts";
+import { ensureKeyMaterialAccess, ensureTokenManagementAccess } from "../authz.ts";
+import { IdentityRepo, RecoveryRepo, TokenRepo } from "../db.package/index.ts";
+import { constantTimeEqual, randomHex, sha256Hex } from "../ids.ts";
+import { ServerKey } from "../server-key.ts";
+import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "../worker-env.ts";
 import { handleCliCallback, htmlResponse, isCliCallbackState } from "./handlers-auth-cli.ts";
-import { constantTimeEqual, randomHex, sha256Hex } from "./ids.ts";
-import { ServerKey } from "./server-key.ts";
-import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "./worker-env.ts";
 
 /**
  * The shape of the signup-code cookie value: `<state>.<sha256(code)>`

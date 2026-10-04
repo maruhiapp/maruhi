@@ -33,18 +33,18 @@ import {
   requiredPermissionForEntry,
   scopedProjectIdsFor,
   tokenScopeAllowsForProject,
-} from "./authz.ts";
-import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "./chain-do.ts";
-import { callProjectData, noContent, unwrapDataOutcome } from "./data-http.ts";
-import type { DataOutcome } from "./data-plane.ts";
-import { InviteRepo, OrgRepo, ProjectRepo } from "./db.package/index.ts";
+} from "../authz.ts";
+import { callProjectData, noContent, unwrapDataOutcome } from "../data/data-http.ts";
+import type { DataOutcome } from "../data/data-plane.ts";
+import { InviteRepo, OrgRepo, ProjectRepo } from "../db.package/index.ts";
+import type { AppendOutcome, InitOutcome, SnapshotOutcome } from "../do/chain-do.ts";
 import {
   MAX_ACTIVE_PROJECTS_PER_ORG,
   MAX_ENTRY_CANONICAL_BYTES,
   PROJECT_LIST_PAGE_SIZE,
-} from "./policy.ts";
-import { projectQuotaExceeded } from "./quotas.ts";
-import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
+} from "../policy.ts";
+import { projectQuotaExceeded } from "../quotas.ts";
+import { projectStub, rpcCall, WorkerEnv } from "../worker-env.ts";
 
 // Mapping of outcomes at the RPC boundary onto the api-schema typed errors /
 // success responses. A chain-RPC rejection arrives as a DataRejection

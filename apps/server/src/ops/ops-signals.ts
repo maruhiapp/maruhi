@@ -16,9 +16,9 @@
 
 import { Effect } from "effect";
 
-import type { GitHubApiShape } from "./auth.package/index.ts";
-import type { OpsCounterMetric, OpsRepoShape } from "./db.package/index.ts";
-import { OpsRepo } from "./db.package/index.ts";
+import type { GitHubApiShape } from "../auth.package/index.ts";
+import type { OpsCounterMetric, OpsRepoShape } from "../db.package/index.ts";
+import { OpsRepo } from "../db.package/index.ts";
 
 /** Counter +1 (best-effort — a failure leaves only a static log). */
 export function noteOpsCounter(metric: OpsCounterMetric): Effect.Effect<void, never, OpsRepo> {

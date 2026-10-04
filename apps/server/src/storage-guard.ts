@@ -65,8 +65,8 @@
 import { Context, Effect, Layer } from "effect";
 
 import { AuditStore } from "./audit-store.ts";
-import type { DataRejectedError } from "./data-plane.ts";
-import { rejectData } from "./data-plane.ts";
+import type { DataRejectedError } from "./data/data-plane.ts";
+import { rejectData } from "./data/data-plane.ts";
 import { DO_STORAGE_REJECT_BYTES, DO_STORAGE_WARN_BYTES } from "./policy.ts";
 
 /** The decision for a measured size (admit < warn < reject). */

@@ -16,13 +16,13 @@
 
 import { Effect } from "effect";
 
-import { AuditStore } from "./audit-store.ts";
-import type { StateCache } from "./chain-store.ts";
-import type { DataActor } from "./data-plane.ts";
-import { dataEvent, rejectData, requireMemberState } from "./data-plane.ts";
-import { MAX_ROTATION_DISMISSALS_PER_REQUEST } from "./policy.ts";
-import type { EffectiveRotationFlag } from "./rotation-detect.ts";
-import { deriveEffectiveFlags } from "./rotation-detect.ts";
+import { AuditStore } from "../audit-store.ts";
+import type { DataActor } from "../data/data-plane.ts";
+import { dataEvent, rejectData, requireMemberState } from "../data/data-plane.ts";
+import type { StateCache } from "../do/chain-store.ts";
+import { MAX_ROTATION_DISMISSALS_PER_REQUEST } from "../policy.ts";
+import type { EffectiveRotationFlag } from "../rotation-detect.ts";
+import { deriveEffectiveFlags } from "../rotation-detect.ts";
 
 /** A dismissal target (crosses the RPC boundary). */
 export interface RotationDismissTargetInput {

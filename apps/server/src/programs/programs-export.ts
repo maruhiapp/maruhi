@@ -15,22 +15,22 @@
 
 import { Effect } from "effect";
 
-import { AuditStore } from "./audit-store.ts";
-import type { StateCache } from "./chain-store.ts";
-import type { ChainStore } from "./chain-store.ts";
-import type { DataActor, DataRejectedError } from "./data-plane.ts";
-import { dataEvent, rejectData, requireMemberState } from "./data-plane.ts";
-import { DataStore } from "./data-store.ts";
-import { readMirrorState } from "./do-mirror.ts";
-import { PROJECT_DO_TABLES, readProjectDoSchemaVersion } from "./do-schema.ts";
+import { AuditStore } from "../audit-store.ts";
+import type { DataActor, DataRejectedError } from "../data/data-plane.ts";
+import { dataEvent, rejectData, requireMemberState } from "../data/data-plane.ts";
+import { DataStore } from "../data/data-store.ts";
+import type { StateCache } from "../do/chain-store.ts";
+import type { ChainStore } from "../do/chain-store.ts";
+import { readMirrorState } from "../do/do-mirror.ts";
+import { PROJECT_DO_TABLES, readProjectDoSchemaVersion } from "../do/do-schema.ts";
 import {
   decodeExportCursor,
   encodeExportCursor,
   type ExportCursorState,
   type ExportPageResult,
   exportSnapshotPage,
-} from "./do-snapshot.ts";
-import { MAX_EXPORT_PAGE_BYTES, MAX_EXPORT_PAGE_ROWS, MAX_EXPORTS_PER_WINDOW } from "./policy.ts";
+} from "../do/do-snapshot.ts";
+import { MAX_EXPORT_PAGE_BYTES, MAX_EXPORT_PAGE_ROWS, MAX_EXPORTS_PER_WINDOW } from "../policy.ts";
 
 /** One page as the worker returns it (the wire shape of api-schema's ExportPageSchema). */
 export interface ExportPageValue {

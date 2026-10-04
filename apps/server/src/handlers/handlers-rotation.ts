@@ -16,9 +16,9 @@ import { maruhiApi } from "@maruhi/api-schema";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { callProjectData, noContent } from "./data-http.ts";
-import type { MemberProposalValue } from "./programs-proposal.ts";
-import type { EffectiveRotationFlag } from "./rotation-detect.ts";
+import { callProjectData, noContent } from "../data/data-http.ts";
+import type { MemberProposalValue } from "../programs/programs-proposal.ts";
+import type { EffectiveRotationFlag } from "../rotation-detect.ts";
 
 export const rotationLive = HttpApiBuilder.group(maruhiApi, "rotation", (handlers) =>
   handlers

@@ -14,21 +14,21 @@ import { MAX_VERSION_VALUES_PAGE } from "@maruhi/api-schema";
 import { auditReadPayload, VAR_READ_EVENT } from "@maruhi/core";
 import { Effect } from "effect";
 
-import { AuditStore } from "./audit-store.ts";
-import type { StateCache } from "./chain-store.ts";
-import type { DataActor, PulledVariableValue } from "./data-plane.ts";
+import { AuditStore } from "../audit-store.ts";
+import type { DataActor, PulledVariableValue } from "../data/data-plane.ts";
 import {
   dataEvent,
   rejectData,
   requireEnvironmentAccess,
   requireMemberState,
-} from "./data-plane.ts";
-import type { StoredVersionMeta } from "./data-store.ts";
-import { DataStore } from "./data-store.ts";
-import { MAX_VERSION_VALUES_PAGE_BYTES } from "./policy.ts";
-import { requireActiveEnvironment, requireActiveVariable } from "./quotas.ts";
-import { flagsIfCurrentByVersion } from "./rotation-detect.ts";
-import { observeStorageLevel } from "./storage-guard.ts";
+} from "../data/data-plane.ts";
+import type { StoredVersionMeta } from "../data/data-store.ts";
+import { DataStore } from "../data/data-store.ts";
+import type { StateCache } from "../do/chain-store.ts";
+import { MAX_VERSION_VALUES_PAGE_BYTES } from "../policy.ts";
+import { requireActiveEnvironment, requireActiveVariable } from "../quotas.ts";
+import { flagsIfCurrentByVersion } from "../rotation-detect.ts";
+import { observeStorageLevel } from "../storage-guard.ts";
 
 /** One history row as the program returns it (the wire's VariableVersionHistoryEntry). */
 export interface VariableVersionHistoryRow extends StoredVersionMeta {

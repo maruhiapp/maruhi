@@ -38,8 +38,8 @@ import {
   recordLoginFailed,
   redirectToGitHubAuthorize,
   requestOrigin,
-} from "./auth-shared.ts";
-import type { CliVerifyParams } from "./auth.package/index.ts";
+} from "../auth-shared.ts";
+import type { CliVerifyParams } from "../auth.package/index.ts";
 import {
   CLI_FLOW_TTL_MS,
   CLI_PAGE_CSP_HEADER,
@@ -56,12 +56,12 @@ import {
   verificationQuery,
   verifyCliVerifyQuery,
   verifyFlowToken,
-} from "./auth.package/index.ts";
-import type { D1AuditRepo } from "./db.package/index.ts";
-import { CliFlowRepo, FlowSigningKeyRepo, IdentityRepo, OpsRepo } from "./db.package/index.ts";
-import { constantTimeEqual, randomHex, sha256Hex } from "./ids.ts";
-import { noteOpsCounter } from "./ops-signals.ts";
-import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "./worker-env.ts";
+} from "../auth.package/index.ts";
+import type { D1AuditRepo } from "../db.package/index.ts";
+import { CliFlowRepo, FlowSigningKeyRepo, IdentityRepo, OpsRepo } from "../db.package/index.ts";
+import { constantTimeEqual, randomHex, sha256Hex } from "../ids.ts";
+import { noteOpsCounter } from "../ops/ops-signals.ts";
+import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "../worker-env.ts";
 
 /** The default token name when issuance parameters are omitted (§6's semantics treat it the same as the default scope). */
 const DEFAULT_TOKEN_NAME = "cli-login";

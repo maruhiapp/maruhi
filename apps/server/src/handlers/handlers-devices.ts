@@ -35,9 +35,9 @@ import { Effect } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { ensureKeyMaterialAccess } from "./authz.ts";
-import type { DeviceAddRequestRecord, DeviceRecord } from "./db.package/index.ts";
-import { DeviceRepo, KeyWrapRepo } from "./db.package/index.ts";
+import { ensureKeyMaterialAccess } from "../authz.ts";
+import type { DeviceAddRequestRecord, DeviceRecord } from "../db.package/index.ts";
+import { DeviceRepo, KeyWrapRepo } from "../db.package/index.ts";
 
 const noContent = HttpServerResponse.empty({ status: 204 });
 

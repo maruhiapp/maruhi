@@ -21,7 +21,7 @@ import { RequestAuth } from "@maruhi/core";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { statefulGetCsrfViolated } from "./auth.package/index.ts";
+import { statefulGetCsrfViolated } from "../auth.package/index.ts";
 import {
   callProjectData,
   checkAadCoordinates,
@@ -34,16 +34,16 @@ import {
   toValueInput,
   toWireValue,
   toWireVariable,
-} from "./data-http.ts";
+} from "../data/data-http.ts";
 import type {
   EnvironmentMetadataPullValue,
   EnvironmentPullValue,
   VariableVersionValue,
-} from "./data-plane.ts";
+} from "../data/data-plane.ts";
 import type {
   VariableVersionHistoryValue,
   VariableVersionValuesValue,
-} from "./programs-history.ts";
+} from "../programs/programs-history.ts";
 
 /**
  * A GET that carries state — the var.read audit record (§12-7 / AUDIT_SPEC

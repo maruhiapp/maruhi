@@ -155,7 +155,7 @@ function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReaso
 //   schema fields and name (§4.2) is an **acceptance check** (AUTH_SPEC
 //   §12-5 — the same kind of acceptance check as name's "preserve the
 //   previous active name" convention; v1's name preservation is isomorphic
-//   and checked by apps/server/src/programs-variable.ts). **The v2-delete
+//   and checked by apps/server/src/programs/programs-variable.ts). **The v2-delete
 //   "schema fields / layout must match the previous" acceptance check is
 //   mandatory on the acceptance surface** — without it, a modified delete
 //   with a valid signature (status = deleted with rewritten schema fields)

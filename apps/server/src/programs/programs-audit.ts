@@ -23,12 +23,12 @@
 import { DEFAULT_AUDIT_EVENTS_PAGE_LIMIT, MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
 import { Effect, type Schema } from "effect";
 
-import type { StoredAuditEventRow } from "./audit-store.ts";
-import { AuditStore } from "./audit-store.ts";
-import type { StateCache } from "./chain-store.ts";
-import type { DataActor } from "./data-plane.ts";
-import { rejectData, requireMemberState, roleAtLeast } from "./data-plane.ts";
-import { ensureStorageAdmitsAuditHeadExtension } from "./storage-guard.ts";
+import type { StoredAuditEventRow } from "../audit-store.ts";
+import { AuditStore } from "../audit-store.ts";
+import type { DataActor } from "../data/data-plane.ts";
+import { rejectData, requireMemberState, roleAtLeast } from "../data/data-plane.ts";
+import type { StateCache } from "../do/chain-store.ts";
+import { ensureStorageAdmitsAuditHeadExtension } from "../storage-guard.ts";
 
 /** A read query (crosses the RPC boundary). The filter vocabulary is per AUDIT_SPEC §7. */
 export interface AuditEventsQueryInput {

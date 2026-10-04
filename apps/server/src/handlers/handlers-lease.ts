@@ -25,18 +25,22 @@ import { computeLeaseClaimsDigest } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { toWireVariable } from "./data-http.ts";
-import { OidcVerifier, type VerifiedOidcToken } from "./oidc.package/index.ts";
-import { LEASE_BINDING_RETENTION_MARGIN_MS } from "./policy.ts";
-import type { LeaseOutcome, LeaseRejection, LeaseTokenFacts } from "./programs-lease.ts";
-import type { PreflightOutcome, ProposalOutcome, ProposalRejection } from "./programs-proposal.ts";
+import { toWireVariable } from "../data/data-http.ts";
+import { OidcVerifier, type VerifiedOidcToken } from "../oidc.package/index.ts";
+import { LEASE_BINDING_RETENTION_MARGIN_MS } from "../policy.ts";
+import type { LeaseOutcome, LeaseRejection, LeaseTokenFacts } from "../programs/programs-lease.ts";
+import type {
+  PreflightOutcome,
+  ProposalOutcome,
+  ProposalRejection,
+} from "../programs/programs-proposal.ts";
 import {
   IP_RATE_LIMIT_PERIOD_SECONDS,
   ipRateLimitAllowed,
   projectStub,
   rpcCall,
   WorkerEnv,
-} from "./worker-env.ts";
+} from "../worker-env.ts";
 
 /**
  * claims_digest (CRYPTO_SPEC §9.1) is computed from the **verified**

@@ -14,12 +14,12 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { computeUserKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import { AuditStore } from "./audit-store.ts";
+import { AuditStore } from "../audit-store.ts";
+import { DataStore } from "../data/data-store.ts";
 import type { AppliedProposal } from "./chain-accept.ts";
 import { insertAcceptedEntrySync, proposalIndexOf } from "./chain-accept.ts";
 import type { StoredChain, VerifiedChainView } from "./chain-store.ts";
 import { ChainStore } from "./chain-store.ts";
-import { DataStore } from "./data-store.ts";
 
 /**
  * Atomic commit of an accepted entry. `chain` is the stored chain before

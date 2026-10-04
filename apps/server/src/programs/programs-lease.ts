@@ -40,18 +40,22 @@
 import type { ChainEntry, ChainState, ServerGrant } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import { AuditStore } from "./audit-store.ts";
-import type { StateCache } from "./chain-store.ts";
-import { ChainStore, deriveStoredState } from "./chain-store.ts";
-import type { EnvironmentPullValue, InitializedChain } from "./data-plane.ts";
-import { currentEpochOf, loadInitializedChain, optionalDistributionFields } from "./data-plane.ts";
-import { DataStore } from "./data-store.ts";
-import { grantCoversEnvironment, leasePolicyAuthorizes } from "./lease-policy.ts";
-import { MAX_LEASE_DENIED_ROWS_PER_WINDOW, MAX_LEASES_PER_WINDOW } from "./policy.ts";
-import { requireActiveEnvironment } from "./quotas.ts";
-import type { LeaseWrapOutput, ServerKeyInfo } from "./server-key.ts";
-import { ServerKey } from "./server-key.ts";
-import { observeStorageLevel, StorageMeter } from "./storage-guard.ts";
+import { AuditStore } from "../audit-store.ts";
+import type { EnvironmentPullValue, InitializedChain } from "../data/data-plane.ts";
+import {
+  currentEpochOf,
+  loadInitializedChain,
+  optionalDistributionFields,
+} from "../data/data-plane.ts";
+import { DataStore } from "../data/data-store.ts";
+import type { StateCache } from "../do/chain-store.ts";
+import { ChainStore, deriveStoredState } from "../do/chain-store.ts";
+import { grantCoversEnvironment, leasePolicyAuthorizes } from "../lease-policy.ts";
+import { MAX_LEASE_DENIED_ROWS_PER_WINDOW, MAX_LEASES_PER_WINDOW } from "../policy.ts";
+import { requireActiveEnvironment } from "../quotas.ts";
+import type { LeaseWrapOutput, ServerKeyInfo } from "../server-key.ts";
+import { ServerKey } from "../server-key.ts";
+import { observeStorageLevel, StorageMeter } from "../storage-guard.ts";
 
 /** Only the parts of a verified OIDC token that authorization and binding need, passed by the worker. */
 export interface LeaseTokenFacts {

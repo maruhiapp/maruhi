@@ -8,9 +8,8 @@
 
 import { Effect } from "effect";
 
-import { AuditStore } from "./audit-store.ts";
-import type { StateCache } from "./chain-store.ts";
-import type { DataActor, DekWrapInput, DekWrapRefInput } from "./data-plane.ts";
+import { AuditStore } from "../audit-store.ts";
+import type { DataActor, DekWrapInput, DekWrapRefInput } from "../data/data-plane.ts";
 import {
   currentEpochOf,
   dataEvent,
@@ -18,8 +17,8 @@ import {
   rejectData,
   requireEnvironmentAccess,
   roleAtLeast,
-} from "./data-plane.ts";
-import { DataStore } from "./data-store.ts";
+} from "../data/data-plane.ts";
+import { DataStore } from "../data/data-store.ts";
 import {
   allRecipientsAreOwnDevices,
   checkWrapRequestCount,
@@ -27,9 +26,10 @@ import {
   ensureWrapSetAcceptable,
   wrapRecipientClass,
   wrapRefKey,
-} from "./dek-wraps.ts";
-import { requireActiveEnvironment } from "./quotas.ts";
-import { ensureStorageAdmitsGrowth } from "./storage-guard.ts";
+} from "../dek-wraps.ts";
+import type { StateCache } from "../do/chain-store.ts";
+import { requireActiveEnvironment } from "../quotas.ts";
+import { ensureStorageAdmitsGrowth } from "../storage-guard.ts";
 
 export const registerDekWrapsProgram = (
   actor: DataActor,

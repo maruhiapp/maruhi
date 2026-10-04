@@ -39,7 +39,7 @@ import { Effect } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { ensureKeyMaterialAccess } from "./authz.ts";
+import { ensureKeyMaterialAccess } from "../authz.ts";
 import {
   APPROVAL_LIMIT,
   HANDOFF_REQUEST_LIMIT,
@@ -47,13 +47,13 @@ import {
   type KeyWrapRepoShape,
   KeyWrapRepo,
   RecoveryRepo,
-} from "./db.package/index.ts";
+} from "../db.package/index.ts";
 import type {
   GuardianGroupRecord,
   HandoffRequestRecord,
   KeyWrapWindowDecision,
   KeyWrapWindowKind,
-} from "./key-wrap-domain.ts";
+} from "../key-wrap-domain.ts";
 
 /** Maps a window refusal onto a typed 429. */
 function rateLimited(

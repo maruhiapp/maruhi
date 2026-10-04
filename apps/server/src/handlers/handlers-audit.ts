@@ -21,12 +21,12 @@ import { RequestAuth } from "@maruhi/core";
 import { Effect, type Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { ensureSelfAuditAccess, tokenScopeAllowsForProject } from "./authz.ts";
-import { callProjectData, requireProjectChainAdmin } from "./data-http.ts";
-import type { D1StoredAuditEventRow } from "./db.package/index.ts";
-import { D1AuditRepo } from "./db.package/index.ts";
-import type { AuditActorValue, AuditEventValue } from "./programs-audit.ts";
-import { resolvePageLimit } from "./programs-audit.ts";
+import { ensureSelfAuditAccess, tokenScopeAllowsForProject } from "../authz.ts";
+import { callProjectData, requireProjectChainAdmin } from "../data/data-http.ts";
+import type { D1StoredAuditEventRow } from "../db.package/index.ts";
+import { D1AuditRepo } from "../db.package/index.ts";
+import type { AuditActorValue, AuditEventValue } from "../programs/programs-audit.ts";
+import { resolvePageLimit } from "../programs/programs-audit.ts";
 
 /** Stored row's actor_type column → actor kind (on the D1 side the write path is 'user' only). */
 function actorTypeOf(stored: string): AuditActorValue["type"] {

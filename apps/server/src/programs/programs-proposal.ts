@@ -21,20 +21,24 @@ import type { ChainState } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import { AuditStore } from "./audit-store.ts";
-import type { StateCache } from "./chain-store.ts";
-import type { ChainStore } from "./chain-store.ts";
-import type { DataActor, DataRejectedError, RotationProposalRejectReason } from "./data-plane.ts";
-import { dataEvent, rejectData, requireMemberState, roleAtLeast } from "./data-plane.ts";
-import type { DataStoreShape, StoredProposal, StoredProposalVariable } from "./data-store.ts";
-import { DataStore } from "./data-store.ts";
-import { deviceReceivesEnvironment } from "./dek-wraps.ts";
-import { MAX_PENDING_ROTATION_PROPOSALS, MAX_ROTATION_PROPOSALS_PER_WINDOW } from "./policy.ts";
+import { AuditStore } from "../audit-store.ts";
+import type {
+  DataActor,
+  DataRejectedError,
+  RotationProposalRejectReason,
+} from "../data/data-plane.ts";
+import { dataEvent, rejectData, requireMemberState, roleAtLeast } from "../data/data-plane.ts";
+import type { DataStoreShape, StoredProposal, StoredProposalVariable } from "../data/data-store.ts";
+import { DataStore } from "../data/data-store.ts";
+import { deviceReceivesEnvironment } from "../dek-wraps.ts";
+import type { StateCache } from "../do/chain-store.ts";
+import type { ChainStore } from "../do/chain-store.ts";
+import { MAX_PENDING_ROTATION_PROPOSALS, MAX_ROTATION_PROPOSALS_PER_WINDOW } from "../policy.ts";
+import { projectBytesExceeded } from "../quotas.ts";
+import type { ServerKey } from "../server-key.ts";
+import { observeStorageLevel, StorageMeter } from "../storage-guard.ts";
 import type { LeaseRejection, LeaseTokenFacts } from "./programs-lease.ts";
 import { authorizeWorkload, recordDenied } from "./programs-lease.ts";
-import { projectBytesExceeded } from "./quotas.ts";
-import type { ServerKey } from "./server-key.ts";
-import { observeStorageLevel, StorageMeter } from "./storage-guard.ts";
 
 /** The rotation connectors a proposal may name (the api-schema RotationConnectorSchema vocabulary). */
 const ROTATION_CONNECTORS = [

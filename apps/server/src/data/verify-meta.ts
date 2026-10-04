@@ -10,6 +10,8 @@ import type {
 import { SUPPORTED_META_LAYOUT_VERSIONS, verifyDistributedMetaStatement } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS, MAX_VERSIONS_PER_VARIABLE } from "../policy.ts";
+import { metaVersionsExceeded } from "../quotas.ts";
 import type {
   DataRejectedError,
   MemberWithDevice,
@@ -20,8 +22,6 @@ import type {
 import { rejectData } from "./data-plane.ts";
 import type { MetaAnchor } from "./data-store.ts";
 import { DataStore } from "./data-store.ts";
-import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS, MAX_VERSIONS_PER_VARIABLE } from "./policy.ts";
-import { metaVersionsExceeded } from "./quotas.ts";
 
 /**
  * Mapping from crypto's detailed reasons to wire reasons (the same provisional
