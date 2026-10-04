@@ -84,13 +84,6 @@ function issueErrorToCliError(error: unknown): CliError {
 }
 
 /**
- * Issuing an invite + issue signature + link assembly + saving the
- * issuance pin. Issuance authorization is enforced by the server, but the
- * role rules (the same level as §6.2: issuing requires admin or above,
- * role=admin requires owner) are dropped locally before communicating
- * (for clear wording).
- */
-/**
  * Pre-issuance checks (before communicating): the inviter's role rules
  * (the same level as §6.2: issuing requires admin or above, role=admin
  * requires owner) and that the local master key matches one's own key on
