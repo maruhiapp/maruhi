@@ -3,12 +3,12 @@
 // The floor = **the monotonic join (join-semilattice) of the facts that
 // have passed verification so far**, not "the snapshot of the last
 // successful pull" (3-D). The storage form is an append-only observation
-// log + fold (3-E — floor-log.ts); this module holds only the lattice's
-// types and the join operations. The on-disk merge and the in-process
-// merge share **one and the same join implementation** (session-31 §3 —
-// structurally removing the breeding ground where a duplicated
-// "`>=` last-wins" implementation overwrote same-version different-hash
-// evidence).
+// log + fold (3-E — floor-log.ts, with the fold in floor-log-fold.ts);
+// this module holds only the lattice's types and the join operations.
+// The on-disk merge and the in-process merge share **one and the same
+// join implementation** (session-31 §3 — structurally removing the
+// breeding ground where a duplicated "`>=` last-wins" implementation
+// overwrote same-version different-hash evidence).
 //
 // Epoch observations join as two typed coordinates kept apart (the §6.3
 // norm):
