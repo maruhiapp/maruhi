@@ -10,6 +10,16 @@
     "@stylexjs/unplugin",
     "@stylexjs/eslint-plugin"
   ],
+  // The two scoped undici overrides in package.json are security pins, not
+  // leftovers: they lift exact-pinned undici versions (the miniflare copies
+  // under cf and @cloudflare/runtime-types, and @scalar/json-magic) to the
+  // patched 7.29.1 so `bun audit` stays clean
+  // (#198, #239). fallow reports them as unused because it cannot see the
+  // transitive resolution; bun.lock shows both in effect.
+  "ignoreDependencyOverrides": [
+    { "package": "@scalar/json-magic>undici", "source": "package.json" },
+    { "package": "miniflare>undici", "source": "package.json" }
+  ],
   // apps/web's entries are string references inside vite.config.ts
   // (funstackStatic's root/app), so fallow cannot detect them automatically —
   // declare them as entry points manually.
