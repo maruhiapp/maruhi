@@ -12,14 +12,10 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 
 import { displayText } from "../display.ts";
 import { cliError, type CliError } from "../errors.ts";
+import { isRecord } from "../json-record.ts";
 import { CLI_VERSION } from "../version.ts";
 import { scrubVendorOutput, type SyncWrite } from "./sync-exec.ts";
-import {
-  type HttpOutcome,
-  type HttpTargetInput,
-  type IntegrationToken,
-  isRecord,
-} from "./sync-http.ts";
+import type { HttpOutcome, HttpTargetInput, IntegrationToken } from "./sync-http.ts";
 
 const RETRIABLE_STATUSES = new Set([429, 502, 503, 504]);
 

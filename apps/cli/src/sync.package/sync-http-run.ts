@@ -13,6 +13,7 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 
 import { displayText } from "../display.ts";
 import type { CliError } from "../errors.ts";
+import { isRecord } from "../json-record.ts";
 import type { SyncWrite } from "./sync-exec.ts";
 import { readResponse } from "./sync-http-read.ts";
 import { scrubbed, send } from "./sync-http-send.ts";
@@ -26,7 +27,6 @@ import {
   type HttpRequestResult,
   type HttpTargetInput,
   type HttpWriteStrategy,
-  isRecord,
   NO_SUBJECT,
   parseJson,
   type PathSubject,

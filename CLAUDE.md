@@ -135,6 +135,14 @@ apps/
 - Tests may import package internals directly (`apps/cli/test/**` is excluded from ImportLint).
 - When files move, update file references in live docs and source comments (checked by `apps/site/test/unit/doc-paths.test.ts`). Dated records — `docs/adr/`, `docs/notes/`, `docs/DEEPSEC_FINDINGS_*`, `docs/*_REVIEW_*`, and the dated implementation notes in `ROADMAP.md` — keep the paths they were written with.
 
+### Layers (enforced by fallow `boundaries` in `.fallowrc.json`)
+
+- Workspace packages sit below the apps. `crypto` imports no other workspace package, `core` may import `crypto`, and `api-schema` may import `core` and `crypto`. Packages never import an app, and apps never import each other.
+- CLI (`apps/cli/src`): the entry files (`bin.ts`, `index.ts`, `cli.ts`, `cli-runner.ts`) are on top, the command layer (`commands/**` and each `*.package/command.ts`) is next, and every other file is the domain layer. The domain layer never imports the command layer, and imports the entry files only for types.
+- Server (`apps/server/src`): `index.ts` is the only file that imports `handlers/**`. `programs/`, `do/`, `data/`, `ops/`, and the root files form one zone, because the DO programs run inside the chain DO and the two import each other.
+- Web (`apps/web/src`): the shell (`App.tsx`, `Root.tsx`, `pages/**`) may import the views (`dashboard/**`, `components/**`, and every other file under `src`). The views never import the shell.
+- Zones match in order, first match wins. A new entry file or top-level directory that does not fit is a design question: propose the change to `.fallowrc.json` and this section together to a human.
+
 ## Quality gate (always pass before committing)
 
 1. `check:english` → 2. `oxfmt` → 3. `oxlint` → 4. `tsc --noEmit` →
