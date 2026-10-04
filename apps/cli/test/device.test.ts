@@ -45,7 +45,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { VerifiedProject } from "../src/chain-sync.ts";
 import { runCli } from "../src/cli.ts";
 import { expectedWrapRecipientCount } from "../src/dek-wrap.ts";
-import { DEVICE_ADD_WAIT_HINT_AFTER_MS } from "../src/device.ts";
+import { DEVICE_ADD_WAIT_HINT_AFTER_MS } from "../src/device-add.ts";
 import { masterKeyEntryName, serializeStoredMasterKey, tokenEntryName } from "../src/keychain.ts";
 import {
   makeFileOwnDeviceStore,

@@ -301,7 +301,7 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
   // unremovable duplication stated in its own words by both the docs and
   // `device approve`'s output, so the copied phrase is pinned on both
   it("states who can place a device-add request with the same words as `device approve`", () => {
-    const source = readFileSync(join(repoRoot, "apps", "cli", "src", "device.ts"), "utf8");
+    const source = readFileSync(join(repoRoot, "apps", "cli", "src", "device-approve.ts"), "utf8");
     expect(source).toContain("account-wide admin API token");
     expect(devices).toContain("account-wide admin API token");
   });
@@ -311,7 +311,7 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
   // Note and the docs, so the Note phrase the docs quote is pinned on both
   // (rewording the Note would falsify the docs' quote)
   it("quotes the note that a failed registry write leaves the request in place", () => {
-    const source = readFileSync(join(repoRoot, "apps", "cli", "src", "device.ts"), "utf8");
+    const source = readFileSync(join(repoRoot, "apps", "cli", "src", "device-approve.ts"), "utf8");
     expect(source).toContain("The request is left in place until");
     expect(source).toContain("will not see the completion signal");
     expect(devices).toContain(
@@ -441,7 +441,7 @@ interface Limit {
 }
 
 const DEVICES_API = "packages/api-schema/src/devices-api.ts";
-const DEVICE_CLI = "apps/cli/src/device.ts";
+const DEVICE_CLI = "apps/cli/src/device-add.ts";
 const KEY_WRAPS = "apps/server/src/db.package/key-wraps.ts";
 const FIFTEEN_MINUTES = "15 * 60 * 1000";
 
