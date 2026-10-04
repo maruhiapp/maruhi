@@ -66,6 +66,7 @@ import { HttpClientRequest } from "effect/http";
 
 import { decodeValueText, displayText } from "../display.ts";
 import { cliError, type CliError } from "../errors.ts";
+import { isRecord } from "../json-record.ts";
 import type { SyncWrite } from "./sync-exec.ts";
 import type { OptionSpec, ResolvedOptions, ValueConstraints } from "./sync-types.ts";
 
@@ -285,10 +286,6 @@ export function parseJson(text: string): unknown {
     // A body that is not JSON (a WAF block page, etc.) = treated as an unreadable response
     return null;
   }
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Empty unless an array (absorbs wobble in the response shape). */

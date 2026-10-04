@@ -41,8 +41,8 @@ import { Context, Effect } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
-import { type LedgerRead, readLedger } from "./json-record.ts";
-import { BOOK_KEY, decodeOriginBook, isRecord } from "./origin-book.ts";
+import { isRecord, type LedgerRead, readLedger } from "./json-record.ts";
+import { BOOK_KEY, decodeOriginBook } from "./origin-book.ts";
 
 /** Where the record came from (the three DK-D conditions). */
 export type OwnDeviceSource = "reserve" | "approved" | "observed";
