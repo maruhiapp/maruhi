@@ -22,14 +22,12 @@ import {
   ensurePlainRunOfBrokeredProjectAllowed,
   ensureProxyConfigAccepted,
   markProjectBrokered,
-} from "../proxy.package/index.ts";
-import {
   DEFAULT_PROXY_CONFIG_PATH,
   type LoadedProxyConfig,
   checkProxyConfigProject,
   loadProxyConfigIfPresent,
+  proxyRunOp,
 } from "../proxy.package/index.ts";
-import { proxyRunOp } from "../proxy.package/index.ts";
 import { type PulledVariables, pullVariables } from "../pull.ts";
 import { enforceDeclaredPresence, runOp, typeAdvisoryWarnings } from "../run.ts";
 import { commonFlags, mirrorFlag, runCommandArgument, singleFlag } from "./flags.ts";

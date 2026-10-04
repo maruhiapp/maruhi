@@ -22,7 +22,6 @@ import { describeProxyConfig } from "./proxy-run.ts";
  * `maruhi proxy run -- <command>` (PF4 — credential brokering): `run`'s
  * flags plus the proxy config path and a per-request log switch. The run
  * target is declared exactly like `run`'s.
-
  * @public
  */
 export const proxyRunConfig = {
