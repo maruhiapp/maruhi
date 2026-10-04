@@ -47,7 +47,7 @@ import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { MAX_VERSION_VALUES_PAGE_BYTES } from "../src/policy.ts";
-import { withinByteBudget } from "../src/programs-history.ts";
+import { withinByteBudget } from "../src/programs/programs-history.ts";
 import { JSON_HEADERS } from "./support/auth.ts";
 import {
   createVariableStatement,

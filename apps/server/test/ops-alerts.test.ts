@@ -16,20 +16,20 @@ import { Context, Effect } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { makeDbServices, OpsRepo, opsWindowStart } from "../src/db.package/index.ts";
-import type { OpsAlertPayload, OpsSignal } from "../src/ops-alerts.ts";
+import type { OpsAlertPayload, OpsSignal } from "../src/ops/ops-alerts.ts";
 import {
   deriveAlertEvents,
   evaluateOpsSignals,
   makeWebhookNotifier,
   OpsNotifier,
   runOpsAlerts,
-} from "../src/ops-alerts.ts";
+} from "../src/ops/ops-alerts.ts";
 import {
   OPS_ALERT_RENOTIFY_MS,
   OPS_GITHUB_TOKEN_REQUESTS_PER_HOUR_THRESHOLD,
   OPS_SIGNUP_DENIED_PER_HOUR_THRESHOLD,
-} from "../src/ops-policy.ts";
-import { noteOpsCounter } from "../src/ops-signals.ts";
+} from "../src/ops/ops-policy.ts";
+import { noteOpsCounter } from "../src/ops/ops-signals.ts";
 import { cliToken, resetAuthDb, seedUser } from "./support/auth.ts";
 
 const ops = () => Context.get(makeDbServices(env.DB), OpsRepo);

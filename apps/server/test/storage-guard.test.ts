@@ -38,45 +38,48 @@ import { describe, expect, it, vi } from "vitest";
 import { putHeadAttestationProgram } from "../src/attestation-accept.ts";
 import type { AuditStore } from "../src/audit-store.ts";
 import { auditStoreLayer } from "../src/audit-store.ts";
-import { appendProgram, snapshotProgram } from "../src/chain-do.ts";
-import type { ChainStore, StateCache } from "../src/chain-store.ts";
-import { chainStoreLayer } from "../src/chain-store.ts";
-import {
-  createEnvironmentCompositeProgram,
-  rotateEpochCompositeProgram,
-} from "../src/composite-programs.ts";
 import {
   toManifestInput,
   toMetaStatementInput,
   toValueInput,
   unwrapDataOutcome,
-} from "../src/data-http.ts";
-import type { DataActor, DataRejection } from "../src/data-plane.ts";
-import type { DataStore } from "../src/data-store.ts";
-import { dataStoreLayer } from "../src/data-store.ts";
+} from "../src/data/data-http.ts";
+import type { DataActor, DataRejection } from "../src/data/data-plane.ts";
+import type { DataStore } from "../src/data/data-store.ts";
+import { dataStoreLayer } from "../src/data/data-store.ts";
+import { appendProgram, snapshotProgram } from "../src/do/chain-do.ts";
+import type { ChainStore, StateCache } from "../src/do/chain-store.ts";
+import { chainStoreLayer } from "../src/do/chain-store.ts";
 import { DO_STORAGE_REJECT_BYTES, DO_STORAGE_WARN_BYTES } from "../src/policy.ts";
-import { auditHeadProgram } from "../src/programs-audit.ts";
+import {
+  createEnvironmentCompositeProgram,
+  rotateEpochCompositeProgram,
+} from "../src/programs/composite-programs.ts";
+import { auditHeadProgram } from "../src/programs/programs-audit.ts";
 import {
   deleteDekWrapsProgram,
   listMyDekWrapsProgram,
   registerDekWrapsProgram,
-} from "../src/programs-dek.ts";
+} from "../src/programs/programs-dek.ts";
 import {
   deleteEnvironmentProgram,
   listEnvironmentsProgram,
   pullEnvironmentMetadataProgram,
   pullEnvironmentProgram,
   renameEnvironmentProgram,
-} from "../src/programs-environment.ts";
-import { dismissRotationFlagsProgram } from "../src/programs-rotation.ts";
-import { getSchemaPolicyProgram, setSchemaPolicyProgram } from "../src/programs-schema-policy.ts";
+} from "../src/programs/programs-environment.ts";
+import { dismissRotationFlagsProgram } from "../src/programs/programs-rotation.ts";
+import {
+  getSchemaPolicyProgram,
+  setSchemaPolicyProgram,
+} from "../src/programs/programs-schema-policy.ts";
 import {
   activateVariableProgram,
   createVariableProgram,
   deleteVariableProgram,
   pushVersionProgram,
   renameVariableProgram,
-} from "../src/programs-variable.ts";
+} from "../src/programs/programs-variable.ts";
 import { makeStorageMeter, StorageMeter, storageGuardDecision } from "../src/storage-guard.ts";
 import { addMemberOperation, signEntryAt } from "./support/data-crypto.ts";
 import {

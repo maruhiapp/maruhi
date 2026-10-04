@@ -23,14 +23,14 @@
 // entry_hash_hex) (no capability is carried on keys, jobs, or
 // results).
 
-import type { OpsRestoreOutcome, ProjectChainDO } from "./chain-do.ts";
-import { ProjectChainDO as ProjectChainDOClass } from "./chain-do.ts";
 import type {
   ImportClassification,
   ImportedIdentity,
   ImportProvisionResult,
 } from "./db.package/index.ts";
 import { classifyImportedProject, provisionImportedProject } from "./db.package/index.ts";
+import type { OpsRestoreOutcome, ProjectChainDO } from "./do/chain-do.ts";
+import { ProjectChainDO as ProjectChainDOClass } from "./do/chain-do.ts";
 import {
   chainOwners,
   identitiesOnChain,

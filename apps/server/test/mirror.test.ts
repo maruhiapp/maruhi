@@ -20,8 +20,8 @@
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { PROJECT_DO_TABLES, readProjectDoSchemaVersion } from "../src/do-schema.ts";
-import { restoreSnapshot } from "../src/do-snapshot.ts";
+import { PROJECT_DO_TABLES, readProjectDoSchemaVersion } from "../src/do/do-schema.ts";
+import { restoreSnapshot } from "../src/do/do-snapshot.ts";
 import { JSON_HEADERS } from "./support/auth.ts";
 import { changeRoleOperation, signEntryAt, vectorKeyOf } from "./support/data-crypto.ts";
 import {

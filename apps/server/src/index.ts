@@ -27,35 +27,35 @@ import {
   makeSessionService,
   makeTokenService,
 } from "./auth.package/index.ts";
-import type { Env } from "./chain-do.ts";
 import type { DbServices } from "./db.package/index.ts";
 import { makeDbServices, OpsRepo, SessionRepo, TokenRepo } from "./db.package/index.ts";
-import { auditLive } from "./handlers-audit.ts";
-import { authCliLive } from "./handlers-auth-cli.ts";
-import { authLive } from "./handlers-auth.ts";
-import { deksLive } from "./handlers-deks.ts";
-import { devicesLive } from "./handlers-devices.ts";
-import { environmentsLive } from "./handlers-environments.ts";
-import { exportLive } from "./handlers-export.ts";
-import { invitesLive } from "./handlers-invites.ts";
-import { keyWrapsLive } from "./handlers-key-wraps.ts";
-import { leaseLive } from "./handlers-lease.ts";
-import { membershipLive } from "./handlers-membership.ts";
-import { mirrorLive } from "./handlers-mirror.ts";
-import { rotationLive } from "./handlers-rotation.ts";
-import { schemaPolicyLive } from "./handlers-schema-policy.ts";
-import { variablesLive } from "./handlers-variables.ts";
+import type { Env } from "./do/chain-do.ts";
+import { auditLive } from "./handlers/handlers-audit.ts";
+import { authCliLive } from "./handlers/handlers-auth-cli.ts";
+import { authLive } from "./handlers/handlers-auth.ts";
+import { deksLive } from "./handlers/handlers-deks.ts";
+import { devicesLive } from "./handlers/handlers-devices.ts";
+import { environmentsLive } from "./handlers/handlers-environments.ts";
+import { exportLive } from "./handlers/handlers-export.ts";
+import { invitesLive } from "./handlers/handlers-invites.ts";
+import { keyWrapsLive } from "./handlers/handlers-key-wraps.ts";
+import { leaseLive } from "./handlers/handlers-lease.ts";
+import { membershipLive } from "./handlers/handlers-membership.ts";
+import { mirrorLive } from "./handlers/handlers-mirror.ts";
+import { rotationLive } from "./handlers/handlers-rotation.ts";
+import { schemaPolicyLive } from "./handlers/handlers-schema-policy.ts";
+import { variablesLive } from "./handlers/handlers-variables.ts";
 import { makeOidcVerifier, OidcVerifier } from "./oidc.package/index.ts";
-import { makeWebhookNotifier, OpsNotifier, runOpsAlerts } from "./ops-alerts.ts";
-import { runBackupSweep } from "./ops-backup.ts";
-import { OPS_HOURLY_CRON } from "./ops-policy.ts";
-import { countingGitHubApi } from "./ops-signals.ts";
+import { makeWebhookNotifier, OpsNotifier, runOpsAlerts } from "./ops/ops-alerts.ts";
+import { runBackupSweep } from "./ops/ops-backup.ts";
+import { OPS_HOURLY_CRON } from "./ops/ops-policy.ts";
+import { countingGitHubApi } from "./ops/ops-signals.ts";
 import { MAX_REQUEST_BODY_BYTES } from "./policy.ts";
 import { makeServerKey, ServerKey } from "./server-key.ts";
 import { WorkerEnv } from "./worker-env.ts";
 
-export { ProjectChainDO } from "./chain-do.ts";
-export type { Env } from "./chain-do.ts";
+export { ProjectChainDO } from "./do/chain-do.ts";
+export type { Env } from "./do/chain-do.ts";
 
 // Findings from spike-b: HttpApiBuilder.layer nominally requires
 // HttpPlatform / FileSystem / Etag.Generator / Path (for a pure JSON

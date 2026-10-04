@@ -1,7 +1,7 @@
 // Gives the wrangler.jsonc binding types to cloudflare:test's env (Cloudflare.Env)
 declare namespace Cloudflare {
   interface Env {
-    PROJECT_CHAIN: DurableObjectNamespace<import("../src/chain-do.ts").ProjectChainDO>;
+    PROJECT_CHAIN: DurableObjectNamespace<import("../src/do/chain-do.ts").ProjectChainDO>;
     DB: D1Database;
     GITHUB_CLIENT_ID: string;
     GITHUB_CLIENT_SECRET: string;

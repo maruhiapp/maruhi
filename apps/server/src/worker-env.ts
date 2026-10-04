@@ -3,7 +3,7 @@
 
 import { Context, Effect } from "effect";
 
-import type { Env, ProjectChainDO } from "./chain-do.ts";
+import type { Env, ProjectChainDO } from "./do/chain-do.ts";
 
 export class WorkerEnv extends Context.Service<WorkerEnv, Env>()("WorkerEnv") {}
 

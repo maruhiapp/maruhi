@@ -7,7 +7,7 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { chainCapacityExceeded } from "../src/chain-accept.ts";
+import { chainCapacityExceeded } from "../src/do/chain-accept.ts";
 import {
   MAX_CHAIN_ENTRIES,
   MAX_CHAIN_TOTAL_CANONICAL_BYTES,
