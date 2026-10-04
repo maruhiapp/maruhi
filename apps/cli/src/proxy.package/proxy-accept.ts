@@ -53,11 +53,11 @@ import { dirname, join } from "node:path";
 
 import { Context, Effect, Stdio } from "effect";
 
-import { AgentProfileRef, describeNonTerminal, ensureHumanCeremonyAllowed } from "./agent-gate.ts";
-import { cliError, type CliError } from "./errors.ts";
-import type { CliIo } from "./io.ts";
-import { isRecord, readLedger } from "./json-record.ts";
-import { logNote } from "./notice.ts";
+import { AgentProfileRef, describeNonTerminal, ensureHumanCeremonyAllowed } from "../agent-gate.ts";
+import { cliError, type CliError } from "../errors.ts";
+import type { CliIo } from "../io.ts";
+import { isRecord, readLedger } from "../json-record.ts";
+import { logNote } from "../notice.ts";
 
 /** One accepted config: the content a person accepted, when, and for which projects (R-24). */
 export interface AcceptedProxyConfig {

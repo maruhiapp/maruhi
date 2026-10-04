@@ -57,7 +57,7 @@ import {
   makeStreamReplacer,
   replaceBytes,
   scrubPatterns,
-} from "./byte-replace.ts";
+} from "../byte-replace.ts";
 import type { EphemeralCa } from "./proxy-cert.ts";
 import type { Surface } from "./proxy-config.ts";
 import {

@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { parseHostPattern, parseProxyConfig } from "../src/proxy-config.ts";
+import { parseHostPattern, parseProxyConfig } from "../src/proxy.package/proxy-config.ts";
 
 const PROJECT = "a".repeat(64);
 

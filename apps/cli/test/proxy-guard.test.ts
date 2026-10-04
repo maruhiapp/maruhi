@@ -9,7 +9,7 @@ import {
   isHostLocalAddress,
   isHostLocalName,
   isLoopbackBind,
-} from "../src/proxy-guard.ts";
+} from "../src/proxy.package/proxy-guard.ts";
 
 describe("proxy-guard", () => {
   it("classifies loopback, link-local, unspecified, and IPv4-mapped addresses as host-local", () => {

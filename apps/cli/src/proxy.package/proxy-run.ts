@@ -39,11 +39,13 @@ import tls from "node:tls";
 
 import { Context, Effect, Redacted, type Stdio } from "effect";
 
-import { privateRuntimeDir } from "./agent.ts";
-import { displayText } from "./display.ts";
-import { cliError, type CliError, usageError } from "./errors.ts";
-import { CliIo } from "./io.ts";
-import { logNote, logWarning } from "./notice.ts";
+import { privateRuntimeDir } from "../agent.ts";
+import { displayText } from "../display.ts";
+import { cliError, type CliError, usageError } from "../errors.ts";
+import { CliIo } from "../io.ts";
+import { logNote, logWarning } from "../notice.ts";
+import type { DecryptedVariable } from "../pull.ts";
+import { buildInjectionEnv, ProcessRunner, redactionFragments } from "../run.ts";
 import { makeEphemeralCa } from "./proxy-cert.ts";
 import type { HostPattern, ProxyConfig, VariableRule } from "./proxy-config.ts";
 import { type ConnectorDeps, makeConnectorCredential } from "./proxy-connector.ts";
@@ -55,8 +57,6 @@ import {
   type ProxyOptions,
   startProxy,
 } from "./proxy-server.ts";
-import type { DecryptedVariable } from "./pull.ts";
-import { buildInjectionEnv, ProcessRunner, redactionFragments } from "./run.ts";
 
 /**
  * Test seams (absent in production): where the proxy's upstream

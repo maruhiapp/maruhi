@@ -10,7 +10,7 @@ import tls from "node:tls";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { makeEphemeralCa } from "../src/proxy-cert.ts";
+import { makeEphemeralCa } from "../src/proxy.package/proxy-cert.ts";
 
 describe("makeEphemeralCa", () => {
   it("produces a self-signed CA and host leaves an independent parser accepts and verifies", async () => {

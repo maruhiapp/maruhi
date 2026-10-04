@@ -13,17 +13,21 @@ import { join } from "node:path";
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { makeEphemeralCa } from "../src/proxy-cert.ts";
-import { parseHostPattern } from "../src/proxy-config.ts";
-import type { Lookup } from "../src/proxy-guard.ts";
+import { makeEphemeralCa } from "../src/proxy.package/proxy-cert.ts";
+import { parseHostPattern } from "../src/proxy.package/proxy-config.ts";
+import type { Lookup } from "../src/proxy.package/proxy-guard.ts";
 import {
   type BrokeredCredential,
   credentialsFor,
   makePlaceholder,
   matchesTarget,
   type Target,
-} from "../src/proxy-rules.ts";
-import { type ProxyDecision, type ProxyHandle, startProxy } from "../src/proxy-server.ts";
+} from "../src/proxy.package/proxy-rules.ts";
+import {
+  type ProxyDecision,
+  type ProxyHandle,
+  startProxy,
+} from "../src/proxy.package/proxy-server.ts";
 import {
   httpsViaProxy,
   httpViaProxy,

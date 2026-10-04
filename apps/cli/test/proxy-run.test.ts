@@ -1,4 +1,4 @@
-// Tests for `maruhi proxy run` (proxy-run.ts / commands/proxy.ts — PF4,
+// Tests for `maruhi proxy run` (proxy-run.ts / proxy.package/command.ts — PF4,
 // docs/notes/pf4-design.md), end to end through runCli against a mock
 // maruhi server: the environment is pulled and verified like `run`, the
 // child receives placeholders for brokered variables and real values only
@@ -18,9 +18,9 @@ import { chdir, cwd } from "node:process";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
-import { acceptedProxyConfigsPathOf } from "../src/proxy-accept.ts";
-import { makeEphemeralCa } from "../src/proxy-cert.ts";
-import { parseListenAddress } from "../src/proxy-run.ts";
+import { acceptedProxyConfigsPathOf } from "../src/proxy.package/proxy-accept.ts";
+import { makeEphemeralCa } from "../src/proxy.package/proxy-cert.ts";
+import { parseListenAddress } from "../src/proxy.package/proxy-run.ts";
 import {
   buildChain,
   type BuiltChain,

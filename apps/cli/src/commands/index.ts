@@ -34,6 +34,7 @@
 import { Command, Param } from "effect/cli";
 
 import { type CommandSpec } from "../cli-formatter.ts";
+import { proxyAcceptConfig, proxyRunConfig, makeProxyCommands } from "../proxy.package/command.ts";
 import {
   schemaExportConfig,
   schemaImportConfig,
@@ -124,7 +125,6 @@ import {
   projectVerifyConfig,
   makeProjectCommands,
 } from "./project.ts";
-import { proxyAcceptConfig, proxyRunConfig, makeProxyCommands } from "./proxy.ts";
 import { pullConfig, runConfig, makePullRunCommands } from "./pull-run.ts";
 import { PUSH_STDIN_HINT, pushConfig, makePushCommand } from "./push.ts";
 import {

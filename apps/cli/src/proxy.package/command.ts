@@ -4,24 +4,25 @@ import { isProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 
+import { commonFlags, runCommandArgument, singleFlag, singleValued } from "../commands/flags.ts";
+import { brokeredRun } from "../commands/pull-run.ts";
+import { commandAfterTerminator } from "../commands/shared.ts";
 import { ConfigStore } from "../config.ts";
 import { usageError } from "../errors.ts";
 import { logNote } from "../notice.ts";
-import { acceptProxyConfig } from "../proxy-accept.ts";
+import { acceptProxyConfig } from "./proxy-accept.ts";
 import {
   DEFAULT_PROXY_CONFIG_PATH,
   checkProxyConfigProject,
   loadProxyConfig,
-} from "../proxy-config.ts";
-import { describeProxyConfig } from "../proxy-run.ts";
-import { commonFlags, runCommandArgument, singleFlag, singleValued } from "./flags.ts";
-import { brokeredRun } from "./pull-run.ts";
-import { commandAfterTerminator } from "./shared.ts";
+} from "./proxy-config.ts";
+import { describeProxyConfig } from "./proxy-run.ts";
 
 /**
  * `maruhi proxy run -- <command>` (PF4 — credential brokering): `run`'s
  * flags plus the proxy config path and a per-request log switch. The run
  * target is declared exactly like `run`'s.
+ * @public
  */
 export const proxyRunConfig = {
   ...commonFlags(),
@@ -43,7 +44,7 @@ export const proxyRunConfig = {
   ),
   command: runCommandArgument(),
 };
-
+/** @public */
 export const proxyAcceptConfig = {
   config: singleValued(
     "config",
@@ -54,7 +55,7 @@ export const proxyAcceptConfig = {
     "The project the config is for (default: the config's `project`, else the default project)",
   ),
 };
-
+/** @public */
 export function makeProxyCommands(onExitCode: (code: number) => void) {
   // `maruhi proxy run` (PF4 — pf4-design.md). The same prologue as run
   // (config → environment → verified pull → presence fail-fast → type

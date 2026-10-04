@@ -23,11 +23,11 @@ import tls from "node:tls";
 import { Effect } from "effect";
 
 import { liveLayer } from "../../src/live.ts";
-import { makeEphemeralCa } from "../../src/proxy-cert.ts";
-import { parseHostPattern } from "../../src/proxy-config.ts";
-import { makePlaceholder } from "../../src/proxy-rules.ts";
-import { proxyControlEnv } from "../../src/proxy-run.ts";
-import { startProxy } from "../../src/proxy-server.ts";
+import { makeEphemeralCa } from "../../src/proxy.package/proxy-cert.ts";
+import { parseHostPattern } from "../../src/proxy.package/proxy-config.ts";
+import { makePlaceholder } from "../../src/proxy.package/proxy-rules.ts";
+import { proxyControlEnv } from "../../src/proxy.package/proxy-run.ts";
+import { startProxy } from "../../src/proxy.package/proxy-server.ts";
 import { ProcessRunner } from "../../src/run.ts";
 
 const REAL = "ghp_probe_real_value_0123456789";
