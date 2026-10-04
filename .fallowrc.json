@@ -83,7 +83,7 @@
   // Layer structure, mirrored in CLAUDE.md ("Layers"). Workspace packages sit
   // below the apps: crypto imports no other workspace package, core may import
   // crypto, api-schema may import core and crypto. Packages never import an
-  // app, and apps never import each other.
+  // app, and apps (cli, server, web, site) never import each other.
   // Per app: the CLI entry files sit above the command layer (commands/** and
   // each *.package/command.ts), which sits above every other file (the domain
   // layer); domain files may import the entry files only for types. Server's
@@ -117,7 +117,8 @@
         "name": "web-shell",
         "patterns": ["apps/web/src/App.tsx", "apps/web/src/Root.tsx", "apps/web/src/pages/**"]
       },
-      { "name": "web-views", "patterns": ["apps/web/src/**"] }
+      { "name": "web-views", "patterns": ["apps/web/src/**"] },
+      { "name": "site", "patterns": ["apps/site/**"] }
     ],
     "rules": [
       { "from": "crypto", "allow": [] },
@@ -146,7 +147,8 @@
       },
       { "from": "server-domain", "allow": ["server-domain", "crypto", "core", "api-schema"] },
       { "from": "web-shell", "allow": ["web-shell", "web-views", "crypto", "core", "api-schema"] },
-      { "from": "web-views", "allow": ["web-views", "crypto", "core", "api-schema"] }
+      { "from": "web-views", "allow": ["web-views", "crypto", "core", "api-schema"] },
+      { "from": "site", "allow": ["site", "crypto", "core", "api-schema"] }
     ]
   },
   "audit": {
