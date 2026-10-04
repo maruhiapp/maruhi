@@ -21,6 +21,7 @@ import {
   usableBookHit,
 } from "./known-fingerprints.ts";
 import { logNote } from "./notice.ts";
+
 /** An accepted row (every row carries the issuance text). */
 export type AddableRow = InvitationRow & { readonly acceptance: InviteAcceptance };
 

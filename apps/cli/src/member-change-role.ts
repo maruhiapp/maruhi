@@ -54,6 +54,7 @@ import {
   scopeChangeAt,
   scopeContains,
 } from "./scope.ts";
+
 // ---------------------------------------------------------------------------
 // member change-role
 // ---------------------------------------------------------------------------
@@ -443,13 +444,6 @@ function splitWidenedByActorScope(input: {
   });
 }
 
-/**
- * `maruhi member change-role`: appends the full replacement of (role,
- * scope), the actor backfills the widened part (§12-6's append path), then
- * rotates the duty environments of the demotion / narrowing (§7) (the
- * order is design record K4-B: the 3 environment sets are pairwise
- * disjoint, and each can resume idempotently).
- */
 /** change_role's inner op (proposal-ization — the omitted side is already resolved against the target's state on the proposal-time view). */
 function changeRoleOperation(input: {
   readonly targetUserId: string;
@@ -650,6 +644,13 @@ export function fulfilRoleChange<R>(input: {
   });
 }
 
+/**
+ * `maruhi member change-role`: appends the full replacement of (role,
+ * scope), the actor backfills the widened part (§12-6's append path), then
+ * rotates the duty environments of the demotion / narrowing (§7) (the
+ * order is design record K4-B: the 3 environment sets are pairwise
+ * disjoint, and each can resume idempotently).
+ */
 export function memberChangeRoleOp<R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;

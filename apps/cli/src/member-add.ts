@@ -63,6 +63,7 @@ import { logNote, logWarning } from "./notice.ts";
 import { type InvitePins, issuedPinOf } from "./pins.ts";
 import { verifiedDeletedEnvironmentSet } from "./rotation-sweep.ts";
 import { compareCodePoints, describeScope, scopeContains } from "./scope.ts";
+
 // ---------------------------------------------------------------------------
 // member add
 // ---------------------------------------------------------------------------

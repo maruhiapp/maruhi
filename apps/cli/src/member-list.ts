@@ -7,6 +7,7 @@ import type { VerifiedProject } from "./chain-sync.ts";
 import { describeDevice, devicesOf } from "./device-key.ts";
 import { displayText } from "./display.ts";
 import { describeScope } from "./scope.ts";
+
 // ---------------------------------------------------------------------------
 // member list
 // ---------------------------------------------------------------------------

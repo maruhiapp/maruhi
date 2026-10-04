@@ -31,6 +31,7 @@ import {
 } from "./member.ts";
 import type { SweepRotate } from "./rotation-sweep.ts";
 import { describeScope, scopeContains } from "./scope.ts";
+
 // ---------------------------------------------------------------------------
 // member remove
 // ---------------------------------------------------------------------------
