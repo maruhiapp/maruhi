@@ -1,9 +1,10 @@
 // The `*.package/command.ts` entry discipline (CLAUDE.md "CLI source
 // layout"): a command group living in a package is imported by
 // commands/index.ts directly — and by nothing else, not even the
-// package's own index.ts (a re-export there widens the surface back to a
-// second entry and, on sync, closes the index → command → context →
-// rotate-connector → index cycle the layout exists to avoid).
+// package's own index.ts. A re-export there widens the surface back to a
+// second entry and, for schema and proxy, would close a real import cycle
+// (sync's matching edge is a type-only import — it follows the same shape
+// for consistency, so the check covers all three uniformly).
 //
 // apps/cli/test/** is excluded from ImportLint by design (tests may
 // inspect package internals), so this pin is a mechanical walk: every
