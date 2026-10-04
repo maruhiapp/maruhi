@@ -120,7 +120,7 @@ function selfObligationRejection(
   ) {
     return null;
   }
-  // Demotion / scope narrowing is judged by the same single predicate as the self-obligation check of a direct append (member.ts)
+  // Demotion / scope narrowing is judged by the same single predicate as the self-obligation check of a direct append (member-change-role.ts)
   switch (
     selfObligationReason(verified, self, {
       role: inner.payload.newRole,

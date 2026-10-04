@@ -2,8 +2,9 @@
 // §6.1 / §6.4).
 //
 // Membership operations (add_member / remove_member / change_role —
-// member.ts) and server-disclosure operations (grant_server /
-// revoke_server — server-grant / server-revoke) share the same structure:
+// member-add / member-remove / member-change-role) and server-disclosure
+// operations (grant_server / revoke_server — server-grant / server-revoke)
+// share the same structure:
 // "sign right after the current head → append under the parent-head CAS
 // (a 409 goes to the caller's retryOnConflict as ChainHeadConflict)".
 // The signing assembly and the append POST are unified here (per-op
