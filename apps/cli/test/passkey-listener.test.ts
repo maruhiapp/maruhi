@@ -18,8 +18,8 @@ import {
   PRF_PAGE_CSP,
   type PrfListener,
   startPrfListener,
-} from "../src/passkey-listener.ts";
-import { PRF_PAGE_CSS, PRF_PAGE_HTML, PRF_PAGE_JS } from "../src/passkey-page.ts";
+} from "../src/passkey.package/passkey-listener.ts";
+import { PRF_PAGE_CSS, PRF_PAGE_HTML, PRF_PAGE_JS } from "../src/passkey.package/passkey-page.ts";
 
 const PRF_HEX = "10".repeat(32);
 const CREDENTIAL_HEX = "a1b2c3d4e5f60718";

@@ -35,19 +35,19 @@ import { decodeHex, derivePasskeyKek, encodeHex, unwrapMasterBlob } from "@maruh
 import { Duration, Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
-import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
-import type { MaruhiClient } from "./api.ts";
-import { displayText, formatUtcMinutes } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { CliIo, type CliIoShape } from "./io.ts";
-import { parseStoredMasterKey, type StoredMasterKey } from "./keychain.ts";
-import { newLedgerId, wrapReserveBlob } from "./master-ops.ts";
-import { logNote } from "./notice.ts";
+import { ensureSensitiveTerminalAllowed } from "../agent-gate.ts";
+import type { MaruhiClient } from "../api.ts";
+import { displayText, formatUtcMinutes } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { CliIo, type CliIoShape } from "../io.ts";
+import { parseStoredMasterKey, type StoredMasterKey } from "../keychain.ts";
+import { newLedgerId, wrapReserveBlob } from "../master-ops.ts";
+import { logNote } from "../notice.ts";
+import type { ReserveKeys } from "../reserve.ts";
+import type { CliSession } from "../session.ts";
 import { type PrfListener, type PrfListenerOutcome, startPrfListener } from "./passkey-listener.ts";
 import type { PrfPageConfig, PrfPageErrorCode } from "./passkey-page.ts";
-import type { ReserveKeys } from "./reserve.ts";
-import type { CliSession } from "./session.ts";
 
 /** Cap on the ceremony wait (enough for browser launch + biometric auth. An abandoned terminal is not listened to forever). */
 const CEREMONY_TIMEOUT = Duration.minutes(5);
