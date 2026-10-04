@@ -105,7 +105,7 @@ function winnerRegression(
  * re-fetched latest being older than a version known to exist = the server
  * contradicting itself), (2) regression from the verified known latest,
  * different signed bytes at the same coordinates, and a mismatched
- * adjacent prev. **Rotation re-encryption (env-rotate.ts) also goes
+ * adjacent prev. **Rotation re-encryption (env-rotate-push.ts) also goes
  * through this check**: re-pointing prev at the winner is the same shape
  * as the push path, and letting just one side chain-sign onto a diverged
  * history would open a hole that relies on the floor (a SHOULD, absent on

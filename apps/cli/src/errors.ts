@@ -16,7 +16,7 @@ export class CliError extends Data.TaggedError("CliError")<{
    * Whether the failure carries cryptographic evidence (a
    * contradiction between signature-verified data and the chain
    * attestation / floor — one a re-run does not resolve). rotate's
-   * per-leg classification (settlePass in env-rotate.ts) reads it to
+   * per-leg classification (settlePass in env-rotate-pass.ts) reads it to
    * avoid downgrading to "re-run to fix" guidance.
    */
   readonly evidence?: boolean;

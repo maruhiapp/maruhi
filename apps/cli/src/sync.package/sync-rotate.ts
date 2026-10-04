@@ -34,7 +34,7 @@
 // not the kind of failure "the next apply rewrites", and folding
 // it into a warning would hide tamper evidence behind the wrong
 // guidance "just re-apply". Evidence alone passes through as a
-// failure (same discipline as env-rotate.ts's re-scan). It talks
+// failure (same discipline as env-rotate-push.ts's re-scan). It talks
 // only to the maruhi server and never touches the sync target
 // (vendor API / CLI). What appears in the output is only the
 // target name, counts, versions, and variable names
