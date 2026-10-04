@@ -471,6 +471,28 @@ function noteResolvedFailure(warnings: string[], failure: string | null, resolut
   }
 }
 
+/**
+ * Re-encrypting the current values (§7): encrypt each target with the
+ * target epoch's DEK and push it as an ordinary push, and **at the end of
+ * every pass, rescan the environment and verify the completion** (up to
+ * {@link MAX_REENCRYPT_PASSES} passes). The rescan doubles as confirming
+ * the conflicts' reality (a winner already at the current epoch needs no
+ * re-encryption) and discovering variables created after the first pull.
+ * "Finished pushing every target" is not evidence of completion —
+ * completion's evidence is "the re-fetched, re-verified view carries no
+ * active value below the target epoch".
+ *
+ * Failures are never thrown — they come back as {@link
+ * ReencryptOutcome.failure}: by the time this function runs the epoch has
+ * already advanced, and throwing a mid-run failure (network, a concurrent
+ * rotation, a floor write) as an exception would let the fact "only the
+ * epoch advanced and re-encryption remains" slip past the
+ * partial-completion reporting path. The exception is **cryptographic
+ * evidence (RescanResult.evidence)** alone, which is an immediate abort
+ * (the error channel) — it is not the "a re-run fixes it" kind of
+ * failure, so it must not blend into partial-completion + resume guidance
+ * (aligned with the push path's handling).
+ */
 export function reencryptCurrentValues(input: {
   readonly context: ReencryptContext;
   readonly view: VerifiedProject;
