@@ -14,13 +14,15 @@ import {
 } from "../context.ts";
 import { CliError, usageError } from "../errors.ts";
 import { parseUserFingerprintFlag } from "../fingerprint-flag.ts";
+import { inviteAcceptOp } from "../invite-accept.ts";
+import { inviteCreateOp } from "../invite-create.ts";
 import {
   type InviteInputRejection,
   type InviteLinkData,
   type InviteRole,
   parseInviteAcceptInput,
 } from "../invite-link.ts";
-import { inviteAcceptOp, inviteCreateOp, inviteListOp, inviteRevokeOp } from "../invite.ts";
+import { inviteListOp, inviteRevokeOp } from "../invite-list.ts";
 import { keyGenerateOp } from "../keygen.ts";
 import { PinStore } from "../pins.ts";
 import { scopeFromFlags } from "../scope.ts";
