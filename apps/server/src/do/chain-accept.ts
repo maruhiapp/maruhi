@@ -12,23 +12,23 @@ import { chainMirrorEvents, indexProposals } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { AuditEventInput, AuditRotationRead } from "./audit-store.ts";
-import type { StoredChain, VerifiedChainView } from "./chain-store.ts";
-import { canonicalBytesOf, verifyChainEffect } from "./chain-store.ts";
-import type { DataRejectedError } from "./data-plane.ts";
-import { rejectData } from "./data-plane.ts";
-import type { StaleWrapRef } from "./data-store.ts";
+import type { AuditEventInput, AuditRotationRead } from "../audit-store.ts";
+import type { DataRejectedError } from "../data/data-plane.ts";
+import { rejectData } from "../data/data-plane.ts";
+import type { StaleWrapRef } from "../data/data-store.ts";
 import {
   MAX_CHAIN_ENTRIES,
   MAX_CHAIN_TOTAL_CANONICAL_BYTES,
   MAX_ENTRY_CANONICAL_BYTES,
-} from "./policy.ts";
+} from "../policy.ts";
 import {
   detectDeviceRevocation,
   detectMemberRemoval,
   detectRoleChange,
   detectServerRevocation,
-} from "./rotation-detect.ts";
+} from "../rotation-detect.ts";
+import type { StoredChain, VerifiedChainView } from "./chain-store.ts";
+import { canonicalBytesOf, verifyChainEffect } from "./chain-store.ts";
 
 /** ChainInvalid (verification / encoder failure) → chain-entry-invalid rejection. */
 const rejectChainInvalid = (error: ChainInvalidError): DataRejectedError =>

@@ -10,6 +10,8 @@
 
 import { Context, Effect, Layer } from "effect";
 
+import { ATTESTATION_WINDOW_MS, LEASE_WINDOW_MS } from "../policy.ts";
+import type { StoredServerWrap } from "../server-key.ts";
 import type {
   CheckpointSnapshotEntryValue,
   CheckpointSnapshotValue,
@@ -28,8 +30,6 @@ import type {
   ValueInput,
   WireSuite,
 } from "./data-plane.ts";
-import { ATTESTATION_WINDOW_MS, LEASE_WINDOW_MS } from "./policy.ts";
-import type { StoredServerWrap } from "./server-key.ts";
 
 interface EnvironmentRow {
   readonly environmentId: string;

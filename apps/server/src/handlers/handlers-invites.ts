@@ -49,10 +49,10 @@ import { Effect } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { ensureKeyMaterialAccess } from "./authz.ts";
-import { requireProjectChainAdmin } from "./data-http.ts";
-import { INVITE_TTL_MS, InviteRepo } from "./db.package/index.ts";
-import type { InvitationRecord, InviteIssuance } from "./invite-domain.ts";
+import { ensureKeyMaterialAccess } from "../authz.ts";
+import { requireProjectChainAdmin } from "../data/data-http.ts";
+import { INVITE_TTL_MS, InviteRepo } from "../db.package/index.ts";
+import type { InvitationRecord, InviteIssuance } from "../invite-domain.ts";
 
 /**
  * Derives the unusability reason (§15-1: expiry is derived from

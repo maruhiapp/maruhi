@@ -59,8 +59,10 @@ import { Effect, Schema } from "effect";
 import { HttpServerResponse } from "effect/http";
 import type { HttpApiEndpoint } from "effect/http-api";
 
-import { ensureTokenScopeForProject } from "./authz.ts";
-import type { ProjectChainDO } from "./chain-do.ts";
+import { ensureTokenScopeForProject } from "../authz.ts";
+import type { ProjectChainDO } from "../do/chain-do.ts";
+import { MAX_VALUE_CIPHERTEXT_BYTES } from "../policy.ts";
+import { projectStub, rpcCall, WorkerEnv } from "../worker-env.ts";
 import type {
   DataActor,
   DataOutcome,
@@ -72,8 +74,6 @@ import type {
   ValueInput,
 } from "./data-plane.ts";
 import { roleAtLeast } from "./data-plane.ts";
-import { MAX_VALUE_CIPHERTEXT_BYTES } from "./policy.ts";
-import { projectStub, rpcCall, WorkerEnv } from "./worker-env.ts";
 
 /** The 204 response (shared by write endpoints). */
 export const noContent = HttpServerResponse.empty({ status: 204 });

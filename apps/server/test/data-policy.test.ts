@@ -21,8 +21,8 @@ import { Cause, Effect, Exit } from "effect";
 import type { HttpApiEndpoint } from "effect/http-api";
 import { describe, expect, it } from "vitest";
 
-import { dataRejectionError, unwrapDataOutcome } from "../src/data-http.ts";
-import type { DataRejection } from "../src/data-plane.ts";
+import { dataRejectionError, unwrapDataOutcome } from "../src/data/data-http.ts";
+import type { DataRejection } from "../src/data/data-plane.ts";
 import {
   MAX_ACTIVE_ENVIRONMENTS,
   MAX_ACTIVE_VARIABLES_PER_ENVIRONMENT,

@@ -13,8 +13,7 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { ensureActorMatches } from "./authz.ts";
-import type { EnvironmentChainResultValue } from "./composite-programs.ts";
+import { ensureActorMatches } from "../authz.ts";
 import {
   callProjectData,
   checkManifestCoordinates,
@@ -22,8 +21,9 @@ import {
   noContent,
   toManifestInput,
   toMetaStatementInput,
-} from "./data-http.ts";
-import type { EnvironmentListValue } from "./data-plane.ts";
+} from "../data/data-http.ts";
+import type { EnvironmentListValue } from "../data/data-plane.ts";
+import type { EnvironmentChainResultValue } from "../programs/composite-programs.ts";
 
 /**
  * §12-4: the chain entry's actor and the wrap's signer must strictly

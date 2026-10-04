@@ -42,8 +42,9 @@
 // (the next upload starts at sequence 0). No audit row is written for a
 // replication (ruling G).
 
-import { auditRowShapeViolations, deriveAuditHeads, isAuditHeadHex } from "./audit-store.ts";
-import type { MirrorSyncRejectReason } from "./data-plane.ts";
+import { auditRowShapeViolations, deriveAuditHeads, isAuditHeadHex } from "../audit-store.ts";
+import type { MirrorSyncRejectReason } from "../data/data-plane.ts";
+import { OPS_RESTORE_BATCH_ROWS } from "../ops/ops-policy.ts";
 import {
   acceptColumns,
   acceptHeader,
@@ -59,7 +60,6 @@ import {
   type SnapshotTableLine,
   type SnapshotTrailer,
 } from "./do-snapshot.ts";
-import { OPS_RESTORE_BATCH_ROWS } from "./ops-policy.ts";
 
 /**
  * Snapshot tables a replication never replaces: the deployment's own

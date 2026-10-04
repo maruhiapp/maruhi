@@ -1,4 +1,4 @@
-// Tests for the project DO's schema-migration machinery (src/do-schema.ts).
+// Tests for the project DO's schema-migration machinery (src/do/do-schema.ts).
 // Verifies on the real workerd SqlStorage: applying to an empty DB and to
 // a mid-version DB, rollback and rerun of a failed step, and that
 // re-applying to an already-migrated DB is a no-op.
@@ -13,8 +13,8 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { DataStore, dataStoreLayer } from "../src/data-store.ts";
-import type { ProjectDoMigration } from "../src/do-schema.ts";
+import { DataStore, dataStoreLayer } from "../src/data/data-store.ts";
+import type { ProjectDoMigration } from "../src/do/do-schema.ts";
 import {
   applyProjectDoMigrations,
   ensureProjectDoTables,
@@ -22,7 +22,7 @@ import {
   PROJECT_DO_LOCAL_TABLES,
   PROJECT_DO_TABLES,
   readProjectDoSchemaVersion,
-} from "../src/do-schema.ts";
+} from "../src/do/do-schema.ts";
 
 /** Run body on the storage of this file's dedicated DO. */
 async function withStorage<T>(body: (storage: DurableObjectStorage) => T): Promise<T> {

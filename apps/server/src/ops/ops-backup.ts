@@ -19,9 +19,10 @@
 
 import { Effect } from "effect";
 
-import type { Env, OpsBackupOutcome } from "./chain-do.ts";
-import type { OpsBackupAttempt } from "./db.package/index.ts";
-import { OpsRepo } from "./db.package/index.ts";
+import type { OpsBackupAttempt } from "../db.package/index.ts";
+import { OpsRepo } from "../db.package/index.ts";
+import type { Env, OpsBackupOutcome } from "../do/chain-do.ts";
+import { projectStub, rpcCall } from "../worker-env.ts";
 import {
   OPS_BACKUP_MAX_BYTES,
   OPS_BACKUP_REFRESH_MS,
@@ -29,7 +30,6 @@ import {
   OPS_SWEEP_MAX_PROJECTS,
   OPS_SWEEP_PAGE_SIZE,
 } from "./ops-policy.ts";
-import { projectStub, rpcCall } from "./worker-env.ts";
 
 const SWEEP_CURSOR_KEY = "backup_sweep_cursor";
 const SNAPSHOT_KEY_PREFIX = "do";

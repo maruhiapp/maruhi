@@ -1,5 +1,5 @@
 // Tests for the partial indexing of audit_events' target / key-FP indexes
-// (src/do-schema.ts — audit-log growth-density countermeasure ①).
+// (src/do/do-schema.ts — audit-log growth-density countermeasure ①).
 //
 // Three things are pinned on workerd's real SqlStorage:
 // (a) the post-migration schema has `WHERE <column> IS NOT NULL` partial

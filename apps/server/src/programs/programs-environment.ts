@@ -13,8 +13,7 @@
 import { auditReadPayload, VAR_READ_EVENT } from "@maruhi/core";
 import { Effect } from "effect";
 
-import { AuditStore } from "./audit-store.ts";
-import type { StateCache } from "./chain-store.ts";
+import { AuditStore } from "../audit-store.ts";
 import type {
   DataActor,
   EnvironmentListValue,
@@ -23,7 +22,7 @@ import type {
   EnvironmentSummaryValue,
   EnvManifestInput,
   MetaStatementInput,
-} from "./data-plane.ts";
+} from "../data/data-plane.ts";
 import {
   currentEpochOf,
   dataEvent,
@@ -33,12 +32,13 @@ import {
   requireEnvironmentAccess,
   requireMemberState,
   withSigningDevice,
-} from "./data-plane.ts";
-import { DataStore } from "./data-store.ts";
-import { requireActiveEnvironment } from "./quotas.ts";
-import { ensureStorageAdmitsGrowth, observeStorageLevel } from "./storage-guard.ts";
-import { acceptManifestForMetaOp } from "./verify-manifest.ts";
-import { acceptMetaStatement, ensureNfcName } from "./verify-meta.ts";
+} from "../data/data-plane.ts";
+import { DataStore } from "../data/data-store.ts";
+import { acceptManifestForMetaOp } from "../data/verify-manifest.ts";
+import { acceptMetaStatement, ensureNfcName } from "../data/verify-meta.ts";
+import type { StateCache } from "../do/chain-store.ts";
+import { requireActiveEnvironment } from "../quotas.ts";
+import { ensureStorageAdmitsGrowth, observeStorageLevel } from "../storage-guard.ts";
 
 export const renameEnvironmentProgram = (
   actor: DataActor,

@@ -19,13 +19,13 @@ import {
 import { Context, Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import type { Env, OpsBackupOutcome, OpsRestoreOutcome } from "../src/chain-do.ts";
 import { makeDbServices, OpsRepo } from "../src/db.package/index.ts";
-import { PROJECT_DO_TABLES } from "../src/do-schema.ts";
-import { SNAPSHOT_FORMAT, SNAPSHOT_FORMAT_VERSION } from "../src/do-snapshot.ts";
+import type { Env, OpsBackupOutcome, OpsRestoreOutcome } from "../src/do/chain-do.ts";
+import { PROJECT_DO_TABLES } from "../src/do/do-schema.ts";
+import { SNAPSHOT_FORMAT, SNAPSHOT_FORMAT_VERSION } from "../src/do/do-snapshot.ts";
 import worker from "../src/index.ts";
-import { runBackupSweep } from "../src/ops-backup.ts";
-import { OPS_BACKUP_MAX_BYTES, OPS_HOURLY_CRON } from "../src/ops-policy.ts";
+import { runBackupSweep } from "../src/ops/ops-backup.ts";
+import { OPS_BACKUP_MAX_BYTES, OPS_HOURLY_CRON } from "../src/ops/ops-policy.ts";
 import { seedProjectActivity } from "./support/audit-read-scenario.ts";
 import { OWNER, projectId, READER, requestJson } from "./support/data-fixture.ts";
 import { ENV, registerDataScenario, token } from "./support/data-scenario.ts";

@@ -20,9 +20,9 @@ import type {
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Data, Effect } from "effect";
 
-import type { AuditEventInput } from "./audit-store.ts";
-import type { StateCache, StoredChain } from "./chain-store.ts";
-import { ChainStore, deriveStoredState } from "./chain-store.ts";
+import type { AuditEventInput } from "../audit-store.ts";
+import type { StateCache, StoredChain } from "../do/chain-store.ts";
+import { ChainStore, deriveStoredState } from "../do/chain-store.ts";
 
 // ---------------------------------------------------------------------------
 // Inputs and values crossing the RPC boundary (only plain objects safe for

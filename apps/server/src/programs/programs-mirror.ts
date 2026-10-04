@@ -28,10 +28,10 @@ import {
 } from "@maruhi/crypto";
 import { Effect, Schema } from "effect";
 
-import { AuditStore } from "./audit-store.ts";
-import type { ChainStore, StateCache } from "./chain-store.ts";
-import type { DataActor, DataRejectedError } from "./data-plane.ts";
-import { rejectData, requireMemberState, roleAtLeast } from "./data-plane.ts";
+import { AuditStore } from "../audit-store.ts";
+import type { DataActor, DataRejectedError } from "../data/data-plane.ts";
+import { rejectData, requireMemberState, roleAtLeast } from "../data/data-plane.ts";
+import type { ChainStore, StateCache } from "../do/chain-store.ts";
 import {
   commitMirrorReplica,
   verifyStagedAuditHeads,
@@ -44,15 +44,15 @@ import {
   stagedChainRows,
   stageMirrorPage,
   unmarkMirror,
-} from "./do-mirror.ts";
-import { PROJECT_DO_TABLES, readProjectDoSchemaVersion } from "./do-schema.ts";
-import { readWatermarks } from "./do-snapshot.ts";
+} from "../do/do-mirror.ts";
+import { PROJECT_DO_TABLES, readProjectDoSchemaVersion } from "../do/do-schema.ts";
+import { readWatermarks } from "../do/do-snapshot.ts";
 import {
   MAX_EXPORT_PAGE_BYTES,
   MAX_EXPORT_PAGE_ROWS,
   MAX_MIRROR_PAGE_SLACK_BYTES,
-} from "./policy.ts";
-import { ensureStorageAdmitsGrowth, StorageMeter } from "./storage-guard.ts";
+} from "../policy.ts";
+import { ensureStorageAdmitsGrowth, StorageMeter } from "../storage-guard.ts";
 
 /** The last replication as the status reports it (the commit's position; the re-appended count is a commit's answer only). */
 export type MirrorSyncPosition = Omit<MirrorCommit, "ownAuditRows">;

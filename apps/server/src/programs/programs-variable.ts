@@ -8,9 +8,8 @@
 import type { ChainHistoryIndex, ChainState } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { AuditEventInput } from "./audit-store.ts";
-import { AuditStore } from "./audit-store.ts";
-import type { StateCache } from "./chain-store.ts";
+import type { AuditEventInput } from "../audit-store.ts";
+import { AuditStore } from "../audit-store.ts";
 import type {
   DataActor,
   DataRejection,
@@ -20,7 +19,7 @@ import type {
   SchemaPolicy,
   ValueInput,
   VariableVersionValue,
-} from "./data-plane.ts";
+} from "../data/data-plane.ts";
 import {
   currentEpochOf,
   dataEvent,
@@ -28,18 +27,10 @@ import {
   rejectData,
   requireEnvironmentAccess,
   withSigningDevice,
-} from "./data-plane.ts";
-import type { DataWriteOps, VariableRow } from "./data-store.ts";
-import { DataStore } from "./data-store.ts";
-import { MAX_VERSIONS_PER_VARIABLE } from "./policy.ts";
-import {
-  ensureProjectCapacity,
-  ensureVariableQuota,
-  requireActiveEnvironment,
-  requireActiveVariable,
-} from "./quotas.ts";
-import { ensureStorageAdmitsGrowth } from "./storage-guard.ts";
-import { acceptManifestForMetaOp } from "./verify-manifest.ts";
+} from "../data/data-plane.ts";
+import type { DataWriteOps, VariableRow } from "../data/data-store.ts";
+import { DataStore } from "../data/data-store.ts";
+import { acceptManifestForMetaOp } from "../data/verify-manifest.ts";
 import {
   acceptMetaStatement,
   ensureDescriptionPolicy,
@@ -49,8 +40,17 @@ import {
   ensureSchemaPolicyAllowsLayout,
   ensureSupportedLayout,
   statementLayoutVersion,
-} from "./verify-meta.ts";
-import { ensureValueCas, ensureValueSignature } from "./verify-value.ts";
+} from "../data/verify-meta.ts";
+import { ensureValueCas, ensureValueSignature } from "../data/verify-value.ts";
+import type { StateCache } from "../do/chain-store.ts";
+import { MAX_VERSIONS_PER_VARIABLE } from "../policy.ts";
+import {
+  ensureProjectCapacity,
+  ensureVariableQuota,
+  requireActiveEnvironment,
+  requireActiveVariable,
+} from "../quotas.ts";
+import { ensureStorageAdmitsGrowth } from "../storage-guard.ts";
 
 function variableIdUnavailable(
   existing: VariableRow | null,

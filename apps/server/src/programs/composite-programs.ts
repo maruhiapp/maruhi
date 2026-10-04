@@ -27,23 +27,16 @@
 import type { ChainEntry, ChainState } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { AuditEventInput, AuditRotationRead } from "./audit-store.ts";
-import { AuditStore } from "./audit-store.ts";
-import {
-  ensureParentHead,
-  insertAcceptedEntryPairSync,
-  verifyAcceptableEntryPair,
-} from "./chain-accept.ts";
-import type { StateCache, StoredChain } from "./chain-store.ts";
-import { ChainStore, deriveStoredState, updateStateCache } from "./chain-store.ts";
-import { ensureAuditHeadAcceptable, ensureCheckpointValuesDigest } from "./checkpoint-accept.ts";
+import type { AuditEventInput, AuditRotationRead } from "../audit-store.ts";
+import { AuditStore } from "../audit-store.ts";
+import { ensureAuditHeadAcceptable, ensureCheckpointValuesDigest } from "../checkpoint-accept.ts";
 import type {
   DataActor,
   DekWrapInput,
   EnvManifestInput,
   MemberWithDevice,
   MetaStatementInput,
-} from "./data-plane.ts";
+} from "../data/data-plane.ts";
 import {
   dataEvent,
   deviceOf,
@@ -52,18 +45,29 @@ import {
   rejectData,
   requireRole,
   requireRoleInScope,
-} from "./data-plane.ts";
-import type { DataWriteOps } from "./data-store.ts";
-import { DataStore } from "./data-store.ts";
+} from "../data/data-plane.ts";
+import type { DataWriteOps } from "../data/data-store.ts";
+import { DataStore } from "../data/data-store.ts";
+import {
+  acceptEnvManifest,
+  manifestDigestEntries,
+  storedEnvMeta,
+} from "../data/verify-manifest.ts";
+import { ensureMetaStatementSignature, ensureNfcName } from "../data/verify-meta.ts";
 import {
   dekRegisteredEvent,
   ensureWrapSetAcceptable,
   expectedWrapRecipientCount,
-} from "./dek-wraps.ts";
-import { ensureEnvironmentQuota, requireActiveEnvironment } from "./quotas.ts";
-import { ensureStorageAdmitsGrowth } from "./storage-guard.ts";
-import { acceptEnvManifest, manifestDigestEntries, storedEnvMeta } from "./verify-manifest.ts";
-import { ensureMetaStatementSignature, ensureNfcName } from "./verify-meta.ts";
+} from "../dek-wraps.ts";
+import {
+  ensureParentHead,
+  insertAcceptedEntryPairSync,
+  verifyAcceptableEntryPair,
+} from "../do/chain-accept.ts";
+import type { StateCache, StoredChain } from "../do/chain-store.ts";
+import { ChainStore, deriveStoredState, updateStateCache } from "../do/chain-store.ts";
+import { ensureEnvironmentQuota, requireActiveEnvironment } from "../quotas.ts";
+import { ensureStorageAdmitsGrowth } from "../storage-guard.ts";
 
 /** The result of a composite acceptance (crosses the RPC boundary). */
 export interface EnvironmentChainResultValue {

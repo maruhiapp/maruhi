@@ -18,7 +18,7 @@
 
 import { Context, Effect } from "effect";
 
-import { OpsRepo } from "./db.package/index.ts";
+import { OpsRepo } from "../db.package/index.ts";
 import {
   OPS_ALERT_RENOTIFY_MS,
   OPS_COUNTER_WINDOW_MS,

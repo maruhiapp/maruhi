@@ -12,8 +12,8 @@ import { maruhiApi } from "@maruhi/api-schema";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { callProjectData, noContent } from "./data-http.ts";
-import type { SchemaPolicy } from "./data-plane.ts";
+import { callProjectData, noContent } from "../data/data-http.ts";
+import type { SchemaPolicy } from "../data/data-plane.ts";
 
 export const schemaPolicyLive = HttpApiBuilder.group(maruhiApi, "schemaPolicy", (handlers) =>
   handlers

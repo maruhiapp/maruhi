@@ -31,20 +31,10 @@ import type { ChainEntry, ChainState, Role } from "@maruhi/crypto";
 import { DurableObject } from "cloudflare:workers";
 import { Data, Effect, Layer, ManagedRuntime, Semaphore } from "effect";
 
-import type { HeadAttestationSubmissionInput } from "./attestation-accept.ts";
-import { putHeadAttestationProgram } from "./attestation-accept.ts";
-import { AuditStore, auditStoreLayer } from "./audit-store.ts";
-import type { AppliedProposal } from "./chain-accept.ts";
-import { ensureParentHead, verifyAcceptableEntry } from "./chain-accept.ts";
-import { commitAcceptedEntry } from "./chain-commit.ts";
-import type { StateCache } from "./chain-store.ts";
-import { ChainStore, chainStoreLayer, deriveStoredState, updateStateCache } from "./chain-store.ts";
-import { standaloneCheckpointProgram } from "./checkpoint-accept.ts";
-import type { EnvironmentChainResultValue } from "./composite-programs.ts";
-import {
-  createEnvironmentCompositeProgram,
-  rotateEpochCompositeProgram,
-} from "./composite-programs.ts";
+import type { HeadAttestationSubmissionInput } from "../attestation-accept.ts";
+import { putHeadAttestationProgram } from "../attestation-accept.ts";
+import { AuditStore, auditStoreLayer } from "../audit-store.ts";
+import { standaloneCheckpointProgram } from "../checkpoint-accept.ts";
 import type {
   DataActor,
   DataOutcome,
@@ -61,10 +51,100 @@ import type {
   SchemaPolicy,
   ValueInput,
   VariableVersionValue,
-} from "./data-plane.ts";
-import { rejectData, requireMemberState } from "./data-plane.ts";
-import type { StoredHeadAttestation } from "./data-store.ts";
-import { DataStore, dataStoreLayer } from "./data-store.ts";
+} from "../data/data-plane.ts";
+import { rejectData, requireMemberState } from "../data/data-plane.ts";
+import type { StoredHeadAttestation } from "../data/data-store.ts";
+import { DataStore, dataStoreLayer } from "../data/data-store.ts";
+import { MAX_DEVICES_PER_MEMBER } from "../policy.ts";
+import type { EnvironmentChainResultValue } from "../programs/composite-programs.ts";
+import {
+  createEnvironmentCompositeProgram,
+  rotateEpochCompositeProgram,
+} from "../programs/composite-programs.ts";
+import type { AuditEventsQueryInput, AuditEventValue } from "../programs/programs-audit.ts";
+import { auditEventsProgram, auditHeadProgram } from "../programs/programs-audit.ts";
+import {
+  deleteDekWrapsProgram,
+  listMyDekWrapsProgram,
+  registerDekWrapsProgram,
+} from "../programs/programs-dek.ts";
+import {
+  deleteEnvironmentProgram,
+  listEnvironmentsProgram,
+  pullEnvironmentMetadataProgram,
+  pullEnvironmentProgram,
+  renameEnvironmentProgram,
+} from "../programs/programs-environment.ts";
+import type { ExportMembersValue, ExportPageValue } from "../programs/programs-export.ts";
+import { exportMembersProgram, exportPageProgram } from "../programs/programs-export.ts";
+import type {
+  VariableVersionHistoryValue,
+  VariableVersionValuesValue,
+} from "../programs/programs-history.ts";
+import {
+  variableHistoryProgram,
+  variableVersionValuesProgram,
+} from "../programs/programs-history.ts";
+import type { LeaseOutcome, LeaseTokenFacts, LeaseValue } from "../programs/programs-lease.ts";
+import { leaseProgram } from "../programs/programs-lease.ts";
+import type {
+  MirrorPageRequest,
+  MirrorPageValue,
+  MirrorStatusValue,
+} from "../programs/programs-mirror.ts";
+import {
+  markMirrorProgram,
+  mirrorPageProgram,
+  mirrorStatusProgram,
+  unmarkMirrorProgram,
+} from "../programs/programs-mirror.ts";
+import type {
+  MemberProposalValue,
+  PreflightOutcome,
+  PreflightRecipientInput,
+  PreflightVariableInput,
+  ProposalOutcome,
+  ProposalReceipt,
+  ProposalResolutionInput,
+  RotationProposalInput,
+} from "../programs/programs-proposal.ts";
+import {
+  listRotationProposalsProgram,
+  preflightRotationProgram,
+  proposeRotationProgram,
+  resolveRotationProposalProgram,
+} from "../programs/programs-proposal.ts";
+import type { RotationDismissTargetInput } from "../programs/programs-rotation.ts";
+import {
+  dismissRotationFlagsProgram,
+  rotationFlagsProgram,
+} from "../programs/programs-rotation.ts";
+import {
+  getSchemaPolicyProgram,
+  setSchemaPolicyProgram,
+} from "../programs/programs-schema-policy.ts";
+import {
+  activateVariableProgram,
+  createVariableProgram,
+  deleteVariableProgram,
+  pushVersionProgram,
+  renameVariableProgram,
+} from "../programs/programs-variable.ts";
+import { ensureProposalAdmitted } from "../quotas.ts";
+import type { EffectiveRotationFlag } from "../rotation-detect.ts";
+import { makeServerKey, ServerKey } from "../server-key.ts";
+import type { StorageGuardDecision } from "../storage-guard.ts";
+import {
+  ensureStorageAdmitsGrowth,
+  StorageMeter,
+  storageGuardDecision,
+  storageMeterLayer,
+} from "../storage-guard.ts";
+import type { AppliedProposal } from "./chain-accept.ts";
+import { ensureParentHead, verifyAcceptableEntry } from "./chain-accept.ts";
+import { commitAcceptedEntry } from "./chain-commit.ts";
+import type { StateCache } from "./chain-store.ts";
+import { ChainStore, chainStoreLayer, deriveStoredState, updateStateCache } from "./chain-store.ts";
 import { readMirrorState } from "./do-mirror.ts";
 import {
   ensureProjectDoTables,
@@ -79,73 +159,6 @@ import {
   snapshotObjectKey,
   writeSnapshot,
 } from "./do-snapshot.ts";
-import { MAX_DEVICES_PER_MEMBER } from "./policy.ts";
-import type { AuditEventsQueryInput, AuditEventValue } from "./programs-audit.ts";
-import { auditEventsProgram, auditHeadProgram } from "./programs-audit.ts";
-import {
-  deleteDekWrapsProgram,
-  listMyDekWrapsProgram,
-  registerDekWrapsProgram,
-} from "./programs-dek.ts";
-import {
-  deleteEnvironmentProgram,
-  listEnvironmentsProgram,
-  pullEnvironmentMetadataProgram,
-  pullEnvironmentProgram,
-  renameEnvironmentProgram,
-} from "./programs-environment.ts";
-import type { ExportMembersValue, ExportPageValue } from "./programs-export.ts";
-import { exportMembersProgram, exportPageProgram } from "./programs-export.ts";
-import type {
-  VariableVersionHistoryValue,
-  VariableVersionValuesValue,
-} from "./programs-history.ts";
-import { variableHistoryProgram, variableVersionValuesProgram } from "./programs-history.ts";
-import type { LeaseOutcome, LeaseTokenFacts, LeaseValue } from "./programs-lease.ts";
-import { leaseProgram } from "./programs-lease.ts";
-import type { MirrorPageRequest, MirrorPageValue, MirrorStatusValue } from "./programs-mirror.ts";
-import {
-  markMirrorProgram,
-  mirrorPageProgram,
-  mirrorStatusProgram,
-  unmarkMirrorProgram,
-} from "./programs-mirror.ts";
-import type {
-  MemberProposalValue,
-  PreflightOutcome,
-  PreflightRecipientInput,
-  PreflightVariableInput,
-  ProposalOutcome,
-  ProposalReceipt,
-  ProposalResolutionInput,
-  RotationProposalInput,
-} from "./programs-proposal.ts";
-import {
-  listRotationProposalsProgram,
-  preflightRotationProgram,
-  proposeRotationProgram,
-  resolveRotationProposalProgram,
-} from "./programs-proposal.ts";
-import type { RotationDismissTargetInput } from "./programs-rotation.ts";
-import { dismissRotationFlagsProgram, rotationFlagsProgram } from "./programs-rotation.ts";
-import { getSchemaPolicyProgram, setSchemaPolicyProgram } from "./programs-schema-policy.ts";
-import {
-  activateVariableProgram,
-  createVariableProgram,
-  deleteVariableProgram,
-  pushVersionProgram,
-  renameVariableProgram,
-} from "./programs-variable.ts";
-import { ensureProposalAdmitted } from "./quotas.ts";
-import type { EffectiveRotationFlag } from "./rotation-detect.ts";
-import { makeServerKey, ServerKey } from "./server-key.ts";
-import type { StorageGuardDecision } from "./storage-guard.ts";
-import {
-  ensureStorageAdmitsGrowth,
-  StorageMeter,
-  storageGuardDecision,
-  storageMeterLayer,
-} from "./storage-guard.ts";
 
 export interface Env {
   readonly PROJECT_CHAIN: DurableObjectNamespace<ProjectChainDO>;
