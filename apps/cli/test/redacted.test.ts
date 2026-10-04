@@ -4,7 +4,8 @@
 // and "internal errors get only the type name", this 4th layer: tokens can
 // never yield their raw value without unwrapping `Redacted` at the type level.
 //
-// What this pins, threefold:
+// What this pins, threefold (split across redacted-output.test.ts #1,
+// redacted-keychain.test.ts #2, and redacted.test.ts #3):
 //  3. The unwrap sites (`Redacted.value`) are kept countable
 //
 // #3 is close to the real aim: more than the redaction itself, "the unwrap sites have not grown" is what works.

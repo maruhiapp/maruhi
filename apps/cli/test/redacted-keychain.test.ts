@@ -4,7 +4,8 @@
 // and "internal errors get only the type name", this 4th layer: tokens can
 // never yield their raw value without unwrapping `Redacted` at the type level.
 //
-// What this pins, threefold:
+// What this pins, threefold (split across redacted-output.test.ts #1,
+// redacted-keychain.test.ts #2, and redacted.test.ts #3):
 //  2. The keychain round trip (save → read-back → real use) is not broken by a
 //     redacted save (`Redacted.toJSON()` returns "<redacted>", so stringifying a
 //     record as-is saves a redaction with no type error — the biggest trap)
