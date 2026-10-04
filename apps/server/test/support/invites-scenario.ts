@@ -351,12 +351,12 @@ export function firstAudit(rows: readonly AuditRow[], event: string): AuditRow {
   return found;
 }
 
-export let fixture: DataFixture;
+export let inviteFixture: DataFixture;
 
 /** Called once at the top of each test file: registers the fixture's
  * beforeEach. */
 export function registerInviteScenario(): void {
   beforeEach(async () => {
-    fixture = await setupDataProject();
+    inviteFixture = await setupDataProject();
   });
 }
