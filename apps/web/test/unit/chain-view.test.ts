@@ -3,7 +3,8 @@
 // are bound by tsc).
 import { describe, expect, it } from "vitest";
 
-import { deriveReportedView, reportedDeviceCount } from "../../src/dashboard/chain-view.ts";
+import { reportedDeviceCount } from "../../src/dashboard/chain-view-reported.ts";
+import { deriveReportedView } from "../../src/dashboard/chain-view.ts";
 import type { ChainEntry } from "../../src/dashboard/types.ts";
 
 const HEX64 = "12".repeat(32);
