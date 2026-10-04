@@ -8,6 +8,7 @@
 // procedures (sync-http-run.ts).
 
 import { displayText } from "../display.ts";
+import { isRecord } from "../json-record.ts";
 import { scrubbed } from "./sync-http-send.ts";
 import {
   arrayOf,
@@ -15,7 +16,6 @@ import {
   type HttpOutcome,
   type HttpRequestResult,
   type HttpTargetInput,
-  isRecord,
   parseJson,
   recordsOf,
   type ResponseKind,

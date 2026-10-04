@@ -49,8 +49,9 @@ import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
 import { CliIo } from "./io.ts";
+import { isRecord } from "./json-record.ts";
 import { logNote, logWarning } from "./notice.ts";
-import { BOOK_KEY, decodeOriginBook, isRecord } from "./origin-book.ts";
+import { BOOK_KEY, decodeOriginBook } from "./origin-book.ts";
 
 /** One person's records verified out of band. */
 export interface KnownFingerprint {
