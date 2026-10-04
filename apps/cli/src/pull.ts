@@ -293,7 +293,7 @@ export function pullVariables(input: {
     const results: DecryptedVariable[] = [];
     for (const variable of selectedVariables(pulled.variables, input.select)) {
       // A duplicate active name was already refused by the statement
-      // verification (values.ts) (§4.2 — `maruhi run`'s environment
+      // verification (values-verify.ts) (§4.2 — `maruhi run`'s environment
       // variable injection has no path that silently crushes one side)
       const plaintext = yield* decryptVerifiedValue({
         verified,
