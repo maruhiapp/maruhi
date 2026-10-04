@@ -1,6 +1,6 @@
 // Mock handlers for chain distribution (full length) and self-addressed DEKs.
 // Shared by meta-server.ts / value-env.ts. The appendable project
-// (`appendableProjectHandlers`) is shared by device.test.ts and the restore
+// (`appendableProjectHandlers`) is shared by support/device.ts and the restore
 // path tests (passkey / handoff — DK K14).
 
 import { type ChainEntry, computeChainEntryHash } from "@maruhi/crypto";

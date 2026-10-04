@@ -31,7 +31,7 @@ Thanks for your interest in contributing to maruhi. Issues and pull requests are
 - It does **not** run the end-to-end suites of `apps/web` and `apps/site`. They need a build first and start their own `cf dev`; CI runs them as separate steps:
   - `bun run --filter @maruhi/web build && bun run --filter @maruhi/web e2e`
   - `bun run --filter @maruhi/site build && bun run --filter @maruhi/site e2e`
-- To run one package or one file: `cd apps/cli && bun x vitest run test/push.test.ts`
+- To run one package or one file: `cd apps/cli && bun x vitest run test/push-create.test.ts`
 
 For development rules, see [CLAUDE.md](CLAUDE.md) (Japanese) and [docs/adr/](docs/adr/) (Japanese). In particular:
 

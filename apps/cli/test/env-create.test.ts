@@ -109,7 +109,7 @@ function chainHandler(
  * A minimal composite-create mock mimicking the real server's state
  * transitions: appends an accepted create_environment entry to the chain and
  * serves it to later chain fetches (the acceptance-check resync — §12-10
- * (3)). Same rationale as env-rotate.test.ts's makeServer — since the effect
+ * (3)). Same rationale as support/env-rotate.ts's makeServer — since the effect
  * check is a chain sync, a mock that merely returns 200 can never succeed.
  */
 function acceptingCreateServer(input: {

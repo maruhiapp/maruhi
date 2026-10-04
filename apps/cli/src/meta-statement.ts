@@ -28,7 +28,7 @@ import { cliError, type CliError } from "./errors.ts";
  * random ID independent of the name: so it does not collide with the
  * ban on renaming display names / reusing deleted IDs (tombstone).
  * Every creation path shares this one implementation (push's create
- * — push.ts; declaration creation — schema.ts).
+ * — push-resolve.ts; declaration creation — schema.ts).
  */
 export function generateVariableId(): string {
   return `v${encodeHex(crypto.getRandomValues(new Uint8Array(12)))}`;
