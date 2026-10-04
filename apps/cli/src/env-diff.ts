@@ -154,7 +154,7 @@ function sideEntryOf(statement: VerifiedVariableStatement): DiffSideEntry {
  * existing variable name" (the S3 ruling — declared is a first-class
  * variable, §4.2; the presence of a value is shown as a note). A
  * same-name collision within one environment is already refused by
- * §6.3's verification (values.ts's checkVerifiedNames), so folding into
+ * §6.3's verification (values-verify.ts's checkVerifiedNames), so folding into
  * the map here loses no fact.
  */
 function statementsByName(
