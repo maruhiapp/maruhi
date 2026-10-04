@@ -276,7 +276,7 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
   // K6-D: dashboard wording is copied from the web implementation (no
   // paraphrasing)
   it.each([
-    ["fingerprint not reported", "ProjectScreen.tsx"],
+    ["fingerprint not reported", "ProjectScreenOverview.tsx"],
     ["as reported by the server", "DevicesScreen.tsx"],
     ["Lost a device?", "DevicesScreen.tsx"],
   ])("quotes %s as the dashboard has it", (phrase, file) => {
