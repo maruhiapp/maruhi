@@ -13,10 +13,10 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { AuditStore } from "../src/audit-store.ts";
-import { ChainStore } from "../src/chain-store.ts";
-import { DataStore } from "../src/data-store.ts";
+import { DataStore } from "../src/data/data-store.ts";
+import { ChainStore } from "../src/do/chain-store.ts";
 import { MAX_LEASES_PER_WINDOW } from "../src/policy.ts";
-import { leaseProgram } from "../src/programs-lease.ts";
+import { leaseProgram } from "../src/programs/programs-lease.ts";
 import { makeServerKey, ServerKey } from "../src/server-key.ts";
 import { StorageMeter } from "../src/storage-guard.ts";
 import {

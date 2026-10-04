@@ -10,8 +10,8 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import type { OpsBackupOutcome } from "../src/chain-do.ts";
-import { OPS_BACKUP_MAX_BYTES } from "../src/ops-policy.ts";
+import type { OpsBackupOutcome } from "../src/do/chain-do.ts";
+import { OPS_BACKUP_MAX_BYTES } from "../src/ops/ops-policy.ts";
 import type { RestoreJobResult } from "../src/restore-worker.ts";
 import { processRestoreJobs, projectIdFromSnapshot } from "../src/restore-worker.ts";
 import { seedProjectActivity } from "./support/audit-read-scenario.ts";

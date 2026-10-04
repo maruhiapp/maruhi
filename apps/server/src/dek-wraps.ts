@@ -27,9 +27,9 @@ import type {
   DekRecipientClass,
   DekWrapInput,
   MemberWithDevice,
-} from "./data-plane.ts";
-import { dataEvent, rejectData, withSigningDevice } from "./data-plane.ts";
-import { DataStore } from "./data-store.ts";
+} from "./data/data-plane.ts";
+import { dataEvent, rejectData, withSigningDevice } from "./data/data-plane.ts";
+import { DataStore } from "./data/data-store.ts";
 import { MAX_DEK_WRAPS_PER_REQUEST } from "./policy.ts";
 import { ensureWrapRowCapacity } from "./quotas.ts";
 

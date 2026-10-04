@@ -35,10 +35,10 @@ import type { AttestationInvalidReason } from "@maruhi/crypto";
 import { verifyDistributedHeadAttestation } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { ChainStore, StateCache } from "./chain-store.ts";
-import type { AttestationRejectReason, DataRejectedError } from "./data-plane.ts";
-import { rejectData, requireMemberState, withSigningDevice } from "./data-plane.ts";
-import { DataStore } from "./data-store.ts";
+import type { AttestationRejectReason, DataRejectedError } from "./data/data-plane.ts";
+import { rejectData, requireMemberState, withSigningDevice } from "./data/data-plane.ts";
+import { DataStore } from "./data/data-store.ts";
+import type { ChainStore, StateCache } from "./do/chain-store.ts";
 import { MAX_ATTESTATIONS_PER_MEMBER_PER_WINDOW } from "./policy.ts";
 
 /** Wire submission content (attester is the caller — same shape as api-schema's submission). */

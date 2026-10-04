@@ -133,7 +133,7 @@
     // cron (hourly): ops foundation H3 — the DO → R2 evacuation
     // sweep and tripwire evaluation (src/index.ts branches on the
     // cron string; keep the string manually in sync with
-    // src/ops-policy.ts's OPS_HOURLY_CRON). On a default deploy
+    // src/ops/ops-policy.ts's OPS_HOURLY_CRON). On a default deploy
     // without the evacuation binding (env.hosted's
     // OPS_BACKUP_BUCKET), the hourly job is nearly a no-op — just a
     // few D1 reads (docs/SELF_HOSTING.md "Backups and

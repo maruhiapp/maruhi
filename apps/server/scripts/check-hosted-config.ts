@@ -28,7 +28,7 @@ import { dirname, relative } from "node:path";
 import { unstable_readConfig } from "wrangler";
 
 import cfConfig from "../cloudflare.config.ts";
-import { OPS_HOURLY_CRON } from "../src/ops-policy.ts";
+import { OPS_HOURLY_CRON } from "../src/ops/ops-policy.ts";
 import bundlerConfig from "../wrangler.config.ts";
 
 const configPath = new URL("../wrangler.jsonc", import.meta.url).pathname;
@@ -360,7 +360,7 @@ function checkHostedInvariants(prefix: string, self: Norm, env: Norm): void {
   }
 
   // hosted-only: the evacuation bucket's binding name matches Env in
-  // src/chain-do.ts
+  // src/do/chain-do.ts
   if (!("OPS_BACKUP_BUCKET" in env.r2)) {
     failures.push(`${prefix}: r2_buckets: hosted must bind OPS_BACKUP_BUCKET`);
   }

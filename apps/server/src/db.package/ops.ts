@@ -16,7 +16,7 @@ import {
   OPS_BACKUP_STALE_MS,
   OPS_COUNTER_RETENTION_MS,
   OPS_COUNTER_WINDOW_MS,
-} from "../ops-policy.ts";
+} from "../ops/ops-policy.ts";
 import { opsBackups, opsCounters, opsState, projects, userAuditEvents } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
