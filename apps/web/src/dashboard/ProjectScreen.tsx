@@ -31,14 +31,14 @@ import { type ReactNode, useId, useMemo, useState } from "react";
 import { apiGet } from "./api.ts";
 import { AuditEventList } from "./AuditEventList.tsx";
 import {
-  deriveReportedView,
-  type ReportedDevice,
   reportedDeviceCount,
+  type ReportedDevice,
   type ReportedMember,
   type ReportedPolicy,
   type ReportedProposal,
   type ReportedServer,
-} from "./chain-view.ts";
+} from "./chain-view-reported.ts";
+import { deriveReportedView } from "./chain-view.ts";
 import { DashboardShell } from "./DashboardShell.tsx";
 import { apiPaths } from "./endpoints.ts";
 import { isProjectId, shortId } from "./ids.ts";
