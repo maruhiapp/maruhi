@@ -33,7 +33,7 @@ import {
   acceptRequest,
   errorTag,
   firstAudit,
-  fixture,
+  inviteFixture,
   inviteAuditRows,
   inviteRow,
   issueInvite,
@@ -49,9 +49,9 @@ registerInviteScenario();
 
 describe("invite accept", () => {
   it("accepts with both signatures and records invite.accepted in the same batch", async () => {
-    const issued = await issueInvite(fixture, OWNER, "member");
+    const issued = await issueInvite(inviteFixture, OWNER, "member");
     const keys = await makeInviteeKeys();
-    const response = await acceptAs(fixture, STRANGER, keys, issued);
+    const response = await acceptAs(inviteFixture, STRANGER, keys, issued);
     expect(response.status).toBe(200);
     const body = (await response.json()) as { id: string; projectId: string; role: string };
     expect(body).toEqual({
@@ -86,17 +86,17 @@ describe("invite accept", () => {
   });
 
   it("is single-use: the losing accept gets 410 accepted and no extra audit row", async () => {
-    const issued = await issueInvite(fixture, OWNER, "member");
+    const issued = await issueInvite(inviteFixture, OWNER, "member");
     const keys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, keys, issued)).status).toBe(200);
+    expect((await acceptAs(inviteFixture, STRANGER, keys, issued)).status).toBe(200);
     // Both the legitimate acceptor's retry and a different person's
     // late arrival get the same 410 accepted (surface a noisy
     // conflict)
-    const retry = await acceptAs(fixture, STRANGER, keys, issued);
+    const retry = await acceptAs(inviteFixture, STRANGER, keys, issued);
     expect(retry.status).toBe(410);
     expect((await retry.json()) as object).toMatchObject({ reason: "accepted" });
     const memberKeys = await makeInviteeKeys();
-    const late = await acceptAs(fixture, MEMBER, memberKeys, issued);
+    const late = await acceptAs(inviteFixture, MEMBER, memberKeys, issued);
     expect(late.status).toBe(410);
     // A lost CAS adds no audit row (the changes() guard)
     const accepted = (await inviteAuditRows()).filter((r) => r.event === "invite.accepted");
@@ -104,9 +104,9 @@ describe("invite accept", () => {
   });
 
   it("a lost CAS writes no audit row (changes() guard)", async () => {
-    const issued = await issueInvite(fixture, OWNER, "member");
+    const issued = await issueInvite(inviteFixture, OWNER, "member");
     const keys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, keys, issued)).status).toBe(200);
+    expect((await acceptAs(inviteFixture, STRANGER, keys, issued)).status).toBe(200);
     // The concurrent loser whose "another acceptance finalized
     // between reading pending and the CAS" case is deterministically
     // reproduced via a direct repository call, since over HTTP the
@@ -135,7 +135,7 @@ describe("invite accept", () => {
     expect(mustRow(await inviteRow(issued.id)).invitee_user_id).toBe(STRANGER);
 
     // A lost CAS on the revoke side is the same guard: revoking a completed row writes no audit
-    const completed = await issueInvite(fixture, OWNER, "member");
+    const completed = await issueInvite(inviteFixture, OWNER, "member");
     await env.DB.prepare("UPDATE invitations SET status = 'completed' WHERE id = ?")
       .bind(completed.id)
       .run();
@@ -154,14 +154,14 @@ describe("invite accept", () => {
     if (!unknownLink.ok) {
       throw new Error("link key derivation failed");
     }
-    const unknown = await acceptAs(fixture, STRANGER, keys, {
+    const unknown = await acceptAs(inviteFixture, STRANGER, keys, {
       linkPubHex: Buffer.from(unknownLink.value.publicKeyRaw).toString("hex"),
       linkKey: unknownLink.value,
     });
     expect(unknown.status).toBe(404);
     expect(await errorTag(unknown)).toBe("InviteNotFound");
 
-    const malformed = await acceptRequest(bearer(tokenOf(fixture.tokens, STRANGER)), {
+    const malformed = await acceptRequest(bearer(tokenOf(inviteFixture.tokens, STRANGER)), {
       linkPubHex: "not-a-key",
       encPubHex: keys.encPubHex,
       sigPubHex: keys.sigPubHex,
@@ -170,7 +170,7 @@ describe("invite accept", () => {
     });
     expect(malformed.status).toBe(400);
     // The old wire shape (the token field) is a strict-acceptance 400 (no compatibility path)
-    const legacy = await acceptRequest(bearer(tokenOf(fixture.tokens, STRANGER)), {
+    const legacy = await acceptRequest(bearer(tokenOf(inviteFixture.tokens, STRANGER)), {
       token: `maruhi_inv_${"A".repeat(43)}`,
       encPubHex: keys.encPubHex,
       sigPubHex: keys.sigPubHex,
@@ -182,38 +182,38 @@ describe("invite accept", () => {
   it("unusable invites are 410 with a reason (status precedes expiry)", async () => {
     const keys = await makeInviteeKeys();
     // revoked (and expired) → revoked wins (pin the judgment order)
-    const revoked = await issueInvite(fixture, OWNER, "member");
+    const revoked = await issueInvite(inviteFixture, OWNER, "member");
     await env.DB.prepare("UPDATE invitations SET status = 'revoked', expires_at = ? WHERE id = ?")
       .bind(Date.now() - 1000, revoked.id)
       .run();
-    const revokedResponse = await acceptAs(fixture, STRANGER, keys, revoked);
+    const revokedResponse = await acceptAs(inviteFixture, STRANGER, keys, revoked);
     expect(revokedResponse.status).toBe(410);
     expect((await revokedResponse.json()) as object).toMatchObject({ reason: "revoked" });
 
     // completed → completed
-    const completed = await issueInvite(fixture, OWNER, "member");
+    const completed = await issueInvite(inviteFixture, OWNER, "member");
     await env.DB.prepare("UPDATE invitations SET status = 'completed' WHERE id = ?")
       .bind(completed.id)
       .run();
-    const completedResponse = await acceptAs(fixture, STRANGER, keys, completed);
+    const completedResponse = await acceptAs(inviteFixture, STRANGER, keys, completed);
     expect(completedResponse.status).toBe(410);
     expect((await completedResponse.json()) as object).toMatchObject({ reason: "completed" });
 
     // still pending and expired → expired
-    const expired = await issueInvite(fixture, OWNER, "member");
+    const expired = await issueInvite(inviteFixture, OWNER, "member");
     await env.DB.prepare("UPDATE invitations SET expires_at = ? WHERE id = ?")
       .bind(Date.now() - 1000, expired.id)
       .run();
-    const expiredResponse = await acceptAs(fixture, STRANGER, keys, expired);
+    const expiredResponse = await acceptAs(inviteFixture, STRANGER, keys, expired);
     expect(expiredResponse.status).toBe(410);
     expect((await expiredResponse.json()) as object).toMatchObject({ reason: "expired" });
   });
 
   it("rejects invalid signatures with 422 (link first, then accept)", async () => {
-    const issued = await issueInvite(fixture, OWNER, "member");
+    const issued = await issueInvite(inviteFixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     const otherKeys = await makeInviteeKeys();
-    const auth = bearer(tokenOf(fixture.tokens, STRANGER));
+    const auth = bearer(tokenOf(inviteFixture.tokens, STRANGER));
     const valid = await signAcceptance(keys, issued, STRANGER);
 
     // (a) tampered acceptance-signature bytes → which=accept
@@ -264,14 +264,14 @@ describe("invite accept", () => {
 
     // (d) link tampering: signed at a different project's coordinates
     //     (the server reconstructs from the stored row)
-    const wrongProject = await acceptAs(fixture, STRANGER, keys, issued, {
+    const wrongProject = await acceptAs(inviteFixture, STRANGER, keys, issued, {
       projectId: "0".repeat(64),
     });
     expect(wrongProject.status).toBe(422);
 
     // (e) presenting an acceptance signed for someone else (the
     //     calling principal = the signed invitee)
-    const wrongInvitee = await acceptAs(fixture, STRANGER, keys, issued, {
+    const wrongInvitee = await acceptAs(inviteFixture, STRANGER, keys, issued, {
       inviteeUserId: MEMBER,
     });
     expect(wrongInvitee.status).toBe(422);
@@ -299,7 +299,7 @@ describe("invite accept", () => {
   });
 
   it("requires the key-material token condition (the §13-2 level)", async () => {
-    const issued = await issueInvite(fixture, OWNER, "member");
+    const issued = await issueInvite(inviteFixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     const narrow = await cliToken(9009, [{ project: projectId, permission: "admin" }]);
     const signatures = await signAcceptance(keys, issued, STRANGER);
@@ -316,7 +316,7 @@ describe("invite accept", () => {
   });
 
   it("rejects a session principal even with the CSRF header (the §5 capability restriction — the §15-2 inversion)", async () => {
-    const issued = await issueInvite(fixture, OWNER, "member");
+    const issued = await issueInvite(inviteFixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     const session = await loginSession(9009);
     const signatures = await signAcceptance(keys, issued, STRANGER);
@@ -348,17 +348,17 @@ const flip = (hex: string) => `${hex.slice(0, -1)}${hex.endsWith("0") ? "1" : "0
 const revoke = (id: string) =>
   SELF.fetch(`${BASE}/projects/${projectId}/invites/${id}`, {
     method: "DELETE",
-    headers: bearer(tokenOf(fixture.tokens, OWNER)),
+    headers: bearer(tokenOf(inviteFixture.tokens, OWNER)),
   });
 
 describe("invite list / revoke", () => {
   it("lists issuance + acceptance; the inviter client re-verifies all three signatures", async () => {
-    const issued = await issueInvite(fixture, OWNER, "member");
+    const issued = await issueInvite(inviteFixture, OWNER, "member");
     const keys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, keys, issued)).status).toBe(200);
+    expect((await acceptAs(inviteFixture, STRANGER, keys, issued)).status).toBe(200);
 
     const response = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
-      headers: bearer(tokenOf(fixture.tokens, OWNER)),
+      headers: bearer(tokenOf(inviteFixture.tokens, OWNER)),
     });
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
@@ -441,17 +441,17 @@ describe("invite list / revoke", () => {
 
   it("list requires chain role admin: member 403, non-member 404", async () => {
     const member = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
-      headers: bearer(tokenOf(fixture.tokens, MEMBER)),
+      headers: bearer(tokenOf(inviteFixture.tokens, MEMBER)),
     });
     expect(member.status).toBe(403);
     const stranger = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
-      headers: bearer(tokenOf(fixture.tokens, STRANGER)),
+      headers: bearer(tokenOf(inviteFixture.tokens, STRANGER)),
     });
     expect(stranger.status).toBe(404);
   });
 
   it("revokes pending and accepted invites; terminal states are 410 / unknown 404", async () => {
-    const issued = await issueInvite(fixture, OWNER, "member");
+    const issued = await issueInvite(inviteFixture, OWNER, "member");
     const first = await revoke(issued.id);
     expect(first.status).toBe(204);
     expect((await inviteRow(issued.id))?.status).toBe("revoked");
@@ -464,7 +464,7 @@ describe("invite list / revoke", () => {
 
     // Acceptance is 410 revoked
     const keys = await makeInviteeKeys();
-    const late = await acceptAs(fixture, STRANGER, keys, issued);
+    const late = await acceptAs(inviteFixture, STRANGER, keys, issued);
     expect(late.status).toBe(410);
     expect((await late.json()) as object).toMatchObject({ reason: "revoked" });
 
@@ -474,13 +474,13 @@ describe("invite list / revoke", () => {
     expect((await inviteAuditRows()).filter((r) => r.event === "invite.revoked")).toHaveLength(1);
 
     // Revoking an accepted invite is allowed (the path for killing it when a mismatch is discovered)
-    const accepted = await issueInvite(fixture, OWNER, "member");
+    const accepted = await issueInvite(inviteFixture, OWNER, "member");
     const acceptedKeys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, acceptedKeys, accepted)).status).toBe(200);
+    expect((await acceptAs(inviteFixture, STRANGER, acceptedKeys, accepted)).status).toBe(200);
     expect((await revoke(accepted.id)).status).toBe(204);
 
     // completed is 410 completed
-    const completed = await issueInvite(fixture, OWNER, "member");
+    const completed = await issueInvite(inviteFixture, OWNER, "member");
     await env.DB.prepare("UPDATE invitations SET status = 'completed' WHERE id = ?")
       .bind(completed.id)
       .run();
@@ -493,7 +493,7 @@ describe("invite list / revoke", () => {
   });
 
   it("session principals can list and revoke (§5's permitted set — reads + revocations)", async () => {
-    const issued = await issueInvite(fixture, OWNER, "member");
+    const issued = await issueInvite(inviteFixture, OWNER, "member");
     const session = await loginSession(9001);
 
     // Listing (a read) — allowed for a session with chain role admin
@@ -522,12 +522,12 @@ describe("invite list / revoke", () => {
   });
 
   it("marks the key-matched accepted invite completed when add_member is accepted", async () => {
-    const matched = await issueInvite(fixture, OWNER, "member");
-    const otherPending = await issueInvite(fixture, OWNER, "reader");
+    const matched = await issueInvite(inviteFixture, OWNER, "member");
+    const otherPending = await issueInvite(inviteFixture, OWNER, "reader");
     const keys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, keys, matched)).status).toBe(200);
+    expect((await acceptAs(inviteFixture, STRANGER, keys, matched)).status).toBe(200);
 
-    await appendOperation(fixture, OWNER, {
+    await appendOperation(inviteFixture, OWNER, {
       op: "add_member",
       payload: {
         targetUserId: STRANGER,
@@ -550,14 +550,14 @@ describe("invite list / revoke", () => {
   });
 
   it("add_member still succeeds when the reconciliation write fails (catchDefect guard)", async () => {
-    const issued = await issueInvite(fixture, OWNER, "member");
+    const issued = await issueInvite(inviteFixture, OWNER, "member");
     const keys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, keys, issued)).status).toBe(200);
+    expect((await acceptAs(inviteFixture, STRANGER, keys, issued)).status).toBe(200);
     // Make the reconciliation's D1 write fail deterministically (the
     // table is temporarily stashed). Without the guard the committed
     // append would 500 and appendOperation's 200 expect would fail
     await env.DB.prepare("ALTER TABLE invitations RENAME TO invitations_hidden").run();
-    await appendOperation(fixture, OWNER, {
+    await appendOperation(inviteFixture, OWNER, {
       op: "add_member",
       payload: {
         targetUserId: STRANGER,
@@ -577,12 +577,12 @@ describe("invite list / revoke", () => {
   });
 
   it("leaves an accepted invite untouched when add_member carries different keys", async () => {
-    const issued = await issueInvite(fixture, OWNER, "member");
+    const issued = await issueInvite(inviteFixture, OWNER, "member");
     const keys = await makeInviteeKeys();
     const differentKeys = await makeInviteeKeys();
-    expect((await acceptAs(fixture, STRANGER, keys, issued)).status).toBe(200);
+    expect((await acceptAs(inviteFixture, STRANGER, keys, issued)).status).toBe(200);
 
-    await appendOperation(fixture, OWNER, {
+    await appendOperation(inviteFixture, OWNER, {
       op: "add_member",
       payload: {
         targetUserId: STRANGER,

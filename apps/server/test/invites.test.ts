@@ -34,7 +34,7 @@ import {
 import {
   errorTag,
   firstAudit,
-  fixture,
+  inviteFixture,
   inviteAuditRows,
   inviteRow,
   issueInvite,
@@ -52,7 +52,7 @@ registerInviteScenario();
 describe("invite issue", () => {
   it("owner issues an invite: issuance statement stored, nothing secret returned, audit in same batch", async () => {
     const before = Date.now();
-    const issued = await issueInvite(fixture, OWNER, "member");
+    const issued = await issueInvite(inviteFixture, OWNER, "member");
     expect(issued.expiresAtMs).toBeGreaterThanOrEqual(before + INVITE_TTL_MS);
 
     const row = mustRow(await inviteRow(issued.id));
@@ -82,18 +82,18 @@ describe("invite issue", () => {
   });
 
   it("rejects a reused invite id or link pub with 409 (client-chosen id, UNIQUE link_pub)", async () => {
-    const first = await issueInvite(fixture, OWNER, "member");
-    const sameId = await makeIssuePayload(fixture, OWNER, "member", { id: first.id });
-    const idConflict = await issueInviteRequest(fixture, OWNER, "member", sameId);
+    const first = await issueInvite(inviteFixture, OWNER, "member");
+    const sameId = await makeIssuePayload(inviteFixture, OWNER, "member", { id: first.id });
+    const idConflict = await issueInviteRequest(inviteFixture, OWNER, "member", sameId);
     expect(idConflict.status).toBe(409);
     expect((await idConflict.json()) as object).toMatchObject({
       _tag: "InviteConflict",
       field: "id",
     });
-    const sameLink = await makeIssuePayload(fixture, OWNER, "member", {
+    const sameLink = await makeIssuePayload(inviteFixture, OWNER, "member", {
       linkPubHex: first.linkPubHex,
     });
-    const linkConflict = await issueInviteRequest(fixture, OWNER, "member", sameLink);
+    const linkConflict = await issueInviteRequest(inviteFixture, OWNER, "member", sameLink);
     expect(linkConflict.status).toBe(409);
     expect((await linkConflict.json()) as object).toMatchObject({ field: "linkPub" });
     // A conflict writes no audit (nothing was admitted)
@@ -105,7 +105,7 @@ describe("invite issue", () => {
   it("rejects the pre-IV issue payload (role only) with 400 — no compatibility path", async () => {
     const response = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
       method: "POST",
-      headers: { ...JSON_HEADERS, ...bearer(tokenOf(fixture.tokens, OWNER)) },
+      headers: { ...JSON_HEADERS, ...bearer(tokenOf(inviteFixture.tokens, OWNER)) },
       body: JSON.stringify({ role: "member" }),
     });
     expect(response.status).toBe(400);
@@ -117,16 +117,16 @@ describe("invite issue", () => {
       [READER, 403],
       [STRANGER, 404],
     ] as const) {
-      const response = await issueInviteRequest(fixture, userId, "member");
+      const response = await issueInviteRequest(inviteFixture, userId, "member");
       expect(response.status).toBe(expected);
     }
   });
 
   it("role=admin invites are owner-only (admin can issue member invites)", async () => {
     // The owner can issue admin invites
-    await issueInvite(fixture, OWNER, "admin");
+    await issueInvite(inviteFixture, OWNER, "admin");
     // Promote member to admin (change_role is an owner operation)
-    await appendOperation(fixture, OWNER, {
+    await appendOperation(inviteFixture, OWNER, {
       op: "change_role",
       payload: {
         targetUserId: MEMBER,
@@ -136,14 +136,14 @@ describe("invite issue", () => {
       },
     });
     // An admin can issue member invites but an admin invite is 403
-    await issueInvite(fixture, MEMBER, "member");
-    const denied = await issueInviteRequest(fixture, MEMBER, "admin");
+    await issueInvite(inviteFixture, MEMBER, "member");
+    const denied = await issueInviteRequest(inviteFixture, MEMBER, "admin");
     expect(denied.status).toBe(403);
     expect(await errorTag(denied)).toBe("Forbidden");
   });
 
   it("token scope gates issuance: out-of-scope 404, low permission 403", async () => {
-    const payload = wirePayloadOf(await makeIssuePayload(fixture, OWNER, "member"));
+    const payload = wirePayloadOf(await makeIssuePayload(inviteFixture, OWNER, "member"));
     const outOfScope = await cliToken(9001, [{ project: "f".repeat(64), permission: "admin" }]);
     const outResponse = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
       method: "POST",
@@ -163,9 +163,9 @@ describe("invite issue", () => {
 
   it("fixed-window rate limit: 31st issuance within the hour is 429", async () => {
     for (let index = 0; index < INVITE_ISSUE_WINDOW_LIMIT; index += 1) {
-      await issueInvite(fixture, OWNER, "member");
+      await issueInvite(inviteFixture, OWNER, "member");
     }
-    const response = await issueInviteRequest(fixture, OWNER, "member");
+    const response = await issueInviteRequest(inviteFixture, OWNER, "member");
     expect(response.status).toBe(429);
     const body = (await response.json()) as { _tag: string; retryAfterSeconds: number };
     expect(body["_tag"]).toBe("InviteRateLimited");
@@ -193,7 +193,7 @@ describe("invite issue", () => {
         expiresAt: now + INVITE_TTL_MS,
       });
     }
-    const response = await issueInviteRequest(fixture, OWNER, "member");
+    const response = await issueInviteRequest(inviteFixture, OWNER, "member");
     expect(response.status).toBe(429);
     const body = (await response.json()) as { _tag: string; limit: number };
     expect(body["_tag"]).toBe("InvitePendingLimit");
@@ -212,7 +212,7 @@ describe("invite issue", () => {
     }
 
     const responses = await Promise.all(
-      Array.from({ length: 8 }, () => issueInviteRequest(fixture, OWNER, "member")),
+      Array.from({ length: 8 }, () => issueInviteRequest(inviteFixture, OWNER, "member")),
     );
     expect(responses.filter((response) => response.status === 200)).toHaveLength(1);
     const rejected = responses.filter((response) => response.status !== 200);
@@ -244,7 +244,7 @@ describe("invite issue", () => {
     }
 
     const responses = await Promise.all(
-      Array.from({ length: 8 }, () => issueInviteRequest(fixture, OWNER, "member")),
+      Array.from({ length: 8 }, () => issueInviteRequest(inviteFixture, OWNER, "member")),
     );
     expect(responses.filter((response) => response.status === 200)).toHaveLength(1);
     const rejected = responses.filter((response) => response.status !== 200);
@@ -273,6 +273,6 @@ describe("invite issue", () => {
         expiresAt: now - 1000,
       });
     }
-    await issueInvite(fixture, OWNER, "member");
+    await issueInvite(inviteFixture, OWNER, "member");
   });
 });

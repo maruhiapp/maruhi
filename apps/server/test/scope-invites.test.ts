@@ -14,7 +14,7 @@ import { BASE, bearer, JSON_HEADERS } from "./support/auth.ts";
 import { OWNER, projectId, STRANGER, tokenOf } from "./support/data-fixture.ts";
 import {
   acceptAs,
-  fixture,
+  inviteFixture,
   inviteRow,
   issueInviteRequest,
   makeInviteeKeys,
@@ -28,11 +28,11 @@ registerInviteScenario();
 
 describe("scope on invite rows (§15 — format checking only)", () => {
   it("admits a listed issuance without checking environment existence, and carries scope on the list row and the acceptance response", async () => {
-    const payload = await makeIssuePayload(fixture, OWNER, "member", {
+    const payload = await makeIssuePayload(inviteFixture, OWNER, "member", {
       scopeKind: "listed",
       scopeEnvironmentIds: ["env-never-created-0001", "env-dev-0002"],
     });
-    const issued = await issueInviteRequest(fixture, OWNER, "member", payload);
+    const issued = await issueInviteRequest(inviteFixture, OWNER, "member", payload);
     expect(issued.status).toBe(200);
     const row = mustRow(await inviteRow(payload.id));
     expect(row.scope_kind).toBe("listed");
@@ -42,7 +42,7 @@ describe("scope on invite rows (§15 — format checking only)", () => {
     ]);
 
     const list = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
-      headers: bearer(tokenOf(fixture.tokens, OWNER)),
+      headers: bearer(tokenOf(inviteFixture.tokens, OWNER)),
     });
     expect(list.status).toBe(200);
     const listed = (await list.json()) as {
@@ -54,7 +54,7 @@ describe("scope on invite rows (§15 — format checking only)", () => {
     });
 
     const keys = await makeInviteeKeys();
-    const accepted = await acceptAs(fixture, STRANGER, keys, payload);
+    const accepted = await acceptAs(inviteFixture, STRANGER, keys, payload);
     expect(accepted.status).toBe(200);
     expect(await accepted.json()).toMatchObject({
       id: payload.id,
@@ -68,10 +68,10 @@ describe("scope on invite rows (§15 — format checking only)", () => {
     // The issue-signature producer side (@maruhi/crypto) rejects `all` +
     // non-empty as malformed, so build a valid `all` issuance first and then
     // mutate only the wire body
-    const payload = await makeIssuePayload(fixture, OWNER, "member");
+    const payload = await makeIssuePayload(inviteFixture, OWNER, "member");
     const response = await SELF.fetch(`${BASE}/projects/${projectId}/invites`, {
       method: "POST",
-      headers: { ...JSON_HEADERS, ...bearer(tokenOf(fixture.tokens, OWNER)) },
+      headers: { ...JSON_HEADERS, ...bearer(tokenOf(inviteFixture.tokens, OWNER)) },
       body: JSON.stringify({ ...wirePayloadOf(payload), scopeEnvironmentIds: ["env-dev-0002"] }),
     });
     expect(response.status).toBe(400);
