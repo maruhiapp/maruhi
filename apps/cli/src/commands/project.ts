@@ -30,7 +30,7 @@ import { countNoun, displayText, logWarnings } from "../display.ts";
 import { CliError, cliError, usageError } from "../errors.ts";
 import { type FloorHandle } from "../floor-check.ts";
 import { CliIo } from "../io.ts";
-import { formatMemberListRow, memberListRows } from "../member.ts";
+import { formatMemberListRow, memberListRows } from "../member-list.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { describeExport, projectExportOp } from "../project-export.ts";
 import { projectInitOp } from "../project-init.ts";

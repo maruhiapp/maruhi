@@ -19,7 +19,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { MaruhiClient } from "../src/api.ts";
 import { type VerifiedProject, verifyChainSnapshot } from "../src/chain-sync.ts";
 import { environmentKeysFor } from "../src/deks.ts";
-import { scopeChangesOf } from "../src/member.ts";
+import { scopeChangesOf } from "../src/member-change-role.ts";
 import { environmentsOfScopeAt, sameScope, scopeChangeAt, scopeContains } from "../src/scope.ts";
 import {
   addScopedMemberOp,
