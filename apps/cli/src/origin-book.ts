@@ -2,15 +2,13 @@
 // (known-fingerprints.json, own-devices.json). A single invalid record makes the whole
 // file count as corrupt (no partial reads — same as pins).
 
+import { isRecord } from "./json-record.ts";
+
 // Record-key (origin / user_id) discipline: starts with an alphanumeric (like the
 // invite id in pins.ts, this structurally excludes `__proto__`) and contains no
 // whitespace. origin is a normalized URL (http(s)://…) and user_id is server-assigned
 // — the rule depends on neither format
 export const BOOK_KEY = /^[A-Za-z0-9]\S{0,1023}$/;
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * Decodes `{ v: version, known: { origin: users } }`. `decodeUsers` reads one origin's
