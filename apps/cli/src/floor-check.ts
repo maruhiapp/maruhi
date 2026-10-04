@@ -46,7 +46,7 @@ import {
   type VariableFloor,
 } from "./floor.ts";
 import type { VerifiedManifest } from "./manifest.ts";
-import type { VerifiedPulledValue } from "./values.ts";
+import type { VerifiedPulledValue } from "./values-verify.ts";
 
 /** Evidence material of a verified meta-statement, including deleted / declared (variables only — §4.2 layout v2). */
 export interface VerifiedMetaEvidence {

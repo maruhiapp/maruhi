@@ -56,7 +56,8 @@ import { requireChainEnvironment } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { DeclaredVariable, DecryptedVariable } from "./pull.ts";
 import { decryptVerifiedValue, toDeclaredVariables } from "./pull.ts";
-import { type PulledWire, type VerifiedPulledValue, verifyLeaseDistribution } from "./values.ts";
+import type { PulledWire, VerifiedPulledValue } from "./values-verify.ts";
+import { verifyLeaseDistribution } from "./values.ts";
 
 /** The wire shape of a lease response (the structural type of api-schema's LeaseResponseSchema). */
 export interface LeaseResponseWire {

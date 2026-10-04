@@ -34,7 +34,8 @@ import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
 import { requireEnvironmentInScope } from "./scope.ts";
-import { pullVerifiedEnvironment, type VerifiedPulledValue } from "./values.ts";
+import type { VerifiedPulledValue } from "./values-verify.ts";
+import { pullVerifiedEnvironment } from "./values.ts";
 
 /** One decrypted variable (plaintext bytes live in memory only). */
 export interface DecryptedVariable {

@@ -77,12 +77,12 @@ import { generateVariableId, signCreateStatement } from "./meta-statement.ts";
 import { decryptVerifiedValue } from "./pull.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signContinuationStatementV2 } from "./schema.package/index.ts";
+import type { VerifiedPulledValue } from "./values-verify.ts";
 import {
   type ManifestIssueBase,
   manifestIssueBaseOf,
   pullVerifiedEnvironment,
   pullVerifiedEnvironmentMetadata,
-  type VerifiedPulledValue,
 } from "./values.ts";
 
 const MAX_ATTEMPTS = 5;
