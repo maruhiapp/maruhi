@@ -1161,7 +1161,7 @@ type PushAttempt =
    * is not decided here — left to the rescan (a chain re-verification):
    * whether "another member rotated concurrently" or "the server's claim
    * contradicts the chain" is indistinguishable until the chain-derived
-   * current epoch is observed (same discipline as push.ts's
+   * current epoch is observed (same discipline as push-state.ts's
    * epoch-conflict).
    */
   | { readonly kind: "epoch-stale" };
@@ -1383,7 +1383,7 @@ interface RescanResult {
  *    values still on the old DEK remain, yet completion was reported"
  * 2. **Re-planning 409 conflicts** (§12-5's retry procedure): verify the
  *    winner under §6.3, and apply **the winner's consistency check
- *    (winnerRegression, shared with push.ts) before the adopt/reject
+ *    (winnerRegression, shared with push-winner.ts) before the adopt/reject
  *    decision**. Re-encryption re-anchors the prev onto the winner's
  *    signed-bytes hash and signs, so without the check one's own
  *    signature would chain onto a forked history (§12-5's evidence-chain
@@ -1422,7 +1422,7 @@ function rescanEnvironment(input: {
    * epoch conflict, **always** re-fetch the chain and re-derive the
    * current epoch without depending on pull's future-head condition
    * (without the re-fetch, another member's concurrent rotation would be
-   * mistaken for "a server contradiction" — same discipline as push.ts's
+   * mistaken for "a server contradiction" — same discipline as push-state.ts's
    * epoch-conflict).
    */
   readonly forceResync: boolean;
@@ -1913,7 +1913,7 @@ function settlePass(input: {
       // Even on the force-resynced chain the epoch did not move (if it
       // had, rescanEnvironment would have failed). The server's
       // EpochConflict claim contradicts the chain, and re-pushing that
-      // variable cannot resolve it (same judgment as push.ts). But an
+      // variable cannot resolve it (same judgment as push-state.ts). But an
       // abort is allowed **only when the very claimed variable still
       // remains**: if it resolved — say another member finished writing it
       // at the same epoch — the rest remains for other reasons (a
