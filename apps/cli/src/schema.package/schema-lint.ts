@@ -55,14 +55,14 @@ import { join } from "node:path";
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import { countNoun, displayText, logWarnings } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import type { FloorHandle } from "./floor-check.ts";
-import { CliIo } from "./io.ts";
-import { logNote } from "./notice.ts";
-import { pullVerifiedEnvironmentMetadata } from "./values.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { countNoun, displayText, logWarnings } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import type { FloorHandle } from "../floor-check.ts";
+import { CliIo } from "../io.ts";
+import { logNote } from "../notice.ts";
+import { pullVerifiedEnvironmentMetadata } from "../values.ts";
 
 /** The identifier shape caught as an environment variable name (the customary POSIX env-var name). */
 const NAME = "([A-Za-z_][A-Za-z0-9_]*)";

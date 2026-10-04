@@ -42,8 +42,12 @@ import { CliIo } from "./io.ts";
 import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts";
 import { signStatementAndHash } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
-import { signDeleteStatementV2 } from "./schema-statement.ts";
-import { requireVerifiedEnvironment, resolveSchemaTarget, type SchemaSetState } from "./schema.ts";
+import {
+  signDeleteStatementV2,
+  requireVerifiedEnvironment,
+  resolveSchemaTarget,
+  type SchemaSetState,
+} from "./schema.package/index.ts";
 import type { VerifiedEnvironmentMetadata } from "./values.ts";
 
 const MAX_ATTEMPTS = 5;

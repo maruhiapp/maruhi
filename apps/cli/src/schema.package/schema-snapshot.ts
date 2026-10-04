@@ -55,13 +55,13 @@
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import { displayText, logWarnings } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import type { FloorHandle, VerifiedVariableStatement } from "./floor-check.ts";
-import { CliIo } from "./io.ts";
-import { pullVerifiedEnvironmentMetadata } from "./values.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import { displayText, logWarnings } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import type { FloorHandle, VerifiedVariableStatement } from "../floor-check.ts";
+import { CliIo } from "../io.ts";
+import { pullVerifiedEnvironmentMetadata } from "../values.ts";
 
 /**
  * The generated-data framing (ruling CW): the snapshot is data, not

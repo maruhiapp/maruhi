@@ -34,25 +34,25 @@ import type { EnvironmentId } from "@maruhi/core";
 import type { MetaVarType } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import { type VerifiedProject } from "./chain-sync.ts";
-import { displayText, escapeText, logWarnings } from "./display.ts";
-import { findHighEntropySubstring } from "./entropy.ts";
-import { cliError, type CliError } from "./errors.ts";
-import type { FloorHandle, VerifiedSchemaFields, VerifiedTombstone } from "./floor-check.ts";
-import { rejectIntentOnServerRejection, type VerifiedVariableStatement } from "./floor-check.ts";
-import { CliIo } from "./io.ts";
-import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts";
-import { generateVariableId } from "./meta-statement.ts";
-import { logNote, logWarning } from "./notice.ts";
-import { retryOnConflict } from "./retry.ts";
-import { signContinuationStatementV2, signDeclareStatement } from "./schema-statement.ts";
+import type { MaruhiClient } from "../api.ts";
+import { type VerifiedProject } from "../chain-sync.ts";
+import { displayText, escapeText, logWarnings } from "../display.ts";
+import { findHighEntropySubstring } from "../entropy.ts";
+import { cliError, type CliError } from "../errors.ts";
+import type { FloorHandle, VerifiedSchemaFields, VerifiedTombstone } from "../floor-check.ts";
+import { rejectIntentOnServerRejection, type VerifiedVariableStatement } from "../floor-check.ts";
+import { CliIo } from "../io.ts";
+import { confirmMetaMutation, issueManifestWithIntent } from "../meta-confirm.ts";
+import { generateVariableId } from "../meta-statement.ts";
+import { logNote, logWarning } from "../notice.ts";
+import { retryOnConflict } from "../retry.ts";
 import {
   type ManifestIssueBase,
   manifestIssueBaseOf,
   pullVerifiedEnvironmentMetadata,
   type VerifiedEnvironmentMetadata,
-} from "./values.ts";
+} from "../values.ts";
+import { signContinuationStatementV2, signDeclareStatement } from "./schema-statement.ts";
 
 /* -------------------------------------------------------------------------- */
 /* Display (maruhi schema)                                                   */
@@ -229,7 +229,7 @@ export type FieldUpdate<T> =
   | { readonly kind: "keep" }
   | { readonly kind: "set"; readonly value: T };
 
-/** schema set's column specification (the shape is settled by commands/schema.ts's flag interpretation). */
+/** schema set's column specification (the shape is settled by schema.package/command.ts's flag interpretation). */
 export interface SchemaFieldUpdates {
   readonly varType: FieldUpdate<MetaVarType>;
   readonly required: FieldUpdate<boolean>;
@@ -267,7 +267,7 @@ export interface SchemaSetInput {
   readonly quietDisabledAdvisory?: boolean;
 }
 
-/** schema set's result (display is the caller's — commands/schema.ts). */
+/** schema set's result (display is the caller's — schema.package/command.ts). */
 export interface SchemaSetSummary {
   /** true = newly created as a declaration (declared, metaVersion 1), false = a reissue. */
   readonly created: boolean;

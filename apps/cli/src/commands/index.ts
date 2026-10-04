@@ -35,6 +35,15 @@ import { Command, Param } from "effect/cli";
 
 import { type CommandSpec } from "../cli-formatter.ts";
 import {
+  schemaExportConfig,
+  schemaImportConfig,
+  schemaLintConfig,
+  schemaSetConfig,
+  schemaShowConfig,
+  schemaVerifySnapshotConfig,
+  makeSchemaCommands,
+} from "../schema.package/command.ts";
+import {
   syncApplyConfig,
   syncInitConfig,
   syncPlanConfig,
@@ -126,15 +135,6 @@ import {
   rotationRejectConfig,
   makeRotationCommands,
 } from "./rotation.ts";
-import {
-  schemaExportConfig,
-  schemaImportConfig,
-  schemaLintConfig,
-  schemaSetConfig,
-  schemaShowConfig,
-  schemaVerifySnapshotConfig,
-  makeSchemaCommands,
-} from "./schema.ts";
 import { serverGrantConfig, serverRevokeConfig, makeServerCommands } from "./server.ts";
 import { tokenListConfig, tokenRevokeConfig, makeTokenCommands } from "./token.ts";
 import {

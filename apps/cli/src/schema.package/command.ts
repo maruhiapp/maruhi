@@ -6,14 +6,15 @@ import { MAX_META_MAX_AGE_DAYS, type MetaVarType } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
+import { NonBlank, commonFlags, singleFlag, singleValued } from "../commands/flags.ts";
 import { type CliServices, openEnvironment, openMetadataEnvironment } from "../context.ts";
 import { displayText, logWarnings } from "../display.ts";
 import { CliError, cliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
 import { logNote } from "../notice.ts";
-import { ensureImportCeremonyAllowed, schemaImportOp } from "../schema-import.ts";
-import { scanPaths, schemaLintOp } from "../schema-lint.ts";
-import { schemaExportOp, schemaVerifySnapshotOp } from "../schema-snapshot.ts";
+import { ensureImportCeremonyAllowed, schemaImportOp } from "./schema-import.ts";
+import { scanPaths, schemaLintOp } from "./schema-lint.ts";
+import { schemaExportOp, schemaVerifySnapshotOp } from "./schema-snapshot.ts";
 import {
   type FieldUpdate,
   type SchemaFieldUpdates,
@@ -21,15 +22,16 @@ import {
   ensureEntropyAcknowledged,
   schemaSetOp,
   schemaShowOp,
-} from "../schema.ts";
-import { NonBlank, commonFlags, singleFlag, singleValued } from "./flags.ts";
+} from "./schema.ts";
 
-/** `maruhi schema` (display — the bare parent doubles as show. Same shape as audit). */
+/** `maruhi schema` (display — the bare parent doubles as show. Same shape as audit).
+ * @public
+ */
 export const schemaShowConfig = { ...commonFlags() };
 
 /** The `--type` closed set (CRYPTO_SPEC §4.2 — ruling CT) + `none` for an explicit clear. */
 const SCHEMA_TYPES = ["string", "number", "boolean", "url"] as const;
-
+/** @public */
 export const schemaSetConfig = {
   ...commonFlags(),
   type: singleValued(
@@ -65,7 +67,9 @@ export const schemaSetConfig = {
   ),
 };
 
-/** `maruhi schema import <file>` (bootstrap — design doc §1-3). */
+/** `maruhi schema import <file>` (bootstrap — design doc §1-3).
+ * @public
+ */
 export const schemaImportConfig = {
   ...commonFlags(),
   file: Argument.String("file").pipe(
@@ -76,10 +80,14 @@ export const schemaImportConfig = {
   ),
 };
 
-/** `maruhi schema export` (producing the derived snapshot — design doc §1-6). */
+/** `maruhi schema export` (producing the derived snapshot — design doc §1-6).
+ * @public
+ */
 export const schemaExportConfig = { ...commonFlags() };
 
-/** `maruhi schema verify-snapshot <file>` (the CI divergence check — design doc §1-6). */
+/** `maruhi schema verify-snapshot <file>` (the CI divergence check — design doc §1-6).
+ * @public
+ */
 export const schemaVerifySnapshotConfig = {
   ...commonFlags(),
   file: Argument.String("file").pipe(
@@ -90,7 +98,9 @@ export const schemaVerifySnapshotConfig = {
   ),
 };
 
-/** `maruhi schema lint [paths...]` (matching against the code contract — design doc §1-7). */
+/** `maruhi schema lint [paths...]` (matching against the code contract — design doc §1-7).
+ * @public
+ */
 export const schemaLintConfig = {
   ...commonFlags(),
   ignore: Flag.String("ignore").pipe(
@@ -223,7 +233,7 @@ function schemaSetReport(name: string, summary: SchemaSetSummary): string {
   }
   return `Updated the schema of ${displayText(name)} (type=${typeShown}, required=${summary.schema.required}${maxAge}, metaVersion=${summary.metaVersion})`;
 }
-
+/** @public */
 export function makeSchemaCommands() {
   const schemaSet = Command.make("set", schemaSetConfig, (values) =>
     Effect.gen(function* () {

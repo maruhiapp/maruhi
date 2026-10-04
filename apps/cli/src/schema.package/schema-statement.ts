@@ -28,10 +28,10 @@
 import { SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { VerifiedProject } from "./chain-sync.ts";
-import type { CliError } from "./errors.ts";
-import type { VerifiedSchemaFields } from "./floor-check.ts";
-import { signStatementAndHash } from "./meta-statement.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import type { CliError } from "../errors.ts";
+import type { VerifiedSchemaFields } from "../floor-check.ts";
+import { signStatementAndHash } from "../meta-statement.ts";
 
 /** The shared input of a v2 statement (creation / continuation is fixed by the 2 functions below). */
 export interface VariableStatementV2Input {
