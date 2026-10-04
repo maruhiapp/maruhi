@@ -80,6 +80,75 @@
     "packages/crypto/test-vectors/tools/**",
     "scripts/**"
   ],
+  // Layer structure, mirrored in CLAUDE.md ("Layers"). Workspace packages sit
+  // below the apps: crypto imports no other workspace package, core may import
+  // crypto, api-schema may import core and crypto. Packages never import an
+  // app, and apps never import each other.
+  // Per app: the CLI entry files sit above the command layer (commands/** and
+  // each *.package/command.ts), which sits above every other file (the domain
+  // layer); domain files may import the entry files only for types. Server's
+  // index.ts is the only file that imports handlers/**. Web's shell (App.tsx,
+  // Root.tsx, pages/**) may import the views, never the reverse.
+  // Zones match in order, first match wins — the per-app `src/**` catch-alls
+  // must stay last in their group.
+  "boundaries": {
+    "zones": [
+      { "name": "crypto", "patterns": ["packages/crypto/src/**"] },
+      { "name": "core", "patterns": ["packages/core/src/**"] },
+      { "name": "api-schema", "patterns": ["packages/api-schema/src/**"] },
+      {
+        "name": "cli-entry",
+        "patterns": [
+          "apps/cli/src/bin.ts",
+          "apps/cli/src/index.ts",
+          "apps/cli/src/cli.ts",
+          "apps/cli/src/cli-runner.ts"
+        ]
+      },
+      {
+        "name": "cli-commands",
+        "patterns": ["apps/cli/src/commands/**", "apps/cli/src/*.package/command.ts"]
+      },
+      { "name": "cli-domain", "patterns": ["apps/cli/src/**"] },
+      { "name": "server-entry", "patterns": ["apps/server/src/index.ts"] },
+      { "name": "server-handlers", "patterns": ["apps/server/src/handlers/**"] },
+      { "name": "server-domain", "patterns": ["apps/server/src/**"] },
+      {
+        "name": "web-shell",
+        "patterns": ["apps/web/src/App.tsx", "apps/web/src/Root.tsx", "apps/web/src/pages/**"]
+      },
+      { "name": "web-views", "patterns": ["apps/web/src/**"] }
+    ],
+    "rules": [
+      { "from": "crypto", "allow": [] },
+      { "from": "core", "allow": ["crypto"] },
+      { "from": "api-schema", "allow": ["core", "crypto"] },
+      {
+        "from": "cli-entry",
+        "allow": ["cli-commands", "cli-domain", "crypto", "core", "api-schema"]
+      },
+      {
+        "from": "cli-commands",
+        "allow": ["cli-commands", "cli-domain", "crypto", "core", "api-schema"]
+      },
+      {
+        "from": "cli-domain",
+        "allow": ["cli-domain", "crypto", "core", "api-schema"],
+        "allowTypeOnly": ["cli-entry"]
+      },
+      {
+        "from": "server-entry",
+        "allow": ["server-handlers", "server-domain", "crypto", "core", "api-schema"]
+      },
+      {
+        "from": "server-handlers",
+        "allow": ["server-handlers", "server-domain", "crypto", "core", "api-schema"]
+      },
+      { "from": "server-domain", "allow": ["server-domain", "crypto", "core", "api-schema"] },
+      { "from": "web-shell", "allow": ["web-shell", "web-views", "crypto", "core", "api-schema"] },
+      { "from": "web-views", "allow": ["web-views", "crypto", "core", "api-schema"] }
+    ]
+  },
   "audit": {
     "deadCodeBaseline": "fallow-baselines/dead-code.json",
     "healthBaseline": "fallow-baselines/health.json",
