@@ -4,7 +4,8 @@
 // and "internal errors get only the type name", this 4th layer: tokens can
 // never yield their raw value without unwrapping `Redacted` at the type level.
 //
-// What this pins, threefold:
+// What this pins, threefold (split across redacted-output.test.ts #1,
+// redacted-keychain.test.ts #2, and redacted.test.ts #3):
 //  1. A careless `toString` / `JSON.stringify` / template expansion produces a redaction
 
 import { Redacted } from "effect";

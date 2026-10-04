@@ -3,6 +3,10 @@
 // Following display.ts (terminal neutralization), failure.ts (error mapping),
 // and "internal errors get only the type name", this 4th layer: tokens can
 // never yield their raw value without unwrapping `Redacted` at the type level.
+//
+// The threefold list of what these tests pin is split across
+// redacted-output.test.ts (#1), redacted-keychain.test.ts (#2), and
+// redacted.test.ts (#3); this file holds section 2b.
 
 import { Effect, Exit, Layer, Redacted, Stdio } from "effect";
 import { describe, expect, it } from "vitest";
