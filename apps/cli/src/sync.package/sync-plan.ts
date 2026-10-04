@@ -49,6 +49,7 @@ import {
   scrubVendorOutput,
   type SyncWrite,
 } from "./sync-exec.ts";
+import { runBatch } from "./sync-http-run.ts";
 import {
   buildBatches,
   checkIntegrationToken,
@@ -56,7 +57,6 @@ import {
   type HttpRetryPolicy,
   type IntegrationToken,
   resolveOptions,
-  runBatch,
 } from "./sync-http.ts";
 import {
   loadReceipt,

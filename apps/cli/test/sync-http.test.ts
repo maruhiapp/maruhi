@@ -28,10 +28,10 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { parseSyncConfig, type SyncTarget } from "../src/sync.package/sync-config.ts";
+import { HTTP_PRESETS } from "../src/sync.package/sync-http-presets.ts";
 import {
   buildBatches,
   checkIntegrationToken,
-  HTTP_PRESETS,
   type HttpPreset,
   type PathToken,
 } from "../src/sync.package/sync-http.ts";
