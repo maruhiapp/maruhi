@@ -209,9 +209,10 @@ const PROJECT_DO_DDL = [
   // signature segment is malleable — see the doc of signingInputHashHex in
   // verifier.ts). `expires_at` is "the last time time-validation could accept
   // the token + a margin" (LEASE_BINDING_RETENTION_MARGIN_MS in policy.ts), and
-  // the row count is bounded by the issuance rate window and GC (data-store-wrap-queries.ts
-  // — deletes expired rows when recording). Neither the token body nor claims
-  // are stored (hash and public key only — both non-secret)
+  // the row count is bounded by the issuance rate window and GC
+  // (data-store-wrap-queries.ts — deletes expired rows when recording).
+  // Neither the token body nor claims are stored (hash and public key only —
+  // both non-secret)
   `CREATE TABLE lease_bindings (
      binding_key_hex TEXT PRIMARY KEY,
      ephemeral_pub_hex TEXT NOT NULL,

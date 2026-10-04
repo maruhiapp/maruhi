@@ -22,7 +22,7 @@ import {
 } from "../member-change-role.ts";
 import { formatMemberListRow, memberListJson, memberListRows } from "../member-list.ts";
 import { memberRemoveOp } from "../member-remove.ts";
-import { type MemberOpOutcome } from "../member.ts";
+import type { MemberOpOutcome } from "../member.ts";
 import { logNote, logWarning } from "../notice.ts";
 import { PinStore } from "../pins.ts";
 import { reportRotationChecklist } from "../rotation.ts";

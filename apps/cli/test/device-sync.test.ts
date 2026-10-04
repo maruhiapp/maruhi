@@ -14,7 +14,7 @@
 import { verifyChainWithHistory } from "@maruhi/crypto";
 import { describe, expect, it } from "vitest";
 
-import { type VerifiedProject } from "../src/chain-sync.ts";
+import type { VerifiedProject } from "../src/chain-sync.ts";
 import { runCli } from "../src/cli.ts";
 import { expectedWrapRecipientCount } from "../src/dek-wrap.ts";
 import {

@@ -33,7 +33,7 @@ import {
   recordOwnDevice,
   startEnvWithoutKey,
 } from "./support/device.ts";
-import { type TestEnv } from "./support/env.ts";
+import type { TestEnv } from "./support/env.ts";
 import { ledgerHandlerFor, storedMasterRecord, storedReserveRecord } from "./support/ledger.ts";
 import { type MockHandler, onRequest } from "./support/server.ts";
 

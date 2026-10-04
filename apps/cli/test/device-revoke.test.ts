@@ -9,7 +9,7 @@
 import { verifyChainWithHistory } from "@maruhi/crypto";
 import { describe, expect, it } from "vitest";
 
-import { type VerifiedProject } from "../src/chain-sync.ts";
+import type { VerifiedProject } from "../src/chain-sync.ts";
 import { runCli } from "../src/cli.ts";
 import { rotationMandates } from "../src/rotation-sweep.ts";
 import {
@@ -35,7 +35,7 @@ import {
   chainWithEnvironment,
   registryRowOf,
 } from "./support/device.ts";
-import { type TestEnv } from "./support/env.ts";
+import type { TestEnv } from "./support/env.ts";
 
 describe("the sweep's fifth kind: the device-revoked obligation (rotation-sweep — K4-8)", () => {
   it("makes the obligation out of the revoked device's effective scope just before revocation (seq−1) — at seq the device is gone, so it must not collapse to ALL", async () => {
