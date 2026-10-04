@@ -29,11 +29,8 @@ import { decryptVerifiedValue } from "./pull.ts";
 import { type PushedVersion, pushVariable } from "./push.ts";
 import { describeShape, lineCountWarning, shapeOf, type ValueShape } from "./rotate-connector.ts";
 import { fetchRotationProposals, resolveVariableStates, type StateIndex } from "./rotation.ts";
-import {
-  pullVerifiedEnvironment,
-  type VerifiedEnvironmentPull,
-  type VerifiedPulledValue,
-} from "./values.ts";
+import type { VerifiedPulledValue } from "./values-verify.ts";
+import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
 import { ensureConfirmed } from "./var-rotate.ts";
 
 /** A proposal's variables for display: the verified name when known, else the identifier. */

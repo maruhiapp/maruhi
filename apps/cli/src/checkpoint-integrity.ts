@@ -53,7 +53,7 @@ import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
 
 import { displayText } from "./display.ts";
 
-/** The coordinates of a served value that rule 2 looks at (satisfied by values.ts's VerifiedPulledValue). */
+/** The coordinates of a served value that rule 2 looks at (satisfied by values-verify.ts's VerifiedPulledValue). */
 export interface CheckpointCheckedValue {
   readonly variableId: string;
   readonly version: number;

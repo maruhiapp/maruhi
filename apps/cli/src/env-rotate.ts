@@ -62,11 +62,8 @@ import { logWarning } from "./notice.ts";
 import { decryptVerifiedValue, missingWrapReason } from "./pull.ts";
 import { encryptAndSignPayload, winnerInconsistency } from "./push.ts";
 import { retryOnConflict } from "./retry.ts";
-import {
-  pullVerifiedEnvironment,
-  type VerifiedEnvironmentPull,
-  type VerifiedPulledValue,
-} from "./values.ts";
+import type { VerifiedPulledValue } from "./values-verify.ts";
+import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
 
 const MAX_ATTEMPTS = 5;
 /** The re-encryption pass limit (one pass = a push to every target + re-fetch / re-verify of the conflicts). */
