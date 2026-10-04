@@ -2,7 +2,7 @@
 // norm for update ordering.
 //
 // Everything checked has already passed the §6.3 signature verification of
-// distributed data (values.ts). A disagreement with the floor is "a
+// distributed data (values-verify.ts). A disagreement with the floor is "a
 // contradiction between properly signed data", so a detection is
 // non-repudiable evidence of server equivocation or forgery (by a key inside
 // its membership interval) — no false-positive concern — and every case is
@@ -46,7 +46,7 @@ import {
   type VariableFloor,
 } from "./floor.ts";
 import type { VerifiedManifest } from "./manifest.ts";
-import type { VerifiedPulledValue } from "./values.ts";
+import type { VerifiedPulledValue } from "./values-verify.ts";
 
 /** Evidence material of a verified meta-statement, including deleted / declared (variables only — §4.2 layout v2). */
 export interface VerifiedMetaEvidence {
@@ -532,7 +532,7 @@ function checkFloorDeleted(
  * The shared skeleton of the environment meta check + the per-variable check
  * of everything in the floor (omission / regression / difference /
  * undeletion). Only the active-side check is swapped by shape (value-bearing
- * / metadata-only). values.ts has already refused an active / deleted pair
+ * / metadata-only). values-verify.ts has already refused an active / deleted pair
  * on the same ID.
  */
 function checkFloorCommon<T extends { readonly variableId: string }>(

@@ -9,7 +9,7 @@
 //   value-carrying pull to get the verified latest value and the bundled DEK
 //   (no double fetch with listMine). The lookup key is NFC-normalized, then
 //   compared byte-exact (§12-1). Duplicate active statements with the same
-//   name are refused by the verification side (values.ts)
+//   name are refused by the verification side (values-verify.ts)
 // - Creation: author-sign a `VariableMetaStatement` (metaVersion 1, active,
 //   empty prev) with your own key and bundle it with the version-1 value
 //   (§12-5). The name is NFC-normalized before signing (the client is the
@@ -77,12 +77,12 @@ import { generateVariableId, signCreateStatement } from "./meta-statement.ts";
 import { decryptVerifiedValue } from "./pull.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signContinuationStatementV2 } from "./schema.package/index.ts";
+import type { VerifiedPulledValue } from "./values-verify.ts";
 import {
   type ManifestIssueBase,
   manifestIssueBaseOf,
   pullVerifiedEnvironment,
   pullVerifiedEnvironmentMetadata,
-  type VerifiedPulledValue,
 } from "./values.ts";
 
 const MAX_ATTEMPTS = 5;
