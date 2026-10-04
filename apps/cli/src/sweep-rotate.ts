@@ -1,7 +1,7 @@
 // The per-environment rotation injected into §7's whole-environment
 // sweep (shared by server revoke / member remove / change-role).
 // The consumers are commands/{approval,member,server}.ts,
-// device.ts, and key-recover.ts.
+// device-revoke.ts, and key-recover.ts.
 
 import { isEnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
