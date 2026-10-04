@@ -103,6 +103,8 @@ const ALLOWED: Readonly<Record<string, string>> = {
   "restore/jobs/job-1.json": "an object key in the documented restore procedure",
   "restore/results/import-acme.json": "an object key in the documented restore procedure",
   "restore/results/job-1.json": "an object key in the documented restore procedure",
+  // Template paths (a `<placeholder>` segment stands in for a real name)
+  ".package/command.ts": "a template path — `<domain>` stands for the package name",
   // The deepsec tool's own checkout layout
   ".deepsec/node_modules/deepsec/SKILL.md": "a file inside the deepsec tool's own directory",
   ".deepsec/node_modules/deepsec/dist/docs/writing-matchers.md":
