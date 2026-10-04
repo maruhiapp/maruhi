@@ -621,7 +621,7 @@ describe("maruhi key recover (restore)", () => {
     expect(keychainDump).not.toContain(reserveUser.encSkHex);
     expect(keychainDump).not.toContain(reserveUser.sigSkSeedHex);
     // A key carrying the reserve-key mark is recorded as a reserve key without
-    // asking (DK K16-6 — the check's positive / negative cases live in the DK K14 / K16 describes in device.test.ts)
+    // asking (DK K16-6 — the check's positive / negative cases live in the DK K14 / K16 describes in device-key-recovery.test.ts)
     expect(await recordedReservesOf(env, maruhi.origin, user.userId)).toHaveLength(1);
     const output = env.logs.join("\n");
     expect(output).toContain("Generated this device's key and stored it in the OS keychain");

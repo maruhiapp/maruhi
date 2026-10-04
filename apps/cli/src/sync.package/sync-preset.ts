@@ -21,7 +21,8 @@
 // gets exec if present, otherwise http.
 
 import { type ExecPreset, EXEC_PRESETS } from "./sync-exec.ts";
-import { type HttpPreset, HTTP_PRESETS } from "./sync-http.ts";
+import { HTTP_PRESETS } from "./sync-http-presets.ts";
+import { type HttpPreset } from "./sync-http.ts";
 import type { DriverKind, PresetId, ResolvedOptions } from "./sync-types.ts";
 
 /** A driver the preset does not offer, with the reason shown to whoever configures it. */

@@ -153,7 +153,7 @@ const PROJECT_DO_DDL = [
      PRIMARY KEY (environment_id, epoch, recipient_user_id, recipient_enc_pub_hex)
    )`,
   // Recipient index: the §12-6 cleanup at re-add acceptance
-  // (deleteStaleMemberWraps in data-store.ts) queries by
+  // (deleteStaleMemberWraps in data-store-write-ops.ts) queries by
   // `recipient_user_id = ? AND recipient_class = 'member'` (the third primary-key
   // component cannot use a prefix match)
   `CREATE INDEX dw_recipient ON dek_wraps (recipient_user_id, recipient_class)`,
@@ -209,7 +209,7 @@ const PROJECT_DO_DDL = [
   // signature segment is malleable — see the doc of signingInputHashHex in
   // verifier.ts). `expires_at` is "the last time time-validation could accept
   // the token + a margin" (LEASE_BINDING_RETENTION_MARGIN_MS in policy.ts), and
-  // the row count is bounded by the issuance rate window and GC (data-store.ts
+  // the row count is bounded by the issuance rate window and GC (data-store-wrap-queries.ts
   // — deletes expired rows when recording). Neither the token body nor claims
   // are stored (hash and public key only — both non-secret)
   `CREATE TABLE lease_bindings (
