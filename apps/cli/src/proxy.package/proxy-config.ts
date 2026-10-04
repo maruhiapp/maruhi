@@ -25,14 +25,14 @@ import { readFile } from "node:fs/promises";
 
 import { Effect } from "effect";
 
-import { cliError, type CliError, usageError } from "./errors.ts";
+import { cliError, type CliError, usageError } from "../errors.ts";
 import {
   isRecord,
   loadIfPresent,
   parseConfigHeader,
   parseJsonRecord,
   unknownKeys,
-} from "./json-record.ts";
+} from "../json-record.ts";
 
 /** Default location of the proxy config, relative to the working directory. */
 export const DEFAULT_PROXY_CONFIG_PATH = "maruhi.proxy.json";

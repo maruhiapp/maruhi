@@ -36,7 +36,7 @@ import {
   tlv,
   unsignedInteger,
   utf8String,
-} from "./der.ts";
+} from "../der.ts";
 
 const encoder = new TextEncoder();
 

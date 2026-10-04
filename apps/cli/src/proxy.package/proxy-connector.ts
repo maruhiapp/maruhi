@@ -23,10 +23,10 @@
 // Error wording carries the connector, the variable name, the HTTP
 // status, and GitHub's `message` field — never an input or the token.
 
-import { pemBody, pkcs1ToPkcs8 } from "./der.ts";
+import { pemBody, pkcs1ToPkcs8 } from "../der.ts";
+import { CLI_VERSION } from "../version.ts";
 import type { ConnectorKind } from "./proxy-config.ts";
 import type { BrokeredCredential } from "./proxy-rules.ts";
-import { CLI_VERSION } from "./version.ts";
 
 /** A minted credential and when it stops being valid (null = no expiry known). */
 interface Minted {

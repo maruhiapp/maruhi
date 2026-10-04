@@ -8,8 +8,8 @@ import { createVerify, generateKeyPairSync } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { parseHostPattern } from "../src/proxy-config.ts";
-import { makeConnectorCredential } from "../src/proxy-connector.ts";
+import { parseHostPattern } from "../src/proxy.package/proxy-config.ts";
+import { makeConnectorCredential } from "../src/proxy.package/proxy-connector.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();

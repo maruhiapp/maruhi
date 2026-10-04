@@ -37,8 +37,8 @@ import {
   acceptedProxyConfigsPathOf,
   makeFileProxyAcceptStore,
   ProxyAcceptStore,
-} from "../../src/proxy-accept.ts";
-import { ProxySeams, type ProxySeamsShape } from "../../src/proxy-run.ts";
+} from "../../src/proxy.package/proxy-accept.ts";
+import { ProxySeams, type ProxySeamsShape } from "../../src/proxy.package/proxy-run.ts";
 import { SqlRunner, type SqlRunnerShape } from "../../src/rotate-connector.ts";
 import {
   type CaptureInput,

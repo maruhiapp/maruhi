@@ -47,7 +47,7 @@ import {
   acceptedProxyConfigsPathOf,
   makeFileProxyAcceptStore,
   ProxyAcceptStore,
-} from "./proxy-accept.ts";
+} from "./proxy.package/index.ts";
 import { SqlRunner, type SqlRunnerShape } from "./rotate-connector.ts";
 import {
   buildChildEnvironment,
