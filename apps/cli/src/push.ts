@@ -96,7 +96,7 @@ export interface PushedVersion {
  * Encryption (fresh nonce) + the §4.1 value signature. The declared head is
  * the verified view's current head.
  *
- * Rotation re-encryption (env-rotate.ts) goes through the same
+ * Rotation re-encryption (env-rotate-push.ts) goes through the same
  * implementation: re-encryption is "a normal push the performer signs as
  * writer" (§7 / §4.1), and splitting the signed-object assembly across two
  * implementations would let only one of them lose the discipline.
