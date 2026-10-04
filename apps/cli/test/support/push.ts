@@ -263,7 +263,7 @@ export function pullMetadataHandlerOf(
       if (echo !== undefined && echo.body !== null) {
         // Accepted: the distributed form = the issueBase set + creation
         // statement; the manifest = the accepted issued form + issuer
-        // attribution (isomorphic to acceptRotate in env-rotate.test.ts)
+        // attribution (isomorphic to acceptRotate in support/env-rotate.ts)
         return {
           status: 200,
           json: {

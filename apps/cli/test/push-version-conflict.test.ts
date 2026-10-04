@@ -458,7 +458,7 @@ describe("maruhi push", () => {
   });
 
   it("EpochConflict (409) resyncs → fetches the new-epoch DEK → re-encrypts and retries (the chain is the epoch's source of truth)", async () => {
-    // push.test assumes "two states over the same genesis" (holds via
+    // support/push.ts assumes "two states over the same genesis" (holds via
     // Ed25519's deterministic signatures + fixed timestamps)
     expect(chainV2.projectId).toBe(chainV1.projectId);
     const createBodies: CreateBody[] = [];
