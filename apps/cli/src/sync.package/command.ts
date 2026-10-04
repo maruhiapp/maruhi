@@ -36,11 +36,13 @@ const syncCommonFlags = () => ({
   ),
 });
 
+/** @public */
 export const syncPlanConfig = {
   ...syncCommonFlags(),
   target: syncTargetArgument(),
 };
 
+/** @public */
 export const syncApplyConfig = {
   ...syncCommonFlags(),
   yes: singleFlag(
@@ -54,6 +56,7 @@ export const syncApplyConfig = {
  * `maruhi sync init <target>`'s declaration (SY2 stage 2 — ruling F):
  * touches neither network nor files; assembles the config JSON from the
  * flags and prints it to stdout.
+ * @public
  */
 export const syncInitConfig = {
   preset: singleValued(
@@ -166,6 +169,7 @@ function openSyncTarget(values: {
   });
 }
 
+/** @public */
 export function makeSyncCommands() {
   const syncPlan = Command.make("plan", syncPlanConfig, (values) =>
     Effect.gen(function* () {

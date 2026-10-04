@@ -49,7 +49,7 @@ import {
   syncInitConfig,
   syncPlanConfig,
   makeSyncCommands,
-} from "../sync.package/index.ts";
+} from "../sync.package/command.ts";
 import { agentConfig, agentStatusConfig, makeAgentCommands } from "./agent.ts";
 import {
   approvalApproveConfig,
