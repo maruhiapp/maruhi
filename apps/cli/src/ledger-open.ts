@@ -25,7 +25,7 @@ import { CliIo } from "./io.ts";
 import type { StoredMasterKey } from "./keychain.ts";
 import { logNote } from "./notice.ts";
 import type { OwnDeviceStore } from "./own-devices.ts";
-import { openReserveWithPasskey } from "./passkey.ts";
+import { openReserveWithPasskey } from "./passkey.package/index.ts";
 import { mapUnloadableRecoveryBlob, unwrapRecoveryBlobWithCode } from "./recovery.ts";
 import {
   isMarkedReserve,

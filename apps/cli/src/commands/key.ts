@@ -12,7 +12,7 @@ import { keyPublishOp } from "../key-publish.ts";
 import { keyRecoverOp, keyRecoveryOp, keyReserveRotateOp } from "../key-recover.ts";
 import { keyGenerateOp, keyShowOp } from "../keygen.ts";
 import { openLedgerReserveForChange } from "../ledger-open.ts";
-import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "../passkey.ts";
+import { listPasskeysOp, removePasskeyOp, sealPasskeyOp } from "../passkey.package/index.ts";
 import { NonBlank, serverOnlyFlags, singleFlag } from "./flags.ts";
 
 export const keyGenerateConfig = {
