@@ -2,8 +2,20 @@
 // per-record decoding — a broken line is ignored by fold (self-healing).
 // The storage form's overview lives in floor-log.ts.
 
+import { isEnvironmentId, isVariableId } from "@maruhi/core";
+
+import {
+  type ChainHeadFloor,
+  type EnvironmentFloor,
+  type FloorConflict,
+  type FloorIntent,
+  type FloorIntentOutcome,
+  type ManifestFloor,
+  type VariableFloor,
+} from "./floor.ts";
+
 /** A snapshot record's content (= the fold result, including conflicts / intents). */
-interface SnapshotState {
+export interface SnapshotState {
   readonly chainHead: ChainHeadFloor | null;
   readonly environments: Readonly<Record<string, EnvironmentFloor>>;
   readonly conflicts: readonly FloorConflict[];
@@ -11,7 +23,7 @@ interface SnapshotState {
 }
 
 /** An observation-log record (one line = one record). */
-type FloorLogRecord =
+export type FloorLogRecord =
   | { readonly r: "head"; readonly head: ChainHeadFloor }
   | {
       readonly r: "pull";
@@ -80,7 +92,7 @@ function isHex64(value: unknown): value is string {
   return typeof value === "string" && HEX_64.test(value);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -130,7 +142,7 @@ function decodeList<T>(value: unknown, decode: (item: unknown) => T | null): T[]
   return items;
 }
 
-function decodeChainHead(value: unknown): ChainHeadFloor | null {
+export function decodeChainHead(value: unknown): ChainHeadFloor | null {
   if (!isRecord(value) || !isPositiveInteger(value["seq"]) || !isHex64(value["hashHex"])) {
     return null;
   }
@@ -473,7 +485,7 @@ const RECORD_DECODERS = new Map<string, (value: Record<string, unknown>) => Floo
 ]);
 
 /** Strict decoding of one line. null = undecodable (fold ignores it — self-healing). */
-function decodeLogRecord(line: string): FloorLogRecord | null {
+export function decodeLogRecord(line: string): FloorLogRecord | null {
   let value: unknown;
   try {
     value = JSON.parse(line);

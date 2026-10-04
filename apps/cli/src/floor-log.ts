@@ -30,32 +30,27 @@
 import { join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
-import { isEnvironmentId, isProjectId, isVariableId } from "@maruhi/core";
+import { isProjectId } from "@maruhi/core";
 import { Data, Effect, FileSystem, type PlatformError } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { formatFloorConflicts } from "./floor-evidence.ts";
+import { decodeChainHead, type FloorLogRecord, isRecord } from "./floor-log-decode.ts";
+import { type FoldOutcome, foldRecords } from "./floor-log-fold.ts";
 import {
   type AttestationEvidenceRecord,
-  type ChainHeadFloor,
   emptyEnvironmentFloor,
   type EnvironmentFloor,
-  type FloorConflict,
   type FloorIntent,
   type FloorIntentInput,
-  type FloorIntentOutcome,
   type FloorLoadResult,
   floorRecordGet,
   type FloorStoreShape,
-  joinChainHead,
-  joinEnvironmentFloor,
   type ManifestCommit,
-  type ManifestFloor,
   type MetadataCommit,
   type ProjectFloor,
   type PullCommit,
   type PushCommit,
-  type VariableFloor,
 } from "./floor.ts";
 
 /**

@@ -3,6 +3,18 @@
 // floor-log.ts; the record format and strict decoding live in
 // floor-log-decode.ts.
 
+import { decodeLogRecord, type FloorLogRecord, type SnapshotState } from "./floor-log-decode.ts";
+import {
+  type ChainHeadFloor,
+  emptyEnvironmentFloor,
+  type EnvironmentFloor,
+  type FloorConflict,
+  type FloorIntent,
+  joinChainHead,
+  joinEnvironmentFloor,
+  type ProjectFloor,
+} from "./floor.ts";
+
 // ---- fold (observation log → floor) ----
 
 interface FoldState {
@@ -93,7 +105,7 @@ function applyRecord(state: FoldState, record: FloorLogRecord): void {
   }
 }
 
-interface FoldOutcome {
+export interface FoldOutcome {
   readonly floor: ProjectFloor;
   /** The total decodable record count (the basis position for a snapshot's `folded`). */
   readonly decodedRecords: number;
@@ -177,7 +189,7 @@ function foldBase(records: readonly FloorLogRecord[]): {
   return { foldFrom: 0, snapshotIndex: -1, state: baseStateOf(null) };
 }
 
-function foldRecords(lines: readonly string[]): FoldOutcome {
+export function foldRecords(lines: readonly string[]): FoldOutcome {
   const { records, droppedAtRecordCount } = parseLogLines(lines);
   const { foldFrom, snapshotIndex, state } = foldBase(records);
   for (let index = foldFrom; index < records.length; index += 1) {
