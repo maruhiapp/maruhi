@@ -70,7 +70,7 @@ describe("the parser's 12 pitfall shapes fail at the argument layer", () => {
 
   it("a value for a boolean is read as written", async () => {
     // To measure `--show=false` / `--show false` before any communication, the
-    // environment ID is broken to force a fail (pull-run.test.ts pins that it
+    // environment ID is broken to force a fail (pull-run-pull.test.ts pins that it
     // never reached value display)
     for (const argv of [
       ["pull", "--show=false", "--env", "!bad"],
