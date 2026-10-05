@@ -1,7 +1,13 @@
 import type { CryptoError, CryptoResult } from "@maruhi/crypto";
-import { verifyChain } from "@maruhi/crypto";
-import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import {
+  exportEncryptionPublicKey,
+  exportSigningPublicKey,
+  generateEncryptionKeyPair,
+  generateSigningKeyPair,
+  verifyChain,
+} from "@maruhi/crypto";
+import { Cause, Effect, Exit } from "effect";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   ChainInvalidError,
@@ -18,6 +24,9 @@ import {
   CryptoInviteLinkSignatureError,
   CryptoKeyExportError,
   CryptoKeyImportError,
+  cryptoPromise,
+  type CryptoPromiseOperation,
+  CryptoRejectedError,
   CryptoSignError,
   CryptoValueInvalidError,
   fromCryptoResult,
@@ -114,6 +123,93 @@ describe("cryptoEffect", () => {
     if (error instanceof ChainInvalidError) {
       expect(error.reason).toBe("empty-chain");
       expect(error.seq).toBe(0);
+    }
+  });
+});
+
+// Every @maruhi/crypto export that returns a bare Promise (no
+// CryptoResult) — CryptoPromiseOperation is derived from the package's
+// public surface, and this list is pinned to it both ways: `satisfies`
+// keeps the list inside the union, `AllOperationsCovered` fails to
+// compile if the union grows a member the list lacks
+type CryptoExports = typeof import("@maruhi/crypto");
+const BARE_PROMISE_OPERATIONS = [
+  "computeChainEntryHash",
+  "exportEncryptionPublicKey",
+  "exportSigningPublicKey",
+  "generateEncryptionKeyPair",
+  "generateSigningKeyPair",
+] as const satisfies readonly CryptoPromiseOperation[];
+type AllOperationsCovered = CryptoPromiseOperation extends (typeof BARE_PROMISE_OPERATIONS)[number]
+  ? true
+  : never;
+const allOperationsCovered: AllOperationsCovered = true;
+void allOperationsCovered;
+
+describe("cryptoPromise", () => {
+  // Correctly-typed success values per operation — real key material
+  // shapes without any cast (the two generators actually run)
+  let thunks: { [K in CryptoPromiseOperation]: () => ReturnType<CryptoExports[K]> };
+  beforeAll(async () => {
+    const encPair = await generateEncryptionKeyPair();
+    const sigPair = await generateSigningKeyPair();
+    const encPub = await exportEncryptionPublicKey(encPair.publicKey);
+    const sigPub = await exportSigningPublicKey(sigPair.publicKey);
+    thunks = {
+      computeChainEntryHash: () => Promise.resolve("deadbeef"),
+      exportEncryptionPublicKey: () => Promise.resolve(encPub),
+      exportSigningPublicKey: () => Promise.resolve(sigPub),
+      generateEncryptionKeyPair: () => Promise.resolve(encPair),
+      generateSigningKeyPair: () => Promise.resolve(sigPair),
+    };
+  });
+
+  for (const operation of BARE_PROMISE_OPERATIONS) {
+    it(`passes the resolved value through (${operation})`, async () => {
+      const expected = await thunks[operation]();
+      await expect(Effect.runPromise(cryptoPromise(operation, thunks[operation]))).resolves.toBe(
+        expected,
+      );
+    });
+
+    it(`turns a rejection into CryptoRejected and leaks nothing (${operation})`, async () => {
+      const effect = cryptoPromise(operation, () => Promise.reject(new Error("SENTINEL")));
+      const error = await Effect.runPromise(Effect.flip(effect));
+      expect(error).toBeInstanceOf(CryptoRejectedError);
+      if (error instanceof CryptoRejectedError) {
+        expect(error.operation).toBe(operation);
+      }
+      // The rejection cause is dropped on purpose: the sentinel must
+      // surface through no serialization of the error or the exit
+      expect(JSON.stringify(error)).not.toContain("SENTINEL");
+      expect(String(error)).not.toContain("SENTINEL");
+      expect(error.stack ?? "").not.toContain("SENTINEL");
+      const exit = await Effect.runPromiseExit(effect);
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).not.toContain("SENTINEL");
+      } else {
+        expect.unreachable("the effect must fail");
+      }
+    });
+  }
+
+  it("maps a synchronous throw from the thunk to CryptoRejected too", async () => {
+    const effect = cryptoPromise("generateSigningKeyPair", () => {
+      throw new Error("SENTINEL");
+    });
+    const error = await Effect.runPromise(Effect.flip(effect));
+    expect(error).toBeInstanceOf(CryptoRejectedError);
+    if (error instanceof CryptoRejectedError) {
+      expect(error.operation).toBe("generateSigningKeyPair");
+    }
+    expect(JSON.stringify(error)).not.toContain("SENTINEL");
+    expect(String(error)).not.toContain("SENTINEL");
+    expect(error.stack ?? "").not.toContain("SENTINEL");
+    const exit = await Effect.runPromiseExit(effect);
+    if (Exit.isFailure(exit)) {
+      expect(Cause.pretty(exit.cause)).not.toContain("SENTINEL");
+    } else {
+      expect.unreachable("the effect must fail");
     }
   });
 });

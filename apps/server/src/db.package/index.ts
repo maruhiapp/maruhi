@@ -46,6 +46,12 @@ export {
 export { OrgRepo } from "./orgs.ts";
 export { ProjectRepo } from "./projects.ts";
 export { RECOVERY_FETCH_LIMIT, RecoveryRepo } from "./recovery.ts";
-export { type DbServices, isUniqueConflict, makeDbServices } from "./repos.ts";
+export {
+  D1FailureError,
+  type DbServices,
+  D1UniqueConflictError,
+  makeDbServices,
+  tryD1,
+} from "./repos.ts";
 export { SessionRepo, type SessionRepoShape } from "./sessions.ts";
 export { TokenRepo, type TokenRepoShape } from "./tokens.ts";

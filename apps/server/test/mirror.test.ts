@@ -18,10 +18,11 @@
 // - unmarking promotes the mirror (writes accepted again)
 
 import { env, runInDurableObject, SELF } from "cloudflare:test";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { PROJECT_DO_TABLES, readProjectDoSchemaVersion } from "../src/do/do-schema.ts";
-import { restoreSnapshot } from "../src/do/do-snapshot.ts";
+import { restoreSnapshot, type RestoreFailureCode } from "../src/do/do-snapshot.ts";
 import { JSON_HEADERS } from "./support/auth.ts";
 import { changeRoleOperation, signEntryAt, vectorKeyOf } from "./support/data-crypto.ts";
 import {
@@ -108,14 +109,38 @@ async function restoreLines(lines: readonly string[]): Promise<void> {
   await runInDurableObject(stub, async (_instance, state) => {
     // The stream is created inside the DO's context (an I/O object of
     // the test context cannot be read on behalf of the DO)
-    await restoreSnapshot({
-      storage: state.storage,
-      tables: PROJECT_DO_TABLES,
-      schemaVersion: readProjectDoSchemaVersion(state.storage.sql),
-      body: new Blob([text]).stream().pipeThrough(new CompressionStream("gzip")),
-    });
+    await Effect.runPromise(
+      restoreSnapshot({
+        storage: state.storage,
+        tables: PROJECT_DO_TABLES,
+        schemaVersion: readProjectDoSchemaVersion(state.storage.sql),
+        body: new Blob([text]).stream().pipeThrough(new CompressionStream("gzip")),
+      }),
+    );
   });
   await evictProjectDo(projectId);
+}
+
+/** Restores like restoreLines but answers the refusal's code (null = the import committed). */
+async function restoreLinesRefusal(lines: readonly string[]): Promise<RestoreFailureCode | null> {
+  await resetProjectDo(projectId);
+  const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
+  const text = `${lines.join("\n")}\n`;
+  const code = await runInDurableObject(stub, async (_instance, state) =>
+    Effect.runPromise(
+      restoreSnapshot({
+        storage: state.storage,
+        tables: PROJECT_DO_TABLES,
+        schemaVersion: readProjectDoSchemaVersion(state.storage.sql),
+        body: new Blob([text]).stream().pipeThrough(new CompressionStream("gzip")),
+      }).pipe(
+        Effect.map((): RestoreFailureCode | null => null),
+        Effect.catchTag("RestoreRefused", (error) => Effect.succeed(error.code)),
+      ),
+    ),
+  );
+  await evictProjectDo(projectId);
+  return code;
 }
 
 const status = (userId = READER) => requestJson("GET", "/mirror", token(userId));
@@ -1051,6 +1076,28 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(((await same.json()) as WirePageOutcome).committed).toBeDefined();
     await expectRejected(await upload(withoutAudit, 50), "audit-regression");
     expect(await stagingTables()).toEqual([]);
+  });
+
+  it("refuses a line whose fields carry wrong types at decode — malformed on the page and the restore path", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const lines = await exportAll();
+    const header = parsedLine(lines[0]);
+    const rows = parsedLine(lines[lines.length - 1])["rows"] as Record<string, unknown>;
+    expect((await mark(OWNER)).status).toBe(200);
+    // A string count in the trailer's rows: refused at decode, before
+    // the count check (a well-typed wrong count is row-count-mismatch, above)
+    const wrongCount = withTrailer(lines, { rows: { ...rows, variables: "5" } });
+    await expectRejected(await upload(wrongCount, 50), "malformed");
+    // A string schemaVersion: refused at decode (a numeric mismatch is
+    // schema-mismatch, above)
+    await expectRejected(
+      await page(OWNER, 0, [JSON.stringify({ ...header, schemaVersion: "3" })]),
+      "malformed",
+    );
+    // The restore's reader decodes the same wire union: the same forged
+    // trailer is malformed on the import too
+    await expect(restoreLinesRefusal(wrongCount)).resolves.toBe("malformed");
   });
 
   it("serves a workload lease on a mirror and refuses the mint after authorization", async () => {

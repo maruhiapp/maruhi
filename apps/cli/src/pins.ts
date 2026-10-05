@@ -28,16 +28,24 @@
 // can erase local state is outside the pins' remit (reduces to
 // §14.3-3's non-guarantee — the same boundary as the floor).
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { isEnvironmentId } from "@maruhi/core";
-import { MAX_SCOPE_ENVIRONMENTS, type ScopeKind } from "@maruhi/crypto";
-import { Context, Effect } from "effect";
+import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
+import type { ScopeKind } from "@maruhi/crypto";
+import { Context, Effect, Schema } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
 import { GITHUB_LOGIN } from "./invite-link.ts";
+import {
+  Hex32,
+  Hex64,
+  PositiveInt,
+  readJsonFile,
+  recordKeysMatch,
+  ScopeEnvironmentIds,
+  writeJsonFileAtomic,
+} from "./json-record.ts";
 
 /** The acceptor-side invite-link anchor (§6.3 (a)). */
 export interface InviteAnchor {
@@ -113,9 +121,6 @@ export function pinsDirOf(configPath: string): string {
  */
 const ISSUED_PIN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
-const HEX_64 = /^[0-9a-f]{64}$/;
-const HEX_32 = /^[0-9a-f]{32}$/;
-const ROLES = ["reader", "member", "admin"] as const;
 // The invite id is server-issued (ULID) but does not depend on
 // the format (the same posture as AUTH_SPEC §11-1's ID-format
 // independence). Banning a leading `_` structurally excludes
@@ -123,164 +128,39 @@ const ROLES = ["reader", "member", "admin"] as const;
 // uses floorRecordGet
 const INVITE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+const InviteAnchorSchema = Schema.Struct({
+  headSeq: PositiveInt,
+  headHashHex: Hex64,
+  inviterUserId: Schema.String.check(Schema.isPattern(/^.{1,1024}$/s)),
+  inviterKeyFingerprintHex: Hex32,
+  inviterSigPubHex: Hex64,
+  verifiedAtSeq: Schema.NullOr(PositiveInt),
+});
 
-function isPositiveInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
+const IssuedPinSchema = Schema.Struct({
+  linkPubHex: Hex64,
+  role: Schema.Literals(["reader", "member", "admin"]),
+  // The scope pair's structural rules are CRYPTO_SPEC §6.2's (kind's
+  // closed set, at most 256 ids, no duplicates, id format — the
+  // listed/all split is the struct-level check below)
+  scopeKind: Schema.Literals(["all", "listed"]),
+  scopeEnvironmentIds: ScopeEnvironmentIds,
+  expiresAtMs: PositiveInt,
+  expectedGithubLogin: Schema.NullOr(Schema.String.check(Schema.isPattern(GITHUB_LOGIN))),
+}).check(
+  Schema.makeFilter(
+    (pin) =>
+      pin.scopeKind !== "all" ||
+      pin.scopeEnvironmentIds.length === 0 ||
+      "an 'all' scope carries no environment ids",
+  ),
+);
 
-/** Returns a record's string field after pattern validation (mismatch = null). */
-function patternField(
-  record: Record<string, unknown>,
-  key: string,
-  pattern: RegExp,
-): string | null {
-  const value = record[key];
-  return typeof value === "string" && pattern.test(value) ? value : null;
-}
-
-/** A record's positive-integer field (mismatch = null). */
-function positiveIntField(record: Record<string, unknown>, key: string): number | null {
-  const value = record[key];
-  return isPositiveInteger(value) ? value : null;
-}
-
-/** A nullable string field: null = null, pattern match = the value, otherwise (including missing) = "invalid". */
-function nullablePatternField(
-  record: Record<string, unknown>,
-  key: string,
-  pattern: RegExp,
-): string | null | "invalid" {
-  return record[key] === null ? null : (patternField(record, key, pattern) ?? "invalid");
-}
-
-/** A nullable positive-integer field (null = null, other malformed/missing = "invalid"). */
-function nullablePositiveIntField(
-  record: Record<string, unknown>,
-  key: string,
-): number | null | "invalid" {
-  return record[key] === null ? null : (positiveIntField(record, key) ?? "invalid");
-}
-
-function decodeAnchor(value: unknown): InviteAnchor | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const headSeq = positiveIntField(value, "headSeq");
-  const headHashHex = patternField(value, "headHashHex", HEX_64);
-  const inviterUserId = patternField(value, "inviterUserId", /^.{1,1024}$/s);
-  const inviterKeyFingerprintHex = patternField(value, "inviterKeyFingerprintHex", HEX_32);
-  const verifiedAtSeq = nullablePositiveIntField(value, "verifiedAtSeq");
-  const inviterSigPubHex = patternField(value, "inviterSigPubHex", HEX_64);
-  if (
-    headSeq === null ||
-    headHashHex === null ||
-    inviterUserId === null ||
-    inviterKeyFingerprintHex === null ||
-    verifiedAtSeq === "invalid" ||
-    inviterSigPubHex === null
-  ) {
-    return null;
-  }
-  return {
-    headSeq,
-    headHashHex,
-    inviterUserId,
-    inviterKeyFingerprintHex,
-    inviterSigPubHex,
-    verifiedAtSeq,
-  };
-}
-
-function decodeIssuedPin(value: unknown): IssuedInvitePin | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const linkPubHex = patternField(value, "linkPubHex", HEX_64);
-  const role = ROLES.find((known) => known === value["role"]) ?? null;
-  const expiresAtMs = positiveIntField(value, "expiresAtMs");
-  const expectedGithubLogin = nullablePatternField(value, "expectedGithubLogin", GITHUB_LOGIN);
-  const scope = scopeFields(value);
-  if (
-    linkPubHex === null ||
-    role === null ||
-    expiresAtMs === null ||
-    expectedGithubLogin === "invalid" ||
-    scope === "invalid"
-  ) {
-    return null;
-  }
-  return { linkPubHex, role, ...scope, expiresAtMs, expectedGithubLogin };
-}
-
-/** The scope pair (a structural-rule violation = "invalid"). The structural rules are CRYPTO_SPEC §6.2's (kind's closed set, all ⇒ empty, at most 256, no duplicates, id format). */
-function scopeFields(
-  record: Record<string, unknown>,
-): { readonly scopeKind: ScopeKind; readonly scopeEnvironmentIds: readonly string[] } | "invalid" {
-  const kind = record["scopeKind"];
-  const ids = record["scopeEnvironmentIds"];
-  if (
-    (kind !== "all" && kind !== "listed") ||
-    !isScopeIdList(ids) ||
-    (kind === "all" && ids.length > 0)
-  ) {
-    return "invalid";
-  }
-  return { scopeKind: kind, scopeEnvironmentIds: [...ids] };
-}
-
-/** The structural rules of an environment-id list (§12-1 format, at most 256, no duplicates). */
-function isScopeIdList(ids: unknown): ids is readonly string[] {
-  return (
-    Array.isArray(ids) &&
-    ids.length <= MAX_SCOPE_ENVIRONMENTS &&
-    ids.every((id) => isEnvironmentId(id)) &&
-    new Set(ids).size === ids.length
-  );
-}
-
-/** Strict decoding. A schema mismatch treats the whole as corrupt (no partial reads — same as the floor). */
-/** Decoding the whole issued record (one malformed entry rejects the whole). */
-function decodeIssuedRecord(value: unknown): Record<string, IssuedInvitePin> | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const issued: Record<string, IssuedInvitePin> = {};
-  for (const [inviteId, raw] of Object.entries(value)) {
-    if (!INVITE_ID.test(inviteId)) {
-      return null;
-    }
-    const pin = decodeIssuedPin(raw);
-    if (pin === null) {
-      return null;
-    }
-    issued[inviteId] = pin;
-  }
-  return issued;
-}
-
-function decodeInvitePins(json: string): InvitePins | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  if (!isRecord(value) || value["v"] !== 1) {
-    return null;
-  }
-  const anchor = value["anchor"] === null ? null : decodeAnchor(value["anchor"]);
-  if (value["anchor"] !== null && anchor === null) {
-    return null;
-  }
-  const issued = decodeIssuedRecord(value["issued"]);
-  if (issued === null) {
-    return null;
-  }
-  return { v: 1, anchor, issued };
-}
+const PinsFileSchema = Schema.Struct({
+  v: Schema.Literal(1),
+  anchor: Schema.NullOr(InviteAnchorSchema),
+  issued: Schema.Record(Schema.String, IssuedPinSchema).check(recordKeysMatch(INVITE_ID)),
+});
 
 /** Reads an issued pin (own-property — floor.ts's discipline). */
 export function issuedPinOf(
@@ -293,67 +173,59 @@ export function issuedPinOf(
 /** File-backed pin store at `dir` (used by both production and tests). */
 export function makeFilePinStore(dir: string): PinStoreShape {
   const pathOf = (projectId: string) => join(dir, `${projectId}.json`);
+  const writeError = (projectId: string) =>
+    cliError(
+      `Cannot write the invite-pin file (corrupt or an I/O failure): ${pathOf(projectId)} — inspect it, and if the modification was unintended, delete it and re-run`,
+    );
 
-  const loadRaw = async (projectId: string): Promise<PinsLoadResult> => {
-    let json: string;
-    try {
-      json = await readFile(pathOf(projectId), "utf8");
-    } catch (error) {
-      // Only missing (ENOENT) **alone** folds into "none". EACCES
+  const load = (projectId: string) =>
+    readJsonFile(pathOf(projectId), PinsFileSchema).pipe(
+      Effect.map((loaded): PinsLoadResult => {
+        switch (loaded.state) {
+          case "missing":
+            return { pins: null, state: "missing" };
+          case "corrupt":
+            return { pins: null, state: "corrupt" };
+          case "loaded":
+            return { pins: loaded.file, state: "loaded" };
+        }
+      }),
+      // Only missing (NotFound) **alone** folds into "none". EACCES
       // / EISDIR etc. are a "could not read the existing pins"
       // failure — folding them into "none" makes merge rebuild the
       // existing file from empty and silently lose the verified
       // anchor and the issued pins (same discipline as config.ts's
       // reading)
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return { pins: null, state: "missing" };
-      }
-      throw error;
-    }
-    const pins = decodeInvitePins(json);
-    return pins === null ? { pins: null, state: "corrupt" } : { pins, state: "loaded" };
-  };
-
-  const write = async (projectId: string, pins: InvitePins): Promise<void> => {
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    const path = pathOf(projectId);
-    const temp = `${path}.${process.pid}.tmp`;
-    await writeFile(temp, `${JSON.stringify(pins, null, 2)}\n`, { mode: 0o600 });
-    await rename(temp, path);
-  };
+      Effect.mapError(() => cliError(`Cannot read the invite-pin file: ${pathOf(projectId)}`)),
+      Effect.provide(BunFileSystem.layer),
+    );
 
   const merge = (
     projectId: string,
     apply: (pins: InvitePins) => InvitePins,
   ): Effect.Effect<void, CliError> =>
-    Effect.tryPromise({
-      try: async () => {
-        const loaded = await loadRaw(projectId);
-        if (loaded.state === "corrupt") {
-          // Writing onto a corrupt file is refused (same
-          // discipline as the floor's "a write failure is never
-          // fail-open"). Rebuilding from empty would let the
-          // verified anchor be silently lost via one corruption +
-          // the next write and become indistinguishable from
-          // "there never was an anchor" (§6.3 (a)'s detection
-          // itself depends on the anchor)
-          throw new Error("corrupt");
-        }
-        const base: InvitePins = loaded.pins ?? { v: 1, anchor: null, issued: {} };
-        await write(projectId, apply(base));
-      },
-      catch: () =>
-        cliError(
-          `Cannot write the invite-pin file (corrupt or an I/O failure): ${pathOf(projectId)} — inspect it, and if the modification was unintended, delete it and re-run`,
-        ),
-    });
+    Effect.gen(function* () {
+      const loaded = yield* readJsonFile(pathOf(projectId), PinsFileSchema);
+      if (loaded.state === "corrupt") {
+        // Writing onto a corrupt file is refused (same
+        // discipline as the floor's "a write failure is never
+        // fail-open"). Rebuilding from empty would let the
+        // verified anchor be silently lost via one corruption +
+        // the next write and become indistinguishable from
+        // "there never was an anchor" (§6.3 (a)'s detection
+        // itself depends on the anchor)
+        return yield* Effect.fail(writeError(projectId));
+      }
+      const base: InvitePins =
+        loaded.state === "missing" ? { v: 1, anchor: null, issued: {} } : loaded.file;
+      yield* writeJsonFileAtomic(pathOf(projectId), PinsFileSchema, apply(base));
+    }).pipe(
+      Effect.mapError(() => writeError(projectId)),
+      Effect.provide(BunFileSystem.layer),
+    );
 
   return {
-    load: (projectId) =>
-      Effect.tryPromise({
-        try: () => loadRaw(projectId),
-        catch: () => cliError(`Cannot read the invite-pin file: ${pathOf(projectId)}`),
-      }),
+    load,
     saveAnchor: (projectId, anchor) => merge(projectId, (pins) => ({ ...pins, anchor })),
     saveIssuedPin: (projectId, inviteId, pin) => {
       // Writing an out-of-format id makes the next load wholly corrupt (strict decoding), so refuse beforehand

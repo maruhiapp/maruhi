@@ -13,12 +13,13 @@
 // ignored as an unknown key (decodeConfig picks up only allowed keys).
 
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import { Context, Effect, FileSystem, Result, Schema } from "effect";
 
 import { CliError, cliError } from "./errors.ts";
+import { writeJsonFileAtomic } from "./json-record.ts";
 
 /**
  * Backing source (CRYPTO_SPEC §6.5 — IV2): the source that mechanically
@@ -158,16 +159,12 @@ export function makeFileConfigStore(path: string): ConfigStoreShape {
     load: Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const json = yield* fs.readFileString(path, "utf8").pipe(
+        // Treat **only** not-created (NotFound / ENOENT) as empty settings
+        // (first run). Folding read failures like EACCES / EISDIR / EIO into
+        // empty settings would let a later `config set` replace, without
+        // warning, settings that merely failed to be read
+        Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(null)),
         Effect.catch((error) => {
-          // Treat **only** not-created (ENOENT) as empty settings (first
-          // run). Folding read failures like EACCES / EISDIR / EIO into
-          // empty settings would let a later `config set` replace,
-          // without warning, settings that merely failed to be read
-          // (direct `_tag` access is banned by oxlint — read it
-          // through a record, the failure.ts discipline)
-          if ((error.reason as unknown as Record<string, unknown>)["_tag"] === "NotFound") {
-            return Effect.succeed(null);
-          }
           const code =
             (error.reason.cause as NodeJS.ErrnoException | undefined)?.code ?? "unknown error";
           return Effect.fail(
@@ -189,14 +186,8 @@ export function makeFileConfigStore(path: string): ConfigStoreShape {
       return config;
     }).pipe(Effect.provide(BunFileSystem.layer)),
     save: (config) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        yield* fs.makeDirectory(dirname(path), { recursive: true, mode: 0o700 });
-        // temp + rename prevents torn writes (the last write among concurrent runs wins)
-        const temp = `${path}.${process.pid}.tmp`;
-        yield* fs.writeFileString(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-        yield* fs.rename(temp, path);
-      }).pipe(
+      // temp + rename prevents torn writes (the last write among concurrent runs wins)
+      writeJsonFileAtomic(path, CliConfigSchema, config).pipe(
         Effect.mapError(() => cliError(`Cannot write the config file: ${path}`)),
         Effect.provide(BunFileSystem.layer),
       ),

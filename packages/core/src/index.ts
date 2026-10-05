@@ -20,6 +20,9 @@ export {
   CryptoKeyExportError,
   CryptoKeyImportError,
   CryptoMetaStatementInvalidError,
+  cryptoPromise,
+  type CryptoPromiseOperation,
+  CryptoRejectedError,
   CryptoSignError,
   CryptoUnsupportedMetaLayoutError,
   CryptoValueInvalidError,
@@ -27,6 +30,7 @@ export {
   toWrappedCryptoError,
   type WrappedCryptoError,
 } from "./crypto-errors.ts";
+export { type EgressRequestInit, egressHttpClientLayer } from "./egress.ts";
 export { ulid } from "./ids.ts";
 export {
   type AuditActor,

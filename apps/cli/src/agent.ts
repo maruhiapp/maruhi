@@ -56,7 +56,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Effect } from "effect";
+import { Data, Effect, Option, Predicate, Schema } from "effect";
 
 import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
@@ -84,75 +84,45 @@ const IO_TIMEOUT_MS = 5_000;
 const SOCKET_FILE_NAME = "agent.sock";
 
 /** One request to the agent (mirrors {@link KeychainShape}, plus `list` for status). */
-export type AgentRequest =
-  | { readonly v: 1; readonly op: "get" | "remove"; readonly name: string }
-  | { readonly v: 1; readonly op: "set"; readonly name: string; readonly value: string }
-  | { readonly v: 1; readonly op: "list" };
+const AgentRequestSchema = Schema.Union([
+  Schema.Struct({
+    v: Schema.Literal(AGENT_PROTOCOL_VERSION),
+    op: Schema.Literals(["get", "remove"]),
+    name: Schema.NonEmptyString,
+  }),
+  Schema.Struct({
+    v: Schema.Literal(AGENT_PROTOCOL_VERSION),
+    op: Schema.Literal("set"),
+    name: Schema.NonEmptyString,
+    value: Schema.String,
+  }),
+  Schema.Struct({ v: Schema.Literal(AGENT_PROTOCOL_VERSION), op: Schema.Literal("list") }),
+]);
+export type AgentRequest = typeof AgentRequestSchema.Type;
 
-/** One response from the agent. */
-export type AgentResponse =
-  | { readonly ok: true; readonly value: string | null }
-  | { readonly ok: true; readonly names: readonly string[] }
-  | { readonly ok: false; readonly error: string };
+/**
+ * One response from the agent. The union order matters: a body matching the
+ * `value` shape decodes as that variant even if it also carries `names` — the
+ * same first-match-wins reading the hand-written parser had.
+ */
+const AgentResponseSchema = Schema.Union([
+  Schema.Struct({ ok: Schema.Literal(true), value: Schema.NullOr(Schema.String) }),
+  Schema.Struct({ ok: Schema.Literal(true), names: Schema.Array(Schema.String) }),
+  Schema.Struct({ ok: Schema.Literal(false), error: Schema.String }),
+]);
+export type AgentResponse = typeof AgentResponseSchema.Type;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+const requestFromLine = Schema.fromJsonString(AgentRequestSchema);
+const responseFromLine = Schema.fromJsonString(AgentResponseSchema);
 
 /** Parses one request line; null when malformed or of another protocol version. */
 export function parseAgentRequest(line: string): AgentRequest | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (!isRecord(value) || value["v"] !== AGENT_PROTOCOL_VERSION) {
-    return null;
-  }
-  if (value["op"] === "list") {
-    return { v: 1, op: "list" };
-  }
-  const name = value["name"];
-  if (typeof name !== "string" || name.length === 0) {
-    return null;
-  }
-  const op = value["op"];
-  if (op === "get" || op === "remove") {
-    return { v: 1, op, name };
-  }
-  if (op === "set" && typeof value["value"] === "string") {
-    return { v: 1, op, name, value: value["value"] };
-  }
-  return null;
+  return Option.getOrNull(Schema.decodeUnknownOption(requestFromLine)(line));
 }
 
 /** Parses one response line; null when malformed. */
 export function parseAgentResponse(line: string): AgentResponse | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  if (!isRecord(value)) {
-    return null;
-  }
-  if (value["ok"] === true && (typeof value["value"] === "string" || value["value"] === null)) {
-    return { ok: true, value: value["value"] };
-  }
-  const names = value["names"];
-  if (
-    value["ok"] === true &&
-    Array.isArray(names) &&
-    names.every((name) => typeof name === "string")
-  ) {
-    return { ok: true, names: names as string[] };
-  }
-  if (value["ok"] === false && typeof value["error"] === "string") {
-    return { ok: false, error: value["error"] };
-  }
-  return null;
+  return Option.getOrNull(Schema.decodeUnknownOption(responseFromLine)(line));
 }
 
 /** Encodes a request as one line (the wire form). */
@@ -385,13 +355,20 @@ export function startAgentServer(
 /* -------------------------------------------------------------------------- */
 
 /** The connect succeeded but the conversation cannot be held (no answer, malformed answer, version mismatch). */
-class AgentProtocolError extends Error {}
+class AgentProtocolError extends Data.TaggedError("AgentProtocolError")<{
+  readonly reason: string;
+}> {}
 
 /** No socket or nobody is listening (the session has ended). */
-class AgentGoneError extends Error {}
+class AgentGoneError extends Data.TaggedError("AgentGoneError")<{
+  readonly reason: string;
+}> {}
 
 /** What the env var points to does not look like a socket our agent made (do not use it). */
-class AgentSocketRejectedError extends Error {}
+class AgentSocketRejectedError extends Data.TaggedError("AgentSocketRejectedError")<{
+  /** The rejection reason, in user-facing words (embedded in the refusal message). */
+  readonly reason: string;
+}> {}
 
 const GONE_CODES = new Set(["ENOENT", "ECONNREFUSED", "ENOTSOCK", "EACCES"]);
 
@@ -404,24 +381,30 @@ const GONE_CODES = new Set(["ENOENT", "ECONNREFUSED", "ENOTSOCK", "EACCES"]);
  * file stops here (a same-user attacker cannot be stopped — the same
  * boundary as the OS keychain).
  */
-async function assertTrustedSocket(socketPath: string): Promise<void> {
-  const reason = socketRejectionReason(await lstatAgentSocket(socketPath));
-  if (reason !== null) {
-    throw new AgentSocketRejectedError(reason);
-  }
-}
-
-/** Maps lstat failures into the same vocabulary as the connect side (gone / cannot talk). */
-async function lstatAgentSocket(socketPath: string): Promise<Stats> {
-  try {
-    return await lstat(socketPath);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code ?? "lstat";
-    // Same classification as the connect side: missing / unreachable (EACCES
-    // etc.) is "the session has ended", everything else is the cannot-talk
-    // side — so the same state does not become a different story by path
-    throw GONE_CODES.has(code) ? new AgentGoneError(code) : new AgentProtocolError(code);
-  }
+function assertTrustedSocket(
+  socketPath: string,
+): Effect.Effect<void, AgentGoneError | AgentProtocolError | AgentSocketRejectedError> {
+  return Effect.tryPromise({
+    try: () => lstat(socketPath),
+    catch: (error) => {
+      const code =
+        Predicate.hasProperty(error, "code") && Predicate.isString(error.code)
+          ? error.code
+          : "lstat";
+      // Same classification as the connect side: missing / unreachable
+      // (EACCES etc.) is "the session has ended", everything else is the
+      // cannot-talk side — so the same state does not become a different
+      // story by path
+      return GONE_CODES.has(code)
+        ? new AgentGoneError({ reason: code })
+        : new AgentProtocolError({ reason: code });
+    },
+  }).pipe(
+    Effect.flatMap((stat) => {
+      const reason = socketRejectionReason(stat);
+      return reason === null ? Effect.void : Effect.fail(new AgentSocketRejectedError({ reason }));
+    }),
+  );
 }
 
 /** The reason it must not be used (in user-facing words); null when fine. */
@@ -445,58 +428,83 @@ function socketRejectionReason(stat: Stats): string | null {
   return (stat.mode & 0o077) === 0 ? null : "other users can access it";
 }
 
-async function sendAgentRequest(socketPath: string, request: AgentRequest): Promise<AgentResponse> {
-  await assertTrustedSocket(socketPath);
-  return new Promise((resolve, reject) => {
-    let buffered = "";
-    let settled = false;
-    const socket = createConnection(socketPath);
-    const settle = (outcome: () => void): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      socket.destroy();
-      outcome();
-    };
-    const timer = setTimeout(
-      () => settle(() => reject(new AgentProtocolError("timeout"))),
-      IO_TIMEOUT_MS,
-    );
-    socket.setEncoding("utf8");
-    socket.once("connect", () => {
-      socket.write(encodeAgentRequest(request));
-    });
-    socket.on("data", (chunk: string) => {
-      buffered += chunk;
-      if (Buffer.byteLength(buffered) > MAX_MESSAGE_BYTES) {
-        settle(() => reject(new AgentProtocolError("response too large")));
-        return;
-      }
-      const newline = buffered.indexOf("\n");
-      if (newline < 0) {
-        return;
-      }
-      const response = parseAgentResponse(buffered.slice(0, newline));
-      settle(() =>
-        response === null
-          ? reject(new AgentProtocolError("malformed response"))
-          : resolve(response),
-      );
-    });
-    socket.once("error", (error: NodeJS.ErrnoException) => {
-      settle(() =>
-        reject(
-          error.code !== undefined && GONE_CODES.has(error.code)
-            ? new AgentGoneError(error.code)
-            : new AgentProtocolError(error.code ?? "socket error"),
+/**
+ * One request / one response on the trusted socket, the whole conversation
+ * inside one callback. `finish` destroys the socket first and resumes after:
+ * a resume after the callback has yielded evaluates the fiber synchronously,
+ * so the socket is gone before the caller continues. Only the first resume
+ * counts, so a later `close` (the one `destroy` itself causes) or `error`
+ * cannot mask the settled outcome. The listeners stay attached for the
+ * socket's whole life — an `error` that arrives late finds a listener (whose
+ * resume is a no-op) instead of becoming an uncaught exception. The cleanup
+ * returned to `Effect.callback` runs only on interruption — it is what makes
+ * {@link Effect.timeout} sever the connection rather than leave it behind;
+ * `finish` covers every outcome that resumes. Exported for the tests, which
+ * pin each failure's classification on a real socket.
+ */
+export function sendAgentRequest(
+  socketPath: string,
+  request: AgentRequest,
+): Effect.Effect<AgentResponse, AgentGoneError | AgentProtocolError | AgentSocketRejectedError> {
+  const conversation = Effect.callback<AgentResponse, AgentGoneError | AgentProtocolError>(
+    (resume) => {
+      let buffered = "";
+      const socket = createConnection(socketPath);
+      const finish = (
+        outcome: Effect.Effect<AgentResponse, AgentGoneError | AgentProtocolError>,
+      ): void => {
+        socket.destroy();
+        resume(outcome);
+      };
+      socket.setEncoding("utf8");
+      socket.once("connect", () => {
+        socket.write(encodeAgentRequest(request));
+      });
+      socket.on("data", (chunk: string) => {
+        buffered += chunk;
+        if (Buffer.byteLength(buffered) > MAX_MESSAGE_BYTES) {
+          finish(Effect.fail(new AgentProtocolError({ reason: "response too large" })));
+          return;
+        }
+        const newline = buffered.indexOf("\n");
+        if (newline < 0) {
+          return;
+        }
+        const response = parseAgentResponse(buffered.slice(0, newline));
+        finish(
+          response === null
+            ? Effect.fail(new AgentProtocolError({ reason: "malformed response" }))
+            : Effect.succeed(response),
+        );
+      });
+      socket.on("error", (error: NodeJS.ErrnoException) => {
+        finish(
+          Effect.fail(
+            error.code !== undefined && GONE_CODES.has(error.code)
+              ? new AgentGoneError({ reason: error.code })
+              : new AgentProtocolError({ reason: error.code ?? "socket error" }),
+          ),
+        );
+      });
+      // Closed before the response line (the agent died, etc.)
+      socket.once("close", () => finish(Effect.fail(new AgentProtocolError({ reason: "closed" }))));
+      return Effect.sync(() => {
+        socket.destroy();
+      });
+    },
+  );
+  return assertTrustedSocket(socketPath).pipe(
+    // The clock covers the conversation only (the lstat before it was never
+    // inside the old timer either)
+    Effect.andThen(
+      conversation.pipe(
+        Effect.timeout(IO_TIMEOUT_MS),
+        Effect.catchTag("TimeoutError", () =>
+          Effect.fail(new AgentProtocolError({ reason: "timeout" })),
         ),
-      );
-    });
-    // Closed before the response line (the agent died, etc.)
-    socket.once("close", () => settle(() => reject(new AgentProtocolError("closed"))));
-  });
+      ),
+    ),
+  );
 }
 
 const agentGoneMessage =
@@ -505,17 +513,20 @@ const agentGoneMessage =
 const agentProtocolMessage =
   "The maruhi agent did not answer as expected (a different maruhi version may be running it). Exit the agent session and start a new one with `maruhi agent -- <shell>` using this version" as const;
 
-function agentRequestError(error: unknown): CliError {
-  if (error instanceof AgentGoneError) {
-    return cliError(agentGoneMessage);
-  }
-  if (error instanceof AgentSocketRejectedError) {
-    return cliError(
-      `Refusing to use the agent socket named by ${AGENT_SOCKET_ENV}: ${error.message}. Unset ${AGENT_SOCKET_ENV}, or start a new session with \`maruhi agent -- <shell>\``,
-    );
-  }
-  return cliError(agentProtocolMessage);
-}
+/**
+ * The socket-side failures in user-facing words, as `catchTags` handlers.
+ * AgentGoneError differs per caller (the probe treats it as "safe to start a
+ * new session"), so only the two shared cases live here.
+ */
+const agentErrorHandlers = {
+  AgentSocketRejectedError: (error: AgentSocketRejectedError) =>
+    Effect.fail(
+      cliError(
+        `Refusing to use the agent socket named by ${AGENT_SOCKET_ENV}: ${error.reason}. Unset ${AGENT_SOCKET_ENV}, or start a new session with \`maruhi agent -- <shell>\``,
+      ),
+    ),
+  AgentProtocolError: () => Effect.fail(cliError(agentProtocolMessage)),
+} as const;
 
 /**
  * Whether the agent the env var points to is alive (for the nesting check).
@@ -524,16 +535,12 @@ function agentRequestError(error: unknown): CliError {
  * mismatch) are returned to the user with their reason.
  */
 function probeAgent(socketPath: string): Effect.Effect<"live" | "gone", CliError> {
-  return Effect.tryPromise({
-    try: () => sendAgentRequest(socketPath, { v: 1, op: "list" }),
-    catch: (error) => error,
-  }).pipe(
-    Effect.map((): "live" => "live"),
-    Effect.catch((error) =>
-      error instanceof AgentGoneError
-        ? Effect.succeed("gone" as const)
-        : Effect.fail(agentRequestError(error)),
-    ),
+  return sendAgentRequest(socketPath, { v: 1, op: "list" }).pipe(
+    Effect.as("live" as const),
+    Effect.catchTags({
+      ...agentErrorHandlers,
+      AgentGoneError: () => Effect.succeed("gone" as const),
+    }),
   );
 }
 
@@ -542,10 +549,11 @@ function askAgent(
   socketPath: string,
   request: AgentRequest,
 ): Effect.Effect<Exclude<AgentResponse, { readonly ok: false }>, CliError> {
-  return Effect.tryPromise({
-    try: () => sendAgentRequest(socketPath, request),
-    catch: agentRequestError,
-  }).pipe(
+  return sendAgentRequest(socketPath, request).pipe(
+    Effect.catchTags({
+      ...agentErrorHandlers,
+      AgentGoneError: () => Effect.fail(cliError(agentGoneMessage)),
+    }),
     Effect.flatMap((response) =>
       // A request the agent would refuse never leaves this implementation (only a version-mismatched agent)
       response.ok ? Effect.succeed(response) : Effect.fail(cliError(agentProtocolMessage)),
