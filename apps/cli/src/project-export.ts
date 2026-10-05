@@ -87,10 +87,17 @@ function identitiesPathOf(outPath: string): string {
 function ensureAbsent(path: string): Effect.Effect<void, CliError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    // A failed check counts as absent (the exclusive `wx` open that
-    // follows reports the real cause — EACCES & co. still surface at the
-    // export's own open, so nothing is silently swallowed)
-    const exists = yield* fs.exists(path).pipe(Effect.catch(() => Effect.succeed(false)));
+    // NotFound is the only error `exists` folds to absent — a check that
+    // fails otherwise is a real error, never a silent "absent"
+    const exists = yield* fs
+      .exists(path)
+      .pipe(
+        Effect.mapError((error) =>
+          cliError(
+            `Checking ${displayText(path)} failed (${error.reason.cause instanceof Error ? error.reason.cause.name : "unknown"})`,
+          ),
+        ),
+      );
     if (exists) {
       return yield* Effect.fail(
         cliError(`Refusing to overwrite ${displayText(path)} (choose another --out path)`),
@@ -160,81 +167,95 @@ class GzipFileSink {
 
   /** Appends the lines (each as one NDJSON line) — fails on a stream error already seen or landing during the write. */
   write(lines: readonly string[]): Effect.Effect<void, CliError> {
-    if (lines.length === 0) {
-      return Effect.void;
-    }
-    const prior = this.#failure;
-    if (prior !== null) {
-      return Effect.fail(this.#writeFailed(prior));
-    }
-    const file = this.#file;
-    const gzip = this.#gzip;
-    return Effect.callback<void, CliError>((resume) => {
-      const detach = () => {
-        file.off("error", onError);
-        gzip.off("error", onError);
-      };
-      const onError = (error: Error) => {
-        detach();
-        resume(Effect.fail(this.#writeFailed(error)));
-      };
-      file.once("error", onError);
-      gzip.once("error", onError);
-      gzip.write(`${lines.join("\n")}\n`, (error) => {
-        detach();
-        resume(error ? Effect.fail(this.#writeFailed(error)) : Effect.void);
+    // Everything the stream does happens inside the suspend — an effect
+    // must not act while it is only being built
+    return Effect.suspend(() => {
+      if (lines.length === 0) {
+        return Effect.void;
+      }
+      const prior = this.#failure;
+      if (prior !== null) {
+        return Effect.fail(this.#writeFailed(prior));
+      }
+      const file = this.#file;
+      const gzip = this.#gzip;
+      return Effect.callback<void, CliError>((resume) => {
+        const detach = () => {
+          file.off("error", onError);
+          gzip.off("error", onError);
+        };
+        const onError = (error: Error) => {
+          detach();
+          resume(Effect.fail(this.#writeFailed(error)));
+        };
+        file.once("error", onError);
+        gzip.once("error", onError);
+        gzip.write(`${lines.join("\n")}\n`, (error) => {
+          detach();
+          resume(error ? Effect.fail(this.#writeFailed(error)) : Effect.void);
+        });
+        return Effect.sync(detach);
       });
-      return Effect.sync(detach);
     });
   }
 
   /** Ends the gzip and waits for the file's `finish`; resolves to the compressed byte count. */
   finish(): Effect.Effect<number, CliError> {
-    this.#gzip.end();
-    const prior = this.#failure;
-    const done =
-      prior !== null
-        ? Effect.fail(this.#writeFailed(prior))
-        : Effect.callback<void, CliError>((resume) => {
-            const file = this.#file;
-            const gzip = this.#gzip;
-            const detach = () => {
-              file.off("finish", onFinish);
-              file.off("error", onError);
-              gzip.off("error", onError);
-            };
-            const onFinish = () => {
-              detach();
-              resume(Effect.void);
-            };
-            const onError = (error: Error) => {
-              detach();
-              resume(Effect.fail(this.#writeFailed(error)));
-            };
-            file.once("finish", onFinish);
-            file.once("error", onError);
-            gzip.once("error", onError);
-            return Effect.sync(detach);
-          });
-    return Effect.map(done, () => this.#bytes);
+    return Effect.suspend(() => {
+      const prior = this.#failure;
+      const done =
+        prior !== null
+          ? Effect.fail(this.#writeFailed(prior))
+          : Effect.callback<void, CliError>((resume) => {
+              const file = this.#file;
+              const gzip = this.#gzip;
+              const detach = () => {
+                file.off("finish", onFinish);
+                file.off("error", onError);
+                gzip.off("error", onError);
+              };
+              const onFinish = () => {
+                detach();
+                resume(Effect.void);
+              };
+              const onError = (error: Error) => {
+                detach();
+                resume(Effect.fail(this.#writeFailed(error)));
+              };
+              file.once("finish", onFinish);
+              file.once("error", onError);
+              gzip.once("error", onError);
+              // end() must run after the listeners are attached — a
+              // finish in the gap would never reach the callback
+              if (file.writableFinished) {
+                onFinish();
+              } else {
+                gzip.end();
+              }
+              return Effect.sync(detach);
+            });
+      return Effect.map(done, () => this.#bytes);
+    });
   }
 
   /** Tears both streams down and waits for the file descriptor to close (the file is removed afterwards). */
   abort(): Effect.Effect<void> {
-    this.#gzip.destroy();
-    const file = this.#file;
-    return Effect.callback<void>((resume) => {
-      if (file.closed || file.destroyed) {
-        resume(Effect.void);
-        return;
-      }
-      const onClose = () => resume(Effect.void);
-      file.once("close", onClose);
-      file.destroy();
-      return Effect.sync(() => {
-        file.off("close", onClose);
-      });
-    });
+    return Effect.suspend(() =>
+      Effect.callback<void>((resume) => {
+        const file = this.#file;
+        if (file.closed || file.destroyed) {
+          resume(Effect.void);
+          return;
+        }
+        const onClose = () => resume(Effect.void);
+        file.once("close", onClose);
+        this.#gzip.destroy();
+        file.destroy();
+        return Effect.sync(() => {
+          file.off("close", onClose);
+        });
+      }),
+    );
   }
 }
 
@@ -429,7 +450,11 @@ function writePair(
       .pipe(
         // Success is the proof this run created the companion — a wx
         // open that refused EEXIST means the file belongs to someone
-        // else and the cleanup must leave it alone
+        // else and the cleanup must leave it alone. The write and its
+        // ownership mark are one uninterruptible unit: an interrupt
+        // delivered mid-write must not leave a file on disk that no
+        // cleanup knows it may remove (the platform write honors the
+        // abort signal but may already have committed the file)
         Effect.tap(
           Effect.sync(() => {
             owned.companion = true;
@@ -442,6 +467,7 @@ function writePair(
             })`,
           ),
         ),
+        Effect.uninterruptible,
       );
     return {
       outPath,
