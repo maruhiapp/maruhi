@@ -362,6 +362,9 @@ function exportOnce(
         owned.out ||= sink.ownsFile;
         if (owned.out) {
           yield* removePath(outPath);
+          // The flag means "our file is on disk now" — clear it so a
+          // later cleanup does not remove whatever lands next
+          owned.out = false;
         }
       }),
   );
@@ -413,6 +416,7 @@ function writePair(
       // the path is never this run's to delete)
       if (owned.out) {
         yield* removePath(outPath);
+        owned.out = false;
       }
       attempt = yield* exportOnce(input, owned);
       identities = yield* companionFor(input, attempt);
