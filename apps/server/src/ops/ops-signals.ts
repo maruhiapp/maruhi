@@ -14,7 +14,7 @@
 // swallowed — a static 1-line log is left and processing continues
 // (does not take precedence over login-path availability).
 
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import type { GitHubApiShape } from "../auth.package/index.ts";
 import type { OpsCounterMetric, OpsRepoShape } from "../db.package/index.ts";
@@ -22,14 +22,14 @@ import { OpsRepo } from "../db.package/index.ts";
 
 /** Counter +1 (best-effort — a failure leaves only a static log). */
 export function noteOpsCounter(metric: OpsCounterMetric): Effect.Effect<void, never, OpsRepo> {
-  return Effect.flatMap(OpsRepo, (ops) => ops.incrementCounter(metric, Date.now())).pipe(
+  return Effect.flatMap(OpsRepo, (ops) =>
+    Effect.flatMap(Clock.currentTimeMillis, (nowMs) => ops.incrementCounter(metric, nowMs)),
+  ).pipe(
     Effect.catchCause(() =>
-      Effect.sync(() => {
-        // Static message only (metric names are fixed vocabulary)
-        console.warn(
-          `ops counter increment failed (${metric}); the signal undercounts this window`,
-        );
-      }),
+      // Static message only (metric names are fixed vocabulary)
+      Effect.logWarning(
+        `ops counter increment failed (${metric}); the signal undercounts this window`,
+      ),
     ),
   );
 }
@@ -39,13 +39,12 @@ export function countingGitHubApi(api: GitHubApiShape, ops: OpsRepoShape): GitHu
   return {
     ...api,
     exchangeCode: (code, redirectUri) =>
-      ops.incrementCounter("github_token_requests", Date.now()).pipe(
+      Clock.currentTimeMillis.pipe(
+        Effect.flatMap((nowMs) => ops.incrementCounter("github_token_requests", nowMs)),
         Effect.catchCause(() =>
-          Effect.sync(() => {
-            console.warn(
-              "ops counter increment failed (github_token_requests); the signal undercounts this window",
-            );
-          }),
+          Effect.logWarning(
+            "ops counter increment failed (github_token_requests); the signal undercounts this window",
+          ),
         ),
         Effect.andThen(api.exchangeCode(code, redirectUri)),
       ),

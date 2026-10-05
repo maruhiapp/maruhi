@@ -26,6 +26,7 @@ import { SNAPSHOT_FORMAT, SNAPSHOT_FORMAT_VERSION } from "../src/do/do-snapshot.
 import worker from "../src/index.ts";
 import { runBackupSweep } from "../src/ops/ops-backup.ts";
 import { OPS_BACKUP_MAX_BYTES, OPS_HOURLY_CRON } from "../src/ops/ops-policy.ts";
+import { ServerLoggerLive } from "../src/server-logger.ts";
 import { seedProjectActivity } from "./support/audit-read-scenario.ts";
 import { OWNER, projectId, READER, requestJson } from "./support/data-fixture.ts";
 import { ENV, registerDataScenario, token } from "./support/data-scenario.ts";
@@ -518,9 +519,16 @@ describe("DO -> R2 evacuation and restore into an empty DO (hosted-ops.md §2-D 
 
 const opsRepo = () => Context.get(makeDbServices(env.DB), OpsRepo);
 
+// The scheduled() root's logger (index.ts) — without it the converted
+// Effect.logWarning lines do not reach the console spies
+const withLogger = <A, E, R>(program: Effect.Effect<A, E, R>) =>
+  program.pipe(Effect.provide(ServerLoggerLive));
+
 describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
   const sweep = (target: Env = workerEnv) =>
-    Effect.runPromise(runBackupSweep(target).pipe(Effect.provideService(OpsRepo, opsRepo())));
+    Effect.runPromise(
+      runBackupSweep(target).pipe(Effect.provideService(OpsRepo, opsRepo()), withLogger),
+    );
 
   it("records a success keyed by project with the DO id image, then skips the unchanged project", async () => {
     await seedProjectActivity();
@@ -565,7 +573,10 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
     const before = await opsRepo().backupRecord(projectId).pipe(Effect.runPromise);
     expect(before?.consecutiveFailures).toBe(1);
     const result = await Effect.runPromise(
-      runBackupSweep(workerEnv, { maxBytes: 1 }).pipe(Effect.provideService(OpsRepo, opsRepo())),
+      runBackupSweep(workerEnv, { maxBytes: 1 }).pipe(
+        Effect.provideService(OpsRepo, opsRepo()),
+        withLogger,
+      ),
     );
     expect(result).toMatchObject({ visited: 1, oversize: 1, failed: 0 });
     const record = await opsRepo().backupRecord(projectId).pipe(Effect.runPromise);
@@ -611,7 +622,10 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
   it("honours the visit budget and keeps the cursor for the next run", async () => {
     await seedProjectActivity();
     const result = await Effect.runPromise(
-      runBackupSweep(workerEnv, { maxProjects: 0 }).pipe(Effect.provideService(OpsRepo, opsRepo())),
+      runBackupSweep(workerEnv, { maxProjects: 0 }).pipe(
+        Effect.provideService(OpsRepo, opsRepo()),
+        withLogger,
+      ),
     );
     expect(result).toMatchObject({ visited: 0, truncated: true });
   });

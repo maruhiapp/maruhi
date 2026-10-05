@@ -12,7 +12,9 @@
 //   against real D1
 
 import { env } from "cloudflare:test";
-import { Context, Effect } from "effect";
+import { Context, Effect, Fiber, Redacted } from "effect";
+import { FetchHttpClient } from "effect/http";
+import { TestClock } from "effect/testing";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { makeDbServices, OpsRepo, opsWindowStart } from "../src/db.package/index.ts";
@@ -30,6 +32,8 @@ import {
   OPS_SIGNUP_DENIED_PER_HOUR_THRESHOLD,
 } from "../src/ops/ops-policy.ts";
 import { noteOpsCounter } from "../src/ops/ops-signals.ts";
+import { ServerLoggerLive } from "../src/server-logger.ts";
+import { readWorkerSecrets } from "../src/worker-env.ts";
 import { cliToken, resetAuthDb, seedUser } from "./support/auth.ts";
 
 const ops = () => Context.get(makeDbServices(env.DB), OpsRepo);
@@ -222,22 +226,102 @@ describe("notification (hosted-ops.md §2-B)", () => {
       events: [{ signal: "storage_warn_projects", state: "firing", value: 1, threshold: 1 }],
       text: "maruhi ops: storage_warn_projects is firing (value 1, threshold 1)",
     };
-    expect(
-      await Effect.runPromise(makeWebhookNotifier(env.OPS_ALERT_WEBHOOK_URL).notify(payload)),
-    ).toBe(true);
+    const runNotify = (notifier: OpsNotifier["Service"]): Promise<boolean> =>
+      Effect.runPromise(notifier.notify(payload).pipe(Effect.provide(ServerLoggerLive)));
+    // The URL arrives Redacted from the env (worker-env.ts)
+    expect(await runNotify(makeWebhookNotifier(readWorkerSecrets(env).opsAlertWebhookUrl))).toBe(
+      true,
+    );
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      expect(await Effect.runPromise(makeWebhookNotifier(undefined).notify(payload))).toBe(true);
+      expect(await runNotify(makeWebhookNotifier(undefined))).toBe(true);
       expect(warn).toHaveBeenCalledWith(
         "ops signal firing: storage_warn_projects (value 1, threshold 1)",
       );
-      // An unreachable URL returns false (resent next time) — never
-      // swallowed silently
+      // An unreachable URL (the outbound fake answers 500) returns false
+      // (resent next time) with the same static line — never swallowed
+      // silently
       expect(
-        await Effect.runPromise(
-          makeWebhookNotifier("https://unreachable.invalid/hook").notify(payload),
-        ),
+        await runNotify(makeWebhookNotifier(Redacted.make("https://unreachable.invalid/hook"))),
       ).toBe(false);
+      expect(warn).toHaveBeenCalledWith(
+        "ops alert webhook responded with a non-2xx status; retrying on the next evaluation",
+      );
+      // The URL is a secret: it appears in no warn line
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("unreachable.invalid");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("ops-webhook.test");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("a webhook POST that never answers resolves to false once the timeout elapses (the scheduled run is not blocked)", async () => {
+    // The webhook path runs inside the cron Effect (scheduled()) — not in
+    // a workerd request handler — so the clock is drivable by TestClock.
+    // fetch is swapped per run through the FetchHttpClient's `Fetch`
+    // reference (github.test.ts's pattern)
+    const payload: OpsAlertPayload = {
+      service: "maruhi",
+      at: new Date(0).toISOString(),
+      events: [{ signal: "storage_warn_projects", state: "firing", value: 1, threshold: 1 }],
+      text: "maruhi ops: storage_warn_projects is firing (value 1, threshold 1)",
+    };
+    const hangingFetch = (() => new Promise<Response>(() => {})) as typeof fetch;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const outcome = await Effect.runPromise(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.forkChild(
+            makeWebhookNotifier(Redacted.make("https://ops-webhook.test/hook")).notify(payload),
+          );
+          yield* TestClock.adjust("5 seconds");
+          return yield* Fiber.join(fiber);
+        }).pipe(
+          Effect.provide(TestClock.layer()),
+          Effect.provideService(FetchHttpClient.Fetch, hangingFetch),
+          Effect.provide(ServerLoggerLive),
+        ),
+      );
+      expect(outcome).toBe(false);
+      expect(warn).toHaveBeenCalledWith(
+        "ops alert webhook request failed; retrying on the next evaluation",
+        "TimeoutError",
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("ops-webhook.test");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("restarts from an empty state on a malformed stored state row (the same static line)", async () => {
+    const now = Date.now();
+    await seedCounter("cli_flow_capacity", opsWindowStart(now), 1);
+    // A stored row that is not parseable JSON-shaped state: evaluation
+    // logs the same line as before and starts from "all inactive"
+    // (operational state only)
+    await runOps(Effect.flatMap(OpsRepo, (repo) => repo.setState("alerts", "not json", now)));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const capturing = capturingNotifier(true);
+      const events = await Effect.runPromise(
+        runOpsAlerts(now).pipe(
+          Effect.provideService(OpsNotifier, capturing.service),
+          Effect.provideService(OpsRepo, ops()),
+          Effect.provide(ServerLoggerLive),
+        ),
+      );
+      expect(events).toEqual([
+        { signal: "cli_flow_capacity_reached", state: "firing", value: 1, threshold: 1 },
+      ]);
+      expect(warn).toHaveBeenCalledWith(
+        "ops alert state row is not valid JSON; starting from an empty state",
+      );
+      // The state saved is exactly the freshly derived one (started from {})
+      expect(await runOps(Effect.flatMap(OpsRepo, (repo) => repo.getState("alerts")))).toBe(
+        JSON.stringify({
+          cli_flow_capacity_reached: { active: true, since: now, lastNotifiedAt: now },
+        }),
+      );
     } finally {
       warn.mockRestore();
     }

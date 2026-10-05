@@ -169,12 +169,12 @@ export const observeStorageLevel: Effect.Effect<StorageGuardDecision, never, Sto
       // Static message only (no variable values like project ID or
       // size — the size is the monitoring system's domain; this is
       // the one line stating "it was reached")
-      console.warn(
+      yield* Effect.logWarning(
         "project storage crossed the warning threshold (AUTH_SPEC §12-8 DO storage guard); growth writes are still accepted until the rejection threshold",
       );
     }
     if (decision === "reject" && meter.noteLogged("reject")) {
-      console.error(
+      yield* Effect.logError(
         "project storage reached the rejection threshold (AUTH_SPEC §12-8 DO storage guard); growth writes are rejected until space is freed — reads, deletions, revocations and rotations remain accepted",
       );
     }

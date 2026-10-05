@@ -17,7 +17,7 @@
 // self-hosted default — it does nothing, but not silently: it leaves
 // one static line per isolate.
 
-import { Effect } from "effect";
+import { Clock, Effect, Ref } from "effect";
 
 import type { OpsBackupAttempt } from "../db.package/index.ts";
 import { OpsRepo } from "../db.package/index.ts";
@@ -46,7 +46,6 @@ export interface BackupSweepResult {
 }
 
 export interface BackupSweepOptions {
-  readonly nowMs?: () => number;
   readonly budgetMs?: number;
   readonly maxProjects?: number;
   readonly maxBytes?: number;
@@ -54,7 +53,8 @@ export interface BackupSweepOptions {
   readonly partBytes?: number;
 }
 
-let warnedMissingBucket = false;
+/** The once-per-isolate flag of warnMissingBucketOnce (module state like identities.ts's Refs). */
+const warnedMissingBucket = Ref.makeUnsafe(false);
 
 function toAttempt(outcome: OpsBackupOutcome): OpsBackupAttempt {
   switch (outcome.kind) {
@@ -117,12 +117,13 @@ function backupOne(
     ).pipe(
       Effect.map(toAttempt),
       Effect.catchTag("RpcCallError", () =>
-        Effect.sync((): OpsBackupAttempt => {
-          // Static message only (no project ID — the record lives on
-          // the D1 side)
-          console.warn("project backup RPC failed; the project is retried on the next sweep");
-          return { kind: "failure", code: "rpc-failed", storageLevel: null };
-        }),
+        // Static message only (no project ID — the record lives on
+        // the D1 side)
+        Effect.logWarning(
+          "project backup RPC failed; the project is retried on the next sweep",
+        ).pipe(
+          Effect.as<OpsBackupAttempt>({ kind: "failure", code: "rpc-failed", storageLevel: null }),
+        ),
       ),
     );
     return outcome;
@@ -157,18 +158,21 @@ function sweepPage(
   env: Env,
   page: readonly string[],
   result: MutableSweepResult,
-  limits: { readonly now: () => number; readonly deadline: number; readonly maxProjects: number },
+  limits: SweepLimits,
   options: BackupSweepOptions,
 ): Effect.Effect<string | null, never, OpsRepo> {
   return Effect.gen(function* () {
     const ops = yield* OpsRepo;
     let last: string | null = null;
     for (const projectId of page) {
-      if (result.visited >= limits.maxProjects || limits.now() >= limits.deadline) {
+      if (
+        result.visited >= limits.maxProjects ||
+        (yield* Clock.currentTimeMillis) >= limits.deadline
+      ) {
         result.truncated = true;
         return last;
       }
-      const attemptAt = limits.now();
+      const attemptAt = yield* Clock.currentTimeMillis;
       const attempt = yield* backupOne(env, projectId, attemptAt, options);
       const doIdHex = env.PROJECT_CHAIN.idFromName(projectId).toString();
       yield* ops.recordBackupAttempt(projectId, doIdHex, attempt, attemptAt);
@@ -180,7 +184,6 @@ function sweepPage(
 }
 
 interface SweepLimits {
-  readonly now: () => number;
   readonly deadline: number;
   readonly maxProjects: number;
 }
@@ -211,18 +214,19 @@ function sweepFromCursor(
         break;
       }
     }
-    yield* ops.setState(SWEEP_CURSOR_KEY, cursor ?? "", limits.now());
+    yield* ops.setState(SWEEP_CURSOR_KEY, cursor ?? "", yield* Clock.currentTimeMillis);
   });
 }
 
-function warnMissingBucketOnce(): void {
-  if (!warnedMissingBucket) {
-    warnedMissingBucket = true;
-    console.warn(
-      "backup bucket binding is not configured; project snapshots are not exported (see docs/SELF_HOSTING.md, Backups)",
-    );
-  }
-}
+const warnMissingBucketOnce: Effect.Effect<void> = Effect.flatMap(
+  Ref.getAndSet(warnedMissingBucket, true),
+  (warned) =>
+    warned
+      ? Effect.void
+      : Effect.logWarning(
+          "backup bucket binding is not configured; project snapshots are not exported (see docs/SELF_HOSTING.md, Backups)",
+        ),
+);
 
 /**
  * The sweep body. Advances from the cursor within the budget; on
@@ -243,16 +247,14 @@ export function runBackupSweep(
       truncated: false,
     };
     if (!result.enabled) {
-      warnMissingBucketOnce();
+      yield* warnMissingBucketOnce;
       return result;
     }
-    const now = options.nowMs ?? Date.now;
     yield* sweepFromCursor(
       env,
       result,
       {
-        now,
-        deadline: now() + (options.budgetMs ?? OPS_SWEEP_BUDGET_MS),
+        deadline: (yield* Clock.currentTimeMillis) + (options.budgetMs ?? OPS_SWEEP_BUDGET_MS),
         maxProjects: options.maxProjects ?? OPS_SWEEP_MAX_PROJECTS,
       },
       options,
