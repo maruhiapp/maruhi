@@ -18,6 +18,7 @@
 // - unmarking promotes the mirror (writes accepted again)
 
 import { env, runInDurableObject, SELF } from "cloudflare:test";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { PROJECT_DO_TABLES, readProjectDoSchemaVersion } from "../src/do/do-schema.ts";
@@ -108,12 +109,14 @@ async function restoreLines(lines: readonly string[]): Promise<void> {
   await runInDurableObject(stub, async (_instance, state) => {
     // The stream is created inside the DO's context (an I/O object of
     // the test context cannot be read on behalf of the DO)
-    await restoreSnapshot({
-      storage: state.storage,
-      tables: PROJECT_DO_TABLES,
-      schemaVersion: readProjectDoSchemaVersion(state.storage.sql),
-      body: new Blob([text]).stream().pipeThrough(new CompressionStream("gzip")),
-    });
+    await Effect.runPromise(
+      restoreSnapshot({
+        storage: state.storage,
+        tables: PROJECT_DO_TABLES,
+        schemaVersion: readProjectDoSchemaVersion(state.storage.sql),
+        body: new Blob([text]).stream().pipeThrough(new CompressionStream("gzip")),
+      }),
+    );
   });
   await evictProjectDo(projectId);
 }

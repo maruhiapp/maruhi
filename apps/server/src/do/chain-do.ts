@@ -1346,40 +1346,45 @@ export class ProjectChainDO extends DurableObject<Env> {
             return { kind: "oversize", storageLevel, databaseSizeBytes } satisfies OpsBackupOutcome;
           }
           const objectKey = snapshotObjectKey(input.keyPrefix, doIdHex, input.nowMs);
-          const written = yield* Effect.promise(() =>
-            writeSnapshot({
-              sql,
-              tables: PROJECT_DO_TABLES,
-              schemaVersion: readProjectDoSchemaVersion(sql),
-              doIdHex,
-              takenAtMs: input.nowMs,
-              bucket,
-              key: objectKey,
-              ...(input.partBytes === undefined ? {} : { partBytes: input.partBytes }),
-            }).then(
-              (result): OpsBackupOutcome => ({
-                kind: "uploaded",
-                objectKey,
-                bytes: result.bytes,
-                auditSeq: result.trailer.auditMaxSeq,
-                chainSeq: result.trailer.chainHeadSeq,
-                attestationMark: marks.attestationMark,
-                storageLevel,
-                databaseSizeBytes,
-                trailer: result.trailer,
-              }),
-              (error: unknown): OpsBackupOutcome => {
+          return yield* writeSnapshot({
+            sql,
+            tables: PROJECT_DO_TABLES,
+            schemaVersion: readProjectDoSchemaVersion(sql),
+            doIdHex,
+            takenAtMs: input.nowMs,
+            bucket,
+            key: objectKey,
+            ...(input.partBytes === undefined ? {} : { partBytes: input.partBytes }),
+          }).pipe(
+            Effect.map((result): OpsBackupOutcome => ({
+              kind: "uploaded",
+              objectKey,
+              bytes: result.bytes,
+              auditSeq: result.trailer.auditMaxSeq,
+              chainSeq: result.trailer.chainHeadSeq,
+              attestationMark: marks.attestationMark,
+              storageLevel,
+              databaseSizeBytes,
+              trailer: result.trailer,
+            })),
+            // Every evacuation failure is a defect (do-snapshot.ts); it is
+            // answered with the static code and retried on the next sweep
+            Effect.catchDefect((defect) =>
+              Effect.sync(() => {
                 // A static message only (up to the class name). The
                 // record lives in the worker-side D1
                 console.warn(
                   "project snapshot upload failed; retried on the next sweep",
-                  error instanceof Error ? error.name : "unknown",
+                  defect instanceof Error ? defect.name : "unknown",
                 );
-                return { kind: "upload-failed", storageLevel, databaseSizeBytes };
-              },
+                return {
+                  kind: "upload-failed",
+                  storageLevel,
+                  databaseSizeBytes,
+                } satisfies OpsBackupOutcome;
+              }),
             ),
           );
-          return written;
         }),
       ),
     );
@@ -1405,45 +1410,49 @@ export class ProjectChainDO extends DurableObject<Env> {
       this.#opLock.withPermit(
         Effect.gen(function* () {
           const audit = yield* AuditStore;
-          const restored = yield* Effect.promise(async () => {
+          const restored = yield* Effect.gen(function* () {
             // An import restores the body its pre-check verified, by its
             // etag (ruling H revision, round 4): a re-put between the two
             // reads is refused, never restored unchecked
-            const object =
+            const object = yield* Effect.promise(() =>
               etag === undefined
-                ? await bucket.get(objectKey)
-                : await bucket.get(objectKey, { onlyIf: { etagMatches: etag } });
+                ? bucket.get(objectKey)
+                : bucket.get(objectKey, { onlyIf: { etagMatches: etag } }),
+            );
             if (object === null) {
-              return new RestoreRefusedError("object-missing");
+              return yield* new RestoreRefusedError({ code: "object-missing" });
             }
             // A precondition failure answers the object without a body
             const verified = "body" in object ? (object as R2ObjectBody) : null;
             if (verified === null) {
-              return new RestoreRefusedError("object-changed");
+              return yield* new RestoreRefusedError({ code: "object-changed" });
             }
-            try {
-              return await restoreSnapshot({
-                storage,
-                tables: PROJECT_DO_TABLES,
-                schemaVersion: readProjectDoSchemaVersion(sql),
-                body: verified.body,
-              });
-            } catch (error) {
-              if (error instanceof RestoreRefusedError) {
-                return error;
-              }
-              throw error;
-            } finally {
+            return yield* restoreSnapshot({
+              storage,
+              tables: PROJECT_DO_TABLES,
+              schemaVersion: readProjectDoSchemaVersion(sql),
+              body: verified.body,
+            }).pipe(
               // Discard the memory regardless of success or failure (no
               // residue of a partial restore is handed out either)
-              cache.chain = null;
-              cache.current = null;
-              audit.resetSeqCacheSync();
-            }
-          });
-          if (restored instanceof RestoreRefusedError) {
+              Effect.ensuring(
+                Effect.sync(() => {
+                  cache.chain = null;
+                  cache.current = null;
+                  audit.resetSeqCacheSync();
+                }),
+              ),
+            );
+          }).pipe(
+            Effect.map((result) => ({ kind: "ok" as const, result })),
+            Effect.catchTag("RestoreRefused", (error) =>
+              Effect.succeed({ kind: "refused" as const, code: error.code }),
+            ),
+          );
+          if (restored.kind === "refused") {
             return { kind: "refused", code: restored.code } satisfies OpsRestoreOutcome;
           }
+          const { result } = restored;
           // Extend the audit-head row to the end (bounded extension — a
           // one-time operation at restore, so run it to convergence)
           while ((yield* audit.ensureHeadCurrent) === "more-remains") {
@@ -1453,7 +1462,7 @@ export class ProjectChainDO extends DurableObject<Env> {
           const marks = readWatermarks(sql);
           return {
             kind: "restored",
-            rows: restored.rows,
+            rows: result.rows,
             chainHeadSeq: marks.chainHeadSeq,
             chainHeadHashHex: marks.chainHeadHashHex,
             auditMaxSeq: marks.auditMaxSeq,
