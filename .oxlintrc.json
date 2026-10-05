@@ -16,6 +16,36 @@
       "rules": { "unicorn/consistent-function-scoping": "off" }
     },
     {
+      // Outbound HTTP goes through one client (packages/core/src/egress.ts):
+      // effect's own clients add trace headers (traceparent / b3) to every
+      // request, which the "say nothing" principle rules out. Tests may build
+      // plain clients for their local stub servers
+      "files": ["apps/*/src/**", "packages/*/src/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect/http",
+                "importNames": ["FetchHttpClient"],
+                "message": "Build outbound HTTP clients only with egressHttpClientLayer from @maruhi/core (packages/core/src/egress.ts)"
+              },
+              {
+                "name": "@effect/platform-bun/BunHttpClient",
+                "message": "Build outbound HTTP clients only with egressHttpClientLayer from @maruhi/core (packages/core/src/egress.ts)"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      // The one place allowed to wrap effect's fetch client
+      "files": ["packages/core/src/egress.ts"],
+      "rules": { "no-restricted-imports": "off" }
+    },
+    {
       // Astryx styling discipline (ADR-0013, B2 operation). Details: the
       // styling-discipline section of CLAUDE.md
       "files": ["apps/web/**/*.{js,jsx,ts,tsx}"],
