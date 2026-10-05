@@ -38,7 +38,7 @@
 //      in the same synchronous block)
 
 import type { ChainEntry, ChainState, ServerGrant } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
 import type { EnvironmentPullValue, InitializedChain } from "../data/data-plane.ts";
@@ -212,7 +212,7 @@ export const authorizeWorkload = (
   Effect.gen(function* () {
     const serverKey = yield* ServerKey;
     const serverKeyInfo = yield* serverKey.info;
-    const nowMs = Date.now();
+    const nowMs = yield* Clock.currentTimeMillis;
     // 0. A deployment with no server key configured fails **before reading the
     // project**. Order matters: if chain loading (uninitialized = 404) ran
     // first, a keyless deployment would produce the "unknown = 404 / real =

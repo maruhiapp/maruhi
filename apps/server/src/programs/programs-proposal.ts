@@ -19,7 +19,7 @@
 
 import type { ChainState } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
 import type {
@@ -409,7 +409,7 @@ export const preflightRotationProgram = (
   Effect.gen(function* () {
     const { state } = yield* authorizeWorkload(environmentId, ephemeralPubHex, facts, cache);
     const store = yield* DataStore;
-    const nowMs = Date.now();
+    const nowMs = yield* Clock.currentTimeMillis;
     if (store.isMirrorSync()) {
       return yield* preflightRefusal("mirror-read-only");
     }
@@ -496,7 +496,7 @@ export const listRotationProposalsProgram = (actor: DataActor, cache: StateCache
     // explicitly). Environments outside the person's scope are filtered
     const { member } = yield* requireMemberState(actor.userId, "member", cache);
     const store = yield* DataStore;
-    const nowMs = Date.now();
+    const nowMs = yield* Clock.currentTimeMillis;
     // The list is the read that is about proposals, and the one a project
     // whose rotation job is gone still runs (the cron's --fail-on-pending):
     // it sweeps too, so expired rows get their closing audit row and leave
@@ -543,7 +543,7 @@ export const resolveRotationProposalProgram = (
 ): Effect.Effect<void, DataRejectedError, ChainStore | DataStore | AuditStore> =>
   Effect.gen(function* () {
     const { member } = yield* requireMemberState(actor.userId, "member", cache);
-    const nowMs = Date.now();
+    const nowMs = yield* Clock.currentTimeMillis;
     // The resolved proposal is reached expired or not: a member who began
     // the acceptance before the expiry has pushed signed versions already,
     // and their outcome belongs in the log as theirs, not as "nobody's"

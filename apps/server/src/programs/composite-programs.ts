@@ -25,7 +25,7 @@
 // role / commitment format are all judged there.
 
 import type { ChainEntry, ChainState } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import type { AuditEventInput, AuditRotationRead } from "../audit-store.ts";
 import { AuditStore } from "../audit-store.ts";
@@ -333,7 +333,7 @@ const makeWriteContext = (input: {
       actor: input.actor,
       member: input.member,
       environmentId: input.environmentId,
-      nowMs: Date.now(),
+      nowMs: yield* Clock.currentTimeMillis,
     } satisfies CompositeWriteContext;
   });
 

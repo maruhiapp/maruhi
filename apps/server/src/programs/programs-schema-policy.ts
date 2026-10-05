@@ -10,7 +10,7 @@
 //   reads store.schemaPolicy under the same permit — no race window
 //   against a change (§12-11)
 
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
 import type { DataActor, SchemaPolicy } from "../data/data-plane.ts";
@@ -50,7 +50,7 @@ export const setSchemaPolicyProgram = (
       return;
     }
     const audit = yield* AuditStore;
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     // The settings upsert and the audit row are written in the same
     // synchronous block (atomicity)
     yield* Effect.sync(() => {

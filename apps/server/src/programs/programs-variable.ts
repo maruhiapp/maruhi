@@ -6,7 +6,7 @@
 // verification → quantity policy → atomic write + audit (AUDIT_SPEC §3.3).
 
 import type { ChainHistoryIndex, ChainState } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import type { AuditEventInput } from "../audit-store.ts";
 import { AuditStore } from "../audit-store.ts";
@@ -329,7 +329,7 @@ export const createVariableProgram = (
     }
     const store = yield* DataStore;
     const audit = yield* AuditStore;
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     // Write phase (single task): the variable row + the statement row + (for
     // an active creation) version 1 + the manifest (upsert of the latest one)
     // + the audit row, written atomically (never leave "an active variable
@@ -446,7 +446,7 @@ export const pushVersionProgram = (
     yield* ensureProjectCapacity(value.ciphertextHex.length / 2);
     const store = yield* DataStore;
     const audit = yield* AuditStore;
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     yield* Effect.sync(() => {
       writeVersionWithAudit(
         store.write,
@@ -575,7 +575,7 @@ export const activateVariableProgram = (
     yield* ensureProjectCapacity(input.value.ciphertextHex.length / 2);
     const store = yield* DataStore;
     const audit = yield* AuditStore;
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     // Write phase (single task): the statement row + version 1 + the manifest
     // + var.version_pushed (version 1 — AUDIT_SPEC §3.3. The start of the
     // existence interval is already held by the var.created of the declared
@@ -686,7 +686,7 @@ export const renameVariableProgram = (
       },
     });
     const audit = yield* AuditStore;
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     // Audit-event branching (AUDIT_SPEC §3.3): only a reissue that actually
     // changed the name is var.renamed; a name-preserving reissue (setting or
     // changing schema fields — the §12-5 schema reissue) is
@@ -773,7 +773,7 @@ export const deleteVariableProgram = (
     });
     const store = yield* DataStore;
     const audit = yield* AuditStore;
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     // Write phase: tombstone + delete all versions + the deleted statement
     // row (keeps being stored and distributed — §12-5) + the manifest +
     // var.deleted (author FP — AUDIT_SPEC §3.3)

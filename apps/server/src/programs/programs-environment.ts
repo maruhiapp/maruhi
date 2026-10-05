@@ -11,7 +11,7 @@
 // metadata-only pull are scope-agnostic (§12-3's table / §12-7).
 
 import { auditReadPayload, VAR_READ_EVENT } from "@maruhi/core";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
 import type {
@@ -106,7 +106,7 @@ export const renameEnvironmentProgram = (
       envMeta: { metaVersion: statement.metaVersion, sigHashHex: signedBytesHashHex },
     });
     const audit = yield* AuditStore;
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     yield* Effect.sync(() => {
       store.write.insertEnvironmentMetaStatement(
         environmentId,
@@ -168,7 +168,7 @@ export const deleteEnvironmentProgram = (
     yield* ensureDevicePermission(author, "admin", environmentId);
     const store = yield* DataStore;
     const audit = yield* AuditStore;
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     const variables = yield* store.listActiveVariables(environmentId);
     // The write phase (a single task): atomically writes the
     // tombstone + data deletion + the deleted statement row, plus a
@@ -304,7 +304,7 @@ export const pullEnvironmentProgram = (
     // variables were returned nothing is recorded (no ciphertext was
     // distributed — the recording condition is unchanged)
     const audit = yield* AuditStore;
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     if (variables.length > 0) {
       yield* Effect.sync(() => {
         audit.appendSync(

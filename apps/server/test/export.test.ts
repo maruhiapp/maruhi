@@ -505,6 +505,75 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     expect((await exportPage(OWNER, ownersCursor({}))).status).toBe(409);
   });
 
+  it("refuses a continuation whose exported row's payload does not decode to the cursor's head (ruling D revision)", async () => {
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    const first = await exportPage(OWNER);
+    expect(first.status).toBe(200);
+    const head = ((await first.json()) as WirePage).head;
+    const exportedSeq = head.auditMaxSeq;
+    const mutation = await queryProjectDo(projectId, "SELECT seq FROM mutation_state WHERE id = 1");
+    const cursor = base64Url(
+      JSON.stringify({
+        table: 0,
+        started: false,
+        rowid: -1,
+        rows: {},
+        exportedSeq,
+        marks: {
+          chainHeadSeq: head.chainHeadSeq,
+          chainHeadHashHex: head.chainHeadHashHex,
+          mutationSeq: Number(mutation[0]?.["seq"] ?? 0),
+          schemaVersion: readProjectDoSchemaVersionOf(),
+          formatVersion: SNAPSHOT_FORMAT_VERSION,
+        },
+      }),
+    );
+    const stored = (
+      await queryProjectDo(projectId, "SELECT payload FROM audit_events WHERE seq = ?", exportedSeq)
+    )[0];
+    const payload = String(stored?.["payload"]);
+    expect(JSON.parse(payload)).toMatchObject({
+      chainHeadSeq: head.chainHeadSeq,
+      chainHeadHashHex: head.chainHeadHashHex,
+    });
+    const writePayload = (text: string) =>
+      queryProjectDo(
+        projectId,
+        "UPDATE audit_events SET payload = ? WHERE seq = ?",
+        text,
+        exportedSeq,
+      );
+    // The stored row decodes to the cursor's head: the continuation is served
+    expect((await exportPage(OWNER, cursor)).status).toBe(200);
+    // A payload column that is not JSON, is not the bound object, or names
+    // another head never binds — the continuation restarts like a foreign
+    // or stale cursor
+    for (const bad of [
+      "not json",
+      "5",
+      '"x"',
+      "null",
+      "{}",
+      JSON.stringify([head.chainHeadSeq, head.chainHeadHashHex]),
+      JSON.stringify({ chainHeadSeq: head.chainHeadSeq }),
+      JSON.stringify({ chainHeadSeq: "1", chainHeadHashHex: head.chainHeadHashHex }),
+      JSON.stringify({
+        chainHeadSeq: head.chainHeadSeq + 1,
+        chainHeadHashHex: head.chainHeadHashHex,
+      }),
+      JSON.stringify({ chainHeadSeq: head.chainHeadSeq, chainHeadHashHex: "00" }),
+    ]) {
+      await writePayload(bad);
+      const refused = await exportPage(OWNER, cursor);
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toMatchObject({ _tag: "ExportChanged" });
+    }
+    // The row restored, the same cursor binds again
+    await writePayload(payload);
+    expect((await exportPage(OWNER, cursor)).status).toBe(200);
+  });
+
   it("exports the audit log up to the mark: the trailer's counts stay the first page's after reads in between", async () => {
     await seedProjectActivity();
     const first = await exportPage(OWNER);
