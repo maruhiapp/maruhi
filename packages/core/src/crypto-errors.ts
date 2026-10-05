@@ -20,7 +20,9 @@
 // this repacking adds nothing else.
 //
 // Call sites handle a wrapped crypto error in one of three ways only:
-//   - `Effect.catchTag` — handle specific errors by `_tag`,
+//   - `Effect.catchTag` — handle specific errors by `_tag` (or an
+//     exhaustive table with one entry per `_tag`, where a new kind must
+//     fail typecheck instead of silently becoming a defect),
 //   - `Effect.orDie` — an error means an invariant broke; make it a defect,
 //   - `Effect.mapError` — re-wrap into a domain error.
 //

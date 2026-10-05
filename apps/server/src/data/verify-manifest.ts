@@ -39,6 +39,7 @@ import type {
 import { verifyDistributedEnvManifest } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import { catchCryptoErrors } from "../crypto-catch.ts";
 import type { EnvManifestInput, ManifestRejectReason, MemberWithDevice } from "./data-plane.ts";
 import { rejectData } from "./data-plane.ts";
 import { DataStore } from "./data-store.ts";
@@ -250,7 +251,7 @@ export const acceptEnvManifest = (input: {
         currentManifestVersion: latestVersion,
       });
     }
-    const verified = yield* Effect.catchTag(
+    const verified = yield* catchCryptoErrors(
       cryptoEffect(() =>
         verifyDistributedEnvManifest({
           history: input.history,
@@ -285,17 +286,36 @@ export const acceptEnvManifest = (input: {
               : { signedBytesHashHex: anchor.signedBytesHashHex, epoch: anchor.epoch },
         }),
       ),
-      "CryptoEnvManifestInvalid",
-      (error) =>
-        rejectData({
-          kind: "manifest-rejected",
-          reason: MANIFEST_REJECT_REASONS[error.reason],
-        }),
-      // InvalidInput / KeyImportFailed are unreachable with a
-      // Schema-validated wire shape + keys derived from a verified
-      // chain (an implementation bug = defect; error values carry no
-      // secrets)
-      (error) => Effect.die(error),
+      {
+        CryptoEnvManifestInvalid: (error) =>
+          rejectData({
+            kind: "manifest-rejected",
+            reason: MANIFEST_REJECT_REASONS[error.reason],
+          }),
+        // Every other kind is unreachable (InvalidInput / KeyImportFailed
+        // with a Schema-validated wire shape + keys derived from a
+        // verified chain; the rest are never returned by this
+        // operation): an implementation bug = defect; error values carry
+        // no secrets
+        CryptoInvalidInput: "die",
+        CryptoKeyImport: "die",
+        CryptoKeyExport: "die",
+        CryptoEncrypt: "die",
+        CryptoDecrypt: "die",
+        CryptoDekWrap: "die",
+        CryptoDekUnwrap: "die",
+        CryptoSign: "die",
+        CryptoDekWrapSignature: "die",
+        CryptoInviteAcceptSignature: "die",
+        CryptoInviteLinkSignature: "die",
+        CryptoInviteIssueSignature: "die",
+        CryptoDekCommitment: "die",
+        CryptoValueInvalid: "die",
+        CryptoMetaStatementInvalid: "die",
+        CryptoUnsupportedMetaLayout: "die",
+        CryptoHeadAttestationInvalid: "die",
+        ChainInvalid: "die",
+      },
     );
     return verified.signedBytesHashHex;
   });

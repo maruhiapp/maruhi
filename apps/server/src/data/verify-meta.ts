@@ -11,6 +11,7 @@ import type {
 import { SUPPORTED_META_LAYOUT_VERSIONS, verifyDistributedMetaStatement } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import { catchCryptoErrors } from "../crypto-catch.ts";
 import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS, MAX_VERSIONS_PER_VARIABLE } from "../policy.ts";
 import { metaVersionsExceeded } from "../quotas.ts";
 import type {
@@ -126,7 +127,7 @@ export const ensureMetaStatementSignature = (input: {
 }) =>
   Effect.gen(function* () {
     yield* ensureLayoutShape(input.statement);
-    const verified = yield* Effect.catchTags(
+    const verified = yield* catchCryptoErrors(
       cryptoEffect(() =>
         verifyDistributedMetaStatement({
           history: input.history,
@@ -170,11 +171,28 @@ export const ensureMetaStatementSignature = (input: {
         // a tamper warning)
         CryptoUnsupportedMetaLayout: () =>
           rejectData({ kind: "meta-rejected", reason: "unsupported-layout" }),
+        // Every other kind is unreachable (InvalidInput / KeyImportFailed with
+        // a Schema-validated wire plus a key derived from a verified chain;
+        // the rest are never returned by this operation): an implementation
+        // bug = defect; the error value contains no secrets
+        CryptoInvalidInput: "die",
+        CryptoKeyImport: "die",
+        CryptoKeyExport: "die",
+        CryptoEncrypt: "die",
+        CryptoDecrypt: "die",
+        CryptoDekWrap: "die",
+        CryptoDekUnwrap: "die",
+        CryptoSign: "die",
+        CryptoDekWrapSignature: "die",
+        CryptoInviteAcceptSignature: "die",
+        CryptoInviteLinkSignature: "die",
+        CryptoInviteIssueSignature: "die",
+        CryptoDekCommitment: "die",
+        CryptoValueInvalid: "die",
+        CryptoEnvManifestInvalid: "die",
+        CryptoHeadAttestationInvalid: "die",
+        ChainInvalid: "die",
       },
-      // InvalidInput / KeyImportFailed are unreachable with a Schema-validated
-      // wire plus a key derived from a verified chain (an implementation bug =
-      // defect; the error value contains no secrets)
-      (error) => Effect.die(error),
     );
     return verified.signedBytesHashHex;
   });
