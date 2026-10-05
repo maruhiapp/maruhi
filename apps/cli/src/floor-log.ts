@@ -31,11 +31,11 @@ import { join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import { isProjectId } from "@maruhi/core";
-import { Data, Effect, FileSystem, type PlatformError } from "effect";
+import { Data, Effect, FileSystem, type PlatformError, Predicate } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { formatFloorConflicts } from "./floor-evidence.ts";
-import { decodeChainHead, type FloorLogRecord, isRecord } from "./floor-log-decode.ts";
+import { decodeChainHead, type FloorLogRecord } from "./floor-log-decode.ts";
 import { type FoldOutcome, foldRecords } from "./floor-log-fold.ts";
 import {
   type AttestationEvidenceRecord,
@@ -52,6 +52,7 @@ import {
   type PullCommit,
   type PushCommit,
 } from "./floor.ts";
+import { isRecord } from "./json-record.ts";
 
 /**
  * The compaction trigger: a threshold on the number of records
@@ -68,9 +69,7 @@ const MAX_APPEND_WRITE_ATTEMPTS = 3;
 // ---- File store ----
 
 function isFileMissingError(error: PlatformError.PlatformError): boolean {
-  // Direct `_tag` access is banned by oxlint — read it through a record
-  // (the failure.ts discipline)
-  return (error.reason as unknown as Record<string, unknown>)["_tag"] === "NotFound";
+  return Predicate.isTagged("NotFound")(error.reason);
 }
 
 /**
@@ -102,22 +101,27 @@ const appendAll = (
   payload: Uint8Array,
   logName: string,
 ): Effect.Effect<void, PlatformError.PlatformError | ShortWriteError> =>
-  Effect.gen(function* () {
-    for (let attempt = 1; ; attempt += 1) {
-      const bytesWritten = yield* handle.write(payload);
-      if (bytesWritten === payload.length) {
-        break;
-      }
-      if (bytesWritten === 0 || attempt >= MAX_APPEND_WRITE_ATTEMPTS) {
-        return yield* new ShortWriteError({
-          logName,
-          bytesWritten,
-          payloadBytes: payload.length,
-        });
-      }
-    }
-    yield* handle.sync;
-  });
+  handle.write(payload).pipe(
+    Effect.flatMap((bytesWritten) =>
+      bytesWritten === payload.length
+        ? Effect.void
+        : Effect.fail(
+            new ShortWriteError({
+              logName,
+              bytesWritten,
+              payloadBytes: payload.length,
+            }),
+          ),
+    ),
+    // Retry only a non-zero short write, within the full-length rewrite
+    // budget: a 0-byte write fails immediately, and the last attempt's
+    // ShortWriteError propagates when the budget runs out
+    Effect.retry({
+      times: MAX_APPEND_WRITE_ATTEMPTS - 1,
+      while: (error) => error instanceof ShortWriteError && error.bytesWritten > 0,
+    }),
+    Effect.andThen(handle.sync),
+  );
 
 function encodeRecord(record: FloorLogRecord): string {
   return `${JSON.stringify(record)}\n`;
