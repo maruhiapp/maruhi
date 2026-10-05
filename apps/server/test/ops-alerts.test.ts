@@ -296,32 +296,44 @@ describe("notification (hosted-ops.md §2-B)", () => {
   it("restarts from an empty state on a malformed stored state row (the same static line)", async () => {
     const now = Date.now();
     await seedCounter("cli_flow_capacity", opsWindowStart(now), 1);
-    // A stored row that is not parseable JSON-shaped state: evaluation
-    // logs the same line as before and starts from "all inactive"
+    // Stored rows the cast accepted (or crashed on) but the Schema
+    // decode rejects — unparseable text, JSON null (the cast's
+    // TypeError defect), a bare array, a wrong-shaped entry. The
+    // outcome is the same line + restart from "all inactive"
     // (operational state only)
-    await runOps(Effect.flatMap(OpsRepo, (repo) => repo.setState("alerts", "not json", now)));
+    const malformed = [
+      "not json",
+      "null",
+      "[1,2]",
+      '{"cli_flow_capacity_reached":{"active":"yes"}}',
+    ];
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const capturing = capturingNotifier(true);
-      const events = await Effect.runPromise(
-        runOpsAlerts(now).pipe(
-          Effect.provideService(OpsNotifier, capturing.service),
-          Effect.provideService(OpsRepo, ops()),
-          Effect.provide(ServerLoggerLive),
-        ),
-      );
-      expect(events).toEqual([
-        { signal: "cli_flow_capacity_reached", state: "firing", value: 1, threshold: 1 },
-      ]);
-      expect(warn).toHaveBeenCalledWith(
-        "ops alert state row is not valid JSON; starting from an empty state",
-      );
-      // The state saved is exactly the freshly derived one (started from {})
-      expect(await runOps(Effect.flatMap(OpsRepo, (repo) => repo.getState("alerts")))).toBe(
-        JSON.stringify({
-          cli_flow_capacity_reached: { active: true, since: now, lastNotifiedAt: now },
-        }),
-      );
+      for (const stored of malformed) {
+        await runOps(Effect.flatMap(OpsRepo, (repo) => repo.setState("alerts", stored, now)));
+        warn.mockClear();
+        const capturing = capturingNotifier(true);
+        const events = await Effect.runPromise(
+          runOpsAlerts(now).pipe(
+            Effect.provideService(OpsNotifier, capturing.service),
+            Effect.provideService(OpsRepo, ops()),
+            Effect.provide(ServerLoggerLive),
+          ),
+        );
+        expect(events).toEqual([
+          { signal: "cli_flow_capacity_reached", state: "firing", value: 1, threshold: 1 },
+        ]);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          "ops alert state row is not valid JSON; starting from an empty state",
+        );
+        // The state saved is exactly the freshly derived one (started from {})
+        expect(await runOps(Effect.flatMap(OpsRepo, (repo) => repo.getState("alerts")))).toBe(
+          JSON.stringify({
+            cli_flow_capacity_reached: { active: true, since: now, lastNotifiedAt: now },
+          }),
+        );
+      }
     } finally {
       warn.mockRestore();
     }
