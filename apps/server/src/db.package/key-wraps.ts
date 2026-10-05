@@ -34,6 +34,7 @@ import type {
   WardShareRecord,
 } from "../key-wrap-domain.ts";
 import { type D1AuditActor, type D1AuditEventInput, guardedAuditSelectColumns } from "./audit.ts";
+import { tryD1 } from "./errors.ts";
 import {
   guardianGroups,
   guardianShares,
@@ -48,8 +49,12 @@ import {
 
 type Db = ReturnType<typeof drizzle>;
 
-/** D1 failures are defects (Effect.promise). Only domain-level branches are returned as values. */
-const run = <A>(thunk: () => Promise<A>): Effect.Effect<A> => Effect.promise(thunk);
+// D1 access goes through the shared tryD1 adapter (errors.ts —
+// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
+// public repository types keep an empty error channel because the
+// handlers turning D1FailureError into typed errors belong to other
+// lanes. An unexpected D1 failure stays a defect = a 500, as before.
+// Only domain-level branches are returned as values
 
 /** The §13-8 fixed-window length (all 1 hour). */
 const KEY_WRAP_WINDOW_MS = 60 * 60 * 1000;
@@ -309,7 +314,7 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
 
   return {
     consumeWindow: ({ userId, kind, limit, nowMs, audit }) =>
-      run(async () => {
+      tryD1(async () => {
         // The window-expiry check uses the difference between the
         // INSERT…ON CONFLICT excluded row (= this call's nowMs) and the
         // existing row: expired → reset; within the window → increment
@@ -368,16 +373,16 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           allowed: false,
           retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
         } as const;
-      }),
+      }).pipe(Effect.orDie),
     resetWindow: (userId, kind) =>
-      run(async () => {
+      tryD1(async () => {
         await db
           .delete(keyWrapWindows)
           .where(and(eq(keyWrapWindows.userId, userId), eq(keyWrapWindows.kind, kind)));
-      }),
+      }).pipe(Effect.orDie),
 
     passkeyInsert: ({ userId, wrapId, params, wrap, limit, nowMs, actor }) =>
-      run(async () => {
+      tryD1(async () => {
         // Cap check and insert in the same INSERT…SELECT…WHERE
         // (concurrent registrations cannot overrun — same shape as the
         // invitations pending cap)
@@ -428,27 +433,27 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           .where(eq(masterKeyWraps.id, wrapId))
           .get();
         return taken === undefined ? "limit" : "conflict";
-      }),
+      }).pipe(Effect.orDie),
     passkeyFind: (userId, wrapId) =>
-      run(async () => {
+      tryD1(async () => {
         const row = await db
           .select()
           .from(masterKeyWraps)
           .where(and(eq(masterKeyWraps.userId, userId), eq(masterKeyWraps.id, wrapId)))
           .get();
         return row === undefined ? null : toPasskeyRecord(row);
-      }),
+      }).pipe(Effect.orDie),
     passkeyList: (userId) =>
-      run(async () => {
+      tryD1(async () => {
         const rows = await db
           .select()
           .from(masterKeyWraps)
           .where(eq(masterKeyWraps.userId, userId))
           .orderBy(masterKeyWraps.createdAt);
         return rows.map(toPasskeyRecord);
-      }),
+      }).pipe(Effect.orDie),
     passkeyDelete: (userId, wrapId, nowMs, actor) =>
-      run(async () => {
+      tryD1(async () => {
         const results = await db.batch([
           db
             .delete(masterKeyWraps)
@@ -469,10 +474,10 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           ),
         ]);
         return results[0].length === 1;
-      }),
+      }).pipe(Effect.orDie),
 
     missingUsers: (userIds) =>
-      run(async () => {
+      tryD1(async () => {
         if (userIds.length === 0) {
           return [];
         }
@@ -482,9 +487,9 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           .where(inArray(users.id, [...userIds]));
         const present = new Set(rows.map((r) => r.id));
         return userIds.filter((id) => !present.has(id));
-      }),
+      }).pipe(Effect.orDie),
     guardianCreate: ({ userId, groupId, mode, wrap, shares, limit, nowMs, actor }) =>
-      run(async () => {
+      tryD1(async () => {
         const underLimit = sql<boolean>`(select count(*) from ${guardianGroups} where ${guardianGroups.userId} = ${userId}) < ${limit} and not exists (select 1 from ${guardianGroups} where ${guardianGroups.id} = ${groupId})`;
         // The group row goes through a capped INSERT…SELECT; the segment
         // rows and the audit enter only when "a group row was inserted
@@ -572,19 +577,19 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           return taken === undefined ? "limit" : "conflict";
         }
         return "created";
-      }),
-    guardianFind: (userId, groupId) => run(() => findGroup(userId, groupId)),
+      }).pipe(Effect.orDie),
+    guardianFind: (userId, groupId) => tryD1(() => findGroup(userId, groupId)).pipe(Effect.orDie),
     guardianList: (userId) =>
-      run(async () => {
+      tryD1(async () => {
         const rows = await db
           .select()
           .from(guardianGroups)
           .where(eq(guardianGroups.userId, userId))
           .orderBy(guardianGroups.createdAt);
         return groupsWithShares(rows);
-      }),
+      }).pipe(Effect.orDie),
     guardianDelete: (userId, groupId, nowMs, actor) =>
-      run(async () => {
+      tryD1(async () => {
         const group = await findGroup(userId, groupId);
         if (group === null) {
           return false;
@@ -617,9 +622,9 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           ...auditEvents.map((event) => guardedAuditInsert(event, nowMs, sql`(select 1)`, deleted)),
         ]);
         return results[1].length === 1;
-      }),
+      }).pipe(Effect.orDie),
     sharesOfGuardian: (guardianUserId, wardUserId) =>
-      run(async () => {
+      tryD1(async () => {
         const rows = await db
           .select({
             wardUserId: guardianGroups.userId,
@@ -670,10 +675,10 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           ciphertextHex: row.ciphertextHex,
           createdAtMs: row.createdAt,
         }));
-      }),
+      }).pipe(Effect.orDie),
 
     handoffCreate: ({ requestId, userId, ttlMs, nowMs, actor }) =>
-      run(async () => {
+      tryD1(async () => {
         const results = await db.batch([
           db
             .insert(keyHandoffRequests)
@@ -701,9 +706,9 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           ),
         ]);
         return results[0].length === 1 ? "created" : "conflict";
-      }),
+      }).pipe(Effect.orDie),
     handoffFind: (requestId, nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         const row = await db
           .select()
           .from(keyHandoffRequests)
@@ -719,9 +724,9 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           expiresAtMs: row.expiresAt,
           collectedAtMs: row.collectedAt,
         };
-      }),
+      }).pipe(Effect.orDie),
     handoffApprove: ({ requestId, wardUserId, approverUserId, approval, limit, nowMs, actor }) =>
-      run(async () => {
+      tryD1(async () => {
         // The cap is a declaration of the acceptance policy (§13-8). The
         // effective bound is carried structurally by the PK `(request_id,
         // source, share_index)` plus the handler's role check (limit = 1
@@ -763,9 +768,9 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           ),
         ]);
         return results[0].length === 1 ? "created" : "conflict";
-      }),
+      }).pipe(Effect.orDie),
     handoffApprovals: (requestId) =>
-      run(async () => {
+      tryD1(async () => {
         const rows = await db
           .select()
           .from(keyHandoffApprovals)
@@ -780,9 +785,9 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
           ciphertextHex: row.ciphertextHex,
           createdAtMs: row.createdAt,
         }));
-      }),
+      }).pipe(Effect.orDie),
     handoffMarkCollected: (requestId, approvalCount, nowMs, actor) =>
-      run(async () => {
+      tryD1(async () => {
         // Sets collected_at only while it is NULL, and records audit
         // exactly that once (does not keep writing "a restore happened"
         // on every poll)
@@ -807,26 +812,26 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
               .where(sql`changes() = 1`),
           ),
         ]);
-      }),
+      }).pipe(Effect.orDie),
     handoffDelete: (requestId, userId) =>
-      run(async () => {
+      tryD1(async () => {
         const rows = await db
           .delete(keyHandoffRequests)
           .where(and(eq(keyHandoffRequests.id, requestId), eq(keyHandoffRequests.userId, userId)))
           .returning({ id: keyHandoffRequests.id });
         return rows.length === 1;
-      }),
+      }).pipe(Effect.orDie),
     handoffSweep: (nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         await db
           .delete(keyHandoffRequests)
           .where(lte(keyHandoffRequests.expiresAt, nowMs - HANDOFF_SWEEP_GRACE_MS));
-      }),
+      }).pipe(Effect.orDie),
     loginOf: (userId) =>
-      run(async () => {
+      tryD1(async () => {
         const row = await loginQuery(userId);
         return row?.login ?? null;
-      }),
+      }).pipe(Effect.orDie),
   };
 }
 

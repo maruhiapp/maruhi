@@ -7,11 +7,16 @@ import { Context, Effect } from "effect";
 
 import type { SessionRecord } from "../auth-domain.ts";
 import { userAuditInsert } from "./audit.ts";
+import { tryD1 } from "./errors.ts";
 import { sessions } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
 
-const run = <T>(evaluate: () => Promise<T>): Effect.Effect<T> => Effect.promise(evaluate);
+// D1 access goes through the shared tryD1 adapter (errors.ts —
+// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
+// public repository types keep an empty error channel because the
+// handlers turning D1FailureError into typed errors belong to other
+// lanes. An unexpected D1 failure stays a defect = a 500, as before
 
 // ---------------------------------------------------------------------------
 // SessionRepo (§5. The id is a hash; the raw value never reaches this
@@ -51,7 +56,7 @@ export function makeSessionRepo(db: Db): SessionRepoShape {
     // the stored id — not the raw value, AUTH_SPEC §10) is copied into
     // the payload for cross-checking against the revocation event
     insert: (idHash, userId, authMethod, nowMs, expiresAtMs) =>
-      run(async () => {
+      tryD1(async () => {
         await db.batch([
           db.insert(sessions).values({
             id: idHash,
@@ -67,9 +72,9 @@ export function makeSessionRepo(db: Db): SessionRepoShape {
             payload: { sessionId: idHash },
           }),
         ]);
-      }),
+      }).pipe(Effect.orDie),
     findByHash: (idHash) =>
-      run(async () => {
+      tryD1(async () => {
         const row = await db
           .select({
             userId: sessions.userId,
@@ -82,16 +87,16 @@ export function makeSessionRepo(db: Db): SessionRepoShape {
         return row === undefined
           ? null
           : { userId: row.userId, authMethod: row.authMethod, expiresAtMs: row.expiresAt };
-      }),
+      }).pipe(Effect.orDie),
     touch: (idHash, nowMs, expiresAtMs) =>
-      run(async () => {
+      tryD1(async () => {
         await db
           .update(sessions)
           .set({ lastUsedAt: nowMs, expiresAt: expiresAtMs })
           .where(eq(sessions.id, idHash));
-      }),
+      }).pipe(Effect.orDie),
     revokeByHash: (idHash, nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         // The event is written after observing the deletion's success
         // via returning (the actor is also copied from it). A read →
         // delete two-step would let two concurrent logouts both succeed
@@ -114,14 +119,14 @@ export function makeSessionRepo(db: Db): SessionRepoShape {
           actor: { userId: row.userId, authMethod: row.authMethod },
           payload: { sessionId: idHash },
         });
-      }),
+      }).pipe(Effect.orDie),
     deleteByHash: (idHash) =>
-      run(async () => {
+      tryD1(async () => {
         await db.delete(sessions).where(eq(sessions.id, idHash));
-      }),
+      }).pipe(Effect.orDie),
     deleteExpired: (nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         await db.delete(sessions).where(lte(sessions.expiresAt, nowMs));
-      }),
+      }).pipe(Effect.orDie),
   };
 }
