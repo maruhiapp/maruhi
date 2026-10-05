@@ -2,9 +2,9 @@
 // nothing" principle applied to the wire).
 //
 // Scope: effect HttpClients only. A few call sites still use the platform
-// `fetch` directly (apps/cli/src/oidc-github.ts, apps/server/src/ops/ops-alerts.ts,
-// and same-origin browser code); plain `fetch` adds no header of its own, so
-// they are outside the trace-header concern this file addresses.
+// `fetch` directly (apps/server/src/ops/ops-alerts.ts and same-origin
+// browser code); plain `fetch` adds no header of its own, so they are
+// outside the trace-header concern this file addresses.
 //
 // effect's HttpClient adds `traceparent` / `b3` headers to every request by
 // default (trace propagation). maruhi never forwards trace context: under a
