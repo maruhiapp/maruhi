@@ -750,12 +750,15 @@ describe("CLI login (AUTH_SPEC §4 — the server-brokered web-flow handoff)", (
     expect(flows?.n).toBe(0);
   });
 
-  it("dies on a vsig-signed scopesJson that does not decode (signed-but-corrupt params = defect)", async () => {
+  it("dies on a vsig-signed scopesJson that is not a scope array (signed-but-corrupt params = defect)", async () => {
     // scopesJson is only ever signed by the server's own cliStart
     // (JSON.stringify of Schema-validated scopes). A vsig-valid value
     // that fails the scope-array decode = an implementation bug /
     // signing-key compromise — not a uniform refusal: it is a defect
-    // (500), the same outcome main's JSON.parse throw produced
+    // (500). "{}" is valid JSON but not a scope array: on main it
+    // passed JSON.parse, createOrMatch wrote the flow row, and only
+    // the render defected; now the decode dies before the insert —
+    // same 500 on the wire, and no row is written
     await seedUser("user-cli-malformed", 918);
     await startCliFlow();
     const key = await flowSigningKeyFromDb();
@@ -764,7 +767,7 @@ describe("CLI login (AUTH_SPEC §4 — the server-brokered web-flow handoff)", (
       expiresAtMs: Date.now() + 60_000,
       userCode: "AAAA-AAAA",
       tokenName: "malformed-scopes",
-      scopesJson: "not-json",
+      scopesJson: "{}",
       expiresInDays: 30,
     };
     const vsig = await computeVsig(key, params);
@@ -776,6 +779,11 @@ describe("CLI login (AUTH_SPEC §4 — the server-brokered web-flow handoff)", (
       redirect: "manual",
     });
     expect(callback.status).toBe(500);
+    // The defect happens before createOrMatch — no flow row exists
+    const flows = await env.DB.prepare("SELECT COUNT(*) AS n FROM cli_login_flows").first<{
+      n: number;
+    }>();
+    expect(flows?.n).toBe(0);
   });
 
   it("rejects an expired verificationUrl with the same uniform page (§4-2)", async () => {
