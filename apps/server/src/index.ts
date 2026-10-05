@@ -52,6 +52,7 @@ import { OPS_HOURLY_CRON } from "./ops/ops-policy.ts";
 import { countingGitHubApi } from "./ops/ops-signals.ts";
 import { MAX_REQUEST_BODY_BYTES } from "./policy.ts";
 import { makeServerKey, ServerKey } from "./server-key.ts";
+import { ServerLoggerLive } from "./server-logger.ts";
 import { readWorkerSecrets, WorkerEnv, WorkerSecrets } from "./worker-env.ts";
 
 export { ProjectChainDO } from "./do/chain-do.ts";
@@ -148,8 +149,14 @@ function handlerFor(env: Env): EnvHandler {
   // `observability.logs.invocationLogs: false` would reopen via the
   // console path (found by checking real Workers Logs data during an
   // ops exercise — hosted-ops.md §5-3). The console lines that remain
-  // are static messages + aggregates only (DC-2)
-  const webHandler = HttpRouter.toWebHandler(apiLive, { disableLogger: true });
+  // are static messages + aggregates only (DC-2).
+  // The handler fibers run in the built layer's context, so the server
+  // logger provided here is the logger of every request:
+  // Effect.logWarning / logError reach console.warn / console.error with
+  // the message text only (server-logger.ts)
+  const webHandler = HttpRouter.toWebHandler(apiLive.pipe(Layer.provideMerge(ServerLoggerLive)), {
+    disableLogger: true,
+  });
   const built: EnvHandler = {
     handler: (request) => webHandler.handler(request, services),
   };
@@ -338,11 +345,14 @@ export default {
         runBackupSweep(env).pipe(
           Effect.andThen(runOpsAlerts(Date.now())),
           Effect.provideContext(services),
+          Effect.provide(ServerLoggerLive),
         ),
       );
       return;
     }
     const sessions = Context.get(dbServices, SessionRepo);
-    await Effect.runPromise(sessions.deleteExpired(Date.now()));
+    await Effect.runPromise(
+      sessions.deleteExpired(Date.now()).pipe(Effect.provide(ServerLoggerLive)),
+    );
   },
 } satisfies ExportedHandler<Env>;

@@ -26,6 +26,7 @@ import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/c
 import { Context, Data, Effect, Layer } from "effect";
 
 import { randomHex } from "./ids.ts";
+import { ServerLoggerLive } from "./server-logger.ts";
 
 /**
  * The input of one audit-event row (columns per AUDIT_SPEC §5.1;
@@ -795,6 +796,7 @@ export async function deriveAuditHeads(
         // defect (a storage fault inside the fiber still rejects the
         // promise, same as a throw did)
         Effect.catchTag("AuditHeadChunkInvalid", () => Effect.succeed("invalid" as const)),
+        Effect.provide(ServerLoggerLive),
       ),
     );
     if (outcome !== "more") {

@@ -133,6 +133,7 @@ import {
 import { ensureProposalAdmitted } from "../quotas.ts";
 import type { EffectiveRotationFlag } from "../rotation-detect.ts";
 import { makeServerKey, ServerKey } from "../server-key.ts";
+import { ServerLoggerLive } from "../server-logger.ts";
 import type { StorageGuardDecision } from "../storage-guard.ts";
 import {
   ensureStorageAdmitsGrowth,
@@ -707,6 +708,9 @@ export class ProjectChainDO extends DurableObject<Env> {
         // from the same Workers Secret. The DO's env-reading boundary
         // for it: the IKM is Redacted from here on (worker-env.ts)
         Layer.sync(ServerKey, () => makeServerKey(readWorkerSecrets(env).serverEncKeyIkm)),
+        // Effect logs from DO programs go to console.warn / console.error
+        // with the message text only (server-logger.ts)
+        ServerLoggerLive,
       ),
     );
   }

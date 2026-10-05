@@ -15,7 +15,7 @@
 //   open = stays pending)
 
 import { env, SELF } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   BASE,
@@ -36,6 +36,9 @@ import {
 
 beforeEach(async () => {
   await resetAuthDb();
+});
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 async function countRows(table: string): Promise<number> {
@@ -91,11 +94,20 @@ describe("GET /auth/config's signupPolicy advisory (§3 / §4)", () => {
   });
 
   it("treats an unknown stored value as 'closed' (fail-closed — an operator typo must not flip to open)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
     await setSignupPolicy("evreyone-welcome");
     const body = (await (await SELF.fetch(`${BASE}/auth/config`)).json()) as {
       signupPolicy?: string;
     };
     expect(body.signupPolicy).toBe("closed");
+    // The operator warning (Effect.logWarning in identities.ts) goes through
+    // the server logger provided at the HTTP root (server-logger.ts):
+    // console.warn with exactly the message text, nothing on console.log
+    expect(warn).toHaveBeenCalledWith(
+      "deployment_settings.signup_policy has an unknown value; treating it as 'closed' (fail-closed — fix it with the SQL in docs/SELF_HOSTING.md)",
+    );
+    expect(log).not.toHaveBeenCalled();
     // The gate reads it the same way (new sign-ups are rejected)
     const callback = await signupAttempt(700);
     expect(callback.status).toBe(403);
