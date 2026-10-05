@@ -16,7 +16,7 @@ import {
   TokenNotFoundError,
 } from "@maruhi/api-schema";
 import { auditActorOf, RequestAuth, SessionService, TokenService } from "@maruhi/core";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
@@ -181,7 +181,10 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         }
         const identities = yield* IdentityRepo;
         const tokenHash = yield* Effect.promise(() => sha256Hex(signupCode));
-        const valid = yield* identities.hasPendingSignupInvite(tokenHash, Date.now());
+        const valid = yield* identities.hasPendingSignupInvite(
+          tokenHash,
+          yield* Clock.currentTimeMillis,
+        );
         if (!valid) {
           // Script-less guidance that does not distinguish unknown /
           // revoked / consumed (§3). The pre-validation is fail-fast, not
@@ -274,7 +277,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         );
         const resolved = yield* identities.getOrCreateUser(
           identity,
-          Date.now(),
+          yield* Clock.currentTimeMillis,
           signupInviteTokenHash,
         );
         if ("denied" in resolved) {
@@ -417,7 +420,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         const revoked = yield* tokens.revokeById(
           params.tokenId,
           principal.userId,
-          Date.now(),
+          yield* Clock.currentTimeMillis,
           auditActorOf(principal),
         );
         if (!revoked) {
@@ -442,7 +445,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
             nonceHex: payload.nonceHex,
             ciphertextHex: payload.ciphertextHex,
           },
-          Date.now(),
+          yield* Clock.currentTimeMillis,
           auditActorOf(principal),
         );
         return HttpServerResponse.empty({ status: 204 });
@@ -481,7 +484,7 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
         // recorded)
         const decision = yield* recovery.recordFetch(
           principal.userId,
-          Date.now(),
+          yield* Clock.currentTimeMillis,
           auditActorOf(principal),
         );
         if (!decision.allowed) {

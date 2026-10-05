@@ -23,7 +23,7 @@ import {
 } from "@maruhi/api-schema";
 import { cryptoEffect } from "@maruhi/core";
 import { computeLeaseClaimsDigest } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { toWireVariable } from "../data/data-http.ts";
@@ -146,7 +146,7 @@ const authenticateWorkload = (
     // 1. The authentication stage (§14-1): verify the OIDC token.
     //    No chain-derived state is consulted
     const verifier = yield* OidcVerifier;
-    const token = yield* verifier.verify(payload.oidcToken, Date.now());
+    const token = yield* verifier.verify(payload.oidcToken, yield* Clock.currentTimeMillis);
     const claimsDigestHex = yield* claimsDigestFor(token);
     // The first-come-binding key (§14-1) is already computed by the
     // verifier from the signed bytes (signing input) — not a hash of

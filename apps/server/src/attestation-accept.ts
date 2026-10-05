@@ -34,7 +34,7 @@
 import { cryptoEffect } from "@maruhi/core";
 import type { AttestationInvalidReason } from "@maruhi/crypto";
 import { verifyDistributedHeadAttestation } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { catchCryptoErrors } from "./crypto-catch.ts";
 import type { AttestationRejectReason, DataRejectedError } from "./data/data-plane.ts";
@@ -83,7 +83,7 @@ export const putHeadAttestationProgram = (
     // 1. Membership (reader or higher — §16-1's "chain role reader or higher")
     const context = yield* requireMemberState(callerUserId, "reader", cache);
     const store = yield* DataStore;
-    const nowMs = Date.now();
+    const nowMs = yield* Clock.currentTimeMillis;
 
     // 2. Fixed window per member (check → consume immediately: repeated rejected submissions also use the window)
     const window = yield* store.checkAttestationWindow(

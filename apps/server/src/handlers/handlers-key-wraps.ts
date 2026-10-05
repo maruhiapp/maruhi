@@ -35,7 +35,7 @@ import {
   MAX_PASSKEY_WRAPS_PER_USER,
 } from "@maruhi/api-schema";
 import { auditActorOf, RequestAuth } from "@maruhi/core";
-import { Effect } from "effect";
+import { Clock, Effect, Option, Schema } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
@@ -78,21 +78,26 @@ interface PasskeyParams {
   readonly label?: string;
 }
 
+const PasskeyParamsSchema = Schema.Struct({
+  credentialIdHex: Schema.String,
+  prfSaltHex: Schema.String,
+  // A stored label of an unexpected shape is filtered out below (not
+  // a decode failure — the same "drop a non-string label" as before)
+  label: Schema.optional(Schema.Unknown),
+});
+
+const decodePasskeyParams = Schema.decodeUnknownOption(Schema.fromJsonString(PasskeyParamsSchema));
+
 function parsePasskeyParams(json: string): PasskeyParams {
   // The only writer is this file's passkeyRegister (JSON-ifying
-  // Schema-validated values). An unparseable row is an implementation
+  // Schema-validated values). An undecodable row is an implementation
   // bug / DB corruption — do not silently redistribute it in another
   // shape
-  const parsed: unknown = JSON.parse(json);
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    typeof (parsed as { credentialIdHex?: unknown }).credentialIdHex !== "string" ||
-    typeof (parsed as { prfSaltHex?: unknown }).prfSaltHex !== "string"
-  ) {
+  const decoded = decodePasskeyParams(json);
+  if (Option.isNone(decoded)) {
     throw new Error("stored passkey wrap has malformed params");
   }
-  const record = parsed as { credentialIdHex: string; prfSaltHex: string; label?: unknown };
+  const record = decoded.value;
   return {
     credentialIdHex: record.credentialIdHex,
     prfSaltHex: record.prfSaltHex,
@@ -339,7 +344,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
           params: JSON.stringify(params),
           wrap: payload.wrap,
           limit: MAX_PASSKEY_WRAPS_PER_USER,
-          nowMs: Date.now(),
+          nowMs: yield* Clock.currentTimeMillis,
           actor: auditActorOf(principal),
         });
         if (decision !== "created") {
@@ -371,7 +376,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
             userId: principal.userId,
             kind: "blob-fetch",
             limit: KEY_BLOB_FETCH_LIMIT,
-            nowMs: Date.now(),
+            nowMs: yield* Clock.currentTimeMillis,
             audit: {
               event: "auth.key_wrap_fetched",
               actor: auditActorOf(principal),
@@ -404,7 +409,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
           yield* repo.passkeyDelete(
             principal.userId,
             params.wrapId,
-            Date.now(),
+            yield* Clock.currentTimeMillis,
             auditActorOf(principal),
           ),
         );
@@ -436,7 +441,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
           wrap: payload.wrap,
           shares: payload.shares,
           limit: MAX_GUARDIAN_GROUPS_PER_USER,
-          nowMs: Date.now(),
+          nowMs: yield* Clock.currentTimeMillis,
           actor: auditActorOf(principal),
         });
         if (decision !== "created") {
@@ -467,7 +472,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
             userId: principal.userId,
             kind: "blob-fetch",
             limit: KEY_BLOB_FETCH_LIMIT,
-            nowMs: Date.now(),
+            nowMs: yield* Clock.currentTimeMillis,
             audit: {
               event: "auth.key_wrap_fetched",
               actor: auditActorOf(principal),
@@ -496,7 +501,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
           yield* repo.guardianDelete(
             principal.userId,
             params.groupId,
-            Date.now(),
+            yield* Clock.currentTimeMillis,
             auditActorOf(principal),
           ),
         );
@@ -555,7 +560,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
             userId: principal.userId,
             kind: "approval",
             limit: APPROVAL_LIMIT,
-            nowMs: Date.now(),
+            nowMs: yield* Clock.currentTimeMillis,
             audit: {
               event: "auth.guardian_share_fetched",
               actor: auditActorOf(principal),
@@ -583,7 +588,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
-        const nowMs = Date.now();
+        const nowMs = yield* Clock.currentTimeMillis;
         // Opportunistic deletion (requests past expiry + grace)
         yield* repo.handoffSweep(nowMs);
         yield* rateLimited(
@@ -621,7 +626,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
           repo,
           params.requestId,
           principal.userId,
-          Date.now(),
+          yield* Clock.currentTimeMillis,
         );
         const wardLogin = yield* repo.loginOf(request.userId);
         return {
@@ -637,7 +642,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
-        const nowMs = Date.now();
+        const nowMs = yield* Clock.currentTimeMillis;
         const { request, roles } = yield* visibleRequest(
           repo,
           params.requestId,
@@ -690,7 +695,7 @@ export const keyWrapsLive = HttpApiBuilder.group(maruhiApi, "keyWraps", (handler
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* KeyWrapRepo;
-        const nowMs = Date.now();
+        const nowMs = yield* Clock.currentTimeMillis;
         const request = yield* repo.handoffFind(params.requestId, nowMs);
         // Fetching approvals is ward-only (guardians get the uniform
         // 404)

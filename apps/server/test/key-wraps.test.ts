@@ -194,6 +194,27 @@ describe("passkey-prf wraps (class S — §13-7)", () => {
     expect(await auditCount("auth.key_wrap_removed")).toBe(1);
   });
 
+  it("fails the fetch when the stored passkey params are undecodable (corruption stays a defect)", async () => {
+    const token = await cliToken(616);
+    const registered = await SELF.fetch(`${BASE}/auth/key-wraps/passkey`, {
+      method: "POST",
+      headers: { ...JSON_HEADERS, ...bearer(token) },
+      body: passkeyBody(),
+    });
+    expect(registered.status).toBe(200);
+    const { wrapId } = await json<{ wrapId: string }>(registered);
+    // A row the v1 write path cannot produce (passkeyRegister always
+    // writes a complete Schema shape — this is DB corruption / an
+    // implementation bug). It is not silently redistributed in another
+    // shape: the decode failure is a defect (500)
+    await env.DB.prepare("UPDATE master_key_wraps SET params = ? WHERE id = ?")
+      .bind('{"credentialIdHex":"55"}', wrapId)
+      .run();
+    expect((await get(`/auth/key-wraps/passkey/${wrapId}`, token)).status).toBe(500);
+    // The status listing shares the same decode — it dies identically
+    expect((await get("/auth/key-wraps", token)).status).toBe(500);
+  });
+
   it("rejects a project-scoped token (§13-2's key-material condition) and unknown fields (strict)", async () => {
     const scoped = await cliToken(612, [{ project: "f0".repeat(32), permission: "admin" }]);
     const forbidden = await SELF.fetch(`${BASE}/auth/key-wraps/passkey`, {
