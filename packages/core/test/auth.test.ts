@@ -70,4 +70,11 @@ describe("parseTokenScopes (restoring a stored JSON)", () => {
     expect(parseTokenScopes('[{"permission":"read"}]')).toBeNull();
     expect(parseTokenScopes("[null]")).toBeNull();
   });
+
+  it("rejects a scope whose project is not a ProjectId (owner-approved tightening)", () => {
+    // The hand-written guard accepted any string for `project`;
+    // TokenScopeSchema requires a ProjectId (64 lowercase hex) or "*"
+    expect(parseTokenScopes('[{"project":"not-a-project-id","permission":"read"}]')).toBeNull();
+    expect(parseTokenScopes(`[{"project":"${"AB".repeat(32)}","permission":"read"}]`)).toBeNull();
+  });
 });
