@@ -57,7 +57,6 @@ import {
   describeShape,
   describeValueShapes,
   planRotation,
-  type RotateDeps,
   type RotateInputs,
   rotateCredential,
   type RotationOutcome,
@@ -79,7 +78,6 @@ export interface CiRotateInput extends CiLeaseInput {
   readonly name: string;
   readonly config: RotateConfig;
   readonly configPath: string;
-  readonly deps: RotateDeps;
   /** How many days the proposal waits for a member (1 to 30). */
   readonly expiresInDays: number;
   readonly now?: () => number;
@@ -488,7 +486,7 @@ export function ciRotateOp(
       })
       .pipe(Effect.mapError((error) => preflightRefusal(error, primary)));
     const site = { variable: primary, environmentId: input.environmentId };
-    const outcome = yield* callConnector(input.deps, rotateCredential(rule, current, inputs, site));
+    const outcome = yield* callConnector(rotateCredential(rule, current, inputs, site));
     const planned = yield* plannedValues(primary, rule, local, outcome);
     const io = yield* CliIo;
     const mintInput = { input, rule, planned, outcome, params };

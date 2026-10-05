@@ -15,8 +15,6 @@ import {
   loadRotateConfig,
   configNamesProject as rotateConfigNamesProject,
 } from "../rotate-config.ts";
-import { SqlRunner } from "../rotate-connector.ts";
-import { ProcessRunner } from "../run.ts";
 import { normalizeHttpOrigin } from "../session.ts";
 import {
   ciSyncOp,
@@ -25,7 +23,7 @@ import {
   loadSyncConfig,
   requireSyncTarget,
 } from "../sync.package/index.ts";
-import { RotateSeams, logRotationWarnings, rotateDeps } from "../var-rotate.ts";
+import { logRotationWarnings } from "../var-rotate.ts";
 import { NonBlank, runCommandArgument, singleFlag, singleValued } from "./flags.ts";
 import { ENV_FLAG_SHAPE_MESSAGE, commandAfterTerminator } from "./shared.ts";
 
@@ -342,7 +340,6 @@ function ciRotateCommand(values: {
       name: values.name,
       config: rotateConfig,
       configPath: rotateConfigPath,
-      deps: rotateDeps(yield* RotateSeams, yield* SqlRunner, (yield* ProcessRunner).captureScript),
     });
     yield* logRotationWarnings(result.warnings);
     for (const line of describeProposal(result, coordinates.environmentId)) {

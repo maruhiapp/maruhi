@@ -34,7 +34,7 @@
 // Error wording carries the connector, the issuer's status code and
 // message — never a credential, a password, or a URL with a password in it.
 
-import { Clock, Context, Data, Effect, type Layer, Redacted, Schema } from "effect";
+import { Clock, Context, Data, Effect, Redacted, Schema } from "effect";
 import {
   HttpBody,
   HttpClient,
@@ -69,8 +69,9 @@ export interface SqlRunnerShape {
 export class SqlRunner extends Context.Service<SqlRunner, SqlRunnerShape>()("cli/SqlRunner") {}
 
 /**
- * The issuer API origins a run targets (production: the fixed hosts; the
- * rotate seams — `rotateDeps` in var-rotate.ts — redirect them in tests).
+ * The issuer API origins a run targets (production: the reference's
+ * default — every origin unset, so each call uses the issuer's fixed host;
+ * tests provide the reference to point the calls at a fake issuer).
  */
 interface IssuerEndpointsShape {
   readonly awsIamBase?: string | undefined;
@@ -105,14 +106,11 @@ export class ConnectorCrypto extends Context.Reference<ConnectorCryptoShape>(
 ) {}
 
 /**
- * What the caller provides around the connector call: the test seams
- * expressed as service overrides (`rotateDeps` in var-rotate.ts builds it;
- * production passes `Layer.empty` — the ambient `HttpClient`, `SqlRunner`,
- * `ProcessRunner` and the references' defaults answer).
+ * The services a connector run requires — the command's ambient ones (the
+ * CLI's egress `HttpClient`, `SqlRunner`, `ProcessRunner`). The `Clock`,
+ * {@link IssuerEndpoints} and {@link ConnectorCrypto} are read from the
+ * run's context too, with their defaults in production.
  */
-export type RotateDeps = Layer.Layer<never>;
-
-/** The services a connector run requires. */
 export type ConnectorServices = HttpClient.HttpClient | SqlRunner | ProcessRunner;
 
 /**

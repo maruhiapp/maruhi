@@ -30,7 +30,6 @@ import {
   generatePassword,
   IssuerEndpoints,
   planRotation,
-  type RotateDeps,
   rotateCredential,
   SqlRunner,
   type SqlRunnerShape,
@@ -111,7 +110,7 @@ function deps(
     sql?: SqlRunnerShape;
     exec?: (input: CaptureInput) => Promise<CaptureOutcome>;
   } = {},
-): RotateDeps {
+): Layer.Layer<ConnectorServices> {
   let counter = 0;
   return Layer.mergeAll(
     Layer.provide(
@@ -143,21 +142,17 @@ function deps(
   );
 }
 
-/**
- * Runs a connector program under the test layer at a fixed instant. The
- * layer is typed `RotateDeps` (opaque — the seams provide an unknown subset
- * of the services), but here it always carries every connector service, so
- * the provisioned program is self-contained.
- */
+/** Runs a connector program under the test layer at a fixed instant. */
 function run<A>(
-  depsLayer: RotateDeps,
+  depsLayer: Layer.Layer<ConnectorServices>,
   effect: Effect.Effect<A, ConnectorError, ConnectorServices>,
 ): Promise<A> {
-  const provided = Effect.gen(function* () {
-    yield* TestClock.setTime(FIXED_NOW);
-    return yield* effect;
-  }).pipe(Effect.provide(depsLayer));
-  return Effect.runPromise(provided as Effect.Effect<A, ConnectorError, never>);
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      yield* TestClock.setTime(FIXED_NOW);
+      return yield* effect;
+    }).pipe(Effect.provide(depsLayer)),
+  );
 }
 
 function credential(primary: string, companions: Record<string, string> = {}): CredentialValues {
