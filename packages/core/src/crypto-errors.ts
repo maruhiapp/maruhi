@@ -156,8 +156,9 @@ export class ChainInvalidError extends Data.TaggedError("ChainInvalid")<{
 
 /**
  * The @maruhi/crypto exports that return a bare `Promise` (no
- * `CryptoResult`) and can therefore reject. Keep in sync with
- * packages/crypto/src/index.ts.
+ * `CryptoResult`) and can therefore reject. Keep in sync with the
+ * bare-`Promise` exports of packages/crypto/src/internal.package/ —
+ * `sha256` is listed ahead of a public export (internal only today).
  */
 export type CryptoPromiseOperation =
   | "computeChainEntryHash"
