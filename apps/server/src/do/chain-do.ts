@@ -140,6 +140,7 @@ import {
   storageGuardDecision,
   storageMeterLayer,
 } from "../storage-guard.ts";
+import { readWorkerSecrets } from "../worker-env.ts";
 import type { AppliedProposal } from "./chain-accept.ts";
 import { ensureParentHead, verifyAcceptableEntry } from "./chain-accept.ts";
 import { commitAcceptedEntry } from "./chain-commit.ts";
@@ -165,14 +166,19 @@ export interface Env {
   readonly DB: D1Database;
   /** The GitHub OAuth App's client_id (Workers Secret / .dev.vars. Public information, but the provisioning path is uniformly secret — AUTH_SPEC §3-2). */
   readonly GITHUB_CLIENT_ID: string;
-  /** The GitHub OAuth App's client_secret (Workers Secret / .dev.vars. Only dummy values may be committed). */
+  /**
+   * The GitHub OAuth App's client_secret (Workers Secret / .dev.vars. Only
+   * dummy values may be committed). Read only through worker-env.ts's
+   * readWorkerSecrets, which wraps it in Redacted.
+   */
   readonly GITHUB_CLIENT_SECRET: string;
   /**
    * The deployment keypair's input key material (Workers Secret /
    * .dev.vars. 32 bytes hex — CRYPTO_SPEC §9). The keypair is derived at
    * startup via RFC 9180 DeriveKeyPair (server-key.ts). Unset = a pure
    * E2EE deployment with no selective disclosure (the default). On a
-   * deployment lacking the secret it is undefined at runtime.
+   * deployment lacking the secret it is undefined at runtime. Read only
+   * through worker-env.ts's readWorkerSecrets, which wraps it in Redacted.
    */
   readonly SERVER_ENC_KEY_IKM?: string;
   /**
@@ -698,8 +704,9 @@ export class ProjectChainDO extends DurableObject<Env> {
         // Lease unsealing + re-wrapping happen inside the DO (the head
         // of programs-lease.ts: audit atomicity). A separate instance
         // from the worker-side ServerKey, but derives the same keypair
-        // from the same Workers Secret
-        Layer.sync(ServerKey, () => makeServerKey(env.SERVER_ENC_KEY_IKM)),
+        // from the same Workers Secret. The DO's env-reading boundary
+        // for it: the IKM is Redacted from here on (worker-env.ts)
+        Layer.sync(ServerKey, () => makeServerKey(readWorkerSecrets(env).serverEncKeyIkm)),
       ),
     );
   }

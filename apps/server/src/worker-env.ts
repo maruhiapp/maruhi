@@ -1,14 +1,72 @@
-// Small pieces shared inside the worker: the Env service and the DO
-// RPC call helper.
+// Small pieces shared inside the worker: the Env and secrets services
+// and the DO RPC call helper.
 
-import { Context, Effect } from "effect";
+import { Context, Effect, Redacted } from "effect";
 
 import type { Env, ProjectChainDO } from "./do/chain-do.ts";
 
-export class WorkerEnv extends Context.Service<WorkerEnv, Env>()("WorkerEnv") {}
+/** The Env fields that are secret configuration values (read only through `readWorkerSecrets`). */
+type SecretName = "GITHUB_CLIENT_SECRET" | "SERVER_ENC_KEY_IKM";
+
+/**
+ * The Env as handlers see it: the bindings and the non-secret
+ * configuration. The secret fields are left out of the type, so a
+ * handler reaches them only as `Redacted` through WorkerSecrets.
+ */
+type WorkerBindings = Omit<Env, SecretName>;
+
+export class WorkerEnv extends Context.Service<WorkerEnv, WorkerBindings>()("WorkerEnv") {}
+
+/**
+ * The worker's secret configuration values, each wrapped in `Redacted`
+ * at the moment it is read from the env: string, JSON, and inspection
+ * output (logs, error messages, Cause renderings) show only
+ * `<redacted:NAME>`. `undefined` = unset or empty — a deployment
+ * lacking the secret leaves it undefined at runtime, and both
+ * consumers already treated an empty value the same as an unset one.
+ * `Redacted.value` is called only where a value is used: the
+ * token-exchange body (auth.package/github.ts) and the HKDF input
+ * (server-key.ts).
+ */
+interface WorkerSecretsShape {
+  readonly githubClientSecret: Redacted.Redacted<string> | undefined;
+  readonly serverEncKeyIkm: Redacted.Redacted<string> | undefined;
+}
+
+export class WorkerSecrets extends Context.Service<WorkerSecrets, WorkerSecretsShape>()(
+  "WorkerSecrets",
+) {}
+
+/** Wraps one secret as read from the env, labeled with its name (unset or empty → undefined). */
+function redactSecret(
+  raw: string | undefined,
+  label: SecretName,
+): Redacted.Redacted<string> | undefined {
+  return raw === undefined || raw === "" ? undefined : Redacted.make(raw, { label });
+}
+
+/**
+ * The env-reading boundary for secrets: one call per entry point that
+ * receives the Workers env (index.ts's buildServices and the chain DO's
+ * constructor). The parameter names only the two secret fields, both
+ * optional: a deployment lacking a secret has it undefined at runtime
+ * whatever Env declares.
+ */
+export function readWorkerSecrets(env: {
+  readonly GITHUB_CLIENT_SECRET?: string;
+  readonly SERVER_ENC_KEY_IKM?: string;
+}): WorkerSecretsShape {
+  return {
+    githubClientSecret: redactSecret(env.GITHUB_CLIENT_SECRET, "GITHUB_CLIENT_SECRET"),
+    serverEncKeyIkm: redactSecret(env.SERVER_ENC_KEY_IKM, "SERVER_ENC_KEY_IKM"),
+  };
+}
 
 /** Resolves the project DO's stub (DO name = project ID). */
-export const projectStub = (env: Env, projectId: string): DurableObjectStub<ProjectChainDO> =>
+export const projectStub = (
+  env: Pick<Env, "PROJECT_CHAIN">,
+  projectId: string,
+): DurableObjectStub<ProjectChainDO> =>
   env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
 
 // The workers-types RPC stub types distribute a union return value

@@ -39,7 +39,7 @@ import {
   unwrapDek,
   wrapLeaseDek,
 } from "@maruhi/crypto";
-import { Context, Data, Effect } from "effect";
+import { Context, Data, Effect, Redacted } from "effect";
 
 import type { WireSuite } from "./data/data-plane.ts";
 
@@ -113,12 +113,16 @@ interface DerivedServerKey {
 class ServerKeyUnusableError extends Data.TaggedError("ServerKeyUnusable")<object> {}
 const unusable = new ServerKeyUnusableError();
 
-const derive = (ikmHex: string | undefined): Effect.Effect<DerivedServerKey | null> =>
+const derive = (
+  ikmHex: Redacted.Redacted<string> | undefined,
+): Effect.Effect<DerivedServerKey | null> =>
   Effect.gen(function* () {
-    if (ikmHex === undefined || ikmHex === "") {
+    if (ikmHex === undefined) {
       return null;
     }
-    const ikm = decodeHex(ikmHex);
+    // The IKM's only unwrap: the hex decodes straight into the
+    // derivation input (worker-env.ts wraps it at the env read)
+    const ikm = decodeHex(Redacted.value(ikmHex));
     if (ikm === null || ikm.length !== IKM_BYTES) {
       return null;
     }
@@ -155,9 +159,11 @@ function zeroize(bytes: Uint8Array): void {
 /**
  * A service built once at worker / DO startup. Derivation happens
  * once at first reference and is cached inside the isolate thereafter
- * (the ikm and the secret key stay inside the closure).
+ * (the ikm and the secret key stay inside the closure). The ikm
+ * arrives `Redacted` (undefined = unset or empty — worker-env.ts's
+ * readWorkerSecrets).
  */
-export function makeServerKey(ikmHex: string | undefined): ServerKeyShape {
+export function makeServerKey(ikmHex: Redacted.Redacted<string> | undefined): ServerKeyShape {
   // Effect.cached allocates its memo cell synchronously: one
   // derivation per isolate however many fibers race — the first run's
   // Exit (a derived key, a null "unconfigured", or a defect) is

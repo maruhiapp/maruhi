@@ -12,7 +12,7 @@
 //   forbidden). No stub branch exists in production code
 
 import { egressHttpClientLayer } from "@maruhi/core";
-import { type Cause, Context, Data, Duration, Effect, Schema } from "effect";
+import { type Cause, Context, Data, Duration, Effect, Redacted, Schema } from "effect";
 import {
   type HttpClientError,
   HttpClient,
@@ -108,10 +108,15 @@ function fetchJson<S extends Schema.Constraint>(
   }).pipe(Effect.timeout(REQUEST_TIMEOUT));
 }
 
-/** RFC 6749 §4.1.3: the token endpoint body is application/x-www-form-urlencoded. */
+/**
+ * RFC 6749 §4.1.3: the token endpoint body is application/x-www-form-urlencoded.
+ * The client secret's only unwrap is this body field. An unconfigured
+ * secret (undefined) leaves the field out — the normal path never gets
+ * here (start fails closed with 503), and GitHub rejects the exchange.
+ */
 function exchangeCodeRequest(
   clientId: string,
-  clientSecret: string,
+  clientSecret: Redacted.Redacted<string> | undefined,
   code: string,
   redirectUri: string,
 ): HttpClientRequest.HttpClientRequest {
@@ -119,7 +124,7 @@ function exchangeCodeRequest(
     HttpClientRequest.setHeaders(COMMON_HEADERS),
     HttpClientRequest.bodyUrlParams({
       client_id: clientId,
-      client_secret: clientSecret,
+      client_secret: clientSecret === undefined ? undefined : Redacted.value(clientSecret),
       code,
       redirect_uri: redirectUri,
     }),
@@ -193,8 +198,14 @@ function attempt<A>(
   );
 }
 
-/** Production implementation: calls GitHub's OAuth / REST API directly. */
-export function makeGitHubApi(clientId: string, clientSecret: string): GitHubApiShape {
+/**
+ * Production implementation: calls GitHub's OAuth / REST API directly. The
+ * client secret stays `Redacted` until the token-exchange body.
+ */
+export function makeGitHubApi(
+  clientId: string,
+  clientSecret: Redacted.Redacted<string> | undefined,
+): GitHubApiShape {
   return {
     exchangeCode: (code, redirectUri) =>
       attempt(

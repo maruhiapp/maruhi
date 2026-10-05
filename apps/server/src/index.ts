@@ -52,7 +52,7 @@ import { OPS_HOURLY_CRON } from "./ops/ops-policy.ts";
 import { countingGitHubApi } from "./ops/ops-signals.ts";
 import { MAX_REQUEST_BODY_BYTES } from "./policy.ts";
 import { makeServerKey, ServerKey } from "./server-key.ts";
-import { WorkerEnv } from "./worker-env.ts";
+import { readWorkerSecrets, WorkerEnv, WorkerSecrets } from "./worker-env.ts";
 
 export { ProjectChainDO } from "./do/chain-do.ts";
 export type { Env } from "./do/chain-do.ts";
@@ -71,6 +71,7 @@ const platformContext = Layer.mergeAll(
 type RequestServices =
   | DbServices
   | WorkerEnv
+  | WorkerSecrets
   | GitHubApi
   | SessionService
   | TokenService
@@ -79,18 +80,22 @@ type RequestServices =
 
 function buildServices(env: Env): Context.Context<RequestServices> {
   const dbServices = makeDbServices(env.DB);
+  // The worker's env-reading boundary for secrets: from here on they
+  // travel only as Redacted (worker-env.ts)
+  const secrets = readWorkerSecrets(env);
   return dbServices.pipe(
     Context.add(WorkerEnv, env),
+    Context.add(WorkerSecrets, secrets),
     // In-house counting of GitHub token requests (ops-signals.ts —
     // the acceptance surface's behavior is unchanged)
     Context.add(
       GitHubApi,
       countingGitHubApi(
-        makeGitHubApi(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET),
+        makeGitHubApi(env.GITHUB_CLIENT_ID, secrets.githubClientSecret),
         Context.get(dbServices, OpsRepo),
       ),
     ),
-    Context.add(ServerKey, makeServerKey(env.SERVER_ENC_KEY_IKM)),
+    Context.add(ServerKey, makeServerKey(secrets.serverEncKeyIkm)),
     // The OIDC verifier (AUTH_SPEC §14-1). Since it holds the JWKS
     // cache per isolate, exactly one is built per env (same lifetime
     // as handlerCache)

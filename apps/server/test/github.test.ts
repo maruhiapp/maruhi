@@ -17,7 +17,7 @@
 // at the first request (oidc.test.ts's per-test swap does not hit this
 // limitation because the JWKS code calls globalThis.fetch directly).
 
-import { Effect, Fiber } from "effect";
+import { Effect, Fiber, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
@@ -65,7 +65,8 @@ const run = <A, E>(effect: Effect.Effect<A, E>, fetchImpl: typeof fetch) =>
     ),
   );
 
-const api = () => makeGitHubApi("test-client-id", "test-client-secret");
+const CLIENT_SECRET = Redacted.make("dummy-client-secret", { label: "GITHUB_CLIENT_SECRET" });
+const api = () => makeGitHubApi("test-client-id", CLIENT_SECRET);
 
 describe("makeGitHubApi exchangeCode (§3-2)", () => {
   it("returns the access token from a well-formed answer", async () => {
@@ -91,6 +92,46 @@ describe("makeGitHubApi exchangeCode (§3-2)", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).not.toContain("traceparent");
     expect(sent[0]).not.toContain("b3");
+  });
+
+  it("unwraps the Redacted client secret into the token-exchange body only", async () => {
+    const sent: { url: string; headers: string; body: string }[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      sent.push({
+        url: request.url,
+        headers: JSON.stringify([...request.headers]),
+        body: new TextDecoder().decode(await request.arrayBuffer()),
+      });
+      return json({ access_token: "gho_test1" });
+    }) as typeof fetch;
+    const outcome = await run(api().exchangeCode("code-1", REDIRECT_URI), fetchImpl);
+    expect(outcome).toEqual({ ok: true, value: "gho_test1" });
+    expect(sent).toHaveLength(1);
+    const body = new URLSearchParams(sent[0]?.body);
+    expect(body.get("client_id")).toBe("test-client-id");
+    expect(body.get("client_secret")).toBe(Redacted.value(CLIENT_SECRET));
+    expect(sent[0]?.url).not.toContain(Redacted.value(CLIENT_SECRET));
+    expect(sent[0]?.headers).not.toContain(Redacted.value(CLIENT_SECRET));
+  });
+
+  it("leaves client_secret out of the body when the secret is unconfigured", async () => {
+    // Unset and empty both reach makeGitHubApi as undefined (worker-env.ts);
+    // the field is omitted and GitHub's rejection is a code-exchange-failed
+    const bodies: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(new TextDecoder().decode(await new Request(input, init).arrayBuffer()));
+      return json({ error: "incorrect_client_credentials" });
+    }) as typeof fetch;
+    const outcome = await run(
+      makeGitHubApi("test-client-id", undefined).exchangeCode("code-1", REDIRECT_URI),
+      fetchImpl,
+    );
+    expect(outcome).toEqual({
+      ok: false,
+      error: expect.objectContaining({ _tag: "GitHubAuth", reason: "code-exchange-failed" }),
+    });
+    expect(new URLSearchParams(bodies[0]).has("client_secret")).toBe(false);
   });
 
   it("fails with code-exchange-failed when GitHub never answers", async () => {

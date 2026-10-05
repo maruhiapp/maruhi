@@ -7,7 +7,7 @@
 // handlers-auth-cli), the parts both sides use live in this module.
 
 import { AuthFlowError, SetupIncompleteError } from "@maruhi/api-schema";
-import { Effect } from "effect";
+import { Effect, type Redacted } from "effect";
 import type { Cookies, HttpServerRequest } from "effect/http";
 import { HttpServerResponse } from "effect/http";
 
@@ -107,15 +107,16 @@ export function redirectToGitHubAuthorize(
  * become undefined at runtime). Letting it pass through would land on a
  * GitHub error page or an opaque token-exchange failure (AuthFlow 400) with
  * no traceable cause, so it redirects to the setup guide
- * (docs/SELF_HOSTING.md) with a 503.
+ * (docs/SELF_HOSTING.md) with a 503. The secret's emptiness is settled
+ * before it is wrapped (worker-env.ts's readWorkerSecrets maps unset and
+ * empty to undefined), so this check never unwraps it.
  */
 export function ensureGitHubOAuthConfigured(
   clientId: string | undefined,
-  clientSecret: string | undefined,
+  clientSecret: Redacted.Redacted<string> | undefined,
 ): Effect.Effect<void, SetupIncompleteError> {
   const clientIdMissing = clientId === undefined || clientId === "";
-  const clientSecretMissing = clientSecret === undefined || clientSecret === "";
-  return clientIdMissing || clientSecretMissing
+  return clientIdMissing || clientSecret === undefined
     ? Effect.fail(new SetupIncompleteError({ reason: "github-oauth-unconfigured" }))
     : Effect.void;
 }

@@ -10,12 +10,13 @@ import {
   importEncryptionPublicKey,
   wrapDek,
 } from "@maruhi/crypto";
-import { Effect, Exit, Fiber } from "effect";
+import { Effect, Exit, Fiber, Redacted } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import { makeServerKey, type ServerKeyInfo, type StoredServerWrap } from "../src/server-key.ts";
 
-const IKM_HEX = "b0".repeat(32);
+// A dummy IKM, Redacted as worker-env.ts's readWorkerSecrets hands it over
+const IKM = Redacted.make("b0".repeat(32), { label: "SERVER_ENC_KEY_IKM" });
 const PROJECT_ID = "0".repeat(64);
 const CLAIMS_DIGEST_HEX = "1".repeat(64);
 const WORKLOAD_PUB_HEX = "aa".repeat(32);
@@ -56,7 +57,7 @@ const resealInput = (wraps: readonly StoredServerWrap[]) => ({
 
 describe("makeServerKey's derivation cache", () => {
   it("derives once however many info / reseal calls race", async () => {
-    const key = makeServerKey(IKM_HEX);
+    const key = makeServerKey(IKM);
     // The pinned suite's derivation signs exactly twice (HKDF extract
     // + expand — CRYPTO_SPEC §2, §9). An empty-wraps reseal adds no
     // sign (its only crypto call is importEncryptionPublicKey), so the
@@ -97,7 +98,7 @@ describe("makeServerKey's derivation cache", () => {
       .mockImplementationOnce((algorithm, key, data) =>
         signGate.then(() => realSign(algorithm, key, data)),
       );
-    const key = makeServerKey(IKM_HEX);
+    const key = makeServerKey(IKM);
     const fiber = Effect.runFork(key.info);
     await vi.waitFor(() => expect(signSpy).toHaveBeenCalled());
     // Interrupt while the fiber is suspended inside the derivation.
@@ -116,7 +117,7 @@ describe("makeServerKey's derivation cache", () => {
   it("caches a null (unset or malformed ikm) result like a success", async () => {
     const signSpy = vi.spyOn(crypto.subtle, "sign");
     for (const bad of [undefined, "", "not-hex", "ab".repeat(31)]) {
-      const key = makeServerKey(bad);
+      const key = makeServerKey(bad === undefined ? undefined : Redacted.make(bad));
       const [a, b] = await Effect.runPromise(
         Effect.all([key.info, key.info], { concurrency: "unbounded" }),
       );
@@ -141,7 +142,7 @@ describe("makeServerKey's derivation cache", () => {
 
 describe("reseal's DEK hygiene", () => {
   it("re-wraps the stored wrap and zeroizes the unsealed DEK on success", async () => {
-    const key = makeServerKey(IKM_HEX);
+    const key = makeServerKey(IKM);
     const info = await Effect.runPromise(key.info);
     if (info === null) throw new Error("a configured ikm yielded null");
     const wrap = await storedServerWrap(info);
@@ -160,7 +161,7 @@ describe("reseal's DEK hygiene", () => {
   });
 
   it("zeroizes the unsealed DEK even when the re-wrap itself fails", async () => {
-    const key = makeServerKey(IKM_HEX);
+    const key = makeServerKey(IKM);
     const info = await Effect.runPromise(key.info);
     if (info === null) throw new Error("a configured ikm yielded null");
     const wrap = await storedServerWrap(info);
@@ -184,7 +185,7 @@ describe("reseal's DEK hygiene", () => {
   });
 
   it("zeroizes the unsealed DEK when an interrupt lands while the unwrap is in flight", async () => {
-    const key = makeServerKey(IKM_HEX);
+    const key = makeServerKey(IKM);
     const info = await Effect.runPromise(key.info);
     if (info === null) throw new Error("a configured ikm yielded null");
     const wrap = await storedServerWrap(info);
@@ -220,7 +221,7 @@ describe("reseal's DEK hygiene", () => {
   });
 
   it("never reaches zeroize when the unwrap fails", async () => {
-    const key = makeServerKey(IKM_HEX);
+    const key = makeServerKey(IKM);
     const info = await Effect.runPromise(key.info);
     if (info === null) throw new Error("a configured ikm yielded null");
     const fillSpy = vi.spyOn(Uint8Array.prototype, "fill");
