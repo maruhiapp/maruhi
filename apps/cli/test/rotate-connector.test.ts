@@ -702,6 +702,19 @@ describe("cloudflare-api-token connector", () => {
     );
   });
 
+  it("an error status without the envelope still names the status, and a refused connection names its reason", async () => {
+    const edge = fakeIssuer(() => new Response("<html>bad gateway</html>", { status: 502 }));
+    await expect(
+      run(deps({ fetch: edge.fetch }), rotateCredential(rule, current, {})),
+    ).rejects.toThrow("Cloudflare answered 502 to the token verification");
+    const refused = (() => Promise.reject(new Error("ECONNREFUSED"))) as unknown as typeof fetch;
+    await expect(
+      run(deps({ fetch: refused }), rotateCredential(rule, current, {})),
+    ).rejects.toThrow(
+      "cloudflare-api-token: GET /client/v4/user/tokens/verify could not reach Cloudflare (ECONNREFUSED)",
+    );
+  });
+
   it("finalize deletes the previous token with the current one, and an invalid previous token is already done", async () => {
     const previous = current;
     const now = credential("cf-new-token-value");

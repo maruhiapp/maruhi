@@ -35,7 +35,13 @@
 // message — never a credential, a password, or a URL with a password in it.
 
 import { Clock, Context, Data, Effect, type Layer, Redacted, Schema } from "effect";
-import { HttpBody, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+import {
+  HttpBody,
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/http";
 
 import { countNoun, decodeValueText, displayText } from "./display.ts";
 import { companionVariablesOf, EXEC_CONTROL_PREFIX, type RotateRule } from "./rotate-config.ts";
@@ -182,6 +188,15 @@ const USER_AGENT = `maruhi-cli/${CLI_VERSION}`;
 /** An unknown thrown value's message (a fetch rejection, a driver error — the reason, never a credential). */
 function reasonOf(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
+}
+
+/**
+ * The message an `HttpClientError` carries: the transport's own cause (the
+ * fetch rejection — a refused connection, a DNS failure) when it has one,
+ * the client's wording ("Transport error", "Decode error"…) otherwise.
+ */
+function transportReason(error: HttpClientError.HttpClientError): string {
+  return reasonOf(error.reason.cause, reasonOf(error, "request failed"));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -651,14 +666,12 @@ function awsQueryCall(
         Effect.mapError(
           (error) =>
             new ConnectorError({
-              message: `aws-iam-access-key: ${action} could not reach ${service.name.toUpperCase()} (${reasonOf(error, "request failed")})`,
+              message: `aws-iam-access-key: ${action} could not reach ${service.name.toUpperCase()} (${transportReason(error)})`,
             }),
         ),
       );
     const text = yield* response.text.pipe(
-      Effect.mapError(
-        (error) => new ConnectorError({ message: reasonOf(error, "request failed") }),
-      ),
+      Effect.mapError((error) => new ConnectorError({ message: transportReason(error) })),
     );
     return {
       ok: response.status >= 200 && response.status < 300,
@@ -973,21 +986,25 @@ function cloudflareCall(
       Effect.mapError(
         (error) =>
           new ConnectorError({
-            message: `cloudflare-api-token: ${method} ${path} could not reach Cloudflare (${reasonOf(error, "request failed")})`,
+            message: `cloudflare-api-token: ${method} ${path} could not reach Cloudflare (${transportReason(error)})`,
           }),
       ),
     );
-    // A body that is not the JSON envelope is a connector error now
-    // (it was read as an empty envelope before — silently). Whatever the
-    // decode's own error (parse failure, schema mismatch), the cause is the
-    // same: the answer was not the envelope.
+    // A successful answer that is not the JSON envelope is a connector
+    // error now (it was read as an empty envelope before — silently). An
+    // error status may not carry the envelope either, and there the status
+    // classification below still owns the message — an edge answer of HTML
+    // still reads "Cloudflare answered 502 to …", a 404 still "already".
     const envelope = yield* response.pipe(
       HttpClientResponse.schemaBodyJson(CloudflareEnvelope),
-      Effect.mapError(
-        () =>
-          new ConnectorError({
-            message: `cloudflare-api-token: ${method} ${path} — Cloudflare's answer was not the JSON envelope it returns`,
-          }),
+      Effect.catch(() =>
+        response.status >= 200 && response.status < 300
+          ? Effect.fail(
+              new ConnectorError({
+                message: `cloudflare-api-token: ${method} ${path} — Cloudflare's answer was not the JSON envelope it returns`,
+              }),
+            )
+          : Effect.succeed<CloudflareEnvelope>({}),
       ),
     );
     return { status: response.status, envelope };

@@ -24,7 +24,7 @@
 // status, and GitHub's `message` field — never an input or the token.
 
 import { type Clock, Data, Effect, Schema } from "effect";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import { pemBody, pkcs1ToPkcs8 } from "../der.ts";
 import { CLI_VERSION } from "../version.ts";
@@ -67,6 +67,16 @@ class ConnectorError extends Data.TaggedError("ConnectorError")<{
 /** An unknown thrown value's message (a transport failure — the reason, never a credential). */
 function reasonOf(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
+}
+
+/**
+ * The transport's own cause when the client wraps one (the fetch rejection
+ * — a refused connection, a DNS failure), the client's own wording
+ * ("Transport error", "Decode error"…) when it has none.
+ */
+function transportReason(error: HttpClientError.HttpClientError): string {
+  const cause = error.reason.cause;
+  return cause instanceof Error ? cause.message : error.message;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -218,17 +228,22 @@ function mintGithubApp(
           }),
         ),
       )
+      .pipe(Effect.mapError((error) => new ConnectorError({ message: transportReason(error) })));
+    // GitHub's edge answers HTML on a bad day: any body that is not the
+    // token JSON (unparseable or the wrong shape) decodes to {} and the
+    // status wording below carries the failure — "GitHub answered 502 (no
+    // message)". Only a body the client cannot even read is its own error.
+    const record = yield* response
+      .pipe(HttpClientResponse.schemaBodyJson(TokenResponse))
       .pipe(
-        Effect.mapError(
-          (error) => new ConnectorError({ message: reasonOf(error, "request failed") }),
+        Effect.catch((error) =>
+          Schema.isSchemaError(error) ||
+          (HttpClientError.isHttpClientError(error) &&
+            error.reason instanceof HttpClientError.DecodeError)
+            ? Effect.succeed<TokenResponse>({})
+            : Effect.fail(new ConnectorError({ message: transportReason(error) })),
         ),
       );
-    const record = yield* response.pipe(HttpClientResponse.schemaBodyJson(TokenResponse)).pipe(
-      Effect.catchTag("SchemaError", () => Effect.succeed<TokenResponse>({})),
-      Effect.mapError(
-        (error) => new ConnectorError({ message: reasonOf(error, "request failed") }),
-      ),
-    );
     return yield* parseTokenResponse(response.status, record);
   });
 }
@@ -257,11 +272,7 @@ function revokeGithubApp(
           }),
         ),
       )
-      .pipe(
-        Effect.mapError(
-          (error) => new ConnectorError({ message: reasonOf(error, "request failed") }),
-        ),
-      );
+      .pipe(Effect.mapError((error) => new ConnectorError({ message: transportReason(error) })));
     // 204 = revoked; 401 = already invalid (expired or revoked) — nothing left to do
     if (response.status !== 204 && response.status !== 401) {
       return yield* new ConnectorError({

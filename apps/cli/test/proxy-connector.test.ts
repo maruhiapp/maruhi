@@ -285,6 +285,33 @@ describe("github-app connector", () => {
     expect(github.calls).toHaveLength(2);
   });
 
+  it("an HTML error page from GitHub's edge still reads as the status answer", async () => {
+    const github = fakeGithub(
+      () =>
+        new Response("<html>bad gateway</html>", {
+          status: 502,
+          headers: { "content-type": "text/html" },
+        }),
+    );
+    const { deps } = await connectorDeps(github);
+    const credential = makeConnectorCredential({
+      name: "GH_TOKEN",
+      kind: "github-app",
+      inputs: {
+        appId: enc.encode("123"),
+        privateKey: enc.encode(PKCS1),
+        installationId: enc.encode("42"),
+      },
+      placeholder: "mhp_GH_TOKEN_u",
+      hosts: hosts(),
+      surfaces: ["header"],
+      deps,
+    });
+    await expect(credential.resolve()).rejects.toThrow(
+      "connector github-app for GH_TOKEN: GitHub answered 502 (no message)",
+    );
+  });
+
   it("revokes every held token at release even when one revocation fails, and reports the failures (§21 R-3)", async () => {
     let now = Date.UTC(2026, 9, 1, 12, 0, 0);
     let deletes = 0;
