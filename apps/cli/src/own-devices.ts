@@ -43,6 +43,7 @@ import { floorRecordGet } from "./floor.ts";
 import {
   Hex32,
   Hex64,
+  type LedgerRead,
   PositiveInt,
   readJsonFile,
   recordKeysMatch,
@@ -201,8 +202,14 @@ export function makeFileOwnDeviceStore(path: string): OwnDeviceStoreShape {
       `Cannot write the own-devices record (corrupt or an I/O failure): ${path} — inspect it, and if the modification was unintended, delete it and re-run`,
     );
 
-  const loadRaw = readJsonFile(path, FileSchema).pipe(
-    Effect.mapError(() => cliError(`Cannot read the own-devices record: ${path}`)),
+  // Reads are fail-open at the ledger level: only NotFound is `missing`,
+  // and an unreadable file (EACCES / EISDIR / EIO) is the `corrupt`
+  // state, not an error — `load` callers (recordedReserves in reserve.ts
+  // via `key show`, staleReserveFingerprints in key-recover.ts) treat
+  // any non-`loaded` state as "no records" and degrade, while `merge`
+  // refuses to write over it.
+  const loadLedger = readJsonFile(path, FileSchema).pipe(
+    Effect.catch(() => Effect.succeed<LedgerRead<OwnDevicesFile>>({ state: "corrupt" })),
     Effect.provide(BunFileSystem.layer),
   );
 
@@ -215,7 +222,7 @@ export function makeFileOwnDeviceStore(path: string): OwnDeviceStoreShape {
       if (!BOOK_KEY.test(origin) || !BOOK_KEY.test(userId)) {
         return yield* Effect.fail(writeError());
       }
-      const loaded = yield* loadRaw;
+      const loaded = yield* loadLedger;
       if (loaded.state === "corrupt") {
         // Refuse overwriting a corrupt file (same discipline as pins / the fingerprint ledger)
         return yield* Effect.fail(writeError());
@@ -233,7 +240,7 @@ export function makeFileOwnDeviceStore(path: string): OwnDeviceStoreShape {
     filePath: path,
     load: (origin, userId) =>
       Effect.gen(function* (): Effect.fn.Return<OwnDevicesLookup, CliError> {
-        const loaded = yield* loadRaw;
+        const loaded = yield* loadLedger;
         if (loaded.state === "missing") {
           return { state: "missing" };
         }
