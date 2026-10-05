@@ -77,6 +77,22 @@ describe("makeGitHubApi exchangeCode (§3-2)", () => {
     expect(outcome).toEqual({ ok: true, value: "gho_test1" });
   });
 
+  it("sends GitHub no trace headers (the egress client adds none of its own)", async () => {
+    const sent: string[][] = [];
+    const fetchImpl = ((_input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push(Object.keys(Object.fromEntries(new Headers(init?.headers))));
+      return Promise.resolve(json({ access_token: "gho_test1" }));
+    }) as typeof fetch;
+    const outcome = await run(
+      api().exchangeCode("code-1", REDIRECT_URI).pipe(Effect.withSpan("parent")),
+      fetchImpl,
+    );
+    expect(outcome).toEqual({ ok: true, value: "gho_test1" });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toContain("traceparent");
+    expect(sent[0]).not.toContain("b3");
+  });
+
   it("fails with code-exchange-failed when GitHub never answers", async () => {
     // The endpoint accepts the connection and never responds: the call now
     // fails through the typed error once REQUEST_TIMEOUT (5 s, the same
