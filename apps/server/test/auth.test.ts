@@ -1292,38 +1292,71 @@ describe("session sliding renewal (§5)", () => {
 });
 
 describe("tryD1 (D1 error classification)", () => {
-  const failureOf = (error: unknown): Promise<unknown> =>
-    Effect.runPromise(Effect.flip(tryD1(() => Promise.reject(error))));
+  const failureOf = (promise: Promise<unknown>): Promise<unknown> =>
+    Effect.runPromise(Effect.flip(tryD1(() => promise)));
+
+  // The real workerd D1 message shape: a `: SQLITE_CONSTRAINT
+  // (extended: SQLITE_CONSTRAINT_*)` tail follows the target
+  const UNIQUE_VIOLATION =
+    "UNIQUE constraint failed: invitations.link_pub: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_UNIQUE)";
 
   it("classifies UNIQUE violations as D1UniqueConflict directly and through cause chains", async () => {
     // The batch path puts the message on a plain Error, the
     // single-query path on DrizzleQueryError (on the cause side).
     // Pin that either shape is classified as a conflict
     expect(
-      await failureOf(new Error("D1_ERROR: UNIQUE constraint failed: users.id")),
+      await failureOf(Promise.reject(new Error(`D1_ERROR: ${UNIQUE_VIOLATION}`))),
     ).toBeInstanceOf(D1UniqueConflictError);
     expect(
       await failureOf(
-        new Error("Failed query: insert into users ...", {
-          cause: new Error("UNIQUE constraint failed: users.id: SQLITE_CONSTRAINT"),
-        }),
+        Promise.reject(
+          new Error("Failed query: insert into invitations ...", {
+            cause: new Error(UNIQUE_VIOLATION),
+          }),
+        ),
       ),
     ).toBeInstanceOf(D1UniqueConflictError);
   });
 
   it("classifies every other rejection as D1Failure", async () => {
-    expect(await failureOf(new Error("D1_ERROR: database is locked"))).toBeInstanceOf(
-      D1FailureError,
-    );
-    expect(await failureOf("not an error")).toBeInstanceOf(D1FailureError);
+    expect(
+      await failureOf(Promise.reject(new Error("D1_ERROR: database is locked"))),
+    ).toBeInstanceOf(D1FailureError);
+    expect(await failureOf(Promise.reject("not an error"))).toBeInstanceOf(D1FailureError);
   });
 
   it("carries the violated constraint's target text", async () => {
-    const failure = await failureOf(
-      new Error("UNIQUE constraint failed: users.id: SQLITE_CONSTRAINT"),
-    );
-    expect(failure).toBeInstanceOf(D1UniqueConflictError);
-    expect((failure as D1UniqueConflictError).constraint).toBe("users.id");
+    // `constraint` is exactly the target, never the
+    // `: SQLITE_... (extended: ...)` tail — the invites race maps on
+    // this text, so a polluted capture would silently become a 500
+    for (const error of [
+      new Error(`D1_ERROR: ${UNIQUE_VIOLATION}`),
+      new Error("Failed query: insert into invitations ...", {
+        cause: new Error(UNIQUE_VIOLATION),
+      }),
+    ]) {
+      const failure = await failureOf(Promise.reject(error));
+      expect(failure).toBeInstanceOf(D1UniqueConflictError);
+      expect((failure as D1UniqueConflictError).constraint).toBe("invitations.link_pub");
+    }
+  });
+
+  it("classifies a real workerd D1 UNIQUE rejection with the constraint target", async () => {
+    // An actual duplicate insert against the vitest D1 — pins the
+    // real message shape end-to-end instead of the synthetic text
+    // above
+    await env.DB.exec("CREATE TABLE IF NOT EXISTS d1_probe_unique (probe TEXT UNIQUE)");
+    try {
+      await env.DB.prepare("DELETE FROM d1_probe_unique").run();
+      await env.DB.prepare("INSERT INTO d1_probe_unique (probe) VALUES ('dup')").run();
+      const failure = await failureOf(
+        env.DB.prepare("INSERT INTO d1_probe_unique (probe) VALUES ('dup')").run(),
+      );
+      expect(failure).toBeInstanceOf(D1UniqueConflictError);
+      expect((failure as D1UniqueConflictError).constraint).toBe("d1_probe_unique.probe");
+    } finally {
+      await env.DB.exec("DROP TABLE IF EXISTS d1_probe_unique");
+    }
   });
 });
 

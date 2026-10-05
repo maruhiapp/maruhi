@@ -72,13 +72,18 @@ function isUniqueConflict(error: unknown): boolean {
 /**
  * The violated constraint's target text from the same cause-chain
  * walk as isUniqueConflict ("UNIQUE constraint failed:
- * <table>.<column>"), null when the message carried none.
+ * <table>.<column>"), null when the message carried none. The real
+ * workerd shape appends a SQLite code tail — `: SQLITE_CONSTRAINT
+ * (extended: SQLITE_CONSTRAINT_*)` — and the target list (one or
+ * comma-joined columns) never contains a colon, so the capture stops
+ * at the first one (or the end of the message). An empty capture
+ * keeps the walk going to the next cause.
  */
 function conflictTargetOf(error: unknown): string | null {
   for (let current = error; current instanceof Error; current = current.cause) {
-    const match = /UNIQUE constraint failed: (.+?)(?:: SQLITE_\w+)?$/.exec(current.message);
-    if (match !== null) {
-      return match[1] ?? null;
+    const target = /UNIQUE constraint failed: ([^:]+)/.exec(current.message)?.[1]?.trim();
+    if (target) {
+      return target;
     }
   }
   return null;
