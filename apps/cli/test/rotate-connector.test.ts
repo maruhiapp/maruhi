@@ -41,6 +41,7 @@ import {
   ScriptLeftoverError,
   ScriptStoppedError,
 } from "../src/run.ts";
+import { signV4 } from "../src/sigv4.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -387,6 +388,58 @@ describe("aws-iam-access-key connector", () => {
     expect(outcome.previous).toContain("AKIAOLD0000000000001 stays active");
   });
 
+  it("every header SignedHeaders names reaches the wire with the value that was signed", async () => {
+    // IAM recomputes the signature from the headers it receives: one signed
+    // header missing or changed on the wire (a content-type dropped when the
+    // body is set) is SignatureDoesNotMatch. Re-signing what arrived must
+    // reproduce the Authorization header that was sent
+    const issuer = fakeIssuer((call) => {
+      switch (actionOf(call)) {
+        case "GetAccessKeyLastUsed":
+          return xml(
+            "<GetAccessKeyLastUsedResponse><GetAccessKeyLastUsedResult><UserName>app</UserName></GetAccessKeyLastUsedResult></GetAccessKeyLastUsedResponse>",
+          );
+        case "ListAccessKeys":
+          return xml(keysXml([{ id: "AKIAOLD0000000000001", status: "Active" }]));
+        case "CreateAccessKey":
+          return xml(
+            "<CreateAccessKeyResponse><CreateAccessKeyResult><AccessKey><AccessKeyId>AKIANEW0000000000002</AccessKeyId><SecretAccessKey>s</SecretAccessKey></AccessKey></CreateAccessKeyResult></CreateAccessKeyResponse>",
+          );
+        default:
+          return new Response("", { status: 500 });
+      }
+    });
+    await run(deps({ fetch: issuer.fetch }), rotateCredential(rule, current, {}));
+    expect(issuer.calls).toHaveLength(3);
+    for (const call of issuer.calls) {
+      const authorization = call.headers["authorization"] ?? "";
+      const signedNames = /SignedHeaders=([^,]+),/.exec(authorization)?.[1]?.split(";") ?? [];
+      expect(signedNames).toEqual(["content-type", "host", "x-amz-date"]);
+      const signedOnWire: Record<string, string> = {};
+      for (const name of signedNames) {
+        expect(call.headers[name], `${actionOf(call)}: signed header ${name}`).toBeDefined();
+        signedOnWire[name] = call.headers[name] ?? "";
+      }
+      const resigned = await signV4({
+        method: "POST",
+        url: call.url,
+        region: "us-east-1",
+        service: "iam",
+        headers: signedOnWire,
+        body: call.body,
+        credentials: {
+          accessKeyId: "AKIAOLD0000000000001",
+          secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        },
+        nowMs: FIXED_NOW,
+      });
+      expect(resigned.headers["authorization"]).toBe(authorization);
+      for (const name of signedNames) {
+        expect(resigned.headers[name]).toBe(signedOnWire[name]);
+      }
+    }
+  });
+
   it("reclaims an inactive second key, refuses two active ones, and signs with the admin pair when named", async () => {
     const admin = {
       accessKeyId: enc.encode("AKIAADMIN00000000003"),
@@ -695,6 +748,65 @@ describe("cloudflare-api-token connector", () => {
     expect((error as Error).message).toBe(
       "cloudflare-api-token: GET /client/v4/user/tokens/verify — Cloudflare's answer was not the JSON envelope it returns",
     );
+  });
+
+  it("a null or misshapen result is the step's connector error, never a crash", async () => {
+    // verify answering `result: null` reads as a token Cloudflare did not verify
+    const unverified = fakeIssuer(() => json(200, { success: true, result: null }));
+    const notVerified = await run(
+      deps({ fetch: unverified.fetch }),
+      rotateCredential(rule, current, {}),
+    ).catch((e: unknown) => e);
+    expect(notVerified).toBeInstanceOf(ConnectorError);
+    expect((notVerified as Error).message).toBe(
+      "cloudflare-api-token: the current value is not a valid token (Cloudflare refused to verify it), so its policies cannot be copied. Create the replacement at the issuer and push it",
+    );
+    // the definition answering `result: null`
+    const noDefinition = fakeIssuer((call) =>
+      call.url.endsWith("/verify")
+        ? json(200, { success: true, result: { id: "tok-old" } })
+        : json(200, { success: true, result: null }),
+    );
+    const definitionError = await run(
+      deps({ fetch: noDefinition.fetch }),
+      rotateCredential(rule, current, {}),
+    ).catch((e: unknown) => e);
+    expect(definitionError).toBeInstanceOf(ConnectorError);
+    expect((definitionError as Error).message).toBe(
+      "cloudflare-api-token: token tok-old came back without a name and policies",
+    );
+    expect(noDefinition.calls).toHaveLength(2);
+    // the creation answering `result: null`, then a value of another type
+    for (const created of [null, { id: "tok-new", value: 42 }]) {
+      const noValue = fakeIssuer((call) => {
+        if (call.url.endsWith("/verify")) {
+          return json(200, { success: true, result: { id: "tok-old" } });
+        }
+        if (call.method === "GET") {
+          return json(200, { success: true, result: { name: "deploy", policies } });
+        }
+        return json(200, { success: true, result: created });
+      });
+      const creationError = await run(
+        deps({ fetch: noValue.fetch }),
+        rotateCredential(rule, current, {}),
+      ).catch((e: unknown) => e);
+      expect(creationError).toBeInstanceOf(ConnectorError);
+      expect((creationError as Error).message).toBe(
+        "cloudflare-api-token: Cloudflare did not return the new token's value",
+      );
+    }
+    // finalize: a previous token whose verify carries `result: null` is already done
+    const previousGone = fakeIssuer(() => json(200, { success: true, result: null }));
+    expect(
+      (
+        await run(
+          deps({ fetch: previousGone.fetch }),
+          finalizeCredential(rule, current, credential("cf-new-token-value"), {}),
+        )
+      ).kind,
+    ).toBe("already");
+    expect(previousGone.calls).toHaveLength(1);
   });
 
   it("an error status without the envelope still names the status, and a refused connection names its reason", async () => {

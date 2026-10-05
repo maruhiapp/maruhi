@@ -34,7 +34,7 @@
 // Error wording carries the connector, the issuer's status code and
 // message — never a credential, a password, or a URL with a password in it.
 
-import { Clock, Context, Data, Effect, Redacted, Schema } from "effect";
+import { Clock, Context, Data, Effect, Option, Redacted, Schema } from "effect";
 import {
   HttpBody,
   HttpClient,
@@ -541,6 +541,13 @@ const AWS_IAM_BASE = "https://iam.amazonaws.com";
 const AWS_IAM_VERSION = "2010-05-08";
 /** IAM's Query API lives in us-east-1 whatever the caller's region. */
 const AWS_IAM_REGION = "us-east-1";
+/**
+ * The Query API body's content type. SigV4 signs it (`SignedHeaders` names
+ * content-type), so the request must carry exactly this value: the body
+ * declares it, because setting a body rewrites the content-type header
+ * from the body's own type.
+ */
+const AWS_QUERY_CONTENT_TYPE = "application/x-www-form-urlencoded; charset=utf-8";
 /** The global STS endpoint (`GetCallerIdentity` needs no permission: it only proves the credential pair authenticates). */
 const AWS_STS_BASE = "https://sts.amazonaws.com";
 const AWS_STS_VERSION = "2011-06-15";
@@ -646,7 +653,7 @@ function awsQueryCall(
           url: `${service.base}/`,
           region: AWS_IAM_REGION,
           service: service.name,
-          headers: { "content-type": "application/x-www-form-urlencoded; charset=utf-8" },
+          headers: { "content-type": AWS_QUERY_CONTENT_TYPE },
           body,
           credentials: caller,
           nowMs: clock.currentTimeMillisUnsafe(),
@@ -657,7 +664,7 @@ function awsQueryCall(
       .execute(
         HttpClientRequest.post(`${service.base}/`).pipe(
           HttpClientRequest.setHeaders({ ...signed.headers, "user-agent": USER_AGENT }),
-          HttpClientRequest.setBody(HttpBody.raw(body)),
+          HttpClientRequest.setBody(HttpBody.raw(body, { contentType: AWS_QUERY_CONTENT_TYPE })),
         ),
       )
       .pipe(
@@ -949,6 +956,28 @@ const CloudflareEnvelope = Schema.Struct({
 });
 type CloudflareEnvelope = typeof CloudflareEnvelope.Type;
 
+/*
+ * The envelope's `result` per step, decoded where it is read. A result that
+ * is absent, `null` or another shape decodes to none, and each step answers
+ * that with its own wording (an unverifiable token, a definition without a
+ * name and policies, a creation without the new value).
+ */
+
+/** `/verify`'s result: the id of the token that authenticated. */
+const VerifiedToken = Schema.Struct({ id: Schema.NonEmptyString });
+
+/** A token's definition — the fields the replacement copies (the optional ones are checked where they are copied). */
+const TokenDefinition = Schema.Struct({
+  name: Schema.String,
+  policies: Schema.Array(Schema.Unknown),
+  condition: Schema.optionalKey(Schema.Unknown),
+  expires_on: Schema.optionalKey(Schema.Unknown),
+  not_before: Schema.optionalKey(Schema.Unknown),
+});
+
+/** The created token: its id and its value (shown only in this answer). */
+const CreatedToken = Schema.Struct({ id: Schema.String, value: Schema.NonEmptyString });
+
 function tokensPath(rule: Extract<RotateRule, { connector: "cloudflare-api-token" }>): string {
   return rule.accountId === null
     ? "/client/v4/user/tokens"
@@ -1037,8 +1066,10 @@ function cloudflareTokenId(
     if (status !== 200) {
       return yield* cloudflareFailure("the token verification", status, envelope);
     }
-    const result = envelope.result as { readonly id?: unknown } | undefined;
-    return typeof result?.id === "string" && result.id.length > 0 ? result.id : null;
+    return Option.match(Schema.decodeUnknownOption(VerifiedToken)(envelope.result), {
+      onNone: () => null,
+      onSome: (verified) => verified.id,
+    });
   });
 }
 
@@ -1058,24 +1089,13 @@ function cloudflareDefinition(
     if (detail.status !== 200 || detail.envelope.success === false) {
       return yield* cloudflareFailure(`reading token ${id}`, detail.status, detail.envelope);
     }
-    const definition = detail.envelope.result as
-      | {
-          readonly name?: unknown;
-          readonly policies?: unknown;
-          readonly condition?: unknown;
-          readonly expires_on?: unknown;
-          readonly not_before?: unknown;
-        }
-      | undefined;
-    if (
-      definition === undefined ||
-      typeof definition.name !== "string" ||
-      !Array.isArray(definition.policies)
-    ) {
+    const decoded = Schema.decodeUnknownOption(TokenDefinition)(detail.envelope.result);
+    if (Option.isNone(decoded)) {
       return yield* new ConnectorError({
         message: `cloudflare-api-token: token ${id} came back without a name and policies`,
       });
     }
+    const definition = decoded.value;
     const request: Record<string, unknown> = {
       name: definition.name,
       policies: definition.policies,
@@ -1117,19 +1137,13 @@ function rotateCloudflare(
         created.envelope,
       );
     }
-    const result = created.envelope.result as
-      | { readonly id?: unknown; readonly value?: unknown }
-      | undefined;
-    if (
-      result === undefined ||
-      typeof result.id !== "string" ||
-      typeof result.value !== "string" ||
-      result.value.length === 0
-    ) {
+    const decoded = Schema.decodeUnknownOption(CreatedToken)(created.envelope.result);
+    if (Option.isNone(decoded)) {
       return yield* new ConnectorError({
         message: "cloudflare-api-token: Cloudflare did not return the new token's value",
       });
     }
+    const result = decoded.value;
     return {
       values: { primary: encoder.encode(result.value), companions: {} },
       facts: [
