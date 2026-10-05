@@ -10,6 +10,8 @@
 //     state as "no records" and degrade rather than abort
 //  4. record refuses to overwrite a corrupt file (strict decode — no
 //     partial rebuilds)
+//  5. The stored entry keeps the wire field order (the stored format is
+//     unchanged by the Schema codec)
 
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -79,5 +81,28 @@ describe("own-devices record (own-devices.ts)", () => {
     expect(failed).toContain("Cannot write the own-devices record");
     // The corrupt content stays as-is (never silently rebuilt)
     expect(await readFile(path, "utf8")).toBe("{ not json");
+  });
+
+  it("a stored entry keeps the wire field order (the scope pair right after roleCap)", async () => {
+    const { path, store } = await makeStore();
+    await Effect.runPromise(store.record(ORIGIN, USER_A, ENTRY));
+
+    const stored = JSON.parse(await readFile(path, "utf8")) as {
+      known: Record<string, Record<string, Record<string, object>>>;
+    };
+    const row = stored.known[ORIGIN]?.[USER_A]?.[ENTRY.keyFingerprintHex];
+    expect(Object.keys(row ?? {})).toEqual([
+      "encPubHex",
+      "sigPubHex",
+      "roleCap",
+      "scopeKind",
+      "scopeEnvironmentIds",
+      "source",
+      "label",
+      "addedByFingerprintHex",
+      "observedProjectId",
+      "recordedAtMs",
+      "revokedAtMs",
+    ]);
   });
 });
