@@ -290,10 +290,7 @@ const verifyOneWrapSignature = (
     // Fold every crypto failure — including InvalidInput (structural
     // badness) — into signature-rejected (on a Schema-validated wire,
     // effectively only DekWrapSignatureInvalid reaches here)
-    Effect.matchEffect({
-      onFailure: () => rejectData({ kind: "dek-wrap-rejected", reason: "signature-invalid" }),
-      onSuccess: () => Effect.void,
-    }),
+    Effect.mapError(() => rejectData({ kind: "dek-wrap-rejected", reason: "signature-invalid" })),
   );
 
 /** Import a sig public key derived from a verified chain (failure is a storage / verifier bug = defect). */
