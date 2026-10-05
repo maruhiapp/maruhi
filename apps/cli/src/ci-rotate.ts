@@ -21,6 +21,7 @@
 // variables, counts, dates, and the connector's non-secret facts.
 
 import { ProjectNotFoundError, RotationProposalRejectedError } from "@maruhi/api-schema";
+import { cryptoEffect } from "@maruhi/core";
 import type { EnvironmentId } from "@maruhi/core";
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import {
@@ -42,6 +43,7 @@ import {
   type LeasedEnvironments,
   leaseEnvironmentsWithCredential,
 } from "./ci-lease.ts";
+import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { memberDevicesInOrder, ROLE_RANK } from "./dek-wrap.ts";
 import { countNoun, displayText, formatUtcDate, logWarnings } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -281,18 +283,23 @@ function sealToRecipients(input: {
   return Effect.forEach(input.recipients, ({ member, device }) =>
     Effect.gen(function* () {
       const keyBytes = decodeHex(device.encPubHex);
-      const publicKey =
-        keyBytes === null ? null : yield* Effect.promise(() => importEncryptionPublicKey(keyBytes));
-      if (publicKey === null || !publicKey.ok) {
+      if (keyBytes === null) {
         return yield* Effect.fail(
           cliError(
             `Cannot load the device key ${device.keyFingerprintHex} of member ${displayText(member.userId)} from the chain (a corrupt public key)`,
           ),
         );
       }
-      const sealed = yield* Effect.promise(() =>
+      const publicKey = yield* cryptoEffect(() => importEncryptionPublicKey(keyBytes)).pipe(
+        Effect.mapError(() =>
+          cliError(
+            `Cannot load the device key ${device.keyFingerprintHex} of member ${displayText(member.userId)} from the chain (a corrupt public key)`,
+          ),
+        ),
+      );
+      const sealed = yield* cryptoEffect(() =>
         sealProposedValue({
-          recipientPublicKey: publicKey.value,
+          recipientPublicKey: publicKey,
           value: input.bytes,
           context: {
             projectId: input.projectId,
@@ -303,19 +310,18 @@ function sealToRecipients(input: {
             recipientUserId: member.userId,
           },
         }),
-      );
-      if (!sealed.ok) {
-        return yield* Effect.fail(
+      ).pipe(
+        Effect.mapError((error) =>
           cliError(
-            `Sealing the new value of ${displayText(input.variableId)} to member ${displayText(member.userId)} failed (${sealed.error.kind})`,
+            `Sealing the new value of ${displayText(input.variableId)} to member ${displayText(member.userId)} failed (${cryptoErrorKind(error)})`,
           ),
-        );
-      }
+        ),
+      );
       return {
         recipientUserId: member.userId,
         recipientEncPubHex: device.encPubHex,
-        encHex: encodeHex(sealed.value.enc),
-        ciphertextHex: encodeHex(sealed.value.ciphertext),
+        encHex: encodeHex(sealed.enc),
+        ciphertextHex: encodeHex(sealed.ciphertext),
       };
     }),
   );

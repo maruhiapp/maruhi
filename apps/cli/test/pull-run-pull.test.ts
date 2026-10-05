@@ -2,6 +2,7 @@
 // and run (memory injection), and for the AI-agent-detection boundary
 // (value display is refused / run is allowed).
 
+import { signDekWrap } from "@maruhi/crypto";
 import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
@@ -300,6 +301,113 @@ describe("maruhi pull", () => {
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("registration signature does not verify");
+  });
+
+  it("reports the full refusal message for a signature bit-flip (§5.1)", async () => {
+    const wrap = fixture.wraps[0];
+    if (wrap === undefined) {
+      throw new Error("fixture");
+    }
+    const flipped = `${wrap.signatureHex.slice(0, -1)}${wrap.signatureHex.endsWith("0") ? "1" : "0"}`;
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ deks: [{ ...wrap, signatureHex: flipped }, fixture.wraps[1]] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        `maruhi: The DEK wrap's registration signature does not verify (epoch=1, signer=${fixture.owner.userId})`,
+      ]),
+    );
+  });
+
+  it("reports the full refusal message for a wrap §5.1-signed but sealed to another key (not addressed to your key)", async () => {
+    // An honestly constructed wrap: the §5.1 signature is valid (the signer
+    // did sign it — over the declared coordinates), but the HPKE wrap is
+    // addressed to a different enc key, so the failure only surfaces at the
+    // open (design record DK K4-16)
+    const stranger = await makeTestUser("user-stranger-9999");
+    const base = await wrapDekFor({
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      dek: fixture.dek1,
+      recipient: stranger,
+      signer: fixture.owner,
+    });
+    const resigned = await signDekWrap({
+      context: {
+        suite: base.suite,
+        projectId: fixture.built.projectId,
+        environmentId: ENV_ID,
+        epoch: 1,
+        recipientUserId: fixture.owner.userId,
+        recipientEncPubHex: fixture.owner.encPubHex,
+        encHex: base.encHex,
+        ciphertextHex: base.ciphertextHex,
+        signerUserId: fixture.owner.userId,
+      },
+      signingKey: fixture.owner.sigKeyPair.privateKey,
+    });
+    if (!resigned.ok) {
+      throw new Error("test fixture: signDekWrap failed");
+    }
+    const misaddressed = {
+      ...base,
+      recipientEncPubHex: fixture.owner.encPubHex,
+      signatureHex: resigned.value,
+    };
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ deks: [misaddressed, fixture.wraps[1]] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        `maruhi: Cannot decrypt the DEK (epoch=1, signer=${fixture.owner.userId}). The wrap is not addressed to your key, or it is corrupt`,
+      ]),
+    );
+  });
+
+  it("reports the full refusal message for a poisoned DEK (a fake-DEK injection — §5.2)", async () => {
+    const forgedDek = crypto.getRandomValues(new Uint8Array(32));
+    const poison = await wrapDekFor({
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      dek: forgedDek,
+      recipient: fixture.owner,
+      signer: fixture.owner,
+    });
+    const env = await startEnv([chainHandler(), pullHandler({ deks: [poison, fixture.wraps[1]] })]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        `maruhi: The DEK does not match the commitment on the chain (epoch=1, signer=${fixture.owner.userId}). This may be a poisoned wrap (a fake DEK) — an administrator must repair it (delete the wrap, then re-register)`,
+      ]),
+    );
+  });
+
+  it("reports the full refusal message for a signer absent from chain history", async () => {
+    const stranger = await makeTestUser("user-stranger-9999");
+    const foreign = await wrapDekFor({
+      projectId: fixture.built.projectId,
+      environmentId: ENV_ID,
+      epoch: 1,
+      dek: fixture.dek1,
+      recipient: fixture.owner,
+      signer: stranger,
+    });
+    const env = await startEnv([
+      chainHandler(),
+      pullHandler({ deks: [foreign, fixture.wraps[1]] }),
+    ]);
+    expect(await runCli(["pull"], env.layer)).toBe(1);
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        `maruhi: The signer does not exist in the chain history (signer=${stranger.userId}, fp=${stranger.fingerprintHex})`,
+      ]),
+    );
   });
 
   it("a variable whose declared-epoch DEK is not distributed is an error", async () => {

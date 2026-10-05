@@ -38,6 +38,7 @@ import type {
   DistributedVariableMetaStatement,
   LeasedDek,
 } from "@maruhi/api-schema";
+import { cryptoEffect } from "@maruhi/core";
 import type { EnvironmentId, ProjectId } from "@maruhi/core";
 import type { ChainEntry, EncryptionKeyPair, LeaseClaims } from "@maruhi/crypto";
 import {
@@ -99,18 +100,13 @@ export interface VerifiedLeaseMaterial {
   readonly warnings: readonly string[];
 }
 
-/** The open result of one lease wrap (a tagged Result — same shape as deks.ts's UnwrapResult). */
-type LeaseUnwrapResult =
-  | { readonly kind: "ok"; readonly dek: Uint8Array }
-  | { readonly kind: "rejected"; readonly message: string };
-
 /**
  * Opens one lease wrap + commitment check (§5.2 / §9.1 verification
  * obligation (3)). The DEK never leaves this function until the
  * check succeeds. The coordinates are built from my own verified
  * values (genesis hash, requested environment).
  */
-async function unwrapOneLease(input: {
+function unwrapOneLease(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly workloadKeyPair: EncryptionKeyPair;
@@ -118,46 +114,52 @@ async function unwrapOneLease(input: {
   readonly lease: LeasedDek;
   /** The chain-derived commitment for that (environment, epoch) (§5.2). */
   readonly expectedCommitmentHex: string;
-}): Promise<LeaseUnwrapResult> {
+}): Effect.Effect<Uint8Array, CliError> {
   const { verified, environmentId, lease } = input;
-  const enc = decodeHex(lease.encHex);
-  const ciphertext = decodeHex(lease.ciphertextHex);
-  if (enc === null || ciphertext === null) {
-    return { kind: "rejected", message: `The leased DEK is malformed (epoch=${lease.epoch})` };
-  }
-  const dek = await unwrapLeaseDek({
-    workloadKeyPair: input.workloadKeyPair,
-    wrapped: { enc, ciphertext },
-    context: {
-      projectId: verified.projectId,
-      environmentId,
-      epoch: lease.epoch,
-      claimsDigestHex: input.claimsDigestHex,
-    },
+  return Effect.gen(function* () {
+    const enc = decodeHex(lease.encHex);
+    const ciphertext = decodeHex(lease.ciphertextHex);
+    if (enc === null || ciphertext === null) {
+      return yield* Effect.fail(cliError(`The leased DEK is malformed (epoch=${lease.epoch})`));
+    }
+    const dek = yield* cryptoEffect(() =>
+      unwrapLeaseDek({
+        workloadKeyPair: input.workloadKeyPair,
+        wrapped: { enc, ciphertext },
+        context: {
+          projectId: verified.projectId,
+          environmentId,
+          epoch: lease.epoch,
+          claimsDigestHex: input.claimsDigestHex,
+        },
+      }),
+    ).pipe(
+      Effect.mapError(() =>
+        cliError(
+          `Cannot open the leased DEK (epoch=${lease.epoch}). The lease was issued for a different workload identity or context (claims-digest mismatch), or the response is corrupt`,
+        ),
+      ),
+    );
+    yield* cryptoEffect(() =>
+      verifyDekCommitment({
+        context: {
+          suite: SUITE_ID,
+          projectId: verified.projectId,
+          environmentId,
+          epoch: lease.epoch,
+        },
+        dek,
+        expectedCommitmentHex: input.expectedCommitmentHex,
+      }),
+    ).pipe(
+      Effect.mapError(() =>
+        cliError(
+          `The leased DEK does not match the commitment on the chain (epoch=${lease.epoch}). This may be a fake DEK injected by a compromised server — do not trust this response`,
+        ),
+      ),
+    );
+    return dek;
   });
-  if (!dek.ok) {
-    return {
-      kind: "rejected",
-      message: `Cannot open the leased DEK (epoch=${lease.epoch}). The lease was issued for a different workload identity or context (claims-digest mismatch), or the response is corrupt`,
-    };
-  }
-  const commitment = await verifyDekCommitment({
-    context: {
-      suite: SUITE_ID,
-      projectId: verified.projectId,
-      environmentId,
-      epoch: lease.epoch,
-    },
-    dek: dek.value,
-    expectedCommitmentHex: input.expectedCommitmentHex,
-  });
-  if (!commitment.ok) {
-    return {
-      kind: "rejected",
-      message: `The leased DEK does not match the commitment on the chain (epoch=${lease.epoch}). This may be a fake DEK injected by a compromised server — do not trust this response`,
-    };
-  }
-  return { kind: "ok", dek: dek.value };
 }
 
 /**
@@ -205,15 +207,11 @@ function unwrapLeases(input: {
     // Only the verified entry point (computeLeaseClaimsDigest) is
     // used for the claims digest — using the builder directly bypasses
     // the empty-field guards
-    const digest = yield* Effect.tryPromise({
-      try: () => computeLeaseClaimsDigest(input.claims),
-      catch: () => cliError("Failed to compute the lease claims digest (crypto error)"),
-    });
-    if (!digest.ok) {
-      return yield* Effect.fail(
+    const digest = yield* cryptoEffect(() => computeLeaseClaimsDigest(input.claims)).pipe(
+      Effect.mapError(() =>
         cliError("Failed to compute the lease claims digest (the OIDC claims are unusable)"),
-      );
-    }
+      ),
+    );
     const byEpoch = new Map<number, Redacted.Redacted<Uint8Array>>();
     for (const lease of input.leases) {
       const problem = leaseEpochProblem(chainEpoch, new Set(byEpoch.keys()), lease);
@@ -228,24 +226,17 @@ function unwrapLeases(input: {
           ),
         );
       }
-      const result = yield* Effect.tryPromise({
-        try: () =>
-          unwrapOneLease({
-            verified,
-            environmentId,
-            workloadKeyPair: input.workloadKeyPair,
-            claimsDigestHex: digest.value,
-            lease,
-            expectedCommitmentHex,
-          }),
-        catch: () => cliError(`Leased-DEK unwrap failed (epoch=${lease.epoch} — crypto error)`),
+      const dek = yield* unwrapOneLease({
+        verified,
+        environmentId,
+        workloadKeyPair: input.workloadKeyPair,
+        claimsDigestHex: digest,
+        lease,
+        expectedCommitmentHex,
       });
-      if (result.kind === "rejected") {
-        return yield* Effect.fail(cliError(result.message));
-      }
       // The opened DEK is wrapped here (after passing the §5.2 check
       // — a pre-check DEK never leaves unwrapOneLease's inside)
-      byEpoch.set(lease.epoch, Redacted.make(result.dek, { label: "dek" }));
+      byEpoch.set(lease.epoch, Redacted.make(dek, { label: "dek" }));
     }
     return byEpoch;
   });

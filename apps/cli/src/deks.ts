@@ -17,6 +17,7 @@
 // a colluding server injecting a false DEK — §14.2-1).
 
 import type { RecipientDek } from "@maruhi/api-schema";
+import { cryptoEffect } from "@maruhi/core";
 import type { EncryptionKeyPair, EnvironmentChainState } from "@maruhi/crypto";
 import {
   decodeHex,
@@ -53,93 +54,97 @@ function signerKeyFor(verified: VerifiedProject, wrap: RecipientDek): Uint8Array
   return match === undefined ? null : decodeHex(match.sigPubHex);
 }
 
-/** Result of verifying and unwrapping one wrap (a tagged Result — no instanceof discrimination). */
-type UnwrapResult =
-  | { readonly kind: "ok"; readonly dek: Uint8Array }
-  | { readonly kind: "rejected"; readonly message: string };
-
-async function verifyAndUnwrapOne(input: {
+/** Verifies one wrap's registration signature and unwraps it (§5.1), with the §5.2 commitment check before the DEK leaves. */
+function verifyAndUnwrapOne(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly recipient: DekRecipient;
   readonly wrap: RecipientDek;
   /** The chain-derived commitment for that (environment, epoch) (§5.2). */
   readonly expectedCommitmentHex: string;
-}): Promise<UnwrapResult> {
+}): Effect.Effect<Uint8Array, CliError> {
   const { verified, environmentId, recipient, wrap } = input;
-  const signerKeyBytes = signerKeyFor(verified, wrap);
-  if (signerKeyBytes === null) {
-    return {
-      kind: "rejected",
-      message: `The signer does not exist in the chain history (signer=${displayText(wrap.signerUserId)}, fp=${wrap.signerKeyFingerprintHex})`,
-    };
-  }
-  const signerKey = await importSigningPublicKey(signerKeyBytes);
-  if (!signerKey.ok) {
-    return { kind: "rejected", message: "Cannot load the signer's public key" };
-  }
-  const verifiedSignature = await verifyDekWrapSignature({
-    context: {
-      suite: wrap.suite,
-      projectId: verified.projectId,
-      environmentId,
-      epoch: wrap.epoch,
-      recipientUserId: recipient.userId,
-      recipientEncPubHex: recipient.encPubHex,
-      encHex: wrap.encHex,
-      ciphertextHex: wrap.ciphertextHex,
-      signerUserId: wrap.signerUserId,
-    },
-    signatureHex: wrap.signatureHex,
-    signerPublicKey: signerKey.value,
+  return Effect.gen(function* () {
+    const signerKeyBytes = signerKeyFor(verified, wrap);
+    if (signerKeyBytes === null) {
+      return yield* Effect.fail(
+        cliError(
+          `The signer does not exist in the chain history (signer=${displayText(wrap.signerUserId)}, fp=${wrap.signerKeyFingerprintHex})`,
+        ),
+      );
+    }
+    const signerKey = yield* cryptoEffect(() => importSigningPublicKey(signerKeyBytes)).pipe(
+      Effect.mapError(() => cliError("Cannot load the signer's public key")),
+    );
+    yield* cryptoEffect(() =>
+      verifyDekWrapSignature({
+        context: {
+          suite: wrap.suite,
+          projectId: verified.projectId,
+          environmentId,
+          epoch: wrap.epoch,
+          recipientUserId: recipient.userId,
+          recipientEncPubHex: recipient.encPubHex,
+          encHex: wrap.encHex,
+          ciphertextHex: wrap.ciphertextHex,
+          signerUserId: wrap.signerUserId,
+        },
+        signatureHex: wrap.signatureHex,
+        signerPublicKey: signerKey,
+      }),
+    ).pipe(
+      Effect.mapError(() =>
+        cliError(
+          `The DEK wrap's registration signature does not verify (epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})`,
+        ),
+      ),
+    );
+    const enc = decodeHex(wrap.encHex);
+    const ciphertext = decodeHex(wrap.ciphertextHex);
+    if (enc === null || ciphertext === null) {
+      return yield* Effect.fail(cliError(`The DEK wrap is malformed (epoch=${wrap.epoch})`));
+    }
+    const dek = yield* cryptoEffect(() =>
+      unwrapDek({
+        recipientKeyPair: recipient.encKeyPair,
+        wrapped: { enc, ciphertext },
+        context: {
+          projectId: verified.projectId,
+          environmentId,
+          epoch: wrap.epoch,
+          recipientUserId: recipient.userId,
+        },
+      }),
+    ).pipe(
+      Effect.mapError(() =>
+        cliError(
+          `Cannot decrypt the DEK (epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)}). The wrap is not addressed to your key, or it is corrupt`,
+        ),
+      ),
+    );
+    // §5.2 / §6.3: do not use the DEK until the commitment check succeeds.
+    // The coordinates are assembled from our own verified values (the
+    // genesis hash, the request's environment ID)
+    yield* cryptoEffect(() =>
+      verifyDekCommitment({
+        context: {
+          suite: SUITE_ID,
+          projectId: verified.projectId,
+          environmentId,
+          epoch: wrap.epoch,
+        },
+        dek,
+        expectedCommitmentHex: input.expectedCommitmentHex,
+      }),
+    ).pipe(
+      Effect.mapError(() =>
+        cliError(
+          `The DEK does not match the commitment on the chain (epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)}). This may be a poisoned wrap (a fake DEK) — an administrator must repair it (delete the wrap, then re-register)`,
+        ),
+      ),
+    );
+    return dek;
   });
-  if (!verifiedSignature.ok) {
-    return {
-      kind: "rejected",
-      message: `The DEK wrap's registration signature does not verify (epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)})`,
-    };
-  }
-  const enc = decodeHex(wrap.encHex);
-  const ciphertext = decodeHex(wrap.ciphertextHex);
-  if (enc === null || ciphertext === null) {
-    return { kind: "rejected", message: `The DEK wrap is malformed (epoch=${wrap.epoch})` };
-  }
-  const dek = await unwrapDek({
-    recipientKeyPair: recipient.encKeyPair,
-    wrapped: { enc, ciphertext },
-    context: {
-      projectId: verified.projectId,
-      environmentId,
-      epoch: wrap.epoch,
-      recipientUserId: recipient.userId,
-    },
-  });
-  if (!dek.ok) {
-    return {
-      kind: "rejected",
-      message: `Cannot decrypt the DEK (epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)}). The wrap is not addressed to your key, or it is corrupt`,
-    };
-  }
-  // §5.2 / §6.3: do not use the DEK until the commitment check succeeds.
-  // The coordinates are assembled from our own verified values (the
-  // genesis hash, the request's environment ID)
-  const commitment = await verifyDekCommitment({
-    context: {
-      suite: SUITE_ID,
-      projectId: verified.projectId,
-      environmentId,
-      epoch: wrap.epoch,
-    },
-    dek: dek.value,
-    expectedCommitmentHex: input.expectedCommitmentHex,
-  });
-  if (!commitment.ok) {
-    return {
-      kind: "rejected",
-      message: `The DEK does not match the commitment on the chain (epoch=${wrap.epoch}, signer=${displayText(wrap.signerUserId)}). This may be a poisoned wrap (a fake DEK) — an administrator must repair it (delete the wrap, then re-register)`,
-    };
-  }
-  return { kind: "ok", dek: dek.value };
 }
 
 /** Chain-derived environment state (§6.2). Distributing a not-yet-created environment contradicts the chain in the server response. */
@@ -219,24 +224,17 @@ function verifyAndUnwrapDeks(input: {
           ),
         );
       }
-      const result = yield* Effect.tryPromise({
-        try: () =>
-          verifyAndUnwrapOne({
-            verified: input.verified,
-            environmentId: input.environmentId,
-            recipient: input.recipient,
-            wrap,
-            expectedCommitmentHex,
-          }),
-        catch: () => cliError(`DEK-wrap verification failed (epoch=${wrap.epoch} — crypto error)`),
+      const dek = yield* verifyAndUnwrapOne({
+        verified: input.verified,
+        environmentId: input.environmentId,
+        recipient: input.recipient,
+        wrap,
+        expectedCommitmentHex,
       });
-      if (result.kind === "rejected") {
-        return yield* Effect.fail(cliError(result.message));
-      }
       // The unwrapped DEK is wrapped here (only after the §5.2 commitment
       // check passes — a DEK before the check never leaves the inside of
       // verifyAndUnwrapOne)
-      byEpoch.set(wrap.epoch, Redacted.make(result.dek, { label: "dek" }));
+      byEpoch.set(wrap.epoch, Redacted.make(dek, { label: "dek" }));
     }
     return byEpoch;
   });

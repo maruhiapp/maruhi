@@ -24,6 +24,7 @@
 // never persisted (the issuance pin holds only the public key). The
 // server never receives the seed.
 
+import { cryptoEffect } from "@maruhi/core";
 import {
   computeUserKeyFingerprint,
   decodeHex,
@@ -124,28 +125,38 @@ export function verifyIssuance(input: {
     // A row issued by a revoked device does not pass = the inviter
     // reissues)
     for (const inviterDevice of devicesOf(inviter)) {
-      const verified = yield* Effect.tryPromise({
-        try: () =>
-          verifyInviteIssueSignature({
-            context: {
-              suite: SUITE_ID,
-              inviteId: input.row.id,
-              projectId: input.verified.projectId,
-              linkPubHex: issuance.linkPubHex,
-              headHashHex: issuance.headHashHex,
-              headSeq: issuance.headSeq,
-              role: input.row.role,
-              inviterUserId: inviter.userId,
-              inviterEncPubHex: inviterDevice.encPubHex,
-              inviterSigPubHex: inviterDevice.sigPubHex,
-              scopeKind: input.row.scopeKind,
-              scopeEnvironmentIds: input.row.scopeEnvironmentIds,
-            },
-            signatureHex: issuance.issueSignatureHex,
-          }),
-        catch: () => cliError("Failed to verify the issue signature (crypto error)"),
-      });
-      if (verified.ok) {
+      // Any crypto failure means "this device's key does not verify the
+      // row" — the same folding the pre-bridge `!ok` check made (the
+      // verification's producible kinds are these three); anything the
+      // union adds later is an invariant break and dies
+      const verified = yield* cryptoEffect(() =>
+        verifyInviteIssueSignature({
+          context: {
+            suite: SUITE_ID,
+            inviteId: input.row.id,
+            projectId: input.verified.projectId,
+            linkPubHex: issuance.linkPubHex,
+            headHashHex: issuance.headHashHex,
+            headSeq: issuance.headSeq,
+            role: input.row.role,
+            inviterUserId: inviter.userId,
+            inviterEncPubHex: inviterDevice.encPubHex,
+            inviterSigPubHex: inviterDevice.sigPubHex,
+            scopeKind: input.row.scopeKind,
+            scopeEnvironmentIds: input.row.scopeEnvironmentIds,
+          },
+          signatureHex: issuance.issueSignatureHex,
+        }),
+      ).pipe(
+        Effect.map(() => true as const),
+        Effect.catchTags({
+          CryptoInvalidInput: () => Effect.succeed(false as const),
+          CryptoKeyImport: () => Effect.succeed(false as const),
+          CryptoInviteIssueSignature: () => Effect.succeed(false as const),
+        }),
+        Effect.orDie,
+      );
+      if (verified) {
         return { ok: true } as const;
       }
     }
@@ -190,23 +201,38 @@ export function verifyAcceptanceBlock(input: {
       inviteeEncPubHex: input.acceptance.inviteeEncPubHex,
       inviteeSigPubHex: input.acceptance.inviteeSigPubHex,
     };
-    const linkVerified = yield* Effect.tryPromise({
-      try: () =>
-        verifyInviteLinkSignature({
-          context,
-          linkSignatureHex: input.acceptance.linkSignatureHex,
-        }),
-      catch: () => cliError("Failed to verify the link signature (crypto error)"),
-    });
-    if (!linkVerified.ok) {
+    // A crypto failure folds to the block's rejection kind (the same
+    // folding the pre-bridge `!ok` checks made); a kind the verifiers
+    // cannot produce is an invariant break and dies
+    const linkVerified = yield* cryptoEffect(() =>
+      verifyInviteLinkSignature({
+        context,
+        linkSignatureHex: input.acceptance.linkSignatureHex,
+      }),
+    ).pipe(
+      Effect.map(() => true as const),
+      Effect.catchTags({
+        CryptoInvalidInput: () => Effect.succeed(false as const),
+        CryptoKeyImport: () => Effect.succeed(false as const),
+        CryptoInviteLinkSignature: () => Effect.succeed(false as const),
+      }),
+      Effect.orDie,
+    );
+    if (!linkVerified) {
       return { ok: false, which: "link" } as const;
     }
-    const verified = yield* Effect.tryPromise({
-      try: () =>
-        verifyInviteAcceptSignature({ context, signatureHex: input.acceptance.signatureHex }),
-      catch: () => cliError("Failed to verify the acceptance signature (crypto error)"),
-    });
-    if (!verified.ok) {
+    const verified = yield* cryptoEffect(() =>
+      verifyInviteAcceptSignature({ context, signatureHex: input.acceptance.signatureHex }),
+    ).pipe(
+      Effect.map(() => true as const),
+      Effect.catchTags({
+        CryptoInvalidInput: () => Effect.succeed(false as const),
+        CryptoKeyImport: () => Effect.succeed(false as const),
+        CryptoInviteAcceptSignature: () => Effect.succeed(false as const),
+      }),
+      Effect.orDie,
+    );
+    if (!verified) {
       return { ok: false, which: "accept" } as const;
     }
     const enc = decodeHex(input.acceptance.inviteeEncPubHex);
@@ -214,14 +240,14 @@ export function verifyAcceptanceBlock(input: {
     if (enc === null || sig === null) {
       return { ok: false, which: "keys" } as const;
     }
-    const fingerprint = yield* Effect.tryPromise({
-      try: () => computeUserKeyFingerprint(enc, sig),
-      catch: () => cliError("Failed to compute the acceptance key's fingerprint (crypto error)"),
-    });
-    if (!fingerprint.ok) {
+    const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(
+      Effect.catchTag("CryptoInvalidInput", () => Effect.succeed(null)),
+      Effect.orDie,
+    );
+    if (fingerprint === null) {
       return { ok: false, which: "keys" } as const;
     }
-    return { ok: true, fingerprintHex: encodeHex(fingerprint.value) } as const;
+    return { ok: true, fingerprintHex: encodeHex(fingerprint) } as const;
   });
 }
 
@@ -283,14 +309,10 @@ export function resolveLinkKey(link: InviteLinkData) {
     if (seed === null) {
       return yield* Effect.fail(cliError("The link's key seed (k=) is malformed"));
     }
-    const derived = yield* Effect.tryPromise({
-      try: () => deriveInviteLinkKeyPair(seed),
-      catch: () => cliError("Failed to derive the invite link key (crypto error)"),
-    });
-    if (!derived.ok) {
-      return yield* Effect.fail(cliError("Failed to derive the invite link key"));
-    }
-    return { keyPair: derived.value, linkPubHex: encodeHex(derived.value.publicKeyRaw) };
+    const derived = yield* cryptoEffect(() => deriveInviteLinkKeyPair(seed)).pipe(
+      Effect.mapError(() => cliError("Failed to derive the invite link key")),
+    );
+    return { keyPair: derived, linkPubHex: encodeHex(derived.publicKeyRaw) };
   });
 }
 

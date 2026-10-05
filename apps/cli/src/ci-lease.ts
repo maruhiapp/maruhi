@@ -20,6 +20,7 @@
 // same ephemeral key (AUTH_SPEC §14-1 / CRYPTO_SPEC §9.1).
 
 import { LeaseUnauthorizedError, ProjectNotFoundError } from "@maruhi/api-schema";
+import { cryptoPromise } from "@maruhi/core";
 import type { EnvironmentId, ProjectId } from "@maruhi/core";
 import type { EncryptionKeyPair, LeaseClaims } from "@maruhi/crypto";
 import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from "@maruhi/crypto";
@@ -53,6 +54,9 @@ export interface CiLeaseInput {
   readonly anchorPath: string | undefined;
 }
 
+/** The typed lease-issue call's error union (endpoint errors | HttpClientError | SchemaError). */
+type LeaseIssueError = Effect.Error<ReturnType<MaruhiClient["lease"]["issue"]>>;
+
 /** One lease issuance (the wire boundary). Errors are returned typed, for classification. */
 function issueLease(input: {
   readonly client: MaruhiClient;
@@ -60,7 +64,7 @@ function issueLease(input: {
   readonly environmentId: EnvironmentId;
   readonly token: Redacted.Redacted<string>;
   readonly ephemeralPubHex: string;
-}): Effect.Effect<LeaseResponseWire, unknown> {
+}): Effect.Effect<LeaseResponseWire, LeaseIssueError> {
   return Effect.gen(function* () {
     // Why it is unwrapped: the wire boundary of the lease request (the
     // payload's oidcToken field). The plaintext token rides only in the
@@ -261,15 +265,17 @@ function freshCredential(
   timeoutMs?: number,
 ): Effect.Effect<WorkloadCredential, CliError, CliIo> {
   return Effect.gen(function* () {
-    const keyPair = yield* Effect.tryPromise({
-      try: () => generateEncryptionKeyPair(),
-      catch: () => cliError("Failed to generate the ephemeral key pair (crypto error)"),
-    });
+    const keyPair = yield* cryptoPromise("generateEncryptionKeyPair", () =>
+      generateEncryptionKeyPair(),
+    ).pipe(
+      Effect.mapError(() => cliError("Failed to generate the ephemeral key pair (crypto error)")),
+    );
     const ephemeralPubHex = encodeHex(
-      yield* Effect.tryPromise({
-        try: () => exportEncryptionPublicKey(keyPair.publicKey),
-        catch: () => cliError("Failed to export the ephemeral public key (crypto error)"),
-      }),
+      yield* cryptoPromise("exportEncryptionPublicKey", () =>
+        exportEncryptionPublicKey(keyPair.publicKey),
+      ).pipe(
+        Effect.mapError(() => cliError("Failed to export the ephemeral public key (crypto error)")),
+      ),
     );
     const token = yield* fetchGitHubOidcToken(audience, timeoutMs);
     return { token, ephemeralPubHex, keyPair };

@@ -900,6 +900,26 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expectNoSecretLeak(fixture);
   });
 
+  it("surfaces the crypto layer's InvalidInput verbatim when the new value exceeds the sealed-value bound", async () => {
+    // The connector emits a >64KiB value: sealProposedValue refuses it
+    // (MAX_SEALED_VALUE_BYTES), and the proposal-refusal path folds the seal
+    // failure's message into the recovery notice
+    const fixture = await startCi();
+    fixture.env.setCaptureHandler(() => ({
+      exitCode: 0,
+      stdout: new TextEncoder().encode("x".repeat(64 * 1024)),
+      stderr: "",
+    }));
+    expect(await ciRotate(fixture)).toBe(1);
+    expect(fixture.env.errors).toEqual(
+      expect.arrayContaining([
+        `maruhi: The issuer accepted the rotation (./rotate.sh: new credential produced) but the server refused to store the proposal: Sealing the new value of vs to member user-member-2222 failed (InvalidInput). Re-run the job. Recovery for the credential that now exists at the issuer: the new credential is held only by this process (it is not shown) — re-run the rotation (./rotate.sh runs again; make it idempotent, or retire the unused credential at the issuer by hand)`,
+      ]),
+    );
+    expect(fixture.minted.bodies).toHaveLength(0);
+    expectNoSecretLeak(fixture);
+  });
+
   it("missing flags are usage errors (2) before any network", async () => {
     const fixture = await startCi();
     expect(

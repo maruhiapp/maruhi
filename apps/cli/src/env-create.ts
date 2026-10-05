@@ -24,6 +24,7 @@
 
 import type { WrappedDek } from "@maruhi/api-schema";
 import { AuditHeadNotReadyError, ChainHeadConflictError } from "@maruhi/api-schema";
+import { cryptoEffect } from "@maruhi/core";
 import type { EnvironmentId } from "@maruhi/core";
 import type { ChainEntry, ChainMember, SigningKeyPair } from "@maruhi/crypto";
 import { computeDekCommitment, generateDek, SUITE_ID } from "@maruhi/crypto";
@@ -166,24 +167,19 @@ export function envCreateOp(input: {
     const name = input.name.normalize("NFC");
     // Wrapped right after generation (from here on the DEK only flows as a Redacted)
     const dek = Redacted.make(generateDek(), { label: "dek" });
-    const commitment = yield* Effect.tryPromise({
-      try: () =>
-        computeDekCommitment({
-          context: {
-            suite: SUITE_ID,
-            projectId: input.verified.projectId,
-            environmentId: input.environmentId,
-            epoch: 1,
-          },
-          // Reason for unwrapping: the input to the commitment
-          // computation (a crypto boundary). The product is a hash
-          dek: Redacted.value(dek),
-        }),
-      catch: () => cliError("Failed to compute the DEK commitment"),
-    });
-    if (!commitment.ok) {
-      return yield* Effect.fail(cliError("Failed to compute the DEK commitment"));
-    }
+    const commitment = yield* cryptoEffect(() =>
+      computeDekCommitment({
+        context: {
+          suite: SUITE_ID,
+          projectId: input.verified.projectId,
+          environmentId: input.environmentId,
+          epoch: 1,
+        },
+        // Reason for unwrapping: the input to the commitment
+        // computation (a crypto boundary). The product is a hash
+        dek: Redacted.value(dek),
+      }),
+    ).pipe(Effect.mapError(() => cliError("Failed to compute the DEK commitment")));
     const deks = yield* buildWrapCompleteSet({
       verified: input.verified,
       environmentId: input.environmentId,
@@ -200,7 +196,7 @@ export function envCreateOp(input: {
         // A CAS retry re-signs **both** the entry (prev changes) and the
         // statement (declared head changes) (§12-4). The wrap set is
         // rebuilt only when the member set changed
-        attempt: (state) => attemptCreate(input, state, { name, commitmentHex: commitment.value }),
+        attempt: (state) => attemptCreate(input, state, { name, commitmentHex: commitment }),
         // AuditHeadNotReady (503 — the bounded extension of the audit-head
         // derived column is incomplete; AUDIT_SPEC §5.1) also advances via
         // the same recovery (resync + re-sign + resend): even on a failure
@@ -252,7 +248,7 @@ export function envCreateOp(input: {
       },
     );
     // The floor is established and success is reported only after the effect confirmation (§12-10 (3)) passes
-    yield* confirmCreation(input, accepted, commitment.value);
+    yield* confirmCreation(input, accepted, commitment);
     // The current epoch right after creation is **structurally 1**
     // (§12-4 — the bundled entry is create_environment, and the
     // confirmation above backed it with the chain-derived value). The
@@ -262,6 +258,9 @@ export function envCreateOp(input: {
     return { currentEpoch: 1, memberCount: accepted.state.deks.length };
   });
 }
+
+/** The typed environments.create call's error union (endpoint errors | HttpClientError | SchemaError). */
+type EnvironmentsCreateError = Effect.Error<ReturnType<MaruhiClient["environments"]["create"]>>;
 
 /** One attempt's worth of signing (entry, statement, manifest) + intent + sending. */
 function attemptCreate(
@@ -274,7 +273,7 @@ function attemptCreate(
   },
   state: CreateState,
   material: { readonly name: string; readonly commitmentHex: string },
-): Effect.Effect<AcceptedCreation, unknown> {
+): Effect.Effect<AcceptedCreation, CliError | EnvironmentsCreateError> {
   return Effect.gen(function* () {
     const entry = yield* signCreateEntry({
       verified: state.verified,
