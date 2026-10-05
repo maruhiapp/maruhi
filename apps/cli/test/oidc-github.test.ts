@@ -2,6 +2,7 @@
 // A stub `FetchHttpClient.Fetch` pins the request's shape (method, the
 // three headers, `redirect: "manual"`) and every failure's exact message.
 
+import { egressHttpClientLayer } from "@maruhi/core";
 import { Cause, Effect, Exit, Fiber, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
@@ -139,6 +140,30 @@ describe("the GitHub Actions OIDC issuance fetch", () => {
   it("fails with the fetch rejection's message on a transport rejection", async () => {
     const { exit } = await fetchWith(() => Promise.reject(new Error("socket hangup")));
     expect(messageOf(exit)).toBe(`${FETCH_FAILED}: socket hangup`);
+  });
+
+  // Under runCli an ambient HttpClient already sits in context, and
+  // `Effect.provide` shares layer builds across provide calls: without
+  // `{ local: true }` on the issuance fetch's provide, its
+  // `FetchHttpClient.layer` resolves to the ambient build — which never
+  // carries the RequestInit — and `redirect: "manual"` silently drops
+  it('keeps `redirect: "manual"` when an ambient HttpClient already exists', async () => {
+    const calls: RecordedCall[] = [];
+    const stub = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      calls.push({ url: String(input), init });
+      return new Response(JSON.stringify({ value: "the-oidc-token" }), { status: 200 });
+    }) as typeof fetch;
+    const exit = await Effect.runPromiseExit(
+      fetchGitHubOidcToken(AUDIENCE).pipe(
+        Effect.provideService(CliIo, runnerEnv),
+        Effect.provideService(FetchHttpClient.Fetch, stub),
+        // The ambient client the command environment carries
+        Effect.provide(egressHttpClientLayer()),
+      ),
+    );
+    expect(Exit.isSuccess(exit)).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.init?.redirect).toBe("manual");
   });
 
   it("times out on the Effect clock with the same message as the pre-HttpClient abort", async () => {
