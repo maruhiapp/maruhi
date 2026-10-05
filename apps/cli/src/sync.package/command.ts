@@ -207,7 +207,6 @@ export function makeSyncCommands() {
         writerUserId: opened.context.session.userId,
         signingKey: opened.context.masterKeys.sigKeyPair.privateKey,
         yes: values.yes,
-        now: () => new Date(),
         tokenFloor: opened.tokenFloor,
       });
     }),

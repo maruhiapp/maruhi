@@ -18,7 +18,7 @@ import {
   computeChainEntryHash,
   signChainEntry,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { displayText } from "./display.ts";
@@ -83,6 +83,7 @@ export function projectInitOp(input: {
     }
     const org = picked.org;
 
+    const timestampMs = yield* Clock.currentTimeMillis;
     const unsigned: UnsignedChainEntry = {
       suite: SUITE_ID,
       seq: 1,
@@ -96,7 +97,7 @@ export function projectInitOp(input: {
         userId: input.session.userId,
         keyFingerprintHex: input.masterKeys.fingerprintHex,
       },
-      timestampMs: Date.now(),
+      timestampMs,
     };
     const signed = yield* cryptoEffect(() =>
       signChainEntry({ entry: unsigned, signingKey: input.masterKeys.sigKeyPair.privateKey }),

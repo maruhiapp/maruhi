@@ -331,7 +331,6 @@ function applyTarget(
       // requireProductionConsent stops it and it becomes a
       // warning
       yes: false,
-      now: () => new Date(),
       tokenFloor,
       display: { showUnchanged: false },
     });

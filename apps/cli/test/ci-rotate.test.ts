@@ -27,7 +27,8 @@ import {
   openProposedValue,
   wrapLeaseDek,
 } from "@maruhi/crypto";
-import { Redacted } from "effect";
+import { Clock, Duration, Effect, Layer, Redacted } from "effect";
+import { TestClock } from "effect/testing";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
@@ -223,7 +224,10 @@ function issuanceDelay(issued: number, options: OidcOptions): Promise<null> | nu
   });
 }
 
-function oidcHandler(state: { issued: number }, options: OidcOptions = {}): MockHandler {
+function oidcHandler(
+  state: { issued: number; fetches: number },
+  options: OidcOptions = {},
+): MockHandler {
   return (request) => {
     if (request.method !== "GET" || request.path !== "/oidc/token") {
       return null;
@@ -231,6 +235,7 @@ function oidcHandler(state: { issued: number }, options: OidcOptions = {}): Mock
     if (request.headers["authorization"] !== `Bearer ${RUNNER_TOKEN}`) {
       return { status: 401, json: { message: "bad runner token" } };
     }
+    state.fetches += 1;
     const outage = issuanceOutage(state.issued, options);
     if (outage !== null) {
       return outage;
@@ -435,6 +440,8 @@ interface CiFixture {
   readonly leased: Leased;
   readonly preflighted: Preflighted;
   readonly minted: Minted;
+  /** The issuance endpoint's counters (a fetch in flight already holds its bound). */
+  readonly oidc: { issued: number; fetches: number };
 }
 
 /** CI environment: neither login nor config is seeded (CI mode's independence is pinned by this setup). */
@@ -442,8 +449,9 @@ async function startCi(config: unknown = EXEC_RULE, oidc: OidcOptions = {}): Pro
   const leased: Leased = { bodies: [] };
   const preflighted: Preflighted = { bodies: [] };
   const minted: Minted = { requests: [], bodies: [] };
+  const oidcState = { issued: 0, fetches: 0 };
   const server = await MockServer.start([
-    oidcHandler({ issued: 0 }, oidc),
+    oidcHandler(oidcState, oidc),
     leaseHandler(leased),
     preflightHandler(preflighted),
     mintHandler(minted),
@@ -462,27 +470,77 @@ async function startCi(config: unknown = EXEC_RULE, oidc: OidcOptions = {}): Pro
   const configDir = await mkdtemp(join(tmpdir(), "maruhi-ci-rotate-test-"));
   const configPath = join(configDir, "maruhi.rotate.json");
   await writeFile(configPath, JSON.stringify(config));
-  return { env, server, configPath, leased, preflighted, minted };
+  return { env, server, configPath, leased, preflighted, minted, oidc: oidcState };
+}
+
+function ciRotateArgs(fixture: CiFixture, extra: readonly string[]): string[] {
+  return [
+    "ci",
+    "rotate",
+    "STRIPE_SECRET_KEY",
+    "--server",
+    fixture.server.origin,
+    "--project",
+    built.projectId,
+    "--env",
+    ENV_ID,
+    "--rotate-config",
+    fixture.configPath,
+    ...extra,
+  ];
 }
 
 function ciRotate(fixture: CiFixture, ...extra: string[]): Promise<number> {
+  return runCli(ciRotateArgs(fixture, extra), fixture.env.layer);
+}
+
+/** The same rotation run against a TestClock (the job's clock reads come from it). */
+function ciRotateOnClock(
+  fixture: CiFixture,
+  clock: Clock.Clock,
+  ...extra: string[]
+): Promise<number> {
   return runCli(
-    [
-      "ci",
-      "rotate",
-      "STRIPE_SECRET_KEY",
-      "--server",
-      fixture.server.origin,
-      "--project",
-      built.projectId,
-      "--env",
-      ENV_ID,
-      "--rotate-config",
-      fixture.configPath,
-      ...extra,
-    ],
-    fixture.env.layer,
+    ciRotateArgs(fixture, extra),
+    Layer.mergeAll(fixture.env.layer, Layer.succeed(Clock.Clock, clock)),
   );
+}
+
+/**
+ * A TestClock pinned at the real current instant: the job's clock reads are
+ * controllable while the mock server and the code outside the Effect context
+ * (which still read real time) stay consistent with it. Returns the instant
+ * the clock was set to, for computing token expirations.
+ */
+async function realNowClock(): Promise<{ clock: Clock.Clock; nowMs: number }> {
+  const clock = await Effect.runPromise(
+    Effect.gen(function* () {
+      return yield* Clock.Clock;
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+  const nowMs = Date.now();
+  await Effect.runPromise(TestClock.setTime(nowMs).pipe(Effect.provideService(Clock.Clock, clock)));
+  return { clock, nowMs };
+}
+
+/** Advances the run's clock past any timeouts scheduled inside the interval. */
+function clockAdjust(clock: Clock.Clock, millis: number): Promise<void> {
+  return Effect.runPromise(
+    TestClock.adjust(Duration.millis(millis)).pipe(Effect.provideService(Clock.Clock, clock)),
+  );
+}
+
+/** Waits until the mock's issuance endpoint has been hit `count` times (the fetch then holds its bound). */
+async function oidcFetches(fixture: CiFixture, count: number): Promise<void> {
+  const deadline = Date.now() + 4_000;
+  while (fixture.oidc.fetches < count) {
+    if (Date.now() > deadline) {
+      throw new Error(
+        `the OIDC endpoint was hit ${fixture.oidc.fetches} times, expected at least ${count}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
 function expectNoSecretLeak(fixture: CiFixture): void {
@@ -720,15 +778,16 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     // the newest token the job holds for the lease's key while it is
     // unexpired. The issuance endpoint stops answering after the mint's
     // token (jti 2): the recovery still goes through on that token (O-15)
+    const first = await realNowClock();
     const fixture = await startCi(EXEC_RULE, {
-      expSeconds: Math.floor(Date.now() / 1000) + 600,
+      expSeconds: Math.floor(first.nowMs / 1000) + 600,
       failAfter: 2,
     });
     fixture.minted.rejectOnce = {
       status: 422,
       json: { _tag: "RotationProposalRejected", reason: "recipients-mismatch" },
     };
-    expect(await ciRotate(fixture)).toBe(0);
+    expect(await ciRotateOnClock(fixture, first.clock)).toBe(0);
     // One connector run, two leases, two mints under distinct proposal ids
     expect(fixture.env.captureCalls).toHaveLength(1);
     expect(fixture.leased.bodies).toHaveLength(2);
@@ -751,15 +810,16 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expect(fixture.env.logs.join("\n")).toContain("The proposal was sealed a second time");
     // A token within the reuse margin of its expiry is still presented
     // when no fresh one can be minted (O-17): the re-lease goes through
+    const second = await realNowClock();
     const nearExpiry = await startCi(EXEC_RULE, {
-      expSeconds: Math.floor(Date.now() / 1000) + 20,
+      expSeconds: Math.floor(second.nowMs / 1000) + 20,
       failAfter: 2,
     });
     nearExpiry.minted.rejectOnce = {
       status: 422,
       json: { _tag: "RotationProposalRejected", reason: "recipients-mismatch" },
     };
-    expect(await ciRotate(nearExpiry)).toBe(0);
+    expect(await ciRotateOnClock(nearExpiry, second.clock)).toBe(0);
     expect(nearExpiry.leased.bodies).toHaveLength(2);
     expect(jtiOf(nth(nearExpiry.leased.bodies, 1))).toBe(2);
     expect(nearExpiry.env.errors.join("\n")).toContain(
@@ -778,33 +838,45 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
   });
 
   it("a hung issuance endpoint does not eat the fallback: the fetch's bound follows the life of the token in hand (O-18)", async () => {
-    // The lease token lives 8 s; the mint's fetch hangs, so its bound is the
-    // token's remaining life minus the margin, and the lease's token is
-    // presented while it still lives
+    // The lease token lives ~10 s; the mint's fetch hangs, so its bound is
+    // the token's remaining life minus the margin, and the lease's token is
+    // presented while it still lives. The clock runs past the bound (~8 s)
+    // while staying under the expiry, so the recovery keeps a live token.
+    const { clock, nowMs } = await realNowClock();
     const fixture = await startCi(EXEC_RULE, {
-      expSeconds: Math.floor(Date.now() / 1000) + 8,
+      expSeconds: Math.floor(nowMs / 1000) + 10,
       hangAfter: 1,
     });
-    expect(await ciRotate(fixture)).toBe(0);
+    const run = ciRotateOnClock(fixture, clock);
+    // The mint's fetch is in flight with its bound taken before the hang
+    await oidcFetches(fixture, 2);
+    await clockAdjust(clock, 8_500);
+    expect(await run).toBe(0);
     const body = onlyMint(fixture);
     expect(jwtPayload(body.oidcToken)["jti"]).toBe(1);
     expect(fixture.env.errors.join("\n")).toContain("presenting the lease's token");
-  }, 20_000);
+  });
 
   it("an expired lease token does not shorten the fetch of a fresh one: a slow issuance endpoint still mints (O-19)", async () => {
-    // The lease's token expired while the connector ran, so there is no
-    // fallback to protect: the mint's fetch gets the default bound, not
-    // the floor, and the endpoint's late answer (3 s) is waited for
+    // The lease's token is already expired, so there is no fallback to
+    // protect: the mint's fetch gets the default bound (30 s), not the
+    // floor, and the endpoint's late answer (3 s real) is waited for. The
+    // clock crosses a 1 s floor bound while the fetch is in flight, so a
+    // shortened bound would fail the run where the default does not.
+    const { clock, nowMs } = await realNowClock();
     const fixture = await startCi(EXEC_RULE, {
-      expSeconds: Math.floor(Date.now() / 1000) - 60,
+      expSeconds: Math.floor(nowMs / 1000) - 60,
       delayAfter: 1,
     });
-    expect(await ciRotate(fixture)).toBe(0);
+    const run = ciRotateOnClock(fixture, clock);
+    await oidcFetches(fixture, 2);
+    await clockAdjust(clock, 2_000);
+    expect(await run).toBe(0);
     const body = onlyMint(fixture);
     expect(jwtPayload(body.oidcToken)["jti"]).toBe(2);
     expect(fixture.env.errors.join("\n")).not.toContain("presenting the lease's token");
     expectNoSecretLeak(fixture);
-  }, 20_000);
+  });
 
   it("the issuance bound follows the token in hand: capped at the default, the remaining life minus the margin, the default again when the token cannot outlive the floor (O-18 / O-19)", () => {
     const now = 1_700_000_000_000;
@@ -827,11 +899,12 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
   });
 
   it("an expired lease token is not presented when no fresh token can be minted: the recovery step is named", async () => {
+    const { clock, nowMs } = await realNowClock();
     const fixture = await startCi(EXEC_RULE, {
-      expSeconds: Math.floor(Date.now() / 1000) - 60,
+      expSeconds: Math.floor(nowMs / 1000) - 60,
       failAfter: 1,
     });
-    expect(await ciRotate(fixture)).toBe(1);
+    expect(await ciRotateOnClock(fixture, clock)).toBe(1);
     const errors = fixture.env.errors.join("\n");
     expect(errors).toContain(
       "no token is left to store the proposal: the lease's token expired at",

@@ -14,7 +14,7 @@ import { ChainHeadConflictError } from "@maruhi/api-schema";
 import { cryptoEffect } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, SigningKeyPair } from "@maruhi/crypto";
 import { signChainEntry, SUITE_ID } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
@@ -43,6 +43,7 @@ export function signEntryAtHead(input: {
     }
     // The signing device = that person's valid device matching the signing key at hand (K4-16 — device-key.ts)
     const device = yield* ownDeviceBySigningKey(input.verified, actor, input.signingKeyPair);
+    const timestampMs = yield* Clock.currentTimeMillis;
     const signed = yield* cryptoEffect(() =>
       signChainEntry({
         entry: {
@@ -51,7 +52,7 @@ export function signEntryAtHead(input: {
           prevHashHex: input.verified.state.headHashHex,
           ...input.operation,
           actor: { userId: actor.userId, keyFingerprintHex: device.keyFingerprintHex },
-          timestampMs: Date.now(),
+          timestampMs,
         },
         signingKey: input.signingKeyPair.privateKey,
       }),

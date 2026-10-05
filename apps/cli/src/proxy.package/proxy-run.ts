@@ -581,8 +581,9 @@ export function proxyRunOp(
     });
     yield* announcePlan(plan, input);
     const injected = yield* injectionEnvFor(plan);
+    const caNowMs = yield* Clock.currentTimeMillis;
     const ca = yield* Effect.tryPromise({
-      try: () => makeEphemeralCa(),
+      try: () => makeEphemeralCa(caNowMs),
       catch: () =>
         cliError("Cannot create the run's certificate authority (WebCrypto unavailable)"),
     });

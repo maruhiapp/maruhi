@@ -41,7 +41,7 @@
 // (displayText).
 
 import type { EnvironmentId } from "@maruhi/core";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "../api.ts";
 import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
@@ -156,7 +156,6 @@ export interface AdvanceReceiptsInput {
   readonly receiptsFloor: FloorHandle;
   readonly writerUserId: string;
   readonly signingKey: CryptoKey;
-  readonly now: () => Date;
 }
 
 /** One target's result (for display). */
@@ -192,7 +191,12 @@ function advanceTarget(
       // Before the first sync = nothing to advance (skipped quietly — plan says everything is new)
       return { outcome: { kind: "no-receipt" }, verified: loaded.verified };
     }
-    const result = advanceReceipt(loaded.receipt, input.written, input.now().toISOString());
+    const syncedAtMs = yield* Clock.currentTimeMillis;
+    const result = advanceReceipt(
+      loaded.receipt,
+      input.written,
+      new Date(syncedAtMs).toISOString(),
+    );
     if (result.advanced.length === 0) {
       // Nothing is written when the content does not change (does not consume a version)
       return {

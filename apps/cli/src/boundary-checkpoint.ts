@@ -22,7 +22,7 @@ import {
   signChainEntry,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import type { VerifiedProject } from "./chain-sync.ts";
 import { ownDeviceOrFail } from "./device-key.ts";
@@ -60,6 +60,7 @@ export function signBoundaryCheckpoint(input: {
     const device = yield* ownDeviceOrFail(input.verified, input.member, {
       keyFingerprintHex: input.deviceFingerprintHex,
     });
+    const timestampMs = yield* Clock.currentTimeMillis;
     const signed = yield* cryptoEffect(() =>
       signChainEntry({
         entry: {
@@ -80,7 +81,7 @@ export function signBoundaryCheckpoint(input: {
             ],
             auditHeadHashHex: "",
           },
-          timestampMs: Date.now(),
+          timestampMs,
         },
         signingKey: input.signingKey,
       }),

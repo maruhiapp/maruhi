@@ -42,7 +42,7 @@
 import { dirname, join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
-import { Context, Effect, Schema, Stdio } from "effect";
+import { Clock, Context, Effect, Schema, Stdio } from "effect";
 
 import { describeNonTerminal } from "./agent-gate.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
@@ -327,6 +327,7 @@ export function makeFileFingerprintBook(path: string): FingerprintBookShape {
           loaded.state === "missing" ? { v: 2, known: {} } : loaded.file;
         const users = floorRecordGet(base.known, origin) ?? {};
         const user = floorRecordGet(users, userId) ?? { fingerprints: {} };
+        const verifiedAtMs = yield* Clock.currentTimeMillis;
         yield* writeJsonFileAtomic(path, BookFileSchema, {
           v: 2,
           known: {
@@ -336,7 +337,7 @@ export function makeFileFingerprintBook(path: string): FingerprintBookShape {
               [userId]: {
                 fingerprints: {
                   ...user.fingerprints,
-                  [fingerprintHex]: { verifiedAtMs: Date.now() },
+                  [fingerprintHex]: { verifiedAtMs },
                 },
               },
             },

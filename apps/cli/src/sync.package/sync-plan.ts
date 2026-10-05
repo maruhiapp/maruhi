@@ -28,7 +28,7 @@
 // responsibility).
 
 import type { EnvironmentId } from "@maruhi/core";
-import { Effect, Redacted } from "effect";
+import { Clock, Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
 import type { MaruhiClient } from "../api.ts";
@@ -480,8 +480,6 @@ export interface SyncApplyInput extends SyncContextInput {
   readonly signingKey: CryptoKey;
   /** The explicit consent for apply to a production target (supplement 14 M4). */
   readonly yes: boolean;
-  /** The writer's clock (the receipt's syncedAt. Never used for a judgment). */
-  readonly now: () => Date;
   /** The floor of the integration token's environment (only for the http driver. exec is null). */
   readonly tokenFloor: FloorHandle | null;
   /** The vendor API's retry (the default is production tuning. Tests shorten it). */
@@ -1051,12 +1049,13 @@ export function syncApplyOp(
     // The receipt advances only by "what was actually delivered". Even
     // on a failed run the delivered part is recorded, so the next plan
     // shows only the remainder
+    const syncedAtMs = yield* Clock.currentTimeMillis;
     const receipt = nextReceipt({
       target: input.target,
       previous: loaded.receipt,
       result,
       versions: work.versions,
-      syncedAt: input.now().toISOString(),
+      syncedAt: new Date(syncedAtMs).toISOString(),
     });
     // The receipt's push starts from the view that may have advanced via
     // the pulls of the sync source (and the token environment) (the view

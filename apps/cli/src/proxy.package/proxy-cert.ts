@@ -213,7 +213,7 @@ const CA_SUBJECT = "maruhi ephemeral CA (one proxy run only)";
  * subjectAltName for the host. The CA private key lives only in this
  * closure.
  */
-export async function makeEphemeralCa(now: number = Date.now()): Promise<EphemeralCa> {
+export async function makeEphemeralCa(now: number): Promise<EphemeralCa> {
   const ca = await generateSigner(CA_SUBJECT, false);
   const caTbs = tbsCertificate({
     subject: ca,
