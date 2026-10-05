@@ -199,12 +199,18 @@ export class CryptoRejectedError extends Data.TaggedError("CryptoRejected")<{
  * the crypto contract (errors come back as values, a promise never
  * rejects) was violated. Used only as a defect: it carries no part of
  * the rejection value, so nothing derived from key material or
- * plaintext can reach crash output (absolute rule). The `_tag` is the
- * whole diagnostic — no payload exists to leak.
+ * plaintext can reach crash output (absolute rule). The `_tag` and a
+ * fixed static message (so `Cause.pretty` renders a readable line) are
+ * the whole diagnostic — the message is a constant, never runtime
+ * data, so no payload exists to leak.
  */
-export class CryptoContractViolationError extends Data.TaggedError(
-  "CryptoContractViolation",
-)<object> {}
+export class CryptoContractViolationError extends Data.TaggedError("CryptoContractViolation")<{
+  readonly message: string;
+}> {
+  constructor() {
+    super({ message: "a CryptoResult-returning crypto operation rejected or threw" });
+  }
+}
 
 /**
  * Union of the Effect-tagged errors a `CryptoResult`-returning

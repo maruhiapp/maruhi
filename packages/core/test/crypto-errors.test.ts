@@ -56,6 +56,8 @@ describe("cryptoEffect", () => {
     expect(pretty).not.toContain(SECRET_SENTINEL);
     // …but the crash is still diagnosable as the crypto contract breaking
     expect(pretty).toContain("CryptoContractViolation");
+    // The fixed static message renders, so the defect reads as more than a bare tag
+    expect(pretty).toContain("a CryptoResult-returning crypto operation rejected or threw");
   });
 
   it("scrubs a non-Error rejection value the same way", async () => {
