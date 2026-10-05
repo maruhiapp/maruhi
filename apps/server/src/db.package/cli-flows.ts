@@ -7,11 +7,16 @@ import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
 
 import { guardedAuditSelectColumns } from "./audit.ts";
+import { tryD1 } from "./errors.ts";
 import { cliLoginFlows, userAuditEvents } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
 
-const run = <T>(evaluate: () => Promise<T>): Effect.Effect<T> => Effect.promise(evaluate);
+// D1 access goes through the shared tryD1 adapter (errors.ts —
+// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
+// public repository types keep an empty error channel because the
+// handlers turning D1FailureError into typed errors belong to other
+// lanes. An unexpected D1 failure stays a defect = a 500, as before
 
 // ---------------------------------------------------------------------------
 // CliFlowRepo (AUTH_SPEC §4-1 (4)–(5). The CLI login flow rows)
@@ -116,7 +121,7 @@ export class CliFlowRepo extends Context.Service<CliFlowRepo, CliFlowRepoShape>(
 export function makeCliFlowRepo(db: Db): CliFlowRepoShape {
   return {
     createOrMatch: (flow, nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         // The cap is counted on unconsumed rows (anything but consumed)
         // (§4-1 (4) (iii)'s "concurrent unconsumed rows"). The judgment
         // and the insert are the same INSERT…SELECT (same shape as the
@@ -191,9 +196,9 @@ export function makeCliFlowRepo(db: Db): CliFlowRepoShape {
         // (capacity). A row = another user_id / expired / a terminal
         // state (uniformly rejected — never differentiated)
         return existing === undefined ? "capacity" : "rejected";
-      }),
+      }).pipe(Effect.orDie),
     decideCas: (flowId, ticketHash, decision, nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         const cas = db
           .update(cliLoginFlows)
           .set({ status: decision })
@@ -233,9 +238,9 @@ export function makeCliFlowRepo(db: Db): CliFlowRepoShape {
           ),
         ]);
         return results[0].length === 1;
-      }),
+      }).pipe(Effect.orDie),
     findById: (flowId) =>
-      run(async () => {
+      tryD1(async () => {
         const row = await db
           .select({
             id: cliLoginFlows.id,
@@ -269,15 +274,15 @@ export function makeCliFlowRepo(db: Db): CliFlowRepoShape {
           userCode: row.userCode,
           expiresAtMs: row.expiresAt,
         };
-      }),
+      }).pipe(Effect.orDie),
     consumeCas: (flowId) =>
-      run(async () => {
+      tryD1(async () => {
         const rows = await db
           .update(cliLoginFlows)
           .set({ status: "consumed" })
           .where(and(eq(cliLoginFlows.id, flowId), eq(cliLoginFlows.status, "approved")))
           .returning({ id: cliLoginFlows.id });
         return rows.length === 1;
-      }),
+      }).pipe(Effect.orDie),
   };
 }

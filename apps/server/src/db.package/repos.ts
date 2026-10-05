@@ -4,9 +4,11 @@
 // - Drizzle types and queries are confined to this file (inside the
 //   db.package boundary). The public shapes are domain types
 //   (../auth-domain.ts) and Effect only
-// - A D1 failure (connection, SQL error) is treated as a defect
-//   (Effect.promise). Only the domain-expected branches (no such row,
-//   a unique-constraint conflict) are expressed as values
+// - A D1 failure (connection, SQL error) is classified by the shared
+//   tryD1 adapter (errors.ts) and treated as a defect (Effect.orDie at
+//   each repository method's boundary). Only the domain-expected
+//   branches (no such row, a unique-constraint conflict) are expressed
+//   as values
 // - The settled decision to adopt Drizzle is session 06: classic
 //   drizzle-orm/d1 was adopted. The effect-d1 driver at rc.4 did not
 //   support transaction / batch, so getOrCreateUser (§1-5), which needs
@@ -29,7 +31,7 @@ import { makeRecoveryRepo, RecoveryRepo } from "./recovery.ts";
 import { makeSessionRepo, SessionRepo } from "./sessions.ts";
 import { makeTokenRepo, TokenRepo } from "./tokens.ts";
 
-export { isUniqueConflict } from "./errors.ts";
+export { D1FailureError, D1UniqueConflictError, tryD1 } from "./errors.ts";
 
 // ---------------------------------------------------------------------------
 // The bundle: build the Context of the whole repository set from a D1

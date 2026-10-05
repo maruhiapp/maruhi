@@ -23,9 +23,16 @@ import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
 
 import { randomHex } from "../ids.ts";
+import { tryD1 } from "./errors.ts";
 import { loginFailedWindows, orgAuditEvents, userAuditEvents } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
+
+// D1 access goes through the shared tryD1 adapter (errors.ts —
+// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
+// public repository types keep an empty error channel because the
+// handlers turning D1FailureError into typed errors belong to other
+// lanes. An unexpected D1 failure stays a defect = a 500, as before
 
 /**
  * The audit actor (AUDIT_SPEC §2). Derived from the shared AuditActor
@@ -423,19 +430,19 @@ async function appendWithFixedWindow(
 export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
   return {
     appendUserEvent: (event, serverTs) =>
-      Effect.promise(async () => {
+      tryD1(async () => {
         await userAuditInsert(db, serverTs, event);
-      }),
+      }).pipe(Effect.orDie),
     appendLoginFailed: (event, serverTs, bucket) =>
-      Effect.promise(() =>
+      tryD1(() =>
         appendWithFixedWindow(db, event, serverTs, {
           bucketKey: loginFailedBucketKey(bucket),
           markerEvent: LOGIN_FAILED_SUPPRESSED_EVENT,
           markerBasePayload: { authMethod: bucket.authMethod, reason: bucket.reason },
         }),
-      ),
+      ).pipe(Effect.orDie),
     appendSignupDenied: (event, serverTs, reason) =>
-      Effect.promise(() =>
+      tryD1(() =>
         appendWithFixedWindow(db, event, serverTs, {
           // The bucket namespaces are separated by event name (cannot
           // collide with login_failed's [authMethod, reason] key)
@@ -443,9 +450,9 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
           markerEvent: SIGNUP_DENIED_SUPPRESSED_EVENT,
           markerBasePayload: { authMethod: "github_oauth", reason },
         }),
-      ),
+      ).pipe(Effect.orDie),
     readProjectInviteEvents: (projectId, page) =>
-      Effect.promise(() =>
+      tryD1(() =>
         selectAuditPage(
           db,
           orgAuditEvents,
@@ -459,15 +466,15 @@ export function makeD1AuditRepo(db: Db): D1AuditRepoShape {
           ),
           page,
         ),
-      ),
+      ).pipe(Effect.orDie),
     readUserEventsFor: (userId, page) =>
-      Effect.promise(() =>
+      tryD1(() =>
         selectAuditPage(
           db,
           userAuditEvents,
           or(eq(userAuditEvents.actorUserId, userId), eq(userAuditEvents.targetUserId, userId)),
           page,
         ),
-      ),
+      ).pipe(Effect.orDie),
   };
 }
