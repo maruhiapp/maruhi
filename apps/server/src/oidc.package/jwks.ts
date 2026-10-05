@@ -33,18 +33,9 @@
 // JWKS is public information, and persisting it only saves one round trip on
 // cold start — not worth the management cost of stored data.
 
-import {
-  Clock,
-  Data,
-  Deferred,
-  Effect,
-  Exit,
-  Layer,
-  Schema,
-  Stream,
-  SynchronizedRef,
-} from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+import { egressHttpClientLayer } from "@maruhi/core";
+import { Clock, Data, Deferred, Effect, Exit, Schema, Stream, SynchronizedRef } from "effect";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import { algorithmForJwk, importJwk, type Jwk } from "./jwk.ts";
 
@@ -192,21 +183,19 @@ const JwksDocument = Schema.Struct({
 });
 
 /**
- * The `HttpClient` layer the package's fetches run on.
- * `redirect: "manual"` is kept via `FetchHttpClient.RequestInit`:
- * **never follow redirects** — the check pinning `jwks_uri` to the issuer's
- * origin (jwksUriOf) is an explicit security control, and following a 302
- * to another origin would defeat the pinning. A 3xx is rejected by the
- * status check in fetchJson.
+ * The `HttpClient` layer the package's fetches run on — the repo's shared
+ * egress client (trace propagation disabled), with `redirect: "manual"`
+ * fixed for every request: **never follow redirects** — the check pinning
+ * `jwks_uri` to the issuer's origin (jwksUriOf) is an explicit security
+ * control, and following a 302 to another origin would defeat the
+ * pinning. A 3xx is rejected by the status check in fetchJson.
  */
-const defaultHttpClientLayer = FetchHttpClient.layer.pipe(
-  Layer.provide(Layer.succeed(FetchHttpClient.RequestInit, { redirect: "manual" })),
-);
+const defaultHttpClientLayer = egressHttpClientLayer({ redirect: "manual" });
 
 /**
- * main decoded the body with a fatal UTF-8 decoder: invalid bytes must be
- * a decode failure (503), not silently repaired into U+FFFD by the
- * non-fatal decoder `schemaBodyJson` uses.
+ * Decode with a fatal UTF-8 decoder: invalid bytes must be a decode
+ * failure (503), not silently repaired into U+FFFD by the non-fatal
+ * decoder `schemaBodyJson` uses.
  */
 const utf8FatalDecoder = new TextDecoder("utf-8", { fatal: true });
 
