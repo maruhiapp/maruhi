@@ -65,9 +65,9 @@ const TokenResponseSchema = Schema.Struct({
   access_token: Schema.optionalKey(Schema.String),
 });
 
-/** GitHub's `GET /user` answer: the numeric id is the identifier; the login is a display snapshot only. */
+/** GitHub's `GET /user` answer: the integer id is the identifier; the login is a display snapshot only. */
 const UserResponseSchema = Schema.Struct({
-  id: Schema.optionalKey(Schema.Number),
+  id: Schema.optionalKey(Schema.Int),
   login: Schema.optionalKey(Schema.String),
 });
 type UserResponse = typeof UserResponseSchema.Type;

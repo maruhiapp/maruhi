@@ -17,8 +17,9 @@
 // at the first request (oidc.test.ts's per-test swap does not hit this
 // limitation because the JWKS code calls globalThis.fetch directly).
 
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import { FetchHttpClient } from "effect/http";
+import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { makeGitHubApi } from "../src/auth.package/index.ts";
@@ -79,9 +80,17 @@ describe("makeGitHubApi exchangeCode (§3-2)", () => {
   it("fails with code-exchange-failed when GitHub never answers", async () => {
     // The endpoint accepts the connection and never responds: the call now
     // fails through the typed error once REQUEST_TIMEOUT (5 s, the same
-    // bound as the JWKS fetch) elapses instead of hanging
+    // bound as the JWKS fetch) elapses instead of hanging. The clock is
+    // virtual (TestClock), so the 5 s wait is instant
     const fetchImpl = (() => new Promise<Response>(() => {})) as typeof fetch;
-    const outcome = await run(api().exchangeCode("code-1", REDIRECT_URI), fetchImpl);
+    const outcome = await run(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(api().exchangeCode("code-1", REDIRECT_URI));
+        yield* TestClock.adjust("5 seconds");
+        return yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(TestClock.layer())),
+      fetchImpl,
+    );
     expect(outcome).toEqual({
       ok: false,
       error: expect.objectContaining({ _tag: "GitHubAuth", reason: "code-exchange-failed" }),
@@ -124,6 +133,19 @@ describe("makeGitHubApi fetchIdentity (§3-2 / §3-3)", () => {
     });
   });
 
+  it("fails with token-invalid when the user answer carries a null login", async () => {
+    // JSON `null` is not an absent key: the schema rejects it where the
+    // cast used to read it as "no login"
+    const outcome = await run(
+      api().fetchIdentity("gho_test100"),
+      githubStub({ user: json({ id: 100, login: null }) }),
+    );
+    expect(outcome).toEqual({
+      ok: false,
+      error: expect.objectContaining({ _tag: "GitHubAuth", reason: "token-invalid" }),
+    });
+  });
+
   it("fails with token-invalid when /user rejects the token", async () => {
     const outcome = await run(
       api().fetchIdentity("gho_bad"),
@@ -141,6 +163,21 @@ describe("makeGitHubApi fetchIdentity (§3-2 / §3-3)", () => {
     const outcome = await run(
       api().fetchIdentity("gho_test100"),
       githubStub({ emails: () => Promise.resolve(json({ message: "not an array" })) }),
+    );
+    expect(outcome).toEqual({
+      ok: false,
+      error: expect.objectContaining({ _tag: "GitHubAuth", reason: "token-invalid" }),
+    });
+  });
+
+  it("fails with token-invalid when an emails entry has a null email", async () => {
+    // Same edge as a non-array body: the cast used to read `email: null` as
+    // "not a string" and skip the entry; the schema fails the whole call
+    const outcome = await run(
+      api().fetchIdentity("gho_test100"),
+      githubStub({
+        emails: () => Promise.resolve(json([{ email: null, primary: true, verified: true }])),
+      }),
     );
     expect(outcome).toEqual({
       ok: false,
