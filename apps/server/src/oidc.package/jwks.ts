@@ -33,7 +33,17 @@
 // JWKS is public information, and persisting it only saves one round trip on
 // cold start — not worth the management cost of stored data.
 
-import { Clock, Data, Deferred, Effect, Layer, Schema, Stream, SynchronizedRef } from "effect";
+import {
+  Clock,
+  Data,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  Schema,
+  Stream,
+  SynchronizedRef,
+} from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import { algorithmForJwk, importJwk, type Jwk } from "./jwk.ts";
@@ -423,22 +433,31 @@ export function makeJwksCache(
         );
         if (winner) {
           yield* Effect.forkDetach(
-            Effect.matchEffect(load, {
-              onSuccess: (loaded) =>
-                Effect.andThen(
-                  SynchronizedRef.update(state, (current) =>
-                    slot.setLoaded(current, issuer, loaded),
+            Effect.uninterruptible(
+              Effect.gen(function* () {
+                // Uninterruptible + an exit-materialized load: like the old
+                // shared Promise, the fetch cannot be killed mid-flight, and
+                // on ANY exit (success, typed failure, defect) the in-flight
+                // entry drops and the Deferred settles — a dead in-flight
+                // entry would hang every later joiner
+                const exit = yield* Effect.exit(
+                  // A defect must still read as "jwks unavailable" for
+                  // joiners — the old tryPromise catch-all mapped every
+                  // rejection to the same 503
+                  load.pipe(
+                    Effect.catchDefect(() =>
+                      Effect.fail(new JwksUnavailableError({ reason: "fetch" })),
+                    ),
                   ),
-                  Deferred.succeed(created, loaded),
-                ),
-              onFailure: (error) =>
-                Effect.andThen(
-                  SynchronizedRef.update(state, (current) =>
-                    slot.setInFlight(current, dropKey(slot.inFlightOf(current), issuer)),
-                  ),
-                  Deferred.fail(created, error),
-                ),
-            }),
+                );
+                yield* SynchronizedRef.update(state, (current) =>
+                  Exit.isSuccess(exit)
+                    ? slot.setLoaded(current, issuer, exit.value)
+                    : slot.setInFlight(current, dropKey(slot.inFlightOf(current), issuer)),
+                );
+                yield* Deferred.done(created, exit);
+              }),
+            ),
           );
         }
         return created;

@@ -41,16 +41,30 @@ function json(value: unknown, status = 200): Response {
  * An `HttpClient` stub serving discovery / JWKS. Swap `jwks` to
  * simulate key rotation; set `failJwks` to simulate an issuer-side
  * outage; set `hang` for an issuer that never answers (the fetch
- * timeout then has to win — `TestClock.adjust` fires it).
+ * timeout then has to win — `TestClock.adjust` fires it); set `dieJwks`
+ * for a defect in the fetch (not a typed failure).
  */
-function stubHttpClient(
-  options: {
-    readonly jwks?: () => unknown;
-    readonly failJwks?: () => boolean;
-    readonly discovery?: unknown;
-    readonly hang?: boolean;
-  } = {},
-): StubbedHttp {
+type StubOptions = {
+  readonly jwks?: () => unknown;
+  readonly failJwks?: () => boolean;
+  readonly dieJwks?: () => boolean;
+  readonly discovery?: unknown;
+  readonly hang?: boolean;
+};
+
+const jwksResponse = (
+  options: StubOptions,
+  respond: (body: Response) => Effect.Effect<HttpClientResponse.HttpClientResponse>,
+): Effect.Effect<HttpClientResponse.HttpClientResponse> => {
+  if (options.dieJwks?.() === true) {
+    return Effect.die(new Error("client blew up"));
+  }
+  return options.failJwks?.() === true
+    ? respond(new Response("boom", { status: 503 }))
+    : respond(json(options.jwks?.() ?? OIDC_JWKS));
+};
+
+function stubHttpClient(options: StubOptions = {}): StubbedHttp {
   const urls: string[] = [];
   const client = HttpClient.make((request, url) => {
     urls.push(url.href);
@@ -62,9 +76,7 @@ function stubHttpClient(
       return respond(json(options.discovery ?? OIDC_DISCOVERY));
     }
     if (url.href.endsWith("/.well-known/jwks")) {
-      return options.failJwks?.() === true
-        ? respond(new Response("boom", { status: 503 }))
-        : respond(json(options.jwks?.() ?? OIDC_JWKS));
+      return jwksResponse(options, respond);
     }
     return respond(new Response("unexpected", { status: 500 }));
   });
@@ -256,6 +268,22 @@ describe("JWKS cache (§14-1)", () => {
     expect(stub.urls.length).toBe(afterFirstFailure + 1);
   });
 
+  it("settles the shared load when the fetch dies with a defect, then retries after the cooldown", async () => {
+    // A defect inside the single-flight load must still complete the
+    // Deferred and drop the in-flight entry (the old Promise always
+    // rejected and cleaned up in `.finally`) — a dead in-flight entry
+    // would hang every later caller on that issuer
+    let dying = true;
+    const stub = stubHttpClient({ dieJwks: () => dying });
+    const rt = await makeTestRuntime();
+    const cache = makeJwksCache(stub.layer);
+    expect((await run(rt, cache.resolveKey(OIDC_ISSUER, OIDC_KID))).ok).toBe(false);
+
+    dying = false;
+    await advance(rt, 61_000);
+    expect(await resolve(cache, rt, OIDC_KID)).not.toBeNull();
+  });
+
   it("aborts a hanging JWKS fetch instead of holding the request open", async () => {
     // An external fetch inducible via an unauthenticated path, so an
     // unresponsive issuer must not hold the request open
@@ -263,11 +291,20 @@ describe("JWKS cache (§14-1)", () => {
     const stub = stubHttpClient({ hang: true });
     const rt = await makeTestRuntime();
     const pending = run(rt, makeJwksCache(stub.layer).resolveKey(OIDC_ISSUER, OIDC_KID));
-    // Let the detached fetch fiber register its timeout sleep before
-    // advancing the clock
-    await new Promise((resolveFlush) => setTimeout(resolveFlush, 0));
-    await advance(rt, 10_000);
-    const result = await pending;
+    // No ordering assumption about which tick the detached fetch fiber
+    // registers its timeout sleep on: yield the runtime's scheduler and
+    // advance in slices until the verdict settles. 20 s of virtual time
+    // covers FETCH_TIMEOUT_MS several times over; a fetch that never
+    // settles fails the assertion below instead of hanging the suite
+    for (let tick = 0; tick < 20; tick += 1) {
+      await rt.runPromise(Effect.yieldNow);
+      await advance(rt, 1_000);
+      if ((await Promise.race([pending, Promise.resolve("pending")])) !== "pending") break;
+    }
+    const result = await Promise.race([pending, Promise.resolve("pending" as const)]);
+    if (result === "pending") {
+      throw new Error("resolveKey did not settle within 20 s of virtual time");
+    }
     expect(result.ok).toBe(false);
   });
 });
