@@ -230,9 +230,9 @@ function mintGithubApp(
       )
       .pipe(Effect.mapError((error) => new ConnectorError({ message: transportReason(error) })));
     // GitHub's edge answers HTML on a bad day: any body that is not the
-    // token JSON (unparseable or the wrong shape) decodes to {} and the
-    // status wording below carries the failure — "GitHub answered 502 (no
-    // message)". Only a body the client cannot even read is its own error.
+    // token JSON — unreadable, unparseable or the wrong shape — decodes to
+    // {} and the status wording below carries the failure ("GitHub
+    // answered 502 (no message)").
     const record = yield* response
       .pipe(HttpClientResponse.schemaBodyJson(TokenResponse))
       .pipe(
