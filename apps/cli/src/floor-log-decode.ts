@@ -216,10 +216,9 @@ const decodeOrNull =
   };
 
 /** Strict decoding of one line. null = undecodable (fold ignores it — self-healing). */
-export function decodeLogRecord(line: string): FloorLogRecord | null {
-  const decoded = Schema.decodeUnknownResult(Schema.fromJsonString(FloorLogRecordSchema))(line);
-  return Result.isSuccess(decoded) ? decoded.success : null;
-}
+export const decodeLogRecord: (line: string) => FloorLogRecord | null = decodeOrNull(
+  Schema.fromJsonString(FloorLogRecordSchema),
+);
 
 /** Strict decoding of a chain head (null = undecodable). */
 export const decodeChainHead: (value: unknown) => ChainHeadFloor | null =
