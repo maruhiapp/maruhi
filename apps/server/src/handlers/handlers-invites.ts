@@ -45,7 +45,7 @@ import {
   verifyInviteAcceptSignature,
   verifyInviteLinkSignature,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
@@ -162,7 +162,7 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
         if (payload.role === "admin" && role !== "owner") {
           return yield* Effect.fail(new ForbiddenError({ reason: "insufficient-role" }));
         }
-        const nowMs = Date.now();
+        const nowMs = yield* Clock.currentTimeMillis;
         const invites = yield* InviteRepo;
         const decision = yield* invites.create(
           {
@@ -212,7 +212,7 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
         if (record === null) {
           return yield* Effect.fail(new InviteNotFoundError());
         }
-        const nowMs = Date.now();
+        const nowMs = yield* Clock.currentTimeMillis;
         const gone = goneReasonOf(record, nowMs);
         if (gone !== null) {
           return yield* Effect.fail(new InviteGoneError({ reason: gone }));
@@ -288,7 +288,7 @@ export const invitesLive = HttpApiBuilder.group(maruhiApi, "invites", (handlers)
         // pending rows also allowed — B1a ruling). completed / revoked
         // → 410. invite.revoked is recorded by the repository in the
         // same batch (AUDIT_SPEC §3.2)
-        const nowMs = Date.now();
+        const nowMs = yield* Clock.currentTimeMillis;
         const won = yield* invites.revokeCas(
           params.projectId,
           record.id,

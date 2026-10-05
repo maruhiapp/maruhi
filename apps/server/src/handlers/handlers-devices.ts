@@ -31,7 +31,7 @@ import {
 } from "@maruhi/api-schema";
 import { cryptoEffect, RequestAuth } from "@maruhi/core";
 import { computeUserKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
@@ -119,7 +119,7 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
           label: payload.label,
           tokenId: payload.tokenId ?? null,
           limit: MAX_DEVICE_REGISTRY_ROWS_PER_USER,
-          nowMs: Date.now(),
+          nowMs: yield* Clock.currentTimeMillis,
         });
         if (!admitted) {
           return yield* Effect.fail(
@@ -148,7 +148,7 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
-        const nowMs = Date.now();
+        const nowMs = yield* Clock.currentTimeMillis;
         const repo = yield* DeviceRepo;
         // Opportunistic deletion (the caller's own expired requests)
         yield* repo.requestSweep(principal.userId, nowMs);
@@ -193,7 +193,7 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
       Effect.gen(function* () {
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
-        const nowMs = Date.now();
+        const nowMs = yield* Clock.currentTimeMillis;
         const repo = yield* DeviceRepo;
         yield* repo.requestSweep(principal.userId, nowMs);
         const rows = yield* repo.requestList(principal.userId, nowMs);
@@ -205,7 +205,11 @@ export const devicesLive = HttpApiBuilder.group(maruhiApi, "devices", (handlers)
         const principal = yield* (yield* RequestAuth).principal;
         yield* ensureKeyMaterialAccess(principal);
         const repo = yield* DeviceRepo;
-        const row = yield* repo.requestFind(principal.userId, params.fp, Date.now());
+        const row = yield* repo.requestFind(
+          principal.userId,
+          params.fp,
+          yield* Clock.currentTimeMillis,
+        );
         if (row === null) {
           return yield* Effect.fail(new DeviceNotFoundError());
         }

@@ -22,7 +22,7 @@ import type { AuthenticatedPrincipal } from "@maruhi/core";
 import { auditActorOf, cryptoPromise, RequestAuth } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, Role } from "@maruhi/crypto";
 import { canonicalChainEntryBytes, computeChainEntryHash } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import type { HttpApiEndpoint } from "effect/http-api";
 import { HttpApiBuilder } from "effect/http-api";
 
@@ -81,7 +81,7 @@ const repairOrConflict = (
       projectId,
       orgId,
       principal.userId,
-      Date.now(),
+      yield* Clock.currentTimeMillis,
       auditActorOf(principal),
     );
     return { projectId, headSeq: outcome.headSeq, headHashHex: outcome.headHashHex };
@@ -105,7 +105,7 @@ const mapInitOutcome = <Endpoint extends HttpApiEndpoint.Top>(
           projectId,
           orgId,
           principal.userId,
-          Date.now(),
+          yield* Clock.currentTimeMillis,
           auditActorOf(principal),
         );
         return { projectId, headSeq: outcome.headSeq, headHashHex: outcome.headHashHex };
@@ -256,13 +256,15 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
               const outcome = yield* rpcCall<DataOutcome<Role>>(() =>
                 projectStub(env, projectId).memberRoleFor(principal.userId),
               ).pipe(
-                Effect.catchTag("RpcCallError", (error) => {
-                  console.warn(
-                    "project list: a membership confirmation failed; omitting that project from the page (its projection row is retained)",
-                    error.errorName,
-                  );
-                  return Effect.succeed(null);
-                }),
+                Effect.catchTag("RpcCallError", (error) =>
+                  Effect.as(
+                    Effect.logWarning(
+                      "project list: a membership confirmation failed; omitting that project from the page (its projection row is retained)",
+                      error.errorName,
+                    ),
+                    null,
+                  ),
+                ),
               );
               if (outcome === null) {
                 return null;
@@ -320,7 +322,7 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         // only a listing omission, which the next get repairs)
         const projects = yield* ProjectRepo;
         yield* projects
-          .upsertMember(params.projectId, principal.userId, Date.now())
+          .upsertMember(params.projectId, principal.userId, yield* Clock.currentTimeMillis)
           .pipe(Effect.catchDefect(() => Effect.void));
         return {
           projectId: params.projectId,
@@ -430,7 +432,7 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
           // (lazy insert) self-repairs
           const projects = yield* ProjectRepo;
           yield* projects
-            .upsertMember(params.projectId, target.targetUserId, Date.now())
+            .upsertMember(params.projectId, target.targetUserId, yield* Clock.currentTimeMillis)
             .pipe(Effect.catchDefect(() => Effect.void));
         }
         if (applied.op === "remove_member") {

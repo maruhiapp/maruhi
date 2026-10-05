@@ -23,8 +23,8 @@ import {
   TokenLimitError,
 } from "@maruhi/api-schema";
 import type { TokenScope } from "@maruhi/core";
-import { TokenService } from "@maruhi/core";
-import { Effect, Option } from "effect";
+import { parseTokenScopes, TokenService } from "@maruhi/core";
+import { Clock, Effect, Option } from "effect";
 import type { HttpServerRequest } from "effect/http";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -86,7 +86,7 @@ const DEFAULT_TOKEN_SCOPES: readonly TokenScope[] = [{ project: "*", permission:
 const flowSigningKey: Effect.Effect<CryptoKey, never, FlowSigningKeyRepo> = Effect.gen(
   function* () {
     const repo = yield* FlowSigningKeyRepo;
-    const keyHex = yield* repo.getOrCreate(randomHex(32), Date.now());
+    const keyHex = yield* repo.getOrCreate(randomHex(32), yield* Clock.currentTimeMillis);
     // Malformed form (only ever written by our own generation path) is a defect
     return yield* Effect.promise(() => importFlowSigningKey(keyHex));
   },
@@ -164,22 +164,24 @@ function restoreFlowBinding(
   }
   const readParam = (name: string): string | undefined => bound.get(name) ?? undefined;
   const vsig = readParam("vsig");
-  return Effect.promise(async () => {
-    const params = await verifyCliVerifyQuery(
-      key,
-      {
-        flow: readParam("flow"),
-        exp: readParam("exp"),
-        code: readParam("code"),
-        name: readParam("name"),
-        scopes: readParam("scopes"),
-        days: readParam("days"),
-        vsig,
-      },
-      Date.now(),
-    );
-    return params === null || vsig === undefined ? "invalid" : { params, vsig };
-  });
+  return Effect.flatMap(Clock.currentTimeMillis, (nowMs) =>
+    Effect.promise(async () => {
+      const params = await verifyCliVerifyQuery(
+        key,
+        {
+          flow: readParam("flow"),
+          exp: readParam("exp"),
+          code: readParam("code"),
+          name: readParam("name"),
+          scopes: readParam("scopes"),
+          days: readParam("days"),
+          vsig,
+        },
+        nowMs,
+      );
+      return params === null || vsig === undefined ? "invalid" : { params, vsig };
+    }),
+  );
 }
 
 /**
@@ -187,8 +189,8 @@ function restoreFlowBinding(
  * (create-or-match) and rendering of the approval page. user_id, the
  * issuance parameters, and the ticket are all fixed at creation (no
  * intermediate state exists). scopesJson is a value start itself
- * JSON.stringify'd and is vsig-verified — a parse failure is a
- * defect.
+ * JSON.stringify'd from Schema-validated scopes and is
+ * vsig-verified — a decode failure is a defect.
  */
 function admitAndRenderApproval(
   params: CliVerifyParams,
@@ -198,7 +200,13 @@ function admitAndRenderApproval(
   return Effect.gen(function* () {
     const ticket = randomHex(32);
     const ticketHash = yield* Effect.promise(() => sha256Hex(ticket));
-    const scopes = JSON.parse(params.scopesJson) as readonly TokenScope[];
+    const scopes = parseTokenScopes(params.scopesJson);
+    if (scopes === null) {
+      // The only signer is the server (cliStart JSON.stringify's
+      // Schema-validated scopes). A value that does not decode = an
+      // implementation bug / signing-key compromise = defect
+      return yield* Effect.die(new Error("verified CLI flow scopes are not a valid scope array"));
+    }
     const flows = yield* CliFlowRepo;
     const admission = yield* flows.createOrMatch(
       {
@@ -211,7 +219,7 @@ function admitAndRenderApproval(
         ticketHash,
         expiresAtMs: params.expiresAtMs,
       },
-      Date.now(),
+      yield* Clock.currentTimeMillis,
     );
     // rejected (different user_id, expired, terminal state) and
     // capacity (overall cap) both get the uniform error page
@@ -339,7 +347,7 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         const secrets = yield* WorkerSecrets;
         yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, secrets.githubClientSecret);
         const key = yield* flowSigningKey;
-        const nowMs = Date.now();
+        const nowMs = yield* Clock.currentTimeMillis;
         const flowId = randomHex(16);
         const expiresAtMs = nowMs + CLI_FLOW_TTL_MS;
         const params: CliVerifyParams = {
@@ -384,7 +392,8 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
           return uniformErrorPage();
         }
         const key = yield* flowSigningKey;
-        const params = yield* Effect.promise(() => verifyCliVerifyQuery(key, query, Date.now()));
+        const nowMs = yield* Clock.currentTimeMillis;
+        const params = yield* Effect.promise(() => verifyCliVerifyQuery(key, query, nowMs));
         if (params === null || query.vsig === undefined) {
           return uniformErrorPage();
         }
@@ -426,7 +435,7 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
           flowId,
           ticketHash,
           decision === "approve" ? "approved" : "denied",
-          Date.now(),
+          yield* Clock.currentTimeMillis,
         );
         if (!decided) {
           return uniformErrorPage();
@@ -456,8 +465,9 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         // credential mismatch); expired = a typed termination
         // instruction to the legitimate holder (§4-2)
         const key = yield* flowSigningKey;
+        const nowMs = yield* Clock.currentTimeMillis;
         const verdict = yield* Effect.promise(() =>
-          verifyFlowToken(key, payload.flowId, payload.flowToken, Date.now()),
+          verifyFlowToken(key, payload.flowId, payload.flowToken, nowMs),
         );
         if (verdict === "invalid") {
           return yield* Effect.fail(new CliFlowRejectedError());

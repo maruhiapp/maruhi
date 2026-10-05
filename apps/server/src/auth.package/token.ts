@@ -13,7 +13,7 @@
 
 import type { Principal, TokenServiceShape } from "@maruhi/core";
 import { anonymousPrincipal, TokenLimitReachedError } from "@maruhi/core";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import type { ApiTokenRecord } from "../auth-domain.ts";
 import type { TokenRepoShape } from "../db.package/index.ts";
@@ -56,17 +56,18 @@ function toPrincipal(record: ApiTokenRecord | null, tokenHash: string, nowMs: nu
 const TOUCH_INTERVAL_MS = 60 * 60 * 1000;
 
 function resolveByHash(tokens: TokenRepoShape, tokenHash: string): Effect.Effect<Principal> {
-  return Effect.flatMap(tokens.findByHash(tokenHash), (record) => {
-    const now = Date.now();
-    const principal = toPrincipal(record, tokenHash, now);
-    if (principal.kind !== "token" || record === null) {
-      return Effect.succeed(anonymousPrincipal);
-    }
-    if (record.lastUsedAtMs !== null && now - record.lastUsedAtMs < TOUCH_INTERVAL_MS) {
-      return Effect.succeed(principal);
-    }
-    return Effect.as(tokens.touchLastUsed(record.id, now), principal);
-  });
+  return Effect.flatMap(tokens.findByHash(tokenHash), (record) =>
+    Effect.flatMap(Clock.currentTimeMillis, (now) => {
+      const principal = toPrincipal(record, tokenHash, now);
+      if (principal.kind !== "token" || record === null) {
+        return Effect.succeed(anonymousPrincipal);
+      }
+      if (record.lastUsedAtMs !== null && now - record.lastUsedAtMs < TOUCH_INTERVAL_MS) {
+        return Effect.succeed(principal);
+      }
+      return Effect.as(tokens.touchLastUsed(record.id, now), principal);
+    }),
+  );
 }
 
 export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
@@ -76,7 +77,7 @@ export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
         const rawToken = TOKEN_PREFIX + randomBase62();
         const tokenHash = yield* hashOf(rawToken);
         const tokenId = ulid();
-        const createdAtMs = Date.now();
+        const createdAtMs = yield* Clock.currentTimeMillis;
         // expires_at is fixed at issuance (AUTH_SPEC §6 — deliberately
         // asymmetric to the session §5 sliding renewal: tokens are forced
         // through periodic re-authentication)
@@ -118,10 +119,12 @@ export function makeTokenService(tokens: TokenRepoShape): TokenServiceShape {
             ? Effect.void
             : Effect.asVoid(
                 // In self-revocation (CLI logout) the actor's token = the revocation target itself
-                tokens.revokeById(record.id, record.userId, Date.now(), {
-                  userId: record.userId,
-                  apiTokenId: record.id,
-                }),
+                Effect.flatMap(Clock.currentTimeMillis, (now) =>
+                  tokens.revokeById(record.id, record.userId, now, {
+                    userId: record.userId,
+                    apiTokenId: record.id,
+                  }),
+                ),
               ),
         ),
       ),

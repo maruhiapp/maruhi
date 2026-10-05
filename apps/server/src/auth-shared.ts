@@ -7,7 +7,7 @@
 // handlers-auth-cli), the parts both sides use live in this module.
 
 import { AuthFlowError, SetupIncompleteError } from "@maruhi/api-schema";
-import { Effect, type Redacted } from "effect";
+import { Clock, Effect, type Redacted } from "effect";
 import type { Cookies, HttpServerRequest } from "effect/http";
 import { HttpServerResponse } from "effect/http";
 
@@ -144,10 +144,12 @@ export function recordLoginFailed(
   reason: AuthFlowError["reason"],
 ): Effect.Effect<void, never, D1AuditRepo> {
   return Effect.flatMap(D1AuditRepo, (audit) =>
-    audit.appendLoginFailed(
-      { event: "auth.login_failed", actor: {}, payload: { authMethod, reason } },
-      Date.now(),
-      { authMethod, reason },
+    Effect.flatMap(Clock.currentTimeMillis, (now) =>
+      audit.appendLoginFailed(
+        { event: "auth.login_failed", actor: {}, payload: { authMethod, reason } },
+        now,
+        { authMethod, reason },
+      ),
     ),
   );
 }
@@ -164,14 +166,16 @@ export function recordSignupDenied(
   reason: SignupDenialReason,
 ): Effect.Effect<void, never, D1AuditRepo> {
   return Effect.flatMap(D1AuditRepo, (audit) =>
-    audit.appendSignupDenied(
-      {
-        event: "auth.signup_denied",
-        actor: {},
-        payload: { authMethod: "github_oauth", reason },
-      },
-      Date.now(),
-      reason,
+    Effect.flatMap(Clock.currentTimeMillis, (now) =>
+      audit.appendSignupDenied(
+        {
+          event: "auth.signup_denied",
+          actor: {},
+          payload: { authMethod: "github_oauth", reason },
+        },
+        now,
+        reason,
+      ),
     ),
   );
 }
