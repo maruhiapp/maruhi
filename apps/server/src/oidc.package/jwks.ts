@@ -64,9 +64,9 @@ const FORCED_REFRESH_COOLDOWN_MS = 60 * 1000;
  * While an issuer is down, `fetchedAtMs` stays past the TTL, so without this,
  * for the rest of the grace window (just under 6 hours at most) "one
  * unauthenticated request = one outbound fetch to the issuer (5-second timeout
- * each)" would persist. `inFlight` folds only **concurrent** requests;
- * sequential requests are not folded. Amplification bites exactly when the
- * issuer is already weakened — the shape we least want.
+ * each)" would persist. The in-flight records fold only **concurrent**
+ * requests; sequential requests are not folded. Amplification bites exactly
+ * when the issuer is already weakened — the shape we least want.
  */
 const FAILED_REFRESH_COOLDOWN_MS = 60 * 1000;
 
@@ -179,21 +179,21 @@ const DiscoveryDocument = Schema.Struct({
 });
 
 /**
- * The JWKS document. Entries stay `unknown` and are narrowed to objects by
- * `isJwk` — a non-object entry is unusable and gets skipped by selection
- * rather than rejecting the whole set (issuers may publish keys we cannot
- * use).
+ * The JWKS document. Every entry must be a JSON object — the schema
+ * rejects a non-object entry wholesale (503), the verdict the
+ * pre-Effect code reached when `algorithmForJwk` dereferenced `null`.
+ * A Record keeps every declared JWK field (x/y/key_ops are consumed by
+ * importJwk, not just the ones we pattern-match on); a key whose fields
+ * we cannot use is skipped later by selectJwk (issuers may publish
+ * algorithms we do not accept).
  */
 const JwksDocument = Schema.Struct({
-  keys: Schema.Array(Schema.Unknown),
+  keys: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
 });
 
-/** A decoded JWKS entry is usable only when it is a JSON object. */
-const isJwk = (value: unknown): value is Jwk => typeof value === "object" && value !== null;
-
 /**
- * The `HttpClient` layer the package's fetches run on when no layer is
- * passed. `redirect: "manual"` is kept via `FetchHttpClient.RequestInit`:
+ * The `HttpClient` layer the package's fetches run on.
+ * `redirect: "manual"` is kept via `FetchHttpClient.RequestInit`:
  * **never follow redirects** — the check pinning `jwks_uri` to the issuer's
  * origin (jwksUriOf) is an explicit security control, and following a 302
  * to another origin would defeat the pinning. A 3xx is rejected by the
@@ -202,6 +202,13 @@ const isJwk = (value: unknown): value is Jwk => typeof value === "object" && val
 const defaultHttpClientLayer = FetchHttpClient.layer.pipe(
   Layer.provide(Layer.succeed(FetchHttpClient.RequestInit, { redirect: "manual" })),
 );
+
+/**
+ * main decoded the body with a fatal UTF-8 decoder: invalid bytes must be
+ * a decode failure (503), not silently repaired into U+FFFD by the
+ * non-fatal decoder `schemaBodyJson` uses.
+ */
+const utf8FatalDecoder = new TextDecoder("utf-8", { fatal: true });
 
 /**
  * GET `url` and decode the JSON body with `schema` via
@@ -246,6 +253,11 @@ const fetchJson = <S extends Schema.Constraint>(
         merged.set(chunk, offset);
         offset += chunk.length;
       }
+      // Reject invalid UTF-8 before re-wrapping — see utf8FatalDecoder
+      yield* Effect.try({
+        try: () => utf8FatalDecoder.decode(merged),
+        catch: () => new JwksUnavailableError({ reason: "decode" }),
+      });
       const bounded = HttpClientResponse.fromWeb(
         response.request,
         new Response(merged, { status: response.status, headers: response.headers }),
@@ -253,11 +265,14 @@ const fetchJson = <S extends Schema.Constraint>(
       return { document: yield* HttpClientResponse.schemaBodyJson(schema)(bounded) } as const;
     }).pipe(
       Effect.timeout(FETCH_TIMEOUT_MS),
+      // Normalize each foreign error to its own reason — no flattening:
+      // an error type the pipeline grows later surfaces as a type error
+      // here instead of being silently remapped
       Effect.catchTags({
         TimeoutError: () => Effect.fail(new JwksUnavailableError({ reason: "timeout" })),
         SchemaError: () => Effect.fail(new JwksUnavailableError({ reason: "decode" })),
+        HttpClientError: () => Effect.fail(new JwksUnavailableError({ reason: "fetch" })),
       }),
-      Effect.mapError(() => new JwksUnavailableError({ reason: "fetch" })),
     );
     if (typeof outcome === "string") {
       return yield* Effect.fail(new JwksUnavailableError({ reason: outcome }));
@@ -361,27 +376,16 @@ interface InFlightSlot<A> {
     state: CacheState,
     inFlight: Readonly<Record<string, Deferred.Deferred<A, JwksUnavailableError>>>,
   ) => CacheState;
-  readonly setLoaded: (state: CacheState, issuer: string, loaded: A) => CacheState;
 }
 
 const discoverySlot: InFlightSlot<CachedDiscovery> = {
   inFlightOf: (state) => state.discoveryInFlight,
   setInFlight: (state, inFlight) => ({ ...state, discoveryInFlight: inFlight }),
-  setLoaded: (state, issuer, loaded) => ({
-    ...state,
-    lastGoodDiscovery: { ...state.lastGoodDiscovery, [issuer]: loaded },
-    discoveryInFlight: dropKey(state.discoveryInFlight, issuer),
-  }),
 };
 
 const jwksSlot: InFlightSlot<CachedJwks> = {
   inFlightOf: (state) => state.jwksInFlight,
   setInFlight: (state, inFlight) => ({ ...state, jwksInFlight: inFlight }),
-  setLoaded: (state, issuer, loaded) => ({
-    ...state,
-    lastGoodJwks: { ...state.lastGoodJwks, [issuer]: loaded },
-    jwksInFlight: dropKey(state.jwksInFlight, issuer),
-  }),
 };
 
 /**
@@ -391,9 +395,7 @@ const jwksSlot: InFlightSlot<CachedJwks> = {
  * `Deferred`, so a cold-start rush does not hit the same issuer
  * simultaneously.
  */
-export function makeJwksCache(
-  httpClientLayer: Layer.Layer<HttpClient.HttpClient> = defaultHttpClientLayer,
-): JwksCacheShape {
+export function makeJwksCache(): JwksCacheShape {
   const state = SynchronizedRef.makeUnsafe(emptyCacheState);
 
   /**
@@ -404,11 +406,23 @@ export function makeJwksCache(
    * Deferred, and the finalization inside always completes it. The whole
    * register-and-fork step is uninterruptible so no joiner can strand a
    * Deferred that never completes.
+   *
+   * `settle` is the state transition the winner commits when `load`
+   * finishes. It runs inside the detached load's own
+   * `SynchronizedRef.update`, atomically with the in-flight drop and
+   * before `Deferred.done` — all post-load bookkeeping (a stored value,
+   * the failure cooldown stamp, the held-stale stamp) lands there, so it
+   * cannot be lost by interrupting every waiting caller.
    */
   const singleFlight = <A>(
     issuer: string,
     slot: InFlightSlot<A>,
     load: Effect.Effect<A, JwksUnavailableError, HttpClient.HttpClient>,
+    settle: (
+      current: CacheState,
+      exit: Exit.Exit<A, JwksUnavailableError>,
+      nowMs: number,
+    ) => CacheState,
   ): Effect.Effect<Deferred.Deferred<A, JwksUnavailableError>, never, HttpClient.HttpClient> =>
     Effect.uninterruptible(
       Effect.gen(function* () {
@@ -450,10 +464,9 @@ export function makeJwksCache(
                     ),
                   ),
                 );
+                const settledAtMs = yield* Clock.currentTimeMillis;
                 yield* SynchronizedRef.update(state, (current) =>
-                  Exit.isSuccess(exit)
-                    ? slot.setLoaded(current, issuer, exit.value)
-                    : slot.setInFlight(current, dropKey(slot.inFlightOf(current), issuer)),
+                  settle(current, exit, settledAtMs),
                 );
                 yield* Deferred.done(created, exit);
               }),
@@ -480,7 +493,19 @@ export function makeJwksCache(
       if (cached !== undefined && nowMs - cached.fetchedAtMs < DISCOVERY_TTL_MS) {
         return cached;
       }
-      const deferred = yield* singleFlight(issuer, discoverySlot, loadDiscovery(issuer));
+      const deferred = yield* singleFlight(
+        issuer,
+        discoverySlot,
+        loadDiscovery(issuer),
+        (current, exit) =>
+          Exit.isSuccess(exit)
+            ? {
+                ...current,
+                lastGoodDiscovery: { ...current.lastGoodDiscovery, [issuer]: exit.value },
+                discoveryInFlight: dropKey(current.discoveryInFlight, issuer),
+              }
+            : { ...current, discoveryInFlight: dropKey(current.discoveryInFlight, issuer) },
+      );
       return yield* Effect.matchEffect(Deferred.await(deferred), {
         onSuccess: Effect.succeed,
         onFailure: (error) => (cached !== undefined ? Effect.succeed(cached) : Effect.fail(error)),
@@ -494,8 +519,11 @@ export function makeJwksCache(
     Effect.gen(function* () {
       const { jwksUri } = yield* discoveryFor(issuer);
       const document = yield* fetchJson(jwksUri, JwksDocument);
-      const keys = document.keys.filter(isJwk);
-      return { keys, fetchedAtMs: yield* Clock.currentTimeMillis, forcedRefreshAtMs };
+      return {
+        keys: document.keys,
+        fetchedAtMs: yield* Clock.currentTimeMillis,
+        forcedRefreshAtMs,
+      };
     });
 
   const jwksFor = (
@@ -522,40 +550,60 @@ export function makeJwksCache(
       }
       const forcedRefreshAtMs = forcedRefreshStamp(cached, nowMs);
 
-      const deferred = yield* singleFlight(issuer, jwksSlot, loadJwks(issuer, forcedRefreshAtMs));
-      return yield* Effect.matchEffect(Deferred.await(deferred), {
-        onSuccess: (loaded) =>
-          Effect.as(
-            SynchronizedRef.update(state, (current) => ({
-              ...current,
+      const deferred = yield* singleFlight(
+        issuer,
+        jwksSlot,
+        loadJwks(issuer, forcedRefreshAtMs),
+        (current, exit, settledAtMs) => {
+          const dropped = { ...current, jwksInFlight: dropKey(current.jwksInFlight, issuer) };
+          if (Exit.isSuccess(exit)) {
+            // The good value updates **only on success**; the failure
+            // cooldown is cleared by the next success
+            return {
+              ...dropped,
+              lastGoodJwks: { ...current.lastGoodJwks, [issuer]: exit.value },
               lastFailureAtMs: dropKey(current.lastFailureAtMs, issuer),
-            })),
-            loaded,
-          ),
+            };
+          }
+          // Record the failure as a cooldown origin — unconditionally,
+          // even when every caller was interrupted (that is why it runs
+          // in the load's own settle, not in caller continuations). A
+          // held stale set inside the grace window keeps the seed
+          // forcedRefreshAtMs, so hammering unknown kids inside the TTL
+          // stays one fetch per cooldown, not one per request
+          const after = current.lastGoodJwks[issuer];
+          return {
+            ...dropped,
+            lastFailureAtMs: { ...current.lastFailureAtMs, [issuer]: settledAtMs },
+            ...(isWithinGrace(after, settledAtMs)
+              ? {
+                  lastGoodJwks: {
+                    ...current.lastGoodJwks,
+                    [issuer]: { ...after, forcedRefreshAtMs },
+                  },
+                }
+              : {}),
+          };
+        },
+      );
+      return yield* Effect.matchEffect(Deferred.await(deferred), {
+        onSuccess: Effect.succeed,
         onFailure: (error) =>
           Effect.gen(function* () {
-            const failureAtMs = yield* Clock.currentTimeMillis;
-            yield* SynchronizedRef.update(state, (current) => ({
-              ...current,
-              lastFailureAtMs: { ...current.lastFailureAtMs, [issuer]: failureAtMs },
-            }));
+            // The failure stamp and the held-stale stamp already landed
+            // atomically inside the load's own settle — this
+            // continuation only reads the final verdict, so an
+            // interrupted caller cannot strand the bookkeeping
+            const settledAtMs = yield* Clock.currentTimeMillis;
+            const after = (yield* SynchronizedRef.get(state)).lastGoodJwks[issuer];
             // stale-while-revalidate: if a good value is inside the grace
-            // window, keep verifying with it. Signature verification itself
-            // always runs (rejection only happens when no key is available at
-            // all)
-            if (!isWithinGrace(cached, failureAtMs)) {
+            // window, keep verifying with it. Signature verification
+            // itself always runs (rejection only happens when no key is
+            // available at all)
+            if (!isWithinGrace(after, settledAtMs)) {
               return yield* Effect.fail(error);
             }
-            // **A failed forced refresh also becomes a cooldown origin**. An
-            // invariant independent of the failure cooldown above, so that
-            // hammering unknown kids inside the TTL does not become one fetch
-            // per request
-            const held = { ...cached, forcedRefreshAtMs };
-            yield* SynchronizedRef.update(state, (current) => ({
-              ...current,
-              lastGoodJwks: { ...current.lastGoodJwks, [issuer]: held },
-            }));
-            return held;
+            return after;
           }),
       });
     });
@@ -574,6 +622,6 @@ export function makeJwksCache(
         }
         const key = yield* Effect.promise(() => importJwk(jwk, binding));
         return key === null ? null : { key, binding };
-      }).pipe(Effect.provide(httpClientLayer)),
+      }).pipe(Effect.provide(defaultHttpClientLayer)),
   };
 }
