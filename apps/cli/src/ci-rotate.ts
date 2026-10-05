@@ -22,8 +22,8 @@
 
 import { ProjectNotFoundError, RotationProposalRejectedError } from "@maruhi/api-schema";
 import { cryptoEffect } from "@maruhi/core";
-import type { EnvironmentId, WrappedCryptoError } from "@maruhi/core";
-import type { ChainDevice, ChainMember, CryptoError } from "@maruhi/crypto";
+import type { EnvironmentId } from "@maruhi/core";
+import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import {
   decodeHex,
   effectivePermissionOf,
@@ -43,6 +43,7 @@ import {
   type LeasedEnvironments,
   leaseEnvironmentsWithCredential,
 } from "./ci-lease.ts";
+import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { memberDevicesInOrder, ROLE_RANK } from "./dek-wrap.ts";
 import { countNoun, displayText, formatUtcDate, logWarnings } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -269,35 +270,6 @@ interface SealedWrap {
   readonly ciphertextHex: string;
 }
 
-/**
- * The seal failure message embeds the `CryptoError.kind` string, which the
- * bridge does not carry — this maps a `WrappedCryptoError` tag back to the
- * kind that produced it so the user-visible message stays identical. The
- * `satisfies` keeps it honest: the day crypto grows a new `CryptoError`
- * kind, this stops compiling until the tag is added.
- */
-const CRYPTO_KIND_OF_TAG = {
-  CryptoInvalidInput: "InvalidInput",
-  CryptoKeyImport: "KeyImportFailed",
-  CryptoKeyExport: "KeyExportFailed",
-  CryptoEncrypt: "EncryptFailed",
-  CryptoDecrypt: "DecryptFailed",
-  CryptoDekWrap: "DekWrapFailed",
-  CryptoDekUnwrap: "DekUnwrapFailed",
-  CryptoSign: "SignFailed",
-  CryptoDekWrapSignature: "DekWrapSignatureInvalid",
-  CryptoInviteAcceptSignature: "InviteAcceptSignatureInvalid",
-  CryptoInviteLinkSignature: "InviteLinkSignatureInvalid",
-  CryptoInviteIssueSignature: "InviteIssueSignatureInvalid",
-  CryptoDekCommitment: "DekCommitmentMismatch",
-  CryptoValueInvalid: "ValueInvalid",
-  CryptoMetaStatementInvalid: "MetaStatementInvalid",
-  CryptoUnsupportedMetaLayout: "UnsupportedMetaLayout",
-  CryptoEnvManifestInvalid: "EnvManifestInvalid",
-  CryptoHeadAttestationInvalid: "HeadAttestationInvalid",
-  ChainInvalid: "ChainInvalid",
-} as const satisfies Record<WrappedCryptoError["_tag"], CryptoError["kind"]>;
-
 /** Seals one value to every recipient device (one HPKE Seal per device — §5.3). */
 function sealToRecipients(input: {
   readonly projectId: string;
@@ -341,7 +313,7 @@ function sealToRecipients(input: {
       ).pipe(
         Effect.mapError((error) =>
           cliError(
-            `Sealing the new value of ${displayText(input.variableId)} to member ${displayText(member.userId)} failed (${CRYPTO_KIND_OF_TAG[error["_tag"]]})`,
+            `Sealing the new value of ${displayText(input.variableId)} to member ${displayText(member.userId)} failed (${cryptoErrorKind(error)})`,
           ),
         ),
       );
