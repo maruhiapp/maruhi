@@ -39,19 +39,19 @@
 //   coverage (deletion only returns you to the ceremony — fail-closed,
 //   safer than pins)
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { Context, Effect, Stdio } from "effect";
+import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
+import { Context, Effect, Schema, Stdio } from "effect";
 
 import { describeNonTerminal } from "./agent-gate.ts";
 import { displayText, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
 import { CliIo } from "./io.ts";
-import { isRecord } from "./json-record.ts";
+import { PositiveInt, readJsonFile, recordKeysMatch, writeJsonFileAtomic } from "./json-record.ts";
 import { logNote, logWarning } from "./notice.ts";
-import { BOOK_KEY, decodeOriginBook } from "./origin-book.ts";
+import { BOOK_KEY, originBookSchema } from "./origin-book.ts";
 
 /** One person's records verified out of band. */
 export interface KnownFingerprint {
@@ -256,46 +256,15 @@ export function confirmKnownFingerprint(input: {
 
 const HEX_32 = /^[0-9a-f]{32}$/;
 
-function validTimestamp(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-
 /** One person's record (`{ fingerprints: { FP: { verifiedAtMs } } }`). */
-function decodeUser(value: unknown): KnownUser | null {
-  if (!isRecord(value) || !isRecord(value["fingerprints"])) {
-    return null;
-  }
-  const fingerprints: Record<string, { readonly verifiedAtMs: number }> = {};
-  for (const [fingerprintHex, raw] of Object.entries(value["fingerprints"])) {
-    if (!HEX_32.test(fingerprintHex) || !isRecord(raw) || !validTimestamp(raw["verifiedAtMs"])) {
-      return null;
-    }
-    fingerprints[fingerprintHex] = { verifiedAtMs: raw["verifiedAtMs"] };
-  }
-  return { fingerprints };
-}
-
-/** Decoding one origin's worth (user_id → set) (one invalid entry rejects the whole). */
-function decodeUsers(value: unknown): Record<string, KnownUser> | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const users: Record<string, KnownUser> = {};
-  for (const [userId, raw] of Object.entries(value)) {
-    const entry = decodeUser(raw);
-    if (entry === null || !BOOK_KEY.test(userId)) {
-      return null;
-    }
-    users[userId] = entry;
-  }
-  return users;
-}
+const KnownUserSchema = Schema.Struct({
+  fingerprints: Schema.Record(Schema.String, Schema.Struct({ verifiedAtMs: PositiveInt })).check(
+    recordKeysMatch(HEX_32),
+  ),
+});
 
 /** Strict decode (v2). One invalid entry treats the whole as corrupt (no partial reads — same as pins). */
-function decodeBook(json: string): FingerprintBookFile | null {
-  const known = decodeOriginBook(json, 2, decodeUsers);
-  return known === null ? null : { v: 2, known };
-}
+const BookFileSchema = originBookSchema(2, KnownUserSchema);
 
 /** The set → the lookup result's entry list (ascending FP). */
 function entriesOf(user: KnownUser): readonly KnownFingerprint[] {
@@ -306,96 +275,73 @@ function entriesOf(user: KnownUser): readonly KnownFingerprint[] {
 
 /** File-backed fingerprint book at `path` (used by both production and tests). */
 export function makeFileFingerprintBook(path: string): FingerprintBookShape {
-  const loadRaw = async (): Promise<
-    | { readonly book: FingerprintBookFile; readonly state: "loaded" }
-    | { readonly state: "missing" }
-    | { readonly state: "corrupt" }
-  > => {
-    let json: string;
-    try {
-      json = await readFile(path, "utf8");
-    } catch (error) {
-      // **Only** uncreated (ENOENT) folds into "none". Folding EACCES /
-      // EISDIR / EIO etc. into "none" would let record overwrite with an
-      // empty book and silently lose verified FPs, and let lookup return
-      // miss, silencing the change warning (the same discipline as
-      // pins.ts / config.ts)
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return { state: "missing" };
-      }
-      throw error;
-    }
-    const book = decodeBook(json);
-    return book === null ? { state: "corrupt" } : { book, state: "loaded" };
-  };
+  const writeError = () =>
+    cliError(
+      `Cannot write the verified-fingerprint book (corrupt or an I/O failure): ${path} — inspect it, and if the modification was unintended, delete it and re-run`,
+    );
 
-  const write = async (book: FingerprintBookFile): Promise<void> => {
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    const temp = `${path}.${process.pid}.tmp`;
-    await writeFile(temp, `${JSON.stringify(book, null, 2)}\n`, { mode: 0o600 });
-    await rename(temp, path);
-  };
+  // **Only** uncreated (NotFound) folds into "none". Folding EACCES /
+  // EISDIR / EIO etc. into "none" would let record overwrite with an
+  // empty book and silently lose verified FPs, and let lookup return
+  // miss, silencing the change warning (the same discipline as
+  // pins.ts / config.ts)
+  const load = () =>
+    readJsonFile(path, BookFileSchema).pipe(
+      Effect.mapError(() => cliError(`Cannot read the verified-fingerprint book: ${path}`)),
+      Effect.provide(BunFileSystem.layer),
+    );
 
   return {
     filePath: path,
     lookup: (origin, userId) =>
-      Effect.tryPromise({
-        try: async (): Promise<FingerprintLookup> => {
-          const loaded = await loadRaw();
-          if (loaded.state === "missing") {
-            return { state: "miss" };
-          }
-          if (loaded.state === "corrupt") {
-            return { state: "corrupt" };
-          }
-          // own-property lookup (floor.ts's discipline — never pick up a value via the prototype)
-          const users = floorRecordGet(loaded.book.known, origin);
-          const user = users === undefined ? undefined : floorRecordGet(users, userId);
-          const entries = user === undefined ? [] : entriesOf(user);
-          return entries.length === 0 ? { state: "miss" } : { state: "hit", entries };
-        },
-        catch: () => cliError(`Cannot read the verified-fingerprint book: ${path}`),
+      Effect.gen(function* (): Effect.fn.Return<FingerprintLookup, CliError> {
+        const loaded = yield* load();
+        if (loaded.state === "missing") {
+          return { state: "miss" };
+        }
+        if (loaded.state === "corrupt") {
+          return { state: "corrupt" };
+        }
+        // own-property lookup (floor.ts's discipline — never pick up a value via the prototype)
+        const users = floorRecordGet(loaded.file.known, origin);
+        const user = users === undefined ? undefined : floorRecordGet(users, userId);
+        const entries = user === undefined ? [] : entriesOf(user);
+        return entries.length === 0 ? { state: "miss" } : { state: "hit", entries };
       }),
     record: (origin, userId, fingerprintHex) =>
-      Effect.tryPromise({
-        try: async () => {
-          // Writing an off-form key would make the next load wholly
-          // corrupt (strict decode), so refuse beforehand (the caller
-          // degrades to a warning — fail-open)
-          if (!BOOK_KEY.test(origin) || !BOOK_KEY.test(userId) || !HEX_32.test(fingerprintHex)) {
-            throw new Error("key form");
-          }
-          const loaded = await loadRaw();
-          if (loaded.state === "corrupt") {
-            // Refuse to overwrite a corrupt file (the same discipline as
-            // pins' merge — never silently erase the traces of an
-            // unintended change)
-            throw new Error("corrupt");
-          }
-          const base: FingerprintBookFile =
-            loaded.state === "missing" ? { v: 2, known: {} } : loaded.book;
-          const users = floorRecordGet(base.known, origin) ?? {};
-          const user = floorRecordGet(users, userId) ?? { fingerprints: {} };
-          await write({
-            v: 2,
-            known: {
-              ...base.known,
-              [origin]: {
-                ...users,
-                [userId]: {
-                  fingerprints: {
-                    ...user.fingerprints,
-                    [fingerprintHex]: { verifiedAtMs: Date.now() },
-                  },
+      Effect.gen(function* () {
+        // Writing an off-form key would make the next load wholly
+        // corrupt (strict decode), so refuse beforehand (the caller
+        // degrades to a warning — fail-open)
+        if (!BOOK_KEY.test(origin) || !BOOK_KEY.test(userId) || !HEX_32.test(fingerprintHex)) {
+          return yield* Effect.fail(writeError());
+        }
+        const loaded = yield* load();
+        if (loaded.state === "corrupt") {
+          // Refuse to overwrite a corrupt file (the same discipline as
+          // pins' merge — never silently erase the traces of an
+          // unintended change)
+          return yield* Effect.fail(writeError());
+        }
+        const base: FingerprintBookFile =
+          loaded.state === "missing" ? { v: 2, known: {} } : loaded.file;
+        const users = floorRecordGet(base.known, origin) ?? {};
+        const user = floorRecordGet(users, userId) ?? { fingerprints: {} };
+        yield* writeJsonFileAtomic(path, BookFileSchema, {
+          v: 2,
+          known: {
+            ...base.known,
+            [origin]: {
+              ...users,
+              [userId]: {
+                fingerprints: {
+                  ...user.fingerprints,
+                  [fingerprintHex]: { verifiedAtMs: Date.now() },
                 },
               },
             },
-          });
-        },
-        catch: () =>
-          cliError(
-            `Cannot write the verified-fingerprint book (corrupt or an I/O failure): ${path} — inspect it, and if the modification was unintended, delete it and re-run`,
-          ),
-      }),
+          },
+        });
+      }).pipe(Effect.mapError(writeError), Effect.provide(BunFileSystem.layer)),
   };
 }
