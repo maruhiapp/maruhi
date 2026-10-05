@@ -7,32 +7,41 @@
 //  - aws-iam-access-key: the IAM Query API is called signed; an inactive
 //    second key is reclaimed, two active keys refuse; finalize deactivates
 //  - cloudflare-api-token: verify → read → create with the same policies;
-//    finalize deletes the previous token (already invalid = "already")
+//    finalize deletes the previous token (already invalid = "already"); a
+//    body that is not the JSON envelope is a connector error
 //  - postgres / mysql: the statements run on the admin connection with
 //    quoted identifiers; alternation picks the other role; in-place MySQL
 //    retains the current password and finalize discards it
 
+import { Effect, Layer } from "effect";
+import { FetchHttpClient } from "effect/http";
+import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import type { RotateRule } from "../src/rotate-config.ts";
 import {
+  ConnectorCrypto,
   ConnectorError,
+  type ConnectorServices,
   type CredentialValues,
   describeFinalize,
   describeValueShapes,
   finalizeCredential,
   generatePassword,
+  IssuerEndpoints,
   planRotation,
-  type RotateDeps,
   rotateCredential,
+  SqlRunner,
   type SqlRunnerShape,
 } from "../src/rotate-connector.ts";
 import {
   type CaptureInput,
   type CaptureOutcome,
+  ProcessRunner,
   ScriptLeftoverError,
   ScriptStoppedError,
 } from "../src/run.ts";
+import { signV4 } from "../src/sigv4.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -87,27 +96,64 @@ function recordingSql(
   return { executed, probed, sql };
 }
 
+const FIXED_NOW = Date.parse("2026-10-02T00:00:00Z");
+
+/**
+ * The services a test's connector call sees: the fake issuer's fetch as the
+ * `HttpClient`, the recorder's `SqlRunner`, the fake script runner as the
+ * `ProcessRunner`'s `captureScript`, deterministic bytes as the
+ * `ConnectorCrypto` source, the test issuer origins, and a `TestClock`
+ * ({@link run} sets it — the SigV4 signature carries its instant).
+ */
 function deps(
   input: {
     fetch?: typeof fetch;
     sql?: SqlRunnerShape;
     exec?: (input: CaptureInput) => Promise<CaptureOutcome>;
   } = {},
-): RotateDeps {
+): Layer.Layer<ConnectorServices> {
   let counter = 0;
-  return {
-    fetch:
-      input.fetch ??
-      ((() => Promise.reject(new Error("no fetch in this test"))) as unknown as typeof fetch),
-    now: () => Date.parse("2026-10-02T00:00:00Z"),
+  return Layer.mergeAll(
+    Layer.provide(
+      FetchHttpClient.layer,
+      Layer.succeed(
+        FetchHttpClient.Fetch,
+        input.fetch ??
+          ((() => Promise.reject(new Error("no fetch in this test"))) as unknown as typeof fetch),
+      ),
+    ),
+    Layer.succeed(SqlRunner, input.sql ?? recordingSql().sql),
+    Layer.succeed(ProcessRunner, {
+      run: () => Effect.succeed(0),
+      exec: () => Effect.succeed({ exitCode: 0, output: "" }),
+      captureScript:
+        input.exec ?? (() => Promise.reject(new Error("no script runner in this test"))),
+      runSession: () => Effect.succeed(0),
+    }),
     // Deterministic bytes: every password is "AAAA…" shifted by a counter
-    randomBytes: (length) => new Uint8Array(length).fill(((counter += 1) % 26) as number),
-    sql: input.sql ?? recordingSql().sql,
-    exec: input.exec ?? (() => Promise.reject(new Error("no script runner in this test"))),
-    awsIamBase: "https://iam.test",
-    awsStsBase: "https://sts.test",
-    cloudflareBase: "https://cf.test",
-  };
+    Layer.succeed(ConnectorCrypto, {
+      nextBytes: (length) => new Uint8Array(length).fill(((counter += 1) % 26) as number),
+    }),
+    Layer.succeed(IssuerEndpoints, {
+      awsIamBase: "https://iam.test",
+      awsStsBase: "https://sts.test",
+      cloudflareBase: "https://cf.test",
+    }),
+    TestClock.layer(),
+  );
+}
+
+/** Runs a connector program under the test layer at a fixed instant. */
+function run<A>(
+  depsLayer: Layer.Layer<ConnectorServices>,
+  effect: Effect.Effect<A, ConnectorError, ConnectorServices>,
+): Promise<A> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      yield* TestClock.setTime(FIXED_NOW);
+      return yield* effect;
+    }).pipe(Effect.provide(depsLayer)),
+  );
 }
 
 function credential(primary: string, companions: Record<string, string> = {}): CredentialValues {
@@ -154,11 +200,11 @@ describe("postgres connector", () => {
 
   it("alternates to the other role on the admin connection and tests the new URL", async () => {
     const sql = recordingSql();
-    const outcome = await rotateCredential(
-      alternate,
-      current,
-      { adminUrl: enc.encode("postgres://admin:secret@db.example:5432/shop") },
+    const outcome = await run(
       deps({ sql: sql.sql }),
+      rotateCredential(alternate, current, {
+        adminUrl: enc.encode("postgres://admin:secret@db.example:5432/shop"),
+      }),
     );
     expect(sql.executed).toHaveLength(1);
     expect(sql.executed[0]?.url).toBe("postgres://admin:secret@db.example:5432/shop");
@@ -172,15 +218,15 @@ describe("postgres connector", () => {
     expect(url.host).toBe("db.example:5432");
     expect(url.search).toBe("?sslmode=require");
     expect(sql.probed).toEqual([value]);
-    expect(planRotation(alternate, current).immediate).toBe(false);
+    expect((await Effect.runPromise(planRotation(alternate, current))).immediate).toBe(false);
     expect(outcome.previous).toContain("role app_a keeps its previous password");
     expect(outcome.warnings).toEqual([]);
   });
 
   it("in place: no grace, the plan says so, the URL's role rotates itself, and a failed probe is a warning", async () => {
     const sql = recordingSql({ failProbe: true });
-    expect(planRotation(inPlace, current).immediate).toBe(true);
-    const outcome = await rotateCredential(inPlace, current, {}, deps({ sql: sql.sql }));
+    expect((await Effect.runPromise(planRotation(inPlace, current))).immediate).toBe(true);
+    const outcome = await run(deps({ sql: sql.sql }), rotateCredential(inPlace, current, {}));
     expect(sql.executed[0]?.url).toBe("postgres://app_a:old@db.example:5432/shop?sslmode=require");
     expect(sql.executed[0]?.statements[0]).toMatch(/^ALTER ROLE "app_a" WITH PASSWORD '/);
     expect(outcome.warnings[0]).toContain("connection test with it failed");
@@ -190,13 +236,13 @@ describe("postgres connector", () => {
 
   it("refuses a URL whose role is neither alternated role, and a non-URL value", async () => {
     await expect(
-      rotateCredential(alternate, credential("postgres://other:x@db/shop"), {}, deps()),
+      run(deps(), rotateCredential(alternate, credential("postgres://other:x@db/shop"), {})),
     ).rejects.toThrow("neither of the alternated roles");
-    await expect(rotateCredential(alternate, credential("not a url"), {}, deps())).rejects.toThrow(
-      "expects the variable to hold a connection URL",
-    );
     await expect(
-      rotateCredential(alternate, credential("mysql://app_a:x@db/shop"), {}, deps()),
+      run(deps(), rotateCredential(alternate, credential("not a url"), {})),
+    ).rejects.toThrow("expects the variable to hold a connection URL");
+    await expect(
+      run(deps(), rotateCredential(alternate, credential("mysql://app_a:x@db/shop"), {})),
     ).rejects.toThrow("expects a postgres / postgresql URL");
   });
 
@@ -204,7 +250,10 @@ describe("postgres connector", () => {
     const sql = recordingSql();
     const previous = credential("postgres://app_a:old@db.example:5432/shop");
     const now = credential("postgres://app_b:new@db.example:5432/shop");
-    const outcome = await finalizeCredential(alternate, previous, now, {}, deps({ sql: sql.sql }));
+    const outcome = await run(
+      deps({ sql: sql.sql }),
+      finalizeCredential(alternate, previous, now, {}),
+    );
     expect(outcome.kind).toBe("finalized");
     expect(sql.executed[0]?.statements[0]).toMatch(
       /^ALTER ROLE "app_a" WITH PASSWORD '[A-Za-z0-9]{32}'$/,
@@ -212,18 +261,18 @@ describe("postgres connector", () => {
     // The self-rotation admin connection is the current credential
     expect(sql.executed[0]?.url).toBe("postgres://app_b:new@db.example:5432/shop");
     expect(
-      (await finalizeCredential(inPlace, previous, now, {}, deps({ sql: sql.sql }))).kind,
+      (await run(deps({ sql: sql.sql }), finalizeCredential(inPlace, previous, now, {}))).kind,
     ).toBe("nothing");
-    expect((await finalizeCredential(alternate, now, now, {}, deps({ sql: sql.sql }))).kind).toBe(
-      "nothing",
-    );
+    expect(
+      (await run(deps({ sql: sql.sql }), finalizeCredential(alternate, now, now, {}))).kind,
+    ).toBe("nothing");
   });
 
   it("a failed statement names the stage and never the URL", async () => {
     const sql = recordingSql({
       failExecute: "permission denied for postgres://admin:secret@db/shop",
     });
-    const error = await rotateCredential(alternate, current, {}, deps({ sql: sql.sql })).catch(
+    const error = await run(deps({ sql: sql.sql }), rotateCredential(alternate, current, {})).catch(
       (e: unknown) => e,
     );
     expect(error).toBeInstanceOf(ConnectorError);
@@ -240,18 +289,15 @@ describe("mysql connector", () => {
 
   it("sets the new password retaining the current one, and finalize discards the old password", async () => {
     const sql = recordingSql();
-    const outcome = await rotateCredential(inPlace, current, {}, deps({ sql: sql.sql }));
+    const outcome = await run(deps({ sql: sql.sql }), rotateCredential(inPlace, current, {}));
     expect(sql.executed[0]?.statements[0]).toMatch(
       /^ALTER USER 'app'@'%' IDENTIFIED BY '[A-Za-z0-9]{32}' RETAIN CURRENT PASSWORD$/,
     );
-    expect(planRotation(inPlace, current).immediate).toBe(false);
+    expect((await Effect.runPromise(planRotation(inPlace, current))).immediate).toBe(false);
     expect(new URL(dec.decode(outcome.values.primary)).username).toBe("app");
-    const finalized = await finalizeCredential(
-      inPlace,
-      current,
-      outcome.values,
-      {},
+    const finalized = await run(
       deps({ sql: sql.sql }),
+      finalizeCredential(inPlace, current, outcome.values, {}),
     );
     expect(finalized.kind).toBe("finalized");
     expect(sql.executed[1]?.statements[0]).toBe("ALTER USER 'app'@'%' DISCARD OLD PASSWORD");
@@ -267,7 +313,10 @@ describe("mysql connector", () => {
       host: "10.0.0.%",
       inputs: {},
     };
-    await rotateCredential(rule, credential("mysql://app_b:x@db/shop"), {}, deps({ sql: sql.sql }));
+    await run(
+      deps({ sql: sql.sql }),
+      rotateCredential(rule, credential("mysql://app_b:x@db/shop"), {}),
+    );
     expect(sql.executed[0]?.statements[0]).toMatch(
       /^ALTER USER 'app_a'@'10\.0\.0\.%' IDENTIFIED BY '[A-Za-z0-9]{32}'$/,
     );
@@ -317,7 +366,7 @@ describe("aws-iam-access-key connector", () => {
           return new Response("", { status: 500 });
       }
     });
-    const outcome = await rotateCredential(rule, current, {}, deps({ fetch: issuer.fetch }));
+    const outcome = await run(deps({ fetch: issuer.fetch }), rotateCredential(rule, current, {}));
     expect(issuer.calls.map(actionOf)).toEqual([
       "GetAccessKeyLastUsed",
       "ListAccessKeys",
@@ -337,6 +386,58 @@ describe("aws-iam-access-key connector", () => {
     );
     expect(outcome.facts.join(" ")).toContain("new access key AKIANEW0000000000002 created");
     expect(outcome.previous).toContain("AKIAOLD0000000000001 stays active");
+  });
+
+  it("every header SignedHeaders names reaches the wire with the value that was signed", async () => {
+    // IAM recomputes the signature from the headers it receives: one signed
+    // header missing or changed on the wire (a content-type dropped when the
+    // body is set) is SignatureDoesNotMatch. Re-signing what arrived must
+    // reproduce the Authorization header that was sent
+    const issuer = fakeIssuer((call) => {
+      switch (actionOf(call)) {
+        case "GetAccessKeyLastUsed":
+          return xml(
+            "<GetAccessKeyLastUsedResponse><GetAccessKeyLastUsedResult><UserName>app</UserName></GetAccessKeyLastUsedResult></GetAccessKeyLastUsedResponse>",
+          );
+        case "ListAccessKeys":
+          return xml(keysXml([{ id: "AKIAOLD0000000000001", status: "Active" }]));
+        case "CreateAccessKey":
+          return xml(
+            "<CreateAccessKeyResponse><CreateAccessKeyResult><AccessKey><AccessKeyId>AKIANEW0000000000002</AccessKeyId><SecretAccessKey>s</SecretAccessKey></AccessKey></CreateAccessKeyResult></CreateAccessKeyResponse>",
+          );
+        default:
+          return new Response("", { status: 500 });
+      }
+    });
+    await run(deps({ fetch: issuer.fetch }), rotateCredential(rule, current, {}));
+    expect(issuer.calls).toHaveLength(3);
+    for (const call of issuer.calls) {
+      const authorization = call.headers["authorization"] ?? "";
+      const signedNames = /SignedHeaders=([^,]+),/.exec(authorization)?.[1]?.split(";") ?? [];
+      expect(signedNames).toEqual(["content-type", "host", "x-amz-date"]);
+      const signedOnWire: Record<string, string> = {};
+      for (const name of signedNames) {
+        expect(call.headers[name], `${actionOf(call)}: signed header ${name}`).toBeDefined();
+        signedOnWire[name] = call.headers[name] ?? "";
+      }
+      const resigned = await signV4({
+        method: "POST",
+        url: call.url,
+        region: "us-east-1",
+        service: "iam",
+        headers: signedOnWire,
+        body: call.body,
+        credentials: {
+          accessKeyId: "AKIAOLD0000000000001",
+          secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        },
+        nowMs: FIXED_NOW,
+      });
+      expect(resigned.headers["authorization"]).toBe(authorization);
+      for (const name of signedNames) {
+        expect(resigned.headers[name]).toBe(signedOnWire[name]);
+      }
+    }
   });
 
   it("reclaims an inactive second key, refuses two active ones, and signs with the admin pair when named", async () => {
@@ -364,7 +465,10 @@ describe("aws-iam-access-key connector", () => {
           return new Response("", { status: 500 });
       }
     });
-    const outcome = await rotateCredential(withUser, current, admin, deps({ fetch: issuer.fetch }));
+    const outcome = await run(
+      deps({ fetch: issuer.fetch }),
+      rotateCredential(withUser, current, admin),
+    );
     expect(issuer.calls.map(actionOf)).toEqual([
       "ListAccessKeys",
       "DeleteAccessKey",
@@ -385,7 +489,7 @@ describe("aws-iam-access-key connector", () => {
       ),
     );
     await expect(
-      rotateCredential(withUser, current, admin, deps({ fetch: full.fetch })),
+      run(deps({ fetch: full.fetch }), rotateCredential(withUser, current, admin)),
     ).rejects.toThrow("already has two active access keys");
     expect(full.calls).toHaveLength(1);
   });
@@ -399,11 +503,9 @@ describe("aws-iam-access-key connector", () => {
         ),
     );
     const withUser: RotateRule = { ...rule, user: "app" };
-    const error = await rotateCredential(
-      withUser,
-      current,
-      {},
+    const error = await run(
       deps({ fetch: issuer.fetch }),
+      rotateCredential(withUser, current, {}),
     ).catch((e: unknown) => e);
     expect((error as Error).message).toBe(
       "aws-iam-access-key: IAM answered 403 to ListAccessKeys (AccessDenied: User is not authorized)",
@@ -443,13 +545,9 @@ describe("aws-iam-access-key connector", () => {
           return new Response("", { status: 500 });
       }
     });
-    const first = await finalizeCredential(
-      withUser,
-      previous,
-      now,
-      {},
+    const first = await run(
       deps({ fetch: issuer.fetch }),
-      ancestors,
+      finalizeCredential(withUser, previous, now, {}, ancestors),
     );
     expect(first.kind).toBe("finalized");
     const probe = issuer.calls.find((call) => actionOf(call) === "GetCallerIdentity");
@@ -459,13 +557,9 @@ describe("aws-iam-access-key connector", () => {
     expect(new URLSearchParams(update?.body).get("Status")).toBe("Inactive");
     // The finalize is signed by the current credential (the new key)
     expect(update?.headers["authorization"]).toContain("Credential=AKIANEW0000000000002/");
-    const second = await finalizeCredential(
-      withUser,
-      previous,
-      now,
-      {},
+    const second = await run(
       deps({ fetch: issuer.fetch }),
-      ancestors,
+      finalizeCredential(withUser, previous, now, {}, ancestors),
     );
     expect(second.kind).toBe("already");
   });
@@ -491,13 +585,17 @@ describe("aws-iam-access-key connector", () => {
       }
     });
     // A key created by hand (no version of the key id variable held it): untouched, no probe
-    const stranger = await finalizeCredential(
-      withUser,
-      current,
-      now,
-      {},
+    const stranger = await run(
       deps({ fetch: issuer.fetch }),
-      { accessKeyId: [enc.encode("AKIAOLD0000000000001")] },
+      finalizeCredential(
+        withUser,
+        current,
+        now,
+        {},
+        {
+          accessKeyId: [enc.encode("AKIAOLD0000000000001")],
+        },
+      ),
     );
     expect(stranger.kind).toBe("nothing");
     expect(stranger.facts[0]).toContain(
@@ -506,13 +604,17 @@ describe("aws-iam-access-key connector", () => {
     expect(calls).toEqual(["ListAccessKeys"]);
     // A stored key id that does not pair with the previous secret (someone pushed by hand): untouched
     calls.length = 0;
-    const mismatch = await finalizeCredential(
-      withUser,
-      current,
-      now,
-      {},
+    const mismatch = await run(
       deps({ fetch: issuer.fetch }),
-      { accessKeyId: [enc.encode("AKIAHAND000000000003")] },
+      finalizeCredential(
+        withUser,
+        current,
+        now,
+        {},
+        {
+          accessKeyId: [enc.encode("AKIAHAND000000000003")],
+        },
+      ),
     );
     expect(mismatch.kind).toBe("nothing");
     expect(mismatch.facts[0]).toContain(
@@ -521,15 +623,12 @@ describe("aws-iam-access-key connector", () => {
     expect(calls).toEqual(["ListAccessKeys", "GetCallerIdentity"]);
     // Only the current key exists: nothing to deactivate (no probe)
     calls.length = 0;
-    const alone = await finalizeCredential(
-      withUser,
-      now,
-      now,
-      {},
+    const alone = await run(
       deps({
         fetch: fakeIssuer(() => xml(keysXml([{ id: "AKIANEW0000000000002", status: "Active" }])))
           .fetch,
       }),
+      finalizeCredential(withUser, now, now, {}),
     );
     expect(alone.kind).toBe("nothing");
     expect(alone.facts[0]).toBe(
@@ -571,7 +670,7 @@ describe("cloudflare-api-token connector", () => {
       }
       return json(500, { success: false, errors: [{ code: 1, message: "unexpected" }] });
     });
-    const outcome = await rotateCredential(rule, current, {}, deps({ fetch: issuer.fetch }));
+    const outcome = await run(deps({ fetch: issuer.fetch }), rotateCredential(rule, current, {}));
     expect(issuer.calls.map((call) => `${call.method} ${new URL(call.url).pathname}`)).toEqual([
       "GET /client/v4/user/tokens/verify",
       "GET /client/v4/user/tokens/tok-old",
@@ -605,11 +704,9 @@ describe("cloudflare-api-token connector", () => {
       }
       return json(200, { success: true, result: { id: "tok-new", value: "v" } });
     });
-    await rotateCredential(
-      accountRule,
-      current,
-      { token: enc.encode("admin-token") },
+    await run(
       deps({ fetch: issuer.fetch }),
+      rotateCredential(accountRule, current, { token: enc.encode("admin-token") }),
     );
     expect(new URL(issuer.calls[0]?.url ?? "").pathname).toBe(
       `/client/v4/accounts/${"0".repeat(32)}/tokens/verify`,
@@ -623,7 +720,7 @@ describe("cloudflare-api-token connector", () => {
       json(401, { success: false, errors: [{ code: 1000, message: "Invalid API Token" }] }),
     );
     await expect(
-      rotateCredential(rule, current, {}, deps({ fetch: invalid.fetch })),
+      run(deps({ fetch: invalid.fetch }), rotateCredential(rule, current, {})),
     ).rejects.toThrow("the current value is not a valid token");
     expect(invalid.calls).toHaveLength(1);
     const denied = fakeIssuer((call) =>
@@ -635,9 +732,93 @@ describe("cloudflare-api-token connector", () => {
           }),
     );
     await expect(
-      rotateCredential(rule, current, {}, deps({ fetch: denied.fetch })),
+      run(deps({ fetch: denied.fetch }), rotateCredential(rule, current, {})),
     ).rejects.toThrow(
       "Cloudflare answered 403 to reading token tok-old (9109: Unauthorized to access requested resource)",
+    );
+  });
+
+  it("a body that is not the JSON envelope is a connector error, not an empty answer", async () => {
+    const issuer = fakeIssuer(() => new Response("<html>not json</html>", { status: 200 }));
+    const error = await run(
+      deps({ fetch: issuer.fetch }),
+      rotateCredential(rule, current, {}),
+    ).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ConnectorError);
+    expect((error as Error).message).toBe(
+      "cloudflare-api-token: GET /client/v4/user/tokens/verify — Cloudflare's answer was not the JSON envelope it returns",
+    );
+  });
+
+  it("a null or misshapen result is the step's connector error, never a crash", async () => {
+    // verify answering `result: null` reads as a token Cloudflare did not verify
+    const unverified = fakeIssuer(() => json(200, { success: true, result: null }));
+    const notVerified = await run(
+      deps({ fetch: unverified.fetch }),
+      rotateCredential(rule, current, {}),
+    ).catch((e: unknown) => e);
+    expect(notVerified).toBeInstanceOf(ConnectorError);
+    expect((notVerified as Error).message).toBe(
+      "cloudflare-api-token: the current value is not a valid token (Cloudflare refused to verify it), so its policies cannot be copied. Create the replacement at the issuer and push it",
+    );
+    // the definition answering `result: null`
+    const noDefinition = fakeIssuer((call) =>
+      call.url.endsWith("/verify")
+        ? json(200, { success: true, result: { id: "tok-old" } })
+        : json(200, { success: true, result: null }),
+    );
+    const definitionError = await run(
+      deps({ fetch: noDefinition.fetch }),
+      rotateCredential(rule, current, {}),
+    ).catch((e: unknown) => e);
+    expect(definitionError).toBeInstanceOf(ConnectorError);
+    expect((definitionError as Error).message).toBe(
+      "cloudflare-api-token: token tok-old came back without a name and policies",
+    );
+    expect(noDefinition.calls).toHaveLength(2);
+    // the creation answering `result: null`, then a value of another type
+    for (const created of [null, { id: "tok-new", value: 42 }]) {
+      const noValue = fakeIssuer((call) => {
+        if (call.url.endsWith("/verify")) {
+          return json(200, { success: true, result: { id: "tok-old" } });
+        }
+        if (call.method === "GET") {
+          return json(200, { success: true, result: { name: "deploy", policies } });
+        }
+        return json(200, { success: true, result: created });
+      });
+      const creationError = await run(
+        deps({ fetch: noValue.fetch }),
+        rotateCredential(rule, current, {}),
+      ).catch((e: unknown) => e);
+      expect(creationError).toBeInstanceOf(ConnectorError);
+      expect((creationError as Error).message).toBe(
+        "cloudflare-api-token: Cloudflare did not return the new token's value",
+      );
+    }
+    // finalize: a previous token whose verify carries `result: null` is already done
+    const previousGone = fakeIssuer(() => json(200, { success: true, result: null }));
+    expect(
+      (
+        await run(
+          deps({ fetch: previousGone.fetch }),
+          finalizeCredential(rule, current, credential("cf-new-token-value"), {}),
+        )
+      ).kind,
+    ).toBe("already");
+    expect(previousGone.calls).toHaveLength(1);
+  });
+
+  it("an error status without the envelope still names the status, and a refused connection names its reason", async () => {
+    const edge = fakeIssuer(() => new Response("<html>bad gateway</html>", { status: 502 }));
+    await expect(
+      run(deps({ fetch: edge.fetch }), rotateCredential(rule, current, {})),
+    ).rejects.toThrow("Cloudflare answered 502 to the token verification");
+    const refused = (() => Promise.reject(new Error("ECONNREFUSED"))) as unknown as typeof fetch;
+    await expect(
+      run(deps({ fetch: refused }), rotateCredential(rule, current, {})),
+    ).rejects.toThrow(
+      "cloudflare-api-token: GET /client/v4/user/tokens/verify could not reach Cloudflare (ECONNREFUSED)",
     );
   });
 
@@ -655,12 +836,9 @@ describe("cloudflare-api-token connector", () => {
       }
       return json(500, {});
     });
-    const outcome = await finalizeCredential(
-      rule,
-      previous,
-      now,
-      {},
+    const outcome = await run(
       deps({ fetch: issuer.fetch }),
+      finalizeCredential(rule, previous, now, {}),
     );
     expect(outcome.kind).toBe("finalized");
     const deletion = issuer.calls.find((call) => call.method === "DELETE");
@@ -672,7 +850,7 @@ describe("cloudflare-api-token connector", () => {
         : json(200, { success: true, result: { id: "tok-new" } }),
     );
     expect(
-      (await finalizeCredential(rule, previous, now, {}, deps({ fetch: gone.fetch }))).kind,
+      (await run(deps({ fetch: gone.fetch }), finalizeCredential(rule, previous, now, {}))).kind,
     ).toBe("already");
   });
 });
@@ -714,12 +892,9 @@ describe("exec connector (a script of the repository — PF8)", () => {
 
   it("runs the rotate script with the credential, the inputs, and the control variables in its environment, and reads the new value from stdout", async () => {
     const script = fakeScript(() => ok("sk_live_new\n", "creating key at stripe\n"));
-    const outcome = await rotateCredential(
-      withFinalize,
-      current,
-      { STRIPE_ADMIN_KEY: enc.encode("rk_admin") },
+    const outcome = await run(
       deps({ exec: script.exec }),
-      SITE,
+      rotateCredential(withFinalize, current, { STRIPE_ADMIN_KEY: enc.encode("rk_admin") }, SITE),
     );
     expect(script.calls).toHaveLength(1);
     expect(script.calls[0]?.command).toEqual(["./rotate.sh", "--live"]);
@@ -747,33 +922,27 @@ describe("exec connector (a script of the repository — PF8)", () => {
     expect(outcome.previous).toContain(
       "stays valid until you finalize (./finalize.sh runs with it)",
     );
-    expect(planRotation(withFinalize, current).immediate).toBe(false);
-    expect(planRotation(withFinalize, current).description).toContain(
+    expect((await Effect.runPromise(planRotation(withFinalize, current))).immediate).toBe(false);
+    expect((await Effect.runPromise(planRotation(withFinalize, current))).description).toContain(
       "run ./rotate.sh to create the new credential",
     );
   });
 
   it("without a finalize script the rotation is immediate (no grace) and finalize has nothing to do", async () => {
     const script = fakeScript(() => ok("sk_live_new"));
-    expect(planRotation(noFinalize, current).immediate).toBe(true);
-    expect(planRotation(noFinalize, current).description).toContain("no finalize script");
-    const outcome = await rotateCredential(
-      noFinalize,
-      current,
-      {},
+    expect((await Effect.runPromise(planRotation(noFinalize, current))).immediate).toBe(true);
+    expect((await Effect.runPromise(planRotation(noFinalize, current))).description).toContain(
+      "no finalize script",
+    );
+    const outcome = await run(
       deps({ exec: script.exec }),
-      SITE,
+      rotateCredential(noFinalize, current, {}, SITE),
     );
     expect(outcome.previous).toContain("nothing to finalize");
     expect(describeFinalize(noFinalize)).toContain("nothing to invalidate");
-    const finalized = await finalizeCredential(
-      noFinalize,
-      current,
-      outcome.values,
-      {},
+    const finalized = await run(
       deps(),
-      {},
-      SITE,
+      finalizeCredential(noFinalize, current, outcome.values, {}, {}, SITE),
     );
     expect(finalized.kind).toBe("nothing");
   });
@@ -782,14 +951,16 @@ describe("exec connector (a script of the repository — PF8)", () => {
     const script = fakeScript(() => ok("deleted key sk_live_old at stripe\n"));
     const previous = credential("sk_live_old");
     const now = credential("sk_live_new");
-    const outcome = await finalizeCredential(
-      withFinalize,
-      previous,
-      now,
-      { STRIPE_ADMIN_KEY: enc.encode("rk_admin") },
+    const outcome = await run(
       deps({ exec: script.exec }),
-      {},
-      SITE,
+      finalizeCredential(
+        withFinalize,
+        previous,
+        now,
+        { STRIPE_ADMIN_KEY: enc.encode("rk_admin") },
+        {},
+        SITE,
+      ),
     );
     expect(outcome.kind).toBe("finalized");
     expect(script.calls[0]?.command).toEqual(["./finalize.sh"]);
@@ -813,14 +984,22 @@ describe("exec connector (a script of the repository — PF8)", () => {
 
   it("finalize passes the previous credential's companions as MH_ROTATE_PREVIOUS_<name>, scrubbed from the facts like every other value", async () => {
     const script = fakeScript(() => ok("deleted key key_old (secret sk_live_old)\n"));
-    const outcome = await finalizeCredential(
-      jsonRule,
-      { primary: enc.encode("sk_live_old"), companions: { STRIPE_KEY_ID: enc.encode("key_old") } },
-      { primary: enc.encode("sk_live_new"), companions: { STRIPE_KEY_ID: enc.encode("key_new") } },
-      {},
+    const outcome = await run(
       deps({ exec: script.exec }),
-      {},
-      SITE,
+      finalizeCredential(
+        jsonRule,
+        {
+          primary: enc.encode("sk_live_old"),
+          companions: { STRIPE_KEY_ID: enc.encode("key_old") },
+        },
+        {
+          primary: enc.encode("sk_live_new"),
+          companions: { STRIPE_KEY_ID: enc.encode("key_new") },
+        },
+        {},
+        {},
+        SITE,
+      ),
     );
     expect(outcome.kind).toBe("finalized");
     expect(script.calls[0]?.extraEnv).toEqual({
@@ -848,12 +1027,9 @@ describe("exec connector (a script of the repository — PF8)", () => {
         }),
       ),
     );
-    const outcome = await rotateCredential(
-      jsonRule,
-      current,
-      {},
+    const outcome = await run(
       deps({ exec: script.exec }),
-      SITE,
+      rotateCredential(jsonRule, current, {}, SITE),
     );
     expect(dec.decode(outcome.values.primary)).toBe("sk_live_new");
     expect(dec.decode(outcome.values.companions["STRIPE_KEY_ID"] ?? new Uint8Array())).toBe(
@@ -868,36 +1044,33 @@ describe("exec connector (a script of the repository — PF8)", () => {
     expect(describeValueShapes(outcome)).toBe("11 bytes, 1 line; STRIPE_KEY_ID 7 bytes, 1 line");
     const missing = fakeScript(() => ok(JSON.stringify({ value: "x" })));
     await expect(
-      rotateCredential(jsonRule, current, {}, deps({ exec: missing.exec }), SITE),
+      run(deps({ exec: missing.exec }), rotateCredential(jsonRule, current, {}, SITE)),
     ).rejects.toThrow("lacks the companion STRIPE_KEY_ID the rule declares");
     const extra = fakeScript(() =>
       ok(JSON.stringify({ value: "x", companions: { STRIPE_KEY_ID: "k", OTHER: "o" } })),
     );
     await expect(
-      rotateCredential(jsonRule, current, {}, deps({ exec: extra.exec }), SITE),
+      run(deps({ exec: extra.exec }), rotateCredential(jsonRule, current, {}, SITE)),
     ).rejects.toThrow(
       "answered a companion the rule does not declare (the rule declares STRIPE_KEY_ID)",
     );
     const notJson = fakeScript(() => ok("sk_live_new"));
     await expect(
-      rotateCredential(jsonRule, current, {}, deps({ exec: notJson.exec }), SITE),
+      run(deps({ exec: notJson.exec }), rotateCredential(jsonRule, current, {}, SITE)),
     ).rejects.toThrow("did not print a JSON object on stdout");
     const unknownKey = fakeScript(() =>
       ok(JSON.stringify({ value: "x", companions: { STRIPE_KEY_ID: "k" }, note: 1 })),
     );
     await expect(
-      rotateCredential(jsonRule, current, {}, deps({ exec: unknownKey.exec }), SITE),
+      run(deps({ exec: unknownKey.exec }), rotateCredential(jsonRule, current, {}, SITE)),
     ).rejects.toThrow("has 1 unknown key; it takes value, companions, facts");
     // The script's words (an unknown key, an undeclared companion name) never reach the message
     const leaky = fakeScript(() =>
       ok(JSON.stringify({ value: "x", companions: { STRIPE_KEY_ID: "k", sk_live_leak: "o" } })),
     );
-    const leakyError = await rotateCredential(
-      jsonRule,
-      current,
-      {},
+    const leakyError = await run(
       deps({ exec: leaky.exec }),
-      SITE,
+      rotateCredential(jsonRule, current, {}, SITE),
     ).catch((e: unknown) => e);
     expect((leakyError as Error).message).not.toContain("sk_live_leak");
     // A produced value must be text a process environment can carry
@@ -905,13 +1078,13 @@ describe("exec connector (a script of the repository — PF8)", () => {
       ok(JSON.stringify({ value: "a\u0000b", companions: { STRIPE_KEY_ID: "k" } })),
     );
     await expect(
-      rotateCredential(jsonRule, current, {}, deps({ exec: nul.exec }), SITE),
+      run(deps({ exec: nul.exec }), rotateCredential(jsonRule, current, {}, SITE)),
     ).rejects.toThrow("the value in the rotate script's JSON answer is not UTF-8 text without NUL");
     const nulCompanion = fakeScript(() =>
       ok(JSON.stringify({ value: "v", companions: { STRIPE_KEY_ID: "k\u0000" } })),
     );
     await expect(
-      rotateCredential(jsonRule, current, {}, deps({ exec: nulCompanion.exec }), SITE),
+      run(deps({ exec: nulCompanion.exec }), rotateCredential(jsonRule, current, {}, SITE)),
     ).rejects.toThrow(
       "the companion STRIPE_KEY_ID in the rotate script's answer is not UTF-8 text without NUL",
     );
@@ -919,21 +1092,15 @@ describe("exec connector (a script of the repository — PF8)", () => {
 
   it("a plain answer drops one CRLF or LF, refuses bytes that are not text, and a failing finalize script is reported like a failing rotate script", async () => {
     const crlf = fakeScript(() => ok("sk_live_new\r\n"));
-    const outcome = await rotateCredential(
-      withFinalize,
-      current,
-      {},
+    const outcome = await run(
       deps({ exec: crlf.exec }),
-      SITE,
+      rotateCredential(withFinalize, current, {}, SITE),
     );
     expect(dec.decode(outcome.values.primary)).toBe("sk_live_new");
     const twoNewlines = fakeScript(() => ok("sk_live_new\n\n"));
-    const kept = await rotateCredential(
-      withFinalize,
-      current,
-      {},
+    const kept = await run(
       deps({ exec: twoNewlines.exec }),
-      SITE,
+      rotateCredential(withFinalize, current, {}, SITE),
     );
     expect(dec.decode(kept.values.primary)).toBe("sk_live_new\n");
     const binary = fakeScript((): CaptureOutcome => ({
@@ -942,7 +1109,7 @@ describe("exec connector (a script of the repository — PF8)", () => {
       stderr: "",
     }));
     await expect(
-      rotateCredential(withFinalize, current, {}, deps({ exec: binary.exec }), SITE),
+      run(deps({ exec: binary.exec }), rotateCredential(withFinalize, current, {}, SITE)),
     ).rejects.toThrow(
       "the value the rotate script printed on stdout is not UTF-8 text without NUL",
     );
@@ -952,14 +1119,16 @@ describe("exec connector (a script of the repository — PF8)", () => {
       stdout: new Uint8Array(0),
       stderr: "cannot delete sk_live_old\n",
     }));
-    const error = await finalizeCredential(
-      withFinalize,
-      credential("sk_live_old"),
-      credential("sk_live_new"),
-      {},
+    const error = await run(
       deps({ exec: failing.exec }),
-      {},
-      SITE,
+      finalizeCredential(
+        withFinalize,
+        credential("sk_live_old"),
+        credential("sk_live_new"),
+        {},
+        {},
+        SITE,
+      ),
     ).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ConnectorError);
     expect((error as Error).message).toBe(
@@ -973,12 +1142,9 @@ describe("exec connector (a script of the repository — PF8)", () => {
       stdout: new Uint8Array(0),
       stderr: "stripe said no for sk_live_old with rk_admin\n",
     }));
-    const error = await rotateCredential(
-      withFinalize,
-      current,
-      { STRIPE_ADMIN_KEY: enc.encode("rk_admin") },
+    const error = await run(
       deps({ exec: failing.exec }),
-      SITE,
+      rotateCredential(withFinalize, current, { STRIPE_ADMIN_KEY: enc.encode("rk_admin") }, SITE),
     ).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ConnectorError);
     expect((error as Error).message).toBe(
@@ -986,12 +1152,12 @@ describe("exec connector (a script of the repository — PF8)", () => {
     );
     const empty = fakeScript(() => ok("\n"));
     await expect(
-      rotateCredential(withFinalize, current, {}, deps({ exec: empty.exec }), SITE),
+      run(deps({ exec: empty.exec }), rotateCredential(withFinalize, current, {}, SITE)),
     ).rejects.toThrow("printed no value on stdout");
     const absent = deps({
       exec: () => Promise.reject(new Error("cannot start ./rotate.sh (ENOENT)")),
     });
-    await expect(rotateCredential(withFinalize, current, {}, absent, SITE)).rejects.toThrow(
+    await expect(run(absent, rotateCredential(withFinalize, current, {}, SITE))).rejects.toThrow(
       "the rotate script ./rotate.sh did not start: cannot start ./rotate.sh (ENOENT)",
     );
     // A script maruhi stopped after it started (a flooded stdout) is not a
@@ -999,7 +1165,7 @@ describe("exec connector (a script of the repository — PF8)", () => {
     const stopped = deps({
       exec: () => Promise.reject(new ScriptStoppedError("sh wrote more than 1 MiB to stdout")),
     });
-    await expect(rotateCredential(withFinalize, current, {}, stopped, SITE)).rejects.toThrow(
+    await expect(run(stopped, rotateCredential(withFinalize, current, {}, SITE))).rejects.toThrow(
       "the rotate script ./rotate.sh was stopped: sh wrote more than 1 MiB to stdout. The new credential may exist at the issuer",
     );
     // A leftover process's output: refused with the recovery when the
@@ -1010,21 +1176,23 @@ describe("exec connector (a script of the repository — PF8)", () => {
           new ScriptLeftoverError(0, "sh exited (code 0) while a process it started kept writing"),
         ),
     });
-    await expect(rotateCredential(withFinalize, current, {}, leftover, SITE)).rejects.toThrow(
+    await expect(run(leftover, rotateCredential(withFinalize, current, {}, SITE))).rejects.toThrow(
       "exec: sh exited (code 0) while a process it started kept writing. The script exited 0, so the new credential may exist at the issuer",
     );
     // A credential that is not text cannot ride in an environment variable
     await expect(
-      rotateCredential(
-        withFinalize,
-        { primary: new Uint8Array([0xff, 0xfe]), companions: {} },
-        {},
+      run(
         deps(),
-        SITE,
+        rotateCredential(
+          withFinalize,
+          { primary: new Uint8Array([0xff, 0xfe]), companions: {} },
+          {},
+          SITE,
+        ),
       ),
     ).rejects.toThrow("the value of STRIPE_SECRET_KEY is not a UTF-8 text without NUL");
     // The site is required for this connector (an internal inconsistency, not a user error)
-    await expect(rotateCredential(withFinalize, current, {}, deps())).rejects.toThrow(
+    await expect(run(deps(), rotateCredential(withFinalize, current, {}))).rejects.toThrow(
       "the rotation site (variable and environment) was not supplied",
     );
   });

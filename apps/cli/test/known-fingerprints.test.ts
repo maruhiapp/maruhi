@@ -56,6 +56,18 @@ describe("verified-fingerprint book (known-fingerprints.ts)", () => {
     expect((await Effect.runPromise(book.lookup(ORIGIN, USER_A))).state).toBe("miss");
   });
 
+  it("a user_id of 'constructor' (a legal book key, an inherited Object property) records and hits via own-property lookup", async () => {
+    const { book } = await makeBook();
+    // floor.ts's floorRecordGet discipline: `users["constructor"]` would
+    // resolve Object.prototype.constructor (a function), so lookups must
+    // be own-property checks
+    await Effect.runPromise(book.record(ORIGIN, "constructor", FP_A));
+
+    const hit = await Effect.runPromise(book.lookup(ORIGIN, "constructor"));
+    if (hit.state !== "hit") throw new Error(`expected hit, got ${hit.state}`);
+    expect(hit.entries.map((entry) => entry.fingerprintHex)).toEqual([FP_A]);
+  });
+
   it("a record for the same person adds to the fingerprint set, keeping other entries (read-merge-write — the DK device set)", async () => {
     const { book, path } = await makeBook();
     await Effect.runPromise(book.record(ORIGIN, USER_A, FP_A));

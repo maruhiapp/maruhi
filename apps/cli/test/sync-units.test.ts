@@ -371,6 +371,38 @@ describe("parseSyncConfig", () => {
     );
     expect(bad).toContain("target names must start with an alphanumeric character");
   });
+
+  // A value of a type no member of an optional / nullable key accepts
+  // (number, boolean, array, object, null) reports the key's own wording —
+  // never the union's default "Expected X | undefined"
+  it.each([
+    ["options", [1, true, [], null, "yes"], "targets.t.options must be an object"],
+    ["cwd", [1, false, [], {}, null], "targets.t.cwd must be a non-empty relative path"],
+    [
+      "command",
+      [1, true, [], {}, null],
+      "targets.t.command must be a non-empty path to the installed vercel CLI",
+    ],
+    [
+      "driver",
+      [1, true, [], {}],
+      'targets.t.driver must be "exec" (the installed vendor CLI; the default when the preset has one) or "http" (the vendor API with a token stored in maruhi)',
+    ],
+    ["production", ["yes", 1, [], {}, null], "targets.t.production must be true or false"],
+  ])("reports a wrong-typed %s with the key's own reason", (key, values, reason) => {
+    for (const value of values) {
+      expect(parseSyncConfig(baseConfig(vercelTarget({ [key]: value })), "/repo")).toBe(reason);
+    }
+  });
+
+  it("reports a wrong-typed exclude with its own reason, and reads a null driver as absent", () => {
+    for (const value of [1, true, {}, null]) {
+      expect(
+        parseSyncConfig(baseConfig(vercelTarget({ variables: "all", exclude: value })), "/repo"),
+      ).toBe("targets.t.exclude must be an array of variable names");
+    }
+    expect(parsed(vercelTarget({ driver: null })).driver.kind).toBe("exec");
+  });
 });
 
 describe("buildInvocations (the declarative presets)", () => {

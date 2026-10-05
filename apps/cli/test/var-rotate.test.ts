@@ -21,9 +21,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { decryptVariable } from "@maruhi/crypto";
+import { Layer } from "effect";
+import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { runCli } from "../src/cli.ts";
+import { type CliServices, runCli } from "../src/cli.ts";
+import { IssuerEndpoints } from "../src/rotate-connector.ts";
 import {
   buildChain,
   type BuiltChain,
@@ -191,6 +194,29 @@ async function startEnv(input: {
     typeof input.config === "string" ? input.config : JSON.stringify(input.config),
   );
   return { env, prod: prod.state, ops: ops === null ? null : ops.state, configPath };
+}
+
+/**
+ * The CLI layer with a fake AWS behind the connector: the issuer origins
+ * point at `https://iam.test` / `https://sts.test`, and the fetch behind the
+ * ambient `HttpClient` answers those from `issuer` (the maruhi server's
+ * requests still go out through the real fetch).
+ */
+function withFakeAws(env: TestEnv, issuer: typeof fetch): Layer.Layer<CliServices> {
+  const routed = ((input: string | URL | Request, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    return url.startsWith("https://iam.test/") || url.startsWith("https://sts.test/")
+      ? issuer(input, init)
+      : globalThis.fetch(input, init);
+  }) as typeof fetch;
+  return Layer.mergeAll(
+    env.layer,
+    Layer.succeed(FetchHttpClient.Fetch, routed),
+    Layer.succeed(IssuerEndpoints, {
+      awsIamBase: "https://iam.test",
+      awsStsBase: "https://sts.test",
+    }),
+  );
 }
 
 async function decryptLatest(state: ValueEnvironmentState, dek: Uint8Array, variableId: string) {
@@ -458,12 +484,6 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
     return { actions, fetch: fetchImpl };
   }
 
-  const AWS_SEAMS = {
-    awsIamBase: "https://iam.test",
-    awsStsBase: "https://sts.test",
-    now: () => Date.parse("2026-10-02T00:00:00Z"),
-  };
-
   it("rotates the pair: the key id companion and the secret are pushed as two versions; the companion name resolves the rule", async () => {
     const { env, prod, configPath } = await startEnv({
       prod: [
@@ -473,11 +493,11 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
       config: AWS_CONFIG,
     });
     const iam = fakeIam();
-    env.setRotateSeams({ ...AWS_SEAMS, fetch: iam.fetch });
+    const issuerLayer = withFakeAws(env, iam.fetch);
     expect(
       await runCli(
         ["var", "rotate", "AWS_ACCESS_KEY_ID", "--rotate-config", configPath],
-        env.layer,
+        issuerLayer,
       ),
     ).toBe(0);
     expect(iam.actions).toEqual(["ListAccessKeys", "CreateAccessKey"]);
@@ -510,7 +530,7 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
           "--rotate-config",
           configPath,
         ],
-        env.layer,
+        issuerLayer,
       ),
     ).toBe(0);
     // The target is decided against the issuer: the other listed key, held by
@@ -572,7 +592,7 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
       }
       return new Response("<UpdateAccessKeyResponse/>", { status: 200 });
     }) as typeof fetch;
-    env.setRotateSeams({ ...AWS_SEAMS, fetch: fetchImpl });
+    const issuerLayer = withFakeAws(env, fetchImpl);
     expect(
       await runCli(
         [
@@ -586,7 +606,7 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
           "--rotate-config",
           configPath,
         ],
-        env.layer,
+        issuerLayer,
       ),
     ).toBe(0);
     expect(probes).toHaveLength(1);
@@ -619,11 +639,11 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
       ],
     });
     const iam = fakeIam();
-    env.setRotateSeams({ ...AWS_SEAMS, fetch: iam.fetch });
+    const issuerLayer = withFakeAws(env, iam.fetch);
     expect(
       await runCli(
         ["var", "rotate", "AWS_SECRET_ACCESS_KEY", "--rotate-config", configPath],
-        env.layer,
+        issuerLayer,
       ),
     ).toBe(1);
     expect(iam.actions).toEqual(["ListAccessKeys", "CreateAccessKey"]);
@@ -658,7 +678,7 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
       config: AWS_CONFIG,
     });
     const iam = fakeIam();
-    env.setRotateSeams({ ...AWS_SEAMS, fetch: iam.fetch });
+    const issuerLayer = withFakeAws(env, iam.fetch);
     expect(
       await runCli(
         [
@@ -670,7 +690,7 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
           "--rotate-config",
           configPath,
         ],
-        env.layer,
+        issuerLayer,
       ),
     ).toBe(0);
     expect(iam.actions).toEqual(["ListAccessKeys"]);
@@ -1081,12 +1101,7 @@ describe("maruhi var rotate --finalize with an ancestor this device cannot decry
       }
       return new Response("<UpdateAccessKeyResponse/>", { status: 200 });
     }) as typeof fetch;
-    env.setRotateSeams({
-      fetch: fetchImpl,
-      awsIamBase: "https://iam.test",
-      awsStsBase: "https://sts.test",
-      now: () => Date.parse("2026-10-02T00:00:00Z"),
-    });
+    const issuerLayer = withFakeAws(env, fetchImpl);
     expect(
       await runCli(
         [
@@ -1098,7 +1113,7 @@ describe("maruhi var rotate --finalize with an ancestor this device cannot decry
           "--rotate-config",
           configPath,
         ],
-        env.layer,
+        issuerLayer,
       ),
     ).toBe(0);
     const output = [...env.logs, ...env.errors].join("\n");

@@ -20,7 +20,7 @@
 // for confirmation first (`--yes` for scripts). Finalizing asks the same way.
 
 import type { EnvironmentId } from "@maruhi/core";
-import { Context, Effect, Redacted, Stdio } from "effect";
+import { Effect, Redacted, Stdio } from "effect";
 
 import type { CliServices, EnvironmentContext } from "./context.ts";
 import { floorHandleFor } from "./context.ts";
@@ -34,7 +34,7 @@ import { type PushedVersion, pushVariable } from "./push.ts";
 import { type InputRefs, type RotateConfig, type RotateRule, ruleFor } from "./rotate-config.ts";
 import {
   companionsOf,
-  ConnectorError,
+  type ConnectorError,
   type CredentialValues,
   describeFinalize,
   describeValueShapes,
@@ -42,7 +42,6 @@ import {
   finalizeCredential,
   lineCountWarning,
   planRotation,
-  type RotateDeps,
   type RotateInputs,
   rotateCredential,
   type RotationOutcome,
@@ -50,41 +49,6 @@ import {
 import { requireEnvironmentInScope } from "./scope.ts";
 import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
 import { verifiedAncestorRange, verifiedAncestorValues } from "./var-history.ts";
-
-/**
- * Test seams (absent in production): where the issuer APIs are and what the
- * clock says. Provided by the test layer through {@link RotateSeams}.
- */
-export interface RotateSeamsShape {
-  readonly fetch?: typeof fetch;
-  readonly now?: () => number;
-  readonly randomBytes?: (length: number) => Uint8Array;
-  readonly awsIamBase?: string;
-  readonly awsStsBase?: string;
-  readonly cloudflareBase?: string;
-}
-
-export class RotateSeams extends Context.Reference<RotateSeamsShape | null>("cli/RotateSeams", {
-  defaultValue: (): RotateSeamsShape | null => null,
-}) {}
-
-/** The connector dependencies of one run: production defaults overridden by the test seams. */
-export function rotateDeps(
-  seams: RotateSeamsShape | null,
-  sql: RotateDeps["sql"],
-  exec: RotateDeps["exec"],
-): RotateDeps {
-  return {
-    fetch: seams?.fetch ?? globalThis.fetch,
-    now: seams?.now ?? (() => Date.now()),
-    randomBytes: seams?.randomBytes ?? ((length) => crypto.getRandomValues(new Uint8Array(length))),
-    sql,
-    exec,
-    awsIamBase: seams?.awsIamBase,
-    awsStsBase: seams?.awsStsBase,
-    cloudflareBase: seams?.cloudflareBase,
-  };
-}
 
 export interface VarRotateInput {
   readonly context: EnvironmentContext;
@@ -94,7 +58,6 @@ export interface VarRotateInput {
   readonly name: string;
   /** true = skip the confirmation of an invalidating step (the only non-interactive path). */
   readonly yes: boolean;
-  readonly deps: RotateDeps;
 }
 
 export interface VarRotateResult {
@@ -284,11 +247,22 @@ function currentCredential(
   });
 }
 
-export function connectorFailure(error: unknown): CliError {
-  if (error instanceof ConnectorError) {
-    return cliError(error.message);
-  }
-  return cliError(error instanceof Error ? error.message : "the connector failed");
+/** The connector's failure becomes the CLI error carrying its wording as-is (the connector names the issuer's problem). */
+export function connectorFailure(error: ConnectorError): CliError {
+  return cliError(error.message);
+}
+
+/**
+ * Runs a connector Effect on the command's ambient services (the CLI's
+ * egress `HttpClient`, `SqlRunner`, `ProcessRunner`) with its typed failure
+ * mapped to the CLI error.
+ */
+export function callConnector<A, R>(
+  effect: Effect.Effect<A, ConnectorError, R>,
+): Effect.Effect<A, CliError, R> {
+  return effect.pipe(
+    Effect.catchTag("ConnectorError", (error) => Effect.fail(connectorFailure(error))),
+  );
 }
 
 /** Confirms an invalidating step: `--yes`, or a y/N prompt at a terminal; non-interactive without --yes refuses. */
@@ -408,10 +382,9 @@ export function varRotateOp(
     const local = yield* decryptedByName(context, context.environmentId, pulled);
     const current = yield* currentCredential(target, local);
     const inputs = yield* resolveInputs(context, target.rule.inputs, local, target.primary);
-    const plan = yield* Effect.try({
-      try: () => planRotation(target.rule, current),
-      catch: connectorFailure,
-    });
+    const plan = yield* planRotation(target.rule, current).pipe(
+      Effect.catchTag("ConnectorError", (error) => Effect.fail(connectorFailure(error))),
+    );
     if (plan.immediate) {
       yield* ensureConfirmed({
         facts: [
@@ -423,10 +396,7 @@ export function varRotateOp(
       });
     }
     const site = { variable: target.primary, environmentId: context.environmentId };
-    const outcome = yield* Effect.tryPromise({
-      try: () => rotateCredential(target.rule, current, inputs, input.deps, site),
-      catch: connectorFailure,
-    });
+    const outcome = yield* callConnector(rotateCredential(target.rule, current, inputs, site));
     // A line count that changed is worth a look before the push (D-16)
     const lineWarning = lineCountWarning(
       displayText(target.primary),
@@ -524,11 +494,9 @@ export function varFinalizeOp(
       yes: input.yes,
     });
     const site = { variable: target.primary, environmentId: context.environmentId };
-    const outcome = yield* Effect.tryPromise({
-      try: () =>
-        finalizeCredential(target.rule, previous, current, inputs, input.deps, ancestors, site),
-      catch: connectorFailure,
-    });
+    const outcome = yield* callConnector(
+      finalizeCredential(target.rule, previous, current, inputs, ancestors, site),
+    );
     return {
       primary: target.primary,
       connector: target.rule.connector,

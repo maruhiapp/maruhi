@@ -143,6 +143,52 @@ describe("parseRotateConfig", () => {
     );
   });
 
+  // A value of a type no member of an optional / nullable key accepts
+  // (number, boolean, array, object, null) reports the key's own wording —
+  // never the union's default "Expected X | undefined"
+  it.each([
+    [
+      "user",
+      { connector: "aws-iam-access-key", accessKeyIdVariable: "ID" },
+      [1, true, [], {}, null],
+      "variables.V.user must be an IAM user name",
+    ],
+    [
+      "accountId",
+      { connector: "cloudflare-api-token" },
+      [1, true, [], {}, null],
+      "variables.V.accountId must be a Cloudflare account id (32 hex digits)",
+    ],
+    [
+      "host",
+      { connector: "mysql" },
+      [1, true, [], {}],
+      "variables.V.host must be the account's host part (default %)",
+    ],
+    [
+      "output",
+      { connector: "exec", rotate: "./rotate.sh" },
+      [1, true, [], {}],
+      'variables.V.output must be "value" (the script prints the new value) or "json" (an object with value, companions, facts)',
+    ],
+  ])("reports a wrong-typed %s with the key's own reason", (key, rule, values, reason) => {
+    for (const value of values) {
+      expect(parse({ version: 1, variables: { V: { ...rule, [key]: value } } })).toBe(reason);
+    }
+  });
+
+  it("reads a null host / output / roles / finalize as absent", () => {
+    const parsed = expectValid({
+      version: 1,
+      variables: {
+        MY: { connector: "mysql", host: null, roles: null },
+        EX: { connector: "exec", rotate: "./rotate.sh", output: null, finalize: null },
+      },
+    });
+    expect(parsed.variables.get("MY")).toMatchObject({ host: "%", roles: null });
+    expect(parsed.variables.get("EX")).toMatchObject({ output: "value", finalize: null });
+  });
+
   it("keeps the access key id companion unique and rule-less", () => {
     expect(
       parse({
