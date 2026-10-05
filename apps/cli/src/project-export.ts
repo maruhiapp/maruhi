@@ -243,13 +243,15 @@ class GzipFileSink {
     return Effect.suspend(() =>
       Effect.callback<void>((resume) => {
         const file = this.#file;
+        // Before the early return: an already-closed file (autoDestroy on
+        // a refused open) must not leave the gzip's handle alive
+        this.#gzip.destroy();
         if (file.closed || file.destroyed) {
           resume(Effect.void);
           return;
         }
         const onClose = () => resume(Effect.void);
         file.once("close", onClose);
-        this.#gzip.destroy();
         file.destroy();
         return Effect.sync(() => {
           file.off("close", onClose);
