@@ -29,23 +29,33 @@ import { FetchHttpClient, HttpClient } from "effect/http";
 /** Fetch options a caller may fix for every request (e.g. `redirect: "manual"`). */
 export type EgressRequestInit = Omit<RequestInit, "body" | "headers" | "method" | "signal">;
 
-const withEgressPolicy = (client: HttpClient.HttpClient): HttpClient.HttpClient =>
-  HttpClient.transform(client, (response) =>
-    Effect.provideService(response, Tracer.DisablePropagation, true),
-  );
+const withEgressPolicy = (
+  client: HttpClient.HttpClient,
+  init: EgressRequestInit | undefined,
+): HttpClient.HttpClient =>
+  HttpClient.transform(client, (response) => {
+    const quiet = Effect.provideService(response, Tracer.DisablePropagation, true);
+    // The fetch options ride on each request, not on the layer build: the
+    // fetch client reads `RequestInit` from the request's own context, which
+    // wins over its build context. A build-time `RequestInit` is lost when
+    // `FetchHttpClient.layer` is already built in the ambient memo map (the
+    // CLI command environment), so a nested `redirect: "manual"` would be
+    // silently dropped and a redirect would re-send the caller's headers.
+    return init === undefined
+      ? quiet
+      : Effect.provideService(quiet, FetchHttpClient.RequestInit, init);
+  });
 
 /**
  * The outbound HttpClient: fetch-based, with no header of its own. `init`
- * fixes fetch options for every request made through this layer.
+ * fixes fetch options for every request made through this layer, also when
+ * the layer is provided under an ambient HttpClient.
  */
 export function egressHttpClientLayer(
   init?: EgressRequestInit,
 ): Layer.Layer<HttpClient.HttpClient> {
-  const client = Layer.effect(
+  return Layer.effect(
     HttpClient.HttpClient,
-    Effect.map(HttpClient.HttpClient, withEgressPolicy),
+    Effect.map(HttpClient.HttpClient, (client) => withEgressPolicy(client, init)),
   ).pipe(Layer.provide(FetchHttpClient.layer));
-  return init === undefined
-    ? client
-    : client.pipe(Layer.provide(Layer.succeed(FetchHttpClient.RequestInit, init)));
 }
