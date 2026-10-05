@@ -152,6 +152,72 @@ describe("parseProxyConfig", () => {
     expect(config).toMatchObject({ unmatched: "block", unlisted: "passthrough" });
   });
 
+  it("reads a null unmatched / unlisted as absent (the defaults)", () => {
+    expect(parse({ version: 1, unmatched: null, unlisted: null, variables: {} })).toMatchObject({
+      unmatched: "allow",
+      unlisted: "withhold",
+    });
+  });
+
+  // A value of a type no member of an optional / nullable key accepts
+  // (number, boolean, array, object, null) reports the key's own wording —
+  // never the union's default "Expected X | undefined"
+  it.each([
+    [
+      "unmatched",
+      [1, true, [], {}],
+      'unmatched must be "allow" (tunnel hosts no rule names, untouched) or "block"',
+    ],
+    [
+      "unlisted",
+      [1, true, [], {}],
+      'unlisted must be "withhold" (variables no rule names are not injected) or "passthrough"',
+    ],
+  ])("reports a wrong-typed %s with the key's own reason", (key, values, reason) => {
+    for (const value of values) {
+      expect(parse({ version: 1, [key]: value, variables: {} })).toBe(reason);
+    }
+  });
+
+  it.each([
+    [
+      "surfaces",
+      [1, true, {}, null, "header"],
+      "variables.X.surfaces must be a non-empty array of header | path | query | body",
+    ],
+    ["surfaces", [["header", 1]], "variables.X.surfaces accepts only header | path | query | body"],
+    [
+      "placeholder",
+      [1, true, [], {}, null],
+      "variables.X.placeholder must be 16 to 256 printable ASCII characters without spaces",
+    ],
+    [
+      "hosts",
+      [1, true, {}, null, "x.example"],
+      "variables.X.hosts must be a non-empty array of host entries",
+    ],
+    // Entry by entry: the first bad entry decides the reason
+    [
+      "hosts",
+      [[1, "bad/path"]],
+      "variables.X.hosts entries must be strings (host[:port], optionally with http:// or https://)",
+    ],
+    [
+      "hosts",
+      [["bad/path", 1]],
+      "variables.X.hosts has an invalid entry: a host entry carries no path (write host[:port] only)",
+    ],
+  ])("reports a wrong-typed rule %s with the key's own reason", (key, values, reason) => {
+    for (const value of values) {
+      expect(
+        parse({
+          version: 1,
+          variables: { X: { mode: "broker", hosts: ["x.example"], [key]: value } },
+        }),
+      ).toBe(reason);
+    }
+  });
+
   it("refuses unknown keys, bad versions, bad modes, and bad values — naming the key, never the value", () => {
     expect(parse({ version: 2, variables: {} })).toMatch(/version/);
     expect(parse({ version: 1, variables: {}, extra: 1 })).toMatch(

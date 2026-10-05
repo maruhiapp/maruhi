@@ -14,7 +14,7 @@ import { dirname } from "node:path";
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import { EnvironmentIdSchema, isProjectId } from "@maruhi/core";
 import { MAX_SCOPE_ENVIRONMENTS } from "@maruhi/crypto";
-import { Effect, Exit, FileSystem, type PlatformError, Result, Schema } from "effect";
+import { Effect, FileSystem, type PlatformError, Result, Schema } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 
@@ -95,34 +95,6 @@ export type LedgerRead<T> =
   | { readonly state: "loaded"; readonly file: T }
   | { readonly state: "missing" }
   | { readonly state: "corrupt" };
-
-/**
- * Reads a per-user ledger (own-devices, accepted proxy configs): absent =
- * `missing`, unreadable by `decode` = `corrupt`. Strict decoding, no partial
- * reads (the pins / fingerprint-ledger discipline).
- */
-export async function readLedger<T>(
-  path: string,
-  decode: (json: string) => T | null,
-): Promise<LedgerRead<T>> {
-  const read = Effect.flatMap(FileSystem.FileSystem, (fs) => fs.readFileString(path, "utf8")).pipe(
-    // Only "not created yet" (NotFound / ENOENT) is `missing`. EACCES /
-    // EISDIR / EIO — and any defect — read as `corrupt` so a writer never
-    // replaces a file it could not read (the pins / fingerprint-ledger
-    // discipline — review finding §21 R-15)
-    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(null)),
-    Effect.provide(BunFileSystem.layer),
-  );
-  const exit = await Effect.runPromise(Effect.exit(read));
-  if (Exit.isFailure(exit)) {
-    return { state: "corrupt" };
-  }
-  if (exit.value === null) {
-    return { state: "missing" };
-  }
-  const file = decode(exit.value);
-  return file === null ? { state: "corrupt" } : { state: "loaded", file };
-}
 
 // ---- Schema-described ledger files (FileSystem-backed) ----
 
