@@ -555,7 +555,7 @@ export const callProjectData =
       const env = yield* WorkerEnv;
       const outcome = yield* rpcCall<DataOutcome<T>>(() =>
         options.invoke(projectStub(env, options.projectId), auditActorOf(principal)),
-      );
+      ).pipe(Effect.orDie);
       return yield* unwrapDataOutcome(outcome, options.projectId, options.endpoint);
     });
 
@@ -577,7 +577,7 @@ export const requireProjectChainAdmin = <Endpoint extends HttpApiEndpoint.Top>(
     const env = yield* WorkerEnv;
     const outcome = yield* rpcCall<DataOutcome<Role>>(() =>
       projectStub(env, projectId).memberRoleFor(principal.userId),
-    );
+    ).pipe(Effect.orDie);
     const role = yield* unwrapDataOutcome(outcome, projectId, endpoint);
     if (!roleAtLeast(role, "admin")) {
       return yield* Effect.fail(new ForbiddenError({ reason: "insufficient-role" }));

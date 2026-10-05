@@ -17,7 +17,7 @@ import {
   runInDurableObject,
 } from "cloudflare:test";
 import { Context, Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { makeDbServices, OpsRepo } from "../src/db.package/index.ts";
 import type { Env, OpsBackupOutcome, OpsRestoreOutcome } from "../src/do/chain-do.ts";
@@ -574,6 +574,31 @@ describe("evacuation sweep (ops-backup.ts) and the hourly cron", () => {
     const summary = await opsRepo().backupSummary(Date.now()).pipe(Effect.runPromise);
     expect(summary.oversizeProjects).toBe(1);
     expect(summary.failingProjects).toBe(0);
+  });
+
+  it("records a rejected backup RPC as rpc-failed with the static warning only (RpcCallError, caught by tag)", async () => {
+    // A namespace whose stub rejects opsBackup (the shape of an
+    // unreachable DO or a DO-side defect). The rejection text stands in
+    // for DO error text: it must not reach the log
+    const rejectionText = "dummy DO failure text";
+    const rejecting = {
+      idFromName: (name: string) => workerEnv.PROJECT_CHAIN.idFromName(name),
+      get: () => ({ opsBackup: () => Promise.reject(new TypeError(rejectionText)) }),
+    } as unknown as Env["PROJECT_CHAIN"];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await sweep({ ...workerEnv, PROJECT_CHAIN: rejecting });
+      expect(result).toMatchObject({ enabled: true, visited: 1, uploaded: 0, failed: 1 });
+      expect(warn.mock.calls).toEqual([
+        ["project backup RPC failed; the project is retried on the next sweep"],
+      ]);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(rejectionText);
+    } finally {
+      warn.mockRestore();
+    }
+    const record = await opsRepo().backupRecord(projectId).pipe(Effect.runPromise);
+    expect(record?.lastFailureCode).toBe("rpc-failed");
+    expect(record?.consecutiveFailures).toBe(1);
   });
 
   it("is a no-op without the bucket binding (self-hosting default)", async () => {

@@ -1,7 +1,7 @@
 // Small pieces shared inside the worker: the Env and secrets services
-// and the DO RPC call helper.
+// and the DO RPC call helper (with its typed failure).
 
-import { Context, Effect, Redacted } from "effect";
+import { Context, Data, Effect, Redacted } from "effect";
 
 import type { Env, ProjectChainDO } from "./do/chain-do.ts";
 
@@ -69,11 +69,30 @@ export const projectStub = (
 ): DurableObjectStub<ProjectChainDO> =>
   env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
 
+/**
+ * A DO RPC that rejected, or threw before returning its promise (DO
+ * unreachable, a DO-side defect, a storage fault). It carries only the
+ * rejection's error class name (`errorName` — "unknown" for a non-Error
+ * value), never the message or the error itself: the rejection's text
+ * comes from the DO and can carry stored data or identifiers, and this
+ * error may be logged. The class name is what the existing static
+ * failure lines already log.
+ */
+export class RpcCallError extends Data.TaggedError("RpcCallError")<{
+  readonly errorName: string;
+}> {}
+
 // The workers-types RPC stub types distribute a union return value
 // into a per-member Promise intersection, so this converts back to
-// the DO method's declared Promise<Outcome>
-export const rpcCall = <T>(call: () => PromiseLike<unknown>): Effect.Effect<T> =>
-  Effect.promise(() => call() as Promise<T>);
+// the DO method's declared Promise<Outcome>. A rejection is a typed
+// RpcCallError; a call site with no recovery turns it into a defect
+// (Effect.orDie — the HTTP boundary's 500)
+export const rpcCall = <T>(call: () => PromiseLike<unknown>): Effect.Effect<T, RpcCallError> =>
+  Effect.tryPromise({
+    try: () => call() as Promise<T>,
+    catch: (cause) =>
+      new RpcCallError({ errorName: cause instanceof Error ? cause.name : "unknown" }),
+  });
 
 /**
  * The period (seconds) of the ratelimits binding's fixed window.

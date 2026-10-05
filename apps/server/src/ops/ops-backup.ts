@@ -116,7 +116,7 @@ function backupOne(
       }),
     ).pipe(
       Effect.map(toAttempt),
-      Effect.catchCause(() =>
+      Effect.catchTag("RpcCallError", () =>
         Effect.sync((): OpsBackupAttempt => {
           // Static message only (no project ID — the record lives on
           // the D1 side)

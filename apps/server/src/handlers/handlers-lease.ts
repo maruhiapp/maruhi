@@ -201,7 +201,10 @@ function workloadRpc<T>(
 ) {
   return Effect.gen(function* () {
     const { env, facts } = yield* authenticateWorkload(payload, request);
-    return yield* rpcCall<T>(() => call(projectStub(env, params.projectId), facts));
+    // An RPC failure has no typed answer here: a defect (500), as before
+    return yield* rpcCall<T>(() => call(projectStub(env, params.projectId), facts)).pipe(
+      Effect.orDie,
+    );
   });
 }
 
