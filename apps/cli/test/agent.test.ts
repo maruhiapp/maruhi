@@ -15,12 +15,14 @@
 // - A `maruhi run` child does NOT get MARUHI_AGENT_SOCK (corollary of the
 //   existing rule)
 
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod as setFileMode, mkdtemp, rename, rm, stat } from "node:fs/promises";
+import { createServer, type Socket } from "node:net";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { wrapMasterSecret } from "@maruhi/crypto";
-import { Effect, Exit, Layer, Redacted } from "effect";
+import { Cause, Duration, Effect, Exit, Fiber, Layer, Predicate, Redacted } from "effect";
+import { TestClock } from "effect/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -31,6 +33,7 @@ import {
   makeAgentStore,
   parseAgentRequest,
   parseAgentResponse,
+  sendAgentRequest,
   startAgentServer,
 } from "../src/agent.ts";
 import { runCli } from "../src/cli.ts";
@@ -299,6 +302,241 @@ describeSocket("agent server and client (real unix socket)", () => {
     const keychain = makeAgentKeychain(join(dir, "gone.sock"));
     const exit = await Effect.runPromiseExit(keychain.get("token::x"));
     expect(JSON.stringify(exit)).toContain("The agent session has ended");
+  });
+});
+
+/** A trusted agent socket (ours, 0600, in a 0700 directory) whose answers the test scripts. */
+interface ScriptedAgent {
+  readonly socketPath: string;
+  /** The first connection's request line, without its newline. */
+  readonly received: Promise<string>;
+  /** Settles when the first connection closes on the agent's side. */
+  readonly disconnected: Promise<void>;
+  readonly isDisconnected: () => boolean;
+}
+
+/**
+ * Listens on `<private dir>/agent.sock` (chmod 0600, so the client's
+ * assertTrustedSocket passes) and hands each connection to `respond` once a
+ * full request line has arrived.
+ */
+async function scriptedAgent(respond: (socket: Socket) => void): Promise<ScriptedAgent> {
+  const socketPath = join(await privateDir(), "agent.sock");
+  let onReceived: (line: string) => void = () => undefined;
+  let onDisconnected: () => void = () => undefined;
+  const received = new Promise<string>((resolve) => {
+    onReceived = resolve;
+  });
+  const disconnected = new Promise<void>((resolve) => {
+    onDisconnected = resolve;
+  });
+  let closed = false;
+  const connections = new Set<Socket>();
+  const server = createServer((socket) => {
+    const first = connections.size === 0;
+    connections.add(socket);
+    let buffered = "";
+    let answered = false;
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      buffered += chunk;
+      const newline = buffered.indexOf("\n");
+      if (answered || newline < 0) {
+        return;
+      }
+      answered = true;
+      if (first) {
+        onReceived(buffered.slice(0, newline));
+      }
+      respond(socket);
+    });
+    // The client severing mid-write (EPIPE / ECONNRESET) is what these tests
+    // provoke; the outcome under test is the client's, asserted from its side
+    socket.on("error", () => {
+      socket.destroy();
+    });
+    socket.once("close", () => {
+      if (first) {
+        closed = true;
+        onDisconnected();
+      }
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  await setFileMode(socketPath, 0o600);
+  cleanups.push(
+    () =>
+      new Promise<void>((resolve) => {
+        for (const socket of connections) {
+          socket.destroy();
+        }
+        server.close(() => resolve());
+      }),
+  );
+  return { socketPath, received, disconnected, isDisconnected: () => closed };
+}
+
+/** The tagged failure `sendAgentRequest` ended with, as `{ _tag, reason }`. */
+function agentFailure(exit: Exit.Exit<unknown, unknown>): {
+  readonly _tag: string;
+  readonly reason: string;
+} {
+  if (!Exit.isFailure(exit)) {
+    throw new Error("expected a failure exit");
+  }
+  const error = Cause.squash(exit.cause);
+  if (!Predicate.hasProperty(error, "_tag") || !Predicate.hasProperty(error, "reason")) {
+    throw new Error("expected a tagged agent error");
+  }
+  const { _tag: tag, reason } = error;
+  if (!Predicate.isString(tag) || !Predicate.isString(reason)) {
+    throw new Error("expected a tagged agent error");
+  }
+  return { _tag: tag, reason };
+}
+
+/** The user-facing message a Keychain call failed with. */
+function failureMessage(exit: Exit.Exit<unknown, unknown>): string {
+  if (!Exit.isFailure(exit)) {
+    throw new Error("expected a failure exit");
+  }
+  const error = Cause.squash(exit.cause);
+  if (!Predicate.hasProperty(error, "message") || !Predicate.isString(error.message)) {
+    throw new Error("expected an error with a message");
+  }
+  return error.message;
+}
+
+const AGENT_PROTOCOL_MESSAGE =
+  "The maruhi agent did not answer as expected (a different maruhi version may be running it). Exit the agent session and start a new one with `maruhi agent -- <shell>` using this version";
+
+const AGENT_GONE_MESSAGE =
+  "Cannot connect to the maruhi agent (MARUHI_AGENT_SOCK points to a socket nobody is listening on). The agent session has ended — start a new one with `maruhi agent -- <shell>`, or unset MARUHI_AGENT_SOCK to use the OS keychain";
+
+/**
+ * Runs `effect` against a silent agent on the TestClock: waits (on real I/O)
+ * until the agent has the request, checks the connection is still held just
+ * before the 5-second limit, then crosses it.
+ */
+function acrossTheTimeout<A, E>(
+  agent: ScriptedAgent,
+  effect: Effect.Effect<A, E>,
+): Promise<{ readonly exit: Exit.Exit<A, E>; readonly heldBeforeLimit: boolean }> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(Effect.exit(effect));
+      yield* Effect.promise(() => agent.received);
+      yield* TestClock.adjust(Duration.millis(4_999));
+      // Give real I/O a turn so a premature disconnect would be seen
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+      const heldBeforeLimit = fiber.pollUnsafe() === undefined && !agent.isDisconnected();
+      yield* TestClock.adjust(Duration.millis(1));
+      const exit = yield* Fiber.join(fiber);
+      return { exit, heldBeforeLimit };
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+}
+
+describeSocket("agent client failures (real unix socket, sendAgentRequest)", () => {
+  it("a silent agent times out at 5 s on the Effect clock, and the client severs the connection", async () => {
+    const agent = await scriptedAgent(() => undefined);
+    const { exit, heldBeforeLimit } = await acrossTheTimeout(
+      agent,
+      sendAgentRequest(agent.socketPath, { v: 1, op: "list" }),
+    );
+    expect(await agent.received).toBe('{"v":1,"op":"list"}');
+    expect(heldBeforeLimit).toBe(true);
+    expect(agentFailure(exit)).toEqual({ _tag: "AgentProtocolError", reason: "timeout" });
+    // The interruption cleanup destroyed the client socket: the agent sees it go
+    await agent.disconnected;
+    expect(agent.isDisconnected()).toBe(true);
+
+    // Through the Keychain implementation the user sees the protocol message
+    const viaKeychain = await scriptedAgent(() => undefined);
+    const keychainRun = await acrossTheTimeout(
+      viaKeychain,
+      makeAgentKeychain(viaKeychain.socketPath).get("token::x"),
+    );
+    expect(keychainRun.heldBeforeLimit).toBe(true);
+    expect(failureMessage(keychainRun.exit)).toBe(AGENT_PROTOCOL_MESSAGE);
+    await viaKeychain.disconnected;
+  });
+
+  it("an agent that answers garbage and closes without a newline is classified as closed", async () => {
+    const agent = await scriptedAgent((socket) => socket.end("garbage"));
+    const exit = await Effect.runPromiseExit(
+      sendAgentRequest(agent.socketPath, { v: 1, op: "get", name: "token::x" }),
+    );
+    expect(agentFailure(exit)).toEqual({ _tag: "AgentProtocolError", reason: "closed" });
+    await agent.disconnected;
+    const viaKeychain = await scriptedAgent((socket) => socket.end("garbage"));
+    expect(
+      failureMessage(
+        await Effect.runPromiseExit(makeAgentKeychain(viaKeychain.socketPath).get("token::x")),
+      ),
+    ).toBe(AGENT_PROTOCOL_MESSAGE);
+  });
+
+  it("a complete but malformed response line is classified as a malformed response", async () => {
+    const agent = await scriptedAgent((socket) => socket.end("garbage\n"));
+    const exit = await Effect.runPromiseExit(
+      sendAgentRequest(agent.socketPath, { v: 1, op: "get", name: "token::x" }),
+    );
+    expect(agentFailure(exit)).toEqual({
+      _tag: "AgentProtocolError",
+      reason: "malformed response",
+    });
+    const viaKeychain = await scriptedAgent((socket) => socket.end("garbage\n"));
+    expect(
+      failureMessage(
+        await Effect.runPromiseExit(makeAgentKeychain(viaKeychain.socketPath).get("token::x")),
+      ),
+    ).toBe(AGENT_PROTOCOL_MESSAGE);
+  });
+
+  it("a response beyond the 64 KiB cap is refused as too large, and the client severs the connection", async () => {
+    // One byte over MAX_MESSAGE_BYTES, no newline, and the agent keeps the
+    // connection open — so only the size cap can end the conversation
+    const oversized = "x".repeat(64 * 1024 + 1);
+    const agent = await scriptedAgent((socket) => socket.write(oversized));
+    const exit = await Effect.runPromiseExit(
+      sendAgentRequest(agent.socketPath, { v: 1, op: "get", name: "token::x" }),
+    );
+    expect(agentFailure(exit)).toEqual({
+      _tag: "AgentProtocolError",
+      reason: "response too large",
+    });
+    await agent.disconnected;
+    expect(agent.isDisconnected()).toBe(true);
+    const viaKeychain = await scriptedAgent((socket) => socket.write(oversized));
+    expect(
+      failureMessage(
+        await Effect.runPromiseExit(makeAgentKeychain(viaKeychain.socketPath).get("token::x")),
+      ),
+    ).toBe(AGENT_PROTOCOL_MESSAGE);
+  });
+
+  it("a trusted socket file nobody listens on fails the connect as ECONNREFUSED (the session has ended)", async () => {
+    // Move the socket inode aside before the agent closes: what remains is our
+    // own 0600 socket with no listener behind it
+    const dir = await privateDir();
+    const server = await startAgentServer(dir);
+    const orphan = join(dir, "orphan.sock");
+    await rename(server.socketPath, orphan);
+    await server.close();
+    expect((await stat(orphan)).isSocket()).toBe(true);
+    expect(await fileMode(orphan)).toBe(0o600);
+    const exit = await Effect.runPromiseExit(sendAgentRequest(orphan, { v: 1, op: "list" }));
+    expect(agentFailure(exit)).toEqual({ _tag: "AgentGoneError", reason: "ECONNREFUSED" });
+    expect(
+      failureMessage(await Effect.runPromiseExit(makeAgentKeychain(orphan).get("token::x"))),
+    ).toBe(AGENT_GONE_MESSAGE);
   });
 });
 
