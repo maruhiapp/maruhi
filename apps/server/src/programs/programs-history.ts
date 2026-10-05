@@ -12,7 +12,7 @@
 
 import { MAX_VERSION_VALUES_PAGE } from "@maruhi/api-schema";
 import { auditReadPayload, VAR_READ_EVENT } from "@maruhi/core";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
 import type { DataActor, PulledVariableValue } from "../data/data-plane.ts";
@@ -142,7 +142,7 @@ export const variableVersionValuesProgram = (
     // the reader can decrypt). The range check above guarantees at least
     // one row
     const audit = yield* AuditStore;
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     yield* Effect.sync(() => {
       audit.appendSync(
         dataEvent(actor, now, VAR_READ_EVENT, {

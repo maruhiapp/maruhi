@@ -13,7 +13,7 @@
 // Both run under the DO's permit synchronously (one page = one
 // synchronous read; no permit across awaits).
 
-import { Effect } from "effect";
+import { Clock, Effect, Option, Schema } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
 import type { DataActor, DataRejectedError } from "../data/data-plane.ts";
@@ -56,7 +56,7 @@ export const exportPageProgram = (
 ): Effect.Effect<ExportPageValue, DataRejectedError, ChainStore | DataStore | AuditStore> =>
   Effect.gen(function* () {
     const { state } = yield* requireMemberState(actor.userId, "owner", cache);
-    const nowMs = Date.now();
+    const nowMs = yield* Clock.currentTimeMillis;
     const cursor = yield* continuationOf(cursorText, sql, actor.userId);
     const exportedSeq =
       cursor === null
@@ -170,6 +170,18 @@ function lastAuditSeq(sql: SqlStorage): number {
   return Number(sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").one()["m"]);
 }
 
+/**
+ * The `project.exported` row's payload as the cursor binds it: the head the
+ * first page's row recorded (ruling D revision). A column that does not
+ * decode to exactly this — not JSON, a scalar, a wrong shape, or a
+ * different head — fails the binding like a stale cursor.
+ */
+const exportRowPayload = Schema.Struct({
+  chainHeadSeq: Schema.Number,
+  chainHeadHashHex: Schema.NullOr(Schema.String),
+});
+const decodeExportRowPayload = Schema.decodeUnknownOption(Schema.fromJsonString(exportRowPayload));
+
 /** Whether the cursor's `project.exported` row exists, is the requester's, and names the cursor's head (within the exported bound). */
 function exportRowBinds(sql: SqlStorage, cursor: ExportCursorState, userId: string): boolean {
   const row = sql
@@ -181,17 +193,9 @@ function exportRowBinds(sql: SqlStorage, cursor: ExportCursorState, userId: stri
   if (row === undefined || row["event"] !== "project.exported" || row["actor_user_id"] !== userId) {
     return false;
   }
-  let payload: unknown;
-  try {
-    payload = JSON.parse(String(row["payload"]));
-  } catch {
-    return false;
-  }
-  if (typeof payload !== "object" || payload === null) {
-    return false;
-  }
-  const head = payload as { chainHeadSeq?: unknown; chainHeadHashHex?: unknown };
+  const head = Option.getOrNull(decodeExportRowPayload(String(row["payload"])));
   return (
+    head !== null &&
     head.chainHeadSeq === cursor.marks.chainHeadSeq &&
     head.chainHeadHashHex === cursor.marks.chainHeadHashHex
   );

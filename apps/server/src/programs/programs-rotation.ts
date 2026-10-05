@@ -14,7 +14,7 @@
 // programs-*. Derivation is a fold over the event sequence only (no
 // mutable store of flags — §4.1).
 
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
 import type { DataActor } from "../data/data-plane.ts";
@@ -87,7 +87,7 @@ export const dismissRotationFlagsProgram = (
       }
       deduped.push(target);
     }
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     // The write phase (a single task): one rotation.dismissed row
     // per pair (AUDIT_SPEC §3.3 — the actor is the dismisser
     // themselves)

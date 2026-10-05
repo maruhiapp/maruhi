@@ -6,7 +6,7 @@
 // The permit-serialization premise is the same as the former
 // data-programs.ts.
 
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
 import type { DataActor, DekWrapInput, DekWrapRefInput } from "../data/data-plane.ts";
@@ -83,7 +83,7 @@ export const registerDekWrapsProgram = (
     yield* ensureDevicePermission(signer, requiredRole, environmentId);
     const store = yield* DataStore;
     const audit = yield* AuditStore;
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     yield* Effect.sync(() => {
       for (const wrap of wraps) {
         store.write.insertWrap(environmentId, wrap, signer, now);
@@ -159,7 +159,7 @@ export const deleteDekWrapsProgram = (
       });
     }
     const audit = yield* AuditStore;
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     // The write phase (a single task): writes the deletion and the
     // dek.deleted (one row per recipient — AUDIT_SPEC §3.3)
     // atomically

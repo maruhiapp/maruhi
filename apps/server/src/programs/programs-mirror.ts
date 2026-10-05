@@ -27,7 +27,7 @@ import {
   computeChainEntryHash,
   verifyChainWithHistory,
 } from "@maruhi/crypto";
-import { Effect, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
 import type { DataActor, DataRejectedError } from "../data/data-plane.ts";
@@ -154,13 +154,13 @@ export const markMirrorProgram = (
     const sql = storage.sql;
     const current = readMirrorState(sql);
     if (current === null) {
-      markMirror(sql, sourceOrigin, Date.now());
+      markMirror(sql, sourceOrigin, yield* Clock.currentTimeMillis);
     } else if (current.sourceOrigin === sourceOrigin) {
       return yield* rejectData({ kind: "mirror-state", reason: "already-mirror" });
     } else {
       // A mark naming another source re-points the mirror (ruling C
       // revision, round 4): the project stays frozen throughout
-      remarkMirror(storage, PROJECT_DO_TABLES, sourceOrigin, Date.now());
+      remarkMirror(storage, PROJECT_DO_TABLES, sourceOrigin, yield* Clock.currentTimeMillis);
     }
     return statusOf(sql, "owner");
   });
@@ -184,14 +184,15 @@ export const unmarkMirrorProgram = (
 const refuse = (refusal: MirrorPageRefusedError): DataRejectedError =>
   rejectData({ kind: "mirror-sync-rejected", reason: refusal.reason });
 
+const decodeEntryJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeChainEntry = Schema.decodeUnknownEffect(ChainEntrySchema);
+
 /** One staged row's entry: JSON that does not parse is malformed; a shape the wire schema refuses is an invalid chain. */
 function decodeEntry(text: string): Effect.Effect<ChainEntry, MirrorPageRefusedError> {
-  return Effect.try({
-    try: () => JSON.parse(text) as unknown,
-    catch: () => new MirrorPageRefusedError({ reason: "malformed" }),
-  }).pipe(
+  return decodeEntryJson(text).pipe(
+    Effect.mapError(() => new MirrorPageRefusedError({ reason: "malformed" })),
     Effect.flatMap((parsed) =>
-      Schema.decodeUnknownEffect(ChainEntrySchema)(parsed).pipe(
+      decodeChainEntry(parsed).pipe(
         Effect.map((entry) => entry as ChainEntry),
         Effect.mapError(() => new MirrorPageRefusedError({ reason: "chain-invalid" })),
       ),
@@ -266,7 +267,7 @@ export const mirrorPageProgram = (
       state,
       sequence: page.sequence,
       lines: page.lines,
-      nowMs: Date.now(),
+      nowMs: yield* Clock.currentTimeMillis,
       maxRows: MAX_EXPORT_PAGE_ROWS,
       maxBytes: MAX_EXPORT_PAGE_BYTES + MAX_MIRROR_PAGE_SLACK_BYTES,
     }).pipe(Effect.catchTag("MirrorPageRefused", refuse));
@@ -292,7 +293,7 @@ export const mirrorPageProgram = (
       storage,
       tables: PROJECT_DO_TABLES,
       state,
-      nowMs: Date.now(),
+      nowMs: yield* Clock.currentTimeMillis,
       sourceMutationSeq: page.sourceMutationSeq ?? null,
     }).pipe(Effect.catchTag("MirrorPageRefused", refuse));
     // The chain and the audit log were replaced: the derived memory is
