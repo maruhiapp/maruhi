@@ -118,7 +118,7 @@ const appendAll = (
     // ShortWriteError propagates when the budget runs out
     Effect.retry({
       times: MAX_APPEND_WRITE_ATTEMPTS - 1,
-      while: (error) => error instanceof ShortWriteError && error.bytesWritten > 0,
+      while: (error) => Predicate.isTagged(error, "ShortWrite") && error.bytesWritten > 0,
     }),
     Effect.andThen(handle.sync),
   );
