@@ -725,6 +725,24 @@ describe("maruhi key recover --passkey (recovery)", () => {
     expect(env.keychain.has(masterKeyEntryName(server.origin, owner.userId))).toBe(false);
   });
 
+  it("a PRF that does not open the wrap refuses with the full decrypt wording", async () => {
+    const { registration } = await registerOnce();
+    const { env, server } = await start([
+      statusHandler([rowOf(registration)]),
+      wrapHandler(registration.wrapId, registration),
+      noMembershipsHandler,
+    ]);
+    seedTokenOnly(env, server.origin);
+    // A well-formed 32-byte PRF output that simply does not match the registration
+    browserPosting(env, () => ({ credentialIdHex: CREDENTIAL_HEX, prfHex: "99".repeat(32) }));
+    expect(await runCli(["key", "recover", "--passkey"], env.layer)).toBe(1);
+    expect(env.errors.at(-1)).toBe(
+      "maruhi: Cannot decrypt the wrapped reserve key with this passkey. The passkey's PRF output does not match the registration (the wrap or its parameters were altered, or the passkey was re-created) — nothing was changed",
+    );
+    expect(env.prompts).toEqual([]);
+    expect(env.keychain.has(masterKeyEntryName(server.origin, owner.userId))).toBe(false);
+  });
+
   it("a rate limit after the ceremony becomes guidance and nothing remains in the keychain", async () => {
     const { registration } = await registerOnce();
     const { env, server } = await start([

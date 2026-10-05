@@ -12,6 +12,7 @@
 // The FP is public information; displaying or logging the word list
 // does not violate the no-plaintext-values / no-key-material rule.
 
+import { cryptoEffect } from "@maruhi/core";
 import { decodeHex, fingerprintToWords } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -31,14 +32,9 @@ export function fingerprintWords(
     if (bytes === null) {
       return yield* Effect.fail(cliError(invalidMessage));
     }
-    const words = yield* Effect.tryPromise({
-      try: () => fingerprintToWords(bytes),
-      catch: () => cliError("Failed to compute the fingerprint word list (crypto error)"),
-    });
-    if (!words.ok) {
-      return yield* Effect.fail(cliError("Failed to compute the fingerprint word list"));
-    }
-    return words.value;
+    return yield* cryptoEffect(() => fingerprintToWords(bytes)).pipe(
+      Effect.mapError(() => cliError("Failed to compute the fingerprint word list")),
+    );
   });
 }
 

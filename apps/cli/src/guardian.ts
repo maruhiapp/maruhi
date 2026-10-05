@@ -30,6 +30,7 @@
 //
 // Plaintext KEK, segments, and B exist only in local variables.
 
+import { cryptoEffect, fromCryptoResult } from "@maruhi/core";
 import {
   type ChainDevice,
   type ChainMember,
@@ -221,37 +222,38 @@ function sealShareFor(input: {
   return Effect.gen(function* () {
     const encPub = decodeHex(input.device.encPubHex);
     const publicKey =
-      encPub === null ? null : yield* Effect.promise(() => importEncryptionPublicKey(encPub));
-    if (publicKey === null || !publicKey.ok) {
+      encPub === null
+        ? null
+        : yield* cryptoEffect(() => importEncryptionPublicKey(encPub)).pipe(
+            Effect.mapError(() =>
+              cliError(`The chain key of ${displayText(input.guardianUserId)} cannot be imported`),
+            ),
+          );
+    if (publicKey === null) {
       return yield* Effect.fail(
         cliError(`The chain key of ${displayText(input.guardianUserId)} cannot be imported`),
       );
     }
-    const sealed = yield* Effect.tryPromise({
-      try: () =>
-        sealGuardianShare({
-          guardianPublicKey: publicKey.value,
-          share: input.share,
-          context: {
-            userId: input.wardUserId,
-            groupId: input.groupId,
-            mode: input.mode,
-            shareIndex: input.shareIndex,
-            guardianUserId: input.guardianUserId,
-          },
-        }),
-      catch: () => cliError("Failed to seal a guardian share (crypto error)"),
-    });
-    if (!sealed.ok) {
-      return yield* Effect.fail(cliError("Failed to seal a guardian share"));
-    }
+    const sealed = yield* cryptoEffect(() =>
+      sealGuardianShare({
+        guardianPublicKey: publicKey,
+        share: input.share,
+        context: {
+          userId: input.wardUserId,
+          groupId: input.groupId,
+          mode: input.mode,
+          shareIndex: input.shareIndex,
+          guardianUserId: input.guardianUserId,
+        },
+      }),
+    ).pipe(Effect.mapError(() => cliError("Failed to seal a guardian share")));
     return {
       shareIndex: input.shareIndex,
       guardianUserId: input.guardianUserId,
       guardianEncPubHex: input.device.encPubHex,
       guardianKeyFingerprintHex: input.device.keyFingerprintHex,
-      encHex: encodeHex(sealed.value.enc),
-      ciphertextHex: encodeHex(sealed.value.ciphertext),
+      encHex: encodeHex(sealed.enc),
+      ciphertextHex: encodeHex(sealed.ciphertext),
     };
   });
 }
@@ -273,22 +275,22 @@ function prepareGroup(input: {
   return Effect.gen(function* () {
     const kek = generateMasterWrapKek();
     const blob = new TextEncoder().encode(serializeStoredMasterKey(input.reserve.record));
-    const wrapped = yield* Effect.tryPromise({
-      try: () =>
-        wrapMasterBlob({
-          kek,
-          masterSecretBlob: blob,
-          context: {
-            userId: input.wardUserId,
-            kind: "guardian",
-            wrapRef: input.groupId,
-            mode: input.mode,
-          },
-        }),
-      catch: () => cliError("Failed to wrap the reserve key for the guardian group (crypto error)"),
-    });
-    const split = splitGuardianKek({ kek, mode: input.mode, count: input.guardians.length });
-    if (!wrapped.ok || !split.ok || split.value.length !== input.guardians.length) {
+    const wrapped = yield* cryptoEffect(() =>
+      wrapMasterBlob({
+        kek,
+        masterSecretBlob: blob,
+        context: {
+          userId: input.wardUserId,
+          kind: "guardian",
+          wrapRef: input.groupId,
+          mode: input.mode,
+        },
+      }),
+    ).pipe(Effect.mapError(() => cliError("Failed to prepare the guardian group")));
+    const split = yield* fromCryptoResult(
+      splitGuardianKek({ kek, mode: input.mode, count: input.guardians.length }),
+    ).pipe(Effect.mapError(() => cliError("Failed to prepare the guardian group")));
+    if (split.length !== input.guardians.length) {
       return yield* Effect.fail(cliError("Failed to prepare the guardian group"));
     }
     const shares: SealedShare[] = [];
@@ -302,15 +304,15 @@ function prepareGroup(input: {
             shareIndex: index + 1,
             guardianUserId: guardian.userId,
             device,
-            share: split.value[index] ?? new Uint8Array(),
+            share: split[index] ?? new Uint8Array(),
           }),
         );
       }
     }
     return {
       wrap: {
-        nonceHex: encodeHex(wrapped.value.nonce),
-        ciphertextHex: encodeHex(wrapped.value.ciphertext),
+        nonceHex: encodeHex(wrapped.nonce),
+        ciphertextHex: encodeHex(wrapped.ciphertext),
       },
       shares,
     };
@@ -599,36 +601,32 @@ function resolveApprovalTarget(
   code: string,
 ): Effect.Effect<ApprovalTarget, CliError, HttpClient.HttpClient> {
   return Effect.gen(function* () {
-    const decoded = yield* Effect.promise(() => decodeHandoffCode(code));
-    if (!decoded.ok) {
-      return yield* Effect.fail(
+    const decoded = yield* cryptoEffect(() => decodeHandoffCode(code)).pipe(
+      Effect.mapError(() =>
         cliError(
           "The handoff code is malformed (58 characters in groups of 4; hyphens, spaces, and letter case are ignored). Copy it again from the requesting device",
         ),
-      );
-    }
-    const requestId = yield* Effect.promise(() => computeHandoffRequestId(decoded.value));
-    const ephemeralPublicKey = yield* Effect.promise(() =>
-      importEncryptionPublicKey(decoded.value),
+      ),
     );
-    if (!requestId.ok || !ephemeralPublicKey.ok) {
-      return yield* Effect.fail(cliError("The handoff code does not encode a usable key"));
-    }
-    const lookup = yield* client.keyWraps
-      .handoffLookup({ params: { requestId: requestId.value } })
-      .pipe(
-        Effect.catchTag("HandoffNotFound", () =>
-          Effect.fail(
-            cliError(
-              "No pending handoff request matches this code (it is unknown, expired, or you are not one of the requester's guardians)",
-            ),
+    const requestId = yield* cryptoEffect(() => computeHandoffRequestId(decoded)).pipe(
+      Effect.mapError(() => cliError("The handoff code does not encode a usable key")),
+    );
+    const ephemeralPublicKey = yield* cryptoEffect(() => importEncryptionPublicKey(decoded)).pipe(
+      Effect.mapError(() => cliError("The handoff code does not encode a usable key")),
+    );
+    const lookup = yield* client.keyWraps.handoffLookup({ params: { requestId } }).pipe(
+      Effect.catchTag("HandoffNotFound", () =>
+        Effect.fail(
+          cliError(
+            "No pending handoff request matches this code (it is unknown, expired, or you are not one of the requester's guardians)",
           ),
         ),
-        Effect.mapError(toCliError),
-      );
+      ),
+      Effect.mapError(toCliError),
+    );
     return {
-      requestId: requestId.value,
-      ephemeralPublicKey: ephemeralPublicKey.value,
+      requestId,
+      ephemeralPublicKey,
       wardUserId: lookup.wardUserId,
       wardLabel:
         lookup.wardLogin === null
