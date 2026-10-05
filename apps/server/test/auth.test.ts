@@ -7,6 +7,7 @@
 
 import { computeServerKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { createExecutionContext, createScheduledController, env, SELF } from "cloudflare:test";
+import { Effect } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -17,7 +18,12 @@ import {
   importFlowSigningKey,
   verificationQuery,
 } from "../src/auth.package/index.ts";
-import { isUniqueConflict, MAX_CONCURRENT_CLI_FLOWS } from "../src/db.package/index.ts";
+import {
+  D1FailureError,
+  D1UniqueConflictError,
+  MAX_CONCURRENT_CLI_FLOWS,
+  tryD1,
+} from "../src/db.package/index.ts";
 import worker from "../src/index.ts";
 import {
   approvalTicketOf,
@@ -1285,21 +1291,39 @@ describe("session sliding renewal (§5)", () => {
   });
 });
 
-describe("isUniqueConflict (D1 error discrimination)", () => {
-  it("detects UNIQUE violations directly and through cause chains", () => {
+describe("tryD1 (D1 error classification)", () => {
+  const failureOf = (error: unknown): Promise<unknown> =>
+    Effect.runPromise(Effect.flip(tryD1(() => Promise.reject(error))));
+
+  it("classifies UNIQUE violations as D1UniqueConflict directly and through cause chains", async () => {
     // The batch path puts the message on a plain Error, the
     // single-query path on DrizzleQueryError (on the cause side).
-    // Pin that either shape is discriminated as a conflict
-    expect(isUniqueConflict(new Error("D1_ERROR: UNIQUE constraint failed: users.id"))).toBe(true);
+    // Pin that either shape is classified as a conflict
     expect(
-      isUniqueConflict(
+      await failureOf(new Error("D1_ERROR: UNIQUE constraint failed: users.id")),
+    ).toBeInstanceOf(D1UniqueConflictError);
+    expect(
+      await failureOf(
         new Error("Failed query: insert into users ...", {
           cause: new Error("UNIQUE constraint failed: users.id: SQLITE_CONSTRAINT"),
         }),
       ),
-    ).toBe(true);
-    expect(isUniqueConflict(new Error("D1_ERROR: database is locked"))).toBe(false);
-    expect(isUniqueConflict("not an error")).toBe(false);
+    ).toBeInstanceOf(D1UniqueConflictError);
+  });
+
+  it("classifies every other rejection as D1Failure", async () => {
+    expect(await failureOf(new Error("D1_ERROR: database is locked"))).toBeInstanceOf(
+      D1FailureError,
+    );
+    expect(await failureOf("not an error")).toBeInstanceOf(D1FailureError);
+  });
+
+  it("carries the violated constraint's target text", async () => {
+    const failure = await failureOf(
+      new Error("UNIQUE constraint failed: users.id: SQLITE_CONSTRAINT"),
+    );
+    expect(failure).toBeInstanceOf(D1UniqueConflictError);
+    expect((failure as D1UniqueConflictError).constraint).toBe("users.id");
   });
 });
 
