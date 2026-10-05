@@ -62,7 +62,7 @@ const reasonFormatter = SchemaIssue.makeFormatterStandardSchemaV1();
  * separator (space / colon / dot) is a suffix appended to the dotted path
  * (array positions left out); anything else is already a complete reason.
  */
-export function issueReason(issue: SchemaIssue.Issue): Invalid {
+function issueReason(issue: SchemaIssue.Issue): Invalid {
   const first = reasonFormatter(issue).issues[0];
   if (first === undefined) {
     return "is invalid";
