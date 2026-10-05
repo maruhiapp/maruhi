@@ -18,6 +18,7 @@
 // the internal implementation (`capWithinCap`) (the same discipline as
 // ES K4-I).
 
+import { cryptoPromise } from "@maruhi/core";
 import type { ChainDevice, ChainMember, DeviceCap, SigningKeyPair } from "@maruhi/crypto";
 import { encodeHex, exportSigningPublicKey } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -126,10 +127,11 @@ export function ownDeviceBySigningKey(
   signingKeyPair: SigningKeyPair,
 ): Effect.Effect<ChainDevice, CliError> {
   return Effect.gen(function* () {
-    const sigPub = yield* Effect.tryPromise({
-      try: () => exportSigningPublicKey(signingKeyPair.publicKey),
-      catch: () => cliError("Failed to export the signing public key (crypto error)"),
-    });
+    const sigPub = yield* cryptoPromise("exportSigningPublicKey", () =>
+      exportSigningPublicKey(signingKeyPair.publicKey),
+    ).pipe(
+      Effect.mapError(() => cliError("Failed to export the signing public key (crypto error)")),
+    );
     return yield* ownDeviceOrFail(verified, member, { sigPubHex: encodeHex(sigPub) });
   });
 }

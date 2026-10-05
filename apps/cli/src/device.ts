@@ -40,11 +40,12 @@
 // the chain; the local records are written only by the 3 paths — sealing,
 // approval, observation (K4-3).
 
+import { cryptoEffect } from "@maruhi/core";
 import { computeUserKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { cliError, type CliError } from "./errors.ts";
+import type { CliError } from "./errors.ts";
 import { fetchProjectMemberships } from "./project-list.ts";
 import { compareCodePoints } from "./scope.ts";
 
@@ -72,10 +73,14 @@ export function recomputeFingerprint(
   if (enc === null || sig === null) {
     return Effect.succeed(null);
   }
-  return Effect.tryPromise({
-    try: () => computeUserKeyFingerprint(enc, sig),
-    catch: () => cliError("Failed to compute a key fingerprint (crypto error)"),
-  }).pipe(Effect.map((result) => (result.ok ? encodeHex(result.value) : null)));
+  // A malformed stored key materializes as InvalidInput, which is
+  // a fingerprint that cannot match — null (the caller treats it as
+  // "no such key"). Anything else is an invariant break and dies
+  return cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(
+    Effect.map(encodeHex),
+    Effect.catchTag("CryptoInvalidInput", () => Effect.succeed(null)),
+    Effect.orDie,
+  );
 }
 
 /** Fetches the registry (null when unreadable — used only for display and the signal, so never fails). */

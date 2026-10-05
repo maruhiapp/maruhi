@@ -16,6 +16,7 @@
 //   is split off here to avoid circular imports)
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
+import { cryptoPromise } from "@maruhi/core";
 import type {
   ApprovalTargetOp,
   ChainEntry,
@@ -174,10 +175,9 @@ export function proposeOperation(
         cliError("The propose entry was not signed (internal contradiction)"),
       );
     }
-    const hash = yield* Effect.tryPromise({
-      try: () => computeChainEntryHash(entry),
-      catch: () => cliError("Failed to compute the proposal hash (crypto error)"),
-    });
+    const hash = yield* cryptoPromise("computeChainEntryHash", () =>
+      computeChainEntryHash(entry),
+    ).pipe(Effect.mapError(() => cliError("Failed to compute the proposal hash (crypto error)")));
     const pending = verified.state.pendingProposals.get(hash);
     if (pending === undefined) {
       return yield* Effect.fail(

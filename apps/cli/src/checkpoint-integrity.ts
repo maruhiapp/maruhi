@@ -48,8 +48,10 @@
 // caller types it as evidence — errors.ts).
 
 import type { CheckpointValueSnapshot } from "@maruhi/api-schema";
+import { cryptoEffect } from "@maruhi/core";
 import type { ChainHistoryIndex, EnvironmentCheckpointState } from "@maruhi/crypto";
 import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
+import { Effect } from "effect";
 
 import { displayText } from "./display.ts";
 
@@ -266,8 +268,12 @@ export async function checkCheckpointIntegrity(input: {
   // Recompute the enumeration's canonical digest (the computation refuses
   // duplicate variableIds) and reconcile it against the chain notarization
   // (values_digest)
-  const digest = await computeEnvValuesDigest(SUITE_ID, snapshot.values);
-  if (!digest.ok || digest.value !== baseline.valuesDigestHex) {
+  const digest = await Effect.runPromise(
+    cryptoEffect(() => computeEnvValuesDigest(SUITE_ID, snapshot.values)).pipe(
+      Effect.match({ onSuccess: (value) => value, onFailure: () => null }),
+    ),
+  );
+  if (digest === null || digest !== baseline.valuesDigestHex) {
     return rejected(
       `The checkpoint value snapshot for environment ${displayText(environmentId)} does not match the values digest notarized by checkpoint seq ${baseline.seq} on the verified chain (a tampered or substituted enumeration)`,
     );

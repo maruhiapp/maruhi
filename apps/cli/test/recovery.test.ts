@@ -783,6 +783,47 @@ describe("maruhi key recover (restore)", () => {
     expect(env.keychain.get(masterKeyEntryName(maruhi.origin, user.userId))).toBeUndefined();
   });
 
+  it("a tampered wrap gets the same retry wording as a wrong code (the full messages)", async () => {
+    const user = await makeTestUser("user-0001");
+    const secret = crypto.getRandomValues(new Uint8Array(32));
+    const wrapped = await wrapMasterSecret({
+      recoverySecret: secret,
+      userId: user.userId,
+      masterSecretBlob: new TextEncoder().encode(
+        serializeStoredMasterKey(storedReserveRecord(user)),
+      ),
+    });
+    if (!wrapped.ok) throw new Error("test wrap failed");
+    // One flipped bit in the served ciphertext: the blob does not open
+    // even under the right code, and the user-facing wording cannot
+    // distinguish that from a mistyped code
+    const tampered = wrapped.value.ciphertext.slice();
+    tampered[0] = (tampered[0] ?? 0) ^ 0x01;
+    const maruhi = await start([
+      onRequest("GET", "/auth/recovery", () => ({
+        status: 200,
+        json: {
+          suite: "maruhi/v1",
+          nonceHex: Buffer.from(wrapped.value.nonce).toString("hex"),
+          ciphertextHex: Buffer.from(tampered).toString("hex"),
+          updatedAtMs: 1754006400000,
+        },
+      })),
+      noProjectsHandler(),
+    ]);
+    const env = await loggedInEnv(maruhi.origin, user.userId);
+    const code = Redacted.value(formatRecoveryCode(Redacted.make(secret)));
+    env.setPromptResponses([code, code, code]);
+    expect(await runCli(["key", "recover"], env.layer)).toBe(1);
+    expect(env.errors).toEqual([
+      "Cannot decrypt. Check that the code is correct",
+      "Cannot decrypt. Check that the code is correct",
+      "Cannot decrypt. Check that the code is correct",
+      "maruhi: Recovery-code entry failed repeatedly. Check the code and re-run",
+    ]);
+    expect(env.keychain.get(masterKeyEntryName(maruhi.origin, user.userId))).toBeUndefined();
+  });
+
   it("refuses code input in an AI-agent environment (the symmetric line to the issuance side)", async () => {
     const user = await makeTestUser("user-0001");
     let fetched = false;

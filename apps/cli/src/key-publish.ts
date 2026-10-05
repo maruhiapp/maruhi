@@ -23,6 +23,7 @@
 //   treated as "do not register" and only the guidance is shown (the
 //   key generation itself is already complete)
 
+import { fromCryptoResult } from "@maruhi/core";
 import { decodeHex, encodeOpenSshEd25519PublicKey } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
@@ -44,10 +45,11 @@ function openSshSigningKeyLine(keys: MasterKeys): Effect.Effect<string, CliError
   if (raw === null) {
     return Effect.fail(cliError("The stored signing public key is malformed"));
   }
-  const encoded = encodeOpenSshEd25519PublicKey(raw);
-  return encoded.ok
-    ? Effect.succeed(encoded.value)
-    : Effect.fail(cliError("The stored signing public key cannot be encoded as an OpenSSH key"));
+  return fromCryptoResult(encodeOpenSshEd25519PublicKey(raw)).pipe(
+    Effect.mapError(() =>
+      cliError("The stored signing public key cannot be encoded as an OpenSSH key"),
+    ),
+  );
 }
 
 /** The title on the gh side (carries the FP so the key is recognizable as maruhi's in the list). */

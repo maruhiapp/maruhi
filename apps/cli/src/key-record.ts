@@ -8,6 +8,7 @@
 // private side is wrapped in `Redacted` right after generation and
 // never leaves this function as a bare string.
 
+import { cryptoEffect, cryptoPromise } from "@maruhi/core";
 import {
   encodeHex,
   exportEncryptionPrivateKey,
@@ -23,49 +24,41 @@ import { Effect, Redacted } from "effect";
 import { cliError, type CliError } from "./errors.ts";
 import type { StoredMasterKey } from "./keychain.ts";
 
-// A WebCrypto reject is mapped to a typed failure, not a defect (do
-// not flow an uninspected external message to the terminal as an
-// "internal error")
+// A WebCrypto reject surfaces as `CryptoRejected` through the bridge and is
+// mapped to a typed failure, not a defect (do not flow an uninspected
+// external message to the terminal as an "internal error")
 const keygenFailed = () => cliError("Failed to generate the keypair (crypto error)");
+
+const keygenSerializeFailed = () =>
+  cliError("Failed to generate the keypair (cannot serialize the private keys)");
 
 /** Generates a fresh (enc, sig) key record with the private halves redacted. */
 export function generateKeyRecord(): Effect.Effect<StoredMasterKey, CliError> {
   return Effect.gen(function* () {
-    const encPair = yield* Effect.tryPromise({
-      try: () => generateEncryptionKeyPair({ extractable: true }),
-      catch: keygenFailed,
-    });
-    const sigPair = yield* Effect.tryPromise({
-      try: () => generateSigningKeyPair({ extractable: true }),
-      catch: keygenFailed,
-    });
-    const encPub = yield* Effect.tryPromise({
-      try: () => exportEncryptionPublicKey(encPair.publicKey),
-      catch: keygenFailed,
-    });
-    const sigPub = yield* Effect.tryPromise({
-      try: () => exportSigningPublicKey(sigPair.publicKey),
-      catch: keygenFailed,
-    });
-    const encSk = yield* Effect.tryPromise({
-      try: () => exportEncryptionPrivateKey(encPair.privateKey),
-      catch: keygenFailed,
-    });
-    const sigSeed = yield* Effect.tryPromise({
-      try: () => exportSigningPrivateSeed(sigPair.privateKey),
-      catch: keygenFailed,
-    });
-    if (!encSk.ok || !sigSeed.ok) {
-      return yield* Effect.fail(
-        cliError("Failed to generate the keypair (cannot serialize the private keys)"),
-      );
-    }
+    const encPair = yield* cryptoPromise("generateEncryptionKeyPair", () =>
+      generateEncryptionKeyPair({ extractable: true }),
+    ).pipe(Effect.mapError(keygenFailed));
+    const sigPair = yield* cryptoPromise("generateSigningKeyPair", () =>
+      generateSigningKeyPair({ extractable: true }),
+    ).pipe(Effect.mapError(keygenFailed));
+    const encPub = yield* cryptoPromise("exportEncryptionPublicKey", () =>
+      exportEncryptionPublicKey(encPair.publicKey),
+    ).pipe(Effect.mapError(keygenFailed));
+    const sigPub = yield* cryptoPromise("exportSigningPublicKey", () =>
+      exportSigningPublicKey(sigPair.publicKey),
+    ).pipe(Effect.mapError(keygenFailed));
+    const encSk = yield* cryptoEffect(() => exportEncryptionPrivateKey(encPair.privateKey)).pipe(
+      Effect.mapError(keygenSerializeFailed),
+    );
+    const sigSeed = yield* cryptoEffect(() => exportSigningPrivateSeed(sigPair.privateKey)).pipe(
+      Effect.mapError(keygenSerializeFailed),
+    );
     return {
       suite: SUITE_ID,
       encPubHex: encodeHex(encPub),
-      encSkHex: Redacted.make(encodeHex(encSk.value), { label: "master-enc-sk" }),
+      encSkHex: Redacted.make(encodeHex(encSk), { label: "master-enc-sk" }),
       sigPubHex: encodeHex(sigPub),
-      sigSkSeedHex: Redacted.make(encodeHex(sigSeed.value), { label: "master-sig-seed" }),
+      sigSkSeedHex: Redacted.make(encodeHex(sigSeed), { label: "master-sig-seed" }),
     } satisfies StoredMasterKey;
   });
 }

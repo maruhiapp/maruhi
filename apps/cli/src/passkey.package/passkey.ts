@@ -31,6 +31,7 @@
 // only. A cancelled ceremony does not consume the window.
 
 import { MAX_PASSKEY_WRAPS_PER_USER } from "@maruhi/api-schema";
+import { cryptoEffect } from "@maruhi/core";
 import { decodeHex, derivePasskeyKek, encodeHex, unwrapMasterBlob } from "@maruhi/crypto";
 import { Duration, Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
@@ -227,20 +228,13 @@ function runPrfCeremony(
 }
 
 function deriveKek(prf: Uint8Array): Effect.Effect<Uint8Array, CliError> {
-  return Effect.gen(function* () {
-    const kek = yield* Effect.tryPromise({
-      try: () => derivePasskeyKek(prf),
-      catch: () => cliError("Failed to derive the wrapping key from the passkey (crypto error)"),
-    });
-    if (!kek.ok) {
-      return yield* Effect.fail(
-        cliError(
-          "The passkey returned a PRF value of the wrong size, so no wrapping key can be derived",
-        ),
-      );
-    }
-    return kek.value;
-  });
+  return cryptoEffect(() => derivePasskeyKek(prf)).pipe(
+    Effect.mapError(() =>
+      cliError(
+        "The passkey returned a PRF value of the wrong size, so no wrapping key can be derived",
+      ),
+    ),
+  );
 }
 
 /** The ledger's passkey row (a copy of status). */
@@ -453,23 +447,20 @@ function unwrapReserveRecord(input: {
       );
     }
     const kek = yield* deriveKek(outcome.prf);
-    const unwrapped = yield* Effect.tryPromise({
-      try: () =>
-        unwrapMasterBlob({
-          kek,
-          wrapped: { nonce: wrap.nonce, ciphertext: wrap.ciphertext },
-          context: { userId: input.session.userId, kind: "passkey-prf", wrapRef: wrapId },
-        }),
-      catch: () => cliError("Failed to decrypt the wrapped reserve key (crypto error)"),
-    });
-    if (!unwrapped.ok) {
-      return yield* Effect.fail(
+    const unwrapped = yield* cryptoEffect(() =>
+      unwrapMasterBlob({
+        kek,
+        wrapped: { nonce: wrap.nonce, ciphertext: wrap.ciphertext },
+        context: { userId: input.session.userId, kind: "passkey-prf", wrapRef: wrapId },
+      }),
+    ).pipe(
+      Effect.mapError(() =>
         cliError(
           "Cannot decrypt the wrapped reserve key with this passkey. The passkey's PRF output does not match the registration (the wrap or its parameters were altered, or the passkey was re-created) — nothing was changed",
         ),
-      );
-    }
-    const record = parseStoredMasterKey(new TextDecoder().decode(unwrapped.value));
+      ),
+    );
+    const record = parseStoredMasterKey(new TextDecoder().decode(unwrapped));
     if (record === null) {
       return yield* Effect.fail(
         cliError(

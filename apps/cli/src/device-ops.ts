@@ -23,6 +23,7 @@
 // as already registered).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
+import { cryptoEffect } from "@maruhi/core";
 import type {
   ChainDevice,
   ChainEntry,
@@ -158,31 +159,25 @@ function signAddDevice(input: {
         ),
       );
     }
-    const signed = yield* Effect.tryPromise({
-      try: () =>
-        signChainEntry({
-          entry: {
-            suite: SUITE_ID,
-            seq: input.verified.state.headSeq + 1,
-            prevHashHex: input.verified.state.headHashHex,
-            op: "add_device",
-            actor: { userId: member.userId, keyFingerprintHex: actorDevice.keyFingerprintHex },
-            payload: {
-              encPubHex: input.candidate.encPubHex,
-              sigPubHex: input.candidate.sigPubHex,
-              roleCap: input.candidate.cap.roleCap,
-              ...scopePayloadFieldsOf(input.candidate.cap.scope),
-            },
-            timestampMs: Date.now(),
+    return yield* cryptoEffect(() =>
+      signChainEntry({
+        entry: {
+          suite: SUITE_ID,
+          seq: input.verified.state.headSeq + 1,
+          prevHashHex: input.verified.state.headHashHex,
+          op: "add_device",
+          actor: { userId: member.userId, keyFingerprintHex: actorDevice.keyFingerprintHex },
+          payload: {
+            encPubHex: input.candidate.encPubHex,
+            sigPubHex: input.candidate.sigPubHex,
+            roleCap: input.candidate.cap.roleCap,
+            ...scopePayloadFieldsOf(input.candidate.cap.scope),
           },
-          signingKey: input.signer.signingKeyPair.privateKey,
-        }),
-      catch: () => cliError("Failed to sign the add_device entry"),
-    });
-    if (!signed.ok) {
-      return yield* Effect.fail(cliError("Failed to sign the add_device entry"));
-    }
-    return signed.value;
+          timestampMs: Date.now(),
+        },
+        signingKey: input.signer.signingKeyPair.privateKey,
+      }),
+    ).pipe(Effect.mapError(() => cliError("Failed to sign the add_device entry")));
   });
 }
 
@@ -283,26 +278,21 @@ function signRevokeDevice(input: {
     if (rejection !== null) {
       return yield* Effect.fail(cliError(rejection));
     }
-    const signed = yield* Effect.tryPromise({
-      try: () =>
-        signChainEntry({
-          entry: {
-            suite: SUITE_ID,
-            seq: input.verified.state.headSeq + 1,
-            prevHashHex: input.verified.state.headHashHex,
-            op: "revoke_device",
-            actor: { userId: actor.userId, keyFingerprintHex: actorDevice.keyFingerprintHex },
-            payload: { targetUserId: target.userId, deviceFingerprintsHex: revoking },
-            timestampMs: Date.now(),
-          },
-          signingKey: input.signer.signingKeyPair.privateKey,
-        }),
-      catch: () => cliError("Failed to sign the revoke_device entry"),
-    });
-    if (!signed.ok) {
-      return yield* Effect.fail(cliError("Failed to sign the revoke_device entry"));
-    }
-    return { entry: signed.value, revoking };
+    const entry = yield* cryptoEffect(() =>
+      signChainEntry({
+        entry: {
+          suite: SUITE_ID,
+          seq: input.verified.state.headSeq + 1,
+          prevHashHex: input.verified.state.headHashHex,
+          op: "revoke_device",
+          actor: { userId: actor.userId, keyFingerprintHex: actorDevice.keyFingerprintHex },
+          payload: { targetUserId: target.userId, deviceFingerprintsHex: revoking },
+          timestampMs: Date.now(),
+        },
+        signingKey: input.signer.signingKeyPair.privateKey,
+      }),
+    ).pipe(Effect.mapError(() => cliError("Failed to sign the revoke_device entry")));
+    return { entry, revoking };
   });
 }
 

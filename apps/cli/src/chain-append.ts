@@ -11,6 +11,7 @@
 // pre-checks and CAS-conflict recovery belong to each op).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
+import { cryptoEffect } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, SigningKeyPair } from "@maruhi/crypto";
 import { signChainEntry, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -42,25 +43,20 @@ export function signEntryAtHead(input: {
     }
     // The signing device = that person's valid device matching the signing key at hand (K4-16 — device-key.ts)
     const device = yield* ownDeviceBySigningKey(input.verified, actor, input.signingKeyPair);
-    const signed = yield* Effect.tryPromise({
-      try: () =>
-        signChainEntry({
-          entry: {
-            suite: SUITE_ID,
-            seq: input.verified.state.headSeq + 1,
-            prevHashHex: input.verified.state.headHashHex,
-            ...input.operation,
-            actor: { userId: actor.userId, keyFingerprintHex: device.keyFingerprintHex },
-            timestampMs: Date.now(),
-          },
-          signingKey: input.signingKeyPair.privateKey,
-        }),
-      catch: () => cliError(input.failureText),
-    });
-    if (!signed.ok) {
-      return yield* Effect.fail(cliError(input.failureText));
-    }
-    return signed.value;
+    const signed = yield* cryptoEffect(() =>
+      signChainEntry({
+        entry: {
+          suite: SUITE_ID,
+          seq: input.verified.state.headSeq + 1,
+          prevHashHex: input.verified.state.headHashHex,
+          ...input.operation,
+          actor: { userId: actor.userId, keyFingerprintHex: device.keyFingerprintHex },
+          timestampMs: Date.now(),
+        },
+        signingKey: input.signingKeyPair.privateKey,
+      }),
+    ).pipe(Effect.mapError(() => cliError(input.failureText)));
+    return signed;
   });
 }
 
