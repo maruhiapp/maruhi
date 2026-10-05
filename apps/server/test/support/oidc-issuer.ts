@@ -54,9 +54,9 @@ function body(value: unknown, status = 200): Response {
  * A router called from outboundService (returns null when not addressed to
  * the issuer — the caller forwards to other fakes). Returns **only happy
  * responses**: the fetch-failure side (fail-closed and 503
- * `oidc-jwks-unavailable`) is checked by unit tests that swap out fetch
- * (test/oidc.test.ts) — outboundService runs on the Node side, so its state
- * cannot be flipped from workerd-side tests.
+ * `oidc-jwks-unavailable`) is checked by unit tests that stub
+ * `FetchHttpClient.Fetch` (test/oidc.test.ts) — outboundService runs on the
+ * Node side, so its state cannot be flipped from workerd-side tests.
  */
 export function fakeOidcIssuer(url: URL): Response | null {
   if (url.origin !== new URL(OIDC_ISSUER).origin) {

@@ -42,6 +42,8 @@
 // (the next upload starts at sequence 0). No audit row is written for a
 // replication (ruling G).
 
+import { Data, Effect } from "effect";
+
 import { auditRowShapeViolations, deriveAuditHeads, isAuditHeadHex } from "../audit-store.ts";
 import type { MirrorSyncRejectReason } from "../data/data-plane.ts";
 import { OPS_RESTORE_BATCH_ROWS } from "../ops/ops-policy.ts";
@@ -208,22 +210,18 @@ export function unmarkMirror(storage: DurableObjectStorage, tables: readonly str
   });
 }
 
-export class MirrorPageRefusedError extends Error {
-  constructor(readonly reason: MirrorSyncRejectReason) {
-    super(`mirror page refused: ${reason}`);
-  }
-}
+/**
+ * The page refusal in the Effect error channel (the reason is the
+ * worker-facing MirrorSyncRejectReason). Inside transactionSync
+ * closures it is still thrown — the throw is what rolls the page's
+ * transaction back — and the boundary's `catch` turns it back into the
+ * typed error (the only place an instanceof may remain).
+ */
+export class MirrorPageRefusedError extends Data.TaggedError("MirrorPageRefused")<{
+  readonly reason: MirrorSyncRejectReason;
+}> {}
 
-const malformed = (): MirrorPageRefusedError => new MirrorPageRefusedError("malformed");
-
-function isSnapshotScalar(value: unknown): value is SnapshotScalar {
-  return (
-    value === null ||
-    typeof value === "number" ||
-    typeof value === "string" ||
-    (typeof value === "object" && "b64" in value && typeof value.b64 === "string")
-  );
-}
+const malformed = (): MirrorPageRefusedError => new MirrorPageRefusedError({ reason: "malformed" });
 
 /**
  * Consumes one page's lines in order into the staging tables (the same
@@ -288,7 +286,7 @@ class PageStager {
 
   #beginTable(line: SnapshotTableLine): void {
     if (!this.known.has(line.table)) {
-      throw new MirrorPageRefusedError("unknown-table");
+      throw new MirrorPageRefusedError({ reason: "unknown-table" });
     }
     this.flush();
     // The column names are embedded as identifiers: only the live
@@ -317,9 +315,7 @@ class PageStager {
       this.table === null ||
       columns === null ||
       line.table !== this.table ||
-      !Array.isArray(line.values) ||
-      line.values.length !== columns.length ||
-      !line.values.every(isSnapshotScalar)
+      line.values.length !== columns.length
     ) {
       throw malformed();
     }
@@ -430,20 +426,15 @@ function verifyAuditContiguity(sql: SqlStorage): void {
 
 /** The trailer's counts against the staged tables (and no count for a table this server has not). */
 function verifyCounts(sql: SqlStorage, tables: readonly string[], trailer: SnapshotTrailer): void {
-  const rows: unknown = trailer.rows;
-  if (typeof rows !== "object" || rows === null) {
-    throw malformed();
-  }
-  const counts = rows as Readonly<Record<string, unknown>>;
   const known = new Set(tables);
-  for (const [table, count] of Object.entries(counts)) {
+  for (const [table, count] of Object.entries(trailer.rows)) {
     if (!known.has(table) && count !== 0) {
-      throw new MirrorPageRefusedError("unknown-table");
+      throw new MirrorPageRefusedError({ reason: "unknown-table" });
     }
   }
   for (const table of tables) {
-    if ((counts[table] ?? 0) !== stagedCount(sql, table)) {
-      throw new MirrorPageRefusedError("row-count-mismatch");
+    if ((trailer.rows[table] ?? 0) !== stagedCount(sql, table)) {
+      throw new MirrorPageRefusedError({ reason: "row-count-mismatch" });
     }
   }
 }
@@ -452,7 +443,7 @@ function verifyCounts(sql: SqlStorage, tables: readonly string[], trailer: Snaps
 function verifyChainExtension(sql: SqlStorage): void {
   const staging = stagingOf(CHAIN_TABLE);
   if (!hasTable(sql, staging)) {
-    throw new MirrorPageRefusedError("chain-not-extension");
+    throw new MirrorPageRefusedError({ reason: "chain-not-extension" });
   }
   const diverging = sql
     .exec(
@@ -465,7 +456,7 @@ function verifyChainExtension(sql: SqlStorage): void {
     Number(diverging) !== 0 ||
     stagedMaxSeq(sql, CHAIN_TABLE) < readWatermarks(sql).chainHeadSeq
   ) {
-    throw new MirrorPageRefusedError("chain-not-extension");
+    throw new MirrorPageRefusedError({ reason: "chain-not-extension" });
   }
 }
 
@@ -570,7 +561,7 @@ function acceptTrailer(
   }
   verifyChainExtension(sql);
   if (stagedMaxSeq(sql, AUDIT_TABLE) < input.state.lastAuditSeq) {
-    throw new MirrorPageRefusedError("audit-regression");
+    throw new MirrorPageRefusedError({ reason: "audit-regression" });
   }
   // The replica's log must extend the one replicated last: every live row
   // up to the replicated position — the mirror's own accepted evidence,
@@ -602,7 +593,7 @@ function verifyAuditPrefix(sql: SqlStorage, state: MirrorState): void {
   const staged = stagingOf(AUDIT_TABLE);
   const stagedHeads = stagingOf(AUDIT_HEAD_TABLE);
   if (!hasTable(sql, staged) || !hasTable(sql, stagedHeads)) {
-    throw new MirrorPageRefusedError("audit-not-extension");
+    throw new MirrorPageRefusedError({ reason: "audit-not-extension" });
   }
   const headsDiffer = sql
     .exec(
@@ -614,7 +605,7 @@ function verifyAuditPrefix(sql: SqlStorage, state: MirrorState): void {
     .exec(`SELECT 1 FROM ${AUDIT_HEAD_TABLE} WHERE seq = ?`, state.lastAuditSeq)
     .toArray()[0];
   if (Number(headsDiffer) !== 0 || ownReaches === undefined) {
-    throw new MirrorPageRefusedError("audit-not-extension");
+    throw new MirrorPageRefusedError({ reason: "audit-not-extension" });
   }
   const columns = sql.exec(`SELECT * FROM ${AUDIT_TABLE} LIMIT 0`).columnNames;
   const differs = columns
@@ -628,8 +619,32 @@ function verifyAuditPrefix(sql: SqlStorage, state: MirrorState): void {
     )
     .one()["n"];
   if (Number(rewritten) !== 0) {
-    throw new MirrorPageRefusedError("audit-not-extension");
+    throw new MirrorPageRefusedError({ reason: "audit-not-extension" });
   }
+}
+
+/**
+ * The derivation's start head: at the replicated position the mirror's
+ * own column (the position's head — the mirror derived it over the
+ * verified-identical rows), or — a first replica — the staged column's
+ * tail (an uploaded claim, checked to be a head hash by the caller).
+ * null = no such row (refused as malformed).
+ */
+function stagedAuditHeadStart(
+  sql: SqlStorage,
+  state: MirrorState,
+  stagedHeads: string,
+): { readonly from: number; readonly start: string | null } {
+  const firstReplica = state.lastAuditSeq === 0;
+  const from = firstReplica ? stagedMaxSeq(sql, AUDIT_HEAD_TABLE) : state.lastAuditSeq;
+  const table = firstReplica ? stagedHeads : AUDIT_HEAD_TABLE;
+  const head =
+    from === 0
+      ? ""
+      : sql.exec(`SELECT head_hash_hex FROM ${table} WHERE seq = ?`, from).toArray()[0]?.[
+          "head_hash_hex"
+        ];
+  return { from, start: head === undefined ? null : String(head) };
 }
 
 /**
@@ -644,47 +659,40 @@ function verifyAuditPrefix(sql: SqlStorage, state: MirrorState): void {
  * derivation over the rows it covers. Runs between the two transactions,
  * under the permit, like the staged chain's content verification.
  */
-export async function verifyStagedAuditHeads(
+export function verifyStagedAuditHeads(
   sql: SqlStorage,
   state: MirrorState,
-): Promise<MirrorPageRefusedError | null> {
-  const stagedHeads = stagingOf(AUDIT_HEAD_TABLE);
-  const stagedLog = stagingOf(AUDIT_TABLE);
-  if (!hasTable(sql, stagedLog)) {
-    return null;
-  }
-  // A replica without the head column's table line is derived from seq 1
-  // into a staged column created for it (round 11: an absent column
-  // installed an empty one, and the extension after the commit met the
-  // replica's rows unchecked)
-  if (!hasTable(sql, stagedHeads)) {
-    sql.exec(
-      `CREATE TABLE ${stagedHeads} AS SELECT seq, head_hash_hex FROM ${AUDIT_HEAD_TABLE} LIMIT 0`,
+): Effect.Effect<void, MirrorPageRefusedError> {
+  return Effect.gen(function* () {
+    const stagedHeads = stagingOf(AUDIT_HEAD_TABLE);
+    const stagedLog = stagingOf(AUDIT_TABLE);
+    if (!hasTable(sql, stagedLog)) {
+      return;
+    }
+    // A replica without the head column's table line is derived from seq 1
+    // into a staged column created for it (round 11: an absent column
+    // installed an empty one, and the extension after the commit met the
+    // replica's rows unchecked)
+    if (!hasTable(sql, stagedHeads)) {
+      sql.exec(
+        `CREATE TABLE ${stagedHeads} AS SELECT seq, head_hash_hex FROM ${AUDIT_HEAD_TABLE} LIMIT 0`,
+      );
+      sql.exec(`CREATE INDEX ${stagedHeads}_seq ON ${stagedHeads} (seq)`);
+    }
+    const { from, start } = stagedAuditHeadStart(sql, state, stagedHeads);
+    if (from !== 0 && !isAuditHeadHex(start)) {
+      return yield* malformed();
+    }
+    // The uploaded claim past the start goes first; the derivation then
+    // writes chunk by chunk into the staged column (one chunk of memory)
+    sql.exec(`DELETE FROM ${stagedHeads} WHERE seq > ?`, from);
+    const derived = yield* Effect.promise(() =>
+      deriveAuditHeads(sql, stagedLog, stagedHeads, from, from === 0 ? "" : String(start)),
     );
-    sql.exec(`CREATE INDEX ${stagedHeads}_seq ON ${stagedHeads} (seq)`);
-  }
-  const from = state.lastAuditSeq > 0 ? state.lastAuditSeq : stagedMaxSeq(sql, AUDIT_HEAD_TABLE);
-  const table = state.lastAuditSeq > 0 ? AUDIT_HEAD_TABLE : stagedHeads;
-  const start =
-    from === 0
-      ? ""
-      : sql.exec(`SELECT head_hash_hex FROM ${table} WHERE seq = ?`, from).toArray()[0]?.[
-          "head_hash_hex"
-        ];
-  if (from !== 0 && !isAuditHeadHex(start)) {
-    return malformed();
-  }
-  // The uploaded claim past the start goes first; the derivation then
-  // writes chunk by chunk into the staged column (one chunk of memory)
-  sql.exec(`DELETE FROM ${stagedHeads} WHERE seq > ?`, from);
-  const derived = await deriveAuditHeads(
-    sql,
-    stagedLog,
-    stagedHeads,
-    from,
-    from === 0 ? "" : String(start),
-  );
-  return derived ? null : malformed();
+    if (!derived) {
+      return yield* malformed();
+    }
+  });
 }
 
 /** One staged chain row as the content verification reads it (programs-mirror.ts). */
@@ -696,29 +704,35 @@ export interface StagedChainRow {
 }
 
 /** The staged chain in seq order (contiguous from 1, every column of the shape the server writes — else malformed). */
-export function stagedChainRows(sql: SqlStorage): readonly StagedChainRow[] {
-  const staging = stagingOf(CHAIN_TABLE);
-  if (!hasTable(sql, staging)) {
-    throw new MirrorPageRefusedError("chain-not-extension");
-  }
-  const rows = sql
-    .exec(`SELECT seq, entry_json, entry_hash_hex, canonical_bytes FROM ${staging} ORDER BY seq`)
-    .toArray();
-  return rows.map((row, index) => {
-    const seq = row["seq"];
-    const entryJson = row["entry_json"];
-    const entryHashHex = row["entry_hash_hex"];
-    const canonicalBytes = row["canonical_bytes"];
-    if (
-      seq !== index + 1 ||
-      typeof entryJson !== "string" ||
-      typeof entryHashHex !== "string" ||
-      typeof canonicalBytes !== "number" ||
-      !Number.isInteger(canonicalBytes)
-    ) {
-      throw malformed();
+export function stagedChainRows(
+  sql: SqlStorage,
+): Effect.Effect<readonly StagedChainRow[], MirrorPageRefusedError> {
+  return Effect.gen(function* () {
+    const staging = stagingOf(CHAIN_TABLE);
+    if (!hasTable(sql, staging)) {
+      return yield* new MirrorPageRefusedError({ reason: "chain-not-extension" });
     }
-    return { seq, entryJson, entryHashHex, canonicalBytes };
+    const rows = sql
+      .exec(`SELECT seq, entry_json, entry_hash_hex, canonical_bytes FROM ${staging} ORDER BY seq`)
+      .toArray();
+    const out: StagedChainRow[] = [];
+    for (const [index, row] of rows.entries()) {
+      const seq = row["seq"];
+      const entryJson = row["entry_json"];
+      const entryHashHex = row["entry_hash_hex"];
+      const canonicalBytes = row["canonical_bytes"];
+      if (
+        seq !== index + 1 ||
+        typeof entryJson !== "string" ||
+        typeof entryHashHex !== "string" ||
+        typeof canonicalBytes !== "number" ||
+        !Number.isInteger(canonicalBytes)
+      ) {
+        return yield* malformed();
+      }
+      out.push({ seq, entryJson, entryHashHex, canonicalBytes });
+    }
+    return out;
   });
 }
 
@@ -737,104 +751,115 @@ export interface MirrorCommitInput {
  * position. A constraint the live schema refuses (a duplicate key, a NULL
  * where none is allowed) rolls the transaction back and is `malformed`.
  */
-export function commitMirrorReplica(input: MirrorCommitInput): MirrorCommit {
+export function commitMirrorReplica(
+  input: MirrorCommitInput,
+): Effect.Effect<MirrorCommit, MirrorPageRefusedError> {
   const { storage, state } = input;
   const sql = storage.sql;
-  try {
-    return storage.transactionSync(() => {
-      if (!hasTable(sql, TRAILER_TABLE)) {
-        throw malformed();
-      }
-      const replicaAuditSeq = stagedMaxSeq(sql, AUDIT_TABLE);
-      // The mirror's own rows (past the last replicated position) wait
-      // aside — minus the ones the replica carries by their wire row id
-      // (AUDIT_SPEC §7 C1): a frozen former primary's rows between its mark
-      // and its export came back through the destination, and re-appending
-      // them would collide on the row id (ruling J revision, round 4)
-      const auditColumns = sql.exec(`SELECT * FROM ${AUDIT_TABLE} LIMIT 0`).columnNames;
-      sql.exec(`DROP TABLE IF EXISTS ${LOCAL_AUDIT_TABLE}`);
-      const stagedAudit = stagingOf(AUDIT_TABLE);
-      if (hasTable(sql, stagedAudit)) {
-        // A carried row is the mirror's own row, byte for byte (its seq may
-        // differ): the replica cannot rewrite the evidence the mirror
-        // itself witnessed under the same row id (ruling J revision, round 5)
-        const differs = auditColumns
-          .filter((column) => column !== "seq")
-          .map((column) => `own.${column} IS NOT staged.${column}`)
-          .join(" OR ");
-        const rewritten = sql
-          .exec(
-            `SELECT COUNT(*) AS n FROM ${AUDIT_TABLE} AS own JOIN ${stagedAudit} AS staged ON staged.row_id = own.row_id WHERE own.seq > ? AND (${differs})`,
-            state.lastAuditSeq,
-          )
-          .one()["n"];
-        if (Number(rewritten) !== 0) {
+  return Effect.try({
+    try: () =>
+      storage.transactionSync(() => {
+        if (!hasTable(sql, TRAILER_TABLE)) {
           throw malformed();
         }
-      }
-      const carried = hasTable(sql, stagedAudit)
-        ? ` AND row_id NOT IN (SELECT row_id FROM ${stagedAudit})`
-        : "";
-      sql.exec(
-        `CREATE TABLE ${LOCAL_AUDIT_TABLE} AS SELECT * FROM ${AUDIT_TABLE} WHERE seq > ?${carried}`,
-        state.lastAuditSeq,
-      );
-      const ownAuditRows = Number(
-        sql.exec(`SELECT COUNT(*) AS n FROM ${LOCAL_AUDIT_TABLE}`).one()["n"],
-      );
-      swapTables(sql, input.tables, input.nowMs, state.lastAuditSeq);
-      // … and follow the replica's rows, renumbered densely in their order
-      // (the rows the replica carried left holes)
-      const shifted = auditColumns.map((column) =>
-        column === "seq" ? "? + ROW_NUMBER() OVER (ORDER BY seq)" : column,
-      );
-      sql.exec(
-        `INSERT INTO ${AUDIT_TABLE} (${auditColumns.join(", ")}) SELECT ${shifted.join(", ")} FROM ${LOCAL_AUDIT_TABLE} ORDER BY seq`,
-        replicaAuditSeq,
-      );
-      sql.exec(`DROP TABLE ${LOCAL_AUDIT_TABLE}`);
-      sql.exec(`DROP TABLE ${TRAILER_TABLE}`);
-      const marks = readWatermarks(sql);
-      const commit: MirrorCommit = {
-        atMs: input.nowMs,
-        chainHeadSeq: marks.chainHeadSeq,
-        chainHeadHashHex: marks.chainHeadHashHex ?? "",
-        auditMaxSeq: replicaAuditSeq,
-        attestationMark: marks.attestationMark,
-        ...(input.sourceMutationSeq === null ? {} : { mutationSeq: input.sourceMutationSeq }),
-        ownAuditRows,
-      };
-      sql.exec(
-        `UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL, last_synced_at = ?, last_head_seq = ?, last_head_hash_hex = ?, last_audit_seq = ?, last_attestation_mark = ?, last_mutation_seq = ? WHERE id = 1`,
-        commit.atMs,
-        commit.chainHeadSeq,
-        commit.chainHeadHashHex,
-        commit.auditMaxSeq,
-        commit.attestationMark,
-        input.sourceMutationSeq,
-      );
-      return commit;
-    });
-  } catch (error) {
-    discardMirrorStaging(storage, input.tables);
-    // A refusal of the checks above, or SQLite refusing the replica's rows
-    // against the live schema (its message names a constraint, never a value)
-    throw error instanceof MirrorPageRefusedError ? error : malformed();
-  }
+        const replicaAuditSeq = stagedMaxSeq(sql, AUDIT_TABLE);
+        // The mirror's own rows (past the last replicated position) wait
+        // aside — minus the ones the replica carries by their wire row id
+        // (AUDIT_SPEC §7 C1): a frozen former primary's rows between its mark
+        // and its export came back through the destination, and re-appending
+        // them would collide on the row id (ruling J revision, round 4)
+        const auditColumns = sql.exec(`SELECT * FROM ${AUDIT_TABLE} LIMIT 0`).columnNames;
+        sql.exec(`DROP TABLE IF EXISTS ${LOCAL_AUDIT_TABLE}`);
+        const stagedAudit = stagingOf(AUDIT_TABLE);
+        if (hasTable(sql, stagedAudit)) {
+          // A carried row is the mirror's own row, byte for byte (its seq may
+          // differ): the replica cannot rewrite the evidence the mirror
+          // itself witnessed under the same row id (ruling J revision, round 5)
+          const differs = auditColumns
+            .filter((column) => column !== "seq")
+            .map((column) => `own.${column} IS NOT staged.${column}`)
+            .join(" OR ");
+          const rewritten = sql
+            .exec(
+              `SELECT COUNT(*) AS n FROM ${AUDIT_TABLE} AS own JOIN ${stagedAudit} AS staged ON staged.row_id = own.row_id WHERE own.seq > ? AND (${differs})`,
+              state.lastAuditSeq,
+            )
+            .one()["n"];
+          if (Number(rewritten) !== 0) {
+            throw malformed();
+          }
+        }
+        const carried = hasTable(sql, stagedAudit)
+          ? ` AND row_id NOT IN (SELECT row_id FROM ${stagedAudit})`
+          : "";
+        sql.exec(
+          `CREATE TABLE ${LOCAL_AUDIT_TABLE} AS SELECT * FROM ${AUDIT_TABLE} WHERE seq > ?${carried}`,
+          state.lastAuditSeq,
+        );
+        const ownAuditRows = Number(
+          sql.exec(`SELECT COUNT(*) AS n FROM ${LOCAL_AUDIT_TABLE}`).one()["n"],
+        );
+        swapTables(sql, input.tables, input.nowMs, state.lastAuditSeq);
+        // … and follow the replica's rows, renumbered densely in their order
+        // (the rows the replica carried left holes)
+        const shifted = auditColumns.map((column) =>
+          column === "seq" ? "? + ROW_NUMBER() OVER (ORDER BY seq)" : column,
+        );
+        sql.exec(
+          `INSERT INTO ${AUDIT_TABLE} (${auditColumns.join(", ")}) SELECT ${shifted.join(", ")} FROM ${LOCAL_AUDIT_TABLE} ORDER BY seq`,
+          replicaAuditSeq,
+        );
+        sql.exec(`DROP TABLE ${LOCAL_AUDIT_TABLE}`);
+        sql.exec(`DROP TABLE ${TRAILER_TABLE}`);
+        const marks = readWatermarks(sql);
+        const commit: MirrorCommit = {
+          atMs: input.nowMs,
+          chainHeadSeq: marks.chainHeadSeq,
+          chainHeadHashHex: marks.chainHeadHashHex ?? "",
+          auditMaxSeq: replicaAuditSeq,
+          attestationMark: marks.attestationMark,
+          ...(input.sourceMutationSeq === null ? {} : { mutationSeq: input.sourceMutationSeq }),
+          ownAuditRows,
+        };
+        sql.exec(
+          `UPDATE mirror_state SET expected_sequence = 0, staging_table = NULL, last_synced_at = ?, last_head_seq = ?, last_head_hash_hex = ?, last_audit_seq = ?, last_attestation_mark = ?, last_mutation_seq = ? WHERE id = 1`,
+          commit.atMs,
+          commit.chainHeadSeq,
+          commit.chainHeadHashHex,
+          commit.auditMaxSeq,
+          commit.attestationMark,
+          input.sourceMutationSeq,
+        );
+        return commit;
+      }),
+    // Inside transactionSync the refusal is a throw (the throw is what
+    // rolls the swap back); the boundary turns it back into the typed
+    // error — the only place an instanceof may remain. Any other throw
+    // is SQLite refusing the replica's rows against the live schema (its
+    // message names a constraint, never a value): also malformed
+    catch: (error) => (error instanceof MirrorPageRefusedError ? error : malformed()),
+  }).pipe(Effect.onError(() => Effect.sync(() => discardMirrorStaging(storage, input.tables))));
 }
 
-function toRefusal(error: unknown): MirrorPageRefusedError | null {
+/**
+ * The thrown value crossing a transactionSync boundary — inside the
+ * closure the refusal is a throw (that is what rolls the transaction
+ * back); here it is turned back into the typed error. The only place an
+ * instanceof may remain. The restore reader's vocabulary is folded onto
+ * the page's (its other codes cannot arise here); any other throw is a
+ * defect.
+ */
+const toMirrorRefusal = (error: unknown): MirrorPageRefusedError => {
   if (error instanceof MirrorPageRefusedError) {
     return error;
   }
   if (error instanceof RestoreRefusedError) {
-    // The restore reader's vocabulary folded onto the page's (its other codes cannot arise here)
-    return new MirrorPageRefusedError(
-      error.code === "schema-mismatch" ? "schema-mismatch" : "malformed",
-    );
+    return new MirrorPageRefusedError({
+      reason: error.code === "schema-mismatch" ? "schema-mismatch" : "malformed",
+    });
   }
-  return null;
-}
+  throw error;
+};
 
 /** The page bounds (the export's, plus one line of slack): judged before any write. */
 function ensurePageBounds(input: MirrorPageInput): void {
@@ -843,63 +868,65 @@ function ensurePageBounds(input: MirrorPageInput): void {
   for (const line of input.lines) {
     bytes += encoder.encode(line).length + 1;
     if (bytes > input.maxBytes) {
-      throw new MirrorPageRefusedError("page-too-large");
+      throw new MirrorPageRefusedError({ reason: "page-too-large" });
     }
   }
 }
 
 /**
  * Stages one page (the caller holds the permit and verified the mark and
- * the storage guard). Throws {@link MirrorPageRefusedError}; any other
- * throw is a defect (the transaction rolled back either way).
+ * the storage guard). Fails with {@link MirrorPageRefusedError}; any
+ * other throw is a defect (the transaction rolled back either way).
  */
-export function stageMirrorPage(input: MirrorPageInput): MirrorStageResult {
+export function stageMirrorPage(
+  input: MirrorPageInput,
+): Effect.Effect<MirrorStageResult, MirrorPageRefusedError> {
   const { storage, state } = input;
   const sql = storage.sql;
-  if (input.sequence !== 0 && input.sequence !== state.expectedSequence) {
-    throw new MirrorPageRefusedError("sequence-mismatch");
-  }
-  try {
-    ensurePageBounds(input);
-    return storage.transactionSync(() => {
-      const first = input.sequence === 0;
-      if (first) {
-        dropStaging(sql, input.tables);
-      }
-      const stager = new PageStager(
-        sql,
-        new Set(input.tables),
-        input.schemaVersion,
-        first ? null : state.stagingTable,
-        first,
-      );
-      for (const text of input.lines) {
-        stager.accept(parseLine(text));
-        if (stager.rows > input.maxRows) {
-          throw new MirrorPageRefusedError("page-too-large");
-        }
-      }
-      stager.flush();
-      const nextSequence = input.sequence + 1;
-      if (stager.trailer === null) {
-        sql.exec(
-          "UPDATE mirror_state SET expected_sequence = ?, staging_table = ? WHERE id = 1",
-          nextSequence,
-          stager.table,
-        );
-        return { kind: "staged", nextSequence };
-      }
-      acceptTrailer(sql, input, stager.trailer, nextSequence);
-      return { kind: "trailer" };
-    });
-  } catch (error) {
-    // The page's transaction rolled back; the staging in progress is
-    // discarded on every refusal (the sequence refusal above keeps it)
-    discardMirrorStaging(storage, input.tables);
-    const refusal = toRefusal(error);
-    if (refusal === null) {
-      throw error;
+  return Effect.gen(function* () {
+    if (input.sequence !== 0 && input.sequence !== state.expectedSequence) {
+      return yield* new MirrorPageRefusedError({ reason: "sequence-mismatch" });
     }
-    throw refusal;
-  }
+    return yield* Effect.try({
+      try: () => {
+        ensurePageBounds(input);
+        return storage.transactionSync(() => {
+          const first = input.sequence === 0;
+          if (first) {
+            dropStaging(sql, input.tables);
+          }
+          const stager = new PageStager(
+            sql,
+            new Set(input.tables),
+            input.schemaVersion,
+            first ? null : state.stagingTable,
+            first,
+          );
+          for (const text of input.lines) {
+            stager.accept(parseLine(text));
+            if (stager.rows > input.maxRows) {
+              throw new MirrorPageRefusedError({ reason: "page-too-large" });
+            }
+          }
+          stager.flush();
+          const nextSequence = input.sequence + 1;
+          if (stager.trailer === null) {
+            sql.exec(
+              "UPDATE mirror_state SET expected_sequence = ?, staging_table = ? WHERE id = 1",
+              nextSequence,
+              stager.table,
+            );
+            return { kind: "staged", nextSequence } satisfies MirrorStageResult;
+          }
+          acceptTrailer(sql, input, stager.trailer, nextSequence);
+          return { kind: "trailer" } satisfies MirrorStageResult;
+        });
+      },
+      catch: toMirrorRefusal,
+    }).pipe(
+      // The page's transaction rolled back; the staging in progress is
+      // discarded on every refusal (the sequence refusal above keeps it)
+      Effect.onError(() => Effect.sync(() => discardMirrorStaging(storage, input.tables))),
+    );
+  });
 }

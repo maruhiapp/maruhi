@@ -19,14 +19,24 @@
 // first; a mismatch is reported (an older head = the server answered
 // from behind the verified view; a newer one = a write landed after the
 // sync).
+//
+// Resource discipline: the output file is a scoped resource
+// (acquireUseRelease) — every exit that is not a completed attempt
+// removes it, so a failure, an interruption (Ctrl-C) or a defect never
+// leaves a partial file behind (an incomplete export is never kept, and
+// the next run must not be refused as an overwrite). The command's own
+// run gains a matching onExit for the data/companion pair. Cleanup only
+// removes what the run provably created: the `wx` creates are the
+// ownership proof, so a file landing at a checked path after
+// `ensureAbsent` — someone else's — is never deleted.
 
 import { createWriteStream } from "node:fs";
-import { rm, stat, writeFile } from "node:fs/promises";
 import { createGzip } from "node:zlib";
 
+import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import type { ExportIdentities } from "@maruhi/api-schema";
 import { ExportChangedError } from "@maruhi/api-schema";
-import { Effect } from "effect";
+import { Effect, Exit, FileSystem, Result, Schema } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
@@ -74,14 +84,20 @@ function identitiesPathOf(outPath: string): string {
 }
 
 /** Refuses an existing file (an export never overwrites — a stale file next to a fresh one is how a migration goes wrong). */
-function ensureAbsent(path: string): Effect.Effect<void, CliError> {
+function ensureAbsent(path: string): Effect.Effect<void, CliError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const exists = yield* Effect.promise(() =>
-      stat(path).then(
-        () => true,
-        () => false,
-      ),
-    );
+    const fs = yield* FileSystem.FileSystem;
+    // NotFound is the only error `exists` folds to absent — a check that
+    // fails otherwise is a real error, never a silent "absent"
+    const exists = yield* fs
+      .exists(path)
+      .pipe(
+        Effect.mapError((error) =>
+          cliError(
+            `Checking ${displayText(path)} failed (${error.reason.cause instanceof Error ? error.reason.cause.name : "unknown"})`,
+          ),
+        ),
+      );
     if (exists) {
       return yield* Effect.fail(
         cliError(`Refusing to overwrite ${displayText(path)} (choose another --out path)`),
@@ -90,102 +106,176 @@ function ensureAbsent(path: string): Effect.Effect<void, CliError> {
   });
 }
 
+/**
+ * Removes a file, tolerating its absence. A removal failure is a defect
+ * (there is no user-facing answer to "the cleanup itself failed").
+ */
+function removePath(path: string): Effect.Effect<void, never, FileSystem.FileSystem> {
+  return FileSystem.FileSystem.pipe(
+    Effect.andThen((fs) => fs.remove(path, { force: true })),
+    Effect.orDie,
+  );
+}
+
 /** A gzip sink to the file (node streams — the CLI is not Worker code). */
 class GzipFileSink {
   readonly #gzip = createGzip();
   readonly #file: ReturnType<typeof createWriteStream>;
-  readonly #done: Promise<void>;
+  readonly #path: string;
   #bytes = 0;
+  /**
+   * The first stream failure seen. A Node stream without an `error`
+   * listener throws on failure — this listener lives for the sink's
+   * whole lifetime (write/finish listen per wait only), so an error
+   * landing between operations is recorded here and surfaces at the
+   * next operation instead of crashing the process.
+   */
+  #failure: Error | null = null;
+  /**
+   * Whether this sink's `wx` open committed — the only proof the file is
+   * this run's. An already-existing file makes the open fail EEXIST
+   * instead (no `open` event), and that file must never be removed.
+   */
+  #ownsFile = false;
 
   constructor(path: string) {
+    this.#path = path;
     this.#file = createWriteStream(path, { flags: "wx" });
+    const record = (error: Error) => {
+      this.#failure ??= error;
+    };
+    this.#file.on("error", record);
+    this.#gzip.on("error", record);
+    this.#file.once("open", () => {
+      this.#ownsFile = true;
+    });
     this.#gzip.on("data", (chunk: Buffer) => {
       this.#bytes += chunk.length;
     });
-    this.#done = new Promise<void>((resolve, reject) => {
-      this.#file.on("finish", resolve);
-      this.#file.on("error", reject);
-      this.#gzip.on("error", reject);
-    });
-    // `finish` observes a failure through `#done`; after `abort` nobody
-    // waits for it, and the teardown itself raises ERR_STREAM_DESTROYED on
-    // a write still in flight — that rejection must not surface as an
-    // unhandled one (the file is being removed; the caller already has the
-    // error it is aborting for). Not a swallowed error: `finish` still fails
-    this.#done.catch(() => undefined);
     this.#gzip.pipe(this.#file);
   }
 
-  write(lines: readonly string[]): Promise<void> {
-    if (lines.length === 0) {
-      return Promise.resolve();
-    }
-    return new Promise<void>((resolve, reject) => {
-      this.#gzip.write(`${lines.join("\n")}\n`, (error) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve();
-        }
+  get ownsFile(): boolean {
+    return this.#ownsFile;
+  }
+
+  #writeFailed(error: unknown): CliError {
+    return cliError(
+      `Writing ${displayText(this.#path)} failed (${error instanceof Error ? error.name : "unknown"})`,
+    );
+  }
+
+  /** Appends the lines (each as one NDJSON line) — fails on a stream error already seen or landing during the write. */
+  write(lines: readonly string[]): Effect.Effect<void, CliError> {
+    // Everything the stream does happens inside the suspend — an effect
+    // must not act while it is only being built
+    return Effect.suspend(() => {
+      if (lines.length === 0) {
+        return Effect.void;
+      }
+      const prior = this.#failure;
+      if (prior !== null) {
+        return Effect.fail(this.#writeFailed(prior));
+      }
+      const file = this.#file;
+      const gzip = this.#gzip;
+      return Effect.callback<void, CliError>((resume) => {
+        const detach = () => {
+          file.off("error", onError);
+          gzip.off("error", onError);
+        };
+        const onError = (error: Error) => {
+          detach();
+          resume(Effect.fail(this.#writeFailed(error)));
+        };
+        file.once("error", onError);
+        gzip.once("error", onError);
+        gzip.write(`${lines.join("\n")}\n`, (error) => {
+          detach();
+          resume(error ? Effect.fail(this.#writeFailed(error)) : Effect.void);
+        });
+        return Effect.sync(detach);
       });
     });
   }
 
-  async finish(): Promise<number> {
-    this.#gzip.end();
-    await this.#done;
-    return this.#bytes;
+  /** Ends the gzip and waits for the file's `finish`; resolves to the compressed byte count. */
+  finish(): Effect.Effect<number, CliError> {
+    return Effect.suspend(() => {
+      const prior = this.#failure;
+      const done =
+        prior !== null
+          ? Effect.fail(this.#writeFailed(prior))
+          : Effect.callback<void, CliError>((resume) => {
+              const file = this.#file;
+              const gzip = this.#gzip;
+              const detach = () => {
+                file.off("finish", onFinish);
+                file.off("error", onError);
+                gzip.off("error", onError);
+              };
+              const onFinish = () => {
+                detach();
+                resume(Effect.void);
+              };
+              const onError = (error: Error) => {
+                detach();
+                resume(Effect.fail(this.#writeFailed(error)));
+              };
+              file.once("finish", onFinish);
+              file.once("error", onError);
+              gzip.once("error", onError);
+              // end() must run after the listeners are attached — a
+              // finish in the gap would never reach the callback
+              if (file.writableFinished) {
+                onFinish();
+              } else {
+                gzip.end();
+              }
+              return Effect.sync(detach);
+            });
+      return Effect.map(done, () => this.#bytes);
+    });
   }
 
   /** Tears both streams down and waits for the file descriptor to close (the file is removed afterwards). */
-  abort(): Promise<void> {
-    this.#gzip.destroy();
-    return new Promise<void>((resolve) => {
-      if (this.#file.closed || this.#file.destroyed) {
-        resolve();
-        return;
-      }
-      this.#file.once("close", () => resolve());
-      this.#file.destroy();
-    });
+  abort(): Effect.Effect<void> {
+    return Effect.suspend(() =>
+      Effect.callback<void>((resume) => {
+        const file = this.#file;
+        // Before the early return: an already-closed file (autoDestroy on
+        // a refused open) must not leave the gzip's handle alive
+        this.#gzip.destroy();
+        if (file.closed || file.destroyed) {
+          resume(Effect.void);
+          return;
+        }
+        const onClose = () => resume(Effect.void);
+        file.once("close", onClose);
+        file.destroy();
+        return Effect.sync(() => {
+          file.off("close", onClose);
+        });
+      }),
+    );
   }
 }
 
-/** A line as a JSON object, or null (the last line must be the trailer object). */
-function parseObjectLine(line: string | undefined): Record<string, unknown> | null {
+/** The trailer line's wire shape (the snapshot format — what the client reads back out of `last`). */
+const TrailerLineSchema = Schema.Struct({
+  kind: Schema.Literal("trailer"),
+  rows: Schema.Record(Schema.String, Schema.Number),
+  chainHeadSeq: Schema.Number,
+  chainHeadHashHex: Schema.Union([Schema.String, Schema.Null]),
+  auditMaxSeq: Schema.Number,
+});
+
+function parseTrailer(line: string | undefined): ExportTrailer | null {
   if (line === undefined) {
     return null;
   }
-  try {
-    const parsed: unknown = JSON.parse(line);
-    return typeof parsed === "object" && parsed !== null
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseTrailer(line: string | undefined): ExportTrailer | null {
-  const trailer = parseObjectLine(line);
-  if (trailer === null || trailer["kind"] !== "trailer") {
-    return null;
-  }
-  const { rows, chainHeadSeq, chainHeadHashHex, auditMaxSeq } = trailer;
-  if (
-    typeof rows !== "object" ||
-    rows === null ||
-    typeof chainHeadSeq !== "number" ||
-    typeof auditMaxSeq !== "number"
-  ) {
-    return null;
-  }
-  return {
-    rows: rows as Readonly<Record<string, number>>,
-    chainHeadSeq,
-    chainHeadHashHex: typeof chainHeadHashHex === "string" ? chainHeadHashHex : null,
-    auditMaxSeq,
-  };
+  const decoded = Schema.decodeUnknownResult(Schema.fromJsonString(TrailerLineSchema))(line);
+  return Result.isFailure(decoded) ? null : decoded.success;
 }
 
 type Attempt =
@@ -198,98 +288,213 @@ type Attempt =
     }
   | { readonly kind: "changed" };
 
-/** One full pass over the pages into a fresh file; "changed" = the project moved (the file is removed and the caller restarts). */
-function exportOnce(input: ProjectExportInput): Effect.Effect<Attempt, CliError> {
-  return Effect.gen(function* () {
-    const sink = new GzipFileSink(input.outPath);
-    // Every failure removes the partial file first (an incomplete export is
-    // never kept, and the next run must not be refused as an overwrite)
-    const discard = Effect.promise(async () => {
-      await sink.abort();
-      await rm(input.outPath, { force: true });
-    });
-    const fail = (error: CliError) => discard.pipe(Effect.andThen(Effect.fail(error)));
-    let cursor: string | undefined;
-    let lines = 0;
-    let last: string | undefined;
-    let mirrorOf: string | null = null;
-    for (let page = 0; page < MAX_PAGES; page += 1) {
-      const response = yield* input.client.export
-        .page({
-          params: { projectId: input.projectId },
-          query: cursor === undefined ? {} : { cursor },
-        })
-        .pipe(
-          Effect.catch((error) =>
-            error instanceof ExportChangedError ? Effect.succeed(null) : fail(toCliError(error)),
+/**
+ * Which of the two outputs this run provably created — the only files a
+ * cleanup may remove. `ensureAbsent` is a check, not ownership: a file
+ * landing at a checked path afterwards belongs to someone else and must
+ * never be deleted (the `wx` creates are the proof — they refuse EEXIST).
+ */
+interface OwnedOutputs {
+  out: boolean;
+  companion: boolean;
+}
+
+/**
+ * One full pass over the pages into a fresh file. The file is a scoped
+ * resource: any exit other than a completed attempt — a failure, a
+ * project change, an interruption, a defect — removes it (when this
+ * attempt created one at all).
+ */
+function exportOnce(
+  input: ProjectExportInput,
+  owned: OwnedOutputs,
+): Effect.Effect<Attempt, CliError, FileSystem.FileSystem> {
+  const outPath = input.outPath;
+  return Effect.acquireUseRelease(
+    // Ownership is per attempt — this one has not created anything yet
+    Effect.sync(() => {
+      owned.out = false;
+      return new GzipFileSink(outPath);
+    }),
+    (sink) =>
+      Effect.gen(function* () {
+        let cursor: string | undefined;
+        let lines = 0;
+        let last: string | undefined;
+        let mirrorOf: string | null = null;
+        for (let page = 0; page < MAX_PAGES; page += 1) {
+          const response = yield* input.client.export
+            .page({
+              params: { projectId: input.projectId },
+              query: cursor === undefined ? {} : { cursor },
+            })
+            .pipe(
+              Effect.catchTag("ExportChanged", () => Effect.succeed(null)),
+              Effect.catch((error) => Effect.fail(toCliError(error))),
+            );
+          if (response === null) {
+            // "changed" exits the use block: the release removes the
+            // partial file, the caller restarts
+            return { kind: "changed" } as const;
+          }
+          yield* sink.write(response.lines);
+          lines += response.lines.length;
+          last = response.lines[response.lines.length - 1] ?? last;
+          // The mark the server read with this page's marks (ruling J
+          // revision, round 5): on the last page, with the marks
+          // unchanged since the first, "marked" means no write landed
+          // here after the export
+          mirrorOf = response.head.mirrorOf ?? null;
+          cursor = response.next;
+          if (cursor === undefined) {
+            const trailer = parseTrailer(last);
+            if (trailer === null) {
+              return yield* Effect.fail(
+                cliError(
+                  "The server ended the export without a trailer line (an incomplete export is never kept)",
+                ),
+              );
+            }
+            const bytes = yield* sink.finish();
+            return {
+              kind: "done",
+              bytes,
+              lines,
+              trailer,
+              mark: (mirrorOf === null
+                ? { kind: "writable" }
+                : { kind: "frozen", sourceOrigin: mirrorOf }) satisfies ExportMark,
+            } as const;
+          }
+        }
+        return yield* Effect.fail(
+          cliError(
+            `The server kept returning more pages past the ${MAX_PAGES}-page bound — stopping. This does not happen with an honest server; investigate the server if it persists`,
           ),
         );
-      if (response === null) {
-        yield* discard;
-        return { kind: "changed" } as const;
-      }
-      yield* Effect.tryPromise({
-        try: () => sink.write(response.lines),
-        catch: (error) =>
-          cliError(
-            `Writing ${displayText(input.outPath)} failed (${error instanceof Error ? error.name : "unknown"})`,
-          ),
-      }).pipe(Effect.catch(fail));
-      lines += response.lines.length;
-      last = response.lines[response.lines.length - 1] ?? last;
-      // The mark the server read with this page's marks (ruling J revision,
-      // round 5): on the last page, with the marks unchanged since the
-      // first, "marked" means no write landed here after the export
-      mirrorOf = response.head.mirrorOf ?? null;
-      cursor = response.next;
-      if (cursor === undefined) {
-        const trailer = parseTrailer(last);
-        if (trailer === null) {
-          return yield* fail(
-            cliError(
-              "The server ended the export without a trailer line (an incomplete export is never kept)",
-            ),
-          );
+      }),
+    (sink, exit) =>
+      Effect.gen(function* () {
+        owned.out ||= sink.ownsFile;
+        if (Exit.isSuccess(exit) && exit.value.kind === "done") {
+          return;
         }
-        const bytes = yield* Effect.tryPromise({
-          try: () => sink.finish(),
-          catch: (error) =>
-            cliError(
-              `Writing ${displayText(input.outPath)} failed (${error instanceof Error ? error.name : "unknown"})`,
-            ),
-        }).pipe(Effect.catch(fail));
-        return {
-          kind: "done",
-          bytes,
-          lines,
-          trailer,
-          mark: (mirrorOf === null
-            ? { kind: "writable" }
-            : { kind: "frozen", sourceOrigin: mirrorOf }) satisfies ExportMark,
-        } as const;
-      }
-    }
-    return yield* fail(
-      cliError(
-        `The server kept returning more pages past the ${MAX_PAGES}-page bound — stopping. This does not happen with an honest server; investigate the server if it persists`,
-      ),
-    );
-  });
+        yield* sink.abort();
+        // The open may have committed during the close wait — re-check
+        // before deciding whether the file is this attempt's to remove
+        owned.out ||= sink.ownsFile;
+        if (owned.out) {
+          yield* removePath(outPath);
+          // The flag means "our file is on disk now" — clear it so a
+          // later cleanup does not remove whatever lands next
+          owned.out = false;
+        }
+      }),
+  );
 }
 
 /** The identities companion of a completed attempt; null when its chain head is not the file's (the pair is mismatched). */
 function companionFor(
   input: ProjectExportInput,
   attempt: Attempt,
-  withoutData: (error: CliError) => Effect.Effect<never, CliError>,
 ): Effect.Effect<ExportIdentities | null, CliError> {
   if (attempt.kind === "changed") {
     return Effect.succeed(null);
   }
   return input.client.export.identities({ params: { projectId: input.projectId } }).pipe(
-    Effect.catch((error) => withoutData(toCliError(error))),
+    Effect.catch((error) => Effect.fail(toCliError(error))),
     Effect.map((identities) =>
       identities.chainHeadHashHex === attempt.trailer.chainHeadHashHex ? identities : null,
+    ),
+  );
+}
+
+/**
+ * The data file plus its companion. Either file the export wrote is
+ * removed when the run exits without success (failure, interruption,
+ * defect): a stale pair is worse than none — a migration needs both.
+ */
+function writePair(
+  input: ProjectExportInput,
+): Effect.Effect<ProjectExportResult, CliError, FileSystem.FileSystem> {
+  const outPath = input.outPath;
+  const identitiesPath = identitiesPathOf(outPath);
+  const owned: OwnedOutputs = { out: false, companion: false };
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    let attempt = yield* exportOnce(input, owned);
+    let identities = yield* companionFor(input, attempt);
+    // The companion is read at a chain head; a head other than the file's
+    // trailer's is a mismatched pair (a member added or removed between
+    // the two reads — the destination would refuse it as stale), so the
+    // export starts over like any change (bounded)
+    for (
+      let restarts = 0;
+      (attempt.kind === "changed" || identities === null) && restarts < MAX_RESTARTS;
+      restarts += 1
+    ) {
+      // A completed file whose companion was stale is still on disk;
+      // a "changed" attempt already removed its own — and an attempt
+      // whose wx open refused EEXIST created nothing (a foreign file at
+      // the path is never this run's to delete)
+      if (owned.out) {
+        yield* removePath(outPath);
+        owned.out = false;
+      }
+      attempt = yield* exportOnce(input, owned);
+      identities = yield* companionFor(input, attempt);
+    }
+    if (attempt.kind === "changed" || identities === null) {
+      return yield* Effect.fail(toCliError(new ExportChangedError({ reason: "project-changed" })));
+    }
+    yield* fs
+      .writeFileString(identitiesPath, `${JSON.stringify(identities, null, 2)}\n`, { flag: "wx" })
+      .pipe(
+        // Success is the proof this run created the companion — a wx
+        // open that refused EEXIST means the file belongs to someone
+        // else and the cleanup must leave it alone. The write and its
+        // ownership mark are one uninterruptible unit: an interrupt
+        // delivered mid-write must not leave a file on disk that no
+        // cleanup knows it may remove (the platform write honors the
+        // abort signal but may already have committed the file)
+        Effect.tap(
+          Effect.sync(() => {
+            owned.companion = true;
+          }),
+        ),
+        Effect.mapError((error) =>
+          cliError(
+            `Writing ${displayText(identitiesPath)} failed (${
+              error.reason.cause instanceof Error ? error.reason.cause.name : "unknown"
+            })`,
+          ),
+        ),
+        Effect.uninterruptible,
+      );
+    return {
+      outPath,
+      identitiesPath,
+      bytes: attempt.bytes,
+      lines: attempt.lines,
+      trailer: attempt.trailer,
+      identities,
+      mark: attempt.mark,
+    };
+  }).pipe(
+    // `ensureAbsent` stays outside this scope: a cleanup that ran on the
+    // refusal exit would delete the user's pre-existing file — and even
+    // inside it, only files this run provably created are removed
+    Effect.onExit((exit) =>
+      Exit.isSuccess(exit)
+        ? Effect.void
+        : Effect.gen(function* () {
+            if (owned.out) {
+              yield* removePath(outPath);
+            }
+            if (owned.companion) {
+              yield* removePath(identitiesPath);
+            }
+          }),
     ),
   );
 }
@@ -298,53 +503,16 @@ function companionFor(
 export function projectExportOp(
   input: ProjectExportInput,
 ): Effect.Effect<ProjectExportResult, CliError> {
+  const outPath = input.outPath;
+  const identitiesPath = identitiesPathOf(outPath);
   return Effect.gen(function* () {
-    const identitiesPath = identitiesPathOf(input.outPath);
-    yield* ensureAbsent(input.outPath);
+    yield* ensureAbsent(outPath);
     yield* ensureAbsent(identitiesPath);
-    // The companion is half of the export: without it the data file is
-    // removed too (a migration needs both, and a stale pair is worse than none)
-    const withoutData = (error: CliError) =>
-      Effect.promise(() => rm(input.outPath, { force: true })).pipe(
-        Effect.andThen(Effect.fail(error)),
-      );
-    // The companion is read at a chain head; a head other than the file's
-    // trailer's is a mismatched pair (a member added or removed between
-    // the two reads — the destination would refuse it as stale), so the
-    // export starts over like any change (bounded)
-    let attempt = yield* exportOnce(input);
-    let identities = yield* companionFor(input, attempt, withoutData);
-    for (
-      let restarts = 0;
-      (attempt.kind === "changed" || identities === null) && restarts < MAX_RESTARTS;
-      restarts += 1
-    ) {
-      yield* Effect.promise(() => rm(input.outPath, { force: true }));
-      attempt = yield* exportOnce(input);
-      identities = yield* companionFor(input, attempt, withoutData);
-    }
-    if (attempt.kind === "changed" || identities === null) {
-      yield* Effect.promise(() => rm(input.outPath, { force: true }));
-      return yield* Effect.fail(toCliError(new ExportChangedError({ reason: "project-changed" })));
-    }
-    yield* Effect.tryPromise({
-      try: () =>
-        writeFile(identitiesPath, `${JSON.stringify(identities, null, 2)}\n`, { flag: "wx" }),
-      catch: (error) =>
-        cliError(
-          `Writing ${displayText(identitiesPath)} failed (${error instanceof Error ? error.name : "unknown"})`,
-        ),
-    }).pipe(Effect.catch(withoutData));
-    return {
-      outPath: input.outPath,
-      identitiesPath,
-      bytes: attempt.bytes,
-      lines: attempt.lines,
-      trailer: attempt.trailer,
-      identities,
-      mark: attempt.mark,
-    };
-  });
+    return yield* writePair(input);
+    // BunFileSystem is provided inside the module (config.ts discipline):
+    // the command environment's FileSystem is deliberately a dying stub
+    // (cli-runner.ts), so the env must not supply it
+  }).pipe(Effect.provide(BunFileSystem.layer));
 }
 
 /** What the export's mark means for the migration (the next steps follow it). */

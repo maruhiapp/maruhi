@@ -32,6 +32,8 @@
 //   that fails midway holds no chain and stays "uninitialized"; reruns
 //   wipe the non-chain tables and redo (no overwrite path exists)
 
+import { Data, Effect, Option, Schema } from "effect";
+
 import { auditRowShapeViolations, deriveAuditHeads, isAuditHeadHex } from "../audit-store.ts";
 import {
   OPS_RESTORE_BATCH_ROWS,
@@ -45,41 +47,68 @@ export const SNAPSHOT_FORMAT_VERSION = 1;
 /** DO SQLite bound-parameter limit (per statement — durable-objects/platform/limits). */
 export const MAX_BOUND_PARAMETERS = 100;
 
-export type SnapshotScalar = number | string | null | { readonly b64: string };
+// The line formats on the wire — the single source for the SnapshotLine
+// types below (the union decode of parseLine). `kind` narrows the
+// union; `format` / `version` stay literal so the header keeps its
+// constant type and a wrong one is refused before a field is read. The
+// encode side writes these same shapes.
+const snapshotScalarSchema = Schema.Union([
+  Schema.Number,
+  Schema.String,
+  Schema.Null,
+  Schema.Struct({ b64: Schema.String }),
+]);
 
-export interface SnapshotHeader {
-  readonly kind: "header";
-  readonly format: typeof SNAPSHOT_FORMAT;
-  readonly version: typeof SNAPSHOT_FORMAT_VERSION;
-  readonly schemaVersion: number;
-  readonly takenAtMs: number;
-  readonly doIdHex: string;
-}
+const snapshotHeaderSchema = Schema.Struct({
+  kind: Schema.Literal("header"),
+  format: Schema.Literal(SNAPSHOT_FORMAT),
+  version: Schema.Literal(SNAPSHOT_FORMAT_VERSION),
+  schemaVersion: Schema.Number,
+  takenAtMs: Schema.Number,
+  doIdHex: Schema.String,
+});
 
-export interface SnapshotTableLine {
-  readonly kind: "table";
-  readonly table: string;
-  readonly columns: readonly string[];
-}
+const snapshotTableLineSchema = Schema.Struct({
+  kind: Schema.Literal("table"),
+  table: Schema.String,
+  columns: Schema.Array(Schema.String),
+});
 
-export interface SnapshotRowLine {
-  readonly kind: "row";
-  readonly table: string;
-  readonly values: readonly SnapshotScalar[];
-}
+const snapshotRowLineSchema = Schema.Struct({
+  kind: Schema.Literal("row"),
+  table: Schema.String,
+  values: Schema.Array(snapshotScalarSchema),
+});
 
-export interface SnapshotTrailer {
-  readonly kind: "trailer";
-  readonly rows: Readonly<Record<string, number>>;
-  readonly chainHeadSeq: number;
-  readonly chainHeadHashHex: string | null;
-  readonly auditMaxSeq: number;
-  /** Only when the cumulative-hash column (audit_head_hashes) has reached MAX(seq). */
-  readonly auditHeadHashHex: string | null;
-  readonly databaseSizeBytes: number;
-}
+const snapshotTrailerSchema = Schema.Struct({
+  kind: Schema.Literal("trailer"),
+  rows: Schema.Record(Schema.String, Schema.Number),
+  chainHeadSeq: Schema.Number,
+  chainHeadHashHex: Schema.NullOr(Schema.String),
+  auditMaxSeq: Schema.Number,
+  // Only when the cumulative-hash column (audit_head_hashes) has reached MAX(seq)
+  auditHeadHashHex: Schema.NullOr(Schema.String),
+  databaseSizeBytes: Schema.Number,
+});
 
-export type SnapshotLine = SnapshotHeader | SnapshotTableLine | SnapshotRowLine | SnapshotTrailer;
+const snapshotLineSchema = Schema.Union([
+  snapshotHeaderSchema,
+  snapshotTableLineSchema,
+  snapshotRowLineSchema,
+  snapshotTrailerSchema,
+]);
+
+export type SnapshotScalar = typeof snapshotScalarSchema.Type;
+export type SnapshotHeader = typeof snapshotHeaderSchema.Type;
+export type SnapshotTableLine = typeof snapshotTableLineSchema.Type;
+export type SnapshotRowLine = typeof snapshotRowLineSchema.Type;
+export type SnapshotTrailer = typeof snapshotTrailerSchema.Type;
+export type SnapshotLine = typeof snapshotLineSchema.Type;
+
+// Compiled once at module scope: `fromJsonString` composes JSON.parse
+// and the schema, and rebuilding it per line makes a new AST every
+// call — on a restore every row line runs through this
+const decodeSnapshotLine = Schema.decodeUnknownSync(Schema.fromJsonString(snapshotLineSchema));
 
 // ---------------------------------------------------------------------------
 // Watermarks (input to the skip rules — hosted-ops §2-D)
@@ -329,16 +358,19 @@ export function snapshotObjectKey(prefix: string, doIdHex: string, takenAtMs: nu
 /**
  * Reads out all tables and writes to R2 (the caller must hold the
  * permit). Reads one page at a time, synchronously, per table via a
- * rowid keyset (no cursor is held across awaits).
+ * rowid keyset (no cursor is held across awaits). Every failure is a
+ * defect (a rejected write, a failed upload); the in-flight multipart
+ * upload is aborted on it (the bucket lifecycle rule also cleans up
+ * incomplete uploads).
  */
-export async function writeSnapshot(input: WriteSnapshotInput): Promise<WriteSnapshotResult> {
+export function writeSnapshot(input: WriteSnapshotInput): Effect.Effect<WriteSnapshotResult> {
   const { sql } = input;
   const writer = new GzipObjectWriter(
     input.bucket,
     input.key,
     input.partBytes ?? OPS_SNAPSHOT_PART_BYTES,
   );
-  try {
+  return Effect.gen(function* () {
     const header: SnapshotHeader = {
       kind: "header",
       format: SNAPSHOT_FORMAT,
@@ -347,12 +379,12 @@ export async function writeSnapshot(input: WriteSnapshotInput): Promise<WriteSna
       takenAtMs: input.takenAtMs,
       doIdHex: input.doIdHex,
     };
-    await writer.writeLine(JSON.stringify(header));
+    yield* Effect.promise(() => writer.writeLine(JSON.stringify(header)));
     const rows: Record<string, number> = {};
     for (const table of snapshotTableOrder(input.tables)) {
       const columns = sql.exec(`SELECT * FROM ${table} LIMIT 0`).columnNames;
       const tableLine: SnapshotTableLine = { kind: "table", table, columns };
-      await writer.writeLine(JSON.stringify(tableLine));
+      yield* Effect.promise(() => writer.writeLine(JSON.stringify(tableLine)));
       let count = 0;
       let lastRowid = -1;
       for (;;) {
@@ -373,7 +405,7 @@ export async function writeSnapshot(input: WriteSnapshotInput): Promise<WriteSna
             table,
             values: values.map(encodeScalar),
           };
-          await writer.writeLine(JSON.stringify(rowLine));
+          yield* Effect.promise(() => writer.writeLine(JSON.stringify(rowLine)));
           count += 1;
         }
         if (page.length < OPS_SNAPSHOT_ROW_PAGE) {
@@ -392,13 +424,10 @@ export async function writeSnapshot(input: WriteSnapshotInput): Promise<WriteSna
       auditHeadHashHex: marks.auditHeadHashHex,
       databaseSizeBytes: sql.databaseSize,
     };
-    await writer.writeLine(JSON.stringify(trailer));
-    const { bytes } = await writer.finish();
+    yield* Effect.promise(() => writer.writeLine(JSON.stringify(trailer)));
+    const { bytes } = yield* Effect.promise(() => writer.finish());
     return { bytes, trailer };
-  } catch (error) {
-    await writer.abort();
-    throw error;
-  }
+  }).pipe(Effect.onError(() => Effect.promise(() => writer.abort())));
 }
 
 // ---------------------------------------------------------------------------
@@ -505,14 +534,28 @@ export function encodeExportCursor(state: ExportCursorState): string {
   return base64UrlEncode(JSON.stringify(state));
 }
 
-function isRecordOfNumbers(value: unknown): value is Readonly<Record<string, number>> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.values(value).every((count) => typeof count === "number")
-  );
-}
+// The cursor's wire shape. Positions are embedded in SQL (the rowid) or
+// index the table order: only non-negative integers (rowid ≥ -1,
+// exportedSeq ≥ 1) pass — anything else is not a cursor this server
+// produced
+const exportCursorSchema = Schema.Struct({
+  table: Schema.Natural,
+  started: Schema.Boolean,
+  rowid: Schema.Int.check(Schema.isGreaterThanOrEqualTo(-1)),
+  rows: Schema.Record(Schema.String, Schema.Number),
+  marks: Schema.Struct({
+    chainHeadSeq: Schema.Number,
+    chainHeadHashHex: Schema.NullOr(Schema.String),
+    mutationSeq: Schema.Number,
+    schemaVersion: Schema.Number,
+    formatVersion: Schema.Number,
+  }),
+  exportedSeq: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+});
+
+const decodeExportCursorJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(exportCursorSchema),
+);
 
 /** null = not a cursor this server produced (the client starts over). */
 export function decodeExportCursor(text: string): ExportCursorState | null {
@@ -520,66 +563,7 @@ export function decodeExportCursor(text: string): ExportCursorState | null {
   if (json === null) {
     return null;
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null) {
-    return null;
-  }
-  const candidate = parsed as Partial<ExportCursorState>;
-  const marks = decodeMarks(candidate.marks);
-  // Positions are embedded in SQL (the rowid) or index the table order:
-  // only non-negative integers (rowid ≥ -1) pass — anything else is not a
-  // cursor this server produced
-  if (
-    !isIntegerAtLeast(candidate.table, 0) ||
-    typeof candidate.started !== "boolean" ||
-    !isIntegerAtLeast(candidate.rowid, -1) ||
-    !isRecordOfNumbers(candidate.rows) ||
-    !isIntegerAtLeast(candidate.exportedSeq, 1) ||
-    marks === null
-  ) {
-    return null;
-  }
-  return {
-    table: candidate.table,
-    started: candidate.started,
-    rowid: candidate.rowid,
-    rows: candidate.rows,
-    exportedSeq: candidate.exportedSeq,
-    marks,
-  };
-}
-
-function isIntegerAtLeast(value: unknown, floor: number): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= floor;
-}
-
-/** The cursor's marks, each of its declared type (null = not a cursor this server produced). */
-function decodeMarks(value: unknown): ExportMarks | null {
-  if (typeof value !== "object" || value === null) {
-    return null;
-  }
-  const marks = value as Partial<ExportMarks>;
-  const { chainHeadHashHex } = marks;
-  const numbers = [marks.chainHeadSeq, marks.mutationSeq, marks.schemaVersion, marks.formatVersion];
-  if (
-    !numbers.every((number) => typeof number === "number") ||
-    (chainHeadHashHex !== null && typeof chainHeadHashHex !== "string")
-  ) {
-    return null;
-  }
-  const [chainHeadSeq = 0, mutationSeq = 0, schemaVersion = 0, formatVersion = 0] = numbers;
-  return {
-    chainHeadSeq,
-    chainHeadHashHex: chainHeadHashHex ?? null,
-    mutationSeq,
-    schemaVersion,
-    formatVersion,
-  };
+  return Option.getOrNull(decodeExportCursorJson(json));
 }
 
 export interface ExportPageInput {
@@ -774,11 +758,17 @@ export type RestoreFailureCode =
   | "row-count-mismatch"
   | "unknown-table";
 
-export class RestoreRefusedError extends Error {
-  constructor(readonly code: RestoreFailureCode) {
-    super(`restore refused: ${code}`);
-  }
-}
+/**
+ * The refusal in the Effect error channel (the code is the static
+ * RestoreFailureCode — safe to put in result files and logs). Inside
+ * transactionSync closures and the stream loop it is still thrown — the
+ * throw is what rolls a batch back and stops the read — and the
+ * boundary's `catch` turns it back into the typed error (the only place
+ * an instanceof may remain).
+ */
+export class RestoreRefusedError extends Data.TaggedError("RestoreRefused")<{
+  readonly code: RestoreFailureCode;
+}> {}
 
 export interface RestoreSnapshotInput {
   /** DO storage with transactionSync (sql is taken from here). */
@@ -819,19 +809,28 @@ async function* lines(body: ReadableStream): AsyncGenerator<string> {
 }
 
 export function parseLine(text: string): SnapshotLine {
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    // Decoded against the wire union: a non-JSON line, or a shape no
+    // line kind writes, is a corrupted evacuation (fold the reason into
+    // a static code — the body is not carried)
+    return decodeSnapshotLine(text);
   } catch {
-    // A non-JSON line = a corrupted evacuation (fold the reason into a
-    // static code — the body is not carried)
-    throw new RestoreRefusedError("malformed");
+    throw new RestoreRefusedError({ code: "malformed" });
   }
-  if (typeof parsed !== "object" || parsed === null || !("kind" in parsed)) {
-    throw new RestoreRefusedError("malformed");
-  }
-  return parsed as SnapshotLine;
 }
+
+/**
+ * The thrown value crossing the async boundary — inside the reader and
+ * its transactionSync batches the refusal is a throw (that is what
+ * rolls a batch back); here it is turned back into the typed error. The
+ * only place an instanceof may remain; any other throw is a defect.
+ */
+const toRestoreRefusal = (error: unknown): RestoreRefusedError => {
+  if (error instanceof RestoreRefusedError) {
+    return error;
+  }
+  throw error;
+};
 
 function wipeTables(sql: SqlStorage, tables: readonly string[]): void {
   for (const table of tables) {
@@ -854,7 +853,7 @@ class RowInserter {
 
   push(values: readonly SnapshotScalar[]): void {
     if (values.length !== this.columns.length) {
-      throw new RestoreRefusedError("malformed");
+      throw new RestoreRefusedError({ code: "malformed" });
     }
     this.#buffer.push(values);
     if (this.#buffer.length >= OPS_RESTORE_BATCH_ROWS) {
@@ -884,16 +883,17 @@ class RowInserter {
 }
 
 /**
- * Validates and returns the column names of an evacuation's table line.
- * Any miss — not an array, a non-string element, or not an exact match
- * including order with the live table's column names — is "malformed"
- * (column names are embedded as SQL identifiers, so only values that
- * pass here are used).
+ * Validates and returns the column names of an evacuation's table line
+ * (the wire schema has already decoded them as strings). Any miss — not
+ * an exact match including order with the live table's column names —
+ * is "malformed" (column names are embedded as SQL identifiers, so only
+ * values that pass here are used).
  */
-export function acceptColumns(sql: SqlStorage, table: string, columns: unknown): readonly string[] {
-  if (!Array.isArray(columns) || !columns.every((column) => typeof column === "string")) {
-    throw new RestoreRefusedError("malformed");
-  }
+export function acceptColumns(
+  sql: SqlStorage,
+  table: string,
+  columns: readonly string[],
+): readonly string[] {
   // table is already checked against the set of known tables (a value safe to embed as an identifier)
   const live = sql.exec(`SELECT * FROM ${table} LIMIT 0`).columnNames;
   if (
@@ -901,21 +901,19 @@ export function acceptColumns(sql: SqlStorage, table: string, columns: unknown):
     columns.length !== live.length ||
     columns.some((column, index) => column !== live[index])
   ) {
-    throw new RestoreRefusedError("malformed");
+    throw new RestoreRefusedError({ code: "malformed" });
   }
   return live;
 }
 
 export function acceptHeader(line: SnapshotLine, schemaVersion: number): SnapshotHeader {
-  if (
-    line.kind !== "header" ||
-    line.format !== SNAPSHOT_FORMAT ||
-    line.version !== SNAPSHOT_FORMAT_VERSION
-  ) {
-    throw new RestoreRefusedError("malformed");
+  // A non-header line in the header's slot (the wire schema has already
+  // refused a bad format/version at decode)
+  if (line.kind !== "header") {
+    throw new RestoreRefusedError({ code: "malformed" });
   }
   if (line.schemaVersion !== schemaVersion) {
-    throw new RestoreRefusedError("schema-mismatch");
+    throw new RestoreRefusedError({ code: "schema-mismatch" });
   }
   return line;
 }
@@ -942,7 +940,7 @@ class RestoreReader {
       return;
     }
     if (this.trailer !== null) {
-      throw new RestoreRefusedError("malformed");
+      throw new RestoreRefusedError({ code: "malformed" });
     }
     switch (line.kind) {
       case "table":
@@ -956,7 +954,7 @@ class RestoreReader {
         this.trailer = line;
         return;
       default:
-        throw new RestoreRefusedError("malformed");
+        throw new RestoreRefusedError({ code: "malformed" });
     }
   }
 
@@ -964,11 +962,11 @@ class RestoreReader {
   async verify(tables: readonly string[]): Promise<RestoreSnapshotResult> {
     const { header, trailer } = this;
     if (header === null || trailer === null) {
-      throw new RestoreRefusedError("trailer-missing");
+      throw new RestoreRefusedError({ code: "trailer-missing" });
     }
     for (const table of tables) {
       if ((trailer.rows[table] ?? 0) !== (this.rows[table] ?? 0)) {
-        throw new RestoreRefusedError("row-count-mismatch");
+        throw new RestoreRefusedError({ code: "row-count-mismatch" });
       }
     }
     this.#verifyAuditContiguity();
@@ -993,13 +991,13 @@ class RestoreReader {
     const from = tail === undefined ? 0 : Number(tail["seq"]);
     const start = tail === undefined ? "" : tail["head_hash_hex"];
     if (tail !== undefined && !isAuditHeadHex(start)) {
-      throw new RestoreRefusedError("malformed");
+      throw new RestoreRefusedError({ code: "malformed" });
     }
     // Every row's numbers in the canonical form's domain, the rows under
     // the snapshot's column included (round 11); then the heads past the
     // column, chunk by chunk into the live column (wiped on a failure)
     if (auditRowShapeViolations(sql, "audit_events") !== 0) {
-      throw new RestoreRefusedError("malformed");
+      throw new RestoreRefusedError({ code: "malformed" });
     }
     const derived = await deriveAuditHeads(
       sql,
@@ -1009,7 +1007,7 @@ class RestoreReader {
       String(start),
     );
     if (!derived) {
-      throw new RestoreRefusedError("malformed");
+      throw new RestoreRefusedError({ code: "malformed" });
     }
   }
 
@@ -1038,13 +1036,13 @@ class RestoreReader {
       heads.min < 1 ||
       heads.count > audit.count
     ) {
-      throw new RestoreRefusedError("malformed");
+      throw new RestoreRefusedError({ code: "malformed" });
     }
   }
 
   #beginTable(line: SnapshotTableLine): void {
     if (!this.known.has(line.table)) {
-      throw new RestoreRefusedError("unknown-table");
+      throw new RestoreRefusedError({ code: "unknown-table" });
     }
     this.#flush();
     // The column names come from the evacuation's line and are embedded
@@ -1094,7 +1092,7 @@ class RestoreReader {
   #acceptRow(line: SnapshotRowLine): void {
     const inserter = this.#inserter;
     if (inserter === null || line.table !== this.#table) {
-      throw new RestoreRefusedError("malformed");
+      throw new RestoreRefusedError({ code: "malformed" });
     }
     inserter.push(line.values);
     this.rows[line.table] = (this.rows[line.table] ?? 0) + 1;
@@ -1109,31 +1107,44 @@ class RestoreReader {
 /**
  * Writes an evacuation back into an empty DO (the caller must hold the
  * permit). Each batch is atomically committed with transactionSync; a
- * mid-way failure (exception, missing trailer, row-count mismatch)
- * wipes all tables back to empty before throwing. chain_entries rows go
- * to the staging table and are moved to the real table in one
- * transaction only after verification passes — wherever the process
- * dies, it falls on the "uninitialized" side and restore can be retried.
+ * mid-way failure (a refusal, a defect) wipes all tables back to empty
+ * before it propagates. chain_entries rows go to the staging table and
+ * are moved to the real table in one transaction only after
+ * verification passes — wherever the process dies, it falls on the
+ * "uninitialized" side and restore can be retried.
  */
-export async function restoreSnapshot(input: RestoreSnapshotInput): Promise<RestoreSnapshotResult> {
+export function restoreSnapshot(
+  input: RestoreSnapshotInput,
+): Effect.Effect<RestoreSnapshotResult, RestoreRefusedError> {
   const { storage, tables } = input;
-  if (!isProjectDoEmpty(storage.sql)) {
-    throw new RestoreRefusedError("not-empty");
-  }
-  // Wipe the previous partial restore (leftover non-chain tables) first
-  wipeTables(storage.sql, tables);
-  storage.sql.exec(`DROP TABLE IF EXISTS ${CHAIN_STAGING_TABLE}`);
-  const reader = new RestoreReader(storage, new Set(tables), input.schemaVersion);
-  try {
-    for await (const text of lines(input.body)) {
-      if (text !== "") {
-        reader.accept(parseLine(text));
-      }
+  return Effect.gen(function* () {
+    if (!isProjectDoEmpty(storage.sql)) {
+      return yield* new RestoreRefusedError({ code: "not-empty" });
     }
-    return await reader.verify(tables);
-  } catch (error) {
+    // Wipe the previous partial restore (leftover non-chain tables) first
     wipeTables(storage.sql, tables);
     storage.sql.exec(`DROP TABLE IF EXISTS ${CHAIN_STAGING_TABLE}`);
-    throw error;
-  }
+    const reader = new RestoreReader(storage, new Set(tables), input.schemaVersion);
+    return yield* Effect.tryPromise({
+      try: async () => {
+        for await (const text of lines(input.body)) {
+          if (text !== "") {
+            reader.accept(parseLine(text));
+          }
+        }
+        return await reader.verify(tables);
+      },
+      catch: toRestoreRefusal,
+    }).pipe(
+      // On every mid-way failure the DO is wiped back to empty (the
+      // not-empty refusal above does not reach this — there is nothing
+      // of this restore's to wipe)
+      Effect.onError(() =>
+        Effect.sync(() => {
+          wipeTables(storage.sql, tables);
+          storage.sql.exec(`DROP TABLE IF EXISTS ${CHAIN_STAGING_TABLE}`);
+        }),
+      ),
+    );
+  });
 }
