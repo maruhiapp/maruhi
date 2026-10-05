@@ -4,6 +4,7 @@
 
 export {
   ChainInvalidError,
+  CryptoContractViolationError,
   CryptoDecryptError,
   CryptoDekCommitmentError,
   CryptoDekUnwrapError,
