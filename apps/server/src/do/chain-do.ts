@@ -1444,15 +1444,17 @@ export class ProjectChainDO extends DurableObject<Env> {
               ),
             );
           }).pipe(
-            Effect.map((result) => ({ kind: "ok" as const, result })),
+            // A refusal is answered, never thrown past the permit
             Effect.catchTag("RestoreRefused", (error) =>
-              Effect.succeed({ kind: "refused" as const, code: error.code }),
+              Effect.succeed({
+                kind: "refused",
+                code: error.code,
+              } satisfies OpsRestoreOutcome),
             ),
           );
-          if (restored.kind === "refused") {
-            return { kind: "refused", code: restored.code } satisfies OpsRestoreOutcome;
+          if ("code" in restored) {
+            return restored;
           }
-          const { result } = restored;
           // Extend the audit-head row to the end (bounded extension — a
           // one-time operation at restore, so run it to convergence)
           while ((yield* audit.ensureHeadCurrent) === "more-remains") {
@@ -1462,7 +1464,7 @@ export class ProjectChainDO extends DurableObject<Env> {
           const marks = readWatermarks(sql);
           return {
             kind: "restored",
-            rows: result.rows,
+            rows: restored.rows,
             chainHeadSeq: marks.chainHeadSeq,
             chainHeadHashHex: marks.chainHeadHashHex,
             auditMaxSeq: marks.auditMaxSeq,

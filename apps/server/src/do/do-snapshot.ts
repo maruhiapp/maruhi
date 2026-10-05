@@ -47,46 +47,11 @@ export const SNAPSHOT_FORMAT_VERSION = 1;
 /** DO SQLite bound-parameter limit (per statement — durable-objects/platform/limits). */
 export const MAX_BOUND_PARAMETERS = 100;
 
-export type SnapshotScalar = number | string | null | { readonly b64: string };
-
-export interface SnapshotHeader {
-  readonly kind: "header";
-  readonly format: typeof SNAPSHOT_FORMAT;
-  readonly version: typeof SNAPSHOT_FORMAT_VERSION;
-  readonly schemaVersion: number;
-  readonly takenAtMs: number;
-  readonly doIdHex: string;
-}
-
-export interface SnapshotTableLine {
-  readonly kind: "table";
-  readonly table: string;
-  readonly columns: readonly string[];
-}
-
-export interface SnapshotRowLine {
-  readonly kind: "row";
-  readonly table: string;
-  readonly values: readonly SnapshotScalar[];
-}
-
-export interface SnapshotTrailer {
-  readonly kind: "trailer";
-  readonly rows: Readonly<Record<string, number>>;
-  readonly chainHeadSeq: number;
-  readonly chainHeadHashHex: string | null;
-  readonly auditMaxSeq: number;
-  /** Only when the cumulative-hash column (audit_head_hashes) has reached MAX(seq). */
-  readonly auditHeadHashHex: string | null;
-  readonly databaseSizeBytes: number;
-}
-
-export type SnapshotLine = SnapshotHeader | SnapshotTableLine | SnapshotRowLine | SnapshotTrailer;
-
-// The line formats on the wire (the union decode of parseLine). `kind`
-// narrows the union; `format` / `version` stay literal so the header
-// keeps its constant type (SnapshotHeader) and a wrong one is refused
-// before a field is read. The encode side writes these same shapes.
+// The line formats on the wire — the single source for the SnapshotLine
+// types below (the union decode of parseLine). `kind` narrows the
+// union; `format` / `version` stay literal so the header keeps its
+// constant type and a wrong one is refused before a field is read. The
+// encode side writes these same shapes.
 const snapshotScalarSchema = Schema.Union([
   Schema.Number,
   Schema.String,
@@ -94,35 +59,56 @@ const snapshotScalarSchema = Schema.Union([
   Schema.Struct({ b64: Schema.String }),
 ]);
 
+const snapshotHeaderSchema = Schema.Struct({
+  kind: Schema.Literal("header"),
+  format: Schema.Literal(SNAPSHOT_FORMAT),
+  version: Schema.Literal(SNAPSHOT_FORMAT_VERSION),
+  schemaVersion: Schema.Number,
+  takenAtMs: Schema.Number,
+  doIdHex: Schema.String,
+});
+
+const snapshotTableLineSchema = Schema.Struct({
+  kind: Schema.Literal("table"),
+  table: Schema.String,
+  columns: Schema.Array(Schema.String),
+});
+
+const snapshotRowLineSchema = Schema.Struct({
+  kind: Schema.Literal("row"),
+  table: Schema.String,
+  values: Schema.Array(snapshotScalarSchema),
+});
+
+const snapshotTrailerSchema = Schema.Struct({
+  kind: Schema.Literal("trailer"),
+  rows: Schema.Record(Schema.String, Schema.Number),
+  chainHeadSeq: Schema.Number,
+  chainHeadHashHex: Schema.NullOr(Schema.String),
+  auditMaxSeq: Schema.Number,
+  // Only when the cumulative-hash column (audit_head_hashes) has reached MAX(seq)
+  auditHeadHashHex: Schema.NullOr(Schema.String),
+  databaseSizeBytes: Schema.Number,
+});
+
 const snapshotLineSchema = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("header"),
-    format: Schema.Literal(SNAPSHOT_FORMAT),
-    version: Schema.Literal(SNAPSHOT_FORMAT_VERSION),
-    schemaVersion: Schema.Number,
-    takenAtMs: Schema.Number,
-    doIdHex: Schema.String,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("table"),
-    table: Schema.String,
-    columns: Schema.Array(Schema.String),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("row"),
-    table: Schema.String,
-    values: Schema.Array(snapshotScalarSchema),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("trailer"),
-    rows: Schema.Record(Schema.String, Schema.Number),
-    chainHeadSeq: Schema.Number,
-    chainHeadHashHex: Schema.NullOr(Schema.String),
-    auditMaxSeq: Schema.Number,
-    auditHeadHashHex: Schema.NullOr(Schema.String),
-    databaseSizeBytes: Schema.Number,
-  }),
+  snapshotHeaderSchema,
+  snapshotTableLineSchema,
+  snapshotRowLineSchema,
+  snapshotTrailerSchema,
 ]);
+
+export type SnapshotScalar = typeof snapshotScalarSchema.Type;
+export type SnapshotHeader = typeof snapshotHeaderSchema.Type;
+export type SnapshotTableLine = typeof snapshotTableLineSchema.Type;
+export type SnapshotRowLine = typeof snapshotRowLineSchema.Type;
+export type SnapshotTrailer = typeof snapshotTrailerSchema.Type;
+export type SnapshotLine = typeof snapshotLineSchema.Type;
+
+// Compiled once at module scope: `fromJsonString` composes JSON.parse
+// and the schema, and rebuilding it per line makes a new AST every
+// call — on a restore every row line runs through this
+const decodeSnapshotLine = Schema.decodeUnknownSync(Schema.fromJsonString(snapshotLineSchema));
 
 // ---------------------------------------------------------------------------
 // Watermarks (input to the skip rules — hosted-ops §2-D)
@@ -567,15 +553,17 @@ const exportCursorSchema = Schema.Struct({
   exportedSeq: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
 });
 
+const decodeExportCursorJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(exportCursorSchema),
+);
+
 /** null = not a cursor this server produced (the client starts over). */
 export function decodeExportCursor(text: string): ExportCursorState | null {
   const json = base64UrlDecode(text);
   if (json === null) {
     return null;
   }
-  return Option.getOrNull(
-    Schema.decodeUnknownOption(Schema.fromJsonString(exportCursorSchema))(json),
-  );
+  return Option.getOrNull(decodeExportCursorJson(json));
 }
 
 export interface ExportPageInput {
@@ -825,7 +813,7 @@ export function parseLine(text: string): SnapshotLine {
     // Decoded against the wire union: a non-JSON line, or a shape no
     // line kind writes, is a corrupted evacuation (fold the reason into
     // a static code — the body is not carried)
-    return Schema.decodeUnknownSync(Schema.fromJsonString(snapshotLineSchema))(text);
+    return decodeSnapshotLine(text);
   } catch {
     throw new RestoreRefusedError({ code: "malformed" });
   }
@@ -895,16 +883,17 @@ class RowInserter {
 }
 
 /**
- * Validates and returns the column names of an evacuation's table line.
- * Any miss — not an array, a non-string element, or not an exact match
- * including order with the live table's column names — is "malformed"
- * (column names are embedded as SQL identifiers, so only values that
- * pass here are used).
+ * Validates and returns the column names of an evacuation's table line
+ * (the wire schema has already decoded them as strings). Any miss — not
+ * an exact match including order with the live table's column names —
+ * is "malformed" (column names are embedded as SQL identifiers, so only
+ * values that pass here are used).
  */
-export function acceptColumns(sql: SqlStorage, table: string, columns: unknown): readonly string[] {
-  if (!Array.isArray(columns) || !columns.every((column) => typeof column === "string")) {
-    throw new RestoreRefusedError({ code: "malformed" });
-  }
+export function acceptColumns(
+  sql: SqlStorage,
+  table: string,
+  columns: readonly string[],
+): readonly string[] {
   // table is already checked against the set of known tables (a value safe to embed as an identifier)
   const live = sql.exec(`SELECT * FROM ${table} LIMIT 0`).columnNames;
   if (
@@ -918,11 +907,9 @@ export function acceptColumns(sql: SqlStorage, table: string, columns: unknown):
 }
 
 export function acceptHeader(line: SnapshotLine, schemaVersion: number): SnapshotHeader {
-  if (
-    line.kind !== "header" ||
-    line.format !== SNAPSHOT_FORMAT ||
-    line.version !== SNAPSHOT_FORMAT_VERSION
-  ) {
+  // A non-header line in the header's slot (the wire schema has already
+  // refused a bad format/version at decode)
+  if (line.kind !== "header") {
     throw new RestoreRefusedError({ code: "malformed" });
   }
   if (line.schemaVersion !== schemaVersion) {
