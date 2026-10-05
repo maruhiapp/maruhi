@@ -11,10 +11,10 @@
 // - Tests stub GitHub via miniflare's outboundService (real network is
 //   forbidden). No stub branch exists in production code
 
+import { egressHttpClientLayer } from "@maruhi/core";
 import { type Cause, Context, Data, Duration, Effect, Schema } from "effect";
 import {
   type HttpClientError,
-  FetchHttpClient,
   HttpClient,
   HttpClientRequest,
   HttpClientResponse,
@@ -169,6 +169,9 @@ function toIdentity(
   });
 }
 
+/** The outbound client: no header of its own (packages/core/src/egress.ts). */
+const githubHttpClient = egressHttpClientLayer();
+
 /**
  * Folds outbound failures (transport errors, timeouts, unexpected shapes)
  * and null answers into the typed error, and provides the HTTP client
@@ -186,7 +189,7 @@ function attempt<A>(
       TimeoutError: () => Effect.fail(failure),
     }),
     Effect.flatMap((value) => (value === null ? Effect.fail(failure) : Effect.succeed(value))),
-    Effect.provide(FetchHttpClient.layer),
+    Effect.provide(githubHttpClient),
   );
 }
 
