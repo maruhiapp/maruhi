@@ -915,6 +915,27 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expectNoSecretLeak(fixture);
   });
 
+  it("a lease token dead on the run's clock is abandoned even while real time says it lives (mutation sentinel)", async () => {
+    // The run's clock sits a minute ahead of real time, so a token with
+    // 30 s of real life left is already dead to it — reverting the
+    // catch's clock read (or both reads) to Date.now() sees a live
+    // token, takes the fallback and exits 0, so this case fails green
+    // on that revert
+    const { clock, nowMs } = await realNowClock();
+    await clockAdjust(clock, 60_000);
+    const fixture = await startCi(EXEC_RULE, {
+      expSeconds: Math.floor(nowMs / 1000) + 30,
+      failAfter: 1,
+    });
+    expect(await ciRotateOnClock(fixture, clock)).toBe(1);
+    const errors = fixture.env.errors.join("\n");
+    expect(errors).toContain(
+      "no token is left to store the proposal: the lease's token expired at",
+    );
+    expect(fixture.minted.bodies).toHaveLength(0);
+    expectNoSecretLeak(fixture);
+  });
+
   it("refuses a rule without a grace period before touching the issuer (a proposal can be rejected or expire)", async () => {
     const fixture = await startCi({
       version: 1,

@@ -581,9 +581,10 @@ export function proxyRunOp(
     });
     yield* announcePlan(plan, input);
     const injected = yield* injectionEnvFor(plan);
-    const caNowMs = yield* Clock.currentTimeMillis;
+    // CA and leaves read the same clock the connector's JWTs do — one time
+    // source per run, and a TestClock drives all of them
     const ca = yield* Effect.tryPromise({
-      try: () => makeEphemeralCa(caNowMs),
+      try: () => makeEphemeralCa(() => connectorDeps.clock.currentTimeMillisUnsafe()),
       catch: () =>
         cliError("Cannot create the run's certificate authority (WebCrypto unavailable)"),
     });

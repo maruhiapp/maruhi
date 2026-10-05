@@ -110,7 +110,7 @@ beforeAll(async () => {
       await entry("v-other", "OTHER", REAL_OTHER),
     ],
   };
-  originCa = await makeEphemeralCa(Date.now());
+  originCa = await makeEphemeralCa(Date.now);
   const leaf = await originCa.issue("api.example.test");
   origin = await startOrigin({ tls: { key: leaf.keyPem, cert: leaf.certPem } });
 });

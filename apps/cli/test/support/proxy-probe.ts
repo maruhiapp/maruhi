@@ -41,8 +41,8 @@ function pattern(text: string) {
   return parsed;
 }
 
-const runCa = await makeEphemeralCa(Date.now());
-const originCa = await makeEphemeralCa(Date.now());
+const runCa = await makeEphemeralCa(Date.now);
+const originCa = await makeEphemeralCa(Date.now);
 const leaf = await originCa.issue("api.example.test");
 
 // The origin: echoes the authorization header and the path
