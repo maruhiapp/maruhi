@@ -9,7 +9,7 @@ import { createVerify, generateKeyPairSync } from "node:crypto";
 import { Clock, Effect, Layer } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { parseHostPattern } from "../src/proxy.package/proxy-config.ts";
 import {
@@ -310,6 +310,90 @@ describe("github-app connector", () => {
     await expect(credential.resolve()).rejects.toThrow(
       "connector github-app for GH_TOKEN: GitHub answered 502 (no message)",
     );
+  });
+
+  it("a minted token next to a non-string expires_at or message is still cached and revoked; a non-string message reads as none", async () => {
+    let minted = 0;
+    const github = fakeGithub((call) => {
+      if (call.method === "DELETE") {
+        return new Response(null, { status: 204 });
+      }
+      minted += 1;
+      return minted === 1
+        ? new Response(JSON.stringify({ token: "ghs_no_expiry", expires_at: null, message: 5 }), {
+            status: 201,
+            headers: { "content-type": "application/json" },
+          })
+        : new Response(JSON.stringify({ message: { text: "not a string" } }), {
+            status: 403,
+            headers: { "content-type": "application/json" },
+          });
+    });
+    const { deps } = await connectorDeps(github, "https://github.test");
+    const inputs = {
+      appId: enc.encode("123"),
+      privateKey: enc.encode(PKCS1),
+      installationId: enc.encode("42"),
+    };
+    const credential = makeConnectorCredential({
+      name: "GH_TOKEN",
+      kind: "github-app",
+      inputs,
+      placeholder: "mhp_GH_TOKEN_n",
+      hosts: hosts(),
+      surfaces: ["header"],
+      deps,
+    });
+    expect(dec.decode(await credential.resolve())).toBe("ghs_no_expiry");
+    // No known expiry: the token stays cached (no second mint)
+    expect(dec.decode(await credential.resolve())).toBe("ghs_no_expiry");
+    expect(github.calls).toHaveLength(1);
+    await credential.release?.();
+    expect(github.calls.map((call) => `${call.method} ${call.headers["authorization"]}`)).toEqual([
+      expect.stringMatching(/^POST Bearer /),
+      "DELETE token ghs_no_expiry",
+    ]);
+    const refused = makeConnectorCredential({
+      name: "GH_TOKEN",
+      kind: "github-app",
+      inputs,
+      placeholder: "mhp_GH_TOKEN_m",
+      hosts: hosts(),
+      surfaces: ["header"],
+      deps,
+    });
+    await expect(refused.resolve()).rejects.toThrow(
+      "connector github-app for GH_TOKEN: GitHub answered 403 (no message)",
+    );
+  });
+
+  it("a JWT signing failure passes WebCrypto's own reason through", async () => {
+    const github = fakeGithub(() => tokenResponse("ghs_unused", 3_600_000, Date.now()));
+    const { deps } = await connectorDeps(github);
+    const sign = vi
+      .spyOn(crypto.subtle, "sign")
+      .mockRejectedValueOnce(new Error("the operation failed for an operation-specific reason"));
+    try {
+      const credential = makeConnectorCredential({
+        name: "GH_TOKEN",
+        kind: "github-app",
+        inputs: {
+          appId: enc.encode("123"),
+          privateKey: enc.encode(PKCS1),
+          installationId: enc.encode("42"),
+        },
+        placeholder: "mhp_GH_TOKEN_s",
+        hosts: hosts(),
+        surfaces: ["header"],
+        deps,
+      });
+      await expect(credential.resolve()).rejects.toThrow(
+        /^connector github-app for GH_TOKEN: the operation failed for an operation-specific reason$/,
+      );
+      expect(github.calls).toHaveLength(0);
+    } finally {
+      sign.mockRestore();
+    }
   });
 
   it("revokes every held token at release even when one revocation fails, and reports the failures (§21 R-3)", async () => {

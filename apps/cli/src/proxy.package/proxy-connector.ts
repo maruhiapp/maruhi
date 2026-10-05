@@ -90,14 +90,16 @@ const JWT_LIFETIME_S = 9 * 60;
 
 /**
  * GitHub's `access_tokens` response — only `token` / `expires_at` /
- * `message` are read. A body that is not a JSON object decodes to an empty
- * record (the caller then reports "no message" / "carried no token" — the
- * same wording as before the decode was schema-checked).
+ * `message` are read, and each is type-checked where it is read: a field
+ * of another type never discards the others (a minted token next to an
+ * `expires_at: null` is still cached and revoked). A body that is unreadable,
+ * not JSON or not a JSON object decodes to an empty record (the caller then
+ * reports "no message" / "carried no token").
  */
 const TokenResponse = Schema.Struct({
-  token: Schema.optionalKey(Schema.String),
-  expires_at: Schema.optionalKey(Schema.String),
-  message: Schema.optionalKey(Schema.String),
+  token: Schema.optionalKey(Schema.Unknown),
+  expires_at: Schema.optionalKey(Schema.Unknown),
+  message: Schema.optionalKey(Schema.Unknown),
 });
 type TokenResponse = typeof TokenResponse.Type;
 
@@ -153,10 +155,7 @@ function appJwt(
   return Effect.map(
     Effect.tryPromise({
       try: () => crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, encoder.encode(signingInput)),
-      catch: (error) =>
-        new ConnectorError({
-          message: `the App key could not sign the JWT (${reasonOf(error, "signing failed")})`,
-        }),
+      catch: (error) => new ConnectorError({ message: reasonOf(error, "unknown failure") }),
     }),
     (signature) => `${signingInput}.${base64Url(new Uint8Array(signature))}`,
   );
@@ -182,7 +181,7 @@ function parseTokenResponse(
 ): Effect.Effect<Minted, ConnectorError> {
   if (status !== 201) {
     return new ConnectorError({
-      message: `GitHub answered ${status} (${record.message ?? "no message"})`,
+      message: `GitHub answered ${status} (${typeof record.message === "string" ? record.message : "no message"})`,
     });
   }
   const token = record.token;
@@ -265,6 +264,7 @@ function revokeGithubApp(
       .execute(
         HttpClientRequest.delete(`${base}/installation/token`).pipe(
           HttpClientRequest.setHeaders({
+            // Reason for unwrapping: the token authenticates its own revocation (GitHub's API shape)
             authorization: `token ${decoder.decode(token)}`,
             accept: "application/vnd.github+json",
             "x-github-api-version": "2022-11-28",
