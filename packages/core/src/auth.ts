@@ -11,7 +11,7 @@
 // logged. The resolve functions return only the result of the hash
 // match.
 
-import { Context, Data, Effect, Schema } from "effect";
+import { Context, Data, Effect, Option, Schema } from "effect";
 
 import { ProjectIdSchema } from "./project.ts";
 
@@ -78,34 +78,17 @@ export function scopePermissionFor(
   return best;
 }
 
-/** Parses a stored scopes JSON string; null when the shape is not a scope array. */
+const decodeStoredScopes = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(TokenScopeSchema)),
+);
+
+/**
+ * Parses a stored scopes JSON string; null when the value does not
+ * decode as a scope array (the same failure value as before — the
+ * caller's handling is unchanged)
+ */
 export function parseTokenScopes(json: string): readonly TokenScope[] | null {
-  try {
-    return decodeScopes(JSON.parse(json));
-  } catch {
-    // A JSON syntax error is "a malformed stored value", which the caller treats as a failure
-    return null;
-  }
-}
-
-function decodeScopes(value: unknown): readonly TokenScope[] | null {
-  if (!Array.isArray(value) || !value.every(isTokenScope)) {
-    return null;
-  }
-  return value;
-}
-
-function isTokenScope(value: unknown): value is TokenScope {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record["project"] === "string" &&
-    (record["permission"] === "read" ||
-      record["permission"] === "write" ||
-      record["permission"] === "admin")
-  );
+  return Option.getOrNull(decodeStoredScopes(json));
 }
 
 // ---------------------------------------------------------------------------
