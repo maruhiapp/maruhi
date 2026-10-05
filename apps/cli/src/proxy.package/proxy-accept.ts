@@ -48,15 +48,14 @@
 // database gives it — not under `MARUHI_CONFIG_DIR` / `XDG_CONFIG_HOME`,
 // which an agent can set for its own invocation (R-23).
 
-import { mkdir, realpath, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { Context, Effect, Stdio } from "effect";
+import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
+import { Context, Effect, FileSystem, Result, Schema, Stdio } from "effect";
 
 import { AgentProfileRef, describeNonTerminal, ensureHumanCeremonyAllowed } from "../agent-gate.ts";
 import { cliError, type CliError } from "../errors.ts";
 import type { CliIo } from "../io.ts";
-import { isRecord, readLedger } from "../json-record.ts";
 import { logNote } from "../notice.ts";
 
 /** One accepted config: the content a person accepted, when, and for which projects (R-24). */
@@ -119,113 +118,91 @@ export function acceptedProxyConfigsPathOf(home: string): string {
   return join(home, ".config", "maruhi", "proxy-accepted.json");
 }
 
-interface AcceptedFile {
-  readonly v: 1;
-  readonly accepted: Readonly<Record<string, AcceptedProxyConfig>>;
-  readonly projects: Readonly<Record<string, BrokeredProject>>;
-}
+/**
+ * The ledger's Schema (strict — no partial reads, same as pins / the
+ * fingerprint ledger): one bad entry fails the whole file as corrupt.
+ * Extra keys on an entry or on the file are tolerated, as before.
+ */
+const LEDGER = Schema.fromJsonString(
+  Schema.Struct({
+    v: Schema.Literal(1),
+    accepted: Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        content: Schema.String,
+        acceptedAtMs: Schema.Int,
+        projectIds: Schema.Array(Schema.String),
+      }),
+    ),
+    projects: Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        configPath: Schema.String,
+        markedAtMs: Schema.Int,
+      }),
+    ),
+  }),
+);
 
-function isSafeTimestamp(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value);
-}
-
-function decodeAccepted(record: unknown): AcceptedProxyConfig | null {
-  if (
-    !isRecord(record) ||
-    typeof record["content"] !== "string" ||
-    !isSafeTimestamp(record["acceptedAtMs"])
-  ) {
-    return null;
-  }
-  // An entry written before the project binding (R-24) has no `projectIds`:
-  // it reads as accepted for no project (fails closed per project, repaired
-  // by an ordinary `proxy accept`) rather than as a corrupt file
-  const projectIds = record["projectIds"] ?? [];
-  if (!Array.isArray(projectIds) || !projectIds.every((id) => typeof id === "string")) {
-    return null;
-  }
-  return { content: record["content"], acceptedAtMs: record["acceptedAtMs"], projectIds };
-}
-
-function decodeProject(record: unknown): BrokeredProject | null {
-  if (
-    !isRecord(record) ||
-    typeof record["configPath"] !== "string" ||
-    !isSafeTimestamp(record["markedAtMs"])
-  ) {
-    return null;
-  }
-  return { configPath: record["configPath"], markedAtMs: record["markedAtMs"] };
-}
-
-/** Every entry decoded, or null when one is not what it should be (strict — no partial reads). */
-function decodeAll<T>(
-  entries: unknown,
-  decode: (record: unknown) => T | null,
-): Record<string, T> | null {
-  if (!isRecord(entries)) {
-    return null;
-  }
-  const out: Record<string, T> = {};
-  for (const [key, record] of Object.entries(entries)) {
-    const decoded = decode(record);
-    if (decoded === null) {
-      return null;
-    }
-    out[key] = decoded;
-  }
-  return out;
-}
-
-/** Strict decoding (no partial reads — same as pins / the fingerprint ledger). `projects` may be absent (an older file). */
-function decodeFile(json: string): AcceptedFile | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  if (!isRecord(parsed) || parsed["v"] !== 1) {
-    return null;
-  }
-  const accepted = decodeAll(parsed["accepted"], decodeAccepted);
-  const projects = decodeAll(parsed["projects"] ?? {}, decodeProject);
-  return accepted === null || projects === null ? null : { v: 1, accepted, projects };
-}
+type AcceptedFile = (typeof LEDGER)["Type"];
 
 const EMPTY_FILE: AcceptedFile = { v: 1, accepted: {}, projects: {} };
 
 export function makeFileProxyAcceptStore(path: string): ProxyAcceptStoreShape {
-  const loadRaw = () => readLedger(path, decodeFile);
+  const loadRaw = (): Effect.Effect<LedgerRead> =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const content = yield* fs
+        .readFileString(path, "utf8")
+        .pipe(
+          Effect.catch((error) =>
+            (error.reason as unknown as Record<string, unknown>)["_tag"] === "NotFound"
+              ? Effect.succeed(null)
+              : Effect.succeed(false),
+          ),
+        );
+      if (content === null) {
+        return { state: "missing" as const };
+      }
+      if (content === false) {
+        return { state: "corrupt" as const };
+      }
+      const decoded = Schema.decodeUnknownResult(LEDGER)(content);
+      return Result.isSuccess(decoded)
+        ? { state: "loaded" as const, file: decoded.success }
+        : { state: "corrupt" as const };
+    }).pipe(Effect.provide(BunFileSystem.layer));
 
-  const write = async (file: AcceptedFile): Promise<void> => {
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    const temp = `${path}.${process.pid}.tmp`;
-    await writeFile(temp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
-    await rename(temp, path);
-  };
+  const write = (file: AcceptedFile): Effect.Effect<void, unknown> =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(dirname(path), { recursive: true, mode: 0o700 });
+      const temp = `${path}.${process.pid}.tmp`;
+      yield* fs.writeFileString(temp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+      yield* fs.rename(temp, path);
+    }).pipe(Effect.provide(BunFileSystem.layer));
+
+  const cannotRecord = (what: string): CliError =>
+    cliError(
+      `Cannot record ${what} (the record is corrupt, unreadable, or cannot be written): ${path} — inspect it, and if the modification was unintended, delete it and re-run`,
+    );
 
   /** Read-merge-write; a corrupt (or unreadable) file is never overwritten. */
   const merge = (apply: (file: AcceptedFile) => AcceptedFile, what: string) =>
-    Effect.tryPromise({
-      try: async () => {
-        const loaded = await loadRaw();
-        if (loaded.state === "corrupt") {
-          throw new Error("corrupt");
-        }
-        await write(apply(loaded.state === "missing" ? EMPTY_FILE : loaded.file));
-      },
-      catch: () =>
-        cliError(
-          `Cannot record ${what} (the record is corrupt, unreadable, or cannot be written): ${path} — inspect it, and if the modification was unintended, delete it and re-run`,
-        ),
+    Effect.gen(function* () {
+      const loaded = yield* loadRaw();
+      if (loaded.state === "corrupt") {
+        return yield* Effect.fail(cannotRecord(what));
+      }
+      const file = apply(loaded.state === "missing" ? EMPTY_FILE : loaded.file);
+      yield* write(file).pipe(Effect.mapError(() => cannotRecord(what)));
     });
 
   return {
     filePath: path,
     lookup: (configPath) =>
-      Effect.promise(async () => {
-        const loaded = await loadRaw();
+      Effect.gen(function* () {
+        const loaded = yield* loadRaw();
         if (loaded.state !== "loaded") {
           return loaded;
         }
@@ -240,8 +217,8 @@ export function makeFileProxyAcceptStore(path: string): ProxyAcceptStoreShape {
         "the accepted proxy config",
       ),
     brokeredProject: (projectId) =>
-      Effect.promise(async () => {
-        const loaded = await loadRaw();
+      Effect.gen(function* () {
+        const loaded = yield* loadRaw();
         if (loaded.state !== "loaded") {
           return loaded;
         }
@@ -261,14 +238,20 @@ export function makeFileProxyAcceptStore(path: string): ProxyAcceptStoreShape {
   };
 }
 
+/** A ledger read (the same three states as the lookups — never fails; a read error is `corrupt`). */
+type LedgerRead =
+  | { readonly state: "missing" }
+  | { readonly state: "corrupt" }
+  | { readonly state: "loaded"; readonly file: AcceptedFile };
+
 const ACCEPT_COMMAND = "`maruhi proxy accept`";
 
 /** The resolved absolute path of the config (the record's key; `./x` and `--config /…/x` are one entry). */
 function resolvedPath(path: string): Effect.Effect<string, CliError> {
-  return Effect.tryPromise({
-    try: () => realpath(path),
-    catch: () => cliError(`Cannot resolve the path of the proxy config ${path}`),
-  });
+  return FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.realPath(path))).pipe(
+    Effect.mapError(() => cliError(`Cannot resolve the path of the proxy config ${path}`)),
+    Effect.provide(BunFileSystem.layer),
+  );
 }
 
 function corruptRecord(filePath: string): CliError {

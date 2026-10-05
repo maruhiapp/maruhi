@@ -20,19 +20,35 @@
 // `maruhi.proxy.json`, `--config` overrides), a version field, unknown
 // keys refused, and validation wording that names the key and the rule
 // but never echoes the value typed.
+//
+// The JSON is described with Schema and decoded with
+// `Schema.decodeUnknownResult`: the leaf shapes are real schema nodes
+// (String / Literals / Record / Array / Struct), and everything whose
+// wording or ordering is conditional — the mode dispatch, the per-mode
+// key sets, the cross-rule checks — is a `Schema.makeFilter` in the same
+// sequence the hand-written checks ran (the first reason wins, like
+// before). The filters report `Schema.FilterIssue`s: a `{path, issue}`
+// whose issue starts with a separator is a suffix appended to the dotted
+// path ("variables.X.mode" + " must be ..."), and a plain string is a
+// complete reason; the wording is unchanged.
 
-import { readFile } from "node:fs/promises";
+import { Effect, Result, Schema } from "effect";
 
-import { Effect } from "effect";
-
-import { cliError, type CliError, usageError } from "../errors.ts";
 import {
-  isRecord,
-  loadIfPresent,
-  parseConfigHeader,
-  parseJsonRecord,
-  unknownKeys,
-} from "../json-record.ts";
+  envNameLeaf,
+  field,
+  type Invalid,
+  isReason,
+  issueReason,
+  JsonRecord,
+  loadConfig,
+  type Reason,
+  reasonIssue,
+  stringLeaf,
+  unknownKeysRefusal,
+} from "../config-schema.ts";
+import { type CliError, usageError } from "../errors.ts";
+import { loadIfPresent, parseConfigHeader } from "../json-record.ts";
 
 /** Default location of the proxy config, relative to the working directory. */
 export const DEFAULT_PROXY_CONFIG_PATH = "maruhi.proxy.json";
@@ -93,9 +109,6 @@ export interface ProxyConfig {
   /** Env-var name → rule. */
   readonly variables: ReadonlyMap<string, VariableRule>;
 }
-
-/** A validation failure (the reason). Never includes a typed value. */
-type Invalid = string;
 
 const ROOT_KEYS = ["version", "project", "unmatched", "unlisted", "variables"] as const;
 const BROKER_KEYS = ["mode", "hosts", "surfaces", "placeholder"] as const;
@@ -200,68 +213,113 @@ export function parseHostPattern(text: string): HostPattern | Invalid {
   return { scheme, host: rest, wildcard, port };
 }
 
-function parseHosts(name: string, value: unknown): readonly HostPattern[] | Invalid {
-  if (!Array.isArray(value) || value.length === 0) {
-    return `variables.${name}.hosts must be a non-empty array of host entries`;
+/** The `hosts` array: non-empty, string entries, each a valid host pattern (the entry index never reaches the reason). */
+const HOSTS = Schema.Array(Schema.Unknown)
+  .annotate({ message: " must be a non-empty array of host entries" })
+  .check(
+    Schema.makeFilter((entries) => {
+      if (entries.length === 0) {
+        return { path: [], issue: " must be a non-empty array of host entries" };
+      }
+      for (const entry of entries) {
+        if (Result.isFailure(Schema.decodeUnknownResult(Schema.String)(entry))) {
+          return {
+            path: [],
+            issue: " entries must be strings (host[:port], optionally with http:// or https://)",
+          };
+        }
+      }
+      return undefined;
+    }),
+  );
+
+/** The `surfaces` array: non-empty, each entry one of the RFC 9110 surfaces (deduped on success). */
+const SURFACES_FIELD = Schema.Array(Schema.Unknown)
+  .annotate({ message: ` must be a non-empty array of ${SURFACES.join(" | ")}` })
+  .check(
+    Schema.makeFilter((entries) => {
+      if (entries.length === 0) {
+        return { path: [], issue: ` must be a non-empty array of ${SURFACES.join(" | ")}` };
+      }
+      for (const entry of entries) {
+        const surface = Schema.decodeUnknownResult(Schema.String)(entry);
+        if (
+          Result.isFailure(surface) ||
+          !(SURFACES as readonly string[]).includes(surface.success)
+        ) {
+          return { path: [], issue: ` accepts only ${SURFACES.join(" | ")}` };
+        }
+      }
+      return undefined;
+    }),
+  );
+
+/** The `placeholder` string (16–256 printable ASCII without spaces — review finding §19 C-12). */
+const PLACEHOLDER_FIELD = stringLeaf(
+  " must be 16 to 256 printable ASCII characters without spaces",
+  (value) => PLACEHOLDER.test(value),
+);
+
+/** The rule `mode` word. */
+const MODE = Schema.Literals(["broker", "connector", "passthrough", "withhold"]).annotate({
+  message: " must be broker, connector, passthrough, or withhold",
+});
+
+/** The `connector` kind word. */
+const CONNECTOR = Schema.Literals(CONNECTOR_KINDS).annotate({
+  message: ` must be one of ${CONNECTOR_KINDS.join(", ")}`,
+});
+
+function parseHosts(name: string, value: unknown): readonly HostPattern[] | Reason {
+  const entries = Schema.decodeUnknownResult(HOSTS)(value);
+  if (Result.isFailure(entries)) {
+    return { path: ["hosts"], issue: entries.failure.issue };
   }
   const hosts: HostPattern[] = [];
-  for (const entry of value) {
-    if (typeof entry !== "string") {
-      return `variables.${name}.hosts entries must be strings (host[:port], optionally with http:// or https://)`;
-    }
-    const parsed = parseHostPattern(entry);
+  for (const entry of entries.success) {
+    // The schema checked every entry is a string
+    const parsed = parseHostPattern(entry as string);
     if (typeof parsed === "string") {
-      return `variables.${name}.hosts has an invalid entry: ${parsed}`;
+      return { path: ["hosts"], issue: ` has an invalid entry: ${parsed}` };
     }
     hosts.push(parsed);
   }
   return hosts;
 }
 
-function parseSurfaces(name: string, value: unknown): readonly Surface[] | Invalid {
-  if (value === undefined) {
+function parseSurfaces(record: Record<string, unknown>): readonly Surface[] | Reason {
+  const entries = field(record, "surfaces", Schema.UndefinedOr(SURFACES_FIELD));
+  if (isReason(entries)) {
+    return entries;
+  }
+  if (entries.value === undefined) {
     return DEFAULT_SURFACES;
   }
-  if (!Array.isArray(value) || value.length === 0) {
-    return `variables.${name}.surfaces must be a non-empty array of ${SURFACES.join(" | ")}`;
-  }
-  const surfaces = new Set<Surface>();
-  for (const entry of value) {
-    if (typeof entry !== "string" || !(SURFACES as readonly string[]).includes(entry)) {
-      return `variables.${name}.surfaces accepts only ${SURFACES.join(" | ")}`;
-    }
-    surfaces.add(entry as Surface);
-  }
-  return [...surfaces];
+  // The schema checked every entry is one of SURFACES (the set dedupes)
+  return [...new Set(entries.value as readonly Surface[])];
 }
 
 function parsePlaceholder(
-  name: string,
-  value: unknown,
-): { readonly placeholder: string | undefined } | Invalid {
-  if (value === undefined) {
-    return { placeholder: undefined };
-  }
-  if (typeof value !== "string" || !PLACEHOLDER.test(value)) {
-    return `variables.${name}.placeholder must be 16 to 256 printable ASCII characters without spaces`;
-  }
-  return { placeholder: value };
+  record: Record<string, unknown>,
+): { readonly placeholder: string | undefined } | Reason {
+  const placeholder = field(record, "placeholder", Schema.UndefinedOr(PLACEHOLDER_FIELD));
+  return isReason(placeholder) ? placeholder : { placeholder: placeholder.value };
 }
 
 function parseBrokerSettings(
   name: string,
   record: Record<string, unknown>,
-): BrokerSettings | Invalid {
+): BrokerSettings | Reason {
   const hosts = parseHosts(name, record["hosts"]);
-  if (typeof hosts === "string") {
+  if (isReason(hosts)) {
     return hosts;
   }
-  const surfaces = parseSurfaces(name, record["surfaces"]);
-  if (typeof surfaces === "string") {
+  const surfaces = parseSurfaces(record);
+  if (isReason(surfaces)) {
     return surfaces;
   }
-  const placeholder = parsePlaceholder(name, record["placeholder"]);
-  if (typeof placeholder === "string") {
+  const placeholder = parsePlaceholder(record);
+  if (isReason(placeholder)) {
     return placeholder;
   }
   return { hosts, surfaces, placeholder: placeholder.placeholder };
@@ -271,71 +329,83 @@ function parseConnectorInputs(
   name: string,
   connector: ConnectorKind,
   value: unknown,
-): Readonly<Record<string, string>> | Invalid {
+): Readonly<Record<string, string>> | Reason {
   const required = CONNECTOR_INPUTS[connector];
-  if (!isRecord(value)) {
-    return `variables.${name}.inputs must be an object naming the variables for ${required.join(", ")}`;
+  const inputs = Schema.decodeUnknownResult(
+    JsonRecord(` must be an object naming the variables for ${required.join(", ")}`),
+  )(value);
+  if (Result.isFailure(inputs)) {
+    return { path: ["inputs"], issue: inputs.failure.issue };
   }
-  const unknown = unknownKeys(value, required);
-  if (unknown.length > 0) {
-    return `variables.${name}.inputs has unknown keys (${unknown.join(", ")}); the ${connector} connector takes ${required.join(", ")}`;
+  const unknown = unknownKeysRefusal(
+    inputs.success,
+    required,
+    `the ${connector} connector takes ${required.join(", ")}`,
+  );
+  if (unknown !== undefined) {
+    return { path: ["inputs"], issue: reasonIssue(unknown) };
   }
-  const inputs: Record<string, string> = {};
+  const parsed: Record<string, string> = {};
   for (const key of required) {
-    const variable = value[key];
-    if (typeof variable !== "string" || !ENV_NAME.test(variable)) {
-      return `variables.${name}.inputs.${key} must name a maruhi variable (letters, digits, _)`;
+    const variable = field(
+      inputs.success,
+      key,
+      envNameLeaf(" must name a maruhi variable (letters, digits, _)"),
+    );
+    if (isReason(variable)) {
+      return { path: ["inputs"], issue: reasonIssue(variable) };
     }
-    inputs[key] = variable;
+    parsed[key] = variable.value;
   }
-  return inputs;
+  return parsed;
 }
 
-function parseBrokerRule(name: string, value: Record<string, unknown>): VariableRule | Invalid {
-  const unknown = unknownKeys(value, BROKER_KEYS);
-  if (unknown.length > 0) {
-    return `variables.${name} has unknown keys (${unknown.join(", ")}); a broker rule accepts ${BROKER_KEYS.join(", ")}`;
+function parseBrokerRule(name: string, value: Record<string, unknown>): VariableRule | Reason {
+  const unknown = unknownKeysRefusal(
+    value,
+    BROKER_KEYS,
+    `a broker rule accepts ${BROKER_KEYS.join(", ")}`,
+  );
+  if (unknown !== undefined) {
+    return unknown;
   }
   const settings = parseBrokerSettings(name, value);
-  return typeof settings === "string" ? settings : { mode: "broker", ...settings };
+  return isReason(settings) ? settings : { mode: "broker", ...settings };
 }
 
-function parseConnectorRule(name: string, value: Record<string, unknown>): VariableRule | Invalid {
-  const unknown = unknownKeys(value, CONNECTOR_KEYS);
-  if (unknown.length > 0) {
-    return `variables.${name} has unknown keys (${unknown.join(", ")}); a connector rule accepts ${CONNECTOR_KEYS.join(", ")}`;
+function parseConnectorRule(name: string, value: Record<string, unknown>): VariableRule | Reason {
+  const unknown = unknownKeysRefusal(
+    value,
+    CONNECTOR_KEYS,
+    `a connector rule accepts ${CONNECTOR_KEYS.join(", ")}`,
+  );
+  if (unknown !== undefined) {
+    return unknown;
   }
-  const connector = value["connector"];
-  if (
-    typeof connector !== "string" ||
-    !(CONNECTOR_KINDS as readonly string[]).includes(connector)
-  ) {
-    return `variables.${name}.connector must be one of ${CONNECTOR_KINDS.join(", ")}`;
+  const connector = field(value, "connector", CONNECTOR);
+  if (isReason(connector)) {
+    return connector;
   }
-  const kind = connector as ConnectorKind;
-  const inputs = parseConnectorInputs(name, kind, value["inputs"]);
-  if (typeof inputs === "string") {
+  const inputs = parseConnectorInputs(name, connector.value, value["inputs"]);
+  if (isReason(inputs)) {
     return inputs;
   }
   const settings = parseBrokerSettings(name, value);
-  return typeof settings === "string"
+  return isReason(settings)
     ? settings
-    : { mode: "connector", connector: kind, inputs, ...settings };
+    : { mode: "connector", connector: connector.value, inputs, ...settings };
 }
 
 function parseBareRule(
   name: string,
   mode: "passthrough" | "withhold",
   value: Record<string, unknown>,
-): VariableRule | Invalid {
-  const unknown = unknownKeys(value, BARE_KEYS);
-  if (unknown.length > 0) {
-    return `variables.${name} has unknown keys (${unknown.join(", ")}); a ${mode} rule takes only "mode"`;
-  }
-  return { mode };
+): VariableRule | Reason {
+  const unknown = unknownKeysRefusal(value, BARE_KEYS, `a ${mode} rule takes only "mode"`);
+  return unknown === undefined ? { mode } : unknown;
 }
 
-function parseRule(name: string, value: unknown): VariableRule | Invalid {
+function parseRule(name: string, value: unknown): VariableRule | Reason {
   // Shorthands: an array = broker toward these hosts; a bare mode word
   if (Array.isArray(value)) {
     return parseRule(name, { mode: "broker", hosts: value });
@@ -343,57 +413,85 @@ function parseRule(name: string, value: unknown): VariableRule | Invalid {
   if (value === "passthrough" || value === "withhold") {
     return { mode: value };
   }
-  if (!isRecord(value)) {
-    return `variables.${name} must be an object with a "mode", an array of hosts, or "passthrough" / "withhold"`;
+  return parseRecordRule(name, value);
+}
+
+function parseRecordRule(name: string, value: unknown): VariableRule | Reason {
+  const record = Schema.decodeUnknownResult(
+    JsonRecord(
+      ' must be an object with a "mode", an array of hosts, or "passthrough" / "withhold"',
+    ),
+  )(value);
+  if (Result.isFailure(record)) {
+    return record.failure.issue;
   }
-  const mode = value["mode"];
-  switch (mode) {
+  const mode = field(record.success, "mode", MODE);
+  if (isReason(mode)) {
+    return mode;
+  }
+  switch (mode.value) {
     case "broker":
-      return parseBrokerRule(name, value);
+      return parseBrokerRule(name, record.success);
     case "connector":
-      return parseConnectorRule(name, value);
+      return parseConnectorRule(name, record.success);
     case "passthrough":
     case "withhold":
-      return parseBareRule(name, mode, value);
-    default:
-      return `variables.${name}.mode must be broker, connector, passthrough, or withhold`;
+      return parseBareRule(name, mode.value, record.success);
   }
 }
 
 /** The top-level scalar fields (version / project / unmatched / unlisted). */
+const UNMATCHED = Schema.UndefinedOr(
+  Schema.Literals(["allow", "block"]).annotate({
+    message: ' must be "allow" (tunnel hosts no rule names, untouched) or "block"',
+  }),
+);
+const UNLISTED = Schema.UndefinedOr(
+  Schema.Literals(["withhold", "passthrough"]).annotate({
+    message: ' must be "withhold" (variables no rule names are not injected) or "passthrough"',
+  }),
+);
+
 function parseRoot(
   parsed: Record<string, unknown>,
-): Pick<ProxyConfig, "projectId" | "unmatched" | "unlisted"> | Invalid {
+): Pick<ProxyConfig, "projectId" | "unmatched" | "unlisted"> | Reason {
   const header = parseConfigHeader(parsed, ROOT_KEYS);
   if (typeof header === "string") {
     return header;
   }
-  const unmatched = parsed["unmatched"] ?? "allow";
-  if (unmatched !== "allow" && unmatched !== "block") {
-    return 'unmatched must be "allow" (tunnel hosts no rule names, untouched) or "block"';
+  const unmatched = field(parsed, "unmatched", UNMATCHED);
+  if (isReason(unmatched)) {
+    return unmatched;
   }
-  const unlisted = parsed["unlisted"] ?? "withhold";
-  if (unlisted !== "withhold" && unlisted !== "passthrough") {
-    return 'unlisted must be "withhold" (variables no rule names are not injected) or "passthrough"';
+  const unlisted = field(parsed, "unlisted", UNLISTED);
+  if (isReason(unlisted)) {
+    return unlisted;
   }
-  return { projectId: header.projectId, unmatched, unlisted };
+  return {
+    projectId: header.projectId,
+    unmatched: unmatched.value ?? "allow",
+    unlisted: unlisted.value ?? "withhold",
+  };
 }
 
 /** The `variables` object: every rule, unique placeholders, and no injection of a consumed input. */
-function parseVariables(raw: unknown): ReadonlyMap<string, VariableRule> | Invalid {
-  if (!isRecord(raw)) {
-    return "variables must be an object (env-var name → rule); it may be empty";
+function parseVariables(raw: unknown): ReadonlyMap<string, VariableRule> | Reason {
+  const record = Schema.decodeUnknownResult(
+    JsonRecord(" must be an object (env-var name → rule); it may be empty"),
+  )(raw);
+  if (Result.isFailure(record)) {
+    return record.failure.issue;
   }
   const variables = new Map<string, VariableRule>();
   const placeholders = new Set<string>();
   const consumed = new Map<string, string>();
-  for (const [name, value] of Object.entries(raw)) {
+  for (const [name, value] of Object.entries(record.success)) {
     if (!ENV_NAME.test(name)) {
       return "variables keys must be environment variable names (letters, digits, _, starting with a letter or _)";
     }
     const rule = parseRule(name, value);
-    if (typeof rule === "string") {
-      return rule;
+    if (isReason(rule)) {
+      return { path: [name], issue: reasonIssue(rule) };
     }
     const registered = registerRule(name, rule, placeholders, consumed);
     if (registered !== null) {
@@ -443,18 +541,55 @@ function checkConsumed(
   return null;
 }
 
+/**
+ * The document as a Schema: a JSON object, then the header fields, then
+ * the rules — the same order the reasons ran in before (the first one
+ * wins). `parseConfigHeader` (json-record.ts) stays the header's check —
+ * it returns the reason's string, which is a verbatim filter issue.
+ */
+const ProxyDocument = JsonRecord("the top level must be an object")
+  .check(
+    Schema.makeFilter((record) => {
+      const root = parseRoot(record);
+      return isReason(root) ? root : undefined;
+    }),
+  )
+  .check(
+    Schema.makeFilter((record) => {
+      const variables = parseVariables(record["variables"]);
+      return isReason(variables)
+        ? { path: ["variables"], issue: reasonIssue(variables) }
+        : undefined;
+    }),
+  );
+
 /** Interpreting the config JSON (the reason's string when invalid). Exported for tests. */
 export function parseProxyConfig(content: string): ProxyConfig | Invalid {
-  const parsed = parseJsonRecord(content);
-  if (typeof parsed === "string") {
-    return parsed;
+  const json = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))(content);
+  if (Result.isFailure(json)) {
+    return "not valid JSON";
   }
-  const root = parseRoot(parsed);
-  if (typeof root === "string") {
+  const decoded = Schema.decodeUnknownResult(ProxyDocument)(json.success);
+  if (Result.isFailure(decoded)) {
+    return issueReason(decoded.failure.issue);
+  }
+  // The document's filters already ran the same pure steps — re-running
+  // them on the validated record cannot produce a reason
+  const parsed = parseProxyConfigDocument(decoded.success);
+  if (isReason(parsed)) {
+    throw new Error("proxy-config: the document passed validation but failed to build");
+  }
+  return parsed;
+}
+
+/** The fused validation + build pass over a validated record (its checks are the document's filters). */
+function parseProxyConfigDocument(record: Record<string, unknown>): ProxyConfig | Reason {
+  const root = parseRoot(record);
+  if (isReason(root)) {
     return root;
   }
-  const variables = parseVariables(parsed["variables"]);
-  return typeof variables === "string" ? variables : { version: 1, ...root, variables };
+  const variables = parseVariables(record["variables"]);
+  return isReason(variables) ? variables : { version: 1, ...root, variables };
 }
 
 /** A config as read from disk: the rules, and the exact content a person accepts (proxy-accept.ts). */
@@ -465,20 +600,12 @@ export interface LoadedProxyConfig {
 
 /** Loading and verifying `--config <file>` (default `maruhi.proxy.json`). */
 export function loadProxyConfig(path: string): Effect.Effect<LoadedProxyConfig, CliError> {
-  return Effect.gen(function* () {
-    const content = yield* Effect.tryPromise({
-      try: () => readFile(path, "utf8"),
-      catch: () =>
-        cliError(
-          `Cannot read the proxy config ${path}. Create it (see the Credential brokering page in the docs), or pass --config <file>`,
-        ),
-    });
-    const parsed = parseProxyConfig(content);
-    if (typeof parsed === "string") {
-      return yield* Effect.fail(cliError(`The proxy config ${path} is invalid: ${parsed}`));
-    }
-    return { config: parsed, content };
-  });
+  return loadConfig(
+    path,
+    "proxy config",
+    "Create it (see the Credential brokering page in the docs), or pass --config <file>",
+    parseProxyConfig,
+  ).pipe(Effect.map(({ parsed, content }) => ({ config: parsed, content })));
 }
 
 /**

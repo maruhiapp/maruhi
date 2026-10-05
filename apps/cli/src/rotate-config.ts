@@ -21,21 +21,39 @@
 //
 // Hosts are never configurable: each connector talks to its issuer's fixed
 // API host (sync-http.ts's "no door for config to swap the host").
+//
+// The JSON is described with Schema and decoded with
+// `Schema.decodeUnknownResult`: the leaf shapes are real schema nodes
+// (String / Literals / Record / Struct), and everything whose wording or
+// ordering is conditional — the connector dispatch, the per-connector key
+// sets, the cross-rule checks — is a `Schema.makeFilter` in the same
+// sequence the hand-written checks ran (the first reason wins, like
+// before). The filters report `Schema.FilterIssue`s: a `{path, issue}`
+// whose issue starts with a separator is a suffix appended to the dotted
+// path ("variables.X.connector" + " must be ..."), and a plain string is
+// a complete reason; the wording is unchanged.
 
-import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
-import { isEnvironmentId } from "@maruhi/core";
-import { Effect } from "effect";
+import { Effect, Result, Schema } from "effect";
 
-import { cliError, type CliError } from "./errors.ts";
 import {
-  isRecord,
-  loadIfPresent,
-  parseConfigHeader,
-  parseJsonRecord,
-  unknownKeys,
-} from "./json-record.ts";
+  configHeader,
+  environmentId,
+  envNameLeaf,
+  field,
+  type Invalid,
+  isReason,
+  issueReason,
+  JsonRecord,
+  loadConfig,
+  type Reason,
+  reasonIssue,
+  stringLeaf,
+  unknownKeysRefusal,
+} from "./config-schema.ts";
+import type { CliError } from "./errors.ts";
+import { loadIfPresent, parseConfigHeader, unknownKeys } from "./json-record.ts";
 import { isDeniedEnvName, SAFE_ENV_NAME } from "./run.ts";
 
 /** Default location of the rotation config, relative to the working directory. */
@@ -141,8 +159,6 @@ export interface RotateConfig {
   readonly variables: ReadonlyMap<string, RotateRule>;
 }
 
-type Invalid = string;
-
 const ROOT_KEYS = ["version", "project", "variables"] as const;
 
 /** The keys each connector's rule accepts, and the inputs it takes. */
@@ -163,8 +179,6 @@ const CONNECTOR_INPUTS: Readonly<Record<RotateConnectorKind, readonly string[] |
   exec: null,
 };
 
-// An environment variable name (run.ts's SAFE_ENV_NAME — a POSIX identifier)
-const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 // A database role / account name the connector can quote safely (no quotes,
 // backslashes, whitespace, or control characters — names outside this set are
 // refused rather than escaped: a rotation must never run a statement the
@@ -175,28 +189,42 @@ const IAM_USER = /^[\w+=,.@-]{1,64}$/;
 // A Cloudflare account id (32 hex digits)
 const CF_ACCOUNT = /^[0-9a-f]{32}$/;
 
-function parseInputRef(name: string, inputName: string, value: unknown): InputRef | Invalid {
+/** `inputs.<input>` in its object form: `{ environment, name }` pointing at another environment's variable. */
+const INPUT_REF_RECORD = JsonRecord(
+  " must be a variable name or an object with environment and name",
+)
+  .check(
+    Schema.makeFilter(
+      (record) =>
+        unknownKeysRefusal(
+          record,
+          ["environment", "name"],
+          "an input takes environment and name",
+        ) ?? undefined,
+    ),
+  )
+  .pipe(
+    Schema.decodeTo(
+      Schema.Struct({
+        environment: environmentId(" must be an environment id").annotateKey({
+          messageMissingKey: " must be an environment id",
+        }),
+        name: envNameLeaf(" must be a variable name (letters, digits, _)").annotateKey({
+          messageMissingKey: " must be a variable name (letters, digits, _)",
+        }),
+      }),
+    ),
+  );
+
+function parseInputRef(value: unknown): InputRef | Reason {
+  // A bare string names a variable of the target's own environment
   if (typeof value === "string") {
-    return ENV_NAME.test(value)
+    return SAFE_ENV_NAME.test(value)
       ? { environment: null, name: value }
-      : `variables.${name}.inputs.${inputName} must name a variable (letters, digits, _)`;
+      : " must name a variable (letters, digits, _)";
   }
-  if (!isRecord(value)) {
-    return `variables.${name}.inputs.${inputName} must be a variable name or an object with environment and name`;
-  }
-  const unknown = unknownKeys(value, ["environment", "name"]);
-  if (unknown.length > 0) {
-    return `variables.${name}.inputs.${inputName} has unknown keys (${unknown.join(", ")}); an input takes environment and name`;
-  }
-  const environment = value["environment"];
-  const variable = value["name"];
-  if (typeof environment !== "string" || !isEnvironmentId(environment)) {
-    return `variables.${name}.inputs.${inputName}.environment must be an environment id`;
-  }
-  if (typeof variable !== "string" || !ENV_NAME.test(variable)) {
-    return `variables.${name}.inputs.${inputName}.name must be a variable name (letters, digits, _)`;
-  }
-  return { environment, name: variable };
+  const decoded = Schema.decodeUnknownResult(INPUT_REF_RECORD)(value);
+  return Result.isSuccess(decoded) ? decoded.success : decoded.failure.issue;
 }
 
 /** The AWS admin pair is consumed as a set: both keys, or neither (self-rotation); a session token rides only with the pair. */
@@ -213,103 +241,6 @@ function awsInputsInvalid(
     return `variables.${name}.inputs.sessionToken needs accessKeyId and secretAccessKey alongside it`;
   }
   return null;
-}
-
-function parseInputs(name: string, kind: RotateConnectorKind, raw: unknown): InputRefs | Invalid {
-  if (raw === undefined) {
-    return {};
-  }
-  if (!isRecord(raw)) {
-    return `variables.${name}.inputs must be an object (input name → variable)`;
-  }
-  const refusedName = inputNamesRefusal(name, kind, raw);
-  if (refusedName !== null) {
-    return refusedName;
-  }
-  const inputs: Record<string, InputRef> = {};
-  for (const [inputName, value] of Object.entries(raw)) {
-    const parsed = parseInputRef(name, inputName, value);
-    if (typeof parsed === "string") {
-      return parsed;
-    }
-    inputs[inputName] = parsed;
-  }
-  const aws = kind === "aws-iam-access-key" ? awsInputsInvalid(name, inputs) : null;
-  return aws ?? inputs;
-}
-
-function parseRoles(name: string, raw: unknown): readonly [string, string] | null | Invalid {
-  if (raw === undefined || raw === null) {
-    return null;
-  }
-  if (
-    !Array.isArray(raw) ||
-    raw.length !== 2 ||
-    !raw.every((role) => typeof role === "string" && DB_NAME.test(role))
-  ) {
-    return `variables.${name}.roles must be a list of exactly two role names (letters, digits, _ . @ -) alternated across rotations`;
-  }
-  const [first, second] = raw as [string, string];
-  if (first === second) {
-    return `variables.${name}.roles must name two different roles`;
-  }
-  return [first, second];
-}
-
-function parseAwsRule(
-  name: string,
-  value: Record<string, unknown>,
-  inputs: InputRefs,
-): RotateRule | Invalid {
-  const idVariable = value["accessKeyIdVariable"];
-  if (typeof idVariable !== "string" || !ENV_NAME.test(idVariable)) {
-    return `variables.${name}.accessKeyIdVariable must name the variable holding the matching access key id`;
-  }
-  if (idVariable === name) {
-    return `variables.${name}.accessKeyIdVariable must differ from the rule's own variable (the rule is keyed by the secret access key)`;
-  }
-  const user = value["user"];
-  if (user !== undefined && (typeof user !== "string" || !IAM_USER.test(user))) {
-    return `variables.${name}.user must be an IAM user name`;
-  }
-  return {
-    connector: "aws-iam-access-key",
-    accessKeyIdVariable: idVariable,
-    user: user ?? null,
-    inputs,
-  };
-}
-
-function parseCloudflareRule(
-  name: string,
-  value: Record<string, unknown>,
-  inputs: InputRefs,
-): RotateRule | Invalid {
-  const accountId = value["accountId"];
-  if (accountId !== undefined && (typeof accountId !== "string" || !CF_ACCOUNT.test(accountId))) {
-    return `variables.${name}.accountId must be a Cloudflare account id (32 hex digits)`;
-  }
-  return { connector: "cloudflare-api-token", accountId: accountId ?? null, inputs };
-}
-
-function parseDbRule(
-  name: string,
-  kind: "postgres" | "mysql",
-  value: Record<string, unknown>,
-  inputs: InputRefs,
-): RotateRule | Invalid {
-  const roles = parseRoles(name, value["roles"]);
-  if (typeof roles === "string") {
-    return roles;
-  }
-  if (kind === "postgres") {
-    return { connector: kind, roles, inputs };
-  }
-  const host = value["host"] ?? "%";
-  if (typeof host !== "string" || host.length === 0 || host.length > 255 || /['\\\s]/.test(host)) {
-    return `variables.${name}.host must be the account's host part (default %)`;
-  }
-  return { connector: kind, roles, host, inputs };
 }
 
 /**
@@ -336,6 +267,139 @@ function inputNamesRefusal(
     }
   }
   return null;
+}
+
+function parseInputs(name: string, kind: RotateConnectorKind, raw: unknown): InputRefs | Reason {
+  if (raw === undefined) {
+    return {};
+  }
+  const record = Schema.decodeUnknownResult(
+    JsonRecord(" must be an object (input name → variable)"),
+  )(raw);
+  if (Result.isFailure(record)) {
+    return { path: ["inputs"], issue: record.failure.issue };
+  }
+  const refusedName = inputNamesRefusal(name, kind, record.success);
+  if (refusedName !== null) {
+    return refusedName;
+  }
+  const inputs: Record<string, InputRef> = {};
+  for (const [inputName, value] of Object.entries(record.success)) {
+    const parsed = parseInputRef(value);
+    if (isReason(parsed)) {
+      return { path: ["inputs", inputName], issue: reasonIssue(parsed) };
+    }
+    inputs[inputName] = parsed;
+  }
+  const aws = kind === "aws-iam-access-key" ? awsInputsInvalid(name, inputs) : null;
+  return aws ?? inputs;
+}
+
+/** `roles`: null / absent = in-place rotation; otherwise exactly two different role names. */
+const ROLES = Schema.Unknown.check(
+  Schema.makeFilter((raw) => {
+    if (
+      !Array.isArray(raw) ||
+      raw.length !== 2 ||
+      !raw.every((role) => typeof role === "string" && DB_NAME.test(role))
+    ) {
+      return " must be a list of exactly two role names (letters, digits, _ . @ -) alternated across rotations";
+    }
+    return raw[0] === raw[1] ? " must name two different roles" : undefined;
+  }),
+);
+
+function parseRoles(raw: unknown): readonly [string, string] | null | Reason {
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+  const decoded = Schema.decodeUnknownResult(ROLES)(raw);
+  if (Result.isFailure(decoded)) {
+    return { path: ["roles"], issue: decoded.failure.issue };
+  }
+  // The schema checked it is a two-entry list of DB_NAME strings
+  return decoded.success as [string, string];
+}
+
+function parseAwsRule(
+  name: string,
+  value: Record<string, unknown>,
+  inputs: InputRefs,
+): RotateRule | Reason {
+  const idVariable = field(
+    value,
+    "accessKeyIdVariable",
+    envNameLeaf(" must name the variable holding the matching access key id"),
+  );
+  if (isReason(idVariable)) {
+    return idVariable;
+  }
+  if (idVariable.value === name) {
+    return {
+      path: ["accessKeyIdVariable"],
+      issue:
+        " must differ from the rule's own variable (the rule is keyed by the secret access key)",
+    };
+  }
+  const user = field(
+    value,
+    "user",
+    Schema.UndefinedOr(stringLeaf(" must be an IAM user name", (raw) => IAM_USER.test(raw))),
+  );
+  if (isReason(user)) {
+    return user;
+  }
+  return {
+    connector: "aws-iam-access-key",
+    accessKeyIdVariable: idVariable.value,
+    user: user.value ?? null,
+    inputs,
+  };
+}
+
+function parseCloudflareRule(
+  value: Record<string, unknown>,
+  inputs: InputRefs,
+): RotateRule | Reason {
+  const accountId = field(
+    value,
+    "accountId",
+    Schema.UndefinedOr(
+      stringLeaf(" must be a Cloudflare account id (32 hex digits)", (raw) => CF_ACCOUNT.test(raw)),
+    ),
+  );
+  if (isReason(accountId)) {
+    return accountId;
+  }
+  return { connector: "cloudflare-api-token", accountId: accountId.value ?? null, inputs };
+}
+
+function parseDbRule(
+  kind: "postgres" | "mysql",
+  value: Record<string, unknown>,
+  inputs: InputRefs,
+): RotateRule | Reason {
+  const roles = parseRoles(value["roles"]);
+  if (isReason(roles)) {
+    return roles;
+  }
+  if (kind === "postgres") {
+    return { connector: kind, roles, inputs };
+  }
+  const host = field(
+    value,
+    "host",
+    Schema.UndefinedOr(
+      stringLeaf(
+        " must be the account's host part (default %)",
+        (raw) => raw.length > 0 && raw.length <= 255 && !/['\\\s]/.test(raw),
+      ),
+    ),
+  );
+  if (isReason(host)) {
+    return host;
+  }
+  return { connector: kind, roles, host: host.value ?? "%", inputs };
 }
 
 /**
@@ -377,37 +441,51 @@ function duplicateEnvName(names: readonly string[]): string | null {
 }
 
 /** A script's argv: a non-empty list of strings whose first element is the executable (a bare string = that executable alone, no word splitting). */
-function parseArgv(path: string, raw: unknown): readonly string[] | Invalid {
-  const list = typeof raw === "string" ? [raw] : raw;
-  if (
-    !Array.isArray(list) ||
-    list.length === 0 ||
-    !list.every((item) => typeof item === "string") ||
-    (list[0] as string).trim().length === 0
-  ) {
-    return `${path} must be the script's command: a non-empty list of strings whose first element is the executable (or that executable as one string)`;
+const ARGV = Schema.Unknown.check(
+  Schema.makeFilter((raw) => {
+    const list = typeof raw === "string" ? [raw] : raw;
+    return Array.isArray(list) &&
+      list.length > 0 &&
+      list.every((item) => typeof item === "string") &&
+      (list[0] as string).trim().length > 0
+      ? undefined
+      : " must be the script's command: a non-empty list of strings whose first element is the executable (or that executable as one string)";
+  }),
+);
+
+function parseArgv(raw: unknown): readonly string[] | Reason {
+  const decoded = Schema.decodeUnknownResult(ARGV)(raw);
+  if (Result.isFailure(decoded)) {
+    return decoded.failure.issue;
   }
+  // The schema checked the shape (a bare string is the executable alone)
+  const list = typeof raw === "string" ? [raw] : raw;
   return list as readonly string[];
 }
 
 /** The scripts' working directory: the config's directory, or a relative path joined onto it (an absolute path would not travel with the repository). */
-function parseCwd(
-  name: string,
-  raw: unknown,
-  configDir: string,
-): { readonly cwd: string } | Invalid {
+function parseCwd(raw: unknown, configDir: string): { readonly cwd: string } | Reason {
   if (raw === undefined) {
     return { cwd: configDir };
   }
-  if (typeof raw !== "string" || raw.length === 0 || isAbsolute(raw)) {
-    return `variables.${name}.cwd must be a non-empty relative path (resolved from the rotation config's directory)`;
+  const relativePath = Schema.decodeUnknownResult(
+    stringLeaf(
+      " must be a non-empty relative path (resolved from the rotation config's directory)",
+      (value) => value.length > 0 && !isAbsolute(value),
+    ),
+  )(raw);
+  if (Result.isFailure(relativePath)) {
+    return { path: ["cwd"], issue: relativePath.failure.issue };
   }
-  const cwd = join(configDir, raw);
+  const cwd = join(configDir, relativePath.success);
   // The scripts travel with the repository that holds the config; a cwd
   // that climbs out of its directory would run whatever lives there
   const inside = relative(configDir, cwd);
   if (inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
-    return `variables.${name}.cwd must stay inside the rotation config's directory (${raw} climbs out of it)`;
+    return {
+      path: ["cwd"],
+      issue: ` must stay inside the rotation config's directory (${relativePath.success} climbs out of it)`,
+    };
   }
   return { cwd };
 }
@@ -416,15 +494,18 @@ function parseCompanions(
   name: string,
   raw: unknown,
   inputs: InputRefs,
-): Readonly<Record<string, string>> | Invalid {
+): Readonly<Record<string, string>> | Reason {
   if (raw === undefined) {
     return {};
   }
-  if (!isRecord(raw)) {
-    return `variables.${name}.companions must be an object (environment variable name → the maruhi variable it carries)`;
+  const record = Schema.decodeUnknownResult(
+    JsonRecord(" must be an object (environment variable name → the maruhi variable it carries)"),
+  )(raw);
+  if (Result.isFailure(record)) {
+    return { path: ["companions"], issue: record.failure.issue };
   }
   const companions: Record<string, string> = {};
-  for (const [envName, variable] of Object.entries(raw)) {
+  for (const [envName, variable] of Object.entries(record.success)) {
     const refused = companionNameRefusal(
       name,
       envName,
@@ -434,13 +515,20 @@ function parseCompanions(
     if (refused !== null) {
       return refused;
     }
-    if (typeof variable !== "string" || !ENV_NAME.test(variable)) {
-      return `variables.${name}.companions.${envName} must name the maruhi variable it carries (letters, digits, _)`;
+    const parsed = Schema.decodeUnknownResult(
+      envNameLeaf(" must name the maruhi variable it carries (letters, digits, _)"),
+    )(variable);
+    if (Result.isFailure(parsed)) {
+      return { path: ["companions", envName], issue: parsed.failure.issue };
     }
-    if (variable === name) {
-      return `variables.${name}.companions.${envName} must differ from the rule's own variable (the credential itself is injected under its name)`;
+    if (parsed.success === name) {
+      return {
+        path: ["companions", envName],
+        issue:
+          " must differ from the rule's own variable (the credential itself is injected under its name)",
+      };
     }
-    companions[envName] = variable;
+    companions[envName] = parsed.success;
   }
   return companions;
 }
@@ -474,45 +562,7 @@ function companionNameRefusal(
   return null;
 }
 
-function parseExecRule(
-  name: string,
-  value: Record<string, unknown>,
-  inputs: InputRefs,
-  configDir: string,
-): RotateRule | Invalid {
-  const rotate = parseArgv(`variables.${name}.rotate`, value["rotate"]);
-  if (typeof rotate === "string") {
-    return rotate;
-  }
-  const finalize =
-    value["finalize"] === undefined || value["finalize"] === null
-      ? null
-      : parseArgv(`variables.${name}.finalize`, value["finalize"]);
-  if (typeof finalize === "string") {
-    return finalize;
-  }
-  const cwd = parseCwd(name, value["cwd"], configDir);
-  if (typeof cwd === "string") {
-    return cwd;
-  }
-  const names = execNamesRefusal(name, inputs);
-  if (names !== null) {
-    return names;
-  }
-  const answer = parseExecAnswer(name, value, inputs);
-  if (typeof answer === "string") {
-    return answer;
-  }
-  return { connector: "exec", rotate, finalize, cwd: cwd.cwd, ...answer, inputs };
-}
-
-/**
- * The exec rule's own name and its inputs as environment variable names:
- * the credential is injected under the rule's own variable name, so that
- * name must be one a script may carry (the same line as its inputs and
- * companions), and no input may collide with it — judged
- * case-insensitively (run.ts's injection rule). null = acceptable.
- */
+/** The exec rule's own name and its inputs as environment variable names: the credential is injected under the rule's own variable name, so that name must be one a script may carry (the same line as its inputs and companions), and no input may collide with it — judged case-insensitively (run.ts's injection rule). null = acceptable. */
 function execNamesRefusal(name: string, inputs: InputRefs): Invalid | null {
   const ownName = scriptEnvNameRefusal(name);
   if (ownName !== null) {
@@ -536,64 +586,114 @@ function parseExecAnswer(
   inputs: InputRefs,
 ):
   | { readonly output: "value" | "json"; readonly companions: Readonly<Record<string, string>> }
-  | Invalid {
-  const output = value["output"] ?? "value";
-  if (output !== "value" && output !== "json") {
-    return `variables.${name}.output must be "value" (the script prints the new value) or "json" (an object with value, companions, facts)`;
+  | Reason {
+  const output = field(
+    value,
+    "output",
+    Schema.UndefinedOr(
+      Schema.Literals(["value", "json"]).annotate({
+        message:
+          ' must be "value" (the script prints the new value) or "json" (an object with value, companions, facts)',
+      }),
+    ),
+  );
+  if (isReason(output)) {
+    return output;
   }
   const companions = parseCompanions(name, value["companions"], inputs);
-  if (typeof companions === "string") {
+  if (isReason(companions)) {
     return companions;
   }
-  if (output === "value" && Object.keys(companions).length > 0) {
-    return `variables.${name}.companions needs "output": "json" (only a JSON answer can carry companions)`;
+  const resolved = output.value ?? "value";
+  if (resolved === "value" && Object.keys(companions).length > 0) {
+    return {
+      path: ["companions"],
+      issue: ' needs "output": "json" (only a JSON answer can carry companions)',
+    };
   }
-  return { output, companions };
+  return { output: resolved, companions };
+}
+
+function parseExecRule(
+  name: string,
+  value: Record<string, unknown>,
+  inputs: InputRefs,
+  configDir: string,
+): RotateRule | Reason {
+  const rotate = parseArgv(value["rotate"]);
+  if (isReason(rotate)) {
+    return { path: ["rotate"], issue: reasonIssue(rotate) };
+  }
+  const finalize =
+    value["finalize"] === undefined || value["finalize"] === null
+      ? null
+      : parseArgv(value["finalize"]);
+  if (isReason(finalize)) {
+    return { path: ["finalize"], issue: reasonIssue(finalize) };
+  }
+  const cwd = parseCwd(value["cwd"], configDir);
+  if (isReason(cwd)) {
+    return cwd;
+  }
+  const names = execNamesRefusal(name, inputs);
+  if (names !== null) {
+    return names;
+  }
+  const answer = parseExecAnswer(name, value, inputs);
+  if (isReason(answer)) {
+    return answer;
+  }
+  return { connector: "exec", rotate, finalize, cwd: cwd.cwd, ...answer, inputs };
 }
 
 /** The rule's connector kind and the key check (the shape every rule shares). */
 function parseRuleHead(
-  name: string,
   value: Record<string, unknown>,
-): { readonly kind: RotateConnectorKind } | Invalid {
-  const connector = value["connector"];
-  if (
-    typeof connector !== "string" ||
-    !(ROTATE_CONNECTOR_KINDS as readonly string[]).includes(connector)
-  ) {
-    return `variables.${name}.connector must be one of ${ROTATE_CONNECTOR_KINDS.join(", ")}`;
+): { readonly kind: RotateConnectorKind } | Reason {
+  const connector = field(
+    value,
+    "connector",
+    Schema.Literals(ROTATE_CONNECTOR_KINDS).annotate({
+      message: ` must be one of ${ROTATE_CONNECTOR_KINDS.join(", ")}`,
+    }),
+  );
+  if (isReason(connector)) {
+    return connector;
   }
-  const kind = connector as RotateConnectorKind;
-  const unknown = unknownKeys(value, RULE_KEYS[kind]);
-  if (unknown.length > 0) {
-    return `variables.${name} has unknown keys (${unknown.join(", ")}); a ${kind} rule accepts ${RULE_KEYS[kind].join(", ")}`;
-  }
-  return { kind };
+  const unknown = unknownKeysRefusal(
+    value,
+    RULE_KEYS[connector.value],
+    `a ${connector.value} rule accepts ${RULE_KEYS[connector.value].join(", ")}`,
+  );
+  return unknown === undefined ? { kind: connector.value } : unknown;
 }
 
-function parseRule(name: string, value: unknown, configDir: string): RotateRule | Invalid {
-  if (!isRecord(value)) {
-    return `variables.${name} must be an object with a connector`;
+function parseRule(name: string, value: unknown, configDir: string): RotateRule | Reason {
+  const record = Schema.decodeUnknownResult(JsonRecord(" must be an object with a connector"))(
+    value,
+  );
+  if (Result.isFailure(record)) {
+    return record.failure.issue;
   }
-  const head = parseRuleHead(name, value);
-  if (typeof head === "string") {
+  const head = parseRuleHead(record.success);
+  if (isReason(head)) {
     return head;
   }
   const { kind } = head;
-  const inputs = parseInputs(name, kind, value["inputs"]);
-  if (typeof inputs === "string") {
+  const inputs = parseInputs(name, kind, record.success["inputs"]);
+  if (isReason(inputs)) {
     return inputs;
   }
   switch (kind) {
     case "aws-iam-access-key":
-      return parseAwsRule(name, value, inputs);
+      return parseAwsRule(name, record.success, inputs);
     case "cloudflare-api-token":
-      return parseCloudflareRule(name, value, inputs);
+      return parseCloudflareRule(record.success, inputs);
     case "postgres":
     case "mysql":
-      return parseDbRule(name, kind, value, inputs);
+      return parseDbRule(kind, record.success, inputs);
     case "exec":
-      return parseExecRule(name, value, inputs, configDir);
+      return parseExecRule(name, record.success, inputs, configDir);
   }
 }
 
@@ -648,26 +748,45 @@ function companionConflict(variables: ReadonlyMap<string, RotateRule>): Invalid 
   return null;
 }
 
-function parseVariables(
-  raw: unknown,
-  configDir: string,
-): ReadonlyMap<string, RotateRule> | Invalid {
-  if (!isRecord(raw)) {
-    return "variables must be an object (variable name → rule); it may be empty";
+/** The `variables` object: every rule, then the companion-conflict check across them. */
+function parseVariables(raw: unknown, configDir: string): ReadonlyMap<string, RotateRule> | Reason {
+  const record = Schema.decodeUnknownResult(
+    JsonRecord(" must be an object (variable name → rule); it may be empty"),
+  )(raw);
+  if (Result.isFailure(record)) {
+    return record.failure.issue;
   }
   const variables = new Map<string, RotateRule>();
-  for (const [name, value] of Object.entries(raw)) {
-    if (!ENV_NAME.test(name)) {
+  for (const [name, value] of Object.entries(record.success)) {
+    if (!SAFE_ENV_NAME.test(name)) {
       return "variables keys must be variable names (letters, digits, _, starting with a letter or _)";
     }
     const rule = parseRule(name, value, configDir);
-    if (typeof rule === "string") {
-      return rule;
+    if (isReason(rule)) {
+      return { path: [name], issue: reasonIssue(rule) };
     }
     variables.set(name, rule);
   }
   return companionConflict(variables) ?? variables;
 }
+
+/**
+ * The document as a Schema: a JSON object, then the header fields, then
+ * the rules — the same order the reasons ran in before (the first one
+ * wins). `parseConfigHeader` (json-record.ts) stays the header's check —
+ * it returns the reason's string, a verbatim filter issue.
+ */
+const RotateDocument = (configDir: string) =>
+  JsonRecord("the top level must be an object")
+    .check(configHeader(ROOT_KEYS))
+    .check(
+      Schema.makeFilter((record) => {
+        const variables = parseVariables(record["variables"], configDir);
+        return isReason(variables)
+          ? { path: ["variables"], issue: reasonIssue(variables) }
+          : undefined;
+      }),
+    );
 
 /**
  * Parses the rotation config. `configDir` is the directory the config was
@@ -678,36 +797,45 @@ export function parseRotateConfig(
   content: string,
   options: { readonly configDir?: string | undefined } = {},
 ): RotateConfig | Invalid {
-  const parsed = parseJsonRecord(content);
-  if (typeof parsed === "string") {
-    return parsed;
+  const configDir = options.configDir ?? ".";
+  const json = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))(content);
+  if (Result.isFailure(json)) {
+    return "not valid JSON";
   }
-  const header = parseConfigHeader(parsed, ROOT_KEYS);
+  const decoded = Schema.decodeUnknownResult(RotateDocument(configDir))(json.success);
+  if (Result.isFailure(decoded)) {
+    return issueReason(decoded.failure.issue);
+  }
+  // The document's filters already ran the same pure steps — re-running
+  // them on the validated record cannot produce a reason
+  const parsed = parseRotateConfigDocument(decoded.success, configDir);
+  if (isReason(parsed)) {
+    throw new Error("rotate-config: the document passed validation but failed to build");
+  }
+  return parsed;
+}
+
+/** The fused validation + build pass over a validated record (its checks are the document's filters). */
+function parseRotateConfigDocument(
+  record: Record<string, unknown>,
+  configDir: string,
+): RotateConfig | Reason {
+  const header = parseConfigHeader(record, ROOT_KEYS);
   if (typeof header === "string") {
     return header;
   }
-  const variables = parseVariables(parsed["variables"], options.configDir ?? ".");
-  return typeof variables === "string"
-    ? variables
-    : { version: 1, projectId: header.projectId, variables };
+  const variables = parseVariables(record["variables"], configDir);
+  return isReason(variables) ? variables : { version: 1, projectId: header.projectId, variables };
 }
 
 /** Loading and verifying `--config <file>` (default `maruhi.rotate.json`). */
 export function loadRotateConfig(path: string): Effect.Effect<RotateConfig, CliError> {
-  return Effect.gen(function* () {
-    const content = yield* Effect.tryPromise({
-      try: () => readFile(path, "utf8"),
-      catch: () =>
-        cliError(
-          `Cannot read the rotation config ${path}. Create it (see the Rotation page in the docs), or pass --rotate-config <file>`,
-        ),
-    });
-    const parsed = parseRotateConfig(content, { configDir: dirname(path) });
-    if (typeof parsed === "string") {
-      return yield* Effect.fail(cliError(`The rotation config ${path} is invalid: ${parsed}`));
-    }
-    return parsed;
-  });
+  return loadConfig(
+    path,
+    "rotation config",
+    "Create it (see the Rotation page in the docs), or pass --rotate-config <file>",
+    (content) => parseRotateConfig(content, { configDir: dirname(path) }),
+  ).pipe(Effect.map(({ parsed }) => parsed));
 }
 
 /** The default config when it exists in the working directory: null when absent; a broken one is reported, never skipped. */
