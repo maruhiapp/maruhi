@@ -439,7 +439,7 @@ function parseDriverKind(
   const declared = field(
     record,
     "driver",
-    Schema.UndefinedOr(
+    Schema.NullishOr(
       Schema.Literals(["exec", "http"]).annotate({
         message:
           ' must be "exec" (the installed vendor CLI; the default when the preset has one) or "http" (the vendor API with a token stored in maruhi)',

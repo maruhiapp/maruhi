@@ -389,7 +389,7 @@ function parseDbRule(
   const host = field(
     value,
     "host",
-    Schema.UndefinedOr(
+    Schema.NullishOr(
       stringLeaf(
         " must be the account's host part (default %)",
         (raw) => raw.length > 0 && raw.length <= 255 && !/['\\\s]/.test(raw),
@@ -590,7 +590,7 @@ function parseExecAnswer(
   const output = field(
     value,
     "output",
-    Schema.UndefinedOr(
+    Schema.NullishOr(
       Schema.Literals(["value", "json"]).annotate({
         message:
           ' must be "value" (the script prints the new value) or "json" (an object with value, companions, facts)',

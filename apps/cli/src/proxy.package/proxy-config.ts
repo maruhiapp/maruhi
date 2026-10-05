@@ -441,12 +441,12 @@ function parseRecordRule(name: string, value: unknown): VariableRule | Reason {
 }
 
 /** The top-level scalar fields (version / project / unmatched / unlisted). */
-const UNMATCHED = Schema.UndefinedOr(
+const UNMATCHED = Schema.NullishOr(
   Schema.Literals(["allow", "block"]).annotate({
     message: ' must be "allow" (tunnel hosts no rule names, untouched) or "block"',
   }),
 );
-const UNLISTED = Schema.UndefinedOr(
+const UNLISTED = Schema.NullishOr(
   Schema.Literals(["withhold", "passthrough"]).annotate({
     message: ' must be "withhold" (variables no rule names are not injected) or "passthrough"',
   }),
