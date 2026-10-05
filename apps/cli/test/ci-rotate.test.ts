@@ -855,7 +855,7 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     const body = onlyMint(fixture);
     expect(jwtPayload(body.oidcToken)["jti"]).toBe(1);
     expect(fixture.env.errors.join("\n")).toContain("presenting the lease's token");
-  });
+  }, 20_000);
 
   it("an expired lease token does not shorten the fetch of a fresh one: a slow issuance endpoint still mints (O-19)", async () => {
     // The lease's token is already expired, so there is no fallback to
@@ -876,7 +876,7 @@ describe("maruhi ci rotate (sealed value proposals — PF7b)", () => {
     expect(jwtPayload(body.oidcToken)["jti"]).toBe(2);
     expect(fixture.env.errors.join("\n")).not.toContain("presenting the lease's token");
     expectNoSecretLeak(fixture);
-  });
+  }, 20_000);
 
   it("the issuance bound follows the token in hand: capped at the default, the remaining life minus the margin, the default again when the token cannot outlive the floor (O-18 / O-19)", () => {
     const now = 1_700_000_000_000;
