@@ -20,6 +20,7 @@
 // by the rows the mirror itself appends while serving reads and leases).
 
 import { ChainEntrySchema } from "@maruhi/api-schema";
+import { cryptoEffect, cryptoPromise } from "@maruhi/core";
 import type { ChainEntry, Role } from "@maruhi/crypto";
 import {
   canonicalChainEntryBytes,
@@ -219,7 +220,11 @@ function verifyStagedChain(sql: SqlStorage): Effect.Effect<void, MirrorPageRefus
     const entries: ChainEntry[] = [];
     for (const row of rows) {
       const entry = yield* decodeEntry(row.entryJson);
-      const hash = yield* Effect.promise(() => computeChainEntryHash(entry));
+      // A rejection is a platform defect, the same outcome the bare
+      // Promise's rejection propagated as before the bridge
+      const hash = yield* cryptoPromise("computeChainEntryHash", () =>
+        computeChainEntryHash(entry),
+      ).pipe(Effect.orDie);
       if (
         entry.seq !== row.seq ||
         hash !== row.entryHashHex ||
@@ -229,10 +234,7 @@ function verifyStagedChain(sql: SqlStorage): Effect.Effect<void, MirrorPageRefus
       }
       entries.push(entry);
     }
-    const verified = yield* Effect.promise(() => verifyChainWithHistory(entries));
-    if (!verified.ok) {
-      return yield* invalid;
-    }
+    yield* cryptoEffect(() => verifyChainWithHistory(entries)).pipe(Effect.mapError(() => invalid));
   });
 }
 
