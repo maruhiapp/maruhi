@@ -21,6 +21,7 @@
 // decision 7's existing gate). Plaintext segments, KEK, and B exist
 // only in local variables.
 
+import { cryptoEffect, cryptoPromise, fromCryptoResult } from "@maruhi/core";
 import {
   computeHandoffRequestId,
   decodeHex,
@@ -125,29 +126,25 @@ function openApproval(input: {
 }): Effect.Effect<Uint8Array, CliError> {
   return Effect.gen(function* () {
     const wrapped = yield* decodeWrapped(input.approval);
-    const opened = yield* Effect.tryPromise({
-      try: () =>
-        openHandoffValue({
-          ephemeralKeyPair: input.ephemeral,
-          wrapped,
-          context: {
-            userId: input.userId,
-            requestId: input.requestId,
-            source: input.approval.source,
-            shareIndex: input.approval.shareIndex,
-            approverUserId: input.approval.approverUserId,
-          },
-        }),
-      catch: () => cliError("Failed to open an approval (crypto error)"),
-    });
-    if (!opened.ok) {
-      return yield* Effect.fail(
+    return yield* cryptoEffect(() =>
+      openHandoffValue({
+        ephemeralKeyPair: input.ephemeral,
+        wrapped,
+        context: {
+          userId: input.userId,
+          requestId: input.requestId,
+          source: input.approval.source,
+          shareIndex: input.approval.shareIndex,
+          approverUserId: input.approval.approverUserId,
+        },
+      }),
+    ).pipe(
+      Effect.mapError(() =>
         cliError(
           `Cannot open the approval from ${displayText(input.approval.approverUserId)}: it was not sealed to this request's key, or its context was altered in transit. The handoff was aborted — re-run and hand the new code to the guardians again`,
         ),
-      );
-    }
-    return opened.value;
+      ),
+    );
   });
 }
 
@@ -164,40 +161,35 @@ function recoverBlob(input: {
     for (const approval of input.assembled.approvals) {
       values.push(yield* openApproval({ ...input, approval }));
     }
-    const joined = joinGuardianShares({
-      mode: input.assembled.group.mode,
-      shares: values,
-      expectedCount: input.assembled.group.guardianCount,
-    });
-    if (!joined.ok) {
-      return yield* Effect.fail(cliError("Failed to reassemble the group key from the shares"));
-    }
+    const kek = yield* fromCryptoResult(
+      joinGuardianShares({
+        mode: input.assembled.group.mode,
+        shares: values,
+        expectedCount: input.assembled.group.guardianCount,
+      }),
+    ).pipe(Effect.mapError(() => cliError("Failed to reassemble the group key from the shares")));
     const group = yield* input.client.keyWraps
       .guardianGet({ params: { groupId: input.assembled.group.groupId } })
       .pipe(Effect.mapError(toCliError));
     const wrapped = yield* decodeBlobWrap(group.wrap);
-    const unwrapped = yield* Effect.tryPromise({
-      try: () =>
-        unwrapMasterBlob({
-          kek: joined.value,
-          wrapped,
-          context: {
-            userId: input.userId,
-            kind: "guardian",
-            wrapRef: group.groupId,
-            mode: group.mode,
-          },
-        }),
-      catch: () => cliError("Failed to decrypt the wrapped reserve key (crypto error)"),
-    });
-    if (!unwrapped.ok) {
-      return yield* Effect.fail(
+    return yield* cryptoEffect(() =>
+      unwrapMasterBlob({
+        kek,
+        wrapped,
+        context: {
+          userId: input.userId,
+          kind: "guardian",
+          wrapRef: group.groupId,
+          mode: group.mode,
+        },
+      }),
+    ).pipe(
+      Effect.mapError(() =>
         cliError(
           "Cannot decrypt the wrapped reserve key with the approvals received. The wrap and the approvals do not match (the ledger or the approvals were altered) — the handoff was aborted",
         ),
-      );
-    }
-    return unwrapped.value;
+      ),
+    );
   });
 }
 
@@ -210,20 +202,19 @@ interface HandoffRequest {
 
 function newHandoffRequest(): Effect.Effect<HandoffRequest, CliError> {
   return Effect.gen(function* () {
-    const ephemeral = yield* Effect.tryPromise({
-      try: () => generateEncryptionKeyPair(),
-      catch: () => cliError("Failed to generate the handoff key (crypto error)"),
-    });
-    const publicKey = yield* Effect.tryPromise({
-      try: () => exportEncryptionPublicKey(ephemeral.publicKey),
-      catch: () => cliError("Failed to export the handoff key (crypto error)"),
-    });
-    const code = yield* Effect.promise(() => encodeHandoffCode(publicKey));
-    const requestId = yield* Effect.promise(() => computeHandoffRequestId(publicKey));
-    if (!code.ok || !requestId.ok) {
-      return yield* Effect.fail(cliError("Failed to derive the handoff code"));
-    }
-    return { ephemeral, code: code.value, requestId: requestId.value };
+    const ephemeral = yield* cryptoPromise("generateEncryptionKeyPair", () =>
+      generateEncryptionKeyPair(),
+    ).pipe(Effect.mapError(() => cliError("Failed to generate the handoff key (crypto error)")));
+    const publicKey = yield* cryptoPromise("exportEncryptionPublicKey", () =>
+      exportEncryptionPublicKey(ephemeral.publicKey),
+    ).pipe(Effect.mapError(() => cliError("Failed to export the handoff key (crypto error)")));
+    const code = yield* cryptoEffect(() => encodeHandoffCode(publicKey)).pipe(
+      Effect.mapError(() => cliError("Failed to derive the handoff code")),
+    );
+    const requestId = yield* cryptoEffect(() => computeHandoffRequestId(publicKey)).pipe(
+      Effect.mapError(() => cliError("Failed to derive the handoff code")),
+    );
+    return { ephemeral, code, requestId };
   });
 }
 

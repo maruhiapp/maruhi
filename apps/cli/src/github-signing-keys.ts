@@ -22,6 +22,7 @@
 //   parseOpenSshEd25519PublicKey (pinned by test vectors). Kinds other
 //   than `ssh-ed25519` are skipped as out of scope
 
+import { fromCryptoResult } from "@maruhi/core";
 import { decodeHex, encodeHex, parseOpenSshEd25519PublicKey } from "@maruhi/crypto";
 import { Duration, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -101,18 +102,6 @@ function fetchSigningKeys(
   });
 }
 
-/** Whether the target Ed25519 key is byte-identically contained in the list (kinds other than ssh-ed25519 are skipped). */
-function containsSigningKey(
-  entries: readonly { readonly key: string }[],
-  targetHex: string,
-): boolean {
-  return entries.some((entry) => {
-    const parsed = parseOpenSshEd25519PublicKey(entry.key);
-    // Kinds other than ssh-ed25519 (RSA / ECDSA / sk-*) and broken lines are out of scope
-    return parsed.ok && encodeHex(parsed.value) === targetHex;
-  });
-}
-
 /**
  * Checks whether the `sigPubHex` key is contained in the login's
  * signing-key list. Failures and inabilities alike are returned in
@@ -134,9 +123,22 @@ export function checkSigningKeyBacking(input: {
     if (fetched.kind !== "entries") {
       return fetched;
     }
-    return containsSigningKey(fetched.entries, encodeHex(target))
-      ? ({ kind: "match" } as const)
-      : ({ kind: "not-registered" } as const);
+    const targetHex = encodeHex(target);
+    for (const entry of fetched.entries) {
+      // Kinds other than ssh-ed25519 (RSA / ECDSA / sk-*) and broken
+      // lines are out of scope — an InvalidInput is skipped, the same
+      // as the pre-bridge `!ok` check; another kind is an invariant
+      // break and dies
+      const matched = yield* fromCryptoResult(parseOpenSshEd25519PublicKey(entry.key)).pipe(
+        Effect.map((key) => encodeHex(key) === targetHex),
+        Effect.catchTag("CryptoInvalidInput", () => Effect.succeed(false)),
+        Effect.orDie,
+      );
+      if (matched) {
+        return { kind: "match" } as const;
+      }
+    }
+    return { kind: "not-registered" } as const;
   });
 }
 

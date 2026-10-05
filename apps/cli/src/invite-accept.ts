@@ -9,6 +9,7 @@ import {
   InviteNotFoundError,
   InviteSignatureInvalidError,
 } from "@maruhi/api-schema";
+import { cryptoEffect } from "@maruhi/core";
 import {
   computeUserKeyFingerprint,
   decodeHex,
@@ -63,14 +64,10 @@ function inviterFingerprintOf(link: InviteLinkData): Effect.Effect<string, CliEr
     if (enc === null || sig === null) {
       return yield* Effect.fail(cliError("The link's inviter keys (ie= / is=) are malformed"));
     }
-    const fingerprint = yield* Effect.tryPromise({
-      try: () => computeUserKeyFingerprint(enc, sig),
-      catch: () => cliError("Failed to compute the inviter's key fingerprint (crypto error)"),
-    });
-    if (!fingerprint.ok) {
-      return yield* Effect.fail(cliError("The link's inviter keys (ie= / is=) are malformed"));
-    }
-    return encodeHex(fingerprint.value);
+    const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(
+      Effect.mapError(() => cliError("The link's inviter keys (ie= / is=) are malformed")),
+    );
+    return encodeHex(fingerprint);
   });
 }
 
@@ -86,34 +83,31 @@ function verifyLinkIssuanceWith(
   linkPubHex: string,
 ): Effect.Effect<void, CliError> {
   return Effect.gen(function* () {
-    const verified = yield* Effect.tryPromise({
-      try: () =>
-        verifyInviteIssueSignature({
-          context: {
-            suite: SUITE_ID,
-            inviteId: link.inviteId,
-            projectId: link.projectId,
-            linkPubHex,
-            headHashHex: link.headHashHex,
-            headSeq: link.headSeq,
-            role: link.role,
-            inviterUserId: link.inviterUserId,
-            inviterEncPubHex: link.inviterEncPubHex,
-            inviterSigPubHex: link.inviterSigPubHex,
-            scopeKind: link.scopeKind,
-            scopeEnvironmentIds: link.scopeEnvironmentIds,
-          },
-          signatureHex: link.issueSignatureHex,
-        }),
-      catch: () => cliError("Failed to verify the link's issue signature (crypto error)"),
-    });
-    if (!verified.ok) {
-      return yield* Effect.fail(
+    yield* cryptoEffect(() =>
+      verifyInviteIssueSignature({
+        context: {
+          suite: SUITE_ID,
+          inviteId: link.inviteId,
+          projectId: link.projectId,
+          linkPubHex,
+          headHashHex: link.headHashHex,
+          headSeq: link.headSeq,
+          role: link.role,
+          inviterUserId: link.inviterUserId,
+          inviterEncPubHex: link.inviterEncPubHex,
+          inviterSigPubHex: link.inviterSigPubHex,
+          scopeKind: link.scopeKind,
+          scopeEnvironmentIds: link.scopeEnvironmentIds,
+        },
+        signatureHex: link.issueSignatureHex,
+      }),
+    ).pipe(
+      Effect.mapError(() =>
         cliError(
           "The invite link's issue signature does not verify under the inviter key it names (CRYPTO_SPEC §6.5). The link was altered in transit, or it was not issued by the holder of that key — do not accept it; ask the inviter to reissue over a trusted channel",
         ),
-      );
-    }
+      ),
+    );
   });
 }
 
@@ -447,17 +441,12 @@ export function inviteAcceptOp(input: {
       inviteeEncPubHex: masterKeys.record.encPubHex,
       inviteeSigPubHex: masterKeys.record.sigPubHex,
     };
-    const signature = yield* Effect.tryPromise({
-      try: () => signInviteAccept({ context, signingKey: masterKeys.sigKeyPair.privateKey }),
-      catch: () => cliError("Failed to create the acceptance signature (crypto error)"),
-    });
-    const linkSignature = yield* Effect.tryPromise({
-      try: () => signInviteLink({ context, linkPrivateKey: linkKey.keyPair.privateKey }),
-      catch: () => cliError("Failed to create the link signature (crypto error)"),
-    });
-    if (!signature.ok || !linkSignature.ok) {
-      return yield* Effect.fail(cliError("Failed to create the acceptance signatures"));
-    }
+    const signature = yield* cryptoEffect(() =>
+      signInviteAccept({ context, signingKey: masterKeys.sigKeyPair.privateKey }),
+    ).pipe(Effect.mapError(() => cliError("Failed to create the acceptance signatures")));
+    const linkSignature = yield* cryptoEffect(() =>
+      signInviteLink({ context, linkPrivateKey: linkKey.keyPair.privateKey }),
+    ).pipe(Effect.mapError(() => cliError("Failed to create the acceptance signatures")));
 
     const accepted = yield* input.client.invites
       .accept({
@@ -465,8 +454,8 @@ export function inviteAcceptOp(input: {
           linkPubHex: linkKey.linkPubHex,
           encPubHex: masterKeys.record.encPubHex,
           sigPubHex: masterKeys.record.sigPubHex,
-          acceptSignatureHex: signature.value,
-          linkSignatureHex: linkSignature.value,
+          acceptSignatureHex: signature,
+          linkSignatureHex: linkSignature,
         },
       })
       .pipe(Effect.mapError(acceptErrorToCliError));

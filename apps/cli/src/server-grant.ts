@@ -27,7 +27,7 @@
 // (AUTH_SPEC §14-3).
 
 import { ChainHeadConflictError } from "@maruhi/api-schema";
-import type { EnvironmentId } from "@maruhi/core";
+import { cryptoEffect, type EnvironmentId } from "@maruhi/core";
 import type {
   ChainEntry,
   LeasePolicyIssuer,
@@ -188,16 +188,14 @@ function fetchServerKeyConfig(client: MaruhiClient): Effect.Effect<ServerKeyConf
     if (encPub === null || encPub.length !== 32) {
       return yield* Effect.fail(cliError("serverEncPubHex in /auth/config is malformed"));
     }
-    const computed = yield* Effect.tryPromise({
-      try: () => computeServerKeyFingerprint(encPub),
-      catch: () => cliError("Failed to compute the server key fingerprint (crypto error)"),
-    });
-    if (!computed.ok || encodeHex(computed.value) !== fingerprintHex) {
-      return yield* Effect.fail(
-        cliError(
-          "The server-provided enc public key does not match serverKeyFingerprintHex (the response contradicts itself). Check the deployment configuration or the transport path",
-        ),
-      );
+    const mismatch = cliError(
+      "The server-provided enc public key does not match serverKeyFingerprintHex (the response contradicts itself). Check the deployment configuration or the transport path",
+    );
+    const computed = yield* cryptoEffect(() => computeServerKeyFingerprint(encPub)).pipe(
+      Effect.mapError(() => mismatch),
+    );
+    if (encodeHex(computed) !== fingerprintHex) {
+      return yield* Effect.fail(mismatch);
     }
     return { serverEncPubHex: encPubHex, serverKeyFingerprintHex: fingerprintHex };
   });

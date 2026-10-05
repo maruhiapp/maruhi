@@ -7,6 +7,7 @@
 // create a route that puts key material into the process environment.
 // session-11.md handoff).
 
+import { cryptoEffect, cryptoPromise } from "@maruhi/core";
 import type { EncryptionKeyPair, SigningKeyPair } from "@maruhi/crypto";
 import {
   computeUserKeyFingerprint,
@@ -22,7 +23,7 @@ import {
   importSigningKeyPair,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Data, Effect, Redacted } from "effect";
+import { Data, Effect, Exit, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
 import { makeApiClient } from "./api.ts";
@@ -465,28 +466,35 @@ function keychainSession(
  * nothing.
  */
 export function cryptoBackendUsable(): Effect.Effect<boolean> {
-  return Effect.tryPromise({
-    try: probeCryptoRoundTrip,
-    catch: () => null,
-  }).pipe(Effect.catch(() => Effect.succeed(false)));
+  // The probe's verdict is a boolean by definition: any failure — a typed
+  // crypto error or a defect (a contract-violating rejection) — means the
+  // backend cannot round-trip, which `exit` folds into `false` whole
+  return Effect.map(probeCryptoRoundTrip.pipe(Effect.exit), (exit) =>
+    Exit.isSuccess(exit) ? exit.value : false,
+  );
 }
 
 /** Round-trips generate → export → import with a disposable key (key material never leaves). */
-async function probeCryptoRoundTrip(): Promise<boolean> {
-  const enc = await generateEncryptionKeyPair({ extractable: true });
-  const sig = await generateSigningKeyPair({ extractable: true });
-  const encSk = await exportEncryptionPrivateKey(enc.privateKey);
-  const sigSeed = await exportSigningPrivateSeed(sig.privateKey);
-  if (!encSk.ok || !sigSeed.ok) {
-    return false;
-  }
-  const encPub = await exportEncryptionPublicKey(enc.publicKey);
-  const sigPub = await exportSigningPublicKey(sig.publicKey);
-  const encPair = await importEncryptionKeyPair({ publicKey: encPub, privateKey: encSk.value });
-  const sigPair = await importSigningKeyPair({ publicKey: sigPub, privateSeed: sigSeed.value });
-  const fingerprint = await computeUserKeyFingerprint(encPub, sigPub);
-  return encPair.ok && sigPair.ok && fingerprint.ok;
-}
+const probeCryptoRoundTrip = Effect.gen(function* () {
+  const enc = yield* cryptoPromise("generateEncryptionKeyPair", () =>
+    generateEncryptionKeyPair({ extractable: true }),
+  );
+  const sig = yield* cryptoPromise("generateSigningKeyPair", () =>
+    generateSigningKeyPair({ extractable: true }),
+  );
+  const encSk = yield* cryptoEffect(() => exportEncryptionPrivateKey(enc.privateKey));
+  const sigSeed = yield* cryptoEffect(() => exportSigningPrivateSeed(sig.privateKey));
+  const encPub = yield* cryptoPromise("exportEncryptionPublicKey", () =>
+    exportEncryptionPublicKey(enc.publicKey),
+  );
+  const sigPub = yield* cryptoPromise("exportSigningPublicKey", () =>
+    exportSigningPublicKey(sig.publicKey),
+  );
+  yield* cryptoEffect(() => importEncryptionKeyPair({ publicKey: encPub, privateKey: encSk }));
+  yield* cryptoEffect(() => importSigningKeyPair({ publicKey: sigPub, privateSeed: sigSeed }));
+  yield* cryptoEffect(() => computeUserKeyFingerprint(encPub, sigPub));
+  return true;
+});
 
 /**
  * The common part when the environment is the cause (the cause, and the next
@@ -846,27 +854,22 @@ export function importMasterKeys(
     if (encPub === null || encSk === null || sigPub === null || sigSeed === null) {
       return yield* Effect.fail(new MasterKeyCorrupt());
     }
-    // A WebCrypto reject (an import exception for broken key material) is also treated as corrupt
-    const encKeyPair = yield* Effect.tryPromise({
-      try: () => importEncryptionKeyPair({ publicKey: encPub, privateKey: encSk }),
-      catch: () => new MasterKeyCorrupt(),
-    });
-    const sigKeyPair = yield* Effect.tryPromise({
-      try: () => importSigningKeyPair({ publicKey: sigPub, privateSeed: sigSeed }),
-      catch: () => new MasterKeyCorrupt(),
-    });
-    const fingerprint = yield* Effect.tryPromise({
-      try: () => computeUserKeyFingerprint(encPub, sigPub),
-      catch: () => new MasterKeyCorrupt(),
-    });
-    if (!encKeyPair.ok || !sigKeyPair.ok || !fingerprint.ok) {
-      return yield* Effect.fail(new MasterKeyCorrupt());
-    }
+    // A CryptoResult error (an import exception for broken key material,
+    // folded into a value by the crypto side) is treated as corrupt
+    const encKeyPair = yield* cryptoEffect(() =>
+      importEncryptionKeyPair({ publicKey: encPub, privateKey: encSk }),
+    ).pipe(Effect.mapError(() => new MasterKeyCorrupt()));
+    const sigKeyPair = yield* cryptoEffect(() =>
+      importSigningKeyPair({ publicKey: sigPub, privateSeed: sigSeed }),
+    ).pipe(Effect.mapError(() => new MasterKeyCorrupt()));
+    const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(encPub, sigPub)).pipe(
+      Effect.mapError(() => new MasterKeyCorrupt()),
+    );
     return {
       record,
-      encKeyPair: encKeyPair.value,
-      sigKeyPair: sigKeyPair.value,
-      fingerprintHex: encodeHex(fingerprint.value),
+      encKeyPair,
+      sigKeyPair,
+      fingerprintHex: encodeHex(fingerprint),
     } satisfies MasterKeys;
   });
 }

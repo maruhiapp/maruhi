@@ -7,7 +7,7 @@ import {
   InvitePendingLimitError,
   InviteRateLimitedError,
 } from "@maruhi/api-schema";
-import { ulid } from "@maruhi/core";
+import { cryptoEffect, ulid } from "@maruhi/core";
 import {
   type ChainMember,
   deriveInviteLinkKeyPair,
@@ -179,39 +179,30 @@ function signIssuance(input: {
   return Effect.gen(function* () {
     const inviteId = ulid();
     const seed = generateInviteLinkSeed();
-    const linkKey = yield* Effect.tryPromise({
-      try: () => deriveInviteLinkKeyPair(seed),
-      catch: () => cliError("Failed to derive the invite link key (crypto error)"),
-    });
-    if (!linkKey.ok) {
-      return yield* Effect.fail(cliError("Failed to derive the invite link key"));
-    }
-    const linkPubHex = encodeHex(linkKey.value.publicKeyRaw);
-    const signed = yield* Effect.tryPromise({
-      try: () =>
-        signInviteIssue({
-          context: {
-            suite: SUITE_ID,
-            inviteId,
-            projectId: input.verified.projectId,
-            linkPubHex,
-            headHashHex: input.verified.state.headHashHex,
-            headSeq: input.verified.state.headSeq,
-            role: input.role,
-            inviterUserId: input.inviter.userId,
-            inviterEncPubHex: input.inviterKeys.encPubHex,
-            inviterSigPubHex: input.inviterKeys.sigPubHex,
-            scopeKind: input.scope.scopeKind,
-            scopeEnvironmentIds: input.scope.scopeEnvironmentIds,
-          },
-          signingKey: input.signingKey,
-        }),
-      catch: () => cliError("Failed to create the issue signature (crypto error)"),
-    });
-    if (!signed.ok) {
-      return yield* Effect.fail(cliError("Failed to create the issue signature"));
-    }
-    return { inviteId, seed, linkPubHex, issueSignatureHex: signed.value };
+    const linkKey = yield* cryptoEffect(() => deriveInviteLinkKeyPair(seed)).pipe(
+      Effect.mapError(() => cliError("Failed to derive the invite link key")),
+    );
+    const linkPubHex = encodeHex(linkKey.publicKeyRaw);
+    const signed = yield* cryptoEffect(() =>
+      signInviteIssue({
+        context: {
+          suite: SUITE_ID,
+          inviteId,
+          projectId: input.verified.projectId,
+          linkPubHex,
+          headHashHex: input.verified.state.headHashHex,
+          headSeq: input.verified.state.headSeq,
+          role: input.role,
+          inviterUserId: input.inviter.userId,
+          inviterEncPubHex: input.inviterKeys.encPubHex,
+          inviterSigPubHex: input.inviterKeys.sigPubHex,
+          scopeKind: input.scope.scopeKind,
+          scopeEnvironmentIds: input.scope.scopeEnvironmentIds,
+        },
+        signingKey: input.signingKey,
+      }),
+    ).pipe(Effect.mapError(() => cliError("Failed to create the issue signature")));
+    return { inviteId, seed, linkPubHex, issueSignatureHex: signed };
   });
 }
 
