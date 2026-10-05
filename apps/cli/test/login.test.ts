@@ -62,7 +62,7 @@ function approvedResponse(input?: {
 /**
  * The maruhi side of the handoff (start + n polls of pending → final response).
  * The start response's pollIntervalSeconds is 0 (clamped up to the wire
- * minimum — the run's waits are driven by the TestClock, so no real-time
+ * minimum — the run's waits are driven by the virtual clock, so no real-time
  * sleep happens either way).
  */
 function fakeHandoff(
@@ -481,6 +481,59 @@ describe("maruhi login", () => {
       "maruhi: The sign-in request expired (it was valid for 0 seconds). Run `maruhi login` again",
     );
     expect(handoff.polls()).toBe(0);
+  });
+
+  it("pins the deadline to the Clock — a still-pending flow expires after exactly its declared window", async () => {
+    // expiresInSeconds 12 with the wire minimum interval (5 s): the check
+    // `now + interval > deadline` admits waits at 0 and 5 (0+5≤12, 5+5≤12)
+    // and ends the flow at 10 (10+5>12) — two polls, then expired. Under
+    // the virtual clock this is instant; on a Date.now() regression the
+    // same run costs 12 real seconds and exceeds the test timeout
+    const handoff = fakeHandoff({
+      startOverrides: { expiresInSeconds: 12 },
+      finalPoll: { status: 200, json: { status: "pending" } },
+    });
+    const maruhi = await start(handoff.handlers);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+
+    expect(await runCliWithClock(["login"], env.layer)).toBe(1);
+    expect(env.errors.at(-1)).toBe(
+      "maruhi: The sign-in request expired (it was valid for 12 seconds). Run `maruhi login` again",
+    );
+    expect(handoff.polls()).toBe(2);
+  });
+
+  it("the server-driven backoff also rides the Clock — a 429's retryAfterSeconds pushes the next wait past the deadline", async () => {
+    // retryAfterSeconds 8 raises the interval 5→8 after the first poll;
+    // the next check (5+8>12) ends the flow — one poll, then expired.
+    // On a Date.now() regression the run costs 5 real seconds
+    let polls = 0;
+    const maruhi = await start([
+      onRequest("POST", "/auth/cli/start", () => ({
+        status: 200,
+        json: {
+          flowId: FLOW_ID,
+          flowToken: FLOW_TOKEN,
+          userCode: USER_CODE,
+          verificationUrl: VERIFICATION_URL,
+          expiresInSeconds: 12,
+          pollIntervalSeconds: 0,
+        },
+      })),
+      onRequest("POST", "/auth/cli/poll", () => {
+        polls += 1;
+        return { status: 429, json: { _tag: "AuthRateLimited", retryAfterSeconds: 8 } };
+      }),
+    ]);
+    const env = await makeTestEnv();
+    await seedConfig(env, { server: maruhi.origin });
+
+    expect(await runCliWithClock(["login"], env.layer)).toBe(1);
+    expect(env.errors.at(-1)).toBe(
+      "maruhi: The sign-in request expired (it was valid for 12 seconds). Run `maruhi login` again",
+    );
+    expect(polls).toBe(1);
   });
 
   it("the validity guidance and the expiry wording derive from the server response's expiresInSeconds (ruling D-1)", async () => {

@@ -35,11 +35,13 @@ interface ClockedLayer {
 }
 
 /**
- * The waits/bounds split: a program wait shorter than this is virtual
- * (each `sleep` advances `now` by the full duration and yields one
- * fiber turn); a longer sleep is a bound on real work — the client's
- * 30 s request timeout — and keeps real time, so it can never cancel
- * real I/O that is still in flight.
+ * The waits/bounds split: a program wait shorter than this is virtual —
+ * it resolves instantly and `now` advances by the full duration; a wait
+ * of 10 s or more sleeps in real time (the client's 30 s request
+ * timeout — a bound on real work that must never be virtualized into
+ * cancelling in-flight I/O). A future test whose program waits 10 s or
+ * more per round therefore knowingly costs real time; keep poll
+ * intervals under this bound.
  */
 const REAL_WAIT_BOUND_MS = 10_000;
 

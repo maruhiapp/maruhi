@@ -1120,13 +1120,15 @@ describe("the login / logout argument layer (ADR-0016 stage 3 ④)", () => {
 
   it("--poll-interval no longer exists and is refused as an unknown flag", async () => {
     // The hidden test-only shortcut was removed with the polling rewrite
-    // (the schedule now drives the waits; tests advance a TestClock). An
+    // (the schedule now drives the waits; tests drive a virtual clock). An
     // unknown flag is a usage error (2), and the given value is never echoed
-    const { env } = await startEnv();
-    expect(await runCli(["login", "--poll-interval", "3"], env.layer)).toBe(2);
+    const { env, server } = await startEnv();
+    expect(await runCli(["login", "--poll-interval", "sentinel-value-0x"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
     expect(errors).toContain("Unknown flag");
     expect(errors).not.toContain("--poll-interval");
+    expectNoLeak(env, ["sentinel-value-0x"]);
+    expect(server.requests).toHaveLength(0);
   });
 
   it("logout takes no positional args", async () => {
