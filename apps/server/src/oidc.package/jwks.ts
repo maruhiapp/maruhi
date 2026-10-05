@@ -33,7 +33,8 @@
 // JWKS is public information, and persisting it only saves one round trip on
 // cold start — not worth the management cost of stored data.
 
-import { Effect } from "effect";
+import { Clock, Data, Deferred, Effect, Layer, Schema, Stream, SynchronizedRef } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import { algorithmForJwk, importJwk, type Jwk } from "./jwk.ts";
 
@@ -69,11 +70,10 @@ const FAILED_REFRESH_COOLDOWN_MS = 60 * 1000;
 const STALE_GRACE_MS = 6 * 60 * 60 * 1000;
 
 /**
- * Size limit of a fetched document (in **bytes**). Cut off by measured bytes —
- * the result length of `Response.text()` is in UTF-16 code units, not bytes,
- * and by that point the whole body is already in memory. Only by aborting on
- * threshold overflow while reading the stream does this become "cutting off
- * memory consumption by an oversized response".
+ * Size limit of a fetched document (in **bytes**). Cut off by measured bytes
+ * while reading the stream — `schemaBodyJson` buffers the whole body, so only
+ * by stopping the stream at the threshold does this stay "cutting off memory
+ * consumption by an oversized response".
  */
 const MAX_DOCUMENT_BYTES = 256 * 1024;
 
@@ -83,6 +83,17 @@ const MAX_DOCUMENT_BYTES = 256 * 1024;
  * never responds (same value as jose's `timeoutDuration` default).
  */
 const FETCH_TIMEOUT_MS = 5_000;
+
+/**
+ * Any failure that leaves no usable verification key (transport, non-OK
+ * status, decode, oversize body, timeout, post-failure cooldown). Callers
+ * map it to 503 `oidc-jwks-unavailable` — the same "transient, not 401"
+ * shape the old `"jwks-unavailable"` literal carried; `reason` is
+ * diagnostic only.
+ */
+class JwksUnavailableError extends Data.TaggedError("JwksUnavailable")<{
+  readonly reason: "fetch" | "status" | "decode" | "too-large" | "timeout" | "cooldown";
+}> {}
 
 /** A resolved verification key (a JWK and the algorithm binding derived from it). */
 export interface ResolvedVerificationKey {
@@ -95,14 +106,14 @@ export interface JwksCacheShape {
    * Resolve the verification key for `kid` from the issuer's JWKS. An unknown
    * kid triggers one forced refresh within the cooldown before the verdict
    * (key-rotation follow-up). Returns null if not found (= 401 unknown-key),
-   * or "jwks-unavailable" when no usable key can be obtained at all (= 503;
-   * the reason is never read, only mapped to a 503, so it takes the same
-   * string-literal shape as ResealFailure in server-key.ts).
+   * or fails with `JwksUnavailableError` when no usable key can be obtained at
+   * all (= 503; the reason is never read, only mapped to a 503, so it takes
+   * the same single-shape role as ResealFailure in server-key.ts).
    */
   readonly resolveKey: (
     issuer: string,
     kid: string | null,
-  ) => Effect.Effect<ResolvedVerificationKey | null, "jwks-unavailable">;
+  ) => Effect.Effect<ResolvedVerificationKey | null, JwksUnavailableError>;
 }
 
 interface CachedJwks {
@@ -116,85 +127,155 @@ interface CachedDiscovery {
   readonly fetchedAtMs: number;
 }
 
-/** Read up to the byte limit; abort on overflow (overflow throws). */
-async function readWithinLimit(body: ReadableStream<Uint8Array>): Promise<Uint8Array> {
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    total += value.length;
-    if (total > MAX_DOCUMENT_BYTES) {
-      await reader.cancel();
-      throw new Error("jwks fetch: document too large");
-    }
-    chunks.push(value);
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return merged;
+/**
+ * The whole cache state lives in one `SynchronizedRef` — the last successful
+ * values, the failure timestamps, and the in-flight `Deferred`s that fold
+ * concurrent same-issuer requests into one fetch (single-flight). Keeping
+ * the last-good values and the in-flight markers in separate fields is what
+ * keeps a failed fetch from corrupting an existing good value (the second
+ * reason in the header comment).
+ */
+interface CacheState {
+  readonly lastGoodDiscovery: Readonly<Record<string, CachedDiscovery>>;
+  readonly lastGoodJwks: Readonly<Record<string, CachedJwks>>;
+  readonly lastFailureAtMs: Readonly<Record<string, number>>;
+  readonly jwksInFlight: Readonly<
+    Record<string, Deferred.Deferred<CachedJwks, JwksUnavailableError>>
+  >;
+  readonly discoveryInFlight: Readonly<
+    Record<string, Deferred.Deferred<CachedDiscovery, JwksUnavailableError>>
+  >;
 }
 
-async function fetchJson(url: string): Promise<unknown> {
-  const response = await fetch(url, {
-    headers: { accept: "application/json" },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    // **Never follow redirects**: the check pinning `jwks_uri` to the issuer's
-    // origin (jwksUriOf) is an explicit security control, and following a 302
-    // to another origin would defeat the pinning. A 3xx is rejected via
-    // ok=false
-    redirect: "manual",
-  });
-  if (!response.ok || response.body === null) {
-    throw new Error("jwks fetch: non-ok response");
-  }
-  const bytes = await readWithinLimit(response.body);
-  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+const emptyCacheState: CacheState = {
+  lastGoodDiscovery: {},
+  lastGoodJwks: {},
+  lastFailureAtMs: {},
+  jwksInFlight: {},
+  discoveryInFlight: {},
+};
+
+/** Drop one key from an immutable record copy. */
+function dropKey<T>(record: Readonly<Record<string, T>>, key: string): Readonly<Record<string, T>> {
+  const next = { ...record };
+  delete next[key];
+  return next;
 }
+
+/** The discovery document's fields the pin checks read (issuer + jwks_uri). */
+const DiscoveryDocument = Schema.Struct({
+  issuer: Schema.String,
+  jwks_uri: Schema.String,
+});
 
 /**
- * Extract `jwks_uri` from a discovery document. **Verify the issuer's
- * self-declaration**: the `issuer` field must equal the requested issuer, and
- * `jwks_uri` must be https on the same origin as that issuer. The issuer
- * itself is trustworthy because it comes from the static allowlist, but a URL
- * returned by it sits in a position where the fetch target could be swapped
- * arbitrarily, so pin the keys' provenance to the issuer's origin.
+ * The JWKS document. Entries stay `unknown` and are narrowed to objects by
+ * `isJwk` — a non-object entry is unusable and gets skipped by selection
+ * rather than rejecting the whole set (issuers may publish keys we cannot
+ * use).
  */
-function jwksUriOf(document: unknown, issuer: string): string | null {
-  if (typeof document !== "object" || document === null) {
-    return null;
-  }
-  const record = document as Record<string, unknown>;
-  if (record["issuer"] !== issuer) {
-    return null;
-  }
-  const jwksUri = record["jwks_uri"];
-  if (typeof jwksUri !== "string") {
+const JwksDocument = Schema.Struct({
+  keys: Schema.Array(Schema.Unknown),
+});
+
+/** A decoded JWKS entry is usable only when it is a JSON object. */
+const isJwk = (value: unknown): value is Jwk => typeof value === "object" && value !== null;
+
+/**
+ * The `HttpClient` layer the package's fetches run on when no layer is
+ * passed. `redirect: "manual"` is kept via `FetchHttpClient.RequestInit`:
+ * **never follow redirects** — the check pinning `jwks_uri` to the issuer's
+ * origin (jwksUriOf) is an explicit security control, and following a 302
+ * to another origin would defeat the pinning. A 3xx is rejected by the
+ * status check in fetchJson.
+ */
+const defaultHttpClientLayer = FetchHttpClient.layer.pipe(
+  Layer.provide(Layer.succeed(FetchHttpClient.RequestInit, { redirect: "manual" })),
+);
+
+/**
+ * GET `url` and decode the JSON body with `schema` via
+ * `HttpClientResponse.schemaBodyJson` (typed decoding — no `as` casts).
+ * The byte cap reads the body as a stream and stops at MAX_DOCUMENT_BYTES
+ * before wrapping it back into a `Response` — the same early-abort bound
+ * the pre-Effect reader loop gave. The FETCH_TIMEOUT_MS timeout covers the
+ * request **and** the body read, matching the old `AbortSignal.timeout`.
+ */
+const fetchJson = <S extends Schema.Constraint>(
+  url: string,
+  schema: S,
+): Effect.Effect<S["Type"], JwksUnavailableError, HttpClient.HttpClient | S["DecodingServices"]> =>
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    // Inside this region every error is foreign — transport, a hung issuer,
+    // schema decode — so the pipeline below normalizes them wholesale. Our
+    // own verdicts stay in the success channel as strings and become typed
+    // errors only outside it (no instanceof discrimination needed).
+    const outcome = yield* Effect.gen(function* () {
+      const response = yield* client.execute(
+        HttpClientRequest.get(url, { headers: { accept: "application/json" } }),
+      );
+      if (response.status < 200 || response.status >= 300) {
+        return "status" as const;
+      }
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      yield* Stream.runForEachWhile(response.stream, (chunk) =>
+        Effect.sync(() => {
+          chunks.push(chunk);
+          total += chunk.length;
+          return total <= MAX_DOCUMENT_BYTES;
+        }),
+      );
+      if (total > MAX_DOCUMENT_BYTES) {
+        return "too-large" as const;
+      }
+      const merged = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
+      const bounded = HttpClientResponse.fromWeb(
+        response.request,
+        new Response(merged, { status: response.status, headers: response.headers }),
+      );
+      return { document: yield* HttpClientResponse.schemaBodyJson(schema)(bounded) } as const;
+    }).pipe(
+      Effect.timeout(FETCH_TIMEOUT_MS),
+      Effect.catchTags({
+        TimeoutError: () => Effect.fail(new JwksUnavailableError({ reason: "timeout" })),
+        SchemaError: () => Effect.fail(new JwksUnavailableError({ reason: "decode" })),
+      }),
+      Effect.mapError(() => new JwksUnavailableError({ reason: "fetch" })),
+    );
+    if (typeof outcome === "string") {
+      return yield* Effect.fail(new JwksUnavailableError({ reason: outcome }));
+    }
+    return outcome.document;
+  });
+
+/**
+ * Extract `jwks_uri` from a decoded discovery document. **Verify the
+ * issuer's self-declaration**: the `issuer` field must equal the requested
+ * issuer, and `jwks_uri` must be https on the same origin as that issuer.
+ * The issuer itself is trustworthy because it comes from the static
+ * allowlist, but a URL returned by it sits in a position where the fetch
+ * target could be swapped arbitrarily, so pin the keys' provenance to the
+ * issuer's origin.
+ */
+function jwksUriOf(document: typeof DiscoveryDocument.Type, issuer: string): string | null {
+  if (document.issuer !== issuer) {
     return null;
   }
   try {
-    const parsed = new URL(jwksUri);
+    const parsed = new URL(document.jwks_uri);
     return parsed.protocol === "https:" && parsed.origin === new URL(issuer).origin
-      ? jwksUri
+      ? document.jwks_uri
       : null;
   } catch {
     return null;
   }
-}
-
-function keysOf(document: unknown): readonly Jwk[] | null {
-  if (typeof document !== "object" || document === null) {
-    return null;
-  }
-  const keys = (document as Record<string, unknown>)["keys"];
-  return Array.isArray(keys) ? (keys as readonly Jwk[]) : null;
 }
 
 /** Pick the usable key matching `kid` (a missing kid is allowed only when there is exactly one key). */
@@ -209,33 +290,160 @@ function selectJwk(keys: readonly Jwk[], kid: string | null): Jwk | null {
   return usable.length === 1 ? (usable[0] ?? null) : null;
 }
 
-/**
- * The JWKS cache (per isolate). Built once at worker startup (buildServices —
- * index.ts). Concurrent requests share the in-flight Promise, so a cold-start
- * rush does not hit the same issuer simultaneously.
- */
-export function makeJwksCache(now: () => number = Date.now): JwksCacheShape {
-  // Keep **the last successful value** and **the in-flight Promise** in
-  // separate maps. The structure that keeps a failed fetch from corrupting the
-  // existing good value (the second reason in the header comment)
-  const lastGoodDiscovery = new Map<string, CachedDiscovery>();
-  const lastGoodJwks = new Map<string, CachedJwks>();
-  // The time of the most recent failed refresh (thins out retries while the
-  // issuer is down). Cleared on success
-  const lastFailureAtMs = new Map<string, number>();
-  const inFlight = new Map<string, Promise<CachedJwks>>();
-  const discoveryInFlight = new Map<string, Promise<CachedDiscovery>>();
-
-  const loadDiscovery = async (issuer: string): Promise<CachedDiscovery> => {
-    const document = await fetchJson(
+const loadDiscovery = (
+  issuer: string,
+): Effect.Effect<CachedDiscovery, JwksUnavailableError, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
+    const document = yield* fetchJson(
       `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`,
+      DiscoveryDocument,
     );
     const jwksUri = jwksUriOf(document, issuer);
     if (jwksUri === null) {
-      throw new Error("jwks: discovery document rejected");
+      return yield* Effect.fail(new JwksUnavailableError({ reason: "decode" }));
     }
-    return { jwksUri, fetchedAtMs: now() };
-  };
+    return { jwksUri, fetchedAtMs: yield* Clock.currentTimeMillis };
+  });
+
+/**
+ * Whether the cached JWKS can be used as-is. Even inside the TTL, an unknown
+ * kid triggers exactly one re-fetch under a cooldown (following a key
+ * rotation right after it happens — the §14-1 JWKS cache strategy).
+ */
+const isUsable = (cached: CachedJwks, kid: string | null, nowMs: number): boolean => {
+  if (nowMs - cached.fetchedAtMs >= JWKS_TTL_MS) {
+    return false;
+  }
+  if (selectJwk(cached.keys, kid) !== null) {
+    return true;
+  }
+  return nowMs - cached.forcedRefreshAtMs < FORCED_REFRESH_COOLDOWN_MS;
+};
+
+/**
+ * The forcedRefreshAtMs to seed a refresh with. A re-fetch inside the TTL
+ * means a forced refresh triggered by an unknown kid, so record that time as
+ * the cooldown's origin (a normal TTL-expired refresh leaves it unchanged).
+ */
+const forcedRefreshStamp = (cached: CachedJwks | undefined, nowMs: number): number => {
+  if (cached === undefined) {
+    return 0;
+  }
+  return nowMs - cached.fetchedAtMs < JWKS_TTL_MS ? nowMs : cached.forcedRefreshAtMs;
+};
+
+/** Whether a good value is inside the grace window (the stale-while-revalidate acceptance condition). */
+const isWithinGrace = (cached: CachedJwks | undefined, nowMs: number): cached is CachedJwks =>
+  cached !== undefined && nowMs - cached.fetchedAtMs < STALE_GRACE_MS;
+
+/**
+ * One keyed in-flight record's slice of `CacheState`: which record the
+ * single-flight `Deferred`s live in, and where a successful load lands.
+ * Discovery and JWKS share the same register-or-join machinery through
+ * these accessors (`Deferred` is invariant in its value type, so the slot
+ * picks the concrete record rather than the record being generic).
+ */
+interface InFlightSlot<A> {
+  readonly inFlightOf: (
+    state: CacheState,
+  ) => Readonly<Record<string, Deferred.Deferred<A, JwksUnavailableError>>>;
+  readonly setInFlight: (
+    state: CacheState,
+    inFlight: Readonly<Record<string, Deferred.Deferred<A, JwksUnavailableError>>>,
+  ) => CacheState;
+  readonly setLoaded: (state: CacheState, issuer: string, loaded: A) => CacheState;
+}
+
+const discoverySlot: InFlightSlot<CachedDiscovery> = {
+  inFlightOf: (state) => state.discoveryInFlight,
+  setInFlight: (state, inFlight) => ({ ...state, discoveryInFlight: inFlight }),
+  setLoaded: (state, issuer, loaded) => ({
+    ...state,
+    lastGoodDiscovery: { ...state.lastGoodDiscovery, [issuer]: loaded },
+    discoveryInFlight: dropKey(state.discoveryInFlight, issuer),
+  }),
+};
+
+const jwksSlot: InFlightSlot<CachedJwks> = {
+  inFlightOf: (state) => state.jwksInFlight,
+  setInFlight: (state, inFlight) => ({ ...state, jwksInFlight: inFlight }),
+  setLoaded: (state, issuer, loaded) => ({
+    ...state,
+    lastGoodJwks: { ...state.lastGoodJwks, [issuer]: loaded },
+    jwksInFlight: dropKey(state.jwksInFlight, issuer),
+  }),
+};
+
+/**
+ * The JWKS cache (per isolate). Built once at worker startup (buildServices —
+ * index.ts). The `SynchronizedRef`/`Deferred`s are `makeUnsafe` so the
+ * constructor stays synchronous; concurrent requests share the in-flight
+ * `Deferred`, so a cold-start rush does not hit the same issuer
+ * simultaneously.
+ */
+export function makeJwksCache(
+  httpClientLayer: Layer.Layer<HttpClient.HttpClient> = defaultHttpClientLayer,
+): JwksCacheShape {
+  const state = SynchronizedRef.makeUnsafe(emptyCacheState);
+
+  /**
+   * Single-flight over `state`: join the in-flight `Deferred` for `issuer`,
+   * or — as the first arrival — run `load` on a detached fiber exactly
+   * once. Detached like the old shared Promise: the load must not die with
+   * the requester that happened to start it — every joiner awaits the same
+   * Deferred, and the finalization inside always completes it. The whole
+   * register-and-fork step is uninterruptible so no joiner can strand a
+   * Deferred that never completes.
+   */
+  const singleFlight = <A>(
+    issuer: string,
+    slot: InFlightSlot<A>,
+    load: Effect.Effect<A, JwksUnavailableError, HttpClient.HttpClient>,
+  ): Effect.Effect<Deferred.Deferred<A, JwksUnavailableError>, never, HttpClient.HttpClient> =>
+    Effect.uninterruptible(
+      Effect.gen(function* () {
+        const [created, winner] = yield* SynchronizedRef.modify(
+          state,
+          (
+            current,
+          ): readonly [
+            readonly [Deferred.Deferred<A, JwksUnavailableError>, boolean],
+            CacheState,
+          ] => {
+            const existing = slot.inFlightOf(current)[issuer];
+            if (existing !== undefined) {
+              return [[existing, false], current];
+            }
+            const made = Deferred.makeUnsafe<A, JwksUnavailableError>();
+            return [
+              [made, true],
+              slot.setInFlight(current, { ...slot.inFlightOf(current), [issuer]: made }),
+            ];
+          },
+        );
+        if (winner) {
+          yield* Effect.forkDetach(
+            Effect.matchEffect(load, {
+              onSuccess: (loaded) =>
+                Effect.andThen(
+                  SynchronizedRef.update(state, (current) =>
+                    slot.setLoaded(current, issuer, loaded),
+                  ),
+                  Deferred.succeed(created, loaded),
+                ),
+              onFailure: (error) =>
+                Effect.andThen(
+                  SynchronizedRef.update(state, (current) =>
+                    slot.setInFlight(current, dropKey(slot.inFlightOf(current), issuer)),
+                  ),
+                  Deferred.fail(created, error),
+                ),
+            }),
+          );
+        }
+        return created;
+      }),
+    );
 
   /**
    * discovery is used only to resolve `jwks_uri`, and that value is
@@ -243,142 +451,110 @@ export function makeJwksCache(now: () => number = Date.now): JwksCacheShape {
    * exists, keep using it (the freshness bound is held by the JWKS-side grace
    * window, so no separate window lives here).
    */
-  const discoveryFor = async (issuer: string): Promise<CachedDiscovery> => {
-    const cached = lastGoodDiscovery.get(issuer);
-    if (cached !== undefined && now() - cached.fetchedAtMs < DISCOVERY_TTL_MS) {
-      return cached;
-    }
-    const pending =
-      discoveryInFlight.get(issuer) ??
-      loadDiscovery(issuer)
-        .then((loaded) => {
-          lastGoodDiscovery.set(issuer, loaded);
-          return loaded;
-        })
-        .finally(() => discoveryInFlight.delete(issuer));
-    discoveryInFlight.set(issuer, pending);
-    try {
-      return await pending;
-    } catch (error) {
-      if (cached !== undefined) {
+  const discoveryFor = (
+    issuer: string,
+  ): Effect.Effect<CachedDiscovery, JwksUnavailableError, HttpClient.HttpClient> =>
+    Effect.gen(function* () {
+      const nowMs = yield* Clock.currentTimeMillis;
+      const snapshot = yield* SynchronizedRef.get(state);
+      const cached = snapshot.lastGoodDiscovery[issuer];
+      if (cached !== undefined && nowMs - cached.fetchedAtMs < DISCOVERY_TTL_MS) {
         return cached;
       }
-      throw error;
-    }
-  };
+      const deferred = yield* singleFlight(issuer, discoverySlot, loadDiscovery(issuer));
+      return yield* Effect.matchEffect(Deferred.await(deferred), {
+        onSuccess: Effect.succeed,
+        onFailure: (error) => (cached !== undefined ? Effect.succeed(cached) : Effect.fail(error)),
+      });
+    });
 
-  const loadJwks = async (issuer: string, forcedRefreshAtMs: number): Promise<CachedJwks> => {
-    const { jwksUri } = await discoveryFor(issuer);
-    const keys = keysOf(await fetchJson(jwksUri));
-    if (keys === null) {
-      throw new Error("jwks: document has no keys array");
-    }
-    return { keys, fetchedAtMs: now(), forcedRefreshAtMs };
-  };
+  const loadJwks = (
+    issuer: string,
+    forcedRefreshAtMs: number,
+  ): Effect.Effect<CachedJwks, JwksUnavailableError, HttpClient.HttpClient> =>
+    Effect.gen(function* () {
+      const { jwksUri } = yield* discoveryFor(issuer);
+      const document = yield* fetchJson(jwksUri, JwksDocument);
+      const keys = document.keys.filter(isJwk);
+      return { keys, fetchedAtMs: yield* Clock.currentTimeMillis, forcedRefreshAtMs };
+    });
 
-  /**
-   * Whether the cached JWKS can be used as-is. Even inside the TTL, an unknown
-   * kid triggers exactly one re-fetch under a cooldown (following a key
-   * rotation right after it happens — the §14-1 JWKS cache strategy).
-   */
-  const isUsable = (cached: CachedJwks, kid: string | null): boolean => {
-    if (now() - cached.fetchedAtMs >= JWKS_TTL_MS) {
-      return false;
-    }
-    if (selectJwk(cached.keys, kid) !== null) {
-      return true;
-    }
-    return now() - cached.forcedRefreshAtMs < FORCED_REFRESH_COOLDOWN_MS;
-  };
-
-  /** Share the in-flight Promise (a cold-start rush must not hit the same issuer simultaneously). */
-  const refresh = (issuer: string, forcedRefreshAtMs: number): Promise<CachedJwks> => {
-    const existing = inFlight.get(issuer);
-    if (existing !== undefined) {
-      return existing;
-    }
-    const pending = loadJwks(issuer, forcedRefreshAtMs)
-      // The good value updates **only on success**; a failure never touches it
-      .then((loaded) => {
-        lastGoodJwks.set(issuer, loaded);
-        return loaded;
-      })
-      .finally(() => inFlight.delete(issuer));
-    inFlight.set(issuer, pending);
-    return pending;
-  };
-
-  /**
-   * The forcedRefreshAtMs to seed a refresh with. A re-fetch inside the TTL
-   * means a forced refresh triggered by an unknown kid, so record that time as
-   * the cooldown's origin (a normal TTL-expired refresh leaves it unchanged).
-   */
-  const forcedRefreshStamp = (cached: CachedJwks | undefined): number => {
-    if (cached === undefined) {
-      return 0;
-    }
-    return now() - cached.fetchedAtMs < JWKS_TTL_MS ? now() : cached.forcedRefreshAtMs;
-  };
-
-  /** Whether a good value is inside the grace window (the stale-while-revalidate acceptance condition). */
-  const isWithinGrace = (cached: CachedJwks | undefined): cached is CachedJwks =>
-    cached !== undefined && now() - cached.fetchedAtMs < STALE_GRACE_MS;
-
-  const jwksFor = async (issuer: string, kid: string | null): Promise<CachedJwks> => {
-    const cached = lastGoodJwks.get(issuer);
-    if (cached !== undefined && isUsable(cached, kid)) {
-      return cached;
-    }
-    // If the latest refresh failed, do not re-hit the issuer until the
-    // cooldown ends. In the "TTL expired + issuer down" state `isUsable`
-    // returns false at its first branch (the TTL) and never reaches the
-    // forced-refresh cooldown, so the failure side needs its own interval
-    const failedAt = lastFailureAtMs.get(issuer);
-    if (failedAt !== undefined && now() - failedAt < FAILED_REFRESH_COOLDOWN_MS) {
-      if (isWithinGrace(cached)) {
+  const jwksFor = (
+    issuer: string,
+    kid: string | null,
+  ): Effect.Effect<CachedJwks, JwksUnavailableError, HttpClient.HttpClient> =>
+    Effect.gen(function* () {
+      const nowMs = yield* Clock.currentTimeMillis;
+      const snapshot = yield* SynchronizedRef.get(state);
+      const cached = snapshot.lastGoodJwks[issuer];
+      if (cached !== undefined && isUsable(cached, kid, nowMs)) {
         return cached;
       }
-      throw new Error("jwks: refresh is cooling down after a failure");
-    }
-    const forcedRefreshAtMs = forcedRefreshStamp(cached);
-    try {
-      const loaded = await refresh(issuer, forcedRefreshAtMs);
-      lastFailureAtMs.delete(issuer);
-      return loaded;
-    } catch (error) {
-      lastFailureAtMs.set(issuer, now());
-      // stale-while-revalidate: if a good value is inside the grace window,
-      // keep verifying with it. Signature verification itself always runs
-      // (rejection only happens when no key is available at all)
-      if (!isWithinGrace(cached)) {
-        throw error;
+      // If the latest refresh failed, do not re-hit the issuer until the
+      // cooldown ends. In the "TTL expired + issuer down" state `isUsable`
+      // returns false at its first branch (the TTL) and never reaches the
+      // forced-refresh cooldown, so the failure side needs its own interval
+      const failedAt = snapshot.lastFailureAtMs[issuer];
+      if (failedAt !== undefined && nowMs - failedAt < FAILED_REFRESH_COOLDOWN_MS) {
+        if (isWithinGrace(cached, nowMs)) {
+          return cached;
+        }
+        return yield* Effect.fail(new JwksUnavailableError({ reason: "cooldown" }));
       }
-      // **A failed forced refresh also becomes a cooldown origin**. An
-      // invariant independent of the failure cooldown above, so that hammering
-      // unknown kids inside the TTL does not become one fetch per request
-      const held = { ...cached, forcedRefreshAtMs };
-      lastGoodJwks.set(issuer, held);
-      return held;
-    }
-  };
+      const forcedRefreshAtMs = forcedRefreshStamp(cached, nowMs);
+
+      const deferred = yield* singleFlight(issuer, jwksSlot, loadJwks(issuer, forcedRefreshAtMs));
+      return yield* Effect.matchEffect(Deferred.await(deferred), {
+        onSuccess: (loaded) =>
+          Effect.as(
+            SynchronizedRef.update(state, (current) => ({
+              ...current,
+              lastFailureAtMs: dropKey(current.lastFailureAtMs, issuer),
+            })),
+            loaded,
+          ),
+        onFailure: (error) =>
+          Effect.gen(function* () {
+            const failureAtMs = yield* Clock.currentTimeMillis;
+            yield* SynchronizedRef.update(state, (current) => ({
+              ...current,
+              lastFailureAtMs: { ...current.lastFailureAtMs, [issuer]: failureAtMs },
+            }));
+            // stale-while-revalidate: if a good value is inside the grace
+            // window, keep verifying with it. Signature verification itself
+            // always runs (rejection only happens when no key is available at
+            // all)
+            if (!isWithinGrace(cached, failureAtMs)) {
+              return yield* Effect.fail(error);
+            }
+            // **A failed forced refresh also becomes a cooldown origin**. An
+            // invariant independent of the failure cooldown above, so that
+            // hammering unknown kids inside the TTL does not become one fetch
+            // per request
+            const held = { ...cached, forcedRefreshAtMs };
+            yield* SynchronizedRef.update(state, (current) => ({
+              ...current,
+              lastGoodJwks: { ...current.lastGoodJwks, [issuer]: held },
+            }));
+            return held;
+          }),
+      });
+    });
 
   return {
     resolveKey: (issuer, kid) =>
-      Effect.tryPromise({
-        try: async () => {
-          const document = await jwksFor(issuer, kid);
-          const jwk = selectJwk(document.keys, kid);
-          if (jwk === null) {
-            return null;
-          }
-          const binding = algorithmForJwk(jwk);
-          if (binding === null) {
-            return null;
-          }
-          const key = await importJwk(jwk, binding);
-          return key === null ? null : { key, binding };
-        },
-        catch: () => "jwks-unavailable" as const,
-      }),
+      Effect.gen(function* () {
+        const document = yield* jwksFor(issuer, kid);
+        const jwk = selectJwk(document.keys, kid);
+        if (jwk === null) {
+          return null;
+        }
+        const binding = algorithmForJwk(jwk);
+        if (binding === null) {
+          return null;
+        }
+        const key = yield* Effect.promise(() => importJwk(jwk, binding));
+        return key === null ? null : { key, binding };
+      }).pipe(Effect.provide(httpClientLayer)),
   };
 }
