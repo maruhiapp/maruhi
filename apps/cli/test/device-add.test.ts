@@ -17,6 +17,7 @@ import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.ts";
 import { DEVICE_ADD_WAIT_HINT_AFTER_MS } from "../src/device-add.ts";
+import { formatUtcMinutes } from "../src/display.ts";
 import { masterKeyEntryName, tokenEntryName } from "../src/keychain.ts";
 import {
   buildChain,
@@ -47,6 +48,7 @@ import {
 } from "./support/device.ts";
 import { makeTestEnv, seedConfig, type TestEnv } from "./support/env.ts";
 import { onRequest } from "./support/server.ts";
+import { advanceUntilSettled, waitFor, withTestClock } from "./support/test-clock.ts";
 
 describe("maruhi device add", () => {
   it("a device holding a registered key reports it as registered (no request is created); --replace swaps after the new key's request (K13-8)", async () => {
@@ -181,43 +183,37 @@ describe("maruhi device add", () => {
       }),
     );
     await seedConfig(env, { server: server.origin, defaultProject: built.projectId });
+    // The clock is anchored at wall time, so the 6-minutes-old request's
+    // elapsed crosses the hint threshold on the first registry fetch —
+    // emitted before the first wait, with no clock advance needed
+    const { layer, testClock } = await withTestClock(env.layer, { at: Date.now() });
+    const run = runCli(["device", "add", "--label", "phone"], layer);
     // After round 1 (no signal → guidance), place a row equivalent to the approver's PUT: round 2 picks up the signal
-    const run = runCli(["device", "add", "--label", "phone"], env.layer);
-    const rowPlaced = new Promise<void>((resolve) => {
-      const tick = (): void => {
-        const stored = env.keychain.get(masterKeyEntryName(server.origin, owner.userId));
-        const hinted = env.errors.some((line) => line.includes("still waiting ("));
-        if (stored !== undefined && hinted) {
-          const record = JSON.parse(stored) as { encPubHex: string; sigPubHex: string };
-          void computeUserKeyFingerprint(
-            hexBytes(record.encPubHex),
-            hexBytes(record.sigPubHex),
-          ).then((fp) => {
-            if (!fp.ok) throw new Error("fp");
-            state.registry.push({
-              keyFingerprintHex: encodeHex(fp.value),
-              encPubHex: record.encPubHex,
-              sigPubHex: record.sigPubHex,
-              label: "phone",
-              createdAtMs: Date.now(),
-            });
-            resolve();
-          });
-          return;
-        }
-        setTimeout(tick, 20);
-      };
-      tick();
+    const { stored } = await waitFor(() => {
+      const key = env.keychain.get(masterKeyEntryName(server.origin, owner.userId));
+      const hinted = env.errors.some((line) => line.includes("still waiting ("));
+      return key !== undefined && hinted ? { stored: key } : undefined;
     });
-    await rowPlaced;
-    expect(await run, env.errors.join("\n")).toBe(0);
+    const record = JSON.parse(stored) as { encPubHex: string; sigPubHex: string };
+    const fp = await computeUserKeyFingerprint(
+      hexBytes(record.encPubHex),
+      hexBytes(record.sigPubHex),
+    );
+    if (!fp.ok) throw new Error("fp");
+    state.registry.push({
+      keyFingerprintHex: encodeHex(fp.value),
+      encPubHex: record.encPubHex,
+      sigPubHex: record.sigPubHex,
+      label: "phone",
+      createdAtMs: Date.now(),
+    });
+    // The run is parked in the 3-second poll wait — fast-forward it
+    expect(await advanceUntilSettled(testClock, run), env.errors.join("\n")).toBe(0);
     const hints = env.errors.filter((line) => line.includes("still waiting ("));
     expect(hints).toHaveLength(1);
     // Elapsed is measured for real (a resumed wait exceeds the threshold) — here threshold + 1 minute
-    expect(hints[0]).toContain("6 minutes since the request");
-    expect(hints[0]).toContain("this key is not in your device registry yet");
-    expect(hints[0]).toContain(
-      "failed on every project, or could not list this device in your device registry, the cause is in its output",
+    expect(hints[0]).toBe(
+      `Note: still waiting (6 minutes since the request): this key is not in your device registry yet. If \`maruhi device approve\` already ran on the approving device and failed on every project, or could not list this device in your device registry, the cause is in its output and this request stays valid until ${formatUtcMinutes(requestedAtMs + DEVICE_ADD_REQUEST_TTL_MS)} — fix it there and re-run it. Otherwise nothing is needed here`,
     );
     expect(env.logs.join("\n")).toContain("Approved: this device is registered on 0 projects");
   }, 15_000);

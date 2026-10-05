@@ -15,7 +15,7 @@ import { ConfigStore } from "../config.ts";
 import { CliError, usageError } from "../errors.ts";
 import { loginOp, logoutOp } from "../login.ts";
 import { resolveServerOrigin } from "../session.ts";
-import { hiddenIntegerValued, serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
+import { serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
 
 export const loginConfig = {
   ...serverOnlyFlags(),
@@ -33,10 +33,6 @@ export const loginConfig = {
   "show-token": singleFlag(
     "show-token",
     "Print the issued token once, to provision MARUHI_TOKEN on a runtime without lease support (interactive terminals only)",
-  ),
-  "poll-interval": hiddenIntegerValued(
-    "poll-interval",
-    "Minimum approval polling interval in seconds (for tests)",
   ),
 };
 
@@ -97,7 +93,6 @@ export function makeLoginLogoutCommands() {
       const store = yield* ConfigStore;
       const config = yield* store.load;
       const origin = yield* resolveServerOrigin(values.server, config);
-      const minIntervalSeconds = values["poll-interval"];
       yield* loginOp({
         origin,
         tokenName,
@@ -108,7 +103,6 @@ export function makeLoginLogoutCommands() {
         // a same-name rotation. Ruling CM)
         tokenNameIsDefault: tokenName === `cli:${hostname()}`,
         ...(expiresInDays === undefined ? {} : { expiresInDays }),
-        ...(minIntervalSeconds === undefined ? {} : { minIntervalSeconds }),
       });
     }),
   ).pipe(

@@ -8,7 +8,7 @@ import {
   DeviceRegistryLimitError,
 } from "@maruhi/api-schema";
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
-import { Duration, Effect, Result } from "effect";
+import { Clock, Duration, Effect, Result, Schedule } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { type CliServices, type ProjectContextBase } from "./context.ts";
@@ -44,7 +44,7 @@ import {
 // device add
 // ---------------------------------------------------------------------------
 
-/** The wait interval (registry polling — K4-5. Tests shorten it). */
+/** The wait interval (registry polling — K4-5). */
 const DEVICE_ADD_POLL_INTERVAL_MS = 3_000;
 
 /**
@@ -65,7 +65,6 @@ export function deviceAddOp(input: {
   readonly client: MaruhiClient;
   readonly label: string;
   readonly replace: boolean;
-  readonly pollIntervalMs?: number | undefined;
 }): Effect.Effect<void, CliError, CliServices> {
   return Effect.gen(function* () {
     const keychain = yield* Keychain;
@@ -126,7 +125,6 @@ function awaitApproval(
   input: {
     readonly session: CliSession;
     readonly client: MaruhiClient;
-    readonly pollIntervalMs?: number | undefined;
   },
   keys: MasterKeys,
   expiresAtMs: number,
@@ -142,7 +140,6 @@ function awaitApproval(
       client: input.client,
       fingerprintHex: keys.fingerprintHex,
       expiresAtMs,
-      intervalMs: input.pollIntervalMs ?? DEVICE_ADD_POLL_INTERVAL_MS,
       hintAfterMs: DEVICE_ADD_WAIT_HINT_AFTER_MS,
     });
     const standings = yield* keyStandingsOf({
@@ -634,31 +631,35 @@ function waitForRegistryRow(input: {
   readonly client: MaruhiClient;
   readonly fingerprintHex: string;
   readonly expiresAtMs: number;
-  readonly intervalMs: number;
   readonly hintAfterMs: number | null;
 }): Effect.Effect<boolean, never, CliIo> {
   return Effect.gen(function* () {
     let hinted = false;
-    for (;;) {
-      const rows = yield* fetchRegistry(input.client);
-      if (rows?.some((row) => row.keyFingerprintHex === input.fingerprintHex) === true) {
-        return true;
-      }
-      if (Date.now() >= input.expiresAtMs) {
-        return false;
-      }
-      const requestedAtMs = input.expiresAtMs - DEVICE_ADD_REQUEST_TTL_MS;
-      if (
-        !hinted &&
-        input.hintAfterMs !== null &&
-        Date.now() - requestedAtMs >= input.hintAfterMs
-      ) {
-        hinted = true;
-        yield* logNote(
-          `still waiting (${Math.round((Date.now() - requestedAtMs) / 60_000)} minutes since the request): this key is not in your device registry yet. If \`maruhi device approve\` already ran on the approving device and failed on every project, or could not list this device in your device registry, the cause is in its output and this request stays valid until ${formatUtcMinutes(input.expiresAtMs)} — fix it there and re-run it. Otherwise nothing is needed here`,
-        );
-      }
-      yield* Effect.sleep(Duration.millis(input.intervalMs));
-    }
+    const result = yield* Effect.repeat(
+      Effect.gen(function* () {
+        const rows = yield* fetchRegistry(input.client);
+        if (rows?.some((row) => row.keyFingerprintHex === input.fingerprintHex) === true) {
+          return "found" as const;
+        }
+        const nowMs = yield* Clock.currentTimeMillis;
+        if (nowMs >= input.expiresAtMs) {
+          return "expired" as const;
+        }
+        const requestedAtMs = input.expiresAtMs - DEVICE_ADD_REQUEST_TTL_MS;
+        const elapsedMs = nowMs - requestedAtMs;
+        if (!hinted && input.hintAfterMs !== null && elapsedMs >= input.hintAfterMs) {
+          hinted = true;
+          yield* logNote(
+            `still waiting (${Math.round(elapsedMs / 60_000)} minutes since the request): this key is not in your device registry yet. If \`maruhi device approve\` already ran on the approving device and failed on every project, or could not list this device in your device registry, the cause is in its output and this request stays valid until ${formatUtcMinutes(input.expiresAtMs)} — fix it there and re-run it. Otherwise nothing is needed here`,
+          );
+        }
+        return "waiting" as const;
+      }),
+      {
+        schedule: Schedule.spaced(Duration.millis(DEVICE_ADD_POLL_INTERVAL_MS)),
+        until: (round) => round !== "waiting",
+      },
+    );
+    return result === "found";
   });
 }

@@ -1,7 +1,7 @@
 // `maruhi invite` (discipline: see commands/index.ts).
 
 import { ALL_SCOPE } from "@maruhi/crypto";
-import { Effect, Redacted } from "effect";
+import { Clock, Effect, Redacted } from "effect";
 import { Argument, Command } from "effect/cli";
 
 import { identityBackingOf } from "../config.ts";
@@ -202,7 +202,7 @@ function inviteListCommand(flags: CommonFlags): Effect.Effect<number, CliError, 
       client: context.client,
       verified: context.verified,
       pins: loaded.pins,
-      nowMs: Date.now(),
+      nowMs: yield* Clock.currentTimeMillis,
     });
     // A signature-verification failure or a pin mismatch is not "a
     // successful read" but a detection of evidence — never 0 (a script can

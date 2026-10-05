@@ -15,6 +15,7 @@ import {
   MockServer,
   onRequest,
 } from "./support/server.ts";
+import { runCliWithClock } from "./support/test-clock.ts";
 
 let servers: MockServer[] = [];
 
@@ -60,8 +61,9 @@ function approvedResponse(input?: {
 
 /**
  * The maruhi side of the handoff (start + n polls of pending → final response).
- * The start response's pollIntervalSeconds is 0 (tests pass `--poll-interval 0`
- * so the lower bound is also 0 — no real-time sleep).
+ * The start response's pollIntervalSeconds is 0 (clamped up to the wire
+ * minimum — the run's waits are driven by the TestClock, so no real-time
+ * sleep happens either way).
  */
 function fakeHandoff(
   input: {
@@ -117,9 +119,6 @@ function fakeHandoff(
   return { handlers, polls: () => polls, startBodies, pollBodies };
 }
 
-/** Flags shared by all tests (no real-time sleep). */
-const FAST_POLL = ["--poll-interval", "0"] as const;
-
 describe("maruhi login", () => {
   it("fails an overlong --token-name before any communication (never wastes the browser approval)", async () => {
     // If the argument layer skipped the cap (api-schema's MAX_TOKEN_NAME_LENGTH),
@@ -131,7 +130,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    const code = await runCli(["login", "--token-name", "n".repeat(129), ...FAST_POLL], env.layer);
+    const code = await runCliWithClock(["login", "--token-name", "n".repeat(129)], env.layer);
     // A usage mistake is a usage error (2)
     expect(code).toBe(2);
     expect(env.errors.join("\n")).toContain("--token-name must be at most 128 characters");
@@ -149,7 +148,7 @@ describe("maruhi login", () => {
     await seedConfig(env, { server: maruhi.origin });
 
     for (const value of ["0", "366"]) {
-      const code = await runCli(["login", "--token-ttl-days", value, ...FAST_POLL], env.layer);
+      const code = await runCliWithClock(["login", "--token-ttl-days", value], env.layer);
       expect(code).toBe(2);
     }
     expect(env.errors.join("\n")).toContain("--token-ttl-days must be between 1 and 365");
@@ -162,8 +161,8 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(await runCli(["login", "--token-ttl-days", "365", ...FAST_POLL], env.layer)).toBe(0);
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login", "--token-ttl-days", "365"], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     expect(handoff.startBodies[0]?.["expiresInDays"]).toBe(365);
     // When omitted, the server default (90 days) applies — the key itself is not sent
     expect(Object.hasOwn(handoff.startBodies[1] ?? {}, "expiresInDays")).toBe(false);
@@ -177,7 +176,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    const code = await runCli(["login", "--token-name", "cli-test", ...FAST_POLL], env.layer);
+    const code = await runCliWithClock(["login", "--token-name", "cli-test"], env.layer);
     expect(code).toBe(0);
     expect(handoff.polls()).toBe(3);
     // The issuance parameters ride on start (§4-1 (1) — fixed at start, not at issuance)
@@ -237,7 +236,7 @@ describe("maruhi login", () => {
       await seedConfig(env, { server: maruhi.origin });
       env.setPromptResponses(["y"]);
 
-      expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+      expect(await runCliWithClock(["login"], env.layer)).toBe(0);
       expect(env.prompts.join("\n")).toContain("Do you already have a maruhi account");
       expect(env.errors.join("\n")).toContain("invite-only");
       // Past the confirmation, proceed to the usual start → poll
@@ -251,7 +250,7 @@ describe("maruhi login", () => {
       await seedConfig(env, { server: maruhi.origin });
       env.setPromptResponses([""]);
 
-      expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
+      expect(await runCliWithClock(["login"], env.layer)).toBe(1);
       // A misoperation guard (not authorization): never begins a wasted browser round trip
       expect(maruhi.requests.map((request) => request.path)).toEqual(["/auth/config"]);
       const output = [...env.logs, ...env.errors].join("\n");
@@ -267,7 +266,7 @@ describe("maruhi login", () => {
       await seedConfig(env, { server: maruhi.origin });
       env.setPromptResponses(["n"]);
 
-      expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
+      expect(await runCliWithClock(["login"], env.layer)).toBe(1);
       expect(env.errors.join("\n")).toContain("not accepting new sign-ups");
       expect(maruhi.requests.map((request) => request.path)).toEqual(["/auth/config"]);
     });
@@ -283,7 +282,7 @@ describe("maruhi login", () => {
         } else {
           env.setTerminal({ stdin: false });
         }
-        expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+        expect(await runCliWithClock(["login"], env.layer)).toBe(0);
         expect(env.prompts).toHaveLength(0);
         expect(env.errors.join("\n")).toContain("invite-only");
         expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
@@ -296,7 +295,7 @@ describe("maruhi login", () => {
       const env = await makeTestEnv();
       await seedConfig(env, { server: maruhi.origin });
 
-      expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+      expect(await runCliWithClock(["login"], env.layer)).toBe(0);
       expect(env.prompts).toHaveLength(0);
       expect(env.errors.join("\n")).not.toContain("invite-only");
     });
@@ -307,7 +306,7 @@ describe("maruhi login", () => {
       const bareServer = await start(bare.handlers);
       const env2 = await makeTestEnv();
       await seedConfig(env2, { server: bareServer.origin });
-      expect(await runCli(["login", ...FAST_POLL], env2.layer)).toBe(0);
+      expect(await runCliWithClock(["login"], env2.layer)).toBe(0);
       expect(env2.prompts).toHaveLength(0);
     });
   });
@@ -319,7 +318,7 @@ describe("maruhi login", () => {
     await seedConfig(env, { server: maruhi.origin });
     // The default TestEnv = interactive terminal × non-agent
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     expect(env.browserOpens).toEqual([VERIFICATION_URL]);
     expect(env.errors.join("\n")).toContain("Opened your browser");
   });
@@ -337,7 +336,7 @@ describe("maruhi login", () => {
       } else {
         env.setTerminal({ stdout: false });
       }
-      expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+      expect(await runCliWithClock(["login"], env.layer)).toBe(0);
       expect(env.browserOpens).toHaveLength(0);
       const guidance = env.errors.join("\n");
       expect(guidance).toContain(VERIFICATION_URL);
@@ -355,7 +354,7 @@ describe("maruhi login", () => {
     await seedConfig(env, { server: maruhi.origin });
     env.setBrowserOpenSucceeds(false);
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     expect(env.browserOpens).toEqual([VERIFICATION_URL]);
     // A failed launch is never claimed as "opened" (the manual-open guidance for the URL is always shown)
     expect(env.errors.join("\n")).not.toContain("Opened your browser");
@@ -372,7 +371,7 @@ describe("maruhi login", () => {
       const env = await makeTestEnv();
       await seedConfig(env, { server: maruhi.origin });
       // The default TestEnv = interactive terminal × non-agent (the auto-launch target environment)
-      expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+      expect(await runCliWithClock(["login"], env.layer)).toBe(0);
       expect(env.browserOpens).toHaveLength(0);
       expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
     }
@@ -390,7 +389,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).not.toContain("\u001b");
     expect(env.errors.join("\n")).not.toContain("\u001b");
     expect(env.errors.join("\n")).toContain("Confirmation code: AB\uFFFDCD");
@@ -402,7 +401,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("denied in the browser");
     expect(env.keychain.size).toBe(0);
   });
@@ -415,7 +414,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("The sign-in request expired");
     expect(handoff.polls()).toBe(1);
     expect(env.keychain.size).toBe(0);
@@ -431,7 +430,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("rejected by the server");
     expect(env.keychain.size).toBe(0);
   });
@@ -461,7 +460,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     expect(polls).toBe(2);
     expect(env.keychain.get(tokenEntryName(maruhi.origin))).toBeDefined();
   });
@@ -476,8 +475,11 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("The sign-in request expired");
+    expect(env.errors.at(-1)).toBe(
+      "maruhi: The sign-in request expired (it was valid for 0 seconds). Run `maruhi login` again",
+    );
     expect(handoff.polls()).toBe(0);
   });
 
@@ -496,7 +498,7 @@ describe("maruhi login", () => {
       const maruhi = await start(handoff.handlers);
       const env = await makeTestEnv();
       await seedConfig(env, { server: maruhi.origin });
-      expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
+      expect(await runCliWithClock(["login"], env.layer)).toBe(1);
       const guidance = env.errors.join("\n");
       expect(guidance).toContain(`This request expires in ${window}`);
       expect(guidance).toContain(`The sign-in request expired (it was valid for ${window})`);
@@ -506,7 +508,7 @@ describe("maruhi login", () => {
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("This request expires in 15 minutes");
   });
 
@@ -515,7 +517,7 @@ describe("maruhi login", () => {
     const maruhi = await start(handoff.handlers);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
-    expect(await runCli(["login", "--token-name", "cli-test", ...FAST_POLL], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login", "--token-name", "cli-test"], env.layer)).toBe(0);
     // stdout carries only the result (no URL / code / waiting display mixed in)
     expect(env.logs).toEqual([
       "Signed in as user-0001. The token is stored in the OS keychain",
@@ -534,7 +536,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("self-hosting setup is incomplete");
     expect(env.errors.join("\n")).toContain("SELF_HOSTING");
   });
@@ -547,7 +549,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).toContain("(invalid timestamp: 9900000000000000)");
   });
 
@@ -557,7 +559,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(await runCli(["login", "--show-token", ...FAST_POLL], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login", "--show-token"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain("maruhi_pat_issued");
     expect(logs).toContain("MARUHI_TOKEN");
@@ -582,9 +584,9 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(
-      await runCli(["login", "--token-name", "ci", "--show-token", ...FAST_POLL], env.layer),
-    ).toBe(0);
+    expect(await runCliWithClock(["login", "--token-name", "ci", "--show-token"], env.layer)).toBe(
+      0,
+    );
     const notes = env.errors.join("\n");
     expect(notes).toContain("run a plain `maruhi login` afterwards");
     expect(notes).not.toContain("issue it under a distinct name instead");
@@ -601,7 +603,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(await runCli(["login", "--show-token", ...FAST_POLL], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login", "--show-token"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
     // Raw ESC / fake appended lines never reach the terminal (visualized as escape sequences)
     expect(logs).not.toContain("\u001b");
@@ -619,13 +621,13 @@ describe("maruhi login", () => {
     const agentEnv = await makeTestEnv();
     await seedConfig(agentEnv, { server: maruhi.origin });
     agentEnv.setAgent({ isAgent: true, name: "test-agent" });
-    expect(await runCli(["login", "--show-token", ...FAST_POLL], agentEnv.layer)).toBe(1);
+    expect(await runCliWithClock(["login", "--show-token"], agentEnv.layer)).toBe(1);
     expect(agentEnv.errors.join("\n")).toContain("AI agent environment was detected");
 
     const pipedEnv = await makeTestEnv();
     await seedConfig(pipedEnv, { server: maruhi.origin });
     pipedEnv.setTerminal({ stdout: false });
-    expect(await runCli(["login", "--show-token", ...FAST_POLL], pipedEnv.layer)).toBe(1);
+    expect(await runCliWithClock(["login", "--show-token"], pipedEnv.layer)).toBe(1);
     expect(pipedEnv.errors.join("\n")).toContain("interactive terminal");
 
     expect(maruhi.requests).toHaveLength(0);
@@ -643,7 +645,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     const hint = env.errors.join("\n");
     expect(hint).toContain("`maruhi key recover`");
     // Path ordering (K7-4): if a device remains, add; otherwise, recover
@@ -674,7 +676,7 @@ describe("maruhi login", () => {
       }),
     );
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("issue one with `maruhi key recovery`");
   });
 
@@ -685,7 +687,7 @@ describe("maruhi login", () => {
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(0);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(0);
     // Never a silent skip (CLAUDE.md: do not swallow silently in a catch)
     expect(env.errors.join("\n")).toContain("skipped the next-step hint");
   });
@@ -705,7 +707,7 @@ describe("maruhi login", () => {
     await seedConfig(env, { server: maruhi.origin });
     env.failKeychainWrites();
 
-    expect(await runCli(["login", ...FAST_POLL], env.layer)).toBe(1);
+    expect(await runCliWithClock(["login"], env.layer)).toBe(1);
     expect(revoked).toBe(1);
     expect(env.keychain.size).toBe(0);
     expect(env.errors.join("\n")).toContain("cannot write to the keychain (test injection)");
@@ -721,7 +723,7 @@ describe("maruhi login", () => {
     await seedConfig(env, { server: maruhi.origin });
     env.failKeychainWrites();
 
-    expect(await runCli(["login", "--token-name", "cli-test", ...FAST_POLL], env.layer)).toBe(1);
+    expect(await runCliWithClock(["login", "--token-name", "cli-test"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("revoking the issued token also failed");
     expect(errors).not.toContain("has been revoked on the server");

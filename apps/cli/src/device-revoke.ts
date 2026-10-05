@@ -5,7 +5,7 @@
 import { ForbiddenError, TokenNotFoundError } from "@maruhi/api-schema";
 import type { ChainDevice, ChainMember, MemberScope, Role } from "@maruhi/crypto";
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
@@ -140,7 +140,12 @@ function finishOwnRevocation(input: {
   return Effect.gen(function* () {
     const store = yield* OwnDeviceStore;
     // revoked in the local record (prevents re-registering — K4-3 counterexample 1)
-    yield* store.markRevoked(input.session.origin, input.session.userId, input.revoked, Date.now());
+    yield* store.markRevoked(
+      input.session.origin,
+      input.session.userId,
+      input.revoked,
+      yield* Clock.currentTimeMillis,
+    );
     for (const fp of input.revoked) {
       yield* input.client.devices.remove({ params: { fp } }).pipe(
         Effect.asVoid,

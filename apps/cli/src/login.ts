@@ -16,7 +16,7 @@
 //   keychain
 
 import { MIN_CLI_POLL_INTERVAL_SECONDS } from "@maruhi/api-schema";
-import { Duration, Effect, Option, Redacted, Stdio } from "effect";
+import { Cause, Clock, Duration, Effect, Option, Pull, Redacted, Schedule, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
 import { AgentProfileRef } from "./agent-gate.ts";
@@ -51,9 +51,9 @@ const MAX_EXPIRES_IN_SECONDS = 1800;
 
 /**
  * Clamps the polling interval into [min, max] (the minimum is the
- * wire-shared MIN_CLI_POLL_INTERVAL_SECONDS — §4-1 (5). Only tests may
- * shorten it). 0 / negative / non-numeric go to the minimum (no busy
- * spin). When the minimum exceeds the maximum, the minimum wins.
+ * wire-shared MIN_CLI_POLL_INTERVAL_SECONDS — §4-1 (5)). 0 / negative /
+ * non-numeric go to the minimum (no busy spin). When the minimum
+ * exceeds the maximum, the minimum wins.
  */
 function clampInterval(seconds: number, minSeconds: number): number {
   if (!Number.isFinite(seconds) || seconds < minSeconds) {
@@ -282,8 +282,6 @@ export function loginOp(input: {
   readonly tokenNameIsDefault: boolean;
   /** The explicit TTL (days. AUTH_SPEC §6 — W3a. Omitted = the server default of 90 days). */
   readonly expiresInDays?: number;
-  /** The polling interval's floor (seconds. Shortened only by tests). */
-  readonly minIntervalSeconds?: number;
 }): Effect.Effect<void, CliError, Keychain | CliIo | HttpClient.HttpClient | Stdio.Stdio> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
@@ -327,30 +325,55 @@ export function loginOp(input: {
     yield* maybeOpenBrowser(io, started.verificationUrl);
     yield* io.logError("Waiting for approval\u2026");
 
-    // Acquisition (§4-1 (5)). The deadline is checked **before** the
-    // sleep (when the next polling time passes the deadline the flow
-    // expires during the wait)
-    const minInterval = input.minIntervalSeconds ?? MIN_CLI_POLL_INTERVAL_SECONDS;
-    const deadlineMs = Date.now() + expiresInSeconds * 1000;
-    const initialInterval = clampInterval(started.pollIntervalSeconds, minInterval);
-    const poll = (
-      intervalSeconds: number,
-    ): Effect.Effect<Extract<PollOutcome, { readonly kind: "approved" }>, CliError> =>
-      Effect.gen(function* () {
-        if (Date.now() + intervalSeconds * 1000 > deadlineMs) {
-          return yield* Effect.fail(cliError(flowExpiredMessage(window)));
-        }
-        yield* Effect.sleep(Duration.seconds(intervalSeconds));
-        const outcome = yield* pollOnce(client, started.flowId, started.flowToken, window);
-        if (outcome.kind === "approved") {
-          return outcome;
-        }
-        if (outcome.kind === "backoff") {
-          return yield* poll(clampInterval(outcome.retryAfterSeconds, intervalSeconds));
-        }
-        return yield* poll(intervalSeconds);
-      });
-    const approved = yield* poll(initialInterval);
+    // Acquisition (§4-1 (5)). The deadline is checked **before** each
+    // wait (when the next polling time passes it the flow expires
+    // during the wait — in the step's metadata `now`, the same Clock
+    // the sleep runs on). The server may raise the interval per
+    // response (slow_down / 429), so the wait is computed in the
+    // schedule's own state from the last poll's outcome — `scheduleFrom`
+    // runs the step once before the first poll, which is exactly this
+    // flow's leading sleep
+    const deadlineMs = (yield* Clock.currentTimeMillis) + expiresInSeconds * 1000;
+    const initialInterval = clampInterval(
+      started.pollIntervalSeconds,
+      MIN_CLI_POLL_INTERVAL_SECONDS,
+    );
+    // The step's first input — a synthetic pre-poll state for the leading
+    // wait (a real poll's outcome feeds the next step from then on)
+    const pendingOutcome: PollOutcome = { kind: "pending" };
+    const awaitingApproval: Schedule.Schedule<PollOutcome, PollOutcome> = Schedule.while(
+      Schedule.fromStepWithMetadata(
+        Effect.sync(() => {
+          let intervalSeconds = initialInterval;
+          return ({
+            input: lastOutcome,
+            now,
+          }: Schedule.InputMetadata<PollOutcome>): Pull.Pull<
+            [PollOutcome, Duration.Duration],
+            Cause.Done<PollOutcome>,
+            PollOutcome
+          > => {
+            if (lastOutcome.kind === "backoff") {
+              intervalSeconds = clampInterval(lastOutcome.retryAfterSeconds, intervalSeconds);
+            }
+            return now + intervalSeconds * 1000 > deadlineMs
+              ? Cause.done(lastOutcome)
+              : Effect.succeed<[PollOutcome, Duration.Duration]>([
+                  lastOutcome,
+                  Duration.seconds(intervalSeconds),
+                ]);
+          };
+        }),
+      ),
+      ({ input: polled }) => polled.kind !== "approved",
+    );
+    const outcome = yield* pollOnce(client, started.flowId, started.flowToken, window).pipe(
+      Effect.scheduleFrom<PollOutcome, PollOutcome, never, never>(pendingOutcome, awaitingApproval),
+    );
+    if (outcome.kind !== "approved") {
+      return yield* Effect.fail(cliError(flowExpiredMessage(window)));
+    }
+    const approved = outcome;
 
     const issuedToken = Redacted.make(approved.token, { label: "maruhi-token" });
     const record: StoredToken = {

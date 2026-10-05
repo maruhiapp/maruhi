@@ -1096,9 +1096,9 @@ describe("the login / logout argument layer (ADR-0016 stage 3 ④)", () => {
     // The expected type may be shown since it comes from the declaration,
     // but the given value could contain plaintext, so it is never shown
     const { env, server } = await startEnv();
-    expect(await runCli(["login", "--poll-interval", "s3cr3t"], env.layer)).toBe(2);
+    expect(await runCli(["login", "--token-ttl-days", "s3cr3t"], env.layer)).toBe(2);
     const errors = env.errors.join("\n");
-    expect(errors).toContain("Unacceptable value for flag --poll-interval");
+    expect(errors).toContain("Unacceptable value for flag --token-ttl-days");
     expectNoLeak(env, ["s3cr3t"]);
     expect(server.requests).toHaveLength(0);
   });
@@ -1118,20 +1118,15 @@ describe("the login / logout argument layer (ADR-0016 stage 3 ④)", () => {
     expect(env.errors.join("\n")).toContain("Unknown flag (did you mean --token-name?)");
   });
 
-  it("hidden options appear in neither help nor candidates", async () => {
-    // The internal-facing spelling (--poll-interval) is not spread around.
-    // Upstream's typo candidates exclude hidden (measured), and our own list (specOf) excludes it too
-    const typo = await startEnv();
-    expect(await runCli(["login", "--poll-intervall", "3"], typo.env.layer)).toBe(2);
-    const errors = typo.env.errors.join("\n");
-    expect(errors).not.toContain("--poll-interval");
+  it("--poll-interval no longer exists and is refused as an unknown flag", async () => {
+    // The hidden test-only shortcut was removed with the polling rewrite
+    // (the schedule now drives the waits; tests advance a TestClock). An
+    // unknown flag is a usage error (2), and the given value is never echoed
+    const { env } = await startEnv();
+    expect(await runCli(["login", "--poll-interval", "3"], env.layer)).toBe(2);
+    const errors = env.errors.join("\n");
     expect(errors).toContain("Unknown flag");
-
-    const help = await startEnv();
-    expect(await runCli(["login", "--help"], help.env.layer)).toBe(0);
-    const full = help.env.errors.join("\n");
-    expect(full).toContain("--token-name");
-    expect(full).not.toContain("--poll-interval");
+    expect(errors).not.toContain("--poll-interval");
   });
 
   it("logout takes no positional args", async () => {
