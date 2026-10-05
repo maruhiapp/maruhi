@@ -31,6 +31,7 @@
 // chain — §6.4). The acceptance time is stored but not distributed (§16-1).
 // It is also not turned into an audit event (§16-3).
 
+import { cryptoEffect } from "@maruhi/core";
 import type { AttestationInvalidReason } from "@maruhi/crypto";
 import { verifyDistributedHeadAttestation } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -105,8 +106,8 @@ export const putHeadAttestationProgram = (
     //    design record §8 K3-1. The attester's key = the signing device's
     //    device key — CRYPTO_SPEC §6.6)
     const { device: attester } = yield* withSigningDevice(context.member, (candidate) =>
-      Effect.gen(function* () {
-        const verified = yield* Effect.promise(() =>
+      Effect.catchTag(
+        cryptoEffect(() =>
           verifyDistributedHeadAttestation({
             history: context.history,
             context: {
@@ -119,22 +120,18 @@ export const putHeadAttestationProgram = (
             attesterKeyFingerprintHex: candidate.keyFingerprintHex,
             signatureHex: input.signatureHex,
           }),
-        );
-        if (!verified.ok) {
-          if (verified.error.kind === "HeadAttestationInvalid") {
-            return yield* rejectData({
-              kind: "attestation-rejected",
-              reason: ATTESTATION_REJECT_REASONS[verified.error.reason],
-            });
-          }
-          // InvalidInput / KeyImportFailed are unreachable with a
-          // Schema-validated wire + a key derived from a verified chain
-          // (implementation bug = defect. No secrets included)
-          return yield* Effect.die(
-            new Error(`head attestation verification failed: ${verified.error.kind}`),
-          );
-        }
-      }),
+        ),
+        "CryptoHeadAttestationInvalid",
+        (error) =>
+          rejectData({
+            kind: "attestation-rejected",
+            reason: ATTESTATION_REJECT_REASONS[error.reason],
+          }),
+        // InvalidInput / KeyImportFailed are unreachable with a
+        // Schema-validated wire + a key derived from a verified chain
+        // (implementation bug = defect. No secrets included)
+        (error) => Effect.die(error),
+      ),
     );
 
     // 4. Monotonic seq advance (regression 409 / same seq idempotent 204 /

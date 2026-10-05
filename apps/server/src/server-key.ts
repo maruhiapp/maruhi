@@ -26,6 +26,7 @@
 // server key is an optional feature and there is no reason to block
 // the login path.
 
+import { cryptoEffect, cryptoPromise } from "@maruhi/core";
 import {
   computeServerKeyFingerprint,
   decodeHex,
@@ -38,7 +39,7 @@ import {
   unwrapDek,
   wrapLeaseDek,
 } from "@maruhi/crypto";
-import { Context, Effect } from "effect";
+import { Context, Data, Effect } from "effect";
 
 import type { WireSuite } from "./data/data-plane.ts";
 
@@ -103,31 +104,43 @@ interface DerivedServerKey {
   readonly keyPair: EncryptionKeyPair;
 }
 
-async function derive(ikmHex: string | undefined): Promise<DerivedServerKey | null> {
-  if (ikmHex === undefined || ikmHex === "") {
-    return null;
-  }
-  const ikm = decodeHex(ikmHex);
-  if (ikm === null || ikm.length !== IKM_BYTES) {
-    return null;
-  }
-  const pair = await deriveEncryptionKeyPair({ ikm });
-  if (!pair.ok) {
-    return null;
-  }
-  const publicKey = await exportEncryptionPublicKey(pair.value.publicKey);
-  const fingerprint = await computeServerKeyFingerprint(publicKey);
-  if (!fingerprint.ok) {
-    return null;
-  }
-  return {
-    info: {
-      serverEncPubHex: encodeHex(publicKey),
-      serverKeyFingerprintHex: encodeHex(fingerprint.value),
-    },
-    keyPair: pair.value,
-  };
-}
+/**
+ * The domain error `derive` folds every wrapped crypto error into:
+ * an underivable server key is an unconfigured deployment — the same
+ * treatment as an unset or malformed ikm (the public face disappears
+ * from /auth/config).
+ */
+class ServerKeyUnusableError extends Data.TaggedError("ServerKeyUnusable")<object> {}
+const unusable = new ServerKeyUnusableError();
+
+const derive = (ikmHex: string | undefined): Effect.Effect<DerivedServerKey | null> =>
+  Effect.gen(function* () {
+    if (ikmHex === undefined || ikmHex === "") {
+      return null;
+    }
+    const ikm = decodeHex(ikmHex);
+    if (ikm === null || ikm.length !== IKM_BYTES) {
+      return null;
+    }
+    const pair = yield* cryptoEffect(() => deriveEncryptionKeyPair({ ikm }));
+    // A rejection of the bare-Promise export is a platform defect,
+    // not "unusable material" — the same defect the pre-bridge code
+    // let the cached Promise's rejection propagate as
+    const publicKey = yield* cryptoPromise("exportEncryptionPublicKey", () =>
+      exportEncryptionPublicKey(pair.publicKey),
+    ).pipe(Effect.orDie);
+    const fingerprint = yield* cryptoEffect(() => computeServerKeyFingerprint(publicKey));
+    return {
+      info: {
+        serverEncPubHex: encodeHex(publicKey),
+        serverKeyFingerprintHex: encodeHex(fingerprint),
+      },
+      keyPair: pair,
+    };
+  }).pipe(
+    Effect.mapError(() => unusable),
+    Effect.catchTag("ServerKeyUnusable", () => Effect.succeed(null)),
+  );
 
 /**
  * Zero-fills the buffer of an unsealed DEK. In JS a copy made before
@@ -145,16 +158,27 @@ function zeroize(bytes: Uint8Array): void {
  * (the ikm and the secret key stay inside the closure).
  */
 export function makeServerKey(ikmHex: string | undefined): ServerKeyShape {
-  let cached: Promise<DerivedServerKey | null> | undefined;
-  const derived = (): Promise<DerivedServerKey | null> => {
-    cached ??= derive(ikmHex);
-    return cached;
-  };
+  // Effect.cached allocates its memo cell synchronously: one
+  // derivation per isolate however many fibers race — the first run's
+  // Exit (a derived key, a null "unconfigured", or a defect) is
+  // replayed to every later call, the same guarantee the hand-made
+  // `cached ??=` Promise gave
+  const derived = Effect.runSync(Effect.cached(derive(ikmHex)));
+  // Accesses hold the memo evaluation uninterruptibly. An interrupted
+  // first caller would otherwise leave an interrupted Exit in the
+  // cell permanently, poisoning the key until the isolate is recycled
+  // (the detached Promise had no such failure mode). The mask must
+  // wrap the access, not the derivation: the pending interrupt
+  // surfaces when the mask lifts, which inside `cached` would still be
+  // within the cell's scope — here the store lands first and the
+  // caller's interrupt only takes effect after it. Waiters wait out
+  // the one-shot derivation before their own interrupt lands
+  const shared = Effect.uninterruptible(derived);
   return {
-    info: Effect.promise(async () => (await derived())?.info ?? null),
+    info: Effect.map(shared, (key) => key?.info ?? null),
     reseal: (input) =>
       Effect.gen(function* () {
-        const key = yield* Effect.promise(derived);
+        const key = yield* shared;
         if (key === null) {
           return yield* Effect.fail<ResealFailure>("not-configured");
         }
@@ -162,15 +186,14 @@ export function makeServerKey(ikmHex: string | undefined): ServerKeyShape {
         if (workloadPubBytes === null) {
           return yield* Effect.fail<ResealFailure>("wrap-failed");
         }
-        const workloadPublicKey = yield* Effect.promise(() =>
+        const workloadPublicKey = yield* cryptoEffect(() =>
           importEncryptionPublicKey(workloadPubBytes),
-        );
-        if (!workloadPublicKey.ok) {
+        ).pipe(
           // Import can fail even through the wire Schema (32-byte
           // hex) — an X25519 public key that is invalid as a point.
           // The caller maps it to a 400-equivalent
-          return yield* Effect.fail<ResealFailure>("wrap-failed");
-        }
+          Effect.mapError(() => "wrap-failed" as const),
+        );
         const leases: LeaseWrapOutput[] = [];
         for (const wrap of input.wraps) {
           const enc = decodeHex(wrap.encHex);
@@ -178,7 +201,7 @@ export function makeServerKey(ikmHex: string | undefined): ServerKeyShape {
           if (enc === null || ciphertext === null) {
             return yield* Effect.fail<ResealFailure>("unwrap-failed");
           }
-          const dek = yield* Effect.promise(() =>
+          const dek = yield* cryptoEffect(() =>
             unwrapDek({
               recipientKeyPair: key.keyPair,
               wrapped: { enc, ciphertext },
@@ -191,30 +214,30 @@ export function makeServerKey(ikmHex: string | undefined): ServerKeyShape {
                 recipientUserId: key.info.serverKeyFingerprintHex,
               },
             }),
-          );
-          if (!dek.ok) {
+          ).pipe(
             // An undecryptable poisoned wrap (a target of §12-6's
             // repair path). No DEK was obtained
-            return yield* Effect.fail<ResealFailure>("unwrap-failed");
-          }
+            Effect.mapError(() => "unwrap-failed" as const),
+          );
           const context: LeaseWrapContext = {
             projectId: input.projectId,
             environmentId: input.environmentId,
             epoch: wrap.epoch,
             claimsDigestHex: input.claimsDigestHex,
           };
-          const leased = yield* Effect.promise(() =>
-            wrapLeaseDek({ workloadPublicKey: workloadPublicKey.value, dek: dek.value, context }),
+          const leased = yield* cryptoEffect(() =>
+            wrapLeaseDek({ workloadPublicKey, dek, context }),
+          ).pipe(
+            // The unsealed DEK is zero-filled on every exit —
+            // success, wrap failure, and defect alike
+            Effect.ensuring(Effect.sync(() => zeroize(dek))),
+            Effect.mapError(() => "wrap-failed" as const),
           );
-          zeroize(dek.value);
-          if (!leased.ok) {
-            return yield* Effect.fail<ResealFailure>("wrap-failed");
-          }
           leases.push({
             suite: wrap.suite,
             epoch: wrap.epoch,
-            encHex: encodeHex(leased.value.enc),
-            ciphertextHex: encodeHex(leased.value.ciphertext),
+            encHex: encodeHex(leased.enc),
+            ciphertextHex: encodeHex(leased.ciphertext),
           });
         }
         return leases;

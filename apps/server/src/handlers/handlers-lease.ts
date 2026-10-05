@@ -21,6 +21,7 @@ import {
   ProjectNotFoundError,
   RotationProposalRejectedError,
 } from "@maruhi/api-schema";
+import { cryptoEffect } from "@maruhi/core";
 import { computeLeaseClaimsDigest } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -61,22 +62,16 @@ function claimsDigestFor(token: VerifiedOidcToken): Effect.Effect<string, LeaseU
     // the reason code does not go looking for a "claim that exists"
     return Effect.fail(new LeaseUnauthorizedError({ reason: "ambiguous-audience" }));
   }
-  return Effect.flatMap(
-    Effect.promise(() =>
-      computeLeaseClaimsDigest({
-        issuerUrl: token.issuer,
-        subject: token.subject,
-        audience,
-      }),
-    ),
-    (digest) =>
-      // Unreachable because the verifier has already dropped empty
-      // fields (stringClaim / audiencesOf), but do not swallow crypto's
-      // Result
-      digest.ok
-        ? Effect.succeed(digest.value)
-        : Effect.fail(new LeaseUnauthorizedError({ reason: "missing-claim" })),
-  );
+  // Unreachable because the verifier has already dropped empty
+  // fields (stringClaim / audiencesOf), but a wrapped crypto error is
+  // still mapped rather than swallowed
+  return cryptoEffect(() =>
+    computeLeaseClaimsDigest({
+      issuerUrl: token.issuer,
+      subject: token.subject,
+      audience,
+    }),
+  ).pipe(Effect.mapError(() => new LeaseUnauthorizedError({ reason: "missing-claim" })));
 }
 
 /**

@@ -1,5 +1,6 @@
 // Server-side verification of meta statements (the AUTH_SPEC §12-5 meta rules = CRYPTO_SPEC §4.2 / §6.4).
 
+import { cryptoEffect } from "@maruhi/core";
 import type {
   ChainHistoryIndex,
   MetaInvalidReason,
@@ -125,59 +126,57 @@ export const ensureMetaStatementSignature = (input: {
 }) =>
   Effect.gen(function* () {
     yield* ensureLayoutShape(input.statement);
-    const verified = yield* Effect.promise(() =>
-      verifyDistributedMetaStatement({
-        history: input.history,
-        context: {
-          suite: input.statement.suite,
-          projectId: input.projectId,
-          environmentId: input.environmentId,
-          target: input.target,
-          name: input.statement.name,
-          status: input.statement.status,
-          // The layout v2 carrier field (§12-2 — omitted = 1). Selects which
-          // layout's signed_bytes to recompute (ruling CR)
-          layoutVersion: input.statement.layoutVersion,
-          schema: cryptoSchemaOf(input.statement),
-          metaVersion: input.statement.metaVersion,
-          prevMetaSigHashHex: input.statement.prevMetaSigHashHex,
-          // author = the calling principal (§12-5 item 1). The bound-key match
-          // between the verification key and head time is checked by
-          // verifyDistributedMetaStatement via the FP (chain-derived member at acceptance time)
-          authorUserId: input.member.userId,
-          chainHeadHashHex: input.statement.chainHeadHashHex,
-          chainHeadSeq: input.statement.chainHeadSeq,
-        },
-        authorKeyFingerprintHex: input.member.keyFingerprintHex,
-        signatureHex: input.statement.signatureHex,
-        predecessor: input.predecessor,
-      }),
+    const verified = yield* Effect.catchTags(
+      cryptoEffect(() =>
+        verifyDistributedMetaStatement({
+          history: input.history,
+          context: {
+            suite: input.statement.suite,
+            projectId: input.projectId,
+            environmentId: input.environmentId,
+            target: input.target,
+            name: input.statement.name,
+            status: input.statement.status,
+            // The layout v2 carrier field (§12-2 — omitted = 1). Selects which
+            // layout's signed_bytes to recompute (ruling CR)
+            layoutVersion: input.statement.layoutVersion,
+            schema: cryptoSchemaOf(input.statement),
+            metaVersion: input.statement.metaVersion,
+            prevMetaSigHashHex: input.statement.prevMetaSigHashHex,
+            // author = the calling principal (§12-5 item 1). The bound-key match
+            // between the verification key and head time is checked by
+            // verifyDistributedMetaStatement via the FP (chain-derived member at acceptance time)
+            authorUserId: input.member.userId,
+            chainHeadHashHex: input.statement.chainHeadHashHex,
+            chainHeadSeq: input.statement.chainHeadSeq,
+          },
+          authorKeyFingerprintHex: input.member.keyFingerprintHex,
+          signatureHex: input.statement.signatureHex,
+          predecessor: input.predecessor,
+        }),
+      ),
+      {
+        CryptoMetaStatementInvalid: (error) =>
+          rejectData({
+            kind: "meta-rejected",
+            reason: META_REJECT_REASONS[error.reason],
+          }),
+        // A declared layoutVersion beyond this server's support range ({1, 2, 3})
+        // occurs as the **normal case** of "old server × new client" once this
+        // revision puts layoutVersion on the wire (ruling CR). The primary check is
+        // ensureSupportedLayout at the head of each acceptance path; this is the
+        // fail-closed second line of defense (even if a new acceptance path drops
+        // the head check, it must not become defect = a 500 indistinguishable from
+        // a tamper warning)
+        CryptoUnsupportedMetaLayout: () =>
+          rejectData({ kind: "meta-rejected", reason: "unsupported-layout" }),
+      },
+      // InvalidInput / KeyImportFailed are unreachable with a Schema-validated
+      // wire plus a key derived from a verified chain (an implementation bug =
+      // defect; the error value contains no secrets)
+      (error) => Effect.die(error),
     );
-    if (verified.ok) {
-      return verified.value.signedBytesHashHex;
-    }
-    if (verified.error.kind === "MetaStatementInvalid") {
-      return yield* rejectData({
-        kind: "meta-rejected",
-        reason: META_REJECT_REASONS[verified.error.reason],
-      });
-    }
-    // A declared layoutVersion beyond this server's support range ({1, 2, 3})
-    // occurs as the **normal case** of "old server × new client" once this
-    // revision puts layoutVersion on the wire (ruling CR). The primary check is
-    // ensureSupportedLayout at the head of each acceptance path; this is the
-    // fail-closed second line of defense (even if a new acceptance path drops
-    // the head check, it must not become defect = a 500 indistinguishable from
-    // a tamper warning)
-    if (verified.error.kind === "UnsupportedMetaLayout") {
-      return yield* rejectData({ kind: "meta-rejected", reason: "unsupported-layout" });
-    }
-    // InvalidInput / KeyImportFailed are unreachable with a Schema-validated
-    // wire plus a key derived from a verified chain (an implementation bug =
-    // defect; the error value contains no secrets)
-    return yield* Effect.die(
-      new Error(`meta statement verification failed: ${verified.error.kind}`),
-    );
+    return verified.signedBytesHashHex;
   });
 
 /**

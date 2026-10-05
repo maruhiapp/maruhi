@@ -10,6 +10,7 @@
 // order — key uniqueness means at most one device can verify), and the
 // remaining wraps are verified with that key alone.
 
+import { cryptoEffect } from "@maruhi/core";
 import type { ChainMember, ChainState } from "@maruhi/crypto";
 import {
   decodeHex,
@@ -265,35 +266,32 @@ const verifyOneWrapSignature = (
   signerPublicKey: CryptoKey,
   wrap: DekWrapInput,
 ) =>
-  Effect.gen(function* () {
-    const verified = yield* Effect.promise(() =>
-      verifyDekWrapSignature({
-        context: {
-          suite: wrap.suite,
-          projectId,
-          environmentId,
-          epoch: wrap.epoch,
-          recipientUserId: wrap.recipientUserId,
-          recipientEncPubHex: wrap.recipientEncPubHex,
-          encHex: wrap.encHex,
-          ciphertextHex: wrap.ciphertextHex,
-          // The signed signer = the calling principal (§12-6). Key-duplicated
-          // members are forbidden by the chain layer (CRYPTO_SPEC §6.2), but
-          // even if one existed, reattribution is caught here (an independent
-          // defense layer of §5.1)
-          signerUserId: signer.userId,
-        },
-        signatureHex: wrap.signatureHex,
-        signerPublicKey,
-      }),
-    );
-    if (!verified.ok) {
-      // Fold everything including InvalidInput (structural badness) into
-      // signature-rejected (on a Schema-validated wire, effectively only
-      // DekWrapSignatureInvalid reaches here)
-      return yield* rejectData({ kind: "dek-wrap-rejected", reason: "signature-invalid" });
-    }
-  });
+  cryptoEffect(() =>
+    verifyDekWrapSignature({
+      context: {
+        suite: wrap.suite,
+        projectId,
+        environmentId,
+        epoch: wrap.epoch,
+        recipientUserId: wrap.recipientUserId,
+        recipientEncPubHex: wrap.recipientEncPubHex,
+        encHex: wrap.encHex,
+        ciphertextHex: wrap.ciphertextHex,
+        // The signed signer = the calling principal (§12-6). Key-duplicated
+        // members are forbidden by the chain layer (CRYPTO_SPEC §6.2), but
+        // even if one existed, reattribution is caught here (an independent
+        // defense layer of §5.1)
+        signerUserId: signer.userId,
+      },
+      signatureHex: wrap.signatureHex,
+      signerPublicKey,
+    }),
+  ).pipe(
+    // Fold every crypto failure — including InvalidInput (structural
+    // badness) — into signature-rejected (on a Schema-validated wire,
+    // effectively only DekWrapSignatureInvalid reaches here)
+    Effect.mapError(() => rejectData({ kind: "dek-wrap-rejected", reason: "signature-invalid" })),
+  );
 
 /** Import a sig public key derived from a verified chain (failure is a storage / verifier bug = defect). */
 const importSignerKey = (signer: MemberWithDevice) =>
@@ -308,11 +306,7 @@ const importSignerKey = (signer: MemberWithDevice) =>
     if (signerKeyBytes === null) {
       return yield* Effect.die(new Error("chain-derived signing key is not valid hex"));
     }
-    const imported = yield* Effect.promise(() => importSigningPublicKey(signerKeyBytes));
-    if (!imported.ok) {
-      return yield* Effect.die(new Error("chain-derived signing key failed to import"));
-    }
-    return imported.value;
+    return yield* cryptoEffect(() => importSigningPublicKey(signerKeyBytes)).pipe(Effect.orDie);
   });
 
 /**

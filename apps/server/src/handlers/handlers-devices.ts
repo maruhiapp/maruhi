@@ -29,7 +29,7 @@ import {
   MAX_DEVICE_REGISTRY_ROWS_PER_USER,
   maruhiApi,
 } from "@maruhi/api-schema";
-import { RequestAuth } from "@maruhi/core";
+import { cryptoEffect, RequestAuth } from "@maruhi/core";
 import { computeUserKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { HttpServerResponse } from "effect/http";
@@ -53,11 +53,12 @@ const fingerprintOf = (encPubHex: string, sigPubHex: string) =>
     if (enc === null || sig === null) {
       return yield* Effect.die(new Error("device public keys are not valid hex"));
     }
-    const digest = yield* Effect.promise(() => computeUserKeyFingerprint(enc, sig));
-    if (!digest.ok) {
-      return yield* Effect.die(new Error("device fingerprint computation failed"));
-    }
-    return encodeHex(digest.value);
+    // A wrapped crypto failure stays a defect, like the die the
+    // pre-bridge code raised on a failed fingerprint computation
+    const digest = yield* cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(
+      Effect.orDie,
+    );
+    return encodeHex(digest);
   });
 
 /** Match between the path's `:fp` and the FP recomputed from the body's public keys (mismatch = 400). */

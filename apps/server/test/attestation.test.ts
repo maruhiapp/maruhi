@@ -252,6 +252,25 @@ describe("PUT /projects/:projectId/head-attestation (acceptance — §6.4 / §16
     expect(await future.json()).toMatchObject({ reason: "chain-head-unknown" });
   });
 
+  it("acceptance verification: a head at which the attester was not yet a member = 422 chain-head-state-mismatch", async () => {
+    const head = await setupChain();
+    // Guards the premise: MEMBER was added at seq 2, so the head is seq 3
+    expect(head.seq).toBe(3);
+    // MEMBER's signature is valid, but the declared head is the genesis
+    // (seq 1) — a real chain head at which MEMBER (added at seq 2) was
+    // not yet a member: attester-not-member-at-head on the crypto side
+    // folds into the wire's chain-head-state-mismatch
+    const genesisHead = { seq: 1, hashHex: vectorEntries[0]?.entry_hash_hex ?? "" };
+    const response = await submitAttestation(MEMBER, genesisHead);
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({
+      _tag: "AttestationRejected",
+      reason: "chain-head-state-mismatch",
+    });
+    // The same head attested by the owner (a member since seq 1) is accepted
+    expect((await submitAttestation(OWNER, genesisHead)).status).toBe(204);
+  });
+
   it("verification cannot pass with another's user_id (structural enforcement of caller = attester)", async () => {
     const head = await setupChain();
     // Submitting an attestation signed with MEMBER's key under
