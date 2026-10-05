@@ -56,7 +56,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Data, Effect, Option, Schema } from "effect";
+import { Data, Effect, Option, Predicate, Schema } from "effect";
 
 import { displayText } from "./display.ts";
 import { cliError, type CliError, usageError } from "./errors.ts";
@@ -387,7 +387,10 @@ function assertTrustedSocket(
   return Effect.tryPromise({
     try: () => lstat(socketPath),
     catch: (error) => {
-      const code = (error as NodeJS.ErrnoException).code ?? "lstat";
+      const code =
+        Predicate.hasProperty(error, "code") && Predicate.isString(error.code)
+          ? error.code
+          : "lstat";
       // Same classification as the connect side: missing / unreachable
       // (EACCES etc.) is "the session has ended", everything else is the
       // cannot-talk side — so the same state does not become a different
@@ -427,13 +430,19 @@ function socketRejectionReason(stat: Stats): string | null {
 
 /**
  * One request / one response on the trusted socket, the whole conversation
- * inside one callback. `resume` wins once, so `finish` resumes first and
- * destroys the socket after (a late `close` / `error` cannot mask the settled
- * outcome). The cleanup returned to `Effect.callback` runs only on
- * interruption — it is what makes {@link Effect.timeout} sever the connection
- * rather than leave it behind; `finish` covers every outcome that resumes.
+ * inside one callback. `finish` destroys the socket first and resumes after:
+ * a resume after the callback has yielded evaluates the fiber synchronously,
+ * so the socket is gone before the caller continues. Only the first resume
+ * counts, so a later `close` (the one `destroy` itself causes) or `error`
+ * cannot mask the settled outcome. The listeners stay attached for the
+ * socket's whole life — an `error` that arrives late finds a listener (whose
+ * resume is a no-op) instead of becoming an uncaught exception. The cleanup
+ * returned to `Effect.callback` runs only on interruption — it is what makes
+ * {@link Effect.timeout} sever the connection rather than leave it behind;
+ * `finish` covers every outcome that resumes. Exported for the tests, which
+ * pin each failure's classification on a real socket.
  */
-function sendAgentRequest(
+export function sendAgentRequest(
   socketPath: string,
   request: AgentRequest,
 ): Effect.Effect<AgentResponse, AgentGoneError | AgentProtocolError | AgentSocketRejectedError> {
@@ -444,8 +453,8 @@ function sendAgentRequest(
       const finish = (
         outcome: Effect.Effect<AgentResponse, AgentGoneError | AgentProtocolError>,
       ): void => {
-        resume(outcome);
         socket.destroy();
+        resume(outcome);
       };
       socket.setEncoding("utf8");
       socket.once("connect", () => {
@@ -468,7 +477,7 @@ function sendAgentRequest(
             : Effect.succeed(response),
         );
       });
-      socket.once("error", (error: NodeJS.ErrnoException) => {
+      socket.on("error", (error: NodeJS.ErrnoException) => {
         finish(
           Effect.fail(
             error.code !== undefined && GONE_CODES.has(error.code)
@@ -480,7 +489,6 @@ function sendAgentRequest(
       // Closed before the response line (the agent died, etc.)
       socket.once("close", () => finish(Effect.fail(new AgentProtocolError({ reason: "closed" }))));
       return Effect.sync(() => {
-        socket.removeAllListeners();
         socket.destroy();
       });
     },
