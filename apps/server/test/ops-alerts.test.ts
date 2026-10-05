@@ -12,7 +12,7 @@
 //   against real D1
 
 import { env } from "cloudflare:test";
-import { Context, Effect, Fiber, Redacted } from "effect";
+import { Context, Duration, Effect, Fiber, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -274,7 +274,11 @@ describe("notification (hosted-ops.md §2-B)", () => {
           const fiber = yield* Effect.forkChild(
             makeWebhookNotifier(Redacted.make("https://ops-webhook.test/hook")).notify(payload),
           );
-          yield* TestClock.adjust("5 seconds");
+          yield* TestClock.adjust(Duration.millis(4999));
+          // One ms inside the bound: the request has not been abandoned
+          expect(fiber.pollUnsafe()).toBeUndefined();
+          expect(warn).not.toHaveBeenCalled();
+          yield* TestClock.adjust(Duration.millis(1));
           return yield* Fiber.join(fiber);
         }).pipe(
           Effect.provide(TestClock.layer()),
@@ -286,6 +290,37 @@ describe("notification (hosted-ops.md §2-B)", () => {
       expect(warn).toHaveBeenCalledWith(
         "ops alert webhook request failed; retrying on the next evaluation",
         "TimeoutError",
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("ops-webhook.test");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("a webhook POST rejected by the transport warns with the rejection's kind name (no URL)", async () => {
+    const payload: OpsAlertPayload = {
+      service: "maruhi",
+      at: new Date(0).toISOString(),
+      events: [{ signal: "storage_warn_projects", state: "firing", value: 1, threshold: 1 }],
+      text: "maruhi ops: storage_warn_projects is firing (value 1, threshold 1)",
+    };
+    const refusingFetch = (() => Promise.reject(new TypeError("boom"))) as unknown as typeof fetch;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const outcome = await Effect.runPromise(
+        makeWebhookNotifier(Redacted.make("https://ops-webhook.test/hook"))
+          .notify(payload)
+          .pipe(
+            Effect.provideService(FetchHttpClient.Fetch, refusingFetch),
+            Effect.provide(ServerLoggerLive),
+          ),
+      );
+      expect(outcome).toBe(false);
+      // The transport kind name only — the same second argument main's
+      // raw-fetch catch logged (never the URL or the body)
+      expect(warn).toHaveBeenCalledWith(
+        "ops alert webhook request failed; retrying on the next evaluation",
+        "TypeError",
       );
       expect(JSON.stringify(warn.mock.calls)).not.toContain("ops-webhook.test");
     } finally {

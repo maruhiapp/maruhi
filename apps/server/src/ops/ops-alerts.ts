@@ -92,12 +92,20 @@ const WEBHOOK_REQUEST_TIMEOUT = Duration.seconds(5);
 /** The outbound client: no header of its own (packages/core/src/egress.ts). */
 const webhookHttpClient = egressHttpClientLayer();
 
-/** A webhook send failure folds into the static line + `false` (kind name only — never the URL or the body). */
+const webhookRequestFailedWith = (kind: string) =>
+  Effect.logWarning("ops alert webhook request failed; retrying on the next evaluation", kind).pipe(
+    Effect.as(false),
+  );
+
+/**
+ * A webhook send failure folds into the static line + `false` (kind
+ * name only — never the URL or the body). HttpClientError carries the
+ * underlying failure (the fetch rejection, the URL-parse TypeError)
+ * in `.cause` — its name is the same transport kind the raw-fetch
+ * implementation logged.
+ */
 const webhookRequestFailed = (error: Error) =>
-  Effect.logWarning(
-    "ops alert webhook request failed; retrying on the next evaluation",
-    error.name,
-  ).pipe(Effect.as(false));
+  webhookRequestFailedWith(error.cause instanceof Error ? error.cause.name : "unknown");
 
 /** The production implementation: POSTs JSON when a webhook URL is configured. */
 export function makeWebhookNotifier(
@@ -137,7 +145,8 @@ export function makeWebhookNotifier(
         Effect.catchTags({
           HttpClientError: webhookRequestFailed,
           HttpBodyError: webhookRequestFailed,
-          TimeoutError: webhookRequestFailed,
+          // The new timeout has no transport underneath — its own name
+          TimeoutError: () => webhookRequestFailedWith("TimeoutError"),
         }),
         Effect.provide(webhookHttpClient),
       );
