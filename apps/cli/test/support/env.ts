@@ -47,7 +47,6 @@ import {
   type ExecOutcome,
   ProcessRunner,
 } from "../../src/run.ts";
-import { RotateSeams, type RotateSeamsShape } from "../../src/var-rotate.ts";
 import type { TestUser } from "./crypto.ts";
 
 /** One recorded child-process invocation. */
@@ -140,8 +139,6 @@ export interface TestEnv {
   setRunnerHandler(handler: (call: RunnerCall) => Promise<number>): void;
   /** Test seams of `maruhi proxy run` (where upstream connections go, the connector's API). */
   setProxySeams(seams: ProxySeamsShape | null): void;
-  /** Test seams of `maruhi var rotate` (the issuer APIs, the clock, the password bytes). */
-  setRotateSeams(seams: RotateSeamsShape | null): void;
   /** Fakes the database client of the `postgres` / `mysql` connectors (default: refuses every connection). */
   setSqlRunner(runner: SqlRunnerShape): void;
   /**
@@ -237,7 +234,6 @@ export async function makeTestEnv(): Promise<TestEnv> {
   let runnerExitCode = 0;
   let runnerHandler: ((call: RunnerCall) => Promise<number>) | null = null;
   let proxySeams: ProxySeamsShape | null = null;
-  let rotateSeams: RotateSeamsShape | null = null;
   let sqlRunner: SqlRunnerShape = {
     execute: () => Promise.reject(new Error("no database client in tests (setSqlRunner)")),
     probe: () => Promise.reject(new Error("no database client in tests (setSqlRunner)")),
@@ -376,7 +372,6 @@ export async function makeTestEnv(): Promise<TestEnv> {
         }),
     }),
     Layer.sync(ProxySeams, () => proxySeams),
-    Layer.sync(RotateSeams, () => rotateSeams),
     Layer.succeed(SqlRunner, {
       execute: (url, statements) => sqlRunner.execute(url, statements),
       probe: (url) => sqlRunner.probe(url),
@@ -510,9 +505,6 @@ export async function makeTestEnv(): Promise<TestEnv> {
     },
     setProxySeams(seams) {
       proxySeams = seams;
-    },
-    setRotateSeams(seams) {
-      rotateSeams = seams;
     },
     setSqlRunner(runner) {
       sqlRunner = runner;

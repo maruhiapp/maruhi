@@ -13,8 +13,6 @@ import {
   loadRotateConfig,
   configNamesProject as rotateConfigNamesProject,
 } from "../rotate-config.ts";
-import { SqlRunner } from "../rotate-connector.ts";
-import { ProcessRunner } from "../run.ts";
 import {
   DEFAULT_SYNC_CONFIG_PATH,
   type PushSyncSetup,
@@ -25,11 +23,9 @@ import {
 import { formatVarHistory, varHistoryJson, varHistoryOp, varRollbackOp } from "../var-history.ts";
 import { varRmOp } from "../var-rm.ts";
 import {
-  RotateSeams,
   describeFinalization,
   describeRotation,
   logRotationWarnings,
-  rotateDeps,
   varFinalizeOp,
   varRotateOp,
 } from "../var-rotate.ts";
@@ -325,11 +321,6 @@ export function makeVarCommands() {
         configPath: rotateConfigPath,
         name: values.name,
         yes: values.yes,
-        deps: rotateDeps(
-          yield* RotateSeams,
-          yield* SqlRunner,
-          (yield* ProcessRunner).captureScript,
-        ),
       };
       if (values.finalize) {
         return yield* runVarFinalize({ ...shared, previousVersion: values.previous ?? null });

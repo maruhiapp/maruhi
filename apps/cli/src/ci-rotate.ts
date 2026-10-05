@@ -57,12 +57,13 @@ import {
   describeShape,
   describeValueShapes,
   planRotation,
-  type RotateDeps,
   type RotateInputs,
   rotateCredential,
   type RotationOutcome,
+  type SqlRunner,
 } from "./rotate-connector.ts";
-import { connectorFailure } from "./var-rotate.ts";
+import type { ProcessRunner } from "./run.ts";
+import { callConnector, connectorFailure } from "./var-rotate.ts";
 
 /** The server's bound on a proposal's lifetime (AUTH_SPEC §14-5 — 30 days). */
 export const MAX_PROPOSAL_DAYS = 30;
@@ -77,7 +78,6 @@ export interface CiRotateInput extends CiLeaseInput {
   readonly name: string;
   readonly config: RotateConfig;
   readonly configPath: string;
-  readonly deps: RotateDeps;
   /** How many days the proposal waits for a member (1 to 30). */
   readonly expiresInDays: number;
   readonly now?: () => number;
@@ -413,7 +413,11 @@ function mintRefusal(error: unknown, outcome: RotationOutcome): CliError {
  */
 export function ciRotateOp(
   input: CiRotateInput,
-): Effect.Effect<CiRotateResult, CliError, CliIo | HttpClient.HttpClient> {
+): Effect.Effect<
+  CiRotateResult,
+  CliError,
+  CliIo | HttpClient.HttpClient | SqlRunner | ProcessRunner
+> {
   return Effect.gen(function* () {
     const target = ruleFor(input.config, input.name.normalize("NFC"));
     if (target === null) {
@@ -441,10 +445,9 @@ export function ciRotateOp(
     const local = byNameOf(material);
     const current = yield* currentCredential(primary, rule, local);
     const inputs = yield* leasedInputs(primary, rule, input.environmentId, leased.materials);
-    const plan = yield* Effect.try({
-      try: () => planRotation(rule, current),
-      catch: connectorFailure,
-    });
+    const plan = yield* planRotation(rule, current).pipe(
+      Effect.catchTag("ConnectorError", (error) => Effect.fail(connectorFailure(error))),
+    );
     if (plan.immediate) {
       return yield* Effect.fail(
         cliError(
@@ -483,10 +486,7 @@ export function ciRotateOp(
       })
       .pipe(Effect.mapError((error) => preflightRefusal(error, primary)));
     const site = { variable: primary, environmentId: input.environmentId };
-    const outcome = yield* Effect.tryPromise({
-      try: () => rotateCredential(rule, current, inputs, input.deps, site),
-      catch: connectorFailure,
-    });
+    const outcome = yield* callConnector(rotateCredential(rule, current, inputs, site));
     const planned = yield* plannedValues(primary, rule, local, outcome);
     const io = yield* CliIo;
     const mintInput = { input, rule, planned, outcome, params };
