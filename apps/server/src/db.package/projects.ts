@@ -6,12 +6,16 @@ import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
 
 import { type D1AuditActor, orgAuditInsert } from "./audit.ts";
-import { isUniqueConflict } from "./errors.ts";
+import { tryD1 } from "./errors.ts";
 import { projectMembers, projects } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
 
-const run = <T>(evaluate: () => Promise<T>): Effect.Effect<T> => Effect.promise(evaluate);
+// D1 access goes through the shared tryD1 adapter (errors.ts —
+// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
+// public repository types keep an empty error channel because the
+// handlers turning D1FailureError into typed errors belong to other
+// lanes. An unexpected D1 failure stays a defect = a 500, as before
 
 // ---------------------------------------------------------------------------
 // ProjectRepo (§11-3. The org-attribution metadata + the §11-5
@@ -105,64 +109,62 @@ const SCOPE_FILTER_CHUNK_SIZE = 50;
 export function makeProjectRepo(db: Db): ProjectRepoShape {
   return {
     insertIfAbsent: (projectId, orgId, ownerUserId, nowMs, actor) =>
-      run(async () => {
-        try {
-          await db.batch([
-            db.insert(projects).values({ id: projectId, orgId, createdAt: nowMs }),
-            db
-              .insert(projectMembers)
-              .values({ projectId, userId: ownerUserId, createdAt: nowMs })
-              .onConflictDoNothing(),
-            orgAuditInsert(db, nowMs, {
-              event: "org.project_created",
-              actor,
-              orgId,
-              projectId,
-            }),
-          ]);
-        } catch (error) {
-          // A PK conflict = already created. The whole batch rolls back,
-          // so both insert and audit are a no-op (idempotent). No
-          // execution order exists where only the audit row survives.
-          // A non-conflict is a defect
-          if (!isUniqueConflict(error)) {
-            throw error;
-          }
-        }
-      }),
+      tryD1(() =>
+        db.batch([
+          db.insert(projects).values({ id: projectId, orgId, createdAt: nowMs }),
+          db
+            .insert(projectMembers)
+            .values({ projectId, userId: ownerUserId, createdAt: nowMs })
+            .onConflictDoNothing(),
+          orgAuditInsert(db, nowMs, {
+            event: "org.project_created",
+            actor,
+            orgId,
+            projectId,
+          }),
+        ]),
+      ).pipe(
+        // A PK conflict = already created. The whole batch rolls back,
+        // so both insert and audit are a no-op (idempotent). No
+        // execution order exists where only the audit row survives.
+        // A non-conflict stays a D1FailureError and is a defect
+        Effect.catchTag("D1UniqueConflict", () => Effect.void),
+        Effect.asVoid,
+        Effect.orDie,
+      ),
     exists: (projectId) =>
-      run(async () => {
+      tryD1(async () => {
         const row = await db
           .select({ id: projects.id })
           .from(projects)
           .where(eq(projects.id, projectId))
           .get();
         return row !== undefined;
-      }),
+      }).pipe(Effect.orDie),
     countInOrg: (orgId) =>
-      run(async () => {
+      tryD1(async () => {
         const row = await db
           .select({ n: count() })
           .from(projects)
           .where(eq(projects.orgId, orgId))
           .get();
         return row?.n ?? 0;
-      }),
+      }).pipe(Effect.orDie),
     upsertMember: (projectId, userId, nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         await db
           .insert(projectMembers)
           .values({ projectId, userId, createdAt: nowMs })
           .onConflictDoNothing();
-      }),
+      }).pipe(Effect.orDie),
     deleteMember: (projectId, userId) =>
-      run(async () => {
+      tryD1(async () => {
         await db
           .delete(projectMembers)
           .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId)));
-      }),
+      }).pipe(Effect.orDie),
     listMemberProjectIds: (userId, afterProjectId, limit, withinProjectIds) =>
-      run(async () => {
+      tryD1(async () => {
         const pageQuery = (
           scopeChunk: readonly string[] | null,
         ): Promise<{ projectId: string }[]> => {
@@ -200,6 +202,6 @@ export function makeProjectRepo(db: Db): ProjectRepoShape {
           merged.push(...(await pageQuery(chunk)).map((row) => row.projectId));
         }
         return merged.toSorted().slice(0, limit);
-      }),
+      }).pipe(Effect.orDie),
   };
 }
