@@ -123,36 +123,34 @@ export function proposeOperation(
       };
     }
     let signed: ChainEntry | null = null;
-    const outcome = yield* retryOnConflict(
-      { verified: input.verified, existing: null } as ProposeState,
-      {
-        maxAttempts: MAX_ATTEMPTS,
-        attempt: (state) =>
-          state.existing !== null
-            ? Effect.succeed(state)
-            : Effect.gen(function* () {
-                const entry = yield* signEntryAtHead({
-                  verified: state.verified,
-                  signerUserId: input.signerUserId,
-                  operation: { op: "propose", payload: { inner, expiresAtMs } },
-                  signingKeyPair: input.signingKeyPair,
-                  failureText: "Failed to sign the propose entry",
-                });
-                signed = entry;
-                yield* appendEntry(input.client, state.verified, entry);
-                return state;
-              }),
-        classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-        recover: (state) =>
-          Effect.gen(function* () {
-            const resynced = yield* resyncExtended(input.resync, state.verified);
-            yield* ensureStillTarget(resynced, inner, true);
-            yield* recheck(resynced);
-            return { verified: resynced, existing: findPendingSame(resynced, inner) };
-          }),
-        exhaustedMessage: `propose's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
-      },
-    );
+    const initial: ProposeState = { verified: input.verified, existing: null };
+    const outcome = yield* retryOnConflict(initial, {
+      maxAttempts: MAX_ATTEMPTS,
+      attempt: (state) =>
+        state.existing !== null
+          ? Effect.succeed(state)
+          : Effect.gen(function* () {
+              const entry = yield* signEntryAtHead({
+                verified: state.verified,
+                signerUserId: input.signerUserId,
+                operation: { op: "propose", payload: { inner, expiresAtMs } },
+                signingKeyPair: input.signingKeyPair,
+                failureText: "Failed to sign the propose entry",
+              });
+              signed = entry;
+              yield* appendEntry(input.client, state.verified, entry);
+              return state;
+            }),
+      classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
+      recover: (state) =>
+        Effect.gen(function* () {
+          const resynced = yield* resyncExtended(input.resync, state.verified);
+          yield* ensureStillTarget(resynced, inner, true);
+          yield* recheck(resynced);
+          return { verified: resynced, existing: findPendingSame(resynced, inner) };
+        }),
+      exhaustedMessage: `propose's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
+    });
     const verified = yield* resyncExtended(input.resync, outcome.verified);
     if (outcome.existing !== null) {
       const pending = verified.state.pendingProposals.get(outcome.existing.proposalHashHex);
