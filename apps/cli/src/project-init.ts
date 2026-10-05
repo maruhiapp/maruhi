@@ -11,6 +11,7 @@
 //   trusted)
 
 import type { UserOrgSchema } from "@maruhi/api-schema";
+import { cryptoEffect, cryptoPromise } from "@maruhi/core";
 import {
   SUITE_ID,
   type UnsignedChainEntry,
@@ -97,22 +98,16 @@ export function projectInitOp(input: {
       },
       timestampMs: Date.now(),
     };
-    const signed = yield* Effect.tryPromise({
-      try: () =>
-        signChainEntry({ entry: unsigned, signingKey: input.masterKeys.sigKeyPair.privateKey }),
-      catch: () => cliError("Failed to sign the genesis entry"),
-    });
-    if (!signed.ok) {
-      return yield* Effect.fail(cliError("Failed to sign the genesis entry"));
-    }
+    const signed = yield* cryptoEffect(() =>
+      signChainEntry({ entry: unsigned, signingKey: input.masterKeys.sigKeyPair.privateKey }),
+    ).pipe(Effect.mapError(() => cliError("Failed to sign the genesis entry")));
     // The project ID precomputed client-side (the genesis hash — §6.4)
-    const expectedProjectId = yield* Effect.tryPromise({
-      try: () => computeChainEntryHash(signed.value),
-      catch: () => cliError("Failed to compute the genesis hash (crypto error)"),
-    });
+    const expectedProjectId = yield* cryptoPromise("computeChainEntryHash", () =>
+      computeChainEntryHash(signed),
+    ).pipe(Effect.mapError(() => cliError("Failed to compute the genesis hash (crypto error)")));
 
     const head = yield* input.client.membership
-      .init({ payload: { orgId: org.orgId, entry: signed.value } })
+      .init({ payload: { orgId: org.orgId, entry: signed } })
       .pipe(Effect.mapError(toCliError));
 
     // The server's issued value is not trusted: fail unless it exactly matches the precomputed value
