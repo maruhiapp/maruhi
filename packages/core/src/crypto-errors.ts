@@ -23,6 +23,10 @@
 //   - `Effect.catchTag` — handle specific errors by `_tag`,
 //   - `Effect.orDie` — an error means an invariant broke; make it a defect,
 //   - `Effect.mapError` — re-wrap into a domain error.
+//
+// The "no leak" guarantee above covers the typed error channel only:
+// a `cryptoEffect` rejection still dies with the raw rejection value in
+// the defect (scrubbing that is a Wave 2 follow-up).
 
 import type {
   AeadOperation,
@@ -154,19 +158,27 @@ export class ChainInvalidError extends Data.TaggedError("ChainInvalid")<{
   readonly reason: ChainInvalidReason;
 }> {}
 
+type CryptoExports = typeof import("@maruhi/crypto");
+
 /**
  * The @maruhi/crypto exports that return a bare `Promise` (no
- * `CryptoResult`) and can therefore reject. Keep in sync with the
- * bare-`Promise` exports of packages/crypto/src/internal.package/ —
- * `sha256` is listed ahead of a public export (internal only today).
+ * `CryptoResult`) and can therefore reject. Derived from the package's
+ * public surface: a new bare-Promise export widens this union (and what
+ * `cryptoPromise` accepts) automatically, and an export switching to
+ * `CryptoResult` drops out.
  */
-export type CryptoPromiseOperation =
-  | "computeChainEntryHash"
-  | "exportEncryptionPublicKey"
-  | "exportSigningPublicKey"
-  | "generateEncryptionKeyPair"
-  | "generateSigningKeyPair"
-  | "sha256";
+export type CryptoPromiseOperation = {
+  [K in keyof CryptoExports]: CryptoExports[K] extends (...args: never) => Promise<infer Result>
+    ? [Result] extends [CryptoResult<unknown>]
+      ? never
+      : K
+    : never;
+}[keyof CryptoExports];
+
+/** The awaited success type of the named bare-Promise export. */
+type BarePromiseResult<Operation extends CryptoPromiseOperation> = Awaited<
+  ReturnType<CryptoExports[Operation]>
+>;
 
 /**
  * A bare-Promise @maruhi/crypto operation (`CryptoPromiseOperation`)
@@ -271,15 +283,16 @@ export function cryptoEffect<T>(
 
 /**
  * Runs one of the bare-Promise @maruhi/crypto exports
- * (`CryptoPromiseOperation`) and lifts the value into `Effect`. A
- * rejection becomes `CryptoRejectedError` carrying only `operation` —
- * the rejection cause is never kept, so no key material or value can
- * leak into the error channel.
+ * (`CryptoPromiseOperation`) and lifts the value into `Effect`. The
+ * thunk's return type is pinned to the named export's, so `operation`
+ * and `run` cannot disagree. A rejection becomes `CryptoRejectedError`
+ * carrying only `operation` — the rejection cause is never kept, so no
+ * key material or value can leak into the error channel.
  */
-export function cryptoPromise<T>(
-  operation: CryptoPromiseOperation,
-  run: () => Promise<T>,
-): Effect.Effect<T, CryptoRejectedError> {
+export function cryptoPromise<Operation extends CryptoPromiseOperation>(
+  operation: Operation,
+  run: () => Promise<BarePromiseResult<Operation>>,
+): Effect.Effect<BarePromiseResult<Operation>, CryptoRejectedError> {
   return Effect.tryPromise({
     try: run,
     catch: () => new CryptoRejectedError({ operation }),
