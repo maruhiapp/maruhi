@@ -10,7 +10,7 @@ import {
   importEncryptionPublicKey,
   wrapDek,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import { makeServerKey, type ServerKeyInfo, type StoredServerWrap } from "../src/server-key.ts";
@@ -80,6 +80,23 @@ describe("makeServerKey's derivation cache", () => {
     expect(c).toBe(a);
     expect(resealed).toEqual([]);
     expect(signs).toBe(2);
+  });
+
+  it("an interrupted first caller cannot poison the cache", async () => {
+    const key = makeServerKey(IKM_HEX);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(key.info);
+        yield* Fiber.interrupt(fiber);
+      }),
+    );
+    // Effect.cached replays the first run's Exit: if the evaluation
+    // were interruptible, a cancelled request would leave an
+    // interrupted Exit in the cell forever. The uninterruptible mask
+    // around derive makes that Exit impossible — whether or not the
+    // interrupt landed mid-derivation, a later call still resolves
+    const info = await Effect.runPromise(key.info);
+    expect(info).not.toBeNull();
   });
 
   it("caches a null (unset or malformed ikm) result like a success", async () => {

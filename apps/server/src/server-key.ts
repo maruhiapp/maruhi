@@ -162,8 +162,13 @@ export function makeServerKey(ikmHex: string | undefined): ServerKeyShape {
   // derivation per isolate however many fibers race — the first run's
   // Exit (a derived key, a null "unconfigured", or a defect) is
   // replayed to every later call, the same guarantee the hand-made
-  // `cached ??=` Promise gave
-  const derived = Effect.runSync(Effect.cached(derive(ikmHex)));
+  // `cached ??=` Promise gave. uninterruptible shields the
+  // evaluation: an interrupted first caller would otherwise leave an
+  // interrupted Exit in the cell permanently, poisoning the key until
+  // the isolate is recycled (the detached Promise had no such failure
+  // mode). Waiters still interrupt at the latch without touching the
+  // cell
+  const derived = Effect.runSync(Effect.cached(Effect.uninterruptible(derive(ikmHex))));
   return {
     info: Effect.map(derived, (key) => key?.info ?? null),
     reseal: (input) =>
