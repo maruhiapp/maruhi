@@ -22,7 +22,7 @@
 //   server-fixed page size of 100)
 
 import { env, runInDurableObject, SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { PROJECT_LIST_PAGE_SIZE } from "../src/policy.ts";
 import { BASE, bearer, cliToken, loginSession, sessionHeaders } from "./support/auth.ts";
@@ -247,16 +247,39 @@ describe("the project list (AUTH_SPEC §11-5)", () => {
         "INSERT INTO chain_entries (seq, entry_json, entry_hash_hex, canonical_bytes) VALUES (1, 'not-json', 'broken', 8)",
       );
     });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const response = await listOk(bearer(token(OWNER)));
       // The corrupted candidate is omitted from the response, and
       // the rest (the real project) still enumerates
       expect(response.projects).toEqual([{ projectId, role: "owner" }]);
+      // The rejected RPC arrives as RpcCallError and leaves the static
+      // line + the rejection's error class name (the DO's ChainInvalid
+      // defect, as its name crosses the RPC) — never the project id
+      expect(warn.mock.calls).toEqual([
+        [
+          "project list: a membership confirmation failed; omitting that project from the page (its projection row is retained)",
+          "ChainInvalid",
+        ],
+      ]);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(broken);
+      // The same rejection on a site with no recovery stays a defect
+      // (Effect.orDie): 500, as before RpcCallError — the chain get
+      // (handlers-membership.ts), callProjectData (the schema-policy
+      // get) and requireProjectChainAdmin (the invite list) in
+      // data-http.ts
+      for (const path of ["chain", "schema-policy", "invites"]) {
+        const failed = await SELF.fetch(`${BASE}/projects/${broken}/${path}`, {
+          headers: bearer(token(OWNER)),
+        });
+        expect(failed.status, path).toBe(500);
+      }
       // The row is kept (ghost deletion applies only to a definite
       // non-member answer — so it can reappear once the outage
       // clears)
       expect(await projectionRowsOf(OWNER)).toEqual([broken, projectId].toSorted());
     } finally {
+      warn.mockRestore();
       await resetProjectDo(broken);
     }
   });

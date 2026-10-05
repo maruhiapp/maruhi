@@ -188,7 +188,7 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         const env = yield* WorkerEnv;
         const outcome = yield* rpcCall<InitOutcome>(() =>
           projectStub(env, projectId).init(projectId, payload.entry, { admitFresh }),
-        );
+        ).pipe(Effect.orDie);
         return yield* mapInitOutcome(endpoint, projectId, payload.orgId, principal, outcome);
       }),
     )
@@ -237,10 +237,10 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
           visible,
           (projectId) =>
             Effect.gen(function* () {
-              // A defect of the confirmation RPC (DO unreachable, stored
-              // chain corrupted, etc.) is isolated per candidate: on the
-              // discovery endpoint, one project's failure must not turn the
-              // rest of the enumeration into a 500.
+              // A failure of the confirmation RPC (RpcCallError — DO
+              // unreachable, stored chain corrupted, etc.) is isolated per
+              // candidate: on the discovery endpoint, one project's failure
+              // must not turn the rest of the enumeration into a 500.
               // The row is only omitted from the response — it is **kept**
               // (a ghost is deleted only on the DO's explicit non-member
               // answer — it can reappear once the fault recovers).
@@ -256,10 +256,10 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
               const outcome = yield* rpcCall<DataOutcome<Role>>(() =>
                 projectStub(env, projectId).memberRoleFor(principal.userId),
               ).pipe(
-                Effect.catchDefect((defect) => {
+                Effect.catchTag("RpcCallError", (error) => {
                   console.warn(
                     "project list: a membership confirmation failed; omitting that project from the page (its projection row is retained)",
-                    defect instanceof Error ? defect.name : "unknown",
+                    error.errorName,
                   );
                   return Effect.succeed(null);
                 }),
@@ -306,7 +306,7 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         const env = yield* WorkerEnv;
         const outcome = yield* rpcCall<SnapshotOutcome>(() =>
           projectStub(env, params.projectId).snapshotFor(principal.userId),
-        );
+        ).pipe(Effect.orDie);
         // §11-2: do not distinguish uninitialized from non-member
         // (existence concealment. The folding is rejectionErrors —
         // derivation from the contract declaration is unwrapDataOutcome)
@@ -389,7 +389,7 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
             payload.entry,
             principal.userId,
           ),
-        );
+        ).pipe(Effect.orDie);
         const head = yield* unwrapDataOutcome(outcome, params.projectId, endpoint);
         // The accepted effect = the directly appended op, or the inner op a
         // completed approve applied (four-eyes — CRYPTO_SPEC §6.4 "identical
