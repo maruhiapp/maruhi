@@ -61,7 +61,12 @@ import type { D1AuditRepo } from "../db.package/index.ts";
 import { CliFlowRepo, FlowSigningKeyRepo, IdentityRepo, OpsRepo } from "../db.package/index.ts";
 import { constantTimeEqual, randomHex, sha256Hex } from "../ids.ts";
 import { noteOpsCounter } from "../ops/ops-signals.ts";
-import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "../worker-env.ts";
+import {
+  IP_RATE_LIMIT_PERIOD_SECONDS,
+  ipRateLimitAllowed,
+  WorkerEnv,
+  WorkerSecrets,
+} from "../worker-env.ts";
 
 /** The default token name when issuance parameters are omitted (§6's semantics treat it the same as the default scope). */
 const DEFAULT_TOKEN_NAME = "cli-login";
@@ -331,7 +336,8 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         }
         // An unconfigured server fails closed before reaching GitHub
         // (§4-1 (1))
-        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
+        const secrets = yield* WorkerSecrets;
+        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, secrets.githubClientSecret);
         const key = yield* flowSigningKey;
         const nowMs = Date.now();
         const flowId = randomHex(16);
@@ -363,6 +369,7 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
     .handle("cliVerify", ({ request, query }) =>
       Effect.gen(function* () {
         const env = yield* WorkerEnv;
+        const secrets = yield* WorkerSecrets;
         // Stateless verification of vsig and expiry (§4-1 (3)).
         // Failure ends with the uniform error page before any GitHub
         // redirect happens (do not run the OAuth dance for a
@@ -371,7 +378,7 @@ export const authCliLive = HttpApiBuilder.group(maruhiApi, "authCli", (handlers)
         // reaching here means a forged URL or lost configuration)
         const configured = yield* ensureGitHubOAuthConfigured(
           env.GITHUB_CLIENT_ID,
-          env.GITHUB_CLIENT_SECRET,
+          secrets.githubClientSecret,
         ).pipe(Effect.option);
         if (Option.isNone(configured)) {
           return uniformErrorPage();

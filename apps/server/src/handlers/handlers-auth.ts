@@ -45,7 +45,12 @@ import { ensureKeyMaterialAccess, ensureTokenManagementAccess } from "../authz.t
 import { IdentityRepo, RecoveryRepo, TokenRepo } from "../db.package/index.ts";
 import { constantTimeEqual, randomHex, sha256Hex } from "../ids.ts";
 import { ServerKey } from "../server-key.ts";
-import { IP_RATE_LIMIT_PERIOD_SECONDS, ipRateLimitAllowed, WorkerEnv } from "../worker-env.ts";
+import {
+  IP_RATE_LIMIT_PERIOD_SECONDS,
+  ipRateLimitAllowed,
+  WorkerEnv,
+  WorkerSecrets,
+} from "../worker-env.ts";
 import { handleCliCallback, htmlResponse, isCliCallbackState } from "./handlers-auth-cli.ts";
 
 /**
@@ -115,12 +120,13 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     .handle("authConfig", () =>
       Effect.gen(function* () {
         const env = yield* WorkerEnv;
+        const secrets = yield* WorkerSecrets;
         // Public config (AUTH_SPEC §4): only public information — client_id
         // already appears in plaintext on the authorize URL. Do not add
         // client_secret etc. to this response (it is part of the check — a
         // 200 works as confirmation that "client_id / secret are both
         // registered")
-        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
+        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, secrets.githubClientSecret);
         // If the deployment keypair (CRYPTO_SPEC §9) is configured, add its
         // public face (AUTH_SPEC §4 — serverKeyFingerprintHex is the
         // verification target when running grant_server; serverEncPubHex is
@@ -150,7 +156,8 @@ export const authLive = HttpApiBuilder.group(maruhiApi, "auth", (handlers) =>
     .handle("githubStart", ({ request, query }) =>
       Effect.gen(function* () {
         const env = yield* WorkerEnv;
-        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
+        const secrets = yield* WorkerSecrets;
+        yield* ensureGitHubOAuthConfigured(env.GITHUB_CLIENT_ID, secrets.githubClientSecret);
         const state = randomHex(16);
         const signupCode = query.signup_code;
         if (signupCode === undefined) {
