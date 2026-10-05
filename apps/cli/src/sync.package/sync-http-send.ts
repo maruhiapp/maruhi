@@ -7,7 +7,7 @@
 // into showable lines. Used by the response readers
 // (sync-http-read.ts) and the run procedures (sync-http-run.ts).
 
-import { Duration, Effect } from "effect";
+import { Clock, Data, Duration, Effect, Schedule } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 
 import { displayText } from "../display.ts";
@@ -18,6 +18,16 @@ import { scrubVendorOutput, type SyncWrite } from "./sync-exec.ts";
 import type { HttpOutcome, HttpTargetInput, IntegrationToken } from "./sync-http.ts";
 
 const RETRIABLE_STATUSES = new Set([429, 502, 503, 504]);
+
+/**
+ * One attempt's retryable outcome: the fragment the failure message ends with,
+ * and the `Retry-After` the response carried (null for a transport failure or
+ * an unreadable header — the schedule then waits out the backoff instead).
+ */
+class SendRetryable extends Data.TaggedError("SendRetryable")<{
+  readonly failure: string;
+  readonly retryAfter: Duration.Duration | null;
+}> {}
 
 /** Interpreting `Retry-After` (seconds or an HTTP date). null if unreadable. */
 function retryAfterOf(header: string | undefined, now: number): Duration.Duration | null {
@@ -49,46 +59,60 @@ export function send(
       HttpClientRequest.setHeader("accept", "application/json"),
       HttpClientRequest.setHeader("user-agent", `maruhi-cli/${CLI_VERSION}`),
     );
-    let lastFailure = "";
-    for (let attempt = 1; attempt <= input.retry.attempts; attempt += 1) {
-      const outcome = yield* client.execute(prepared).pipe(
-        Effect.flatMap((response) =>
-          Effect.map(response.text, (text) => ({
-            kind: "response" as const,
-            status: response.status,
-            retryAfter: retryAfterOf(response.headers["retry-after"], Date.now()),
-            text,
-          })),
-        ),
-        // A transport-layer failure (DNS, connection, TLS). The message is only a description of the destination; no body
-        Effect.catch((error) =>
-          Effect.succeed({ kind: "transport" as const, message: describeTransport(error) }),
-        ),
+    // Zero attempts means nothing is ever sent.
+    if (input.retry.attempts <= 0) {
+      return yield* Effect.fail(
+        cliError(` (${input.retry.attempts} attempts). Check the network and retry`),
       );
-      if (outcome.kind === "response" && !RETRIABLE_STATUSES.has(outcome.status)) {
-        return { status: outcome.status, text: outcome.text };
-      }
-      lastFailure =
-        outcome.kind === "transport"
-          ? outcome.message
-          : `${input.preset.label} answered ${outcome.status}`;
-      if (attempt === input.retry.attempts) {
-        break;
-      }
-      const backoff = Duration.times(input.retry.baseDelay, 2 ** (attempt - 1));
-      const wait =
-        outcome.kind === "response" && outcome.retryAfter !== null ? outcome.retryAfter : backoff;
-      if (Duration.isGreaterThan(wait, input.retry.maxDelay)) {
-        return yield* Effect.fail(
-          cliError(
-            `${input.preset.label} asked to retry after ${Math.ceil(Duration.toSeconds(wait))} seconds (Retry-After), longer than maruhi waits. Run \`maruhi sync apply\` again later`,
-          ),
-        );
-      }
-      yield* Effect.sleep(wait);
     }
-    return yield* Effect.fail(
-      cliError(`${lastFailure} (${input.retry.attempts} attempts). Check the network and retry`),
+    const once = client.execute(prepared).pipe(
+      Effect.flatMap((response) => Effect.map(response.text, (text) => ({ response, text }))),
+      // A transport-layer failure (DNS, connection, TLS). The message is only a description of the destination; no body
+      Effect.catch((error) =>
+        Effect.fail(new SendRetryable({ failure: describeTransport(error), retryAfter: null })),
+      ),
+      Effect.flatMap(({ response, text }) =>
+        RETRIABLE_STATUSES.has(response.status)
+          ? Effect.flatMap(Clock.currentTimeMillis, (now) =>
+              Effect.fail(
+                new SendRetryable({
+                  failure: `${input.preset.label} answered ${response.status}`,
+                  retryAfter: retryAfterOf(response.headers["retry-after"], now),
+                }),
+              ),
+            )
+          : Effect.succeed({ status: response.status, text } satisfies HttpOutcome),
+      ),
+    );
+    // Exponential backoff; a response's Retry-After overrides that step's
+    // wait. The schedule output records the step number and the wait it
+    // computed so the fallback can tell an over-cap Retry-After apart from
+    // exhausted attempts (on the last attempt the cap is not evaluated, so
+    // the failure counts toward the attempt total instead).
+    const policy = Schedule.exponential(input.retry.baseDelay).pipe(
+      Schedule.modifyDelay(
+        ({ input: failure, duration }: Schedule.Metadata<Duration.Duration, SendRetryable>) =>
+          Effect.succeed(failure.retryAfter ?? duration),
+      ),
+      Schedule.map(({ attempt, duration }) => ({ attempt, wait: duration })),
+      Schedule.while(
+        ({ attempt, duration }) =>
+          attempt < input.retry.attempts &&
+          Duration.isLessThanOrEqualTo(duration, input.retry.maxDelay),
+      ),
+    );
+    return yield* Effect.retryOrElse(once, policy, (failure, stop) =>
+      stop.attempt >= input.retry.attempts
+        ? Effect.fail(
+            cliError(
+              `${failure.failure} (${input.retry.attempts} attempts). Check the network and retry`,
+            ),
+          )
+        : Effect.fail(
+            cliError(
+              `${input.preset.label} asked to retry after ${Math.ceil(Duration.toSeconds(stop.wait))} seconds (Retry-After), longer than maruhi waits. Run \`maruhi sync apply\` again later`,
+            ),
+          ),
     );
   });
 }

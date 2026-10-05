@@ -6,12 +6,12 @@ import type { SignupPolicy } from "@maruhi/api-schema";
 import type { OrgRole } from "@maruhi/core";
 import { and, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
-import { Context, Data, Effect } from "effect";
+import { Context, Data, Effect, Ref } from "effect";
 
 import type { ResolvedUser, SignupGateResult, UserOrg, VerifiedIdentity } from "../auth-domain.ts";
 import { ulid } from "../ids.ts";
 import { type D1AuditActor, guardedAuditSelectColumns } from "./audit.ts";
-import { isUniqueConflict } from "./errors.ts";
+import { type D1Error, type D1FailureError, tryD1 } from "./errors.ts";
 import {
   deploymentSettings,
   linkedIdentities,
@@ -25,7 +25,11 @@ import {
 
 type Db = ReturnType<typeof drizzle>;
 
-const run = <T>(evaluate: () => Promise<T>): Effect.Effect<T> => Effect.promise(evaluate);
+// D1 access goes through the shared tryD1 adapter (errors.ts —
+// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
+// public repository types keep an empty error channel because the
+// handlers turning D1FailureError into typed errors belong to other
+// lanes. An unexpected D1 failure stays a defect = a 500, as before
 
 // ---------------------------------------------------------------------------
 // IdentityRepo (§1-5 getOrCreateUser / §9-1 automatic personal-org
@@ -107,8 +111,8 @@ const IDENTITY_IN_CHUNK = 90;
 function identitiesOf(
   db: Db,
   userIds: readonly string[],
-): Effect.Effect<readonly LinkedIdentityRecord[]> {
-  return run(async () => {
+): Effect.Effect<readonly LinkedIdentityRecord[], D1Error> {
+  return tryD1(async () => {
     const rows: LinkedIdentityRecord[] = [];
     for (let start = 0; start < userIds.length; start += IDENTITY_IN_CHUNK) {
       const chunk = userIds.slice(start, start + IDENTITY_IN_CHUNK);
@@ -128,8 +132,11 @@ function identitiesOf(
   });
 }
 
-function lookupLinkedUser(db: Db, identity: VerifiedIdentity): Effect.Effect<string | null> {
-  return run(async () => {
+function lookupLinkedUser(
+  db: Db,
+  identity: VerifiedIdentity,
+): Effect.Effect<string | null, D1Error> {
+  return tryD1(async () => {
     const row = await db
       .select({ userId: linkedIdentities.userId })
       .from(linkedIdentities)
@@ -148,36 +155,35 @@ class InsertConflictError extends Data.TaggedError("InsertConflict")<object> {}
 /** The signupPolicy key in deployment_settings (AUTH_SPEC §3). */
 const SIGNUP_POLICY_KEY = "signup_policy";
 
-// The fail-closed warning for an unknown stored value is emitted once
-// per isolate (/auth/config is a surface the synthetic monitor hits
-// periodically — hosted-design.md §5-2 — and warning every time would
-// flood the log). The message is static (the stored value itself is
-// never written — the §11-5 discipline)
-let warnedUnknownSignupPolicy = false;
-
 /**
  * Read the signupPolicy at acceptance time (AUTH_SPEC §3). No row =
  * 'open'; an unknown value = 'closed' (fail-closed).
  */
-async function readSignupPolicy(db: Db): Promise<SignupPolicy> {
-  const row = await db
-    .select({ value: deploymentSettings.value })
-    .from(deploymentSettings)
-    .where(eq(deploymentSettings.key, SIGNUP_POLICY_KEY))
-    .get();
-  if (row === undefined) {
-    return "open";
-  }
-  if (row.value === "open" || row.value === "invite" || row.value === "closed") {
-    return row.value;
-  }
-  if (!warnedUnknownSignupPolicy) {
-    warnedUnknownSignupPolicy = true;
-    console.warn(
-      "deployment_settings.signup_policy has an unknown value; treating it as 'closed' (fail-closed — fix it with the SQL in docs/SELF_HOSTING.md)",
+function readSignupPolicy(
+  db: Db,
+  warnedUnknownSignupPolicy: Ref.Ref<boolean>,
+): Effect.Effect<SignupPolicy, D1Error> {
+  return Effect.gen(function* () {
+    const row = yield* tryD1(() =>
+      db
+        .select({ value: deploymentSettings.value })
+        .from(deploymentSettings)
+        .where(eq(deploymentSettings.key, SIGNUP_POLICY_KEY))
+        .get(),
     );
-  }
-  return "closed";
+    if (row === undefined) {
+      return "open";
+    }
+    if (row.value === "open" || row.value === "invite" || row.value === "closed") {
+      return row.value;
+    }
+    if (!(yield* Ref.getAndSet(warnedUnknownSignupPolicy, true))) {
+      yield* Effect.logWarning(
+        "deployment_settings.signup_policy has an unknown value; treating it as 'closed' (fail-closed — fix it with the SQL in docs/SELF_HOSTING.md)",
+      );
+    }
+    return "closed";
+  });
 }
 
 /**
@@ -231,7 +237,7 @@ function createUserBatch(
   identity: VerifiedIdentity,
   nowMs: number,
   gate: SignupGate,
-): Effect.Effect<string, InsertConflictError | SignupGateLostError> {
+): Effect.Effect<string, InsertConflictError | SignupGateLostError | D1FailureError> {
   const userId = ulid(nowMs);
   const orgId = ulid(nowMs);
   const actor: D1AuditActor = { userId };
@@ -347,45 +353,41 @@ function createUserBatch(
         .where(chained),
     ),
   ] as const;
-  return Effect.tryPromise({
-    try: async () => {
-      const createdRows =
-        gate.kind === "invite"
-          ? (
-              await db.batch([
-                // The consumption CAS (AUTH_SPEC §3): takes effect only
-                // on pending + unexpired + acceptance-time policy
-                // 'invite'. Same transaction as the creation — neither
-                // the "a failed attempt burns a code only" shape nor
-                // the "creation succeeded but the code is left
-                // unconsumed" shape exists
-                db
-                  .update(signupInvites)
-                  .set({ status: "used", usedByUserId: userId, usedAt: nowMs })
-                  .where(
-                    and(
-                      eq(signupInvites.id, gate.inviteId),
-                      eq(signupInvites.status, "pending"),
-                      gt(signupInvites.expiresAt, nowMs),
-                      signupPolicyIs("invite"),
-                    ),
+  return tryD1(async () => {
+    const createdRows =
+      gate.kind === "invite"
+        ? (
+            await db.batch([
+              // The consumption CAS (AUTH_SPEC §3): takes effect only
+              // on pending + unexpired + acceptance-time policy
+              // 'invite'. Same transaction as the creation — neither
+              // the "a failed attempt burns a code only" shape nor
+              // the "creation succeeded but the code is left
+              // unconsumed" shape exists
+              db
+                .update(signupInvites)
+                .set({ status: "used", usedByUserId: userId, usedAt: nowMs })
+                .where(
+                  and(
+                    eq(signupInvites.id, gate.inviteId),
+                    eq(signupInvites.status, "pending"),
+                    gt(signupInvites.expiresAt, nowMs),
+                    signupPolicyIs("invite"),
                   ),
-                usersInsert,
-                ...trailing,
-              ])
-            )[1]
-          : (await db.batch([usersInsert, ...trailing]))[0];
-      return createdRows.length === 1 ? userId : null;
-    },
-    catch: (error) => {
-      if (isUniqueConflict(error)) {
-        return new InsertConflictError();
-      }
-      // A D1 failure other than a conflict propagates as-is, as an
-      // infrastructure defect
-      throw error;
-    },
+                ),
+              usersInsert,
+              ...trailing,
+            ])
+          )[1]
+        : (await db.batch([usersInsert, ...trailing]))[0];
+    return createdRows.length === 1 ? userId : null;
   }).pipe(
+    // A UNIQUE violation on the (provider, provider_user_id) PK = the
+    // other concurrent signup won; the caller re-looks-up. A D1
+    // failure other than a conflict stays a D1FailureError and is a
+    // defect at the public boundary (an infrastructure defect, as the
+    // re-throw was before)
+    Effect.catchTag("D1UniqueConflict", () => Effect.fail(new InsertConflictError())),
     Effect.flatMap((created) =>
       created === null ? Effect.fail(new SignupGateLostError()) : Effect.succeed(created),
     ),
@@ -402,12 +404,12 @@ function refreshVerifiedEmail(
   userId: string,
   identity: VerifiedIdentity,
   nowMs: number,
-): Effect.Effect<void> {
+): Effect.Effect<void, D1Error> {
   if (identity.verifiedEmail === null) {
     return Effect.void;
   }
   const email = identity.verifiedEmail;
-  return run(async () => {
+  return tryD1(async () => {
     await db
       .update(users)
       .set({ email, emailVerified: 1, updatedAt: nowMs })
@@ -420,8 +422,8 @@ function findPendingSignupInvite(
   db: Db,
   tokenHashHex: string,
   nowMs: number,
-): Effect.Effect<{ readonly id: string } | null> {
-  return run(async () => {
+): Effect.Effect<{ readonly id: string } | null, D1Error> {
+  return tryD1(async () => {
     const row = await db
       .select({ id: signupInvites.id })
       .from(signupInvites)
@@ -438,6 +440,13 @@ function findPendingSignupInvite(
 }
 
 export function makeIdentityRepo(db: Db): IdentityRepoShape {
+  // The fail-closed warning for an unknown stored value is emitted
+  // once per service instance (the Ref — /auth/config is a surface the
+  // synthetic monitor hits periodically — hosted-design.md §5-2 — and
+  // warning every time would flood the log). The message is static
+  // (the stored value itself is never written — the §11-5 discipline)
+  const warnedUnknownSignupPolicy = Ref.makeUnsafe(false);
+
   // The single idempotent entry point (§1-5) carrying the signupPolicy
   // gate (AUTH_SPEC §3). attempt is the re-judgment count of
   // SignupGateLost (the policy transitioned between the read and the
@@ -450,8 +459,8 @@ export function makeIdentityRepo(db: Db): IdentityRepoShape {
     nowMs: number,
     signupInviteTokenHash: string | null,
     attempt = 0,
-  ): Effect.Effect<SignupGateResult> => {
-    const attemptCreate = (gate: SignupGate): Effect.Effect<SignupGateResult> =>
+  ): Effect.Effect<SignupGateResult, D1Error> => {
+    const attemptCreate = (gate: SignupGate): Effect.Effect<SignupGateResult, D1Error> =>
       createUserBatch(db, identity, nowMs, gate).pipe(
         Effect.map((userId): SignupGateResult => ({ userId, created: true })),
         Effect.catchTag("InsertConflict", () => rerunLookup(db, identity)),
@@ -470,44 +479,44 @@ export function makeIdentityRepo(db: Db): IdentityRepoShape {
           created: false,
         } satisfies ResolvedUser);
       }
-      return Effect.flatMap(
-        run(() => readSignupPolicy(db)),
-        (policy) => {
-          if (policy === "closed") {
-            return Effect.succeed<SignupGateResult>({ denied: "policy-closed" });
-          }
-          if (policy === "open") {
-            return attemptCreate({ kind: "open" });
-          }
-          if (signupInviteTokenHash === null) {
-            return Effect.succeed<SignupGateResult>({ denied: "invite-required" });
-          }
-          return Effect.flatMap(
-            findPendingSignupInvite(db, signupInviteTokenHash, nowMs),
-            (invite) =>
-              invite === null
-                ? Effect.succeed<SignupGateResult>({ denied: "invite-invalid" })
-                : attemptCreate({ kind: "invite", inviteId: invite.id }),
-          );
-        },
-      );
+      return Effect.flatMap(readSignupPolicy(db, warnedUnknownSignupPolicy), (policy) => {
+        if (policy === "closed") {
+          return Effect.succeed<SignupGateResult>({ denied: "policy-closed" });
+        }
+        if (policy === "open") {
+          return attemptCreate({ kind: "open" });
+        }
+        if (signupInviteTokenHash === null) {
+          return Effect.succeed<SignupGateResult>({ denied: "invite-required" });
+        }
+        return Effect.flatMap(
+          findPendingSignupInvite(db, signupInviteTokenHash, nowMs),
+          (invite) =>
+            invite === null
+              ? Effect.succeed<SignupGateResult>({ denied: "invite-invalid" })
+              : attemptCreate({ kind: "invite", inviteId: invite.id }),
+        );
+      });
     });
   };
   return {
     getOrCreateUser: (identity, nowMs, signupInviteTokenHash) =>
-      getOrCreateUser(identity, nowMs, signupInviteTokenHash),
-    lookupUser: (identity) => lookupLinkedUser(db, identity),
-    listUserOrgs: (userId) => listUserOrgs(db, userId),
-    providerLoginOf: (userId) => providerLoginOf(db, userId),
-    identitiesOf: (userIds) => identitiesOf(db, userIds),
-    signupPolicy: Effect.suspend(() => run(() => readSignupPolicy(db))),
+      getOrCreateUser(identity, nowMs, signupInviteTokenHash).pipe(Effect.orDie),
+    lookupUser: (identity) => lookupLinkedUser(db, identity).pipe(Effect.orDie),
+    listUserOrgs: (userId) => listUserOrgs(db, userId).pipe(Effect.orDie),
+    providerLoginOf: (userId) => providerLoginOf(db, userId).pipe(Effect.orDie),
+    identitiesOf: (userIds) => identitiesOf(db, userIds).pipe(Effect.orDie),
+    signupPolicy: readSignupPolicy(db, warnedUnknownSignupPolicy).pipe(Effect.orDie),
     hasPendingSignupInvite: (tokenHashHex, nowMs) =>
-      Effect.map(findPendingSignupInvite(db, tokenHashHex, nowMs), (row) => row !== null),
+      findPendingSignupInvite(db, tokenHashHex, nowMs).pipe(
+        Effect.map((row) => row !== null),
+        Effect.orDie,
+      ),
   };
 }
 
 /** The re-lookup after a batch conflict. Still not finding it here is a D1 failure (defect). */
-function rerunLookup(db: Db, identity: VerifiedIdentity): Effect.Effect<ResolvedUser> {
+function rerunLookup(db: Db, identity: VerifiedIdentity): Effect.Effect<ResolvedUser, D1Error> {
   return Effect.flatMap(lookupLinkedUser(db, identity), (found) =>
     found === null
       ? Effect.die(new Error("linked identity insert failed without a conflicting row"))
@@ -515,8 +524,8 @@ function rerunLookup(db: Db, identity: VerifiedIdentity): Effect.Effect<Resolved
   );
 }
 
-function providerLoginOf(db: Db, userId: string): Effect.Effect<string | null> {
-  return run(async () => {
+function providerLoginOf(db: Db, userId: string): Effect.Effect<string | null, D1Error> {
+  return tryD1(async () => {
     const row = await db
       .select({ login: linkedIdentities.providerLogin })
       .from(linkedIdentities)
@@ -526,8 +535,8 @@ function providerLoginOf(db: Db, userId: string): Effect.Effect<string | null> {
   });
 }
 
-function listUserOrgs(db: Db, userId: string): Effect.Effect<readonly UserOrg[]> {
-  return run(async () => {
+function listUserOrgs(db: Db, userId: string): Effect.Effect<readonly UserOrg[], D1Error> {
+  return tryD1(async () => {
     const rows = await db
       .select({
         orgId: organizations.id,

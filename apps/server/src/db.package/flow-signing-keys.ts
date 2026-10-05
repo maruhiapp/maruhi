@@ -5,11 +5,16 @@ import { eq } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
 
+import { tryD1 } from "./errors.ts";
 import { flowSigningKeys } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
 
-const run = <T>(evaluate: () => Promise<T>): Effect.Effect<T> => Effect.promise(evaluate);
+// D1 access goes through the shared tryD1 adapter (errors.ts —
+// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
+// public repository types keep an empty error channel because the
+// handlers turning D1FailureError into typed errors belong to other
+// lanes. An unexpected D1 failure stays a defect = a 500, as before
 
 // ---------------------------------------------------------------------------
 // FlowSigningKeyRepo (AUTH_SPEC §4-2. The store of the CLI login flow
@@ -39,7 +44,7 @@ export class FlowSigningKeyRepo extends Context.Service<
 export function makeFlowSigningKeyRepo(db: Db): FlowSigningKeyRepoShape {
   return {
     getOrCreate: (candidateKeyHex, nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         await db
           .insert(flowSigningKeys)
           .values({ id: FLOW_SIGNING_KEY_ID, keyHex: candidateKeyHex, createdAt: nowMs })
@@ -54,6 +59,6 @@ export function makeFlowSigningKeyRepo(db: Db): FlowSigningKeyRepoShape {
           throw new Error("flow signing key insert succeeded but the row is missing");
         }
         return row.keyHex;
-      }),
+      }).pipe(Effect.orDie),
   };
 }
