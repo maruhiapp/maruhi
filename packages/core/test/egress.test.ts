@@ -69,6 +69,28 @@ describe("egressHttpClientLayer", () => {
       expect(headers).toEqual({ accept: "application/json", "x-caller": "set-by-caller" });
     }
   });
+
+  it("keeps the fixed fetch options when provided under an ambient egress client", async () => {
+    // The CLI command environment already holds an egress client; a module
+    // that needs `redirect: "manual"` provides its own layer inside it. A
+    // build-time RequestInit would be dropped there (the ambient
+    // FetchHttpClient build is reused), and a redirect would re-send the
+    // caller's credentials
+    const { fetch, seen } = captureFetch();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* twoRequests.pipe(Effect.provide(egressHttpClientLayer({ redirect: "manual" })));
+        yield* twoRequests;
+      }).pipe(
+        Effect.provide(egressHttpClientLayer()),
+        Effect.provideService(FetchHttpClient.Fetch, fetch),
+      ),
+    );
+    expect(seen.map((entry) => entry.redirect)).toEqual(["manual", "manual", undefined, undefined]);
+    for (const { headers } of seen) {
+      expect(headers).toEqual({ accept: "application/json", "x-caller": "set-by-caller" });
+    }
+  });
 });
 
 describe("outbound clients are built only in packages/core/src/egress.ts", () => {
