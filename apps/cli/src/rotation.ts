@@ -21,7 +21,7 @@
 
 import type { RotationProposal } from "@maruhi/api-schema";
 import { RotationFlagNotFoundError } from "@maruhi/api-schema";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { CliServices, ProjectContextBase } from "./context.ts";
@@ -411,7 +411,6 @@ const ROTATION_DUE_EXIT_CODE = 3;
 
 /** The options of `maruhi rotation list` (the fail-on switches are the CI-cron shape — PF7a). */
 export interface RotationListOptions {
-  readonly nowMs?: number | undefined;
   /** Exit {@link ROTATION_DUE_EXIT_CODE} when a value is past its max age (or within `dueWithinDays` of it). */
   readonly failOnDue?: boolean | undefined;
   /** How many days ahead `--fail-on-due` looks (0 = past due only; the listing always shows the 14-day window). */
@@ -667,7 +666,7 @@ export function rotationListOp(
 ): Effect.Effect<number, CliError, CliServices> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    const nowMs = options.nowMs ?? Date.now();
+    const nowMs = yield* Clock.currentTimeMillis;
     const windowDays = options.dueWithinDays ?? 0;
     const config = yield* checklistConfig(context.projectId);
     // A failed flags read is one unknown part, not an outage of the whole

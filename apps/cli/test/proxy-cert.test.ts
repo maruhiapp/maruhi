@@ -14,7 +14,7 @@ import { makeEphemeralCa } from "../src/proxy.package/proxy-cert.ts";
 
 describe("makeEphemeralCa", () => {
   it("produces a self-signed CA and host leaves an independent parser accepts and verifies", async () => {
-    const ca = await makeEphemeralCa();
+    const ca = await makeEphemeralCa(Date.now);
     const caCert = new X509Certificate(ca.certPem);
     expect(caCert.ca).toBe(true);
     expect(caCert.subject).toContain("CN=maruhi ephemeral CA");
@@ -41,7 +41,7 @@ describe("makeEphemeralCa", () => {
   });
 
   it("encodes a host name of 128+ characters correctly (a two-byte length — §19 C-10)", async () => {
-    const ca = await makeEphemeralCa();
+    const ca = await makeEphemeralCa(Date.now);
     const host = `${"a".repeat(60)}.${"b".repeat(60)}.${"c".repeat(60)}.example`;
     expect(host.length).toBeGreaterThan(128);
     const leaf = new X509Certificate((await ca.issue(host)).certPem);
@@ -50,14 +50,14 @@ describe("makeEphemeralCa", () => {
   });
 
   it("encodes an IPv4 literal as an iPAddress name", async () => {
-    const ca = await makeEphemeralCa();
+    const ca = await makeEphemeralCa(Date.now);
     const leaf = new X509Certificate((await ca.issue("127.0.0.1")).certPem);
     expect(leaf.subjectAltName).toBe("IP Address:127.0.0.1");
     expect(leaf.checkIP("127.0.0.1")).toBe("127.0.0.1");
   });
 
   it("does not remember a failed leaf issuance: the next request for the host tries again (§21 R-5)", async () => {
-    const ca = await makeEphemeralCa();
+    const ca = await makeEphemeralCa(Date.now);
     const spy = vi
       .spyOn(crypto.subtle, "exportKey")
       .mockRejectedValueOnce(new Error("transient export failure"));
@@ -73,7 +73,7 @@ describe("makeEphemeralCa", () => {
   });
 
   it("completes a real TLS handshake with a client that trusts only the CA", async () => {
-    const ca = await makeEphemeralCa();
+    const ca = await makeEphemeralCa(Date.now);
     const leaf = await ca.issue("api.example.test");
     const server = tls.createServer({ key: leaf.keyPem, cert: leaf.certPem }, (socket) => {
       socket.end("hello");
@@ -97,7 +97,7 @@ describe("makeEphemeralCa", () => {
       });
       expect(received).toBe("hello");
       // A client trusting only the CA refuses a different CA's leaf
-      const other = await makeEphemeralCa();
+      const other = await makeEphemeralCa(Date.now);
       await expect(
         new Promise<void>((resolve, reject) => {
           const client = tls.connect(

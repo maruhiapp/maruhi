@@ -32,7 +32,7 @@ import { dirname, join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import type { ScopeKind } from "@maruhi/crypto";
-import { Context, Effect, Schema } from "effect";
+import { Clock, Context, Effect, Schema } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import { floorRecordGet } from "./floor.ts";
@@ -236,13 +236,14 @@ export function makeFilePinStore(dir: string): PinStoreShape {
           ),
         );
       }
-      return merge(projectId, (pins) => {
-        const now = Date.now();
-        const kept = Object.entries(pins.issued).filter(
-          ([, existing]) => existing.expiresAtMs + ISSUED_PIN_RETENTION_MS > now,
-        );
-        return { ...pins, issued: { ...Object.fromEntries(kept), [inviteId]: pin } };
-      });
+      return Effect.flatMap(Clock.currentTimeMillis, (now) =>
+        merge(projectId, (pins) => {
+          const kept = Object.entries(pins.issued).filter(
+            ([, existing]) => existing.expiresAtMs + ISSUED_PIN_RETENTION_MS > now,
+          );
+          return { ...pins, issued: { ...Object.fromEntries(kept), [inviteId]: pin } };
+        }),
+      );
     },
   };
 }

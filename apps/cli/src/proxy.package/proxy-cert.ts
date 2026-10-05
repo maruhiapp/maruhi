@@ -211,14 +211,16 @@ const CA_SUBJECT = "maruhi ephemeral CA (one proxy run only)";
  * (basicConstraints CA, keyUsage keyCertSign + cRLSign). Leaves are issued
  * on demand (`issue`) with serverAuth, digitalSignature, and a
  * subjectAltName for the host. The CA private key lives only in this
- * closure.
+ * closure. The instant source is injected so the CA and every leaf read
+ * one clock: production passes the Effect clock's unsafe read
+ * (`currentTimeMillisUnsafe`), tests pass `Date.now`.
  */
-export async function makeEphemeralCa(now: number = Date.now()): Promise<EphemeralCa> {
+export async function makeEphemeralCa(now: () => number): Promise<EphemeralCa> {
   const ca = await generateSigner(CA_SUBJECT, false);
   const caTbs = tbsCertificate({
     subject: ca,
     issuer: ca,
-    now,
+    now: now(),
     extensions: [
       extension(OID.basicConstraints, true, seq(boolTrue())),
       // keyCertSign (5), cRLSign (6)
@@ -235,7 +237,7 @@ export async function makeEphemeralCa(now: number = Date.now()): Promise<Ephemer
     const tbs = tbsCertificate({
       subject: leaf,
       issuer: ca,
-      now: Date.now(),
+      now: now(),
       extensions: [
         extension(OID.basicConstraints, true, seq()),
         // digitalSignature (0)

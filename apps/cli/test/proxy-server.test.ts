@@ -61,8 +61,8 @@ let open: ProxyHandle[] = [];
 let hopDirs: string[] = [];
 
 beforeAll(async () => {
-  runCa = await makeEphemeralCa();
-  originCa = await makeEphemeralCa();
+  runCa = await makeEphemeralCa(Date.now);
+  originCa = await makeEphemeralCa(Date.now);
   const leaf = await originCa.issue("api.example.test");
   secureOrigin = await startOrigin({
     tls: { key: leaf.keyPem, cert: leaf.certPem },

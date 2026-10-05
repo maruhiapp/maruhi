@@ -200,7 +200,6 @@ function envRotateCommand(
         receiptsFloor,
         writerUserId: context.session.userId,
         signingKey: context.masterKeys.sigKeyPair.privateKey,
-        now: () => new Date(),
       });
     }
     return code;

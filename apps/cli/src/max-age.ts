@@ -15,7 +15,7 @@
 // pays one round-trip time whatever the count (the pull wire carries no
 // push time — AUTH_SPEC §12-7; pf6-design.md ruling R9-C kept it that way).
 
-import { Duration, Effect } from "effect";
+import { Clock, Duration, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { countNoun, displayText, formatUtcDate } from "./display.ts";
@@ -216,7 +216,6 @@ export function notePastDueValues(input: {
   readonly projectId: string;
   readonly environmentId: string;
   readonly variables: readonly DecryptedVariable[];
-  readonly nowMs?: number | undefined;
 }): Effect.Effect<void, never, CliIo> {
   return Effect.gen(function* () {
     const candidates = input.variables.flatMap((variable): MaxAgeCandidate[] =>
@@ -233,7 +232,7 @@ export function notePastDueValues(input: {
     if (candidates.length === 0) {
       return;
     }
-    const nowMs = input.nowMs ?? Date.now();
+    const nowMs = yield* Clock.currentTimeMillis;
     const { rows } = yield* dueRowsFor({
       client: input.client,
       projectId: input.projectId,

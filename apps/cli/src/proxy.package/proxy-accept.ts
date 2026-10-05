@@ -51,7 +51,7 @@
 import { join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
-import { Context, Effect, FileSystem, Schema, Stdio } from "effect";
+import { Clock, Context, Effect, FileSystem, Schema, Stdio } from "effect";
 
 import { AgentProfileRef, describeNonTerminal, ensureHumanCeremonyAllowed } from "../agent-gate.ts";
 import { cliError, type CliError } from "../errors.ts";
@@ -330,16 +330,17 @@ export function acceptProxyConfig(input: {
       : lookup.state === "missing"
         ? "first use"
         : "changed";
+    const nowMs = yield* Clock.currentTimeMillis;
     if (outcome !== "unchanged") {
       // A changed content starts the project list over: the acceptance is of this content, for these projects
       const projectIds = same
         ? [...lookup.accepted.projectIds, input.projectId]
         : [input.projectId];
-      yield* store.accept(key, { content: input.content, acceptedAtMs: Date.now(), projectIds });
+      yield* store.accept(key, { content: input.content, acceptedAtMs: nowMs, projectIds });
     }
     // Armed here, not at the first brokered run: between accepting and
     // running, deleting the file must already be gated (R-18)
-    yield* store.markBrokered(input.projectId, { configPath: key, markedAtMs: Date.now() });
+    yield* store.markBrokered(input.projectId, { configPath: key, markedAtMs: nowMs });
     return outcome;
   });
 }
@@ -357,7 +358,8 @@ export function markProjectBrokered(input: {
   return Effect.gen(function* () {
     const store = yield* ProxyAcceptStore;
     const key = yield* resolvedPath(input.configPath);
-    yield* store.markBrokered(input.projectId, { configPath: key, markedAtMs: Date.now() });
+    const markedAtMs = yield* Clock.currentTimeMillis;
+    yield* store.markBrokered(input.projectId, { configPath: key, markedAtMs });
   });
 }
 

@@ -35,7 +35,7 @@
 import { AttestationRegressionError } from "@maruhi/api-schema";
 import { cryptoEffect } from "@maruhi/core";
 import { SUITE_ID, signHeadAttestation, verifyDistributedHeadAttestation } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { DistributedAttestationWire, VerifiedProject } from "./chain-sync.ts";
@@ -144,6 +144,7 @@ function evidenceRecordOf(
   view: VerifiedProject,
   attestation: DistributedAttestationWire,
   kind: AttestationEvidenceRecord["kind"],
+  detectedAtMs: number,
 ): AttestationEvidenceRecord {
   return {
     attestation: {
@@ -160,7 +161,7 @@ function evidenceRecordOf(
       entryHashAtAttestedSeq: view.history.entryHashAt(attestation.chainHeadSeq) ?? "",
     },
     kind,
-    detectedAtMs: Date.now(),
+    detectedAtMs,
   };
 }
 
@@ -175,8 +176,9 @@ function failWithEvidence(
 ): Effect.Effect<never, CliError, CliServices> {
   return Effect.gen(function* () {
     const store = yield* FloorStore;
+    const detectedAtMs = yield* Clock.currentTimeMillis;
     const evidence = records.map((record) =>
-      evidenceRecordOf(view, record.attestation, record.kind),
+      evidenceRecordOf(view, record.attestation, record.kind, detectedAtMs),
     );
     let evidencePath = "(could not be written)";
     for (const record of evidence) {

@@ -33,7 +33,7 @@ import {
   scopeIncludesEnvironment,
   sealProposedValue,
 } from "@maruhi/crypto";
-import { Effect, Redacted } from "effect";
+import { Clock, Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
 import type { VerifiedProject } from "./chain-sync.ts";
@@ -82,7 +82,6 @@ export interface CiRotateInput extends CiLeaseInput {
   readonly configPath: string;
   /** How many days the proposal waits for a member (1 to 30). */
   readonly expiresInDays: number;
-  readonly now?: () => number;
 }
 
 export interface CiRotateResult {
@@ -658,28 +657,32 @@ function mintTokenFor(
 ): Effect.Effect<Redacted.Redacted<string>, CliError, CliIo> {
   // The fetch's bound follows the lease token's life (O-18): a hung
   // endpoint must not eat the fallback to a token that still lives
-  return fetchGitHubOidcToken(
-    input.audience,
-    issuanceBoundFor(lease.credential.token, (input.now ?? Date.now)()),
-  ).pipe(
-    Effect.catch((error) =>
-      Effect.gen(function* () {
-        const io = yield* CliIo;
-        const expiresAtMs = tokenExpiresAtMs(lease.credential.token);
-        if (expiresAtMs !== null && expiresAtMs <= (input.now ?? Date.now)()) {
-          return yield* Effect.fail(
-            cliError(
-              `The issuer accepted the rotation (${outcome.facts.join("; ")}) but no token is left to store the proposal: the lease's token expired at ${formatUtcDate(expiresAtMs)} before a fresh one could be minted (${error.message}). Recovery for the credential that now exists at the issuer: ${outcome.recovery}`,
-            ),
+  return Effect.gen(function* () {
+    const boundNowMs = yield* Clock.currentTimeMillis;
+    return yield* fetchGitHubOidcToken(
+      input.audience,
+      issuanceBoundFor(lease.credential.token, boundNowMs),
+    ).pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          const io = yield* CliIo;
+          const expiresAtMs = tokenExpiresAtMs(lease.credential.token);
+          const nowMs = yield* Clock.currentTimeMillis;
+          if (expiresAtMs !== null && expiresAtMs <= nowMs) {
+            return yield* Effect.fail(
+              cliError(
+                `The issuer accepted the rotation (${outcome.facts.join("; ")}) but no token is left to store the proposal: the lease's token expired at ${formatUtcDate(expiresAtMs)} before a fresh one could be minted (${error.message}). Recovery for the credential that now exists at the issuer: ${outcome.recovery}`,
+              ),
+            );
+          }
+          yield* io.logError(
+            `Could not mint a fresh OIDC token for the proposal (${error.message}); presenting the lease's token`,
           );
-        }
-        yield* io.logError(
-          `Could not mint a fresh OIDC token for the proposal (${error.message}); presenting the lease's token`,
-        );
-        return lease.credential.token;
-      }),
-    ),
-  );
+          return lease.credential.token;
+        }),
+      ),
+    );
+  });
 }
 
 /** The report lines of a mint (the command prints them; values never appear). */
