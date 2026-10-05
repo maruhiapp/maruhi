@@ -16,11 +16,16 @@ import type {
   InviteStatus,
 } from "../invite-domain.ts";
 import { type D1AuditActor, guardedAuditSelectColumns } from "./audit.ts";
+import { D1FailureError, tryD1 } from "./errors.ts";
 import { invitations, orgAuditEvents } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
 
-const run = <T>(evaluate: () => Promise<T>): Effect.Effect<T> => Effect.promise(evaluate);
+// D1 access goes through the shared tryD1 adapter (errors.ts —
+// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
+// public repository types keep an empty error channel because the
+// handlers turning D1FailureError into typed errors belong to other
+// lanes. An unexpected D1 failure stays a defect = a 500, as before
 
 // ---------------------------------------------------------------------------
 // InviteRepo (AUTH_SPEC §15. Invite records and invite.* audit appended
@@ -216,23 +221,17 @@ function toInvitationRecord(row: InvitationRow): InvitationRecord {
 }
 
 /**
- * Maps a D1 UNIQUE constraint violation to the issuance 409
- * (`invitations.id` / `inv_link_pub`). Any other error is null (the
- * caller re-throws — never swallowed).
+ * The violated unique-constraint target (carried by
+ * D1UniqueConflictError — errors.ts) → the issuance 409 field
+ * (`invitations.id` / `inv_link_pub`). Any other constraint is null —
+ * the caller re-raises it as D1FailureError (a defect at the boundary,
+ * as the re-throw was before; never swallowed).
  */
-function inviteUniqueConflictOf(error: unknown): "id" | "linkPub" | null {
-  // D1 carries a constraint error on either message or cause (varies by runtime)
-  const cause = error instanceof Error ? error.cause : undefined;
-  const message = `${error instanceof Error ? error.message : String(error)} ${
-    cause instanceof Error ? cause.message : ""
-  }`;
-  if (!/UNIQUE constraint failed/.test(message)) {
-    return null;
-  }
-  if (message.includes("invitations.link_pub")) {
+function inviteConflictFieldOf(constraint: string | null): "id" | "linkPub" | null {
+  if (constraint === "invitations.link_pub") {
     return "linkPub";
   }
-  return message.includes("invitations.id") ? "id" : null;
+  return constraint === "invitations.id" ? "id" : null;
 }
 
 /** Re-evaluates both the pending and the lookback caps inside the same INSERT statement. */
@@ -357,7 +356,7 @@ export function makeInviteRepo(db: Db): InviteRepoShape {
     );
   return {
     create: (input, nowMs, actor) =>
-      run(async () => {
+      tryD1(async () => {
         // The judgment and the insert are folded into a single
         // INSERT…SELECT. With a separate request's SELECT → INSERT,
         // every concurrent issuer would observe the same under-limit
@@ -370,8 +369,8 @@ export function makeInviteRepo(db: Db): InviteRepoShape {
         // reused id is never silently let through. It is detected
         // deterministically by a prior SELECT, and a concurrent
         // issuance interposing between the SELECT and the INSERT
-        // surfaces as a UNIQUE constraint error and is mapped to the
-        // same 409
+        // surfaces as a UNIQUE constraint error = a D1UniqueConflict
+        // typed error, mapped to the same 409 by the catchTag below
         const existing = await db
           .select({ id: invitations.id, linkPub: invitations.linkPub })
           .from(invitations)
@@ -383,28 +382,17 @@ export function makeInviteRepo(db: Db): InviteRepoShape {
         if (found !== undefined) {
           return { kind: "conflict", field: found.id === input.id ? "id" : "linkPub" } as const;
         }
-        const insert = () =>
-          db.batch([
-            conditionalInviteInsert(db, input, nowMs),
-            guardedAuditInsert({
-              inviteId: input.id,
-              event: "invite.created",
-              actor,
-              targetUserId: null,
-              payload: { inviteId: input.id, role: input.role },
-              nowMs,
-            }),
-          ]);
-        let results: Awaited<ReturnType<typeof insert>>;
-        try {
-          results = await insert();
-        } catch (error) {
-          const conflict = inviteUniqueConflictOf(error);
-          if (conflict !== null) {
-            return { kind: "conflict", field: conflict } as const;
-          }
-          throw error;
-        }
+        const results = await db.batch([
+          conditionalInviteInsert(db, input, nowMs),
+          guardedAuditInsert({
+            inviteId: input.id,
+            event: "invite.created",
+            actor,
+            targetUserId: null,
+            payload: { inviteId: input.id, role: input.role },
+            nowMs,
+          }),
+        ]);
         if (results[0].length === 1) {
           return { kind: "created" } as const;
         }
@@ -421,21 +409,32 @@ export function makeInviteRepo(db: Db): InviteRepoShape {
           kind: "rate-limited",
           retryAfterSeconds: 1,
         } as const;
-      }),
-    findByLinkPub: (linkPubHex) => run(() => findWhere(eq(invitations.linkPub, linkPubHex))),
+      }).pipe(
+        Effect.catchTag("D1UniqueConflict", (error) => {
+          const field = inviteConflictFieldOf(error.constraint);
+          return field === null
+            ? Effect.fail(new D1FailureError({ cause: error.cause }))
+            : Effect.succeed({ kind: "conflict", field } as const);
+        }),
+        Effect.orDie,
+      ),
+    findByLinkPub: (linkPubHex) =>
+      tryD1(() => findWhere(eq(invitations.linkPub, linkPubHex))).pipe(Effect.orDie),
     findById: (projectId, id) =>
-      run(() => findWhere(and(eq(invitations.id, id), eq(invitations.projectId, projectId)))),
+      tryD1(() =>
+        findWhere(and(eq(invitations.id, id), eq(invitations.projectId, projectId))),
+      ).pipe(Effect.orDie),
     listForProject: (projectId) =>
-      run(async () => {
+      tryD1(async () => {
         const rows = await db
           .select()
           .from(invitations)
           .where(eq(invitations.projectId, projectId))
           .orderBy(invitations.createdAt, invitations.id);
         return rows.map(toInvitationRecord);
-      }),
+      }).pipe(Effect.orDie),
     acceptCas: (input, nowMs, actor) =>
-      run(async () => {
+      tryD1(async () => {
         const results = await db.batch([
           db
             .update(invitations)
@@ -469,9 +468,9 @@ export function makeInviteRepo(db: Db): InviteRepoShape {
           }),
         ]);
         return results[0].length === 1;
-      }),
+      }).pipe(Effect.orDie),
     revokeCas: (projectId, id, payload, nowMs, actor) =>
-      run(async () => {
+      tryD1(async () => {
         const results = await db.batch([
           db
             .update(invitations)
@@ -494,9 +493,9 @@ export function makeInviteRepo(db: Db): InviteRepoShape {
           }),
         ]);
         return results[0].length === 1;
-      }),
+      }).pipe(Effect.orDie),
     completeAccepted: (target) =>
-      run(async () => {
+      tryD1(async () => {
         await db
           .update(invitations)
           .set({ status: "completed" })
@@ -509,6 +508,6 @@ export function makeInviteRepo(db: Db): InviteRepoShape {
               eq(invitations.inviteeSigPub, target.inviteeSigPubHex),
             ),
           );
-      }),
+      }).pipe(Effect.orDie),
   };
 }

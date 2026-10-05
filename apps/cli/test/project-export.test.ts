@@ -8,16 +8,27 @@
 //  2. a 409 ExportChanged restarts the export from the first page (the
 //     partial file is removed first)
 //  3. the trailer's chain head is cross-checked against the verified view
-//  4. an existing file is never overwritten; --out is required (usage)
+//  4. an existing file is never overwritten; --out is required (usage),
+//     and a foreign file racing past the check is never removed (a wx
+//     refusal is not ownership)
+//  5. an export interrupted mid-write — or dying with a defect —
+//     removes the partial file (the output is a scoped resource —
+//     acquireUseRelease), and an interrupt racing the companion write
+//     leaves no written-but-unowned identities file
 
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { ProjectId } from "@maruhi/core";
+import { Cause, Effect, Exit, Fiber } from "effect";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import type { MaruhiClient } from "../src/api.ts";
+import { verifyChainSnapshot } from "../src/chain-sync.ts";
 import { runCli } from "../src/cli.ts";
+import { projectExportOp } from "../src/project-export.ts";
 import { chainHandlerOf } from "./support/chain-handler.ts";
 import {
   buildChain,
@@ -28,6 +39,41 @@ import {
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
+
+/** The output paths whose createWriteStream open must fail as EEXIST (a foreign file won the race). */
+const refusedOpens = vi.hoisted(() => new Set<string>());
+
+vi.mock("node:fs", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("node:fs")>();
+  const { Writable } = await import("node:stream");
+  return {
+    ...mod,
+    createWriteStream: (
+      path: Parameters<typeof mod.createWriteStream>[0],
+      options?: Parameters<typeof mod.createWriteStream>[1],
+    ) => {
+      if (!refusedOpens.has(String(path))) {
+        return mod.createWriteStream(path, options as never);
+      }
+      // The wx open of a file that landed after ensureAbsent: a real
+      // foreign file sits at the path, the open refuses EEXIST, and no
+      // `open` event ever fires
+      const stream = new Writable({
+        write: (_chunk, _encoding, done) => done(),
+      });
+      setImmediate(() => {
+        mod.writeFileSync(path, "a foreign file — never this run's to remove");
+        stream.emit(
+          "error",
+          Object.assign(new Error(`EEXIST: file already exists, open '${String(path)}'`), {
+            code: "EEXIST",
+          }),
+        );
+      });
+      return stream as unknown as ReturnType<typeof mod.createWriteStream>;
+    },
+  };
+});
 
 let owner: TestUser;
 let built: BuiltChain;
@@ -288,6 +334,173 @@ describe("maruhi project export (PF3)", () => {
     expect(await runCli(["project", "export", "--out", data], half.env.layer)).toBe(1);
     await expect(stat(data)).rejects.toThrow();
     await expect(stat(`${data}.identities.json`)).rejects.toThrow();
+  });
+
+  it("removes the partial file when the export is interrupted mid-write", async () => {
+    // No MockServer: a stub client answers the first page, then holds the
+    // continuation forever — the export sits mid-write with a partial
+    // file on disk when the interrupt arrives
+    const lines = snapshotLines();
+    const head = {
+      chainHeadSeq: built.entries.length,
+      chainHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
+      auditMaxSeq: 2,
+    };
+    let secondPageRequested: () => void = () => undefined;
+    const secondPage = new Promise<void>((resolve) => {
+      secondPageRequested = resolve;
+    });
+    const client = {
+      export: {
+        page: (args: { readonly query: { readonly cursor?: string } }) =>
+          args.query.cursor === undefined
+            ? Effect.succeed({ lines: lines.slice(0, 3), next: "Y3Vyc29y", head })
+            : Effect.suspend(() => {
+                secondPageRequested();
+                return Effect.never;
+              }),
+        identities: () => Effect.succeed(identitiesAt(head.chainHeadHashHex)),
+      },
+    } as unknown as MaruhiClient;
+    const verified = await Effect.runPromise(
+      verifyChainSnapshot({
+        projectId: built.projectId as ProjectId,
+        entries: built.entries,
+        claimedHeadSeq: built.entries.length,
+        claimedHeadHashHex: head.chainHeadHashHex,
+      }),
+    );
+    const dir = await mkdtemp(join(tmpdir(), "maruhi-export-test-"));
+    const out = join(dir, "interrupted.ndjson.gz");
+    const fiber = Effect.runFork(
+      projectExportOp({ client, projectId: built.projectId, verified, outPath: out }),
+    );
+    // The first page is already written once the second is requested
+    await secondPage;
+    // The write stream's wx open is asynchronous — the partial file must
+    // provably exist before the interrupt, or the stat rejections below
+    // would pass without the release doing anything
+    await vi.waitFor(async () => {
+      await stat(out);
+    });
+    // Fiber.interrupt waits for the fiber's exit — the uninterruptible
+    // release (stream teardown + file removal) has completed by now
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    await expect(stat(out)).rejects.toThrow();
+    await expect(stat(`${out}.identities.json`)).rejects.toThrow();
+  });
+
+  it("removes the partial file when the export dies with a defect mid-write", async () => {
+    const lines = snapshotLines();
+    const head = {
+      chainHeadSeq: built.entries.length,
+      chainHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
+      auditMaxSeq: 2,
+    };
+    const client = {
+      export: {
+        page: (args: { readonly query: { readonly cursor?: string } }) =>
+          args.query.cursor === undefined
+            ? Effect.succeed({ lines: lines.slice(0, 3), next: "Y3Vyc29y", head })
+            : // The defect is delayed so the partial file below provably
+              // exists when it lands — otherwise the release could remove
+              // it before the stat ever sees it
+              Effect.sleep("200 millis").pipe(
+                Effect.andThen(Effect.die(new Error("injected defect"))),
+              ),
+        identities: () => Effect.succeed(identitiesAt(head.chainHeadHashHex)),
+      },
+    } as unknown as MaruhiClient;
+    const verified = await Effect.runPromise(
+      verifyChainSnapshot({
+        projectId: built.projectId as ProjectId,
+        entries: built.entries,
+        claimedHeadSeq: built.entries.length,
+        claimedHeadHashHex: head.chainHeadHashHex,
+      }),
+    );
+    const dir = await mkdtemp(join(tmpdir(), "maruhi-export-test-"));
+    const out = join(dir, "defect.ndjson.gz");
+    const fiber = Effect.runFork(
+      projectExportOp({ client, projectId: built.projectId, verified, outPath: out }),
+    );
+    // The defect must land on a file that provably exists, or the stat
+    // rejections below would pass without the release doing anything
+    await vi.waitFor(async () => {
+      await stat(out);
+    });
+    const exit = await Effect.runPromise(Fiber.await(fiber));
+    expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true);
+    await expect(stat(out)).rejects.toThrow();
+    await expect(stat(`${out}.identities.json`)).rejects.toThrow();
+  });
+
+  it("removes the companion too when an interrupt races its write", async () => {
+    // writeFileString's wx create honors the abort signal — an interrupt
+    // mid-write must either let the write finish (so its ownership mark
+    // reaches the cleanup) or keep it from starting; a written-but-unowned
+    // companion is the orphan this guards. The oversized payload keeps
+    // the write in flight long enough for the interrupt to land inside it.
+    const lines = snapshotLines();
+    const head = {
+      chainHeadSeq: built.entries.length,
+      chainHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
+      auditMaxSeq: 2,
+    };
+    const identities = {
+      ...identitiesAt(head.chainHeadHashHex),
+      unlinked: Array.from({ length: 2_000_000 }, (_, i) => `user-unlinked-${i}`),
+    };
+    const client = {
+      export: {
+        page: (args: { readonly query: { readonly cursor?: string } }) =>
+          args.query.cursor === undefined
+            ? Effect.succeed({ lines: lines.slice(0, 3), next: "Y3Vyc29y", head })
+            : Effect.succeed({ lines: lines.slice(3), head }),
+        identities: () => Effect.succeed(identities),
+      },
+    } as unknown as MaruhiClient;
+    const verified = await Effect.runPromise(
+      verifyChainSnapshot({
+        projectId: built.projectId as ProjectId,
+        entries: built.entries,
+        claimedHeadSeq: built.entries.length,
+        claimedHeadHashHex: head.chainHeadHashHex,
+      }),
+    );
+    const dir = await mkdtemp(join(tmpdir(), "maruhi-export-test-"));
+    const out = join(dir, "interrupt-companion.ndjson.gz");
+    const companion = `${out}.identities.json`;
+    const fiber = Effect.runFork(
+      projectExportOp({ client, projectId: built.projectId, verified, outPath: out }),
+    );
+    // The companion's wx create means the write has started — interrupt
+    // while the payload may still be flushing (a tight poll, or the
+    // detection latency itself swallows the window)
+    await vi.waitFor(
+      async () => {
+        await stat(companion);
+      },
+      { interval: 1, timeout: 10_000 },
+    );
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    await expect(stat(out)).rejects.toThrow();
+    await expect(stat(companion)).rejects.toThrow();
+  });
+
+  it("never removes a foreign file that landed between the check and the wx open", async () => {
+    const fixture = await startEnv();
+    const out = join(fixture.dir, "raced.ndjson.gz");
+    refusedOpens.add(out);
+    try {
+      expect(await runCli(["project", "export", "--out", out], fixture.env.layer)).toBe(1);
+      expect(fixture.env.errors.join("\n")).toContain(`Writing ${out} failed (Error)`);
+      // The foreign file is untouched — the run provably created nothing
+      expect(await readFile(out, "utf8")).toBe("a foreign file — never this run's to remove");
+      await expect(stat(`${out}.identities.json`)).rejects.toThrow();
+    } finally {
+      refusedOpens.delete(out);
+    }
   });
 
   it("never overwrites an existing file, and --out is required", async () => {

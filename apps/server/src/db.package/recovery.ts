@@ -7,12 +7,17 @@ import { Context, Effect } from "effect";
 
 import type { RecoveryFetchDecision, RecoveryWrapRecord } from "../auth-domain.ts";
 import { type D1AuditActor, userAuditInsert } from "./audit.ts";
+import { tryD1 } from "./errors.ts";
 import { KEY_BLOB_FETCH_LIMIT, type KeyWrapRepoShape } from "./key-wraps.ts";
 import { keyWrapWindows, recoveryWraps } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
 
-const run = <T>(evaluate: () => Promise<T>): Effect.Effect<T> => Effect.promise(evaluate);
+// D1 access goes through the shared tryD1 adapter (errors.ts —
+// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
+// public repository types keep an empty error channel because the
+// handlers turning D1FailureError into typed errors belong to other
+// lanes. An unexpected D1 failure stays a defect = a 500, as before
 
 // ---------------------------------------------------------------------------
 // RecoveryRepo (AUTH_SPEC §13. At most one blob per user)
@@ -66,7 +71,7 @@ export class RecoveryRepo extends Context.Service<RecoveryRepo, RecoveryRepoShap
 export function makeRecoveryRepo(db: Db, keyWraps: KeyWrapRepoShape): RecoveryRepoShape {
   return {
     upsert: (userId, wrap, nowMs, actor) =>
-      run(async () => {
+      tryD1(async () => {
         await db.batch([
           // A re-issuance is a new blob, so the fetch window (the
           // summed window — §13-8) is reset too (the trial history
@@ -95,9 +100,9 @@ export function makeRecoveryRepo(db: Db, keyWraps: KeyWrapRepoShape): RecoveryRe
             }),
           userAuditInsert(db, nowMs, { event: "auth.recovery_code_reissued", actor }),
         ]);
-      }),
+      }).pipe(Effect.orDie),
     find: (userId) =>
-      run(async () => {
+      tryD1(async () => {
         const row = await db
           .select({
             suite: recoveryWraps.suite,
@@ -116,7 +121,7 @@ export function makeRecoveryRepo(db: Db, keyWraps: KeyWrapRepoShape): RecoveryRe
               ciphertextHex: row.ciphertextHex,
               updatedAtMs: row.updatedAt,
             };
-      }),
+      }).pipe(Effect.orDie),
     // Since KL3 (§13-8) the fetch count is kept in the fixed window
     // summed with passkey / guardian-group wrap fetches
     // (KeyWrapRepo.consumeWindow — a single conditional UPSERT + a

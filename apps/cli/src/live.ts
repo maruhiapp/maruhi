@@ -21,8 +21,8 @@ import { stat } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 
 import * as BunStdio from "@effect/platform-bun/BunStdio";
+import { egressHttpClientLayer } from "@maruhi/core";
 import { Duration, Effect, Layer, Redacted } from "effect";
-import { FetchHttpClient } from "effect/http";
 import { agentInfo } from "std-env";
 
 import { type AgentProfile, AgentProfileRef } from "./agent-gate.ts";
@@ -1007,6 +1007,8 @@ export function liveLayer(): Layer.Layer<CliServices> {
     Layer.succeed(CliIo, makeLiveIo()),
     Layer.succeed(ProcessRunner, makeBunProcessRunner()),
     Layer.succeed(SqlRunner, makeBunSqlRunner()),
-    FetchHttpClient.layer,
+    // Outbound HTTP adds no header of its own (no trace propagation —
+    // packages/core/src/egress.ts)
+    egressHttpClientLayer(),
   );
 }

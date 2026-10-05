@@ -17,11 +17,16 @@ import {
   OPS_COUNTER_RETENTION_MS,
   OPS_COUNTER_WINDOW_MS,
 } from "../ops/ops-policy.ts";
+import { tryD1 } from "./errors.ts";
 import { opsBackups, opsCounters, opsState, projects, userAuditEvents } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
 
-const run = <T>(evaluate: () => Promise<T>): Effect.Effect<T> => Effect.promise(evaluate);
+// D1 access goes through the shared tryD1 adapter (errors.ts —
+// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
+// public repository types keep an empty error channel because the
+// handlers turning D1FailureError into typed errors belong to other
+// lanes. An unexpected D1 failure stays a defect = a 500, as before
 
 /** Operations counter metric names (hosted-ops §2-A). */
 export type OpsCounterMetric = "github_token_requests" | "cli_flow_capacity";
@@ -198,7 +203,7 @@ function backupAttemptColumns(
 export function makeOpsRepo(db: Db): OpsRepoShape {
   return {
     incrementCounter: (metric, nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         await db
           .insert(opsCounters)
           .values({ metric, windowStart: opsWindowStart(nowMs), count: 1 })
@@ -206,33 +211,33 @@ export function makeOpsRepo(db: Db): OpsRepoShape {
             target: [opsCounters.metric, opsCounters.windowStart],
             set: { count: sql`${opsCounters.count} + 1` },
           });
-      }),
+      }).pipe(Effect.orDie),
     counterWindows: (metric, sinceMs) =>
-      run(async () =>
+      tryD1(async () =>
         db
           .select({ windowStart: opsCounters.windowStart, count: opsCounters.count })
           .from(opsCounters)
           .where(and(eq(opsCounters.metric, metric), gte(opsCounters.windowStart, sinceMs)))
           .orderBy(asc(opsCounters.windowStart))
           .all(),
-      ),
+      ).pipe(Effect.orDie),
     pruneCounters: (nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         await db
           .delete(opsCounters)
           .where(lt(opsCounters.windowStart, nowMs - OPS_COUNTER_RETENTION_MS));
-      }),
+      }).pipe(Effect.orDie),
     auditEventCountSince: (event, sinceMs) =>
-      run(async () => {
+      tryD1(async () => {
         const row = await db
           .select({ n: count() })
           .from(userAuditEvents)
           .where(and(eq(userAuditEvents.event, event), gte(userAuditEvents.serverTs, sinceMs)))
           .get();
         return row?.n ?? 0;
-      }),
+      }).pipe(Effect.orDie),
     listProjectIdsAfter: (afterProjectId, limit) =>
-      run(async () => {
+      tryD1(async () => {
         const rows = await db
           .select({ id: projects.id })
           .from(projects)
@@ -241,9 +246,9 @@ export function makeOpsRepo(db: Db): OpsRepoShape {
           .limit(limit)
           .all();
         return rows.map((row) => row.id);
-      }),
+      }).pipe(Effect.orDie),
     backupRecord: (projectId) =>
-      run(async () => {
+      tryD1(async () => {
         const row = await db
           .select()
           .from(opsBackups)
@@ -266,9 +271,9 @@ export function makeOpsRepo(db: Db): OpsRepoShape {
           consecutiveFailures: row.consecutiveFailures,
           lastFailureCode: toFailureCode(row.lastFailureCode),
         };
-      }),
+      }).pipe(Effect.orDie),
     recordBackupAttempt: (projectId, doIdHex, attempt, nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         const columns = backupAttemptColumns(attempt, nowMs);
         await db
           .insert(opsBackups)
@@ -277,9 +282,9 @@ export function makeOpsRepo(db: Db): OpsRepoShape {
             target: opsBackups.projectId,
             set: { doIdHex, lastAttemptAt: nowMs, ...columns.update },
           });
-      }),
+      }).pipe(Effect.orDie),
     backupSummary: (nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         const staleBefore = nowMs - OPS_BACKUP_STALE_MS;
         // Aggregates in a single query (conditional sum — row count is at most the project count)
         const row = await db
@@ -308,22 +313,22 @@ export function makeOpsRepo(db: Db): OpsRepoShape {
           failingProjects: toCount(row?.failing),
           oversizeProjects: toCount(row?.oversize),
         };
-      }),
+      }).pipe(Effect.orDie),
     getState: (key) =>
-      run(async () => {
+      tryD1(async () => {
         const row = await db
           .select({ value: opsState.value })
           .from(opsState)
           .where(eq(opsState.key, key))
           .get();
         return row?.value ?? null;
-      }),
+      }).pipe(Effect.orDie),
     setState: (key, value, nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         await db
           .insert(opsState)
           .values({ key, value, updatedAt: nowMs })
           .onConflictDoUpdate({ target: opsState.key, set: { value, updatedAt: nowMs } });
-      }),
+      }).pipe(Effect.orDie),
   };
 }
