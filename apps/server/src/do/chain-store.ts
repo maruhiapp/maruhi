@@ -15,6 +15,8 @@ import type { ChainEntry, ChainHistoryIndex, ChainState } from "@maruhi/crypto";
 import { canonicalChainEntryBytes, verifyChainWithHistory } from "@maruhi/crypto";
 import { Context, Effect, Layer, Result, Schema } from "effect";
 
+import { catchCryptoErrors } from "../crypto-catch.ts";
+
 export interface StoredChain {
   readonly entries: readonly ChainEntry[];
   /** 0 = uninitialized */
@@ -162,12 +164,30 @@ export interface VerifiedChainView {
 export function verifyChainEffect(
   entries: readonly ChainEntry[],
 ): Effect.Effect<VerifiedChainView, ChainInvalidError> {
-  return Effect.catchTag(
+  return catchCryptoErrors(
     cryptoEffect(() => verifyChainWithHistory(entries)),
-    // verifyChain contractually returns only ChainInvalid; anything else is an implementation bug
-    "ChainInvalid",
-    (error) => Effect.fail(error),
-    (error) => Effect.die(error),
+    {
+      ChainInvalid: (error) => Effect.fail(error),
+      // verifyChain contractually returns only ChainInvalid; anything else is an implementation bug
+      CryptoInvalidInput: "die",
+      CryptoKeyImport: "die",
+      CryptoKeyExport: "die",
+      CryptoEncrypt: "die",
+      CryptoDecrypt: "die",
+      CryptoDekWrap: "die",
+      CryptoDekUnwrap: "die",
+      CryptoSign: "die",
+      CryptoDekWrapSignature: "die",
+      CryptoInviteAcceptSignature: "die",
+      CryptoInviteLinkSignature: "die",
+      CryptoInviteIssueSignature: "die",
+      CryptoDekCommitment: "die",
+      CryptoValueInvalid: "die",
+      CryptoMetaStatementInvalid: "die",
+      CryptoUnsupportedMetaLayout: "die",
+      CryptoEnvManifestInvalid: "die",
+      CryptoHeadAttestationInvalid: "die",
+    },
   );
 }
 

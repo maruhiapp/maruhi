@@ -36,6 +36,7 @@ import type { AttestationInvalidReason } from "@maruhi/crypto";
 import { verifyDistributedHeadAttestation } from "@maruhi/crypto";
 import { Effect } from "effect";
 
+import { catchCryptoErrors } from "./crypto-catch.ts";
 import type { AttestationRejectReason, DataRejectedError } from "./data/data-plane.ts";
 import { rejectData, requireMemberState, withSigningDevice } from "./data/data-plane.ts";
 import { DataStore } from "./data/data-store.ts";
@@ -106,7 +107,7 @@ export const putHeadAttestationProgram = (
     //    design record §8 K3-1. The attester's key = the signing device's
     //    device key — CRYPTO_SPEC §6.6)
     const { device: attester } = yield* withSigningDevice(context.member, (candidate) =>
-      Effect.catchTag(
+      catchCryptoErrors(
         cryptoEffect(() =>
           verifyDistributedHeadAttestation({
             history: context.history,
@@ -121,16 +122,35 @@ export const putHeadAttestationProgram = (
             signatureHex: input.signatureHex,
           }),
         ),
-        "CryptoHeadAttestationInvalid",
-        (error) =>
-          rejectData({
-            kind: "attestation-rejected",
-            reason: ATTESTATION_REJECT_REASONS[error.reason],
-          }),
-        // InvalidInput / KeyImportFailed are unreachable with a
-        // Schema-validated wire + a key derived from a verified chain
-        // (implementation bug = defect. No secrets included)
-        (error) => Effect.die(error),
+        {
+          CryptoHeadAttestationInvalid: (error) =>
+            rejectData({
+              kind: "attestation-rejected",
+              reason: ATTESTATION_REJECT_REASONS[error.reason],
+            }),
+          // Every other kind is unreachable (InvalidInput /
+          // KeyImportFailed with a Schema-validated wire + a key derived
+          // from a verified chain; the rest are never returned by this
+          // operation): implementation bug = defect. No secrets included
+          CryptoInvalidInput: "die",
+          CryptoKeyImport: "die",
+          CryptoKeyExport: "die",
+          CryptoEncrypt: "die",
+          CryptoDecrypt: "die",
+          CryptoDekWrap: "die",
+          CryptoDekUnwrap: "die",
+          CryptoSign: "die",
+          CryptoDekWrapSignature: "die",
+          CryptoInviteAcceptSignature: "die",
+          CryptoInviteLinkSignature: "die",
+          CryptoInviteIssueSignature: "die",
+          CryptoDekCommitment: "die",
+          CryptoValueInvalid: "die",
+          CryptoMetaStatementInvalid: "die",
+          CryptoUnsupportedMetaLayout: "die",
+          CryptoEnvManifestInvalid: "die",
+          ChainInvalid: "die",
+        },
       ),
     );
 
