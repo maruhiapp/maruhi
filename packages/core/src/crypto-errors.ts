@@ -1,15 +1,28 @@
-// A wrapper mapping @maruhi/crypto's CryptoResult (a union discriminated
-// by `kind`) onto Effect typed errors.
+// Bridges @maruhi/crypto (Effect-free: pure functions + error values)
+// into Effect. Two wrappers, matched to the two async return shapes
+// crypto exposes:
 //
-// Design decision: crypto stays Effect-free — pure functions + error
-// values; the Effect wrapping happens on the core side. The
-// discriminator is `kind` on the crypto side and Data.TaggedError's
+//   - `cryptoEffect` for operations returning `Promise<CryptoResult<T>>`
+//     (the normal contract — errors come back as values, mapped by
+//     `kind` onto the tagged errors below). A rejection there is a
+//     broken contract — a bug — and surfaces as a defect.
+//   - `cryptoPromise` for the few exports returning a bare `Promise<T>`
+//     (`CryptoPromiseOperation`). A rejection becomes
+//     `CryptoRejectedError`; the rejection cause is dropped on purpose,
+//     so no key material or value can ever ride along in an error.
+//
+// The discriminator is `kind` on the crypto side and Data.TaggedError's
 // `_tag` on the Effect side (tag names carry the "Crypto" prefix).
 //
 // Inheriting the absolute rule: errors never contain fragments of
 // plaintext values, key material, or ciphertexts. Because crypto-side
 // error values carry only identifiers (field / seq / reason codes),
 // this repacking adds nothing else.
+//
+// Call sites handle a wrapped crypto error in one of three ways only:
+//   - `Effect.catchTag` — handle specific errors by `_tag`,
+//   - `Effect.orDie` — an error means an invariant broke; make it a defect,
+//   - `Effect.mapError` — re-wrap into a domain error.
 
 import type {
   AeadOperation,
@@ -141,7 +154,36 @@ export class ChainInvalidError extends Data.TaggedError("ChainInvalid")<{
   readonly reason: ChainInvalidReason;
 }> {}
 
-/** Union of all Effect-tagged errors a wrapped @maruhi/crypto operation can fail with. */
+/**
+ * The @maruhi/crypto exports that return a bare `Promise` (no
+ * `CryptoResult`) and can therefore reject. Keep in sync with
+ * packages/crypto/src/index.ts.
+ */
+export type CryptoPromiseOperation =
+  | "computeChainEntryHash"
+  | "exportEncryptionPublicKey"
+  | "exportSigningPublicKey"
+  | "generateEncryptionKeyPair"
+  | "generateSigningKeyPair"
+  | "sha256";
+
+/**
+ * A bare-Promise @maruhi/crypto operation (`CryptoPromiseOperation`)
+ * rejected. The rejection cause is deliberately not kept — key material
+ * and plaintext values must never be able to ride along in an error
+ * (absolute rule). Deliberately not part of `WrappedCryptoError`: that
+ * union mirrors `CryptoError` kinds 1:1, and a rejection is not a
+ * `CryptoError` value.
+ */
+export class CryptoRejectedError extends Data.TaggedError("CryptoRejected")<{
+  readonly operation: CryptoPromiseOperation;
+}> {}
+
+/**
+ * Union of the Effect-tagged errors a `CryptoResult`-returning
+ * @maruhi/crypto operation can fail with — one member per `CryptoError`
+ * kind. (`CryptoRejectedError` stays outside: see its doc.)
+ */
 export type WrappedCryptoError =
   | CryptoInvalidInputError
   | CryptoKeyImportError
@@ -213,12 +255,32 @@ export function fromCryptoResult<T>(result: CryptoResult<T>): Effect.Effect<T, W
 }
 
 /**
- * Runs an async @maruhi/crypto operation and lifts its `CryptoResult` into
- * `Effect`. The thunk must never reject — crypto operations return
- * errors as values by contract (packages/crypto never throws).
+ * Runs an async @maruhi/crypto operation that returns `CryptoResult` and
+ * lifts the result into `Effect`, mapping errors by `kind`. Only for
+ * operations returning `CryptoResult` — crypto returns errors as values
+ * by contract, so a rejection is a bug and surfaces as a defect
+ * (`Effect.promise`). For exports returning a bare `Promise`, use
+ * `cryptoPromise`.
  */
 export function cryptoEffect<T>(
   run: () => Promise<CryptoResult<T>>,
 ): Effect.Effect<T, WrappedCryptoError> {
   return Effect.flatMap(Effect.promise(run), fromCryptoResult);
+}
+
+/**
+ * Runs one of the bare-Promise @maruhi/crypto exports
+ * (`CryptoPromiseOperation`) and lifts the value into `Effect`. A
+ * rejection becomes `CryptoRejectedError` carrying only `operation` —
+ * the rejection cause is never kept, so no key material or value can
+ * leak into the error channel.
+ */
+export function cryptoPromise<T>(
+  operation: CryptoPromiseOperation,
+  run: () => Promise<T>,
+): Effect.Effect<T, CryptoRejectedError> {
+  return Effect.tryPromise({
+    try: run,
+    catch: () => new CryptoRejectedError({ operation }),
+  });
 }

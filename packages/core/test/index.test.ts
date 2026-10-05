@@ -18,6 +18,9 @@ import {
   CryptoInviteLinkSignatureError,
   CryptoKeyExportError,
   CryptoKeyImportError,
+  cryptoPromise,
+  type CryptoPromiseOperation,
+  CryptoRejectedError,
   CryptoSignError,
   CryptoValueInvalidError,
   fromCryptoResult,
@@ -116,6 +119,48 @@ describe("cryptoEffect", () => {
       expect(error.seq).toBe(0);
     }
   });
+});
+
+// Every @maruhi/crypto export that returns a bare Promise (no
+// CryptoResult) — kept in sync with CryptoPromiseOperation both ways:
+// the `satisfies` pins the list inside the union, `AllOperationsCovered`
+// fails to compile if the union grows a member the list lacks
+const BARE_PROMISE_OPERATIONS = [
+  "computeChainEntryHash",
+  "exportEncryptionPublicKey",
+  "exportSigningPublicKey",
+  "generateEncryptionKeyPair",
+  "generateSigningKeyPair",
+  "sha256",
+] as const satisfies readonly CryptoPromiseOperation[];
+type AllOperationsCovered = CryptoPromiseOperation extends (typeof BARE_PROMISE_OPERATIONS)[number]
+  ? true
+  : never;
+const allOperationsCovered: AllOperationsCovered = true;
+void allOperationsCovered;
+
+describe("cryptoPromise", () => {
+  for (const operation of BARE_PROMISE_OPERATIONS) {
+    it(`passes the resolved value through (${operation})`, async () => {
+      const sentinel = { operation };
+      await expect(
+        Effect.runPromise(cryptoPromise(operation, () => Promise.resolve(sentinel))),
+      ).resolves.toBe(sentinel);
+    });
+
+    it(`turns a rejection into CryptoRejected (${operation})`, async () => {
+      const error = await Effect.runPromise(
+        Effect.flip(cryptoPromise(operation, () => Promise.reject(new Error("boom")))),
+      );
+      expect(error).toBeInstanceOf(CryptoRejectedError);
+      if (error instanceof CryptoRejectedError) {
+        // The rejection cause is dropped on purpose — only the
+        // operation name may ride along
+        expect(error.operation).toBe(operation);
+        expect(Object.keys(error)).not.toContain("cause");
+      }
+    });
+  }
 });
 
 describe("isProjectId", () => {
