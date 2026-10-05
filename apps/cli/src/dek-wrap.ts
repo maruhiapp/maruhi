@@ -18,6 +18,7 @@
 // re-wraps are avoided).
 
 import type { WrappedDek } from "@maruhi/api-schema";
+import { cryptoEffect } from "@maruhi/core";
 import type {
   ChainDevice,
   ChainMember,
@@ -36,7 +37,7 @@ import {
   SUITE_ID,
   wrapDek,
 } from "@maruhi/crypto";
-import { Effect, Redacted } from "effect";
+import { Data, Effect, Redacted } from "effect";
 
 import type { VerifiedProject } from "./chain-sync.ts";
 import { devicesOf, ownDeviceBySigningKey } from "./device-key.ts";
@@ -157,7 +158,89 @@ type WrapBuildResult =
   | { readonly kind: "ok"; readonly wrap: WrappedDek }
   | { readonly kind: "failed"; readonly reason: string };
 
-export async function wrapAndSignFor(input: {
+/** Why building one wrap failed (the reason is folded into the caller's message verbatim). */
+class WrapBuildFailed extends Data.TaggedError("WrapBuildFailed")<{
+  readonly reason: string;
+}> {}
+
+function wrapAndSignForEffect(input: {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly epoch: number;
+  readonly dek: Redacted.Redacted<Uint8Array>;
+  readonly recipient: WrapRecipient;
+  readonly signerUserId: string;
+  readonly signingKeyPair: SigningKeyPair;
+}): Effect.Effect<WrappedDek, WrapBuildFailed> {
+  const { environmentId, epoch, dek, recipient } = input;
+  // Recipient identifier: member = user_id / server = server key FP (§9 —
+  // the same value goes into HPKE info and the recipient_user_id position
+  // of the §5.1 signature target)
+  const id = recipientId(recipient);
+  const encPubHex = recipientEncPubHex(recipient);
+  return Effect.gen(function* () {
+    const recipientKeyBytes = decodeHex(encPubHex);
+    if (recipientKeyBytes === null) {
+      return yield* Effect.fail(
+        new WrapBuildFailed({ reason: "Cannot decode the recipient's enc public-key hex" }),
+      );
+    }
+    const recipientKey = yield* cryptoEffect(() =>
+      importEncryptionPublicKey(recipientKeyBytes),
+    ).pipe(
+      Effect.mapError(
+        () => new WrapBuildFailed({ reason: "Cannot load the recipient's enc public key" }),
+      ),
+    );
+    const wrapped = yield* cryptoEffect(() =>
+      wrapDek({
+        recipientPublicKey: recipientKey,
+        // Why it is unwrapped: input to the HPKE wrap (the crypto boundary). The product is the wrapped ciphertext
+        dek: Redacted.value(dek),
+        context: {
+          projectId: input.projectId,
+          environmentId,
+          epoch,
+          recipientUserId: id,
+        },
+      }),
+    ).pipe(Effect.mapError(() => new WrapBuildFailed({ reason: "The HPKE wrap failed" })));
+    const encHex = encodeHex(wrapped.enc);
+    const ciphertextHex = encodeHex(wrapped.ciphertext);
+    const signatureHex = yield* cryptoEffect(() =>
+      signDekWrap({
+        context: {
+          suite: SUITE_ID,
+          projectId: input.projectId,
+          environmentId,
+          epoch,
+          recipientUserId: id,
+          recipientEncPubHex: encPubHex,
+          encHex,
+          ciphertextHex,
+          signerUserId: input.signerUserId,
+        },
+        signingKey: input.signingKeyPair.privateKey,
+      }),
+    ).pipe(
+      Effect.mapError(
+        () => new WrapBuildFailed({ reason: "Failed to create the registration signature" }),
+      ),
+    );
+    return {
+      suite: SUITE_ID,
+      epoch,
+      ...(recipient.kind === "server" ? { recipientClass: "server" as const } : {}),
+      recipientUserId: id,
+      recipientEncPubHex: encPubHex,
+      encHex,
+      ciphertextHex,
+      signatureHex,
+    };
+  });
+}
+
+export function wrapAndSignFor(input: {
   readonly projectId: string;
   readonly environmentId: string;
   readonly epoch: number;
@@ -166,66 +249,14 @@ export async function wrapAndSignFor(input: {
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
 }): Promise<WrapBuildResult> {
-  const { environmentId, epoch, dek, recipient } = input;
-  // Recipient identifier: member = user_id / server = server key FP (§9 —
-  // the same value goes into HPKE info and the recipient_user_id position
-  // of the §5.1 signature target)
-  const id = recipientId(recipient);
-  const encPubHex = recipientEncPubHex(recipient);
-  const recipientKeyBytes = decodeHex(encPubHex);
-  if (recipientKeyBytes === null) {
-    return { kind: "failed", reason: "Cannot decode the recipient's enc public-key hex" };
-  }
-  const recipientKey = await importEncryptionPublicKey(recipientKeyBytes);
-  if (!recipientKey.ok) {
-    return { kind: "failed", reason: "Cannot load the recipient's enc public key" };
-  }
-  const wrapped = await wrapDek({
-    recipientPublicKey: recipientKey.value,
-    // Why it is unwrapped: input to the HPKE wrap (the crypto boundary). The product is the wrapped ciphertext
-    dek: Redacted.value(dek),
-    context: {
-      projectId: input.projectId,
-      environmentId,
-      epoch,
-      recipientUserId: id,
-    },
-  });
-  if (!wrapped.ok) {
-    return { kind: "failed", reason: "The HPKE wrap failed" };
-  }
-  const encHex = encodeHex(wrapped.value.enc);
-  const ciphertextHex = encodeHex(wrapped.value.ciphertext);
-  const signature = await signDekWrap({
-    context: {
-      suite: SUITE_ID,
-      projectId: input.projectId,
-      environmentId,
-      epoch,
-      recipientUserId: id,
-      recipientEncPubHex: encPubHex,
-      encHex,
-      ciphertextHex,
-      signerUserId: input.signerUserId,
-    },
-    signingKey: input.signingKeyPair.privateKey,
-  });
-  if (!signature.ok) {
-    return { kind: "failed", reason: "Failed to create the registration signature" };
-  }
-  return {
-    kind: "ok",
-    wrap: {
-      suite: SUITE_ID,
-      epoch,
-      ...(recipient.kind === "server" ? { recipientClass: "server" as const } : {}),
-      recipientUserId: id,
-      recipientEncPubHex: encPubHex,
-      encHex,
-      ciphertextHex,
-      signatureHex: signature.value,
-    },
-  };
+  return Effect.runPromise(
+    wrapAndSignForEffect(input).pipe(
+      Effect.map((wrap): WrapBuildResult => ({ kind: "ok", wrap })),
+      Effect.catchTag("WrapBuildFailed", (error) =>
+        Effect.succeed<WrapBuildResult>({ kind: "failed", reason: error.reason }),
+      ),
+    ),
+  );
 }
 
 /**
@@ -251,25 +282,20 @@ export function buildWrapCompleteSet(input: {
         recipient.kind === "member"
           ? `member ${displayText(recipient.member.userId)} (device ${recipient.device.keyFingerprintHex})`
           : `server key ${displayText(recipient.grant.serverKeyFingerprintHex)}`;
-      const built = yield* Effect.tryPromise({
-        try: () =>
-          wrapAndSignFor({
-            projectId: input.verified.projectId,
-            environmentId: input.environmentId,
-            epoch: input.epoch,
-            dek: input.dek,
-            recipient,
-            signerUserId: input.signerUserId,
-            signingKeyPair: input.signingKeyPair,
-          }),
-        catch: () => cliError(`DEK-wrap generation for ${label} failed (crypto error)`),
-      });
-      if (built.kind === "failed") {
-        return yield* Effect.fail(
-          cliError(`Failed to generate the DEK wrap for ${label} (${built.reason})`),
-        );
-      }
-      wraps.push(built.wrap);
+      const wrap = yield* wrapAndSignForEffect({
+        projectId: input.verified.projectId,
+        environmentId: input.environmentId,
+        epoch: input.epoch,
+        dek: input.dek,
+        recipient,
+        signerUserId: input.signerUserId,
+        signingKeyPair: input.signingKeyPair,
+      }).pipe(
+        Effect.mapError((error) =>
+          cliError(`Failed to generate the DEK wrap for ${label} (${error.reason})`),
+        ),
+      );
+      wraps.push(wrap);
     }
     return wraps;
   });

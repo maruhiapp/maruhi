@@ -21,8 +21,9 @@
 // variables, counts, dates, and the connector's non-secret facts.
 
 import { ProjectNotFoundError, RotationProposalRejectedError } from "@maruhi/api-schema";
-import type { EnvironmentId } from "@maruhi/core";
-import type { ChainDevice, ChainMember } from "@maruhi/crypto";
+import { cryptoEffect } from "@maruhi/core";
+import type { EnvironmentId, WrappedCryptoError } from "@maruhi/core";
+import type { ChainDevice, ChainMember, CryptoError } from "@maruhi/crypto";
 import {
   decodeHex,
   effectivePermissionOf,
@@ -268,6 +269,35 @@ interface SealedWrap {
   readonly ciphertextHex: string;
 }
 
+/**
+ * The seal failure message embeds the `CryptoError.kind` string, which the
+ * bridge does not carry — this maps a `WrappedCryptoError` tag back to the
+ * kind that produced it so the user-visible message stays identical. The
+ * `satisfies` keeps it honest: the day crypto grows a new `CryptoError`
+ * kind, this stops compiling until the tag is added.
+ */
+const CRYPTO_KIND_OF_TAG = {
+  CryptoInvalidInput: "InvalidInput",
+  CryptoKeyImport: "KeyImportFailed",
+  CryptoKeyExport: "KeyExportFailed",
+  CryptoEncrypt: "EncryptFailed",
+  CryptoDecrypt: "DecryptFailed",
+  CryptoDekWrap: "DekWrapFailed",
+  CryptoDekUnwrap: "DekUnwrapFailed",
+  CryptoSign: "SignFailed",
+  CryptoDekWrapSignature: "DekWrapSignatureInvalid",
+  CryptoInviteAcceptSignature: "InviteAcceptSignatureInvalid",
+  CryptoInviteLinkSignature: "InviteLinkSignatureInvalid",
+  CryptoInviteIssueSignature: "InviteIssueSignatureInvalid",
+  CryptoDekCommitment: "DekCommitmentMismatch",
+  CryptoValueInvalid: "ValueInvalid",
+  CryptoMetaStatementInvalid: "MetaStatementInvalid",
+  CryptoUnsupportedMetaLayout: "UnsupportedMetaLayout",
+  CryptoEnvManifestInvalid: "EnvManifestInvalid",
+  CryptoHeadAttestationInvalid: "HeadAttestationInvalid",
+  ChainInvalid: "ChainInvalid",
+} as const satisfies Record<WrappedCryptoError["_tag"], CryptoError["kind"]>;
+
 /** Seals one value to every recipient device (one HPKE Seal per device — §5.3). */
 function sealToRecipients(input: {
   readonly projectId: string;
@@ -281,18 +311,23 @@ function sealToRecipients(input: {
   return Effect.forEach(input.recipients, ({ member, device }) =>
     Effect.gen(function* () {
       const keyBytes = decodeHex(device.encPubHex);
-      const publicKey =
-        keyBytes === null ? null : yield* Effect.promise(() => importEncryptionPublicKey(keyBytes));
-      if (publicKey === null || !publicKey.ok) {
+      if (keyBytes === null) {
         return yield* Effect.fail(
           cliError(
             `Cannot load the device key ${device.keyFingerprintHex} of member ${displayText(member.userId)} from the chain (a corrupt public key)`,
           ),
         );
       }
-      const sealed = yield* Effect.promise(() =>
+      const publicKey = yield* cryptoEffect(() => importEncryptionPublicKey(keyBytes)).pipe(
+        Effect.mapError(() =>
+          cliError(
+            `Cannot load the device key ${device.keyFingerprintHex} of member ${displayText(member.userId)} from the chain (a corrupt public key)`,
+          ),
+        ),
+      );
+      const sealed = yield* cryptoEffect(() =>
         sealProposedValue({
-          recipientPublicKey: publicKey.value,
+          recipientPublicKey: publicKey,
           value: input.bytes,
           context: {
             projectId: input.projectId,
@@ -303,19 +338,18 @@ function sealToRecipients(input: {
             recipientUserId: member.userId,
           },
         }),
-      );
-      if (!sealed.ok) {
-        return yield* Effect.fail(
+      ).pipe(
+        Effect.mapError((error) =>
           cliError(
-            `Sealing the new value of ${displayText(input.variableId)} to member ${displayText(member.userId)} failed (${sealed.error.kind})`,
+            `Sealing the new value of ${displayText(input.variableId)} to member ${displayText(member.userId)} failed (${CRYPTO_KIND_OF_TAG[error["_tag"]]})`,
           ),
-        );
-      }
+        ),
+      );
       return {
         recipientUserId: member.userId,
         recipientEncPubHex: device.encPubHex,
-        encHex: encodeHex(sealed.value.enc),
-        ciphertextHex: encodeHex(sealed.value.ciphertext),
+        encHex: encodeHex(sealed.enc),
+        ciphertextHex: encodeHex(sealed.ciphertext),
       };
     }),
   );

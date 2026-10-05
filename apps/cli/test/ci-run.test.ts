@@ -615,6 +615,37 @@ describe("maruhi ci run (verification-duty negative cases — CRYPTO_SPEC §9.1)
     expect(env.errors.join("\n")).toContain("beyond the chain's current epoch");
     expect(env.runnerCalls).toHaveLength(0);
   });
+
+  it("reports the full refusal message on a claims-digest mismatch (a wrap repurposed from another job context)", async () => {
+    // Same shape as the substring check above: the epoch-1 wrap fails the
+    // open first (the leases list is epoch-ordered)
+    const { env, server } = await startCiEnv([
+      leaseHandler({ claims: { subject: "repo:evil/other:ref:refs/heads/main" } }),
+    ]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: Cannot open the leased DEK (epoch=1). The lease was issued for a different workload identity or context (claims-digest mismatch), or the response is corrupt",
+      ]),
+    );
+    expect(env.runnerCalls).toHaveLength(0);
+    expectNoSecretLeak(env);
+  });
+
+  it("reports the full refusal message for a leased DEK that fails the chain commitment (a fake-DEK injection)", async () => {
+    const poison = crypto.getRandomValues(new Uint8Array(32));
+    const { env, server } = await startCiEnv([
+      leaseHandler({ dekForEpoch: (epoch, dek) => (epoch === 2 ? poison : dek) }),
+    ]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: The leased DEK does not match the commitment on the chain (epoch=2). This may be a fake DEK injected by a compromised server — do not trust this response",
+      ]),
+    );
+    expect(env.runnerCalls).toHaveLength(0);
+    expectNoSecretLeak(env);
+  });
 });
 
 /* -------------------------------------------------------------------------- */

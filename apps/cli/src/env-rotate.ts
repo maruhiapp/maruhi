@@ -21,6 +21,7 @@
 // only variable names (already displayText'd) from verified statements,
 // counts, and epoch numbers.
 
+import { cryptoEffect } from "@maruhi/core";
 import { computeDekCommitment, generateDek, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
@@ -633,26 +634,18 @@ function computeRotationCommitmentHex(input: {
   readonly newEpoch: number;
   readonly dek: Redacted.Redacted<Uint8Array>;
 }): Effect.Effect<string, CliError> {
-  return Effect.tryPromise({
-    try: () =>
-      computeDekCommitment({
-        context: {
-          suite: SUITE_ID,
-          projectId: input.projectId,
-          environmentId: input.environmentId,
-          epoch: input.newEpoch,
-        },
-        // Why it is unwrapped: it is the commitment computation's input (the encryption boundary). The product is a hash
-        dek: Redacted.value(input.dek),
-      }),
-    catch: () => cliError("Failed to compute the DEK commitment"),
-  }).pipe(
-    Effect.flatMap((commitment) =>
-      commitment.ok
-        ? Effect.succeed(commitment.value)
-        : Effect.fail(cliError("Failed to compute the DEK commitment")),
-    ),
-  );
+  return cryptoEffect(() =>
+    computeDekCommitment({
+      context: {
+        suite: SUITE_ID,
+        projectId: input.projectId,
+        environmentId: input.environmentId,
+        epoch: input.newEpoch,
+      },
+      // Why it is unwrapped: it is the commitment computation's input (the encryption boundary). The product is a hash
+      dek: Redacted.value(input.dek),
+    }),
+  ).pipe(Effect.mapError(() => cliError("Failed to compute the DEK commitment")));
 }
 
 /**
