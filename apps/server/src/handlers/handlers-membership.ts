@@ -19,7 +19,7 @@ import {
   ProjectLimitError,
 } from "@maruhi/api-schema";
 import type { AuthenticatedPrincipal } from "@maruhi/core";
-import { auditActorOf, RequestAuth } from "@maruhi/core";
+import { auditActorOf, cryptoPromise, RequestAuth } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, Role } from "@maruhi/crypto";
 import { canonicalChainEntryBytes, computeChainEntryHash } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -146,10 +146,11 @@ const precheckAndComputeProjectId = (entry: ChainEntry) =>
         new ChainEntryTooLargeError({ limitBytes: MAX_ENTRY_CANONICAL_BYTES }),
       );
     }
-    return yield* Effect.tryPromise({
-      try: () => computeChainEntryHash(entry),
-      catch: () => new ChainEntryInvalidError({ seq: entry.seq, reason: "invalid-payload" }),
-    });
+    return yield* cryptoPromise("computeChainEntryHash", () =>
+      computeChainEntryHash(entry),
+    ).pipe(
+      Effect.mapError(() => new ChainEntryInvalidError({ seq: entry.seq, reason: "invalid-payload" })),
+    );
   });
 
 export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (handlers) =>

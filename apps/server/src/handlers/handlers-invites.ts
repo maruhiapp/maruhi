@@ -35,7 +35,7 @@ import {
   InviteSignatureInvalidError,
   maruhiApi,
 } from "@maruhi/api-schema";
-import { auditActorOf, RequestAuth } from "@maruhi/core";
+import { auditActorOf, cryptoEffect, RequestAuth } from "@maruhi/core";
 import {
   computeUserKeyFingerprint,
   decodeHex,
@@ -105,17 +105,18 @@ function toSummary(record: InvitationRecord) {
  * a defect.
  */
 const fingerprintOf = (encPubHex: string, sigPubHex: string): Effect.Effect<string> =>
-  Effect.promise(async () => {
+  Effect.gen(function* () {
     const encPub = decodeHex(encPubHex);
     const sigPub = decodeHex(sigPubHex);
     if (encPub === null || sigPub === null) {
-      throw new Error("schema-validated key hex failed to decode");
+      return yield* Effect.die(new Error("schema-validated key hex failed to decode"));
     }
-    const fingerprint = await computeUserKeyFingerprint(encPub, sigPub);
-    if (!fingerprint.ok) {
-      throw new Error("schema-validated keys failed fingerprint computation");
-    }
-    return encodeHex(fingerprint.value);
+    // A wrapped crypto failure here stays a defect, like the throw the
+    // pre-bridge code raised on a failed fingerprint computation
+    const fingerprint = yield* cryptoEffect(() =>
+      computeUserKeyFingerprint(encPub, sigPub),
+    ).pipe(Effect.orDie);
+    return encodeHex(fingerprint);
   });
 
 /**
@@ -143,18 +144,12 @@ function verifyAcceptanceSignatures(input: {
       inviteeEncPubHex: input.encPubHex,
       inviteeSigPubHex: input.sigPubHex,
     };
-    const linkVerified = yield* Effect.promise(() =>
+    yield* cryptoEffect(() =>
       verifyInviteLinkSignature({ context, linkSignatureHex: input.linkSignatureHex }),
-    );
-    if (!linkVerified.ok) {
-      return yield* Effect.fail(new InviteSignatureInvalidError({ which: "link" }));
-    }
-    const acceptVerified = yield* Effect.promise(() =>
+    ).pipe(Effect.mapError(() => new InviteSignatureInvalidError({ which: "link" })));
+    yield* cryptoEffect(() =>
       verifyInviteAcceptSignature({ context, signatureHex: input.acceptSignatureHex }),
-    );
-    if (!acceptVerified.ok) {
-      return yield* Effect.fail(new InviteSignatureInvalidError({ which: "accept" }));
-    }
+    ).pipe(Effect.mapError(() => new InviteSignatureInvalidError({ which: "accept" })));
   });
 }
 
