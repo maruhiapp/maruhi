@@ -19,7 +19,7 @@ import { gunzipSync } from "node:zlib";
 
 import type { ProjectId } from "@maruhi/core";
 import { Effect, Fiber } from "effect";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { MaruhiClient } from "../src/api.ts";
 import { verifyChainSnapshot } from "../src/chain-sync.ts";
@@ -338,6 +338,12 @@ describe("maruhi project export (PF3)", () => {
     );
     // The first page is already written once the second is requested
     await secondPage;
+    // The write stream's wx open is asynchronous — the partial file must
+    // provably exist before the interrupt, or the stat rejections below
+    // would pass without the release doing anything
+    await vi.waitFor(async () => {
+      await stat(out);
+    });
     // Fiber.interrupt waits for the fiber's exit — the uninterruptible
     // release (stream teardown + file removal) has completed by now
     await Effect.runPromise(Fiber.interrupt(fiber));

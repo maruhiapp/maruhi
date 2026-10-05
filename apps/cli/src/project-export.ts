@@ -25,7 +25,10 @@
 // removes it, so a failure, an interruption (Ctrl-C) or a defect never
 // leaves a partial file behind (an incomplete export is never kept, and
 // the next run must not be refused as an overwrite). The command's own
-// run gains a matching onExit for the data/companion pair.
+// run gains a matching onExit for the data/companion pair. Cleanup only
+// removes what the run provably created: the `wx` creates are the
+// ownership proof, so a file landing at a checked path after
+// `ensureAbsent` — someone else's — is never deleted.
 
 import { createWriteStream } from "node:fs";
 import { createGzip } from "node:zlib";
@@ -121,6 +124,12 @@ class GzipFileSink {
    * next operation instead of crashing the process.
    */
   #failure: Error | null = null;
+  /**
+   * Whether this sink's `wx` open committed — the only proof the file is
+   * this run's. An already-existing file makes the open fail EEXIST
+   * instead (no `open` event), and that file must never be removed.
+   */
+  #ownsFile = false;
 
   constructor(path: string) {
     this.#path = path;
@@ -130,10 +139,17 @@ class GzipFileSink {
     };
     this.#file.on("error", record);
     this.#gzip.on("error", record);
+    this.#file.once("open", () => {
+      this.#ownsFile = true;
+    });
     this.#gzip.on("data", (chunk: Buffer) => {
       this.#bytes += chunk.length;
     });
     this.#gzip.pipe(this.#file);
+  }
+
+  get ownsFile(): boolean {
+    return this.#ownsFile;
   }
 
   #writeFailed(error: unknown): CliError {
@@ -250,16 +266,33 @@ type Attempt =
   | { readonly kind: "changed" };
 
 /**
+ * Which of the two outputs this run provably created — the only files a
+ * cleanup may remove. `ensureAbsent` is a check, not ownership: a file
+ * landing at a checked path afterwards belongs to someone else and must
+ * never be deleted (the `wx` creates are the proof — they refuse EEXIST).
+ */
+interface OwnedOutputs {
+  out: boolean;
+  companion: boolean;
+}
+
+/**
  * One full pass over the pages into a fresh file. The file is a scoped
  * resource: any exit other than a completed attempt — a failure, a
- * project change, an interruption, a defect — removes it.
+ * project change, an interruption, a defect — removes it (when this
+ * attempt created one at all).
  */
 function exportOnce(
   input: ProjectExportInput,
+  owned: OwnedOutputs,
 ): Effect.Effect<Attempt, CliError, FileSystem.FileSystem> {
   const outPath = input.outPath;
   return Effect.acquireUseRelease(
-    Effect.sync(() => new GzipFileSink(outPath)),
+    // Ownership is per attempt — this one has not created anything yet
+    Effect.sync(() => {
+      owned.out = false;
+      return new GzipFileSink(outPath);
+    }),
     (sink) =>
       Effect.gen(function* () {
         let cursor: string | undefined;
@@ -318,9 +351,19 @@ function exportOnce(
         );
       }),
     (sink, exit) =>
-      Exit.isSuccess(exit) && exit.value.kind === "done"
-        ? Effect.void
-        : sink.abort().pipe(Effect.andThen(removePath(outPath))),
+      Effect.gen(function* () {
+        owned.out ||= sink.ownsFile;
+        if (Exit.isSuccess(exit) && exit.value.kind === "done") {
+          return;
+        }
+        yield* sink.abort();
+        // The open may have committed during the close wait — re-check
+        // before deciding whether the file is this attempt's to remove
+        owned.out ||= sink.ownsFile;
+        if (owned.out) {
+          yield* removePath(outPath);
+        }
+      }),
   );
 }
 
@@ -350,9 +393,10 @@ function writePair(
 ): Effect.Effect<ProjectExportResult, CliError, FileSystem.FileSystem> {
   const outPath = input.outPath;
   const identitiesPath = identitiesPathOf(outPath);
+  const owned: OwnedOutputs = { out: false, companion: false };
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    let attempt = yield* exportOnce(input);
+    let attempt = yield* exportOnce(input, owned);
     let identities = yield* companionFor(input, attempt);
     // The companion is read at a chain head; a head other than the file's
     // trailer's is a mismatched pair (a member added or removed between
@@ -364,9 +408,13 @@ function writePair(
       restarts += 1
     ) {
       // A completed file whose companion was stale is still on disk;
-      // a "changed" attempt already removed its own
-      yield* removePath(outPath);
-      attempt = yield* exportOnce(input);
+      // a "changed" attempt already removed its own — and an attempt
+      // whose wx open refused EEXIST created nothing (a foreign file at
+      // the path is never this run's to delete)
+      if (owned.out) {
+        yield* removePath(outPath);
+      }
+      attempt = yield* exportOnce(input, owned);
       identities = yield* companionFor(input, attempt);
     }
     if (attempt.kind === "changed" || identities === null) {
@@ -375,6 +423,14 @@ function writePair(
     yield* fs
       .writeFileString(identitiesPath, `${JSON.stringify(identities, null, 2)}\n`, { flag: "wx" })
       .pipe(
+        // Success is the proof this run created the companion — a wx
+        // open that refused EEXIST means the file belongs to someone
+        // else and the cleanup must leave it alone
+        Effect.tap(
+          Effect.sync(() => {
+            owned.companion = true;
+          }),
+        ),
         Effect.mapError((error) =>
           cliError(
             `Writing ${displayText(identitiesPath)} failed (${
@@ -394,11 +450,19 @@ function writePair(
     };
   }).pipe(
     // `ensureAbsent` stays outside this scope: a cleanup that ran on the
-    // refusal exit would delete the user's pre-existing file
+    // refusal exit would delete the user's pre-existing file — and even
+    // inside it, only files this run provably created are removed
     Effect.onExit((exit) =>
       Exit.isSuccess(exit)
         ? Effect.void
-        : removePath(outPath).pipe(Effect.andThen(removePath(identitiesPath))),
+        : Effect.gen(function* () {
+            if (owned.out) {
+              yield* removePath(outPath);
+            }
+            if (owned.companion) {
+              yield* removePath(identitiesPath);
+            }
+          }),
     ),
   );
 }
