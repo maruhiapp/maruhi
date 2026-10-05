@@ -6,10 +6,16 @@
 
 import { createVerify, generateKeyPairSync } from "node:crypto";
 
+import { Clock, Effect, Layer } from "effect";
+import { FetchHttpClient, HttpClient } from "effect/http";
+import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { parseHostPattern } from "../src/proxy.package/proxy-config.ts";
-import { makeConnectorCredential } from "../src/proxy.package/proxy-connector.ts";
+import {
+  type ConnectorDeps,
+  makeConnectorCredential,
+} from "../src/proxy.package/proxy-connector.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -48,6 +54,34 @@ function fakeGithub(answer: (call: SeenCall, index: number) => Response) {
   return { calls, fetch: fetchImpl };
 }
 
+/**
+ * The connector's deps for a test: an `HttpClient` built on the fake
+ * GitHub's fetch and a `TestClock` impl — the same objects the mint /
+ * revoke steps are run with. `setTime` writes the instant the JWT and the
+ * refresh margin are read at.
+ */
+async function connectorDeps(github: { fetch: typeof fetch }, apiBase?: string) {
+  const deps = await Effect.runPromise(
+    Effect.gen(function* () {
+      return { client: yield* HttpClient.HttpClient, clock: yield* Clock.Clock } as const;
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.provide(FetchHttpClient.layer, Layer.succeed(FetchHttpClient.Fetch, github.fetch)),
+          TestClock.layer(),
+        ),
+      ),
+    ),
+  );
+  const clock = deps.clock;
+  return {
+    deps: { ...deps, apiBase } satisfies ConnectorDeps,
+    /** Sets the TestClock impl's current instant (the deps' clock object). */
+    setTime: (ms: number) =>
+      Effect.runPromise(TestClock.setTime(ms).pipe(Effect.provideService(Clock.Clock, clock))),
+  };
+}
+
 function tokenResponse(token: string, expiresInMs: number, now: number): Response {
   return new Response(
     JSON.stringify({ token, expires_at: new Date(now + expiresInMs).toISOString() }),
@@ -75,6 +109,8 @@ describe("github-app connector", () => {
         ? new Response(null, { status: 204 })
         : tokenResponse(`ghs_minted_${index}`, 60 * 60 * 1000, now),
     );
+    const { deps, setTime } = await connectorDeps(github, "https://github.test");
+    await setTime(now);
     const credential = makeConnectorCredential({
       name: "GH_TOKEN",
       kind: "github-app",
@@ -86,7 +122,7 @@ describe("github-app connector", () => {
       placeholder: "mhp_GH_TOKEN_x",
       hosts: hosts(),
       surfaces: ["header"],
-      deps: { fetch: github.fetch, now: () => now, apiBase: "https://github.test" },
+      deps,
     });
     expect(dec.decode(await credential.resolve())).toBe("ghs_minted_0");
     // The call GitHub saw
@@ -108,10 +144,12 @@ describe("github-app connector", () => {
 
     // Cached: a second resolve within the hour does not call GitHub
     now += 30 * 60 * 1000;
+    await setTime(now);
     expect(dec.decode(await credential.resolve())).toBe("ghs_minted_0");
     expect(github.calls).toHaveLength(1);
     // Re-minted inside the five-minute margin before expiry
     now += 26 * 60 * 1000;
+    await setTime(now);
     expect(dec.decode(await credential.resolve())).toBe("ghs_minted_1");
     expect(github.calls).toHaveLength(2);
     // Both the current and the previous token are known for scrubbing (the old one may still be valid)
@@ -134,8 +172,9 @@ describe("github-app connector", () => {
     expect(credential.known()).toEqual([]);
   });
 
-  it("knows nothing before the first mint (no mint happens just to scrub)", () => {
+  it("knows nothing before the first mint (no mint happens just to scrub)", async () => {
     const github = fakeGithub(() => tokenResponse("ghs_never", 3_600_000, Date.now()));
+    const { deps } = await connectorDeps(github);
     const credential = makeConnectorCredential({
       name: "GH_TOKEN",
       kind: "github-app",
@@ -147,7 +186,7 @@ describe("github-app connector", () => {
       placeholder: "mhp_GH_TOKEN_u",
       hosts: hosts(),
       surfaces: ["header"],
-      deps: { fetch: github.fetch, now: Date.now },
+      deps,
     });
     expect(credential.known()).toEqual([]);
     expect(github.calls).toHaveLength(0);
@@ -156,6 +195,7 @@ describe("github-app connector", () => {
   it("imports a PKCS#8 key too, and concurrent first uses share one mint", async () => {
     const now = Date.now();
     const github = fakeGithub((_call, index) => tokenResponse(`ghs_${index}`, 3_600_000, now));
+    const { deps } = await connectorDeps(github);
     const credential = makeConnectorCredential({
       name: "GH_TOKEN",
       kind: "github-app",
@@ -167,7 +207,7 @@ describe("github-app connector", () => {
       placeholder: "mhp_GH_TOKEN_y",
       hosts: hosts(),
       surfaces: ["header"],
-      deps: { fetch: github.fetch, now: () => now },
+      deps,
     });
     const [a, b] = await Promise.all([credential.resolve(), credential.resolve()]);
     expect(dec.decode(a)).toBe("ghs_0");
@@ -184,6 +224,7 @@ describe("github-app connector", () => {
           headers: { "content-type": "application/json" },
         }),
     );
+    const { deps } = await connectorDeps(github);
     const refused = makeConnectorCredential({
       name: "GH_TOKEN",
       kind: "github-app",
@@ -195,7 +236,7 @@ describe("github-app connector", () => {
       placeholder: "mhp_GH_TOKEN_z",
       hosts: hosts(),
       surfaces: ["header"],
-      deps: { fetch: github.fetch, now: Date.now },
+      deps,
     });
     await expect(refused.resolve()).rejects.toThrow(
       "connector github-app for GH_TOKEN: GitHub answered 404 (Integration not found)",
@@ -215,7 +256,7 @@ describe("github-app connector", () => {
       placeholder: "mhp_GH_TOKEN_w",
       hosts: hosts(),
       surfaces: ["header"],
-      deps: { fetch: github.fetch, now: Date.now },
+      deps,
     });
     const error = await badKey.resolve().then(
       () => null,
@@ -235,7 +276,7 @@ describe("github-app connector", () => {
       placeholder: "mhp_GH_TOKEN_v",
       hosts: hosts(),
       surfaces: ["header"],
-      deps: { fetch: github.fetch, now: Date.now },
+      deps,
     });
     await expect(badInstallation.resolve()).rejects.toThrow(
       "input installationId must be the numeric installation ID",
@@ -243,6 +284,7 @@ describe("github-app connector", () => {
     // GitHub was not called for the two malformed inputs
     expect(github.calls).toHaveLength(2);
   });
+
   it("revokes every held token at release even when one revocation fails, and reports the failures (§21 R-3)", async () => {
     let now = Date.UTC(2026, 9, 1, 12, 0, 0);
     let deletes = 0;
@@ -255,6 +297,8 @@ describe("github-app connector", () => {
       }
       return tokenResponse(`ghs_minted_${index}`, 60 * 60 * 1000, now);
     });
+    const { deps, setTime } = await connectorDeps(github, "https://github.test");
+    await setTime(now);
     const credential = makeConnectorCredential({
       name: "GH_TOKEN",
       kind: "github-app",
@@ -266,10 +310,11 @@ describe("github-app connector", () => {
       placeholder: "mhp_GH_TOKEN_x",
       hosts: hosts(),
       surfaces: ["header"],
-      deps: { fetch: github.fetch, now: () => now, apiBase: "https://github.test" },
+      deps,
     });
     await credential.resolve();
     now += 56 * 60 * 1000;
+    await setTime(now);
     await credential.resolve();
     expect(credential.known()).toHaveLength(2);
     await expect(credential.release?.()).rejects.toThrow(/revo/i);

@@ -34,13 +34,14 @@
 // Error wording carries the connector, the issuer's status code and
 // message — never a credential, a password, or a URL with a password in it.
 
-import { Context, Redacted } from "effect";
+import { Clock, Context, Data, Effect, type Layer, Redacted, Schema } from "effect";
+import { HttpBody, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import { countNoun, decodeValueText, displayText } from "./display.ts";
 import { companionVariablesOf, EXEC_CONTROL_PREFIX, type RotateRule } from "./rotate-config.ts";
 import {
-  type CaptureInput,
   type CaptureOutcome,
+  ProcessRunner,
   ScriptLeftoverError,
   ScriptStoppedError,
 } from "./run.ts";
@@ -61,19 +62,52 @@ export interface SqlRunnerShape {
 
 export class SqlRunner extends Context.Service<SqlRunner, SqlRunnerShape>()("cli/SqlRunner") {}
 
-/** The seams a connector uses (tests redirect the issuer APIs and the clock). */
-export interface RotateDeps {
-  readonly fetch: typeof fetch;
-  readonly now: () => number;
-  readonly randomBytes: (length: number) => Uint8Array;
-  readonly sql: SqlRunnerShape;
-  /** Runs a script of the `exec` connector (production: Bun.spawn — live.ts; tests: a fake). */
-  readonly exec: (input: CaptureInput) => Promise<CaptureOutcome>;
-  /** The issuer API origins (production: the fixed hosts). */
+/**
+ * The issuer API origins a run targets (production: the fixed hosts; the
+ * rotate seams — `rotateDeps` in var-rotate.ts — redirect them in tests).
+ */
+interface IssuerEndpointsShape {
   readonly awsIamBase?: string | undefined;
   readonly awsStsBase?: string | undefined;
   readonly cloudflareBase?: string | undefined;
 }
+
+export class IssuerEndpoints extends Context.Reference<IssuerEndpointsShape>(
+  "cli/IssuerEndpoints",
+  {
+    defaultValue: (): IssuerEndpointsShape => ({}),
+  },
+) {}
+
+/**
+ * The byte source the connectors' password generation draws from
+ * (production: WebCrypto's CSPRNG; tests: a deterministic filler). Effect's
+ * own `Random` is deliberately not the answer — it is not cryptographically
+ * secure, and the generated strings are credentials.
+ */
+interface ConnectorCryptoShape {
+  readonly nextBytes: (length: number) => Uint8Array;
+}
+
+export class ConnectorCrypto extends Context.Reference<ConnectorCryptoShape>(
+  "cli/ConnectorCrypto",
+  {
+    defaultValue: (): ConnectorCryptoShape => ({
+      nextBytes: (length) => crypto.getRandomValues(new Uint8Array(length)),
+    }),
+  },
+) {}
+
+/**
+ * What the caller provides around the connector call: the test seams
+ * expressed as service overrides (`rotateDeps` in var-rotate.ts builds it;
+ * production passes `Layer.empty` — the ambient `HttpClient`, `SqlRunner`,
+ * `ProcessRunner` and the references' defaults answer).
+ */
+export type RotateDeps = Layer.Layer<never>;
+
+/** The services a connector run requires. */
+export type ConnectorServices = HttpClient.HttpClient | SqlRunner | ProcessRunner;
 
 /**
  * The values every earlier version of a companion variable held (newest
@@ -139,14 +173,16 @@ export interface FinalizeOutcome {
 }
 
 /** A connector failure the caller reports as-is (the message never carries a credential). */
-export class ConnectorError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ConnectorError";
-  }
-}
+export class ConnectorError extends Data.TaggedError("ConnectorError")<{
+  readonly message: string;
+}> {}
 
 const USER_AGENT = `maruhi-cli/${CLI_VERSION}`;
+
+/** An unknown thrown value's message (a fetch rejection, a driver error — the reason, never a credential). */
+function reasonOf(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
 
 /* -------------------------------------------------------------------------- */
 /* Passwords                                                                    */
@@ -182,33 +218,38 @@ interface DbUrl {
 const DB_NAME = /^[A-Za-z0-9_.@-]{1,128}$/;
 
 /** Parses a database URL and takes its (decoded) user; refuses one without credentials. */
-function parseDbUrl(bytes: Uint8Array, scheme: "postgres" | "mysql"): DbUrl {
+function parseDbUrl(
+  bytes: Uint8Array,
+  scheme: "postgres" | "mysql",
+): Effect.Effect<DbUrl, ConnectorError> {
   let url: URL;
   try {
     url = new URL(decoder.decode(bytes));
   } catch {
-    throw new ConnectorError(
-      `the ${scheme} connector expects the variable to hold a connection URL`,
-    );
+    return new ConnectorError({
+      message: `the ${scheme} connector expects the variable to hold a connection URL`,
+    });
   }
   const protocol = url.protocol.replace(/:$/, "");
   const accepted =
     scheme === "postgres" ? ["postgres", "postgresql"] : ["mysql", "mysql2", "mariadb"];
   if (!accepted.includes(protocol)) {
-    throw new ConnectorError(
-      `the ${scheme} connector expects a ${accepted.join(" / ")} URL (the variable's URL has another scheme)`,
-    );
+    return new ConnectorError({
+      message: `the ${scheme} connector expects a ${accepted.join(" / ")} URL (the variable's URL has another scheme)`,
+    });
   }
   const user = decodeURIComponent(url.username);
   if (user.length === 0) {
-    throw new ConnectorError(`the ${scheme} connector needs a user in the connection URL`);
+    return new ConnectorError({
+      message: `the ${scheme} connector needs a user in the connection URL`,
+    });
   }
   if (!DB_NAME.test(user)) {
-    throw new ConnectorError(
-      `the ${scheme} connector supports role names of letters, digits, _ . @ - only (the URL's user is outside that set)`,
-    );
+    return new ConnectorError({
+      message: `the ${scheme} connector supports role names of letters, digits, _ . @ - only (the URL's user is outside that set)`,
+    });
   }
-  return { url, user };
+  return Effect.succeed({ url, user });
 }
 
 function withCredentials(base: URL, user: string, password: string): string {
@@ -222,20 +263,20 @@ function withCredentials(base: URL, user: string, password: string): string {
 function nextRole(
   rule: Extract<RotateRule, { connector: "postgres" | "mysql" }>,
   current: string,
-): string {
+): Effect.Effect<string, ConnectorError> {
   if (rule.roles === null) {
-    return current;
+    return Effect.succeed(current);
   }
   const [first, second] = rule.roles;
   if (current === first) {
-    return second;
+    return Effect.succeed(second);
   }
   if (current === second) {
-    return first;
+    return Effect.succeed(first);
   }
-  throw new ConnectorError(
-    `the connection URL's user is neither of the alternated roles in the rotation config (${first}, ${second})`,
-  );
+  return new ConnectorError({
+    message: `the connection URL's user is neither of the alternated roles in the rotation config (${first}, ${second})`,
+  });
 }
 
 function pgIdentifier(name: string): string {
@@ -260,199 +301,223 @@ function adminUrlOf(inputs: RotateInputs, current: DbUrl): string {
 }
 
 function describeSqlFailure(stage: string, error: unknown): ConnectorError {
-  const reason = error instanceof Error ? error.message : "unknown failure";
+  const reason = reasonOf(error, "unknown failure");
   // A driver message can echo the connection URL; keep only the first line
   // and strip anything that looks like a URL with credentials
   const line =
     reason.split("\n")[0]?.replace(/[a-z0-9+.-]+:\/\/[^\s]+/gi, "<url>") ?? "unknown failure";
-  return new ConnectorError(`${stage}: ${line}`);
+  return new ConnectorError({ message: `${stage}: ${line}` });
 }
 
 function dbPlan(
   rule: Extract<RotateRule, { connector: "postgres" | "mysql" }>,
   current: CredentialValues,
-): RotationPlan {
-  const parsed = parseDbUrl(current.primary, rule.connector);
-  const role = nextRole(rule, parsed.user);
-  if (rule.roles !== null) {
-    return {
-      description: `set a new password on role ${role} (role ${parsed.user} keeps its password until you finalize)`,
-      immediate: false,
-    };
-  }
-  return rule.connector === "mysql"
-    ? {
-        description: `set a new password on account ${parsed.user}@${rule.host}, keeping the current one as a secondary password until you finalize`,
+): Effect.Effect<RotationPlan, ConnectorError> {
+  return Effect.gen(function* () {
+    const parsed = yield* parseDbUrl(current.primary, rule.connector);
+    const role = yield* nextRole(rule, parsed.user);
+    if (rule.roles !== null) {
+      return {
+        description: `set a new password on role ${role} (role ${parsed.user} keeps its password until you finalize)`,
         immediate: false,
-      }
-    : {
-        description: `change the password of role ${role} in place — the current password stops working at once (no grace period; alternate two roles to get one)`,
-        immediate: true,
       };
-}
-
-async function rotatePostgres(
-  rule: Extract<RotateRule, { connector: "postgres" }>,
-  current: CredentialValues,
-  inputs: RotateInputs,
-  deps: RotateDeps,
-): Promise<ConnectorOutcome> {
-  const parsed = parseDbUrl(current.primary, "postgres");
-  const role = nextRole(rule, parsed.user);
-  const password = generatePassword(deps.randomBytes);
-  const statement = `ALTER ROLE ${pgIdentifier(role)} WITH PASSWORD ${pgLiteral(password)}`;
-  try {
-    await deps.sql.execute(adminUrlOf(inputs, parsed), [statement]);
-  } catch (error) {
-    throw describeSqlFailure(`postgres: setting the password of role ${role} failed`, error);
-  }
-  const value = withCredentials(parsed.url, role, password);
-  const warnings = await probe(deps, value, `postgres: the new credential of role ${role}`);
-  return {
-    values: { primary: encoder.encode(value), companions: {} },
-    facts: [
-      rule.roles === null ? `role ${role}: password changed in place` : `role ${role} now in use`,
-    ],
-    previous:
-      rule.roles === null
-        ? "the previous password stopped working when the change was applied (nothing to finalize)"
-        : `role ${parsed.user} keeps its previous password until you finalize`,
-    recovery:
-      rule.roles === null
-        ? `role ${role}'s password is now one nobody holds — an admin sets a new one (ALTER ROLE ${pgIdentifier(role)} WITH PASSWORD …) and pushes the URL with it`
-        : `re-running the rotation sets another password on role ${role} (role ${parsed.user} is untouched)`,
-    warnings,
-  };
-}
-
-async function rotateMysql(
-  rule: Extract<RotateRule, { connector: "mysql" }>,
-  current: CredentialValues,
-  inputs: RotateInputs,
-  deps: RotateDeps,
-): Promise<ConnectorOutcome> {
-  const parsed = parseDbUrl(current.primary, "mysql");
-  const role = nextRole(rule, parsed.user);
-  const password = generatePassword(deps.randomBytes);
-  const retain = rule.roles === null ? " RETAIN CURRENT PASSWORD" : "";
-  const statement = `ALTER USER ${mysqlAccount(role, rule.host)} IDENTIFIED BY ${mysqlLiteral(password)}${retain}`;
-  try {
-    await deps.sql.execute(adminUrlOf(inputs, parsed), [statement]);
-  } catch (error) {
-    throw describeSqlFailure(`mysql: setting the password of ${role}@${rule.host} failed`, error);
-  }
-  const value = withCredentials(parsed.url, role, password);
-  const warnings = await probe(deps, value, `mysql: the new credential of ${role}@${rule.host}`);
-  return {
-    values: { primary: encoder.encode(value), companions: {} },
-    facts: [
-      rule.roles === null
-        ? `account ${role}@${rule.host}: new primary password set, previous kept as secondary`
-        : `account ${role}@${rule.host} now in use`,
-    ],
-    previous:
-      rule.roles === null
-        ? "the previous password keeps working as the account's secondary password until you finalize"
-        : `account ${parsed.user}@${rule.host} keeps its previous password until you finalize`,
-    recovery:
-      rule.roles === null
-        ? `the primary password of ${role}@${rule.host} is now one nobody holds while the previous one still works as the secondary — an admin sets a new primary without RETAIN CURRENT PASSWORD (ALTER USER ${mysqlAccount(role, rule.host)} IDENTIFIED BY …; the secondary stays) and pushes the URL with it. Do not re-run the rotation first: RETAIN would keep the lost password and drop the working one`
-        : `re-running the rotation sets another password on ${role}@${rule.host} (${parsed.user}@${rule.host} is untouched)`,
-    warnings,
-  };
-}
-
-async function probe(deps: RotateDeps, url: string, what: string): Promise<readonly string[]> {
-  try {
-    await deps.sql.probe(url);
-    return [];
-  } catch (error) {
-    const reason = describeSqlFailure(
-      `${what} was set at the server but a connection test with it failed`,
-      error,
-    );
-    return [`${reason.message} — check the new value before finalizing`];
-  }
-}
-
-async function finalizePostgres(
-  rule: Extract<RotateRule, { connector: "postgres" }>,
-  previous: CredentialValues,
-  current: CredentialValues,
-  inputs: RotateInputs,
-  deps: RotateDeps,
-): Promise<FinalizeOutcome> {
-  if (rule.roles === null) {
-    return { kind: "nothing", facts: ["an in-place password change left nothing to finalize"] };
-  }
-  const before = parseDbUrl(previous.primary, "postgres");
-  const now = parseDbUrl(current.primary, "postgres");
-  if (before.user === now.user) {
-    return {
-      kind: "nothing",
-      facts: [`role ${now.user} is in use by both versions (nothing to invalidate)`],
-    };
-  }
-  const scrambled = generatePassword(deps.randomBytes);
-  const statement = `ALTER ROLE ${pgIdentifier(before.user)} WITH PASSWORD ${pgLiteral(scrambled)}`;
-  try {
-    await deps.sql.execute(adminUrlOf(inputs, now), [statement]);
-  } catch (error) {
-    throw describeSqlFailure(
-      `postgres: invalidating the password of role ${before.user} failed`,
-      error,
-    );
-  }
-  return {
-    kind: "finalized",
-    facts: [`role ${before.user}: password replaced by a random one nobody holds`],
-  };
-}
-
-async function finalizeMysql(
-  rule: Extract<RotateRule, { connector: "mysql" }>,
-  previous: CredentialValues,
-  current: CredentialValues,
-  inputs: RotateInputs,
-  deps: RotateDeps,
-): Promise<FinalizeOutcome> {
-  const now = parseDbUrl(current.primary, "mysql");
-  if (rule.roles === null) {
-    const statement = `ALTER USER ${mysqlAccount(now.user, rule.host)} DISCARD OLD PASSWORD`;
-    try {
-      await deps.sql.execute(adminUrlOf(inputs, now), [statement]);
-    } catch (error) {
-      throw describeSqlFailure(
-        `mysql: discarding the secondary password of ${now.user}@${rule.host} failed`,
-        error,
-      );
     }
-    return {
-      kind: "finalized",
-      facts: [`account ${now.user}@${rule.host}: secondary password discarded`],
-    };
-  }
-  const before = parseDbUrl(previous.primary, "mysql");
-  if (before.user === now.user) {
-    return {
-      kind: "nothing",
-      facts: [`account ${now.user} is in use by both versions (nothing to invalidate)`],
-    };
-  }
-  const scrambled = generatePassword(deps.randomBytes);
-  const statement = `ALTER USER ${mysqlAccount(before.user, rule.host)} IDENTIFIED BY ${mysqlLiteral(scrambled)}`;
-  try {
-    await deps.sql.execute(adminUrlOf(inputs, now), [statement]);
-  } catch (error) {
-    throw describeSqlFailure(
-      `mysql: invalidating the password of ${before.user}@${rule.host} failed`,
-      error,
+    return rule.connector === "mysql"
+      ? {
+          description: `set a new password on account ${parsed.user}@${rule.host}, keeping the current one as a secondary password until you finalize`,
+          immediate: false,
+        }
+      : {
+          description: `change the password of role ${role} in place — the current password stops working at once (no grace period; alternate two roles to get one)`,
+          immediate: true,
+        };
+  });
+}
+
+/** Runs the statements against the admin connection (the SqlRunner service — Bun's SQL client or a test recorder). */
+function sqlExecute(
+  url: string,
+  statements: readonly string[],
+  stage: string,
+): Effect.Effect<void, ConnectorError, SqlRunner> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlRunner;
+    yield* Effect.tryPromise({
+      try: () => sql.execute(url, statements),
+      catch: (error) => describeSqlFailure(stage, error),
+    });
+  });
+}
+
+function rotatePostgres(
+  rule: Extract<RotateRule, { connector: "postgres" }>,
+  current: CredentialValues,
+  inputs: RotateInputs,
+): Effect.Effect<ConnectorOutcome, ConnectorError, SqlRunner> {
+  return Effect.gen(function* () {
+    const parsed = yield* parseDbUrl(current.primary, "postgres");
+    const role = yield* nextRole(rule, parsed.user);
+    const password = generatePassword((yield* ConnectorCrypto).nextBytes);
+    const statement = `ALTER ROLE ${pgIdentifier(role)} WITH PASSWORD ${pgLiteral(password)}`;
+    yield* sqlExecute(
+      adminUrlOf(inputs, parsed),
+      [statement],
+      `postgres: setting the password of role ${role} failed`,
     );
-  }
-  return {
-    kind: "finalized",
-    facts: [`account ${before.user}@${rule.host}: password replaced by a random one nobody holds`],
-  };
+    const value = withCredentials(parsed.url, role, password);
+    const warnings = yield* probe(value, `postgres: the new credential of role ${role}`);
+    return {
+      values: { primary: encoder.encode(value), companions: {} },
+      facts: [
+        rule.roles === null ? `role ${role}: password changed in place` : `role ${role} now in use`,
+      ],
+      previous:
+        rule.roles === null
+          ? "the previous password stopped working when the change was applied (nothing to finalize)"
+          : `role ${parsed.user} keeps its previous password until you finalize`,
+      recovery:
+        rule.roles === null
+          ? `role ${role}'s password is now one nobody holds — an admin sets a new one (ALTER ROLE ${pgIdentifier(role)} WITH PASSWORD …) and pushes the URL with it`
+          : `re-running the rotation sets another password on role ${role} (role ${parsed.user} is untouched)`,
+      warnings,
+    };
+  });
+}
+
+function rotateMysql(
+  rule: Extract<RotateRule, { connector: "mysql" }>,
+  current: CredentialValues,
+  inputs: RotateInputs,
+): Effect.Effect<ConnectorOutcome, ConnectorError, SqlRunner> {
+  return Effect.gen(function* () {
+    const parsed = yield* parseDbUrl(current.primary, "mysql");
+    const role = yield* nextRole(rule, parsed.user);
+    const password = generatePassword((yield* ConnectorCrypto).nextBytes);
+    const retain = rule.roles === null ? " RETAIN CURRENT PASSWORD" : "";
+    const statement = `ALTER USER ${mysqlAccount(role, rule.host)} IDENTIFIED BY ${mysqlLiteral(password)}${retain}`;
+    yield* sqlExecute(
+      adminUrlOf(inputs, parsed),
+      [statement],
+      `mysql: setting the password of ${role}@${rule.host} failed`,
+    );
+    const value = withCredentials(parsed.url, role, password);
+    const warnings = yield* probe(value, `mysql: the new credential of ${role}@${rule.host}`);
+    return {
+      values: { primary: encoder.encode(value), companions: {} },
+      facts: [
+        rule.roles === null
+          ? `account ${role}@${rule.host}: new primary password set, previous kept as secondary`
+          : `account ${role}@${rule.host} now in use`,
+      ],
+      previous:
+        rule.roles === null
+          ? "the previous password keeps working as the account's secondary password until you finalize"
+          : `account ${parsed.user}@${rule.host} keeps its previous password until you finalize`,
+      recovery:
+        rule.roles === null
+          ? `the primary password of ${role}@${rule.host} is now one nobody holds while the previous one still works as the secondary — an admin sets a new primary without RETAIN CURRENT PASSWORD (ALTER USER ${mysqlAccount(role, rule.host)} IDENTIFIED BY …; the secondary stays) and pushes the URL with it. Do not re-run the rotation first: RETAIN would keep the lost password and drop the working one`
+          : `re-running the rotation sets another password on ${role}@${rule.host} (${parsed.user}@${rule.host} is untouched)`,
+      warnings,
+    };
+  });
+}
+
+/** The connection test of a new credential: a failure is a warning, never a refusal (the issuer accepted the change). */
+function probe(url: string, what: string): Effect.Effect<readonly string[], never, SqlRunner> {
+  return Effect.gen(function* () {
+    const sql = yield* SqlRunner;
+    return yield* Effect.tryPromise({
+      try: () => sql.probe(url),
+      catch: (error) =>
+        describeSqlFailure(
+          `${what} was set at the server but a connection test with it failed`,
+          error,
+        ),
+    }).pipe(
+      Effect.map(() => [] as readonly string[]),
+      Effect.catchTag("ConnectorError", (error) =>
+        Effect.succeed([`${error.message} — check the new value before finalizing`]),
+      ),
+    );
+  });
+}
+
+function finalizePostgres(
+  rule: Extract<RotateRule, { connector: "postgres" }>,
+  previous: CredentialValues,
+  current: CredentialValues,
+  inputs: RotateInputs,
+): Effect.Effect<FinalizeOutcome, ConnectorError, SqlRunner> {
+  return Effect.gen(function* () {
+    if (rule.roles === null) {
+      return {
+        kind: "nothing" as const,
+        facts: ["an in-place password change left nothing to finalize"],
+      };
+    }
+    const before = yield* parseDbUrl(previous.primary, "postgres");
+    const now = yield* parseDbUrl(current.primary, "postgres");
+    if (before.user === now.user) {
+      return {
+        kind: "nothing" as const,
+        facts: [`role ${now.user} is in use by both versions (nothing to invalidate)`],
+      };
+    }
+    const scrambled = generatePassword((yield* ConnectorCrypto).nextBytes);
+    const statement = `ALTER ROLE ${pgIdentifier(before.user)} WITH PASSWORD ${pgLiteral(scrambled)}`;
+    yield* sqlExecute(
+      adminUrlOf(inputs, now),
+      [statement],
+      `postgres: invalidating the password of role ${before.user} failed`,
+    );
+    return {
+      kind: "finalized" as const,
+      facts: [`role ${before.user}: password replaced by a random one nobody holds`],
+    };
+  });
+}
+
+function finalizeMysql(
+  rule: Extract<RotateRule, { connector: "mysql" }>,
+  previous: CredentialValues,
+  current: CredentialValues,
+  inputs: RotateInputs,
+): Effect.Effect<FinalizeOutcome, ConnectorError, SqlRunner> {
+  return Effect.gen(function* () {
+    const now = yield* parseDbUrl(current.primary, "mysql");
+    if (rule.roles === null) {
+      const statement = `ALTER USER ${mysqlAccount(now.user, rule.host)} DISCARD OLD PASSWORD`;
+      yield* sqlExecute(
+        adminUrlOf(inputs, now),
+        [statement],
+        `mysql: discarding the secondary password of ${now.user}@${rule.host} failed`,
+      );
+      return {
+        kind: "finalized" as const,
+        facts: [`account ${now.user}@${rule.host}: secondary password discarded`],
+      };
+    }
+    const before = yield* parseDbUrl(previous.primary, "mysql");
+    if (before.user === now.user) {
+      return {
+        kind: "nothing" as const,
+        facts: [`account ${now.user} is in use by both versions (nothing to invalidate)`],
+      };
+    }
+    const scrambled = generatePassword((yield* ConnectorCrypto).nextBytes);
+    const statement = `ALTER USER ${mysqlAccount(before.user, rule.host)} IDENTIFIED BY ${mysqlLiteral(scrambled)}`;
+    yield* sqlExecute(
+      adminUrlOf(inputs, now),
+      [statement],
+      `mysql: invalidating the password of ${before.user}@${rule.host} failed`,
+    );
+    return {
+      kind: "finalized" as const,
+      facts: [
+        `account ${before.user}@${rule.host}: password replaced by a random one nobody holds`,
+      ],
+    };
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -487,35 +552,43 @@ interface IamKey {
 }
 
 /** The credentials the IAM calls are signed with: the admin pair when named, else the key itself. */
-function awsCallerOf(current: CredentialValues, inputs: RotateInputs): AwsCredentials {
-  const adminId = inputs["accessKeyId"];
-  const adminSecret = inputs["secretAccessKey"];
-  if (adminId !== undefined && adminSecret !== undefined) {
-    const token = inputs["sessionToken"];
+function awsCallerOf(
+  current: CredentialValues,
+  inputs: RotateInputs,
+): Effect.Effect<AwsCredentials, ConnectorError> {
+  return Effect.gen(function* () {
+    const adminId = inputs["accessKeyId"];
+    const adminSecret = inputs["secretAccessKey"];
+    if (adminId !== undefined && adminSecret !== undefined) {
+      const token = inputs["sessionToken"];
+      return {
+        accessKeyId: decoder.decode(adminId).trim(),
+        secretAccessKey: decoder.decode(adminSecret).trim(),
+        ...(token === undefined ? {} : { sessionToken: decoder.decode(token).trim() }),
+      };
+    }
     return {
-      accessKeyId: decoder.decode(adminId).trim(),
-      secretAccessKey: decoder.decode(adminSecret).trim(),
-      ...(token === undefined ? {} : { sessionToken: decoder.decode(token).trim() }),
+      accessKeyId: yield* currentKeyId(current),
+      secretAccessKey: decoder.decode(current.primary).trim(),
     };
-  }
-  return {
-    accessKeyId: currentKeyId(current),
-    secretAccessKey: decoder.decode(current.primary).trim(),
-  };
+  });
 }
 
-function currentKeyId(current: CredentialValues): string {
+function currentKeyId(current: CredentialValues): Effect.Effect<string, ConnectorError> {
   const companion = current.companions[AWS_ACCESS_KEY_ID_COMPANION];
   if (companion === undefined) {
-    throw new ConnectorError("aws-iam-access-key: the access key id companion is missing");
+    return new ConnectorError({
+      message: "aws-iam-access-key: the access key id companion is missing",
+    });
   }
   const id = decoder.decode(companion).trim();
   if (!ACCESS_KEY_ID.test(id)) {
-    throw new ConnectorError(
-      "aws-iam-access-key: the access key id variable does not hold an access key id (uppercase letters and digits)",
-    );
+    return new ConnectorError({
+      message:
+        "aws-iam-access-key: the access key id variable does not hold an access key id (uppercase letters and digits)",
+    });
   }
-  return id;
+  return Effect.succeed(id);
 }
 
 /** One XML element's text (IAM responses are flat enough for this; values are never interpolated back). */
@@ -535,42 +608,64 @@ interface AwsQueryService {
 }
 
 /** One SigV4-signed Query API call; the raw response (an error answer is returned, not thrown — the caller classifies it). */
-async function awsQueryCall(
-  deps: RotateDeps,
+function awsQueryCall(
   caller: AwsCredentials,
   service: AwsQueryService,
   action: string,
   params: Readonly<Record<string, string>>,
-): Promise<{ readonly ok: boolean; readonly status: number; readonly text: string }> {
-  const body = new URLSearchParams({
-    Action: action,
-    Version: service.version,
-    ...params,
-  }).toString();
-  const signed = await signV4({
-    method: "POST",
-    url: `${service.base}/`,
-    region: AWS_IAM_REGION,
-    service: service.name,
-    headers: { "content-type": "application/x-www-form-urlencoded; charset=utf-8" },
-    body,
-    credentials: caller,
-    nowMs: deps.now(),
-  });
-  let response: Response;
-  try {
-    response = await deps.fetch(`${service.base}/`, {
-      method: "POST",
-      headers: { ...signed.headers, "user-agent": USER_AGENT },
-      body,
+): Effect.Effect<
+  { readonly ok: boolean; readonly status: number; readonly text: string },
+  ConnectorError,
+  HttpClient.HttpClient
+> {
+  return Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const clock = yield* Clock.Clock;
+    const body = new URLSearchParams({
+      Action: action,
+      Version: service.version,
+      ...params,
+    }).toString();
+    const signed = yield* Effect.tryPromise({
+      try: () =>
+        signV4({
+          method: "POST",
+          url: `${service.base}/`,
+          region: AWS_IAM_REGION,
+          service: service.name,
+          headers: { "content-type": "application/x-www-form-urlencoded; charset=utf-8" },
+          body,
+          credentials: caller,
+          nowMs: clock.currentTimeMillisUnsafe(),
+        }),
+      catch: (error) => new ConnectorError({ message: reasonOf(error, "the connector failed") }),
     });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : "request failed";
-    throw new ConnectorError(
-      `aws-iam-access-key: ${action} could not reach ${service.name.toUpperCase()} (${reason})`,
+    const response = yield* client
+      .execute(
+        HttpClientRequest.post(`${service.base}/`).pipe(
+          HttpClientRequest.setHeaders({ ...signed.headers, "user-agent": USER_AGENT }),
+          HttpClientRequest.setBody(HttpBody.raw(body)),
+        ),
+      )
+      .pipe(
+        Effect.mapError(
+          (error) =>
+            new ConnectorError({
+              message: `aws-iam-access-key: ${action} could not reach ${service.name.toUpperCase()} (${reasonOf(error, "request failed")})`,
+            }),
+        ),
+      );
+    const text = yield* response.text.pipe(
+      Effect.mapError(
+        (error) => new ConnectorError({ message: reasonOf(error, "request failed") }),
+      ),
     );
-  }
-  return { ok: response.ok, status: response.status, text: await response.text() };
+    return {
+      ok: response.status >= 200 && response.status < 300,
+      status: response.status,
+      text,
+    };
+  });
 }
 
 function awsErrorText(text: string): string {
@@ -579,25 +674,26 @@ function awsErrorText(text: string): string {
   return `${code}${message === "" ? "" : `: ${message}`}`;
 }
 
-async function iamCall(
-  deps: RotateDeps,
+function iamCall(
   caller: AwsCredentials,
   action: string,
   params: Readonly<Record<string, string>>,
-): Promise<string> {
-  const response = await awsQueryCall(
-    deps,
-    caller,
-    { name: "iam", base: deps.awsIamBase ?? AWS_IAM_BASE, version: AWS_IAM_VERSION },
-    action,
-    params,
-  );
-  if (!response.ok) {
-    throw new ConnectorError(
-      `aws-iam-access-key: IAM answered ${response.status} to ${action} (${awsErrorText(response.text)})`,
+): Effect.Effect<string, ConnectorError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const endpoints = yield* IssuerEndpoints;
+    const response = yield* awsQueryCall(
+      caller,
+      { name: "iam", base: endpoints.awsIamBase ?? AWS_IAM_BASE, version: AWS_IAM_VERSION },
+      action,
+      params,
     );
-  }
-  return response.text;
+    if (!response.ok) {
+      return yield* new ConnectorError({
+        message: `aws-iam-access-key: IAM answered ${response.status} to ${action} (${awsErrorText(response.text)})`,
+      });
+    }
+    return response.text;
+  });
 }
 
 /**
@@ -606,116 +702,135 @@ async function iamCall(
  * refutes it. Any other answer (a network failure, a throttle) is surfaced,
  * never read as "not the pair".
  */
-async function awsPairAuthenticates(deps: RotateDeps, candidate: AwsCredentials): Promise<boolean> {
-  const response = await awsQueryCall(
-    deps,
-    candidate,
-    { name: "sts", base: deps.awsStsBase ?? AWS_STS_BASE, version: AWS_STS_VERSION },
-    "GetCallerIdentity",
-    {},
-  );
-  if (response.ok) {
-    return true;
-  }
-  if (AWS_AUTH_FAILURE_CODES.has(xmlText(response.text, "Code") ?? "")) {
-    return false;
-  }
-  throw new ConnectorError(
-    `aws-iam-access-key: STS answered ${response.status} to GetCallerIdentity (${awsErrorText(response.text)})`,
-  );
-}
-
-async function iamUserOf(
-  deps: RotateDeps,
-  caller: AwsCredentials,
-  rule: Extract<RotateRule, { connector: "aws-iam-access-key" }>,
-  keyId: string,
-): Promise<string> {
-  if (rule.user !== null) {
-    return rule.user;
-  }
-  const xml = await iamCall(deps, caller, "GetAccessKeyLastUsed", { AccessKeyId: keyId });
-  const user = xmlText(xml, "UserName");
-  if (user === null || user.length === 0) {
-    throw new ConnectorError(
-      "aws-iam-access-key: IAM did not name the user of the current access key (set `user` in the rotation config)",
+function awsPairAuthenticates(
+  candidate: AwsCredentials,
+): Effect.Effect<boolean, ConnectorError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const endpoints = yield* IssuerEndpoints;
+    const response = yield* awsQueryCall(
+      candidate,
+      { name: "sts", base: endpoints.awsStsBase ?? AWS_STS_BASE, version: AWS_STS_VERSION },
+      "GetCallerIdentity",
+      {},
     );
-  }
-  return user;
-}
-
-async function iamListKeys(
-  deps: RotateDeps,
-  caller: AwsCredentials,
-  user: string,
-): Promise<IamKey[]> {
-  const xml = await iamCall(deps, caller, "ListAccessKeys", { UserName: user });
-  return xmlMembers(xml).flatMap((member) => {
-    const id = xmlText(member, "AccessKeyId");
-    const status = xmlText(member, "Status");
-    const createDate = xmlText(member, "CreateDate") ?? "";
-    return id === null || (status !== "Active" && status !== "Inactive")
-      ? []
-      : [{ id, status, createDate }];
+    if (response.ok) {
+      return true;
+    }
+    if (AWS_AUTH_FAILURE_CODES.has(xmlText(response.text, "Code") ?? "")) {
+      return false;
+    }
+    return yield* new ConnectorError({
+      message: `aws-iam-access-key: STS answered ${response.status} to GetCallerIdentity (${awsErrorText(response.text)})`,
+    });
   });
 }
 
-/** The IAM user the current key belongs to and its keys (the opening read of a rotation and of a finalize). */
-async function iamKeysOf(
+function iamUserOf(
+  caller: AwsCredentials,
   rule: Extract<RotateRule, { connector: "aws-iam-access-key" }>,
-  current: CredentialValues,
-  inputs: RotateInputs,
-  deps: RotateDeps,
-) {
-  const caller = awsCallerOf(current, inputs);
-  const currentId = currentKeyId(current);
-  const user = await iamUserOf(deps, caller, rule, currentId);
-  const keys = await iamListKeys(deps, caller, user);
-  return { caller, currentId, user, keys };
+  keyId: string,
+): Effect.Effect<string, ConnectorError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    if (rule.user !== null) {
+      return rule.user;
+    }
+    const xml = yield* iamCall(caller, "GetAccessKeyLastUsed", { AccessKeyId: keyId });
+    const user = xmlText(xml, "UserName");
+    if (user === null || user.length === 0) {
+      return yield* new ConnectorError({
+        message:
+          "aws-iam-access-key: IAM did not name the user of the current access key (set `user` in the rotation config)",
+      });
+    }
+    return user;
+  });
 }
 
-async function rotateAwsIam(
+function iamListKeys(
+  caller: AwsCredentials,
+  user: string,
+): Effect.Effect<IamKey[], ConnectorError, HttpClient.HttpClient> {
+  return Effect.map(iamCall(caller, "ListAccessKeys", { UserName: user }), (xml) =>
+    xmlMembers(xml).flatMap((member) => {
+      const id = xmlText(member, "AccessKeyId");
+      const status = xmlText(member, "Status");
+      const createDate = xmlText(member, "CreateDate") ?? "";
+      return id === null || (status !== "Active" && status !== "Inactive")
+        ? []
+        : [{ id, status, createDate }];
+    }),
+  );
+}
+
+/** The IAM user the current key belongs to and its keys (the opening read of a rotation and of a finalize). */
+function iamKeysOf(
   rule: Extract<RotateRule, { connector: "aws-iam-access-key" }>,
   current: CredentialValues,
   inputs: RotateInputs,
-  deps: RotateDeps,
-): Promise<ConnectorOutcome> {
-  const { caller, currentId, user, keys } = await iamKeysOf(rule, current, inputs, deps);
-  const facts: string[] = [];
-  if (keys.length >= 2) {
-    // IAM allows two keys per user. An inactive one that is not the key in
-    // use is a finalized previous rotation — reclaim it (Vault / Infisical
-    // reclaim the oldest; we never delete an active key)
-    const reclaimable = keys.find((key) => key.id !== currentId && key.status === "Inactive");
-    if (reclaimable === undefined) {
-      throw new ConnectorError(
-        `aws-iam-access-key: user ${user} already has two active access keys, so IAM cannot create a third. Finalize the previous rotation (\`--finalize\` deactivates the key the previous version held) or deactivate one at the issuer, then retry`,
+): Effect.Effect<
+  {
+    readonly caller: AwsCredentials;
+    readonly currentId: string;
+    readonly user: string;
+    readonly keys: IamKey[];
+  },
+  ConnectorError,
+  HttpClient.HttpClient
+> {
+  return Effect.gen(function* () {
+    const caller = yield* awsCallerOf(current, inputs);
+    const currentId = yield* currentKeyId(current);
+    const user = yield* iamUserOf(caller, rule, currentId);
+    const keys = yield* iamListKeys(caller, user);
+    return { caller, currentId, user, keys };
+  });
+}
+
+function rotateAwsIam(
+  rule: Extract<RotateRule, { connector: "aws-iam-access-key" }>,
+  current: CredentialValues,
+  inputs: RotateInputs,
+): Effect.Effect<ConnectorOutcome, ConnectorError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const { caller, currentId, user, keys } = yield* iamKeysOf(rule, current, inputs);
+    const facts: string[] = [];
+    if (keys.length >= 2) {
+      // IAM allows two keys per user. An inactive one that is not the key in
+      // use is a finalized previous rotation — reclaim it (Vault / Infisical
+      // reclaim the oldest; we never delete an active key)
+      const reclaimable = keys.find((key) => key.id !== currentId && key.status === "Inactive");
+      if (reclaimable === undefined) {
+        return yield* new ConnectorError({
+          message: `aws-iam-access-key: user ${user} already has two active access keys, so IAM cannot create a third. Finalize the previous rotation (\`--finalize\` deactivates the key the previous version held) or deactivate one at the issuer, then retry`,
+        });
+      }
+      yield* iamCall(caller, "DeleteAccessKey", { UserName: user, AccessKeyId: reclaimable.id });
+      facts.push(
+        `deleted the inactive access key ${reclaimable.id} (the slot a previous rotation left)`,
       );
     }
-    await iamCall(deps, caller, "DeleteAccessKey", { UserName: user, AccessKeyId: reclaimable.id });
+    const xml = yield* iamCall(caller, "CreateAccessKey", { UserName: user });
+    const newId = xmlText(xml, "AccessKeyId");
+    const newSecret = xmlText(xml, "SecretAccessKey");
+    if (newId === null || newSecret === null || newId.length === 0 || newSecret.length === 0) {
+      return yield* new ConnectorError({
+        message: "aws-iam-access-key: IAM did not return the new access key",
+      });
+    }
     facts.push(
-      `deleted the inactive access key ${reclaimable.id} (the slot a previous rotation left)`,
+      `user ${user}: new access key ${newId} created (the previous key ${currentId} stays active)`,
     );
-  }
-  const xml = await iamCall(deps, caller, "CreateAccessKey", { UserName: user });
-  const newId = xmlText(xml, "AccessKeyId");
-  const newSecret = xmlText(xml, "SecretAccessKey");
-  if (newId === null || newSecret === null || newId.length === 0 || newSecret.length === 0) {
-    throw new ConnectorError("aws-iam-access-key: IAM did not return the new access key");
-  }
-  facts.push(
-    `user ${user}: new access key ${newId} created (the previous key ${currentId} stays active)`,
-  );
-  return {
-    values: {
-      primary: encoder.encode(newSecret),
-      companions: { [AWS_ACCESS_KEY_ID_COMPANION]: encoder.encode(newId) },
-    },
-    facts,
-    previous: `access key ${currentId} stays active until you finalize (IAM keys take a few seconds to become usable)`,
-    recovery: `access key ${newId} exists at the issuer and its secret is held only by this process (it is not shown) — delete ${newId} for user ${user} at the issuer, then re-run the rotation (a re-run refuses while two active keys exist; only an inactive key is reclaimed)`,
-    warnings: [],
-  };
+    return {
+      values: {
+        primary: encoder.encode(newSecret),
+        companions: { [AWS_ACCESS_KEY_ID_COMPANION]: encoder.encode(newId) },
+      },
+      facts,
+      previous: `access key ${currentId} stays active until you finalize (IAM keys take a few seconds to become usable)`,
+      recovery: `access key ${newId} exists at the issuer and its secret is held only by this process (it is not shown) — delete ${newId} for user ${user} at the issuer, then re-run the rotation (a re-run refuses while two active keys exist; only an inactive key is reclaimed)`,
+      warnings: [],
+    };
+  });
 }
 
 /** The key ids earlier versions of the key id variable held (ill-formed values are ignored, never matched). */
@@ -740,65 +855,66 @@ function storedKeyIds(ancestors: CompanionAncestors): ReadonlySet<string> {
  * is exactly the credential that version held. Either check failing
  * leaves the key as it is and says so.
  */
-async function finalizeAwsIam(
+function finalizeAwsIam(
   rule: Extract<RotateRule, { connector: "aws-iam-access-key" }>,
   previous: CredentialValues,
   current: CredentialValues,
   inputs: RotateInputs,
-  deps: RotateDeps,
   ancestors: CompanionAncestors,
-): Promise<FinalizeOutcome> {
-  const { caller, currentId, user, keys } = await iamKeysOf(rule, current, inputs, deps);
-  const others = keys.filter((key) => key.id !== currentId);
-  if (others.length === 0) {
-    return {
-      kind: "nothing",
-      facts: [`access key ${currentId} is the only key of user ${user} (nothing to deactivate)`],
-    };
-  }
-  const stored = storedKeyIds(ancestors);
-  const previousSecret = decoder.decode(previous.primary).trim();
-  const facts: string[] = [];
-  for (const key of others) {
-    if (!stored.has(key.id)) {
-      facts.push(
-        `access key ${key.id} of user ${user} was never a version of ${rule.accessKeyIdVariable} (not created through maruhi) — left untouched`,
-      );
-      continue;
-    }
-    if (key.status === "Inactive") {
+): Effect.Effect<FinalizeOutcome, ConnectorError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const { caller, currentId, user, keys } = yield* iamKeysOf(rule, current, inputs);
+    const others = keys.filter((key) => key.id !== currentId);
+    if (others.length === 0) {
       return {
-        kind: "already",
+        kind: "nothing" as const,
+        facts: [`access key ${currentId} is the only key of user ${user} (nothing to deactivate)`],
+      };
+    }
+    const stored = storedKeyIds(ancestors);
+    const previousSecret = decoder.decode(previous.primary).trim();
+    const facts: string[] = [];
+    for (const key of others) {
+      if (!stored.has(key.id)) {
+        facts.push(
+          `access key ${key.id} of user ${user} was never a version of ${rule.accessKeyIdVariable} (not created through maruhi) — left untouched`,
+        );
+        continue;
+      }
+      if (key.status === "Inactive") {
+        return {
+          kind: "already" as const,
+          facts: [
+            ...facts,
+            `access key ${key.id} is already inactive (the next rotation deletes it)`,
+          ],
+        };
+      }
+      const pairs = yield* awsPairAuthenticates({
+        accessKeyId: key.id,
+        secretAccessKey: previousSecret,
+      });
+      if (!pairs) {
+        facts.push(
+          `access key ${key.id} is active but does not authenticate with the previous version's secret (not that version's key) — left untouched`,
+        );
+        continue;
+      }
+      yield* iamCall(caller, "UpdateAccessKey", {
+        UserName: user,
+        AccessKeyId: key.id,
+        Status: "Inactive",
+      });
+      return {
+        kind: "finalized" as const,
         facts: [
           ...facts,
-          `access key ${key.id} is already inactive (the next rotation deletes it)`,
+          `access key ${key.id} deactivated (reversible at the issuer; the next rotation deletes it)`,
         ],
       };
     }
-    const pairs = await awsPairAuthenticates(deps, {
-      accessKeyId: key.id,
-      secretAccessKey: previousSecret,
-    });
-    if (!pairs) {
-      facts.push(
-        `access key ${key.id} is active but does not authenticate with the previous version's secret (not that version's key) — left untouched`,
-      );
-      continue;
-    }
-    await iamCall(deps, caller, "UpdateAccessKey", {
-      UserName: user,
-      AccessKeyId: key.id,
-      Status: "Inactive",
-    });
-    return {
-      kind: "finalized",
-      facts: [
-        ...facts,
-        `access key ${key.id} deactivated (reversible at the issuer; the next rotation deletes it)`,
-      ],
-    };
-  }
-  return { kind: "nothing", facts };
+    return { kind: "nothing" as const, facts };
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -807,11 +923,20 @@ async function finalizeAwsIam(
 
 const CLOUDFLARE_BASE = "https://api.cloudflare.com";
 
-interface CloudflareEnvelope {
-  readonly success?: boolean;
-  readonly errors?: readonly { readonly code?: number; readonly message?: string }[];
-  readonly result?: unknown;
-}
+/** Cloudflare's JSON envelope (`{success, errors, result}`; other keys are not read). */
+const CloudflareEnvelope = Schema.Struct({
+  success: Schema.optionalKey(Schema.Boolean),
+  errors: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        code: Schema.optionalKey(Schema.Number),
+        message: Schema.optionalKey(Schema.String),
+      }),
+    ),
+  ),
+  result: Schema.optionalKey(Schema.Unknown),
+});
+type CloudflareEnvelope = typeof CloudflareEnvelope.Type;
 
 function tokensPath(rule: Extract<RotateRule, { connector: "cloudflare-api-token" }>): string {
   return rule.accountId === null
@@ -819,38 +944,54 @@ function tokensPath(rule: Extract<RotateRule, { connector: "cloudflare-api-token
     : `/client/v4/accounts/${rule.accountId}/tokens`;
 }
 
-async function cloudflareCall(
-  deps: RotateDeps,
+function cloudflareCall(
   bearer: string,
   method: "GET" | "POST" | "DELETE",
   path: string,
   body?: unknown,
-): Promise<{ readonly status: number; readonly envelope: CloudflareEnvelope }> {
-  const base = deps.cloudflareBase ?? CLOUDFLARE_BASE;
-  let response: Response;
-  try {
-    response = await deps.fetch(`${base}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${bearer}`,
-        "user-agent": USER_AGENT,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : "request failed";
-    throw new ConnectorError(
-      `cloudflare-api-token: ${method} ${path} could not reach Cloudflare (${reason})`,
+): Effect.Effect<
+  { readonly status: number; readonly envelope: CloudflareEnvelope },
+  ConnectorError,
+  HttpClient.HttpClient
+> {
+  return Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const endpoints = yield* IssuerEndpoints;
+    const base = endpoints.cloudflareBase ?? CLOUDFLARE_BASE;
+    let request = HttpClientRequest.make(method)(`${base}${path}`).pipe(
+      HttpClientRequest.bearerToken(bearer),
+      HttpClientRequest.setHeaders({ "user-agent": USER_AGENT }),
     );
-  }
-  let envelope: CloudflareEnvelope = {};
-  try {
-    envelope = (await response.json()) as CloudflareEnvelope;
-  } catch {
-    envelope = {};
-  }
-  return { status: response.status, envelope };
+    if (body !== undefined) {
+      request = request.pipe(
+        HttpClientRequest.setBody(
+          HttpBody.raw(JSON.stringify(body), { contentType: "application/json" }),
+        ),
+      );
+    }
+    const response = yield* client.execute(request).pipe(
+      Effect.mapError(
+        (error) =>
+          new ConnectorError({
+            message: `cloudflare-api-token: ${method} ${path} could not reach Cloudflare (${reasonOf(error, "request failed")})`,
+          }),
+      ),
+    );
+    // A body that is not the JSON envelope is a connector error now
+    // (it was read as an empty envelope before — silently). Whatever the
+    // decode's own error (parse failure, schema mismatch), the cause is the
+    // same: the answer was not the envelope.
+    const envelope = yield* response.pipe(
+      HttpClientResponse.schemaBodyJson(CloudflareEnvelope),
+      Effect.mapError(
+        () =>
+          new ConnectorError({
+            message: `cloudflare-api-token: ${method} ${path} — Cloudflare's answer was not the JSON envelope it returns`,
+          }),
+      ),
+    );
+    return { status: response.status, envelope };
+  });
 }
 
 function cloudflareFailure(
@@ -863,31 +1004,27 @@ function cloudflareFailure(
     first === undefined
       ? ""
       : ` (${first.code ?? "?"}${first.message === undefined ? "" : `: ${first.message}`})`;
-  return new ConnectorError(
-    `cloudflare-api-token: Cloudflare answered ${status} to ${what}${detail}`,
-  );
+  return new ConnectorError({
+    message: `cloudflare-api-token: Cloudflare answered ${status} to ${what}${detail}`,
+  });
 }
 
 /** The id of the token whose value this is (`/verify` with the token itself), or null when it is not valid. */
-async function cloudflareTokenId(
-  deps: RotateDeps,
+function cloudflareTokenId(
   rule: Extract<RotateRule, { connector: "cloudflare-api-token" }>,
   token: string,
-): Promise<string | null> {
-  const { status, envelope } = await cloudflareCall(
-    deps,
-    token,
-    "GET",
-    `${tokensPath(rule)}/verify`,
-  );
-  if (status === 401 || status === 403 || envelope.success === false) {
-    return null;
-  }
-  if (status !== 200) {
-    throw cloudflareFailure("the token verification", status, envelope);
-  }
-  const result = envelope.result as { readonly id?: unknown } | undefined;
-  return typeof result?.id === "string" && result.id.length > 0 ? result.id : null;
+): Effect.Effect<string | null, ConnectorError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const { status, envelope } = yield* cloudflareCall(token, "GET", `${tokensPath(rule)}/verify`);
+    if (status === 401 || status === 403 || envelope.success === false) {
+      return null;
+    }
+    if (status !== 200) {
+      return yield* cloudflareFailure("the token verification", status, envelope);
+    }
+    const result = envelope.result as { readonly id?: unknown } | undefined;
+    return typeof result?.id === "string" && result.id.length > 0 ? result.id : null;
+  });
 }
 
 function adminTokenOf(current: CredentialValues, inputs: RotateInputs): string {
@@ -896,113 +1033,140 @@ function adminTokenOf(current: CredentialValues, inputs: RotateInputs): string {
 }
 
 /** The definition of a token (name, policies, condition, validity window) as the replacement's request body. */
-async function cloudflareDefinition(
-  deps: RotateDeps,
+function cloudflareDefinition(
   rule: Extract<RotateRule, { connector: "cloudflare-api-token" }>,
   admin: string,
   id: string,
-): Promise<Record<string, unknown>> {
-  const detail = await cloudflareCall(deps, admin, "GET", `${tokensPath(rule)}/${id}`);
-  if (detail.status !== 200 || detail.envelope.success === false) {
-    throw cloudflareFailure(`reading token ${id}`, detail.status, detail.envelope);
-  }
-  const definition = detail.envelope.result as {
-    readonly name?: unknown;
-    readonly policies?: unknown;
-    readonly condition?: unknown;
-    readonly expires_on?: unknown;
-    readonly not_before?: unknown;
-  };
-  if (typeof definition.name !== "string" || !Array.isArray(definition.policies)) {
-    throw new ConnectorError(
-      `cloudflare-api-token: token ${id} came back without a name and policies`,
-    );
-  }
-  const request: Record<string, unknown> = { name: definition.name, policies: definition.policies };
-  if (definition.condition !== undefined) {
-    request["condition"] = definition.condition;
-  }
-  if (typeof definition.expires_on === "string") {
-    request["expires_on"] = definition.expires_on;
-  }
-  if (typeof definition.not_before === "string") {
-    request["not_before"] = definition.not_before;
-  }
-  return request;
+): Effect.Effect<Record<string, unknown>, ConnectorError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const detail = yield* cloudflareCall(admin, "GET", `${tokensPath(rule)}/${id}`);
+    if (detail.status !== 200 || detail.envelope.success === false) {
+      return yield* cloudflareFailure(`reading token ${id}`, detail.status, detail.envelope);
+    }
+    const definition = detail.envelope.result as
+      | {
+          readonly name?: unknown;
+          readonly policies?: unknown;
+          readonly condition?: unknown;
+          readonly expires_on?: unknown;
+          readonly not_before?: unknown;
+        }
+      | undefined;
+    if (
+      definition === undefined ||
+      typeof definition.name !== "string" ||
+      !Array.isArray(definition.policies)
+    ) {
+      return yield* new ConnectorError({
+        message: `cloudflare-api-token: token ${id} came back without a name and policies`,
+      });
+    }
+    const request: Record<string, unknown> = {
+      name: definition.name,
+      policies: definition.policies,
+    };
+    if (definition.condition !== undefined) {
+      request["condition"] = definition.condition;
+    }
+    if (typeof definition.expires_on === "string") {
+      request["expires_on"] = definition.expires_on;
+    }
+    if (typeof definition.not_before === "string") {
+      request["not_before"] = definition.not_before;
+    }
+    return request;
+  });
 }
 
-async function rotateCloudflare(
+function rotateCloudflare(
   rule: Extract<RotateRule, { connector: "cloudflare-api-token" }>,
   current: CredentialValues,
   inputs: RotateInputs,
-  deps: RotateDeps,
-): Promise<ConnectorOutcome> {
-  const token = decoder.decode(current.primary).trim();
-  const admin = adminTokenOf(current, inputs);
-  const id = await cloudflareTokenId(deps, rule, token);
-  if (id === null) {
-    throw new ConnectorError(
-      "cloudflare-api-token: the current value is not a valid token (Cloudflare refused to verify it), so its policies cannot be copied. Create the replacement at the issuer and push it",
-    );
-  }
-  const request = await cloudflareDefinition(deps, rule, admin, id);
-  const created = await cloudflareCall(deps, admin, "POST", tokensPath(rule), request);
-  if (created.status !== 200 || created.envelope.success === false) {
-    throw cloudflareFailure("creating the replacement token", created.status, created.envelope);
-  }
-  const result = created.envelope.result as { readonly id?: unknown; readonly value?: unknown };
-  if (
-    typeof result.id !== "string" ||
-    typeof result.value !== "string" ||
-    result.value.length === 0
-  ) {
-    throw new ConnectorError(
-      "cloudflare-api-token: Cloudflare did not return the new token's value",
-    );
-  }
-  return {
-    values: { primary: encoder.encode(result.value), companions: {} },
-    facts: [
-      `token ${String(request["name"])}: replacement ${result.id} created with the same policies`,
-    ],
-    previous: `token ${id} stays valid until you finalize`,
-    recovery: `token ${result.id} exists at the issuer and its value is held only by this process (it is not shown) — delete it at the issuer, then re-run the rotation (a re-run creates another token)`,
-    warnings: [],
-  };
+): Effect.Effect<ConnectorOutcome, ConnectorError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const token = decoder.decode(current.primary).trim();
+    const admin = adminTokenOf(current, inputs);
+    const id = yield* cloudflareTokenId(rule, token);
+    if (id === null) {
+      return yield* new ConnectorError({
+        message:
+          "cloudflare-api-token: the current value is not a valid token (Cloudflare refused to verify it), so its policies cannot be copied. Create the replacement at the issuer and push it",
+      });
+    }
+    const request = yield* cloudflareDefinition(rule, admin, id);
+    const created = yield* cloudflareCall(admin, "POST", tokensPath(rule), request);
+    if (created.status !== 200 || created.envelope.success === false) {
+      return yield* cloudflareFailure(
+        "creating the replacement token",
+        created.status,
+        created.envelope,
+      );
+    }
+    const result = created.envelope.result as
+      | { readonly id?: unknown; readonly value?: unknown }
+      | undefined;
+    if (
+      result === undefined ||
+      typeof result.id !== "string" ||
+      typeof result.value !== "string" ||
+      result.value.length === 0
+    ) {
+      return yield* new ConnectorError({
+        message: "cloudflare-api-token: Cloudflare did not return the new token's value",
+      });
+    }
+    return {
+      values: { primary: encoder.encode(result.value), companions: {} },
+      facts: [
+        `token ${String(request["name"])}: replacement ${result.id} created with the same policies`,
+      ],
+      previous: `token ${id} stays valid until you finalize`,
+      recovery: `token ${result.id} exists at the issuer and its value is held only by this process (it is not shown) — delete it at the issuer, then re-run the rotation (a re-run creates another token)`,
+      warnings: [],
+    };
+  });
 }
 
-async function finalizeCloudflare(
+function finalizeCloudflare(
   rule: Extract<RotateRule, { connector: "cloudflare-api-token" }>,
   previous: CredentialValues,
   current: CredentialValues,
   inputs: RotateInputs,
-  deps: RotateDeps,
-): Promise<FinalizeOutcome> {
-  const admin = adminTokenOf(current, inputs);
-  const previousToken = decoder.decode(previous.primary).trim();
-  const currentToken = decoder.decode(current.primary).trim();
-  if (previousToken === currentToken) {
-    return { kind: "nothing", facts: ["both versions hold the same token (nothing to delete)"] };
-  }
-  const previousId = await cloudflareTokenId(deps, rule, previousToken);
-  if (previousId === null) {
-    return { kind: "already", facts: ["the previous token is no longer valid"] };
-  }
-  const currentId = await cloudflareTokenId(deps, rule, currentToken);
-  if (currentId === previousId) {
-    return {
-      kind: "nothing",
-      facts: [`token ${previousId} is the one in use (nothing to delete)`],
-    };
-  }
-  const deleted = await cloudflareCall(deps, admin, "DELETE", `${tokensPath(rule)}/${previousId}`);
-  if (deleted.status === 404) {
-    return { kind: "already", facts: [`token ${previousId} no longer exists`] };
-  }
-  if (deleted.status !== 200 || deleted.envelope.success === false) {
-    throw cloudflareFailure(`deleting token ${previousId}`, deleted.status, deleted.envelope);
-  }
-  return { kind: "finalized", facts: [`token ${previousId} deleted`] };
+): Effect.Effect<FinalizeOutcome, ConnectorError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const admin = adminTokenOf(current, inputs);
+    const previousToken = decoder.decode(previous.primary).trim();
+    const currentToken = decoder.decode(current.primary).trim();
+    if (previousToken === currentToken) {
+      return {
+        kind: "nothing" as const,
+        facts: ["both versions hold the same token (nothing to delete)"],
+      };
+    }
+    const previousId = yield* cloudflareTokenId(rule, previousToken);
+    if (previousId === null) {
+      return { kind: "already" as const, facts: ["the previous token is no longer valid"] };
+    }
+    const currentId = yield* cloudflareTokenId(rule, currentToken);
+    if (currentId === previousId) {
+      return {
+        kind: "nothing" as const,
+        facts: [`token ${previousId} is the one in use (nothing to delete)`],
+      };
+    }
+    const deleted = yield* cloudflareCall(admin, "DELETE", `${tokensPath(rule)}/${previousId}`);
+    if (deleted.status === 404) {
+      return { kind: "already" as const, facts: [`token ${previousId} no longer exists`] };
+    }
+    if (deleted.status !== 200 || deleted.envelope.success === false) {
+      return yield* cloudflareFailure(
+        `deleting token ${previousId}`,
+        deleted.status,
+        deleted.envelope,
+      );
+    }
+    return { kind: "finalized" as const, facts: [`token ${previousId} deleted`] };
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1042,54 +1206,66 @@ function scriptEnvironment(input: {
   readonly current: CredentialValues;
   readonly previous: CredentialValues | null;
   readonly inputs: RotateInputs;
-}): Readonly<Record<string, string>> {
-  const env: Record<string, string> = {
-    [`${EXEC_CONTROL_PREFIX}VARIABLE`]: input.site.variable,
-    [`${EXEC_CONTROL_PREFIX}ENVIRONMENT`]: input.site.environmentId,
-    [`${EXEC_CONTROL_PREFIX}PHASE`]: input.phase,
-  };
-  const set = (name: string, bytes: Uint8Array, what: string): void => {
-    const text = decodeValueText(bytes);
-    if (text === null || text.includes("\0")) {
-      throw new ConnectorError(
-        `exec: ${what} is not a UTF-8 text without NUL, so it cannot be set in the script's environment`,
+}): Effect.Effect<Readonly<Record<string, string>>, ConnectorError> {
+  return Effect.gen(function* () {
+    const env: Record<string, string> = {
+      [`${EXEC_CONTROL_PREFIX}VARIABLE`]: input.site.variable,
+      [`${EXEC_CONTROL_PREFIX}ENVIRONMENT`]: input.site.environmentId,
+      [`${EXEC_CONTROL_PREFIX}PHASE`]: input.phase,
+    };
+    const set = (
+      name: string,
+      bytes: Uint8Array,
+      what: string,
+    ): Effect.Effect<void, ConnectorError> => {
+      const text = decodeValueText(bytes);
+      if (text === null || text.includes("\0")) {
+        return new ConnectorError({
+          message: `exec: ${what} is not a UTF-8 text without NUL, so it cannot be set in the script's environment`,
+        });
+      }
+      return Effect.sync(() => {
+        env[name] = text;
+      });
+    };
+    yield* set(
+      input.site.variable,
+      input.current.primary,
+      `the value of ${displayText(input.site.variable)}`,
+    );
+    yield* set(
+      `${EXEC_CONTROL_PREFIX}CURRENT`,
+      input.current.primary,
+      `the value of ${displayText(input.site.variable)}`,
+    );
+    if (input.previous !== null) {
+      yield* set(
+        `${EXEC_CONTROL_PREFIX}PREVIOUS`,
+        input.previous.primary,
+        "the previous credential",
       );
     }
-    env[name] = text;
-  };
-  set(
-    input.site.variable,
-    input.current.primary,
-    `the value of ${displayText(input.site.variable)}`,
-  );
-  set(
-    `${EXEC_CONTROL_PREFIX}CURRENT`,
-    input.current.primary,
-    `the value of ${displayText(input.site.variable)}`,
-  );
-  if (input.previous !== null) {
-    set(`${EXEC_CONTROL_PREFIX}PREVIOUS`, input.previous.primary, "the previous credential");
-  }
-  for (const [envName, variable] of Object.entries(input.rule.companions)) {
-    const bytes = input.current.companions[envName];
-    if (bytes !== undefined) {
-      set(envName, bytes, `the value of ${displayText(variable)}`);
+    for (const [envName, variable] of Object.entries(input.rule.companions)) {
+      const bytes = input.current.companions[envName];
+      if (bytes !== undefined) {
+        yield* set(envName, bytes, `the value of ${displayText(variable)}`);
+      }
+      // The companion the previous credential carried (the key id to
+      // retire), when the finalize knows it (C-7)
+      const previousBytes = input.previous?.companions[envName];
+      if (previousBytes !== undefined) {
+        yield* set(
+          `${EXEC_CONTROL_PREFIX}PREVIOUS_${envName}`,
+          previousBytes,
+          `the previous value of ${displayText(variable)}`,
+        );
+      }
     }
-    // The companion the previous credential carried (the key id to
-    // retire), when the finalize knows it (C-7)
-    const previousBytes = input.previous?.companions[envName];
-    if (previousBytes !== undefined) {
-      set(
-        `${EXEC_CONTROL_PREFIX}PREVIOUS_${envName}`,
-        previousBytes,
-        `the previous value of ${displayText(variable)}`,
-      );
+    for (const [envName, bytes] of Object.entries(input.inputs)) {
+      yield* set(envName, bytes, `the input ${displayText(envName)}`);
     }
-  }
-  for (const [envName, bytes] of Object.entries(input.inputs)) {
-    set(envName, bytes, `the input ${displayText(envName)}`);
-  }
-  return env;
+    return env;
+  });
 }
 
 /** The secrets a script of this rotation could echo (scrubbed out of anything shown). */
@@ -1135,9 +1311,9 @@ function captureFailure(
       phase === "rotate"
         ? ". The new credential may exist at the issuer: re-run the rotation once the script prints only the value (make it idempotent, or retire the unused credential at the issuer by hand)"
         : "";
-    return new ConnectorError(
-      `exec: the ${phase} script ${script} was stopped: ${error.message}${created}`,
-    );
+    return new ConnectorError({
+      message: `exec: the ${phase} script ${script} was stopped: ${error.message}${created}`,
+    });
   }
   if (error instanceof ScriptLeftoverError) {
     // The script's own answer cannot be told from a leftover process's
@@ -1147,34 +1323,36 @@ function captureFailure(
       error.exitCode === 0 && phase === "rotate"
         ? ". The script exited 0, so the new credential may exist at the issuer: re-run the rotation once the script redirects that output (make it idempotent, or retire the unused credential at the issuer by hand)"
         : "";
-    return new ConnectorError(`exec: ${error.message}${created}`);
+    return new ConnectorError({ message: `exec: ${error.message}${created}` });
   }
-  const reason = error instanceof Error ? error.message : "it could not be started";
-  return new ConnectorError(`exec: the ${phase} script ${script} did not start: ${reason}`);
+  const reason = reasonOf(error, "it could not be started");
+  return new ConnectorError({
+    message: `exec: the ${phase} script ${script} did not start: ${reason}`,
+  });
 }
 
 /** Runs one script; a launch failure or a non-zero exit is a connector error naming the script and the scrubbed stderr tail. */
-async function runScript(
-  deps: RotateDeps,
+function runScript(
   rule: ExecRule,
   argv: readonly string[],
   env: Readonly<Record<string, string>>,
   secrets: readonly SyncWrite[],
   phase: "rotate" | "finalize",
-): Promise<CaptureOutcome> {
-  let outcome: CaptureOutcome;
-  try {
-    outcome = await deps.exec({ command: argv, cwd: rule.cwd, extraEnv: env });
-  } catch (error) {
-    throw captureFailure(error, phase, argv[0] ?? "");
-  }
-  if (outcome.exitCode !== 0) {
-    const tail = scrubbedLines(outcome.stderr, secrets, EXEC_SHOWN_LINES);
-    throw new ConnectorError(
-      `exec: the ${phase} script ${argv[0] ?? ""} exited with code ${outcome.exitCode}${tail.length === 0 ? "" : ` (its stderr, filtered: ${tail.join(" | ")})`}`,
-    );
-  }
-  return outcome;
+): Effect.Effect<CaptureOutcome, ConnectorError, ProcessRunner> {
+  return Effect.gen(function* () {
+    const runner = yield* ProcessRunner;
+    const outcome = yield* Effect.tryPromise({
+      try: () => runner.captureScript({ command: argv, cwd: rule.cwd, extraEnv: env }),
+      catch: (error) => captureFailure(error, phase, argv[0] ?? ""),
+    });
+    if (outcome.exitCode !== 0) {
+      const tail = scrubbedLines(outcome.stderr, secrets, EXEC_SHOWN_LINES);
+      return yield* new ConnectorError({
+        message: `exec: the ${phase} script ${argv[0] ?? ""} exited with code ${outcome.exitCode}${tail.length === 0 ? "" : ` (its stderr, filtered: ${tail.join(" | ")})`}`,
+      });
+    }
+    return outcome;
+  });
 }
 
 /**
@@ -1244,7 +1422,7 @@ export function lineCountWarning(
 }
 
 /** The new value as the rotate script printed it: one trailing newline (LF or CRLF) is dropped, nothing else is touched. */
-function valueFromStdout(stdout: Uint8Array): Uint8Array {
+function valueFromStdout(stdout: Uint8Array): Effect.Effect<Uint8Array, ConnectorError> {
   let end = stdout.length;
   if (end > 0 && stdout[end - 1] === 0x0a) {
     end -= 1;
@@ -1254,9 +1432,10 @@ function valueFromStdout(stdout: Uint8Array): Uint8Array {
   }
   const value = stdout.subarray(0, end);
   if (value.length === 0) {
-    throw new ConnectorError(
-      "exec: the rotate script printed no value on stdout (its stdout is the new credential; commentary belongs on stderr)",
-    );
+    return new ConnectorError({
+      message:
+        "exec: the rotate script printed no value on stdout (its stdout is the new credential; commentary belongs on stderr)",
+    });
   }
   return producedText(value, "the value the rotate script printed on stdout");
 }
@@ -1267,7 +1446,9 @@ interface ScriptAnswer {
 }
 
 /** The rotate script's stdout as a JSON object (anything else is refused with the contract spelled out). */
-function jsonObjectFromStdout(stdout: Uint8Array): Record<string, unknown> {
+function jsonObjectFromStdout(
+  stdout: Uint8Array,
+): Effect.Effect<Record<string, unknown>, ConnectorError> {
   const text = decodeValueText(stdout);
   let parsed: unknown;
   try {
@@ -1276,9 +1457,10 @@ function jsonObjectFromStdout(stdout: Uint8Array): Record<string, unknown> {
     parsed = undefined;
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new ConnectorError(
-      'exec: the rotate script did not print a JSON object on stdout (the rule declares "output": "json": print {"value": "<new credential>", "companions": {…}, "facts": […]})',
-    );
+    return new ConnectorError({
+      message:
+        'exec: the rotate script did not print a JSON object on stdout (the rule declares "output": "json": print {"value": "<new credential>", "companions": {…}, "facts": […]})',
+    });
   }
   const record = parsed as Record<string, unknown>;
   const unknown = Object.keys(record).filter(
@@ -1286,21 +1468,25 @@ function jsonObjectFromStdout(stdout: Uint8Array): Record<string, unknown> {
   );
   // The keys are the script's words: counted, never echoed
   if (unknown.length > 0) {
-    throw new ConnectorError(
-      `exec: the rotate script's JSON answer has ${countNoun(unknown.length, "unknown key")}; it takes value, companions, facts`,
-    );
+    return new ConnectorError({
+      message: `exec: the rotate script's JSON answer has ${countNoun(unknown.length, "unknown key")}; it takes value, companions, facts`,
+    });
   }
-  return record;
+  return Effect.succeed(record);
 }
 
 /** One answered companion: declared by the rule and a non-empty string. */
-function companionBytes(rule: ExecRule, name: string, value: unknown): Uint8Array {
+function companionBytes(
+  rule: ExecRule,
+  name: string,
+  value: unknown,
+): Effect.Effect<Uint8Array, ConnectorError> {
   // The script's own words never reach an error message (a mistyped key
   // could be a credential): the message names what the rule declares
   if (!(name in rule.companions)) {
-    throw new ConnectorError(
-      `exec: the rotate script answered a companion the rule does not declare (the rule declares ${declaredCompanions(rule)}); declare it under companions in the rotation config`,
-    );
+    return new ConnectorError({
+      message: `exec: the rotate script answered a companion the rule does not declare (the rule declares ${declaredCompanions(rule)}); declare it under companions in the rotation config`,
+    });
   }
   return producedBytes(value, `the companion ${displayText(name)} in the rotate script's answer`);
 }
@@ -1316,118 +1502,156 @@ function declaredCompanions(rule: ExecRule): string {
  * string of UTF-8 text without NUL — what a value must be to be injected
  * by `maruhi run` later. `what` names the value, never carries it.
  */
-function producedBytes(value: unknown, what: string): Uint8Array {
+function producedBytes(value: unknown, what: string): Effect.Effect<Uint8Array, ConnectorError> {
   if (typeof value !== "string" || value.length === 0) {
-    throw new ConnectorError(`exec: ${what} is not a non-empty string`);
+    return new ConnectorError({ message: `exec: ${what} is not a non-empty string` });
   }
   return producedText(encoder.encode(value), what);
 }
 
 /** The produced bytes checked as UTF-8 text without NUL (a value that could not be injected is refused before it is stored). */
-function producedText(bytes: Uint8Array, what: string): Uint8Array {
+function producedText(bytes: Uint8Array, what: string): Effect.Effect<Uint8Array, ConnectorError> {
   const text = decodeValueText(bytes);
   if (text === null || text.includes("\0")) {
-    throw new ConnectorError(
-      `exec: ${what} is not UTF-8 text without NUL, so it could never be injected into a process environment; it is refused before anything is stored`,
-    );
+    return new ConnectorError({
+      message: `exec: ${what} is not UTF-8 text without NUL, so it could never be injected into a process environment; it is refused before anything is stored`,
+    });
   }
-  return bytes;
+  return Effect.succeed(bytes);
 }
 
 /** The answer's companions: every one the rule declares, nothing it does not, each a non-empty string. */
-function companionsFromAnswer(rule: ExecRule, raw: unknown): Record<string, Uint8Array> {
-  const companionsRaw = raw ?? {};
-  if (typeof companionsRaw !== "object" || companionsRaw === null || Array.isArray(companionsRaw)) {
-    throw new ConnectorError(
-      "exec: the rotate script's JSON answer has a companions field that is not an object",
-    );
-  }
-  const companions: Record<string, Uint8Array> = {};
-  for (const [name, value] of Object.entries(companionsRaw as Record<string, unknown>)) {
-    companions[name] = companionBytes(rule, name, value);
-  }
-  const missing = Object.keys(rule.companions).find((name) => !(name in companions));
-  if (missing !== undefined) {
-    throw new ConnectorError(
-      `exec: the rotate script's answer lacks the companion ${displayText(missing)} the rule declares (every declared companion is pushed with the new value, so all of them must be answered)`,
-    );
-  }
-  return companions;
+function companionsFromAnswer(
+  rule: ExecRule,
+  raw: unknown,
+): Effect.Effect<Record<string, Uint8Array>, ConnectorError> {
+  return Effect.gen(function* () {
+    const companionsRaw = raw ?? {};
+    if (
+      typeof companionsRaw !== "object" ||
+      companionsRaw === null ||
+      Array.isArray(companionsRaw)
+    ) {
+      return yield* new ConnectorError({
+        message:
+          "exec: the rotate script's JSON answer has a companions field that is not an object",
+      });
+    }
+    const companions: Record<string, Uint8Array> = {};
+    for (const [name, value] of Object.entries(companionsRaw as Record<string, unknown>)) {
+      companions[name] = yield* companionBytes(rule, name, value);
+    }
+    const missing = Object.keys(rule.companions).find((name) => !(name in companions));
+    if (missing !== undefined) {
+      return yield* new ConnectorError({
+        message: `exec: the rotate script's answer lacks the companion ${displayText(missing)} the rule declares (every declared companion is pushed with the new value, so all of them must be answered)`,
+      });
+    }
+    return companions;
+  });
 }
 
 /** The rotate script's JSON answer: `{ value, companions?, facts? }`. */
-function answerFromJson(rule: ExecRule, stdout: Uint8Array): ScriptAnswer {
-  const record = jsonObjectFromStdout(stdout);
-  const primary = producedBytes(record["value"], "the value in the rotate script's JSON answer");
-  const companions = companionsFromAnswer(rule, record["companions"]);
-  const factsRaw = record["facts"] ?? [];
-  if (!Array.isArray(factsRaw) || !factsRaw.every((fact) => typeof fact === "string")) {
-    throw new ConnectorError(
-      "exec: the rotate script's JSON answer has a facts field that is not a list of strings",
+function answerFromJson(
+  rule: ExecRule,
+  stdout: Uint8Array,
+): Effect.Effect<ScriptAnswer, ConnectorError> {
+  return Effect.gen(function* () {
+    const record = yield* jsonObjectFromStdout(stdout);
+    const primary = yield* producedBytes(
+      record["value"],
+      "the value in the rotate script's JSON answer",
     );
-  }
-  return { values: { primary, companions }, facts: factsRaw as string[] };
+    const companions = yield* companionsFromAnswer(rule, record["companions"]);
+    const factsRaw = record["facts"] ?? [];
+    if (!Array.isArray(factsRaw) || !factsRaw.every((fact) => typeof fact === "string")) {
+      return yield* new ConnectorError({
+        message:
+          "exec: the rotate script's JSON answer has a facts field that is not a list of strings",
+      });
+    }
+    return { values: { primary, companions }, facts: factsRaw as string[] };
+  });
 }
 
-async function rotateExec(
+function rotateExec(
   rule: ExecRule,
   site: RotationSite,
   current: CredentialValues,
   inputs: RotateInputs,
-  deps: RotateDeps,
-): Promise<ConnectorOutcome> {
-  const env = scriptEnvironment({ rule, site, phase: "rotate", current, previous: null, inputs });
-  const secrets = scriptSecrets({ current, previous: null, inputs });
-  const outcome = await runScript(deps, rule, rule.rotate, env, secrets, "rotate");
-  const answer: ScriptAnswer =
-    rule.output === "json"
-      ? answerFromJson(rule, outcome.stdout)
-      : { values: { primary: valueFromStdout(outcome.stdout), companions: {} }, facts: [] };
-  // The script's own words may carry a credential by mistake: scrub them
-  // of everything this run knows before they reach the report
-  const all = scriptSecrets({ current, previous: null, inputs, produced: answer.values });
-  const facts = answer.facts.flatMap((fact) => scrubbedLines(fact, all, 1));
-  const script = rule.rotate[0] ?? "";
-  return {
-    values: answer.values,
-    facts: [
-      `${script}: new credential produced${facts.length === 0 ? "" : ` (${facts.join("; ")})`}`,
-    ],
-    previous:
-      rule.finalize === null
-        ? "the rotate script was expected to retire the previous credential itself (nothing to finalize)"
-        : `the previous credential stays valid until you finalize (${rule.finalize[0] ?? ""} runs with it)`,
-    recovery: `the new credential is held only by this process (it is not shown) — re-run the rotation (${script} runs again; make it idempotent, or retire the unused credential at the issuer by hand)`,
-    warnings: [],
-  };
+): Effect.Effect<ConnectorOutcome, ConnectorError, ProcessRunner> {
+  return Effect.gen(function* () {
+    const env = yield* scriptEnvironment({
+      rule,
+      site,
+      phase: "rotate",
+      current,
+      previous: null,
+      inputs,
+    });
+    const secrets = scriptSecrets({ current, previous: null, inputs });
+    const outcome = yield* runScript(rule, rule.rotate, env, secrets, "rotate");
+    const answer: ScriptAnswer =
+      rule.output === "json"
+        ? yield* answerFromJson(rule, outcome.stdout)
+        : {
+            values: { primary: yield* valueFromStdout(outcome.stdout), companions: {} },
+            facts: [],
+          };
+    // The script's own words may carry a credential by mistake: scrub them
+    // of everything this run knows before they reach the report
+    const all = scriptSecrets({ current, previous: null, inputs, produced: answer.values });
+    const facts = answer.facts.flatMap((fact) => scrubbedLines(fact, all, 1));
+    const script = rule.rotate[0] ?? "";
+    return {
+      values: answer.values,
+      facts: [
+        `${script}: new credential produced${facts.length === 0 ? "" : ` (${facts.join("; ")})`}`,
+      ],
+      previous:
+        rule.finalize === null
+          ? "the rotate script was expected to retire the previous credential itself (nothing to finalize)"
+          : `the previous credential stays valid until you finalize (${rule.finalize[0] ?? ""} runs with it)`,
+      recovery: `the new credential is held only by this process (it is not shown) — re-run the rotation (${script} runs again; make it idempotent, or retire the unused credential at the issuer by hand)`,
+      warnings: [],
+    };
+  });
 }
 
-async function finalizeExec(
+function finalizeExec(
   rule: ExecRule,
   site: RotationSite,
   previous: CredentialValues,
   current: CredentialValues,
   inputs: RotateInputs,
-  deps: RotateDeps,
-): Promise<FinalizeOutcome> {
-  if (rule.finalize === null) {
+): Effect.Effect<FinalizeOutcome, ConnectorError, ProcessRunner> {
+  return Effect.gen(function* () {
+    if (rule.finalize === null) {
+      return {
+        kind: "nothing" as const,
+        facts: [
+          "the rule has no finalize script (its rotate script retires the previous credential itself)",
+        ],
+      };
+    }
+    const env = yield* scriptEnvironment({
+      rule,
+      site,
+      phase: "finalize",
+      current,
+      previous,
+      inputs,
+    });
+    const secrets = scriptSecrets({ current, previous, inputs });
+    const outcome = yield* runScript(rule, rule.finalize, env, secrets, "finalize");
+    const said = scrubbedLines(decoder.decode(outcome.stdout), secrets, EXEC_FACT_LINES);
     return {
-      kind: "nothing",
+      kind: "finalized" as const,
       facts: [
-        "the rule has no finalize script (its rotate script retires the previous credential itself)",
+        `${rule.finalize[0] ?? ""}: previous credential retired${said.length === 0 ? "" : ` (${said.join("; ")})`}`,
       ],
     };
-  }
-  const env = scriptEnvironment({ rule, site, phase: "finalize", current, previous, inputs });
-  const secrets = scriptSecrets({ current, previous, inputs });
-  const outcome = await runScript(deps, rule, rule.finalize, env, secrets, "finalize");
-  const said = scrubbedLines(decoder.decode(outcome.stdout), secrets, EXEC_FACT_LINES);
-  return {
-    kind: "finalized",
-    facts: [
-      `${rule.finalize[0] ?? ""}: previous credential retired${said.length === 0 ? "" : ` (${said.join("; ")})`}`,
-    ],
-  };
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1440,53 +1664,56 @@ export function companionsOf(rule: RotateRule): Readonly<Record<string, string>>
 }
 
 /** What the rotation will do at the issuer (decided from the current value alone — nothing is sent). */
-export function planRotation(rule: RotateRule, current: CredentialValues): RotationPlan {
+export function planRotation(
+  rule: RotateRule,
+  current: CredentialValues,
+): Effect.Effect<RotationPlan, ConnectorError> {
   switch (rule.connector) {
     case "postgres":
     case "mysql":
       return dbPlan(rule, current);
     case "aws-iam-access-key":
-      return {
-        description: `create a second access key for the IAM user (the current key ${currentKeyId(current)} stays active until you finalize)`,
+      return Effect.map(currentKeyId(current), (keyId) => ({
+        description: `create a second access key for the IAM user (the current key ${keyId} stays active until you finalize)`,
         immediate: false,
-      };
+      }));
     case "cloudflare-api-token":
-      return {
+      return Effect.succeed({
         description:
           "create a second token with the current token's policies (the current token stays valid until you finalize)",
         immediate: false,
-      };
+      });
     case "exec":
-      return rule.finalize === null
-        ? {
-            description: `run ${rule.rotate[0] ?? ""} — the rule has no finalize script, so that script is expected to retire the current credential itself (no grace period)`,
-            immediate: true,
-          }
-        : {
-            description: `run ${rule.rotate[0] ?? ""} to create the new credential (the current one stays valid until you finalize with ${rule.finalize[0] ?? ""})`,
-            immediate: false,
-          };
+      return Effect.succeed(
+        rule.finalize === null
+          ? {
+              description: `run ${rule.rotate[0] ?? ""} — the rule has no finalize script, so that script is expected to retire the current credential itself (no grace period)`,
+              immediate: true,
+            }
+          : {
+              description: `run ${rule.rotate[0] ?? ""} to create the new credential (the current one stays valid until you finalize with ${rule.finalize[0] ?? ""})`,
+              immediate: false,
+            },
+      );
   }
 }
 
-/** Creates the new credential at the issuer. Rejects with {@link ConnectorError}. */
-export async function rotateCredential(
+/** Creates the new credential at the issuer. Fails with {@link ConnectorError}. */
+export function rotateCredential(
   rule: RotateRule,
   current: CredentialValues,
   inputs: RotateInputs,
-  deps: RotateDeps,
   /** Where the rotation happens (the `exec` connector's scripts receive it; required for that connector). */
   site?: RotationSite,
-): Promise<RotationOutcome> {
-  const outcome = await rotateWith(rule, current, inputs, deps, site);
-  return {
+): Effect.Effect<RotationOutcome, ConnectorError, ConnectorServices> {
+  return Effect.map(rotateWith(rule, current, inputs, site), (outcome) => ({
     ...outcome,
     shape: shapeOf(outcome.values.primary),
     companionShapes: Object.fromEntries(
       Object.entries(outcome.values.companions).map(([name, bytes]) => [name, shapeOf(bytes)]),
     ),
     currentShape: shapeOf(current.primary),
-  };
+  }));
 }
 
 /** A connector's own outcome (the frame adds the values' shapes). */
@@ -1496,20 +1723,21 @@ function rotateWith(
   rule: RotateRule,
   current: CredentialValues,
   inputs: RotateInputs,
-  deps: RotateDeps,
   site?: RotationSite,
-): Promise<ConnectorOutcome> {
+): Effect.Effect<ConnectorOutcome, ConnectorError, ConnectorServices> {
   switch (rule.connector) {
     case "postgres":
-      return rotatePostgres(rule, current, inputs, deps);
+      return rotatePostgres(rule, current, inputs);
     case "mysql":
-      return rotateMysql(rule, current, inputs, deps);
+      return rotateMysql(rule, current, inputs);
     case "aws-iam-access-key":
-      return rotateAwsIam(rule, current, inputs, deps);
+      return rotateAwsIam(rule, current, inputs);
     case "cloudflare-api-token":
-      return rotateCloudflare(rule, current, inputs, deps);
+      return rotateCloudflare(rule, current, inputs);
     case "exec":
-      return rotateExec(rule, requireSite(site), current, inputs, deps);
+      return requireSite(site).pipe(
+        Effect.flatMap((resolved) => rotateExec(rule, resolved, current, inputs)),
+      );
   }
 }
 
@@ -1535,35 +1763,37 @@ export function describeFinalize(rule: RotateRule): string {
   }
 }
 
-/** Invalidates the previous credential at the issuer. Rejects with {@link ConnectorError}. */
-export async function finalizeCredential(
+/** Invalidates the previous credential at the issuer. Fails with {@link ConnectorError}. */
+export function finalizeCredential(
   rule: RotateRule,
   previous: CredentialValues,
   current: CredentialValues,
   inputs: RotateInputs,
-  deps: RotateDeps,
   ancestors: CompanionAncestors = {},
   /** Where the rotation happens (required for the `exec` connector). */
   site?: RotationSite,
-): Promise<FinalizeOutcome> {
+): Effect.Effect<FinalizeOutcome, ConnectorError, ConnectorServices> {
   switch (rule.connector) {
     case "postgres":
-      return finalizePostgres(rule, previous, current, inputs, deps);
+      return finalizePostgres(rule, previous, current, inputs);
     case "mysql":
-      return finalizeMysql(rule, previous, current, inputs, deps);
+      return finalizeMysql(rule, previous, current, inputs);
     case "aws-iam-access-key":
-      return finalizeAwsIam(rule, previous, current, inputs, deps, ancestors);
+      return finalizeAwsIam(rule, previous, current, inputs, ancestors);
     case "cloudflare-api-token":
-      return finalizeCloudflare(rule, previous, current, inputs, deps);
+      return finalizeCloudflare(rule, previous, current, inputs);
     case "exec":
-      return finalizeExec(rule, requireSite(site), previous, current, inputs, deps);
+      return requireSite(site).pipe(
+        Effect.flatMap((resolved) => finalizeExec(rule, resolved, previous, current, inputs)),
+      );
   }
 }
 
 /** The exec connector cannot run without knowing the variable and environment (an internal inconsistency, never a user error). */
-function requireSite(site: RotationSite | undefined): RotationSite {
-  if (site === undefined) {
-    throw new ConnectorError("exec: the rotation site (variable and environment) was not supplied");
-  }
-  return site;
+function requireSite(site: RotationSite | undefined): Effect.Effect<RotationSite, ConnectorError> {
+  return site === undefined
+    ? new ConnectorError({
+        message: "exec: the rotation site (variable and environment) was not supplied",
+      })
+    : Effect.succeed(site);
 }

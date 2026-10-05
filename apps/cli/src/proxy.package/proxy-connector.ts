@@ -23,6 +23,9 @@
 // Error wording carries the connector, the variable name, the HTTP
 // status, and GitHub's `message` field — never an input or the token.
 
+import { type Clock, Data, Effect, Schema } from "effect";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+
 import { pemBody, pkcs1ToPkcs8 } from "../der.ts";
 import { CLI_VERSION } from "../version.ts";
 import type { ConnectorKind } from "./proxy-config.ts";
@@ -37,10 +40,16 @@ interface Minted {
 /** The decrypted inputs a connector consumes (input name → bytes). */
 export type ConnectorInputs = Readonly<Record<string, Uint8Array>>;
 
-/** The seams a connector uses (tests redirect the API base). */
+/**
+ * The service implementations a connector is bound to for a run
+ * (production: the ambient `HttpClient` and `Clock`, resolved in
+ * proxy-run.ts; the proxy seams substitute them in tests).
+ */
 export interface ConnectorDeps {
-  readonly fetch: typeof fetch;
-  readonly now: () => number;
+  /** The HTTP client the connector calls the API through. */
+  readonly client: HttpClient.HttpClient;
+  /** The clock the JWT timestamps and the refresh margin are read from. */
+  readonly clock: Clock.Clock;
   /** The API origin (production: the connector's fixed host). */
   readonly apiBase?: string | undefined;
 }
@@ -49,6 +58,16 @@ export interface ConnectorDeps {
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
 const decoder = new TextDecoder();
+
+/** A connector failure; `resolve` / `release` rephrase it as `connector <kind> for <name>: <reason>`. */
+class ConnectorError extends Data.TaggedError("ConnectorError")<{
+  readonly message: string;
+}> {}
+
+/** An unknown thrown value's message (a transport failure — the reason, never a credential). */
+function reasonOf(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
 
 /* -------------------------------------------------------------------------- */
 /* github-app                                                                   */
@@ -59,6 +78,19 @@ const GITHUB_API = "https://api.github.com";
 const JWT_BACKDATE_S = 60;
 const JWT_LIFETIME_S = 9 * 60;
 
+/**
+ * GitHub's `access_tokens` response — only `token` / `expires_at` /
+ * `message` are read. A body that is not a JSON object decodes to an empty
+ * record (the caller then reports "no message" / "carried no token" — the
+ * same wording as before the decode was schema-checked).
+ */
+const TokenResponse = Schema.Struct({
+  token: Schema.optionalKey(Schema.String),
+  expires_at: Schema.optionalKey(Schema.String),
+  message: Schema.optionalKey(Schema.String),
+});
+type TokenResponse = typeof TokenResponse.Type;
+
 function base64Url(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) {
@@ -68,29 +100,37 @@ function base64Url(bytes: Uint8Array): string {
 }
 
 /** The App key as a WebCrypto signing key (PKCS#1 or PKCS#8 PEM). */
-async function importAppKey(pemText: string): Promise<CryptoKey> {
+function importAppKey(pemText: string): Effect.Effect<CryptoKey, ConnectorError> {
   const pkcs1 = pemBody(pemText, "RSA PRIVATE KEY");
   const pkcs8 = pkcs1 === null ? pemBody(pemText, "PRIVATE KEY") : pkcs1ToPkcs8(pkcs1);
   if (pkcs8 === null) {
-    throw new Error(
-      "the private key is not a PEM RSA key (expected a `-----BEGIN RSA PRIVATE KEY-----` or `-----BEGIN PRIVATE KEY-----` block, as downloaded from the GitHub App's settings)",
-    );
+    return new ConnectorError({
+      message:
+        "the private key is not a PEM RSA key (expected a `-----BEGIN RSA PRIVATE KEY-----` or `-----BEGIN PRIVATE KEY-----` block, as downloaded from the GitHub App's settings)",
+    });
   }
-  try {
-    return await crypto.subtle.importKey(
-      "pkcs8",
-      pkcs8,
-      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-      false,
-      ["sign"],
-    );
-  } catch {
-    throw new Error("the private key could not be imported as an RSA signing key");
-  }
+  return Effect.tryPromise({
+    try: () =>
+      crypto.subtle.importKey(
+        "pkcs8",
+        pkcs8,
+        { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+        false,
+        ["sign"],
+      ),
+    catch: () =>
+      new ConnectorError({
+        message: "the private key could not be imported as an RSA signing key",
+      }),
+  });
 }
 
 /** A signed App JWT (RS256), per GitHub's authentication docs. */
-async function appJwt(key: CryptoKey, appId: string, nowMs: number): Promise<string> {
+function appJwt(
+  key: CryptoKey,
+  appId: string,
+  nowMs: number,
+): Effect.Effect<string, ConnectorError> {
   const now = Math.floor(nowMs / 1000);
   const encoder = new TextEncoder();
   const header = base64Url(encoder.encode(JSON.stringify({ alg: "RS256", typ: "JWT" })));
@@ -100,77 +140,97 @@ async function appJwt(key: CryptoKey, appId: string, nowMs: number): Promise<str
     ),
   );
   const signingInput = `${header}.${payload}`;
-  const signature = new Uint8Array(
-    await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, encoder.encode(signingInput)),
+  return Effect.map(
+    Effect.tryPromise({
+      try: () => crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, encoder.encode(signingInput)),
+      catch: (error) =>
+        new ConnectorError({
+          message: `the App key could not sign the JWT (${reasonOf(error, "signing failed")})`,
+        }),
+    }),
+    (signature) => `${signingInput}.${base64Url(new Uint8Array(signature))}`,
   );
-  return `${signingInput}.${base64Url(signature)}`;
 }
 
 /** A trimmed single-line input (IDs); rejects anything but a short token of printable ASCII. */
-function textInput(inputs: ConnectorInputs, name: string): string {
+function textInput(inputs: ConnectorInputs, name: string): Effect.Effect<string, ConnectorError> {
   const bytes = inputs[name];
   if (bytes === undefined) {
-    throw new Error(`input ${name} is missing`);
+    return new ConnectorError({ message: `input ${name} is missing` });
   }
   const text = decoder.decode(bytes).trim();
   if (!/^[\x21-\x7E]{1,128}$/.test(text)) {
-    throw new Error(`input ${name} is not a single-line identifier`);
+    return new ConnectorError({ message: `input ${name} is not a single-line identifier` });
   }
-  return text;
+  return Effect.succeed(text);
 }
 
 /** GitHub's `access_tokens` response → the minted token (the status and `message` on refusal). */
-/** The response body as a JSON object (an empty object when it is not one). */
-function jsonObjectOf(text: string): Record<string, unknown> {
-  try {
-    const body: unknown = JSON.parse(text);
-    return typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
-}
-
-function parseTokenResponse(status: number, text: string): Minted {
-  const record = jsonObjectOf(text);
+function parseTokenResponse(
+  status: number,
+  record: TokenResponse,
+): Effect.Effect<Minted, ConnectorError> {
   if (status !== 201) {
-    const message = typeof record["message"] === "string" ? record["message"] : "no message";
-    throw new Error(`GitHub answered ${status} (${message})`);
+    return new ConnectorError({
+      message: `GitHub answered ${status} (${record.message ?? "no message"})`,
+    });
   }
-  const token = record["token"];
+  const token = record.token;
   if (typeof token !== "string" || token.length === 0) {
-    throw new Error("GitHub's response carried no token");
+    return new ConnectorError({ message: "GitHub's response carried no token" });
   }
   const expiresAt =
-    typeof record["expires_at"] === "string" ? Date.parse(record["expires_at"]) : Number.NaN;
-  return {
+    typeof record.expires_at === "string" ? Date.parse(record.expires_at) : Number.NaN;
+  return Effect.succeed({
     value: new TextEncoder().encode(token),
     expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
-  };
+  });
 }
 
-async function mintGithubApp(inputs: ConnectorInputs, deps: ConnectorDeps): Promise<Minted> {
-  const appId = textInput(inputs, "appId");
-  const installationId = textInput(inputs, "installationId");
-  if (!/^\d+$/.test(installationId)) {
-    throw new Error("input installationId must be the numeric installation ID");
-  }
-  const keyBytes = inputs["privateKey"];
-  if (keyBytes === undefined) {
-    throw new Error("input privateKey is missing");
-  }
-  const key = await importAppKey(decoder.decode(keyBytes));
-  const jwt = await appJwt(key, appId, deps.now());
-  const base = deps.apiBase ?? GITHUB_API;
-  const response = await deps.fetch(`${base}/app/installations/${installationId}/access_tokens`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${jwt}`,
-      accept: "application/vnd.github+json",
-      "x-github-api-version": "2022-11-28",
-      "user-agent": `maruhi-cli/${CLI_VERSION}`,
-    },
+function mintGithubApp(
+  inputs: ConnectorInputs,
+  deps: ConnectorDeps,
+): Effect.Effect<Minted, ConnectorError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const appId = yield* textInput(inputs, "appId");
+    const installationId = yield* textInput(inputs, "installationId");
+    if (!/^\d+$/.test(installationId)) {
+      return yield* new ConnectorError({
+        message: "input installationId must be the numeric installation ID",
+      });
+    }
+    const keyBytes = inputs["privateKey"];
+    if (keyBytes === undefined) {
+      return yield* new ConnectorError({ message: "input privateKey is missing" });
+    }
+    const key = yield* importAppKey(decoder.decode(keyBytes));
+    const jwt = yield* appJwt(key, appId, deps.clock.currentTimeMillisUnsafe());
+    const base = deps.apiBase ?? GITHUB_API;
+    const client = yield* HttpClient.HttpClient;
+    const response = yield* client
+      .execute(
+        HttpClientRequest.post(`${base}/app/installations/${installationId}/access_tokens`).pipe(
+          HttpClientRequest.setHeaders({
+            authorization: `Bearer ${jwt}`,
+            accept: "application/vnd.github+json",
+            "x-github-api-version": "2022-11-28",
+            "user-agent": `maruhi-cli/${CLI_VERSION}`,
+          }),
+        ),
+      )
+      .pipe(
+        Effect.mapError(
+          (error) => new ConnectorError({ message: reasonOf(error, "request failed") }),
+        ),
+      );
+    const record = yield* response.pipe(HttpClientResponse.schemaBodyJson(TokenResponse)).pipe(
+      Effect.catchTag("SchemaError", () => Effect.succeed<TokenResponse>({})),
+      Effect.mapError(
+        (error) => new ConnectorError({ message: reasonOf(error, "request failed") }),
+      ),
+    );
+    return yield* parseTokenResponse(response.status, record);
   });
-  return parseTokenResponse(response.status, await response.text());
 }
 
 /**
@@ -179,32 +239,62 @@ async function mintGithubApp(inputs: ConnectorInputs, deps: ConnectorDeps): Prom
  * run's, not GitHub's hour (pf4-design.md §19 D-14a). A refusal (already
  * expired, network) is reported by the caller as a Note.
  */
-async function revokeGithubApp(token: Uint8Array, deps: ConnectorDeps): Promise<void> {
-  const base = deps.apiBase ?? GITHUB_API;
-  const response = await deps.fetch(`${base}/installation/token`, {
-    method: "DELETE",
-    headers: {
-      // Reason for unwrapping: the token authenticates its own revocation (GitHub's API shape)
-      authorization: `token ${decoder.decode(token)}`,
-      accept: "application/vnd.github+json",
-      "x-github-api-version": "2022-11-28",
-      "user-agent": `maruhi-cli/${CLI_VERSION}`,
-    },
+function revokeGithubApp(
+  token: Uint8Array,
+  deps: ConnectorDeps,
+): Effect.Effect<void, ConnectorError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    const base = deps.apiBase ?? GITHUB_API;
+    const client = yield* HttpClient.HttpClient;
+    const response = yield* client
+      .execute(
+        HttpClientRequest.delete(`${base}/installation/token`).pipe(
+          HttpClientRequest.setHeaders({
+            authorization: `token ${decoder.decode(token)}`,
+            accept: "application/vnd.github+json",
+            "x-github-api-version": "2022-11-28",
+            "user-agent": `maruhi-cli/${CLI_VERSION}`,
+          }),
+        ),
+      )
+      .pipe(
+        Effect.mapError(
+          (error) => new ConnectorError({ message: reasonOf(error, "request failed") }),
+        ),
+      );
+    // 204 = revoked; 401 = already invalid (expired or revoked) — nothing left to do
+    if (response.status !== 204 && response.status !== 401) {
+      return yield* new ConnectorError({
+        message: `GitHub answered ${response.status} to the revocation`,
+      });
+    }
   });
-  // 204 = revoked; 401 = already invalid (expired or revoked) — nothing left to do
-  if (response.status !== 204 && response.status !== 401) {
-    throw new Error(`GitHub answered ${response.status} to the revocation`);
-  }
 }
 
 interface ConnectorImpl {
-  readonly mint: (inputs: ConnectorInputs, deps: ConnectorDeps) => Promise<Minted>;
-  readonly revoke: (value: Uint8Array, deps: ConnectorDeps) => Promise<void>;
+  readonly mint: (
+    inputs: ConnectorInputs,
+    deps: ConnectorDeps,
+  ) => Effect.Effect<Minted, ConnectorError, HttpClient.HttpClient>;
+  readonly revoke: (
+    value: Uint8Array,
+    deps: ConnectorDeps,
+  ) => Effect.Effect<void, ConnectorError, HttpClient.HttpClient>;
 }
 
 const CONNECTORS: Readonly<Record<ConnectorKind, ConnectorImpl>> = {
   "github-app": { mint: mintGithubApp, revoke: revokeGithubApp },
 };
+
+/** Runs a connector step to a promise at the credential's Promise boundary (`resolve` / `release` are the proxy's API). */
+function runConnector<A>(input: {
+  readonly effect: Effect.Effect<A, ConnectorError, HttpClient.HttpClient>;
+  readonly deps: ConnectorDeps;
+}): Promise<A> {
+  return Effect.runPromise(
+    input.effect.pipe(Effect.provideService(HttpClient.HttpClient, input.deps.client)),
+  );
+}
 
 /**
  * A brokered credential backed by a connector: `resolve` mints on first
@@ -245,20 +335,22 @@ export function makeConnectorCredential(input: {
       // token left alive would outlive the run — review finding §21 R-3)
       const failures: string[] = [];
       for (const minted of held) {
-        await revoke(minted.value, input.deps).catch((error: unknown) => {
-          failures.push(error instanceof Error ? error.message : "revocation failed");
-        });
+        await runConnector({ effect: revoke(minted.value, input.deps), deps: input.deps }).catch(
+          (error: unknown) => {
+            failures.push(error instanceof Error ? error.message : "revocation failed");
+          },
+        );
       }
       if (failures.length > 0) {
         throw new Error(failures.join("; "));
       }
     },
     resolve: () => {
-      if (cached !== null && fresh(input.deps.now())) {
+      if (cached !== null && fresh(input.deps.clock.currentTimeMillisUnsafe())) {
         return Promise.resolve(cached.value);
       }
       if (inFlight === null) {
-        inFlight = mint(input.inputs, input.deps)
+        inFlight = runConnector({ effect: mint(input.inputs, input.deps), deps: input.deps })
           .then((minted) => {
             previous = cached;
             cached = minted;

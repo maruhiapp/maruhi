@@ -37,7 +37,8 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import tls from "node:tls";
 
-import { Context, Effect, Redacted, type Stdio } from "effect";
+import { Clock, Context, Effect, Redacted, type Stdio } from "effect";
+import { HttpClient } from "effect/http";
 
 import { privateRuntimeDir } from "../agent.ts";
 import { displayText } from "../display.ts";
@@ -563,14 +564,14 @@ function releaseAndClose(
 /** `maruhi proxy run`: broker the environment's values to one command. Returns the child's exit code. */
 export function proxyRunOp(
   input: ProxyRunInput,
-): Effect.Effect<number, CliError, CliIo | ProcessRunner | Stdio.Stdio> {
+): Effect.Effect<number, CliError, CliIo | ProcessRunner | Stdio.Stdio | HttpClient.HttpClient> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const runner = yield* ProcessRunner;
     const seams = yield* ProxySeams;
     const connectorDeps: ConnectorDeps = {
-      fetch: globalThis.fetch,
-      now: Date.now,
+      client: yield* HttpClient.HttpClient,
+      clock: yield* Clock.Clock,
       ...seams?.connector,
     };
     const plan = yield* planFor({
