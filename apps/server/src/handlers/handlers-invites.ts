@@ -113,9 +113,9 @@ const fingerprintOf = (encPubHex: string, sigPubHex: string): Effect.Effect<stri
     }
     // A wrapped crypto failure here stays a defect, like the throw the
     // pre-bridge code raised on a failed fingerprint computation
-    const fingerprint = yield* cryptoEffect(() =>
-      computeUserKeyFingerprint(encPub, sigPub),
-    ).pipe(Effect.orDie);
+    const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(encPub, sigPub)).pipe(
+      Effect.orDie,
+    );
     return encodeHex(fingerprint);
   });
 

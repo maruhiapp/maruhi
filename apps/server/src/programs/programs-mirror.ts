@@ -234,9 +234,7 @@ function verifyStagedChain(sql: SqlStorage): Effect.Effect<void, MirrorPageRefus
       }
       entries.push(entry);
     }
-    yield* cryptoEffect(() => verifyChainWithHistory(entries)).pipe(
-      Effect.mapError(() => invalid),
-    );
+    yield* cryptoEffect(() => verifyChainWithHistory(entries)).pipe(Effect.mapError(() => invalid));
   });
 }
 

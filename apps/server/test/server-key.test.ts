@@ -63,10 +63,9 @@ describe("makeServerKey's derivation cache", () => {
     // sign count directly counts derivations
     const signSpy = vi.spyOn(crypto.subtle, "sign");
     const [a, b, resealed, d] = await Effect.runPromise(
-      Effect.all(
-        [key.info, key.info, key.reseal(resealInput([])), key.info],
-        { concurrency: "unbounded" },
-      ),
+      Effect.all([key.info, key.info, key.reseal(resealInput([])), key.info], {
+        concurrency: "unbounded",
+      }),
     );
     const [c] = await Effect.runPromise(
       Effect.all([key.info, key.info], { concurrency: "unbounded" }),

@@ -146,10 +146,10 @@ const precheckAndComputeProjectId = (entry: ChainEntry) =>
         new ChainEntryTooLargeError({ limitBytes: MAX_ENTRY_CANONICAL_BYTES }),
       );
     }
-    return yield* cryptoPromise("computeChainEntryHash", () =>
-      computeChainEntryHash(entry),
-    ).pipe(
-      Effect.mapError(() => new ChainEntryInvalidError({ seq: entry.seq, reason: "invalid-payload" })),
+    return yield* cryptoPromise("computeChainEntryHash", () => computeChainEntryHash(entry)).pipe(
+      Effect.mapError(
+        () => new ChainEntryInvalidError({ seq: entry.seq, reason: "invalid-payload" }),
+      ),
     );
   });
 
