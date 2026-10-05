@@ -11,7 +11,14 @@
 // - Tests stub GitHub via miniflare's outboundService (real network is
 //   forbidden). No stub branch exists in production code
 
-import { Context, Data, Effect } from "effect";
+import { type Cause, Context, Data, Duration, Effect, Schema } from "effect";
+import {
+  type HttpClientError,
+  FetchHttpClient,
+  HttpClient,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/http";
 
 import type { VerifiedIdentity } from "../auth-domain.ts";
 
@@ -19,6 +26,13 @@ const OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token";
 const API_BASE = "https://api.github.com";
 const API_USER_URL = `${API_BASE}/user`;
 const API_EMAILS_URL = `${API_BASE}/user/emails`;
+
+/**
+ * Timeout of one outbound GitHub call. Same bound as the OIDC issuer fetch
+ * (oidc.package/jwks.ts's FETCH_TIMEOUT_MS): an auth-path request must not
+ * hang on a peer that accepts the connection and never answers.
+ */
+const REQUEST_TIMEOUT = Duration.seconds(5);
 
 /** Failure of the GitHub authentication dance (reason code only; token values and external IDs are not carried). */
 class GitHubAuthError extends Data.TaggedError("GitHubAuth")<{
@@ -42,57 +56,81 @@ export interface GitHubApiShape {
 
 export class GitHubApi extends Context.Service<GitHubApi, GitHubApiShape>()("GitHubApi") {}
 
-interface TokenResponse {
-  readonly access_token?: string;
-}
+/**
+ * GitHub's token-endpoint answer (§3-2). A 200 carries either a token or an
+ * OAuth error body — an absent access_token is a failed exchange, not a
+ * malformed answer.
+ */
+const TokenResponseSchema = Schema.Struct({
+  access_token: Schema.optionalKey(Schema.String),
+});
 
-interface UserResponse {
-  readonly id?: number;
-  readonly login?: string;
-}
+/** GitHub's `GET /user` answer: the integer id is the identifier; the login is a display snapshot only. */
+const UserResponseSchema = Schema.Struct({
+  id: Schema.optionalKey(Schema.Int),
+  login: Schema.optionalKey(Schema.String),
+});
+type UserResponse = typeof UserResponseSchema.Type;
 
-interface EmailEntry {
-  readonly email?: string;
-  readonly primary?: boolean;
-  readonly verified?: boolean;
-}
+/** One entry of GitHub's `GET /user/emails` answer (only the fields the §3-3 filter reads). */
+const EmailEntrySchema = Schema.Struct({
+  email: Schema.optionalKey(Schema.String),
+  primary: Schema.optionalKey(Schema.Boolean),
+  verified: Schema.optionalKey(Schema.Boolean),
+});
+const EmailListSchema = Schema.Array(EmailEntrySchema);
+type EmailEntry = typeof EmailEntrySchema.Type;
 
 // Always attached since both github.com / api.github.com may require a UA
 const COMMON_HEADERS = { accept: "application/json", "user-agent": "maruhi" };
 const GITHUB_API_HEADERS = { accept: "application/vnd.github+json", "user-agent": "maruhi" };
 
-async function exchangeCodeRequest(
+/** The failure channel of one outbound GitHub call (folded into GitHubAuthError at the operation boundary). */
+type CallError = HttpClientError.HttpClientError | Schema.SchemaError | Cause.TimeoutError;
+
+/**
+ * One outbound GitHub call: fetch, gate on a 2xx status, schema-decode the
+ * JSON body — all inside REQUEST_TIMEOUT. `null` means GitHub answered with
+ * a non-ok status (each caller decides its meaning); transport errors,
+ * timeouts, and unexpected body shapes stay in the error channel.
+ */
+function fetchJson<S extends Schema.Constraint>(
+  request: HttpClientRequest.HttpClientRequest,
+  schema: S,
+): Effect.Effect<S["Type"] | null, CallError, HttpClient.HttpClient | S["DecodingServices"]> {
+  return Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const response = yield* client.execute(request);
+    if (response.status < 200 || response.status >= 300) {
+      return null;
+    }
+    return yield* response.pipe(HttpClientResponse.schemaBodyJson(schema));
+  }).pipe(Effect.timeout(REQUEST_TIMEOUT));
+}
+
+/** RFC 6749 §4.1.3: the token endpoint body is application/x-www-form-urlencoded. */
+function exchangeCodeRequest(
   clientId: string,
   clientSecret: string,
   code: string,
   redirectUri: string,
-): Promise<string | null> {
-  // RFC 6749 §4.1.3: the token endpoint body is application/x-www-form-urlencoded
-  const response = await fetch(OAUTH_TOKEN_URL, {
-    method: "POST",
-    headers: { ...COMMON_HEADERS, "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
+): HttpClientRequest.HttpClientRequest {
+  return HttpClientRequest.post(OAUTH_TOKEN_URL).pipe(
+    HttpClientRequest.setHeaders(COMMON_HEADERS),
+    HttpClientRequest.bodyUrlParams({
       client_id: clientId,
       client_secret: clientSecret,
       code,
       redirect_uri: redirectUri,
     }),
-  });
-  if (!response.ok) {
-    return null;
-  }
-  const body = (await response.json()) as TokenResponse;
-  return typeof body.access_token === "string" ? body.access_token : null;
+  );
 }
 
-async function fetchUserRequest(accessToken: string): Promise<UserResponse | null> {
-  const response = await fetch(API_USER_URL, {
-    headers: { ...GITHUB_API_HEADERS, authorization: `Bearer ${accessToken}` },
-  });
-  if (!response.ok) {
-    return null;
-  }
-  return (await response.json()) as UserResponse;
+function apiRequest(url: string, accessToken: string): HttpClientRequest.HttpClientRequest {
+  return HttpClientRequest.get(url).pipe(
+    HttpClientRequest.setHeaders(GITHUB_API_HEADERS),
+    HttpClientRequest.bearerToken(accessToken),
+  );
 }
 
 function isVerifiedPrimary(entry: EmailEntry): boolean {
@@ -105,41 +143,50 @@ function pickVerifiedPrimaryEmail(entries: readonly EmailEntry[]): string | null
 }
 
 /** Returns only the primary-and-verified email (§3-3; null = not stored). */
-async function fetchVerifiedPrimaryEmail(accessToken: string): Promise<string | null> {
-  const response = await fetch(API_EMAILS_URL, {
-    headers: { ...GITHUB_API_HEADERS, authorization: `Bearer ${accessToken}` },
-  });
-  if (!response.ok) {
-    return null;
-  }
-  const entries = (await response.json()) as readonly EmailEntry[];
-  return Array.isArray(entries) ? pickVerifiedPrimaryEmail(entries) : null;
+function fetchVerifiedPrimaryEmail(
+  accessToken: string,
+): Effect.Effect<string | null, CallError, HttpClient.HttpClient> {
+  return Effect.map(
+    fetchJson(apiRequest(API_EMAILS_URL, accessToken), EmailListSchema),
+    (entries) => (entries === null ? null : pickVerifiedPrimaryEmail(entries)),
+  );
 }
 
-async function toIdentity(
+function toIdentity(
   user: UserResponse | null,
   accessToken: string,
-): Promise<VerifiedIdentity | null> {
-  if (user === null || typeof user.id !== "number") {
-    return null;
-  }
-  return {
-    provider: "github",
-    providerUserId: String(user.id),
-    providerLogin: typeof user.login === "string" ? user.login : null,
-    verifiedEmail: await fetchVerifiedPrimaryEmail(accessToken),
-  };
+): Effect.Effect<VerifiedIdentity | null, CallError, HttpClient.HttpClient> {
+  return Effect.gen(function* () {
+    if (user === null || typeof user.id !== "number") {
+      return null;
+    }
+    return {
+      provider: "github" as const,
+      providerUserId: String(user.id),
+      providerLogin: user.login ?? null,
+      verifiedEmail: yield* fetchVerifiedPrimaryEmail(accessToken),
+    };
+  });
 }
 
-/** Folds fetch failures (network errors, GitHub outages) into the typed error too. */
-function attempt<T>(
+/**
+ * Folds outbound failures (transport errors, timeouts, unexpected shapes)
+ * and null answers into the typed error, and provides the HTTP client
+ * locally (index.ts is not involved in this module's transport).
+ */
+function attempt<A>(
   reason: "code-exchange-failed" | "token-invalid",
-  evaluate: () => Promise<T | null>,
-): Effect.Effect<T, GitHubAuthError> {
-  return Effect.tryPromise({ try: evaluate, catch: () => new GitHubAuthError({ reason }) }).pipe(
-    Effect.flatMap((value) =>
-      value === null ? Effect.fail(new GitHubAuthError({ reason })) : Effect.succeed(value),
-    ),
+  effect: Effect.Effect<A | null, CallError, HttpClient.HttpClient>,
+): Effect.Effect<A, GitHubAuthError> {
+  const failure = new GitHubAuthError({ reason });
+  return effect.pipe(
+    Effect.catchTags({
+      HttpClientError: () => Effect.fail(failure),
+      SchemaError: () => Effect.fail(failure),
+      TimeoutError: () => Effect.fail(failure),
+    }),
+    Effect.flatMap((value) => (value === null ? Effect.fail(failure) : Effect.succeed(value))),
+    Effect.provide(FetchHttpClient.layer),
   );
 }
 
@@ -147,12 +194,23 @@ function attempt<T>(
 export function makeGitHubApi(clientId: string, clientSecret: string): GitHubApiShape {
   return {
     exchangeCode: (code, redirectUri) =>
-      attempt("code-exchange-failed", () =>
-        exchangeCodeRequest(clientId, clientSecret, code, redirectUri),
+      attempt(
+        "code-exchange-failed",
+        Effect.map(
+          fetchJson(
+            exchangeCodeRequest(clientId, clientSecret, code, redirectUri),
+            TokenResponseSchema,
+          ),
+          (body) => body?.access_token ?? null,
+        ),
       ),
     fetchIdentity: (accessToken) =>
-      attempt("token-invalid", async () =>
-        toIdentity(await fetchUserRequest(accessToken), accessToken),
+      attempt(
+        "token-invalid",
+        Effect.flatMap(
+          fetchJson(apiRequest(API_USER_URL, accessToken), UserResponseSchema),
+          (user) => toIdentity(user, accessToken),
+        ),
       ),
   };
 }
