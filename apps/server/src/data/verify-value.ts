@@ -1,6 +1,7 @@
 // Server-side verification of value signatures and the (epoch,
 // version) CAS (AUTH_SPEC §12-5 = CRYPTO_SPEC §4.1 / §6.4).
 
+import { cryptoEffect } from "@maruhi/core";
 import type {
   ChainHistoryIndex,
   ChainState,
@@ -134,44 +135,44 @@ export const ensureValueSignature = (input: {
       }
       predecessor = anchor;
     }
-    const verified = yield* Effect.promise(() =>
-      verifyDistributedValue({
-        history: input.history,
-        context: {
-          suite: input.value.suite,
-          projectId: input.projectId,
-          environmentId: input.environmentId,
-          epoch: input.value.epoch,
-          variableId: input.variableId,
-          version: input.value.version,
-          nonceHex: input.value.nonceHex,
-          ciphertextHex: input.value.ciphertextHex,
-          prevValueSigHashHex: input.value.prevValueSigHashHex,
-          // writer = the caller (§12-5's 1). The verification key
-          // and the bound-key match at head time are checked by
-          // verifyDistributedValue via the FP (the chain-derived
-          // member at acceptance time)
-          writerUserId: input.member.userId,
-          chainHeadHashHex: input.value.chainHeadHashHex,
-          chainHeadSeq: input.value.chainHeadSeq,
-        },
-        writerKeyFingerprintHex: input.member.keyFingerprintHex,
-        signatureHex: input.value.signatureHex,
-        predecessor,
-      }),
+    const verified = yield* Effect.catchTag(
+      cryptoEffect(() =>
+        verifyDistributedValue({
+          history: input.history,
+          context: {
+            suite: input.value.suite,
+            projectId: input.projectId,
+            environmentId: input.environmentId,
+            epoch: input.value.epoch,
+            variableId: input.variableId,
+            version: input.value.version,
+            nonceHex: input.value.nonceHex,
+            ciphertextHex: input.value.ciphertextHex,
+            prevValueSigHashHex: input.value.prevValueSigHashHex,
+            // writer = the caller (§12-5's 1). The verification key
+            // and the bound-key match at head time are checked by
+            // verifyDistributedValue via the FP (the chain-derived
+            // member at acceptance time)
+            writerUserId: input.member.userId,
+            chainHeadHashHex: input.value.chainHeadHashHex,
+            chainHeadSeq: input.value.chainHeadSeq,
+          },
+          writerKeyFingerprintHex: input.member.keyFingerprintHex,
+          signatureHex: input.value.signatureHex,
+          predecessor,
+        }),
+      ),
+      "CryptoValueInvalid",
+      (error) =>
+        rejectData({
+          kind: "value-rejected",
+          reason: VALUE_REJECT_REASONS[error.reason],
+        }),
+      // InvalidInput / KeyImportFailed are unreachable with a
+      // Schema-validated wire shape + keys derived from a verified
+      // chain (an implementation bug = defect; error values carry no
+      // secrets)
+      (error) => Effect.die(error),
     );
-    if (verified.ok) {
-      return verified.value.signedBytesHashHex;
-    }
-    if (verified.error.kind === "ValueInvalid") {
-      return yield* rejectData({
-        kind: "value-rejected",
-        reason: VALUE_REJECT_REASONS[verified.error.reason],
-      });
-    }
-    // InvalidInput / KeyImportFailed are unreachable with a
-    // Schema-validated wire shape + keys derived from a verified
-    // chain (an implementation bug = defect; error values carry no
-    // secrets)
-    return yield* Effect.die(new Error(`value verification failed: ${verified.error.kind}`));
+    return verified.signedBytesHashHex;
   });

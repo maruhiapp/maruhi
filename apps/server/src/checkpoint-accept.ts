@@ -27,6 +27,7 @@
 //   Precedes the consensus rule environment-out-of-scope (422) (defense in
 //   depth on the same state)
 
+import { cryptoEffect } from "@maruhi/core";
 import type { ChainEntry, CheckpointEnvironmentEntry } from "@maruhi/crypto";
 import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -60,12 +61,11 @@ export const ensureCheckpointValuesDigest = (
   values: readonly CheckpointValueEntryRow[],
 ) =>
   Effect.gen(function* () {
-    const digest = yield* Effect.promise(() => computeEnvValuesDigest(SUITE_ID, values));
-    if (!digest.ok) {
+    const digest = yield* cryptoEffect(() => computeEnvValuesDigest(SUITE_ID, values)).pipe(
       // Malformed input derived from stored rows is an implementation bug (no secrets in error values)
-      return yield* Effect.die(new Error(`values digest failed: ${digest.error.kind}`));
-    }
-    if (digest.value !== tuple.valuesDigestHex) {
+      Effect.orDie,
+    );
+    if (digest !== tuple.valuesDigestHex) {
       return yield* rejectData({
         kind: "checkpoint-state-mismatch",
         reason: "values-digest-mismatch",

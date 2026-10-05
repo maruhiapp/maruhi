@@ -15,10 +15,15 @@
 //   mirror verification — `maruhi audit verify` — uses)
 
 import type { AuditEventRecord } from "@maruhi/core";
-import { auditReadVariablesOf, CHAIN_MIRROR_EVENT_PREFIX, VAR_READ_EVENT } from "@maruhi/core";
+import {
+  auditReadVariablesOf,
+  CHAIN_MIRROR_EVENT_PREFIX,
+  cryptoEffect,
+  VAR_READ_EVENT,
+} from "@maruhi/core";
 import type { AuditHeadRow } from "@maruhi/crypto";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/crypto";
-import { Context, Effect, Layer } from "effect";
+import { Context, Data, Effect, Layer } from "effect";
 
 import { randomHex } from "./ids.ts";
 
@@ -637,7 +642,7 @@ const extendHeadHashes = (
   sql: SqlStorage,
   maxChunks: number,
 ): Effect.Effect<AuditHeadExtensionOutcome> =>
-  Effect.promise(async () => {
+  Effect.gen(function* () {
     const state = { hashedUpTo: 0, head: "" };
     const tail = sql
       .exec(`SELECT seq, head_hash_hex FROM audit_head_hashes ORDER BY seq DESC LIMIT 1`)
@@ -647,7 +652,7 @@ const extendHeadHashes = (
       state.head = String(tail["head_hash_hex"]);
     }
     for (let chunk = 0; chunk < maxChunks; chunk += 1) {
-      if (await hashNextChunk(sql, state)) {
+      if (yield* hashNextChunk(sql, state)) {
         return "current";
       }
     }
@@ -665,28 +670,32 @@ const extendHeadHashes = (
  * single INSERT. The return value = whether this chunk brought the
  * column to MAX(seq) (an empty chunk or a short chunk).
  */
-async function hashNextChunk(
+const hashNextChunk = (
   sql: SqlStorage,
   state: { hashedUpTo: number; head: string },
-): Promise<boolean> {
-  const outcome = await deriveChunk(sql, "audit_events", "audit_head_hashes", state);
-  if (outcome.kind === "invalid") {
+): Effect.Effect<boolean> =>
+  deriveChunk(sql, "audit_events", "audit_head_hashes", state).pipe(
+    Effect.map((outcome) => outcome === "done"),
     // A structural invalidity on input derived from a stored row is an
     // implementation bug (the error value carries no secrets): the staged
     // and restored logs are refused before they are installed (ruling J
     // revision, rounds 9–11), so a live log never carries one
-    throw new Error(`audit log cannot be hashed at seq ${outcome.seq}: ${outcome.reason}`);
-  }
-  return outcome.kind === "done";
-}
+    Effect.catchTag("AuditHeadChunkInvalid", (error) =>
+      Effect.die(new Error(`audit log cannot be hashed at seq ${error.seq}: ${error.reason}`)),
+    ),
+  );
 
-type DeriveChunkOutcome =
-  /** The chunk reached the source's end (empty or short). */
-  | { readonly kind: "done" }
-  /** A full chunk was written; more may remain. */
-  | { readonly kind: "more" }
-  /** The row at `seq` is not the next one, or the canonical form refuses it. */
-  | { readonly kind: "invalid"; readonly seq: number; readonly reason: string };
+/**
+ * One row failed the canonical form — the row at `seq` is not the next
+ * one, or the digest / head computation refused it. `reason` is a
+ * debugging label only: a structural reason string that carries no row
+ * content (the same discipline as CryptoError's kind-only values —
+ * never a fragment of the log).
+ */
+class AuditHeadChunkInvalidError extends Data.TaggedError("AuditHeadChunkInvalid")<{
+  readonly seq: number;
+  readonly reason: string;
+}> {}
 
 /**
  * Hashes the next chunk (up to HEAD_CHUNK_ROWS rows) of `source` past
@@ -696,47 +705,63 @@ type DeriveChunkOutcome =
  * restored log (ruling J revision, rounds 10 and 11): memory stays at one
  * chunk whatever the log's size.
  */
-async function deriveChunk(
+const deriveChunk = (
   sql: SqlStorage,
   source: string,
   target: string,
   state: { hashedUpTo: number; head: string },
-): Promise<DeriveChunkOutcome> {
-  const rows = sql
-    .exec(
-      `SELECT ${HEAD_ROW_COLUMNS} FROM ${source} WHERE seq > ? ORDER BY seq LIMIT ?`,
-      state.hashedUpTo,
-      HEAD_CHUNK_ROWS,
-    )
-    .toArray()
-    .map(toAuditHeadRow);
-  if (rows.length === 0) {
-    return { kind: "done" };
-  }
-  const inserts: (string | number)[] = [];
-  for (const row of rows) {
-    if (row.seq !== state.hashedUpTo + 1) {
-      return { kind: "invalid", seq: state.hashedUpTo + 1, reason: "seq gap" };
+): Effect.Effect<"done" | "more", AuditHeadChunkInvalidError> =>
+  Effect.gen(function* () {
+    const rows = sql
+      .exec(
+        `SELECT ${HEAD_ROW_COLUMNS} FROM ${source} WHERE seq > ? ORDER BY seq LIMIT ?`,
+        state.hashedUpTo,
+        HEAD_CHUNK_ROWS,
+      )
+      .toArray()
+      .map(toAuditHeadRow);
+    if (rows.length === 0) {
+      return "done";
     }
-    const digest = await computeAuditRowDigest(row);
-    if (!digest.ok) {
-      return { kind: "invalid", seq: row.seq, reason: `row digest: ${digest.error.kind}` };
+    const inserts: (string | number)[] = [];
+    for (const row of rows) {
+      if (row.seq !== state.hashedUpTo + 1) {
+        return yield* new AuditHeadChunkInvalidError({
+          seq: state.hashedUpTo + 1,
+          reason: "seq gap",
+        });
+      }
+      const digest = yield* cryptoEffect(() => computeAuditRowDigest(row)).pipe(
+        Effect.mapError(
+          (error) =>
+            new AuditHeadChunkInvalidError({
+              seq: row.seq,
+              reason: `row digest: ${error["_tag"]}`,
+            }),
+        ),
+      );
+      const next = yield* cryptoEffect(() =>
+        computeAuditHeadHash(SUITE_ID, state.head, row.seq, digest),
+      ).pipe(
+        Effect.mapError(
+          (error) =>
+            new AuditHeadChunkInvalidError({
+              seq: row.seq,
+              reason: `head hash: ${error["_tag"]}`,
+            }),
+        ),
+      );
+      state.head = next;
+      state.hashedUpTo = row.seq;
+      inserts.push(row.seq, state.head);
     }
-    const next = await computeAuditHeadHash(SUITE_ID, state.head, row.seq, digest.value);
-    if (!next.ok) {
-      return { kind: "invalid", seq: row.seq, reason: `head hash: ${next.error.kind}` };
-    }
-    state.head = next.value;
-    state.hashedUpTo = row.seq;
-    inserts.push(row.seq, state.head);
-  }
-  sql.exec(
-    `INSERT INTO ${target} (seq, head_hash_hex) VALUES ${rows.map(() => "(?, ?)").join(", ")}`,
-    ...inserts,
-  );
-  // A short chunk = this chunk reached MAX(seq) (no extra SELECT needed)
-  return rows.length < HEAD_CHUNK_ROWS ? { kind: "done" } : { kind: "more" };
-}
+    sql.exec(
+      `INSERT INTO ${target} (seq, head_hash_hex) VALUES ${rows.map(() => "(?, ?)").join(", ")}`,
+      ...inserts,
+    );
+    // A short chunk = this chunk reached MAX(seq) (no extra SELECT needed)
+    return rows.length < HEAD_CHUNK_ROWS ? "done" : "more";
+  });
 
 /** Whether a stored head hash is one the chaining accepts (64 lowercase hex). */
 export function isAuditHeadHex(value: unknown): value is string {
@@ -763,9 +788,17 @@ export async function deriveAuditHeads(
 ): Promise<boolean> {
   const state = { hashedUpTo: fromSeq, head: prevHead };
   for (;;) {
-    const outcome = await deriveChunk(sql, source, target, state);
-    if (outcome.kind !== "more") {
-      return outcome.kind === "done";
+    const outcome = await Effect.runPromise(
+      deriveChunk(sql, source, target, state).pipe(
+        // A log that fails the canonical form is refused (false) — the
+        // staging / restore paths treat it as untrusted input, not as a
+        // defect (a storage fault inside the fiber still rejects the
+        // promise, same as a throw did)
+        Effect.catchTag("AuditHeadChunkInvalid", () => Effect.succeed("invalid" as const)),
+      ),
+    );
+    if (outcome !== "more") {
+      return outcome === "done";
     }
   }
 }
