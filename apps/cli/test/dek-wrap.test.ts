@@ -3,11 +3,13 @@
 // embeds verbatim in its message. Driven through the exported function, which
 // runs the internal effect and folds `WrapBuildFailed` back into the Result.
 
+import { unwrapDek, verifyDekWrapSignature } from "@maruhi/crypto";
+import { unwrapResult } from "@maruhi/crypto/test-support";
 import { Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { wrapAndSignFor } from "../src/dek-wrap.ts";
-import { makeTestUser } from "./support/crypto.ts";
+import { hexBytes, makeTestUser } from "./support/crypto.ts";
 
 function serverRecipient(serverEncPubHex: string) {
   return {
@@ -60,11 +62,13 @@ describe("wrapAndSignFor", () => {
   it("wraps and signs for a valid recipient ({kind: 'ok'} shape)", async () => {
     const signer = await makeTestUser("user-signer-0001");
     const server = await makeTestUser("user-server-0001");
+    const projectId = "aa".repeat(32);
+    const dek = new Uint8Array(32).map((_, index) => index);
     const built = await wrapAndSignFor({
-      projectId: "aa".repeat(32),
+      projectId,
       environmentId: "prod",
       epoch: 1,
-      dek: Redacted.make(new Uint8Array(32), { label: "dek" }),
+      dek: Redacted.make(dek, { label: "dek" }),
       recipient: serverRecipient(server.encPubHex),
       signerUserId: signer.userId,
       signingKeyPair: signer.sigKeyPair,
@@ -80,5 +84,43 @@ describe("wrapAndSignFor", () => {
       recipientUserId: "ab".repeat(16),
       recipientEncPubHex: server.encPubHex,
     });
+    // The produced wrap is real: the §5.1 signature verifies under the
+    // signer's key, and the HPKE wrap opens under the recipient's key to
+    // the input DEK (pins encHex/ciphertextHex and the context fields)
+    unwrapResult(
+      await verifyDekWrapSignature({
+        context: {
+          suite: built.wrap.suite,
+          projectId,
+          environmentId: "prod",
+          epoch: 1,
+          recipientUserId: "ab".repeat(16),
+          recipientEncPubHex: server.encPubHex,
+          encHex: built.wrap.encHex,
+          ciphertextHex: built.wrap.ciphertextHex,
+          signerUserId: signer.userId,
+        },
+        signatureHex: built.wrap.signatureHex,
+        signerPublicKey: signer.sigKeyPair.publicKey,
+      }),
+      "verifyDekWrapSignature",
+    );
+    const opened = unwrapResult(
+      await unwrapDek({
+        recipientKeyPair: server.encKeyPair,
+        wrapped: {
+          enc: hexBytes(built.wrap.encHex),
+          ciphertext: hexBytes(built.wrap.ciphertextHex),
+        },
+        context: {
+          projectId,
+          environmentId: "prod",
+          epoch: 1,
+          recipientUserId: "ab".repeat(16),
+        },
+      }),
+      "unwrapDek",
+    );
+    expect([...opened]).toEqual([...dek]);
   });
 });
