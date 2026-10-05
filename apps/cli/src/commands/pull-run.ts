@@ -4,7 +4,7 @@ import { Effect } from "effect";
 import { Command } from "effect/cli";
 
 import { ensurePlainRunAllowed, ensureValueDisplayAllowed } from "../agent-gate.ts";
-import { ConfigStore } from "../config.ts";
+import { loadCliConfig } from "../config.ts";
 import {
   type CliServices,
   type CommonFlags,
@@ -111,8 +111,7 @@ export function brokeredRun(input: {
         content: input.loaded.content,
         projectId,
       });
-    const early =
-      input.flags.project ?? config.projectId ?? (yield* (yield* ConfigStore).load).defaultProject;
+    const early = input.flags.project ?? config.projectId ?? (yield* loadCliConfig).defaultProject;
     if (early !== undefined) {
       yield* accepted(early);
     }

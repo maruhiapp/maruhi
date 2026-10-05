@@ -32,7 +32,6 @@
 // ci run (the lease path) does not join gossip (§6.6 / §14-2 — the lease
 // response bundles no attestations and the workload has no signing key).
 
-import { AttestationRegressionError } from "@maruhi/api-schema";
 import { cryptoEffect } from "@maruhi/core";
 import { SUITE_ID, signHeadAttestation, verifyDistributedHeadAttestation } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
@@ -187,7 +186,7 @@ function failWithEvidence(
       // preservation; the interruption and warning are unchanged if it fails)
       const written = yield* store
         .appendAttestationEvidence(projectId, record)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
+        .pipe(Effect.orElseSucceed(() => null));
       if (written !== null) {
         evidencePath = written;
       }
@@ -290,7 +289,7 @@ export function submitHeadAttestationIfAdvanced(input: {
     const head = { seq: input.view.state.headSeq, hashHex: input.view.state.headHashHex };
     const attested = yield* store
       .loadAttestedHead(input.projectId)
-      .pipe(Effect.catch(() => Effect.succeed(null)));
+      .pipe(Effect.orElseSucceed(() => null));
     if (attested !== null && head.seq <= attested.seq && head.hashHex === attested.hashHex) {
       // Suppress only re-attesting the **identical head** that has not
       // advanced (the SHOULD's trigger is "if advanced" — no submission, no
@@ -315,7 +314,7 @@ export function submitHeadAttestationIfAdvanced(input: {
         },
         signingKey: input.signingKey,
       }),
-    ).pipe(Effect.catch(() => Effect.succeed(null)));
+    ).pipe(Effect.orElseSucceed(() => null));
     if (signed === null) {
       yield* logNote(
         "could not sign the head attestation for this sync (split-view gossip). This does not affect the current command",
@@ -323,8 +322,8 @@ export function submitHeadAttestationIfAdvanced(input: {
       return;
     }
     // Reading `_tag` directly is banned by oxlint — the discrimination is
-    // instanceof (the failure.ts discipline); the diagnostic name is
-    // internalErrorKind (the type name only — carries no response fragment)
+    // the tag (catchTag); the diagnostic name is internalErrorKind (the
+    // type name only — carries no response fragment)
     const submitted = yield* input.client.membership
       .attest({
         params: { projectId: input.projectId },
@@ -337,10 +336,10 @@ export function submitHeadAttestationIfAdvanced(input: {
       })
       .pipe(
         Effect.as("submitted" as const),
-        Effect.catch((error) =>
-          Effect.succeed(
-            error instanceof AttestationRegressionError ? "regression" : internalErrorKind(error),
-          ),
+        Effect.catchTag(
+          "AttestationRegression",
+          () => Effect.succeed("regression" as const),
+          (error) => Effect.succeed(internalErrorKind(error)),
         ),
       );
     if (submitted === "submitted") {

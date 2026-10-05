@@ -107,9 +107,11 @@ describe("maruhi token list", () => {
 
     expect(await runCli(["token", "list"], env.layer)).toBe(1);
     expect(env.logs).toEqual([]);
-    const stderr = env.errors.join("\n");
-    expect(stderr).toContain("Listing tokens needs an admin token");
-    expect(stderr).toContain("browser session");
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: Listing tokens needs an admin token (all projects × admin) or a browser session; this token cannot list them (AUTH_SPEC §6)",
+      ]),
+    );
   });
 
   it("an unexpected server error is exit 1 (no list emitted)", async () => {
@@ -146,9 +148,11 @@ describe("maruhi token revoke", () => {
 
     expect(await runCli(["token", "revoke", "tok_missing"], env.layer)).toBe(1);
     expect(env.logs).toEqual([]);
-    const stderr = env.errors.join("\n");
-    expect(stderr).toContain("No token with id tok_missing belongs to you");
-    expect(stderr).toContain("maruhi token list");
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: No token with id tok_missing belongs to you (already revoked, or another account's — see `maruhi token list`)",
+      ]),
+    );
   });
 
   it("a 403 guides that an admin token / browser session is needed, exit 1", async () => {
@@ -161,8 +165,10 @@ describe("maruhi token revoke", () => {
 
     expect(await runCli(["token", "revoke", "tok_target"], env.layer)).toBe(1);
     expect(env.logs).toEqual([]);
-    expect(env.errors.join("\n")).toContain(
-      "Revoking a token by id needs an admin token (all projects × admin) or a browser session",
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: Revoking a token by id needs an admin token (all projects × admin) or a browser session (AUTH_SPEC §6)",
+      ]),
     );
   });
 

@@ -710,6 +710,13 @@ describe("maruhi device add — an existing key's standing on the chain (DK K13)
       const entry = masterKeyEntryName(server.origin, owner.userId);
       const before = env.keychain.get(entry);
       expect(await runCli(["device", "add", "--replace"], env.layer)).toBe(1);
+      expect(env.errors).toEqual(
+        expect.arrayContaining([
+          reason === "add-requests"
+            ? "maruhi: Too many device-add requests in the last hour (limit 5). Wait and re-run"
+            : "maruhi: Your device registry is full (32 rows). On a registered device, remove old rows with `maruhi device list` / `maruhi device revoke`, then re-run",
+        ]),
+      );
       expect(env.keychain.get(entry), reason).toBe(before);
       const errors = env.errors.join("\n");
       expect(errors).toContain(
@@ -735,7 +742,33 @@ describe("maruhi device add — an existing key's standing on the chain (DK K13)
     const env = await startEnvWithoutKey(server.origin, built.projectId);
     expect(await runCli(["device", "add"], env.layer)).toBe(1);
     expect(env.keychain.get(masterKeyEntryName(server.origin, owner.userId))).toBeUndefined();
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: Too many device-add requests in the last hour (limit 5). Wait and re-run",
+      ]),
+    );
     expect(env.errors.join("\n")).not.toContain("nothing was replaced");
+  });
+
+  it("a full registry (device-rows, 429) reports the registry-limit guidance", async () => {
+    const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
+    const { server } = await makeServer({
+      built,
+      withEnvironment: false,
+      extra: [
+        onRequest("POST", "/auth/devices/requests", () => ({
+          status: 429,
+          json: { _tag: "DeviceRegistryLimit", reason: "device-rows", limit: 32 },
+        })),
+      ],
+    });
+    const env = await startEnvWithoutKey(server.origin, built.projectId);
+    expect(await runCli(["device", "add"], env.layer)).toBe(1);
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: Your device registry is full (32 rows). On a registered device, remove old rows with `maruhi device list` / `maruhi device revoke`, then re-run",
+      ]),
+    );
   });
 
   it("the guarded replace never overwrites a key another process wrote during request creation, and emits no FP (K13-8)", async () => {

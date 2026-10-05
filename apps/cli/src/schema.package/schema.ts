@@ -421,12 +421,24 @@ export function requireVerifiedEnvironment(
     : Effect.succeed(environment);
 }
 
+/**
+ * One attempt's concrete failure channel: CliError (own failures and the
+ * crypto bridge's wrapped kinds re-mapped at the crypto sites) plus the
+ * variables endpoints' declared error unions (the raw types —
+ * classifySchemaSetConflict discriminates them on the retryOnConflict
+ * side).
+ */
+type SchemaSetAttemptError =
+  | CliError
+  | Effect.Error<ReturnType<SchemaSetInput["client"]["variables"]["create"]>>
+  | Effect.Error<ReturnType<SchemaSetInput["client"]["variables"]["rename"]>>;
+
 /** One attempt (signing, sending). Classifying a conflict is retryOnConflict's classify's job. */
 function attemptSchemaSet(
   input: SchemaSetInput,
   name: string,
   state: SchemaSetState,
-): Effect.Effect<AcceptedSchemaSet, unknown> {
+): Effect.Effect<AcceptedSchemaSet, SchemaSetAttemptError> {
   return Effect.gen(function* () {
     const target = state.target;
     const environment = yield* requireVerifiedEnvironment(state, input.environmentId);
@@ -570,7 +582,7 @@ function attemptSchemaSet(
 type SchemaSetConflict = { readonly kind: "re-resolve" };
 
 /** The retryable classification of a CAS conflict (§12-5). Anything else is null (a definitive error). */
-function classifySchemaSetConflict(error: unknown): SchemaSetConflict | null {
+function classifySchemaSetConflict(error: SchemaSetAttemptError): SchemaSetConflict | null {
   if (
     error instanceof VariableConflictError ||
     error instanceof MetaVersionConflictError ||

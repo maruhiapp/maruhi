@@ -6,7 +6,7 @@ import { Command } from "effect/cli";
 
 import { BODY_TIMEOUT, makeApiClient } from "../api.ts";
 import { syncProject } from "../chain-sync.ts";
-import { ConfigStore } from "../config.ts";
+import { loadCliConfig } from "../config.ts";
 import {
   type CliServices,
   type SessionContext,
@@ -59,7 +59,7 @@ function openMirrorTarget(flags: {
   readonly mirror?: string | undefined;
 }) {
   return Effect.gen(function* () {
-    const config = yield* (yield* ConfigStore).load;
+    const config = yield* loadCliConfig;
     const projectId = yield* resolveProjectId(flags.project, config);
     const serverOrigin = yield* resolveServerOrigin(flags.server, config);
     const mirrorOrigin = yield* resolveMirrorOrigin(flags.mirror, config);

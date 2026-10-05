@@ -29,8 +29,20 @@ type PushConflict =
   | { readonly kind: "epoch-conflict" }
   | { readonly kind: "variable-conflict" };
 
+/**
+ * One attempt's concrete failure channel: CliError (own failures and the
+ * crypto bridge's wrapped kinds re-mapped at the crypto sites) plus the
+ * variables endpoints' declared error unions (the raw types —
+ * classifyPushConflict discriminates them on the retryOnConflict side).
+ */
+export type PushAttemptError =
+  | CliError
+  | Effect.Error<ReturnType<PushInput["client"]["variables"]["create"]>>
+  | Effect.Error<ReturnType<PushInput["client"]["variables"]["activate"]>>
+  | Effect.Error<ReturnType<PushInput["client"]["variables"]["push"]>>;
+
 /** The retryable classification of CAS conflicts (§12-5). Anything else is null (a terminal error). */
-export function classifyPushConflict(error: unknown): PushConflict | null {
+export function classifyPushConflict(error: PushAttemptError): PushConflict | null {
   if (error instanceof VersionConflictError) {
     return { kind: "version-conflict", currentVersion: error.currentVersion };
   }

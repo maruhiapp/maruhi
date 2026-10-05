@@ -153,7 +153,7 @@ function parseEntries(text: string): Effect.Effect<readonly { readonly key: stri
     }
     return yield* decodeSigningKeys(json).pipe(
       Effect.map((entries) => entries as readonly { readonly key: string }[]),
-      Effect.catch(() => Effect.succeed(null)),
+      Effect.orElseSucceed(() => null),
     );
   });
 }

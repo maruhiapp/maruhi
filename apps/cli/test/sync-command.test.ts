@@ -453,7 +453,11 @@ describe("maruhi sync plan", () => {
         missing.env.layer,
       ),
     ).toBe(1);
-    expect(missing.env.errors.join("\n")).toContain("Cannot read the sync config");
+    expect(missing.env.errors).toEqual(
+      expect.arrayContaining([
+        `maruhi: Cannot read the sync config ${join(missing.configDir, "nope.json")}. Create it with \`maruhi sync init\` (see the Deploy targets page in the docs), or pass --config <file>`,
+      ]),
+    );
     // A disagreement between the config's project and the flag is a
     // usage error (2). It never hits the network
     const mismatched = await startFixture({

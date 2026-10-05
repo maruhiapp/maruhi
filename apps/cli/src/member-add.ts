@@ -3,7 +3,6 @@
 // (member-add-ceremony.ts) -> add_member append (CAS retry) -> backfill of
 // every environment × every epoch (the group's overview lives in member.ts).
 
-import { DekWrapNotFoundError } from "@maruhi/api-schema";
 import {
   type ChainDevice,
   type ChainEntry,
@@ -333,9 +332,11 @@ function backfillMemberDevice(input: {
           })
           .pipe(
             Effect.asVoid,
-            Effect.catch((error) =>
+            Effect.catchTag(
+              "DekWrapNotFound",
               // When a concurrent repair made the slot disappear, only the re-registration is needed
-              error instanceof DekWrapNotFoundError ? Effect.void : Effect.fail(toCliError(error)),
+              () => Effect.void,
+              (error) => Effect.fail(toCliError(error)),
             ),
           );
         // delete → re-register is not atomic: if the re-register fails

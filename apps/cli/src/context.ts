@@ -19,7 +19,7 @@ import {
 } from "./attestation.ts";
 import { resyncExtended, syncProject, type VerifiedProject } from "./chain-sync.ts";
 import type { CliConfig } from "./config.ts";
-import { ConfigStore } from "./config.ts";
+import { ConfigStore, loadCliConfig } from "./config.ts";
 import type { DekRecipient } from "./deks.ts";
 import { ownDeviceOrFail } from "./device-key.ts";
 import { syncOwnDevices } from "./device-sync.ts";
@@ -126,7 +126,7 @@ export function withMirrorFallback<A>(
   read: (flags: CommonFlags) => Effect.Effect<A, CliError, CliServices>,
 ): Effect.Effect<A, CliError, CliServices> {
   return Effect.gen(function* () {
-    const config = yield* (yield* ConfigStore).load;
+    const config = yield* loadCliConfig;
     const mirror = yield* resolveMirrorOrigin(flags.mirror, config);
     if (mirror === null) {
       return yield* read(flags);
@@ -282,8 +282,7 @@ export function openSession(
   clientOptions: SessionClientOptions = {},
 ): Effect.Effect<SessionContext, CliError, CliServices> {
   return Effect.gen(function* () {
-    const store = yield* ConfigStore;
-    return yield* openSessionWith(yield* store.load, serverFlag, credential, clientOptions);
+    return yield* openSessionWith(yield* loadCliConfig, serverFlag, credential, clientOptions);
   });
 }
 
@@ -790,8 +789,7 @@ export function openProject(
   options?: OpenProjectOptions,
 ): Effect.Effect<ProjectContext, CliError, CliServices> {
   return Effect.gen(function* () {
-    const store = yield* ConfigStore;
-    return yield* openProjectWith(yield* store.load, flags, options);
+    return yield* openProjectWith(yield* loadCliConfig, flags, options);
   });
 }
 
@@ -808,8 +806,7 @@ export function openMetadataProject(
   flags: CommonFlags,
 ): Effect.Effect<ProjectContextBase, CliError, CliServices> {
   return Effect.gen(function* () {
-    const store = yield* ConfigStore;
-    return yield* openMetadataProjectWith(yield* store.load, flags);
+    return yield* openMetadataProjectWith(yield* loadCliConfig, flags);
   });
 }
 
@@ -857,8 +854,7 @@ export function openEnvironment(
   options?: OpenProjectOptions,
 ): Effect.Effect<EnvironmentContext, CliError, CliServices> {
   return Effect.gen(function* () {
-    const store = yield* ConfigStore;
-    const config = yield* store.load;
+    const config = yield* loadCliConfig;
     const environmentId = yield* resolveEnvironmentId(flags.env, config);
     const context = yield* openProjectWith(config, flags, options);
     // The check is **this device's effective scope** (person ∩ device — DK
@@ -926,8 +922,7 @@ export function openMetadataEnvironment(
   flags: CommonFlags,
 ): Effect.Effect<MetadataEnvironmentContext, CliError, CliServices> {
   return Effect.gen(function* () {
-    const store = yield* ConfigStore;
-    const config = yield* store.load;
+    const config = yield* loadCliConfig;
     const environmentId = yield* resolveEnvironmentId(flags.env, config);
     const context = yield* openMetadataProjectWith(config, flags);
     const floorHandle = yield* floorHandleFor(context, environmentId);
@@ -971,8 +966,7 @@ export function openMetadataEnvironmentPair(
   second: EnvironmentId,
 ): Effect.Effect<EnvironmentPairContext, CliError, CliServices> {
   return Effect.gen(function* () {
-    const store = yield* ConfigStore;
-    const config = yield* store.load;
+    const config = yield* loadCliConfig;
     const context = yield* openMetadataProjectWith(config, flags);
     return {
       ...context,

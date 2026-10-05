@@ -58,6 +58,7 @@ import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { rejectIntentOnServerRejection } from "./floor-check.ts";
 import type { ManifestFloor, VariableFloor } from "./floor.ts";
+import { type ManifestDigestEntry } from "./manifest.ts";
 import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts";
 import { signCreateStatement } from "./meta-statement.ts";
 import { decryptVerifiedValue } from "./pull.ts";
@@ -66,12 +67,14 @@ import {
   classifyPushConflict,
   initialState,
   nextState,
+  type PushAttemptError,
   type PushInput,
   type PushState,
 } from "./push-state.ts";
 import { retryOnConflict } from "./retry.ts";
 import { signContinuationStatementV2 } from "./schema.package/index.ts";
 import type { VerifiedPulledValue } from "./values-verify.ts";
+import { type ManifestIssueBase } from "./values.ts";
 
 const MAX_ATTEMPTS = 5;
 
@@ -281,22 +284,38 @@ function withLineage<T>(value: T, sameValueAs: number | undefined) {
 }
 
 /**
- * One attempt's concrete failure channel: CliError (own failures and the
- * crypto bridge's wrapped kinds re-mapped at the crypto sites) plus the
- * variables endpoints' declared error unions (the raw types —
- * classifyPushConflict discriminates them on the retryOnConflict side).
+ * Manifest issuance + journal-before-send (3-F) for a variables meta
+ * operation (§12-10): append an intent before sending a security-critical
+ * mutation. If persistence fails, do not send (fail-closed). What a crash or
+ * lost response loses is not "the belief that it succeeded" but "the record
+ * of the confirmation duty".
  */
-type AttemptOnceError =
-  | CliError
-  | Effect.Error<ReturnType<PushInput["client"]["variables"]["create"]>>
-  | Effect.Error<ReturnType<PushInput["client"]["variables"]["activate"]>>
-  | Effect.Error<ReturnType<PushInput["client"]["variables"]["push"]>>;
+function issueVariableManifest(
+  input: PushInput,
+  state: PushState,
+  issueBase: ManifestIssueBase,
+  variableId: string,
+  entries: readonly ManifestDigestEntry[],
+): ReturnType<typeof issueManifestWithIntent> {
+  return issueManifestWithIntent({
+    verified: state.verified,
+    environmentId: input.environmentId,
+    epoch: state.epoch,
+    previous: issueBase.previous,
+    entries,
+    envMeta: issueBase.envMeta,
+    issuerUserId: input.writerUserId,
+    signingKey: input.signingKey,
+    floor: input.floor,
+    variableId,
+  });
+}
 
 /** One attempt (encrypt, sign, send). The conflict classification is retryOnConflict's classify's job. */
 function attemptOnce(
   input: PushInput,
   state: PushState,
-): Effect.Effect<AcceptedPush, AttemptOnceError> {
+): Effect.Effect<AcceptedPush, PushAttemptError> {
   return Effect.gen(function* () {
     yield* ensureRestoreTarget(input, state);
     const dek = state.deks.get(state.epoch);
@@ -362,17 +381,12 @@ function attemptOnce(
           ),
         );
       }
-      // Manifest issuance + journal-before-send (3-F): append an intent
-      // before sending a security-critical mutation (a meta operation —
-      // §12-10). If persistence fails, do not send (fail-closed). What a
-      // crash or lost response loses is not "the belief that it succeeded"
-      // but "the record of the confirmation duty".
-      const { manifest, intentId } = yield* issueManifestWithIntent({
-        verified: state.verified,
-        environmentId: input.environmentId,
-        epoch: state.epoch,
-        previous: issueBase.previous,
-        entries: [
+      const { manifest, intentId } = yield* issueVariableManifest(
+        input,
+        state,
+        issueBase,
+        target.variableId,
+        [
           ...issueBase.entries,
           {
             variableId: target.variableId,
@@ -381,12 +395,7 @@ function attemptOnce(
             metaSigHashHex: created.metaSigHashHex,
           },
         ],
-        envMeta: issueBase.envMeta,
-        issuerUserId: input.writerUserId,
-        signingKey: input.signingKey,
-        floor: input.floor,
-        variableId: target.variableId,
-      });
+      );
       const accepted = yield* input.client.variables
         .create({
           params,
@@ -456,13 +465,13 @@ function attemptOnce(
           ),
         );
       }
-      // An activation is also a meta-operation composite (§12-10 (1)) — manifest issuance + a 3-F intent
-      const { manifest, intentId } = yield* issueManifestWithIntent({
-        verified: state.verified,
-        environmentId: input.environmentId,
-        epoch: state.epoch,
-        previous: issueBase.previous,
-        entries: [
+      // An activation is also a meta-operation composite (§12-10 (1))
+      const { manifest, intentId } = yield* issueVariableManifest(
+        input,
+        state,
+        issueBase,
+        target.variableId,
+        [
           ...issueBase.entries.filter((entry) => entry.variableId !== target.variableId),
           {
             variableId: target.variableId,
@@ -471,12 +480,7 @@ function attemptOnce(
             metaSigHashHex: activation.metaSigHashHex,
           },
         ],
-        envMeta: issueBase.envMeta,
-        issuerUserId: input.writerUserId,
-        signingKey: input.signingKey,
-        floor: input.floor,
-        variableId: target.variableId,
-      });
+      );
       const accepted = yield* input.client.variables
         .activate({
           params: { ...params, variableId: target.variableId },

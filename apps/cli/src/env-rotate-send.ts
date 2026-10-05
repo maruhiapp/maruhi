@@ -6,14 +6,11 @@
 import {
   AuditHeadNotReadyError,
   ChainHeadConflictError,
-  CheckpointStateMismatchError,
-  EnvironmentNotFoundError,
-  ManifestVersionConflictError,
   type WrappedDek,
 } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
 import type { ChainEntry, ChainMember, EnvValuesDigestEntry, SigningKeyPair } from "@maruhi/crypto";
-import { Effect, Redacted } from "effect";
+import { Data, Effect, Redacted, Runtime } from "effect";
 
 import { signBoundaryCheckpoint } from "./boundary-checkpoint.ts";
 import { signEntryAtHead } from "./chain-append.ts";
@@ -201,49 +198,20 @@ interface AcceptedRotation {
  * The 422 marker of the boundary checkpoint's values_digest cross-check
  * (§12-4): the shape where a concurrent push advanced the current values
  * after the declared head settled — a re-sign does not resolve it
- * (re-fetching the value set is required). CliError is subclassed so
+ * (re-fetching the value set is required). A tag of its own so
  * envRotateOp's bounded retry (redoing from a verified pull — §12-4's
- * specification) can catch it by type (toCliError passes CliError
- * through, so the type survives even across retryOnConflict's
- * unclassified path).
+ * specification) catches it by tag: it survives retryOnConflict
+ * via the `passthrough` option (the unclassified path's toCliError
+ * mapping would erase the distinction), and it becomes a plain
+ * {@link CliError} with the same message when env-rotate.ts gives up.
  */
-export class RotateValuesConflictError extends CliError {}
-
-/**
- * A rotate into a deleted (tombstone) environment is a 404 (§12-4). The
- * shape is "the chain asserts the environment exists but the server
- * returned 404", so per §7's discipline "never skip silently — interrupt
- * and warn" — never collapse it into the generic "environment not found".
- */
-function mapRotateFailure(environmentId: string): (error: unknown) => unknown {
-  return (error) => {
-    if (error instanceof EnvironmentNotFoundError) {
-      return cliError(
-        `Rotation for environment ${environmentId} was rejected with 404. Unless a verified deletion statement can be confirmed, a malicious server may be selectively blocking rotation — aborting instead of silently skipping (CRYPTO_SPEC §7)`,
-      );
-    }
-    if (error instanceof ManifestVersionConflictError) {
-      // A CAS conflict on the bundled manifest (§12-5 (6)) = another meta
-      // operation (a variable create / rename / delete / an environment
-      // rename) was interposed between issuance and acceptance. Since the
-      // meta set may have changed, re-signing within this run cannot
-      // resolve it — a re-run re-fetches the meta state (unlike a chain
-      // CAS 409, the material must be re-fetched)
-      return cliError(
-        `A concurrent meta operation advanced environment ${environmentId}'s manifest (the server reports manifestVersion ${error.currentManifestVersion}). Re-run \`maruhi env rotate\` to rebuild the manifest from the refreshed state`,
-      );
-    }
-    if (error instanceof CheckpointStateMismatchError) {
-      // The 422 of the boundary checkpoint's values_digest cross-check
-      // (§12-4). envRotateOp picks it up via a bounded retry from a
-      // verified pull (on exhaustion this wording surfaces as-is)
-      return new RotateValuesConflictError({
-        message: `A concurrent push advanced environment ${environmentId}'s values while the rotation was in flight (the server reports ${error.reason}). Re-run \`maruhi env rotate\` to rebuild the checkpoint from the refreshed state`,
-      });
-    }
-    // Classification targets like ChainHeadConflict pass through as-is (retryOnConflict's classify)
-    return error;
-  };
+export class RotateValuesConflictError extends Data.TaggedError("RotateValuesConflictError")<{
+  readonly message: string;
+}> {
+  /** The same exit code CliError gives it (a failure, not a usage error). */
+  override get [Runtime.errorExitCode](): number {
+    return 1;
+  }
 }
 
 /**
@@ -300,7 +268,7 @@ export function appendRotation(
     /** The manifest-floor-commit failure warning (null = success). The caller accumulates it into the sink. */
     readonly floorWarning: string | null;
   },
-  CliError
+  CliError | RotateValuesConflictError
 > {
   return Effect.gen(function* () {
     const buildWraps = (verified: VerifiedProject) =>
@@ -328,7 +296,7 @@ export function appendRotation(
     // target
     let lastSent: AcceptedRotation | null = null;
     const attempted = yield* asOutcome(
-      retryOnConflict<RotateState, AcceptedRotation, "head-conflict">(
+      retryOnConflict(
         { verified: input.baseline, member: input.member, deks: yield* buildWraps(input.baseline) },
         {
           maxAttempts: MAX_ATTEMPTS,
@@ -427,23 +395,68 @@ export function appendRotation(
                   },
                 })
                 .pipe(
-                  Effect.tapError((error) =>
+                  Effect.tapError((error) => {
+                    ambiguousSend = !isServerRejection(error);
                     // A refusal with the server's own error body (a CAS
                     // 409 included) = no effect has occurred (settled) —
                     // close the intent. A resolution-append failure may be
                     // swallowed: the direction where the intent stays open
                     // is the safe side
-                    isServerRejection(error)
+                    return isServerRejection(error)
                       ? Effect.ignore(input.floor.resolveIntent(intentId, "rejected"))
-                      : Effect.void,
-                  ),
-                  Effect.mapError((error) => {
-                    ambiguousSend = !isServerRejection(error);
-                    return mapRotateFailure(input.environmentId)(error);
+                      : Effect.void;
                   }),
+                  Effect.catchTags(
+                    {
+                      // A rotate into a deleted (tombstone) environment is a
+                      // 404 (§12-4). The shape is "the chain asserts the
+                      // environment exists but the server returned 404", so
+                      // per §7's discipline "never skip silently — interrupt
+                      // and warn" — never collapse it into the generic
+                      // "environment not found"
+                      EnvironmentNotFound: () =>
+                        Effect.fail(
+                          cliError(
+                            `Rotation for environment ${input.environmentId} was rejected with 404. Unless a verified deletion statement can be confirmed, a malicious server may be selectively blocking rotation — aborting instead of silently skipping (CRYPTO_SPEC §7)`,
+                          ),
+                        ),
+                      // A CAS conflict on the bundled manifest (§12-5 (6))
+                      // = another meta operation (a variable create /
+                      // rename / delete / an environment rename) was
+                      // interposed between issuance and acceptance. Since
+                      // the meta set may have changed, re-signing within
+                      // this run cannot resolve it — a re-run re-fetches
+                      // the meta state (unlike a chain CAS 409, the
+                      // material must be re-fetched)
+                      ManifestVersionConflict: (error) =>
+                        Effect.fail(
+                          cliError(
+                            `A concurrent meta operation advanced environment ${input.environmentId}'s manifest (the server reports manifestVersion ${error.currentManifestVersion}). Re-run \`maruhi env rotate\` to rebuild the manifest from the refreshed state`,
+                          ),
+                        ),
+                      // The 422 of the boundary checkpoint's values_digest
+                      // cross-check (§12-4). envRotateOp picks it up via a
+                      // bounded retry from a verified pull (on exhaustion
+                      // this wording surfaces as-is)
+                      CheckpointStateMismatch: (error) =>
+                        Effect.fail(
+                          new RotateValuesConflictError({
+                            message: `A concurrent push advanced environment ${input.environmentId}'s values while the rotation was in flight (the server reports ${error.reason}). Re-run \`maruhi env rotate\` to rebuild the checkpoint from the refreshed state`,
+                          }),
+                        ),
+                    },
+                    // Classification targets like ChainHeadConflict pass
+                    // through as-is (retryOnConflict's classify)
+                    Effect.fail,
+                  ),
                 );
               return sent;
             }),
+          // RotateValuesConflictError bypasses classification: it is the
+          // outer bounded retry's signal (env-rotate.ts catches it by
+          // tag), and the unclassified path's toCliError mapping would
+          // erase the distinction
+          passthrough: "RotateValuesConflictError",
           // AuditHeadNotReady (503) advances with the same recovery as a
           // CAS conflict (resync + re-sign + re-send) — the reason and the
           // defensive classification's intent are the same as

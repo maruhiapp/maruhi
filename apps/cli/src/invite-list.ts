@@ -2,7 +2,6 @@
 // acceptance verification with fingerprint-word display and the
 // issuance-pin cross-check (the group's overview lives in invite.ts).
 
-import { InviteGoneError, InviteNotFoundError } from "@maruhi/api-schema";
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
@@ -141,19 +140,21 @@ export function inviteRevokeOp(input: {
     yield* input.client.invites
       .revoke({ params: { projectId: input.verified.projectId, id: input.inviteId } })
       .pipe(
-        Effect.mapError((error) => {
-          if (error instanceof InviteNotFoundError) {
-            return cliError("Invite not found (check the id with `maruhi invite list`)");
-          }
-          if (error instanceof InviteGoneError) {
-            return error.reason === "completed"
-              ? cliError(
-                  "This invite has completed through add_member. To undo the membership, run `maruhi member remove` (it rotates every environment — CRYPTO_SPEC §7)",
-                )
-              : cliError("This invite is already revoked");
-          }
-          return toCliError(error);
-        }),
+        Effect.catchTags(
+          {
+            InviteNotFound: () =>
+              Effect.fail(cliError("Invite not found (check the id with `maruhi invite list`)")),
+            InviteGone: (error) =>
+              Effect.fail(
+                error.reason === "completed"
+                  ? cliError(
+                      "This invite has completed through add_member. To undo the membership, run `maruhi member remove` (it rotates every environment — CRYPTO_SPEC §7)",
+                    )
+                  : cliError("This invite is already revoked"),
+              ),
+          },
+          (error) => Effect.fail(toCliError(error)),
+        ),
       );
     yield* io.log("Revoked the invite");
   });

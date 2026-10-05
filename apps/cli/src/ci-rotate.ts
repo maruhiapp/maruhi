@@ -502,46 +502,49 @@ export function ciRotateOp(
       recipients,
       token: mintToken,
     }).pipe(
-      Effect.catch((error) =>
-        error instanceof RotationProposalRejectedError && error.reason === "recipients-mismatch"
-          ? Effect.gen(function* () {
-              // The one post-issuer refusal that is purely a race (O-7):
-              // the members or devices changed between the lease and the
-              // mint. The plaintext is still in memory, so lease again,
-              // compute W(E) from the current chain, seal again and mint
-              // once more (a new proposal id); a second mismatch stops
-              yield* io.logError(
-                "The project's members or devices changed after this job leased it: leasing again and sealing the proposal to the current recipients (once)",
-              );
-              // Under the lease's key and the newest token the job holds
-              // for it — the mint's, minted seconds ago, else the lease's —
-              // while it lasts (a runner whose issuance endpoint stopped
-              // answering can still recover — O-13 / O-15); a fresh pair
-              // otherwise
-              const again = yield* leaseEnvironmentsWithCredential({
-                ...input,
-                environmentIds: [input.environmentId],
-                credential: { ...leased.credential, token: mintToken },
-              }).pipe(Effect.mapError((failure) => mintRefusal(failure, outcome)));
-              const againMaterial = again.materials.get(input.environmentId);
-              if (againMaterial === undefined) {
-                return yield* Effect.fail(
-                  cliError("The lease returned no material (internal inconsistency)"),
+      Effect.catchTag(
+        "RotationProposalRejected",
+        (error) =>
+          error.reason === "recipients-mismatch"
+            ? Effect.gen(function* () {
+                // The one post-issuer refusal that is purely a race (O-7):
+                // the members or devices changed between the lease and the
+                // mint. The plaintext is still in memory, so lease again,
+                // compute W(E) from the current chain, seal again and mint
+                // once more (a new proposal id); a second mismatch stops
+                yield* io.logError(
+                  "The project's members or devices changed after this job leased it: leasing again and sealing the proposal to the current recipients (once)",
                 );
-              }
-              const againRecipients = proposalRecipients(
-                againMaterial.verified,
-                input.environmentId,
-              );
-              const second = yield* sealAndMint({
-                ...mintInput,
-                lease: again,
-                recipients: againRecipients,
-                token: yield* mintTokenFor(input, again, outcome),
-              }).pipe(Effect.mapError((failure) => mintRefusal(failure, outcome)));
-              return { ...second, resealed: true };
-            })
-          : Effect.fail(mintRefusal(error, outcome)),
+                // Under the lease's key and the newest token the job holds
+                // for it — the mint's, minted seconds ago, else the lease's —
+                // while it lasts (a runner whose issuance endpoint stopped
+                // answering can still recover — O-13 / O-15); a fresh pair
+                // otherwise
+                const again = yield* leaseEnvironmentsWithCredential({
+                  ...input,
+                  environmentIds: [input.environmentId],
+                  credential: { ...leased.credential, token: mintToken },
+                }).pipe(Effect.mapError((failure) => mintRefusal(failure, outcome)));
+                const againMaterial = again.materials.get(input.environmentId);
+                if (againMaterial === undefined) {
+                  return yield* Effect.fail(
+                    cliError("The lease returned no material (internal inconsistency)"),
+                  );
+                }
+                const againRecipients = proposalRecipients(
+                  againMaterial.verified,
+                  input.environmentId,
+                );
+                const second = yield* sealAndMint({
+                  ...mintInput,
+                  lease: again,
+                  recipients: againRecipients,
+                  token: yield* mintTokenFor(input, again, outcome),
+                }).pipe(Effect.mapError((failure) => mintRefusal(failure, outcome)));
+                return { ...second, resealed: true };
+              })
+            : Effect.fail(mintRefusal(error, outcome)),
+        (error) => Effect.fail(mintRefusal(error, outcome)),
       ),
     );
     yield* logWarnings([...material.warnings, ...outcome.warnings]);
@@ -634,8 +637,8 @@ function sealAndMint(
         },
       })
       .pipe(
-        Effect.mapError((error) =>
-          error instanceof RotationProposalRejectedError ? error : mintRefusal(error, outcome),
+        Effect.catchTag("RotationProposalRejected", Effect.fail, (error) =>
+          Effect.fail(mintRefusal(error, outcome)),
         ),
       );
     return { proposalId, expiresAtMs: receipt.expiresAtMs, recipients, resealed: false };

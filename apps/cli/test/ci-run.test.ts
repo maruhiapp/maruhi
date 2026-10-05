@@ -679,7 +679,11 @@ describe("maruhi ci run (token-replayed / rate limit / 503)", () => {
   it("auto-retries token-replayed exactly once with a fresh token, presenting the same ephemeral key", async () => {
     const { env, server, oidc } = await startCiEnv([flakyLeaseHandler(1, TOKEN_REPLAYED)]);
     expect(await runCli(ciArgs(server), env.layer)).toBe(0);
-    expect(env.errors.join("\n")).toContain("Minting a fresh token and retrying once");
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "The lease was rejected as token-replayed (the token was already bound to a different ephemeral key). Minting a fresh token and retrying once",
+      ]),
+    );
 
     const leases = server.requests.filter((request) => request.path === leasePath());
     expect(leases).toHaveLength(2);
@@ -698,7 +702,11 @@ describe("maruhi ci run (token-replayed / rate limit / 503)", () => {
   it("stops after one retry if token-replayed persists with a fresh token (never sends a third)", async () => {
     const { env, server, oidc } = await startCiEnv([flakyLeaseHandler(99, TOKEN_REPLAYED)]);
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("token-replayed again with a freshly minted token");
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: The lease was rejected as token-replayed again with a freshly minted token. Someone else is using this job's OIDC tokens — investigate the job's steps and network path for token exfiltration (AUTH_SPEC §14-1)",
+      ]),
+    );
     expect(server.requests.filter((request) => request.path === leasePath())).toHaveLength(2);
     expect(oidc.issued).toBe(2);
     expect(env.runnerCalls).toHaveLength(0);
@@ -713,7 +721,11 @@ describe("maruhi ci run (token-replayed / rate limit / 503)", () => {
       }),
     ]);
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
-    expect(env.errors.join("\n")).toContain("unsupported-issuer");
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: The OIDC token was rejected by the lease endpoint (unsupported-issuer). Check the token's issuer, audience, and validity window (AUTH_SPEC §14-1)",
+      ]),
+    );
     expect(server.requests.filter((request) => request.path === leasePath())).toHaveLength(1);
   });
 
@@ -778,9 +790,11 @@ describe("maruhi ci run (token-replayed / rate limit / 503)", () => {
       }),
     ]);
     expect(await runCli(ciArgs(server), env.layer)).toBe(1);
-    const output = env.errors.join("\n");
-    expect(output).toContain("lease-policy mismatch");
-    expect(output).toContain("maruhi server grant --lease-policy");
+    expect(env.errors).toEqual(
+      expect.arrayContaining([
+        "maruhi: The server answered 404 for the lease. The lease endpoint folds these into one uniform answer (existence hiding — AUTH_SPEC §14-1): unknown project, no active grant, a lease-policy mismatch (issuer / audience / claim constraints), and an out-of-scope or unknown environment. Check --server, --project, and the environment in the workflow, and that a project owner granted this workload's identity with `maruhi server grant --lease-policy`",
+      ]),
+    );
     // No retry (neither a credential problem nor transient)
     expect(server.requests.filter((request) => request.path === leasePath())).toHaveLength(1);
     expect(env.runnerCalls).toHaveLength(0);

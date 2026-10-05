@@ -73,7 +73,7 @@ export function syncOwnDevices(
     }
     const lookup = yield* store
       .load(session.origin, session.userId)
-      .pipe(Effect.catch(() => Effect.succeed({ state: "corrupt" } as const)));
+      .pipe(Effect.orElseSucceed(() => ({ state: "corrupt" }) as const));
     if (lookup.state === "corrupt") {
       yield* logWarning(
         `the own-devices record is corrupt and was ignored: ${store.filePath} — inspect it, and delete it if the change was not intentional (device keys are re-observed from the project chains)`,

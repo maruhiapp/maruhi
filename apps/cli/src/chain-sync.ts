@@ -21,7 +21,7 @@
 // declarations (§14-2), so it is always empty there.
 
 import type { ProjectId } from "@maruhi/core";
-import { ChainInvalidError, cryptoEffect, cryptoPromise } from "@maruhi/core";
+import { cryptoEffect, cryptoPromise } from "@maruhi/core";
 import type { ChainEntry, ChainHistoryIndex, ChainState } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
@@ -209,17 +209,25 @@ export function verifyChainSnapshot(input: {
   return Effect.gen(function* () {
     const { projectId, entries } = input;
     const { state, history } = yield* cryptoEffect(() => verifyChainWithHistory(entries)).pipe(
-      Effect.mapError((error) => {
-        const { seq, reason } =
-          error instanceof ChainInvalidError ? error : { seq: 0, reason: "invalid-payload" };
-        // A distributed chain failing verification = a
-        // contradiction in signed data (evidence — re-running does
-        // not resolve it. Must never be folded into a cleanup
-        // warning)
-        return evidenceError(
-          `Chain verification failed (seq=${seq}, reason=${reason}). The server may be distributing an invalid chain`,
-        );
-      }),
+      // A distributed chain failing verification = a
+      // contradiction in signed data (evidence — re-running does
+      // not resolve it. Must never be folded into a cleanup
+      // warning)
+      Effect.catchTag(
+        "ChainInvalid",
+        (error) =>
+          Effect.fail(
+            evidenceError(
+              `Chain verification failed (seq=${error.seq}, reason=${error.reason}). The server may be distributing an invalid chain`,
+            ),
+          ),
+        () =>
+          Effect.fail(
+            evidenceError(
+              "Chain verification failed (seq=0, reason=invalid-payload). The server may be distributing an invalid chain",
+            ),
+          ),
+      ),
     );
 
     // §6.4: the project ID = the genesis entry hash. The swap

@@ -296,8 +296,8 @@ export function approveProposalOp<R>(input: {
     );
     const proposal = first.proposal;
     let mySeq: number | null = null;
-    const outcome = yield* retryOnConflict<ApproveState, ApproveState, "head-conflict">(
-      { verified: input.verified, closed: null },
+    const outcome = yield* retryOnConflict(
+      { verified: input.verified, closed: null } as ApproveState,
       {
         maxAttempts: MAX_ATTEMPTS,
         attempt: (state) =>

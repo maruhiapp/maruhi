@@ -209,7 +209,7 @@ export function makeFileOwnDeviceStore(path: string): OwnDeviceStoreShape {
   // any non-`loaded` state as "no records" and degrade, while `merge`
   // refuses to write over it.
   const loadLedger = readJsonFile(path, FileSchema).pipe(
-    Effect.catch(() => Effect.succeed<LedgerRead<OwnDevicesFile>>({ state: "corrupt" })),
+    Effect.orElseSucceed((): LedgerRead<OwnDevicesFile> => ({ state: "corrupt" })),
     Effect.provide(BunFileSystem.layer),
   );
 

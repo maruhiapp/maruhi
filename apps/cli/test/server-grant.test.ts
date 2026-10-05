@@ -615,6 +615,8 @@ describe("maruhi server grant", () => {
         env.layer,
       ),
     ).toBe(2);
-    expect(env.errors.join("\n")).toContain("--lease-policy content is invalid: not valid JSON");
+    expect(env.errors).toEqual(
+      expect.arrayContaining(["maruhi: --lease-policy content is invalid: not valid JSON"]),
+    );
   });
 });

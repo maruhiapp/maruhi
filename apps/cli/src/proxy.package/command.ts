@@ -7,7 +7,7 @@ import { Command } from "effect/cli";
 import { commonFlags, runCommandArgument, singleFlag, singleValued } from "../commands/flags.ts";
 import { brokeredRun } from "../commands/pull-run.ts";
 import { commandAfterTerminator } from "../commands/shared.ts";
-import { ConfigStore } from "../config.ts";
+import { loadCliConfig } from "../config.ts";
 import { usageError } from "../errors.ts";
 import { logNote } from "../notice.ts";
 import { acceptProxyConfig } from "./proxy-accept.ts";
@@ -99,9 +99,7 @@ export function makeProxyCommands(onExitCode: (code: number) => void) {
       // arms is per project, R-18)
       yield* checkProxyConfigProject(loaded.config, values.project);
       const projectId =
-        values.project ??
-        loaded.config.projectId ??
-        (yield* (yield* ConfigStore).load).defaultProject;
+        values.project ?? loaded.config.projectId ?? (yield* loadCliConfig).defaultProject;
       if (projectId === undefined) {
         return yield* Effect.fail(
           usageError(

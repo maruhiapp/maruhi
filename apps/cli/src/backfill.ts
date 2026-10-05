@@ -9,7 +9,7 @@
 // resolution of a per-epoch 409 differs (treat as registered / replace via
 // the repair path), so that is the injection point.
 
-import { DekWrapExistsError, type WrappedDek } from "@maruhi/api-schema";
+import { type WrappedDek } from "@maruhi/api-schema";
 import type { SigningKeyPair } from "@maruhi/crypto";
 import { Effect, type Redacted } from "effect";
 
@@ -215,13 +215,14 @@ export function registerWraps(
   return (deks) =>
     client.deks.register({ params: { projectId, environmentId }, payload: { deks } }).pipe(
       Effect.map((): RegisterOutcome => ({ kind: "ok" })),
-      Effect.catch((error) =>
-        error instanceof DekWrapExistsError
-          ? Effect.succeed<RegisterOutcome>({
-              kind: "exists",
-              storedRecipientEncPubHex: error.storedRecipientEncPubHex,
-            })
-          : Effect.fail(toCliError(error)),
+      Effect.catchTag(
+        "DekWrapExists",
+        (error) =>
+          Effect.succeed<RegisterOutcome>({
+            kind: "exists",
+            storedRecipientEncPubHex: error.storedRecipientEncPubHex,
+          }),
+        (error) => Effect.fail(toCliError(error)),
       ),
     );
 }

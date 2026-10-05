@@ -397,7 +397,7 @@ export function loginOp(input: {
           const authed = yield* makeApiClient({ baseUrl: input.origin, token: issuedToken });
           const revoked = yield* authed.auth.revokeToken({}).pipe(
             Effect.map(() => true),
-            Effect.catch(() => Effect.succeed(false)),
+            Effect.orElseSucceed(() => false),
           );
           return yield* Effect.fail(
             cliError(

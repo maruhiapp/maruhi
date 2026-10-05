@@ -130,11 +130,10 @@ export interface ReencryptContext {
  * failure must ride the "partial completion" reporting path — escaping as
  * an exception would lose the operational state.
  */
-export function asOutcome<A, R>(
-  effect: Effect.Effect<A, CliError, R>,
+export function asOutcome<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
 ): Effect.Effect<
-  | { readonly kind: "ok"; readonly value: A }
-  | { readonly kind: "failed"; readonly error: CliError },
+  { readonly kind: "ok"; readonly value: A } | { readonly kind: "failed"; readonly error: E },
   never,
   R
 > {

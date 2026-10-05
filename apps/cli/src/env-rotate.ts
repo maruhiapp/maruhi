@@ -36,7 +36,7 @@ import {
   ensureRotationIsUseful,
 } from "./env-rotate-decrypt.ts";
 import { reencryptContext, reencryptCurrentValues } from "./env-rotate-pass.ts";
-import { appendRotation, RotateValuesConflictError } from "./env-rotate-send.ts";
+import { appendRotation, type RotateValuesConflictError } from "./env-rotate-send.ts";
 import { ensureRotatable, type RotateInput, dedupeWarnings } from "./env-rotate-shared.ts";
 import { CliError, cliError, usageError } from "./errors.ts";
 import { CliIo } from "./io.ts";
@@ -189,13 +189,10 @@ function rotateAttempt(
   return Effect.suspend(() => {
     const warnings: string[] = [];
     return rotateWithWarnings(input, warnings).pipe(
-      Effect.catch((error) =>
+      Effect.tapError(() => logWarnings(dedupeWarnings(warnings))),
+      Effect.catchTag("RotateValuesConflictError", (error) =>
         Effect.gen(function* () {
-          yield* logWarnings(dedupeWarnings(warnings));
-          if (
-            error instanceof RotateValuesConflictError &&
-            attempt < MAX_VALUES_CONFLICT_ATTEMPTS
-          ) {
+          if (attempt < MAX_VALUES_CONFLICT_ATTEMPTS) {
             // A concurrent push advanced the current values (§12-4).
             // This attempt's composite was not accepted (the epoch did not
             // advance), so the generated new DEK and wrap set may be
@@ -207,7 +204,9 @@ function rotateAttempt(
             );
             return yield* rotateAttempt(input, attempt + 1);
           }
-          return yield* Effect.fail(error);
+          // On exhaustion it surfaces as a plain CliError with the same
+          // message (the tag is only for this catch)
+          return yield* Effect.fail(cliError(error.message));
         }),
       ),
     );
@@ -434,7 +433,7 @@ function manifestBaseOf(pulled: VerifiedEnvironmentPull): {
 function rotateWithWarnings(
   input: RotateInput,
   warnings: string[],
-): Effect.Effect<RotationSummary, CliError, CliIo> {
+): Effect.Effect<RotationSummary, CliError | RotateValuesConflictError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const reason = yield* checkReasonLength(input.reason);

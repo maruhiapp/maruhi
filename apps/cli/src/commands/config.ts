@@ -5,15 +5,14 @@ import { Argument, Command } from "effect/cli";
 
 import {
   CONFIG_KEYS,
-  ConfigFileCorruptError,
   type ConfigKey,
   ConfigStore,
   IDENTITY_BACKINGS,
   asConfigKey,
   asIdentityBacking,
+  loadCliConfig,
 } from "../config.ts";
 import { CliError, usageError } from "../errors.ts";
-import { toCliError } from "../failure.ts";
 import { CliIo } from "../io.ts";
 import { logWarning } from "../notice.ts";
 import { NonBlank } from "./flags.ts";
@@ -53,9 +52,8 @@ export function makeConfigCommands() {
   const configGet = Command.make("get", configGetConfig, (values) =>
     Effect.gen(function* () {
       const io = yield* CliIo;
-      const store = yield* ConfigStore;
       const configKey = yield* requireConfigKey(values.key);
-      const config = yield* store.load;
+      const config = yield* loadCliConfig;
       // stdout is only the command's output (the value): `V=$(maruhi
       // config get server)` captures nothing besides the value (decision 9)
       yield* io.log(config[configKey] ?? "");
@@ -81,15 +79,13 @@ export function makeConfigCommands() {
       // EISDIR / EIO etc.) would silently replace an existing config that
       // merely could not be read, so it fails as-is
       const config = yield* store.load.pipe(
-        Effect.catch((error) =>
-          error instanceof ConfigFileCorruptError
-            ? Effect.gen(function* () {
-                yield* logWarning(
-                  `${toCliError(error).message} — discarding the existing config and recreating it with only this key`,
-                );
-                return {};
-              })
-            : Effect.fail(error),
+        Effect.catchTag("ConfigFileCorruptError", (error) =>
+          Effect.gen(function* () {
+            yield* logWarning(
+              `${error.message} — discarding the existing config and recreating it with only this key`,
+            );
+            return {};
+          }),
         ),
       );
       yield* store.save({ ...config, [configKey]: values.value });

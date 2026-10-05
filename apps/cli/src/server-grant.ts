@@ -339,11 +339,6 @@ function grantUnchanged(
   );
 }
 
-/** The CAS retry's state. */
-interface GrantState {
-  readonly verified: VerifiedProject;
-}
-
 /** The grant's outcome: a proposal (four-eyes — K6) or an application. */
 export type ServerGrantOutcome =
   | { readonly kind: "proposed"; readonly proposal: ProposedSummary }
@@ -464,7 +459,7 @@ export function serverGrantOp(input: {
         "An active grant with identical content (both scope and lease_policy) already exists — skipping the chain append and running only the backfill (crash recovery)",
       );
     } else {
-      const appended = yield* retryOnConflict<GrantState, VerifiedProject, "head-conflict">(
+      const appended = yield* retryOnConflict(
         { verified },
         {
           maxAttempts: MAX_ATTEMPTS,

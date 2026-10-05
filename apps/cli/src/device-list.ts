@@ -40,7 +40,7 @@ function collectChainRows(input: {
       const context = yield* openMetadataProject({
         server: input.session.origin,
         project: projectId,
-      }).pipe(Effect.catch(() => Effect.succeed<ProjectContextBase | null>(null)));
+      }).pipe(Effect.orElseSucceed((): ProjectContextBase | null => null));
       if (context === null) {
         yield* logNote(
           `${displayText(projectId)}: could not sync this project; its devices are not shown`,

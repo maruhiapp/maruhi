@@ -656,8 +656,8 @@ interface D1AuditRenderResult {
 }
 
 /** The common path for a D1-side page (invites / self): fetch → render the list → continuation hint. */
-function fetchAndRenderD1Events(input: {
-  readonly request: Effect.Effect<{ readonly events: readonly WireAuditEvent[] }, unknown>;
+function fetchAndRenderD1Events<E>(input: {
+  readonly request: Effect.Effect<{ readonly events: readonly WireAuditEvent[] }, E>;
   readonly page: AuditPageOptions;
   readonly emptyMessage: string;
   readonly command: string;

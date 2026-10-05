@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
-import { Context, Effect, FileSystem, Result, Schema } from "effect";
+import { Context, Data, Effect, FileSystem, Result, Runtime, Schema } from "effect";
 
 import { CliError, cliError } from "./errors.ts";
 import { writeJsonFileAtomic } from "./json-record.ts";
@@ -78,13 +78,28 @@ export function asConfigKey(name: string): ConfigKey | null {
 
 /** Load / save boundary for the non-secret config file. */
 export interface ConfigStoreShape {
-  readonly load: Effect.Effect<CliConfig, CliError>;
+  readonly load: Effect.Effect<CliConfig, CliError | ConfigFileCorruptError>;
   readonly save: (config: CliConfig) => Effect.Effect<void, CliError>;
 }
 
 export class ConfigStore extends Context.Service<ConfigStore, ConfigStoreShape>()(
   "cli/ConfigStore",
 ) {}
+
+/**
+ * `ConfigStore.load` for every caller other than `config set`'s
+ * discard-and-recreate: a corrupt-content failure surfaces as a plain
+ * CliError (the tag exists only for the one command allowed to rebuild
+ * the file).
+ */
+export const loadCliConfig: Effect.Effect<CliConfig, CliError, ConfigStore> = Effect.gen(
+  function* () {
+    const store = yield* ConfigStore;
+    return yield* store.load.pipe(
+      Effect.catchTag("ConfigFileCorruptError", (error) => Effect.fail(cliError(error.message))),
+    );
+  },
+);
 
 /** Resolves the config file path (MARUHI_CONFIG_DIR → XDG_CONFIG_HOME → ~/.config). */
 export function defaultConfigPath(env: (name: string) => string | undefined): string {
@@ -146,12 +161,22 @@ function decodeConfig(json: string): CliConfig | null {
 
 /**
  * A failure where the config file's **content** cannot be interpreted as
- * JSON (a subtype of CliError). Only for this case may `config set`
- * "discard and recreate" — a failure to read (EACCES / EISDIR / EIO
- * etc.) is not corrupt content, so it must not proceed to replacing the
- * existing settings.
+ * JSON — a tag of its own so `config set`'s "discard and recreate"
+ * catches it by tag and nothing else does. A failure to read (EACCES /
+ * EISDIR / EIO etc.) is not corrupt content, so it must not proceed to
+ * replacing the existing settings. It becomes a plain {@link CliError}
+ * with the same message wherever it leaves the code that handles it
+ * (`config set` via the catchTag, every other consumer via
+ * {@link loadCliConfig}).
  */
-export class ConfigFileCorruptError extends CliError {}
+class ConfigFileCorruptError extends Data.TaggedError("ConfigFileCorruptError")<{
+  readonly message: string;
+}> {
+  /** The same exit code CliError gives it (a failure, not a usage error). */
+  override get [Runtime.errorExitCode](): number {
+    return 1;
+  }
+}
 
 /** File-backed config store at `path` (used by both production and tests). */
 export function makeFileConfigStore(path: string): ConfigStoreShape {

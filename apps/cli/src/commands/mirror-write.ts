@@ -558,7 +558,7 @@ function sourceState(
           }),
         ),
       ),
-      Effect.catch(() => Effect.succeed(null)),
+      Effect.orElseSucceed(() => null),
     );
     if (marked !== null) {
       return marked;
@@ -584,7 +584,7 @@ function keyFollowUps(
     const verified = prefetched ?? (yield* syncProject(client, projectId));
     const own = yield* client.auth.authConfig({}).pipe(
       Effect.map((config) => config.serverKeyFingerprintHex ?? null),
-      Effect.catch(() => Effect.succeed(null)),
+      Effect.orElseSucceed(() => null),
     );
     const lines: string[] = [];
     for (const grant of [...verified.state.serverGrants.values()].toSorted((a, b) =>

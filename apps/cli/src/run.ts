@@ -12,7 +12,7 @@
 // wording ever includes the description** (never build an injection
 // surface via the logs).
 
-import { Context, Effect, Redacted, Stdio } from "effect";
+import { Context, Data, Effect, Redacted, Stdio } from "effect";
 
 import { AgentProfileRef } from "./agent-gate.ts";
 import { decodeValueText, displayText } from "./display.ts";
@@ -72,8 +72,12 @@ export interface CaptureOutcome {
 }
 
 /** A captured script that maruhi stopped after it started (its stdout passed the cap) — distinct from a launch failure. */
-export class ScriptStoppedError extends Error {
-  override readonly name = "ScriptStoppedError";
+export class ScriptStoppedError extends Data.TaggedError("ScriptStoppedError")<{
+  readonly message: string;
+}> {
+  constructor(message: string) {
+    super({ message });
+  }
 }
 
 /**
@@ -82,13 +86,12 @@ export class ScriptStoppedError extends Error {
  * script's own exit code is carried — a 0 means the credential may exist
  * at the issuer.
  */
-export class ScriptLeftoverError extends Error {
-  override readonly name = "ScriptLeftoverError";
-  constructor(
-    readonly exitCode: number,
-    message: string,
-  ) {
-    super(message);
+export class ScriptLeftoverError extends Data.TaggedError("ScriptLeftoverError")<{
+  readonly exitCode: number;
+  readonly message: string;
+}> {
+  constructor(exitCode: number, message: string) {
+    super({ exitCode, message });
   }
 }
 

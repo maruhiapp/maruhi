@@ -89,7 +89,7 @@ export function fetchRegistry(
 ): Effect.Effect<readonly RegistryRow[] | null, never> {
   return client.devices.list({}).pipe(
     Effect.map((response) => response.devices as readonly RegistryRow[]),
-    Effect.catch(() => Effect.succeed(null)),
+    Effect.orElseSucceed(() => null),
   );
 }
 

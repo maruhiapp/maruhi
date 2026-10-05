@@ -2,12 +2,11 @@
 // <file>` (lease_policy — CRYPTO_SPEC §6.2). The argument layer is
 // commands/server.ts. Wording is English per ADR-0017.
 
-import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import type { LeasePolicyIssuer } from "@maruhi/crypto";
-import { Effect, FileSystem, Result, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 
 import { type CliError, usageError } from "./errors.ts";
-import { JsonRecord, recordKeysMatch } from "./json-record.ts";
+import { JsonRecord, readNamedFile, recordKeysMatch } from "./json-record.ts";
 
 // Input-file limits of lease_policy (CRYPTO_SPEC §6.2). Same values
 // as the consensus rules (an excess becomes invalid-payload at chain
@@ -145,16 +144,14 @@ export function loadLeasePolicy(
     return Effect.succeed([]);
   }
   return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const content = yield* fs
-      .readFileString(path, "utf8")
-      .pipe(
-        Effect.mapError(() => usageError("Cannot read the --lease-policy file (check the path)")),
-      );
+    const content = yield* readNamedFile(
+      path,
+      usageError("Cannot read the --lease-policy file (check the path)"),
+    );
     const parsed = parseLeasePolicy(content);
     if (typeof parsed === "string") {
       return yield* Effect.fail(usageError(`--lease-policy content is invalid: ${parsed}`));
     }
     return parsed;
-  }).pipe(Effect.provide(BunFileSystem.layer));
+  });
 }

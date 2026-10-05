@@ -116,7 +116,7 @@ function inviteCreateCommand(
         ? null
         : yield* context.client.auth.me({}).pipe(
             Effect.map((me) => me.providerLogin ?? null),
-            Effect.catch(() => Effect.succeed(null)),
+            Effect.orElseSucceed(() => null),
           );
     yield* inviteCreateOp({
       client: context.client,

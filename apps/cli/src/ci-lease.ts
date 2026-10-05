@@ -19,7 +19,6 @@
 // project per token, so all requests under the same token must present the
 // same ephemeral key (AUTH_SPEC §14-1 / CRYPTO_SPEC §9.1).
 
-import { LeaseUnauthorizedError, ProjectNotFoundError } from "@maruhi/api-schema";
 import { cryptoPromise } from "@maruhi/core";
 import type { EnvironmentId, ProjectId } from "@maruhi/core";
 import type { EncryptionKeyPair, LeaseClaims } from "@maruhi/crypto";
@@ -106,15 +105,16 @@ function attemptLease(
 ): Effect.Effect<IssueOutcome, CliError> {
   return issueLease(input).pipe(
     Effect.map((response) => ({ kind: "ok", response }) as const),
-    Effect.catch((error) => {
-      if (error instanceof LeaseUnauthorizedError && error.reason === "token-replayed") {
-        return Effect.succeed({ kind: "replayed" } as const);
-      }
-      if (error instanceof ProjectNotFoundError) {
-        return Effect.fail(cliError(LEASE_NOT_FOUND_MESSAGE));
-      }
-      return Effect.fail(toCliError(error));
-    }),
+    Effect.catchTags(
+      {
+        LeaseUnauthorized: (error) =>
+          error.reason === "token-replayed"
+            ? Effect.succeed({ kind: "replayed" } as const)
+            : Effect.fail(toCliError(error)),
+        ProjectNotFound: () => Effect.fail(cliError(LEASE_NOT_FOUND_MESSAGE)),
+      },
+      (error) => Effect.fail(toCliError(error)),
+    ),
   );
 }
 

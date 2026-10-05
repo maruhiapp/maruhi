@@ -86,11 +86,7 @@ function appendWithCas(input: {
   readonly opLabel: string;
   readonly signEntry: (verified: VerifiedProject) => Effect.Effect<ChainEntry | null, CliError>;
 }): Effect.Effect<{ readonly verified: VerifiedProject; readonly appended: boolean }, CliError> {
-  return retryOnConflict<
-    VerifiedProject,
-    { readonly verified: VerifiedProject; readonly appended: boolean },
-    "head-conflict"
-  >(input.verified, {
+  return retryOnConflict(input.verified, {
     maxAttempts: MAX_ATTEMPTS,
     attempt: (view) =>
       Effect.gen(function* () {

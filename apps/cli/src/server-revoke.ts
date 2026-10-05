@@ -141,13 +141,6 @@ function lastRevokeSeq(verified: VerifiedProject): number | null {
   return null;
 }
 
-interface RevokeState {
-  readonly verified: VerifiedProject;
-  readonly target: string;
-  /** Already revoked by a concurrent revoke — skip the append and proceed to rotation. */
-  readonly alreadyRevoked: boolean;
-}
-
 /**
  * The whole-environment sweep after revoke application (§7).
  * Shared by the direct-append revoke and the fulfiller of an
@@ -245,11 +238,7 @@ export function serverRevokeOp<R>(input: {
 
     if (target !== null) {
       revokedFingerprint = target.serverKeyFingerprintHex;
-      const outcome = yield* retryOnConflict<
-        RevokeState,
-        { readonly verified: VerifiedProject; readonly appended: boolean },
-        "head-conflict"
-      >(
+      const outcome = yield* retryOnConflict(
         { verified, target: target.serverKeyFingerprintHex, alreadyRevoked: false },
         {
           maxAttempts: MAX_ATTEMPTS,
