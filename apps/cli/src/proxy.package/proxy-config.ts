@@ -21,34 +21,33 @@
 // keys refused, and validation wording that names the key and the rule
 // but never echoes the value typed.
 //
-// The JSON is described with Schema and decoded with
-// `Schema.decodeUnknownResult`: the leaf shapes are real schema nodes
-// (String / Literals / Record / Array / Struct), and everything whose
-// wording or ordering is conditional — the mode dispatch, the per-mode
-// key sets, the cross-rule checks — is a `Schema.makeFilter` in the same
-// sequence the hand-written checks ran (the first reason wins, like
-// before). The filters report `Schema.FilterIssue`s: a `{path, issue}`
-// whose issue starts with a separator is a suffix appended to the dotted
-// path ("variables.X.mode" + " must be ..."), and a plain string is a
-// complete reason; the wording is unchanged.
+// The JSON is read in one pass of steps over Schema-decoded leaves
+// (String / Literals / Record / Array), in the sequence the hand-written
+// checks ran (the first reason wins, like before); config-schema.ts renders
+// the failing issue as the same path-and-reason wording.
 
 import { Effect, Result, Schema } from "effect";
 
 import {
+  at,
+  configHeader,
+  decode,
   envNameLeaf,
   field,
   type Invalid,
-  isReason,
-  issueReason,
-  JsonRecord,
+  knownKeys,
   loadConfig,
-  type Reason,
-  reasonIssue,
+  nullishOr,
+  objectLeaf,
+  type Parsed,
+  parseConfigDocument,
+  refuse,
   stringLeaf,
-  unknownKeysRefusal,
+  undefinedOr,
 } from "../config-schema.ts";
 import { type CliError, usageError } from "../errors.ts";
-import { loadIfPresent, parseConfigHeader } from "../json-record.ts";
+import { loadIfPresent } from "../json-record.ts";
+import { SAFE_ENV_NAME } from "../run.ts";
 
 /** Default location of the proxy config, relative to the working directory. */
 export const DEFAULT_PROXY_CONFIG_PATH = "maruhi.proxy.json";
@@ -120,8 +119,6 @@ const CONNECTOR_INPUTS: Readonly<Record<ConnectorKind, readonly string[]>> = {
   "github-app": ["appId", "privateKey", "installationId"],
 };
 
-// An environment variable name (run.ts's SAFE_ENV_NAME — a POSIX identifier)
-const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 // A DNS label sequence (lower-cased on parse). IPv4 literals also pass this shape
 const HOST_NAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 // Printable ASCII without spaces (a value that survives headers, URLs, and
@@ -213,51 +210,33 @@ export function parseHostPattern(text: string): HostPattern | Invalid {
   return { scheme, host: rest, wildcard, port };
 }
 
-/** The `hosts` array: non-empty, string entries, each a valid host pattern (the entry index never reaches the reason). */
+/** The `hosts` array: non-empty (each entry is then read in order by {@link parseHostPattern}). */
+const HOSTS_MESSAGE = " must be a non-empty array of host entries";
 const HOSTS = Schema.Array(Schema.Unknown)
-  .annotate({ message: " must be a non-empty array of host entries" })
-  .check(
-    Schema.makeFilter((entries) => {
-      if (entries.length === 0) {
-        return { path: [], issue: " must be a non-empty array of host entries" };
-      }
-      for (const entry of entries) {
-        if (Result.isFailure(Schema.decodeUnknownResult(Schema.String)(entry))) {
-          return {
-            path: [],
-            issue: " entries must be strings (host[:port], optionally with http:// or https://)",
-          };
-        }
-      }
-      return undefined;
-    }),
-  );
+  .annotate({ message: HOSTS_MESSAGE })
+  .check(Schema.isMinLength(1, { message: HOSTS_MESSAGE }));
+
+/** One `hosts` entry before it is read as a pattern. */
+const HOST_ENTRY = Schema.String.annotate({
+  message: " entries must be strings (host[:port], optionally with http:// or https://)",
+});
 
 /** The `surfaces` array: non-empty, each entry one of the RFC 9110 surfaces (deduped on success). */
-const SURFACES_FIELD = Schema.Array(Schema.Unknown)
-  .annotate({ message: ` must be a non-empty array of ${SURFACES.join(" | ")}` })
-  .check(
-    Schema.makeFilter((entries) => {
-      if (entries.length === 0) {
-        return { path: [], issue: ` must be a non-empty array of ${SURFACES.join(" | ")}` };
-      }
-      for (const entry of entries) {
-        const surface = Schema.decodeUnknownResult(Schema.String)(entry);
-        if (
-          Result.isFailure(surface) ||
-          !(SURFACES as readonly string[]).includes(surface.success)
-        ) {
-          return { path: [], issue: ` accepts only ${SURFACES.join(" | ")}` };
-        }
-      }
-      return undefined;
-    }),
-  );
+const SURFACES_MESSAGE = ` must be a non-empty array of ${SURFACES.join(" | ")}`;
+const SURFACES_FIELD = undefinedOr(
+  SURFACES_MESSAGE,
+  Schema.Array(
+    Schema.Literals(SURFACES).annotate({ message: ` accepts only ${SURFACES.join(" | ")}` }),
+  )
+    .annotate({ message: SURFACES_MESSAGE })
+    .check(Schema.isMinLength(1, { message: SURFACES_MESSAGE })),
+);
 
 /** The `placeholder` string (16–256 printable ASCII without spaces — review finding §19 C-12). */
-const PLACEHOLDER_FIELD = stringLeaf(
-  " must be 16 to 256 printable ASCII characters without spaces",
-  (value) => PLACEHOLDER.test(value),
+const PLACEHOLDER_MESSAGE = " must be 16 to 256 printable ASCII characters without spaces";
+const PLACEHOLDER_FIELD = undefinedOr(
+  PLACEHOLDER_MESSAGE,
+  stringLeaf(PLACEHOLDER_MESSAGE, (value) => PLACEHOLDER.test(value)),
 );
 
 /** The rule `mode` word. */
@@ -270,236 +249,154 @@ const CONNECTOR = Schema.Literals(CONNECTOR_KINDS).annotate({
   message: ` must be one of ${CONNECTOR_KINDS.join(", ")}`,
 });
 
-function parseHosts(name: string, value: unknown): readonly HostPattern[] | Reason {
-  const entries = Schema.decodeUnknownResult(HOSTS)(value);
-  if (Result.isFailure(entries)) {
-    return { path: ["hosts"], issue: entries.failure.issue };
-  }
-  const hosts: HostPattern[] = [];
-  for (const entry of entries.success) {
-    // The schema checked every entry is a string
-    const parsed = parseHostPattern(entry as string);
-    if (typeof parsed === "string") {
-      return { path: ["hosts"], issue: ` has an invalid entry: ${parsed}` };
+/** A connector input's value: the maruhi variable that supplies it. */
+const INPUT_VARIABLE = envNameLeaf(" must name a maruhi variable (letters, digits, _)");
+
+function parseHosts(record: Record<string, unknown>): Parsed<readonly HostPattern[]> {
+  return Result.gen(function* () {
+    const entries = yield* field(record, "hosts", HOSTS);
+    const hosts: HostPattern[] = [];
+    for (const entry of entries) {
+      // Entry by entry, like before: the first bad entry decides the reason
+      const parsed = parseHostPattern(yield* at(["hosts"], decode(HOST_ENTRY, entry)));
+      if (typeof parsed === "string") {
+        return yield* refuse(` has an invalid entry: ${parsed}`, ["hosts"]);
+      }
+      hosts.push(parsed);
     }
-    hosts.push(parsed);
-  }
-  return hosts;
-}
-
-function parseSurfaces(record: Record<string, unknown>): readonly Surface[] | Reason {
-  const entries = field(record, "surfaces", Schema.UndefinedOr(SURFACES_FIELD));
-  if (isReason(entries)) {
-    return entries;
-  }
-  if (entries.value === undefined) {
-    return DEFAULT_SURFACES;
-  }
-  // The schema checked every entry is one of SURFACES (the set dedupes)
-  return [...new Set(entries.value as readonly Surface[])];
-}
-
-function parsePlaceholder(
-  record: Record<string, unknown>,
-): { readonly placeholder: string | undefined } | Reason {
-  const placeholder = field(record, "placeholder", Schema.UndefinedOr(PLACEHOLDER_FIELD));
-  return isReason(placeholder) ? placeholder : { placeholder: placeholder.value };
-}
-
-function parseBrokerSettings(
-  name: string,
-  record: Record<string, unknown>,
-): BrokerSettings | Reason {
-  const hosts = parseHosts(name, record["hosts"]);
-  if (isReason(hosts)) {
     return hosts;
-  }
-  const surfaces = parseSurfaces(record);
-  if (isReason(surfaces)) {
-    return surfaces;
-  }
-  const placeholder = parsePlaceholder(record);
-  if (isReason(placeholder)) {
-    return placeholder;
-  }
-  return { hosts, surfaces, placeholder: placeholder.placeholder };
+  });
+}
+
+function parseBrokerSettings(record: Record<string, unknown>): Parsed<BrokerSettings> {
+  return Result.gen(function* () {
+    const hosts = yield* parseHosts(record);
+    const surfaces = yield* field(record, "surfaces", SURFACES_FIELD);
+    const placeholder = yield* field(record, "placeholder", PLACEHOLDER_FIELD);
+    return {
+      hosts,
+      surfaces: surfaces === undefined ? DEFAULT_SURFACES : [...new Set(surfaces)],
+      placeholder,
+    };
+  });
 }
 
 function parseConnectorInputs(
-  name: string,
   connector: ConnectorKind,
-  value: unknown,
-): Readonly<Record<string, string>> | Reason {
+  record: Record<string, unknown>,
+): Parsed<Readonly<Record<string, string>>> {
   const required = CONNECTOR_INPUTS[connector];
-  const inputs = Schema.decodeUnknownResult(
-    JsonRecord(` must be an object naming the variables for ${required.join(", ")}`),
-  )(value);
-  if (Result.isFailure(inputs)) {
-    return { path: ["inputs"], issue: inputs.failure.issue };
-  }
-  const unknown = unknownKeysRefusal(
-    inputs.success,
-    required,
-    `the ${connector} connector takes ${required.join(", ")}`,
-  );
-  if (unknown !== undefined) {
-    return { path: ["inputs"], issue: reasonIssue(unknown) };
-  }
-  const parsed: Record<string, string> = {};
-  for (const key of required) {
-    const variable = field(
-      inputs.success,
-      key,
-      envNameLeaf(" must name a maruhi variable (letters, digits, _)"),
+  const inputs = Result.gen(function* () {
+    const given = yield* decode(
+      objectLeaf(` must be an object naming the variables for ${required.join(", ")}`),
+      record["inputs"],
     );
-    if (isReason(variable)) {
-      return { path: ["inputs"], issue: reasonIssue(variable) };
+    yield* knownKeys(given, required, `the ${connector} connector takes ${required.join(", ")}`);
+    const parsed: Record<string, string> = {};
+    for (const key of required) {
+      parsed[key] = yield* field(given, key, INPUT_VARIABLE);
     }
-    parsed[key] = variable.value;
-  }
-  return parsed;
+    return parsed;
+  });
+  return at(["inputs"], inputs);
 }
 
-function parseBrokerRule(name: string, value: Record<string, unknown>): VariableRule | Reason {
-  const unknown = unknownKeysRefusal(
-    value,
-    BROKER_KEYS,
-    `a broker rule accepts ${BROKER_KEYS.join(", ")}`,
-  );
-  if (unknown !== undefined) {
-    return unknown;
-  }
-  const settings = parseBrokerSettings(name, value);
-  return isReason(settings) ? settings : { mode: "broker", ...settings };
+function parseBrokerRule(value: Record<string, unknown>): Parsed<VariableRule> {
+  return Result.gen(function* () {
+    yield* knownKeys(value, BROKER_KEYS, `a broker rule accepts ${BROKER_KEYS.join(", ")}`);
+    const settings = yield* parseBrokerSettings(value);
+    return { mode: "broker", ...settings };
+  });
 }
 
-function parseConnectorRule(name: string, value: Record<string, unknown>): VariableRule | Reason {
-  const unknown = unknownKeysRefusal(
-    value,
-    CONNECTOR_KEYS,
-    `a connector rule accepts ${CONNECTOR_KEYS.join(", ")}`,
-  );
-  if (unknown !== undefined) {
-    return unknown;
-  }
-  const connector = field(value, "connector", CONNECTOR);
-  if (isReason(connector)) {
-    return connector;
-  }
-  const inputs = parseConnectorInputs(name, connector.value, value["inputs"]);
-  if (isReason(inputs)) {
-    return inputs;
-  }
-  const settings = parseBrokerSettings(name, value);
-  return isReason(settings)
-    ? settings
-    : { mode: "connector", connector: connector.value, inputs, ...settings };
+function parseConnectorRule(value: Record<string, unknown>): Parsed<VariableRule> {
+  return Result.gen(function* () {
+    yield* knownKeys(
+      value,
+      CONNECTOR_KEYS,
+      `a connector rule accepts ${CONNECTOR_KEYS.join(", ")}`,
+    );
+    const connector = yield* field(value, "connector", CONNECTOR);
+    const inputs = yield* parseConnectorInputs(connector, value);
+    const settings = yield* parseBrokerSettings(value);
+    return { mode: "connector", connector, inputs, ...settings };
+  });
 }
 
 function parseBareRule(
-  name: string,
   mode: "passthrough" | "withhold",
   value: Record<string, unknown>,
-): VariableRule | Reason {
-  const unknown = unknownKeysRefusal(value, BARE_KEYS, `a ${mode} rule takes only "mode"`);
-  return unknown === undefined ? { mode } : unknown;
+): Parsed<VariableRule> {
+  return Result.map(knownKeys(value, BARE_KEYS, `a ${mode} rule takes only "mode"`), () => ({
+    mode,
+  }));
 }
 
-function parseRule(name: string, value: unknown): VariableRule | Reason {
+const RULE_RECORD = objectLeaf(
+  ' must be an object with a "mode", an array of hosts, or "passthrough" / "withhold"',
+);
+
+function parseRule(value: unknown): Parsed<VariableRule> {
   // Shorthands: an array = broker toward these hosts; a bare mode word
   if (Array.isArray(value)) {
-    return parseRule(name, { mode: "broker", hosts: value });
+    return parseRule({ mode: "broker", hosts: value });
   }
   if (value === "passthrough" || value === "withhold") {
-    return { mode: value };
+    return Result.succeed({ mode: value });
   }
-  return parseRecordRule(name, value);
+  return Result.gen(function* () {
+    const record = yield* decode(RULE_RECORD, value);
+    const mode = yield* field(record, "mode", MODE);
+    switch (mode) {
+      case "broker":
+        return yield* parseBrokerRule(record);
+      case "connector":
+        return yield* parseConnectorRule(record);
+      case "passthrough":
+      case "withhold":
+        return yield* parseBareRule(mode, record);
+    }
+  });
 }
 
-function parseRecordRule(name: string, value: unknown): VariableRule | Reason {
-  const record = Schema.decodeUnknownResult(
-    JsonRecord(
-      ' must be an object with a "mode", an array of hosts, or "passthrough" / "withhold"',
-    ),
-  )(value);
-  if (Result.isFailure(record)) {
-    return record.failure.issue;
-  }
-  const mode = field(record.success, "mode", MODE);
-  if (isReason(mode)) {
-    return mode;
-  }
-  switch (mode.value) {
-    case "broker":
-      return parseBrokerRule(name, record.success);
-    case "connector":
-      return parseConnectorRule(name, record.success);
-    case "passthrough":
-    case "withhold":
-      return parseBareRule(name, mode.value, record.success);
-  }
-}
-
-/** The top-level scalar fields (version / project / unmatched / unlisted). */
-const UNMATCHED = Schema.NullishOr(
-  Schema.Literals(["allow", "block"]).annotate({
-    message: ' must be "allow" (tunnel hosts no rule names, untouched) or "block"',
-  }),
+/** The top-level `unmatched` / `unlisted` words (null = absent = the default). */
+const UNMATCHED_MESSAGE = ' must be "allow" (tunnel hosts no rule names, untouched) or "block"';
+const UNMATCHED = nullishOr(
+  UNMATCHED_MESSAGE,
+  Schema.Literals(["allow", "block"]).annotate({ message: UNMATCHED_MESSAGE }),
 );
-const UNLISTED = Schema.NullishOr(
-  Schema.Literals(["withhold", "passthrough"]).annotate({
-    message: ' must be "withhold" (variables no rule names are not injected) or "passthrough"',
-  }),
+const UNLISTED_MESSAGE =
+  ' must be "withhold" (variables no rule names are not injected) or "passthrough"';
+const UNLISTED = nullishOr(
+  UNLISTED_MESSAGE,
+  Schema.Literals(["withhold", "passthrough"]).annotate({ message: UNLISTED_MESSAGE }),
 );
 
-function parseRoot(
-  parsed: Record<string, unknown>,
-): Pick<ProxyConfig, "projectId" | "unmatched" | "unlisted"> | Reason {
-  const header = parseConfigHeader(parsed, ROOT_KEYS);
-  if (typeof header === "string") {
-    return header;
-  }
-  const unmatched = field(parsed, "unmatched", UNMATCHED);
-  if (isReason(unmatched)) {
-    return unmatched;
-  }
-  const unlisted = field(parsed, "unlisted", UNLISTED);
-  if (isReason(unlisted)) {
-    return unlisted;
-  }
-  return {
-    projectId: header.projectId,
-    unmatched: unmatched.value ?? "allow",
-    unlisted: unlisted.value ?? "withhold",
-  };
-}
+const VARIABLES_RECORD = objectLeaf(" must be an object (env-var name → rule); it may be empty");
 
 /** The `variables` object: every rule, unique placeholders, and no injection of a consumed input. */
-function parseVariables(raw: unknown): ReadonlyMap<string, VariableRule> | Reason {
-  const record = Schema.decodeUnknownResult(
-    JsonRecord(" must be an object (env-var name → rule); it may be empty"),
-  )(raw);
-  if (Result.isFailure(record)) {
-    return record.failure.issue;
-  }
-  const variables = new Map<string, VariableRule>();
-  const placeholders = new Set<string>();
-  const consumed = new Map<string, string>();
-  for (const [name, value] of Object.entries(record.success)) {
-    if (!ENV_NAME.test(name)) {
-      return "variables keys must be environment variable names (letters, digits, _, starting with a letter or _)";
+function parseVariables(
+  record: Record<string, unknown>,
+): Parsed<ReadonlyMap<string, VariableRule>> {
+  const variables = Result.gen(function* () {
+    const raw = yield* decode(VARIABLES_RECORD, record["variables"]);
+    const rules = new Map<string, VariableRule>();
+    const placeholders = new Set<string>();
+    const consumed = new Map<string, string>();
+    for (const [name, value] of Object.entries(raw)) {
+      if (!SAFE_ENV_NAME.test(name)) {
+        return yield* refuse(
+          "variables keys must be environment variable names (letters, digits, _, starting with a letter or _)",
+        );
+      }
+      const rule = yield* at([name], parseRule(value));
+      yield* registerRule(name, rule, placeholders, consumed);
+      rules.set(name, rule);
     }
-    const rule = parseRule(name, value);
-    if (isReason(rule)) {
-      return { path: [name], issue: reasonIssue(rule) };
-    }
-    const registered = registerRule(name, rule, placeholders, consumed);
-    if (registered !== null) {
-      return registered;
-    }
-    variables.set(name, rule);
-  }
-  return checkConsumed(variables, consumed) ?? variables;
+    yield* checkConsumed(rules, consumed);
+    return rules;
+  });
+  return at(["variables"], variables);
 }
 
 /** Tracks a rule's placeholder (unique across rules) and the inputs its connector consumes. */
@@ -508,13 +405,15 @@ function registerRule(
   rule: VariableRule,
   placeholders: Set<string>,
   consumed: Map<string, string>,
-): Invalid | null {
+): Parsed<void> {
   if ((rule.mode === "broker" || rule.mode === "connector") && rule.placeholder !== undefined) {
     // One placeholder inside another would make the longer one's substitution
     // rewrite the shorter one's — refused, like a duplicate
     for (const other of placeholders) {
       if (other.includes(rule.placeholder) || rule.placeholder.includes(other)) {
-        return `variables.${name}.placeholder is also used by another rule, or contains / is contained in another rule's placeholder (placeholders must be unique and independent)`;
+        return refuse(
+          `variables.${name}.placeholder is also used by another rule, or contains / is contained in another rule's placeholder (placeholders must be unique and independent)`,
+        );
       }
     }
     placeholders.add(rule.placeholder);
@@ -524,72 +423,49 @@ function registerRule(
       consumed.set(variable, `${name}.inputs.${input}`);
     }
   }
-  return null;
+  return Result.succeed(undefined);
 }
 
 /** A variable a connector consumes is never injected, so a rule that would inject it contradicts the connector. */
 function checkConsumed(
   variables: ReadonlyMap<string, VariableRule>,
   consumed: ReadonlyMap<string, string>,
-): Invalid | null {
+): Parsed<void> {
   for (const [variable, where] of consumed) {
     const rule = variables.get(variable);
     if (rule !== undefined && rule.mode !== "withhold") {
-      return `variables.${variable} is consumed by a connector (${where}) and cannot also have a ${rule.mode} rule — a connector's inputs never reach the child`;
+      return refuse(
+        `variables.${variable} is consumed by a connector (${where}) and cannot also have a ${rule.mode} rule — a connector's inputs never reach the child`,
+      );
     }
   }
-  return null;
+  return Result.succeed(undefined);
 }
 
 /**
- * The document as a Schema: a JSON object, then the header fields, then
- * the rules — the same order the reasons ran in before (the first one
- * wins). `parseConfigHeader` (json-record.ts) stays the header's check —
- * it returns the reason's string, which is a verbatim filter issue.
+ * The document in one pass: the header fields, then the rules — the same
+ * order the reasons ran in before (the first one wins).
  */
-const ProxyDocument = JsonRecord("the top level must be an object")
-  .check(
-    Schema.makeFilter((record) => {
-      const root = parseRoot(record);
-      return isReason(root) ? root : undefined;
-    }),
-  )
-  .check(
-    Schema.makeFilter((record) => {
-      const variables = parseVariables(record["variables"]);
-      return isReason(variables)
-        ? { path: ["variables"], issue: reasonIssue(variables) }
-        : undefined;
-    }),
-  );
+function parseProxyDocument(record: Record<string, unknown>): Parsed<ProxyConfig> {
+  return Result.gen(function* () {
+    const header = yield* configHeader(record, ROOT_KEYS);
+    const unmatched = yield* field(record, "unmatched", UNMATCHED);
+    const unlisted = yield* field(record, "unlisted", UNLISTED);
+    const variables = yield* parseVariables(record);
+    const config: ProxyConfig = {
+      version: 1,
+      projectId: header.projectId,
+      unmatched: unmatched ?? "allow",
+      unlisted: unlisted ?? "withhold",
+      variables,
+    };
+    return config;
+  });
+}
 
 /** Interpreting the config JSON (the reason's string when invalid). Exported for tests. */
 export function parseProxyConfig(content: string): ProxyConfig | Invalid {
-  const json = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))(content);
-  if (Result.isFailure(json)) {
-    return "not valid JSON";
-  }
-  const decoded = Schema.decodeUnknownResult(ProxyDocument)(json.success);
-  if (Result.isFailure(decoded)) {
-    return issueReason(decoded.failure.issue);
-  }
-  // The document's filters already ran the same pure steps — re-running
-  // them on the validated record cannot produce a reason
-  const parsed = parseProxyConfigDocument(decoded.success);
-  if (isReason(parsed)) {
-    throw new Error("proxy-config: the document passed validation but failed to build");
-  }
-  return parsed;
-}
-
-/** The fused validation + build pass over a validated record (its checks are the document's filters). */
-function parseProxyConfigDocument(record: Record<string, unknown>): ProxyConfig | Reason {
-  const root = parseRoot(record);
-  if (isReason(root)) {
-    return root;
-  }
-  const variables = parseVariables(record["variables"]);
-  return isReason(variables) ? variables : { version: 1, ...root, variables };
+  return parseConfigDocument(content, parseProxyDocument);
 }
 
 /** A config as read from disk: the rules, and the exact content a person accepts (proxy-accept.ts). */

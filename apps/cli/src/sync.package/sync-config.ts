@@ -24,42 +24,46 @@
 // only). The validation's wording says "which key and why" and never
 // shows the value that was typed.
 //
-// The JSON is described with Schema and decoded with
-// `Schema.decodeUnknownResult`: the leaf shapes are real schema nodes
-// (String / Boolean / Literals / Record / Array / Struct), and
-// everything whose wording or ordering is conditional — the driver
-// dispatch, the spec-driven options, the cross-target checks — is a
-// `Schema.makeFilter` in the same sequence the hand-written checks ran
-// (the first reason wins, like before). The filters report
-// `Schema.FilterIssue`s: a `{path, issue}` whose issue starts with a
-// separator is a suffix appended to the dotted path ("targets.X.options"
-// + " must be ..."), and a plain string is a complete reason; the
-// wording is unchanged.
+// The JSON is read in one pass of steps over Schema-decoded leaves
+// (String / Boolean / Literals / Record / Array / Struct), in the sequence
+// the hand-written checks ran (the first reason wins, like before);
+// config-schema.ts renders the failing issue as the same path-and-reason
+// wording.
 
 import { dirname, join } from "node:path";
 
 import { Effect, Result, Schema } from "effect";
 
 import {
+  at,
+  closedRecord,
   configHeader,
+  decode,
   environmentId,
   field,
   type Invalid,
-  isReason,
-  issueReason,
-  JsonRecord,
+  knownKeys,
   loadConfig,
-  type Reason,
-  reasonIssue,
+  nullishOr,
+  objectLeaf,
+  type Parsed,
+  parseConfigDocument,
+  refuse,
   stringLeaf,
-  unknownKeysRefusal,
+  undefinedOr,
 } from "../config-schema.ts";
 import { type CliError, usageError } from "../errors.ts";
-import { loadIfPresent, parseConfigHeader } from "../json-record.ts";
+import { loadIfPresent } from "../json-record.ts";
 import type { ExecPreset } from "./sync-exec.ts";
 import type { HttpPreset } from "./sync-http.ts";
 import { defaultDriverOf, isUnavailable, type SyncPreset, SYNC_PRESETS } from "./sync-preset.ts";
-import type { DriverKind, OptionSpec, PresetId, ResolvedOptions } from "./sync-types.ts";
+import {
+  type DriverKind,
+  type OptionSpec,
+  PRESET_IDS,
+  type PresetId,
+  type ResolvedOptions,
+} from "./sync-types.ts";
 
 /** Default location of the sync config, relative to the working directory. */
 export const DEFAULT_SYNC_CONFIG_PATH = "maruhi.sync.json";
@@ -153,82 +157,70 @@ export interface SyncConfig {
 const TARGET_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 /** A non-empty string leaf. */
-const nonEmpty = (suffix: string) => stringLeaf(suffix, (value) => value.trim().length > 0);
+const nonEmpty = (message: string) => stringLeaf(message, (value) => value.trim().length > 0);
 
 /**
  * A config value that lands on gh's argv (the workflow file name, a ref):
  * non-empty and not starting with `-` (never let a config build a shape
  * read as a flag).
  */
-const ghArgument = (suffix: string) =>
-  stringLeaf(suffix, (value) => value.trim().length > 0 && !value.startsWith("-"));
+const ghArgument = (message: string) =>
+  stringLeaf(message, (value) => value.trim().length > 0 && !value.startsWith("-"));
+
+const BOOLEAN_OPTION = Schema.Boolean.annotate({ message: " must be true or false" });
+const STRING_OPTION = nonEmpty(" must be a non-empty string");
 
 /** Validating one option's value (follows the declared spec — boolean | string [+ values] [+ pattern]). */
-function parseOptionValue(
-  spec: OptionSpec,
-  given: unknown,
-): { readonly value: string | boolean } | Reason {
+function parseOptionValue(spec: OptionSpec, given: unknown): Parsed<string | boolean> {
   if (spec.type === "boolean") {
-    const decoded = Schema.decodeUnknownResult(
-      Schema.Boolean.annotate({ message: " must be true or false" }),
-    )(given);
-    return Result.isSuccess(decoded) ? { value: decoded.success } : decoded.failure.issue;
+    return decode(BOOLEAN_OPTION, given);
   }
-  const text = Schema.decodeUnknownResult(nonEmpty(" must be a non-empty string"))(given);
-  if (Result.isFailure(text)) {
-    return text.failure.issue;
-  }
-  if (spec.values !== undefined && !spec.values.includes(text.success)) {
-    return ` must be one of ${spec.values.join(", ")}`;
-  }
-  if (spec.pattern !== undefined && !spec.pattern.regex.test(text.success)) {
-    return ` must be ${spec.pattern.hint}`;
-  }
-  return { value: text.success };
+  return Result.gen(function* () {
+    const text = yield* decode(STRING_OPTION, given);
+    if (spec.values !== undefined && !spec.values.includes(text)) {
+      return yield* refuse(` must be one of ${spec.values.join(", ")}`);
+    }
+    if (spec.pattern !== undefined && !spec.pattern.regex.test(text)) {
+      return yield* refuse(` must be ${spec.pattern.hint}`);
+    }
+    return text;
+  });
 }
+
+const OPTIONS_MESSAGE = " must be an object";
+const OPTIONS = undefinedOr(OPTIONS_MESSAGE, objectLeaf(OPTIONS_MESSAGE));
 
 /** Validating the preset-specific options (follows the chosen driver's declaration — data-driven). */
 function parseTargetOptions(
   presetId: PresetId,
   driverKind: DriverKind,
   declaredOptions: Readonly<Record<string, OptionSpec>>,
-  value: unknown,
-): ResolvedOptions | Reason {
-  const record = Schema.decodeUnknownResult(Schema.UndefinedOr(JsonRecord(" must be an object")))(
-    value,
-  );
-  if (Result.isFailure(record)) {
-    return { path: ["options"], issue: record.failure.issue };
-  }
-  const raw = record.success ?? {};
-  const declared = Object.keys(declaredOptions);
-  const unknown = unknownKeysRefusal(
-    raw,
-    declared,
-    `the ${presetId} preset with the ${driverKind} driver accepts: ${declared.join(", ")}`,
-  );
-  if (unknown !== undefined) {
-    return { path: ["options"], issue: reasonIssue(unknown) };
-  }
-  const options: Record<string, string | boolean> = {};
-  for (const [key, spec] of Object.entries(declaredOptions)) {
-    const given = raw[key];
-    if (given === undefined) {
-      if (spec.required) {
-        return {
-          path: ["options", key],
-          issue: ` is required for the ${presetId} preset with the ${driverKind} driver${spec.values === undefined ? "" : ` (one of ${spec.values.join(", ")})`}`,
-        };
+  given: Readonly<Record<string, unknown>>,
+): Parsed<ResolvedOptions> {
+  const options = Result.gen(function* () {
+    const declared = Object.keys(declaredOptions);
+    yield* knownKeys(
+      given,
+      declared,
+      `the ${presetId} preset with the ${driverKind} driver accepts: ${declared.join(", ")}`,
+    );
+    const resolved: Record<string, string | boolean> = {};
+    for (const [key, spec] of Object.entries(declaredOptions)) {
+      const value = given[key];
+      if (value === undefined) {
+        if (spec.required) {
+          return yield* refuse(
+            ` is required for the ${presetId} preset with the ${driverKind} driver${spec.values === undefined ? "" : ` (one of ${spec.values.join(", ")})`}`,
+            [key],
+          );
+        }
+        continue;
       }
-      continue;
+      resolved[key] = yield* at([key], parseOptionValue(spec, value));
     }
-    const parsedValue = parseOptionValue(spec, given);
-    if (isReason(parsedValue)) {
-      return { path: ["options", key], issue: reasonIssue(parsedValue) };
-    }
-    options[key] = parsedValue.value;
-  }
-  return options;
+    return resolved;
+  });
+  return at(["options"], options);
 }
 
 const TARGET_KEYS = [
@@ -246,272 +238,212 @@ const TARGET_KEYS = [
   "workflow",
 ] as const;
 
-/** `variables`: `"all"` (with an optional `exclude`), or a non-empty list of variable names. */
-const VARIABLES_LIST = Schema.Array(Schema.Unknown)
-  .annotate({ message: ' must be a non-empty array of variable names, or "all"' })
-  .check(
-    Schema.makeFilter((entries) =>
-      entries.length > 0 &&
-      entries.every((entry) => typeof entry === "string" && entry.trim().length > 0)
-        ? undefined
-        : ' must be a non-empty array of variable names, or "all"',
-    ),
-  );
+/** `variables`: a non-empty list of variable names (or `"all"`, read before this). */
+const VARIABLES_MESSAGE = ' must be a non-empty array of variable names, or "all"';
+const VARIABLES_LIST = Schema.Array(nonEmpty(VARIABLES_MESSAGE))
+  .annotate({ message: VARIABLES_MESSAGE })
+  .check(Schema.isMinLength(1, { message: VARIABLES_MESSAGE }));
 
 /** `exclude`: an array of non-empty variable names (only alongside `"all"`). */
-const EXCLUDE_LIST = Schema.Array(Schema.Unknown)
-  .annotate({ message: " must be an array of variable names" })
-  .check(
-    Schema.makeFilter((entries) =>
-      entries.every((entry) => typeof entry === "string" && entry.trim().length > 0)
-        ? undefined
-        : " must be an array of variable names",
-    ),
-  );
+const EXCLUDE_MESSAGE = " must be an array of variable names";
+const EXCLUDE_LIST = undefinedOr(
+  EXCLUDE_MESSAGE,
+  Schema.Array(nonEmpty(EXCLUDE_MESSAGE)).annotate({ message: EXCLUDE_MESSAGE }),
+);
 
-function parseVariables(
-  record: Record<string, unknown>,
-): { variables: readonly string[] | "all"; exclude: readonly string[] } | Reason {
-  const raw = record["variables"];
-  if (raw === "all") {
-    if (record["exclude"] === undefined) {
-      return { variables: "all", exclude: [] };
+/** The variables a target carries: `"all"` (minus `exclude`), or an explicit list. */
+interface VariableSelection {
+  readonly variables: readonly string[] | "all";
+  readonly exclude: readonly string[];
+}
+
+function parseVariables(record: Record<string, unknown>): Parsed<VariableSelection> {
+  return Result.gen(function* () {
+    if (record["variables"] === "all") {
+      const exclude = yield* field(record, "exclude", EXCLUDE_LIST);
+      const all: VariableSelection = { variables: "all", exclude: exclude ?? [] };
+      return all;
     }
-    const exclude = field(record, "exclude", EXCLUDE_LIST);
-    if (isReason(exclude)) {
-      return exclude;
+    const names = yield* field(record, "variables", VARIABLES_LIST);
+    if (record["exclude"] !== undefined) {
+      return yield* refuse(' applies only when variables is "all"', ["exclude"]);
     }
-    // The schema checked every entry is a non-empty string
-    return { variables: "all", exclude: exclude.value as readonly string[] };
-  }
-  const list = field(record, "variables", VARIABLES_LIST);
-  if (isReason(list)) {
-    return list;
-  }
-  if (record["exclude"] !== undefined) {
-    return { path: ["exclude"], issue: ' applies only when variables is "all"' };
-  }
-  const names = list.value as readonly string[];
-  if (new Set(names).size !== names.length) {
-    return { path: ["variables"], issue: " lists the same name more than once" };
-  }
-  return { variables: names, exclude: [] };
+    if (new Set(names).size !== names.length) {
+      return yield* refuse(" lists the same name more than once", ["variables"]);
+    }
+    const listed: VariableSelection = { variables: names, exclude: [] };
+    return listed;
+  });
 }
 
 /** Interpreting `token: { environment, name }` (where the http driver's integration token lives). */
-const TOKEN_REF = JsonRecord(
+const TOKEN_REF = closedRecord(
   ' must be an object of the form { "environment": "<environment ID>", "name": "<variable name>" }',
-)
-  .check(
-    Schema.makeFilter(
-      (record) =>
-        unknownKeysRefusal(record, ["environment", "name"], "accepted: environment, name") ??
-        undefined,
-    ),
-  )
-  .pipe(
-    Schema.decodeTo(
-      Schema.Struct({
-        environment: environmentId(
-          " must be the maruhi environment ID that holds the token",
-        ).annotateKey({
-          messageMissingKey: " must be the maruhi environment ID that holds the token",
-        }),
-        name: nonEmpty(" must be the name of the variable that holds the token").annotateKey({
-          messageMissingKey: " must be the name of the variable that holds the token",
-        }),
+  ["environment", "name"],
+  "accepted: environment, name",
+).pipe(
+  Schema.decodeTo(
+    Schema.Struct({
+      environment: environmentId(
+        " must be the maruhi environment ID that holds the token",
+      ).annotateKey({
+        messageMissingKey: " must be the maruhi environment ID that holds the token",
       }),
-    ),
-  );
+      name: nonEmpty(" must be the name of the variable that holds the token").annotateKey({
+        messageMissingKey: " must be the name of the variable that holds the token",
+      }),
+    }),
+  ),
+);
 
 /** Interpreting `workflow: { file, ref?, command? }` (required when onPush is "workflow"). */
-const WORKFLOW = JsonRecord(' must be an object of the form { "file": "<workflow file name>" }')
-  .check(
-    Schema.makeFilter(
-      (record) =>
-        unknownKeysRefusal(record, ["file", "ref", "command"], "accepted: file, ref, command") ??
-        undefined,
-    ),
-  )
-  .pipe(
-    Schema.decodeTo(
-      Schema.Struct({
-        file: ghArgument(
-          " must be the workflow's file name (for example maruhi-sync.yml)",
-        ).annotateKey({
-          messageMissingKey: " must be the workflow's file name (for example maruhi-sync.yml)",
-        }),
-        ref: Schema.optionalKey(ghArgument(" must be a branch or tag name")),
-        command: Schema.optionalKey(nonEmpty(" must be a non-empty path to the installed gh CLI")),
+const WORKFLOW = closedRecord(
+  ' must be an object of the form { "file": "<workflow file name>" }',
+  ["file", "ref", "command"],
+  "accepted: file, ref, command",
+).pipe(
+  Schema.decodeTo(
+    Schema.Struct({
+      file: ghArgument(
+        " must be the workflow's file name (for example maruhi-sync.yml)",
+      ).annotateKey({
+        messageMissingKey: " must be the workflow's file name (for example maruhi-sync.yml)",
       }),
-    ),
-  );
+      ref: Schema.optionalKey(ghArgument(" must be a branch or tag name")),
+      command: Schema.optionalKey(nonEmpty(" must be a non-empty path to the installed gh CLI")),
+    }),
+  ),
+);
 
 /** Interpreting `receipts: { environment }` (where the receipt variables live — supplement 15 X3 (a)). */
-const RECEIPTS = JsonRecord(' must be an object of the form { "environment": "<environment ID>" }')
-  .check(
-    Schema.makeFilter(
-      (record) => unknownKeysRefusal(record, ["environment"], "accepted: environment") ?? undefined,
-    ),
-  )
-  .pipe(
-    Schema.decodeTo(
-      Schema.Struct({
-        environment: environmentId(
-          " must be a maruhi environment ID (create it with `maruhi env create`)",
-        ).annotateKey({
-          messageMissingKey:
-            " must be a maruhi environment ID (create it with `maruhi env create`)",
-        }),
+const RECEIPTS = closedRecord(
+  ' must be an object of the form { "environment": "<environment ID>" }',
+  ["environment"],
+  "accepted: environment",
+).pipe(
+  Schema.decodeTo(
+    Schema.Struct({
+      environment: environmentId(
+        " must be a maruhi environment ID (create it with `maruhi env create`)",
+      ).annotateKey({
+        messageMissingKey: " must be a maruhi environment ID (create it with `maruhi env create`)",
       }),
-    ),
-  );
+    }),
+  ),
+);
+
+const CWD_MESSAGE = " must be a non-empty relative path";
+const CWD = undefinedOr(CWD_MESSAGE, nonEmpty(CWD_MESSAGE));
 
 /** Interpreting the exec driver's run surface (cwd / command). */
 function parseExecDriver(
   record: Record<string, unknown>,
   spec: ExecPreset,
   configDir: string,
-): TargetDriver | Reason {
-  if (record["token"] !== undefined) {
-    return {
-      path: ["token"],
-      issue: " applies only to the http driver (the exec driver uses the vendor CLI's own sign-in)",
+): Parsed<TargetDriver> {
+  return Result.gen(function* () {
+    if (record["token"] !== undefined) {
+      return yield* refuse(
+        " applies only to the http driver (the exec driver uses the vendor CLI's own sign-in)",
+        ["token"],
+      );
+    }
+    const cwd = yield* field(record, "cwd", CWD);
+    const commandMessage = ` must be a non-empty path to the installed ${spec.command} CLI`;
+    const command = yield* field(
+      record,
+      "command",
+      undefinedOr(commandMessage, nonEmpty(commandMessage)),
+    );
+    const driver: TargetDriver = {
+      kind: "exec",
+      spec,
+      cwd: cwd === undefined ? configDir : join(configDir, cwd),
+      command: command ?? spec.command,
+      namedCommand: command !== undefined,
     };
-  }
-  const cwd = field(
-    record,
-    "cwd",
-    Schema.UndefinedOr(nonEmpty(" must be a non-empty relative path")),
-  );
-  if (isReason(cwd)) {
-    return cwd;
-  }
-  const command = field(
-    record,
-    "command",
-    Schema.UndefinedOr(nonEmpty(` must be a non-empty path to the installed ${spec.command} CLI`)),
-  );
-  if (isReason(command)) {
-    return command;
-  }
-  return {
-    kind: "exec",
-    spec,
-    cwd: cwd.value === undefined ? configDir : join(configDir, cwd.value),
-    command: command.value ?? spec.command,
-    namedCommand: command.value !== undefined,
-  };
+    return driver;
+  });
 }
 
 /** Interpreting the http driver's credential surface (token). */
-function parseHttpDriver(record: Record<string, unknown>, spec: HttpPreset): TargetDriver | Reason {
-  for (const key of ["cwd", "command"] as const) {
-    if (record[key] !== undefined) {
-      return {
-        path: [key],
-        issue: " applies only to the exec driver (the http driver runs no vendor CLI)",
-      };
+function parseHttpDriver(record: Record<string, unknown>, spec: HttpPreset): Parsed<TargetDriver> {
+  return Result.gen(function* () {
+    for (const key of ["cwd", "command"] as const) {
+      if (record[key] !== undefined) {
+        return yield* refuse(
+          " applies only to the exec driver (the http driver runs no vendor CLI)",
+          [key],
+        );
+      }
     }
-  }
-  if (record["token"] === undefined) {
-    return {
-      path: ["token"],
-      issue: ` is required for the http driver: { "environment": "<environment ID>", "name": "<variable name>" } naming the maruhi variable that holds ${spec.tokenHint}`,
-    };
-  }
-  const token = field(record, "token", TOKEN_REF);
-  if (isReason(token)) {
-    return token;
-  }
-  return { kind: "http", spec, token: token.value };
+    if (record["token"] === undefined) {
+      return yield* refuse(
+        ` is required for the http driver: { "environment": "<environment ID>", "name": "<variable name>" } naming the maruhi variable that holds ${spec.tokenHint}`,
+        ["token"],
+      );
+    }
+    const token = yield* field(record, "token", TOKEN_REF);
+    const driver: TargetDriver = { kind: "http", spec, token };
+    return driver;
+  });
 }
+
+const DRIVER_MESSAGE =
+  ' must be "exec" (the installed vendor CLI; the default when the preset has one) or "http" (the vendor API with a token stored in maruhi)';
+const DRIVER = nullishOr(
+  DRIVER_MESSAGE,
+  Schema.Literals(["exec", "http"]).annotate({ message: DRIVER_MESSAGE }),
+);
 
 /**
  * Resolving `driver` (omitted = the preset's default: exec when it has
  * one, else http). A config naming a driver the preset does not have is
  * refused with the reason (the declaration's `unavailable`) attached.
  */
-function parseDriverKind(
-  record: Record<string, unknown>,
-  preset: SyncPreset,
-): { readonly kind: DriverKind } | Reason {
-  const declared = field(
-    record,
-    "driver",
-    Schema.NullishOr(
-      Schema.Literals(["exec", "http"]).annotate({
-        message:
-          ' must be "exec" (the installed vendor CLI; the default when the preset has one) or "http" (the vendor API with a token stored in maruhi)',
-      }),
-    ),
-  );
-  if (isReason(declared)) {
-    return declared;
-  }
-  const kind = declared.value ?? defaultDriverOf(preset);
-  const declaration = kind === "exec" ? preset.exec : preset.http;
-  return isUnavailable(declaration)
-    ? { path: ["driver"], issue: `: ${declaration.unavailable}; use "${defaultDriverOf(preset)}"` }
-    : { kind };
+function parseDriverKind(record: Record<string, unknown>, preset: SyncPreset): Parsed<DriverKind> {
+  return Result.gen(function* () {
+    const kind = (yield* field(record, "driver", DRIVER)) ?? defaultDriverOf(preset);
+    const declaration = kind === "exec" ? preset.exec : preset.http;
+    if (isUnavailable(declaration)) {
+      return yield* refuse(`: ${declaration.unavailable}; use "${defaultDriverOf(preset)}"`, [
+        "driver",
+      ]);
+    }
+    return kind;
+  });
+}
+
+const TARGET_RECORD = objectLeaf(" must be an object");
+const PRESET = Schema.Literals(PRESET_IDS).annotate({
+  message: ` must be one of ${PRESET_IDS.join(", ")}`,
+});
+const TARGET_ENVIRONMENT = environmentId(" must be a maruhi environment ID");
+
+/** The target's shape before its driver is read (record, keys, preset, driver kind, environment). */
+interface TargetHead {
+  readonly record: Record<string, unknown>;
+  readonly preset: SyncPreset;
+  readonly driverKind: DriverKind;
+  readonly environment: string;
 }
 
 /** Interpreting the target's shape (record, keys, preset, driver, environment). */
-function parseTargetHead(
-  name: string,
-  value: unknown,
-):
-  | {
-      record: Record<string, unknown>;
-      preset: SyncPreset;
-      driverKind: DriverKind;
-      environment: string;
+function parseTargetHead(name: string, value: unknown): Parsed<TargetHead> {
+  return Result.gen(function* () {
+    if (!TARGET_NAME.test(name)) {
+      return yield* refuse(
+        "target names must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or - (key under targets)",
+      );
     }
-  | Reason {
-  if (!TARGET_NAME.test(name)) {
-    return "target names must start with an alphanumeric character, followed by up to 63 alphanumerics, _ or - (key under targets)";
-  }
-  const record = Schema.decodeUnknownResult(JsonRecord(" must be an object"))(value);
-  if (Result.isFailure(record)) {
-    return record.failure.issue;
-  }
-  const unknown = unknownKeysRefusal(
-    record.success,
-    TARGET_KEYS,
-    `accepted: ${TARGET_KEYS.join(", ")}`,
-  );
-  if (unknown !== undefined) {
-    return unknown;
-  }
-  const preset = field(
-    record.success,
-    "preset",
-    Schema.Literals(Object.keys(SYNC_PRESETS)).annotate({
-      message: ` must be one of ${Object.keys(SYNC_PRESETS).join(", ")}`,
-    }),
-  );
-  if (isReason(preset)) {
-    return preset;
-  }
-  const driverKind = parseDriverKind(record.success, SYNC_PRESETS[preset.value as PresetId]);
-  if (isReason(driverKind)) {
-    return driverKind;
-  }
-  const { kind } = driverKind;
-  const environment = field(
-    record.success,
-    "environment",
-    environmentId(" must be a maruhi environment ID"),
-  );
-  if (isReason(environment)) {
-    return environment;
-  }
-  return {
-    record: record.success,
-    preset: SYNC_PRESETS[preset.value as PresetId],
-    driverKind: kind,
-    environment: environment.value,
-  };
+    const record = yield* decode(TARGET_RECORD, value);
+    yield* knownKeys(record, TARGET_KEYS, `accepted: ${TARGET_KEYS.join(", ")}`);
+    const preset = SYNC_PRESETS[yield* field(record, "preset", PRESET)];
+    const driverKind = yield* parseDriverKind(record, preset);
+    const environment = yield* field(record, "environment", TARGET_ENVIRONMENT);
+    const head: TargetHead = { record, preset, driverKind, environment };
+    return head;
+  });
 }
 
 /** Reads the target's driver surface against the chosen driver's declaration (parseDriverKind already refused a missing declaration). */
@@ -520,14 +452,14 @@ function parseDriver(
   preset: SyncPreset,
   driverKind: DriverKind,
   configDir: string,
-): TargetDriver | Reason {
+): Parsed<TargetDriver> {
   if (driverKind === "exec") {
     return isUnavailable(preset.exec)
-      ? preset.exec.unavailable
+      ? refuse(preset.exec.unavailable)
       : parseExecDriver(record, preset.exec, configDir);
   }
   return isUnavailable(preset.http)
-    ? preset.http.unavailable
+    ? refuse(preset.http.unavailable)
     : parseHttpDriver(record, preset.http);
 }
 
@@ -537,21 +469,19 @@ function parseDriverAndOptions(
   preset: SyncPreset,
   driverKind: DriverKind,
   configDir: string,
-): { readonly driver: TargetDriver; readonly options: ResolvedOptions } | Reason {
-  const driver = parseDriver(record, preset, driverKind, configDir);
-  if (isReason(driver)) {
-    return driver;
-  }
-  const options = parseTargetOptions(preset.id, driverKind, driver.spec.options, record["options"]);
-  if (isReason(options)) {
-    return options;
-  }
-  // The options' mutual consistency (the preset's `check` — Netlify's
-  // context / branch / secret, GitHub's environment / app)
-  const inconsistent = driver.spec.check?.(options) ?? null;
-  return inconsistent === null
-    ? { driver, options }
-    : { path: ["options"], issue: `.${inconsistent}` };
+): Parsed<{ readonly driver: TargetDriver; readonly options: ResolvedOptions }> {
+  return Result.gen(function* () {
+    const driver = yield* parseDriver(record, preset, driverKind, configDir);
+    const given = (yield* field(record, "options", OPTIONS)) ?? {};
+    const options = yield* parseTargetOptions(preset.id, driverKind, driver.spec.options, given);
+    // The options' mutual consistency (the preset's `check` — Netlify's
+    // context / branch / secret, GitHub's environment / app)
+    const inconsistent = driver.spec.check?.(options) ?? null;
+    if (inconsistent !== null) {
+      return yield* refuse(`.${inconsistent}`, ["options"]);
+    }
+    return { driver, options };
+  });
 }
 
 /**
@@ -562,25 +492,34 @@ function parseDriverAndOptions(
  */
 function excludeToken(
   name: string,
-  selection: { readonly variables: readonly string[] | "all"; readonly exclude: readonly string[] },
+  selection: VariableSelection,
   driver: TargetDriver,
   environment: string,
-): readonly string[] | Reason {
+): Parsed<readonly string[]> {
   if (driver.kind !== "http" || driver.token.environment !== environment) {
-    return selection.exclude;
+    return Result.succeed(selection.exclude);
   }
   if (selection.variables !== "all") {
     return selection.variables.includes(driver.token.name)
-      ? {
-          path: ["variables"],
-          issue: ` lists the token variable (targets.${name}.token.name); the integration token is never copied to the target`,
-        }
-      : selection.exclude;
+      ? refuse(
+          ` lists the token variable (targets.${name}.token.name); the integration token is never copied to the target`,
+          ["variables"],
+        )
+      : Result.succeed(selection.exclude);
   }
-  return selection.exclude.includes(driver.token.name)
-    ? selection.exclude
-    : [...selection.exclude, driver.token.name];
+  return Result.succeed(
+    selection.exclude.includes(driver.token.name)
+      ? selection.exclude
+      : [...selection.exclude, driver.token.name],
+  );
 }
+
+const ON_PUSH = Schema.Literals(["apply", "workflow"]).annotate({
+  message:
+    ' must be "apply" (sync from this machine right after `maruhi push`) or "workflow" (trigger the repository\'s workflow with gh so CI syncs); leave it out to sync only by hand',
+});
+
+const WORKFLOW_ONLY = ' applies only when onPush is "workflow"';
 
 /**
  * Interpreting `onPush` / `workflow` (stage 3 — rulings B / C). `"apply"`
@@ -595,244 +534,150 @@ function parseOnPush(
   record: Record<string, unknown>,
   isProduction: boolean,
   configDir: string,
-): OnPush | null | Reason {
-  const onPush = record["onPush"];
-  if (onPush === undefined) {
-    return record["workflow"] === undefined
-      ? null
-      : { path: ["workflow"], issue: ' applies only when onPush is "workflow"' };
-  }
-  const parsed = field(
-    record,
-    "onPush",
-    Schema.Literals(["apply", "workflow"]).annotate({
-      message:
-        ' must be "apply" (sync from this machine right after `maruhi push`) or "workflow" (trigger the repository\'s workflow with gh so CI syncs); leave it out to sync only by hand',
-    }),
-  );
-  if (isReason(parsed)) {
-    return parsed;
-  }
-  if (parsed.value === "apply") {
+): Parsed<OnPush | null> {
+  return Result.gen(function* () {
+    if (record["onPush"] === undefined) {
+      return record["workflow"] === undefined ? null : yield* refuse(WORKFLOW_ONLY, ["workflow"]);
+    }
+    const onPush = yield* field(record, "onPush", ON_PUSH);
+    if (onPush === "workflow") {
+      return yield* parseWorkflow(record, configDir);
+    }
     if (record["workflow"] !== undefined) {
-      return { path: ["workflow"], issue: ' applies only when onPush is "workflow"' };
+      return yield* refuse(WORKFLOW_ONLY, ["workflow"]);
     }
     if (isProduction) {
-      return {
-        path: ["onPush"],
-        issue:
-          ' cannot be "apply" for a production target: production is written only by an explicit `maruhi sync apply --yes`. Use "workflow" to let CI write it under the --yes in the workflow file, or set production to false if the target is not production',
-      };
+      return yield* refuse(
+        ' cannot be "apply" for a production target: production is written only by an explicit `maruhi sync apply --yes`. Use "workflow" to let CI write it under the --yes in the workflow file, or set production to false if the target is not production',
+        ["onPush"],
+      );
     }
-    return { kind: "apply" };
-  }
-  return parseWorkflow(record["workflow"], configDir);
+    const apply: OnPush = { kind: "apply" };
+    return apply;
+  });
 }
 
 /** Interpreting `workflow` (required when onPush is "workflow"). */
-function parseWorkflow(value: unknown, configDir: string): OnPush | Reason {
-  if (value === undefined) {
-    return {
-      path: ["workflow"],
-      issue:
+function parseWorkflow(record: Record<string, unknown>, configDir: string): Parsed<OnPush> {
+  return Result.gen(function* () {
+    if (record["workflow"] === undefined) {
+      return yield* refuse(
         ' is required when onPush is "workflow": { "file": "<workflow file name>" } naming the workflow that runs `maruhi ci sync` (it must have a workflow_dispatch trigger with a "target" input)',
+        ["workflow"],
+      );
+    }
+    const workflow = yield* field(record, "workflow", WORKFLOW);
+    const onPush: OnPush = {
+      kind: "workflow",
+      file: workflow.file,
+      ref: workflow.ref,
+      command: workflow.command ?? "gh",
+      namedCommand: workflow.command !== undefined,
+      cwd: configDir,
     };
-  }
-  const workflow = field({ workflow: value }, "workflow", WORKFLOW);
-  if (isReason(workflow)) {
-    return workflow;
-  }
-  return {
-    kind: "workflow",
-    file: workflow.value.file,
-    ref: workflow.value.ref,
-    command: workflow.value.command ?? "gh",
-    namedCommand: workflow.value.command !== undefined,
-    cwd: configDir,
-  };
+    return onPush;
+  });
+}
+
+const PRODUCTION_MESSAGE = " must be true or false";
+const PRODUCTION = undefinedOr(
+  PRODUCTION_MESSAGE,
+  Schema.Boolean.annotate({ message: PRODUCTION_MESSAGE }),
+);
+
+function parseTarget(name: string, value: unknown, configDir: string): Parsed<SyncTarget> {
+  return Result.gen(function* () {
+    const { record, preset, driverKind, environment } = yield* parseTargetHead(name, value);
+    const selection = yield* parseVariables(record);
+    const production = yield* field(record, "production", PRODUCTION);
+    const { driver, options } = yield* parseDriverAndOptions(record, preset, driverKind, configDir);
+    const exclude = yield* excludeToken(name, selection, driver, environment);
+    // Absent an explicit value, the preset decides (Vercel = production
+    // environment, Workers = no named environment). Since it is a
+    // misoperation guard, the default falls toward "production"
+    const isProduction = production ?? preset.isProduction(options);
+    const onPush = yield* parseOnPush(record, isProduction, configDir);
+    const target: SyncTarget = {
+      name,
+      preset,
+      driver,
+      environment,
+      variables: selection.variables,
+      exclude,
+      production: isProduction,
+      options,
+      onPush,
+    };
+    return target;
+  });
 }
 
 const ROOT_KEYS = ["version", "project", "receipts", "targets"] as const;
 
-function parseTarget(name: string, value: unknown, configDir: string): SyncTarget | Reason {
-  const head = parseTargetHead(name, value);
-  if (isReason(head)) {
-    return head;
-  }
-  const { record, preset, driverKind, environment } = head;
-  const selection = parseVariables(record);
-  if (isReason(selection)) {
-    return selection;
-  }
-  const production = field(
-    record,
-    "production",
-    Schema.UndefinedOr(Schema.Boolean.annotate({ message: " must be true or false" })),
-  );
-  if (isReason(production)) {
-    return production;
-  }
-  const driven = parseDriverAndOptions(record, preset, driverKind, configDir);
-  if (isReason(driven)) {
-    return driven;
-  }
-  const { driver, options } = driven;
-  const exclude = excludeToken(name, selection, driver, environment);
-  if (isReason(exclude)) {
-    return exclude;
-  }
-  // Absent an explicit value, the preset decides (Vercel = production
-  // environment, Workers = no named environment). Since it is a
-  // misoperation guard, the default falls toward "production"
-  const isProduction = production.value ?? preset.isProduction(options);
-  const onPush = parseOnPush(record, isProduction, configDir);
-  if (isReason(onPush)) {
-    return onPush;
-  }
-  return {
-    name,
-    preset,
-    driver,
-    environment,
-    variables: selection.variables,
-    exclude,
-    production: isProduction,
-    options,
-    onPush,
-  };
-}
+const TARGETS_MESSAGE = " must be an object with at least one target";
+const TARGETS = objectLeaf(TARGETS_MESSAGE);
 
 /** Interpreting each target of `targets` and the checks spanning the whole config (the receipts environment, `project`). */
 function parseTargets(
   record: Record<string, unknown>,
-  configDir: string,
-): ReadonlyMap<string, SyncTarget> | Reason {
-  const raw = field(record, "targets", JsonRecord(" must be an object with at least one target"));
-  if (isReason(raw)) {
-    return raw;
-  }
-  if (Object.keys(raw.value).length === 0) {
-    return { path: ["targets"], issue: " must be an object with at least one target" };
-  }
-  // The spanning checks read the config the earlier checks already
-  // validated (receipts.environment, project)
-  const receipts = field(record, "receipts", RECEIPTS);
-  if (isReason(receipts)) {
-    return receipts;
-  }
-  const header = parseConfigHeader(record, ROOT_KEYS);
-  if (typeof header === "string") {
-    return header;
-  }
-  const targets = new Map<string, SyncTarget>();
-  for (const [name, value] of Object.entries(raw.value)) {
-    const target = parseTarget(name, value, configDir);
-    if (isReason(target)) {
-      return { path: ["targets", name], issue: reasonIssue(target) };
+  root: {
+    readonly configDir: string;
+    readonly receiptsEnvironment: string;
+    readonly projectId: string | undefined;
+  },
+): Parsed<ReadonlyMap<string, SyncTarget>> {
+  return Result.gen(function* () {
+    const raw = yield* field(record, "targets", TARGETS);
+    if (Object.keys(raw).length === 0) {
+      return yield* refuse(TARGETS_MESSAGE, ["targets"]);
     }
-    const refused = targetSpan(name, target, receipts.value.environment, header.projectId);
-    if (refused !== undefined) {
-      return refused;
+    const targets = new Map<string, SyncTarget>();
+    for (const [name, value] of Object.entries(raw)) {
+      const target = yield* at(["targets", name], parseTarget(name, value, root.configDir));
+      // Never make the receipts environment a sync source: blocks both the
+      // shape where `maruhi run --env <receipts>` injects even receipt
+      // variables into the child, and the shape that carries a receipt
+      // itself to the target
+      if (target.environment === root.receiptsEnvironment) {
+        return yield* refuse(
+          ` is the receipts environment (${root.receiptsEnvironment}); receipts must live in an environment that is not synced`,
+          ["targets", name, "environment"],
+        );
+      }
+      // The post-push sync is only used with a config that names which
+      // project it belongs to (stage 3's ruling B — never silently apply
+      // cwd's config to a different project's push)
+      if (target.onPush !== null && root.projectId === undefined) {
+        return yield* refuse(
+          ' needs the top-level "project": sync on push only uses a config that names its project (add it, or generate the config with `maruhi sync init --project <project ID>`)',
+          ["targets", name, "onPush"],
+        );
+      }
+      targets.set(name, target);
     }
-    targets.set(name, target);
-  }
-  return targets;
-}
-
-/** A target's spanning refusals: the receipts environment as a source, and onPush without a `project` — undefined = the target stands. */
-function targetSpan(
-  name: string,
-  target: SyncTarget,
-  receiptsEnvironment: string | null,
-  projectId: string | undefined,
-): Reason | undefined {
-  // Never make the receipts environment a sync source: blocks both the
-  // shape where `maruhi run --env <receipts>` injects even receipt
-  // variables into the child, and the shape that carries a receipt
-  // itself to the target
-  if (target.environment === receiptsEnvironment) {
-    return {
-      path: ["targets", name, "environment"],
-      issue: ` is the receipts environment (${receiptsEnvironment}); receipts must live in an environment that is not synced`,
-    };
-  }
-  // The post-push sync is only used with a config that names which
-  // project it belongs to (stage 3's ruling B — never silently apply
-  // cwd's config to a different project's push)
-  if (target.onPush !== null && projectId === undefined) {
-    return {
-      path: ["targets", name, "onPush"],
-      issue:
-        ' needs the top-level "project": sync on push only uses a config that names its project (add it, or generate the config with `maruhi sync init --project <project ID>`)',
-    };
-  }
-  return undefined;
+    return targets;
+  });
 }
 
 /**
- * The document as a Schema: a JSON object, then the header fields, then
- * `receipts`, then `targets` — the same order the reasons ran in before
- * (the first one wins). `parseConfigHeader` (json-record.ts) stays the
- * header's check — it returns the reason's string, a verbatim filter
- * issue.
+ * The document in one pass: the header fields, then `receipts`, then
+ * `targets` — the same order the reasons ran in before (the first one
+ * wins).
  */
-const SyncDocument = (configDir: string) =>
-  JsonRecord("the top level must be an object")
-    .check(configHeader(ROOT_KEYS))
-    .check(
-      Schema.makeFilter((record) => {
-        const receipts = field(record, "receipts", RECEIPTS);
-        return isReason(receipts) ? receipts : undefined;
-      }),
-    )
-    .check(
-      Schema.makeFilter((record) => {
-        const targets = parseTargets(record, configDir);
-        return isReason(targets) ? targets : undefined;
-      }),
-    );
+function parseSyncDocument(record: Record<string, unknown>, configDir: string): Parsed<SyncConfig> {
+  return Result.gen(function* () {
+    const { projectId } = yield* configHeader(record, ROOT_KEYS);
+    const receipts = yield* field(record, "receipts", RECEIPTS);
+    const receiptsEnvironment = receipts.environment;
+    const targets = yield* parseTargets(record, { configDir, receiptsEnvironment, projectId });
+    const config: SyncConfig = { version: 1, projectId, receiptsEnvironment, targets };
+    return config;
+  });
+}
 
 /** Interpreting the config JSON (the reason's string when invalid). */
 export function parseSyncConfig(content: string, configDir: string): SyncConfig | Invalid {
-  const json = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))(content);
-  if (Result.isFailure(json)) {
-    return "not valid JSON";
-  }
-  const decoded = Schema.decodeUnknownResult(SyncDocument(configDir))(json.success);
-  if (Result.isFailure(decoded)) {
-    return issueReason(decoded.failure.issue);
-  }
-  // The document's filters already ran the same pure steps — re-running
-  // them on the validated record cannot produce a reason
-  const parsed = parseSyncConfigDocument(decoded.success, configDir);
-  if (isReason(parsed)) {
-    throw new Error("sync-config: the document passed validation but failed to build");
-  }
-  return parsed;
-}
-
-/** The fused validation + build pass over a validated record (its checks are the document's filters). */
-function parseSyncConfigDocument(
-  record: Record<string, unknown>,
-  configDir: string,
-): SyncConfig | Reason {
-  const header = parseConfigHeader(record, ROOT_KEYS);
-  if (typeof header === "string") {
-    return header;
-  }
-  const receipts = field(record, "receipts", RECEIPTS);
-  if (isReason(receipts)) {
-    return receipts;
-  }
-  const targets = parseTargets(record, configDir);
-  return isReason(targets)
-    ? targets
-    : {
-        version: 1,
-        projectId: header.projectId,
-        receiptsEnvironment: receipts.value.environment,
-        targets,
-      };
+  return parseConfigDocument(content, (record) => parseSyncDocument(record, configDir));
 }
 
 /** Loading and verifying `--config <file>` (default `maruhi.sync.json`). */

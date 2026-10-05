@@ -1,70 +1,73 @@
 // The Schema machinery shared by the user-edited config files
 // (sync.package/sync-config.ts, rotate-config.ts,
-// proxy.package/proxy-config.ts). Each config describes its document as
-// a Schema whose ordered checks run the same steps the hand-written
-// validators did, in the same order — the first failure's reason is the
-// one the user sees, worded exactly as before.
+// proxy.package/proxy-config.ts). Each config reads its document in one
+// pass of steps over Schema-decoded leaves, in the same order the
+// hand-written validators ran — the first failure's reason is the one the
+// user sees, worded exactly as before.
 //
-// The currency inside a check is the `Reason` — a `Schema.FilterIssue`:
-// a plain string is a complete reason, a `{path, issue}` pair names the
-// field the issue belongs to, and an issue that starts with a separator
-// (space / colon / dot) is a suffix appended to the dotted path
-// ("variables.X.connector" + " must be ..."). A reason never contains the
-// offending value.
+// A step returns a `Parsed<A>` (a `Result` — the built value, or the
+// `SchemaIssue` the reason is rendered from), and steps compose with
+// `Result.gen`. An issue's message that starts with a separator (space /
+// colon / dot) is a suffix appended to the dotted path of the field it
+// belongs to ("variables.X.connector" + " must be ..."); any other message
+// is a complete reason. A reason never contains the offending value, and
+// never names an array entry's position (the wording never did).
 
 import * as BunFileSystem from "@effect/platform-bun/BunFileSystem";
 import { isEnvironmentId } from "@maruhi/core";
 import { Effect, FileSystem, Result, Schema, SchemaIssue } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
-import { isRecord, parseConfigHeader, unknownKeys } from "./json-record.ts";
+import { JsonRecord, parseConfigHeader, unknownKeys } from "./json-record.ts";
+import { SAFE_ENV_NAME } from "./run.ts";
 
 /** A validation failure (the reason's string). Never includes the value itself. */
 export type Invalid = string;
 
-/** A validation failure as a filter issue: a reason string, a `{path, issue}` pair, or a nested issue. */
-export type Reason = Schema.FilterIssue;
+/** One config step's outcome: the built value, or the issue its reason is rendered from. */
+export type Parsed<A> = Result.Result<A, SchemaIssue.Issue>;
 
-/** Whether a parse step produced a {@link Reason} rather than a value. */
-export function isReason(value: unknown): value is Reason {
-  return (
-    typeof value === "string" ||
-    SchemaIssue.isIssue(value) ||
-    (isRecord(value) &&
-      Array.isArray(value["path"]) &&
-      (typeof value["issue"] === "string" || SchemaIssue.isIssue(value["issue"])))
-  );
+/** A refusal at `path` (relative to the step's own field; empty = the field itself). */
+export function refuse(message: string, path: ReadonlyArray<PropertyKey> = []): Parsed<never> {
+  const issue = new SchemaIssue.InvalidValue({ message });
+  return Result.fail(path.length === 0 ? issue : new SchemaIssue.Pointer(path, issue));
 }
 
-/** Wraps a {@link Reason} as a real issue so an outer `{path, issue}` can prefix it (makeFilter's own normalization). */
-export function reasonIssue(reason: Reason): SchemaIssue.Issue {
-  if (SchemaIssue.isIssue(reason)) {
-    return reason;
-  }
-  if (typeof reason === "string") {
-    return new SchemaIssue.InvalidValue({ message: reason });
-  }
-  return new SchemaIssue.Pointer(
-    reason.path,
-    typeof reason.issue === "string"
-      ? new SchemaIssue.InvalidValue({ message: reason.issue })
-      : reason.issue,
-  );
+/** A step's failure placed under `path` (the key its value was read from). */
+export function at<A>(path: ReadonlyArray<PropertyKey>, parsed: Parsed<A>): Parsed<A> {
+  return Result.mapError(parsed, (issue) => new SchemaIssue.Pointer(path, issue));
+}
+
+/** Decodes `value` against a leaf schema. */
+export function decode<S extends Schema.ConstraintDecoder<unknown>>(
+  schema: S,
+  value: unknown,
+): Parsed<S["Type"]> {
+  return Result.mapError(Schema.decodeUnknownResult(schema)(value), (error) => error.issue);
+}
+
+/** Decodes `record[key]` against a leaf schema; the failure carries the key's path. */
+export function field<S extends Schema.ConstraintDecoder<unknown>>(
+  record: Readonly<Record<string, unknown>>,
+  key: string,
+  schema: S,
+): Parsed<S["Type"]> {
+  return at([key], decode(schema, record[key]));
 }
 
 const reasonFormatter = SchemaIssue.makeFormatterStandardSchemaV1();
 
 /**
- * The first issue rendered as the user's reason: a flattened message
- * starting with a separator (space / colon / dot) is a suffix appended to
- * the dotted path; anything else is already a complete reason.
+ * The first issue rendered as the user's reason: a message starting with a
+ * separator (space / colon / dot) is a suffix appended to the dotted path
+ * (array positions left out); anything else is already a complete reason.
  */
 export function issueReason(issue: SchemaIssue.Issue): Invalid {
   const first = reasonFormatter(issue).issues[0];
   if (first === undefined) {
     return "is invalid";
   }
-  const path = first.path ?? [];
+  const path = (first.path ?? []).filter((segment) => typeof segment !== "number");
   const message = first.message;
   if (
     path.length === 0 ||
@@ -75,54 +78,88 @@ export function issueReason(issue: SchemaIssue.Issue): Invalid {
   return `${path.map(String).join(".")}${message}`;
 }
 
-/** A JSON object boundary: a non-object input reports the annotated suffix. */
-export const JsonRecord = (suffix: string) =>
-  Schema.Record(Schema.String, Schema.Unknown).annotate({ message: suffix });
+/** A JSON object boundary: a non-object input reports `message`. */
+export const objectLeaf = (message: string) => JsonRecord.annotate({ message });
 
-/** A string leaf: a non-string input and a failed predicate report the same suffix. */
-export const stringLeaf = (suffix: string, test: (value: string) => boolean) =>
-  Schema.String.annotate({ message: suffix }).check(
-    Schema.makeFilter((value) => (test(value) ? undefined : suffix)),
+/** A string leaf: a non-string input and a failed predicate report the same `message`. */
+export const stringLeaf = (message: string, test: (value: string) => boolean) =>
+  Schema.String.annotate({ message }).check(
+    Schema.makeFilter((value) => (test(value) ? undefined : message)),
   );
 
 /** An environment ID leaf (the `isEnvironmentId` shape — the typed value is never echoed). */
-export const environmentId = (suffix: string) => stringLeaf(suffix, isEnvironmentId);
+export const environmentId = (message: string) => stringLeaf(message, isEnvironmentId);
 
-// An environment variable name (run.ts's SAFE_ENV_NAME — a POSIX identifier)
-const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** An environment variable name leaf (run.ts's SAFE_ENV_NAME — a POSIX identifier). */
+export const envNameLeaf = (message: string) =>
+  stringLeaf(message, (value) => SAFE_ENV_NAME.test(value));
 
-/** An environment variable name leaf (a POSIX identifier). */
-export const envNameLeaf = (suffix: string) => stringLeaf(suffix, (value) => ENV_NAME.test(value));
+/**
+ * `schema`, or the key left out. A value no member accepts (a number, a
+ * boolean, an array, an object, null) reports `message` — the leaf's own
+ * wording — instead of the union's default "Expected X | undefined".
+ */
+export const undefinedOr = <S extends Schema.Top>(message: string, schema: S) =>
+  Schema.UndefinedOr(schema).annotate({ message });
 
-/** Decodes `record[key]` against a schema; the failure carries the key's path. */
-export function field<S extends Schema.ConstraintDecoder<unknown>>(
-  record: Record<string, unknown>,
-  key: string,
-  schema: S,
-): { readonly value: S["Type"] } | Reason {
-  const decoded = Schema.decodeUnknownResult(schema)(record[key]);
-  return Result.isSuccess(decoded)
-    ? { value: decoded.success }
-    : { path: [key], issue: decoded.failure.issue };
+/** `schema`, null, or the key left out (null reads as absent); otherwise as {@link undefinedOr}. */
+export const nullishOr = <S extends Schema.Top>(message: string, schema: S) =>
+  Schema.NullishOr(schema).annotate({ message });
+
+/** A check that answers with its reason (null / undefined = it passes), as a step. */
+export function refusal(reason: Invalid | null | undefined): Parsed<void> {
+  return reason === null || reason === undefined ? Result.succeed(undefined) : refuse(reason);
 }
 
-/** The `has unknown keys (...)` refusal every record shape shares (a typo is reported, never silently ignored). */
-export function unknownKeysRefusal(
-  record: Record<string, unknown>,
+/** The `has unknown keys (...)` wording every record shape shares, or undefined when every key is known. */
+function unknownKeysMessage(
+  record: Readonly<Record<string, unknown>>,
   allowed: readonly string[],
   tail: string,
-): Reason | undefined {
+): string | undefined {
   const unknown = unknownKeys(record, allowed);
-  return unknown.length === 0
-    ? undefined
-    : { path: [], issue: ` has unknown keys (${unknown.join(", ")}); ${tail}` };
+  return unknown.length === 0 ? undefined : ` has unknown keys (${unknown.join(", ")}); ${tail}`;
 }
 
-/** The `parseConfigHeader` check every user-edited config runs first (its failure's string is a verbatim reason). */
-export function configHeader(allowed: readonly string[]) {
-  return Schema.makeFilter((record: Record<string, unknown>) => {
-    const header = parseConfigHeader(record, allowed);
-    return typeof header === "string" ? header : undefined;
+/** Refuses keys outside `allowed` (a typo is reported, never silently ignored). */
+export function knownKeys(
+  record: Readonly<Record<string, unknown>>,
+  allowed: readonly string[],
+  tail: string,
+): Parsed<void> {
+  return refusal(unknownKeysMessage(record, allowed, tail));
+}
+
+/** An object leaf that also refuses keys outside `allowed` (the shape of a nested record with fixed keys). */
+export const closedRecord = (message: string, allowed: readonly string[], tail: string) =>
+  objectLeaf(message).check(
+    Schema.makeFilter((record) => unknownKeysMessage(record, allowed, tail)),
+  );
+
+/** The header every user-edited config shares (json-record.ts's `parseConfigHeader` — its reason is a complete one). */
+export function configHeader(
+  record: Record<string, unknown>,
+  rootKeys: readonly string[],
+): Parsed<{ readonly projectId: string | undefined }> {
+  const header = parseConfigHeader(record, rootKeys);
+  return typeof header === "string" ? refuse(header) : Result.succeed(header);
+}
+
+const JSON_DOCUMENT = Schema.fromJsonString(Schema.Unknown);
+const TOP_LEVEL = objectLeaf("the top level must be an object");
+
+/** Interpreting a config's JSON text: a JSON object, then `parse` over it (the reason's string when invalid). */
+export function parseConfigDocument<A>(
+  content: string,
+  parse: (record: Record<string, unknown>) => Parsed<A>,
+): A | Invalid {
+  const json = Schema.decodeUnknownResult(JSON_DOCUMENT)(content);
+  if (Result.isFailure(json)) {
+    return "not valid JSON";
+  }
+  return Result.match(Result.flatMap(decode(TOP_LEVEL, json.success), parse), {
+    onFailure: issueReason,
+    onSuccess: (value) => value,
   });
 }
 
