@@ -1,9 +1,9 @@
 // The single place an effect HttpClient is built (the CLAUDE.md "say
 // nothing" principle applied to the wire).
 //
-// Scope: effect HttpClients only. A few call sites still use the platform
-// `fetch` directly (apps/server/src/ops/ops-alerts.ts and same-origin
-// browser code); plain `fetch` adds no header of its own, so they are
+// Scope: effect HttpClients only. Same-origin browser code (the web
+// dashboard and the CLI's local passkey page) still uses the platform
+// `fetch` directly; plain `fetch` adds no header of its own, so it is
 // outside the trace-header concern this file addresses.
 //
 // effect's HttpClient adds `traceparent` / `b3` headers to every request by
