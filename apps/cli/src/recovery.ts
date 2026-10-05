@@ -21,6 +21,7 @@
 //   where reissuing (`maruhi key recovery`) can redo it first, in case
 //   the confirmation fails
 
+import { cryptoEffect } from "@maruhi/core";
 import {
   decodeHex,
   encodeHex,
@@ -111,25 +112,20 @@ export function issueRecoveryCodeOp(input: {
     // key is unusable" (the same trap as keychain storage. keychain.ts's
     // note)
     const blob = new TextEncoder().encode(serializeStoredMasterKey(input.record));
-    const wrapped = yield* Effect.tryPromise({
-      try: () =>
-        wrapMasterSecret({
-          // Reason for unwrapping: the recovery wrap's key-derivation input (the crypto boundary)
-          recoverySecret: Redacted.value(secret),
-          userId: input.session.userId,
-          masterSecretBlob: blob,
-        }),
-      catch: () => cliError("Failed to encrypt the recovery blob (crypto error)"),
-    });
-    if (!wrapped.ok) {
-      return yield* Effect.fail(cliError("Failed to create the recovery wrap"));
-    }
+    const wrapped = yield* cryptoEffect(() =>
+      wrapMasterSecret({
+        // Reason for unwrapping: the recovery wrap's key-derivation input (the crypto boundary)
+        recoverySecret: Redacted.value(secret),
+        userId: input.session.userId,
+        masterSecretBlob: blob,
+      }),
+    ).pipe(Effect.mapError(() => cliError("Failed to create the recovery wrap")));
     yield* input.client.auth
       .recoveryPut({
         payload: {
           suite: SUITE_ID,
-          nonceHex: encodeHex(wrapped.value.nonce),
-          ciphertextHex: encodeHex(wrapped.value.ciphertext),
+          nonceHex: encodeHex(wrapped.nonce),
+          ciphertextHex: encodeHex(wrapped.ciphertext),
         },
       })
       .pipe(Effect.mapError(toCliError));
@@ -376,21 +372,25 @@ function unwrapWithPromptedCode(input: {
         );
         continue;
       }
-      const unwrapped = yield* Effect.tryPromise({
-        try: () =>
-          unwrapMasterSecret({
-            // Reason for unwrapping: the recovery-blob decryption's key-derivation input (the crypto boundary)
-            recoverySecret: Redacted.value(secret),
-            userId: input.userId,
-            wrapped: { nonce: input.nonce, ciphertext: input.ciphertext },
-          }),
-        catch: () => cliError("Failed to decrypt the recovery blob (crypto error)"),
-      });
-      if (!unwrapped.ok) {
-        yield* io.logError("Cannot decrypt. Check that the code is correct");
+      // A crypto failure on the entered code (or a blob that does not
+      // open under it) means the same thing to the user: warn and let
+      // them re-enter — the wording is the failure itself, so the typed
+      // error is re-wrapped then folded back into a logged retry
+      const unwrapped = yield* cryptoEffect(() =>
+        unwrapMasterSecret({
+          // Reason for unwrapping: the recovery-blob decryption's key-derivation input (the crypto boundary)
+          recoverySecret: Redacted.value(secret),
+          userId: input.userId,
+          wrapped: { nonce: input.nonce, ciphertext: input.ciphertext },
+        }),
+      ).pipe(
+        Effect.mapError(() => cliError("Cannot decrypt. Check that the code is correct")),
+        Effect.catchTag("CliError", (error) => Effect.as(io.logError(error.message), null)),
+      );
+      if (unwrapped === null) {
         continue;
       }
-      const parsed = readRecoveryBlob(unwrapped.value);
+      const parsed = readRecoveryBlob(unwrapped);
       const record = parsed.record;
       if (record === null) {
         // Decryption succeeded yet the content is corrupt = the blob was

@@ -17,7 +17,7 @@
 // locals and leave nowhere but the return value (never onto logs or
 // errors — CLAUDE.md).
 
-import { ulid } from "@maruhi/core";
+import { cryptoEffect, ulid } from "@maruhi/core";
 import {
   decodeHex,
   type EncryptionKey,
@@ -43,23 +43,19 @@ export function openOwnGuardianShare(input: {
 }): Effect.Effect<Uint8Array, CliError> {
   return Effect.gen(function* () {
     // info is assembled by openGuardianShare in the spec's field order (a transplant fails decryption — §8.3)
-    const opened = yield* Effect.tryPromise({
-      try: () =>
-        openGuardianShare({
-          guardianKeyPair: input.masterKeys.encKeyPair,
-          wrapped: input.wrapped,
-          context: input.context,
-        }),
-      catch: () => cliError("Failed to open your guardian share (crypto error)"),
-    });
-    if (!opened.ok) {
-      return yield* Effect.fail(
+    return yield* cryptoEffect(() =>
+      openGuardianShare({
+        guardianKeyPair: input.masterKeys.encKeyPair,
+        wrapped: input.wrapped,
+        context: input.context,
+      }),
+    ).pipe(
+      Effect.mapError(() =>
         cliError(
           "Cannot open your guardian share with the device key on this machine. The ward may have sealed the group to a previous key of yours, or before this device was registered — ask them to re-add you with `maruhi guardian add`",
         ),
-      );
-    }
-    return opened.value;
+      ),
+    );
   });
 }
 
@@ -79,14 +75,9 @@ export function wrapReserveBlob(input: {
   return Effect.gen(function* () {
     // JSON.stringify(record) is not used (the private side would be redacted — the note in keychain.ts)
     const blob = new TextEncoder().encode(serializeStoredMasterKey(input.record));
-    const wrapped = yield* Effect.tryPromise({
-      try: () => wrapMasterBlob({ kek: input.kek, masterSecretBlob: blob, context: input.context }),
-      catch: () => cliError("Failed to wrap the reserve key (crypto error)"),
-    });
-    if (!wrapped.ok) {
-      return yield* Effect.fail(cliError("Failed to wrap the reserve key"));
-    }
-    return wrapped.value;
+    return yield* cryptoEffect(() =>
+      wrapMasterBlob({ kek: input.kek, masterSecretBlob: blob, context: input.context }),
+    ).pipe(Effect.mapError(() => cliError("Failed to wrap the reserve key")));
   });
 }
 
@@ -97,14 +88,9 @@ export function sealForRequester(input: {
   readonly context: HandoffWrapContext;
 }): Effect.Effect<WrappedDek, CliError> {
   return Effect.gen(function* () {
-    const sealed = yield* Effect.tryPromise({
-      try: () => sealHandoffValue(input),
-      catch: () => cliError("Failed to seal the approval to the requester's key (crypto error)"),
-    });
-    if (!sealed.ok) {
-      return yield* Effect.fail(cliError("Failed to seal the approval to the requester's key"));
-    }
-    return sealed.value;
+    return yield* cryptoEffect(() => sealHandoffValue(input)).pipe(
+      Effect.mapError(() => cliError("Failed to seal the approval to the requester's key")),
+    );
   });
 }
 

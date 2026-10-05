@@ -647,6 +647,44 @@ describe("maruhi guardian approve <code> (the approver)", () => {
     expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
   });
 
+  it("a malformed code is refused with the full wording (nothing is sent)", async () => {
+    const { env, server } = await start([]);
+    seedSession(env, server.origin, alice);
+    expect(await runCli(["guardian", "approve", "AAAA-BBBB"], env.layer)).toBe(1);
+    expect(env.errors).toEqual([
+      "maruhi: The handoff code is malformed (58 characters in groups of 4; hyphens, spaces, and letter case are ignored). Copy it again from the requesting device",
+    ]);
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("a share row sealed to this device that does not open is refused (the full message)", async () => {
+    const requester = await makeRequester();
+    const kek = generateMasterWrapKek();
+    const mine = await sealedShareFor(alice, kek);
+    // Well-formed but undecryptable: one flipped character in the
+    // ciphertext (e.g. the ward sealed to a previous key of this device)
+    const tampered = `${mine.ciphertextHex.slice(0, -2)}${mine.ciphertextHex.endsWith("00") ? "01" : "00"}`;
+    const { env, server } = await start([
+      lookupHandler(requester.requestId, lookupOf(ward, null)),
+      myShareHandler([
+        {
+          guardianKeyFingerprintHex: alice.fingerprintHex,
+          guardianEncPubHex: alice.encPubHex,
+          encHex: mine.encHex,
+          ciphertextHex: tampered,
+        },
+      ]),
+      approveHandler(requester.requestId, () => {}),
+    ]);
+    seedSession(env, server.origin, alice);
+    env.setPromptResponses(["yes"]);
+    expect(await runCli(["guardian", "approve", requester.code], env.layer)).toBe(1);
+    expect(env.errors).toEqual([
+      "maruhi: Cannot open your guardian share with the device key on this machine. The ward may have sealed the group to a previous key of yours, or before this device was registered — ask them to re-add you with `maruhi guardian add`",
+    ]);
+    expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
+  });
+
   it("refuses to approve in agent environments and non-terminals", async () => {
     const requester = await makeRequester();
     const { env, server } = await start([approveHandler(requester.requestId, () => {})]);
