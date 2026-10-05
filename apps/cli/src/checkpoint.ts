@@ -33,7 +33,7 @@ import {
   CheckpointStateMismatchError,
 } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
-import { scopePermissionFor } from "@maruhi/core";
+import { cryptoEffect, cryptoPromise, scopePermissionFor } from "@maruhi/core";
 import type {
   ChainEntry,
   CheckpointEnvironmentEntry,
@@ -46,7 +46,7 @@ import {
   scopeIncludesEnvironment,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Effect, Schedule } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { signEntryAtHead } from "./chain-append.ts";
@@ -74,6 +74,14 @@ const MAX_HEAD_CONFLICT_ATTEMPTS = 5;
  * session-38 ruling AG).
  */
 const MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS = 10;
+
+/**
+ * The backoff between AuditHeadNotReady retries (§16-2). The bounded
+ * extension on the server side advances on every call, so a retry is
+ * productive — the exponential wait only keeps the loop from pounding the
+ * endpoint and stays within a few seconds across the whole budget.
+ */
+const AUDIT_HEAD_NOT_READY_BASE_DELAY = "5 millis";
 
 /** The guidance shown on AuditHeadNotReady exhaustion (shared by the fetch and send paths). */
 const AUDIT_HEAD_NOT_READY_EXHAUSTED = `The server is still materializing the audit-head hash column after ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS} attempts (this happens once, on the first audit-head access of a project with a very large existing audit log). Progress is saved server-side and every attempt advances it — re-run the command to continue where it left off`;
@@ -286,19 +294,15 @@ function buildTuples(
           ),
         );
       }
-      const digest = yield* Effect.tryPromise({
-        try: () => computeEnvValuesDigest(SUITE_ID, pulled.values),
-        catch: () => cliError("Failed to compute the checkpoint values digest"),
-      });
-      if (!digest.ok) {
-        return yield* Effect.fail(cliError("Failed to compute the checkpoint values digest"));
-      }
+      const digest = yield* cryptoEffect(() =>
+        computeEnvValuesDigest(SUITE_ID, pulled.values),
+      ).pipe(Effect.mapError(() => cliError("Failed to compute the checkpoint values digest")));
       tuples.push({
         environmentId,
         epoch: environment.currentEpoch,
         manifestVersion: pulled.manifestVersion,
         manifestSigHashHex: pulled.manifestSigHashHex,
-        valuesDigestHex: digest.value,
+        valuesDigestHex: digest,
       });
     }
     return { view, tuples, warnings };
@@ -309,10 +313,11 @@ function buildTuples(
  * Fetching the audit-head attestation (called only for effective admin —
  * §16-2). AuditHeadNotReady (503 — the lazy materialization's bounded
  * extension is incomplete) is absorbed by a dedicated bounded retry: the
- * server-side progress is saved per call and always advances, so an
- * immediate retry is productive (no backoff needed). On exhaustion the
- * message guides the cause and the fix by re-running (never silently drop
- * to a generic error). `maruhi audit reconcile` shares this too.
+ * server-side progress is saved per call and always advances, so a
+ * bounded retry converges (exponential backoff — see the constant). On
+ * exhaustion the message guides the cause and the fix by re-running
+ * (never silently drop to a generic error). `maruhi audit reconcile`
+ * shares this too.
  */
 export function fetchAuditHead(
   client: MaruhiClient,
@@ -320,27 +325,40 @@ export function fetchAuditHead(
 ): Effect.Effect<string, CliError, CliIo> {
   return Effect.gen(function* () {
     const io = yield* CliIo;
-    for (let attempt = 1; attempt <= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS; attempt += 1) {
-      const outcome = yield* client.audit.auditHead({ params: { projectId } }).pipe(
-        Effect.map((response) => ({ kind: "ok" as const, head: response.auditHeadHashHex })),
-        Effect.catch((error) =>
-          error instanceof AuditHeadNotReadyError
-            ? Effect.succeed({ kind: "not-ready" as const })
-            : Effect.fail(
-                cliError(`Cannot fetch the audit head attestation (${toCliError(error).message})`),
-              ),
-        ),
-      );
-      if (outcome.kind === "ok") {
-        return outcome.head;
-      }
-      if (attempt < MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS) {
-        yield* io.log(
-          `The server is materializing the audit-head hash column — retrying (attempt ${attempt + 1} of ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS})`,
-        );
-      }
-    }
-    return yield* Effect.fail(cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED));
+    // 503 failures absorbed so far (the count behind the message's
+    // attempt numbering). The cap lives in `while`, not the schedule:
+    // stopping the schedule by `times` would still run the `while`
+    // predicate on the final step — emitting a spurious retry line
+    let notReady = 0;
+    return yield* client.audit.auditHead({ params: { projectId } }).pipe(
+      Effect.map((response) => response.auditHeadHashHex),
+      Effect.mapError((error) =>
+        error instanceof AuditHeadNotReadyError
+          ? error
+          : cliError(`Cannot fetch the audit head attestation (${toCliError(error).message})`),
+      ),
+      Effect.retry({
+        while: (error) => {
+          if (
+            !(error instanceof AuditHeadNotReadyError) ||
+            notReady >= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS - 1
+          ) {
+            return false;
+          }
+          notReady += 1;
+          return Effect.as(
+            io.log(
+              `The server is materializing the audit-head hash column — retrying (attempt ${notReady + 1} of ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS})`,
+            ),
+            true,
+          );
+        },
+        schedule: Schedule.exponential(AUDIT_HEAD_NOT_READY_BASE_DELAY),
+      }),
+      Effect.mapError((error) =>
+        error instanceof AuditHeadNotReadyError ? cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED) : error,
+      ),
+    );
   });
 }
 
@@ -436,10 +454,9 @@ function confirmAccepted(
   resync: Effect.Effect<VerifiedProject, CliError>,
 ): Effect.Effect<void, CliError> {
   return Effect.gen(function* () {
-    const expectedHash = yield* Effect.tryPromise({
-      try: () => computeChainEntryHash(entry),
-      catch: () => cliError("Failed to compute the checkpoint entry hash"),
-    });
+    const expectedHash = yield* cryptoPromise("computeChainEntryHash", () =>
+      computeChainEntryHash(entry),
+    ).pipe(Effect.mapError(() => cliError("Failed to compute the checkpoint entry hash")));
     const view = yield* resync.pipe(
       Effect.mapError((error) =>
         cliError(
@@ -503,53 +520,111 @@ export function issueCheckpoint(
     let previous: BuiltView | null = null;
     let subset: readonly EnvironmentId[] | null = null;
     for (;;) {
-      // The type annotation cuts the generator's self-referential inference (built → subset → built)
-      const built: BuiltView = yield* buildTuples(input, subset ?? targets);
-      warnings.push(...built.warnings);
-      // The audit-head attestation is fetched after the CAS parent (the
-      // chain head the signing is based on) is settled (§6.3 — fetching it
-      // earlier falls into audit-head-stale via someone else's checkpoint
-      // landing in between). A 422 retry refetches the attestation too
-      // (§16-2)
-      const auditHeadHashHex = attest
-        ? yield* fetchAuditHead(input.client, input.verified.projectId)
-        : "";
-      const attempt = yield* sendCheckpoint({
-        client: input.client,
-        view: built.view,
-        tuples: built.tuples,
-        auditHeadHashHex,
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
-        resync: input.resync,
-      }).pipe(
-        Effect.map((accepted) => ({ kind: "accepted" as const, accepted })),
-        Effect.catch((error) => classifySendFailure(error)),
+      // The retried unit of §12-10 (3): rebuild the view, refetch the
+      // attestation (fetched after the CAS parent — the chain head the
+      // signing is based on — is settled, §6.3; a retry refetches it too,
+      // §16-2), and send. An AuditHeadNotReady (503) from the accepting
+      // side is retried by Effect.retry on this whole unit — a fresh view
+      // + attestation is exactly what converges it (the failure response
+      // still advanced the server's bounded extension — progress saved,
+      // AUDIT_SPEC §5.1). `while` carries the cumulative cap for the same
+      // reason as fetchAuditHead (the outer for(;;) interleaves other
+      // retriable kinds, so a per-call `times` could not bound it)
+      const attemptBody: Effect.Effect<
+        {
+          readonly built: BuiltView;
+          readonly baseline: BuiltView | null;
+          readonly outcome:
+            | { readonly kind: "accepted"; readonly accepted: { readonly headSeq: number } }
+            | { readonly kind: "head-conflict" }
+            | { readonly kind: "state-mismatch"; readonly reason: string };
+        },
+        AuditHeadNotReadyError | CliError,
+        CliIo
+      > = Effect.gen(function* () {
+        // The type annotation cuts the generator's self-referential inference (built → subset → built)
+        const built: BuiltView = yield* buildTuples(input, subset ?? targets);
+        warnings.push(...built.warnings);
+        // The subset-fallback baseline = the previous build (null while a
+        // subset issuance is in flight — no fallback inside a subset)
+        const baseline = subset === null ? previous : null;
+        previous = built;
+        const auditHeadHashHex = attest
+          ? yield* fetchAuditHead(input.client, input.verified.projectId)
+          : "";
+        const outcome = yield* sendCheckpoint({
+          client: input.client,
+          view: built.view,
+          tuples: built.tuples,
+          auditHeadHashHex,
+          signerUserId: input.signerUserId,
+          signingKeyPair: input.signingKeyPair,
+          resync: input.resync,
+        }).pipe(
+          Effect.map((accepted) => ({ kind: "accepted" as const, accepted })),
+          // The 503 re-fails before classification — it is retried by the
+          // Effect.retry on the unit, not absorbed as an outcome
+          Effect.catch(
+            (
+              error,
+            ): Effect.Effect<
+              | { readonly kind: "head-conflict" }
+              | { readonly kind: "state-mismatch"; readonly reason: string },
+              AuditHeadNotReadyError | CliError
+            > =>
+              error instanceof AuditHeadNotReadyError
+                ? Effect.fail(error)
+                : classifySendFailure(error),
+          ),
+        );
+        return { built, baseline, outcome };
+      });
+      const attempt = yield* attemptBody.pipe(
+        Effect.retry({
+          while: (error) => {
+            if (
+              !(error instanceof AuditHeadNotReadyError) ||
+              counters.notReady >= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS - 1
+            ) {
+              return false;
+            }
+            counters.notReady += 1;
+            return Effect.as(
+              io.log(
+                `The server is materializing the audit-head hash column — refetching the attestation and retrying (attempt ${counters.notReady + 1} of ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS})`,
+              ),
+              true,
+            );
+          },
+          schedule: Schedule.exponential(AUDIT_HEAD_NOT_READY_BASE_DELAY),
+        }),
+        Effect.mapError((error) =>
+          error instanceof AuditHeadNotReadyError
+            ? cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)
+            : error,
+        ),
       );
-      if (attempt.kind === "accepted") {
+      if (attempt.outcome.kind === "accepted") {
         return summarizeAccepted({
           targets,
           subset,
           attest,
-          headSeq: attempt.accepted.headSeq,
+          headSeq: attempt.outcome.accepted.headSeq,
           warnings,
         });
       }
-      // Absorbing a retriable failure (the type annotation is for the same
-      // reason as built — cutting the generator's self-referential
-      // inference): null = retry as-is, array = fall back to the subset
-      const nextSubset: readonly EnvironmentId[] | null = yield* absorbSendFailure({
-        failure: attempt,
+      // Absorbing a retriable failure: null = retry as-is, array = fall back to the subset
+      const nextSubset = yield* absorbSendFailure({
+        failure: attempt.outcome,
         counters,
-        built,
-        baseline: subset === null ? previous : null,
+        built: attempt.built,
+        baseline: attempt.baseline,
         warnings,
         io,
       });
       if (nextSubset !== null) {
         subset = nextSubset;
       }
-      previous = built;
     }
   });
 }
@@ -568,23 +643,21 @@ interface RetryCounters {
  * guidance.
  *
  * - head-conflict (409): re-sign and retry (the existing convention's cap)
- * - audit-head-not-ready (503): the shape where a large batch of audit
- *   rows (bulk var.read etc.) was appended between the attestation fetch
- *   and acceptance, and the accepting side's re-extension hit its cap.
- *   Even on a failure response the server's extension has advanced, so
- *   refetching the view and the attestation and retrying converges
- *   (progress saved — AUDIT_SPEC §5.1). Exhaustion is not silenced: the
- *   message guides the cause and the fix by re-running (session-38 ruling
- *   AG)
  * - state-mismatch (422): retry with a refetched view; past the cap, issue
  *   exactly once with the subset of tuples unchanged across the last two
  *   builds (the §6.3 fallback path)
+ *
+ * (audit-head-not-ready (503) no longer reaches here — the retried unit's
+ * Effect.retry absorbs it by refetching the view and the attestation;
+ * even on a failure response the server's extension has advanced, so
+ * retrying converges — progress saved, AUDIT_SPEC §5.1. Exhaustion is
+ * not silenced either: the message guides the cause and the fix by
+ * re-running — session-38 ruling AG)
  */
 function absorbSendFailure(input: {
   readonly failure:
     | { readonly kind: "head-conflict" }
-    | { readonly kind: "state-mismatch"; readonly reason: string }
-    | { readonly kind: "audit-head-not-ready" };
+    | { readonly kind: "state-mismatch"; readonly reason: string };
   readonly counters: RetryCounters;
   readonly built: BuiltView;
   readonly baseline: BuiltView | null;
@@ -597,11 +670,6 @@ function absorbSendFailure(input: {
       counters.headConflict += 1;
       yield* ensureHeadConflictBudget(counters.headConflict);
       yield* io.log("The chain head advanced while the checkpoint was in flight — re-signing");
-      return null;
-    }
-    if (failure.kind === "audit-head-not-ready") {
-      counters.notReady += 1;
-      yield* absorbAcceptanceNotReady(counters.notReady, io);
       return null;
     }
     counters.mismatch += 1;
@@ -642,25 +710,6 @@ function summarizeAccepted(input: {
     headSeq: input.headSeq,
     warnings: [...new Set(input.warnings)],
   };
-}
-
-/**
- * Absorbing AuditHeadNotReady (503) at the acceptance stage: the shape
- * where a large batch of audit rows (bulk var.read etc.) was appended
- * between the attestation fetch and acceptance, and the accepting side's
- * re-extension hit its cap. Even on a failure response the server's
- * extension has advanced, so refetching the view and the attestation and
- * retrying converges (progress saved — AUDIT_SPEC §5.1). Exhaustion is
- * not silenced: the message guides the cause and the fix by re-running
- * (session-38 ruling AG).
- */
-function absorbAcceptanceNotReady(attempts: number, io: CliIoShape): Effect.Effect<void, CliError> {
-  if (attempts >= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS) {
-    return Effect.fail(cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED));
-  }
-  return io.log(
-    `The server is materializing the audit-head hash column — refetching the attestation and retrying (attempt ${attempts + 1} of ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS})`,
-  );
 }
 
 /** The remaining-budget check for CAS-conflict (409) re-signing retries (spent = definitive failure). */
@@ -711,13 +760,11 @@ function stableSubsetOrFail(input: {
   return Effect.succeed(stableIds);
 }
 
-/** Classifying sendCheckpoint's failure (the retriable kinds are discriminated here; anything else is a definitive failure). */
+/** Classifying sendCheckpoint's failure (the retriable kinds are discriminated here; AuditHeadNotReady is re-failed for the unit's Effect.retry before reaching this; anything else is a definitive failure). */
 function classifySendFailure(
-  error: ChainHeadConflictError | CheckpointStateMismatchError | AuditHeadNotReadyError | CliError,
+  error: ChainHeadConflictError | CheckpointStateMismatchError | CliError,
 ): Effect.Effect<
-  | { readonly kind: "head-conflict" }
-  | { readonly kind: "state-mismatch"; readonly reason: string }
-  | { readonly kind: "audit-head-not-ready" },
+  { readonly kind: "head-conflict" } | { readonly kind: "state-mismatch"; readonly reason: string },
   CliError
 > {
   if (error instanceof ChainHeadConflictError) {
@@ -725,9 +772,6 @@ function classifySendFailure(
   }
   if (error instanceof CheckpointStateMismatchError) {
     return Effect.succeed({ kind: "state-mismatch" as const, reason: error.reason });
-  }
-  if (error instanceof AuditHeadNotReadyError) {
-    return Effect.succeed({ kind: "audit-head-not-ready" as const });
   }
   return Effect.fail(error);
 }

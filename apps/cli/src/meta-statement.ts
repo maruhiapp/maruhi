@@ -16,6 +16,7 @@
 // drift from the production implementation, so it is not unified
 // into here.
 
+import { cryptoEffect } from "@maruhi/core";
 import type { MetaStatementContext } from "@maruhi/crypto";
 import { computeMetaSignedBytesHash, encodeHex, signMetaStatement, SUITE_ID } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -46,21 +47,13 @@ export function signStatementAndHash(
   signingKey: CryptoKey,
 ): Effect.Effect<{ readonly signatureHex: string; readonly metaSigHashHex: string }, CliError> {
   return Effect.gen(function* () {
-    const signature = yield* Effect.tryPromise({
-      try: () => signMetaStatement({ context, signingKey }),
-      catch: () => cliError("Failed to sign the meta statement"),
-    });
-    if (!signature.ok) {
-      return yield* Effect.fail(cliError("Failed to sign the meta statement"));
-    }
-    const metaSigHash = yield* Effect.tryPromise({
-      try: () => computeMetaSignedBytesHash(context),
-      catch: () => cliError("Failed to compute the meta-statement signed-bytes hash"),
-    });
-    if (!metaSigHash.ok) {
-      return yield* Effect.fail(cliError("Failed to compute the meta-statement signed-bytes hash"));
-    }
-    return { signatureHex: signature.value, metaSigHashHex: metaSigHash.value };
+    const signature = yield* cryptoEffect(() => signMetaStatement({ context, signingKey })).pipe(
+      Effect.mapError(() => cliError("Failed to sign the meta statement")),
+    );
+    const metaSigHash = yield* cryptoEffect(() => computeMetaSignedBytesHash(context)).pipe(
+      Effect.mapError(() => cliError("Failed to compute the meta-statement signed-bytes hash")),
+    );
+    return { signatureHex: signature, metaSigHashHex: metaSigHash };
   });
 }
 

@@ -17,6 +17,7 @@
 // choose, so it does not exist).
 
 import type { DistributedEnvironmentManifest, EnvironmentManifest } from "@maruhi/api-schema";
+import { CryptoEnvManifestInvalidError, cryptoEffect } from "@maruhi/core";
 import type { EnvManifestContext, VariablesDigestEntry } from "@maruhi/crypto";
 import {
   computeEnvManifestSignedBytesHash,
@@ -28,6 +29,7 @@ import {
 import { Effect } from "effect";
 
 import type { VerifiedProject } from "./chain-sync.ts";
+import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import type { ManifestFloor } from "./floor.ts";
@@ -104,20 +106,16 @@ export function signNextManifest(
   input: SignManifestInput,
 ): Effect.Effect<SignedManifest, CliError> {
   return Effect.gen(function* () {
-    const digest = yield* Effect.tryPromise({
-      try: () => computeVariablesDigest(SUITE_ID, input.entries),
-      catch: () => cliError("Failed to compute the manifest variables digest"),
-    });
-    if (!digest.ok) {
-      return yield* Effect.fail(cliError("Failed to compute the manifest variables digest"));
-    }
+    const digest = yield* cryptoEffect(() => computeVariablesDigest(SUITE_ID, input.entries)).pipe(
+      Effect.mapError(() => cliError("Failed to compute the manifest variables digest")),
+    );
     const context: EnvManifestContext = {
       suite: SUITE_ID,
       projectId: input.verified.projectId,
       environmentId: input.environmentId,
       epoch: input.epoch,
       manifestVersion: (input.previous?.manifestVersion ?? 0) + 1,
-      variablesDigestHex: digest.value,
+      variablesDigestHex: digest,
       envMetaVersion: input.envMeta.metaVersion,
       envMetaSigHashHex: input.envMeta.sigHashHex,
       prevManifestSigHashHex: input.previous?.signedBytesHashHex ?? "",
@@ -125,20 +123,12 @@ export function signNextManifest(
       chainHeadHashHex: input.chainHead.hashHex,
       chainHeadSeq: input.chainHead.seq,
     };
-    const signature = yield* Effect.tryPromise({
-      try: () => signEnvManifest({ context, signingKey: input.signingKey }),
-      catch: () => cliError("Failed to sign the environment manifest"),
-    });
-    if (!signature.ok) {
-      return yield* Effect.fail(cliError("Failed to sign the environment manifest"));
-    }
-    const hash = yield* Effect.tryPromise({
-      try: () => computeEnvManifestSignedBytesHash(context),
-      catch: () => cliError("Failed to compute the manifest signed-bytes hash"),
-    });
-    if (!hash.ok) {
-      return yield* Effect.fail(cliError("Failed to compute the manifest signed-bytes hash"));
-    }
+    const signature = yield* cryptoEffect(() =>
+      signEnvManifest({ context, signingKey: input.signingKey }),
+    ).pipe(Effect.mapError(() => cliError("Failed to sign the environment manifest")));
+    const hash = yield* cryptoEffect(() => computeEnvManifestSignedBytesHash(context)).pipe(
+      Effect.mapError(() => cliError("Failed to compute the manifest signed-bytes hash")),
+    );
     return {
       // The wire is entirely derived from the signed context (this
       // module's reason to exist. suite is a Literal — the context
@@ -154,9 +144,9 @@ export function signNextManifest(
         prevManifestSigHashHex: context.prevManifestSigHashHex,
         chainHeadHashHex: context.chainHeadHashHex,
         chainHeadSeq: context.chainHeadSeq,
-        signatureHex: signature.value,
+        signatureHex: signature,
       },
-      manifestSigHashHex: hash.value,
+      manifestSigHashHex: hash,
       manifestVersion: context.manifestVersion,
       epoch: context.epoch,
     };
@@ -216,90 +206,96 @@ export async function verifyDistributedManifest(input: {
           epoch: floorManifest.epoch,
         }
       : undefined;
-  const result = await verifyDistributedEnvManifest({
-    history: input.verified.history,
-    context: {
-      suite: manifest.suite,
-      projectId: input.verified.projectId,
-      environmentId: input.environmentId,
-      epoch: manifest.epoch,
-      manifestVersion: manifest.manifestVersion,
-      variablesDigestHex: manifest.variablesDigestHex,
-      envMetaVersion: manifest.envMetaVersion,
-      envMetaSigHashHex: manifest.envMetaSigHashHex,
-      prevManifestSigHashHex: manifest.prevManifestSigHashHex,
-      issuerUserId: manifest.issuerUserId,
-      chainHeadHashHex: manifest.chainHeadHashHex,
-      chainHeadSeq: manifest.chainHeadSeq,
-    },
-    issuerKeyFingerprintHex: manifest.issuerKeyFingerprintHex,
-    signatureHex: manifest.signatureHex,
-    entries: input.entries,
-    envMeta: { metaVersion: input.envMeta.metaVersion, sigHashHex: input.envMeta.sigHashHex },
-    // Only an adjacent version gets the floor-derived predecessor
-    // (above). Otherwise it follows latest-only's known constraint —
-    // detecting cross-session regression, same-version difference,
-    // and forward injection is the floor's manifest extension's job
-    // (floor-check.ts's rules (a)(b)(c))
-    ...(predecessor === undefined ? {} : { predecessor }),
-  });
-  if (result.ok) {
-    return {
-      kind: "ok",
-      value: {
-        manifestVersion: manifest.manifestVersion,
-        epoch: manifest.epoch,
-        variablesDigestHex: manifest.variablesDigestHex,
-        envMetaVersion: manifest.envMetaVersion,
-        envMetaSigHashHex: manifest.envMetaSigHashHex,
-        prevManifestSigHashHex: manifest.prevManifestSigHashHex,
-        signedBytesHashHex: result.value.signedBytesHashHex,
-        chainHeadSeq: manifest.chainHeadSeq,
-        chainHeadHashHex: manifest.chainHeadHashHex,
-        signatureHex: manifest.signatureHex,
-        issuerUserId: manifest.issuerUserId,
+  return Effect.runPromise(
+    cryptoEffect(() =>
+      verifyDistributedEnvManifest({
+        history: input.verified.history,
+        context: {
+          suite: manifest.suite,
+          projectId: input.verified.projectId,
+          environmentId: input.environmentId,
+          epoch: manifest.epoch,
+          manifestVersion: manifest.manifestVersion,
+          variablesDigestHex: manifest.variablesDigestHex,
+          envMetaVersion: manifest.envMetaVersion,
+          envMetaSigHashHex: manifest.envMetaSigHashHex,
+          prevManifestSigHashHex: manifest.prevManifestSigHashHex,
+          issuerUserId: manifest.issuerUserId,
+          chainHeadHashHex: manifest.chainHeadHashHex,
+          chainHeadSeq: manifest.chainHeadSeq,
+        },
         issuerKeyFingerprintHex: manifest.issuerKeyFingerprintHex,
-      },
-    };
-  }
-  const error = result.error;
-  if (error.kind === "EnvManifestInvalid") {
-    const unknownSigner = error.reason === "issuer-unknown";
-    if (
-      error.reason === "chain-head-future" ||
-      (unknownSigner && manifest.chainHeadSeq > input.verified.history.headSeq)
-    ) {
-      return { kind: "future" };
-    }
-    if (predecessor !== undefined && error.reason === "prev-hash-mismatch") {
-      // An adjacent-prev mismatch is a contradiction against the
-      // floor (the verified previous manifest) = evidence of a fork
-      // in the manifest chain. Include material presentable to a
-      // third party (both hashes, the issuer, the declared head)
-      // (session-31 §3)
-      return {
-        kind: "rejected",
-        message: [
-          `Environment ${input.environmentId}'s manifest (manifestVersion ${manifest.manifestVersion}) declares a prev that does not match the verified predecessor recorded in the local floor (evidence of a diverged manifest chain — CRYPTO_SPEC §4.3 rule (1))`,
-          `  floor record (previously verified): manifestVersion=${floorManifest?.manifestVersion ?? 0} manifest_signed_bytes_hash=${predecessor.signedBytesHashHex}`,
-          `  this distribution: prevManifestSigHashHex=${manifest.prevManifestSigHashHex}`,
-          `    declared head: seq=${manifest.chainHeadSeq} hash=${manifest.chainHeadHashHex}`,
-          // user_id is a length-constrained free-form string on the wire — neutralize before showing on the terminal
-          `    issuer signature: issuer=${displayText(manifest.issuerUserId)} fp=${manifest.issuerKeyFingerprintHex}`,
-          `    signature=${manifest.signatureHex}`,
-          "  Preserve this output and the local floor log, and present them to the project administrators",
-        ].join("\n"),
-      };
-    }
-    return {
-      kind: "rejected",
-      message: `Verification of environment ${input.environmentId}'s manifest failed (reason=${error.reason}). Statements may have been omitted, injected or replaced by the server (CRYPTO_SPEC §4.3)`,
-    };
-  }
-  return {
-    kind: "rejected",
-    message: `Verification of environment ${input.environmentId}'s manifest failed (reason=${error.kind})`,
-  };
+        signatureHex: manifest.signatureHex,
+        entries: input.entries,
+        envMeta: { metaVersion: input.envMeta.metaVersion, sigHashHex: input.envMeta.sigHashHex },
+        // Only an adjacent version gets the floor-derived predecessor
+        // (above). Otherwise it follows latest-only's known constraint —
+        // detecting cross-session regression, same-version difference,
+        // and forward injection is the floor's manifest extension's job
+        // (floor-check.ts's rules (a)(b)(c))
+        ...(predecessor === undefined ? {} : { predecessor }),
+      }),
+    ).pipe(
+      Effect.match({
+        onSuccess: (value): ManifestVerifyOutcome => ({
+          kind: "ok",
+          value: {
+            manifestVersion: manifest.manifestVersion,
+            epoch: manifest.epoch,
+            variablesDigestHex: manifest.variablesDigestHex,
+            envMetaVersion: manifest.envMetaVersion,
+            envMetaSigHashHex: manifest.envMetaSigHashHex,
+            prevManifestSigHashHex: manifest.prevManifestSigHashHex,
+            signedBytesHashHex: value.signedBytesHashHex,
+            chainHeadSeq: manifest.chainHeadSeq,
+            chainHeadHashHex: manifest.chainHeadHashHex,
+            signatureHex: manifest.signatureHex,
+            issuerUserId: manifest.issuerUserId,
+            issuerKeyFingerprintHex: manifest.issuerKeyFingerprintHex,
+          },
+        }),
+        onFailure: (error): ManifestVerifyOutcome => {
+          if (error instanceof CryptoEnvManifestInvalidError) {
+            const unknownSigner = error.reason === "issuer-unknown";
+            if (
+              error.reason === "chain-head-future" ||
+              (unknownSigner && manifest.chainHeadSeq > input.verified.history.headSeq)
+            ) {
+              return { kind: "future" };
+            }
+            if (predecessor !== undefined && error.reason === "prev-hash-mismatch") {
+              // An adjacent-prev mismatch is a contradiction against the
+              // floor (the verified previous manifest) = evidence of a fork
+              // in the manifest chain. Include material presentable to a
+              // third party (both hashes, the issuer, the declared head)
+              // (session-31 §3)
+              return {
+                kind: "rejected",
+                message: [
+                  `Environment ${input.environmentId}'s manifest (manifestVersion ${manifest.manifestVersion}) declares a prev that does not match the verified predecessor recorded in the local floor (evidence of a diverged manifest chain — CRYPTO_SPEC §4.3 rule (1))`,
+                  `  floor record (previously verified): manifestVersion=${floorManifest?.manifestVersion ?? 0} manifest_signed_bytes_hash=${predecessor.signedBytesHashHex}`,
+                  `  this distribution: prevManifestSigHashHex=${manifest.prevManifestSigHashHex}`,
+                  `    declared head: seq=${manifest.chainHeadSeq} hash=${manifest.chainHeadHashHex}`,
+                  // user_id is a length-constrained free-form string on the wire — neutralize before showing on the terminal
+                  `    issuer signature: issuer=${displayText(manifest.issuerUserId)} fp=${manifest.issuerKeyFingerprintHex}`,
+                  `    signature=${manifest.signatureHex}`,
+                  "  Preserve this output and the local floor log, and present them to the project administrators",
+                ].join("\n"),
+              };
+            }
+            return {
+              kind: "rejected",
+              message: `Verification of environment ${input.environmentId}'s manifest failed (reason=${error.reason}). Statements may have been omitted, injected or replaced by the server (CRYPTO_SPEC §4.3)`,
+            };
+          }
+          return {
+            kind: "rejected",
+            message: `Verification of environment ${input.environmentId}'s manifest failed (reason=${cryptoErrorKind(error)})`,
+          };
+        },
+      }),
+    ),
+  );
 }
 
 /** The uniform refusal message for a missing manifest (§6.3). */

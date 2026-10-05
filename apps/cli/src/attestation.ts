@@ -33,6 +33,7 @@
 // response bundles no attestations and the workload has no signing key).
 
 import { AttestationRegressionError } from "@maruhi/api-schema";
+import { cryptoEffect } from "@maruhi/core";
 import { SUITE_ID, signHeadAttestation, verifyDistributedHeadAttestation } from "@maruhi/crypto";
 import { Effect } from "effect";
 
@@ -58,49 +59,61 @@ type MatchOutcome =
  * view. Verification failures are skip (not reconciliation material); only
  * the two head-binding kinds (§6.3-2) come back as future / mismatch.
  */
-async function matchAttestation(
+function matchAttestation(
   view: VerifiedProject,
   attestation: DistributedAttestationWire,
-): Promise<MatchOutcome> {
-  // First half of §6.6 (1): the attester (user_id + key FP) must be a
-  // current member in the local view. An attestation by a non-current member
-  // is not reconciliation material (the server deletes the row at remove —
-  // §6.4; even when distributed, a past attestation within the membership
-  // interval has no warning value)
-  const current = view.history.memberStateAt(attestation.attesterUserId, view.state.headSeq);
-  // The attested FP is one of the attester's currently valid devices
-  // (2026-09-19 DK — per-device identification)
-  if (current === undefined || !current.devices.has(attestation.attesterKeyFingerprintHex)) {
-    return { kind: "skip" };
-  }
-  const verified = await verifyDistributedHeadAttestation({
-    history: view.history,
-    context: {
-      suite: attestation.suite,
-      projectId: view.projectId,
-      attesterUserId: attestation.attesterUserId,
-      chainHeadHashHex: attestation.chainHeadHashHex,
-      chainHeadSeq: attestation.chainHeadSeq,
-    },
-    attesterKeyFingerprintHex: attestation.attesterKeyFingerprintHex,
-    signatureHex: attestation.signatureHex,
+): Effect.Effect<MatchOutcome> {
+  return Effect.gen(function* () {
+    // First half of §6.6 (1): the attester (user_id + key FP) must be a
+    // current member in the local view. An attestation by a non-current member
+    // is not reconciliation material (the server deletes the row at remove —
+    // §6.4; even when distributed, a past attestation within the membership
+    // interval has no warning value)
+    const current = view.history.memberStateAt(attestation.attesterUserId, view.state.headSeq);
+    // The attested FP is one of the attester's currently valid devices
+    // (2026-09-19 DK — per-device identification)
+    if (current === undefined || !current.devices.has(attestation.attesterKeyFingerprintHex)) {
+      return { kind: "skip" } satisfies MatchOutcome;
+    }
+    const outcome = yield* cryptoEffect(() =>
+      verifyDistributedHeadAttestation({
+        history: view.history,
+        context: {
+          suite: attestation.suite,
+          projectId: view.projectId,
+          attesterUserId: attestation.attesterUserId,
+          chainHeadHashHex: attestation.chainHeadHashHex,
+          chainHeadSeq: attestation.chainHeadSeq,
+        },
+        attesterKeyFingerprintHex: attestation.attesterKeyFingerprintHex,
+        signatureHex: attestation.signatureHex,
+      }),
+    ).pipe(
+      Effect.as({ kind: "ok" } satisfies MatchOutcome),
+      // Every other wrapped kind is not reconciliation material — the
+      // else branch lands on skip (§6.6: verification failures are
+      // skipped, not warned — warning-induction DoS by forged
+      // attestations is eliminated that way)
+      Effect.catchTags(
+        {
+          CryptoHeadAttestationInvalid: (error) => {
+            if (error.reason === "chain-head-future") {
+              return Effect.succeed({ kind: "future" } satisfies MatchOutcome);
+            }
+            if (error.reason === "chain-head-mismatch") {
+              // Signature and key selection are already verified (check order — §6.6),
+              // so this mismatch makes the attestation itself evidence (distinct from a
+              // discarded skip)
+              return Effect.succeed({ kind: "mismatch" } satisfies MatchOutcome);
+            }
+            return Effect.succeed({ kind: "skip" } satisfies MatchOutcome);
+          },
+        },
+        () => Effect.succeed({ kind: "skip" } satisfies MatchOutcome),
+      ),
+    );
+    return outcome;
   });
-  if (verified.ok) {
-    return { kind: "ok" };
-  }
-  if (verified.error.kind !== "HeadAttestationInvalid") {
-    return { kind: "skip" };
-  }
-  if (verified.error.reason === "chain-head-future") {
-    return { kind: "future" };
-  }
-  if (verified.error.reason === "chain-head-mismatch") {
-    // Signature and key selection are already verified (check order — §6.6),
-    // so this mismatch makes the attestation itself evidence (distinct from a
-    // discarded skip)
-    return { kind: "mismatch" };
-  }
-  return { kind: "skip" };
 }
 
 interface Classified {
@@ -108,21 +121,23 @@ interface Classified {
   readonly future: DistributedAttestationWire[];
 }
 
-async function classifyAll(
+function classifyAll(
   view: VerifiedProject,
   attestations: readonly DistributedAttestationWire[],
-): Promise<Classified> {
-  const evidence: DistributedAttestationWire[] = [];
-  const future: DistributedAttestationWire[] = [];
-  for (const attestation of attestations) {
-    const outcome = await matchAttestation(view, attestation);
-    if (outcome.kind === "mismatch") {
-      evidence.push(attestation);
-    } else if (outcome.kind === "future") {
-      future.push(attestation);
+): Effect.Effect<Classified> {
+  return Effect.gen(function* () {
+    const evidence: DistributedAttestationWire[] = [];
+    const future: DistributedAttestationWire[] = [];
+    for (const attestation of attestations) {
+      const outcome = yield* matchAttestation(view, attestation);
+      if (outcome.kind === "mismatch") {
+        evidence.push(attestation);
+      } else if (outcome.kind === "future") {
+        future.push(attestation);
+      }
     }
-  }
-  return { evidence, future };
+    return { evidence, future };
+  });
 }
 
 function evidenceRecordOf(
@@ -197,7 +212,7 @@ export function reconcileDistributedAttestations(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
 }): Effect.Effect<VerifiedProject, CliError, CliServices> {
   return Effect.gen(function* () {
-    const first = yield* Effect.promise(() => classifyAll(input.view, input.view.attestations));
+    const first = yield* classifyAll(input.view, input.view.attestations);
     if (first.evidence.length > 0) {
       return yield* failWithEvidence(
         input.projectId,
@@ -235,7 +250,7 @@ export function reconcileDistributedAttestations(input: {
       seen.add(key);
       return true;
     });
-    const second = yield* Effect.promise(() => classifyAll(advanced, union));
+    const second = yield* classifyAll(advanced, union);
     if (second.evidence.length > 0 || second.future.length > 0) {
       return yield* failWithEvidence(input.projectId, advanced, [
         ...second.evidence.map((attestation) => ({
@@ -287,7 +302,7 @@ export function submitHeadAttestationIfAdvanced(input: {
       // a concurrent CLI
       return;
     }
-    const signed = yield* Effect.promise(() =>
+    const signed = yield* cryptoEffect(() =>
       signHeadAttestation({
         context: {
           suite: SUITE_ID,
@@ -298,8 +313,8 @@ export function submitHeadAttestationIfAdvanced(input: {
         },
         signingKey: input.signingKey,
       }),
-    );
-    if (!signed.ok) {
+    ).pipe(Effect.catch(() => Effect.succeed(null)));
+    if (signed === null) {
       yield* logNote(
         "could not sign the head attestation for this sync (split-view gossip). This does not affect the current command",
       );
@@ -315,7 +330,7 @@ export function submitHeadAttestationIfAdvanced(input: {
           suite: SUITE_ID,
           chainHeadHashHex: head.hashHex,
           chainHeadSeq: head.seq,
-          signatureHex: signed.value,
+          signatureHex: signed,
         },
       })
       .pipe(
