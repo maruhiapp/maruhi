@@ -9,15 +9,22 @@
 //     partial file is removed first)
 //  3. the trailer's chain head is cross-checked against the verified view
 //  4. an existing file is never overwritten; --out is required (usage)
+//  5. an export interrupted mid-write removes the partial file (the
+//     output is a scoped resource — acquireUseRelease)
 
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 
+import type { ProjectId } from "@maruhi/core";
+import { Effect, Fiber } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import type { MaruhiClient } from "../src/api.ts";
+import { verifyChainSnapshot } from "../src/chain-sync.ts";
 import { runCli } from "../src/cli.ts";
+import { projectExportOp } from "../src/project-export.ts";
 import { chainHandlerOf } from "./support/chain-handler.ts";
 import {
   buildChain,
@@ -288,6 +295,54 @@ describe("maruhi project export (PF3)", () => {
     expect(await runCli(["project", "export", "--out", data], half.env.layer)).toBe(1);
     await expect(stat(data)).rejects.toThrow();
     await expect(stat(`${data}.identities.json`)).rejects.toThrow();
+  });
+
+  it("removes the partial file when the export is interrupted mid-write", async () => {
+    // No MockServer: a stub client answers the first page, then holds the
+    // continuation forever — the export sits mid-write with a partial
+    // file on disk when the interrupt arrives
+    const lines = snapshotLines();
+    const head = {
+      chainHeadSeq: built.entries.length,
+      chainHeadHashHex: built.hashes[built.hashes.length - 1] ?? "",
+      auditMaxSeq: 2,
+    };
+    let secondPageRequested: () => void = () => undefined;
+    const secondPage = new Promise<void>((resolve) => {
+      secondPageRequested = resolve;
+    });
+    const client = {
+      export: {
+        page: (args: { readonly query: { readonly cursor?: string } }) =>
+          args.query.cursor === undefined
+            ? Effect.succeed({ lines: lines.slice(0, 3), next: "Y3Vyc29y", head })
+            : Effect.suspend(() => {
+                secondPageRequested();
+                return Effect.never;
+              }),
+        identities: () => Effect.succeed(identitiesAt(head.chainHeadHashHex)),
+      },
+    } as unknown as MaruhiClient;
+    const verified = await Effect.runPromise(
+      verifyChainSnapshot({
+        projectId: built.projectId as ProjectId,
+        entries: built.entries,
+        claimedHeadSeq: built.entries.length,
+        claimedHeadHashHex: head.chainHeadHashHex,
+      }),
+    );
+    const dir = await mkdtemp(join(tmpdir(), "maruhi-export-test-"));
+    const out = join(dir, "interrupted.ndjson.gz");
+    const fiber = Effect.runFork(
+      projectExportOp({ client, projectId: built.projectId, verified, outPath: out }),
+    );
+    // The first page is already written once the second is requested
+    await secondPage;
+    // Fiber.interrupt waits for the fiber's exit — the uninterruptible
+    // release (stream teardown + file removal) has completed by now
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    await expect(stat(out)).rejects.toThrow();
+    await expect(stat(`${out}.identities.json`)).rejects.toThrow();
   });
 
   it("never overwrites an existing file, and --out is required", async () => {
