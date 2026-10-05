@@ -24,6 +24,10 @@
 // - A `Cause` passed as a message part is lifted out of the message by
 //   Effect (it becomes the log event's cause) and is never printed: its
 //   rendering would include error messages that can carry data.
+// - Every log call must carry a static message part. A Cause-only call
+//   (`Effect.logError(cause)`, `Effect.tapCause(Effect.logError)`) arrives
+//   with no message parts; it prints the fixed `CAUSE_ONLY_LINE` instead of
+//   a blank line, so the event stays visible without printing the Cause.
 //
 // `ServerLoggerLive` replaces the default logger set (Logger.layer without
 // mergeWithExisting), so neither the default logger nor the tracer logger
@@ -36,8 +40,12 @@
 
 import { Layer, Logger } from "effect";
 
+/** Printed for a log call that carried no message part (a Cause-only call — see the header). */
+export const CAUSE_ONLY_LINE = "a log call carried no message (Cause-only); add a static message";
+
 const serverLogger = Logger.make<unknown, void>(({ logLevel, message }) => {
-  const parts: readonly unknown[] = Array.isArray(message) ? message : [message];
+  const given: readonly unknown[] = Array.isArray(message) ? message : [message];
+  const parts: readonly unknown[] = given.length === 0 ? [CAUSE_ONLY_LINE] : given;
   switch (logLevel) {
     case "Warn":
       console.warn(...parts);

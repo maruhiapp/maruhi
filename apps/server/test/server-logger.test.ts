@@ -7,7 +7,7 @@
 import { Cause, Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ServerLoggerLive } from "../src/server-logger.ts";
+import { CAUSE_ONLY_LINE, ServerLoggerLive } from "../src/server-logger.ts";
 
 const CONSOLE_METHODS = ["log", "info", "warn", "error", "debug"] as const;
 type ConsoleMethod = (typeof CONSOLE_METHODS)[number];
@@ -84,6 +84,14 @@ describe("server logger (server-logger.ts)", () => {
       ),
     );
     expect(collect().error).toEqual([["failure line"]]);
+    expect(JSON.stringify(collect())).not.toContain(projectId);
+  });
+
+  it("prints a fixed line, not a blank one, for a Cause-only log call (and never the Cause)", async () => {
+    const collect = spyConsole();
+    const projectId = "cd".repeat(32);
+    await run(Effect.logError(Cause.fail(new Error(`DO error about ${projectId}`))));
+    expect(collect().error).toEqual([[CAUSE_ONLY_LINE]]);
     expect(JSON.stringify(collect())).not.toContain(projectId);
   });
 
