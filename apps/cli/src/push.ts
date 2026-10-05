@@ -43,6 +43,7 @@
 //   lives in memory only
 
 import type { EnvironmentId } from "@maruhi/core";
+import { cryptoEffect } from "@maruhi/core";
 import {
   computeValueSignedBytesHash,
   encodeHex,
@@ -121,23 +122,15 @@ export function encryptAndSignPayload(input: {
     version: input.version,
   };
   return Effect.gen(function* () {
-    const encrypted = yield* Effect.tryPromise({
-      // Why it is unwrapped: the input of encryption (plaintext →
-      // ciphertext). The product is the ciphertext, so the unwrapped
-      // plaintext never leaves this call
-      try: () =>
-        encryptVariable({
-          dek: Redacted.value(input.dek),
-          context,
-          plaintext: Redacted.value(input.value),
-        }),
-      catch: () => cliError("Failed to encrypt the value"),
-    });
-    if (!encrypted.ok) {
-      return yield* Effect.fail(cliError("Failed to encrypt the value"));
-    }
-    const nonceHex = encodeHex(encrypted.value.nonce);
-    const ciphertextHex = encodeHex(encrypted.value.ciphertext);
+    const encrypted = yield* cryptoEffect(() =>
+      encryptVariable({
+        dek: Redacted.value(input.dek),
+        context,
+        plaintext: Redacted.value(input.value),
+      }),
+    ).pipe(Effect.mapError(() => cliError("Failed to encrypt the value")));
+    const nonceHex = encodeHex(encrypted.nonce);
+    const ciphertextHex = encodeHex(encrypted.ciphertext);
     const signatureContext = {
       suite: SUITE_ID,
       ...context,
@@ -148,25 +141,17 @@ export function encryptAndSignPayload(input: {
       chainHeadHashHex: input.verified.state.headHashHex,
       chainHeadSeq: input.verified.state.headSeq,
     } as const;
-    const signature = yield* Effect.tryPromise({
-      try: () => signValue({ context: signatureContext, signingKey: input.signingKey }),
-      catch: () => cliError("Failed to create the value signature"),
-    });
-    if (!signature.ok) {
-      return yield* Effect.fail(cliError("Failed to create the value signature"));
-    }
+    const signature = yield* cryptoEffect(() =>
+      signValue({ context: signatureContext, signingKey: input.signingKey }),
+    ).pipe(Effect.mapError(() => cliError("Failed to create the value signature")));
     // The signed-bytes hash of my own signed object (promoted to the local
     // floor once accepted — a self-computed value, not the server's claim;
     // the same posture as the basis of the next version's prev)
-    const signedBytesHash = yield* Effect.tryPromise({
-      try: () => computeValueSignedBytesHash(signatureContext),
-      catch: () => cliError("Failed to compute the value-signature signed-bytes hash"),
-    });
-    if (!signedBytesHash.ok) {
-      return yield* Effect.fail(
-        cliError("Failed to compute the value-signature signed-bytes hash"),
-      );
-    }
+    const signedBytesHash = yield* cryptoEffect(() =>
+      computeValueSignedBytesHash(signatureContext),
+    ).pipe(
+      Effect.mapError(() => cliError("Failed to compute the value-signature signed-bytes hash")),
+    );
     return {
       payload: {
         suite: SUITE_ID,
@@ -176,9 +161,9 @@ export function encryptAndSignPayload(input: {
         prevValueSigHashHex: input.prevValueSigHashHex,
         chainHeadHashHex: input.verified.state.headHashHex,
         chainHeadSeq: input.verified.state.headSeq,
-        signatureHex: signature.value,
+        signatureHex: signature,
       },
-      signedBytesHashHex: signedBytesHash.value,
+      signedBytesHashHex: signedBytesHash,
     } as const;
   });
 }
@@ -295,8 +280,23 @@ function withLineage<T>(value: T, sameValueAs: number | undefined) {
   return sameValueAs === undefined ? { value } : { value, sameValueAs };
 }
 
+/**
+ * One attempt's concrete failure channel: CliError (own failures and the
+ * crypto bridge's wrapped kinds re-mapped at the crypto sites) plus the
+ * variables endpoints' declared error unions (the raw types —
+ * classifyPushConflict discriminates them on the retryOnConflict side).
+ */
+type AttemptOnceError =
+  | CliError
+  | Effect.Error<ReturnType<PushInput["client"]["variables"]["create"]>>
+  | Effect.Error<ReturnType<PushInput["client"]["variables"]["activate"]>>
+  | Effect.Error<ReturnType<PushInput["client"]["variables"]["push"]>>;
+
 /** One attempt (encrypt, sign, send). The conflict classification is retryOnConflict's classify's job. */
-function attemptOnce(input: PushInput, state: PushState): Effect.Effect<AcceptedPush, unknown> {
+function attemptOnce(
+  input: PushInput,
+  state: PushState,
+): Effect.Effect<AcceptedPush, AttemptOnceError> {
   return Effect.gen(function* () {
     yield* ensureRestoreTarget(input, state);
     const dek = state.deks.get(state.epoch);

@@ -14,6 +14,7 @@
 // On a CAS retry this entry is re-signed together with the entry,
 // statements, and manifest (because prev = the H+1 entry's hash changes).
 
+import { cryptoEffect, cryptoPromise } from "@maruhi/core";
 import type { ChainEntry, ChainMember, EnvValuesDigestEntry } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
@@ -50,50 +51,43 @@ export function signBoundaryCheckpoint(input: {
   readonly signingKey: CryptoKey;
 }): Effect.Effect<ChainEntry & { readonly op: "checkpoint" }, CliError> {
   return Effect.gen(function* () {
-    const digest = yield* Effect.tryPromise({
-      try: () => computeEnvValuesDigest(SUITE_ID, input.values),
-      catch: () => cliError("Failed to compute the checkpoint values digest"),
-    });
-    if (!digest.ok) {
-      return yield* Effect.fail(cliError("Failed to compute the checkpoint values digest"));
-    }
-    const prevHashHex = yield* Effect.tryPromise({
-      try: () => computeChainEntryHash(input.compositeEntry),
-      catch: () => cliError("Failed to sign the boundary checkpoint entry"),
-    });
+    const digest = yield* cryptoEffect(() => computeEnvValuesDigest(SUITE_ID, input.values)).pipe(
+      Effect.mapError(() => cliError("Failed to compute the checkpoint values digest")),
+    );
+    const prevHashHex = yield* cryptoPromise("computeChainEntryHash", () =>
+      computeChainEntryHash(input.compositeEntry),
+    ).pipe(Effect.mapError(() => cliError("Failed to sign the boundary checkpoint entry")));
     const device = yield* ownDeviceOrFail(input.verified, input.member, {
       keyFingerprintHex: input.deviceFingerprintHex,
     });
-    const signed = yield* Effect.tryPromise({
-      try: () =>
-        signChainEntry({
-          entry: {
-            suite: SUITE_ID,
-            seq: input.compositeEntry.seq + 1,
-            prevHashHex,
-            op: "checkpoint",
-            actor: { userId: input.member.userId, keyFingerprintHex: device.keyFingerprintHex },
-            payload: {
-              environments: [
-                {
-                  environmentId: input.environmentId,
-                  epoch: input.epoch,
-                  manifestVersion: input.manifestVersion,
-                  manifestSigHashHex: input.manifestSigHashHex,
-                  valuesDigestHex: digest.value,
-                },
-              ],
-              auditHeadHashHex: "",
-            },
-            timestampMs: Date.now(),
+    const signed = yield* cryptoEffect(() =>
+      signChainEntry({
+        entry: {
+          suite: SUITE_ID,
+          seq: input.compositeEntry.seq + 1,
+          prevHashHex,
+          op: "checkpoint",
+          actor: { userId: input.member.userId, keyFingerprintHex: device.keyFingerprintHex },
+          payload: {
+            environments: [
+              {
+                environmentId: input.environmentId,
+                epoch: input.epoch,
+                manifestVersion: input.manifestVersion,
+                manifestSigHashHex: input.manifestSigHashHex,
+                valuesDigestHex: digest,
+              },
+            ],
+            auditHeadHashHex: "",
           },
-          signingKey: input.signingKey,
-        }),
-      catch: () => cliError("Failed to sign the boundary checkpoint entry"),
-    });
-    if (!signed.ok || signed.value.op !== "checkpoint") {
+          timestampMs: Date.now(),
+        },
+        signingKey: input.signingKey,
+      }),
+    ).pipe(Effect.mapError(() => cliError("Failed to sign the boundary checkpoint entry")));
+    if (signed.op !== "checkpoint") {
       return yield* Effect.fail(cliError("Failed to sign the boundary checkpoint entry"));
     }
-    return signed.value;
+    return signed;
   });
 }

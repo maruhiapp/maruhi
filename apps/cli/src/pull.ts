@@ -18,6 +18,7 @@
 // push.ts).
 
 import type { EnvironmentId } from "@maruhi/core";
+import { cryptoEffect } from "@maruhi/core";
 import type { MetaVarType, SigningKeyPair } from "@maruhi/crypto";
 import { decodeHex, decryptVariable } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
@@ -166,33 +167,29 @@ export function decryptVerifiedValue(input: {
         cliError(`Variable ${displayText(variable.name)} has a malformed ciphertext`),
       );
     }
-    const plaintext = yield* Effect.tryPromise({
-      try: () =>
-        decryptVariable({
-          // Reason for unwrapping: the decryption's key input (the crypto boundary)
-          dek: Redacted.value(dek),
-          context: {
-            projectId: input.verified.projectId,
-            environmentId: input.environmentId,
-            epoch: variable.epoch,
-            variableId: variable.variableId,
-            version: variable.version,
-          },
-          nonce,
-          ciphertext,
-        }),
-      catch: () =>
-        cliError(`Decryption of variable ${displayText(variable.name)} failed (crypto error)`),
-    });
-    if (!plaintext.ok) {
-      return yield* Effect.fail(
+    const plaintext = yield* cryptoEffect(() =>
+      decryptVariable({
+        // Reason for unwrapping: the decryption's key input (the crypto boundary)
+        dek: Redacted.value(dek),
+        context: {
+          projectId: input.verified.projectId,
+          environmentId: input.environmentId,
+          epoch: variable.epoch,
+          variableId: variable.variableId,
+          version: variable.version,
+        },
+        nonce,
+        ciphertext,
+      }),
+    ).pipe(
+      Effect.mapError(() =>
         cliError(
           `Cannot decrypt variable ${displayText(variable.name)} (context mismatch or corrupted ciphertext — possibly replaced by the server)`,
         ),
-      );
-    }
+      ),
+    );
     // The decryption's product is wrapped here. From here on the plaintext flows only as a Redacted
-    return Redacted.make(plaintext.value, { label: "variable-value" });
+    return Redacted.make(plaintext, { label: "variable-value" });
   });
 }
 

@@ -27,11 +27,13 @@
 
 import type { DistributedEncryptedPayload, VariableVersionHistoryEntry } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
+import { cryptoEffect } from "@maruhi/core";
 import { verifyDistributedValue } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
+import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { countNoun, displayText, formatUtcSeconds } from "./display.ts";
 import { cliError, type CliError, evidenceError } from "./errors.ts";
@@ -322,7 +324,7 @@ function verifyVersion(input: {
         ),
       );
     }
-    const result = yield* Effect.promise(() =>
+    const result = yield* cryptoEffect(() =>
       verifyDistributedValue({
         history: verified.history,
         context: {
@@ -343,16 +345,15 @@ function verifyVersion(input: {
         signatureHex: payload.signatureHex,
         predecessor: input.predecessor,
       }),
-    );
-    if (!result.ok) {
-      const reason = "reason" in result.error ? result.error.reason : result.error.kind;
-      return yield* Effect.fail(
-        evidenceError(
+    ).pipe(
+      Effect.mapError((error) => {
+        const reason = "reason" in error ? error.reason : cryptoErrorKind(error);
+        return evidenceError(
           `Version ${aad.version} of ${displayText(latest.name)} failed verification against the verified history (reason=${reason}). It may have been replaced or forged by the server — nothing was restored`,
-        ),
-      );
-    }
-    return result.value.signedBytesHashHex;
+        );
+      }),
+    );
+    return result.signedBytesHashHex;
   });
 }
 

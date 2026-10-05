@@ -10,13 +10,21 @@ import type {
   DistributedEnvironmentMetaStatement,
   DistributedVariableMetaStatement,
 } from "@maruhi/api-schema";
+import {
+  cryptoEffect,
+  CryptoMetaStatementInvalidError,
+  CryptoUnsupportedMetaLayoutError,
+  CryptoValueInvalidError,
+  type WrappedCryptoError,
+} from "@maruhi/core";
 import type { MetaStatementContext, MetaVariableSchema } from "@maruhi/crypto";
 import { verifyDistributedMetaStatement, verifyDistributedValue } from "@maruhi/crypto";
 import { Effect } from "effect";
 
 import type { VerifiedProject } from "./chain-sync.ts";
+import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { displayText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
+import type { CliError } from "./errors.ts";
 import type {
   VerifiedMetaEvidence,
   VerifiedSchemaFields,
@@ -122,9 +130,12 @@ function coordinatesMatch(
 function isFutureFailure(
   verified: VerifiedProject,
   chainHeadSeq: number,
-  error: { readonly kind: string; readonly reason?: string },
+  error: WrappedCryptoError,
 ): boolean {
-  if (error.kind !== "ValueInvalid" && error.kind !== "MetaStatementInvalid") {
+  if (
+    !(error instanceof CryptoValueInvalidError) &&
+    !(error instanceof CryptoMetaStatementInvalidError)
+  ) {
     return false;
   }
   const unknownSigner = error.reason === "writer-unknown" || error.reason === "author-unknown";
@@ -138,14 +149,14 @@ function failureOutcome<T>(
   verified: VerifiedProject,
   label: string,
   chainHeadSeq: number,
-  error: { readonly kind: string; readonly reason?: string; readonly layoutVersion?: number },
+  error: WrappedCryptoError,
 ): VerifyOutcome<T> {
-  if (error.kind === "UnsupportedMetaLayout") {
+  if (error instanceof CryptoUnsupportedMetaLayoutError) {
     return {
       kind: "rejected",
       // An honest breaking mode (the client needs an update) — not evidence of tampering (ruling CR)
       evidence: false,
-      message: `${label} uses statement layout version ${error.layoutVersion ?? "(unknown)"}, which this CLI does not support (supported: 1, 2). This is not a tampering indication — update the maruhi CLI (CRYPTO_SPEC §4.2)`,
+      message: `${label} uses statement layout version ${error.layoutVersion}, which this CLI does not support (supported: 1, 2). This is not a tampering indication — update the maruhi CLI (CRYPTO_SPEC §4.2)`,
     };
   }
   if (isFutureFailure(verified, chainHeadSeq, error)) {
@@ -154,7 +165,7 @@ function failureOutcome<T>(
   return {
     kind: "rejected",
     evidence: true,
-    message: `Verification of ${label} failed (reason=${error.reason ?? error.kind}). It may have been replaced or forged by the server`,
+    message: `Verification of ${label} failed (reason=${"reason" in error ? error.reason : cryptoErrorKind(error)}). It may have been replaced or forged by the server`,
   };
 }
 
@@ -279,29 +290,38 @@ async function verifyStatement(
   label: string,
   layout?: WireStatementLayout | null,
 ): Promise<VerifyOutcome<{ readonly signedBytesHashHex: string }>> {
-  const result = await verifyDistributedMetaStatement({
-    history: verified.history,
-    context: {
-      suite: statement.suite,
-      projectId: verified.projectId,
-      environmentId,
-      target,
-      name: statement.name,
-      status: statement.status,
-      ...contextLayoutFields(layout ?? null),
-      metaVersion: statement.metaVersion,
-      prevMetaSigHashHex: statement.prevMetaSigHashHex,
-      authorUserId: statement.authorUserId,
-      chainHeadHashHex: statement.chainHeadHashHex,
-      chainHeadSeq: statement.chainHeadSeq,
-    },
-    authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
-    signatureHex: statement.signatureHex,
-  });
-  if (!result.ok) {
-    return failureOutcome(verified, label, statement.chainHeadSeq, result.error);
-  }
-  return { kind: "ok", value: result.value };
+  return await Effect.runPromise(
+    cryptoEffect(() =>
+      verifyDistributedMetaStatement({
+        history: verified.history,
+        context: {
+          suite: statement.suite,
+          projectId: verified.projectId,
+          environmentId,
+          target,
+          name: statement.name,
+          status: statement.status,
+          ...contextLayoutFields(layout ?? null),
+          metaVersion: statement.metaVersion,
+          prevMetaSigHashHex: statement.prevMetaSigHashHex,
+          authorUserId: statement.authorUserId,
+          chainHeadHashHex: statement.chainHeadHashHex,
+          chainHeadSeq: statement.chainHeadSeq,
+        },
+        authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
+        signatureHex: statement.signatureHex,
+      }),
+    ).pipe(
+      Effect.match({
+        onSuccess: (value): VerifyOutcome<{ readonly signedBytesHashHex: string }> => ({
+          kind: "ok",
+          value,
+        }),
+        onFailure: (error): VerifyOutcome<{ readonly signedBytesHashHex: string }> =>
+          failureOutcome(verified, label, statement.chainHeadSeq, error),
+      }),
+    ),
+  );
 }
 
 /**
@@ -383,61 +403,67 @@ async function verifyOne(
       message: `Variable ${displayText(variable.variableId)} was served a ${statement.status} statement together with a value (a value must only accompany an active statement — an inconsistent server response)`,
     };
   }
-  const result = await verifyDistributedValue({
-    history: verified.history,
-    context: {
-      suite: payload.suite,
-      projectId: verified.projectId,
-      environmentId,
-      epoch: payload.aad.epoch,
-      variableId: variable.variableId,
-      version: payload.aad.version,
-      nonceHex: payload.nonceHex,
-      ciphertextHex: payload.ciphertextHex,
-      prevValueSigHashHex: payload.prevValueSigHashHex,
-      writerUserId: payload.writerUserId,
-      chainHeadHashHex: payload.chainHeadHashHex,
-      chainHeadSeq: payload.chainHeadSeq,
-    },
-    writerKeyFingerprintHex: payload.writerKeyFingerprintHex,
-    signatureHex: payload.signatureHex,
-  });
-  if (!result.ok) {
-    return failureOutcome(
-      verified,
-      `variable ${displayText(statement.name)}'s value signature`,
-      payload.chainHeadSeq,
-      result.error,
-    );
-  }
-  return {
-    kind: "ok",
-    value: {
-      variableId: variable.variableId,
-      name: statement.name,
-      version: payload.aad.version,
-      epoch: payload.aad.epoch,
-      nonceHex: payload.nonceHex,
-      ciphertextHex: payload.ciphertextHex,
-      prevValueSigHashHex: payload.prevValueSigHashHex,
-      signedBytesHashHex: result.value.signedBytesHashHex,
-      metaVersion: statement.metaVersion,
-      metaSignedBytesHashHex: verifiedStatement.value.signedBytesHashHex,
-      prevMetaSigHashHex: statement.prevMetaSigHashHex,
-      valueChainHeadSeq: payload.chainHeadSeq,
-      valueChainHeadHashHex: payload.chainHeadHashHex,
-      metaChainHeadSeq: statement.chainHeadSeq,
-      metaChainHeadHashHex: statement.chainHeadHashHex,
-      valueSignatureHex: payload.signatureHex,
-      writerUserId: payload.writerUserId,
-      writerKeyFingerprintHex: payload.writerKeyFingerprintHex,
-      metaSignatureHex: statement.signatureHex,
-      authorUserId: statement.authorUserId,
-      authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
-      layoutVersion: verifiedStatement.value.layout.layoutVersion,
-      schema: verifiedStatement.value.layout.schema,
-    },
-  };
+  return await Effect.runPromise(
+    cryptoEffect(() =>
+      verifyDistributedValue({
+        history: verified.history,
+        context: {
+          suite: payload.suite,
+          projectId: verified.projectId,
+          environmentId,
+          epoch: payload.aad.epoch,
+          variableId: variable.variableId,
+          version: payload.aad.version,
+          nonceHex: payload.nonceHex,
+          ciphertextHex: payload.ciphertextHex,
+          prevValueSigHashHex: payload.prevValueSigHashHex,
+          writerUserId: payload.writerUserId,
+          chainHeadHashHex: payload.chainHeadHashHex,
+          chainHeadSeq: payload.chainHeadSeq,
+        },
+        writerKeyFingerprintHex: payload.writerKeyFingerprintHex,
+        signatureHex: payload.signatureHex,
+      }),
+    ).pipe(
+      Effect.match({
+        onSuccess: (result): VerifyOutcome<VerifiedPulledValue> => ({
+          kind: "ok",
+          value: {
+            variableId: variable.variableId,
+            name: statement.name,
+            version: payload.aad.version,
+            epoch: payload.aad.epoch,
+            nonceHex: payload.nonceHex,
+            ciphertextHex: payload.ciphertextHex,
+            prevValueSigHashHex: payload.prevValueSigHashHex,
+            signedBytesHashHex: result.signedBytesHashHex,
+            metaVersion: statement.metaVersion,
+            metaSignedBytesHashHex: verifiedStatement.value.signedBytesHashHex,
+            prevMetaSigHashHex: statement.prevMetaSigHashHex,
+            valueChainHeadSeq: payload.chainHeadSeq,
+            valueChainHeadHashHex: payload.chainHeadHashHex,
+            metaChainHeadSeq: statement.chainHeadSeq,
+            metaChainHeadHashHex: statement.chainHeadHashHex,
+            valueSignatureHex: payload.signatureHex,
+            writerUserId: payload.writerUserId,
+            writerKeyFingerprintHex: payload.writerKeyFingerprintHex,
+            metaSignatureHex: statement.signatureHex,
+            authorUserId: statement.authorUserId,
+            authorKeyFingerprintHex: statement.authorKeyFingerprintHex,
+            layoutVersion: verifiedStatement.value.layout.layoutVersion,
+            schema: verifiedStatement.value.layout.schema,
+          },
+        }),
+        onFailure: (error): VerifyOutcome<VerifiedPulledValue> =>
+          failureOutcome(
+            verified,
+            `variable ${displayText(statement.name)}'s value signature`,
+            payload.chainHeadSeq,
+            error,
+          ),
+      }),
+    ),
+  );
 }
 
 export interface PullWire {
@@ -754,30 +780,26 @@ export function verifiedDeletedEnvironments(
     readonly statement: DistributedEnvironmentMetaStatement;
   }[],
 ): Effect.Effect<ReadonlySet<string>, CliError> {
-  return Effect.tryPromise({
-    try: async () => {
-      const deleted = new Set<string>();
-      for (const environment of environments) {
-        const statement = environment.statement;
-        if (
-          statement.environmentId !== environment.environmentId ||
-          statement.status !== "deleted"
-        ) {
-          continue;
-        }
-        const outcome = await verifyStatement(
+  return Effect.gen(function* () {
+    const deleted = new Set<string>();
+    for (const environment of environments) {
+      const statement = environment.statement;
+      if (statement.environmentId !== environment.environmentId || statement.status !== "deleted") {
+        continue;
+      }
+      const outcome = yield* Effect.promise(() =>
+        verifyStatement(
           verified,
           environment.environmentId,
           { kind: "environment" },
           statement,
           `environment ${displayText(environment.environmentId)}'s deletion statement`,
-        );
-        if (outcome.kind === "ok") {
-          deleted.add(environment.environmentId);
-        }
+        ),
+      );
+      if (outcome.kind === "ok") {
+        deleted.add(environment.environmentId);
       }
-      return deleted;
-    },
-    catch: () => cliError("Environment-statement verification failed"),
+    }
+    return deleted;
   });
 }

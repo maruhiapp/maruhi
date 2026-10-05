@@ -37,15 +37,16 @@
 // so it may be treated as evidence of tampering or corruption.
 
 import { MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
-import { scopePermissionFor } from "@maruhi/core";
+import { cryptoEffect, scopePermissionFor, type WrappedCryptoError } from "@maruhi/core";
 import type { AuditHeadRow, ChainEntry } from "@maruhi/crypto";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 
 import type { WireAuditEvent } from "./audit.ts";
 import { paginateAuditEvents } from "./audit.ts";
 import { fetchAuditHead } from "./checkpoint.ts";
 import type { CliServices, ProjectContextBase } from "./context.ts";
+import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { countNoun, displayText } from "./display.ts";
 import type { CliError } from "./errors.ts";
 import { cliError } from "./errors.ts";
@@ -212,38 +213,55 @@ interface RecomputedColumn {
 }
 
 /**
+ * The recomputation's internal failure — a wrapped crypto error surfaced
+ * at one row (§5.1). The seq and the crypto-side kind are the whole
+ * payload (identifiers only — no secrets).
+ */
+class AuditRecomputationError extends Data.TaggedError("AuditRecomputationError")<{
+  readonly seq: number;
+  readonly message: string;
+}> {}
+
+const recomputationError = (seq: number) =>
+  Effect.mapError((error: WrappedCryptoError) => {
+    const kind = cryptoErrorKind(error);
+    return new AuditRecomputationError({
+      seq,
+      message: `recomputation failed at seq ${seq}: ${kind}`,
+    });
+  });
+
+/**
  * Recompute the cumulative hash column (§5.1 — the canonical implementation
  * is @maruhi/crypto; the audit-head.json vectors pin the same h_n as the
  * server implementation). Input is every row in seq ascending order.
  */
 function recomputeColumn(rows: readonly AuditHeadRow[]): Effect.Effect<RecomputedColumn, CliError> {
-  return Effect.tryPromise({
-    try: async () => {
-      const positions = new Map<string, number>();
-      let head = "";
-      for (const row of rows) {
-        const digest = await computeAuditRowDigest(row);
-        const next = digest.ok
-          ? await computeAuditHeadHash(SUITE_ID, head, row.seq, digest.value)
-          : digest;
-        if (!next.ok) {
-          throw new Error(`recomputation failed at seq ${row.seq}: ${next.error.kind}`);
-        }
-        head = next.value;
-        // SHA-256 collisions do not occur in practice, but a stray duplicate keeps the first (earliest position)
-        if (!positions.has(head)) {
-          positions.set(head, row.seq);
-        }
+  return Effect.gen(function* () {
+    const positions = new Map<string, number>();
+    let head = "";
+    for (const row of rows) {
+      const digest = yield* cryptoEffect(() => computeAuditRowDigest(row)).pipe(
+        recomputationError(row.seq),
+      );
+      head = yield* cryptoEffect(() => computeAuditHeadHash(SUITE_ID, head, row.seq, digest)).pipe(
+        recomputationError(row.seq),
+      );
+      // SHA-256 collisions do not occur in practice, but a stray duplicate keeps the first (earliest position)
+      if (!positions.has(head)) {
+        positions.set(head, row.seq);
       }
-      return { positions, finalHeadHex: head };
-    },
+    }
+    return { positions, finalHeadHex: head };
+  }).pipe(
     // The error value is only a seq and a reason code (no secrets), but per
     // the discipline it is mapped to a fixed wording of identifiers only
-    catch: (error) =>
-      cliError(
-        `Failed to recompute the audit-head hash column (${error instanceof Error ? displayText(error.message) : "unknown"})`,
+    Effect.catchTag("AuditRecomputationError", (error) =>
+      Effect.fail(
+        cliError(`Failed to recompute the audit-head hash column (${displayText(error.message)})`),
       ),
-  });
+    ),
+  );
 }
 
 /** Gap check (§6 — a gap = the trace of a deletion). rows are seq ascending. */

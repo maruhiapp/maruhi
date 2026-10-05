@@ -15,10 +15,12 @@
 
 import type { RotationProposal } from "@maruhi/api-schema";
 import type { EnvironmentId } from "@maruhi/core";
+import { cryptoEffect } from "@maruhi/core";
 import { decodeHex, openProposedValue } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
 import type { CliServices, EnvironmentContext, ProjectContextBase } from "./context.ts";
+import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { environmentKeysFor } from "./deks.ts";
 import { countNoun, displayText, formatUtcDate, formatUtcMinutes } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
@@ -247,7 +249,7 @@ function openOwnWrap(
     if (enc === null || ciphertext === null) {
       return yield* Effect.fail(cliError("The proposal's sealed value is malformed (not hex)"));
     }
-    const opened = yield* Effect.promise(() =>
+    const opened = yield* cryptoEffect(() =>
       openProposedValue({
         recipientKeyPair: context.recipient.encKeyPair,
         sealed: { enc, ciphertext },
@@ -260,15 +262,14 @@ function openOwnWrap(
           recipientUserId: context.session.userId,
         },
       }),
-    );
-    if (!opened.ok) {
-      return yield* Effect.fail(
+    ).pipe(
+      Effect.mapError((error) =>
         cliError(
-          `Cannot open the sealed value of ${displayText(name)} with this device's key (${opened.error.kind}): the proposal was sealed to another key or another context, or it is corrupt. Reject it and let the job run again`,
+          `Cannot open the sealed value of ${displayText(name)} with this device's key (${cryptoErrorKind(error)}): the proposal was sealed to another key or another context, or it is corrupt. Reject it and let the job run again`,
         ),
-      );
-    }
-    return opened.value;
+      ),
+    );
+    return opened;
   });
 }
 
