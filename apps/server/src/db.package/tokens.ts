@@ -9,11 +9,16 @@ import { Context, Effect } from "effect";
 
 import type { ApiTokenRecord, ApiTokenSummary } from "../auth-domain.ts";
 import { type D1AuditActor, guardedAuditSelectColumns, userAuditInsert } from "./audit.ts";
+import { tryD1 } from "./errors.ts";
 import { apiTokens, userAuditEvents } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
 
-const run = <T>(evaluate: () => Promise<T>): Effect.Effect<T> => Effect.promise(evaluate);
+// D1 access goes through the shared tryD1 adapter (errors.ts —
+// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
+// public repository types keep an empty error channel because the
+// handlers turning D1FailureError into typed errors belong to other
+// lanes. An unexpected D1 failure stays a defect = a 500, as before
 
 // ---------------------------------------------------------------------------
 // TokenRepo (§6. The token_hash comparison additionally uses a
@@ -176,7 +181,7 @@ export function makeTokenRepo(db: Db): TokenRepoShape {
     // same-name rotation is allowed even at the limit and also keeps
     // the old id's audit in the same batch.
     issueForUserWithinLimit: (token, limit) =>
-      run(async () => {
+      tryD1(async () => {
         if (await rotateExistingToken(db, token)) {
           return true;
         }
@@ -187,14 +192,14 @@ export function makeTokenRepo(db: Db): TokenRepoShape {
         // existence check and the new INSERT. To distinguish it from a
         // quota rejection of a new name, the rotation is retried last
         return rotateExistingToken(db, token);
-      }),
-    findByHash: (tokenHash) => run(() => findTokenByHash(db, tokenHash)),
+      }).pipe(Effect.orDie),
+    findByHash: (tokenHash) => tryD1(() => findTokenByHash(db, tokenHash)).pipe(Effect.orDie),
     touchLastUsed: (id, nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         await db.update(apiTokens).set({ lastUsedAt: nowMs }).where(eq(apiTokens.id, id));
-      }),
+      }).pipe(Effect.orDie),
     listForUser: (userId) =>
-      run(async () => {
+      tryD1(async () => {
         // token_hash is not among the selected columns (a distribution
         // surface — the note in auth-domain.ts). Expired rows are
         // returned too: the list is an inventory surface, and unlike
@@ -233,9 +238,9 @@ export function makeTokenRepo(db: Db): TokenRepoShape {
             expiresAtMs: row.expiresAt,
           };
         });
-      }),
+      }).pipe(Effect.orDie),
     revokeById: (id, userId, nowMs, actor) =>
-      run(async () => {
+      tryD1(async () => {
         // The event is written after observing the deletion's success
         // via returning (same shape as revokeByHash). A concurrent
         // revoke can pass the caller's findByHash on both sides, so an
@@ -260,7 +265,7 @@ export function makeTokenRepo(db: Db): TokenRepoShape {
           payload: { tokenId: id },
         });
         return true;
-      }),
+      }).pipe(Effect.orDie),
   };
 }
 

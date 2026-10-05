@@ -19,12 +19,17 @@ import { and, count, eq, gt, lte, sql } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
 import { Context, Effect } from "effect";
 
+import { tryD1 } from "./errors.ts";
 import { deviceAddRequests, devices } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
 
-/** D1 failures are defects (Effect.promise). Only domain-level branches are returned as values. */
-const run = <A>(thunk: () => Promise<A>): Effect.Effect<A> => Effect.promise(thunk);
+// D1 access goes through the shared tryD1 adapter (errors.ts —
+// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
+// public repository types keep an empty error channel because the
+// handlers turning D1FailureError into typed errors belong to other
+// lanes. An unexpected D1 failure stays a defect = a 500, as before.
+// Only domain-level branches are returned as values
 
 /** One registry row (§13-11). */
 export interface DeviceRecord {
@@ -115,7 +120,7 @@ const toRequest = (row: {
 export function makeDeviceRepo(db: Db): DeviceRepoShape {
   return {
     list: (userId) =>
-      run(async () => {
+      tryD1(async () => {
         const rows = await db
           .select()
           .from(devices)
@@ -129,9 +134,9 @@ export function makeDeviceRepo(db: Db): DeviceRepoShape {
           tokenId: row.tokenId,
           createdAtMs: row.createdAt,
         }));
-      }),
+      }).pipe(Effect.orDie),
     upsert: ({ userId, keyFingerprintHex, encPubHex, sigPubHex, label, tokenId, limit, nowMs }) =>
-      run(async () => {
+      tryD1(async () => {
         // A single capped INSERT … SELECT … ON CONFLICT DO UPDATE
         // statement (same shape as TokenRepo — concurrent registrations
         // cannot overrun). If a row for the same (user, FP) exists, only
@@ -167,17 +172,17 @@ export function makeDeviceRepo(db: Db): DeviceRepoShape {
           })
           .returning({ fp: devices.keyFingerprintHex });
         return upserted.length === 1;
-      }),
+      }).pipe(Effect.orDie),
     remove: (userId, keyFingerprintHex) =>
-      run(async () => {
+      tryD1(async () => {
         const deleted = await db
           .delete(devices)
           .where(and(eq(devices.userId, userId), eq(devices.keyFingerprintHex, keyFingerprintHex)))
           .returning({ fp: devices.keyFingerprintHex });
         return deleted.length === 1;
-      }),
+      }).pipe(Effect.orDie),
     requestCreate: ({ userId, keyFingerprintHex, encPubHex, sigPubHex, label, nowMs, ttlMs }) =>
-      run(async () => {
+      tryD1(async () => {
         const registered = await db
           .select({ n: count() })
           .from(devices)
@@ -212,18 +217,18 @@ export function makeDeviceRepo(db: Db): DeviceRepoShape {
           })
           .returning({ fp: deviceAddRequests.keyFingerprintHex });
         return rows.length === 1 ? "created" : "request-exists";
-      }),
+      }).pipe(Effect.orDie),
     requestList: (userId, nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         const rows = await db
           .select()
           .from(deviceAddRequests)
           .where(and(eq(deviceAddRequests.userId, userId), gt(deviceAddRequests.expiresAt, nowMs)))
           .orderBy(deviceAddRequests.createdAt, deviceAddRequests.keyFingerprintHex);
         return rows.map(toRequest);
-      }),
+      }).pipe(Effect.orDie),
     requestFind: (userId, keyFingerprintHex, nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         const row = await db
           .select()
           .from(deviceAddRequests)
@@ -236,9 +241,9 @@ export function makeDeviceRepo(db: Db): DeviceRepoShape {
           )
           .get();
         return row === undefined ? null : toRequest(row);
-      }),
+      }).pipe(Effect.orDie),
     requestCancel: (userId, keyFingerprintHex) =>
-      run(async () => {
+      tryD1(async () => {
         const deleted = await db
           .delete(deviceAddRequests)
           .where(
@@ -249,14 +254,14 @@ export function makeDeviceRepo(db: Db): DeviceRepoShape {
           )
           .returning({ fp: deviceAddRequests.keyFingerprintHex });
         return deleted.length === 1;
-      }),
+      }).pipe(Effect.orDie),
     requestSweep: (userId, nowMs) =>
-      run(async () => {
+      tryD1(async () => {
         await db
           .delete(deviceAddRequests)
           .where(
             and(eq(deviceAddRequests.userId, userId), lte(deviceAddRequests.expiresAt, nowMs)),
           );
-      }),
+      }).pipe(Effect.orDie),
   };
 }
