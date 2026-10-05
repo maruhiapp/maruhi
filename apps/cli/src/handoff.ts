@@ -34,7 +34,7 @@ import {
   openHandoffValue,
   unwrapMasterBlob,
 } from "@maruhi/crypto";
-import { Duration, Effect, Stdio } from "effect";
+import { Clock, Duration, Effect, Schedule, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
 import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
@@ -251,22 +251,34 @@ function awaitApprovals(input: {
 }): Effect.Effect<Assembled, CliError, HttpClient.HttpClient> {
   return Effect.gen(function* () {
     let received = 0;
-    while (Date.now() < input.expiresAtMs) {
-      const page = yield* input.client.keyWraps
-        .handoffApprovals({ params: { requestId: input.requestId } })
-        .pipe(Effect.mapError(toCliError));
-      received = page.approvals.length;
-      const assembled = assemble(page.approvals, input.groups);
-      if (assembled !== null) {
-        return assembled;
-      }
-      yield* Effect.sleep(POLL_INTERVAL);
-    }
-    return yield* Effect.fail(
-      cliError(
-        `The handoff request expired without enough approvals (${received} received). Re-run to issue a new code`,
-      ),
+    const outcome = yield* Effect.repeat(
+      Effect.gen(function* () {
+        // The deadline bounds the next fetch: it is judged at the loop's
+        // top (before the request), not during the wait between polls
+        if ((yield* Clock.currentTimeMillis) >= input.expiresAtMs) {
+          return { kind: "expired" as const };
+        }
+        const page = yield* input.client.keyWraps
+          .handoffApprovals({ params: { requestId: input.requestId } })
+          .pipe(Effect.mapError(toCliError));
+        received = page.approvals.length;
+        const assembled = assemble(page.approvals, input.groups);
+        return assembled === null
+          ? { kind: "waiting" as const }
+          : { kind: "assembled" as const, assembled };
+      }),
+      {
+        schedule: Schedule.spaced(POLL_INTERVAL),
+        until: (round) => round.kind !== "waiting",
+      },
     );
+    return outcome.kind === "assembled"
+      ? outcome.assembled
+      : yield* Effect.fail(
+          cliError(
+            `The handoff request expired without enough approvals (${received} received). Re-run to issue a new code`,
+          ),
+        );
   });
 }
 

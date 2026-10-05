@@ -57,6 +57,7 @@ import {
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { advanceUntilSettled, waitFor, withTestClock } from "./support/test-clock.ts";
 
 let ward: TestUser;
 /** ward's reserve key (the B the ledger seals — a different key from the device key). */
@@ -389,6 +390,36 @@ describe("maruhi key recover --handoff (the requester)", () => {
       "You have no guardians registered, so nobody can approve a handoff. Open the reserve key with your recovery code (`maruhi key recover`) or a passkey (`--passkey`) instead",
     );
     expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(0);
+  });
+
+  it("ends the approval wait at the request's expiry with the full message (the round past the deadline never fetches)", async () => {
+    // A 2-second TTL: the first round fetches while valid and parks in the
+    // 3-second wait; the round past the deadline ends the wait without
+    // fetching — the failure carries the last page's count (0)
+    let fetches = 0;
+    const { env, server } = await start([
+      onRequest("POST", "/auth/handoff", () => ({
+        status: 200,
+        json: { expiresAtMs: Date.now() + 2_000 },
+      })),
+      statusHandler([aliceAnyGroup()]),
+      approvalsHandler(async () => {
+        fetches += 1;
+        return [];
+      }),
+    ]);
+    seedTokenOnly(env, server.origin, ward);
+    const { layer, testClock } = await withTestClock(env.layer);
+    const run = runCli(["key", "recover", "--handoff"], layer);
+    // One fetch lands while the request is valid; the next wake lands past
+    // the 2s TTL, so the round past the deadline is the terminal one
+    await waitFor(() => (fetches === 1 ? true : undefined));
+    await advanceUntilSettled(testClock, run);
+    expect(await run).toBe(1);
+    expect(fetches).toBe(1);
+    expect(env.errors.at(-1)).toBe(
+      "maruhi: The handoff request expired without enough approvals (0 received). Re-run to issue a new code",
+    );
   });
 
   it("refuses the request on a device that already has a key", async () => {

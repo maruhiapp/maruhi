@@ -22,7 +22,7 @@
 // (device-sync.ts) uses to `add_device` to each project (K4-3).
 
 import { ALL_SCOPE, type EncryptionKeyPair, type SigningKeyPair } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { cliError, type CliError } from "./errors.ts";
 import type { CliIo } from "./io.ts";
@@ -104,9 +104,11 @@ export function recordReserveLocally(
   session: CliSession,
   reserve: ReserveKeys,
 ): Effect.Effect<void, CliError, OwnDeviceStore> {
-  return Effect.flatMap(OwnDeviceStore, (store) =>
-    store.record(session.origin, session.userId, reserveEntryOf(reserve, Date.now())),
-  );
+  return Effect.gen(function* () {
+    const store = yield* OwnDeviceStore;
+    const nowMs = yield* Clock.currentTimeMillis;
+    yield* store.record(session.origin, session.userId, reserveEntryOf(reserve, nowMs));
+  });
 }
 
 /** The locally recorded reserve keys (not revoked), newest first. */
@@ -149,7 +151,12 @@ export function markRevokedReserveRecord(
     if (!recorded) {
       return;
     }
-    yield* store.markRevoked(session.origin, session.userId, [fingerprintHex], Date.now());
+    yield* store.markRevoked(
+      session.origin,
+      session.userId,
+      [fingerprintHex],
+      yield* Clock.currentTimeMillis,
+    );
     yield* logNote(
       `this machine had recorded ${fingerprintHex} as your reserve key; it is revoked, so the record now says so`,
     );

@@ -51,52 +51,17 @@ export function singleFlag(name: string, description: string) {
 }
 
 /**
- * A hidden flag for testing (one value). Appears in neither help nor
- * typo candidates. `Flag.withHidden` removes it from help and completion
- * (rc.113+). The diagnostics listing (specOf) also walks the leaf's
- * `hidden` to exclude it — never popularize an internal spelling.
- */
-export function hiddenIntegerValued(name: string, description: string) {
-  return Flag.Int(name).pipe(
-    Flag.withDescription(description),
-    Flag.withHidden,
-    Flag.atMost(1),
-    Flag.map((values) => values[0]),
-  );
-}
-
-/**
- * Whether that declaration is a hidden leaf (`Param.Single`). A wrapper
- * (Map / Variadic / Transform / Optional) carries its child in `param`, so
- * walk to the leaf to judge.
- */
-function isHiddenParam(param: Param.Any): boolean {
-  let current: unknown = param;
-  while (typeof current === "object" && current !== null) {
-    if (Param.isSingle(current as Param.Any)) {
-      return (current as { hidden: boolean }).hidden;
-    }
-    current = (current as { param?: unknown }).param;
-  }
-  return false;
-}
-
-/**
  * Derive the diagnostics' command declaration from **the command
  * definition itself**. A hand-written copy would leave only the
  * diagnostics stale when a flag is added. `Param` is a public type
  * carrying `kind` (`"flag"` / `"argument"`), so they can be sorted
  * straight off the declaration listing. The name uses the object key (=
- * the spelling typed). A hidden declaration is not listed (never
- * popularize an internal spelling).
+ * the spelling typed).
  */
 export function specOf(config: Readonly<Record<string, Param.Any>>): CommandSpec {
   const flags: string[] = [];
   const positionals: string[] = [];
   for (const [name, param] of Object.entries(config)) {
-    if (isHiddenParam(param)) {
-      continue;
-    }
     (param.kind === "flag" ? flags : positionals).push(name);
   }
   return { flags, positionals };

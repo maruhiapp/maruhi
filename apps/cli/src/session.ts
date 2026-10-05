@@ -23,7 +23,7 @@ import {
   importSigningKeyPair,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Data, Effect, Exit, Redacted } from "effect";
+import { Clock, Data, Effect, Exit, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
 import { makeApiClient } from "./api.ts";
@@ -197,7 +197,7 @@ function warnNearExpiry(
     if (expiresAtMs === undefined) {
       return;
     }
-    const remainingMs = expiresAtMs - Date.now();
+    const remainingMs = expiresAtMs - (yield* Clock.currentTimeMillis);
     if (remainingMs <= 0 || remainingMs > TOKEN_EXPIRY_WARNING_WINDOW_MS) {
       return;
     }

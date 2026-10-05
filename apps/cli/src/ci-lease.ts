@@ -24,7 +24,7 @@ import { cryptoPromise } from "@maruhi/core";
 import type { EnvironmentId, ProjectId } from "@maruhi/core";
 import type { EncryptionKeyPair, LeaseClaims } from "@maruhi/crypto";
 import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from "@maruhi/crypto";
-import { Effect, Redacted } from "effect";
+import { Clock, Effect, Redacted } from "effect";
 import type { HttpClient } from "effect/http";
 
 import { loadRepositoryAnchor } from "./anchor.ts";
@@ -178,29 +178,32 @@ export function leaseEnvironmentsWithCredential(
     const anchor =
       input.anchorPath === undefined ? null : yield* loadRepositoryAnchor(input.anchorPath);
     const client = yield* makeApiClient({ baseUrl: input.origin });
+    const nowMs = yield* Clock.currentTimeMillis;
     const credential =
-      reusableCredential(input.credential) ??
+      reusableCredential(input.credential, nowMs) ??
       (yield* freshCredential(
         input.audience,
         input.credential === undefined
           ? undefined
-          : issuanceBoundFor(input.credential.token, Date.now()),
+          : issuanceBoundFor(input.credential.token, nowMs),
       ).pipe(
-        Effect.catch((error) => {
-          // No fresh token, but an unexpired one in hand (within the reuse
-          // margin): present it — the same fallback shape as the mint's
-          // (ruling O revision, round 6)
-          const inHand = input.credential;
-          if (inHand === undefined || !unexpired(inHand)) {
-            return Effect.fail(error);
-          }
-          return Effect.as(
-            io.logError(
-              `Could not mint a fresh OIDC token for the lease (${error.message}); presenting the token in hand`,
-            ),
-            inHand,
-          );
-        }),
+        Effect.catch((error) =>
+          Effect.gen(function* () {
+            // No fresh token, but an unexpired one in hand (within the reuse
+            // margin): present it — the same fallback shape as the mint's
+            // (ruling O revision, round 6)
+            const inHand = input.credential;
+            if (inHand === undefined || !unexpired(inHand, yield* Clock.currentTimeMillis)) {
+              return yield* Effect.fail(error);
+            }
+            return yield* Effect.as(
+              io.logError(
+                `Could not mint a fresh OIDC token for the lease (${error.message}); presenting the token in hand`,
+              ),
+              inHand,
+            );
+          }),
+        ),
       ));
     const { keyPair: workloadKeyPair, ephemeralPubHex } = credential;
     let { token } = credential;
@@ -283,16 +286,19 @@ function freshCredential(
 }
 
 /** The earlier credential when its token is still presentable (its `exp` is known and not within the margin), else null. */
-function reusableCredential(credential: WorkloadCredential | undefined): WorkloadCredential | null {
+function reusableCredential(
+  credential: WorkloadCredential | undefined,
+  nowMs: number,
+): WorkloadCredential | null {
   if (credential === undefined) {
     return null;
   }
   const expiresAtMs = tokenExpiresAtMs(credential.token);
-  return expiresAtMs !== null && expiresAtMs - REUSE_MARGIN_MS > Date.now() ? credential : null;
+  return expiresAtMs !== null && expiresAtMs - REUSE_MARGIN_MS > nowMs ? credential : null;
 }
 
 /** Whether a credential's token is unexpired by its `exp` alone (no margin — the last resort when no fresh token can be minted). */
-function unexpired(credential: WorkloadCredential): boolean {
+function unexpired(credential: WorkloadCredential, nowMs: number): boolean {
   const expiresAtMs = tokenExpiresAtMs(credential.token);
-  return expiresAtMs !== null && expiresAtMs > Date.now();
+  return expiresAtMs !== null && expiresAtMs > nowMs;
 }

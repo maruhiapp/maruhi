@@ -1,7 +1,7 @@
 // Helpers shared across command groups (discipline: see commands/index.ts). A leaf: nothing here imports another commands/ file.
 
 import { type EnvironmentId } from "@maruhi/core";
-import { Effect, Stdio } from "effect";
+import { Clock, Effect, Stdio } from "effect";
 
 import {
   type ProposalView,
@@ -147,7 +147,7 @@ export function proposeCheckpointRefresh(
       client: context.client,
       verified: context.verified,
       signerUserId: context.session.userId,
-      nowMs: Date.now(),
+      nowMs: yield* Clock.currentTimeMillis,
     });
     if (proposal === null) {
       return;
@@ -165,12 +165,14 @@ export function proposeCheckpointRefresh(
 export function proposalInputOf(
   expires: string | undefined,
 ): Effect.Effect<ProposalInput, CliError> {
-  const parsed = parseProposalExpiry(expires);
-  if (!parsed.ok) {
-    return Effect.fail(usageError(parsed.message));
-  }
-  const nowMs = Date.now();
-  return Effect.succeed({ nowMs, expiresAtMs: nowMs + parsed.lifetimeMs });
+  return Effect.gen(function* () {
+    const parsed = parseProposalExpiry(expires);
+    if (!parsed.ok) {
+      return yield* Effect.fail(usageError(parsed.message));
+    }
+    const nowMs = yield* Clock.currentTimeMillis;
+    return { nowMs, expiresAtMs: nowMs + parsed.lifetimeMs };
+  });
 }
 
 /** The wording of a proposal's remaining vote count ("needs N more owner approval(s)" — ruling P8). */

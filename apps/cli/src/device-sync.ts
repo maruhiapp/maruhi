@@ -28,7 +28,7 @@
 // written here (K4-3 counterexample 2 — pinned by a test).
 
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
-import { Effect, type Stdio } from "effect";
+import { Clock, Effect, type Stdio } from "effect";
 
 import { ensureHumanCeremonyAllowed } from "./agent-gate.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
@@ -194,7 +194,7 @@ function observeDevices(input: {
           label: null,
           addedByFingerprintHex: provenance.addedByFingerprintHex,
           observedProjectId: context.projectId,
-          recordedAtMs: Date.now(),
+          recordedAtMs: yield* Clock.currentTimeMillis,
           revokedAtMs: null,
         };
         yield* store
@@ -228,7 +228,7 @@ function observeDevices(input: {
       .map((record) => record.keyFingerprintHex);
     if (toMark.length > 0) {
       yield* store
-        .markRevoked(session.origin, session.userId, toMark, Date.now())
+        .markRevoked(session.origin, session.userId, toMark, yield* Clock.currentTimeMillis)
         .pipe(Effect.catch((error) => noteWriteFailure(error)));
       yield* logNote(
         `device ${toMark.join(", ")} is revoked on project ${displayText(context.projectId)}; marked as revoked in this machine's records (it will not be added to other projects from here)`,

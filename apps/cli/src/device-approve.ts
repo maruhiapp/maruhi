@@ -4,7 +4,7 @@
 
 import { DeviceRegistryLimitError, MAX_DEVICE_REGISTRY_ROWS_PER_USER } from "@maruhi/api-schema";
 import type { DeviceCap } from "@maruhi/crypto";
-import { Effect, Result } from "effect";
+import { Clock, Effect, Result } from "effect";
 
 import { ensureDeviceApproveAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
@@ -213,7 +213,7 @@ export function deviceApproveOp(input: {
       label: request.label,
       addedByFingerprintHex: masterKeys.fingerprintHex,
       observedProjectId: null,
-      recordedAtMs: Date.now(),
+      recordedAtMs: yield* Clock.currentTimeMillis,
       revokedAtMs: null,
     };
     yield* store.record(input.session.origin, input.session.userId, entry);

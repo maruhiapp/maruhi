@@ -36,6 +36,7 @@ import { formatRecoveryCode, parseRecoveryCode } from "../src/recovery-code.ts";
 import { ensureNoStoredMasterKey, loadMasterKeys, resolveSession } from "../src/session.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { runCliWithClock } from "./support/test-clock.ts";
 
 /** The exchange-response expiry fixture (AUTH_SPEC §6 — W3a: 2099-01-01T00:00:00Z). */
 const EXPIRES_AT_MS = Date.UTC(2099, 0, 1);
@@ -160,7 +161,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
     await seedConfig(env, { server: maruhi.origin });
 
     // (a) Save: login writes to the keychain
-    const code = await runCli(["login", "--poll-interval", "0"], env.layer);
+    const code = await runCliWithClock(["login"], env.layer);
     expect(code).toBe(0);
     const stored = env.keychain.get(tokenEntryName(maruhi.origin));
     expect(stored).toBeDefined();

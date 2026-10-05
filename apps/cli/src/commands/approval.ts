@@ -1,6 +1,6 @@
 // `maruhi approval` (discipline: see commands/index.ts).
 
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
 import { type Fulfilment, approveProposalOp } from "../approval-approve.ts";
@@ -130,7 +130,7 @@ function approvalListCommand(
   return Effect.gen(function* () {
     const io = yield* CliIo;
     const context = yield* openMetadataProject(flags);
-    const views = proposalViews(context.verified, Date.now());
+    const views = proposalViews(context.verified, yield* Clock.currentTimeMillis);
     if (flags.json) {
       yield* io.log(approvalListJson(context.verified.state.approvalPolicy, views));
       return;
@@ -162,7 +162,11 @@ function approvalShowCommand(
     if (resolution.kind !== "pending") {
       return yield* Effect.fail(cliError(describeUnresolvedRef(resolution)));
     }
-    const view = proposalViewOf(context.verified, resolution.proposal, Date.now());
+    const view = proposalViewOf(
+      context.verified,
+      resolution.proposal,
+      yield* Clock.currentTimeMillis,
+    );
     for (const line of proposalDetailLines(view)) {
       yield* io.log(line);
     }
@@ -354,7 +358,7 @@ function approvalApproveCommand(
       recipient: context.recipient,
       resync: context.resync,
       rotateWith: (reason) => sweepRotateFor(context, reason),
-      nowMs: Date.now(),
+      nowMs: yield* Clock.currentTimeMillis,
     });
     switch (outcome.kind) {
       case "recorded":

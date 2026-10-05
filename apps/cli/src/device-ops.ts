@@ -39,7 +39,7 @@ import {
   signChainEntry,
   SUITE_ID,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { backfillEachEnvironment, backfillEnvironmentFor } from "./backfill.ts";
@@ -159,6 +159,7 @@ function signAddDevice(input: {
         ),
       );
     }
+    const timestampMs = yield* Clock.currentTimeMillis;
     return yield* cryptoEffect(() =>
       signChainEntry({
         entry: {
@@ -173,7 +174,7 @@ function signAddDevice(input: {
             roleCap: input.candidate.cap.roleCap,
             ...scopePayloadFieldsOf(input.candidate.cap.scope),
           },
-          timestampMs: Date.now(),
+          timestampMs,
         },
         signingKey: input.signer.signingKeyPair.privateKey,
       }),
@@ -278,6 +279,7 @@ function signRevokeDevice(input: {
     if (rejection !== null) {
       return yield* Effect.fail(cliError(rejection));
     }
+    const timestampMs = yield* Clock.currentTimeMillis;
     const entry = yield* cryptoEffect(() =>
       signChainEntry({
         entry: {
@@ -287,7 +289,7 @@ function signRevokeDevice(input: {
           op: "revoke_device",
           actor: { userId: actor.userId, keyFingerprintHex: actorDevice.keyFingerprintHex },
           payload: { targetUserId: target.userId, deviceFingerprintsHex: revoking },
-          timestampMs: Date.now(),
+          timestampMs,
         },
         signingKey: input.signer.signingKeyPair.privateKey,
       }),

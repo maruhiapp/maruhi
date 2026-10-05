@@ -27,7 +27,7 @@
 // (rows that can only restore a revoked key — leave no false trust).
 
 import { ALL_SCOPE, type ChainDevice } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import type { HttpClient } from "effect/http";
 
 import type { MaruhiClient } from "./api.ts";
@@ -630,7 +630,7 @@ function registerReserveAndRetire(input: {
       input.session.origin,
       input.session.userId,
       input.retiring,
-      Date.now(),
+      yield* Clock.currentTimeMillis,
     );
     const projects = yield* fetchProjectMemberships(input.client);
     yield* io.log(
