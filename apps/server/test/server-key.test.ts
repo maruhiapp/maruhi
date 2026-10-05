@@ -183,6 +183,42 @@ describe("reseal's DEK hygiene", () => {
     expect(zeroizes).toBe(1);
   });
 
+  it("zeroizes the unsealed DEK when an interrupt lands while the unwrap is in flight", async () => {
+    const key = makeServerKey(IKM_HEX);
+    const info = await Effect.runPromise(key.info);
+    if (info === null) throw new Error("a configured ikm yielded null");
+    const wrap = await storedServerWrap(info);
+    // Gate the HPKE Open's AES-GCM decrypt (the unwrap's last
+    // WebCrypto step) so the interrupt deterministically lands while
+    // the fiber is suspended inside the unwrap — the window where an
+    // interruptible unwrap would drop the DEK it later produces
+    const realDecrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+    let releaseDecrypt!: () => void;
+    const decryptGate = new Promise<void>((resolve) => {
+      releaseDecrypt = resolve;
+    });
+    const decryptSpy = vi
+      .spyOn(crypto.subtle, "decrypt")
+      .mockImplementationOnce((algorithm, cryptoKey, data) =>
+        decryptGate.then(() => realDecrypt(algorithm, cryptoKey, data)),
+      );
+    const fillSpy = vi.spyOn(Uint8Array.prototype, "fill");
+    const fiber = Effect.runFork(key.reseal(resealInput([wrap])));
+    await vi.waitFor(() => expect(decryptSpy).toHaveBeenCalled());
+    Effect.runFork(Fiber.interrupt(fiber));
+    releaseDecrypt();
+    const exit = await Effect.runPromise(Fiber.await(fiber));
+    const fills = [...fillSpy.mock.calls];
+    fillSpy.mockRestore();
+    decryptSpy.mockRestore();
+    // The unwrap finishes uninterruptibly, its DEK reaches the
+    // release, and only then does the interrupt take effect (the
+    // re-wrap never runs)
+    expect(Exit.hasInterrupts(exit)).toBe(true);
+    expect(fills).toHaveLength(1);
+    expect(fills[0]?.[0]).toBe(0);
+  });
+
   it("never reaches zeroize when the unwrap fails", async () => {
     const key = makeServerKey(IKM_HEX);
     const info = await Effect.runPromise(key.info);

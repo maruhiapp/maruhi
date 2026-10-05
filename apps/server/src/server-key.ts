@@ -201,37 +201,43 @@ export function makeServerKey(ikmHex: string | undefined): ServerKeyShape {
           if (enc === null || ciphertext === null) {
             return yield* Effect.fail<ResealFailure>("unwrap-failed");
           }
-          const dek = yield* cryptoEffect(() =>
-            unwrapDek({
-              recipientKeyPair: key.keyPair,
-              wrapped: { enc, ciphertext },
-              context: {
-                projectId: input.projectId,
-                environmentId: input.environmentId,
-                epoch: wrap.epoch,
-                // §9: a server-addressed wrap carries the server-key
-                // FP in the recipient position of its info
-                recipientUserId: key.info.serverKeyFingerprintHex,
-              },
-            }),
-          ).pipe(
-            // An undecryptable poisoned wrap (a target of §12-6's
-            // repair path). No DEK was obtained
-            Effect.mapError(() => "unwrap-failed" as const),
-          );
           const context: LeaseWrapContext = {
             projectId: input.projectId,
             environmentId: input.environmentId,
             epoch: wrap.epoch,
             claimsDigestHex: input.claimsDigestHex,
           };
-          const leased = yield* cryptoEffect(() =>
-            wrapLeaseDek({ workloadPublicKey, dek, context }),
-          ).pipe(
-            // The unsealed DEK is zero-filled on every exit —
-            // success, wrap failure, and defect alike
-            Effect.ensuring(Effect.sync(() => zeroize(dek))),
-            Effect.mapError(() => "wrap-failed" as const),
+          // The unsealed DEK is a resource: the unwrap is the acquire
+          // (run uninterruptibly by acquireUseRelease, so a DEK it
+          // produces always reaches the release) and zeroize is the
+          // release. The DEK is zero-filled on every exit once the
+          // unwrap succeeds — success, wrap failure, defect, and
+          // interruption alike
+          const leased = yield* Effect.acquireUseRelease(
+            cryptoEffect(() =>
+              unwrapDek({
+                recipientKeyPair: key.keyPair,
+                wrapped: { enc, ciphertext },
+                context: {
+                  projectId: input.projectId,
+                  environmentId: input.environmentId,
+                  epoch: wrap.epoch,
+                  // §9: a server-addressed wrap carries the server-key
+                  // FP in the recipient position of its info
+                  recipientUserId: key.info.serverKeyFingerprintHex,
+                },
+              }),
+            ).pipe(
+              // An undecryptable poisoned wrap (a target of §12-6's
+              // repair path). No DEK was obtained, so there is
+              // nothing to release
+              Effect.mapError(() => "unwrap-failed" as const),
+            ),
+            (dek) =>
+              cryptoEffect(() => wrapLeaseDek({ workloadPublicKey, dek, context })).pipe(
+                Effect.mapError(() => "wrap-failed" as const),
+              ),
+            (dek) => Effect.sync(() => zeroize(dek)),
           );
           leases.push({
             suite: wrap.suite,
