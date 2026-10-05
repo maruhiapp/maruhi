@@ -10,7 +10,7 @@
 // The tables' DDL lives in do-schema.ts (applied by the DO constructor).
 
 import { ChainEntrySchema } from "@maruhi/api-schema";
-import { ChainInvalidError, toWrappedCryptoError } from "@maruhi/core";
+import { ChainInvalidError, cryptoEffect } from "@maruhi/core";
 import type { ChainEntry, ChainHistoryIndex, ChainState } from "@maruhi/crypto";
 import { canonicalChainEntryBytes, verifyChainWithHistory } from "@maruhi/crypto";
 import { Context, Effect, Layer, Result, Schema } from "effect";
@@ -162,16 +162,12 @@ export interface VerifiedChainView {
 export function verifyChainEffect(
   entries: readonly ChainEntry[],
 ): Effect.Effect<VerifiedChainView, ChainInvalidError> {
-  return Effect.flatMap(
-    Effect.promise(() => verifyChainWithHistory(entries)),
-    (result) => {
-      if (result.ok) {
-        return Effect.succeed(result.value);
-      }
-      const wrapped = toWrappedCryptoError(result.error);
-      // verifyChain contractually returns only ChainInvalid; anything else is an implementation bug
-      return wrapped instanceof ChainInvalidError ? Effect.fail(wrapped) : Effect.die(wrapped);
-    },
+  return Effect.catchTag(
+    cryptoEffect(() => verifyChainWithHistory(entries)),
+    // verifyChain contractually returns only ChainInvalid; anything else is an implementation bug
+    "ChainInvalid",
+    (error) => Effect.fail(error),
+    (error) => Effect.die(error),
   );
 }
 

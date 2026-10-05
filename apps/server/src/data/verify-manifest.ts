@@ -29,6 +29,7 @@
 // unchanged, because the composite program passes it the **history
 // index after applying the entries**.
 
+import { cryptoEffect } from "@maruhi/core";
 import type {
   ChainHistoryIndex,
   EnvManifestEnvMeta,
@@ -249,52 +250,52 @@ export const acceptEnvManifest = (input: {
         currentManifestVersion: latestVersion,
       });
     }
-    const verified = yield* Effect.promise(() =>
-      verifyDistributedEnvManifest({
-        history: input.history,
-        context: {
-          suite: input.manifest.suite,
-          // The coordinates are reconstructed from server-side
-          // values (§12-5 — not assembled from wire-declared
-          // values)
-          projectId: input.projectId,
-          environmentId: input.environmentId,
-          epoch: input.manifest.epoch,
-          manifestVersion: input.manifest.manifestVersion,
-          variablesDigestHex: input.manifest.variablesDigestHex,
-          envMetaVersion: input.manifest.envMetaVersion,
-          envMetaSigHashHex: input.manifest.envMetaSigHashHex,
-          prevManifestSigHashHex: input.manifest.prevManifestSigHashHex,
-          // issuer = the caller (§12-5 (1)). The verification key
-          // and the bound-key match at head time are checked by
-          // verifyDistributedEnvManifest via the FP (the
-          // chain-derived member at acceptance time)
-          issuerUserId: input.member.userId,
-          chainHeadHashHex: input.manifest.chainHeadHashHex,
-          chainHeadSeq: input.manifest.chainHeadSeq,
-        },
-        issuerKeyFingerprintHex: input.member.keyFingerprintHex,
-        signatureHex: input.manifest.signatureHex,
-        entries: input.entries,
-        envMeta: input.envMeta,
-        predecessor:
-          anchor === null
-            ? undefined
-            : { signedBytesHashHex: anchor.signedBytesHashHex, epoch: anchor.epoch },
-      }),
+    const verified = yield* Effect.catchTag(
+      cryptoEffect(() =>
+        verifyDistributedEnvManifest({
+          history: input.history,
+          context: {
+            suite: input.manifest.suite,
+            // The coordinates are reconstructed from server-side
+            // values (§12-5 — not assembled from wire-declared
+            // values)
+            projectId: input.projectId,
+            environmentId: input.environmentId,
+            epoch: input.manifest.epoch,
+            manifestVersion: input.manifest.manifestVersion,
+            variablesDigestHex: input.manifest.variablesDigestHex,
+            envMetaVersion: input.manifest.envMetaVersion,
+            envMetaSigHashHex: input.manifest.envMetaSigHashHex,
+            prevManifestSigHashHex: input.manifest.prevManifestSigHashHex,
+            // issuer = the caller (§12-5 (1)). The verification key
+            // and the bound-key match at head time are checked by
+            // verifyDistributedEnvManifest via the FP (the
+            // chain-derived member at acceptance time)
+            issuerUserId: input.member.userId,
+            chainHeadHashHex: input.manifest.chainHeadHashHex,
+            chainHeadSeq: input.manifest.chainHeadSeq,
+          },
+          issuerKeyFingerprintHex: input.member.keyFingerprintHex,
+          signatureHex: input.manifest.signatureHex,
+          entries: input.entries,
+          envMeta: input.envMeta,
+          predecessor:
+            anchor === null
+              ? undefined
+              : { signedBytesHashHex: anchor.signedBytesHashHex, epoch: anchor.epoch },
+        }),
+      ),
+      "CryptoEnvManifestInvalid",
+      (error) =>
+        rejectData({
+          kind: "manifest-rejected",
+          reason: MANIFEST_REJECT_REASONS[error.reason],
+        }),
+      // InvalidInput / KeyImportFailed are unreachable with a
+      // Schema-validated wire shape + keys derived from a verified
+      // chain (an implementation bug = defect; error values carry no
+      // secrets)
+      (error) => Effect.die(error),
     );
-    if (verified.ok) {
-      return verified.value.signedBytesHashHex;
-    }
-    if (verified.error.kind === "EnvManifestInvalid") {
-      return yield* rejectData({
-        kind: "manifest-rejected",
-        reason: MANIFEST_REJECT_REASONS[verified.error.reason],
-      });
-    }
-    // InvalidInput / KeyImportFailed are unreachable with a
-    // Schema-validated wire shape + keys derived from a verified
-    // chain (an implementation bug = defect; error values carry no
-    // secrets)
-    return yield* Effect.die(new Error(`manifest verification failed: ${verified.error.kind}`));
+    return verified.signedBytesHashHex;
   });

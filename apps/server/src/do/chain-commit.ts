@@ -10,6 +10,7 @@
 // in chain-accept.ts).
 
 import type { ChainMirrorSubject } from "@maruhi/core";
+import { cryptoEffect } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeUserKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -44,11 +45,10 @@ const mirrorSubjectOf = (entry: ChainEntry): Effect.Effect<ChainMirrorSubject> =
     if (enc === null || sig === null) {
       return yield* Effect.die(new Error("add_device payload keys are not valid hex"));
     }
-    const fingerprint = yield* Effect.promise(() => computeUserKeyFingerprint(enc, sig));
-    if (!fingerprint.ok) {
-      return yield* Effect.die(new Error("add_device fingerprint computation failed"));
-    }
-    return { addedDeviceKeyFingerprintHex: encodeHex(fingerprint.value) };
+    const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(
+      Effect.orDie,
+    );
+    return { addedDeviceKeyFingerprintHex: encodeHex(fingerprint) };
   });
 
 export const commitAcceptedEntry = (
