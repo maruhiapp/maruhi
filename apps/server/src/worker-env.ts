@@ -6,7 +6,7 @@ import { Context, Data, Effect, Redacted } from "effect";
 import type { Env, ProjectChainDO } from "./do/chain-do.ts";
 
 /** The Env fields that are secret configuration values (read only through `readWorkerSecrets`). */
-type SecretName = "GITHUB_CLIENT_SECRET" | "SERVER_ENC_KEY_IKM";
+type SecretName = "GITHUB_CLIENT_SECRET" | "SERVER_ENC_KEY_IKM" | "OPS_ALERT_WEBHOOK_URL";
 
 /**
  * The Env as handlers see it: the bindings and the non-secret
@@ -22,15 +22,16 @@ export class WorkerEnv extends Context.Service<WorkerEnv, WorkerBindings>()("Wor
  * at the moment it is read from the env: string, JSON, and inspection
  * output (logs, error messages, Cause renderings) show only
  * `<redacted:NAME>`. `undefined` = unset or empty — a deployment
- * lacking the secret leaves it undefined at runtime, and both
+ * lacking the secret leaves it undefined at runtime, and all
  * consumers already treated an empty value the same as an unset one.
  * `Redacted.value` is called only where a value is used: the
- * token-exchange body (auth.package/github.ts) and the HKDF input
- * (server-key.ts).
+ * token-exchange body (auth.package/github.ts), the HKDF input
+ * (server-key.ts), and the webhook request's URL (ops/ops-alerts.ts).
  */
 interface WorkerSecretsShape {
   readonly githubClientSecret: Redacted.Redacted<string> | undefined;
   readonly serverEncKeyIkm: Redacted.Redacted<string> | undefined;
+  readonly opsAlertWebhookUrl: Redacted.Redacted<string> | undefined;
 }
 
 export class WorkerSecrets extends Context.Service<WorkerSecrets, WorkerSecretsShape>()(
@@ -47,18 +48,20 @@ function redactSecret(
 
 /**
  * The env-reading boundary for secrets: one call per entry point that
- * receives the Workers env (index.ts's buildServices and the chain DO's
- * constructor). The parameter names only the two secret fields, both
- * optional: a deployment lacking a secret has it undefined at runtime
- * whatever Env declares.
+ * receives the Workers env (index.ts's buildServices and scheduled(),
+ * and the chain DO's constructor). The parameter names only the secret
+ * fields, all optional: a deployment lacking a secret has it undefined
+ * at runtime whatever Env declares.
  */
 export function readWorkerSecrets(env: {
   readonly GITHUB_CLIENT_SECRET?: string;
   readonly SERVER_ENC_KEY_IKM?: string;
+  readonly OPS_ALERT_WEBHOOK_URL?: string;
 }): WorkerSecretsShape {
   return {
     githubClientSecret: redactSecret(env.GITHUB_CLIENT_SECRET, "GITHUB_CLIENT_SECRET"),
     serverEncKeyIkm: redactSecret(env.SERVER_ENC_KEY_IKM, "SERVER_ENC_KEY_IKM"),
+    opsAlertWebhookUrl: redactSecret(env.OPS_ALERT_WEBHOOK_URL, "OPS_ALERT_WEBHOOK_URL"),
   };
 }
 
@@ -239,16 +242,16 @@ export function ipRateLimitAllowed(
   limiter: RateLimit,
   request: { readonly source: unknown },
 ): Effect.Effect<boolean> {
-  return Effect.promise(async () => {
-    const source = request.source;
-    const ip = source instanceof Request ? source.headers.get("cf-connecting-ip") : null;
-    if (ip === null || ip === "") {
-      return true;
-    }
-    try {
-      const outcome = await limiter.limit({ key: rateLimitKeyOf(ip) });
-      return outcome.success;
-    } catch (error) {
+  const source = request.source;
+  const ip = source instanceof Request ? source.headers.get("cf-connecting-ip") : null;
+  if (ip === null || ip === "") {
+    return Effect.succeed(true);
+  }
+  return Effect.tryPromise({
+    try: async () => (await limiter.limit({ key: rateLimitKeyOf(ip) })).success,
+    catch: (error) => error,
+  }).pipe(
+    Effect.catch((error: unknown) =>
       // The **explicit** fail-open recovery (an availability-side
       // design decision — see the doc above). But it is not swallowed
       // silently (CLAUDE.md): if a binding misconfiguration leaves
@@ -259,11 +262,10 @@ export function ipRateLimitAllowed(
       // error.message is a string outside our control (a future
       // limiter implementation could put the key in it), so only the
       // kind name is logged, honoring the "no IPs" promise
-      console.warn(
+      Effect.logWarning(
         "rate limiter binding failed; allowing the request (fail-open)",
         error instanceof Error ? error.name : "unknown",
-      );
-      return true;
-    }
-  });
+      ).pipe(Effect.as(true)),
+    ),
+  );
 }

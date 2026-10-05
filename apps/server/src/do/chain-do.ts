@@ -29,7 +29,7 @@
 
 import type { ChainEntry, ChainState, Role } from "@maruhi/crypto";
 import { DurableObject } from "cloudflare:workers";
-import { Data, Effect, Layer, ManagedRuntime, Semaphore } from "effect";
+import { Clock, Data, Effect, Layer, ManagedRuntime, Semaphore } from "effect";
 
 import type { HeadAttestationSubmissionInput } from "../attestation-accept.ts";
 import { putHeadAttestationProgram } from "../attestation-accept.ts";
@@ -234,7 +234,8 @@ export interface Env {
   /**
    * The tripwire-notification webhook (Workers Secret — hosted-ops.md
    * §2-B). Unset = never sends (disabled by default). The body is only
-   * static signal names + aggregate values.
+   * static signal names + aggregate values. Read only through
+   * worker-env.ts's readWorkerSecrets, which wraps it in Redacted.
    */
   readonly OPS_ALERT_WEBHOOK_URL?: string;
 }
@@ -594,7 +595,7 @@ export const appendProgram = (
       yield* ensureProposalAdmitted(
         entry.payload.expiresAtMs,
         chain.state.pendingProposals,
-        Date.now(),
+        yield* Clock.currentTimeMillis,
       );
     }
     // The device-count acceptance policy (AUTH_SPEC §12-8 / CRYPTO_SPEC
@@ -1381,19 +1382,18 @@ export class ProjectChainDO extends DurableObject<Env> {
             // Every evacuation failure is a defect (do-snapshot.ts); it is
             // answered with the static code and retried on the next sweep
             Effect.catchDefect((defect) =>
-              Effect.sync(() => {
-                // A static message only (up to the class name). The
-                // record lives in the worker-side D1
-                console.warn(
-                  "project snapshot upload failed; retried on the next sweep",
-                  defect instanceof Error ? defect.name : "unknown",
-                );
-                return {
+              // A static message only (up to the class name). The
+              // record lives in the worker-side D1
+              Effect.logWarning(
+                "project snapshot upload failed; retried on the next sweep",
+                defect instanceof Error ? defect.name : "unknown",
+              ).pipe(
+                Effect.as<OpsBackupOutcome>({
                   kind: "upload-failed",
                   storageLevel,
                   databaseSizeBytes,
-                } satisfies OpsBackupOutcome;
-              }),
+                }),
+              ),
             ),
           );
         }),

@@ -80,6 +80,7 @@ import {
   pushVersionProgram,
   renameVariableProgram,
 } from "../src/programs/programs-variable.ts";
+import { ServerLoggerLive } from "../src/server-logger.ts";
 import { makeStorageMeter, StorageMeter, storageGuardDecision } from "../src/storage-guard.ts";
 import { addMemberOperation, signEntryAt } from "./support/data-crypto.ts";
 import {
@@ -130,6 +131,10 @@ async function runInProject<A>(
       dataStoreLayer(state.storage.sql),
       auditStoreLayer(state.storage.sql),
       Layer.succeed(StorageMeter, meter),
+      // The DO runtime's logger (chain-do.ts) — without it the
+      // converted Effect.logWarning / logError lines do not reach
+      // the console spies
+      ServerLoggerLive,
     );
     const run: Runner = (program) => Effect.runPromiseExit(program.pipe(Effect.provide(layers)));
     return await body(run);

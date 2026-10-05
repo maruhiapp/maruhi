@@ -13,7 +13,7 @@ import type { ChainMirrorSubject } from "@maruhi/core";
 import { cryptoEffect } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeUserKeyFingerprint, decodeHex, encodeHex } from "@maruhi/crypto";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { AuditStore } from "../audit-store.ts";
 import { DataStore } from "../data/data-store.ts";
@@ -65,7 +65,7 @@ export const commitAcceptedEntry = (
     // sweep deletes wrap rows, so generic chain acceptance is also handed
     // the data store's write surface
     const dataStore = yield* DataStore;
-    const nowMs = Date.now();
+    const nowMs = yield* Clock.currentTimeMillis;
     const proposals = proposalIndexOf([...chain.entries, entry], applied);
     // add_device's mirror row (AUDIT_SPEC §3.4) needs the carried device's
     // FP. SHA-256 is async, so the acceptance side computes it before the

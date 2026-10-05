@@ -16,7 +16,7 @@
 
 import { AuthMiddleware, maruhiApi } from "@maruhi/api-schema";
 import { SessionService, TokenService } from "@maruhi/core";
-import { Context, Effect, FileSystem, Layer, Path } from "effect";
+import { Clock, Context, Effect, FileSystem, Layer, Path } from "effect";
 import { Etag, HttpPlatform, HttpRouter } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
@@ -339,11 +339,11 @@ export default {
     const dbServices = makeDbServices(env.DB);
     if (controller.cron === OPS_HOURLY_CRON) {
       const services = dbServices.pipe(
-        Context.add(OpsNotifier, makeWebhookNotifier(env.OPS_ALERT_WEBHOOK_URL)),
+        Context.add(OpsNotifier, makeWebhookNotifier(readWorkerSecrets(env).opsAlertWebhookUrl)),
       );
       await Effect.runPromise(
-        runBackupSweep(env).pipe(
-          Effect.andThen(runOpsAlerts(Date.now())),
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap((nowMs) => runBackupSweep(env).pipe(Effect.andThen(runOpsAlerts(nowMs)))),
           Effect.provideContext(services),
           Effect.provide(ServerLoggerLive),
         ),
@@ -352,7 +352,10 @@ export default {
     }
     const sessions = Context.get(dbServices, SessionRepo);
     await Effect.runPromise(
-      sessions.deleteExpired(Date.now()).pipe(Effect.provide(ServerLoggerLive)),
+      Clock.currentTimeMillis.pipe(
+        Effect.flatMap((nowMs) => sessions.deleteExpired(nowMs)),
+        Effect.provide(ServerLoggerLive),
+      ),
     );
   },
 } satisfies ExportedHandler<Env>;

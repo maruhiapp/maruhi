@@ -8,15 +8,18 @@
 // (project IDs, user IDs, etc.).
 //
 // The destination is the Workers Secret `OPS_ALERT_WEBHOOK_URL`
-// (unset = do not send — disabled by default). Notifications fire on
-// state transitions (inactive → active / active → inactive); while a
-// signal stays active it re-notifies every OPS_ALERT_RENOTIFY_MS. A
-// send failure is not swallowed: a static 1-line log is left and the
-// state is not updated (the next evaluation re-sends). Even without a
-// webhook configured, an active signal leaves a static 1-line entry
-// in Workers Logs (the self-hosted hook).
+// (unset = do not send — disabled by default; carried as Redacted
+// through worker-env.ts). Notifications fire on state transitions
+// (inactive → active / active → inactive); while a signal stays
+// active it re-notifies every OPS_ALERT_RENOTIFY_MS. A send failure
+// is not swallowed: a static 1-line log is left and the state is not
+// updated (the next evaluation re-sends). Even without a webhook
+// configured, an active signal leaves a static 1-line entry in
+// Workers Logs (the self-hosted hook).
 
-import { Context, Effect } from "effect";
+import { egressHttpClientLayer } from "@maruhi/core";
+import { Context, Duration, Effect, Redacted, Schema } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
 
 import { OpsRepo } from "../db.package/index.ts";
 import {
@@ -78,42 +81,76 @@ export interface OpsNotifierShape {
 
 export class OpsNotifier extends Context.Service<OpsNotifier, OpsNotifierShape>()("OpsNotifier") {}
 
+/**
+ * Timeout of one webhook POST — the same bound as github.ts's
+ * REQUEST_TIMEOUT and jwks.ts's FETCH_TIMEOUT_MS: the scheduled run
+ * must not hang on a peer that accepts the connection and never
+ * answers.
+ */
+const WEBHOOK_REQUEST_TIMEOUT = Duration.seconds(5);
+
+/** The outbound client: no header of its own (packages/core/src/egress.ts). */
+const webhookHttpClient = egressHttpClientLayer();
+
+const webhookRequestFailedWith = (kind: string) =>
+  Effect.logWarning("ops alert webhook request failed; retrying on the next evaluation", kind).pipe(
+    Effect.as(false),
+  );
+
+/**
+ * A webhook send failure folds into the static line + `false` (kind
+ * name only — never the URL or the body). HttpClientError carries the
+ * underlying failure (the fetch rejection, the URL-parse TypeError)
+ * in `.cause` — its name is the same transport kind the raw-fetch
+ * implementation logged.
+ */
+const webhookRequestFailed = (error: Error) =>
+  webhookRequestFailedWith(error.cause instanceof Error ? error.cause.name : "unknown");
+
 /** The production implementation: POSTs JSON when a webhook URL is configured. */
-export function makeWebhookNotifier(webhookUrl: string | undefined): OpsNotifierShape {
+export function makeWebhookNotifier(
+  webhookUrl: Redacted.Redacted<string> | undefined,
+): OpsNotifierShape {
   return {
-    notify: (payload) =>
-      Effect.promise(async () => {
-        if (webhookUrl === undefined || webhookUrl === "") {
-          for (const event of payload.events) {
+    notify: (payload) => {
+      if (webhookUrl === undefined) {
+        return Effect.forEach(
+          payload.events,
+          (event) =>
             // Static signal name + aggregates only
-            console.warn(
+            Effect.logWarning(
               `ops signal ${event.state}: ${event.signal} (value ${event.value}, threshold ${event.threshold})`,
-            );
-          }
-          return true;
-        }
-        try {
-          const response = await fetch(webhookUrl, {
-            method: "POST",
-            headers: { "content-type": "application/json", "user-agent": "maruhi" },
-            body: JSON.stringify(payload),
-          });
-          if (!response.ok) {
-            console.warn(
-              "ops alert webhook responded with a non-2xx status; retrying on the next evaluation",
-            );
-            return false;
-          }
-          return true;
-        } catch (error) {
-          // Neither the URL nor the response body is logged (kind name only)
-          console.warn(
-            "ops alert webhook request failed; retrying on the next evaluation",
-            error instanceof Error ? error.name : "unknown",
+            ),
+          { discard: true },
+        ).pipe(Effect.as(true));
+      }
+      return Effect.gen(function* () {
+        const client = yield* HttpClient.HttpClient;
+        // The URL's only unwrap: the request build (a Workers Secret).
+        // It appears in no log line or error
+        const request = yield* HttpClientRequest.post(Redacted.value(webhookUrl)).pipe(
+          HttpClientRequest.setHeaders({ "user-agent": "maruhi" }),
+          HttpClientRequest.bodyJson(payload),
+        );
+        const response = yield* client.execute(request);
+        if (response.status < 200 || response.status >= 300) {
+          yield* Effect.logWarning(
+            "ops alert webhook responded with a non-2xx status; retrying on the next evaluation",
           );
           return false;
         }
-      }),
+        return true;
+      }).pipe(
+        Effect.timeout(WEBHOOK_REQUEST_TIMEOUT),
+        Effect.catchTags({
+          HttpClientError: webhookRequestFailed,
+          HttpBodyError: webhookRequestFailed,
+          // The new timeout has no transport underneath — its own name
+          TimeoutError: () => webhookRequestFailedWith("TimeoutError"),
+        }),
+        Effect.provide(webhookHttpClient),
+      );
+    },
   };
 }
 
@@ -174,18 +211,29 @@ export function evaluateOpsSignals(
   });
 }
 
-function parseStates(raw: string | null): AlertStates {
+/** The stored state row's entry shape (decoded, not cast — a malformed value restarts from empty). */
+const AlertStateSchema = Schema.Struct({
+  active: Schema.Boolean,
+  since: Schema.Number,
+  lastNotifiedAt: Schema.Number,
+});
+
+/** The stored row: a JSON object of per-signal entries (unknown keys carry over to the next save). */
+const AlertStatesSchema = Schema.fromJsonString(Schema.Record(Schema.String, AlertStateSchema));
+
+function parseStates(raw: string | null): Effect.Effect<AlertStates> {
   if (raw === null) {
-    return {};
+    return Effect.succeed({});
   }
-  try {
-    return JSON.parse(raw) as AlertStates;
-  } catch {
-    // A corrupted state row restarts from "all inactive" (operational
-    // state only — not audit)
-    console.warn("ops alert state row is not valid JSON; starting from an empty state");
-    return {};
-  }
+  return Schema.decodeUnknownEffect(AlertStatesSchema)(raw).pipe(
+    Effect.catchTag("SchemaError", () =>
+      // A corrupted state row restarts from "all inactive" (operational
+      // state only — not audit)
+      Effect.logWarning("ops alert state row is not valid JSON; starting from an empty state").pipe(
+        Effect.as<AlertStates>({}),
+      ),
+    ),
+  );
 }
 
 /** Derivation of transitions (and re-notifications) — a pure function (pinned by tests). */
@@ -248,7 +296,7 @@ export function runOpsAlerts(
     const ops = yield* OpsRepo;
     const notifier = yield* OpsNotifier;
     const signals = yield* evaluateOpsSignals(nowMs);
-    const states = parseStates(yield* ops.getState(ALERT_STATE_KEY));
+    const states = yield* parseStates(yield* ops.getState(ALERT_STATE_KEY));
     const { events, next } = deriveAlertEvents(signals, states, nowMs);
     if (events.length === 0) {
       return events;
