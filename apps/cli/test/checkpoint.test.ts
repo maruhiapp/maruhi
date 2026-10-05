@@ -564,6 +564,42 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     expect(state.auditHeadCalls()).toBe(2);
   });
 
+  it(
+    "AuditHeadNotReady (503) at the acceptance stage backs off exponentially and exhausts the shared 10-attempt budget",
+    async () => {
+      const appendTimes: number[] = [];
+      const { state, env } = await makeNotReadyFixture({
+        onAppend: () => {
+          appendTimes.push(Date.now());
+          return NOT_READY;
+        },
+      });
+      expect(await runCli(["project", "checkpoint"], env.layer)).toBe(1);
+      // The shared notReady counter caps the acceptance path too: 10
+      // appends, each preceded by a fresh attestation (the retried unit
+      // refetches it — §16-2; the server's extension advances regardless —
+      // AUDIT_SPEC §5.1)
+      expect(state.appends.length).toBe(10);
+      expect(state.auditHeadCalls()).toBe(10);
+      // Exponential backoff between appends (5, 10, …, 1280 ms — ~2.5 s
+      // cumulative; the pre-backoff loop resubmitted immediately). The gaps
+      // are lower bounds only — each also carries a rebuild + attestation
+      // + send round-trip
+      const waits = [5, 10, 20, 40, 80, 160, 320, 640, 1280];
+      for (const [index, wait] of waits.entries()) {
+        expect(appendTimes[index + 1]! - appendTimes[index]!).toBeGreaterThanOrEqual(wait - 1);
+      }
+      expect(appendTimes[9]! - appendTimes[0]!).toBeGreaterThanOrEqual(2000);
+      expect(env.logs.join("\n")).toContain(
+        "refetching the attestation and retrying (attempt 10 of 10)",
+      );
+      const output = env.errors.join("\n");
+      expect(output).toContain("still materializing the audit-head hash column");
+      expect(output).toContain("re-run the command to continue where it left off");
+    },
+    20000,
+  );
+
   it("when AuditHeadNotReady is exhausted, fails with guidance on the trigger condition and the fix by re-running", async () => {
     const { state, env } = await makeNotReadyFixture({ onAuditHead: () => NOT_READY });
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(1);
