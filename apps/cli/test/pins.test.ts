@@ -80,7 +80,7 @@ describe("invite-pin file (pins.ts)", () => {
   it("a pin file with a leading byte-order mark loads", async () => {
     const { path, store } = await makeStore();
     await Effect.runPromise(store.saveIssuedPin(PROJECT, INVITE_A, pin(["prod"])));
-    await writeFile(path, `﻿${await readFile(path, "utf8")}`);
+    await writeFile(path, `\uFEFF${await readFile(path, "utf8")}`);
 
     const loaded = await Effect.runPromise(store.load(PROJECT));
     expect(loaded.state).toBe("loaded");
