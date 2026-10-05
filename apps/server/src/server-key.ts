@@ -162,18 +162,23 @@ export function makeServerKey(ikmHex: string | undefined): ServerKeyShape {
   // derivation per isolate however many fibers race — the first run's
   // Exit (a derived key, a null "unconfigured", or a defect) is
   // replayed to every later call, the same guarantee the hand-made
-  // `cached ??=` Promise gave. uninterruptible shields the
-  // evaluation: an interrupted first caller would otherwise leave an
-  // interrupted Exit in the cell permanently, poisoning the key until
-  // the isolate is recycled (the detached Promise had no such failure
-  // mode). Waiters still interrupt at the latch without touching the
-  // cell
-  const derived = Effect.runSync(Effect.cached(Effect.uninterruptible(derive(ikmHex))));
+  // `cached ??=` Promise gave
+  const derived = Effect.runSync(Effect.cached(derive(ikmHex)));
+  // Accesses hold the memo evaluation uninterruptibly. An interrupted
+  // first caller would otherwise leave an interrupted Exit in the
+  // cell permanently, poisoning the key until the isolate is recycled
+  // (the detached Promise had no such failure mode). The mask must
+  // wrap the access, not the derivation: the pending interrupt
+  // surfaces when the mask lifts, which inside `cached` would still be
+  // within the cell's scope — here the store lands first and the
+  // caller's interrupt only takes effect after it. Waiters wait out
+  // the one-shot derivation before their own interrupt lands
+  const shared = Effect.uninterruptible(derived);
   return {
-    info: Effect.map(derived, (key) => key?.info ?? null),
+    info: Effect.map(shared, (key) => key?.info ?? null),
     reseal: (input) =>
       Effect.gen(function* () {
-        const key = yield* derived;
+        const key = yield* shared;
         if (key === null) {
           return yield* Effect.fail<ResealFailure>("not-configured");
         }

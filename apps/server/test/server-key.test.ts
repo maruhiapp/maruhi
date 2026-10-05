@@ -10,7 +10,7 @@ import {
   importEncryptionPublicKey,
   wrapDek,
 } from "@maruhi/crypto";
-import { Effect, Fiber } from "effect";
+import { Effect, Exit, Fiber } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import { makeServerKey, type ServerKeyInfo, type StoredServerWrap } from "../src/server-key.ts";
@@ -83,19 +83,33 @@ describe("makeServerKey's derivation cache", () => {
   });
 
   it("an interrupted first caller cannot poison the cache", async () => {
+    // Gate the derivation's first HKDF sign so the first caller's
+    // fiber is suspended mid-derivation when the interrupt lands —
+    // without it the interrupt usually wins the race before the fiber
+    // even evaluates, and the poisoned-cell path goes unexercised
+    const realSign = crypto.subtle.sign.bind(crypto.subtle);
+    let releaseSign!: () => void;
+    const signGate = new Promise<void>((resolve) => {
+      releaseSign = resolve;
+    });
+    const signSpy = vi
+      .spyOn(crypto.subtle, "sign")
+      .mockImplementationOnce((algorithm, key, data) =>
+        signGate.then(() => realSign(algorithm, key, data)),
+      );
     const key = makeServerKey(IKM_HEX);
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(key.info);
-        yield* Fiber.interrupt(fiber);
-      }),
-    );
-    // Effect.cached replays the first run's Exit: if the evaluation
-    // were interruptible, a cancelled request would leave an
-    // interrupted Exit in the cell forever. The uninterruptible mask
-    // around derive makes that Exit impossible — whether or not the
-    // interrupt landed mid-derivation, a later call still resolves
+    const fiber = Effect.runFork(key.info);
+    await vi.waitFor(() => expect(signSpy).toHaveBeenCalled());
+    // Interrupt while the fiber is suspended inside the derivation.
+    // The uninterruptible mask around each memo access means the
+    // evaluation finishes and the cell stores a completed Exit —
+    // the interrupt kills only the fiber
+    Effect.runFork(Fiber.interrupt(fiber));
+    releaseSign();
+    const exit = await Effect.runPromise(Fiber.await(fiber));
     const info = await Effect.runPromise(key.info);
+    signSpy.mockRestore();
+    expect(Exit.hasInterrupts(exit)).toBe(true);
     expect(info).not.toBeNull();
   });
 
