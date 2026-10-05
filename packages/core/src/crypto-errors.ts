@@ -24,9 +24,11 @@
 //   - `Effect.orDie` — an error means an invariant broke; make it a defect,
 //   - `Effect.mapError` — re-wrap into a domain error.
 //
-// The "no leak" guarantee above covers the typed error channel only:
-// a `cryptoEffect` rejection still dies with the raw rejection value in
-// the defect (scrubbing that is a Wave 2 follow-up).
+// The "no leak" guarantee covers both channels: the typed error
+// channel carries only `CryptoError`-derived fields (or just the
+// operation name for `CryptoRejectedError`), and a `cryptoEffect`
+// rejection dies with a fixed `CryptoContractViolationError` — the
+// rejection value never reaches the defect.
 
 import type {
   AeadOperation,
@@ -193,6 +195,18 @@ export class CryptoRejectedError extends Data.TaggedError("CryptoRejected")<{
 }> {}
 
 /**
+ * A `Promise<CryptoResult>`-returning @maruhi/crypto operation rejected —
+ * the crypto contract (errors come back as values, a promise never
+ * rejects) was violated. Used only as a defect: it carries no part of
+ * the rejection value, so nothing derived from key material or
+ * plaintext can reach crash output (absolute rule). The `_tag` is the
+ * whole diagnostic — no payload exists to leak.
+ */
+export class CryptoContractViolationError extends Data.TaggedError(
+  "CryptoContractViolation",
+)<object> {}
+
+/**
  * Union of the Effect-tagged errors a `CryptoResult`-returning
  * @maruhi/crypto operation can fail with — one member per `CryptoError`
  * kind. (`CryptoRejectedError` stays outside: see its doc.)
@@ -272,13 +286,25 @@ export function fromCryptoResult<T>(result: CryptoResult<T>): Effect.Effect<T, W
  * lifts the result into `Effect`, mapping errors by `kind`. Only for
  * operations returning `CryptoResult` — crypto returns errors as values
  * by contract, so a rejection is a bug and surfaces as a defect
- * (`Effect.promise`). For exports returning a bare `Promise`, use
- * `cryptoPromise`.
+ * (`Effect.promise`). The defect is a fixed
+ * `CryptoContractViolationError`: the rejection value is replaced
+ * inside the thunk before `Effect.promise` can embed it, so no key
+ * material or plaintext can leak into crash output. For exports
+ * returning a bare `Promise`, use `cryptoPromise`.
  */
 export function cryptoEffect<T>(
   run: () => Promise<CryptoResult<T>>,
 ): Effect.Effect<T, WrappedCryptoError> {
-  return Effect.flatMap(Effect.promise(run), fromCryptoResult);
+  return Effect.flatMap(
+    Effect.promise(async () => {
+      try {
+        return await run();
+      } catch {
+        throw new CryptoContractViolationError();
+      }
+    }),
+    fromCryptoResult,
+  );
 }
 
 /**
