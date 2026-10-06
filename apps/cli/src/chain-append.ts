@@ -29,37 +29,35 @@ import { toCliError } from "./failure.ts";
  * `failureText` is the wording for a signing failure (the caller supplies
  * it, including the op name).
  */
-export function signEntryAtHead(input: {
+export const signEntryAtHead = Effect.fn("chain-append.signEntryAtHead")(function* (input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
   readonly operation: ChainOperation;
   readonly signingKeyPair: SigningKeyPair;
   readonly failureText: string;
-}): Effect.Effect<ChainEntry, CliError> {
-  return Effect.gen(function* () {
-    const actor = input.verified.state.members.get(input.signerUserId);
-    if (actor === undefined) {
-      return yield* Effect.fail(cliError("Not a chain-derived member"));
-    }
-    // The signing device = that person's valid device matching the signing key at hand (K4-16 — device-key.ts)
-    const device = yield* ownDeviceBySigningKey(input.verified, actor, input.signingKeyPair);
-    const timestampMs = yield* Clock.currentTimeMillis;
-    const signed = yield* cryptoEffect(() =>
-      signChainEntry({
-        entry: {
-          suite: SUITE_ID,
-          seq: input.verified.state.headSeq + 1,
-          prevHashHex: input.verified.state.headHashHex,
-          ...input.operation,
-          actor: { userId: actor.userId, keyFingerprintHex: device.keyFingerprintHex },
-          timestampMs,
-        },
-        signingKey: input.signingKeyPair.privateKey,
-      }),
-    ).pipe(Effect.mapError(() => cliError(input.failureText)));
-    return signed;
-  });
-}
+}): Effect.fn.Return<ChainEntry, CliError> {
+  const actor = input.verified.state.members.get(input.signerUserId);
+  if (actor === undefined) {
+    return yield* Effect.fail(cliError("Not a chain-derived member"));
+  }
+  // The signing device = that person's valid device matching the signing key at hand (K4-16 — device-key.ts)
+  const device = yield* ownDeviceBySigningKey(input.verified, actor, input.signingKeyPair);
+  const timestampMs = yield* Clock.currentTimeMillis;
+  const signed = yield* cryptoEffect(() =>
+    signChainEntry({
+      entry: {
+        suite: SUITE_ID,
+        seq: input.verified.state.headSeq + 1,
+        prevHashHex: input.verified.state.headHashHex,
+        ...input.operation,
+        actor: { userId: actor.userId, keyFingerprintHex: device.keyFingerprintHex },
+        timestampMs,
+      },
+      signingKey: input.signingKeyPair.privateKey,
+    }),
+  ).pipe(Effect.mapError(() => cliError(input.failureText)));
+  return signed;
+});
 
 /**
  * Append under the parent-head CAS. A head conflict is returned as

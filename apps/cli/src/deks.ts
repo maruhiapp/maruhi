@@ -175,70 +175,68 @@ export function requireChainEnvironment(
  * chain lets a colluding server inject false values via an attacker DEK
  * signed by a regular member).
  */
-function verifyAndUnwrapDeks(input: {
+const verifyAndUnwrapDeks = Effect.fn("deks.verifyAndUnwrapDeks")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly recipient: DekRecipient;
   readonly deks: readonly RecipientDek[];
-}): Effect.Effect<ReadonlyMap<number, Redacted.Redacted<Uint8Array>>, CliError> {
-  return Effect.gen(function* () {
-    // An environment's existence itself is chain-derived (§6.2):
-    // distribution of an environment absent from the chain is refused
-    // wholesale as a phantom environment
-    const environment = yield* requireChainEnvironment(input.verified, input.environmentId);
-    const chainEpoch = environment.currentEpoch;
-    const byEpoch = new Map<number, Redacted.Redacted<Uint8Array>>();
-    // Open only the rows addressed to my devices (AUTH_SPEC §12-6's
-    // device axis — one response carries all devices of the same person.
-    // DK K4-16: read → verify signature → unwrap. Rows for other devices
-    // are not poisoned wraps)
-    const mine = input.deks.filter((wrap) => wrap.recipientEncPubHex === input.recipient.encPubHex);
-    for (const wrap of mine) {
-      if (wrap.suite !== SUITE_ID) {
-        // Currently unreachable because of the Schema Literal pin, but
-        // since the verification coordinates use the declared suite, pin
-        // it explicitly on the CLI side too (defense against a future
-        // union)
-        return yield* Effect.fail(cliError(`The DEK wrap uses an unknown suite (${wrap.suite})`));
-      }
-      if (wrap.epoch > chainEpoch) {
-        return yield* Effect.fail(
-          cliError(
-            `A DEK wrap for epoch ${wrap.epoch}, beyond the chain's current epoch (${chainEpoch}), was served. A rotation may have just happened — if re-running does not resolve this, the server response contradicts the chain`,
-          ),
-        );
-      }
-      if (byEpoch.has(wrap.epoch)) {
-        return yield* Effect.fail(
-          cliError(`Duplicate DEK wraps for the same epoch (epoch=${wrap.epoch})`),
-        );
-      }
-      // The chain-derived commitment (§5.2). For every epoch in
-      // 1 ≤ epoch ≤ current, a create / rotate entry already published
-      // the commitment (§6.2 consensus rules)
-      const expectedCommitmentHex = environment.dekCommitments.get(wrap.epoch);
-      if (expectedCommitmentHex === undefined) {
-        return yield* Effect.fail(
-          cliError(
-            `No commitment for epoch ${wrap.epoch} exists on the chain (a chain-derivation inconsistency)`,
-          ),
-        );
-      }
-      const dek = yield* verifyAndUnwrapOne({
-        verified: input.verified,
-        environmentId: input.environmentId,
-        recipient: input.recipient,
-        wrap,
-        expectedCommitmentHex,
-      });
-      // The unwrapped DEK is wrapped here (only after the §5.2 commitment
-      // check passes — a DEK before the check never leaves the inside of
-      // verifyAndUnwrapOne)
-      byEpoch.set(wrap.epoch, Redacted.make(dek, { label: "dek" }));
+}): Effect.fn.Return<ReadonlyMap<number, Redacted.Redacted<Uint8Array>>, CliError> {
+  // An environment's existence itself is chain-derived (§6.2):
+  // distribution of an environment absent from the chain is refused
+  // wholesale as a phantom environment
+  const environment = yield* requireChainEnvironment(input.verified, input.environmentId);
+  const chainEpoch = environment.currentEpoch;
+  const byEpoch = new Map<number, Redacted.Redacted<Uint8Array>>();
+  // Open only the rows addressed to my devices (AUTH_SPEC §12-6's
+  // device axis — one response carries all devices of the same person.
+  // DK K4-16: read → verify signature → unwrap. Rows for other devices
+  // are not poisoned wraps)
+  const mine = input.deks.filter((wrap) => wrap.recipientEncPubHex === input.recipient.encPubHex);
+  for (const wrap of mine) {
+    if (wrap.suite !== SUITE_ID) {
+      // Currently unreachable because of the Schema Literal pin, but
+      // since the verification coordinates use the declared suite, pin
+      // it explicitly on the CLI side too (defense against a future
+      // union)
+      return yield* Effect.fail(cliError(`The DEK wrap uses an unknown suite (${wrap.suite})`));
     }
-    return byEpoch;
-  });
-}
+    if (wrap.epoch > chainEpoch) {
+      return yield* Effect.fail(
+        cliError(
+          `A DEK wrap for epoch ${wrap.epoch}, beyond the chain's current epoch (${chainEpoch}), was served. A rotation may have just happened — if re-running does not resolve this, the server response contradicts the chain`,
+        ),
+      );
+    }
+    if (byEpoch.has(wrap.epoch)) {
+      return yield* Effect.fail(
+        cliError(`Duplicate DEK wraps for the same epoch (epoch=${wrap.epoch})`),
+      );
+    }
+    // The chain-derived commitment (§5.2). For every epoch in
+    // 1 ≤ epoch ≤ current, a create / rotate entry already published
+    // the commitment (§6.2 consensus rules)
+    const expectedCommitmentHex = environment.dekCommitments.get(wrap.epoch);
+    if (expectedCommitmentHex === undefined) {
+      return yield* Effect.fail(
+        cliError(
+          `No commitment for epoch ${wrap.epoch} exists on the chain (a chain-derivation inconsistency)`,
+        ),
+      );
+    }
+    const dek = yield* verifyAndUnwrapOne({
+      verified: input.verified,
+      environmentId: input.environmentId,
+      recipient: input.recipient,
+      wrap,
+      expectedCommitmentHex,
+    });
+    // The unwrapped DEK is wrapped here (only after the §5.2 commitment
+    // check passes — a DEK before the check never leaves the inside of
+    // verifyAndUnwrapOne)
+    byEpoch.set(wrap.epoch, Redacted.make(dek, { label: "dek" }));
+  }
+  return byEpoch;
+});
 
 /**
  * The set of environment keys derived from a verified view: the pair of
@@ -287,7 +285,7 @@ export function missingEpochsOf(keys: EnvironmentKeys): readonly number[] {
  * typed error (the wrap is neither fetched nor unwrapped, and its
  * content never appears in the message).
  */
-export function environmentKeysFor(input: {
+export const environmentKeysFor = Effect.fnUntraced(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: string;
@@ -296,58 +294,56 @@ export function environmentKeysFor(input: {
   readonly prefetched?: readonly RecipientDek[] | null | undefined;
   /** The known set already verified and unwrapped in this session (no refetch when it has the current epoch). */
   readonly cached?: ReadonlyMap<number, Redacted.Redacted<Uint8Array>> | undefined;
-}): Effect.Effect<EnvironmentKeys, CliError> {
-  return Effect.gen(function* () {
-    // The current epoch is a chain-derived value (§6.2 — a not-yet-created environment stops here)
-    const currentEpoch = (yield* requireChainEnvironment(input.verified, input.environmentId))
-      .currentEpoch;
-    const self = input.verified.state.members.get(input.recipient.userId);
-    if (self === undefined) {
-      return yield* Effect.fail(
-        cliError("You are not a chain-derived member of this project (no DEK is addressed to you)"),
-      );
-    }
-    // The unwrapping device = my valid device matching the enc key at
-    // hand (DK K4-16). A DEK for an environment outside the effective
-    // scope (person ∩ device — K4-17) is not used even when addressed to
-    // me
-    const device = yield* ownDeviceOrFail(input.verified, self, {
-      encPubHex: input.recipient.encPubHex,
-    });
-    const permission = effectivePermissionOf(self, device);
-    if (!scopeIncludesEnvironment(permission.scope, input.environmentId)) {
-      return yield* Effect.fail(
-        cliError(
-          scopeIncludesEnvironment(self.scope, input.environmentId)
-            ? outOfScopeMessage({
-                member: self,
-                device,
-                environmentId: input.environmentId,
-                operation: "open the DEKs of",
-              })
-            : `Environment ${displayText(input.environmentId)} is outside your environment scope (your scope: ${describeScope(self.scope)}), so a DEK wrap addressed to you for it is not used (CRYPTO_SPEC §6.3 — such a wrap would mean the server is not enforcing AUTH_SPEC §12-6). Your local chain view may be stale — re-run to resync, or ask an admin to widen your scope`,
-        ),
-      );
-    }
-    if (input.cached?.has(currentEpoch) === true) {
-      return { currentEpoch, deksByEpoch: input.cached };
-    }
-    const wire =
-      input.prefetched ??
-      (yield* input.client.deks
-        .listMine({
-          params: { projectId: input.verified.projectId, environmentId: input.environmentId },
-        })
-        .pipe(
-          Effect.mapError(toCliError),
-          Effect.map((response) => response.deks),
-        ));
-    const deksByEpoch = yield* verifyAndUnwrapDeks({
-      verified: input.verified,
-      environmentId: input.environmentId,
-      recipient: input.recipient,
-      deks: wire,
-    });
-    return { currentEpoch, deksByEpoch };
+}): Effect.fn.Return<EnvironmentKeys, CliError> {
+  // The current epoch is a chain-derived value (§6.2 — a not-yet-created environment stops here)
+  const currentEpoch = (yield* requireChainEnvironment(input.verified, input.environmentId))
+    .currentEpoch;
+  const self = input.verified.state.members.get(input.recipient.userId);
+  if (self === undefined) {
+    return yield* Effect.fail(
+      cliError("You are not a chain-derived member of this project (no DEK is addressed to you)"),
+    );
+  }
+  // The unwrapping device = my valid device matching the enc key at
+  // hand (DK K4-16). A DEK for an environment outside the effective
+  // scope (person ∩ device — K4-17) is not used even when addressed to
+  // me
+  const device = yield* ownDeviceOrFail(input.verified, self, {
+    encPubHex: input.recipient.encPubHex,
   });
-}
+  const permission = effectivePermissionOf(self, device);
+  if (!scopeIncludesEnvironment(permission.scope, input.environmentId)) {
+    return yield* Effect.fail(
+      cliError(
+        scopeIncludesEnvironment(self.scope, input.environmentId)
+          ? outOfScopeMessage({
+              member: self,
+              device,
+              environmentId: input.environmentId,
+              operation: "open the DEKs of",
+            })
+          : `Environment ${displayText(input.environmentId)} is outside your environment scope (your scope: ${describeScope(self.scope)}), so a DEK wrap addressed to you for it is not used (CRYPTO_SPEC §6.3 — such a wrap would mean the server is not enforcing AUTH_SPEC §12-6). Your local chain view may be stale — re-run to resync, or ask an admin to widen your scope`,
+      ),
+    );
+  }
+  if (input.cached?.has(currentEpoch) === true) {
+    return { currentEpoch, deksByEpoch: input.cached };
+  }
+  const wire =
+    input.prefetched ??
+    (yield* input.client.deks
+      .listMine({
+        params: { projectId: input.verified.projectId, environmentId: input.environmentId },
+      })
+      .pipe(
+        Effect.mapError(toCliError),
+        Effect.map((response) => response.deks),
+      ));
+  const deksByEpoch = yield* verifyAndUnwrapDeks({
+    verified: input.verified,
+    environmentId: input.environmentId,
+    recipient: input.recipient,
+    deks: wire,
+  });
+  return { currentEpoch, deksByEpoch };
+});

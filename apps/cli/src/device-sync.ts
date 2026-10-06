@@ -61,55 +61,53 @@ import { requireScopeEnvironmentsExist } from "./scope.ts";
  * the context with a resynced view when this device appended anything. Never
  * fails the command: every problem becomes a Note / Warning.
  */
-export function syncOwnDevices(
+export const syncOwnDevices = Effect.fn("device-sync.syncOwnDevices")(function* (
   context: ProjectContext,
-): Effect.Effect<ProjectContext, never, OwnDeviceStore | CliIo | Stdio.Stdio> {
-  return Effect.gen(function* () {
-    const store = yield* OwnDeviceStore;
-    const { session } = context;
-    const self = context.verified.state.members.get(session.userId);
-    if (self === undefined) {
-      return context;
+): Effect.fn.Return<ProjectContext, never, OwnDeviceStore | CliIo | Stdio.Stdio> {
+  const store = yield* OwnDeviceStore;
+  const { session } = context;
+  const self = context.verified.state.members.get(session.userId);
+  if (self === undefined) {
+    return context;
+  }
+  const lookup = yield* store
+    .load(session.origin, session.userId)
+    .pipe(Effect.orElseSucceed(() => ({ state: "corrupt" }) as const));
+  if (lookup.state === "corrupt") {
+    yield* logWarning(
+      `the own-devices record is corrupt and was ignored: ${store.filePath} — inspect it, and delete it if the change was not intentional (device keys are re-observed from the project chains)`,
+    );
+    return context;
+  }
+  const records = lookup.state === "loaded" ? lookup.devices : [];
+  // (a)(b): observation and revocation observation (record updates are fail-open — a Note when unwritable)
+  yield* observeDevices({ context, self, records, store });
+  // (c): registration (can sign only when this device is my device on the chain)
+  const own = findOwnDevice(self, { keyFingerprintHex: context.masterKeys.fingerprintHex });
+  if (own === undefined) {
+    return context;
+  }
+  let current = context;
+  const candidates = registrationCandidates(context.verified, self, records);
+  // Registration involves signing (add_device + DEK wraps), so it is
+  // done only in a human session that passes the same ceremony gate
+  // as `device approve` (known agent → whether stdin / stdout is a
+  // terminal). The local record is an unsigned file: in an agent
+  // environment a planted row would add a signer without this gate
+  // (K4-37 — security review point)
+  if (candidates.length > 0 && (yield* registrationAllowed(context.projectId, candidates))) {
+    for (const candidate of candidates) {
+      current = yield* registerRecorded({ context: current, self, own, candidate });
     }
-    const lookup = yield* store
-      .load(session.origin, session.userId)
-      .pipe(Effect.orElseSucceed(() => ({ state: "corrupt" }) as const));
-    if (lookup.state === "corrupt") {
-      yield* logWarning(
-        `the own-devices record is corrupt and was ignored: ${store.filePath} — inspect it, and delete it if the change was not intentional (device keys are re-observed from the project chains)`,
-      );
-      return context;
-    }
-    const records = lookup.state === "loaded" ? lookup.devices : [];
-    // (a)(b): observation and revocation observation (record updates are fail-open — a Note when unwritable)
-    yield* observeDevices({ context, self, records, store });
-    // (c): registration (can sign only when this device is my device on the chain)
-    const own = findOwnDevice(self, { keyFingerprintHex: context.masterKeys.fingerprintHex });
-    if (own === undefined) {
-      return context;
-    }
-    let current = context;
-    const candidates = registrationCandidates(context.verified, self, records);
-    // Registration involves signing (add_device + DEK wraps), so it is
-    // done only in a human session that passes the same ceremony gate
-    // as `device approve` (known agent → whether stdin / stdout is a
-    // terminal). The local record is an unsigned file: in an agent
-    // environment a planted row would add a signer without this gate
-    // (K4-37 — security review point)
-    if (candidates.length > 0 && (yield* registrationAllowed(context.projectId, candidates))) {
-      for (const candidate of candidates) {
-        current = yield* registerRecorded({ context: current, self, own, candidate });
-      }
-    }
-    // (d): missing reserve key (K4-9)
-    yield* warnReserveMissing({
-      self: current.verified.state.members.get(session.userId) ?? self,
-      own,
-      records,
-    });
-    return current;
+  }
+  // (d): missing reserve key (K4-9)
+  yield* warnReserveMissing({
+    self: current.verified.state.members.get(session.userId) ?? self,
+    own,
+    records,
   });
-}
+  return current;
+});
 
 /**
  * (c)'s ceremony gate (K4-37): emits a Note and returns false when
@@ -169,73 +167,71 @@ function warnReserveMissing(input: {
 }
 
 /** (a)(b) Observation: records my devices on the chain and writes revocations into the record. */
-function observeDevices(input: {
+const observeDevices = Effect.fn("device-sync.observeDevices")(function* (input: {
   readonly context: ProjectContext;
   readonly self: ChainMember;
   readonly records: readonly OwnDeviceEntry[];
   readonly store: OwnDeviceStoreShape;
-}): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
-    const { context, self, records, store } = input;
-    const { session } = context;
-    const byFp = new Map(records.map((record) => [record.keyFingerprintHex, record]));
-    for (const device of devicesOf(self)) {
-      const known = byFp.get(device.keyFingerprintHex);
-      const provenance = deviceProvenanceOf(context.verified, session.userId, device);
-      if (known === undefined) {
-        // First observation (K4-4 d-2): a Note with provenance. My own device is recorded silently
-        const entry: OwnDeviceEntry = {
-          keyFingerprintHex: device.keyFingerprintHex,
-          encPubHex: device.encPubHex,
-          sigPubHex: device.sigPubHex,
-          roleCap: device.roleCap,
-          scope: device.scope,
-          source: "observed",
-          label: null,
-          addedByFingerprintHex: provenance.addedByFingerprintHex,
-          observedProjectId: context.projectId,
-          recordedAtMs: yield* Clock.currentTimeMillis,
-          revokedAtMs: null,
-        };
-        yield* store
-          .record(session.origin, session.userId, entry)
-          .pipe(Effect.catch((error) => noteWriteFailure(error)));
-        if (device.keyFingerprintHex !== context.masterKeys.fingerprintHex) {
-          yield* logNote(describeObservation(context.projectId, device, provenance));
-        }
-      } else if (known.revokedAtMs !== null) {
-        // Only re-approval clears the revocation mark, and a
-        // registered key cannot recreate a request (DK K10-5), so it
-        // does not say "approve it again" (a procedure the user cannot
-        // follow). If the device is needed on other projects, use a
-        // new key
-        yield* logNote(
-          `device ${device.keyFingerprintHex} was revoked from this machine's records but is active on project ${displayText(context.projectId)} (${describeAdder(provenance)}). It is not re-added to other projects from here (a revoked record is never cleared by syncing). If it should not be active, revoke it with \`maruhi device revoke ${device.keyFingerprintHex}\`; if that machine should be on more projects, revoke it, then ${reAddDeviceRoute("that machine")}`,
-        );
-      }
-    }
-    // (b): write this chain's revocations into the record (among
-    // the revoked FPs not the current device, those whose record is
-    // active)
-    const revokedHere = revokedFingerprintsOf(context.verified, session.userId);
-    const toMark = records
-      .filter(
-        (record) =>
-          record.revokedAtMs === null &&
-          revokedHere.has(record.keyFingerprintHex) &&
-          !self.devices.has(record.keyFingerprintHex),
-      )
-      .map((record) => record.keyFingerprintHex);
-    if (toMark.length > 0) {
+}): Effect.fn.Return<void, never, CliIo> {
+  const { context, self, records, store } = input;
+  const { session } = context;
+  const byFp = new Map(records.map((record) => [record.keyFingerprintHex, record]));
+  for (const device of devicesOf(self)) {
+    const known = byFp.get(device.keyFingerprintHex);
+    const provenance = deviceProvenanceOf(context.verified, session.userId, device);
+    if (known === undefined) {
+      // First observation (K4-4 d-2): a Note with provenance. My own device is recorded silently
+      const entry: OwnDeviceEntry = {
+        keyFingerprintHex: device.keyFingerprintHex,
+        encPubHex: device.encPubHex,
+        sigPubHex: device.sigPubHex,
+        roleCap: device.roleCap,
+        scope: device.scope,
+        source: "observed",
+        label: null,
+        addedByFingerprintHex: provenance.addedByFingerprintHex,
+        observedProjectId: context.projectId,
+        recordedAtMs: yield* Clock.currentTimeMillis,
+        revokedAtMs: null,
+      };
       yield* store
-        .markRevoked(session.origin, session.userId, toMark, yield* Clock.currentTimeMillis)
+        .record(session.origin, session.userId, entry)
         .pipe(Effect.catch((error) => noteWriteFailure(error)));
+      if (device.keyFingerprintHex !== context.masterKeys.fingerprintHex) {
+        yield* logNote(describeObservation(context.projectId, device, provenance));
+      }
+    } else if (known.revokedAtMs !== null) {
+      // Only re-approval clears the revocation mark, and a
+      // registered key cannot recreate a request (DK K10-5), so it
+      // does not say "approve it again" (a procedure the user cannot
+      // follow). If the device is needed on other projects, use a
+      // new key
       yield* logNote(
-        `device ${toMark.join(", ")} is revoked on project ${displayText(context.projectId)}; marked as revoked in this machine's records (it will not be added to other projects from here)`,
+        `device ${device.keyFingerprintHex} was revoked from this machine's records but is active on project ${displayText(context.projectId)} (${describeAdder(provenance)}). It is not re-added to other projects from here (a revoked record is never cleared by syncing). If it should not be active, revoke it with \`maruhi device revoke ${device.keyFingerprintHex}\`; if that machine should be on more projects, revoke it, then ${reAddDeviceRoute("that machine")}`,
       );
     }
-  });
-}
+  }
+  // (b): write this chain's revocations into the record (among
+  // the revoked FPs not the current device, those whose record is
+  // active)
+  const revokedHere = revokedFingerprintsOf(context.verified, session.userId);
+  const toMark = records
+    .filter(
+      (record) =>
+        record.revokedAtMs === null &&
+        revokedHere.has(record.keyFingerprintHex) &&
+        !self.devices.has(record.keyFingerprintHex),
+    )
+    .map((record) => record.keyFingerprintHex);
+  if (toMark.length > 0) {
+    yield* store
+      .markRevoked(session.origin, session.userId, toMark, yield* Clock.currentTimeMillis)
+      .pipe(Effect.catch((error) => noteWriteFailure(error)));
+    yield* logNote(
+      `device ${toMark.join(", ")} is revoked on project ${displayText(context.projectId)}; marked as revoked in this machine's records (it will not be added to other projects from here)`,
+    );
+  }
+});
 
 function describeAdder(provenance: {
   readonly addedByFingerprintHex: string | null;

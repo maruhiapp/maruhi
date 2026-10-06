@@ -55,118 +55,116 @@ type PushAttempt =
  * is "an ordinary push signed by the performer as writer" and carries no
  * dedicated wire or authorization).
  */
-export function pushReencrypted(input: {
+export const pushReencrypted = Effect.fn("env-rotate-push.pushReencrypted")(function* (input: {
   readonly context: ReencryptContext;
   readonly view: VerifiedProject;
   readonly target: ReencryptTarget;
-}): Effect.Effect<PushAttempt, CliError> {
-  return Effect.gen(function* () {
-    const { environmentId, epoch, dek, writerUserId, signingKey, floor, client } = input.context;
-    const latest = input.target.value;
-    const version = latest.version + 1;
-    // The prev is the **self-computed** hash of the verified latest value
-    // (never chain-sign onto the server-claimed hash — avoiding the
-    // evidence-chain contamination of §12-5)
-    const signed = yield* encryptAndSignPayload({
-      verified: input.view,
-      environmentId: environmentId,
-      variableId: latest.variableId,
-      epoch: epoch,
-      version,
-      prevValueSigHashHex: latest.signedBytesHashHex,
-      dek: dek,
-      value: input.target.plaintext,
-      writerUserId: writerUserId,
-      signingKey: signingKey,
-    });
-    const outcome = yield* client.variables
-      .push({
-        params: {
-          projectId: input.view.projectId,
-          environmentId: environmentId,
-          variableId: latest.variableId,
-        },
-        // sameValueAs = the value-lineage declaration (AUTH_SPEC §12-5 —
-        // SHOULD): this push is a new-epoch re-encryption of the latest
-        // version's plaintext, so it inherits that value's origin and never
-        // counts as clearing the needs-rotation flag (an upstream
-        // credential update — AUDIT_SPEC §4.1-5)
-        payload: { value: signed.payload, sameValueAs: latest.version },
-      })
-      .pipe(
-        Effect.map(() => ({ kind: "pushed" }) as const),
-        Effect.catchTags(
-          {
-            // There is a concurrent push's winner. Never decide on the
-            // 409's claimed value — the caller re-fetches and re-verifies
-            // the reality (whether the winner is already at the current
-            // epoch)
-            VersionConflict: (error) =>
-              Effect.succeed({
-                kind: "conflict",
-                currentVersion: error.currentVersion,
-              } satisfies PushAttempt),
-            // A concurrent deletion. A deletion is a tombstone + the
-            // deletion of all versions (§12-5), so there is no current
-            // value to re-encrypt — aligned with the rescan side's
-            // handling of the same race (warn and drop from the targets);
-            // the remaining variables' processing is not stopped
-            VariableNotFound: () => Effect.succeed({ kind: "deleted" } satisfies PushAttempt),
-            // Never make the claim the source of truth: the chain re-verification happens in the rescan
-            EpochConflict: () => Effect.succeed({ kind: "epoch-stale" } satisfies PushAttempt),
-          },
-          (error) => Effect.fail(toCliError(error)),
-        ),
-      );
-    if (outcome.kind !== "pushed") {
-      return outcome;
-    }
-    // Promoting my accepted write into the floor (§6.3). Since the meta
-    // did not change, the floor's meta record stays the verified latest.
-    // Rule (c)'s baseline does not move. Never let a floor write failure
-    // turn an "accepted re-encryption" into unfinished: the acceptance
-    // cannot be taken back and this variable already lives at the new
-    // epoch. The lost (SHOULD) detection material is conveyed as a
-    // warning, and the remaining variables' processing is not stopped
-    const floorWarning = yield* floor
-      .commitPush(
-        latest.variableId,
-        {
-          status: "active",
-          version,
-          epoch: epoch,
-          valueSigHashHex: signed.signedBytesHashHex,
-          metaVersion: latest.metaVersion,
-          metaSigHashHex: latest.metaSignedBytesHashHex,
-        },
-        { seq: input.view.state.headSeq, hashHex: input.view.state.headHashHex },
-      )
-      .pipe(
-        Effect.as(null),
-        Effect.catch((error) =>
-          Effect.succeed(
-            `Re-encryption of variable ${displayText(latest.name)} was accepted, but ${error.message} (some rollback-detection material for this variable is missing)`,
-          ),
-        ),
-      );
-    // My accepted write (assembled from the signed subject itself — not a server echo)
-    const written: VerifiedPulledValue = {
-      ...latest,
-      version,
-      epoch,
-      nonceHex: signed.payload.nonceHex,
-      ciphertextHex: signed.payload.ciphertextHex,
-      prevValueSigHashHex: latest.signedBytesHashHex,
-      signedBytesHashHex: signed.signedBytesHashHex,
-      valueChainHeadSeq: input.view.state.headSeq,
-      valueChainHeadHashHex: input.view.state.headHashHex,
-      valueSignatureHex: signed.payload.signatureHex,
-      writerUserId,
-      writerKeyFingerprintHex: input.context.writerKeyFingerprintHex,
-    };
-    return { kind: "pushed", floorWarning, written };
+}): Effect.fn.Return<PushAttempt, CliError> {
+  const { environmentId, epoch, dek, writerUserId, signingKey, floor, client } = input.context;
+  const latest = input.target.value;
+  const version = latest.version + 1;
+  // The prev is the **self-computed** hash of the verified latest value
+  // (never chain-sign onto the server-claimed hash — avoiding the
+  // evidence-chain contamination of §12-5)
+  const signed = yield* encryptAndSignPayload({
+    verified: input.view,
+    environmentId: environmentId,
+    variableId: latest.variableId,
+    epoch: epoch,
+    version,
+    prevValueSigHashHex: latest.signedBytesHashHex,
+    dek: dek,
+    value: input.target.plaintext,
+    writerUserId: writerUserId,
+    signingKey: signingKey,
   });
-}
+  const outcome = yield* client.variables
+    .push({
+      params: {
+        projectId: input.view.projectId,
+        environmentId: environmentId,
+        variableId: latest.variableId,
+      },
+      // sameValueAs = the value-lineage declaration (AUTH_SPEC §12-5 —
+      // SHOULD): this push is a new-epoch re-encryption of the latest
+      // version's plaintext, so it inherits that value's origin and never
+      // counts as clearing the needs-rotation flag (an upstream
+      // credential update — AUDIT_SPEC §4.1-5)
+      payload: { value: signed.payload, sameValueAs: latest.version },
+    })
+    .pipe(
+      Effect.map(() => ({ kind: "pushed" }) as const),
+      Effect.catchTags(
+        {
+          // There is a concurrent push's winner. Never decide on the
+          // 409's claimed value — the caller re-fetches and re-verifies
+          // the reality (whether the winner is already at the current
+          // epoch)
+          VersionConflict: (error) =>
+            Effect.succeed({
+              kind: "conflict",
+              currentVersion: error.currentVersion,
+            } satisfies PushAttempt),
+          // A concurrent deletion. A deletion is a tombstone + the
+          // deletion of all versions (§12-5), so there is no current
+          // value to re-encrypt — aligned with the rescan side's
+          // handling of the same race (warn and drop from the targets);
+          // the remaining variables' processing is not stopped
+          VariableNotFound: () => Effect.succeed({ kind: "deleted" } satisfies PushAttempt),
+          // Never make the claim the source of truth: the chain re-verification happens in the rescan
+          EpochConflict: () => Effect.succeed({ kind: "epoch-stale" } satisfies PushAttempt),
+        },
+        (error) => Effect.fail(toCliError(error)),
+      ),
+    );
+  if (outcome.kind !== "pushed") {
+    return outcome;
+  }
+  // Promoting my accepted write into the floor (§6.3). Since the meta
+  // did not change, the floor's meta record stays the verified latest.
+  // Rule (c)'s baseline does not move. Never let a floor write failure
+  // turn an "accepted re-encryption" into unfinished: the acceptance
+  // cannot be taken back and this variable already lives at the new
+  // epoch. The lost (SHOULD) detection material is conveyed as a
+  // warning, and the remaining variables' processing is not stopped
+  const floorWarning = yield* floor
+    .commitPush(
+      latest.variableId,
+      {
+        status: "active",
+        version,
+        epoch: epoch,
+        valueSigHashHex: signed.signedBytesHashHex,
+        metaVersion: latest.metaVersion,
+        metaSigHashHex: latest.metaSignedBytesHashHex,
+      },
+      { seq: input.view.state.headSeq, hashHex: input.view.state.headHashHex },
+    )
+    .pipe(
+      Effect.as(null),
+      Effect.catch((error) =>
+        Effect.succeed(
+          `Re-encryption of variable ${displayText(latest.name)} was accepted, but ${error.message} (some rollback-detection material for this variable is missing)`,
+        ),
+      ),
+    );
+  // My accepted write (assembled from the signed subject itself — not a server echo)
+  const written: VerifiedPulledValue = {
+    ...latest,
+    version,
+    epoch,
+    nonceHex: signed.payload.nonceHex,
+    ciphertextHex: signed.payload.ciphertextHex,
+    prevValueSigHashHex: latest.signedBytesHashHex,
+    signedBytesHashHex: signed.signedBytesHashHex,
+    valueChainHeadSeq: input.view.state.headSeq,
+    valueChainHeadHashHex: input.view.state.headHashHex,
+    valueSignatureHex: signed.payload.signatureHex,
+    writerUserId,
+    writerKeyFingerprintHex: input.context.writerKeyFingerprintHex,
+  };
+  return { kind: "pushed", floorWarning, written };
+});
 
 /**
  * Matching known values against re-fetched ones. Against the values that
@@ -276,7 +274,7 @@ interface RescanResult {
  *    corruption), and for an adjacent-prev mismatch the floor has no
  *    material at all
  */
-export function rescanEnvironment(input: {
+export const rescanEnvironment = Effect.fn("env-rotate-push.rescanEnvironment")(function* (input: {
   readonly context: ReencryptContext;
   readonly view: VerifiedProject;
   /**
@@ -316,115 +314,113 @@ export function rescanEnvironment(input: {
    * plaintext is built (decryption only right before use).
    */
   readonly decryptRemaining: boolean;
-}): Effect.Effect<RescanResult, CliError> {
-  return Effect.gen(function* () {
-    const { client, environmentId, resync, floor, epoch, deksByEpoch } = input.context;
-    const base = input.forceResync ? yield* resyncExtended(resync, input.view) : input.view;
-    const pulled = yield* pullVerifiedEnvironment({
-      client,
-      verified: base,
-      environmentId,
-      resync,
-      floor,
-    });
-    const view = pulled.verified;
-    // Warnings flow **before any judgment**: even on a pass aborted by a
-    // concurrent rotation, the SHOULD warnings this pull collected must
-    // not be lost (the sink's discipline)
-    for (const warning of pulled.warnings) {
-      input.collectWarning(warning);
-    }
-    const environment = yield* requireChainEnvironment(view, environmentId);
-    if (environment.currentEpoch !== epoch) {
-      return yield* Effect.fail(
-        cliError(
-          `Environment ${environmentId}'s epoch advanced from ${epoch} to ${environment.currentEpoch} during re-encryption (a concurrent rotation by another member)`,
-        ),
-      );
-    }
-    const reconciled = reconcileKnown({
-      known: input.known,
-      unfinishedIds: input.unfinishedIds,
-      latest: pulled.variables,
-      epoch,
-      collectWarning: input.collectWarning,
-    });
-    if (reconciled.evidence !== null) {
-      return {
-        view,
-        stale: [],
-        targets: [],
-        undecryptable: [],
-        alreadyCurrent: 0,
-        evidence: reconciled.evidence,
-      };
-    }
-    // The completion check + the next pass's targets: every active value
-    // below the target epoch (not limited to the conflicts — a variable
-    // created in the window also appears here)
-    const stale = pulled.variables.filter((value) => value.epoch < epoch);
-    if (!input.decryptRemaining) {
-      // No decryption, but "can it be opened" is still judged: the
-      // presence of a wrap addressed to me is known from a Map lookup and
-      // builds no plaintext. Skipping it would disguise as the default
-      // wording (conflict) the cause of a state that only surfaces on the
-      // final pass — "only unopenable values remain"
-      const missing = stale.filter((value) => !deksByEpoch.has(value.epoch)).map(missingWrapReason);
-      // Like the passes that attempt decryption, per-variable warnings
-      // are emitted too (with only the as-cause report, which variables
-      // were stranded is invisible on a pass where a push failure took
-      // priority)
-      for (const reason of missing) {
-        input.collectWarning(undecryptableWarning(reason));
-      }
-      return {
-        view,
-        stale,
-        targets: [],
-        undecryptable: missing,
-        alreadyCurrent: reconciled.alreadyCurrent,
-        evidence: null,
-      };
-    }
-    // A missing wrap addressed to me (benign) never fails the rescan
-    // itself: the completion judgment was made by the pre-decryption
-    // stale, and dropping here would turn **even the pushable share** into
-    // "completion could not be verified". On the other hand, a value that
-    // cannot be opened despite holding the wrap (substitution / view
-    // inconsistency) is treated as **evidence** — it was an
-    // immediate-abort condition on the first pull, so it must not be
-    // downgraded to "a re-run-fixable partial completion" just because it
-    // surfaced mid-pass
-    const attempted = yield* asOutcome(
-      decryptTargets({
-        verified: view,
-        environmentId,
-        values: stale,
-        deksByEpoch,
-        chainEpoch: environment.currentEpoch,
-      }),
+}): Effect.fn.Return<RescanResult, CliError> {
+  const { client, environmentId, resync, floor, epoch, deksByEpoch } = input.context;
+  const base = input.forceResync ? yield* resyncExtended(resync, input.view) : input.view;
+  const pulled = yield* pullVerifiedEnvironment({
+    client,
+    verified: base,
+    environmentId,
+    resync,
+    floor,
+  });
+  const view = pulled.verified;
+  // Warnings flow **before any judgment**: even on a pass aborted by a
+  // concurrent rotation, the SHOULD warnings this pull collected must
+  // not be lost (the sink's discipline)
+  for (const warning of pulled.warnings) {
+    input.collectWarning(warning);
+  }
+  const environment = yield* requireChainEnvironment(view, environmentId);
+  if (environment.currentEpoch !== epoch) {
+    return yield* Effect.fail(
+      cliError(
+        `Environment ${environmentId}'s epoch advanced from ${epoch} to ${environment.currentEpoch} during re-encryption (a concurrent rotation by another member)`,
+      ),
     );
-    if (attempted.kind === "failed") {
-      return {
-        view,
-        stale,
-        targets: [],
-        undecryptable: [],
-        alreadyCurrent: 0,
-        evidence: attempted.error.message,
-      };
-    }
-    const decrypted = attempted.value;
-    for (const reason of decrypted.undecryptable) {
+  }
+  const reconciled = reconcileKnown({
+    known: input.known,
+    unfinishedIds: input.unfinishedIds,
+    latest: pulled.variables,
+    epoch,
+    collectWarning: input.collectWarning,
+  });
+  if (reconciled.evidence !== null) {
+    return {
+      view,
+      stale: [],
+      targets: [],
+      undecryptable: [],
+      alreadyCurrent: 0,
+      evidence: reconciled.evidence,
+    };
+  }
+  // The completion check + the next pass's targets: every active value
+  // below the target epoch (not limited to the conflicts — a variable
+  // created in the window also appears here)
+  const stale = pulled.variables.filter((value) => value.epoch < epoch);
+  if (!input.decryptRemaining) {
+    // No decryption, but "can it be opened" is still judged: the
+    // presence of a wrap addressed to me is known from a Map lookup and
+    // builds no plaintext. Skipping it would disguise as the default
+    // wording (conflict) the cause of a state that only surfaces on the
+    // final pass — "only unopenable values remain"
+    const missing = stale.filter((value) => !deksByEpoch.has(value.epoch)).map(missingWrapReason);
+    // Like the passes that attempt decryption, per-variable warnings
+    // are emitted too (with only the as-cause report, which variables
+    // were stranded is invisible on a pass where a push failure took
+    // priority)
+    for (const reason of missing) {
       input.collectWarning(undecryptableWarning(reason));
     }
     return {
       view,
       stale,
-      targets: decrypted.targets,
-      undecryptable: decrypted.undecryptable,
+      targets: [],
+      undecryptable: missing,
       alreadyCurrent: reconciled.alreadyCurrent,
       evidence: null,
     };
-  });
-}
+  }
+  // A missing wrap addressed to me (benign) never fails the rescan
+  // itself: the completion judgment was made by the pre-decryption
+  // stale, and dropping here would turn **even the pushable share** into
+  // "completion could not be verified". On the other hand, a value that
+  // cannot be opened despite holding the wrap (substitution / view
+  // inconsistency) is treated as **evidence** — it was an
+  // immediate-abort condition on the first pull, so it must not be
+  // downgraded to "a re-run-fixable partial completion" just because it
+  // surfaced mid-pass
+  const attempted = yield* asOutcome(
+    decryptTargets({
+      verified: view,
+      environmentId,
+      values: stale,
+      deksByEpoch,
+      chainEpoch: environment.currentEpoch,
+    }),
+  );
+  if (attempted.kind === "failed") {
+    return {
+      view,
+      stale,
+      targets: [],
+      undecryptable: [],
+      alreadyCurrent: 0,
+      evidence: attempted.error.message,
+    };
+  }
+  const decrypted = attempted.value;
+  for (const reason of decrypted.undecryptable) {
+    input.collectWarning(undecryptableWarning(reason));
+  }
+  return {
+    view,
+    stale,
+    targets: decrypted.targets,
+    undecryptable: decrypted.undecryptable,
+    alreadyCurrent: reconciled.alreadyCurrent,
+    evidence: null,
+  };
+});
