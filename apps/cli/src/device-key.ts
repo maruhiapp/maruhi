@@ -121,20 +121,16 @@ function historicalFingerprintOf(
  * sig public key is the keypair's public key), so chain-signing paths need no
  * extra fingerprint parameter.
  */
-export function ownDeviceBySigningKey(
+export const ownDeviceBySigningKey = Effect.fn("device-key.ownDeviceBySigningKey")(function* (
   verified: VerifiedProject,
   member: ChainMember,
   signingKeyPair: SigningKeyPair,
-): Effect.Effect<ChainDevice, CliError> {
-  return Effect.gen(function* () {
-    const sigPub = yield* cryptoPromise("exportSigningPublicKey", () =>
-      exportSigningPublicKey(signingKeyPair.publicKey),
-    ).pipe(
-      Effect.mapError(() => cliError("Failed to export the signing public key (crypto error)")),
-    );
-    return yield* ownDeviceOrFail(verified, member, { sigPubHex: encodeHex(sigPub) });
-  });
-}
+): Effect.fn.Return<ChainDevice, CliError> {
+  const sigPub = yield* cryptoPromise("exportSigningPublicKey", () =>
+    exportSigningPublicKey(signingKeyPair.publicKey),
+  ).pipe(Effect.mapError(() => cliError("Failed to export the signing public key (crypto error)")));
+  return yield* ownDeviceOrFail(verified, member, { sigPubHex: encodeHex(sigPub) });
+});
 
 /** Whether one of the member's current device keys is exactly (enc, sig). */
 export function memberHasKeys(member: ChainMember, encPubHex: string, sigPubHex: string): boolean {

@@ -77,7 +77,7 @@ import { logNote } from "./notice.ts";
 import { pullVerifiedEnvironmentMetadata } from "./values.ts";
 
 /** One environment under comparison. The floor is used for §6.3's meta-level checks (not committed). */
-export interface DiffTarget {
+interface DiffTarget {
   readonly environmentId: EnvironmentId;
   readonly floor: FloorHandle;
 }
@@ -87,10 +87,10 @@ export interface DiffTarget {
  * statement's schema field — server declarations are not used, §14.2-8).
  * `none` = no schema field (layout v1).
  */
-export type RequiredContract = "required" | "optional" | "none";
+type RequiredContract = "required" | "optional" | "none";
 
 /** One variable present on only one side (name, state, required — description is not carried, §2). */
-export interface DiffSideEntry {
+interface DiffSideEntry {
   readonly name: string;
   /** true = declared (no value). */
   readonly declared: boolean;
@@ -98,14 +98,14 @@ export interface DiffSideEntry {
 }
 
 /** Among the names present on both sides, those whose declared contract (required / state) disagrees. */
-export interface ContractMismatch {
+interface ContractMismatch {
   readonly name: string;
   readonly first: { readonly declared: boolean; readonly required: RequiredContract };
   readonly second: { readonly declared: boolean; readonly required: RequiredContract };
 }
 
 /** The result of the variable-name set comparison (name-sorted differences and counts). */
-export interface EnvironmentDiff {
+interface EnvironmentDiff {
   readonly firstEnvironmentId: EnvironmentId;
   readonly secondEnvironmentId: EnvironmentId;
   /** Variables only in the first (name-sorted). */
@@ -201,7 +201,7 @@ export function reportEnvironmentWarnings(
  * (§6.3-2b), and reusing the original view would compare the two
  * environments as verified against **separate histories**.
  */
-export function envDiffOp(input: {
+export const envDiffOp = Effect.fn("env-diff.envDiffOp")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   /** The bounded resync on a future head (each pull uses it once). */
@@ -215,63 +215,58 @@ export function envDiffOp(input: {
    * write the same head inside each response's accept).
    */
   readonly commitHead: (verified: VerifiedProject) => Effect.Effect<void, CliError, CliServices>;
-}): Effect.Effect<EnvironmentDiff, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const first = yield* pullVerifiedEnvironmentMetadata({
-      client: input.client,
-      verified: input.verified,
-      environmentId: input.first.environmentId,
-      resync: input.resync,
-      floor: input.first.floor,
-    });
-    // Warnings then head recording, in that order (neither depends on the second pull's success)
-    yield* reportEnvironmentWarnings(input.first.environmentId, first.warnings);
-    yield* input.commitHead(first.verified);
-    const second = yield* pullVerifiedEnvironmentMetadata({
-      client: input.client,
-      // Carries over the view the first's verification used (it may have advanced)
-      verified: first.verified,
-      environmentId: input.second.environmentId,
-      resync: input.resync,
-      floor: input.second.floor,
-    });
-    yield* reportEnvironmentWarnings(input.second.environmentId, second.warnings);
-    yield* input.commitHead(second.verified);
-    const firstByName = statementsByName(first.variables);
-    const secondByName = statementsByName(second.variables);
-    const contractMismatches: ContractMismatch[] = [];
-    for (const [name, firstStatement] of firstByName) {
-      const secondStatement = secondByName.get(name);
-      if (secondStatement === undefined) {
-        continue;
-      }
-      const firstSide = sideEntryOf(firstStatement);
-      const secondSide = sideEntryOf(secondStatement);
-      if (
-        firstSide.declared !== secondSide.declared ||
-        firstSide.required !== secondSide.required
-      ) {
-        contractMismatches.push({
-          name,
-          first: { declared: firstSide.declared, required: firstSide.required },
-          second: { declared: secondSide.declared, required: secondSide.required },
-        });
-      }
-    }
-    return {
-      firstEnvironmentId: input.first.environmentId,
-      secondEnvironmentId: input.second.environmentId,
-      onlyInFirst: sortedByName(
-        [...firstByName.values()].filter((v) => !secondByName.has(v.name)).map(sideEntryOf),
-      ),
-      onlyInSecond: sortedByName(
-        [...secondByName.values()].filter((v) => !firstByName.has(v.name)).map(sideEntryOf),
-      ),
-      contractMismatches: sortedByName(contractMismatches),
-      shared: [...firstByName.keys()].filter((name) => secondByName.has(name)).length,
-    };
+}): Effect.fn.Return<EnvironmentDiff, CliError, CliServices> {
+  const first = yield* pullVerifiedEnvironmentMetadata({
+    client: input.client,
+    verified: input.verified,
+    environmentId: input.first.environmentId,
+    resync: input.resync,
+    floor: input.first.floor,
   });
-}
+  // Warnings then head recording, in that order (neither depends on the second pull's success)
+  yield* reportEnvironmentWarnings(input.first.environmentId, first.warnings);
+  yield* input.commitHead(first.verified);
+  const second = yield* pullVerifiedEnvironmentMetadata({
+    client: input.client,
+    // Carries over the view the first's verification used (it may have advanced)
+    verified: first.verified,
+    environmentId: input.second.environmentId,
+    resync: input.resync,
+    floor: input.second.floor,
+  });
+  yield* reportEnvironmentWarnings(input.second.environmentId, second.warnings);
+  yield* input.commitHead(second.verified);
+  const firstByName = statementsByName(first.variables);
+  const secondByName = statementsByName(second.variables);
+  const contractMismatches: ContractMismatch[] = [];
+  for (const [name, firstStatement] of firstByName) {
+    const secondStatement = secondByName.get(name);
+    if (secondStatement === undefined) {
+      continue;
+    }
+    const firstSide = sideEntryOf(firstStatement);
+    const secondSide = sideEntryOf(secondStatement);
+    if (firstSide.declared !== secondSide.declared || firstSide.required !== secondSide.required) {
+      contractMismatches.push({
+        name,
+        first: { declared: firstSide.declared, required: firstSide.required },
+        second: { declared: secondSide.declared, required: secondSide.required },
+      });
+    }
+  }
+  return {
+    firstEnvironmentId: input.first.environmentId,
+    secondEnvironmentId: input.second.environmentId,
+    onlyInFirst: sortedByName(
+      [...firstByName.values()].filter((v) => !secondByName.has(v.name)).map(sideEntryOf),
+    ),
+    onlyInSecond: sortedByName(
+      [...secondByName.values()].filter((v) => !firstByName.has(v.name)).map(sideEntryOf),
+    ),
+    contractMismatches: sortedByName(contractMismatches),
+    shared: [...firstByName.keys()].filter((name) => secondByName.has(name)).length,
+  };
+});
 
 /**
  * The display annotation for a variable present on only one side (the
@@ -310,53 +305,53 @@ function contractText(side: ContractMismatch["first"]): string {
  * formatPulledLine), and since `EnvironmentId` is not branded, the type
  * cannot guarantee the environment ID is verified either.
  */
-export function reportEnvironmentDiff(diff: EnvironmentDiff): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const first = displayText(diff.firstEnvironmentId);
-    const second = displayText(diff.secondEnvironmentId);
-    yield* io.log(
-      `Synced and verified: environment ${first} = ${countNoun(diff.onlyInFirst.length + diff.shared, "variable")} / environment ${second} = ${countNoun(diff.onlyInSecond.length + diff.shared, "variable")}`,
-    );
-    const sides = [
-      { environmentId: first, entries: diff.onlyInFirst },
-      { environmentId: second, entries: diff.onlyInSecond },
-    ];
-    for (const side of sides) {
-      // The count is printed even at 0 names (the output's shape does not vary between runs)
-      yield* io.log(`Variables only in environment ${side.environmentId}: ${side.entries.length}`);
-      for (const entry of side.entries) {
-        yield* io.log(sideEntryLine(entry));
-      }
+export const reportEnvironmentDiff = Effect.fn("env-diff.reportEnvironmentDiff")(function* (
+  diff: EnvironmentDiff,
+): Effect.fn.Return<void, CliError, CliIo> {
+  const io = yield* CliIo;
+  const first = displayText(diff.firstEnvironmentId);
+  const second = displayText(diff.secondEnvironmentId);
+  yield* io.log(
+    `Synced and verified: environment ${first} = ${countNoun(diff.onlyInFirst.length + diff.shared, "variable")} / environment ${second} = ${countNoun(diff.onlyInSecond.length + diff.shared, "variable")}`,
+  );
+  const sides = [
+    { environmentId: first, entries: diff.onlyInFirst },
+    { environmentId: second, entries: diff.onlyInSecond },
+  ];
+  for (const side of sides) {
+    // The count is printed even at 0 names (the output's shape does not vary between runs)
+    yield* io.log(`Variables only in environment ${side.environmentId}: ${side.entries.length}`);
+    for (const entry of side.entries) {
+      yield* io.log(sideEntryLine(entry));
     }
-    // The required axis (§1-5): even for names present on both, a
-    // disagreeing declared contract (required / set / declared) is shown.
-    // The count line is printed even at 0 (same "the output's shape does
-    // not vary between runs" discipline as above)
+  }
+  // The required axis (§1-5): even for names present on both, a
+  // disagreeing declared contract (required / set / declared) is shown.
+  // The count line is printed even at 0 (same "the output's shape does
+  // not vary between runs" discipline as above)
+  yield* io.log(
+    `Variables in both with a differing schema contract: ${diff.contractMismatches.length}`,
+  );
+  for (const mismatch of diff.contractMismatches) {
     yield* io.log(
-      `Variables in both with a differing schema contract: ${diff.contractMismatches.length}`,
+      `  ${displayText(mismatch.name)} — ${first}: ${contractText(mismatch.first)} / ${second}: ${contractText(mismatch.second)}`,
     );
-    for (const mismatch of diff.contractMismatches) {
-      yield* io.log(
-        `  ${displayText(mismatch.name)} — ${first}: ${contractText(mismatch.first)} / ${second}: ${contractText(mismatch.second)}`,
-      );
-    }
-    yield* io.log(
-      `Variables in both: ${diff.shared} (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)`,
-    );
-    // The specimen-skew caveat is **always** printed (stderr — it is
-    // advice, not the command's output, so it is not mixed into the
-    // stdout diff listing). Going silent at zero differences would hide
-    // **skew's most dangerous direction**: if a variable is deleted from
-    // one side after the first is read, it is reported as present on both
-    // and ends at zero differences = a real difference reads as "in
-    // sync". Only the advice follows the conclusion
-    const advice =
-      diff.onlyInFirst.length + diff.onlyInSecond.length > 0
-        ? "For differences you cannot explain, run this again to confirm before filling them in with a push (a push is an irreversible chain append and may overwrite a newer value with an older one)"
-        : "Before treating zero differences as proof the environments are in sync, run this again to confirm";
-    yield* logNote(
-      `the two environments are read sequentially, not atomically (there is no API that reads two environments at once). If another member pushes or deletes during the run, differences may appear that do not exist, and real differences may not appear — ${advice}`,
-    );
-  });
-}
+  }
+  yield* io.log(
+    `Variables in both: ${diff.shared} (names match, nothing more — values were neither fetched nor decrypted, so whether the values match was not compared)`,
+  );
+  // The specimen-skew caveat is **always** printed (stderr — it is
+  // advice, not the command's output, so it is not mixed into the
+  // stdout diff listing). Going silent at zero differences would hide
+  // **skew's most dangerous direction**: if a variable is deleted from
+  // one side after the first is read, it is reported as present on both
+  // and ends at zero differences = a real difference reads as "in
+  // sync". Only the advice follows the conclusion
+  const advice =
+    diff.onlyInFirst.length + diff.onlyInSecond.length > 0
+      ? "For differences you cannot explain, run this again to confirm before filling them in with a push (a push is an irreversible chain append and may overwrite a newer value with an older one)"
+      : "Before treating zero differences as proof the environments are in sync, run this again to confirm";
+  yield* logNote(
+    `the two environments are read sequentially, not atomically (there is no API that reads two environments at once). If another member pushes or deletes during the run, differences may appear that do not exist, and real differences may not appear — ${advice}`,
+  );
+});

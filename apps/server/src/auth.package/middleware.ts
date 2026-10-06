@@ -50,27 +50,25 @@ export function parseBearerToken(authorization: string): string | null {
  * session" must not happen). The session cookie is resolved only when no
  * Authorization is present.
  */
-function resolvePrincipal(
+const resolvePrincipal = Effect.fn("middleware.resolvePrincipal")(function* (
   request: HttpServerRequest.HttpServerRequest,
-): Effect.Effect<Principal, never, SessionService | TokenService> {
-  return Effect.gen(function* () {
-    const authorization = request.headers["authorization"];
-    if (authorization !== undefined) {
-      const rawToken = parseBearerToken(authorization);
-      if (rawToken === null) {
-        return anonymousPrincipal;
-      }
-      const tokens = yield* TokenService;
-      return yield* tokens.resolveApiToken(rawToken);
+): Effect.fn.Return<Principal, never, SessionService | TokenService> {
+  const authorization = request.headers["authorization"];
+  if (authorization !== undefined) {
+    const rawToken = parseBearerToken(authorization);
+    if (rawToken === null) {
+      return anonymousPrincipal;
     }
-    const rawSession = request.cookies[SESSION_COOKIE];
-    if (rawSession !== undefined) {
-      const sessions = yield* SessionService;
-      return yield* sessions.resolveSession(rawSession);
-    }
-    return anonymousPrincipal;
-  });
-}
+    const tokens = yield* TokenService;
+    return yield* tokens.resolveApiToken(rawToken);
+  }
+  const rawSession = request.cookies[SESSION_COOKIE];
+  if (rawSession !== undefined) {
+    const sessions = yield* SessionService;
+    return yield* sessions.resolveSession(rawSession);
+  }
+  return anonymousPrincipal;
+});
 
 function csrfViolated(request: HttpServerRequest.HttpServerRequest, principal: Principal): boolean {
   return (
@@ -134,32 +132,31 @@ export const authMiddlewareImpl: HttpApiMiddleware.HttpApiMiddleware<
   RequestAuth,
   readonly [typeof UnauthorizedError, typeof ForbiddenError],
   SessionService | TokenService
-> = (httpEffect, options) =>
-  Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const principal = yield* resolvePrincipal(request);
-    if (principal.kind === "anonymous") {
-      return yield* Effect.fail(new UnauthorizedError());
-    }
-    // Session capability restriction (AUTH_SPEC §5 — outside the allow
-    // enumeration is fail-closed 403). The decision material is only
-    // (principal kind, group/endpoint identifier): a uniform response that
-    // never consults project existence or state — consistent with §11-2's
-    // existence hiding (same argument as §12-3's authorization-first
-    // exception). Placed before the CSRF check so that the denial reason
-    // for a disallowed endpoint does not vary with the presence of a header
-    // the attacker can attach themselves
-    if (
-      principal.kind === "session" &&
-      !isSessionAllowedEndpoint(options.group.identifier, options.endpoint.identifier)
-    ) {
-      return yield* Effect.fail(new ForbiddenError({ reason: "session-not-allowed" }));
-    }
-    if (csrfViolated(request, principal)) {
-      return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
-    }
-    const response = yield* Effect.provideService(httpEffect, RequestAuth, {
-      principal: Effect.succeed(principal),
-    });
-    return yield* refreshSessionCookie(response, principal, request.cookies[SESSION_COOKIE]);
+> = Effect.fn("middleware.authMiddlewareImpl")(function* (httpEffect, options) {
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const principal = yield* resolvePrincipal(request);
+  if (principal.kind === "anonymous") {
+    return yield* Effect.fail(new UnauthorizedError());
+  }
+  // Session capability restriction (AUTH_SPEC §5 — outside the allow
+  // enumeration is fail-closed 403). The decision material is only
+  // (principal kind, group/endpoint identifier): a uniform response that
+  // never consults project existence or state — consistent with §11-2's
+  // existence hiding (same argument as §12-3's authorization-first
+  // exception). Placed before the CSRF check so that the denial reason
+  // for a disallowed endpoint does not vary with the presence of a header
+  // the attacker can attach themselves
+  if (
+    principal.kind === "session" &&
+    !isSessionAllowedEndpoint(options.group.identifier, options.endpoint.identifier)
+  ) {
+    return yield* Effect.fail(new ForbiddenError({ reason: "session-not-allowed" }));
+  }
+  if (csrfViolated(request, principal)) {
+    return yield* Effect.fail(new ForbiddenError({ reason: "csrf-header-required" }));
+  }
+  const response = yield* Effect.provideService(httpEffect, RequestAuth, {
+    principal: Effect.succeed(principal),
   });
+  return yield* refreshSessionCookie(response, principal, request.cookies[SESSION_COOKIE]);
+});

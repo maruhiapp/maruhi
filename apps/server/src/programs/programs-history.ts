@@ -73,13 +73,8 @@ function sameValueAsOf(payload: Readonly<Record<string, unknown>> | null): numbe
   return typeof value === "number" && Number.isInteger(value) && value >= 1 ? value : undefined;
 }
 
-export const variableHistoryProgram = (
-  actor: DataActor,
-  environmentId: string,
-  variableId: string,
-  cache: StateCache,
-) =>
-  Effect.gen(function* () {
+export const variableHistoryProgram = Effect.fn("programs-history.variableHistoryProgram")(
+  function* (actor: DataActor, environmentId: string, variableId: string, cache: StateCache) {
     yield* requireMemberState(actor.userId, "reader", cache);
     yield* requireActiveEnvironment(environmentId);
     yield* requireActiveVariable(environmentId, variableId);
@@ -111,55 +106,57 @@ export const variableHistoryProgram = (
         };
       }),
     } satisfies VariableVersionHistoryValue;
-  });
+  },
+);
 
-export const variableVersionValuesProgram = (
+export const variableVersionValuesProgram = Effect.fn(
+  "programs-history.variableVersionValuesProgram",
+)(function* (
   actor: DataActor,
   environmentId: string,
   variableId: string,
   fromVersion: number,
   cache: StateCache,
-) =>
-  Effect.gen(function* () {
-    yield* requireEnvironmentAccess(actor.userId, "reader", environmentId, cache);
-    yield* requireActiveEnvironment(environmentId);
-    const variable = yield* requireActiveVariable(environmentId, variableId);
-    // The query Schema already refuses fromVersion < 1 (400). A declared
-    // variable has no version (latestVersion 0), so every fromVersion is
-    // past the latest
-    if (fromVersion < 1 || fromVersion > variable.latestVersion) {
-      return yield* rejectData({ kind: "payload-mismatch", field: "fromVersion" });
-    }
-    // Same observation as the with-values pull (§12-8 — a read that writes
-    // var.read rows)
-    yield* observeStorageLevel;
-    const store = yield* DataStore;
-    const values = withinByteBudget(
-      yield* store.versionRange(environmentId, variableId, fromVersion, MAX_VERSION_VALUES_PAGE),
+) {
+  yield* requireEnvironmentAccess(actor.userId, "reader", environmentId, cache);
+  yield* requireActiveEnvironment(environmentId);
+  const variable = yield* requireActiveVariable(environmentId, variableId);
+  // The query Schema already refuses fromVersion < 1 (400). A declared
+  // variable has no version (latestVersion 0), so every fromVersion is
+  // past the latest
+  if (fromVersion < 1 || fromVersion > variable.latestVersion) {
+    return yield* rejectData({ kind: "payload-mismatch", field: "fromVersion" });
+  }
+  // Same observation as the with-values pull (§12-8 — a read that writes
+  // var.read rows)
+  yield* observeStorageLevel;
+  const store = yield* DataStore;
+  const values = withinByteBudget(
+    yield* store.versionRange(environmentId, variableId, fromVersion, MAX_VERSION_VALUES_PAGE),
+  );
+  // Audit (AUDIT_SPEC §3.3 — the aggregate form): one row per request
+  // enumerating every returned version (each is a distributed ciphertext
+  // the reader can decrypt). The range check above guarantees at least
+  // one row
+  const audit = yield* AuditStore;
+  const now = yield* Clock.currentTimeMillis;
+  yield* Effect.sync(() => {
+    audit.appendSync(
+      dataEvent(actor, now, VAR_READ_EVENT, {
+        environmentId,
+        payload: auditReadPayload(
+          values.map((value) => ({
+            variableId,
+            epoch: value.epoch,
+            version: value.version,
+          })),
+        ),
+      }),
     );
-    // Audit (AUDIT_SPEC §3.3 — the aggregate form): one row per request
-    // enumerating every returned version (each is a distributed ciphertext
-    // the reader can decrypt). The range check above guarantees at least
-    // one row
-    const audit = yield* AuditStore;
-    const now = yield* Clock.currentTimeMillis;
-    yield* Effect.sync(() => {
-      audit.appendSync(
-        dataEvent(actor, now, VAR_READ_EVENT, {
-          environmentId,
-          payload: auditReadPayload(
-            values.map((value) => ({
-              variableId,
-              epoch: value.epoch,
-              version: value.version,
-            })),
-          ),
-        }),
-      );
-    });
-    return {
-      variableId,
-      latestVersion: variable.latestVersion,
-      values,
-    } satisfies VariableVersionValuesValue;
   });
+  return {
+    variableId,
+    latestVersion: variable.latestVersion,
+    values,
+  } satisfies VariableVersionValuesValue;
+});

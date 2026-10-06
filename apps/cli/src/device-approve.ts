@@ -58,64 +58,62 @@ interface ApprovableRequest {
 }
 
 /** Picks the request-list row matching the reference the human carried (the response's FP is not used — recomputed). */
-function matchRequest(
+const matchRequest = Effect.fn("device-approve.matchRequest")(function* (
   client: MaruhiClient,
   ref: ApproveRef,
-): Effect.Effect<ApprovableRequest, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const { requests } = yield* client.devices.requestList({}).pipe(Effect.mapError(toCliError));
-    const matches: ApprovableRequest[] = [];
-    for (const row of requests) {
-      const fingerprintHex = yield* recomputeFingerprint(row.encPubHex, row.sigPubHex);
-      if (fingerprintHex === null) {
-        continue;
-      }
-      if (fingerprintHex !== row.keyFingerprintHex) {
-        yield* logWarning(
-          `a device-add request claims fingerprint ${row.keyFingerprintHex} but its public keys compute to ${fingerprintHex} — ignored (the server's row does not match its own keys)`,
-        );
-        continue;
-      }
-      const hit =
-        ref.kind === "hex"
-          ? fingerprintHex === ref.fingerprintHex
-          : (yield* fingerprintWords(fingerprintHex, "The key fingerprint is malformed")).join(
-              " ",
-            ) === ref.words.join(" ");
-      if (hit) {
-        matches.push({
-          fingerprintHex,
-          encPubHex: row.encPubHex,
-          sigPubHex: row.sigPubHex,
-          label: row.label,
-          expiresAtMs: row.expiresAtMs,
-        });
-      }
+): Effect.fn.Return<ApprovableRequest, CliError, CliIo> {
+  const { requests } = yield* client.devices.requestList({}).pipe(Effect.mapError(toCliError));
+  const matches: ApprovableRequest[] = [];
+  for (const row of requests) {
+    const fingerprintHex = yield* recomputeFingerprint(row.encPubHex, row.sigPubHex);
+    if (fingerprintHex === null) {
+      continue;
     }
-    const match = matches[0];
-    if (match === undefined) {
-      return yield* Effect.fail(
-        cliError(
-          "No pending device-add request matches that fingerprint. Requests expire 15 minutes after `maruhi device add`; re-run it on the new device and compare the fingerprint it prints (full hex or the 12 words) with what you typed",
-        ),
+    if (fingerprintHex !== row.keyFingerprintHex) {
+      yield* logWarning(
+        `a device-add request claims fingerprint ${row.keyFingerprintHex} but its public keys compute to ${fingerprintHex} — ignored (the server's row does not match its own keys)`,
       );
+      continue;
     }
-    if (matches.length > 1) {
-      // Multiple requests for the same key (the server is supposed to
-      // dedupe by FP). Rather than silently picking one and granting chain
-      // authority, stop and show them
-      return yield* Effect.fail(
-        cliError(
-          `${countNoun(matches.length, "pending device-add request")} carry the same key fingerprint ${match.fingerprintHex} (labels: ${matches.map((item) => displayText(item.label)).join(", ")}). The server should hold at most one request per fingerprint, so refusing to pick one. Wait for them to expire (15 minutes), re-run \`maruhi device add\` on the new device and approve the single new request`,
-        ),
-      );
+    const hit =
+      ref.kind === "hex"
+        ? fingerprintHex === ref.fingerprintHex
+        : (yield* fingerprintWords(fingerprintHex, "The key fingerprint is malformed")).join(
+            " ",
+          ) === ref.words.join(" ");
+    if (hit) {
+      matches.push({
+        fingerprintHex,
+        encPubHex: row.encPubHex,
+        sigPubHex: row.sigPubHex,
+        label: row.label,
+        expiresAtMs: row.expiresAtMs,
+      });
     }
-    return match;
-  });
-}
+  }
+  const match = matches[0];
+  if (match === undefined) {
+    return yield* Effect.fail(
+      cliError(
+        "No pending device-add request matches that fingerprint. Requests expire 15 minutes after `maruhi device add`; re-run it on the new device and compare the fingerprint it prints (full hex or the 12 words) with what you typed",
+      ),
+    );
+  }
+  if (matches.length > 1) {
+    // Multiple requests for the same key (the server is supposed to
+    // dedupe by FP). Rather than silently picking one and granting chain
+    // authority, stop and show them
+    return yield* Effect.fail(
+      cliError(
+        `${countNoun(matches.length, "pending device-add request")} carry the same key fingerprint ${match.fingerprintHex} (labels: ${matches.map((item) => displayText(item.label)).join(", ")}). The server should hold at most one request per fingerprint, so refusing to pick one. Wait for them to expire (15 minutes), re-run \`maruhi device add\` on the new device and approve the single new request`,
+      ),
+    );
+  }
+  return match;
+});
 
 /** The approval result on one project. */
-export interface ProjectApproveOutcome {
+interface ProjectApproveOutcome {
   readonly projectId: string;
   readonly state: "registered" | "already" | "skipped" | "failed";
   readonly backfill: DeviceBackfillOutcome | null;
@@ -123,141 +121,136 @@ export interface ProjectApproveOutcome {
 }
 
 /** `maruhi device approve <fp|words> [--cap <role>] [--env …|--all-envs|--no-envs] [--project]`. */
-export function deviceApproveOp(input: {
+export const deviceApproveOp = Effect.fn("device-approve.deviceApproveOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly ref: ApproveRef;
   readonly cap: DeviceCap;
   readonly project: string | undefined;
-}): Effect.Effect<readonly ProjectApproveOutcome[], CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    // The ceremony gate precedes fetching the request list (K4-6 counterexample 3)
-    yield* ensureDeviceApproveAllowed;
-    const request = yield* matchRequest(input.client, input.ref);
-    const masterKeys = yield* loadMasterKeys(input.session);
-    if (request.fingerprintHex === masterKeys.fingerprintHex) {
-      return yield* Effect.fail(
-        cliError("That request carries this machine's own key; approve it from another device"),
-      );
-    }
-    const words = yield* fingerprintWords(
-      request.fingerprintHex,
-      "The key fingerprint is malformed",
+}): Effect.fn.Return<readonly ProjectApproveOutcome[], CliError, CliServices> {
+  const io = yield* CliIo;
+  // The ceremony gate precedes fetching the request list (K4-6 counterexample 3)
+  yield* ensureDeviceApproveAllowed;
+  const request = yield* matchRequest(input.client, input.ref);
+  const masterKeys = yield* loadMasterKeys(input.session);
+  if (request.fingerprintHex === masterKeys.fingerprintHex) {
+    return yield* Effect.fail(
+      cliError("That request carries this machine's own key; approve it from another device"),
     );
-    yield* io.log(
-      `Approving device ${request.fingerprintHex} (label "${displayText(request.label)}", cap ${describeCap(input.cap)})`,
-    );
-    yield* io.log(`fp words: ${formatWordList(words)}`);
-    // The FP-provenance discipline (K7-7 — the same claim as docs
-    // `devices.mdx`): only `ensureKeyMaterialAccess` (a `*` × admin token)
-    // can place a request, so the path of placing a request with a stolen
-    // token and getting a conveyed FP approved is stopped not by the yes
-    // but by "read it from the screen of the machine being added"
-    yield* io.log(
-      "Compare them with the screen of the machine you are adding, never with a fingerprint sent to you: a request can be placed by anyone holding an account-wide admin API token of yours, and approving it adds their key to your projects",
-    );
-    const projectIds = yield* resolveProjectIds(input.client, input.project);
-    // 2-phase (DK K10-4): open every project first to collect the
-    // outcomes and the "caps already registered"; if a cap disagrees, stop
-    // without appending anywhere (judging while appending means noticing
-    // only after this run's cap was added to an unregistered project). The
-    // opened contexts are used in phase 2
-    const plans: ProjectApprovePlan[] = [];
-    for (const projectId of projectIds) {
-      plans.push(
-        yield* planApproveOnProject({
-          session: input.session,
-          projectId,
-          request,
-          cap: input.cap,
-          masterKeys,
-        }),
-      );
-    }
-    yield* refuseCapMismatch({ plans, request, cap: input.cap, project: input.project });
-    const outcomes: ProjectApproveOutcome[] = [];
-    for (const plan of plans) {
-      outcomes.push(
-        plan.kind === "settled"
-          ? plan.outcome
-          : yield* appendOnProject({
-              session: input.session,
-              plan,
-              request,
-              cap: input.cap,
-              masterKeys,
-            }),
-      );
-    }
-    // If it landed on no project (all failed / skipped), the later stages
-    // (record, registry, request cancellation) do not run: recording makes
-    // the first sync repeat the same failure, the registry row sends the
-    // requester a false signal, and cancelling the request erases the
-    // re-run's material (Bugbot's catch)
-    if (!outcomes.some((item) => item.state === "registered" || item.state === "already")) {
-      yield* logWarning(
-        "the device was not registered on any project, so nothing was recorded and the request was left in place. Fix the cause reported above and re-run `maruhi device approve` with the same fingerprint (the request stays valid until it expires)",
-      );
-      return outcomes;
-    }
-    // The local record (approved — writer (2) of K4-3). The approver's device FP is kept as provenance
-    const store = yield* OwnDeviceStore;
-    const entry: OwnDeviceEntry = {
-      keyFingerprintHex: request.fingerprintHex,
-      encPubHex: request.encPubHex,
-      sigPubHex: request.sigPubHex,
-      roleCap: input.cap.roleCap,
-      scope: input.cap.scope,
-      source: "approved",
-      label: request.label,
-      addedByFingerprintHex: masterKeys.fingerprintHex,
-      observedProjectId: null,
-      recordedAtMs: yield* Clock.currentTimeMillis,
-      revokedAtMs: null,
-    };
-    yield* store.record(input.session.origin, input.session.userId, entry);
-    // The registry PUT (the signal — done last). The result is taken as a
-    // value and becomes the cancellation condition (DK K9-1): deleting a
-    // request after failing to send the signal leaves the approver's
-    // re-run unable to find the request, with no way to resend the signal.
-    // The failure kind doesn't matter (K9-2 — only the wording sees the
-    // kind)
-    const listed = yield* Effect.result(
-      input.client.devices.register({
-        params: { fp: request.fingerprintHex },
-        payload: {
-          encPubHex: request.encPubHex,
-          sigPubHex: request.sigPubHex,
-          label: request.label,
-        },
+  }
+  const words = yield* fingerprintWords(request.fingerprintHex, "The key fingerprint is malformed");
+  yield* io.log(
+    `Approving device ${request.fingerprintHex} (label "${displayText(request.label)}", cap ${describeCap(input.cap)})`,
+  );
+  yield* io.log(`fp words: ${formatWordList(words)}`);
+  // The FP-provenance discipline (K7-7 — the same claim as docs
+  // `devices.mdx`): only `ensureKeyMaterialAccess` (a `*` × admin token)
+  // can place a request, so the path of placing a request with a stolen
+  // token and getting a conveyed FP approved is stopped not by the yes
+  // but by "read it from the screen of the machine being added"
+  yield* io.log(
+    "Compare them with the screen of the machine you are adding, never with a fingerprint sent to you: a request can be placed by anyone holding an account-wide admin API token of yours, and approving it adds their key to your projects",
+  );
+  const projectIds = yield* resolveProjectIds(input.client, input.project);
+  // 2-phase (DK K10-4): open every project first to collect the
+  // outcomes and the "caps already registered"; if a cap disagrees, stop
+  // without appending anywhere (judging while appending means noticing
+  // only after this run's cap was added to an unregistered project). The
+  // opened contexts are used in phase 2
+  const plans: ProjectApprovePlan[] = [];
+  for (const projectId of projectIds) {
+    plans.push(
+      yield* planApproveOnProject({
+        session: input.session,
+        projectId,
+        request,
+        cap: input.cap,
+        masterKeys,
       }),
     );
-    if (Result.isFailure(listed)) {
-      // The request is left (until its expiry). A re-run converges via
-      // all-projects already (the previously failed ones retry) → PUT →
-      // cancellation. Past the expiry there is no path that writes the
-      // registry row (K9-3's T3)
-      const retry = `The request is left in place until ${formatUtcMinutes(request.expiresAtMs)}:`;
-      // The re-run uses the same cap (K10-1 — a different cap is refused.
-      // A flagless re-run becomes the default owner / all, so the command
-      // is issued as-is)
-      const rerun = approveCommandOf(request.fingerprintHex, input.cap, input.project);
-      const afterwards =
-        "After that the device stays registered on the chains above but unlisted in your device registry";
-      yield* logNote(
-        listed.failure instanceof DeviceRegistryLimitError
-          ? `the device registry is full (${MAX_DEVICE_REGISTRY_ROWS_PER_USER} rows), so the new device was not listed there and \`maruhi device add\` on it will not see the completion signal. ${retry} remove old rows (\`maruhi device list\`, then \`maruhi device revoke\`) and re-run \`${rerun}\` before then to list it. ${afterwards}`
-          : `could not update the device registry (${toCliError(listed.failure).message}); the device is registered on the chains above regardless, but \`maruhi device add\` on it will not see the completion signal. ${retry} re-run \`${rerun}\` before then to list it. ${afterwards}`,
-      );
-      return outcomes;
-    }
-    yield* input.client.devices
-      .requestCancel({ params: { fp: request.fingerprintHex } })
-      .pipe(Effect.asVoid, Effect.ignore);
+  }
+  yield* refuseCapMismatch({ plans, request, cap: input.cap, project: input.project });
+  const outcomes: ProjectApproveOutcome[] = [];
+  for (const plan of plans) {
+    outcomes.push(
+      plan.kind === "settled"
+        ? plan.outcome
+        : yield* appendOnProject({
+            session: input.session,
+            plan,
+            request,
+            cap: input.cap,
+            masterKeys,
+          }),
+    );
+  }
+  // If it landed on no project (all failed / skipped), the later stages
+  // (record, registry, request cancellation) do not run: recording makes
+  // the first sync repeat the same failure, the registry row sends the
+  // requester a false signal, and cancelling the request erases the
+  // re-run's material (Bugbot's catch)
+  if (!outcomes.some((item) => item.state === "registered" || item.state === "already")) {
+    yield* logWarning(
+      "the device was not registered on any project, so nothing was recorded and the request was left in place. Fix the cause reported above and re-run `maruhi device approve` with the same fingerprint (the request stays valid until it expires)",
+    );
     return outcomes;
-  });
-}
+  }
+  // The local record (approved — writer (2) of K4-3). The approver's device FP is kept as provenance
+  const store = yield* OwnDeviceStore;
+  const entry: OwnDeviceEntry = {
+    keyFingerprintHex: request.fingerprintHex,
+    encPubHex: request.encPubHex,
+    sigPubHex: request.sigPubHex,
+    roleCap: input.cap.roleCap,
+    scope: input.cap.scope,
+    source: "approved",
+    label: request.label,
+    addedByFingerprintHex: masterKeys.fingerprintHex,
+    observedProjectId: null,
+    recordedAtMs: yield* Clock.currentTimeMillis,
+    revokedAtMs: null,
+  };
+  yield* store.record(input.session.origin, input.session.userId, entry);
+  // The registry PUT (the signal — done last). The result is taken as a
+  // value and becomes the cancellation condition (DK K9-1): deleting a
+  // request after failing to send the signal leaves the approver's
+  // re-run unable to find the request, with no way to resend the signal.
+  // The failure kind doesn't matter (K9-2 — only the wording sees the
+  // kind)
+  const listed = yield* Effect.result(
+    input.client.devices.register({
+      params: { fp: request.fingerprintHex },
+      payload: {
+        encPubHex: request.encPubHex,
+        sigPubHex: request.sigPubHex,
+        label: request.label,
+      },
+    }),
+  );
+  if (Result.isFailure(listed)) {
+    // The request is left (until its expiry). A re-run converges via
+    // all-projects already (the previously failed ones retry) → PUT →
+    // cancellation. Past the expiry there is no path that writes the
+    // registry row (K9-3's T3)
+    const retry = `The request is left in place until ${formatUtcMinutes(request.expiresAtMs)}:`;
+    // The re-run uses the same cap (K10-1 — a different cap is refused.
+    // A flagless re-run becomes the default owner / all, so the command
+    // is issued as-is)
+    const rerun = approveCommandOf(request.fingerprintHex, input.cap, input.project);
+    const afterwards =
+      "After that the device stays registered on the chains above but unlisted in your device registry";
+    yield* logNote(
+      listed.failure instanceof DeviceRegistryLimitError
+        ? `the device registry is full (${MAX_DEVICE_REGISTRY_ROWS_PER_USER} rows), so the new device was not listed there and \`maruhi device add\` on it will not see the completion signal. ${retry} remove old rows (\`maruhi device list\`, then \`maruhi device revoke\`) and re-run \`${rerun}\` before then to list it. ${afterwards}`
+        : `could not update the device registry (${toCliError(listed.failure).message}); the device is registered on the chains above regardless, but \`maruhi device add\` on it will not see the completion signal. ${retry} re-run \`${rerun}\` before then to list it. ${afterwards}`,
+    );
+    return outcomes;
+  }
+  yield* input.client.devices
+    .requestCancel({ params: { fp: request.fingerprintHex } })
+    .pipe(Effect.asVoid, Effect.ignore);
+  return outcomes;
+});
 
 /**
  * The phase-1 result (DK K10-4): settled (skipped / already / failed), or
@@ -448,24 +441,22 @@ function appendOnProject(input: {
 }
 
 /** Reporting the approval result (called by commands/device.ts). */
-export function reportApproveOutcomes(
+export const reportApproveOutcomes = Effect.fn("device-approve.reportApproveOutcomes")(function* (
   outcomes: readonly ProjectApproveOutcome[],
-): Effect.Effect<number, never, CliIo> {
-  return Effect.gen(function* () {
-    // It landed nowhere (all skipped / failed — no record or request
-    // cancellation happened). The approval ends as a failure (not 0 even
-    // when everything was only skipped)
-    let exitCode = outcomes.some((item) => item.state === "registered" || item.state === "already")
-      ? 0
-      : 1;
-    for (const item of outcomes) {
-      if ((yield* reportApproveOutcome(item)) !== 0) {
-        exitCode = 1;
-      }
+): Effect.fn.Return<number, never, CliIo> {
+  // It landed nowhere (all skipped / failed — no record or request
+  // cancellation happened). The approval ends as a failure (not 0 even
+  // when everything was only skipped)
+  let exitCode = outcomes.some((item) => item.state === "registered" || item.state === "already")
+    ? 0
+    : 1;
+  for (const item of outcomes) {
+    if ((yield* reportApproveOutcome(item)) !== 0) {
+      exitCode = 1;
     }
-    return exitCode;
-  });
-}
+  }
+  return exitCode;
+});
 
 /** The backfill summary (in parentheses. null = no backfill). */
 export function describeBackfill(backfill: DeviceBackfillOutcome | null): string {
@@ -500,14 +491,14 @@ function reportApproveOutcome(item: ProjectApproveOutcome): Effect.Effect<number
 }
 
 /** The registered(-already) row + a backfill-failure warning (shared by approve and restore — 1 when there is a failure). */
-export function reportRegisteredDevice(input: {
-  readonly label: string;
-  readonly action: string;
-  readonly backfill: DeviceBackfillOutcome | null;
-  /** Guidance for the path that fills the failed environments (DK K11-5 — the wording is built by device-gaps.ts). */
-  readonly rerun: (environmentId: string) => string;
-}): Effect.Effect<number, never, CliIo> {
-  return Effect.gen(function* () {
+export const reportRegisteredDevice = Effect.fn("device-approve.reportRegisteredDevice")(
+  function* (input: {
+    readonly label: string;
+    readonly action: string;
+    readonly backfill: DeviceBackfillOutcome | null;
+    /** Guidance for the path that fills the failed environments (DK K11-5 — the wording is built by device-gaps.ts). */
+    readonly rerun: (environmentId: string) => string;
+  }): Effect.fn.Return<number, never, CliIo> {
     const io = yield* CliIo;
     yield* io.log(`${input.label}: ${input.action}${describeBackfill(input.backfill)}`);
     const failed = input.backfill?.failed ?? [];
@@ -517,5 +508,5 @@ export function reportRegisteredDevice(input: {
       );
     }
     return failed.length > 0 ? 1 : 0;
-  });
-}
+  },
+);

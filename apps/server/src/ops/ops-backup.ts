@@ -34,7 +34,7 @@ import {
 const SWEEP_CURSOR_KEY = "backup_sweep_cursor";
 const SNAPSHOT_KEY_PREFIX = "do";
 
-export interface BackupSweepResult {
+interface BackupSweepResult {
   readonly enabled: boolean;
   readonly visited: number;
   readonly uploaded: number;
@@ -45,7 +45,7 @@ export interface BackupSweepResult {
   readonly truncated: boolean;
 }
 
-export interface BackupSweepOptions {
+interface BackupSweepOptions {
   readonly budgetMs?: number;
   readonly maxProjects?: number;
   readonly maxBytes?: number;
@@ -83,52 +83,48 @@ function toAttempt(outcome: OpsBackupOutcome): OpsBackupAttempt {
 }
 
 /** Evacuation of one project (an RPC failure is recorded as failure — retried next sweep). */
-function backupOne(
+const backupOne = Effect.fn("ops-backup.backupOne")(function* (
   env: Env,
   projectId: string,
   nowMs: number,
   options: BackupSweepOptions,
-): Effect.Effect<OpsBackupAttempt, never, OpsRepo> {
-  return Effect.gen(function* () {
-    const ops = yield* OpsRepo;
-    const record = yield* ops.backupRecord(projectId);
-    const skipIfUnchanged =
-      record !== null &&
-      record.lastSuccessAt !== null &&
-      record.lastAuditSeq !== null &&
-      record.lastChainSeq !== null &&
-      record.lastAttestationMark !== null &&
-      nowMs - record.lastSuccessAt < OPS_BACKUP_REFRESH_MS
-        ? {
-            auditSeq: record.lastAuditSeq,
-            chainSeq: record.lastChainSeq,
-            attestationMark: record.lastAttestationMark,
-          }
-        : null;
-    const stub = projectStub(env, projectId);
-    const outcome = yield* rpcCall<OpsBackupOutcome>(() =>
-      stub.opsBackup({
-        keyPrefix: SNAPSHOT_KEY_PREFIX,
-        nowMs,
-        maxBytes: options.maxBytes ?? OPS_BACKUP_MAX_BYTES,
-        skipIfUnchanged,
-        ...(options.partBytes === undefined ? {} : { partBytes: options.partBytes }),
-      }),
-    ).pipe(
-      Effect.map(toAttempt),
-      Effect.catchTag("RpcCallError", () =>
-        // Static message only (no project ID — the record lives on
-        // the D1 side)
-        Effect.logWarning(
-          "project backup RPC failed; the project is retried on the next sweep",
-        ).pipe(
-          Effect.as<OpsBackupAttempt>({ kind: "failure", code: "rpc-failed", storageLevel: null }),
-        ),
+): Effect.fn.Return<OpsBackupAttempt, never, OpsRepo> {
+  const ops = yield* OpsRepo;
+  const record = yield* ops.backupRecord(projectId);
+  const skipIfUnchanged =
+    record !== null &&
+    record.lastSuccessAt !== null &&
+    record.lastAuditSeq !== null &&
+    record.lastChainSeq !== null &&
+    record.lastAttestationMark !== null &&
+    nowMs - record.lastSuccessAt < OPS_BACKUP_REFRESH_MS
+      ? {
+          auditSeq: record.lastAuditSeq,
+          chainSeq: record.lastChainSeq,
+          attestationMark: record.lastAttestationMark,
+        }
+      : null;
+  const stub = projectStub(env, projectId);
+  const outcome = yield* rpcCall<OpsBackupOutcome>(() =>
+    stub.opsBackup({
+      keyPrefix: SNAPSHOT_KEY_PREFIX,
+      nowMs,
+      maxBytes: options.maxBytes ?? OPS_BACKUP_MAX_BYTES,
+      skipIfUnchanged,
+      ...(options.partBytes === undefined ? {} : { partBytes: options.partBytes }),
+    }),
+  ).pipe(
+    Effect.map(toAttempt),
+    Effect.catchTag("RpcCallError", () =>
+      // Static message only (no project ID — the record lives on
+      // the D1 side)
+      Effect.logWarning("project backup RPC failed; the project is retried on the next sweep").pipe(
+        Effect.as<OpsBackupAttempt>({ kind: "failure", code: "rpc-failed", storageLevel: null }),
       ),
-    );
-    return outcome;
-  });
-}
+    ),
+  );
+  return outcome;
+});
 
 interface MutableSweepResult {
   enabled: boolean;
@@ -154,34 +150,32 @@ function tally(result: MutableSweepResult, attempt: OpsBackupAttempt): void {
 }
 
 /** Visits one page's worth. Return value = the last project visited (mid-page when the budget ran out). */
-function sweepPage(
+const sweepPage = Effect.fn("ops-backup.sweepPage")(function* (
   env: Env,
   page: readonly string[],
   result: MutableSweepResult,
   limits: SweepLimits,
   options: BackupSweepOptions,
-): Effect.Effect<string | null, never, OpsRepo> {
-  return Effect.gen(function* () {
-    const ops = yield* OpsRepo;
-    let last: string | null = null;
-    for (const projectId of page) {
-      if (
-        result.visited >= limits.maxProjects ||
-        (yield* Clock.currentTimeMillis) >= limits.deadline
-      ) {
-        result.truncated = true;
-        return last;
-      }
-      const attemptAt = yield* Clock.currentTimeMillis;
-      const attempt = yield* backupOne(env, projectId, attemptAt, options);
-      const doIdHex = env.PROJECT_CHAIN.idFromName(projectId).toString();
-      yield* ops.recordBackupAttempt(projectId, doIdHex, attempt, attemptAt);
-      tally(result, attempt);
-      last = projectId;
+): Effect.fn.Return<string | null, never, OpsRepo> {
+  const ops = yield* OpsRepo;
+  let last: string | null = null;
+  for (const projectId of page) {
+    if (
+      result.visited >= limits.maxProjects ||
+      (yield* Clock.currentTimeMillis) >= limits.deadline
+    ) {
+      result.truncated = true;
+      return last;
     }
-    return last;
-  });
-}
+    const attemptAt = yield* Clock.currentTimeMillis;
+    const attempt = yield* backupOne(env, projectId, attemptAt, options);
+    const doIdHex = env.PROJECT_CHAIN.idFromName(projectId).toString();
+    yield* ops.recordBackupAttempt(projectId, doIdHex, attempt, attemptAt);
+    tally(result, attempt);
+    last = projectId;
+  }
+  return last;
+});
 
 interface SweepLimits {
   readonly deadline: number;
@@ -189,34 +183,29 @@ interface SweepLimits {
 }
 
 /** Advances from the cursor to the end (or until the budget runs out), then saves the next cursor. */
-function sweepFromCursor(
+const sweepFromCursor = Effect.fn("ops-backup.sweepFromCursor")(function* (
   env: Env,
   result: MutableSweepResult,
   limits: SweepLimits,
   options: BackupSweepOptions,
-): Effect.Effect<void, never, OpsRepo> {
-  return Effect.gen(function* () {
-    const ops = yield* OpsRepo;
-    let cursor = yield* ops.getState(SWEEP_CURSOR_KEY);
-    for (;;) {
-      const page = yield* ops.listProjectIdsAfter(
-        cursor === "" ? null : cursor,
-        OPS_SWEEP_PAGE_SIZE,
-      );
-      const last = yield* sweepPage(env, page, result, limits, options);
-      cursor = last ?? cursor;
-      if (result.truncated) {
-        break;
-      }
-      if (page.length < OPS_SWEEP_PAGE_SIZE) {
-        // The end: next time starts from the beginning
-        cursor = null;
-        break;
-      }
+): Effect.fn.Return<void, never, OpsRepo> {
+  const ops = yield* OpsRepo;
+  let cursor = yield* ops.getState(SWEEP_CURSOR_KEY);
+  for (;;) {
+    const page = yield* ops.listProjectIdsAfter(cursor === "" ? null : cursor, OPS_SWEEP_PAGE_SIZE);
+    const last = yield* sweepPage(env, page, result, limits, options);
+    cursor = last ?? cursor;
+    if (result.truncated) {
+      break;
     }
-    yield* ops.setState(SWEEP_CURSOR_KEY, cursor ?? "", yield* Clock.currentTimeMillis);
-  });
-}
+    if (page.length < OPS_SWEEP_PAGE_SIZE) {
+      // The end: next time starts from the beginning
+      cursor = null;
+      break;
+    }
+  }
+  yield* ops.setState(SWEEP_CURSOR_KEY, cursor ?? "", yield* Clock.currentTimeMillis);
+});
 
 const warnMissingBucketOnce: Effect.Effect<void> = Effect.flatMap(
   Ref.getAndSet(warnedMissingBucket, true),
@@ -232,33 +221,31 @@ const warnMissingBucketOnce: Effect.Effect<void> = Effect.flatMap(
  * The sweep body. Advances from the cursor within the budget; on
  * reaching the end, resets the cursor to the beginning.
  */
-export function runBackupSweep(
+export const runBackupSweep = Effect.fn("ops-backup.runBackupSweep")(function* (
   env: Env,
   options: BackupSweepOptions = {},
-): Effect.Effect<BackupSweepResult, never, OpsRepo> {
-  return Effect.gen(function* () {
-    const result: MutableSweepResult = {
-      enabled: env.OPS_BACKUP_BUCKET !== undefined,
-      visited: 0,
-      uploaded: 0,
-      skipped: 0,
-      oversize: 0,
-      failed: 0,
-      truncated: false,
-    };
-    if (!result.enabled) {
-      yield* warnMissingBucketOnce;
-      return result;
-    }
-    yield* sweepFromCursor(
-      env,
-      result,
-      {
-        deadline: (yield* Clock.currentTimeMillis) + (options.budgetMs ?? OPS_SWEEP_BUDGET_MS),
-        maxProjects: options.maxProjects ?? OPS_SWEEP_MAX_PROJECTS,
-      },
-      options,
-    );
+): Effect.fn.Return<BackupSweepResult, never, OpsRepo> {
+  const result: MutableSweepResult = {
+    enabled: env.OPS_BACKUP_BUCKET !== undefined,
+    visited: 0,
+    uploaded: 0,
+    skipped: 0,
+    oversize: 0,
+    failed: 0,
+    truncated: false,
+  };
+  if (!result.enabled) {
+    yield* warnMissingBucketOnce;
     return result;
-  });
-}
+  }
+  yield* sweepFromCursor(
+    env,
+    result,
+    {
+      deadline: (yield* Clock.currentTimeMillis) + (options.budgetMs ?? OPS_SWEEP_BUDGET_MS),
+      maxProjects: options.maxProjects ?? OPS_SWEEP_MAX_PROJECTS,
+    },
+    options,
+  );
+  return result;
+});

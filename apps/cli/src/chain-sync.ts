@@ -121,68 +121,66 @@ class ChainDerivationError extends Data.TaggedError("ChainDerivationError")<{
   readonly message: string;
 }> {}
 
-function buildKeyHistory(
+const buildKeyHistory = Effect.fn("chain-sync.buildKeyHistory")(function* (
   applied: readonly AppliedOperation[],
-): Effect.Effect<ReadonlyMap<string, readonly KeyBinding[]>, ChainDerivationError> {
-  return Effect.gen(function* () {
-    const history = new Map<string, KeyBinding[]>();
-    const seen = new Set<string>();
-    const add = (userId: string, binding: KeyBinding) => {
-      const dedupe = `${userId}#${bindingKey(binding)}`;
-      if (seen.has(dedupe)) {
-        return;
-      }
-      seen.add(dedupe);
-      const list = history.get(userId);
-      if (list === undefined) {
-        history.set(userId, [binding]);
-      } else {
-        list.push(binding);
-      }
-    };
-    for (const { seq, operation, actorUserId } of applied) {
-      // The ops that register a key are genesis / add_member /
-      // add_device (§6.2 — 2026-09-19 DK: a device key also lands
-      // on the history as a key bound to its person. Revocation
-      // does not erase the history). An add_member applied via a
-      // proposal (four-eyes — K6) lands in the same shape too.
-      // Post-verifyChain, hex is in canonical form. The FP is
-      // recomputed from the payload's key (genesis's actor FP is
-      // already verified to match the payload key)
-      if (
-        operation.op !== "genesis" &&
-        operation.op !== "add_member" &&
-        operation.op !== "add_device"
-      ) {
-        continue;
-      }
-      const enc = decodeHex(operation.payload.encPubHex);
-      const sig = decodeHex(operation.payload.sigPubHex);
-      if (enc === null || sig === null) {
-        return yield* Effect.fail(
-          new ChainDerivationError({
-            message: `Cannot decode the public-key hex in ${operation.op} (seq=${seq})`,
-          }),
-        );
-      }
-      const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(
-        Effect.mapError(
-          () =>
-            new ChainDerivationError({
-              message: `Cannot compute the key fingerprint for ${operation.op} (seq=${seq})`,
-            }),
-        ),
-      );
-      // genesis / add_device's target = the actor themself; add_member's target = the payload's target
-      add(operation.op === "add_member" ? operation.payload.targetUserId : actorUserId, {
-        encPubHex: operation.payload.encPubHex,
-        sigPubHex: operation.payload.sigPubHex,
-        keyFingerprintHex: encodeHex(fingerprint),
-      });
+): Effect.fn.Return<ReadonlyMap<string, readonly KeyBinding[]>, ChainDerivationError> {
+  const history = new Map<string, KeyBinding[]>();
+  const seen = new Set<string>();
+  const add = (userId: string, binding: KeyBinding) => {
+    const dedupe = `${userId}#${bindingKey(binding)}`;
+    if (seen.has(dedupe)) {
+      return;
     }
-    return history;
-  });
-}
+    seen.add(dedupe);
+    const list = history.get(userId);
+    if (list === undefined) {
+      history.set(userId, [binding]);
+    } else {
+      list.push(binding);
+    }
+  };
+  for (const { seq, operation, actorUserId } of applied) {
+    // The ops that register a key are genesis / add_member /
+    // add_device (§6.2 — 2026-09-19 DK: a device key also lands
+    // on the history as a key bound to its person. Revocation
+    // does not erase the history). An add_member applied via a
+    // proposal (four-eyes — K6) lands in the same shape too.
+    // Post-verifyChain, hex is in canonical form. The FP is
+    // recomputed from the payload's key (genesis's actor FP is
+    // already verified to match the payload key)
+    if (
+      operation.op !== "genesis" &&
+      operation.op !== "add_member" &&
+      operation.op !== "add_device"
+    ) {
+      continue;
+    }
+    const enc = decodeHex(operation.payload.encPubHex);
+    const sig = decodeHex(operation.payload.sigPubHex);
+    if (enc === null || sig === null) {
+      return yield* Effect.fail(
+        new ChainDerivationError({
+          message: `Cannot decode the public-key hex in ${operation.op} (seq=${seq})`,
+        }),
+      );
+    }
+    const fingerprint = yield* cryptoEffect(() => computeUserKeyFingerprint(enc, sig)).pipe(
+      Effect.mapError(
+        () =>
+          new ChainDerivationError({
+            message: `Cannot compute the key fingerprint for ${operation.op} (seq=${seq})`,
+          }),
+      ),
+    );
+    // genesis / add_device's target = the actor themself; add_member's target = the payload's target
+    add(operation.op === "add_member" ? operation.payload.targetUserId : actorUserId, {
+      encPubHex: operation.payload.encPubHex,
+      sigPubHex: operation.payload.sigPubHex,
+      keyFingerprintHex: encodeHex(fingerprint),
+    });
+  }
+  return history;
+});
 
 /**
  * Fully verifies one distributed chain snapshot (§6.3), checks the genesis
@@ -197,7 +195,7 @@ function buildKeyHistory(
  * pinning and head consistency (the same reason as values.ts's
  * decryptVerifiedValue).
  */
-export function verifyChainSnapshot(input: {
+export const verifyChainSnapshot = Effect.fn("chain-sync.verifyChainSnapshot")(function* (input: {
   readonly projectId: ProjectId;
   readonly entries: readonly ChainEntry[];
   /** The server-declared head (not trusted — checked for equality against the derived head). */
@@ -205,106 +203,102 @@ export function verifyChainSnapshot(input: {
   readonly claimedHeadHashHex: string;
   /** The bundled head declarations (carried unverified — the lease path passes none = empty). */
   readonly attestations?: readonly DistributedAttestationWire[];
-}): Effect.Effect<VerifiedProject, CliError> {
-  return Effect.gen(function* () {
-    const { projectId, entries } = input;
-    const { state, history } = yield* cryptoEffect(() => verifyChainWithHistory(entries)).pipe(
-      // A distributed chain failing verification = a
-      // contradiction in signed data (evidence — re-running does
-      // not resolve it. Must never be folded into a cleanup
-      // warning)
-      Effect.catchTag(
-        "ChainInvalid",
-        (error) =>
-          Effect.fail(
-            evidenceError(
-              `Chain verification failed (seq=${error.seq}, reason=${error.reason}). The server may be distributing an invalid chain`,
-            ),
-          ),
-        () =>
-          Effect.fail(
-            evidenceError(
-              "Chain verification failed (seq=0, reason=invalid-payload). The server may be distributing an invalid chain",
-            ),
-          ),
-      ),
-    );
-
-    // §6.4: the project ID = the genesis entry hash. The swap
-    // where the server distributes a different chain under the
-    // same ID is detected mechanically here
-    const genesis = entries[0];
-    if (genesis === undefined) {
-      return yield* Effect.fail(cliError("The chain is empty"));
-    }
-    const genesisHash = yield* cryptoPromise("computeChainEntryHash", () =>
-      computeChainEntryHash(genesis),
-    ).pipe(Effect.mapError(() => cliError("Failed to compute the genesis hash (crypto error)")));
-    if (genesisHash !== projectId) {
-      return yield* Effect.fail(
-        evidenceError(
-          `The genesis hash does not match the project ID (suspected server-side chain replacement): expected=${projectId} actual=${genesisHash}`,
-        ),
-      );
-    }
-
-    // Consistency between the server-declared head and the derived head (declared values are not trusted)
-    if (state.headSeq !== input.claimedHeadSeq || state.headHashHex !== input.claimedHeadHashHex) {
-      return yield* Effect.fail(
-        evidenceError(
-          "The server-declared chain head does not match the fetched entries (the response contradicts itself)",
-        ),
-      );
-    }
-
-    // The applied-operations list (K6-C) — the completion judgment is core's indexProposals (K5-F)
-    const applied = appliedOperations(
-      entries,
-      (seq) => history.entryHashAt(seq),
-      new Set(state.pendingProposals.keys()),
-    );
-    const keyHistory = yield* buildKeyHistory(applied).pipe(
-      Effect.catchTag("ChainDerivationError", (error) =>
+}): Effect.fn.Return<VerifiedProject, CliError> {
+  const { projectId, entries } = input;
+  const { state, history } = yield* cryptoEffect(() => verifyChainWithHistory(entries)).pipe(
+    // A distributed chain failing verification = a
+    // contradiction in signed data (evidence — re-running does
+    // not resolve it. Must never be folded into a cleanup
+    // warning)
+    Effect.catchTag(
+      "ChainInvalid",
+      (error) =>
         Effect.fail(
-          cliError(
-            `Chain-derivation inconsistency: ${error.message} (cannot build the key index from the verified chain)`,
+          evidenceError(
+            `Chain verification failed (seq=${error.seq}, reason=${error.reason}). The server may be distributing an invalid chain`,
           ),
         ),
+      () =>
+        Effect.fail(
+          evidenceError(
+            "Chain verification failed (seq=0, reason=invalid-payload). The server may be distributing an invalid chain",
+          ),
+        ),
+    ),
+  );
+
+  // §6.4: the project ID = the genesis entry hash. The swap
+  // where the server distributes a different chain under the
+  // same ID is detected mechanically here
+  const genesis = entries[0];
+  if (genesis === undefined) {
+    return yield* Effect.fail(cliError("The chain is empty"));
+  }
+  const genesisHash = yield* cryptoPromise("computeChainEntryHash", () =>
+    computeChainEntryHash(genesis),
+  ).pipe(Effect.mapError(() => cliError("Failed to compute the genesis hash (crypto error)")));
+  if (genesisHash !== projectId) {
+    return yield* Effect.fail(
+      evidenceError(
+        `The genesis hash does not match the project ID (suspected server-side chain replacement): expected=${projectId} actual=${genesisHash}`,
       ),
     );
-    return {
-      projectId,
-      state,
-      history,
-      keyHistory,
-      entries,
-      applied,
-      attestations: input.attestations ?? [],
-    } satisfies VerifiedProject;
-  });
-}
+  }
+
+  // Consistency between the server-declared head and the derived head (declared values are not trusted)
+  if (state.headSeq !== input.claimedHeadSeq || state.headHashHex !== input.claimedHeadHashHex) {
+    return yield* Effect.fail(
+      evidenceError(
+        "The server-declared chain head does not match the fetched entries (the response contradicts itself)",
+      ),
+    );
+  }
+
+  // The applied-operations list (K6-C) — the completion judgment is core's indexProposals (K5-F)
+  const applied = appliedOperations(
+    entries,
+    (seq) => history.entryHashAt(seq),
+    new Set(state.pendingProposals.keys()),
+  );
+  const keyHistory = yield* buildKeyHistory(applied).pipe(
+    Effect.catchTag("ChainDerivationError", (error) =>
+      Effect.fail(
+        cliError(
+          `Chain-derivation inconsistency: ${error.message} (cannot build the key index from the verified chain)`,
+        ),
+      ),
+    ),
+  );
+  return {
+    projectId,
+    state,
+    history,
+    keyHistory,
+    entries,
+    applied,
+    attestations: input.attestations ?? [],
+  } satisfies VerifiedProject;
+});
 
 /**
  * Fetches and fully verifies the project chain (§6.3) through
  * {@link verifyChainSnapshot}.
  */
-export function syncProject(
+export const syncProject = Effect.fn("chain-sync.syncProject")(function* (
   client: MaruhiClient,
   projectId: ProjectId,
-): Effect.Effect<VerifiedProject, CliError> {
-  return Effect.gen(function* () {
-    const snapshot = yield* client.membership
-      .get({ params: { projectId } })
-      .pipe(Effect.mapError(toCliError));
-    return yield* verifyChainSnapshot({
-      projectId,
-      entries: snapshot.entries,
-      claimedHeadSeq: snapshot.headSeq,
-      claimedHeadHashHex: snapshot.headHashHex,
-      attestations: snapshot.attestations,
-    });
+): Effect.fn.Return<VerifiedProject, CliError> {
+  const snapshot = yield* client.membership
+    .get({ params: { projectId } })
+    .pipe(Effect.mapError(toCliError));
+  return yield* verifyChainSnapshot({
+    projectId,
+    entries: snapshot.entries,
+    claimedHeadSeq: snapshot.headSeq,
+    claimedHeadHashHex: snapshot.headHashHex,
+    attestations: snapshot.attestations,
   });
-}
+});
 
 /**
  * The check that the post-resync new snapshot is an **extension**

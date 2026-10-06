@@ -609,116 +609,112 @@ function runtimeBaseDir(envVar: (name: string) => string | undefined): string {
  * socket) and `maruhi proxy run` (the CA certificate files and the hop
  * sockets of the proxy — proxy-server.ts).
  */
-export function privateRuntimeDir(input: {
+export const privateRuntimeDir = Effect.fn("agent.privateRuntimeDir")(function* (input: {
   readonly envVar: (name: string) => string | undefined;
   readonly prefix: string;
   /** What the directory is for (the creation-failure wording). */
   readonly purpose: string;
   readonly removeFailure: (dir: string) => string;
-}): Effect.Effect<
+}): Effect.fn.Return<
   { readonly dir: string; readonly removeDir: Effect.Effect<void, never, CliIo> },
   CliError
 > {
-  return Effect.gen(function* () {
-    const dir = yield* Effect.tryPromise({
-      try: () => mkdtemp(join(runtimeBaseDir(input.envVar), input.prefix)),
-      catch: () =>
-        cliError(
-          `Cannot create a private directory for ${input.purpose} (under XDG_RUNTIME_DIR, or the temp directory when it is unset)`,
-        ),
-    });
-    const removeDir = Effect.tryPromise({
-      try: () => rm(dir, { recursive: true, force: true }),
-      catch: () => cliError(input.removeFailure(dir)),
-    }).pipe(Effect.catch((error) => logWarning(error.message)));
-    return { dir, removeDir };
+  const dir = yield* Effect.tryPromise({
+    try: () => mkdtemp(join(runtimeBaseDir(input.envVar), input.prefix)),
+    catch: () =>
+      cliError(
+        `Cannot create a private directory for ${input.purpose} (under XDG_RUNTIME_DIR, or the temp directory when it is unset)`,
+      ),
   });
-}
+  const removeDir = Effect.tryPromise({
+    try: () => rm(dir, { recursive: true, force: true }),
+    catch: () => cliError(input.removeFailure(dir)),
+  }).pipe(Effect.catch((error) => logWarning(error.message)));
+  return { dir, removeDir };
+});
 
 /**
  * `maruhi agent -- <command>`: start the socket, run the command with
  * {@link AGENT_SOCKET_ENV} set, and tear everything down when it exits.
  * Returns the command's exit code.
  */
-export function agentOp(input: {
+export const agentOp = Effect.fn("agent.agentOp")(function* (input: {
   readonly command: readonly string[];
   /** `--key-ttl` (ms). Unset = the master key is held for the child's lifespan too. */
   readonly keyTtl?: { readonly ms: number; readonly text: string } | undefined;
-}): Effect.Effect<number, CliError, CliIo | ProcessRunner> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const runner = yield* ProcessRunner;
-    // Same as run: "there is one argument" and "there is something to run" are different things
-    if (input.command.length === 0 || (input.command[0] ?? "").trim() === "") {
-      return yield* Effect.fail(usageError(AGENT_COMMAND_REQUIRED));
-    }
-    if (platform() === "win32") {
+}): Effect.fn.Return<number, CliError, CliIo | ProcessRunner> {
+  const io = yield* CliIo;
+  const runner = yield* ProcessRunner;
+  // Same as run: "there is one argument" and "there is something to run" are different things
+  if (input.command.length === 0 || (input.command[0] ?? "").trim() === "") {
+    return yield* Effect.fail(usageError(AGENT_COMMAND_REQUIRED));
+  }
+  if (platform() === "win32") {
+    return yield* Effect.fail(
+      cliError(
+        "`maruhi agent` is not available on Windows (it needs a Unix domain socket). The Windows Credential Manager needs no setup — use it instead",
+      ),
+    );
+  }
+  // Nesting is refused: the outer agent already holds the keys, and an
+  // inner one would only add an empty holding store and make "which one it
+  // went into" unknowable. But **only a live agent** counts as nesting: if
+  // the parent died first and only the shell remains (terminal
+  // multiplexing, reparenting), the env var is a leftover, and "start a new
+  // one" + "refuse nesting" would dead-end. Leftovers may be replaced
+  const existing = io.envVar(AGENT_SOCKET_ENV);
+  if (existing !== undefined && existing.length > 0) {
+    const state = yield* probeAgent(existing);
+    if (state === "live") {
       return yield* Effect.fail(
         cliError(
-          "`maruhi agent` is not available on Windows (it needs a Unix domain socket). The Windows Credential Manager needs no setup — use it instead",
+          `Already inside an agent session (${AGENT_SOCKET_ENV} points to a running agent). Nested agents are refused — use this session, or exit it first`,
         ),
       );
     }
-    // Nesting is refused: the outer agent already holds the keys, and an
-    // inner one would only add an empty holding store and make "which one it
-    // went into" unknowable. But **only a live agent** counts as nesting: if
-    // the parent died first and only the shell remains (terminal
-    // multiplexing, reparenting), the env var is a leftover, and "start a new
-    // one" + "refuse nesting" would dead-end. Leftovers may be replaced
-    const existing = io.envVar(AGENT_SOCKET_ENV);
-    if (existing !== undefined && existing.length > 0) {
-      const state = yield* probeAgent(existing);
-      if (state === "live") {
-        return yield* Effect.fail(
-          cliError(
-            `Already inside an agent session (${AGENT_SOCKET_ENV} points to a running agent). Nested agents are refused — use this session, or exit it first`,
-          ),
-        );
-      }
-      yield* logWarning(
-        `${AGENT_SOCKET_ENV} pointed to an agent session that has already ended; starting a new one (the new value replaces it for this command's children)`,
-      );
-    }
-    // Even when removal fails the session's result (the child's exit code)
-    // is not thrown away: the directory is empty or holds only the socket's
-    // inode (no values in it). Not swallowed silently — warned
-    const { dir, removeDir } = yield* privateRuntimeDir({
-      envVar: io.envVar,
-      prefix: "maruhi-agent-",
-      purpose: "the agent socket",
-      removeFailure: (path) =>
-        `could not remove the agent socket directory (${path}) — remove it by hand`,
-    });
-    return yield* Effect.acquireUseRelease(
-      Effect.tryPromise({
-        try: () => startAgentServer(dir, { keyTtlMs: input.keyTtl?.ms }),
-        catch: (error) =>
-          cliError(
-            `Cannot listen on the agent socket${errnoSuffix(error)}. Nothing was stored; check that the directory is on a filesystem that supports Unix domain sockets`,
-          ),
-      }).pipe(Effect.onError(() => removeDir)),
-      (server) =>
-        Effect.gen(function* () {
-          // The notice goes to stderr (does not dirty the child's stdout —
-          // output does not interleave even under uses like
-          // `maruhi agent -- make`)
-          yield* io.logError(
-            "Agent session started: tokens and keys you sign in with or recover here stay in memory only, and are discarded when the command exits",
-          );
-          if (input.keyTtl !== undefined) {
-            yield* io.logError(
-              `This device's key is forgotten ${input.keyTtl.text} after it is stored (--key-ttl); the token stays. When a command reports it is missing, register this shell again with \`maruhi device add\` (approve it from a device you have) and revoke the forgotten key with \`maruhi device revoke\``,
-            );
-          }
-          return yield* runner.runSession({
-            command: input.command,
-            env: { [AGENT_SOCKET_ENV]: server.socketPath },
-          });
-        }),
-      (server) => Effect.promise(() => server.close()).pipe(Effect.andThen(removeDir)),
+    yield* logWarning(
+      `${AGENT_SOCKET_ENV} pointed to an agent session that has already ended; starting a new one (the new value replaces it for this command's children)`,
     );
+  }
+  // Even when removal fails the session's result (the child's exit code)
+  // is not thrown away: the directory is empty or holds only the socket's
+  // inode (no values in it). Not swallowed silently — warned
+  const { dir, removeDir } = yield* privateRuntimeDir({
+    envVar: io.envVar,
+    prefix: "maruhi-agent-",
+    purpose: "the agent socket",
+    removeFailure: (path) =>
+      `could not remove the agent socket directory (${path}) — remove it by hand`,
   });
-}
+  return yield* Effect.acquireUseRelease(
+    Effect.tryPromise({
+      try: () => startAgentServer(dir, { keyTtlMs: input.keyTtl?.ms }),
+      catch: (error) =>
+        cliError(
+          `Cannot listen on the agent socket${errnoSuffix(error)}. Nothing was stored; check that the directory is on a filesystem that supports Unix domain sockets`,
+        ),
+    }).pipe(Effect.onError(() => removeDir)),
+    (server) =>
+      Effect.gen(function* () {
+        // The notice goes to stderr (does not dirty the child's stdout —
+        // output does not interleave even under uses like
+        // `maruhi agent -- make`)
+        yield* io.logError(
+          "Agent session started: tokens and keys you sign in with or recover here stay in memory only, and are discarded when the command exits",
+        );
+        if (input.keyTtl !== undefined) {
+          yield* io.logError(
+            `This device's key is forgotten ${input.keyTtl.text} after it is stored (--key-ttl); the token stays. When a command reports it is missing, register this shell again with \`maruhi device add\` (approve it from a device you have) and revoke the forgotten key with \`maruhi device revoke\``,
+          );
+        }
+        return yield* runner.runSession({
+          command: input.command,
+          env: { [AGENT_SOCKET_ENV]: server.socketPath },
+        });
+      }),
+    (server) => Effect.promise(() => server.close()).pipe(Effect.andThen(removeDir)),
+  );
+});
 
 /**
  * `maruhi agent status`: shows by name what this agent session is holding
@@ -726,32 +722,34 @@ export function agentOp(input: {
  * a stale `MARUHI_AGENT_SOCK` surfaces the client's session-ended message
  * as-is.
  */
-export function agentStatusOp(): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const socketPath = io.envVar(AGENT_SOCKET_ENV);
-    if (socketPath === undefined || socketPath.length === 0) {
-      return yield* Effect.fail(
-        cliError(
-          `Not inside an agent session (${AGENT_SOCKET_ENV} is not set). Start one with \`maruhi agent -- <shell>\``,
-        ),
-      );
-    }
-    const response = yield* askAgent(socketPath, { v: 1, op: "list" });
-    if (!("names" in response)) {
-      return yield* Effect.fail(cliError(agentProtocolMessage));
-    }
-    // The path is one our own process made, but it arrives via an env var, so neutralize it before display
-    yield* io.log(`socket:      ${displayText(socketPath)}`);
-    if (response.names.length === 0) {
-      yield* io.log("holding:     nothing yet (run `maruhi login` in this session)");
-      return;
-    }
-    for (const name of response.names.toSorted()) {
-      yield* io.log(describeEntryName(name));
-    }
-  });
-}
+export const agentStatusOp = Effect.fn("agent.agentStatusOp")(function* (): Effect.fn.Return<
+  void,
+  CliError,
+  CliIo
+> {
+  const io = yield* CliIo;
+  const socketPath = io.envVar(AGENT_SOCKET_ENV);
+  if (socketPath === undefined || socketPath.length === 0) {
+    return yield* Effect.fail(
+      cliError(
+        `Not inside an agent session (${AGENT_SOCKET_ENV} is not set). Start one with \`maruhi agent -- <shell>\``,
+      ),
+    );
+  }
+  const response = yield* askAgent(socketPath, { v: 1, op: "list" });
+  if (!("names" in response)) {
+    return yield* Effect.fail(cliError(agentProtocolMessage));
+  }
+  // The path is one our own process made, but it arrives via an env var, so neutralize it before display
+  yield* io.log(`socket:      ${displayText(socketPath)}`);
+  if (response.names.length === 0) {
+    yield* io.log("holding:     nothing yet (run `maruhi login` in this session)");
+    return;
+  }
+  for (const name of response.names.toSorted()) {
+    yield* io.log(describeEntryName(name));
+  }
+});
 
 /**
  * Renders an entry name (keychain.ts's tokenEntryName / masterKeyEntryName)

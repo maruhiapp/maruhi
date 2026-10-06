@@ -59,59 +59,55 @@ type SigningKeysFetch =
   | { readonly kind: "unavailable"; readonly detail: string };
 
 /** `GET /users/{login}/ssh_signing_keys` (unauthenticated, fixed host, with timeout). */
-function fetchSigningKeys(
+const fetchSigningKeys = Effect.fn("github-signing-keys.fetchSigningKeys")(function* (
   login: string,
-): Effect.Effect<SigningKeysFetch, never, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const client = yield* HttpClient.HttpClient;
-    const request = HttpClientRequest.get(
-      `${GITHUB_API_ORIGIN}/users/${encodeURIComponent(login)}/ssh_signing_keys`,
-    ).pipe(
-      HttpClientRequest.setHeader("accept", "application/vnd.github+json"),
-      HttpClientRequest.setHeader("user-agent", `maruhi-cli/${CLI_VERSION}`),
-    );
-    const outcome = yield* client.execute(request).pipe(
-      Effect.flatMap((response) =>
-        Effect.map(response.text, (text) => ({ status: response.status, text })),
-      ),
-      Effect.timeout(REQUEST_TIMEOUT),
-      Effect.map((value) => ({ ok: true, value }) as const),
-      // Transport-layer failure / timeout: no body or headers are carried in (only a short kind)
-      Effect.catch((error) =>
-        Effect.succeed({ ok: false, detail: describeFailure(error) } as const),
-      ),
-    );
-    if (!outcome.ok) {
-      return { kind: "unavailable", detail: outcome.detail } as const;
-    }
-    const { status, text } = outcome.value;
-    if (status === 404) {
-      return { kind: "no-user" } as const;
-    }
-    if (status !== 200) {
-      const rateLimited = status === 403 || status === 429 ? " (rate limited)" : "";
-      return {
-        kind: "unavailable",
-        detail: `github.com answered ${status}${rateLimited}`,
-      } as const;
-    }
-    const entries = yield* parseEntries(text);
-    return entries === null
-      ? ({ kind: "unavailable", detail: "github.com's response had an unexpected shape" } as const)
-      : ({ kind: "entries", entries } as const);
-  });
-}
+): Effect.fn.Return<SigningKeysFetch, never, HttpClient.HttpClient> {
+  const client = yield* HttpClient.HttpClient;
+  const request = HttpClientRequest.get(
+    `${GITHUB_API_ORIGIN}/users/${encodeURIComponent(login)}/ssh_signing_keys`,
+  ).pipe(
+    HttpClientRequest.setHeader("accept", "application/vnd.github+json"),
+    HttpClientRequest.setHeader("user-agent", `maruhi-cli/${CLI_VERSION}`),
+  );
+  const outcome = yield* client.execute(request).pipe(
+    Effect.flatMap((response) =>
+      Effect.map(response.text, (text) => ({ status: response.status, text })),
+    ),
+    Effect.timeout(REQUEST_TIMEOUT),
+    Effect.map((value) => ({ ok: true, value }) as const),
+    // Transport-layer failure / timeout: no body or headers are carried in (only a short kind)
+    Effect.catch((error) => Effect.succeed({ ok: false, detail: describeFailure(error) } as const)),
+  );
+  if (!outcome.ok) {
+    return { kind: "unavailable", detail: outcome.detail } as const;
+  }
+  const { status, text } = outcome.value;
+  if (status === 404) {
+    return { kind: "no-user" } as const;
+  }
+  if (status !== 200) {
+    const rateLimited = status === 403 || status === 429 ? " (rate limited)" : "";
+    return {
+      kind: "unavailable",
+      detail: `github.com answered ${status}${rateLimited}`,
+    } as const;
+  }
+  const entries = yield* parseEntries(text);
+  return entries === null
+    ? ({ kind: "unavailable", detail: "github.com's response had an unexpected shape" } as const)
+    : ({ kind: "entries", entries } as const);
+});
 
 /**
  * Checks whether the `sigPubHex` key is contained in the login's
  * signing-key list. Failures and inabilities alike are returned in
  * the type, never as a CliError (the fail-closed definition above).
  */
-export function checkSigningKeyBacking(input: {
-  readonly login: string;
-  readonly sigPubHex: string;
-}): Effect.Effect<BackingVerdict, never, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
+export const checkSigningKeyBacking = Effect.fn("github-signing-keys.checkSigningKeyBacking")(
+  function* (input: {
+    readonly login: string;
+    readonly sigPubHex: string;
+  }): Effect.fn.Return<BackingVerdict, never, HttpClient.HttpClient> {
     if (!GITHUB_LOGIN.test(input.login)) {
       return { kind: "unavailable", detail: "the login is not a valid GitHub login" } as const;
     }
@@ -139,24 +135,24 @@ export function checkSigningKeyBacking(input: {
       }
     }
     return { kind: "not-registered" } as const;
-  });
-}
+  },
+);
 
 /** Interprets the response body (a JSON array + `key` string; null when the shape differs). */
-function parseEntries(text: string): Effect.Effect<readonly { readonly key: string }[] | null> {
-  return Effect.gen(function* () {
-    let json: unknown;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      return null;
-    }
-    return yield* decodeSigningKeys(json).pipe(
-      Effect.map((entries) => entries as readonly { readonly key: string }[]),
-      Effect.orElseSucceed(() => null),
-    );
-  });
-}
+const parseEntries = Effect.fn("github-signing-keys.parseEntries")(function* (
+  text: string,
+): Effect.fn.Return<readonly { readonly key: string }[] | null> {
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  return yield* decodeSigningKeys(json).pipe(
+    Effect.map((entries) => entries as readonly { readonly key: string }[]),
+    Effect.orElseSucceed(() => null),
+  );
+});
 
 /** Description of a transport-layer failure (kind only; no body, headers, or URL). */
 function describeFailure(error: unknown): string {

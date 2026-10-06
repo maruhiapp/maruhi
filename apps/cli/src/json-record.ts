@@ -72,23 +72,21 @@ export function parseConfigHeader(
  * `load(path)` when it exists, and `unreadable` as the error when it exists
  * but cannot be stat'ed — a broken config is reported, never skipped.
  */
-export function loadIfPresent<A>(
+export const loadIfPresent = Effect.fn("json-record.loadIfPresent")(function* <A>(
   path: string,
   load: (path: string) => Effect.Effect<A, CliError>,
   unreadable: string,
-): Effect.Effect<A | null, CliError> {
-  return Effect.gen(function* () {
-    // `exists` = access(F_OK): a PlatformError whose reason is NotFound is
-    // false; every other read failure is `unreadable` (the same discipline as
-    // the stat() version). The layer is provided only around the existence
-    // check so `load` keeps the caller's environment.
-    const exists = yield* Effect.flatMap(FileSystem.FileSystem, (fs) => fs.exists(path)).pipe(
-      Effect.mapError(() => cliError(unreadable)),
-      Effect.provide(BunFileSystem.layer),
-    );
-    return exists ? yield* load(path) : null;
-  });
-}
+): Effect.fn.Return<A | null, CliError> {
+  // `exists` = access(F_OK): a PlatformError whose reason is NotFound is
+  // false; every other read failure is `unreadable` (the same discipline as
+  // the stat() version). The layer is provided only around the existence
+  // check so `load` keeps the caller's environment.
+  const exists = yield* Effect.flatMap(FileSystem.FileSystem, (fs) => fs.exists(path)).pipe(
+    Effect.mapError(() => cliError(unreadable)),
+    Effect.provide(BunFileSystem.layer),
+  );
+  return exists ? yield* load(path) : null;
+});
 
 /** A per-user ledger file as read (`corrupt` is distinguishable from `missing` — a person deals with it). */
 export type LedgerRead<T> =
@@ -147,23 +145,22 @@ export function recordKeysMatch(match: RegExp | ((key: string) => boolean)) {
  * EIO) stays an error so a writer never replaces a file it could not read
  * (the pins / fingerprint-ledger discipline — review finding §21 R-15).
  */
-export function readJsonFile<S extends Schema.ConstraintCodec<unknown>>(
-  path: string,
-  schema: S,
-): Effect.Effect<LedgerRead<S["Type"]>, PlatformError.PlatformError, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
+export const readJsonFile = Effect.fn("json-record.readJsonFile")(
+  function* <S extends Schema.ConstraintCodec<unknown>>(
+    path: string,
+    schema: S,
+  ): Effect.fn.Return<LedgerRead<S["Type"]>, PlatformError.PlatformError, FileSystem.FileSystem> {
     const fs = yield* FileSystem.FileSystem;
     const json = yield* fs.readFileString(path, "utf8");
     const decoded = Schema.decodeUnknownResult(Schema.fromJsonString(schema))(json);
     return Result.isFailure(decoded)
       ? ({ state: "corrupt" } as const)
       : ({ state: "loaded", file: decoded.success } as const);
-  }).pipe(
-    Effect.catchReason("PlatformError", "NotFound", () =>
-      Effect.succeed({ state: "missing" } as const),
-    ),
-  );
-}
+  },
+  Effect.catchReason("PlatformError", "NotFound", () =>
+    Effect.succeed({ state: "missing" } as const),
+  ),
+);
 
 /**
  * Reading one user-named file's content: any read failure becomes the
@@ -172,15 +169,17 @@ export function readJsonFile<S extends Schema.ConstraintCodec<unknown>>(
  * FileSystem-providing environment (dying on purpose, cli-runner.ts) is
  * never touched, BunFileSystem is provided locally.
  */
-export function readNamedFile(path: string, unreadable: CliError): Effect.Effect<string, CliError> {
-  return Effect.gen(function* () {
+export const readNamedFile: (
+  path: string,
+  unreadable: CliError,
+) => Effect.Effect<string, CliError> = Effect.fn("json-record.readNamedFile")(
+  function* (path: string, _unreadable: CliError) {
     const fs = yield* FileSystem.FileSystem;
     return yield* fs.readFileString(path, "utf8");
-  }).pipe(
-    Effect.mapError(() => unreadable),
-    Effect.provide(BunFileSystem.layer),
-  );
-}
+  },
+  (effect, _path, unreadable) => effect.pipe(Effect.mapError(() => unreadable)),
+  Effect.provide(BunFileSystem.layer),
+);
 
 /**
  * Writes `value` to `path` encoded by `schema`, atomically: the directory is
@@ -188,17 +187,17 @@ export function readNamedFile(path: string, unreadable: CliError): Effect.Effect
  * rename moves it over `path` — a partial file is never observable. Encoding
  * is checked, so a value that would not decode again is refused.
  */
-export function writeJsonFileAtomic<S extends Schema.ConstraintCodec<unknown>>(
+export const writeJsonFileAtomic = Effect.fn("json-record.writeJsonFileAtomic")(function* <
+  S extends Schema.ConstraintCodec<unknown>,
+>(
   path: string,
   schema: S,
   value: S["Type"],
-): Effect.Effect<void, PlatformError.PlatformError | Schema.SchemaError, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const encoded = yield* Effect.fromResult(Schema.encodeResult(schema)(value));
-    const fs = yield* FileSystem.FileSystem;
-    yield* fs.makeDirectory(dirname(path), { recursive: true, mode: 0o700 });
-    const temp = `${path}.${process.pid}.tmp`;
-    yield* fs.writeFileString(temp, `${JSON.stringify(encoded, null, 2)}\n`, { mode: 0o600 });
-    yield* fs.rename(temp, path);
-  });
-}
+): Effect.fn.Return<void, PlatformError.PlatformError | Schema.SchemaError, FileSystem.FileSystem> {
+  const encoded = yield* Effect.fromResult(Schema.encodeResult(schema)(value));
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.makeDirectory(dirname(path), { recursive: true, mode: 0o700 });
+  const temp = `${path}.${process.pid}.tmp`;
+  yield* fs.writeFileString(temp, `${JSON.stringify(encoded, null, 2)}\n`, { mode: 0o600 });
+  yield* fs.rename(temp, path);
+});

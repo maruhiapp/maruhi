@@ -90,7 +90,7 @@ const AUDIT_HEAD_NOT_READY_EXHAUSTED = `The server is still materializing the au
 const CHECKPOINT_PROPOSAL_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** The issuance result (the material for display and the exit code). */
-export interface CheckpointSummary {
+interface CheckpointSummary {
   /** The notarized environment IDs (ascending byte order = payload order). */
   readonly environmentIds: readonly string[];
   /** The environments left out of the all-environments coverage (SHOULD), with the reason (non-empty only for a subset issuance). */
@@ -101,7 +101,7 @@ export interface CheckpointSummary {
   readonly warnings: readonly string[];
 }
 
-export interface CheckpointInput {
+interface CheckpointInput {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
@@ -164,12 +164,12 @@ function sameTuple(a: BuiltTuple, b: BuiltTuple | undefined): boolean {
  * from /auth/me's tokenScopes (absent = a session principal = the user's
  * full power); no 403 is hit (§16-2).
  */
-function determineAuditAttestation(input: {
-  readonly client: MaruhiClient;
-  readonly verified: VerifiedProject;
-  readonly signerUserId: string;
-}): Effect.Effect<boolean, CliError> {
-  return Effect.gen(function* () {
+const determineAuditAttestation = Effect.fn("checkpoint.determineAuditAttestation")(
+  function* (input: {
+    readonly client: MaruhiClient;
+    readonly verified: VerifiedProject;
+    readonly signerUserId: string;
+  }): Effect.fn.Return<boolean, CliError> {
     const member = input.verified.state.members.get(input.signerUserId);
     if (member === undefined || (member.role !== "admin" && member.role !== "owner")) {
       return false;
@@ -180,8 +180,8 @@ function determineAuditAttestation(input: {
     }
     const granted = scopePermissionFor(me.tokenScopes, input.verified.projectId);
     return granted === "admin";
-  });
-}
+  },
+);
 
 /**
  * Resolving the coverage targets ("all" = chain-derived environments -
@@ -193,44 +193,42 @@ function determineAuditAttestation(input: {
  * missing the all-environments SHOULD must not be silenced). An explicit
  * list (trigger (i)) is a typed error when out of scope.
  */
-function resolveTargets(
+const resolveTargets = Effect.fn("checkpoint.resolveTargets")(function* (
   input: CheckpointInput,
-): Effect.Effect<
+): Effect.fn.Return<
   { readonly targets: readonly EnvironmentId[]; readonly outOfScope: readonly string[] },
   CliError
 > {
-  return Effect.gen(function* () {
-    if (input.environmentIds !== "all") {
-      for (const environmentId of input.environmentIds) {
-        yield* requireEnvironmentInScope({
-          verified: input.verified,
-          userId: input.signerUserId,
-          environmentId,
-          operation: "checkpoint",
-        });
-      }
-      return { targets: input.environmentIds, outOfScope: [] };
+  if (input.environmentIds !== "all") {
+    for (const environmentId of input.environmentIds) {
+      yield* requireEnvironmentInScope({
+        verified: input.verified,
+        userId: input.signerUserId,
+        environmentId,
+        operation: "checkpoint",
+      });
     }
-    const all = [...input.verified.state.environments.keys()];
-    if (all.length === 0) {
-      return { targets: [], outOfScope: [] };
-    }
-    const self = input.verified.state.members.get(input.signerUserId);
-    if (self === undefined) {
-      return yield* Effect.fail(cliError("You are not a chain-derived member of this project"));
-    }
-    const deleted = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
-    const active = all.filter((environmentId) => !deleted.has(environmentId));
-    return {
-      targets: active
-        .filter((environmentId) => scopeIncludesEnvironment(self.scope, environmentId))
-        .toSorted(compareUtf8Bytes) as readonly EnvironmentId[],
-      outOfScope: active
-        .filter((environmentId) => !scopeIncludesEnvironment(self.scope, environmentId))
-        .toSorted(compareUtf8Bytes),
-    };
-  });
-}
+    return { targets: input.environmentIds, outOfScope: [] };
+  }
+  const all = [...input.verified.state.environments.keys()];
+  if (all.length === 0) {
+    return { targets: [], outOfScope: [] };
+  }
+  const self = input.verified.state.members.get(input.signerUserId);
+  if (self === undefined) {
+    return yield* Effect.fail(cliError("You are not a chain-derived member of this project"));
+  }
+  const deleted = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+  const active = all.filter((environmentId) => !deleted.has(environmentId));
+  return {
+    targets: active
+      .filter((environmentId) => scopeIncludesEnvironment(self.scope, environmentId))
+      .toSorted(compareUtf8Bytes) as readonly EnvironmentId[],
+    outOfScope: active
+      .filter((environmentId) => !scopeIncludesEnvironment(self.scope, environmentId))
+      .toSorted(compareUtf8Bytes),
+  };
+});
 
 /**
  * Building the verified view: verified-pull each target environment in
@@ -241,73 +239,71 @@ function resolveTargets(
  * signing is detected by the acceptance stage (409 / 422) and absorbed by
  * bounded retries.
  */
-function buildTuples(
+const buildTuples = Effect.fn("checkpoint.buildTuples")(function* (
   input: CheckpointInput,
   targets: readonly EnvironmentId[],
-): Effect.Effect<BuiltView, CliError> {
-  return Effect.gen(function* () {
-    let view = yield* input.resync;
-    const warnings: string[] = [];
-    const pulls = new Map<
-      string,
-      {
-        readonly manifestVersion: number;
-        readonly manifestSigHashHex: string;
-        readonly values: readonly EnvValuesDigestEntry[];
-      }
-    >();
-    for (const environmentId of targets) {
-      const floor = yield* input.floorFor(environmentId);
-      const pulled = yield* pullVerifiedEnvironment({
-        client: input.client,
-        verified: view,
-        environmentId,
-        resync: input.resync,
-        floor,
-      }).pipe(
-        Effect.mapError((error) =>
-          cliError(
-            `Cannot build the checkpoint for environment ${displayText(environmentId)}: ${error.message}`,
-          ),
+): Effect.fn.Return<BuiltView, CliError> {
+  let view = yield* input.resync;
+  const warnings: string[] = [];
+  const pulls = new Map<
+    string,
+    {
+      readonly manifestVersion: number;
+      readonly manifestSigHashHex: string;
+      readonly values: readonly EnvValuesDigestEntry[];
+    }
+  >();
+  for (const environmentId of targets) {
+    const floor = yield* input.floorFor(environmentId);
+    const pulled = yield* pullVerifiedEnvironment({
+      client: input.client,
+      verified: view,
+      environmentId,
+      resync: input.resync,
+      floor,
+    }).pipe(
+      Effect.mapError((error) =>
+        cliError(
+          `Cannot build the checkpoint for environment ${displayText(environmentId)}: ${error.message}`,
+        ),
+      ),
+    );
+    view = pulled.verified;
+    warnings.push(...pulled.warnings);
+    pulls.set(environmentId, {
+      manifestVersion: pulled.manifest.manifestVersion,
+      manifestSigHashHex: pulled.manifest.signedBytesHashHex,
+      values: pulled.variables.map((value) => ({
+        variableId: value.variableId,
+        version: value.version,
+        valueSigHashHex: value.signedBytesHashHex,
+      })),
+    });
+  }
+  const tuples: BuiltTuple[] = [];
+  for (const environmentId of targets) {
+    const pulled = pulls.get(environmentId);
+    const environment = view.state.environments.get(environmentId);
+    if (pulled === undefined || environment === undefined) {
+      return yield* Effect.fail(
+        cliError(
+          `Environment ${displayText(environmentId)} disappeared from the verified chain while building the checkpoint — re-run`,
         ),
       );
-      view = pulled.verified;
-      warnings.push(...pulled.warnings);
-      pulls.set(environmentId, {
-        manifestVersion: pulled.manifest.manifestVersion,
-        manifestSigHashHex: pulled.manifest.signedBytesHashHex,
-        values: pulled.variables.map((value) => ({
-          variableId: value.variableId,
-          version: value.version,
-          valueSigHashHex: value.signedBytesHashHex,
-        })),
-      });
     }
-    const tuples: BuiltTuple[] = [];
-    for (const environmentId of targets) {
-      const pulled = pulls.get(environmentId);
-      const environment = view.state.environments.get(environmentId);
-      if (pulled === undefined || environment === undefined) {
-        return yield* Effect.fail(
-          cliError(
-            `Environment ${displayText(environmentId)} disappeared from the verified chain while building the checkpoint — re-run`,
-          ),
-        );
-      }
-      const digest = yield* cryptoEffect(() =>
-        computeEnvValuesDigest(SUITE_ID, pulled.values),
-      ).pipe(Effect.mapError(() => cliError("Failed to compute the checkpoint values digest")));
-      tuples.push({
-        environmentId,
-        epoch: environment.currentEpoch,
-        manifestVersion: pulled.manifestVersion,
-        manifestSigHashHex: pulled.manifestSigHashHex,
-        valuesDigestHex: digest,
-      });
-    }
-    return { view, tuples, warnings };
-  });
-}
+    const digest = yield* cryptoEffect(() => computeEnvValuesDigest(SUITE_ID, pulled.values)).pipe(
+      Effect.mapError(() => cliError("Failed to compute the checkpoint values digest")),
+    );
+    tuples.push({
+      environmentId,
+      epoch: environment.currentEpoch,
+      manifestVersion: pulled.manifestVersion,
+      manifestSigHashHex: pulled.manifestSigHashHex,
+      valuesDigestHex: digest,
+    });
+  }
+  return { view, tuples, warnings };
+});
 
 /**
  * Fetching the audit-head attestation (called only for effective admin —
@@ -319,53 +315,51 @@ function buildTuples(
  * (never silently drop to a generic error). `maruhi audit reconcile`
  * shares this too.
  */
-export function fetchAuditHead(
+export const fetchAuditHead = Effect.fn("checkpoint.fetchAuditHead")(function* (
   client: MaruhiClient,
   projectId: string,
-): Effect.Effect<string, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    // 503 failures absorbed so far (the count behind the message's
-    // attempt numbering). The cap lives in `while`, not the schedule:
-    // stopping the schedule by `times` would still run the `while`
-    // predicate on the final step — emitting a spurious retry line
-    let notReady = 0;
-    return yield* client.audit.auditHead({ params: { projectId } }).pipe(
-      Effect.map((response) => response.auditHeadHashHex),
-      Effect.catchTag("AuditHeadNotReady", Effect.fail, (error) =>
-        Effect.fail(
-          cliError(`Cannot fetch the audit head attestation (${toCliError(error).message})`),
-        ),
+): Effect.fn.Return<string, CliError, CliIo> {
+  const io = yield* CliIo;
+  // 503 failures absorbed so far (the count behind the message's
+  // attempt numbering). The cap lives in `while`, not the schedule:
+  // stopping the schedule by `times` would still run the `while`
+  // predicate on the final step — emitting a spurious retry line
+  let notReady = 0;
+  return yield* client.audit.auditHead({ params: { projectId } }).pipe(
+    Effect.map((response) => response.auditHeadHashHex),
+    Effect.catchTag("AuditHeadNotReady", Effect.fail, (error) =>
+      Effect.fail(
+        cliError(`Cannot fetch the audit head attestation (${toCliError(error).message})`),
       ),
-      Effect.retry({
-        while: (error) => {
-          if (
-            !(error instanceof AuditHeadNotReadyError) ||
-            notReady >= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS - 1
-          ) {
-            return false;
-          }
-          notReady += 1;
-          return Effect.as(
-            io.log(
-              `The server is materializing the audit-head hash column — retrying (attempt ${notReady + 1} of ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS})`,
-            ),
-            true,
-          );
-        },
-        schedule: Schedule.exponential(AUDIT_HEAD_NOT_READY_BASE_DELAY),
-      }),
-      Effect.catchTag(
-        "AuditHeadNotReady",
-        () => Effect.fail(cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)),
-        Effect.fail,
-      ),
-    );
-  });
-}
+    ),
+    Effect.retry({
+      while: (error) => {
+        if (
+          !(error instanceof AuditHeadNotReadyError) ||
+          notReady >= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS - 1
+        ) {
+          return false;
+        }
+        notReady += 1;
+        return Effect.as(
+          io.log(
+            `The server is materializing the audit-head hash column — retrying (attempt ${notReady + 1} of ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS})`,
+          ),
+          true,
+        );
+      },
+      schedule: Schedule.exponential(AUDIT_HEAD_NOT_READY_BASE_DELAY),
+    }),
+    Effect.catchTag(
+      "AuditHeadNotReady",
+      () => Effect.fail(cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)),
+      Effect.fail,
+    ),
+  );
+});
 
 /** One attempt of sign → append → post-acceptance reconciliation (§12-10 (3)). */
-function sendCheckpoint(input: {
+const sendCheckpoint = Effect.fn("checkpoint.sendCheckpoint")(function* (input: {
   readonly client: MaruhiClient;
   readonly view: VerifiedProject;
   readonly tuples: readonly BuiltTuple[];
@@ -373,36 +367,34 @@ function sendCheckpoint(input: {
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-}): Effect.Effect<
+}): Effect.fn.Return<
   { readonly headSeq: number },
   ChainHeadConflictError | CheckpointStateMismatchError | AuditHeadNotReadyError | CliError
 > {
-  return Effect.gen(function* () {
-    const environments: CheckpointEnvironmentEntry[] = input.tuples.map((tuple) => ({
-      environmentId: tuple.environmentId,
-      epoch: tuple.epoch,
-      manifestVersion: tuple.manifestVersion,
-      manifestSigHashHex: tuple.manifestSigHashHex,
-      valuesDigestHex: tuple.valuesDigestHex,
-    }));
-    const entry = yield* signEntryAtHead({
-      verified: input.view,
-      signerUserId: input.signerUserId,
-      operation: {
-        op: "checkpoint",
-        payload: { environments, auditHeadHashHex: input.auditHeadHashHex },
-      },
-      signingKeyPair: input.signingKeyPair,
-      failureText: "Failed to sign the checkpoint entry",
-    });
-    yield* appendCheckpoint(input.client, input.view, entry);
-    // Post-acceptance reconciliation (§12-10 (3)): confirming own entry on
-    // the verified chain. A 2xx is only a transport-layer fact — success is
-    // reported only after this confirmation passes
-    yield* confirmAccepted(entry, input.resync);
-    return { headSeq: entry.seq };
+  const environments: CheckpointEnvironmentEntry[] = input.tuples.map((tuple) => ({
+    environmentId: tuple.environmentId,
+    epoch: tuple.epoch,
+    manifestVersion: tuple.manifestVersion,
+    manifestSigHashHex: tuple.manifestSigHashHex,
+    valuesDigestHex: tuple.valuesDigestHex,
+  }));
+  const entry = yield* signEntryAtHead({
+    verified: input.view,
+    signerUserId: input.signerUserId,
+    operation: {
+      op: "checkpoint",
+      payload: { environments, auditHeadHashHex: input.auditHeadHashHex },
+    },
+    signingKeyPair: input.signingKeyPair,
+    failureText: "Failed to sign the checkpoint entry",
   });
-}
+  yield* appendCheckpoint(input.client, input.view, entry);
+  // Post-acceptance reconciliation (§12-10 (3)): confirming own entry on
+  // the verified chain. A 2xx is only a transport-layer fact — success is
+  // reported only after this confirmation passes
+  yield* confirmAccepted(entry, input.resync);
+  return { headSeq: entry.seq };
+});
 
 /**
  * Sending the append. 409 (CAS) and 422 (CheckpointStateMismatch) are
@@ -448,30 +440,28 @@ function appendCheckpoint(
  * on the re-synced verified chain at that seq. If absent, acceptance is
  * unconfirmed (success is not reported even on a 2xx).
  */
-function confirmAccepted(
+const confirmAccepted = Effect.fn("checkpoint.confirmAccepted")(function* (
   entry: ChainEntry,
   resync: Effect.Effect<VerifiedProject, CliError>,
-): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    const expectedHash = yield* cryptoPromise("computeChainEntryHash", () =>
-      computeChainEntryHash(entry),
-    ).pipe(Effect.mapError(() => cliError("Failed to compute the checkpoint entry hash")));
-    const view = yield* resync.pipe(
-      Effect.mapError((error) =>
-        cliError(
-          `The checkpoint was submitted, but the post-acceptance chain sync failed (${error.message}). Re-run to confirm it landed`,
-        ),
+): Effect.fn.Return<void, CliError> {
+  const expectedHash = yield* cryptoPromise("computeChainEntryHash", () =>
+    computeChainEntryHash(entry),
+  ).pipe(Effect.mapError(() => cliError("Failed to compute the checkpoint entry hash")));
+  const view = yield* resync.pipe(
+    Effect.mapError((error) =>
+      cliError(
+        `The checkpoint was submitted, but the post-acceptance chain sync failed (${error.message}). Re-run to confirm it landed`,
+      ),
+    ),
+  );
+  if (view.history.entryHashAt(entry.seq) !== expectedHash) {
+    return yield* Effect.fail(
+      cliError(
+        "The server returned success, but the re-synced chain does not contain this checkpoint entry — do not trust this submission; re-run (the effect of a mutation is confirmed only through verifiable distribution — AUTH_SPEC §12-10)",
       ),
     );
-    if (view.history.entryHashAt(entry.seq) !== expectedHash) {
-      return yield* Effect.fail(
-        cliError(
-          "The server returned success, but the re-synced chain does not contain this checkpoint entry — do not trust this submission; re-run (the effect of a mutation is confirmed only through verifiable distribution — AUTH_SPEC §12-10)",
-        ),
-      );
-    }
-  });
-}
+  }
+});
 
 /**
  * Zero coverage targets is a failure (when only out-of-scope ones remain,
@@ -507,125 +497,123 @@ function scopeCoverageNotes(
  * Includes the retries and subset fallback of the CRYPTO_SPEC §6.3
  * issuance SHOULD.
  */
-export function issueCheckpoint(
+export const issueCheckpoint = Effect.fn("checkpoint.issueCheckpoint")(function* (
   input: CheckpointInput,
-): Effect.Effect<CheckpointSummary, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const { targets, outOfScope } = yield* resolveTargets(input);
-    const warnings: string[] = yield* scopeCoverageNotes(targets, outOfScope);
-    const attest = yield* determineAuditAttestation(input);
-    const counters: RetryCounters = { mismatch: 0, headConflict: 0, notReady: 0 };
-    let previous: BuiltView | null = null;
-    let subset: readonly EnvironmentId[] | null = null;
-    for (;;) {
-      // The retried unit of §12-10 (3): rebuild the view, refetch the
-      // attestation (fetched after the CAS parent — the chain head the
-      // signing is based on — is settled, §6.3; a retry refetches it too,
-      // §16-2), and send. An AuditHeadNotReady (503) from the accepting
-      // side is retried by Effect.retry on this whole unit — a fresh view
-      // + attestation is exactly what converges it (the failure response
-      // still advanced the server's bounded extension — progress saved,
-      // AUDIT_SPEC §5.1). `while` carries the cumulative cap for the same
-      // reason as fetchAuditHead (the outer for(;;) interleaves other
-      // retriable kinds, so a per-call `times` could not bound it)
-      const attemptBody: Effect.Effect<
-        {
-          readonly built: BuiltView;
-          readonly baseline: BuiltView | null;
-          readonly outcome:
-            | { readonly kind: "accepted"; readonly accepted: { readonly headSeq: number } }
-            | { readonly kind: "head-conflict" }
-            | { readonly kind: "state-mismatch"; readonly reason: string };
-        },
-        AuditHeadNotReadyError | CliError,
-        CliIo
-      > = Effect.gen(function* () {
-        // The type annotation cuts the generator's self-referential inference (built → subset → built)
-        const built: BuiltView = yield* buildTuples(input, subset ?? targets);
-        warnings.push(...built.warnings);
-        // The subset-fallback baseline = the previous build (null while a
-        // subset issuance is in flight — no fallback inside a subset)
-        const baseline = subset === null ? previous : null;
-        previous = built;
-        const auditHeadHashHex = attest
-          ? yield* fetchAuditHead(input.client, input.verified.projectId)
-          : "";
-        const outcome = yield* sendCheckpoint({
-          client: input.client,
-          view: built.view,
-          tuples: built.tuples,
-          auditHeadHashHex,
-          signerUserId: input.signerUserId,
-          signingKeyPair: input.signingKeyPair,
-          resync: input.resync,
-        }).pipe(
-          Effect.map((accepted) => ({ kind: "accepted" as const, accepted })),
-          // The 503 re-fails before classification — it is retried by the
-          // Effect.retry on the unit, not absorbed as an outcome
-          Effect.catchTags(
-            {
-              ChainHeadConflict: () => Effect.succeed({ kind: "head-conflict" as const }),
-              CheckpointStateMismatch: (error) =>
-                Effect.succeed({ kind: "state-mismatch" as const, reason: error.reason }),
-            },
-            // The 503 (AuditHeadNotReady) and the rest re-fail here — the
-            // unit's Effect.retry handles the 503, toCliError is the CLI's
-            // final shape elsewhere
-            Effect.fail,
-          ),
-        );
-        return { built, baseline, outcome };
-      });
-      const attempt = yield* attemptBody.pipe(
-        Effect.retry({
-          while: (error) => {
-            if (
-              !(error instanceof AuditHeadNotReadyError) ||
-              counters.notReady >= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS - 1
-            ) {
-              return false;
-            }
-            counters.notReady += 1;
-            return Effect.as(
-              io.log(
-                `The server is materializing the audit-head hash column — refetching the attestation and retrying (attempt ${counters.notReady + 1} of ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS})`,
-              ),
-              true,
-            );
+): Effect.fn.Return<CheckpointSummary, CliError, CliIo> {
+  const io = yield* CliIo;
+  const { targets, outOfScope } = yield* resolveTargets(input);
+  const warnings: string[] = yield* scopeCoverageNotes(targets, outOfScope);
+  const attest = yield* determineAuditAttestation(input);
+  const counters: RetryCounters = { mismatch: 0, headConflict: 0, notReady: 0 };
+  let previous: BuiltView | null = null;
+  let subset: readonly EnvironmentId[] | null = null;
+  for (;;) {
+    // The retried unit of §12-10 (3): rebuild the view, refetch the
+    // attestation (fetched after the CAS parent — the chain head the
+    // signing is based on — is settled, §6.3; a retry refetches it too,
+    // §16-2), and send. An AuditHeadNotReady (503) from the accepting
+    // side is retried by Effect.retry on this whole unit — a fresh view
+    // + attestation is exactly what converges it (the failure response
+    // still advanced the server's bounded extension — progress saved,
+    // AUDIT_SPEC §5.1). `while` carries the cumulative cap for the same
+    // reason as fetchAuditHead (the outer for(;;) interleaves other
+    // retriable kinds, so a per-call `times` could not bound it)
+    const attemptBody: Effect.Effect<
+      {
+        readonly built: BuiltView;
+        readonly baseline: BuiltView | null;
+        readonly outcome:
+          | { readonly kind: "accepted"; readonly accepted: { readonly headSeq: number } }
+          | { readonly kind: "head-conflict" }
+          | { readonly kind: "state-mismatch"; readonly reason: string };
+      },
+      AuditHeadNotReadyError | CliError,
+      CliIo
+    > = Effect.gen(function* () {
+      // The type annotation cuts the generator's self-referential inference (built → subset → built)
+      const built: BuiltView = yield* buildTuples(input, subset ?? targets);
+      warnings.push(...built.warnings);
+      // The subset-fallback baseline = the previous build (null while a
+      // subset issuance is in flight — no fallback inside a subset)
+      const baseline = subset === null ? previous : null;
+      previous = built;
+      const auditHeadHashHex = attest
+        ? yield* fetchAuditHead(input.client, input.verified.projectId)
+        : "";
+      const outcome = yield* sendCheckpoint({
+        client: input.client,
+        view: built.view,
+        tuples: built.tuples,
+        auditHeadHashHex,
+        signerUserId: input.signerUserId,
+        signingKeyPair: input.signingKeyPair,
+        resync: input.resync,
+      }).pipe(
+        Effect.map((accepted) => ({ kind: "accepted" as const, accepted })),
+        // The 503 re-fails before classification — it is retried by the
+        // Effect.retry on the unit, not absorbed as an outcome
+        Effect.catchTags(
+          {
+            ChainHeadConflict: () => Effect.succeed({ kind: "head-conflict" as const }),
+            CheckpointStateMismatch: (error) =>
+              Effect.succeed({ kind: "state-mismatch" as const, reason: error.reason }),
           },
-          schedule: Schedule.exponential(AUDIT_HEAD_NOT_READY_BASE_DELAY),
-        }),
-        Effect.catchTag(
-          "AuditHeadNotReady",
-          () => Effect.fail(cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)),
+          // The 503 (AuditHeadNotReady) and the rest re-fail here — the
+          // unit's Effect.retry handles the 503, toCliError is the CLI's
+          // final shape elsewhere
           Effect.fail,
         ),
       );
-      if (attempt.outcome.kind === "accepted") {
-        return summarizeAccepted({
-          targets,
-          subset,
-          attest,
-          headSeq: attempt.outcome.accepted.headSeq,
-          warnings,
-        });
-      }
-      // Absorbing a retriable failure: null = retry as-is, array = fall back to the subset
-      const nextSubset = yield* absorbSendFailure({
-        failure: attempt.outcome,
-        counters,
-        built: attempt.built,
-        baseline: attempt.baseline,
+      return { built, baseline, outcome };
+    });
+    const attempt = yield* attemptBody.pipe(
+      Effect.retry({
+        while: (error) => {
+          if (
+            !(error instanceof AuditHeadNotReadyError) ||
+            counters.notReady >= MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS - 1
+          ) {
+            return false;
+          }
+          counters.notReady += 1;
+          return Effect.as(
+            io.log(
+              `The server is materializing the audit-head hash column — refetching the attestation and retrying (attempt ${counters.notReady + 1} of ${MAX_AUDIT_HEAD_NOT_READY_ATTEMPTS})`,
+            ),
+            true,
+          );
+        },
+        schedule: Schedule.exponential(AUDIT_HEAD_NOT_READY_BASE_DELAY),
+      }),
+      Effect.catchTag(
+        "AuditHeadNotReady",
+        () => Effect.fail(cliError(AUDIT_HEAD_NOT_READY_EXHAUSTED)),
+        Effect.fail,
+      ),
+    );
+    if (attempt.outcome.kind === "accepted") {
+      return summarizeAccepted({
+        targets,
+        subset,
+        attest,
+        headSeq: attempt.outcome.accepted.headSeq,
         warnings,
-        io,
       });
-      if (nextSubset !== null) {
-        subset = nextSubset;
-      }
     }
-  });
-}
+    // Absorbing a retriable failure: null = retry as-is, array = fall back to the subset
+    const nextSubset = yield* absorbSendFailure({
+      failure: attempt.outcome,
+      counters,
+      built: attempt.built,
+      baseline: attempt.baseline,
+      warnings,
+      io,
+    });
+    if (nextSubset !== null) {
+      subset = nextSubset;
+    }
+  }
+});
 
 /** issueCheckpoint's retry counters (an independent budget per failure kind). */
 interface RetryCounters {
@@ -652,7 +640,7 @@ interface RetryCounters {
  * not silenced either: the message guides the cause and the fix by
  * re-running — session-38 ruling AG)
  */
-function absorbSendFailure(input: {
+const absorbSendFailure = Effect.fn("checkpoint.absorbSendFailure")(function* (input: {
   readonly failure:
     | { readonly kind: "head-conflict" }
     | { readonly kind: "state-mismatch"; readonly reason: string };
@@ -661,36 +649,34 @@ function absorbSendFailure(input: {
   readonly baseline: BuiltView | null;
   readonly warnings: string[];
   readonly io: CliIoShape;
-}): Effect.Effect<readonly EnvironmentId[] | null, CliError> {
-  return Effect.gen(function* () {
-    const { failure, counters, io } = input;
-    if (failure.kind === "head-conflict") {
-      counters.headConflict += 1;
-      yield* ensureHeadConflictBudget(counters.headConflict);
-      yield* io.log("The chain head advanced while the checkpoint was in flight — re-signing");
-      return null;
-    }
-    counters.mismatch += 1;
-    if (counters.mismatch < MAX_STATE_MISMATCH_ATTEMPTS) {
-      yield* io.log(
-        `The server-side state advanced past this checkpoint's view (${failure.reason}) — re-pulling and retrying (attempt ${counters.mismatch + 1} of ${MAX_STATE_MISMATCH_ATTEMPTS})`,
-      );
-      return null;
-    }
-    const stableIds = yield* stableSubsetOrFail({
-      built: input.built,
-      baseline: input.baseline,
-      reason: failure.reason,
-    });
-    input.warnings.push(
-      `Bounded retries were exhausted by concurrent writes; issuing a partial checkpoint covering the ${stableIds.length} stable environment(s) (a partial baseline is strictly stronger than none — CRYPTO_SPEC §6.3). Re-run \`maruhi project checkpoint\` later to cover the rest`,
-    );
+}): Effect.fn.Return<readonly EnvironmentId[] | null, CliError> {
+  const { failure, counters, io } = input;
+  if (failure.kind === "head-conflict") {
+    counters.headConflict += 1;
+    yield* ensureHeadConflictBudget(counters.headConflict);
+    yield* io.log("The chain head advanced while the checkpoint was in flight — re-signing");
+    return null;
+  }
+  counters.mismatch += 1;
+  if (counters.mismatch < MAX_STATE_MISMATCH_ATTEMPTS) {
     yield* io.log(
-      `Retrying with the stable subset of ${stableIds.length} environment(s) (bounded retries exhausted)`,
+      `The server-side state advanced past this checkpoint's view (${failure.reason}) — re-pulling and retrying (attempt ${counters.mismatch + 1} of ${MAX_STATE_MISMATCH_ATTEMPTS})`,
     );
-    return stableIds;
+    return null;
+  }
+  const stableIds = yield* stableSubsetOrFail({
+    built: input.built,
+    baseline: input.baseline,
+    reason: failure.reason,
   });
-}
+  input.warnings.push(
+    `Bounded retries were exhausted by concurrent writes; issuing a partial checkpoint covering the ${stableIds.length} stable environment(s) (a partial baseline is strictly stronger than none — CRYPTO_SPEC §6.3). Re-run \`maruhi project checkpoint\` later to cover the rest`,
+  );
+  yield* io.log(
+    `Retrying with the stable subset of ${stableIds.length} environment(s) (bounded retries exhausted)`,
+  );
+  return stableIds;
+});
 
 /** The post-acceptance summary (for a subset issuance, skipped makes the miss of the all-environments SHOULD explicit). */
 function summarizeAccepted(input: {
@@ -825,41 +811,39 @@ function latestCheckpointEntry(
  * (null = no proposal). timestampMs is the client-declared time, used only
  * for the proposal's threshold decision (not for verification).
  */
-export function checkpointProposal(input: {
+export const checkpointProposal = Effect.fn("checkpoint.checkpointProposal")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
   readonly nowMs: number;
-}): Effect.Effect<string | null, never> {
-  return Effect.gen(function* () {
-    const member = input.verified.state.members.get(input.signerUserId);
-    if (member === undefined || member.role === "reader") {
-      // Issuance is member or above (§6.2). No proposal for a reader
-      return null;
-    }
-    const plainBasis = latestCheckpointEntry(input.verified, false);
-    const stale = (entry: ChainEntry | null): boolean =>
-      baselineIsStale(entry, input.verified, input.nowMs);
-    const adminRole = member.role === "admin" || member.role === "owner";
-    if (!adminRole) {
-      return stale(plainBasis) ? PLAIN_BASELINE_PROPOSAL : null;
-    }
-    const attestedBasis = latestCheckpointEntry(input.verified, true);
-    if (!stale(attestedBasis)) {
-      return null;
-    }
-    // The notarized baseline is stale: check the effective authority (the
-    // scope half) before deciding the proposal's wording. /auth/me is
-    // fetched only when the proposal is about to hold
-    const effectiveAdmin = yield* determineAuditAttestation(input).pipe(
-      Effect.orElseSucceed(() => false),
-    );
-    if (effectiveAdmin) {
-      return ATTESTED_BASELINE_PROPOSAL;
-    }
+}): Effect.fn.Return<string | null, never> {
+  const member = input.verified.state.members.get(input.signerUserId);
+  if (member === undefined || member.role === "reader") {
+    // Issuance is member or above (§6.2). No proposal for a reader
+    return null;
+  }
+  const plainBasis = latestCheckpointEntry(input.verified, false);
+  const stale = (entry: ChainEntry | null): boolean =>
+    baselineIsStale(entry, input.verified, input.nowMs);
+  const adminRole = member.role === "admin" || member.role === "owner";
+  if (!adminRole) {
     return stale(plainBasis) ? PLAIN_BASELINE_PROPOSAL : null;
-  });
-}
+  }
+  const attestedBasis = latestCheckpointEntry(input.verified, true);
+  if (!stale(attestedBasis)) {
+    return null;
+  }
+  // The notarized baseline is stale: check the effective authority (the
+  // scope half) before deciding the proposal's wording. /auth/me is
+  // fetched only when the proposal is about to hold
+  const effectiveAdmin = yield* determineAuditAttestation(input).pipe(
+    Effect.orElseSucceed(() => false),
+  );
+  if (effectiveAdmin) {
+    return ATTESTED_BASELINE_PROPOSAL;
+  }
+  return stale(plainBasis) ? PLAIN_BASELINE_PROPOSAL : null;
+});
 
 /**
  * The anchor-refresh proposal (session-25 §8 / the second half of

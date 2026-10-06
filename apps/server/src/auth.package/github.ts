@@ -94,19 +94,17 @@ type CallError = HttpClientError.HttpClientError | Schema.SchemaError | Cause.Ti
  * a non-ok status (each caller decides its meaning); transport errors,
  * timeouts, and unexpected body shapes stay in the error channel.
  */
-function fetchJson<S extends Schema.Constraint>(
+const fetchJson = Effect.fn("github.fetchJson")(function* <S extends Schema.Constraint>(
   request: HttpClientRequest.HttpClientRequest,
   schema: S,
-): Effect.Effect<S["Type"] | null, CallError, HttpClient.HttpClient | S["DecodingServices"]> {
-  return Effect.gen(function* () {
-    const client = yield* HttpClient.HttpClient;
-    const response = yield* client.execute(request);
-    if (response.status < 200 || response.status >= 300) {
-      return null;
-    }
-    return yield* response.pipe(HttpClientResponse.schemaBodyJson(schema));
-  }).pipe(Effect.timeout(REQUEST_TIMEOUT));
-}
+): Effect.fn.Return<S["Type"] | null, CallError, HttpClient.HttpClient | S["DecodingServices"]> {
+  const client = yield* HttpClient.HttpClient;
+  const response = yield* client.execute(request);
+  if (response.status < 200 || response.status >= 300) {
+    return null;
+  }
+  return yield* response.pipe(HttpClientResponse.schemaBodyJson(schema));
+}, Effect.timeout(REQUEST_TIMEOUT));
 
 /**
  * RFC 6749 §4.1.3: the token endpoint body is application/x-www-form-urlencoded.
@@ -157,22 +155,20 @@ function fetchVerifiedPrimaryEmail(
   );
 }
 
-function toIdentity(
+const toIdentity = Effect.fn("github.toIdentity")(function* (
   user: UserResponse | null,
   accessToken: string,
-): Effect.Effect<VerifiedIdentity | null, CallError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    if (user === null || typeof user.id !== "number") {
-      return null;
-    }
-    return {
-      provider: "github" as const,
-      providerUserId: String(user.id),
-      providerLogin: user.login ?? null,
-      verifiedEmail: yield* fetchVerifiedPrimaryEmail(accessToken),
-    };
-  });
-}
+): Effect.fn.Return<VerifiedIdentity | null, CallError, HttpClient.HttpClient> {
+  if (user === null || typeof user.id !== "number") {
+    return null;
+  }
+  return {
+    provider: "github" as const,
+    providerUserId: String(user.id),
+    providerLogin: user.login ?? null,
+    verifiedEmail: yield* fetchVerifiedPrimaryEmail(accessToken),
+  };
+});
 
 /** The outbound client: no header of its own (packages/core/src/egress.ts). */
 const githubHttpClient = egressHttpClientLayer();

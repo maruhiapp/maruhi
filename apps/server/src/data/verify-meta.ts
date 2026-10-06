@@ -115,17 +115,17 @@ const ensureLayoutShape = (
  * On success, returns the server-recomputed signed_bytes hash (written to the
  * stored row).
  */
-export const ensureMetaStatementSignature = (input: {
-  readonly projectId: string;
-  readonly environmentId: string;
-  readonly target: MetaStatementTarget;
-  readonly history: ChainHistoryIndex;
-  readonly member: MemberWithDevice;
-  readonly statement: MetaStatementInput;
-  /** When metaVersion > 1, the anchor of the stored previous statement (fetched by the caller). */
-  readonly predecessor?: MetaPredecessor | undefined;
-}) =>
-  Effect.gen(function* () {
+export const ensureMetaStatementSignature = Effect.fn("verify-meta.ensureMetaStatementSignature")(
+  function* (input: {
+    readonly projectId: string;
+    readonly environmentId: string;
+    readonly target: MetaStatementTarget;
+    readonly history: ChainHistoryIndex;
+    readonly member: MemberWithDevice;
+    readonly statement: MetaStatementInput;
+    /** When metaVersion > 1, the anchor of the stored previous statement (fetched by the caller). */
+    readonly predecessor?: MetaPredecessor | undefined;
+  }) {
     yield* ensureLayoutShape(input.statement);
     const verified = yield* catchCryptoErrors(
       cryptoEffect(() =>
@@ -195,7 +195,8 @@ export const ensureMetaStatementSignature = (input: {
       },
     );
     return verified.signedBytesHashHex;
-  });
+  },
+);
 
 /**
  * §12-1: a name that is not in NFC normal form gets a 422. The server only
@@ -347,7 +348,7 @@ const ensureMetaQuota = (
  * transition rules, layout monotonicity).
  * On success, returns the server-recomputed signed_bytes hash.
  */
-export const acceptMetaStatement = (input: {
+export const acceptMetaStatement = Effect.fn("verify-meta.acceptMetaStatement")(function* (input: {
   readonly projectId: string;
   readonly environmentId: string;
   readonly target: MetaStatementTarget;
@@ -361,66 +362,65 @@ export const acceptMetaStatement = (input: {
    * it is not passed for them).
    */
   readonly schemaPolicy?: SchemaPolicy;
-}) =>
-  Effect.gen(function* () {
-    // The support-range check runs first (see the ensureSupportedLayout doc — ruling CR)
-    yield* ensureSupportedLayout(input.statement);
-    yield* ensureMetaQuota(input.latestMetaVersion, input.statement);
-    yield* ensureMetaCas(input.latestMetaVersion, input.statement);
-    const store = yield* DataStore;
-    const anchor =
-      input.target.kind === "variable"
-        ? yield* store.variableMetaAnchor(
-            input.environmentId,
-            input.target.variableId,
-            input.latestMetaVersion,
-          )
-        : yield* store.environmentMetaAnchor(input.environmentId, input.latestMetaVersion);
-    if (anchor === null) {
-      return yield* Effect.die(new Error("meta predecessor row missing after CAS acceptance"));
-    }
-    // Enablement gate (§12-11): reject v2 reissue of a v1 variable while
-    // disabled (continuation statements whose predecessor is v2 pass regardless
-    // of the policy)
-    if (input.schemaPolicy !== undefined) {
-      yield* ensureSchemaPolicyAllowsLayout({
-        schemaPolicy: input.schemaPolicy,
-        statement: input.statement,
-        predecessorLayoutVersion: anchor.layoutVersion,
-      });
-    }
-    if (input.target.kind === "variable" && input.statement.status === "deleted") {
-      // The delete statement's schema fields and layout must match the
-      // predecessor (§12-5). The description acceptance policy does **not**
-      // apply to deletes: the delete rule is byte-exact preservation of the
-      // stored value, and that value was already checked at acceptance.
-      // Applying it would make existing v2 variables undeletable after a
-      // self-host lowers the limit (a collision with §12-8's "limits never
-      // block deletion" principle. This also removes the path where an
-      // out-of-contract description-rejected would surface as a 500: a
-      // modified description is caught first by this check's payload-mismatch)
-      const field = deletePreservationMismatch(anchor, input.statement);
-      if (field !== null) {
-        return yield* rejectData({ kind: "payload-mismatch", field });
-      }
-    } else {
-      // The description acceptance policy (§12-8 — v1 statements are out of scope)
-      yield* ensureDescriptionPolicy(input.statement);
-    }
-    return yield* ensureMetaStatementSignature({
-      projectId: input.projectId,
-      environmentId: input.environmentId,
-      target: input.target,
-      history: input.history,
-      member: input.member,
+}) {
+  // The support-range check runs first (see the ensureSupportedLayout doc — ruling CR)
+  yield* ensureSupportedLayout(input.statement);
+  yield* ensureMetaQuota(input.latestMetaVersion, input.statement);
+  yield* ensureMetaCas(input.latestMetaVersion, input.statement);
+  const store = yield* DataStore;
+  const anchor =
+    input.target.kind === "variable"
+      ? yield* store.variableMetaAnchor(
+          input.environmentId,
+          input.target.variableId,
+          input.latestMetaVersion,
+        )
+      : yield* store.environmentMetaAnchor(input.environmentId, input.latestMetaVersion);
+  if (anchor === null) {
+    return yield* Effect.die(new Error("meta predecessor row missing after CAS acceptance"));
+  }
+  // Enablement gate (§12-11): reject v2 reissue of a v1 variable while
+  // disabled (continuation statements whose predecessor is v2 pass regardless
+  // of the policy)
+  if (input.schemaPolicy !== undefined) {
+    yield* ensureSchemaPolicyAllowsLayout({
+      schemaPolicy: input.schemaPolicy,
       statement: input.statement,
-      // The anchor's stored real values (the layout_version column — input to
-      // the layout-monotonicity check. MetaPredecessor.layoutVersion is a
-      // mandatory fail-closed field)
-      predecessor: {
-        signedBytesHashHex: anchor.signedBytesHashHex,
-        status: anchor.status,
-        layoutVersion: anchor.layoutVersion,
-      },
+      predecessorLayoutVersion: anchor.layoutVersion,
     });
+  }
+  if (input.target.kind === "variable" && input.statement.status === "deleted") {
+    // The delete statement's schema fields and layout must match the
+    // predecessor (§12-5). The description acceptance policy does **not**
+    // apply to deletes: the delete rule is byte-exact preservation of the
+    // stored value, and that value was already checked at acceptance.
+    // Applying it would make existing v2 variables undeletable after a
+    // self-host lowers the limit (a collision with §12-8's "limits never
+    // block deletion" principle. This also removes the path where an
+    // out-of-contract description-rejected would surface as a 500: a
+    // modified description is caught first by this check's payload-mismatch)
+    const field = deletePreservationMismatch(anchor, input.statement);
+    if (field !== null) {
+      return yield* rejectData({ kind: "payload-mismatch", field });
+    }
+  } else {
+    // The description acceptance policy (§12-8 — v1 statements are out of scope)
+    yield* ensureDescriptionPolicy(input.statement);
+  }
+  return yield* ensureMetaStatementSignature({
+    projectId: input.projectId,
+    environmentId: input.environmentId,
+    target: input.target,
+    history: input.history,
+    member: input.member,
+    statement: input.statement,
+    // The anchor's stored real values (the layout_version column — input to
+    // the layout-monotonicity check. MetaPredecessor.layoutVersion is a
+    // mandatory fail-closed field)
+    predecessor: {
+      signedBytesHashHex: anchor.signedBytesHashHex,
+      status: anchor.status,
+      layoutVersion: anchor.layoutVersion,
+    },
   });
+});

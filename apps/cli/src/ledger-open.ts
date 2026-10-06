@@ -39,40 +39,38 @@ import { type CliSession, importMasterKeys, loadMasterKeys } from "./session.ts"
 export type LedgerOpenVia = "code" | "passkey";
 
 /** Opens the ledger blob B and loads it as the reserve key (memory only). */
-export function openLedgerReserve(input: {
+export const openLedgerReserve = Effect.fn("ledger-open.openLedgerReserve")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly via: LedgerOpenVia;
-}): Effect.Effect<ReserveKeys, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const record: StoredMasterKey =
-      input.via === "passkey"
-        ? yield* openReserveWithPasskey({ session: input.session, client: input.client })
-        : yield* unwrapRecoveryBlobWithCode({ session: input.session, client: input.client });
-    const keys = yield* mapUnloadableRecoveryBlob(importMasterKeys(record));
-    return {
-      reserve: true,
-      record: keys.record,
-      encKeyPair: keys.encKeyPair,
-      sigKeyPair: keys.sigKeyPair,
-      fingerprintHex: keys.fingerprintHex,
-    } satisfies ReserveKeys;
-  });
-}
+}): Effect.fn.Return<ReserveKeys, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+  const record: StoredMasterKey =
+    input.via === "passkey"
+      ? yield* openReserveWithPasskey({ session: input.session, client: input.client })
+      : yield* unwrapRecoveryBlobWithCode({ session: input.session, client: input.client });
+  const keys = yield* mapUnloadableRecoveryBlob(importMasterKeys(record));
+  return {
+    reserve: true,
+    record: keys.record,
+    encKeyPair: keys.encKeyPair,
+    sigKeyPair: keys.sigKeyPair,
+    fingerprintHex: keys.fingerprintHex,
+  } satisfies ReserveKeys;
+});
 
 /**
  * Opens the ledger for a change (passkey sealing / guardian designation): the key
  * must carry the reserve-key mark and be revoked nowhere (DK K16); it is then
  * recorded locally as the reserve key (state restoration — K4-2 counterexample 2).
  */
-export function openLedgerReserveForChange(input: {
-  readonly session: CliSession;
-  readonly client: MaruhiClient;
-  readonly via: LedgerOpenVia;
-  /** The re-run command embedded in the refusal wording (e.g. "maruhi guardian add …"). */
-  readonly command: string;
-}): Effect.Effect<ReserveKeys, CliError, CliServices> {
-  return Effect.gen(function* () {
+export const openLedgerReserveForChange = Effect.fn("ledger-open.openLedgerReserveForChange")(
+  function* (input: {
+    readonly session: CliSession;
+    readonly client: MaruhiClient;
+    readonly via: LedgerOpenVia;
+    /** The re-run command embedded in the refusal wording (e.g. "maruhi guardian add …"). */
+    readonly command: string;
+  }): Effect.fn.Return<ReserveKeys, CliError, CliServices> {
     // Loading the device key comes before opening (a device without a key is not qualified to change the ledger)
     yield* loadMasterKeys(input.session);
     const reserve = yield* openLedgerReserve(input);
@@ -83,8 +81,8 @@ export function openLedgerReserveForChange(input: {
     });
     yield* settleLedgerKeyForChange({ ...input, reserve, verdict });
     return reserve;
-  });
-}
+  },
+);
 
 /**
  * Whether the opened ledger key may be used by a ledger-changing
@@ -92,13 +90,13 @@ export function openLedgerReserveForChange(input: {
  * reserve-key mark, stop without recording and name `key
  * recovery`. Otherwise record it.
  */
-export function settleLedgerKeyForChange(input: {
-  readonly session: CliSession;
-  readonly reserve: ReserveKeys;
-  readonly verdict: ReserveVerdict;
-  readonly command: string;
-}): Effect.Effect<void, CliError, CliIo | OwnDeviceStore> {
-  return Effect.gen(function* () {
+export const settleLedgerKeyForChange = Effect.fn("ledger-open.settleLedgerKeyForChange")(
+  function* (input: {
+    readonly session: CliSession;
+    readonly reserve: ReserveKeys;
+    readonly verdict: ReserveVerdict;
+    readonly command: string;
+  }): Effect.fn.Return<void, CliError, CliIo | OwnDeviceStore> {
     const { reserve, verdict } = input;
     const fingerprintHex = reserve.fingerprintHex;
     if (verdict.kind === "revoked") {
@@ -119,8 +117,8 @@ export function settleLedgerKeyForChange(input: {
     yield* noteUncheckedLedgerKey(fingerprintHex, verdict);
     yield* recordReserveLocally(input.session, reserve);
     yield* logNote(`opened the reserve key (fingerprint ${fingerprintHex}) for this change`);
-  });
-}
+  },
+);
 
 /**
  * Names, in a Note, the range where the ledger key's revocation could not be checked

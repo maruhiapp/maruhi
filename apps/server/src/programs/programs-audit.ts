@@ -145,69 +145,70 @@ export function resolvePageLimit(limit: number | undefined): number {
  * seq nor the row count rides — §7's count non-disclosure). Zero
  * audit rows return the empty string.
  */
-export const auditHeadProgram = (actor: DataActor, cache: StateCache) =>
-  Effect.gen(function* () {
-    const context = yield* requireMemberState(actor.userId, "reader", cache);
-    if (!roleAtLeast(context.member.role, "admin")) {
-      return yield* rejectData({ kind: "insufficient-role" });
-    }
-    const audit = yield* AuditStore;
-    // Extend the accumulated-hash column up to MAX(seq) before
-    // reading (lazy materialization — the first call doubles as the
-    // initialization migration over existing rows. AUDIT_SPEC §5.1).
-    // Note: this GET is read-shaped but is an endpoint that
-    // **deliberately writes** (lazy materialization of a derived
-    // column = the contract "the read path extends before reading").
-    // It is serialized under the op permit and the extension is
-    // idempotent, so retries are safe; but introducing response
-    // caching or rerouting on the assumption "GET = side-effect-free"
-    // would break this side effect.
-    // Bounded extension: hitting the cap (= not reaching MAX(seq))
-    // returns a retryable audit-head-not-ready (503) rather than a
-    // stale head — since the refusal comes after the authorization
-    // checks (the 404 / 403 above), it composes with §11-2's
-    // existence hiding.
-    // The DO storage-total guard (AUTH_SPEC §12-8): only when the
-    // materialization above needs a write (the column is short of
-    // MAX(seq)), a DO at or beyond the refusal threshold is rejected
-    // with 422 project-storage-bytes (reading the audit rows
-    // themselves — auditEvents — is not guarded). After the
-    // authorization checks (404 / 403) = composes with §11-2
-    yield* ensureStorageAdmitsAuditHeadExtension;
-    if ((yield* audit.ensureHeadCurrent) === "more-remains") {
-      return yield* rejectData({ kind: "audit-head-not-ready" });
-    }
-    return { auditHeadHashHex: audit.currentHeadHexSync() };
-  });
+export const auditHeadProgram = Effect.fn("programs-audit.auditHeadProgram")(function* (
+  actor: DataActor,
+  cache: StateCache,
+) {
+  const context = yield* requireMemberState(actor.userId, "reader", cache);
+  if (!roleAtLeast(context.member.role, "admin")) {
+    return yield* rejectData({ kind: "insufficient-role" });
+  }
+  const audit = yield* AuditStore;
+  // Extend the accumulated-hash column up to MAX(seq) before
+  // reading (lazy materialization — the first call doubles as the
+  // initialization migration over existing rows. AUDIT_SPEC §5.1).
+  // Note: this GET is read-shaped but is an endpoint that
+  // **deliberately writes** (lazy materialization of a derived
+  // column = the contract "the read path extends before reading").
+  // It is serialized under the op permit and the extension is
+  // idempotent, so retries are safe; but introducing response
+  // caching or rerouting on the assumption "GET = side-effect-free"
+  // would break this side effect.
+  // Bounded extension: hitting the cap (= not reaching MAX(seq))
+  // returns a retryable audit-head-not-ready (503) rather than a
+  // stale head — since the refusal comes after the authorization
+  // checks (the 404 / 403 above), it composes with §11-2's
+  // existence hiding.
+  // The DO storage-total guard (AUTH_SPEC §12-8): only when the
+  // materialization above needs a write (the column is short of
+  // MAX(seq)), a DO at or beyond the refusal threshold is rejected
+  // with 422 project-storage-bytes (reading the audit rows
+  // themselves — auditEvents — is not guarded). After the
+  // authorization checks (404 / 403) = composes with §11-2
+  yield* ensureStorageAdmitsAuditHeadExtension;
+  if ((yield* audit.ensureHeadCurrent) === "more-remains") {
+    return yield* rejectData({ kind: "audit-head-not-ready" });
+  }
+  return { auditHeadHashHex: audit.currentHeadHexSync() };
+});
 
-export const auditEventsProgram = (
+export const auditEventsProgram = Effect.fn("programs-audit.auditEventsProgram")(function* (
   actor: DataActor,
   query: AuditEventsQueryInput,
   cache: StateCache,
-) =>
-  Effect.gen(function* () {
-    const context = yield* requireMemberState(actor.userId, "reader", cache);
-    const adminVisibility = query.scopeAdmin && roleAtLeast(context.member.role, "admin");
-    if (!adminVisibility && query.actorUserId !== undefined && query.actorUserId !== actor.userId) {
-      return yield* rejectData({ kind: "insufficient-role" });
-    }
-    const audit = yield* AuditStore;
-    return yield* Effect.sync((): readonly AuditEventValue[] =>
-      audit
-        .queryEventsSync({
-          beforeRowId: query.beforeRowId ?? null,
-          limit: resolvePageLimit(query.limit),
-          event: query.event ?? null,
-          eventPrefix: query.eventPrefix ?? null,
-          chainSeqPresent: query.chainSeqPresent === true,
-          actorUserId: query.actorUserId ?? null,
-          targetUserId: query.targetUserId ?? null,
-          variableId: query.variableId ?? null,
-          environmentId: query.environmentId ?? null,
-          visibility: adminVisibility
-            ? { kind: "admin" }
-            : { kind: "class1-or-self", selfUserId: actor.userId },
-        })
-        .map((row) => toAuditEventValue(row, adminVisibility)),
-    );
-  });
+) {
+  const context = yield* requireMemberState(actor.userId, "reader", cache);
+  const adminVisibility = query.scopeAdmin && roleAtLeast(context.member.role, "admin");
+  if (!adminVisibility && query.actorUserId !== undefined && query.actorUserId !== actor.userId) {
+    return yield* rejectData({ kind: "insufficient-role" });
+  }
+  const audit = yield* AuditStore;
+  return yield* Effect.sync((): readonly AuditEventValue[] =>
+    audit
+      .queryEventsSync({
+        beforeRowId: query.beforeRowId ?? null,
+        limit: resolvePageLimit(query.limit),
+        event: query.event ?? null,
+        eventPrefix: query.eventPrefix ?? null,
+        chainSeqPresent: query.chainSeqPresent === true,
+        actorUserId: query.actorUserId ?? null,
+        targetUserId: query.targetUserId ?? null,
+        variableId: query.variableId ?? null,
+        environmentId: query.environmentId ?? null,
+        visibility: adminVisibility
+          ? { kind: "admin" }
+          : { kind: "class1-or-self", selfUserId: actor.userId },
+      })
+      .map((row) => toAuditEventValue(row, adminVisibility)),
+  );
+});
