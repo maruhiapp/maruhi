@@ -324,6 +324,38 @@ describe("acceptance-time cross-checking for standalone checkpoints (the 5 reaso
     await expectMismatch(attempt.response, "manifest-mismatch");
   });
 
+  it("refuses a live environment with no stored manifest as a server fault, not a mismatch (0.28-draft)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    // Taken before the row goes: the tuple names the manifest the
+    // environment had, so only the missing row is wrong
+    const tuple = await matchingTuple(ENV);
+    // The creation composite writes the manifest atomically, so a live
+    // environment without one can only come from a corrupted DO or a
+    // crafted snapshot — an invariant violation (AUTH_SPEC §12-5 (6) /
+    // §16-2), the same 500 as every other surface, never a 422 that
+    // reads as the issuer's stale view
+    await queryProjectDo(
+      projectId,
+      "DELETE FROM environment_manifests WHERE environment_id = ?",
+      ENV,
+    );
+    const headBefore = fixture.head.seq;
+    const mirrorsBefore = await checkpointMirrorCount();
+    const attempt = await sendStandaloneCheckpoint({
+      actorUserId: MEMBER,
+      environments: [tuple],
+    });
+    expect(attempt.response.status).toBe(500);
+    // The defect body carries no environment data
+    const body = await attempt.response.text();
+    expect(body).not.toContain(ENV);
+    expect(body).not.toContain("manifestVersion");
+    // Atomicity: nothing reaches the chain or the mirrors
+    const chain = await requestJson("GET", "/chain", token(OWNER));
+    expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore);
+    expect(await checkpointMirrorCount()).toBe(mirrorsBefore);
+  });
+
   it("rejects a values digest that mismatches the stored enumeration (values-digest-mismatch)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, "var-values-0001", "DATABASE_URL", "postgres://alpha");
