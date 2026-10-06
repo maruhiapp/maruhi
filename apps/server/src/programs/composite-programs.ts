@@ -50,6 +50,7 @@ import type { DataWriteOps } from "../data/data-store.ts";
 import { DataStore } from "../data/data-store.ts";
 import {
   acceptEnvManifest,
+  acceptEnvManifestForCreation,
   manifestDigestEntries,
   storedEnvMeta,
 } from "../data/verify-manifest.ts";
@@ -185,10 +186,10 @@ const ensureCompositeWrapSet = Effect.fn("composite-programs.ensureCompositeWrap
  * the epoch the bundled entry establishes, manifestVersion = the bundled
  * manifest's version. The hash match between the tuple's
  * manifest_sig_hash and the bundled manifest is uniquely owned by
- * acceptEnvManifest's checkpoint-binding check (CRYPTO_SPEC §4.3 (2))
- * against the history after both entries apply (§6.4's "the split with
- * the bundled-contents match check is uniquified in the implementation
- * PR").
+ * verifyManifestCryptographically's checkpoint-binding check
+ * (CRYPTO_SPEC §4.3 (2)) against the history after both entries apply
+ * (§6.4's "the split with the bundled-contents match check is
+ * uniquified in the implementation PR").
  */
 const ensureBoundaryCheckpointShape = Effect.fn("composite-programs.ensureBoundaryCheckpointShape")(
   function* (input: {
@@ -403,8 +404,8 @@ export const createEnvironmentCompositeProgram = Effect.fn(
   // The composite-internal consistency check (§12-4): the manifest's
   // epoch = the epoch the bundled entry establishes (creation = 1). An
   // early composite-internal rejection like the wraps' epoch check; the
-  // full epoch-consistency verification is done by acceptEnvManifest
-  // (over the post-application history)
+  // full epoch-consistency verification is done by
+  // acceptEnvManifestForCreation (over the post-application history)
   if (input.manifest.epoch !== 1) {
     return yield* rejectData({ kind: "payload-mismatch", field: "manifestEpoch" });
   }
@@ -460,7 +461,7 @@ export const createEnvironmentCompositeProgram = Effect.fn(
   // bundled manifest it is rejected as checkpoint-binding-mismatch =
   // doubling as the §12-4 hash-match check) against the history after
   // both entries apply (applied.history)
-  const manifestSignedBytesHashHex = yield* acceptEnvManifest({
+  const manifestSignedBytesHashHex = yield* acceptEnvManifestForCreation({
     projectId,
     environmentId,
     history: applied.history,

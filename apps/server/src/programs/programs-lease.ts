@@ -45,7 +45,7 @@ import type { EnvironmentPullValue, InitializedChain } from "../data/data-plane.
 import {
   currentEpochOf,
   loadInitializedChain,
-  optionalDistributionFields,
+  optionalCheckpointSnapshot,
 } from "../data/data-plane.ts";
 import { DataStore } from "../data/data-store.ts";
 import type { StateCache } from "../do/chain-store.ts";
@@ -338,7 +338,13 @@ export const leaseProgram = Effect.fn("programs-lease.leaseProgram")(function* (
   const declaredVariables = yield* store.declaredVariableStatements(environmentId);
   // The latest manifest (§14-2 — material for the workload's verification
   // obligation §9.1 (5); the receiving side rejects any missing uniformly)
+  // — a required response field since 0.28-draft: a created environment
+  // always has a stored row (§12-4's atomic write), so a missing row is
+  // an invariant violation = defect, never an omission
   const manifest = yield* store.environmentManifest(environmentId);
+  if (manifest === null) {
+    return yield* Effect.die(new Error("environment manifest row missing"));
+  }
   // The value snapshot at the checkpoint (§14-2 — the same material as
   // §12-7; null for an environment without a baseline = not included)
   const checkpointSnapshot = yield* store.checkpointSnapshot(environmentId);
@@ -446,6 +452,7 @@ export const leaseProgram = Effect.fn("programs-lease.leaseProgram")(function* (
     deletedVariables,
     ...(declaredVariables.length === 0 ? {} : { declaredVariables }),
     leases,
-    ...optionalDistributionFields(manifest, checkpointSnapshot),
+    manifest,
+    ...optionalCheckpointSnapshot(checkpointSnapshot),
   } satisfies LeaseValue;
 });

@@ -320,19 +320,29 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       head: headOf(built, 4),
       metaVersion: 2,
     });
+    const envStatement = await environmentStatementFor({
+      projectId: built.projectId,
+      environmentId: ENV_ID,
+      name: ENV_ID,
+      author: owner,
+      head: headOf(built, 1),
+    });
     const pullJson = {
       environmentId: ENV_ID,
       currentEpoch: 1,
-      statement: await environmentStatementFor({
-        projectId: built.projectId,
-        environmentId: ENV_ID,
-        name: ENV_ID,
-        author: owner,
-        head: headOf(built, 1),
-      }),
+      statement: envStatement,
       variables: [{ variableId: "vf", statement: forgedStatement, value }],
       deletedVariables: [],
       deks: [wrap],
+      manifest: await manifestFor({
+        projectId: built.projectId,
+        environmentId: ENV_ID,
+        epoch: 1,
+        issuer: owner,
+        head: headOf(built, built.entries.length),
+        envStatement,
+        statements: [forgedStatement],
+      }),
       schemaPolicy: "enabled" as const,
     };
     const server = await MockServer.start([

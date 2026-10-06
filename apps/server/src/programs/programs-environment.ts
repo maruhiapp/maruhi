@@ -27,7 +27,7 @@ import {
   currentEpochOf,
   dataEvent,
   ensureDevicePermission,
-  optionalDistributionFields,
+  optionalCheckpointSnapshot,
   rejectData,
   requireEnvironmentAccess,
   requireMemberState,
@@ -233,10 +233,10 @@ export const listEnvironmentsProgram = Effect.fn("programs-environment.listEnvir
  * requires environment ∈ scope — §12-7; the metadata-only mode is
  * scope-agnostic = plaintext meta is visible to all members —
  * CRYPTO_SPEC §6.3), environment existence, and the environment's
- * own latest statement (bundled as §12-7 verification material).
- * The environment row is created atomically with its statement
- * (composite acceptance), so its absence is an invariant violation
- * = defect.
+ * own latest statement and manifest (bundled as §12-7 verification
+ * material). The environment row is created atomically with its
+ * statement and its manifest (§12-4's creation composite), so the
+ * absence of either is an invariant violation = defect.
  */
 const requirePullContext = Effect.fn("programs-environment.requirePullContext")(function* (
   actor: DataActor,
@@ -254,10 +254,14 @@ const requirePullContext = Effect.fn("programs-environment.requirePullContext")(
   if (statement === null) {
     return yield* Effect.die(new Error("environment meta statement row missing"));
   }
-  // The latest manifest (the material bundled per §12-7). Since
-  // environment creation, every meta operation, and rotate upsert
-  // it atomically, it always exists for a created environment
+  // The latest manifest (the material bundled per §12-7) — a
+  // required response field since 0.28-draft: a missing row can
+  // only come from a corrupted DO or a crafted snapshot, never
+  // from the API's own write paths
   const manifest = yield* store.environmentManifest(environmentId);
+  if (manifest === null) {
+    return yield* Effect.die(new Error("environment manifest row missing"));
+  }
   return { state, store, statement, manifest };
 });
 
@@ -330,7 +334,8 @@ export const pullEnvironmentProgram = Effect.fn("programs-environment.pullEnviro
       ...(declaredVariables.length === 0 ? {} : { declaredVariables }),
       deks,
       schemaPolicy: yield* store.schemaPolicy,
-      ...optionalDistributionFields(manifest, checkpointSnapshot),
+      manifest,
+      ...optionalCheckpointSnapshot(checkpointSnapshot),
     } satisfies EnvironmentPullValue;
   },
 );
@@ -364,6 +369,6 @@ export const pullEnvironmentMetadataProgram = Effect.fn(
     variables,
     deletedVariables,
     schemaPolicy: yield* store.schemaPolicy,
-    ...(manifest === null ? {} : { manifest }),
+    manifest,
   } satisfies EnvironmentMetadataPullValue;
 });

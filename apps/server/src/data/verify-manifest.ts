@@ -162,32 +162,6 @@ export const acceptManifestForMetaOp = Effect.fn("verify-manifest.acceptManifest
     } | null;
     readonly envMeta?: EnvManifestEnvMeta;
   }) {
-    // The head pinning for v1 bootstrap (a clarification of
-    // AUTH_SPEC §12-5 (6)): when no manifest is stored, at v1
-    // acceptance a rotation slipped in after the declared head still
-    // leaves the manifestVersion CAS (latest stays 0) unable to drop
-    // it as a 409, and §12-5's argument "no independent
-    // current-epoch check at acceptance" does not hold for v1
-    // alone. Isomorphic to the composite path's pinning
-    // (manifestChainHead in composite-programs.ts), it requires the
-    // declared head = the current head at acceptance, closing off
-    // the baking-in of a stale epoch (the hash match is owned by
-    // crypto's head-binding check — this is position only).
-    // **The pin applies only to v1 with no anchor established (no
-    // stored manifest)**: a stale v1 against an initialized
-    // environment is not a 422 from the pin; it falls to the CAS's
-    // 409 (with currentManifestVersion) — joining the honest
-    // client's re-fetch / re-sign loop
-    const pinAnchor = yield* Effect.flatMap(DataStore, (store) =>
-      store.environmentManifestAnchor(input.environmentId),
-    );
-    if (
-      pinAnchor === null &&
-      input.manifest.manifestVersion === 1 &&
-      input.manifest.chainHeadSeq !== input.history.headSeq
-    ) {
-      return yield* rejectData({ kind: "payload-mismatch", field: "manifestChainHead" });
-    }
     const signedBytesHashHex = yield* acceptEnvManifest({
       projectId: input.projectId,
       environmentId: input.environmentId,
@@ -213,25 +187,15 @@ export const acceptManifestForMetaOp = Effect.fn("verify-manifest.acceptManifest
   },
 );
 
-/**
- * The manifest acceptance column (§12-5's (1)–(7)): the
- * manifestVersion CAS (6; a 409 carries only the latest number) →
- * fetching the stored previous manifest's anchor (the predecessor
- * for the prev check (5) and epoch monotonicity) → crypto's
- * composite verification (signer match (1), head existence (2),
- * authorization at head (3), epoch consistency (4), digest /
- * environment-meta recomputation (7)).
- * On success returns the server-recomputed signed_bytes hash
- * (written to the stored row).
- *
- * `history` is the chain at acceptance time for non-composite meta
- * operations, and the **post-bundled-entry-application** history
- * index for composites (environment creation, rotate) — §12-5
- * (4)'s judgment basis.
- */
-export const acceptEnvManifest = Effect.fn("verify-manifest.acceptEnvManifest")(function* (input: {
+interface AcceptEnvManifestInput {
   readonly projectId: string;
   readonly environmentId: string;
+  /**
+   * `history` is the chain at acceptance time for non-composite meta
+   * operations, and the **post-bundled-entry-application** history
+   * index for composites (environment creation, rotate) — §12-5
+   * (4)'s judgment basis.
+   */
   readonly history: ChainHistoryIndex;
   readonly member: MemberWithDevice;
   readonly manifest: EnvManifestInput;
@@ -239,83 +203,136 @@ export const acceptEnvManifest = Effect.fn("verify-manifest.acceptEnvManifest")(
   readonly entries: readonly VariablesDigestEntry[];
   /** The latest shape of the post-acceptance environment meta statement (metaVersion + the server-recomputed hash). */
   readonly envMeta: EnvManifestEnvMeta;
-}) {
+}
+
+/**
+ * Crypto's composite verification of the manifest acceptance column
+ * (§12-5's (1)–(4) and (7)): signer match, head existence,
+ * authorization at head, epoch consistency, digest / environment-meta
+ * recomputation. `predecessor` is the stored previous manifest's
+ * anchor (the prev check (5) and epoch monotonicity) — undefined only
+ * at environment creation. On success returns the server-recomputed
+ * signed_bytes hash (written to the stored row).
+ */
+const verifyManifestCryptographically = (
+  input: AcceptEnvManifestInput,
+  predecessor: { readonly signedBytesHashHex: string; readonly epoch: number } | undefined,
+) =>
+  Effect.map(
+    catchCryptoErrors(
+      cryptoEffect(() =>
+        verifyDistributedEnvManifest({
+          history: input.history,
+          context: {
+            suite: input.manifest.suite,
+            // The coordinates are reconstructed from server-side
+            // values (§12-5 — not assembled from wire-declared
+            // values)
+            projectId: input.projectId,
+            environmentId: input.environmentId,
+            epoch: input.manifest.epoch,
+            manifestVersion: input.manifest.manifestVersion,
+            variablesDigestHex: input.manifest.variablesDigestHex,
+            envMetaVersion: input.manifest.envMetaVersion,
+            envMetaSigHashHex: input.manifest.envMetaSigHashHex,
+            prevManifestSigHashHex: input.manifest.prevManifestSigHashHex,
+            // issuer = the caller (§12-5 (1)). The verification key
+            // and the bound-key match at head time are checked by
+            // verifyDistributedEnvManifest via the FP (the
+            // chain-derived member at acceptance time)
+            issuerUserId: input.member.userId,
+            chainHeadHashHex: input.manifest.chainHeadHashHex,
+            chainHeadSeq: input.manifest.chainHeadSeq,
+          },
+          issuerKeyFingerprintHex: input.member.keyFingerprintHex,
+          signatureHex: input.manifest.signatureHex,
+          entries: input.entries,
+          envMeta: input.envMeta,
+          predecessor,
+        }),
+      ),
+      {
+        CryptoEnvManifestInvalid: (error) =>
+          rejectData({
+            kind: "manifest-rejected",
+            reason: MANIFEST_REJECT_REASONS[error.reason],
+          }),
+        // Every other kind is unreachable (InvalidInput / KeyImportFailed
+        // with a Schema-validated wire shape + keys derived from a
+        // verified chain; the rest are never returned by this
+        // operation): an implementation bug = defect; error values carry
+        // no secrets
+        CryptoInvalidInput: "die",
+        CryptoKeyImport: "die",
+        CryptoKeyExport: "die",
+        CryptoEncrypt: "die",
+        CryptoDecrypt: "die",
+        CryptoDekWrap: "die",
+        CryptoDekUnwrap: "die",
+        CryptoSign: "die",
+        CryptoDekWrapSignature: "die",
+        CryptoInviteAcceptSignature: "die",
+        CryptoInviteLinkSignature: "die",
+        CryptoInviteIssueSignature: "die",
+        CryptoDekCommitment: "die",
+        CryptoValueInvalid: "die",
+        CryptoMetaStatementInvalid: "die",
+        CryptoUnsupportedMetaLayout: "die",
+        CryptoHeadAttestationInvalid: "die",
+        ChainInvalid: "die",
+      },
+    ),
+    (verified) => verified.signedBytesHashHex,
+  );
+
+/**
+ * The manifest acceptance column for every non-creation manifest
+ * (§12-5's (1)–(7)): the manifestVersion CAS (6; a 409 carries only
+ * the latest number) → crypto's composite verification
+ * (verifyManifestCryptographically). A created environment always has
+ * a stored manifest (§12-4's atomic write), so a missing row is an
+ * invariant violation = defect — never accepted as v1 (0.28-draft;
+ * the CAS's latest-0 state exists only inside the creation composite,
+ * whose form is acceptEnvManifestForCreation).
+ */
+export const acceptEnvManifest = Effect.fn("verify-manifest.acceptEnvManifest")(function* (
+  input: AcceptEnvManifestInput,
+) {
   const store = yield* DataStore;
   const anchor = yield* store.environmentManifestAnchor(input.environmentId);
-  // The CAS (§12-5 (6)): only declared == latest + 1. No row
-  // (environment creation) goes from latest 0 to v1
-  const latestVersion = anchor?.manifestVersion ?? 0;
-  if (input.manifest.manifestVersion !== latestVersion + 1) {
+  if (anchor === null) {
+    return yield* Effect.die(new Error("environment manifest row missing"));
+  }
+  // The CAS (§12-5 (6)): only declared == latest + 1
+  if (input.manifest.manifestVersion !== anchor.manifestVersion + 1) {
     return yield* rejectData({
       kind: "manifest-version-conflict",
-      currentManifestVersion: latestVersion,
+      currentManifestVersion: anchor.manifestVersion,
     });
   }
-  const verified = yield* catchCryptoErrors(
-    cryptoEffect(() =>
-      verifyDistributedEnvManifest({
-        history: input.history,
-        context: {
-          suite: input.manifest.suite,
-          // The coordinates are reconstructed from server-side
-          // values (§12-5 — not assembled from wire-declared
-          // values)
-          projectId: input.projectId,
-          environmentId: input.environmentId,
-          epoch: input.manifest.epoch,
-          manifestVersion: input.manifest.manifestVersion,
-          variablesDigestHex: input.manifest.variablesDigestHex,
-          envMetaVersion: input.manifest.envMetaVersion,
-          envMetaSigHashHex: input.manifest.envMetaSigHashHex,
-          prevManifestSigHashHex: input.manifest.prevManifestSigHashHex,
-          // issuer = the caller (§12-5 (1)). The verification key
-          // and the bound-key match at head time are checked by
-          // verifyDistributedEnvManifest via the FP (the
-          // chain-derived member at acceptance time)
-          issuerUserId: input.member.userId,
-          chainHeadHashHex: input.manifest.chainHeadHashHex,
-          chainHeadSeq: input.manifest.chainHeadSeq,
-        },
-        issuerKeyFingerprintHex: input.member.keyFingerprintHex,
-        signatureHex: input.manifest.signatureHex,
-        entries: input.entries,
-        envMeta: input.envMeta,
-        predecessor:
-          anchor === null
-            ? undefined
-            : { signedBytesHashHex: anchor.signedBytesHashHex, epoch: anchor.epoch },
-      }),
-    ),
-    {
-      CryptoEnvManifestInvalid: (error) =>
-        rejectData({
-          kind: "manifest-rejected",
-          reason: MANIFEST_REJECT_REASONS[error.reason],
-        }),
-      // Every other kind is unreachable (InvalidInput / KeyImportFailed
-      // with a Schema-validated wire shape + keys derived from a
-      // verified chain; the rest are never returned by this
-      // operation): an implementation bug = defect; error values carry
-      // no secrets
-      CryptoInvalidInput: "die",
-      CryptoKeyImport: "die",
-      CryptoKeyExport: "die",
-      CryptoEncrypt: "die",
-      CryptoDecrypt: "die",
-      CryptoDekWrap: "die",
-      CryptoDekUnwrap: "die",
-      CryptoSign: "die",
-      CryptoDekWrapSignature: "die",
-      CryptoInviteAcceptSignature: "die",
-      CryptoInviteLinkSignature: "die",
-      CryptoInviteIssueSignature: "die",
-      CryptoDekCommitment: "die",
-      CryptoValueInvalid: "die",
-      CryptoMetaStatementInvalid: "die",
-      CryptoUnsupportedMetaLayout: "die",
-      CryptoHeadAttestationInvalid: "die",
-      ChainInvalid: "die",
-    },
-  );
-  return verified.signedBytesHashHex;
+  return yield* verifyManifestCryptographically(input, {
+    signedBytesHashHex: anchor.signedBytesHashHex,
+    epoch: anchor.epoch,
+  });
+});
+
+/**
+ * The creation form — the environment-creation composite only
+ * (§12-4): the sole point where the CAS's initial value 0 exists.
+ * manifestVersion is pinned to the literal 1 on the wire
+ * (CreateEnvironmentManifestSchema), so declared == 0 + 1 holds by
+ * construction. A stored row for a just-created environment is an
+ * invariant violation = defect (no API path can produce one).
+ */
+export const acceptEnvManifestForCreation = Effect.fn(
+  "verify-manifest.acceptEnvManifestForCreation",
+)(function* (input: AcceptEnvManifestInput) {
+  const store = yield* DataStore;
+  const anchor = yield* store.environmentManifestAnchor(input.environmentId);
+  if (anchor !== null) {
+    return yield* Effect.die(
+      new Error("environment manifest row already stored at creation acceptance"),
+    );
+  }
+  return yield* verifyManifestCryptographically(input, undefined);
 });

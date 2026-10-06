@@ -335,23 +335,19 @@ export interface CheckpointSnapshotValue {
 }
 
 /**
- * The omittable verification-material fields of a value-bearing response
- * (§12-7 / §14-2): always present when a stored row exists, otherwise
- * the key itself is absent (the optionalKey wire shape). Shared by the
- * response assembly of pull and lease (the branch is not duplicated in
- * each program).
+ * The omittable verification-material field of a value-bearing response
+ * (§12-7 / §14-2): bundled when a stored row exists for the latest
+ * checkpoint covering this environment, otherwise the key itself is
+ * absent (the optionalKey wire shape — legitimately absent on an
+ * environment without a baseline). Shared by the response assembly of
+ * pull and lease (the branch is not duplicated in each program). The
+ * manifest is not omittable — a created environment always has one
+ * (§12-4; required on the wire since 0.28-draft).
  */
-export function optionalDistributionFields(
-  manifest: DistributedEnvManifestValue | null,
-  checkpointSnapshot: CheckpointSnapshotValue | null,
-): {
-  readonly manifest?: DistributedEnvManifestValue;
+export function optionalCheckpointSnapshot(checkpointSnapshot: CheckpointSnapshotValue | null): {
   readonly checkpointSnapshot?: CheckpointSnapshotValue;
 } {
-  return {
-    ...(manifest === null ? {} : { manifest }),
-    ...(checkpointSnapshot === null ? {} : { checkpointSnapshot }),
-  };
+  return checkpointSnapshot === null ? {} : { checkpointSnapshot };
 }
 
 export interface EnvironmentPullValue {
@@ -376,12 +372,14 @@ export interface EnvironmentPullValue {
   /** The schemaPolicy advisory bundle (§12-7 / §12-11 — always present). */
   readonly schemaPolicy: SchemaPolicy;
   /**
-   * The latest environment manifest (§12-7). Always bundled when a
-   * stored row exists (since environment creation bundles manifest_version
-   * 1, a created environment always has one — on the client side absence
-   * = unconditional rejection §6.3).
+   * The latest environment manifest (§12-7). Required — a created
+   * environment always has a stored row (environment creation bundles
+   * manifest_version 1, and every meta operation / rotate re-issues
+   * it), so a missing row is an invariant violation = defect, never an
+   * omission (0.28-draft; on the client side absence = unconditional
+   * rejection §6.3).
    */
-  readonly manifest?: DistributedEnvManifestValue;
+  readonly manifest: DistributedEnvManifestValue;
   /**
    * The checkpoint-time value snapshot enumeration (§12-7).
    * Always bundled when a stored row exists for the latest checkpoint
@@ -411,8 +409,12 @@ export interface EnvironmentMetadataPullValue {
   readonly variables: readonly DistributedVariableMetaStatementValue[];
   /** The deleted statements of deleted variables (§12-5). */
   readonly deletedVariables: readonly DistributedVariableMetaStatementValue[];
-  /** The latest environment manifest (meta verification completeness is at the same level in this mode — §12-7). */
-  readonly manifest?: DistributedEnvManifestValue;
+  /**
+   * The latest environment manifest (meta verification completeness is
+   * at the same level in this mode — §12-7). Required, same as the
+   * with-values pull.
+   */
+  readonly manifest: DistributedEnvManifestValue;
   /** The schemaPolicy advisory bundle (§12-7 / §12-11 — always present). */
   readonly schemaPolicy: SchemaPolicy;
 }

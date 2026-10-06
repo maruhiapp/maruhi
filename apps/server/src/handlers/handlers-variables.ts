@@ -271,10 +271,9 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
           deks: pulled.deks,
           // The schemaPolicy advisory bundling (§12-7 / §12-11)
           schemaPolicy: pulled.schemaPolicy,
-          // The latest manifest (§12-7 — always bundled when a stored
-          // row exists; the client uniformly refuses its absence —
-          // CRYPTO_SPEC §6.3)
-          ...(pulled.manifest === undefined ? {} : { manifest: pulled.manifest }),
+          // The latest manifest (§12-7 — required since 0.28-draft;
+          // the client uniformly refuses its absence — CRYPTO_SPEC §6.3)
+          manifest: pulled.manifest,
           // The value snapshot at checkpoint time (§12-7 — always
           // bundled when a stored row of the baseline checkpoint
           // exists; the material of client rule 2 — CRYPTO_SPEC §6.3)
