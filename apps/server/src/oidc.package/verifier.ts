@@ -260,69 +260,68 @@ export function makeOidcVerifier(
   supportedIssuers: readonly string[] = SUPPORTED_ISSUERS,
 ): OidcVerifierShape {
   return {
-    verify: (token, nowMs) =>
-      Effect.gen(function* () {
-        const parsed = yield* parseToken(token);
-        const issuer = stringClaim(parsed.claims, "iss");
-        if (issuer === null) {
-          return yield* unauthorized("missing-claim");
-        }
-        // Allowlist matching **before any external fetch** (the DoS
-        // rationale in the header comment)
-        if (!supportedIssuers.includes(issuer)) {
-          return yield* unauthorized("unsupported-issuer");
-        }
-        const resolved = yield* jwks.resolveKey(issuer, parsed.kid).pipe(
-          // A fetch failure is fail-closed (§14-1) but 503, not 401:
-          // telling a transient issuer / network outage as "bad
-          // credentials" would make the CI job treat it as a
-          // non-retryable failure (errors/lease.ts)
-          Effect.mapError(() => new LeaseUnavailableError({ reason: "oidc-jwks-unavailable" })),
-        );
-        if (resolved === null) {
-          return yield* unauthorized("unknown-key");
-        }
-        // The header's alg is used only for the match check against
-        // "the expectation derived from the JWK" (never an input to
-        // branching — jwk.ts's design)
-        if (parsed.alg !== resolved.binding.headerAlg) {
-          return yield* unauthorized("unsupported-alg");
-        }
-        const verified = yield* Effect.promise(() =>
-          verifyJwsSignature({
-            key: resolved.key,
-            binding: resolved.binding,
-            signature: parsed.signature,
-            signingInput: parsed.signingInput,
-          }),
-        );
-        if (!verified) {
-          return yield* unauthorized("signature-invalid");
-        }
-        yield* checkTimes(parsed.claims, nowMs);
-        const subject = stringClaim(parsed.claims, "sub");
-        const audiences = audiencesOf(parsed.claims);
-        // exp's presence and type are already verified by checkTimes
-        // (null cannot reach here)
-        const expiresAtSec = numericClaim(parsed.claims, "exp");
-        if (subject === null || audiences === null || expiresAtSec === null) {
-          return yield* unauthorized("missing-claim");
-        }
-        // The first-come-binding key is a hash of **the signed bytes**
-        // (not the raw token — see signingInputHashHex's doc). Computed
-        // only after signature verification passes
-        const digest = yield* Effect.promise(() =>
-          crypto.subtle.digest("SHA-256", new Uint8Array(parsed.signingInput)),
-        );
-        const signingInputHashHex = encodeHex(new Uint8Array(digest));
-        return {
-          issuer,
-          subject,
-          audiences,
-          claims: parsed.claims,
-          expiresAtSec,
-          signingInputHashHex,
-        };
-      }),
+    verify: Effect.fn("verifier.verify")(function* (token, nowMs) {
+      const parsed = yield* parseToken(token);
+      const issuer = stringClaim(parsed.claims, "iss");
+      if (issuer === null) {
+        return yield* unauthorized("missing-claim");
+      }
+      // Allowlist matching **before any external fetch** (the DoS
+      // rationale in the header comment)
+      if (!supportedIssuers.includes(issuer)) {
+        return yield* unauthorized("unsupported-issuer");
+      }
+      const resolved = yield* jwks.resolveKey(issuer, parsed.kid).pipe(
+        // A fetch failure is fail-closed (§14-1) but 503, not 401:
+        // telling a transient issuer / network outage as "bad
+        // credentials" would make the CI job treat it as a
+        // non-retryable failure (errors/lease.ts)
+        Effect.mapError(() => new LeaseUnavailableError({ reason: "oidc-jwks-unavailable" })),
+      );
+      if (resolved === null) {
+        return yield* unauthorized("unknown-key");
+      }
+      // The header's alg is used only for the match check against
+      // "the expectation derived from the JWK" (never an input to
+      // branching — jwk.ts's design)
+      if (parsed.alg !== resolved.binding.headerAlg) {
+        return yield* unauthorized("unsupported-alg");
+      }
+      const verified = yield* Effect.promise(() =>
+        verifyJwsSignature({
+          key: resolved.key,
+          binding: resolved.binding,
+          signature: parsed.signature,
+          signingInput: parsed.signingInput,
+        }),
+      );
+      if (!verified) {
+        return yield* unauthorized("signature-invalid");
+      }
+      yield* checkTimes(parsed.claims, nowMs);
+      const subject = stringClaim(parsed.claims, "sub");
+      const audiences = audiencesOf(parsed.claims);
+      // exp's presence and type are already verified by checkTimes
+      // (null cannot reach here)
+      const expiresAtSec = numericClaim(parsed.claims, "exp");
+      if (subject === null || audiences === null || expiresAtSec === null) {
+        return yield* unauthorized("missing-claim");
+      }
+      // The first-come-binding key is a hash of **the signed bytes**
+      // (not the raw token — see signingInputHashHex's doc). Computed
+      // only after signature verification passes
+      const digest = yield* Effect.promise(() =>
+        crypto.subtle.digest("SHA-256", new Uint8Array(parsed.signingInput)),
+      );
+      const signingInputHashHex = encodeHex(new Uint8Array(digest));
+      return {
+        issuer,
+        subject,
+        audiences,
+        claims: parsed.claims,
+        expiresAtSec,
+        signingInputHashHex,
+      };
+    }),
   };
 }

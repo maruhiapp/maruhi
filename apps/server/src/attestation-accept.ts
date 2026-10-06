@@ -74,12 +74,12 @@ const ATTESTATION_REJECT_REASONS: Readonly<
  * under the DO's permit — no interruption between the decision and the
  * store). Success is void (204).
  */
-export const putHeadAttestationProgram = (
-  callerUserId: string,
-  input: HeadAttestationSubmissionInput,
-  cache: StateCache,
-): Effect.Effect<void, DataRejectedError, DataStore | ChainStore> =>
-  Effect.gen(function* () {
+export const putHeadAttestationProgram = Effect.fn("attestation-accept.putHeadAttestationProgram")(
+  function* (
+    callerUserId: string,
+    input: HeadAttestationSubmissionInput,
+    cache: StateCache,
+  ): Effect.fn.Return<void, DataRejectedError, DataStore | ChainStore> {
     // 1. Membership (reader or higher — §16-1's "chain role reader or higher")
     const context = yield* requireMemberState(callerUserId, "reader", cache);
     const store = yield* DataStore;
@@ -180,4 +180,5 @@ export const putHeadAttestationProgram = (
         nowMs,
       ),
     );
-  });
+  },
+);

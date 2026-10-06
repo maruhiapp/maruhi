@@ -70,30 +70,30 @@ interface ReconcileViolation {
  * full-row fetch; run below admin, the gap check would misread a visibility
  * hole as a deletion).
  */
-function ensureEffectiveAdmin(context: ProjectContextBase): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    const member = context.verified.state.members.get(context.session.userId);
-    const role = member?.role;
-    if (role !== "admin" && role !== "owner") {
+const ensureEffectiveAdmin = Effect.fn("audit-reconcile.ensureEffectiveAdmin")(function* (
+  context: ProjectContextBase,
+): Effect.fn.Return<void, CliError> {
+  const member = context.verified.state.members.get(context.session.userId);
+  const role = member?.role;
+  if (role !== "admin" && role !== "owner") {
+    return yield* Effect.fail(
+      cliError(
+        "`maruhi audit reconcile` requires effective admin permission (AUDIT_SPEC §6): your chain role on this project is below admin, so the audit rows needed for the reconciliation (class-2 rows and the seq field) are not visible to you",
+      ),
+    );
+  }
+  const me = yield* context.client.auth.me({}).pipe(Effect.mapError(toCliError));
+  if (me.tokenScopes !== undefined) {
+    const granted = scopePermissionFor(me.tokenScopes, context.projectId);
+    if (granted !== "admin") {
       return yield* Effect.fail(
         cliError(
-          "`maruhi audit reconcile` requires effective admin permission (AUDIT_SPEC §6): your chain role on this project is below admin, so the audit rows needed for the reconciliation (class-2 rows and the seq field) are not visible to you",
+          "`maruhi audit reconcile` requires effective admin permission (AUDIT_SPEC §6): this token's scope for the project is below admin. Re-run with an admin-scoped token",
         ),
       );
     }
-    const me = yield* context.client.auth.me({}).pipe(Effect.mapError(toCliError));
-    if (me.tokenScopes !== undefined) {
-      const granted = scopePermissionFor(me.tokenScopes, context.projectId);
-      if (granted !== "admin") {
-        return yield* Effect.fail(
-          cliError(
-            "`maruhi audit reconcile` requires effective admin permission (AUDIT_SPEC §6): this token's scope for the project is below admin. Re-run with an admin-scoped token",
-          ),
-        );
-      }
-    }
-  });
-}
+  }
+});
 
 /**
  * Fetching every audit row (§7 paging — admin-visible, unfiltered,
@@ -128,54 +128,52 @@ function reconcileRowProblem(
   return null;
 }
 
-function fetchAllAuditRows(
+const fetchAllAuditRows = Effect.fn("audit-reconcile.fetchAllAuditRows")(function* (
   context: ProjectContextBase,
-): Effect.Effect<readonly WireAuditEvent[], CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const rows: WireAuditEvent[] = [];
-    const seenIds = new Set<string>();
-    let previousSeq: number | null = null;
-    let pages = 0;
-    yield* paginateAuditEvents({
-      pageLimit: MAX_AUDIT_EVENTS_PAGE_LIMIT,
-      // No static page bound: onRow's strictly-decreasing seq (positive
-      // integers) bounds the total row count by the first page's maximum seq
-      // and carries termination (the engine doc in audit.ts)
-      bound: null,
-      fetchPage: (before) =>
-        Effect.gen(function* () {
-          pages += 1;
-          if (pages > 1 && (pages - 1) % FETCH_PROGRESS_PAGES === 0) {
-            yield* io.log(`Fetched ${countNoun(rows.length, "audit row")} so far…`);
-          }
-          return yield* context.client.audit
-            .events({
-              params: { projectId: context.projectId },
-              query: {
-                limit: MAX_AUDIT_EVENTS_PAGE_LIMIT,
-                ...(before === null ? {} : { before }),
-              },
-            })
-            .pipe(
-              Effect.mapError(toCliError),
-              Effect.map((response) => response.events as readonly WireAuditEvent[]),
-            );
-        }),
-      onRow: (row) => {
-        const problem = reconcileRowProblem(row, seenIds, previousSeq);
-        if (problem !== null) {
-          return Effect.fail(cliError(problem));
+): Effect.fn.Return<readonly WireAuditEvent[], CliError, CliIo> {
+  const io = yield* CliIo;
+  const rows: WireAuditEvent[] = [];
+  const seenIds = new Set<string>();
+  let previousSeq: number | null = null;
+  let pages = 0;
+  yield* paginateAuditEvents({
+    pageLimit: MAX_AUDIT_EVENTS_PAGE_LIMIT,
+    // No static page bound: onRow's strictly-decreasing seq (positive
+    // integers) bounds the total row count by the first page's maximum seq
+    // and carries termination (the engine doc in audit.ts)
+    bound: null,
+    fetchPage: (before) =>
+      Effect.gen(function* () {
+        pages += 1;
+        if (pages > 1 && (pages - 1) % FETCH_PROGRESS_PAGES === 0) {
+          yield* io.log(`Fetched ${countNoun(rows.length, "audit row")} so far…`);
         }
-        seenIds.add(row.id);
-        rows.push(row);
-        previousSeq = row.seq ?? null;
-        return Effect.void;
-      },
-    });
-    return rows;
+        return yield* context.client.audit
+          .events({
+            params: { projectId: context.projectId },
+            query: {
+              limit: MAX_AUDIT_EVENTS_PAGE_LIMIT,
+              ...(before === null ? {} : { before }),
+            },
+          })
+          .pipe(
+            Effect.mapError(toCliError),
+            Effect.map((response) => response.events as readonly WireAuditEvent[]),
+          );
+      }),
+    onRow: (row) => {
+      const problem = reconcileRowProblem(row, seenIds, previousSeq);
+      if (problem !== null) {
+        return Effect.fail(cliError(problem));
+      }
+      seenIds.add(row.id);
+      rows.push(row);
+      previousSeq = row.seq ?? null;
+      return Effect.void;
+    },
   });
-}
+  return rows;
+});
 
 /** Wire optionalKey (absent = stored NULL) → null in the computation input. */
 function orNull<T>(value: T | undefined): T | null {
@@ -236,8 +234,10 @@ const recomputationError = (seq: number) =>
  * is @maruhi/crypto; the audit-head.json vectors pin the same h_n as the
  * server implementation). Input is every row in seq ascending order.
  */
-function recomputeColumn(rows: readonly AuditHeadRow[]): Effect.Effect<RecomputedColumn, CliError> {
-  return Effect.gen(function* () {
+const recomputeColumn: (
+  rows: readonly AuditHeadRow[],
+) => Effect.Effect<RecomputedColumn, CliError> = Effect.fn("audit-reconcile.recomputeColumn")(
+  function* (rows: readonly AuditHeadRow[]) {
     const positions = new Map<string, number>();
     let head = "";
     for (const row of rows) {
@@ -253,16 +253,15 @@ function recomputeColumn(rows: readonly AuditHeadRow[]): Effect.Effect<Recompute
       }
     }
     return { positions, finalHeadHex: head };
-  }).pipe(
-    // The error value is only a seq and a reason code (no secrets), but per
-    // the discipline it is mapped to a fixed wording of identifiers only
-    Effect.catchTag("AuditRecomputationError", (error) =>
-      Effect.fail(
-        cliError(`Failed to recompute the audit-head hash column (${displayText(error.message)})`),
-      ),
+  },
+  // The error value is only a seq and a reason code (no secrets), but per
+  // the discipline it is mapped to a fixed wording of identifiers only
+  Effect.catchTag("AuditRecomputationError", (error) =>
+    Effect.fail(
+      cliError(`Failed to recompute the audit-head hash column (${displayText(error.message)})`),
     ),
-  );
-}
+  ),
+);
 
 /** Gap check (§6 — a gap = the trace of a deletion). rows are seq ascending. */
 function gapViolations(sortedSeqs: readonly number[]): readonly ReconcileViolation[] {
@@ -430,77 +429,75 @@ const CATEGORY_LABEL: Record<ReconcileViolation["category"], string> = {
  * (b)(c) checks of notarizing checkpoints → report in two categories (any
  * violation = exit code 1).
  */
-export function auditReconcileOp(
+export const auditReconcileOp = Effect.fn("audit-reconcile.auditReconcileOp")(function* (
   context: ProjectContextBase,
-): Effect.Effect<number, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* ensureEffectiveAdmin(context);
-    // The declaration is taken **before** fetching all rows (ruling AK):
-    // the column at declaration time is a prefix of the fetched snapshot, so
-    // the membership check's population is always covered by the snapshot
-    const declaredHeadHex = yield* fetchAuditHead(context.client, context.projectId);
-    const rows = yield* fetchAllAuditRows(context);
-    const ascending = [...rows].toSorted((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
-    const seqs = ascending.map((row) => row.seq ?? 0);
-    const gaps = gapViolations(seqs);
-    if (gaps.length > 0) {
-      // With a gap, the h_n chaining mismatches on everything past the gap,
-      // and the downstream membership check would produce the misleading
-      // derived report "every notarization is a violation". Report only the
-      // strongest evidence (the trace of a deletion) and stop (fail-closed —
-      // do not mass-produce misattributions)
-      for (const violation of gaps) {
-        yield* io.logError(
-          `Reconciliation failure [${CATEGORY_LABEL[violation.category]}]: ${violation.detail}`,
-        );
-      }
-      yield* io.logError(
-        "The audit log has seq gaps, so the cumulative-hash reconciliation cannot proceed past them. The audit log is server-managed data (AUDIT_SPEC §6) and a gap is evidence of server-side row deletion",
-      );
-      return 1;
-    }
-    const column = yield* recomputeColumn(ascending.map((row) => toHeadRow(row, row.seq ?? 0)));
-    const checkpoints = checkpointViolations({
-      entries: context.verified.entries,
-      positions: column.positions,
-      mirrors: checkpointMirrorIndex(rows),
-    });
-    const violations = [
-      ...declaredHeadViolations(declaredHeadHex, column),
-      ...checkpoints.violations,
-    ];
-    const summary = `${countNoun(rows.length, "audit row")} recomputed, ${countNoun(checkpoints.notarized, "notarized checkpoint")} checked against the verified chain`;
-    if (violations.length === 0) {
-      // Keep the success wording faithful to what was proved: with zero
-      // notarizations, (a)(b)(c) are vacuously true and what was demonstrated
-      // is only gap-free + declared-head membership. Do not print an
-      // unconditional "checks passed"
-      if (checkpoints.notarized === 0) {
-        yield* io.log(
-          `Audit reconciliation OK (nothing notarized yet): ${summary} — seq continuity and the declared head's membership verified; the checkpoint checks (a)(b)(c) are vacuous until an effective admin issues an audit-head-attested checkpoint (run \`maruhi project checkpoint\` — AUDIT_SPEC §6)`,
-        );
-        return 0;
-      }
-      yield* io.log(
-        `Audit reconciliation OK: ${summary} — membership (a) and position (b)(c) checks passed (AUDIT_SPEC §6)`,
-      );
-      // §6's explicit residual: outside the notarized prefix (rows after the
-      // last notarization) is not covered by this reconciliation — coverage
-      // advances with the next notarization
-      yield* logNote(
-        "rows appended after the latest notarized checkpoint are outside the notarized prefix and are not covered until the next attested checkpoint (AUDIT_SPEC §6)",
-      );
-      return 0;
-    }
-    for (const violation of violations) {
+): Effect.fn.Return<number, CliError, CliServices> {
+  const io = yield* CliIo;
+  yield* ensureEffectiveAdmin(context);
+  // The declaration is taken **before** fetching all rows (ruling AK):
+  // the column at declaration time is a prefix of the fetched snapshot, so
+  // the membership check's population is always covered by the snapshot
+  const declaredHeadHex = yield* fetchAuditHead(context.client, context.projectId);
+  const rows = yield* fetchAllAuditRows(context);
+  const ascending = [...rows].toSorted((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+  const seqs = ascending.map((row) => row.seq ?? 0);
+  const gaps = gapViolations(seqs);
+  if (gaps.length > 0) {
+    // With a gap, the h_n chaining mismatches on everything past the gap,
+    // and the downstream membership check would produce the misleading
+    // derived report "every notarization is a violation". Report only the
+    // strongest evidence (the trace of a deletion) and stop (fail-closed —
+    // do not mass-produce misattributions)
+    for (const violation of gaps) {
       yield* io.logError(
         `Reconciliation failure [${CATEGORY_LABEL[violation.category]}]: ${violation.detail}`,
       );
     }
     yield* io.logError(
-      `Audit reconciliation found ${countNoun(violations.length, "violation")} (${summary}). Row-tampering evidence means rows in the notarized prefix were altered or deleted after notarization; acceptance-policy violations mean the server accepted attestations it must reject (CRYPTO_SPEC §6.4), leaving it able to replay stale audit heads. The signed chain is the truth — do not trust this server's audit log (AUDIT_SPEC §6)`,
+      "The audit log has seq gaps, so the cumulative-hash reconciliation cannot proceed past them. The audit log is server-managed data (AUDIT_SPEC §6) and a gap is evidence of server-side row deletion",
     );
     return 1;
+  }
+  const column = yield* recomputeColumn(ascending.map((row) => toHeadRow(row, row.seq ?? 0)));
+  const checkpoints = checkpointViolations({
+    entries: context.verified.entries,
+    positions: column.positions,
+    mirrors: checkpointMirrorIndex(rows),
   });
-}
+  const violations = [
+    ...declaredHeadViolations(declaredHeadHex, column),
+    ...checkpoints.violations,
+  ];
+  const summary = `${countNoun(rows.length, "audit row")} recomputed, ${countNoun(checkpoints.notarized, "notarized checkpoint")} checked against the verified chain`;
+  if (violations.length === 0) {
+    // Keep the success wording faithful to what was proved: with zero
+    // notarizations, (a)(b)(c) are vacuously true and what was demonstrated
+    // is only gap-free + declared-head membership. Do not print an
+    // unconditional "checks passed"
+    if (checkpoints.notarized === 0) {
+      yield* io.log(
+        `Audit reconciliation OK (nothing notarized yet): ${summary} — seq continuity and the declared head's membership verified; the checkpoint checks (a)(b)(c) are vacuous until an effective admin issues an audit-head-attested checkpoint (run \`maruhi project checkpoint\` — AUDIT_SPEC §6)`,
+      );
+      return 0;
+    }
+    yield* io.log(
+      `Audit reconciliation OK: ${summary} — membership (a) and position (b)(c) checks passed (AUDIT_SPEC §6)`,
+    );
+    // §6's explicit residual: outside the notarized prefix (rows after the
+    // last notarization) is not covered by this reconciliation — coverage
+    // advances with the next notarization
+    yield* logNote(
+      "rows appended after the latest notarized checkpoint are outside the notarized prefix and are not covered until the next attested checkpoint (AUDIT_SPEC §6)",
+    );
+    return 0;
+  }
+  for (const violation of violations) {
+    yield* io.logError(
+      `Reconciliation failure [${CATEGORY_LABEL[violation.category]}]: ${violation.detail}`,
+    );
+  }
+  yield* io.logError(
+    `Audit reconciliation found ${countNoun(violations.length, "violation")} (${summary}). Row-tampering evidence means rows in the notarized prefix were altered or deleted after notarization; acceptance-policy violations mean the server accepted attestations it must reject (CRYPTO_SPEC §6.4), leaving it able to replay stale audit heads. The signed chain is the truth — do not trust this server's audit log (AUDIT_SPEC §6)`,
+  );
+  return 1;
+});

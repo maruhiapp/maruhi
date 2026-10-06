@@ -120,63 +120,61 @@ function duplicateKeyRejection(
 }
 
 /** `add_device` pre-flight checks → sign (null if already registered). */
-function signAddDevice(input: {
+const signAddDevice = Effect.fn("device-ops.signAddDevice")(function* (input: {
   readonly verified: VerifiedProject;
   readonly signer: DeviceOpSigner;
   readonly candidate: DeviceCandidate;
-}): Effect.Effect<ChainEntry | null, CliError> {
-  return Effect.gen(function* () {
-    const member = input.verified.state.members.get(input.signer.userId);
-    if (member === undefined) {
-      return yield* Effect.fail(cliError("You are not a chain-derived member of this project"));
-    }
-    const already = [...member.devices.values()].some(
-      (device) =>
-        device.encPubHex === input.candidate.encPubHex &&
-        device.sigPubHex === input.candidate.sigPubHex,
+}): Effect.fn.Return<ChainEntry | null, CliError> {
+  const member = input.verified.state.members.get(input.signer.userId);
+  if (member === undefined) {
+    return yield* Effect.fail(cliError("You are not a chain-derived member of this project"));
+  }
+  const already = [...member.devices.values()].some(
+    (device) =>
+      device.encPubHex === input.candidate.encPubHex &&
+      device.sigPubHex === input.candidate.sigPubHex,
+  );
+  if (already) {
+    return null;
+  }
+  const actorDevice = yield* ownDeviceBySigningKey(
+    input.verified,
+    member,
+    input.signer.signingKeyPair,
+  );
+  const duplicate = duplicateKeyRejection(input.verified, input.candidate);
+  if (duplicate !== null) {
+    return yield* Effect.fail(cliError(duplicate));
+  }
+  yield* requireScopeEnvironmentsExist(input.verified, input.candidate.cap.scope);
+  if (!capWithinSignerCap(input.candidate.cap, actorDevice)) {
+    return yield* Effect.fail(
+      cliError(
+        `The device's cap (${describeCap(input.candidate.cap)}) exceeds the cap of the device signing this registration (${describeCap(actorDevice)}) — consensus rule device-cap-exceeded (CRYPTO_SPEC §6.2 principle D2). Register it from a device with a wider cap`,
+      ),
     );
-    if (already) {
-      return null;
-    }
-    const actorDevice = yield* ownDeviceBySigningKey(
-      input.verified,
-      member,
-      input.signer.signingKeyPair,
-    );
-    const duplicate = duplicateKeyRejection(input.verified, input.candidate);
-    if (duplicate !== null) {
-      return yield* Effect.fail(cliError(duplicate));
-    }
-    yield* requireScopeEnvironmentsExist(input.verified, input.candidate.cap.scope);
-    if (!capWithinSignerCap(input.candidate.cap, actorDevice)) {
-      return yield* Effect.fail(
-        cliError(
-          `The device's cap (${describeCap(input.candidate.cap)}) exceeds the cap of the device signing this registration (${describeCap(actorDevice)}) — consensus rule device-cap-exceeded (CRYPTO_SPEC §6.2 principle D2). Register it from a device with a wider cap`,
-        ),
-      );
-    }
-    const timestampMs = yield* Clock.currentTimeMillis;
-    return yield* cryptoEffect(() =>
-      signChainEntry({
-        entry: {
-          suite: SUITE_ID,
-          seq: input.verified.state.headSeq + 1,
-          prevHashHex: input.verified.state.headHashHex,
-          op: "add_device",
-          actor: { userId: member.userId, keyFingerprintHex: actorDevice.keyFingerprintHex },
-          payload: {
-            encPubHex: input.candidate.encPubHex,
-            sigPubHex: input.candidate.sigPubHex,
-            roleCap: input.candidate.cap.roleCap,
-            ...scopePayloadFieldsOf(input.candidate.cap.scope),
-          },
-          timestampMs,
+  }
+  const timestampMs = yield* Clock.currentTimeMillis;
+  return yield* cryptoEffect(() =>
+    signChainEntry({
+      entry: {
+        suite: SUITE_ID,
+        seq: input.verified.state.headSeq + 1,
+        prevHashHex: input.verified.state.headHashHex,
+        op: "add_device",
+        actor: { userId: member.userId, keyFingerprintHex: actorDevice.keyFingerprintHex },
+        payload: {
+          encPubHex: input.candidate.encPubHex,
+          sigPubHex: input.candidate.sigPubHex,
+          roleCap: input.candidate.cap.roleCap,
+          ...scopePayloadFieldsOf(input.candidate.cap.scope),
         },
-        signingKey: input.signer.signingKeyPair.privateKey,
-      }),
-    ).pipe(Effect.mapError(() => cliError("Failed to sign the add_device entry")));
-  });
-}
+        timestampMs,
+      },
+      signingKey: input.signer.signingKeyPair.privateKey,
+    }),
+  ).pipe(Effect.mapError(() => cliError("Failed to sign the add_device entry")));
+});
 
 /**
  * Appends `add_device` for `candidate` (signed by `signer`'s device that holds
@@ -240,100 +238,96 @@ function revokeRejection(input: {
 }
 
 /** `revoke_device` pre-flight checks → sign (null if no revocation target remains). */
-function signRevokeDevice(input: {
+const signRevokeDevice = Effect.fn("device-ops.signRevokeDevice")(function* (input: {
   readonly verified: VerifiedProject;
   readonly signer: DeviceOpSigner;
   readonly targetUserId: string;
   readonly fingerprintsHex: readonly string[];
-}): Effect.Effect<
+}): Effect.fn.Return<
   { readonly entry: ChainEntry; readonly revoking: readonly string[] } | null,
   CliError
 > {
-  return Effect.gen(function* () {
-    const actor = input.verified.state.members.get(input.signer.userId);
-    if (actor === undefined) {
-      return yield* Effect.fail(cliError("You are not a chain-derived member of this project"));
-    }
-    const target = input.verified.state.members.get(input.targetUserId);
-    if (target === undefined) {
-      return yield* Effect.fail(
-        cliError(`${displayText(input.targetUserId)} is not a current member of this project`),
-      );
-    }
-    const revoking = input.fingerprintsHex
-      .filter((fingerprintHex) => target.devices.has(fingerprintHex))
-      .toSorted(compareCodePoints);
-    if (revoking.length === 0) {
-      return null;
-    }
-    const actorDevice = yield* ownDeviceBySigningKey(
-      input.verified,
-      actor,
-      input.signer.signingKeyPair,
+  const actor = input.verified.state.members.get(input.signer.userId);
+  if (actor === undefined) {
+    return yield* Effect.fail(cliError("You are not a chain-derived member of this project"));
+  }
+  const target = input.verified.state.members.get(input.targetUserId);
+  if (target === undefined) {
+    return yield* Effect.fail(
+      cliError(`${displayText(input.targetUserId)} is not a current member of this project`),
     );
-    const rejection = revokeRejection({ actor, actorDevice, target, revoking });
-    if (rejection !== null) {
-      return yield* Effect.fail(cliError(rejection));
-    }
-    const timestampMs = yield* Clock.currentTimeMillis;
-    const entry = yield* cryptoEffect(() =>
-      signChainEntry({
-        entry: {
-          suite: SUITE_ID,
-          seq: input.verified.state.headSeq + 1,
-          prevHashHex: input.verified.state.headHashHex,
-          op: "revoke_device",
-          actor: { userId: actor.userId, keyFingerprintHex: actorDevice.keyFingerprintHex },
-          payload: { targetUserId: target.userId, deviceFingerprintsHex: revoking },
-          timestampMs,
-        },
-        signingKey: input.signer.signingKeyPair.privateKey,
-      }),
-    ).pipe(Effect.mapError(() => cliError("Failed to sign the revoke_device entry")));
-    return { entry, revoking };
-  });
-}
+  }
+  const revoking = input.fingerprintsHex
+    .filter((fingerprintHex) => target.devices.has(fingerprintHex))
+    .toSorted(compareCodePoints);
+  if (revoking.length === 0) {
+    return null;
+  }
+  const actorDevice = yield* ownDeviceBySigningKey(
+    input.verified,
+    actor,
+    input.signer.signingKeyPair,
+  );
+  const rejection = revokeRejection({ actor, actorDevice, target, revoking });
+  if (rejection !== null) {
+    return yield* Effect.fail(cliError(rejection));
+  }
+  const timestampMs = yield* Clock.currentTimeMillis;
+  const entry = yield* cryptoEffect(() =>
+    signChainEntry({
+      entry: {
+        suite: SUITE_ID,
+        seq: input.verified.state.headSeq + 1,
+        prevHashHex: input.verified.state.headHashHex,
+        op: "revoke_device",
+        actor: { userId: actor.userId, keyFingerprintHex: actorDevice.keyFingerprintHex },
+        payload: { targetUserId: target.userId, deviceFingerprintsHex: revoking },
+        timestampMs,
+      },
+      signingKey: input.signer.signingKeyPair.privateKey,
+    }),
+  ).pipe(Effect.mapError(() => cliError("Failed to sign the revoke_device entry")));
+  return { entry, revoking };
+});
 
 /**
  * Appends `revoke_device` for the target's devices among `fingerprintsHex`
  * that are still active (CAS retries; idempotent). Returns the fingerprints
  * actually revoked by this call.
  */
-export function appendRevokeDevice(input: {
+export const appendRevokeDevice = Effect.fn("device-ops.appendRevokeDevice")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly signer: DeviceOpSigner;
   readonly targetUserId: string;
   readonly fingerprintsHex: readonly string[];
-}): Effect.Effect<
+}): Effect.fn.Return<
   { readonly verified: VerifiedProject; readonly revoked: readonly string[] },
   CliError
 > {
-  return Effect.gen(function* () {
-    let revoked: readonly string[] = [];
-    const outcome = yield* appendWithCas({
-      client: input.client,
-      verified: input.verified,
-      resync: input.resync,
-      opLabel: "revoke_device",
-      signEntry: (view) =>
-        Effect.map(
-          signRevokeDevice({
-            verified: view,
-            signer: input.signer,
-            targetUserId: input.targetUserId,
-            fingerprintsHex: input.fingerprintsHex,
-          }),
-          (signed) => {
-            revoked = signed === null ? [] : signed.revoking;
-            return signed === null ? null : signed.entry;
-          },
-        ),
-    });
-    return { verified: outcome.verified, revoked: outcome.appended ? revoked : [] };
+  let revoked: readonly string[] = [];
+  const outcome = yield* appendWithCas({
+    client: input.client,
+    verified: input.verified,
+    resync: input.resync,
+    opLabel: "revoke_device",
+    signEntry: (view) =>
+      Effect.map(
+        signRevokeDevice({
+          verified: view,
+          signer: input.signer,
+          targetUserId: input.targetUserId,
+          fingerprintsHex: input.fingerprintsHex,
+        }),
+        (signed) => {
+          revoked = signed === null ? [] : signed.revoking;
+          return signed === null ? null : signed.entry;
+        },
+      ),
   });
-}
+  return { verified: outcome.verified, revoked: outcome.appended ? revoked : [] };
+});
 
 /** Result of the device-addition backfill (aggregated per environment; one environment's failure does not stop the rest). */
 export interface DeviceBackfillOutcome {
@@ -351,23 +345,21 @@ export interface DeviceBackfillOutcome {
  * decided by the same function — the structure keeps "the set we should
  * have delivered" and "the set we check" identical.
  */
-export function deviceEnvironmentsOf(input: {
+export const deviceEnvironmentsOf = Effect.fn("device-ops.deviceEnvironmentsOf")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly targetMember: ChainMember;
   readonly targetDevice: ChainDevice;
-}): Effect.Effect<readonly string[], CliError> {
-  return Effect.gen(function* () {
-    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
-    const scope = effectivePermissionOf(input.targetMember, input.targetDevice).scope;
-    return [...input.verified.state.environments.keys()]
-      .filter(
-        (environmentId) =>
-          !deletedVerified.has(environmentId) && scopeIncludesEnvironment(scope, environmentId),
-      )
-      .toSorted(compareCodePoints);
-  });
-}
+}): Effect.fn.Return<readonly string[], CliError> {
+  const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+  const scope = effectivePermissionOf(input.targetMember, input.targetDevice).scope;
+  return [...input.verified.state.environments.keys()]
+    .filter(
+      (environmentId) =>
+        !deletedVerified.has(environmentId) && scopeIncludesEnvironment(scope, environmentId),
+    )
+    .toSorted(compareCodePoints);
+});
 
 /**
  * Backfills every epoch of every environment in the target device's effective
@@ -375,7 +367,7 @@ export function deviceEnvironmentsOf(input: {
  * is the caller's own key that opens the DEKs (this device, or the reserve key
  * during recovery).
  */
-export function backfillToDevice(input: {
+export const backfillToDevice = Effect.fn("device-ops.backfillToDevice")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly recipient: DekRecipient;
@@ -383,29 +375,27 @@ export function backfillToDevice(input: {
   readonly targetDevice: ChainDevice;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<DeviceBackfillOutcome, CliError> {
-  return Effect.gen(function* () {
-    const environments = yield* deviceEnvironmentsOf(input);
-    const aggregate = yield* backfillEachEnvironment(environments, (environmentId) =>
-      backfillEnvironmentFor({
-        client: input.client,
-        verified: input.verified,
-        environmentId,
-        recipient: input.recipient,
-        wrapRecipient: { kind: "member", member: input.targetMember, device: input.targetDevice },
-        recipientLabel: "device-addressed",
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
-      }),
-    );
-    return {
-      environments: environments.length,
-      registered: aggregate.registered,
-      alreadyRegistered: aggregate.alreadyRegistered,
-      failed: aggregate.failed,
-    };
-  });
-}
+}): Effect.fn.Return<DeviceBackfillOutcome, CliError> {
+  const environments = yield* deviceEnvironmentsOf(input);
+  const aggregate = yield* backfillEachEnvironment(environments, (environmentId) =>
+    backfillEnvironmentFor({
+      client: input.client,
+      verified: input.verified,
+      environmentId,
+      recipient: input.recipient,
+      wrapRecipient: { kind: "member", member: input.targetMember, device: input.targetDevice },
+      recipientLabel: "device-addressed",
+      signerUserId: input.signerUserId,
+      signingKeyPair: input.signingKeyPair,
+    }),
+  );
+  return {
+    environments: environments.length,
+    registered: aggregate.registered,
+    alreadyRegistered: aggregate.alreadyRegistered,
+    failed: aggregate.failed,
+  };
+});
 
 /** Result of the device-revocation sweep (same shape as the member one — shares the report). */
 export type DeviceSweepOutcome = SweepOutcome & {
@@ -425,39 +415,39 @@ export const DEVICE_REVOKED_ROTATION_REASON = "device-revoked";
  * to `outOfScope` as "carried over to another device of the same person
  * or the next sync".
  */
-export function sweepAfterDeviceRevoke<R>(input: {
+export const sweepAfterDeviceRevoke = Effect.fn("device-ops.sweepAfterDeviceRevoke")(function* <
+  R,
+>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly targetUserId: string;
   readonly actorUserId: string;
   readonly actorDevice: ChainDevice;
   readonly rotate: SweepRotate<R>;
-}): Effect.Effect<DeviceSweepOutcome | null, CliError, R> {
-  return Effect.gen(function* () {
-    const mandates: readonly RotationMandate[] = rotationMandates(input.verified).filter(
-      (mandate) => mandate.kind === "device-revoked" && mandate.target === input.targetUserId,
-    );
-    if (mandates.length === 0) {
-      return null;
-    }
-    const actor = input.verified.state.members.get(input.actorUserId);
-    const permission = actor === undefined ? null : effectivePermissionOf(actor, input.actorDevice);
-    const canRotate = permission !== null && ROLE_RANK[permission.role] >= ROLE_RANK.member;
-    const actorScope: MemberScope =
-      canRotate && permission !== null ? permission.scope : { kind: "listed", environmentIds: [] };
-    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
-    const { baselines, outOfScope, skippedDeleted } = partitionSweepBaselines({
-      verified: input.verified,
-      all: baselinesOf(mandates),
-      actorScope,
-      deletedVerified,
-    });
-    const sweep = yield* sweepRotations({
-      rotate: input.rotate,
-      verified: input.verified,
-      baselines,
-      deletedVerified,
-    });
-    return { ...sweep, skippedDeleted, outOfScope };
+}): Effect.fn.Return<DeviceSweepOutcome | null, CliError, R> {
+  const mandates: readonly RotationMandate[] = rotationMandates(input.verified).filter(
+    (mandate) => mandate.kind === "device-revoked" && mandate.target === input.targetUserId,
+  );
+  if (mandates.length === 0) {
+    return null;
+  }
+  const actor = input.verified.state.members.get(input.actorUserId);
+  const permission = actor === undefined ? null : effectivePermissionOf(actor, input.actorDevice);
+  const canRotate = permission !== null && ROLE_RANK[permission.role] >= ROLE_RANK.member;
+  const actorScope: MemberScope =
+    canRotate && permission !== null ? permission.scope : { kind: "listed", environmentIds: [] };
+  const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+  const { baselines, outOfScope, skippedDeleted } = partitionSweepBaselines({
+    verified: input.verified,
+    all: baselinesOf(mandates),
+    actorScope,
+    deletedVerified,
   });
-}
+  const sweep = yield* sweepRotations({
+    rotate: input.rotate,
+    verified: input.verified,
+    baselines,
+    deletedVerified,
+  });
+  return { ...sweep, skippedDeleted, outOfScope };
+});

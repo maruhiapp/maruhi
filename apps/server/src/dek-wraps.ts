@@ -294,20 +294,21 @@ const verifyOneWrapSignature = (
   );
 
 /** Import a sig public key derived from a verified chain (failure is a storage / verifier bug = defect). */
-const importSignerKey = (signer: MemberWithDevice) =>
-  Effect.gen(function* () {
-    // Note: the import succeeding below also relies on the current runtime
-    // behavior that "WebCrypto's raw Ed25519 import only checks length" (the
-    // target keys of add_member / add_device are not imported at chain
-    // acceptance). If the runtime introduces point validation, requests from a
-    // member who holds a bad 32-byte key become defects (self-harm only;
-    // unusable as an attack)
-    const signerKeyBytes = decodeHex(signer.sigPubHex);
-    if (signerKeyBytes === null) {
-      return yield* Effect.die(new Error("chain-derived signing key is not valid hex"));
-    }
-    return yield* cryptoEffect(() => importSigningPublicKey(signerKeyBytes)).pipe(Effect.orDie);
-  });
+const importSignerKey = Effect.fn("dek-wraps.importSignerKey")(function* (
+  signer: MemberWithDevice,
+) {
+  // Note: the import succeeding below also relies on the current runtime
+  // behavior that "WebCrypto's raw Ed25519 import only checks length" (the
+  // target keys of add_member / add_device are not imported at chain
+  // acceptance). If the runtime introduces point validation, requests from a
+  // member who holds a bad 32-byte key become defects (self-harm only;
+  // unusable as an attack)
+  const signerKeyBytes = decodeHex(signer.sigPubHex);
+  if (signerKeyBytes === null) {
+    return yield* Effect.die(new Error("chain-derived signing key is not valid hex"));
+  }
+  return yield* cryptoEffect(() => importSigningPublicKey(signerKeyBytes)).pipe(Effect.orDie);
+});
 
 /**
  * §12-6 / CRYPTO_SPEC §5.1: verify every wrap's registration signature and
@@ -322,31 +323,28 @@ const importSignerKey = (signer: MemberWithDevice) =>
  * wraps, returns null (the device is undetermined — the caller's count check
  * rejects with recipient-missing).
  */
-const ensureWrapSignatures = (
+const ensureWrapSignatures = Effect.fn("dek-wraps.ensureWrapSignatures")(function* (
   projectId: string,
   environmentId: string,
   caller: ChainMember,
   wraps: readonly DekWrapInput[],
-) =>
-  Effect.gen(function* () {
-    const [first, ...rest] = wraps;
-    if (first === undefined) {
-      return null;
-    }
-    const { device: signer, value: signerPublicKey } = yield* withSigningDevice(
-      caller,
-      (candidate) =>
-        Effect.gen(function* () {
-          const key = yield* importSignerKey(candidate);
-          yield* verifyOneWrapSignature(projectId, environmentId, candidate, key, first);
-          return key;
-        }),
-    );
-    for (const wrap of rest) {
-      yield* verifyOneWrapSignature(projectId, environmentId, signer, signerPublicKey, wrap);
-    }
-    return signer;
-  });
+) {
+  const [first, ...rest] = wraps;
+  if (first === undefined) {
+    return null;
+  }
+  const { device: signer, value: signerPublicKey } = yield* withSigningDevice(caller, (candidate) =>
+    Effect.gen(function* () {
+      const key = yield* importSignerKey(candidate);
+      yield* verifyOneWrapSignature(projectId, environmentId, candidate, key, first);
+      return key;
+    }),
+  );
+  for (const wrap of rest) {
+    yield* verifyOneWrapSignature(projectId, environmentId, signer, signerPublicKey, wrap);
+  }
+  return signer;
+});
 
 /**
  * Per-epoch set check (§12-6): initial registration (no existing wraps)
@@ -357,47 +355,50 @@ const ensureWrapSignatures = (
  * recipient classes. Appending to an existing epoch rejects duplicates of an
  * existing (epoch, recipient, device key).
  */
-const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly DekWrapInput[]) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const epochs = [...new Set(wraps.map((wrap) => wrap.epoch))];
-    for (const epoch of epochs) {
-      const epochWraps = wraps.filter((wrap) => wrap.epoch === epoch);
-      const existing = yield* store.countWrapsForEpoch(environmentId, epoch);
-      if (existing === 0) {
-        if (epochWraps.length !== expectedWrapRecipientCount(state, environmentId)) {
-          return yield* rejectData({ kind: "dek-wrap-rejected", reason: "recipient-missing" });
-        }
-        continue;
+const checkWrapSets = Effect.fn("dek-wraps.checkWrapSets")(function* (
+  environmentId: string,
+  state: ChainState,
+  wraps: readonly DekWrapInput[],
+) {
+  const store = yield* DataStore;
+  const epochs = [...new Set(wraps.map((wrap) => wrap.epoch))];
+  for (const epoch of epochs) {
+    const epochWraps = wraps.filter((wrap) => wrap.epoch === epoch);
+    const existing = yield* store.countWrapsForEpoch(environmentId, epoch);
+    if (existing === 0) {
+      if (epochWraps.length !== expectedWrapRecipientCount(state, environmentId)) {
+        return yield* rejectData({ kind: "dek-wrap-rejected", reason: "recipient-missing" });
       }
-      for (const wrap of epochWraps) {
-        // The existence check is at the same granularity as the storage key
-        // (environment, epoch, recipient_user_id, recipient_enc_pub_hex) — an
-        // identical (ID, key) in a different class would still be a primary-key
-        // collision on insert, so fail it to a 409 here
-        const stored = yield* store.wrapStoredRecipient(
-          environmentId,
+      continue;
+    }
+    for (const wrap of epochWraps) {
+      // The existence check is at the same granularity as the storage key
+      // (environment, epoch, recipient_user_id, recipient_enc_pub_hex) — an
+      // identical (ID, key) in a different class would still be a primary-key
+      // collision on insert, so fail it to a 409 here
+      const stored = yield* store.wrapStoredRecipient(
+        environmentId,
+        epoch,
+        wrap.recipientUserId,
+        wrap.recipientEncPubHex,
+      );
+      if (stored !== null) {
+        // Return the occupying wrap's stored recipient enc public key
+        // (AUTH_SPEC §12-6). Under the device-axis primary key it always
+        // equals the key that was sent (an old-key wrap is a separate slot =
+        // it does not block registration of the new key), so its role as
+        // material shrinks to the "already registered = idempotent" decision
+        // — the wire is unchanged (design record §8 K3-3)
+        return yield* rejectData({
+          kind: "dek-wrap-exists",
           epoch,
-          wrap.recipientUserId,
-          wrap.recipientEncPubHex,
-        );
-        if (stored !== null) {
-          // Return the occupying wrap's stored recipient enc public key
-          // (AUTH_SPEC §12-6). Under the device-axis primary key it always
-          // equals the key that was sent (an old-key wrap is a separate slot =
-          // it does not block registration of the new key), so its role as
-          // material shrinks to the "already registered = idempotent" decision
-          // — the wire is unchanged (design record §8 K3-3)
-          return yield* rejectData({
-            kind: "dek-wrap-exists",
-            epoch,
-            recipientUserId: wrap.recipientUserId,
-            storedRecipientEncPubHex: stored.recipientEncPubHex,
-          });
-        }
+          recipientUserId: wrap.recipientUserId,
+          storedRecipientEncPubHex: stored.recipientEncPubHex,
+        });
       }
     }
-  });
+  }
+});
 
 /**
  * Acceptance verification of a wrap set (§12-6) + quantity policy (§12-8) +
@@ -413,23 +414,22 @@ const checkWrapSets = (environmentId: string, state: ChainState, wraps: readonly
  * authorization — ensureDevicePermission — and as the signer FP for writes and
  * audit. null when there are no wraps).
  */
-export const ensureWrapSetAcceptable = (
+export const ensureWrapSetAcceptable = Effect.fn("dek-wraps.ensureWrapSetAcceptable")(function* (
   projectId: string,
   environmentId: string,
   state: ChainState,
   caller: ChainMember,
   currentEpoch: number,
   wraps: readonly DekWrapInput[],
-) =>
-  Effect.gen(function* () {
-    const rejection = checkWrapRecipients(state, environmentId, currentEpoch, wraps);
-    if (rejection !== null) {
-      return yield* rejectData(rejection);
-    }
-    yield* ensureWrapRowCapacity(wraps.length);
-    yield* checkWrapSets(environmentId, state, wraps);
-    return yield* ensureWrapSignatures(projectId, environmentId, caller, wraps);
-  });
+) {
+  const rejection = checkWrapRecipients(state, environmentId, currentEpoch, wraps);
+  if (rejection !== null) {
+    return yield* rejectData(rejection);
+  }
+  yield* ensureWrapRowCapacity(wraps.length);
+  yield* checkWrapSets(environmentId, state, wraps);
+  return yield* ensureWrapSignatures(projectId, environmentId, caller, wraps);
+});
 
 /**
  * dek.registered (AUDIT_SPEC §3.3): one row per recipient (the §5.1 column

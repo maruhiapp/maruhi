@@ -219,7 +219,7 @@ function rotateAttempt(
  * **without advancing the epoch**. Since no new chain entry is created,
  * `--reason` is neither recorded nor required on this path.
  */
-function resumeReencryption(input: {
+const resumeReencryption = Effect.fn("env-rotate.resumeReencryption")(function* (input: {
   readonly input: RotateInput;
   readonly pulled: { readonly verified: VerifiedProject };
   readonly keys: { readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>> };
@@ -235,119 +235,113 @@ function resumeReencryption(input: {
    */
   readonly anyDecryptable: boolean;
   readonly warnings: string[];
-}): Effect.Effect<RotationSummary, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const { currentEpoch, stale, warnings } = input;
-    const environmentId = input.input.environmentId;
-    // Re-applying the guard on the advanced verified view (if a role
-    // change / deletion happened between the first check and the pull,
-    // only the resume path would slip through with a stale verification
-    // state. The resume path only pushes and builds no wrap set, so a
-    // grant's enablement creates no duty here)
-    const member = yield* ensureRotatable(
-      input.pulled.verified,
-      environmentId,
-      input.input.signerUserId,
-      input.input.signingKeyPair,
+}): Effect.fn.Return<RotationSummary, CliError, CliIo> {
+  const { currentEpoch, stale, warnings } = input;
+  const environmentId = input.input.environmentId;
+  // Re-applying the guard on the advanced verified view (if a role
+  // change / deletion happened between the first check and the pull,
+  // only the resume path would slip through with a stale verification
+  // state. The resume path only pushes and builds no wrap set, so a
+  // grant's enablement creates no duty here)
+  const member = yield* ensureRotatable(
+    input.pulled.verified,
+    environmentId,
+    input.input.signerUserId,
+    input.input.signingKeyPair,
+  );
+  const dek = input.keys.deksByEpoch.get(currentEpoch);
+  if (dek === undefined) {
+    // The escape is suggested **only when it can be fulfilled**:
+    // --new-epoch creates the new DEK itself so it doesn't need the
+    // current epoch's DEK, but with no re-encryption material (an
+    // openable current value) it gets rejected by
+    // ensureRotationIsUseful. Suggesting it unconditionally would send
+    // the user bouncing between two contradictory errors
+    return yield* Effect.fail(
+      cliError(
+        input.anyDecryptable
+          ? `The DEK for current epoch ${currentEpoch} is not registered for you (possibly awaiting a re-wrap by the rotation's executor). Cannot resume the incomplete re-encryption — wait for the re-wrap, or if revocation takes priority, run with --new-epoch (only values you can open move to the new epoch; the rest are reported as incomplete)`
+          : `The DEK for current epoch ${currentEpoch} is not registered for you (possibly awaiting a re-wrap by the rotation's executor). You cannot open any current value, so advancing the epoch with --new-epoch would re-encrypt nothing — wait for a re-wrap addressed to you, or have a member holding wraps for that epoch run this`,
+      ),
     );
-    const dek = input.keys.deksByEpoch.get(currentEpoch);
-    if (dek === undefined) {
-      // The escape is suggested **only when it can be fulfilled**:
-      // --new-epoch creates the new DEK itself so it doesn't need the
-      // current epoch's DEK, but with no re-encryption material (an
-      // openable current value) it gets rejected by
-      // ensureRotationIsUseful. Suggesting it unconditionally would send
-      // the user bouncing between two contradictory errors
-      return yield* Effect.fail(
-        cliError(
-          input.anyDecryptable
-            ? `The DEK for current epoch ${currentEpoch} is not registered for you (possibly awaiting a re-wrap by the rotation's executor). Cannot resume the incomplete re-encryption — wait for the re-wrap, or if revocation takes priority, run with --new-epoch (only values you can open move to the new epoch; the rest are reported as incomplete)`
-            : `The DEK for current epoch ${currentEpoch} is not registered for you (possibly awaiting a re-wrap by the rotation's executor). You cannot open any current value, so advancing the epoch with --new-epoch would re-encrypt nothing — wait for a re-wrap addressed to you, or have a member holding wraps for that epoch run this`,
-        ),
-      );
-    }
-    // The wording differs by "was a request made": a reason-less run (the
-    // shape the partial-completion guidance suggests) requested nothing,
-    // so saying it switched would be a lie
-    const switched =
-      input.reason === null
-        ? "Resuming this re-encryption (no new epoch will be created)"
-        : "**The requested rotation will not be performed**; switching to resuming this re-encryption (no new epoch is created, and since this path appends no chain entry, --reason is not recorded either)";
-    yield* logWarning(
-      `after the rotation to epoch ${currentEpoch}, environment ${environmentId} still has ${countNoun(stale.length, "variable")} with incomplete re-encryption. ${switched}. If a new epoch is strictly required (e.g. after removing a departed member), run with --new-epoch — this also counters responses that fake an incomplete state to suppress rotations`,
-    );
-    // Unopenable values do not stop the resume itself: **the epoch has
-    // already advanced**, so the normal path's reason "never create the
-    // state where only the epoch advanced and re-encryption never
-    // completes" does not hold here — that state already exists, and
-    // choosing not to push the openable share only maintains it (with 1
-    // of 100 unopenable, never strand the other 99 on the old DEK). = the
-    // same policy as the "always advance" side, so the policy is shared
-    // with decryptForRotation (splitting into two places would let a
-    // classification change miss only the resume path)
-    const targets = yield* decryptForRotation({
-      verified: input.pulled.verified,
-      environmentId,
-      values: stale,
-      deksByEpoch: input.keys.deksByEpoch,
-      chainEpoch: currentEpoch,
-      warnings,
-    });
-    // If nothing can be pushed, never enter the passes. Entering would
-    // only run an empty push pass and a full re-fetch / re-verify of the
-    // environment, returning to an already-known cause (the early cut-off
-    // equivalent of the normal path's ensureRotationIsUseful)
-    const outcome =
-      targets.length === 0
-        ? {
-            reencrypted: 0,
-            alreadyCurrent: 0,
-            remaining: stale.length,
-            remainingExact: true,
-            failure: nothingDecryptable(stale.length),
-            written: [],
-          }
-        : yield* reencryptCurrentValues({
-            context: reencryptContext(
-              input.input,
-              yield* ownDeviceBySigningKey(
-                input.pulled.verified,
-                member,
-                input.input.signingKeyPair,
-              ),
-              {
-                epoch: currentEpoch,
-                dek,
-                deksByEpoch: input.keys.deksByEpoch,
-              },
-            ),
-            view: input.pulled.verified,
-            targets,
-            sink: warnings,
-          });
-    // Issuance trigger (i) (CRYPTO_SPEC §6.3): a **completion** via the
-    // resume path is the same milestone — the first run never reached
-    // issuance because of a crash, and only here does the interrupted
-    // re-encryption complete and "the post-completion data state" come
-    // into being. Issued on the same condition as the normal path (full
-    // completion only)
-    if (outcome.remaining === 0 && outcome.failure === null) {
-      yield* issuePostRotationCheckpoint(input.input, input.pulled.verified, warnings);
-    }
-    return {
-      mode: "resumed",
-      previousEpoch: currentEpoch,
-      epoch: currentEpoch,
-      reencrypted: outcome.reencrypted,
-      alreadyCurrent: outcome.alreadyCurrent,
-      remaining: outcome.remaining,
-      remainingExact: outcome.remainingExact,
-      failure: outcome.failure,
-      written: outcome.written,
-      warnings: dedupeWarnings(warnings),
-    };
+  }
+  // The wording differs by "was a request made": a reason-less run (the
+  // shape the partial-completion guidance suggests) requested nothing,
+  // so saying it switched would be a lie
+  const switched =
+    input.reason === null
+      ? "Resuming this re-encryption (no new epoch will be created)"
+      : "**The requested rotation will not be performed**; switching to resuming this re-encryption (no new epoch is created, and since this path appends no chain entry, --reason is not recorded either)";
+  yield* logWarning(
+    `after the rotation to epoch ${currentEpoch}, environment ${environmentId} still has ${countNoun(stale.length, "variable")} with incomplete re-encryption. ${switched}. If a new epoch is strictly required (e.g. after removing a departed member), run with --new-epoch — this also counters responses that fake an incomplete state to suppress rotations`,
+  );
+  // Unopenable values do not stop the resume itself: **the epoch has
+  // already advanced**, so the normal path's reason "never create the
+  // state where only the epoch advanced and re-encryption never
+  // completes" does not hold here — that state already exists, and
+  // choosing not to push the openable share only maintains it (with 1
+  // of 100 unopenable, never strand the other 99 on the old DEK). = the
+  // same policy as the "always advance" side, so the policy is shared
+  // with decryptForRotation (splitting into two places would let a
+  // classification change miss only the resume path)
+  const targets = yield* decryptForRotation({
+    verified: input.pulled.verified,
+    environmentId,
+    values: stale,
+    deksByEpoch: input.keys.deksByEpoch,
+    chainEpoch: currentEpoch,
+    warnings,
   });
-}
+  // If nothing can be pushed, never enter the passes. Entering would
+  // only run an empty push pass and a full re-fetch / re-verify of the
+  // environment, returning to an already-known cause (the early cut-off
+  // equivalent of the normal path's ensureRotationIsUseful)
+  const outcome =
+    targets.length === 0
+      ? {
+          reencrypted: 0,
+          alreadyCurrent: 0,
+          remaining: stale.length,
+          remainingExact: true,
+          failure: nothingDecryptable(stale.length),
+          written: [],
+        }
+      : yield* reencryptCurrentValues({
+          context: reencryptContext(
+            input.input,
+            yield* ownDeviceBySigningKey(input.pulled.verified, member, input.input.signingKeyPair),
+            {
+              epoch: currentEpoch,
+              dek,
+              deksByEpoch: input.keys.deksByEpoch,
+            },
+          ),
+          view: input.pulled.verified,
+          targets,
+          sink: warnings,
+        });
+  // Issuance trigger (i) (CRYPTO_SPEC §6.3): a **completion** via the
+  // resume path is the same milestone — the first run never reached
+  // issuance because of a crash, and only here does the interrupted
+  // re-encryption complete and "the post-completion data state" come
+  // into being. Issued on the same condition as the normal path (full
+  // completion only)
+  if (outcome.remaining === 0 && outcome.failure === null) {
+    yield* issuePostRotationCheckpoint(input.input, input.pulled.verified, warnings);
+  }
+  return {
+    mode: "resumed",
+    previousEpoch: currentEpoch,
+    epoch: currentEpoch,
+    reencrypted: outcome.reencrypted,
+    alreadyCurrent: outcome.alreadyCurrent,
+    remaining: outcome.remaining,
+    remainingExact: outcome.remainingExact,
+    failure: outcome.failure,
+    written: outcome.written,
+    warnings: dedupeWarnings(warnings),
+  };
+});
 
 /**
  * The pre-rotate situation warnings (no floor). Placed right after the pull
@@ -430,201 +424,199 @@ function manifestBaseOf(pulled: VerifiedEnvironmentPull): {
   };
 }
 
-function rotateWithWarnings(
+const rotateWithWarnings = Effect.fn("env-rotate.rotateWithWarnings")(function* (
   input: RotateInput,
   warnings: string[],
-): Effect.Effect<RotationSummary, CliError | RotateValuesConflictError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const reason = yield* checkReasonLength(input.reason);
-    yield* ensureRotatable(
-      input.verified,
-      input.environmentId,
-      input.signerUserId,
-      input.signingKeyPair,
-    );
-    // --new-epoch never goes through the resume path = it always signs an
-    // entry. The reason the required check is deferred to just before
-    // signing (on resume the reason is not recorded) does not exist here,
-    // so it is dropped before the pull — never fetch every variable's
-    // ciphertext for an unsatisfiable argument check and leave a
-    // per-variable var.read on the audit log (same discipline as
-    // ensureRotatable)
-    if (input.forceNewEpoch) {
-      yield* requireReason(reason);
-    }
-    // The target set's only source is the server's pull response (the
-    // variable list is not on the chain — §6.2). Since detecting an
-    // omission is the local floor's variable-omitted rule's job (§6.3
-    // (a)), a run without a floor (first sync, after corruption) cannot
-    // detect "a variable consistently withheld". A rotation is a
-    // revocation operation and this leftover is heavy, so it is made
-    // explicit before reporting completion (how §14.3-3's dominant
-    // leftover appears on this path)
-    const floorless = input.floor.current() === null;
+): Effect.fn.Return<RotationSummary, CliError | RotateValuesConflictError, CliIo> {
+  const io = yield* CliIo;
+  const reason = yield* checkReasonLength(input.reason);
+  yield* ensureRotatable(
+    input.verified,
+    input.environmentId,
+    input.signerUserId,
+    input.signingKeyPair,
+  );
+  // --new-epoch never goes through the resume path = it always signs an
+  // entry. The reason the required check is deferred to just before
+  // signing (on resume the reason is not recorded) does not exist here,
+  // so it is dropped before the pull — never fetch every variable's
+  // ciphertext for an unsatisfiable argument check and leave a
+  // per-variable var.read on the audit log (same discipline as
+  // ensureRotatable)
+  if (input.forceNewEpoch) {
+    yield* requireReason(reason);
+  }
+  // The target set's only source is the server's pull response (the
+  // variable list is not on the chain — §6.2). Since detecting an
+  // omission is the local floor's variable-omitted rule's job (§6.3
+  // (a)), a run without a floor (first sync, after corruption) cannot
+  // detect "a variable consistently withheld". A rotation is a
+  // revocation operation and this leftover is heavy, so it is made
+  // explicit before reporting completion (how §14.3-3's dominant
+  // leftover appears on this path)
+  const floorless = input.floor.current() === null;
 
-    // (1) The verified pull (§6.3 / §12-7): every active variable's
-    // latest value + the wraps of every epoch addressed to me. Between
-    // the rotation and the re-encryption's completion, the latest
-    // values' epochs can differ per variable (§12-7) — which is also the
-    // detection material of interruption recovery
-    const pulled = yield* pullVerifiedEnvironment({
-      client: input.client,
-      verified: input.verified,
-      environmentId: input.environmentId,
-      resync: input.resync,
-      floor: input.floor,
-    });
-    // Warnings enter the sink **before** any subsequent failure (DEK
-    // verification etc.): if the failure path's flush didn't include them,
-    // they'd vanish exactly on failure — the same hole as round 8
-    warnings.push(...pulled.warnings, ...rotateSituationWarnings(input, floorless));
-    const keys = yield* environmentKeysFor({
-      client: input.client,
-      verified: pulled.verified,
-      environmentId: input.environmentId,
-      recipient: input.recipient,
-      prefetched: pulled.deks,
-    });
-    const currentEpoch = keys.currentEpoch;
-    const stale = pulled.variables.filter((value) => value.epoch < currentEpoch);
-    const path = rotatePathOf({
-      staleCount: stale.length,
+  // (1) The verified pull (§6.3 / §12-7): every active variable's
+  // latest value + the wraps of every epoch addressed to me. Between
+  // the rotation and the re-encryption's completion, the latest
+  // values' epochs can differ per variable (§12-7) — which is also the
+  // detection material of interruption recovery
+  const pulled = yield* pullVerifiedEnvironment({
+    client: input.client,
+    verified: input.verified,
+    environmentId: input.environmentId,
+    resync: input.resync,
+    floor: input.floor,
+  });
+  // Warnings enter the sink **before** any subsequent failure (DEK
+  // verification etc.): if the failure path's flush didn't include them,
+  // they'd vanish exactly on failure — the same hole as round 8
+  warnings.push(...pulled.warnings, ...rotateSituationWarnings(input, floorless));
+  const keys = yield* environmentKeysFor({
+    client: input.client,
+    verified: pulled.verified,
+    environmentId: input.environmentId,
+    recipient: input.recipient,
+    prefetched: pulled.deks,
+  });
+  const currentEpoch = keys.currentEpoch;
+  const stale = pulled.variables.filter((value) => value.epoch < currentEpoch);
+  const path = rotatePathOf({
+    staleCount: stale.length,
+    reason,
+    forceNewEpoch: input.forceNewEpoch,
+  });
+
+  // --- Interruption recovery: the epoch advanced but re-encryption remains ---
+  if (path === "resume") {
+    return yield* resumeReencryption({
+      input,
+      pulled,
+      keys,
+      currentEpoch,
+      stale,
       reason,
-      forceNewEpoch: input.forceNewEpoch,
-    });
-
-    // --- Interruption recovery: the epoch advanced but re-encryption remains ---
-    if (path === "resume") {
-      return yield* resumeReencryption({
-        input,
-        pulled,
-        keys,
-        currentEpoch,
-        stale,
-        reason,
-        anyDecryptable: pulled.variables.some((value) => keys.deksByEpoch.has(value.epoch)),
-        warnings,
-      });
-    }
-
-    // No incompleteness and no --reason given = a "check only" run (the
-    // re-run shape the partial-completion guidance suggests). Requiring
-    // --reason here would ask the user who re-ran as guided for a reason,
-    // and giving one would become **a second rotation**. Nothing is done;
-    // the completion state is reported. `--reason ""` never reaches this
-    // path (checkReasonLength drops it earlier)
-    if (path === "up-to-date") {
-      return {
-        mode: "up-to-date",
-        previousEpoch: currentEpoch,
-        epoch: currentEpoch,
-        reencrypted: 0,
-        alreadyCurrent: 0,
-        remaining: 0,
-        remainingExact: true,
-        failure: null,
-        written: [],
-        warnings: dedupeWarnings(warnings),
-      };
-    }
-
-    // --- The normal rotation ---
-    // The reason becomes required from here (the path that actually signs a chain entry)
-    const entryReason = yield* requireReason(reason);
-    const newEpoch = currentEpoch + 1;
-    const member = yield* ensureRotatable(
-      pulled.verified,
-      input.environmentId,
-      input.signerUserId,
-      input.signingKeyPair,
-    );
-    // The plaintext re-encryption needs is gathered **before advancing
-    // the epoch**: with an undecryptable value present, never create the
-    // state where only the epoch advanced and re-encryption can never
-    // complete. When --new-epoch is given while an unfinished
-    // re-encryption (old-epoch values) exists, the targets are "all
-    // active variables" anyway, so they converge to the new epoch in one
-    // go without transiting an intermediate epoch (every epoch's DEK is
-    // already decrypted from the wraps addressed to me)
-    const targets = yield* decryptForRotation({
-      verified: pulled.verified,
-      environmentId: input.environmentId,
-      values: pulled.variables,
-      deksByEpoch: keys.deksByEpoch,
-      chainEpoch: currentEpoch,
+      anyDecryptable: pulled.variables.some((value) => keys.deksByEpoch.has(value.epoch)),
       warnings,
     });
-    yield* ensureRotationIsUseful(targets.length, pulled.variables.length);
-    // Wrapped right after generation (from here on the DEK only flows as a Redacted)
-    const dek = Redacted.make(generateDek(), { label: "dek" });
-    const dekCommitmentHex = yield* computeRotationCommitmentHex({
-      projectId: pulled.verified.projectId,
-      environmentId: input.environmentId,
-      newEpoch,
-      dek,
-    });
-    yield* io.log(
-      `Rotating environment ${input.environmentId} (epoch ${currentEpoch} → ${newEpoch}, ${countNoun(targets.length, "variable")} targeted)`,
-    );
-    const rotated = yield* appendRotation({
-      ...input,
-      baseline: pulled.verified,
-      member,
-      reason: entryReason,
-      newEpoch,
-      dek,
-      dekCommitmentHex,
-      manifestBase: manifestBaseOf(pulled),
-      checkpointValues: pulled.variables.map((value) => ({
-        variableId: value.variableId,
-        version: value.version,
-        valueSigHashHex: value.signedBytesHashHex,
-      })),
-    });
-    yield* io.log(
-      `rotate_epoch accepted (epoch=${newEpoch}, new DEK wrapped for ${countNoun(rotated.memberCount, "current member")})`,
-    );
-    if (rotated.floorWarning !== null) {
-      warnings.push(rotated.floorWarning);
-    }
-    // The new epoch's DEK is held by its generator (me). The match
-    // against the chain-derived commitment was already done by
-    // appendRotation (§5.2)
-    const deksByEpoch = new Map<number, Redacted.Redacted<Uint8Array>>(keys.deksByEpoch);
-    deksByEpoch.set(newEpoch, dek);
-    const outcome = yield* reencryptCurrentValues({
-      // The attribution is the member row at acceptance time (already updated if re-signed under CAS retry)
-      context: reencryptContext(
-        input,
-        yield* ownDeviceBySigningKey(pulled.verified, rotated.member, input.signingKeyPair),
-        {
-          epoch: newEpoch,
-          dek,
-          deksByEpoch,
-        },
-      ),
-      view: rotated.view,
-      targets,
-      sink: warnings,
-    });
-    if (outcome.remaining === 0 && outcome.failure === null) {
-      yield* issuePostRotationCheckpoint(input, rotated.view, warnings);
-    }
+  }
+
+  // No incompleteness and no --reason given = a "check only" run (the
+  // re-run shape the partial-completion guidance suggests). Requiring
+  // --reason here would ask the user who re-ran as guided for a reason,
+  // and giving one would become **a second rotation**. Nothing is done;
+  // the completion state is reported. `--reason ""` never reaches this
+  // path (checkReasonLength drops it earlier)
+  if (path === "up-to-date") {
     return {
-      mode: "rotated",
+      mode: "up-to-date",
       previousEpoch: currentEpoch,
-      epoch: newEpoch,
-      reencrypted: outcome.reencrypted,
-      alreadyCurrent: outcome.alreadyCurrent,
-      remaining: outcome.remaining,
-      remainingExact: outcome.remainingExact,
-      failure: outcome.failure,
-      written: outcome.written,
+      epoch: currentEpoch,
+      reencrypted: 0,
+      alreadyCurrent: 0,
+      remaining: 0,
+      remainingExact: true,
+      failure: null,
+      written: [],
       warnings: dedupeWarnings(warnings),
     };
+  }
+
+  // --- The normal rotation ---
+  // The reason becomes required from here (the path that actually signs a chain entry)
+  const entryReason = yield* requireReason(reason);
+  const newEpoch = currentEpoch + 1;
+  const member = yield* ensureRotatable(
+    pulled.verified,
+    input.environmentId,
+    input.signerUserId,
+    input.signingKeyPair,
+  );
+  // The plaintext re-encryption needs is gathered **before advancing
+  // the epoch**: with an undecryptable value present, never create the
+  // state where only the epoch advanced and re-encryption can never
+  // complete. When --new-epoch is given while an unfinished
+  // re-encryption (old-epoch values) exists, the targets are "all
+  // active variables" anyway, so they converge to the new epoch in one
+  // go without transiting an intermediate epoch (every epoch's DEK is
+  // already decrypted from the wraps addressed to me)
+  const targets = yield* decryptForRotation({
+    verified: pulled.verified,
+    environmentId: input.environmentId,
+    values: pulled.variables,
+    deksByEpoch: keys.deksByEpoch,
+    chainEpoch: currentEpoch,
+    warnings,
   });
-}
+  yield* ensureRotationIsUseful(targets.length, pulled.variables.length);
+  // Wrapped right after generation (from here on the DEK only flows as a Redacted)
+  const dek = Redacted.make(generateDek(), { label: "dek" });
+  const dekCommitmentHex = yield* computeRotationCommitmentHex({
+    projectId: pulled.verified.projectId,
+    environmentId: input.environmentId,
+    newEpoch,
+    dek,
+  });
+  yield* io.log(
+    `Rotating environment ${input.environmentId} (epoch ${currentEpoch} → ${newEpoch}, ${countNoun(targets.length, "variable")} targeted)`,
+  );
+  const rotated = yield* appendRotation({
+    ...input,
+    baseline: pulled.verified,
+    member,
+    reason: entryReason,
+    newEpoch,
+    dek,
+    dekCommitmentHex,
+    manifestBase: manifestBaseOf(pulled),
+    checkpointValues: pulled.variables.map((value) => ({
+      variableId: value.variableId,
+      version: value.version,
+      valueSigHashHex: value.signedBytesHashHex,
+    })),
+  });
+  yield* io.log(
+    `rotate_epoch accepted (epoch=${newEpoch}, new DEK wrapped for ${countNoun(rotated.memberCount, "current member")})`,
+  );
+  if (rotated.floorWarning !== null) {
+    warnings.push(rotated.floorWarning);
+  }
+  // The new epoch's DEK is held by its generator (me). The match
+  // against the chain-derived commitment was already done by
+  // appendRotation (§5.2)
+  const deksByEpoch = new Map<number, Redacted.Redacted<Uint8Array>>(keys.deksByEpoch);
+  deksByEpoch.set(newEpoch, dek);
+  const outcome = yield* reencryptCurrentValues({
+    // The attribution is the member row at acceptance time (already updated if re-signed under CAS retry)
+    context: reencryptContext(
+      input,
+      yield* ownDeviceBySigningKey(pulled.verified, rotated.member, input.signingKeyPair),
+      {
+        epoch: newEpoch,
+        dek,
+        deksByEpoch,
+      },
+    ),
+    view: rotated.view,
+    targets,
+    sink: warnings,
+  });
+  if (outcome.remaining === 0 && outcome.failure === null) {
+    yield* issuePostRotationCheckpoint(input, rotated.view, warnings);
+  }
+  return {
+    mode: "rotated",
+    previousEpoch: currentEpoch,
+    epoch: newEpoch,
+    reencrypted: outcome.reencrypted,
+    alreadyCurrent: outcome.alreadyCurrent,
+    remaining: outcome.remaining,
+    remainingExact: outcome.remainingExact,
+    failure: outcome.failure,
+    written: outcome.written,
+    warnings: dedupeWarnings(warnings),
+  };
+});
 
 /** Computing the new-epoch DEK's commitment (CRYPTO_SPEC §5.2). Failures are CliError. */
 function computeRotationCommitmentHex(input: {
@@ -663,37 +655,35 @@ function computeRotationCommitmentHex(input: {
  * Being a SHOULD, an issuance failure never overturns the rotate's
  * success and is disclosed as a warning.
  */
-function issuePostRotationCheckpoint(
+const issuePostRotationCheckpoint = Effect.fn("env-rotate.issuePostRotationCheckpoint")(function* (
   input: RotateInput,
   view: VerifiedProject,
   warnings: string[],
-): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* issueCheckpoint({
-      client: input.client,
-      verified: view,
-      resync: input.resync,
-      environmentIds: [input.environmentId],
-      signerUserId: input.signerUserId,
-      signingKeyPair: input.signingKeyPair,
-      floorFor: () => Effect.succeed(input.floor),
-    }).pipe(
-      Effect.tap((issued) =>
-        Effect.gen(function* () {
-          warnings.push(...issued.warnings);
-          yield* io.log(
-            `Issued the post-rotation periodic checkpoint for environment ${input.environmentId}${issued.attestedAuditHead ? " (audit head attested)" : ""} — CRYPTO_SPEC §6.3 (i)`,
-          );
-        }),
-      ),
-      Effect.catch((error) =>
-        Effect.sync(() => {
-          warnings.push(
-            `The post-rotation periodic checkpoint could not be issued (${error.message}). The boundary checkpoint from the rotation still holds; run \`maruhi project checkpoint\` to notarize the re-encrypted state (CRYPTO_SPEC §6.3 (i))`,
-          );
-        }),
-      ),
-    );
-  });
-}
+): Effect.fn.Return<void, never, CliIo> {
+  const io = yield* CliIo;
+  yield* issueCheckpoint({
+    client: input.client,
+    verified: view,
+    resync: input.resync,
+    environmentIds: [input.environmentId],
+    signerUserId: input.signerUserId,
+    signingKeyPair: input.signingKeyPair,
+    floorFor: () => Effect.succeed(input.floor),
+  }).pipe(
+    Effect.tap((issued) =>
+      Effect.gen(function* () {
+        warnings.push(...issued.warnings);
+        yield* io.log(
+          `Issued the post-rotation periodic checkpoint for environment ${input.environmentId}${issued.attestedAuditHead ? " (audit head attested)" : ""} — CRYPTO_SPEC §6.3 (i)`,
+        );
+      }),
+    ),
+    Effect.catch((error) =>
+      Effect.sync(() => {
+        warnings.push(
+          `The post-rotation periodic checkpoint could not be issued (${error.message}). The boundary checkpoint from the rotation still holds; run \`maruhi project checkpoint\` to notarize the re-encrypted state (CRYPTO_SPEC §6.3 (i))`,
+        );
+      }),
+    ),
+  );
+});

@@ -33,72 +33,71 @@ export interface RotationDismissTargetInput {
 const pairKey = (target: RotationDismissTargetInput): string =>
   `${target.environmentId} ${target.variableId}`;
 
-export const rotationFlagsProgram = (actor: DataActor, cache: StateCache) =>
-  Effect.gen(function* () {
-    yield* requireMemberState(actor.userId, "reader", cache);
-    const audit = yield* AuditStore;
-    return yield* Effect.sync((): readonly EffectiveRotationFlag[] =>
-      deriveEffectiveFlags(audit.readRotationSync.rotationFlagEvents()),
-    );
-  });
-
-export const dismissRotationFlagsProgram = (
+export const rotationFlagsProgram = Effect.fn("programs-rotation.rotationFlagsProgram")(function* (
   actor: DataActor,
-  targets: readonly RotationDismissTargetInput[],
   cache: StateCache,
-) =>
-  Effect.gen(function* () {
-    // Dismissal carries an environment coordinate but does not
-    // consult scope (a governance operation absent from AUTH_SPEC
-    // §12-3's table — AUDIT_SPEC §3.3 / §6: the flag view is class 1
-    // with no environment axis in the visibility predicate, and
-    // dismissal is an admin's decision; design record §9 K3-C).
-    // The only write that still keeps requireMemberState on a path
-    // carrying an environment coordinate
-    yield* requireMemberState(actor.userId, "admin", cache);
-    if (targets.length > MAX_ROTATION_DISMISSALS_PER_REQUEST) {
+) {
+  yield* requireMemberState(actor.userId, "reader", cache);
+  const audit = yield* AuditStore;
+  return yield* Effect.sync((): readonly EffectiveRotationFlag[] =>
+    deriveEffectiveFlags(audit.readRotationSync.rotationFlagEvents()),
+  );
+});
+
+export const dismissRotationFlagsProgram = Effect.fn(
+  "programs-rotation.dismissRotationFlagsProgram",
+)(function* (actor: DataActor, targets: readonly RotationDismissTargetInput[], cache: StateCache) {
+  // Dismissal carries an environment coordinate but does not
+  // consult scope (a governance operation absent from AUTH_SPEC
+  // §12-3's table — AUDIT_SPEC §3.3 / §6: the flag view is class 1
+  // with no environment axis in the visibility predicate, and
+  // dismissal is an admin's decision; design record §9 K3-C).
+  // The only write that still keeps requireMemberState on a path
+  // carrying an environment coordinate
+  yield* requireMemberState(actor.userId, "admin", cache);
+  if (targets.length > MAX_ROTATION_DISMISSALS_PER_REQUEST) {
+    return yield* rejectData({
+      kind: "limit-exceeded",
+      resource: "rotation-dismissals-per-request",
+      limit: MAX_ROTATION_DISMISSALS_PER_REQUEST,
+    });
+  }
+  const audit = yield* AuditStore;
+  const live = new Set(
+    deriveEffectiveFlags(audit.readRotationSync.rotationFlagEvents()).map(pairKey),
+  );
+  // Duplicate pairs are folded into one (dismissal semantics are
+  // idempotent per pair — one request, one event per pair). A pair
+  // with no active flag rejects the whole request all-or-nothing
+  const deduped: RotationDismissTargetInput[] = [];
+  const seen = new Set<string>();
+  for (const target of targets) {
+    const key = pairKey(target);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    if (!live.has(key)) {
       return yield* rejectData({
-        kind: "limit-exceeded",
-        resource: "rotation-dismissals-per-request",
-        limit: MAX_ROTATION_DISMISSALS_PER_REQUEST,
+        kind: "rotation-flag-not-found",
+        environmentId: target.environmentId,
+        variableId: target.variableId,
       });
     }
-    const audit = yield* AuditStore;
-    const live = new Set(
-      deriveEffectiveFlags(audit.readRotationSync.rotationFlagEvents()).map(pairKey),
-    );
-    // Duplicate pairs are folded into one (dismissal semantics are
-    // idempotent per pair — one request, one event per pair). A pair
-    // with no active flag rejects the whole request all-or-nothing
-    const deduped: RotationDismissTargetInput[] = [];
-    const seen = new Set<string>();
-    for (const target of targets) {
-      const key = pairKey(target);
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      if (!live.has(key)) {
-        return yield* rejectData({
-          kind: "rotation-flag-not-found",
+    deduped.push(target);
+  }
+  const now = yield* Clock.currentTimeMillis;
+  // The write phase (a single task): one rotation.dismissed row
+  // per pair (AUDIT_SPEC §3.3 — the actor is the dismisser
+  // themselves)
+  yield* Effect.sync(() => {
+    audit.appendManySync(
+      deduped.map((target) =>
+        dataEvent(actor, now, "rotation.dismissed", {
           environmentId: target.environmentId,
           variableId: target.variableId,
-        });
-      }
-      deduped.push(target);
-    }
-    const now = yield* Clock.currentTimeMillis;
-    // The write phase (a single task): one rotation.dismissed row
-    // per pair (AUDIT_SPEC §3.3 — the actor is the dismisser
-    // themselves)
-    yield* Effect.sync(() => {
-      audit.appendManySync(
-        deduped.map((target) =>
-          dataEvent(actor, now, "rotation.dismissed", {
-            environmentId: target.environmentId,
-            variableId: target.variableId,
-          }),
-        ),
-      );
-    });
+        }),
+      ),
+    );
   });
+});

@@ -26,22 +26,22 @@ import type { VerifiedPulledValue } from "./values-verify.ts";
  * values = every value at the current epoch) it never happens, since the
  * current epoch's DEK is always held.
  */
-export function decryptForRotation(input: {
-  readonly verified: VerifiedProject;
-  readonly environmentId: string;
-  readonly values: readonly VerifiedPulledValue[];
-  readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
-  readonly chainEpoch: number;
-  readonly warnings: string[];
-}): Effect.Effect<readonly ReencryptTarget[], CliError> {
-  return Effect.gen(function* () {
+export const decryptForRotation = Effect.fn("env-rotate-decrypt.decryptForRotation")(
+  function* (input: {
+    readonly verified: VerifiedProject;
+    readonly environmentId: string;
+    readonly values: readonly VerifiedPulledValue[];
+    readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
+    readonly chainEpoch: number;
+    readonly warnings: string[];
+  }): Effect.fn.Return<readonly ReencryptTarget[], CliError> {
     const decrypted = yield* decryptTargets(input);
     for (const reason of decrypted.undecryptable) {
       input.warnings.push(undecryptableWarning(reason));
     }
     return decrypted.targets;
-  });
-}
+  },
+);
 
 /**
  * If nothing can be re-encrypted, never advance the epoch. Advancing
@@ -103,48 +103,46 @@ interface DecryptOutcome {
 }
 
 /** Decrypting the verified latest values (the re-encryption material). The decryption discipline is shared with pull. */
-export function decryptTargets(input: {
+export const decryptTargets = Effect.fn("env-rotate-decrypt.decryptTargets")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly values: readonly VerifiedPulledValue[];
   readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   readonly chainEpoch: number;
-}): Effect.Effect<DecryptOutcome, CliError> {
-  return Effect.gen(function* () {
-    const targets: ReencryptTarget[] = [];
-    const undecryptable: string[] = [];
-    for (const value of input.values) {
-      // Only a benign absence (no wrap addressed to me) is skipped as an
-      // "unopenable value". A decryption failure despite holding the wrap
-      // is an AEAD authentication failure (a ciphertext substitution) or
-      // an inconsistency with the verified view, and aborts immediately
-      // like pull / run — collapsing it into "waiting on another member's
-      // re-run" would report a substitution's sign as a benign operational
-      // wait and guide toward stepping over it with --new-epoch
-      //
-      // "Benign" is judged only for an absence **at or below the
-      // chain-derived current epoch**: for a value with a claimed epoch
-      // beyond the current epoch, not holding that epoch's wrap is the
-      // expected state (deks.ts refuses an over-the-cap wrap), so letting
-      // it slip through this check would disguise an inconsistency with
-      // the verified view as "waiting on another member". An over-the-cap
-      // epoch makes decryptVerifiedValue abort immediately with the same
-      // wording as pull / run (§6.3-4's epoch-not-current-at-head is the
-      // main line; this is a defense line against a derivation
-      // inconsistency)
-      if (value.epoch <= input.chainEpoch && !input.deksByEpoch.has(value.epoch)) {
-        undecryptable.push(missingWrapReason(value));
-        continue;
-      }
-      const plaintext = yield* decryptVerifiedValue({
-        verified: input.verified,
-        environmentId: input.environmentId,
-        variable: value,
-        deksByEpoch: input.deksByEpoch,
-        chainEpoch: input.chainEpoch,
-      });
-      targets.push({ value, plaintext });
+}): Effect.fn.Return<DecryptOutcome, CliError> {
+  const targets: ReencryptTarget[] = [];
+  const undecryptable: string[] = [];
+  for (const value of input.values) {
+    // Only a benign absence (no wrap addressed to me) is skipped as an
+    // "unopenable value". A decryption failure despite holding the wrap
+    // is an AEAD authentication failure (a ciphertext substitution) or
+    // an inconsistency with the verified view, and aborts immediately
+    // like pull / run — collapsing it into "waiting on another member's
+    // re-run" would report a substitution's sign as a benign operational
+    // wait and guide toward stepping over it with --new-epoch
+    //
+    // "Benign" is judged only for an absence **at or below the
+    // chain-derived current epoch**: for a value with a claimed epoch
+    // beyond the current epoch, not holding that epoch's wrap is the
+    // expected state (deks.ts refuses an over-the-cap wrap), so letting
+    // it slip through this check would disguise an inconsistency with
+    // the verified view as "waiting on another member". An over-the-cap
+    // epoch makes decryptVerifiedValue abort immediately with the same
+    // wording as pull / run (§6.3-4's epoch-not-current-at-head is the
+    // main line; this is a defense line against a derivation
+    // inconsistency)
+    if (value.epoch <= input.chainEpoch && !input.deksByEpoch.has(value.epoch)) {
+      undecryptable.push(missingWrapReason(value));
+      continue;
     }
-    return { targets, undecryptable };
-  });
-}
+    const plaintext = yield* decryptVerifiedValue({
+      verified: input.verified,
+      environmentId: input.environmentId,
+      variable: value,
+      deksByEpoch: input.deksByEpoch,
+      chainEpoch: input.chainEpoch,
+    });
+    targets.push({ value, plaintext });
+  }
+  return { targets, undecryptable };
+});

@@ -265,41 +265,39 @@ export function wrapAndSignFor(input: {
  * (§6.3 / §12-4), each wrap signed by the caller (§5.1).
  * Deterministic recipient order for reproducible requests.
  */
-export function buildWrapCompleteSet(input: {
+export const buildWrapCompleteSet = Effect.fn("dek-wrap.buildWrapCompleteSet")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly epoch: number;
   readonly dek: Redacted.Redacted<Uint8Array>;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<readonly WrappedDek[], CliError> {
-  return Effect.gen(function* () {
-    const recipients = wrapRecipientsFor(input.verified, input.environmentId);
-    const wraps: WrappedDek[] = [];
-    for (const recipient of recipients) {
-      // Identifiers are chain-derived free-form strings — always neutralize before emitting to the terminal
-      const label =
-        recipient.kind === "member"
-          ? `member ${displayText(recipient.member.userId)} (device ${recipient.device.keyFingerprintHex})`
-          : `server key ${displayText(recipient.grant.serverKeyFingerprintHex)}`;
-      const wrap = yield* wrapAndSignForEffect({
-        projectId: input.verified.projectId,
-        environmentId: input.environmentId,
-        epoch: input.epoch,
-        dek: input.dek,
-        recipient,
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
-      }).pipe(
-        Effect.mapError((error) =>
-          cliError(`Failed to generate the DEK wrap for ${label} (${error.reason})`),
-        ),
-      );
-      wraps.push(wrap);
-    }
-    return wraps;
-  });
-}
+}): Effect.fn.Return<readonly WrappedDek[], CliError> {
+  const recipients = wrapRecipientsFor(input.verified, input.environmentId);
+  const wraps: WrappedDek[] = [];
+  for (const recipient of recipients) {
+    // Identifiers are chain-derived free-form strings — always neutralize before emitting to the terminal
+    const label =
+      recipient.kind === "member"
+        ? `member ${displayText(recipient.member.userId)} (device ${recipient.device.keyFingerprintHex})`
+        : `server key ${displayText(recipient.grant.serverKeyFingerprintHex)}`;
+    const wrap = yield* wrapAndSignForEffect({
+      projectId: input.verified.projectId,
+      environmentId: input.environmentId,
+      epoch: input.epoch,
+      dek: input.dek,
+      recipient,
+      signerUserId: input.signerUserId,
+      signingKeyPair: input.signingKeyPair,
+    }).pipe(
+      Effect.mapError((error) =>
+        cliError(`Failed to generate the DEK wrap for ${label} (${error.reason})`),
+      ),
+    );
+    wraps.push(wrap);
+  }
+  return wraps;
+});
 
 /**
  * Sameness of the target environment's wrap recipient set (members +
@@ -339,7 +337,7 @@ export const ROLE_RANK = { reader: 0, member: 1, admin: 2, owner: 3 } satisfies 
 >;
 
 /** The signing member with the device that signs and its effective permission (§3 / §6.2). */
-export interface WritingMember {
+interface WritingMember {
   readonly member: ChainMember;
   readonly device: ChainDevice;
   readonly permission: EffectivePermission;
@@ -363,7 +361,7 @@ export interface WritingMember {
  * The environment-existence check (rotate) and the ID-duplication check
  * (create) are operation-specific, so they stay with the callers.
  */
-export function requireWritingMember(input: {
+export const requireWritingMember = Effect.fn("dek-wrap.requireWritingMember")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly signerUserId: string;
@@ -379,38 +377,36 @@ export function requireWritingMember(input: {
    * for a widening" does not apply).
    */
   readonly outOfScope?: string;
-}): Effect.Effect<WritingMember, CliError> {
-  return Effect.gen(function* () {
-    const member = input.verified.state.members.get(input.signerUserId);
-    if (member === undefined) {
-      return yield* Effect.fail(
-        cliError(`You are not a chain-derived member of this project (cannot ${input.operation})`),
-      );
-    }
-    const device = yield* ownDeviceBySigningKey(input.verified, member, input.signingKeyPair);
-    const permission = effectivePermissionOf(member, device);
-    if (ROLE_RANK[permission.role] < ROLE_RANK.member) {
-      return yield* Effect.fail(
-        cliError(
-          ROLE_RANK[member.role] < ROLE_RANK.member
-            ? input.forbidden
-            : `${input.forbidden}. Your role is ${member.role}, but this device's key is capped at ${device.roleCap} (\`maruhi device list\`) — use a device without that cap`,
-        ),
-      );
-    }
-    if (!scopeIncludesEnvironment(permission.scope, input.environmentId)) {
-      return yield* Effect.fail(
-        cliError(
-          input.outOfScope ??
-            outOfScopeMessage({
-              member,
-              device,
-              environmentId: input.environmentId,
-              operation: input.operation,
-            }),
-        ),
-      );
-    }
-    return { member, device, permission };
-  });
-}
+}): Effect.fn.Return<WritingMember, CliError> {
+  const member = input.verified.state.members.get(input.signerUserId);
+  if (member === undefined) {
+    return yield* Effect.fail(
+      cliError(`You are not a chain-derived member of this project (cannot ${input.operation})`),
+    );
+  }
+  const device = yield* ownDeviceBySigningKey(input.verified, member, input.signingKeyPair);
+  const permission = effectivePermissionOf(member, device);
+  if (ROLE_RANK[permission.role] < ROLE_RANK.member) {
+    return yield* Effect.fail(
+      cliError(
+        ROLE_RANK[member.role] < ROLE_RANK.member
+          ? input.forbidden
+          : `${input.forbidden}. Your role is ${member.role}, but this device's key is capped at ${device.roleCap} (\`maruhi device list\`) — use a device without that cap`,
+      ),
+    );
+  }
+  if (!scopeIncludesEnvironment(permission.scope, input.environmentId)) {
+    return yield* Effect.fail(
+      cliError(
+        input.outOfScope ??
+          outOfScopeMessage({
+            member,
+            device,
+            environmentId: input.environmentId,
+            operation: input.operation,
+          }),
+      ),
+    );
+  }
+  return { member, device, permission };
+});

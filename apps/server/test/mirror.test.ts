@@ -835,7 +835,16 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     const rowIdIndex = columns.indexOf("row_id");
     // Foreign row ids (the carried-row rule never matches), and one
     // column of one row rewritten; the uploaded head column is dropped so
-    // every row is derived over as well as shape-checked
+    // every row is derived over as well as shape-checked. A tag never
+    // equals the leading byte of an exported row id (random hex): the
+    // tagged id would then be that live row's own id, and with the
+    // rewritten column a carried row with other content
+    const takenPrefixes = new Set(
+      lines
+        .map(parsedLine)
+        .filter((parsed) => parsed["kind"] === "row" && parsed["table"] === "audit_events")
+        .map((parsed) => String((parsed["values"] as unknown[])[rowIdIndex]).slice(0, 2)),
+    );
     let tag = 0xa0;
     const variant = (seq: number, column: string, value: unknown) =>
       withTrailer(
@@ -866,7 +875,9 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     let repoint = 0;
     const repointed = async () => {
       repoint += 1;
-      tag += 1;
+      do {
+        tag += 1;
+      } while (takenPrefixes.has(tag.toString(16)));
       expect((await mark(OWNER, `https://successor-${repoint}.maruhi.app`)).status).toBe(200);
     };
     // Accepted by both (the affinity converts the text and the real)

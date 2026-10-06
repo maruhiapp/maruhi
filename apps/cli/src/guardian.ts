@@ -105,12 +105,12 @@ function ensureGuardianCeremonyAllowed(io: CliIoShape): Effect.Effect<void, CliE
  * confirmed is the FP of **each device** of the guardian (the
  * segment is sealed to that device).
  */
-function confirmGuardianFingerprint(input: {
-  readonly origin: string;
-  readonly userId: string;
-  readonly fingerprintHex: string;
-}): Effect.Effect<void, CliError, CliIo | FingerprintBook | Stdio.Stdio> {
-  return Effect.gen(function* () {
+const confirmGuardianFingerprint = Effect.fn("guardian.confirmGuardianFingerprint")(
+  function* (input: {
+    readonly origin: string;
+    readonly userId: string;
+    readonly fingerprintHex: string;
+  }): Effect.fn.Return<void, CliError, CliIo | FingerprintBook | Stdio.Stdio> {
     const io = yield* CliIo;
     const words = yield* fingerprintWords(
       input.fingerprintHex,
@@ -149,8 +149,8 @@ function confirmGuardianFingerprint(input: {
         "Guardian key fingerprint confirmation failed (the re-typed word does not match). No guardian group was created — re-run once you can check with this person",
     });
     yield* book.record;
-  });
-}
+  },
+);
 
 /** Preconditions of naming (the same rules as the server's 422, stated here first). */
 function guardianInputRejection(input: {
@@ -210,7 +210,7 @@ function resolveGuardians(input: {
 }
 
 /** Seals one device's worth of a segment to the guardian's chain key. */
-function sealShareFor(input: {
+const sealShareFor = Effect.fn("guardian.sealShareFor")(function* (input: {
   readonly wardUserId: string;
   readonly groupId: string;
   readonly mode: GuardianMode;
@@ -218,106 +218,102 @@ function sealShareFor(input: {
   readonly guardianUserId: string;
   readonly device: ChainDevice;
   readonly share: Uint8Array;
-}): Effect.Effect<SealedShare, CliError> {
-  return Effect.gen(function* () {
-    const encPub = decodeHex(input.device.encPubHex);
-    const publicKey =
-      encPub === null
-        ? null
-        : yield* cryptoEffect(() => importEncryptionPublicKey(encPub)).pipe(
-            Effect.mapError(() =>
-              cliError(`The chain key of ${displayText(input.guardianUserId)} cannot be imported`),
-            ),
-          );
-    if (publicKey === null) {
-      return yield* Effect.fail(
-        cliError(`The chain key of ${displayText(input.guardianUserId)} cannot be imported`),
-      );
-    }
-    const sealed = yield* cryptoEffect(() =>
-      sealGuardianShare({
-        guardianPublicKey: publicKey,
-        share: input.share,
-        context: {
-          userId: input.wardUserId,
-          groupId: input.groupId,
-          mode: input.mode,
-          shareIndex: input.shareIndex,
-          guardianUserId: input.guardianUserId,
-        },
-      }),
-    ).pipe(Effect.mapError(() => cliError("Failed to seal a guardian share")));
-    return {
-      shareIndex: input.shareIndex,
-      guardianUserId: input.guardianUserId,
-      guardianEncPubHex: input.device.encPubHex,
-      guardianKeyFingerprintHex: input.device.keyFingerprintHex,
-      encHex: encodeHex(sealed.enc),
-      ciphertextHex: encodeHex(sealed.ciphertext),
-    };
-  });
-}
+}): Effect.fn.Return<SealedShare, CliError> {
+  const encPub = decodeHex(input.device.encPubHex);
+  const publicKey =
+    encPub === null
+      ? null
+      : yield* cryptoEffect(() => importEncryptionPublicKey(encPub)).pipe(
+          Effect.mapError(() =>
+            cliError(`The chain key of ${displayText(input.guardianUserId)} cannot be imported`),
+          ),
+        );
+  if (publicKey === null) {
+    return yield* Effect.fail(
+      cliError(`The chain key of ${displayText(input.guardianUserId)} cannot be imported`),
+    );
+  }
+  const sealed = yield* cryptoEffect(() =>
+    sealGuardianShare({
+      guardianPublicKey: publicKey,
+      share: input.share,
+      context: {
+        userId: input.wardUserId,
+        groupId: input.groupId,
+        mode: input.mode,
+        shareIndex: input.shareIndex,
+        guardianUserId: input.guardianUserId,
+      },
+    }),
+  ).pipe(Effect.mapError(() => cliError("Failed to seal a guardian share")));
+  return {
+    shareIndex: input.shareIndex,
+    guardianUserId: input.guardianUserId,
+    guardianEncPubHex: input.device.encPubHex,
+    guardianKeyFingerprintHex: input.device.keyFingerprintHex,
+    encHex: encodeHex(sealed.enc),
+    ciphertextHex: encodeHex(sealed.ciphertext),
+  };
+});
 
 /** Wraps B (the reserve key) with a random KEK and splits the KEK into segments sealed to each guardian's each device (§8.3). */
-function prepareGroup(input: {
+const prepareGroup = Effect.fn("guardian.prepareGroup")(function* (input: {
   readonly wardUserId: string;
   readonly reserve: ReserveKeys;
   readonly groupId: string;
   readonly mode: GuardianMode;
   readonly guardians: readonly GuardianMember[];
-}): Effect.Effect<
+}): Effect.fn.Return<
   {
     readonly wrap: { readonly nonceHex: string; readonly ciphertextHex: string };
     readonly shares: readonly SealedShare[];
   },
   CliError
 > {
-  return Effect.gen(function* () {
-    const kek = generateMasterWrapKek();
-    const blob = new TextEncoder().encode(serializeStoredMasterKey(input.reserve.record));
-    const wrapped = yield* cryptoEffect(() =>
-      wrapMasterBlob({
-        kek,
-        masterSecretBlob: blob,
-        context: {
-          userId: input.wardUserId,
-          kind: "guardian",
-          wrapRef: input.groupId,
-          mode: input.mode,
-        },
-      }),
-    ).pipe(Effect.mapError(() => cliError("Failed to prepare the guardian group")));
-    const split = yield* fromCryptoResult(
-      splitGuardianKek({ kek, mode: input.mode, count: input.guardians.length }),
-    ).pipe(Effect.mapError(() => cliError("Failed to prepare the guardian group")));
-    if (split.length !== input.guardians.length) {
-      return yield* Effect.fail(cliError("Failed to prepare the guardian group"));
-    }
-    const shares: SealedShare[] = [];
-    for (const [index, guardian] of input.guardians.entries()) {
-      for (const device of guardian.devices) {
-        shares.push(
-          yield* sealShareFor({
-            wardUserId: input.wardUserId,
-            groupId: input.groupId,
-            mode: input.mode,
-            shareIndex: index + 1,
-            guardianUserId: guardian.userId,
-            device,
-            share: split[index] ?? new Uint8Array(),
-          }),
-        );
-      }
-    }
-    return {
-      wrap: {
-        nonceHex: encodeHex(wrapped.nonce),
-        ciphertextHex: encodeHex(wrapped.ciphertext),
+  const kek = generateMasterWrapKek();
+  const blob = new TextEncoder().encode(serializeStoredMasterKey(input.reserve.record));
+  const wrapped = yield* cryptoEffect(() =>
+    wrapMasterBlob({
+      kek,
+      masterSecretBlob: blob,
+      context: {
+        userId: input.wardUserId,
+        kind: "guardian",
+        wrapRef: input.groupId,
+        mode: input.mode,
       },
-      shares,
-    };
-  });
-}
+    }),
+  ).pipe(Effect.mapError(() => cliError("Failed to prepare the guardian group")));
+  const split = yield* fromCryptoResult(
+    splitGuardianKek({ kek, mode: input.mode, count: input.guardians.length }),
+  ).pipe(Effect.mapError(() => cliError("Failed to prepare the guardian group")));
+  if (split.length !== input.guardians.length) {
+    return yield* Effect.fail(cliError("Failed to prepare the guardian group"));
+  }
+  const shares: SealedShare[] = [];
+  for (const [index, guardian] of input.guardians.entries()) {
+    for (const device of guardian.devices) {
+      shares.push(
+        yield* sealShareFor({
+          wardUserId: input.wardUserId,
+          groupId: input.groupId,
+          mode: input.mode,
+          shareIndex: index + 1,
+          guardianUserId: guardian.userId,
+          device,
+          share: split[index] ?? new Uint8Array(),
+        }),
+      );
+    }
+  }
+  return {
+    wrap: {
+      nonceHex: encodeHex(wrapped.nonce),
+      ciphertextHex: encodeHex(wrapped.ciphertext),
+    },
+    shares,
+  };
+});
 
 /**
  * `maruhi guardian add --project <p> --mode any|all <user>...`: register a
@@ -326,7 +322,7 @@ function prepareGroup(input: {
  * qualification for changing the ledger. K4-2); run it exactly
  * once, after input checks and the ceremony, just before sealing.
  */
-export function guardianAddOp(input: {
+export const guardianAddOp = Effect.fn("guardian.guardianAddOp")(function* (input: {
   readonly flags: CommonFlags;
   readonly mode: GuardianMode;
   readonly userIds: readonly string[];
@@ -334,71 +330,69 @@ export function guardianAddOp(input: {
     session: CliSession,
     client: MaruhiClient,
   ) => Effect.Effect<ReserveKeys, CliError, CliServices>;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* ensureGuardianCeremonyAllowed(io);
-    const context = yield* openMetadataProject(input.flags);
-    const rejection = guardianInputRejection({
-      selfUserId: context.session.userId,
-      mode: input.mode,
-      userIds: input.userIds,
-    });
-    if (rejection !== null) {
-      return yield* Effect.fail(usageError(rejection));
-    }
-    const guardians = yield* resolveGuardians({
-      projectId: context.projectId,
-      members: context.verified.state.members,
-      userIds: input.userIds,
-    });
-    for (const guardian of guardians) {
-      for (const device of guardian.devices) {
-        yield* confirmGuardianFingerprint({
-          origin: context.origin,
-          userId: guardian.userId,
-          fingerprintHex: device.keyFingerprintHex,
-        });
-      }
-    }
-    // Changing the ledger requires opening the reserve key (CRYPTO_SPEC §8 revision (4))
-    const reserve = yield* input.openReserve(context.session, context.client);
-    const groupId = newLedgerId();
-    const prepared = yield* prepareGroup({
-      wardUserId: context.session.userId,
-      reserve,
-      groupId,
-      mode: input.mode,
-      guardians,
-    });
-    yield* context.client.keyWraps
-      .guardianCreate({
-        payload: {
-          groupId,
-          mode: input.mode,
-          wrap: { suite: "maruhi/v1", ...prepared.wrap },
-          shares: prepared.shares,
-        },
-      })
-      .pipe(
-        Effect.catchTag("KeyWrapPolicy", (error) =>
-          Effect.fail(cliError(`The server rejected the guardian group (${error.reason})`)),
-        ),
-        Effect.mapError(toCliError),
-      );
-    yield* io.log(
-      `Registered guardian group ${groupId} (mode ${input.mode}: ${input.mode === "any" ? "any one guardian can approve" : "all guardians must approve"})`,
-    );
-    for (const [index, guardian] of guardians.entries()) {
-      yield* io.log(
-        `  ${index + 1}. ${displayText(guardian.userId)} (${guardian.devices.length === 1 ? "1 device" : `${guardian.devices.length} devices`}: ${guardian.devices.map((device) => device.keyFingerprintHex).join(", ")})`,
-      );
-    }
-    yield* logNote(
-      "shares are sealed to the guardians' current devices; a guardian who adds a device later or revokes one cannot open the share on it. Check with `maruhi guardian list --project <id>` and re-add the group if needed. To restore on a machine with no device key, run `maruhi key recover --handoff` there and send the code to a guardian",
-    );
+}): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  yield* ensureGuardianCeremonyAllowed(io);
+  const context = yield* openMetadataProject(input.flags);
+  const rejection = guardianInputRejection({
+    selfUserId: context.session.userId,
+    mode: input.mode,
+    userIds: input.userIds,
   });
-}
+  if (rejection !== null) {
+    return yield* Effect.fail(usageError(rejection));
+  }
+  const guardians = yield* resolveGuardians({
+    projectId: context.projectId,
+    members: context.verified.state.members,
+    userIds: input.userIds,
+  });
+  for (const guardian of guardians) {
+    for (const device of guardian.devices) {
+      yield* confirmGuardianFingerprint({
+        origin: context.origin,
+        userId: guardian.userId,
+        fingerprintHex: device.keyFingerprintHex,
+      });
+    }
+  }
+  // Changing the ledger requires opening the reserve key (CRYPTO_SPEC §8 revision (4))
+  const reserve = yield* input.openReserve(context.session, context.client);
+  const groupId = newLedgerId();
+  const prepared = yield* prepareGroup({
+    wardUserId: context.session.userId,
+    reserve,
+    groupId,
+    mode: input.mode,
+    guardians,
+  });
+  yield* context.client.keyWraps
+    .guardianCreate({
+      payload: {
+        groupId,
+        mode: input.mode,
+        wrap: { suite: "maruhi/v1", ...prepared.wrap },
+        shares: prepared.shares,
+      },
+    })
+    .pipe(
+      Effect.catchTag("KeyWrapPolicy", (error) =>
+        Effect.fail(cliError(`The server rejected the guardian group (${error.reason})`)),
+      ),
+      Effect.mapError(toCliError),
+    );
+  yield* io.log(
+    `Registered guardian group ${groupId} (mode ${input.mode}: ${input.mode === "any" ? "any one guardian can approve" : "all guardians must approve"})`,
+  );
+  for (const [index, guardian] of guardians.entries()) {
+    yield* io.log(
+      `  ${index + 1}. ${displayText(guardian.userId)} (${guardian.devices.length === 1 ? "1 device" : `${guardian.devices.length} devices`}: ${guardian.devices.map((device) => device.keyFingerprintHex).join(", ")})`,
+    );
+  }
+  yield* logNote(
+    "shares are sealed to the guardians' current devices; a guardian who adds a device later or revokes one cannot open the share on it. Check with `maruhi guardian list --project <id>` and re-add the group if needed. To restore on a machine with no device key, run `maruhi key recover --handoff` there and send the code to a guardian",
+  );
+});
 
 /** One guardian row of the ledger (the distribution form of a status — per device). */
 interface GuardianRow {
@@ -425,56 +419,52 @@ function stalenessOf(
   return current.devices.has(guardian.guardianKeyFingerprintHex) ? null : "device-gone";
 }
 
-function reportGroup(
+const reportGroup = Effect.fn("guardian.reportGroup")(function* (
   group: {
     readonly groupId: string;
     readonly mode: GuardianMode;
     readonly guardians: readonly GuardianRow[];
   },
   chainMembers: ReadonlyMap<string, ChainMember> | null,
-): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const shareIndexes = [...new Set(group.guardians.map((row) => row.shareIndex))].toSorted(
-      (a, b) => a - b,
+): Effect.fn.Return<void, never, CliIo> {
+  const io = yield* CliIo;
+  const shareIndexes = [...new Set(group.guardians.map((row) => row.shareIndex))].toSorted(
+    (a, b) => a - b,
+  );
+  yield* io.log(`${group.groupId}  mode ${group.mode}  ${shareIndexes.length} guardians`);
+  for (const shareIndex of shareIndexes) {
+    yield* reportShare(
+      group.mode,
+      shareIndex,
+      group.guardians.filter((row) => row.shareIndex === shareIndex),
+      chainMembers,
     );
-    yield* io.log(`${group.groupId}  mode ${group.mode}  ${shareIndexes.length} guardians`);
-    for (const shareIndex of shareIndexes) {
-      yield* reportShare(
-        group.mode,
-        shareIndex,
-        group.guardians.filter((row) => row.shareIndex === shareIndex),
-        chainMembers,
-      );
-    }
-  });
-}
+  }
+});
 
 /** Display of one logical segment (one guardian, per-device rows) and the notes for unopenable / partially revoked. */
-function reportShare(
+const reportShare = Effect.fn("guardian.reportShare")(function* (
   mode: GuardianMode,
   shareIndex: number,
   rows: readonly GuardianRow[],
   chainMembers: ReadonlyMap<string, ChainMember> | null,
-): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const userId = rows[0]?.guardianUserId ?? "";
-    const live = rows.filter((row) => stalenessOf(row, chainMembers) === null);
-    const gone = rows.filter((row) => stalenessOf(row, chainMembers) !== null);
-    const stale = chainMembers !== null && live.length === 0;
-    yield* io.log(
-      `  ${shareIndex}. ${displayText(userId)} (${countNoun(rows.length, "device")}: ${fingerprintsOf(rows)})${stale ? "  STALE" : ""}`,
-    );
-    if (stale) {
-      const left = rows.some((row) => stalenessOf(row, chainMembers) === "left");
-      yield* logWarning(staleShareWarning(userId, left, mode));
-    } else if (chainMembers !== null && gone.length > 0) {
-      // Some devices revoked (K1-13 — SHOULD: propose recreation without waiting for every device to be revoked)
-      yield* logNote(partiallyRevokedNote(userId, gone, live.length));
-    }
-  });
-}
+): Effect.fn.Return<void, never, CliIo> {
+  const io = yield* CliIo;
+  const userId = rows[0]?.guardianUserId ?? "";
+  const live = rows.filter((row) => stalenessOf(row, chainMembers) === null);
+  const gone = rows.filter((row) => stalenessOf(row, chainMembers) !== null);
+  const stale = chainMembers !== null && live.length === 0;
+  yield* io.log(
+    `  ${shareIndex}. ${displayText(userId)} (${countNoun(rows.length, "device")}: ${fingerprintsOf(rows)})${stale ? "  STALE" : ""}`,
+  );
+  if (stale) {
+    const left = rows.some((row) => stalenessOf(row, chainMembers) === "left");
+    yield* logWarning(staleShareWarning(userId, left, mode));
+  } else if (chainMembers !== null && gone.length > 0) {
+    // Some devices revoked (K1-13 — SHOULD: propose recreation without waiting for every device to be revoked)
+    yield* logNote(partiallyRevokedNote(userId, gone, live.length));
+  }
+});
 
 function fingerprintsOf(rows: readonly GuardianRow[]): string {
   return rows.map((row) => row.guardianKeyFingerprintHex).join(", ");
@@ -498,74 +488,68 @@ function partiallyRevokedNote(
 }
 
 /** `maruhi guardian list [--project <p>]`: list your guardian groups. */
-export function guardianListOp(input: {
+export const guardianListOp = Effect.fn("guardian.guardianListOp")(function* (input: {
   readonly flags: CommonFlags;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const session = yield* openSession(input.flags.server);
-    const status = yield* session.client.keyWraps.status({}).pipe(Effect.mapError(toCliError));
-    if (status.guardianGroups.length === 0) {
-      yield* io.log("No guardian groups. Add one with `maruhi guardian add`");
-      return;
-    }
-    // With --project, collate the ledger's guardian-key FPs against the chain-derived current device set
-    const chainMembers =
-      input.flags.project === undefined
-        ? null
-        : (yield* openMetadataProject(input.flags)).verified.state.members;
-    for (const group of status.guardianGroups) {
-      yield* reportGroup(group, chainMembers);
-    }
-  });
-}
+}): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const session = yield* openSession(input.flags.server);
+  const status = yield* session.client.keyWraps.status({}).pipe(Effect.mapError(toCliError));
+  if (status.guardianGroups.length === 0) {
+    yield* io.log("No guardian groups. Add one with `maruhi guardian add`");
+    return;
+  }
+  // With --project, collate the ledger's guardian-key FPs against the chain-derived current device set
+  const chainMembers =
+    input.flags.project === undefined
+      ? null
+      : (yield* openMetadataProject(input.flags)).verified.state.members;
+  for (const group of status.guardianGroups) {
+    yield* reportGroup(group, chainMembers);
+  }
+});
 
 /** `maruhi guardian remove <group-id>`: delete a guardian group. */
-export function guardianRemoveOp(input: {
+export const guardianRemoveOp = Effect.fn("guardian.guardianRemoveOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly groupId: string;
-}): Effect.Effect<void, CliError, CliIo | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* input.client.keyWraps.guardianDelete({ params: { groupId: input.groupId } }).pipe(
-      Effect.catchTag("KeyWrapNotFound", () =>
-        Effect.fail(
-          cliError("No guardian group with that ID (list them with `maruhi guardian list`)"),
-        ),
+}): Effect.fn.Return<void, CliError, CliIo | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  yield* input.client.keyWraps.guardianDelete({ params: { groupId: input.groupId } }).pipe(
+    Effect.catchTag("KeyWrapNotFound", () =>
+      Effect.fail(
+        cliError("No guardian group with that ID (list them with `maruhi guardian list`)"),
       ),
-      Effect.mapError(toCliError),
-    );
-    yield* io.log(`Removed guardian group ${displayText(input.groupId)}`);
-  });
-}
+    ),
+    Effect.mapError(toCliError),
+  );
+  yield* io.log(`Removed guardian group ${displayText(input.groupId)}`);
+});
 
 /** `maruhi guardian wards`: list the people who made you a guardian. */
-export function guardianWardsOp(input: {
+export const guardianWardsOp = Effect.fn("guardian.guardianWardsOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, CliIo | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const { wards } = yield* input.client.keyWraps.wards({}).pipe(Effect.mapError(toCliError));
-    if (wards.length === 0) {
-      yield* io.log("Nobody has made you a guardian");
-      return;
-    }
-    for (const ward of wards) {
-      const label =
-        ward.wardLogin === null
-          ? displayText(ward.wardUserId)
-          : `${displayText(ward.wardLogin)} (${displayText(ward.wardUserId)})`;
-      yield* io.log(
-        `${label}  group ${displayText(ward.groupId)}  mode ${ward.mode}  share ${ward.shareIndex}`,
-      );
-    }
+}): Effect.fn.Return<void, CliError, CliIo | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  const { wards } = yield* input.client.keyWraps.wards({}).pipe(Effect.mapError(toCliError));
+  if (wards.length === 0) {
+    yield* io.log("Nobody has made you a guardian");
+    return;
+  }
+  for (const ward of wards) {
+    const label =
+      ward.wardLogin === null
+        ? displayText(ward.wardUserId)
+        : `${displayText(ward.wardLogin)} (${displayText(ward.wardUserId)})`;
     yield* io.log(
-      "When one of them asks you to help restore their reserve key, run `maruhi guardian approve` with the code they send you",
+      `${label}  group ${displayText(ward.groupId)}  mode ${ward.mode}  share ${ward.shareIndex}`,
     );
-  });
-}
+  }
+  yield* io.log(
+    "When one of them asks you to help restore their reserve key, run `maruhi guardian approve` with the code they send you",
+  );
+});
 
 // ---------------------------------------------------------------------------
 // guardian approve (§8.4 — guardian approval. The old-device path was removed in 2026-09-19 DK)
@@ -596,66 +580,65 @@ interface ApprovalTarget {
 }
 
 /** Decrypts the code and queries the request. */
-function resolveApprovalTarget(
+const resolveApprovalTarget = Effect.fn("guardian.resolveApprovalTarget")(function* (
   client: MaruhiClient,
   code: string,
-): Effect.Effect<ApprovalTarget, CliError, HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const decoded = yield* cryptoEffect(() => decodeHandoffCode(code)).pipe(
-      Effect.mapError(() =>
+): Effect.fn.Return<ApprovalTarget, CliError, HttpClient.HttpClient> {
+  const decoded = yield* cryptoEffect(() => decodeHandoffCode(code)).pipe(
+    Effect.mapError(() =>
+      cliError(
+        "The handoff code is malformed (58 characters in groups of 4; hyphens, spaces, and letter case are ignored). Copy it again from the requesting device",
+      ),
+    ),
+  );
+  const requestId = yield* cryptoEffect(() => computeHandoffRequestId(decoded)).pipe(
+    Effect.mapError(() => cliError("The handoff code does not encode a usable key")),
+  );
+  const ephemeralPublicKey = yield* cryptoEffect(() => importEncryptionPublicKey(decoded)).pipe(
+    Effect.mapError(() => cliError("The handoff code does not encode a usable key")),
+  );
+  const lookup = yield* client.keyWraps.handoffLookup({ params: { requestId } }).pipe(
+    Effect.catchTag("HandoffNotFound", () =>
+      Effect.fail(
         cliError(
-          "The handoff code is malformed (58 characters in groups of 4; hyphens, spaces, and letter case are ignored). Copy it again from the requesting device",
+          "No pending handoff request matches this code (it is unknown, expired, or you are not one of the requester's guardians)",
         ),
       ),
-    );
-    const requestId = yield* cryptoEffect(() => computeHandoffRequestId(decoded)).pipe(
-      Effect.mapError(() => cliError("The handoff code does not encode a usable key")),
-    );
-    const ephemeralPublicKey = yield* cryptoEffect(() => importEncryptionPublicKey(decoded)).pipe(
-      Effect.mapError(() => cliError("The handoff code does not encode a usable key")),
-    );
-    const lookup = yield* client.keyWraps.handoffLookup({ params: { requestId } }).pipe(
-      Effect.catchTag("HandoffNotFound", () =>
-        Effect.fail(
-          cliError(
-            "No pending handoff request matches this code (it is unknown, expired, or you are not one of the requester's guardians)",
-          ),
-        ),
-      ),
-      Effect.mapError(toCliError),
-    );
-    return {
-      requestId,
-      ephemeralPublicKey,
-      wardUserId: lookup.wardUserId,
-      wardLabel:
-        lookup.wardLogin === null
-          ? displayText(lookup.wardUserId)
-          : `${displayText(lookup.wardLogin)} (${displayText(lookup.wardUserId)})`,
-      roles: lookup.roles,
-    };
-  });
-}
+    ),
+    Effect.mapError(toCliError),
+  );
+  return {
+    requestId,
+    ephemeralPublicKey,
+    wardUserId: lookup.wardUserId,
+    wardLabel:
+      lookup.wardLogin === null
+        ? displayText(lookup.wardUserId)
+        : `${displayText(lookup.wardLogin)} (${displayText(lookup.wardUserId)})`,
+    roles: lookup.roles,
+  };
+});
 
 /** Description of the request and a yes confirmation (nothing is sent for anything but yes). */
-function confirmApproval(io: CliIoShape, target: ApprovalTarget): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    const groups = target.roles.map(
-      (role) => `${displayText(role.groupId)} (${role.mode}, share ${role.shareIndex})`,
-    );
-    yield* io.log(`Handoff request from ${target.wardLabel} — you are their guardian`);
-    yield* io.log(`  groups: ${groups.join(", ")}`);
-    yield* io.log(
-      "Confirm out of band (e.g. a call to a number you already know) that this person asked you for the approval right now. Anyone who took over their account could show you this code",
-    );
-    const answer = yield* io.promptLine({
-      prompt: `Type yes to approve the handoff for ${target.wardLabel}: `,
-    });
-    if (answer.trim() !== "yes") {
-      return yield* Effect.fail(cliError("The handoff approval was cancelled (nothing was sent)"));
-    }
+const confirmApproval = Effect.fn("guardian.confirmApproval")(function* (
+  io: CliIoShape,
+  target: ApprovalTarget,
+): Effect.fn.Return<void, CliError> {
+  const groups = target.roles.map(
+    (role) => `${displayText(role.groupId)} (${role.mode}, share ${role.shareIndex})`,
+  );
+  yield* io.log(`Handoff request from ${target.wardLabel} — you are their guardian`);
+  yield* io.log(`  groups: ${groups.join(", ")}`);
+  yield* io.log(
+    "Confirm out of band (e.g. a call to a number you already know) that this person asked you for the approval right now. Anyone who took over their account could show you this code",
+  );
+  const answer = yield* io.promptLine({
+    prompt: `Type yes to approve the handoff for ${target.wardLabel}: `,
   });
-}
+  if (answer.trim() !== "yes") {
+    return yield* Effect.fail(cliError("The handoff approval was cancelled (nothing was sent)"));
+  }
+});
 
 /** Sends the approval (the sealed segment). */
 function sendApproval(input: {
@@ -710,94 +693,90 @@ function ownDeviceShare(
 }
 
 /** Approving as a guardian: opens the my-addressed segment with this device's key and re-seals it to E.pub on the spot (§8.4). */
-function approveAsGuardian(input: {
+const approveAsGuardian = Effect.fn("guardian.approveAsGuardian")(function* (input: {
   readonly client: MaruhiClient;
   readonly target: ApprovalTarget;
   readonly masterKeys: MasterKeys;
   readonly selfUserId: string;
-}): Effect.Effect<void, CliError, CliIo | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    for (const role of input.target.roles) {
-      const share = yield* input.client.keyWraps
-        .myShare({ params: { groupId: role.groupId } })
-        .pipe(Effect.mapError(toCliError));
-      const mine = ownDeviceShare(share, input.masterKeys);
-      if (mine === null) {
-        return yield* Effect.fail(
-          cliError(
-            `Your share of group ${displayText(role.groupId)} is not sealed to this device (fingerprint ${input.masterKeys.fingerprintHex}). Approve from one of your devices it was sealed to, or ask ${input.target.wardLabel} to re-add the group after this device was registered`,
-          ),
-        );
-      }
-      const opened = yield* openOwnGuardianShare({
-        masterKeys: input.masterKeys,
-        wrapped: yield* decodeWrapped(mine),
-        context: {
-          userId: input.target.wardUserId,
-          groupId: role.groupId,
-          mode: role.mode,
-          shareIndex: role.shareIndex,
-          guardianUserId: input.selfUserId,
-        },
-      });
-      const sealed = yield* sealForRequester({
-        ephemeralPublicKey: input.target.ephemeralPublicKey,
-        value: opened,
-        context: {
-          userId: input.target.wardUserId,
-          requestId: input.target.requestId,
-          source: role.groupId,
-          shareIndex: role.shareIndex,
-          approverUserId: input.selfUserId,
-        },
-      });
-      yield* sendApproval({
-        client: input.client,
-        requestId: input.target.requestId,
-        approverKeyFingerprintHex: input.masterKeys.fingerprintHex,
-        source: role.groupId,
-        shareIndex: role.shareIndex,
-        sealed,
-      });
-      yield* io.log(
-        `Approved share ${role.shareIndex} of group ${displayText(role.groupId)}${role.mode === "all" ? " (the other guardians must approve too)" : ""}`,
+}): Effect.fn.Return<void, CliError, CliIo | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  for (const role of input.target.roles) {
+    const share = yield* input.client.keyWraps
+      .myShare({ params: { groupId: role.groupId } })
+      .pipe(Effect.mapError(toCliError));
+    const mine = ownDeviceShare(share, input.masterKeys);
+    if (mine === null) {
+      return yield* Effect.fail(
+        cliError(
+          `Your share of group ${displayText(role.groupId)} is not sealed to this device (fingerprint ${input.masterKeys.fingerprintHex}). Approve from one of your devices it was sealed to, or ask ${input.target.wardLabel} to re-add the group after this device was registered`,
+        ),
       );
     }
-    yield* logNote(
-      "the approval was sealed to the requester's one-time key and nothing was stored on this device",
+    const opened = yield* openOwnGuardianShare({
+      masterKeys: input.masterKeys,
+      wrapped: yield* decodeWrapped(mine),
+      context: {
+        userId: input.target.wardUserId,
+        groupId: role.groupId,
+        mode: role.mode,
+        shareIndex: role.shareIndex,
+        guardianUserId: input.selfUserId,
+      },
+    });
+    const sealed = yield* sealForRequester({
+      ephemeralPublicKey: input.target.ephemeralPublicKey,
+      value: opened,
+      context: {
+        userId: input.target.wardUserId,
+        requestId: input.target.requestId,
+        source: role.groupId,
+        shareIndex: role.shareIndex,
+        approverUserId: input.selfUserId,
+      },
+    });
+    yield* sendApproval({
+      client: input.client,
+      requestId: input.target.requestId,
+      approverKeyFingerprintHex: input.masterKeys.fingerprintHex,
+      source: role.groupId,
+      shareIndex: role.shareIndex,
+      sealed,
+    });
+    yield* io.log(
+      `Approved share ${role.shareIndex} of group ${displayText(role.groupId)}${role.mode === "all" ? " (the other guardians must approve too)" : ""}`,
     );
-  });
-}
+  }
+  yield* logNote(
+    "the approval was sealed to the requester's one-time key and nothing was stored on this device",
+  );
+});
 
 /**
  * `maruhi guardian approve <code>`: approve a reserve-key handoff request as one
  * of the requester's guardians (formerly `key approve` — K4-15).
  */
-export function guardianApproveOp(input: {
+export const guardianApproveOp = Effect.fn("guardian.guardianApproveOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly code: string;
-}): Effect.Effect<void, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* ensureApproveCeremonyAllowed(io);
-    const target = yield* resolveApprovalTarget(input.client, input.code);
-    if (target.wardUserId === input.session.userId) {
-      // The server never shows the request to the ward themself (§13-7), but do not trust the response — refuse locally too
-      return yield* Effect.fail(
-        cliError(
-          "This handoff request is your own. Only your guardians can approve it (device migration no longer goes through a handoff — register a new device with `maruhi device add` / `maruhi device approve`)",
-        ),
-      );
-    }
-    const masterKeys = yield* loadMasterKeys(input.session);
-    yield* confirmApproval(io, target);
-    yield* approveAsGuardian({
-      client: input.client,
-      target,
-      masterKeys,
-      selfUserId: input.session.userId,
-    });
+}): Effect.fn.Return<void, CliError, Keychain | CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  yield* ensureApproveCeremonyAllowed(io);
+  const target = yield* resolveApprovalTarget(input.client, input.code);
+  if (target.wardUserId === input.session.userId) {
+    // The server never shows the request to the ward themself (§13-7), but do not trust the response — refuse locally too
+    return yield* Effect.fail(
+      cliError(
+        "This handoff request is your own. Only your guardians can approve it (device migration no longer goes through a handoff — register a new device with `maruhi device add` / `maruhi device approve`)",
+      ),
+    );
+  }
+  const masterKeys = yield* loadMasterKeys(input.session);
+  yield* confirmApproval(io, target);
+  yield* approveAsGuardian({
+    client: input.client,
+    target,
+    masterKeys,
+    selfUserId: input.session.userId,
   });
-}
+});

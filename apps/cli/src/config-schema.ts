@@ -173,21 +173,16 @@ export function parseConfigDocument<A>(
  * FileSystem is provided locally — the callers never take the service
  * into their environment).
  */
-export function loadConfig<T>(
+export const loadConfig = Effect.fn("config-schema.loadConfig")(function* <T>(
   path: string,
   what: string,
   hint: string,
   parse: (content: string) => T | Invalid,
-): Effect.Effect<{ readonly parsed: T; readonly content: string }, CliError> {
-  return Effect.gen(function* () {
-    const content = yield* readNamedFile(
-      path,
-      cliError(`Cannot read the ${what} ${path}. ${hint}`),
-    );
-    const parsed = parse(content);
-    if (typeof parsed === "string") {
-      return yield* Effect.fail(cliError(`The ${what} ${path} is invalid: ${parsed}`));
-    }
-    return { parsed, content };
-  });
-}
+): Effect.fn.Return<{ readonly parsed: T; readonly content: string }, CliError> {
+  const content = yield* readNamedFile(path, cliError(`Cannot read the ${what} ${path}. ${hint}`));
+  const parsed = parse(content);
+  if (typeof parsed === "string") {
+    return yield* Effect.fail(cliError(`The ${what} ${path} is invalid: ${parsed}`));
+  }
+  return { parsed, content };
+});

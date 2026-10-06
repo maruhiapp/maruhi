@@ -141,8 +141,8 @@ function ensureSchemaLockedCreation(
  * is done by the caller (createVariableProgram) before every
  * statement-dependent check.
  */
-const ensureCreationSchemaGates = (statement: MetaStatementInput) =>
-  Effect.gen(function* () {
+const ensureCreationSchemaGates = Effect.fn("programs-variable.ensureCreationSchemaGates")(
+  function* (statement: MetaStatementInput) {
     const store = yield* DataStore;
     const schemaPolicy = yield* store.schemaPolicy;
     yield* ensureSchemaPolicyAllowsLayout({
@@ -152,37 +152,37 @@ const ensureCreationSchemaGates = (statement: MetaStatementInput) =>
     });
     yield* ensureSchemaLockedCreation(schemaPolicy, statement);
     yield* ensureDescriptionPolicy(statement);
-  });
+  },
+);
 
 /**
  * The pre-checks of creation (§12-1 / §12-8): ID availability (no tombstone
  * reuse) → quantity policy → NFC → name uniqueness.
  */
-const ensureVariableCreatable = (
+const ensureVariableCreatable = Effect.fn("programs-variable.ensureVariableCreatable")(function* (
   environmentId: string,
   statement: MetaStatementInput,
   variableId: string,
-) =>
-  Effect.gen(function* () {
-    const store = yield* DataStore;
-    const existing = yield* store.findVariable(environmentId, variableId);
-    const unavailable = variableIdUnavailable(existing, variableId);
-    if (unavailable !== null) {
-      return yield* rejectData(unavailable);
-    }
-    yield* ensureVariableQuota(environmentId);
-    yield* ensureNfcName(statement.name);
-    if (yield* store.variableNameTaken(environmentId, statement.name, null)) {
-      return yield* rejectData({
-        kind: "variable-conflict",
-        variableId,
-        reason: "duplicate-name",
-      });
-    }
-  });
+) {
+  const store = yield* DataStore;
+  const existing = yield* store.findVariable(environmentId, variableId);
+  const unavailable = variableIdUnavailable(existing, variableId);
+  if (unavailable !== null) {
+    return yield* rejectData(unavailable);
+  }
+  yield* ensureVariableQuota(environmentId);
+  yield* ensureNfcName(statement.name);
+  if (yield* store.variableNameTaken(environmentId, statement.name, null)) {
+    return yield* rejectData({
+      kind: "variable-conflict",
+      variableId,
+      reason: "duplicate-name",
+    });
+  }
+});
 
 /** The verification pipeline for a bundled version-1 value (only for creation with a value): value CAS → value signature → capacity. */
-const acceptCreationValue = (context: {
+const acceptCreationValue = Effect.fn("programs-variable.acceptCreationValue")(function* (context: {
   readonly state: ChainState;
   readonly history: ChainHistoryIndex;
   readonly member: MemberWithDevice;
@@ -190,19 +190,18 @@ const acceptCreationValue = (context: {
   readonly environmentId: string;
   readonly variableId: string;
   readonly value: ValueInput;
-}) =>
-  Effect.gen(function* () {
-    yield* ensureValueCas(context.state, context.environmentId, 0, context.value);
-    const signedBytesHashHex = yield* ensureValueSignature({
-      projectId: context.projectId,
-      environmentId: context.environmentId,
-      variableId: context.variableId,
-      history: context.history,
-      member: context.member,
-      value: context.value,
-    });
-    return { value: context.value, signedBytesHashHex };
+}) {
+  yield* ensureValueCas(context.state, context.environmentId, 0, context.value);
+  const signedBytesHashHex = yield* ensureValueSignature({
+    projectId: context.projectId,
+    environmentId: context.environmentId,
+    variableId: context.variableId,
+    history: context.history,
+    member: context.member,
+    value: context.value,
   });
+  return { value: context.value, signedBytesHashHex };
+});
 
 /**
  * The shared prefix of writes to an existing variable (push / activation /
@@ -210,18 +209,14 @@ const acceptCreationValue = (context: {
  * → scope) → environment existence → variable existence. Bundles the same
  * three stages so the four paths do not repeat them.
  */
-const requireVariableWriteContext = (
-  actor: DataActor,
-  environmentId: string,
-  variableId: string,
-  cache: StateCache,
-) =>
-  Effect.gen(function* () {
+const requireVariableWriteContext = Effect.fn("programs-variable.requireVariableWriteContext")(
+  function* (actor: DataActor, environmentId: string, variableId: string, cache: StateCache) {
     const context = yield* requireEnvironmentAccess(actor.userId, "member", environmentId, cache);
     yield* requireActiveEnvironment(environmentId);
     const variable = yield* requireActiveVariable(environmentId, variableId);
     return { ...context, variable };
-  });
+  },
+);
 
 /**
  * Variable creation (§12-5): active (with the bundled version-1 value) or
@@ -230,19 +225,19 @@ const requireVariableWriteContext = (
  * status and value presence (creating a deleted variable is structurally
  * impossible).
  */
-export const createVariableProgram = (
-  actor: DataActor,
-  environmentId: string,
-  input: {
-    readonly variableId: string;
-    readonly statement: MetaStatementInput;
-    /** The version-1 value of an active creation. undefined for a declared creation (no value). */
-    readonly value?: ValueInput;
-    readonly manifest: EnvManifestInput;
-  },
-  cache: StateCache,
-) =>
-  Effect.gen(function* () {
+export const createVariableProgram = Effect.fn("programs-variable.createVariableProgram")(
+  function* (
+    actor: DataActor,
+    environmentId: string,
+    input: {
+      readonly variableId: string;
+      readonly statement: MetaStatementInput;
+      /** The version-1 value of an active creation. undefined for a declared creation (no value). */
+      readonly value?: ValueInput;
+      readonly manifest: EnvManifestInput;
+    },
+    cache: StateCache,
+  ) {
     const { state, history, member, projectId } = yield* requireEnvironmentAccess(
       actor.userId,
       "member",
@@ -380,93 +375,93 @@ export const createVariableProgram = (
       version: acceptedValue?.value.version ?? 0,
       epoch: acceptedValue?.value.epoch ?? currentEpochOf(state, environmentId),
     } satisfies VariableVersionValue;
-  });
+  },
+);
 
-export const pushVersionProgram = (
+export const pushVersionProgram = Effect.fn("programs-variable.pushVersionProgram")(function* (
   actor: DataActor,
   environmentId: string,
   variableId: string,
   value: ValueInput,
   sameValueAs: number | undefined,
   cache: StateCache,
-) =>
-  Effect.gen(function* () {
-    const { state, history, member, projectId, variable } = yield* requireVariableWriteContext(
-      actor,
-      environmentId,
-      variableId,
-      cache,
-    );
-    // A normal push to a declared variable is not accepted (§12-5): the
-    // first value is only the activation composite (value version 1 + a
-    // status active statement + manifest)
-    if (variable.latestStatus === "declared") {
-      return yield* rejectData({ kind: "activation-required", variableId });
-    }
-    // The DO storage total guard (§12-8): after the existence and kind
-    // checks, before CAS / signature. A re-encryption / rollback push is also covered
-    // (under rejection, no new value can be written — the consistent
-    // consequence; (d) of the same section)
-    yield* ensureStorageAdmitsGrowth;
-    yield* ensureValueCas(state, environmentId, variable.latestVersion, value);
-    // The lineage declaration names an earlier version of this variable
-    // (§12-5 — 2026-09-27 VH). Versions are contiguous from 1, so after the
-    // CAS "< version" is exactly "an existing earlier version". The claim
-    // itself is unverifiable (E2EE) and affects nothing else
-    if (sameValueAs !== undefined && sameValueAs >= value.version) {
-      return yield* rejectData({ kind: "payload-mismatch", field: "sameValueAs" });
-    }
-    // Check order (ruling D): epoch / version CAS → value signature
-    // (signature → declared head → state at head → predecessor) → quantity
-    // policy → atomic write. On non-acceptance, neither variable / version /
-    // latest / audit changes. The writer's device is resolved from the value
-    // signature (design record §8 K3-1) — the second-stage authorization (the
-    // device's effective permission: member × environment ∈ effective scope)
-    // runs right after the signature
-    const { device: writer, value: signedBytesHashHex } = yield* withSigningDevice(
-      member,
-      (candidate) =>
-        ensureValueSignature({
-          projectId,
-          environmentId,
-          variableId,
-          history,
-          member: candidate,
-          value,
-        }),
-    );
-    yield* ensureDevicePermission(writer, "member", environmentId);
-    if (value.version > MAX_VERSIONS_PER_VARIABLE) {
-      return yield* rejectData({
-        kind: "limit-exceeded",
-        resource: "versions",
-        limit: MAX_VERSIONS_PER_VARIABLE,
-      });
-    }
-    yield* ensureProjectCapacity(value.ciphertextHex.length / 2);
-    const store = yield* DataStore;
-    const audit = yield* AuditStore;
-    const now = yield* Clock.currentTimeMillis;
-    yield* Effect.sync(() => {
-      writeVersionWithAudit(
-        store.write,
-        audit.appendSync,
-        actor,
-        writer,
+) {
+  const { state, history, member, projectId, variable } = yield* requireVariableWriteContext(
+    actor,
+    environmentId,
+    variableId,
+    cache,
+  );
+  // A normal push to a declared variable is not accepted (§12-5): the
+  // first value is only the activation composite (value version 1 + a
+  // status active statement + manifest)
+  if (variable.latestStatus === "declared") {
+    return yield* rejectData({ kind: "activation-required", variableId });
+  }
+  // The DO storage total guard (§12-8): after the existence and kind
+  // checks, before CAS / signature. A re-encryption / rollback push is also covered
+  // (under rejection, no new value can be written — the consistent
+  // consequence; (d) of the same section)
+  yield* ensureStorageAdmitsGrowth;
+  yield* ensureValueCas(state, environmentId, variable.latestVersion, value);
+  // The lineage declaration names an earlier version of this variable
+  // (§12-5 — 2026-09-27 VH). Versions are contiguous from 1, so after the
+  // CAS "< version" is exactly "an existing earlier version". The claim
+  // itself is unverifiable (E2EE) and affects nothing else
+  if (sameValueAs !== undefined && sameValueAs >= value.version) {
+    return yield* rejectData({ kind: "payload-mismatch", field: "sameValueAs" });
+  }
+  // Check order (ruling D): epoch / version CAS → value signature
+  // (signature → declared head → state at head → predecessor) → quantity
+  // policy → atomic write. On non-acceptance, neither variable / version /
+  // latest / audit changes. The writer's device is resolved from the value
+  // signature (design record §8 K3-1) — the second-stage authorization (the
+  // device's effective permission: member × environment ∈ effective scope)
+  // runs right after the signature
+  const { device: writer, value: signedBytesHashHex } = yield* withSigningDevice(
+    member,
+    (candidate) =>
+      ensureValueSignature({
+        projectId,
         environmentId,
         variableId,
+        history,
+        member: candidate,
         value,
-        sameValueAs,
-        signedBytesHashHex,
-        now,
-      );
+      }),
+  );
+  yield* ensureDevicePermission(writer, "member", environmentId);
+  if (value.version > MAX_VERSIONS_PER_VARIABLE) {
+    return yield* rejectData({
+      kind: "limit-exceeded",
+      resource: "versions",
+      limit: MAX_VERSIONS_PER_VARIABLE,
     });
-    return {
+  }
+  yield* ensureProjectCapacity(value.ciphertextHex.length / 2);
+  const store = yield* DataStore;
+  const audit = yield* AuditStore;
+  const now = yield* Clock.currentTimeMillis;
+  yield* Effect.sync(() => {
+    writeVersionWithAudit(
+      store.write,
+      audit.appendSync,
+      actor,
+      writer,
+      environmentId,
       variableId,
-      version: value.version,
-      epoch: value.epoch,
-    } satisfies VariableVersionValue;
+      value,
+      sameValueAs,
+      signedBytesHashHex,
+      now,
+    );
   });
+  return {
+    variableId,
+    version: value.version,
+    epoch: value.epoch,
+  } satisfies VariableVersionValue;
+});
 
 /**
  * activation (declared → active — §12-5): the first value push to a declared
@@ -478,18 +473,18 @@ export const pushVersionProgram = (
  * policy (the §12-11 reversibility — the schema-locked varType check does not
  * reach back either: activation is not a creation).
  */
-export const activateVariableProgram = (
-  actor: DataActor,
-  environmentId: string,
-  variableId: string,
-  input: {
-    readonly value: ValueInput;
-    readonly statement: MetaStatementInput;
-    readonly manifest: EnvManifestInput;
-  },
-  cache: StateCache,
-) =>
-  Effect.gen(function* () {
+export const activateVariableProgram = Effect.fn("programs-variable.activateVariableProgram")(
+  function* (
+    actor: DataActor,
+    environmentId: string,
+    variableId: string,
+    input: {
+      readonly value: ValueInput;
+      readonly statement: MetaStatementInput;
+      readonly manifest: EnvManifestInput;
+    },
+    cache: StateCache,
+  ) {
     const { state, history, member, projectId, variable } = yield* requireVariableWriteContext(
       actor,
       environmentId,
@@ -610,17 +605,18 @@ export const activateVariableProgram = (
       version: input.value.version,
       epoch: input.value.epoch,
     } satisfies VariableVersionValue;
-  });
+  },
+);
 
-export const renameVariableProgram = (
-  actor: DataActor,
-  environmentId: string,
-  variableId: string,
-  statement: MetaStatementInput,
-  manifest: EnvManifestInput,
-  cache: StateCache,
-) =>
-  Effect.gen(function* () {
+export const renameVariableProgram = Effect.fn("programs-variable.renameVariableProgram")(
+  function* (
+    actor: DataActor,
+    environmentId: string,
+    variableId: string,
+    statement: MetaStatementInput,
+    manifest: EnvManifestInput,
+    cache: StateCache,
+  ) {
     const { history, member, projectId, variable } = yield* requireVariableWriteContext(
       actor,
       environmentId,
@@ -716,17 +712,18 @@ export const renameVariableProgram = (
         }),
       );
     });
-  });
+  },
+);
 
-export const deleteVariableProgram = (
-  actor: DataActor,
-  environmentId: string,
-  variableId: string,
-  statement: MetaStatementInput,
-  manifest: EnvManifestInput,
-  cache: StateCache,
-) =>
-  Effect.gen(function* () {
+export const deleteVariableProgram = Effect.fn("programs-variable.deleteVariableProgram")(
+  function* (
+    actor: DataActor,
+    environmentId: string,
+    variableId: string,
+    statement: MetaStatementInput,
+    manifest: EnvManifestInput,
+    cache: StateCache,
+  ) {
     const { history, member, projectId, variable } = yield* requireVariableWriteContext(
       actor,
       environmentId,
@@ -796,4 +793,5 @@ export const deleteVariableProgram = (
         }),
       );
     });
-  });
+  },
+);

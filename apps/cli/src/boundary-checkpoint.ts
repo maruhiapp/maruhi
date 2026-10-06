@@ -33,24 +33,24 @@ import { cliError, type CliError } from "./errors.ts";
  * values is the latest value-level shape of the verified view (active
  * variables only — the §6.2 values_digest definition).
  */
-export function signBoundaryCheckpoint(input: {
-  /** The just-signed composite entry (create / rotate — the anchor for seq / prev). */
-  readonly compositeEntry: ChainEntry;
-  readonly environmentId: string;
-  /** The epoch the composite establishes (creation = 1, rotate = new_epoch). */
-  readonly epoch: number;
-  /** The embedded manifest's version and signed_bytes hash (the binding target — §4.3 (2)). */
-  readonly manifestVersion: number;
-  readonly manifestSigHashHex: string;
-  readonly values: readonly EnvValuesDigestEntry[];
-  /** The verified view used to resolve the signing device (message when the key at hand is missing — DK K13-5). */
-  readonly verified: VerifiedProject;
-  readonly member: ChainMember;
-  /** FP of the signing device (the key at hand — the same device as the composite entry). */
-  readonly deviceFingerprintHex: string;
-  readonly signingKey: CryptoKey;
-}): Effect.Effect<ChainEntry & { readonly op: "checkpoint" }, CliError> {
-  return Effect.gen(function* () {
+export const signBoundaryCheckpoint = Effect.fn("boundary-checkpoint.signBoundaryCheckpoint")(
+  function* (input: {
+    /** The just-signed composite entry (create / rotate — the anchor for seq / prev). */
+    readonly compositeEntry: ChainEntry;
+    readonly environmentId: string;
+    /** The epoch the composite establishes (creation = 1, rotate = new_epoch). */
+    readonly epoch: number;
+    /** The embedded manifest's version and signed_bytes hash (the binding target — §4.3 (2)). */
+    readonly manifestVersion: number;
+    readonly manifestSigHashHex: string;
+    readonly values: readonly EnvValuesDigestEntry[];
+    /** The verified view used to resolve the signing device (message when the key at hand is missing — DK K13-5). */
+    readonly verified: VerifiedProject;
+    readonly member: ChainMember;
+    /** FP of the signing device (the key at hand — the same device as the composite entry). */
+    readonly deviceFingerprintHex: string;
+    readonly signingKey: CryptoKey;
+  }): Effect.fn.Return<ChainEntry & { readonly op: "checkpoint" }, CliError> {
     const digest = yield* cryptoEffect(() => computeEnvValuesDigest(SUITE_ID, input.values)).pipe(
       Effect.mapError(() => cliError("Failed to compute the checkpoint values digest")),
     );
@@ -90,5 +90,5 @@ export function signBoundaryCheckpoint(input: {
       return yield* Effect.fail(cliError("Failed to sign the boundary checkpoint entry"));
     }
     return signed;
-  });
-}
+  },
+);
