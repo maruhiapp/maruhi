@@ -19,7 +19,6 @@
 //  5. Authorization/selection branches: owner only, multiple grants
 //     require --fingerprint, nothing to revoke is an error
 
-import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash, computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -50,6 +49,7 @@ import {
   type WireDistributedVariableStatement,
   type WireRecipientDek,
   wrapDekFor,
+  type WireRotateBody,
 } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
@@ -89,25 +89,6 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-/** The rotate compound body (api-schema's environments.rotate payload). */
-interface RotateBody {
-  readonly parentHeadHashHex: string;
-  readonly entry: ChainEntry & {
-    readonly op: "rotate_epoch";
-    readonly payload: {
-      readonly environmentId: string;
-      readonly newEpoch: number;
-      readonly reason: string;
-      readonly dekCommitmentHex: string;
-    };
-  };
-  readonly deks: readonly WrappedDek[];
-  /** The bundled manifest (§12-4 — issue form; the issuer is the caller's contract). */
-  readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
-  /** The boundary checkpoint (§12-4's mandatory bundling). */
-  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
-}
-
 /** One variable in a pull response (verified statement + distribution-form value). */
 interface PulledVariable {
   readonly variableId: string;
@@ -126,7 +107,7 @@ interface RevokeServerState {
   readonly appendedEntries: ChainEntry[];
   /** Counts of append POSTs, including attempts refused by a stubbed response. */
   readonly counters: { appendAttempts: number };
-  readonly rotateBodies: RotateBody[];
+  readonly rotateBodies: WireRotateBody[];
   readonly pushes: { readonly environmentId: string; readonly variableId: string }[];
 }
 
@@ -154,7 +135,7 @@ async function makeRevokeServer(input: {
   const entries: ChainEntry[] = [...input.built.entries];
   const hashes: string[] = [...input.built.hashes];
   const appendedEntries: ChainEntry[] = [];
-  const rotateBodies: RotateBody[] = [];
+  const rotateBodies: WireRotateBody[] = [];
   const pushes: { environmentId: string; variableId: string }[] = [];
   const environments = input.environments ?? {};
   const listedStatements =
@@ -307,7 +288,7 @@ async function makeRevokeServer(input: {
       if (injected !== undefined) {
         return injected;
       }
-      const body = request.body as RotateBody;
+      const body = request.body as WireRotateBody;
       rotateBodies.push(body);
       // Accept the two entries: rotate + boundary checkpoint (§12-4)
       entries.push(body.entry, body.checkpoint);

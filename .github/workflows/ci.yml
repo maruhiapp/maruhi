@@ -149,6 +149,14 @@ jobs:
           bunx fallow report --from "$RUNNER_TEMP/fallow-results.json" --format github-summary >> "$GITHUB_STEP_SUMMARY"
           exit "$audit_status"
 
+      # The duplication baseline is shrink-only: it lists accepted clone debt
+      # and may lose entries, never gain them, relative to the merge-base with
+      # the PR's base branch (a push to main compares main with itself)
+      - name: 5b. fallow dupes baseline (shrink-only)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: bun scripts/check-dupes-baseline.mjs "origin/${BASE_REF:-main}"
+
       - name: 6. React Doctor (web, diff mode)
         run: bun run doctor
 

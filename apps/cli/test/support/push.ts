@@ -1,4 +1,3 @@
-import { decryptVariable } from "@maruhi/crypto";
 import { afterEach, beforeAll } from "vitest";
 
 import {
@@ -8,18 +7,16 @@ import {
   environmentStatementFor,
   genesisOp,
   headOf,
-  hexBytes,
   makeTestUser,
   manifestFor,
   manifestHashOf,
-  rotateEpochOp,
+  rotatedEnvironmentFor,
   statementFor,
   type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedVariableStatement,
   type WireEncryptedPayload,
-  wrapDekFor,
   type WireRecipientDek,
 } from "./crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
@@ -70,14 +67,9 @@ beforeAll(async () => {
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
   ]);
   // The shape where a rotation is stacked on the same genesis (same project)
-  chainV2 = await buildChain([
-    { actor: owner, operation: genesisOp(owner) },
-    { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
-    { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
-  ]);
-  const common = { projectId: chainV1.projectId, environmentId: ENV_ID };
-  wrap1 = await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner });
-  wrap2 = await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner });
+  const rotated = await rotatedEnvironmentFor({ owner, environmentId: ENV_ID, dek1, dek2 });
+  chainV2 = rotated.chain;
+  [wrap1, wrap2] = rotated.wraps;
   envStatement = await environmentStatementFor({
     projectId: chainV1.projectId,
     environmentId: ENV_ID,
@@ -332,17 +324,4 @@ export interface CreateBody {
     readonly chainHeadSeq: number;
     readonly signatureHex: string;
   };
-}
-
-export async function decryptWire(dek: Uint8Array, value: WireEncryptedPayload): Promise<string> {
-  const result = await decryptVariable({
-    dek,
-    context: value.aad,
-    nonce: hexBytes(value.nonceHex),
-    ciphertext: hexBytes(value.ciphertextHex),
-  });
-  if (!result.ok) {
-    throw new Error("decrypt failed in test");
-  }
-  return new TextDecoder().decode(result.value);
 }

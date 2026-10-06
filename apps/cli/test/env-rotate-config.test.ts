@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { receiptVariableName } from "../src/sync.package/sync-receipt.ts";
 import {
+  decryptWire,
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
@@ -24,7 +25,6 @@ import {
 } from "./support/crypto.ts";
 import {
   chainBase,
-  decryptWire,
   dek1,
   dek2,
   ENV_ID,

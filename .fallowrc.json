@@ -161,6 +161,15 @@
       { "from": "site", "allow": ["site", "crypto", "core", "api-schema"] }
     ]
   },
+  // Clone detection skips the crypto test harnesses: each
+  // packages/crypto/test/checks/<section>.ts is a per-spec-section harness kept
+  // independently readable against its CRYPTO_SPEC section, and deduplicating
+  // them would change packages/crypto, which needs crypto human review
+  // (CLAUDE.md). The duplication baseline (fallow-baselines/dupes.json) holds
+  // only real debt and is shrink-only (scripts/check-dupes-baseline.mjs, CI 5b)
+  "duplicates": {
+    "ignore": ["packages/crypto/test/checks/**"]
+  },
   "audit": {
     "deadCodeBaseline": "fallow-baselines/dead-code.json",
     "healthBaseline": "fallow-baselines/health.json",
