@@ -519,11 +519,12 @@ export const verifyLeaseDistribution = Effect.fn("values.verifyLeaseDistribution
   > {
     // Manifest verification is mandatory (CRYPTO_SPEC §9.1 (5)) and a
     // required response field — the wire schema refuses an omission at
-    // decode, same as pull. The floor-derived prev check does not apply — a workload is a
-    // first-sync class that holds no floor (§14.3-3. session-31 §3 M1-A1's
-    // note that leases are out of scope): signature, digest, epoch
-    // agreement, and omission refusal stay at the pull's level, and the
-    // predecessor is null (the shared verifier's identity). A lease is a
+    // decode, same as pull. The floor-derived prev check does not apply
+    // — a workload is a first-sync class that holds no floor (§14.3-3.
+    // session-31 §3 M1-A1's note that leases are out of scope):
+    // signature, digest, epoch agreement, and omission refusal stay at
+    // the pull's level, and the predecessor is null (the shared
+    // verifier's identity). A lease is a
     // self-contained shape where the response bundles the chain — the
     // fetch view = the bundled chain's head itself (the shape where the
     // baseline is newer than the fetch view structurally cannot exist, and

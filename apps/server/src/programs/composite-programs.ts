@@ -186,10 +186,10 @@ const ensureCompositeWrapSet = Effect.fn("composite-programs.ensureCompositeWrap
  * the epoch the bundled entry establishes, manifestVersion = the bundled
  * manifest's version. The hash match between the tuple's
  * manifest_sig_hash and the bundled manifest is uniquely owned by
- * acceptEnvManifest's checkpoint-binding check (CRYPTO_SPEC §4.3 (2))
- * against the history after both entries apply (§6.4's "the split with
- * the bundled-contents match check is uniquified in the implementation
- * PR").
+ * verifyManifestCryptographically's checkpoint-binding check
+ * (CRYPTO_SPEC §4.3 (2)) against the history after both entries apply
+ * (§6.4's "the split with the bundled-contents match check is
+ * uniquified in the implementation PR").
  */
 const ensureBoundaryCheckpointShape = Effect.fn("composite-programs.ensureBoundaryCheckpointShape")(
   function* (input: {
