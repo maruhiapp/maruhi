@@ -13,7 +13,7 @@ An environment (`dev`, `staging`, `prod`, …) holds a set of variables and has 
 | Change its display name      | `maruhi env rename <environment-id> <name>` | member or above, environment in scope |
 | Delete it and all its values | `maruhi env rm <environment-id>`            | admin or owner, environment in scope  |
 
-Every change to a name or to the environment's state is a statement signed by your device key. Other members' CLIs verify it against the project's chain before they trust a name, so the server cannot rename or revive an environment on its own.
+Every change to a name or to the environment's state is a statement signed by your device key. Other members' CLIs verify it against the project's chain before they trust a name, so the server cannot forge a rename or any other statement on its own.
 
 ## Create
 
