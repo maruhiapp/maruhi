@@ -38,7 +38,7 @@ const VariableMetaSide = {
 
 /**
  * One variable's floor (the meta side is shared; deleted / declared —
- * layout v2's no-value-set declaration, §4.2 — carry the meta side only).
+ * layout v3's no-value-set declaration, §4.2 — carry the meta side only).
  */
 const VariableFloorSchema = Schema.Union([
   Schema.Struct({

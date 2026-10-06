@@ -113,8 +113,8 @@ function writeVersionWithAudit(
 
 /**
  * schema-locked (§12-11 / §12-5): in a locked project, variable creation
- * (metaVersion 1 — both declared and value-bundled) requires layoutVersion 2
- * or above and a non-empty varType (write-time blocking of the silent creation of
+ * (metaVersion 1 — both declared and value-bundled) requires layoutVersion 3
+ * and a non-empty varType (write-time blocking of the silent creation of
  * shadow variables by typos). It is a **one-time check at creation**, not a
  * continuing invariant — a later schema reissue may set varType back to ""
  * even under locked, and it does not reach back to a declared variable's
@@ -127,7 +127,7 @@ function ensureSchemaLockedCreation(
   if (schemaPolicy !== "locked") {
     return Effect.void;
   }
-  if (statementLayoutVersion(statement) < 2 || (statement.schema?.varType ?? "") === "") {
+  if (statementLayoutVersion(statement) !== 3 || (statement.schema?.varType ?? "") === "") {
     return Effect.fail(rejectData({ kind: "schema-policy-rejected", reason: "schema-required" }));
   }
   return Effect.void;
@@ -136,7 +136,7 @@ function ensureSchemaLockedCreation(
 /**
  * Run the creation-time (metaVersion 1) schema-family acceptance checks
  * (§12-11 / §12-8) under the policy at acceptance time: the disabled
- * enablement gate (reject new v2 adoption) → the schema-locked creation check
+ * enablement gate (reject new v3 adoption) → the schema-locked creation check
  * → the description acceptance policy. The layoutVersion support-range check
  * is done by the caller (createVariableProgram) before every
  * statement-dependent check.
@@ -221,7 +221,7 @@ const requireVariableWriteContext = Effect.fn("programs-variable.requireVariable
 /**
  * Variable creation (§12-5): active (with the bundled version-1 value) or
  * declared (no value — the sole exception to "a variable without a value does
- * not exist"; layout v2 only). The wire Schema fixes the combination of
+ * not exist"; layout v3 only). The wire Schema fixes the combination of
  * status and value presence (creating a deleted variable is structurally
  * impossible).
  */
@@ -258,8 +258,8 @@ export const createVariableProgram = Effect.fn("programs-variable.createVariable
     yield* ensureStorageAdmitsGrowth;
     yield* ensureVariableCreatable(environmentId, input.statement, input.variableId);
     // The schema policy (§12-11 — read the policy at acceptance time under
-    // the permit): disabled rejects new v2 adoption (v2 creation at
-    // metaVersion 1); locked requires v2 + non-empty varType on creation. The
+    // the permit): disabled rejects new v3 adoption (v3 creation at
+    // metaVersion 1); locked requires v3 + non-empty varType on creation. The
     // description bound and character class are §12-8
     yield* ensureCreationSchemaGates(input.statement);
     // Creation = the bundled version-1 value + the metaVersion-1 statement
@@ -466,10 +466,10 @@ export const pushVersionProgram = Effect.fn("programs-variable.pushVersionProgra
 /**
  * activation (declared → active — §12-5): the first value push to a declared
  * variable is accepted as the composite of "EncryptedPayload (version 1) + a
- * status active statement (metaVersion + 1, v2) + EnvironmentManifest". The
+ * status active statement (metaVersion + 1, v3) + EnvironmentManifest". The
  * value signature, statement signature, and manifest checks are a composition
- * of the existing rules. Because the predecessor is necessarily v2 (declared
- * is v2-only), it is accepted as a continuation statement regardless of the
+ * of the existing rules. Because the predecessor is necessarily v3 (declared
+ * is v3-only), it is accepted as a continuation statement regardless of the
  * policy (the §12-11 reversibility — the schema-locked varType check does not
  * reach back either: activation is not a creation).
  */
@@ -504,8 +504,8 @@ export const activateVariableProgram = Effect.fn("programs-variable.activateVari
     // value CAS only enforces version = latestVersion + 1 it cannot double as
     // the target check (sending version N+1 to an active variable would pass),
     // so this explicit guard is what makes the schemaPolicy exemption's
-    // premise below hold — "the predecessor is necessarily v2 (declared is
-    // v2-only)". Without it, an active v1 variable could be promoted to v2
+    // premise below hold — "the predecessor is necessarily v3 (declared is
+    // v3-only)". Without it, an active v1 variable could be promoted to v3
     // under disabled, bypassing the §12-11 enablement gate
     if (variable.latestStatus !== "declared") {
       return yield* rejectData({ kind: "payload-mismatch", field: "status" });
@@ -524,9 +524,9 @@ export const activateVariableProgram = Effect.fn("programs-variable.activateVari
     yield* ensureValueCas(state, environmentId, variable.latestVersion, input.value);
     // The meta acceptance pipeline (§12-5): CAS → anchor → description
     // acceptance check → signature verification (the declared → active
-    // transition and v2 monotonicity are crypto's predecessor check).
+    // transition and layout monotonicity are crypto's predecessor check).
     // schemaPolicy is not passed — thanks to the declared guard above the
-    // predecessor is necessarily v2, and a continuation statement is accepted
+    // predecessor is necessarily v3, and a continuation statement is accepted
     // regardless of the policy (§12-11)
     const { device: author, value: metaSignedBytesHashHex } = yield* withSigningDevice(
       member,
@@ -658,8 +658,8 @@ export const renameVariableProgram = Effect.fn("programs-variable.renameVariable
           history,
           member: candidate,
           statement,
-          // The enablement gate (§12-11): rejects "v2 reissue of a v1
-          // variable" under disabled (a continuation whose predecessor is v2
+          // The enablement gate (§12-11): rejects "v3 reissue of a v1
+          // variable" under disabled (a continuation whose predecessor is v3
           // passes regardless of the policy — judged on the anchor's real
           // values)
           schemaPolicy,

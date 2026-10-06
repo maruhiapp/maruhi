@@ -42,9 +42,9 @@ const SHA256_HEX_LENGTH = 32 * 2;
 
 /**
  * One entry of the variables digest (CRYPTO_SPEC §4.3): the latest form of
- * one variable's metadata statement — tombstones (`deleted`) and layout v2
+ * one variable's metadata statement — tombstones (`deleted`) and layout v3
  * `declared` statements (§4.2 — a declaration with no value set) included. The digest encoder
- * is unchanged by layout v2: `declared` only appears as a new string value of
+ * is unchanged by layout v3: `declared` only appears as a new string value of
  * the `status` field (§4.3's coverage of the schema columns — the manifest
  * layer is unchanged).
  */

@@ -4,7 +4,7 @@
 //   v_j = LP(variable_id, version, value_sig_hash_hex)
 //     — **UTF-8 byte-ascending order** of variable_id. Only `active` variables
 //     (tombstones are captured by the manifest side — §4.3 — and status =
-//     declared [§4.2 layout v2, value not yet set] has no value and hence no
+//     declared [§4.2 layout v3, value not yet set] has no value and hence no
 //     coordinates to notarize, so it is out of scope).
 //     The empty set is also valid (an environment with zero variables = an
 //     LP with zero elements. The boundary checkpoint at environment creation
@@ -13,7 +13,7 @@
 // strings).
 // The skeleton (validate → reject duplicates → internal sort → nested LP) is
 // the shared implementation in sorted-digest.ts, isomorphic to §4.3's
-// variables_digest (manifest-sign.ts). Introducing layout v2's declared left
+// variables_digest (manifest-sign.ts). Introducing layout v3's declared left
 // the encoder unchanged — only the target-selection rule
 // (selectEnvValuesDigestEntries) looks at status.
 // Test vectors: the values_digests section of test-vectors/chain-entries.json
@@ -53,7 +53,7 @@ function valuesDigestEntryInvalidField(entry: EnvValuesDigestEntry): string | nu
 /**
  * One variable's value-level state as seen by a checkpoint issuer (CRYPTO_SPEC
  * §6.2 target selection): an `active` variable carries its latest value
- * coordinates; `declared` (§4.2 layout v2 — value not yet set) and `deleted`
+ * coordinates; `declared` (§4.2 layout v3 — value not yet set) and `deleted`
  * variables have no value coordinates at all, so the type makes carrying them
  * unrepresentable.
  */
@@ -67,7 +67,7 @@ export type EnvValuesDigestSource =
 /**
  * Selects the values-digest subjects from a variable set with statement
  * statuses (CRYPTO_SPEC §6.2): only `active` variables appear. `declared`
- * variables (§4.2 layout v2) have no value to attest, and tombstones are
+ * variables (§4.2 layout v3) have no value to attest, and tombstones are
  * captured by the manifest side (§4.3). The digest encoder itself is
  * unchanged — this selection rule is the only status-aware step.
  * Test vectors: test-vectors/checkpoint-digest.json

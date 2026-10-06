@@ -49,7 +49,7 @@ export interface ChainHeadFloor {
 
 /**
  * One variable's floor (active = latest value + latest statement,
- * deleted = tombstone, declared = layout v2's no-value-set declaration —
+ * deleted = tombstone, declared = layout v3's no-value-set declaration —
  * CRYPTO_SPEC §4.2).
  *
  * declared holds the meta side only (the value floor stays empty until

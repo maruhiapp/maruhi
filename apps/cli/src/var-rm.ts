@@ -1,12 +1,12 @@
 // `maruhi var rm <NAME>` — deleting a variable.
 //
 // The wire, acceptance, and verification already exist
-// (DeleteVariableMetaStatement v1 / V2 + the manifest compound —
+// (DeleteVariableMetaStatement v1 / V3 + the manifest compound —
 // AUTH_SPEC §12-5). This module only adds the CLI-side signing,
 // sending, and confirmation:
 //
 //   - Deleting a v1 variable keeps the v1 form (never silently
-//     raises the layout). Deleting a v2 variable **keeps the schema
+//     raises the layout). Deleting a v3 variable **keeps the schema
 //     fields and layout byte-exactly from the previous statement**
 //     (CRYPTO_SPEC §4.2's deletion convention — the server enforces
 //     a mismatch as 422 payload-mismatch). name keeps the last
@@ -43,7 +43,7 @@ import { confirmMetaMutation, issueManifestWithIntent } from "./meta-confirm.ts"
 import { signStatementAndHash } from "./meta-statement.ts";
 import { retryOnConflict } from "./retry.ts";
 import {
-  signDeleteStatementV2,
+  signDeleteStatementV3,
   requireVerifiedEnvironment,
   resolveSchemaTarget,
   type SchemaSetState,
@@ -229,20 +229,18 @@ const attemptDeletion = Effect.fn("var-rm.attemptDeletion")(function* (
     );
   }
   const previousStatus = target.status;
-  // Deleting a v2 / v3 variable uses that form (schema fields and
-  // layout kept byte-exactly from the previous statement —
-  // §12-5's deletion convention); a v1 variable's deletion keeps
-  // the v1 form
+  // Deleting a v3 variable uses that form (schema fields and layout
+  // kept byte-exactly from the previous statement — §12-5's deletion
+  // convention); a v1 variable's deletion keeps the v1 form. A verified
+  // statement carries schema fields exactly on layout 3
   const signed =
-    target.layoutVersion >= 2 && target.schema !== null
-      ? yield* signDeleteStatementV2({
+    target.schema !== null
+      ? yield* signDeleteStatementV3({
           verified: state.verified,
           environmentId: input.environmentId,
           variableId: target.variableId,
           name: target.name,
           schema: target.schema,
-          // The deletion keeps the predecessor's layout (v2 or v3 — §12-5)
-          layoutVersion: target.layoutVersion === 3 ? 3 : 2,
           prev: { metaVersion: target.metaVersion, metaSigHashHex: target.metaSigHashHex },
           authorUserId: input.authorUserId,
           signingKey: input.signingKey,
@@ -319,7 +317,7 @@ function classifyDeletionConflict(error: DeletionAttemptError): DeletionConflict
 
 /**
  * Deletes one variable (declared or active — AUTH_SPEC §12-5): a signed
- * deletion statement (v1 stays v1; a v2 variable's deletion preserves its
+ * deletion statement (v1 stays v1; a v3 variable's deletion preserves its
  * schema fields and layout byte-exactly) + manifest composite, gated by an
  * explicit confirmation (interactive name re-entry, or --force), and
  * confirmed against the verified distribution (1-E′ — §12-10 (3)) before the

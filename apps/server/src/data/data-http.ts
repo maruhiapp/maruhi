@@ -202,10 +202,10 @@ export function toManifestInput(manifest: {
 
 /**
  * Wire statement → the store input handed to the DO (coordinates already
- * verified). In layout v2 (§12-2) layoutVersion and the schema fields are
- * present as a 4-field set — the wire Schema forces the coupling, so the
- * branch may test layoutVersion's presence alone (missing schema fields
- * fall earlier as a Schema 400).
+ * verified). In layout v3 (§12-2) layoutVersion and the schema fields are
+ * present as a set — the wire Schema forces the coupling, so the branch may
+ * test their presence directly (missing schema fields fall earlier as a
+ * Schema 400; a missing maxAgeDays is verify-meta.ts's 422).
  */
 export function toMetaStatementInput(statement: {
   readonly suite: "maruhi/v1";
@@ -239,8 +239,9 @@ export function toMetaStatementInput(statement: {
             varType: statement.varType,
             required: statement.required,
             description: statement.description,
-            // Layout v3's field rides only when the wire carries it (the
-            // layout ↔ presence coupling is verify-meta.ts's check)
+            // maxAgeDays rides only when the wire carries it (its absence
+            // on layout 3 is verify-meta.ts's 422 payload-mismatch, after
+            // the layout support-range check)
             ...(statement.maxAgeDays === undefined ? {} : { maxAgeDays: statement.maxAgeDays }),
           },
         }),

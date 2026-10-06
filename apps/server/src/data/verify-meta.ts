@@ -45,49 +45,47 @@ const META_REJECT_REASONS: Readonly<Record<MetaInvalidReason, MetaStatementRejec
   "prev-shape-mismatch": "chain-head-state-mismatch",
   "prev-hash-mismatch": "chain-head-state-mismatch",
   "revived-after-delete": "chain-head-state-mismatch",
-  // The §4.2 layout v2 transition (active → declared) folds into state-mismatch
+  // The §4.2 layout v3 transition (active → declared) folds into state-mismatch
   // (same transition class as revived-after-delete — the spec gives no dedicated error name)
   "declared-after-active": "chain-head-state-mismatch",
-  // Layout monotonicity (a v1 successor on a v2 variable) is an error name the spec states explicitly (§12-5)
+  // Layout monotonicity (a v1 successor on a v3 variable) is an error name the spec states explicitly (§12-5)
   "layout-regression": "layout-regression",
 };
 
 /**
  * Wire MetaStatementInput → crypto's signed schema fields (the required
- * boolean ↔ "true"/"false" mapping lives in this one place).
+ * boolean ↔ "true"/"false" mapping lives in this one place). max_age_days
+ * is "" = no declaration, else the decimal (the LP field representation of
+ * CRYPTO_SPEC §4.2). A missing maxAgeDays never reaches here on layout 3
+ * ({@link ensureLayoutShape} refuses it first); any other layout is refused
+ * by crypto's layout check before the fields are read.
  */
 function cryptoSchemaOf(statement: MetaStatementInput): MetaVariableSchema | undefined {
   if (statement.schema === undefined) {
     return undefined;
   }
-  const maxAge = statement.schema.maxAgeDays;
+  const maxAge = statement.schema.maxAgeDays ?? null;
   return {
     varType: statement.schema.varType,
     required: statement.schema.required ? "true" : "false",
     description: statement.schema.description,
-    // Layout v3's max_age_days: "" = no declaration, else the decimal (the
-    // LP field representation of CRYPTO_SPEC §4.2)
-    ...(maxAge === undefined ? {} : { maxAgeDays: maxAge === null ? "" : String(maxAge) }),
+    maxAgeDays: maxAge === null ? "" : String(maxAge),
   };
 }
 
 /**
- * §12-5 (layout v3 — PF6 R9): the wire carries `maxAgeDays` iff the
- * layout is 3 (null = no declaration). A v3 statement without the field,
- * or a v2 statement with it, is a shape mismatch between the declared
- * layout and the fields — refused as 422 payload-mismatch before the
- * signature (the crypto layer would refuse it too, as InvalidInput; this
- * keeps the honest wording).
+ * §12-5 (layout v3): a v3 statement carries `maxAgeDays` (null = no
+ * declaration). A v3 statement without the field is a shape mismatch
+ * between the declared layout and the fields — refused as 422
+ * payload-mismatch before the signature (the crypto layer would refuse it
+ * too, as InvalidInput; this keeps the honest wording).
  */
 const ensureLayoutShape = (
   statement: MetaStatementInput,
-): Effect.Effect<void, DataRejectedError> => {
-  const layout = statementLayoutVersion(statement);
-  const present = statement.schema?.maxAgeDays !== undefined;
-  return (layout === 3) === present || layout === 1
+): Effect.Effect<void, DataRejectedError> =>
+  statementLayoutVersion(statement) !== 3 || statement.schema?.maxAgeDays !== undefined
     ? Effect.void
     : Effect.fail(rejectData({ kind: "payload-mismatch", field: "maxAgeDays" }));
-};
 
 /**
  * Acceptance verification of a meta statement (§12-5 items 1-3 + the prev
@@ -138,7 +136,7 @@ export const ensureMetaStatementSignature = Effect.fn("verify-meta.ensureMetaSta
             target: input.target,
             name: input.statement.name,
             status: input.statement.status,
-            // The layout v2 carrier field (§12-2 — omitted = 1). Selects which
+            // The layout carrier field (§12-2 — omitted = 1). Selects which
             // layout's signed_bytes to recompute (ruling CR)
             layoutVersion: input.statement.layoutVersion,
             schema: cryptoSchemaOf(input.statement),
@@ -162,9 +160,9 @@ export const ensureMetaStatementSignature = Effect.fn("verify-meta.ensureMetaSta
             kind: "meta-rejected",
             reason: META_REJECT_REASONS[error.reason],
           }),
-        // A declared layoutVersion beyond this server's support range ({1, 2, 3})
-        // occurs as the **normal case** of "old server × new client" once this
-        // revision puts layoutVersion on the wire (ruling CR). The primary check is
+        // A declared layoutVersion outside this server's support range ({1, 3} —
+        // the retired 2, or a later layout as the **normal case** of "old
+        // server × new client" — ruling CR). The primary check is
         // ensureSupportedLayout at the head of each acceptance path; this is the
         // fail-closed second line of defense (even if a new acceptance path drops
         // the head check, it must not become defect = a 500 indistinguishable from
@@ -214,9 +212,10 @@ export const statementLayoutVersion = (statement: MetaStatementInput): number =>
 
 /**
  * Support-range check for the declared layoutVersion (ruling CR — §12-2 /
- * CRYPTO_SPEC §4.2). Call it **before every other v2-family acceptance check**:
- * for an unsupported layout (v4+ — the normal case of "old server × new
- * client"), the schemaPolicy gate, schema-locked check, and the
+ * CRYPTO_SPEC §4.2). Call it **before every other schema-layout acceptance
+ * check**: for an unsupported layout (the retired 2, or v4+ — the normal
+ * case of "old server × new client"), the schemaPolicy gate, schema-locked
+ * check, and the
  * delete-statement predecessor match are in principle undefinable, and
  * returning those errors first would be misleading in a "fix the policy and it
  * passes" direction. Always return the honest update-required =
@@ -259,12 +258,12 @@ export const ensureDescriptionPolicy = (
 
 /**
  * §12-11 / §12-5 enablement gate: a project whose schemaPolicy is disabled
- * rejects with 422 the **new adoption** of layout v2 (creating a v2 statement
- * at metaVersion 1, and reissuing as v2 a variable whose previous statement is
- * v1). Continuation statements on a variable whose predecessor is already v2
+ * rejects with 422 the **new adoption** of layout v3 (creating a v3 statement
+ * at metaVersion 1, and reissuing as v3 a variable whose previous statement is
+ * v1). Continuation statements on a variable whose predecessor is already v3
  * (delete, activation, rename, schema reissue) are accepted regardless of the
  * policy (reversibility — downgrading does not freeze the lifecycle of existing
- * v2 variables). v1 statements are accepted regardless of the policy, as
+ * v3 variables). v1 statements are accepted regardless of the policy, as
  * before. The decision uses the policy at acceptance time (the caller reads it
  * inside the project DO's serialization).
  */
@@ -275,7 +274,7 @@ export const ensureSchemaPolicyAllowsLayout = (input: {
   readonly predecessorLayoutVersion: number;
 }): Effect.Effect<void, DataRejectedError> =>
   input.schemaPolicy === "disabled" &&
-  statementLayoutVersion(input.statement) >= 2 &&
+  statementLayoutVersion(input.statement) !== 1 &&
   input.predecessorLayoutVersion === 1
     ? Effect.fail(rejectData({ kind: "schema-policy-rejected", reason: "schema-policy-disabled" }))
     : Effect.void;
@@ -341,7 +340,7 @@ const ensureMetaQuota = (
  * The meta acceptance pipeline shared by rename / schema reissue / delete /
  * activation (§12-5): metaVersion bound → CAS (409 returns the latest number
  * only) → fetch the stored predecessor statement's anchor (it always exists
- * after CAS passes — absence is a defect) → acceptance-surface v2 checks (the
+ * after CAS passes — absence is a defect) → acceptance-surface schema checks (the
  * schemaPolicy enablement gate, the description acceptance policy, the delete
  * statement's schema-field/layout predecessor match) → signature verification
  * (predecessor included — prev chaining, rejecting re-statement after delete,
@@ -358,7 +357,7 @@ export const acceptMetaStatement = Effect.fn("verify-meta.acceptMetaStatement")(
   readonly statement: MetaStatementInput;
   /**
    * schemaPolicy at acceptance time (variable statements only — the caller
-   * reads it under the DO permit; environment statements are not v2 targets, so
+   * reads it under the DO permit; environment statements are not v3 targets, so
    * it is not passed for them).
    */
   readonly schemaPolicy?: SchemaPolicy;
@@ -379,8 +378,8 @@ export const acceptMetaStatement = Effect.fn("verify-meta.acceptMetaStatement")(
   if (anchor === null) {
     return yield* Effect.die(new Error("meta predecessor row missing after CAS acceptance"));
   }
-  // Enablement gate (§12-11): reject v2 reissue of a v1 variable while
-  // disabled (continuation statements whose predecessor is v2 pass regardless
+  // Enablement gate (§12-11): reject v3 reissue of a v1 variable while
+  // disabled (continuation statements whose predecessor is v3 pass regardless
   // of the policy)
   if (input.schemaPolicy !== undefined) {
     yield* ensureSchemaPolicyAllowsLayout({
@@ -394,7 +393,7 @@ export const acceptMetaStatement = Effect.fn("verify-meta.acceptMetaStatement")(
     // predecessor (§12-5). The description acceptance policy does **not**
     // apply to deletes: the delete rule is byte-exact preservation of the
     // stored value, and that value was already checked at acceptance.
-    // Applying it would make existing v2 variables undeletable after a
+    // Applying it would make existing v3 variables undeletable after a
     // self-host lowers the limit (a collision with §12-8's "limits never
     // block deletion" principle. This also removes the path where an
     // out-of-contract description-rejected would surface as a 500: a

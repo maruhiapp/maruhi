@@ -14,7 +14,7 @@
 // (CRYPTO_SPEC §14.3's display discipline — only the fulfillment of
 // required is verifiable from signed statements, the strict side).
 //
-// Setting (schema set): when the target exists, a v2 schema reissue
+// Setting (schema set): when the target exists, a v3 schema reissue
 // (metaVersion + 1, name / status unchanged) + a manifest composite;
 // when not, create it as a declaration (declared, metaVersion 1)
 // (§12-5). **The merge rule is a partial update** (§1-2 — an
@@ -52,7 +52,7 @@ import {
   pullVerifiedEnvironmentMetadata,
   type VerifiedEnvironmentMetadata,
 } from "../values.ts";
-import { signContinuationStatementV2, signDeclareStatement } from "./schema-statement.ts";
+import { signContinuationStatementV3, signDeclareStatement } from "./schema-statement.ts";
 
 /* -------------------------------------------------------------------------- */
 /* Display (maruhi schema)                                                   */
@@ -365,7 +365,7 @@ interface AcceptedSchemaSet {
  * The local pre-signing check (fail-closed — acceptance's source of
  * truth stays the server §12-5). null = passed.
  *
- * - The first v2 reissue onto a v1 previous statement (no schema
+ * - The first v3 reissue onto a v1 previous statement (no schema
  *   columns) requires an explicit required. §1-2's partial update is an
  *   inheritance rule for "the previous statement's values", and a v1 has
  *   no required to inherit — silently applying the creation default
@@ -497,8 +497,6 @@ const attemptSchemaSet = Effect.fn("schema.attemptSchemaSet")(function* (
       variableId: generateVariableId(),
       name,
       schema: merged,
-      // A new declaration is the current layout (v3 — PF6 R9)
-      layoutVersion: 3,
       authorUserId: input.authorUserId,
       signingKey: input.signingKey,
     });
@@ -529,17 +527,15 @@ const attemptSchemaSet = Effect.fn("schema.attemptSchemaSet")(function* (
       state,
     };
   }
-  // Schema reissue (a status-unchanged v2 continuation — the rename form doubles as acceptance §12-5)
-  const signed = yield* signContinuationStatementV2({
+  // Schema reissue (a status-unchanged v3 continuation — the rename form doubles as acceptance §12-5;
+  // a v1 target is raised to v3, the legitimate direction of §4.2's monotonicity)
+  const signed = yield* signContinuationStatementV3({
     verified: state.verified,
     environmentId: input.environmentId,
     variableId: target.variableId,
     // name / status are unchanged (schema reissue — §12-5. Renaming goes through the rename path)
     name: target.name,
     schema: merged,
-    // A reissue moves the variable to the current layout (v2 → v3 is the
-    // legitimate direction of §4.2's monotonicity; a v3 stays v3)
-    layoutVersion: 3,
     status: target.status === "active" ? "active" : "declared",
     prev: { metaVersion: target.metaVersion, metaSigHashHex: target.metaSigHashHex },
     authorUserId: input.authorUserId,
@@ -594,7 +590,7 @@ const MAX_ATTEMPTS = 5;
 
 /**
  * Sets (or declares) one variable's schema fields (design doc §1-2): a partial
- * update over the verified previous statement, issued as a layout-v2
+ * update over the verified previous statement, issued as a layout-v3
  * statement + manifest composite, confirmed against the verified
  * distribution (1-E′ — §12-10 (3)) before success is reported.
  */
@@ -613,7 +609,7 @@ export const schemaSetOp = Effect.fn("schema.schemaSetOp")(function* (
     (initial.target === null || initial.target.layoutVersion === 1)
   ) {
     yield* logNote(
-      "the server reports this project's schema policy as disabled, so it will likely reject new layout-v2 statements (422 schema-policy-disabled). An admin can enable it via PUT /projects/:projectId/schema-policy (see docs/SELF_HOSTING.md)",
+      "the server reports this project's schema policy as disabled, so it will likely reject new layout-v3 schema statements (422 schema-policy-disabled). An admin can enable it via PUT /projects/:projectId/schema-policy (see docs/SELF_HOSTING.md)",
     );
   }
   const accepted = yield* retryOnConflict(initial, {

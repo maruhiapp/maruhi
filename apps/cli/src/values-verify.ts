@@ -75,7 +75,7 @@ export interface VerifiedPulledValue {
   readonly authorKeyFingerprintHex: string;
   /** The statement's wire layoutVersion (omitted = 1 — §12-2). */
   readonly layoutVersion: number;
-  /** The schema column of layout v2 (null for v1. The type is a declaration — advisory §14.3-7). */
+  /** The schema column of layout v3 (null for v1. The type is a declaration — advisory §14.3-7). */
   readonly schema: VerifiedSchemaFields | null;
 }
 
@@ -124,8 +124,8 @@ function coordinatesMatch(
  * head)" go to the bounded-resync entry (future). Everything else is a
  * refusal (the classification is shared between value and meta).
  *
- * UnsupportedMetaLayout (a layoutVersion beyond the supported range
- * {1, 2} — checked by crypto **before** the signature verification) is an
+ * UnsupportedMetaLayout (a layoutVersion outside the supported range
+ * {1, 3} — checked by crypto **before** the signature verification) is an
  * honest breaking mode meaning "the client needs an update", and is not
  * collapsed into the tampering-suspect wording (CRYPTO_SPEC §4.2 — ruling
  * CR).
@@ -196,14 +196,16 @@ function metaEvidenceFields(
 }
 
 /**
- * Interpreting a variable statement's wire v2 fields (§12-2): a v1 has all
- * 4 fields absent, a v2 has all 4 present. A partial presence is a shape an
- * honest server's response never has (the server guarantees the join of
- * stored rows — §12-2), so it is refused. layoutVersion's wire type is an
- * integer with no fixed upper bound (explicit values ≥ 2), and the
- * supported-range ({1, 2}) check happens in the crypto layer
- * (metaContextRejection) before the signature verification — the range is
- * not checked here (don't collapse a v3 into a Schema / shape error).
+ * Interpreting a variable statement's wire schema-layout fields (§12-2): a
+ * v1 has all of them absent, a v3 has all of them present (maxAgeDays null
+ * = no declaration). A partial presence is a shape an honest server's
+ * response never has (the server guarantees the join of stored rows —
+ * §12-2), so it is refused. layoutVersion's wire type is an integer with no
+ * fixed upper bound (explicit values ≥ 2), and the supported-range ({1, 3})
+ * check happens in the crypto layer (metaContextRejection) before the
+ * signature verification — the range is not checked here (the retired 2
+ * or a future layout must surface as "unsupported layout", not as a shape
+ * error).
  */
 type WireStatementLayout =
   | { readonly layoutVersion: 1; readonly schema: null }
@@ -244,24 +246,20 @@ function wireStatementLayoutOf(
 }
 
 /**
- * Layout v3 carries maxAgeDays (null = none) and layout v2 must not (§12-2 —
- * the layout ↔ field coupling; a mismatch is the same partial-set refusal).
- * Layouts beyond 3 are refused later as unsupported (the crypto layer's
- * typed error), so the coupling is only judged for 2 and 3.
+ * Layout v3 carries maxAgeDays (null = none — §12-2; its absence is the same
+ * partial-set refusal). Any other layout is refused later as unsupported
+ * (the crypto layer's typed error), so the coupling is only judged for 3.
  */
 function maxAgeCoupled(layoutVersion: number, present: boolean): boolean {
-  if (layoutVersion === 3) {
-    return present;
-  }
-  return layoutVersion === 2 ? !present : true;
+  return layoutVersion !== 3 || present;
 }
 
-/** The refusal message for a distribution carrying a partial v2 / v3 field set (§12-2's all-or-nothing rule). */
+/** The refusal message for a distribution carrying a partial schema-layout field set (§12-2's all-or-nothing rule). */
 function partialLayoutMessage(label: string): string {
-  return `${label} carries only part of the layout-v2 field set (layoutVersion / varType / required / description must be all present or all absent, and maxAgeDays present exactly on layout v3 — an inconsistent server response)`;
+  return `${label} carries only part of the layout-v3 field set (layoutVersion / varType / required / description / maxAgeDays must be all present or all absent — an inconsistent server response)`;
 }
 
-/** The v2 fields passed to crypto's signed context (required in the signature convention's string form — §4.2). */
+/** The schema-layout fields passed to crypto's signed context (required and max_age_days in the signature convention's string forms — §4.2). */
 function contextLayoutFields(
   layout: WireStatementLayout | null,
 ): Pick<MetaStatementContext, "layoutVersion" | "schema"> {
@@ -272,10 +270,8 @@ function contextLayoutFields(
     varType: layout.schema.varType,
     required: layout.schema.required ? "true" : "false",
     description: layout.schema.description,
-    // Layout v3's max_age_days in the signed string form ("" = none)
-    ...(layout.layoutVersion === 3
-      ? { maxAgeDays: layout.schema.maxAgeDays === null ? "" : String(layout.schema.maxAgeDays) }
-      : {}),
+    // "" = no declaration
+    maxAgeDays: layout.schema.maxAgeDays === null ? "" : String(layout.schema.maxAgeDays),
   };
   return { layoutVersion: layout.layoutVersion, schema };
 }
@@ -283,7 +279,7 @@ function contextLayoutFields(
 /**
  * The composite verification of a statement (§6.3). The context is
  * assembled locally from the expected coordinates. A variable statement's
- * v2 fields (layout) are interpreted from the wire by the caller and passed
+ * schema-layout fields are interpreted from the wire by the caller and passed
  * in (an environment meta stays v1 — §4.2 — and carries no layout).
  */
 async function verifyStatement(
@@ -330,7 +326,7 @@ async function verifyStatement(
 
 /**
  * Verifying a variable statement (the entry of verifyStatement with the
- * wire v2 interpretation). A partial v2 field set is refused here; on
+ * wire schema-layout interpretation). A partial field set is refused here; on
  * success the layout (for display, carry-over, digest material) is also
  * returned.
  */

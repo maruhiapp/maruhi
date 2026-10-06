@@ -48,7 +48,7 @@ import {
 import type { VerifiedManifest } from "./manifest.ts";
 import type { VerifiedPulledValue } from "./values-verify.ts";
 
-/** Evidence material of a verified meta-statement, including deleted / declared (variables only — §4.2 layout v2). */
+/** Evidence material of a verified meta-statement, including deleted / declared (variables only — §4.2 layout v3). */
 export interface VerifiedMetaEvidence {
   readonly status: "active" | "deleted" | "declared";
   readonly metaVersion: number;
@@ -73,7 +73,7 @@ export interface VerifiedPullSnapshot {
   readonly environment: VerifiedMetaEvidence;
   readonly variables: readonly VerifiedPulledValue[];
   /**
-   * Verified declared statements (valueless — §4.2 layout v2 / §12-7's
+   * Verified declared statements (valueless — §4.2 layout v3 / §12-7's
    * declaredVariables). In a value-bearing response, declared variables not
    * being distributed a value is legitimate (declared is the only legitimate
    * valueless state — CRYPTO_SPEC §6.3).
@@ -101,7 +101,7 @@ export interface VerifiedMetadataSnapshot {
 }
 
 /**
- * The schema column of layout v2 (from a verified statement — CRYPTO_SPEC
+ * The schema column of layout v3 (from a verified statement — CRYPTO_SPEC
  * §4.2). The type is a **declaration** and agreement with the value is not
  * guaranteed (§14.3-7 — display and validation are advisory).
  */
@@ -110,10 +110,9 @@ export interface VerifiedSchemaFields {
   readonly required: boolean;
   readonly description: string;
   /**
-   * Layout v3 (CRYPTO_SPEC §4.2 — PF6 R9 expiring values): the days after a
-   * value's push within which it should be replaced, null = no declaration
-   * (also null on a layout-v2 statement, which has no such field — the
-   * statement's `layoutVersion` tells the two apart). Advisory like the type.
+   * PF6 R9 expiring values (CRYPTO_SPEC §4.2): the days after a value's push
+   * within which it should be replaced, null = no declaration. Advisory like
+   * the type.
    */
   readonly maxAgeDays: number | null;
 }
@@ -128,7 +127,7 @@ export interface VerifiedVariableStatement extends VerifiedMetaEvidence {
   readonly name: string;
   /** The wire's layoutVersion (omitted = 1 — §12-2). */
   readonly layoutVersion: number;
-  /** The schema column of layout v2 (null for a v1 statement). */
+  /** The schema column of layout v3 (null for a v1 statement). */
   readonly schema: VerifiedSchemaFields | null;
 }
 

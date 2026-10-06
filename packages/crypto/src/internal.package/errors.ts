@@ -138,9 +138,9 @@ export type ValueInvalidReason =
  *   terminal. Also applies to a transition to declared — the
  *   declared-after-delete vector)
  * - `declared-after-active` — a statement that declares the successor of
- *   an active predecessor (§4.2 layout v2 — never express a rollback of a
+ *   an active predecessor (§4.2 layout v3 — never express a rollback of a
  *   value's existence. The only path that removes a value is deletion)
- * - `layout-regression` — a v1 successor statement to a layoutVersion 2
+ * - `layout-regression` — a v1 successor statement to a layoutVersion 3
  *   predecessor (§4.2's per-variable layout monotonicity — allowing a
  *   regression would let a single rename silently erase the schema
  *   column, breaking the presence guarantee §14.2-8)
@@ -328,9 +328,9 @@ export type CryptoError =
    */
   | { readonly kind: "MetaStatementInvalid"; readonly reason: MetaInvalidReason }
   /**
-   * A metadata statement declares a wire `layoutVersion` beyond what this
-   * build supports (CRYPTO_SPEC §4.2 layout selection — ruling CR): the client
-   * must be updated. Checked **before** signature verification so an outdated
+   * A metadata statement declares a wire `layoutVersion` outside what this
+   * build supports ({1, 3} — CRYPTO_SPEC §4.2 layout selection, ruling CR;
+   * the retired layout 2 included): the client must be updated. Checked **before** signature verification so an outdated
    * verifier fails with an honest "update required" error instead of a
    * signature failure that is indistinguishable from tampering.
    */

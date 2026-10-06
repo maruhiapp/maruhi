@@ -166,7 +166,7 @@ export type VariableVersionHistoryEntry = typeof VariableVersionHistoryEntrySche
 const StatementNameSchema = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
 
 const MetaStatementStatusSchema = Schema.Literals(["active", "deleted"]);
-// Layout v2 of variable statements adds a third state, declared
+// Layout v3 of variable statements adds a third state, declared
 // (CRYPTO_SPEC §4.2 — declared, value not yet set; environment meta and
 // the v1 layout keep the traditional two values)
 const VariableMetaStatementStatusSchema = Schema.Literals(["active", "deleted", "declared"]);
@@ -223,11 +223,11 @@ const anyLifecycleFields = {
 };
 
 // ---------------------------------------------------------------------------
-// Layout v2 of variable meta statements (CRYPTO_SPEC §4.2 / AUTH_SPEC
-// §12-2). A v1 statement keeps the traditional field set (layoutVersion
-// and all 4 schema fields absent — strict acceptance enforces this);
-// v2 carries layoutVersion and the schema fields. Environment meta
-// statements are out of scope (stay v1).
+// Layout v3 of variable meta statements (the schema layout — CRYPTO_SPEC
+// §4.2 / AUTH_SPEC §12-2). A v1 statement keeps the traditional field set
+// (layoutVersion and all schema fields absent — strict acceptance
+// enforces this); v3 carries layoutVersion and the schema fields.
+// Environment meta statements are out of scope (stay v1).
 // ---------------------------------------------------------------------------
 
 /**
@@ -241,9 +241,10 @@ export const MetaVarTypeSchema = Schema.Literals(["", "string", "number", "boole
  * The wire layoutVersion (AUTH_SPEC §12-2): **an integer with no pinned
  * upper bound**. v1 is expressed by the field being absent (omitted =
  * 1), so an explicit value is 2 or higher. Checking the supported range
- * (currently {1, 2}) is done not by the Schema but by the acceptance
- * check before signature verification; an excess surfaces as a typed
- * 422 "unsupported layout" (an honest failure mode that does not
+ * ({1, 3} — the retired layout 2 is outside it) is done not by the Schema
+ * but by the acceptance check before signature verification; a layout
+ * outside it surfaces as a typed 422 "unsupported layout" (an honest
+ * failure mode that does not
  * conflate it with a Schema 400 = a failure indistinguishable from
  * tampering — CRYPTO_SPEC §4.2).
  */
@@ -255,10 +256,10 @@ const MetaLayoutVersionSchema = Schema.Number.check(
 /**
  * Layout v3's max age (CRYPTO_SPEC §4.2 — PF6 R9 "expiring values"): the
  * number of days after a value's push within which it should be replaced,
- * 1..3650, or null = no declaration. The wire carries the field **iff the
- * layout is 3** (present with null for "none"; absent on v2) — the
- * coupling is an acceptance check (422 payload-mismatch), not a Schema
- * 400, so the two layouts share one wire shape.
+ * 1..3650, or null = no declaration. A v3 statement carries the field
+ * (present with null for "none") — its absence is refused by an acceptance
+ * check (422 payload-mismatch, before signature verification), not a
+ * Schema 400.
  */
 export const MetaMaxAgeDaysSchema = Schema.NullOr(
   Schema.Number.check(
@@ -268,14 +269,14 @@ export const MetaMaxAgeDaysSchema = Schema.NullOr(
   ),
 );
 
-// The schema fields (all required in v2 — fail-closed so the omitted
+// The schema fields (all required in v3 — fail-closed so the omitted
 // interpretation of required is not dispersed into client
 // implementations; CRYPTO_SPEC §4.2). The description limit (1024 code
 // points) and character class (reject control characters) are a §12-8
 // acceptance check (422), not checked in the Schema (deliberately a
-// different category from the display-name 400). maxAgeDays is layout
-// v3's field (present iff layoutVersion is 3 — acceptance-checked)
-const varMetaV2Fields = {
+// different category from the display-name 400). maxAgeDays's presence
+// is acceptance-checked (see MetaMaxAgeDaysSchema)
+const varMetaV3Fields = {
   layoutVersion: MetaLayoutVersionSchema,
   varType: MetaVarTypeSchema,
   required: Schema.Boolean,
@@ -289,17 +290,17 @@ export const CreateVariableMetaStatementSchema = Schema.Struct({
   ...creationLifecycleFields,
 });
 
-/** Layout-v2 value-carrying creation statement (status active, with schema fields). */
-export const CreateVariableMetaStatementV2Schema = Schema.Struct({
+/** Layout-v3 value-carrying creation statement (status active, with schema fields). */
+export const CreateVariableMetaStatementV3Schema = Schema.Struct({
   ...varMetaBaseFields,
   ...creationLifecycleFields,
-  ...varMetaV2Fields,
+  ...varMetaV3Fields,
 });
 
 /**
  * The statement of a declaration (declared creation — §12-5):
  * metaVersion 1 with no value. The sole exception to "a variable
- * without a value does not exist", and layout-v2 only (CRYPTO_SPEC
+ * without a value does not exist", and layout-v3 only (CRYPTO_SPEC
  * §4.2 — ruling CS). A creation's status is only active (value bundled)
  * or declared (no value) — creating a deleted one is structurally
  * refused by the wire form.
@@ -309,7 +310,7 @@ export const DeclareVariableMetaStatementSchema = Schema.Struct({
   status: Schema.Literal("declared"),
   metaVersion: Schema.Literal(1),
   prevMetaSigHashHex: Schema.Literal(""),
-  ...varMetaV2Fields,
+  ...varMetaV3Fields,
 });
 
 /** The statement of a variable rename (metaVersion CAS — §12-5). */
@@ -319,7 +320,7 @@ export const RenameVariableMetaStatementSchema = Schema.Struct({
 });
 
 /**
- * Layout-v2 rename / schema-reissuance statement (§12-5 — the
+ * Layout-v3 rename / schema-reissuance statement (§12-5 — the
  * acceptance rule is identical to a rename). status keeps the current
  * state (a schema reissuance or rename stays active, or stays declared
  * — a state transition cannot happen in this form: if status does not
@@ -327,23 +328,23 @@ export const RenameVariableMetaStatementSchema = Schema.Struct({
  * payload-mismatch. declared → active goes only through the activation
  * composite; active → declared is forbidden — CRYPTO_SPEC §4.2).
  */
-export const RenameVariableMetaStatementV2Schema = Schema.Struct({
+export const RenameVariableMetaStatementV3Schema = Schema.Struct({
   ...varMetaBaseFields,
   status: Schema.Literals(["active", "declared"]),
   metaVersion: MetaVersionAtLeast2,
   prevMetaSigHashHex: Sha256Hex,
-  ...varMetaV2Fields,
+  ...varMetaV3Fields,
 });
 
 /**
  * The statement of an activation (declared → active — §12-5): a
- * status-active, metaVersion + 1 v2 statement bundled into the
+ * status-active, metaVersion + 1 v3 statement bundled into the
  * composite with the first value push.
  */
 export const ActivateVariableMetaStatementSchema = Schema.Struct({
   ...varMetaBaseFields,
   ...renameLifecycleFields,
-  ...varMetaV2Fields,
+  ...varMetaV3Fields,
 });
 
 /** The statement of a variable deletion (status deleted; name is the immediately preceding active name — §4.2). */
@@ -353,15 +354,15 @@ export const DeleteVariableMetaStatementSchema = Schema.Struct({
 });
 
 /**
- * Layout-v2 deletion statement (deleting a v2 variable is always v2 —
+ * Layout-v3 deletion statement (deleting a v3 variable is always v3 —
  * layout monotonicity). The schema fields and layout must keep the
  * immediately preceding statement's values unchanged (same convention
  * as name — a mismatch is 422 payload-mismatch; §12-5).
  */
-export const DeleteVariableMetaStatementV2Schema = Schema.Struct({
+export const DeleteVariableMetaStatementV3Schema = Schema.Struct({
   ...varMetaBaseFields,
   ...deleteLifecycleFields,
-  ...varMetaV2Fields,
+  ...varMetaV3Fields,
 });
 
 /** The statement bundled in an environment-creation composite request (§12-4). */
@@ -393,19 +394,19 @@ export const DeleteEnvironmentMetaStatementSchema = Schema.Struct({
  */
 export const DistributedVariableMetaStatementSchema = Schema.Struct({
   ...varMetaBaseFields,
-  // The variable-side distribution carries 3 states (declared is layout v2 only — CRYPTO_SPEC §4.2)
+  // The variable-side distribution carries 3 states (declared is layout v3 only — CRYPTO_SPEC §4.2)
   status: VariableMetaStatementStatusSchema,
   metaVersion: PositiveInt,
   prevMetaSigHashHex: PrevMetaSigHashHex,
-  // Layout-v2 carriage fields (§12-2): on a v1 statement's distribution
-  // **all 4 fields are absent** (new fields are never added to a v1
-  // distribution); on v2 all 4 fields are present. The server's stored
-  // row (already accepted) guarantees the presence binding
+  // Layout-v3 carriage fields (§12-2): on a v1 statement's distribution
+  // **all 5 fields are absent** (new fields are never added to a v1
+  // distribution); on v3 all 5 fields are present (maxAgeDays null = no
+  // declaration). The server's stored row (already accepted) guarantees
+  // the presence binding
   layoutVersion: Schema.optionalKey(MetaLayoutVersionSchema),
   varType: Schema.optionalKey(MetaVarTypeSchema),
   required: Schema.optionalKey(Schema.Boolean),
   description: Schema.optionalKey(Schema.String),
-  // Layout v3 (PF6 R9): present (null = no declaration) iff layoutVersion is 3
   maxAgeDays: Schema.optionalKey(MetaMaxAgeDaysSchema),
   authorUserId: BoundedUserId,
   authorKeyFingerprintHex: KeyFingerprintHex,
@@ -569,8 +570,8 @@ export type CheckpointValueSnapshot = typeof CheckpointValueSnapshotSchema.Type;
 /**
  * The project's schema policy (AUTH_SPEC §12-11 — the enablement gate
  * and schema-locked; default disabled): disabled = refuse new
- * adoption of layout v2 / enabled = accept v2 (schema fields
- * optional) / locked = enabled + require layoutVersion 2 and non-empty
+ * adoption of layout v3 / enabled = accept v3 (schema fields
+ * optional) / locked = enabled + require layoutVersion 3 and non-empty
  * varType on variable creation. A write acceptance policy; not placed
  * on the chain (nor an input to verification rules — distribution is
  * advisory).
