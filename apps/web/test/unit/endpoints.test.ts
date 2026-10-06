@@ -148,7 +148,9 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
     // import passed both build and run silently while the bundle and
     // the supply chain quietly grew. Under verbatimModuleSyntax a
     // type-only import is spelled `import type`, so a value import
-    // mixing in is mechanically checkable
+    // mixing in is mechanically checkable. This is the web half of the
+    // Effect fence (CLAUDE.md "Architecture"); the crypto half is the
+    // packages/crypto override of no-restricted-imports in .oxlintrc.json
     const srcRoot = join(import.meta.dirname, "../../src");
     expect(
       findSourceOffenders(
