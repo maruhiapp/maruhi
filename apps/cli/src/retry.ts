@@ -31,10 +31,16 @@ interface ConflictRetryOptions<S, A, C, E, R = never, K extends string = never> 
    * own tagged error (an outer retry's signal — the unclassified path's
    * toCliError mapping would erase the distinction the caller branches
    * on). Everything else is classified or mapped, as without the option.
-   * Passing the class itself (not a `_tag` string) keeps the tag at a
-   * single source of truth — the class declaration — so a mistyped tag
-   * is a compile error (identifier resolution), and the propagated type
-   * still narrows to the matching member of E.
+   * Passing the class itself (not a `_tag` string) makes a mistyped tag
+   * a compile error — a misspelled class name does not resolve — and the
+   * propagated type still narrows to the matching member of E. A real
+   * class whose tag E does not carry still compiles (K infers to its
+   * tag, `TaggedMember<E, K>` is never, and if its instances did flow
+   * through they would propagate untyped): the class must be a member
+   * of the retried union. `K extends TagsOf<E>` cannot say so — at the
+   * call sites E is inferable only through the context-sensitive
+   * lambdas, so the constraint collapses to never (verified on
+   * 2026-10-06 against env-rotate-send.ts).
    */
   readonly passthrough?: abstract new (args: any) => { readonly _tag: K };
 }
