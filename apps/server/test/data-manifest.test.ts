@@ -26,7 +26,9 @@ import {
 } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
+  createEnvironmentComposite,
   createEnvironmentOk,
+  createEnvironmentStatement,
   deleteEnvironmentRequest,
   envMetaOf,
   MEMBER,
@@ -46,6 +48,7 @@ import {
   ENV,
   fakePayload,
   fixture,
+  hashOf,
   manifestForStatement,
   nextVariableStatement,
   registerDataScenario,
@@ -55,6 +58,7 @@ import {
   VAR,
   variableStatementFor,
   varStatements,
+  wrapsFor,
 } from "./support/data-scenario.ts";
 import { queryProjectDo } from "./support/project-do.ts";
 
@@ -404,6 +408,78 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
     });
     expect(mismatched.status).toBe(422);
     expect(((await mismatched.json()) as { field: string }).field).toBe("manifestEpoch");
+  });
+
+  it("requires the creation and rotation composites' manifests to declare the pre-append head (§12-4)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    // An existing but stale head: the creation entry below the current
+    // boundary checkpoint
+    const staleHead = { seq: fixture.head.seq - 1, hashHex: await hashOf(fixture.head.seq - 1) };
+    const headBefore = fixture.head.seq;
+    const rowsBefore = await manifestRows();
+
+    // Creation: the statement declares the current head, the manifest is
+    // valid in every field but its declared head
+    const otherEnv = "env-app-0002";
+    const statement = await createEnvironmentStatement({
+      authorUserId: OWNER,
+      environmentId: otherEnv,
+      name: "Staging",
+      head: fixture.head,
+    });
+    const created = await createEnvironmentComposite(fixture, {
+      environmentId: otherEnv,
+      name: "Staging",
+      deks: await wrapsFor(otherEnv, ALL_MEMBERS),
+      dekCommitmentHex: "ab".repeat(32),
+      statement,
+      manifest: await signEnvManifestAs(OWNER, projectId, {
+        suite: "maruhi/v1",
+        environmentId: otherEnv,
+        epoch: 1,
+        manifestVersion: 1,
+        variablesDigestHex: await digestOf([]),
+        envMetaVersion: statement.metaVersion,
+        envMetaSigHashHex: await metaSignedBytesHashOf(projectId, statement, OWNER),
+        prevManifestSigHashHex: "",
+        chainHeadHashHex: staleHead.hashHex,
+        chainHeadSeq: staleHead.seq,
+      }),
+    });
+    expect(created.status).toBe(422);
+    expect(((await created.json()) as { field: string }).field).toBe("manifestChainHead");
+
+    // Rotation: the manifest is the legitimate next one, signed against
+    // the stale head
+    const rotated = await rotateEnvironmentComposite(fixture, {
+      environmentId: ENV,
+      newEpoch: 2,
+      deks: await wrapDekForAll({
+        projectId,
+        environmentId: ENV,
+        epoch: 2,
+        dek: makeDek(),
+        recipientUserIds: ALL_MEMBERS,
+        signerUserId: MEMBER,
+      }),
+      dekCommitmentHex: "ab".repeat(32),
+      manifest: await nextEnvironmentManifest(fixture, {
+        environmentId: ENV,
+        epoch: 2,
+        entries: [],
+        envMeta: await envMetaOf(fixture, ENV),
+        issuerUserId: MEMBER,
+        head: staleHead,
+      }),
+    });
+    expect(rotated.status).toBe(422);
+    expect(((await rotated.json()) as { field: string }).field).toBe("manifestChainHead");
+
+    // Atomicity: neither refusal leaves anything on the chain or in the
+    // manifest rows
+    const chain = await requestJson("GET", "/chain", token(READER));
+    expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore);
+    expect(await manifestRows()).toEqual(rowsBefore);
   });
 
   it("answers every read surface with a server fault when the stored manifest row is missing (0.28-draft)", async () => {
