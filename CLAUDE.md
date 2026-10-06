@@ -167,6 +167,11 @@ apps/
   eats a `catch` is forbidden
 - Keep new dependencies minimal. When adding one, record the reason in the
   commit message
+- **No backward compatibility before the first public release** (owner
+  ruling 2026-10-06): there are no users yet, so do not keep code, wire
+  fields, spec text or docs for older data, clients, servers or
+  deployments. Delete superseded paths and documents instead of adding
+  compat handling; a breaking change is listed in the PR, not mitigated
 - **All repository text is English** (ADR-0019): user-facing strings (ADR-0017),
   comments, internal docs, test names, and commit messages / PR titles. There is
   no i18n mechanism. Exceptions are enumerated in ADR-0019 decision 2 and
