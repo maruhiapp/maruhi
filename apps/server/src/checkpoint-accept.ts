@@ -131,7 +131,10 @@ export const ensureAuditHeadAcceptable = Effect.fn("checkpoint-accept.ensureAudi
  * existence on the chain is assumed already guaranteed by the consensus
  * rule (unknown-environment) — a chain-resident environment with no data
  * rows is a violation of composite-acceptance atomicity (storage
- * corruption), so it dies.
+ * corruption), so it dies. So does a live environment with no stored
+ * manifest: the creation composite writes it atomically, so its absence
+ * is corruption, not a mismatch (AUTH_SPEC §12-5 (6) / §16-2 — the
+ * server-fault discipline of every other surface).
  */
 const ensureCheckpointTupleState = Effect.fnUntraced(function* (tuple: CheckpointEnvironmentEntry) {
   const store = yield* DataStore;
@@ -148,8 +151,10 @@ const ensureCheckpointTupleState = Effect.fnUntraced(function* (tuple: Checkpoin
     });
   }
   const anchor = yield* store.environmentManifestAnchor(tuple.environmentId);
+  if (anchor === null) {
+    return yield* Effect.die(new Error("environment manifest row missing"));
+  }
   if (
-    anchor === null ||
     anchor.manifestVersion !== tuple.manifestVersion ||
     anchor.signedBytesHashHex !== tuple.manifestSigHashHex
   ) {

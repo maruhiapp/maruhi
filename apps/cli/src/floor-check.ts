@@ -96,7 +96,7 @@ export interface VerifiedMetadataSnapshot {
   /** Verified statements of all non-deleted variables (active and declared mixed — §12-7). */
   readonly variables: readonly VerifiedVariableStatement[];
   readonly tombstones: readonly VerifiedTombstone[];
-  /** The verified manifest (omission already refused by values.ts — no migration tolerance on a metadata-only pull). */
+  /** The verified manifest (required on the wire — an omission is refused at decode, same as the with-values pull). */
   readonly manifest: VerifiedManifest;
 }
 

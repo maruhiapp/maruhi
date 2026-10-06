@@ -41,7 +41,7 @@ import {
   valuesDigestOf,
   wrapDekForAll,
 } from "./data-crypto.ts";
-import { evictProjectDo, queryProjectDo, resetProjectDo } from "./project-do.ts";
+import { queryProjectDo, resetProjectDo } from "./project-do.ts";
 
 export const OWNER = "user-owner-0001";
 export const MEMBER = "user-member-0002";
@@ -311,53 +311,6 @@ export async function manifestForVariableOp(
   return {
     manifest,
     state: { manifest, issuerUserId: input.issuerUserId, epoch: last.epoch, entries },
-  };
-}
-
-/**
- * Remove the boundary checkpoint entry at the chain tail and the
- * environment's snapshot rows, reproducing the shape of an old-generation
- * chain with no checkpoint tuples (pre-boundary-checkpoint) — for manifest
- * migration-path tests. The real migration targets are environments created
- * before manifests / checkpoints were introduced, whose chains have no
- * tuples — the current API always inserts a checkpoint in the composite, so
- * the test removes it directly, outside the append-only invariant (same
- * handling as membership's canonical_bytes modification). After the
- * modification, evict the DO back to a full load and rewind the fixture head
- * to the new tail.
- */
-export async function stripTrailingCheckpoint(
-  fixture: DataFixture,
-  environmentId: string,
-): Promise<void> {
-  const tail = await queryProjectDo(
-    projectId,
-    "SELECT seq, entry_json FROM chain_entries ORDER BY seq DESC LIMIT 1",
-  );
-  const tailSeq = Number(tail[0]?.["seq"]);
-  const tailEntry = JSON.parse(String(tail[0]?.["entry_json"])) as { op?: string };
-  if (tailEntry.op !== "checkpoint") {
-    throw new Error("chain tail is not a boundary checkpoint entry");
-  }
-  await queryProjectDo(projectId, "DELETE FROM chain_entries WHERE seq = ?", tailSeq);
-  await queryProjectDo(
-    projectId,
-    "DELETE FROM environment_checkpoints WHERE environment_id = ?",
-    environmentId,
-  );
-  await queryProjectDo(
-    projectId,
-    "DELETE FROM checkpoint_snapshot_values WHERE environment_id = ?",
-    environmentId,
-  );
-  await evictProjectDo(projectId);
-  const newTail = await queryProjectDo(
-    projectId,
-    "SELECT seq, entry_hash_hex FROM chain_entries ORDER BY seq DESC LIMIT 1",
-  );
-  fixture.head = {
-    seq: Number(newTail[0]?.["seq"]),
-    hashHex: String(newTail[0]?.["entry_hash_hex"]),
   };
 }
 

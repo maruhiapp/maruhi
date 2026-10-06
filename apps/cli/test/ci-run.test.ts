@@ -350,6 +350,24 @@ function leaseHandler(overrides?: LeaseResponseOverrides, projectId?: string): M
   };
 }
 
+/**
+ * Lease handler whose response body drops `manifest` — a
+ * manifest-suppressing server (§6.3). The manifest is required on the
+ * wire since AUTH_SPEC 0.28-draft, so the response is built complete
+ * and the field is stripped before it goes out.
+ */
+function manifestlessLeaseHandler(): MockHandler {
+  return async (request) => {
+    if (request.method !== "POST" || request.path !== leasePath()) {
+      return null;
+    }
+    const { manifest: _suppressed, ...suppressingBody } = (await leaseResponseFor(
+      leaseBody(request),
+    )) as Record<string, unknown>;
+    return { status: 200, json: suppressingBody };
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Test environment                                                            */
 /* -------------------------------------------------------------------------- */
@@ -642,6 +660,19 @@ describe("maruhi ci run (verification-duty negative cases — CRYPTO_SPEC §9.1)
       expect.arrayContaining([
         "maruhi: The leased DEK does not match the commitment on the chain (epoch=2). This may be a fake DEK injected by a compromised server — do not trust this response",
       ]),
+    );
+    expect(env.runnerCalls).toHaveLength(0);
+    expectNoSecretLeak(env);
+  });
+
+  it("(5) reports the full refusal message for a response without a manifest (manifest suppression — §6.3)", async () => {
+    // The lease response decodes in ci-lease.ts (a different file than
+    // the pull's decode), so the dedicated renderer's wording is
+    // pinned here too — the same verdict as the pull path's
+    const { env, server } = await startCiEnv([manifestlessLeaseHandler()]);
+    expect(await runCli(ciArgs(server), env.layer)).toBe(1);
+    expect(env.errors.at(-1)).toBe(
+      "maruhi: The server did not distribute an environment manifest. A missing manifest is treated as manifest suppression (statement omission cannot be ruled out — CRYPTO_SPEC §6.3) and the response is rejected",
     );
     expect(env.runnerCalls).toHaveLength(0);
     expectNoSecretLeak(env);

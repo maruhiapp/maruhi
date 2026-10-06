@@ -493,7 +493,11 @@ export const varFinalizeOp = Effect.fn("var-rotate.varFinalizeOp")(function* (
 });
 
 /** The report lines of a rotation (the command prints them; values never appear). */
-export function describeRotation(result: VarRotateResult, environmentId: string): string[] {
+export function describeRotation(
+  result: VarRotateResult,
+  environmentId: string,
+  nowMs: number,
+): string[] {
   const versions = result.pushed
     .map(
       (entry) =>
@@ -513,7 +517,7 @@ export function describeRotation(result: VarRotateResult, environmentId: string)
   }
   if (result.maxAgeDays !== null) {
     lines.push(
-      `Max age ${result.maxAgeDays}d declared: the next rotation is due by ${formatUtcDate(Date.now() + result.maxAgeDays * 24 * 60 * 60 * 1000)} (\`maruhi rotation list\` shows it when it comes close)`,
+      `Max age ${result.maxAgeDays}d declared: the next rotation is due by ${formatUtcDate(nowMs + result.maxAgeDays * 24 * 60 * 60 * 1000)} (\`maruhi rotation list\` shows it when it comes close)`,
     );
   }
   return lines;

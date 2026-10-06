@@ -8,9 +8,9 @@
 // migrations, so here every table in PROJECT_DO_TABLES is DELETE'd by name,
 // and then evictDurableObject drops the in-memory cache of derived
 // ChainState too.
-// PROJECT_DO_TABLES is derived from the tables declarations of the base
-// step and the later steps of the migration plan in src/do/do-schema.ts (a
-// step that adds a table must always declare it in tables). schema_meta is
+// PROJECT_DO_TABLES is derived from the tables declarations of the
+// migration plan in src/do/do-schema.ts (the base step and every later step;
+// a step that adds a table must always declare it in tables). schema_meta is
 // intentionally not DELETE'd because it records the applied version.
 
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";

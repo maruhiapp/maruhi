@@ -7,9 +7,10 @@
 // What is pinned: composite acceptance together with meta ops /
 // manifestVersion CAS (the 409 carries only the latest number) /
 // server-side digest recomputation / retention of only the latest one
-// copy / bundling into both pull modes (tombstones included) / cascade
-// on environment deletion / the migration path (v1 initialization via a
-// rotate for a pre-manifest environment).
+// copy / bundling into both pull modes (tombstones included — the
+// manifest is a required response field) / the missing-row invariant
+// violation (a defect, never an omission or a v1 acceptance) / cascade
+// on environment deletion.
 
 import { describe, expect, it } from "vitest";
 
@@ -21,12 +22,13 @@ import {
   metaSignedBytesHashOf,
   signEnvManifestAs,
   signMetaStatementAs,
-  unwrapDistributedDek,
   wrapDekForAll,
 } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
+  createEnvironmentComposite,
   createEnvironmentOk,
+  createEnvironmentStatement,
   deleteEnvironmentRequest,
   envMetaOf,
   MEMBER,
@@ -38,7 +40,6 @@ import {
   requestJson,
   rotateEnvironmentComposite,
   rotateEnvironmentOk,
-  stripTrailingCheckpoint,
 } from "./support/data-fixture.ts";
 import {
   aadFor,
@@ -47,6 +48,7 @@ import {
   ENV,
   fakePayload,
   fixture,
+  hashOf,
   manifestForStatement,
   nextVariableStatement,
   registerDataScenario,
@@ -56,13 +58,14 @@ import {
   VAR,
   variableStatementFor,
   varStatements,
+  wrapsFor,
 } from "./support/data-scenario.ts";
 import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
 interface WireManifestBody {
-  readonly manifest?: {
+  readonly manifest: {
     readonly environmentId: string;
     readonly epoch: number;
     readonly manifestVersion: number;
@@ -407,42 +410,141 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
     expect(((await mismatched.json()) as { field: string }).field).toBe("manifestEpoch");
   });
 
-  it("initializes manifestVersion 1 through a rotation for a pre-manifest environment (migration path)", async () => {
+  it("requires the creation and rotation composites' manifests to declare the pre-append head (§12-4)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    // An existing but stale head: the creation entry below the current
+    // boundary checkpoint
+    const staleHead = { seq: fixture.head.seq - 1, hashHex: await hashOf(fixture.head.seq - 1) };
+    const headBefore = fixture.head.seq;
+    const rowsBefore = await manifestRows();
+
+    // Creation: the statement declares the current head, the manifest is
+    // valid in every field but its declared head
+    const otherEnv = "env-app-0002";
+    const statement = await createEnvironmentStatement({
+      authorUserId: OWNER,
+      environmentId: otherEnv,
+      name: "Staging",
+      head: fixture.head,
+    });
+    const created = await createEnvironmentComposite(fixture, {
+      environmentId: otherEnv,
+      name: "Staging",
+      deks: await wrapsFor(otherEnv, ALL_MEMBERS),
+      dekCommitmentHex: "ab".repeat(32),
+      statement,
+      manifest: await signEnvManifestAs(OWNER, projectId, {
+        suite: "maruhi/v1",
+        environmentId: otherEnv,
+        epoch: 1,
+        manifestVersion: 1,
+        variablesDigestHex: await digestOf([]),
+        envMetaVersion: statement.metaVersion,
+        envMetaSigHashHex: await metaSignedBytesHashOf(projectId, statement, OWNER),
+        prevManifestSigHashHex: "",
+        chainHeadHashHex: staleHead.hashHex,
+        chainHeadSeq: staleHead.seq,
+      }),
+    });
+    expect(created.status).toBe(422);
+    expect(((await created.json()) as { field: string }).field).toBe("manifestChainHead");
+
+    // Rotation: the manifest is the legitimate next one, signed against
+    // the stale head
+    const rotated = await rotateEnvironmentComposite(fixture, {
+      environmentId: ENV,
+      newEpoch: 2,
+      deks: await wrapDekForAll({
+        projectId,
+        environmentId: ENV,
+        epoch: 2,
+        dek: makeDek(),
+        recipientUserIds: ALL_MEMBERS,
+        signerUserId: MEMBER,
+      }),
+      dekCommitmentHex: "ab".repeat(32),
+      manifest: await nextEnvironmentManifest(fixture, {
+        environmentId: ENV,
+        epoch: 2,
+        entries: [],
+        envMeta: await envMetaOf(fixture, ENV),
+        issuerUserId: MEMBER,
+        head: staleHead,
+      }),
+    });
+    expect(rotated.status).toBe(422);
+    expect(((await rotated.json()) as { field: string }).field).toBe("manifestChainHead");
+
+    // Atomicity: neither refusal leaves anything on the chain or in the
+    // manifest rows
+    const chain = await requestJson("GET", "/chain", token(READER));
+    expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore);
+    expect(await manifestRows()).toEqual(rowsBefore);
+  });
+
+  it("answers every read surface with a server fault when the stored manifest row is missing (0.28-draft)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // Simulate an environment created before manifests/checkpoints were
-    // introduced: strip the trailing boundary checkpoint from the chain
-    // (an old-generation chain has no tuple — nothing for §4.3 (2) to
-    // bind to) and delete the stored manifest row too
-    await stripTrailingCheckpoint(fixture, ENV);
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    // Outside the creation composite an environment always has a stored
+    // manifest (§12-4's atomic write — the only writers are the creation
+    // composite, meta ops and rotate, the only deleter the deletion
+    // cascade). A live manifest-less environment can only come from a
+    // corrupted DO or a crafted snapshot — an invariant violation,
+    // refused as a defect (500), never a 200 that omits the field
     await queryProjectDo(
       projectId,
       "DELETE FROM environment_manifests WHERE environment_id = ?",
       ENV,
     );
-    // pull answers without a manifest (a transitional state — the client side carries the rejection)
-    const pulled = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
-    expect((await pulled.json()) as WireManifestBody).not.toHaveProperty("manifest");
 
-    // The rotate composite establishes manifestVersion 1 (prev empty) (CAS initial value = 0)
-    const entries = fixture.manifests.get(ENV)?.entries ?? [];
-    fixture.manifests.delete(ENV);
-    const manifest = await nextEnvironmentManifest(fixture, {
-      environmentId: ENV,
-      epoch: 2,
-      entries,
-      envMeta: await envMetaOf(fixture, ENV),
-      issuerUserId: MEMBER,
-      head: fixture.head,
+    for (const path of [`/environments/${ENV}/pull`, `/environments/${ENV}/pull/metadata`]) {
+      const response = await requestJson("GET", path, token(READER));
+      expect(response.status, path).toBe(500);
+      // The defect body carries no environment data
+      const body = await response.text();
+      expect(body).not.toContain(ENV);
+      expect(body).not.toContain("manifestVersion");
+    }
+
+    // A meta operation is refused the same way (the CAS's latest-0
+    // state exists only inside the creation composite — never accepted
+    // as v1)
+    const statement = await nextVariableStatement({
+      variableId: VAR,
+      name: "DB_URL",
+      status: "active",
+      authorUserId: MEMBER,
     });
-    expect(manifest.manifestVersion).toBe(1);
-    // Use a single DEK for both the wrap and the commitment (with
-    // separate makeDek()s the server cannot open the member-directed
-    // wrap's plaintext and would still accept, but the distributed
-    // new-epoch DEK would not match the chain's commitment — pinning a
-    // shape a peer CLI would reject)
+    const metaOp = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      {
+        statement,
+        manifest: await nextEnvironmentManifest(fixture, {
+          environmentId: ENV,
+          epoch: 1,
+          entries: [
+            {
+              variableId: VAR,
+              status: "active" as const,
+              metaVersion: statement.metaVersion,
+              metaSigHashHex: await metaSignedBytesHashOf(projectId, statement, MEMBER),
+            },
+          ],
+          envMeta: await envMetaOf(fixture, ENV),
+          issuerUserId: MEMBER,
+          head: fixture.head,
+        }),
+      },
+    );
+    expect(metaOp.status).toBe(500);
+
+    // So is the rotate composite (a single DEK for both the wrap and
+    // the commitment — the member-directed wrap must open to the DEK
+    // the chain's commitment names)
     const nextDek = makeDek();
-    const response = await rotateEnvironmentComposite(fixture, {
+    const rotated = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
       deks: await wrapDekForAll({
@@ -454,137 +556,39 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
         signerUserId: MEMBER,
       }),
       dekCommitmentHex: await commitmentOf(projectId, ENV, 2, nextDek),
-      manifest,
+      manifest: await nextEnvironmentManifest(fixture, {
+        environmentId: ENV,
+        epoch: 2,
+        entries: fixture.manifests.get(ENV)?.entries ?? [],
+        envMeta: await envMetaOf(fixture, ENV),
+        issuerUserId: MEMBER,
+        head: fixture.head,
+      }),
     });
-    expect(response.status).toBe(200);
-    expect((await manifestRows())[0]).toMatchObject({
-      manifest_version: 1,
-      epoch: 2,
-      variables_digest_hex: await digestOf(entries),
-    });
-    const afterInit = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
-    const afterInitBody = (await afterInit.json()) as WireManifestBody & {
-      readonly deks: readonly { epoch: number; encHex: string; ciphertextHex: string }[];
-    };
-    expect(afterInitBody.manifest).toMatchObject({
-      manifestVersion: 1,
-      epoch: 2,
-    });
-    // Don't stop at the server's 200: open the distributed wrap as the
-    // recipient (READER) and carry through the §5.2 commitment match —
-    // equality with the dek_commitment_hex of the rotate_epoch the chain
-    // distributed (pinning the peer CLI's receive path)
-    const epoch2Wrap = afterInitBody.deks.find((wrap) => wrap.epoch === 2);
-    if (epoch2Wrap === undefined) throw new Error("missing epoch-2 wrap in pull");
-    const openedDek = await unwrapDistributedDek({
-      recipientUserId: READER,
-      wrapped: epoch2Wrap,
-      projectId,
-      environmentId: ENV,
-    });
-    const chain = await requestJson("GET", "/chain", token(READER));
-    const chainEntries = (
-      (await chain.json()) as {
-        entries: readonly { op: string; payload: { dekCommitmentHex?: string } }[];
-      }
-    ).entries;
-    const rotateEntry = chainEntries.findLast((entry) => entry.op === "rotate_epoch");
-    if (rotateEntry === undefined) throw new Error("missing rotate_epoch entry in chain");
-    expect(await commitmentOf(projectId, ENV, 2, openedDek)).toBe(
-      rotateEntry.payload.dekCommitmentHex,
-    );
-  });
+    expect(rotated.status).toBe(500);
 
-  it("pins the declared head of a non-composite v1 bootstrap to the acceptance-time head (§12-5 (6))", async () => {
-    // Since a v1 is accepted with no stored manifest (latest 0), the
-    // manifestVersion CAS cannot drop a request at 409 even when a
-    // rotation intervenes after the declared head — so a v1 on the
-    // non-composite path requires declared head = the current head at
-    // acceptance, closing off a bootstrap that baked epoch 1 into a
-    // pre-rotate head (a stale anchor)
-    const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // Simulate an environment created before manifests/checkpoints were
-    // introduced (leaving no tuple on the chain — the same reason as the
-    // migration-path test above). Strip both the create and the rotate
-    // composites' boundary checkpoints from the tail
-    await stripTrailingCheckpoint(fixture, ENV);
-    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    const staleHead = fixture.head;
-    await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
-    await stripTrailingCheckpoint(fixture, ENV);
-    await queryProjectDo(
+    // Refused without writing: no manifest row, no meta statement
+    // advance, and the chain does not move (the rotate's entry pair is
+    // not appended)
+    expect(await manifestRows()).toEqual([]);
+    const metaRows = await queryProjectDo(
       projectId,
-      "DELETE FROM environment_manifests WHERE environment_id = ?",
+      "SELECT meta_version FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ?",
       ENV,
+      VAR,
     );
-    fixture.manifests.delete(ENV);
-
-    const statement = await nextVariableStatement({
-      variableId: VAR,
-      name: "DB_URL",
-      status: "active",
-      authorUserId: MEMBER,
-    });
-    const entries = [
-      {
-        variableId: VAR,
-        status: "active" as const,
-        metaVersion: statement.metaVersion,
-        metaSigHashHex: await metaSignedBytesHashOf(projectId, statement, MEMBER),
-      },
-    ];
-    // A v1 declaring the pre-rotate head (the position where epoch 1
-    // was current) = baking in a stale epoch. The epoch-consistency
-    // check (at the declared head) would pass this shape, but the head
-    // pinning drops it first
-    const stale = await requestJson(
-      "PATCH",
-      `/environments/${ENV}/variables/${VAR}`,
-      token(MEMBER),
-      {
-        statement,
-        manifest: await nextEnvironmentManifest(fixture, {
-          environmentId: ENV,
-          epoch: 1,
-          entries,
-          envMeta: await envMetaOf(fixture, ENV),
-          issuerUserId: MEMBER,
-          head: staleHead,
-        }),
-      },
+    expect(metaRows.map((row) => row["meta_version"])).toEqual([1]);
+    const tail = await queryProjectDo(
+      projectId,
+      "SELECT entry_json FROM chain_entries ORDER BY seq DESC LIMIT 1",
     );
-    expect(stale.status).toBe(422);
-    expect(((await stale.json()) as { field: string }).field).toBe("manifestChainHead");
-
-    // A v1 declaring the current head + current epoch at acceptance is
-    // accepted (the non-composite-path bootstrap itself stays valid for
-    // migration)
-    const pinned = await requestJson(
-      "PATCH",
-      `/environments/${ENV}/variables/${VAR}`,
-      token(MEMBER),
-      {
-        statement,
-        manifest: await nextEnvironmentManifest(fixture, {
-          environmentId: ENV,
-          epoch: 2,
-          entries,
-          envMeta: await envMetaOf(fixture, ENV),
-          issuerUserId: MEMBER,
-          head: fixture.head,
-        }),
-      },
-    );
-    expect(pinned.status).toBe(204);
-    expect((await manifestRows())[0]).toMatchObject({ manifest_version: 1, epoch: 2 });
+    expect(JSON.parse(String(tail[0]?.["entry_json"]))["op"]).not.toBe("rotate_epoch");
   });
 
-  it("routes a stale v1 against an initialized environment to the CAS 409, not the bootstrap pin", async () => {
-    // The pin applies only to a v1 with no anchor established (no stored
-    // manifest). A stale v1 against an initialized environment (latest
-    // 2) falls not to the 422 (manifestChainHead) but to the CAS 409
-    // (carrying currentManifestVersion), joining the legitimate client's
-    // re-fetch / re-sign loop
+  it("routes a stale v1 against an initialized environment to the CAS 409", async () => {
+    // A stale v1 against an initialized environment (latest 2) falls to
+    // the CAS 409 (carrying currentManifestVersion), joining the
+    // legitimate client's re-fetch / re-sign loop
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const statement = await nextVariableStatement({

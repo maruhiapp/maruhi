@@ -7,10 +7,7 @@
 // here — they live only in the OS keychain (keychain.ts).
 //
 // The server URL has no default (self-hosted is the premise, so no hosted
-// default exists — task ruling). The old `githubClientId` was removed
-// with its consumer by the AUTH_SPEC §4 revision (CLI client_id
-// resolution was dropped) — if left in an existing file it is harmlessly
-// ignored as an unknown key (decodeConfig picks up only allowed keys).
+// default exists — task ruling).
 
 import { homedir } from "node:os";
 import { join } from "node:path";

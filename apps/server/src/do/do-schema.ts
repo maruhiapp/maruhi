@@ -23,8 +23,8 @@
 // one base step on 2026-10-06, owner-approved, the same move the D1 schema
 // made with drizzle/20260926225739_init. Design record of the first fold:
 // dk-design.md §22-4). The DDL is in creation order, so a fresh DO's
-// sqlite_master layout matches an upgraded one's — except for the
-// optional residue column on mirror_state (below).
+// sqlite_master layout matches an upgraded one's, except for the unused
+// mirror_state residue column described at mirror_state below.
 const PROJECT_DO_DDL = [
   `CREATE TABLE chain_entries (
      seq INTEGER PRIMARY KEY,

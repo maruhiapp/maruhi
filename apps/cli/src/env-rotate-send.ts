@@ -451,7 +451,7 @@ export const appendRotation = Effect.fn("env-rotate-send.appendRotation")(functi
         // outer bounded retry's signal (env-rotate.ts catches it by
         // tag), and the unclassified path's toCliError mapping would
         // erase the distinction
-        passthrough: "RotateValuesConflictError",
+        passthrough: RotateValuesConflictError,
         // AuditHeadNotReady (503) advances with the same recovery as a
         // CAS conflict (resync + re-sign + re-send) — the reason and the
         // defensive classification's intent are the same as

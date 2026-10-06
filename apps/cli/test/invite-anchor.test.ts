@@ -187,6 +187,9 @@ describe("the invite-link anchor's machine cross-check (first sync — §6.3 (a)
     await writeFile(join(env.pinsDir, `${built.projectId}.json`), "{broken");
 
     expect(await runCli(["project", "verify"], env.layer)).toBe(0);
-    expect(env.errors.join("\n")).toContain("cannot read the invite-pin file (it is corrupt)");
+    expect(env.errors).toEqual([
+      "Note: this project has no local floor yet (first sync). Persistent rollback / omission detection takes effect from the next run",
+      "Warning: cannot read the invite-pin file (it is corrupt). Continuing without the anchor check — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this",
+    ]);
   });
 });

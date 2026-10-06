@@ -580,21 +580,34 @@ describe("maruhi pull", () => {
     );
     const env = await startEnv([
       chainHandler(),
-      onRequest("GET", `/projects/${fixture.built.projectId}/environments/ghost/pull`, () => ({
-        status: 200,
-        json: {
-          environmentId: "ghost",
-          currentEpoch: 1,
-          // A meta statement never checks the environment's existence (the
-          // §12-4 asymmetry), so the ghost environment's statement itself
-          // verifies; the value signature (§6.3-4) rejects it
-          statement: ghostEnvStatement,
-          variables: [ghostEntry],
-          deletedVariables: [],
-          deks: [ghostWrap],
-          schemaPolicy: "enabled",
-        },
-      })),
+      onRequest(
+        "GET",
+        `/projects/${fixture.built.projectId}/environments/ghost/pull`,
+        async () => ({
+          status: 200,
+          json: {
+            environmentId: "ghost",
+            currentEpoch: 1,
+            // A meta statement never checks the environment's existence (the
+            // §12-4 asymmetry), so the ghost environment's statement itself
+            // verifies; the value signature (§6.3-4) rejects it
+            statement: ghostEnvStatement,
+            variables: [ghostEntry],
+            deletedVariables: [],
+            deks: [ghostWrap],
+            manifest: await manifestFor({
+              projectId: fixture.built.projectId,
+              environmentId: "ghost",
+              epoch: 1,
+              issuer: fixture.owner,
+              head: headOf(fixture.built, 3),
+              envStatement: ghostEnvStatement,
+              statements: [ghostEntry.statement],
+            }),
+            schemaPolicy: "enabled",
+          },
+        }),
+      ),
     ]);
     expect(await runCli(["pull", "--env", "ghost"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("reason=environment-not-created-at-head");
@@ -847,13 +860,24 @@ describe("maruhi pull", () => {
       writer: oldKeys,
       head: headOf(built, 5),
     });
+    const forgedEntry = await pullEntry(built.projectId, "vf", "FORGED", forged, owner);
+    const envStatement = await pullEnvStatement(built.projectId, owner);
     const pullJson = {
       environmentId: ENV_ID,
       currentEpoch: 1,
-      statement: await pullEnvStatement(built.projectId, owner),
-      variables: [await pullEntry(built.projectId, "vf", "FORGED", forged, owner)],
+      statement: envStatement,
+      variables: [forgedEntry],
       deletedVariables: [],
       deks: [wrap],
+      manifest: await manifestFor({
+        projectId: built.projectId,
+        environmentId: ENV_ID,
+        epoch: 1,
+        issuer: owner,
+        head: headOf(built, built.entries.length),
+        envStatement,
+        statements: [forgedEntry.statement],
+      }),
       schemaPolicy: "enabled" as const,
     };
     const server = await MockServer.start([

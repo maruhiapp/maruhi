@@ -558,7 +558,7 @@ export const checkInviteAnchor = Effect.fn("context.checkInviteAnchor")(function
   const loaded = yield* store.load(projectId);
   if (loaded.state === "corrupt") {
     yield* logWarning(
-      "cannot read the invite-pin file (it is corrupt). Continuing without the anchor check — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this. If the file predates this release, delete `invites/<projectId>.json` in the maruhi configuration directory and accept the invite again",
+      "cannot read the invite-pin file (it is corrupt). Continuing without the anchor check — your local state may have been modified or deleted unintentionally. Be careful if you do not recognize this",
     );
     return;
   }

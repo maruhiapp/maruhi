@@ -71,11 +71,9 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
     expect(body.currentEpoch).toBe(1);
 
     // Bundles the latest environment manifest + issuer info (§14-2 —
-    // material for the workload's verification obligation §9.1 (5))
-    expect(
-      (body as { manifest?: { manifestVersion: number; epoch: number; issuerUserId: string } })
-        .manifest,
-    ).toMatchObject({ manifestVersion: 2, epoch: 1 });
+    // material for the workload's verification obligation §9.1 (5).
+    // A required response field since 0.28-draft)
+    expect(body.manifest).toMatchObject({ manifestVersion: 2, epoch: 1 });
 
     // The lease wrap carries no registered signature or signer info
     // (server-generated and response-scoped — no signer can exist on
@@ -92,6 +90,29 @@ describe("workload leases: issuance (AUTH_SPEC §14-2 / CRYPTO_SPEC §9.1)", () 
     expect(opened.ok).toBe(true);
     // The leased DEK is the original epoch DEK itself (the server only intermediated)
     expect(opened.ok && encodeHex(opened.value)).toBe(encodeHex(dek));
+  });
+
+  it("answers with a server fault when the stored manifest row is missing (0.28-draft)", async () => {
+    await readyProject();
+    const workload = await workloadKeyPair();
+    // A live environment without a stored manifest can only come from a
+    // corrupted DO or a crafted snapshot — an invariant violation,
+    // refused as a defect (500): never a lease body that omits the
+    // field (§14-2 makes it required)
+    await queryProjectDo(
+      projectId,
+      "DELETE FROM environment_manifests WHERE environment_id = ?",
+      ENV,
+    );
+    const response = await requestLease({
+      oidcToken: await makeOidcToken(),
+      ephemeralPubHex: workload.publicKeyHex,
+    });
+    expect(response.status).toBe(500);
+    // The defect body carries no environment data
+    const body = await response.text();
+    expect(body).not.toContain(ENV);
+    expect(body).not.toContain("manifestVersion");
   });
 
   it("bundles the stored checkpoint-time value snapshot (§14-2)", async () => {
