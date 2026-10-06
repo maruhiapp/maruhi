@@ -55,7 +55,7 @@ What happens on the server, at once:
 
 - Every variable in the environment is deleted, with every stored version of its value and the metadata of variables deleted earlier.
 - Every wrapped copy of the environment's keys (its DEKs, for every member and every epoch) is deleted.
-- The environment stays in the project's environment list as a **tombstone**: its signed deletion record, which keeps the last display name. Clients verify that record, so a server that later hides the deletion or brings the environment back is detected.
+- The environment stays in the project's environment list as a **tombstone**: its signed deletion record, which keeps the last display name. Clients verify that record's signature and author when they read it. Detecting a server that later hides the deletion or brings the environment back is not in place yet: it arrives when environment deletion moves onto the project's chain.
 - The ID is never reused: the project's chain still records that the environment was created. The display name is freed and can be given to another environment.
 - The audit log records the deletion of the environment and of each variable it held.
 
