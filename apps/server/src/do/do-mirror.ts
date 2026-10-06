@@ -368,8 +368,8 @@ export interface MirrorCommit {
   readonly auditMaxSeq: number;
   /** The replica's attestation mark (the source's latest head-attestation acceptance time). */
   readonly attestationMark: number;
-  /** The source's mutation counter the replica was exported at (absent when the sync did not say). */
-  readonly mutationSeq?: number;
+  /** The source's mutation counter the replica was exported at. */
+  readonly mutationSeq: number;
   /** The mirror's own audit rows re-appended after the replica's (ruling G revision). */
   readonly ownAuditRows: number;
 }
@@ -737,8 +737,8 @@ export interface MirrorCommitInput {
   readonly tables: readonly string[];
   readonly state: MirrorState;
   readonly nowMs: number;
-  /** The source's mutation counter the trailer page carried (null = not said). */
-  readonly sourceMutationSeq: number | null;
+  /** The source's mutation counter the trailer page carried. */
+  readonly sourceMutationSeq: number;
 }
 
 /**
@@ -814,7 +814,7 @@ export function commitMirrorReplica(
           chainHeadHashHex: marks.chainHeadHashHex ?? "",
           auditMaxSeq: replicaAuditSeq,
           attestationMark: marks.attestationMark,
-          ...(input.sourceMutationSeq === null ? {} : { mutationSeq: input.sourceMutationSeq }),
+          mutationSeq: input.sourceMutationSeq,
           ownAuditRows,
         };
         sql.exec(

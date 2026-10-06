@@ -45,7 +45,7 @@ export const ExportHeadSchema = Schema.Struct({
   chainHeadHashHex: Sha256Hex,
   auditMaxSeq: Schema.Number,
   /** The project DO's mutation counter at the export (a mirror records it with the replica — the sync's no-change check). */
-  mutationSeq: Schema.optionalKey(Schema.Number),
+  mutationSeq: Schema.Number,
   /**
    * The source this project is marked as a mirror of, read in the same
    * call as the marks (AUTH_SPEC §11-6 — the switch-over): a last page

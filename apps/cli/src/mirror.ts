@@ -123,9 +123,7 @@ const replicateOnce = Effect.fn("mirror.replicateOnce")(function* (
           lines: exported.lines,
           // The source's counter rides with every page; the mirror records
           // the trailer page's with the replica (the no-change check)
-          ...(exported.head.mutationSeq === undefined
-            ? {}
-            : { sourceMutationSeq: exported.head.mutationSeq }),
+          sourceMutationSeq: exported.head.mutationSeq,
         },
       })
       .pipe(Effect.mapError(toCliError));

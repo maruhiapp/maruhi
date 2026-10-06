@@ -55,8 +55,17 @@ import {
 } from "../policy.ts";
 import { ensureStorageAdmitsGrowth, StorageMeter } from "../storage-guard.ts";
 
-/** The last replication as the status reports it (the commit's position; the re-appended count is a commit's answer only). */
-export type MirrorSyncPosition = Omit<MirrorCommit, "ownAuditRows">;
+/**
+ * The last replication as the status reports it (the commit's position;
+ * the re-appended count is a commit's answer only). The stored record of a
+ * replication committed before the counter was recorded carries no
+ * mutation counter (`mirror_state.last_mutation_seq` is nullable — a
+ * pre-squash DO may hold such a row); the client's no-change check then
+ * reads "changed".
+ */
+export type MirrorSyncPosition = Omit<MirrorCommit, "ownAuditRows" | "mutationSeq"> & {
+  readonly mutationSeq?: number;
+};
 
 /**
  * The status as the worker returns it (the wire shape of api-schema's
@@ -91,7 +100,7 @@ export interface MirrorPageRequest {
   readonly sequence: number;
   readonly lines: readonly string[];
   /** The source's mutation counter as the export's head reported it (the trailer page records it). */
-  readonly sourceMutationSeq?: number | undefined;
+  readonly sourceMutationSeq: number;
 }
 
 function statusOf(sql: SqlStorage, role: Role): MirrorStatusValue {
@@ -291,7 +300,7 @@ export const mirrorPageProgram = Effect.fn("programs-mirror.mirrorPageProgram")(
     tables: PROJECT_DO_TABLES,
     state,
     nowMs: yield* Clock.currentTimeMillis,
-    sourceMutationSeq: page.sourceMutationSeq ?? null,
+    sourceMutationSeq: page.sourceMutationSeq,
   }).pipe(Effect.catchTag("MirrorPageRefused", refuse));
   // The chain and the audit log were replaced: the derived memory is
   // discarded and the audit-head column extended to the end (the same

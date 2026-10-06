@@ -62,7 +62,8 @@ interface WireStatus {
   readonly lastSync?: {
     readonly chainHeadSeq: number;
     readonly auditMaxSeq: number;
-    readonly attestationMark?: number;
+    readonly attestationMark: number;
+    readonly mutationSeq?: number;
   };
   readonly nextSequence?: number;
   readonly head: {
@@ -147,8 +148,14 @@ const status = (userId = READER) => requestJson("GET", "/mirror", token(userId))
 const mark = (userId: string, sourceOrigin = SOURCE) =>
   requestJson("PUT", "/mirror", token(userId), { sourceOrigin });
 const unmark = (userId: string) => requestJson("DELETE", "/mirror", token(userId));
+/** The source's mutation counter every page carries (the trailer page's is recorded with the replica). */
+const SOURCE_MUTATION_SEQ = 7;
 const page = (userId: string, sequence: number, lines: readonly string[]) =>
-  requestJson("PUT", "/mirror/pages", token(userId), { sequence, lines });
+  requestJson("PUT", "/mirror/pages", token(userId), {
+    sequence,
+    lines,
+    sourceMutationSeq: SOURCE_MUTATION_SEQ,
+  });
 
 async function statusOk(userId = READER): Promise<WireStatus> {
   const response = await status(userId);
@@ -314,6 +321,7 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
         chainHeadHashHex: newerTrailer["chainHeadHashHex"],
         auditMaxSeq: newerTrailer["auditMaxSeq"],
         attestationMark: 0,
+        mutationSeq: SOURCE_MUTATION_SEQ,
         // The rows the mirror appended while serving (the pull above)
         ownAuditRows: ownRows,
       },
@@ -322,6 +330,7 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(synced.lastSync).toMatchObject({
       chainHeadSeq: newerTrailer["chainHeadSeq"],
       attestationMark: 0,
+      mutationSeq: SOURCE_MUTATION_SEQ,
     });
     expect(synced.nextSequence).toBeUndefined();
     expect(synced.head.chainHeadHashHex).toBe(newerTrailer["chainHeadHashHex"]);
