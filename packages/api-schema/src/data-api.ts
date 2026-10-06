@@ -536,8 +536,7 @@ export const variablesGroup = HttpApiGroup.make("variables")
         ManifestRejectedError,
         ManifestVersionConflictError,
         NameNotNfcError,
-        // Schema policy (§12-11): new v3 adoption under disabled is
-        // schema-policy-disabled; creating without varType under locked
+        // Schema policy (§12-11): creating without varType under locked
         // is schema-required
         SchemaPolicyRejectedError,
         // description length/character limits (the §12-8 acceptance
@@ -709,10 +708,6 @@ export const variablesGroup = HttpApiGroup.make("variables")
           ManifestRejectedError,
           ManifestVersionConflictError,
           NameNotNfcError,
-          // Reissuing a v1 variable as v3 under disabled is
-          // schema-policy-disabled (§12-11; continuation statements of
-          // an already-v3 variable are accepted regardless of policy)
-          SchemaPolicyRejectedError,
           SchemaDescriptionRejectedError,
           DataLimitExceededError,
         ],
@@ -856,8 +851,7 @@ export const deksGroup = HttpApiGroup.make("deks")
 export const SchemaPolicyResultSchema = Schema.Struct({ schemaPolicy: SchemaPolicySchema });
 
 /**
- * Project schema-policy setting (AUTH_SPEC §12-11 — the enablement gate
- * and schema-locked).
+ * Project schema-policy setting (AUTH_SPEC §12-11 — schema-locked).
  *
  * - GET: read scope × chain role reader or higher (200 = `{ schemaPolicy }`)
  * - PUT: **admin scope × chain role admin or higher** (204). Session
@@ -868,7 +862,7 @@ export const SchemaPolicyResultSchema = Schema.Struct({ schemaPolicy: SchemaPoli
  *
  * Decision order and existence concealment (non-member 404) are the same
  * as §12-3. The payload carries no signed structure (outside the §12-10
- * (1) strict target class — Schema verification closes over a 3-value
+ * (1) strict target class — Schema verification closes over a 2-value
  * Literal).
  */
 export const schemaPolicyGroup = HttpApiGroup.make("schemaPolicy")

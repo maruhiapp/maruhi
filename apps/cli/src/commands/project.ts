@@ -1,4 +1,4 @@
-// `maruhi project` and `project policy approvals` (discipline: see commands/index.ts).
+// `maruhi project` and `project policy approvals / schema` (discipline: see commands/index.ts).
 
 import { APPROVAL_TARGET_OPS, type ApprovalTargetOp } from "@maruhi/crypto";
 import { Effect } from "effect";
@@ -35,6 +35,12 @@ import { logNote, logWarning } from "../notice.ts";
 import { describeExport, projectExportOp } from "../project-export.ts";
 import { projectInitOp } from "../project-init.ts";
 import { projectListOp } from "../project-list.ts";
+import {
+  isSchemaPolicy,
+  SCHEMA_POLICIES,
+  setSchemaPolicyOp,
+  showSchemaPolicyOp,
+} from "../project-schema-policy.ts";
 import { describeUnconvergedMandate, resolveUnconvergedMandates } from "../rotation-sweep.ts";
 import { loadMasterKeys } from "../session.ts";
 import { projectFlags, proposalFlags, serverOnlyFlags, singleFlag, singleValued } from "./flags.ts";
@@ -90,6 +96,34 @@ export const projectPolicyApprovalsConfig = {
     "Turn the policy off (while a policy is active, this itself needs the approvals)",
   ),
 };
+
+export const projectPolicySchemaConfig = {
+  ...projectFlags(),
+  set: singleValued(
+    "set",
+    `Set the schema policy (${SCHEMA_POLICIES.join(" | ")}; locked = creating a variable requires a declared type; needs the admin role)`,
+  ),
+};
+
+/**
+ * `maruhi project policy schema [--set <tier>]` (AUTH_SPEC §12-11): no
+ * flag = show the policy; `--set` = set it (admin). Keyless and chain-free
+ * — the policy is a server acceptance setting (project-schema-policy.ts).
+ */
+const projectPolicySchemaCommand = Effect.fn("commands-project.projectPolicySchemaCommand")(
+  function* (flags: CommonFlags & { readonly set?: string | undefined }) {
+    const tier = flags.set;
+    if (tier !== undefined && !isSchemaPolicy(tier)) {
+      return yield* Effect.fail(usageError(`--set must be one of ${SCHEMA_POLICIES.join(" | ")}`));
+    }
+    const context = yield* openSession(flags.server);
+    const projectId = yield* resolveProjectId(flags.project, context.config);
+    if (tier === undefined) {
+      return yield* showSchemaPolicyOp({ client: context.client, projectId });
+    }
+    return yield* setSchemaPolicyOp({ client: context.client, projectId, policy: tier });
+  },
+);
 
 /** `maruhi project verify`: chain verification + floor / anchor checks + state display. */
 const projectVerify = Effect.fn("commands-project.projectVerify")(function* (
@@ -403,9 +437,25 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     ),
   );
 
+  const projectPolicySchema = Command.make(
+    "schema",
+    projectPolicySchemaConfig,
+    Effect.fn("commands-project.projectPolicySchema")(function* (values) {
+      yield* projectPolicySchemaCommand({
+        server: values.server,
+        project: values.project,
+        set: values.set,
+      });
+    }),
+  ).pipe(
+    Command.withDescription(
+      "Show or set the schema policy (enabled = types optional, locked = creating a variable requires a declared type); no flags = show",
+    ),
+  );
+
   const projectPolicy = Command.make("policy").pipe(
-    Command.withDescription("Project policies (approvals)"),
-    Command.withSubcommands([projectPolicyApprovals]),
+    Command.withDescription("Project policies (approvals / schema)"),
+    Command.withSubcommands([projectPolicyApprovals, projectPolicySchema]),
   );
 
   const projectCheckpoint = Command.make(

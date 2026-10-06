@@ -51,7 +51,6 @@ async function reissueAuditRows(
 describe("transitions and layout monotonicity (§12-5)", () => {
   it("active → declared (rename form) is 422 payload-mismatch (the acceptance check of an unchanged status)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
@@ -81,7 +80,6 @@ describe("transitions and layout monotonicity (§12-5)", () => {
 
   it("declared → declared schema re-issuance and rename are 204 (updatable while still a declaration)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({ variableId: VAR, name: "API_KEY" });
     const statement = await nextVariableStatement({
       variableId: VAR,
@@ -104,7 +102,6 @@ describe("transitions and layout monotonicity (§12-5)", () => {
 
   it("a v1 successor (rename) on a v3 variable is 422 layout-regression (layout monotonicity)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
@@ -134,7 +131,6 @@ describe("transitions and layout monotonicity (§12-5)", () => {
 
   it("declared re-creation with a deleted ID is 409 retired (no ID reuse — §12-1)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     expect((await deleteVariableRequest(VAR, MEMBER)).status).toBe(204);
     const response = await declareVariableRequest({
@@ -293,7 +289,6 @@ describe("the just-before match of a delete statement's schema field and layout 
 describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
   it("a schema-field-only change on a v3 variable is accepted under the same rules as a rename and reflected in distribution", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
@@ -346,7 +341,6 @@ describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
 
   it("a re-issuance changing both name and schema field is a single var.renamed row (the rename is the primary event — one operation, one row)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
@@ -382,7 +376,6 @@ describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
   it("a v3 re-issuance on a v1 variable is accepted under enabled (migration at a natural opportunity)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    await setSchemaPolicyOk("enabled", OWNER);
     const statement = await nextVariableStatement({
       variableId: VAR,
       name: "DATABASE_URL",
@@ -407,23 +400,31 @@ describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
     expect(await reissueAuditRows("var.schema_reissued")).toHaveLength(1);
   });
 
-  it("after downgrading to disabled, continuing an already-v3 variable (rename, delete) is still accepted and only new adoption stops (reversibility)", async () => {
+  it("relaxing locked to enabled lifts only the creation-time check: existing variables continue and a creation without varType is accepted again (reversibility)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
+    await setSchemaPolicyOk("locked", OWNER);
     await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
       plaintext: "postgres://alpha",
       dek,
+      schema: { varType: "url" },
     }).then((response) => expect(response.status).toBe(200));
-    await setSchemaPolicyOk("disabled", OWNER);
-    // Continuation 1: a v3 rename passes
+    const lockedOut = await declareVariableRequest({
+      variableId: "var-untyped",
+      name: "UNTYPED_KEY",
+      actorUserId: MEMBER,
+      schema: { varType: "" },
+    });
+    expect(lockedOut.status).toBe(422);
+    await setSchemaPolicyOk("enabled", OWNER);
+    // The existing v3 variable continues (a v3 rename)
     const rename = await nextVariableStatement({
       variableId: VAR,
       name: "DB_URL",
       status: "active",
       authorUserId: MEMBER,
-      v3: v3Fields(),
+      v3: v3Fields({ varType: "url" }),
     });
     const renameBundle = await manifestForStatement(rename, MEMBER);
     const renamed = await requestJson(
@@ -435,37 +436,18 @@ describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
     expect(renamed.status).toBe(204);
     varStatements.set(VAR, { statement: rename, authorUserId: MEMBER });
     renameBundle.record();
-    // Continuation 2: a v3 deletion also passes (the downgrade does not freeze existing v3 variables' lifecycle)
-    const remove = await nextVariableStatement({
-      variableId: VAR,
-      name: "DB_URL",
-      status: "deleted",
-      authorUserId: MEMBER,
-      v3: v3Fields(),
+    // A creation without varType is accepted again
+    await declareVariableOk({
+      variableId: "var-untyped",
+      name: "UNTYPED_KEY",
+      schema: { varType: "" },
     });
-    const removeBundle = await manifestForStatement(remove, MEMBER);
-    const removed = await requestJson(
-      "DELETE",
-      `/environments/${ENV}/variables/${VAR}`,
-      token(MEMBER),
-      { statement: remove, manifest: removeBundle.manifest },
-    );
-    expect(removed.status).toBe(204);
-    removeBundle.record();
-    // New adoption stops
-    const declared = await declareVariableRequest({
-      variableId: "var-new-decl",
-      name: "NEW_KEY",
-      actorUserId: MEMBER,
-    });
-    expect(declared.status).toBe(422);
   });
 });
 
 describe("max age (CRYPTO_SPEC §4.2 layout v3, PF6 R9)", () => {
   it("a creation declaring maxAgeDays is accepted and distributed with the field; a deletion must keep it", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     const schema = {
       varType: "url" as const,
       required: true,

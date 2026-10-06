@@ -111,7 +111,7 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
     expect(((await response.json()) as { reason: string }).reason).toBe("signature-invalid");
     // The environment is not created (signature verification precedes the write phase)
     const list = await requestJson("GET", "/environments", token(READER));
-    await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "disabled" });
+    await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "enabled" });
   });
 
   it("rejects wraps without a signature (400 Schema, both paths)", async () => {

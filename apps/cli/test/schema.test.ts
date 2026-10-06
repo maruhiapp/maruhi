@@ -219,7 +219,7 @@ function pullHandler(overrides?: {
 
 interface MetadataOverrides {
   readonly variables?: readonly WireDistributedVariableStatement[];
-  readonly schemaPolicy?: "disabled" | "enabled" | "locked";
+  readonly schemaPolicy?: "enabled" | "locked";
   /**
    * Echo of accepted meta operations (material for §12-10 (3)'s effect
    * check): after acceptance it serves base + the accepted statement +
@@ -800,19 +800,6 @@ describe("maruhi schema set (§1-2)", () => {
     expect(errors).toContain("--type");
     // Nothing was signed or sent (not a single POST)
     expect(lastServer().requests.filter((request) => request.method === "POST")).toHaveLength(0);
-  });
-
-  it("a disabled advisory emits advance guidance (SHOULD — it still sends: the source of truth for acceptance is the server)", async () => {
-    const echo: MutationEcho = { body: null, base: [] };
-    const createCalls: MockRequest[] = [];
-    const env = await startEnv([
-      chainHandler(),
-      metadataHandler({ variables: [], schemaPolicy: "disabled", echo }),
-      captureCreate(echo, createCalls),
-    ]);
-    expect(await runCli(["schema", "set", "NEW_VAR"], env.layer)).toBe(0);
-    expect(env.errors.join("\n")).toContain("schema policy as disabled");
-    expect(createCalls).toHaveLength(1);
   });
 
   it("--required combined with --optional is a usage error", async () => {

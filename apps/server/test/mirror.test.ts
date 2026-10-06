@@ -280,7 +280,7 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       reason: "mirror-read-only",
     });
     const policy = await requestJson("PUT", "/schema-policy", token(OWNER), {
-      schemaPolicy: "enabled",
+      schemaPolicy: "locked",
     });
     expect(policy.status).toBe(403);
     expect((await requestJson("GET", "/schema-policy", token(READER))).status).toBe(200);

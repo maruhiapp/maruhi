@@ -119,7 +119,7 @@ describe("schema-locked (§12-11 — the one-time check at creation)", () => {
 
   it("locked: activation of a declared created without varType during the enabled period is not retroacted and is accepted", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
+    // Declared under the default enabled
     await declareVariableOk({ variableId: VAR, name: "API_KEY", schema: { varType: "" } });
     await setSchemaPolicyOk("locked", OWNER);
     const response = await activateVariableRequest({
@@ -135,7 +135,6 @@ describe("schema-locked (§12-11 — the one-time check at creation)", () => {
 describe("the description acceptance check (§12-8)", () => {
   it("1024 code points are accepted; beyond that is 422 too-long (surrogate pairs count as code points)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     // An astral-plane char (2 UTF-16 units) × 1024 = 1024 code points → accepted
     await declareVariableOk({
       variableId: VAR,
@@ -157,7 +156,6 @@ describe("the description acceptance check (§12-8)", () => {
 
   it("control characters (newlines, ANSI-escape ESC) are 422 control-characters (pinned to a single line)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     for (const description of ["line one\nline two", "colored \u001b[31mred\u001b[0m"]) {
       const response = await declareVariableRequest({
         variableId: VAR,
@@ -206,7 +204,6 @@ function unsupportedLayoutStatement(layoutVersion: 2 | 4 = 4): Record<string, un
 describe("unsupported layouts (§12-2 — ruling CR)", () => {
   it("layoutVersion 4 is a typed 422 unsupported-layout rejection (not crushed into a bad-signature 500)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: unsupportedLayoutStatement(),
       manifest: unsignedManifest(),
@@ -218,13 +215,12 @@ describe("unsupported layouts (§12-2 — ruling CR)", () => {
     });
   });
 
-  it("the support-range check precedes schemaPolicy (no misleading error under disabled / locked either)", async () => {
+  it("the support-range check precedes schemaPolicy (no misleading error under enabled / locked either)", async () => {
     // The honest answer to a v4 client is always "server update
-    // required"; schema-policy-disabled (unchanged by enabling) or
-    // schema-required (unchanged by adding varType) must not be returned
-    // first (the intent of ruling CR)
+    // required"; schema-required (unchanged by adding varType) must not
+    // be returned first (the intent of ruling CR)
     await createEnvironmentOk(fixture, ENV, "App");
-    for (const policy of ["disabled", "locked"] as const) {
+    for (const policy of ["enabled", "locked"] as const) {
       await setSchemaPolicyOk(policy, OWNER);
       const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
         statement: unsupportedLayoutStatement(),
@@ -240,7 +236,6 @@ describe("unsupported layouts (§12-2 — ruling CR)", () => {
 
   it("the support-range check precedes creation's pre-checks (duplicate name) (no duplicate-name for a name-colliding v4)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     // Create an existing variable with the same name as the v4 declaration first, setting up a name collision
     await createVariableOk(dek, "var-existing", "API_KEY", "occupied");
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
@@ -256,7 +251,6 @@ describe("unsupported layouts (§12-2 — ruling CR)", () => {
 
   it("the support-range check precedes deletion's just-before match and the meta CAS judgment (the rename / delete paths)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     // A v4 successor statement (even in rename form with a stale
     // metaVersion, unsupported-layout settles before the CAS 409)
@@ -321,7 +315,6 @@ describe("unsupported layouts (§12-2 — ruling CR)", () => {
 
   it("the retired layoutVersion 2 is a typed 422 unsupported-layout on creation (CRYPTO_SPEC §4.2 — 0.15-draft)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: unsupportedLayoutStatement(2),
       manifest: unsignedManifest(),
@@ -339,7 +332,6 @@ describe("unsupported layouts (§12-2 — ruling CR)", () => {
     // support-range check settles before the signature, the CAS, and the
     // monotonicity check
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",

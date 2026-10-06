@@ -167,7 +167,7 @@ const environmentStatement = {
 
 export const environmentsFixture: EnvironmentList = {
   environments: [{ environmentId: "production", currentEpoch: 1, statement: environmentStatement }],
-  schemaPolicy: "disabled",
+  schemaPolicy: "enabled",
 };
 
 export const metadataPullFixture: EnvironmentMetadataPull = {
@@ -199,7 +199,7 @@ export const metadataPullFixture: EnvironmentMetadataPull = {
     issuerUserId: "user_e2e",
     issuerKeyFingerprintHex: FP,
   },
-  schemaPolicy: "disabled",
+  schemaPolicy: "enabled",
 };
 
 // The admin-visible project-DO response (with seq — AUDIT_SPEC §7).

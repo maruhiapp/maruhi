@@ -4,17 +4,13 @@
 // Scope: all items of AUTH_SPEC §12-5 "acceptance of layout v3,
 // declared, and activation" + §12-8 (the description acceptance check)
 // + §12-11 (schemaPolicy) + §12-7 (declared distribution, advisory
-// bundling). This pins the design document's
-// (docs/notes/value-free-schema-design.md §3) "safe to stop" claim —
-// with the default disabled, v3 acceptance lies dormant and v1 is
-// unchanged — plus the boundary of §12-5's four 422 error names
-// (schema-policy-disabled / activation-required / layout-regression /
-// schema-required).
+// bundling), plus the boundary of §12-5's 422 error names
+// (activation-required / layout-regression / schema-required).
 //
 // How the suite is split (shared helpers in
 // support/schema-scenario.ts; for the split's motivation see the
 // top of support/membership-scenario.ts):
-// - this file: the schemaPolicy setting, the enablement gate, declared
+// - this file: the schemaPolicy setting, default v3 acceptance, declared
 //   creation and activation
 // - data-schema-transitions.test.ts: transitions and layout
 //   monotonicity, deletions' just-before match, schema re-issuance and
@@ -38,7 +34,6 @@ import {
   activateVariableRequest,
   createVariableOk,
   declareVariableOk,
-  declareVariableRequest,
   ENV,
   fixture,
   manifestForStatement,
@@ -75,18 +70,18 @@ async function auditCount(event: string, variableId?: string): Promise<number> {
 }
 
 describe("the schemaPolicy setting (AUTH_SPEC §12-11)", () => {
-  it("GET returns the default disabled (read × reader or above). Non-members get a uniform 404", async () => {
+  it("GET returns the default enabled (read × reader or above). Non-members get a uniform 404", async () => {
     const asReader = await requestJson("GET", "/schema-policy", token(READER));
     expect(asReader.status).toBe(200);
-    await expect(asReader.json()).resolves.toEqual({ schemaPolicy: "disabled" });
+    await expect(asReader.json()).resolves.toEqual({ schemaPolicy: "enabled" });
     const asStranger = await requestJson("GET", "/schema-policy", token(STRANGER));
     expect(asStranger.status).toBe(404);
   });
 
   it("PUT is admin × admin (204). A change records project.schema_policy_changed with the old and new values", async () => {
-    await setSchemaPolicyOk("enabled", OWNER);
+    await setSchemaPolicyOk("locked", OWNER);
     const read = await requestJson("GET", "/schema-policy", token(READER));
-    await expect(read.json()).resolves.toEqual({ schemaPolicy: "enabled" });
+    await expect(read.json()).resolves.toEqual({ schemaPolicy: "locked" });
     const rows = await queryProjectDo(
       projectId,
       "SELECT actor_type, actor_user_id, actor_key_fingerprint, payload FROM audit_events WHERE event = 'project.schema_policy_changed'",
@@ -100,36 +95,48 @@ describe("the schemaPolicy setting (AUTH_SPEC §12-11)", () => {
       actor_key_fingerprint: null,
     });
     expect(JSON.parse(String(rows[0]?.["payload"]))).toMatchObject({
-      previous: "disabled",
-      next: "enabled",
+      previous: "enabled",
+      next: "locked",
     });
   });
 
   it('a same-value PUT stays 204 and adds no audit row (does not record an unchanged transition as a "change")', async () => {
+    // The default is enabled: PUT enabled on a fresh project is unchanged
     await setSchemaPolicyOk("enabled", OWNER);
-    await setSchemaPolicyOk("enabled", OWNER);
+    expect(await auditCount("project.schema_policy_changed")).toBe(0);
+    await setSchemaPolicyOk("locked", OWNER);
+    await setSchemaPolicyOk("locked", OWNER);
     expect(await auditCount("project.schema_policy_changed")).toBe(1);
   });
 
   it("PUT authorization: a chain role of member gets 403, a non-member 404", async () => {
     const asMember = await requestJson("PUT", "/schema-policy", token(MEMBER), {
-      schemaPolicy: "enabled",
+      schemaPolicy: "locked",
     });
     expect(asMember.status).toBe(403);
     const asStranger = await requestJson("PUT", "/schema-policy", token(STRANGER), {
-      schemaPolicy: "enabled",
+      schemaPolicy: "locked",
     });
     expect(asStranger.status).toBe(404);
     // The rejection does not change the policy
     const read = await requestJson("GET", "/schema-policy", token(OWNER));
-    await expect(read.json()).resolves.toEqual({ schemaPolicy: "disabled" });
+    await expect(read.json()).resolves.toEqual({ schemaPolicy: "enabled" });
   });
 
-  it("a PUT of anything but the three values is a Schema-verification 400", async () => {
-    const response = await requestJson("PUT", "/schema-policy", token(OWNER), {
-      schemaPolicy: "everything",
-    });
-    expect(response.status).toBe(400);
+  it("a PUT of anything but the two values is a Schema-verification 400 (the removed disabled tier included)", async () => {
+    for (const schemaPolicy of ["everything", "disabled"]) {
+      const response = await requestJson("PUT", "/schema-policy", token(OWNER), { schemaPolicy });
+      expect(response.status, schemaPolicy).toBe(400);
+    }
+  });
+
+  it("an unknown stored value fails closed (storage corruption — never re-read as the default)", async () => {
+    await queryProjectDo(
+      projectId,
+      "INSERT INTO project_settings (id, schema_policy) VALUES (1, 'disabled')",
+    );
+    const response = await requestJson("GET", "/schema-policy", token(READER));
+    expect(response.status).toBe(500);
   });
 
   it("advisory bundling (§12-7): the environment list, the valued pull, and the metadata-only pull all carry schemaPolicy (not verification material)", async () => {
@@ -144,41 +151,19 @@ describe("the schemaPolicy setting (AUTH_SPEC §12-11)", () => {
   });
 });
 
-describe("the enablement gate — the default disabled rejects only new v3 adoption (§12-5 / §12-11)", () => {
-  it("a value-bundled v3 creation is 422 schema-policy-disabled (the v1 path is unchanged)", async () => {
+describe("layout v3 is accepted by default — no enablement gate (§12-5 / §12-11)", () => {
+  it("a fresh project accepts a value-bundled v3 creation", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    const rejected = await createVariableV3Request({
+    const created = await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
       plaintext: "postgres://alpha",
       dek,
     });
-    expect(rejected.status).toBe(422);
-    await expect(rejected.json()).resolves.toMatchObject({
-      _tag: "SchemaPolicyRejected",
-      reason: "schema-policy-disabled",
-    });
-    // v1 creation is accepted as before (demonstrating zero impact on existing v1 projects)
-    await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
+    expect(created.status).toBe(200);
   });
 
-  it("declared creation (no value) is 422 schema-policy-disabled", async () => {
-    await createEnvironmentOk(fixture, ENV, "App");
-    const rejected = await declareVariableRequest({
-      variableId: VAR,
-      name: "API_KEY",
-      actorUserId: MEMBER,
-    });
-    expect(rejected.status).toBe(422);
-    await expect(rejected.json()).resolves.toMatchObject({
-      _tag: "SchemaPolicyRejected",
-      reason: "schema-policy-disabled",
-    });
-    // The rejection leaves no variable row or audit row
-    expect(await auditCount("var.created", VAR)).toBe(0);
-  });
-
-  it("a v3 re-issuance on a v1 variable is 422 schema-policy-disabled", async () => {
+  it("a fresh project accepts a v3 re-issuance on a v1 variable", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const statement = await nextVariableStatement({
@@ -195,18 +180,13 @@ describe("the enablement gate — the default disabled rejects only new v3 adopt
       token(MEMBER),
       { statement, manifest },
     );
-    expect(response.status).toBe(422);
-    await expect(response.json()).resolves.toMatchObject({
-      _tag: "SchemaPolicyRejected",
-      reason: "schema-policy-disabled",
-    });
+    expect(response.status).toBe(204);
   });
 });
 
 describe("declared creation and activation (§12-5)", () => {
   it("enabled: declared creation is accepted with no value, recording stored version 0 and var.created (author FP)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({
       variableId: VAR,
       name: "API_KEY",
@@ -239,7 +219,6 @@ describe("declared creation and activation (§12-5)", () => {
 
   it("distribution (§12-7): declared appears on the valued pull's declaredVariables and the metadata-only pull's variables; values and DEKs are not carried", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({
       variableId: VAR,
       name: "API_KEY",
@@ -279,7 +258,6 @@ describe("declared creation and activation (§12-5)", () => {
 
   it("a normal push against a declared is 422 activation-required", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({ variableId: VAR, name: "API_KEY" });
     const value = await encryptValue(
       dek,
@@ -302,7 +280,6 @@ describe("declared creation and activation (§12-5)", () => {
 
   it("the activation composite is accepted with 200 version 1 and records var.version_pushed (version 1)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({ variableId: VAR, name: "API_KEY" });
     const response = await activateVariableRequest({
       variableId: VAR,
@@ -342,23 +319,8 @@ describe("declared creation and activation (§12-5)", () => {
     expect(push.status).toBe(200);
   });
 
-  it("activation is accepted regardless of the policy even after a downgrade to disabled (§12-11 reversibility — a continuation statement)", async () => {
-    const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
-    await declareVariableOk({ variableId: VAR, name: "API_KEY" });
-    await setSchemaPolicyOk("disabled", OWNER);
-    const response = await activateVariableRequest({
-      variableId: VAR,
-      actorUserId: MEMBER,
-      dek,
-      plaintext: "secret-value",
-    });
-    expect(response.status).toBe(200);
-  });
-
   it("the activation composite on an active variable is 422 payload-mismatch (status — an explicit guard, independent of the version value)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
@@ -387,12 +349,10 @@ describe("declared creation and activation (§12-5)", () => {
     }
   });
 
-  it("an active v1 variable under disabled cannot be promoted to v3 via the activation path either (§12-11 bypass is blocked)", async () => {
-    // activation does not check schemaPolicy (because a declared's
-    // immediate predecessor is always v3), but that exemption presumes
-    // the target is a declared. Without the guard, a v3 re-issuance
-    // would pass under disabled on a v1 active variable with version
-    // latest+1
+  it("an active v1 variable cannot be promoted to v3 via the activation path (the activation target is only a declared)", async () => {
+    // The status guard keeps a value push to an active variable from
+    // riding the activation composite (a version latest+1 passes the
+    // value CAS, so the CAS alone cannot reject it)
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const response = await activateVariableRequest({
@@ -426,7 +386,6 @@ describe("declared creation and activation (§12-5)", () => {
 
   it("activation does not double as a rename (name keeps the declaration's name — 422 payload-mismatch)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     await declareVariableOk({ variableId: VAR, name: "API_KEY" });
     const renamed = await activateVariableRequest({
       variableId: VAR,
@@ -471,7 +430,6 @@ describe("declared creation and activation (§12-5)", () => {
 
   it("the creation composite cannot create a deleted (a wire-shape 400 — §12-5's acceptance surface is authoritative)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    await setSchemaPolicyOk("enabled", OWNER);
     // A zero signature valid only in form (a Schema 400 never reaches signature verification)
     const statement = {
       suite: "maruhi/v1",

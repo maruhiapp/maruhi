@@ -5,7 +5,7 @@
 // 2026-09-15 ES K3) → environment/variable existence → CAS → signature
 // verification → quantity policy → atomic write + audit (AUDIT_SPEC §3.3).
 
-import type { ChainHistoryIndex, ChainState } from "@maruhi/crypto";
+import type { ChainHistoryIndex, ChainMember, ChainState } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
 import type { AuditEventInput } from "../audit-store.ts";
@@ -37,7 +37,6 @@ import {
   ensureMetaCas,
   ensureMetaStatementSignature,
   ensureNfcName,
-  ensureSchemaPolicyAllowsLayout,
   ensureSupportedLayout,
   statementLayoutVersion,
 } from "../data/verify-meta.ts";
@@ -135,22 +134,15 @@ function ensureSchemaLockedCreation(
 
 /**
  * Run the creation-time (metaVersion 1) schema-family acceptance checks
- * (§12-11 / §12-8) under the policy at acceptance time: the disabled
- * enablement gate (reject new v3 adoption) → the schema-locked creation check
- * → the description acceptance policy. The layoutVersion support-range check
+ * (§12-11 / §12-8) under the policy at acceptance time: the schema-locked
+ * creation check → the description acceptance policy. The layoutVersion support-range check
  * is done by the caller (createVariableProgram) before every
  * statement-dependent check.
  */
 const ensureCreationSchemaGates = Effect.fn("programs-variable.ensureCreationSchemaGates")(
   function* (statement: MetaStatementInput) {
     const store = yield* DataStore;
-    const schemaPolicy = yield* store.schemaPolicy;
-    yield* ensureSchemaPolicyAllowsLayout({
-      schemaPolicy,
-      statement,
-      predecessorLayoutVersion: 1,
-    });
-    yield* ensureSchemaLockedCreation(schemaPolicy, statement);
+    yield* ensureSchemaLockedCreation(yield* store.schemaPolicy, statement);
     yield* ensureDescriptionPolicy(statement);
   },
 );
@@ -219,6 +211,56 @@ const requireVariableWriteContext = Effect.fn("programs-variable.requireVariable
 );
 
 /**
+ * The shared acceptance core of rename / schema reissue and delete (§12-5):
+ * the meta acceptance pipeline under the signing device (verify-meta.ts's
+ * acceptMetaStatement) → the author's member permission → the composite
+ * acceptance of the manifest, with the accepted statement standing in for
+ * the variable's digest entry.
+ */
+const acceptVariableMetaOp = Effect.fn("programs-variable.acceptVariableMetaOp")(function* (input: {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly variableId: string;
+  readonly latestMetaVersion: number;
+  readonly history: ChainHistoryIndex;
+  readonly member: ChainMember;
+  readonly statement: MetaStatementInput;
+  readonly manifest: EnvManifestInput;
+  /** The status the manifest digest takes for this variable after the operation. */
+  readonly digestStatus: "active" | "deleted" | "declared";
+}) {
+  const { projectId, environmentId, variableId, history, statement } = input;
+  const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
+    input.member,
+    (candidate) =>
+      acceptMetaStatement({
+        projectId,
+        environmentId,
+        target: { kind: "variable", variableId },
+        latestMetaVersion: input.latestMetaVersion,
+        history,
+        member: candidate,
+        statement,
+      }),
+  );
+  yield* ensureDevicePermission(author, "member", environmentId);
+  const acceptedManifest = yield* acceptManifestForMetaOp({
+    projectId,
+    environmentId,
+    history,
+    member: author,
+    manifest: input.manifest,
+    digestOverride: {
+      variableId,
+      status: input.digestStatus,
+      metaVersion: statement.metaVersion,
+      signedBytesHashHex,
+    },
+  });
+  return { author, signedBytesHashHex, acceptedManifest };
+});
+
+/**
  * Variable creation (§12-5): active (with the bundled version-1 value) or
  * declared (no value — the sole exception to "a variable without a value does
  * not exist"; layout v3 only). The wire Schema fixes the combination of
@@ -258,8 +300,7 @@ export const createVariableProgram = Effect.fn("programs-variable.createVariable
     yield* ensureStorageAdmitsGrowth;
     yield* ensureVariableCreatable(environmentId, input.statement, input.variableId);
     // The schema policy (§12-11 — read the policy at acceptance time under
-    // the permit): disabled rejects new v3 adoption (v3 creation at
-    // metaVersion 1); locked requires v3 + non-empty varType on creation. The
+    // the permit): locked requires v3 + non-empty varType on creation. The
     // description bound and character class are §12-8
     yield* ensureCreationSchemaGates(input.statement);
     // Creation = the bundled version-1 value + the metaVersion-1 statement
@@ -503,10 +544,8 @@ export const activateVariableProgram = Effect.fn("programs-variable.activateVari
     // general-purpose composite of "value push + meta reissue"). Since the
     // value CAS only enforces version = latestVersion + 1 it cannot double as
     // the target check (sending version N+1 to an active variable would pass),
-    // so this explicit guard is what makes the schemaPolicy exemption's
-    // premise below hold — "the predecessor is necessarily v3 (declared is
-    // v3-only)". Without it, an active v1 variable could be promoted to v3
-    // under disabled, bypassing the §12-11 enablement gate
+    // so this explicit guard is what keeps a value push to an active variable
+    // from riding the activation composite
     if (variable.latestStatus !== "declared") {
       return yield* rejectData({ kind: "payload-mismatch", field: "status" });
     }
@@ -524,10 +563,7 @@ export const activateVariableProgram = Effect.fn("programs-variable.activateVari
     yield* ensureValueCas(state, environmentId, variable.latestVersion, input.value);
     // The meta acceptance pipeline (§12-5): CAS → anchor → description
     // acceptance check → signature verification (the declared → active
-    // transition and layout monotonicity are crypto's predecessor check).
-    // schemaPolicy is not passed — thanks to the declared guard above the
-    // predecessor is necessarily v3, and a continuation statement is accepted
-    // regardless of the policy (§12-11)
+    // transition and layout monotonicity are crypto's predecessor check)
     const { device: author, value: metaSignedBytesHashHex } = yield* withSigningDevice(
       member,
       (candidate) =>
@@ -646,40 +682,18 @@ export const renameVariableProgram = Effect.fn("programs-variable.renameVariable
     if (yield* store.variableNameTaken(environmentId, statement.name, variableId)) {
       return yield* rejectData({ kind: "variable-conflict", variableId, reason: "duplicate-name" });
     }
-    const schemaPolicy = yield* store.schemaPolicy;
-    const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
-      member,
-      (candidate) =>
-        acceptMetaStatement({
-          projectId,
-          environmentId,
-          target: { kind: "variable", variableId },
-          latestMetaVersion: variable.latestMetaVersion,
-          history,
-          member: candidate,
-          statement,
-          // The enablement gate (§12-11): rejects "v3 reissue of a v1
-          // variable" under disabled (a continuation whose predecessor is v3
-          // passes regardless of the policy — judged on the anchor's real
-          // values)
-          schemaPolicy,
-        }),
-    );
-    yield* ensureDevicePermission(author, "member", environmentId);
-    // Composite acceptance of the manifest (§12-5): recompute and cross-check
-    // on the set after the rename is applied
-    const acceptedManifest = yield* acceptManifestForMetaOp({
+    // The manifest is recomputed and cross-checked on the set after the
+    // rename is applied
+    const { author, signedBytesHashHex, acceptedManifest } = yield* acceptVariableMetaOp({
       projectId,
       environmentId,
+      variableId,
+      latestMetaVersion: variable.latestMetaVersion,
       history,
-      member: author,
+      member,
+      statement,
       manifest,
-      digestOverride: {
-        variableId,
-        status: statement.status,
-        metaVersion: statement.metaVersion,
-        signedBytesHashHex,
-      },
+      digestStatus: statement.status,
     });
     const audit = yield* AuditStore;
     const now = yield* Clock.currentTimeMillis;
@@ -738,35 +752,19 @@ export const deleteVariableProgram = Effect.fn("programs-variable.deleteVariable
     if (statement.name !== variable.name) {
       return yield* rejectData({ kind: "payload-mismatch", field: "name" });
     }
-    const { device: author, value: signedBytesHashHex } = yield* withSigningDevice(
-      member,
-      (candidate) =>
-        acceptMetaStatement({
-          projectId,
-          environmentId,
-          target: { kind: "variable", variableId },
-          latestMetaVersion: variable.latestMetaVersion,
-          history,
-          member: candidate,
-          statement,
-        }),
-    );
-    yield* ensureDevicePermission(author, "member", environmentId);
-    // Composite acceptance of the manifest (§12-5): recompute and cross-check
-    // on the set including the tombstone (a digest mismatch from hiding a
-    // tombstone is caught here — §4.3 (3))
-    const acceptedManifest = yield* acceptManifestForMetaOp({
+    // The manifest is recomputed and cross-checked on the set including the
+    // tombstone (a digest mismatch from hiding a tombstone is caught here —
+    // §4.3 (3))
+    const { author, signedBytesHashHex, acceptedManifest } = yield* acceptVariableMetaOp({
       projectId,
       environmentId,
+      variableId,
+      latestMetaVersion: variable.latestMetaVersion,
       history,
-      member: author,
+      member,
+      statement,
       manifest,
-      digestOverride: {
-        variableId,
-        status: "deleted",
-        metaVersion: statement.metaVersion,
-        signedBytesHashHex,
-      },
+      digestStatus: "deleted",
     });
     const store = yield* DataStore;
     const audit = yield* AuditStore;

@@ -88,7 +88,6 @@ afterEach(async () => {
 
 async function startImportEnv(options?: {
   readonly initialVariables?: Parameters<typeof makeMetaEnvironmentServer>[0]["initialVariables"];
-  readonly schemaPolicy?: "disabled" | "enabled" | "locked";
 }): Promise<{ env: TestEnv; state: MetaEnvironmentState }> {
   const { state, handlers } = makeMetaEnvironmentServer({
     chain: built,
@@ -97,7 +96,6 @@ async function startImportEnv(options?: {
     envStatement,
     initialVariables: options?.initialVariables ?? [],
     wrap: wrap1,
-    ...(options?.schemaPolicy === undefined ? {} : { schemaPolicy: options.schemaPolicy }),
   });
   const server = await MockServer.start(handlers);
   servers.push(server);
@@ -495,16 +493,7 @@ describe("the completion-time deletion offer (default is not to delete)", () => 
   });
 });
 
-describe("around the acceptance surface (advisory, serial O(N) — finding F′)", () => {
-  it("the disabled advisory is shown once across the whole import", async () => {
-    const { env } = await startImportEnv({ schemaPolicy: "disabled" });
-    const file = await writeEnvFile(["A=", "B="].join("\n"));
-    env.setPromptResponses(["y", "y", ""]);
-    expect(await runCli(["schema", "import", file], env.layer)).toBe(0);
-    const notices = env.errors.filter((line) => line.includes("schema policy as disabled"));
-    expect(notices).toHaveLength(1);
-  });
-
+describe("around the acceptance surface (serial O(N) — finding F′)", () => {
   it("registration is serial per-variable compounds — 3 round trips per declaration (resolve + compound + effect check)", async () => {
     // The pinned measured shape of finding F′: N declarations = 1
     // initial resolve + N × (1 resolve + 1 create + 1 effect check). No

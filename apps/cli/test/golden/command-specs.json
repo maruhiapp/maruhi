@@ -615,7 +615,8 @@
     "flags": [],
     "positionals": [],
     "subcommands": [
-      "approvals"
+      "approvals",
+      "schema"
     ]
   },
   "project policy approvals": {
@@ -626,6 +627,14 @@
       "required",
       "ops",
       "off"
+    ],
+    "positionals": []
+  },
+  "project policy schema": {
+    "flags": [
+      "server",
+      "project",
+      "set"
     ],
     "positionals": []
   },

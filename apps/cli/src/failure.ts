@@ -44,6 +44,7 @@ import {
   ProposalLimitError,
   RotationProposalNotFoundError,
   RotationProposalRejectedError,
+  SchemaPolicyRejectedError,
   SetupIncompleteError,
   TokenLimitError,
   UnauthorizedError,
@@ -358,6 +359,12 @@ const renderers: readonly Renderer[] = [
     isInstanceOf(EpochConflictError),
     (e) => `Epoch conflict (current epoch=${e.currentEpoch}). Giving up after the retry limit`,
   ),
+  // The schema policy (AUTH_SPEC §12-11 — schema-required is its only reason)
+  when(
+    isInstanceOf(SchemaPolicyRejectedError),
+    (e) =>
+      `This project's schema policy is locked: creating a variable requires a declared type (${e.reason}). Declare it first with \`maruhi schema set NAME --type <string|number|boolean|url>\`, then push its value`,
+  ),
   when(
     isInstanceOf(PayloadMismatchError),
     (e) => `The declared AAD does not match the storage coordinates (${displayText(e.field)})`,
@@ -534,6 +541,7 @@ export function isServerRejection(error: unknown): boolean {
     ProjectNotFoundError,
     RotationProposalNotFoundError,
     RotationProposalRejectedError,
+    SchemaPolicyRejectedError,
     UnauthorizedError,
     ValueTooLargeError,
     VariableConflictError,

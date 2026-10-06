@@ -450,7 +450,6 @@ function declareApproved(
     authorUserId: input.authorUserId,
     signingKey: input.signingKey,
     requireCreation: true,
-    quietDisabledAdvisory: true,
   }).pipe(
     Effect.asVoid,
     Effect.mapError((error) =>
@@ -604,14 +603,8 @@ export const schemaImportOp = Effect.fn("schema-import.schemaImportOp")(function
   }
   // The matching material for existing names (verified statements only
   // — §12-2. Both active and declared are mixed into variables §12-7)
-  // and the one-time guidance for the disabled advisory
   const metadata = yield* pullVerifiedEnvironmentMetadata(input);
   yield* logWarnings(metadata.warnings);
-  if (metadata.advisorySchemaPolicy === "disabled") {
-    yield* logNote(
-      "the server reports this project's schema policy as disabled, so it will likely reject new declarations (422 schema-policy-disabled). An admin can enable it via PUT /projects/:projectId/schema-policy (see docs/SELF_HOSTING.md)",
-    );
-  }
   const existingNames = new Set(metadata.variables.map((statement) => statement.name));
   const { declared, activated, skipped, stopped } = yield* runApprovalLoop(
     input,
