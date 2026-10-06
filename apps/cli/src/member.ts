@@ -105,7 +105,7 @@ export function memberMandatesFor(
 }
 
 /** The §7 duty-environment sweep (the shared aftermath of remove / demotion / narrowing. Baseline = environment → the max duty seq). */
-export function sweepAfterMandate<R>(input: {
+export const sweepAfterMandate = Effect.fn("member.sweepAfterMandate")(function* <R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly mandates: readonly RotationMandate[];
@@ -115,41 +115,39 @@ export function sweepAfterMandate<R>(input: {
   readonly signingKeyPair: SigningKeyPair;
   /** The per-duty-kind rotation injection (the rotate entry's reason matches the duty). */
   readonly rotateWith: (reason: string) => SweepRotate<R>;
-}): Effect.Effect<MemberSweepOutcome, CliError, R> {
-  return Effect.gen(function* () {
-    const actorScope = yield* actorEffectiveScope(
-      input.verified,
-      input.actorUserId,
-      input.signingKeyPair,
-    );
-    // Duty environments outside my (the device's effective) scope (when a
-    // duty from a narrowing / remove someone made in the past remains on
-    // the target's history, when run on a capped device) are excluded from
-    // the rotate targets (CRYPTO_SPEC §7 — even the actor cannot rotate
-    // outside scope. Independent review S2). The always-on warning keeps
-    // displaying them
-    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
-    const { baselines, outOfScope, skippedDeleted } = partitionSweepBaselines({
-      verified: input.verified,
-      all: baselinesOf(input.mandates),
-      actorScope,
-      deletedVerified,
-    });
-    // Each environment's reason = the kind of the duty that became that environment's baseline (max seq) (independent review N3)
-    const reasons = reasonsByEnvironment(input.mandates);
-    const sweep = yield* sweepRotations({
-      rotate: (environmentId, mode) =>
-        input.rotateWith(reasons.get(environmentId) ?? MEMBER_REMOVED_ROTATION_REASON)(
-          environmentId,
-          mode,
-        ),
-      verified: input.verified,
-      baselines,
-      deletedVerified,
-    });
-    return { ...sweep, skippedDeleted, outOfScope };
+}): Effect.fn.Return<MemberSweepOutcome, CliError, R> {
+  const actorScope = yield* actorEffectiveScope(
+    input.verified,
+    input.actorUserId,
+    input.signingKeyPair,
+  );
+  // Duty environments outside my (the device's effective) scope (when a
+  // duty from a narrowing / remove someone made in the past remains on
+  // the target's history, when run on a capped device) are excluded from
+  // the rotate targets (CRYPTO_SPEC §7 — even the actor cannot rotate
+  // outside scope. Independent review S2). The always-on warning keeps
+  // displaying them
+  const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+  const { baselines, outOfScope, skippedDeleted } = partitionSweepBaselines({
+    verified: input.verified,
+    all: baselinesOf(input.mandates),
+    actorScope,
+    deletedVerified,
   });
-}
+  // Each environment's reason = the kind of the duty that became that environment's baseline (max seq) (independent review N3)
+  const reasons = reasonsByEnvironment(input.mandates);
+  const sweep = yield* sweepRotations({
+    rotate: (environmentId, mode) =>
+      input.rotateWith(reasons.get(environmentId) ?? MEMBER_REMOVED_ROTATION_REASON)(
+        environmentId,
+        mode,
+      ),
+    verified: input.verified,
+    baselines,
+    deletedVerified,
+  });
+  return { ...sweep, skippedDeleted, outOfScope };
+});
 
 /**
  * The range of environments where the actor can fulfill rotate = the
@@ -159,28 +157,26 @@ export function sweepAfterMandate<R>(input: {
  * devices are empty too (fail-closed — they stay on the always-on
  * warning).
  */
-function actorEffectiveScope(
+const actorEffectiveScope = Effect.fn("member.actorEffectiveScope")(function* (
   verified: VerifiedProject,
   actorUserId: string,
   signingKeyPair: SigningKeyPair,
-): Effect.Effect<MemberScope, CliError> {
-  return Effect.gen(function* () {
-    const actor = verified.state.members.get(actorUserId);
-    if (actor === undefined) {
-      return { kind: "listed", environmentIds: [] };
-    }
-    const device = yield* ownDeviceBySigningKey(verified, actor, signingKeyPair).pipe(
-      Effect.orElseSucceed((): ChainDevice | null => null),
-    );
-    if (device === null) {
-      return { kind: "listed", environmentIds: [] };
-    }
-    const permission = effectivePermissionOf(actor, device);
-    return ROLE_RANK[permission.role] >= ROLE_RANK.member
-      ? permission.scope
-      : { kind: "listed", environmentIds: [] };
-  });
-}
+): Effect.fn.Return<MemberScope, CliError> {
+  const actor = verified.state.members.get(actorUserId);
+  if (actor === undefined) {
+    return { kind: "listed", environmentIds: [] };
+  }
+  const device = yield* ownDeviceBySigningKey(verified, actor, signingKeyPair).pipe(
+    Effect.orElseSucceed((): ChainDevice | null => null),
+  );
+  if (device === null) {
+    return { kind: "listed", environmentIds: [] };
+  }
+  const permission = effectivePermissionOf(actor, device);
+  return ROLE_RANK[permission.role] >= ROLE_RANK.member
+    ? permission.scope
+    : { kind: "listed", environmentIds: [] };
+});
 
 /**
  * The sweep of the target's duties (remove / demotion / narrowing —

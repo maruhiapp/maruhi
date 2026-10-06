@@ -238,25 +238,27 @@ export function makeFileOwnDeviceStore(path: string): OwnDeviceStoreShape {
 
   return {
     filePath: path,
-    load: (origin, userId) =>
-      Effect.gen(function* (): Effect.fn.Return<OwnDevicesLookup, CliError> {
-        const loaded = yield* loadLedger;
-        if (loaded.state === "missing") {
-          return { state: "missing" };
-        }
-        if (loaded.state === "corrupt") {
-          return { state: "corrupt" };
-        }
-        const users = floorRecordGet(loaded.file.known, origin);
-        const devices = users === undefined ? undefined : floorRecordGet(users, userId);
-        return {
-          state: "loaded",
-          devices: Object.entries(devices ?? {}).map(([keyFingerprintHex, record]) => ({
-            keyFingerprintHex,
-            ...record,
-          })),
-        };
-      }),
+    load: Effect.fn("own-devices.load")(function* (origin, userId): Effect.fn.Return<
+      OwnDevicesLookup,
+      CliError
+    > {
+      const loaded = yield* loadLedger;
+      if (loaded.state === "missing") {
+        return { state: "missing" };
+      }
+      if (loaded.state === "corrupt") {
+        return { state: "corrupt" };
+      }
+      const users = floorRecordGet(loaded.file.known, origin);
+      const devices = users === undefined ? undefined : floorRecordGet(users, userId);
+      return {
+        state: "loaded",
+        devices: Object.entries(devices ?? {}).map(([keyFingerprintHex, record]) => ({
+          keyFingerprintHex,
+          ...record,
+        })),
+      };
+    }),
     record: (origin, userId, entry) => {
       const { keyFingerprintHex, ...record } = entry;
       if (

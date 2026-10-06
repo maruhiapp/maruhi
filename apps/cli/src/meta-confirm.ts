@@ -40,25 +40,25 @@ import { pullVerifiedEnvironmentMetadata, type VerifiedEnvironmentMetadata } fro
  * the intent fails, the caller must not send (fail-closed —
  * appendIntent's failure propagates as is).
  */
-export function issueManifestWithIntent(input: {
-  readonly verified: VerifiedProject;
-  readonly environmentId: string;
-  /** The current epoch at issuance time (the chain-derived value). */
-  readonly epoch: number;
-  readonly previous: {
-    readonly manifestVersion: number;
-    readonly signedBytesHashHex: string;
-  } | null;
-  /** The meta set after the operation is applied (tombstones included — §4.3 (3)'s recomputation target). */
-  readonly entries: readonly ManifestDigestEntry[];
-  readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
-  readonly issuerUserId: string;
-  readonly signingKey: CryptoKey;
-  readonly floor: FloorHandle;
-  /** The intent's collation coordinate (the meta operation's target variable). */
-  readonly variableId: string;
-}): Effect.Effect<{ readonly manifest: SignedManifest; readonly intentId: string }, CliError> {
-  return Effect.gen(function* () {
+export const issueManifestWithIntent = Effect.fn("meta-confirm.issueManifestWithIntent")(
+  function* (input: {
+    readonly verified: VerifiedProject;
+    readonly environmentId: string;
+    /** The current epoch at issuance time (the chain-derived value). */
+    readonly epoch: number;
+    readonly previous: {
+      readonly manifestVersion: number;
+      readonly signedBytesHashHex: string;
+    } | null;
+    /** The meta set after the operation is applied (tombstones included — §4.3 (3)'s recomputation target). */
+    readonly entries: readonly ManifestDigestEntry[];
+    readonly envMeta: { readonly metaVersion: number; readonly sigHashHex: string };
+    readonly issuerUserId: string;
+    readonly signingKey: CryptoKey;
+    readonly floor: FloorHandle;
+    /** The intent's collation coordinate (the meta operation's target variable). */
+    readonly variableId: string;
+  }): Effect.fn.Return<{ readonly manifest: SignedManifest; readonly intentId: string }, CliError> {
     const chainHead = {
       seq: input.verified.state.headSeq,
       hashHex: input.verified.state.headHashHex,
@@ -85,8 +85,8 @@ export function issueManifestWithIntent(input: {
       declaredHead: chainHead,
     });
     return { manifest, intentId };
-  });
-}
+  },
+);
 
 /**
  * Confirms one accepted meta mutation against the verified distribution
@@ -94,7 +94,7 @@ export function issueManifestWithIntent(input: {
  * a typed error when the issued manifest was not stored or the effect is not
  * visible in the verified statement set.
  */
-export function confirmMetaMutation(input: {
+export const confirmMetaMutation = Effect.fn("meta-confirm.confirmMetaMutation")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
@@ -113,49 +113,47 @@ export function confirmMetaMutation(input: {
    * at or above the issued metaVersion.
    */
   readonly effectVisible: (metadata: VerifiedEnvironmentMetadata) => boolean;
-}): Effect.Effect<void, CliError> {
-  return Effect.gen(function* () {
-    const metadata = yield* pullVerifiedEnvironmentMetadata({
-      client: input.client,
-      verified: input.verified,
-      environmentId: input.environmentId,
-      resync: input.resync,
-      floor: input.floor,
-    }).pipe(
-      Effect.mapError((error) =>
-        cliError(
-          `The ${input.describe} was accepted (2xx), but the post-acceptance confirmation against the verified distribution failed (AUTH_SPEC §12-10 (3) — success is defined by the confirmed effect, not the 2xx): ${error.message}`,
-        ),
+}): Effect.fn.Return<void, CliError> {
+  const metadata = yield* pullVerifiedEnvironmentMetadata({
+    client: input.client,
+    verified: input.verified,
+    environmentId: input.environmentId,
+    resync: input.resync,
+    floor: input.floor,
+  }).pipe(
+    Effect.mapError((error) =>
+      cliError(
+        `The ${input.describe} was accepted (2xx), but the post-acceptance confirmation against the verified distribution failed (AUTH_SPEC §12-10 (3) — success is defined by the confirmed effect, not the 2xx): ${error.message}`,
       ),
-    );
-    const distributed = metadata.manifest;
-    const resolve = (outcome: Parameters<FloorHandle["resolveIntent"]>[1]) =>
-      input.intentId === null ? Effect.void : input.floor.resolveIntent(input.intentId, outcome);
-    if (
-      distributed.manifestVersion === input.selfManifest.manifestVersion &&
-      distributed.signedBytesHashHex === input.selfManifest.manifestSigHashHex
-    ) {
-      return yield* resolve("accepted");
-    }
-    if (
-      distributed.manifestVersion > input.selfManifest.manifestVersion &&
-      input.effectVisible(metadata)
-    ) {
-      // Overtaken by a concurrent meta operation, but this operation's effect exists in the verified set
-      return yield* resolve("accepted-superseded");
-    }
-    if (distributed.manifestVersion === input.selfManifest.manifestVersion) {
-      yield* resolve("not-accepted");
-      return yield* Effect.fail(
-        cliError(
-          `The ${input.describe} was accepted (2xx), but the server distributes a different manifest at the issued manifestVersion ${input.selfManifest.manifestVersion} (issued signed-bytes hash ${input.selfManifest.manifestSigHashHex}, distributed ${distributed.signedBytesHashHex}). The issued manifest was not stored — treating the ${input.describe} as unconfirmed (AUTH_SPEC §12-10 (3)); the local floor was not advanced with the issued manifest`,
-        ),
-      );
-    }
+    ),
+  );
+  const distributed = metadata.manifest;
+  const resolve = (outcome: Parameters<FloorHandle["resolveIntent"]>[1]) =>
+    input.intentId === null ? Effect.void : input.floor.resolveIntent(input.intentId, outcome);
+  if (
+    distributed.manifestVersion === input.selfManifest.manifestVersion &&
+    distributed.signedBytesHashHex === input.selfManifest.manifestSigHashHex
+  ) {
+    return yield* resolve("accepted");
+  }
+  if (
+    distributed.manifestVersion > input.selfManifest.manifestVersion &&
+    input.effectVisible(metadata)
+  ) {
+    // Overtaken by a concurrent meta operation, but this operation's effect exists in the verified set
+    return yield* resolve("accepted-superseded");
+  }
+  if (distributed.manifestVersion === input.selfManifest.manifestVersion) {
+    yield* resolve("not-accepted");
     return yield* Effect.fail(
       cliError(
-        `The ${input.describe} was accepted (2xx), but its effect could not be confirmed in the verified distribution (the distributed manifestVersion is ${distributed.manifestVersion} vs the issued ${input.selfManifest.manifestVersion}, and the effect is not visible in the verified statement set). Treating the ${input.describe} as unconfirmed (AUTH_SPEC §12-10 (3)) — re-run the command after investigating the server`,
+        `The ${input.describe} was accepted (2xx), but the server distributes a different manifest at the issued manifestVersion ${input.selfManifest.manifestVersion} (issued signed-bytes hash ${input.selfManifest.manifestSigHashHex}, distributed ${distributed.signedBytesHashHex}). The issued manifest was not stored — treating the ${input.describe} as unconfirmed (AUTH_SPEC §12-10 (3)); the local floor was not advanced with the issued manifest`,
       ),
     );
-  });
-}
+  }
+  return yield* Effect.fail(
+    cliError(
+      `The ${input.describe} was accepted (2xx), but its effect could not be confirmed in the verified distribution (the distributed manifestVersion is ${distributed.manifestVersion} vs the issued ${input.selfManifest.manifestVersion}, and the effect is not visible in the verified statement set). Treating the ${input.describe} as unconfirmed (AUTH_SPEC §12-10 (3)) — re-run the command after investigating the server`,
+    ),
+  );
+});

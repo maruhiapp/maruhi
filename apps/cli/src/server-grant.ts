@@ -65,7 +65,7 @@ interface ServerKeyConfig {
   readonly serverKeyFingerprintHex: string;
 }
 
-export interface GrantSummary {
+interface GrantSummary {
   /** Whether it appended to the chain (false = detected a valid grant of identical content and skipped). */
   readonly appended: boolean;
   readonly serverKeyFingerprintHex: string;
@@ -172,34 +172,34 @@ function sameScope(a: readonly string[], b: readonly string[]): boolean {
  * self-consistency check (machine detection of transport corruption /
  * a mix-up of sources).
  */
-function fetchServerKeyConfig(client: MaruhiClient): Effect.Effect<ServerKeyConfig, CliError> {
-  return Effect.gen(function* () {
-    const config = yield* client.auth.authConfig({}).pipe(Effect.mapError(toCliError));
-    const encPubHex = config.serverEncPubHex;
-    const fingerprintHex = config.serverKeyFingerprintHex;
-    if (encPubHex === undefined || fingerprintHex === undefined) {
-      return yield* Effect.fail(
-        cliError(
-          "The server has no deployment keypair configured (/auth/config has no serverKeyFingerprintHex). Register SERVER_ENC_KEY_IKM following docs/SELF_HOSTING.md",
-        ),
-      );
-    }
-    const encPub = decodeHex(encPubHex);
-    if (encPub === null || encPub.length !== 32) {
-      return yield* Effect.fail(cliError("serverEncPubHex in /auth/config is malformed"));
-    }
-    const mismatch = cliError(
-      "The server-provided enc public key does not match serverKeyFingerprintHex (the response contradicts itself). Check the deployment configuration or the transport path",
+const fetchServerKeyConfig = Effect.fn("server-grant.fetchServerKeyConfig")(function* (
+  client: MaruhiClient,
+): Effect.fn.Return<ServerKeyConfig, CliError> {
+  const config = yield* client.auth.authConfig({}).pipe(Effect.mapError(toCliError));
+  const encPubHex = config.serverEncPubHex;
+  const fingerprintHex = config.serverKeyFingerprintHex;
+  if (encPubHex === undefined || fingerprintHex === undefined) {
+    return yield* Effect.fail(
+      cliError(
+        "The server has no deployment keypair configured (/auth/config has no serverKeyFingerprintHex). Register SERVER_ENC_KEY_IKM following docs/SELF_HOSTING.md",
+      ),
     );
-    const computed = yield* cryptoEffect(() => computeServerKeyFingerprint(encPub)).pipe(
-      Effect.mapError(() => mismatch),
-    );
-    if (encodeHex(computed) !== fingerprintHex) {
-      return yield* Effect.fail(mismatch);
-    }
-    return { serverEncPubHex: encPubHex, serverKeyFingerprintHex: fingerprintHex };
-  });
-}
+  }
+  const encPub = decodeHex(encPubHex);
+  if (encPub === null || encPub.length !== 32) {
+    return yield* Effect.fail(cliError("serverEncPubHex in /auth/config is malformed"));
+  }
+  const mismatch = cliError(
+    "The server-provided enc public key does not match serverKeyFingerprintHex (the response contradicts itself). Check the deployment configuration or the transport path",
+  );
+  const computed = yield* cryptoEffect(() => computeServerKeyFingerprint(encPub)).pipe(
+    Effect.mapError(() => mismatch),
+  );
+  if (encodeHex(computed) !== fingerprintHex) {
+    return yield* Effect.fail(mismatch);
+  }
+  return { serverEncPubHex: encPubHex, serverKeyFingerprintHex: fingerprintHex };
+});
 
 /**
  * The server-key confirmation ceremony (§9): the FP's word display and
@@ -216,86 +216,82 @@ function fetchServerKeyConfig(client: MaruhiClient): Effect.Effect<ServerKeyConf
  *   word** (the same ceremony as the recovery code's save confirmation —
  *   recovery.ts. Blocks the shape of typing y without reading)
  */
-function confirmServerKey(input: {
+const confirmServerKey = Effect.fn("server-grant.confirmServerKey")(function* (input: {
   readonly fingerprintHex: string;
   readonly expectFingerprintHex: string | null;
-}): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const words = yield* fingerprintWords(
-      input.fingerprintHex,
-      "The server key fingerprint is malformed",
-    );
-    const lines = [
-      "Server key fingerprint (first 16 bytes of SHA-256(enc public key) — CRYPTO_SPEC §9):",
-      `  hex:  ${input.fingerprintHex}`,
-      "  word: " + formatWordList(words),
-      "Check against your out-of-band record that this word list matches the server key fingerprint noted at deploy time (see the recording step in docs/SELF_HOSTING.md).",
-    ];
-    for (const line of lines) {
-      yield* io.log(line);
-    }
-    if (input.expectFingerprintHex !== null) {
-      if (input.expectFingerprintHex !== input.fingerprintHex) {
-        return yield* Effect.fail(
-          cliError(
-            "--expect-fingerprint does not match the fingerprint of the server-provided key. The deployment's key is not the one you expected — the grant was aborted (verify the key out of band)",
-          ),
-        );
-      }
-      yield* io.log(
-        "--expect-fingerprint matches (continuing; the out-of-band record counts as checked)",
-      );
-      return;
-    }
-    // Never let an AI-agent environment perform the ceremony on the
-    // user's behalf (the matching is a human's out-of-band
-    // confirmation — §9 / ADR-0014. The grant version of the same posture
-    // as the value-display refusal — agent.ts)
-    if (io.agentProfile().isAgent) {
+}): Effect.fn.Return<void, CliError, CliIo> {
+  const io = yield* CliIo;
+  const words = yield* fingerprintWords(
+    input.fingerprintHex,
+    "The server key fingerprint is malformed",
+  );
+  const lines = [
+    "Server key fingerprint (first 16 bytes of SHA-256(enc public key) — CRYPTO_SPEC §9):",
+    `  hex:  ${input.fingerprintHex}`,
+    "  word: " + formatWordList(words),
+    "Check against your out-of-band record that this word list matches the server key fingerprint noted at deploy time (see the recording step in docs/SELF_HOSTING.md).",
+  ];
+  for (const line of lines) {
+    yield* io.log(line);
+  }
+  if (input.expectFingerprintHex !== null) {
+    if (input.expectFingerprintHex !== input.fingerprintHex) {
       return yield* Effect.fail(
         cliError(
-          "Refused to run the server-key confirmation ceremony: an AI agent environment was detected. Run this yourself in a terminal, or pass the fingerprint noted out of band via --expect-fingerprint",
+          "--expect-fingerprint does not match the fingerprint of the server-provided key. The deployment's key is not the one you expected — the grant was aborted (verify the key out of band)",
         ),
       );
     }
-    return yield* confirmByLastWord({
-      words,
-      promptText: "Once checked, type the last of the 12 words shown above",
-      mismatchText: "That does not match. Type the last word of the list shown above",
-      exhaustedText:
-        "Server key fingerprint confirmation failed (the re-typed word does not match). The grant was not performed — re-run once you can check against your out-of-band record",
-    });
+    yield* io.log(
+      "--expect-fingerprint matches (continuing; the out-of-band record counts as checked)",
+    );
+    return;
+  }
+  // Never let an AI-agent environment perform the ceremony on the
+  // user's behalf (the matching is a human's out-of-band
+  // confirmation — §9 / ADR-0014. The grant version of the same posture
+  // as the value-display refusal — agent.ts)
+  if (io.agentProfile().isAgent) {
+    return yield* Effect.fail(
+      cliError(
+        "Refused to run the server-key confirmation ceremony: an AI agent environment was detected. Run this yourself in a terminal, or pass the fingerprint noted out of band via --expect-fingerprint",
+      ),
+    );
+  }
+  return yield* confirmByLastWord({
+    words,
+    promptText: "Once checked, type the last of the 12 words shown above",
+    mismatchText: "That does not match. Type the last word of the list shown above",
+    exhaustedText:
+      "Server key fingerprint confirmation failed (the re-typed word does not match). The grant was not performed — re-run once you can check against your out-of-band record",
   });
-}
+});
 
 /** Signs the grant_server entry right after the current head (the shared core = chain-append.ts). */
-function signGrantEntry(input: {
+const signGrantEntry = Effect.fn("server-grant.signGrantEntry")(function* (input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
   readonly serverConfig: ServerKeyConfig;
   readonly scope: readonly string[];
   readonly leasePolicy: readonly LeasePolicyIssuer[];
-}): Effect.Effect<ChainEntry, CliError> {
-  return Effect.gen(function* () {
-    return yield* signEntryAtHead({
-      verified: input.verified,
-      signerUserId: input.signerUserId,
-      operation: {
-        op: "grant_server",
-        payload: {
-          serverEncPubHex: input.serverConfig.serverEncPubHex,
-          serverKeyFingerprintHex: input.serverConfig.serverKeyFingerprintHex,
-          scopeEnvironmentIds: input.scope,
-          leasePolicy: input.leasePolicy,
-        },
+}): Effect.fn.Return<ChainEntry, CliError> {
+  return yield* signEntryAtHead({
+    verified: input.verified,
+    signerUserId: input.signerUserId,
+    operation: {
+      op: "grant_server",
+      payload: {
+        serverEncPubHex: input.serverConfig.serverEncPubHex,
+        serverKeyFingerprintHex: input.serverConfig.serverKeyFingerprintHex,
+        scopeEnvironmentIds: input.scope,
+        leasePolicy: input.leasePolicy,
       },
-      signingKeyPair: input.signingKeyPair,
-      failureText: "Failed to sign the grant_server entry",
-    });
+    },
+    signingKeyPair: input.signingKeyPair,
+    failureText: "Failed to sign the grant_server entry",
   });
-}
+});
 
 /**
  * Registers the server-addressed wraps for every epoch (1..current
@@ -340,7 +336,7 @@ function grantUnchanged(
 }
 
 /** The grant's outcome: a proposal (four-eyes — K6) or an application. */
-export type ServerGrantOutcome =
+type ServerGrantOutcome =
   | { readonly kind: "proposed"; readonly proposal: ProposedSummary }
   | { readonly kind: "applied"; readonly summary: GrantSummary };
 
@@ -351,35 +347,36 @@ export type ServerGrantOutcome =
  * who completed the application under four-eyes (approval-approve.ts —
  * §12-6's fifth path).
  */
-export function backfillServerGrant(input: {
+export const backfillServerGrant = Effect.fn("server-grant.backfillServerGrant")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly grant: ServerGrant;
   readonly recipient: DekRecipient;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<{ readonly registered: number; readonly alreadyRegistered: number }, CliError> {
-  return Effect.gen(function* () {
-    let registered = 0;
-    let alreadyRegistered = 0;
-    for (const environmentId of input.grant.scopeEnvironmentIds) {
-      const result = yield* backfillEnvironment({
-        client: input.client,
-        verified: input.verified,
-        environmentId,
-        recipient: input.recipient,
-        grant: input.grant,
-        signerUserId: input.signerUserId,
-        signingKeyPair: input.signingKeyPair,
-      });
-      registered += result.registered;
-      alreadyRegistered += result.alreadyRegistered;
-    }
-    return { registered, alreadyRegistered };
-  });
-}
+}): Effect.fn.Return<
+  { readonly registered: number; readonly alreadyRegistered: number },
+  CliError
+> {
+  let registered = 0;
+  let alreadyRegistered = 0;
+  for (const environmentId of input.grant.scopeEnvironmentIds) {
+    const result = yield* backfillEnvironment({
+      client: input.client,
+      verified: input.verified,
+      environmentId,
+      recipient: input.recipient,
+      grant: input.grant,
+      signerUserId: input.signerUserId,
+      signingKeyPair: input.signingKeyPair,
+    });
+    registered += result.registered;
+    alreadyRegistered += result.alreadyRegistered;
+  }
+  return { registered, alreadyRegistered };
+});
 
-export function serverGrantOp(input: {
+export const serverGrantOp = Effect.fn("server-grant.serverGrantOp")(function* (input: {
   readonly client: MaruhiClient;
   /**
    * The deployment whose server key is granted (`--key-from <mirror url>`
@@ -397,146 +394,144 @@ export function serverGrantOp(input: {
   readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly proposal: ProposalInput;
-}): Effect.Effect<ServerGrantOutcome, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    // Normalizing the scope: ascending code-point order, no duplicates (§6.2's SHOULD)
-    const scope = [...new Set<string>(input.environmentIds)].toSorted();
-    const serverConfig = yield* fetchServerKeyConfig(input.keySource ?? input.client);
-    const { existing } = yield* ensureGrantable({
-      verified: input.verified,
-      signerUserId: input.signerUserId,
-      scope,
-      serverConfig,
-    });
+}): Effect.fn.Return<ServerGrantOutcome, CliError, CliIo> {
+  const io = yield* CliIo;
+  // Normalizing the scope: ascending code-point order, no duplicates (§6.2's SHOULD)
+  const scope = [...new Set<string>(input.environmentIds)].toSorted();
+  const serverConfig = yield* fetchServerKeyConfig(input.keySource ?? input.client);
+  const { existing } = yield* ensureGrantable({
+    verified: input.verified,
+    signerUserId: input.signerUserId,
+    scope,
+    serverConfig,
+  });
 
-    const unchanged = grantUnchanged(existing, scope, input.leasePolicy);
+  const unchanged = grantUnchanged(existing, scope, input.leasePolicy);
 
-    // The ceremony (§9) runs whether or not an append happens (even on a
-    // backfill-only re-run, never skip matching the key that will
-    // continue to receive disclosure)
-    yield* confirmServerKey({
-      fingerprintHex: serverConfig.serverKeyFingerprintHex,
-      expectFingerprintHex: input.expectFingerprintHex,
-    });
+  // The ceremony (§9) runs whether or not an append happens (even on a
+  // backfill-only re-run, never skip matching the key that will
+  // continue to receive disclosure)
+  yield* confirmServerKey({
+    fingerprintHex: serverConfig.serverKeyFingerprintHex,
+    expectFingerprintHex: input.expectFingerprintHex,
+  });
 
-    const inner: ProposableOperation = {
-      op: "grant_server",
-      payload: {
-        serverEncPubHex: serverConfig.serverEncPubHex,
-        serverKeyFingerprintHex: serverConfig.serverKeyFingerprintHex,
-        scopeEnvironmentIds: scope,
-        leasePolicy: input.leasePolicy,
-      },
-    };
-    // Four-eyes (K6-A): when the policy targets grant_server, propose and
-    // stop (the server-addressed backfill is performed by the approver
-    // who completes the application — approval item 22). The proposer has
-    // already done the ceremony
-    if (!unchanged && isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
-      // Never propose when a grant of identical content is already valid after resync (Cursor Bugbot finding — a redundant proposal)
-      const proposal = yield* proposeOperation(
-        input,
-        inner,
-        proposeRecheck(
-          (view) =>
-            ensureGrantable({
-              verified: view,
+  const inner: ProposableOperation = {
+    op: "grant_server",
+    payload: {
+      serverEncPubHex: serverConfig.serverEncPubHex,
+      serverKeyFingerprintHex: serverConfig.serverKeyFingerprintHex,
+      scopeEnvironmentIds: scope,
+      leasePolicy: input.leasePolicy,
+    },
+  };
+  // Four-eyes (K6-A): when the policy targets grant_server, propose and
+  // stop (the server-addressed backfill is performed by the approver
+  // who completes the application — approval item 22). The proposer has
+  // already done the ceremony
+  if (!unchanged && isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
+    // Never propose when a grant of identical content is already valid after resync (Cursor Bugbot finding — a redundant proposal)
+    const proposal = yield* proposeOperation(
+      input,
+      inner,
+      proposeRecheck(
+        (view) =>
+          ensureGrantable({
+            verified: view,
+            signerUserId: input.signerUserId,
+            scope,
+            serverConfig,
+          }),
+        (checked) => grantUnchanged(checked.existing, scope, input.leasePolicy),
+        "An active grant with identical content was appended by a concurrent run — nothing to propose. Re-run `maruhi server grant` to resume the backfill",
+      ),
+    );
+    return { kind: "proposed", proposal };
+  }
+
+  let verified = input.verified;
+  if (unchanged) {
+    yield* io.log(
+      "An active grant with identical content (both scope and lease_policy) already exists — skipping the chain append and running only the backfill (crash recovery)",
+    );
+  } else {
+    const appended = yield* retryOnConflict(
+      { verified },
+      {
+        maxAttempts: MAX_ATTEMPTS,
+        attempt: (state) =>
+          Effect.gen(function* () {
+            const entry = yield* signGrantEntry({
+              verified: state.verified,
+              signerUserId: input.signerUserId,
+              signingKeyPair: input.signingKeyPair,
+              serverConfig,
+              scope,
+              leasePolicy: input.leasePolicy,
+            });
+            yield* appendEntry(input.client, state.verified, entry);
+            return state.verified;
+          }),
+        classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
+        recover: (state) =>
+          Effect.gen(function* () {
+            // Resync with the extended check (blocks re-signing onto a
+            // shortened / forked chain — the same discipline as env
+            // create / rotate's CAS retry)
+            const resynced = yield* resyncExtended(input.resync, state.verified);
+            yield* ensureStillTarget(resynced, inner, false);
+            yield* ensureGrantable({
+              verified: resynced,
               signerUserId: input.signerUserId,
               scope,
               serverConfig,
-            }),
-          (checked) => grantUnchanged(checked.existing, scope, input.leasePolicy),
-          "An active grant with identical content was appended by a concurrent run — nothing to propose. Re-run `maruhi server grant` to resume the backfill",
+            });
+            return { verified: resynced };
+          }),
+        exhaustedMessage: `grant_server's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
+      },
+    );
+    // Confirm the grant's listing via the post-acceptance resync (never make the server's claim the source of truth)
+    verified = yield* resyncExtended(input.resync, appended);
+    const granted = verified.state.serverGrants.get(serverConfig.serverKeyFingerprintHex);
+    if (granted === undefined) {
+      return yield* Effect.fail(
+        cliError(
+          "The resync after grant_server was accepted does not show the grant (the server's response contradicts the chain). Investigate the served chain",
         ),
       );
-      return { kind: "proposed", proposal };
     }
+    yield* io.log(
+      `Appended grant_server to the chain (seq=${verified.state.headSeq}, scope=${scope.join(", ")})`,
+    );
+  }
 
-    let verified = input.verified;
-    if (unchanged) {
-      yield* io.log(
-        "An active grant with identical content (both scope and lease_policy) already exists — skipping the chain append and running only the backfill (crash recovery)",
-      );
-    } else {
-      const appended = yield* retryOnConflict(
-        { verified },
-        {
-          maxAttempts: MAX_ATTEMPTS,
-          attempt: (state) =>
-            Effect.gen(function* () {
-              const entry = yield* signGrantEntry({
-                verified: state.verified,
-                signerUserId: input.signerUserId,
-                signingKeyPair: input.signingKeyPair,
-                serverConfig,
-                scope,
-                leasePolicy: input.leasePolicy,
-              });
-              yield* appendEntry(input.client, state.verified, entry);
-              return state.verified;
-            }),
-          classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-          recover: (state) =>
-            Effect.gen(function* () {
-              // Resync with the extended check (blocks re-signing onto a
-              // shortened / forked chain — the same discipline as env
-              // create / rotate's CAS retry)
-              const resynced = yield* resyncExtended(input.resync, state.verified);
-              yield* ensureStillTarget(resynced, inner, false);
-              yield* ensureGrantable({
-                verified: resynced,
-                signerUserId: input.signerUserId,
-                scope,
-                serverConfig,
-              });
-              return { verified: resynced };
-            }),
-          exhaustedMessage: `grant_server's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
-        },
-      );
-      // Confirm the grant's listing via the post-acceptance resync (never make the server's claim the source of truth)
-      verified = yield* resyncExtended(input.resync, appended);
-      const granted = verified.state.serverGrants.get(serverConfig.serverKeyFingerprintHex);
-      if (granted === undefined) {
-        return yield* Effect.fail(
-          cliError(
-            "The resync after grant_server was accepted does not show the grant (the server's response contradicts the chain). Investigate the served chain",
-          ),
-        );
-      }
-      yield* io.log(
-        `Appended grant_server to the chain (seq=${verified.state.headSeq}, scope=${scope.join(", ")})`,
-      );
-    }
+  const grant = verified.state.serverGrants.get(serverConfig.serverKeyFingerprintHex);
+  if (grant === undefined) {
+    return yield* Effect.fail(
+      cliError("Cannot confirm an active grant (contradicts the resync result)"),
+    );
+  }
 
-    const grant = verified.state.serverGrants.get(serverConfig.serverKeyFingerprintHex);
-    if (grant === undefined) {
-      return yield* Effect.fail(
-        cliError("Cannot confirm an active grant (contradicts the resync result)"),
-      );
-    }
-
-    // The backfill (every environment in the disclosure scope × every epoch — AUTH_SPEC §12-6)
-    const { registered, alreadyRegistered } = yield* backfillServerGrant({
-      client: input.client,
-      verified,
-      grant,
-      recipient: input.recipient,
-      signerUserId: input.signerUserId,
-      signingKeyPair: input.signingKeyPair,
-    });
-
-    return {
-      kind: "applied",
-      summary: {
-        appended: !unchanged,
-        serverKeyFingerprintHex: serverConfig.serverKeyFingerprintHex,
-        scopeEnvironmentIds: grant.scopeEnvironmentIds,
-        leasePolicyCount: grant.leasePolicy.length,
-        registered,
-        alreadyRegistered,
-      },
-    };
+  // The backfill (every environment in the disclosure scope × every epoch — AUTH_SPEC §12-6)
+  const { registered, alreadyRegistered } = yield* backfillServerGrant({
+    client: input.client,
+    verified,
+    grant,
+    recipient: input.recipient,
+    signerUserId: input.signerUserId,
+    signingKeyPair: input.signingKeyPair,
   });
-}
+
+  return {
+    kind: "applied",
+    summary: {
+      appended: !unchanged,
+      serverKeyFingerprintHex: serverConfig.serverKeyFingerprintHex,
+      scopeEnvironmentIds: grant.scopeEnvironmentIds,
+      leasePolicyCount: grant.leasePolicy.length,
+      registered,
+      alreadyRegistered,
+    },
+  };
+});

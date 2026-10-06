@@ -64,77 +64,75 @@ const HISTORY_TIMEOUT = Duration.seconds(10);
  * is said, never swallowed: the value would otherwise vanish from the
  * list and read as "nothing due".
  */
-export function dueRowsFor(input: {
+export const dueRowsFor = Effect.fnUntraced(function* (input: {
   readonly client: MaruhiClient;
   readonly projectId: string;
   readonly environmentId: string;
   readonly candidates: readonly MaxAgeCandidate[];
   readonly nowMs: number;
   readonly windowDays: number;
-}): Effect.Effect<DueRows, never, CliIo> {
-  return Effect.gen(function* () {
-    const unreadable: string[] = [];
-    const rows = yield* Effect.forEach(
-      input.candidates,
-      (candidate) =>
-        input.client.variables
-          .history({
-            params: {
-              projectId: input.projectId,
-              environmentId: input.environmentId,
-              variableId: candidate.variableId,
-            },
-          })
-          .pipe(
-            // A stalled read is bounded like a failed one: the note must
-            // never hold `maruhi run` (B-7), and a check cannot wait forever
-            Effect.timeout(HISTORY_TIMEOUT),
-            Effect.map((response) => response.versions),
-            // A failed read is noted and counted: the listing goes on, but
-            // a check (`--fail-on-due`) cannot pass on an unknown age
-            Effect.catch((error) =>
-              Effect.as(
-                logNote(
-                  `could not read the history of ${displayText(candidate.name)} in environment ${displayText(input.environmentId)} (${error.message}) — its age is not shown`,
-                ),
-                null,
+}): Effect.fn.Return<DueRows, never, CliIo> {
+  const unreadable: string[] = [];
+  const rows = yield* Effect.forEach(
+    input.candidates,
+    (candidate) =>
+      input.client.variables
+        .history({
+          params: {
+            projectId: input.projectId,
+            environmentId: input.environmentId,
+            variableId: candidate.variableId,
+          },
+        })
+        .pipe(
+          // A stalled read is bounded like a failed one: the note must
+          // never hold `maruhi run` (B-7), and a check cannot wait forever
+          Effect.timeout(HISTORY_TIMEOUT),
+          Effect.map((response) => response.versions),
+          // A failed read is noted and counted: the listing goes on, but
+          // a check (`--fail-on-due`) cannot pass on an unknown age
+          Effect.catch((error) =>
+            Effect.as(
+              logNote(
+                `could not read the history of ${displayText(candidate.name)} in environment ${displayText(input.environmentId)} (${error.message}) — its age is not shown`,
               ),
+              null,
             ),
-            Effect.map((history): DueRow | null => {
-              if (history === null) {
-                unreadable.push(candidate.name);
-                return null;
-              }
-              const pushedAtMs = plaintextPushedAtMs(history);
-              if (pushedAtMs === null) {
-                return null;
-              }
-              const dueAtMs = pushedAtMs + candidate.maxAgeDays * DAY_MS;
-              return dueAtMs - input.nowMs > input.windowDays * DAY_MS
-                ? null
-                : {
-                    environmentId: input.environmentId,
-                    variableId: candidate.variableId,
-                    name: candidate.name,
-                    maxAgeDays: candidate.maxAgeDays,
-                    pushedAtMs,
-                    dueAtMs,
-                  };
-            }),
           ),
-      // Every read at once: a handful of metadata GETs to one DO, so the
-      // note costs one round-trip time whatever the count (and one bound)
-      { concurrency: "unbounded" },
-    );
-    return {
-      rows: rows
-        .filter((row): row is DueRow => row !== null)
-        .toSorted((a, b) => a.dueAtMs - b.dueAtMs || a.name.localeCompare(b.name)),
-      unreadable,
-      unreadableEnvironments: [],
-    };
-  });
-}
+          Effect.map((history): DueRow | null => {
+            if (history === null) {
+              unreadable.push(candidate.name);
+              return null;
+            }
+            const pushedAtMs = plaintextPushedAtMs(history);
+            if (pushedAtMs === null) {
+              return null;
+            }
+            const dueAtMs = pushedAtMs + candidate.maxAgeDays * DAY_MS;
+            return dueAtMs - input.nowMs > input.windowDays * DAY_MS
+              ? null
+              : {
+                  environmentId: input.environmentId,
+                  variableId: candidate.variableId,
+                  name: candidate.name,
+                  maxAgeDays: candidate.maxAgeDays,
+                  pushedAtMs,
+                  dueAtMs,
+                };
+          }),
+        ),
+    // Every read at once: a handful of metadata GETs to one DO, so the
+    // note costs one round-trip time whatever the count (and one bound)
+    { concurrency: "unbounded" },
+  );
+  return {
+    rows: rows
+      .filter((row): row is DueRow => row !== null)
+      .toSorted((a, b) => a.dueAtMs - b.dueAtMs || a.name.localeCompare(b.name)),
+    unreadable,
+    unreadableEnvironments: [],
+  };
+});
 
 /** A history row as the age needs it (the lineage declaration included). */
 interface AgeRow {
@@ -211,39 +209,37 @@ function formatPastDueNote(rows: readonly DueRow[], nowMs: number): string | nul
  * history call (concurrent); an environment with none costs nothing. The
  * note never changes the command's outcome.
  */
-export function notePastDueValues(input: {
+export const notePastDueValues = Effect.fn("max-age.notePastDueValues")(function* (input: {
   readonly client: MaruhiClient;
   readonly projectId: string;
   readonly environmentId: string;
   readonly variables: readonly DecryptedVariable[];
-}): Effect.Effect<void, never, CliIo> {
-  return Effect.gen(function* () {
-    const candidates = input.variables.flatMap((variable): MaxAgeCandidate[] =>
-      variable.maxAgeDays === null
-        ? []
-        : [
-            {
-              variableId: variable.variableId,
-              name: variable.name,
-              maxAgeDays: variable.maxAgeDays,
-            },
-          ],
-    );
-    if (candidates.length === 0) {
-      return;
-    }
-    const nowMs = yield* Clock.currentTimeMillis;
-    const { rows } = yield* dueRowsFor({
-      client: input.client,
-      projectId: input.projectId,
-      environmentId: input.environmentId,
-      candidates,
-      nowMs,
-      windowDays: 0,
-    });
-    const note = formatPastDueNote(rows, nowMs);
-    if (note !== null) {
-      yield* logNote(note);
-    }
+}): Effect.fn.Return<void, never, CliIo> {
+  const candidates = input.variables.flatMap((variable): MaxAgeCandidate[] =>
+    variable.maxAgeDays === null
+      ? []
+      : [
+          {
+            variableId: variable.variableId,
+            name: variable.name,
+            maxAgeDays: variable.maxAgeDays,
+          },
+        ],
+  );
+  if (candidates.length === 0) {
+    return;
+  }
+  const nowMs = yield* Clock.currentTimeMillis;
+  const { rows } = yield* dueRowsFor({
+    client: input.client,
+    projectId: input.projectId,
+    environmentId: input.environmentId,
+    candidates,
+    nowMs,
+    windowDays: 0,
   });
-}
+  const note = formatPastDueNote(rows, nowMs);
+  if (note !== null) {
+    yield* logNote(note);
+  }
+});

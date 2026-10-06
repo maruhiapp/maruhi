@@ -19,7 +19,7 @@ type TagsOf<E> = E extends { readonly _tag: infer Tag extends string } ? Tag : n
 /** The members of E carrying `_tag` K (never when none do). */
 type TaggedMember<E, K extends string> = E extends { readonly _tag: K } ? E : never;
 
-export interface ConflictRetryOptions<S, A, C, E, R = never, K extends string = never> {
+interface ConflictRetryOptions<S, A, C, E, R = never, K extends string = never> {
   readonly maxAttempts: number;
   /** One attempt (from the current state through signing and sending). Succeeds with the accepted value or fails with a typed error. */
   readonly attempt: (state: S) => Effect.Effect<A, E, R>;
@@ -53,39 +53,44 @@ export interface ConflictRetryOptions<S, A, C, E, R = never, K extends string = 
  * error propagates as is; only a returned retryable state is used on
  * the next round (unused on the final round).
  */
-export function retryOnConflict<S, A, C, E, R = never, K extends string = never>(
+export const retryOnConflict = Effect.fn("retry.retryOnConflict")(function* <
+  S,
+  A,
+  C,
+  E,
+  R = never,
+  K extends string = never,
+>(
   initial: S,
   options: ConflictRetryOptions<S, A, C, E, R, K>,
-): Effect.Effect<A, CliError | TaggedMember<E, K>, R> {
-  return Effect.gen(function* () {
-    const unclassified = (
-      error: E,
-    ): Effect.Effect<
-      | { readonly kind: "accepted"; readonly value: A }
-      | { readonly kind: "conflict"; readonly conflict: C },
-      CliError
-    > => {
-      const conflict = options.classify(error);
-      return conflict === null
-        ? Effect.fail(toCliError(error))
-        : Effect.succeed({ kind: "conflict", conflict } as const);
-    };
-    let state = initial;
-    for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
-      const outcome = yield* options.attempt(state).pipe(
-        Effect.map((value) => ({ kind: "accepted", value }) as const),
-        options.passthrough === undefined
-          ? Effect.catch(unclassified)
-          : // The option documents "a tag E carries"; the cast is contained
-            // inside this abstraction (catchTag's K must be provably a tag
-            // of E, while the option's K infers from the caller's literal)
-            Effect.catchTag(options.passthrough as string as TagsOf<E>, Effect.fail, unclassified),
-      );
-      if (outcome.kind === "accepted") {
-        return outcome.value;
-      }
-      state = yield* options.recover(state, outcome.conflict);
+): Effect.fn.Return<A, CliError | TaggedMember<E, K>, R> {
+  const unclassified = (
+    error: E,
+  ): Effect.Effect<
+    | { readonly kind: "accepted"; readonly value: A }
+    | { readonly kind: "conflict"; readonly conflict: C },
+    CliError
+  > => {
+    const conflict = options.classify(error);
+    return conflict === null
+      ? Effect.fail(toCliError(error))
+      : Effect.succeed({ kind: "conflict", conflict } as const);
+  };
+  let state = initial;
+  for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+    const outcome = yield* options.attempt(state).pipe(
+      Effect.map((value) => ({ kind: "accepted", value }) as const),
+      options.passthrough === undefined
+        ? Effect.catch(unclassified)
+        : // The option documents "a tag E carries"; the cast is contained
+          // inside this abstraction (catchTag's K must be provably a tag
+          // of E, while the option's K infers from the caller's literal)
+          Effect.catchTag(options.passthrough as string as TagsOf<E>, Effect.fail, unclassified),
+    );
+    if (outcome.kind === "accepted") {
+      return outcome.value;
     }
-    return yield* Effect.fail(cliError(options.exhaustedMessage));
-  });
-}
+    state = yield* options.recover(state, outcome.conflict);
+  }
+  return yield* Effect.fail(cliError(options.exhaustedMessage));
+});

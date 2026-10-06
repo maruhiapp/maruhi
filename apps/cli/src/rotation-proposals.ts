@@ -50,51 +50,49 @@ function describeVariables(proposal: RotationProposal, states: StateIndex | unde
 }
 
 /** `maruhi rotation proposals [--env]`: the pending proposals with their next step (no value is opened). */
-export function rotationProposalsOp(
+export const rotationProposalsOp = Effect.fn("rotation-proposals.rotationProposalsOp")(function* (
   context: ProjectContextBase,
   options: { readonly environmentId?: string | undefined } = {},
-): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const all = yield* fetchRotationProposals(context.client, context.projectId);
-    const proposals =
-      options.environmentId === undefined
-        ? all
-        : all.filter((proposal) => proposal.environmentId === options.environmentId);
-    if (proposals.length === 0) {
-      yield* io.log(
-        options.environmentId === undefined
-          ? "No sealed proposals are pending"
-          : `No sealed proposals are pending for environment ${displayText(options.environmentId)}`,
-      );
-      return;
-    }
-    const environmentIds = [
-      ...new Set(proposals.map((proposal) => proposal.environmentId)),
-    ].toSorted();
-    const states = yield* resolveVariableStates(context, environmentIds);
+): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const all = yield* fetchRotationProposals(context.client, context.projectId);
+  const proposals =
+    options.environmentId === undefined
+      ? all
+      : all.filter((proposal) => proposal.environmentId === options.environmentId);
+  if (proposals.length === 0) {
     yield* io.log(
-      `Pending sealed proposals: ${countNoun(proposals.length, "proposal")} (minted by CI jobs under a workload lease — each waits for a member's accept or reject)`,
+      options.environmentId === undefined
+        ? "No sealed proposals are pending"
+        : `No sealed proposals are pending for environment ${displayText(options.environmentId)}`,
     );
-    for (const proposal of proposals) {
-      yield* io.log(
-        `  ${proposal.proposalId}\tenvironment=${displayText(proposal.environmentId)}\tconnector=${proposal.connector}\tminted=${formatUtcMinutes(proposal.createdAtMs)}\texpires=${formatUtcDate(proposal.expiresAtMs)}`,
-      );
-      yield* io.log(
-        `    variables: ${describeVariables(proposal, states.get(proposal.environmentId))}`,
-      );
-      yield* io.log(
-        `    minted by: the workload whose lease claims digest is ${proposal.claimsDigestHex.slice(0, 16)}… under the grant at chain seq ${proposal.grantChainSeq} (\`maruhi audit list --event rotation.proposed\` shows the row)`,
-      );
-      for (const fact of proposal.facts) {
-        yield* io.log(`    ${displayText(fact)}`);
-      }
-      yield* io.log(
-        `    next: \`maruhi rotation accept ${proposal.proposalId}\` (pushes the new value signed as you) or \`maruhi rotation reject ${proposal.proposalId}\``,
-      );
+    return;
+  }
+  const environmentIds = [
+    ...new Set(proposals.map((proposal) => proposal.environmentId)),
+  ].toSorted();
+  const states = yield* resolveVariableStates(context, environmentIds);
+  yield* io.log(
+    `Pending sealed proposals: ${countNoun(proposals.length, "proposal")} (minted by CI jobs under a workload lease — each waits for a member's accept or reject)`,
+  );
+  for (const proposal of proposals) {
+    yield* io.log(
+      `  ${proposal.proposalId}\tenvironment=${displayText(proposal.environmentId)}\tconnector=${proposal.connector}\tminted=${formatUtcMinutes(proposal.createdAtMs)}\texpires=${formatUtcDate(proposal.expiresAtMs)}`,
+    );
+    yield* io.log(
+      `    variables: ${describeVariables(proposal, states.get(proposal.environmentId))}`,
+    );
+    yield* io.log(
+      `    minted by: the workload whose lease claims digest is ${proposal.claimsDigestHex.slice(0, 16)}… under the grant at chain seq ${proposal.grantChainSeq} (\`maruhi audit list --event rotation.proposed\` shows the row)`,
+    );
+    for (const fact of proposal.facts) {
+      yield* io.log(`    ${displayText(fact)}`);
     }
-  });
-}
+    yield* io.log(
+      `    next: \`maruhi rotation accept ${proposal.proposalId}\` (pushes the new value signed as you) or \`maruhi rotation reject ${proposal.proposalId}\``,
+    );
+  }
+});
 
 /** Finds the pending proposal with the given id (a full id; a unique prefix of at least 8 characters is accepted). */
 export function findProposal(
@@ -122,7 +120,7 @@ export function findProposal(
   );
 }
 
-export interface AcceptInput {
+interface AcceptInput {
   readonly context: EnvironmentContext;
   readonly proposal: RotationProposal;
   /** true = skip the confirmation (the only non-interactive path). */
@@ -163,39 +161,37 @@ interface OpenedValue {
  * value with this device's DEK and compares the bytes; a different value
  * means the variable moved.
  */
-function storedValue(
+const storedValue = Effect.fn("rotation-proposals.storedValue")(function* (
   context: EnvironmentContext,
   pulled: VerifiedEnvironmentPull,
   current: VerifiedPulledValue,
-): Effect.Effect<Redacted.Redacted<Uint8Array>, CliError> {
-  return Effect.gen(function* () {
-    const keys = yield* environmentKeysFor({
-      client: context.client,
-      verified: pulled.verified,
-      environmentId: context.environmentId,
-      recipient: context.recipient,
-      prefetched: pulled.deks,
-    });
-    return yield* decryptVerifiedValue({
-      verified: pulled.verified,
-      environmentId: context.environmentId,
-      variable: current,
-      deksByEpoch: keys.deksByEpoch,
-      chainEpoch: keys.currentEpoch,
-    }).pipe(
-      // The device cannot open the current value (no wrap for its epoch —
-      // the post-add_device backfill is missing — or the environment is
-      // outside this device's scope): the same remedy as a missing proposal
-      // wrap, since a blind push by a device whose key reach is incomplete
-      // is not an acceptance (round 9)
-      Effect.mapError((error) =>
-        cliError(
-          `The current value of ${displayText(current.name)} cannot be opened on this device (${error.message}); the acceptance compares the proposed value with it before the push. Accept from a device that can read the environment (the one that approved this device's registration backfills its wraps — \`maruhi key device approve\`), or reject the proposal`,
-        ),
-      ),
-    );
+): Effect.fn.Return<Redacted.Redacted<Uint8Array>, CliError> {
+  const keys = yield* environmentKeysFor({
+    client: context.client,
+    verified: pulled.verified,
+    environmentId: context.environmentId,
+    recipient: context.recipient,
+    prefetched: pulled.deks,
   });
-}
+  return yield* decryptVerifiedValue({
+    verified: pulled.verified,
+    environmentId: context.environmentId,
+    variable: current,
+    deksByEpoch: keys.deksByEpoch,
+    chainEpoch: keys.currentEpoch,
+  }).pipe(
+    // The device cannot open the current value (no wrap for its epoch —
+    // the post-add_device backfill is missing — or the environment is
+    // outside this device's scope): the same remedy as a missing proposal
+    // wrap, since a blind push by a device whose key reach is incomplete
+    // is not an acceptance (round 9)
+    Effect.mapError((error) =>
+      cliError(
+        `The current value of ${displayText(current.name)} cannot be opened on this device (${error.message}); the acceptance compares the proposed value with it before the push. Accept from a device that can read the environment (the one that approved this device's registration backfills its wraps — \`maruhi key device approve\`), or reject the proposal`,
+      ),
+    ),
+  );
+});
 
 function sameBytes(stored: Uint8Array, proposed: Uint8Array): boolean {
   return stored.length === proposed.length && stored.every((byte, i) => byte === proposed[i]);
@@ -227,156 +223,150 @@ function currentOf(
 }
 
 /** Opens the wrap sealed to this device (by its enc key) under the §5.3 info of the proposed variable. */
-function openOwnWrap(
+const openOwnWrap = Effect.fn("rotation-proposals.openOwnWrap")(function* (
   input: AcceptInput,
   variable: RotationProposal["variables"][number],
   name: string,
-): Effect.Effect<Uint8Array, CliError> {
-  return Effect.gen(function* () {
-    const { context, proposal } = input;
-    const wrap = variable.wraps.find(
-      (candidate) => candidate.recipientEncPubHex === context.recipient.encPubHex,
-    );
-    if (wrap === undefined) {
-      return yield* Effect.fail(
-        cliError(
-          `The proposal carries no value sealed to this device (key ${context.masterKeys.fingerprintHex}) for ${displayText(name)}: it was minted before this device was registered, or this device is not in the environment's scope. Accept it from another device, or reject it`,
-        ),
-      );
-    }
-    const enc = decodeHex(wrap.encHex);
-    const ciphertext = decodeHex(wrap.ciphertextHex);
-    if (enc === null || ciphertext === null) {
-      return yield* Effect.fail(cliError("The proposal's sealed value is malformed (not hex)"));
-    }
-    const opened = yield* cryptoEffect(() =>
-      openProposedValue({
-        recipientKeyPair: context.recipient.encKeyPair,
-        sealed: { enc, ciphertext },
-        context: {
-          projectId: context.projectId,
-          environmentId: context.environmentId,
-          proposalId: proposal.proposalId,
-          variableId: variable.variableId,
-          baseVersion: variable.baseVersion,
-          recipientUserId: context.session.userId,
-        },
-      }),
-    ).pipe(
-      Effect.mapError((error) =>
-        cliError(
-          `Cannot open the sealed value of ${displayText(name)} with this device's key (${cryptoErrorKind(error)}): the proposal was sealed to another key or another context, or it is corrupt. Reject it and let the job run again`,
-        ),
+): Effect.fn.Return<Uint8Array, CliError> {
+  const { context, proposal } = input;
+  const wrap = variable.wraps.find(
+    (candidate) => candidate.recipientEncPubHex === context.recipient.encPubHex,
+  );
+  if (wrap === undefined) {
+    return yield* Effect.fail(
+      cliError(
+        `The proposal carries no value sealed to this device (key ${context.masterKeys.fingerprintHex}) for ${displayText(name)}: it was minted before this device was registered, or this device is not in the environment's scope. Accept it from another device, or reject it`,
       ),
     );
-    return opened;
-  });
-}
+  }
+  const enc = decodeHex(wrap.encHex);
+  const ciphertext = decodeHex(wrap.ciphertextHex);
+  if (enc === null || ciphertext === null) {
+    return yield* Effect.fail(cliError("The proposal's sealed value is malformed (not hex)"));
+  }
+  const opened = yield* cryptoEffect(() =>
+    openProposedValue({
+      recipientKeyPair: context.recipient.encKeyPair,
+      sealed: { enc, ciphertext },
+      context: {
+        projectId: context.projectId,
+        environmentId: context.environmentId,
+        proposalId: proposal.proposalId,
+        variableId: variable.variableId,
+        baseVersion: variable.baseVersion,
+        recipientUserId: context.session.userId,
+      },
+    }),
+  ).pipe(
+    Effect.mapError((error) =>
+      cliError(
+        `Cannot open the sealed value of ${displayText(name)} with this device's key (${cryptoErrorKind(error)}): the proposal was sealed to another key or another context, or it is corrupt. Reject it and let the job run again`,
+      ),
+    ),
+  );
+  return opened;
+});
 
 /** Opens this device's wrap of one proposed variable after checking the target still is the verified current version. */
-function openOne(
+const openOne = Effect.fnUntraced(function* (
   input: AcceptInput,
   pulled: VerifiedEnvironmentPull,
   variable: RotationProposal["variables"][number],
-): Effect.Effect<OpenedValue, CliError> {
-  return Effect.gen(function* () {
-    const { context, proposal } = input;
-    const current = yield* currentOf(input, pulled, variable);
-    const value = yield* openOwnWrap(input, variable, current.name);
-    // Reason for unwrapping: the shape and the byte comparison (both values are this device's to know)
-    const stored = Redacted.value(yield* storedValue(context, pulled, current));
-    // A current version past the base is either an earlier accept's own
-    // push (the same bytes — nothing to push, only to resolve) or a
-    // move, which makes the proposal stale
-    const moved = current.version > variable.baseVersion;
-    if (moved && !sameBytes(stored, value)) {
-      return yield* Effect.fail(
-        cliError(
-          `${displayText(current.name)} moved since the proposal was minted (it replaces version ${variable.baseVersion}, the current version is ${current.version}). Reject the proposal (\`maruhi rotation reject ${proposal.proposalId}\`), retire the credential it created at the issuer, and let the job run again`,
-        ),
-      );
-    }
-    return {
-      variableId: variable.variableId,
-      name: current.name,
-      value: Redacted.make(value, { label: "variable-value" }),
-      storedAs: moved ? current.version : null,
-      shape: shapeOf(value),
-      currentShape: shapeOf(stored),
-    };
-  });
-}
+): Effect.fn.Return<OpenedValue, CliError> {
+  const { context, proposal } = input;
+  const current = yield* currentOf(input, pulled, variable);
+  const value = yield* openOwnWrap(input, variable, current.name);
+  // Reason for unwrapping: the shape and the byte comparison (both values are this device's to know)
+  const stored = Redacted.value(yield* storedValue(context, pulled, current));
+  // A current version past the base is either an earlier accept's own
+  // push (the same bytes — nothing to push, only to resolve) or a
+  // move, which makes the proposal stale
+  const moved = current.version > variable.baseVersion;
+  if (moved && !sameBytes(stored, value)) {
+    return yield* Effect.fail(
+      cliError(
+        `${displayText(current.name)} moved since the proposal was minted (it replaces version ${variable.baseVersion}, the current version is ${current.version}). Reject the proposal (\`maruhi rotation reject ${proposal.proposalId}\`), retire the credential it created at the issuer, and let the job run again`,
+      ),
+    );
+  }
+  return {
+    variableId: variable.variableId,
+    name: current.name,
+    value: Redacted.make(value, { label: "variable-value" }),
+    storedAs: moved ? current.version : null,
+    shape: shapeOf(value),
+    currentShape: shapeOf(stored),
+  };
+});
 
 /**
  * `maruhi rotation accept <id>`: opens this device's wraps, confirms, pushes
  * every proposed value as an ordinary signed version (companions first —
  * the server's variable order), then resolves the proposal.
  */
-export function rotationAcceptOp(
+export const rotationAcceptOp = Effect.fn("rotation-proposals.rotationAcceptOp")(function* (
   input: AcceptInput,
-): Effect.Effect<AcceptResult, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const { context, proposal } = input;
-    if (proposal.environmentId !== context.environmentId) {
-      return yield* Effect.fail(
-        cliError(
-          `Proposal ${proposal.proposalId} belongs to environment ${displayText(proposal.environmentId)}, not ${displayText(context.environmentId)}`,
-        ),
-      );
-    }
-    const pulled = yield* pullVerifiedEnvironment({
-      client: context.client,
-      verified: context.verified,
-      environmentId: context.environmentId as EnvironmentId,
-      resync: context.resync,
-      floor: context.floorHandle,
-    });
-    // The server's variable order is the minted order (companions first)
-    const opened = yield* Effect.forEach(proposal.variables, (variable) =>
-      openOne(input, pulled, variable),
-    );
-    const toPush = opened.filter((entry) => entry.storedAs === null);
-    // A line count that changed is worth a look before the push, here
-    // where the decision is made (D-18; the CI job's report already showed it)
-    yield* Effect.forEach(
-      toPush.flatMap((entry) => {
-        const warning = lineCountWarning(
-          displayText(entry.name),
-          entry.shape,
-          entry.currentShape,
-          proposal.connector,
-        );
-        return warning === null ? [] : [warning];
-      }),
-      (warning) => logWarning(warning),
-      { discard: true },
-    );
-    yield* ensureConfirmed({
-      facts: acceptanceFacts(proposal, context.environmentId, opened),
-      prompt: "Accept and push? [y/N]: ",
-      refusal: `Refusing to accept proposal ${proposal.proposalId} in a non-interactive environment without --yes (it pushes new versions signed by you). Re-run with --yes to accept that explicitly`,
-      abort: "Aborted: nothing was pushed and the proposal stays pending",
-      yes: input.yes,
-    });
-    const pushed = yield* pushProposed(context, proposal, pulled, toPush);
-    const versions = opened.map((entry) => ({
-      variableId: entry.variableId,
-      version:
-        pushed.find((candidate) => candidate.name === entry.name)?.version.version ??
-        entry.storedAs ??
-        0,
-    }));
-    yield* resolveAccepted(context, proposal, opened, versions);
-    return {
-      proposalId: proposal.proposalId,
-      pushed,
-      stored: opened.flatMap((entry) =>
-        entry.storedAs === null ? [] : [{ name: entry.name, version: entry.storedAs }],
+): Effect.fn.Return<AcceptResult, CliError, CliServices> {
+  const { context, proposal } = input;
+  if (proposal.environmentId !== context.environmentId) {
+    return yield* Effect.fail(
+      cliError(
+        `Proposal ${proposal.proposalId} belongs to environment ${displayText(proposal.environmentId)}, not ${displayText(context.environmentId)}`,
       ),
-      warnings: [...pulled.warnings, ...pushed.flatMap((entry) => entry.version.warnings)],
-    };
+    );
+  }
+  const pulled = yield* pullVerifiedEnvironment({
+    client: context.client,
+    verified: context.verified,
+    environmentId: context.environmentId as EnvironmentId,
+    resync: context.resync,
+    floor: context.floorHandle,
   });
-}
+  // The server's variable order is the minted order (companions first)
+  const opened = yield* Effect.forEach(proposal.variables, (variable) =>
+    openOne(input, pulled, variable),
+  );
+  const toPush = opened.filter((entry) => entry.storedAs === null);
+  // A line count that changed is worth a look before the push, here
+  // where the decision is made (D-18; the CI job's report already showed it)
+  yield* Effect.forEach(
+    toPush.flatMap((entry) => {
+      const warning = lineCountWarning(
+        displayText(entry.name),
+        entry.shape,
+        entry.currentShape,
+        proposal.connector,
+      );
+      return warning === null ? [] : [warning];
+    }),
+    (warning) => logWarning(warning),
+    { discard: true },
+  );
+  yield* ensureConfirmed({
+    facts: acceptanceFacts(proposal, context.environmentId, opened),
+    prompt: "Accept and push? [y/N]: ",
+    refusal: `Refusing to accept proposal ${proposal.proposalId} in a non-interactive environment without --yes (it pushes new versions signed by you). Re-run with --yes to accept that explicitly`,
+    abort: "Aborted: nothing was pushed and the proposal stays pending",
+    yes: input.yes,
+  });
+  const pushed = yield* pushProposed(context, proposal, pulled, toPush);
+  const versions = opened.map((entry) => ({
+    variableId: entry.variableId,
+    version:
+      pushed.find((candidate) => candidate.name === entry.name)?.version.version ??
+      entry.storedAs ??
+      0,
+  }));
+  yield* resolveAccepted(context, proposal, opened, versions);
+  return {
+    proposalId: proposal.proposalId,
+    pushed,
+    stored: opened.flatMap((entry) =>
+      entry.storedAs === null ? [] : [{ name: entry.name, version: entry.storedAs }],
+    ),
+    warnings: [...pulled.warnings, ...pushed.flatMap((entry) => entry.version.warnings)],
+  };
+});
 
 /** The confirmation's lines: what is pushed, what is already stored, who minted it, and the connector's facts. */
 function acceptanceFacts(
@@ -405,38 +395,39 @@ function acceptanceFacts(
 }
 
 /** Pushes the opened values that are not stored yet, in the proposal's order, as ordinary signed versions. */
-function pushProposed(
+const pushProposed = Effect.fn("rotation-proposals.pushProposed")(function* (
   context: EnvironmentContext,
   proposal: RotationProposal,
   pulled: VerifiedEnvironmentPull,
   toPush: readonly OpenedValue[],
-): Effect.Effect<readonly { readonly name: string; readonly version: PushedVersion }[], CliError> {
-  return Effect.gen(function* () {
-    const pushed: { readonly name: string; readonly version: PushedVersion }[] = [];
-    for (const entry of toPush) {
-      const version = yield* pushVariable({
-        client: context.client,
-        environmentId: context.environmentId as EnvironmentId,
-        recipient: context.recipient,
-        name: entry.name,
-        value: entry.value,
-        verified: pulled.verified,
-        resync: context.resync,
-        writerUserId: context.session.userId,
-        signingKey: context.masterKeys.sigKeyPair.privateKey,
-        floor: context.floorHandle,
-      }).pipe(
-        Effect.mapError((error) =>
-          cliError(
-            `Storing ${displayText(entry.name)} failed: ${error.message}. ${pushed.length === 0 ? "Nothing was stored" : `Stored so far: ${pushed.map((done) => `${displayText(done.name)} (version ${done.version.version})`).join(", ")}`}; the proposal stays pending — fix the cause and run \`maruhi rotation accept ${proposal.proposalId}\` again (a value already stored is recognized and not pushed twice)`,
-          ),
+): Effect.fn.Return<
+  readonly { readonly name: string; readonly version: PushedVersion }[],
+  CliError
+> {
+  const pushed: { readonly name: string; readonly version: PushedVersion }[] = [];
+  for (const entry of toPush) {
+    const version = yield* pushVariable({
+      client: context.client,
+      environmentId: context.environmentId as EnvironmentId,
+      recipient: context.recipient,
+      name: entry.name,
+      value: entry.value,
+      verified: pulled.verified,
+      resync: context.resync,
+      writerUserId: context.session.userId,
+      signingKey: context.masterKeys.sigKeyPair.privateKey,
+      floor: context.floorHandle,
+    }).pipe(
+      Effect.mapError((error) =>
+        cliError(
+          `Storing ${displayText(entry.name)} failed: ${error.message}. ${pushed.length === 0 ? "Nothing was stored" : `Stored so far: ${pushed.map((done) => `${displayText(done.name)} (version ${done.version.version})`).join(", ")}`}; the proposal stays pending — fix the cause and run \`maruhi rotation accept ${proposal.proposalId}\` again (a value already stored is recognized and not pushed twice)`,
         ),
-      );
-      pushed.push({ name: entry.name, version });
-    }
-    return pushed;
-  });
-}
+      ),
+    );
+    pushed.push({ name: entry.name, version });
+  }
+  return pushed;
+});
 
 /** Tells the server the proposal is accepted, naming the versions that hold its values (a failure says how to finish). */
 function resolveAccepted(
@@ -483,24 +474,22 @@ export function describeAcceptance(result: AcceptResult, environmentId: string):
 }
 
 /** `maruhi rotation reject <id>`: drops the proposal; the credential it created at the issuer is named for retirement. */
-export function rotationRejectOp(input: {
+export const rotationRejectOp = Effect.fn("rotation-proposals.rotationRejectOp")(function* (input: {
   readonly context: ProjectContextBase;
   readonly proposal: RotationProposal;
-}): Effect.Effect<void, CliError, CliServices> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const { context, proposal } = input;
-    yield* context.client.rotation
-      .resolveProposal({
-        params: { projectId: context.projectId, proposalId: proposal.proposalId },
-        payload: { outcome: "rejected" },
-      })
-      .pipe(Effect.mapError(toCliError));
-    yield* io.log(
-      `Rejected proposal ${proposal.proposalId} (environment ${displayText(proposal.environmentId)}; rotation.proposal_rejected recorded in the audit log). The credential the job created still exists at the issuer — retire it by hand:`,
-    );
-    for (const fact of proposal.facts) {
-      yield* io.log(`  ${displayText(fact)}`);
-    }
-  });
-}
+}): Effect.fn.Return<void, CliError, CliServices> {
+  const io = yield* CliIo;
+  const { context, proposal } = input;
+  yield* context.client.rotation
+    .resolveProposal({
+      params: { projectId: context.projectId, proposalId: proposal.proposalId },
+      payload: { outcome: "rejected" },
+    })
+    .pipe(Effect.mapError(toCliError));
+  yield* io.log(
+    `Rejected proposal ${proposal.proposalId} (environment ${displayText(proposal.environmentId)}; rotation.proposal_rejected recorded in the audit log). The credential the job created still exists at the issuer — retire it by hand:`,
+  );
+  for (const fact of proposal.facts) {
+    yield* io.log(`  ${displayText(fact)}`);
+  }
+});

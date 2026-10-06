@@ -137,67 +137,61 @@ function duplicateMemberKeyRejection(
 }
 
 /** The pre-append check of add_member (re-run after a CAS retry's resync as well). */
-function ensureAddable(input: {
+const ensureAddable = Effect.fn("member-add.ensureAddable")(function* (input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
   readonly acceptance: InviteAcceptance;
   readonly role: Role;
   readonly scope: ScopePayloadFields;
   readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<{ readonly alreadyAdded: boolean }, CliError> {
-  return Effect.gen(function* () {
-    const actor = input.verified.state.members.get(input.signerUserId);
-    if (actor === undefined) {
-      return yield* Effect.fail(
-        cliError("Only admins and above can run add_member (CRYPTO_SPEC §6.2)"),
-      );
+}): Effect.fn.Return<{ readonly alreadyAdded: boolean }, CliError> {
+  const actor = input.verified.state.members.get(input.signerUserId);
+  if (actor === undefined) {
+    return yield* Effect.fail(
+      cliError("Only admins and above can run add_member (CRYPTO_SPEC §6.2)"),
+    );
+  }
+  const permission = yield* actorAuthority(input.verified, actor, input.signingKeyPair);
+  const actorRejection = addActorRejection(permission, input.role);
+  if (actorRejection !== null) {
+    return yield* Effect.fail(cliError(actorRejection));
+  }
+  const existing = input.verified.state.members.get(input.acceptance.inviteeUserId);
+  if (existing !== undefined) {
+    if (
+      memberHasKeys(existing, input.acceptance.inviteeEncPubHex, input.acceptance.inviteeSigPubHex)
+    ) {
+      // Already appended (a previous run's interruption / a concurrent
+      // run) — resume as backfill-only
+      return { alreadyAdded: true };
     }
-    const permission = yield* actorAuthority(input.verified, actor, input.signingKeyPair);
-    const actorRejection = addActorRejection(permission, input.role);
-    if (actorRejection !== null) {
-      return yield* Effect.fail(cliError(actorRejection));
-    }
-    const existing = input.verified.state.members.get(input.acceptance.inviteeUserId);
-    if (existing !== undefined) {
-      if (
-        memberHasKeys(
-          existing,
-          input.acceptance.inviteeEncPubHex,
-          input.acceptance.inviteeSigPubHex,
-        )
-      ) {
-        // Already appended (a previous run's interruption / a concurrent
-        // run) — resume as backfill-only
-        return { alreadyAdded: true };
-      }
-      return yield* Effect.fail(
-        cliError(
-          "The target user ID is already a member with a different key (the acceptance block contradicts the chain). Another acceptance may already have been added, or the acceptances were mixed up — check the state with `maruhi invite list` and `maruhi project verify`",
-        ),
-      );
-    }
-    const keyRejection = duplicateMemberKeyRejection(input.verified, input.acceptance);
-    if (keyRejection !== null) {
-      return yield* Effect.fail(cliError(keyRejection));
-    }
-    // Principle 1 (§6.2 scope-not-contained — check order is also §6.2's:
-    // after the duplicate family): add's permission-change environment set
-    // = the new scope (the invite row). The issuance-time check (K4-G) is
-    // the issuer's; the add's actor may be a different person at a
-    // different time (independent review S1). Dropped before the ceremony.
-    // An already-appended resume (above), like remove / change-role, asks
-    // no containment (what remains is only the backfill)
-    const invited = memberScopeOf(input.scope);
-    if (!scopeContains(permission.scope, invited)) {
-      return yield* Effect.fail(
-        cliError(
-          `Your environment scope (${describeScope(permission.scope)}) does not contain the invite's scope (${describeScope(invited)}), so add_member would be rejected (CRYPTO_SPEC §6.2 scope-not-contained). Ask an owner or an admin whose scope covers it to run member add`,
-        ),
-      );
-    }
-    return { alreadyAdded: false };
-  });
-}
+    return yield* Effect.fail(
+      cliError(
+        "The target user ID is already a member with a different key (the acceptance block contradicts the chain). Another acceptance may already have been added, or the acceptances were mixed up — check the state with `maruhi invite list` and `maruhi project verify`",
+      ),
+    );
+  }
+  const keyRejection = duplicateMemberKeyRejection(input.verified, input.acceptance);
+  if (keyRejection !== null) {
+    return yield* Effect.fail(cliError(keyRejection));
+  }
+  // Principle 1 (§6.2 scope-not-contained — check order is also §6.2's:
+  // after the duplicate family): add's permission-change environment set
+  // = the new scope (the invite row). The issuance-time check (K4-G) is
+  // the issuer's; the add's actor may be a different person at a
+  // different time (independent review S1). Dropped before the ceremony.
+  // An already-appended resume (above), like remove / change-role, asks
+  // no containment (what remains is only the backfill)
+  const invited = memberScopeOf(input.scope);
+  if (!scopeContains(permission.scope, invited)) {
+    return yield* Effect.fail(
+      cliError(
+        `Your environment scope (${describeScope(permission.scope)}) does not contain the invite's scope (${describeScope(invited)}), so add_member would be rejected (CRYPTO_SPEC §6.2 scope-not-contained). Ask an owner or an admin whose scope covers it to run member add`,
+      ),
+    );
+  }
+  return { alreadyAdded: false };
+});
 
 /**
  * Signs an add_member entry right after the current head (the shared core
@@ -255,16 +249,16 @@ interface MemberBackfillResult {
  * key (`storedRecipientEncPubHex` — AUTH_SPEC §12-6) with the acceptance
  * key (decryptability = enc-key equality itself).
  */
-function backfillMemberEnvironment(input: {
-  readonly client: MaruhiClient;
-  readonly verified: VerifiedProject;
-  readonly environmentId: string;
-  readonly recipient: DekRecipient;
-  readonly target: ChainMember;
-  readonly signerUserId: string;
-  readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<MemberBackfillResult, CliError> {
-  return Effect.gen(function* () {
+const backfillMemberEnvironment = Effect.fn("member-add.backfillMemberEnvironment")(
+  function* (input: {
+    readonly client: MaruhiClient;
+    readonly verified: VerifiedProject;
+    readonly environmentId: string;
+    readonly recipient: DekRecipient;
+    readonly target: ChainMember;
+    readonly signerUserId: string;
+    readonly signingKeyPair: SigningKeyPair;
+  }): Effect.fn.Return<MemberBackfillResult, CliError> {
     // Of the target's **all devices**, those whose effective scope
     // includes E (the device expansion of R(E) — CRYPTO_SPEC §6.2, DK K4).
     // Each device has its own slot, so register per device
@@ -281,8 +275,8 @@ function backfillMemberEnvironment(input: {
       repaired += result.repaired;
     }
     return { registered, alreadyRegistered, repaired };
-  });
-}
+  },
+);
 
 /** The backfill of one environment × one device of the target (slot = (epoch, user_id, enc key)). */
 function backfillMemberDevice(input: {
@@ -367,7 +361,7 @@ function backfillMemberDevice(input: {
  * append happens (even on a backfill-only re-run, never skip verifying the
  * key wraps are about to be dealt to — same discipline as server grant).
  */
-function prepareMemberAdd(input: {
+const prepareMemberAdd = Effect.fn("member-add.prepareMemberAdd")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly inviteId: string | null;
@@ -379,7 +373,7 @@ function prepareMemberAdd(input: {
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
   readonly origin: string;
-}): Effect.Effect<
+}): Effect.fn.Return<
   {
     readonly row: AddableRow;
     readonly alreadyAdded: boolean;
@@ -387,104 +381,102 @@ function prepareMemberAdd(input: {
   CliError,
   CliIo | FingerprintBook | Stdio.Stdio | HttpClient.HttpClient
 > {
-  return Effect.gen(function* () {
-    const listed = yield* listInvitations(input.client, input.verified.projectId);
-    const row = yield* selectInvitation(listed, input.inviteId);
+  const listed = yield* listInvitations(input.client, input.verified.projectId);
+  const row = yield* selectInvitation(listed, input.inviteId);
 
-    // Verifying the issuance text (CRYPTO_SPEC §6.5 — IV): the row's
-    // issuance signature is verified with the chain-derived inviter key.
-    // For a row I issued, my own key settles "is it my issuance" (independent
-    // of the issuance pin). Failure = the row was substituted / tampered →
-    // refuse
-    const issuance = yield* verifyIssuance({ verified: input.verified, row });
-    if (!issuance.ok) {
-      return yield* Effect.fail(
-        cliError(`This invite ${issuanceFailureText(issuance.reason)}. add_member was aborted`),
-      );
-    }
+  // Verifying the issuance text (CRYPTO_SPEC §6.5 — IV): the row's
+  // issuance signature is verified with the chain-derived inviter key.
+  // For a row I issued, my own key settles "is it my issuance" (independent
+  // of the issuance pin). Failure = the row was substituted / tampered →
+  // refuse
+  const issuance = yield* verifyIssuance({ verified: input.verified, row });
+  if (!issuance.ok) {
+    return yield* Effect.fail(
+      cliError(`This invite ${issuanceFailureText(issuance.reason)}. add_member was aborted`),
+    );
+  }
 
-    // The issuance-pin cross-check (SHOULD — agreement of the
-    // issuance-time link_pub / role with the server's claims). Without a
-    // pin (issued on another device, beyond the retention window) only the
-    // issuance signature's verification pins the row (the IV revision moved
-    // the source of truth to the issuance signature)
-    const pin = pinMismatchOf(input.pins, row);
-    if (pin === "mismatch") {
-      return yield* Effect.fail(
-        cliError(
-          "The server's claim for the invite row (link key / role) does not match the local record from issuance. The row may have been swapped or the role tampered with — add_member was aborted",
-        ),
-      );
-    }
-    if (pin === "missing") {
-      yield* logNote(
-        "this machine has no issuance pin for this invite (it may have been issued on another device). The issue signature still fixes the row; only the addressee login recorded at issuance is unavailable here",
-      );
-    }
+  // The issuance-pin cross-check (SHOULD — agreement of the
+  // issuance-time link_pub / role with the server's claims). Without a
+  // pin (issued on another device, beyond the retention window) only the
+  // issuance signature's verification pins the row (the IV revision moved
+  // the source of truth to the issuance signature)
+  const pin = pinMismatchOf(input.pins, row);
+  if (pin === "mismatch") {
+    return yield* Effect.fail(
+      cliError(
+        "The server's claim for the invite row (link key / role) does not match the local record from issuance. The row may have been swapped or the role tampered with — add_member was aborted",
+      ),
+    );
+  }
+  if (pin === "missing") {
+    yield* logNote(
+      "this machine has no issuance pin for this invite (it may have been issued on another device). The issue signature still fixes the row; only the addressee login recorded at issuance is unavailable here",
+    );
+  }
 
-    // §6.5's independent verification (never trusting the server's claimed verification result): the link signature → the acceptance signature
-    const acceptanceVerified = yield* verifyAcceptanceBlock({
-      projectId: input.verified.projectId,
-      issuance: row.issuance,
-      acceptance: row.acceptance,
-    });
-    if (!acceptanceVerified.ok) {
-      return yield* Effect.fail(
-        cliError(
-          `For this invite, ${acceptanceFailureText(acceptanceVerified.which)}. This acceptance block cannot be trusted — add_member was aborted (revoke the invite)`,
-        ),
-      );
-    }
+  // §6.5's independent verification (never trusting the server's claimed verification result): the link signature → the acceptance signature
+  const acceptanceVerified = yield* verifyAcceptanceBlock({
+    projectId: input.verified.projectId,
+    issuance: row.issuance,
+    acceptance: row.acceptance,
+  });
+  if (!acceptanceVerified.ok) {
+    return yield* Effect.fail(
+      cliError(
+        `For this invite, ${acceptanceFailureText(acceptanceVerified.which)}. This acceptance block cannot be trusted — add_member was aborted (revoke the invite)`,
+      ),
+    );
+  }
 
-    const first = yield* ensureAddable({
-      verified: input.verified,
-      signerUserId: input.signerUserId,
-      acceptance: row.acceptance,
+  const first = yield* ensureAddable({
+    verified: input.verified,
+    signerUserId: input.signerUserId,
+    acceptance: row.acceptance,
+    role: row.role,
+    scope: { scopeKind: row.scopeKind, scopeEnvironmentIds: row.scopeEnvironmentIds },
+    signingKeyPair: input.signingKeyPair,
+  });
+  if (!first.alreadyAdded) {
+    yield* warnKeyReuse(input.verified, row.acceptance);
+  }
+
+  // Adequacy form 4 (backing source) → if unmet, adequacy forms 1-3 (ceremony / flag / book)
+  const backed = yield* confirmInviteeViaBacking({
+    identityBacking: input.identityBacking,
+    flagLogin: input.githubLogin,
+    pinLogin: issuedPinOf(input.pins, row.id)?.expectedGithubLogin ?? null,
+    sigPubHex: row.acceptance.inviteeSigPubHex,
+    fingerprintHex: acceptanceVerified.fingerprintHex,
+    expectFingerprintHex: input.expectFingerprintHex,
+  });
+  if (!backed) {
+    yield* confirmInviteeFingerprint({
+      origin: input.origin,
+      targetUserId: row.acceptance.inviteeUserId,
       role: row.role,
-      scope: { scopeKind: row.scopeKind, scopeEnvironmentIds: row.scopeEnvironmentIds },
-      signingKeyPair: input.signingKeyPair,
-    });
-    if (!first.alreadyAdded) {
-      yield* warnKeyReuse(input.verified, row.acceptance);
-    }
-
-    // Adequacy form 4 (backing source) → if unmet, adequacy forms 1-3 (ceremony / flag / book)
-    const backed = yield* confirmInviteeViaBacking({
-      identityBacking: input.identityBacking,
-      flagLogin: input.githubLogin,
-      pinLogin: issuedPinOf(input.pins, row.id)?.expectedGithubLogin ?? null,
-      sigPubHex: row.acceptance.inviteeSigPubHex,
       fingerprintHex: acceptanceVerified.fingerprintHex,
       expectFingerprintHex: input.expectFingerprintHex,
     });
-    if (!backed) {
-      yield* confirmInviteeFingerprint({
-        origin: input.origin,
-        targetUserId: row.acceptance.inviteeUserId,
-        role: row.role,
-        fingerprintHex: acceptanceVerified.fingerprintHex,
-        expectFingerprintHex: input.expectFingerprintHex,
-      });
-    }
-    return { row, alreadyAdded: first.alreadyAdded };
-  });
-}
+  }
+  return { row, alreadyAdded: first.alreadyAdded };
+});
 
 /** The all-environment sweep of the backfill (one environment's failure doesn't stop the rest — §7). */
-export function backfillAllEnvironments(input: {
-  readonly client: MaruhiClient;
-  readonly verified: VerifiedProject;
-  readonly recipient: DekRecipient;
-  readonly target: ChainMember;
-  /** The environments to backfill (default = all environments of the target's scope). An explicit list is re-narrowed by the scope. */
-  readonly environments?: readonly string[];
-  readonly signerUserId: string;
-  readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<
-  Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed">,
-  CliError
-> {
-  return Effect.gen(function* () {
+export const backfillAllEnvironments = Effect.fn("member-add.backfillAllEnvironments")(
+  function* (input: {
+    readonly client: MaruhiClient;
+    readonly verified: VerifiedProject;
+    readonly recipient: DekRecipient;
+    readonly target: ChainMember;
+    /** The environments to backfill (default = all environments of the target's scope). An explicit list is re-narrowed by the scope. */
+    readonly environments?: readonly string[];
+    readonly signerUserId: string;
+    readonly signingKeyPair: SigningKeyPair;
+  }): Effect.fn.Return<
+    Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed">,
+    CliError
+  > {
     // The target scope's environments (chain-derived, verified-deletions
     // excluded) × every epoch (CRYPTO_SPEC §7 "every epoch DEK of every
     // environment in the target's scope" — 2026-09-15 ES K4. The
@@ -501,8 +493,8 @@ export function backfillAllEnvironments(input: {
     return yield* backfillEachEnvironment(environments, (environmentId) =>
       backfillMemberEnvironment({ ...input, environmentId }),
     );
-  });
-}
+  },
+);
 
 /** add_member's inner op (the same payload for a direct append and a proposal — the invite row's scope). */
 function addMemberOperation(
@@ -528,49 +520,47 @@ function addMemberOperation(
  * application under four-eyes (§12-6's fifth path — approval-approve.ts).
  * The target is the current member after resync (`target`).
  */
-export function backfillNewMember(input: {
+export const backfillNewMember = Effect.fn("member-add.backfillNewMember")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly target: ChainMember;
   readonly recipient: DekRecipient;
   readonly signerUserId: string;
   readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<
+}): Effect.fn.Return<
   Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed">,
   CliError,
   CliIo
 > {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    // Guidance on a re-addition (a past membership under a different key):
-    // does the key history carry a binding different from the current key.
-    // The 409 judgment is the exact comparison against the response's
-    // stored enc public key (AUTH_SPEC §12-6 supplement); this is guidance
-    // only. The server auto-cleans stale-key wraps on add_member acceptance
-    // (same supplement), so normally a 409 only ever means "registered under
-    // the current key". "A different key" = a history binding that matches
-    // none of the target's current device set (with multiple devices, a
-    // current device's key is not a stale key — DK K4)
-    const readdedWithNewKey = (input.verified.keyHistory.get(input.target.userId) ?? []).some(
-      (binding) => !memberHasKeys(input.target, binding.encPubHex, binding.sigPubHex),
+  const io = yield* CliIo;
+  // Guidance on a re-addition (a past membership under a different key):
+  // does the key history carry a binding different from the current key.
+  // The 409 judgment is the exact comparison against the response's
+  // stored enc public key (AUTH_SPEC §12-6 supplement); this is guidance
+  // only. The server auto-cleans stale-key wraps on add_member acceptance
+  // (same supplement), so normally a 409 only ever means "registered under
+  // the current key". "A different key" = a history binding that matches
+  // none of the target's current device set (with multiple devices, a
+  // current device's key is not a stale key — DK K4)
+  const readdedWithNewKey = (input.verified.keyHistory.get(input.target.userId) ?? []).some(
+    (binding) => !memberHasKeys(input.target, binding.encPubHex, binding.sigPubHex),
+  );
+  if (readdedWithNewKey) {
+    yield* io.log(
+      "The target user ID was previously a member with a different key. If leftover wraps addressed to the old key are found, the repair path (delete → re-register) replaces them with the new key (CRYPTO_SPEC §7 / AUTH_SPEC §12-6)",
     );
-    if (readdedWithNewKey) {
-      yield* io.log(
-        "The target user ID was previously a member with a different key. If leftover wraps addressed to the old key are found, the repair path (delete → re-register) replaces them with the new key (CRYPTO_SPEC §7 / AUTH_SPEC §12-6)",
-      );
-    }
-    return yield* backfillAllEnvironments({
-      client: input.client,
-      verified: input.verified,
-      recipient: input.recipient,
-      target: input.target,
-      signerUserId: input.signerUserId,
-      signingKeyPair: input.signingKeyPair,
-    });
+  }
+  return yield* backfillAllEnvironments({
+    client: input.client,
+    verified: input.verified,
+    recipient: input.recipient,
+    target: input.target,
+    signerUserId: input.signerUserId,
+    signingKeyPair: input.signingKeyPair,
   });
-}
+});
 
-export function memberAddOp(input: {
+export const memberAddOp = Effect.fn("member-add.memberAddOp")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly inviteId: string | null;
@@ -584,104 +574,102 @@ export function memberAddOp(input: {
   readonly recipient: DekRecipient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly proposal: ProposalInput;
-}): Effect.Effect<
+}): Effect.fn.Return<
   MemberOpOutcome<MemberAddSummary>,
   CliError,
   CliIo | FingerprintBook | Stdio.Stdio | HttpClient.HttpClient
 > {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const { row, alreadyAdded } = yield* prepareMemberAdd(input);
-    const inner = addMemberOperation(row);
-    const scope = { scopeKind: row.scopeKind, scopeEnvironmentIds: row.scopeEnvironmentIds };
-    const recheck = (view: VerifiedProject) =>
-      ensureAddable({
-        verified: view,
-        signerUserId: input.signerUserId,
-        acceptance: row.acceptance,
-        role: row.role,
-        scope,
-        signingKeyPair: input.signingKeyPair,
-      });
-
-    // Four-eyes (K6-A / K6-D): if the policy targets add_member, propose
-    // and finish. The ceremony (prepareMemberAdd) was done by the proposer,
-    // and the backfill is done by the approver who completes the
-    // application
-    if (!alreadyAdded && isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
-      const proposal = yield* proposeOperation(
-        input,
-        inner,
-        proposeRecheck(
-          recheck,
-          (rechecked) => rechecked.alreadyAdded,
-          "The target was added by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi member add` to resume the backfill",
-        ),
-      );
-      return { kind: "proposed", proposal };
-    }
-
-    let verified = input.verified;
-    let appended = false;
-    if (alreadyAdded) {
-      yield* io.log(
-        "The target is already a member with the same key — skipping add_member and running only the backfill (crash recovery)",
-      );
-    } else {
-      const outcome = yield* appendWithCas({
-        client: input.client,
-        verified,
-        resync: input.resync,
-        opLabel: "add_member",
-        signEntry: (view) =>
-          signAddMemberEntry({
-            verified: view,
-            signerUserId: input.signerUserId,
-            acceptance: row.acceptance,
-            role: row.role,
-            scope,
-            signingKeyPair: input.signingKeyPair,
-          }),
-        recheck: (view) =>
-          ensureStillTarget(view, inner, false).pipe(
-            Effect.flatMap(() => recheck(view)),
-            Effect.map((rechecked) => ({ already: rechecked.alreadyAdded })),
-          ),
-      });
-      appended = outcome.appended;
-      verified = outcome.verified;
-    }
-
-    // The post-acceptance resync confirms the listing (the server's claim is never the source of truth)
-    verified = yield* resyncExtended(input.resync, verified);
-    const target = verified.state.members.get(row.acceptance.inviteeUserId);
-    if (
-      target === undefined ||
-      !memberHasKeys(target, row.acceptance.inviteeEncPubHex, row.acceptance.inviteeSigPubHex)
-    ) {
-      return yield* Effect.fail(
-        cliError(
-          "The resync after add_member was accepted does not show the member (with the acceptance key) on the chain (the server's response contradicts the chain). Investigate the served chain",
-        ),
-      );
-    }
-    if (appended) {
-      yield* io.log(
-        `Appended add_member to the chain (target=${displayText(target.userId)}, role=${row.role}, seq=${verified.state.headSeq})`,
-      );
-    }
-
-    const backfilled = yield* backfillNewMember({
-      client: input.client,
-      verified,
-      target,
-      recipient: input.recipient,
+  const io = yield* CliIo;
+  const { row, alreadyAdded } = yield* prepareMemberAdd(input);
+  const inner = addMemberOperation(row);
+  const scope = { scopeKind: row.scopeKind, scopeEnvironmentIds: row.scopeEnvironmentIds };
+  const recheck = (view: VerifiedProject) =>
+    ensureAddable({
+      verified: view,
       signerUserId: input.signerUserId,
+      acceptance: row.acceptance,
+      role: row.role,
+      scope,
       signingKeyPair: input.signingKeyPair,
     });
-    return {
-      kind: "applied",
-      summary: { appended, targetUserId: target.userId, role: row.role, ...backfilled },
-    };
+
+  // Four-eyes (K6-A / K6-D): if the policy targets add_member, propose
+  // and finish. The ceremony (prepareMemberAdd) was done by the proposer,
+  // and the backfill is done by the approver who completes the
+  // application
+  if (!alreadyAdded && isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
+    const proposal = yield* proposeOperation(
+      input,
+      inner,
+      proposeRecheck(
+        recheck,
+        (rechecked) => rechecked.alreadyAdded,
+        "The target was added by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi member add` to resume the backfill",
+      ),
+    );
+    return { kind: "proposed", proposal };
+  }
+
+  let verified = input.verified;
+  let appended = false;
+  if (alreadyAdded) {
+    yield* io.log(
+      "The target is already a member with the same key — skipping add_member and running only the backfill (crash recovery)",
+    );
+  } else {
+    const outcome = yield* appendWithCas({
+      client: input.client,
+      verified,
+      resync: input.resync,
+      opLabel: "add_member",
+      signEntry: (view) =>
+        signAddMemberEntry({
+          verified: view,
+          signerUserId: input.signerUserId,
+          acceptance: row.acceptance,
+          role: row.role,
+          scope,
+          signingKeyPair: input.signingKeyPair,
+        }),
+      recheck: (view) =>
+        ensureStillTarget(view, inner, false).pipe(
+          Effect.flatMap(() => recheck(view)),
+          Effect.map((rechecked) => ({ already: rechecked.alreadyAdded })),
+        ),
+    });
+    appended = outcome.appended;
+    verified = outcome.verified;
+  }
+
+  // The post-acceptance resync confirms the listing (the server's claim is never the source of truth)
+  verified = yield* resyncExtended(input.resync, verified);
+  const target = verified.state.members.get(row.acceptance.inviteeUserId);
+  if (
+    target === undefined ||
+    !memberHasKeys(target, row.acceptance.inviteeEncPubHex, row.acceptance.inviteeSigPubHex)
+  ) {
+    return yield* Effect.fail(
+      cliError(
+        "The resync after add_member was accepted does not show the member (with the acceptance key) on the chain (the server's response contradicts the chain). Investigate the served chain",
+      ),
+    );
+  }
+  if (appended) {
+    yield* io.log(
+      `Appended add_member to the chain (target=${displayText(target.userId)}, role=${row.role}, seq=${verified.state.headSeq})`,
+    );
+  }
+
+  const backfilled = yield* backfillNewMember({
+    client: input.client,
+    verified,
+    target,
+    recipient: input.recipient,
+    signerUserId: input.signerUserId,
+    signingKeyPair: input.signingKeyPair,
   });
-}
+  return {
+    kind: "applied",
+    summary: { appended, targetUserId: target.userId, role: row.role, ...backfilled },
+  };
+});

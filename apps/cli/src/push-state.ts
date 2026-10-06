@@ -113,34 +113,34 @@ export interface PushState {
   readonly warnings: readonly string[];
 }
 
-export function initialState(input: PushInput): Effect.Effect<PushState, CliError> {
-  return Effect.gen(function* () {
-    const resolved = yield* resolveTarget(input);
-    const verified = resolved.verified;
-    // The current epoch (the chain-derived value — §6.2; a push against an
-    // uncreated environment stops here) and the DEK set are derived together
-    // from the same verified view (deks.ts's environmentKeysFor). The DEK is
-    // fetched exactly once per path (session-11 ruling 3's double-fetch
-    // elimination): for an existing variable the bundled share of the
-    // value-carrying pull (prefetched) is verified and unwrapped / for a
-    // creation, listMine
-    const keys = yield* environmentKeysFor({
-      client: input.client,
-      verified,
-      environmentId: input.environmentId,
-      recipient: input.recipient,
-      prefetched: resolved.deks,
-    });
-    return {
-      verified,
-      epoch: keys.currentEpoch,
-      deks: keys.deksByEpoch,
-      target: resolved.target,
-      issueBase: resolved.issueBase,
-      warnings: resolved.warnings,
-    };
+export const initialState = Effect.fn("push-state.initialState")(function* (
+  input: PushInput,
+): Effect.fn.Return<PushState, CliError> {
+  const resolved = yield* resolveTarget(input);
+  const verified = resolved.verified;
+  // The current epoch (the chain-derived value — §6.2; a push against an
+  // uncreated environment stops here) and the DEK set are derived together
+  // from the same verified view (deks.ts's environmentKeysFor). The DEK is
+  // fetched exactly once per path (session-11 ruling 3's double-fetch
+  // elimination): for an existing variable the bundled share of the
+  // value-carrying pull (prefetched) is verified and unwrapped / for a
+  // creation, listMine
+  const keys = yield* environmentKeysFor({
+    client: input.client,
+    verified,
+    environmentId: input.environmentId,
+    recipient: input.recipient,
+    prefetched: resolved.deks,
   });
-}
+  return {
+    verified,
+    epoch: keys.currentEpoch,
+    deks: keys.deksByEpoch,
+    target: resolved.target,
+    issueBase: resolved.issueBase,
+    warnings: resolved.warnings,
+  };
+});
 
 /** Re-fetches the DEK set only when the epoch changed (or is first seen) (the cached semantics). */
 function refreshEpochState(
@@ -166,65 +166,64 @@ function refreshEpochState(
  * id, verify it, and re-point prev at its signed-bytes hash. The 409
  * response is never asked for the winner's hash.
  */
-function adoptConflictWinner(
+const adoptConflictWinner = Effect.fn("push-state.adoptConflictWinner")(function* (
   input: PushInput,
   state: PushState,
   currentVersion: number,
-): Effect.Effect<PushState, CliError> {
-  return Effect.gen(function* () {
-    const pulled = yield* pullVerifiedEnvironment({
-      client: input.client,
-      verified: state.verified,
-      environmentId: input.environmentId,
-      resync: input.resync,
-      floor: input.floor,
-    });
-    const winner = pulled.variables.find(
-      (variable) => variable.variableId === state.target.variableId,
-    );
-    if (winner === undefined) {
-      return yield* Effect.fail(
-        cliError(
-          `The version-conflict winner (variable ${state.target.variableId}) is missing from the re-fetched pull (a concurrent deletion by another member, or an inconsistent server response)`,
-        ),
-      );
-    }
-    const inconsistency = winnerInconsistency(
-      state.target.variableId,
-      state.target.kind === "push" ? state.target.latest : null,
-      winner,
-      currentVersion,
-    );
-    if (inconsistency !== null) {
-      return yield* Effect.fail(cliError(inconsistency));
-    }
-    const refreshed = yield* refreshEpochState(input, state, pulled.verified);
-    return {
-      ...refreshed,
-      target: { kind: "push", variableId: state.target.variableId, latest: winner },
-      // Adopting the winner = a push to an existing variable (meta state unchanged — no manifest issued)
-      issueBase: null,
-      warnings: [...state.warnings, ...pulled.warnings],
-    };
+): Effect.fn.Return<PushState, CliError> {
+  const pulled = yield* pullVerifiedEnvironment({
+    client: input.client,
+    verified: state.verified,
+    environmentId: input.environmentId,
+    resync: input.resync,
+    floor: input.floor,
   });
-}
+  const winner = pulled.variables.find(
+    (variable) => variable.variableId === state.target.variableId,
+  );
+  if (winner === undefined) {
+    return yield* Effect.fail(
+      cliError(
+        `The version-conflict winner (variable ${state.target.variableId}) is missing from the re-fetched pull (a concurrent deletion by another member, or an inconsistent server response)`,
+      ),
+    );
+  }
+  const inconsistency = winnerInconsistency(
+    state.target.variableId,
+    state.target.kind === "push" ? state.target.latest : null,
+    winner,
+    currentVersion,
+  );
+  if (inconsistency !== null) {
+    return yield* Effect.fail(cliError(inconsistency));
+  }
+  const refreshed = yield* refreshEpochState(input, state, pulled.verified);
+  return {
+    ...refreshed,
+    target: { kind: "push", variableId: state.target.variableId, latest: winner },
+    // Adopting the winner = a push to an existing variable (meta state unchanged — no manifest issued)
+    issueBase: null,
+    warnings: [...state.warnings, ...pulled.warnings],
+  };
+});
 
-function reresolveTarget(input: PushInput, state: PushState): Effect.Effect<PushState, CliError> {
-  return Effect.gen(function* () {
-    const resolved = yield* resolveTarget({ ...input, verified: state.verified });
-    // The re-resolution's DEK prefers the on-hand set of a known epoch and
-    // is re-fetched only when the epoch advanced (refreshEpochState).
-    // resolved.deks is for the first resolution only — don't redo the
-    // unwrapping on the rare path of a conflict retry
-    const refreshed = yield* refreshEpochState(input, state, resolved.verified);
-    return {
-      ...refreshed,
-      target: resolved.target,
-      issueBase: resolved.issueBase,
-      warnings: [...state.warnings, ...resolved.warnings],
-    };
-  });
-}
+const reresolveTarget = Effect.fn("push-state.reresolveTarget")(function* (
+  input: PushInput,
+  state: PushState,
+): Effect.fn.Return<PushState, CliError> {
+  const resolved = yield* resolveTarget({ ...input, verified: state.verified });
+  // The re-resolution's DEK prefers the on-hand set of a known epoch and
+  // is re-fetched only when the epoch advanced (refreshEpochState).
+  // resolved.deks is for the first resolution only — don't redo the
+  // unwrapping on the rare path of a conflict retry
+  const refreshed = yield* refreshEpochState(input, state, resolved.verified);
+  return {
+    ...refreshed,
+    target: resolved.target,
+    issueBase: resolved.issueBase,
+    warnings: [...state.warnings, ...resolved.warnings],
+  };
+});
 
 /**
  * Recovery from a conflict (the domain-specific part of §12-5's retry

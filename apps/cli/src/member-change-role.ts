@@ -238,18 +238,18 @@ export function selfObligationReason(
  * self-narrowing refusal is dropped because the fulfiller moves to the
  * approver — design record K6-N).
  */
-function ensureRoleChangeable(input: {
-  readonly verified: VerifiedProject;
-  readonly signerUserId: string;
-  readonly targetUserId: string;
-  readonly request: ChangeRoleRequest;
-  readonly proposing: boolean;
-  readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<
-  { readonly alreadyChanged: boolean; readonly role: Role; readonly scope: MemberScope },
-  CliError
-> {
-  return Effect.gen(function* () {
+const ensureRoleChangeable = Effect.fn("member-change-role.ensureRoleChangeable")(
+  function* (input: {
+    readonly verified: VerifiedProject;
+    readonly signerUserId: string;
+    readonly targetUserId: string;
+    readonly request: ChangeRoleRequest;
+    readonly proposing: boolean;
+    readonly signingKeyPair: SigningKeyPair;
+  }): Effect.fn.Return<
+    { readonly alreadyChanged: boolean; readonly role: Role; readonly scope: MemberScope },
+    CliError
+  > {
     const { actor, target } = yield* resolveActorAndTarget(
       input.verified,
       input.signerUserId,
@@ -301,8 +301,8 @@ function ensureRoleChangeable(input: {
       return yield* Effect.fail(cliError(containment));
     }
     return { alreadyChanged: false, ...next };
-  });
-}
+  },
+);
 
 /**
  * Signs a change_role entry right after the current head (the shared core
@@ -344,14 +344,14 @@ function signChangeRoleEntry(input: {
  * across a CAS retry, it is not overwritten (design record K4-A's
  * "omitted = unchanged" — Cursor Bugbot's catch).
  */
-function signChangeRoleAtView(input: {
-  readonly verified: VerifiedProject;
-  readonly signerUserId: string;
-  readonly targetUserId: string;
-  readonly request: ChangeRoleRequest;
-  readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<ChainEntry, CliError> {
-  return Effect.gen(function* () {
+const signChangeRoleAtView = Effect.fn("member-change-role.signChangeRoleAtView")(
+  function* (input: {
+    readonly verified: VerifiedProject;
+    readonly signerUserId: string;
+    readonly targetUserId: string;
+    readonly request: ChangeRoleRequest;
+    readonly signingKeyPair: SigningKeyPair;
+  }): Effect.fn.Return<ChainEntry, CliError> {
     const current = input.verified.state.members.get(input.targetUserId);
     if (current === undefined) {
       return yield* Effect.fail(cliError("The target is not a member (check the user ID)"));
@@ -365,8 +365,8 @@ function signChangeRoleAtView(input: {
       newScope: next.scope,
       signingKeyPair: input.signingKeyPair,
     });
-  });
-}
+  },
+);
 
 /**
  * The widened part = of the union of the widened parts of **all**
@@ -413,16 +413,16 @@ export function scopeChangesOf(
  * they go to the note and are left to a re-run by a member whose scope
  * carries that environment.
  */
-function splitWidenedByActorScope(input: {
-  readonly client: MaruhiClient;
-  readonly verified: VerifiedProject;
-  readonly actorUserId: string;
-  readonly widened: readonly string[];
-}): Effect.Effect<
-  { readonly widened: readonly string[]; readonly widenedOutOfScope: readonly string[] },
-  CliError
-> {
-  return Effect.gen(function* () {
+const splitWidenedByActorScope = Effect.fn("member-change-role.splitWidenedByActorScope")(
+  function* (input: {
+    readonly client: MaruhiClient;
+    readonly verified: VerifiedProject;
+    readonly actorUserId: string;
+    readonly widened: readonly string[];
+  }): Effect.fn.Return<
+    { readonly widened: readonly string[]; readonly widenedOutOfScope: readonly string[] },
+    CliError
+  > {
     // A verified-deleted environment is dropped from the widened part even
     // if still in scope (never keep emitting an out-of-scope note for "an
     // environment nobody can fill" — pullfrog's catch. Same set as
@@ -441,8 +441,8 @@ function splitWidenedByActorScope(input: {
         (environmentId) => !scopeIncludesEnvironment(actorScope, environmentId),
       ),
     };
-  });
-}
+  },
+);
 
 /** change_role's inner op (proposal-ization — the omitted side is already resolved against the target's state on the proposal-time view). */
 function changeRoleOperation(input: {
@@ -501,7 +501,7 @@ function proposeRoleChange(
  * as-is) — even if a concurrent change_role changed the kept side, it
  * holds when the requested side is on the chain.
  */
-function appendRoleChange(input: {
+const appendRoleChange = Effect.fn("member-change-role.appendRoleChange")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly targetUserId: string;
@@ -514,58 +514,56 @@ function appendRoleChange(input: {
   readonly recheck: (
     view: VerifiedProject,
   ) => Effect.Effect<{ readonly alreadyChanged: boolean }, CliError>;
-}): Effect.Effect<
+}): Effect.fn.Return<
   { readonly verified: VerifiedProject; readonly appended: boolean; readonly target: ChainMember },
   CliError
 > {
-  return Effect.gen(function* () {
-    let verified = input.verified;
-    let appended = false;
-    if (!input.alreadyChanged) {
-      const outcome = yield* appendWithCas({
-        client: input.client,
-        verified,
-        resync: input.resync,
-        opLabel: "change_role",
-        // The omitted side (role / scope) is resolved from the target's
-        // state on **the signing view** (signChangeRoleAtView — Cursor
-        // Bugbot's catch)
-        signEntry: (view) =>
-          signChangeRoleAtView({
-            verified: view,
-            signerUserId: input.signerUserId,
-            targetUserId: input.targetUserId,
-            request: input.request,
-            signingKeyPair: input.signingKeyPair,
-          }),
-        recheck: (view) =>
-          ensureStillTarget(view, input.inner, false).pipe(
-            Effect.flatMap(() => input.recheck(view)),
-            Effect.map((rechecked) => ({ already: rechecked.alreadyChanged })),
-          ),
-      });
-      verified = outcome.verified;
-      appended = outcome.appended;
-    }
-    verified = yield* resyncExtended(input.resync, verified);
-    const target = verified.state.members.get(input.targetUserId);
-    const expected =
-      target === undefined ? undefined : yield* resolveRoleChange(target, input.request);
-    if (
-      target === undefined ||
-      expected === undefined ||
-      target.role !== expected.role ||
-      !sameScope(target.scope, expected.scope)
-    ) {
-      return yield* Effect.fail(
-        cliError(
-          "The resync after change_role was accepted does not show the target's new role / scope (the server's response contradicts the chain). Investigate the served chain",
+  let verified = input.verified;
+  let appended = false;
+  if (!input.alreadyChanged) {
+    const outcome = yield* appendWithCas({
+      client: input.client,
+      verified,
+      resync: input.resync,
+      opLabel: "change_role",
+      // The omitted side (role / scope) is resolved from the target's
+      // state on **the signing view** (signChangeRoleAtView — Cursor
+      // Bugbot's catch)
+      signEntry: (view) =>
+        signChangeRoleAtView({
+          verified: view,
+          signerUserId: input.signerUserId,
+          targetUserId: input.targetUserId,
+          request: input.request,
+          signingKeyPair: input.signingKeyPair,
+        }),
+      recheck: (view) =>
+        ensureStillTarget(view, input.inner, false).pipe(
+          Effect.flatMap(() => input.recheck(view)),
+          Effect.map((rechecked) => ({ already: rechecked.alreadyChanged })),
         ),
-      );
-    }
-    return { verified, appended, target };
-  });
-}
+    });
+    verified = outcome.verified;
+    appended = outcome.appended;
+  }
+  verified = yield* resyncExtended(input.resync, verified);
+  const target = verified.state.members.get(input.targetUserId);
+  const expected =
+    target === undefined ? undefined : yield* resolveRoleChange(target, input.request);
+  if (
+    target === undefined ||
+    expected === undefined ||
+    target.role !== expected.role ||
+    !sameScope(target.scope, expected.scope)
+  ) {
+    return yield* Effect.fail(
+      cliError(
+        "The resync after change_role was accepted does not show the target's new role / scope (the server's response contradicts the chain). Investigate the served chain",
+      ),
+    );
+  }
+  return { verified, appended, target };
+});
 
 /** The result of change_role's post-application fulfillment (widening backfill + demotion / narrowing sweep). */
 export type RoleChangeFulfilment = Pick<
@@ -585,7 +583,9 @@ export type RoleChangeFulfilment = Pick<
  * who completes the application under four-eyes (approval-approve.ts —
  * approval item 22). The target is the current member after resync.
  */
-export function fulfilRoleChange<R>(input: {
+export const fulfilRoleChange = Effect.fn("member-change-role.fulfilRoleChange")(function* <
+  R,
+>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly target: ChainMember;
@@ -593,56 +593,54 @@ export function fulfilRoleChange<R>(input: {
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
   readonly rotateWith: (reason: string) => SweepRotate<R>;
-}): Effect.Effect<RoleChangeFulfilment, CliError, R> {
-  return Effect.gen(function* () {
-    const change = scopeChangesOf(input.verified, input.target);
-    const { widened, widenedOutOfScope } = yield* splitWidenedByActorScope({
-      client: input.client,
-      verified: input.verified,
-      actorUserId: input.signerUserId,
-      widened: change.widened,
-    });
-
-    // (1) The widening backfill — the actor holds the DEK by the containment rule (§12-6). Idempotent via 409
-    const backfill =
-      widened.length === 0
-        ? null
-        : yield* backfillAllEnvironments({
-            client: input.client,
-            verified: input.verified,
-            recipient: input.recipient,
-            target: input.target,
-            environments: widened,
-            signerUserId: input.signerUserId,
-            signingKeyPair: input.signingKeyPair,
-          });
-
-    // (2) Rotate the demotion / narrowing duty environments (§7). With no
-    // duty entry on the target, no duty ever arose (promotion, widening, a
-    // born-reader no-op) — others' unconverged duties are not picked up
-    const mandates = memberMandatesFor(input.verified, input.target.userId);
-    const demoted = mandates.some((mandate) => mandate.kind === "role-demoted");
-    const sweep =
-      mandates.length === 0
-        ? null
-        : yield* sweepAfterMandate({
-            client: input.client,
-            verified: input.verified,
-            mandates,
-            actorUserId: input.signerUserId,
-            signingKeyPair: input.signingKeyPair,
-            rotateWith: input.rotateWith,
-          });
-    return {
-      widenedEnvironmentIds: widened,
-      widenedOutOfScopeEnvironmentIds: widenedOutOfScope,
-      narrowedEnvironmentIds: change.narrowed,
-      backfill,
-      demoted,
-      sweep,
-    };
+}): Effect.fn.Return<RoleChangeFulfilment, CliError, R> {
+  const change = scopeChangesOf(input.verified, input.target);
+  const { widened, widenedOutOfScope } = yield* splitWidenedByActorScope({
+    client: input.client,
+    verified: input.verified,
+    actorUserId: input.signerUserId,
+    widened: change.widened,
   });
-}
+
+  // (1) The widening backfill — the actor holds the DEK by the containment rule (§12-6). Idempotent via 409
+  const backfill =
+    widened.length === 0
+      ? null
+      : yield* backfillAllEnvironments({
+          client: input.client,
+          verified: input.verified,
+          recipient: input.recipient,
+          target: input.target,
+          environments: widened,
+          signerUserId: input.signerUserId,
+          signingKeyPair: input.signingKeyPair,
+        });
+
+  // (2) Rotate the demotion / narrowing duty environments (§7). With no
+  // duty entry on the target, no duty ever arose (promotion, widening, a
+  // born-reader no-op) — others' unconverged duties are not picked up
+  const mandates = memberMandatesFor(input.verified, input.target.userId);
+  const demoted = mandates.some((mandate) => mandate.kind === "role-demoted");
+  const sweep =
+    mandates.length === 0
+      ? null
+      : yield* sweepAfterMandate({
+          client: input.client,
+          verified: input.verified,
+          mandates,
+          actorUserId: input.signerUserId,
+          signingKeyPair: input.signingKeyPair,
+          rotateWith: input.rotateWith,
+        });
+  return {
+    widenedEnvironmentIds: widened,
+    widenedOutOfScopeEnvironmentIds: widenedOutOfScope,
+    narrowedEnvironmentIds: change.narrowed,
+    backfill,
+    demoted,
+    sweep,
+  };
+});
 
 /**
  * `maruhi member change-role`: appends the full replacement of (role,
@@ -651,7 +649,9 @@ export function fulfilRoleChange<R>(input: {
  * order is design record K4-B: the 3 environment sets are pairwise
  * disjoint, and each can resume idempotently).
  */
-export function memberChangeRoleOp<R>(input: {
+export const memberChangeRoleOp = Effect.fn("member-change-role.memberChangeRoleOp")(function* <
+  R,
+>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly targetUserId: string;
@@ -663,71 +663,69 @@ export function memberChangeRoleOp<R>(input: {
   /** The per-duty-reason rotation injection (demotion = role-demoted / narrowing only = scope-narrowed). */
   readonly rotateWith: (reason: string) => SweepRotate<R>;
   readonly proposal: ProposalInput;
-}): Effect.Effect<MemberOpOutcome<MemberChangeRoleSummary>, CliError, R> {
-  return Effect.gen(function* () {
-    // The proposal-ization judgment runs on the new (role, scope) resolved
-    // from the request on the current view (establishing an owner is always
-    // targeted). The check order (the order of §6.2's consensus rules — own
-    // duty → role rules → …) belongs to ensureRoleChangeable
-    const { target: current } = yield* resolveActorAndTarget(
-      input.verified,
-      input.signerUserId,
-      input.targetUserId,
-    );
-    if (current === undefined) {
-      return yield* Effect.fail(cliError("The target is not a member (check the user ID)"));
-    }
-    const resolved = yield* resolveRoleChange(current, input.request);
-    const inner = changeRoleOperation({
-      targetUserId: input.targetUserId,
-      newRole: resolved.role,
-      newScope: resolved.scope,
-    });
-    const proposing = isApprovalTarget(inner, input.verified.state.approvalPolicy);
-    const recheck = (view: VerifiedProject) =>
-      ensureRoleChangeable({
-        verified: view,
-        signerUserId: input.signerUserId,
-        targetUserId: input.targetUserId,
-        request: input.request,
-        proposing,
-        signingKeyPair: input.signingKeyPair,
-      });
-    const first = yield* recheck(input.verified);
-
-    // Four-eyes (K6-A): if the policy targets it, propose and finish (the
-    // widening backfill and the narrowing sweep are fulfilled by the
-    // approver after the application — approval item 22). The omitted side
-    // is fixed to the proposal-time view's state
-    if (!first.alreadyChanged && proposing) {
-      const proposal = yield* proposeRoleChange(input, inner, resolved, recheck);
-      return { kind: "proposed", proposal };
-    }
-
-    const { verified, appended, target } = yield* appendRoleChange({
-      ...input,
-      inner,
-      alreadyChanged: first.alreadyChanged,
-      recheck,
-    });
-    const fulfilment = yield* fulfilRoleChange({
-      client: input.client,
-      verified,
-      target,
-      signerUserId: input.signerUserId,
-      signingKeyPair: input.signingKeyPair,
-      recipient: input.recipient,
-      rotateWith: input.rotateWith,
-    });
-    return {
-      kind: "applied",
-      summary: {
-        appended,
-        targetUserId: input.targetUserId,
-        newRole: target.role,
-        newScope: target.scope,
-        ...fulfilment,
-      },
-    };
+}): Effect.fn.Return<MemberOpOutcome<MemberChangeRoleSummary>, CliError, R> {
+  // The proposal-ization judgment runs on the new (role, scope) resolved
+  // from the request on the current view (establishing an owner is always
+  // targeted). The check order (the order of §6.2's consensus rules — own
+  // duty → role rules → …) belongs to ensureRoleChangeable
+  const { target: current } = yield* resolveActorAndTarget(
+    input.verified,
+    input.signerUserId,
+    input.targetUserId,
+  );
+  if (current === undefined) {
+    return yield* Effect.fail(cliError("The target is not a member (check the user ID)"));
+  }
+  const resolved = yield* resolveRoleChange(current, input.request);
+  const inner = changeRoleOperation({
+    targetUserId: input.targetUserId,
+    newRole: resolved.role,
+    newScope: resolved.scope,
   });
-}
+  const proposing = isApprovalTarget(inner, input.verified.state.approvalPolicy);
+  const recheck = (view: VerifiedProject) =>
+    ensureRoleChangeable({
+      verified: view,
+      signerUserId: input.signerUserId,
+      targetUserId: input.targetUserId,
+      request: input.request,
+      proposing,
+      signingKeyPair: input.signingKeyPair,
+    });
+  const first = yield* recheck(input.verified);
+
+  // Four-eyes (K6-A): if the policy targets it, propose and finish (the
+  // widening backfill and the narrowing sweep are fulfilled by the
+  // approver after the application — approval item 22). The omitted side
+  // is fixed to the proposal-time view's state
+  if (!first.alreadyChanged && proposing) {
+    const proposal = yield* proposeRoleChange(input, inner, resolved, recheck);
+    return { kind: "proposed", proposal };
+  }
+
+  const { verified, appended, target } = yield* appendRoleChange({
+    ...input,
+    inner,
+    alreadyChanged: first.alreadyChanged,
+    recheck,
+  });
+  const fulfilment = yield* fulfilRoleChange({
+    client: input.client,
+    verified,
+    target,
+    signerUserId: input.signerUserId,
+    signingKeyPair: input.signingKeyPair,
+    recipient: input.recipient,
+    rotateWith: input.rotateWith,
+  });
+  return {
+    kind: "applied",
+    summary: {
+      appended,
+      targetUserId: input.targetUserId,
+      newRole: target.role,
+      newScope: target.scope,
+      ...fulfilment,
+    },
+  };
+});

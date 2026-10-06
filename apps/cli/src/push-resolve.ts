@@ -88,7 +88,7 @@ interface ResolvedTarget {
  * recorded — the CLI side of "don't record as read what was never read"
  * (session-11 ruling 3).
  */
-export function resolveTarget(input: {
+export const resolveTarget = Effect.fn("push-resolve.resolveTarget")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
@@ -96,100 +96,98 @@ export function resolveTarget(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   /** The local floor (§6.3 — the verified pulls used for resolution also go through the floor check [plus a floor commit for the value-carrying one]). */
   readonly floor: FloorHandle;
-}): Effect.Effect<ResolvedTarget, CliError> {
-  return Effect.gen(function* () {
-    const metadata = yield* pullVerifiedEnvironmentMetadata(input);
-    // A duplicate same-name pair (whether active / declared) is already
-    // refused by the verification side, but kept as a defensive line so the
-    // push-target identification does not depend on the response ordering
-    // (§4.2's resolution refusal)
-    const matches = metadata.variables.filter((variable) => variable.name === input.name);
-    if (matches.length > 1) {
+}): Effect.fn.Return<ResolvedTarget, CliError> {
+  const metadata = yield* pullVerifiedEnvironmentMetadata(input);
+  // A duplicate same-name pair (whether active / declared) is already
+  // refused by the verification side, but kept as a defensive line so the
+  // push-target identification does not depend on the response ordering
+  // (§4.2's resolution refusal)
+  const matches = metadata.variables.filter((variable) => variable.name === input.name);
+  if (matches.length > 1) {
+    return yield* Effect.fail(
+      cliError(
+        `Multiple live statements with the same name passed verification (server equivocation): ${input.name}. Refusing to resolve the push target`,
+      ),
+    );
+  }
+  // The material of the bundled manifest (§12-5) for a meta operation
+  // (create / activate) (from the verified metadata pull). A push to an
+  // existing active variable issues no manifest (the issuing triggers are
+  // limited — §4.3), so its resolution sets issueBase to null
+  const issueBase = manifestIssueBaseOf(metadata);
+  const existing = matches[0];
+  if (existing === undefined) {
+    return {
+      target: { kind: "create", variableId: generateVariableId() },
+      verified: metadata.verified,
+      warnings: metadata.warnings,
+      deks: null,
+      issueBase,
+    };
+  }
+  if (existing.status === "declared") {
+    // The first value push onto a declared variable = the activation
+    // composite (§12-5). Since no value exists, no value-carrying pull is
+    // made (don't pollute var.read — don't let an unread value be recorded
+    // as read). The schema column and name take the declaration-time
+    // values over byte-exact (a rename goes through the rename path — the
+    // server enforces with 422 payload-mismatch)
+    if (existing.schema === null) {
+      // declared is layout-v2-only (§4.2) — a v1 declared is already refused at the verification stage
       return yield* Effect.fail(
         cliError(
-          `Multiple live statements with the same name passed verification (server equivocation): ${input.name}. Refusing to resolve the push target`,
-        ),
-      );
-    }
-    // The material of the bundled manifest (§12-5) for a meta operation
-    // (create / activate) (from the verified metadata pull). A push to an
-    // existing active variable issues no manifest (the issuing triggers are
-    // limited — §4.3), so its resolution sets issueBase to null
-    const issueBase = manifestIssueBaseOf(metadata);
-    const existing = matches[0];
-    if (existing === undefined) {
-      return {
-        target: { kind: "create", variableId: generateVariableId() },
-        verified: metadata.verified,
-        warnings: metadata.warnings,
-        deks: null,
-        issueBase,
-      };
-    }
-    if (existing.status === "declared") {
-      // The first value push onto a declared variable = the activation
-      // composite (§12-5). Since no value exists, no value-carrying pull is
-      // made (don't pollute var.read — don't let an unread value be recorded
-      // as read). The schema column and name take the declaration-time
-      // values over byte-exact (a rename goes through the rename path — the
-      // server enforces with 422 payload-mismatch)
-      if (existing.schema === null) {
-        // declared is layout-v2-only (§4.2) — a v1 declared is already refused at the verification stage
-        return yield* Effect.fail(
-          cliError(
-            `Variable ${existing.variableId} is declared but carries no schema fields (internal inconsistency)`,
-          ),
-        );
-      }
-      return {
-        target: {
-          kind: "activate",
-          variableId: existing.variableId,
-          prev: {
-            metaVersion: existing.metaVersion,
-            metaSigHashHex: existing.metaSigHashHex,
-            name: existing.name,
-            schema: existing.schema,
-            layoutVersion: existing.layoutVersion === 3 ? 3 : 2,
-          },
-        },
-        verified: metadata.verified,
-        warnings: metadata.warnings,
-        deks: null,
-        issueBase,
-      };
-    }
-    const pulled = yield* pullVerifiedEnvironment({ ...input, verified: metadata.verified });
-    const latest = pulled.variables.find((variable) => variable.variableId === existing.variableId);
-    if (latest === undefined) {
-      // A concurrent deletion between resolution and value fetch, or an
-      // inconsistency across responses (an omission is per-variable evidence
-      // at the floor check too). Refuse explicitly instead of falling back
-      // to a creation with a wrong prev
-      return yield* Effect.fail(
-        cliError(
-          `The resolved variable ${existing.variableId} (${input.name}) is missing from the value-carrying pull (a concurrent deletion by another member, or an inconsistent server response). Re-run the command`,
-        ),
-      );
-    }
-    if (latest.name !== input.name) {
-      // A concurrent rename between resolution and value fetch. Never aim a
-      // push at a variable that moved to a name different from the input.
-      // latest.name is the verified statement's name (§12-2), so a
-      // byte-exact comparison suffices
-      return yield* Effect.fail(
-        cliError(
-          `The resolved variable ${existing.variableId} was renamed from ${displayText(input.name)} to ${displayText(latest.name)} before the value fetch (a concurrent rename by another member). Re-run the command`,
+          `Variable ${existing.variableId} is declared but carries no schema fields (internal inconsistency)`,
         ),
       );
     }
     return {
-      target: { kind: "push", variableId: existing.variableId, latest },
-      verified: pulled.verified,
-      warnings: [...metadata.warnings, ...pulled.warnings],
-      deks: pulled.deks,
-      // A push to an existing active variable changes no meta state = issues no manifest (§4.3)
-      issueBase: null,
+      target: {
+        kind: "activate",
+        variableId: existing.variableId,
+        prev: {
+          metaVersion: existing.metaVersion,
+          metaSigHashHex: existing.metaSigHashHex,
+          name: existing.name,
+          schema: existing.schema,
+          layoutVersion: existing.layoutVersion === 3 ? 3 : 2,
+        },
+      },
+      verified: metadata.verified,
+      warnings: metadata.warnings,
+      deks: null,
+      issueBase,
     };
-  });
-}
+  }
+  const pulled = yield* pullVerifiedEnvironment({ ...input, verified: metadata.verified });
+  const latest = pulled.variables.find((variable) => variable.variableId === existing.variableId);
+  if (latest === undefined) {
+    // A concurrent deletion between resolution and value fetch, or an
+    // inconsistency across responses (an omission is per-variable evidence
+    // at the floor check too). Refuse explicitly instead of falling back
+    // to a creation with a wrong prev
+    return yield* Effect.fail(
+      cliError(
+        `The resolved variable ${existing.variableId} (${input.name}) is missing from the value-carrying pull (a concurrent deletion by another member, or an inconsistent server response). Re-run the command`,
+      ),
+    );
+  }
+  if (latest.name !== input.name) {
+    // A concurrent rename between resolution and value fetch. Never aim a
+    // push at a variable that moved to a name different from the input.
+    // latest.name is the verified statement's name (§12-2), so a
+    // byte-exact comparison suffices
+    return yield* Effect.fail(
+      cliError(
+        `The resolved variable ${existing.variableId} was renamed from ${displayText(input.name)} to ${displayText(latest.name)} before the value fetch (a concurrent rename by another member). Re-run the command`,
+      ),
+    );
+  }
+  return {
+    target: { kind: "push", variableId: existing.variableId, latest },
+    verified: pulled.verified,
+    warnings: [...metadata.warnings, ...pulled.warnings],
+    deks: pulled.deks,
+    // A push to an existing active variable changes no meta state = issues no manifest (§4.3)
+    issueBase: null,
+  };
+});

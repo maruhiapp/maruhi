@@ -36,7 +36,7 @@ import { describeScope, scopeContains } from "./scope.ts";
 // member remove
 // ---------------------------------------------------------------------------
 
-export interface MemberRemoveSummary extends MemberSweepOutcome {
+interface MemberRemoveSummary extends MemberSweepOutcome {
   /** Whether it was appended to the chain (false = already deleted — resumes from mid-rotation). */
   readonly appended: boolean;
   readonly targetUserId: string;
@@ -47,37 +47,33 @@ export interface MemberRemoveSummary extends MemberSweepOutcome {
  * `proposing` = the proposal path (the self-remove refusal is dropped
  * because the fulfiller moves to the approver — design record K6-N).
  */
-function ensureRemovable(input: {
+const ensureRemovable = Effect.fn("member-remove.ensureRemovable")(function* (input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: string;
   readonly targetUserId: string;
   readonly proposing: boolean;
   readonly signingKeyPair: SigningKeyPair;
-}): Effect.Effect<{ readonly alreadyRemoved: boolean }, CliError> {
-  return Effect.gen(function* () {
-    if (input.targetUserId === input.signerUserId && !input.proposing) {
-      return yield* Effect.fail(
-        cliError(
-          "You cannot remove yourself. You would be unable to run the post-removal rotation of every environment (CRYPTO_SPEC §7) — ask another admin / owner to remove you",
-        ),
-      );
-    }
-    const { actor, target } = yield* resolveActorAndTarget(
-      input.verified,
-      input.signerUserId,
-      input.targetUserId,
+}): Effect.fn.Return<{ readonly alreadyRemoved: boolean }, CliError> {
+  if (input.targetUserId === input.signerUserId && !input.proposing) {
+    return yield* Effect.fail(
+      cliError(
+        "You cannot remove yourself. You would be unable to run the post-removal rotation of every environment (CRYPTO_SPEC §7) — ask another admin / owner to remove you",
+      ),
     );
-    const permission = yield* actorAuthority(input.verified, actor, input.signingKeyPair);
-    if (target === undefined) {
-      const resumable = removalResumeRejection(input.verified, permission, input.targetUserId);
-      return resumable === null
-        ? { alreadyRemoved: true }
-        : yield* Effect.fail(cliError(resumable));
-    }
-    const rejection = removeRuleRejection(input.verified, permission, target);
-    return rejection === null ? { alreadyRemoved: false } : yield* Effect.fail(cliError(rejection));
-  });
-}
+  }
+  const { actor, target } = yield* resolveActorAndTarget(
+    input.verified,
+    input.signerUserId,
+    input.targetUserId,
+  );
+  const permission = yield* actorAuthority(input.verified, actor, input.signingKeyPair);
+  if (target === undefined) {
+    const resumable = removalResumeRejection(input.verified, permission, input.targetUserId);
+    return resumable === null ? { alreadyRemoved: true } : yield* Effect.fail(cliError(resumable));
+  }
+  const rejection = removeRuleRejection(input.verified, permission, target);
+  return rejection === null ? { alreadyRemoved: false } : yield* Effect.fail(cliError(rejection));
+});
 
 /**
  * The conditions for resuming from deleted (interruption recovery): a
@@ -140,7 +136,7 @@ function signRemoveEntry(input: {
   });
 }
 
-export function memberRemoveOp<R>(input: {
+export const memberRemoveOp = Effect.fn("member-remove.memberRemoveOp")(function* <R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly targetUserId: string;
@@ -149,96 +145,94 @@ export function memberRemoveOp<R>(input: {
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
   readonly rotateWith: (reason: string) => SweepRotate<R>;
   readonly proposal: ProposalInput;
-}): Effect.Effect<MemberOpOutcome<MemberRemoveSummary>, CliError, R> {
-  return Effect.gen(function* () {
-    const inner: ProposableOperation = {
-      op: "remove_member",
-      payload: { targetUserId: input.targetUserId },
-    };
-    const proposing = isApprovalTarget(inner, input.verified.state.approvalPolicy);
-    const recheck = (view: VerifiedProject) =>
-      ensureRemovable({
-        verified: view,
-        signerUserId: input.signerUserId,
-        targetUserId: input.targetUserId,
-        proposing,
-        signingKeyPair: input.signingKeyPair,
-      });
-    const first = yield* recheck(input.verified);
+}): Effect.fn.Return<MemberOpOutcome<MemberRemoveSummary>, CliError, R> {
+  const inner: ProposableOperation = {
+    op: "remove_member",
+    payload: { targetUserId: input.targetUserId },
+  };
+  const proposing = isApprovalTarget(inner, input.verified.state.approvalPolicy);
+  const recheck = (view: VerifiedProject) =>
+    ensureRemovable({
+      verified: view,
+      signerUserId: input.signerUserId,
+      targetUserId: input.targetUserId,
+      proposing,
+      signingKeyPair: input.signingKeyPair,
+    });
+  const first = yield* recheck(input.verified);
 
-    // Four-eyes (K6-A): if the policy targets remove_member, propose and
-    // finish (the rotate duty is fulfilled by the approver's sweep after
-    // the application — rulings P7 / P8). A resume (already deleted) is
-    // never proposed
-    if (!first.alreadyRemoved && proposing) {
-      const proposal = yield* proposeOperation(
-        input,
-        inner,
-        proposeRecheck(
-          recheck,
-          (rechecked) => rechecked.alreadyRemoved,
-          "The target was removed by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi member remove` to resume the rotation",
-        ),
-      );
-      return { kind: "proposed", proposal };
-    }
+  // Four-eyes (K6-A): if the policy targets remove_member, propose and
+  // finish (the rotate duty is fulfilled by the approver's sweep after
+  // the application — rulings P7 / P8). A resume (already deleted) is
+  // never proposed
+  if (!first.alreadyRemoved && proposing) {
+    const proposal = yield* proposeOperation(
+      input,
+      inner,
+      proposeRecheck(
+        recheck,
+        (rechecked) => rechecked.alreadyRemoved,
+        "The target was removed by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi member remove` to resume the rotation",
+      ),
+    );
+    return { kind: "proposed", proposal };
+  }
 
-    let verified = input.verified;
-    let appended = false;
-    if (!first.alreadyRemoved) {
-      const outcome = yield* appendWithCas({
-        client: input.client,
-        verified,
-        resync: input.resync,
-        opLabel: "remove_member",
-        signEntry: (view) =>
-          signRemoveEntry({
-            verified: view,
-            signerUserId: input.signerUserId,
-            targetUserId: input.targetUserId,
-            signingKeyPair: input.signingKeyPair,
-          }),
-        recheck: (view) =>
-          ensureStillTarget(view, inner, false).pipe(
-            Effect.flatMap(() => recheck(view)),
-            Effect.map((rechecked) => ({ already: rechecked.alreadyRemoved })),
-          ),
-      });
-      verified = outcome.verified;
-      appended = outcome.appended;
-    }
-
-    // The post-acceptance resync confirms the deletion's listing (the server's claim is never the source of truth)
-    verified = yield* resyncExtended(input.resync, verified);
-    if (verified.state.members.has(input.targetUserId)) {
-      return yield* Effect.fail(
-        cliError(
-          "The resync after remove_member was accepted still shows the target as a member (the server's response contradicts the chain). Investigate the served chain",
-        ),
-      );
-    }
-
-    // The target's duty entry (this remove's append or a historical one —
-    // past narrowings / demotions included) becomes the baseline. No remove
-    // at all means "a deletion was confirmed yet no duty entry exists" = an
-    // internal contradiction of the derivation. The duty's environment set
-    // is the target's current scope (§7 — listed{} means empty)
-    const mandates = memberMandatesFor(verified, input.targetUserId);
-    if (!mandates.some((mandate) => mandate.kind === "member-removed")) {
-      return yield* Effect.fail(
-        cliError(
-          "Cannot find the rotation-mandate entry on the chain (internal contradiction in the derivation)",
-        ),
-      );
-    }
-    const sweep = yield* sweepAfterMandate({
+  let verified = input.verified;
+  let appended = false;
+  if (!first.alreadyRemoved) {
+    const outcome = yield* appendWithCas({
       client: input.client,
       verified,
-      mandates,
-      actorUserId: input.signerUserId,
-      signingKeyPair: input.signingKeyPair,
-      rotateWith: input.rotateWith,
+      resync: input.resync,
+      opLabel: "remove_member",
+      signEntry: (view) =>
+        signRemoveEntry({
+          verified: view,
+          signerUserId: input.signerUserId,
+          targetUserId: input.targetUserId,
+          signingKeyPair: input.signingKeyPair,
+        }),
+      recheck: (view) =>
+        ensureStillTarget(view, inner, false).pipe(
+          Effect.flatMap(() => recheck(view)),
+          Effect.map((rechecked) => ({ already: rechecked.alreadyRemoved })),
+        ),
     });
-    return { kind: "applied", summary: { appended, targetUserId: input.targetUserId, ...sweep } };
+    verified = outcome.verified;
+    appended = outcome.appended;
+  }
+
+  // The post-acceptance resync confirms the deletion's listing (the server's claim is never the source of truth)
+  verified = yield* resyncExtended(input.resync, verified);
+  if (verified.state.members.has(input.targetUserId)) {
+    return yield* Effect.fail(
+      cliError(
+        "The resync after remove_member was accepted still shows the target as a member (the server's response contradicts the chain). Investigate the served chain",
+      ),
+    );
+  }
+
+  // The target's duty entry (this remove's append or a historical one —
+  // past narrowings / demotions included) becomes the baseline. No remove
+  // at all means "a deletion was confirmed yet no duty entry exists" = an
+  // internal contradiction of the derivation. The duty's environment set
+  // is the target's current scope (§7 — listed{} means empty)
+  const mandates = memberMandatesFor(verified, input.targetUserId);
+  if (!mandates.some((mandate) => mandate.kind === "member-removed")) {
+    return yield* Effect.fail(
+      cliError(
+        "Cannot find the rotation-mandate entry on the chain (internal contradiction in the derivation)",
+      ),
+    );
+  }
+  const sweep = yield* sweepAfterMandate({
+    client: input.client,
+    verified,
+    mandates,
+    actorUserId: input.signerUserId,
+    signingKeyPair: input.signingKeyPair,
+    rotateWith: input.rotateWith,
   });
-}
+  return { kind: "applied", summary: { appended, targetUserId: input.targetUserId, ...sweep } };
+});

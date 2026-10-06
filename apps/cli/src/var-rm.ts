@@ -52,7 +52,7 @@ import type { VerifiedEnvironmentMetadata } from "./values.ts";
 
 const MAX_ATTEMPTS = 5;
 
-export interface VarRmInput {
+interface VarRmInput {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
@@ -66,7 +66,7 @@ export interface VarRmInput {
   readonly signingKey: CryptoKey;
 }
 
-export interface VarRmSummary {
+interface VarRmSummary {
   readonly variableId: string;
   readonly metaVersion: number;
   /** The pre-deletion state (active = the value is also gone / declared = declaration only). */
@@ -75,33 +75,31 @@ export interface VarRmSummary {
 }
 
 /** Resolves the target (distinguishing deleted / nonexistent uses the pre-call state). */
-function resolveDeletionTarget(
+const resolveDeletionTarget = Effect.fn("var-rm.resolveDeletionTarget")(function* (
   input: VarRmInput,
   verified: VerifiedProject,
   name: string,
-): Effect.Effect<SchemaSetState & { readonly target: VerifiedVariableStatement }, CliError> {
-  return Effect.gen(function* () {
-    const state = yield* resolveSchemaTarget(input, verified, name);
-    const target = state.target;
-    if (target !== null) {
-      return { ...state, target };
-    }
-    if (state.tombstones.some((tombstone) => tombstone.name === name)) {
-      // Deletion is terminal (§4.2) — rm on an already-deleted
-      // name reaches "the desired state" but the call's
-      // precondition (this run deletes it) does not hold, so make
-      // it an explicit error
-      return yield* Effect.fail(
-        cliError(
-          `Variable ${displayText(name)} is already deleted (deletion is terminal — a deleted variable cannot be restored). Nothing was changed by this run`,
-        ),
-      );
-    }
+): Effect.fn.Return<SchemaSetState & { readonly target: VerifiedVariableStatement }, CliError> {
+  const state = yield* resolveSchemaTarget(input, verified, name);
+  const target = state.target;
+  if (target !== null) {
+    return { ...state, target };
+  }
+  if (state.tombstones.some((tombstone) => tombstone.name === name)) {
+    // Deletion is terminal (§4.2) — rm on an already-deleted
+    // name reaches "the desired state" but the call's
+    // precondition (this run deletes it) does not hold, so make
+    // it an explicit error
     return yield* Effect.fail(
-      cliError(`Variable ${displayText(name)} does not exist in this environment`),
+      cliError(
+        `Variable ${displayText(name)} is already deleted (deletion is terminal — a deleted variable cannot be restored). Nothing was changed by this run`,
+      ),
     );
-  });
-}
+  }
+  return yield* Effect.fail(
+    cliError(`Variable ${displayText(name)} does not exist in this environment`),
+  );
+});
 
 /**
  * The explicit deletion confirmation (fail-closed): without
@@ -111,46 +109,44 @@ function resolveDeletionTarget(
  * Getting the judgment material via a service is CLAUDE.md's
  * "never read process.* directly" discipline.
  */
-function ensureDeletionConfirmed(
+const ensureDeletionConfirmed = Effect.fn("var-rm.ensureDeletionConfirmed")(function* (
   input: VarRmInput,
   target: VerifiedVariableStatement,
   name: string,
-): Effect.Effect<void, CliError, CliIo | Stdio.Stdio> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const consequence =
-      target.status === "active"
-        ? "its value (every stored version) is deleted immediately and cannot be recovered"
-        : "the declaration (no value was set) is removed";
-    if (input.force) {
-      // An explicit flag = explicit risk acceptance. The fact is still made visible (never delete silently)
-      yield* io.logError(
-        `Deleting ${displayText(name)} without confirmation (--force): ${consequence}. Deletion is terminal — the variable cannot be restored`,
-      );
-      return;
-    }
-    const stdio = yield* Stdio.Stdio;
-    const interactive = (yield* stdio.stdinIsTerminal) && (yield* stdio.stdoutIsTerminal);
-    if (!interactive) {
-      return yield* Effect.fail(
-        cliError(
-          `Refusing to delete ${displayText(name)} in a non-interactive environment without --force (deletion is terminal and, for a variable with a value, destroys every stored version). Re-run with --force to accept that explicitly`,
-        ),
-      );
-    }
+): Effect.fn.Return<void, CliError, CliIo | Stdio.Stdio> {
+  const io = yield* CliIo;
+  const consequence =
+    target.status === "active"
+      ? "its value (every stored version) is deleted immediately and cannot be recovered"
+      : "the declaration (no value was set) is removed";
+  if (input.force) {
+    // An explicit flag = explicit risk acceptance. The fact is still made visible (never delete silently)
     yield* io.logError(
-      `You are about to delete ${displayText(name)}: ${consequence}. Deletion is terminal — the variable cannot be restored`,
+      `Deleting ${displayText(name)} without confirmation (--force): ${consequence}. Deletion is terminal — the variable cannot be restored`,
     );
-    const answer = yield* io.promptLine({
-      prompt: `Type the variable name to confirm the permanent deletion: `,
-    });
-    if (answer.trim().normalize("NFC") !== name) {
-      return yield* Effect.fail(
-        cliError("Aborted: the typed name did not match (nothing was signed or sent)"),
-      );
-    }
+    return;
+  }
+  const stdio = yield* Stdio.Stdio;
+  const interactive = (yield* stdio.stdinIsTerminal) && (yield* stdio.stdoutIsTerminal);
+  if (!interactive) {
+    return yield* Effect.fail(
+      cliError(
+        `Refusing to delete ${displayText(name)} in a non-interactive environment without --force (deletion is terminal and, for a variable with a value, destroys every stored version). Re-run with --force to accept that explicitly`,
+      ),
+    );
+  }
+  yield* io.logError(
+    `You are about to delete ${displayText(name)}: ${consequence}. Deletion is terminal — the variable cannot be restored`,
+  );
+  const answer = yield* io.promptLine({
+    prompt: `Type the variable name to confirm the permanent deletion: `,
   });
-}
+  if (answer.trim().normalize("NFC") !== name) {
+    return yield* Effect.fail(
+      cliError("Aborted: the typed name did not match (nothing was signed or sent)"),
+    );
+  }
+});
 
 interface AcceptedDeletion {
   readonly variableId: string;
@@ -167,49 +163,47 @@ interface AcceptedDeletion {
 }
 
 /** A v1 variable's deletion statement (keeps the v1 form — never silently raises the layout). */
-function signDeleteStatementV1(input: {
+const signDeleteStatementV1 = Effect.fn("var-rm.signDeleteStatementV1")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: string;
   readonly target: VerifiedVariableStatement;
   readonly authorUserId: string;
   readonly signingKey: CryptoKey;
 }) {
-  return Effect.gen(function* () {
-    // The signed context is built exactly once, and the wire is
-    // derived mechanically (same discipline as meta-statement.ts
-    // / schema-statement.ts)
-    const context = {
-      suite: SUITE_ID,
-      projectId: input.verified.projectId,
-      environmentId: input.environmentId,
-      target: { kind: "variable", variableId: input.target.variableId },
-      // name keeps the last active name as-is (§4.2 — deletion never empties it)
-      name: input.target.name,
-      status: "deleted",
-      metaVersion: input.target.metaVersion + 1,
-      prevMetaSigHashHex: input.target.metaSigHashHex,
-      authorUserId: input.authorUserId,
-      chainHeadHashHex: input.verified.state.headHashHex,
-      chainHeadSeq: input.verified.state.headSeq,
-    } as const;
-    const signed = yield* signStatementAndHash(context, input.signingKey);
-    return {
-      statement: {
-        suite: context.suite,
-        environmentId: context.environmentId,
-        variableId: context.target.variableId,
-        name: context.name,
-        status: context.status,
-        metaVersion: context.metaVersion,
-        prevMetaSigHashHex: context.prevMetaSigHashHex,
-        chainHeadHashHex: context.chainHeadHashHex,
-        chainHeadSeq: context.chainHeadSeq,
-        signatureHex: signed.signatureHex,
-      },
-      metaSigHashHex: signed.metaSigHashHex,
-    };
-  });
-}
+  // The signed context is built exactly once, and the wire is
+  // derived mechanically (same discipline as meta-statement.ts
+  // / schema-statement.ts)
+  const context = {
+    suite: SUITE_ID,
+    projectId: input.verified.projectId,
+    environmentId: input.environmentId,
+    target: { kind: "variable", variableId: input.target.variableId },
+    // name keeps the last active name as-is (§4.2 — deletion never empties it)
+    name: input.target.name,
+    status: "deleted",
+    metaVersion: input.target.metaVersion + 1,
+    prevMetaSigHashHex: input.target.metaSigHashHex,
+    authorUserId: input.authorUserId,
+    chainHeadHashHex: input.verified.state.headHashHex,
+    chainHeadSeq: input.verified.state.headSeq,
+  } as const;
+  const signed = yield* signStatementAndHash(context, input.signingKey);
+  return {
+    statement: {
+      suite: context.suite,
+      environmentId: context.environmentId,
+      variableId: context.target.variableId,
+      name: context.name,
+      status: context.status,
+      metaVersion: context.metaVersion,
+      prevMetaSigHashHex: context.prevMetaSigHashHex,
+      chainHeadHashHex: context.chainHeadHashHex,
+      chainHeadSeq: context.chainHeadSeq,
+      signatureHex: signed.signatureHex,
+    },
+    metaSigHashHex: signed.metaSigHashHex,
+  };
+});
 
 /**
  * One attempt's concrete failure channel: CliError (own failures and the
@@ -223,92 +217,90 @@ type DeletionAttemptError =
   | Effect.Error<ReturnType<VarRmInput["client"]["variables"]["remove"]>>;
 
 /** One attempt (sign, send). Conflict classification is retryOnConflict's classify's job. */
-function attemptDeletion(
+const attemptDeletion = Effect.fn("var-rm.attemptDeletion")(function* (
   input: VarRmInput,
   state: SchemaSetState & { readonly target: VerifiedVariableStatement },
-): Effect.Effect<AcceptedDeletion, DeletionAttemptError> {
-  return Effect.gen(function* () {
-    const target = state.target;
-    const environment = yield* requireVerifiedEnvironment(state, input.environmentId);
-    if (target.status !== "active" && target.status !== "declared") {
-      return yield* Effect.fail(
-        cliError("The resolved deletion target is not a live variable (internal inconsistency)"),
-      );
-    }
-    const previousStatus = target.status;
-    // Deleting a v2 / v3 variable uses that form (schema fields and
-    // layout kept byte-exactly from the previous statement —
-    // §12-5's deletion convention); a v1 variable's deletion keeps
-    // the v1 form
-    const signed =
-      target.layoutVersion >= 2 && target.schema !== null
-        ? yield* signDeleteStatementV2({
-            verified: state.verified,
-            environmentId: input.environmentId,
-            variableId: target.variableId,
-            name: target.name,
-            schema: target.schema,
-            // The deletion keeps the predecessor's layout (v2 or v3 — §12-5)
-            layoutVersion: target.layoutVersion === 3 ? 3 : 2,
-            prev: { metaVersion: target.metaVersion, metaSigHashHex: target.metaSigHashHex },
-            authorUserId: input.authorUserId,
-            signingKey: input.signingKey,
-          })
-        : yield* signDeleteStatementV1({
-            verified: state.verified,
-            environmentId: input.environmentId,
-            target,
-            authorUserId: input.authorUserId,
-            signingKey: input.signingKey,
-          });
-    // The manifest swaps the target entry for a tombstone (§4.3 —
-    // the digest covers every statement including tombstones). The
-    // 3-F intent is persisted before sending
-    const { manifest, intentId } = yield* issueManifestWithIntent({
-      verified: state.verified,
-      environmentId: input.environmentId,
-      epoch: environment.currentEpoch,
-      previous: state.manifestBase.previous,
-      entries: [
-        ...state.manifestBase.entries.filter((entry) => entry.variableId !== target.variableId),
-        {
-          variableId: target.variableId,
-          status: "deleted" as const,
-          metaVersion: target.metaVersion + 1,
-          metaSigHashHex: signed.metaSigHashHex,
-        },
-      ],
-      envMeta: state.manifestBase.envMeta,
-      issuerUserId: input.authorUserId,
-      signingKey: input.signingKey,
-      floor: input.floor,
-      variableId: target.variableId,
-    });
-    yield* input.client.variables
-      .remove({
-        params: {
-          projectId: state.verified.projectId,
+): Effect.fn.Return<AcceptedDeletion, DeletionAttemptError> {
+  const target = state.target;
+  const environment = yield* requireVerifiedEnvironment(state, input.environmentId);
+  if (target.status !== "active" && target.status !== "declared") {
+    return yield* Effect.fail(
+      cliError("The resolved deletion target is not a live variable (internal inconsistency)"),
+    );
+  }
+  const previousStatus = target.status;
+  // Deleting a v2 / v3 variable uses that form (schema fields and
+  // layout kept byte-exactly from the previous statement —
+  // §12-5's deletion convention); a v1 variable's deletion keeps
+  // the v1 form
+  const signed =
+    target.layoutVersion >= 2 && target.schema !== null
+      ? yield* signDeleteStatementV2({
+          verified: state.verified,
           environmentId: input.environmentId,
           variableId: target.variableId,
-        },
-        payload: { statement: signed.statement, manifest: manifest.manifest },
-      })
-      .pipe(Effect.tapError(rejectIntentOnServerRejection(input.floor, intentId)));
-    return {
-      variableId: target.variableId,
-      metaVersion: target.metaVersion + 1,
-      metaSigHashHex: signed.metaSigHashHex,
-      previousStatus,
-      selfManifest: {
-        manifestVersion: manifest.manifestVersion,
-        epoch: manifest.epoch,
-        manifestSigHashHex: manifest.manifestSigHashHex,
+          name: target.name,
+          schema: target.schema,
+          // The deletion keeps the predecessor's layout (v2 or v3 — §12-5)
+          layoutVersion: target.layoutVersion === 3 ? 3 : 2,
+          prev: { metaVersion: target.metaVersion, metaSigHashHex: target.metaSigHashHex },
+          authorUserId: input.authorUserId,
+          signingKey: input.signingKey,
+        })
+      : yield* signDeleteStatementV1({
+          verified: state.verified,
+          environmentId: input.environmentId,
+          target,
+          authorUserId: input.authorUserId,
+          signingKey: input.signingKey,
+        });
+  // The manifest swaps the target entry for a tombstone (§4.3 —
+  // the digest covers every statement including tombstones). The
+  // 3-F intent is persisted before sending
+  const { manifest, intentId } = yield* issueManifestWithIntent({
+    verified: state.verified,
+    environmentId: input.environmentId,
+    epoch: environment.currentEpoch,
+    previous: state.manifestBase.previous,
+    entries: [
+      ...state.manifestBase.entries.filter((entry) => entry.variableId !== target.variableId),
+      {
+        variableId: target.variableId,
+        status: "deleted" as const,
+        metaVersion: target.metaVersion + 1,
+        metaSigHashHex: signed.metaSigHashHex,
       },
-      intentId,
-      state,
-    };
+    ],
+    envMeta: state.manifestBase.envMeta,
+    issuerUserId: input.authorUserId,
+    signingKey: input.signingKey,
+    floor: input.floor,
+    variableId: target.variableId,
   });
-}
+  yield* input.client.variables
+    .remove({
+      params: {
+        projectId: state.verified.projectId,
+        environmentId: input.environmentId,
+        variableId: target.variableId,
+      },
+      payload: { statement: signed.statement, manifest: manifest.manifest },
+    })
+    .pipe(Effect.tapError(rejectIntentOnServerRejection(input.floor, intentId)));
+  return {
+    variableId: target.variableId,
+    metaVersion: target.metaVersion + 1,
+    metaSigHashHex: signed.metaSigHashHex,
+    previousStatus,
+    selfManifest: {
+      manifestVersion: manifest.manifestVersion,
+      epoch: manifest.epoch,
+      manifestSigHashHex: manifest.manifestSigHashHex,
+    },
+    intentId,
+    state,
+  };
+});
 
 type DeletionConflict = { readonly kind: "re-resolve" };
 
@@ -333,92 +325,87 @@ function classifyDeletionConflict(error: DeletionAttemptError): DeletionConflict
  * confirmed against the verified distribution (1-E′ — §12-10 (3)) before the
  * local floor advances to the tombstone.
  */
-export function varRmOp(
+export const varRmOp = Effect.fn("var-rm.varRmOp")(function* (
   input: VarRmInput,
-): Effect.Effect<VarRmSummary, CliError, CliIo | Stdio.Stdio> {
-  return Effect.gen(function* () {
-    // Normalization's agent is the client before signing (§4.2 / §12-1)
-    const name = input.name.normalize("NFC");
-    const initial = yield* resolveDeletionTarget(input, input.verified, name);
-    // The confirmation happens exactly once before signing,
-    // sending, and the retry loop. What the confirmation binds is
-    // **variableId** (not the name): re-resolution happens by
-    // name, so a concurrent deletion + a fresh creation of the
-    // same name can put a different variable under that name —
-    // that shape is stopped by the recover below as a typed error
-    // (never delete an unconfirmed variable)
-    yield* ensureDeletionConfirmed(input, initial.target, name);
-    const confirmedVariableId = initial.target.variableId;
-    const accepted = yield* retryOnConflict(initial, {
-      maxAttempts: MAX_ATTEMPTS,
-      attempt: (state) => attemptDeletion(input, state),
-      classify: classifyDeletionConflict,
-      recover: (state) =>
-        resolveDeletionTarget(input, state.verified, name).pipe(
-          Effect.filterOrFail(
-            (next) => next.target.variableId === confirmedVariableId,
-            () =>
-              cliError(
-                `Variable ${displayText(name)} now resolves to a different variable than the one you confirmed (the original was deleted or renamed concurrently, and another variable took the name). Nothing was deleted by this run — re-run \`maruhi var rm\` to confirm against the current state`,
-              ),
-          ),
+): Effect.fn.Return<VarRmSummary, CliError, CliIo | Stdio.Stdio> {
+  // Normalization's agent is the client before signing (§4.2 / §12-1)
+  const name = input.name.normalize("NFC");
+  const initial = yield* resolveDeletionTarget(input, input.verified, name);
+  // The confirmation happens exactly once before signing,
+  // sending, and the retry loop. What the confirmation binds is
+  // **variableId** (not the name): re-resolution happens by
+  // name, so a concurrent deletion + a fresh creation of the
+  // same name can put a different variable under that name —
+  // that shape is stopped by the recover below as a typed error
+  // (never delete an unconfirmed variable)
+  yield* ensureDeletionConfirmed(input, initial.target, name);
+  const confirmedVariableId = initial.target.variableId;
+  const accepted = yield* retryOnConflict(initial, {
+    maxAttempts: MAX_ATTEMPTS,
+    attempt: (state) => attemptDeletion(input, state),
+    classify: classifyDeletionConflict,
+    recover: (state) =>
+      resolveDeletionTarget(input, state.verified, name).pipe(
+        Effect.filterOrFail(
+          (next) => next.target.variableId === confirmedVariableId,
+          () =>
+            cliError(
+              `Variable ${displayText(name)} now resolves to a different variable than the one you confirmed (the original was deleted or renamed concurrently, and another variable took the name). Nothing was deleted by this run — re-run \`maruhi var rm\` to confirm against the current state`,
+            ),
         ),
-      exhaustedMessage: `The deletion conflict did not resolve (after ${MAX_ATTEMPTS} attempts). Wait a moment and re-run the command`,
-    });
-    // Effect confirmation (1-E′ — §12-10 (3)): the definition of
-    // success is confirmation on the verifiable distribution. A
-    // deletion's effect is a tombstone (at or above the issued
-    // metaVersion. Same-version requires hash equality — never
-    // misread a 2xx lost to a concurrent operation as effective)
-    const issued = { metaVersion: accepted.metaVersion, metaSigHashHex: accepted.metaSigHashHex };
-    const tombstoneConfirms = (tombstone: {
-      readonly metaVersion: number;
-      readonly metaSigHashHex: string;
-    }) =>
-      tombstone.metaVersion > issued.metaVersion ||
-      (tombstone.metaVersion === issued.metaVersion &&
-        tombstone.metaSigHashHex === issued.metaSigHashHex);
-    yield* confirmMetaMutation({
-      client: input.client,
-      verified: accepted.state.verified,
-      environmentId: input.environmentId,
-      resync: input.resync,
-      floor: input.floor,
-      selfManifest: accepted.selfManifest,
-      intentId: accepted.intentId,
-      describe: "variable deletion",
-      effectVisible: (metadata: VerifiedEnvironmentMetadata) =>
-        metadata.tombstones.some(
-          (tombstone) =>
-            tombstone.variableId === accepted.variableId && tombstoneConfirms(tombstone),
-        ),
-    });
-    // The floor's tombstone advance (§6.3 — a later pull can
-    // detect the deletion being silently undone.
-    // journal-before-release: before the success report). Since
-    // the deletion itself is already confirmed, a floor write
-    // failure is reported as such
-    yield* input.floor
-      .commitPush(
-        accepted.variableId,
-        {
-          status: "deleted",
-          metaVersion: accepted.metaVersion,
-          metaSigHashHex: accepted.metaSigHashHex,
-        },
-        {
-          seq: accepted.state.verified.state.headSeq,
-          hashHex: accepted.state.verified.state.headHashHex,
-        },
-      )
-      .pipe(
-        Effect.mapError((error) => cliError(`The deletion was accepted, but ${error.message}`)),
-      );
-    return {
-      variableId: accepted.variableId,
-      metaVersion: accepted.metaVersion,
-      previousStatus: accepted.previousStatus,
-      warnings: accepted.state.warnings,
-    };
+      ),
+    exhaustedMessage: `The deletion conflict did not resolve (after ${MAX_ATTEMPTS} attempts). Wait a moment and re-run the command`,
   });
-}
+  // Effect confirmation (1-E′ — §12-10 (3)): the definition of
+  // success is confirmation on the verifiable distribution. A
+  // deletion's effect is a tombstone (at or above the issued
+  // metaVersion. Same-version requires hash equality — never
+  // misread a 2xx lost to a concurrent operation as effective)
+  const issued = { metaVersion: accepted.metaVersion, metaSigHashHex: accepted.metaSigHashHex };
+  const tombstoneConfirms = (tombstone: {
+    readonly metaVersion: number;
+    readonly metaSigHashHex: string;
+  }) =>
+    tombstone.metaVersion > issued.metaVersion ||
+    (tombstone.metaVersion === issued.metaVersion &&
+      tombstone.metaSigHashHex === issued.metaSigHashHex);
+  yield* confirmMetaMutation({
+    client: input.client,
+    verified: accepted.state.verified,
+    environmentId: input.environmentId,
+    resync: input.resync,
+    floor: input.floor,
+    selfManifest: accepted.selfManifest,
+    intentId: accepted.intentId,
+    describe: "variable deletion",
+    effectVisible: (metadata: VerifiedEnvironmentMetadata) =>
+      metadata.tombstones.some(
+        (tombstone) => tombstone.variableId === accepted.variableId && tombstoneConfirms(tombstone),
+      ),
+  });
+  // The floor's tombstone advance (§6.3 — a later pull can
+  // detect the deletion being silently undone.
+  // journal-before-release: before the success report). Since
+  // the deletion itself is already confirmed, a floor write
+  // failure is reported as such
+  yield* input.floor
+    .commitPush(
+      accepted.variableId,
+      {
+        status: "deleted",
+        metaVersion: accepted.metaVersion,
+        metaSigHashHex: accepted.metaSigHashHex,
+      },
+      {
+        seq: accepted.state.verified.state.headSeq,
+        hashHex: accepted.state.verified.state.headHashHex,
+      },
+    )
+    .pipe(Effect.mapError((error) => cliError(`The deletion was accepted, but ${error.message}`)));
+  return {
+    variableId: accepted.variableId,
+    metaVersion: accepted.metaVersion,
+    previousStatus: accepted.previousStatus,
+    warnings: accepted.state.warnings,
+  };
+});

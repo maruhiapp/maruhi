@@ -100,32 +100,28 @@ function reserveEntryOf(reserve: ReserveKeys, nowMs: number): OwnDeviceEntry {
  * reported as a typed failure: without the record the reserve key never reaches
  * the project chains, so the caller must not report the sealing as complete.
  */
-export function recordReserveLocally(
+export const recordReserveLocally = Effect.fn("reserve.recordReserveLocally")(function* (
   session: CliSession,
   reserve: ReserveKeys,
-): Effect.Effect<void, CliError, OwnDeviceStore> {
-  return Effect.gen(function* () {
-    const store = yield* OwnDeviceStore;
-    const nowMs = yield* Clock.currentTimeMillis;
-    yield* store.record(session.origin, session.userId, reserveEntryOf(reserve, nowMs));
-  });
-}
+): Effect.fn.Return<void, CliError, OwnDeviceStore> {
+  const store = yield* OwnDeviceStore;
+  const nowMs = yield* Clock.currentTimeMillis;
+  yield* store.record(session.origin, session.userId, reserveEntryOf(reserve, nowMs));
+});
 
 /** The locally recorded reserve keys (not revoked), newest first. */
-export function recordedReserves(
+export const recordedReserves = Effect.fn("reserve.recordedReserves")(function* (
   session: CliSession,
-): Effect.Effect<readonly OwnDeviceEntry[], CliError, OwnDeviceStore> {
-  return Effect.gen(function* () {
-    const store = yield* OwnDeviceStore;
-    const loaded = yield* store.load(session.origin, session.userId);
-    if (loaded.state !== "loaded") {
-      return [];
-    }
-    return loaded.devices
-      .filter((device) => device.source === "reserve" && device.revokedAtMs === null)
-      .toSorted((a, b) => b.recordedAtMs - a.recordedAtMs);
-  });
-}
+): Effect.fn.Return<readonly OwnDeviceEntry[], CliError, OwnDeviceStore> {
+  const store = yield* OwnDeviceStore;
+  const loaded = yield* store.load(session.origin, session.userId);
+  if (loaded.state !== "loaded") {
+    return [];
+  }
+  return loaded.devices
+    .filter((device) => device.source === "reserve" && device.revokedAtMs === null)
+    .toSorted((a, b) => b.recordedAtMs - a.recordedAtMs);
+});
 
 /**
  * When the ledger's key is found to be revoked and this device has
@@ -133,11 +129,13 @@ export function recordedReserves(
  * 4-g). No row = do nothing. A write failure does not fail the
  * command — it becomes a Warning.
  */
-export function markRevokedReserveRecord(
+export const markRevokedReserveRecord: (
   session: CliSession,
   fingerprintHex: string,
-): Effect.Effect<void, never, OwnDeviceStore | CliIo> {
-  return Effect.gen(function* () {
+) => Effect.Effect<void, never, OwnDeviceStore | CliIo> = Effect.fn(
+  "reserve.markRevokedReserveRecord",
+)(
+  function* (session: CliSession, fingerprintHex: string) {
     const store = yield* OwnDeviceStore;
     const loaded = yield* store.load(session.origin, session.userId);
     const recorded =
@@ -160,11 +158,13 @@ export function markRevokedReserveRecord(
     yield* logNote(
       `this machine had recorded ${fingerprintHex} as your reserve key; it is revoked, so the record now says so`,
     );
-  }).pipe(
-    Effect.catch((error) =>
-      logWarning(
-        `could not correct this machine's record of ${fingerprintHex} (${error.message}); check it with \`maruhi key show\``,
+  },
+  (effect, session, fingerprintHex) =>
+    effect.pipe(
+      Effect.catch((error) =>
+        logWarning(
+          `could not correct this machine's record of ${fingerprintHex} (${error.message}); check it with \`maruhi key show\``,
+        ),
       ),
     ),
-  );
-}
+);

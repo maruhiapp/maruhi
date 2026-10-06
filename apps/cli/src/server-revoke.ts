@@ -55,7 +55,7 @@ const MAX_ATTEMPTS = 5;
 export const REVOKE_ROTATION_REASON = "server-revoked";
 
 /** The revoke's result: a proposal (four-eyes — K6) or an application. */
-export type ServerRevokeOutcome =
+type ServerRevokeOutcome =
   | { readonly kind: "proposed"; readonly proposal: ProposedSummary }
   | { readonly kind: "applied"; readonly summary: RevokeSummary };
 
@@ -148,44 +148,42 @@ function lastRevokeSeq(verified: VerifiedProject): number | null {
  * (approval-approve.ts). `revokeSeq` = the obligation's reference
  * (the applied seq).
  */
-export function sweepAfterRevoke<R>(input: {
+export const sweepAfterRevoke = Effect.fn("server-revoke.sweepAfterRevoke")(function* <R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly revokeSeq: number;
   readonly rotate: SweepRotate<R>;
-}): Effect.Effect<SweepOutcome & { readonly skippedDeleted: readonly string[] }, CliError, R> {
-  return Effect.gen(function* () {
-    // Excludes verified-deleted environments from the rotation
-    // targets (a deleted environment returns 404 for both rotate
-    // and pull, and no wrap remains to rotate). The only basis for
-    // exclusion is **verification of a signed deletion statement**
-    // — never skipped silently on the server's 404 declaration
-    // alone (§7). If unverifiable it stays a target and surfaces
-    // as a failure
-    const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
-    const skippedDeleted = [...input.verified.state.environments.keys()]
-      .filter((environmentId) => deletedVerified.has(environmentId))
-      .toSorted(compareCodePoints);
+}): Effect.fn.Return<SweepOutcome & { readonly skippedDeleted: readonly string[] }, CliError, R> {
+  // Excludes verified-deleted environments from the rotation
+  // targets (a deleted environment returns 404 for both rotate
+  // and pull, and no wrap remains to rotate). The only basis for
+  // exclusion is **verification of a signed deletion statement**
+  // — never skipped silently on the server's 404 declaration
+  // alone (§7). If unverifiable it stays a target and surfaces
+  // as a failure
+  const deletedVerified = yield* verifiedDeletedEnvironmentSet(input.client, input.verified);
+  const skippedDeleted = [...input.verified.state.environments.keys()]
+    .filter((environmentId) => deletedVerified.has(environmentId))
+    .toSorted(compareCodePoints);
 
-    // The obligation's environment set = every environment at the
-    // revoke's point (§7 — revoke_server is immutable; the server
-    // key cannot hold the DEK of a later-created environment). The
-    // derivation is shared with rotationMandates
-    const sweep = yield* sweepRotations({
-      rotate: input.rotate,
-      verified: input.verified,
-      baselines: baselinesOf(
-        rotationMandates(input.verified).filter(
-          (mandate) => mandate.kind === "server-revoked" && mandate.seq === input.revokeSeq,
-        ),
+  // The obligation's environment set = every environment at the
+  // revoke's point (§7 — revoke_server is immutable; the server
+  // key cannot hold the DEK of a later-created environment). The
+  // derivation is shared with rotationMandates
+  const sweep = yield* sweepRotations({
+    rotate: input.rotate,
+    verified: input.verified,
+    baselines: baselinesOf(
+      rotationMandates(input.verified).filter(
+        (mandate) => mandate.kind === "server-revoked" && mandate.seq === input.revokeSeq,
       ),
-      deletedVerified,
-    });
-    return { ...sweep, skippedDeleted };
+    ),
+    deletedVerified,
   });
-}
+  return { ...sweep, skippedDeleted };
+});
 
-export function serverRevokeOp<R>(input: {
+export const serverRevokeOp = Effect.fn("server-revoke.serverRevokeOp")(function* <R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly fingerprintHex: string | null;
@@ -201,114 +199,112 @@ export function serverRevokeOp<R>(input: {
    */
   readonly rotate: SweepRotate<R>;
   readonly proposal: ProposalInput;
-}): Effect.Effect<ServerRevokeOutcome, CliError, R> {
-  return Effect.gen(function* () {
-    yield* requireOwner(input.verified, input.signerUserId);
-    const target = yield* selectGrant(input.verified, input.fingerprintHex);
+}): Effect.fn.Return<ServerRevokeOutcome, CliError, R> {
+  yield* requireOwner(input.verified, input.signerUserId);
+  const target = yield* selectGrant(input.verified, input.fingerprintHex);
 
-    // Four-eyes (K6-A): when the policy covers revoke_server,
-    // propose and finish (the whole-environment rotate is done by
-    // the approver who completed the application — approval item
-    // 22). A resume (no valid grant) is not proposed
-    if (target !== null) {
-      const inner: ProposableOperation = {
-        op: "revoke_server",
-        payload: { serverKeyFingerprintHex: target.serverKeyFingerprintHex },
-      };
-      if (isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
-        const proposal = yield* proposeOperation(input, inner, (view) =>
-          Effect.gen(function* () {
-            yield* requireOwner(view, input.signerUserId);
-            if (!view.state.serverGrants.has(target.serverKeyFingerprintHex)) {
-              return yield* Effect.fail(
-                cliError(
-                  "The grant was revoked by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi server revoke` to resume the rotation",
-                ),
-              );
-            }
-          }),
-        );
-        return { kind: "proposed", proposal };
-      }
-    }
-
-    let verified = input.verified;
-    let appended = false;
-    let revokedFingerprint: string | null = null;
-
-    if (target !== null) {
-      revokedFingerprint = target.serverKeyFingerprintHex;
-      const outcome = yield* retryOnConflict(
-        { verified, target: target.serverKeyFingerprintHex, alreadyRevoked: false },
-        {
-          maxAttempts: MAX_ATTEMPTS,
-          attempt: (state) =>
-            state.alreadyRevoked
-              ? Effect.succeed({ verified: state.verified, appended: false })
-              : Effect.gen(function* () {
-                  const entry = yield* signRevokeEntry({
-                    verified: state.verified,
-                    signerUserId: input.signerUserId,
-                    serverKeyFingerprintHex: state.target,
-                    signingKeyPair: input.signingKeyPair,
-                  });
-                  yield* appendEntry(input.client, state.verified, entry);
-                  return { verified: state.verified, appended: true };
-                }),
-          classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
-          recover: (state) =>
-            Effect.gen(function* () {
-              const resynced = yield* resyncExtended(input.resync, state.verified);
-              yield* requireOwner(resynced, input.signerUserId);
-              yield* ensureStillTarget(
-                resynced,
-                { op: "revoke_server", payload: { serverKeyFingerprintHex: state.target } },
-                false,
-              );
-              // If already revoked by a concurrent revoke, skip the append and proceed (the rotation still runs)
-              return {
-                verified: resynced,
-                target: state.target,
-                alreadyRevoked: !resynced.state.serverGrants.has(state.target),
-              };
-            }),
-          exhaustedMessage: `revoke_server's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
-        },
+  // Four-eyes (K6-A): when the policy covers revoke_server,
+  // propose and finish (the whole-environment rotate is done by
+  // the approver who completed the application — approval item
+  // 22). A resume (no valid grant) is not proposed
+  if (target !== null) {
+    const inner: ProposableOperation = {
+      op: "revoke_server",
+      payload: { serverKeyFingerprintHex: target.serverKeyFingerprintHex },
+    };
+    if (isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
+      const proposal = yield* proposeOperation(input, inner, (view) =>
+        Effect.gen(function* () {
+          yield* requireOwner(view, input.signerUserId);
+          if (!view.state.serverGrants.has(target.serverKeyFingerprintHex)) {
+            return yield* Effect.fail(
+              cliError(
+                "The grant was revoked by a concurrent run while this proposal was being appended — nothing to propose. Re-run `maruhi server revoke` to resume the rotation",
+              ),
+            );
+          }
+        }),
       );
-      verified = outcome.verified;
-      appended = outcome.appended;
-      // After acceptance, a re-sync confirms the revocation's posting (the server declaration is not the source of truth)
-      verified = yield* resyncExtended(input.resync, verified);
-      if (verified.state.serverGrants.has(target.serverKeyFingerprintHex)) {
-        return yield* Effect.fail(
-          cliError(
-            "The resync after revoke_server was accepted still shows the grant as active (the server's response contradicts the chain). Investigate the served chain",
-          ),
-        );
-      }
+      return { kind: "proposed", proposal };
     }
+  }
 
-    // Deriving the rotation targets: on a run that appended, "the
-    // last revoke's seq" is this run's append itself; on a run
-    // that did not append (interruption recovery) it is taken
-    // from the chain history
-    const revokeSeq = lastRevokeSeq(verified);
-    if (revokeSeq === null) {
+  let verified = input.verified;
+  let appended = false;
+  let revokedFingerprint: string | null = null;
+
+  if (target !== null) {
+    revokedFingerprint = target.serverKeyFingerprintHex;
+    const outcome = yield* retryOnConflict(
+      { verified, target: target.serverKeyFingerprintHex, alreadyRevoked: false },
+      {
+        maxAttempts: MAX_ATTEMPTS,
+        attempt: (state) =>
+          state.alreadyRevoked
+            ? Effect.succeed({ verified: state.verified, appended: false })
+            : Effect.gen(function* () {
+                const entry = yield* signRevokeEntry({
+                  verified: state.verified,
+                  signerUserId: input.signerUserId,
+                  serverKeyFingerprintHex: state.target,
+                  signingKeyPair: input.signingKeyPair,
+                });
+                yield* appendEntry(input.client, state.verified, entry);
+                return { verified: state.verified, appended: true };
+              }),
+        classify: (error) => (error instanceof ChainHeadConflictError ? "head-conflict" : null),
+        recover: (state) =>
+          Effect.gen(function* () {
+            const resynced = yield* resyncExtended(input.resync, state.verified);
+            yield* requireOwner(resynced, input.signerUserId);
+            yield* ensureStillTarget(
+              resynced,
+              { op: "revoke_server", payload: { serverKeyFingerprintHex: state.target } },
+              false,
+            );
+            // If already revoked by a concurrent revoke, skip the append and proceed (the rotation still runs)
+            return {
+              verified: resynced,
+              target: state.target,
+              alreadyRevoked: !resynced.state.serverGrants.has(state.target),
+            };
+          }),
+        exhaustedMessage: `revoke_server's chain-head conflict did not resolve (${MAX_ATTEMPTS} attempts). Wait a moment and re-run`,
+      },
+    );
+    verified = outcome.verified;
+    appended = outcome.appended;
+    // After acceptance, a re-sync confirms the revocation's posting (the server declaration is not the source of truth)
+    verified = yield* resyncExtended(input.resync, verified);
+    if (verified.state.serverGrants.has(target.serverKeyFingerprintHex)) {
       return yield* Effect.fail(
         cliError(
-          "There is no active grant_server and no revoke_server on the chain (nothing to revoke)",
+          "The resync after revoke_server was accepted still shows the grant as active (the server's response contradicts the chain). Investigate the served chain",
         ),
       );
     }
-    const sweep = yield* sweepAfterRevoke({
-      client: input.client,
-      verified,
-      revokeSeq,
-      rotate: input.rotate,
-    });
-    return {
-      kind: "applied",
-      summary: { appended, serverKeyFingerprintHex: revokedFingerprint, ...sweep },
-    };
+  }
+
+  // Deriving the rotation targets: on a run that appended, "the
+  // last revoke's seq" is this run's append itself; on a run
+  // that did not append (interruption recovery) it is taken
+  // from the chain history
+  const revokeSeq = lastRevokeSeq(verified);
+  if (revokeSeq === null) {
+    return yield* Effect.fail(
+      cliError(
+        "There is no active grant_server and no revoke_server on the chain (nothing to revoke)",
+      ),
+    );
+  }
+  const sweep = yield* sweepAfterRevoke({
+    client: input.client,
+    verified,
+    revokeSeq,
+    rotate: input.rotate,
   });
-}
+  return {
+    kind: "applied",
+    summary: { appended, serverKeyFingerprintHex: revokedFingerprint, ...sweep },
+  };
+});

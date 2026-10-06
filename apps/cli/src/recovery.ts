@@ -89,100 +89,98 @@ function ensureRecoveryCodeInteractionAllowed(
  * reserve key's record (reserve.ts) — there is no path to pass a device
  * key.
  */
-export function issueRecoveryCodeOp(input: {
+export const issueRecoveryCodeOp = Effect.fn("recovery.issueRecoveryCodeOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly record: StoredMasterKey;
-}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    yield* ensureRecoveryCodeInteractionAllowed(io, "issue");
+}): Effect.fn.Return<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
+  const io = yield* CliIo;
+  yield* ensureRecoveryCodeInteractionAllowed(io, "issue");
 
-    // Replacing an existing registration (reissue) is announced beforehand (the previous code stops working with this operation)
-    const status = yield* input.client.auth.recoveryStatus({}).pipe(Effect.mapError(toCliError));
-    if (status.registered) {
-      yield* io.logError(
-        "Replacing the existing recovery registration (previous recovery codes become invalid)",
-      );
-    }
-
-    const secret = Redacted.make(generateRecoverySecret(), { label: "recovery-secret" });
-    // Never use JSON.stringify(record) — the secret side would be wrapped
-    // still redacted, registering a recovery blob that "restores but the
-    // key is unusable" (the same trap as keychain storage. keychain.ts's
-    // note)
-    const blob = new TextEncoder().encode(serializeStoredMasterKey(input.record));
-    const wrapped = yield* cryptoEffect(() =>
-      wrapMasterSecret({
-        // Reason for unwrapping: the recovery wrap's key-derivation input (the crypto boundary)
-        recoverySecret: Redacted.value(secret),
-        userId: input.session.userId,
-        masterSecretBlob: blob,
-      }),
-    ).pipe(Effect.mapError(() => cliError("Failed to create the recovery wrap")));
-    yield* input.client.auth
-      .recoveryPut({
-        payload: {
-          suite: SUITE_ID,
-          nonceHex: encodeHex(wrapped.nonce),
-          ciphertextHex: encodeHex(wrapped.ciphertext),
-        },
-      })
-      .pipe(Effect.mapError(toCliError));
-
-    // The code's display block goes wholly to stderr (the same channel as
-    // the prompt). stdout may be redirected / piped: the code is key
-    // material and must not get a path that lands in a plaintext file via
-    // `maruhi key generate > log`. On stderr it appears on the same
-    // screen as the confirmation prompt, so the confirmation ceremony
-    // still works
-    const code = formatRecoveryCode(secret);
-    yield* io.logError("");
-    yield* io.logError("Issued your recovery code. Store it somewhere safe now:");
-    yield* io.logError("");
-    // Reason for unwrapping: displaying the code is issuance's very
-    // function (it is never shown again). Displayability was already
-    // decided by the TTY + agent gate at the head of this function, and
-    // the unwrap happens behind it. stderr itself was also confirmed to
-    // be a TTY
-    yield* io.logError(`    ${Redacted.value(code)}`);
-    yield* io.logError("");
+  // Replacing an existing registration (reissue) is announced beforehand (the previous code stops working with this operation)
+  const status = yield* input.client.auth.recoveryStatus({}).pipe(Effect.mapError(toCliError));
+  if (status.registered) {
     yield* io.logError(
-      "Recommended: print it or save it in a password manager. This code will never be shown again",
+      "Replacing the existing recovery registration (previous recovery codes become invalid)",
     );
-    yield* io.logError(
-      "With this code plus your account sign-in, you can restore your reserve key on a machine that has no device key and register that machine as a new device (`maruhi key recover`)",
-    );
-    yield* confirmCodeSaved(code);
-    yield* io.logError("Save confirmation complete");
-  });
-}
+  }
+
+  const secret = Redacted.make(generateRecoverySecret(), { label: "recovery-secret" });
+  // Never use JSON.stringify(record) — the secret side would be wrapped
+  // still redacted, registering a recovery blob that "restores but the
+  // key is unusable" (the same trap as keychain storage. keychain.ts's
+  // note)
+  const blob = new TextEncoder().encode(serializeStoredMasterKey(input.record));
+  const wrapped = yield* cryptoEffect(() =>
+    wrapMasterSecret({
+      // Reason for unwrapping: the recovery wrap's key-derivation input (the crypto boundary)
+      recoverySecret: Redacted.value(secret),
+      userId: input.session.userId,
+      masterSecretBlob: blob,
+    }),
+  ).pipe(Effect.mapError(() => cliError("Failed to create the recovery wrap")));
+  yield* input.client.auth
+    .recoveryPut({
+      payload: {
+        suite: SUITE_ID,
+        nonceHex: encodeHex(wrapped.nonce),
+        ciphertextHex: encodeHex(wrapped.ciphertext),
+      },
+    })
+    .pipe(Effect.mapError(toCliError));
+
+  // The code's display block goes wholly to stderr (the same channel as
+  // the prompt). stdout may be redirected / piped: the code is key
+  // material and must not get a path that lands in a plaintext file via
+  // `maruhi key generate > log`. On stderr it appears on the same
+  // screen as the confirmation prompt, so the confirmation ceremony
+  // still works
+  const code = formatRecoveryCode(secret);
+  yield* io.logError("");
+  yield* io.logError("Issued your recovery code. Store it somewhere safe now:");
+  yield* io.logError("");
+  // Reason for unwrapping: displaying the code is issuance's very
+  // function (it is never shown again). Displayability was already
+  // decided by the TTY + agent gate at the head of this function, and
+  // the unwrap happens behind it. stderr itself was also confirmed to
+  // be a TTY
+  yield* io.logError(`    ${Redacted.value(code)}`);
+  yield* io.logError("");
+  yield* io.logError(
+    "Recommended: print it or save it in a password manager. This code will never be shown again",
+  );
+  yield* io.logError(
+    "With this code plus your account sign-in, you can restore your reserve key on a machine that has no device key and register that machine as a new device (`maruhi key recover`)",
+  );
+  yield* confirmCodeSaved(code);
+  yield* io.logError("Save confirmation complete");
+});
 
 /** Confirm the save by re-typing the displayed code's last group (the loss-prevention UX). */
-function confirmCodeSaved(code: Redacted.Redacted<string>): Effect.Effect<void, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    // Reason for unwrapping: the matching material for the last group.
-    // The code is already displayed, and the substring taken here is
-    // never output — used only for the comparison
-    const groups = Redacted.value(code).split("-");
-    const last = groups[groups.length - 1] ?? "";
-    for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt += 1) {
-      const answer = yield* io.promptLine({
-        prompt: `To confirm you saved the code, enter its last group (group ${groups.length}, 4 characters): `,
-      });
-      if (answer.trim().toUpperCase() === last) {
-        return;
-      }
-      yield* io.logError("It does not match. Check the code shown above");
+const confirmCodeSaved = Effect.fn("recovery.confirmCodeSaved")(function* (
+  code: Redacted.Redacted<string>,
+): Effect.fn.Return<void, CliError, CliIo> {
+  const io = yield* CliIo;
+  // Reason for unwrapping: the matching material for the last group.
+  // The code is already displayed, and the substring taken here is
+  // never output — used only for the comparison
+  const groups = Redacted.value(code).split("-");
+  const last = groups[groups.length - 1] ?? "";
+  for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt += 1) {
+    const answer = yield* io.promptLine({
+      prompt: `To confirm you saved the code, enter its last group (group ${groups.length}, 4 characters): `,
+    });
+    if (answer.trim().toUpperCase() === last) {
+      return;
     }
-    return yield* Effect.fail(
-      cliError(
-        "Save confirmation failed. The recovery registration itself is complete — store the code shown above, or reissue it with `maruhi key recovery`",
-      ),
-    );
-  });
-}
+    yield* io.logError("It does not match. Check the code shown above");
+  }
+  return yield* Effect.fail(
+    cliError(
+      "Save confirmation failed. The recovery registration itself is complete — store the code shown above, or reissue it with `maruhi key recovery`",
+    ),
+  );
+});
 
 /**
  * Opens the recovery blob with a prompted recovery code and returns the reserve
@@ -192,11 +190,11 @@ function confirmCodeSaved(code: Redacted.Redacted<string>): Effect.Effect<void, 
  * / `key reserve rotate`). Recovery's tail (issuing the new device key →
  * `add_device` → discarding the reserve key) is key-recover.ts.
  */
-export function unwrapRecoveryBlobWithCode(input: {
-  readonly session: CliSession;
-  readonly client: MaruhiClient;
-}): Effect.Effect<StoredMasterKey, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
-  return Effect.gen(function* () {
+export const unwrapRecoveryBlobWithCode = Effect.fn("recovery.unwrapRecoveryBlobWithCode")(
+  function* (input: {
+    readonly session: CliSession;
+    readonly client: MaruhiClient;
+  }): Effect.fn.Return<StoredMasterKey, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient> {
     const io = yield* CliIo;
     // A line symmetric to the issuing side: the code is key material, and
     // no path for typing it through an agent-mediated stdin is built
@@ -233,8 +231,8 @@ export function unwrapRecoveryBlobWithCode(input: {
       ciphertext,
       userId: input.session.userId,
     });
-  });
-}
+  },
+);
 
 /** The re-registration procedure itself (identical for every cause). */
 const reRegisterAction =
@@ -345,90 +343,88 @@ function readRecoveryBlob(bytes: Uint8Array): {
   };
 }
 
-function unwrapWithPromptedCode(input: {
+const unwrapWithPromptedCode = Effect.fn("recovery.unwrapWithPromptedCode")(function* (input: {
   readonly nonce: Uint8Array;
   readonly ciphertext: Uint8Array;
   readonly userId: string;
-}): Effect.Effect<StoredMasterKey, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt += 1) {
-      // The entered code is key material itself. **Wrap it at the
-      // boundary** (left as a bare string, it could be loaded onto the
-      // logError in the same block in one line, and never appear in the
-      // inventory of unwrap points). It is unwrapped only just before
-      // interpretation
-      const answer = Redacted.make(
-        yield* io.promptLine({
-          prompt: "Enter your recovery code: ",
-          secret: true,
-        }),
-        { label: "recovery-code" },
-      );
-      const secret = parseRecoveryCode(Redacted.value(answer));
-      if (secret === null) {
-        yield* io.logError(
-          "The code is malformed (13 groups of 4 characters; hyphens, spaces, and letter case are ignored)",
-        );
-        continue;
-      }
-      // A crypto failure on the entered code (or a blob that does not
-      // open under it) means the same thing to the user: warn and let
-      // them re-enter — the wording is the failure itself, so the typed
-      // error is re-wrapped then folded back into a logged retry
-      const unwrapped = yield* cryptoEffect(() =>
-        unwrapMasterSecret({
-          // Reason for unwrapping: the recovery-blob decryption's key-derivation input (the crypto boundary)
-          recoverySecret: Redacted.value(secret),
-          userId: input.userId,
-          wrapped: { nonce: input.nonce, ciphertext: input.ciphertext },
-        }),
-      ).pipe(
-        Effect.mapError(() => cliError("Cannot decrypt. Check that the code is correct")),
-        Effect.catchTag("CliError", (error) => Effect.as(io.logError(error.message), null)),
-      );
-      if (unwrapped === null) {
-        continue;
-      }
-      const parsed = readRecoveryBlob(unwrapped);
-      const record = parsed.record;
-      if (record === null) {
-        // Decryption succeeded yet the content is corrupt = the blob was
-        // malformed at registration (not a code mistake, so no re-entry
-        // is prompted). A redacted save is distinguished here too: the
-        // blob is serializeStoredMasterKey's third sink and the same
-        // forgotten unwrap can arrive. Moreover re-registering via
-        // `maruhi key recovery` requires loading the master key (=
-        // already restored), so it cannot run on a device that lost its
-        // key — it does not even hold up as guidance
-        return yield* Effect.fail(
-          cliError(
-            parsed.placeholder
-              ? // What is corrupt is the **server-registered blob**, not a
-                // keychain record (this route passed through
-                // ensureNoStoredMasterKey, so no master key exists in the
-                // keychain)
-                `${placeholderCause("The registered recovery blob")}. ${reRegisterGuidance} Also report this as a maruhi bug`
-              : // It may only be a different shape (a blob a future
-                // version wrote). Use the same classification as the
-                // keychain side, and for what cannot be declared corrupt,
-                // guide toward an update first. Even on the corrupt side,
-                // re-registration can only run **on another device that
-                // still holds a key** (this device has none), so do not
-                // drop that caveat
-                parsed.classification === "foreign"
-                ? foreignRecoveryBlobMessage(parsed.declaredSuite)
-                : `Cannot interpret the decrypted blob as a key record. ${reRegisterGuidance}`,
-          ),
-        );
-      }
-      return record;
-    }
-    return yield* Effect.fail(
-      cliError("Recovery-code entry failed repeatedly. Check the code and re-run"),
+}): Effect.fn.Return<StoredMasterKey, CliError, CliIo> {
+  const io = yield* CliIo;
+  for (let attempt = 1; attempt <= PROMPT_ATTEMPTS; attempt += 1) {
+    // The entered code is key material itself. **Wrap it at the
+    // boundary** (left as a bare string, it could be loaded onto the
+    // logError in the same block in one line, and never appear in the
+    // inventory of unwrap points). It is unwrapped only just before
+    // interpretation
+    const answer = Redacted.make(
+      yield* io.promptLine({
+        prompt: "Enter your recovery code: ",
+        secret: true,
+      }),
+      { label: "recovery-code" },
     );
-  });
-}
+    const secret = parseRecoveryCode(Redacted.value(answer));
+    if (secret === null) {
+      yield* io.logError(
+        "The code is malformed (13 groups of 4 characters; hyphens, spaces, and letter case are ignored)",
+      );
+      continue;
+    }
+    // A crypto failure on the entered code (or a blob that does not
+    // open under it) means the same thing to the user: warn and let
+    // them re-enter — the wording is the failure itself, so the typed
+    // error is re-wrapped then folded back into a logged retry
+    const unwrapped = yield* cryptoEffect(() =>
+      unwrapMasterSecret({
+        // Reason for unwrapping: the recovery-blob decryption's key-derivation input (the crypto boundary)
+        recoverySecret: Redacted.value(secret),
+        userId: input.userId,
+        wrapped: { nonce: input.nonce, ciphertext: input.ciphertext },
+      }),
+    ).pipe(
+      Effect.mapError(() => cliError("Cannot decrypt. Check that the code is correct")),
+      Effect.catchTag("CliError", (error) => Effect.as(io.logError(error.message), null)),
+    );
+    if (unwrapped === null) {
+      continue;
+    }
+    const parsed = readRecoveryBlob(unwrapped);
+    const record = parsed.record;
+    if (record === null) {
+      // Decryption succeeded yet the content is corrupt = the blob was
+      // malformed at registration (not a code mistake, so no re-entry
+      // is prompted). A redacted save is distinguished here too: the
+      // blob is serializeStoredMasterKey's third sink and the same
+      // forgotten unwrap can arrive. Moreover re-registering via
+      // `maruhi key recovery` requires loading the master key (=
+      // already restored), so it cannot run on a device that lost its
+      // key — it does not even hold up as guidance
+      return yield* Effect.fail(
+        cliError(
+          parsed.placeholder
+            ? // What is corrupt is the **server-registered blob**, not a
+              // keychain record (this route passed through
+              // ensureNoStoredMasterKey, so no master key exists in the
+              // keychain)
+              `${placeholderCause("The registered recovery blob")}. ${reRegisterGuidance} Also report this as a maruhi bug`
+            : // It may only be a different shape (a blob a future
+              // version wrote). Use the same classification as the
+              // keychain side, and for what cannot be declared corrupt,
+              // guide toward an update first. Even on the corrupt side,
+              // re-registration can only run **on another device that
+              // still holds a key** (this device has none), so do not
+              // drop that caveat
+              parsed.classification === "foreign"
+              ? foreignRecoveryBlobMessage(parsed.declaredSuite)
+              : `Cannot interpret the decrypted blob as a key record. ${reRegisterGuidance}`,
+        ),
+      );
+    }
+    return record;
+  }
+  return yield* Effect.fail(
+    cliError("Recovery-code entry failed repeatedly. Check the code and re-run"),
+  );
+});
 
 /**
  * `maruhi key generate`'s tail: generating the reserve key and its first
@@ -439,11 +435,15 @@ function unwrapWithPromptedCode(input: {
  * device key's generation still succeeds. The reserve key is made by a
  * later `maruhi key recovery`.
  */
-export function issueRecoveryAfterKeygen(input: {
-  readonly session: CliSession;
-  readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient | OwnDeviceStore> {
-  return Effect.gen(function* () {
+export const issueRecoveryAfterKeygen = Effect.fn("recovery.issueRecoveryAfterKeygen")(
+  function* (input: {
+    readonly session: CliSession;
+    readonly client: MaruhiClient;
+  }): Effect.fn.Return<
+    void,
+    CliError,
+    CliIo | Stdio.Stdio | HttpClient.HttpClient | OwnDeviceStore
+  > {
     const io = yield* CliIo;
     if (io.agentProfile().isAgent) {
       yield* io.log(
@@ -458,28 +458,26 @@ export function issueRecoveryAfterKeygen(input: {
         ),
       ),
     );
-  });
-}
+  },
+);
 
 /**
  * Generates a reserve key, seals it with a fresh recovery code and records its
  * public side locally (K4-1's order: seal → record. Chain registration
  * happens at the next sync).
  */
-export function sealNewReserve(input: {
+export const sealNewReserve = Effect.fn("recovery.sealNewReserve")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
-}): Effect.Effect<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient | OwnDeviceStore> {
-  return Effect.gen(function* () {
-    const reserve = yield* generateReserveKeys();
-    yield* issueRecoveryCodeOp({
-      session: input.session,
-      client: input.client,
-      record: reserve.record,
-    });
-    yield* recordReserveLocally(input.session, reserve);
-    yield* logNote(
-      `created your reserve key (fingerprint ${reserve.fingerprintHex}). It lives only in the recovery ledger; it is registered on each project the next time this device syncs it`,
-    );
+}): Effect.fn.Return<void, CliError, CliIo | Stdio.Stdio | HttpClient.HttpClient | OwnDeviceStore> {
+  const reserve = yield* generateReserveKeys();
+  yield* issueRecoveryCodeOp({
+    session: input.session,
+    client: input.client,
+    record: reserve.record,
   });
-}
+  yield* recordReserveLocally(input.session, reserve);
+  yield* logNote(
+    `created your reserve key (fingerprint ${reserve.fingerprintHex}). It lives only in the recovery ledger; it is registered on each project the next time this device syncs it`,
+  );
+});

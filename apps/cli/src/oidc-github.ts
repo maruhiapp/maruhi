@@ -148,102 +148,100 @@ const ISSUANCE_MARGIN_MS = 2000;
 /** The shortest bound worth giving the fetch; a token in hand with less life than this is no fallback. */
 const ISSUANCE_FLOOR_MS = 1000;
 
-export function fetchGitHubOidcToken(
+export const fetchGitHubOidcToken = Effect.fn("oidc-github.fetchGitHubOidcToken")(function* (
   audience: string,
   /** The bound on the fetch (default {@link OIDC_FETCH_TIMEOUT_MS}; shorter when a token in hand would expire first). */
   timeoutMs: number = OIDC_FETCH_TIMEOUT_MS,
-): Effect.Effect<Redacted.Redacted<string>, CliError, CliIo> {
-  return Effect.gen(function* () {
-    const io = yield* CliIo;
-    const endpoint = readIssuanceEndpoint(io);
-    if (endpoint === null) {
-      return yield* Effect.fail(cliError(OIDC_ENV_MISSING_MESSAGE));
-    }
-    // Validate the URL before sending the runner token (a bearer
-    // credential): refuse non-`https:` (plaintext http, custom
-    // schemes) and embedded credentials. The host is not pinned —
-    // GitHub-hosted runners do not have a fixed hostname and GHES
-    // can be any host, so an allowlist would only break legitimate
-    // runs without adding attack coverage (the position that can
-    // swap env vars = a position that can already write the job
-    // definition)
-    const url = validatedIssuanceUrl(endpoint.requestUrl, audience);
-    if (url === null) {
-      return yield* Effect.fail(
-        cliError(
-          "ACTIONS_ID_TOKEN_REQUEST_URL is not a valid https: URL, so the runner's bearer token will not be sent to it (check the runner environment)",
-        ),
-      );
-    }
-    const outcome = yield* Effect.gen(function* () {
-      const client = yield* HttpClient.HttpClient;
-      const response = yield* client.execute(
-        HttpClientRequest.get(url, {
-          headers: {
-            accept: "application/json",
-            authorization: `Bearer ${endpoint.requestToken}`,
-            "user-agent": "maruhi-cli",
-          },
-        }),
-      );
-      if (response.status < 200 || response.status >= 300) {
-        return { tag: "status", status: response.status } as const;
-      }
-      const decoded = yield* response.text.pipe(Effect.flatMap(decodeIssuanceBody));
-      return { tag: "ok", value: decoded.value } as const;
-    }).pipe(
-      // A hung issuance endpoint must not hold the job: the lease's token
-      // fallback and the recovery message are reached while that token
-      // lives (ruling O revision, round 6 — the API client's bound). It
-      // covers the request and the body read, matching the pre-HttpClient
-      // AbortSignal.timeout
-      Effect.timeout(timeoutMs),
-      // Inside this region every failure is foreign — transport, a hung
-      // endpoint, an undecodable body — so each is normalized to its own
-      // verdict wholesale. A decode failure's SchemaError can carry a
-      // fragment of the response body, and this body is the token's
-      // transport: it folds into "uninterpretable" so no part of it
-      // reaches an error
-      Effect.catchTags({
-        TimeoutError: () =>
-          Effect.succeed({ tag: "transport", reason: "The operation timed out." } as const),
-        HttpClientError: (error) =>
-          Effect.succeed({ tag: "transport", reason: transportReason(error) } as const),
-        SchemaError: () => Effect.succeed({ tag: "uninterpretable" } as const),
-      }),
-      // `local: true` rebuilds the layer per use: a layer is shared between
-      // `Effect.provide` calls by default, so the `FetchHttpClient.layer`
-      // inside the egress layer would resolve to the ambient build (which
-      // never carries the RequestInit) when a client already exists in the
-      // environment — and `redirect: "manual"` would silently drop
-      Effect.provide(issuanceHttpClientLayer, { local: true }),
+): Effect.fn.Return<Redacted.Redacted<string>, CliError, CliIo> {
+  const io = yield* CliIo;
+  const endpoint = readIssuanceEndpoint(io);
+  if (endpoint === null) {
+    return yield* Effect.fail(cliError(OIDC_ENV_MISSING_MESSAGE));
+  }
+  // Validate the URL before sending the runner token (a bearer
+  // credential): refuse non-`https:` (plaintext http, custom
+  // schemes) and embedded credentials. The host is not pinned —
+  // GitHub-hosted runners do not have a fixed hostname and GHES
+  // can be any host, so an allowlist would only break legitimate
+  // runs without adding attack coverage (the position that can
+  // swap env vars = a position that can already write the job
+  // definition)
+  const url = validatedIssuanceUrl(endpoint.requestUrl, audience);
+  if (url === null) {
+    return yield* Effect.fail(
+      cliError(
+        "ACTIONS_ID_TOKEN_REQUEST_URL is not a valid https: URL, so the runner's bearer token will not be sent to it (check the runner environment)",
+      ),
     );
-    if (outcome.tag === "status") {
-      return yield* Effect.fail(
-        cliError(
-          `Failed to fetch the GitHub Actions OIDC token (check the runner's network): HTTP ${outcome.status}`,
-        ),
-      );
+  }
+  const outcome = yield* Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const response = yield* client.execute(
+      HttpClientRequest.get(url, {
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${endpoint.requestToken}`,
+          "user-agent": "maruhi-cli",
+        },
+      }),
+    );
+    if (response.status < 200 || response.status >= 300) {
+      return { tag: "status", status: response.status } as const;
     }
-    if (outcome.tag === "transport") {
-      return yield* Effect.fail(
-        cliError(
-          `Failed to fetch the GitHub Actions OIDC token (check the runner's network): ${outcome.reason}`,
-        ),
-      );
-    }
-    if (outcome.tag === "uninterpretable") {
-      return yield* Effect.fail(
-        cliError("Cannot interpret the OIDC token response from the GitHub Actions runner"),
-      );
-    }
-    // The bare string that arrived from outside the environment is
-    // wrapped here. From here on the token only flows as Redacted
-    // (unwrapping is the 2 places: claims reading and the lease
-    // payload)
-    return Redacted.make(outcome.value, { label: "oidc-token" });
-  });
-}
+    const decoded = yield* response.text.pipe(Effect.flatMap(decodeIssuanceBody));
+    return { tag: "ok", value: decoded.value } as const;
+  }).pipe(
+    // A hung issuance endpoint must not hold the job: the lease's token
+    // fallback and the recovery message are reached while that token
+    // lives (ruling O revision, round 6 — the API client's bound). It
+    // covers the request and the body read, matching the pre-HttpClient
+    // AbortSignal.timeout
+    Effect.timeout(timeoutMs),
+    // Inside this region every failure is foreign — transport, a hung
+    // endpoint, an undecodable body — so each is normalized to its own
+    // verdict wholesale. A decode failure's SchemaError can carry a
+    // fragment of the response body, and this body is the token's
+    // transport: it folds into "uninterpretable" so no part of it
+    // reaches an error
+    Effect.catchTags({
+      TimeoutError: () =>
+        Effect.succeed({ tag: "transport", reason: "The operation timed out." } as const),
+      HttpClientError: (error) =>
+        Effect.succeed({ tag: "transport", reason: transportReason(error) } as const),
+      SchemaError: () => Effect.succeed({ tag: "uninterpretable" } as const),
+    }),
+    // `local: true` rebuilds the layer per use: a layer is shared between
+    // `Effect.provide` calls by default, so the `FetchHttpClient.layer`
+    // inside the egress layer would resolve to the ambient build (which
+    // never carries the RequestInit) when a client already exists in the
+    // environment — and `redirect: "manual"` would silently drop
+    Effect.provide(issuanceHttpClientLayer, { local: true }),
+  );
+  if (outcome.tag === "status") {
+    return yield* Effect.fail(
+      cliError(
+        `Failed to fetch the GitHub Actions OIDC token (check the runner's network): HTTP ${outcome.status}`,
+      ),
+    );
+  }
+  if (outcome.tag === "transport") {
+    return yield* Effect.fail(
+      cliError(
+        `Failed to fetch the GitHub Actions OIDC token (check the runner's network): ${outcome.reason}`,
+      ),
+    );
+  }
+  if (outcome.tag === "uninterpretable") {
+    return yield* Effect.fail(
+      cliError("Cannot interpret the OIDC token response from the GitHub Actions runner"),
+    );
+  }
+  // The bare string that arrived from outside the environment is
+  // wrapped here. From here on the token only flows as Redacted
+  // (unwrapping is the 2 places: claims reading and the lease
+  // payload)
+  return Redacted.make(outcome.value, { label: "oidc-token" });
+});
 
 /** base64url → bytes (null when malformed. Never put a token fragment onto an exception message). */
 function decodeBase64Url(segment: string): Uint8Array | null {
