@@ -318,10 +318,9 @@ export const membershipLive = HttpApiBuilder.group(maruhiApi, "membership", (han
         const snapshot = yield* unwrapDataOutcome(outcome, params.projectId, endpoint);
         // §11-5 (4): a successful get = the DO confirmed a chain-derived
         // member — lazy insert into the membership projection (self-repair
-        // of a D1 fault at add_member time + unattended backfill of
-        // pre-projection projects). An idempotent derived-cache write; a D1
-        // fault is not propagated into the success response (the same
-        // discipline as the §15-2 completed cross-check. The consequence is
+        // of a D1 fault at add_member time). An idempotent derived-cache
+        // write; a D1 fault is not propagated into the success response (the
+        // same discipline as the §15-2 completed cross-check. The consequence is
         // only a listing omission, which the next get repairs)
         const projects = yield* ProjectRepo;
         yield* projects
