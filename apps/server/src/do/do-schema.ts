@@ -8,8 +8,8 @@
 // - audit_events: the audit log (the AUDIT_SPEC §5.1 schema verbatim). seq is
 //   monotonic with no gaps (numbering lives in audit-store.ts — the next seq
 //   is held in DO memory)
-// - schema_meta: the version of applied migrations (one row). Later schema
-//   changes to existing DOs are appended to PROJECT_DO_MIGRATIONS as ordered
+// - schema_meta: the recorded schema version (one row). Later schema changes
+//   to existing DOs are appended to PROJECT_DO_MIGRATIONS.steps as ordered
 //   steps (re-applying CREATE cannot add columns to an existing table)
 //
 // Drizzle (drizzle-orm/durable-sqlite) is again deferred (continuing the
@@ -18,8 +18,12 @@
 // boundary without adding a dependency. The D1 side (db.package) keeps using
 // Drizzle.
 
-// The current schema (all steps folded into one on 2026-09-26 — design record
-// dk-design.md §22-4. The pre-fold DOs were recreated with each operator deploy).
+// The current schema (version 9: the pre-squash steps 1-9 — the 2026-09-26
+// fold of the first history plus the 2026-10-02 appends — were squashed into
+// one base step on 2026-10-06, owner-approved, the same move the D1 schema
+// made with drizzle/20260926225739_init. Design record of the first fold:
+// dk-design.md §22-4). The DDL is in creation order, so a fresh DO's
+// sqlite_master layout matches an upgraded one's.
 const PROJECT_DO_DDL = [
   `CREATE TABLE chain_entries (
      seq INTEGER PRIMARY KEY,
@@ -59,7 +63,12 @@ const PROJECT_DO_DDL = [
   // layout_version: the wire layout (the anchor for the layout-monotonicity
   // check of the next statement). var_type / required / description: the v2
   // schema fields (NULL on v1 rows. required is stored as the signed "true" /
-  // "false" string representation)
+  // "false" string representation). max_age_days (2026-10-02 — PF6 R9 expiring
+  // values, CRYPTO_SPEC §4.2 layout v3): NULL on v1 / v2 rows; on a v3 row the
+  // signed string ("" = no declaration, else the decimal day count). It is
+  // declared last among the columns (a column definition cannot follow a
+  // table constraint in CREATE TABLE input) — the same column order the
+  // pre-squash ALTERs produced
   `CREATE TABLE variable_meta_statements (
      environment_id TEXT NOT NULL,
      variable_id TEXT NOT NULL,
@@ -79,6 +88,7 @@ const PROJECT_DO_DDL = [
      var_type TEXT,
      required TEXT,
      description TEXT,
+     max_age_days TEXT,
      PRIMARY KEY (environment_id, variable_id, meta_version)
    )`,
   `CREATE TABLE environment_meta_statements (
@@ -307,6 +317,81 @@ const PROJECT_DO_DDL = [
      id INTEGER PRIMARY KEY CHECK (id = 1),
      schema_policy TEXT NOT NULL
    )`,
+  // Sealed value proposals (2026-10-02 — PF7b, CRYPTO_SPEC §5.3 / AUTH_SPEC
+  // §14-5): a proposal minted by a leased workload, its variables (the version
+  // each replaces) and its sealed values (one row per recipient device). Rows
+  // are deleted on resolution and on expiry (the audit log keeps the history —
+  // rotation.proposed / rotation.proposal_accepted /
+  // rotation.proposal_rejected). facts_json is the connector's non-secret
+  // facts as a JSON array of strings; nothing in these tables is decryptable
+  // by the server
+  `CREATE TABLE rotation_proposals (
+     proposal_id TEXT PRIMARY KEY,
+     environment_id TEXT NOT NULL,
+     connector TEXT NOT NULL,
+     facts_json TEXT NOT NULL,
+     claims_digest_hex TEXT NOT NULL,
+     grant_chain_seq INTEGER NOT NULL,
+     created_at INTEGER NOT NULL,
+     expires_at INTEGER NOT NULL
+   )`,
+  `CREATE TABLE rotation_proposal_variables (
+     proposal_id TEXT NOT NULL,
+     variable_id TEXT NOT NULL,
+     base_version INTEGER NOT NULL,
+     position INTEGER NOT NULL,
+     PRIMARY KEY (proposal_id, variable_id)
+   )`,
+  `CREATE TABLE rotation_proposal_wraps (
+     proposal_id TEXT NOT NULL,
+     variable_id TEXT NOT NULL,
+     recipient_user_id TEXT NOT NULL,
+     recipient_enc_pub_hex TEXT NOT NULL,
+     enc_hex TEXT NOT NULL,
+     ciphertext_hex TEXT NOT NULL,
+     PRIMARY KEY (proposal_id, variable_id, recipient_user_id, recipient_enc_pub_hex)
+   )`,
+  // The mirror mark and the replication position of a project that is a read
+  // replica of a source deployment (2026-10-02 — PF2 mirrors, AUTH_SPEC
+  // §11-7). **Not a snapshot table** (declared in PROJECT_DO_LOCAL_TABLES,
+  // not in `tables`): a replica must never carry the mark, a restore must not
+  // wipe it, and an export must not emit it.
+  // last_attestation_mark (ruling H revision): the replica's attestation mark
+  // at the last replication, so a sync can tell "nothing changed on the
+  // source" from the three marks (chain head, audit seq, attestation mark)
+  // without uploading a replica. last_mutation_seq (ruling H revision,
+  // round 3): the source's mutation counter the replica was exported at, so
+  // a sync's no-change check covers every write (attestations included) by
+  // construction. Both sit at the end because the pre-squash ALTERs appended
+  // them — the squashed base reproduces the same column order.
+  // Residue of the squash: a DO upgraded to 9 before the squash may carry an
+  // unused nullable `mirror_state.last_audit_head_hash_hex` (added by the
+  // pre-squash steps, unread since ruling J revision round 8, never written
+  // or read by name anywhere); a later step must not add a column of that
+  // name — the ALTER would refuse on those DOs
+  `CREATE TABLE mirror_state (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     source_origin TEXT NOT NULL,
+     marked_at INTEGER NOT NULL,
+     expected_sequence INTEGER NOT NULL,
+     staging_table TEXT,
+     last_synced_at INTEGER,
+     last_head_seq INTEGER,
+     last_head_hash_hex TEXT,
+     last_audit_seq INTEGER,
+     last_attestation_mark INTEGER,
+     last_mutation_seq INTEGER
+   )`,
+  // The deployment-local mutation counter a paged export binds its cursor to
+  // (2026-10-02 — PF3 ruling C revision, AUTH_SPEC §11-6). Bumped by the
+  // schema's triggers (below), not by the write entry points: any row change
+  // by any path moves it, so a writer added later cannot forget to, and a
+  // read between two pages of an export no longer restarts it. **Not a
+  // snapshot table** (PROJECT_DO_LOCAL_TABLES)
+  `CREATE TABLE mutation_state (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     seq INTEGER NOT NULL
+   )`,
 ];
 
 /**
@@ -320,191 +405,108 @@ export interface ProjectDoMigration {
   readonly apply: (sql: SqlStorage) => void;
 }
 
-// Ordered migration steps. **Appending at the end is the only allowed
+/**
+ * The project DO's migration plan: one `base` step that builds the schema as
+ * of `baseVersion` directly (applying it records `baseVersion`), then the
+ * ordered `steps` appended after the squash — step i records baseVersion +
+ * i + 1. The recorded version is explicit data rather than a step count, so
+ * a squashed base and the steps appended after it share one mechanism.
+ */
+export interface ProjectDoMigrationPlan {
+  readonly baseVersion: number;
+  readonly base: ProjectDoMigration;
+  readonly steps: readonly ProjectDoMigration[];
+}
+
+/**
+ * The version the 2026-10-06 squash records: history before it (versions
+ * 1-9 on the pre-squash lineage) was folded into the base step,
+ * owner-approved.
+ */
+const PROJECT_DO_BASE_VERSION = 9;
+
+// The tables the squashed base declares (the pre-squash steps 1-6's
+// declared set, unchanged — PROJECT_DO_TABLES is derived from it).
+const PROJECT_DO_BASE_TABLES: readonly string[] = [
+  "chain_entries",
+  "environments",
+  "variables",
+  "variable_meta_statements",
+  "environment_meta_statements",
+  "variable_versions",
+  "dek_wraps",
+  "audit_events",
+  "lease_windows",
+  "lease_bindings",
+  "environment_manifests",
+  "environment_checkpoints",
+  "checkpoint_snapshot_values",
+  "audit_head_hashes",
+  "head_attestations",
+  "attestation_windows",
+  "project_settings",
+  "rotation_proposals",
+  "rotation_proposal_variables",
+  "rotation_proposal_wraps",
+];
+
+// The migration plan: the squashed `base` step below builds the version-9
+// schema directly, so a fresh DO reaches 9 in one step and a DO already at
+// 9 runs nothing. **Appending at the end of `steps` is the only allowed
 // change** (editing, reordering, or deleting an applied step is forbidden
-// because it would disagree with DOs already deployed externally). Each step
-// may assume "a DB with all previous steps applied" (ALTER TABLE etc.).
-// Each step applies "the body + the version bump" in one transaction
-// (transactionSync), so an exception mid-step rolls the whole step back and the
-// next constructor run retries from the start of the failed step (no partially
-// applied DDL remains, so a step itself does not need to be written
-// idempotently).
-export const PROJECT_DO_MIGRATIONS: readonly ProjectDoMigration[] = [
-  {
-    tables: [
-      "chain_entries",
-      "environments",
-      "variables",
-      "variable_meta_statements",
-      "environment_meta_statements",
-      "variable_versions",
-      "dek_wraps",
-      "audit_events",
-      "lease_windows",
-      "lease_bindings",
-      "environment_manifests",
-      "environment_checkpoints",
-      "checkpoint_snapshot_values",
-      "audit_head_hashes",
-      "head_attestations",
-      "attestation_windows",
-      "project_settings",
-    ],
+// because it would disagree with DOs already deployed externally). Each
+// step may assume "a DB with the base and all previous steps applied"
+// (ALTER TABLE etc.). Each step applies "the body + the version write" in
+// one transaction (transactionSync), so an exception mid-step rolls the
+// whole step back and the next constructor run retries from the start of
+// the failed step (no partially applied DDL remains, so a step itself does
+// not need to be written idempotently). A step that adds a table declares
+// it in `tables` and creates the table's own mutation triggers in its body
+// (mutationTriggers below) — the base creates them for the tracked tables
+// it declares.
+export const PROJECT_DO_MIGRATIONS: ProjectDoMigrationPlan = {
+  baseVersion: PROJECT_DO_BASE_VERSION,
+  base: {
+    tables: PROJECT_DO_BASE_TABLES,
     apply(sql) {
       for (const statement of PROJECT_DO_DDL) {
         sql.exec(statement);
       }
-    },
-  },
-  // Step 2 (2026-10-02 — PF6 R9 expiring values, CRYPTO_SPEC §4.2 layout
-  // v3): the max_age_days column of variable statements. NULL on v1 / v2
-  // rows; on a v3 row the signed string ("" = no declaration, else the
-  // decimal day count)
-  {
-    tables: [],
-    apply(sql) {
-      sql.exec("ALTER TABLE variable_meta_statements ADD COLUMN max_age_days TEXT");
-    },
-  },
-  // Step 3 (2026-10-02 — PF7b sealed value proposals, CRYPTO_SPEC §5.3 /
-  // AUTH_SPEC §14-5): a proposal minted by a leased workload, its
-  // variables (the version each replaces) and its sealed values (one row
-  // per recipient device). Rows are deleted on resolution and on expiry
-  // (the audit log keeps the history — rotation.proposed /
-  // rotation.proposal_accepted / rotation.proposal_rejected). facts_json
-  // is the connector's non-secret facts as a JSON array of strings;
-  // nothing in these tables is decryptable by the server
-  {
-    tables: ["rotation_proposals", "rotation_proposal_variables", "rotation_proposal_wraps"],
-    apply(sql) {
-      sql.exec(`CREATE TABLE rotation_proposals (
-         proposal_id TEXT PRIMARY KEY,
-         environment_id TEXT NOT NULL,
-         connector TEXT NOT NULL,
-         facts_json TEXT NOT NULL,
-         claims_digest_hex TEXT NOT NULL,
-         grant_chain_seq INTEGER NOT NULL,
-         created_at INTEGER NOT NULL,
-         expires_at INTEGER NOT NULL
-       )`);
-      sql.exec(`CREATE TABLE rotation_proposal_variables (
-         proposal_id TEXT NOT NULL,
-         variable_id TEXT NOT NULL,
-         base_version INTEGER NOT NULL,
-         position INTEGER NOT NULL,
-         PRIMARY KEY (proposal_id, variable_id)
-       )`);
-      sql.exec(`CREATE TABLE rotation_proposal_wraps (
-         proposal_id TEXT NOT NULL,
-         variable_id TEXT NOT NULL,
-         recipient_user_id TEXT NOT NULL,
-         recipient_enc_pub_hex TEXT NOT NULL,
-         enc_hex TEXT NOT NULL,
-         ciphertext_hex TEXT NOT NULL,
-         PRIMARY KEY (proposal_id, variable_id, recipient_user_id, recipient_enc_pub_hex)
-       )`);
-    },
-  },
-  // Step 4 (2026-10-02 — PF2 mirrors, AUTH_SPEC §11-7): the mirror mark and
-  // the replication position of a project that is a read replica of a
-  // source deployment. **Not a snapshot table** (declared in
-  // PROJECT_DO_LOCAL_TABLES, not in `tables`): a replica must never carry
-  // the mark, a restore must not wipe it, and an export must not emit it
-  {
-    tables: [],
-    apply(sql) {
-      sql.exec(`CREATE TABLE mirror_state (
-         id INTEGER PRIMARY KEY CHECK (id = 1),
-         source_origin TEXT NOT NULL,
-         marked_at INTEGER NOT NULL,
-         expected_sequence INTEGER NOT NULL,
-         staging_table TEXT,
-         last_synced_at INTEGER,
-         last_head_seq INTEGER,
-         last_head_hash_hex TEXT,
-         last_audit_seq INTEGER
-       )`);
-    },
-  },
-  // Step 5 (2026-10-02 — PF3 ruling C revision, AUTH_SPEC §11-6): the
-  // deployment-local mutation counter a paged export binds its cursor to.
-  // Bumped by every write entry point of the DO, the workload mint and a
-  // replica commit (do-snapshot.ts bumpMutationSeq); reads that append
-  // audit rows do not move it, so a read between two pages of an export
-  // no longer restarts it. **Not a snapshot table** (PROJECT_DO_LOCAL_TABLES)
-  {
-    tables: [],
-    apply(sql) {
-      sql.exec(`CREATE TABLE mutation_state (
-         id INTEGER PRIMARY KEY CHECK (id = 1),
-         seq INTEGER NOT NULL
-       )`);
-    },
-  },
-  // Step 6 (2026-10-02 — PF2 ruling H revision, AUTH_SPEC §11-7): the
-  // replica's attestation mark at the last replication, so a sync can tell
-  // "nothing changed on the source" from the three marks (chain head, audit
-  // seq, attestation mark) without uploading a replica
-  {
-    tables: [],
-    apply(sql) {
-      sql.exec("ALTER TABLE mirror_state ADD COLUMN last_attestation_mark INTEGER");
-    },
-  },
-  // Step 7 (2026-10-02 — PF3 ruling C revision, round 3): the mutation
-  // counter is maintained by the schema, not by the write entry points —
-  // an AFTER INSERT / UPDATE / DELETE trigger on every snapshot table that
-  // takes part in an export's consistency (every table but the audit log
-  // and its cumulative-hash column, which the export bounds by seq, and
-  // the deployment-local drift tables — rate-limit windows, first-come
-  // bindings, attestation windows — which ruling C accepts as drift). Any
-  // row change by any path bumps it, so a writer added later cannot forget
-  // to. **A table added by a later step declares its own triggers in that
-  // step** (mutationTriggers below). The tables are the ones the steps
-  // before this one declare (never a runtime-internal `_cf_*` /
-  // `sqlite_*` table or a leftover staging table, on which a trigger
-  // would be refused or pointless — ruling C revision, round 5)
-  {
-    tables: [],
-    apply(sql) {
-      const declared = new Set(PROJECT_DO_MIGRATIONS.slice(0, 6).flatMap((step) => step.tables));
-      const tables = sql
+      // The mutation triggers on every declared table that isMutationTracked
+      // (the pre-squash steps' mechanism, folded in): AFTER INSERT / UPDATE /
+      // DELETE on every snapshot table that takes part in an export's
+      // consistency — every declared table but the audit log and its
+      // cumulative-hash column, which the export bounds by seq, and the
+      // deployment-local drift tables, which ruling C accepts as drift. The
+      // names come from sqlite_master so the set is never a runtime-internal
+      // `_cf_*` / `sqlite_*` table or a leftover staging table, on which a
+      // trigger would be refused or pointless (ruling C revision, round 5)
+      const declared = new Set(PROJECT_DO_BASE_TABLES);
+      const tracked = sql
         .exec("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         .toArray()
         .map((row) => String(row["name"]))
         .filter((name) => declared.has(name) && isMutationTracked(name));
-      for (const table of tables) {
+      for (const table of tracked) {
         for (const statement of mutationTriggers(table)) {
           sql.exec(statement);
         }
       }
-    },
-  },
-  // Step 8 (2026-10-02 — PF2 ruling H revision, round 3): the source's
-  // mutation counter the replica was exported at, so a sync's no-change
-  // check covers every write (attestations included) by construction
-  {
-    tables: [],
-    apply(sql) {
-      sql.exec("ALTER TABLE mirror_state ADD COLUMN last_mutation_seq INTEGER");
-    },
-  },
-  // Step 9 (2026-10-02 — PF3 ruling C revision, round 6 / PF3 ruling J
-  // revision, round 6): (a) a write-class audit row moves the mutation
-  // counter — the one write entry point that touches no tracked table is
-  // a dismissal, whose only effect is its audit row; the deny list names
-  // the read-path rows (which must not restart an export), so any audit-
-  // only write added later restarts exports by default; (b) a column for
-  // the replica's audit head hash at the replicated position (unused since
-  // ruling J revision, round 8: the mirror's own head column decides)
-  {
-    tables: [],
-    apply(sql) {
+      // The audit write trigger (ruling C revision, round 6 / ruling J
+      // revision, round 6): a write-class audit row moves the mutation
+      // counter — the one write entry point that touches no tracked table is
+      // a dismissal, whose only effect is its audit row; the deny list names
+      // the read-path rows (which must not restart an export), so any
+      // audit-only write added later restarts exports by default
       sql.exec(auditWriteTrigger());
-      sql.exec("ALTER TABLE mirror_state ADD COLUMN last_audit_head_hash_hex TEXT");
     },
   },
-];
+  steps: [],
+};
+
+/** The latest project DO schema version: the squashed base plus every appended step. */
+export const PROJECT_DO_LATEST_SCHEMA_VERSION =
+  PROJECT_DO_MIGRATIONS.baseVersion + PROJECT_DO_MIGRATIONS.steps.length;
 
 const AUDIT_WRITE_TRIGGER = "mutation_audit_events_write";
 
@@ -513,7 +515,7 @@ function readPathList(): string {
   return READ_PATH_AUDIT_EVENTS.map((event) => `'${event}'`).join(", ");
 }
 
-/** Step 9's trigger (also re-asserted at every open — {@link ensureAuditWriteTrigger}). */
+/** The base step's audit trigger (also re-asserted at every open — {@link ensureAuditWriteTrigger}). */
 function auditWriteTrigger(): string {
   return `CREATE TRIGGER IF NOT EXISTS ${AUDIT_WRITE_TRIGGER} AFTER INSERT ON audit_events
          WHEN NEW.event NOT IN (${readPathList()})
@@ -525,10 +527,11 @@ function auditWriteTrigger(): string {
 /**
  * The deny list is baked into the trigger's SQL at apply time, so an
  * event added to {@link READ_PATH_AUDIT_EVENTS} later would never reach a
- * DO that already applied step 9 — and every such read would restart
+ * DO that already carries the trigger — and every such read would restart
  * exports there. A trigger carries no data: it is derived schema,
  * re-created whenever its stored text no longer names the list the code
- * does (ruling C revision, round 7). Step 9 stays the creator on a fresh DO.
+ * does (ruling C revision, round 7). The base step stays the creator on a
+ * fresh DO.
  */
 function ensureAuditWriteTrigger(sql: SqlStorage): void {
   const row = sql
@@ -550,7 +553,7 @@ function ensureAuditWriteTrigger(sql: SqlStorage): void {
 /**
  * The audit rows a read appends (AUDIT_SPEC §3.3): they do not restart an
  * export — the export bounds the log by seq instead. Every other audit row
- * is a write's, and moves the mutation counter (step 9).
+ * is a write's, and moves the mutation counter (the audit write trigger).
  */
 const READ_PATH_AUDIT_EVENTS: readonly string[] = [
   "var.read",
@@ -563,7 +566,7 @@ const READ_PATH_AUDIT_EVENTS: readonly string[] = [
 
 /**
  * Tables whose row changes do not move the mutation counter: the audit log
- * (a write-class row moves it through step 9's own trigger; a read-path
+ * (a write-class row moves it through the audit write trigger; a read-path
  * row does not — the export bounds the log by seq instead) and its
  * cumulative-hash column, the deployment-local drift tables of ruling C,
  * the local state tables, and the migration meta row.
@@ -579,7 +582,7 @@ const MUTATION_UNTRACKED_TABLES: ReadonlySet<string> = new Set([
   "schema_meta",
 ]);
 
-/** The three triggers that make a table's row changes bump the mutation counter (step 7). */
+/** The three triggers that make a table's row changes bump the mutation counter (created by the base step on every tracked declared table; a later step that adds a table creates its own). */
 function mutationTriggers(table: string): readonly string[] {
   return ["INSERT", "UPDATE", "DELETE"].map(
     (event) =>
@@ -596,14 +599,16 @@ export function isMutationTracked(table: string): boolean {
 }
 
 /**
- * All project-DO table names, derived from the migration steps. The test
- * reset helper (test/support/project-do.ts) uses this as its DELETE list.
- * `schema_meta` is intentionally excluded: the applied-version row must
- * survive test resets so migrations are not re-applied to a populated schema.
+ * All project-DO table names, derived from the migration plan's declared
+ * tables. The test reset helper (test/support/project-do.ts) uses this as
+ * its DELETE list. `schema_meta` is intentionally excluded: the
+ * applied-version row must survive test resets so migrations are not
+ * re-applied to a populated schema.
  */
-export const PROJECT_DO_TABLES: readonly string[] = PROJECT_DO_MIGRATIONS.flatMap(
-  (migration) => migration.tables,
-);
+export const PROJECT_DO_TABLES: readonly string[] = [
+  ...PROJECT_DO_MIGRATIONS.base.tables,
+  ...PROJECT_DO_MIGRATIONS.steps.flatMap((step) => step.tables),
+];
 
 /**
  * Deployment-local tables of the project DO: never exported, never
@@ -612,13 +617,12 @@ export const PROJECT_DO_TABLES: readonly string[] = PROJECT_DO_MIGRATIONS.flatMa
  */
 export const PROJECT_DO_LOCAL_TABLES: readonly string[] = ["mirror_state", "mutation_state"];
 
-// version = "number of applied steps" (0 = none applied, PROJECT_DO_MIGRATIONS.length = latest)
 const SCHEMA_META_DDL = `CREATE TABLE IF NOT EXISTS schema_meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   version INTEGER NOT NULL
 )`;
 
-/** Read the number of applied migration steps (0 for a fresh database). */
+/** Read the recorded schema version (0 for a fresh database). */
 export function readProjectDoSchemaVersion(sql: SqlStorage): number {
   sql.exec(SCHEMA_META_DDL);
   const rows = sql.exec("SELECT version FROM schema_meta WHERE id = 1").toArray();
@@ -628,30 +632,35 @@ export function readProjectDoSchemaVersion(sql: SqlStorage): number {
   }
   const version = Number(row.version);
   if (!Number.isInteger(version) || version < 0) {
-    // Treating a corrupt value as 0 would re-run every step (step 2 onward is
-    // not idempotent), so fail explicitly and hand it to human investigation
+    // Treating a corrupt value as 0 would re-run the base step, and treating
+    // it as a lower valid version would re-run later steps that are not
+    // written idempotently — fail explicitly and hand it to human
+    // investigation
     throw new Error(`project DO schema_meta.version is corrupt: ${String(row.version)}`);
   }
   return version;
 }
 
 /**
- * Apply the not-yet-applied migration steps in order. Each step and its
- * version bump run in one synchronous transaction, so a failing step rolls
- * back entirely and is retried from its start on the next call. Applied steps
- * are skipped, so calling this on an up-to-date database is a no-op.
+ * Apply the not-yet-applied schema changes in order: the base step on a
+ * fresh database, then every later step whose recorded version is above the
+ * stored one. Each step and its version write run in one synchronous
+ * transaction, so a failing step rolls back entirely and is retried from
+ * its start on the next call. An up-to-date database is a no-op.
  *
- * Refuses to run when the stored version is newer than this deployment's step
- * count: after a rollback deploy the old code cannot know the newer schema's
- * shape, and continuing silently risks writing through stale assumptions.
+ * Refuses to run when the stored version is newer than this deployment's
+ * latest version: after a rollback deploy the old code cannot know the
+ * newer schema's shape, and continuing silently risks writing through
+ * stale assumptions.
  */
 export function applyProjectDoMigrations(
   storage: DurableObjectStorage,
-  migrations: readonly ProjectDoMigration[],
+  plan: ProjectDoMigrationPlan,
 ): void {
   const sql = storage.sql;
   const current = readProjectDoSchemaVersion(sql);
-  if (current > migrations.length) {
+  const latest = plan.baseVersion + plan.steps.length;
+  if (current > latest) {
     // In the self-hosted distribution a rollback deploy to an older version
     // really happens. Do not silently run old code on a newer-schema DB
     // (operations rule: forward only). Mind the blast radius: this throw fires
@@ -661,25 +670,49 @@ export function applyProjectDoMigrations(
     // step
     throw new Error(
       `project DO schema version ${current} is newer than this deployment supports ` +
-        `(max ${migrations.length}); refusing to run older code on a newer schema`,
+        `(max ${latest}); refusing to run older code on a newer schema`,
     );
   }
-  for (const [index, migration] of migrations.entries()) {
-    if (index < current) {
-      continue;
-    }
+  if (current > 0 && current < plan.baseVersion) {
+    // A stored version below the base predates the squash: the pre-squash
+    // steps were folded into the base (2026-10-06, owner-approved — zero
+    // live users), so there is no sequence of steps that could upgrade it;
+    // the project must be recreated. Same throw site and blast radius as
+    // the rollback guard above: it fires in the DO constructor, so a
+    // project DO at such a version cannot open at all
+    throw new Error(
+      `project DO schema version ${current} predates the squashed schema ` +
+        `(version ${plan.baseVersion}, squashed 2026-10-06); this DO cannot be ` +
+        `upgraded in place — recreate the project`,
+    );
+  }
+  if (current === 0) {
     storage.transactionSync(() => {
-      migration.apply(sql);
+      plan.base.apply(sql);
       sql.exec(
         `INSERT INTO schema_meta (id, version) VALUES (1, ?)
          ON CONFLICT (id) DO UPDATE SET version = excluded.version`,
-        index + 1,
+        plan.baseVersion,
+      );
+    });
+  }
+  for (const [index, step] of plan.steps.entries()) {
+    const version = plan.baseVersion + index + 1;
+    if (version <= current) {
+      continue;
+    }
+    storage.transactionSync(() => {
+      step.apply(sql);
+      sql.exec(
+        `INSERT INTO schema_meta (id, version) VALUES (1, ?)
+         ON CONFLICT (id) DO UPDATE SET version = excluded.version`,
+        version,
       );
     });
   }
 }
 
-/** Called from the DO constructor (idempotent). Applies only the not-yet-applied steps in order. */
+/** Called from the DO constructor (idempotent). Applies only the not-yet-applied changes in order. */
 export function ensureProjectDoTables(storage: DurableObjectStorage): void {
   applyProjectDoMigrations(storage, PROJECT_DO_MIGRATIONS);
   ensureAuditWriteTrigger(storage.sql);

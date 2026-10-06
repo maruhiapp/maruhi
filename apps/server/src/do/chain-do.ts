@@ -777,7 +777,8 @@ export class ProjectChainDO extends DurableObject<Env> {
   /**
    * {@link #runData} for the write entry points: membership → the mirror
    * guard → the program. The mutation counter a paged export binds its
-   * cursor to is kept by the schema's triggers (do-schema.ts step 7), not
+   * cursor to is kept by the schema's triggers (the mutation triggers the
+   * do-schema.ts base step creates), not
    * here: any row change by any path moves it.
    */
   #runWrite<T>(
