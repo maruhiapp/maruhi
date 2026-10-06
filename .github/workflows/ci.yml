@@ -183,9 +183,6 @@ jobs:
       - name: 8b. Server deploy dry-run (combined assets config)
         run: bunx cf deploy --dry-run
         working-directory: apps/server
-        env:
-          WRANGLER_SEND_METRICS: "false"
-          CF_SEND_TELEMETRY: "false"
 
       # Ops foundation H3 (docs/notes/hosted-ops.md §2-F): check the hosted
       # environment and the restore worker through the same path, and confirm
@@ -194,9 +191,6 @@ jobs:
       # `--env` selected are cf `--mode`s of one cloudflare.config.ts
       - name: 8c. Hosted / restore config dry-run + drift check
         working-directory: apps/server
-        env:
-          WRANGLER_SEND_METRICS: "false"
-          CF_SEND_TELEMETRY: "false"
         run: |
           bunx cf deploy --dry-run --mode hosted
           bunx cf deploy --dry-run --mode restore
@@ -221,9 +215,6 @@ jobs:
       - name: 8e. Site deploy dry-run (static assets config)
         run: bunx cf deploy --dry-run
         working-directory: apps/site
-        env:
-          WRANGLER_SEND_METRICS: "false"
-          CF_SEND_TELEMETRY: "false"
 
       # Playwright browser install (shared by the browser tests in step 9 / 9b /
       # 11). The old layout (playwright install --with-deps inside step 9 every
