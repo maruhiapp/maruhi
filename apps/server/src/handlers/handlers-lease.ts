@@ -231,8 +231,8 @@ export const leaseLive = HttpApiBuilder.group(maruhiApi, "lease", (handlers) =>
           deletedVariables: leased.deletedVariables,
           leases: leased.leases,
           // The latest manifest (§14-2 — material for the workload's
-          // verification duty §9.1 (5))
-          ...(leased.manifest === undefined ? {} : { manifest: leased.manifest }),
+          // verification duty §9.1 (5); required since 0.28-draft)
+          manifest: leased.manifest,
           // The value snapshot at checkpoint time (§14-2 — same material
           // as §12-7. Material for the workload's checkpoint consistency
           // and rule 2 — CRYPTO_SPEC §6.3)

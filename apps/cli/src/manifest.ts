@@ -14,7 +14,9 @@
 //
 // **Missing manifest = uniform refusal** (§6.3 — the "warn if
 // uninitialized" branch is a relaxation path an attacker can
-// choose, so it does not exist).
+// choose, so it does not exist). Required on the wire since
+// 0.28-draft: the schema refuses the omission at decode — the
+// same verdict as a dropped environment statement.
 
 import type { DistributedEnvironmentManifest, EnvironmentManifest } from "@maruhi/api-schema";
 import { CryptoEnvManifestInvalidError, cryptoEffect } from "@maruhi/core";
@@ -293,13 +295,5 @@ export async function verifyDistributedManifest(input: {
         },
       }),
     ),
-  );
-}
-
-/** The uniform refusal message for a missing manifest (§6.3). */
-export function missingManifestMessage(environmentId: string): string {
-  return (
-    `The server did not distribute an environment manifest for ${environmentId}. ` +
-    "A missing manifest is treated as manifest suppression (statement omission cannot be ruled out — CRYPTO_SPEC §6.3) and the response is rejected"
   );
 }

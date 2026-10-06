@@ -77,8 +77,12 @@ export interface LeaseResponseWire {
    * declared).
    */
   readonly declaredVariables?: readonly DistributedVariableMetaStatement[] | undefined;
-  /** The latest manifest (§12-7 — a missing one is refused outright per §9.1 (5). No migration allowance). */
-  readonly manifest?: DistributedEnvironmentManifest | undefined;
+  /**
+   * The latest manifest (§14-2 — required on the wire; the schema
+   * refuses an omission at decode — the same verdict as a dropped
+   * environment statement, §9.1 (5) / §6.3).
+   */
+  readonly manifest: DistributedEnvironmentManifest;
   /**
    * The value-snapshot enumeration at the checkpoint (§14-2 — the
    * material of rule 2. A response that omits it despite a baseline

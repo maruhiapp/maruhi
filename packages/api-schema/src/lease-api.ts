@@ -22,10 +22,10 @@ import { PulledVariableSchema } from "./data-api.ts";
 import {
   BoundedUserId,
   CheckpointValueSnapshotSchema,
-  DistributedEnvironmentManifestSchema,
   DistributedEnvironmentMetaStatementSchema,
   DistributedVariableMetaStatementSchema,
   LeasedDekSchema,
+  RequiredDistributedEnvironmentManifestSchema,
 } from "./data.ts";
 import {
   LeaseRateLimitedError,
@@ -105,10 +105,11 @@ export const LeaseResponseSchema = Schema.Struct({
   /**
    * The latest environment manifest + issuer info (§14-2). Material for
    * the workload's verification duty §9.1 (5) (digest recomputation,
-   * epoch consistency). Missing = refuse, same as pull (optional only
-   * as the transient state until migration completes).
+   * epoch consistency). Required — a created environment always has a
+   * stored manifest (§12-4); a missing one is refused, same as pull
+   * (CRYPTO_SPEC §6.3).
    */
-  manifest: Schema.optionalKey(DistributedEnvironmentManifestSchema),
+  manifest: RequiredDistributedEnvironmentManifestSchema,
   /**
    * Enumeration of the checkpoint-time value snapshot (§14-2 — same
    * material as §12-7). The workload's checkpoint-consistency

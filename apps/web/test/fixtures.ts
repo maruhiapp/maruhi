@@ -182,6 +182,23 @@ export const metadataPullFixture: EnvironmentMetadataPull = {
     },
   ],
   deletedVariables: [],
+  // The distributed environment manifest (required on the wire since
+  // 0.28-draft — a schema-valid dummy; the dashboard never reads it)
+  manifest: {
+    suite: "maruhi/v1",
+    environmentId: "production",
+    epoch: 1,
+    manifestVersion: 1,
+    variablesDigestHex: HEX64,
+    envMetaVersion: 1,
+    envMetaSigHashHex: HEX64,
+    prevManifestSigHashHex: "",
+    chainHeadHashHex: HEX64,
+    chainHeadSeq: 1,
+    signatureHex: SIG,
+    issuerUserId: "user_e2e",
+    issuerKeyFingerprintHex: FP,
+  },
   schemaPolicy: "disabled",
 };
 
