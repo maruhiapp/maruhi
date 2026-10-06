@@ -2,8 +2,8 @@
 //
 // - Building and ES256-signing OIDC tokens (the key is the dummy in
 //   support/oidc-issuer.ts; outboundService serves the JWKS of the same key)
-// - The deployment keypair (actually derived from SERVER_ENC_KEY_IKM in
-//   vitest.config.ts). Because tests check as far as "the server can really
+// - The deployment keypair (actually derived from the SERVER_ENC_KEY_IKM
+//   binding — .dev.vars.example's dummy, injected by vitest.config.ts). Because tests check as far as "the server can really
 //   open a wrap addressed to itself", they use the real derived key, not a
 //   dummy public key
 //
@@ -12,10 +12,12 @@
 
 import {
   computeServerKeyFingerprint,
+  decodeHex,
   deriveEncryptionKeyPair,
   encodeHex,
   exportEncryptionPublicKey,
 } from "@maruhi/crypto";
+import { env } from "cloudflare:test";
 
 import { OIDC_ISSUER, OIDC_KID, OIDC_PRIVATE_JWK } from "./oidc-issuer.ts";
 
@@ -42,9 +44,11 @@ export async function deploymentKey(): Promise<DeploymentKey> {
   if (cachedKey !== undefined) {
     return cachedKey;
   }
-  // Same value as SERVER_ENC_KEY_IKM ("b0" x 32) in vitest.config.ts's
-  // miniflare bindings
-  const ikm = Uint8Array.from({ length: 32 }, () => 0xb0);
+  // The same binding the worker derives its keypair from
+  const ikm = decodeHex(env.SERVER_ENC_KEY_IKM ?? "");
+  if (ikm === null || ikm.length === 0) {
+    throw new Error("SERVER_ENC_KEY_IKM binding is not set to hex");
+  }
   const pair = await deriveEncryptionKeyPair({ ikm });
   if (!pair.ok) {
     throw new Error("deployment key derivation failed");

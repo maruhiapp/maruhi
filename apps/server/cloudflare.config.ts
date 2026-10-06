@@ -78,8 +78,10 @@ const SPA_ASSETS = {
  * D1 migrations no longer live in the config: `migrations_dir` /
  * `migrations_pattern` became the `--dir` / `--pattern` flags of
  * `cf d1 migrations apply` (see the db:migrate scripts in package.json).
- * The `.dev.vars.example` template is intentionally not migrated; it only
- * documents dummy values and is not a `secrets.required` entry.
+ * The `.dev.vars.example` template is intentionally not migrated: it holds the
+ * dummy values for local `cf dev` (copied to `.dev.vars`) and is the source of
+ * the server tests' dummy bindings (vitest.config.ts), not a `secrets.required`
+ * entry.
  */
 export default defineConfig((ctx) => {
   switch (ctx.mode) {

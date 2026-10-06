@@ -5,7 +5,7 @@ declare namespace Cloudflare {
     DB: D1Database;
     GITHUB_CLIENT_ID: string;
     GITHUB_CLIENT_SECRET: string;
-    /** ikm of the deployment keypair (optional; unset in the test default). */
+    /** ikm of the deployment keypair (optional; set from .dev.vars.example in tests). */
     SERVER_ENC_KEY_IKM?: string;
     /** Source-IP rate limits (AUTH_SPEC §4-1 — wrangler.jsonc ratelimits). */
     CLI_START_RATE_LIMIT: RateLimit;

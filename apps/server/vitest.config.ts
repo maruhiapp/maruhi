@@ -3,7 +3,11 @@ import { defineConfig } from "vitest/config";
 import { unstable_readConfig } from "wrangler";
 
 import { fakeGitHub } from "./test/support/fake-github.ts";
+import { readDevVarsExample } from "./test/support/read-dev-vars.ts";
 import { readDrizzleMigrations } from "./test/support/read-migrations.ts";
+
+// The dummy secret bindings (Node side, like the reads below)
+const devVars = readDevVarsExample(new URL(".dev.vars.example", import.meta.url).pathname);
 
 // Pass wrangler.jsonc's real values to serving-topology.test.ts (the
 // run_worker_first all-endpoints coverage sweep). workerd cannot read
@@ -24,22 +28,19 @@ export default defineConfig({
         // Reproduces the hosted environment's shape in tests)
         r2Buckets: ["OPS_BACKUP_BUCKET"],
         bindings: {
-          // GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET are Workers
-          // Secrets in production (they don't appear in
-          // wrangler.jsonc), so tests inject a "configured server"'s
-          // dummy values here (unconfigured-detection tests pass a
-          // swapped env to worker.fetch — auth.test.ts)
-          GITHUB_CLIENT_ID: "dummy-github-client-id",
-          GITHUB_CLIENT_SECRET: "dummy-github-client-secret",
-          // The deployment keypair's IKM (CRYPTO_SPEC §9). A
-          // Workers Secret in production. The §14 lease-path tests
-          // build a server-bound wrap with the real key derived
-          // from this IKM and verify the server can unwrap it
-          SERVER_ENC_KEY_IKM: "b0".repeat(32),
-          // The tripwire-notification webhook (hosted-ops.md §2-B).
-          // The fake (fake-github.ts) receives it. The sent body's
-          // contents are checked via an OpsNotifier swap
-          // (ops-alerts.test.ts)
+          // The Workers Secrets (absent from wrangler.jsonc): the
+          // tests run a "configured server" with the dummy values of
+          // .dev.vars.example, the single source shared with local
+          // `cf dev` (unconfigured-detection tests pass a swapped env
+          // to worker.fetch — auth.test.ts). The §14 lease-path tests
+          // build a server-bound wrap with the real key derived from
+          // its SERVER_ENC_KEY_IKM and verify the server can unwrap it
+          ...devVars,
+          // Test-only overrides on top of the example.
+          // The tripwire-notification webhook (hosted-ops.md §2-B;
+          // commented out in the example as hosted-only). The fake
+          // (fake-github.ts) receives it. The sent body's contents are
+          // checked via an OpsNotifier swap (ops-alerts.test.ts)
           OPS_ALERT_WEBHOOK_URL: "https://ops-webhook.test/hook",
           // wrangler.jsonc's real assets.run_worker_first value
           // (the coverage sweep's inspection target)

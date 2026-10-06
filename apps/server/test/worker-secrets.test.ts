@@ -3,8 +3,8 @@
 // OPS_ALERT_WEBHOOK_URL are wrapped at the env read, so no rendering a log
 // line, an error message, or a Cause can take — String, JSON, Effect's
 // formatter, the Node inspect hook, a logged value, Cause.pretty — shows
-// the value. The values read here are the dummy bindings from
-// vitest.config.ts.
+// the value. The values read here are the dummy bindings vitest.config.ts
+// injects (.dev.vars.example plus its test-only overrides).
 
 import { env } from "cloudflare:test";
 import { Cause, Effect, Exit, Formatter, Inspectable, Redacted } from "effect";
