@@ -389,7 +389,7 @@ function sourceUnchanged(
 /** The three marks the last replication brought are the source's current ones, and the mirror still holds that head. */
 function marksUnchanged(before: MirrorStatus, source: MirrorStatus): boolean {
   const last = before.lastSync;
-  if (last === undefined || last.mutationSeq === undefined) {
+  if (last === undefined) {
     return false;
   }
   return (

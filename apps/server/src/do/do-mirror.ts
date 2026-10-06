@@ -97,9 +97,9 @@ export interface MirrorState {
   readonly lastHeadHashHex: string;
   /** The replica's audit seq at the last replication (or the mark): rows past it are the mirror's own. */
   readonly lastAuditSeq: number;
-  /** The replica's attestation mark at the last replication (or the mark); null on a row written before the column existed (a DO that already ran the pre-squash steps). */
-  readonly lastAttestationMark: number | null;
-  /** The source's mutation counter the replica was exported at (null = unknown — the bootstrap, or a sync that did not say). */
+  /** The replica's attestation mark at the last replication (or the mark). */
+  readonly lastAttestationMark: number;
+  /** The source's mutation counter the replica was exported at (null until the first replication since the mark). */
   readonly lastMutationSeq: number | null;
 }
 
@@ -117,8 +117,7 @@ export function readMirrorState(sql: SqlStorage): MirrorState | null {
     lastHeadSeq: Number(row["last_head_seq"]),
     lastHeadHashHex: String(row["last_head_hash_hex"]),
     lastAuditSeq: Number(row["last_audit_seq"]),
-    lastAttestationMark:
-      row["last_attestation_mark"] === null ? null : Number(row["last_attestation_mark"]),
+    lastAttestationMark: Number(row["last_attestation_mark"]),
     lastMutationSeq: row["last_mutation_seq"] === null ? null : Number(row["last_mutation_seq"]),
   };
 }

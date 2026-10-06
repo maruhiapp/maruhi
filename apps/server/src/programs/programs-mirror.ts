@@ -55,17 +55,8 @@ import {
 } from "../policy.ts";
 import { ensureStorageAdmitsGrowth, StorageMeter } from "../storage-guard.ts";
 
-/**
- * The last replication as the status reports it (the commit's position;
- * the re-appended count is a commit's answer only). The stored record of a
- * replication committed before the counter was recorded carries no
- * mutation counter (`mirror_state.last_mutation_seq` is nullable — a
- * pre-squash DO may hold such a row); the client's no-change check then
- * reads "changed".
- */
-export type MirrorSyncPosition = Omit<MirrorCommit, "ownAuditRows" | "mutationSeq"> & {
-  readonly mutationSeq?: number;
-};
+/** The last replication as the status reports it (the commit's position; the re-appended count is a commit's answer only). */
+export type MirrorSyncPosition = Omit<MirrorCommit, "ownAuditRows">;
 
 /**
  * The status as the worker returns it (the wire shape of api-schema's
@@ -126,7 +117,9 @@ function statusOf(sql: SqlStorage, role: Role): MirrorStatusValue {
     mirror: true,
     sourceOrigin: state.sourceOrigin,
     markedAtMs: state.markedAtMs,
-    ...(state.lastSyncedAtMs === null || !admin
+    // The commit writes the sync time and the source's counter together,
+    // so both are set exactly when a replication was recorded
+    ...(state.lastSyncedAtMs === null || state.lastMutationSeq === null || !admin
       ? {}
       : {
           lastSync: {
@@ -134,8 +127,8 @@ function statusOf(sql: SqlStorage, role: Role): MirrorStatusValue {
             chainHeadSeq: state.lastHeadSeq,
             chainHeadHashHex: state.lastHeadHashHex,
             auditMaxSeq: state.lastAuditSeq,
-            attestationMark: state.lastAttestationMark ?? 0,
-            ...(state.lastMutationSeq === null ? {} : { mutationSeq: state.lastMutationSeq }),
+            attestationMark: state.lastAttestationMark,
+            mutationSeq: state.lastMutationSeq,
           },
         }),
     ...(state.expectedSequence === 0 ? {} : { nextSequence: state.expectedSequence }),

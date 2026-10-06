@@ -1,10 +1,8 @@
 // Tests for the project DO's schema-migration machinery (src/do/do-schema.ts).
-// Verifies on the real workerd SqlStorage: the squashed base step on an
-// empty DB (recorded as version 9, schema pinned against the dump the W4-Z3
-// differential probe generated from the pre-squash steps 1-9), the refusal
-// of a pre-squash version (1-8), application/rollback/rerun of later steps
-// on synthetic plans, and that re-applying to an already-migrated DB is a
-// no-op.
+// Verifies on the real workerd SqlStorage: the base step on an empty DB
+// (recorded as version 9), the fail-closed refusal of a stored version below
+// the base, application/rollback/rerun of later steps on synthetic plans,
+// and that re-applying to an already-migrated DB is a no-op.
 //
 // The real DO's (ProjectChainDO) constructor applies migrations at
 // runInDurableObject instantiation time, so the "empty DB" / "mid-version
@@ -17,7 +15,6 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { DataStore, dataStoreLayer } from "../src/data/data-store.ts";
-import { readMirrorState } from "../src/do/do-mirror.ts";
 import type { ProjectDoMigration, ProjectDoMigrationPlan } from "../src/do/do-schema.ts";
 import {
   applyProjectDoMigrations,
@@ -28,7 +25,6 @@ import {
   PROJECT_DO_TABLES,
   readProjectDoSchemaVersion,
 } from "../src/do/do-schema.ts";
-import expectedV9Schema from "./fixtures/do-schema-v9.json";
 
 /** Run body on the storage of this file's dedicated DO. */
 async function withStorage<T>(body: (storage: DurableObjectStorage) => T): Promise<T> {
@@ -60,44 +56,8 @@ function userTableNames(sql: SqlStorage): Set<string> {
   );
 }
 
-/** sqlite_master.sql normalized: quoting and whitespace differences are not schema differences. */
-function canonSql(sql: unknown): string | null {
-  if (sql === null || sql === undefined) {
-    return null;
-  }
-  return String(sql).replaceAll('"', "").replace(/\s+/g, "");
-}
-
-interface SchemaObject {
-  type: string;
-  name: string;
-  tblName: string;
-  sql: string | null;
-}
-
-/** The schema objects in sqlite_master rowid order (creation order), the pinned shape. */
-function schemaObjects(sql: SqlStorage): SchemaObject[] {
-  return sql
-    .exec(
-      `SELECT type, name, tbl_name, sql FROM sqlite_master
-       WHERE name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND name != 'sqlite_sequence'
-       ORDER BY rowid`,
-    )
-    .toArray()
-    .map((row) => ({
-      type: String(row["type"]),
-      name: String(row["name"]),
-      tblName: String(row["tbl_name"]),
-      sql: canonSql(row["sql"]),
-    }));
-}
-
-/** The audit write trigger is derived schema: its text embeds READ_PATH_AUDIT_EVENTS and ensureAuditWriteTrigger rewrites it when the list changes — mask its sql so the v9 pin does not break on a routine list change (export.test.ts pins the text itself). */
-const stripDerivedSql = (object: SchemaObject): SchemaObject =>
-  object.name === "mutation_audit_events_write" ? { ...object, sql: "<derived>" } : object;
-
 describe("project DO schema migrations", () => {
-  it("applies the squashed base to an empty DB and records version 9", async () => {
+  it("applies the base to an empty DB and records version 9", async () => {
     await withStorage((storage) => {
       const sql = storage.sql;
       dropAllUserTables(sql);
@@ -105,7 +65,7 @@ describe("project DO schema migrations", () => {
 
       ensureProjectDoTables(storage);
 
-      // One step: the squashed base records 9 directly (the latest version —
+      // One step: the base records 9 directly (the latest version —
       // no later steps exist today)
       expect(PROJECT_DO_LATEST_SCHEMA_VERSION).toBe(9);
       expect(readProjectDoSchemaVersion(sql)).toBe(PROJECT_DO_LATEST_SCHEMA_VERSION);
@@ -122,112 +82,23 @@ describe("project DO schema migrations", () => {
     });
   });
 
-  it("builds the same schema as the pre-squash steps 1-9 produced (the pinned dump)", async () => {
+  it("refuses a stored version below the base as corrupt before running any DDL", async () => {
     await withStorage((storage) => {
       const sql = storage.sql;
       dropAllUserTables(sql);
-      // Apply only the base: the pin is the version-9 schema, and it stays a
-      // v9 pin when a later step is appended above it
-      applyProjectDoMigrations(storage, { ...PROJECT_DO_MIGRATIONS, steps: [] });
-
-      // fixtures/do-schema-v9.json is the normalized dump the W4-Z3
-      // differential probe generated from origin/main's steps 1-9 (the
-      // mirror_state residue column the squash drops removed; regenerate by
-      // re-running that probe against the pre-squash do-schema.ts). Every
-      // object — table / index / trigger, in creation order — must match
-      const fresh = schemaObjects(sql);
-      expect(fresh.map(stripDerivedSql)).toEqual(
-        (expectedV9Schema.objects as readonly SchemaObject[]).map(stripDerivedSql),
-      );
-      const auditTrigger = fresh.find((object) => object.name === "mutation_audit_events_write");
-      expect(auditTrigger?.tblName).toBe("audit_events");
-      expect(auditTrigger?.sql).toContain("AFTERINSERTONaudit_events");
-      for (const [table, columns] of Object.entries(expectedV9Schema.tableXinfo)) {
-        expect(sql.exec(`SELECT * FROM pragma_table_xinfo('${table}')`).toArray()).toEqual(columns);
-      }
-      for (const [table, indexes] of Object.entries(expectedV9Schema.indexList)) {
-        expect(sql.exec(`SELECT * FROM pragma_index_list('${table}')`).toArray()).toEqual(indexes);
-      }
-      for (const [index, entries] of Object.entries(expectedV9Schema.indexXinfo)) {
-        expect(sql.exec(`SELECT * FROM pragma_index_xinfo('${index}')`).toArray()).toEqual(entries);
-      }
-      for (const [table, keys] of Object.entries(expectedV9Schema.foreignKeys)) {
-        expect(sql.exec(`SELECT * FROM pragma_foreign_key_list('${table}')`).toArray()).toEqual(
-          keys,
-        );
-      }
-    });
-  });
-
-  it("a DO already at version 9 with the pre-squash schema shape is a no-op (the residue column stays)", async () => {
-    await withStorage((storage) => {
-      const sql = storage.sql;
-      dropAllUserTables(sql);
-      ensureProjectDoTables(storage);
-      // Reproduce a DO that reached 9 under the pre-squash steps: the
-      // deployment-local mirror_state there carries the extra nullable
-      // column the squash drops from the base
-      sql.exec("ALTER TABLE mirror_state ADD COLUMN last_audit_head_hash_hex TEXT");
-      sql.exec(
-        `INSERT INTO mirror_state (id, source_origin, marked_at, expected_sequence, staging_table,
-           last_synced_at, last_head_seq, last_head_hash_hex, last_audit_seq,
-           last_attestation_mark, last_audit_head_hash_hex)
-         VALUES (1, 'https://source.test', 1, 0, NULL, NULL, 0, '', 0, NULL, 'ab')`,
-      );
-      sql.exec(
-        `INSERT INTO chain_entries (seq, entry_json, entry_hash_hex, canonical_bytes) VALUES (1, '{}', 'ab', 2)`,
-      );
-      const schemaBefore = schemaObjects(sql);
-
-      ensureProjectDoTables(storage);
-
-      // No step ran: the version, the schema (the residue column included)
-      // and the rows are untouched
-      expect(readProjectDoSchemaVersion(sql)).toBe(PROJECT_DO_LATEST_SCHEMA_VERSION);
-      expect(schemaObjects(sql)).toEqual(schemaBefore);
-      const mirrorRow = sql.exec("SELECT * FROM mirror_state WHERE id = 1").toArray()[0];
-      expect(mirrorRow?.["last_audit_head_hash_hex"]).toBe("ab");
-      expect(readMirrorState(sql)).toEqual({
-        sourceOrigin: "https://source.test",
-        markedAtMs: 1,
-        expectedSequence: 0,
-        stagingTable: null,
-        lastSyncedAtMs: null,
-        lastHeadSeq: 0,
-        lastHeadHashHex: "",
-        lastAuditSeq: 0,
-        lastAttestationMark: null,
-        lastMutationSeq: null,
-      });
-      expect(sql.exec(`SELECT COUNT(*) AS n FROM chain_entries`).toArray()[0]?.n).toBe(1);
-
-      // Cleanup: return to the real schema (the ALTERed mirror_state is
-      // dropped and recreated without the residue column)
-      dropAllUserTables(sql);
-      ensureProjectDoTables(storage);
-    });
-  });
-
-  it("refuses a pre-squash stored version (1-8) before running any DDL", async () => {
-    await withStorage((storage) => {
-      const sql = storage.sql;
-      dropAllUserTables(sql);
-      // schema_meta exists (the version read creates it) but is empty —
-      // write each pre-squash version into it
+      // No step records a version in 1..base-1: such a value is corrupt
       readProjectDoSchemaVersion(sql);
-      sql.exec(`INSERT INTO schema_meta (id, version) VALUES (1, 1)`);
-      for (let version = 1; version <= 8; version++) {
-        sql.exec(`UPDATE schema_meta SET version = ? WHERE id = 1`, version);
-        expect(() => ensureProjectDoTables(storage)).toThrow(
-          `project DO schema version ${version} predates the squashed schema ` +
-            `(version 9, squashed 2026-10-06); this DO cannot be upgraded in place ` +
-            `— recreate the project`,
-        );
-        // The refusal happens before any DDL: the version is not rewritten
-        // and no table was created
-        expect(readProjectDoSchemaVersion(sql)).toBe(version);
-        expect(userTableNames(sql)).toEqual(new Set(["schema_meta"]));
-      }
+      sql.exec(
+        `INSERT INTO schema_meta (id, version) VALUES (1, ?)`,
+        PROJECT_DO_MIGRATIONS.baseVersion - 1,
+      );
+      expect(() => ensureProjectDoTables(storage)).toThrow(
+        `project DO schema_meta.version is corrupt: ${PROJECT_DO_MIGRATIONS.baseVersion - 1}`,
+      );
+      // The refusal happens before any DDL: the version is not rewritten
+      // and no table was created
+      expect(readProjectDoSchemaVersion(sql)).toBe(PROJECT_DO_MIGRATIONS.baseVersion - 1);
+      expect(userTableNames(sql)).toEqual(new Set(["schema_meta"]));
 
       // Cleanup: return to the real schema
       dropAllUserTables(sql);

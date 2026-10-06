@@ -61,7 +61,7 @@ export const MirrorSyncRecordSchema = Schema.Struct({
   auditMaxSeq: Schema.Number,
   attestationMark: Schema.Number,
   /** The source's mutation counter the replica was exported at (the sync's no-change check — ruling H revision, round 3). */
-  mutationSeq: Schema.optionalKey(Schema.Number),
+  mutationSeq: Schema.Number,
   ownAuditRows: Schema.optionalKey(Schema.Number),
 });
 
