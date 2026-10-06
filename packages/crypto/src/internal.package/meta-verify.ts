@@ -16,9 +16,9 @@
 //      AUTH_SPEC §12-3)
 //   6. Chaining integrity (only when a predecessor is passed: prev match +
 //      rejection of re-statement after deletion — §4.2's "no re-activation
-//      after deleted" — plus layout v2's transition rules: no
+//      after deleted" — plus layout v3's transition rules: no
 //      active → declared, and per-variable layout monotonicity [rejecting a
-//      v2 → v1 regression] — §4.2 layout v2, 0.8-draft)
+//      v3 → v1 regression] — §4.2 layout v3)
 // Coordinate integrity (§6.3-5) is the caller's duty: construct the context
 // passed to this function from expected coordinates (the verified genesis
 // hash, the requested environment, the outer response's variableId), not
@@ -73,10 +73,10 @@ export interface MetaPredecessor {
   /**
    * The predecessor's wire layout version — the anchor of the per-variable
    * layout monotonicity check (§4.2: a successor of a lower layout than its
-   * predecessor — v1 after v2, v2 after v3 — is rejected as `layout-regression`). **Required, not optional-with-default**:
+   * predecessor — v1 after v3 — is rejected as `layout-regression`). **Required, not optional-with-default**:
    * this structure is assembled from a *verified* stored statement, and an
    * omitted-means-1 default would make the fail-closed monotonicity check
-   * fail-open — a caller that forgets the field would silently wave a v2 → v1
+   * fail-open — a caller that forgets the field would silently wave a v3 → v1
    * regression through, which is the exact schema erasure the rule exists to
    * stop. Wire omission = 1 (§4.2) is the *wire* rule;
    * callers holding a v1 predecessor write `layoutVersion: 1` explicitly, so
@@ -155,7 +155,7 @@ function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReaso
 //   schema fields and name (§4.2) is an **acceptance check** (AUTH_SPEC
 //   §12-5 — the same kind of acceptance check as name's "preserve the
 //   previous active name" convention; v1's name preservation is isomorphic
-//   and checked by apps/server/src/programs/programs-variable.ts). **The v2-delete
+//   and checked by apps/server/src/programs/programs-variable.ts). **The v3-delete
 //   "schema fields / layout must match the previous" acceptance check is
 //   mandatory on the acceptance surface** — without it, a modified delete
 //   with a valid signature (status = deleted with rewritten schema fields)
@@ -163,7 +163,7 @@ function headStateReason(input: DistributedMetaStatementInput): MetaInvalidReaso
 // - metaVersion 1 + status deleted is rejected by the signing API
 //   (signMetaStatement) but not by the distributed verification (a known
 //   asymmetry since v1 — the acceptance surface [§12-5: a creation is
-//   active or v2 declared] is authoritative)
+//   active or v3 declared] is authoritative)
 function prevReason(input: DistributedMetaStatementInput): MetaInvalidReason | null {
   const { context, predecessor } = input;
   // The shape of prev (always checked even under latest-only):
@@ -190,22 +190,20 @@ function prevReason(input: DistributedMetaStatementInput): MetaInvalidReason | n
   if (predecessor.status === "deleted") {
     return "revived-after-delete";
   }
-  // §4.2 layout v2: active → declared is forbidden (never create a
+  // §4.2 layout v3: active → declared is forbidden (never create a
   // rewinding representation of a value's existence — the only way to take
   // a value out is deletion). declared → declared (re-issuing the schema or
   // renaming while still declared) is legitimate and not rejected here
   if (predecessor.status === "active" && context.status === "declared") {
     return "declared-after-active";
   }
-  // §4.2's per-variable layout monotonicity: a v1 successor of a variable
-  // whose predecessor is v2 is rejected (allowing the regression would let
-  // one rename silently erase the schema fields, bypassing the presence
-  // guarantee §14.2-8 and schema-locked [AUTH_SPEC §12-11]). The
-  // predecessor side is a mandatory field (fail-closed — see
-  // MetaPredecessor's doc); only the context side applies the wire
-  // convention (omitted = 1)
-  // Generalized at layout 3 (PF6 R9): the layout never decreases (a v2
-  // successor on a v3 variable would silently drop the max-age declaration)
+  // §4.2's per-variable layout monotonicity: the layout never decreases —
+  // a v1 successor of a variable whose predecessor is v3 is rejected
+  // (allowing the regression would let one rename silently erase the
+  // schema fields, bypassing the presence guarantee §14.2-8 and
+  // schema-locked [AUTH_SPEC §12-11]). The predecessor side is a mandatory
+  // field (fail-closed — see MetaPredecessor's doc); only the context side
+  // applies the wire convention (omitted = 1)
   if (metaLayoutVersionOf(context) < predecessor.layoutVersion) {
     return "layout-regression";
   }

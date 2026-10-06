@@ -59,10 +59,10 @@ const PROJECT_DO_DDL = [
   // (§12-4/-5 — detection material for denial of a deletion and for
   // unauthorized revival).
   // layout_version: the wire layout (the anchor for the layout-monotonicity
-  // check of the next statement). var_type / required / description: the v2
+  // check of the next statement). var_type / required / description: the v3
   // schema fields (NULL on v1 rows. required is stored as the signed "true" /
   // "false" string representation). max_age_days (2026-10-02 — PF6 R9 expiring
-  // values, CRYPTO_SPEC §4.2 layout v3): NULL on v1 / v2 rows; on a v3 row the
+  // values, CRYPTO_SPEC §4.2 layout v3): NULL on v1 rows; on a v3 row the
   // signed string ("" = no declaration, else the decimal day count). It is
   // declared last among the columns (a column definition cannot follow a
   // table constraint in CREATE TABLE input)

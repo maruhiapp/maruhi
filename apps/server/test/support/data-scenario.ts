@@ -99,34 +99,29 @@ export async function variableStatementFor(
   });
 }
 
-/** Layout-v2 schema fields (wire shape — required is a boolean). */
+/** Layout-v3 schema fields (wire shape — required is a boolean; maxAgeDays null = no declaration). */
 export interface WireSchemaFields {
   readonly varType: "" | "string" | "number" | "boolean" | "url";
   readonly required: boolean;
   readonly description: string;
+  readonly maxAgeDays: number | null;
 }
 
-/** Carrier fields for a v2 statement (layoutVersion 2 + the schema fields). */
-export function v2Fields(schema: Partial<WireSchemaFields> = {}): {
+/** Carrier fields for a v3 statement (layoutVersion 3 + the schema fields). */
+export function v3Fields(schema: Partial<WireSchemaFields> = {}): {
   readonly layoutVersion: number;
   readonly varType: WireSchemaFields["varType"];
   readonly required: boolean;
   readonly description: string;
+  readonly maxAgeDays: number | null;
 } {
   return {
-    layoutVersion: 2,
+    layoutVersion: 3,
     varType: schema.varType ?? "string",
     required: schema.required ?? true,
     description: schema.description ?? "",
+    maxAgeDays: schema.maxAgeDays ?? null,
   };
-}
-
-/** Carrier fields for a v3 statement (layoutVersion 3 + the schema fields + maxAgeDays — PF6 R9). */
-export function v3Fields(
-  schema: Partial<WireSchemaFields> = {},
-  maxAgeDays: number | null = null,
-): ReturnType<typeof v2Fields> & { readonly maxAgeDays: number | null } {
-  return { ...v2Fields(schema), layoutVersion: 3, maxAgeDays };
 }
 
 /** Sign a variable's next statement (rename / schema re-issuance / deletion / activation) from the latest recorded one. */
@@ -136,8 +131,8 @@ export async function nextVariableStatement(input: {
   readonly status: "active" | "deleted" | "declared";
   readonly authorUserId: string;
   readonly environmentId?: string;
-  /** Layout-v2 / v3 carrier fields (v2Fields(...) / v3Fields(...) — omitted = v1 statement). */
-  readonly v2?: ReturnType<typeof v2Fields> | ReturnType<typeof v3Fields>;
+  /** Layout-v3 carrier fields (v3Fields(...) — omitted = v1 statement). */
+  readonly v3?: ReturnType<typeof v3Fields>;
 }): Promise<WireVariableMetaStatement> {
   const last = varStatements.get(input.variableId);
   if (last === undefined) {
@@ -156,7 +151,7 @@ export async function nextVariableStatement(input: {
     status: input.status,
     metaVersion: last.statement.metaVersion + 1,
     prevMetaSigHashHex,
-    ...input.v2,
+    ...input.v3,
     chainHeadHashHex: fixture.head.hashHex,
     chainHeadSeq: fixture.head.seq,
   });
@@ -356,10 +351,10 @@ export async function createVariableOk(
 }
 
 /**
- * Sign and return a layout-v2 creation statement (metaVersion 1 — active =
+ * Sign and return a layout-v3 creation statement (metaVersion 1 — active =
  * with bundled value / declared = valueless declaration).
  */
-export async function variableStatementV2For(input: {
+export async function variableStatementV3For(input: {
   readonly authorUserId: string;
   readonly variableId: string;
   readonly name: string;
@@ -375,7 +370,7 @@ export async function variableStatementV2For(input: {
     status: input.status,
     metaVersion: 1,
     prevMetaSigHashHex: "",
-    ...v2Fields(input.schema),
+    ...v3Fields(input.schema),
     chainHeadHashHex: fixture.head.hashHex,
     chainHeadSeq: fixture.head.seq,
   });
@@ -388,7 +383,7 @@ export async function declareVariableRequest(input: {
   readonly actorUserId: string;
   readonly schema?: Partial<WireSchemaFields>;
 }): Promise<Response> {
-  const statement = await variableStatementV2For({
+  const statement = await variableStatementV3For({
     authorUserId: input.actorUserId,
     variableId: input.variableId,
     name: input.name,
@@ -434,7 +429,7 @@ export async function declareVariableOk(input: {
 
 /**
  * The activation composite (§12-5 — declared → active: value version 1 +
- * status-active v2 statement + manifest). On 200, advances the record.
+ * status-active v3 statement + manifest). On 200, advances the record.
  */
 export async function activateVariableRequest(input: {
   readonly variableId: string;
@@ -462,7 +457,7 @@ export async function activateVariableRequest(input: {
     name: input.name ?? last.statement.name,
     status: "active",
     authorUserId: input.actorUserId,
-    v2: v2Fields(input.schema),
+    v3: v3Fields(input.schema),
   });
   const value = await encryptValue(
     input.dek,

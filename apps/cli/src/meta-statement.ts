@@ -38,7 +38,7 @@ export function generateVariableId(): string {
 /**
  * Shared implementation of signing + self-computing the
  * signed-bytes hash (the v1 create form = this module; the
- * layout-v2 form = schema-statement.ts). The hash is a
+ * layout-v3 form = schema-statement.ts). The hash is a
  * self-computed value that, once accepted, becomes the local
  * floor's meta record (§6.3 — not a server declaration).
  */

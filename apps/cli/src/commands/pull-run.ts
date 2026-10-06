@@ -187,7 +187,7 @@ export function makePullRunCommands(onExitCode: (code: number) => void) {
       for (const variable of pulled.variables) {
         yield* io.log(formatPulledLine(variable));
       }
-      // declared (valueless declarations — §4.2 layout v2) are listed as
+      // declared (valueless declarations — §4.2 layout v3) are listed as
       // metadata rows (no value or version exists. The schema's detail is
       // `maruhi schema`)
       for (const declared of pulled.declared) {

@@ -12,7 +12,7 @@ import {
   storedSuite,
   storedVariableStatus,
   stringColumn,
-  variableStatementV2Fields,
+  variableStatementV3Fields,
   type StoredRow,
 } from "./data-store-rows.ts";
 import type { StoredVersionMeta } from "./data-store.ts";
@@ -86,7 +86,7 @@ export const makeVersionQueries = (sql: SqlStorage) => ({
             environmentId,
             variableId: stringColumn(row, "variable_id"),
             ...statementColumns(row, "ms_", storedVariableStatus),
-            ...variableStatementV2Fields(row, "ms_"),
+            ...variableStatementV3Fields(row, "ms_"),
           },
         })),
     ),

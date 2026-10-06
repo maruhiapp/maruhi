@@ -87,7 +87,7 @@ export interface DekWrapRefInput {
 
 /**
  * A statement's lifecycle state (CRYPTO_SPEC §4.2). declared is limited
- * to variables on layout v2 (environment meta and the v1 layout stay
+ * to variables on layout v3 (environment meta and the v1 layout stay
  * two-valued — the wire Schema enforces it, and the DO side accepts all
  * three values as the storage / verification type).
  */
@@ -97,7 +97,7 @@ export type MetaStatementStatusInput = "active" | "deleted" | "declared";
 export type MetaVarTypeInput = "" | "string" | "number" | "boolean" | "url";
 
 /**
- * The layout-v2 schema fields (CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2).
+ * The layout-v3 schema fields (CRYPTO_SPEC §4.2 / AUTH_SPEC §12-2).
  * required rides as the wire's boolean (the mapping onto the signed
  * "true" / "false" strings happens in the one place that verifies —
  * verify-meta.ts).
@@ -107,10 +107,11 @@ export interface MetaVariableSchemaInput {
   readonly required: boolean;
   readonly description: string;
   /**
-   * Layout v3 (CRYPTO_SPEC §4.2 — PF6 R9 expiring values): days after a
-   * value's push within which it should be replaced (1..3650), null = no
-   * declaration. Present iff the layout is 3 (verify-meta.ts enforces the
-   * coupling as 422 payload-mismatch); absent on a v2 statement.
+   * PF6 R9 expiring values (CRYPTO_SPEC §4.2): days after a value's push
+   * within which it should be replaced (1..3650), null = no declaration.
+   * Optional only as the wire arrives: a v3 statement without it is
+   * refused by verify-meta.ts as 422 payload-mismatch, and every stored
+   * row carries it.
    */
   readonly maxAgeDays?: number | null;
 }
@@ -134,12 +135,13 @@ export interface MetaStatementInput {
   readonly prevMetaSigHashHex: string;
   /**
    * The wire's layoutVersion (§12-2 — omitted = 1). The wire Schema only
-   * lets an explicit value of 2 or above through; an excess over the
-   * supported range ({1, 2, 3}) is refused by the acceptance check ahead of
-   * signature verification with a 422 `unsupported-layout` (ruling CR).
+   * lets an explicit value of 2 or above through; a layout outside the
+   * supported range ({1, 3} — the retired 2 included) is refused by the
+   * acceptance check ahead of signature verification with a 422
+   * `unsupported-layout` (ruling CR).
    */
   readonly layoutVersion?: number;
-  /** The layout-v2 schema fields (always present when layoutVersion is explicit — the wire shape). */
+  /** The layout-v3 schema fields (always present when layoutVersion is explicit — the wire shape). */
   readonly schema?: MetaVariableSchemaInput;
   /** The chain head the author last verified at signing time (the §4.2 authorization-time binding). */
   readonly chainHeadHashHex: string;
@@ -160,7 +162,7 @@ export interface DistributedMetaStatementValue {
   readonly suite: WireSuite;
   readonly environmentId: string;
   readonly name: string;
-  /** An environment statement stays two-valued (declared is v2-only for variables — §4.2). */
+  /** An environment statement stays two-valued (declared is v3-only for variables — §4.2). */
   readonly status: "active" | "deleted";
   readonly metaVersion: number;
   readonly prevMetaSigHashHex: string;
@@ -173,7 +175,7 @@ export interface DistributedMetaStatementValue {
 
 /**
  * The distributed form of a variable statement (with variableId). The
- * layout-v2 carried fields exist as a complete set of four only on v2
+ * layout-v3 carried fields exist as a complete set of five only on v3
  * stored rows (no new field is added to a v1 distribution — §12-2).
  */
 export interface DistributedVariableMetaStatementValue extends Omit<
@@ -186,7 +188,7 @@ export interface DistributedVariableMetaStatementValue extends Omit<
   readonly varType?: MetaVarTypeInput;
   readonly required?: boolean;
   readonly description?: string;
-  /** Layout v3 only (present with null = no declaration). */
+  /** Present with the other schema fields (null = no declaration). */
   readonly maxAgeDays?: number | null;
 }
 
@@ -464,11 +466,11 @@ export type ValueSignatureRejectReason =
 
 /**
  * The 422 reasons of a meta statement: the value signature's 3-vocabulary
- * (session-12 §6-7) plus the 2 layout-v2 reasons the spec names
- * explicitly — `layout-regression` = a v1 successor to a v2 variable
+ * (session-12 §6-7) plus the 2 layout reasons the spec names
+ * explicitly — `layout-regression` = a v1 successor to a v3 variable
  * (layout monotonicity — §12-5); `unsupported-layout` = a declared
- * layoutVersion beyond the supported range (the normal case of "old
- * server × new client" — ruling CR; it is not squashed into an invalid
+ * layoutVersion outside the supported range {1, 3} (the retired 2, or the
+ * normal case of "old server × new client" — ruling CR; it is not squashed into an invalid
  * signature). chain-head-state-mismatch covers: membership, key binding,
  * and role at the head; mismatches of prev's shape / the stored
  * predecessor; a re-statement after deletion (revived-after-delete); and
@@ -634,7 +636,7 @@ export type DataRejection =
   | { readonly kind: "epoch-conflict"; readonly currentEpoch: number }
   | { readonly kind: "value-rejected"; readonly reason: ValueSignatureRejectReason }
   | { readonly kind: "meta-rejected"; readonly reason: MetaStatementRejectReason }
-  // The schemaPolicy acceptance gate (§12-11): new v2 adoption under
+  // The schemaPolicy acceptance gate (§12-11): new v3 adoption under
   // disabled / a creation without varType under locked
   | { readonly kind: "schema-policy-rejected"; readonly reason: SchemaPolicyRejectReason }
   // A normal push to a declared variable (§12-5 — requires the activation composite)

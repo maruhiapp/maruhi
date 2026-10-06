@@ -112,10 +112,10 @@ export interface MetaAuthorInfo {
  * signed_bytes hash and status. The input of the next metaVersion's
  * prev check and of the post-deletion re-statement rejection (the §12-5
  * meta rules). layoutVersion is the stored actual value (the anchor of
- * the layout-monotonicity check — CRYPTO_SPEC §4.2); schema is the v2
+ * the layout-monotonicity check — CRYPTO_SPEC §4.2); schema is the v3
  * row's schema fields (the input of the deleted statement's
  * predecessor-match check — §12-5; a v1 row is null). Environment meta
- * is always layoutVersion 1, schema null (outside v2's scope).
+ * is always layoutVersion 1, schema null (outside the schema layout's scope).
  */
 export interface MetaAnchor {
   readonly signedBytesHashHex: string;

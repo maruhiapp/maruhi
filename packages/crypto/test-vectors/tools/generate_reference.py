@@ -5136,27 +5136,29 @@ ENV_META_SIG_FIELDS_ORDER = [
     "meta_version", "prev_meta_sig_hash_hex", "author_user_id",
     "chain_head_hash_hex", "chain_head_seq",
 ]
-# CRYPTO_SPEC §4.2 layout v2 (0.8-draft — 2026-08-30 session 46): the
-# second layout of the variable-meta statement. The domain-separation
-# string is "<suite>/var-meta-sig-v2" (the layout version is local to
-# the statement kind — suite stays). The schema fields (var_type /
-# required / description) are inserted right after status. Environment
-# meta stays v1
-VAR_META_SIG_V2_FIELDS_ORDER = [
+# CRYPTO_SPEC §4.2 layout v3 (the schema layout — 0.8-draft session 46's
+# schema fields and declared status, plus PF6 R9's max_age_days, 2026-10-02):
+# the second valid layout of the variable-meta statement. The
+# domain-separation string is "<suite>/var-meta-sig-v3" (the layout version
+# is local to the statement kind — suite stays). The schema fields (var_type
+# / required / description / max_age_days) are inserted right after status.
+# max_age_days is "" (no declaration) or a decimal 1..3650 without leading
+# zeros. Environment meta stays v1
+VAR_META_SIG_V3_FIELDS_ORDER = [
     "domain", "project_id", "environment_id", "variable_id", "name", "status",
-    "var_type", "required", "description",
+    "var_type", "required", "description", "max_age_days",
     "meta_version", "prev_meta_sig_hash_hex", "author_user_id",
     "chain_head_hash_hex", "chain_head_seq",
 ]
 
-
-# Layout v3 (CRYPTO_SPEC §4.2 — PF6 R9 "expiring values", 2026-10-02): the
-# v2 field sequence plus max_age_days right after description, under its
-# own domain string "<suite>/var-meta-sig-v3". max_age_days is "" (no
-# declaration) or a decimal 1..3650 without leading zeros
-VAR_META_SIG_V3_FIELDS_ORDER = [
+# The retired layout v2 (CRYPTO_SPEC 0.15-draft §4.2 — 2026-10-06: the v3
+# field sequence without max_age_days under "<suite>/var-meta-sig-v2"). It
+# is no longer a valid layout; the encoder is kept only to build the
+# v2-layout-unsupported negative (a validly signed v2 statement that the
+# implementation must refuse as an unsupported layout)
+RETIRED_VAR_META_SIG_V2_FIELDS_ORDER = [
     "domain", "project_id", "environment_id", "variable_id", "name", "status",
-    "var_type", "required", "description", "max_age_days",
+    "var_type", "required", "description",
     "meta_version", "prev_meta_sig_hash_hex", "author_user_id",
     "chain_head_hash_hex", "chain_head_seq",
 ]
@@ -5170,7 +5172,8 @@ def meta_signed_bytes(ctx: dict) -> bytes:
         # the harness's rejection is the shape check on the context side
         return lp_encode([ctx.get(key, "") for key in VAR_META_SIG_V3_FIELDS_ORDER])
     if layout == 2:
-        order = VAR_META_SIG_V2_FIELDS_ORDER
+        # The retired layout (the v2-layout-unsupported negative only)
+        order = RETIRED_VAR_META_SIG_V2_FIELDS_ORDER
     else:
         order = (VAR_META_SIG_FIELDS_ORDER if ctx["kind"] == "variable"
                  else ENV_META_SIG_FIELDS_ORDER)
@@ -5320,19 +5323,22 @@ def gen_metadata_signature():
         ),
     ]
 
-    # --- Layout-v2 positives (CRYPTO_SPEC §4.2 layout v2 / §11's
-    #     0.8-draft entry. 2026-08-30 session 46 — S0 approved, vectorized
-    #     in S1). The existing v1 vectors do not change by one byte
-    #     (layout v2 is an addition of a new domain string — extend by
-    #     appending) ---
-    def make_v2_context(environment_id, variable_id, name, status, var_type, required,
-                        description, meta_version, prev_hash_hex, author_id,
+    # --- Layout-v3 positives (CRYPTO_SPEC §4.2 layout v3 — the schema
+    #     layout: the schema fields and the declared status of 0.8-draft
+    #     session 46 plus PF6 R9's max_age_days, 2026-10-02). An addition of
+    #     a new domain string: the v1 vectors do not change by one byte
+    #     (extend by appending — §11). The layout-v2 vectors were removed
+    #     in 0.15-draft (layout v2 retired); the rules they pinned are
+    #     re-pinned on v3 statements below ---
+    def make_v3_context(environment_id, variable_id, name, status, var_type, required,
+                        description, max_age_days, meta_version, prev_hash_hex, author_id,
                         head_hash_hex, head_seq):
+        # The key order follows the signed sequence
         return {
             "kind": "variable",
             "suite": suite,
-            "domain": f"{suite}/var-meta-sig-v2",
-            "layout_version": 2,
+            "domain": f"{suite}/var-meta-sig-v3",
+            "layout_version": 3,
             "project_id": project_id,
             "environment_id": environment_id,
             "variable_id": variable_id,
@@ -5341,93 +5347,13 @@ def gen_metadata_signature():
             "var_type": var_type,
             "required": required,
             "description": description,
+            "max_age_days": max_age_days,
             "meta_version": meta_version,
             "prev_meta_sig_hash_hex": prev_hash_hex,
             "author_user_id": author_id,
             "chain_head_hash_hex": head_hash_hex,
             "chain_head_seq": head_seq,
         }
-
-    def make_v2_statement(name, environment_id, variable_id, display_name, status,
-                          var_type, required, description, meta_version, prev_hash_hex,
-                          author_id, head_seq, note, prev_base=None):
-        ctx = make_v2_context(environment_id, variable_id, display_name, status,
-                              var_type, required, description, meta_version,
-                              prev_hash_hex, author_id, head_hash(head_seq), head_seq)
-        signed = meta_signed_bytes(ctx)
-        vector = {
-            "name": name,
-            "context": ctx,
-            "author_key_fingerprint_hex": fp_of(author_id),
-            "signed_bytes_hex": signed.hex(),
-            "signed_bytes_sha256_hex": sha256(signed).hex(),
-            "signature_hex": signer_of(author_id).sign(signed).hex(),
-            "note": note,
-        }
-        if prev_base is not None:
-            vector["prev_base"] = prev_base
-        return vector
-
-    v2_typed = make_v2_statement(
-        "var-v2-create-typed", "env-prod-0001", "var-v2-typed-0010", "SERVICE_URL",
-        "active", "url", "true", "Primary service endpoint URL", 1, "", admin_id, 12,
-        "a layout-v2 variable creation (with schema fields, status active). The domain-separation string is "
-        "maruhi/v1/var-meta-sig-v2 (the layout version is local to the statement kind — suite stays; §4.2). "
-        "The schema fields (var_type / required / description) line up as signed data right after status",
-    )
-    v2_untyped = make_v2_statement(
-        "var-v2-create-untyped", "env-prod-0001", "var-v2-untyped-0011", "OPTIONAL_FLAG",
-        "active", "", "false", "", 1, "", admin_id, 12,
-        "a layout-v2 untyped form (var_type = \"\" is a legitimate value of the closed set — §4.2). "
-        "description may also be the empty string (only required is mandated explicit — the empty string is not allowed for it)",
-    )
-    v2_declared = make_v2_statement(
-        "var-v2-declared-create", "env-prod-0001", "var-v2-declared-0012", "STRIPE_API_KEY",
-        "declared", "string", "true", "Stripe secret key (set before first deploy)",
-        1, "", admin_id, 12,
-        "a declared creation (metaVersion 1, no value — the 3rd status of §4.2 layout v2). "
-        "Creation is either active (with value bundled) or declared (no value)",
-    )
-    v2_activation = make_v2_statement(
-        "var-v2-activation", "env-prod-0001", "var-v2-declared-0012", "STRIPE_API_KEY",
-        "active", "string", "true", "Stripe secret key (set before first deploy)",
-        2, v2_declared["signed_bytes_sha256_hex"], admin_id, 12,
-        "the declared → active transition (activation — a compound with the first value push. The compound's acceptance check is "
-        "AUTH_SPEC §12-5 = S2; this vector pins the single statement's encode / verify and "
-        "'activating a declared predecessor is legitimate')",
-        prev_base="var-v2-declared-create",
-    )
-    v2_delete = make_v2_statement(
-        "var-v2-delete-keeps-schema", "env-prod-0001", "var-v2-typed-0010", "SERVICE_URL",
-        "deleted", "url", "true", "Primary service endpoint URL",
-        2, v2_typed["signed_bytes_sha256_hex"], admin_id, 12,
-        "a layout-v2 deletion (status deleted). Under the same convention as name, the schema fields and layout are "
-        "kept verbatim from the preceding statement (§4.2 — only a deletion statement requires full retention)",
-        prev_base="var-v2-create-typed",
-    )
-    vectors += [v2_typed, v2_untyped, v2_declared, v2_activation, v2_delete]
-
-    # --- Layout-v3 positives (CRYPTO_SPEC §4.2 layout v3 — PF6 R9
-    #     expiring values, 2026-10-02; docs/notes/pf6-design.md ruling
-    #     R9). An addition of a new domain string: the v1 / v2 vectors do
-    #     not change by one byte (extend by appending — §11) ---
-    def make_v3_context(environment_id, variable_id, name, status, var_type, required,
-                        description, max_age_days, meta_version, prev_hash_hex, author_id,
-                        head_hash_hex, head_seq):
-        ctx = make_v2_context(environment_id, variable_id, name, status, var_type, required,
-                              description, meta_version, prev_hash_hex, author_id,
-                              head_hash_hex, head_seq)
-        ctx["domain"] = f"{suite}/var-meta-sig-v3"
-        ctx["layout_version"] = 3
-        ctx["max_age_days"] = max_age_days
-        # Keep the field order of the signed sequence in the context too
-        ordered = {}
-        for key in ["kind", "suite", "domain", "layout_version", "project_id", "environment_id",
-                    "variable_id", "name", "status", "var_type", "required", "description",
-                    "max_age_days", "meta_version", "prev_meta_sig_hash_hex", "author_user_id",
-                    "chain_head_hash_hex", "chain_head_seq"]:
-            ordered[key] = ctx[key]
-        return ordered
 
     def make_v3_statement(name, environment_id, variable_id, display_name, status,
                           var_type, required, description, max_age_days, meta_version,
@@ -5463,13 +5389,24 @@ def gen_metadata_signature():
         "a layout-v3 declared creation with max_age_days = \"\" (no declaration — the empty string "
         "is the legitimate 'none' value; the field itself is mandatory in v3)",
     )
+    v3_activation = make_v3_statement(
+        "var-v3-activation", "env-prod-0001", "var-v3-plain-0014", "FEATURE_FLAG",
+        "active", "boolean", "false", "", "", 2, v3_no_max_age["signed_bytes_sha256_hex"], admin_id, 12,
+        "the declared → active transition (activation — a compound with the first value push. The "
+        "compound's acceptance check is AUTH_SPEC §12-5; this vector pins the single statement's "
+        "encode / verify and 'activating a declared predecessor is legitimate'). The activation of a "
+        "v3 variable stays v3 with the schema fields unchanged",
+        prev_base="var-v3-create-no-max-age",
+    )
     v3_upgrade = make_v3_statement(
-        "var-v3-upgrade-from-v2", "env-prod-0001", "var-v2-untyped-0011", "OPTIONAL_FLAG",
-        "active", "", "false", "", "30", 2, v2_untyped["signed_bytes_sha256_hex"], admin_id, 12,
-        "a schema reissue that moves a v2 variable (var-v2-create-untyped) to layout v3 (metaVersion 2, "
-        "prev = the v2 statement) declaring max_age_days = 30. Raising the layout is the legitimate "
-        "direction of §4.2's per-variable monotonicity",
-        prev_base="var-v2-create-untyped",
+        "var-v3-upgrade-from-v1", "env-prod-0001", "var-cafe-0009", nfc_name,
+        "active", "", "false", "", "30", 2, var_nfc["signed_bytes_sha256_hex"], admin_id, 12,
+        "a schema reissue that moves a v1 variable (var-nfc-name) to layout v3 (metaVersion 2, "
+        "prev = the v1 statement) declaring max_age_days = 30 with an untyped form (var_type = \"\" "
+        "is a legitimate value of the closed set; description may be empty). Raising the layout is "
+        "the legitimate direction of §4.2's per-variable monotonicity (a new adoption — AUTH_SPEC "
+        "§12-11's gate decides its acceptance)",
+        prev_base="var-nfc-name",
     )
     v3_delete = make_v3_statement(
         "var-v3-delete-keeps-max-age", "env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL",
@@ -5479,7 +5416,7 @@ def gen_metadata_signature():
         "including max_age_days and the layout are kept verbatim from the preceding statement (§4.2)",
         prev_base="var-v3-create-expiring",
     )
-    vectors += [v3_expiring, v3_no_max_age, v3_upgrade, v3_delete]
+    vectors += [v3_expiring, v3_no_max_age, v3_activation, v3_upgrade, v3_delete]
 
     # --- rename-fork (§14.2-5 / §8-2): two valid statements with
     #     different contents on the same (variable, metaVersion).
@@ -5841,111 +5778,91 @@ def gen_metadata_signature():
         ),
     ]
 
-    # --- Layout-v2 negatives (the enumeration in §11's 0.8-draft
-    #     entry) ---------------------------------------------------
+    # --- Layout-v3 negatives (the enumeration in §11's 0.8-draft,
+    #     0.13-draft and 0.15-draft entries) -----------------------------
     # Signature family (tampering / transplantation): keep the original
     # signature while substituting signed_bytes, and pin that Ed25519
     # verification fails (the same form as the existing negatives)
-    def v2_tamper_negative(name, overrides, note, base_vector=None):
-        source = base_vector if base_vector is not None else v2_typed
-        ctx = dict(source["context"], **overrides)
+    def v3_tamper_negative(name, overrides, note):
+        ctx = dict(v3_expiring["context"], **overrides)
         return {
             "name": name,
-            "base": source["name"],
+            "base": v3_expiring["name"],
             "context": ctx,
             "verify_signed_bytes_hex": meta_signed_bytes(ctx).hex(),
-            "signature_hex": source["signature_hex"],
+            "signature_hex": v3_expiring["signature_hex"],
             "verify_key_hex": sig_pub_of(admin_id),
             "must_fail": True,
             "note": note,
         }
 
     # Both directions of layout confusion (§4.2 — interpreting v1 as
-    # v2 and vice versa fails structurally on signature mismatch [§1
+    # v3 and vice versa fails structurally on signature mismatch [§1
     # principle 6]. A false layoutVersion declaration degenerates into
     # recomputing signed_bytes under the other layout = a signature
     # mismatch — pinning the known residual of ruling CR)
-    confusion_v2_as_v1_ctx = make_context(
-        "variable", "env-prod-0001", "var-v2-typed-0010", "SERVICE_URL", "active",
+    confusion_v3_as_v1_ctx = make_context(
+        "variable", "env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL", "active",
         1, "", admin_id, head_hash(12), 12)
-    confusion_v1_as_v2_ctx = make_v2_context(
-        "env-prod-0001", "var-api-key-0001", "API_KEY", "active", "", "false", "",
+    confusion_v1_as_v3_ctx = make_v3_context(
+        "env-prod-0001", "var-api-key-0001", "API_KEY", "active", "", "false", "", "",
         1, "", admin_id, head_hash(12), 12)
     layout_negatives = [
         {
-            "name": "layout-confusion-v2-as-v1",
-            "base": v2_typed["name"],
-            "context": confusion_v2_as_v1_ctx,
-            "verify_signed_bytes_hex": meta_signed_bytes(confusion_v2_as_v1_ctx).hex(),
-            "signature_hex": v2_typed["signature_hex"],
+            "name": "layout-confusion-v3-as-v1",
+            "base": v3_expiring["name"],
+            "context": confusion_v3_as_v1_ctx,
+            "verify_signed_bytes_hex": meta_signed_bytes(confusion_v3_as_v1_ctx).hex(),
+            "signature_hex": v3_expiring["signature_hex"],
             "verify_key_hex": sig_pub_of(admin_id),
             "must_fail": True,
-            "note": "recomputing a v2-signed statement (var-v2-create-typed) with the schema fields dropped "
+            "note": "recomputing a v3-signed statement (var-v3-create-expiring) with the schema fields dropped "
                     "under the v1 layout (v1 domain string) fails signature verification "
-                    "(a false layoutVersion declaration v2 → v1 degenerates into a signature "
+                    "(a false layoutVersion declaration v3 → v1 degenerates into a signature "
                     "mismatch — ruling CR)",
         },
         {
-            "name": "layout-confusion-v1-as-v2",
+            "name": "layout-confusion-v1-as-v3",
             "base": "var-create",
-            "context": confusion_v1_as_v2_ctx,
-            "verify_signed_bytes_hex": meta_signed_bytes(confusion_v1_as_v2_ctx).hex(),
+            "context": confusion_v1_as_v3_ctx,
+            "verify_signed_bytes_hex": meta_signed_bytes(confusion_v1_as_v3_ctx).hex(),
             "signature_hex": var_create["signature_hex"],
             "verify_key_hex": sig_pub_of(admin_id),
             "must_fail": True,
             "note": "recomputing a v1-signed statement (var-create) padded with empty schema fields "
-                    "under the v2 layout (v2 domain string) fails signature verification "
-                    "(a false layoutVersion declaration v1 → v2 — confusion in the opposite "
+                    "under the v3 layout (v3 domain string) fails signature verification "
+                    "(a false layoutVersion declaration v1 → v3 — confusion in the opposite "
                     "direction degenerates the same way)",
         },
-        v2_tamper_negative(
+        v3_tamper_negative(
             "tampered-var-type", {"var_type": "string"},
             "rewriting var_type (url → string) fails verification of the original signature (the schema fields are signed — §4.2)",
         ),
-        v2_tamper_negative(
+        v3_tamper_negative(
             "tampered-required", {"required": "false"},
             "rewriting required (true → false) fails verification of the original signature (the premise "
             "of the presence guarantee §14.2-8 — a required declaration never changes without a "
             "signed explicit operation)",
         ),
-        v2_tamper_negative(
+        v3_tamper_negative(
             "tampered-description", {"description": "Rewritten by the server"},
             "rewriting description fails verification of the original signature (description is also signed byte-exact — §4.2)",
         ),
-        v2_tamper_negative(
-            "v2-suite-mismatch", {"suite": "maruhi/v2", "domain": "maruhi/v2/var-meta-sig-v2"},
+        v3_tamper_negative(
+            "v3-suite-mismatch", {"suite": "maruhi/v2", "domain": "maruhi/v2/var-meta-sig-v3"},
             "a different suite means a different domain string, so a cross-suite signature transplant "
-            "fails verification under the v2 layout too (the layout version is local to the "
+            "fails verification under the v3 layout too (the layout version is local to the "
             "statement kind and the suite binding is unchanged — §4.2)",
         ),
-        # Layout v3 (PF6 R9)
-        {
-            "name": "layout-confusion-v3-as-v2",
-            "base": v3_expiring["name"],
-            "context": make_v2_context("env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL", "active",
-                                       "url", "true", "Primary database connection URL",
-                                       1, "", admin_id, head_hash(12), 12),
-            "verify_signed_bytes_hex": meta_signed_bytes(
-                make_v2_context("env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL", "active",
-                                "url", "true", "Primary database connection URL",
-                                1, "", admin_id, head_hash(12), 12)).hex(),
-            "signature_hex": v3_expiring["signature_hex"],
-            "verify_key_hex": sig_pub_of(admin_id),
-            "must_fail": True,
-            "note": "recomputing a v3-signed statement (var-v3-create-expiring) with max_age_days dropped "
-                    "under the v2 layout (v2 domain string) fails signature verification (a false "
-                    "layoutVersion declaration v3 → v2 degenerates into a signature mismatch — ruling CR)",
-        },
-        v2_tamper_negative(
+        v3_tamper_negative(
             "tampered-max-age-days", {"max_age_days": "365"},
             "rewriting max_age_days (90 → 365) fails verification of the original signature (max_age_days "
             "is signed byte-exact like the other schema fields — §4.2 layout v3)",
-            base_vector=v3_expiring,
         ),
     ]
 
     # Verification-rule family (kind = "authorization"): the signature is valid but rejected by transition / layout rules
-    def v2_rule_negative(name, ctx, expected_reason, note, predecessor):
+    def schema_rule_negative(name, ctx, expected_reason, note, predecessor):
         signed = meta_signed_bytes(ctx)
         return {
             "name": name,
@@ -5963,50 +5880,17 @@ def gen_metadata_signature():
             "predecessor": predecessor,
         }
 
-    v2_rule_negatives = [
-        v2_rule_negative(
+    schema_rule_negatives = [
+        schema_rule_negative(
             "declared-after-active",
-            make_v2_context("env-prod-0001", "var-v2-typed-0010", "SERVICE_URL", "declared",
-                            "url", "true", "Primary service endpoint URL",
-                            2, v2_typed["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12),
+            make_v3_context("env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL", "declared",
+                            "url", "true", "Primary database connection URL", "90",
+                            2, v3_expiring["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12),
             "declared-after-active",
             "the form that makes an active predecessor's successor declared is rejected even when the signature "
             "and prev chain are valid (§4.2 — no active → declared: do not create a representation "
             "that rolls back the existence of a value. Deletion is the only path that removes a "
             "value)",
-            predecessor={
-                "base": "var-v2-create-typed",
-                "signed_bytes_sha256_hex": v2_typed["signed_bytes_sha256_hex"],
-                "status": "active",
-                "layout_version": 2,
-            },
-        ),
-        v2_rule_negative(
-            "declared-after-delete",
-            make_v2_context("env-prod-0001", "var-v2-typed-0010", "SERVICE_URL", "declared",
-                            "url", "true", "Primary service endpoint URL",
-                            3, v2_delete["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12),
-            "revived-after-delete",
-            "a successor to a deleted predecessor is rejected even as declared (§4.2 — 'no "
-            "re-activation after deleted' also applies to a transition to declared. A tombstone is "
-            "terminal — pins the scope of the existing reason code revived-after-delete)",
-            predecessor={
-                "base": "var-v2-delete-keeps-schema",
-                "signed_bytes_sha256_hex": v2_delete["signed_bytes_sha256_hex"],
-                "status": "deleted",
-                "layout_version": 2,
-            },
-        ),
-        v2_rule_negative(
-            "layout-regression-v3-to-v2",
-            make_v2_context("env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL", "active",
-                            "url", "true", "Primary database connection URL",
-                            2, v3_expiring["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12),
-            "layout-regression",
-            "a v2 successor statement (a schema reissue form) to a variable whose immediately preceding "
-            "statement is v3 is rejected even when the signature and prev chain are valid (§4.2's "
-            "per-variable layout monotonicity, generalized at layout v3 — a regression would silently "
-            "drop the max_age_days declaration)",
             predecessor={
                 "base": "var-v3-create-expiring",
                 "signed_bytes_sha256_hex": v3_expiring["signed_bytes_sha256_hex"],
@@ -6014,22 +5898,38 @@ def gen_metadata_signature():
                 "layout_version": 3,
             },
         ),
-        v2_rule_negative(
+        schema_rule_negative(
+            "declared-after-delete",
+            make_v3_context("env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL", "declared",
+                            "url", "true", "Primary database connection URL", "90",
+                            3, v3_delete["signed_bytes_sha256_hex"], admin_id, head_hash(12), 12),
+            "revived-after-delete",
+            "a successor to a deleted predecessor is rejected even as declared (§4.2 — 'no "
+            "re-activation after deleted' also applies to a transition to declared. A tombstone is "
+            "terminal — pins the scope of the existing reason code revived-after-delete)",
+            predecessor={
+                "base": "var-v3-delete-keeps-max-age",
+                "signed_bytes_sha256_hex": v3_delete["signed_bytes_sha256_hex"],
+                "status": "deleted",
+                "layout_version": 3,
+            },
+        ),
+        schema_rule_negative(
             "layout-regression-rename",
-            make_context("variable", "env-prod-0001", "var-v2-typed-0010", "SERVICE_URL_RENAMED",
-                         "active", 2, v2_typed["signed_bytes_sha256_hex"], admin_id,
+            make_context("variable", "env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL_RENAMED",
+                         "active", 2, v3_expiring["signed_bytes_sha256_hex"], admin_id,
                          head_hash(12), 12),
             "layout-regression",
             "a v1 successor statement (a rename form) to a variable whose immediately preceding statement "
-            "is v2 is rejected even when the signature and prev chain are valid (§4.2's "
+            "is v3 is rejected even when the signature and prev chain are valid (§4.2's "
             "per-variable layout monotonicity — allowing regression would let one rename silently "
             "drop the schema fields, bypassing the presence guarantee §14.2-8 and schema-locked "
             "[AUTH_SPEC §12-11])",
             predecessor={
-                "base": "var-v2-create-typed",
-                "signed_bytes_sha256_hex": v2_typed["signed_bytes_sha256_hex"],
+                "base": "var-v3-create-expiring",
+                "signed_bytes_sha256_hex": v3_expiring["signed_bytes_sha256_hex"],
                 "status": "active",
-                "layout_version": 2,
+                "layout_version": 3,
             },
         ),
     ]
@@ -6041,24 +5941,27 @@ def gen_metadata_signature():
     # key — verify_reference confirms the rejection is not by
     # cryptographic verification (the same arrangement as
     # kind = "authorization")
-    def v2_invalid_input_negative(name, ctx, note):
+    def signed_case(name, kind, ctx, expected_error, note):
         signed = meta_signed_bytes(ctx)
         return {
             "name": name,
-            "kind": "invalid-input",
+            "kind": kind,
             "context": ctx,
             "author_key_fingerprint_hex": fp_of(admin_id),
             "signed_bytes_hex": signed.hex(),
             "signed_bytes_sha256_hex": sha256(signed).hex(),
             "signature_hex": signer_of(admin_id).sign(signed).hex(),
             "verify_key_hex": sig_pub_of(admin_id),
-            "expected_error": "InvalidInput",
+            "expected_error": expected_error,
             "must_fail": True,
             "note": note,
         }
 
+    def invalid_input_negative(name, ctx, note):
+        return signed_case(name, "invalid-input", ctx, "InvalidInput", note)
+
     invalid_input_negatives = [
-        v2_invalid_input_negative(
+        invalid_input_negative(
             "v1-declared-status",
             make_context("variable", "env-prod-0001", "var-rule-0006", "DECLARED_V1",
                          "declared", 1, "", admin_id, head_hash(12), 12),
@@ -6067,16 +5970,7 @@ def gen_metadata_signature():
             "rejected with InvalidInput — the signature is valid for this byte string; the "
             "rejection is not by cryptographic verification",
         ),
-        v2_invalid_input_negative(
-            "v2-with-max-age",
-            dict(make_v2_context("env-prod-0001", "var-rule-0008", "RULE_VAR_V2_MAX", "active",
-                                 "string", "true", "Rule fixture", 1, "", admin_id, head_hash(12), 12),
-                 max_age_days="90"),
-            "a layout-2 statement must not carry max_age_days (the field exists only in layout v3 — "
-            "§4.2). The signed bytes are the plain v2 form; the context's extra field is a "
-            "structural violation rejected with InvalidInput",
-        ),
-        v2_invalid_input_negative(
+        invalid_input_negative(
             "v3-missing-max-age",
             {k: v for k, v in make_v3_context("env-prod-0001", "var-rule-0009", "RULE_VAR_V3", "active",
                                               "string", "true", "Rule fixture", "", 1, "", admin_id,
@@ -6086,28 +5980,66 @@ def gen_metadata_signature():
             "declaration; the context missing the field is a structural violation rejected with "
             "InvalidInput",
         ),
-        v2_invalid_input_negative(
+        invalid_input_negative(
             "v3-max-age-leading-zero",
             make_v3_context("env-prod-0001", "var-rule-0010", "RULE_VAR_V3_ZERO", "active",
                             "string", "true", "Rule fixture", "090", 1, "", admin_id, head_hash(12), 12),
             "max_age_days is a decimal without leading zeros (one value = one byte string — signature "
             "uniqueness; §4.2 layout v3). \"090\" is rejected with InvalidInput",
         ),
-        v2_invalid_input_negative(
+        invalid_input_negative(
             "v3-max-age-out-of-range",
             make_v3_context("env-prod-0001", "var-rule-0011", "RULE_VAR_V3_BIG", "active",
                             "string", "true", "Rule fixture", "3651", 1, "", admin_id, head_hash(12), 12),
             "max_age_days is at most 3650 (ten years — a longer interval is \"no interval\"; §4.2 "
             "layout v3). 3651 is rejected with InvalidInput",
         ),
-        v2_invalid_input_negative(
-            "v2-empty-required",
-            make_v2_context("env-prod-0001", "var-rule-0007", "RULE_VAR_V2", "active",
-                            "string", "", "Rule fixture", 1, "", admin_id, head_hash(12), 12),
-            "v2's required must be explicit \"true\" | \"false\" and does not allow the empty string "
+        invalid_input_negative(
+            "v3-empty-required",
+            make_v3_context("env-prod-0001", "var-rule-0012", "RULE_VAR_V3_REQUIRED", "active",
+                            "string", "", "Rule fixture", "", 1, "", admin_id, head_hash(12), 12),
+            "v3's required must be explicit \"true\" | \"false\" and does not allow the empty string "
             "(§4.2 — fail-closed: do not scatter a default-value interpretation for the omitted "
             "case across client implementations). Rejected as a structural violation with "
             "InvalidInput",
+        ),
+    ]
+
+    # The retired layout v2 (kind = "unsupported-layout" — CRYPTO_SPEC
+    # 0.15-draft §4.2, 2026-10-06): a well-formed statement validly signed
+    # over the former v2 byte layout and declaring layoutVersion 2. The
+    # supported set is {1, 3}, so the implementation must refuse it with
+    # the typed UnsupportedMetaLayout before signature verification — never
+    # as an invalid signature or InvalidInput. verify_reference confirms
+    # the signature is valid over the retired encoding (the rejection is not
+    # by cryptographic verification)
+    retired_v2_ctx = {
+        "kind": "variable",
+        "suite": suite,
+        "domain": f"{suite}/var-meta-sig-v2",
+        "layout_version": 2,
+        "project_id": project_id,
+        "environment_id": "env-prod-0001",
+        "variable_id": "var-rule-0007",
+        "name": "RULE_VAR_V2",
+        "status": "active",
+        "var_type": "string",
+        "required": "true",
+        "description": "Rule fixture",
+        "meta_version": 1,
+        "prev_meta_sig_hash_hex": "",
+        "author_user_id": admin_id,
+        "chain_head_hash_hex": head_hash(12),
+        "chain_head_seq": 12,
+    }
+    unsupported_layout_negatives = [
+        signed_case(
+            "v2-layout-unsupported", "unsupported-layout", retired_v2_ctx, "UnsupportedMetaLayout",
+            "layout v2 is retired (§4.2 — 0.15-draft): a statement declaring layoutVersion 2, signed "
+            "validly over the former v2 byte layout (maruhi/v1/var-meta-sig-v2 — the v3 field sequence "
+            "without max_age_days), is refused with the typed 'unsupported layout' error before "
+            "signature verification (ruling CR's honest failure mode — the signature is valid for "
+            "this byte string; the rejection is not by cryptographic verification)",
         ),
     ]
 
@@ -6218,13 +6150,13 @@ def gen_metadata_signature():
             "description": "CRYPTO_SPEC §4.2: signed statements of variable and environment metadata (Ed25519). var_meta_signed_bytes = LP(\"<suite>/var-meta-sig\", project_id, environment_id, variable_id, name, status, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq); env_meta_signed_bytes = LP(\"<suite>/env-meta-sig\", project_id, environment_id, name, status, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq). The chain and keys reference chain-entries.json's canonical 12-entry chain",
             "var_signed_fields_order": VAR_META_SIG_FIELDS_ORDER,
             "env_signed_fields_order": ENV_META_SIG_FIELDS_ORDER,
-            "var_v2_signed_fields_order": VAR_META_SIG_V2_FIELDS_ORDER,
             "var_v3_signed_fields_order": VAR_META_SIG_V3_FIELDS_ORDER,
+            "retired_var_v2_signed_fields_order": RETIRED_VAR_META_SIG_V2_FIELDS_ORDER,
             "binary_encoding": "hashes go into LP as lowercase hex strings (the same convention as chain-entries.json's binary_encoding). Numbers (meta_version / chain_head_seq) are decimal-stringified. name is bound byte-exact as UTF-8 bytes (NFC normalization is the signing client's responsibility — §4.2)",
             "chain_reference": "chain-entries.json: project_id = the genesis entry hash, chain_head_hash_hex = entries[chain_head_seq - 1].entry_hash_hex, author keys = keys. The canonical chain is 24 entries (2026-09-14 ES + PF1 — the meaning of the positives is unchanged; the negatives gained author-environment-out-of-scope-at-head)",
             "no_epoch_anchor": "meta statements carry no epoch anchor (§4.2). Verification rules corresponding to the value signature's epoch-not-current-at-head / environment-not-created-at-head do not exist, and injecting onto a forward meta_version is a known residual undetected by v1 (§14.3-5). var-meta-head-before-env-create being a positive pins this asymmetry",
-            "layout_v2": "CRYPTO_SPEC §4.2 layout v2 (0.8-draft — session-46 rulings CR / CS): the second layout of the variable-meta statement. var_meta_signed_bytes_v2 = LP(\"<suite>/var-meta-sig-v2\", project_id, environment_id, variable_id, name, status, var_type, required, description, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq). The context's layout_version (omitted = 1) corresponds to the wire layoutVersion and selects which layout signed_bytes is recomputed under. The verifier checks the supported range before signature verification, and rejects an excess with a typed error (unsupported layout) — an honest failure mode that does not crush it into a signature failure (since no reference expectation exists for this rejection case, the harness pins it per convention-21's division). status is 3 values (active | deleted | declared — declared is v2-only), var_type is a closed set (\"\" | string | number | boolean | url), and required must be explicit (\"true\" | \"false\"). Environment meta statements stay v1 (out of scope of this revision). Existing v1 vectors do not change by one byte (extend by appending — §11)",
-            "layout_v3": "CRYPTO_SPEC §4.2 layout v3 (0.13-draft — PF6 R9 expiring values, docs/notes/pf6-design.md ruling R9): the third layout of the variable-meta statement. var_meta_signed_bytes_v3 = LP(\"<suite>/var-meta-sig-v3\", project_id, environment_id, variable_id, name, status, var_type, required, description, max_age_days, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq). max_age_days is mandatory in v3: \"\" (no declaration) or a decimal 1..3650 without leading zeros (the number of days after a value's push within which it should be replaced — advisory like var_type, §14.3-7). A v2 statement must not carry it. The per-variable layout monotonicity is generalized: a successor's layout is never lower than its predecessor's (v2 → v3 is the legitimate upgrade; v3 → v2 is layout-regression). Deletion keeps max_age_days verbatim like the other schema fields. Existing v1 / v2 vectors do not change by one byte (extend by appending — §11)",
+            "layout_v3": "CRYPTO_SPEC §4.2 layout v3 (the schema layout — 0.8-draft session-46 rulings CR / CS for the schema fields and declared; 0.13-draft PF6 R9 for max_age_days): the second valid layout of the variable-meta statement. var_meta_signed_bytes_v3 = LP(\"<suite>/var-meta-sig-v3\", project_id, environment_id, variable_id, name, status, var_type, required, description, max_age_days, meta_version, prev_meta_sig_hash_hex, author_user_id, chain_head_hash_hex, chain_head_seq). The context's layout_version (omitted = 1) corresponds to the wire layoutVersion and selects which layout signed_bytes is recomputed under; the supported set is {1, 3}. status is 3 values (active | deleted | declared — declared is v3-only), var_type is a closed set (\"\" | string | number | boolean | url), required must be explicit (\"true\" | \"false\"), and max_age_days is mandatory: \"\" (no declaration) or a decimal 1..3650 without leading zeros (advisory like var_type, §14.3-7). The per-variable layout monotonicity: a successor's layout is never lower than its predecessor's (v1 → v3 is the legitimate upgrade; v1 after v3 is layout-regression). Deletion keeps the schema fields verbatim. Environment meta statements stay v1. Existing v1 vectors do not change by one byte (extend by appending — §11)",
+            "retired_layout_v2": "CRYPTO_SPEC §4.2 (0.15-draft — 2026-10-06): layout v2 (LP(\"<suite>/var-meta-sig-v2\", ...) in retired_var_v2_signed_fields_order — the v3 sequence without max_age_days) is retired and is not a valid layout. Its vectors were removed and the rules they pinned are re-pinned on v3 statements. The negative of kind unsupported-layout (v2-layout-unsupported) is a statement validly signed over the retired encoding that declares layout_version 2: it must be rejected with the typed error UnsupportedMetaLayout before signature verification. A layout beyond the supported set in the other direction (v4+) has no reference statement and stays pinned on the harness side (convention 21's division)",
             "extra_keys": {
                 "ghost": {
                     "note": "for author-unknown-in-history (a key that exists nowhere in the chain history)",
@@ -6246,8 +6178,8 @@ def gen_metadata_signature():
                 "branches": fork_branches,
             },
             "name_swap": name_swap,
-            "negative": negatives + rule_negatives + layout_negatives + v2_rule_negatives
-            + invalid_input_negatives,
+            "negative": negatives + rule_negatives + layout_negatives + schema_rule_negatives
+            + invalid_input_negatives + unsupported_layout_negatives,
         },
     )
 
@@ -6396,31 +6328,32 @@ def gen_env_manifest():
     api_v3_entry = digest_entry("var-api-key-0001", "deleted", 3, api_v3_hash)
     legacy_entry = digest_entry("var-legacy-0002", "active", 1, legacy_hash)
 
-    # A layout-v2 declared statement (identical inputs and hash to
-    # metadata-signature.json's var-v2-declared-create — §4.2 layout v2).
+    # A layout-v3 declared statement (identical inputs and hash to
+    # metadata-signature.json's var-v3-create-no-max-age — §4.2 layout v3).
     # The entry / digest encoders are unchanged; "declared" merely appears
     # as a new string value in status (§4.3's coverage of the schema
     # fields — automatic inheritance with no manifest-layer change)
-    declared_v2_ctx = {
+    declared_v3_ctx = {
         "kind": "variable",
-        "domain": f"{suite}/var-meta-sig-v2",
-        "layout_version": 2,
+        "domain": f"{suite}/var-meta-sig-v3",
+        "layout_version": 3,
         "project_id": project_id,
         "environment_id": env_id,
-        "variable_id": "var-v2-declared-0012",
-        "name": "STRIPE_API_KEY",
+        "variable_id": "var-v3-plain-0014",
+        "name": "FEATURE_FLAG",
         "status": "declared",
-        "var_type": "string",
-        "required": "true",
-        "description": "Stripe secret key (set before first deploy)",
+        "var_type": "boolean",
+        "required": "false",
+        "description": "",
+        "max_age_days": "",
         "meta_version": 1,
         "prev_meta_sig_hash_hex": "",
         "author_user_id": admin_id,
         "chain_head_hash_hex": head_hash(12),
         "chain_head_seq": 12,
     }
-    declared_v2_hash = sha256(meta_signed_bytes(declared_v2_ctx)).hex()
-    declared_v2_entry = digest_entry("var-v2-declared-0012", "declared", 1, declared_v2_hash)
+    declared_v3_hash = sha256(meta_signed_bytes(declared_v3_ctx)).hex()
+    declared_v3_entry = digest_entry("var-v3-plain-0014", "declared", 1, declared_v3_hash)
 
     def make_context(environment_id, epoch, manifest_version, digest_hex,
                      env_meta_version, env_meta_hash, prev_hash_hex, issuer_id,
@@ -6618,17 +6551,18 @@ def gen_env_manifest():
                     "reaches this digest",
         },
         {
-            # The layout-v2 declared entry (§4.2 / §11's 0.8-draft entry — 2026-08-30)
+            # The declared entry (§4.2 / §11's 0.8-draft entry — 2026-08-30;
+            # rebased onto the layout-v3 declared statement in 0.15-draft)
             "name": "declared-entry",
-            "entries": sorted([legacy_entry, declared_v2_entry],
+            "entries": sorted([legacy_entry, declared_v3_entry],
                               key=lambda e: e["variable_id"].encode("utf-8")),
-            "digest_input_hex": variables_digest_input([legacy_entry, declared_v2_entry]).hex(),
-            "variables_digest_hex": variables_digest_hex([legacy_entry, declared_v2_entry]),
-            "note": "an entry with status = declared (§4.2 layout v2) is also enumerated as the latest "
+            "digest_input_hex": variables_digest_input([legacy_entry, declared_v3_entry]).hex(),
+            "variables_digest_hex": variables_digest_hex([legacy_entry, declared_v3_entry]),
+            "note": "an entry with status = declared (§4.2 layout v3) is also enumerated as the latest "
                     "form of every statement. The entry / digest encoders are unchanged; a new "
                     "string value merely appears in status (§4.3's coverage of the schema fields "
-                    "— meta_sig_hash is computed from the v2 signed_bytes [metadata-signature.json's "
-                    "var-v2-declared-create])",
+                    "— meta_sig_hash is computed from the v3 signed_bytes [metadata-signature.json's "
+                    "var-v3-create-no-max-age])",
         },
     ]
 

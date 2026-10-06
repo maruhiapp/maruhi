@@ -80,7 +80,7 @@ export interface VerifiedEnvironmentPull {
   readonly verified: VerifiedProject;
   readonly variables: readonly VerifiedPulledValue[];
   /**
-   * Verified declared statements (valueless declarations — §4.2 layout v2).
+   * Verified declared statements (valueless declarations — §4.2 layout v3).
    * declared is the only legitimate valueless state (CRYPTO_SPEC §6.3's
    * value-distribution requirement).
    */

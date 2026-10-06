@@ -8,7 +8,7 @@ import { numberColumn, stringColumn } from "./data-store-rows.ts";
 import type { DataWriteOps, ExpiredProposal, MetaAuthorInfo } from "./data-store.ts";
 
 /**
- * The layout-v2 column values (layout_version + the schema fields —
+ * The layout-v3 column values (layout_version + the schema fields —
  * variable statements only). A v1 statement has layout_version 1 and
  * NULL schema fields. required is stored as the signed-target "true" /
  * "false" representation (identical to CRYPTO_SPEC §4.2's LP field).
@@ -19,7 +19,9 @@ function layoutColumnValues(statement: MetaStatementInput): readonly (string | n
   if (schema === undefined) {
     return [layoutVersion, null, null, null, null];
   }
-  // max_age_days: NULL on a v2 row; the signed string ("" = none) on a v3 row
+  // max_age_days: the signed string ("" = none). Acceptance refuses a v3
+  // statement without the field, so NULL is never written for one (the
+  // decode treats a NULL as a defect)
   const maxAge =
     schema.maxAgeDays === undefined
       ? null
@@ -38,7 +40,7 @@ function layoutColumnValues(statement: MetaStatementInput): readonly (string | n
 /**
  * The INSERT of a statement row (the column order shared by variable
  * and environment; only the table name is swapped). The variable side
- * also writes the layout-v2 columns ({@link layoutColumnValues}).
+ * also writes the layout-v3 columns ({@link layoutColumnValues}).
  */
 function insertStatementRow(
   sql: SqlStorage,

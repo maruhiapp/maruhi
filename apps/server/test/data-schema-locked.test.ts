@@ -1,9 +1,9 @@
-// Layout v2 — integration tests of the valueless schema's server-side
-// acceptance surface — schema-locked (the §12-11 one-time check at
-// creation), the description acceptance check (§12-8), and unsupported
-// layouts (§12-2 ruling CR). See the top of data-schema-v2.test.ts for
-// how the suite is split and support/schema-v2-scenario.ts for the
-// shared helpers.
+// Layout v3 (the schema layout) — integration tests of the valueless
+// schema's server-side acceptance surface — schema-locked (the §12-11
+// one-time check at creation), the description acceptance check
+// (§12-8), and unsupported layouts (§12-2 ruling CR — the retired
+// layout 2 included). See the top of data-schema.test.ts for how the
+// suite is split and support/schema-scenario.ts for the shared helpers.
 
 import { describe, expect, it } from "vitest";
 
@@ -31,17 +31,18 @@ import {
   token,
   unsignedManifest,
   unsignedPayload,
-  v2Fields,
+  v3Fields,
   VAR,
   variableStatementFor,
   varStatements,
 } from "./support/data-scenario.ts";
-import { createVariableV2Request } from "./support/schema-v2-scenario.ts";
+import { queryProjectDo } from "./support/project-do.ts";
+import { createVariableV3Request } from "./support/schema-scenario.ts";
 
 registerDataScenario();
 
 describe("schema-locked (§12-11 — the one-time check at creation)", () => {
-  it("locked: v1 creation and v2 creation without varType are 422 schema-required; with varType is accepted", async () => {
+  it("locked: v1 creation and v3 creation without varType are 422 schema-required; with varType is accepted", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("locked", OWNER);
     // v1 creation (layoutVersion 1)
@@ -63,7 +64,7 @@ describe("schema-locked (§12-11 — the one-time check at creation)", () => {
       _tag: "SchemaPolicyRejected",
       reason: "schema-required",
     });
-    // A v2 declaration without varType
+    // A v3 declaration without varType
     const untyped = await declareVariableRequest({
       variableId: VAR,
       name: "API_KEY",
@@ -77,7 +78,7 @@ describe("schema-locked (§12-11 — the one-time check at creation)", () => {
     });
     // With varType, both declaration and the value-bundled path are accepted
     await declareVariableOk({ variableId: VAR, name: "API_KEY", schema: { varType: "string" } });
-    const typedCreate = await createVariableV2Request({
+    const typedCreate = await createVariableV3Request({
       variableId: "var-typed",
       name: "TYPED_URL",
       plaintext: "https://example.invalid",
@@ -90,7 +91,7 @@ describe("schema-locked (§12-11 — the one-time check at creation)", () => {
   it("locked: re-issuing the schema with varType empty is not prevented (a one-time check at creation — not an ongoing invariant)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("locked", OWNER);
-    await createVariableV2Request({
+    await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
       plaintext: "postgres://alpha",
@@ -102,7 +103,7 @@ describe("schema-locked (§12-11 — the one-time check at creation)", () => {
       name: "DATABASE_URL",
       status: "active",
       authorUserId: MEMBER,
-      v2: v2Fields({ varType: "" }),
+      v3: v3Fields({ varType: "" }),
     });
     const { manifest, record } = await manifestForStatement(statement, MEMBER);
     const response = await requestJson(
@@ -173,8 +174,20 @@ describe("the description acceptance check (§12-8)", () => {
   });
 });
 
+/**
+ * The schema-field carriage of an unsupported layout: 4 (the first future
+ * layout) keeps the v3 field set; the retired 2 carries the v3 set without
+ * maxAgeDays (the former v2 wire shape).
+ */
+function unsupportedLayoutFields(layoutVersion: 2 | 4): Record<string, unknown> {
+  const { maxAgeDays, ...v2Shape } = v3Fields();
+  return layoutVersion === 2
+    ? { ...v2Shape, layoutVersion }
+    : { ...v3Fields(), maxAgeDays, layoutVersion };
+}
+
 /** Build a declaration of an unsupported layout (zero signature, since the signing API cannot produce one). */
-function unsupportedLayoutStatement(): Record<string, unknown> {
+function unsupportedLayoutStatement(layoutVersion: 2 | 4 = 4): Record<string, unknown> {
   return {
     suite: "maruhi/v1",
     environmentId: ENV,
@@ -183,9 +196,7 @@ function unsupportedLayoutStatement(): Record<string, unknown> {
     status: "declared",
     metaVersion: 1,
     prevMetaSigHashHex: "",
-    ...v2Fields(),
-    // Layout 4 is the first unsupported one since layout v3 (PF6 R9)
-    layoutVersion: 4,
+    ...unsupportedLayoutFields(layoutVersion),
     chainHeadHashHex: fixture.head.hashHex,
     chainHeadSeq: fixture.head.seq,
     signatureHex: "00".repeat(64),
@@ -257,8 +268,7 @@ describe("unsupported layouts (§12-2 — ruling CR)", () => {
       status: "active",
       metaVersion: 9,
       prevMetaSigHashHex: "ab".repeat(32),
-      ...v2Fields(),
-      layoutVersion: 4,
+      ...unsupportedLayoutFields(4),
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
       signatureHex: "00".repeat(64),
@@ -307,5 +317,68 @@ describe("unsupported layouts (§12-2 — ruling CR)", () => {
       _tag: "MetaStatementRejected",
       reason: "unsupported-layout",
     });
+  });
+
+  it("the retired layoutVersion 2 is a typed 422 unsupported-layout on creation (CRYPTO_SPEC §4.2 — 0.15-draft)", async () => {
+    await createEnvironmentOk(fixture, ENV, "App");
+    await setSchemaPolicyOk("enabled", OWNER);
+    const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
+      statement: unsupportedLayoutStatement(2),
+      manifest: unsignedManifest(),
+    });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      _tag: "MetaStatementRejected",
+      reason: "unsupported-layout",
+    });
+  });
+
+  it("a v2 successor on a v3 variable is unsupported-layout, never layout-regression or a stored row (rename / delete)", async () => {
+    // The successor is signed as a valid v3 statement and then relabelled
+    // to the retired layout (the signing API cannot produce layout 2): the
+    // support-range check settles before the signature, the CAS, and the
+    // monotonicity check
+    const dek = await createEnvironmentOk(fixture, ENV, "App");
+    await setSchemaPolicyOk("enabled", OWNER);
+    await createVariableV3Request({
+      variableId: VAR,
+      name: "DATABASE_URL",
+      plaintext: "postgres://alpha",
+      dek,
+      schema: { varType: "url" },
+    }).then((response) => expect(response.status).toBe(200));
+    for (const [status, method] of [
+      ["active", "PATCH"],
+      ["deleted", "DELETE"],
+    ] as const) {
+      const signed = await nextVariableStatement({
+        variableId: VAR,
+        name: "DATABASE_URL",
+        status,
+        authorUserId: MEMBER,
+        v3: v3Fields({ varType: "url" }),
+      });
+      const { maxAgeDays: _dropped, ...v2Shape } = signed;
+      const bundle = await manifestForStatement(signed, MEMBER);
+      const response = await requestJson(
+        method,
+        `/environments/${ENV}/variables/${VAR}`,
+        token(MEMBER),
+        { statement: { ...v2Shape, layoutVersion: 2 }, manifest: bundle.manifest },
+      );
+      expect(response.status, status).toBe(422);
+      await expect(response.json()).resolves.toMatchObject({
+        _tag: "MetaStatementRejected",
+        reason: "unsupported-layout",
+      });
+    }
+    // Nothing was stored: the variable is still at metaVersion 1 on layout 3
+    const rows = await queryProjectDo(
+      projectId,
+      "SELECT layout_version, meta_version FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ?",
+      ENV,
+      VAR,
+    );
+    expect(rows).toEqual([{ layout_version: 3, meta_version: 1 }]);
   });
 });

@@ -1,9 +1,9 @@
 // Tests for `maruhi var rm` (S4 — variable removal).
 //
 // Invariants pinned down:
-//  1. **Removing a v2 variable keeps the schema fields and layout
+//  1. **Removing a v3 variable keeps the schema fields and layout
 //     byte-exact from just before** (CRYPTO_SPEC §4.2's removal
-//     convention); **removing a v1 variable stays in v1 form** (no v2
+//     convention); **removing a v1 variable stays in v1 form** (no v3
 //     fields — don't silently upgrade the layout)
 //  2. Removal is terminal: removing an active variable requires explicit
 //     interactive confirmation (retyping the variable name), and in a
@@ -47,10 +47,10 @@ const DESCRIPTION = "Primary endpoint of the shop";
 let owner: TestUser;
 let built: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
-/** v2 declared (url type, required, with a description). */
-let declaredV2: WireDistributedVariableStatement;
-/** v2 active (with schema fields). */
-let activeV2: WireDistributedVariableStatement;
+/** v3 declared (url type, required, with a description). */
+let declaredV3: WireDistributedVariableStatement;
+/** v3 active (with schema fields). */
+let activeV3: WireDistributedVariableStatement;
 /** v1 active (no schema fields — the traditional shape). */
 let activeV1: WireDistributedVariableStatement;
 let servers: MockServer[] = [];
@@ -67,7 +67,7 @@ beforeAll(async () => {
   const common = { projectId: built.projectId, environmentId: ENV_ID };
   const head = { seq: 1, hashHex: built.projectId };
   envStatement = await environmentStatementFor({ ...common, name: ENV_ID, author: owner, head });
-  declaredV2 = await statementFor({
+  declaredV3 = await statementFor({
     ...common,
     variableId: "v-declared",
     name: "SHOP_URL",
@@ -76,7 +76,7 @@ beforeAll(async () => {
     status: "declared",
     schema: { varType: "url", required: true, description: DESCRIPTION },
   });
-  activeV2 = await statementFor({
+  activeV3 = await statementFor({
     ...common,
     variableId: "v-port",
     name: "PORT",
@@ -108,7 +108,7 @@ async function startRmEnv(options?: {
     owner,
     environmentId: ENV_ID,
     envStatement,
-    initialVariables: options?.initialVariables ?? [declaredV2, activeV2, activeV1],
+    initialVariables: options?.initialVariables ?? [declaredV3, activeV3, activeV1],
     initialTombstones: options?.initialTombstones ?? [],
     ...(options?.ignoreRemovals === undefined ? {} : { ignoreRemovals: options.ignoreRemovals }),
   });
@@ -140,7 +140,7 @@ async function loadFloor(env: TestEnv): Promise<ProjectFloor> {
 }
 
 describe("maruhi var rm (the removal statement's shape)", () => {
-  it("removing a v2 declared variable keeps the schema fields and layout byte-exact (§4.2)", async () => {
+  it("removing a v3 declared variable keeps the schema fields and layout byte-exact (§4.2)", async () => {
     const { env, state } = await startRmEnv();
     env.setPromptResponses(["SHOP_URL"]);
     expect(await runCli(["var", "rm", "SHOP_URL"], env.layer)).toBe(0);
@@ -156,10 +156,11 @@ describe("maruhi var rm (the removal statement's shape)", () => {
     expect(body.statement["name"]).toBe("SHOP_URL");
     // Schema fields and layout hold the previous statement's values
     // byte-exact
-    expect(body.statement["layoutVersion"]).toBe(2);
+    expect(body.statement["layoutVersion"]).toBe(3);
     expect(body.statement["varType"]).toBe("url");
     expect(body.statement["required"]).toBe(true);
     expect(body.statement["description"]).toBe(DESCRIPTION);
+    expect(body.statement["maxAgeDays"]).toBeNull();
     expect(body.statement["prevMetaSigHashHex"]).not.toBe("");
     // The manifest is re-issued over the set including the tombstone
     // (§4.3)
@@ -176,7 +177,7 @@ describe("maruhi var rm (the removal statement's shape)", () => {
     });
   });
 
-  it("removing a v1 variable stays in v1 form (no v2 fields)", async () => {
+  it("removing a v1 variable stays in v1 form (no v3 fields)", async () => {
     const { env, state } = await startRmEnv();
     env.setPromptResponses(["LEGACY_KEY"]);
     expect(await runCli(["var", "rm", "LEGACY_KEY"], env.layer)).toBe(0);
@@ -282,7 +283,7 @@ describe("the CAS retry and the binding to the confirmed target", () => {
       issuer: owner,
       head: headOf(built, 2),
       envStatement,
-      statements: [declaredV2],
+      statements: [declaredV3],
     });
     // The second-and-later distributions give the post-replacement set
     // (the manifest advances by prev-chaining — don't confuse this with
@@ -320,7 +321,7 @@ describe("the CAS retry and the binding to the confirmed target", () => {
             environmentId: ENV_ID,
             currentEpoch: 1,
             statement: envStatement,
-            variables: first ? [declaredV2] : [replacement],
+            variables: first ? [declaredV3] : [replacement],
             deletedVariables: [],
             manifest: first ? firstManifest : secondManifest,
             schemaPolicy: "enabled" as const,

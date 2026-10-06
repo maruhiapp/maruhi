@@ -46,12 +46,12 @@ export interface DecryptedVariable {
   readonly version: number;
   readonly epoch: number;
   /**
-   * The declared type (the schema column of §4.2 layout v2. v1 /
+   * The declared type (the schema column of §4.2 layout v3. v1 /
    * unspecified = ""). Used only by the advisory type check just before
    * injection (run.ts — §14.3-7: the check warns but the run continues).
    */
   readonly varType: MetaVarType;
-  /** The required declaration (layout v2's schema column. v1 = false). Used by `maruhi sync`'s completeness check. */
+  /** The required declaration (layout v3's schema column. v1 = false). Used by `maruhi sync`'s completeness check. */
   readonly required: boolean;
   /**
    * The max age the schema declares (layout v3 — PF6 R9; null = none).
@@ -64,7 +64,7 @@ export interface DecryptedVariable {
 
 /**
  * One declared variable (a schema-only declaration with no value —
- * CRYPTO_SPEC §4.2 layout v2). Material for `maruhi run` / `ci run`'s
+ * CRYPTO_SPEC §4.2 layout v3). Material for `maruhi run` / `ci run`'s
  * presence check (required strict — §14.2-8). Carries no description
  * (the fail-fast error wording never includes the description —
  * session-46 §8 turn 3).
@@ -90,7 +90,7 @@ export interface PulledVariables {
 
 /**
  * Verified declared statements → the presence check's material. declared
- * is layout v2-only (§4.2 — a v1 declared was already refused at the
+ * is layout v3-only (§4.2 — a v1 declared was already refused at the
  * verification stage) so a schema always rides along, but a null on the
  * type is treated as required = true, fail-closed (never let a missing
  * required collapse into "pass through without injecting").

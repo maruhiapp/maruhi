@@ -69,7 +69,7 @@ export const MAX_VERSIONS_PER_VARIABLE = 1_000;
 export const MAX_VERSION_VALUES_PAGE_BYTES = 1024 * 1024;
 
 /**
- * §12-8: limit on the schema description (variables — layout v2) in Unicode
+ * §12-8: limit on the schema description (variables — layout v3) in Unicode
  * code points. Together with the rejection of control characters (newlines
  * included), excess is rejected with 422 (deliberately a different class from
  * the display-name Schema 400 — this one has a dedicated acceptance check).

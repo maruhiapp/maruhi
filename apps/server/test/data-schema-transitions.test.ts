@@ -1,12 +1,12 @@
-// Layout v2 (valueless schema) — integration tests of the server-side
+// Layout v3 (valueless schema) — integration tests of the server-side
 // acceptance surface — transitions and layout monotonicity, the
-// just-before match of delete statements, and schema re-issuance and
-// reversibility (AUTH_SPEC §12-5 / §12-11).
+// just-before match of delete statements, schema re-issuance and
+// reversibility, and the max age (AUTH_SPEC §12-5 / §12-11).
 
 import { describe, expect, it } from "vitest";
 
 import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS } from "../src/policy.ts";
-import { encryptValue, signMetaStatementAs, vectorKeyOf } from "./support/data-crypto.ts";
+import { encryptValue, vectorKeyOf } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
   MEMBER,
@@ -28,13 +28,12 @@ import {
   setSchemaPolicyOk,
   token,
   v3Fields,
-  v2Fields,
   VAR,
-  variableStatementV2For,
+  variableStatementV3For,
   varStatements,
 } from "./support/data-scenario.ts";
 import { queryProjectDo } from "./support/project-do.ts";
-import { createVariableV2Request } from "./support/schema-v2-scenario.ts";
+import { createVariableV3Request } from "./support/schema-scenario.ts";
 
 registerDataScenario();
 
@@ -53,7 +52,7 @@ describe("transitions and layout monotonicity (§12-5)", () => {
   it("active → declared (rename form) is 422 payload-mismatch (the acceptance check of an unchanged status)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
-    await createVariableV2Request({
+    await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
       plaintext: "postgres://alpha",
@@ -64,7 +63,7 @@ describe("transitions and layout monotonicity (§12-5)", () => {
       name: "DATABASE_URL",
       status: "declared",
       authorUserId: MEMBER,
-      v2: v2Fields(),
+      v3: v3Fields(),
     });
     const { manifest } = await manifestForStatement(statement, MEMBER);
     const response = await requestJson(
@@ -89,7 +88,7 @@ describe("transitions and layout monotonicity (§12-5)", () => {
       name: "API_TOKEN",
       status: "declared",
       authorUserId: MEMBER,
-      v2: v2Fields({ varType: "string", required: false, description: "renamed declaration" }),
+      v3: v3Fields({ varType: "string", required: false, description: "renamed declaration" }),
     });
     const { manifest, record } = await manifestForStatement(statement, MEMBER);
     const response = await requestJson(
@@ -103,10 +102,10 @@ describe("transitions and layout monotonicity (§12-5)", () => {
     record();
   });
 
-  it("a v1 successor (rename) on a v2 variable is 422 layout-regression (layout monotonicity)", async () => {
+  it("a v1 successor (rename) on a v3 variable is 422 layout-regression (layout monotonicity)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
-    await createVariableV2Request({
+    await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
       plaintext: "postgres://alpha",
@@ -151,10 +150,10 @@ describe("transitions and layout monotonicity (§12-5)", () => {
   });
 });
 
-/** Create and record a v2 variable (schema field pinned). */
-async function seedV2Variable(dek: Uint8Array): Promise<void> {
+/** Create and record a v3 variable (schema field pinned). */
+async function seedV3Variable(dek: Uint8Array): Promise<void> {
   await setSchemaPolicyOk("enabled", OWNER);
-  const response = await createVariableV2Request({
+  const response = await createVariableV3Request({
     variableId: VAR,
     name: "DATABASE_URL",
     plaintext: "postgres://alpha",
@@ -165,15 +164,15 @@ async function seedV2Variable(dek: Uint8Array): Promise<void> {
 }
 
 describe("the just-before match of a delete statement's schema field and layout (§12-5)", () => {
-  it("a v2 deletion preserving the schema field and layout is 204 (declared deletions share the shape)", async () => {
+  it("a v3 deletion preserving the schema field and layout is 204 (declared deletions share the shape)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await seedV2Variable(dek);
+    await seedV3Variable(dek);
     const statement = await nextVariableStatement({
       variableId: VAR,
       name: "DATABASE_URL",
       status: "deleted",
       authorUserId: MEMBER,
-      v2: v2Fields({ varType: "url", required: true, description: "primary database" }),
+      v3: v3Fields({ varType: "url", required: true, description: "primary database" }),
     });
     const { manifest, record } = await manifestForStatement(statement, MEMBER);
     const response = await requestJson(
@@ -193,7 +192,7 @@ describe("the just-before match of a delete statement's schema field and layout 
       name: "PENDING_KEY",
       status: "deleted",
       authorUserId: MEMBER,
-      v2: v2Fields(),
+      v3: v3Fields(),
     });
     const bundled = await manifestForStatement(declaredDelete, MEMBER);
     const declaredResponse = await requestJson(
@@ -207,8 +206,8 @@ describe("the just-before match of a delete statement's schema field and layout 
 
   it("a deletion that alters the schema field is 422 payload-mismatch (not accepted even with a valid signature — tampered-deletion blocking)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await seedV2Variable(dek);
-    const cases: readonly (readonly [Partial<Parameters<typeof v2Fields>[0]>, string])[] = [
+    await seedV3Variable(dek);
+    const cases: readonly (readonly [Partial<Parameters<typeof v3Fields>[0]>, string])[] = [
       [{ varType: "string", required: true, description: "primary database" }, "varType"],
       [{ varType: "url", required: false, description: "primary database" }, "required"],
       [{ varType: "url", required: true, description: "totally different" }, "description"],
@@ -219,7 +218,7 @@ describe("the just-before match of a delete statement's schema field and layout 
         name: "DATABASE_URL",
         status: "deleted",
         authorUserId: MEMBER,
-        v2: v2Fields(schema),
+        v3: v3Fields(schema),
       });
       const { manifest } = await manifestForStatement(statement, MEMBER);
       const response = await requestJson(
@@ -236,18 +235,18 @@ describe("the just-before match of a delete statement's schema field and layout 
   it("a deletion's description is outside the acceptance policy (an alteration is a just-before-match 422 — it does not fall to an out-of-contract 500)", async () => {
     // Deletion's rule is byte-exact preservation of the stored value,
     // and the description acceptance policy (§12-8) does not apply —
-    // applying it would leave existing v2 variables undeletable after a
+    // applying it would leave existing v3 variables undeletable after a
     // self-host lowers the cap (the "no blocking deletions via the cap"
     // principle). A tampered deletion carrying an over-cap description
     // is caught by preservation's payload-mismatch.
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await seedV2Variable(dek);
+    await seedV3Variable(dek);
     const statement = await nextVariableStatement({
       variableId: VAR,
       name: "DATABASE_URL",
       status: "deleted",
       authorUserId: MEMBER,
-      v2: v2Fields({
+      v3: v3Fields({
         varType: "url",
         required: true,
         description: "a".repeat(MAX_SCHEMA_DESCRIPTION_CODEPOINTS + 1),
@@ -267,9 +266,9 @@ describe("the just-before match of a delete statement's schema field and layout 
     });
   });
 
-  it("a v1-shaped deletion on a v2 variable is 422 payload-mismatch (layoutVersion — the layout is also just-before-matched)", async () => {
+  it("a v1-shaped deletion on a v3 variable is 422 payload-mismatch (layoutVersion — the layout is also just-before-matched)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await seedV2Variable(dek);
+    await seedV3Variable(dek);
     const statement = await nextVariableStatement({
       variableId: VAR,
       name: "DATABASE_URL",
@@ -292,10 +291,10 @@ describe("the just-before match of a delete statement's schema field and layout 
 });
 
 describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
-  it("a schema-field-only change on a v2 variable is accepted under the same rules as a rename and reflected in distribution", async () => {
+  it("a schema-field-only change on a v3 variable is accepted under the same rules as a rename and reflected in distribution", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
-    await createVariableV2Request({
+    await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
       plaintext: "postgres://alpha",
@@ -307,7 +306,7 @@ describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
       name: "DATABASE_URL",
       status: "active",
       authorUserId: MEMBER,
-      v2: v2Fields({ varType: "url", required: false, description: "connection string" }),
+      v3: v3Fields({ varType: "url", required: false, description: "connection string" }),
     });
     const { manifest, record } = await manifestForStatement(statement, MEMBER);
     const response = await requestJson(
@@ -348,7 +347,7 @@ describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
   it("a re-issuance changing both name and schema field is a single var.renamed row (the rename is the primary event — one operation, one row)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
-    await createVariableV2Request({
+    await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
       plaintext: "postgres://alpha",
@@ -357,10 +356,10 @@ describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
     }).then((response) => expect(response.status).toBe(200));
     const statement = await nextVariableStatement({
       variableId: VAR,
-      name: "DATABASE_URL_V2",
+      name: "DATABASE_URL_PRIMARY",
       status: "active",
       authorUserId: MEMBER,
-      v2: v2Fields({ varType: "url", required: false, description: "" }),
+      v3: v3Fields({ varType: "url", required: false, description: "" }),
     });
     const { manifest, record } = await manifestForStatement(statement, MEMBER);
     const response = await requestJson(
@@ -376,11 +375,11 @@ describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
     const renamed = await reissueAuditRows("var.renamed");
     expect(renamed).toHaveLength(1);
     expect(JSON.parse(String(renamed[0]?.["payload"]))).toMatchObject({
-      name: "DATABASE_URL_V2",
+      name: "DATABASE_URL_PRIMARY",
     });
   });
 
-  it("a v2 re-issuance on a v1 variable is accepted under enabled (migration at a natural opportunity)", async () => {
+  it("a v3 re-issuance on a v1 variable is accepted under enabled (migration at a natural opportunity)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await setSchemaPolicyOk("enabled", OWNER);
@@ -389,7 +388,7 @@ describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
       name: "DATABASE_URL",
       status: "active",
       authorUserId: MEMBER,
-      v2: v2Fields({ varType: "url" }),
+      v3: v3Fields({ varType: "url" }),
     });
     const { manifest, record } = await manifestForStatement(statement, MEMBER);
     const response = await requestJson(
@@ -408,23 +407,23 @@ describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
     expect(await reissueAuditRows("var.schema_reissued")).toHaveLength(1);
   });
 
-  it("after downgrading to disabled, continuing an already-v2 variable (rename, delete) is still accepted and only new adoption stops (reversibility)", async () => {
+  it("after downgrading to disabled, continuing an already-v3 variable (rename, delete) is still accepted and only new adoption stops (reversibility)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
-    await createVariableV2Request({
+    await createVariableV3Request({
       variableId: VAR,
       name: "DATABASE_URL",
       plaintext: "postgres://alpha",
       dek,
     }).then((response) => expect(response.status).toBe(200));
     await setSchemaPolicyOk("disabled", OWNER);
-    // Continuation 1: a v2 rename passes
+    // Continuation 1: a v3 rename passes
     const rename = await nextVariableStatement({
       variableId: VAR,
       name: "DB_URL",
       status: "active",
       authorUserId: MEMBER,
-      v2: v2Fields(),
+      v3: v3Fields(),
     });
     const renameBundle = await manifestForStatement(rename, MEMBER);
     const renamed = await requestJson(
@@ -436,13 +435,13 @@ describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
     expect(renamed.status).toBe(204);
     varStatements.set(VAR, { statement: rename, authorUserId: MEMBER });
     renameBundle.record();
-    // Continuation 2: a v2 deletion also passes (the downgrade does not freeze existing v2 variables' lifecycle)
+    // Continuation 2: a v3 deletion also passes (the downgrade does not freeze existing v3 variables' lifecycle)
     const remove = await nextVariableStatement({
       variableId: VAR,
       name: "DB_URL",
       status: "deleted",
       authorUserId: MEMBER,
-      v2: v2Fields(),
+      v3: v3Fields(),
     });
     const removeBundle = await manifestForStatement(remove, MEMBER);
     const removed = await requestJson(
@@ -463,20 +462,22 @@ describe("schema re-issuance and reversibility (§12-5 / §12-11)", () => {
   });
 });
 
-describe("layout v3 — expiring values (CRYPTO_SPEC §4.2 layout v3, PF6 R9)", () => {
-  it("a v3 creation declaring maxAgeDays is accepted and distributed with the field; a v3 deletion must keep it", async () => {
+describe("max age (CRYPTO_SPEC §4.2 layout v3, PF6 R9)", () => {
+  it("a creation declaring maxAgeDays is accepted and distributed with the field; a deletion must keep it", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("enabled", OWNER);
-    const statement = await variableStatementV2For({
+    const schema = {
+      varType: "url" as const,
+      required: true,
+      description: "primary database",
+      maxAgeDays: 90,
+    };
+    const statement = await variableStatementV3For({
       authorUserId: MEMBER,
       variableId: VAR,
       name: "DATABASE_URL",
       status: "active",
-      schema: { varType: "url", required: true, description: "primary database" },
-    });
-    const v3 = await signMetaStatementAs(MEMBER, projectId, {
-      ...statement,
-      ...v3Fields({ varType: "url", required: true, description: "primary database" }, 90),
+      schema,
     });
     const value = await encryptValue(
       dek,
@@ -484,14 +485,14 @@ describe("layout v3 — expiring values (CRYPTO_SPEC §4.2 layout v3, PF6 R9)", 
       "postgres://alpha",
       { writerUserId: MEMBER, head: fixture.head },
     );
-    const { manifest, record } = await manifestForStatement(v3, MEMBER);
+    const { manifest, record } = await manifestForStatement(statement, MEMBER);
     const created = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
-      statement: v3,
+      statement,
       value,
       manifest,
     });
     expect(created.status).toBe(200);
-    varStatements.set(VAR, { statement: v3, authorUserId: MEMBER });
+    varStatements.set(VAR, { statement, authorUserId: MEMBER });
     record();
     const metadata = await requestJson("GET", `/environments/${ENV}/pull/metadata`, token(READER));
     const body = (await metadata.json()) as { variables: readonly Record<string, unknown>[] };
@@ -503,7 +504,7 @@ describe("layout v3 — expiring values (CRYPTO_SPEC §4.2 layout v3, PF6 R9)", 
       name: "DATABASE_URL",
       status: "deleted",
       authorUserId: MEMBER,
-      v2: v3Fields({ varType: "url", required: true, description: "primary database" }, 30),
+      v3: v3Fields({ ...schema, maxAgeDays: 30 }),
     });
     const alteredBundle = await manifestForStatement(altered, MEMBER);
     const rejected = await requestJson(
@@ -520,7 +521,7 @@ describe("layout v3 — expiring values (CRYPTO_SPEC §4.2 layout v3, PF6 R9)", 
       name: "DATABASE_URL",
       status: "deleted",
       authorUserId: MEMBER,
-      v2: v3Fields({ varType: "url", required: true, description: "primary database" }, 90),
+      v3: v3Fields(schema),
     });
     const keptBundle = await manifestForStatement(kept, MEMBER);
     const deleted = await requestJson(
@@ -532,89 +533,30 @@ describe("layout v3 — expiring values (CRYPTO_SPEC §4.2 layout v3, PF6 R9)", 
     expect(deleted.status).toBe(204);
   });
 
-  it("a v2 → v3 reissue is accepted (the layout rises); a v2 successor on a v3 variable is 422 layout-regression", async () => {
+  it("a v3 statement without maxAgeDays is 422 payload-mismatch (maxAgeDays) before the signature", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await seedV2Variable(dek);
-    const upgrade = await nextVariableStatement({
+    await seedV3Variable(dek);
+    // The signing API refuses the shape (InvalidInput), so it is a validly
+    // signed statement whose field was dropped afterwards — the server's
+    // shape check settles before the signature
+    const signed = await nextVariableStatement({
       variableId: VAR,
       name: "DATABASE_URL",
       status: "active",
       authorUserId: MEMBER,
-      v2: v3Fields({ varType: "url", required: true, description: "primary database" }, null),
+      v3: v3Fields({ varType: "url", required: true, description: "primary database" }),
     });
-    const bundle = await manifestForStatement(upgrade, MEMBER);
-    const upgraded = await requestJson(
-      "PATCH",
-      `/environments/${ENV}/variables/${VAR}`,
-      token(MEMBER),
-      { statement: upgrade, manifest: bundle.manifest },
-    );
-    expect(upgraded.status).toBe(204);
-    varStatements.set(VAR, { statement: upgrade, authorUserId: MEMBER });
-    bundle.record();
-    const metadata = await requestJson("GET", `/environments/${ENV}/pull/metadata`, token(READER));
-    const body = (await metadata.json()) as { variables: readonly Record<string, unknown>[] };
-    expect(body.variables[0]).toMatchObject({ layoutVersion: 3, maxAgeDays: null, metaVersion: 2 });
-
-    const regression = await nextVariableStatement({
-      variableId: VAR,
-      name: "DATABASE_URL",
-      status: "active",
-      authorUserId: MEMBER,
-      v2: v2Fields({ varType: "url", required: true, description: "primary database" }),
-    });
-    const regressionBundle = await manifestForStatement(regression, MEMBER);
-    const rejected = await requestJson(
-      "PATCH",
-      `/environments/${ENV}/variables/${VAR}`,
-      token(MEMBER),
-      { statement: regression, manifest: regressionBundle.manifest },
-    );
-    expect(rejected.status).toBe(422);
-    await expect(rejected.json()).resolves.toMatchObject({
-      _tag: "MetaStatementRejected",
-      reason: "layout-regression",
-    });
-  });
-
-  it("the layout ↔ field coupling: a v3 statement without maxAgeDays, or a v2 one with it, is 422 payload-mismatch (maxAgeDays)", async () => {
-    const dek = await createEnvironmentOk(fixture, ENV, "App");
-    await seedV2Variable(dek);
-    // The signing API refuses both shapes (InvalidInput), so each is a
-    // validly signed statement whose layout / field was altered afterwards
-    // — the server's shape check settles before the signature
-    const schema = { varType: "url" as const, required: true, description: "primary database" };
-    const signedV2 = await nextVariableStatement({
-      variableId: VAR,
-      name: "DATABASE_URL",
-      status: "active",
-      authorUserId: MEMBER,
-      v2: v2Fields(schema),
-    });
-    const signedV3 = await nextVariableStatement({
-      variableId: VAR,
-      name: "DATABASE_URL",
-      status: "active",
-      authorUserId: MEMBER,
-      v2: v3Fields(schema, 90),
-    });
-    const { maxAgeDays: _dropped, ...v3WithoutField } = signedV3;
+    const { maxAgeDays: _dropped, ...withoutField } = signed;
     // The manifest is bundled from the well-formed statement (no hash exists
     // for an ill-shaped one); the shape check settles before the manifest
-    for (const [statement, wellFormed] of [
-      [{ ...signedV2, layoutVersion: 3 }, signedV2],
-      [{ ...signedV2, maxAgeDays: 90 }, signedV2],
-      [v3WithoutField, signedV3],
-    ] as const) {
-      const bundle = await manifestForStatement(wellFormed, MEMBER);
-      const response = await requestJson(
-        "PATCH",
-        `/environments/${ENV}/variables/${VAR}`,
-        token(MEMBER),
-        { statement, manifest: bundle.manifest },
-      );
-      expect(response.status).toBe(422);
-      await expect(response.json()).resolves.toMatchObject({ field: "maxAgeDays" });
-    }
+    const bundle = await manifestForStatement(signed, MEMBER);
+    const response = await requestJson(
+      "PATCH",
+      `/environments/${ENV}/variables/${VAR}`,
+      token(MEMBER),
+      { statement: withoutField, manifest: bundle.manifest },
+    );
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({ field: "maxAgeDays" });
   });
 });

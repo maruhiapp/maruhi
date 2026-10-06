@@ -9,4 +9,4 @@ export {
   schemaRows,
   type SchemaSetState,
 } from "./schema.ts";
-export { signContinuationStatementV2, signDeleteStatementV2 } from "./schema-statement.ts";
+export { signContinuationStatementV3, signDeleteStatementV3 } from "./schema-statement.ts";

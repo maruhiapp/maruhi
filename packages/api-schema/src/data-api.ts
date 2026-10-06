@@ -27,12 +27,12 @@ import {
   CreateEnvironmentManifestSchema,
   CreateEnvironmentMetaStatementSchema,
   CreateVariableMetaStatementSchema,
-  CreateVariableMetaStatementV2Schema,
+  CreateVariableMetaStatementV3Schema,
   DeclareVariableMetaStatementSchema,
   DekWrapRefSchema,
   DeleteEnvironmentMetaStatementSchema,
   DeleteVariableMetaStatementSchema,
-  DeleteVariableMetaStatementV2Schema,
+  DeleteVariableMetaStatementV3Schema,
   DistributedEncryptedPayloadSchema,
   DistributedEnvironmentMetaStatementSchema,
   DistributedVariableMetaStatementSchema,
@@ -41,7 +41,7 @@ import {
   RecipientDekSchema,
   RenameEnvironmentMetaStatementSchema,
   RenameVariableMetaStatementSchema,
-  RenameVariableMetaStatementV2Schema,
+  RenameVariableMetaStatementV3Schema,
   RequiredDistributedEnvironmentManifestSchema,
   SchemaPolicySchema,
   VariableVersionHistoryEntrySchema,
@@ -195,7 +195,7 @@ export const EnvironmentPullSchema = Schema.Struct({
   variables: Schema.Array(PulledVariableSchema),
   deletedVariables: Schema.Array(DistributedVariableMetaStatementSchema),
   /**
-   * The latest statements of declared variables (§12-7 — layout v2).
+   * The latest statements of declared variables (§12-7 — layout v3).
    * They have no value and no version (declared is the only legitimate
    * valueless state — the CRYPTO_SPEC §6.3 value-distribution
    * requirement). Bundling them is mandatory as material for manifest
@@ -484,9 +484,9 @@ export const variablesGroup = HttpApiGroup.make("variables")
       // and the display name (no bare fields alongside — no
       // double-carriage mismatch surface).
       //
-      // Under layout v2, creation is a Union of two forms: active (value
-      // bundled — the statement may be v1 or v2) and declared (no value —
-      // a v2-only declaration; the sole exception to "a variable without
+      // Under layout v3, creation is a Union of two forms: active (value
+      // bundled — the statement may be v1 or v3) and declared (no value —
+      // a v3-only declaration; the sole exception to "a variable without
       // a value does not exist"). Neither form can create deleted (Schema
       // 400 — the wire face of the §12-5 transition rules; strictPayload
       // rejects unknown fields inside the Union too — §12-10 (1))
@@ -495,7 +495,7 @@ export const variablesGroup = HttpApiGroup.make("variables")
           Schema.Struct({
             statement: Schema.Union([
               CreateVariableMetaStatementSchema,
-              CreateVariableMetaStatementV2Schema,
+              CreateVariableMetaStatementV3Schema,
             ]),
             value: EncryptedPayloadSchema,
             // Manifest reflecting the post-creation meta state (the set
@@ -536,7 +536,7 @@ export const variablesGroup = HttpApiGroup.make("variables")
         ManifestRejectedError,
         ManifestVersionConflictError,
         NameNotNfcError,
-        // Schema policy (§12-11): new v2 adoption under disabled is
+        // Schema policy (§12-11): new v3 adoption under disabled is
         // schema-policy-disabled; creating without varType under locked
         // is schema-required
         SchemaPolicyRejectedError,
@@ -628,9 +628,9 @@ export const variablesGroup = HttpApiGroup.make("variables")
     ).middleware(AuthMiddleware),
   )
   .add(
-    // activation (declared → active — §12-5; layout v2):
+    // activation (declared → active — §12-5; layout v3):
     // the first value push to a declared variable is accepted as the
-    // composite "value version 1 + status-active v2 statement
+    // composite "value version 1 + status-active v3 statement
     // (metaVersion + 1) + manifest". Meta state changes, so it
     // re-issues the manifest (the subject of the "a value push does not
     // touch the manifest" invariant is the normal push — CRYPTO_SPEC
@@ -640,7 +640,7 @@ export const variablesGroup = HttpApiGroup.make("variables")
     // payload-mismatch (status / name) (renaming is the rename path's
     // job, together with its var.renamed audit. This restriction is what
     // makes the precondition of the §12-11 policy exemption — the prior
-    // statement is always v2 — hold)
+    // statement is always v3 — hold)
     HttpApiEndpoint.post(
       "activate",
       "/projects/:projectId/environments/:environmentId/variables/:variableId/activate",
@@ -682,7 +682,7 @@ export const variablesGroup = HttpApiGroup.make("variables")
       "/projects/:projectId/environments/:environmentId/variables/:variableId",
       {
         params: variableParams,
-        // The v2 form doubles as a rename and a schema reissuance (a
+        // The v3 form doubles as a rename and a schema reissuance (a
         // change to the schema fields only) — the acceptance rule is the
         // same (§12-5). status keeps the current state (a transition
         // cannot happen in this form — a mismatch is 422
@@ -691,7 +691,7 @@ export const variablesGroup = HttpApiGroup.make("variables")
           Schema.Struct({
             statement: Schema.Union([
               RenameVariableMetaStatementSchema,
-              RenameVariableMetaStatementV2Schema,
+              RenameVariableMetaStatementV3Schema,
             ]),
             manifest: EnvironmentManifestSchema,
           }),
@@ -709,9 +709,9 @@ export const variablesGroup = HttpApiGroup.make("variables")
           ManifestRejectedError,
           ManifestVersionConflictError,
           NameNotNfcError,
-          // Reissuing a v1 variable as v2 under disabled is
+          // Reissuing a v1 variable as v3 under disabled is
           // schema-policy-disabled (§12-11; continuation statements of
-          // an already-v2 variable are accepted regardless of policy)
+          // an already-v3 variable are accepted regardless of policy)
           SchemaPolicyRejectedError,
           SchemaDescriptionRejectedError,
           DataLimitExceededError,
@@ -729,15 +729,15 @@ export const variablesGroup = HttpApiGroup.make("variables")
         // is the immediately preceding active name) plus a manifest
         // reflecting the set including the tombstone (§12-5 — manifests
         // are outside the row-count cap, so the deletion path is not
-        // blocked: only the latest 1 is kept — §12-8). Deleting a v2
-        // variable uses the v2 form (schema fields and layout match the
+        // blocked: only the latest 1 is kept — §12-8). Deleting a v3
+        // variable uses the v3 form (schema fields and layout match the
         // immediately preceding one — §12-5; accepted regardless of
         // policy as a continuation statement — §12-11 reversibility)
         payload: strictPayload(
           Schema.Struct({
             statement: Schema.Union([
               DeleteVariableMetaStatementSchema,
-              DeleteVariableMetaStatementV2Schema,
+              DeleteVariableMetaStatementV3Schema,
             ]),
             manifest: EnvironmentManifestSchema,
           }),

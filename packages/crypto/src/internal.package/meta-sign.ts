@@ -7,13 +7,18 @@
 // env_meta_signed_bytes = LP("<suite>/env-meta-sig", project_id, environment_id,
 //                            name, status, meta_version, prev_meta_sig_hash_hex,
 //                            author_user_id, chain_head_hash_hex, chain_head_seq)
-// Layout v2 (0.8-draft — session 46 rulings CR / CS; variables only —
+// Layout v3 (the schema layout — 0.8-draft session 46 rulings CR / CS for
+// the schema fields and declared, PF6 R9 for max_age_days; variables only —
 // environment meta stays v1):
-// var_meta_signed_bytes_v2 = LP("<suite>/var-meta-sig-v2", project_id,
+// var_meta_signed_bytes_v3 = LP("<suite>/var-meta-sig-v3", project_id,
 //                               environment_id, variable_id, name, status,
-//                               var_type, required, description, meta_version,
+//                               var_type, required, description,
+//                               max_age_days, meta_version,
 //                               prev_meta_sig_hash_hex, author_user_id,
 //                               chain_head_hash_hex, chain_head_seq)
+// The supported layouts are {1, 3}: layout v2 (the v3 sequence without
+// max_age_days under "<suite>/var-meta-sig-v2") was retired in 0.15-draft
+// and is refused like any other unsupported layout.
 // The suite and the var / env kind / layout version are bound by the domain
 // string (same shape as §4.1 / §5.1. The layout version is local to the
 // statement kind and the suite stays put — maruhi/v2 is reserved for a PQ
@@ -49,13 +54,13 @@ const SHA256_HEX_LENGTH = 32 * 2;
 
 /**
  * Lifecycle status a metadata statement binds (CRYPTO_SPEC §4.2).
- * `declared` — declared but no value set — exists only in variable layout v2
+ * `declared` — declared but no value set — exists only in variable layout v3
  * (ruling CS: v1 is unchanged); layout 1 statements are limited to the first two.
  */
 export type MetaStatementStatus = "active" | "deleted" | "declared";
 
 /**
- * Declared type of a variable's value (CRYPTO_SPEC §4.2 layout v2). A closed
+ * Declared type of a variable's value (CRYPTO_SPEC §4.2 layout v3). A closed
  * set — `""` means unspecified; no validation DSL / enum / defaults (ruling CT).
  * The declaration is advisory (§14.3-7): the signature proves the author
  * declared this type, never that values conform to it.
@@ -65,7 +70,7 @@ export type MetaVarType = "" | "string" | "number" | "boolean" | "url";
 const META_VAR_TYPES: readonly string[] = ["", "string", "number", "boolean", "url"];
 
 /**
- * Schema fields of a variable meta statement in layout v2 (CRYPTO_SPEC §4.2):
+ * Schema fields of a variable meta statement in layout v3 (CRYPTO_SPEC §4.2):
  * bound byte-exactly into the signed bytes between `status` and
  * `meta_version`. `required` is mandatory-explicit (`"true" | "false"` — the
  * empty string is rejected so no client-side default interpretation can
@@ -77,18 +82,17 @@ export interface MetaVariableSchema {
   readonly required: "true" | "false";
   readonly description: string;
   /**
-   * Layout v3 (CRYPTO_SPEC §4.2 — PF6 R9 "expiring values"): the number of
-   * days after a value's push within which it should be replaced, as the
-   * signed decimal string (`"1"`…`"3650"`, no leading zeros), or `""` = no
-   * declaration. Present iff the layout is 3; a v2 statement has no such
-   * field. The declaration is advisory like the type (§14.3-7): the signature
-   * proves the author declared the interval, never that a value was replaced
-   * in time.
+   * PF6 R9 "expiring values" (CRYPTO_SPEC §4.2): the number of days after a
+   * value's push within which it should be replaced, as the signed decimal
+   * string (`"1"`…`"3650"`, no leading zeros), or `""` = no declaration.
+   * Mandatory (fail-closed like `required`). The declaration is advisory
+   * like the type (§14.3-7): the signature proves the author declared the
+   * interval, never that a value was replaced in time.
    */
-  readonly maxAgeDays?: string | undefined;
+  readonly maxAgeDays: string;
 }
 
-/** The largest declarable max age (days — layout v3). Ten years; a longer interval is "no interval". */
+/** The largest declarable max age (days). Ten years; a longer interval is "no interval". */
 export const MAX_META_MAX_AGE_DAYS = 3650;
 
 // The signed form of max_age_days: empty, or a decimal without leading
@@ -101,8 +105,12 @@ export function isMetaMaxAgeDays(text: string): boolean {
   return MAX_AGE_DAYS_FORM.test(text) && (text === "" || Number(text) <= MAX_META_MAX_AGE_DAYS);
 }
 
-/** Supported wire layout versions of variable meta statements (§4.2). */
-export const SUPPORTED_META_LAYOUT_VERSIONS: readonly number[] = [1, 2, 3];
+/**
+ * Supported wire layout versions of variable meta statements (§4.2): v1 and
+ * the schema layout v3. Layout 2 is retired (0.15-draft) and refused as
+ * unsupported like v4+.
+ */
+export const SUPPORTED_META_LAYOUT_VERSIONS: readonly number[] = [1, 3];
 
 /**
  * Resolves the effective layout version of a statement or predecessor
@@ -138,12 +146,12 @@ export interface MetaStatementContext {
   readonly status: MetaStatementStatus;
   /**
    * Wire layout version (§4.2 — omitted = 1). Selects which layout's signed
-   * bytes are computed. Layouts 2 and 3 are variable statements only and
-   * require `schema` (3 additionally `schema.maxAgeDays`); environment
-   * statements stay layout 1 (outside these revisions).
+   * bytes are computed. Layout 3 is variable statements only and requires
+   * `schema`; environment statements stay layout 1 (outside the schema
+   * layout).
    */
   readonly layoutVersion?: number | undefined;
-  /** Layout v2 / v3 schema fields — present iff the layout version is 2 or 3. */
+  /** Layout v3 schema fields — present iff the layout version is 3. */
   readonly schema?: MetaVariableSchema | undefined;
   /** 1-based counter (creation = 1; each rename / delete increments). */
   readonly metaVersion: number;
@@ -205,7 +213,7 @@ function coordinateFieldInvalid(context: MetaStatementContext): string | null {
 }
 
 // Layout-1 structure check: no schema fields exist and status is 2-valued
-// (declared is v2-only — ruling CS: v1 declared is InvalidInput as a
+// (declared is v3-only — ruling CS: v1 declared is InvalidInput as a
 // wire-shape structure violation. Vector v1-declared-status)
 function layoutV1FieldInvalid(context: MetaStatementContext): string | null {
   if (context.schema !== undefined) {
@@ -217,14 +225,13 @@ function layoutV1FieldInvalid(context: MetaStatementContext): string | null {
   return null;
 }
 
-// Layout-2 / layout-3 structure check: variable statements only
-// (environment meta stays v1 — §4.2), schema fields mandatory, var_type a
-// closed set, required mandatory-explicit and the empty string not allowed
-// (fail-closed — vector v2-empty-required), status 3-valued. Layout 3
-// additionally carries max_age_days (mandatory; "" or 1..3650 — vectors
-// v3-missing-max-age / v3-max-age-leading-zero / v3-max-age-out-of-range);
-// a layout-2 statement must not carry it (vector v2-with-max-age)
-function layoutV2FieldInvalid(context: MetaStatementContext): string | null {
+// Layout-3 structure check: variable statements only (environment meta
+// stays v1 — §4.2), schema fields mandatory, var_type a closed set,
+// required mandatory-explicit and the empty string not allowed
+// (fail-closed — vector v3-empty-required), max_age_days mandatory and
+// well-formed ("" or 1..3650 — vectors v3-missing-max-age /
+// v3-max-age-leading-zero / v3-max-age-out-of-range), status 3-valued
+function layoutV3FieldInvalid(context: MetaStatementContext): string | null {
   if (context.target.kind !== "variable") {
     return "context layoutVersion";
   }
@@ -237,28 +244,23 @@ function layoutV2FieldInvalid(context: MetaStatementContext): string | null {
   if (context.schema.required !== "true" && context.schema.required !== "false") {
     return "context required";
   }
-  if (!maxAgeFieldValid(metaLayoutVersionOf(context), context.schema.maxAgeDays)) {
+  // The wire-derived context may lack the field despite the type
+  // (fail-closed — the v3-missing-max-age vector)
+  const maxAge: unknown = context.schema.maxAgeDays;
+  if (typeof maxAge !== "string" || !isMetaMaxAgeDays(maxAge)) {
     return "context maxAgeDays";
   }
   const statuses: readonly string[] = ["active", "deleted", "declared"];
   return statuses.includes(context.status) ? null : "context status";
 }
 
-// Layout 3 carries max_age_days (mandatory, well-formed); layout 2 must not
-function maxAgeFieldValid(layout: number, maxAge: string | undefined): boolean {
-  if (layout === 3) {
-    return maxAge !== undefined && isMetaMaxAgeDays(maxAge);
-  }
-  return maxAge === undefined;
-}
-
 // Layout-dependent structure check (precondition: the layout version is
-// within the supported range). The status vocabulary and the presence of
-// schema fields are decided by the layout
+// within the supported range {1, 3}). The status vocabulary and the
+// presence of schema fields are decided by the layout
 function layoutFieldInvalid(context: MetaStatementContext): string | null {
   return metaLayoutVersionOf(context) === 1
     ? layoutV1FieldInvalid(context)
-    : layoutV2FieldInvalid(context);
+    : layoutV3FieldInvalid(context);
 }
 
 // Structure validation of the signing target. The metaVersion ↔ prev
@@ -316,7 +318,7 @@ export function metaContextRejection(context: MetaStatementContext): CryptoError
 /**
  * Builds the canonical byte string signed for one metadata statement
  * (CRYPTO_SPEC §4.2). The domain string embeds the suite identifier, the
- * statement kind (var / env) and — for variable layout v2 — the layout
+ * statement kind (var / env) and — for variable layout v3 — the layout
  * version, so a signature never transplants across suites, kinds or layouts
  * (layout confusion fails structurally as a signature mismatch — §1
  * principle 6). Callers must
@@ -324,18 +326,18 @@ export function metaContextRejection(context: MetaStatementContext): CryptoError
  * assumes valid input.
  */
 export function buildMetaSignedBytes(context: MetaStatementContext): Uint8Array {
-  const layout = metaLayoutVersionOf(context);
   if (
-    (layout === 2 || layout === 3) &&
+    metaLayoutVersionOf(context) === 3 &&
     context.target.kind === "variable" &&
     context.schema !== undefined
   ) {
-    // Layout 3 = layout 2 plus max_age_days right after description, under
-    // its own domain string (a v3 signature never verifies under v2 and vice
-    // versa — §1 principle 6)
-    const maxAge: LengthPrefixedField[] = layout === 3 ? [context.schema.maxAgeDays ?? ""] : [];
+    // The schema fields right after status, under the layout's own domain
+    // string (a v3 signature never verifies under v1 and vice versa — §1
+    // principle 6). The encoder is total: a context missing max_age_days
+    // encodes it as the empty declaration (validation rejects it first)
+    const maxAge: unknown = context.schema.maxAgeDays;
     return encodeLengthPrefixed([
-      `${context.suite}/var-meta-sig-v${layout}`,
+      `${context.suite}/var-meta-sig-v3`,
       context.projectId,
       context.environmentId,
       context.target.variableId,
@@ -344,7 +346,7 @@ export function buildMetaSignedBytes(context: MetaStatementContext): Uint8Array 
       context.schema.varType,
       context.schema.required,
       context.schema.description,
-      ...maxAge,
+      typeof maxAge === "string" ? maxAge : "",
       context.metaVersion,
       context.prevMetaSigHashHex,
       context.authorUserId,
@@ -398,7 +400,7 @@ export async function computeMetaSignedBytesHash(
  * Signing enforces the metaVersion ↔ prev coupling (metaVersion 1 signs an
  * empty prev, later versions sign a 64-hex prev) and that a creation
  * (metaVersion 1) is never `deleted` (deletion is an increment — §4.2; a
- * creation is active or, for v2 variables, declared — a value-less
+ * creation is active or, for v3 variables, declared — a value-less
  * declaration). Producing a
  * rule-violating statement is always a caller bug, unlike verification where
  * such wire data must be rejected with a typed reason instead.

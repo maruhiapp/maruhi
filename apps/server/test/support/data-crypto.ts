@@ -593,7 +593,7 @@ export async function encryptValue(
 
 /**
  * Wire representation of a variable statement (VariableMetaStatement —
- * §12-2). In layout v2, layoutVersion and the four schema fields are all
+ * §12-2). In layout v3, layoutVersion and the schema fields are all
  * present together (in v1 all are absent; required is a wire boolean).
  */
 export interface WireVariableMetaStatement {
@@ -641,8 +641,9 @@ function metaContextOf(
     target: metaTargetOf(statement),
     name: statement.name,
     status: statement.status,
-    // Layout-v2 carrier fields → signature target (required is "true"/"false" —
-    // the LP field representation of CRYPTO_SPEC §4.2)
+    // Layout-v3 carrier fields → signature target (required is "true"/"false",
+    // max_age_days "" or the decimal — the LP field representations of
+    // CRYPTO_SPEC §4.2)
     layoutVersion: statement.layoutVersion,
     ...(statement.layoutVersion === undefined ||
     statement.varType === undefined ||
@@ -654,10 +655,10 @@ function metaContextOf(
             varType: statement.varType,
             required: statement.required ? ("true" as const) : ("false" as const),
             description: statement.description,
-            // Layout v3: max_age_days as the signed string ("" = none)
-            ...(statement.maxAgeDays === undefined
-              ? {}
-              : { maxAgeDays: statement.maxAgeDays === null ? "" : String(statement.maxAgeDays) }),
+            maxAgeDays:
+              statement.maxAgeDays === undefined || statement.maxAgeDays === null
+                ? ""
+                : String(statement.maxAgeDays),
           },
         }),
     metaVersion: statement.metaVersion,

@@ -343,17 +343,18 @@ describe("value push / meta operations (§12-5 — variables)", () => {
   });
 
   it("declared create (union branch — §12-5) rejects an unknown field with 400", async () => {
-    // Pinning on the v2 branch that strict annotations propagate
+    // Pinning on the v3 branch that strict annotations propagate
     // across the Union (§12-10 (1)). The control is the handler
     // stage's 4xx (non-400) = proof the decode passed
     const send = sendJson("POST", dataUrl(`/environments/${ENV}/variables`), bearer(token(OWNER)));
     const statement = {
       ...unsignedVariableStatement(VAR, "DATABASE_URL"),
       status: "declared",
-      layoutVersion: 2,
+      layoutVersion: 3,
       varType: "string",
       required: true,
       description: "",
+      maxAgeDays: null,
     };
     await expectStrictReject(send, { statement, manifest: unsignedManifest() });
     await expectNestedReject(send, {
@@ -372,10 +373,11 @@ describe("value push / meta operations (§12-5 — variables)", () => {
       ...unsignedVariableStatement(VAR, "DATABASE_URL"),
       metaVersion: 2,
       prevMetaSigHashHex: "ab".repeat(32),
-      layoutVersion: 2,
+      layoutVersion: 3,
       varType: "string",
       required: true,
       description: "",
+      maxAgeDays: null,
     };
     await expectStrictReject(send, {
       value: unsignedPayload(aadFor(1, 1)),

@@ -766,7 +766,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
         currentEpoch: 1,
       },
       // A layoutVersion this CLI does not know (a statement written by a
-      // future CLI — the v2 fields are all present). Rejected before signature verification
+      // future CLI — the v3 fields are all present). Rejected before signature verification
       receipts: [
         {
           ...receipt,
@@ -776,6 +776,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
             varType: "",
             required: false,
             description: "",
+            maxAgeDays: null,
           },
         },
       ],

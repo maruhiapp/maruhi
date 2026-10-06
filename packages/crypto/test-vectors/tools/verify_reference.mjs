@@ -181,9 +181,10 @@ const VAR_SIGNED_FIELDS_ORDER = [
   "chain_head_seq",
 ];
 const ENV_SIGNED_FIELDS_ORDER = VAR_SIGNED_FIELDS_ORDER.filter((f) => f !== "variable_id");
-// Layout v2 (CRYPTO_SPEC §4.2's 0.8-draft — inserts the schema fields
-// immediately after status)
-const VAR_V2_SIGNED_FIELDS_ORDER = [
+// The retired layout v2 (CRYPTO_SPEC §4.2's 0.15-draft — the v3 sequence
+// without max_age_days). Not a valid layout; kept only to cross-check the
+// v2-layout-unsupported negative's signature over the retired encoding
+const RETIRED_VAR_V2_SIGNED_FIELDS_ORDER = [
   "domain",
   "project_id",
   "environment_id",
@@ -199,8 +200,8 @@ const VAR_V2_SIGNED_FIELDS_ORDER = [
   "chain_head_hash_hex",
   "chain_head_seq",
 ];
-// Layout v3 (CRYPTO_SPEC §4.2's 0.13-draft — PF6 R9: inserts max_age_days
-// immediately after description)
+// Layout v3 (CRYPTO_SPEC §4.2 — the schema layout: var_type / required /
+// description / max_age_days inserted immediately after status)
 const VAR_V3_SIGNED_FIELDS_ORDER = [
   "domain",
   "project_id",
@@ -226,9 +227,7 @@ const expectedMetaDomain = (ctx) => {
   if (layout === 3) {
     return `${ctx.suite}/var-meta-sig-v3`;
   }
-  return layout === 2
-    ? `${ctx.suite}/var-meta-sig-v2`
-    : `${ctx.suite}/${ctx.kind === "variable" ? "var" : "env"}-meta-sig`;
+  return `${ctx.suite}/${ctx.kind === "variable" ? "var" : "env"}-meta-sig`;
 };
 
 // --- encoding.json -----------------------------------------------------------
@@ -1330,12 +1329,12 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     sameOrder(doc.env_signed_fields_order, ENV_SIGNED_FIELDS_ORDER),
   );
   check(
-    "meta-sig: var_v2_signed_fields_order matches spec",
-    sameOrder(doc.var_v2_signed_fields_order, VAR_V2_SIGNED_FIELDS_ORDER),
-  );
-  check(
     "meta-sig: var_v3_signed_fields_order matches spec",
     sameOrder(doc.var_v3_signed_fields_order, VAR_V3_SIGNED_FIELDS_ORDER),
+  );
+  check(
+    "meta-sig: retired_var_v2_signed_fields_order matches the retired layout",
+    sameOrder(doc.retired_var_v2_signed_fields_order, RETIRED_VAR_V2_SIGNED_FIELDS_ORDER),
   );
   // The context's layout_version (omitted = 1) carries the layout
   // selection (§4.2 ruling CR)
@@ -1345,7 +1344,8 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       return VAR_V3_SIGNED_FIELDS_ORDER;
     }
     if (layout === 2) {
-      return VAR_V2_SIGNED_FIELDS_ORDER;
+      // The retired layout (the v2-layout-unsupported negative only)
+      return RETIRED_VAR_V2_SIGNED_FIELDS_ORDER;
     }
     return ctx.kind === "variable" ? VAR_SIGNED_FIELDS_ORDER : ENV_SIGNED_FIELDS_ORDER;
   };
@@ -1498,13 +1498,18 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
   }
 
   for (const n of doc.negative) {
-    if (n.kind === "authorization" || n.kind === "invalid-input") {
-      // For the verification-rule and structural-violation kinds,
-      // confirm it is "cryptographically valid (the signature is
-      // correct)". Rejection via expected_reason / expected_error is the
-      // implementation tests' job (§6.3 history verification, InvalidInput
-      // fail-closed) — guarantees the rejection is not a cryptographic
-      // verification failure
+    if (
+      n.kind === "authorization" ||
+      n.kind === "invalid-input" ||
+      n.kind === "unsupported-layout"
+    ) {
+      // For the verification-rule, structural-violation, and
+      // unsupported-layout kinds, confirm it is "cryptographically valid
+      // (the signature is correct)". Rejection via expected_reason /
+      // expected_error is the implementation tests' job (§6.3 history
+      // verification, InvalidInput fail-closed, UnsupportedMetaLayout before
+      // signature verification) — guarantees the rejection is not a
+      // cryptographic verification failure
       const bytes = signedBytes(n.context);
       const ok = await crypto.subtle.verify(
         "Ed25519",
@@ -1528,41 +1533,28 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
     check(`meta-sig negative: ${n.name}`, bytesMatch && verified === false);
   }
-  // Layout v2 (§4.2's 0.8-draft): the declared-creation → activation prev
-  // linkage, and a v2 deletion's full retention of the schema fields and
-  // name (only a deletion statement is required to retain everything)
+  // Layout v3 (§4.2 — the schema layout): the declared-creation →
+  // activation prev linkage, a v1 → v3 reissue linking to its v1
+  // predecessor (the legitimate upgrade direction), a v3 deletion keeping
+  // the schema fields and max_age_days verbatim, and the structural /
+  // retired-layout negatives carrying exactly the shape the spec refuses
   {
-    const declared = byName.get("var-v2-declared-create");
-    const activation = byName.get("var-v2-activation");
-    const created = byName.get("var-v2-create-typed");
-    const deleted = byName.get("var-v2-delete-keeps-schema");
+    const declared = byName.get("var-v3-create-no-max-age");
+    const activation = byName.get("var-v3-activation");
     check(
-      "meta-sig v2: activation links declared -> active",
+      "meta-sig v3: activation links declared -> active",
       declared.context.status === "declared" &&
         activation.context.status === "active" &&
+        activation.context.layout_version === 3 &&
         activation.context.prev_meta_sig_hash_hex === declared.signed_bytes_sha256_hex,
     );
-    check(
-      "meta-sig v2: delete keeps schema fields and name",
-      deleted.context.status === "deleted" &&
-        deleted.context.name === created.context.name &&
-        deleted.context.var_type === created.context.var_type &&
-        deleted.context.required === created.context.required &&
-        deleted.context.description === created.context.description,
-    );
-  }
-  // Layout v3 (§4.2's 0.13-draft): a v2 → v3 reissue links to its v2
-  // predecessor (the legitimate upgrade direction), a v3 deletion keeps
-  // max_age_days verbatim with the other schema fields, and the structural
-  // negatives carry exactly the shape the spec refuses
-  {
-    const upgraded = byName.get("var-v3-upgrade-from-v2");
+    const upgraded = byName.get("var-v3-upgrade-from-v1");
     const predecessor = byName.get(upgraded.prev_base);
     const created = byName.get("var-v3-create-expiring");
     const deleted = byName.get("var-v3-delete-keeps-max-age");
     check(
-      "meta-sig v3: upgrade links a v2 predecessor",
-      (predecessor.context.layout_version ?? 1) === 2 &&
+      "meta-sig v3: upgrade links a v1 predecessor",
+      (predecessor.context.layout_version ?? 1) === 1 &&
         upgraded.context.layout_version === 3 &&
         upgraded.context.prev_meta_sig_hash_hex === predecessor.signed_bytes_sha256_hex,
     );
@@ -1577,11 +1569,6 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
     );
     const negativeContext = (name) => doc.negative.find((n) => n.name === name).context;
     check(
-      "meta-sig v3: v2-with-max-age carries the field on a layout-2 context",
-      negativeContext("v2-with-max-age").layout_version === 2 &&
-        typeof negativeContext("v2-with-max-age").max_age_days === "string",
-    );
-    check(
       "meta-sig v3: v3-missing-max-age omits the field on a layout-3 context",
       negativeContext("v3-missing-max-age").layout_version === 3 &&
         !("max_age_days" in negativeContext("v3-missing-max-age")),
@@ -1590,6 +1577,22 @@ async function aesGcmDecrypt(keyHex, nonceHex, aadHex, ctHex) {
       "meta-sig v3: leading-zero and out-of-range values are outside 1..3650 canonical form",
       !/^(?:[1-9][0-9]{0,3})$/.test(negativeContext("v3-max-age-leading-zero").max_age_days) &&
         Number(negativeContext("v3-max-age-out-of-range").max_age_days) > 3650,
+    );
+    check(
+      "meta-sig v3: v3-empty-required carries an empty required on a layout-3 context",
+      negativeContext("v3-empty-required").layout_version === 3 &&
+        negativeContext("v3-empty-required").required === "",
+    );
+    // The retired layout v2 (§4.2's 0.15-draft): the unsupported-layout
+    // negative declares layout 2 and is signed under the retired domain
+    const retired = doc.negative.find((n) => n.name === "v2-layout-unsupported");
+    check(
+      "meta-sig v2-layout-unsupported: declares the retired layout under its domain",
+      retired.kind === "unsupported-layout" &&
+        retired.expected_error === "UnsupportedMetaLayout" &&
+        retired.context.layout_version === 2 &&
+        retired.context.domain === `${retired.context.suite}/var-meta-sig-v2` &&
+        !("max_age_days" in retired.context),
     );
   }
   // nfc-variant: pins that the NFD variant of a name signed in NFC

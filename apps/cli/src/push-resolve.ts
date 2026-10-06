@@ -27,16 +27,14 @@ interface ActivationPrev {
   readonly metaSigHashHex: string;
   /** The name at declaration time (an activation never doubles as a rename — the server enforces with 422, §12-5). */
   readonly name: string;
-  /** The schema column at declaration time (an activation takes it over byte-exact — the partial-update principle). */
+  /** The schema column at declaration time (an activation takes it over byte-exact — the partial-update principle; the layout stays v3). */
   readonly schema: VerifiedSchemaFields;
-  /** The declaration's layout (an activation keeps it — v2 stays v2, v3 stays v3). */
-  readonly layoutVersion: 2 | 3;
 }
 
 /**
  * The 3 shapes of a push target (§12-5): creation (a composite of value
  * version 1 + metaVersion 1), activation (the first value push onto a
- * declared variable — a composite of value version 1 + a v2 statement with
+ * declared variable — a composite of value version 1 + a v3 statement with
  * status active [metaVersion + 1] + a manifest), and a normal push onto an
  * existing active variable (meta untouched).
  */
@@ -133,7 +131,7 @@ export const resolveTarget = Effect.fn("push-resolve.resolveTarget")(function* (
     // values over byte-exact (a rename goes through the rename path — the
     // server enforces with 422 payload-mismatch)
     if (existing.schema === null) {
-      // declared is layout-v2-only (§4.2) — a v1 declared is already refused at the verification stage
+      // declared is layout-v3-only (§4.2) — a v1 declared is already refused at the verification stage
       return yield* Effect.fail(
         cliError(
           `Variable ${existing.variableId} is declared but carries no schema fields (internal inconsistency)`,
@@ -149,7 +147,6 @@ export const resolveTarget = Effect.fn("push-resolve.resolveTarget")(function* (
           metaSigHashHex: existing.metaSigHashHex,
           name: existing.name,
           schema: existing.schema,
-          layoutVersion: existing.layoutVersion === 3 ? 3 : 2,
         },
       },
       verified: metadata.verified,

@@ -72,7 +72,7 @@ export {
 } from "./internal.package/index.ts";
 
 // §4.2: signed statements of variable / environment metadata (including
-// layout v2 — schema columns, declared, layout selection — 0.8-draft)
+// layout v3 — schema columns, declared, max age, layout selection)
 export {
   buildMetaSignedBytes,
   computeMetaSignedBytesHash,

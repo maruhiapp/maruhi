@@ -72,7 +72,7 @@ import {
   type PushState,
 } from "./push-state.ts";
 import { retryOnConflict } from "./retry.ts";
-import { signContinuationStatementV2 } from "./schema.package/index.ts";
+import { signContinuationStatementV3 } from "./schema.package/index.ts";
 import type { VerifiedPulledValue } from "./values-verify.ts";
 import { type ManifestIssueBase } from "./values.ts";
 
@@ -424,7 +424,7 @@ const attemptOnce = Effect.fn("push.attemptOnce")(function* (
   }
   if (state.target.kind === "activate") {
     // activation (declared → active — §12-5): a composite of value
-    // version 1 + a v2 statement with status active (metaVersion + 1) + a
+    // version 1 + a v3 statement with status active (metaVersion + 1) + a
     // manifest. name and the schema column take the declaration-time
     // values over byte-exact (a rename goes through the rename path — the
     // server enforces with 422 payload-mismatch. Schema changes go
@@ -438,13 +438,12 @@ const attemptOnce = Effect.fn("push.attemptOnce")(function* (
         ),
       );
     }
-    const activation = yield* signContinuationStatementV2({
+    const activation = yield* signContinuationStatementV3({
       verified: state.verified,
       environmentId: input.environmentId,
       variableId: target.variableId,
       name: target.prev.name,
       schema: target.prev.schema,
-      layoutVersion: target.prev.layoutVersion,
       status: "active",
       prev: {
         metaVersion: target.prev.metaVersion,

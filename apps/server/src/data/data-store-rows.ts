@@ -79,7 +79,7 @@ export function storedSuite(value: unknown): WireSuite {
 
 /**
  * The stored status column → an environment statement's 2 values
- * (environment meta is outside v2's scope — CRYPTO_SPEC §4.2). An
+ * (environment meta is outside the schema layout's scope — CRYPTO_SPEC §4.2). An
  * unknown value is a defect as storage corruption.
  */
 function storedEnvStatus(value: string): "active" | "deleted" {
@@ -90,7 +90,7 @@ function storedEnvStatus(value: string): "active" | "deleted" {
   return value;
 }
 
-/** The stored status column → a variable statement's 3 values (declared is v2 only). */
+/** The stored status column → a variable statement's 3 values (declared is v3 only). */
 export function storedVariableStatus(value: string): MetaStatementStatusInput {
   if (value !== "active" && value !== "deleted" && value !== "declared") {
     throw new Error("unexpected status in stored meta statement row");
@@ -129,28 +129,26 @@ function nullableStringColumn(row: StoredRow, column: string): string | null {
 }
 
 /**
- * Decode the layout-v2 schema columns (a v1 row = all 4 columns treated
- * as absent → null). A NULL schema column on a v2 row is an invariant
- * violation of the write path (a defect).
+ * Decode the layout-v3 schema columns (a v1 row = all 5 columns treated
+ * as absent → null). Any other stored layout, or a NULL schema column on a
+ * v3 row, is an invariant violation of the write path (a defect — the
+ * acceptance path stores supported layouts only).
  */
 function storedSchemaColumns(row: StoredRow, prefix: string): MetaVariableSchemaInput | null {
   const layoutVersion = numberColumn(row, `${prefix}layout_version`);
   if (layoutVersion === 1) {
     return null;
   }
+  if (layoutVersion !== 3) {
+    throw new Error("meta statement row has an unsupported layout");
+  }
   const varType = nullableStringColumn(row, `${prefix}var_type`);
   const required = nullableStringColumn(row, `${prefix}required`);
   const description = nullableStringColumn(row, `${prefix}description`);
-  if (varType === null || required === null || description === null) {
-    throw new Error("layout v2 meta statement row is missing schema columns");
-  }
-  if (layoutVersion === 2) {
-    return { varType: storedVarType(varType), required: storedRequired(required), description };
-  }
-  // Layout v3: max_age_days is stored as the signed string ("" = none)
+  // max_age_days is stored as the signed string ("" = none)
   const maxAge = nullableStringColumn(row, `${prefix}max_age_days`);
-  if (maxAge === null) {
-    throw new Error("layout v3 meta statement row is missing max_age_days");
+  if (varType === null || required === null || description === null || maxAge === null) {
+    throw new Error("layout v3 meta statement row is missing schema columns");
   }
   return {
     varType: storedVarType(varType),
@@ -195,12 +193,12 @@ export function statementOf(row: StoredRow): DistributedMetaStatementValue {
 }
 
 /**
- * Variable-statement columns → the distributed form's v2 carried
- * fields (§12-2): on a v1 row all four fields are absent (no new field
- * is added to a v1 distribution); on a v2 row layoutVersion + the
+ * Variable-statement columns → the distributed form's v3 carried
+ * fields (§12-2): on a v1 row all five fields are absent (no new field
+ * is added to a v1 distribution); on a v3 row layoutVersion + the
  * schema fields are expanded.
  */
-export function variableStatementV2Fields(
+export function variableStatementV3Fields(
   row: StoredRow,
   prefix: string,
 ): Pick<
@@ -216,8 +214,8 @@ export function variableStatementV2Fields(
     varType: schema.varType,
     required: schema.required,
     description: schema.description,
-    // Layout v3 carries maxAgeDays (null = none); a v2 row carries no such field
-    ...(schema.maxAgeDays === undefined ? {} : { maxAgeDays: schema.maxAgeDays }),
+    // null = no declaration
+    maxAgeDays: schema.maxAgeDays ?? null,
   };
 }
 
@@ -226,7 +224,7 @@ export function variableStatementOf(row: StoredRow): DistributedVariableMetaStat
     environmentId: stringColumn(row, "environment_id"),
     variableId: stringColumn(row, "variable_id"),
     ...statementColumns(row, "", storedVariableStatus),
-    ...variableStatementV2Fields(row, ""),
+    ...variableStatementV3Fields(row, ""),
   };
 }
 
@@ -262,7 +260,7 @@ export function environmentAnchorOf(row: StoredRow | undefined): MetaAnchor | nu
 export const MS_COLUMNS =
   "ms.environment_id, ms.suite, ms.name, ms.status, ms.meta_version, ms.prev_meta_sig_hash_hex, ms.chain_head_hash_hex, ms.chain_head_seq, ms.signature_hex, ms.author_user_id, ms.author_key_fingerprint";
 
-// A variable statement also selects the v2 carried-field columns
+// A variable statement also selects the v3 carried-field columns
 // (columns that do not exist in the environment side's SELECT —
-// environment_meta_statements is outside v2's scope)
+// environment_meta_statements is outside the schema layout's scope)
 export const VAR_MS_COLUMNS = `${MS_COLUMNS}, ms.layout_version, ms.var_type, ms.required, ms.description, ms.max_age_days`;

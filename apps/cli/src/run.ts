@@ -4,7 +4,7 @@
 // created. run is allowed even when an agent is detected (it is not a
 // value display but a sanctioned consumption path — the task ruling).
 //
-// The valueless schema's (§4.2 layout v2) fail-fast (design doc §1-4 —
+// The valueless schema's (§4.2 layout v3) fail-fast (design doc §1-4 —
 // rulings CT / CU): presence is strict (a required = true declared →
 // the child is **never started**, a typed error), types are lenient (an
 // advisory check on the plaintext just before injection — a mismatch

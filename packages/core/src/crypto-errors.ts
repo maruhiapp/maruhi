@@ -125,7 +125,7 @@ export class CryptoMetaStatementInvalidError extends Data.TaggedError(
 }> {}
 
 /**
- * A metadata statement declares a wire `layoutVersion` beyond what this
+ * A metadata statement declares a wire `layoutVersion` outside what this
  * build supports (CRYPTO_SPEC §4.2 layout selection): the client must be
  * updated. Distinct from `CryptoMetaStatementInvalid` so callers can show an
  * honest "update required" instead of a tampering warning.
